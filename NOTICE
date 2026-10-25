@@ -1,0 +1,38 @@
+Task Dock
+Copyright (c) 2026 Task Dock contributors
+
+本产品包含以下开源项目的设计参考与模式借鉴（详见 docs/THIRD_PARTY.md）：
+
+1. FloatTodo (lan374/float-todo)
+   MIT License, Copyright (c) 2025 morning
+   参考：无边框透明置顶悬浮窗、托盘菜单、全局热键的 Tauri 2 实现模式。
+
+2. todo-tauri (followG/todo-tauri)
+   MIT License, Copyright (c) 2026 G
+   参考：贴边自动隐藏交互策略。
+
+3. Code Light AI (cuihp/code-light-ai)
+   MIT License
+   参考：Claude Code / Codex 生命周期钩子 → JSON 状态文件 → Tauri 轮询的
+   Agent 状态灯架构（本项目演进为统一事件总线 + 文件投递目录）。
+
+4. DeepHUD (hktjayaranga/deephud)
+   MIT License
+   参考：紧凑/完整显示模式、Rust 本地提醒调度器、SQLite 桌面存储架构。
+
+5. AgentMonitor (mxyhi/AgentMonitor)
+   MIT License, Copyright (c) 2026 Thomas Ricouard
+   参考：Codex app-server stdio JSON-RPC 接入方式（后续路线）。
+
+6. Agent Tray Monitor (Guimathis/agent-tray-monitor)
+   MIT License, Copyright (c) Guilherme Mathis
+   参考：生命周期 Hooks → 本地 IPC → 系统托盘状态灯的架构。
+
+7. Simple To Do (DFreeMind/simple-to-do)
+   MIT License
+   参考：任务数据模型、重复任务与提醒的设计思路。
+
+BUG-gao/floating-todo 仓库未提供许可证（All Rights Reserved），
+本项目仅阅读其公开 README 作产品形态参考，未复制任何代码。
+
+第三方 crate / npm 依赖许可证见 docs/THIRD_PARTY.md 第三、四节。
