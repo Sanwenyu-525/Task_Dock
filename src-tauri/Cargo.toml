@@ -35,9 +35,24 @@ regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
+# 导航系统（v0.4）：窗口枚举/焦点控制（与 window-vibrancy 传递依赖同主版本，零新增二进制）
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_Threading",
+  "Win32_Graphics_Dwm",
+] }
+# 注册表读取（卸载信息 / UWP 包注册）
+winreg = "0.55"
+# 开始菜单 .lnk 快捷方式解析（纯 Rust 实现；个别畸形 lnk 会 panic，
+# 调用方以 catch_unwind 隔离，坏文件跳过不影响扫描）
+lnk = "0.5"
 
+# 注意：不得设置 panic = "abort" —— 导航扫描依赖 catch_unwind 隔离畸形 .lnk 的
+# 解析 panic（真机验收发现：panic=abort 下 catch_unwind 失效，扫描到用户开始
+# 菜单中的异常快捷方式会让整个应用直接退出）。
 [profile.release]
-panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"

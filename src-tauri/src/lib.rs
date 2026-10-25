@@ -4,6 +4,7 @@ pub mod agents;
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod navigation;
 pub mod nlp;
 pub mod recurrence;
 pub mod scheduler;
@@ -33,7 +34,7 @@ fn tray_icon_bytes(state: AgentState) -> &'static [u8] {
         AgentState::Completed => include_bytes!("../icons/status/done.png"),
         AgentState::Failed => include_bytes!("../icons/status/failed.png"),
         AgentState::Disconnected => include_bytes!("../icons/status/idle.png"),
-        AgentState::Idle => include_bytes!("../icons/tray.png"),
+        AgentState::Idle => include_bytes!("../icons/tray-app.png"),
     }
 }
 
@@ -249,7 +250,7 @@ fn restore_window(app: &AppHandle, db: &Db) {
     };
     // 显示模式尺寸（先同步最小尺寸，避免常驻 minWidth 钳制极简模式）
     let settings = db::Settings::load(db).unwrap_or_default();
-    commands::system::set_mode_window_size(&win, &settings.mode.as_str());
+    commands::system::set_mode_window_size(&win, settings.mode.as_str());
 
     // 记忆位置（越界则用默认位置）
     if let Some(rect) = db
@@ -365,10 +366,7 @@ pub fn run() {
             }
 
             let handle = app.handle().clone();
-            let data_dir = handle
-                .path()
-                .app_data_dir()
-                .expect("无法获取应用数据目录");
+            let data_dir = handle.path().app_data_dir().expect("无法获取应用数据目录");
             std::fs::create_dir_all(&data_dir).ok();
 
             let db = Arc::new(Db::open(&data_dir.join("task-dock.db")).expect("数据库打开失败"));
@@ -385,7 +383,9 @@ pub fn run() {
             // 窗口材质（毛玻璃）：在显示窗口之前应用，避免透明闪烁；
             // 失败自动回退 solid（前端 load 时会再次确认实际状态）
             if settings.material == "glass" {
-                if let Ok(r) = commands::system::apply_window_material(handle.clone(), "glass".into()) {
+                if let Ok(r) =
+                    commands::system::apply_window_material(handle.clone(), "glass".into())
+                {
                     if !r.applied {
                         tracing::info!("系统不支持毛玻璃材质，已回退 solid（{}）", r.os_version);
                     }
@@ -498,6 +498,24 @@ pub fn run() {
             commands::system::get_snap_state,
             commands::system::hub_health,
             commands::system::apply_window_material,
+            // 统一导航（v0.4）
+            commands::navigation::nav_scan_apps,
+            commands::navigation::nav_list_windows,
+            commands::navigation::nav_list_targets,
+            commands::navigation::nav_save_target,
+            commands::navigation::nav_update_target,
+            commands::navigation::nav_delete_target,
+            commands::navigation::nav_recent_logs,
+            commands::navigation::nav_prune_logs,
+            commands::navigation::nav_link_task,
+            commands::navigation::nav_unlink_task,
+            commands::navigation::nav_update_task_link,
+            commands::navigation::nav_task_targets,
+            commands::navigation::nav_all_task_links,
+            commands::navigation::nav_navigate,
+            commands::navigation::nav_agent_capabilities,
+            commands::navigation::nav_agent_action,
+            commands::navigation::nav_agent_open_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Task Dock 失败");
@@ -542,7 +560,9 @@ fn headless_data_dir() -> std::path::PathBuf {
 /// - post <source> <state>         向本地 ingest 直接上报一次（调试）
 pub fn agentctl(args: &[String]) -> i32 {
     if args.is_empty() {
-        eprintln!("用法: task-dock --agentctl <scan|install|verify|uninstall|status|events|post> [参数]");
+        eprintln!(
+            "用法: task-dock --agentctl <scan|install|verify|uninstall|status|events|post> [参数]"
+        );
         return 2;
     }
     let data_dir = headless_data_dir();
@@ -590,7 +610,10 @@ pub fn agentctl(args: &[String]) -> i32 {
             }
         }
         "events" => {
-            let limit = args.get(1).and_then(|v| v.parse::<i64>().ok()).unwrap_or(20);
+            let limit = args
+                .get(1)
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(20);
             let rows = db
                 .with_conn(|conn| {
                     let mut stmt = conn.prepare(

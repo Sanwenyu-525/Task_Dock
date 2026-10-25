@@ -78,7 +78,7 @@ pub fn adapter() -> HooksAdapter {
         source_id: "trae",
         display_name: "Trae",
         docs_url: "https://docs.trae.ai/ide/hook-configuration-reference",
-        hooks_files: hooks_files,
+        hooks_files,
         events: supported_events,
         detect_impl,
         limitations: vec![

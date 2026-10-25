@@ -193,6 +193,13 @@ export interface Settings {
   stale_run_minutes: number;
   auto_backup: boolean;
   backup_retain_days: number;
+  // 导航偏好（v0.4）
+  nav_prefer_focus: boolean;
+  nav_allow_launch: boolean;
+  nav_fallback: boolean;
+  nav_remember_window: boolean;
+  nav_default_browser: string;
+  nav_workspace_max: number;
 }
 
 /** 全局任务统计（跨所有筛选视图）。 */
@@ -281,8 +288,9 @@ export const codexHooksStatus = () =>
   );
 export const codexHooksInstall = () => invoke<Record<string, unknown>>("codex_hooks_install");
 export const codexHooksUninstall = () => invoke<Record<string, unknown>>("codex_hooks_uninstall");
+/** 跳转 Agent 会话（v0.4 走统一导航：证据化能力 + 诚实降级；返回结构化结果）。 */
 export const openAgentSession = (sourceId: string, sessionId: string) =>
-  invoke<void>("open_agent_session", { source_id: sourceId, session_id: sessionId });
+  invoke<import("./navigation").NavigationResult>("open_agent_session", { source_id: sourceId, session_id: sessionId });
 export const listNotifications = (unreadOnly = false, limit = 100) =>
   invoke<NotificationRow[]>("list_notifications", { unread_only: unreadOnly, limit });
 export const markNotificationRead = (id: string) => invoke<void>("mark_notification_read", { id });

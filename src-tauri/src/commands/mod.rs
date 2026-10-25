@@ -1,8 +1,9 @@
 //! 命令层：前端 invoke 的统一入口。
 
 pub mod agents;
-pub mod settings;
 pub mod data;
+pub mod navigation;
+pub mod settings;
 pub mod system;
 pub mod tasks;
 

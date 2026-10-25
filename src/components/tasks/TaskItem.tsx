@@ -1,20 +1,34 @@
-//! 单个任务条目：完成（带撤销反馈）、双击或按钮编辑、元信息展示。
+//! 单个任务条目：完成（带撤销反馈）、双击或按钮编辑、元信息展示、关联目标跳转。
+//!
+//! v0.4：任务卡展示关联应用/网址/文件/Agent 图标（最多 3 个直列，其余折叠为
+//! 数量入口）；点击图标 = 打开该目标（≠ 任务完成）；多目标经快捷菜单选择；
+//! 菜单顶部提供「打开工作区」（批量启动由 WorkspaceLauncher 执行）。
 
-import { Check, Clock, Repeat, Link2, Pencil } from "lucide-react";
+import { useState } from "react";
+import { Check, Clock, Repeat, Link2, Pencil, Rocket } from "lucide-react";
 import type { Task } from "../../lib/bridge";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useNavigationStore } from "../../store/useNavigationStore";
 import { formatDue, isOverdue, priorityLabel, describeRecurrence } from "../../lib/format";
+import { navNavigate, resultMessage } from "../../lib/navigation";
+import TargetMenu, { TargetAvatar } from "../navigation/TargetMenu";
 
 interface Props {
   task: Task;
   compact?: boolean;
 }
 
+/** 直列图标上限：超出部分折叠为数量入口，避免任务卡失控。 */
+const MAX_INLINE_TARGETS = 3;
+
 export default function TaskItem({ task, compact }: Props) {
   const toggle = useTasksStore((s) => s.toggle);
   const openEditor = useUiStore((s) => s.openEditor);
   const showToast = useUiStore((s) => s.showToast);
+  const openWorkspace = useUiStore((s) => s.openWorkspace);
+  const links = useNavigationStore((s) => s.linksByTask[task.id]) ?? [];
+  const [menuOpen, setMenuOpen] = useState(false);
   const overdue = task.status === "pending" && isOverdue(task.due_at);
 
   async function onToggle() {
@@ -36,6 +50,27 @@ export default function TaskItem({ task, compact }: Props) {
       showToast(`操作失败：${String(e)}`, { kind: "error" });
     }
   }
+
+  /** 点击目标图标：直接跳转（任务状态不受影响）。 */
+  async function navigateTarget(targetId: string, name: string, behavior: string) {
+    const action =
+      behavior === "launch"
+        ? "open_app"
+        : behavior === "focus_or_launch"
+          ? "focus_window"
+          : behavior === "resume_session"
+            ? "resume_session"
+            : undefined;
+    try {
+      const r = await navNavigate(targetId, action ? { action } : undefined);
+      showToast(resultMessage(r, name), { kind: r.success ? "success" : "error" });
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    }
+  }
+
+  const inline = links.slice(0, MAX_INLINE_TARGETS);
+  const overflow = links.length - inline.length;
 
   return (
     <div className={`task-item priority-${task.priority} ${task.status}`}>
@@ -79,10 +114,75 @@ export default function TaskItem({ task, compact }: Props) {
             </span>
           )}
         </div>
+        {links.length > 0 && (
+          <div className="task-nav-row" role="group" aria-label="关联目标">
+            {inline.map((l) => (
+              <button
+                key={l.id}
+                className="task-nav-btn"
+                title={`打开：${l.target.display_name}`}
+                aria-label={`打开 ${l.target.display_name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigateTarget(l.target_id, l.target.display_name, l.launch_behavior);
+                }}
+              >
+                <TargetAvatar link={l} size={18} />
+              </button>
+            ))}
+            {overflow > 0 && (
+              <button
+                className="task-nav-btn task-nav-more"
+                title={`还有 ${overflow} 个关联目标`}
+                aria-label={`还有 ${overflow} 个关联目标`}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen((v) => !v);
+                }}
+              >
+                +{overflow}
+              </button>
+            )}
+          </div>
+        )}
       </div>
       {!compact && (
         <button className="icon-btn sm task-edit" onClick={() => openEditor(task)} title="编辑任务" aria-label="编辑任务">
           <Pencil size={13} />
+        </button>
+      )}
+      {menuOpen && links.length > 0 && (
+        <>
+          {/* 点击卡片其余区域关闭菜单 */}
+          <div className="target-menu-backdrop" onClick={() => setMenuOpen(false)} />
+          <div className="target-menu-anchor">
+            <TargetMenu
+              links={links}
+              onClose={() => setMenuOpen(false)}
+              onNavigate={(l) => navigateTarget(l.target_id, l.target.display_name, l.launch_behavior)}
+              onOpenAll={
+                links.length >= 2
+                  ? () => {
+                      setMenuOpen(false);
+                      openWorkspace(task);
+                    }
+                  : undefined
+              }
+            />
+          </div>
+        </>
+      )}
+      {/* 快捷工作区入口：≥2 目标时在卡片尾部显示（紧凑模式经菜单进入） */}
+      {!compact && links.length >= 2 && (
+        <button
+          className="icon-btn sm task-workspace"
+          title="打开工作区（批量启动关联目标）"
+          aria-label="打开工作区"
+          onClick={() => openWorkspace(task)}
+        >
+          <Rocket size={13} />
         </button>
       )}
     </div>

@@ -3,12 +3,14 @@ import { useSettingsStore } from "./store/useSettingsStore";
 import { useTasksStore } from "./store/useTasksStore";
 import { useAgentsStore } from "./store/useAgentsStore";
 import { useUiStore } from "./store/useUiStore";
+import { useNavigationStore } from "./store/useNavigationStore";
 import { useEdgeSnap, useWindowPersistence } from "./hooks/useEdgeSnap";
 import TitleBar from "./components/TitleBar";
 import MinimalView from "./components/MinimalView";
 import CompactView from "./components/CompactView";
 import FullView from "./components/FullView";
 import TaskEditor from "./components/tasks/TaskEditor";
+import WorkspaceLauncher from "./components/navigation/WorkspaceLauncher";
 import Toast from "./components/Toast";
 import {
   onAgentChanged,
@@ -28,6 +30,8 @@ export default function App() {
   const loadStats = useTasksStore((s) => s.loadStats);
   const loadAgents = useAgentsStore((s) => s.load);
   const bumpQuickAdd = useUiStore((s) => s.bumpQuickAdd);
+  const loadNavLinks = useNavigationStore((s) => s.loadTaskLinks);
+  const loadNavTargets = useNavigationStore((s) => s.loadTargets);
 
   const mode = settings?.mode ?? "full";
   const snapEnabled = settings?.snap_enabled ?? true;
@@ -39,14 +43,19 @@ export default function App() {
     loadSettings();
     refreshTasks();
     loadAgents();
-  }, [loadSettings, refreshTasks, loadAgents]);
+    loadNavLinks();
+    loadNavTargets();
+  }, [loadSettings, refreshTasks, loadAgents, loadNavLinks, loadNavTargets]);
 
   useEffect(() => {
     const cleanups: (() => void)[] = [];
     onAgentChanged(() => loadAgents()).then((u) => cleanups.push(u));
     onReminderFired(() => refreshTasks()).then((u) => cleanups.push(u));
     // 新通知/新事件：任务列表（含 Agent 建的任务）与全局统计都要刷新
-    onNotification(() => refreshTasks()).then((u) => cleanups.push(u));
+    onNotification(() => {
+      refreshTasks();
+      loadNavLinks();
+    }).then((u) => cleanups.push(u));
     onFocusQuickAdd(() => bumpQuickAdd()).then((u) => cleanups.push(u));
     onModeChanged((m) => {
       // 尺寸/持久化由后端完成；这里只同步 UI（不触发数据刷新，
@@ -61,9 +70,10 @@ export default function App() {
       refreshTasks();
       loadAgents();
       loadStats();
+      loadNavLinks();
     }).then((u) => cleanups.push(u));
     return () => cleanups.forEach((u) => u());
-  }, [loadAgents, refreshTasks, loadStats, bumpQuickAdd, syncExternal]);
+  }, [loadAgents, refreshTasks, loadStats, bumpQuickAdd, syncExternal, loadNavLinks]);
 
   return (
     <div className={`dock-window mode-${mode} material-${settings?.material ?? "glass"}`}>
@@ -81,6 +91,7 @@ export default function App() {
         </div>
       </div>
       <TaskEditor />
+      <WorkspaceLauncher />
       <Toast />
     </div>
   );

@@ -1,0 +1,215 @@
+//! 应用与快捷方式管理：导航偏好、已保存目标（含失效清理）、默认浏览器、导航记录。
+//! 与「Agent 接入管理」职责分离：这里只管普通软件与通用目标。
+
+import { useEffect, useState } from "react";
+import {
+  Star, Trash2, RefreshCw, EyeOff, Eye, Rocket, ClipboardList, Navigation, Ban,
+} from "lucide-react";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { useUiStore } from "../../store/useUiStore";
+import { useNavigationStore } from "../../store/useNavigationStore";
+import {
+  navDeleteTarget, navRecentLogs, navUpdateTarget, navNavigate, resultMessage,
+  TARGET_TYPE_LABELS,
+  type NavLogRow,
+} from "../../lib/navigation";
+
+export default function AppManagement() {
+  const settings = useSettingsStore((s) => s.settings);
+  const update = useSettingsStore((s) => s.update);
+  const showToast = useUiStore((s) => s.showToast);
+  const { targets, targetsLoaded, loadTargets, scan, scanning, loadApps } = useNavigationStore();
+  const [logs, setLogs] = useState<NavLogRow[] | null>(null);
+  const [showHidden, setShowHidden] = useState(false);
+
+  useEffect(() => {
+    if (!targetsLoaded) loadTargets();
+    navRecentLogs(20).then(setLogs).catch(() => setLogs([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 失效检测说明：浏览器环境无法同步探测本地路径；目标失效由后端在
+  // running_state=unavailable（任务关联视图）与导航失败记录中如实呈现。
+
+  const browsers = targets.filter((t) => t.target_type === "application" && t.category === "browser");
+
+  async function refresh() {
+    await Promise.all([loadTargets(true), loadApps(true)]);
+    navRecentLogs(20).then(setLogs).catch(() => {});
+    showToast("应用清单已刷新", { kind: "success" });
+  }
+
+  if (!settings) return null;
+
+  const visible = targets.filter((t) => showHidden || !t.hidden);
+
+  return (
+    <div className="app-management">
+      {/* 导航偏好 */}
+      <div className="panel-block">
+        <div className="panel-block-head">
+          <span><Navigation size={12} /> 导航偏好</span>
+        </div>
+        <label className="setting-row">
+          <span>优先唤醒现有窗口（而非重复启动）</span>
+          <input
+            type="checkbox"
+            checked={settings.nav_prefer_focus}
+            onChange={(e) => update({ nav_prefer_focus: e.target.checked })}
+          />
+        </label>
+        <label className="setting-row">
+          <span>允许启动未运行的程序</span>
+          <input
+            type="checkbox"
+            checked={settings.nav_allow_launch}
+            onChange={(e) => update({ nav_allow_launch: e.target.checked })}
+          />
+        </label>
+        <label className="setting-row">
+          <span>精准跳转失败时按层级降级（关闭则直接报错）</span>
+          <input
+            type="checkbox"
+            checked={settings.nav_fallback}
+            onChange={(e) => update({ nav_fallback: e.target.checked })}
+          />
+        </label>
+        <label className="setting-row">
+          <span>记住上次选择的窗口（多窗口应用）</span>
+          <input
+            type="checkbox"
+            checked={settings.nav_remember_window}
+            onChange={(e) => update({ nav_remember_window: e.target.checked })}
+          />
+        </label>
+        <label className="setting-row">
+          <span>工作区批量启动数量上限（{settings.nav_workspace_max}）</span>
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={settings.nav_workspace_max}
+            onChange={(e) => update({ nav_workspace_max: Number(e.target.value) })}
+          />
+        </label>
+        <label className="setting-row">
+          <span>默认浏览器</span>
+          <select
+            className="input sm"
+            value={settings.nav_default_browser}
+            onChange={(e) => update({ nav_default_browser: e.target.value })}
+          >
+            <option value="">系统默认</option>
+            {browsers.map((b) => (
+              <option key={b.id} value={b.app_key}>{b.display_name}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {/* 已保存目标 */}
+      <div className="panel-block">
+        <div className="panel-block-head">
+          <span>已保存的目标（{visible.length}）</span>
+          <div className="btn-group">
+            <button className="btn sm" onClick={() => setShowHidden((v) => !v)} title={showHidden ? "隐藏已隐藏项" : "显示隐藏项"}>
+              {showHidden ? <Eye size={12} /> : <EyeOff size={12} />}
+            </button>
+            <button className="btn sm" onClick={refresh} disabled={scanning}>
+              <RefreshCw size={12} className={scanning ? "spin" : ""} /> 重新扫描
+            </button>
+          </div>
+        </div>
+        {scan && (
+          <div className="endpoint-hint">
+            最近扫描 {scan.counts.startmenu ?? 0} 个开始菜单 / {scan.counts.registry ?? 0} 个注册表 /
+            {" "}{scan.counts.uwp ?? 0} 个商店应用 / {scan.counts.known ?? 0} 个常用位置（{scan.duration_ms}ms）
+          </div>
+        )}
+        {visible.length === 0 && (
+          <div className="empty-hint">暂无目标；在任务编辑器「添加目标」或应用选择器中登记</div>
+        )}
+        <div className="target-admin-list">
+          {visible.slice(0, 60).map((t) => (
+            <div key={t.id} className="target-admin-row">
+              <span className="target-admin-name" title={t.exe_path || t.url || t.path}>
+                {t.display_name}
+              </span>
+              <span className="target-admin-type">{TARGET_TYPE_LABELS[t.target_type]}</span>
+              <span className="target-admin-uses">{t.use_count > 0 ? `${t.use_count} 次` : ""}</span>
+              <button
+                className={`icon-btn sm ${t.favorite ? "default-on" : ""}`}
+                title={t.favorite ? "取消收藏" : "收藏"}
+                aria-label={t.favorite ? `取消收藏 ${t.display_name}` : `收藏 ${t.display_name}`}
+                onClick={async () => {
+                  await navUpdateTarget(t.id, { favorite: !t.favorite }).catch((e) => showToast(String(e), { kind: "error" }));
+                  await loadTargets(true);
+                }}
+              >
+                <Star size={11} />
+              </button>
+              <button
+                className={`icon-btn sm ${t.hidden ? "default-on" : ""}`}
+                title={t.hidden ? "取消隐藏" : "隐藏（不显示在选择器）"}
+                aria-label={t.hidden ? `取消隐藏 ${t.display_name}` : `隐藏 ${t.display_name}`}
+                onClick={async () => {
+                  await navUpdateTarget(t.id, { hidden: !t.hidden }).catch((e) => showToast(String(e), { kind: "error" }));
+                  await loadTargets(true);
+                }}
+              >
+                {t.hidden ? <EyeOff size={11} /> : <Eye size={11} />}
+              </button>
+              <button
+                className="icon-btn sm"
+                title="测试跳转"
+                aria-label={`测试跳转 ${t.display_name}`}
+                onClick={async () => {
+                  try {
+                    const r = await navNavigate(t.id);
+                    showToast(resultMessage(r, t.display_name), { kind: r.success ? "success" : "error" });
+                    setLogs(await navRecentLogs(20).catch(() => []));
+                  } catch (e) {
+                    showToast(String(e), { kind: "error" });
+                  }
+                }}
+              >
+                <Rocket size={11} />
+              </button>
+              <button
+                className="icon-btn sm"
+                title="删除目标（关联任务会同步解除）"
+                aria-label={`删除 ${t.display_name}`}
+                onClick={async () => {
+                  await navDeleteTarget(t.id).catch((e) => showToast(String(e), { kind: "error" }));
+                  await Promise.all([loadTargets(true), useNavigationStore.getState().loadTaskLinks()]);
+                }}
+              >
+                <Trash2 size={11} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 导航记录 */}
+      <div className="panel-block">
+        <div className="panel-block-head">
+          <span><ClipboardList size={12} /> 最近导航记录</span>
+        </div>
+        {logs === null && <div className="empty-hint">加载中…</div>}
+        {logs !== null && logs.length === 0 && <div className="empty-hint">暂无记录</div>}
+        <div className="nav-log-list">
+          {logs?.slice(0, 10).map((l) => (
+            <div key={l.id} className={`nav-log-row ${l.success ? "" : "bad"}`}>
+              <span className="nav-log-time">{l.created_at.slice(5, 16).replace("T", " ")}</span>
+              <span className="nav-log-name" title={l.reason}>{l.target_name || l.target_id}</span>
+              <span className="nav-log-action">{l.actual_action ?? l.requested_action}</span>
+              {!l.success && <span title={l.reason}><Ban size={10} /></span>}
+              {l.fallback_used && <span className="nav-log-fb">降级</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}

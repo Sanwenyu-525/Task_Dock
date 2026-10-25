@@ -71,7 +71,7 @@ pub fn adapter() -> HooksAdapter {
         source_id: "qoder",
         display_name: "Qoder",
         docs_url: "https://docs.qoder.cn/qoder/hooks",
-        hooks_files: hooks_files,
+        hooks_files,
         events: supported_events,
         detect_impl,
         limitations: vec![

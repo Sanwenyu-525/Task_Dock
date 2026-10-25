@@ -16,3 +16,21 @@
 **真实联调通过计数：6 / 7**（Codex、Trae、WorkBuddy、Qoder、DSH、OpenCode；ZCode 待验证不计入）。
 
 范围外但已勘明格式（按用户指示移出本轮）：Claude Code（`~/.claude/settings.json`，本机 v2.1.186）、Cursor（`~/.cursor/hooks.json`，`version:1` + camelCase 事件）、Gemini CLI（未见官方 hooks）。
+
+---
+
+## Agent 跳转/导航能力矩阵（v0.4 新增）
+
+> 「证据」列说明能力如何被核验：`baseline-verified` = 本机真实版本实测；`exe-found` = 当次动态定位到可执行文件；`cli-help-probed` = 运行时探测 CLI 帮助文本；`unsupported-interface` = 无官方接口，诚实标记不支持（不臆造 Deep Link）；`not-installed` = 本机未安装。「真机验证」= 在本机 Windows 桌面会话真实执行过（cargo test 真机用例 + 手动验收），未验证的一律如实标注。
+
+| Agent | 启动软件（L1） | 唤醒窗口（L2） | 打开工作区（L3） | 恢复会话（L4） | 证据 | 真机验证 | 已知限制 |
+|---|---|---|---|---|---|---|---|
+| Codex CLI | ✅ | ✅ | ❌ 无此接口 | ✅ `codex resume <id>` | baseline-verified（0.130.0-alpha.5） | ✅（单测真实 spawn） | resume 在新终端进程打开；多实例时无法定位原终端窗口 |
+| Codex App（无 CLI） | ✅（App 数据目录存在时） | ✅（按标题提示） | ❌ | ❌ 降级为唤醒窗口 | exe-found / not-installed 动态 | ⚠️ 待真机验证 | App 与 CLI 会话库共用 ~/.codex，但无法从 App 反查会话窗口 |
+| OpenCode | ✅ | ✅ | ❌ | ⚠️ 动态：CLI 帮助确认支持会话 ID 参数才启用；否则降级打开 TUI | cli-help-probed（1h 缓存） | ❌ 待真机验证（探测逻辑有单测，真实 resume 命令未在本机跑过） | 仅装了 CLI 才有 L4；resume 无 ID 支持时只能打开会话选择器 |
+| Trae / Trae CN | ✅ | ✅ | ⚠️ `trae <dir>`（VS Code 系 CLI 惯例，帮助文本未逐项核验） | ❌ 诚实不支持 → 降级启动/唤醒 | cli-convention | ❌ 待真机验证 | 多窗口时唤醒「其中一个」并如实标注，不冒充精准实例 |
+| Qoder | ✅ | ✅ | ⚠️ `qoder <dir>`（同上） | ❌ 诚实不支持 | cli-convention | ❌ 待真机验证 | IDE 与 CLI 为不同形态；CLI 可恢复 ≠ IDE 可恢复，两者分开判定 |
+| WorkBuddy / CodeBuddy | ✅ | ✅ | ❌ | ❌ 诚实不支持 | exe-found | ❌ 待真机验证 | 官方参数/协议未核实，仅做启动与窗口唤醒 |
+| DeepSeek Harness | ✅（CLI 在 PATH 时） | ✅ | ❌ | ❌ 诚实不支持 | exe-found | ❌ 待真机验证 | 桌面端无会话定位接口 |
+| ZCode | ✅（exe 定位时） | ✅ | ❌ | ❌ 诚实不支持 | exe-found | ❌ 待真机验证 | 无公开会话接口 |
+| 自定义 Agent | 手动登记为应用目标后 ✅ | ✅ | — | ❌（不信任事件携带的命令） | 用户确认配置 | ❌ 待真机验证 | 只使用用户在「应用与快捷方式」里确认过的启动配置 |

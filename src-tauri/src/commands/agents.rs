@@ -106,30 +106,42 @@ pub fn update_source(
     })
 }
 
-/// 删除来源：只删 Agent 观测数据；关联的普通任务与 task_agent_links 保留
-/// （任务侧显示为「来源已移除」，绝不级联删除用户任务）。
+/// 删除来源。
+///
+/// P1 修复（外键冲突）：agent_sessions/agent_instances 以外键引用 agent_sources，
+/// 旧实现在 also_delete_data=false 时直接 DELETE 来源 → FOREIGN KEY constraint failed，
+/// 来源一旦有过事件就永远删不掉。新语义：
+/// - 会话/轮次/实例（FK 绑定的观测数据）总是随之删除，保证删除必成功；
+/// - agent_events 按 also_delete_data 决定去留（false 保留历史流水，source_id 为普通列）；
+/// - 用户任务与 task_agent_links 永不级联删除（任务侧显示「来源已移除」）。
 #[tauri::command]
 pub fn delete_source(db: State<'_, Arc<Db>>, id: String, also_delete_data: bool) -> AppResult<()> {
-    let now = crate::agents::now_iso();
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
+        // 先删子表（runs 经 session 级联，但显式删除顺序更稳）
+        tx.execute(
+            "DELETE FROM agent_runs WHERE source_id = ?1",
+            rusqlite::params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM agent_sessions WHERE source_id = ?1",
+            rusqlite::params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM agent_instances WHERE source_id = ?1",
+            rusqlite::params![id],
+        )?;
         if also_delete_data {
             tx.execute(
-                "DELETE FROM agent_runs WHERE source_id = ?1",
-                rusqlite::params![id],
-            )?;
-            tx.execute(
-                "DELETE FROM agent_sessions WHERE source_id = ?1",
-                rusqlite::params![id],
-            )?;
-            tx.execute(
-                "DELETE FROM agent_instances WHERE source_id = ?1",
+                "DELETE FROM agent_events WHERE source_id = ?1",
                 rusqlite::params![id],
             )?;
         }
         // task_agent_links 保留任务历史（不删 tasks，links 留作记录）
-        tx.execute("DELETE FROM agent_sources WHERE id = ?1", rusqlite::params![id])?;
-        let _ = now;
+        tx.execute(
+            "DELETE FROM agent_sources WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
         tx.commit()?;
         Ok::<_, AppError>(())
     })
@@ -177,7 +189,10 @@ pub fn adapter_verify(
 }
 
 #[tauri::command]
-pub fn adapter_uninstall(adapter_id: String, app: tauri::AppHandle) -> AppResult<serde_json::Value> {
+pub fn adapter_uninstall(
+    adapter_id: String,
+    app: tauri::AppHandle,
+) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
     let app_data = app.path().app_data_dir()?;
@@ -185,7 +200,11 @@ pub fn adapter_uninstall(adapter_id: String, app: tauri::AppHandle) -> AppResult
 }
 
 #[tauri::command]
-pub fn adapter_status(adapter_id: String, app: tauri::AppHandle, db: State<'_, Arc<Db>>) -> AppResult<serde_json::Value> {
+pub fn adapter_status(
+    adapter_id: String,
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
     let app_data = app.path().app_data_dir()?;
@@ -220,7 +239,10 @@ pub fn mock_start_scenario(session_title: String, outcome: String) -> AppResult<
         "completed" | "failed" | "waiting_only" => outcome,
         _ => "completed".to_string(),
     };
-    if mock::trigger(MockScenario { session_title, outcome }) {
+    if mock::trigger(MockScenario {
+        session_title,
+        outcome,
+    }) {
         Ok(())
     } else {
         Err(AppError::Agent("Mock Adapter 未运行".into()))
@@ -235,36 +257,55 @@ pub fn codex_hooks_status(app: tauri::AppHandle) -> AppResult<serde_json::Value>
 }
 
 #[tauri::command]
-pub fn codex_hooks_install(app: tauri::AppHandle, db: State<'_, Arc<Db>>) -> AppResult<serde_json::Value> {
-    let a = managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
+pub fn codex_hooks_install(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+) -> AppResult<serde_json::Value> {
+    let a =
+        managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
     let app_data = app.path().app_data_dir()?;
     a.install(&app_data, &db)
 }
 
 #[tauri::command]
 pub fn codex_hooks_uninstall(app: tauri::AppHandle) -> AppResult<serde_json::Value> {
-    let a = managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
+    let a =
+        managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
     let app_data = app.path().app_data_dir()?;
     a.uninstall(&app_data)
 }
 
-/// 跳转到 Agent 会话（目前支持 Codex：codex resume）。
+/// 跳转到 Agent 会话（v0.4 起走统一导航系统：证据化能力 + 诚实降级）。
+/// 返回结构化结果；前端也可用 nav_navigate(target_id) 获得相同语义。
 #[tauri::command]
-pub fn open_agent_session(source_id: String, session_id: String) -> AppResult<()> {
-    match source_id.as_str() {
-        "codex" => codex::open_session(&session_id),
-        "mock" => Err(AppError::Agent("模拟会话无需跳转".into())),
-        other => Err(AppError::Agent(format!(
-            "来源 {} 暂不支持跳转（无可靠官方跳转接口）",
-            other
-        ))),
+pub fn open_agent_session(
+    db: State<'_, Arc<Db>>,
+    source_id: String,
+    session_id: String,
+) -> AppResult<crate::navigation::NavigationResult> {
+    let r = crate::navigation::agent_navigation::resume_session(&db, &source_id, &session_id);
+    crate::navigation::target_resolver::write_log(
+        &db,
+        &r,
+        &format!("{}:{}", source_id, session_id),
+    );
+    if r.success {
+        Ok(r)
+    } else {
+        Err(AppError::Agent(
+            r.reason.unwrap_or_else(|| "跳转失败".into()),
+        ))
     }
 }
 
 // ── 通知收件箱 ──────────────────────────────────────────────
 
 #[tauri::command]
-pub fn list_notifications(db: State<'_, Arc<Db>>, unread_only: Option<bool>, limit: Option<i64>) -> AppResult<Vec<NotificationRow>> {
+pub fn list_notifications(
+    db: State<'_, Arc<Db>>,
+    unread_only: Option<bool>,
+    limit: Option<i64>,
+) -> AppResult<Vec<NotificationRow>> {
     let limit = limit.unwrap_or(100).clamp(1, 500);
     let mut sql = "SELECT id, kind, title, body, ref_type, ref_id, occurrence, is_read, created_at FROM notification_history".to_string();
     if unread_only.unwrap_or(false) {
@@ -304,7 +345,10 @@ pub fn mark_notification_read(db: State<'_, Arc<Db>>, id: String) -> AppResult<(
 #[tauri::command]
 pub fn mark_all_notifications_read(db: State<'_, Arc<Db>>) -> AppResult<()> {
     db.with_conn(|conn| {
-        conn.execute("UPDATE notification_history SET is_read = 1 WHERE is_read = 0", [])?;
+        conn.execute(
+            "UPDATE notification_history SET is_read = 1 WHERE is_read = 0",
+            [],
+        )?;
         Ok::<_, AppError>(())
     })
 }
@@ -319,7 +363,11 @@ pub fn clear_notifications(db: State<'_, Arc<Db>>) -> AppResult<()> {
 
 /// Agent 事件流水（历史记录；扩展列：occurred_at / transport / evidence_type）。
 #[tauri::command]
-pub fn list_agent_events(db: State<'_, Arc<Db>>, source_id: Option<String>, limit: Option<i64>) -> AppResult<Vec<crate::db::AgentEventRow>> {
+pub fn list_agent_events(
+    db: State<'_, Arc<Db>>,
+    source_id: Option<String>,
+    limit: Option<i64>,
+) -> AppResult<Vec<crate::db::AgentEventRow>> {
     let limit = limit.unwrap_or(100).clamp(1, 500);
     db.with_conn(|conn| {
         let (sql, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = match &source_id {

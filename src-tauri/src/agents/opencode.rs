@@ -171,7 +171,10 @@ impl ManagedAdapter for OpencodeAdapter {
                 )));
             }
         }
-        std::fs::write(&file, plugin_content(settings.http_port, &settings.http_token))?;
+        std::fs::write(
+            &file,
+            plugin_content(settings.http_port, &settings.http_token),
+        )?;
         let config = json!({
             "adapter": "opencode",
             "plugin_file": file.to_string_lossy(),
@@ -214,7 +217,9 @@ impl ManagedAdapter for OpencodeAdapter {
                     )?;
                     Ok::<_, crate::error::AppError>(())
                 });
-                Ok(json!({ "ok": true, "http_status": status, "note": "插件上报链路（plugin → HTTP ingest → DB）已验证" }))
+                Ok(
+                    json!({ "ok": true, "http_status": status, "note": "插件上报链路（plugin → HTTP ingest → DB）已验证" }),
+                )
             }
             Ok(status) => Ok(json!({ "ok": false, "reason": format!("HTTP {}", status) })),
             Err(e) => Ok(json!({ "ok": false, "reason": e })),
@@ -226,7 +231,9 @@ impl ManagedAdapter for OpencodeAdapter {
         if file.exists() {
             let existing = std::fs::read_to_string(&file).unwrap_or_default();
             if !existing.contains(PLUGIN_MARKER) && !existing.contains("Task Dock") {
-                return Err(AppError::Agent("插件文件非 Task Dock 生成，拒绝删除".into()));
+                return Err(AppError::Agent(
+                    "插件文件非 Task Dock 生成，拒绝删除".into(),
+                ));
             }
             std::fs::remove_file(&file)?;
         }
@@ -239,7 +246,9 @@ impl ManagedAdapter for OpencodeAdapter {
             && std::fs::read_to_string(&file)
                 .map(|c| c.contains("Task Dock") || c.contains(PLUGIN_MARKER))
                 .unwrap_or(false);
-        Ok(json!({ "adapter": "opencode", "plugin_installed": installed, "plugin_file": file.to_string_lossy() }))
+        Ok(
+            json!({ "adapter": "opencode", "plugin_installed": installed, "plugin_file": file.to_string_lossy() }),
+        )
     }
 }
 
@@ -253,11 +262,16 @@ pub fn reqwest_like_post(url: &str, token: &str, body: &Value) -> Result<u16, St
         .to_string();
     let host_port = addr.split('/').next().unwrap_or("");
     let (host, port_str) = host_port.split_once(':').ok_or("bad url")?;
-    let port: u16 = port_str.parse::<u16>().map_err(|e: std::num::ParseIntError| e.to_string())?;
-    let stream = std::net::TcpStream::connect((host, port))
-        .map_err(|e| format!("connect: {}", e))?;
+    let port: u16 = port_str
+        .parse::<u16>()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
+    let stream =
+        std::net::TcpStream::connect((host, port)).map_err(|e| format!("connect: {}", e))?;
     let mut stream = stream;
-    let path = addr.strip_prefix(host_port).filter(|p| !p.is_empty()).unwrap_or("/");
+    let path = addr
+        .strip_prefix(host_port)
+        .filter(|p| !p.is_empty())
+        .unwrap_or("/");
     let req = format!(
         "POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         path, host, token, payload.len(), payload

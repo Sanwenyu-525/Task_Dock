@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use tauri::Manager;
 
-use crate::agents::{AgentEvent, AgentHub, AgentAdapter};
+use crate::agents::{AgentAdapter, AgentEvent, AgentHub, Transport};
 
+#[derive(Default)]
 pub struct FileDropAdapter;
 
 impl FileDropAdapter {
@@ -44,12 +45,7 @@ async fn process_file(hub: &AgentHub, path: &std::path::Path) {
     };
     let events: Vec<AgentEvent> = match value {
         serde_json::Value::Object(_) => match serde_json::from_value::<AgentEvent>(value) {
-            Ok(mut ev) => {
-                if ev.transport.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none() {
-                    ev.transport = Some("file".into());
-                }
-                vec![ev]
-            }
+            Ok(ev) => vec![ev],
             Err(e) => {
                 tracing::warn!("投递文件事件校验失败 {:?}: {}", path.file_name(), e);
                 move_to_failed(hub, path).await;
@@ -57,25 +53,17 @@ async fn process_file(hub: &AgentHub, path: &std::path::Path) {
             }
         },
         serde_json::Value::Array(arr) => {
-            let mut out = Vec::new();
-            let mut bad = false;
+            // 全成功/全失败：任一元素非法，整个文件不入库
+            let mut out = Vec::with_capacity(arr.len());
             for item in arr {
                 match serde_json::from_value::<AgentEvent>(item) {
-                    Ok(mut ev) => {
-                        if ev.transport.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_none() {
-                            ev.transport = Some("file".into());
-                        }
-                        out.push(ev)
-                    }
+                    Ok(ev) => out.push(ev),
                     Err(e) => {
-                        tracing::warn!("投递文件数组元素校验失败: {}", e);
-                        bad = true;
+                        tracing::warn!("投递文件数组元素校验失败（整批拒绝）: {}", e);
+                        move_to_failed(hub, path).await;
+                        return;
                     }
                 }
-            }
-            if out.is_empty() || bad {
-                move_to_failed(hub, path).await;
-                return;
             }
             out
         }
@@ -84,18 +72,20 @@ async fn process_file(hub: &AgentHub, path: &std::path::Path) {
             return;
         }
     };
-    let mut ok = true;
-    for ev in &events {
-        if let Err(e) = hub.ingest(ev) {
-            tracing::warn!("投递事件被拒绝: {}", e);
-            ok = false;
+    // 单事务批量接入：任一事件被拒，整批回滚（不出现半处理）
+    match hub.ingest_batch(&events, Transport::File) {
+        Ok(outs) => {
+            let _ = tokio::fs::remove_file(path).await;
+            tracing::info!(
+                "已处理投递文件 {:?}（{} 个事件）",
+                path.file_name(),
+                outs.len()
+            );
         }
-    }
-    if ok {
-        let _ = tokio::fs::remove_file(path).await;
-        tracing::info!("已处理投递文件 {:?}（{} 个事件）", path.file_name(), events.len());
-    } else {
-        move_to_failed(hub, path).await;
+        Err(e) => {
+            tracing::warn!("投递事件被拒绝（整批回滚）: {}", e);
+            move_to_failed(hub, path).await;
+        }
     }
 }
 
@@ -106,7 +96,11 @@ async fn move_to_failed(hub: &AgentHub, path: &std::path::Path) {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown.json".into());
-    let dest = failed.join(format!("{}-{}", chrono::Utc::now().timestamp_millis(), name));
+    let dest = failed.join(format!(
+        "{}-{}",
+        chrono::Utc::now().timestamp_millis(),
+        name
+    ));
     let _ = tokio::fs::rename(path, dest).await;
 }
 
@@ -115,7 +109,10 @@ impl AgentAdapter for FileDropAdapter {
         "file_drop"
     }
 
-    fn spawn(self: Box<Self>, hub: std::sync::Arc<AgentHub>) -> tauri::async_runtime::JoinHandle<()> {
+    fn spawn(
+        self: Box<Self>,
+        hub: std::sync::Arc<AgentHub>,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         tauri::async_runtime::spawn(async move {
             let dir = inbox_dir(&hub);
             let _ = tokio::fs::create_dir_all(&dir).await;

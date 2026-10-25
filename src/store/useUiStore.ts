@@ -21,6 +21,10 @@ export const useUiStore = create<{
   editor: { open: boolean; task: Task | null };
   openEditor: (task?: Task) => void;
   closeEditor: () => void;
+  /** 任务工作区批量启动弹窗（v0.4） */
+  workspace: { open: boolean; task: Task | null };
+  openWorkspace: (task: Task) => void;
+  closeWorkspace: () => void;
   toast: ToastData | null;
   showToast: (msg: string | null, opts?: { kind?: ToastData["kind"]; action?: ToastAction }) => void;
   dismissToast: () => void;
@@ -32,6 +36,9 @@ export const useUiStore = create<{
   editor: { open: false, task: null },
   openEditor: (task) => set({ editor: { open: true, task: task ?? null } }),
   closeEditor: () => set({ editor: { open: false, task: null } }),
+  workspace: { open: false, task: null },
+  openWorkspace: (task) => set({ workspace: { open: true, task } }),
+  closeWorkspace: () => set({ workspace: { open: false, task: null } }),
   toast: null,
   showToast: (msg, opts) => {
     if (!msg) {

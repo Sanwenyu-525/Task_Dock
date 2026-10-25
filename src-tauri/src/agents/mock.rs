@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::agents::{AgentAdapter, AgentEvent, AgentHub};
+use crate::agents::{AgentAdapter, AgentEvent, AgentHub, Transport};
 
 /// 由前端「模拟控制台」触发的剧本。
 #[derive(Debug, Clone, Deserialize)]
@@ -31,6 +31,7 @@ pub fn trigger(scenario: MockScenario) -> bool {
     false
 }
 
+#[derive(Default)]
 pub struct MockAdapter;
 
 impl MockAdapter {
@@ -44,7 +45,10 @@ impl AgentAdapter for MockAdapter {
         "mock"
     }
 
-    fn spawn(self: Box<Self>, hub: std::sync::Arc<AgentHub>) -> tauri::async_runtime::JoinHandle<()> {
+    fn spawn(
+        self: Box<Self>,
+        hub: std::sync::Arc<AgentHub>,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MockScenario>();
         let _ = MOCK_TX.set(Mutex::new(tx));
         tauri::async_runtime::spawn(async move {
@@ -56,7 +60,14 @@ impl AgentAdapter for MockAdapter {
     }
 }
 
-fn event(session: &str, run: &str, title: &str, state: &str, message: Option<&str>, pending: Option<Vec<String>>) -> AgentEvent {
+fn event(
+    session: &str,
+    run: &str,
+    title: &str,
+    state: &str,
+    message: Option<&str>,
+    pending: Option<Vec<String>>,
+) -> AgentEvent {
     AgentEvent {
         source_id: "mock".to_string(),
         session_id: session.to_string(),
@@ -76,49 +87,88 @@ async fn run_scenario(hub: &AgentHub, session_title: &str, outcome: &str) {
     let run = format!("mock-run-{}", &uuid::Uuid::new_v4().to_string()[..8]);
     tracing::info!("[模拟] 手动触发会话 {} ({})", session, session_title);
 
-    let _ = hub.ingest(&event(&session, &run, session_title, "running", Some("模拟：开始执行"), None));
-    tokio::time::sleep(Duration::from_millis(1200)).await;
-
-    if outcome != "waiting_only" {
-        let _ = hub.ingest(&event(
+    let _ = hub.ingest(
+        &event(
             &session,
             &run,
             session_title,
-            "waiting",
-            Some("模拟：等待用户确认一项操作（仅演示）"),
+            "running",
+            Some("模拟：开始执行"),
             None,
-        ));
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-        let _ = hub.ingest(&event(&session, &run, session_title, "running", Some("模拟：用户已确认，继续执行"), None));
-        tokio::time::sleep(Duration::from_millis(1200)).await;
-    }
+        ),
+        Transport::Mock,
+    );
+    tokio::time::sleep(Duration::from_millis(1200)).await;
 
-    match outcome {
-        "failed" => {
-            let _ = hub.ingest(&event(&session, &run, session_title, "failed", Some("模拟：执行失败（演示）"), None));
-        }
-        "waiting_only" => {
-            let _ = hub.ingest(&event(
+    if outcome != "waiting_only" {
+        let _ = hub.ingest(
+            &event(
                 &session,
                 &run,
                 session_title,
                 "waiting",
                 Some("模拟：等待用户确认一项操作（仅演示）"),
                 None,
-            ));
-        }
-        _ => {
-            let _ = hub.ingest(&event(
+            ),
+            Transport::Mock,
+        );
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let _ = hub.ingest(
+            &event(
                 &session,
                 &run,
                 session_title,
-                "completed",
-                Some("模拟：本轮执行完成"),
-                Some(vec![
-                    "检查测试覆盖率报告（模拟待办）".to_string(),
-                    "更新接口文档（模拟待办）".to_string(),
-                ]),
-            ));
+                "running",
+                Some("模拟：用户已确认，继续执行"),
+                None,
+            ),
+            Transport::Mock,
+        );
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+    }
+
+    match outcome {
+        "failed" => {
+            let _ = hub.ingest(
+                &event(
+                    &session,
+                    &run,
+                    session_title,
+                    "failed",
+                    Some("模拟：执行失败（演示）"),
+                    None,
+                ),
+                Transport::Mock,
+            );
+        }
+        "waiting_only" => {
+            let _ = hub.ingest(
+                &event(
+                    &session,
+                    &run,
+                    session_title,
+                    "waiting",
+                    Some("模拟：等待用户确认一项操作（仅演示）"),
+                    None,
+                ),
+                Transport::Mock,
+            );
+        }
+        _ => {
+            let _ = hub.ingest(
+                &event(
+                    &session,
+                    &run,
+                    session_title,
+                    "completed",
+                    Some("模拟：本轮执行完成"),
+                    Some(vec![
+                        "检查测试覆盖率报告（模拟待办）".to_string(),
+                        "更新接口文档（模拟待办）".to_string(),
+                    ]),
+                ),
+                Transport::Mock,
+            );
         }
     }
     tracing::info!("[模拟] 会话结束 {} outcome={}", session, outcome);

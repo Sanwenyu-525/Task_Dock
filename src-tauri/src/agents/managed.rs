@@ -78,13 +78,21 @@ pub trait ManagedAdapter: Send + Sync {
 fn process_snapshot() -> Vec<ProcessInfo> {
     use std::sync::{Mutex, OnceLock};
     static SNAP: OnceLock<Mutex<(std::time::Instant, Vec<ProcessInfo>)>> = OnceLock::new();
-    let cell = SNAP.get_or_init(|| Mutex::new((std::time::Instant::now() - std::time::Duration::from_secs(60), Vec::new())));
+    let cell = SNAP.get_or_init(|| {
+        Mutex::new((
+            std::time::Instant::now() - std::time::Duration::from_secs(60),
+            Vec::new(),
+        ))
+    });
     let mut guard = cell.lock().unwrap();
     if guard.0.elapsed() < std::time::Duration::from_secs(3) {
         return guard.1.clone();
     }
     let mut out = Vec::new();
-    if let Ok(output) = std::process::Command::new("tasklist").args(["/FO", "CSV", "/NH"]).output() {
+    if let Ok(output) = std::process::Command::new("tasklist")
+        .args(["/FO", "CSV", "/NH"])
+        .output()
+    {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             let parts: Vec<&str> = line.split("\",\"").collect();
@@ -96,7 +104,11 @@ fn process_snapshot() -> Vec<ProcessInfo> {
                 .get(1)
                 .and_then(|p| p.trim_matches('"').parse::<u32>().ok())
                 .unwrap_or(0);
-            out.push(ProcessInfo { pid, name: name.to_string(), exe: None });
+            out.push(ProcessInfo {
+                pid,
+                name: name.to_string(),
+                exe: None,
+            });
         }
     }
     *guard = (std::time::Instant::now(), out.clone());
@@ -116,12 +128,22 @@ pub fn find_processes(names: &[&str]) -> Vec<ProcessInfo> {
         .collect()
 }
 
+/// 进程名快照（含 .exe 后缀，原样大小写）：导航系统判定「进程存在」用，
+/// 复用 process_snapshot 的 TTL 缓存，不额外发起 tasklist。
+pub fn process_snapshot_names() -> Vec<String> {
+    process_snapshot().into_iter().map(|p| p.name).collect()
+}
+
 /// 运行 exe --version 并截取首行。
 pub fn probe_version(exe: &PathBuf, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(exe).args(args).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text.lines().next()?.trim();
-    if line.is_empty() { None } else { Some(line.chars().take(80).collect()) }
+    if line.is_empty() {
+        None
+    } else {
+        Some(line.chars().take(80).collect())
+    }
 }
 
 /// 在 PATH 与常见目录中查找可执行文件。
@@ -169,7 +191,6 @@ pub fn scan_events_in_binary(exe: &PathBuf, candidates: &[&str]) -> Vec<String> 
     found
 }
 
-
 /// 带文件缓存的能力扫描：Agent 二进制动辄 200MB+，结果按 (路径, 大小, mtime) 缓存
 /// 到应用数据目录，扫描一次后后续调用为纳秒级。
 pub fn scan_events_cached(exe: &PathBuf, candidates: &[&str], cache_key: &str) -> Vec<String> {
@@ -181,7 +202,13 @@ pub fn scan_events_cached(exe: &PathBuf, candidates: &[&str], cache_key: &str) -
         LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
     let stamp = format!("{}|{}|{}", exe.to_string_lossy(), meta.len(), {
         use std::time::SystemTime;
-        meta.modified().map(|m| m.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)).unwrap_or(0)
+        meta.modified()
+            .map(|m| {
+                m.duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
     });
     let cache_id = format!("{}@{}", cache_key, stamp);
     if let Ok(m) = MEMO.lock() {
@@ -191,7 +218,11 @@ pub fn scan_events_cached(exe: &PathBuf, candidates: &[&str], cache_key: &str) -
     }
     // 文件缓存
     let cache_dir = std::env::var("APPDATA")
-        .map(|a| PathBuf::from(a).join("com.taskdock.desktop").join("adapter-cache"))
+        .map(|a| {
+            PathBuf::from(a)
+                .join("com.taskdock.desktop")
+                .join("adapter-cache")
+        })
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let cache_file = cache_dir.join(format!("{}.json", cache_key));
     if let Ok(raw) = std::fs::read_to_string(&cache_file) {
@@ -200,7 +231,11 @@ pub fn scan_events_cached(exe: &PathBuf, candidates: &[&str], cache_key: &str) -
                 let events: Vec<String> = cached
                     .get("events")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 if let Ok(mut m) = MEMO.lock() {
                     m.insert(cache_id.clone(), events.clone());
@@ -244,7 +279,7 @@ impl HooksAdapter {
             .join(format!("task-dock-agent-hook-{}.ps1", self.source_id))
     }
 
-    fn specs(&self, script: &PathBuf, events: &[String]) -> Vec<hooks_install::HookSpec> {
+    fn specs(&self, script: &std::path::Path, events: &[String]) -> Vec<hooks_install::HookSpec> {
         events
             .iter()
             .map(|e| hooks_install::HookSpec {
@@ -322,7 +357,12 @@ impl ManagedAdapter for HooksAdapter {
 
     fn install(&self, app_data: &std::path::Path, db: &Db) -> AppResult<Value> {
         let settings = crate::db::Settings::load(db)?;
-        let script = hooks_install::write_hook_script(app_data, self.source_id, settings.http_port, &settings.http_token)?;
+        let script = hooks_install::write_hook_script(
+            app_data,
+            self.source_id,
+            settings.http_port,
+            &settings.http_token,
+        )?;
         let events = (self.events)();
         if events.is_empty() {
             return Err(AppError::Agent(format!(
@@ -409,7 +449,13 @@ pub fn verify_hook_pipeline(
             "hint": "请先执行接入安装"
         }));
     }
-    let verify_session = format!("taskdock-selftest-{}", source_id);
+    // 每次验证生成唯一 nonce 会话：精确匹配本次验证产生的事件，
+    // 不与历史自测事件或真实会话混淆（自测会话在 ingest 侧被隔离为 selftest 证据）
+    let verify_session = format!(
+        "taskdock-selftest-{}-{}",
+        source_id,
+        &uuid::Uuid::new_v4().to_string()[..12]
+    );
     let stdin_payload = json!({
         "session_id": verify_session,
         "hook_event_name": "Verify",
@@ -442,7 +488,7 @@ pub fn verify_hook_pipeline(
         return Ok(json!({ "ok": false, "reason": "无法启动 PowerShell 执行 Hook 脚本" }));
     }
 
-    // 轮询数据库（HTTP 通道即时；文件回退通道最长 ~3s）
+    // 轮询数据库（HTTP 通道即时；文件回退通道最长 ~3s）：按 nonce 精确匹配
     let deadline = std::time::Duration::from_secs(8);
     while started.elapsed() < deadline {
         let hit: Option<String> = db
@@ -457,21 +503,22 @@ pub fn verify_hook_pipeline(
             })
             .ok()
             .flatten();
-        if hit.is_some() {
+        if let Some(received_at) = hit {
             return Ok(json!({
                 "ok": true,
                 "method": "hook-script → Task Dock ingest（真实链路）",
                 "session": verify_session,
-                "received_at": hit.unwrap(),
+                "received_at": received_at,
                 "elapsed_ms": started.elapsed().as_millis() as u64,
-                "note": "Hook 链路已验证。完整接入仍以真实 Agent 会话触发的事件为准（verified 由真实事件置位）。",
+                "note": "Hook 通道已验证（transport_verified）。真实会话接入仍以非自测事件为准（verified 由真实事件置位）。",
             }));
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
     Ok(json!({
         "ok": false,
-        "reason": "8 秒内未在数据库收到测试事件",
+        "reason": "8 秒内未在数据库收到本次验证（nonce）的测试事件",
+        "session": verify_session,
         "hint": "请确认 Task Dock HTTP 接入已开启（设置 → HTTP 接入），且端口未被占用；文件回退通道需 Task Dock 正在运行",
     }))
 }
@@ -529,9 +576,7 @@ pub fn source_health(db: &Db, source_id: &str) -> Value {
     let (state, has_recent_event) = match last_event_at {
         Some(ref ts) => {
             let fresh = chrono::DateTime::parse_from_rfc3339(ts)
-                .map(|t| {
-                    (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_minutes() < stale
-                })
+                .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_minutes() < stale)
                 .unwrap_or(false);
             (
                 if verified == 0 {

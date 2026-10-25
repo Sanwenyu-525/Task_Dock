@@ -281,7 +281,11 @@ pub fn parse(input: &str) -> ParsedInput {
 
     // 4) 日期词
     if due.is_none() {
-        if let Some(g) = take(r"(大后天|后天|明天|明日|今晚|明晚|今天|今日)", &mut s, &mut matched) {
+        if let Some(g) = take(
+            r"(大后天|后天|明天|明日|今晚|明晚|今天|今日)",
+            &mut s,
+            &mut matched,
+        ) {
             let w = g[0].as_deref().unwrap_or("");
             let offset = match w {
                 "大后天" => 3,
@@ -329,8 +333,16 @@ pub fn parse(input: &str) -> ParsedInput {
     // 6) 月日：3月5日
     if due.is_none() && date_opt.is_none() {
         if let Some(g) = take(r"(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]", &mut s, &mut matched) {
-            let m = g[0].as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).clamp(1, 12);
-            let d = g[1].as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).clamp(1, 31);
+            let m = g[0]
+                .as_deref()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1)
+                .clamp(1, 12);
+            let d = g[1]
+                .as_deref()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1)
+                .clamp(1, 31);
             let today = Local::now().date_naive();
             let mut y = today.year();
             if let Some(nd) = NaiveDate::from_ymd_opt(y, m, d) {
@@ -346,15 +358,31 @@ pub fn parse(input: &str) -> ParsedInput {
     if due.is_none() && date_opt.is_none() {
         if let Some(g) = take(r"(\d{4})-(\d{1,2})-(\d{1,2})", &mut s, &mut matched) {
             let y = g[0].as_deref().and_then(|v| v.parse().ok()).unwrap_or(2026);
-            let m = g[1].as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).clamp(1, 12);
-            let d = g[2].as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).clamp(1, 31);
+            let m = g[1]
+                .as_deref()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1)
+                .clamp(1, 12);
+            let d = g[2]
+                .as_deref()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1)
+                .clamp(1, 31);
             date_opt = NaiveDate::from_ymd_opt(y, m, d);
         }
     }
     if due.is_none() && date_opt.is_none() {
         if let Some(g) = take(r"\b(\d{1,2})-(\d{1,2})\b", &mut s, &mut matched) {
-            let m = g[0].as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).clamp(1, 12);
-            let d = g[1].as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).clamp(1, 31);
+            let m = g[0]
+                .as_deref()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1)
+                .clamp(1, 12);
+            let d = g[1]
+                .as_deref()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(1)
+                .clamp(1, 31);
             let today = Local::now().date_naive();
             let mut y = today.year();
             if let Some(nd) = NaiveDate::from_ymd_opt(y, m, d) {
@@ -370,8 +398,14 @@ pub fn parse(input: &str) -> ParsedInput {
     if due.is_none() {
         // 8a. HH:MM
         if let Some(g) = take(r"(\d{1,2}):(\d{2})", &mut s, &mut matched) {
-            let h = g[0].as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(99);
-            let m = g[1].as_deref().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            let h = g[0]
+                .as_deref()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(99);
+            let m = g[1]
+                .as_deref()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0);
             if h < 24 && m < 60 {
                 hour_opt = Some(h);
                 minute_opt = Some(m);
@@ -435,11 +469,11 @@ pub fn parse(input: &str) -> ParsedInput {
         }
         // 8c. 仅有时段词：下午 / 晚上
         if hour_opt.is_none() {
-                   if let Some(g) = take(
-            r"(凌晨|早上|早晨|清晨|上午|中午|下午|傍晚|晚上|夜里|深夜)",
-            &mut s,
-            &mut matched,
-        ) {
+            if let Some(g) = take(
+                r"(凌晨|早上|早晨|清晨|上午|中午|下午|傍晚|晚上|夜里|深夜)",
+                &mut s,
+                &mut matched,
+            ) {
                 let period = g[0].as_deref().unwrap_or("");
                 if let Some(h) = period_default_hour(period) {
                     hour_opt = Some(h);
@@ -504,7 +538,7 @@ pub fn parse(input: &str) -> ParsedInput {
             let local = Local
                 .from_local_datetime(&naive)
                 .single()
-                .unwrap_or_else(|| Local::now());
+                .unwrap_or_else(Local::now);
             due = Some(local);
             has_explicit_time = has_explicit_time || explicit;
             date_only = !explicit;
@@ -520,11 +554,13 @@ pub fn parse(input: &str) -> ParsedInput {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .trim_matches(|c: char| {
-            c.is_whitespace() || "，,。.、；;：:！!？?-—~".contains(c)
-        })
+        .trim_matches(|c: char| c.is_whitespace() || "，,。.、；;：:！!？?-—~".contains(c))
         .to_string();
-    let title = if title.is_empty() { original.clone() } else { title };
+    let title = if title.is_empty() {
+        original.clone()
+    } else {
+        title
+    };
 
     ParsedInput {
         title,
@@ -553,7 +589,10 @@ mod tests {
         let due = r.due_at.unwrap();
         let expect = Local::now().date_naive() + Duration::days(1);
         assert_eq!(due.date_naive(), expect);
-        assert_eq!(due.time(), chrono::NaiveTime::from_hms_opt(15, 0, 0).unwrap());
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(15, 0, 0).unwrap()
+        );
         assert!(r.has_explicit_time);
         assert!(!r.date_only);
     }
@@ -563,8 +602,14 @@ mod tests {
         let r = p("后天晚上八点检查代码");
         assert_eq!(r.title, "检查代码");
         let due = r.due_at.unwrap();
-        assert_eq!(due.date_naive(), Local::now().date_naive() + Duration::days(2));
-        assert_eq!(due.time(), chrono::NaiveTime::from_hms_opt(20, 0, 0).unwrap());
+        assert_eq!(
+            due.date_naive(),
+            Local::now().date_naive() + Duration::days(2)
+        );
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(20, 0, 0).unwrap()
+        );
     }
 
     #[test]
@@ -576,7 +621,10 @@ mod tests {
         assert_eq!(rule.by_weekday, vec![1]);
         let due = r.due_at.unwrap();
         assert_eq!(due.date_naive().weekday(), Weekday::Mon);
-        assert_eq!(due.time(), chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+        );
     }
 
     #[test]
@@ -600,7 +648,10 @@ mod tests {
     fn parses_tonight() {
         let r = p("今晚8点发布");
         let due = r.due_at.unwrap();
-        assert_eq!(due.time(), chrono::NaiveTime::from_hms_opt(20, 0, 0).unwrap());
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(20, 0, 0).unwrap()
+        );
     }
 
     #[test]
@@ -609,7 +660,10 @@ mod tests {
         let due = r.due_at.unwrap();
         assert_eq!(due.date_naive().weekday(), Weekday::Wed);
         assert!(due.date_naive() > Local::now().date_naive());
-        assert_eq!(due.time(), chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap());
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap()
+        );
     }
 
     #[test]
@@ -632,7 +686,10 @@ mod tests {
     fn parses_hh_mm() {
         let r = p("9:30 站立会");
         let due = r.due_at.unwrap();
-        assert_eq!(due.time(), chrono::NaiveTime::from_hms_opt(9, 30, 0).unwrap());
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(9, 30, 0).unwrap()
+        );
         assert_eq!(r.title, "站立会");
     }
 
@@ -640,7 +697,10 @@ mod tests {
     fn parses_chinese_hour() {
         let r = p("明天十二点吃饭");
         let due = r.due_at.unwrap();
-        assert_eq!(due.time(), chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap());
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap()
+        );
     }
 
     #[test]
@@ -649,7 +709,10 @@ mod tests {
         assert_eq!(r.title, "交报告");
         assert!(r.date_only);
         assert!(!r.has_explicit_time);
-        assert_eq!(r.due_at.unwrap().time(), chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        assert_eq!(
+            r.due_at.unwrap().time(),
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+        );
     }
 
     #[test]
@@ -673,7 +736,10 @@ mod tests {
     #[test]
     fn parses_half_hour() {
         let r = p("三点半出发");
-        assert_eq!(r.due_at.unwrap().time(), chrono::NaiveTime::from_hms_opt(15, 30, 0).unwrap());
+        assert_eq!(
+            r.due_at.unwrap().time(),
+            chrono::NaiveTime::from_hms_opt(15, 30, 0).unwrap()
+        );
     }
 
     #[test]

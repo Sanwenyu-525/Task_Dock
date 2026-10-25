@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Bot, Database, FlaskConical, Copy, Eye, EyeOff,
-  RefreshCw, ChevronDown, ChevronRight,
+  RefreshCw, ChevronDown, ChevronRight, Navigation,
 } from "lucide-react";
 import {
   backupNow,
@@ -20,6 +20,7 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { copyText } from "../../lib/clipboard";
 import MockControls from "../agents/MockControls";
+import AppManagement from "./AppManagement";
 
 /** 可折叠设置分组。 */
 function Section({
@@ -188,6 +189,10 @@ export default function SettingsPanel() {
             })}
           />
         </label>
+      </Section>
+
+      <Section icon={Navigation} title="应用与快捷方式" description="软件发现、导航偏好与跳转记录">
+        <AppManagement />
       </Section>
 
       <Section icon={Bell} title="通知">

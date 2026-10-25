@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value};
+use serde_json::Value;
 
 use crate::error::{AppError, AppResult};
 
@@ -72,12 +72,13 @@ fn read_json(path: &Path) -> AppResult<Option<Value>> {
     if raw.trim().is_empty() {
         return Ok(Some(Value::Object(Default::default())));
     }
-    serde_json::from_str::<Value>(&raw)
-        .map(Some)
-        .map_err(|e| AppError::Agent(format!(
+    serde_json::from_str::<Value>(&raw).map(Some).map_err(|e| {
+        AppError::Agent(format!(
             "hooks 配置 {} 不是合法 JSON（{}）；为安全起见 Task Dock 不会修改它，请人工检查",
-            path.display(), e
-        )))
+            path.display(),
+            e
+        ))
+    })
 }
 
 fn backup(path: &Path) -> AppResult<Option<PathBuf>> {
@@ -103,7 +104,12 @@ fn backup(path: &Path) -> AppResult<Option<PathBuf>> {
             p.file_name()
                 .map(|n| {
                     let n = n.to_string_lossy();
-                    n.starts_with(&format!("{}.taskdock-bak-", stem)) && n != bak.file_name().map(|f| f.to_string_lossy()).as_deref().unwrap_or("")
+                    n.starts_with(&format!("{}.taskdock-bak-", stem))
+                        && n != bak
+                            .file_name()
+                            .map(|f| f.to_string_lossy())
+                            .as_deref()
+                            .unwrap_or("")
                 })
                 .unwrap_or(false)
         })
@@ -125,10 +131,8 @@ fn atomic_write(path: &Path, content: &str, backup_path: Option<&Path>) -> AppRe
     let replaced = std::fs::rename(&tmp, path);
     if replaced.is_err() && path.exists() {
         // Windows 上 rename 不覆盖既有文件：删除原文件后重试（此前已有备份）
-        if std::fs::remove_file(path).is_ok() {
-            if std::fs::rename(&tmp, path).is_ok() {
-                return Ok(());
-            }
+        if std::fs::remove_file(path).is_ok() && std::fs::rename(&tmp, path).is_ok() {
+            return Ok(());
         }
         // 重试仍失败 → 回滚
         if let Some(bak) = backup_path {
@@ -235,7 +239,10 @@ pub fn uninstall_hooks(path: &Path) -> AppResult<HooksFileReport> {
         }
     };
     if !root.is_object() {
-        return Err(AppError::Agent(format!("{} 顶层不是 JSON 对象，拒绝修改", path.display())));
+        return Err(AppError::Agent(format!(
+            "{} 顶层不是 JSON 对象，拒绝修改",
+            path.display()
+        )));
     }
 
     let bak = backup(path)?;
@@ -292,7 +299,7 @@ pub fn status_hooks(path: &Path, events: &[&str]) -> AppResult<Value> {
         if let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) {
             for ev in events {
                 if let Some(arr) = hooks.get(*ev).and_then(|l| l.as_array()) {
-                    let ours = arr.iter().any(|g| is_our_hook(g));
+                    let ours = arr.iter().any(is_our_hook);
                     third_party += arr.iter().filter(|g| !is_our_hook(g)).count();
                     if ours {
                         registered.push(ev.to_string());
@@ -475,7 +482,8 @@ mod tests {
         .unwrap();
         install_hooks(&path, &[spec("Stop"), spec("SessionStart")]).unwrap();
         let r = uninstall_hooks(&path).unwrap();
-        let mut removed = r.installed_events.clone(); removed.sort();
+        let mut removed = r.installed_events.clone();
+        removed.sort();
         assert_eq!(removed, vec!["SessionStart", "Stop"]);
         let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // SessionStart 只剩空 → 键被清理；Stop 只剩第三方

@@ -31,7 +31,7 @@
       "csp": null
     },
     "trayIcon": {
-      "iconPath": "icons/tray.png",
+      "iconPath": "icons/tray-app.png",
       "iconAsTemplate": false,
       "tooltip": "Task Dock"
     }

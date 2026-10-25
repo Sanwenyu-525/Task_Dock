@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bot, RefreshCw, Power, PowerOff, ExternalLink, Copy, CheckCircle2, AlertTriangle,
   ShieldQuestion, ListChecks, Radar, PlugZap, Trash2, Plus, ChevronRight, ChevronDown,
-  Activity, X, Eye, EyeOff, CircleSlash,
+  Activity, X, Eye, EyeOff, CircleSlash, MonitorUp,
 } from "lucide-react";
 import {
   adapterInstall, adapterPreview, adapterUninstall, adapterVerify,
@@ -18,6 +18,7 @@ import {
   pendingItemsToTasks, setSourceEnabled,
   type DiscoveredAgent,
 } from "../../lib/bridge";
+import { navAgentAction, navAgentCapabilities, type AgentNavCapabilities } from "../../lib/navigation";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -458,6 +459,21 @@ function EndpointInfo({
 
 // ── 监控树节点 ──
 
+/** 跳转结果 → Toast（成功/降级/失败都如实反馈）。 */
+function toastNavResult(showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void, r: { success: boolean; reason?: string; fallback_used: boolean; verification_level: string }, name: string) {
+  const v = r.verification_level === "window-confirmed" ? "已确认窗口"
+    : r.verification_level === "process-spawned" ? "进程已启动"
+    : r.verification_level === "launch-requested" ? "已请求启动"
+    : r.verification_level === "delegated" ? "已交系统处理"
+    : r.verification_level === "requested-unverified" ? "已请求，未核实"
+    : "";
+  if (!r.success) {
+    showToast(`「${name}」${r.reason ?? "操作失败"}`, { kind: "error" });
+    return;
+  }
+  showToast(`「${name}」${v}${r.fallback_used ? `（降级：${r.reason ?? ""}）` : ""}`, { kind: "success" });
+}
+
 function AgentNode({
   agent,
   expanded,
@@ -472,44 +488,94 @@ function AgentNode({
   showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
 }) {
   const open = !!expanded[agent.id];
+  const [caps, setCaps] = useState<AgentNavCapabilities | null>(null);
+
+  // 展开时才探测跳转能力（证据化：探测结果随本机安装状态变化）
+  useEffect(() => {
+    if (open && !caps) {
+      navAgentCapabilities(agent.id).then(setCaps).catch(() => setCaps(null));
+    }
+  }, [open, agent.id, caps]);
+
   return (
     <div className={`tree-agent attention-${agent.liveState}`}>
-      <button
-        className="tree-row tree-agent-row"
-        onClick={() => setExpanded((e) => ({ ...e, [agent.id]: !e[agent.id] }))}
-        aria-expanded={open}
-      >
-        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        <span className={`agent-dot state-${agent.liveState}`} />
-        <strong>{agent.name}</strong>
-        <span className="tree-meta">
-          {agent.activeCount > 0 ? `${agent.activeCount} 活跃` : AGENT_STATE_LABELS[agent.liveState] ?? "空闲"}
-        </span>
-      </button>
+      {/* 行容器为 div：展开按钮与导航操作按钮是兄弟节点（修复 button 嵌套） */}
+      <div className="tree-row tree-agent-row">
+        <button
+          className="tree-row-main"
+          onClick={() => setExpanded((e) => ({ ...e, [agent.id]: !e[agent.id] }))}
+          aria-expanded={open}
+        >
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <span className={`agent-dot state-${agent.liveState}`} />
+          <strong>{agent.name}</strong>
+          <span className="tree-meta">
+            {agent.activeCount > 0 ? `${agent.activeCount} 活跃` : AGENT_STATE_LABELS[agent.liveState] ?? "空闲"}
+          </span>
+        </button>
+        <button
+          className="icon-btn sm"
+          title={caps?.can_launch.supported ? `打开 ${agent.name}` : caps ? caps.can_launch.note : "探测跳转能力…"}
+          aria-label={`打开 ${agent.name} 应用`}
+          disabled={!caps?.can_launch.supported}
+          onClick={async () => {
+            try {
+              const r = await navAgentAction(agent.id, "open_app");
+              toastNavResult(showToast, r, agent.name);
+            } catch (e) {
+              showToast(String(e), { kind: "error" });
+            }
+          }}
+        >
+          <ExternalLink size={12} />
+        </button>
+      </div>
       {open && (
         <div className="tree-children">
           {agent.instances.map((inst) => (
             <div key={inst.id} className="tree-instance">
-              <button
-                className="tree-row"
-                onClick={() => setExpanded((e) => ({ ...e, [`${agent.id}/${inst.id}`]: !e[`${agent.id}/${inst.id}`] }))}
-                aria-expanded={!!expanded[`${agent.id}/${inst.id}`]}
-              >
-                {expanded[`${agent.id}/${inst.id}`] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                <span className="tree-inst-key" title={inst.key}>{inst.key}</span>
-                <span className="tree-meta">{inst.sessions.length} 会话</span>
-              </button>
+              <div className="tree-row">
+                <button
+                  className="tree-row-main"
+                  onClick={() => setExpanded((e) => ({ ...e, [`${agent.id}/${inst.id}`]: !e[`${agent.id}/${inst.id}`] }))}
+                  aria-expanded={!!expanded[`${agent.id}/${inst.id}`]}
+                >
+                  {expanded[`${agent.id}/${inst.id}`] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                  <span className="tree-inst-key" title={inst.key}>{inst.key}</span>
+                  <span className="tree-meta">{inst.sessions.length} 会话</span>
+                </button>
+                <button
+                  className="icon-btn sm"
+                  title={`唤醒 ${agent.name} 实例窗口`}
+                  aria-label={`唤醒 ${agent.name} 实例窗口`}
+                  disabled={!caps?.can_focus_window.supported}
+                  onClick={async () => {
+                    try {
+                      const r = await navAgentAction(agent.id, "focus_window");
+                      toastNavResult(showToast, r, `${agent.name} 实例`);
+                    } catch (e) {
+                      showToast(String(e), { kind: "error" });
+                    }
+                  }}
+                >
+                  <MonitorUp size={12} />
+                </button>
+              </div>
               {expanded[`${agent.id}/${inst.id}`] && (
                 <div className="tree-children">
                   {inst.sessions.map((sess) => (
                     <SessionNode
                       key={sess.id}
                       agentId={agent.id}
+                      agentName={agent.name}
                       session={sess}
                       expanded={expanded}
                       setExpanded={setExpanded}
                       onPendingToTasks={onPendingToTasks}
                       showToast={showToast}
+                      canResume={caps?.can_resume_session.supported ?? false}
+                      resumeNote={caps?.can_resume_session.note ?? ""}
+                      canFocus={caps?.can_focus_window.supported ?? false}
                     />
                   ))}
                 </div>
@@ -527,11 +593,15 @@ function AgentNode({
                 <SessionNode
                   key={sess.id}
                   agentId={agent.id}
+                  agentName={agent.name}
                   session={sess}
                   expanded={expanded}
                   setExpanded={setExpanded}
                   onPendingToTasks={onPendingToTasks}
                   showToast={showToast}
+                  canResume={caps?.can_resume_session.supported ?? false}
+                  resumeNote={caps?.can_resume_session.note ?? ""}
+                  canFocus={caps?.can_focus_window.supported ?? false}
                 />
               ))}
             </div>
@@ -544,41 +614,58 @@ function AgentNode({
 
 function SessionNode({
   agentId,
+  agentName,
   session,
   expanded,
   setExpanded,
   onPendingToTasks,
   showToast,
+  canResume,
+  resumeNote,
+  canFocus,
 }: {
   agentId: string;
+  agentName: string;
   session: TreeSession;
   expanded: Record<string, boolean>;
   setExpanded: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   onPendingToTasks: (items: string[]) => Promise<void>;
   showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
+  canResume: boolean;
+  resumeNote: string;
+  canFocus: boolean;
 }) {
   const open = !!expanded[session.id];
+  // 能力未知（caps 未加载）时保守显示「跳转」；后端会诚实降级并在 Toast 说明
+  const jumpSupported = canResume || canFocus;
   return (
     <div className={`tree-session attention-${session.liveState}`}>
-      <button
-        className="tree-row"
-        onClick={() => setExpanded((e) => ({ ...e, [session.id]: !e[session.id] }))}
-        aria-expanded={open}
-      >
-        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        <span className={`session-state state-${session.liveState}`}>
-          {AGENT_STATE_LABELS[session.liveState] ?? "未知"}
-        </span>
-        <span className="tree-title">{session.title || session.externalId.slice(0, 24)}</span>
-        <span className="tree-meta">{session.runs.length} 轮 · {formatRelative(session.lastSeen)}</span>
+      {/* 行容器 div + 兄弟按钮：展开只负责展开，跳转只负责跳转（修复嵌套 button） */}
+      <div className="tree-row">
+        <button
+          className="tree-row-main"
+          onClick={() => setExpanded((e) => ({ ...e, [session.id]: !e[session.id] }))}
+          aria-expanded={open}
+        >
+          {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          <span className={`session-state state-${session.liveState}`}>
+            {AGENT_STATE_LABELS[session.liveState] ?? "未知"}
+          </span>
+          <span className="tree-title">{session.title || session.externalId.slice(0, 24)}</span>
+          <span className="tree-meta">{session.runs.length} 轮 · {formatRelative(session.lastSeen)}</span>
+        </button>
         <button
           className="icon-btn sm"
-          title="跳转到会话"
-          aria-label="跳转到会话"
+          title={canResume ? `恢复会话 — ${resumeNote}` : jumpSupported ? "该 Agent 暂不支持精准恢复会话，将尝试唤醒/启动应用" : "探测跳转能力…"}
+          aria-label={canResume ? `恢复会话 ${session.externalId}` : `打开 ${agentName}`}
           onClick={async (e) => {
             e.stopPropagation();
             try {
               await openAgentSession(agentId, session.externalId);
+              showToast(
+                canResume ? "已发起会话恢复（在新终端进程中）" : "已按能力降级执行（详见提示）",
+                { kind: "success" },
+              );
             } catch (err) {
               showToast(String(err), { kind: "info" });
             }
@@ -586,7 +673,7 @@ function SessionNode({
         >
           <ExternalLink size={12} />
         </button>
-      </button>
+      </div>
       {open && (
         <div className="tree-children">
           {session.runs.map((run) => (

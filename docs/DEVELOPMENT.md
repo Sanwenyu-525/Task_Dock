@@ -42,14 +42,18 @@ npm run tauri build
 task_dock/
 ├── src/                        # React 前端
 │   ├── lib/bridge.ts           # 类型化 IPC 桥接（唯一 invoke 入口）
+│   ├── lib/navigation.ts       # 导航桥接 + 展示辅助纯函数（含单测）
 │   ├── lib/format.ts           # 纯函数时间/文本格式化（含单测）
-│   ├── store/                  # Zustand：tasks / agents / settings / ui
+│   ├── store/                  # Zustand：tasks / agents / settings / ui / navigation
 │   ├── hooks/useEdgeSnap.ts    # 贴边吸附 + 窗口持久化
+│   ├── components/navigation/  # TargetMenu / AppPicker / WorkspaceLauncher
 │   └── components/             # TitleBar / 三模式视图 / 任务 / Agent / 历史 / 设置
 ├── src-tauri/                  # Rust 后端
-│   ├── src/commands/           # 命令层（tasks/agents/settings/data/system）
-│   ├── src/db/                 # SQLite + 迁移 + 设置
-│   ├── src/agents/             # Agent 事件总线 + Adapter（mock/file_drop/http_ingest/codex）
+│   ├── src/commands/           # 命令层（tasks/agents/navigation/settings/data/system）
+│   ├── src/db/                 # SQLite + 迁移（当前 v4）+ 设置
+│   ├── src/agents/             # Agent 事件总线 + Adapter（只观测，不导航）
+│   ├── src/navigation/         # 统一导航（router/app_discovery/window_manager/
+│   │                           #   target_resolver/agent_navigation）
 │   ├── src/scheduler.rs        # 提醒调度引擎
 │   ├── src/nlp.rs              # 中文自然语言解析（含单测）
 │   ├── src/recurrence.rs       # 重复规则计算（含单测）
@@ -59,6 +63,20 @@ task_dock/
 └── docs/                       # 架构 / 许可证 / Adapter / 测试 / 路线图
 ```
 
+### 导航系统命令速查（v0.4）
+
+| 命令 | 用途 |
+|---|---|
+| `nav_scan_apps(force?)` | 软件扫描（开始菜单/注册表/UWP/常用路径；后端 5 分钟缓存） |
+| `nav_list_windows()` | 当前可交互顶层窗口（窗口选择器） |
+| `nav_list_targets` / `nav_save_target` / `nav_update_target` / `nav_delete_target` | 目标 CRUD（保存时全量安全校验 + app_key 幂等去重） |
+| `nav_link_task` / `nav_unlink_task` / `nav_update_task_link` / `nav_task_targets` / `nav_all_task_links` | 任务关联管理 |
+| `nav_navigate(target_id, options?)` | **统一跳转入口**（前端只传目标 ID；结果含 verification_level / fallback_used） |
+| `nav_agent_capabilities(source_id)` | Agent 跳转能力（证据化，动态探测） |
+| `nav_agent_action(source_id, "open_app"|"focus_window")` | Agent 树按钮动作 |
+| `nav_agent_open_workspace(source_id, dir)` | IDE 类 Agent 打开工作区目录 |
+| `nav_recent_logs` / `nav_prune_logs` | 导航执行流水 |
+
 ## 四、代码规范
 
 - TypeScript：`strict` + `noUnusedLocals` + `noUnusedParameters`，提交前 `npm run build` 必须通过。
@@ -66,6 +84,8 @@ task_dock/
 - 新增设置项必须同时加入：`db::Settings` 字段、`commands::settings::ALLOWED_KEYS` 白名单。
 - 新增数据库变更：只在 `MIGRATIONS` 末尾追加新版本 SQL，不修改已发布版本。
 - 新增 Agent 事件字段：同步更新 `AgentEvent`、`validate_event`、`docs/AGENT_ADAPTERS.md`。
+- 导航新增目标类型：同步 `NavigationTargetType`、`target_resolver::validate_input`、
+  `router::execute_with_ctx` 分支与 `APP_NAVIGATION_MATRIX.md`；新增 Agent 跳转能力必须给证据标注。
 
 ## 五、调试技巧
 

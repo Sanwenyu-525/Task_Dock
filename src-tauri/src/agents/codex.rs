@@ -49,7 +49,13 @@ pub fn find_codex_exe() -> Option<PathBuf> {
         return Some(p);
     }
     let candidate = std::env::var("LOCALAPPDATA")
-        .map(|l| PathBuf::from(l).join("OpenAI").join("Codex").join("bin").join("codex.exe"))
+        .map(|l| {
+            PathBuf::from(l)
+                .join("OpenAI")
+                .join("Codex")
+                .join("bin")
+                .join("codex.exe")
+        })
         .unwrap_or_default();
     if candidate.exists() {
         return Some(candidate);
@@ -103,11 +109,12 @@ pub fn adapter() -> HooksAdapter {
         source_id: "codex",
         display_name: "Codex",
         docs_url: "https://github.com/openai/codex",
-        hooks_files: hooks_files,
+        hooks_files,
         events: supported_events,
         detect_impl,
         limitations: vec![
-            "Codex App（桌面版）与 CLI 共用 ~/.codex；App Server（JSON-RPC）可观测能力未在本轮验证".into(),
+            "Codex App（桌面版）与 CLI 共用 ~/.codex；App Server（JSON-RPC）可观测能力未在本轮验证"
+                .into(),
             "Hook 由 Codex 在会话生命周期触发；配置写入成功 ≠ 事件已到达，以真实事件为准".into(),
         ],
         timeout_secs: 10,
@@ -115,7 +122,9 @@ pub fn adapter() -> HooksAdapter {
 }
 
 /// 兼容旧命令入口：Hooks 状态。
-pub fn status<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> crate::error::AppResult<serde_json::Value> {
+pub fn status<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::error::AppResult<serde_json::Value> {
     let _ = app;
     let events = supported_events();
     let events_ref: Vec<&str> = events.iter().map(|s| s.as_str()).collect();
@@ -130,19 +139,5 @@ pub fn status<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> crate::error::App
     }))
 }
 
-/// 跳转到 Codex 会话：codex resume（白名单程序 + 严格参数校验）。
-pub fn open_session(session_id: &str) -> crate::error::AppResult<()> {
-    crate::agents::validate_session_id(session_id)?;
-    if let Some(exe) = find_codex_exe() {
-        std::process::Command::new(exe)
-            .args(["resume", session_id])
-            .spawn()
-            .map_err(|e| crate::error::AppError::Agent(format!("启动 codex resume 失败: {}", e)))?;
-        return Ok(());
-    }
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "codex", "resume", session_id])
-        .spawn()
-        .map_err(|e| crate::error::AppError::Agent(format!("启动 codex resume 失败: {}", e)))?;
-    Ok(())
-}
+// v0.4：会话跳转（codex resume）已迁移至 navigation::agent_navigation::resume_session，
+// 统一走证据化能力 + 诚实降级路径；本模块保留安装检测与 Hooks 观测职责。

@@ -73,7 +73,8 @@ fn detect_impl(r: &mut DetectionReport) {
         r.install_paths.push(a.to_string_lossy().to_string());
     }
     r.install_method = "config-home-or-program-dir".into();
-    r.running_instances = managed::find_processes(&["WorkBuddy", "CodeBuddy", "workbuddy", "codebuddy"]);
+    r.running_instances =
+        managed::find_processes(&["WorkBuddy", "CodeBuddy", "workbuddy", "codebuddy"]);
     r.capabilities.push("sdk-message-stream".into());
 }
 

@@ -41,7 +41,11 @@ pub fn set_mode_window_size<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>, mo
 }
 
 /// 应用显示模式（托盘菜单与命令共用）。
-pub fn apply_mode_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &Db, mode: &str) -> AppResult<()> {
+pub fn apply_mode_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    db: &Db,
+    mode: &str,
+) -> AppResult<()> {
     let mode = match mode {
         "minimal" | "compact" | "full" => mode.to_string(),
         _ => "full".to_string(),
@@ -60,25 +64,41 @@ pub fn apply_mode(app: tauri::AppHandle, db: State<'_, Arc<Db>>, mode: String) -
 }
 
 /// 切换开机自启动（托盘菜单与命令共用）。
-pub fn set_autostart_inner<R: tauri::Runtime>(app: &AppHandle<R>, db: &Db, enabled: bool) -> AppResult<bool> {
+pub fn set_autostart_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    db: &Db,
+    enabled: bool,
+) -> AppResult<bool> {
     use tauri_plugin_autostart::ManagerExt;
     let autostart = app.autolaunch();
     if enabled {
-        autostart.enable().map_err(|e| crate::error::AppError::Agent(e.to_string()))?;
+        autostart
+            .enable()
+            .map_err(|e| crate::error::AppError::Agent(e.to_string()))?;
     } else {
-        autostart.disable().map_err(|e| crate::error::AppError::Agent(e.to_string()))?;
+        autostart
+            .disable()
+            .map_err(|e| crate::error::AppError::Agent(e.to_string()))?;
     }
     db.set_setting("autostart", serde_json::json!(enabled))?;
     Ok(enabled)
 }
 
 #[tauri::command]
-pub fn set_autostart(app: tauri::AppHandle, db: State<'_, Arc<Db>>, enabled: bool) -> AppResult<bool> {
+pub fn set_autostart(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+    enabled: bool,
+) -> AppResult<bool> {
     set_autostart_inner(&app, &db, enabled)
 }
 
 #[tauri::command]
-pub fn set_hotkeys_enabled(app: tauri::AppHandle, db: State<'_, Arc<Db>>, enabled: bool) -> AppResult<()> {
+pub fn set_hotkeys_enabled(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+    enabled: bool,
+) -> AppResult<()> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
     db.set_setting("hotkey_enabled", serde_json::json!(enabled))?;
     let gs = app.global_shortcut();
@@ -176,6 +196,7 @@ fn windows_build() -> u32 {
 }
 
 /// 在主线程上执行窗口材质调用（Win32 窗口操作统一走主线程）。
+/// 带超时：主线程卡死/应用退出时不得无限等待。
 fn run_material<F>(app: &AppHandle, f: F) -> bool
 where
     F: FnOnce() -> bool + Send + 'static,
@@ -185,7 +206,8 @@ where
     let _ = app.run_on_main_thread(move || {
         let _ = tx.send(f());
     });
-    rx.recv().unwrap_or(false)
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or(false)
 }
 
 /// 应用/清除窗口原生材质效果。material: "solid" | "glass"。
@@ -203,21 +225,38 @@ pub fn apply_window_material(app: AppHandle, material: String) -> AppResult<Mate
         let _ = run_material(&app, move || {
             window_vibrancy::clear_mica(&w).is_ok() | window_vibrancy::clear_acrylic(&w).is_ok()
         });
-        return Ok(MaterialResult { material: "solid".into(), applied: false, effect: "none".into(), os_version });
+        return Ok(MaterialResult {
+            material: "solid".into(),
+            applied: false,
+            effect: "none".into(),
+            os_version,
+        });
     }
 
     // Win11：Mica 优先
     if build >= 22000 {
         let w = win.clone();
         if run_material(&app, move || window_vibrancy::apply_mica(&w, None).is_ok()) {
-            return Ok(MaterialResult { material: "glass".into(), applied: true, effect: "mica".into(), os_version });
+            return Ok(MaterialResult {
+                material: "glass".into(),
+                applied: true,
+                effect: "mica".into(),
+                os_version,
+            });
         }
     }
     // Win10 1803+：Acrylic
     if build >= 17134 {
         let w = win.clone();
-        if run_material(&app, move || window_vibrancy::apply_acrylic(&w, None).is_ok()) {
-            return Ok(MaterialResult { material: "glass".into(), applied: true, effect: "acrylic".into(), os_version });
+        if run_material(&app, move || {
+            window_vibrancy::apply_acrylic(&w, None).is_ok()
+        }) {
+            return Ok(MaterialResult {
+                material: "glass".into(),
+                applied: true,
+                effect: "acrylic".into(),
+                os_version,
+            });
         }
     }
     // 不支持：确保无残留效果
@@ -225,5 +264,10 @@ pub fn apply_window_material(app: AppHandle, material: String) -> AppResult<Mate
     let _ = run_material(&app, move || {
         window_vibrancy::clear_mica(&w).is_ok() | window_vibrancy::clear_acrylic(&w).is_ok()
     });
-    Ok(MaterialResult { material: "glass".into(), applied: false, effect: "none".into(), os_version })
+    Ok(MaterialResult {
+        material: "glass".into(),
+        applied: false,
+        effect: "none".into(),
+        os_version,
+    })
 }

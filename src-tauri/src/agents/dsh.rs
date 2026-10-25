@@ -179,7 +179,8 @@ impl ManagedAdapter for DshAdapter {
         let dir = plugin_dir();
         if dir.exists() {
             // 已存在：只允许覆盖我们自己的
-            let existing = std::fs::read_to_string(dir.join("lib").join("index.js")).unwrap_or_default();
+            let existing =
+                std::fs::read_to_string(dir.join("lib").join("index.js")).unwrap_or_default();
             if !existing.contains(PLUGIN_MARKER) {
                 return Err(AppError::Agent(format!(
                     "{} 已存在且非 Task Dock 生成，拒绝覆盖",
@@ -197,8 +198,14 @@ impl ManagedAdapter for DshAdapter {
             "main": "lib/index.js",
             "license": "MIT"
         });
-        std::fs::write(dir.join("package.json"), serde_json::to_string_pretty(&pkg)?)?;
-        std::fs::write(dir.join("lib").join("index.js"), plugin_content(settings.http_port, &settings.http_token))?;
+        std::fs::write(
+            dir.join("package.json"),
+            serde_json::to_string_pretty(&pkg)?,
+        )?;
+        std::fs::write(
+            dir.join("lib").join("index.js"),
+            plugin_content(settings.http_port, &settings.http_token),
+        )?;
         let config = json!({
             "adapter": "dsh",
             "plugin_dir": dir.to_string_lossy(),
@@ -250,9 +257,12 @@ impl ManagedAdapter for DshAdapter {
     fn uninstall(&self, _app_data: &std::path::Path) -> AppResult<Value> {
         let dir = plugin_dir();
         if dir.exists() {
-            let existing = std::fs::read_to_string(dir.join("lib").join("index.js")).unwrap_or_default();
+            let existing =
+                std::fs::read_to_string(dir.join("lib").join("index.js")).unwrap_or_default();
             if !existing.contains(PLUGIN_MARKER) {
-                return Err(AppError::Agent("插件目录非 Task Dock 生成，拒绝删除".into()));
+                return Err(AppError::Agent(
+                    "插件目录非 Task Dock 生成，拒绝删除".into(),
+                ));
             }
             std::fs::remove_dir_all(&dir)?;
         }
@@ -265,6 +275,8 @@ impl ManagedAdapter for DshAdapter {
             && std::fs::read_to_string(dir.join("lib").join("index.js"))
                 .map(|c| c.contains(PLUGIN_MARKER))
                 .unwrap_or(false);
-        Ok(json!({ "adapter": "dsh", "plugin_installed": installed, "plugin_dir": dir.to_string_lossy() }))
+        Ok(
+            json!({ "adapter": "dsh", "plugin_installed": installed, "plugin_dir": dir.to_string_lossy() }),
+        )
     }
 }

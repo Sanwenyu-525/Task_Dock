@@ -29,7 +29,7 @@ pub struct RecurrenceRule {
     pub id: String,
     pub freq: String, // daily | weekly | monthly
     pub interval: i64,
-    pub by_weekday: Vec<u32>,   // 1=周一 .. 7=周日
+    pub by_weekday: Vec<u32>, // 1=周一 .. 7=周日
     pub by_monthday: Option<u32>,
     pub until: Option<String>,
     #[serde(default)]

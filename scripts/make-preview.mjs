@@ -18,18 +18,63 @@ const shim = `
   const q = new URLSearchParams(location.search);
   const THEME = q.get("theme") || "system";
   const MATERIAL = q.get("material") || "glass";
+  const MODE = q.get("mode") || "full";
   const EMPTY = q.get("agents") === "empty";
   const now = new Date();
   const iso = (minAgo) => new Date(now.getTime() - minAgo * 60000).toISOString();
 
   const settings = {
-    theme: THEME, mode: "full", material: MATERIAL,
+    theme: THEME, mode: MODE, material: MATERIAL,
     snap_enabled: true, autostart: false, hotkey_enabled: true,
     http_enabled: true, http_port: 47821,
     http_token: "3f1c9e2a-8b4d-4f6e-a1b2-previewmock01",
     mock_enabled: true, notify_reminder: true, notify_agent: true, notify_muted: false,
     overdue_grace_hours: 24, stale_run_minutes: 15, auto_backup: true, backup_retain_days: 7,
+    nav_prefer_focus: true, nav_allow_launch: true, nav_fallback: true,
+    nav_remember_window: true, nav_default_browser: "", nav_workspace_max: 8,
   };
+
+  // ── 导航 fixture（v0.4：任务关联目标 + 应用扫描 + 能力 + 结果）──
+  const navTarget = (o) => ({
+    id: o.id, display_name: o.name, target_type: o.type, app_key: o.key ?? "",
+    exe_path: o.exe ?? "", launch_args: "", working_dir: "", app_user_model_id: o.aumid ?? "",
+    url: o.url ?? "", path: o.path ?? "", agent_source_id: o.src ?? "", agent_session_id: o.sess ?? "",
+    window_title_hint: o.hint ?? "", icon: "", category: o.cat ?? "", favorite: o.fav ?? false,
+    hidden: false, last_used_at: o.used ?? null, use_count: o.uses ?? 0,
+    created_at: iso(2000), updated_at: iso(100),
+  });
+  const navTargets = [
+    navTarget({ id: "nt1", name: "Visual Studio Code", type: "application", key: "c:\\apps\\code.exe", exe: "C:\\Apps\\Code.exe", cat: "dev", fav: true, uses: 12, used: iso(30) }),
+    navTarget({ id: "nt2", name: "Chrome", type: "application", key: "c:\\apps\\chrome.exe", exe: "C:\\Apps\\chrome.exe", cat: "browser", uses: 30, used: iso(5) }),
+    navTarget({ id: "nt3", name: "GitHub — task_dock", type: "url", url: "https://github.com/x/task_dock", uses: 4, used: iso(60) }),
+    navTarget({ id: "nt4", name: "微信", type: "application", key: "c:\\tencent\\wechat\\wechat.exe", exe: "C:\\Tencent\\WeChat\\WeChat.exe", hint: "微信", cat: "im", uses: 8, used: iso(120) }),
+    navTarget({ id: "nt5", name: "日志目录", type: "directory", path: "D:\\Develop\\task_dock\\logs", uses: 2, used: iso(300) }),
+  ];
+  const navLinks = [
+    { id: "nl1", task_id: "t1", target_id: "nt1", display_order: 0, is_default: true, launch_behavior: "default", created_at: iso(200), target: navTargets[0], running_state: "has_window" },
+    { id: "nl2", task_id: "t1", target_id: "nt3", display_order: 1, is_default: false, launch_behavior: "open", created_at: iso(200), target: navTargets[2], running_state: "always" },
+    { id: "nl3", task_id: "t1", target_id: "nt5", display_order: 2, is_default: false, launch_behavior: "open", created_at: iso(200), target: navTargets[4], running_state: "always" },
+    { id: "nl4", task_id: "t2", target_id: "nt4", display_order: 0, is_default: true, launch_behavior: "focus_or_launch", created_at: iso(150), target: navTargets[3], running_state: "process_only" },
+    { id: "nl5", task_id: "t3", target_id: "nt2", display_order: 0, is_default: true, launch_behavior: "default", created_at: iso(100), target: navTargets[1], running_state: "not_running" },
+  ];
+  const scanApps = [
+    { app_key: "c:\\apps\\chrome.exe", display_name: "Google Chrome", category: "browser", exe_path: "C:\\Apps\\chrome.exe", launch_args: "", working_dir: "", app_user_model_id: "", window_title_hint: "", source: "startmenu" },
+    { app_key: "c:\\tencent\\wechat\\wechat.exe", display_name: "微信", category: "im", exe_path: "C:\\Tencent\\WeChat\\WeChat.exe", launch_args: "", working_dir: "", app_user_model_id: "", window_title_hint: "微信", source: "startmenu" },
+    { app_key: "c:\\kugou\\kugou.exe", display_name: "酷狗音乐", category: "music", exe_path: "C:\\KuGou\\KuGou.exe", launch_args: "", working_dir: "", app_user_model_id: "", window_title_hint: "酷狗", source: "startmenu" },
+    { app_key: "microsoft.windowscalculator_8wekyb3d8bbwe!app", display_name: "计算器", category: "uwp", exe_path: "", launch_args: "", working_dir: "", app_user_model_id: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", window_title_hint: "", source: "uwp" },
+    { app_key: "c:\\apps\\code.exe", display_name: "Visual Studio Code", category: "dev", exe_path: "C:\\Apps\\Code.exe", launch_args: "", working_dir: "", app_user_model_id: "", window_title_hint: "", source: "known" },
+  ];
+  const navCaps = (src, launch, focus, ws, resume, evidence = "exe-found") => ({
+    source_id: src,
+    can_launch: { supported: launch, evidence: launch ? evidence : "not-installed", note: "" },
+    can_focus_window: { supported: focus, evidence: launch ? evidence : "not-installed", note: "" },
+    can_open_workspace: { supported: ws, evidence: ws ? "cli-convention" : "unsupported-interface", note: "" },
+    can_resume_session: { supported: resume, evidence: resume ? "baseline-verified" : "unsupported-interface", note: resume ? "codex resume" : "无官方会话恢复接口" },
+  });
+  const navLogs = [
+    { id: "g1", target_id: "nt1", target_name: "Visual Studio Code", requested_action: "focus_window", actual_action: "focus_window", success: true, fallback_used: false, reason: "", verification_level: "window-confirmed", created_at: iso(30) },
+    { id: "g2", target_id: "nt4", target_name: "微信", requested_action: "focus_window", actual_action: null, success: false, fallback_used: false, reason: "Windows 前台锁定拒绝了切换", verification_level: "none", created_at: iso(90) },
+  ];
 
   const tasks = [
     { id: "t1", title: "审阅 v0.3 视觉验收报告", description: "", priority: 0, status: "pending", category: "工作", tags: ["ui"], due_at: iso(-30), remind_at: null, advance_minutes: 0, recurrence: null, created_at: iso(600), updated_at: iso(10), completed_at: null, linked_agents: 0 },
@@ -106,6 +151,30 @@ const shim = `
       case "list_notifications": return notifications;
       case "list_agent_events": return events;
       case "list_backups": return backups;
+      case "nav_all_task_links": return navLinks;
+      case "nav_task_targets": return navLinks.filter((l) => l.task_id === args?.task_id);
+      case "nav_list_targets": return navTargets;
+      case "nav_scan_apps": return { apps: scanApps, scanned_at: iso(1), duration_ms: 420, counts: { startmenu: 3, registry: 0, uwp: 1, known: 1 } };
+      case "nav_recent_logs": return navLogs;
+      case "nav_agent_capabilities": {
+        const src = args?.source_id;
+        if (src === "codex") return navCaps(src, true, true, false, true, "baseline-verified");
+        if (src === "trae" || src === "qoder") return navCaps(src, true, true, true, false);
+        if (src === "mock") return navCaps(src, false, false, false, false, "not-installed");
+        return navCaps(src ?? "?", false, false, false, false, "unsupported-interface");
+      }
+      case "nav_agent_action":
+      case "nav_navigate": {
+        const t = navTargets.find((x) => x.id === args?.target_id);
+        return { success: true, requested_action: "focus_window", actual_action: "focus_window", fallback_used: false, target_id: args?.target_id ?? "", reason: null, verification_level: "window-confirmed", ...(t ? {} : {}) };
+      }
+      case "nav_list_windows": return [
+        { hwnd: 111, pid: 222, title: "task_dock — D:\\Develop", class_name: "Chrome_WidgetWin", is_minimized: false, exe_path: "c:\\apps\\code.exe" },
+        { hwnd: 222, pid: 333, title: "微信", class_name: "WeChatMainWndForPC", is_minimized: true, exe_path: "c:\\tencent\\wechat\\wechat.exe" },
+      ];
+      case "nav_save_target": return navTargets[0];
+      case "nav_link_task": return "nl-preview";
+      case "nav_prune_logs": return 0;
       case "apply_window_material": return { material: args?.material || "glass", applied: MATERIAL === "glass", effect: MATERIAL === "glass" ? "mica" : "none", os_version: "10.0.26100" };
       case "get_agent_inbox_dir": return "C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\com.taskdock.desktop\\\\agent-inbox";
       case "plugin:event|listen": {

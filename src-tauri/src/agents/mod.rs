@@ -11,18 +11,18 @@
 //! - Adapter（mock / file_drop / http_ingest / hooks / 插件桥接）只负责产生事件；
 //! - 任何来源未注册或被禁用的事件一律拒绝，禁止伪造状态。
 
-pub mod file_drop;
-pub mod http_ingest;
 pub mod codex;
 pub mod discovery;
-pub mod hooks_install;
-pub mod mock;
-pub mod managed;
-pub mod opencode;
 pub mod dsh;
+pub mod file_drop;
+pub mod hooks_install;
+pub mod http_ingest;
+pub mod managed;
+pub mod mock;
+pub mod opencode;
+pub mod qoder;
 pub mod trae;
 pub mod workbuddy;
-pub mod qoder;
 pub mod zcode;
 
 use std::sync::Arc;
@@ -37,6 +37,47 @@ use crate::error::{AppError, AppResult};
 
 pub fn now_iso() -> String {
     Utc::now().to_rfc3339()
+}
+
+/// 传输通道（由服务端按接入入口确定，客户端载荷声明的 transport 一律不作为可信依据）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Http,
+    File,
+    Hook,
+    Plugin,
+    /// 内置模拟器：永不参与任何验证置位
+    Mock,
+    /// 人工/调试上报：不作为接入证据
+    Manual,
+}
+
+impl Transport {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Transport::Http => "http",
+            Transport::File => "file",
+            Transport::Hook => "hook",
+            Transport::Plugin => "plugin",
+            Transport::Mock => "mock",
+            Transport::Manual => "manual",
+        }
+    }
+    /// 是否真实 Agent 事件通道（有资格参与验证置位）。
+    pub fn is_real(&self) -> bool {
+        matches!(
+            self,
+            Transport::Http | Transport::File | Transport::Hook | Transport::Plugin
+        )
+    }
+}
+
+/// 自测会话前缀：verify_hook_pipeline 生成的事件使用该前缀，
+/// ingest 识别后隔离为 selftest 证据（不置 verified、不计入真实会话）。
+const SELFTEST_PREFIX: &str = "taskdock-selftest-";
+
+fn is_selftest_session(session_id: &str) -> bool {
+    session_id.starts_with(SELFTEST_PREFIX)
 }
 
 /// Agent 统一状态。
@@ -62,7 +103,7 @@ impl AgentState {
             AgentState::Disconnected => "disconnected",
         }
     }
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "idle" => Some(AgentState::Idle),
             "running" | "working" | "active" => Some(AgentState::Running),
@@ -75,7 +116,10 @@ impl AgentState {
     }
     /// 是否执行终态（受终态保护，不容旧事件回退）。
     pub fn is_terminal(&self) -> bool {
-        matches!(self, AgentState::Completed | AgentState::Failed | AgentState::Disconnected)
+        matches!(
+            self,
+            AgentState::Completed | AgentState::Failed | AgentState::Disconnected
+        )
     }
     /// 托盘图标聚合优先级（越大越优先）。
     pub fn priority(&self) -> u8 {
@@ -139,7 +183,8 @@ pub struct AgentEvent {
     /// 事件发生时间（ISO8601，可选；缺省用服务端接收时间）
     #[serde(default)]
     pub occurred_at: Option<String>,
-    /// 传输通道：http | file | plugin | hook | mock | bridge（默认 unknown）
+    /// 传输通道声明（兼容字段）：服务端不信任此值，落库与验证一律按接入入口
+    /// 的服务端判定（见 `Transport`）。
     #[serde(default)]
     pub transport: Option<String>,
     /// 证据类型：observed（Agent 事件直报）| process（进程推断）| manual
@@ -177,7 +222,7 @@ fn check_text(v: &str, field: &str, max: usize) -> AppResult<()> {
 
 /// 事件校验：返回规范化后的状态与发生时间。
 pub fn validate_event(ev: &AgentEvent) -> AppResult<AgentState> {
-    let state = AgentState::from_str(&ev.state)
+    let state = AgentState::parse(&ev.state)
         .ok_or_else(|| AppError::Validation(format!("未知状态: {}", ev.state)))?;
     check_id(&ev.source_id, "source_id")?;
     check_id(&ev.session_id, "session_id")?;
@@ -238,7 +283,12 @@ pub struct IngestOutcome {
 
 /// 事件幂等键：Adapter 提供事件 ID 时按 ID；否则按内容签名。
 fn dedupe_key(ev: &AgentEvent, state: AgentState, occurred: &str) -> String {
-    if let Some(eid) = ev.event_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(eid) = ev
+        .event_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         return format!("eid:{}:{}", ev.source_id, eid);
     }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -268,7 +318,13 @@ fn normalize_ts(raw: &str) -> String {
 }
 
 /// 事务内状态机：不触碰 Tauri，可用任意 rusqlite Connection（含内存库）做集成测试。
-pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<IngestOutcome> {
+/// `transport` 由服务端按接入入口确定；`ev.transport` 的客户端声明仅作兼容读取、不采信。
+pub fn ingest_core(
+    conn: &Connection,
+    ev: &AgentEvent,
+    now: &str,
+    transport: Transport,
+) -> AppResult<IngestOutcome> {
     let state = validate_event(ev)?;
     let occurred = normalize_ts(ev.occurred_at.as_deref().unwrap_or(now));
     let title = ev.task_title.clone().unwrap_or_default();
@@ -291,8 +347,16 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    let transport = ev.transport.as_deref().unwrap_or("unknown").to_string();
-    let evidence = ev.evidence_type.as_deref().unwrap_or("observed").to_string();
+    // 自测会话隔离：verify 管线产生的事件标记为 selftest，不污染真实会话与验证状态
+    let selftest = is_selftest_session(&ev.session_id);
+    let evidence = if selftest {
+        "selftest".to_string()
+    } else {
+        ev.evidence_type
+            .as_deref()
+            .unwrap_or("observed")
+            .to_string()
+    };
     let confidence = ev.confidence.unwrap_or(1.0).clamp(0.0, 1.0);
     let schema_version = ev.schema_version.unwrap_or(1);
 
@@ -304,8 +368,8 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
             |r| r.get::<_, i64>(0).map(|v| v != 0),
         )
         .optional()?;
-    let source_enabled = source_enabled
-        .ok_or_else(|| AppError::Agent(format!("未注册的来源: {}", ev.source_id)))?;
+    let source_enabled =
+        source_enabled.ok_or_else(|| AppError::Agent(format!("未注册的来源: {}", ev.source_id)))?;
     if !source_enabled {
         return Err(AppError::Agent(format!("来源已禁用: {}", ev.source_id)));
     }
@@ -332,7 +396,7 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
             instance_ext,
             ev.parent_run_id,
             occurred,
-            transport,
+            transport.as_str(),
             evidence,
             confidence,
             dkey,
@@ -347,7 +411,8 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
                 |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()?;
-        let (run_row_id, session_row_id) = resolve_prior_run(conn, &ev.source_id, &prior, &run_ext)?;
+        let (run_row_id, session_row_id) =
+            resolve_prior_run(conn, &ev.source_id, &prior, &run_ext)?;
         return Ok(IngestOutcome {
             run_row_id,
             session_row_id,
@@ -359,21 +424,25 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
         });
     }
 
-    // 3. 实例层 upsert（同一 Agent 的多个实例分开记录）
+    // 3. 实例层 upsert（同一 Agent 的多个实例分开记录；自测事件不建实例，防止污染真实实例表）
     let instance_row_id: Option<String> = if let Some(iext) = &instance_ext {
-        let iid = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO agent_instances (id, source_id, instance_key, display_name, exe_path, first_seen_at, last_seen_at)
-             VALUES (?1, ?2, ?3, ?3, '', ?4, ?4)
-             ON CONFLICT(source_id, instance_key) DO UPDATE SET last_seen_at = excluded.last_seen_at",
-            rusqlite::params![iid, ev.source_id, iext, occurred],
-        )?;
-        conn.query_row(
-            "SELECT id FROM agent_instances WHERE source_id = ?1 AND instance_key = ?2",
-            rusqlite::params![ev.source_id, iext],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
+        if selftest {
+            None
+        } else {
+            let iid = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO agent_instances (id, source_id, instance_key, display_name, exe_path, first_seen_at, last_seen_at)
+                 VALUES (?1, ?2, ?3, ?3, '', ?4, ?4)
+                 ON CONFLICT(source_id, instance_key) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+                rusqlite::params![iid, ev.source_id, iext, occurred],
+            )?;
+            conn.query_row(
+                "SELECT id FROM agent_instances WHERE source_id = ?1 AND instance_key = ?2",
+                rusqlite::params![ev.source_id, iext],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        }
     } else {
         None
     };
@@ -440,12 +509,13 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
     let mut late = false;
     let run_row_id: String = match existing {
         Some(run) => {
-            let prev = AgentState::from_str(&run.status);
+            let prev = AgentState::parse(&run.status);
             prev_state = prev;
             let prev_terminal = prev.map(|p| p.is_terminal()).unwrap_or(false);
             let is_new_round = prev_terminal
                 && !state.is_terminal()
-                && run.ended_at
+                && run
+                    .ended_at
                     .as_deref()
                     .map(|e| occurred.as_str() > e)
                     .unwrap_or(true);
@@ -455,19 +525,46 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
                 late = true;
                 run.id
             } else if is_new_round {
-                // 会话新一轮执行：旧轮次保持终态，新开一个轮次
-                insert_new_run(
-                    conn,
-                    &ev.source_id,
-                    &session_row_id,
-                    instance_row_id.as_deref(),
-                    run_ext.as_deref(),
-                    ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
-                    &title,
-                    state,
-                    &occurred,
-                    &pending_json,
-                )?
+                // 终态后重连/新一轮：携带同一 external_run_id 时唯一索引
+                // idx_runs_external(source_id, external_run_id) 禁止开第二行，
+                // 必须重开原轮次（状态回活跃、ended_at 清空）。
+                if run_ext.is_some() {
+                    conn.execute(
+                        "UPDATE agent_runs SET
+                           status = ?1,
+                           updated_at = ?2,
+                           ended_at = NULL,
+                           pending_items = CASE WHEN length(?3) > 2 THEN ?3 ELSE pending_items END,
+                           task_title = CASE WHEN length(?4) > 0 THEN ?4 ELSE task_title END,
+                           instance_id = COALESCE(?5, instance_id),
+                           parent_run_id = COALESCE(?6, parent_run_id)
+                         WHERE id = ?7",
+                        rusqlite::params![
+                            state.as_str(),
+                            occurred,
+                            pending_json,
+                            title,
+                            instance_row_id,
+                            ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
+                            run.id,
+                        ],
+                    )?;
+                    run.id
+                } else {
+                    // 无 run_id 的会话新一轮执行：旧轮次保持终态，新开一个轮次
+                    insert_new_run(
+                        conn,
+                        &ev.source_id,
+                        &session_row_id,
+                        instance_row_id.as_deref(),
+                        run_ext.as_deref(),
+                        ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
+                        &title,
+                        state,
+                        &occurred,
+                        &pending_json,
+                    )?
+                }
             } else {
                 // 常规更新（含终态间修正，如 completed 修正为 failed；ended_at 保留首个）
                 conn.execute(
@@ -524,12 +621,22 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
         )?;
     }
 
-    // 8. 来源健康：真实事件到达 → verified 置位（mock 证据永不置位）
-    if transport != "mock" {
-        conn.execute(
-            "UPDATE agent_sources SET verified = 1, last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
-            rusqlite::params![now, ev.source_id],
-        )?;
+    // 8. 来源健康分层（v3）：
+    //    - event_received：任何事件都记录（流水 + last_event_at）；
+    //    - transport_verified：真实通道打通（Hook 自测事件即可证明通道，Mock/Manual 永不）；
+    //    - verified（natural_session_verified）：真实通道 + 非自测会话 才置位。
+    if transport.is_real() {
+        if selftest {
+            conn.execute(
+                "UPDATE agent_sources SET transport_verified = 1, last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, ev.source_id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE agent_sources SET verified = 1, transport_verified = 1, last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, ev.source_id],
+            )?;
+        }
     } else {
         conn.execute(
             "UPDATE agent_sources SET last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
@@ -540,7 +647,13 @@ pub fn ingest_core(conn: &Connection, ev: &AgentEvent, now: &str) -> AppResult<I
     // 9. 状态跃迁通知（事务内写通知记录；Agent 执行结束 ≠ 关联任务完成，仅通知、不改任务状态）
     let mut notification = None;
     let changed = prev_state.map(|p| p != state).unwrap_or(true);
-    if !late && changed && matches!(state, AgentState::Waiting | AgentState::Completed | AgentState::Failed) {
+    if !late
+        && changed
+        && matches!(
+            state,
+            AgentState::Waiting | AgentState::Completed | AgentState::Failed
+        )
+    {
         let (kind, title_cn) = match state {
             AgentState::Waiting => ("agent_waiting", "Agent 等待处理"),
             AgentState::Completed => ("agent_done", "Agent 本轮执行完成"),
@@ -632,28 +745,26 @@ fn resolve_prior_run(
     prior: &Option<(Option<String>, String)>,
     run_ext: &Option<String>,
 ) -> AppResult<(String, String)> {
-    if let Some((rext, sess)) = prior {
-        if let Some(r) = rext {
-            if let Some(rid) = conn
+    if let Some((Some(r), sess)) = prior {
+        if let Some(rid) = conn
+            .query_row(
+                "SELECT id FROM agent_runs WHERE source_id = ?1 AND external_run_id = ?2",
+                rusqlite::params![source_id, r],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            if let Some(sid) = conn
                 .query_row(
-                    "SELECT id FROM agent_runs WHERE source_id = ?1 AND external_run_id = ?2",
-                    rusqlite::params![source_id, r],
+                    "SELECT id FROM agent_sessions WHERE source_id = ?1 AND external_id = ?2",
+                    rusqlite::params![source_id, sess],
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?
             {
-                if let Some(sid) = conn
-                    .query_row(
-                        "SELECT id FROM agent_sessions WHERE source_id = ?1 AND external_id = ?2",
-                        rusqlite::params![source_id, sess],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-                {
-                    return Ok((rid, sid));
-                }
-                return Ok((rid, String::new()));
+                return Ok((rid, sid));
             }
+            return Ok((rid, String::new()));
         }
     }
     if let Some(r) = run_ext {
@@ -672,7 +783,10 @@ fn resolve_prior_run(
 }
 
 /// 心跳失联判定（事务内核心）：超过阈值的活跃轮次 → disconnected + 断连通知（每轮次一次）。
-pub fn cleanup_stale_core(conn: &Connection, stale_minutes: i64) -> AppResult<Vec<(String, String)>> {
+pub fn cleanup_stale_core(
+    conn: &Connection,
+    stale_minutes: i64,
+) -> AppResult<Vec<(String, String)>> {
     let now = Utc::now();
     let cutoff = (now - Duration::minutes(stale_minutes.max(1))).to_rfc3339();
     let tx = conn.unchecked_transaction()?;
@@ -754,34 +868,69 @@ impl AgentHub {
     }
 
     /// 接入一个事件：单一事务（会话/轮次/事件/通知记录一起提交或一起回滚）。
-    pub fn ingest(&self, ev: &AgentEvent) -> AppResult<String> {
+    /// transport 由调用方（Adapter）按接入入口确定，客户端声明不采信。
+    pub fn ingest(&self, ev: &AgentEvent, transport: Transport) -> AppResult<String> {
         let now = now_iso();
         let outcome = self.db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            let out = ingest_core(&tx, ev, &now)?;
+            let out = ingest_core(&tx, ev, &now, transport)?;
             tx.commit()?;
             Ok::<_, AppError>(out)
         })?;
+        let run_row_id = outcome.run_row_id.clone();
+        self.after_ingest(ev, &[outcome]);
+        Ok(run_row_id)
+    }
 
-        // 提交后的副作用：OS 通知 + 广播 + 托盘
-        if let Some((kind, title, body)) = &outcome.notification {
-            self.show_notification(kind, title, body);
+    /// 批量接入：所有事件在同一个事务内处理，任一失败整体回滚（全成功/全失败）。
+    /// 返回实际写入的事件结果；Err 表示一个都没写入。
+    pub fn ingest_batch(
+        &self,
+        events: &[AgentEvent],
+        transport: Transport,
+    ) -> AppResult<Vec<IngestOutcome>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
         }
+        let now = now_iso();
+        let outcomes = self.db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut outs = Vec::with_capacity(events.len());
+            for ev in events {
+                outs.push(ingest_core(&tx, ev, &now, transport)?);
+            }
+            tx.commit()?;
+            Ok::<_, AppError>(outs)
+        })?;
+        for (ev, out) in events.iter().zip(outcomes.iter()) {
+            self.after_ingest(ev, std::slice::from_ref(out));
+        }
+        Ok(outcomes)
+    }
+
+    /// 提交后的副作用：OS 通知 + 广播 + 托盘（绝不放进事务）。
+    fn after_ingest(&self, ev: &AgentEvent, outcomes: &[IngestOutcome]) {
+        for outcome in outcomes {
+            if let Some((kind, title, body)) = &outcome.notification {
+                self.show_notification(kind, title, body);
+            }
+        }
+        let last = outcomes.last();
         let _ = self.app.emit(
             "agent-changed",
             serde_json::json!({
                 "source_id": ev.source_id,
                 "session_id": ev.session_id,
-                "run_id": outcome.run_row_id,
-                "state": outcome.state.as_str(),
-                "deduplicated": outcome.deduplicated,
-                "late": outcome.late,
+                "run_id": last.map(|o| o.run_row_id.clone()),
+                "state": last.map(|o| o.state.as_str()),
+                "deduplicated": last.map(|o| o.deduplicated).unwrap_or(false),
+                "late": last.map(|o| o.late).unwrap_or(false),
+                "batch": outcomes.len(),
             }),
         );
-        if !outcome.deduplicated {
+        if !outcomes.iter().all(|o| o.deduplicated) {
             self.update_tray();
         }
-        Ok(outcome.run_row_id)
     }
 
     #[allow(dead_code)]
@@ -857,11 +1006,20 @@ impl AgentHub {
     pub fn cleanup_stale(&self) -> AppResult<usize> {
         let settings = crate::db::Settings::load(&self.db).unwrap_or_default();
         let stale_minutes = settings.stale_run_minutes.max(1) as i64;
-        let stale = self.db.with_conn(|conn| cleanup_stale_core(conn, stale_minutes))?;
+        let stale = self
+            .db
+            .with_conn(|conn| cleanup_stale_core(conn, stale_minutes))?;
         let notified = stale;
         if !notified.is_empty() {
-            self.show_notification("agent_disconnected", "Agent 连接中断", "部分 Agent 轮次长时间无心跳，已标记为断开");
-            let _ = self.app.emit("agent-changed", serde_json::json!({ "stale_cleanup": notified.len() }));
+            self.show_notification(
+                "agent_disconnected",
+                "Agent 连接中断",
+                "部分 Agent 轮次长时间无心跳，已标记为断开",
+            );
+            let _ = self.app.emit(
+                "agent-changed",
+                serde_json::json!({ "stale_cleanup": notified.len() }),
+            );
             self.update_tray();
         }
         Ok(notified.len())
@@ -954,7 +1112,12 @@ impl AgentHub {
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
         })?;
-        Ok(AgentSnapshot { sources, instances, sessions, runs })
+        Ok(AgentSnapshot {
+            sources,
+            instances,
+            sessions,
+            runs,
+        })
     }
 
     /// 当前最需要关注的 Agent 状态（托盘图标用）。
@@ -974,7 +1137,7 @@ impl AgentHub {
             .unwrap_or_default();
         let mut worst = AgentState::Idle;
         for s in states {
-            if let Some(st) = AgentState::from_str(&s) {
+            if let Some(st) = AgentState::parse(&s) {
                 if st.priority() > worst.priority() {
                     worst = st;
                 }
@@ -1020,11 +1183,37 @@ mod tests {
     }
 
     fn ingest(db: &Db, ev: &AgentEvent, now: &str) -> AppResult<IngestOutcome> {
+        ingest_with(db, ev, now, Transport::Http)
+    }
+
+    fn ingest_with(
+        db: &Db,
+        ev: &AgentEvent,
+        now: &str,
+        transport: Transport,
+    ) -> AppResult<IngestOutcome> {
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            let out = ingest_core(&tx, ev, now)?;
+            let out = ingest_core(&tx, ev, now, transport)?;
             tx.commit()?;
             Ok::<_, AppError>(out)
+        })
+    }
+
+    fn ingest_batch_core(
+        db: &Db,
+        events: &[AgentEvent],
+        transport: Transport,
+    ) -> AppResult<Vec<IngestOutcome>> {
+        let now = "2026-10-25T10:00:00+00:00";
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut outs = Vec::with_capacity(events.len());
+            for ev in events {
+                outs.push(ingest_core(&tx, ev, now, transport)?);
+            }
+            tx.commit()?;
+            Ok::<_, AppError>(outs)
         })
     }
 
@@ -1058,13 +1247,32 @@ mod tests {
     #[test]
     fn terminal_state_is_protected_from_late_running() {
         let db = memdb();
-        ingest(&db, &ev("codex", "s1", Some("r1"), "running"), "2026-10-25T10:00:00+00:00").unwrap();
-        let done = ingest(&db, &ev("codex", "s1", Some("r1"), "completed"), "2026-10-25T10:05:00+00:00").unwrap();
+        ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let done = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "completed"),
+            "2026-10-25T10:05:00+00:00",
+        )
+        .unwrap();
         assert_eq!(done.state, AgentState::Completed);
         // 旧的 running 事件（occurred_at 早于结束时间）不得复活轮次
-        let late = ingest(&db, &ev("codex", "s1", Some("r1"), "running"), "2026-10-25T10:02:00+00:00").unwrap();
+        let late = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "running"),
+            "2026-10-25T10:02:00+00:00",
+        )
+        .unwrap();
         assert!(late.late);
-        let status = cell(&db, "SELECT status FROM agent_runs WHERE id = ?1", rusqlite::params![&done.run_row_id]);
+        let status = cell(
+            &db,
+            "SELECT status FROM agent_runs WHERE id = ?1",
+            rusqlite::params![&done.run_row_id],
+        );
         assert_eq!(status, "completed");
     }
 
@@ -1076,36 +1284,93 @@ mod tests {
         let second = ingest(&db, &e, "2026-10-25T10:00:00+00:00").unwrap();
         assert!(!first.deduplicated);
         assert!(second.deduplicated);
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_events"), 1, "重复事件只留一条流水");
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) FROM agent_events"),
+            1,
+            "重复事件只留一条流水"
+        );
     }
 
     #[test]
     fn missing_run_id_creates_separate_runs_without_conflict() {
         let db = memdb();
         // 两个会话都不带 run_id：P0 缺陷场景（v0.1 空字符串撞唯一索引）
-        let a = ingest(&db, &ev("codex", "sA", None, "running"), "2026-10-25T10:00:00+00:00").unwrap();
-        let b = ingest(&db, &ev("codex", "sB", None, "running"), "2026-10-25T10:00:01+00:00").unwrap();
+        let a = ingest(
+            &db,
+            &ev("codex", "sA", None, "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let b = ingest(
+            &db,
+            &ev("codex", "sB", None, "running"),
+            "2026-10-25T10:00:01+00:00",
+        )
+        .unwrap();
         assert_ne!(a.run_row_id, b.run_row_id);
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs WHERE external_run_id IS NULL"), 2);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_runs WHERE external_run_id IS NULL"
+            ),
+            2
+        );
     }
 
     #[test]
     fn same_session_multiple_rounds() {
         let db = memdb();
-        ingest(&db, &ev("codex", "s1", None, "running"), "2026-10-25T10:00:00+00:00").unwrap();
-        let r1 = ingest(&db, &ev("codex", "s1", None, "completed"), "2026-10-25T10:01:00+00:00").unwrap();
+        ingest(
+            &db,
+            &ev("codex", "s1", None, "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let r1 = ingest(
+            &db,
+            &ev("codex", "s1", None, "completed"),
+            "2026-10-25T10:01:00+00:00",
+        )
+        .unwrap();
         // 会话恢复：completed 之后新的 running（发生时间更晚）→ 新一轮次
-        let r2 = ingest(&db, &ev("codex", "s1", None, "running"), "2026-10-25T10:10:00+00:00").unwrap();
+        let r2 = ingest(
+            &db,
+            &ev("codex", "s1", None, "running"),
+            "2026-10-25T10:10:00+00:00",
+        )
+        .unwrap();
         assert_ne!(r1.run_row_id, r2.run_row_id, "多轮任务应开新轮次");
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs WHERE status = 'completed'"), 1);
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'"), 1);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_runs WHERE status = 'completed'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'"
+            ),
+            1
+        );
     }
 
     #[test]
     fn same_external_session_id_different_sources_never_merge() {
         let db = memdb();
-        let a = ingest(&db, &ev("codex", "same-id", None, "running"), "2026-10-25T10:00:00+00:00").unwrap();
-        let b = ingest(&db, &ev("trae", "same-id", None, "running"), "2026-10-25T10:00:00+00:00").unwrap();
+        let a = ingest(
+            &db,
+            &ev("codex", "same-id", None, "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let b = ingest(
+            &db,
+            &ev("trae", "same-id", None, "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
         assert_ne!(a.session_row_id, b.session_row_id);
         assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_sessions"), 2);
     }
@@ -1113,45 +1378,302 @@ mod tests {
     #[test]
     fn disabled_or_unknown_source_rejected() {
         let db = memdb();
-        let err = ingest(&db, &ev("nope", "s", None, "running"), "2026-10-25T10:00:00+00:00").unwrap_err();
+        let err = ingest(
+            &db,
+            &ev("nope", "s", None, "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("未注册"));
         db.with_conn(|c| {
-            c.execute("UPDATE agent_sources SET enabled = 0 WHERE id = 'codex'", [])?;
+            c.execute(
+                "UPDATE agent_sources SET enabled = 0 WHERE id = 'codex'",
+                [],
+            )?;
             Ok::<_, AppError>(())
         })
         .unwrap();
-        let err = ingest(&db, &ev("codex", "s", None, "running"), "2026-10-25T10:00:00+00:00").unwrap_err();
+        let err = ingest(
+            &db,
+            &ev("codex", "s", None, "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("禁用"));
     }
 
     #[test]
     fn notification_dedupe_across_duplicate_states() {
         let db = memdb();
-        let a = ingest(&db, &ev("codex", "s1", Some("r1"), "running"), "2026-10-25T10:00:00+00:00").unwrap();
+        let a = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
         assert!(a.notification.is_none(), "running 不通知");
-        let w1 = ingest(&db, &ev("codex", "s1", Some("r1"), "waiting"), "2026-10-25T10:01:00+00:00").unwrap();
+        let w1 = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "waiting"),
+            "2026-10-25T10:01:00+00:00",
+        )
+        .unwrap();
         assert!(w1.notification.is_some(), "进入 waiting 通知");
         // running → waiting 再次发生：同轮次同状态只通知一次
-        ingest(&db, &ev("codex", "s1", Some("r1"), "running"), "2026-10-25T10:02:00+00:00").unwrap();
-        let w2 = ingest(&db, &ev("codex", "s1", Some("r1"), "waiting"), "2026-10-25T10:03:00+00:00").unwrap();
+        ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "running"),
+            "2026-10-25T10:02:00+00:00",
+        )
+        .unwrap();
+        let w2 = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "waiting"),
+            "2026-10-25T10:03:00+00:00",
+        )
+        .unwrap();
         assert!(w2.notification.is_none(), "重复 waiting 去重");
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history WHERE kind = 'agent_waiting'"), 1);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM notification_history WHERE kind = 'agent_waiting'"
+            ),
+            1
+        );
     }
 
     #[test]
     fn mock_transport_never_verifies_source() {
         let db = memdb();
-        let mut e = ev("mock", "s1", None, "running");
-        e.transport = Some("mock".into());
+        let e = ev("mock", "s1", None, "running");
+        ingest_with(&db, &e, "2026-10-25T10:00:00+00:00", Transport::Mock).unwrap();
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(verified AS TEXT) FROM agent_sources WHERE id = 'mock'",
+                rusqlite::params![]
+            ),
+            "0",
+            "模拟事件不得置 verified"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(transport_verified AS TEXT) FROM agent_sources WHERE id = 'mock'",
+                rusqlite::params![]
+            ),
+            "0",
+            "模拟事件不得置 transport_verified"
+        );
+    }
+
+    #[test]
+    fn manual_transport_never_verifies_source() {
+        let db = memdb();
+        let e = ev("codex", "s-manual", None, "running");
+        ingest_with(&db, &e, "2026-10-25T10:00:00+00:00", Transport::Manual).unwrap();
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(verified AS TEXT) FROM agent_sources WHERE id = 'codex'",
+                rusqlite::params![]
+            ),
+            "0",
+            "人工/调试上报不得置 verified"
+        );
+    }
+
+    #[test]
+    fn selftest_events_isolated_from_real_sessions_and_verification() {
+        let db = memdb();
+        let e = ev("codex", "taskdock-selftest-codex", None, "running");
         ingest(&db, &e, "2026-10-25T10:00:00+00:00").unwrap();
-        assert_eq!(cell(&db, "SELECT CAST(verified AS TEXT) FROM agent_sources WHERE id = 'mock'", rusqlite::params![]), "0", "模拟事件不得置 verified");
+        // 自测事件证明通道可用，但不作为真实会话证据
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(verified AS TEXT) FROM agent_sources WHERE id = 'codex'",
+                rusqlite::params![]
+            ),
+            "0",
+            "自测事件不得置 verified"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(transport_verified AS TEXT) FROM agent_sources WHERE id = 'codex'",
+                rusqlite::params![]
+            ),
+            "1",
+            "自测事件可证明通道打通"
+        );
+        assert_eq!(cell(&db, "SELECT evidence_type FROM agent_events WHERE session_external_id = 'taskdock-selftest-codex'", rusqlite::params![]), "selftest");
+        // 自测事件不建实例，不污染真实实例表
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_instances"), 0);
+        // 随后真实会话事件仍可正常置位
+        ingest(
+            &db,
+            &ev("codex", "real-sess", None, "running"),
+            "2026-10-25T10:01:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(verified AS TEXT) FROM agent_sources WHERE id = 'codex'",
+                rusqlite::params![]
+            ),
+            "1"
+        );
+    }
+
+    #[test]
+    fn client_declared_transport_is_not_trusted() {
+        // 客户端把 transport 声明为 mock：服务端按 HTTP 入口处理，落库为 http、照常验证
+        let db = memdb();
+        let mut e = ev("codex", "s-fake", None, "running");
+        e.transport = Some("mock".into());
+        ingest_with(&db, &e, "2026-10-25T10:00:00+00:00", Transport::Http).unwrap();
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT transport FROM agent_events WHERE session_external_id = 's-fake'",
+                rusqlite::params![]
+            ),
+            "http"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(verified AS TEXT) FROM agent_sources WHERE id = 'codex'",
+                rusqlite::params![]
+            ),
+            "1",
+            "客户端无法通过声明 mock 逃避验证记录"
+        );
+        // 反向：文件通道声明 http，落库仍为 file
+        let mut e2 = ev("codex", "s-file", None, "running");
+        e2.transport = Some("http".into());
+        ingest_with(&db, &e2, "2026-10-25T10:01:00+00:00", Transport::File).unwrap();
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT transport FROM agent_events WHERE session_external_id = 's-file'",
+                rusqlite::params![]
+            ),
+            "file"
+        );
+    }
+
+    #[test]
+    fn reconnect_after_terminal_with_same_run_id_reopens_run() {
+        // 终态后重连：同一 external_run_id 的活跃事件不得撞唯一索引，也不得静默丢弃
+        let db = memdb();
+        let first = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "completed"),
+            "2026-10-25T10:05:00+00:00",
+        )
+        .unwrap();
+        let re = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "running"),
+            "2026-10-25T10:10:00+00:00",
+        )
+        .unwrap();
+        assert!(!re.late, "终态之后更晚发生的重连事件是合法新一轮");
+        assert_eq!(
+            re.run_row_id, first.run_row_id,
+            "同一 run_id 必须重开原轮次（唯一索引）"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs"), 1);
+        let (status, ended): (String, Option<String>) = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT status, ended_at FROM agent_runs WHERE id = ?1",
+                    rusqlite::params![&re.run_row_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(status, "running");
+        assert!(ended.is_none(), "重开后 ended_at 必须清空");
+    }
+
+    #[test]
+    fn same_run_id_across_sources_never_conflicts() {
+        let db = memdb();
+        let a = ingest(
+            &db,
+            &ev("codex", "sa", Some("same-run"), "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let b = ingest(
+            &db,
+            &ev("trae", "sb", Some("same-run"), "running"),
+            "2026-10-25T10:00:01+00:00",
+        )
+        .unwrap();
+        assert_ne!(a.run_row_id, b.run_row_id, "跨来源同 run_id 必须各自成轮");
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs"), 2);
+    }
+
+    #[test]
+    fn batch_ingest_is_all_or_nothing() {
+        let db = memdb();
+        let good = ev("codex", "s1", Some("r1"), "running");
+        let mut bad = ev("codex", "s2", Some("r2"), "running");
+        bad.state = "not-a-state".into();
+        let err = ingest_batch_core(&db, &[good.clone(), bad], Transport::Http).unwrap_err();
+        assert!(!err.to_string().is_empty());
+        // 第一个事件也必须回滚
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_events"), 0);
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs"), 0);
+        // 全部合法时整批成功
+        let ok = ingest_batch_core(
+            &db,
+            &[good, ev("codex", "s2", Some("r2"), "running")],
+            Transport::Http,
+        )
+        .unwrap();
+        assert_eq!(ok.len(), 2);
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_events"), 2);
     }
 
     #[test]
     fn real_event_verifies_source() {
         let db = memdb();
-        ingest(&db, &ev("codex", "s1", None, "running"), "2026-10-25T10:00:00+00:00").unwrap();
-        assert_eq!(cell(&db, "SELECT CAST(verified AS TEXT) FROM agent_sources WHERE id = 'codex'", rusqlite::params![]), "1", "真实事件到达即最低联调证据");
+        ingest(
+            &db,
+            &ev("codex", "s1", None, "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(verified AS TEXT) FROM agent_sources WHERE id = 'codex'",
+                rusqlite::params![]
+            ),
+            "1",
+            "真实事件到达即最低联调证据"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(transport_verified AS TEXT) FROM agent_sources WHERE id = 'codex'",
+                rusqlite::params![]
+            ),
+            "1"
+        );
     }
 
     #[test]
@@ -1163,7 +1685,11 @@ mod tests {
         e2.instance_id = Some("proc-222".into());
         ingest(&db, &e1, "2026-10-25T10:00:00+00:00").unwrap();
         ingest(&db, &e2, "2026-10-25T10:00:01+00:00").unwrap();
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_instances"), 2, "多实例分开记录");
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) FROM agent_instances"),
+            2,
+            "多实例分开记录"
+        );
     }
 
     #[test]
@@ -1173,7 +1699,12 @@ mod tests {
         let mut e1 = ev("codex", "s1", Some("r1"), "running");
         e1.instance_id = Some("proc-111".into());
         let out1 = ingest(&db, &e1, "2026-10-25T10:00:00+00:00").unwrap();
-        let out2 = ingest(&db, &ev("codex", "s2", None, "running"), "2026-10-25T10:01:00+00:00").unwrap();
+        let out2 = ingest(
+            &db,
+            &ev("codex", "s2", None, "running"),
+            "2026-10-25T10:01:00+00:00",
+        )
+        .unwrap();
 
         // 会话层：s1 关联到 proc-111 的实例行；s2 为 NULL
         let inst_key_1 = db
@@ -1210,15 +1741,23 @@ mod tests {
         // 轮次层：run r1 关联实例，run 无实例信息为 NULL
         let run_inst: Option<String> = db
             .with_conn(|c| {
-                c.query_row("SELECT instance_id FROM agent_runs WHERE id = ?1", rusqlite::params![&out1.run_row_id], |r| r.get(0))
-                    .map_err(AppError::from)
+                c.query_row(
+                    "SELECT instance_id FROM agent_runs WHERE id = ?1",
+                    rusqlite::params![&out1.run_row_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
             })
             .unwrap();
         assert!(run_inst.is_some(), "带实例的轮次应记录 instance_id");
         let run_inst2: Option<String> = db
             .with_conn(|c| {
-                c.query_row("SELECT instance_id FROM agent_runs WHERE id = ?1", rusqlite::params![&out2.run_row_id], |r| r.get(0))
-                    .map_err(AppError::from)
+                c.query_row(
+                    "SELECT instance_id FROM agent_runs WHERE id = ?1",
+                    rusqlite::params![&out2.run_row_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
             })
             .unwrap();
         assert!(run_inst2.is_none(), "无实例信息的轮次保持 NULL");
@@ -1230,23 +1769,60 @@ mod tests {
         let now = "2026-10-25T10:00:00+00:00";
         for i in 0..5 {
             let s = format!("sess-{}", i);
-            ingest(&db, &ev("codex", &s, Some(&format!("run-{}", i)), "running"), now).unwrap();
+            ingest(
+                &db,
+                &ev("codex", &s, Some(&format!("run-{}", i)), "running"),
+                now,
+            )
+            .unwrap();
         }
         assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_sessions"), 5);
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'"), 5);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'"
+            ),
+            5
+        );
     }
 
     #[test]
     fn terminal_correction_between_terminal_states() {
         let db = memdb();
-        ingest(&db, &ev("codex", "s1", Some("r1"), "running"), "2026-10-25T10:00:00+00:00").unwrap();
-        ingest(&db, &ev("codex", "s1", Some("r1"), "completed"), "2026-10-25T10:01:00+00:00").unwrap();
+        ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "completed"),
+            "2026-10-25T10:01:00+00:00",
+        )
+        .unwrap();
         // 终态间修正：completed → failed 允许（不同状态非重复）
-        let fixed = ingest(&db, &ev("codex", "s1", Some("r1"), "failed"), "2026-10-25T10:02:00+00:00").unwrap();
+        let fixed = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "failed"),
+            "2026-10-25T10:02:00+00:00",
+        )
+        .unwrap();
         assert_eq!(fixed.state, AgentState::Failed);
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs"), 1, "修正不开新轮次");
-        let ended = cell(&db, "SELECT ended_at FROM agent_runs WHERE external_run_id = 'r1'", rusqlite::params![]);
-        assert_eq!(ended, "2026-10-25T10:01:00+00:00", "ended_at 保留首个终态时间");
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) FROM agent_runs"),
+            1,
+            "修正不开新轮次"
+        );
+        let ended = cell(
+            &db,
+            "SELECT ended_at FROM agent_runs WHERE external_run_id = 'r1'",
+            rusqlite::params![],
+        );
+        assert_eq!(
+            ended, "2026-10-25T10:01:00+00:00",
+            "ended_at 保留首个终态时间"
+        );
     }
 
     #[test]
@@ -1263,25 +1839,57 @@ mod tests {
             Ok::<_, AppError>(())
         })
         .unwrap();
-        ingest(&db, &ev("codex", "s1", Some("r1"), "completed"), "2026-10-25T10:00:00+00:00").unwrap();
-        let status = cell(&db, "SELECT status FROM tasks WHERE id = ?1", rusqlite::params![&task_id]);
+        ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "completed"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let status = cell(
+            &db,
+            "SELECT status FROM tasks WHERE id = ?1",
+            rusqlite::params![&task_id],
+        );
         assert_eq!(status, "pending", "Agent 完成不得改任务状态");
     }
     #[test]
     fn agent_sudden_exit_marks_disconnected_once() {
         // 场景 8：Agent 突然退出 → 心跳超时判失联，只通知一次，不推断成败
         let db = memdb();
-        let r = ingest(&db, &ev("codex", "s1", Some("r1"), "running"), "2026-10-25T09:00:00+00:00").unwrap();
-        let stale: Vec<(String, String)> = db
-            .with_conn(|conn| cleanup_stale_core(conn, 15))
-            .unwrap();
+        let r = ingest(
+            &db,
+            &ev("codex", "s1", Some("r1"), "running"),
+            "2026-10-25T09:00:00+00:00",
+        )
+        .unwrap();
+        let stale: Vec<(String, String)> =
+            db.with_conn(|conn| cleanup_stale_core(conn, 15)).unwrap();
         assert_eq!(stale.len(), 1, "超时轮次判失联");
-        assert_eq!(cell(&db, "SELECT status FROM agent_runs WHERE id = ?1", rusqlite::params![&r.run_row_id]), "disconnected");
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&r.run_row_id]
+            ),
+            "disconnected"
+        );
         // 再次清理不重复通知
         db.with_conn(|conn| cleanup_stale_core(conn, 15)).unwrap();
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history WHERE kind = 'agent_disconnected'"), 1);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM notification_history WHERE kind = 'agent_disconnected'"
+            ),
+            1
+        );
         // 会话回到 idle
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_sessions WHERE status = 'running'"), 0);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_sessions WHERE status = 'running'"
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1292,15 +1900,40 @@ mod tests {
         let path = dir.join("t.db");
         {
             let db = Db::open(&path).unwrap();
-            ingest(&db, &ev("codex", "s1", Some("r1"), "running"), "2026-10-24T09:00:00+00:00").unwrap();
-            ingest(&db, &ev("trae", "s2", Some("r2"), "completed"), "2026-10-25T10:00:00+00:00").unwrap();
+            ingest(
+                &db,
+                &ev("codex", "s1", Some("r1"), "running"),
+                "2026-10-24T09:00:00+00:00",
+            )
+            .unwrap();
+            ingest(
+                &db,
+                &ev("trae", "s2", Some("r2"), "completed"),
+                "2026-10-25T10:00:00+00:00",
+            )
+            .unwrap();
         } // drop = 模拟退出
         let db2 = Db::open(&path).unwrap();
-        assert_eq!(count(&db2, "SELECT COUNT(*) FROM agent_runs"), 2, "历史轮次保留");
-        assert_eq!(count(&db2, "SELECT COUNT(*) FROM agent_events"), 2, "事件流水保留");
-        let stale: Vec<(String, String)> = db2.with_conn(|conn| cleanup_stale_core(conn, 15)).unwrap();
+        assert_eq!(
+            count(&db2, "SELECT COUNT(*) FROM agent_runs"),
+            2,
+            "历史轮次保留"
+        );
+        assert_eq!(
+            count(&db2, "SELECT COUNT(*) FROM agent_events"),
+            2,
+            "事件流水保留"
+        );
+        let stale: Vec<(String, String)> =
+            db2.with_conn(|conn| cleanup_stale_core(conn, 15)).unwrap();
         assert_eq!(stale.len(), 1, "仅遗留 running 被归位，completed 不动");
-        assert_eq!(count(&db2, "SELECT COUNT(*) FROM agent_runs WHERE status = 'completed'"), 1);
+        assert_eq!(
+            count(
+                &db2,
+                "SELECT COUNT(*) FROM agent_runs WHERE status = 'completed'"
+            ),
+            1
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1309,10 +1942,21 @@ mod tests {
         // 场景 1/15：多 Agent 并行不混淆
         let db = memdb();
         for (src, s) in [("codex", "a"), ("trae", "b"), ("qoder", "c")] {
-            ingest(&db, &ev(src, s, None, "running"), "2026-10-25T10:00:00+00:00").unwrap();
+            ingest(
+                &db,
+                &ev(src, s, None, "running"),
+                "2026-10-25T10:00:00+00:00",
+            )
+            .unwrap();
         }
         assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_sessions"), 3);
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'"), 3);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'"
+            ),
+            3
+        );
     }
 
     #[test]
@@ -1327,12 +1971,24 @@ mod tests {
     fn mock_vs_real_events_distinguishable() {
         // 场景 16：模拟与真实事件在流水里可区分
         let db = memdb();
-        let mut m = ev("mock", "s1", None, "running");
-        m.transport = Some("mock".into());
-        ingest(&db, &m, "2026-10-25T10:00:00+00:00").unwrap();
-        ingest(&db, &ev("codex", "s2", None, "running"), "2026-10-25T10:00:01+00:00").unwrap();
-        let mock_t = cell(&db, "SELECT transport FROM agent_events WHERE source_id = 'mock'", rusqlite::params![]);
-        let real_t = cell(&db, "SELECT transport FROM agent_events WHERE source_id = 'codex'", rusqlite::params![]);
+        let m = ev("mock", "s1", None, "running");
+        ingest_with(&db, &m, "2026-10-25T10:00:00+00:00", Transport::Mock).unwrap();
+        ingest(
+            &db,
+            &ev("codex", "s2", None, "running"),
+            "2026-10-25T10:00:01+00:00",
+        )
+        .unwrap();
+        let mock_t = cell(
+            &db,
+            "SELECT transport FROM agent_events WHERE source_id = 'mock'",
+            rusqlite::params![],
+        );
+        let real_t = cell(
+            &db,
+            "SELECT transport FROM agent_events WHERE source_id = 'codex'",
+            rusqlite::params![],
+        );
         assert_eq!(mock_t, "mock");
         assert_eq!(real_t, "http");
     }

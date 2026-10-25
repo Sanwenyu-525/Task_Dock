@@ -1,7 +1,9 @@
 //! 重复任务规则与下一次发生时间计算。
 //! 时间语义：next_occurrence 返回严格晚于 `after` 的下一次发生时刻（本地时区）。
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Weekday,
+};
 use serde::{Deserialize, Serialize};
 
 /// NLP 解析产出的规则草稿（落库前补 id / anchor）。
@@ -29,11 +31,18 @@ pub fn weekday_num(d: NaiveDate) -> u32 {
 
 /// NaiveDateTime → 本地 DateTime（模糊/不存在时取最早值）。
 fn to_local(dt: NaiveDateTime) -> Option<DateTime<Local>> {
-    Local.from_local_datetime(&dt).single().or_else(|| Local.from_local_datetime(&dt).earliest())
+    Local
+        .from_local_datetime(&dt)
+        .single()
+        .or_else(|| Local.from_local_datetime(&dt).earliest())
 }
 
 fn last_day_of_month(year: i32, month: u32) -> u32 {
-    let (y, m) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (y, m) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     NaiveDate::from_ymd_opt(y, m, 1)
         .unwrap()
         .pred_opt()
@@ -104,10 +113,19 @@ pub fn next_occurrence(
 }
 
 /// 供测试与 UI 展示：规则的中文描述。
-pub fn describe_rule(freq: &str, interval: i64, by_weekday: &[u32], by_monthday: Option<u32>) -> String {
+pub fn describe_rule(
+    freq: &str,
+    interval: i64,
+    by_weekday: &[u32],
+    by_monthday: Option<u32>,
+) -> String {
     match freq {
         "daily" => {
-            if interval == 1 { "每天".into() } else { format!("每 {} 天", interval) }
+            if interval == 1 {
+                "每天".into()
+            } else {
+                format!("每 {} 天", interval)
+            }
         }
         "weekly" => {
             let days = if by_weekday.is_empty() {
@@ -119,10 +137,18 @@ pub fn describe_rule(freq: &str, interval: i64, by_weekday: &[u32], by_monthday:
                     .collect::<Vec<_>>()
                     .join("、")
             };
-            if interval == 1 { days } else { format!("{}（每 {} 周）", days, interval) }
+            if interval == 1 {
+                days
+            } else {
+                format!("{}（每 {} 周）", days, interval)
+            }
         }
         "monthly" => {
-            if interval == 1 { format!("每月 {} 号", by_monthday.unwrap_or(1)) } else { format!("每 {} 个月 {} 号", interval, by_monthday.unwrap_or(1)) }
+            if interval == 1 {
+                format!("每月 {} 号", by_monthday.unwrap_or(1))
+            } else {
+                format!("每 {} 个月 {} 号", interval, by_monthday.unwrap_or(1))
+            }
         }
         _ => "不重复".into(),
     }
@@ -133,7 +159,9 @@ mod tests {
     use super::*;
 
     fn dt(s: &str) -> DateTime<Local> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Local)
+        DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&Local)
     }
 
     fn base() -> DateTime<Local> {

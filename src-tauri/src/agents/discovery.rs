@@ -55,7 +55,10 @@ fn uninstall_key_lines() -> &'static Vec<String> {
             r"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
         ];
         for key in keys {
-            if let Ok(out) = std::process::Command::new("reg").args(["query", key]).output() {
+            if let Ok(out) = std::process::Command::new("reg")
+                .args(["query", key])
+                .output()
+            {
                 for line in String::from_utf8_lossy(&out.stdout).lines() {
                     lines.push(line.to_string());
                 }
@@ -118,10 +121,22 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
             docs_url: d.docs_url.clone(),
             limitations: d.limitations.clone(),
             registered,
-            enabled: health.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-            configured: health.get("configured").and_then(|v| v.as_bool()).unwrap_or(false),
-            verified: health.get("verified").and_then(|v| v.as_bool()).unwrap_or(false),
-            last_event_at: health.get("last_event_at").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            enabled: health
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            configured: health
+                .get("configured")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            verified: health
+                .get("verified")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            last_event_at: health
+                .get("last_event_at")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             health_state: health
                 .get("state")
                 .and_then(|v| v.as_str())
@@ -146,10 +161,19 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
         docs_url: String::new(),
         limitations: vec!["任意 Agent 可通过本地 HTTP / 文件投递上报（source_id=bridge）".into()],
         registered: health.get("state") != Some(&json!("unregistered")),
-        enabled: health.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+        enabled: health
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         configured: true,
-        verified: health.get("verified").and_then(|v| v.as_bool()).unwrap_or(false),
-        last_event_at: health.get("last_event_at").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        verified: health
+            .get("verified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        last_event_at: health
+            .get("last_event_at")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         health_state: health
             .get("state")
             .and_then(|v| v.as_str())
@@ -158,4 +182,3 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
     });
     out
 }
-

@@ -1,19 +1,35 @@
-//! 任务编辑器：新建/编辑、优先级、时间、重复规则、Agent 关联。
+//! 任务编辑器：新建/编辑、优先级、时间、重复规则、Agent 关联、导航目标关联。
 
 import { useEffect, useState } from "react";
-import { Trash2, Link2, Unlink, X } from "lucide-react";
+import { Trash2, Link2, Unlink, X, ArrowUp, ArrowDown, AppWindow, Star } from "lucide-react";
 import {
   listTaskLinks,
   linkTaskAgent,
   unlinkTaskAgent,
   type RecurrenceRuleInput,
 } from "../../lib/bridge";
+import {
+  navTaskTargets, navUnlinkTask, navUpdateTaskLink,
+  stateBadge,
+} from "../../lib/navigation";
+import type { TaskNavLink } from "../../lib/navigation";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { useNavigationStore } from "../../store/useNavigationStore";
 import { describeRecurrence, fromLocalInputValue, toLocalInputValue } from "../../lib/format";
+import AppPicker from "../navigation/AppPicker";
+import { TargetAvatar } from "../navigation/TargetMenu";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+
+const BEHAVIOR_LABELS: Record<string, string> = {
+  default: "按偏好",
+  focus_or_launch: "优先唤醒",
+  launch: "总是启动",
+  resume_session: "恢复会话",
+  open: "打开",
+};
 
 export default function TaskEditor() {
   const editor = useUiStore((s) => s.editor);
@@ -23,6 +39,7 @@ export default function TaskEditor() {
   const update = useTasksStore((s) => s.update);
   const remove = useTasksStore((s) => s.remove);
   const agents = useAgentsStore((s) => s.snapshot);
+  const refreshNavLinks = useNavigationStore((s) => s.loadTaskLinks);
 
   const task = editor.task;
   const [title, setTitle] = useState("");
@@ -38,6 +55,8 @@ export default function TaskEditor() {
   const [monthday, setMonthday] = useState(1);
   const [links, setLinks] = useState<Awaited<ReturnType<typeof listTaskLinks>>>([]);
   const [linkSession, setLinkSession] = useState("");
+  const [navLinks, setNavLinks] = useState<TaskNavLink[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     if (!editor.open) return;
@@ -53,14 +72,73 @@ export default function TaskEditor() {
     setIntervalValue(r?.interval ?? 1);
     setWeekdays(r?.by_weekday ?? []);
     setMonthday(r?.by_monthday ?? 1);
+    setNavLinks([]);
+    setPickerOpen(false);
     if (task) {
       listTaskLinks(task.id).then(setLinks).catch(() => setLinks([]));
+      navTaskTargets(task.id).then(setNavLinks).catch(() => setNavLinks([]));
     } else {
       setLinks([]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor.open, task]);
 
+  // 应用选择器关闭后（可能在其中完成了关联）：重读本任务关联列表
+  useEffect(() => {
+    if (!pickerOpen && editor.open && task) {
+      navTaskTargets(task.id).then(setNavLinks).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerOpen]);
+
   if (!editor.open) return null;
+
+  async function reloadNav() {
+    if (task) {
+      setNavLinks(await navTaskTargets(task.id).catch(() => []));
+    }
+    await refreshNavLinks();
+  }
+
+  async function onNavDefault(id: string) {
+    try {
+      await navUpdateTaskLink(id, { is_default: true });
+      await reloadNav();
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    }
+  }
+
+  async function onNavBehavior(id: string, behavior: string) {
+    try {
+      await navUpdateTaskLink(id, { launch_behavior: behavior });
+      await reloadNav();
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    }
+  }
+
+  async function onNavMove(index: number, delta: -1 | 1) {
+    const a = navLinks[index];
+    const b = navLinks[index + delta];
+    if (!a || !b) return;
+    try {
+      await navUpdateTaskLink(a.id, { display_order: b.display_order });
+      await navUpdateTaskLink(b.id, { display_order: a.display_order });
+      await reloadNav();
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    }
+  }
+
+  async function onNavRemove(id: string) {
+    try {
+      await navUnlinkTask(id);
+      await reloadNav();
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    }
+  }
 
   // Escape 关闭（输入框内同样生效；不与窗口隐藏冲突——事件在此消费）
   function onKeyDown(e: React.KeyboardEvent) {
@@ -258,6 +336,78 @@ export default function TaskEditor() {
           {task && (
             <div className="field">
               <span>
+                <AppWindow size={12} /> 关联目标（软件 / 网址 / 文件 / 目录）
+              </span>
+              <div className="link-row">
+                <button className="btn sm" onClick={() => setPickerOpen(true)}>
+                  <AppWindow size={12} /> 添加目标…
+                </button>
+                {navLinks.length >= 2 && (
+                  <span className="endpoint-hint">多个目标可在任务卡「打开工作区」一键启动</span>
+                )}
+              </div>
+              {navLinks.map((l, i) => {
+                const badge = stateBadge(l.running_state);
+                return (
+                  <div key={l.id} className="nav-link-item">
+                    <TargetAvatar link={l} size={18} />
+                    <span className="nav-link-name" title={l.target.display_name}>
+                      {l.target.display_name}
+                    </span>
+                    <span className={`nav-link-state tone-${badge.tone}`}>{badge.label}</span>
+                    <select
+                      className="input sm nav-link-behavior"
+                      value={l.launch_behavior}
+                      aria-label="跳转行为"
+                      onChange={(e) => onNavBehavior(l.id, e.target.value)}
+                    >
+                      {Object.entries(BEHAVIOR_LABELS).map(([v, label]) => (
+                        <option key={v} value={v}>{label}</option>
+                      ))}
+                    </select>
+                    <button
+                      className={`icon-btn sm ${l.is_default ? "default-on" : ""}`}
+                      title={l.is_default ? "默认目标（点击图标直接打开）" : "设为默认目标"}
+                      aria-label={l.is_default ? `默认目标：${l.target.display_name}` : `设 ${l.target.display_name} 为默认`}
+                      onClick={() => onNavDefault(l.id)}
+                    >
+                      <Star size={11} />
+                    </button>
+                    <button
+                      className="icon-btn sm"
+                      title="上移"
+                      aria-label={`上移 ${l.target.display_name}`}
+                      disabled={i === 0}
+                      onClick={() => onNavMove(i, -1)}
+                    >
+                      <ArrowUp size={11} />
+                    </button>
+                    <button
+                      className="icon-btn sm"
+                      title="下移"
+                      aria-label={`下移 ${l.target.display_name}`}
+                      disabled={i === navLinks.length - 1}
+                      onClick={() => onNavMove(i, 1)}
+                    >
+                      <ArrowDown size={11} />
+                    </button>
+                    <button
+                      className="icon-btn sm"
+                      title="取消关联（不删除目标配置）"
+                      aria-label={`取消关联 ${l.target.display_name}`}
+                      onClick={() => onNavRemove(l.id)}
+                    >
+                      <Unlink size={11} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {task && (
+            <div className="field">
+              <span>
                 <Link2 size={12} /> 关联 Agent 会话
               </span>
               <div className="link-row">
@@ -302,6 +452,13 @@ export default function TaskEditor() {
           </button>
         </div>
       </div>
+      {pickerOpen && task && (
+        <AppPicker
+          taskId={task.id}
+          onClose={() => setPickerOpen(false)}
+          onSelect={undefined}
+        />
+      )}
     </div>
   );
 }
