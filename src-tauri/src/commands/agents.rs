@@ -114,8 +114,20 @@ pub fn update_source(
 /// - 会话/轮次/实例（FK 绑定的观测数据）总是随之删除，保证删除必成功；
 /// - agent_events 按 also_delete_data 决定去留（false 保留历史流水，source_id 为普通列）；
 /// - 用户任务与 task_agent_links 永不级联删除（任务侧显示「来源已移除」）。
+///
+/// 数据生命周期（v0.4 收尾定稿）：
+/// - agent_sources 删除 ⇒ agent_sessions/agent_runs/agent_instances 必须删除（外键约束）；
+/// - task_agent_links 保留为历史记录（无外键，v5 起带 origin 所有权语义）；
+/// - navigation_targets 中的 agent_session 目标保留，运行态如实显示 `unavailable`，
+///   用户可解除或重新关联；删除来源绝不让用户任务消失。
+/// - 因此「删除来源之后」的备份仍然合法可恢复：导入侧将这类引用判为
+///   历史失效（保留）而非伪造（拒绝），见 commands::data 模块注释。
 #[tauri::command]
 pub fn delete_source(db: State<'_, Arc<Db>>, id: String, also_delete_data: bool) -> AppResult<()> {
+    delete_source_inner(&db, &id, also_delete_data)
+}
+
+pub(crate) fn delete_source_inner(db: &Db, id: &str, also_delete_data: bool) -> AppResult<()> {
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         // 先删子表（runs 经 session 级联，但显式删除顺序更稳）

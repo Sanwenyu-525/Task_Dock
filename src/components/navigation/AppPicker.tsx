@@ -12,7 +12,7 @@ import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import type { AgentSession } from "../../lib/bridge";
 import {
-  navLinkTask, navListWindows, navSaveTarget, navSaveAgentSessionTarget,
+  navLinkTask, navListWindows, navPickWindowIdentity, navSaveTarget, navSaveAgentSessionTarget,
   CATEGORY_LABELS, avatarHue,
   type DiscoveredApp, type NavTarget, type TargetInput, type WindowInfo,
 } from "../../lib/navigation";
@@ -161,6 +161,14 @@ export default function AppPicker({ taskId, onSelect, onClose }: Props) {
         window_title_hint: w.title.slice(0, 32),
         overwrite_name: false,
       });
+      // 用户显式选中的窗口 → 把精确身份（类名+标题）固化为该目标的窗口记忆，
+      // 后续导航不再按"标题最长"猜窗口。窗口此刻已被关闭等失败不阻断流程：
+      // 应用目标本身已保存，只如实提示身份未记录。
+      try {
+        await navPickWindowIdentity(t.id, w.hwnd);
+      } catch {
+        showToast("窗口已关闭，未能记录窗口身份（应用目标本身已保存）", { kind: "info" });
+      }
       await afterPick(t, `已关联「${t.display_name}」（来自当前窗口）`);
     } catch (e) {
       showToast(String(e), { kind: "error" });

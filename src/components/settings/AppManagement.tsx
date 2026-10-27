@@ -3,16 +3,19 @@
 
 import { useEffect, useState } from "react";
 import {
-  Star, Trash2, RefreshCw, EyeOff, Eye, Rocket, ClipboardList, Navigation, Ban,
+  Star, Trash2, RefreshCw, EyeOff, Eye, Rocket, ClipboardList, Navigation, Ban, Eraser,
 } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import {
-  navDeleteTarget, navRecentLogs, navUpdateTarget, navNavigate, resultMessage,
-  TARGET_TYPE_LABELS,
+  navDeleteTarget, navForgetWindow, navRecentLogs, navUpdateTarget, navNavigate, navWindowMemory,
+  resultMessage, TARGET_TYPE_LABELS,
   type NavLogRow,
 } from "../../lib/navigation";
+
+/** 记住的窗口身份（类名+标题），targetId → 身份；无记忆的不在表里。 */
+type WinMemories = Record<string, { class_name: string; title: string }>;
 
 export default function AppManagement() {
   const settings = useSettingsStore((s) => s.settings);
@@ -21,12 +24,49 @@ export default function AppManagement() {
   const { targets, targetsLoaded, loadTargets, scan, scanning, loadApps } = useNavigationStore();
   const [logs, setLogs] = useState<NavLogRow[] | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+  const [winMems, setWinMems] = useState<WinMemories>({});
 
   useEffect(() => {
     if (!targetsLoaded) loadTargets();
     navRecentLogs(20).then(setLogs).catch(() => setLogs([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 窗口记忆可见化：目标清单就绪后逐个查询 application 目标记住的窗口身份
+  // （类名+标题），供用户查看与清除。查询失败静默视为无记忆；
+  // 分批限并发，目标很多时不打爆 IPC。targets 变化（增删/刷新）后重查保持新鲜。
+  useEffect(() => {
+    if (!targetsLoaded) return;
+    let cancelled = false;
+    const apps = targets.filter((t) => t.target_type === "application");
+    (async () => {
+      const BATCH = 4;
+      for (let i = 0; i < apps.length; i += BATCH) {
+        const batch = apps.slice(i, i + BATCH);
+        const found = await Promise.all(
+          batch.map(async (t) => {
+            try {
+              const m = await navWindowMemory(t.id);
+              return m ? ([t.id, m] as const) : null;
+            } catch {
+              return null; // 查询失败 = 无记忆，不打扰用户
+            }
+          }),
+        );
+        if (cancelled) return;
+        setWinMems((prev) => {
+          const next = { ...prev };
+          // 先清掉本批旧值（目标可能已无记忆），再写入本批结果
+          for (const t of batch) delete next[t.id];
+          for (const r of found) if (r) next[r[0]] = r[1];
+          return next;
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [targetsLoaded, targets]);
 
   // 失效检测说明：浏览器环境无法同步探测本地路径；目标失效由后端在
   // running_state=unavailable（任务关联视图）与导航失败记录中如实呈现。
@@ -137,6 +177,37 @@ export default function AppManagement() {
               </span>
               <span className="target-admin-type">{TARGET_TYPE_LABELS[t.target_type]}</span>
               <span className="target-admin-uses">{t.use_count > 0 ? `${t.use_count} 次` : ""}</span>
+              {/* 窗口记忆徽标：显示该目标记住的精确窗口身份，可一键清除 */}
+              {t.target_type === "application" && winMems[t.id] && (
+                <>
+                  <span
+                    className="chip"
+                    title={`窗口: ${winMems[t.id].title}（类名 ${winMems[t.id].class_name}）`}
+                  >
+                    窗口记忆
+                  </span>
+                  <button
+                    className="icon-btn sm"
+                    title="清除窗口记忆（下次导航恢复按标题匹配）"
+                    aria-label={`清除窗口记忆 ${t.display_name}`}
+                    onClick={async () => {
+                      try {
+                        await navForgetWindow(t.id);
+                        setWinMems((prev) => {
+                          const next = { ...prev };
+                          delete next[t.id];
+                          return next;
+                        });
+                        showToast("已清除窗口记忆", { kind: "success" });
+                      } catch (e) {
+                        showToast(String(e), { kind: "error" });
+                      }
+                    }}
+                  >
+                    <Eraser size={11} />
+                  </button>
+                </>
+              )}
               <button
                 className={`icon-btn sm ${t.favorite ? "default-on" : ""}`}
                 title={t.favorite ? "取消收藏" : "收藏"}

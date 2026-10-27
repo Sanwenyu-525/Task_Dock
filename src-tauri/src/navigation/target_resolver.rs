@@ -4,7 +4,10 @@
 //! - 目标行是「用户确认过的可信配置」，保存时全部过安全校验；
 //! - 同一身份（app_key / url / 路径 / source+session）只存一行，重复保存即更新；
 //! - 执行时（router）还会再次校验（安装路径可能已变化）；
-//! - 与 task_agent_links 并存：旧表只服务 Agent 会话关联，新表覆盖全部目标类型。
+//! - 与 task_agent_links 并存：旧表只服务 Agent 会话关联，新表覆盖全部目标类型；
+//! - 旧表同步有**所有权语义**（v5 迁移 origin 列）：nav 关联自动补写的兼容行
+//!   `origin='auto'`，随其导航关联一同解除；用户手工关联 `origin='user'`，
+//!   任何自动逻辑都不得删除。
 
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -396,6 +399,28 @@ pub fn update_target(db: &Db, id: &str, patch: &TargetPatch) -> AppResult<()> {
 
 pub fn delete_target(db: &Db, id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
+        // 目标删除会级联清掉 task_navigation_targets（FK ON DELETE CASCADE），
+        // 但它自动补写的旧表影子记录（origin='auto'）没有外键，需在此同步清理，
+        // 否则任务卡的 Agent 计数残留指向已删除目标的死链接。
+        // 用户手工关联（origin='user'）保留为历史记录。
+        let ident: Option<(String, String)> = conn
+            .query_row(
+                "SELECT agent_source_id, agent_session_id FROM navigation_targets
+                 WHERE id = ?1 AND target_type = 'agent_session'
+                   AND agent_source_id <> '' AND agent_session_id <> ''",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((source, session)) = ident {
+            conn.execute(
+                "DELETE FROM task_agent_links
+                 WHERE source_id = ?1 AND session_external_id = ?2
+                   AND run_external_id IS NULL AND origin = 'auto'
+                   AND task_id IN (SELECT task_id FROM task_navigation_targets WHERE target_id = ?3)",
+                rusqlite::params![source, session, id],
+            )?;
+        }
         conn.execute(
             "DELETE FROM navigation_targets WHERE id = ?1",
             rusqlite::params![id],
@@ -477,6 +502,9 @@ pub fn link_task(
         // 与旧 task_agent_links 兼容：Agent 会话目标额外补一条旧表记录。
         // 旧版本的「任务 ↔ Agent 会话」查询与徽标计数都只读这张表，
         // 不写就会表现为"新关联了会话，但任务卡上的 Agent 数还是 0"。
+        // 影子记录必须带 origin='auto'（v5 所有权语义）：解除导航关联时只删
+        // 自动补写的行；若用户已有同会话的手工关联（NOT EXISTS 命中），这里不写，
+        // 手工行保持 origin='user'，永不自动删除。
         let agent_ident: Option<(String, String)> = conn
             .query_row(
                 "SELECT agent_source_id, agent_session_id FROM navigation_targets
@@ -488,8 +516,8 @@ pub fn link_task(
             .optional()?;
         if let Some((source, session)) = agent_ident {
             conn.execute(
-                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at)
-                 SELECT ?1, ?2, ?3, ?4, NULL, ?5 WHERE NOT EXISTS (
+                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at, origin)
+                 SELECT ?1, ?2, ?3, ?4, NULL, ?5, 'auto' WHERE NOT EXISTS (
                    SELECT 1 FROM task_agent_links
                    WHERE task_id = ?2 AND source_id = ?3 AND session_external_id = ?4
                      AND run_external_id IS NULL
@@ -509,8 +537,9 @@ pub fn link_task(
 
 pub fn unlink_task(db: &Db, link_id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
-        // 先取出被删关联的目标身份：若是 Agent 会话目标，同步清理旧表兼容记录，
-        // 否则取消关联后任务卡的 Agent 计数会残留。
+        // 先取出被删关联的目标身份：若是 Agent 会话目标，同步清理**本关联自动补写**的
+        // 旧表影子记录（origin='auto'）。用户手工创建的关联（origin='user'）保留——
+        // 它属于用户自己建立的任务↔Agent 绑定，导航解除不得误删。
         let ident: Option<(String, String, String)> = conn
             .query_row(
                 "SELECT l.task_id, t.agent_source_id, t.agent_session_id
@@ -529,7 +558,7 @@ pub fn unlink_task(db: &Db, link_id: &str) -> AppResult<()> {
             conn.execute(
                 "DELETE FROM task_agent_links
                  WHERE task_id = ?1 AND source_id = ?2 AND session_external_id = ?3
-                   AND run_external_id IS NULL",
+                   AND run_external_id IS NULL AND origin = 'auto'",
                 rusqlite::params![task_id, source, session],
             )?;
         }
@@ -1012,6 +1041,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(legacy, 1, "关联 Agent 会话目标必须同步旧表");
+        // 自动补写的影子记录必须带 origin='auto'（所有权语义）
+        let origin: String = db
+            .with_conn(|c| {
+                c.query_row("SELECT origin FROM task_agent_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(origin, "auto");
         // 重复关联不得产生重复旧记录
         link_task(&db, "t1", &t.id, false, "default").unwrap();
         let legacy2: i64 = db
@@ -1021,7 +1058,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(legacy2, 1, "幂等关联不得重复写旧表");
-        // 取消关联 → 旧表同步清理
+        // 取消关联 → 本关联自动补写的影子记录同步清理
         unlink_task(&db, &link_id).unwrap();
         let legacy3: i64 = db
             .with_conn(|c| {
@@ -1029,7 +1066,179 @@ mod tests {
                     .map_err(AppError::from)
             })
             .unwrap();
-        assert_eq!(legacy3, 0, "取消关联后旧表不得残留");
+        assert_eq!(legacy3, 0, "取消关联后自动影子记录不得残留");
+        // 重复解除：幂等，不报错
+        unlink_task(&db, &link_id).unwrap();
+    }
+
+    // ── 关联所有权（v5 origin 语义）回归 ─────────────────────
+
+    fn insert_manual_link(db: &Db, id: &str, task: &str, source: &str, session: &str) {
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at, origin)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'user')",
+                rusqlite::params![id, task, source, session, now_iso()],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    fn legacy_count(db: &Db) -> i64 {
+        db.with_conn(|c| {
+            c.query_row("SELECT COUNT(*) FROM task_agent_links", [], |r| r.get(0))
+                .map_err(AppError::from)
+        })
+        .unwrap()
+    }
+
+    fn task_row(db: &Db, id: &str) {
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES (?1, 'T', '', 2, 'pending', '', '[]', 0, ?2, ?2)",
+                rusqlite::params![id, now_iso()],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    /// 同一会话同时存在新旧关联：导航关联解除只删自己的影子记录，
+    /// 用户手工创建的关联（origin='user'）必须原样保留。
+    #[test]
+    fn unlink_nav_link_never_deletes_user_manual_link() {
+        let db = Db::open_in_memory().unwrap();
+        task_row(&db, "t1");
+        seed_session(&db, "codex", "sess-1", "联调会话");
+        // 用户先在旧 UI 手工关联该会话
+        insert_manual_link(&db, "l-user", "t1", "codex", "sess-1");
+        // 再通过统一导航关联同一会话：影子记录被 NOT EXISTS 跳过（已有手工行）
+        let t = save_target(&db, &agent_input("codex", "sess-1", "")).unwrap();
+        let link_id = link_task(&db, "t1", &t.id, false, "default").unwrap();
+        assert_eq!(legacy_count(&db), 1, "已有手工关联时不得重复补影子记录");
+        // 解除导航关联：手工关联必须幸存
+        unlink_task(&db, &link_id).unwrap();
+        assert_eq!(legacy_count(&db), 1, "解除导航关联不得误删用户手工关联");
+        let left: (String, String) = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT origin, session_external_id FROM task_agent_links",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(left, ("user".into(), "sess-1".into()));
+        // 只有旧版关联（无导航关联）的场景：一切自动逻辑都不应触碰它
+        // （重复解除已不存在 link_id，上面幂等调用已覆盖）
+    }
+
+    /// 只有旧版关联：删除另一个任务的导航关联不得波及本任务的手工关联。
+    #[test]
+    fn unlink_nav_link_on_other_task_keeps_manual_link_intact() {
+        let db = Db::open_in_memory().unwrap();
+        task_row(&db, "t1");
+        task_row(&db, "t2");
+        seed_session(&db, "codex", "sess-1", "联调会话");
+        seed_session(&db, "codex", "sess-2", "另一个会话");
+        // t1 手工关联 sess-1；t2 导航关联 sess-2（不同会话）
+        insert_manual_link(&db, "l-user", "t1", "codex", "sess-1");
+        let t2 = save_target(&db, &agent_input("codex", "sess-2", "")).unwrap();
+        let link2 = link_task(&db, "t2", &t2.id, false, "default").unwrap();
+        assert_eq!(legacy_count(&db), 2);
+        unlink_task(&db, &link2).unwrap();
+        assert_eq!(legacy_count(&db), 1, "只能删本关联的影子记录");
+        let left: String = db
+            .with_conn(|c| {
+                c.query_row("SELECT id FROM task_agent_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(left, "l-user");
+    }
+
+    /// 删除导航目标：级联清导航关联 + 本目标的自动影子记录；手工关联保留。
+    #[test]
+    fn delete_target_cleans_auto_compat_and_keeps_user_links() {
+        let db = Db::open_in_memory().unwrap();
+        task_row(&db, "t1");
+        task_row(&db, "t2");
+        seed_session(&db, "codex", "sess-1", "联调会话");
+        // t1 手工关联；t2 经导航关联同一会话目标
+        insert_manual_link(&db, "l-user", "t1", "codex", "sess-1");
+        let t = save_target(&db, &agent_input("codex", "sess-1", "")).unwrap();
+        link_task(&db, "t2", &t.id, false, "default").unwrap();
+        assert_eq!(legacy_count(&db), 2);
+        delete_target(&db, &t.id).unwrap();
+        // t2 的导航关联被级联删除；其影子记录同步清理；t1 手工关联保留
+        let nav: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM task_navigation_targets", [], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(nav, 0, "删除目标应级联清掉导航关联");
+        assert_eq!(legacy_count(&db), 1, "只清 auto 影子记录，手工关联保留");
+        let left: String = db
+            .with_conn(|c| {
+                c.query_row("SELECT id FROM task_agent_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(left, "l-user");
+    }
+
+    /// 删除 Agent 来源：任务与两种关联记录都保留（历史引用，不做静默删除）。
+    #[test]
+    fn delete_agent_source_keeps_tasks_and_links() {
+        let db = Db::open_in_memory().unwrap();
+        task_row(&db, "t1");
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO agent_sources (id, display_name, kind, enabled, verified, homepage, note, config, created_at, updated_at)
+                 VALUES ('myagent','自定义来源','manual',1,0,'','','{}',?1,?1)",
+                rusqlite::params![now_iso()],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        seed_session(&db, "myagent", "sess-1", "自定义来源会话");
+        let t = save_target(&db, &agent_input("myagent", "sess-1", "")).unwrap();
+        link_task(&db, "t1", &t.id, false, "default").unwrap();
+        // 模拟 commands::agents::delete_source 的数据生命周期：
+        // sessions/runs/instances 随来源删除（FK 约束），来源行删除，
+        // 任务、关联、导航目标保留为历史引用
+        db.with_conn(|c| {
+            c.execute("DELETE FROM agent_runs WHERE source_id = 'myagent'", [])?;
+            c.execute("DELETE FROM agent_sessions WHERE source_id = 'myagent'", [])?;
+            c.execute(
+                "DELETE FROM agent_instances WHERE source_id = 'myagent'",
+                [],
+            )?;
+            c.execute("DELETE FROM agent_sources WHERE id = 'myagent'", [])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let tasks: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(tasks, 1, "删除来源不得删除用户任务");
+        assert_eq!(legacy_count(&db), 1, "关联记录保留为历史");
+        // 导航目标仍在，但会话已不存在 → 关联如实显示失效
+        let state = task_targets(&db, "t1").unwrap();
+        assert_eq!(state.len(), 1);
+        assert_eq!(
+            state[0].running_state, "unavailable",
+            "会话消失后必须显示失效"
+        );
     }
 
     #[test]

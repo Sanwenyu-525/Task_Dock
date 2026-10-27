@@ -78,6 +78,59 @@ pub(crate) fn execute_with_ctx(
 
 // ── L1/L2：应用 ─────────────────────────────────────────────
 
+/// UWP/MSIX 启动决策：UWP 窗口无法枚举/唤醒，除显式 open_app 外都只能降级为启动，
+/// 且必须尊重 nav_allow_launch——UWP 绝不静默绕过用户「不允许启动」的偏好。
+///
+/// 语义与 Win32 分支统一（对应验收条款：区分用户明确选择"总是启动"与默认唤醒行为；
+/// 无法唤醒时返回明确的失败或降级原因）。
+#[derive(Debug, PartialEq)]
+pub(crate) enum UwpDecision {
+    /// 允许启动。fallback = 本次是否为「唤醒意图降级为启动」；reason 必须如实说明。
+    Launch {
+        fallback: bool,
+        reason: Option<String>,
+    },
+    /// 拒绝启动（含明确原因，不执行任何进程创建）。
+    Refused(String),
+}
+
+pub(crate) fn uwp_decision(action: Option<&str>, allow_launch: bool) -> UwpDecision {
+    match action {
+        // 用户显式选择"总是启动"：直接启动，不算降级
+        Some(ACTION_OPEN_APP) => UwpDecision::Launch {
+            fallback: false,
+            reason: None,
+        },
+        // 默认行为与显式"唤醒窗口"：UWP 无法定位已有窗口，按偏好降级或明确拒绝
+        Some(ACTION_FOCUS_WINDOW) | None => {
+            if allow_launch {
+                UwpDecision::Launch {
+                    fallback: true,
+                    reason: Some("UWP 应用无法定位已有窗口，已按设置降级为启动".into()),
+                }
+            } else {
+                UwpDecision::Refused(
+                    "UWP 应用无法按窗口唤醒，且当前设置不允许自动启动（可开启「允许启动未运行的程序」，或明确选择启动）"
+                        .into(),
+                )
+            }
+        }
+        Some(other) => UwpDecision::Refused(format!("UWP 目标不支持动作: {}", other)),
+    }
+}
+
+/// 生效的窗口记忆：偏好开启时任意记忆都生效；关闭时仅尊重用户显式选择的记忆
+/// （用户亲手挑的窗口，绝不允许被"标题最长"冒充）。
+pub(crate) fn effective_memory(
+    stored: Option<window_manager::WindowMemory>,
+    remember_pref: bool,
+) -> Option<window_manager::WindowMemory> {
+    match remember_pref {
+        true => stored,
+        false => stored.filter(|m| m.origin == window_manager::MemoryOrigin::User),
+    }
+}
+
 pub(crate) fn navigate_application(
     db: &Db,
     t: &NavTargetRow,
@@ -94,18 +147,31 @@ pub(crate) fn navigate_application(
         if let Err(e) = super::validate_aumid(&t.app_user_model_id) {
             return NavigationResult::failure(&t.id, ACTION_OPEN_APP, e.to_string());
         }
-        let arg = format!("shell:AppsFolder\\{}", t.app_user_model_id);
-        return match std::process::Command::new("explorer.exe").arg(&arg).spawn() {
-            Ok(_) => NavigationResult {
-                success: true,
-                requested_action: ACTION_OPEN_APP.into(),
-                actual_action: Some(ACTION_OPEN_APP.into()),
-                fallback_used: false,
-                target_id: t.id.clone(),
-                reason: Some("已提交启动请求（UWP 应用窗口由系统按需创建）".into()),
-                verification_level: VerificationLevel::LaunchRequested.as_str().into(),
-            },
-            Err(e) => NavigationResult::failure(&t.id, ACTION_OPEN_APP, format!("启动失败: {}", e)),
+        let explicit_launch = options.action.as_deref() == Some(ACTION_OPEN_APP);
+        let requested = if explicit_launch {
+            ACTION_OPEN_APP
+        } else {
+            ACTION_FOCUS_WINDOW
+        };
+        return match uwp_decision(options.action.as_deref(), allow_launch) {
+            UwpDecision::Launch { fallback, reason } => {
+                let arg = format!("shell:AppsFolder\\{}", t.app_user_model_id);
+                match std::process::Command::new("explorer.exe").arg(&arg).spawn() {
+                    Ok(_) => NavigationResult {
+                        success: true,
+                        requested_action: requested.into(),
+                        actual_action: Some(ACTION_OPEN_APP.into()),
+                        fallback_used: fallback,
+                        target_id: t.id.clone(),
+                        reason,
+                        verification_level: VerificationLevel::LaunchRequested.as_str().into(),
+                    },
+                    Err(e) => {
+                        NavigationResult::failure(&t.id, requested, format!("启动失败: {}", e))
+                    }
+                }
+            }
+            UwpDecision::Refused(r) => NavigationResult::failure(&t.id, requested, r),
         };
     }
 
@@ -133,13 +199,12 @@ pub(crate) fn navigate_application(
     }
 
     if prefer_focus {
-        // 多窗口选择：用户显式指定 > 记忆的窗口身份 > 标题最长
-        // （记忆只存类名+标题，不存 HWND——见 window_manager::WindowMemory）
-        let remembered = if settings.nav_remember_window {
-            window_manager::load_memory(db, &t.id)
-        } else {
-            None
-        };
+        // 多窗口选择优先级：用户显式指定 > 用户显式选择的窗口记忆 > 自动记忆（偏好开启时）> 标题最长
+        // （记忆只存类名+标题+来源，不存 HWND——见 window_manager::WindowMemory）
+        let remembered = effective_memory(
+            window_manager::load_memory(db, &t.id),
+            settings.nav_remember_window,
+        );
         let chosen = options
             .window_hwnd
             .and_then(|hwnd| windows.iter().find(|w| w.hwnd == hwnd))
@@ -149,8 +214,18 @@ pub(crate) fn navigate_application(
                 Ok(FocusOutcome::Confirmed) => {
                     // 只有真正确认置前后才更新记忆：把"没成功的窗口"记下来
                     // 会让下次跳转继续选错。
+                    // 用户显式选择的记忆（origin=user）不被自动记忆覆盖降级——
+                    // 否则一次成功的定位就把用户亲手挑的窗口身份冲掉了。
                     if settings.nav_remember_window {
-                        let _ = window_manager::save_memory(db, &t.id, w);
+                        let user_picked_same =
+                            window_manager::load_memory(db, &t.id).is_some_and(|m| {
+                                m.origin == window_manager::MemoryOrigin::User
+                                    && m.class_name == w.class_name
+                                    && m.title == w.title
+                            });
+                        if !user_picked_same {
+                            let _ = window_manager::save_memory(db, &t.id, w);
+                        }
                     }
                     let multi = windows.len() > 1;
                     NavigationResult {
@@ -484,33 +559,150 @@ mod tests {
         Db::open_in_memory().unwrap()
     }
 
-    /// 记录某 exe 当前已有窗口句柄，供测试只清理「本次新出现」的窗口。
-    #[cfg(windows)]
-    fn hwnd_snapshot(exe: &str) -> std::collections::HashSet<isize> {
-        window_manager::windows_for_exe(exe)
-            .into_iter()
-            .map(|w| w.hwnd)
-            .collect()
+    // ── 测试进程安全（P1：绝不误伤用户进程）────────────────────
+    //
+    // 旧实现「测试前后窗口快照差集 + taskkill」有竞态：测试期间用户自己打开的
+    // 记事本也会被算作"新窗口"而遭强杀。现策略：
+    // - 每个测试只启动**自己的**子进程并持有 Child 句柄（RAII 守卫）；
+    // - 清理仅按「父 PID == 我们子进程 PID 且镜像名匹配 notepad.exe」归属
+    //   （覆盖 Win11 notepad 存根把真实记事本作为子进程拉起的形态）；
+    // - 无法归属的进程一律不碰（宁可跳过清理，绝不猜测）；
+    // - Drop 保证断言失败/panic 时同样清理；并发测试各杀各的子进程树。
+
+    /// 测试专属子进程守卫：Drop 时清理自己拉起的进程树。
+    struct OwnedProc(std::process::Child);
+
+    impl Drop for OwnedProc {
+        fn drop(&mut self) {
+            #[cfg(windows)]
+            kill_owned_descendants(self.0.id());
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 
-    /// 只终止本次测试新拉起的进程（按 PID）。
-    ///
-    /// 旧实现用 `taskkill /IM notepad.exe /F`：那会连**用户自己开着的**记事本
-    /// 一起强杀（用户未保存的笔记直接丢失）。这里按 PID 精确清理，
-    /// 快照里已存在的窗口一律不碰。
+    /// 终止「父进程 == parent_pid 且镜像名为 notepad.exe」的直接子进程。
+    /// 只按 PID 精确清理自证归属的进程；找不到就什么都不杀。
     #[cfg(windows)]
-    fn kill_new_windows(exe: &str, before: &std::collections::HashSet<isize>) {
-        let lower = exe.to_ascii_lowercase();
-        let victims: Vec<u32> = window_manager::top_windows_force()
-            .into_iter()
-            .filter(|w| w.exe_path.as_deref() == Some(lower.as_str()))
-            .filter(|w| !before.contains(&w.hwnd))
-            .map(|w| w.pid)
-            .collect();
-        for pid in victims {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
+    fn kill_owned_descendants(parent_pid: u32) {
+        use std::mem::zeroed;
+
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        const NOTEPAD: &str = "notepad.exe";
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap as usize == usize::MAX {
+                return;
+            }
+            let mut entry: PROCESSENTRY32W = zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            if Process32FirstW(snap, &mut entry) != 0 {
+                loop {
+                    let exe = String::from_utf16_lossy(
+                        &entry.szExeFile
+                            [..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0)],
+                    )
+                    .to_ascii_lowercase();
+                    if entry.th32ParentProcessID == parent_pid && exe == NOTEPAD {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/PID", &entry.th32ProcessID.to_string(), "/F"])
+                            .output();
+                    }
+                    if Process32NextW(snap, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+            windows_sys::Win32::Foundation::CloseHandle(snap);
+        }
+    }
+
+    /// 轮询等待「属于本测试子进程树」的记事本窗口出现；超时返回 None。
+    ///
+    /// Win11 实测形态：System32\notepad.exe 是存根，立即退出并把打包版
+    /// Notepad.exe（WindowsApps）作为子进程拉起，父 PID 关系保留。
+    /// 因此必须在**全量顶层窗口**里按 PID 归属（窗口进程的 exe 路径不是
+    /// C:\Windows\notepad.exe，按 exe 过滤会漏掉真实窗口）。
+    #[cfg(windows)]
+    fn wait_for_owned_window(
+        child_pid: u32,
+        timeout: std::time::Duration,
+    ) -> Option<window_manager::WindowInfo> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let wins = window_manager::top_windows_force();
+            // 直接形态：窗口就属于我们 spawn 的进程
+            if let Some(w) = wins.iter().find(|w| w.pid == child_pid) {
+                return Some(w.clone());
+            }
+            // Win11 存根形态：真实记事本是子进程（父 == child_pid）
+            let owned = owned_descendant_pids(child_pid);
+            if let Some(w) = wins.iter().find(|w| owned.contains(&w.pid)) {
+                return Some(w.clone());
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    /// 列出父 PID == parent_pid 且镜像名为 notepad.exe 的子进程 PID（不杀，只查询）。
+    #[cfg(windows)]
+    fn owned_descendant_pids(parent_pid: u32) -> std::collections::HashSet<u32> {
+        use std::mem::zeroed;
+
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        let mut out = std::collections::HashSet::new();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap as usize == usize::MAX {
+                return out;
+            }
+            let mut entry: PROCESSENTRY32W = zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            if Process32FirstW(snap, &mut entry) != 0 {
+                loop {
+                    let exe = String::from_utf16_lossy(
+                        &entry.szExeFile
+                            [..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0)],
+                    )
+                    .to_ascii_lowercase();
+                    if entry.th32ParentProcessID == parent_pid && exe == "notepad.exe" {
+                        out.insert(entry.th32ProcessID);
+                    }
+                    if Process32NextW(snap, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+            windows_sys::Win32::Foundation::CloseHandle(snap);
+        }
+        out
+    }
+
+    /// 记事本测试互斥锁：Win11 打包版记事本是「单进程多标签」形态——
+    /// 已有实例存在时，再次 spawn 会在既有进程里开新标签而不产生新进程，
+    /// 父 PID 归属随之失效。串行化让每个测试的 spawn 都从干净状态开始，
+    /// 归属（父 == 本测试子进程 PID）始终可靠。
+    #[cfg(windows)]
+    static NOTEPAD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 拉起测试专属记事本；失败返回 None（环境受限时跳过测试，绝不拿用户的窗口凑数）。
+    #[cfg(windows)]
+    fn spawn_owned_notepad() -> Option<OwnedProc> {
+        match std::process::Command::new("C:\\Windows\\notepad.exe").spawn() {
+            Ok(c) => Some(OwnedProc(c)),
+            Err(e) => {
+                eprintln!("跳过：无法拉起测试专属记事本进程（环境受限）: {}", e);
+                None
+            }
         }
     }
 
@@ -563,47 +755,83 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn notepad_launch_prefers_focus_then_launches() {
-        // 真机测试：notepad.exe 存在于所有 Windows；
-        // 已运行 → 唤醒；未运行 → 启动并等待窗口（验证级别必须如实）
-        const EXE: &str = "C:\\Windows\\notepad.exe";
-        let before = hwnd_snapshot(EXE);
+    fn notepad_launch_focuses_existing_window_of_owned_process() {
+        // 真机测试：只针对**本测试自己拉起的**记事本进程，绝不触碰用户已打开的窗口。
+        // 已有窗口（自己的）→ 必须唤醒而不是再启动一个进程。
+        let _lock = NOTEPAD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(guard) = spawn_owned_notepad() else {
+            return;
+        };
+        let child_pid = guard.0.id();
+        let Some(own) = wait_for_owned_window(child_pid, std::time::Duration::from_secs(6)) else {
+            eprintln!("跳过：6 秒内未出现归属本测试子进程的记事本窗口（可能为静默启动形态），不做任何清理动作");
+            return;
+        };
+        // 目标身份用窗口进程的真实 exe（与「从当前窗口选择」的落库行为一致）。
+        // Win11 打包版记事本的窗口进程是 WindowsApps\...\Notepad.exe，
+        // 用 C:\Windows\notepad.exe 存根路径按 exe 匹配不到窗口（属真实世界形态）。
+        let Some(exe) = own.exe_path.clone() else {
+            eprintln!("跳过：无法解析测试窗口所属进程 exe");
+            return;
+        };
         let d = db();
         let t = target_resolver::save_target(
             &d,
             &target_resolver::TargetInput {
                 target_type: "application".into(),
                 display_name: "记事本(测试)".into(),
-                exe_path: EXE.into(),
+                exe_path: exe.clone(),
                 ..Default::default()
             },
         )
         .unwrap();
-        let r = navigate_application(&d, &t, &Settings::default(), &NavigateOptions::default());
-        assert!(r.success, "notepad 应可启动/唤醒: {:?}", r.reason);
+        // 用户显式指定自己的窗口（HWND 仅本次调用即时使用）
+        let opts = NavigateOptions {
+            window_hwnd: Some(own.hwnd),
+            ..Default::default()
+        };
+        let r = navigate_application(&d, &t, &Settings::default(), &opts);
+        assert!(r.success, "已有窗口必须可唤醒: {:?}", r.reason);
+        assert_eq!(
+            r.actual_action.as_deref(),
+            Some("focus_window"),
+            "已存在窗口时必须唤醒而不是再启动（实际: {:?}）",
+            r.actual_action
+        );
         assert!(
             r.verification_level == "window-confirmed"
-                || r.verification_level == "window-visible"
-                || r.verification_level == "process-spawned",
-            "验证级别必须如实（实际: {}）",
+                || r.verification_level == "requested-unverified",
+            "唤醒的验证级别必须如实（实际: {}；前台锁定时允许 requested-unverified）",
             r.verification_level
         );
-        // 只清理本测试新拉起的记事本；用户原本开着的记事本不受影响
-        kill_new_windows(EXE, &before);
+        // 清理由 OwnedProc::Drop 完成：只杀自己子进程树（父==child_pid 且镜像名匹配）
     }
 
     #[cfg(windows)]
     #[test]
     fn launch_disallowed_reports_failure_or_focus_only() {
-        const EXE: &str = "C:\\Windows\\notepad.exe";
-        let before = hwnd_snapshot(EXE);
+        // 用自己的记事本保证「窗口存在 → 只允许唤醒」分支可确定性覆盖；
+        // 环境受限（无法拉起子进程）时跳过，不依赖用户恰好开着的窗口。
+        let _lock = NOTEPAD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(guard) = spawn_owned_notepad() else {
+            return;
+        };
+        let child_pid = guard.0.id();
+        let Some(own) = wait_for_owned_window(child_pid, std::time::Duration::from_secs(6)) else {
+            eprintln!("跳过：未出现归属本测试子进程的记事本窗口");
+            return;
+        };
+        let Some(exe) = own.exe_path.clone() else {
+            eprintln!("跳过：无法解析测试窗口所属进程 exe");
+            return;
+        };
         let d = db();
         let t = target_resolver::save_target(
             &d,
             &target_resolver::TargetInput {
                 target_type: "application".into(),
                 display_name: "记事本(禁启测试)".into(),
-                exe_path: EXE.into(),
+                exe_path: exe,
                 ..Default::default()
             },
         )
@@ -612,15 +840,103 @@ mod tests {
             nav_allow_launch: false,
             ..Default::default()
         };
-        // notepad 未运行时 → 拒绝启动；已运行 → 唤醒成功（两种都合法，但不能启动新进程）
-        let r = navigate_application(&d, &t, &settings, &NavigateOptions::default());
-        if r.success {
-            assert_eq!(r.actual_action.as_deref(), Some("focus_window"));
-        } else {
-            assert!(r.reason.unwrap().contains("不允许"));
+        // 窗口存在（本测试自己的）→ 唤醒成功；绝不产生新进程
+        let opts = NavigateOptions {
+            window_hwnd: Some(own.hwnd),
+            ..Default::default()
+        };
+        let r = navigate_application(&d, &t, &settings, &opts);
+        assert!(r.success, "窗口已存在时应唤醒而非拒绝: {:?}", r.reason);
+        assert_eq!(r.actual_action.as_deref(), Some("focus_window"));
+    }
+
+    #[test]
+    fn effective_memory_honors_user_pick_even_when_remember_disabled() {
+        let auto = window_manager::WindowMemory {
+            class_name: "Chrome_WidgetWin_1".into(),
+            title: "自动记忆".into(),
+            origin: window_manager::MemoryOrigin::Auto,
+        };
+        let user = window_manager::WindowMemory {
+            class_name: "Chrome_WidgetWin_1".into(),
+            title: "用户挑的窗口".into(),
+            origin: window_manager::MemoryOrigin::User,
+        };
+        // 偏好开启：任意记忆生效
+        assert!(effective_memory(Some(auto.clone()), true).is_some());
+        // 偏好关闭：自动记忆停用，但用户显式选择必须生效（不被"标题最长"冒充）
+        assert!(effective_memory(Some(auto), false).is_none());
+        assert_eq!(effective_memory(Some(user.clone()), false).unwrap(), user);
+        assert!(effective_memory(None, true).is_none());
+    }
+
+    #[test]
+    fn uwp_decision_respects_launch_preference() {
+        use super::UwpDecision;
+        // 显式"总是启动"：直接启动，不算降级
+        assert_eq!(
+            uwp_decision(Some(ACTION_OPEN_APP), false),
+            UwpDecision::Launch {
+                fallback: false,
+                reason: None
+            }
+        );
+        // 默认行为 + 允许启动：降级启动并如实说明
+        match uwp_decision(None, true) {
+            UwpDecision::Launch { fallback, reason } => {
+                assert!(fallback, "默认唤醒意图降级必须标记 fallback");
+                assert!(reason.is_some(), "降级必须携带原因");
+            }
+            other => panic!("应为 Launch，实际: {:?}", other),
         }
-        // 禁止启动的用例本不应产生新窗口；仍做一次精确清理以防万一
-        kill_new_windows(EXE, &before);
+        // 默认行为 + 禁止启动：明确拒绝，绝不静默绕过偏好
+        match uwp_decision(None, false) {
+            UwpDecision::Refused(r) => assert!(r.contains("不允许"), "拒绝原因要明确: {}", r),
+            other => panic!("应为 Refused，实际: {:?}", other),
+        }
+        // 显式"唤醒窗口" + 禁止启动：同样拒绝（UWP 无法唤醒）
+        match uwp_decision(Some(ACTION_FOCUS_WINDOW), false) {
+            UwpDecision::Refused(r) => assert!(r.contains("不允许")),
+            other => panic!("应为 Refused，实际: {:?}", other),
+        }
+        // 未知动作拒绝
+        assert!(matches!(
+            uwp_decision(Some("evil"), true),
+            UwpDecision::Refused(_)
+        ));
+    }
+
+    #[test]
+    fn uwp_target_refused_before_any_process_spawn_when_launch_disallowed() {
+        // 带合法 AUMID 的目标 + 禁止启动：决策在 spawn 之前拒绝，不产生任何进程
+        let d = db();
+        d.with_conn(|c| {
+            c.execute(
+                "INSERT INTO navigation_targets (id, display_name, target_type, app_key, exe_path, launch_args, working_dir, app_user_model_id, url, path, agent_source_id, agent_session_id, window_title_hint, icon, category, favorite, hidden, use_count, created_at, updated_at)
+                 VALUES ('uwp1','计算器','application','uwp:calc','','','','Test.App_8wekyb3d8bbwe!App','','','','','','','uwp',0,0,0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let t = target_resolver::get_target(&d, "uwp1").unwrap().unwrap();
+        let settings = Settings {
+            nav_allow_launch: false,
+            ..Default::default()
+        };
+        let r = navigate_application(&d, &t, &settings, &NavigateOptions::default());
+        assert!(!r.success, "禁止启动时 UWP 默认行为必须失败而非启动");
+        assert!(r.reason.unwrap().contains("不允许"));
+        assert_eq!(r.requested_action, ACTION_FOCUS_WINDOW, "默认语义是唤醒");
+        // 显式 open_app 越过偏好（用户明确选择"总是启动"）——只测决策语义，不真启动：
+        let explicit = uwp_decision(Some(ACTION_OPEN_APP), false);
+        assert!(matches!(
+            explicit,
+            super::UwpDecision::Launch {
+                fallback: false,
+                ..
+            }
+        ));
     }
 
     #[test]

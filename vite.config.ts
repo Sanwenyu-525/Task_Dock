@@ -17,6 +17,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // 纯函数测试保持 node；真实 DOM 交互测试文件用 `// @vitest-environment jsdom` 头注释单独指定
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
   },
 });

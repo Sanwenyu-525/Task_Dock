@@ -172,6 +172,9 @@ export const navSaveAgentSessionTarget = (
     displayName: displayName ?? null,
     workingDir: workingDir ?? null,
   });
+/** 用户显式指定窗口身份（后端由 hwnd 即时解析为 类名+标题 稳定身份并落库；hwnd 不持久化） */
+export const navPickWindowIdentity = (targetId: string, hwnd: number) =>
+  invoke<{ class_name: string; title: string }>("nav_pick_window_identity", { targetId, hwnd });
 /** 记住的窗口身份（类名+标题，不含 HWND）；无记忆为 null。 */
 export const navWindowMemory = (targetId: string) =>
   invoke<{ class_name: string; title: string } | null>("nav_window_memory", { targetId });

@@ -301,6 +301,32 @@ CREATE TABLE navigation_log (
 CREATE INDEX idx_nav_log_created ON navigation_log(created_at);
 "#,
     ),
+    (
+        5,
+        r#"
+-- v5（Task Dock 0.4 收尾）：task_agent_links 关联所有权语义。
+-- origin 区分两类关联，修复「解除导航关联误删用户手工关联」的所有权冲突：
+--   user = 用户手工创建（旧版 UI / link_task_agent 命令），任何自动逻辑不得删除；
+--   auto = nav link_task 为旧表兼容自动补写的影子记录，随其导航关联一同解除。
+-- 旧数据（v0.3 及更早）全部是手工关联，DEFAULT 'user' 保守兼容，绝不误标。
+ALTER TABLE task_agent_links ADD COLUMN origin TEXT NOT NULL DEFAULT 'user';
+
+-- 回填：v0.4 开发版 link_task 自动补写的影子记录与导航关联在同一事务写入，
+-- created_at 严格相等（同一 now_iso()），且存在同身份的 agent_session 导航目标。
+-- 两个条件同时满足才标 auto；用户手工关联不会同时命中（时间戳精度为纳秒级）。
+UPDATE task_agent_links SET origin = 'auto'
+WHERE origin = 'user'
+  AND EXISTS (
+    SELECT 1 FROM task_navigation_targets nl
+    JOIN navigation_targets t ON t.id = nl.target_id
+    WHERE nl.task_id = task_agent_links.task_id
+      AND t.target_type = 'agent_session'
+      AND t.agent_source_id = task_agent_links.source_id
+      AND t.agent_session_id = task_agent_links.session_external_id
+      AND nl.created_at = task_agent_links.created_at
+  );
+"#,
+    ),
 ];
 
 pub struct Db {
@@ -628,7 +654,7 @@ mod tests {
                     .map_err(AppError::from)
             })
             .unwrap();
-        assert_eq!(version, 4, "应依次迁移至 v4");
+        assert_eq!(version, MIGRATIONS.len() as i64, "应依次迁移至最新版");
         // v3：transport_verified 分层验证列已加入
         let cols: i64 = db
             .with_conn(|c| {
@@ -724,7 +750,7 @@ mod tests {
             })
             .unwrap();
         }
-        // 重新打开（幂等重放 user_version=4 的库不应再执行任何迁移）
+        // 重新打开（幂等重放已迁移库不应再执行任何迁移）
         let db2 = Db::open(&path).unwrap();
         let version: i64 = db2
             .with_conn(|c| {
@@ -732,7 +758,7 @@ mod tests {
                     .map_err(AppError::from)
             })
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, MIGRATIONS.len() as i64);
         // 旧关联原样保留
         let old_links: i64 = db2
             .with_conn(|c| {
@@ -836,5 +862,103 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 1, "v3 必须新增 transport_verified 列");
+    }
+
+    /// v5：task_agent_links.origin 所有权语义。
+    /// 手工关联（无同时间戳的导航关联）保持 user；v0.4-dev 自动补写的影子记录
+    /// （created_at 与导航关联严格相等 + 同身份会话目标存在）回填为 auto。
+    #[test]
+    fn v5_backfills_auto_compat_links_and_keeps_user_links() {
+        let dir = std::env::temp_dir().join(format!("td-mig5-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        {
+            // 构造 v4 库：一条手工关联（v0.3 语义）+ 一条 v0.4-dev 自动影子记录
+            let db = Db::open(&path).unwrap(); // 全新库 → 迁移到 v4（此时 MIGRATIONS 已含 v5，需手动降级构造）
+            db.with_conn(|c| {
+                // 手动把库降回 v4（模拟升级前状态）：v5 的列与回填先撤销
+                c.execute_batch(
+                    "ALTER TABLE task_agent_links DROP COLUMN origin;
+                     PRAGMA user_version = 4;",
+                )?;
+                Ok::<_, AppError>(())
+            })
+            .unwrap();
+            let now_auto = "2026-10-27T08:00:00.123456789+00:00";
+            let now_user = "2026-10-20T08:00:00+00:00";
+            db.with_conn(|c| {
+                c.execute(
+                    "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                     VALUES ('t1','任务','',2,'pending','','[]',0,?1,?1)",
+                    rusqlite::params![now_user],
+                )?;
+                c.execute(
+                    "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                     VALUES ('t2','任务2','',2,'pending','','[]',0,?1,?1)",
+                    rusqlite::params![now_user],
+                )?;
+                c.execute(
+                    "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                     VALUES ('s1','codex','sess-1','会话','running',?1,?1)",
+                    rusqlite::params![now_user],
+                )?;
+                // 手工关联（v0.3 时间戳，无导航关联）
+                c.execute(
+                    "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, created_at)
+                     VALUES ('l-user','t1','codex','sess-1',?1)",
+                    rusqlite::params![now_user],
+                )?;
+                // v0.4-dev 自动影子记录：created_at 与导航关联严格相等
+                c.execute(
+                    "INSERT INTO navigation_targets (id, display_name, target_type, app_key, agent_source_id, agent_session_id, created_at, updated_at)
+                     VALUES ('nt1','会话','agent_session','codex:sess-1','codex','sess-1',?1,?1)",
+                    rusqlite::params![now_auto],
+                )?;
+                c.execute(
+                    "INSERT INTO task_navigation_targets (id, task_id, target_id, display_order, is_default, launch_behavior, created_at)
+                     VALUES ('nl1','t2','nt1',0,0,'default',?1)",
+                    rusqlite::params![now_auto],
+                )?;
+                c.execute(
+                    "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, created_at)
+                     VALUES ('l-auto','t2','codex','sess-1',?1)",
+                    rusqlite::params![now_auto],
+                )?;
+                Ok::<_, AppError>(())
+            })
+            .unwrap();
+        }
+        // 重新打开 → 应用 v5 迁移
+        let db = Db::open(&path).unwrap();
+        let origin_of = |id: &str| -> AppResult<String> {
+            db.with_conn(|c| {
+                c.query_row(
+                    "SELECT origin FROM task_agent_links WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+        };
+        assert_eq!(
+            origin_of("l-user").unwrap(),
+            "user",
+            "手工关联必须保持 user"
+        );
+        assert_eq!(
+            origin_of("l-auto").unwrap(),
+            "auto",
+            "同事务影子记录应回填为 auto"
+        );
+        // 幂等：再次打开不重复回填/报错
+        let db2 = Db::open(&path).unwrap();
+        let n: i64 = db2
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM task_agent_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(n, 2);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::db::Db;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::navigation;
 use crate::navigation::router::{self, NavigateOptions};
 
@@ -78,6 +78,31 @@ pub fn nav_window_memory(
 #[tauri::command]
 pub fn nav_forget_window(db: State<'_, Arc<Db>>, target_id: String) -> AppResult<()> {
     navigation::window_manager::forget_memory(&db, &target_id)
+}
+
+/// 用户显式指定窗口身份：后端由 hwnd **即时**解析当前窗口（重新枚举核对，
+/// 不信任陈旧句柄），把稳定身份（类名+标题，origin=user）写入目标记忆。
+///
+/// HWND 只用于这一次即时解析，绝不持久化；落库的是可重新解析的
+/// 类名+标题身份，导航时按身份重新枚举核对。窗口已不存在时返回明确错误，
+/// 前端据此如实提示（不静默降级成别的窗口）。
+#[tauri::command]
+pub fn nav_pick_window_identity(
+    db: State<'_, Arc<Db>>,
+    target_id: String,
+    hwnd: isize,
+) -> AppResult<navigation::window_manager::WindowMemory> {
+    let w = navigation::window_manager::top_windows_force()
+        .into_iter()
+        .find(|w| w.hwnd == hwnd)
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "窗口已不存在（句柄失效），未能记录窗口身份: target={}",
+                target_id
+            ))
+        })?;
+    navigation::window_manager::save_user_memory(&db, &target_id, &w)?;
+    Ok(navigation::window_manager::WindowMemory::from_window(&w))
 }
 
 /// 把某个真实存在的 Agent 会话登记为可信导航目标（供任务关联与工作区启动使用）。

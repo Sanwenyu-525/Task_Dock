@@ -35,15 +35,31 @@ pub enum FocusOutcome {
     Unverified,
 }
 
+/// 窗口记忆的来源。
+///
+/// - `User`：用户在窗口选择器里**显式指定**的窗口身份。即便「记住窗口」偏好
+///   关闭，导航也必须优先尊重它——绝不允许用「标题最长」冒充用户的选择。
+/// - `Auto`：焦点定位成功后自动记录的身份，仅在 `nav_remember_window` 开启时使用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryOrigin {
+    User,
+    #[default]
+    Auto,
+}
+
 /// 用户上次选择的窗口身份。
 ///
 /// **刻意不保存 HWND**：句柄在窗口关闭、进程重启、DWM 重连后都会失效，
 /// 存下来的数字下次几乎必然指向别的窗口（甚至别的进程）——那是最坏的一种
-/// "看起来记住了，实际点错窗口"。这里只存稳定特征：窗口类名 + 标题。
+/// "看起来记住了，实际点错窗口"。这里只存稳定特征：窗口类名 + 标题 + 来源。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct WindowMemory {
     pub class_name: String,
     pub title: String,
+    /// 身份来源（旧数据无此字段 → Auto：旧版本只有自动记忆一种来源）。
+    #[serde(default)]
+    pub origin: MemoryOrigin,
 }
 
 impl WindowMemory {
@@ -51,6 +67,15 @@ impl WindowMemory {
         Self {
             class_name: w.class_name.clone(),
             title: w.title.clone(),
+            origin: MemoryOrigin::Auto,
+        }
+    }
+
+    fn from_window_with_origin(w: &WindowInfo, origin: MemoryOrigin) -> Self {
+        Self {
+            class_name: w.class_name.clone(),
+            title: w.title.clone(),
+            origin,
         }
     }
 }
@@ -99,12 +124,29 @@ pub fn load_memory(db: &Db, target_id: &str) -> Option<WindowMemory> {
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
-/// 记录一次成功的窗口定位（仅在 nav_remember_window 开启时由 router 调用）。
+/// 记录一次成功的窗口定位（仅在 nav_remember_window 开启时由 router 调用；来源=auto）。
 pub fn save_memory(db: &Db, target_id: &str, w: &WindowInfo) -> crate::error::AppResult<()> {
+    save_memory_with_origin(db, target_id, w, MemoryOrigin::Auto)
+}
+
+/// 记录用户显式指定的窗口身份（AppPicker 挑选窗口时调用；来源=user）。
+///
+/// 显式选择不受 nav_remember_window 偏好限制：用户亲手挑的窗口，下次导航必须
+/// 优先找它，找不到也要如实反馈，而不是拿"标题最长"的窗口冒充。
+pub fn save_user_memory(db: &Db, target_id: &str, w: &WindowInfo) -> crate::error::AppResult<()> {
+    save_memory_with_origin(db, target_id, w, MemoryOrigin::User)
+}
+
+fn save_memory_with_origin(
+    db: &Db,
+    target_id: &str,
+    w: &WindowInfo,
+    origin: MemoryOrigin,
+) -> crate::error::AppResult<()> {
     let mut map = memory_map(db);
     map.insert(
         target_id.to_string(),
-        serde_json::to_value(WindowMemory::from_window(w))?,
+        serde_json::to_value(WindowMemory::from_window_with_origin(w, origin))?,
     );
     db.set_setting(WINDOW_MEMORY_KEY, serde_json::Value::Object(map))
 }
@@ -455,18 +497,21 @@ mod tests {
         let m = WindowMemory {
             class_name: "Chrome_WidgetWin_1".into(),
             title: "项目 B — 编辑器".into(),
+            origin: MemoryOrigin::Auto,
         };
         assert_eq!(pick_window(&wins, Some(&m)).unwrap().hwnd, 2);
         // 2) 标题变了（用户切了标签）→ 仍按类名落到同一种窗口
         let m2 = WindowMemory {
             class_name: "ConsoleWindowClass".into(),
             title: "早已关闭的终端".into(),
+            origin: MemoryOrigin::Auto,
         };
         assert_eq!(pick_window(&wins, Some(&m2)).unwrap().hwnd, 4);
         // 3) 类名也不认识 → 回退最长标题
         let m3 = WindowMemory {
             class_name: "Nope".into(),
             title: "nope".into(),
+            origin: MemoryOrigin::Auto,
         };
         let picked = pick_window(&wins, Some(&m3)).unwrap();
         assert_eq!(
@@ -487,6 +532,7 @@ mod tests {
         let m = load_memory(&db, "t1").expect("应能读回记忆");
         assert_eq!(m.class_name, "Chrome_WidgetWin_1");
         assert_eq!(m.title, "我的项目 — 编辑器");
+        assert_eq!(m.origin, MemoryOrigin::Auto, "自动记忆来源必须是 auto");
         // 落库内容里不得出现 HWND 数字（句柄是易变身份，绝不持久化）
         let raw = db
             .get_setting("nav_window_memory")
@@ -498,6 +544,23 @@ mod tests {
         assert!(load_memory(&db, "t2").is_none());
         forget_memory(&db, "t1").unwrap();
         assert!(load_memory(&db, "t1").is_none());
+    }
+
+    #[test]
+    fn user_memory_origin_persists_and_reads_back() {
+        let db = Db::open_in_memory().unwrap();
+        let w = win(777, "用户挑的窗口", "Chrome_WidgetWin_1");
+        save_user_memory(&db, "t1", &w).unwrap();
+        let m = load_memory(&db, "t1").expect("显式选择应能读回");
+        assert_eq!(m.origin, MemoryOrigin::User, "显式选择来源必须是 user");
+        assert_eq!(m.title, "用户挑的窗口");
+        // 旧数据（无 origin 字段）→ 反序列化为 Auto，绝不误判成用户显式选择
+        db.set_setting(
+            "nav_window_memory",
+            serde_json::json!({ "t2": { "class_name": "C", "title": "T" } }),
+        )
+        .unwrap();
+        assert_eq!(load_memory(&db, "t2").unwrap().origin, MemoryOrigin::Auto);
     }
 
     #[test]

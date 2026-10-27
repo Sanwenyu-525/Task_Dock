@@ -508,6 +508,7 @@ pub fn run() {
             commands::navigation::nav_save_agent_session_target,
             commands::navigation::nav_window_memory,
             commands::navigation::nav_forget_window,
+            commands::navigation::nav_pick_window_identity,
             commands::navigation::nav_recent_logs,
             commands::navigation::nav_prune_logs,
             commands::navigation::nav_link_task,

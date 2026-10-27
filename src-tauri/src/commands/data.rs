@@ -25,6 +25,16 @@
 //!   `PRAGMA foreign_key_check` 作为最后一道闸门，任何外键残留整体回滚；
 //! - 向后兼容：v1 / v2 文件缺导航表 → 视为空表，其余数据照常恢复
 //!   （旧备份不会因为「没有导航数据」而被拒绝）。
+//!
+//! v3.1 校验策略（删除 Agent 来源后备份可恢复性）：
+//! 「历史引用已失效」与「非法伪造引用」分开处理——
+//! - **伪造/损坏（整体拒绝）**：结构非法、目标类型非法、身份字段为空、
+//!   agent_session 目标的会话 ID 不过白名单、关联引用不存在的任务/导航目标
+//!   （有真实外键的引用必须完整）；
+//! - **历史失效（接受并保留）**：task_agent_links 与 agent_session 导航目标指向的
+//!   来源/会话已不存在（典型场景：删除来源之后才做的备份）。这些列没有外键约束，
+//!   引用按历史记录保留；恢复后 UI 如实显示 `unavailable`，用户可解除或重新关联。
+//!   合法备份绝不因「来源已删除」而整体恢复失败。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,6 +111,14 @@ pub struct LinkRow {
     pub session_external_id: String,
     pub run_external_id: Option<String>,
     pub created_at: String,
+    /// 关联所有权（v5）：user = 用户手工创建；auto = 导航关联自动补写的影子记录。
+    /// 旧版本导出文件没有该字段 → 视为 user（保守：自动逻辑不删历史行）。
+    #[serde(default = "default_link_origin")]
+    pub origin: String,
+}
+
+fn default_link_origin() -> String {
+    "user".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,10 +390,10 @@ fn collect(db: &Db) -> AppResult<serde_json::Value> {
                 kind: r.get(4)?, fired: r.get::<_, i64>(5)? != 0, fired_at: r.get(6)?,
             }))?;
         let links: Vec<LinkRow> = query_rows(&tx,
-            "SELECT id, task_id, source_id, session_external_id, run_external_id, created_at FROM task_agent_links",
+            "SELECT id, task_id, source_id, session_external_id, run_external_id, created_at, origin FROM task_agent_links",
             |r| Ok(LinkRow {
                 id: r.get(0)?, task_id: r.get(1)?, source_id: r.get(2)?, session_external_id: r.get(3)?,
-                run_external_id: r.get(4)?, created_at: r.get(5)?,
+                run_external_id: r.get(4)?, created_at: r.get(5)?, origin: r.get(6)?,
             }))?;
         let categories: Vec<CategoryRow> = query_rows(&tx,
             "SELECT id, name, color, sort_order, created_at FROM task_categories",
@@ -830,10 +848,13 @@ fn parse_and_validate(db: &Db, data: &serde_json::Value) -> AppResult<ParsedImpo
                 l.id, l.task_id
             )));
         }
-        if !known_sources.contains(&l.source_id) {
+        // 身份为空 = 伪造/损坏数据（正常路径不可能产生），整体拒绝；
+        // 来源不存在 = 历史失效（如来源删除后才做的备份），按历史记录保留。
+        // task_agent_links.source_id 没有外键约束，保留不破坏引用完整性。
+        if l.source_id.trim().is_empty() || l.session_external_id.trim().is_empty() {
             return Err(AppError::Validation(format!(
-                "task_agent_links[{}] 引用了不存在的来源: {}",
-                l.id, l.source_id
+                "task_agent_links[{}] 身份字段为空（来源或会话 ID 缺失）",
+                l.id
             )));
         }
     }
@@ -855,8 +876,11 @@ fn parse_and_validate(db: &Db, data: &serde_json::Value) -> AppResult<ParsedImpo
     }
 
     // v3：导航目标的类型与身份校验。
-    // agent_session 目标必须指向「本地真实存在的会话」，否则恢复后就是一个点了必然
-    // 失败的坏链接（用户会以为数据恢复成功，实际工作区已废）。
+    // 校验分两层：
+    // - 伪造/损坏（拒绝）：类型非法、agent_session 身份为空、会话 ID 不过白名单；
+    // - 历史失效（接受）：来源/会话在文件与本地库都不存在（如删除来源后才做的备份）。
+    //   agent_source_id/agent_session_id 没有外键约束，目标行保留后由 UI 如实显示
+    //   `unavailable`，用户可解除或重新关联——合法备份绝不因此整体恢复失败。
     const NAV_TYPES: &[&str] = &["application", "url", "file", "directory", "agent_session"];
     let mut known_sessions: std::collections::HashSet<(String, String)> = db
         .with_conn(|conn| {
@@ -870,6 +894,7 @@ fn parse_and_validate(db: &Db, data: &serde_json::Value) -> AppResult<ParsedImpo
     for s in &parsed.sessions {
         known_sessions.insert((s.source_id.clone(), s.external_id.clone()));
     }
+    let mut stale_agent_targets: usize = 0;
     for t in &parsed.nav_targets {
         if !NAV_TYPES.contains(&t.target_type.as_str()) {
             return Err(AppError::Validation(format!(
@@ -884,19 +909,32 @@ fn parse_and_validate(db: &Db, data: &serde_json::Value) -> AppResult<ParsedImpo
                     t.id
                 )));
             }
-            if !known_sources.contains(&t.agent_source_id) {
+            // 会话 ID 白名单（与保存/执行路径一致）：不过白名单的必然是伪造数据
+            if let Err(e) = crate::agents::validate_session_id(&t.agent_session_id) {
                 return Err(AppError::Validation(format!(
-                    "navigation_targets[{}] 引用了不存在的来源: {}",
-                    t.id, t.agent_source_id
+                    "navigation_targets[{}] 会话 ID 非法: {}",
+                    t.id, e
                 )));
             }
-            if !known_sessions.contains(&(t.agent_source_id.clone(), t.agent_session_id.clone())) {
-                return Err(AppError::Validation(format!(
-                    "navigation_targets[{}] 指向的 Agent 会话不存在: {}:{}",
-                    t.id, t.agent_source_id, t.agent_session_id
-                )));
+            let stale = !known_sources.contains(&t.agent_source_id)
+                || !known_sessions
+                    .contains(&(t.agent_source_id.clone(), t.agent_session_id.clone()));
+            if stale {
+                stale_agent_targets += 1;
+                tracing::info!(
+                    "导航目标 {} 指向的 Agent 会话 {}/{} 已不存在，保留为失效引用（恢复后显示 unavailable）",
+                    t.id,
+                    t.agent_source_id,
+                    t.agent_session_id
+                );
             }
         }
+    }
+    if stale_agent_targets > 0 {
+        tracing::info!(
+            "共 {} 个 Agent 会话导航目标为历史失效引用，已按策略保留",
+            stale_agent_targets
+        );
     }
     // v3：任务 ↔ 目标关联的引用完整性（导入后工作区配置不能指向已不存在的行）
     for l in &parsed.task_nav_targets {
@@ -1085,8 +1123,8 @@ pub fn import_value(db: &Db, data: &serde_json::Value) -> AppResult<()> {
             }
             for l in &parsed.links {
                 conn.execute(
-                    "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
-                    rusqlite::params![l.id, l.task_id, l.source_id, l.session_external_id, l.run_external_id, l.created_at],
+                    "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at, origin) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    rusqlite::params![l.id, l.task_id, l.source_id, l.session_external_id, l.run_external_id, l.created_at, l.origin],
                 )?;
             }
             for n in &parsed.notifications {
@@ -1533,26 +1571,279 @@ mod tests {
         assert!(err.to_string().contains("目标类型非法"), "实际: {}", err);
     }
 
-    /// 未注册来源的 Agent 会话目标：拒绝（否则恢复后是坏链接）。
+    /// 伪造引用 vs 历史失效引用，校验策略必须不同：
+    /// - 会话 ID 不过白名单 / 身份为空 = 伪造，整体拒绝；
+    /// - 身份合法但来源/会话已不存在 = 历史失效，接受并保留（恢复后显示失效）。
     #[test]
-    fn import_rejects_agent_target_with_unknown_session() {
+    fn import_rejects_forged_agent_target_but_accepts_stale_one() {
         let db = memdb();
         let now = now_iso();
-        let bad = serde_json::json!({
+        let mk = |session: &str| {
+            serde_json::json!({
+                "app": "task-dock", "version": 3, "exported_at": now,
+                "tasks": [], "recurrence_rules": [], "task_reminders": [],
+                "task_agent_links": [], "task_categories": [], "agent_sources": [],
+                "agent_instances": [], "agent_sessions": [], "agent_runs": [],
+                "agent_events": [], "notification_history": [],
+                "navigation_targets": [{
+                    "id": "n1", "display_name": "会话目标", "target_type": "agent_session",
+                    "app_key": format!("codex:{session}"), "agent_source_id": "codex",
+                    "agent_session_id": session, "created_at": now, "updated_at": now
+                }],
+                "task_navigation_targets": [], "navigation_log": [], "settings": {}
+            })
+        };
+        // 伪造：会话 ID 含空格/特殊字符（过不了白名单）
+        let err = import_value(&db, &mk("bad id;rm -rf")).unwrap_err();
+        assert!(
+            err.to_string().contains("非法"),
+            "伪造会话 ID 必须拒绝: {}",
+            err
+        );
+        // 伪造：身份为空
+        let empty = serde_json::json!({
             "app": "task-dock", "version": 3, "exported_at": now,
             "tasks": [], "recurrence_rules": [], "task_reminders": [],
             "task_agent_links": [], "task_categories": [], "agent_sources": [],
             "agent_instances": [], "agent_sessions": [], "agent_runs": [],
             "agent_events": [], "notification_history": [],
             "navigation_targets": [{
-                "id": "n1", "display_name": "幽灵会话", "target_type": "agent_session",
-                "app_key": "codex:ghost", "agent_source_id": "codex",
-                "agent_session_id": "ghost-session", "created_at": now, "updated_at": now
+                "id": "n1", "display_name": "空身份", "target_type": "agent_session",
+                "app_key": "codex:", "agent_source_id": "", "agent_session_id": "",
+                "created_at": now, "updated_at": now
             }],
             "task_navigation_targets": [], "navigation_log": [], "settings": {}
         });
+        let err = import_value(&db, &empty).unwrap_err();
+        assert!(
+            err.to_string().contains("缺少来源或会话 ID"),
+            "实际: {}",
+            err
+        );
+        // 历史失效：身份合法但来源/会话不存在 → 接受，保留目标行
+        let stale = mk("ghost-session");
+        import_value(&db, &stale).unwrap();
+        let kept: (String, String, String) = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT target_type, agent_source_id, agent_session_id FROM navigation_targets WHERE id = 'n1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(
+            kept,
+            (
+                "agent_session".into(),
+                "codex".into(),
+                "ghost-session".into()
+            ),
+            "历史失效目标必须保留"
+        );
+        let violations: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(violations, 0, "失效引用列无外键，不得产生外键违规");
+    }
+
+    /// 关联身份字段为空 = 伪造/损坏：拒绝（正常路径不可能产生空来源的关联）。
+    #[test]
+    fn import_rejects_link_with_empty_identity() {
+        let db = memdb();
+        let now = now_iso();
+        let bad = serde_json::json!({
+            "app": "task-dock", "version": 3, "exported_at": now,
+            "tasks": [{
+                "id": "t-1", "title": "任务", "description": "", "priority": 2,
+                "status": "pending", "category": "", "tags": "[]", "due_at": null,
+                "remind_at": null, "advance_minutes": 0, "recurrence_rule_id": null,
+                "created_at": now, "updated_at": now, "completed_at": null
+            }],
+            "recurrence_rules": [], "task_reminders": [],
+            "task_agent_links": [{
+                "id": "l1", "task_id": "t-1", "source_id": "",
+                "session_external_id": "", "run_external_id": null, "created_at": now
+            }],
+            "task_categories": [], "agent_sources": [],
+            "agent_instances": [], "agent_sessions": [], "agent_runs": [],
+            "agent_events": [], "notification_history": [],
+            "navigation_targets": [], "task_navigation_targets": [], "navigation_log": [], "settings": {}
+        });
         let err = import_value(&db, &bad).unwrap_err();
-        assert!(err.to_string().contains("会话不存在"), "实际: {}", err);
+        assert!(
+            err.to_string().contains("身份字段为空"),
+            "空身份关联必须拒绝: {}",
+            err
+        );
+    }
+
+    /// 端到端回归（P1）：任务关联 Agent 会话 → 删除来源 → 备份 → 导入全新数据库。
+    /// 任务、历史关联、导航目标与失效状态必须完整恢复，外键零违规。
+    /// （修复前：导入严格校验会话存在性，整份备份恢复失败。）
+    #[test]
+    fn delete_source_backup_restore_roundtrip_preserves_tasks_and_marks_unavailable() {
+        // ① 建任务 + 来源 + 会话 + 统一导航关联（两表同步）
+        let db1 = memdb();
+        let now = now_iso();
+        db1.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES ('task-1','联调任务','',2,'pending','','[]',0,?1,?1)",
+                rusqlite::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO agent_sources (id, display_name, kind, enabled, verified, homepage, note, config, created_at, updated_at)
+                 VALUES ('myagent','自定义来源','manual',1,0,'','','{}',?1,?1)",
+                rusqlite::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES ('sess-1','myagent','ext-1','联调会话','running',?1,?1)",
+                rusqlite::params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let t = crate::navigation::target_resolver::save_target(
+            &db1,
+            &crate::navigation::target_resolver::TargetInput {
+                target_type: "agent_session".into(),
+                display_name: "".into(),
+                agent_source_id: "myagent".into(),
+                agent_session_id: "ext-1".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::navigation::target_resolver::link_task(
+            &db1,
+            "task-1",
+            &t.id,
+            false,
+            "resume_session",
+        )
+        .unwrap();
+        assert_eq!(
+            crate::navigation::target_resolver::task_targets(&db1, "task-1").unwrap()[0]
+                .running_state,
+            "agent",
+            "删除前必须显示为可用"
+        );
+
+        // ② 删除来源（模拟 commands::agents::delete_source 的数据生命周期）
+        db1.with_conn(|c| {
+            c.execute("DELETE FROM agent_runs WHERE source_id = 'myagent'", [])?;
+            c.execute("DELETE FROM agent_sessions WHERE source_id = 'myagent'", [])?;
+            c.execute(
+                "DELETE FROM agent_instances WHERE source_id = 'myagent'",
+                [],
+            )?;
+            c.execute("DELETE FROM agent_sources WHERE id = 'myagent'", [])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        // ③ 备份 → 导入到全新数据库（新库只有预置来源，没有 myagent）
+        let backup = collect(&db1).unwrap();
+        let db2 = memdb();
+        import_value(&db2, &backup).unwrap();
+
+        // ④ 验证：任务恢复、关联数量一致、目标保留、状态如实失效
+        let tasks: i64 = db2
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM tasks WHERE id = 'task-1'", [], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(tasks, 1, "用户任务必须完整恢复");
+        let links: i64 = db2
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM task_agent_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(links, 1, "历史关联记录数量必须与备份一致");
+        let nav_links: i64 = db2
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM task_navigation_targets WHERE task_id = 'task-1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(nav_links, 1, "统一导航关联必须完整恢复");
+        let targets = crate::navigation::target_resolver::task_targets(&db2, "task-1").unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(
+            targets[0].running_state, "unavailable",
+            "恢复后必须如实显示目标已失效"
+        );
+        // 外键闸门：全库零违规
+        let violations: i64 = db2
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+    }
+
+    /// 备份/恢复后关联所有权一致：origin 字段必须随导出/导入原样保留，
+    /// 否则恢复后解除导航关联会误删（或漏删）旧表记录。
+    #[test]
+    fn link_origin_survives_backup_restore() {
+        let db1 = memdb();
+        let now = now_iso();
+        db1.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES ('t1','T','',2,'pending','','[]',0,?1,?1)",
+                rusqlite::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at, origin)
+                 VALUES ('l-auto','t1','codex','s-1',NULL,?1,'auto')",
+                rusqlite::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at, origin)
+                 VALUES ('l-user','t1','codex','s-2',NULL,?1,'user')",
+                rusqlite::params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let backup = collect(&db1).unwrap();
+        let db2 = memdb();
+        import_value(&db2, &backup).unwrap();
+        let origins: Vec<(String, String)> = db2
+            .with_conn(|c| {
+                let mut stmt = c.prepare("SELECT id, origin FROM task_agent_links ORDER BY id")?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(
+            origins,
+            vec![
+                ("l-auto".to_string(), "auto".to_string()),
+                ("l-user".to_string(), "user".to_string())
+            ],
+            "origin 必须随备份原样恢复"
+        );
     }
 
     /// 目标路径不可写（父路径是普通文件）：必须返回可读错误，不得 panic。
