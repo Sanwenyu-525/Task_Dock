@@ -727,7 +727,10 @@ mod tests {
         // 重新打开（幂等重放 user_version=4 的库不应再执行任何迁移）
         let db2 = Db::open(&path).unwrap();
         let version: i64 = db2
-            .with_conn(|c| c.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(AppError::from))
+            .with_conn(|c| {
+                c.query_row("PRAGMA user_version", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
             .unwrap();
         assert_eq!(version, 4);
         // 旧关联原样保留

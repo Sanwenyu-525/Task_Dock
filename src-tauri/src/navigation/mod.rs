@@ -72,6 +72,8 @@ pub const ACTION_OPEN_WORKSPACE: &str = "open_workspace"; // L3/4 打开工作�
 pub enum VerificationLevel {
     /// 已验证：窗口已置前（前台句柄即目标窗口）
     WindowConfirmed,
+    /// 窗口确已出现，但未能置前（前台锁拒绝 / 置前超时）——「出现」不等于「确认」
+    WindowVisible,
     /// 进程确已启动（spawn 成功），窗口是否出现未证实
     ProcessSpawned,
     /// 启动请求已提交（explorer shell:AppsFolder 等），结果由系统决定
@@ -86,6 +88,7 @@ impl VerificationLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
             VerificationLevel::WindowConfirmed => "window-confirmed",
+            VerificationLevel::WindowVisible => "window-visible",
             VerificationLevel::ProcessSpawned => "process-spawned",
             VerificationLevel::LaunchRequested => "launch-requested",
             VerificationLevel::Delegated => "delegated",
@@ -144,7 +147,10 @@ pub fn validate_exe_path(raw: &str) -> AppResult<std::path::PathBuf> {
         return Err(AppError::Validation("可执行路径为空".into()));
     }
     if !p.is_absolute() {
-        return Err(AppError::Validation(format!("可执行路径必须是绝对路径: {}", raw)));
+        return Err(AppError::Validation(format!(
+            "可执行路径必须是绝对路径: {}",
+            raw
+        )));
     }
     let lower = raw.trim().to_ascii_lowercase();
     if !lower.ends_with(".exe") {
@@ -172,7 +178,9 @@ pub fn validate_url(raw: &str) -> AppResult<()> {
     if u.is_empty() || u.chars().count() > 2048 {
         return Err(AppError::Validation("URL 为空或超过 2048 字符".into()));
     }
-    if u.chars().any(|c| c.is_control() || c == '"' || c == '<' || c == '>' || c == '|') {
+    if u.chars()
+        .any(|c| c.is_control() || c == '"' || c == '<' || c == '>' || c == '|')
+    {
         return Err(AppError::Validation("URL 含非法字符".into()));
     }
     let lower = u.to_ascii_lowercase();
@@ -210,6 +218,83 @@ pub fn validate_launch_args(raw: &str) -> AppResult<()> {
         return Err(AppError::Validation("启动参数含控制字符".into()));
     }
     Ok(())
+}
+
+/// 按 Windows 命令行规则切分启动参数（与 CommandLineToArgvW 一致）。
+///
+/// 旧实现 `split_whitespace()` + `trim_matches('"')` 有三个真实故障：
+/// 1. `"C:\Program Files\App\data.db"` 被空格切成两段 → 程序收到两个错误参数；
+/// 2. 引号被 `trim_matches` 从**两端**剥掉，`a"b` 这种中间引号也被破坏；
+/// 3. 无法表达"空参数"（`""`）与参数内的转义引号。
+///
+/// 规则：
+/// - 空白（引号外）分隔参数；
+/// - `"` 切换引用状态，引号内的空白属于参数；
+/// - 引号内连续两个 `"` 表示一个字面引号；
+/// - 反斜杠仅在紧跟 `"` 时有特殊含义：`2n` 个 → n 个反斜杠并切换引用，
+///   `2n+1` 个 → n 个反斜杠 + 字面引号（其余情况反斜杠原样保留，路径不受影响）。
+pub fn split_launch_args(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    // 区分「空参数」与「还没有参数」：`""` 必须产出一个空字符串参数
+    let mut started = false;
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                let mut n = 1;
+                while chars.peek() == Some(&'\\') {
+                    chars.next();
+                    n += 1;
+                }
+                if chars.peek() == Some(&'"') {
+                    for _ in 0..(n / 2) {
+                        cur.push('\\');
+                    }
+                    if n % 2 == 1 {
+                        chars.next(); // 吃掉这个引号，它是字面引号
+                        cur.push('"');
+                        started = true;
+                    }
+                    // n 为偶数：引号留给下一轮处理（切换引用状态）
+                } else {
+                    for _ in 0..n {
+                        cur.push('\\');
+                    }
+                    started = true;
+                }
+            }
+            '"' => {
+                if in_quotes {
+                    if chars.peek() == Some(&'"') {
+                        chars.next();
+                        cur.push('"');
+                    } else {
+                        in_quotes = false;
+                    }
+                } else {
+                    in_quotes = true;
+                }
+                started = true;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
 }
 
 /// 本地路径（文件/目录）校验：绝对路径且存在。
@@ -270,5 +355,61 @@ mod tests {
         assert!(validate_launch_args("--profile \"Work\"").is_ok());
         assert!(validate_launch_args(&format!("--{}", "x".repeat(600))).is_err());
         assert!(validate_launch_args("line\nbreak").is_err());
+    }
+
+    #[test]
+    fn launch_args_split_handles_quotes_and_spaces() {
+        // 带空格路径必须保持为一个参数（旧 split_whitespace 会切成两段）
+        assert_eq!(
+            split_launch_args(r#"--profile "C:\Users\Me\My Data\work" --flag"#),
+            vec![
+                "--profile".to_string(),
+                r"C:\Users\Me\My Data\work".to_string(),
+                "--flag".to_string(),
+            ]
+        );
+        // 多个参数 + 单引号内空白
+        assert_eq!(
+            split_launch_args(r#"-a 1 -b "two words" -c"#),
+            vec!["-a", "1", "-b", "two words", "-c"]
+        );
+        // 空引号 = 一个空参数（不是"没有参数"）
+        assert_eq!(split_launch_args(r#""" "#), vec!["".to_string()]);
+        // 引号内转义引号
+        assert_eq!(
+            split_launch_args(r#"--msg "say \"hi\"""#),
+            vec!["--msg".to_string(), r#"say "hi""#.to_string()]
+        );
+        // 纯反斜杠路径不被吞掉（Windows 路径最常见形态）
+        assert_eq!(
+            split_launch_args(r"C:\dir\sub\file.txt"),
+            vec![r"C:\dir\sub\file.txt".to_string()]
+        );
+        // 未闭合引号：不 panic，剩余内容整体作为一个参数
+        assert_eq!(
+            split_launch_args(r#"--x "unterminated"#),
+            vec!["--x".to_string(), "unterminated".to_string()]
+        );
+        // 空白与空串
+        assert!(split_launch_args("").is_empty());
+        assert!(split_launch_args("   ").is_empty());
+    }
+
+    #[test]
+    fn verification_levels_are_distinct() {
+        // 每个级别字符串唯一，前端标签不会互相冒充
+        let all = [
+            VerificationLevel::WindowConfirmed,
+            VerificationLevel::WindowVisible,
+            VerificationLevel::ProcessSpawned,
+            VerificationLevel::LaunchRequested,
+            VerificationLevel::Delegated,
+            VerificationLevel::None,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for l in all {
+            assert!(seen.insert(l.as_str()), "验证级别重复: {}", l.as_str());
+        }
+        assert_eq!(VerificationLevel::WindowVisible.as_str(), "window-visible");
     }
 }

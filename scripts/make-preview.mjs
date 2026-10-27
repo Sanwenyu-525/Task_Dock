@@ -199,13 +199,15 @@ const shim = `
   window.__TAURI_OS_PLUGIN_INTERNALS__ = { platform: "win32", version: "10.0.26100", arch: "x86_64" };
 
   // 背景模拟桌面壁纸，验证毛玻璃透出效果（仅预览用）
+  // 注意：shim 在 <head> 中执行，此时 document.body 还不存在，
+  // 直接 appendChild 会抛 TypeError（走查时表现为每页一条错误）。
   if (!document.getElementById("preview-desktop-bg")) {
     const bg = document.createElement("div");
     bg.id = "preview-desktop-bg";
     bg.style.cssText =
       "position:fixed;inset:0;z-index:-1;" +
       "background:linear-gradient(135deg,#0f4c81 0%,#1a936f 45%,#f3a712 100%);";
-    document.body.appendChild(bg);
+    (document.body || document.documentElement).appendChild(bg);
   }
 })();
 `;

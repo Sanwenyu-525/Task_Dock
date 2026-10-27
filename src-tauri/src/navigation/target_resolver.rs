@@ -9,7 +9,9 @@
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
-use super::{validate_aumid, validate_exe_path, validate_launch_args, validate_local_path, validate_url};
+use super::{
+    validate_aumid, validate_exe_path, validate_launch_args, validate_local_path, validate_url,
+};
 use crate::agents::now_iso;
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -129,14 +131,11 @@ fn row_to_target(r: &rusqlite::Row<'_>) -> rusqlite::Result<NavTargetRow> {
 }
 
 /// 按类型完整校验并计算稳定 app_key。
-fn validate_input(input: &TargetInput) -> AppResult<(String, String)> {
-    let name = input.display_name.trim();
-    if name.is_empty() {
-        return Err(AppError::Validation("目标名称不能为空".into()));
-    }
-    if name.chars().count() > 120 {
-        return Err(AppError::Validation("目标名称超过 120 字符".into()));
-    }
+///
+/// `agent_session` 需要查库：会话必须在本地 `agent_sessions` 里真实存在，
+/// 否则保存下来就是一个"点了必然失败"的坏目标（前端无从分辨）。
+fn validate_input(db: &Db, input: &TargetInput) -> AppResult<(String, String)> {
+    let mut name = input.display_name.trim().to_string();
     if !input.window_title_hint.trim().is_empty()
         && input.window_title_hint.trim().chars().count() > 64
     {
@@ -144,7 +143,10 @@ fn validate_input(input: &TargetInput) -> AppResult<(String, String)> {
     }
     validate_launch_args(&input.launch_args)?;
     if !input.working_dir.trim().is_empty() && !std::path::Path::new(&input.working_dir).is_dir() {
-        return Err(AppError::Validation(format!("工作目录不存在: {}", input.working_dir)));
+        return Err(AppError::Validation(format!(
+            "工作目录不存在: {}",
+            input.working_dir
+        )));
     }
     let key = match input.target_type.as_str() {
         "application" => {
@@ -174,6 +176,50 @@ fn validate_input(input: &TargetInput) -> AppResult<(String, String)> {
             }
             p.to_string_lossy().to_ascii_lowercase()
         }
+        "agent_session" => {
+            let source = input.agent_source_id.trim();
+            let session = input.agent_session_id.trim();
+            if source.is_empty() || session.is_empty() {
+                return Err(AppError::Validation(
+                    "Agent 会话目标必须同时提供来源与会话 ID".into(),
+                ));
+            }
+            // 会话 ID 白名单校验（防参数注入，与 router 执行期校验一致）
+            crate::agents::validate_session_id(session)?;
+            let (source_ok, title) = db.with_conn(|conn| {
+                let source_ok: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM agent_sources WHERE id = ?1",
+                    rusqlite::params![source],
+                    |r| r.get(0),
+                )?;
+                let title: Option<String> = conn
+                    .query_row(
+                        "SELECT title FROM agent_sessions WHERE source_id = ?1 AND external_id = ?2",
+                        rusqlite::params![source, session],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                Ok::<_, AppError>((source_ok, title))
+            })?;
+            if source_ok == 0 {
+                return Err(AppError::Validation(format!("未注册的来源: {}", source)));
+            }
+            let title = title.ok_or_else(|| {
+                AppError::Validation(format!(
+                    "本地不存在该 Agent 会话: {}:{}（不能保存指向未知会话的目标）",
+                    source, session
+                ))
+            })?;
+            if name.is_empty() {
+                // 名称留空时用会话标题兜底，避免用户被迫手打
+                name = if title.trim().is_empty() {
+                    format!("{}:{}", source, session)
+                } else {
+                    title.trim().to_string()
+                };
+            }
+            format!("{}:{}", source, session)
+        }
         _ => {
             return Err(AppError::Validation(format!(
                 "未知目标类型: {}",
@@ -181,12 +227,18 @@ fn validate_input(input: &TargetInput) -> AppResult<(String, String)> {
             )))
         }
     };
-    Ok((key, name.to_string()))
+    if name.is_empty() {
+        return Err(AppError::Validation("目标名称不能为空".into()));
+    }
+    if name.chars().count() > 120 {
+        return Err(AppError::Validation("目标名称超过 120 字符".into()));
+    }
+    Ok((key, name))
 }
 
 /// 保存目标：同 app_key 幂等更新（返回已有行的 id），否则插入新行。
 pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
-    let (app_key, name) = validate_input(input)?;
+    let (app_key, name) = validate_input(db, input)?;
     let now = now_iso();
     db.with_conn(|conn| {
         let existing: Option<String> = conn
@@ -203,6 +255,7 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
                    display_name = CASE WHEN ?3 THEN ?4 ELSE display_name END,
                    exe_path = ?5, launch_args = ?6, working_dir = ?7, app_user_model_id = ?8,
                    url = ?9, path = ?10, window_title_hint = ?11, icon = ?12, category = ?13,
+                   agent_source_id = ?14, agent_session_id = ?15,
                    updated_at = ?1
                  WHERE id = ?2",
                 rusqlite::params![
@@ -219,6 +272,8 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
                     input.window_title_hint.trim(),
                     input.icon.trim(),
                     input.category.trim(),
+                    input.agent_source_id.trim(),
+                    input.agent_session_id.trim(),
                 ],
             )?;
         } else {
@@ -227,7 +282,7 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
                    (id, display_name, target_type, app_key, exe_path, launch_args, working_dir,
                     app_user_model_id, url, path, agent_source_id, agent_session_id,
                     window_title_hint, icon, category, favorite, hidden, use_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '', '', ?11, ?12, ?13, 0, 0, 0, ?14, ?14)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, 0, 0, ?16, ?16)",
                 rusqlite::params![
                     id,
                     name,
@@ -239,6 +294,8 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
                     input.app_user_model_id.trim(),
                     input.url.trim(),
                     input.path.trim(),
+                    input.agent_source_id.trim(),
+                    input.agent_session_id.trim(),
                     input.window_title_hint.trim(),
                     input.icon.trim(),
                     input.category.trim(),
@@ -253,7 +310,10 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
 fn get_target_conn(conn: &rusqlite::Connection, id: &str) -> AppResult<Option<NavTargetRow>> {
     let row = conn
         .query_row(
-            &format!("SELECT {} FROM navigation_targets WHERE id = ?1", TARGET_COLS),
+            &format!(
+                "SELECT {} FROM navigation_targets WHERE id = ?1",
+                TARGET_COLS
+            ),
             rusqlite::params![id],
             row_to_target,
         )
@@ -313,7 +373,11 @@ pub fn update_target(db: &Db, id: &str, patch: &TargetPatch) -> AppResult<()> {
                updated_at = ?7
              WHERE id = ?8",
             rusqlite::params![
-                patch.display_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                patch
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
                 patch.icon.as_deref().map(str::trim),
                 patch.favorite.map(|b| b as i64),
                 patch.hidden.map(|b| b as i64),
@@ -332,7 +396,10 @@ pub fn update_target(db: &Db, id: &str, patch: &TargetPatch) -> AppResult<()> {
 
 pub fn delete_target(db: &Db, id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
-        conn.execute("DELETE FROM navigation_targets WHERE id = ?1", rusqlite::params![id])?;
+        conn.execute(
+            "DELETE FROM navigation_targets WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
         Ok(())
     })
 }
@@ -351,8 +418,13 @@ pub fn bump_use(db: &Db, id: &str) -> AppResult<()> {
 
 // ── 任务关联 ────────────────────────────────────────────────
 
-const VALID_BEHAVIORS: &[&str] =
-    &["default", "focus_or_launch", "launch", "resume_session", "open"];
+const VALID_BEHAVIORS: &[&str] = &[
+    "default",
+    "focus_or_launch",
+    "launch",
+    "resume_session",
+    "open",
+];
 
 pub fn link_task(
     db: &Db,
@@ -402,16 +474,65 @@ pub fn link_task(
             rusqlite::params![task_id, target_id],
             |r| r.get(0),
         )?;
+        // 与旧 task_agent_links 兼容：Agent 会话目标额外补一条旧表记录。
+        // 旧版本的「任务 ↔ Agent 会话」查询与徽标计数都只读这张表，
+        // 不写就会表现为"新关联了会话，但任务卡上的 Agent 数还是 0"。
+        let agent_ident: Option<(String, String)> = conn
+            .query_row(
+                "SELECT agent_source_id, agent_session_id FROM navigation_targets
+                 WHERE id = ?1 AND target_type = 'agent_session'
+                   AND agent_source_id <> '' AND agent_session_id <> ''",
+                rusqlite::params![target_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((source, session)) = agent_ident {
+            conn.execute(
+                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at)
+                 SELECT ?1, ?2, ?3, ?4, NULL, ?5 WHERE NOT EXISTS (
+                   SELECT 1 FROM task_agent_links
+                   WHERE task_id = ?2 AND source_id = ?3 AND session_external_id = ?4
+                     AND run_external_id IS NULL
+                 )",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    task_id,
+                    source,
+                    session,
+                    now
+                ],
+            )?;
+        }
         Ok(actual)
     })
 }
 
 pub fn unlink_task(db: &Db, link_id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
+        // 先取出被删关联的目标身份：若是 Agent 会话目标，同步清理旧表兼容记录，
+        // 否则取消关联后任务卡的 Agent 计数会残留。
+        let ident: Option<(String, String, String)> = conn
+            .query_row(
+                "SELECT l.task_id, t.agent_source_id, t.agent_session_id
+                 FROM task_navigation_targets l
+                 JOIN navigation_targets t ON t.id = l.target_id
+                 WHERE l.id = ?1 AND t.target_type = 'agent_session'",
+                rusqlite::params![link_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
         conn.execute(
             "DELETE FROM task_navigation_targets WHERE id = ?1",
             rusqlite::params![link_id],
         )?;
+        if let Some((task_id, source, session)) = ident {
+            conn.execute(
+                "DELETE FROM task_agent_links
+                 WHERE task_id = ?1 AND source_id = ?2 AND session_external_id = ?3
+                   AND run_external_id IS NULL",
+                rusqlite::params![task_id, source, session],
+            )?;
+        }
         Ok(())
     })
 }
@@ -461,12 +582,27 @@ pub fn update_task_link(
     })
 }
 
-fn link_rows(db: &Db, where_clause: &str, params: &[&dyn rusqlite::ToSql]) -> AppResult<Vec<TaskNavLinkRow>> {
+fn link_rows(
+    db: &Db,
+    where_clause: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> AppResult<Vec<TaskNavLinkRow>> {
     let targets = list_targets(db, true)?;
     let by_id: std::collections::HashMap<String, NavTargetRow> =
         targets.into_iter().map(|t| (t.id.clone(), t)).collect();
     let keys: Vec<String> = by_id.values().map(|t| t.app_key.clone()).collect();
     let running = super::app_discovery::running_states(&keys);
+    // Agent 会话目标的"存活"判定：宿主清理掉会话后，关联就变成失效链接，
+    // 前端需要如实显示"已失效"而不是继续显示"Agent"。
+    let known_sessions: std::collections::HashSet<(String, String)> = db
+        .with_conn(|conn| -> AppResult<Vec<(String, String)>> {
+            let mut stmt = conn.prepare("SELECT source_id, external_id FROM agent_sessions")?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+        })?
+        .into_iter()
+        .collect();
 
     db.with_conn(|conn| {
         let sql = format!(
@@ -478,7 +614,13 @@ fn link_rows(db: &Db, where_clause: &str, params: &[&dyn rusqlite::ToSql]) -> Ap
         let raw: Vec<(String, String, String, i64, i64, String, String)> = stmt
             .query_map(params, |r| {
                 Ok((
-                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?,
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -488,11 +630,12 @@ fn link_rows(db: &Db, where_clause: &str, params: &[&dyn rusqlite::ToSql]) -> Ap
                 let target = by_id.get(&target_id)?.clone();
                 // 运行状态 + 配置有效性
                 let state = if target.target_type == "application" {
-                    if target.exe_path.is_empty() && target.app_user_model_id.is_empty() {
-                        "unavailable".to_string()
-                    } else if !target.exe_path.is_empty()
-                        && !std::path::Path::new(&target.exe_path).exists()
-                    {
+                    // 配置本身失效：既没有 exe 身份也没有 AUMID，或 exe 已被卸载/迁移
+                    let no_identity =
+                        target.exe_path.is_empty() && target.app_user_model_id.is_empty();
+                    let exe_gone = !target.exe_path.is_empty()
+                        && !std::path::Path::new(&target.exe_path).exists();
+                    if no_identity || exe_gone {
                         "unavailable".to_string()
                     } else {
                         running
@@ -516,7 +659,16 @@ fn link_rows(db: &Db, where_clause: &str, params: &[&dyn rusqlite::ToSql]) -> Ap
                                 "unavailable".to_string()
                             }
                         }
-                        "agent_session" => "agent".to_string(),
+                        "agent_session" => {
+                            if known_sessions.contains(&(
+                                target.agent_source_id.clone(),
+                                target.agent_session_id.clone(),
+                            )) {
+                                "agent".to_string()
+                            } else {
+                                "unavailable".to_string()
+                            }
+                        }
                         _ => "unknown".to_string(),
                     }
                 };
@@ -762,6 +914,152 @@ mod tests {
         link_task(&db, "t1", "x1", false, "default").unwrap();
         let links = task_targets(&db, "t1").unwrap();
         assert_eq!(links[0].running_state, "unavailable");
+    }
+
+    // ── 问题 2 回归：Agent 会话可信目标链路 ────────────────────
+
+    fn seed_session(db: &Db, source: &str, external: &str, title: &str) {
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?5)",
+                rusqlite::params![
+                    format!("{}-{}", source, external),
+                    source,
+                    external,
+                    title,
+                    now
+                ],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    fn agent_input(source: &str, session: &str, name: &str) -> TargetInput {
+        TargetInput {
+            target_type: "agent_session".into(),
+            display_name: name.into(),
+            agent_source_id: source.into(),
+            agent_session_id: session.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn agent_session_target_requires_existing_session() {
+        let db = Db::open_in_memory().unwrap();
+        // 会话不存在 → 拒绝（不能保存指向未知会话的坏目标）
+        let err = save_target(&db, &agent_input("codex", "no-such-session", "X")).unwrap_err();
+        assert!(
+            err.to_string().contains("不存在该 Agent 会话"),
+            "实际: {}",
+            err
+        );
+        // 来源不存在 → 拒绝
+        seed_session(&db, "codex", "sess-1", "联调会话");
+        let err = save_target(&db, &agent_input("ghost", "sess-1", "X")).unwrap_err();
+        assert!(err.to_string().contains("未注册的来源"), "实际: {}", err);
+        // 非法会话 ID → 拒绝
+        let err = save_target(&db, &agent_input("codex", "bad id;rm -rf", "X")).unwrap_err();
+        assert!(err.to_string().contains("非法字符"), "实际: {}", err);
+    }
+
+    #[test]
+    fn agent_session_target_saves_identity_and_dedupes() {
+        let db = Db::open_in_memory().unwrap();
+        seed_session(&db, "codex", "sess-1", "联调会话");
+        // 名称留空 → 用会话标题兜底
+        let a = save_target(&db, &agent_input("codex", "sess-1", "")).unwrap();
+        assert_eq!(a.display_name, "联调会话");
+        assert_eq!(a.agent_source_id, "codex");
+        assert_eq!(a.agent_session_id, "sess-1", "会话身份必须落库，否则点不动");
+        assert_eq!(a.app_key, "codex:sess-1");
+        assert_eq!(a.target_type, "agent_session");
+        // 同一会话重复保存 = 更新同一行
+        let b = save_target(&db, &agent_input("codex", "sess-1", "自定义名")).unwrap();
+        assert_eq!(a.id, b.id, "同一会话只允许一行目标");
+        assert_eq!(list_targets(&db, true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn linking_agent_session_target_keeps_legacy_table_in_sync() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES ('t1', 'T', '', 2, 'pending', '', '[]', 0, ?1, ?1)",
+                rusqlite::params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        seed_session(&db, "codex", "sess-1", "联调会话");
+        let t = save_target(&db, &agent_input("codex", "sess-1", "")).unwrap();
+        let link_id = link_task(&db, "t1", &t.id, true, "resume_session").unwrap();
+
+        // 旧表必须同步写入（旧版 UI 只读 task_agent_links）
+        let legacy: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM task_agent_links WHERE task_id = 't1' AND source_id = 'codex' AND session_external_id = 'sess-1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(legacy, 1, "关联 Agent 会话目标必须同步旧表");
+        // 重复关联不得产生重复旧记录
+        link_task(&db, "t1", &t.id, false, "default").unwrap();
+        let legacy2: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM task_agent_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(legacy2, 1, "幂等关联不得重复写旧表");
+        // 取消关联 → 旧表同步清理
+        unlink_task(&db, &link_id).unwrap();
+        let legacy3: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM task_agent_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(legacy3, 0, "取消关联后旧表不得残留");
+    }
+
+    #[test]
+    fn agent_session_link_marks_unavailable_after_session_gone() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES ('t1', 'T', '', 2, 'pending', '', '[]', 0, ?1, ?1)",
+                rusqlite::params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        seed_session(&db, "codex", "sess-1", "联调会话");
+        let t = save_target(&db, &agent_input("codex", "sess-1", "")).unwrap();
+        link_task(&db, "t1", &t.id, false, "default").unwrap();
+        assert_eq!(task_targets(&db, "t1").unwrap()[0].running_state, "agent");
+        // 宿主清理会话后：关联必须如实变为失效
+        db.with_conn(|c| {
+            c.execute("DELETE FROM agent_sessions", [])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        assert_eq!(
+            task_targets(&db, "t1").unwrap()[0].running_state,
+            "unavailable",
+            "会话消失后不得继续显示为可用"
+        );
     }
 
     #[test]

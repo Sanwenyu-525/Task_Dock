@@ -3,11 +3,14 @@
 import { describe, expect, it } from "vitest";
 import {
   avatarHue,
+  buildTargetMenuItems,
+  moveMenuIndex,
   resultMessage,
   stateBadge,
   TARGET_TYPE_LABELS,
   verificationLabel,
   type NavigationResult,
+  type TaskNavLink,
 } from "./navigation";
 
 function result(partial: Partial<NavigationResult>): NavigationResult {
@@ -46,6 +49,85 @@ describe("verificationLabel", () => {
     expect(verificationLabel("window-confirmed")).toBe("已确认窗口");
     expect(verificationLabel("delegated")).toBe("已交系统处理");
     expect(verificationLabel("none")).toBe("未执行");
+  });
+
+  it("窗口已出现但未置前，必须有独立文案（不得冒充已确认）", () => {
+    const label = verificationLabel("window-visible");
+    expect(label).toContain("窗口已出现");
+    expect(label).not.toBe(verificationLabel("window-confirmed"));
+    expect(label).not.toContain("已确认");
+  });
+});
+
+// ── 问题 8：目标菜单键盘模型 ────────────────────────────────
+
+function link(id: string): TaskNavLink {
+  return {
+    id: `link-${id}`,
+    task_id: "t1",
+    target_id: `target-${id}`,
+    display_order: 0,
+    is_default: false,
+    launch_behavior: "default",
+    created_at: "2026-10-26T00:00:00Z",
+    running_state: "not_running",
+    target: {
+      id: `target-${id}`,
+      display_name: id,
+      target_type: "application",
+      app_key: id,
+      exe_path: "",
+      launch_args: "",
+      working_dir: "",
+      app_user_model_id: "",
+      url: "",
+      path: "",
+      agent_source_id: "",
+      agent_session_id: "",
+      window_title_hint: "",
+      icon: "",
+      category: "",
+      favorite: false,
+      hidden: false,
+      last_used_at: null,
+      use_count: 0,
+      created_at: "2026-10-26T00:00:00Z",
+      updated_at: "2026-10-26T00:00:00Z",
+    },
+  };
+}
+
+describe("buildTargetMenuItems", () => {
+  it("工作区入口排在索引 0，普通目标依次后移", () => {
+    const items = buildTargetMenuItems([link("A"), link("B")], true);
+    expect(items).toHaveLength(3);
+    expect(items[0].kind).toBe("workspace");
+    expect(items[1].kind).toBe("target");
+    expect(items[2].kind).toBe("target");
+  });
+
+  it("没有工作区入口时索引从 0 直接是目标", () => {
+    const items = buildTargetMenuItems([link("A")], false);
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe("target");
+  });
+
+  it("空目标列表也能安全构建", () => {
+    expect(buildTargetMenuItems([], false)).toHaveLength(0);
+    expect(buildTargetMenuItems([], true)).toHaveLength(1);
+  });
+});
+
+describe("moveMenuIndex", () => {
+  it("上下移动并在两端回绕", () => {
+    expect(moveMenuIndex(0, 1, 3)).toBe(1);
+    expect(moveMenuIndex(2, 1, 3)).toBe(0);
+    expect(moveMenuIndex(0, -1, 3)).toBe(2);
+  });
+
+  it("空列表不产生 NaN/负数", () => {
+    expect(moveMenuIndex(0, 1, 0)).toBe(0);
+    expect(moveMenuIndex(5, -1, 0)).toBe(0);
   });
 });
 

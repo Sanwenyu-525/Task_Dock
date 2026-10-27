@@ -101,3 +101,32 @@ Task Dock 从「悬浮任务栏 + Agent 监控器」升级为「任务驱动的�
 **待真机手动验收清单**（自动化环境无法覆盖，见 APP_NAVIGATION_MATRIX.md 第四节）：微信/酷狗唤醒、Chrome 指定 URL、VS Code 打开目录、资源管理器定位文件、UWP 启动、多显示器前台切换、OpenCode resume 真实版本。
 
 **后续建议**（按优先级）：P2 视觉走查（preview harness 已备好 fixture）；exe 图标提取（SHGetFileInfo）；`code file:line` 文件级定位；浏览器历史标签复用（仅在官方接口可用时）；导航窗口选择器记忆（nav_remember_window 已存设置，选择器 UI 可加强）。
+
+## 10. 真机 UI 验收补记（Computer Use 驱动，2026-10-26）
+
+交付报告初版完成后，使用 Windows UIA 自动化对**正式版 exe** 做了逐场景真机验收（详见
+[docs/TESTING.md 第五节](docs/TESTING.md)）。结论：**12 个场景全部通过**，过程中发现并当场
+修复了 **3 个 P0 + 1 个 P2 缺陷**——这正是「必须真机验收」的价值：
+
+1. **P0 · panic=abort 吞掉异常隔离**：正式版扫描到用户开始菜单中的畸形 .lnk 时整个应用直接
+   退出（catch_unwind 在 panic=abort 下失效；单测是 debug 构建所以未暴露）。修复：移除
+   `panic = "abort"`。真机日志确认本机 5+ 个畸形快捷方式全部被安全隔离。
+2. **P0 · 应用选择器无限渲染白屏**：zustand v5 selector 每次返回新 `Set`，严格相等比较失败
+   触发无限重渲染。修复：selector 只取稳定引用。
+3. **P0 · Tauri v2 invoke 参数命名**：v2 只认 camelCase 参数键，bridge 层的 snake_case 键使
+   required 参数直接报错（`invalid args 'taskId'`）、Option 参数静默失效——**v0.3 的
+   linkTaskAgent、快速添加时间参数等也一直受此影响**。修复：全部 invoke 键改 camelCase（约 20 处）。
+4. **P2 · 关联失败无提示**：async 回调未 await 成为 unhandled rejection；修复后错误 toast
+   反过来帮助定位了 #3。
+
+关键验证结论（全部有数据库审计或进程实测佐证）：
+- L1 启动：任务卡一键启动 Notepad.exe（真实进程）；
+- L2 唤醒：Chrome 焦点切换 **window-confirmed**（前台句柄核实），重复点击复用现有窗口；
+- 验证分级如实：Win11 商店版记事本（UWP 化，窗口不在自身 exe 名下）按设计报告
+  process-spawned 而非谎报窗口确认；
+- 工作区：两目标顺序批量启动、逐项独立反馈、use_count 与日志完整；
+- Agent 跳转：未安装 Agent 的按钮按证据禁用；bridge 会话跳转诚实拒绝（「该 Agent 无已知
+  窗口身份」），不冒充精准定位；
+- 应用管理：偏好控件、目标管理、失败记录全部渲染正确。
+
+验收残留数据已清理（演示任务/目标/日志删除，Agent 历史与用户设置未触碰）。

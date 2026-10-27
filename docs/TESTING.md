@@ -153,3 +153,43 @@ cd src-tauri && cargo test            # Rust 29 例
 npm run build                         # tsc + vite
 npm run tauri build                   # 安装包
 ```
+
+## 五、v0.4 统一导航真机验收（2026-10-26，Computer Use 驱动）
+
+> 方法：正式版 exe（custom-protocol 构建）+ Windows UIA 自动化逐场景操作，所有结论有
+> **数据库审计记录或进程实测**佐证；UI toast 瞬时不过记录的以 navigation_log 为准。
+> 验收数据已清理，Agent 历史与设置未触碰。
+
+### 场景结果
+
+| 场景 | 操作 | 结果 | 证据 |
+|---|---|---|---|
+| 快速添加 | UIA 输入「验收演示：打开记事本」→ 创建 | ✅ Toast「已创建」+ 列表/计数更新 | UIA 树 |
+| 应用选择器 | 编辑器「添加目标…」→ 搜索/空态/分类 | ✅ 打开正常；notepad 无 Win32 安装记录为真实结果（Win11 为商店应用） | UIA 树 |
+| 窗口选择器 | 「从当前运行的窗口选择…」 | ✅ 列出 Chrome/ZCode/Task Dock 窗口，含标题+exe 身份 | UIA 树 |
+| 手动登记 EXE | 「手动添加」C:\Windows
+otepad.exe | ✅ 目标落库 → 任务关联落库 → 编辑器条目（上移/下移/默认/解除）→ 任务卡图标 | DB: navigation_targets + task_navigation_targets |
+| L1 启动 | 点击任务卡「打开 记事本」 | ✅ Notepad.exe 进程真实启动（PID 102752）；**verification_level=process-spawned**（Win11 记事本 UWP 化，窗口在 ApplicationFrameHost 名下，不谎报 window-confirmed） | DB 日志 + tasklist |
+| L2 唤醒 | 点击「打开 02_插件与工具生态」（Chrome 已运行） | ✅ **window-confirmed**：前台句柄核实成功；重复点击复用现有窗口 | DB 日志（focus_window/success=1） |
+| 已运行复用 | 再次点击 Chrome 目标 | ✅ 不重复启动，唤醒现有窗口 | DB use_count 递增 |
+| 工作区启动 | 任务卡「打开工作区」→ 启动全部（2 目标） | ✅ 顺序执行、逐项状态（等待→启动中→结果）、Chrome window-confirmed + notepad process-spawned | DB 日志 2 条 + use_count |
+| Agent 树按钮 | 「全部」筛选展开 8 个来源 | ✅ 本机未装的 7 个 Agent「打开应用」按钮全部 **disabled**（证据化 not-installed） | UIA 树 |
+| 会话跳转 | bridge 来源 v04-smoke-2 会话点跳转 | ✅ 诚实拒绝：success=0「该 Agent 无已知窗口身份」（纯数据通道不冒充可用） | DB 日志（resume_session/0） |
+| 应用管理 | 设置页「应用与快捷方式」 | ✅ 导航偏好 6 项控件 / 已保存目标（收藏·隐藏·测试跳转·删除）/ 最近导航记录（含失败原因） | UIA 树 |
+| 审计闭环 | — | ✅ use_count/last_used_at/navigation_log 全部正确落库 | DB |
+
+### 验收发现并当场修复的缺陷（4 个，全部已修复并回归）
+
+| # | 级别 | 缺陷 | 根因 | 修复 |
+|---|---|---|---|---|
+| 1 | P0 | 正式版扫描到开始菜单畸形 .lnk 时**整个应用退出** | `[profile.release] panic = "abort"` 使 catch_unwind 失效（单测是 debug 构建未暴露） | 移除 panic=abort（Cargo.toml 注释说明原因）；真机日志确认 5+ 个畸形 lnk 全部被隔离 |
+| 2 | P0 | 打开应用选择器**前端崩溃白屏**（WebView UIA 树塌掉） | zustand v5 selector 每次渲染返回新 `Set` → 严格相等比较失败 → 无限重渲染 | AppPicker/WorkspaceLauncher 的 selector 只取稳定引用，派生集合移入 useMemo |
+| 3 | P0 | 手动添加后「目标已保存但关联静默失败」 | **Tauri v2 invoke 参数只认 camelCase**：bridge 层全量 snake_case 键——required 参数报 invalid args（toast 实证 `invalid args 'taskId'`），Option 参数静默失效（v0.3 的 linkTaskAgent、快速添加时间参数等同样受累） | bridge.ts + navigation.ts 全部 invoke 键改 camelCase（约 20 处）；调用方同步 |
+| 4 | P2 | 关联失败无任何 UI 提示（unhandled rejection） | ManualAddForm.onSaved 未 await async 回调 | afterPick 包 try-catch + 明确错误 toast（该提示直接定位了 #3） |
+
+### 遗留观察
+
+- WebView2 的 UIA 提供程序在长时间高频查询后会卡住（重启进程恢复；Chrome 无此现象）——
+  影响自动化测试工具而非用户交互，记录备查。
+- Win11 商店版记事本等 UWP 化应用的窗口不在自身 exe 名下 → 窗口级唤醒按设计如实降级为
+  process-spawned；如需窗口级支持，后续可按 AUMID/ApplicationFrameHost 特判（列入待办）。

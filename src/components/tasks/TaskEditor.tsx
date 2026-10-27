@@ -48,6 +48,17 @@ export default function TaskEditor() {
   const [category, setCategory] = useState("");
   const [tagsText, setTagsText] = useState("");
   const [due, setDue] = useState("");
+  const [remind, setRemind] = useState("");
+  /**
+   * 只有用户真正改过时间字段才提交它。
+   *
+   * 原因有两层：
+   * 1) datetime-local 只能到分钟，回写会把原本的秒截断——不碰也要改数据；
+   * 2) 后端把「未提供」当作「保持原值」、把「显式 null」当作「清空」，
+   *    前端必须如实表达"我没动它"，否则独立提醒会被编辑动作抹掉。
+   */
+  const [dueTouched, setDueTouched] = useState(false);
+  const [remindTouched, setRemindTouched] = useState(false);
   const [advance, setAdvance] = useState(0);
   const [freq, setFreq] = useState<"" | "daily" | "weekly" | "monthly">("");
   const [interval, setIntervalValue] = useState(1);
@@ -66,6 +77,9 @@ export default function TaskEditor() {
     setCategory(task?.category ?? "");
     setTagsText((task?.tags ?? []).join(", "));
     setDue(toLocalInputValue(task?.due_at));
+    setRemind(toLocalInputValue(task?.remind_at));
+    setDueTouched(false);
+    setRemindTouched(false);
     setAdvance(task?.advance_minutes ?? 0);
     const r = task?.recurrence;
     setFreq(r ? (r.freq as "daily" | "weekly" | "monthly") : "");
@@ -102,7 +116,7 @@ export default function TaskEditor() {
 
   async function onNavDefault(id: string) {
     try {
-      await navUpdateTaskLink(id, { is_default: true });
+      await navUpdateTaskLink(id, { isDefault: true });
       await reloadNav();
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -111,7 +125,7 @@ export default function TaskEditor() {
 
   async function onNavBehavior(id: string, behavior: string) {
     try {
-      await navUpdateTaskLink(id, { launch_behavior: behavior });
+      await navUpdateTaskLink(id, { launchBehavior: behavior });
       await reloadNav();
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -123,8 +137,8 @@ export default function TaskEditor() {
     const b = navLinks[index + delta];
     if (!a || !b) return;
     try {
-      await navUpdateTaskLink(a.id, { display_order: b.display_order });
-      await navUpdateTaskLink(b.id, { display_order: a.display_order });
+      await navUpdateTaskLink(a.id, { displayOrder: b.display_order });
+      await navUpdateTaskLink(b.id, { displayOrder: a.display_order });
       await reloadNav();
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -172,9 +186,11 @@ export default function TaskEditor() {
         .map((t) => t.trim())
         .filter(Boolean)
         .slice(0, 20),
-      due_at: fromLocalInputValue(due),
       advance_minutes: advance,
       recurrence,
+      // 未改动 → 不提交该键（后端保持原值）；改动过 → 提交（null 表示清空）
+      ...(dueTouched ? { due_at: fromLocalInputValue(due) } : {}),
+      ...(remindTouched ? { remind_at: fromLocalInputValue(remind) } : {}),
     };
     try {
       if (task) await update(task.id, input);
@@ -258,8 +274,29 @@ export default function TaskEditor() {
           <div className="field-row">
             <label className="field">
               <span>截止时间</span>
-              <input type="datetime-local" value={due} onChange={(e) => setDue(e.target.value)} />
+              <input
+                type="datetime-local"
+                value={due}
+                onChange={(e) => {
+                  setDue(e.target.value);
+                  setDueTouched(true);
+                }}
+              />
             </label>
+            <label className="field">
+              <span>提醒时间</span>
+              <input
+                type="datetime-local"
+                value={remind}
+                onChange={(e) => {
+                  setRemind(e.target.value);
+                  setRemindTouched(true);
+                }}
+                title="独立提醒时间：可与截止时间不同，留空表示不单独提醒"
+              />
+            </label>
+          </div>
+          <div className="field-row">
             <label className="field">
               <span>提前提醒（分钟）</span>
               <input
@@ -336,7 +373,7 @@ export default function TaskEditor() {
           {task && (
             <div className="field">
               <span>
-                <AppWindow size={12} /> 关联目标（软件 / 网址 / 文件 / 目录）
+                <AppWindow size={12} /> 关联目标（软件 / 网址 / 文件 / 目录 / Agent 会话）
               </span>
               <div className="link-row">
                 <button className="btn sm" onClick={() => setPickerOpen(true)}>

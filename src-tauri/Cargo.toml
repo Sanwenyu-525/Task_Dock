@@ -1,6 +1,6 @@
 [package]
 name = "task-dock"
-version = "0.3.0"
+version = "0.4.0"
 description = "Task Dock — Windows 桌面悬浮任务与 AI Agent 监控中心"
 authors = ["Task Dock contributors"]
 edition = "2021"

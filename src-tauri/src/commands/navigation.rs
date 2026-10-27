@@ -60,7 +60,49 @@ pub fn nav_update_target(
 
 #[tauri::command]
 pub fn nav_delete_target(db: State<'_, Arc<Db>>, id: String) -> AppResult<()> {
+    // 目标删除时同步清掉窗口记忆，避免 id 复用后"继承"到别人的窗口
+    let _ = navigation::window_manager::forget_memory(&db, &id);
     navigation::target_resolver::delete_target(&db, &id)
+}
+
+/// 读取某目标记住的窗口身份（类名+标题；不含 HWND）。
+#[tauri::command]
+pub fn nav_window_memory(
+    db: State<'_, Arc<Db>>,
+    target_id: String,
+) -> Option<navigation::window_manager::WindowMemory> {
+    navigation::window_manager::load_memory(&db, &target_id)
+}
+
+/// 清除窗口记忆（多窗口选错后手动重置）。
+#[tauri::command]
+pub fn nav_forget_window(db: State<'_, Arc<Db>>, target_id: String) -> AppResult<()> {
+    navigation::window_manager::forget_memory(&db, &target_id)
+}
+
+/// 把某个真实存在的 Agent 会话登记为可信导航目标（供任务关联与工作区启动使用）。
+///
+/// 单独提供而不是让前端拼 `TargetInput`：会话身份必须由后端从库里核验，
+/// 前端只能提供 (source_id, session_id)，不能自造显示名/路径。
+#[tauri::command]
+pub fn nav_save_agent_session_target(
+    db: State<'_, Arc<Db>>,
+    source_id: String,
+    session_id: String,
+    display_name: Option<String>,
+    working_dir: Option<String>,
+) -> AppResult<navigation::target_resolver::NavTargetRow> {
+    navigation::target_resolver::save_target(
+        &db,
+        &navigation::target_resolver::TargetInput {
+            target_type: "agent_session".into(),
+            display_name: display_name.unwrap_or_default(),
+            agent_source_id: source_id,
+            agent_session_id: session_id,
+            working_dir: working_dir.unwrap_or_default(),
+            ..Default::default()
+        },
+    )
 }
 
 #[tauri::command]
@@ -192,7 +234,9 @@ pub async fn nav_agent_open_workspace(
     dir: String,
 ) -> AppResult<navigation::NavigationResult> {
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(navigation::agent_navigation::open_workspace(&source_id, &dir))
+        Ok(navigation::agent_navigation::open_workspace(
+            &source_id, &dir,
+        ))
     })
     .await
     .map_err(|e| crate::error::AppError::Agent(format!("工作区打开失败: {}", e)))?

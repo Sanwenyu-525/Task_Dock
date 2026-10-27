@@ -88,13 +88,47 @@ fn category_for_exe(exe_lower: &str) -> &'static str {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     let contains = |names: &[&str]| names.iter().any(|n| stem.contains(n));
-    if contains(&["chrome", "msedge", "firefox", "opera", "brave", "vivaldi", "browser"]) {
+    if contains(&[
+        "chrome", "msedge", "firefox", "opera", "brave", "vivaldi", "browser",
+    ]) {
         "browser"
-    } else if contains(&["wechat", "weixin", "qq", "dingtalk", "feishu", "lark", "telegram", "whatsapp", "tim", "discord", "slack"]) {
+    } else if contains(&[
+        "wechat", "weixin", "qq", "dingtalk", "feishu", "lark", "telegram", "whatsapp", "tim",
+        "discord", "slack",
+    ]) {
         "im"
-    } else if contains(&["kugou", "cloudmusic", "qqmusic", "kwmusic", "spotify", "foobar", "potplayer", "vlc"]) {
+    } else if contains(&[
+        "kugou",
+        "cloudmusic",
+        "qqmusic",
+        "kwmusic",
+        "spotify",
+        "foobar",
+        "potplayer",
+        "vlc",
+    ]) {
         "music"
-    } else if contains(&["code", "trae", "qoder", "cursor", "idea", "pycharm", "webstorm", "goland", "rustrover", "clion", "rider", "datagrip", "studio64", "sublime", "notepad++", "vim", "neovim", "emacs", "windsurf"]) {
+    } else if contains(&[
+        "code",
+        "trae",
+        "qoder",
+        "cursor",
+        "idea",
+        "pycharm",
+        "webstorm",
+        "goland",
+        "rustrover",
+        "clion",
+        "rider",
+        "datagrip",
+        "studio64",
+        "sublime",
+        "notepad++",
+        "vim",
+        "neovim",
+        "emacs",
+        "windsurf",
+    ]) {
         "dev"
     } else if contains(&["explorer"]) {
         "file"
@@ -135,14 +169,38 @@ fn known_app_candidates() -> Vec<(String, String)> {
     let pf86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| pf.clone());
     let la = std::env::var("LOCALAPPDATA").unwrap_or_default();
     let mut v: Vec<(String, String)> = vec![
-        (format!("{}\\Google\\Chrome\\Application\\chrome.exe", pf), "Google Chrome".into()),
-        (format!("{}\\Google\\Chrome\\Application\\chrome.exe", pf86), "Google Chrome".into()),
-        (format!("{}\\Google\\Chrome\\Application\\chrome.exe", la), "Google Chrome".into()),
-        (format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", pf), "Microsoft Edge".into()),
-        (format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", pf86), "Microsoft Edge".into()),
-        (format!("{}\\Mozilla Firefox\\firefox.exe", pf), "Firefox".into()),
-        (format!("{}\\Microsoft VS Code\\Code.exe", pf), "Visual Studio Code".into()),
-        (format!("{}\\Programs\\Microsoft VS Code\\Code.exe", la), "Visual Studio Code".into()),
+        (
+            format!("{}\\Google\\Chrome\\Application\\chrome.exe", pf),
+            "Google Chrome".into(),
+        ),
+        (
+            format!("{}\\Google\\Chrome\\Application\\chrome.exe", pf86),
+            "Google Chrome".into(),
+        ),
+        (
+            format!("{}\\Google\\Chrome\\Application\\chrome.exe", la),
+            "Google Chrome".into(),
+        ),
+        (
+            format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", pf),
+            "Microsoft Edge".into(),
+        ),
+        (
+            format!("{}\\Microsoft\\Edge\\Application\\msedge.exe", pf86),
+            "Microsoft Edge".into(),
+        ),
+        (
+            format!("{}\\Mozilla Firefox\\firefox.exe", pf),
+            "Firefox".into(),
+        ),
+        (
+            format!("{}\\Microsoft VS Code\\Code.exe", pf),
+            "Visual Studio Code".into(),
+        ),
+        (
+            format!("{}\\Programs\\Microsoft VS Code\\Code.exe", la),
+            "Visual Studio Code".into(),
+        ),
     ];
     if let Some(p) = crate::agents::managed::find_exe(&["code", "code.cmd"]) {
         v.push((p.to_string_lossy().to_string(), "Visual Studio Code".into()));
@@ -181,7 +239,11 @@ fn scan_now() -> AppScanResult {
     }
     counts.insert("uwp".into(), apps.len() - n0);
 
-    apps.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    apps.sort_by(|a, b| {
+        a.display_name
+            .to_lowercase()
+            .cmp(&b.display_name.to_lowercase())
+    });
     AppScanResult {
         apps,
         scanned_at: String::new(),
@@ -246,7 +308,11 @@ fn walk_lnk_dir(dir: &Path, depth: usize, budget: &mut usize, out: &mut Vec<Disc
         let path = entry.path();
         if path.is_dir() {
             walk_lnk_dir(&path, depth + 1, budget, out);
-        } else if path.extension().map(|e| e.eq_ignore_ascii_case("lnk")).unwrap_or(false) {
+        } else if path
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("lnk"))
+            .unwrap_or(false)
+        {
             *budget -= 1;
             if let Some(app) = parse_lnk(&path) {
                 out.push(app);
@@ -267,7 +333,9 @@ fn parse_lnk(path: &Path) -> Option<DiscoveredApp> {
     if lower_name.contains("uninstall") || display_name.contains("卸载") {
         return None;
     }
-    let sl = std::panic::catch_unwind(|| lnk::ShellLink::open(path).ok()).ok().flatten()?;
+    let sl = std::panic::catch_unwind(|| lnk::ShellLink::open(path).ok())
+        .ok()
+        .flatten()?;
     let target = sl
         .link_info()
         .as_ref()
@@ -296,7 +364,12 @@ fn parse_lnk(path: &Path) -> Option<DiscoveredApp> {
         category: category_for_exe(&lower).to_string(),
         window_title_hint: title_hint_for_exe(&lower).to_string(),
         exe_path: target,
-        launch_args: sl.arguments().clone().unwrap_or_default().trim().to_string(),
+        launch_args: sl
+            .arguments()
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
         working_dir,
         app_user_model_id: String::new(),
         source: "startmenu".into(),
@@ -336,7 +409,10 @@ fn scan_registry() -> Vec<DiscoveredApp> {
     use winreg::RegKey;
 
     let roots = [
-        (HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall"),
+        (
+            HKEY_LOCAL_MACHINE,
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+        ),
         (
             HKEY_LOCAL_MACHINE,
             "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
@@ -366,7 +442,13 @@ fn scan_registry() -> Vec<DiscoveredApp> {
                 continue;
             }
             let icon: String = sk.get_value("DisplayIcon").unwrap_or_default();
-            let exe = icon.split(',').next().unwrap_or("").trim().trim_matches('"').to_string();
+            let exe = icon
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_matches('"')
+                .to_string();
             if exe.is_empty() {
                 continue;
             }
@@ -530,7 +612,10 @@ mod tests {
 
     #[test]
     fn title_hints_for_cn_apps() {
-        assert_eq!(title_hint_for_exe("c:\\tencent\\wechat\\wechat.exe"), "微信");
+        assert_eq!(
+            title_hint_for_exe("c:\\tencent\\wechat\\wechat.exe"),
+            "微信"
+        );
         assert_eq!(title_hint_for_exe("c:\\kugou\\kugou.exe"), "酷狗");
         assert_eq!(title_hint_for_exe("c:\\app\\unknown.exe"), "");
     }
@@ -538,41 +623,53 @@ mod tests {
     #[test]
     fn push_unique_dedupes_by_app_key() {
         let mut apps = Vec::new();
-        push_unique(&mut apps, DiscoveredApp {
-            app_key: "a".into(),
-            display_name: "A".into(),
-            category: "other".into(),
-            exe_path: String::new(),
-            launch_args: String::new(),
-            working_dir: String::new(),
-            app_user_model_id: String::new(),
-            window_title_hint: String::new(),
-            source: "startmenu".into(),
-        });
-        push_unique(&mut apps, DiscoveredApp {
-            app_key: "a".into(),
-            display_name: "A dup".into(),
-            category: "other".into(),
-            exe_path: String::new(),
-            launch_args: String::new(),
-            working_dir: String::new(),
-            app_user_model_id: String::new(),
-            window_title_hint: String::new(),
-            source: "registry".into(),
-        });
-        push_unique(&mut apps, DiscoveredApp {
-            app_key: String::new(),
-            display_name: "empty key".into(),
-            category: "other".into(),
-            exe_path: String::new(),
-            launch_args: String::new(),
-            working_dir: String::new(),
-            app_user_model_id: String::new(),
-            window_title_hint: String::new(),
-            source: "startmenu".into(),
-        });
+        push_unique(
+            &mut apps,
+            DiscoveredApp {
+                app_key: "a".into(),
+                display_name: "A".into(),
+                category: "other".into(),
+                exe_path: String::new(),
+                launch_args: String::new(),
+                working_dir: String::new(),
+                app_user_model_id: String::new(),
+                window_title_hint: String::new(),
+                source: "startmenu".into(),
+            },
+        );
+        push_unique(
+            &mut apps,
+            DiscoveredApp {
+                app_key: "a".into(),
+                display_name: "A dup".into(),
+                category: "other".into(),
+                exe_path: String::new(),
+                launch_args: String::new(),
+                working_dir: String::new(),
+                app_user_model_id: String::new(),
+                window_title_hint: String::new(),
+                source: "registry".into(),
+            },
+        );
+        push_unique(
+            &mut apps,
+            DiscoveredApp {
+                app_key: String::new(),
+                display_name: "empty key".into(),
+                category: "other".into(),
+                exe_path: String::new(),
+                launch_args: String::new(),
+                working_dir: String::new(),
+                app_user_model_id: String::new(),
+                window_title_hint: String::new(),
+                source: "startmenu".into(),
+            },
+        );
         assert_eq!(apps.len(), 1, "同 key 与空 key 不得重复入库");
-        assert_eq!(apps[0].display_name, "A", "先到者保留（来源优先级由调用顺序决定）");
+        assert_eq!(
+            apps[0].display_name, "A",
+            "先到者保留（来源优先级由调用顺序决定）"
+        );
     }
 
     #[cfg(windows)]
@@ -584,7 +681,11 @@ mod tests {
                 assert!(!a.app_user_model_id.is_empty());
                 assert!(super::super::validate_aumid(&a.app_user_model_id).is_ok());
             } else {
-                assert!(!a.exe_path.is_empty(), "非 UWP 发现项必须有 exe：{:?}", a.display_name);
+                assert!(
+                    !a.exe_path.is_empty(),
+                    "非 UWP 发现项必须有 exe：{:?}",
+                    a.display_name
+                );
                 assert!(
                     super::super::validate_exe_path(&a.exe_path).is_ok(),
                     "发现项必须通过安全校验：{} -> {}",
@@ -600,7 +701,10 @@ mod tests {
     #[test]
     fn running_states_distinguish_levels() {
         // 本测试进程自身：exe 在运行（进程存在），但无顶层窗口
-        let exe = std::env::current_exe().unwrap().to_string_lossy().to_ascii_lowercase();
+        let exe = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase();
         let map = running_states(&[exe]);
         let s = map.values().next().unwrap();
         assert!(

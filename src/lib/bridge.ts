@@ -241,17 +241,17 @@ export const createFromQuickAdd = (
   dueAt: string | null,
   recurrence: RecurrenceRuleInput | null,
   advanceMinutes: number | null,
-) => invoke<Task>("create_from_quick_add", { text, due_at: dueAt, recurrence, advance_minutes: advanceMinutes });
+) => invoke<Task>("create_from_quick_add", { text, dueAt, recurrence, advanceMinutes });
 export const snoozeReminder = (taskId: string, minutes: number) =>
-  invoke<void>("snooze_reminder", { task_id: taskId, minutes });
+  invoke<void>("snooze_reminder", { taskId, minutes });
 export const linkTaskAgent = (
   taskId: string,
   sourceId: string,
   sessionExternalId: string,
   runExternalId?: string,
-) => invoke<TaskAgentLink>("link_task_agent", { task_id: taskId, source_id: sourceId, session_external_id: sessionExternalId, run_external_id: runExternalId });
-export const unlinkTaskAgent = (linkId: string) => invoke<void>("unlink_task_agent", { link_id: linkId });
-export const listTaskLinks = (taskId: string) => invoke<TaskAgentLink[]>("list_task_links", { task_id: taskId });
+) => invoke<TaskAgentLink>("link_task_agent", { taskId, sourceId, sessionExternalId, runExternalId });
+export const unlinkTaskAgent = (linkId: string) => invoke<void>("unlink_task_agent", { linkId });
+export const listTaskLinks = (taskId: string) => invoke<TaskAgentLink[]>("list_task_links", { taskId });
 export const pendingItemsToTasks = (items: string[]) =>
   invoke<Task[]>("pending_items_to_tasks", { items });
 
@@ -261,27 +261,27 @@ export const setSourceEnabled = (id: string, enabled: boolean) =>
   invoke<void>("set_source_enabled", { id, enabled });
 // 动态来源注册
 export const createSource = (id: string, displayName: string, adapter?: string, homepage?: string, note?: string, icon?: string) =>
-  invoke<void>("create_source", { id, display_name: displayName, adapter, homepage, note, icon });
-export const updateSource = (id: string, patch: { display_name?: string; homepage?: string; note?: string; icon?: string; hidden?: boolean }) =>
+  invoke<void>("create_source", { id, displayName, adapter, homepage, note, icon });
+export const updateSource = (id: string, patch: { displayName?: string; homepage?: string; note?: string; icon?: string; hidden?: boolean }) =>
   invoke<void>("update_source", { id, ...patch });
 export const deleteSource = (id: string, alsoDeleteData = false) =>
-  invoke<void>("delete_source", { id, also_delete_data: alsoDeleteData });
+  invoke<void>("delete_source", { id, alsoDeleteData });
 // 自动发现 + 接入向导
 export const discoveryScan = () => invoke<DiscoveredAgent[]>("discovery_scan");
 export const adapterList = () =>
   invoke<{ id: string; display_name: string; transport_kind: string; docs_url: string }[]>("adapter_list");
 export const adapterPreview = (adapterId: string) =>
-  invoke<Record<string, unknown>>("adapter_preview", { adapter_id: adapterId });
+  invoke<Record<string, unknown>>("adapter_preview", { adapterId });
 export const adapterInstall = (adapterId: string) =>
-  invoke<Record<string, unknown>>("adapter_install", { adapter_id: adapterId });
+  invoke<Record<string, unknown>>("adapter_install", { adapterId });
 export const adapterVerify = (adapterId: string) =>
-  invoke<Record<string, unknown>>("adapter_verify", { adapter_id: adapterId });
+  invoke<Record<string, unknown>>("adapter_verify", { adapterId });
 export const adapterUninstall = (adapterId: string) =>
-  invoke<Record<string, unknown>>("adapter_uninstall", { adapter_id: adapterId });
+  invoke<Record<string, unknown>>("adapter_uninstall", { adapterId });
 export const adapterStatus = (adapterId: string) =>
-  invoke<Record<string, unknown>>("adapter_status", { adapter_id: adapterId });
+  invoke<Record<string, unknown>>("adapter_status", { adapterId });
 export const mockStartScenario = (sessionTitle: string, outcome: string) =>
-  invoke<void>("mock_start_scenario", { session_title: sessionTitle, outcome });
+  invoke<void>("mock_start_scenario", { sessionTitle, outcome });
 export const codexHooksStatus = () =>
   invoke<{ installed: boolean; hooks_path: string; script_path: string; codex_home: string }>(
     "codex_hooks_status",
@@ -290,14 +290,14 @@ export const codexHooksInstall = () => invoke<Record<string, unknown>>("codex_ho
 export const codexHooksUninstall = () => invoke<Record<string, unknown>>("codex_hooks_uninstall");
 /** 跳转 Agent 会话（v0.4 走统一导航：证据化能力 + 诚实降级；返回结构化结果）。 */
 export const openAgentSession = (sourceId: string, sessionId: string) =>
-  invoke<import("./navigation").NavigationResult>("open_agent_session", { source_id: sourceId, session_id: sessionId });
+  invoke<import("./navigation").NavigationResult>("open_agent_session", { sourceId, sessionId });
 export const listNotifications = (unreadOnly = false, limit = 100) =>
-  invoke<NotificationRow[]>("list_notifications", { unread_only: unreadOnly, limit });
+  invoke<NotificationRow[]>("list_notifications", { unreadOnly, limit });
 export const markNotificationRead = (id: string) => invoke<void>("mark_notification_read", { id });
 export const markAllNotificationsRead = () => invoke<void>("mark_all_notifications_read");
 export const clearNotifications = () => invoke<void>("clear_notifications");
 export const listAgentEvents = (limit = 100, sourceId?: string) =>
-  invoke<AgentEventRow[]>("list_agent_events", { limit, source_id: sourceId });
+  invoke<AgentEventRow[]>("list_agent_events", { limit, sourceId });
 
 // ── 设置 ──
 export const getSettings = () => invoke<Settings>("get_settings");

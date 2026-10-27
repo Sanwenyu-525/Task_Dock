@@ -1,9 +1,9 @@
 //! 目标快捷菜单：任务卡多目标时的弹出选择（键盘可操作）。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Globe, FileText, FolderOpen, Bot, AppWindow, ChevronRight, Rocket } from "lucide-react";
 import type { TaskNavLink, NavigationTargetType } from "../../lib/navigation";
-import { avatarHue, stateBadge } from "../../lib/navigation";
+import { avatarHue, buildTargetMenuItems, moveMenuIndex, stateBadge } from "../../lib/navigation";
 
 export function TargetTypeIcon({ type, size = 12 }: { type: NavigationTargetType; size?: number }) {
   switch (type) {
@@ -30,16 +30,17 @@ export function TargetAvatar({
 }) {
   const hue = avatarHue(link.target.app_key || link.target.display_name);
   const badge = stateBadge(link.running_state);
+  const isApp = link.target.target_type === "application";
   return (
     <span
-      className={`nav-avatar tone-${badge.tone}`}
+      // 应用用专属色块 + 白图标；其余类型用主题色淡底 + 强调色图标。
+      // 旧实现给非应用类型设了 background: transparent，而 .nav-avatar 的图标是白色
+      // ——浅色主题下等于「白底白字」，网址/目录图标完全看不见。
+      className={`nav-avatar tone-${badge.tone} ${isApp ? "nav-avatar-app" : "nav-avatar-generic"}`}
       style={{
         width: size,
         height: size,
-        background:
-          link.target.target_type === "application"
-            ? `hsl(${hue} 55% 45%)`
-            : "transparent",
+        ...(isApp ? { background: `hsl(${hue} 55% 45%)` } : {}),
       }}
       title={`${link.target.display_name} · ${badge.label}${link.is_default ? " · 默认" : ""}`}
     >
@@ -58,28 +59,69 @@ interface Props {
 }
 
 export default function TargetMenu({ links, onNavigate, onClose, onOpenAll }: Props) {
+  /**
+   * 统一条目列表：工作区入口（若有）+ 每个目标。
+   *
+   * 旧实现把「工作区」按钮单独渲染、索引却只指向 links，于是：
+   * 焦点永远跳过工作区入口，Enter 也只会走 onNavigate —— 键盘用户
+   * 根本触发不了「打开工作区」。索引必须与 DOM 顺序一一对应。
+   */
+  const items = useMemo(
+    () => buildTargetMenuItems(links, Boolean(onOpenAll)),
+    [links, onOpenAll],
+  );
+
   const [index, setIndex] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
 
+  // 条目集合变化（目标增删）时收敛索引，避免越界后 Enter 无响应
   useEffect(() => {
-    const el = ref.current?.querySelector<HTMLElement>(`[data-idx="${index}"]`);
-    el?.focus();
+    setIndex((i) => Math.min(i, Math.max(items.length - 1, 0)));
+  }, [items.length]);
+
+  // 打开即聚焦当前项：键盘用户不需要先 Tab 进来
+  useEffect(() => {
+    ref.current?.querySelector<HTMLElement>(`[data-idx="${index}"]`)?.focus();
   }, [index]);
 
+  function activate(i: number) {
+    const it = items[i];
+    if (!it) return;
+    if (it.kind === "workspace") onOpenAll?.();
+    else if (it.link) onNavigate(it.link);
+    onClose();
+  }
+
   function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      onClose();
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setIndex((i) => Math.min(i + 1, links.length - 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setIndex((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onNavigate(links[index]);
-      onClose();
+    switch (e.key) {
+      case "Escape":
+        e.stopPropagation();
+        onClose();
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        setIndex((i) => moveMenuIndex(i, 1, items.length));
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        setIndex((i) => moveMenuIndex(i, -1, items.length));
+        break;
+      case "Home":
+        e.preventDefault();
+        setIndex(0);
+        break;
+      case "End":
+        e.preventDefault();
+        setIndex(items.length - 1);
+        break;
+      case "Enter":
+      case " ":
+        // preventDefault 阻止按钮的原生 click，否则 Enter 会触发两次
+        e.preventDefault();
+        activate(index);
+        break;
+      default:
+        break;
     }
   }
 
@@ -94,8 +136,9 @@ export default function TargetMenu({ links, onNavigate, onClose, onOpenAll }: Pr
       {onOpenAll && (
         <button
           role="menuitem"
-          data-idx="all"
-          className="target-menu-item target-menu-workspace"
+          data-idx="0"
+          tabIndex={-1}
+          className={`target-menu-item target-menu-workspace ${index === 0 ? "active" : ""}`}
           onClick={() => {
             onOpenAll();
             onClose();
@@ -109,17 +152,20 @@ export default function TargetMenu({ links, onNavigate, onClose, onOpenAll }: Pr
       <div className="target-menu-head">跳转到…</div>
       {links.map((l, i) => {
         const badge = stateBadge(l.running_state);
+        // 有工作区入口时，目标从索引 1 开始
+        const idx = (onOpenAll ? 1 : 0) + i;
         return (
           <button
             key={l.id}
             role="menuitem"
-            data-idx={i}
-            className={`target-menu-item ${i === index ? "active" : ""}`}
+            data-idx={idx}
+            tabIndex={-1}
+            className={`target-menu-item ${idx === index ? "active" : ""}`}
             onClick={() => {
               onNavigate(l);
               onClose();
             }}
-            onMouseEnter={() => setIndex(i)}
+            onMouseEnter={() => setIndex(idx)}
           >
             <TargetAvatar link={l} size={18} />
             <span className="target-menu-name">{l.target.display_name}</span>

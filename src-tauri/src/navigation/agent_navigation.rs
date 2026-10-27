@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::window_manager::{self, FocusOutcome};
-use super::{NavigationResult, VerificationLevel, ACTION_FOCUS_WINDOW, ACTION_OPEN_APP, ACTION_RESUME_SESSION};
+use super::{
+    NavigationResult, VerificationLevel, ACTION_FOCUS_WINDOW, ACTION_OPEN_APP,
+    ACTION_RESUME_SESSION,
+};
 use crate::agents::codex;
 use crate::db::Db;
 use crate::error::AppError;
@@ -132,7 +135,10 @@ fn find_agent_exe(def: &AgentAppDef) -> Option<std::path::PathBuf> {
     }
     if let Ok(la) = std::env::var("LOCALAPPDATA") {
         for (dir, exe) in def.local_hints {
-            let p = std::path::PathBuf::from(&la).join("Programs").join(dir).join(exe);
+            let p = std::path::PathBuf::from(&la)
+                .join("Programs")
+                .join(dir)
+                .join(exe);
             if p.exists() {
                 return Some(p);
             }
@@ -160,9 +166,11 @@ fn agent_windows(def: &AgentAppDef) -> Vec<window_manager::WindowInfo> {
                         .map(|s| s.to_string_lossy().to_ascii_lowercase())
                 })
                 .unwrap_or_default();
-            stems.iter().any(|s| exe_stem == *s)
+            stems.contains(&exe_stem)
                 || (!def.title_hint.is_empty()
-                    && w.title.to_ascii_lowercase().contains(&def.title_hint.to_ascii_lowercase()))
+                    && w.title
+                        .to_ascii_lowercase()
+                        .contains(&def.title_hint.to_ascii_lowercase()))
         })
         .collect()
 }
@@ -173,7 +181,9 @@ fn agent_windows(def: &AgentAppDef) -> Vec<window_manager::WindowInfo> {
 /// 子命令但未见会话参数（只能开选择器）；None = 无 CLI / 无 resume。
 fn opencode_session_resume_support() -> Option<bool> {
     use std::sync::OnceLock;
-    static CACHE: OnceLock<Mutex<Option<(Instant, Option<bool>)>>> = OnceLock::new();
+    /// (探测时间, 结果)：结果 None = 无 CLI / 无 resume 子命令
+    type ResumeProbeCache = Mutex<Option<(Instant, Option<bool>)>>;
+    static CACHE: OnceLock<ResumeProbeCache> = OnceLock::new();
     let cell = CACHE.get_or_init(|| Mutex::new(None));
     if let Some((at, v)) = cell.lock().unwrap().as_ref() {
         if at.elapsed() < Duration::from_secs(3600) {
@@ -226,10 +236,7 @@ pub fn capabilities(source_id: &str) -> AgentNavCapabilities {
     let exe = find_agent_exe(def);
 
     let can_launch = match &exe {
-        Some(p) => CapabilityStatus::yes(
-            "exe-found",
-            &format!("已定位 {}", p.display()),
-        ),
+        Some(p) => CapabilityStatus::yes("exe-found", &format!("已定位 {}", p.display())),
         None => CapabilityStatus::no("not-installed", "未在本机找到可执行文件"),
     };
 
@@ -295,7 +302,11 @@ pub fn capabilities(source_id: &str) -> AgentNavCapabilities {
 
 // ── 动作 ────────────────────────────────────────────────────
 
-fn launch_exe(exe: &std::path::Path, args: &[String], working_dir: Option<&str>) -> Result<(), String> {
+fn launch_exe(
+    exe: &std::path::Path,
+    args: &[String],
+    working_dir: Option<&str>,
+) -> Result<(), String> {
     let mut cmd = std::process::Command::new(exe);
     cmd.args(args);
     if let Some(dir) = working_dir.filter(|d| std::path::Path::new(d).is_dir()) {
@@ -348,11 +359,7 @@ pub fn focus_agent(source_id: &str, allow_launch: bool) -> NavigationResult {
             r.reason = Some("无现有窗口，已降级为启动".into());
             return r;
         }
-        return NavigationResult::failure(
-            source_id,
-            &requested,
-            "未运行且设置不允许启动新进程",
-        );
+        return NavigationResult::failure(source_id, &requested, "未运行且设置不允许启动新进程");
     }
     // 多窗口：唤醒最近活跃（标题最长）的一个，并如实标注是应用级唤醒
     let target = wins.iter().max_by_key(|w| w.title.chars().count()).unwrap();
@@ -363,7 +370,12 @@ pub fn focus_agent(source_id: &str, allow_launch: bool) -> NavigationResult {
             actual_action: Some(ACTION_FOCUS_WINDOW.into()),
             fallback_used: wins.len() > 1,
             target_id: source_id.to_string(),
-            reason: (wins.len() > 1).then(|| format!("该应用有 {} 个窗口，已唤醒其一（无法关联到具体实例）", wins.len())),
+            reason: (wins.len() > 1).then(|| {
+                format!(
+                    "该应用有 {} 个窗口，已唤醒其一（无法关联到具体实例）",
+                    wins.len()
+                )
+            }),
             verification_level: VerificationLevel::WindowConfirmed.as_str().into(),
         },
         Ok(FocusOutcome::Unverified) => NavigationResult {
@@ -414,7 +426,8 @@ pub fn resume_session(db: &Db, source_id: &str, session_id: &str) -> NavigationR
                 if r.success {
                     r.requested_action = requested;
                     r.fallback_used = true;
-                    r.reason = Some("未找到 codex CLI（App 安装不含 CLI），降级为唤醒 Codex 窗口".into());
+                    r.reason =
+                        Some("未找到 codex CLI（App 安装不含 CLI），降级为唤醒 Codex 窗口".into());
                 }
                 return r;
             };
@@ -425,7 +438,9 @@ pub fn resume_session(db: &Db, source_id: &str, session_id: &str) -> NavigationR
                     actual_action: Some(ACTION_RESUME_SESSION.into()),
                     fallback_used: false,
                     target_id,
-                    reason: Some("已在新的终端进程中执行 codex resume（多窗口应用请以终端内容为准）".into()),
+                    reason: Some(
+                        "已在新的终端进程中执行 codex resume（多窗口应用请以终端内容为准）".into(),
+                    ),
                     verification_level: VerificationLevel::ProcessSpawned.as_str().into(),
                 },
                 Err(e) => NavigationResult::failure(&target_id, &requested, e),
@@ -434,7 +449,11 @@ pub fn resume_session(db: &Db, source_id: &str, session_id: &str) -> NavigationR
         "opencode" => {
             if opencode_session_resume_support() == Some(true) {
                 let Some(exe) = crate::agents::managed::find_exe(&["opencode"]) else {
-                    return NavigationResult::failure(&target_id, &requested, "未找到 opencode CLI");
+                    return NavigationResult::failure(
+                        &target_id,
+                        &requested,
+                        "未找到 opencode CLI",
+                    );
                 };
                 return match launch_exe(&exe, &["resume".into(), session_id.to_string()], None) {
                     Ok(()) => NavigationResult {
@@ -455,7 +474,10 @@ pub fn resume_session(db: &Db, source_id: &str, session_id: &str) -> NavigationR
             r.target_id = target_id;
             if r.success {
                 r.fallback_used = true;
-                r.reason = Some("当前版本 resume 不支持按 ID 恢复，已降级为打开 opencode（会话列表中手动选择）".into());
+                r.reason = Some(
+                    "当前版本 resume 不支持按 ID 恢复，已降级为打开 opencode（会话列表中手动选择）"
+                        .into(),
+                );
             }
             r
         }
@@ -489,14 +511,14 @@ pub fn open_workspace(source_id: &str, dir: &str) -> NavigationResult {
         return NavigationResult::failure(source_id, &requested, "该 Agent 无工作区接口");
     };
     let Some((cli, _)) = def.workspace_cli else {
+        return NavigationResult::failure(source_id, &requested, "该 Agent 无已知工作区打开接口");
+    };
+    let Some(exe) = find_agent_exe(def) else {
         return NavigationResult::failure(
             source_id,
             &requested,
-            "该 Agent 无已知工作区打开接口",
+            format!("未找到 {} 可执行文件", cli),
         );
-    };
-    let Some(exe) = find_agent_exe(def) else {
-        return NavigationResult::failure(source_id, &requested, format!("未找到 {} 可执行文件", cli));
     };
     match launch_exe(&exe, &[dir.to_string()], None) {
         Ok(()) => NavigationResult {
@@ -554,6 +576,26 @@ mod tests {
         // 非 IDE Agent
         let r = open_workspace("codex", "C:\\");
         assert!(!r.success, "codex 无工作区接口，必须拒绝");
+    }
+
+    /// Agent 未安装 / 未接入：必须如实失败，不得假装已启动。
+    #[test]
+    fn uninstalled_or_unknown_agent_reports_failure() {
+        // 完全未知的 source：无启动方式
+        let r = launch_agent("no-such-agent");
+        assert!(!r.success);
+        assert_eq!(r.verification_level, "none");
+        assert!(r.reason.unwrap().contains("未内置启动方式"));
+        // 未知 source 的会话恢复：拒绝且不产生"已恢复"假象
+        let d = db();
+        let r = resume_session(&d, "no-such-agent", "sess-1");
+        assert!(!r.success);
+        assert_eq!(r.verification_level, "none");
+        // 未知 source 的能力清单：三项均不支持，证据为 unsupported-interface
+        let c = capabilities("no-such-agent");
+        assert!(!c.can_launch.supported);
+        assert!(!c.can_open_workspace.supported);
+        assert!(!c.can_resume_session.supported);
     }
 
     #[test]

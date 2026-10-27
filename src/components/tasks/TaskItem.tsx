@@ -21,6 +21,8 @@ interface Props {
 
 /** 直列图标上限：超出部分折叠为数量入口，避免任务卡失控。 */
 const MAX_INLINE_TARGETS = 3;
+/** 紧凑模式更窄（320px 也要可用），直列只留 2 个。 */
+const MAX_INLINE_TARGETS_COMPACT = 2;
 
 export default function TaskItem({ task, compact }: Props) {
   const toggle = useTasksStore((s) => s.toggle);
@@ -69,8 +71,12 @@ export default function TaskItem({ task, compact }: Props) {
     }
   }
 
-  const inline = links.slice(0, MAX_INLINE_TARGETS);
+  const inline = links.slice(0, compact ? MAX_INLINE_TARGETS_COMPACT : MAX_INLINE_TARGETS);
   const overflow = links.length - inline.length;
+  // 工作区入口在两种模式下都必须可达：
+  // 旧实现把它挂在 `!compact` 上，而「+N」入口只在 >3 个目标时出现，
+  // 于是紧凑模式下关联 2~3 个目标时**完全没有**启动整个工作区的入口。
+  const canLaunchWorkspace = links.length >= 2;
 
   return (
     <div className={`task-item priority-${task.priority} ${task.status}`}>
@@ -174,8 +180,8 @@ export default function TaskItem({ task, compact }: Props) {
           </div>
         </>
       )}
-      {/* 快捷工作区入口：≥2 目标时在卡片尾部显示（紧凑模式经菜单进入） */}
-      {!compact && links.length >= 2 && (
+      {/* 快捷工作区入口：≥2 目标时显示（紧凑模式同样可用） */}
+      {canLaunchWorkspace && (
         <button
           className="icon-btn sm task-workspace"
           title="打开工作区（批量启动关联目标）"

@@ -36,6 +36,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "nav_remember_window",
     "nav_default_browser",
     "nav_workspace_max",
+    // 本地结构化状态（窗口记忆：类名+标题，不含 HWND）
+    "nav_window_memory",
 ];
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
@@ -79,11 +81,19 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "theme" => enum_of(v, key, &["system", "light", "dark"]),
         "mode" => enum_of(v, key, &["minimal", "compact", "full"]),
         "material" => enum_of(v, key, &["solid", "glass"]),
-        "snap_enabled" | "autostart" | "hotkey_enabled" | "http_enabled" | "mock_enabled"
-        | "notify_reminder" | "notify_agent" | "notify_muted" | "auto_backup"
-        | "nav_prefer_focus" | "nav_allow_launch" | "nav_fallback" | "nav_remember_window" => {
-            bool_of(v, key)
-        }
+        "snap_enabled"
+        | "autostart"
+        | "hotkey_enabled"
+        | "http_enabled"
+        | "mock_enabled"
+        | "notify_reminder"
+        | "notify_agent"
+        | "notify_muted"
+        | "auto_backup"
+        | "nav_prefer_focus"
+        | "nav_allow_launch"
+        | "nav_fallback"
+        | "nav_remember_window" => bool_of(v, key),
         "http_port" => int_in_range(v, key, 1, 65535),
         "overdue_grace_hours" => int_in_range(v, key, 0, 24 * 60),
         "stale_run_minutes" => int_in_range(v, key, 1, 24 * 60),
@@ -100,7 +110,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
             Ok(())
         }
         // 结构化本地状态（非用户偏好）：只验证是对象
-        "window_rect" | "snap_state" => v
+        "window_rect" | "snap_state" | "nav_window_memory" => v
             .as_object()
             .map(|_| ())
             .ok_or_else(|| AppError::Validation(format!("{} 必须是 JSON 对象", key))),

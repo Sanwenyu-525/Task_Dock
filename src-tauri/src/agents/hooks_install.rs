@@ -387,7 +387,7 @@ if (-not $ok) {{
   try {{
     New-Item -ItemType Directory -Force -Path $inbox | Out-Null
     $file = Join-Path $inbox ("{source}-" + [guid]::NewGuid().ToString("N") + ".json")
-    [System.IO.File]::WriteAllText($file, $body, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($file, $body, (New-Object System.Text.UTF8Encoding $false))
   }} catch {{}}
 }}
 "#,

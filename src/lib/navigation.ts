@@ -152,13 +152,31 @@ export const navScanApps = (force = false) =>
   invoke<AppScanResult>("nav_scan_apps", { force });
 export const navListWindows = () => invoke<WindowInfo[]>("nav_list_windows");
 export const navListTargets = (includeHidden = false) =>
-  invoke<NavTarget[]>("nav_list_targets", { include_hidden: includeHidden });
+  invoke<NavTarget[]>("nav_list_targets", { includeHidden });
 export const navSaveTarget = (input: TargetInput) =>
   invoke<NavTarget>("nav_save_target", { input });
 export const navUpdateTarget = (id: string, patch: TargetPatch) =>
   invoke<void>("nav_update_target", { id, patch });
 export const navDeleteTarget = (id: string) =>
   invoke<void>("nav_delete_target", { id });
+/** 把真实存在的 Agent 会话登记为可信目标（后端核验会话身份，前端不自造路径）。 */
+export const navSaveAgentSessionTarget = (
+  sourceId: string,
+  sessionId: string,
+  displayName?: string,
+  workingDir?: string,
+) =>
+  invoke<NavTarget>("nav_save_agent_session_target", {
+    sourceId,
+    sessionId,
+    displayName: displayName ?? null,
+    workingDir: workingDir ?? null,
+  });
+/** 记住的窗口身份（类名+标题，不含 HWND）；无记忆为 null。 */
+export const navWindowMemory = (targetId: string) =>
+  invoke<{ class_name: string; title: string } | null>("nav_window_memory", { targetId });
+export const navForgetWindow = (targetId: string) =>
+  invoke<void>("nav_forget_window", { targetId });
 export const navRecentLogs = (limit = 50) =>
   invoke<NavLogRow[]>("nav_recent_logs", { limit });
 export const navPruneLogs = (keep = 200) =>
@@ -172,38 +190,38 @@ export const navLinkTask = (
   launchBehavior = "default",
 ) =>
   invoke<string>("nav_link_task", {
-    task_id: taskId,
-    target_id: targetId,
-    is_default: isDefault,
-    launch_behavior: launchBehavior,
+    taskId,
+    targetId,
+    isDefault,
+    launchBehavior,
   });
 export const navUnlinkTask = (linkId: string) =>
-  invoke<void>("nav_unlink_task", { link_id: linkId });
+  invoke<void>("nav_unlink_task", { linkId });
 export const navUpdateTaskLink = (
   linkId: string,
-  patch: { display_order?: number; is_default?: boolean; launch_behavior?: string },
+  patch: { displayOrder?: number; isDefault?: boolean; launchBehavior?: string },
 ) =>
   invoke<void>("nav_update_task_link", {
-    link_id: linkId,
-    display_order: patch.display_order,
-    is_default: patch.is_default,
-    launch_behavior: patch.launch_behavior,
+    linkId,
+    displayOrder: patch.displayOrder,
+    isDefault: patch.isDefault,
+    launchBehavior: patch.launchBehavior,
   });
 export const navTaskTargets = (taskId: string) =>
-  invoke<TaskNavLink[]>("nav_task_targets", { task_id: taskId });
+  invoke<TaskNavLink[]>("nav_task_targets", { taskId });
 export const navAllTaskLinks = () => invoke<TaskNavLink[]>("nav_all_task_links");
 
 // ── 跳转 ──
 export const navNavigate = (targetId: string, options?: NavigateOptions) =>
-  invoke<NavigationResult>("nav_navigate", { target_id: targetId, options: options ?? null });
+  invoke<NavigationResult>("nav_navigate", { targetId, options: options ?? null });
 
 // ── Agent 导航 ──
 export const navAgentCapabilities = (sourceId: string) =>
-  invoke<AgentNavCapabilities>("nav_agent_capabilities", { source_id: sourceId });
+  invoke<AgentNavCapabilities>("nav_agent_capabilities", { sourceId });
 export const navAgentAction = (sourceId: string, action: "open_app" | "focus_window") =>
-  invoke<NavigationResult>("nav_agent_action", { source_id: sourceId, action });
+  invoke<NavigationResult>("nav_agent_action", { sourceId, action });
 export const navAgentOpenWorkspace = (sourceId: string, dir: string) =>
-  invoke<NavigationResult>("nav_agent_open_workspace", { source_id: sourceId, dir });
+  invoke<NavigationResult>("nav_agent_open_workspace", { sourceId, dir });
 
 // ── 展示辅助（纯函数，可测试）──
 
@@ -257,6 +275,9 @@ export function verificationLabel(level: string): string {
   switch (level) {
     case "window-confirmed":
       return "已确认窗口";
+    case "window-visible":
+      // 窗口出现了，但没能置前：不等于"已确认"，也不该说"失败"
+      return "窗口已出现（未置前）";
     case "process-spawned":
       return "进程已启动";
     case "launch-requested":
@@ -280,4 +301,33 @@ export function resultMessage(r: NavigationResult, name: string): string {
     return `「${name}」${v}${r.reason ? `（${r.reason}）` : ""}`;
   }
   return `「${name}」${v}`;
+}
+
+/** 目标菜单条目（索引必须与 DOM 顺序一致，键盘导航才不错位）。 */
+export interface TargetMenuItem {
+  key: string;
+  kind: "workspace" | "target";
+  link?: TaskNavLink;
+}
+
+/**
+ * 构建目标菜单条目列表。
+ *
+ * 工作区入口（若有）永远排在第 0 位，普通目标依次后移。
+ * 旧实现的键盘索引只指向 links，导致工作区入口既拿不到焦点也无法用 Enter 触发。
+ */
+export function buildTargetMenuItems(
+  links: TaskNavLink[],
+  hasWorkspace: boolean,
+): TargetMenuItem[] {
+  const items: TargetMenuItem[] = [];
+  if (hasWorkspace) items.push({ key: "__workspace__", kind: "workspace" });
+  for (const l of links) items.push({ key: l.id, kind: "target", link: l });
+  return items;
+}
+
+/** 方向键移动（循环），越界自动回绕；空列表返回 0。 */
+export function moveMenuIndex(current: number, delta: number, length: number): number {
+  if (length <= 0) return 0;
+  return ((current + delta) % length + length) % length;
 }

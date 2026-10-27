@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::db::Db;
+
 /// 一个可交互顶层窗口的快照（HWND 以整数传递，避免跨 FFI 持有指针）。
 #[derive(Debug, Clone, Serialize)]
 pub struct WindowInfo {
@@ -31,6 +33,89 @@ pub struct WindowInfo {
 pub enum FocusOutcome {
     Confirmed,
     Unverified,
+}
+
+/// 用户上次选择的窗口身份。
+///
+/// **刻意不保存 HWND**：句柄在窗口关闭、进程重启、DWM 重连后都会失效，
+/// 存下来的数字下次几乎必然指向别的窗口（甚至别的进程）——那是最坏的一种
+/// "看起来记住了，实际点错窗口"。这里只存稳定特征：窗口类名 + 标题。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct WindowMemory {
+    pub class_name: String,
+    pub title: String,
+}
+
+impl WindowMemory {
+    pub fn from_window(w: &WindowInfo) -> Self {
+        Self {
+            class_name: w.class_name.clone(),
+            title: w.title.clone(),
+        }
+    }
+}
+
+/// 在候选窗口里挑一个：优先命中记忆，否则取标题最长（信息量最大）的。
+///
+/// 记忆失效时逐级降级：同类名同标题 → 同类名（标题会随文档/标签变化）→ 最长标题。
+/// 这个函数是纯函数，多窗口选择行为因此可以被单测直接验证。
+pub fn pick_window<'a>(
+    windows: &'a [WindowInfo],
+    remembered: Option<&WindowMemory>,
+) -> Option<&'a WindowInfo> {
+    if windows.is_empty() {
+        return None;
+    }
+    if let Some(m) = remembered {
+        if let Some(w) = windows
+            .iter()
+            .find(|w| w.class_name == m.class_name && w.title == m.title)
+        {
+            return Some(w);
+        }
+        if let Some(w) = windows.iter().find(|w| w.class_name == m.class_name) {
+            return Some(w);
+        }
+    }
+    windows.iter().max_by_key(|w| w.title.chars().count())
+}
+
+// ── 记忆持久化（application_settings.nav_window_memory）──────────
+
+const WINDOW_MEMORY_KEY: &str = "nav_window_memory";
+
+fn memory_map(db: &Db) -> serde_json::Map<String, serde_json::Value> {
+    db.get_setting(WINDOW_MEMORY_KEY)
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+/// 读取某目标的窗口记忆（无记忆 / 数据损坏 → None，绝不猜测）。
+pub fn load_memory(db: &Db, target_id: &str) -> Option<WindowMemory> {
+    memory_map(db)
+        .get(target_id)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// 记录一次成功的窗口定位（仅在 nav_remember_window 开启时由 router 调用）。
+pub fn save_memory(db: &Db, target_id: &str, w: &WindowInfo) -> crate::error::AppResult<()> {
+    let mut map = memory_map(db);
+    map.insert(
+        target_id.to_string(),
+        serde_json::to_value(WindowMemory::from_window(w))?,
+    );
+    db.set_setting(WINDOW_MEMORY_KEY, serde_json::Value::Object(map))
+}
+
+/// 清除某目标的窗口记忆（目标删除 / 用户重置时调用）。
+pub fn forget_memory(db: &Db, target_id: &str) -> crate::error::AppResult<()> {
+    let mut map = memory_map(db);
+    if map.remove(target_id).is_some() {
+        db.set_setting(WINDOW_MEMORY_KEY, serde_json::Value::Object(map))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -223,12 +308,8 @@ mod imp {
             }
             let mut buf = [0u16; 1024];
             let mut size = buf.len() as u32;
-            let ok = QueryFullProcessImageNameW(
-                handle,
-                PROCESS_NAME_WIN32,
-                buf.as_mut_ptr(),
-                &mut size,
-            );
+            let ok =
+                QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut size);
             CloseHandle(handle);
             if ok != 0 && (size as usize) <= buf.len() {
                 Some(String::from_utf16_lossy(&buf[..size as usize]).to_ascii_lowercase())
@@ -347,5 +428,90 @@ mod tests {
     fn matchers_reject_empty_input() {
         assert!(windows_for_exe("").is_empty());
         assert!(windows_for_title("   ").is_empty());
+    }
+
+    // ── 问题 10：多窗口选择与记忆 ─────────────────────────────
+
+    fn win(hwnd: isize, title: &str, class: &str) -> WindowInfo {
+        WindowInfo {
+            hwnd,
+            pid: 1000 + hwnd as u32,
+            title: title.into(),
+            class_name: class.into(),
+            is_minimized: false,
+            exe_path: Some("c:\\app\\app.exe".into()),
+        }
+    }
+
+    #[test]
+    fn pick_window_prefers_exact_memory_then_class_then_longest_title() {
+        let wins = vec![
+            win(1, "项目 A — 编辑器", "Chrome_WidgetWin_1"),
+            win(2, "项目 B — 编辑器", "Chrome_WidgetWin_1"),
+            win(3, "设置", "Chrome_WidgetWin_1"),
+            win(4, "终端", "ConsoleWindowClass"),
+        ];
+        // 1) 记忆精确命中（同类名 + 同标题）
+        let m = WindowMemory {
+            class_name: "Chrome_WidgetWin_1".into(),
+            title: "项目 B — 编辑器".into(),
+        };
+        assert_eq!(pick_window(&wins, Some(&m)).unwrap().hwnd, 2);
+        // 2) 标题变了（用户切了标签）→ 仍按类名落到同一种窗口
+        let m2 = WindowMemory {
+            class_name: "ConsoleWindowClass".into(),
+            title: "早已关闭的终端".into(),
+        };
+        assert_eq!(pick_window(&wins, Some(&m2)).unwrap().hwnd, 4);
+        // 3) 类名也不认识 → 回退最长标题
+        let m3 = WindowMemory {
+            class_name: "Nope".into(),
+            title: "nope".into(),
+        };
+        let picked = pick_window(&wins, Some(&m3)).unwrap();
+        assert_eq!(
+            picked.title.chars().count(),
+            wins.iter().map(|w| w.title.chars().count()).max().unwrap()
+        );
+        // 4) 无记忆 → 最长标题；空集合 → None
+        assert!(pick_window(&wins, None).is_some());
+        assert!(pick_window(&[], Some(&m)).is_none());
+    }
+
+    #[test]
+    fn window_memory_persists_without_hwnd() {
+        let db = Db::open_in_memory().unwrap();
+        let w = win(424242, "我的项目 — 编辑器", "Chrome_WidgetWin_1");
+        assert!(load_memory(&db, "t1").is_none(), "初始无记忆");
+        save_memory(&db, "t1", &w).unwrap();
+        let m = load_memory(&db, "t1").expect("应能读回记忆");
+        assert_eq!(m.class_name, "Chrome_WidgetWin_1");
+        assert_eq!(m.title, "我的项目 — 编辑器");
+        // 落库内容里不得出现 HWND 数字（句柄是易变身份，绝不持久化）
+        let raw = db
+            .get_setting("nav_window_memory")
+            .unwrap()
+            .unwrap()
+            .to_string();
+        assert!(!raw.contains("424242"), "不得把 HWND 写入数据库: {}", raw);
+        // 不同目标互不干扰
+        assert!(load_memory(&db, "t2").is_none());
+        forget_memory(&db, "t1").unwrap();
+        assert!(load_memory(&db, "t1").is_none());
+    }
+
+    #[test]
+    fn window_memory_survives_corrupted_value() {
+        let db = Db::open_in_memory().unwrap();
+        // 人为写入损坏结构：必须安全降级为「无记忆」，不能 panic
+        db.set_setting(
+            "nav_window_memory",
+            serde_json::json!({ "t1": "not-an-object" }),
+        )
+        .unwrap();
+        assert!(load_memory(&db, "t1").is_none());
+        // 损坏后仍可正常写入新记忆
+        save_memory(&db, "t1", &win(1, "X", "Y")).unwrap();
+        assert_eq!(load_memory(&db, "t1").unwrap().title, "X");
     }
 }

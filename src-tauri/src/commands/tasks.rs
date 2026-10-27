@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use rusqlite::OptionalExtension;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::sync::Arc;
 use tauri::State;
 
@@ -11,6 +11,25 @@ use crate::db::{Db, RecurrenceRule, Task, TaskAgentLink};
 use crate::error::{AppError, AppResult};
 use crate::nlp;
 use crate::recurrence::RecurrenceRuleInput;
+
+/// 三态可空字段：区分「请求里没有这个键」与「显式传 null」。
+///
+/// 这是 v0.4 的一个 P0 修复所依赖的语义：
+/// - 键缺失   → `None`         → 保持库中原值（调用方没打算改它）
+/// - 显式 null → `Some(None)`  → 清空该字段
+/// - 具体值   → `Some(Some(v))`→ 写入新值
+///
+/// 旧实现用 `Option<String>`，两种意图被压成同一个 `None`，于是「只改标题」
+/// 的编辑请求会把独立的 remind_at / due_at 一起写成 NULL——用户设置的提醒
+/// 在保存一次标题后就消失了，且界面不会有任何提示。
+fn deserialize_optional_field<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    // 走到这里说明键存在：值本身（含 null）统一包一层 Some
+    Option::<T>::deserialize(deserializer).map(Some)
+}
 
 #[derive(Debug, Deserialize, Default)]
 pub struct TaskInput {
@@ -23,14 +42,21 @@ pub struct TaskInput {
     pub category: Option<String>,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
-    #[serde(default)]
-    pub due_at: Option<String>,
-    #[serde(default)]
-    pub remind_at: Option<String>,
+    /// 截止时间（三态：缺省=保持原值，null=清除，值=设置）
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub due_at: Option<Option<String>>,
+    /// 独立提醒时间（三态，语义同上）。与 due_at 相互独立：
+    /// 只设提醒不设截止、或两者不同，都必须原样保留。
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub remind_at: Option<Option<String>>,
     #[serde(default)]
     pub advance_minutes: Option<i64>,
-    #[serde(default)]
-    pub recurrence: Option<RecurrenceRuleInput>,
+    /// 重复规则（三态，语义同时间字段）：
+    /// 缺省 = 保持原规则；null = 取消重复；值 = 替换为新规则。
+    /// 旧实现把「没传」当成「取消重复」，于是任何不携带 recurrence 的局部更新
+    /// （例如只改标题）都会静默删掉用户的循环任务。
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub recurrence: Option<Option<RecurrenceRuleInput>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -54,14 +80,47 @@ fn check_title(t: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn parse_opt_utc(s: &Option<String>) -> AppResult<Option<DateTime<Utc>>> {
+/// 三态字段的统一构造：值 → `Some(Some(v))`，用于内部调用方。
+fn tri(v: Option<String>) -> Option<Option<String>> {
+    v.map(Some)
+}
+
+/// 时间字段的更新意图（由三态 `Option<Option<String>>` 解析而来）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FieldUpdate {
+    /// 请求未提及该字段：保持库中原值
+    Keep,
+    /// 显式清空
+    Clear,
+    /// 写入新值
+    Set(DateTime<Utc>),
+}
+
+fn parse_time_field(s: &Option<Option<String>>) -> AppResult<FieldUpdate> {
     match s {
-        None => Ok(None),
-        Some(v) if v.trim().is_empty() => Ok(None),
-        Some(v) => DateTime::parse_from_rfc3339(v)
-            .map(|dt| Some(dt.with_timezone(&Utc)))
+        None => Ok(FieldUpdate::Keep),
+        // 显式 null 或空字符串都表示「用户清空了这个时间」
+        Some(None) => Ok(FieldUpdate::Clear),
+        Some(Some(v)) if v.trim().is_empty() => Ok(FieldUpdate::Clear),
+        Some(Some(v)) => DateTime::parse_from_rfc3339(v)
+            .map(|dt| FieldUpdate::Set(dt.with_timezone(&Utc)))
             .map_err(|_| AppError::Validation(format!("非法时间: {}", v))),
     }
+}
+
+/// 把更新意图落到库中值：Keep 原样返回旧字符串（不做格式化，避免无谓漂移）。
+fn resolve_time(current: &Option<String>, upd: &FieldUpdate) -> Option<String> {
+    match upd {
+        FieldUpdate::Keep => current.clone(),
+        FieldUpdate::Clear => None,
+        FieldUpdate::Set(d) => Some(d.to_rfc3339()),
+    }
+}
+
+fn as_utc(s: &Option<String>) -> Option<DateTime<Utc>> {
+    s.as_deref()
+        .and_then(|v| DateTime::parse_from_rfc3339(v).ok())
+        .map(|dt| dt.with_timezone(&Utc))
 }
 
 fn local_day_bounds() -> (DateTime<Utc>, DateTime<Utc>) {
@@ -350,8 +409,9 @@ pub fn task_stats(db: State<'_, Arc<Db>>) -> AppResult<TaskStats> {
 /// 规则、任务、提醒行在同一个事务内写入：中途失败不会留下无提醒的任务或孤儿规则。
 pub fn create_task_inner(db: &Db, input: TaskInput) -> AppResult<Task> {
     check_title(&input.title)?;
-    let due = parse_opt_utc(&input.due_at)?;
-    let remind = parse_opt_utc(&input.remind_at)?;
+    // 新建：Keep 与 Clear 等价（库里本来就没有值）
+    let due = parse_time_field(&input.due_at)?;
+    let remind = parse_time_field(&input.remind_at)?;
     let priority = input.priority.unwrap_or(2).min(3);
     let advance = input.advance_minutes.unwrap_or(0).max(0);
     let tags = input.tags.unwrap_or_default();
@@ -360,9 +420,9 @@ pub fn create_task_inner(db: &Db, input: TaskInput) -> AppResult<Task> {
     }
     let now = now_iso();
     let id = uuid::Uuid::new_v4().to_string();
-    let due_iso = due.map(|d| d.to_rfc3339());
-    let remind_iso = remind.map(|d| d.to_rfc3339());
-    let anchor_date = due
+    let due_iso = resolve_time(&None, &due);
+    let remind_iso = resolve_time(&None, &remind);
+    let anchor_date = as_utc(&due_iso)
         .map(|d| {
             d.with_timezone(&Local)
                 .date_naive()
@@ -374,7 +434,7 @@ pub fn create_task_inner(db: &Db, input: TaskInput) -> AppResult<Task> {
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         let rule_id = match &input.recurrence {
-            Some(r) if !r.freq.is_empty() => insert_rule_tx(&tx, r, &anchor_date)?,
+            Some(Some(r)) if !r.freq.is_empty() => insert_rule_tx(&tx, r, &anchor_date)?,
             _ => None,
         };
         tx.execute(
@@ -412,24 +472,29 @@ pub fn update_task(db: State<'_, Arc<Db>>, id: String, input: TaskInput) -> AppR
 pub fn update_task_inner(db: &Db, id: &str, input: TaskInput) -> AppResult<Task> {
     check_title(&input.title)?;
     let existing = get_task(db, id)?;
-    let due = parse_opt_utc(&input.due_at)?;
-    let remind = parse_opt_utc(&input.remind_at)?;
+    // P0 修复：三态解析。此前 `Option<String>` 把「没传」与「清空」压成同一个
+    // None，编辑任务（例如只改标题）会把独立的 remind_at 写成 NULL，
+    // 用户的提醒被静默删除。现在只有显式 null 才会清空。
+    let due_upd = parse_time_field(&input.due_at)?;
+    let remind_upd = parse_time_field(&input.remind_at)?;
+    let due_iso = resolve_time(&existing.due_at, &due_upd);
+    let remind_iso = resolve_time(&existing.remind_at, &remind_upd);
+    let due_dt = as_utc(&due_iso);
     let priority = input.priority.unwrap_or(existing.priority).min(3);
     let advance = input
         .advance_minutes
         .unwrap_or(existing.advance_minutes)
         .max(0);
     let tags = input.tags.unwrap_or(existing.tags.clone());
-    let due_iso = due.map(|d| d.to_rfc3339());
-    let remind_iso = remind.map(|d| d.to_rfc3339());
     let now = now_iso();
 
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         let mut next_rule: Option<String> = existing.recurrence.as_ref().map(|r| r.id.clone());
         match &input.recurrence {
-            Some(r) if !r.freq.is_empty() => {
-                let anchor_date = due
+            // 值：替换为新规则（旧规则同事务删除，避免孤儿）
+            Some(Some(r)) if !r.freq.is_empty() => {
+                let anchor_date = due_dt
                     .map(|d| d.with_timezone(&Local).date_naive().format("%Y-%m-%d").to_string())
                     .unwrap_or_else(|| {
                         existing
@@ -444,12 +509,16 @@ pub fn update_task_inner(db: &Db, id: &str, input: TaskInput) -> AppResult<Task>
                 }
                 next_rule = rid;
             }
-            _ => {
+            // 显式 null：用户选择了「不重复」
+            // （空 freq 的对象也按「不重复」处理，与前端空表单一致）
+            Some(None) | Some(Some(_)) => {
                 if let Some(old) = &next_rule {
                     tx.execute("DELETE FROM recurrence_rules WHERE id = ?1", rusqlite::params![old])?;
                     next_rule = None;
                 }
             }
+            // 未提供：保持原规则不变（这就是本次修复的核心）
+            None => {}
         }
         tx.execute(
             "UPDATE tasks SET title = ?1, description = ?2, priority = ?3, category = ?4, tags = ?5,
@@ -553,10 +622,10 @@ pub fn create_from_quick_add(
         priority: None,
         category: None,
         tags: None,
-        due_at: due_at.or_else(|| parsed.due_at.map(|d| d.with_timezone(&Utc).to_rfc3339())),
+        due_at: tri(due_at.or_else(|| parsed.due_at.map(|d| d.with_timezone(&Utc).to_rfc3339()))),
         remind_at: None,
         advance_minutes: advance_minutes.or(parsed.advance_minutes),
-        recurrence: recurrence.or(parsed.recurrence),
+        recurrence: recurrence.or(parsed.recurrence).map(Some),
     };
     create_task(db, input)
 }
@@ -738,8 +807,8 @@ mod tests {
             db,
             TaskInput {
                 title: title.into(),
-                due_at,
-                recurrence,
+                due_at: tri(due_at),
+                recurrence: recurrence.map(Some),
                 ..Default::default()
             },
         )
@@ -754,7 +823,7 @@ mod tests {
             &db,
             TaskInput {
                 title: "带提前提醒".into(),
-                due_at: Some(due),
+                due_at: tri(Some(due)),
                 advance_minutes: Some(30),
                 ..Default::default()
             },
@@ -788,8 +857,8 @@ mod tests {
             &db,
             TaskInput {
                 title: "到期任务".into(),
-                due_at: Some(due.clone()),
-                remind_at: Some(due.clone()),
+                due_at: tri(Some(due.clone())),
+                remind_at: tri(Some(due.clone())),
                 ..Default::default()
             },
         )
@@ -879,8 +948,8 @@ mod tests {
             &t.id,
             TaskInput {
                 title: "改为一次性".into(),
-                due_at: Some(due),
-                recurrence: None,
+                due_at: tri(Some(due)),
+                recurrence: Some(None), // 显式 null = 取消重复
                 ..Default::default()
             },
         )
@@ -911,6 +980,258 @@ mod tests {
         assert_eq!(pending, 1);
     }
 
+    // ── 问题 3 回归：编辑任务不得吃掉独立提醒 ──────────────────
+
+    /// 只改标题（请求里根本没有 due_at / remind_at 键）：
+    /// 独立的 remind_at 必须原样保留，提醒行也要在。
+    #[test]
+    fn edit_title_only_keeps_independent_remind_at() {
+        let db = db();
+        let remind = (Utc::now() + chrono::Duration::hours(3)).to_rfc3339();
+        let t = create_task_inner(
+            &db,
+            TaskInput {
+                title: "只有提醒没有截止".into(),
+                remind_at: tri(Some(remind.clone())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(t.remind_at.as_deref(), Some(remind.as_str()));
+        assert!(t.due_at.is_none());
+
+        // 编辑：只给标题，两个时间字段都缺省
+        let updated = update_task_inner(
+            &db,
+            &t.id,
+            TaskInput {
+                title: "改了标题".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.title, "改了标题");
+        assert_eq!(
+            updated.remind_at.as_deref(),
+            Some(remind.as_str()),
+            "未提供 remind_at 时不得清空用户设置的独立提醒"
+        );
+        assert!(
+            updated.due_at.is_none(),
+            "原本没有截止，编辑后也不应凭空出现"
+        );
+        let pending: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM task_reminders WHERE task_id = ?1 AND fired = 0",
+                    rusqlite::params![t.id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(pending, 1, "提醒行必须仍然存在");
+    }
+
+    /// 显式 null 才清空；未提及的字段保持不动。
+    #[test]
+    fn explicit_null_clears_only_that_field() {
+        let db = db();
+        let due = (Utc::now() + chrono::Duration::days(2)).to_rfc3339();
+        let remind = (Utc::now() + chrono::Duration::hours(5)).to_rfc3339();
+        let t = create_task_inner(
+            &db,
+            TaskInput {
+                title: "两个时间都有".into(),
+                due_at: tri(Some(due.clone())),
+                remind_at: tri(Some(remind.clone())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let updated = update_task_inner(
+            &db,
+            &t.id,
+            TaskInput {
+                title: "只清提醒".into(),
+                remind_at: Some(None), // 显式 null
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(updated.remind_at.is_none(), "显式 null 应清空提醒");
+        assert_eq!(
+            updated.due_at.as_deref(),
+            Some(due.as_str()),
+            "未提及的截止时间不得被连带清空"
+        );
+    }
+
+    /// 截止 / 独立提醒 / 重复规则三者互不覆盖。
+    #[test]
+    fn due_remind_and_recurrence_do_not_overwrite_each_other() {
+        let db = db();
+        let due = (Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+        let remind = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let t = create_task_inner(
+            &db,
+            TaskInput {
+                title: "三件套".into(),
+                due_at: tri(Some(due.clone())),
+                remind_at: tri(Some(remind.clone())),
+                advance_minutes: Some(15),
+                recurrence: Some(Some(crate::recurrence::RecurrenceRuleInput {
+                    freq: "weekly".into(),
+                    interval: 1,
+                    by_weekday: vec![2],
+                    by_monthday: None,
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(t.recurrence.is_some());
+
+        // 只改标题：三者全部保持
+        let u1 = update_task_inner(
+            &db,
+            &t.id,
+            TaskInput {
+                title: "三件套（改名）".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(u1.due_at.as_deref(), Some(due.as_str()));
+        assert_eq!(u1.remind_at.as_deref(), Some(remind.as_str()));
+        assert_eq!(u1.advance_minutes, 15);
+        assert_eq!(
+            u1.recurrence.as_ref().map(|r| r.freq.clone()),
+            Some("weekly".to_string()),
+            "重复规则不得因编辑而丢失"
+        );
+
+        // 只改截止：提醒与规则仍在，且提醒行按新截止重建（due/advance/custom 各一条）
+        let due2 = (Utc::now() + chrono::Duration::days(3)).to_rfc3339();
+        let u2 = update_task_inner(
+            &db,
+            &t.id,
+            TaskInput {
+                title: "三件套（改截止）".into(),
+                due_at: tri(Some(due2.clone())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(u2.due_at.as_deref(), Some(due2.as_str()));
+        assert_eq!(
+            u2.remind_at.as_deref(),
+            Some(remind.as_str()),
+            "改截止不得清掉独立提醒"
+        );
+        assert!(u2.recurrence.is_some(), "改截止不得清掉重复规则");
+        let kinds: Vec<(String, i64)> = db
+            .with_conn(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT kind, COUNT(*) FROM task_reminders
+                     WHERE task_id = ?1 AND fired = 0 GROUP BY kind ORDER BY kind",
+                )?;
+                let rows =
+                    stmt.query_map(rusqlite::params![t.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(
+            kinds,
+            vec![
+                ("advance".to_string(), 1),
+                ("custom".to_string(), 1),
+                ("due".to_string(), 1),
+            ],
+            "重建后应恰好是 提前/独立/截止 三类各一条，实际 {:?}",
+            kinds
+        );
+    }
+
+    // ── 前后端 IPC 契约（真实载荷反序列化）────────────────────
+
+    /// 模拟 TaskEditor.onSave 实际发出的 JSON：
+    /// 未改动时间字段时**不带键**，选择「不重复」时显式 `recurrence: null`。
+    #[test]
+    fn ipc_payload_omitting_time_keys_keeps_them() {
+        let payload = serde_json::json!({
+            "title": "只改标题",
+            "description": "",
+            "priority": 2,
+            "category": "",
+            "tags": [],
+            "advance_minutes": 0,
+            "recurrence": null
+        });
+        let input: TaskInput = serde_json::from_value(payload).expect("前端载荷必须可反序列化");
+        assert!(input.due_at.is_none(), "缺键 = 保持原值");
+        assert!(input.remind_at.is_none(), "缺键 = 保持原值");
+        assert_eq!(
+            input.recurrence,
+            Some(None),
+            "显式 null = 用户选择不重复（与缺键语义不同）"
+        );
+    }
+
+    /// 用户清空时间输入框：前端发 `due_at: null` → 后端应理解为「清空」。
+    #[test]
+    fn ipc_payload_explicit_null_means_clear() {
+        let payload = serde_json::json!({
+            "title": "清空截止",
+            "due_at": null,
+            "remind_at": "2026-11-01T10:00:00+08:00"
+        });
+        let input: TaskInput = serde_json::from_value(payload).unwrap();
+        assert_eq!(input.due_at, Some(None), "显式 null = 清空");
+        assert!(matches!(input.remind_at, Some(Some(_))), "有值 = 设置");
+    }
+
+    /// 端到端：同一份载荷走完 create → update，提醒与规则都不丢。
+    #[test]
+    fn ipc_roundtrip_preserves_schedule_semantics() {
+        let db = db();
+        let due = (Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+        let remind = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let created = create_task_inner(
+            &db,
+            serde_json::from_value(serde_json::json!({
+                "title": "契约任务",
+                "due_at": due,
+                "remind_at": remind,
+                "advance_minutes": 10,
+                "recurrence": { "freq": "daily", "interval": 1, "by_weekday": [], "by_monthday": null }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // 前端「只改标题」的真实载荷
+        let updated = update_task_inner(
+            &db,
+            &created.id,
+            serde_json::from_value(serde_json::json!({
+                "title": "契约任务（改名）",
+                "description": "",
+                "priority": 2,
+                "category": "",
+                "tags": [],
+                "advance_minutes": 10,
+                "recurrence": { "freq": "daily", "interval": 1, "by_weekday": [], "by_monthday": null }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated.due_at.as_deref(), Some(due.as_str()));
+        assert_eq!(updated.remind_at.as_deref(), Some(remind.as_str()));
+        assert_eq!(updated.advance_minutes, 10);
+        assert!(updated.recurrence.is_some());
+    }
+
     #[test]
     fn update_task_replaces_recurrence_with_new_rule() {
         let db = db();
@@ -931,13 +1252,13 @@ mod tests {
             &t.id,
             TaskInput {
                 title: "每天日报".into(),
-                due_at: t.due_at.clone(),
-                recurrence: Some(crate::recurrence::RecurrenceRuleInput {
+                due_at: tri(t.due_at.clone()),
+                recurrence: Some(Some(crate::recurrence::RecurrenceRuleInput {
                     freq: "weekly".into(),
                     interval: 2,
                     by_weekday: vec![1, 3],
                     by_monthday: None,
-                }),
+                })),
                 ..Default::default()
             },
         )

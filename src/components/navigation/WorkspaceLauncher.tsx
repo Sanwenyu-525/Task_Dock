@@ -6,13 +6,14 @@
 //! - 用户可随时取消尚未执行的目标（已发出的启动无法撤回）；
 //! - 明确区分「全部成功 / 部分成功 / 存在失败」；任务完成状态不受影响。
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Rocket, Ban, CheckCircle2, AlertTriangle, CircleDashed, Loader2 } from "lucide-react";
 import type { Task } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { navNavigate, verificationLabel, type NavigationResult } from "../../lib/navigation";
+import { summarizeWorkspace } from "../../lib/workspace";
 
 type ItemState =
   | { phase: "pending" }
@@ -26,13 +27,28 @@ export default function WorkspaceLauncher() {
   const workspace = useUiStore((s) => s.workspace);
   const closeWorkspace = useUiStore((s) => s.closeWorkspace);
   const settings = useSettingsStore((s) => s.settings);
-  const links = useNavigationStore((s) => (workspace.task ? s.linksByTask[workspace.task.id] : undefined)) ?? [];
   const [states, setStates] = useState<ItemState[]>([]);
   const [running, setRunning] = useState(false);
   const cancelRef = useRef(false);
   const task: Task | null = workspace.task;
+  const taskId = task?.id ?? null;
+
+  // 任务切换 / 重新打开：清空上一次的执行结果。
+  // 组件常驻挂载（App 里固定渲染），不清理就会出现「打开 A 任务的工作区，
+  // 看到的是上次 B 任务的成功/失败列表」——最容易被误读成真实执行结果。
+  useEffect(() => {
+    setStates([]);
+    setRunning(false);
+    cancelRef.current = false;
+  }, [taskId, workspace.open]);
 
   const cap = settings?.nav_workspace_max ?? 8;
+  // selector 只取稳定引用，列表在 useMemo 派生（避免每次渲染新建数组触发无限重渲染）
+  const linksByTask = useNavigationStore((s) => s.linksByTask);
+  const links = useMemo(
+    () => linksByTask[workspace.task?.id ?? ""] ?? [],
+    [linksByTask, workspace.task],
+  );
   const list = useMemo(() => links.slice(0, cap), [links, cap]);
   const truncated = links.length > cap;
 
@@ -101,18 +117,21 @@ export default function WorkspaceLauncher() {
     setRunning(false);
   }
 
-  const done = states.filter((s) => s.phase === "done");
-  const ok = done.filter((s) => s.phase === "done" && s.result.success).length;
-  const failed = done.length - ok;
-  const summary = !running
-    ? done.length === 0
+  /**
+   * 统计走纯函数（可单测）：分母恒为「本次计划启动的目标数」，
+   * 成功 / 失败 / 取消三种终态严格分开——取消的目标绝不计入成功。
+   */
+  const stats = summarizeWorkspace(
+    states.map((s) =>
+      s.phase === "done" ? { phase: "done" as const, success: s.result.success } : s,
+    ),
+    list.length,
+    running,
+  );
+  const summary =
+    stats.text === null
       ? null
-      : failed === 0
-        ? { text: `全部成功（${ok}/${list.length}）`, tone: "ok" as const }
-        : ok > 0
-          ? { text: `部分成功：${ok} 成功 · ${failed} 失败${states.some((s) => s.phase === "skipped") ? " · 已取消部分" : ""}`, tone: "warn" as const }
-          : { text: `全部失败（${failed} 个目标）`, tone: "bad" as const }
-    : null;
+      : { text: stats.text, tone: stats.tone as "ok" | "warn" | "bad" };
 
   return (
     <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && !running && closeWorkspace()}>

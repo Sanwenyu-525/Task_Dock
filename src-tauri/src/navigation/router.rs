@@ -11,8 +11,9 @@ use tauri::AppHandle;
 use super::target_resolver::{self, NavTargetRow};
 use super::window_manager::{self, FocusOutcome};
 use super::{
-    NavigationResult, VerificationLevel, ACTION_FOCUS_WINDOW, ACTION_OPEN_APP, ACTION_OPEN_DIRECTORY,
-    ACTION_OPEN_FILE, ACTION_OPEN_URL, ACTION_REVEAL_FILE, ACTION_RESUME_SESSION,
+    NavigationResult, VerificationLevel, ACTION_FOCUS_WINDOW, ACTION_OPEN_APP,
+    ACTION_OPEN_DIRECTORY, ACTION_OPEN_FILE, ACTION_OPEN_URL, ACTION_OPEN_WORKSPACE,
+    ACTION_RESUME_SESSION, ACTION_REVEAL_FILE,
 };
 use crate::db::{Db, Settings};
 use crate::error::AppError;
@@ -66,7 +67,7 @@ pub(crate) fn execute_with_ctx(
     options: &NavigateOptions,
 ) -> NavigationResult {
     match t.target_type.as_str() {
-        "application" => navigate_application(t, settings, options),
+        "application" => navigate_application(db, t, settings, options),
         "url" => navigate_url(db, t, settings, app, options),
         "file" => navigate_file(t, app, options),
         "directory" => navigate_directory(t),
@@ -78,6 +79,7 @@ pub(crate) fn execute_with_ctx(
 // ── L1/L2：应用 ─────────────────────────────────────────────
 
 pub(crate) fn navigate_application(
+    db: &Db,
     t: &NavTargetRow,
     settings: &Settings,
     options: &NavigateOptions,
@@ -131,9 +133,25 @@ pub(crate) fn navigate_application(
     }
 
     if prefer_focus {
-        if let Some(w) = windows.iter().max_by_key(|w| w.title.chars().count()) {
+        // 多窗口选择：用户显式指定 > 记忆的窗口身份 > 标题最长
+        // （记忆只存类名+标题，不存 HWND——见 window_manager::WindowMemory）
+        let remembered = if settings.nav_remember_window {
+            window_manager::load_memory(db, &t.id)
+        } else {
+            None
+        };
+        let chosen = options
+            .window_hwnd
+            .and_then(|hwnd| windows.iter().find(|w| w.hwnd == hwnd))
+            .or_else(|| window_manager::pick_window(&windows, remembered.as_ref()));
+        if let Some(w) = chosen {
             return match window_manager::focus_window(w.hwnd) {
                 Ok(FocusOutcome::Confirmed) => {
+                    // 只有真正确认置前后才更新记忆：把"没成功的窗口"记下来
+                    // 会让下次跳转继续选错。
+                    if settings.nav_remember_window {
+                        let _ = window_manager::save_memory(db, &t.id, w);
+                    }
                     let multi = windows.len() > 1;
                     NavigationResult {
                         success: true,
@@ -159,9 +177,7 @@ pub(crate) fn navigate_application(
                     reason: Some("切换已请求，但未能在超时内核实前台状态".into()),
                     verification_level: "requested-unverified".into(),
                 },
-                Err(e) => {
-                    NavigationResult::failure(&t.id, ACTION_FOCUS_WINDOW, e.reason_cn())
-                }
+                Err(e) => NavigationResult::failure(&t.id, ACTION_FOCUS_WINDOW, e.reason_cn()),
             };
         }
         // 无现有窗口：按偏好决定是否启动
@@ -175,15 +191,11 @@ pub(crate) fn navigate_application(
     }
 
     // L1 启动（结构化参数数组，不经过 shell）
-    let args: Vec<String> = if t.launch_args.trim().is_empty() {
-        Vec::new()
-    } else {
-        t.launch_args
-            .split_whitespace()
-            .map(|s| s.trim_matches('"').to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    };
+    // 参数按 Windows 命令行规则切分：带空格的引号路径保持为一个参数
+    let args: Vec<String> = super::split_launch_args(&t.launch_args);
+    if args.iter().any(|a| a.chars().any(|c| c.is_control())) {
+        return NavigationResult::failure(&t.id, ACTION_OPEN_APP, "启动参数含控制字符，已拒绝执行");
+    }
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(&args);
     if !t.working_dir.is_empty() && std::path::Path::new(&t.working_dir).is_dir() {
@@ -191,21 +203,49 @@ pub(crate) fn navigate_application(
     }
     match cmd.spawn() {
         Ok(_) => {
-            // 进程启动 ≠ 窗口出现：短等确认窗口（不阻塞过久）
+            // 进程启动 ≠ 窗口出现 ≠ 窗口已置前，三者必须分别如实标注
             let waited =
                 window_manager::wait_for_window_by_exe(&exe.to_string_lossy(), LAUNCH_WINDOW_WAIT);
             match waited {
                 Some(w) => {
-                    // 新窗口通常自带前台；仅在未置前时补一次切换
-                    let _ = window_manager::focus_window(w.hwnd);
-                    NavigationResult {
-                        success: true,
-                        requested_action: ACTION_OPEN_APP.into(),
-                        actual_action: Some(ACTION_OPEN_APP.into()),
-                        fallback_used: false,
-                        target_id: t.id.clone(),
-                        reason: None,
-                        verification_level: VerificationLevel::WindowConfirmed.as_str().into(),
+                    let focus = window_manager::focus_window(w.hwnd);
+                    match focus {
+                        Ok(FocusOutcome::Confirmed) => {
+                            if settings.nav_remember_window {
+                                let _ = window_manager::save_memory(db, &t.id, &w);
+                            }
+                            NavigationResult {
+                                success: true,
+                                requested_action: ACTION_OPEN_APP.into(),
+                                actual_action: Some(ACTION_OPEN_APP.into()),
+                                fallback_used: false,
+                                target_id: t.id.clone(),
+                                reason: None,
+                                verification_level: VerificationLevel::WindowConfirmed
+                                    .as_str()
+                                    .into(),
+                            }
+                        }
+                        // 窗口确实出现了，但没能置前：既不能报 window-confirmed，
+                        // 也不该报失败——如实给「窗口已出现，未置前」
+                        Ok(FocusOutcome::Unverified) => NavigationResult {
+                            success: true,
+                            requested_action: ACTION_OPEN_APP.into(),
+                            actual_action: Some(ACTION_OPEN_APP.into()),
+                            fallback_used: false,
+                            target_id: t.id.clone(),
+                            reason: Some("窗口已出现，但置前未在超时内核实".into()),
+                            verification_level: VerificationLevel::WindowVisible.as_str().into(),
+                        },
+                        Err(e) => NavigationResult {
+                            success: true,
+                            requested_action: ACTION_OPEN_APP.into(),
+                            actual_action: Some(ACTION_OPEN_APP.into()),
+                            fallback_used: false,
+                            target_id: t.id.clone(),
+                            reason: Some(format!("窗口已出现，但未能置前：{}", e.reason_cn())),
+                            verification_level: VerificationLevel::WindowVisible.as_str().into(),
+                        },
                     }
                 }
                 None => NavigationResult {
@@ -248,9 +288,8 @@ fn navigate_url(
         let browser_target = target_resolver::list_targets(db, true)
             .ok()
             .and_then(|list| {
-                list.into_iter().find(|x| {
-                    x.app_key == browser_key && x.target_type == "application"
-                })
+                list.into_iter()
+                    .find(|x| x.app_key == browser_key && x.target_type == "application")
             })
             .filter(|x| super::validate_exe_path(&x.exe_path).is_ok());
         if let Some(bt) = browser_target {
@@ -274,11 +313,7 @@ fn navigate_url(
                 };
             }
             if !options.fallback.unwrap_or(settings.nav_fallback) {
-                return NavigationResult::failure(
-                    &t.id,
-                    ACTION_OPEN_URL,
-                    "指定的浏览器启动失败",
-                );
+                return NavigationResult::failure(&t.id, ACTION_OPEN_URL, "指定的浏览器启动失败");
             }
         }
     }
@@ -310,7 +345,10 @@ fn navigate_file(t: &NavTargetRow, app: &AppHandle, options: &NavigateOptions) -
         Err(e) => return NavigationResult::failure(&t.id, ACTION_OPEN_FILE, e.to_string()),
     };
     use tauri_plugin_opener::OpenerExt;
-    match app.opener().open_path(p.to_string_lossy().as_ref(), None::<&str>) {
+    match app
+        .opener()
+        .open_path(p.to_string_lossy().as_ref(), None::<&str>)
+    {
         Ok(()) => NavigationResult {
             success: true,
             requested_action: ACTION_OPEN_FILE.into(),
@@ -320,7 +358,9 @@ fn navigate_file(t: &NavTargetRow, app: &AppHandle, options: &NavigateOptions) -
             reason: Some("已交给系统文件关联程序打开".into()),
             verification_level: VerificationLevel::Delegated.as_str().into(),
         },
-        Err(e) => NavigationResult::failure(&t.id, ACTION_OPEN_FILE, format!("打开文件失败: {}", e)),
+        Err(e) => {
+            NavigationResult::failure(&t.id, ACTION_OPEN_FILE, format!("打开文件失败: {}", e))
+        }
     }
 }
 
@@ -340,9 +380,11 @@ fn reveal_in_explorer(t: &NavTargetRow) -> NavigationResult {
             reason: None,
             verification_level: VerificationLevel::Delegated.as_str().into(),
         },
-        Err(e) => {
-            NavigationResult::failure(&t.id, ACTION_REVEAL_FILE, format!("资源管理器启动失败: {}", e))
-        }
+        Err(e) => NavigationResult::failure(
+            &t.id,
+            ACTION_REVEAL_FILE,
+            format!("资源管理器启动失败: {}", e),
+        ),
     }
 }
 
@@ -361,9 +403,11 @@ fn navigate_directory(t: &NavTargetRow) -> NavigationResult {
             reason: None,
             verification_level: VerificationLevel::Delegated.as_str().into(),
         },
-        Err(e) => {
-            NavigationResult::failure(&t.id, ACTION_OPEN_DIRECTORY, format!("资源管理器启动失败: {}", e))
-        }
+        Err(e) => NavigationResult::failure(
+            &t.id,
+            ACTION_OPEN_DIRECTORY,
+            format!("资源管理器启动失败: {}", e),
+        ),
     }
 }
 
@@ -375,6 +419,25 @@ fn navigate_agent_session(
     settings: &Settings,
     options: &NavigateOptions,
 ) -> NavigationResult {
+    // L3：该会话所在的工作区目录（仅 IDE 类 Agent 有接口）。
+    // 目录来自用户确认过的目标配置（working_dir），执行前仍要求真实存在。
+    if options.action.as_deref() == Some(ACTION_OPEN_WORKSPACE) {
+        let dir = if !t.working_dir.trim().is_empty() {
+            t.working_dir.trim()
+        } else {
+            t.path.trim()
+        };
+        if dir.is_empty() {
+            return NavigationResult::failure(
+                &t.id,
+                ACTION_OPEN_WORKSPACE,
+                "该 Agent 会话目标未登记工作区目录",
+            );
+        }
+        let mut r = super::agent_navigation::open_workspace(&t.agent_source_id, dir);
+        r.target_id = t.id.clone();
+        return r;
+    }
     // 会话行必须仍存在于本地观测库（防外部伪造 ID）
     let exists: i64 = db
         .with_conn(|conn| {
@@ -389,10 +452,8 @@ fn navigate_agent_session(
     if exists == 0 {
         let fallback = options.fallback.unwrap_or(settings.nav_fallback);
         if fallback {
-            let f = super::agent_navigation::focus_agent(
-                &t.agent_source_id,
-                settings.nav_allow_launch,
-            );
+            let f =
+                super::agent_navigation::focus_agent(&t.agent_source_id, settings.nav_allow_launch);
             if f.success {
                 let mut r = f;
                 r.target_id = t.id.clone();
@@ -408,7 +469,8 @@ fn navigate_agent_session(
             "该会话已不存在（可能被宿主清理）",
         );
     }
-    let mut r = super::agent_navigation::resume_session(db, &t.agent_source_id, &t.agent_session_id);
+    let mut r =
+        super::agent_navigation::resume_session(db, &t.agent_source_id, &t.agent_session_id);
     // agent_navigation 以 source:id 作为 target_id；统一回写目标行 ID 供日志关联
     r.target_id = t.id.clone();
     r
@@ -420,6 +482,36 @@ mod tests {
 
     fn db() -> Db {
         Db::open_in_memory().unwrap()
+    }
+
+    /// 记录某 exe 当前已有窗口句柄，供测试只清理「本次新出现」的窗口。
+    #[cfg(windows)]
+    fn hwnd_snapshot(exe: &str) -> std::collections::HashSet<isize> {
+        window_manager::windows_for_exe(exe)
+            .into_iter()
+            .map(|w| w.hwnd)
+            .collect()
+    }
+
+    /// 只终止本次测试新拉起的进程（按 PID）。
+    ///
+    /// 旧实现用 `taskkill /IM notepad.exe /F`：那会连**用户自己开着的**记事本
+    /// 一起强杀（用户未保存的笔记直接丢失）。这里按 PID 精确清理，
+    /// 快照里已存在的窗口一律不碰。
+    #[cfg(windows)]
+    fn kill_new_windows(exe: &str, before: &std::collections::HashSet<isize>) {
+        let lower = exe.to_ascii_lowercase();
+        let victims: Vec<u32> = window_manager::top_windows_force()
+            .into_iter()
+            .filter(|w| w.exe_path.as_deref() == Some(lower.as_str()))
+            .filter(|w| !before.contains(&w.hwnd))
+            .map(|w| w.pid)
+            .collect();
+        for pid in victims {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .output();
+        }
     }
 
     #[test]
@@ -435,7 +527,7 @@ mod tests {
         })
         .unwrap();
         let t = target_resolver::get_target(&d, "gone").unwrap().unwrap();
-        let r = navigate_application(&t, &Settings::default(), &NavigateOptions::default());
+        let r = navigate_application(&d, &t, &Settings::default(), &NavigateOptions::default());
         assert!(!r.success, "exe 消失后不得假装跳转成功");
         assert!(r.reason.unwrap().contains("卸载或迁移"));
     }
@@ -463,7 +555,10 @@ mod tests {
         })
         .unwrap();
         let t2 = target_resolver::get_target(&d, &t.id).unwrap().unwrap();
-        assert!(super::super::validate_url(&t2.url).is_err(), "执行时校验必须拦住篡改");
+        assert!(
+            super::super::validate_url(&t2.url).is_err(),
+            "执行时校验必须拦住篡改"
+        );
     }
 
     #[cfg(windows)]
@@ -471,56 +566,61 @@ mod tests {
     fn notepad_launch_prefers_focus_then_launches() {
         // 真机测试：notepad.exe 存在于所有 Windows；
         // 已运行 → 唤醒；未运行 → 启动并等待窗口（验证级别必须如实）
+        const EXE: &str = "C:\\Windows\\notepad.exe";
+        let before = hwnd_snapshot(EXE);
         let d = db();
         let t = target_resolver::save_target(
             &d,
             &target_resolver::TargetInput {
                 target_type: "application".into(),
                 display_name: "记事本(测试)".into(),
-                exe_path: "C:\\Windows\\notepad.exe".into(),
+                exe_path: EXE.into(),
                 ..Default::default()
             },
         )
         .unwrap();
-        let r = navigate_application(&t, &Settings::default(), &NavigateOptions::default());
+        let r = navigate_application(&d, &t, &Settings::default(), &NavigateOptions::default());
         assert!(r.success, "notepad 应可启动/唤醒: {:?}", r.reason);
         assert!(
-            r.verification_level == "window-confirmed" || r.verification_level == "process-spawned",
+            r.verification_level == "window-confirmed"
+                || r.verification_level == "window-visible"
+                || r.verification_level == "process-spawned",
             "验证级别必须如实（实际: {}）",
             r.verification_level
         );
-        // 清理测试拉起的记事本
-        let _ = std::process::Command::new("taskkill")
-            .args(["/IM", "notepad.exe", "/F"])
-            .output();
+        // 只清理本测试新拉起的记事本；用户原本开着的记事本不受影响
+        kill_new_windows(EXE, &before);
     }
 
     #[cfg(windows)]
     #[test]
     fn launch_disallowed_reports_failure_or_focus_only() {
+        const EXE: &str = "C:\\Windows\\notepad.exe";
+        let before = hwnd_snapshot(EXE);
         let d = db();
         let t = target_resolver::save_target(
             &d,
             &target_resolver::TargetInput {
                 target_type: "application".into(),
                 display_name: "记事本(禁启测试)".into(),
-                exe_path: "C:\\Windows\\notepad.exe".into(),
+                exe_path: EXE.into(),
                 ..Default::default()
             },
         )
         .unwrap();
-        let mut settings = Settings::default();
-        settings.nav_allow_launch = false;
+        let settings = Settings {
+            nav_allow_launch: false,
+            ..Default::default()
+        };
         // notepad 未运行时 → 拒绝启动；已运行 → 唤醒成功（两种都合法，但不能启动新进程）
-        let r = navigate_application(&t, &settings, &NavigateOptions::default());
+        let r = navigate_application(&d, &t, &settings, &NavigateOptions::default());
         if r.success {
             assert_eq!(r.actual_action.as_deref(), Some("focus_window"));
         } else {
             assert!(r.reason.unwrap().contains("不允许"));
         }
-        let _ = std::process::Command::new("taskkill")
-            .args(["/IM", "notepad.exe", "/F"])
-            .output();
+        // 禁止启动的用例本不应产生新窗口；仍做一次精确清理以防万一
+        kill_new_windows(EXE, &before);
     }
 
     #[test]
@@ -537,8 +637,10 @@ mod tests {
         .unwrap();
         let t = target_resolver::get_target(&d, "s1").unwrap().unwrap();
         // 会话在本地不存在 → 失败（禁降级时）
-        let mut opts = NavigateOptions::default();
-        opts.fallback = Some(false);
+        let opts = NavigateOptions {
+            fallback: Some(false),
+            ..Default::default()
+        };
         let r = navigate_agent_session(&d, &t, &Settings::default(), &opts);
         assert!(!r.success);
         assert!(r.reason.unwrap().contains("不存在"));

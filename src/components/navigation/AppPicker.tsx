@@ -5,17 +5,25 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  X, Search, RefreshCw, Plus, Star, Clock, Globe, FolderOpen, Monitor, AppWindow,
+  X, Search, RefreshCw, Plus, Star, Clock, Globe, FolderOpen, Monitor, AppWindow, Bot,
 } from "lucide-react";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useAgentsStore } from "../../store/useAgentsStore";
+import type { AgentSession } from "../../lib/bridge";
 import {
-  navLinkTask, navListWindows, navSaveTarget,
+  navLinkTask, navListWindows, navSaveTarget, navSaveAgentSessionTarget,
   CATEGORY_LABELS, avatarHue,
   type DiscoveredApp, type NavTarget, type TargetInput, type WindowInfo,
 } from "../../lib/navigation";
 
 const CATEGORY_ORDER = ["all", "browser", "im", "music", "dev", "file", "uwp", "other"];
+
+/**
+ * 稳定的空数组引用：zustand v5 用严格相等比较 selector 结果，
+ * 在 selector 里 `?? []` 每次都会新建数组，会触发无限重渲染（白屏的经典成因）。
+ */
+const EMPTY_SESSIONS: AgentSession[] = [];
 
 interface Props {
   /** 关联模式：非空 = 选择后直接关联该任务 */
@@ -32,16 +40,21 @@ export default function AppPicker({ taskId, onSelect, onClose }: Props) {
   const [category, setCategory] = useState("all");
   const [manualOpen, setManualOpen] = useState(false);
   const [windows, setWindows] = useState<WindowInfo[] | null>(null);
+  const [agentOpen, setAgentOpen] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const sessions = useAgentsStore((s) => s.snapshot?.sessions ?? EMPTY_SESSIONS);
 
   useEffect(() => {
     if (!scan) loadApps(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 已保存目标 → 已关联去重（同任务已关联的标记，不重复加）
-  const linkedKeys = useNavigationStore((s) =>
-    taskId ? new Set((s.linksByTask[taskId] ?? []).map((l) => l.target.app_key)) : new Set<string>(),
+  // 已保存目标 → 已关联去重（同任务已关联的标记，不重复加）。
+  // 注意：selector 必须返回稳定引用（zustand v5 严格相等），新 Set 在 useMemo 里建。
+  const linksByTask = useNavigationStore((s) => s.linksByTask);
+  const linkedKeys = useMemo(
+    () => new Set((linksByTask[taskId ?? ""] ?? []).map((l) => l.target.app_key)),
+    [linksByTask, taskId],
   );
 
   const apps = useMemo(() => {
@@ -89,22 +102,46 @@ export default function AppPicker({ taskId, onSelect, onClose }: Props) {
   }
 
   async function afterPick(t: NavTarget, msg: string) {
-    if (taskId) {
-      // 已关联过则提示而非重复关联
-      if (linkedKeys.has(t.app_key)) {
-        showToast(`「${t.display_name}」已关联该任务`, { kind: "info" });
+    try {
+      if (taskId) {
+        // 已关联过则提示而非重复关联
+        if (linkedKeys.has(t.app_key)) {
+          showToast(`「${t.display_name}」已关联该任务`, { kind: "info" });
+          onClose();
+          return;
+        }
+        await navLinkTask(taskId, t.id, false, "default");
+        await useNavigationStore.getState().loadTaskLinks();
+        showToast(msg, { kind: "success" });
         onClose();
-        return;
+      } else if (onSelect) {
+        onSelect(t);
+        onClose();
+      } else {
+        onClose();
       }
-      await navLinkTask(taskId, t.id, false, "default");
-      await useNavigationStore.getState().loadTaskLinks();
-      showToast(msg, { kind: "success" });
-      onClose();
-    } else if (onSelect) {
-      onSelect(t);
-      onClose();
-    } else {
-      onClose();
+    } catch (e) {
+      // 关联失败必须可见：目标已保存，用户可重试关联
+      showToast(`已保存目标，但关联失败：${String(e)}`, { kind: "error" });
+    }
+  }
+
+  /**
+   * 把 Agent 会话登记为可信目标并关联任务。
+   * 只传 (source_id, session_id)：会话身份由后端查库核验，
+   * 前端不构造路径、不编造显示名。
+   */
+  async function pickAgentSession(s: AgentSession) {
+    if (busyKey) return;
+    const key = `${s.source_id}:${s.external_id}`;
+    setBusyKey(key);
+    try {
+      const t = await navSaveAgentSessionTarget(s.source_id, s.external_id);
+      await afterPick(t, `已关联会话「${t.display_name}」`);
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    } finally {
+      setBusyKey(null);
     }
   }
 
@@ -222,6 +259,39 @@ export default function AppPicker({ taskId, onSelect, onClose }: Props) {
             )}
           </div>
 
+          {/* Agent 会话快捷区（v0.4：会话可作为导航目标，支持恢复/工作区跳转） */}
+          <div className="picker-windows">
+            <button className="link-btn" onClick={() => setAgentOpen((v) => !v)}>
+              <Bot size={11} /> {agentOpen ? "收起 Agent 会话" : "从 Agent 会话选择…"}
+            </button>
+            {agentOpen && (
+              <div className="picker-window-list">
+                {sessions.length === 0 && (
+                  <div className="empty-hint">暂无已观测的 Agent 会话（需先有真实事件上报）</div>
+                )}
+                {sessions.slice(0, 12).map((s) => {
+                  const key = `${s.source_id}:${s.external_id}`;
+                  return (
+                    <button
+                      key={s.id}
+                      className="picker-window-item"
+                      disabled={!!busyKey}
+                      onClick={() => pickAgentSession(s)}
+                      title={`${s.source_id} · ${s.external_id}`}
+                    >
+                      <span className="picker-window-title">
+                        {s.title || s.external_id}
+                      </span>
+                      <span className="picker-window-exe">
+                        {busyKey === key ? "登记中…" : s.source_id}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* 应用列表 */}
           <div className="picker-list" role="listbox" aria-label="已安装软件">
             {scan === null || scanning ? (
@@ -263,9 +333,9 @@ export default function AppPicker({ taskId, onSelect, onClose }: Props) {
           {/* 手动添加 */}
           {manualOpen && (
             <ManualAddForm
-              onSaved={(t, msg) => {
+              onSaved={async (t, msg) => {
                 setManualOpen(false);
-                afterPick(t, msg);
+                await afterPick(t, msg);
               }}
               showToast={showToast}
             />
