@@ -31,3 +31,6 @@ nul
 # Release installers & intermediate asset bundles
 release/
 taskdock_icons_tauri_ready.zip
+
+# Local acceptance-test artifacts (real-DB safety backup, MSI logs)
+.acceptance-backup/
