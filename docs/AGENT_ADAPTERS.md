@@ -35,8 +35,14 @@ Authorization: Bearer <http_token>      # 令牌见「设置 → Agent 接入」
 Content-Type: application/json
 ```
 
-- 请求体可为单个事件对象或事件数组；响应 `{"accepted": n, "rejected": m}`；
-- 仅绑定回环地址；请求体上限 64KB；健康检查 `GET /api/v1/health`（无需鉴权）；
+- 请求体可为单个事件对象或事件数组；单事件响应
+  `{"accepted": n, "merged": 0|1, "sampled": 0|1, "rejected": 0, "queued": bool}`；
+  数组批量保持全成功/全失败（任一非法整批 400）。
+- 仅绑定回环地址；请求体上限 64KB；健康检查 `GET /api/v1/health`（无需鉴权）。
+- 过载保护：连接 64 / 活跃请求 32，超限 `429 + Retry-After`；
+  管线队列满时关键事件返回 `503 + Retry-After`，**客户端应重试**；非关键事件可能返回
+  `sampled: 1`（显式降级，调用方可感知）。
+- 关键状态（waiting/completed/failed/disconnected）永不合并；running 允许按轮次合并。
 - 端口与令牌在设置中修改（端口修改后约 1 秒内自动重绑）。
 
 示例：
@@ -49,18 +55,25 @@ curl -s -X POST http://127.0.0.1:47821/api/v1/events \
 
 ### 2. 文件投递（无网络能力的 Agent / 钩子脚本）
 
-向 `%APPDATA%\com.taskdock.desktop\agent-inbox\` 写入 `.json` 文件（单个事件或数组），
-Task Dock 每秒轮询，成功处理后删除，解析失败移入 `failed/` 子目录。
+向 `%APPDATA%\com.taskdock.desktop\agent-inbox\` 写入 `.json` 文件（单个事件或数组）。
+写入方应**先写 `.tmp` 再 rename**；Task Dock 只处理 mtime 超过 300ms 的稳定文件。
+单文件上限默认 4 MiB、每轮最多 200 个文件；解析失败移入 `failed/` 指数退避重试。
+服务端按 `event_id`/内容签名幂等，HTTP 与文件重复投递不会产生双份状态。
 
-## 三、Codex CLI 接入（第一版已实现）
+## 三、Codex CLI 接入（原生 Hook CLI）
 
 Codex 支持生命周期 Hooks（`~/.codex/hooks.json`）。Task Dock 内置安装器：
 
 1. 「Agent → Codex 卡片 → 安装钩子」会：
-   - 生成 PowerShell 上报脚本 `<AppData>\codex-hook.ps1`；
-   - 合并写入 `~/.codex/hooks.json`（保留用户已有条目，幂等可重复安装）；
-2. 脚本被 Codex 调用时读取 stdin JSON 提取会话 ID，按事件名映射状态后：
-   - **优先** POST 到本地 HTTP 端点；失败则**回退**写文件投递目录；
+   - 在 `~/.codex/hooks.json` 写入原生命令
+     `"<安装目录>\task-dock.exe" --agent-hook --source codex --event <Event>`；
+   - 合并写入（保留用户/第三方已有条目，写入前备份，幂等可重复安装）；
+   - 旧版 PowerShell 脚本只做卸载清理与兼容检测，不再用于新安装。
+2. Hook CLI 被 Codex 调用时从 stdin 读取 JSON，提取会话 ID/标题等元数据后：
+   - **优先** POST 本地 HTTP 端点（连接 700ms / 读写 1200ms 超时）；
+   - 失败则**原子写入**文件投递目录，使用同一稳定 `event_id`（sha256 内容哈希），
+     跨通道重复由服务端幂等吸收；
+   - 任何失败都静默退出 0：旁路观测绝不阻塞或中断 Codex。
 3. 事件映射：
 
 | Codex 钩子事件 | Task Dock 状态 |
@@ -70,6 +83,20 @@ Codex 支持生命周期 Hooks（`~/.codex/hooks.json`）。Task Dock 内置安�
 | Stop | completed |
 
 4. 安装后需重启 Codex CLI 会话；如 Codex 要求信任钩子，按其提示确认。
+
+> **性能说明**：旧实现每事件启动一次 PowerShell（约 300ms+ 冷启动）；
+> 原生 CLI 单次进程约 10ms，且不需要额外脚本文件。映射与安装协议保持一致，
+> 不修改 Codex 官方 Hook 协议本身。
+
+## 三点五、DSH / OpenCode 插件桥接
+
+安装器向宿主插件目录写入桥接插件（可一键卸载）：
+
+- 有界队列 200、单并发发送、`AbortController` 2.5s 超时；
+- 非关键 running 按 `session_id + state` 合并，关键事件插队；
+- 429/503 与网络错误指数退避（上限 30s）；
+- 关键事件发送失败 → 原子写文件回退；仍失败则回队；
+- 定时器 `unref()`：Task Dock 未运行时不会卡住或延迟宿主退出。
 
 > **App Server 路线（未采用，原因记录）**：`codex app-server` 提供 stdio JSON-RPC
 > （参考 mxyhi/AgentMonitor，MIT），功能更全（线程恢复、中断回合等），但需要随 Codex

@@ -3,12 +3,17 @@ pub mod models;
 pub use models::*;
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+
+/// 读连接池大小：WAL 下多个只读连接可与单写连接并行，降低快照/历史查询的互斥等待。
+const READ_POOL_SIZE: usize = 3;
 
 /// 迁移列表：按顺序应用，版本号 = PRAGMA user_version。
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -327,10 +332,216 @@ WHERE origin = 'user'
   );
 "#,
     ),
+    (
+        6,
+        r#"
+-- 显式窗口身份属于任务关联，应用目标仍可复用。HWND 不持久化。
+ALTER TABLE task_navigation_targets ADD COLUMN window_identity TEXT;
+ALTER TABLE task_navigation_targets ADD COLUMN window_fallback TEXT NOT NULL DEFAULT 'reselect'
+  CHECK (window_fallback IN ('reselect', 'focus_app', 'launch'));
+"#,
+    ),
+    (
+        7,
+        r#"
+-- v7（Task Dock 0.5）：智能剪贴板。
+-- 图片/缩略图落文件（clipboard_assets 记录引用），文字与元数据入库；
+-- 分组、组内排序、任务关联、逐项粘贴审计各有独立表。
+
+CREATE TABLE clipboard_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  -- text | url | html | image | files
+  kind TEXT NOT NULL CHECK (kind IN ('text','url','html','image','files')),
+  text TEXT NOT NULL DEFAULT '',
+  html TEXT NOT NULL DEFAULT '',
+  preview TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL,
+  byte_size INTEGER NOT NULL DEFAULT 0,
+  source_app TEXT NOT NULL DEFAULT '',
+  source_title TEXT NOT NULL DEFAULT '',
+  image_width INTEGER,
+  image_height INTEGER,
+  file_paths TEXT NOT NULL DEFAULT '[]',
+  favorite INTEGER NOT NULL DEFAULT 0,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  copy_count INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL
+);
+-- 同一内容只保留一条；再次复制只更新时间与次数（去重策略的持久化约束）
+CREATE UNIQUE INDEX idx_clip_items_hash ON clipboard_items(content_hash);
+CREATE INDEX idx_clip_items_seen ON clipboard_items(last_seen_at DESC);
+CREATE INDEX idx_clip_items_kind ON clipboard_items(kind, last_seen_at DESC);
+CREATE INDEX idx_clip_items_fav ON clipboard_items(favorite, last_seen_at DESC);
+
+-- 剪贴板资产：图片原始文件与缩略图（磁盘文件，不入库二进制）
+CREATE TABLE clipboard_assets (
+  id TEXT PRIMARY KEY NOT NULL,
+  item_id TEXT NOT NULL REFERENCES clipboard_items(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('image','thumb')),
+  -- 相对剪贴板根目录的路径（根目录随应用数据目录迁移，绝对路径不落库）
+  path TEXT NOT NULL,
+  byte_size INTEGER NOT NULL DEFAULT 0,
+  width INTEGER,
+  height INTEGER,
+  created_at TEXT NOT NULL,
+  UNIQUE (item_id, role)
+);
+CREATE INDEX idx_clip_assets_item ON clipboard_assets(item_id);
+
+CREATE TABLE clipboard_groups (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  -- auto=连续截图自动收集；manual=用户新建
+  mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto','manual')),
+  -- collecting=收集会话未结束；closed=已结束
+  status TEXT NOT NULL DEFAULT 'collecting' CHECK (status IN ('collecting','closed')),
+  favorite INTEGER NOT NULL DEFAULT 0,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT
+);
+CREATE INDEX idx_clip_groups_status ON clipboard_groups(status, updated_at DESC);
+
+CREATE TABLE clipboard_group_items (
+  group_id TEXT NOT NULL REFERENCES clipboard_groups(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL REFERENCES clipboard_items(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  -- auto=分组引擎追加；manual=用户手动加入/拆分/合并
+  origin TEXT NOT NULL DEFAULT 'auto' CHECK (origin IN ('auto','manual')),
+  added_at TEXT NOT NULL,
+  PRIMARY KEY (group_id, item_id)
+);
+-- 不做 UNIQUE(group_id, position)：重排时中间态必然冲突，排序由事务内重写保证
+CREATE INDEX idx_clip_group_pos ON clipboard_group_items(group_id, position);
+CREATE INDEX idx_clip_group_item ON clipboard_group_items(item_id);
+
+-- 任务资料关联：任务删除只级联删除关联行，剪贴板内容保留
+CREATE TABLE clipboard_task_links (
+  id TEXT PRIMARY KEY NOT NULL,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  target_type TEXT NOT NULL CHECK (target_type IN ('item','group')),
+  target_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (task_id, target_type, target_id)
+);
+CREATE INDEX idx_clip_task_links ON clipboard_task_links(task_id);
+CREATE INDEX idx_clip_task_target ON clipboard_task_links(target_type, target_id);
+
+-- 逐项粘贴审计：未完成项、目标窗口、验证级别（不做"粘贴成功"的虚假断言）
+CREATE TABLE clipboard_paste_jobs (
+  id TEXT PRIMARY KEY NOT NULL,
+  group_id TEXT NOT NULL DEFAULT '',
+  target_title TEXT NOT NULL DEFAULT '',
+  target_exe TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  total INTEGER NOT NULL DEFAULT 0,
+  sent INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  message TEXT NOT NULL DEFAULT '',
+  remaining_items TEXT NOT NULL DEFAULT '[]',
+  restored INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_clip_paste_started ON clipboard_paste_jobs(started_at DESC);
+"#,
+    ),
+    (
+        8,
+        r#"
+-- v8（Task Dock 0.5 性能专项）：事件保留/分页与常用查询索引。
+-- 只加索引，不改既有列与数据；可在旧库上重复执行（IF NOT EXISTS）。
+CREATE INDEX IF NOT EXISTS idx_events_source_received ON agent_events(source_id, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_session_received ON agent_events(session_external_id, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_run ON agent_events(run_external_id);
+CREATE INDEX IF NOT EXISTS idx_events_state_received ON agent_events(state, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notification_history(is_read, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_updated ON agent_runs(updated_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_seen ON agent_sessions(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reminders_task ON task_reminders(task_id, fired);
+CREATE INDEX IF NOT EXISTS idx_sources_visible ON agent_sources(hidden, enabled);
+CREATE INDEX IF NOT EXISTS idx_links_session ON task_agent_links(source_id, session_external_id);
+"#,
+    ),
+    (
+        9,
+        r#"
+-- v9（Task Dock 0.5）：统一任务上下文三张窄表。
+-- 工作现场只存元数据（窗口类名/标题/exe、文件路径、网址），不存窗口内容、不截图；
+-- 删除任务不销毁现场（降级为手动快照），删除现场级联删除条目与素材关联。
+
+CREATE TABLE workspace_snapshots (
+  id TEXT PRIMARY KEY NOT NULL,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  name TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','task')),
+  item_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_restored_at TEXT,
+  restore_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_ws_snapshots_task ON workspace_snapshots(task_id, updated_at DESC);
+CREATE INDEX idx_ws_snapshots_updated ON workspace_snapshots(updated_at DESC);
+
+CREATE TABLE workspace_snapshot_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  snapshot_id TEXT NOT NULL REFERENCES workspace_snapshots(id) ON DELETE CASCADE,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  item_kind TEXT NOT NULL CHECK (item_kind IN ('application','url','file','directory','agent_session')),
+  display_name TEXT NOT NULL,
+  target_id TEXT,
+  app_key TEXT NOT NULL DEFAULT '',
+  exe_path TEXT NOT NULL DEFAULT '',
+  launch_args TEXT NOT NULL DEFAULT '',
+  working_dir TEXT NOT NULL DEFAULT '',
+  app_user_model_id TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL DEFAULT '',
+  agent_source_id TEXT NOT NULL DEFAULT '',
+  agent_session_id TEXT NOT NULL DEFAULT '',
+  window_title_hint TEXT NOT NULL DEFAULT '',
+  window_class TEXT NOT NULL DEFAULT '',
+  window_title TEXT NOT NULL DEFAULT '',
+  restore_note TEXT NOT NULL DEFAULT '',
+  last_result TEXT NOT NULL DEFAULT '',
+  last_verification TEXT NOT NULL DEFAULT '',
+  last_restored_at TEXT
+);
+CREATE INDEX idx_ws_items_snapshot ON workspace_snapshot_items(snapshot_id, display_order);
+
+-- 行动中心「已处理」：按事件 id 去重持久化，幂等写入
+CREATE TABLE action_acks (
+  event_id TEXT PRIMARY KEY NOT NULL,
+  acked_at TEXT NOT NULL
+);
+
+-- 现场 ↔ 剪贴板素材：只写关联，不复制内容；素材删除即级联删除关联
+CREATE TABLE clipboard_snapshot_links (
+  id TEXT PRIMARY KEY NOT NULL,
+  snapshot_id TEXT NOT NULL REFERENCES workspace_snapshots(id) ON DELETE CASCADE,
+  target_type TEXT NOT NULL CHECK (target_type IN ('item','group')),
+  target_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (snapshot_id, target_type, target_id)
+);
+CREATE INDEX idx_clip_snapshot_links ON clipboard_snapshot_links(snapshot_id);
+"#,
+    ),
 ];
 
 pub struct Db {
-    conn: Mutex<Connection>,
+    /// 唯一写连接：SQLite 单写者，写事务在它上面串行化。
+    writer: Mutex<Connection>,
+    /// 只读连接池（WAL 快照读）；内存库为空，回退写连接。
+    readers: Vec<Mutex<Connection>>,
+    next_reader: AtomicUsize,
+    /// 读查询延迟采样（轻量原子计数，供性能诊断；采样本身 < 1µs）。
+    read_calls: AtomicU64,
+    read_nanos: AtomicU64,
+    read_slow: AtomicU64,
 }
 
 impl Db {
@@ -340,14 +551,26 @@ impl Db {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        let db = Self {
-            conn: Mutex::new(conn),
+        configure_writer(&conn)?;
+        let mut db = Self {
+            writer: Mutex::new(conn),
+            readers: Vec::new(),
+            next_reader: AtomicUsize::new(0),
+            read_calls: AtomicU64::new(0),
+            read_nanos: AtomicU64::new(0),
+            read_slow: AtomicU64::new(0),
         };
         db.migrate()?;
         db.seed()?;
+        db.readers = (0..READ_POOL_SIZE)
+            .filter_map(|_| match open_reader(path) {
+                Ok(c) => Some(Mutex::new(c)),
+                Err(e) => {
+                    tracing::warn!("只读连接打开失败（回退写连接读）: {}", e);
+                    None
+                }
+            })
+            .collect();
         Ok(db)
     }
 
@@ -357,7 +580,12 @@ impl Db {
         let conn = Connection::open_in_memory()?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let db = Self {
-            conn: Mutex::new(conn),
+            writer: Mutex::new(conn),
+            readers: Vec::new(),
+            next_reader: AtomicUsize::new(0),
+            read_calls: AtomicU64::new(0),
+            read_nanos: AtomicU64::new(0),
+            read_slow: AtomicU64::new(0),
         };
         db.migrate()?;
         db.seed()?;
@@ -366,7 +594,44 @@ impl Db {
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         // 锁中毒时不 panic：前一次 panic 的连接依然可用（SQLite 连接本身未损坏）。
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+        self.writer.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 只读查询：优先使用读连接池；内存库回退到写连接。
+    /// 注意：只读连接上禁止执行写语句（PRAGMA query_only=ON 会直接报错）。
+    pub fn with_read<T>(&self, f: impl FnOnce(&Connection) -> AppResult<T>) -> AppResult<T> {
+        if self.readers.is_empty() {
+            return self.with_conn(f);
+        }
+        let started = Instant::now();
+        let idx = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+        let conn = self.readers[idx].lock().unwrap_or_else(|e| e.into_inner());
+        let out = f(&conn);
+        let elapsed = started.elapsed();
+        self.read_calls.fetch_add(1, Ordering::Relaxed);
+        self.read_nanos
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+        if elapsed.as_millis() >= 100 {
+            self.read_slow.fetch_add(1, Ordering::Relaxed);
+        }
+        out
+    }
+
+    /// 读查询延迟摘要（诊断面板）。采样 = 一次 with_read 调用（含排队等锁）。
+    pub fn read_stats(&self) -> serde_json::Value {
+        let calls = self.read_calls.load(Ordering::Relaxed);
+        let nanos = self.read_nanos.load(Ordering::Relaxed);
+        let avg_ms = if calls == 0 {
+            0.0
+        } else {
+            ((nanos as f64 / calls as f64) / 1_000_000.0 * 100.0).round() / 100.0
+        };
+        serde_json::json!({
+            "pool_size": self.readers.len(),
+            "calls": calls,
+            "avg_ms": avg_ms,
+            "slow_queries_100ms": self.read_slow.load(Ordering::Relaxed),
+        })
     }
 
     pub fn migrate(&self) -> AppResult<()> {
@@ -398,6 +663,38 @@ impl Db {
             ("stale_run_minutes", "15"),
             ("auto_backup", "true"),
             ("backup_retain_days", "7"),
+            // 事件接入管线与保留策略（v0.5 性能专项）
+            ("ingest_queue_capacity", "1024"),
+            ("ingest_batch_size", "100"),
+            ("ingest_coalesce_ms", "250"),
+            ("agent_event_retention_days", "30"),
+            ("agent_event_max_rows", "200000"),
+            ("agent_event_archive", "true"),
+            ("agent_inbox_max_file_bytes", "4194304"),
+            ("agent_inbox_max_files", "200"),
+            ("perf_diagnostics_enabled", "true"),
+            // 智能剪贴板（v0.5）
+            ("clipboard_enabled", "true"),
+            ("clipboard_paused", "false"),
+            ("clipboard_capture_images", "true"),
+            ("clipboard_capture_files", "true"),
+            ("clipboard_capture_html", "true"),
+            ("clipboard_auto_group", "true"),
+            ("clipboard_group_window_secs", "45"),
+            ("clipboard_retention_days", "30"),
+            ("clipboard_max_items", "1000"),
+            ("clipboard_max_storage_mb", "512"),
+            (
+                "clipboard_exclude_apps",
+                "\"keepass.exe,keepassxc.exe,1password.exe,bitwarden.exe,lastpass.exe,dashlane.exe,enpass.exe\"",
+            ),
+            ("clipboard_paste_interval_ms", "350"),
+            ("clipboard_paste_interval_image_ms", "1200"),
+            ("clipboard_paste_interval_html_ms", "600"),
+            ("clipboard_paste_interval_files_ms", "900"),
+            ("clipboard_sensitive_filter", "true"),
+            // 自动分组序号（内部状态，不属于用户偏好）
+            ("clipboard_group_seq", "0"),
         ];
         for (k, v) in defaults {
             conn.execute(
@@ -464,6 +761,21 @@ impl Db {
         let conn = self.conn();
         f(&conn)
     }
+}
+
+fn configure_writer(conn: &Connection) -> AppResult<()> {
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(())
+}
+
+fn open_reader(path: &Path) -> AppResult<Connection> {
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "query_only", true)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(conn)
 }
 
 // rusqlite optional 扩展
@@ -540,6 +852,34 @@ pub struct Settings {
     pub auto_backup: bool,
     #[serde(default = "default_retain")]
     pub backup_retain_days: u32,
+    // ── 事件接入管线 / 保留 / 诊断（v0.5 性能专项；带默认值，旧库无需迁移键）──
+    /// 有界队列容量（事件数）
+    #[serde(default = "default_ingest_capacity")]
+    pub ingest_queue_capacity: usize,
+    /// 单事务最大事件数
+    #[serde(default = "default_ingest_batch")]
+    pub ingest_batch_size: usize,
+    /// 合并窗口（毫秒，200~500）
+    #[serde(default = "default_ingest_coalesce")]
+    pub ingest_coalesce_ms: u64,
+    /// agent_events 保留天数（0 = 不按时间清理）
+    #[serde(default = "default_event_retention")]
+    pub agent_event_retention_days: u32,
+    /// agent_events 最大行数（0 = 不按行数清理）
+    #[serde(default = "default_event_max_rows")]
+    pub agent_event_max_rows: u64,
+    /// 清理前是否先归档为 JSONL（默认开启；不静默丢弃历史）
+    #[serde(default = "default_true")]
+    pub agent_event_archive: bool,
+    /// 文件投递单文件上限（字节）
+    #[serde(default = "default_inbox_max_file")]
+    pub agent_inbox_max_file_bytes: u64,
+    /// 文件投递每轮最多处理的文件数
+    #[serde(default = "default_inbox_max_files")]
+    pub agent_inbox_max_files: usize,
+    /// 性能诊断采集开关（关闭后仅保留最小计数，不采样延迟分位）
+    #[serde(default = "default_true")]
+    pub perf_diagnostics_enabled: bool,
     // ── 导航偏好（v0.4；全部带默认值，旧库无键也能反序列化）──
     /// 优先唤醒现有窗口（而非重复启动）
     #[serde(default = "default_true")]
@@ -559,6 +899,52 @@ pub struct Settings {
     /// 工作区批量启动数量上限
     #[serde(default = "default_workspace_max")]
     pub nav_workspace_max: u32,
+    // ── 智能剪贴板（v0.5；全部带默认值，旧库无键也能反序列化）──
+    /// 全局监听开关（关闭后不再记录任何新的剪贴板内容）
+    #[serde(default = "default_true")]
+    pub clipboard_enabled: bool,
+    /// 临时暂停（与 enabled 区分：恢复时保留用户的总开关偏好）
+    #[serde(default)]
+    pub clipboard_paused: bool,
+    #[serde(default = "default_true")]
+    pub clipboard_capture_images: bool,
+    #[serde(default = "default_true")]
+    pub clipboard_capture_files: bool,
+    #[serde(default = "default_true")]
+    pub clipboard_capture_html: bool,
+    /// 连续截图自动分组
+    #[serde(default = "default_true")]
+    pub clipboard_auto_group: bool,
+    /// 连续截图分组窗口（秒）
+    #[serde(default = "default_clip_group_window")]
+    pub clipboard_group_window_secs: u32,
+    /// 非收藏条目的保留天数
+    #[serde(default = "default_clip_retention")]
+    pub clipboard_retention_days: u32,
+    /// 最大条目数（非收藏、非置顶）
+    #[serde(default = "default_clip_max_items")]
+    pub clipboard_max_items: u32,
+    /// 资产最大占用（MB）
+    #[serde(default = "default_clip_max_storage")]
+    pub clipboard_max_storage_mb: u32,
+    /// 应用排除名单（小写 exe 名，逗号/换行分隔）
+    #[serde(default = "default_clip_exclude")]
+    pub clipboard_exclude_apps: String,
+    /// 逐项粘贴的步骤间隔（毫秒）；文本/链接基准值
+    #[serde(default = "default_clip_paste_interval")]
+    pub clipboard_paste_interval_ms: u32,
+    /// 图片粘贴间隔：目标应用解码大图更慢，默认更保守
+    #[serde(default = "default_clip_paste_image_interval")]
+    pub clipboard_paste_interval_image_ms: u32,
+    /// 富文本粘贴间隔
+    #[serde(default = "default_clip_paste_html_interval")]
+    pub clipboard_paste_interval_html_ms: u32,
+    /// 文件列表粘贴间隔
+    #[serde(default = "default_clip_paste_files_interval")]
+    pub clipboard_paste_interval_files_ms: u32,
+    /// 高置信敏感内容过滤（如 PEM 私钥）；不宣称能识别全部密码/令牌
+    #[serde(default = "default_true")]
+    pub clipboard_sensitive_filter: bool,
 }
 
 fn default_theme() -> String {
@@ -585,8 +971,57 @@ fn default_stale() -> u32 {
 fn default_retain() -> u32 {
     7
 }
+fn default_ingest_capacity() -> usize {
+    1024
+}
+fn default_ingest_batch() -> usize {
+    100
+}
+fn default_ingest_coalesce() -> u64 {
+    250
+}
+fn default_event_retention() -> u32 {
+    30
+}
+fn default_event_max_rows() -> u64 {
+    200_000
+}
+fn default_inbox_max_file() -> u64 {
+    4 * 1024 * 1024
+}
+fn default_inbox_max_files() -> usize {
+    200
+}
 fn default_workspace_max() -> u32 {
     8
+}
+fn default_clip_group_window() -> u32 {
+    45
+}
+fn default_clip_retention() -> u32 {
+    30
+}
+fn default_clip_max_items() -> u32 {
+    1000
+}
+fn default_clip_max_storage() -> u32 {
+    512
+}
+fn default_clip_exclude() -> String {
+    "keepass.exe,keepassxc.exe,1password.exe,bitwarden.exe,lastpass.exe,dashlane.exe,enpass.exe"
+        .into()
+}
+fn default_clip_paste_interval() -> u32 {
+    350
+}
+fn default_clip_paste_image_interval() -> u32 {
+    1200
+}
+fn default_clip_paste_html_interval() -> u32 {
+    600
+}
+fn default_clip_paste_files_interval() -> u32 {
+    900
 }
 
 impl Default for Settings {
@@ -607,6 +1042,34 @@ impl Settings {
 mod tests {
     use super::*;
     use crate::error::AppError;
+
+    #[test]
+    fn v5_to_v6_preserves_links_and_defaults_to_reselection() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..5]).unwrap();
+        conn.execute("INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('task', '任务', 'now', 'now')", []).unwrap();
+        conn.execute("INSERT INTO navigation_targets (id, display_name, target_type, app_key, created_at, updated_at) VALUES ('target', '浏览器', 'application', 'browser', 'now', 'now')", []).unwrap();
+        conn.execute("INSERT INTO task_navigation_targets (id, task_id, target_id, created_at) VALUES ('link', 'task', 'target', 'now')", []).unwrap();
+        apply_migrations(&conn, 5, MIGRATIONS).unwrap();
+        let (identity, fallback): (Option<String>, String) = conn.query_row("SELECT window_identity, window_fallback FROM task_navigation_targets WHERE id = 'link'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(identity.is_none());
+        assert_eq!(fallback, "reselect");
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            MIGRATIONS[MIGRATIONS.len() - 1].0,
+            "迁移应推进到最新版本（不依赖写死的版本号）"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+    }
 
     #[test]
     fn v1_to_v2_upgrade_preserves_data_and_fixes_run_ids() {
@@ -876,9 +1339,21 @@ mod tests {
             // 构造 v4 库：一条手工关联（v0.3 语义）+ 一条 v0.4-dev 自动影子记录
             let db = Db::open(&path).unwrap(); // 全新库 → 迁移到 v4（此时 MIGRATIONS 已含 v5，需手动降级构造）
             db.with_conn(|c| {
-                // 手动把库降回 v4（模拟升级前状态）：v5 的列与回填先撤销
+                // 手动把库降回 v4（模拟升级前状态）：v5/v6 的列、v7 的剪贴板表先撤销
                 c.execute_batch(
-                    "ALTER TABLE task_agent_links DROP COLUMN origin;
+                    "ALTER TABLE task_navigation_targets DROP COLUMN window_fallback;
+                     ALTER TABLE task_navigation_targets DROP COLUMN window_identity;
+                     ALTER TABLE task_agent_links DROP COLUMN origin;
+                     DROP TABLE clipboard_group_items;
+                     DROP TABLE clipboard_assets;
+                     DROP TABLE clipboard_task_links;
+                     DROP TABLE clipboard_paste_jobs;
+                     DROP TABLE clipboard_groups;
+                     DROP TABLE clipboard_items;
+                     DROP TABLE clipboard_snapshot_links;
+                     DROP TABLE workspace_snapshot_items;
+                     DROP TABLE workspace_snapshots;
+                     DROP TABLE action_acks;
                      PRAGMA user_version = 4;",
                 )?;
                 Ok::<_, AppError>(())
@@ -960,5 +1435,14 @@ mod tests {
             .unwrap();
         assert_eq!(n, 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clipboard_paste_intervals_keep_conservative_defaults() {
+        let s = Settings::default();
+        assert_eq!(s.clipboard_paste_interval_ms, 350);
+        assert_eq!(s.clipboard_paste_interval_html_ms, 600);
+        assert_eq!(s.clipboard_paste_interval_files_ms, 900);
+        assert_eq!(s.clipboard_paste_interval_image_ms, 1200);
     }
 }

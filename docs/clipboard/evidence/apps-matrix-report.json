@@ -1,0 +1,54 @@
+{
+  "generated_at": "2026-10-29T02:19:17.814Z",
+  "app": "D:\\Develop\\task_dock\\src-tauri\\target-accept-dbg\\debug\\task-dock.exe",
+  "results": [
+    {
+      "id": "M1",
+      "app": "记事本（文本，三项有序）",
+      "status": "PASS",
+      "detail": "job=completed sent=3/3 order_ok=true err= text=MATRIX-NOTEPAD-A-1793240281704MATRIX-NOTEPAD-B-1793240281704MATRIX-NOTEPAD-C-1793240281704INITIAL-NOTEPAD|"
+    },
+    {
+      "id": "M2",
+      "app": "资源管理器（多文件 CF_HDROP）",
+      "status": "PASS",
+      "detail": "job=completed sent=1/1 a=true b=true"
+    },
+    {
+      "id": "M3",
+      "app": "Chromium/Edge（文本 textarea，两项有序）",
+      "status": "PASS",
+      "detail": "job=completed value=MATRIX-EDGE-A-1793240281704MATRIX-EDGE-B-1793240281704"
+    },
+    {
+      "id": "M4",
+      "app": "Chromium/Edge（contenteditable 富文本，保留加粗）",
+      "status": "PASS",
+      "detail": "job=completed text=MATRIX-RICH-1793240281704 italic html=<b>MATRIX-RICH-1793240281704</b> <i>italic</i>"
+    },
+    {
+      "id": "M5",
+      "app": "VS Code（编辑器文本）",
+      "status": "PASS",
+      "detail": "补充验收：独立实例 hwnd 332732（--user-data-dir 隔离配置）经 --goto 聚焦编辑器后，真实 Ctrl+V 接收两项并按序保存到 matrix-vscode-final.txt；首轮粘贴落在欢迎页时任务如实报告 0 确认，未伪造成功。"
+    },
+    {
+      "id": "M6",
+      "app": "微信（Weixin 4.x）",
+      "status": "ENVIRONMENT BLOCKED",
+      "detail": "本机 Weixin 正在运行且为已登录的真实用户会话（PID 64744 等），向其窗口注入 Ctrl+V 可能写入用户正在进行的聊天；无隔离实例可用，按安全原则不自动化，记 ENVIRONMENT BLOCKED / NOT VERIFIED。"
+    },
+    {
+      "id": "M7",
+      "app": "Agent 类应用（Trae CN）",
+      "status": "NOT VERIFIED",
+      "detail": "Trae CN 已安装并以隔离 profile 启动，但窗口停留在登录/引导页（标题 TRAE CN），CLI --goto 不能进入编辑区；自动化输入无法确认落点，记 NOT VERIFIED。"
+    }
+  ],
+  "notes": [
+    "notepad pid=61080 hwnd=8851872",
+    "explorer pid=30460 hwnd=12717394",
+    "edge pid=40268 hwnd=4854052",
+    "M5 首轮：编辑区被欢迎页占据，粘贴未被文件接收，任务仅报 sent=2/confirmed=0；改用 --goto 聚焦文件后才通过——说明确认机制未误报。"
+  ]
+}

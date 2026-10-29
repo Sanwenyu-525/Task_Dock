@@ -32,6 +32,14 @@ const shim = `
     overdue_grace_hours: 24, stale_run_minutes: 15, auto_backup: true, backup_retain_days: 7,
     nav_prefer_focus: true, nav_allow_launch: true, nav_fallback: true,
     nav_remember_window: true, nav_default_browser: "", nav_workspace_max: 8,
+    ingest_queue_capacity: 1024, ingest_batch_size: 100, ingest_coalesce_ms: 250,
+    agent_event_retention_days: 14, agent_event_max_rows: 20000, agent_event_archive: true,
+    agent_inbox_max_file_bytes: 65536, agent_inbox_max_files: 500, perf_diagnostics_enabled: true,
+    clipboard_enabled: true, clipboard_paused: false, clipboard_capture_images: true,
+    clipboard_capture_files: true, clipboard_capture_html: true, clipboard_auto_group: true,
+    clipboard_group_window_secs: 45, clipboard_retention_days: 30, clipboard_max_items: 2000,
+    clipboard_max_storage_mb: 2048, clipboard_exclude_apps: "keepass.exe, 1password.exe",
+    clipboard_paste_interval_ms: 350, clipboard_sensitive_filter: true,
   };
 
   // ── 导航 fixture（v0.4：任务关联目标 + 应用扫描 + 能力 + 结果）──
@@ -76,7 +84,29 @@ const shim = `
     { id: "g2", target_id: "nt4", target_name: "微信", requested_action: "focus_window", actual_action: null, success: false, fallback_used: false, reason: "Windows 前台锁定拒绝了切换", verification_level: "none", created_at: iso(90) },
   ];
 
-  const tasks = [
+  const PERF = Math.max(0, parseInt(q.get("perf") || "0", 10) || 0);
+
+  // ?perf=300：性能走查夹具（300 条待办），用于 scripts/render-perf.mjs
+  // 在真实 Chromium 中测量列表渲染成本；默认仍用 4 条演示任务。
+  const tasks = PERF
+    ? Array.from({ length: PERF }, (_, i) => ({
+        id: "perf-" + i,
+        title: "性能任务 " + i,
+        description: i % 3 === 0 ? "包含描述的任务，用于模拟真实列表密度" : "",
+        priority: i % 4,
+        status: "pending",
+        category: i % 2 === 0 ? "性能" : "",
+        tags: i % 7 === 0 ? ["压测", "列表"] : [],
+        due_at: i % 4 === 0 ? iso(-30) : null,
+        remind_at: null,
+        advance_minutes: 0,
+        recurrence: null,
+        created_at: iso(600),
+        updated_at: iso(10),
+        completed_at: null,
+        linked_agents: 0,
+      }))
+    : [
     { id: "t1", title: "审阅 v0.3 视觉验收报告", description: "", priority: 0, status: "pending", category: "工作", tags: ["ui"], due_at: iso(-30), remind_at: null, advance_minutes: 0, recurrence: null, created_at: iso(600), updated_at: iso(10), completed_at: null, linked_agents: 0 },
     { id: "t2", title: "修复监控树实例分组", description: "", priority: 1, status: "pending", category: "开发", tags: [], due_at: iso(180), remind_at: null, advance_minutes: 15, recurrence: null, created_at: iso(500), updated_at: iso(60), completed_at: null, linked_agents: 2 },
     { id: "t3", title: "每周同步进度", description: "", priority: 2, status: "pending", category: "", tags: ["例会"], due_at: iso(2880), remind_at: null, advance_minutes: 0, recurrence: { id: "r1", freq: "weekly", interval: 1, by_weekday: [1], by_monthday: null, until: null, anchor: "2026-10-19" }, created_at: iso(4000), updated_at: iso(300), completed_at: null, linked_agents: 0 },
@@ -123,8 +153,65 @@ const shim = `
     { id: "e5", source_id: "mock", session_external_id: "mock-sess", run_external_id: "mock-run", event_type: "status", state: "completed", message: "模拟完成", received_at: iso(30), transport: "mock", evidence_type: "manual" },
   ];
 
-  const discovered = [
-    { source_id: "codex", display_name: "Codex", transport_kind: "transport", installed: true, version: "0.42.0", install_paths: ["~/.codex"], config_homes: [], install_method: "npm", running_instances: [{ pid: 111, name: "codex", exe: null }], capabilities: [], supported_events: ["running", "waiting", "completed", "failed"], docs_url: "", limitations: [], registered: true, enabled: true, configured: true, verified: true, last_event_at: iso(2), health_state: "live" },
+  // ── 行动中心 / 工作现场 / 任务上下文 fixture（v0.5）──
+  const actionItems = [
+    { id: "a1", kind: "failed", priority: 0, source_id: "codex", source_name: "Codex", session_external_id: "sess-alpha", run_external_id: "run-a", task_id: "t1", task_title: tasks[0].title, title: "Codex 执行失败", message: "命令退出码 1：pnpm build", occurred_at: iso(6), count: 3, event_ids: ["e1a", "e1b", "e1c"], acked: false, authorization_inferred: false },
+    { id: "a2", kind: "authorization", priority: 0, source_id: "codex", source_name: "Codex", session_external_id: "sess-alpha", run_external_id: "run-a", task_id: "t1", task_title: tasks[0].title, title: "可能需要确认权限", message: "请确认是否允许写入 D:\\\\Develop\\\\task_dock", occurred_at: iso(9), count: 1, event_ids: ["e2a"], acked: false, authorization_inferred: true },
+    { id: "a3", kind: "waiting_input", priority: 1, source_id: "trae", source_name: "Trae", session_external_id: "sess-gamma", task_id: null, task_title: null, title: "等待补充需求", message: "请提供目标分支名", occurred_at: iso(40), count: 2, event_ids: ["e3a", "e3b"], acked: false, authorization_inferred: false },
+    { id: "a4", kind: "reminder", priority: 1, source_id: null, source_name: "任务提醒", session_external_id: null, run_external_id: null, task_id: "t1", task_title: tasks[0].title, title: "任务到期：审阅 v0.3 视觉验收报告", message: "", occurred_at: iso(2), count: 1, event_ids: ["n1"], acked: false, authorization_inferred: false },
+    { id: "a5", kind: "running", priority: 2, source_id: "codex", source_name: "Codex", session_external_id: "sess-beta", run_external_id: "run-b1", task_id: "t2", task_title: tasks[1].title, title: "正在重构数据层", message: "第 3 轮执行中", occurred_at: iso(1), count: 5, event_ids: ["e5a"], acked: false, authorization_inferred: false },
+  ];
+  const actionCoverage = [
+    { source_id: "codex", display_name: "Codex", enabled: true, verified: true, transport_verified: true, monitored: true, last_event_at: iso(1), level: "live", explanation: "hook 传输已在近期验证，事件可实时到达。", note: "hook · baseline-verified" },
+    { source_id: "trae", display_name: "Trae", enabled: true, verified: false, transport_verified: false, monitored: false, last_event_at: iso(90), level: "stale", explanation: "超过 24 小时没有新事件，无法确认监控仍然有效。", note: "hook" },
+    { source_id: "zcode", display_name: "ZCode", enabled: true, verified: false, transport_verified: false, monitored: false, last_event_at: null, level: "no-events", explanation: "尚未收到任何事件，可能未安装或未接入。", note: "discovery" },
+    { source_id: "mock", display_name: "Mock 模拟器", enabled: false, verified: false, transport_verified: false, monitored: false, last_event_at: null, level: "disabled", explanation: "来源已停用，不产生运行状态。", note: "mock" },
+  ];
+  const actionFeed = {
+    items: actionItems,
+    counts: { failed: 1, authorization: 1, waiting_input: 1, running: 1, completed: 0, disconnected: 0, reminder: 1 },
+    coverage: actionCoverage,
+    generated_at: iso(0),
+    truncated: false,
+    scanned_events: 42,
+  };
+
+  const snapBase = (o) => ({
+    id: o.id, task_id: o.taskId ?? null, task_title: o.taskTitle ?? null, name: o.name,
+    note: o.note ?? "", source: o.source ?? "task", item_count: o.count,
+    created_at: o.at, updated_at: o.at, last_restored_at: o.restored ?? null,
+    restore_count: o.restoreCount ?? 0,
+  });
+  const snapshots = [
+    snapBase({ id: "ws1", taskId: "t1", taskTitle: tasks[0].title, name: "评审现场 · 10-28 21:04", count: 3, at: iso(40), restored: iso(20), restoreCount: 1 }),
+    snapBase({ id: "ws2", taskId: "t2", taskTitle: tasks[1].title, name: "微信沟通现场", count: 1, at: iso(300), source: "manual" }),
+  ];
+  const snapItem = (o) => ({
+    id: o.id, snapshot_id: o.sid, display_order: o.order, item_kind: o.kind,
+    display_name: o.name, target_id: o.target ?? null, app_key: "", exe_path: o.exe ?? "",
+    launch_args: "", working_dir: "", app_user_model_id: "", url: o.url ?? "", path: o.path ?? "",
+    agent_source_id: "", agent_session_id: "", window_title_hint: o.hint ?? "",
+    window_class: o.cls ?? "", window_title: o.wname ?? "", restore_note: "",
+    last_result: o.result ?? "", last_verification: o.verify ?? "", last_restored_at: o.at ?? null,
+  });
+  const snapItems = (sid) => sid === "ws1" ? [
+    snapItem({ id: "wi1", sid: "ws1", order: 0, kind: "application", name: "Visual Studio Code", target: "nt1", exe: "C:\\\\Apps\\\\Code.exe", hint: "task_dock", cls: "Chrome_WidgetWin", wname: "task_dock — D:\\\\Develop", result: "restored", verify: "window-confirmed", at: iso(20) }),
+    snapItem({ id: "wi2", sid: "ws1", order: 1, kind: "url", name: "GitHub — task_dock", target: "nt3", url: "https://github.com/x/task_dock", result: "restored", verify: "delegated", at: iso(20) }),
+    snapItem({ id: "wi3", sid: "ws1", order: 2, kind: "directory", name: "日志目录", target: "nt5", path: "D:\\\\Develop\\\\task_dock\\\\logs", result: "skipped", verify: "none", at: iso(20) }),
+  ] : [
+    snapItem({ id: "wi4", sid: "ws2", order: 0, kind: "application", name: "微信", target: "nt4", exe: "C:\\\\Tencent\\\\WeChat\\\\WeChat.exe", hint: "微信", cls: "WeChatMainWndForPC", wname: "微信", result: "", verify: "" }),
+  ];
+  const snapshotDetail = (s) => ({ ...s, items: snapItems(s.id) });
+  const clipboardSnapLinks = [
+    { id: "csl1", snapshot_id: "ws1", target_type: "item", target_id: "ci1", created_at: iso(35), label: "接口返回示例", kind: "text" },
+    { id: "csl2", snapshot_id: "ws1", target_type: "group", target_id: "cg1", created_at: iso(34), label: "调试截图（3 项）", kind: "image" },
+  ];
+  const contextAgents = [
+    { link_id: "al1", source_id: "codex", source_name: "Codex", session_external_id: "sess-alpha", title: "重构认证中间件", state: "failed", last_seen_at: iso(6), origin: "user" },
+    { link_id: null, source_id: "trae", source_name: "Trae", session_external_id: "sess-gamma", title: "补充需求讨论", state: "waiting", last_seen_at: iso(40), origin: "nav" },
+  ];
+
+  const discovered = [    { source_id: "codex", display_name: "Codex", transport_kind: "transport", installed: true, version: "0.42.0", install_paths: ["~/.codex"], config_homes: [], install_method: "npm", running_instances: [{ pid: 111, name: "codex", exe: null }], capabilities: [], supported_events: ["running", "waiting", "completed", "failed"], docs_url: "", limitations: [], registered: true, enabled: true, configured: true, verified: true, last_event_at: iso(2), health_state: "live" },
     { source_id: "trae", display_name: "Trae", transport_kind: "transport", installed: true, version: null, install_paths: [], config_homes: [], install_method: "", running_instances: [], capabilities: [], supported_events: ["running", "completed"], docs_url: "", limitations: ["CN 版路径不同"], registered: true, enabled: true, configured: true, verified: false, last_event_at: iso(90), health_state: "stale" },
     { source_id: "zcode", display_name: "ZCode", transport_kind: "discovery", installed: true, version: null, install_paths: [], config_homes: [], install_method: "", running_instances: [{ pid: 222, name: "zcode", exe: null }], capabilities: [], supported_events: [], docs_url: "", limitations: ["事件桥接待验证"], registered: true, enabled: true, configured: false, verified: false, last_event_at: null, health_state: "no-events" },
     { source_id: "qoder", display_name: "Qoder", transport_kind: "transport", installed: false, version: null, install_paths: [], config_homes: [], install_method: "", running_instances: [], capabilities: [], supported_events: [], docs_url: "", limitations: [], registered: true, enabled: true, configured: false, verified: false, last_event_at: null, health_state: "unregistered" },
@@ -150,6 +237,48 @@ const shim = `
       case "discovery_scan": return discovered;
       case "list_notifications": return notifications;
       case "list_agent_events": return events;
+      case "actions_feed": return actionFeed;
+      case "actions_ack":
+      case "actions_unack": return 1;
+      case "actions_open_session": return { success: true, requested_action: "resume_session", actual_action: "resume_session", fallback_used: false, target_id: args?.sessionId ?? "", reason: null, verification_level: "window-confirmed" };
+      case "workspace_list":
+        return args?.taskId ? snapshots.filter((s) => s.task_id === args.taskId) : snapshots;
+      case "workspace_get": {
+        const s = snapshots.find((x) => x.id === args?.id);
+        return s ? snapshotDetail(s) : null;
+      }
+      case "workspace_capture_windows": return [
+        { hwnd: 111, title: "task_dock — D:\\\\Develop", class_name: "Chrome_WidgetWin", exe_path: "C:\\\\Apps\\\\Code.exe", is_minimized: false },
+        { hwnd: 333, title: "微信", class_name: "WeChatMainWndForPC", exe_path: "C:\\\\Tencent\\\\WeChat\\\\WeChat.exe", is_minimized: true },
+        { hwnd: 444, title: "设置", class_name: "ApplicationFrameWindow", exe_path: null, is_minimized: false },
+      ];
+      case "workspace_capture_task":
+      case "workspace_create": {
+        const box = snapshots[0];
+        return { ...snapshotDetail(box), id: "ws-new", name: args?.input?.name || "新现场", item_count: 2 };
+      }
+      case "workspace_restore": return true;
+      case "workspace_restore_cancel": return null;
+      case "workspace_restore_status": return { running: false, snapshot_id: null, cancel_requested: false };
+      case "workspace_delete":
+      case "workspace_rename":
+      case "workspace_detach_task": return null;
+      case "clipboard_snapshot_links":
+        return clipboardSnapLinks.filter((l) => l.snapshot_id === args?.snapshotId);
+      case "clipboard_link_snapshot":
+        return { id: "csl-new", snapshot_id: args?.snapshotId, target_type: args?.targetType, target_id: args?.targetId, created_at: iso(0), label: "预览素材", kind: "text" };
+      case "clipboard_unlink_snapshot": return null;
+      case "task_context": {
+        const task = tasks.find((t) => t.id === args?.taskId) || tasks[0];
+        return {
+          task,
+          agents: contextAgents,
+          navigation: navLinks.filter((l) => l.task_id === task.id),
+          clipboard: [{ id: "cl1", task_id: task.id, target_type: "group", target_id: "cg1", created_at: iso(80), label: "接口调试截图（3 项）", kind: "image" }],
+          snapshots: snapshots.filter((s) => s.task_id === task.id),
+          actions: actionItems.filter((a) => a.task_id === task.id),
+        };
+      }
       case "list_backups": return backups;
       case "nav_all_task_links": return navLinks;
       case "nav_task_targets": return navLinks.filter((l) => l.task_id === args?.task_id);

@@ -21,7 +21,10 @@ use serde_json::Value;
 use crate::error::{AppError, AppResult};
 
 /// Task Dock 写入的 hook 命令中的自我标识（用于识别与安全卸载）。
-pub const MARKER: &str = "task-dock-agent-hook";
+/// v0.5 起 Hook 由原生 CLI 上报，命令含 `--agent-hook`；旧版 PowerShell 脚本
+/// 使用 `task-dock-agent-hook` 文件名，卸载时同样识别。
+pub const MARKER: &str = "--agent-hook";
+pub const LEGACY_MARKER: &str = "task-dock-agent-hook";
 
 /// 备份保留份数。
 const KEEP_BACKUPS: usize = 5;
@@ -56,7 +59,7 @@ fn is_our_hook(entry: &Value) -> bool {
             arr.iter().any(|h| {
                 h.get("command")
                     .and_then(|c| c.as_str())
-                    .map(|c| c.contains(MARKER))
+                    .map(|c| c.contains(MARKER) || c.contains(LEGACY_MARKER))
                     .unwrap_or(false)
             })
         })
@@ -328,101 +331,24 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// 生成共享的 Hook 上报脚本（PowerShell，Windows 10/11 自带）。
-/// -Source 参数 = agent_sources.id；-Event 参数 = Hook 事件名。
-/// 优先 POST 本地 HTTP 接入端点，失败回退写文件投递目录，两条通道进同一状态机。
-pub fn hook_script_content(source_id: &str, http_port: u16, token: &str) -> String {
-    format!(
-        r#"# Task Dock agent hook reporter (auto-generated; safe to remove via Task Dock)
-param([string]$Source = "{source}", [string]$Event = "Unknown")
-$ErrorActionPreference = "SilentlyContinue"
-try {{ $raw = [Console]::In.ReadToEnd() }} catch {{ $raw = "" }}
-if ([string]::IsNullOrWhiteSpace($raw)) {{ $raw = "{{}}" }}
-try {{ $payload = $raw | ConvertFrom-Json }} catch {{ $payload = [pscustomobject]@{{}} }}
-
-# session id: common fields across Claude-compatible agents
-$sessionId = ""
-foreach ($k in @("session_id","sessionId","thread_id","conversation_id","conversationId")) {{
-  if ($payload.PSObject.Properties.Name -contains $k -and $payload.$k) {{ $sessionId = [string]$payload.$k; break }}
-}}
-if ([string]::IsNullOrWhiteSpace($sessionId)) {{ $sessionId = "{source}-unknown-session" }}
-
-# event -> state mapping (conservative: tool events we cannot confirm map to running)
-$state = switch -Regex ($Event) {{
-  "PermissionRequest|Notification" {{ "waiting" }}
-  "Stop|SessionEnd"                 {{ "completed" }}
-  "SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|PreCompact|PostCompact" {{ "running" }}
-  default                           {{ "running" }}
-}}
-# subagent events are not reported separately (avoid confusing the main run)
-if ($Event -match "Subagent") {{ exit 0 }}
-
-$title = ""
-foreach ($k in @("task_title","title","prompt_title")) {{
-  if ($payload.PSObject.Properties.Name -contains $k -and $payload.$k) {{
-    $t = [string]$payload.$k; if ($t.Length -gt 120) {{ $t = $t.Substring(0,120) }}; $title = $t; break
-  }}
-}}
-
-$body = @{{
-  source_id   = $Source
-  session_id  = $sessionId
-  state       = $state
-  task_title  = $title
-  message     = ("hook: " + $Event)
-  occurred_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-  transport   = "hook"
-}} | ConvertTo-Json -Compress
-
-$headers = @{{ "Authorization" = "Bearer {token}" }}
-$ok = $false
-try {{
-  Invoke-RestMethod -Uri "http://127.0.0.1:{port}/api/v1/events" -Method Post -Headers $headers `
-    -ContentType "application/json" -Body $body -TimeoutSec 3 | Out-Null
-  $ok = $true
-}} catch {{}}
-
-if (-not $ok) {{
-  $inbox = Join-Path $env:APPDATA "com.taskdock.desktop\agent-inbox"
-  try {{
-    New-Item -ItemType Directory -Force -Path $inbox | Out-Null
-    $file = Join-Path $inbox ("{source}-" + [guid]::NewGuid().ToString("N") + ".json")
-    [System.IO.File]::WriteAllText($file, $body, (New-Object System.Text.UTF8Encoding $false))
-  }} catch {{}}
-}}
-"#,
-        source = source_id,
-        token = token,
-        port = http_port
-    )
-}
-
-/// 把上报脚本写入应用数据目录，返回脚本路径。
-pub fn write_hook_script(
-    app_data: &Path,
-    source_id: &str,
-    http_port: u16,
-    token: &str,
-) -> AppResult<PathBuf> {
-    let dir = app_data.join("hooks");
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("task-dock-agent-hook-{}.ps1", source_id));
-    // UTF-8 BOM：Windows PowerShell 5.1 对无 BOM 文件按 ANSI 解析，会破坏脚本语法
-    let mut bytes = vec![0xEF, 0xBB, 0xBF];
-    bytes.extend_from_slice(hook_script_content(source_id, http_port, token).as_bytes());
-    std::fs::write(&path, bytes)?;
-    Ok(path)
-}
-
 /// Task Dock hook 命令行（写入各 Agent 配置的 command 字段）。
+/// 原生 CLI 单事件进程开销约 10ms（旧 PowerShell 脚本约 300ms+）。
 /// event 来自 Task Dock 的静态白名单事件表，不接收外部输入，无注入面。
-pub fn hook_command(script: &Path, source_id: &str, event: &str) -> String {
+pub fn hook_command(exe: &Path, source_id: &str, event: &str) -> String {
     format!(
-        "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\" -Source {} -Event {}",
-        script.to_string_lossy(),
+        "\"{}\" {} --source {} --event {}",
+        exe.to_string_lossy(),
+        MARKER,
         source_id,
         event
     )
+}
+
+/// 旧版 PowerShell 脚本路径（仅用于卸载清理与兼容检测）。
+pub fn legacy_script_path(app_data: &Path, source_id: &str) -> PathBuf {
+    app_data
+        .join("hooks")
+        .join(format!("task-dock-agent-hook-{}.ps1", source_id))
 }
 
 #[cfg(test)]

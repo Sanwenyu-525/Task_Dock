@@ -3,7 +3,7 @@
 //! 点击展开详情、通知点击标已读、清空需二次确认；
 //! 订阅 notification / agent-changed 事件实时刷新。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Bot, CheckCheck, Trash2, ChevronRight, ChevronDown, Inbox } from "lucide-react";
 import {
   clearNotifications,
@@ -31,11 +31,31 @@ const TIME_FILTERS: { id: TimeFilter; label: string }[] = [
 ];
 
 const DAY = 86400000;
+const PAGE = 100;
+
+/** 合并事件页并按 (received_at, id) 倒序去重（新页覆盖旧页同 id 记录）。 */
+function mergeEvents(prev: AgentEventRow[], next: AgentEventRow[]): AgentEventRow[] {
+  const map = new Map<string, AgentEventRow>();
+  for (const e of prev) map.set(e.id, e);
+  for (const e of next) map.set(e.id, e);
+  return [...map.values()].sort((a, b) =>
+    a.received_at === b.received_at
+      ? a.id < b.id
+        ? 1
+        : -1
+      : a.received_at < b.received_at
+        ? 1
+        : -1,
+  );
+}
 
 export default function HistoryPanel() {
   const showToast = useUiStore((s) => s.showToast);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [events, setEvents] = useState<AgentEventRow[]>([]);
+  const [eventsHasMore, setEventsHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadedRef = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -45,9 +65,14 @@ export default function HistoryPanel() {
 
   const refresh = useCallback(async () => {
     try {
-      const [ns, evs] = await Promise.all([listNotifications(false, 100), listAgentEvents(100)]);
+      const [ns, evs] = await Promise.all([listNotifications(false, PAGE), listAgentEvents(PAGE)]);
       setNotifications(ns);
-      setEvents(evs);
+      // 增量合并：保留用户已翻页加载的旧事件，避免刷新把时间轴截断回最新一页
+      setEvents((prev) => mergeEvents(prev, evs));
+      if (!loadedRef.current) {
+        loadedRef.current = true;
+        setEventsHasMore(evs.length >= PAGE);
+      }
       setLoaded(true);
     } catch (e) {
       showToast(`加载历史失败：${String(e)}`, { kind: "error" });
@@ -58,12 +83,27 @@ export default function HistoryPanel() {
     refresh();
   }, [refresh]);
 
-  // 新通知 / Agent 事件到达 → 实时刷新（不丢失已滚动位置之外的记录）
+  // 新通知 / Agent 事件到达 → 合并刷新（500ms 窗口，避免事件风暴下反复拉取全量历史）
   useEffect(() => {
     const cleanups: (() => void)[] = [];
-    onNotification(() => void refresh()).then((u) => cleanups.push(u));
-    onAgentChanged(() => void refresh()).then((u) => cleanups.push(u));
-    return () => cleanups.forEach((u) => u());
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const bump = () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+        void refresh();
+      }, 500);
+    };
+    onNotification(() => bump()).then((u) => cleanups.push(u));
+    onAgentChanged((payload) => {
+      if (payload?.changed === false) return;
+      bump();
+    }).then((u) => cleanups.push(u));
+    return () => {
+      if (timer) clearTimeout(timer);
+      cleanups.forEach((u) => u());
+    };
   }, [refresh]);
 
   const sources = useMemo(() => {
@@ -133,6 +173,21 @@ export default function HistoryPanel() {
       showToast(String(e), { kind: "error" });
     } finally {
       setConfirmClear(false);
+    }
+  }
+
+  async function onLoadMore() {
+    if (loadingMore || events.length === 0) return;
+    const cursor = events[events.length - 1].id;
+    setLoadingMore(true);
+    try {
+      const older = await listAgentEvents(PAGE, undefined, cursor);
+      setEvents((prev) => mergeEvents(prev, older));
+      setEventsHasMore(older.length >= PAGE);
+    } catch (e) {
+      showToast(`加载更早事件失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -271,6 +326,13 @@ export default function HistoryPanel() {
           </div>
         </div>
       ))}
+      {loaded && eventsHasMore && (
+        <div className="history-more">
+          <button className="btn sm" onClick={onLoadMore} disabled={loadingMore}>
+            {loadingMore ? "加载中…" : "加载更早的事件"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

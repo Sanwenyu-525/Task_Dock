@@ -28,71 +28,154 @@ pub fn plugin_dir() -> PathBuf {
 pub const PLUGIN_MARKER: &str = "task-dock-bridge";
 
 fn plugin_content(port: u16, token: &str) -> String {
-    format!(
-        r#"// task-dock-bridge — Task Dock bridge for DeepSeek Harness（由 Task Dock 生成，可一键卸载）
+    let template = r#"// task-dock-bridge — Task Dock bridge for DeepSeek Harness（由 Task Dock 生成，可一键卸载）
 // 只上报状态元数据（agent id + 状态 + 时间），不读取任务正文。
-export const name = '{marker}'
+// 保护：2.5s 超时、单并发、running 事件合并、失败指数退避、关键事件文件回退；
+// Task Dock 不可用时绝不影响 Harness 本身（队列有界、定时器 unref）。
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import * as os from 'node:os'
+
+export const name = '__MARKER__'
 export const inject = []
 
-const URL = 'http://127.0.0.1:{port}/api/v1/events'
-const TOKEN = '{token}'
+const URL = 'http://127.0.0.1:__PORT__/api/v1/events'
+const TOKEN = '__TOKEN__'
+const MAX_QUEUE = 200
+const REQUEST_TIMEOUT_MS = 2500
 
-async function post(body) {{
-  try {{
-    const res = await fetch(URL, {{
-      method: 'POST',
-      headers: {{ 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN }},
-      body: JSON.stringify(body),
-    }})
-    if (!res.ok) console.log('[{marker}] http', res.status)
-  }} catch (e) {{
-    // Task Dock 未运行时静默失败，绝不影响 Harness
-  }}
-}}
+const queue = []
+let timer = null
+let inFlight = false
+let failures = 0
+let retryAt = 0
+let seq = 0
 
-function report(state, agentId, message, extra) {{
+function inboxDir() {
+  return path.join(process.env.APPDATA || os.homedir(), 'com.taskdock.desktop', 'agent-inbox')
+}
+
+function fileFallback(body) {
+  try {
+    const dir = inboxDir()
+    fs.mkdirSync(dir, { recursive: true })
+    const name = 'plugin-' + Date.now() + '-' + (seq++).toString(36) + '.json'
+    const finalPath = path.join(dir, name)
+    fs.writeFileSync(finalPath + '.tmp', JSON.stringify(body), 'utf8')
+    fs.renameSync(finalPath + '.tmp', finalPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function schedule() {
+  if (timer || inFlight) return
+  const wait = Math.max(0, retryAt - Date.now())
+  timer = setTimeout(() => { timer = null; void flush() }, wait)
+  if (timer && typeof timer.unref === 'function') timer.unref()
+}
+
+async function flush() {
+  if (inFlight || queue.length === 0) return
+  if (Date.now() < retryAt) return schedule()
+  const item = queue.shift()
+  inFlight = true
+  try {
+    const ctrl = new AbortController()
+    const to = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
+    let res
+    try {
+      res = await fetch(URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+        body: JSON.stringify(item.body),
+        signal: ctrl.signal,
+      })
+    } finally {
+      clearTimeout(to)
+    }
+    if (res.status === 429 || res.status === 503) throw new Error('busy ' + res.status)
+    if (!res.ok) console.log('[task-dock-bridge] http ' + res.status)
+    failures = 0
+    retryAt = 0
+  } catch (e) {
+    failures += 1
+    if (item.critical) {
+      const saved = fileFallback(item.body)
+      if (!saved) queue.unshift(item)
+      console.log('[task-dock-bridge] critical report failed (' + (e?.message || e) + '), fallback=' + saved)
+    }
+    retryAt = Date.now() + Math.min(30000, 1000 * Math.pow(2, Math.min(failures, 5)))
+  } finally {
+    inFlight = false
+    if (queue.length > 0) schedule()
+  }
+}
+
+function enqueue(body, critical) {
+  if (critical) {
+    queue.unshift({ body, critical })
+  } else {
+    const i = queue.findIndex((q) => !q.critical && q.body.session_id === body.session_id && q.body.state === body.state)
+    if (i >= 0) queue[i] = { body, critical }
+    else queue.push({ body, critical })
+  }
+  while (queue.length > MAX_QUEUE) {
+    const idx = queue.findIndex((q) => !q.critical)
+    if (idx < 0) break
+    queue.splice(idx, 1)
+  }
+  schedule()
+}
+
+function report(state, agentId, message, extra) {
   if (!agentId) return
-  post(Object.assign({{
+  const critical = state !== 'running'
+  enqueue(Object.assign({
+    schema_version: 1,
+    event_id: 'dsh-' + Date.now().toString(36) + '-' + (seq++).toString(36),
     source_id: 'deepseek-harness',
     session_id: String(agentId),
     state,
     message,
     occurred_at: new Date().toISOString(),
     transport: 'plugin',
-  }}, extra || {{}}))
-}}
+    evidence_type: 'observed',
+  }, extra || {}), critical)
+}
 
-export function apply(ctx) {{
-  ctx.on('agent/status', (p) => {{
+export function apply(ctx) {
+  ctx.on('agent/status', (p) => {
     const id = p && p.agent ? p.agent.id : undefined
     if (p.status === 'idle') report('completed', id, 'dsh: turn finished')
     else if (p.status === 'error') report('failed', id, 'dsh: agent error')
     else report('running', id, 'dsh: ' + (p.status || 'running'))
-  }})
-  ctx.on('agent/error', (p) => {{
+  })
+  ctx.on('agent/error', (p) => {
     const id = p && p.agent ? p.agent.id : p.id
     report('failed', id, 'dsh: agent error')
-  }})
-  ctx.on('approval/request', (p) => {{
+  })
+  ctx.on('approval/request', (p) => {
     const id = p && p.agent ? p.agent.id : p.id
     report('waiting', id, 'dsh: approval requested')
-  }})
-  ctx.on('subagent/start', (info) => {{
+  })
+  ctx.on('subagent/start', (info) => {
     const id = info && info.parent ? info.parent : undefined
-    report('running', id, 'dsh: subagent started', {{ instance_id: 'subagent-' + String(info && info.id) }})
-  }})
-  ctx.on('subagent/end', (info) => {{
+    report('running', id, 'dsh: subagent started', { instance_id: 'subagent-' + String(info && info.id) })
+  })
+  ctx.on('subagent/end', (info) => {
     const id = info && info.parent ? info.parent : undefined
     const ok = info && info.stopReason === 'completed'
     report(ok ? 'completed' : 'failed', id, 'dsh: subagent ended (' + ((info && info.stopReason) || 'unknown') + ')')
-  }})
-  console.log('[{marker}] loaded')
-}}
-"#,
-        marker = PLUGIN_MARKER,
-        port = port,
-        token = token
-    )
+  })
+  console.log('[__MARKER__] loaded')
+}
+"#;
+    template
+        .replace("__MARKER__", PLUGIN_MARKER)
+        .replace("__PORT__", &port.to_string())
+        .replace("__TOKEN__", token)
 }
 
 #[derive(Clone)]

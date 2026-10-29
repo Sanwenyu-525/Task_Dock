@@ -16,11 +16,15 @@ import userEvent from "@testing-library/user-event";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useTasksStore } from "../../store/useTasksStore";
 import AppPicker from "./AppPicker";
 import {
   navLinkTask,
   navListWindows,
+  navListTargets,
   navPickWindowIdentity,
+  navPickTaskWindow,
+  navLinkTaskWindow,
   navSaveTarget,
   type DiscoveredApp,
   type NavTarget,
@@ -40,6 +44,8 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
     navLinkTask: vi.fn(async () => "link-id"),
     navSaveAgentSessionTarget: vi.fn(),
     navPickWindowIdentity: vi.fn(),
+    navPickTaskWindow: vi.fn(async () => {}),
+    navLinkTaskWindow: vi.fn(async () => "link-id"),
   };
 });
 
@@ -112,6 +118,9 @@ const WIN_NOTEPAD: WindowInfo = {
 
 /** 注入 store 初始数据（真实 zustand 实例；动作替换为 vi.fn 防意外 IPC）。 */
 function seedStores(opts?: { apps?: DiscoveredApp[]; targets?: NavTarget[]; links?: TaskNavLink[] }) {
+  vi.mocked(navListTargets).mockResolvedValue([]);
+  vi.mocked(navPickTaskWindow).mockResolvedValue();
+  vi.mocked(navLinkTaskWindow).mockResolvedValue("link-id");
   useNavigationStore.setState({
     scan: {
       apps: opts?.apps ?? [APP_VSCODE, APP_WECHAT, APP_CHROME],
@@ -129,6 +138,7 @@ function seedStores(opts?: { apps?: DiscoveredApp[]; targets?: NavTarget[]; link
   });
   useAgentsStore.setState({ snapshot: { sources: [], instances: [], sessions: [], runs: [] } });
   useUiStore.setState({ toast: null });
+  useTasksStore.setState({ refresh: vi.fn(async () => {}) });
 }
 
 /** toast 探针：把 useUiStore 的 toast 渲染进 DOM，断言"用户可见"。 */
@@ -236,7 +246,6 @@ describe("AppPicker", () => {
     const t = targetFix("target-win", "doc.txt", "notepad.exe");
     vi.mocked(navListWindows).mockResolvedValue([WIN_NOTEPAD]);
     vi.mocked(navSaveTarget).mockResolvedValue(t);
-    vi.mocked(navPickWindowIdentity).mockResolvedValue({ class_name: WIN_NOTEPAD.class_name, title: WIN_NOTEPAD.title });
     const { onClose } = renderPicker({ taskId: "task-1" });
 
     await user.click(await screen.findByRole("button", { name: /从当前运行的窗口选择/ }));
@@ -248,15 +257,15 @@ describe("AppPicker", () => {
       expect.objectContaining({
         target_type: "application",
         exe_path: WIN_NOTEPAD.exe_path,
-        window_title_hint: WIN_NOTEPAD.title.slice(0, 32),
       }),
     );
-    // 用户选中的窗口身份必须传给后端（hwnd + 目标 id）
-    expect(vi.mocked(navPickWindowIdentity)).toHaveBeenCalledWith("target-win", WIN_NOTEPAD.hwnd);
-    expect(vi.mocked(navLinkTask)).toHaveBeenCalledWith("task-1", "target-win", false, "default");
+    // 用户选中的窗口身份属于任务关联，而不是共用应用目标。
+    expect(vi.mocked(navLinkTaskWindow)).toHaveBeenCalledWith("task-1", "target-win", WIN_NOTEPAD.hwnd);
+    expect(vi.mocked(navPickWindowIdentity)).not.toHaveBeenCalled();
+    expect(vi.mocked(navLinkTask)).not.toHaveBeenCalled();
   });
 
-  it("窗口身份记录失败（窗口已关闭）：info 提示可见，流程不中断仍走 afterPick", async () => {
+  it("窗口身份记录失败时显示错误并保留选择器，便于重试", async () => {
     const user = userEvent.setup();
     seedStores();
     const t = targetFix("target-win", "doc.txt", "notepad.exe");
@@ -270,13 +279,33 @@ describe("AppPicker", () => {
     await user.click(await screen.findByRole("button", { name: /从当前运行的窗口选择/ }));
     await user.click(await screen.findByRole("button", { name: /doc\.txt - 记事本/ }));
 
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1)); // afterPick 仍被执行
+    await waitFor(() => expect(screen.getByTestId("toast").textContent).toContain("window gone"));
+    expect(onClose).not.toHaveBeenCalled();
     expect(vi.mocked(navSaveTarget)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(navPickWindowIdentity)).toHaveBeenCalledWith("target-win", WIN_NOTEPAD.hwnd);
     const toast = screen.getByTestId("toast");
-    expect(toast.textContent).toContain("窗口已关闭");
-    expect(toast.textContent).toContain("应用目标本身已保存");
-    expect(toast.dataset.kind).toBe("info");
+    expect(toast.textContent).toContain("未能记录窗口身份");
+    expect(toast.dataset.kind).toBe("error");
+  });
+
+  it("两个任务重用同一应用时分别更新各自关联的窗口", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    const t = { ...targetFix("shared", "应用", "app"), exe_path: WIN_NOTEPAD.exe_path! };
+    vi.mocked(navListTargets).mockResolvedValue([t]);
+    vi.mocked(navListWindows).mockResolvedValue([WIN_NOTEPAD]);
+    const first = renderPicker({ taskId: "task-1" });
+    await user.click(screen.getByRole("button", { name: /从当前运行的窗口选择/ }));
+    await user.click(await screen.findByRole("button", { name: /doc\.txt - 记事本/ }));
+    await waitFor(() => expect(first.onClose).toHaveBeenCalled());
+    cleanup();
+    const second = renderPicker({ taskId: "task-2" });
+    await user.click(screen.getByRole("button", { name: /从当前运行的窗口选择/ }));
+    await user.click(await screen.findByRole("button", { name: /doc\.txt - 记事本/ }));
+    await waitFor(() => expect(second.onClose).toHaveBeenCalled());
+    expect(vi.mocked(navLinkTaskWindow).mock.calls).toEqual([["task-1", "shared", WIN_NOTEPAD.hwnd], ["task-2", "shared", WIN_NOTEPAD.hwnd]]);
+    expect(navPickWindowIdentity).not.toHaveBeenCalled();
+    expect(navSaveTarget).not.toHaveBeenCalled();
   });
 
   it("busyKey 防重复：连点两次同一应用，navSaveTarget 只调用一次", async () => {

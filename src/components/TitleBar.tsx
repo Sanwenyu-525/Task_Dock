@@ -4,10 +4,11 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown,
+  Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Clipboard,
 } from "lucide-react";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useAgentsStore } from "../store/useAgentsStore";
+import { useUiStore } from "../store/useUiStore";
 import { applyMode } from "../lib/bridge";
 import { AGENT_STATE_LABELS } from "../lib/format";
 import { worstAgentState } from "../lib/agentTree";
@@ -77,13 +78,19 @@ export default function TitleBar() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const snapshot = useAgentsStore((s) => s.snapshot);
+  const clipboardOpen = useUiStore((s) => s.clipboardOpen);
+  const openClipboard = useUiStore((s) => s.openClipboard);
+  const closeClipboard = useUiStore((s) => s.closeClipboard);
   const mode = settings?.mode ?? "full";
   const theme = settings?.theme ?? "system";
 
-  // Escape 隐藏窗口（输入框聚焦时输入框自身已处理并 stopPropagation）
+  // Escape 隐藏窗口（输入框/弹窗/剪贴板抽屉自行处理并阻止冒泡时跳过）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") getCurrentWindow().hide();
+      if (e.key !== "Escape") return;
+      // 次级面板自行消费 Escape，不能顺带把窗口藏进托盘
+      if (useUiStore.getState().clipboardOpen || useUiStore.getState().context.open) return;
+      getCurrentWindow().hide();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -140,6 +147,15 @@ export default function TitleBar() {
             ))
           }
         </Dropdown>
+        <button
+          className={`icon-btn ${clipboardOpen ? "active" : ""}`}
+          title={clipboardOpen ? "关闭智能剪贴板" : "智能剪贴板"}
+          aria-label={clipboardOpen ? "关闭智能剪贴板" : "打开智能剪贴板"}
+          aria-expanded={clipboardOpen}
+          onClick={() => (clipboardOpen ? closeClipboard() : openClipboard())}
+        >
+          <Clipboard size={14} />
+        </button>
         <span className="titlebar-divider" />
         <button className="icon-btn" title="最小化" aria-label="最小化" onClick={() => getCurrentWindow().minimize()}>
           <Minus size={14} />

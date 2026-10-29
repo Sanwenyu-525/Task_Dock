@@ -1,7 +1,7 @@
 {
   "name": "task-dock",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Task Dock — Windows 桌面悬浮任务与 AI Agent 监控中心",
   "scripts": {

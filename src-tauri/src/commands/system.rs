@@ -161,6 +161,38 @@ pub fn hub_health(hub: State<'_, std::sync::Arc<AgentHub>>) -> AppResult<serde_j
     }))
 }
 
+/// 性能诊断快照：队列深度/容量、合并/采样/拒绝计数、延迟分位、HTTP 与文件投递、
+/// SQLite 读延迟与事件表规模。单次查询轻量，受 `perf_diagnostics_enabled` 控制。
+#[tauri::command]
+pub fn performance_diagnostics(
+    db: State<'_, Arc<Db>>,
+    pipeline: State<'_, Arc<crate::agents::pipeline::IngestPipeline>>,
+    hub: State<'_, Arc<AgentHub>>,
+) -> AppResult<serde_json::Value> {
+    let settings = crate::db::Settings::load(&db)?;
+    if !settings.perf_diagnostics_enabled {
+        return Ok(serde_json::json!({ "enabled": false }));
+    }
+    let snap = hub.snapshot()?;
+    Ok(serde_json::json!({
+        "enabled": true,
+        "generated_at": crate::agents::now_iso(),
+        "pipeline": pipeline.stats(),
+        "http": crate::agents::http_ingest::stats_snapshot(),
+        "file_drop": crate::agents::file_drop::stats_snapshot(),
+        "sqlite": db.read_stats(),
+        "retention": crate::agents::retention::retention_status(&db, &settings)?,
+        "hub": {
+            "sources": snap.sources.len(),
+            "sessions": snap.sessions.len(),
+            "runs": snap.runs.len(),
+            "worst_state": hub.worst_state().as_str(),
+        },
+        // 前端刷新调度指标由前端 getAgentRefreshMetrics() 自行展示
+        // （后端不伪造前端计数）。
+    }))
+}
+
 // ── 窗口材质（毛玻璃）────────────────────────────────────────
 //
 // 说明：Tauri 原生 Window::set_effects 在 Windows 上会吞掉底层错误

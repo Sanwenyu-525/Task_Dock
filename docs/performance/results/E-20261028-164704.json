@@ -1,0 +1,320 @@
+{
+  "backend_only": true,
+  "baseline_rss_mb": 6.9,
+  "config": {
+    "agents": 4,
+    "duration_secs": 1800,
+    "rate_per_agent": 5,
+    "sampling": "RSS 每 30 秒（PowerShell Get-Process WorkingSet64）"
+  },
+  "counts": {
+    "critical_failed": 0,
+    "critical_missing_in_db": 0,
+    "critical_ok": 3484,
+    "critical_sent": 3484,
+    "max_queue_depth": 10,
+    "merged": 0,
+    "sampled": 0,
+    "submit_errors": 0,
+    "submitted": 34853
+  },
+  "cpu_threads": 20,
+  "db": {
+    "by_state": {
+      "completed": 1740,
+      "running": 18222,
+      "waiting": 1744
+    },
+    "events": 21706
+  },
+  "machine": {
+    "app_version": "0.4.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "note": "真实 IngestPipeline + 真实 SQLite 状态机；不含 WebView2/Tauri 窗口与托盘 UI",
+  "pass": true,
+  "pipeline": {
+    "batches": 4605,
+    "coalesce_ms": 250,
+    "commit_failures": 0,
+    "db_write_latency": {
+      "max_ms": 80.18,
+      "p50_ms": 9.85,
+      "p95_ms": 29.26,
+      "p99_ms": 56.28,
+      "samples": 1024
+    },
+    "events_merged": 13147,
+    "events_processed": 21706,
+    "events_received": 34853,
+    "events_sampled": 0,
+    "fallback_jobs": 0,
+    "ingest_latency": {
+      "max_ms": 343.05,
+      "p50_ms": 179.75,
+      "p95_ms": 280.73,
+      "p99_ms": 313.86,
+      "samples": 2048
+    },
+    "last_batch_size": 4,
+    "last_flush_at": "2026-10-28T16:46:28.436111300+00:00",
+    "max_batch_size": 8,
+    "merge_buffer": 0,
+    "overload_rejects": 0,
+    "queue_capacity": 1024,
+    "queue_depth_events": 0,
+    "queue_depth_jobs": 0,
+    "running": true,
+    "submissions": 34853,
+    "uptime_secs": 1800
+  },
+  "rss_growth_mb_first_to_last": -1.1,
+  "rss_samples": [
+    {
+      "rss_mb": 7.8,
+      "t_secs": 30
+    },
+    {
+      "rss_mb": 8.4,
+      "t_secs": 60
+    },
+    {
+      "rss_mb": 9.0,
+      "t_secs": 90
+    },
+    {
+      "rss_mb": 9.6,
+      "t_secs": 120
+    },
+    {
+      "rss_mb": 10.1,
+      "t_secs": 150
+    },
+    {
+      "rss_mb": 10.6,
+      "t_secs": 180
+    },
+    {
+      "rss_mb": 10.7,
+      "t_secs": 210
+    },
+    {
+      "rss_mb": 11.0,
+      "t_secs": 240
+    },
+    {
+      "rss_mb": 11.0,
+      "t_secs": 270
+    },
+    {
+      "rss_mb": 11.3,
+      "t_secs": 300
+    },
+    {
+      "rss_mb": 11.4,
+      "t_secs": 330
+    },
+    {
+      "rss_mb": 11.6,
+      "t_secs": 360
+    },
+    {
+      "rss_mb": 5.6,
+      "t_secs": 390
+    },
+    {
+      "rss_mb": 6.2,
+      "t_secs": 420
+    },
+    {
+      "rss_mb": 6.4,
+      "t_secs": 450
+    },
+    {
+      "rss_mb": 6.5,
+      "t_secs": 480
+    },
+    {
+      "rss_mb": 6.8,
+      "t_secs": 510
+    },
+    {
+      "rss_mb": 6.9,
+      "t_secs": 540
+    },
+    {
+      "rss_mb": 7.1,
+      "t_secs": 570
+    },
+    {
+      "rss_mb": 7.5,
+      "t_secs": 600
+    },
+    {
+      "rss_mb": 7.5,
+      "t_secs": 630
+    },
+    {
+      "rss_mb": 7.5,
+      "t_secs": 660
+    },
+    {
+      "rss_mb": 7.7,
+      "t_secs": 690
+    },
+    {
+      "rss_mb": 8.0,
+      "t_secs": 720
+    },
+    {
+      "rss_mb": 8.0,
+      "t_secs": 750
+    },
+    {
+      "rss_mb": 8.4,
+      "t_secs": 780
+    },
+    {
+      "rss_mb": 8.4,
+      "t_secs": 810
+    },
+    {
+      "rss_mb": 8.5,
+      "t_secs": 840
+    },
+    {
+      "rss_mb": 8.5,
+      "t_secs": 870
+    },
+    {
+      "rss_mb": 8.5,
+      "t_secs": 900
+    },
+    {
+      "rss_mb": 8.9,
+      "t_secs": 930
+    },
+    {
+      "rss_mb": 9.2,
+      "t_secs": 960
+    },
+    {
+      "rss_mb": 9.3,
+      "t_secs": 990
+    },
+    {
+      "rss_mb": 9.3,
+      "t_secs": 1020
+    },
+    {
+      "rss_mb": 9.4,
+      "t_secs": 1050
+    },
+    {
+      "rss_mb": 8.4,
+      "t_secs": 1080
+    },
+    {
+      "rss_mb": 8.7,
+      "t_secs": 1110
+    },
+    {
+      "rss_mb": 8.7,
+      "t_secs": 1140
+    },
+    {
+      "rss_mb": 9.1,
+      "t_secs": 1170
+    },
+    {
+      "rss_mb": 9.1,
+      "t_secs": 1200
+    },
+    {
+      "rss_mb": 9.1,
+      "t_secs": 1230
+    },
+    {
+      "rss_mb": 9.2,
+      "t_secs": 1260
+    },
+    {
+      "rss_mb": 9.2,
+      "t_secs": 1290
+    },
+    {
+      "rss_mb": 9.5,
+      "t_secs": 1320
+    },
+    {
+      "rss_mb": 9.9,
+      "t_secs": 1350
+    },
+    {
+      "rss_mb": 9.9,
+      "t_secs": 1380
+    },
+    {
+      "rss_mb": 9.9,
+      "t_secs": 1410
+    },
+    {
+      "rss_mb": 9.9,
+      "t_secs": 1440
+    },
+    {
+      "rss_mb": 10.3,
+      "t_secs": 1470
+    },
+    {
+      "rss_mb": 10.5,
+      "t_secs": 1500
+    },
+    {
+      "rss_mb": 10.6,
+      "t_secs": 1530
+    },
+    {
+      "rss_mb": 10.6,
+      "t_secs": 1560
+    },
+    {
+      "rss_mb": 10.6,
+      "t_secs": 1590
+    },
+    {
+      "rss_mb": 10.6,
+      "t_secs": 1620
+    },
+    {
+      "rss_mb": 11.6,
+      "t_secs": 1650
+    },
+    {
+      "rss_mb": 10.1,
+      "t_secs": 1680
+    },
+    {
+      "rss_mb": 10.3,
+      "t_secs": 1710
+    },
+    {
+      "rss_mb": 10.3,
+      "t_secs": 1740
+    },
+    {
+      "rss_mb": 6.7,
+      "t_secs": 1770
+    },
+    {
+      "rss_mb": 6.7,
+      "t_secs": 1800
+    }
+  ],
+  "scenario": "E",
+  "started_at": "2026-10-28T16:47:04.750435900+00:00"
+}

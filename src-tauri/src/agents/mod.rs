@@ -15,12 +15,15 @@ pub mod codex;
 pub mod discovery;
 pub mod dsh;
 pub mod file_drop;
+pub mod hook_cli;
 pub mod hooks_install;
 pub mod http_ingest;
 pub mod managed;
 pub mod mock;
 pub mod opencode;
+pub mod pipeline;
 pub mod qoder;
+pub mod retention;
 pub mod trae;
 pub mod workbuddy;
 pub mod zcode;
@@ -198,6 +201,8 @@ pub struct AgentEvent {
 const MAX_ID_LEN: usize = 128;
 const MAX_TITLE_LEN: usize = 200;
 const MAX_MSG_LEN: usize = 500;
+/// 单批最多逐条弹出的 OS 通知数；其余合并为一条摘要（数据库仍逐条记录）。
+const MAX_OS_POPUPS_PER_BATCH: usize = 3;
 const MAX_PENDING: usize = 20;
 
 fn check_id(v: &str, field: &str) -> AppResult<()> {
@@ -869,16 +874,15 @@ impl AgentHub {
 
     /// 接入一个事件：单一事务（会话/轮次/事件/通知记录一起提交或一起回滚）。
     /// transport 由调用方（Adapter）按接入入口确定，客户端声明不采信。
+    /// 注意：高吞吐入口（HTTP/文件/插件）统一走 `pipeline::IngestPipeline`，
+    /// 本方法保留给低频率调试/模拟路径。
     pub fn ingest(&self, ev: &AgentEvent, transport: Transport) -> AppResult<String> {
-        let now = now_iso();
-        let outcome = self.db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            let out = ingest_core(&tx, ev, &now, transport)?;
-            tx.commit()?;
-            Ok::<_, AppError>(out)
-        })?;
-        let run_row_id = outcome.run_row_id.clone();
-        self.after_ingest(ev, &[outcome]);
+        let outcomes = self.commit_events(&[(ev.clone(), transport)])?;
+        let run_row_id = outcomes
+            .first()
+            .map(|o| o.run_row_id.clone())
+            .unwrap_or_default();
+        self.after_batch(std::slice::from_ref(ev), &outcomes);
         Ok(run_row_id)
     }
 
@@ -892,45 +896,119 @@ impl AgentHub {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        let now = now_iso();
-        let outcomes = self.db.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            let mut outs = Vec::with_capacity(events.len());
-            for ev in events {
-                outs.push(ingest_core(&tx, ev, &now, transport)?);
-            }
-            tx.commit()?;
-            Ok::<_, AppError>(outs)
-        })?;
-        for (ev, out) in events.iter().zip(outcomes.iter()) {
-            self.after_ingest(ev, std::slice::from_ref(out));
-        }
+        let items: Vec<(AgentEvent, Transport)> =
+            events.iter().cloned().map(|e| (e, transport)).collect();
+        let outcomes = self.commit_events(&items)?;
+        self.after_batch(events, &outcomes);
         Ok(outcomes)
     }
 
-    /// 提交后的副作用：OS 通知 + 广播 + 托盘（绝不放进事务）。
-    fn after_ingest(&self, ev: &AgentEvent, outcomes: &[IngestOutcome]) {
+    /// 只写库、不产生任何 UI/托盘/OS 副作用（供接入管线批量调用）。
+    /// 每个事件可带不同 transport（同一批可混合 HTTP/文件来源）。
+    pub(crate) fn commit_events(
+        &self,
+        items: &[(AgentEvent, Transport)],
+    ) -> AppResult<Vec<IngestOutcome>> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        let now = now_iso();
+        self.db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut outs = Vec::with_capacity(items.len());
+            for (ev, transport) in items {
+                outs.push(ingest_core(&tx, ev, &now, *transport)?);
+            }
+            tx.commit()?;
+            Ok::<_, AppError>(outs)
+        })
+    }
+
+    /// 提交后的副作用：OS 通知（聚合）+ 一次广播 + 一次托盘刷新（绝不放进事务）。
+    /// 批量事件不再逐条广播/逐条查托盘，避免 100 事件 → 100 次快照请求/4×100 次查询。
+    pub(crate) fn after_batch(&self, events: &[AgentEvent], outcomes: &[IngestOutcome]) {
+        if outcomes.is_empty() {
+            return;
+        }
+        let settings = crate::db::Settings::load(&self.db).unwrap_or_default();
+        let mut shown = 0usize;
+        let mut suppressed = 0usize;
+        let mut has_notification = false;
         for outcome in outcomes {
-            if let Some((kind, title, body)) = &outcome.notification {
-                self.show_notification(kind, title, body);
+            let Some((kind, title, body)) = outcome.notification.as_ref() else {
+                continue;
+            };
+            has_notification = true;
+            let allowed = if kind == "reminder" {
+                settings.notify_reminder
+            } else {
+                settings.notify_agent
+            };
+            if !allowed || settings.notify_muted {
+                continue;
+            }
+            if shown < MAX_OS_POPUPS_PER_BATCH {
+                self.show_os_notification(title, body);
+                shown += 1;
+            } else {
+                suppressed += 1;
+            }
+        }
+        if suppressed > 0 {
+            self.show_os_notification(
+                "Agent 状态更新",
+                &format!("另有 {} 条状态变化已记录到 Agent 面板", suppressed),
+            );
+        }
+        if has_notification {
+            let _ = self.app.emit("notification", ());
+        }
+
+        let changed = outcomes.iter().any(|o| !o.deduplicated);
+        let late = outcomes.iter().any(|o| o.late);
+        let mut states = serde_json::Map::new();
+        for o in outcomes {
+            let key = o.state.as_str();
+            let n = states.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+            states.insert(key.to_string(), serde_json::json!(n + 1));
+        }
+        let mut sources: Vec<&str> = Vec::new();
+        for ev in events {
+            if !sources.contains(&ev.source_id.as_str()) {
+                sources.push(ev.source_id.as_str());
             }
         }
         let last = outcomes.last();
         let _ = self.app.emit(
             "agent-changed",
             serde_json::json!({
-                "source_id": ev.source_id,
-                "session_id": ev.session_id,
+                "source_id": events.last().map(|e| e.source_id.as_str()).unwrap_or(""),
+                "sources": sources,
+                "session_id": events.last().map(|e| e.session_id.as_str()).unwrap_or(""),
                 "run_id": last.map(|o| o.run_row_id.clone()),
                 "state": last.map(|o| o.state.as_str()),
-                "deduplicated": last.map(|o| o.deduplicated).unwrap_or(false),
-                "late": last.map(|o| o.late).unwrap_or(false),
+                "states": states,
                 "batch": outcomes.len(),
+                "changed": changed,
+                "deduplicated": !changed,
+                "late": late,
             }),
         );
-        if !outcomes.iter().all(|o| o.deduplicated) {
+        if changed {
             self.update_tray();
         }
+    }
+
+    /// OS 通知（调用方已按设置过滤）。
+    fn show_os_notification(&self, title: &str, body: &str) {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = self
+            .app
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show();
     }
 
     #[allow(dead_code)]
@@ -958,14 +1036,7 @@ impl AgentHub {
             _ => settings.notify_agent,
         };
         if allowed && !settings.notify_muted {
-            use tauri_plugin_notification::NotificationExt;
-            let _ = self
-                .app
-                .notification()
-                .builder()
-                .title(title)
-                .body(body)
-                .show();
+            self.show_os_notification(title, body);
         }
         let _ = self.app.emit("notification", ());
     }
@@ -1032,91 +1103,99 @@ impl AgentHub {
     }
 
     pub fn snapshot(&self) -> AppResult<AgentSnapshot> {
-        let sources = self.db.with_conn(|conn| {
-            let mut stmt = conn.prepare(
+        // 单个只读快照：四张表在同一个读事务内取，避免与写入并发时的跨表不一致，
+        // 且只占用读连接池，不与事件批量写入争抢唯一写锁。
+        self.db.with_read(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut stmt = tx.prepare(
                 "SELECT id, display_name, kind, enabled, verified, homepage, note, config, created_at, updated_at
                  FROM agent_sources WHERE hidden = 0 ORDER BY id",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok(AgentSource {
-                    id: r.get(0)?,
-                    display_name: r.get(1)?,
-                    kind: r.get(2)?,
-                    enabled: r.get::<_, i64>(3)? != 0,
-                    verified: r.get::<_, i64>(4)? != 0,
-                    homepage: r.get(5)?,
-                    note: r.get(6)?,
-                    config: serde_json::from_str(&r.get::<_, String>(7)?).unwrap_or(serde_json::Value::Null),
-                    created_at: r.get(8)?,
-                    updated_at: r.get(9)?,
-                })
-            })?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-        })?;
-        let instances = self.db.with_conn(|conn| {
-            let mut stmt = conn.prepare(
+            let sources = stmt
+                .query_map([], |r| {
+                    Ok(AgentSource {
+                        id: r.get(0)?,
+                        display_name: r.get(1)?,
+                        kind: r.get(2)?,
+                        enabled: r.get::<_, i64>(3)? != 0,
+                        verified: r.get::<_, i64>(4)? != 0,
+                        homepage: r.get(5)?,
+                        note: r.get(6)?,
+                        config: serde_json::from_str(&r.get::<_, String>(7)?)
+                            .unwrap_or(serde_json::Value::Null),
+                        created_at: r.get(8)?,
+                        updated_at: r.get(9)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            let mut stmt = tx.prepare(
                 "SELECT id, source_id, instance_key, display_name, exe_path, first_seen_at, last_seen_at
                  FROM agent_instances ORDER BY last_seen_at DESC LIMIT 200",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok(AgentInstance {
-                    id: r.get(0)?,
-                    source_id: r.get(1)?,
-                    instance_key: r.get(2)?,
-                    display_name: r.get(3)?,
-                    exe_path: r.get(4)?,
-                    first_seen_at: r.get(5)?,
-                    last_seen_at: r.get(6)?,
-                })
-            })?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-        })?;
-        let sessions = self.db.with_conn(|conn| {
-            let mut stmt = conn.prepare(
+            let instances = stmt
+                .query_map([], |r| {
+                    Ok(AgentInstance {
+                        id: r.get(0)?,
+                        source_id: r.get(1)?,
+                        instance_key: r.get(2)?,
+                        display_name: r.get(3)?,
+                        exe_path: r.get(4)?,
+                        first_seen_at: r.get(5)?,
+                        last_seen_at: r.get(6)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            let mut stmt = tx.prepare(
                 "SELECT id, source_id, external_id, title, status, first_seen_at, last_seen_at, last_run_id, instance_id FROM agent_sessions ORDER BY last_seen_at DESC LIMIT 200",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok(AgentSession {
-                    id: r.get(0)?,
-                    source_id: r.get(1)?,
-                    external_id: r.get(2)?,
-                    title: r.get(3)?,
-                    status: r.get(4)?,
-                    first_seen_at: r.get(5)?,
-                    last_seen_at: r.get(6)?,
-                    last_run_id: r.get(7)?,
-                    instance_id: r.get(8)?,
-                })
-            })?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-        })?;
-        let runs = self.db.with_conn(|conn| {
-            let mut stmt = conn.prepare(
+            let sessions = stmt
+                .query_map([], |r| {
+                    Ok(AgentSession {
+                        id: r.get(0)?,
+                        source_id: r.get(1)?,
+                        external_id: r.get(2)?,
+                        title: r.get(3)?,
+                        status: r.get(4)?,
+                        first_seen_at: r.get(5)?,
+                        last_seen_at: r.get(6)?,
+                        last_run_id: r.get(7)?,
+                        instance_id: r.get(8)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            let mut stmt = tx.prepare(
                 "SELECT id, session_id, source_id, external_run_id, task_title, status, started_at, updated_at, ended_at, pending_items, instance_id
                  FROM agent_runs ORDER BY updated_at DESC LIMIT 300",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok(AgentRun {
-                    id: r.get(0)?,
-                    session_id: r.get(1)?,
-                    source_id: r.get(2)?,
-                    external_run_id: r.get(3)?,
-                    task_title: r.get(4)?,
-                    status: r.get(5)?,
-                    started_at: r.get(6)?,
-                    updated_at: r.get(7)?,
-                    ended_at: r.get(8)?,
-                    pending_items: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default(),
-                    instance_id: r.get(10)?,
-                })
-            })?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-        })?;
-        Ok(AgentSnapshot {
-            sources,
-            instances,
-            sessions,
-            runs,
+            let runs = stmt
+                .query_map([], |r| {
+                    Ok(AgentRun {
+                        id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        source_id: r.get(2)?,
+                        external_run_id: r.get(3)?,
+                        task_title: r.get(4)?,
+                        status: r.get(5)?,
+                        started_at: r.get(6)?,
+                        updated_at: r.get(7)?,
+                        ended_at: r.get(8)?,
+                        pending_items: serde_json::from_str(&r.get::<_, String>(9)?)
+                            .unwrap_or_default(),
+                        instance_id: r.get(10)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            tx.commit()?;
+            Ok(AgentSnapshot {
+                sources,
+                instances,
+                sessions,
+                runs,
+            })
         })
     }
 
@@ -1124,7 +1203,7 @@ impl AgentHub {
     pub fn worst_state(&self) -> AgentState {
         let states: Vec<String> = self
             .db
-            .with_conn(|conn| {
+            .with_read(|conn| {
                 let mut stmt = conn.prepare(
                     "SELECT status FROM agent_runs
                      WHERE status IN ('running','waiting','completed','failed')

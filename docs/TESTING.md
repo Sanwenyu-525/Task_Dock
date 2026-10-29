@@ -1,11 +1,39 @@
 # 测试结果与未解决问题
 
-> 测试日期：2026-10-26（v0.4）· 环境：Windows 11 · Node 22.22.2 · Rust 1.95.0 (MSVC)
+> 测试日期：2026-10-29（v0.5）· 环境：Windows 11 · Node 24.18.0 · Rust 1.95.0 (MSVC)
 > 原则：**不以模拟测试冒充真实接入**；所有未验证项明确列出。
+> v0.5 智能剪贴板的详细测试、性能与阻塞项见
+> [clipboard/08-testing-performance.md](clipboard/08-testing-performance.md)、
+> [clipboard/09-implementation-report.md](clipboard/09-implementation-report.md) 与
+> [clipboard/10-remediation-acceptance.md](clipboard/10-remediation-acceptance.md)。
 
 ## 一、自动化测试结果
 
-### 1. Rust 单元测试（cargo test）
+### 0. v0.5 汇总（2026-10-29）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo fmt --check` | 通过 |
+| `cargo clippy --all-targets --all-features` | 通过，0 警告 |
+| `cargo test --all-targets` | **244 passed / 0 failed**（lib）；10 ignored（手动性能与真机工具） |
+| `npx tsc --noEmit` | 通过 |
+| `npx vitest run` | 16 文件 / 109 测试通过 |
+| `npm run build` | 通过（459.80 kB JS / 67.70 kB CSS） |
+| `npx tauri build`（release） | 通过，4m49s；NSIS 3.98 MiB / MSI 6.11 MiB |
+| release 剪贴板性能 | 2/2 通过，列表 p95 1.001 ms、200 连拍 2.799 s（预算 8 s） |
+| 真机验收 | **46/46 PASS**（`clipboard/evidence/acceptance-final13.log`） |
+| 第三方应用矩阵 | **5/5 PASS**；微信 ENVIRONMENT BLOCKED、Agent NOT VERIFIED |
+
+其中 v0.5 剪贴板模块内 Rust 测试 61 例：分类优先级、去重哈希、45s 分组与文本穿插、
+300/组上限、HTML 清洗、高置信敏感模式、来源未知保守凭据模式、排除名单 basename、
+恢复不覆盖用户新内容、富文本整组顺序、DIB/PNG/缩略图、CF_HTML 偏移、HDROP 解析、
+资产清理与引用安全、保留期/条数上限、任务删除级联保留内容、图片落盘失败无半行、
+粘贴状态机（写后不重发、取消保留未处理、目标关闭/焦点失败、内容竞态、恢复失败、
+续跑不重发）、监听有界队列（100/1000 事件峰值与丢弃计数）、panic 隔离。
+前端 109 例：`useClipboardStore` 4 例、`clipboardUi` 预检 9 例、
+`PastePanel` 3 例、`ClipboardDrawer` 3 例、`AgentExportPanel` 2 例及既有测试。
+
+### 1. Rust 单元测试（cargo test，v0.4 记录）
 
 ```
 running 111 tests
@@ -31,7 +59,7 @@ test result: ok. 111 passed; 0 failed
 - **DB 迁移 v4（1 例）**：v3→v4 新表齐备 + task_agent_links 原样保留 +
   唯一约束/CHECK 生效 + 任务删除级联清理两种关联。
 
-### 2. 前端测试（vitest）
+### 2. 前端测试（vitest，v0.4 记录）
 
 ```
 Test Files  5 passed (5)
@@ -48,17 +76,23 @@ datetime-local 互转、Agent 树聚合（10 例）；
 
 | 命令 | 结果 |
 |---|---|
-| `npx tsc --noEmit`（strict + noUnusedLocals） | ✅ 0 错误 |
-| `npm run build`（tsc + vite build） | ✅ 通过（dist/ 286 KB JS + 17 KB CSS） |
-| `cargo check` | ✅ 通过（6 个 dead_code 警告，均为预留 API） |
+| `npx tsc --noEmit`（strict + noUnusedLocals） | ✅ 0 错误（v0.5 复测） |
+| `npm run build`（tsc + vite build） | ✅ 通过（v0.5：459.80 kB JS + 67.70 kB CSS） |
+| `cargo clippy --all-targets --all-features` | ✅ 0 警告（v0.5 复测） |
 
 ### 4. 已知测试缺口（诚实记录）
 
-- AgentHub::ingest 的**集成测试**未编写（需要 AppHandle）；
-  其 SQL 状态机逻辑经手工端到端验证（见下）。
-- 前端组件无自动化 UI 测试（未引入 testing-library）；
-  经真实运行验证（见下）。
-- 休眠/唤醒补偿未经真实休眠测试（按挂钟比对的设计经代码审查，逻辑等价实现有参考实现）。
+- 真机剪贴板/逐项粘贴验收已完成（46/46）；微信与 Agent 类应用因环境阻塞未验证，
+  详见 §六与 `clipboard/10-remediation-acceptance.md`。
+- 真实监听 observed/captured/dropped/latency 未单独采样；
+  队列压力为进程内测试，不能外推。
+- WebView 帧率、空闲 CPU/内存、30 分钟长跑、大分组滚动、多显示器/DPI 未测量。
+- 图片/文件粘贴到图形界面应用未验证（仅记事本拒绝图片时如实报告）。
+- 安装/卸载/签名未验证。
+- ESLint：仓库无配置文件，`npm run lint` 不存在，未伪造 lint 结果。
+- 前端既有测试在 CPU 满载并行编译时出现过 3 例 5 s 超时；本次全量通过（未改阈值）。
+- v0.3 记录的两项缺口（AgentHub::ingest 集成测试、前端组件 UI 测试）中，
+  前端已引入 testing-library 并补充组件测试；AgentHub 集成测试仍缺。
 
 ## 二、端到端运行验证（真实运行，非模拟冒充）
 
@@ -148,8 +182,8 @@ release exe 直接运行验证：进程稳定、全部适配器启动、`GET /ap
 ## 四、复现命令
 
 ```bash
-npm test                              # 前端 11 例
-cd src-tauri && cargo test            # Rust 29 例
+npm test                              # 前端 109 例（16 文件）
+cd src-tauri && cargo test            # Rust 244 例（另有 10 个 ignored 手动性能/真机工具）
 npm run build                         # tsc + vite
 npm run tauri build                   # 安装包
 ```
@@ -193,3 +227,25 @@ otepad.exe | ✅ 目标落库 → 任务关联落库 → 编辑器条目（上�
   影响自动化测试工具而非用户交互，记录备查。
 - Win11 商店版记事本等 UWP 化应用的窗口不在自身 exe 名下 → 窗口级唤醒按设计如实降级为
   process-spawned；如需窗口级支持，后续可按 AUMID/ApplicationFrameHost 特判（列入待办）。
+
+## 六、v0.5 智能剪贴板真机验收（2026-10-29 已执行）
+
+> 方法：隔离实例（identifier `com.taskdock.desktop.accept`、独立 appdata、CDP 9417、
+> 内嵌前端 debug 构建）；真实系统剪贴板 + 真实外部窗口；每项读回来自目标应用/磁盘/
+> 独立进程。原始证据：`clipboard/evidence/acceptance-final13.log`。
+
+- 结果：**46/46 PASS**（A0、B1–B17 及 b 补充项、C1–C12、D1–D5、E1、F1、
+  G1–G2、H1–H2）。覆盖 22 个必测场景；场景与检查项对应关系见
+  `clipboard/08-testing-performance.md` §三。
+- 关键真机证据：C3 记事本真实接收 3 项且顺序正确；C5 粘贴后恢复原剪贴板；
+  C10 目标关闭停止；C11 用户中途复制的新内容不被覆盖；C12 目标拒绝图片时只报
+  “动作已发送”；C6 自身粘贴不产生新历史。
+- 第三方矩阵：记事本、资源管理器（CF_HDROP）、Edge 文本与 contenteditable 富文本、
+  VS Code（保存后磁盘读回）均 **PASS**；微信因已登录真实用户会话
+  **ENVIRONMENT BLOCKED / NOT VERIFIED**；Trae CN（Agent）停在登录/引导页
+  **NOT VERIFIED**。
+- 真机发现并修复两处 UI 缺陷：任务关联模式抽屉 z-index 低于编辑弹窗导致不可点选；
+  删除确认框继承 `pointer-events:none` 导致可见但不可点击。D1/D3 回归通过。
+- 未执行：WebView 帧率、空闲 CPU/内存、30 分钟长跑、>1000 截图、多显示器/DPI、
+  图片/文件粘贴到图形界面应用；微信与 Agent 应用的接收行为未验证。
+- 不把格式层单元测试折算为应用层兼容性证明，也不把未验证应用写成“支持”。

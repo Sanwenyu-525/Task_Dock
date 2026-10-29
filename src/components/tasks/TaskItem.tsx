@@ -5,7 +5,7 @@
 //! 菜单顶部提供「打开工作区」（批量启动由 WorkspaceLauncher 执行）。
 
 import { useState } from "react";
-import { Check, Clock, Repeat, Link2, Pencil, Rocket } from "lucide-react";
+import { Check, Clock, Repeat, Link2, Pencil, Rocket, Layers } from "lucide-react";
 import type { Task } from "../../lib/bridge";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -29,6 +29,7 @@ export default function TaskItem({ task, compact }: Props) {
   const openEditor = useUiStore((s) => s.openEditor);
   const showToast = useUiStore((s) => s.showToast);
   const openWorkspace = useUiStore((s) => s.openWorkspace);
+  const openContext = useUiStore((s) => s.openContext);
   const links = useNavigationStore((s) => s.linksByTask[task.id]) ?? [];
   const [menuOpen, setMenuOpen] = useState(false);
   const overdue = task.status === "pending" && isOverdue(task.due_at);
@@ -54,7 +55,7 @@ export default function TaskItem({ task, compact }: Props) {
   }
 
   /** 点击目标图标：直接跳转（任务状态不受影响）。 */
-  async function navigateTarget(targetId: string, name: string, behavior: string) {
+  async function navigateTarget(targetId: string, name: string, behavior: string, linkId: string) {
     const action =
       behavior === "launch"
         ? "open_app"
@@ -64,7 +65,7 @@ export default function TaskItem({ task, compact }: Props) {
             ? "resume_session"
             : undefined;
     try {
-      const r = await navNavigate(targetId, action ? { action } : undefined);
+      const r = await navNavigate(targetId, { action, task_link_id: linkId });
       showToast(resultMessage(r, name), { kind: r.success ? "success" : "error" });
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -130,7 +131,7 @@ export default function TaskItem({ task, compact }: Props) {
                 aria-label={`打开 ${l.target.display_name}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  navigateTarget(l.target_id, l.target.display_name, l.launch_behavior);
+                  navigateTarget(l.target_id, l.target.display_name, l.launch_behavior, l.id);
                 }}
               >
                 <TargetAvatar link={l} size={18} />
@@ -155,9 +156,19 @@ export default function TaskItem({ task, compact }: Props) {
         )}
       </div>
       {!compact && (
-        <button className="icon-btn sm task-edit" onClick={() => openEditor(task)} title="编辑任务" aria-label="编辑任务">
-          <Pencil size={13} />
-        </button>
+        <>
+          <button
+            className="icon-btn sm task-context"
+            onClick={() => openContext(task)}
+            title="任务上下文（现场 / Agent / 关联）"
+            aria-label="任务上下文"
+          >
+            <Layers size={13} />
+          </button>
+          <button className="icon-btn sm task-edit" onClick={() => openEditor(task)} title="编辑任务" aria-label="编辑任务">
+            <Pencil size={13} />
+          </button>
+        </>
       )}
       {menuOpen && links.length > 0 && (
         <>
@@ -167,7 +178,7 @@ export default function TaskItem({ task, compact }: Props) {
             <TargetMenu
               links={links}
               onClose={() => setMenuOpen(false)}
-              onNavigate={(l) => navigateTarget(l.target_id, l.target.display_name, l.launch_behavior)}
+              onNavigate={(l) => navigateTarget(l.target_id, l.target.display_name, l.launch_behavior, l.id)}
               onOpenAll={
                 links.length >= 2
                   ? () => {

@@ -10,11 +10,12 @@ import {
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { useTasksStore } from "../../store/useTasksStore";
 import type { AgentSession } from "../../lib/bridge";
 import {
-  navLinkTask, navListWindows, navPickWindowIdentity, navSaveTarget, navSaveAgentSessionTarget,
+  navLinkTask, navListWindows, navListTargets, navLinkTaskWindow, navPickTaskWindow, navPickWindowIdentity, navSaveTarget, navSaveAgentSessionTarget,
   CATEGORY_LABELS, avatarHue,
-  type DiscoveredApp, type NavTarget, type TargetInput, type WindowInfo,
+  type DiscoveredApp, type NavTarget, type TargetInput, type WindowInfo, type TaskNavLink,
 } from "../../lib/navigation";
 
 const CATEGORY_ORDER = ["all", "browser", "im", "music", "dev", "file", "uwp", "other"];
@@ -28,12 +29,14 @@ const EMPTY_SESSIONS: AgentSession[] = [];
 interface Props {
   /** 关联模式：非空 = 选择后直接关联该任务 */
   taskId?: string | null;
+  /** 重新选择某条现有关联的窗口。 */
+  windowLink?: TaskNavLink | null;
   /** 选择模式：返回已保存的目标（不关联任务） */
   onSelect?: (target: NavTarget) => void;
   onClose: () => void;
 }
 
-export default function AppPicker({ taskId, onSelect, onClose }: Props) {
+export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Props) {
   const showToast = useUiStore((s) => s.showToast);
   const { scan, scanning, loadApps, targets } = useNavigationStore();
   const [query, setQuery] = useState("");
@@ -48,6 +51,10 @@ export default function AppPicker({ taskId, onSelect, onClose }: Props) {
     if (!scan) loadApps(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (windowLink) navListWindows().then(setWindows).catch(() => setWindows([]));
+  }, [windowLink]);
 
   // 已保存目标 → 已关联去重（同任务已关联的标记，不重复加）。
   // 注意：selector 必须返回稳定引用（zustand v5 严格相等），新 Set 在 useMemo 里建。
@@ -112,6 +119,7 @@ export default function AppPicker({ taskId, onSelect, onClose }: Props) {
         }
         await navLinkTask(taskId, t.id, false, "default");
         await useNavigationStore.getState().loadTaskLinks();
+        await useTasksStore.getState().refresh();
         showToast(msg, { kind: "success" });
         onClose();
       } else if (onSelect) {
@@ -153,28 +161,56 @@ export default function AppPicker({ taskId, onSelect, onClose }: Props) {
     if (busyKey) return;
     setBusyKey(String(w.hwnd));
     try {
+      if (windowLink) {
+        await navPickTaskWindow(windowLink.id, w.hwnd);
+        await useNavigationStore.getState().loadTaskLinks();
+        showToast("已更新任务窗口选择", { kind: "success" });
+        onClose();
+        return;
+      }
       const name = w.title.split(/ [-–·] /)[0].slice(0, 60) || "窗口应用";
-      const t = await navSaveTarget({
+      // 查询现有应用，避免选择窗口时覆盖共用目标的启动参数。
+      const existing = (await navListTargets(true)).find((t) =>
+        t.target_type === "application" && t.exe_path.toLowerCase() === w.exe_path!.toLowerCase());
+      const t = existing ?? await navSaveTarget({
         target_type: "application",
         display_name: name,
         exe_path: w.exe_path,
-        window_title_hint: w.title.slice(0, 32),
         overwrite_name: false,
       });
-      // 用户显式选中的窗口 → 把精确身份（类名+标题）固化为该目标的窗口记忆，
-      // 后续导航不再按"标题最长"猜窗口。窗口此刻已被关闭等失败不阻断流程：
-      // 应用目标本身已保存，只如实提示身份未记录。
-      try {
+      if (taskId) {
+        await navLinkTaskWindow(taskId, t.id, w.hwnd);
+        await useNavigationStore.getState().loadTaskLinks();
+        showToast(`已为任务选择「${w.title}」`, { kind: "success" });
+        onClose();
+      } else {
         await navPickWindowIdentity(t.id, w.hwnd);
-      } catch {
-        showToast("窗口已关闭，未能记录窗口身份（应用目标本身已保存）", { kind: "info" });
+        await afterPick(t, `已选择「${t.display_name}」`);
       }
-      await afterPick(t, `已关联「${t.display_name}」（来自当前窗口）`);
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`未能记录窗口身份：${String(e)}`, { kind: "error" });
     } finally {
       setBusyKey(null);
     }
+  }
+
+  if (windowLink) {
+    const matches = windows?.filter((w) => w.exe_path?.toLowerCase() === windowLink.target.exe_path.toLowerCase());
+    return (
+      <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+        <div className="modal app-picker" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="modal-head"><span>为 {windowLink.target.display_name} 选择窗口</span>
+            <button className="icon-btn sm" onClick={onClose} aria-label="关闭"><X size={14} /></button>
+          </div>
+          <div className="modal-body picker-window-list">
+            {!windows && <div className="empty-hint">正在读取窗口…</div>}
+            {matches?.length === 0 && <div className="empty-hint">没有可选择的窗口</div>}
+            {matches?.map((w) => <button key={w.hwnd} className="picker-window-item" disabled={!!busyKey} onClick={() => pickWindow(w)}>{w.title}</button>)}
+            <button className="btn sm" onClick={async () => setWindows(await navListWindows().catch(() => []))}>刷新窗口</button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (

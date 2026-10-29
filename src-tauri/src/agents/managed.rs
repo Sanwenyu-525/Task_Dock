@@ -17,7 +17,7 @@ use crate::db::Db;
 use crate::error::{AppError, AppResult};
 use rusqlite::OptionalExtension;
 
-use super::hooks_install;
+use super::{hook_cli, hooks_install};
 
 // ── 数据结构 ────────────────────────────────────────────────
 
@@ -273,22 +273,18 @@ pub struct HooksAdapter {
 }
 
 impl HooksAdapter {
-    fn script_path(&self, app_data: &std::path::Path) -> PathBuf {
-        app_data
-            .join("hooks")
-            .join(format!("task-dock-agent-hook-{}.ps1", self.source_id))
-    }
-
-    fn specs(&self, script: &std::path::Path, events: &[String]) -> Vec<hooks_install::HookSpec> {
-        events
+    fn specs(&self, events: &[String]) -> AppResult<Vec<hooks_install::HookSpec>> {
+        let exe = std::env::current_exe()
+            .map_err(|e| AppError::Agent(format!("无法定位 Task Dock 可执行文件: {}", e)))?;
+        Ok(events
             .iter()
             .map(|e| hooks_install::HookSpec {
                 event: e.clone(),
                 matcher: None,
-                command: hooks_install::hook_command(script, self.source_id, e),
+                command: hooks_install::hook_command(&exe, self.source_id, e),
                 timeout_secs: Some(self.timeout_secs),
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -335,6 +331,12 @@ impl ManagedAdapter for HooksAdapter {
             .map(|p| p.to_string_lossy().to_string())
             .collect();
         let events = (self.events)();
+        let exe = std::env::current_exe()
+            .map_err(|e| AppError::Agent(format!("无法定位 Task Dock 可执行文件: {}", e)))?;
+        let sample = events
+            .first()
+            .map(|e| hooks_install::hook_command(&exe, self.source_id, e))
+            .unwrap_or_default();
         Ok(json!({
             "adapter": self.id(),
             "kind": "hooks",
@@ -343,12 +345,14 @@ impl ManagedAdapter for HooksAdapter {
             "format": {
                 "example": { "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "<预览>", "timeout": 10 } ] } ] } }
             },
-            "script_path": self.script_path(app_data).to_string_lossy(),
-            "script_sample": hooks_install::hook_script_content(self.source_id, 47821, "<令牌在安装时写入>"),
+            "transport_config": hook_cli::transport_path(app_data).to_string_lossy(),
+            "command_sample": sample,
+            "reporter": "native-cli",
             "safety": [
                 "写入前自动备份（保留最近 5 份）",
                 "原子写入，失败自动回滚",
                 "第三方 hooks 条目原样保留",
+                "Hook 由原生 CLI 上报（约 10ms/事件，不启动 PowerShell）",
                 "可随时在 Task Dock 一键卸载（仅移除 Task Dock 条目）",
             ],
             "limitations": self.limitations(),
@@ -357,11 +361,11 @@ impl ManagedAdapter for HooksAdapter {
 
     fn install(&self, app_data: &std::path::Path, db: &Db) -> AppResult<Value> {
         let settings = crate::db::Settings::load(db)?;
-        let script = hooks_install::write_hook_script(
+        hook_cli::write_transport_config(
             app_data,
-            self.source_id,
             settings.http_port,
             &settings.http_token,
+            settings.http_enabled,
         )?;
         let events = (self.events)();
         if events.is_empty() {
@@ -370,7 +374,7 @@ impl ManagedAdapter for HooksAdapter {
                 self.display_name
             )));
         }
-        let specs = self.specs(&script, &events);
+        let specs = self.specs(&events)?;
         let mut reports = Vec::new();
         for file in (self.hooks_files)() {
             let report = hooks_install::install_hooks(&file, &specs)?;
@@ -380,7 +384,7 @@ impl ManagedAdapter for HooksAdapter {
         let config = json!({
             "adapter": self.id(),
             "hook_files": (self.hooks_files)().iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
-            "script": script.to_string_lossy(),
+            "reporter": "native-cli",
             "events": events,
             "installed_at": crate::agents::now_iso(),
         });
@@ -409,8 +413,9 @@ impl ManagedAdapter for HooksAdapter {
             let report = hooks_install::uninstall_hooks(&file)?;
             reports.push(report);
         }
-        let script = self.script_path(app_data);
-        let _ = std::fs::remove_file(&script);
+        // 清理旧版 PowerShell 脚本（如有）
+        let legacy = hooks_install::legacy_script_path(app_data, self.source_id);
+        let _ = std::fs::remove_file(&legacy);
         Ok(json!({ "adapter": self.id(), "reports": reports }))
     }
 
@@ -421,10 +426,12 @@ impl ManagedAdapter for HooksAdapter {
             .iter()
             .map(|f| hooks_install::status_hooks(f, &events_ref).unwrap_or(Value::Null))
             .collect();
-        let script_exists = self.script_path(app_data).exists();
+        let legacy = hooks_install::legacy_script_path(app_data, self.source_id);
         Ok(json!({
             "adapter": self.id(),
-            "script_exists": script_exists,
+            "transport_config": hook_cli::transport_path(app_data).to_string_lossy(),
+            "transport_config_exists": hook_cli::transport_path(app_data).exists(),
+            "legacy_script_exists": legacy.exists(),
             "files": files,
         }))
     }
@@ -432,23 +439,23 @@ impl ManagedAdapter for HooksAdapter {
 
 // ── 真实链路验证（第 4 层）─────────────────────────────────
 
-/// 以与 Agent 完全相同的方式调用 Hook 脚本（stdin JSON + 事件参数），
+/// 以与 Agent 完全相同的方式调用 Hook 上报命令（原生 CLI + stdin JSON），
 /// 然后轮询数据库确认事件真实抵达。配置文件存在不算数——必须有事件证据。
 pub fn verify_hook_pipeline(
     app_data: &std::path::Path,
     db: &Db,
     source_id: &str,
 ) -> AppResult<Value> {
-    let script = app_data
-        .join("hooks")
-        .join(format!("task-dock-agent-hook-{}.ps1", source_id));
-    if !script.exists() {
-        return Ok(json!({
-            "ok": false,
-            "reason": "脚本未安装",
-            "hint": "请先执行接入安装"
-        }));
-    }
+    let exe = std::env::current_exe()
+        .map_err(|e| AppError::Agent(format!("无法定位 Task Dock 可执行文件: {}", e)))?;
+    let settings = crate::db::Settings::load(db)?;
+    // 确保 CLI 能读到最新传输参数（幂等；设置变更由 update_settings 同步）
+    let _ = hook_cli::write_transport_config(
+        app_data,
+        settings.http_port,
+        &settings.http_token,
+        settings.http_enabled,
+    );
     // 每次验证生成唯一 nonce 会话：精确匹配本次验证产生的事件，
     // 不与历史自测事件或真实会话混淆（自测会话在 ingest 侧被隔离为 selftest 证据）
     let verify_session = format!(
@@ -462,16 +469,12 @@ pub fn verify_hook_pipeline(
     })
     .to_string();
     let started = std::time::Instant::now();
-    let run = std::process::Command::new("powershell")
+    let run = std::process::Command::new(&exe)
         .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            &script.to_string_lossy(),
-            "-Source",
+            hooks_install::MARKER,
+            "--source",
             source_id,
-            "-Event",
+            "--event",
             "SessionStart",
         ])
         .stdin(std::process::Stdio::piped())
@@ -485,7 +488,7 @@ pub fn verify_hook_pipeline(
         }
         let _ = child.wait();
     } else {
-        return Ok(json!({ "ok": false, "reason": "无法启动 PowerShell 执行 Hook 脚本" }));
+        return Ok(json!({ "ok": false, "reason": "无法启动 Task Dock Hook 上报进程" }));
     }
 
     // 轮询数据库（HTTP 通道即时；文件回退通道最长 ~3s）：按 nonce 精确匹配

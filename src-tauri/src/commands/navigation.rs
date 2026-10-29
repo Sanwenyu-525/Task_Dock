@@ -101,8 +101,61 @@ pub fn nav_pick_window_identity(
                 target_id
             ))
         })?;
+    let target = navigation::target_resolver::get_target(&db, &target_id)?
+        .ok_or_else(|| AppError::NotFound("目标不存在".into()))?;
+    if target.target_type != "application"
+        || target.exe_path.is_empty()
+        || !w
+            .exe_path
+            .as_deref()
+            .is_some_and(|p| p.eq_ignore_ascii_case(&target.exe_path))
+    {
+        return Err(AppError::Validation("窗口所属程序与目标不一致".into()));
+    }
     navigation::window_manager::save_user_memory(&db, &target_id, &w)?;
-    Ok(navigation::window_manager::WindowMemory::from_window(&w))
+    Ok(
+        navigation::window_manager::WindowMemory::from_window_with_origin(
+            &w,
+            navigation::window_manager::MemoryOrigin::User,
+        ),
+    )
+}
+
+#[tauri::command]
+pub fn nav_pick_task_window(db: State<'_, Arc<Db>>, link_id: String, hwnd: isize) -> AppResult<()> {
+    let w = navigation::window_manager::top_windows_force()
+        .into_iter()
+        .find(|w| w.hwnd == hwnd)
+        .ok_or_else(|| AppError::NotFound("窗口已关闭，请重新选择".into()))?;
+    navigation::target_resolver::set_task_window(&db, &link_id, Some(&w))
+}
+
+#[tauri::command]
+pub fn nav_link_task_window(
+    db: State<'_, Arc<Db>>,
+    task_id: String,
+    target_id: String,
+    hwnd: isize,
+) -> AppResult<String> {
+    let w = navigation::window_manager::top_windows_force()
+        .into_iter()
+        .find(|w| w.hwnd == hwnd)
+        .ok_or_else(|| AppError::NotFound("窗口已关闭，请重新选择".into()))?;
+    navigation::target_resolver::link_task_window(&db, &task_id, &target_id, &w)
+}
+
+#[tauri::command]
+pub fn nav_forget_task_window(db: State<'_, Arc<Db>>, link_id: String) -> AppResult<()> {
+    navigation::target_resolver::set_task_window(&db, &link_id, None)
+}
+
+#[tauri::command]
+pub fn nav_set_task_window_fallback(
+    db: State<'_, Arc<Db>>,
+    link_id: String,
+    fallback: String,
+) -> AppResult<()> {
+    navigation::target_resolver::set_task_window_fallback(&db, &link_id, &fallback)
 }
 
 /// 把某个真实存在的 Agent 会话登记为可信导航目标（供任务关联与工作区启动使用）。

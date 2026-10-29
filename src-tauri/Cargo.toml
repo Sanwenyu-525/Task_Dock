@@ -1,6 +1,6 @@
 [package]
 name = "task-dock"
-version = "0.4.0"
+version = "0.5.0"
 description = "Task Dock — Windows 桌面悬浮任务与 AI Agent 监控中心"
 authors = ["Task Dock contributors"]
 edition = "2021"
@@ -28,13 +28,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "io-util", "net"] }
 uuid = { version = "1", features = ["v4"] }
 tiny_http = "0.12"
+# 本地 HTTP 接入（异步、有并发上限、可超时）：与 Cargo.lock 现有传递依赖同主版本
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server"] }
+http-body-util = "0.1"
+bytes = "1"
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
+# 智能剪贴板：PNG 编解码 / 内容哈希 / HTML data URI（均为 Cargo.lock 已有传递依赖，版本对齐）
+png = "0.18"
+sha2 = "0.10"
+base64 = "0.23"
 # 导航系统（v0.4）：窗口枚举/焦点控制（与 window-vibrancy 传递依赖同主版本，零新增二进制）
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
@@ -43,6 +52,13 @@ windows-sys = { version = "0.60", features = [
   "Win32_System_Threading",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_Graphics_Dwm",
+  # 智能剪贴板（v0.5）：剪贴板读写/监听、全局内存、隐藏消息窗口、进程令牌
+  "Win32_System_DataExchange",
+  "Win32_System_Ole",
+  "Win32_System_Memory",
+  "Win32_System_LibraryLoader",
+  "Win32_Security",
+  "Win32_Graphics_Gdi",
 ] }
 # 注册表读取（卸载信息 / UWP 包注册）
 winreg = "0.55"

@@ -138,7 +138,13 @@ fn local_day_bounds() -> (DateTime<Utc>, DateTime<Utc>) {
 
 const TASK_SELECT: &str = "SELECT t.id, t.title, t.description, t.priority, t.status, t.category, t.tags, t.due_at, t.remind_at, t.advance_minutes, t.created_at, t.updated_at, t.completed_at,
      rr.id, rr.freq, rr.interval, rr.by_weekday, rr.by_monthday, rr.until, rr.anchor,
-     (SELECT COUNT(*) FROM task_agent_links l WHERE l.task_id = t.id)
+     (SELECT COUNT(*) FROM (
+       SELECT source_id, session_external_id FROM task_agent_links WHERE task_id = t.id
+       UNION
+       SELECT n.agent_source_id, n.agent_session_id FROM task_navigation_targets l
+       JOIN navigation_targets n ON n.id = l.target_id
+       WHERE l.task_id = t.id AND n.target_type = 'agent_session'
+     ))
    FROM tasks t
    LEFT JOIN recurrence_rules rr ON rr.id = t.recurrence_rule_id";
 
@@ -254,7 +260,7 @@ fn rebuild_reminders_tx(
     Ok(())
 }
 
-fn get_task(db: &Db, id: &str) -> AppResult<Task> {
+pub(crate) fn get_task(db: &Db, id: &str) -> AppResult<Task> {
     db.with_conn(|conn| {
         conn.query_row(
             &format!("{} WHERE t.id = ?1", TASK_SELECT),
@@ -466,7 +472,7 @@ pub fn update_task(db: State<'_, Arc<Db>>, id: String, input: TaskInput) -> AppR
     update_task_inner(&db, &id, input)
 }
 
-/// 更新核心：规则替换、任务更新、旧规则清理、提醒重建在同一个事务内。
+/// 更新核心：规则更新、任务更新及必要的提醒重建在同一个事务内。
 /// 旧实现先删旧规则再更新任务（错误被 `let _ =` 吞掉），中途失败会让
 /// ON DELETE SET NULL 静默吃掉任务的重复规则。
 pub fn update_task_inner(db: &Db, id: &str, input: TaskInput) -> AppResult<Task> {
@@ -492,22 +498,19 @@ pub fn update_task_inner(db: &Db, id: &str, input: TaskInput) -> AppResult<Task>
         let tx = conn.unchecked_transaction()?;
         let mut next_rule: Option<String> = existing.recurrence.as_ref().map(|r| r.id.clone());
         match &input.recurrence {
-            // 值：替换为新规则（旧规则同事务删除，避免孤儿）
+            // 界面没有提供 until/anchor 编辑；修改规则时保留它们及现有 ID。
             Some(Some(r)) if !r.freq.is_empty() => {
-                let anchor_date = due_dt
-                    .map(|d| d.with_timezone(&Local).date_naive().format("%Y-%m-%d").to_string())
-                    .unwrap_or_else(|| {
-                        existing
-                            .recurrence
-                            .as_ref()
-                            .map(|r| r.anchor.clone())
-                            .unwrap_or_else(|| Local::now().date_naive().format("%Y-%m-%d").to_string())
-                    });
-                let rid = insert_rule_tx(&tx, r, &anchor_date)?;
                 if let Some(old) = &next_rule {
-                    tx.execute("DELETE FROM recurrence_rules WHERE id = ?1", rusqlite::params![old])?;
+                    tx.execute(
+                        "UPDATE recurrence_rules SET freq = ?1, interval = ?2, by_weekday = ?3, by_monthday = ?4 WHERE id = ?5",
+                        rusqlite::params![r.freq, r.interval.max(1), serde_json::to_string(&r.by_weekday)?, r.by_monthday, old],
+                    )?;
+                } else {
+                    let anchor_date = due_dt
+                        .map(|d| d.with_timezone(&Local).date_naive().format("%Y-%m-%d").to_string())
+                        .unwrap_or_else(|| Local::now().date_naive().format("%Y-%m-%d").to_string());
+                    next_rule = insert_rule_tx(&tx, r, &anchor_date)?;
                 }
-                next_rule = rid;
             }
             // 显式 null：用户选择了「不重复」
             // （空 freq 的对象也按「不重复」处理，与前端空表单一致）
@@ -538,7 +541,9 @@ pub fn update_task_inner(db: &Db, id: &str, input: TaskInput) -> AppResult<Task>
                 id,
             ],
         )?;
-        rebuild_reminders_tx(&tx, id, due_iso.as_deref(), remind_iso.as_deref(), advance)?;
+        if due_iso != existing.due_at || remind_iso != existing.remind_at || advance != existing.advance_minutes {
+            rebuild_reminders_tx(&tx, id, due_iso.as_deref(), remind_iso.as_deref(), advance)?;
+        }
         tx.commit()?;
         Ok::<_, AppError>(())
     })?;
@@ -685,53 +690,65 @@ pub fn link_task_agent(
     session_external_id: String,
     run_external_id: Option<String>,
 ) -> AppResult<TaskAgentLink> {
-    validate_session_id(&session_external_id)?;
-    if let Some(r) = &run_external_id {
+    let _ = &hub;
+    link_task_agent_inner(
+        &db,
+        &task_id,
+        &source_id,
+        &session_external_id,
+        run_external_id.as_deref(),
+    )
+}
+
+fn link_task_agent_inner(
+    db: &Db,
+    task_id: &str,
+    source_id: &str,
+    session_external_id: &str,
+    run_external_id: Option<&str>,
+) -> AppResult<TaskAgentLink> {
+    validate_session_id(session_external_id)?;
+    if let Some(r) = run_external_id {
         validate_session_id(r)?;
     }
-    let task = get_task(&db, &task_id)?;
-    let _ = task;
-    let source_exists = db.with_conn(|conn| {
-        conn.query_row(
-            "SELECT COUNT(*) FROM agent_sources WHERE id = ?1",
-            rusqlite::params![source_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .map_err(AppError::from)
-    })?;
-    if source_exists == 0 {
-        return Err(AppError::Validation(format!("未注册的来源: {}", source_id)));
-    }
-    let _ = &hub;
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_iso();
     db.with_conn(|conn| {
-        conn.execute(
+        let tx = conn.unchecked_transaction()?;
+        let source_exists: i64 = tx.query_row("SELECT COUNT(*) FROM agent_sources WHERE id = ?1", [source_id], |r| r.get(0))?;
+        if source_exists == 0 { return Err(AppError::Validation(format!("未注册的来源: {}", source_id))); }
+        // 用户主动建立手工关联时，已有的兼容影子升级为 user，导航解除不得删除。
+        tx.execute(
+            "UPDATE task_agent_links SET origin = 'user' WHERE task_id = ?1 AND source_id = ?2 AND session_external_id = ?3 AND IFNULL(run_external_id,'') = IFNULL(?4,'') AND origin = 'auto'",
+            rusqlite::params![task_id, source_id, session_external_id, run_external_id],
+        )?;
+        tx.execute(
             "INSERT OR IGNORE INTO task_agent_links (id, task_id, source_id, session_external_id, run_external_id, created_at)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT EXISTS (
                SELECT 1 FROM task_agent_links WHERE task_id = ?2 AND source_id = ?3 AND session_external_id = ?4 AND IFNULL(run_external_id,'') = IFNULL(?5,'')
              )",
             rusqlite::params![id, task_id, source_id, session_external_id, run_external_id, now],
         )?;
-        Ok::<_, AppError>(())
-    })?;
-    db.with_conn(|conn| {
-        conn.query_row(
-            "SELECT id, task_id, source_id, session_external_id, run_external_id, created_at
-             FROM task_agent_links WHERE task_id = ?1 AND source_id = ?2 AND session_external_id = ?3",
-            rusqlite::params![task_id, source_id, session_external_id],
-            |r| {
-                Ok(TaskAgentLink {
-                    id: r.get(0)?,
-                    task_id: r.get(1)?,
-                    source_id: r.get(2)?,
-                    session_external_id: r.get(3)?,
-                    run_external_id: r.get(4)?,
-                    created_at: r.get(5)?,
-                })
-            },
-        )
-        .map_err(AppError::from)
+        let link = tx.query_row(
+            "SELECT l.id, l.task_id, l.source_id, l.session_external_id, l.run_external_id, l.created_at,
+             EXISTS(SELECT 1 FROM agent_sources s JOIN agent_sessions a ON a.source_id = s.id WHERE s.id = l.source_id AND a.external_id = l.session_external_id)
+             FROM task_agent_links l WHERE l.task_id = ?1 AND l.source_id = ?2 AND l.session_external_id = ?3 AND IFNULL(l.run_external_id,'') = IFNULL(?4,'')",
+            rusqlite::params![task_id, source_id, session_external_id, run_external_id], row_to_agent_link,
+        )?;
+        tx.commit()?;
+        Ok(link)
+    })
+}
+
+fn row_to_agent_link(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskAgentLink> {
+    Ok(TaskAgentLink {
+        id: r.get(0)?,
+        task_id: r.get(1)?,
+        source_id: r.get(2)?,
+        session_external_id: r.get(3)?,
+        run_external_id: r.get(4)?,
+        created_at: r.get(5)?,
+        available: r.get::<_, i64>(6)? != 0,
     })
 }
 
@@ -748,21 +765,17 @@ pub fn unlink_task_agent(db: State<'_, Arc<Db>>, link_id: String) -> AppResult<(
 
 #[tauri::command]
 pub fn list_task_links(db: State<'_, Arc<Db>>, task_id: String) -> AppResult<Vec<TaskAgentLink>> {
+    list_task_links_inner(&db, &task_id)
+}
+
+fn list_task_links_inner(db: &Db, task_id: &str) -> AppResult<Vec<TaskAgentLink>> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, task_id, source_id, session_external_id, run_external_id, created_at
-             FROM task_agent_links WHERE task_id = ?1 ORDER BY created_at DESC",
+            "SELECT l.id, l.task_id, l.source_id, l.session_external_id, l.run_external_id, l.created_at,
+             EXISTS(SELECT 1 FROM agent_sources s JOIN agent_sessions a ON a.source_id = s.id WHERE s.id = l.source_id AND a.external_id = l.session_external_id)
+             FROM task_agent_links l WHERE l.task_id = ?1 AND l.origin = 'user' ORDER BY l.created_at DESC",
         )?;
-        let rows = stmt.query_map(rusqlite::params![task_id], |r| {
-            Ok(TaskAgentLink {
-                id: r.get(0)?,
-                task_id: r.get(1)?,
-                source_id: r.get(2)?,
-                session_external_id: r.get(3)?,
-                run_external_id: r.get(4)?,
-                created_at: r.get(5)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![task_id], row_to_agent_link)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     })
 }
@@ -795,6 +808,183 @@ mod tests {
 
     fn db() -> Db {
         Db::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn navigation_agent_link_is_counted_without_legacy_shadow() {
+        let db = db();
+        let t = create(&db, "任务", None, None);
+        db.with_conn(|c| {
+            c.execute("INSERT INTO navigation_targets (id, display_name, target_type, app_key, agent_source_id, agent_session_id, created_at, updated_at) VALUES ('n', 'Agent', 'agent_session', 'codex:s', 'codex', 's', 'now', 'now')", [])?;
+            c.execute("INSERT INTO task_navigation_targets (id, task_id, target_id, created_at) VALUES ('l', ?1, 'n', 'now')", [&t.id])?;
+            Ok::<_, AppError>(())
+        }).unwrap();
+        assert_eq!(get_task(&db, &t.id).unwrap().linked_agents, 1);
+    }
+
+    #[test]
+    fn edits_preserve_repeat_rule_until_anchor_and_pending_reminder() {
+        for (freq, weekdays, monthday) in
+            [("weekly", vec![1, 5], None), ("monthly", vec![], Some(31))]
+        {
+            let db = db();
+            let t = create(
+                &db,
+                "原题",
+                Some("2026-10-30T02:30:37+00:00".into()),
+                Some(RecurrenceRuleInput {
+                    freq: freq.into(),
+                    interval: 2,
+                    by_weekday: weekdays,
+                    by_monthday: monthday,
+                }),
+            );
+            let id = t.recurrence.as_ref().unwrap().id.clone();
+            db.with_conn(|c| { c.execute("UPDATE recurrence_rules SET until = '2027-07-01T00:00:00Z', anchor = '2026-01-31' WHERE id = ?1", [&id])?; Ok(()) }).unwrap();
+            let before = get_task(&db, &t.id).unwrap();
+            let rule_before = serde_json::to_value(&before.recurrence).unwrap();
+            let reminder_before: (String, String) = db
+                .with_conn(|c| {
+                    c.query_row(
+                        "SELECT id, remind_at FROM task_reminders WHERE task_id = ?1",
+                        [&t.id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(AppError::from)
+                })
+                .unwrap();
+            for input in [
+                TaskInput {
+                    title: "新题".into(),
+                    ..Default::default()
+                },
+                TaskInput {
+                    title: "新题".into(),
+                    description: "新描述".into(),
+                    ..Default::default()
+                },
+                TaskInput {
+                    title: "新题".into(),
+                    priority: Some(1),
+                    ..Default::default()
+                },
+                TaskInput {
+                    title: "新题".into(),
+                    tags: Some(vec!["甲".into()]),
+                    ..Default::default()
+                },
+            ] {
+                let updated = update_task_inner(&db, &t.id, input).unwrap();
+                assert_eq!(
+                    serde_json::to_value(&updated.recurrence).unwrap(),
+                    rule_before
+                );
+                assert_eq!(updated.due_at, before.due_at);
+                let reminder: (String, String) = db
+                    .with_conn(|c| {
+                        c.query_row(
+                            "SELECT id, remind_at FROM task_reminders WHERE task_id = ?1",
+                            [&t.id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .map_err(AppError::from)
+                    })
+                    .unwrap();
+                assert_eq!(reminder, reminder_before);
+            }
+            for input in [
+                TaskInput {
+                    title: "新题".into(),
+                    remind_at: tri(Some("2026-10-29T01:02:03+00:00".into())),
+                    ..Default::default()
+                },
+                TaskInput {
+                    title: "新题".into(),
+                    due_at: tri(Some("2026-11-30T02:30:37+00:00".into())),
+                    ..Default::default()
+                },
+            ] {
+                let updated = update_task_inner(&db, &t.id, input).unwrap();
+                assert_eq!(
+                    serde_json::to_value(&updated.recurrence).unwrap(),
+                    rule_before
+                );
+            }
+            let changed = update_task_inner(
+                &db,
+                &t.id,
+                TaskInput {
+                    title: "新题".into(),
+                    recurrence: Some(Some(RecurrenceRuleInput {
+                        freq: "daily".into(),
+                        interval: 3,
+                        by_weekday: vec![],
+                        by_monthday: None,
+                    })),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let rule = changed.recurrence.unwrap();
+            assert_eq!(rule.id, id);
+            assert_eq!(rule.anchor, "2026-01-31");
+            assert_eq!(rule.until.as_deref(), Some("2027-07-01T00:00:00Z"));
+            let cancelled = update_task_inner(
+                &db,
+                &t.id,
+                TaskInput {
+                    title: "新题".into(),
+                    recurrence: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(cancelled.recurrence.is_none());
+        }
+    }
+
+    #[test]
+    fn manual_and_navigation_agent_links_keep_independent_ownership_and_count() {
+        let db = db();
+        let a = create(&db, "先手工", None, None);
+        let b = create(&db, "先导航", None, None);
+        db.with_conn(|c| {
+            for (id, session) in [("n1", "sess-1"), ("n2", "sess-2")] {
+                c.execute("INSERT INTO navigation_targets (id, display_name, target_type, app_key, agent_source_id, agent_session_id, created_at, updated_at) VALUES (?1, 'Agent', 'agent_session', ?2, 'codex', ?3, 'now', 'now')", rusqlite::params![id, format!("codex:{session}"), session])?;
+            }
+            Ok(())
+        }).unwrap();
+        let manual = link_task_agent_inner(&db, &a.id, "codex", "sess-1", None).unwrap();
+        let nav = crate::navigation::target_resolver::link_task(&db, &a.id, "n1", false, "default")
+            .unwrap();
+        assert_eq!(get_task(&db, &a.id).unwrap().linked_agents, 1);
+        db.with_conn(|c| {
+            c.execute("DELETE FROM task_agent_links WHERE id = ?1", [&manual.id])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(get_task(&db, &a.id).unwrap().linked_agents, 1);
+        crate::navigation::target_resolver::unlink_task(&db, &nav).unwrap();
+        assert_eq!(get_task(&db, &a.id).unwrap().linked_agents, 0);
+
+        let nav_b =
+            crate::navigation::target_resolver::link_task(&db, &b.id, "n1", false, "default")
+                .unwrap();
+        let manual_b = link_task_agent_inner(&db, &b.id, "codex", "sess-1", None).unwrap();
+        assert_eq!(
+            manual_b.id,
+            link_task_agent_inner(&db, &b.id, "codex", "sess-1", None)
+                .unwrap()
+                .id
+        );
+        crate::navigation::target_resolver::link_task(&db, &b.id, "n2", false, "default").unwrap();
+        assert_eq!(get_task(&db, &b.id).unwrap().linked_agents, 2);
+        crate::navigation::target_resolver::unlink_task(&db, &nav_b).unwrap();
+        assert_eq!(list_task_links_inner(&db, &b.id).unwrap().len(), 1);
+        assert_eq!(get_task(&db, &b.id).unwrap().linked_agents, 2);
+        crate::commands::agents::delete_source_inner(&db, "codex", false).unwrap();
+        assert!(!list_task_links_inner(&db, &b.id).unwrap()[0].available);
+        assert_eq!(get_task(&db, &b.id).unwrap().linked_agents, 2);
     }
 
     fn create(

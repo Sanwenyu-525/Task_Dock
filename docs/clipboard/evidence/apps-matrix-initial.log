@@ -1,0 +1,9 @@
+NOTE notepad pid=61080 hwnd=8851872
+PASS [M1] 记事本（文本，三项有序） — job=completed sent=3/3 order_ok=true err= text=MATRIX-NOTEPAD-A-1793240281704MATRIX-NOTEPAD-B-1793240281704MATRIX-NOTEPAD-C-1793240281704INITIAL-NOTEPAD|
+NOTE explorer pid=30460 hwnd=12717394
+PASS [M2] 资源管理器（多文件 CF_HDROP） — job=completed sent=1/1 a=true b=true
+NOTE edge pid=40268 hwnd=4854052
+PASS [M3] Chromium/Edge（文本 textarea，两项有序） — job=completed value=MATRIX-EDGE-A-1793240281704MATRIX-EDGE-B-1793240281704
+PASS [M4] Chromium/Edge（contenteditable 富文本，保留加粗） — job=completed text=MATRIX-RICH-1793240281704 italic html=<b>MATRIX-RICH-1793240281704</b> <i>italic</i>
+NOT VERIFIED [M5] VS Code（编辑器文本） — 未找到 VS Code 目标窗口（启动/窗口标题不可自动化）
+SUMMARY passed=4 failed=0 not_verified=1

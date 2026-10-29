@@ -141,6 +141,7 @@ pub struct TaskAgentLink {
     pub session_external_id: String,
     pub run_external_id: Option<String>,
     pub created_at: String,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

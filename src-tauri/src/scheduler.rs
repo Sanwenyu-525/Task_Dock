@@ -703,4 +703,59 @@ mod tests {
             "每日任务补偿推进后应贴近当前时刻（下一次发生）"
         );
     }
+
+    #[test]
+    fn edited_recurring_task_still_catches_up_after_sleep() {
+        let db = setup();
+        let stale = (Utc::now() - chrono::Duration::days(3)).with_timezone(&chrono::Local);
+        let task_id = seed_recurring_task(&db, stale);
+        let item_before = due_item(&db, &task_id);
+        crate::commands::tasks::update_task_inner(
+            &db,
+            &task_id,
+            crate::commands::tasks::TaskInput {
+                title: "编辑后的任务".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let item_after = due_item(&db, &task_id);
+        assert_eq!(item_after.reminder.id, item_before.reminder.id);
+        let settings = Settings::load(&db).unwrap();
+        // 3 天前的提醒超过 24h 宽限期：按设计只记历史、不弹通知（返回 None），
+        // 但重复任务必须照常推进——这正是编辑后不能丢重复规则的回归点。
+        let fired = fire_reminder_core(&db, &item_after, &Utc::now(), &settings).unwrap();
+        assert!(fired.is_none(), "超过宽限期不得补弹通知");
+        let logged: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM notification_history WHERE kind = 'reminder' AND ref_id = ?1",
+                    rusqlite::params![task_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(logged, 1, "超过宽限期仍记录历史，只是不弹通知");
+        let due: String = db
+            .with_conn(|c| {
+                c.query_row("SELECT due_at FROM tasks WHERE id = ?1", [&task_id], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert!(parse_utc(&due).unwrap() > Utc::now());
+        let next_reminder: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM task_reminders WHERE task_id = ?1 AND fired = 0",
+                    rusqlite::params![task_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(next_reminder, 1, "推进后必须重建下一轮未触发提醒");
+    }
 }

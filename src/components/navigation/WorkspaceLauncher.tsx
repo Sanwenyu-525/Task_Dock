@@ -85,7 +85,7 @@ export default function WorkspaceLauncher() {
               : behavior === "resume_session"
                 ? "resume_session"
                 : undefined;
-        const result = await navNavigate(list[i].target_id, action ? { action } : undefined);
+        const result = await navNavigate(list[i].target_id, { action, task_link_id: list[i].id });
         setStates((prev) => {
           const next = [...prev];
           next[i] = { phase: "done", result };

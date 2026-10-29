@@ -29,38 +29,126 @@ pub fn plugin_file() -> PathBuf {
 pub const PLUGIN_MARKER: &str = "task-dock-bridge";
 
 fn plugin_content(port: u16, token: &str) -> String {
-    format!(
-        r#"// Task Dock bridge for OpenCode（由 Task Dock 生成；可在 Task Dock 中一键卸载）
+    let template = r#"// Task Dock bridge for OpenCode（由 Task Dock 生成；可在 Task Dock 中一键卸载）
 // 只上报状态元数据（会话 ID + 状态），不读取消息正文/Prompt。
-const TASK_DOCK_URL = "http://127.0.0.1:{port}/api/v1/events";
-const TASK_DOCK_TOKEN = "{token}";
+// 保护：2.5s 超时、单并发、running 事件合并、失败指数退避、关键事件文件回退；
+// Task Dock 不可用时绝不影响 OpenCode 本身（队列有界、定时器 unref）。
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
-async function report(state: string, sessionID: string, message: string) {{
-  try {{
-    await fetch(TASK_DOCK_URL, {{
-      method: "POST",
-      headers: {{
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${{TASK_DOCK_TOKEN}}`,
-      }},
-      body: JSON.stringify({{
-        source_id: "opencode",
-        session_id: sessionID || "opencode-unknown",
-        state,
-        message,
-        occurred_at: new Date().toISOString(),
-        transport: "plugin",
-      }}),
-    }});
-  }} catch {{
-    // Task Dock 未运行时静默失败，绝不影响 OpenCode 本身
-  }}
-}}
+const TASK_DOCK_URL = "http://127.0.0.1:__PORT__/api/v1/events";
+const TASK_DOCK_TOKEN = "__TOKEN__";
+const MAX_QUEUE = 200;
+const REQUEST_TIMEOUT_MS = 2500;
 
-export const TaskDockBridge = async () => {{
-  return {{
-    event: async ({{ event }}: {{ event: any }}) => {{
-      try {{
+type Item = { body: any; critical: boolean };
+const queue: Item[] = [];
+let timer: any = null;
+let inFlight = false;
+let failures = 0;
+let retryAt = 0;
+let seq = 0;
+
+function inboxDir(): string {
+  return path.join(process.env.APPDATA || os.homedir(), "com.taskdock.desktop", "agent-inbox");
+}
+
+function fileFallback(body: any): boolean {
+  try {
+    const dir = inboxDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const name = "plugin-" + Date.now() + "-" + (seq++).toString(36) + ".json";
+    const finalPath = path.join(dir, name);
+    fs.writeFileSync(finalPath + ".tmp", JSON.stringify(body), "utf8");
+    fs.renameSync(finalPath + ".tmp", finalPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function schedule(): void {
+  if (timer || inFlight) return;
+  const wait = Math.max(0, retryAt - Date.now());
+  timer = setTimeout(() => { timer = null; void flush(); }, wait);
+  if (timer && typeof timer.unref === "function") timer.unref();
+}
+
+async function flush(): Promise<void> {
+  if (inFlight || queue.length === 0) return;
+  if (Date.now() < retryAt) return schedule();
+  const item = queue.shift() as Item;
+  inFlight = true;
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    let res: any;
+    try {
+      res = await fetch(TASK_DOCK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + TASK_DOCK_TOKEN },
+        body: JSON.stringify(item.body),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(to);
+    }
+    if (res.status === 429 || res.status === 503) throw new Error("busy " + res.status);
+    if (!res.ok) console.log("[task-dock] http " + res.status);
+    failures = 0;
+    retryAt = 0;
+  } catch (e: any) {
+    failures += 1;
+    // 关键状态（waiting/failed/completed）先落文件投递目录，HTTP 恢复后由文件通道补齐；
+    // 落盘失败才放回队首等待重试。running 为可合并进度，失败直接丢弃（后续事件会覆盖）。
+    if (item.critical) {
+      const saved = fileFallback(item.body);
+      if (!saved) queue.unshift(item);
+      console.log("[task-dock] critical report failed (" + (e?.message || e) + "), fallback=" + saved);
+    }
+    retryAt = Date.now() + Math.min(30000, 1000 * Math.pow(2, Math.min(failures, 5)));
+  } finally {
+    inFlight = false;
+    if (queue.length > 0) schedule();
+  }
+}
+
+function enqueue(body: any, critical: boolean): void {
+  if (critical) {
+    queue.unshift({ body, critical });
+  } else {
+    const i = queue.findIndex((q) => !q.critical && q.body.session_id === body.session_id && q.body.state === body.state);
+    if (i >= 0) queue[i] = { body, critical };
+    else queue.push({ body, critical });
+  }
+  while (queue.length > MAX_QUEUE) {
+    const idx = queue.findIndex((q) => !q.critical);
+    if (idx < 0) break;
+    queue.splice(idx, 1);
+  }
+  schedule();
+}
+
+function report(state: string, sessionID: string, message: string): void {
+  const critical = state !== "running";
+  enqueue({
+    schema_version: 1,
+    event_id: "oc-" + Date.now().toString(36) + "-" + (seq++).toString(36),
+    source_id: "opencode",
+    session_id: sessionID || "opencode-unknown",
+    state,
+    message,
+    occurred_at: new Date().toISOString(),
+    transport: "plugin",
+    evidence_type: "observed",
+  }, critical);
+}
+
+export const TaskDockBridge = async () => {
+  return {
+    event: async ({ event }: { event: any }) => {
+      try {
         const t: string = event.type ?? "";
         if (!t) return;
         const sid: string = (event.properties?.sessionID ?? event.properties?.session?.id ?? "") + "";
@@ -69,16 +157,16 @@ export const TaskDockBridge = async () => {{
         if (t === "session.error") return report("failed", sid, "opencode: session error");
         if (t === "permission.asked") return report("waiting", sid, "opencode: permission asked");
         if (t === "tool.execute.before") return report("running", sid, "opencode: tool executing");
-      }} catch {{
+      } catch {
         // 任何解析异常都不影响宿主
-      }}
-    }},
-  }};
-}};
-"#,
-        port = port,
-        token = token
-    )
+      }
+    },
+  };
+};
+"#;
+    template
+        .replace("__PORT__", &port.to_string())
+        .replace("__TOKEN__", token)
 }
 
 #[derive(Clone)]

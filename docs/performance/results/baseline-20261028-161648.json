@@ -1,0 +1,62 @@
+{
+  "backend_only": true,
+  "config": {
+    "agents": 10,
+    "events": 5000,
+    "new_path": "有界管线 + 批处理 + 同一 ingest_core",
+    "old_path": "每事件独立事务 + ingest_core（等效 v0.4 写库路径，未含通知/托盘副作用）"
+  },
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "new_batches": 68,
+  "new_path_ms": 1356,
+  "new_rows": 3238,
+  "note": "真实 IngestPipeline + 真实 SQLite 状态机；不含 WebView2/Tauri 窗口与托盘 UI",
+  "old_path_ms": 19032,
+  "old_rows": 5000,
+  "pass": true,
+  "pipeline": {
+    "batches": 68,
+    "coalesce_ms": 250,
+    "commit_failures": 0,
+    "db_write_latency": {
+      "max_ms": 36.52,
+      "p50_ms": 16.81,
+      "p95_ms": 32.4,
+      "p99_ms": 35.57,
+      "samples": 68
+    },
+    "events_merged": 1762,
+    "events_processed": 3238,
+    "events_received": 5000,
+    "events_sampled": 0,
+    "fallback_jobs": 0,
+    "ingest_latency": {
+      "max_ms": 500.43,
+      "p50_ms": 225.37,
+      "p95_ms": 250.25,
+      "p99_ms": 267.53,
+      "samples": 2048
+    },
+    "last_batch_size": 5,
+    "last_flush_at": "2026-10-28T16:16:48.359831+00:00",
+    "max_batch_size": 70,
+    "merge_buffer": 0,
+    "overload_rejects": 0,
+    "queue_capacity": 1024,
+    "queue_depth_events": 0,
+    "queue_depth_jobs": 0,
+    "running": true,
+    "submissions": 4905,
+    "uptime_secs": 1
+  },
+  "scenario": "baseline",
+  "speedup": 14.04,
+  "started_at": "2026-10-28T16:16:48.377648+00:00"
+}

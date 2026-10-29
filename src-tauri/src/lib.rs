@@ -1,6 +1,8 @@
 //! Task Dock 应用入口：插件装配、窗口/托盘/热键、数据库与 Agent 总线初始化。
 
+pub mod actions;
 pub mod agents;
+pub mod clipboard;
 pub mod commands;
 pub mod db;
 pub mod error;
@@ -8,6 +10,7 @@ pub mod navigation;
 pub mod nlp;
 pub mod recurrence;
 pub mod scheduler;
+pub mod workspace;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -38,47 +41,32 @@ fn tray_icon_bytes(state: AgentState) -> &'static [u8] {
     }
 }
 
+static TRAY_TOOLTIP_CACHE: std::sync::Mutex<Option<(String, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+const TOOLTIP_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn tray_tooltip(db: &Db) -> String {
-    let pending: i64 = db
-        .with_conn(|conn| {
+    // 单次读查询取齐四项统计：批量进度事件不会放大为 4×N 次锁竞争。
+    let (pending, running, waiting, next) = db
+        .with_read(|conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'pending'",
+                "SELECT (SELECT COUNT(*) FROM tasks WHERE status = 'pending'),
+                        (SELECT COUNT(*) FROM agent_runs WHERE status = 'running'),
+                        (SELECT COUNT(*) FROM agent_runs WHERE status = 'waiting'),
+                        (SELECT MIN(remind_at) FROM task_reminders WHERE fired = 0)",
                 [],
-                |r| r.get(0),
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                },
             )
             .map_err(AppError::from)
         })
-        .unwrap_or(0);
-    let running: i64 = db
-        .with_conn(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(AppError::from)
-        })
-        .unwrap_or(0);
-    let waiting: i64 = db
-        .with_conn(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM agent_runs WHERE status = 'waiting'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(AppError::from)
-        })
-        .unwrap_or(0);
-    let next: Option<String> = db
-        .with_conn(|conn| {
-            conn.query_row(
-                "SELECT MIN(remind_at) FROM task_reminders WHERE fired = 0",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(AppError::from)
-        })
-        .unwrap_or(None);
+        .unwrap_or((0, 0, 0, None));
     let next_txt = next
         .map(|t| {
             let now = chrono::Utc::now();
@@ -109,14 +97,29 @@ fn tray_tooltip(db: &Db) -> String {
 pub fn refresh_tray(app: &AppHandle, state: AgentState) {
     if let Some(tray) = TRAY.get() {
         let p = state.priority();
-        if TRAY_STATE.swap(p, Ordering::Relaxed) != p {
+        let icon_changed = TRAY_STATE.swap(p, Ordering::Relaxed) != p;
+        if icon_changed {
             if let Ok(img) = tauri::image::Image::from_bytes(tray_icon_bytes(state)) {
                 let _ = tray.set_icon(Some(img));
             }
         }
         if let Some(db) = app.try_state::<Arc<Db>>() {
-            let tooltip = tray_tooltip(&db);
-            let _ = tray.set_tooltip(Some(&tooltip));
+            // 节流：状态未变化时最多每 5 秒重算一次；文案相同不重复 set_tooltip。
+            let now = std::time::Instant::now();
+            let mut cache = TRAY_TOOLTIP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            let due = icon_changed
+                || cache
+                    .as_ref()
+                    .map(|(_, at)| now.duration_since(*at) >= TOOLTIP_MIN_INTERVAL)
+                    .unwrap_or(true);
+            if due {
+                let tooltip = tray_tooltip(&db);
+                let changed = cache.as_ref().map(|(t, _)| t != &tooltip).unwrap_or(true);
+                if changed {
+                    let _ = tray.set_tooltip(Some(&tooltip));
+                }
+                *cache = Some((tooltip, now));
+            }
         }
     }
 }
@@ -372,16 +375,43 @@ pub fn run() {
             let db = Arc::new(Db::open(&data_dir.join("task-dock.db")).expect("数据库打开失败"));
             handle.manage(db.clone());
 
+            // 智能剪贴板：监听失败只降级为「不自动记录」，不影响任务/Agent 功能
+            let clipboard_rt = clipboard::ClipboardRuntime::new(
+                db.clone(),
+                data_dir.join("clipboard"),
+                handle.clone(),
+            );
+            clipboard_rt.start();
+            handle.manage(clipboard_rt);
+
             let hub = Arc::new(AgentHub::new(handle.clone(), db.clone()));
             handle.manage(hub.clone());
 
             // 窗口恢复（位置/模式/关闭行为）
             restore_window(&handle, &db);
 
-            let settings = db::Settings::load(&db).unwrap_or_default();
-
             // 窗口材质（毛玻璃）：在显示窗口之前应用，避免透明闪烁；
             // 失败自动回退 solid（前端 load 时会再次确认实际状态）
+            let settings = db::Settings::load(&db).unwrap_or_default();
+
+            // Hook 上报 CLI 的传输参数（端口/令牌/启停）：每次启动刷新，设置变更时同步
+            if let Err(e) = agents::hook_cli::write_transport_config(
+                &data_dir,
+                settings.http_port,
+                &settings.http_token,
+                settings.http_enabled,
+            ) {
+                tracing::warn!("写入 Hook 传输参数失败: {}", e);
+            }
+
+            // 有界接入管线：唯一消费者批量写库，所有高频入口共用
+            let sink: Arc<dyn agents::pipeline::IngestSink> = hub.clone();
+            let pipeline = agents::pipeline::IngestPipeline::new(
+                sink,
+                agents::pipeline::PipelineConfig::from_settings(&settings),
+            );
+            pipeline.start();
+            handle.manage(pipeline.clone());
             if settings.material == "glass" {
                 if let Ok(r) =
                     commands::system::apply_window_material(handle.clone(), "glass".into())
@@ -416,8 +446,11 @@ pub fn run() {
             refresh_tray(&handle, AgentState::Idle);
 
             // Agent 适配器
-            Box::new(agents::file_drop::FileDropAdapter::new()).spawn(hub.clone());
-            Box::new(agents::http_ingest::HttpIngestAdapter::new()).spawn(hub.clone());
+            Box::new(agents::file_drop::FileDropAdapter::new(pipeline.clone())).spawn(hub.clone());
+            Box::new(agents::http_ingest::HttpIngestAdapter::new(
+                pipeline.clone(),
+            ))
+            .spawn(hub.clone());
             Box::new(agents::mock::MockAdapter::new()).spawn(hub.clone());
 
             // 异常重启恢复：重启前遗留的活跃轮次按失联规则归位
@@ -428,10 +461,20 @@ pub fn run() {
             // 提醒调度引擎
             scheduler::start_scheduler(handle.clone(), db.clone(), hub.clone());
 
-            // 自动备份（超过 24 小时）
+            // 事件保留/归档：后台任务，启动路径不扫表（首跑延迟 20 秒）
+            agents::retention::start_background(handle.clone(), db.clone());
+
+            // 自动备份（超过 24 小时）：阻塞线程池执行，不拖慢启动与 UI
             {
+                let backup_handle = handle.clone();
                 let db2 = db.clone();
-                let _ = commands::data::auto_backup_if_needed_inner(&handle, &db2);
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(e) =
+                        commands::data::auto_backup_if_needed_inner(&backup_handle, &db2)
+                    {
+                        tracing::warn!("启动自动备份失败: {}", e);
+                    }
+                });
             }
 
             tracing::info!("Task Dock 启动完成（数据目录: {:?}）", data_dir);
@@ -476,6 +519,10 @@ pub fn run() {
             commands::agents::mark_all_notifications_read,
             commands::agents::clear_notifications,
             commands::agents::list_agent_events,
+            commands::agents::agent_retention_status,
+            commands::agents::agent_retention_run,
+            commands::agents::agent_archive_list,
+            commands::agents::agent_inbox_retry,
             // 设置
             commands::settings::get_settings,
             commands::settings::update_settings,
@@ -497,6 +544,7 @@ pub fn run() {
             commands::system::save_snap_state,
             commands::system::get_snap_state,
             commands::system::hub_health,
+            commands::system::performance_diagnostics,
             commands::system::apply_window_material,
             // 统一导航（v0.4）
             commands::navigation::nav_scan_apps,
@@ -509,6 +557,10 @@ pub fn run() {
             commands::navigation::nav_window_memory,
             commands::navigation::nav_forget_window,
             commands::navigation::nav_pick_window_identity,
+            commands::navigation::nav_pick_task_window,
+            commands::navigation::nav_link_task_window,
+            commands::navigation::nav_forget_task_window,
+            commands::navigation::nav_set_task_window_fallback,
             commands::navigation::nav_recent_logs,
             commands::navigation::nav_prune_logs,
             commands::navigation::nav_link_task,
@@ -520,6 +572,68 @@ pub fn run() {
             commands::navigation::nav_agent_capabilities,
             commands::navigation::nav_agent_action,
             commands::navigation::nav_agent_open_workspace,
+            // 智能剪贴板（v0.5）
+            commands::clipboard::clipboard_view,
+            commands::clipboard::clipboard_item,
+            commands::clipboard::clipboard_group,
+            commands::clipboard::clipboard_stats,
+            commands::clipboard::clipboard_thumb,
+            commands::clipboard::clipboard_image,
+            commands::clipboard::clipboard_copy_item,
+            commands::clipboard::clipboard_copy_group_rich,
+            commands::clipboard::clipboard_copy_group_files,
+            commands::clipboard::clipboard_toggle_item,
+            commands::clipboard::clipboard_toggle_group,
+            commands::clipboard::clipboard_close_group,
+            commands::clipboard::clipboard_delete_items,
+            commands::clipboard::clipboard_delete_group,
+            commands::clipboard::clipboard_create_group,
+            commands::clipboard::clipboard_rename_group,
+            commands::clipboard::clipboard_add_to_group,
+            commands::clipboard::clipboard_remove_group_item,
+            commands::clipboard::clipboard_move_group_item,
+            commands::clipboard::clipboard_split_group,
+            commands::clipboard::clipboard_merge_groups,
+            commands::clipboard::clipboard_link_task,
+            commands::clipboard::clipboard_unlink_task,
+            commands::clipboard::clipboard_task_links,
+            commands::clipboard::clipboard_visible_targets,
+            commands::clipboard::clipboard_foreground_target,
+            commands::clipboard::clipboard_paste_precheck,
+            commands::clipboard::clipboard_paste_group,
+            commands::clipboard::clipboard_paste_cancel,
+            commands::clipboard::clipboard_paste_resume,
+            commands::clipboard::clipboard_paste_job,
+            commands::clipboard::clipboard_paste_active,
+            commands::clipboard::clipboard_cleanup,
+            commands::clipboard::clipboard_status,
+            commands::clipboard::clipboard_agent_targets,
+            commands::clipboard::clipboard_export_for_agent,
+            commands::clipboard::clipboard_export_preview,
+            commands::clipboard::clipboard_probe,
+            commands::clipboard::clipboard_link_snapshot,
+            commands::clipboard::clipboard_unlink_snapshot,
+            commands::clipboard::clipboard_snapshot_links,
+            // 行动中心（v0.5）
+            commands::actions::actions_feed,
+            commands::actions::actions_ack,
+            commands::actions::actions_unack,
+            commands::actions::actions_open_session,
+            // 工作现场（v0.5）
+            commands::workspace::workspace_list,
+            commands::workspace::workspace_get,
+            commands::workspace::workspace_create,
+            commands::workspace::workspace_capture_task,
+            commands::workspace::workspace_rename,
+            commands::workspace::workspace_delete,
+            commands::workspace::workspace_prune,
+            commands::workspace::workspace_detach_task,
+            commands::workspace::workspace_capture_windows,
+            commands::workspace::workspace_restore,
+            commands::workspace::workspace_restore_cancel,
+            commands::workspace::workspace_restore_status,
+            // 统一任务上下文（v0.5）
+            commands::context::task_context,
         ])
         .run(tauri::generate_context!())
         .expect("启动 Task Dock 失败");

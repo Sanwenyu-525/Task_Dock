@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
@@ -38,6 +38,20 @@ const ALLOWED_KEYS: &[&str] = &[
     "nav_workspace_max",
     // 本地结构化状态（窗口记忆：类名+标题，不含 HWND）
     "nav_window_memory",
+    // 智能剪贴板（v0.5）
+    "clipboard_enabled",
+    "clipboard_paused",
+    "clipboard_capture_images",
+    "clipboard_capture_files",
+    "clipboard_capture_html",
+    "clipboard_auto_group",
+    "clipboard_group_window_secs",
+    "clipboard_retention_days",
+    "clipboard_max_items",
+    "clipboard_max_storage_mb",
+    "clipboard_exclude_apps",
+    "clipboard_paste_interval_ms",
+    "clipboard_sensitive_filter",
 ];
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
@@ -93,12 +107,43 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "nav_prefer_focus"
         | "nav_allow_launch"
         | "nav_fallback"
-        | "nav_remember_window" => bool_of(v, key),
+        | "nav_remember_window"
+        | "clipboard_enabled"
+        | "clipboard_paused"
+        | "clipboard_capture_images"
+        | "clipboard_capture_files"
+        | "clipboard_capture_html"
+        | "clipboard_auto_group"
+        | "clipboard_sensitive_filter" => bool_of(v, key),
         "http_port" => int_in_range(v, key, 1, 65535),
         "overdue_grace_hours" => int_in_range(v, key, 0, 24 * 60),
         "stale_run_minutes" => int_in_range(v, key, 1, 24 * 60),
         "backup_retain_days" => int_in_range(v, key, 1, 365),
         "nav_workspace_max" => int_in_range(v, key, 1, 20),
+        "clipboard_group_window_secs" => int_in_range(v, key, 5, 600),
+        "clipboard_retention_days" => int_in_range(v, key, 1, 3650),
+        "clipboard_max_items" => int_in_range(v, key, 20, 50_000),
+        "clipboard_max_storage_mb" => int_in_range(v, key, 16, 102_400),
+        "clipboard_paste_interval_ms" => int_in_range(v, key, 100, 5_000),
+        // 排除名单：逗号/换行分隔的 exe 名或路径（长度受限、无控制字符注入）
+        "clipboard_exclude_apps" => {
+            let s = v.as_str().ok_or_else(|| {
+                AppError::Validation("clipboard_exclude_apps 必须是字符串".into())
+            })?;
+            if s.chars().count() > 4096 {
+                return Err(AppError::Validation(
+                    "clipboard_exclude_apps 超过 4096 字符".into(),
+                ));
+            }
+            if s.chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+            {
+                return Err(AppError::Validation(
+                    "clipboard_exclude_apps 含非法控制字符".into(),
+                ));
+            }
+            Ok(())
+        }
         // 默认浏览器 app_key：指向 navigation_targets 的稳定身份（长度受限的自由字符串）
         "nav_default_browser" => {
             let s = v
@@ -128,7 +173,11 @@ pub fn get_settings(db: State<'_, Arc<Db>>) -> AppResult<Settings> {
 }
 
 #[tauri::command]
-pub fn update_settings(db: State<'_, Arc<Db>>, patch: serde_json::Value) -> AppResult<Settings> {
+pub fn update_settings(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+    patch: serde_json::Value,
+) -> AppResult<Settings> {
     let obj = patch
         .as_object()
         .ok_or_else(|| AppError::Validation("设置必须是 JSON 对象".into()))?;
@@ -139,7 +188,17 @@ pub fn update_settings(db: State<'_, Arc<Db>>, patch: serde_json::Value) -> AppR
     for (k, v) in obj {
         db.set_setting(k, v.clone())?;
     }
-    Settings::load(&db)
+    let updated = Settings::load(&db)?;
+    // Hook 上报 CLI 依赖该文件读取端口/令牌/启停（失败不影响设置保存，CLI 会自动走文件回退）
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = crate::agents::hook_cli::write_transport_config(
+            &dir,
+            updated.http_port,
+            &updated.http_token,
+            updated.http_enabled,
+        );
+    }
+    Ok(updated)
 }
 
 #[derive(Debug, Deserialize, Serialize)]

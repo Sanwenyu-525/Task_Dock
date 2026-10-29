@@ -46,9 +46,13 @@ use crate::agents::now_iso;
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
-const EXPORT_VERSION: i64 = 3;
+// v4 增加任务级窗口配置；旧版本应拒绝导入，而不是静默丢失该配置。
+const EXPORT_VERSION: i64 = 4;
 /// 导航日志是诊断流水：只导出最近这些条，恢复时整体替换。
 const NAV_LOG_EXPORT_LIMIT: i64 = 500;
+/// 事件流水同理：仅导出最近这些条，避免备份随工具进度无限膨胀、内存无界。
+/// 用户可见状态/审计结论保存在 agent_runs（全量导出），事件流水缺失不影响状态恢复。
+const EVENT_EXPORT_LIMIT: i64 = 20_000;
 
 fn app_data(app: &tauri::AppHandle) -> AppResult<PathBuf> {
     Ok(app.path().app_data_dir()?)
@@ -341,6 +345,14 @@ pub struct TaskNavTargetRowData {
     #[serde(default = "default_launch_behavior")]
     pub launch_behavior: String,
     pub created_at: String,
+    #[serde(default)]
+    pub window_identity: Option<String>,
+    #[serde(default = "default_window_fallback")]
+    pub window_fallback: String,
+}
+
+fn default_window_fallback() -> String {
+    "reselect".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -367,7 +379,8 @@ pub struct NavLogRowData {
 /// 收集全量数据（导出/备份共用）。
 /// 单个只读事务内读取全部表：与调度器/接入写入并发时仍得到一致性快照。
 fn collect(db: &Db) -> AppResult<serde_json::Value> {
-    db.with_conn(|conn| {
+    // 只占用读连接池：WAL 下读写互不阻塞，备份不会长时间持锁拖慢主路径。
+    db.with_read(|conn| {
         let tx = conn.unchecked_transaction()?;
         let tasks: Vec<TaskRow> = query_rows(&tx,
             "SELECT id, title, description, priority, status, category, tags, due_at, remind_at, advance_minutes, recurrence_rule_id, created_at, updated_at, completed_at FROM tasks",
@@ -430,8 +443,10 @@ fn collect(db: &Db) -> AppResult<serde_json::Value> {
                 ended_at: r.get(8)?, pending_items: r.get(9)?, meta: r.get(10)?,
                 instance_id: r.get(11)?, parent_run_id: r.get(12)?,
             }))?;
-        let events: Vec<EventRow> = query_rows(&tx,
-            "SELECT id, source_id, session_external_id, run_external_id, event_type, state, message, received_at, schema_version, event_id, instance_id, parent_run_id, occurred_at, transport, evidence_type, confidence, dedupe_key FROM agent_events",
+        let events: Vec<EventRow> = query_rows_with(&tx,
+            "SELECT id, source_id, session_external_id, run_external_id, event_type, state, message, received_at, schema_version, event_id, instance_id, parent_run_id, occurred_at, transport, evidence_type, confidence, dedupe_key
+             FROM agent_events ORDER BY received_at DESC, id DESC LIMIT ?1",
+            rusqlite::params![EVENT_EXPORT_LIMIT],
             |r| Ok(EventRow {
                 id: r.get(0)?, source_id: r.get(1)?, session_external_id: r.get(2)?,
                 run_external_id: r.get(3)?, event_type: r.get(4)?, state: r.get(5)?,
@@ -466,12 +481,12 @@ fn collect(db: &Db) -> AppResult<serde_json::Value> {
             }))?;
         // v3：任务 ↔ 导航目标关联（工作区配置本体）
         let task_nav_targets: Vec<TaskNavTargetRowData> = query_rows(&tx,
-            "SELECT id, task_id, target_id, display_order, is_default, launch_behavior, created_at
+            "SELECT id, task_id, target_id, display_order, is_default, launch_behavior, created_at, window_identity, window_fallback
              FROM task_navigation_targets",
             |r| Ok(TaskNavTargetRowData {
                 id: r.get(0)?, task_id: r.get(1)?, target_id: r.get(2)?,
                 display_order: r.get(3)?, is_default: r.get::<_, i64>(4)? != 0,
-                launch_behavior: r.get(5)?, created_at: r.get(6)?,
+                launch_behavior: r.get(5)?, created_at: r.get(6)?, window_identity: r.get(7)?, window_fallback: r.get(8)?,
             }))?;
         // v3：导航流水（诊断用，按时间截断，避免备份文件无限膨胀）
         let nav_logs: Vec<NavLogRowData> = query_rows_with(&tx,
@@ -553,29 +568,42 @@ fn write_json_atomic(path: &Path, content: &str) -> AppResult<()> {
 }
 
 /// 导出到指定路径（由前端对话框选择）。
+/// 走阻塞线程池：大库序列化不占主线程，UI 不卡顿。
 #[tauri::command]
-pub fn export_data(db: State<'_, Arc<Db>>, path: String) -> AppResult<String> {
-    let data = collect(&db)?;
-    let pretty = serde_json::to_string_pretty(&data)?;
-    write_json_atomic(Path::new(&path), &pretty)?;
-    tracing::info!("数据已导出: {}", path);
-    Ok(path)
+pub async fn export_data(db: State<'_, Arc<Db>>, path: String) -> AppResult<String> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = collect(&db)?;
+        let pretty = serde_json::to_string_pretty(&data)?;
+        write_json_atomic(Path::new(&path), &pretty)?;
+        tracing::info!("数据已导出: {}", path);
+        Ok::<_, AppError>(path)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("导出任务中断: {}", e)))?
 }
 
-/// 立即备份到应用数据目录。
-#[tauri::command]
-pub fn backup_now(app: tauri::AppHandle, db: State<'_, Arc<Db>>) -> AppResult<String> {
-    let dir = backup_dir(&app)?;
-    let data = collect(&db)?;
+fn backup_now_inner(app: &tauri::AppHandle, db: &Db) -> AppResult<String> {
+    let dir = backup_dir(app)?;
+    let data = collect(db)?;
     let pretty = serde_json::to_string_pretty(&data)?;
     let path = dir.join(format!(
         "backup-{}.json",
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     ));
     write_json_atomic(&path, &pretty)?;
-    prune_backups(&app, &db)?;
+    prune_backups(app, db)?;
     tracing::info!("本地备份完成: {}", path.display());
     Ok(path.to_string_lossy().to_string())
+}
+
+/// 立即备份到应用数据目录。
+#[tauri::command]
+pub async fn backup_now(app: tauri::AppHandle, db: State<'_, Arc<Db>>) -> AppResult<String> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || backup_now_inner(&app, &db))
+        .await
+        .map_err(|e| AppError::Agent(format!("备份任务中断: {}", e)))?
 }
 
 #[tauri::command]
@@ -659,11 +687,14 @@ pub fn auto_backup_if_needed_inner(app: &tauri::AppHandle, db: &Db) -> AppResult
 }
 
 #[tauri::command]
-pub fn auto_backup_if_needed(
+pub async fn auto_backup_if_needed(
     app: tauri::AppHandle,
     db: State<'_, Arc<Db>>,
 ) -> AppResult<Option<String>> {
-    auto_backup_if_needed_inner(&app, &db)
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || auto_backup_if_needed_inner(&app, &db))
+        .await
+        .map_err(|e| AppError::Agent(format!("自动备份任务中断: {}", e)))?
 }
 
 // ── 导入：解析 → 校验 → 单事务应用 ───────────────────────────
@@ -950,6 +981,33 @@ fn parse_and_validate(db: &Db, data: &serde_json::Value) -> AppResult<ParsedImpo
                 l.id, l.target_id
             )));
         }
+        if !["reselect", "focus_app", "launch"].contains(&l.window_fallback.as_str()) {
+            return Err(AppError::Validation(format!(
+                "关联 {} 的窗口降级策略无效",
+                l.id
+            )));
+        }
+        if let Some(raw) = &l.window_identity {
+            let m: crate::navigation::window_manager::WindowMemory = serde_json::from_str(raw)
+                .map_err(|_| AppError::Validation(format!("关联 {} 的窗口身份无效", l.id)))?;
+            let target = parsed
+                .nav_targets
+                .iter()
+                .find(|t| t.id == l.target_id)
+                .unwrap();
+            if target.target_type != "application"
+                || m.origin != crate::navigation::window_manager::MemoryOrigin::User
+                || m.exe_path.is_empty()
+                || !m.exe_path.eq_ignore_ascii_case(&target.exe_path)
+                || m.class_name.is_empty()
+                || m.title.is_empty()
+            {
+                return Err(AppError::Validation(format!(
+                    "关联 {} 的窗口身份与应用不一致",
+                    l.id
+                )));
+            }
+        }
     }
     for r in &parsed.runs {
         if !session_ids.contains(&r.session_id) {
@@ -1155,11 +1213,11 @@ pub fn import_value(db: &Db, data: &serde_json::Value) -> AppResult<()> {
             for l in &parsed.task_nav_targets {
                 conn.execute(
                     "INSERT INTO task_navigation_targets
-                       (id, task_id, target_id, display_order, is_default, launch_behavior, created_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                       (id, task_id, target_id, display_order, is_default, launch_behavior, created_at, window_identity, window_fallback)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                     rusqlite::params![
                         l.id, l.task_id, l.target_id, l.display_order, l.is_default as i64,
-                        l.launch_behavior, l.created_at,
+                        l.launch_behavior, l.created_at, l.window_identity, l.window_fallback,
                     ],
                 )?;
             }
@@ -1220,18 +1278,30 @@ pub fn import_value(db: &Db, data: &serde_json::Value) -> AppResult<()> {
     })
 }
 
-/// 从 JSON 文件导入（整体替换，导入前自动备份当前数据）。
-#[tauri::command]
-pub fn import_data(app: tauri::AppHandle, db: State<'_, Arc<Db>>, path: String) -> AppResult<()> {
-    let raw = std::fs::read_to_string(&path)?;
+fn import_data_inner(app: &tauri::AppHandle, db: &Db, path: &str) -> AppResult<()> {
+    let raw = std::fs::read_to_string(path)?;
     let data: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|e| AppError::Validation(format!("导出文件不是合法 JSON: {}", e)))?;
     // 先校验再备份再导入：校验失败不动原库、不产生无意义备份
-    parse_and_validate(&db, &data)?;
-    let _ = backup_now(app.clone(), db.clone())?;
-    import_value(&db, &data)?;
+    parse_and_validate(db, &data)?;
+    let _ = backup_now_inner(app, db)?;
+    import_value(db, &data)?;
     tracing::info!("数据导入完成: {}", path);
     Ok(())
+}
+
+/// 从 JSON 文件导入（整体替换，导入前自动备份当前数据）。
+/// 校验/备份/单事务导入全部在阻塞线程池执行，避免大文件卡住 UI 主线程。
+#[tauri::command]
+pub async fn import_data(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+    path: String,
+) -> AppResult<()> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || import_data_inner(&app, &db, &path))
+        .await
+        .map_err(|e| AppError::Agent(format!("导入任务中断: {}", e)))?
 }
 
 #[cfg(test)]
@@ -1501,6 +1571,42 @@ mod tests {
             })
             .unwrap();
         assert_eq!(violations, 0);
+    }
+
+    #[test]
+    fn task_window_identity_and_fallback_survive_backup_restore() {
+        let db = memdb();
+        seed_full(&db);
+        let w = crate::navigation::window_manager::WindowInfo {
+            hwnd: 987654321,
+            pid: 11,
+            title: "文档 A".into(),
+            class_name: "Class".into(),
+            is_minimized: false,
+            exe_path: Some("C:\\Windows\\notepad.exe".into()),
+        };
+        crate::navigation::target_resolver::set_task_window(&db, "tnl-1", Some(&w)).unwrap();
+        crate::navigation::target_resolver::set_task_window_fallback(&db, "tnl-1", "focus_app")
+            .unwrap();
+        let exported = collect(&db).unwrap();
+        assert_eq!(exported["version"], 4);
+        assert!(!exported.to_string().contains("987654321"));
+        let restored = memdb();
+        import_value(&restored, &exported).unwrap();
+        let (identity, fallback) =
+            crate::navigation::target_resolver::task_window_config(&restored, "tnl-1", "nt-app")
+                .unwrap();
+        assert_eq!(identity.unwrap().title, "文档 A");
+        assert_eq!(fallback, "focus_app");
+        let mut invalid = exported.clone();
+        invalid["task_navigation_targets"][0]["window_fallback"] = serde_json::json!("unknown");
+        assert!(import_value(&restored, &invalid).is_err());
+        assert_eq!(
+            crate::navigation::target_resolver::task_window_config(&restored, "tnl-1", "nt-app")
+                .unwrap()
+                .1,
+            "focus_app"
+        );
     }
 
     /// 旧版（v2）备份没有导航三表：必须被接受，且不把现有导航配置当成"损坏"。

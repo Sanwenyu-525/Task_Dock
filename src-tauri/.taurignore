@@ -1,0 +1,7 @@
+# tauri dev 的文件监听忽略规则（语法同 .gitignore）
+# 避免测试代码、构建产物、文档的写入触发无谓的重新编译，
+# 也避免多个 dev 实例争抢 target/ 的 cargo 文件锁时陷入重建循环。
+
+target/
+tests/
+gen/

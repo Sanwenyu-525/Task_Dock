@@ -6,6 +6,8 @@ dist/
 
 # Tauri / Rust
 src-tauri/target/
+src-tauri/target-accept/
+src-tauri/target-accept-dbg/
 src-tauri/gen/
 
 # Editors / OS

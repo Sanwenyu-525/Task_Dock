@@ -81,6 +81,8 @@ export interface TaskNavLink {
   is_default: boolean;
   launch_behavior: string;
   created_at: string;
+  window_identity?: WindowMemory | null;
+  window_fallback?: "reselect" | "focus_app" | "launch";
   target: NavTarget;
   /** not_running | process_only | has_window | always | unavailable | agent */
   running_state: string;
@@ -114,6 +116,13 @@ export interface WindowInfo {
   exe_path: string | null;
 }
 
+export interface WindowMemory {
+  class_name: string;
+  title: string;
+  exe_path: string;
+  origin: "user" | "auto";
+}
+
 export interface NavLogRow {
   id: string;
   target_id: string;
@@ -145,6 +154,7 @@ export interface NavigateOptions {
   action?: string;
   fallback?: boolean;
   window_hwnd?: number;
+  task_link_id?: string;
 }
 
 // ── 扫描与目标 ──
@@ -180,6 +190,14 @@ export const navWindowMemory = (targetId: string) =>
   invoke<{ class_name: string; title: string } | null>("nav_window_memory", { targetId });
 export const navForgetWindow = (targetId: string) =>
   invoke<void>("nav_forget_window", { targetId });
+export const navPickTaskWindow = (linkId: string, hwnd: number) =>
+  invoke<void>("nav_pick_task_window", { linkId, hwnd });
+export const navLinkTaskWindow = (taskId: string, targetId: string, hwnd: number) =>
+  invoke<string>("nav_link_task_window", { taskId, targetId, hwnd });
+export const navForgetTaskWindow = (linkId: string) =>
+  invoke<void>("nav_forget_task_window", { linkId });
+export const navSetTaskWindowFallback = (linkId: string, fallback: string) =>
+  invoke<void>("nav_set_task_window_fallback", { linkId, fallback });
 export const navRecentLogs = (limit = 50) =>
   invoke<NavLogRow[]>("nav_recent_logs", { limit });
 export const navPruneLogs = (keep = 200) =>

@@ -33,7 +33,7 @@ npm run icons
 
 # 构建 Windows 安装包（NSIS + MSI）
 npm run tauri build
-# 产物：src-tauri/target/release/bundle/nsis/Task Dock_0.1.0_x64-setup.exe
+# 产物：src-tauri/target/release/bundle/nsis/Task Dock_0.5.0_x64-setup.exe
 ```
 
 ## 三、项目结构
@@ -43,24 +43,36 @@ task_dock/
 ├── src/                        # React 前端
 │   ├── lib/bridge.ts           # 类型化 IPC 桥接（唯一 invoke 入口）
 │   ├── lib/navigation.ts       # 导航桥接 + 展示辅助纯函数（含单测）
+│   ├── lib/clipboardUi.ts      # 剪贴板类型/时间/状态展示纯函数
 │   ├── lib/format.ts           # 纯函数时间/文本格式化（含单测）
-│   ├── store/                  # Zustand：tasks / agents / settings / ui / navigation
+│   ├── store/                  # Zustand：tasks / agents / actions / clipboard / settings / ui / navigation
 │   ├── hooks/useEdgeSnap.ts    # 贴边吸附 + 窗口持久化
 │   ├── components/navigation/  # TargetMenu / AppPicker / WorkspaceLauncher
+│   ├── components/actions/     # 动作中心（筛选/覆盖度/确认）
+│   ├── components/clipboard/   # 剪贴板抽屉、详情、粘贴与现场/任务关联
+│   ├── components/context/     # 任务上下文抽屉（现场 / Agent / 关联 / 素材 / 动作）
 │   └── components/             # TitleBar / 三模式视图 / 任务 / Agent / 历史 / 设置
 ├── src-tauri/                  # Rust 后端
-│   ├── src/commands/           # 命令层（tasks/agents/navigation/settings/data/system）
-│   ├── src/db/                 # SQLite + 迁移（当前 v4）+ 设置
-│   ├── src/agents/             # Agent 事件总线 + Adapter（只观测，不导航）
+│   ├── src/commands/           # 命令层（tasks/agents/navigation/settings/data/system/
+│   │                           #   actions/workspace/context/clipboard）
+│   ├── src/db/                 # SQLite + 迁移（当前 v9）+ 设置
+│   ├── src/agents/             # Agent 事件总线 + 有界管线 + 保留 + Adapter（只观测，不导航）
 │   ├── src/navigation/         # 统一导航（router/app_discovery/window_manager/
 │   │                           #   target_resolver/agent_navigation）
+│   ├── src/clipboard/          # 智能剪贴板（platform/engine/store/paste/agent_bridge）
+│   ├── src/actions/            # 行动中心只读读模型（合并/分类/覆盖度）
+│   ├── src/workspace/          # 工作现场快照/捕获/恢复
 │   ├── src/scheduler.rs        # 提醒调度引擎
 │   ├── src/nlp.rs              # 中文自然语言解析（含单测）
 │   ├── src/recurrence.rs       # 重复规则计算（含单测）
 │   ├── src/lib.rs              # 窗口/托盘/热键/自启动装配
 │   └── icons/                  # 应用图标与托盘状态图标（脚本生成）
+├── src-tauri/tests/            # 集成测试；ingest_perf / actions_perf / clipboard_perf 为手动压测
 ├── scripts/gen-icons.mjs       # 图标生成器
-└── docs/                       # 架构 / 许可证 / Adapter / 测试 / 路线图
+├── scripts/make-preview.mjs    # 视觉预览 harness（IPC mock）
+├── scripts/visual-audit.mjs    # Playwright 320/400 视觉走查
+├── scripts/render-perf.mjs     # 真实 Chromium 300 行渲染采样
+└── docs/                       # 架构 / 许可证 / Adapter / 测试 / 性能 / 路线图
 ```
 
 ### 导航系统命令速查（v0.4）
@@ -76,6 +88,39 @@ task_dock/
 | `nav_agent_action(source_id, "open_app"|"focus_window")` | Agent 树按钮动作 |
 | `nav_agent_open_workspace(source_id, dir)` | IDE 类 Agent 打开工作区目录 |
 | `nav_recent_logs` / `nav_prune_logs` | 导航执行流水 |
+
+### 行动中心 / 现场 / 上下文命令速查（v0.5）
+
+| 命令 | 用途 |
+|---|---|
+| `actions_feed(filter)` / `actions_ack(ids)` / `actions_unack(ids)` | 动作列表、批量确认、撤销确认 |
+| `actions_open_session(source_id, session_id)` | 跳转 Agent 会话（能力不支持时返回明确失败） |
+| `workspace_list` / `workspace_get` / `workspace_create` / `workspace_rename` / `workspace_delete` | 现场快照 CRUD |
+| `workspace_capture_windows` / `workspace_capture_task` | 枚举可见窗口 / 从任务关联目标捕获 |
+| `workspace_restore(id)` / `workspace_restore_cancel` / `workspace_restore_status` | 顺序恢复（逐项验证级别）、取消、状态 |
+| `workspace_detach_task` / `workspace_prune` | 解绑任务（降级手动快照）/ 清理上限 |
+| `task_context(task_id)` | 统一上下文聚合（任务/现场/Agent/关联/素材/动作） |
+| `clipboard_link_snapshot` / `clipboard_unlink_snapshot` / `clipboard_snapshot_links` | 剪贴板素材 ↔ 现场快照关联 |
+
+### 性能测试（需手动运行，不进入 CI）
+
+```bash
+cd src-tauri
+cargo test --release --test ingest_perf --no-run
+TD_PERF_A_SECS=180 cargo test --release --test ingest_perf scenario_a -- --ignored --nocapture
+cargo test --release --test ingest_perf scenario_b scenario_c scenario_d scenario_baseline -- --ignored --nocapture
+cargo test --release --test actions_perf -- --ignored --nocapture
+cargo test --release --test clipboard_perf -- --ignored --nocapture
+```
+
+前端渲染采样（需先构建并生成预览 harness）：
+
+```bash
+npm run build && node scripts/make-preview.mjs && node scripts/render-perf.mjs
+```
+
+方法和判定标准见 [PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md)，本次实测见
+[PERFORMANCE_ACCEPTANCE_REPORT.md](PERFORMANCE_ACCEPTANCE_REPORT.md)。
 
 ## 四、代码规范
 
@@ -103,7 +148,11 @@ task_dock/
 
 ## 六、已知构建注意
 
-- 首次 Rust 编译 5–15 分钟（取决于镜像与机器）；后续增量约 1–2 分钟。
+- **必须在 `src-tauri/` 目录内运行 cargo**（或用 `npm run tauri ...`）：`src-tauri/rust-toolchain.toml`
+  固定 MSVC 工具链；在仓库根目录用 `--manifest-path` 会绕过该固定，落到默认 GNU 工具链，
+  release 链接可能报 `export ordinal too large`（MinGW ld 的 DLL 导出序数上限），且 WebView2 依赖不可用。
+- 首次 Rust 编译 5–15 分钟（取决于镜像与机器）；后续增量约 1–2 分钟。release 开启 LTO，
+  链接阶段可能需要数分钟，属正常。
 - `cargo test` 会执行 `tauri::generate_context!()`，需 `dist/` 存在（先 `npm run build`）。
   若遇「拒绝访问」写入缓存，删除 `src-tauri/target/debug/build/task-dock-*` 后重试。
 - 未签名安装包首次运行会被 SmartScreen 拦截（「更多信息 → 仍要运行」），属预期现象。

@@ -12,6 +12,7 @@
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
+use super::window_manager::{MemoryOrigin, WindowInfo, WindowMemory};
 use super::{
     validate_aumid, validate_exe_path, validate_launch_args, validate_local_path, validate_url,
 };
@@ -86,6 +87,8 @@ pub struct TaskNavLinkRow {
     pub is_default: bool,
     pub launch_behavior: String,
     pub created_at: String,
+    pub window_identity: Option<WindowMemory>,
+    pub window_fallback: String,
     pub target: NavTargetRow,
     /// not_running | process_only | has_window | unavailable（配置失效）
     pub running_state: String,
@@ -399,6 +402,8 @@ pub fn update_target(db: &Db, id: &str, patch: &TargetPatch) -> AppResult<()> {
 
 pub fn delete_target(db: &Db, id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let conn = &tx;
         // 目标删除会级联清掉 task_navigation_targets（FK ON DELETE CASCADE），
         // 但它自动补写的旧表影子记录（origin='auto'）没有外键，需在此同步清理，
         // 否则任务卡的 Agent 计数残留指向已删除目标的死链接。
@@ -425,6 +430,7 @@ pub fn delete_target(db: &Db, id: &str) -> AppResult<()> {
             "DELETE FROM navigation_targets WHERE id = ?1",
             rusqlite::params![id],
         )?;
+        tx.commit()?;
         Ok(())
     })
 }
@@ -466,6 +472,8 @@ pub fn link_task(
     let now = now_iso();
     let link_id = uuid::Uuid::new_v4().to_string();
     db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let conn = &tx;
         // 目标必须存在（不信任前端凭空 target_id）
         let exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM navigation_targets WHERE id = ?1",
@@ -531,12 +539,15 @@ pub fn link_task(
                 ],
             )?;
         }
+        tx.commit()?;
         Ok(actual)
     })
 }
 
 pub fn unlink_task(db: &Db, link_id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let conn = &tx;
         // 先取出被删关联的目标身份：若是 Agent 会话目标，同步清理**本关联自动补写**的
         // 旧表影子记录（origin='auto'）。用户手工创建的关联（origin='user'）保留——
         // 它属于用户自己建立的任务↔Agent 绑定，导航解除不得误删。
@@ -562,6 +573,7 @@ pub fn unlink_task(db: &Db, link_id: &str) -> AppResult<()> {
                 rusqlite::params![task_id, source, session],
             )?;
         }
+        tx.commit()?;
         Ok(())
     })
 }
@@ -611,6 +623,93 @@ pub fn update_task_link(
     })
 }
 
+/// 只根据数据库中具体的关联读取窗口配置，拒绝关联与目标不匹配的请求。
+pub fn task_window_config(
+    db: &Db,
+    link_id: &str,
+    target_id: &str,
+) -> AppResult<(Option<WindowMemory>, String)> {
+    db.with_conn(|conn| {
+        let row: Option<(Option<String>, String)> = conn.query_row(
+            "SELECT window_identity, window_fallback FROM task_navigation_targets WHERE id = ?1 AND target_id = ?2",
+            rusqlite::params![link_id, target_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let (raw, fallback) = row.ok_or_else(|| AppError::NotFound("任务关联不存在或目标不匹配".into()))?;
+        let memory = raw.map(|s| serde_json::from_str(&s)).transpose()?;
+        Ok((memory, fallback))
+    })
+}
+
+/// 保存当前窗口的稳定身份；窗口所属程序必须与该关联的目标一致。
+pub fn set_task_window(db: &Db, link_id: &str, window: Option<&WindowInfo>) -> AppResult<()> {
+    db.with_conn(|conn| {
+        let target: Option<(String, String)> = conn.query_row(
+            "SELECT t.target_type, t.exe_path FROM task_navigation_targets l JOIN navigation_targets t ON t.id = l.target_id WHERE l.id = ?1",
+            [link_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let (kind, exe) = target.ok_or_else(|| AppError::NotFound("任务关联不存在".into()))?;
+        if kind != "application" { return Err(AppError::Validation("只有应用目标可以选择窗口".into())); }
+        let identity = if let Some(w) = window {
+            if w.class_name.is_empty() || w.title.is_empty() || exe.is_empty()
+                || !w.exe_path.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&exe)) {
+                return Err(AppError::Validation("窗口所属程序与任务关联的应用不一致".into()));
+            }
+            Some(serde_json::to_string(&WindowMemory::from_window_with_origin(w, MemoryOrigin::User))?)
+        } else { None };
+        conn.execute("UPDATE task_navigation_targets SET window_identity = ?1 WHERE id = ?2", rusqlite::params![identity, link_id])?;
+        Ok(())
+    })
+}
+
+/// 新关联与用户所选窗口在同一事务写入，失败时不留下无身份的关联。
+pub fn link_task_window(
+    db: &Db,
+    task_id: &str,
+    target_id: &str,
+    w: &WindowInfo,
+) -> AppResult<String> {
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let target: Option<(String, String)> = tx.query_row(
+            "SELECT target_type, exe_path FROM navigation_targets WHERE id = ?1", [target_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let (kind, exe) = target.ok_or_else(|| AppError::NotFound("目标不存在".into()))?;
+        if kind != "application" || exe.is_empty() || w.title.is_empty() || w.class_name.is_empty()
+            || !w.exe_path.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&exe)) {
+            return Err(AppError::Validation("窗口所属程序与任务关联的应用不一致".into()));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let identity = serde_json::to_string(&WindowMemory::from_window_with_origin(w, MemoryOrigin::User))?;
+        tx.execute(
+            "INSERT INTO task_navigation_targets (id, task_id, target_id, display_order, is_default, launch_behavior, created_at, window_identity)
+             VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(display_order), -1) + 1 FROM task_navigation_targets WHERE task_id = ?2), 0, 'default', ?4, ?5)
+             ON CONFLICT(task_id, target_id) DO UPDATE SET window_identity = excluded.window_identity",
+            rusqlite::params![id, task_id, target_id, now_iso(), identity],
+        )?;
+        let actual = tx.query_row("SELECT id FROM task_navigation_targets WHERE task_id = ?1 AND target_id = ?2",
+            rusqlite::params![task_id, target_id], |r| r.get(0))?;
+        tx.commit()?;
+        Ok(actual)
+    })
+}
+
+pub fn set_task_window_fallback(db: &Db, link_id: &str, fallback: &str) -> AppResult<()> {
+    if !["reselect", "focus_app", "launch"].contains(&fallback) {
+        return Err(AppError::Validation("未知窗口降级策略".into()));
+    }
+    db.with_conn(|conn| {
+        let n = conn.execute(
+            "UPDATE task_navigation_targets SET window_fallback = ?1 WHERE id = ?2",
+            rusqlite::params![fallback, link_id],
+        )?;
+        if n == 0 {
+            return Err(AppError::NotFound("任务关联不存在".into()));
+        }
+        Ok(())
+    })
+}
+
 fn link_rows(
     db: &Db,
     where_clause: &str,
@@ -635,12 +734,13 @@ fn link_rows(
 
     db.with_conn(|conn| {
         let sql = format!(
-            "SELECT id, task_id, target_id, display_order, is_default, launch_behavior, created_at
+            "SELECT id, task_id, target_id, display_order, is_default, launch_behavior, created_at, window_identity, window_fallback
              FROM task_navigation_targets {} ORDER BY display_order, created_at",
             where_clause
         );
         let mut stmt = conn.prepare(&sql)?;
-        let raw: Vec<(String, String, String, i64, i64, String, String)> = stmt
+        #[allow(clippy::type_complexity)]
+        let raw: Vec<(String, String, String, i64, i64, String, String, Option<String>, String)> = stmt
             .query_map(params, |r| {
                 Ok((
                     r.get(0)?,
@@ -650,12 +750,14 @@ fn link_rows(
                     r.get(4)?,
                     r.get(5)?,
                     r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(raw
             .into_iter()
-            .filter_map(|(id, task_id, target_id, order, def, behavior, created)| {
+            .filter_map(|(id, task_id, target_id, order, def, behavior, created, identity, fallback)| {
                 let target = by_id.get(&target_id)?.clone();
                 // 运行状态 + 配置有效性
                 let state = if target.target_type == "application" {
@@ -709,6 +811,8 @@ fn link_rows(
                     is_default: def != 0,
                     launch_behavior: behavior,
                     created_at: created,
+                    window_identity: identity.and_then(|s| serde_json::from_str(&s).ok()),
+                    window_fallback: fallback,
                     target,
                     running_state: state,
                 })
@@ -1103,6 +1207,79 @@ mod tests {
             Ok::<_, AppError>(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn task_window_identities_are_isolated_and_have_no_hwnd() {
+        let db = Db::open_in_memory().unwrap();
+        task_row(&db, "a");
+        task_row(&db, "b");
+        db.with_conn(|c| {
+            c.execute("INSERT INTO navigation_targets (id, display_name, target_type, app_key, exe_path, created_at, updated_at) VALUES ('app', 'Chrome', 'application', 'c:\\app\\app.exe', 'C:\\App\\App.exe', 'now', 'now')", [])?;
+            Ok(())
+        }).unwrap();
+        let a = link_task(&db, "a", "app", false, "default").unwrap();
+        let b = link_task(&db, "b", "app", false, "default").unwrap();
+        let win = |hwnd, title: &str| WindowInfo {
+            hwnd,
+            pid: 42,
+            title: title.into(),
+            class_name: "Chrome_WidgetWin_1".into(),
+            is_minimized: false,
+            exe_path: Some("c:\\app\\app.exe".into()),
+        };
+        set_task_window(&db, &a, Some(&win(987654, "项目 A"))).unwrap();
+        set_task_window(&db, &b, Some(&win(123456, "项目 B"))).unwrap();
+        set_task_window_fallback(&db, &b, "focus_app").unwrap();
+        assert_eq!(
+            task_window_config(&db, &a, "app").unwrap().0.unwrap().title,
+            "项目 A"
+        );
+        let (other, fallback) = task_window_config(&db, &b, "app").unwrap();
+        assert_eq!(other.unwrap().title, "项目 B");
+        assert_eq!(fallback, "focus_app");
+        assert!(task_window_config(&db, &a, "wrong-target").is_err());
+        let raw: String = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT window_identity FROM task_navigation_targets WHERE id = ?1",
+                    [&a],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert!(!raw.contains("987654"));
+        assert!(set_task_window(
+            &db,
+            &a,
+            Some(&WindowInfo {
+                exe_path: Some("c:\\other.exe".into()),
+                ..win(1, "伪造")
+            })
+        )
+        .is_err());
+        set_task_window(&db, &a, None).unwrap();
+        assert!(task_window_config(&db, &a, "app").unwrap().0.is_none());
+        assert_eq!(
+            task_window_config(&db, &b, "app").unwrap().0.unwrap().title,
+            "项目 B"
+        );
+        let c = link_task_window(&db, "a", "app", &win(44, "项目 C")).unwrap();
+        assert_eq!(c, a);
+        assert_eq!(
+            task_window_config(&db, &a, "app").unwrap().0.unwrap().title,
+            "项目 C"
+        );
+        let wrong = WindowInfo {
+            exe_path: Some("c:\\other.exe".into()),
+            ..win(55, "错误")
+        };
+        assert!(link_task_window(&db, "a", "app", &wrong).is_err());
+        assert_eq!(
+            task_window_config(&db, &a, "app").unwrap().0.unwrap().title,
+            "项目 C"
+        );
     }
 
     /// 同一会话同时存在新旧关联：导航关联解除只删自己的影子记录，

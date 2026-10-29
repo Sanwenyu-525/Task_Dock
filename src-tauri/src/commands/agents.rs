@@ -1,5 +1,6 @@
 //! Agent 相关命令：快照、来源管理（动态注册）、自动发现、接入向导、模拟控制、通知。
 
+use rusqlite::OptionalExtension;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
@@ -374,28 +375,44 @@ pub fn clear_notifications(db: State<'_, Arc<Db>>) -> AppResult<()> {
 }
 
 /// Agent 事件流水（历史记录；扩展列：occurred_at / transport / evidence_type）。
+/// `before` 为上一页最后一行的 id：按 (received_at, id) 键集分页，
+/// 同一批次事件时间戳相同时也绝不会翻页丢行；只走只读连接池。
 #[tauri::command]
 pub fn list_agent_events(
     db: State<'_, Arc<Db>>,
     source_id: Option<String>,
+    before: Option<String>,
     limit: Option<i64>,
 ) -> AppResult<Vec<crate::db::AgentEventRow>> {
     let limit = limit.unwrap_or(100).clamp(1, 500);
-    db.with_conn(|conn| {
-        let (sql, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = match &source_id {
-            Some(s) => (
-                "SELECT id, source_id, session_external_id, run_external_id, event_type, state, message, received_at, occurred_at, transport, evidence_type
-                 FROM agent_events WHERE source_id = ?1 ORDER BY received_at DESC LIMIT ?2"
-                    .into(),
-                vec![Box::new(s.clone()), Box::new(limit)],
-            ),
-            None => (
-                "SELECT id, source_id, session_external_id, run_external_id, event_type, state, message, received_at, occurred_at, transport, evidence_type
-                 FROM agent_events ORDER BY received_at DESC LIMIT ?1"
-                    .into(),
-                vec![Box::new(limit)],
-            ),
-        };
+    db.with_read(|conn| {
+        let mut sql = String::from(
+            "SELECT id, source_id, session_external_id, run_external_id, event_type, state, message, received_at, occurred_at, transport, evidence_type
+             FROM agent_events WHERE 1 = 1",
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(s) = &source_id {
+            sql.push_str(" AND source_id = ?");
+            params.push(Box::new(s.clone()));
+        }
+        if let Some(anchor) = &before {
+            let anchor_ts: Option<String> = conn
+                .query_row(
+                    "SELECT received_at FROM agent_events WHERE id = ?1",
+                    rusqlite::params![anchor],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(anchor_ts) = anchor_ts else {
+                return Ok(Vec::new());
+            };
+            sql.push_str(" AND (received_at < ? OR (received_at = ? AND id < ?))");
+            params.push(Box::new(anchor_ts.clone()));
+            params.push(Box::new(anchor_ts));
+            params.push(Box::new(anchor.clone()));
+        }
+        sql.push_str(" ORDER BY received_at DESC, id DESC LIMIT ?");
+        params.push(Box::new(limit));
         let mut stmt = conn.prepare(&sql)?;
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(param_refs.as_slice(), |r| {
@@ -415,4 +432,47 @@ pub fn list_agent_events(
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     })
+}
+
+// ── 事件保留 / 归档（P1）────────────────────────────────
+
+/// 当前事件表规模与保护策略快照（诊断面板使用）。
+#[tauri::command]
+pub fn agent_retention_status(db: State<'_, Arc<Db>>) -> AppResult<serde_json::Value> {
+    let settings = crate::db::Settings::load(&db)?;
+    crate::agents::retention::retention_status(&db, &settings)
+}
+
+/// 手动执行一次保留策略（设置页按钮；归档完成才删除，失败不删）。
+#[tauri::command]
+pub async fn agent_retention_run(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+) -> AppResult<crate::agents::retention::RetentionReport> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = crate::db::Settings::load(&db)?;
+        let dir = app.path().app_data_dir().ok();
+        crate::agents::retention::run_retention(
+            &db,
+            &settings,
+            dir.as_deref(),
+            crate::agents::retention::MAX_PRUNE_PER_RUN,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("事件保留任务中断: {}", e)))?
+}
+
+/// 归档文件清单（JSONL，可在文件管理器中打开/复制备份）。
+#[tauri::command]
+pub fn agent_archive_list(app: tauri::AppHandle) -> AppResult<Vec<serde_json::Value>> {
+    let dir = app.path().app_data_dir()?;
+    crate::agents::retention::list_archives(&dir)
+}
+
+/// 手动重试文件投递失败队列（failed/ 原文件移回收件箱，不删除）。
+#[tauri::command]
+pub fn agent_inbox_retry(app: tauri::AppHandle) -> AppResult<usize> {
+    crate::agents::file_drop::retry_failed_inbox(&app)
 }

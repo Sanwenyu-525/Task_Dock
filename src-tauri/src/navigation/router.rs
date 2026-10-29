@@ -27,6 +27,8 @@ pub struct NavigateOptions {
     pub fallback: Option<bool>,
     /// 用户在窗口选择器里明确指定的窗口
     pub window_hwnd: Option<isize>,
+    /// 来自任务卡或工作区的关联 ID；后端校验它确实属于本目标。
+    pub task_link_id: Option<String>,
 }
 
 const LAUNCH_WINDOW_WAIT: Duration = Duration::from_secs(5);
@@ -38,6 +40,11 @@ pub fn navigate(
     target_id: &str,
     options: &NavigateOptions,
 ) -> NavigationResult {
+    if let Some(link_id) = &options.task_link_id {
+        if let Err(e) = target_resolver::task_window_config(db, link_id, target_id) {
+            return NavigationResult::failure(target_id, "navigate", e.to_string());
+        }
+    }
     let target = match target_resolver::get_target(db, target_id) {
         Ok(Some(t)) => t,
         Ok(None) => {
@@ -131,14 +138,89 @@ pub(crate) fn effective_memory(
     }
 }
 
+#[derive(Debug)]
+enum WindowChoice<'a> {
+    Exact(&'a window_manager::WindowInfo),
+    Fallback(&'a window_manager::WindowInfo),
+    LaunchFallback,
+    Missing,
+}
+
+fn choose_window<'a>(
+    windows: &'a [window_manager::WindowInfo],
+    memory: Option<&window_manager::WindowMemory>,
+    fallback: &str,
+    hwnd: Option<isize>,
+) -> WindowChoice<'a> {
+    if let Some(hwnd) = hwnd {
+        return windows
+            .iter()
+            .find(|w| w.hwnd == hwnd)
+            .map(WindowChoice::Exact)
+            .unwrap_or(WindowChoice::Missing);
+    }
+    if let Some(m) = memory.filter(|m| m.origin == window_manager::MemoryOrigin::User) {
+        if let Some(w) = window_manager::pick_window(windows, Some(m)) {
+            return WindowChoice::Exact(w);
+        }
+        return match fallback {
+            "focus_app" => window_manager::pick_window(windows, None)
+                .map(WindowChoice::Fallback)
+                .unwrap_or(WindowChoice::Missing),
+            "launch" => WindowChoice::LaunchFallback,
+            _ => WindowChoice::Missing,
+        };
+    }
+    match window_manager::pick_window(windows, memory) {
+        Some(w)
+            if memory.is_some_and(|m| m.class_name == w.class_name && m.title == w.title)
+                || (memory.is_none() && windows.len() == 1) =>
+        {
+            WindowChoice::Exact(w)
+        }
+        Some(w) => WindowChoice::Fallback(w),
+        None => WindowChoice::Missing,
+    }
+}
+
 pub(crate) fn navigate_application(
     db: &Db,
     t: &NavTargetRow,
     settings: &Settings,
     options: &NavigateOptions,
 ) -> NavigationResult {
+    let task_config = match options.task_link_id.as_deref() {
+        Some(id) => match target_resolver::task_window_config(db, id, &t.id) {
+            Ok(config) => Some(config),
+            Err(e) => return NavigationResult::failure(&t.id, ACTION_FOCUS_WINDOW, e.to_string()),
+        },
+        None => None,
+    };
+    let task_memory = task_config.as_ref().and_then(|c| c.0.clone());
+    if task_memory.as_ref().is_some_and(|m| {
+        m.origin != window_manager::MemoryOrigin::User
+            || m.exe_path.is_empty()
+            || !m.exe_path.eq_ignore_ascii_case(&t.exe_path)
+    }) {
+        return NavigationResult::failure(
+            &t.id,
+            ACTION_FOCUS_WINDOW,
+            "任务窗口身份与应用不一致，请重新选择",
+        );
+    }
+    let remembered = task_memory.or_else(|| {
+        effective_memory(
+            window_manager::load_memory(db, &t.id),
+            settings.nav_remember_window,
+        )
+    });
+    let explicit_memory = remembered
+        .as_ref()
+        .is_some_and(|m| m.origin == window_manager::MemoryOrigin::User);
     let prefer_focus = options.action.as_deref() != Some(ACTION_OPEN_APP)
         && (options.action.as_deref() == Some(ACTION_FOCUS_WINDOW) || settings.nav_prefer_focus);
+    let prefer_focus =
+        prefer_focus || (explicit_memory && options.action.as_deref() != Some(ACTION_OPEN_APP));
     let allow_launch =
         settings.nav_allow_launch || options.action.as_deref() == Some(ACTION_OPEN_APP);
 
@@ -188,28 +270,64 @@ pub(crate) fn navigate_application(
     };
 
     // 窗口定位：优先用户指定句柄 → exe 身份 → 标题提示
-    let mut windows = window_manager::windows_for_exe(&exe.to_string_lossy());
-    if windows.is_empty() && !t.window_title_hint.is_empty() {
+    let mut windows = if explicit_memory || options.window_hwnd.is_some() {
+        let expected = exe.to_string_lossy();
+        window_manager::top_windows_force()
+            .into_iter()
+            .filter(|w| {
+                w.exe_path
+                    .as_deref()
+                    .is_some_and(|p| p.eq_ignore_ascii_case(&expected))
+            })
+            .collect()
+    } else {
+        window_manager::windows_for_exe(&exe.to_string_lossy())
+    };
+    if windows.is_empty()
+        && !explicit_memory
+        && options.window_hwnd.is_none()
+        && !t.window_title_hint.is_empty()
+    {
         windows = window_manager::windows_for_title(&t.window_title_hint);
     }
-    if let Some(picked) = options.window_hwnd.filter(|_| !windows.is_empty()) {
-        if let Some(w) = windows.iter().find(|w| w.hwnd == picked) {
-            windows = vec![w.clone()];
-        }
-    }
-
+    let mut launch_fallback = false;
     if prefer_focus {
-        // 多窗口选择优先级：用户显式指定 > 用户显式选择的窗口记忆 > 自动记忆（偏好开启时）> 标题最长
-        // （记忆只存类名+标题+来源，不存 HWND——见 window_manager::WindowMemory）
-        let remembered = effective_memory(
-            window_manager::load_memory(db, &t.id),
-            settings.nav_remember_window,
-        );
-        let chosen = options
-            .window_hwnd
-            .and_then(|hwnd| windows.iter().find(|w| w.hwnd == hwnd))
-            .or_else(|| window_manager::pick_window(&windows, remembered.as_ref()));
+        let fallback = task_config
+            .as_ref()
+            .map(|c| c.1.as_str())
+            .unwrap_or("reselect");
+        let choice = choose_window(&windows, remembered.as_ref(), fallback, options.window_hwnd);
+        let (chosen, used_fallback) = match choice {
+            WindowChoice::Exact(w) => (Some(w), false),
+            WindowChoice::Fallback(w) => (Some(w), true),
+            WindowChoice::LaunchFallback => {
+                launch_fallback = true;
+                (None, true)
+            }
+            WindowChoice::Missing if explicit_memory || options.window_hwnd.is_some() => {
+                return NavigationResult::failure(
+                    &t.id,
+                    ACTION_FOCUS_WINDOW,
+                    "指定窗口未找到或身份不唯一，请重新选择窗口",
+                );
+            }
+            WindowChoice::Missing => (None, false),
+        };
         if let Some(w) = chosen {
+            if (explicit_memory || options.window_hwnd.is_some())
+                && !window_manager::top_windows_force().iter().any(|current| {
+                    current.hwnd == w.hwnd
+                        && current.class_name == w.class_name
+                        && current.title == w.title
+                        && current.exe_path == w.exe_path
+                })
+            {
+                return NavigationResult::failure(
+                    &t.id,
+                    ACTION_FOCUS_WINDOW,
+                    "窗口身份已变化，请重新选择",
+                );
+            }
             return match window_manager::focus_window(w.hwnd) {
                 Ok(FocusOutcome::Confirmed) => {
                     // 只有真正确认置前后才更新记忆：把"没成功的窗口"记下来
@@ -217,28 +335,21 @@ pub(crate) fn navigate_application(
                     // 用户显式选择的记忆（origin=user）不被自动记忆覆盖降级——
                     // 否则一次成功的定位就把用户亲手挑的窗口身份冲掉了。
                     if settings.nav_remember_window {
-                        let user_picked_same =
-                            window_manager::load_memory(db, &t.id).is_some_and(|m| {
-                                m.origin == window_manager::MemoryOrigin::User
-                                    && m.class_name == w.class_name
-                                    && m.title == w.title
-                            });
-                        if !user_picked_same {
-                            let _ = window_manager::save_memory(db, &t.id, w);
-                        }
+                        let _ = window_manager::save_memory(db, &t.id, w);
                     }
-                    let multi = windows.len() > 1;
                     NavigationResult {
                         success: true,
                         requested_action: ACTION_FOCUS_WINDOW.into(),
                         actual_action: Some(ACTION_FOCUS_WINDOW.into()),
-                        fallback_used: multi,
+                        fallback_used: used_fallback,
                         target_id: t.id.clone(),
-                        reason: multi.then(|| {
-                            format!(
-                                "该应用有 {} 个窗口，已唤醒其一；可在窗口选择器中指定目标窗口",
-                                windows.len()
-                            )
+                        reason: used_fallback.then(|| {
+                            if explicit_memory {
+                                "指定窗口未找到，已降级唤醒该应用的其他窗口"
+                            } else {
+                                "窗口记忆未精确匹配，已唤醒该应用的一个窗口"
+                            }
+                            .into()
                         }),
                         verification_level: VerificationLevel::WindowConfirmed.as_str().into(),
                     }
@@ -247,16 +358,23 @@ pub(crate) fn navigate_application(
                     success: true,
                     requested_action: ACTION_FOCUS_WINDOW.into(),
                     actual_action: Some(ACTION_FOCUS_WINDOW.into()),
-                    fallback_used: false,
+                    fallback_used: used_fallback,
                     target_id: t.id.clone(),
-                    reason: Some("切换已请求，但未能在超时内核实前台状态".into()),
+                    reason: Some(
+                        if used_fallback {
+                            "已降级请求唤醒其他窗口，但未能核实前台状态"
+                        } else {
+                            "切换已请求，但未能在超时内核实前台状态"
+                        }
+                        .into(),
+                    ),
                     verification_level: "requested-unverified".into(),
                 },
                 Err(e) => NavigationResult::failure(&t.id, ACTION_FOCUS_WINDOW, e.reason_cn()),
             };
         }
         // 无现有窗口：按偏好决定是否启动
-        if !allow_launch {
+        if !allow_launch && !launch_fallback {
             return NavigationResult::failure(
                 &t.id,
                 ACTION_FOCUS_WINDOW,
@@ -276,7 +394,7 @@ pub(crate) fn navigate_application(
     if !t.working_dir.is_empty() && std::path::Path::new(&t.working_dir).is_dir() {
         cmd.current_dir(&t.working_dir);
     }
-    match cmd.spawn() {
+    let mut result = match cmd.spawn() {
         Ok(_) => {
             // 进程启动 ≠ 窗口出现 ≠ 窗口已置前，三者必须分别如实标注
             let waited =
@@ -341,7 +459,20 @@ pub(crate) fn navigate_application(
             ACTION_OPEN_APP,
             format!("启动失败: {}（{:?}）", e, exe),
         ),
+    };
+    if launch_fallback && result.success {
+        result.requested_action = ACTION_FOCUS_WINDOW.into();
+        result.fallback_used = true;
+        result.reason = Some(format!(
+            "指定窗口未找到，已按任务设置降级启动应用{}",
+            result
+                .reason
+                .as_ref()
+                .map(|r| format!("；{}", r))
+                .unwrap_or_default()
+        ));
     }
+    result
 }
 
 // ── L3：网址 ────────────────────────────────────────────────
@@ -855,11 +986,13 @@ mod tests {
         let auto = window_manager::WindowMemory {
             class_name: "Chrome_WidgetWin_1".into(),
             title: "自动记忆".into(),
+            exe_path: String::new(),
             origin: window_manager::MemoryOrigin::Auto,
         };
         let user = window_manager::WindowMemory {
             class_name: "Chrome_WidgetWin_1".into(),
             title: "用户挑的窗口".into(),
+            exe_path: String::new(),
             origin: window_manager::MemoryOrigin::User,
         };
         // 偏好开启：任意记忆生效
@@ -868,6 +1001,59 @@ mod tests {
         assert!(effective_memory(Some(auto), false).is_none());
         assert_eq!(effective_memory(Some(user.clone()), false).unwrap(), user);
         assert!(effective_memory(None, true).is_none());
+    }
+
+    #[test]
+    fn explicit_window_selection_requires_unique_identity_and_marks_fallback() {
+        use window_manager::{MemoryOrigin, WindowInfo, WindowMemory};
+        let win = |hwnd, title: &str| WindowInfo {
+            hwnd,
+            pid: 10,
+            title: title.into(),
+            class_name: "Class".into(),
+            is_minimized: false,
+            exe_path: Some("c:\\app.exe".into()),
+        };
+        let memory = WindowMemory {
+            title: "项目 A".into(),
+            class_name: "Class".into(),
+            exe_path: "C:\\APP.EXE".into(),
+            origin: MemoryOrigin::User,
+        };
+        let windows = vec![win(1, "项目 A"), win(2, "项目 B")];
+        assert!(
+            matches!(choose_window(&windows, Some(&memory), "reselect", None), WindowChoice::Exact(w) if w.hwnd == 1)
+        );
+        let restarted = vec![win(3, "项目 A"), win(4, "项目 B")];
+        assert!(
+            matches!(choose_window(&restarted, Some(&memory), "reselect", None), WindowChoice::Exact(w) if w.hwnd == 3)
+        );
+        let changed = vec![win(3, "项目 A - 新标题"), win(4, "项目 B")];
+        assert!(matches!(
+            choose_window(&changed, Some(&memory), "reselect", None),
+            WindowChoice::Missing
+        ));
+        assert!(matches!(
+            choose_window(&changed, Some(&memory), "focus_app", None),
+            WindowChoice::Fallback(_)
+        ));
+        assert!(matches!(
+            choose_window(&changed, Some(&memory), "launch", None),
+            WindowChoice::LaunchFallback
+        ));
+        assert!(matches!(
+            choose_window(
+                &[win(1, "项目 A"), win(2, "项目 A")],
+                Some(&memory),
+                "reselect",
+                None
+            ),
+            WindowChoice::Missing
+        ));
+        assert!(matches!(
+            choose_window(&windows, Some(&memory), "reselect", Some(999)),
+            WindowChoice::Missing
+        ));
     }
 
     #[test]

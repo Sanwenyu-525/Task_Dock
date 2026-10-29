@@ -1,0 +1,57 @@
+NOTE desktop probe: FG proc=Weixin pid=64744 title=΢�� | UNLOCKED
+NOTE target hwnd=2360488 pid=68836
+NOTE source hwnd=5968182 pid=64896
+NOTE app url=http://tauri.localhost/
+PASS [A0] Tauri IPC 可在验收页调用 — window.__TAURI_INTERNALS__ 可用
+NOTE settings fixture: group_window=8s paste_interval=300ms
+PASS [B1] 标题栏唯一入口可打开抽屉 — drawer 已打开
+PASS [B2] 文字采集入库并正确归属来源应用 — kind=text source=powershell.exe bytes=26
+PASS [B3] 相同文字去重（一条记录、次数递增） — db_rows=1 copy_count=4 ui_cards=1
+PASS [B4] 应用自身复制不产生新历史 — before=1 after=1
+PASS [B5] URL 识别为链接类型 — kind=url
+PASS [B6] 富文本 HTML 采集（保留标记） — kind=html html=<html><body><b>���ı�����-1793239440177</b> <span style="colo
+PASS [B7] 图片入库（磁盘原图+缩略图，不入 BLOB） — assets=[{"role":"image","path":"images/949f32c1-e164-4de3-9399-603bd42fc075.png","byte_size":135682},{"role":"thumb","path":"thumbs/949f32c1-e164-4de3-9399-603bd42fc075.png","byte_size":19732}] exists=true
+PASS [B7b] 单项图片复制写入系统剪贴板 — report={"mode":"image","bytes":135682,"warnings":[],"sequence":5277,"item_count":1} clip=FORMATS: PNG, DeviceIndependentBitmap, Bitmap, Format17
+PASS [B8] 连续三次截图自动成组，截图间文字按顺序保留 — group=ffbf534d-f91c-414f-89d5-1b65824034e2 kinds=image,text,image,image positions=0,1,2,3
+PASS [B8b] 批量截图连续进入同一收集组 — items=12 max_position=11
+PASS [B9] 超过分组窗口后文字使收集会话结束 — status=closed
+PASS [B9b] 窗口过期后的截图建立新收集组 — group=4fabfac4-28b2-46a7-9175-0ddc389d4690 items=1 status=collecting
+PASS [B10] 多文件列表采集 — paths=["C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept\\accept file a.txt","C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept\\accept file b.txt"]
+PASS [B10b] 单项多文件复制写入 CF_HDROP — FORMATS: FileDrop, UnicodeText, Locale, Text, OEMText | FILES: C:\Users\ASUS\AppData\Local\Temp\taskdock-accept\accept file a.txt | C:\Users\ASUS\AppData\Local\Temp\taskdock-accept\accept file b.txt
+PASS [B11] 暂停期间不采集，恢复后继续 — paused_rows=0 resumed=true
+PASS [B11b] 关闭监听后不保存，重新启用后恢复采集 — disabled_rows=0 enabled=true
+PASS [B12] 高置信敏感内容被过滤；普通密码不宣称识别 — aws_rows=0 plain_password_recorded=true
+PASS [B13] 排除名单应用不采集 — excluded_rows=0
+PASS [B14] 搜索与类型筛选生效 — search_cards=1 image_cards=12 db_images=12
+PASS [B15] 收藏与置顶写回数据库 — favorite=1 pinned=1
+PASS [B16] 分组标签页显示自动截图分组 — group_cards=2
+PASS [B17] 手动调整组内顺序并持久化 — order=7c8d3e31-d8c8-4667-9c2d-2bc8da0013d0,c2d7d32f-7e73-4c6e-8698-c8575c5dffc1
+PASS [C1] 整组复制写入富文本格式 — FORMATS: UnicodeText, HTML Format, Locale, Text, OEMText
+PASS [C2] 手动创建分组（3 项） — group=dc48b0ab-de8f-4d41-9e71-37272dbc9629 items=3
+PASS [C3] 逐项粘贴：目标真实接收且顺序正确 — target_len=57 order=0,19,38 before_len=0
+PASS [C4] 粘贴结果文案不宣称目标成功 — 已发送 3/3 项粘贴动作；目标应用是否接收无法自动验证（3 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容
+PASS [C5] 粘贴结束后恢复原剪贴板 — FORMATS: UnicodeText, Locale, Text, OEMText | text_has_sentinel=true
+PASS [C6] 粘贴队列自身写入不产生新历史 — rows=3（应等于原始 3 条）
+PASS [C7] 中途取消：任务停止且保留剩余项 — status=cancelled sent=1/5 remaining=4
+PASS [C8] 继续未完成粘贴：累计发送到总数 — status=completed sent=5/5
+PASS [C9] 并发粘贴被拒绝 — err=Error: page.evaluate: 校验失败: 已有粘贴任务进行中，请先取消或等待完成
+PASS [C11] 粘贴期间用户新复制的内容不被覆盖 — status=failed sent=1/3 restored=0 clip_keeps_user=true
+PASS [C12] 目标不接受图片时只如实报告动作已发送 — status=completed target_text_unchanged=true
+PASS [C10] 目标窗口关闭时任务停止并给出具体原因 — status=failed sent=1/2 message=已发送 1/2 项粘贴动作；目标应用是否接收无法自动验证（1 项未确认，0 项有接收信号）；任务已停止。目标窗口已关闭；已恢复粘贴前的剪贴板内容
+PASS [D1] 从任务编辑器手动关联剪贴板条目 — links=[{"target_type":"item","target_id":"7c8d3e31-d8c8-4667-9c2d-2bc8da0013d0"}]
+PASS [D2] 取消关联不删除剪贴板内容 — links_after=0 item_exists=1
+PASS [D3] 删除条目提示真实语义且不删除磁盘文件 — dialog=删除这条剪贴板历史？  将同时从所属分组和任务关联中移除；文件条目只删除历史记录，不会删除磁盘上的文件。  取消 删除 db=0 disk=true
+PASS [D4] 删除分组保留组内历史条目 — groups=0 items_before=3 items_after=3
+PASS [D5] 删除分组不删除图片条目与磁盘资产 — group_gone=0 images=11/11 assets_kept=true
+PASS [E1] Agent 导出生成本地文件包 — dir=C:\Users\ASUS\AppData\Roaming\com.taskdock.desktop.accept\clipboard-exports\8999a980 manifest=true md=true
+NOTE manifest: { "exported_at": "2026-10-29T02:05:52.813233600+00:00", "files": [], "items": [ { "byte_size": 26, "created_at": "2026-10-29T02:03:55.192076300+00:00", "id": "c2d7d32f-7e73-4c6e-8698-c8575c5dffc1", "kind": "text", "preview": "验收文本-1793239434612", "source_app": "powershell.exe" } ], "note": "本地导出；Tas
+PASS [F1] 设置面板提供剪贴板配置 — headings=1 exclude_input=1
+PASS [G1] 数据库无重复内容哈希 — 0
+NOTE audit {"items":[{"kind":"html","n":1},{"kind":"image","n":12},{"kind":"text","n":25},{"kind":"url","n":1}],"asset_bytes":2151608,"groups":[{"mode":"auto","status":"closed","n":1},{"mode":"manual","status":"closed","n":7}],"jobs":[{"status":"completed","sent":3,"total":3,"restored":1,"message":"已发送 3/3 项粘贴动作；目标应用是否接收无法自动验证（3 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容"},{"status":"completed","sent":5,"total":5,"restored":1,"message":"已发送 5/5 项粘贴动作；目标应用是否接收无法自动验证（4 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容"},{"status":"cancelled","sent":1,"total":2,"restored":1,"message":"已发送 1/2 项粘贴动作；目标应用是否接收无法自动验证（1 项未确认，0 项有接收信号）；用户已取消。已恢复粘贴前的剪贴板内容"},{"status":"failed","sent":1,"total":3,"restored":0,"message":"已发送 1/3 项粘贴动作；目标应用是否接收无法自动验证（1 项未确认，0 项有接收信号）；任务已停止。检测到剪贴板被其他程序更新，已停止并保留最新内容"},{"status":"completed","sent":1,"total":1,"restored":1,"message":"已发送 1/1 项粘贴动作；目标应用是否接收无法自动验证（1 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容"},{"status":"failed","sent":1,"total":2,"restored":1,"message":"已发送 1/2 项粘贴动作；目标应用是否接收无法自动验证（1 项未确认，0 项有接收信号）；任务已停止。目标窗口已关闭；已恢复粘贴前的剪贴板内容"}],"links":0,"duplicates":0}
+PASS [G2] 200 条历史下列表可用（首屏 80 条，滚动无明显卡顿） — open_ms=620 scroll_p50=5ms max=5ms
+NOTE stress_open_ms=620 scroll={"frames":24,"p50":5,"max":5}
+PASS [H2] 剪贴板验收后任务功能仍正常 — task_visible=true quick_add=true
+PASS [H1] 重启后历史与分组持久化 — items 239->239 groups 8->8 group_cards=2
+
+SUMMARY {"passed":46,"failed":0}
+failed: 

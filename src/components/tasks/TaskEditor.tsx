@@ -1,15 +1,21 @@
 //! 任务编辑器：新建/编辑、优先级、时间、重复规则、Agent 关联、导航目标关联。
 
 import { useEffect, useState } from "react";
-import { Trash2, Link2, Unlink, X, ArrowUp, ArrowDown, AppWindow, Star } from "lucide-react";
 import {
+  Trash2, Link2, Unlink, X, ArrowUp, ArrowDown, AppWindow, Star, ClipboardList, Layers,
+} from "lucide-react";
+import {
+  clipboardTaskLinks,
+  clipboardUnlinkTask,
   listTaskLinks,
   linkTaskAgent,
   unlinkTaskAgent,
+  type ClipboardTaskLink,
   type RecurrenceRuleInput,
 } from "../../lib/bridge";
+import { kindLabel } from "../../lib/clipboardUi";
 import {
-  navTaskTargets, navUnlinkTask, navUpdateTaskLink,
+  navTaskTargets, navUnlinkTask, navUpdateTaskLink, navForgetTaskWindow, navSetTaskWindowFallback,
   stateBadge,
 } from "../../lib/navigation";
 import type { TaskNavLink } from "../../lib/navigation";
@@ -22,6 +28,16 @@ import AppPicker from "../navigation/AppPicker";
 import { TargetAvatar } from "../navigation/TargetMenu";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+
+function recurrenceKey(rule: RecurrenceRuleInput | null): string {
+  if (!rule) return "";
+  return JSON.stringify({
+    freq: rule.freq,
+    interval: rule.interval,
+    by_weekday: rule.freq === "weekly" ? [...rule.by_weekday].sort((a, b) => a - b) : [],
+    by_monthday: rule.freq === "monthly" ? rule.by_monthday : null,
+  });
+}
 
 const BEHAVIOR_LABELS: Record<string, string> = {
   default: "按偏好",
@@ -38,8 +54,12 @@ export default function TaskEditor() {
   const create = useTasksStore((s) => s.create);
   const update = useTasksStore((s) => s.update);
   const remove = useTasksStore((s) => s.remove);
+  const refreshTasks = useTasksStore((s) => s.refresh);
   const agents = useAgentsStore((s) => s.snapshot);
   const refreshNavLinks = useNavigationStore((s) => s.loadTaskLinks);
+  const openClipboard = useUiStore((s) => s.openClipboard);
+  const openContext = useUiStore((s) => s.openContext);
+  const clipboardLinkVersion = useUiStore((s) => s.clipboardLinkVersion);
 
   const task = editor.task;
   const [title, setTitle] = useState("");
@@ -68,6 +88,8 @@ export default function TaskEditor() {
   const [linkSession, setLinkSession] = useState("");
   const [navLinks, setNavLinks] = useState<TaskNavLink[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerLink, setPickerLink] = useState<TaskNavLink | null>(null);
+  const [clipLinks, setClipLinks] = useState<ClipboardTaskLink[]>([]);
 
   useEffect(() => {
     if (!editor.open) return;
@@ -88,6 +110,7 @@ export default function TaskEditor() {
     setMonthday(r?.by_monthday ?? 1);
     setNavLinks([]);
     setPickerOpen(false);
+    setPickerLink(null);
     if (task) {
       listTaskLinks(task.id).then(setLinks).catch(() => setLinks([]));
       navTaskTargets(task.id).then(setNavLinks).catch(() => setNavLinks([]));
@@ -104,6 +127,15 @@ export default function TaskEditor() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickerOpen]);
+
+  // 剪贴板关联（手动；抽屉关联后通过版本号触发重读）
+  useEffect(() => {
+    if (!editor.open || !task) {
+      setClipLinks([]);
+      return;
+    }
+    clipboardTaskLinks(task.id).then(setClipLinks).catch(() => setClipLinks([]));
+  }, [editor.open, task, clipboardLinkVersion]);
 
   if (!editor.open) return null;
 
@@ -149,6 +181,7 @@ export default function TaskEditor() {
     try {
       await navUnlinkTask(id);
       await reloadNav();
+      await refreshTasks();
     } catch (e) {
       showToast(String(e), { kind: "error" });
     }
@@ -187,10 +220,13 @@ export default function TaskEditor() {
         .filter(Boolean)
         .slice(0, 20),
       advance_minutes: advance,
-      recurrence,
+      // 只在规则确实发生变化时发送；缺失、null 和具体值分别表示保留、取消和修改。
+      ...(!task || recurrenceKey(recurrence) !== recurrenceKey(task.recurrence)
+        ? { recurrence }
+        : {}),
       // 未改动 → 不提交该键（后端保持原值）；改动过 → 提交（null 表示清空）
-      ...(dueTouched ? { due_at: fromLocalInputValue(due) } : {}),
-      ...(remindTouched ? { remind_at: fromLocalInputValue(remind) } : {}),
+      ...(dueTouched && due !== toLocalInputValue(task?.due_at) ? { due_at: fromLocalInputValue(due) } : {}),
+      ...(remindTouched && remind !== toLocalInputValue(task?.remind_at) ? { remind_at: fromLocalInputValue(remind) } : {}),
     };
     try {
       if (task) await update(task.id, input);
@@ -217,6 +253,7 @@ export default function TaskEditor() {
     try {
       await linkTaskAgent(task.id, sourceId, sessionId);
       setLinks(await listTaskLinks(task.id));
+      await refreshTasks();
       setLinkSession("");
     } catch (e) {
       showToast(String(e));
@@ -227,8 +264,18 @@ export default function TaskEditor() {
     try {
       await unlinkTaskAgent(id);
       setLinks(await listTaskLinks(task!.id));
+      await refreshTasks();
     } catch (e) {
       showToast(String(e));
+    }
+  }
+
+  async function onClipUnlink(id: string) {
+    try {
+      await clipboardUnlinkTask(id);
+      setClipLinks(await clipboardTaskLinks(task!.id));
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
     }
   }
 
@@ -376,7 +423,7 @@ export default function TaskEditor() {
                 <AppWindow size={12} /> 关联目标（软件 / 网址 / 文件 / 目录 / Agent 会话）
               </span>
               <div className="link-row">
-                <button className="btn sm" onClick={() => setPickerOpen(true)}>
+                <button className="btn sm" onClick={() => { setPickerLink(null); setPickerOpen(true); }}>
                   <AppWindow size={12} /> 添加目标…
                 </button>
                 {navLinks.length >= 2 && (
@@ -386,7 +433,8 @@ export default function TaskEditor() {
               {navLinks.map((l, i) => {
                 const badge = stateBadge(l.running_state);
                 return (
-                  <div key={l.id} className="nav-link-item">
+                  <div key={l.id}>
+                  <div className="nav-link-item">
                     <TargetAvatar link={l} size={18} />
                     <span className="nav-link-name" title={l.target.display_name}>
                       {l.target.display_name}
@@ -437,6 +485,29 @@ export default function TaskEditor() {
                       <Unlink size={11} />
                     </button>
                   </div>
+                  {l.target.target_type === "application" && !!l.target.exe_path && (
+                    <div className="link-row">
+                      <span className="endpoint-hint" title={l.window_identity?.title}>
+                        {l.window_identity ? `窗口：${l.window_identity.title}` : "未指定窗口"}
+                      </span>
+                      <button className="btn sm" onClick={() => { setPickerLink(l); setPickerOpen(true); }}>
+                        {l.window_identity ? "重新选择窗口" : "选择窗口"}
+                      </button>
+                      {l.window_identity && <button className="btn sm" onClick={async () => {
+                        try { await navForgetTaskWindow(l.id); await reloadNav(); }
+                        catch (e) { showToast(String(e), { kind: "error" }); }
+                      }}>清除窗口</button>}
+                      {l.window_identity && <select aria-label={`窗口未找到时 ${l.target.display_name}`} value={l.window_fallback ?? "reselect"} onChange={async (e) => {
+                        try { await navSetTaskWindowFallback(l.id, e.target.value); await reloadNav(); }
+                        catch (err) { showToast(String(err), { kind: "error" }); }
+                      }}>
+                        <option value="reselect">提示重新选择</option>
+                        <option value="focus_app">降级唤醒应用</option>
+                        <option value="launch">降级启动应用</option>
+                      </select>}
+                    </div>
+                  )}
+                  </div>
                 );
               })}
             </div>
@@ -465,8 +536,38 @@ export default function TaskEditor() {
                   <span>
                     {l.source_id} · {l.session_external_id}
                     {l.run_external_id ? ` · ${l.run_external_id}` : ""}
+                    {!l.available ? " · 已失效" : ""}
                   </span>
                   <button className="icon-btn sm" onClick={() => onUnlink(l.id)} title="取消关联">
+                    <Unlink size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {task && (
+            <div className="field">
+              <span>
+                <ClipboardList size={12} /> 关联剪贴板（手动）
+              </span>
+              <div className="link-row">
+                <button className="btn sm" onClick={() => openClipboard({ linkTask: task })}>
+                  <ClipboardList size={12} /> 从剪贴板选择条目或分组…
+                </button>
+              </div>
+              <span className="endpoint-hint">不会自动绑定；删除任务不会删除剪贴板内容</span>
+              {clipLinks.map((l) => (
+                <div key={l.id} className="link-item">
+                  <span title={l.label}>
+                    {l.target_type === "group" ? "分组" : kindLabel(l.kind)} · {l.label || l.target_id}
+                  </span>
+                  <button
+                    className="icon-btn sm"
+                    onClick={() => onClipUnlink(l.id)}
+                    title="取消剪贴板关联（不删除内容）"
+                    aria-label="取消剪贴板关联"
+                  >
                     <Unlink size={12} />
                   </button>
                 </div>
@@ -480,6 +581,18 @@ export default function TaskEditor() {
               <Trash2 size={13} /> 删除
             </button>
           )}
+          {task && (
+            <button
+              className="btn"
+              onClick={() => {
+                closeEditor();
+                openContext(task);
+              }}
+              title="查看现场 / Agent / 关联目标 / 剪贴板 / 动作"
+            >
+              <Layers size={13} /> 上下文
+            </button>
+          )}
           <div className="flex-spacer" />
           <button className="btn" onClick={closeEditor}>
             取消
@@ -491,6 +604,7 @@ export default function TaskEditor() {
       </div>
       {pickerOpen && task && (
         <AppPicker
+          windowLink={pickerLink}
           taskId={task.id}
           onClose={() => setPickerOpen(false)}
           onSelect={undefined}

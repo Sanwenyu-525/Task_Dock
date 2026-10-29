@@ -57,6 +57,9 @@ pub enum MemoryOrigin {
 pub struct WindowMemory {
     pub class_name: String,
     pub title: String,
+    /// 旧记忆不含路径；新记忆用路径进一步约束窗口身份。
+    #[serde(default)]
+    pub exe_path: String,
     /// 身份来源（旧数据无此字段 → Auto：旧版本只有自动记忆一种来源）。
     #[serde(default)]
     pub origin: MemoryOrigin,
@@ -67,14 +70,16 @@ impl WindowMemory {
         Self {
             class_name: w.class_name.clone(),
             title: w.title.clone(),
+            exe_path: w.exe_path.clone().unwrap_or_default(),
             origin: MemoryOrigin::Auto,
         }
     }
 
-    fn from_window_with_origin(w: &WindowInfo, origin: MemoryOrigin) -> Self {
+    pub(crate) fn from_window_with_origin(w: &WindowInfo, origin: MemoryOrigin) -> Self {
         Self {
             class_name: w.class_name.clone(),
             title: w.title.clone(),
+            exe_path: w.exe_path.clone().unwrap_or_default(),
             origin,
         }
     }
@@ -82,7 +87,7 @@ impl WindowMemory {
 
 /// 在候选窗口里挑一个：优先命中记忆，否则取标题最长（信息量最大）的。
 ///
-/// 记忆失效时逐级降级：同类名同标题 → 同类名（标题会随文档/标签变化）→ 最长标题。
+/// 显式选择只接受唯一的完整匹配；自动记忆可按类名及最长标题降级。
 /// 这个函数是纯函数，多窗口选择行为因此可以被单测直接验证。
 pub fn pick_window<'a>(
     windows: &'a [WindowInfo],
@@ -92,11 +97,19 @@ pub fn pick_window<'a>(
         return None;
     }
     if let Some(m) = remembered {
-        if let Some(w) = windows
-            .iter()
-            .find(|w| w.class_name == m.class_name && w.title == m.title)
-        {
+        let mut exact = windows.iter().filter(|w| {
+            w.class_name == m.class_name
+                && w.title == m.title
+                && (m.exe_path.is_empty()
+                    || w.exe_path
+                        .as_deref()
+                        .is_some_and(|p| p.eq_ignore_ascii_case(&m.exe_path)))
+        });
+        if let Some(w) = exact.next().filter(|_| exact.next().is_none()) {
             return Some(w);
+        }
+        if m.origin == MemoryOrigin::User {
+            return None;
         }
         if let Some(w) = windows.iter().find(|w| w.class_name == m.class_name) {
             return Some(w);
@@ -143,21 +156,54 @@ fn save_memory_with_origin(
     w: &WindowInfo,
     origin: MemoryOrigin,
 ) -> crate::error::AppResult<()> {
-    let mut map = memory_map(db);
-    map.insert(
-        target_id.to_string(),
-        serde_json::to_value(WindowMemory::from_window_with_origin(w, origin))?,
-    );
-    db.set_setting(WINDOW_MEMORY_KEY, serde_json::Value::Object(map))
+    use rusqlite::OptionalExtension;
+    db.with_conn(|conn| {
+        let raw: Option<String> = conn.query_row(
+            "SELECT value FROM application_settings WHERE key = ?1",
+            [WINDOW_MEMORY_KEY], |r| r.get(0),
+        ).optional()?;
+        let mut map = raw.and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+            .and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        let current = map.get(target_id).and_then(|v| serde_json::from_value::<WindowMemory>(v.clone()).ok());
+        if origin == MemoryOrigin::Auto && current.is_some_and(|m| m.origin == MemoryOrigin::User) {
+            return Ok(());
+        }
+        map.insert(target_id.to_string(), serde_json::to_value(WindowMemory::from_window_with_origin(w, origin))?);
+        conn.execute(
+            "INSERT INTO application_settings (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            rusqlite::params![WINDOW_MEMORY_KEY, serde_json::to_string(&map)?, crate::agents::now_iso()],
+        )?;
+        Ok(())
+    })
 }
 
 /// 清除某目标的窗口记忆（目标删除 / 用户重置时调用）。
 pub fn forget_memory(db: &Db, target_id: &str) -> crate::error::AppResult<()> {
-    let mut map = memory_map(db);
-    if map.remove(target_id).is_some() {
-        db.set_setting(WINDOW_MEMORY_KEY, serde_json::Value::Object(map))?;
-    }
-    Ok(())
+    use rusqlite::OptionalExtension;
+    db.with_conn(|conn| {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM application_settings WHERE key = ?1",
+                [WINDOW_MEMORY_KEY],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let mut map = raw
+            .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        if map.remove(target_id).is_some() {
+            conn.execute(
+                "UPDATE application_settings SET value = ?1, updated_at = ?2 WHERE key = ?3",
+                rusqlite::params![
+                    serde_json::to_string(&map)?,
+                    crate::agents::now_iso(),
+                    WINDOW_MEMORY_KEY
+                ],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Debug)]
@@ -497,6 +543,7 @@ mod tests {
         let m = WindowMemory {
             class_name: "Chrome_WidgetWin_1".into(),
             title: "项目 B — 编辑器".into(),
+            exe_path: String::new(),
             origin: MemoryOrigin::Auto,
         };
         assert_eq!(pick_window(&wins, Some(&m)).unwrap().hwnd, 2);
@@ -504,6 +551,7 @@ mod tests {
         let m2 = WindowMemory {
             class_name: "ConsoleWindowClass".into(),
             title: "早已关闭的终端".into(),
+            exe_path: String::new(),
             origin: MemoryOrigin::Auto,
         };
         assert_eq!(pick_window(&wins, Some(&m2)).unwrap().hwnd, 4);
@@ -511,6 +559,7 @@ mod tests {
         let m3 = WindowMemory {
             class_name: "Nope".into(),
             title: "nope".into(),
+            exe_path: String::new(),
             origin: MemoryOrigin::Auto,
         };
         let picked = pick_window(&wins, Some(&m3)).unwrap();
@@ -561,6 +610,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_memory(&db, "t2").unwrap().origin, MemoryOrigin::Auto);
+    }
+
+    #[test]
+    fn automatic_memory_does_not_replace_user_choice() {
+        let db = Db::open_in_memory().unwrap();
+        save_user_memory(&db, "t1", &win(1, "用户窗口", "Class")).unwrap();
+        save_memory(&db, "t1", &win(2, "其他窗口", "Class")).unwrap();
+        let m = load_memory(&db, "t1").unwrap();
+        assert_eq!(m.origin, MemoryOrigin::User);
+        assert_eq!(m.title, "用户窗口");
+    }
+
+    #[test]
+    fn missing_explicit_window_must_not_select_another_of_same_class() {
+        let selected = WindowMemory {
+            class_name: "Class".into(),
+            title: "窗口 A".into(),
+            exe_path: String::new(),
+            origin: MemoryOrigin::User,
+        };
+        assert!(pick_window(&[win(2, "窗口 B", "Class")], Some(&selected)).is_none());
     }
 
     #[test]

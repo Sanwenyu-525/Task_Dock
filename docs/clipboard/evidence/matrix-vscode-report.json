@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-10-29T02:33:40.718Z",
+  "window": {
+    "pid": 60820,
+    "hwnd": 332732,
+    "file": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept\\matrix-vscode-final.txt"
+  },
+  "job": {
+    "rowid": 6,
+    "status": "completed",
+    "sent": 2,
+    "total": 2,
+    "restored": 1,
+    "message": "已发送 2/2 项粘贴动作；目标应用是否接收无法自动验证（2 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容"
+  },
+  "file_has_a": true,
+  "file_has_b": true,
+  "order_ok": true,
+  "save_error": "",
+  "saved_preview": "MATRIX-VSCODE-A-1793241212497MATRIX-VSCODE-B-1793241212497INITIAL-VSCODE|",
+  "status": "PASS",
+  "reason": "真实 VS Code 窗口接收两项并按序落盘"
+}
