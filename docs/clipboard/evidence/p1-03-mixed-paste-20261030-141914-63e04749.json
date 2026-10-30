@@ -1,0 +1,86 @@
+{
+  "name": "P1-03 mixed image/text paste acceptance",
+  "timestamp": "2026-10-30T14:18:05+0800",
+  "nonce": "63e04749",
+  "environment": {
+    "exe": "D:\\Develop\\task_dock\\src-tauri\\target-accept\\release\\task-dock.exe",
+    "exe_mtime": "2026-10-30T14:08:41",
+    "edge": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "screen": [
+      2048,
+      1152
+    ],
+    "desktop": {
+      "input_desktop": true,
+      "desktop_name": "Default",
+      "foreground_hwnd": 6361480
+    },
+    "preexisting_instances": [],
+    "work_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-zb57hvi5",
+    "app_cdp": 9417,
+    "edge_cdp": 9418,
+    "default_app_cdp_stale_listeners": []
+  },
+  "checks": {
+    "pass": [],
+    "fail": []
+  },
+  "overall": "FAIL",
+  "error": "RuntimeError: Task Dock 未就绪: clipboard_status 调用失败（重试 8 次）: CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n :: {'command': 'clipboard_status', 'error': 'CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\\nCall log:\\n\\x1b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\\x1b[22m\\n', 'app_alive': False, 'app_exit_code': None, 'cdp_port': 9417, 'port_listeners': []}",
+  "app_exit_code": 4294967295,
+  "cdp_diagnostics": [
+    {
+      "command": "clipboard_status",
+      "error": "CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+      "app_alive": false,
+      "app_exit_code": null,
+      "cdp_port": 9417,
+      "port_listeners": []
+    },
+    {
+      "command": "clipboard_status",
+      "error": "CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+      "app_alive": false,
+      "app_exit_code": null,
+      "cdp_port": 9417,
+      "port_listeners": []
+    },
+    {
+      "command": "clipboard_status",
+      "error": "CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+      "app_alive": false,
+      "app_exit_code": null,
+      "cdp_port": 9417,
+      "port_listeners": []
+    },
+    {
+      "command": "clipboard_status",
+      "error": "CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+      "app_alive": false,
+      "app_exit_code": null,
+      "cdp_port": 9417,
+      "port_listeners": []
+    },
+    {
+      "command": "clipboard_status",
+      "error": "CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+      "app_alive": false,
+      "app_exit_code": null,
+      "cdp_port": 9417,
+      "port_listeners": []
+    },
+    {
+      "command": "clipboard_status",
+      "error": "CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+      "app_alive": false,
+      "app_exit_code": null,
+      "cdp_port": 9417,
+      "port_listeners": []
+    }
+  ],
+  "raw_logs": {
+    "app": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-zb57hvi5\\app.log",
+    "app_copy": "D:\\Develop\\task_dock\\docs\\clipboard\\evidence\\p1-03-mixed-paste-20261030-141914-63e04749-app.log",
+    "edge": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-zb57hvi5\\edge.log"
+  }
+}

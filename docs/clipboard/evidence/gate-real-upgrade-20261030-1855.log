@@ -1,0 +1,16 @@
+# command: TD_REAL_UPGRADE_DB=<真实用户库 v11 副本> cargo test --test real_upgrade -- --ignored --nocapture
+# 副本来源: %APPDATA%/com.taskdock.desktop/task-dock.db（运行中的真实用户库，已降级到 v11 结构）
+# 开始: 2026-10-30T18:52:39+08:00
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.43s
+     Running tests\real_upgrade.rs (target\debug\deps\real_upgrade-c1a4ca7b4724aaf4.exe)
+
+running 1 test
+迁移前：version=11 行数=[("tasks", 0), ("agent_sources", 10), ("agent_sessions", 36), ("agent_runs", 248), ("agent_events", 8734), ("notification_history", 310)]
+真实用户库升级验证通过：version 11 → 13，行数无减少，外键零违规，integrity_check ok
+test real_user_database_upgrades_without_losing_rows ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+EXIT=0
+# 结束: 2026-10-30T18:52:50+08:00

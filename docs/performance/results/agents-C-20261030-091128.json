@@ -1,0 +1,337 @@
+[
+  {
+    "source_id": "codex",
+    "display_name": "Codex",
+    "transport_kind": "hooks",
+    "installed": true,
+    "version": "codex-cli 0.130.0-alpha.5",
+    "install_paths": [
+      "C:\\Users\\ASUS\\AppData\\Local\\OpenAI\\Codex\\bin\\codex.exe",
+      "C:\\Users\\ASUS\\AppData\\Local\\OpenAI\\Codex"
+    ],
+    "config_homes": [
+      "C:\\Users\\ASUS\\.codex"
+    ],
+    "install_method": "config-home-or-executable",
+    "running_instances": [
+      {
+        "pid": 23952,
+        "name": "codex.exe",
+        "exe": null
+      },
+      {
+        "pid": 62760,
+        "name": "codex.exe",
+        "exe": null
+      }
+    ],
+    "capabilities": [
+      "official-hooks"
+    ],
+    "supported_events": [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PostToolUse",
+      "PermissionRequest",
+      "Stop",
+      "Notification"
+    ],
+    "docs_url": "https://github.com/openai/codex",
+    "limitations": [
+      "Codex App（桌面版）与 CLI 共用 ~/.codex；App Server（JSON-RPC）可观测能力未在本轮验证",
+      "Hook 由 Codex 在会话生命周期触发；配置写入成功 ≠ 事件已到达，以真实事件为准"
+    ],
+    "registered": true,
+    "enabled": true,
+    "configured": false,
+    "verified": false,
+    "last_event_at": null,
+    "health_state": "no-events"
+  },
+  {
+    "source_id": "trae",
+    "display_name": "Trae",
+    "transport_kind": "hooks",
+    "installed": true,
+    "version": null,
+    "install_paths": [
+      "C:\\Users\\ASUS\\AppData\\Local\\Programs\\Trae",
+      "C:\\Users\\ASUS\\AppData\\Local\\Programs\\Trae CN"
+    ],
+    "config_homes": [
+      "C:\\Users\\ASUS\\.trae",
+      "C:\\Users\\ASUS\\.trae-cn"
+    ],
+    "install_method": "config-home-or-program-dir",
+    "running_instances": [],
+    "capabilities": [
+      "official-hooks"
+    ],
+    "supported_events": [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PostToolUse",
+      "Stop",
+      "Notification"
+    ],
+    "docs_url": "https://docs.trae.ai/ide/hook-configuration-reference",
+    "limitations": [
+      "事件名以官方 Hook 配置参考为准（SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop/Notification）；未在本机完成真实会话联调前标记「待验证」",
+      "国际版与 CN 版配置独立，接入会同时写入已安装版本的配置"
+    ],
+    "registered": true,
+    "enabled": true,
+    "configured": false,
+    "verified": false,
+    "last_event_at": null,
+    "health_state": "no-events"
+  },
+  {
+    "source_id": "workbuddy",
+    "display_name": "WorkBuddy",
+    "transport_kind": "hooks",
+    "installed": true,
+    "version": null,
+    "install_paths": [
+      "C:\\Users\\ASUS\\AppData\\Local\\Programs\\WorkBuddy",
+      "C:\\Users\\ASUS\\AppData\\Local\\Programs\\WorkBuddyAI"
+    ],
+    "config_homes": [
+      "C:\\Users\\ASUS\\.workbuddy",
+      "C:\\Users\\ASUS\\.workbuddy-ai",
+      "C:\\Users\\ASUS\\.codebuddy"
+    ],
+    "install_method": "config-home-or-program-dir",
+    "running_instances": [
+      {
+        "pid": 52088,
+        "name": "WorkBuddy.exe",
+        "exe": null
+      },
+      {
+        "pid": 3720,
+        "name": "WorkBuddy.exe",
+        "exe": null
+      },
+      {
+        "pid": 72444,
+        "name": "WorkBuddy.exe",
+        "exe": null
+      },
+      {
+        "pid": 72560,
+        "name": "WorkBuddy.exe",
+        "exe": null
+      },
+      {
+        "pid": 56520,
+        "name": "WorkBuddy.exe",
+        "exe": null
+      },
+      {
+        "pid": 72556,
+        "name": "WorkBuddy.exe",
+        "exe": null
+      }
+    ],
+    "capabilities": [
+      "official-hooks",
+      "sdk-message-stream"
+    ],
+    "supported_events": [
+      "SessionStart",
+      "SessionEnd",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PostToolUse",
+      "PermissionRequest",
+      "Stop",
+      "Notification"
+    ],
+    "docs_url": "https://www.workbuddy.ai/docs/zh/cli/hooks",
+    "limitations": [
+      "官方安全机制：外部写入 settings.json 后，必须在 WorkBuddy CLI 的 /hooks 面板审查确认才生效",
+      "Windows 下 Hook 经 Git Bash 执行；Task Dock 命令行为 powershell 调用，已兼容",
+      "桌面端（WorkBuddy/WorkBuddyAI）与 CodeBuddy Code、Agent SDK 是不同产品形态，仅 hooks 通道为共同接口"
+    ],
+    "registered": true,
+    "enabled": true,
+    "configured": false,
+    "verified": false,
+    "last_event_at": null,
+    "health_state": "no-events"
+  },
+  {
+    "source_id": "qoder",
+    "display_name": "Qoder",
+    "transport_kind": "hooks",
+    "installed": true,
+    "version": null,
+    "install_paths": [
+      "C:\\Users\\ASUS\\AppData\\Local\\Programs\\Qoder",
+      "C:\\Users\\ASUS\\AppData\\Local\\Programs\\Qoder CN"
+    ],
+    "config_homes": [
+      "C:\\Users\\ASUS\\.qoder"
+    ],
+    "install_method": "config-home-or-program-dir",
+    "running_instances": [],
+    "capabilities": [
+      "official-hooks",
+      "http-handler"
+    ],
+    "supported_events": [
+      "SessionStart",
+      "SessionEnd",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PostToolUse",
+      "PermissionRequest",
+      "Stop",
+      "Notification"
+    ],
+    "docs_url": "https://docs.qoder.cn/qoder/hooks",
+    "limitations": [
+      "Qoder CN 与国际版配置根相同（~/.qoder），事件以官方 CN 文档为准；国际版未在本机联调前标记「待验证」",
+      "官方文档明示：配置可见 ≠ Hook 已被 Runtime 加载执行，需以实际任务验证"
+    ],
+    "registered": true,
+    "enabled": true,
+    "configured": false,
+    "verified": false,
+    "last_event_at": null,
+    "health_state": "no-events"
+  },
+  {
+    "source_id": "opencode",
+    "display_name": "OpenCode",
+    "transport_kind": "plugin",
+    "installed": true,
+    "version": null,
+    "install_paths": [
+      "C:\\Users\\ASUS\\AppData\\Roaming\\npm\\opencode",
+      "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\OpenCode"
+    ],
+    "config_homes": [
+      "C:\\Users\\ASUS\\.config\\opencode"
+    ],
+    "install_method": "npm-global-or-config-home",
+    "running_instances": [],
+    "capabilities": [
+      "official-plugin-events"
+    ],
+    "supported_events": [
+      "session.created",
+      "session.idle",
+      "session.error",
+      "permission.asked",
+      "tool.execute.before"
+    ],
+    "docs_url": "https://opencode.ai/docs/plugins",
+    "limitations": [
+      "插件在 OpenCode 启动时自动加载；安装后需重启 OpenCode 会话",
+      "session.idle 表示一轮回复结束（映射为本轮完成），不代表整个任务完成"
+    ],
+    "registered": true,
+    "enabled": true,
+    "configured": false,
+    "verified": false,
+    "last_event_at": null,
+    "health_state": "no-events"
+  },
+  {
+    "source_id": "deepseek-harness",
+    "display_name": "DeepSeek Harness",
+    "transport_kind": "plugin",
+    "installed": true,
+    "version": null,
+    "install_paths": [
+      "C:\\Users\\ASUS\\AppData\\Local\\Programs\\DeepSeek Harness"
+    ],
+    "config_homes": [
+      "C:\\Users\\ASUS\\.dsh"
+    ],
+    "install_method": "config-home-or-program-dir",
+    "running_instances": [],
+    "capabilities": [
+      "host-plugin-events"
+    ],
+    "supported_events": [
+      "agent/status",
+      "agent/error",
+      "approval/request",
+      "subagent/start",
+      "subagent/end"
+    ],
+    "docs_url": "https://github.com/libukai/awesome-deepseek-harness",
+    "limitations": [
+      "DSH 插件机制无正式稳定性承诺，事件字段以本机 dsh-task-chime 参考实现为准",
+      "插件随 Harness 启动自动加载；安装后需重启 DSH"
+    ],
+    "registered": true,
+    "enabled": true,
+    "configured": false,
+    "verified": false,
+    "last_event_at": null,
+    "health_state": "no-events"
+  },
+  {
+    "source_id": "zcode",
+    "display_name": "ZCode",
+    "transport_kind": "discovery",
+    "installed": true,
+    "version": null,
+    "install_paths": [
+      "C:\\Users\\ASUS\\AppData\\Local\\Programs\\ZCode"
+    ],
+    "config_homes": [
+      "C:\\Users\\ASUS\\.zcode"
+    ],
+    "install_method": "config-home-or-program-dir",
+    "running_instances": [],
+    "capabilities": [
+      "generic-bridge"
+    ],
+    "supported_events": [],
+    "docs_url": "",
+    "limitations": [
+      "ZCode 事件接入依赖插件市场机制（插件根 hooks/hooks.json），第三方本地注册无官方文档，自动安装风险高",
+      "当前仅支持：安装发现 + 运行实例识别 + 通用 HTTP/文件桥接（source_id=zcode）",
+      "无法读取真实执行状态时显示「未知」"
+    ],
+    "registered": true,
+    "enabled": true,
+    "configured": false,
+    "verified": false,
+    "last_event_at": null,
+    "health_state": "no-events"
+  },
+  {
+    "source_id": "bridge",
+    "display_name": "通用桥接",
+    "transport_kind": "manual",
+    "installed": true,
+    "version": null,
+    "install_paths": [],
+    "config_homes": [],
+    "install_method": "built-in",
+    "running_instances": [],
+    "capabilities": [
+      "http-ingest",
+      "file-drop"
+    ],
+    "supported_events": [],
+    "docs_url": "",
+    "limitations": [
+      "任意 Agent 可通过本地 HTTP / 文件投递上报（source_id=bridge）"
+    ],
+    "registered": true,
+    "enabled": true,
+    "configured": true,
+    "verified": true,
+    "last_event_at": "2026-10-30T01:10:49.546504500+00:00",
+    "health_state": "live"
+  }
+]

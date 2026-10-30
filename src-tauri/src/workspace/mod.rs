@@ -7,8 +7,11 @@
 //! - 每项独立反馈，单项失败不阻断；「已发出启动请求」绝不标成「窗口已恢复」；
 //! - 缺失文件 / 已卸载程序 / 已消失的 Agent 会话 → skipped 并给出原因。
 
+mod gate;
+
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -73,6 +76,9 @@ pub struct SnapshotDetail {
     #[serde(flatten)]
     pub summary: SnapshotSummary,
     pub items: Vec<SnapshotItem>,
+    /// 容量提示：受保护的任务现场已占满配额，本次清理无法满足上限。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_warning: Option<String>,
 }
 
 /// 手动捕获条目（窗口捕获用 `window_hwnd`，后端按句柄重新读取身份，不信任前端标题）。
@@ -155,6 +161,7 @@ pub struct RestoreSummary {
 pub struct RestoreStatus {
     pub running: bool,
     pub snapshot_id: Option<String>,
+    pub operation_id: Option<String>,
     pub cancel_requested: bool,
 }
 
@@ -262,7 +269,11 @@ pub fn get_snapshot(db: &Db, id: &str) -> AppResult<SnapshotDetail> {
             .optional()?
             .ok_or_else(|| AppError::NotFound("工作现场不存在".into()))?;
         let items = item_rows(conn, id)?;
-        Ok(SnapshotDetail { summary, items })
+        Ok(SnapshotDetail {
+            summary,
+            items,
+            capacity_warning: None,
+        })
     })
 }
 
@@ -390,12 +401,22 @@ fn dedupe_items(items: Vec<SnapshotItemInput>) -> Vec<SnapshotItemInput> {
 }
 
 /// 从任务已关联的导航目标自动生成快照：只读关联表，不启动任何程序。
+fn ensure_workspace_enabled(db: &Db, action: &str) -> AppResult<()> {
+    if !crate::db::Settings::load(db)?.workspace_enabled {
+        return Err(AppError::Validation(format!(
+            "工作现场模块已停用，请在设置中开启后再{action}"
+        )));
+    }
+    Ok(())
+}
+
 pub fn capture_from_task(
     db: &Db,
     task_id: &str,
     name: &str,
     note: &str,
 ) -> AppResult<SnapshotDetail> {
+    ensure_workspace_enabled(db, "保存")?;
     let links = target_resolver::task_targets(db, task_id)?;
     if links.is_empty() {
         return Err(AppError::Validation(
@@ -453,6 +474,7 @@ pub fn capture_from_task(
 
 /// 创建快照（单事务）。条目上限 30；同一现场内按身份去重。
 pub fn create_snapshot(db: &Db, input: &CaptureInput) -> AppResult<SnapshotDetail> {
+    ensure_workspace_enabled(db, "保存")?;
     let name = input.name.trim();
     if name.is_empty() || name.chars().count() > 80 {
         return Err(AppError::Validation(
@@ -542,8 +564,13 @@ pub fn create_snapshot(db: &Db, input: &CaptureInput) -> AppResult<SnapshotDetai
         tx.commit()?;
         Ok::<_, AppError>(())
     })?;
-    prune_snapshots(db, MAX_SNAPSHOTS)?;
-    get_snapshot(db, &id)
+    let mut detail = get_snapshot(db, &id)?;
+    match prune_snapshots(db, MAX_SNAPSHOTS) {
+        Ok(report) => detail.capacity_warning = report.warning,
+        // 清理失败不影响已保存的现场；错误写入日志，绝不静默删除数据
+        Err(e) => tracing::warn!("工作现场保留策略执行失败（新现场已保存）: {}", e),
+    }
+    Ok(detail)
 }
 
 pub fn rename_snapshot(db: &Db, id: &str, name: &str, note: &str) -> AppResult<()> {
@@ -576,16 +603,71 @@ pub fn delete_snapshot(db: &Db, id: &str) -> AppResult<()> {
     })
 }
 
-/// 保留最新 `keep` 个现场（超出按 updated_at 清理最旧，级联删除条目）。
-pub fn prune_snapshots(db: &Db, keep: usize) -> AppResult<usize> {
+/// 保留策略结果：受保护的任务现场永不自动删除；配额不足时如实返回提示。
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct PruneReport {
+    pub removed: usize,
+    pub protected: usize,
+    pub remaining: usize,
+    pub over_capacity: bool,
+    pub warning: Option<String>,
+}
+
+/// 保留最新 `keep` 个现场：优先清理**未关联任务**的最旧现场；
+/// 任务关联现场默认受保护。若受保护现场本身超过上限，不删保护项，
+/// 返回 `over_capacity` 与明确提示，由用户决定解绑或手动删除。
+pub fn prune_snapshots(db: &Db, keep: usize) -> AppResult<PruneReport> {
     db.with_conn(|conn| {
-        let n = conn.execute(
-            "DELETE FROM workspace_snapshots WHERE id IN (
-               SELECT id FROM workspace_snapshots ORDER BY updated_at DESC LIMIT -1 OFFSET ?1
-             )",
-            params![keep as i64],
+        let tx = conn.unchecked_transaction()?;
+        let total: i64 =
+            tx.query_row("SELECT COUNT(*) FROM workspace_snapshots", [], |r| r.get(0))?;
+        let protected: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM workspace_snapshots WHERE task_id IS NOT NULL",
+            [],
+            |r| r.get(0),
         )?;
-        Ok(n)
+        let excess = (total - keep as i64).max(0);
+        let unprotected = (total - protected).max(0);
+        let removable = excess.min(unprotected);
+        let removed = if removable > 0 {
+            tx.execute(
+                "DELETE FROM workspace_snapshots WHERE id IN (
+                   SELECT id FROM workspace_snapshots WHERE task_id IS NULL
+                   ORDER BY updated_at ASC, rowid ASC LIMIT ?1
+                 )",
+                params![removable],
+            )?
+        } else {
+            0
+        };
+        // 外键/级联一致性：任何残留引用都回滚，绝不留下半清理状态
+        let fk_bad: i64 =
+            tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })?;
+        if fk_bad != 0 {
+            return Err(AppError::Validation(format!(
+                "工作现场清理后外键不一致（{} 行），已回滚",
+                fk_bad
+            )));
+        }
+        tx.commit()?;
+        let remaining = (total - removed as i64).max(0) as usize;
+        let over_capacity = remaining > keep;
+        let warning = over_capacity.then(|| {
+            format!(
+                "任务关联的现场 {} 个受保护，未自动删除；当前保留 {} 个，超过上限 {}。\
+                 请先解除任务关联或手动删除部分现场。",
+                protected, remaining, keep
+            )
+        });
+        Ok(PruneReport {
+            removed,
+            protected: protected as usize,
+            remaining,
+            over_capacity,
+            warning,
+        })
     })
 }
 
@@ -602,38 +684,26 @@ pub fn detach_task(db: &Db, id: &str) -> AppResult<()> {
 
 // ── 恢复 ────────────────────────────────────────────────────
 
-struct RestoreSlot {
-    snapshot_id: String,
-    cancel: Arc<AtomicBool>,
-}
+/// 恢复槽的全局实例：后台恢复串行化的唯一权威。
+static RESTORE_GATE: OnceLock<gate::RestoreGate> = OnceLock::new();
 
-static RESTORE: OnceLock<Mutex<Option<RestoreSlot>>> = OnceLock::new();
-
-fn restore_slot() -> &'static Mutex<Option<RestoreSlot>> {
-    RESTORE.get_or_init(|| Mutex::new(None))
+fn restore_gate() -> &'static gate::RestoreGate {
+    RESTORE_GATE.get_or_init(gate::RestoreGate::new)
 }
 
 pub fn restore_status() -> RestoreStatus {
-    let guard = restore_slot().lock().unwrap_or_else(|e| e.into_inner());
-    match guard.as_ref() {
-        Some(s) => RestoreStatus {
-            running: true,
-            snapshot_id: Some(s.snapshot_id.clone()),
-            cancel_requested: s.cancel.load(Ordering::Acquire),
-        },
-        None => RestoreStatus {
-            running: false,
-            snapshot_id: None,
-            cancel_requested: false,
-        },
+    let st = restore_gate().status();
+    RestoreStatus {
+        running: st.running,
+        snapshot_id: st.snapshot_id,
+        operation_id: st.operation_id,
+        cancel_requested: st.cancel_requested,
     }
 }
 
+/// 请求取消当前恢复；取消只在项间生效，已发出的启动请求无法撤回。
 pub fn request_cancel() {
-    let guard = restore_slot().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(s) = guard.as_ref() {
-        s.cancel.store(true, Ordering::Release);
-    }
+    restore_gate().request_cancel(None);
 }
 
 fn from_nav(item: &SnapshotItem, r: &NavigationResult) -> RestoreItemResult {
@@ -749,38 +819,46 @@ fn focus_matching_window(item: &SnapshotItem) -> Option<(window_manager::WindowI
     None
 }
 
+fn focus_existing_window(
+    item: &SnapshotItem,
+    w: &window_manager::WindowInfo,
+    fallback: bool,
+) -> RestoreItemResult {
+    match window_manager::focus_window(w.hwnd) {
+        Ok(window_manager::FocusOutcome::Confirmed) => RestoreItemResult {
+            item_id: item.id.clone(),
+            display_name: item.display_name.clone(),
+            item_kind: item.item_kind.clone(),
+            outcome: "restored".into(),
+            action: Some("focus_window".into()),
+            verification_level: VerificationLevel::WindowConfirmed.as_str().into(),
+            fallback_used: fallback,
+            reason: if fallback {
+                Some("按进程/窗口类复用（标题已变化）".into())
+            } else {
+                None
+            },
+        },
+        Ok(window_manager::FocusOutcome::Unverified) => RestoreItemResult {
+            item_id: item.id.clone(),
+            display_name: item.display_name.clone(),
+            item_kind: item.item_kind.clone(),
+            outcome: "restored".into(),
+            action: Some("focus_window".into()),
+            verification_level: VerificationLevel::WindowVisible.as_str().into(),
+            fallback_used: fallback,
+            reason: Some("窗口已找到但未能确认置前（可能被系统焦点保护拒绝）".into()),
+        },
+        Err(e) => failed(item, format!("唤醒窗口失败: {}", e.reason_cn())),
+    }
+}
+
 fn do_restore_item(db: &Db, app: &AppHandle, item: &SnapshotItem) -> RestoreItemResult {
     match item.item_kind.as_str() {
         "application" => {
             // 先尝试唤醒已有窗口，绝不重复启动
             if let Some((w, fallback)) = focus_matching_window(item) {
-                return match window_manager::focus_window(w.hwnd) {
-                    Ok(window_manager::FocusOutcome::Confirmed) => RestoreItemResult {
-                        item_id: item.id.clone(),
-                        display_name: item.display_name.clone(),
-                        item_kind: item.item_kind.clone(),
-                        outcome: "restored".into(),
-                        action: Some("focus_window".into()),
-                        verification_level: VerificationLevel::WindowConfirmed.as_str().into(),
-                        fallback_used: fallback,
-                        reason: if fallback {
-                            Some("按进程/窗口类复用（标题已变化）".into())
-                        } else {
-                            None
-                        },
-                    },
-                    Ok(window_manager::FocusOutcome::Unverified) => RestoreItemResult {
-                        item_id: item.id.clone(),
-                        display_name: item.display_name.clone(),
-                        item_kind: item.item_kind.clone(),
-                        outcome: "restored".into(),
-                        action: Some("focus_window".into()),
-                        verification_level: VerificationLevel::WindowVisible.as_str().into(),
-                        fallback_used: fallback,
-                        reason: Some("窗口已找到但未能确认置前（可能被系统焦点保护拒绝）".into()),
-                    },
-                    Err(e) => failed(item, format!("唤醒窗口失败: {}", e.reason_cn())),
-                };
+                return focus_existing_window(item, &w, fallback);
             }
             let exe_missing = !item.app_user_model_id.trim().is_empty()
                 && item.exe_path.trim().is_empty()
@@ -977,7 +1055,12 @@ pub fn restore_snapshot(
                 "phase": "running", "item_id": item.id, "display_name": item.display_name
             }),
         );
-        let r = do_restore_item(db, app, item);
+        // 单项异常/panic 不得中断整个现场，也不得把失败报成成功
+        let r = match std::panic::catch_unwind(AssertUnwindSafe(|| do_restore_item(db, app, item)))
+        {
+            Ok(r) => r,
+            Err(_) => failed(item, "恢复该项时发生内部错误（已跳过，其余继续）"),
+        };
         match r.outcome.as_str() {
             "restored" => summary.restored += 1,
             "failed" => summary.failed += 1,
@@ -1020,43 +1103,63 @@ pub fn restore_snapshot(
     Ok(summary)
 }
 
-/// 启动后台恢复：同一时刻只允许一个现场（避免多个任务争抢前台）。
-/// 返回 false 表示已有恢复在进行。
-pub fn start_restore(db: Arc<Db>, app: AppHandle, snapshot_id: String) -> AppResult<bool> {
-    let mut guard = restore_slot().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(s) = guard.as_ref() {
-        if !s.cancel.load(Ordering::Acquire) {
-            return Err(AppError::Conflict(
-                "已有工作现场正在恢复，请等待完成或先取消".into(),
-            ));
-        }
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "未知 panic".into()
     }
-    let cancel = Arc::new(AtomicBool::new(false));
-    *guard = Some(RestoreSlot {
-        snapshot_id: snapshot_id.clone(),
-        cancel: cancel.clone(),
-    });
-    drop(guard);
+}
+
+/// 启动后台恢复：同一时刻只允许一个现场（避免多个任务争抢前台）。
+/// 已有恢复时先请求取消并等待其真正退出（最多 5s）；超时返回冲突错误，
+/// 绝不允许新旧两个恢复并发运行。返回 Ok(true) 表示已受理。
+pub fn start_restore(db: Arc<Db>, app: AppHandle, snapshot_id: String) -> AppResult<bool> {
+    ensure_workspace_enabled(&db, "恢复")?;
+    let op_id = uuid::Uuid::new_v4().to_string();
+    let cancel = restore_gate()
+        .begin(&op_id, &snapshot_id, std::time::Duration::from_secs(5))
+        .map_err(|busy| {
+            AppError::Conflict(format!(
+                "上一个工作现场恢复仍在退出（已等待 {}ms），请稍后重试",
+                busy.waited_ms
+            ))
+        })?;
+    let guard = gate::SlotGuard::new(restore_gate(), op_id.clone());
 
     let app2 = app.clone();
+    let op2 = op_id.clone();
+    let snapshot2 = snapshot_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = restore_snapshot(&db, &app2, &snapshot_id, &cancel);
-        if let Err(e) = &result {
-            let _ = app2.emit(
-                "workspace-restore-progress",
-                serde_json::json!({
-                    "snapshot_id": snapshot_id, "phase": "error",
-                    "error": e.to_string()
-                }),
-            );
-        }
-        let mut guard = restore_slot().lock().unwrap_or_else(|e| e.into_inner());
-        if guard
-            .as_ref()
-            .map(|s| s.snapshot_id == snapshot_id)
-            .unwrap_or(false)
-        {
-            *guard = None;
+        // guard 随闭包一起移动：正常/取消/失败/panic 均按 operation_id 释放槽
+        let _guard = guard;
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            restore_snapshot(&db, &app2, &snapshot2, &cancel)
+        }));
+        match outcome {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                let _ = app2.emit(
+                    "workspace-restore-progress",
+                    serde_json::json!({
+                        "snapshot_id": snapshot2, "operation_id": op2, "phase": "error",
+                        "error": e.to_string()
+                    }),
+                );
+            }
+            Err(payload) => {
+                let detail = panic_message(payload.as_ref());
+                tracing::error!(operation_id = %op2, "工作现场恢复线程异常退出: {}", detail);
+                let _ = app2.emit(
+                    "workspace-restore-progress",
+                    serde_json::json!({
+                        "snapshot_id": snapshot2, "operation_id": op2, "phase": "error",
+                        "error": format!("恢复线程异常退出：{}", detail)
+                    }),
+                );
+            }
         }
     });
     Ok(true)
@@ -1252,7 +1355,241 @@ mod tests {
             input.items[0].url = format!("https://example.com/{}", i);
             create_snapshot(&db, &input).unwrap();
         }
-        assert_eq!(prune_snapshots(&db, 2).unwrap(), 3);
+        let report = prune_snapshots(&db, 2).unwrap();
+        assert_eq!(report.removed, 3);
+        assert!(!report.over_capacity);
         assert_eq!(list_snapshots(&db, None).unwrap().len(), 2);
+    }
+
+    fn seed_snapshot(db: &Db, task_id: Option<&str>, name: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO workspace_snapshots
+                   (id, task_id, name, note, source, item_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, '', 'manual', 0, '2026-10-28T10:00:00+00:00', '2026-10-28T10:00:00+00:00')",
+                params![id, task_id, name],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        id
+    }
+
+    #[test]
+    fn prune_protects_task_linked_and_prefers_oldest_unlinked() {
+        let db = memdb();
+        let t = task(&db);
+        let mut linked = Vec::new();
+        let mut unlinked = Vec::new();
+        for i in 0..3 {
+            linked.push(seed_snapshot(&db, Some(&t), &format!("任务现场{}", i)));
+        }
+        for i in 0..5 {
+            unlinked.push(seed_snapshot(&db, None, &format!("独立现场{}", i)));
+        }
+        let report = prune_snapshots(&db, 4).unwrap();
+        assert_eq!(report.removed, 4);
+        assert_eq!(report.protected, 3);
+        assert_eq!(report.remaining, 4);
+        assert!(!report.over_capacity);
+        let left: Vec<String> = list_snapshots(&db, None)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        for id in &linked {
+            assert!(left.contains(id), "任务关联现场不得被自动清理");
+        }
+        assert!(
+            left.contains(unlinked.last().unwrap()),
+            "保留最新的未关联现场"
+        );
+        assert!(!left.contains(&unlinked[0]), "优先清理最旧的未关联现场");
+    }
+
+    #[test]
+    fn prune_reports_capacity_when_protected_exceed_quota() {
+        let db = memdb();
+        let t = task(&db);
+        for i in 0..3 {
+            seed_snapshot(&db, Some(&t), &format!("任务现场{}", i));
+        }
+        let u1 = seed_snapshot(&db, None, "独立一");
+        let u2 = seed_snapshot(&db, None, "独立二");
+        let report = prune_snapshots(&db, 2).unwrap();
+        assert_eq!(report.removed, 2, "未关联现场仍应被清理");
+        assert_eq!(report.remaining, 3);
+        assert!(report.over_capacity, "受保护现场超过配额必须明确提示");
+        let warning = report.warning.unwrap();
+        assert!(warning.contains("受保护") && warning.contains("上限"));
+        assert_eq!(list_snapshots(&db, None).unwrap().len(), 3);
+        let ids: Vec<String> = list_snapshots(&db, None)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(!ids.contains(&u1) && !ids.contains(&u2));
+        // 再次清理不会删除任何任务现场
+        let again = prune_snapshots(&db, 2).unwrap();
+        assert_eq!(again.removed, 0);
+        assert!(again.over_capacity);
+        assert_eq!(list_snapshots(&db, None).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn creating_101st_snapshot_never_deletes_task_scene() {
+        let db = memdb();
+        let t = task(&db);
+        for i in 0..100 {
+            seed_snapshot(&db, Some(&t), &format!("任务现场{}", i));
+        }
+        let detail =
+            create_snapshot(&db, &capture(Some(&t), vec![item("url", "第101个")])).unwrap();
+        let warning = detail
+            .capacity_warning
+            .expect("第 101 个受保护现场应返回容量提示");
+        assert!(warning.contains("受保护"));
+        assert_eq!(list_snapshots(&db, None).unwrap().len(), 101);
+    }
+
+    #[test]
+    fn deleting_task_makes_snapshot_prunable() {
+        let db = memdb();
+        let t = task(&db);
+        let linked = seed_snapshot(&db, Some(&t), "将失去关联");
+        let keep1 = seed_snapshot(&db, None, "独立一");
+        let keep2 = seed_snapshot(&db, None, "独立二");
+        db.with_conn(|c| {
+            c.execute("DELETE FROM tasks WHERE id = ?1", params![t])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let report = prune_snapshots(&db, 2).unwrap();
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.protected, 0, "任务删除后现场自动解绑");
+        let ids: Vec<String> = list_snapshots(&db, None)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(!ids.contains(&linked), "解绑后的旧现场可被清理");
+        assert!(ids.contains(&keep1) && ids.contains(&keep2));
+    }
+
+    #[test]
+    fn prune_rolls_back_on_delete_failure() {
+        let db = memdb();
+        for i in 0..3 {
+            seed_snapshot(&db, None, &format!("现场{}", i));
+        }
+        db.with_conn(|c| {
+            c.execute_batch(
+                "CREATE TRIGGER block_snapshot_delete BEFORE DELETE ON workspace_snapshots
+                 BEGIN SELECT RAISE(ABORT, 'blocked by test'); END;",
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let err = prune_snapshots(&db, 1);
+        assert!(err.is_err(), "删除失败必须报错而不是假报成功");
+        assert_eq!(
+            list_snapshots(&db, None).unwrap().len(),
+            3,
+            "事务回滚后数据保持不变"
+        );
+        let fk_bad: i64 = db
+            .with_read(|c| {
+                Ok(
+                    c.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .unwrap();
+        assert_eq!(fk_bad, 0);
+        db.with_conn(|c| {
+            c.execute_batch("DROP TRIGGER block_snapshot_delete;")?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        assert_eq!(prune_snapshots(&db, 1).unwrap().removed, 2);
+    }
+
+    #[test]
+    fn prune_is_noop_within_quota() {
+        let db = memdb();
+        seed_snapshot(&db, None, "一");
+        seed_snapshot(&db, None, "二");
+        let report = prune_snapshots(&db, 5).unwrap();
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.remaining, 2);
+        assert!(!report.over_capacity);
+        assert!(report.warning.is_none());
+    }
+
+    #[test]
+    fn disabled_module_blocks_new_snapshots_but_keeps_history() {
+        let db = memdb();
+        let existing = seed_snapshot(&db, None, "已有现场");
+        db.set_setting("workspace_enabled", serde_json::json!(false))
+            .unwrap();
+        assert!(create_snapshot(&db, &capture(None, vec![item("url", "x")])).is_err());
+        assert!(
+            ensure_workspace_enabled(&db, "恢复").is_err(),
+            "恢复入口必须同样受开关约束"
+        );
+        db.set_setting("workspace_enabled", serde_json::json!(true))
+            .unwrap();
+        assert!(ensure_workspace_enabled(&db, "恢复").is_ok());
+        let list = list_snapshots(&db, None).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, existing, "停用模块不得删除历史");
+    }
+
+    fn restore_test_item(exe: &str) -> SnapshotItem {
+        SnapshotItem {
+            id: "item-1".into(),
+            snapshot_id: "snap-1".into(),
+            display_order: 0,
+            item_kind: "application".into(),
+            display_name: "记事本".into(),
+            target_id: None,
+            app_key: String::new(),
+            exe_path: exe.into(),
+            launch_args: String::new(),
+            working_dir: String::new(),
+            app_user_model_id: String::new(),
+            url: String::new(),
+            path: String::new(),
+            agent_source_id: String::new(),
+            agent_session_id: String::new(),
+            window_title_hint: String::new(),
+            window_class: "Notepad".into(),
+            window_title: "无标题 - 记事本".into(),
+            restore_note: String::new(),
+            last_result: String::new(),
+            last_verification: String::new(),
+            last_restored_at: None,
+        }
+    }
+
+    #[test]
+    fn focus_rejection_is_reported_as_failed_not_restored() {
+        // 无效句柄模拟「系统拒绝置前/窗口已消失」：结果必须是 failed，
+        // 且绝不能标成 window-confirmed。
+        let item = restore_test_item("C:\\Windows\\notepad.exe");
+        let w = window_manager::WindowInfo {
+            hwnd: isize::MAX,
+            pid: 0,
+            title: "无标题 - 记事本".into(),
+            class_name: "Notepad".into(),
+            is_minimized: false,
+            exe_path: Some("c:\\windows\\notepad.exe".into()),
+        };
+        let r = focus_existing_window(&item, &w, false);
+        assert_eq!(r.outcome, "failed");
+        assert_ne!(r.verification_level, "window-confirmed");
+        assert!(r.reason.as_deref().unwrap_or("").contains("唤醒窗口失败"));
     }
 }

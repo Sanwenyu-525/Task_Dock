@@ -1,0 +1,32 @@
+[2m2026-10-30T06:28:47.076971Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v1
+[2m2026-10-30T06:28:47.091398Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v2
+[2m2026-10-30T06:28:47.094570Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v3
+[2m2026-10-30T06:28:47.099245Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v4
+[2m2026-10-30T06:28:47.103205Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v5
+[2m2026-10-30T06:28:47.106669Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v6
+[2m2026-10-30T06:28:47.110528Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v7
+[2m2026-10-30T06:28:47.113772Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v8
+[2m2026-10-30T06:28:47.117204Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v9
+[2m2026-10-30T06:28:47.121203Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v10
+[2m2026-10-30T06:28:47.124617Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v11
+[2m2026-10-30T06:28:47.131098Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v12
+[2m2026-10-30T06:28:47.134229Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v13
+[2m2026-10-30T06:28:47.155267Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 已回填事件来源分类（v12）
+[2m2026-10-30T06:28:47.311622Z[0m [32m INFO[0m [2mtask_dock_lib::clipboard[0m[2m:[0m 剪贴板监听已启动
+[2m2026-10-30T06:28:47.510120Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-4o_rrwfo\\data\\agent-inbox"
+[2m2026-10-30T06:28:47.512058Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-10-30T06:28:47.518899Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-10-30T06:28:47.519444Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-4o_rrwfo\\data"）
+[2m2026-10-30T06:28:47.521896Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 本地 HTTP 接入监听 127.0.0.1:47821
+[2m2026-10-30T06:28:47.577622Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 本地备份完成: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-4o_rrwfo\data\backups\backup-20261030-142847-quick.json（quick，部分=true，10930 字节，SHA-256 65c4cb1320dcde3607313d9ca25c37a2ffbc440f4118c9902257b5598ce7339e）
+[2m2026-10-30T06:28:47.577658Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 启动自动备份完成: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-4o_rrwfo\data\backups\backup-20261030-142847-quick.json
+[2m2026-10-30T06:28:47.945547Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:8336, 3ms)
+[2m2026-10-30T06:28:54.585027Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:2440, 0ms)
+[2m2026-10-30T06:28:55.496911Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:11546, 0ms)
+[2m2026-10-30T06:29:04.237854Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:13410, 0ms)
+[2m2026-10-30T06:29:05.068166Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:13414, 0ms)
+[2m2026-10-30T06:29:05.570330Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:13420, 0ms)
+[2m2026-10-30T06:29:06.144432Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:13435, 0ms)
+[2m2026-10-30T06:29:10.835146Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:1705, 0ms)
+[2m2026-10-30T06:29:57.961000Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:8017, 0ms)
+[2m2026-10-30T06:29:59.314238Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:3432, 0ms)

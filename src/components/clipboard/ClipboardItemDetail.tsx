@@ -127,7 +127,7 @@ export default function ClipboardItemDetail({
     return (
       <div className="clip-detail">
         <div className="clip-detail-head">
-          <button className="icon-btn sm" onClick={onBack} title="返回" aria-label="返回列表">
+          <button className="icon-btn sm" onClick={onBack} data-tip="返回" aria-label="返回列表">
             <ArrowLeft size={13} />
           </button>
           <span>条目详情</span>
@@ -140,7 +140,7 @@ export default function ClipboardItemDetail({
   return (
     <div className="clip-detail">
       <div className="clip-detail-head">
-        <button className="icon-btn sm" onClick={onBack} title="返回" aria-label="返回列表">
+        <button className="icon-btn sm" onClick={onBack} data-tip="返回" aria-label="返回列表">
           <ArrowLeft size={13} />
         </button>
         <span>
@@ -152,12 +152,12 @@ export default function ClipboardItemDetail({
               <Link2 size={11} /> 关联到当前任务
             </button>
           )}
-          <button className="icon-btn sm" title="复制" aria-label="复制" onClick={onCopy} disabled={busy}>
+          <button className="icon-btn sm" data-tip="复制" aria-label="复制" onClick={onCopy} disabled={busy}>
             <Copy size={12} />
           </button>
           <button
             className={`icon-btn sm ${item.pinned ? "active" : ""}`}
-            title={item.pinned ? "取消置顶" : "置顶"}
+            data-tip={item.pinned ? "取消置顶" : "置顶"}
             aria-label={item.pinned ? "取消置顶" : "置顶"}
             aria-pressed={item.pinned}
             onClick={() => onToggle("pinned")}
@@ -166,14 +166,14 @@ export default function ClipboardItemDetail({
           </button>
           <button
             className={`icon-btn sm ${item.favorite ? "active" : ""}`}
-            title={item.favorite ? "取消收藏" : "收藏"}
+            data-tip={item.favorite ? "取消收藏" : "收藏"}
             aria-label={item.favorite ? "取消收藏" : "收藏"}
             aria-pressed={item.favorite}
             onClick={() => onToggle("favorite")}
           >
             <Star size={12} />
           </button>
-          <button className="icon-btn sm danger-ghost" title="删除" aria-label="删除" onClick={onDelete}>
+          <button className="icon-btn sm danger-ghost" data-tip="删除" aria-label="删除" onClick={onDelete}>
             <Trash2 size={12} />
           </button>
         </div>

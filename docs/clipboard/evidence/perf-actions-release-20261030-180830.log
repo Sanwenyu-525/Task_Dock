@@ -1,0 +1,32 @@
+# command: cargo test --release --test actions_perf -- --ignored --nocapture
+# started: 2026-10-30T18:08:30+08:00
+# note: 首次运行的日志重定向路径写错（src-tauri 下应为 ../docs），此处按终端原始输出重建记录
+    Blocking waiting for file lock on artifact directory
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `release` profile [optimized] target(s) in 3m 03s
+     Running tests\actions_perf.rs (target\release\deps\actions_perf-3b0ed1818bd42f5f.exe)
+
+running 1 test
+
+[行动中心] 返回 40 条（筛选共 42）→ p50 3.33ms · p95 3.62ms · max 4.04ms（预算 p95 ≤ 60ms）
+[报告] \?\D:\Develop\task_dock\docs\performance\results\Q-actions-20261030-101135.json
+
+thread 'actions_feed_perf_sample' (12704) panicked at tests\actions_perf.rs:254:5:
+assertion `left == right` failed: 筛选总数与夹具不一致
+  left: 42
+ right: 40
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test actions_feed_perf_sample ... FAILED
+
+failures:
+
+failures:
+    actions_feed_perf_sample
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `--test actions_perf`
+EXIT=101
+# finished: 2026-10-30T18:11:35+08:00
+# 结论：失败原因是测试夹具期望值算错（10 会话/来源按 %3 分布实为 4 失败 + 3 等待 = 42，
+#      而断言用的是 60/3*2=40），生产代码返回的全局筛选总数 42 与单页 40 均正确。

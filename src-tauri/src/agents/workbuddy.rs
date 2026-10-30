@@ -86,6 +86,7 @@ pub fn adapter() -> HooksAdapter {
         hooks_files: settings_files,
         events: supported_events,
         detect_impl,
+        hook_command: super::hooks_install::hook_command,
         limitations: vec![
             "官方安全机制：外部写入 settings.json 后，必须在 WorkBuddy CLI 的 /hooks 面板审查确认才生效".into(),
             "Windows 下 Hook 经 Git Bash 执行；Task Dock 命令行为 powershell 调用，已兼容".into(),

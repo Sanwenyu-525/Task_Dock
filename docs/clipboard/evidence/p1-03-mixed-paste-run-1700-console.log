@@ -1,0 +1,13 @@
+START 2026-10-30 16:39:40
+ENVIRONMENT BLOCKED 隔离实例在 clipboard_status 期间被外部终止（exit=4294967295，日志无 panic）：本机有其他流程在批量结束 task-dock 实例，本次真实 GUI 验收无法继续；请独占实例后重跑（不据此判定产品行为）
+PASS 应用以隔离数据目录启动并处于监听状态 :: fresh_default
+PASS 剪贴板配置无异常
+PASS CDP 目标即本次隔离实例（Agent 收件目录在隔离数据目录内） :: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-mrxtu50g\data\agent-inbox
+PASS 安全测试窗口已出现 :: TaskDock Paste Acceptance 43acef9b - 用户配置 1 - Microsoft​ Edge
+PASS 复制阶段前台为外部应用（否则命中自写抑制、测不到采集链路） :: {'step': 'before-copies', 'foreground_source': 'msedge.exe', 'foreground_hwnd': 4461740, 'target_hwnd': 4461740}
+PASS 测试页编辑器已聚焦 :: {'ok': True, 'title': 'TaskDock Paste Acceptance 43acef9b', 'activeId': 'editor', 'focused': True}
+PASS 复制 A-red 后采集入库（1/4） :: {'copied': 'A-red', 'attempts': [{'attempt': 1, 'foreground': {'step': 'copy-A-red#1', 'foreground_source': 'msedge.exe', 'foreground_hwnd': 4461740, 'target_hwnd': 4461740}, 'items_total': 1, 'expected_total': 1, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}], 'final': {'attempt': 1, 'foreground': {'step': 'copy-A-red#1', 'foreground_source': 'msedge.exe', 'foreground_hwnd': 4461740, 'target_hwnd': 4461740}, 'items_total': 1, 'expected_total': 1, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}}
+PASS 复制 B-green 后采集入库（2/4） :: {'copied': 'B-green', 'attempts': [{'attempt': 1, 'foreground': {'step': 'copy-B-green#1', 'foreground_source': 'workbuddy.exe', 'foreground_hwnd': 7541026, 'target_hwnd': 4461740}, 'items_total': 2, 'expected_total': 2, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}], 'final': {'attempt': 1, 'foreground': {'step': 'copy-B-green#1', 'foreground_source': 'workbuddy.exe', 'foreground_hwnd': 7541026, 'target_hwnd': 4461740}, 'items_total': 2, 'expected_total': 2, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}}
+EVIDENCE D:\Develop\task_dock\docs\clipboard\evidence\p1-03-mixed-paste-20261030-164009-43acef9b.json
+EXIT=3
+END 2026-10-30 16:40:10

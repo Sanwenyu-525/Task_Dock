@@ -1,0 +1,128 @@
+{
+  "scenario": "backup-restore",
+  "date": "2026-10-30",
+  "source_db": {
+    "path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept-v05\\data-v3\\task-dock.db",
+    "counts": {
+      "agent_events": 81554,
+      "agent_sessions": 8281,
+      "agent_runs": 23951,
+      "notification_history": 37489,
+      "application_settings": 45,
+      "integrity": "ok"
+    }
+  },
+  "quick_live": {
+    "elapsed_s": 1.07,
+    "bytes": 57360612,
+    "sha256": "84aafdbd55037fa47afe895042a5165aa497ef1464c32646dab09318f42a5634",
+    "partial": true,
+    "header_agent_events": 67122,
+    "exported_agent_events": 67122,
+    "header_notifications": 500,
+    "exported_notifications": 500,
+    "partial_reasons": [
+      "agent_events 超过上限 20000，保留最近 20000 + 全部 running/waiting 保护行",
+      "notification_history 超过上限 500"
+    ],
+    "note": "历史 80,362 条超过导出上限；未静默截断：header 记录总量、partial=true、partial_reasons 明示"
+  },
+  "full_live": {
+    "elapsed_s": 1.18,
+    "bytes": 78439276,
+    "sha256": "47d8df62debbfe3deab69909e764570c5788b34d530811e3a55714bd65839526",
+    "partial": false,
+    "header_agent_events": 80362,
+    "exported_agent_events": 80362,
+    "header_notifications": 36015,
+    "exported_notifications": 36015
+  },
+  "full_stopped": {
+    "path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept-v05\\backup-stopped-full.json",
+    "elapsed_s": 1.17,
+    "bytes": 78439684,
+    "sha256_integrity": "d1ececac75c15911777c78a8880ebd2fa60d052d5d5952958b14c3d2fb6cc1d7",
+    "file_sha256": "2f57fc92fa57714815f06bed1104f1db277b803c4d60b6fd2737205c6f4af92e",
+    "file_bytes": 78440426,
+    "exported_agent_events": 80362,
+    "partial": false
+  },
+  "bundle_verification": {
+    "independent_sha256_chain": "PASS（quick/full 及停机全量 bundle 逐行重算与 integrity 行一致）"
+  },
+  "restore_full": {
+    "elapsed_s": 14.28,
+    "state": "completed",
+    "pre_backup_created": true,
+    "partial": false,
+    "all_tables_equal": true,
+    "integrity": "ok",
+    "tables": 25,
+    "excluded_local_keys": [
+      "http_token (备份按设计排除，恢复后重新生成)"
+    ],
+    "note": "停机后全量备份→隔离目录恢复；25 张表逐行一致（settings 比较 key+value）"
+  },
+  "restore_quick": {
+    "elapsed_s": 4.8,
+    "state": "completed",
+    "partial": true,
+    "pre_backup_created": true,
+    "restored_counts": {
+      "agent_events": 67122,
+      "agent_sessions": 8077,
+      "agent_runs": 23663,
+      "notification_history": 500,
+      "application_settings": 45,
+      "integrity": "ok"
+    },
+    "note": "partial 备份恢复成功并如实返回 partial=true；agent_events 67,122（截断），会话/轮次全量保留"
+  },
+  "restore_full2_counts": {
+    "agent_events": 80362,
+    "agent_sessions": 8077,
+    "agent_runs": 23663,
+    "notification_history": 36016,
+    "application_settings": 45,
+    "integrity": "ok"
+  },
+  "corrupt_bundle_rejection": {
+    "truncated": {
+      "exit": 1,
+      "elapsed_s": 0.48,
+      "stderr": "恢复失败: 校验失败: 备份第 145 行不是合法 JSON: EOF while parsing a string at line 1 column 150703",
+      "stdout": "",
+      "data_unchanged": true,
+      "counts_after": 67122
+    },
+    "tampered": {
+      "exit": 1,
+      "elapsed_s": 0.07,
+      "stderr": "恢复失败: 序列化错误: expected `:` at line 1 column 9",
+      "stdout": "",
+      "data_unchanged": true,
+      "counts_after": 67122
+    },
+    "valid_json_tamper": {
+      "exit": 1,
+      "elapsed_s": 0.87,
+      "stderr": "恢复失败: 校验失败: 备份第 314 行不是合法 JSON: trailing characters at line 1 column 742",
+      "stdout": "",
+      "data_unchanged": true,
+      "counts_after": 67122,
+      "integrity_after": "ok"
+    },
+    "hash_tamper": {
+      "exit": 1,
+      "elapsed_s": 0.86,
+      "stderr": "恢复失败: 校验失败: 备份完整性校验失败：内容哈希不一致（文件损坏或被修改）",
+      "data_unchanged": true,
+      "counts_after": 67122
+    }
+  },
+  "disk_full": {
+    "status": "NOT TESTED",
+    "reason": "未找到在不破坏系统卷的前提下安全制造磁盘写满的手段；不伪造结果"
+  },
+  "ok": true
+}

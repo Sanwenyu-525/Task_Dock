@@ -1,0 +1,53 @@
+===== ARM: full =====
+    Finished `release` profile [optimized] target(s) in 0.68s
+     Running tests\memory_attrib.rs (target\release\deps\memory_attrib-442f1c8bc8308140.exe)
+
+running 1 test
+test memory_growth_attribution has been running for over 60 seconds
+
+[归因·full] 事件 36000 · 私有字节 +3510272 B（97.51 B/事件）· WAL 5471392 B · 主库 54558720 B · page_count 13351
+[报告] \\?\D:\Develop\task_dock\docs\performance\results\MEMATTR-full-20261030-114840.json
+test memory_growth_attribution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 70.44s
+
+===== ARM: pipeline_only =====
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `release` profile [optimized] target(s) in 5m 18s
+     Running tests\memory_attrib.rs (target\release\deps\memory_attrib-442f1c8bc8308140.exe)
+
+running 1 test
+test memory_growth_attribution has been running for over 60 seconds
+
+[归因·pipeline_only] 事件 36000 · 私有字节 +835584 B（23.21 B/事件）· WAL 918792 B · 主库 4096 B · page_count 119
+[报告] \\?\D:\Develop\task_dock\docs\performance\results\MEMATTR-pipeline_only-20261030-115504.json
+test memory_growth_attribution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 62.20s
+
+===== ARM: db_only =====
+    Finished `release` profile [optimized] target(s) in 0.70s
+     Running tests\memory_attrib.rs (target\release\deps\memory_attrib-442f1c8bc8308140.exe)
+
+running 1 test
+test memory_growth_attribution has been running for over 60 seconds
+
+[归因·db_only] 事件 36000 · 私有字节 +2785280 B（77.37 B/事件）· WAL 5463152 B · 主库 54841344 B · page_count 13389
+[报告] \\?\D:\Develop\task_dock\docs\performance\results\MEMATTR-db_only-20261030-115615.json
+test memory_growth_attribution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 70.22s
+
+===== ARM: full_checkpoint =====
+    Finished `release` profile [optimized] target(s) in 1.21s
+     Running tests\memory_attrib.rs (target\release\deps\memory_attrib-442f1c8bc8308140.exe)
+
+running 1 test
+test memory_growth_attribution has been running for over 60 seconds
+
+[归因·full_checkpoint] 事件 36000 · 私有字节 +3772416 B（104.79 B/事件）· WAL 0 B · 主库 55095296 B · page_count 13451
+[报告] \\?\D:\Develop\task_dock\docs\performance\results\MEMATTR-full_checkpoint-20261030-115733.json
+test memory_growth_attribution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 76.28s
+

@@ -17,6 +17,7 @@ use std::time::Duration;
 use serde_json::Value;
 use sha2::Digest;
 
+use crate::agents::inbox;
 use crate::error::AppResult;
 
 /// 传输参数文件（由主程序写入；与端口/令牌/启停同步）。
@@ -24,8 +25,6 @@ pub const TRANSPORT_FILE: &str = "hook-transport.json";
 const MAX_STDIN_BYTES: u64 = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(700);
 const IO_TIMEOUT: Duration = Duration::from_millis(1200);
-/// 文件回退上限：主程序长期未运行时避免 Hook 无限堆积占用磁盘。
-const MAX_INBOX_FILES: usize = 5000;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HookTransport {
@@ -34,8 +33,12 @@ pub struct HookTransport {
     pub token: String,
 }
 
-/// 与 Tauri `app_data_dir()` 一致：%APPDATA%\com.taskdock.desktop。
+/// 与 Tauri `app_data_dir()` 一致：%APPDATA%\com.taskdock.desktop；
+/// 测试/便携模式（TASK_DOCK_DATA_DIR）下与主程序使用同一隔离目录。
 pub fn app_data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("TASK_DOCK_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     std::env::var("APPDATA")
         .map(|a| PathBuf::from(a).join("com.taskdock.desktop"))
         .unwrap_or_else(|_| PathBuf::from("."))
@@ -181,27 +184,46 @@ fn post_event(cfg: &HookTransport, body: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 文件回退：先写 `.tmp` 再改名，文件投递只认 `.json`，不会读到半写文件。
-fn write_fallback(body: &str) -> bool {
-    let inbox = app_data_dir().join("agent-inbox");
-    if std::fs::create_dir_all(&inbox).is_err() {
-        return false;
+/// 文件回退：与扫描器共用容量预留（总数/总字节/单文件/关键预留），
+/// 先写 `.tmp` 再改名，文件投递只认 `.json`，不会读到半写文件。
+fn write_fallback_in(dir: &Path, body: &str, critical: bool) -> bool {
+    let mut last_error = String::new();
+    let mut attempts = 0u64;
+    // 并发 Hook 下锁竞争与 Windows 瞬时共享冲突（杀毒/索引）可能让单次写入失败；
+    // 有界重试，失败原因仍写入有界日志，绝不谎报成功。
+    for attempt in 0..3u64 {
+        attempts += 1;
+        let name = format!(
+            "hook-{}-{}.json",
+            chrono::Utc::now().timestamp_millis(),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        );
+        match inbox::write_reserved(
+            dir,
+            &name,
+            body.as_bytes(),
+            critical,
+            inbox::QuotaLimits::default(),
+        ) {
+            Ok(_) => return true,
+            Err(e @ (inbox::ReserveError::LockTimeout | inbox::ReserveError::Io(_))) => {
+                last_error = e.to_string();
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_millis(20 * (attempt + 1) * (attempt + 1)));
+                }
+            }
+            Err(e) => {
+                last_error = e.to_string();
+                break;
+            }
+        }
     }
-    let count = std::fs::read_dir(&inbox).map(|d| d.count()).unwrap_or(0);
-    if count > MAX_INBOX_FILES {
-        return false;
-    }
-    let name = format!(
-        "hook-{}-{}.json",
-        chrono::Utc::now().timestamp_millis(),
-        &uuid::Uuid::new_v4().to_string()[..8]
+    // Hook 必须静默，但失败原因要留在有界日志里，便于诊断「关键事件为何没进来」。
+    inbox::record_failure(
+        dir,
+        &format!("hook fallback: {}（尝试 {} 次）", last_error, attempts),
     );
-    let tmp = inbox.join(format!(".{}.tmp", name));
-    let final_path = inbox.join(name);
-    if std::fs::write(&tmp, body).is_err() {
-        return false;
-    }
-    std::fs::rename(&tmp, &final_path).is_ok()
+    false
 }
 
 /// CLI 入口；始终返回 0（Hook 失败不改变 Agent 行为）。
@@ -224,7 +246,8 @@ pub fn run(args: &[String]) -> i32 {
             return 0;
         }
     }
-    write_fallback(&text);
+    let critical = map_event_state(&event) != Some("running");
+    write_fallback_in(&app_data_dir().join("agent-inbox"), &text, critical);
     0
 }
 
@@ -266,6 +289,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ev["session_id"], "trae-unknown-session");
+    }
+
+    #[test]
+    fn fallback_uses_shared_reservation_and_atomic_rename() {
+        let dir = std::env::temp_dir().join(format!("td-hook-fallback-{}", uuid::Uuid::new_v4()));
+        assert!(write_fallback_in(&dir, "{\"a\":1}", true));
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names.len(), 1, "只应留下最终文件，不留 .tmp");
+        assert!(names[0].starts_with("hook-") && names[0].ends_with(".json"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(&names[0])).unwrap(),
+            "{\"a\":1}"
+        );
+        assert_eq!(inbox::measure(&dir).unwrap().files, 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

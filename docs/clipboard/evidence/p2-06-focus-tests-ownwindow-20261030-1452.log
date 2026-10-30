@@ -1,0 +1,22 @@
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.82s
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 10 tests
+test navigation::router::tests::agent_session_target_requires_existing_session ... ok
+test navigation::router::tests::application_target_with_gone_exe_fails_not_fake ... ok
+test navigation::router::tests::effective_memory_honors_user_pick_even_when_remember_disabled ... ok
+test navigation::router::tests::explicit_window_selection_requires_unique_identity_and_marks_fallback ... ok
+test navigation::router::tests::launch_disallowed_reports_failure_or_focus_only ... ENVIRONMENT-BLOCKED [launch_disallowed_reports_failure_or_focus_only] Win11 记事本单实例多标签：已存在他人记事本进程 [51632, 21984]，本次 spawn 不会拥有窗口归属（需在无其他记事本的交互桌面复跑；绝不拿用户窗口凑数）
+ok
+test navigation::router::tests::notepad_launch_focuses_existing_window_of_owned_process ... ENVIRONMENT-BLOCKED [notepad_launch_focuses_existing_window_of_owned_process] Win11 记事本单实例多标签：已存在他人记事本进程 [51632, 21984]，本次 spawn 不会拥有窗口归属（需在无其他记事本的交互桌面复跑；绝不拿用户窗口凑数）
+ok
+test navigation::router::tests::own_process_window_is_enumerated_and_focus_reported_truthfully ... REAL-DESKTOP [own_process_window_is_enumerated_and_focus_reported_truthfully] hwnd=6231440 已被产品窗口枚举看到；focus_window 回报=confirmed
+REAL-DESKTOP [own_process_window_is_enumerated_and_focus_reported_truthfully] 路由器决策=focus_window success=true verification_level=window-confirmed
+ok
+test navigation::router::tests::url_revalidated_at_execution_time ... ok
+test navigation::router::tests::uwp_decision_respects_launch_preference ... ok
+test navigation::router::tests::uwp_target_refused_before_any_process_spawn_when_launch_disallowed ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 424 filtered out; finished in 20.84s
+

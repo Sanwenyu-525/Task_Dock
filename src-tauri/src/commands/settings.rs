@@ -16,6 +16,7 @@ const ALLOWED_KEYS: &[&str] = &[
     "theme",
     "mode",
     "material",
+    "visual_preset",
     "snap_enabled",
     "autostart",
     "hotkey_enabled",
@@ -25,6 +26,9 @@ const ALLOWED_KEYS: &[&str] = &[
     "notify_reminder",
     "notify_agent",
     "notify_muted",
+    "notify_burst_max",
+    "notify_rate_window_secs",
+    "notify_done_aggregate",
     "overdue_grace_hours",
     "stale_run_minutes",
     "auto_backup",
@@ -38,6 +42,9 @@ const ALLOWED_KEYS: &[&str] = &[
     "nav_workspace_max",
     // 本地结构化状态（窗口记忆：类名+标题，不含 HWND）
     "nav_window_memory",
+    // 模块独立启停（v0.5.2）
+    "workspace_enabled",
+    "actions_enabled",
     // 智能剪贴板（v0.5）
     "clipboard_enabled",
     "clipboard_paused",
@@ -51,6 +58,9 @@ const ALLOWED_KEYS: &[&str] = &[
     "clipboard_max_storage_mb",
     "clipboard_exclude_apps",
     "clipboard_paste_interval_ms",
+    "clipboard_paste_interval_image_ms",
+    "clipboard_paste_interval_html_ms",
+    "clipboard_paste_interval_files_ms",
     "clipboard_sensitive_filter",
 ];
 
@@ -95,6 +105,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "theme" => enum_of(v, key, &["system", "light", "dark"]),
         "mode" => enum_of(v, key, &["minimal", "compact", "full"]),
         "material" => enum_of(v, key, &["solid", "glass"]),
+        "visual_preset" => enum_of(v, key, &["dream-gradient", "liquid-glass"]),
         "snap_enabled"
         | "autostart"
         | "hotkey_enabled"
@@ -103,11 +114,14 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "notify_reminder"
         | "notify_agent"
         | "notify_muted"
+        | "notify_done_aggregate"
         | "auto_backup"
         | "nav_prefer_focus"
         | "nav_allow_launch"
         | "nav_fallback"
         | "nav_remember_window"
+        | "workspace_enabled"
+        | "actions_enabled"
         | "clipboard_enabled"
         | "clipboard_paused"
         | "clipboard_capture_images"
@@ -118,13 +132,18 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "http_port" => int_in_range(v, key, 1, 65535),
         "overdue_grace_hours" => int_in_range(v, key, 0, 24 * 60),
         "stale_run_minutes" => int_in_range(v, key, 1, 24 * 60),
+        "notify_burst_max" => int_in_range(v, key, 1, 20),
+        "notify_rate_window_secs" => int_in_range(v, key, 10, 3600),
         "backup_retain_days" => int_in_range(v, key, 1, 365),
         "nav_workspace_max" => int_in_range(v, key, 1, 20),
         "clipboard_group_window_secs" => int_in_range(v, key, 5, 600),
         "clipboard_retention_days" => int_in_range(v, key, 1, 3650),
         "clipboard_max_items" => int_in_range(v, key, 20, 50_000),
         "clipboard_max_storage_mb" => int_in_range(v, key, 16, 102_400),
-        "clipboard_paste_interval_ms" => int_in_range(v, key, 100, 5_000),
+        "clipboard_paste_interval_ms"
+        | "clipboard_paste_interval_image_ms"
+        | "clipboard_paste_interval_html_ms"
+        | "clipboard_paste_interval_files_ms" => int_in_range(v, key, 100, 5_000),
         // 排除名单：逗号/换行分隔的 exe 名或路径（长度受限、无控制字符注入）
         "clipboard_exclude_apps" => {
             let s = v.as_str().ok_or_else(|| {
@@ -169,7 +188,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
 
 #[tauri::command]
 pub fn get_settings(db: State<'_, Arc<Db>>) -> AppResult<Settings> {
-    Settings::load(&db)
+    // 剪贴板配置异常时展示为已停用/已暂停，其他模块设置保持原值。
+    Settings::load_display(&db)
 }
 
 #[tauri::command]
@@ -188,9 +208,24 @@ pub fn update_settings(
     for (k, v) in obj {
         db.set_setting(k, v.clone())?;
     }
-    let updated = Settings::load(&db)?;
+    let updated = Settings::load_display(&db)?;
+    // 模块级生命周期：关闭工作现场时停止正在进行的恢复；剪贴板启停同步监听线程
+    if obj.contains_key("workspace_enabled") && !updated.workspace_enabled {
+        crate::workspace::request_cancel();
+    }
+    if obj.contains_key("clipboard_enabled") {
+        // 不能使用会静默默认的 Settings::load：配置损坏时它会把 enabled 读成 true，
+        // 从而在用户不知情时重新开始采集。
+        let config = Settings::load_clipboard(&db);
+        if config.error.is_none() {
+            if let Some(rt) = app.try_state::<Arc<crate::clipboard::ClipboardRuntime>>() {
+                rt.inner().set_enabled(config.settings.clipboard_enabled);
+            }
+        }
+    }
     // Hook 上报 CLI 依赖该文件读取端口/令牌/启停（失败不影响设置保存，CLI 会自动走文件回退）
-    if let Ok(dir) = app.path().app_data_dir() {
+    {
+        let dir = crate::app_data_dir(&app);
         let _ = crate::agents::hook_cli::write_transport_config(
             &dir,
             updated.http_port,
@@ -199,6 +234,30 @@ pub fn update_settings(
         );
     }
     Ok(updated)
+}
+
+/// 用户显式修复损坏的剪贴板配置。
+///
+/// 只重写无法解析的键；原始值备份到 `clipboard_config_corrupt_backup`，
+/// 不静默删除。`resume=true` 表示用户明确要求修复后恢复自动记录。
+#[tauri::command]
+pub fn clipboard_repair_config(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+    resume: bool,
+) -> AppResult<Settings> {
+    let config = Settings::repair_clipboard(&db, resume)?;
+    match config.error.as_ref() {
+        Some(error) => {
+            tracing::warn!("剪贴板配置修复后仍不可用：{}", error.message());
+        }
+        None => {
+            if let Some(rt) = app.try_state::<Arc<crate::clipboard::ClipboardRuntime>>() {
+                rt.inner().set_enabled(config.settings.clipboard_enabled);
+            }
+        }
+    }
+    Settings::load_display(&db)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -234,6 +293,11 @@ mod tests {
         assert!(validate_setting("mode", &serde_json::json!("compact")).is_ok());
         assert!(validate_setting("material", &serde_json::json!("glass")).is_ok());
         assert!(validate_setting("material", &serde_json::json!(3)).is_err());
+        // v0.6 视觉预设：只接受两个已知值，其他一律拒绝（旧库缺失键走默认值）
+        assert!(validate_setting("visual_preset", &serde_json::json!("dream-gradient")).is_ok());
+        assert!(validate_setting("visual_preset", &serde_json::json!("liquid-glass")).is_ok());
+        assert!(validate_setting("visual_preset", &serde_json::json!("neon")).is_err());
+        assert!(validate_setting("visual_preset", &serde_json::json!(null)).is_err());
     }
 
     #[test]

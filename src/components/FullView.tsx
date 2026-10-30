@@ -1,61 +1,104 @@
-//! 完整模式：任务 / Agent / 行动 / 历史 / 设置 五个标签页（徽标使用全局统计）。
+//! 完整模式：左侧垂直导航 + 任务 / Agent / 行动 / 剪贴板 / 历史 / 设置 六个面板。
+//!
+//! v0.6：由顶部横向标签改为**左侧垂直导航**（两套视觉预设共用同一结构）。
+//! - 图标 + 文字，选中态由预设决定（梦幻渐变=淡色药丸，液态玻璃=玻璃胶囊）
+//! - 徽标口径与行动中心一致（见下），不新造第二套计数
+//! - 底部保留「快速添加」入口，Ctrl+K 与标题栏入口行为一致
+//! - 窄窗（< 380px）时只留图标，避免挤压右侧统计卡与筛选行
+//! - v0.6：剪贴板正式成为第 4 个入口（不再是覆盖整屏的抽屉）
 
-import { useUiStore, type Tab } from "../store/useUiStore";
-import { useAgentsStore } from "../store/useAgentsStore";
+import { useUiStore, TAB_ORDER, type Tab } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
 import TasksPanel from "./tasks/TasksPanel";
 import AgentPanel from "./agents/AgentPanel";
 import ActionCenterPanel from "./actions/ActionCenterPanel";
+import ClipboardPanel from "./clipboard/ClipboardPanel";
 import HistoryPanel from "./history/HistoryPanel";
 import SettingsPanel from "./settings/SettingsPanel";
-import { ListTodo, Bot, Zap, History, Settings as SettingsIcon } from "lucide-react";
-import { liveRuns } from "../lib/agentTree";
+import { ListTodo, Bot, Zap, Clipboard, History, Settings as SettingsIcon, Plus } from "lucide-react";
 
-const TABS: { id: Tab; label: string; icon: typeof ListTodo }[] = [
-  { id: "tasks", label: "任务", icon: ListTodo },
-  { id: "agents", label: "Agent", icon: Bot },
-  { id: "actions", label: "行动", icon: Zap },
-  { id: "history", label: "历史", icon: History },
-  { id: "settings", label: "设置", icon: SettingsIcon },
-];
+const TAB_META: Record<Tab, { label: string; icon: typeof ListTodo; badge?: "intervention" | "attention" | "pending" }> = {
+  tasks: { label: "任务", icon: ListTodo, badge: "pending" },
+  agents: { label: "Agent", icon: Bot, badge: "intervention" },
+  actions: { label: "行动", icon: Zap, badge: "attention" },
+  clipboard: { label: "剪贴板", icon: Clipboard },
+  history: { label: "历史", icon: History },
+  settings: { label: "设置", icon: SettingsIcon },
+};
+
+// 顺序取自 TAB_ORDER：导航渲染与 Ctrl+1…6 共用同一份定义，不会各自漂移
+const TABS = TAB_ORDER.map((id) => ({ id, ...TAB_META[id] }));
 
 export default function FullView() {
   const tab = useUiStore((s) => s.tab);
   const setTab = useUiStore((s) => s.setTab);
-  const agents = useAgentsStore((s) => s.snapshot);
+  const bumpQuickAdd = useUiStore((s) => s.bumpQuickAdd);
   const stats = useTasksStore((s) => s.stats);
   const actionFeed = useActionsStore((s) => s.feed);
 
-  // 徽标使用全局实时集合（waiting/failed 近期事件），不依赖筛选后的任务列表
-  const attention = liveRuns(agents?.runs ?? []).filter(
-    (r) => r.status === "waiting" || r.status === "failed",
-  ).length;
+  // 两个徽标共用行动中心口径：需介入（未确认），不再用原始 waiting/failed 计数，
+  // 避免同一状态在标签页与行动中心显示两个不同的数字。
+  // 行动中心整体关闭时两个徽标都归零（不显示过期聚合）。
   const pending = stats?.pending ?? 0;
-  const actions = attentionCount(actionFeed);
+  const actionsEnabled = actionFeed?.enabled !== false;
+  const intervention = actionsEnabled ? actionFeed?.counts.intervention ?? 0 : 0;
+  const actions = actionsEnabled ? attentionCount(actionFeed) : 0;
+
+  const counts = { intervention, attention: actions, pending };
 
   return (
     <div className="full-view">
-      <nav className="tabs">
-        {TABS.map((t) => (
+      <nav className="rail" aria-label="主导航">
+        <div className="rail-items">
+          {TABS.map((t) => {
+            const count = t.badge ? counts[t.badge] : 0;
+            return (
+              <button
+                key={t.id}
+                className={`rail-item ${tab === t.id ? "active" : ""}`}
+                onClick={() => setTab(t.id)}
+                aria-current={tab === t.id ? "page" : undefined}
+                // 窄窗下文字标签被隐藏，可访问名必须由 aria-label 兜底；
+                // 提示条走统一的 data-tip（原生 title 会弹出系统样式提示）。
+                aria-label={count > 0 ? `${t.label}（${count}）` : t.label}
+                data-tip={t.label}
+              >
+                <span className="rail-icon">
+                  <t.icon size={18} strokeWidth={1.75} />
+                  {count > 0 && (
+                    <em className={`rail-badge ${t.badge === "pending" ? "subtle" : ""}`}>
+                      {count > 99 ? "99+" : count}
+                    </em>
+                  )}
+                </span>
+                <span className="rail-label">{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="rail-foot">
           <button
-            key={t.id}
-            className={`tab ${tab === t.id ? "active" : ""}`}
-            onClick={() => setTab(t.id)}
-            aria-current={tab === t.id ? "page" : undefined}
+            className="rail-item rail-add"
+            data-tip="快速添加任务 (Ctrl+K)"
+            aria-label="快速添加任务"
+            onClick={() => {
+              setTab("tasks");
+              bumpQuickAdd();
+            }}
           >
-            <t.icon size={14} />
-            <span>{t.label}</span>
-            {t.id === "agents" && attention > 0 && <em className="badge">{attention}</em>}
-            {t.id === "actions" && actions > 0 && <em className="badge">{actions}</em>}
-            {t.id === "tasks" && pending > 0 && <em className="badge subtle">{pending}</em>}
+            <span className="rail-icon">
+              <Plus size={17} strokeWidth={1.9} />
+            </span>
+            <span className="rail-label">添加</span>
           </button>
-        ))}
+        </div>
       </nav>
       <div className="tab-content">
         {tab === "tasks" && <TasksPanel />}
         {tab === "agents" && <AgentPanel />}
         {tab === "actions" && <ActionCenterPanel />}
+        {tab === "clipboard" && <ClipboardPanel />}
         {tab === "history" && <HistoryPanel />}
         {tab === "settings" && <SettingsPanel />}
       </div>

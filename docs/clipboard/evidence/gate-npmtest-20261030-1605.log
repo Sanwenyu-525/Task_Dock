@@ -1,0 +1,55 @@
+
+> task-dock@0.5.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock[39m
+
+ [32m✓[39m src/lib/historyGroup.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/lib/agentTree.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/store/useClipboardStore.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m src/lib/workspace.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/store/useActionsStore.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 86[2mms[22m[39m
+ [32m✓[39m src/lib/navigation.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/lib/subscriptions.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m src/lib/format.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/lib/theme.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/lib/clipboardUi.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/store/useSettingsStore.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 73[2mms[22m[39m
+ [32m✓[39m src/store/useAgentsStore.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 2970[2mms[22m[39m
+   [33m[2m✓[22m[39m useAgentsStore 刷新调度[2m > [22m100 条事件在途期间只发 1 次快照，结束后至多补 1 次 [33m 2376[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/AgentExportPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 944[2mms[22m[39m
+   [33m[2m✓[22m[39m AgentExportPanel[2m > [22m区分直接发送、文件导入、桌面粘贴与本地导出 [33m 774[2mms[22m[39m
+ [32m✓[39m src/components/navigation/TargetMenu.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 1291[2mms[22m[39m
+   [33m[2m✓[22m[39m TargetMenu 键盘交互[2m > [22m打开即聚焦第 0 项；工作区入口排第 0 位、索引与 DOM 顺序一致 [33m 772[2mms[22m[39m
+ [32m✓[39m src/components/actions/ActionCenterPanel.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 1318[2mms[22m[39m
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m切换到通知分类后不展示优先级筛选，并显示通知空态 [33m 978[2mms[22m[39m
+ [32m✓[39m src/components/FullView.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 1292[2mms[22m[39m
+   [33m[2m✓[22m[39m 完整模式左侧导航[2m > [22m渲染五个导航入口与底部快捷入口 [33m 700[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/PastePanel.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 1656[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m展示分类间隔；开始后显示逐项状态与剩余数量 [33m 1224[2mms[22m[39m
+ [32m✓[39m src/components/tasks/QuickAdd.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 2090[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m输入自然语言 + Enter：先解析出预览，再 Enter 创建（store/bridge 被正确调用） [33m 1405[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TasksPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 1766[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m点击搜索按钮展开输入框，输入关键词过滤任务列表 [33m 1088[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m清空搜索恢复全部；点击状态按钮过滤任务列表 [33m 676[2mms[22m[39m
+ [32m✓[39m src/components/history/HistoryPanel.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 2426[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 订阅生命周期[2m > [22m卸载后才兑现的监听 Promise 会被立即反订阅 [33m 439[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 全局未读与筛选[2m > [22m未读数来自全库统计，不受首页 100 条限制 [33m 424[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 全局未读与筛选[2m > [22m时间筛选从第一页重新查询，并把 since 传给两条数据流 [33m 435[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m刷新页与已加载页不重叠时提示刷新，不合并出带缺口的时间轴 [33m 656[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TaskEditor.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 2416[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改标题时不提交重复规则或未修改的时间 [33m 1465[2mms[22m[39m
+ [32m✓[39m src/components/navigation/AppPicker.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 2822[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m渲染应用列表；搜索框输入与分类按钮切换都能过滤列表 [33m 1252[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m两个任务重用同一应用时分别更新各自关联的窗口 [33m 557[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/ClipboardDrawer.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 2222[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m分页：80/100 时加载更多只追加一页 [33m 1351[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m监听中、监听线程未启动与手动暂停显示不同状态 [33m 397[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m23 passed[39m[22m[90m (23)[39m
+[2m      Tests [22m [1m[32m164 passed[39m[22m[90m (164)[39m
+[2m   Start at [22m 15:50:31
+[2m   Duration [22m 29.15s[2m (transform 30.58s, setup 0ms, collect 115.38s, tests 23.49s, environment 194.79s, prepare 11.05s)[22m
+
+EXIT=0

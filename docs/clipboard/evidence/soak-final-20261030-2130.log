@@ -1,0 +1,102 @@
+=== 源码指纹 ===
+git_head=66d1eb755aa692febdad720e37b5cd6d16f9591d
+git_head_short=66d1eb7
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/AGENT_ADAPTERS.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ARCHITECTURE.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/DEVELOPMENT.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/PERFORMANCE_ARCHITECTURE.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/PERFORMANCE_TESTING.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/TESTING.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/V05_DESIGN.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/02-architecture.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/04-monitor-security.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/06-copy-paste-protection.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/08-testing-performance.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/09-implementation-report.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/10-remediation-acceptance.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/make-preview.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/perf/ingest-load.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/render-perf.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/actions/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/codex.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/discovery.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/dsh.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/file_drop.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/hook_cli.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/http_ingest.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/managed.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/opencode.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/pipeline.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/retention.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/clipboard/image.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/clipboard/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/clipboard/paste.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/clipboard/platform.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/clipboard/store.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/agents.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/clipboard.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/data.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/settings.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/system.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/workspace.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/db/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/lib.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/navigation/app_discovery.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/navigation/router.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/scheduler.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/workspace/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/tests/actions_perf.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/App.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/FullView.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/TitleBar.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/actions/ActionCenterPanel.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/agents/AgentPanel.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/agents/MockControls.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/AgentExportPanel.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/ClipboardDrawer.test.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/ClipboardDrawer.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/ClipboardGroupCard.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/ClipboardGroupDetail.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/ClipboardItemCard.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/ClipboardItemDetail.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/PastePanel.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/TaskLinkBar.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/clipboard/WorkspaceLinkBar.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/context/TaskContextDrawer.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/history/HistoryPanel.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/navigation/TargetMenu.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/navigation/WorkspaceLauncher.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/settings/AppManagement.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/settings/SettingsPanel.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/tasks/QuickAdd.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/tasks/TaskItem.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/tasks/TasksPanel.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/hooks/useEdgeSnap.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/bridge.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/format.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/historyGroup.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/historyGroup.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/theme.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/theme.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/main.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/store/useActionsStore.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/store/useClipboardStore.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/store/useClipboardStore.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/store/useSettingsStore.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/store/useUiStore.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'vite.config.ts', LF will be replaced by CRLF the next time Git touches it
+dirty_tracked= 98 files changed, 15671 insertions(+), 3363 deletions(-)
+source_tree_sha256=20bf2c2ee8f478c5ba914c9919ac8bf48af0ff7509c6ab20920919dcda977252
+release_exe_sha256=564ff7680f3fb479964cfa4ed8c0882abd582a4db11410579c90be511790b697
+release_exe_bytes=15553024
+release_exe_mtime=2026-10-30 20:36:59.981873500 +0800
+
+=== [C-ui-http-30min] 开始 21:25:40 ===
+    args: --mode mixed --duration 1800 --post 120 --agents 4 --rate 5 --window visible --notify off --transport http --port 47882
+    log:  docs/performance/results/MEM-C-ui-http-30min-20261030-212533.log
+=== [C-ui-http-30min] 结束 21:41:19 rc=0 ===

@@ -19,5 +19,9 @@ export default defineConfig({
     environment: "node",
     // 纯函数测试保持 node；真实 DOM 交互测试文件用 `// @vitest-environment jsdom` 头注释单独指定
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    setupFiles: ["src/test/setup.ts"],
+    // 样式守卫测试用 `?raw` 直接读 CSS 原文；默认 Vitest 会把 CSS 桩成空串，
+    // 只有显式 include `?raw` 请求才放行（其余 CSS 仍然桩掉，不进 jsdom）。
+    css: { include: [/\?raw/] },
   },
 });

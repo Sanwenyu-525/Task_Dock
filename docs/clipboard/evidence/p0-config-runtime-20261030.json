@@ -1,0 +1,53 @@
+{
+ "at": "2026-10-29T17:25:21.547Z",
+ "broken": {
+  "enabled": false,
+  "paused": true,
+  "captureAllowed": false,
+  "configError": {
+   "keys": [
+    "clipboard_enabled"
+   ],
+   "kind": "json"
+  },
+  "monitoring": true
+ },
+ "ui": {
+  "statusText": " 配置异常，自动记录已暂停",
+  "alert": "（键：clipboard_enabled）。监听线程仍在运行，但不会记录任何新内容；损坏的原始值已保留，可在设置中修复。去修复"
+ },
+ "viewItems": [
+  "text",
+  "image",
+  "text",
+  "image",
+  "text"
+ ],
+ "tasks": 3,
+ "tasksAfter": 3,
+ "repairKeepPaused": {
+  "enabled": false,
+  "paused": true,
+  "captureAllowed": false,
+  "configError": null,
+  "monitoring": false
+ },
+ "repairResume": {
+  "enabled": true,
+  "paused": false,
+  "captureAllowed": true,
+  "configError": null,
+  "monitoring": true
+ },
+ "db": {
+  "clipboard_enabled": "true",
+  "clipboard_paused": "false",
+  "backup": "{\"clipboard_enabled\":\"{not-json\"}",
+  "tasks": 3,
+  "changed_keys": [
+   "window_rect",
+   "clipboard_config_corrupt_backup"
+  ],
+  "business_changed": []
+ }
+}

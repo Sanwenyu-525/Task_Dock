@@ -1,0 +1,38 @@
+[2m2026-10-30T07:54:42.145530Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v1
+[2m2026-10-30T07:54:42.157580Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v2
+[2m2026-10-30T07:54:42.165109Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v3
+[2m2026-10-30T07:54:42.170518Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v4
+[2m2026-10-30T07:54:42.176849Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v5
+[2m2026-10-30T07:54:42.184655Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v6
+[2m2026-10-30T07:54:42.192508Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v7
+[2m2026-10-30T07:54:42.198848Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v8
+[2m2026-10-30T07:54:42.202305Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v9
+[2m2026-10-30T07:54:42.206293Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v10
+[2m2026-10-30T07:54:42.210042Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v11
+[2m2026-10-30T07:54:42.217842Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v12
+[2m2026-10-30T07:54:42.222336Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v13
+[2m2026-10-30T07:54:42.225638Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 已回填事件来源分类（v12）
+[2m2026-10-30T07:54:42.369398Z[0m [32m INFO[0m [2mtask_dock_lib::clipboard[0m[2m:[0m 剪贴板监听已启动
+[2m2026-10-30T07:54:42.435291Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-10-30T07:54:42.435726Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-10-30T07:54:42.435776Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-9r4ic63c\\data"）
+[2m2026-10-30T07:54:42.435858Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-9r4ic63c\\data\\agent-inbox"
+[2m2026-10-30T07:54:42.438671Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 本地 HTTP 接入监听 127.0.0.1:47821
+[2m2026-10-30T07:54:42.444340Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 本地备份完成: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-9r4ic63c\data\backups\backup-20261030-155442-quick.json（quick，部分=true，10930 字节，SHA-256 e29baf3a4cc127e5249bd5abdbadd44f2187a1feb74bc9568df675a8f7cefe84）
+[2m2026-10-30T07:54:42.444377Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 启动自动备份完成: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-9r4ic63c\data\backups\backup-20261030-155442-quick.json
+[2m2026-10-30T07:54:42.485274Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:7870, 0ms)
+[2m2026-10-30T07:54:51.127917Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 检测到重复启动，已把焦点交给现有实例
+[2m2026-10-30T07:54:51.269793Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:3371, 0ms)
+[2m2026-10-30T07:54:52.069182Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:10518, 0ms)
+[2m2026-10-30T07:54:53.080454Z[0m [34mDEBUG[0m [2mtask_dock_lib::clipboard::platform[0m[2m:[0m 剪贴板记录：kind=image size=1241 created=true grouped=true
+[2m2026-10-30T07:54:55.557910Z[0m [34mDEBUG[0m [2mtask_dock_lib::clipboard::platform[0m[2m:[0m 剪贴板记录：kind=image size=1241 created=true grouped=true
+[2m2026-10-30T07:54:57.938457Z[0m [34mDEBUG[0m [2mtask_dock_lib::clipboard::platform[0m[2m:[0m 剪贴板记录：kind=text size=38 created=true grouped=true
+[2m2026-10-30T07:54:59.230913Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:12663, 0ms)
+[2m2026-10-30T07:55:00.141633Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:12673, 0ms)
+[2m2026-10-30T07:55:00.409958Z[0m [34mDEBUG[0m [2mtask_dock_lib::clipboard::platform[0m[2m:[0m 剪贴板记录：kind=image size=1241 created=true grouped=true
+[2m2026-10-30T07:55:04.328778Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 检测到重复启动，已把焦点交给现有实例
+[2m2026-10-30T07:55:07.254946Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:10972, 0ms)
+[2m2026-10-30T07:55:07.958699Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:10980, 0ms)
+[2m2026-10-30T07:55:12.329331Z[0m [34mDEBUG[0m [2mtask_dock_lib::clipboard::paste[0m[2m:[0m 逐项粘贴：目标窗口已在前台 hwnd=5047894
+[2m2026-10-30T07:55:12.330710Z[0m [34mDEBUG[0m [2mtask_dock_lib::clipboard::platform::imp[0m[2m:[0m 剪贴板内容不一致：期望 png=1241B；实际 png=Some(553)B
+[2m2026-10-30T07:55:12.337196Z[0m [32m INFO[0m [2mtask_dock_lib::clipboard::paste[0m[2m:[0m 粘贴任务结束：status=failed sent=0/4 skipped=0 restored=false unverified=0

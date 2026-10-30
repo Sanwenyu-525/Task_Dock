@@ -81,6 +81,16 @@ describe("groupHistory", () => {
     expect(groups.map((g) => g.label)).toEqual(["今天", "昨天", "10-20"]);
   });
 
+  it("同一时间戳的条目按稳定 key 排序，翻页合并不改变顺序", () => {
+    const ts = "2026-10-25T11:00:00Z";
+    const groups = groupHistory(
+      [notif("a", "reminder", "提醒A", ts)],
+      [ev("z", "codex", "running", ts)],
+      { now: NOW },
+    );
+    expect(groups[0].entries.map((e) => e.key)).toEqual(["n:a", "e:z"]);
+  });
+
   it("未读状态保留在条目上", () => {
     const groups = groupHistory([notif("n1", "agent_waiting", "等待", "2026-10-25T10:00:00Z", true)], [], { now: NOW });
     expect(groups[0].entries[0].unread).toBe(true);

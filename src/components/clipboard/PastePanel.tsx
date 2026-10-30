@@ -16,6 +16,7 @@ import {
   type PasteTarget,
 } from "../../lib/bridge";
 import { fileBaseName } from "../../lib/clipboardUi";
+import { createSubscriptionScope } from "../../lib/subscriptions";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 
@@ -99,23 +100,26 @@ export default function PastePanel({
   }
 
   useEffect(() => {
+    let alive = true;
     void loadTargets();
     clipboardPasteActive()
       .then(async (id) => {
-        if (!id) return;
+        if (!alive || !id) return;
         const j = await clipboardPasteJob(id).catch(() => null);
-        if (!j) return;
+        if (!alive || !j) return;
         if (j.group_id === groupId) setJob(fromJob(j));
         else setOtherJob(fromJob(j));
       })
       .catch(() => {});
+    return () => {
+      alive = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId]);
 
   useEffect(() => {
-    let un: (() => void) | undefined;
-    let alive = true;
-    onClipboardPaste((e) => {
+    const scope = createSubscriptionScope();
+    scope.add(onClipboardPaste((e) => {
       setJob((prev) =>
         prev && prev.id === e.jobId
           ? {
@@ -137,14 +141,8 @@ export default function PastePanel({
           ? { ...prev, status: e.status, sent: e.sent, total: e.total, pending: e.pending, message: e.message }
           : prev,
       );
-    }).then((u) => {
-      if (alive) un = u;
-      else u();
-    });
-    return () => {
-      alive = false;
-      un?.();
-    };
+    }));
+    return () => scope.dispose();
   }, []);
 
   async function onStart() {
@@ -219,7 +217,7 @@ export default function PastePanel({
   return (
     <div className="clip-detail clip-paste">
       <div className="clip-detail-head">
-        <button className="icon-btn sm" onClick={onBack} title="返回" aria-label="返回分组详情">
+        <button className="icon-btn sm" onClick={onBack} data-tip="返回" aria-label="返回分组详情">
           <ArrowLeft size={13} />
         </button>
         <span>逐项粘贴 · {groupName}</span>

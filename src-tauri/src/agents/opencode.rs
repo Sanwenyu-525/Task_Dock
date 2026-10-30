@@ -51,6 +51,10 @@ let retryAt = 0;
 let seq = 0;
 
 function inboxDir(): string {
+  // 与 Rust 侧 app_data_dir() 保持一致：便携/测试模式（TASK_DOCK_DATA_DIR）下
+  // 投递目录必须跟随数据目录，否则文件回退会落到应用读不到的地方，关键事件静默丢失。
+  const custom = process.env.TASK_DOCK_DATA_DIR;
+  if (custom) return path.join(custom, "agent-inbox");
   return path.join(process.env.APPDATA || os.homedir(), "com.taskdock.desktop", "agent-inbox");
 }
 
@@ -300,13 +304,14 @@ impl ManagedAdapter for OpencodeAdapter {
             Ok(status) if status == 200 => {
                 let _ = db.with_conn(|conn| {
                     conn.execute(
-                        "UPDATE agent_sources SET verified = 1, last_event_at = ?1 WHERE id = 'opencode'",
+                        // 自测只证明插件→HTTP→DB 通道可用；真实会话验证必须等自然事件。
+                        "UPDATE agent_sources SET transport_verified = 1, last_event_at = ?1 WHERE id = 'opencode'",
                         rusqlite::params![crate::agents::now_iso()],
                     )?;
                     Ok::<_, crate::error::AppError>(())
                 });
                 Ok(
-                    json!({ "ok": true, "http_status": status, "note": "插件上报链路（plugin → HTTP ingest → DB）已验证" }),
+                    json!({ "ok": true, "http_status": status, "note": "插件上报链路（plugin → HTTP ingest → DB）已验证；真实会话验证需等待自然事件" }),
                 )
             }
             Ok(status) => Ok(json!({ "ok": false, "reason": format!("HTTP {}", status) })),

@@ -32,8 +32,13 @@ function parseArgs(argv) {
     batch: 1,
     timeoutMs: 15000,
     maxRetries: 40,
+    inflight: 24,
     out: "",
-    source: "bridge",
+    // 默认使用隔离的 benchmark 来源：事件不进入真实 Agent 状态、行动中心或系统通知。
+    source: "bench",
+    allowRealSource: false,
+    // 每次压测使用独立前缀，避免 event_id 与上一轮重复被幂等去重。
+    runId: `r${Date.now().toString(36)}`,
   };
   for (let i = 2; i < argv.length; i++) {
     const key = argv[i];
@@ -51,8 +56,11 @@ function parseArgs(argv) {
       case "--batch": out.batch = Number(next()); break;
       case "--timeout-ms": out.timeoutMs = Number(next()); break;
       case "--max-retries": out.maxRetries = Number(next()); break;
+      case "--inflight": out.inflight = Number(next()); break;
       case "--out": out.out = next(); break;
       case "--source": out.source = next(); break;
+      case "--allow-real-source": out.allowRealSource = true; break;
+      case "--run-id": out.runId = next(); break;
       case "--help":
       case "-h":
         printHelp();
@@ -65,6 +73,13 @@ function parseArgs(argv) {
   if (!out.token) throw new Error("必须提供 --token（Task Dock 设置中的 HTTP 接入令牌）");
   if (!(out.agents > 0) || !(out.rate > 0) || !(out.duration > 0)) {
     throw new Error("--agents / --rate / --duration 必须为正数");
+  }
+  if (out.source !== "bench" && !out.allowRealSource) {
+    // 真实来源会被服务端标记为 real，可能影响真实状态与通知。压测必须显式确认。
+    throw new Error(
+      `拒绝向真实来源 "${out.source}" 压测：该来源事件会被视为真实数据。` +
+        "请使用默认 --source bench（隔离数据源），或在明确知情时追加 --allow-real-source。",
+    );
   }
   return out;
 }
@@ -79,6 +94,10 @@ function printHelp() {
   --batch <n>         每个请求批量事件数（默认 1；批量请求等待事务提交）
   --timeout-ms <n>    单请求超时（默认 15000）
   --max-retries <n>   429/503/网络错误最大重试次数（默认 40）
+  --inflight <n>      全局在途请求上限（默认 24；须低于服务端连接/请求配额）
+  --run-id <id>       本轮唯一前缀（默认时间戳；同一前缀的事件 ID 全局唯一）
+  --source <id>       事件来源（默认 bench：隔离数据源，不进入真实状态/通知）
+  --allow-real-source 允许向非 bench 来源压测（会产生真实事件，谨慎使用）
   --out <path>        结果 JSON 输出路径（默认 docs/performance/results/）`);
 }
 
@@ -110,12 +129,12 @@ function buildEvent(cfg, agent, index) {
         : "running";
   return {
     schema_version: 1,
-    event_id: `http-a${agent}-e${index}`,
+    event_id: `http-${cfg.runId}-a${agent}-e${index}`,
     source_id: cfg.source,
     instance_id: `http-instance-${agent}`,
-    session_id: `http-perf-session-${agent}`,
-    run_id: `http-perf-run-${agent}-${Math.floor(index / RUN_LEN)}`,
-    task_title: `HTTP 压测 ${agent}-${index}`,
+    session_id: `http-perf-${cfg.runId}-session-${agent}`,
+    run_id: `http-perf-${cfg.runId}-run-${agent}-${Math.floor(index / RUN_LEN)}`,
+    task_title: `HTTP 压测 ${cfg.runId} ${agent}-${index}`,
     state,
     message: `http perf ${agent} #${index}`,
     occurred_at: new Date().toISOString(),
@@ -243,8 +262,17 @@ async function main() {
   const startedAt = new Date().toISOString();
   const t0 = performance.now();
   const stopAt = t0 + cfg.duration * 1000;
-  const criticalTasks = [];
-  let criticalSeq = 0;
+
+  // 全局有界并发：服务端连接上限 64、请求并发上限 32；压测进程使用 24 个在途请求，
+  // 既能提供 500/s 的调度速率，又不会因为上千并发连接触发连接配额保护（429 风暴）。
+  const pending = new Set();
+  const track = (p) => {
+    pending.add(p);
+    p.finally(() => pending.delete(p)).catch(() => {});
+  };
+  const waitSlot = async () => {
+    while (pending.size >= cfg.inflight) await Promise.race(pending);
+  };
 
   const agentLoop = async (agent) => {
     const period = 1000 / cfg.rate;
@@ -268,28 +296,26 @@ async function main() {
             const payload = batch;
             batch = [];
             const id = payload.map((e) => e.event_id).join(",");
-            // 批量请求由服务端等待事务提交，单独放行避免拖住发流
-            criticalTasks.push(sendWithRetry(cfg, stats, payload, { critical: false, id }));
+            await waitSlot();
+            track(sendWithRetry(cfg, stats, payload, { critical: false, id }));
           }
         } else {
-          await sendWithRetry(cfg, stats, [event], { critical: false, id: event.event_id });
+          await waitSlot();
+          track(sendWithRetry(cfg, stats, [event], { critical: false, id: event.event_id }));
         }
       } else {
         stats.critical_sent += 1;
-        const id = event.event_id;
-        criticalSeq += 1;
-        const p = sendWithRetry(cfg, stats, [event], { critical: true, id });
-        if (criticalSeq % 32 === 0) await p;
-        else criticalTasks.push(p);
+        await waitSlot();
+        track(sendWithRetry(cfg, stats, [event], { critical: true, id: event.event_id }));
       }
     }
     if (batch.length > 0) {
-      criticalTasks.push(sendWithRetry(cfg, stats, batch, { critical: false, id: "tail" }));
+      track(sendWithRetry(cfg, stats, batch, { critical: false, id: "tail" }));
     }
   };
 
   await Promise.all(Array.from({ length: cfg.agents }, (_, a) => agentLoop(a)));
-  await Promise.all(criticalTasks);
+  await Promise.all(pending);
   const elapsedMs = performance.now() - t0;
 
   // 排空窗口：再等 5 秒，让服务端合并缓冲落库（统计不重复提交）

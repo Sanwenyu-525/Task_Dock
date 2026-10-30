@@ -1,0 +1,176 @@
+﻿{
+    "label":  "C-concurrency-run2",
+    "startedAt":  "2026-10-30T00:47:32.3228070+08:00",
+    "durationSec":  97,
+    "plannedSec":  95,
+    "intervalSec":  5,
+    "logicalCpus":  20,
+    "process":  "task-dock",
+    "samples":  [
+                    {
+                        "at":  "2026-10-30T00:47:33.5401189+08:00",
+                        "t":  0,
+                        "cpuTotalSec":  26.156,
+                        "cpuPct":  null,
+                        "workingSetMB":  589.27,
+                        "privateMB":  415.15,
+                        "threads":  243,
+                        "handles":  7885,
+                        "processes":  9
+                    },
+                    {
+                        "at":  "2026-10-30T00:47:40.3521980+08:00",
+                        "t":  6,
+                        "cpuTotalSec":  28.688,
+                        "cpuPct":  2.531,
+                        "workingSetMB":  606.27,
+                        "privateMB":  391.7,
+                        "threads":  242,
+                        "handles":  8308,
+                        "processes":  9
+                    },
+                    {
+                        "at":  "2026-10-30T00:47:47.0439839+08:00",
+                        "t":  13,
+                        "cpuTotalSec":  31.312,
+                        "cpuPct":  2.625,
+                        "workingSetMB":  667.89,
+                        "privateMB":  508.39,
+                        "threads":  219,
+                        "handles":  8223,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:47:53.4950945+08:00",
+                        "t":  20,
+                        "cpuTotalSec":  32.734,
+                        "cpuPct":  1.422,
+                        "workingSetMB":  679.26,
+                        "privateMB":  520.62,
+                        "threads":  218,
+                        "handles":  8488,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:47:59.8990311+08:00",
+                        "t":  26,
+                        "cpuTotalSec":  33.953,
+                        "cpuPct":  1.219,
+                        "workingSetMB":  684.55,
+                        "privateMB":  517.22,
+                        "threads":  218,
+                        "handles":  8714,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:06.5886480+08:00",
+                        "t":  33,
+                        "cpuTotalSec":  35.078,
+                        "cpuPct":  1.125,
+                        "workingSetMB":  686.7,
+                        "privateMB":  517.03,
+                        "threads":  218,
+                        "handles":  8972,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:13.2165712+08:00",
+                        "t":  39,
+                        "cpuTotalSec":  36.234,
+                        "cpuPct":  1.156,
+                        "workingSetMB":  720.89,
+                        "privateMB":  545.48,
+                        "threads":  231,
+                        "handles":  9630,
+                        "processes":  9
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:19.9376167+08:00",
+                        "t":  46,
+                        "cpuTotalSec":  37.906,
+                        "cpuPct":  1.672,
+                        "workingSetMB":  686.37,
+                        "privateMB":  524.64,
+                        "threads":  218,
+                        "handles":  9464,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:26.3401001+08:00",
+                        "t":  53,
+                        "cpuTotalSec":  40.625,
+                        "cpuPct":  2.719,
+                        "workingSetMB":  696.18,
+                        "privateMB":  534.46,
+                        "threads":  219,
+                        "handles":  9768,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:32.7480547+08:00",
+                        "t":  59,
+                        "cpuTotalSec":  42.75,
+                        "cpuPct":  2.125,
+                        "workingSetMB":  685.3,
+                        "privateMB":  543.99,
+                        "threads":  219,
+                        "handles":  10155,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:39.1264569+08:00",
+                        "t":  65,
+                        "cpuTotalSec":  43.328,
+                        "cpuPct":  0.578,
+                        "workingSetMB":  650.02,
+                        "privateMB":  481.7,
+                        "threads":  219,
+                        "handles":  10117,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:45.4893881+08:00",
+                        "t":  72,
+                        "cpuTotalSec":  43.859,
+                        "cpuPct":  0.531,
+                        "workingSetMB":  642.17,
+                        "privateMB":  478.58,
+                        "threads":  219,
+                        "handles":  10118,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:51.7453571+08:00",
+                        "t":  78,
+                        "cpuTotalSec":  44.484,
+                        "cpuPct":  0.625,
+                        "workingSetMB":  589.71,
+                        "privateMB":  426.08,
+                        "threads":  218,
+                        "handles":  10111,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:48:57.8872933+08:00",
+                        "t":  84,
+                        "cpuTotalSec":  45,
+                        "cpuPct":  0.516,
+                        "workingSetMB":  589.79,
+                        "privateMB":  426.2,
+                        "threads":  218,
+                        "handles":  10111,
+                        "processes":  7
+                    },
+                    {
+                        "at":  "2026-10-30T00:49:03.9193029+08:00",
+                        "t":  91,
+                        "cpuTotalSec":  45.328,
+                        "cpuPct":  0.328,
+                        "workingSetMB":  586.56,
+                        "privateMB":  422.96,
+                        "threads":  219,
+                        "handles":  10110,
+                        "processes":  7
+                    }
+                ]
+}

@@ -2,7 +2,8 @@
 //!
 //! 监听使用 `AddClipboardFormatListener` + 消息专用窗口；读取只识别
 //! 文本 / HTML / PNG / DIB / 文件列表，无法安全解析的格式不记录。
-//! 写入后记录剪贴板序列号，监听侧跳过 <= 该序列号的事件（自我写入隔离）。
+//! 本进程的所有写入（单项复制、整组复制、逐项粘贴、粘贴后恢复）都在
+//! 进程级访问锁内完成并登记最终序列号，监听侧据此跳过自身写入事件。
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ use super::store;
 use super::{
     CapturedContent, CapturedImage, MAX_FILE_COUNT, MAX_HTML_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES,
 };
-use crate::db::{Db, Settings};
+use crate::db::{ClipboardConfigError, Db, Settings};
 use crate::error::{AppError, AppResult};
 
 /// 监听数据汇：去重/设置检查/落库/广播都在这里，监听线程只负责读取。
@@ -237,7 +238,27 @@ fn estimate_content_bytes(c: &CapturedContent) -> usize {
         + c.source_app.len()
         + c.source_title.len()
         + c.file_paths.iter().map(|p| p.len()).sum::<usize>()
-        + c.image.as_ref().map(|i| i.png.len()).unwrap_or(0)
+        + c.image
+            .as_ref()
+            .map(|i| i.png.len() + i.rgba.len())
+            .unwrap_or(0)
+}
+
+/// 入队记账：整条内容超过队列字节预算时，先释放解码像素再记账。
+///
+/// 队列里同时驻留 `png` 与 `rgba`，而 `rgba` 是像素数 ×4——只按 `png` 记账会让
+/// 名义 128MB 的预算在连续几张 4K 截图后实际驻留数百 MB。超大条目（拼接屏、
+/// 超高分辨率图）仍要入库，所以让它带着 `png` 入队，由工作线程重新解码一次；
+/// 这样峰值受预算约束，代价只落在本来就罕见的一次额外解码上。
+fn queue_weight_for(content: &mut CapturedContent) -> usize {
+    let weight = estimate_content_bytes(content);
+    if weight <= CONTENT_QUEUE_MAX_BYTES {
+        return weight;
+    }
+    if let Some(image) = content.image.as_mut() {
+        image.rgba = Vec::new();
+    }
+    estimate_content_bytes(content)
 }
 
 /// 入库结果：供监听线程更新诊断计数。
@@ -305,15 +326,39 @@ fn process_catching_panic(f: impl FnOnce() -> ProcessOutcome) -> ProcessOutcome 
     }
 }
 
+/// 配置异常日志限频：最多每 60 秒记录一次，避免损坏配置导致无限日志。
+fn log_config_error(error: &ClipboardConfigError) {
+    static LAST_LOG_SECS: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = LAST_LOG_SECS.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 60
+        || LAST_LOG_SECS
+            .compare_exchange(last, now, Ordering::SeqCst, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    tracing::warn!("剪贴板配置不可靠，自动记录已暂停：{}", error.message());
+}
+
 impl CaptureSink {
     /// 设置过滤 + 入库；只允许在工作线程调用，日志绝不包含正文。
     pub fn process(&self, mut content: CapturedContent) -> ProcessOutcome {
-        let settings = Settings::load(&self.db).unwrap_or_default();
-        if let CaptureDecision::Skip(reason) = filter_capture(&mut content, &settings) {
+        let config = Settings::load_clipboard(&self.db);
+        if !config.capture_allowed() {
+            if let Some(error) = config.error.as_ref() {
+                log_config_error(error);
+            }
+            return ProcessOutcome::Skipped;
+        }
+        if let CaptureDecision::Skip(reason) = filter_capture(&mut content, &config.settings) {
             tracing::debug!("剪贴板跳过：{}", reason);
             return ProcessOutcome::Skipped;
         }
-        match store::record_capture(&self.db, &self.root, &content, &settings) {
+        match store::record_capture(&self.db, &self.root, &content, &config.settings) {
             Ok(out) => {
                 tracing::debug!(
                     "剪贴板记录：kind={} size={} created={} grouped={}",
@@ -463,6 +508,63 @@ pub(crate) fn guard_allows(
     }
 }
 
+/// 32 位剪贴板序列号的回绕安全比较：`candidate` 是否严格晚于 `reference`。
+#[inline]
+pub(crate) fn sequence_after(candidate: u32, reference: u32) -> bool {
+    (candidate.wrapping_sub(reference) as i32) > 0
+}
+
+/// 事件序列号是否已被本进程的写入覆盖（自写本身或其重复/延迟通知）。
+///
+/// 序列号是 32 位计数器，按回绕差比较：`self_write` 当时及其之前的重复通知
+/// 视为自写；用户随后复制的新内容严格更晚，必须放行。
+#[inline]
+pub(crate) fn is_own_write_sequence(event_sequence: u32, self_write: u32) -> bool {
+    !sequence_after(event_sequence, self_write)
+}
+
+/// 登记自写水位：正常前进；序列号回绕时回退到新水位。
+///
+/// 只前进会把水位永久钉在回绕前的最大值，导致之后所有用户复制都被误判为
+/// 自写而不再记录。明显属于过去的旧通知（回绕差为负且距离很近）不回退。
+pub(crate) fn note_self_write_watermark(self_write: &AtomicU32, sequence: u32) {
+    let mut current = self_write.load(Ordering::SeqCst);
+    loop {
+        // 序列号回绕后新值在数值上更小，但按回绕差仍是「更晚」，必须更新；
+        // 明显过去的旧通知按回绕差为负，保持现有水位。
+        let next = if sequence_after(sequence, current) {
+            sequence
+        } else {
+            current
+        };
+        if next == current {
+            return;
+        }
+        match self_write.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return,
+            Err(value) => current = value,
+        }
+    }
+}
+
+/// 恢复写入结束后的统一收尾：只有写入成功才登记自写序列号。
+///
+/// 失败时不得登记（否则监听侧会把用户内容当成本进程写入而丢弃），
+/// 成功时只前进不回退，避免并发写入把水位拉回去。
+fn finish_restore(
+    written: AppResult<()>,
+    final_seq: u32,
+    self_write: &AtomicU32,
+) -> AppResult<RestoreOutcome> {
+    match written {
+        Ok(()) => {
+            note_self_write_watermark(self_write, final_seq);
+            Ok(RestoreOutcome::Restored)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// 当前剪贴板内容是否仍等于本进程写入的载荷。
 ///
 /// Windows 会在 `CloseClipboard` 之后继续为合成/延迟渲染格式递增序列号，
@@ -480,6 +582,11 @@ pub(crate) fn payload_matches_read(
             text: expected_text,
             html: expected_html,
         } => {
+            // 长度为 0 的 CF_HTML 片段不代表富文本。若按「有 HTML」判定，
+            // 本进程写入的纯文本会被当成用户已换成富文本：逐项粘贴误停、
+            // 自写抑制失效并重复入库。期望侧与实际侧都按不存在处理。
+            let html = html.filter(|h| !h.is_empty());
+            let expected_html = expected_html.as_ref().filter(|h| !h.is_empty());
             if !expected_text.is_empty() && text != Some(expected_text.as_str()) {
                 return false;
             }
@@ -490,8 +597,43 @@ pub(crate) fn payload_matches_read(
             }
         }
         ClipboardPayload::Image {
-            png: expected_png, ..
-        } => !expected_png.is_empty() && png == Some(expected_png.as_slice()),
+            png: expected_png,
+            rgba,
+            width,
+            height,
+        } => {
+            if expected_png.is_empty() {
+                return false;
+            }
+            if png == Some(expected_png.as_slice()) {
+                return true;
+            }
+            // Windows 会用同源 CF_DIB 合成/替换「PNG」容器：容器字节变了不代表图片内容变了。
+            // 只比容器字节会把本进程自己写入的图片误判成「用户已接管」，
+            // 逐项粘贴会中途停、自写抑制会失效并重复入库，必须回退到像素判定。
+            let Some(actual) = png else { return false };
+            let (mut expected_rgba, expected_size) = match rgba {
+                Some(rgba) if !rgba.is_empty() => (rgba.clone(), (*width, *height)),
+                _ => match image::decode_png_rgba(expected_png) {
+                    Ok((rgba, w, h)) => (rgba, (w, h)),
+                    Err(_) => return false,
+                },
+            };
+            match image::decode_png_rgba(actual) {
+                Ok((mut actual_rgba, actual_w, actual_h)) => {
+                    // 两侧都必须按采集规则归一 Alpha：32bpp CF_DIB 合成出的 PNG 容器
+                    // Alpha 字节全 0（通道未被使用），入库时已按不透明处理成 255。
+                    // 不归一就等于拿「Alpha=0 的容器」比「Alpha=255 的入库版本」，
+                    // 本进程刚写入的图片永远匹配不上自己的快照，逐项粘贴会在第 1 项
+                    // 就停成「剪贴板已被其他程序更新」。真实透明图（Alpha 并非全 0）
+                    // 不归一，仍与不透明图区分开。
+                    image::canonicalize_unused_alpha(&mut expected_rgba);
+                    image::canonicalize_unused_alpha(&mut actual_rgba);
+                    (actual_w, actual_h) == expected_size && actual_rgba == expected_rgba
+                }
+                Err(_) => false,
+            }
+        }
         ClipboardPayload::Files { paths } => {
             paths.len() == files.len()
                 && paths
@@ -559,6 +701,22 @@ pub fn write_payload(payload: &ClipboardPayload) -> AppResult<u32> {
     }
 }
 
+/// 用户主动复制（单项/整组）的统一入口：写入与自写登记在同一把访问锁内完成。
+///
+/// 旧的「写入成功后再登记序列号」存在窗口：监听线程可能在登记前读取事件，
+/// 把本进程的复制当成外部复制重复入库。
+pub fn write_payload_notifying(
+    payload: &ClipboardPayload,
+    self_write: &AtomicU32,
+) -> AppResult<u32> {
+    match write_guarded_notifying(payload, WriteGuard::Unconditional, self_write)? {
+        WriteOutcome::Written(seq) => Ok(seq),
+        WriteOutcome::SequenceChanged => {
+            Err(AppError::Validation("剪贴板状态已变化，写入已取消".into()))
+        }
+    }
+}
+
 /// 带守卫写入：守卫判定与写入都在持有进程写锁 + 剪贴板锁期间完成。
 ///
 /// 这是剪贴板写入竞态的唯一安全边界：守卫拒绝时不会执行 EmptyClipboard，
@@ -587,15 +745,17 @@ pub fn snapshot() -> Snapshot {
 /// 只有剪贴板内容仍是本进程最后一次写入时才恢复，绝不覆盖用户后来复制的内容。
 ///
 /// 以内容而不是序列号为准：Windows 会在 CloseClipboard 后继续为合成格式递增序列号，
-/// 序列号相等/不等都不能单独证明剪贴板属于谁。
+/// 序列号相等/不等都不能单独证明剪贴板属于谁。恢复写入同样属于本进程自写，
+/// 成功时在访问锁内登记最终序列号，监听线程不会把恢复当成新的外部复制。
 pub fn restore_if_own_content(
     snapshot: &Snapshot,
     last_written: &ClipboardPayload,
+    self_write: &AtomicU32,
 ) -> AppResult<RestoreOutcome> {
     let Some(payload) = snapshot.payload.as_ref() else {
         return Ok(RestoreOutcome::NoSnapshot);
     };
-    imp::restore_if_own_content(payload, last_written)
+    imp::restore_if_own_content(payload, last_written, self_write)
 }
 
 pub fn send_ctrl_v() -> AppResult<()> {
@@ -794,7 +954,7 @@ mod imp {
             .unwrap_or_default()
     }
 
-    unsafe fn read_png() -> Option<CapturedImage> {
+    unsafe fn read_png(dib_alpha_unused: bool) -> Option<CapturedImage> {
         let fmt = format_id("PNG");
         if fmt == 0 {
             return None;
@@ -803,9 +963,11 @@ mod imp {
         if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
             return None;
         }
-        let (rgba, w, h) = image::decode_png_rgba(&bytes).ok()?;
+        // Windows 会从 32bpp DIB 合成 Alpha 全 0 的 PNG；只有同源 DIB 能
+        // 证明「Alpha 未被使用」时才归一化为不透明，否则保留合法透明图。
+        let (png, rgba, w, h) = image::normalize_clipboard_png(bytes, dib_alpha_unused).ok()?;
         Some(CapturedImage {
-            png: bytes,
+            png,
             width: w,
             height: h,
             rgba,
@@ -821,25 +983,27 @@ mod imp {
         get_bytes_format(fmt).filter(|b| !b.is_empty())
     }
 
-    unsafe fn read_dib() -> Option<CapturedImage> {
-        let candidates = [CF_DIBV5 as u32, CF_DIB as u32];
-        for fmt in candidates {
+    /// 只读原始 DIB 字节，用于判定 Alpha 来源；解码留到真正需要时再做。
+    unsafe fn read_dib_bytes() -> Option<Vec<u8>> {
+        for fmt in [CF_DIBV5 as u32, CF_DIB as u32] {
             if let Some(bytes) = get_bytes_format(fmt) {
-                if bytes.len() > MAX_IMAGE_BYTES {
-                    return None;
-                }
-                if let Some((rgba, w, h)) = image::dib_to_rgba(&bytes) {
-                    let png = image::encode_png(&rgba, w, h).ok()?;
-                    return Some(CapturedImage {
-                        png,
-                        width: w,
-                        height: h,
-                        rgba,
-                    });
+                if !bytes.is_empty() && bytes.len() <= MAX_IMAGE_BYTES {
+                    return Some(bytes);
                 }
             }
         }
         None
+    }
+
+    fn captured_from_dib(bytes: &[u8]) -> Option<CapturedImage> {
+        let (rgba, w, h) = image::dib_to_rgba(bytes)?;
+        let png = image::encode_png(&rgba, w, h).ok()?;
+        Some(CapturedImage {
+            png,
+            width: w,
+            height: h,
+            rgba,
+        })
     }
 
     pub fn parse_hdrop(bytes: &[u8]) -> Vec<String> {
@@ -967,7 +1131,7 @@ mod imp {
         let _access = lock_access();
         // 自写登记与这里使用同一把锁，锁内读到的值一定是最新值；
         // 事件在登记前通过检查也不会造成写入结束后再读一次剪贴板。
-        if event_sequence <= self_write.load(Ordering::SeqCst) {
+        if is_own_write_sequence(event_sequence, self_write.load(Ordering::SeqCst)) {
             return ClipboardRead::Skip("本应用自身写入");
         }
         read_locked(ignore_markers)
@@ -983,7 +1147,12 @@ mod imp {
         let text = read_text().unwrap_or_default();
         let html = read_html().unwrap_or_default();
         let files = read_files();
-        let image = read_png().or_else(|| read_dib());
+        // 先取 DIB 原始字节作为「Alpha 是否被使用」的佐证，再决定 PNG 归一化；
+        // PNG 缺失或损坏时才解码 DIB 兜底。
+        let dib = read_dib_bytes();
+        let dib_alpha_unused = dib.as_deref().is_some_and(image::dib_alpha_is_unused);
+        let image =
+            read_png(dib_alpha_unused).or_else(|| dib.as_deref().and_then(captured_from_dib));
 
         let kind = match super::super::engine::classify(&text, &html, image.is_some(), &files) {
             Some(k) => k,
@@ -1035,33 +1204,42 @@ mod imp {
         // 序列号必须在 CloseClipboard 之后读取：关闭时可能因合成格式继续递增，
         // 锁内读到的值会偏小，导致后续守卫误判“剪贴板已被其他程序更新”。
         let sequence = unsafe { GetClipboardSequenceNumber() };
-        let payload = match read {
-            ClipboardRead::Content(c) => match c.kind.as_str() {
-                super::super::KIND_IMAGE => c.image.map(|i| ClipboardPayload::Image {
-                    png: i.png,
-                    rgba: Some(i.rgba),
-                    width: i.width,
-                    height: i.height,
-                }),
-                super::super::KIND_FILES if !c.file_paths.is_empty() => {
-                    Some(ClipboardPayload::Files {
-                        paths: c.file_paths,
-                    })
-                }
-                super::super::KIND_FILES => None,
-                _ if !c.text.is_empty() || !c.html.is_empty() => Some(ClipboardPayload::Text {
-                    text: c.text,
-                    html: if c.html.is_empty() {
-                        None
-                    } else {
-                        Some(c.html)
-                    },
-                }),
-                _ => None,
-            },
-            _ => None,
+        Snapshot {
+            sequence,
+            payload: payload_from_read(read),
+        }
+    }
+
+    /// 已打开的剪贴板读到的内容 → 可回写的载荷；无法完整比较的形态返回 None。
+    ///
+    /// `snapshot` 与「EmptyClipboard 之后的失败回滚」共用这份映射，
+    /// 避免两条路径对「什么算可恢复」给出不同答案。
+    pub(super) fn payload_from_read(read: ClipboardRead) -> Option<ClipboardPayload> {
+        let c = match read {
+            ClipboardRead::Content(c) => c,
+            _ => return None,
         };
-        Snapshot { sequence, payload }
+        match c.kind.as_str() {
+            super::super::KIND_IMAGE => c.image.map(|i| ClipboardPayload::Image {
+                png: i.png,
+                rgba: Some(i.rgba),
+                width: i.width,
+                height: i.height,
+            }),
+            super::super::KIND_FILES if !c.file_paths.is_empty() => Some(ClipboardPayload::Files {
+                paths: c.file_paths,
+            }),
+            super::super::KIND_FILES => None,
+            _ if !c.text.is_empty() || !c.html.is_empty() => Some(ClipboardPayload::Text {
+                text: c.text,
+                html: if c.html.is_empty() {
+                    None
+                } else {
+                    Some(c.html)
+                },
+            }),
+            _ => None,
+        }
     }
 
     unsafe fn set_bytes(fmt: u32, bytes: &[u8]) -> bool {
@@ -1127,10 +1305,17 @@ mod imp {
 
     /// 调用方必须已持有剪贴板锁；成功时返回写入后的序列号（仍在锁内读取）。
     unsafe fn write_open(payload: &ClipboardPayload) -> AppResult<u32> {
-        let mut ok = true;
         if EmptyClipboard() == 0 {
-            ok = false;
+            // 清空失败时不再写格式：否则会往未知的旧剪贴板里叠加内容。
+            return Err(AppError::Validation("写入剪贴板失败".into()));
         }
+        write_formats(payload)?;
+        Ok(GetClipboardSequenceNumber())
+    }
+
+    /// 调用方必须已持有剪贴板锁并已清空剪贴板；只写格式，不清空。
+    unsafe fn write_formats(payload: &ClipboardPayload) -> AppResult<()> {
+        let mut ok = true;
         match payload {
             ClipboardPayload::Text { text, html } => {
                 let mut primary_ok = false;
@@ -1195,7 +1380,7 @@ mod imp {
         if !ok {
             return Err(AppError::Validation("写入剪贴板失败".into()));
         }
-        Ok(GetClipboardSequenceNumber())
+        Ok(())
     }
 
     /// 调用方必须已持有剪贴板锁；读取全部可比较格式并判断内容是否一致。
@@ -1268,7 +1453,46 @@ mod imp {
             unsafe { CloseClipboard() };
             return Ok(WriteOutcome::SequenceChanged);
         }
-        let written = unsafe { write_open(payload) };
+        // EmptyClipboard 是不可逆动作：一旦清空成功、后续主格式写入失败，用户
+        // 原来的剪贴板就直接丢了。所以清空前先准备好「万一失败要放回什么」——
+        // Content 守卫自带这份内容，序列号守卫与无条件覆盖必须在锁内现场读取。
+        let fallback = match &guard {
+            WriteGuard::Content(_) => None,
+            _ => unsafe { payload_from_read(read_open(true)) },
+        };
+        let preserve: Option<&ClipboardPayload> = match (&guard, fallback.as_ref()) {
+            (WriteGuard::Content(expected), _) => Some(*expected),
+            (_, other) => other,
+        };
+        let emptied = unsafe { EmptyClipboard() != 0 };
+        let written = if emptied {
+            unsafe { write_formats(payload) }
+        } else {
+            Err(AppError::Validation("写入剪贴板失败".into()))
+        };
+        if written.is_err() && emptied {
+            // 写入失败已经发生在清空之后：尽力回写清空前的内容并如实记录。
+            match preserve {
+                Some(expected) => {
+                    let recovered =
+                        unsafe { EmptyClipboard() != 0 && write_formats(expected).is_ok() };
+                    if recovered {
+                        let seq = unsafe { GetClipboardSequenceNumber() };
+                        if let Some(sw) = notify {
+                            note_self_write_watermark(sw, seq);
+                        }
+                        tracing::warn!("剪贴板写入失败，已恢复写入前内容");
+                    } else {
+                        tracing::warn!("剪贴板写入失败，且未能恢复写入前内容");
+                    }
+                }
+                None => {
+                    // 清空前的内容不可比较（非文本/图片/文件形态或读取失败）：
+                    // 没有可靠的重建依据，宁可留空也不猜写一份残缺内容。
+                    tracing::warn!("剪贴板写入失败，且写入前内容无法比较，未能恢复用户剪贴板");
+                }
+            }
+        }
         unsafe { CloseClipboard() };
         match written {
             // Windows 可能在 CloseClipboard 之后继续为合成/延迟渲染格式递增序列号，
@@ -1278,7 +1502,7 @@ mod imp {
                 if let Some(sw) = notify {
                     // 仍在访问锁内：采集线程的锁内复核必然读到该值，
                     // 不会再为本次写入打开剪贴板。
-                    sw.fetch_max(final_seq, Ordering::SeqCst);
+                    note_self_write_watermark(sw, final_seq);
                 }
                 Ok(WriteOutcome::Written(final_seq))
             }
@@ -1289,6 +1513,7 @@ mod imp {
     pub fn restore_if_own_content(
         snapshot_payload: &ClipboardPayload,
         last_written: &ClipboardPayload,
+        self_write: &AtomicU32,
     ) -> AppResult<RestoreOutcome> {
         let _access = lock_access();
         if !open_clipboard() {
@@ -1303,11 +1528,25 @@ mod imp {
             return Ok(RestoreOutcome::KeepUserCopy);
         }
         let restored = unsafe { write_open(snapshot_payload) };
+        let restored = match restored {
+            Ok(seq) => Ok(seq),
+            Err(e) => {
+                // 快照写入失败时尽量把本次写入内容放回，避免「恢复」反而清空剪贴板。
+                let recovered =
+                    unsafe { EmptyClipboard() != 0 && write_formats(last_written).is_ok() };
+                if recovered {
+                    let seq = unsafe { GetClipboardSequenceNumber() };
+                    note_self_write_watermark(self_write, seq);
+                    tracing::warn!("恢复原剪贴板失败，已回退为本次写入内容");
+                } else {
+                    tracing::warn!("恢复原剪贴板失败，且未能保留本次写入内容");
+                }
+                Err(e)
+            }
+        };
         unsafe { CloseClipboard() };
-        match restored {
-            Ok(_) => Ok(RestoreOutcome::Restored),
-            Err(e) => Err(e),
-        }
+        let final_seq = unsafe { GetClipboardSequenceNumber() };
+        finish_restore(restored.map(|_| ()), final_seq, self_write)
     }
 
     pub fn clipboard_match(expected: &ClipboardPayload) -> ClipboardMatch {
@@ -1626,22 +1865,27 @@ mod imp {
                     // 队列中积压的旧事件直接合并：Windows 剪贴板不是可回放的历史，
                     // 只保证读取最新状态，绝不伪造中间版本。
                     while let Some(next) = event_q.try_pop() {
-                        if next.sequence > ev.sequence {
+                        if sequence_after(next.sequence, ev.sequence) {
                             ev = next;
                             MONITOR_COUNTERS
                                 .merged_events
                                 .fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    if ev.sequence <= last {
+                    if !sequence_after(ev.sequence, last) {
                         continue;
                     }
                     last = ev.sequence;
-                    if ev.sequence <= sink.self_write.load(Ordering::SeqCst) {
+                    if is_own_write_sequence(ev.sequence, sink.self_write.load(Ordering::SeqCst)) {
                         continue;
                     }
-                    let settings = Settings::load(&sink.db).unwrap_or_default();
-                    if !settings.clipboard_enabled || settings.clipboard_paused {
+                    // fail-closed：配置缺失键走默认（兼容旧库），任一剪贴板键
+                    // 损坏/类型错误/越界或数据库读取失败都停止本次采集。
+                    let config = Settings::load_clipboard(&sink.db);
+                    if !config.capture_allowed() {
+                        if let Some(error) = config.error.as_ref() {
+                            log_config_error(error);
+                        }
                         continue;
                     }
                     match read_clipboard_for_event(false, ev.sequence, &sink.self_write) {
@@ -1651,8 +1895,9 @@ mod imp {
                             MONITOR_COUNTERS
                                 .max_capture_latency_ms
                                 .fetch_max(latency, Ordering::Relaxed);
-                            let weight = estimate_content_bytes(&c);
-                            match content_q.push(*c, weight) {
+                            let mut content = *c;
+                            let weight = queue_weight_for(&mut content);
+                            match content_q.push(content, weight) {
                                 PushOutcome::Pushed => MonitorCounters::bump_peak(
                                     &MONITOR_COUNTERS.peak_content_queue,
                                     content_q.len(),
@@ -1815,6 +2060,7 @@ mod imp {
     pub fn restore_if_own_content(
         _snapshot_payload: &ClipboardPayload,
         _last_written: &ClipboardPayload,
+        _self_write: &AtomicU32,
     ) -> AppResult<RestoreOutcome> {
         Err(AppError::Validation("当前平台不支持剪贴板恢复".into()))
     }
@@ -1919,6 +2165,64 @@ mod tests {
     }
 
     #[test]
+    fn self_write_gate_skips_only_covered_events() {
+        // 本进程写入的最终序列（含 CloseClipboard 后递增）及更早的重复通知
+        assert!(is_own_write_sequence(42, 42));
+        assert!(is_own_write_sequence(41, 42), "延迟/重复通知不得再入库");
+        assert!(is_own_write_sequence(0, 42));
+        // 用户随后复制的新内容严格更晚，必须放行
+        assert!(!is_own_write_sequence(43, 42));
+        // 回绕感知：u32::MAX 在 42 之前（回绕后 0 才是最新），属于过去事件
+        assert!(is_own_write_sequence(u32::MAX, 42));
+        // 启动时未登记任何自写：所有事件都应被读取
+        assert!(!is_own_write_sequence(1, 0));
+    }
+
+    #[test]
+    fn sequence_wrap_does_not_pin_self_write_watermark() {
+        assert!(sequence_after(0, u32::MAX), "回绕后 0 晚于 MAX");
+        assert!(!sequence_after(u32::MAX, 0), "MAX 早于回绕后的 0");
+
+        let sw = AtomicU32::new(u32::MAX - 2);
+        note_self_write_watermark(&sw, 3);
+        assert_eq!(sw.load(Ordering::SeqCst), 3, "回绕时必须更新水位");
+        assert!(!is_own_write_sequence(4, 3), "回绕后的用户复制必须放行");
+        assert!(is_own_write_sequence(3, 3));
+        assert!(is_own_write_sequence(u32::MAX - 2, 3), "回绕前事件属于过去");
+
+        note_self_write_watermark(&sw, u32::MAX - 10);
+        assert_eq!(sw.load(Ordering::SeqCst), 3, "回绕前的旧通知不得把水位拉回");
+
+        let sw2 = AtomicU32::new(u32::MAX - 3);
+        finish_restore(Ok(()), 2, &sw2).unwrap();
+        assert_eq!(sw2.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn restore_registers_self_write_only_on_success() {
+        let sw = AtomicU32::new(100);
+        let failed = finish_restore(Err(AppError::Validation("写入失败".into())), 120, &sw);
+        assert!(failed.is_err());
+        assert_eq!(
+            sw.load(Ordering::SeqCst),
+            100,
+            "写入失败不得登记自写（否则会丢弃用户内容）"
+        );
+
+        let ok = finish_restore(Ok(()), 120, &sw).unwrap();
+        assert_eq!(ok, RestoreOutcome::Restored);
+        assert_eq!(
+            sw.load(Ordering::SeqCst),
+            120,
+            "恢复成功必须在锁内登记序列号"
+        );
+
+        // 并发场景下只前进不回退
+        finish_restore(Ok(()), 90, &sw).unwrap();
+        assert_eq!(sw.load(Ordering::SeqCst), 120);
+    }
+
+    #[test]
     fn payload_match_requires_same_text_and_html_presence() {
         let plain = ClipboardPayload::Text {
             text: "验收".into(),
@@ -1948,6 +2252,162 @@ mod tests {
             None,
             &[]
         ));
+    }
+
+    #[test]
+    fn payload_match_falls_back_to_pixels_when_png_container_changes() {
+        // 不透明像素按 RGB 重新编码会得到字节完全不同的容器，但像素一致——
+        // 这正是 Windows 用同源 CF_DIB 合成「PNG」时实际发生的事。
+        let rgba: Vec<u8> = (0..4 * 4 * 4)
+            .map(|i| {
+                if i % 4 == 3 {
+                    255
+                } else {
+                    (i as u8).wrapping_mul(37).wrapping_add(11)
+                }
+            })
+            .collect();
+        let expected_png = image::encode_png(&rgba, 4, 4).unwrap();
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 4, 4);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            let rgb: Vec<u8> = rgba
+                .chunks_exact(4)
+                .flat_map(|px| [px[0], px[1], px[2]])
+                .collect();
+            writer.write_image_data(&rgb).unwrap();
+        }
+        assert_ne!(
+            expected_png, out,
+            "样例必须产生不同的容器字节，否则测不到像素回退"
+        );
+        let payload = ClipboardPayload::Image {
+            png: expected_png.clone(),
+            rgba: None,
+            width: 4,
+            height: 4,
+        };
+        assert!(
+            payload_matches_read(&payload, None, None, Some(&out), &[]),
+            "容器字节变了但像素同源，必须判定为同一份内容"
+        );
+        let with_rgba = ClipboardPayload::Image {
+            png: expected_png.clone(),
+            rgba: Some(rgba.clone()),
+            width: 4,
+            height: 4,
+        };
+        assert!(
+            payload_matches_read(&with_rgba, None, None, Some(&out), &[]),
+            "带像素缓存时同样按像素判定"
+        );
+        let mut changed = rgba.clone();
+        changed[0] = changed[0].wrapping_add(1);
+        let changed_png = image::encode_png(&changed, 4, 4).unwrap();
+        assert!(
+            !payload_matches_read(&payload, None, None, Some(&changed_png), &[]),
+            "像素真的变了必须判定为不同内容"
+        );
+        let resized_png = image::encode_png(&rgba[..4 * 3 * 4], 4, 3).unwrap();
+        assert!(
+            !payload_matches_read(&payload, None, None, Some(&resized_png), &[]),
+            "尺寸不同必须判定为不同内容"
+        );
+        assert!(
+            !payload_matches_read(&payload, None, None, None, &[]),
+            "读不到图片必须判定为不同内容"
+        );
+    }
+
+    #[test]
+    fn payload_match_treats_zero_alpha_png_container_as_unused() {
+        // 真机 GUI 复现的形态：入库版本 Alpha=255，Windows 用 CF_DIB 合成出的
+        // 「PNG」容器 Alpha 字节全 0。两侧像素必须按同一条 Alpha 规则归一后比较，
+        // 否则本进程刚写入的图片永远匹配不上自己的粘贴前快照，
+        // 逐项粘贴会在第 1 项停成「剪贴板已被其他程序更新」。
+        let rgb: Vec<u8> = (0..3 * 4 * 4)
+            .map(|i| (i as u8).wrapping_mul(53).wrapping_add(9))
+            .collect();
+        let encode_with_alpha = |alpha: u8| -> Vec<u8> {
+            let rgba: Vec<u8> = rgb
+                .chunks_exact(3)
+                .flat_map(|px| [px[0], px[1], px[2], alpha])
+                .collect();
+            image::encode_png(&rgba, 4, 4).unwrap()
+        };
+        let opaque_png = encode_with_alpha(255);
+        let zero_alpha_png = encode_with_alpha(0);
+        assert_ne!(
+            opaque_png, zero_alpha_png,
+            "样例必须产生不同的容器字节，否则测不到 Alpha 归一"
+        );
+
+        let expected = ClipboardPayload::Image {
+            png: opaque_png.clone(),
+            rgba: None,
+            width: 4,
+            height: 4,
+        };
+        assert!(
+            payload_matches_read(&expected, None, None, Some(&zero_alpha_png), &[]),
+            "Alpha 全 0 的容器属于未使用通道，必须判定为同一份图片内容"
+        );
+        let expected_cached = ClipboardPayload::Image {
+            png: opaque_png.clone(),
+            rgba: Some(
+                rgb.chunks_exact(3)
+                    .flat_map(|px| [px[0], px[1], px[2], 255u8])
+                    .collect(),
+            ),
+            width: 4,
+            height: 4,
+        };
+        assert!(
+            payload_matches_read(&expected_cached, None, None, Some(&zero_alpha_png), &[]),
+            "带像素缓存的期望侧同样要归一"
+        );
+
+        // 真实透明信息（Alpha 并非全 0）不能被归一成不透明。
+        let transparent_png = encode_with_alpha(128);
+        assert!(
+            !payload_matches_read(&expected, None, None, Some(&transparent_png), &[]),
+            "半透明图片与不透明图片是不同内容，绝不因归一而判为相同"
+        );
+    }
+
+    #[test]
+    fn payload_match_ignores_empty_html_fragment() {
+        let plain = ClipboardPayload::Text {
+            text: "验收".into(),
+            html: None,
+        };
+        assert!(
+            payload_matches_read(&plain, Some("验收"), Some(""), None, &[]),
+            "长度为 0 的 HTML 片段不是内容，不能把自写纯文本判成用户接管"
+        );
+        let rich = ClipboardPayload::Text {
+            text: "验收".into(),
+            html: Some("<b>验收</b>".into()),
+        };
+        assert!(
+            !payload_matches_read(&rich, Some("验收"), Some(""), None, &[]),
+            "期望富文本却只读回空片段，必须判定为不同内容"
+        );
+        assert!(
+            !payload_matches_read(&rich, Some("验收"), None, None, &[]),
+            "期望富文本却读不到 HTML，必须判定为不同内容"
+        );
+        let empty_rich = ClipboardPayload::Text {
+            text: "验收".into(),
+            html: Some(String::new()),
+        };
+        assert!(
+            payload_matches_read(&empty_rich, Some("验收"), None, None, &[]),
+            "期望侧的空 HTML 与实际侧同样按不存在处理"
+        );
     }
 
     #[test]
@@ -2038,6 +2498,71 @@ mod tests {
             rgba: vec![],
         });
         assert_eq!(estimate_content_bytes(&c), 3 + 4 + 4 + 7 + 10);
+        // 队列里保留的是 png + rgba 两份：只按 png 记账会让 128MB 预算
+        // 实际占住数倍内存，截图会话尤其明显（纯色图容器极小、像素极大）。
+        c.image = Some(CapturedImage {
+            png: vec![0u8; 10],
+            width: 2,
+            height: 2,
+            rgba: vec![0u8; 16],
+        });
+        assert_eq!(
+            estimate_content_bytes(&c),
+            3 + 4 + 4 + 7 + 10 + 16,
+            "图片记账必须包含解码后的 RGBA"
+        );
+    }
+
+    fn queue_content(png: usize, rgba: usize) -> CapturedContent {
+        CapturedContent {
+            kind: "image".into(),
+            text: String::new(),
+            html: String::new(),
+            preview: String::new(),
+            file_paths: vec![],
+            image: Some(CapturedImage {
+                png: vec![0u8; png],
+                width: 1,
+                height: 1,
+                rgba: vec![0u8; rgba],
+            }),
+            source_app: "snippingtool.exe".into(),
+            source_title: String::new(),
+            byte_size: 0,
+        }
+    }
+
+    #[test]
+    fn oversized_capture_drops_rgba_to_stay_inside_queue_budget() {
+        // 记账修正后，一张超大截图的 RGBA 可能比整条队列预算还大。
+        // 这时必须释放像素（工作线程按 png 重新解码）而不是丢弃用户的截图，
+        // 否则名义 128MB 的预算在实际驻留几倍内存和漏记内容之间二选一。
+        let mut big = queue_content(4 * 1024 * 1024, CONTENT_QUEUE_MAX_BYTES + 1);
+        let weight = queue_weight_for(&mut big);
+        assert!(
+            weight <= CONTENT_QUEUE_MAX_BYTES,
+            "超预算条目必须收敛到预算内：{weight}"
+        );
+        let img = big.image.as_ref().unwrap();
+        assert!(img.rgba.is_empty(), "只允许释放解码像素");
+        assert_eq!(img.png.len(), 4 * 1024 * 1024, "原图字节必须完整保留");
+        let q = BoundedQueue::new(CONTENT_QUEUE_CAPACITY, CONTENT_QUEUE_MAX_BYTES);
+        assert_eq!(
+            q.push(big, weight),
+            PushOutcome::Pushed,
+            "超大截图仍需入库，不得因预算被拒"
+        );
+
+        let mut normal = queue_content(2 * 1024 * 1024, 8 * 1024 * 1024);
+        assert_eq!(
+            queue_weight_for(&mut normal),
+            10 * 1024 * 1024 + "snippingtool.exe".len()
+        );
+        assert_eq!(
+            normal.image.as_ref().unwrap().rgba.len(),
+            8 * 1024 * 1024,
+            "预算内的常规截图不得被动过"
+        );
     }
 
     #[test]
@@ -2238,5 +2763,83 @@ mod tests {
     fn process_catching_panic_converts_panic_to_failed() {
         let outcome = process_catching_panic(|| panic!("模拟工作线程异常"));
         assert_eq!(outcome, ProcessOutcome::Failed);
+    }
+
+    /// `EmptyClipboard` 之后写入失败时，只有可完整比较的形态才谈得上「放回原内容」。
+    ///
+    /// 判错方向的代价不对称：拿残缺内容猜写会伪造用户剪贴板，留空只是丢一次内容。
+    /// 所以这里既断言「可恢复的要能恢复」，也断言「不可恢复的必须判 None」。
+    #[cfg(windows)]
+    #[test]
+    fn only_comparable_forms_can_be_put_back_after_failed_write() {
+        use super::imp::payload_from_read;
+        use ClipboardPayload as P;
+
+        let text = payload_from_read(ClipboardRead::Content(Box::new(captured(
+            "text",
+            "原文",
+            "notepad.exe",
+        ))));
+        assert!(
+            matches!(text, Some(P::Text { ref text, html: None }) if text == "原文"),
+            "纯文本必须可回写"
+        );
+
+        let mut rich = captured("html", "", "chrome.exe");
+        rich.html = "<b>hi</b>".into();
+        assert!(
+            matches!(
+                payload_from_read(ClipboardRead::Content(Box::new(rich))),
+                Some(P::Text { html: Some(_), .. })
+            ),
+            "只有 HTML 时也必须能按原样回写"
+        );
+
+        let mut image = captured("image", "", "snipping.exe");
+        image.image = Some(CapturedImage {
+            png: vec![1, 2, 3],
+            width: 4,
+            height: 2,
+            rgba: vec![0u8; 4 * 2 * 4],
+        });
+        assert!(
+            matches!(
+                payload_from_read(ClipboardRead::Content(Box::new(image))),
+                Some(P::Image {
+                    width: 4,
+                    height: 2,
+                    ..
+                })
+            ),
+            "图片必须带回 PNG 与 RGBA，重贴才不丢像素"
+        );
+
+        // 以下形态无法重建为等价内容：必须判为不可恢复，绝不猜写。
+        let mut kind_says_image = captured("image", "", "snipping.exe");
+        kind_says_image.image = None;
+        assert_eq!(
+            payload_from_read(ClipboardRead::Content(Box::new(kind_says_image))),
+            None,
+            "声称是图片却没解出像素时不能假装可恢复"
+        );
+
+        let mut no_paths = captured("files", "", "explorer.exe");
+        no_paths.file_paths.clear();
+        assert_eq!(
+            payload_from_read(ClipboardRead::Content(Box::new(no_paths))),
+            None,
+            "文件列表为空时没有任何可回写的信息"
+        );
+
+        let mut empty_text = captured("text", "", "unknown");
+        empty_text.text.clear();
+        assert_eq!(
+            payload_from_read(ClipboardRead::Content(Box::new(empty_text))),
+            None,
+            "空文本不是用户的原内容"
+        );
+
+        assert_eq!(payload_from_read(ClipboardRead::Empty), None);
+        assert_eq!(payload_from_read(ClipboardRead::Skip("格式不支持")), None);
     }
 }

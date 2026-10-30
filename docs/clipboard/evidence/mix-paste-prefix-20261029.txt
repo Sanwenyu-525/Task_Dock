@@ -1,0 +1,188 @@
+START {"job_id":"d6c490f2-667b-415f-b2c8-8980c1435e00","target":{"hwnd":8851838,"pid":6688,"title":"MIX-TARGET-20261029 - 用户配置 1 - Microsoft​ Edge","exe_path":"c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe"},"total":4,"interval_ms":350,"intervals":{"text_ms":350,"html_ms":600,"image_ms":1200,"files_ms":900}}
+{
+  "at": "2026-10-29T15:32:26.643Z",
+  "hwnd": 8851838,
+  "target": {
+    "hwnd": 8851838,
+    "pid": 6688,
+    "title": "MIX-TARGET-20261029 - 用户配置 1 - Microsoft​ Edge",
+    "exe_path": "c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe"
+  },
+  "start": {
+    "job_id": "d6c490f2-667b-415f-b2c8-8980c1435e00",
+    "target": {
+      "hwnd": 8851838,
+      "pid": 6688,
+      "title": "MIX-TARGET-20261029 - 用户配置 1 - Microsoft​ Edge",
+      "exe_path": "c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe"
+    },
+    "total": 4,
+    "interval_ms": 350,
+    "intervals": {
+      "text_ms": 350,
+      "html_ms": 600,
+      "image_ms": 1200,
+      "files_ms": 900
+    }
+  },
+  "job": {
+    "id": "d6c490f2-667b-415f-b2c8-8980c1435e00",
+    "group_id": "fa3975f4-0544-4685-8a15-017af63c9fcb",
+    "target_title": "MIX-TARGET-20261029 - 用户配置 1 - Microsoft​ Edge",
+    "target_exe": "c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe",
+    "status": "completed",
+    "total": 4,
+    "sent": 4,
+    "started_at": "2026-10-29T15:32:18.565485500+00:00",
+    "ended_at": "2026-10-29T15:32:24.393686200+00:00",
+    "message": "已发送 4/4 项粘贴动作；目标应用是否接收无法自动验证（4 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容",
+    "remaining_items": [],
+    "restored": true
+  },
+  "restoredClipboard": {
+    "hasImage": false,
+    "files": [],
+    "text": "MIX-SENTINEL-20261029-original-clipboard"
+  },
+  "preClipboard": {
+    "hasImage": false,
+    "files": [],
+    "text": "MIX-SENTINEL-20261029-original-clipboard"
+  },
+  "dom": {
+    "nodes": [
+      {
+        "type": "img",
+        "w": 480,
+        "h": 300,
+        "src": "data:image/png;base64,iVBORw0KGgoAAAANSU"
+      },
+      {
+        "type": "img",
+        "w": 480,
+        "h": 300,
+        "src": "data:image/png;base64,iVBORw0KGgoAAAANSU"
+      },
+      {
+        "type": "text",
+        "text": "TEXT-C-20261029-middle"
+      },
+      {
+        "type": "img",
+        "w": 480,
+        "h": 300,
+        "src": "data:image/png;base64,iVBORw0KGgoAAAANSU"
+      }
+    ],
+    "imgs": [
+      {
+        "w": 480,
+        "h": 300,
+        "complete": true
+      },
+      {
+        "w": 480,
+        "h": 300,
+        "complete": true
+      },
+      {
+        "w": 480,
+        "h": 300,
+        "complete": true
+      }
+    ],
+    "text": "TEXT-C-20261029-middle",
+    "events": [
+      {
+        "types": [
+          "Files"
+        ],
+        "text": ""
+      },
+      {
+        "types": [
+          "Files"
+        ],
+        "text": ""
+      },
+      {
+        "types": [
+          "text/plain"
+        ],
+        "text": "TEXT-C-20261029-middle"
+      },
+      {
+        "types": [
+          "Files"
+        ],
+        "text": ""
+      }
+    ]
+  },
+  "history": {
+    "countBefore": 7,
+    "countAfter": 7,
+    "statsBefore": {
+      "items": 7,
+      "groups": 2
+    },
+    "statsAfter": {
+      "items": 7,
+      "groups": 2
+    },
+    "newItems": [],
+    "copyCountChanged": [],
+    "baseline": [
+      {
+        "id": "b762a172-c3af-480f-95a1-7eef27d414b1",
+        "kind": "image",
+        "copy_count": 2,
+        "last_seen_at": "2026-10-29T15:29:31.428033900+00:00"
+      },
+      {
+        "id": "3ae070df-ca70-4eb4-b6be-d405dfea3081",
+        "kind": "image",
+        "copy_count": 2,
+        "last_seen_at": "2026-10-29T15:29:32.036815+00:00"
+      },
+      {
+        "id": "bbb94d27-04f6-4df4-87d6-aa5132e7280d",
+        "kind": "text",
+        "copy_count": 2,
+        "last_seen_at": "2026-10-29T15:29:32.464334600+00:00"
+      },
+      {
+        "id": "b80c1ab6-1c1e-4b28-9b8f-f1e59c10b541",
+        "kind": "image",
+        "copy_count": 2,
+        "last_seen_at": "2026-10-29T15:29:32.877593900+00:00"
+      }
+    ],
+    "after": [
+      {
+        "id": "b762a172-c3af-480f-95a1-7eef27d414b1",
+        "kind": "image",
+        "copy_count": 2,
+        "last_seen_at": "2026-10-29T15:29:31.428033900+00:00"
+      },
+      {
+        "id": "3ae070df-ca70-4eb4-b6be-d405dfea3081",
+        "kind": "image",
+        "copy_count": 2,
+        "last_seen_at": "2026-10-29T15:29:32.036815+00:00"
+      },
+      {
+        "id": "bbb94d27-04f6-4df4-87d6-aa5132e7280d",
+        "kind": "text",
+        "copy_count": 2,
+        "last_seen_at": "2026-10-29T15:29:32.464334600+00:00"
+      },
+      {
+        "id": "b80c1ab6-1c1e-4b28-9b8f-f1e59c10b541",
+        "kind": "image",
+        "copy_count": 2,
+        "last_seen_at": "2026-10-29T15:29:32.877593900+00:00"
+      }
+    ]
+  }
+}

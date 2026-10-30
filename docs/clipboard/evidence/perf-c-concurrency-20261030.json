@@ -1,0 +1,249 @@
+{
+  "at": "2026-10-29T16:47:31.865Z",
+  "agent": {
+    "httpStatsBefore": {
+      "http": {
+        "accepted": 33650,
+        "active_connections": 1,
+        "active_requests": 0,
+        "internal_errors": 0,
+        "last_request_at": "2026-10-29T16:47:31.957893600+00:00",
+        "max_active_requests": 16,
+        "max_body_bytes": 65536,
+        "max_concurrency": 32,
+        "rejected_auth": 0,
+        "rejected_concurrency": 0,
+        "rejected_overload": 0,
+        "rejected_parse": 1,
+        "requests": 33658
+      },
+      "pipeline": {
+        "batches": 338,
+        "coalesce_ms": 250,
+        "commit_failures": 0,
+        "db_write_latency": {
+          "max_ms": 68.31,
+          "p50_ms": 18.56,
+          "p95_ms": 52.67,
+          "p99_ms": 64.71,
+          "samples": 338
+        },
+        "events_merged": 24884,
+        "events_processed": 8766,
+        "events_received": 33650,
+        "events_sampled": 0,
+        "fallback_jobs": 0,
+        "ingest_latency": {
+          "max_ms": 2612.57,
+          "p50_ms": 119.8,
+          "p95_ms": 2486.59,
+          "p99_ms": 2583.92,
+          "samples": 2048
+        },
+        "last_batch_size": 21,
+        "last_flush_at": "2026-10-29T16:45:47.840115600+00:00",
+        "lifecycle": "running",
+        "max_batch_size": 31,
+        "merge_buffer": 0,
+        "overload_rejects": 0,
+        "queue_capacity": 1024,
+        "queue_depth_events": 0,
+        "queue_depth_jobs": 0,
+        "running": true,
+        "submissions": 33650,
+        "uptime_secs": 192
+      }
+    },
+    "flood": {
+      "durationSec": 60.3,
+      "workers": 16,
+      "requests": 41004,
+      "ok": 41004,
+      "sampled": 0,
+      "merged": 0,
+      "queued": 39222,
+      "nonOk": 0,
+      "networkFailed": 0,
+      "statusCodes": {
+        "200": 41004
+      },
+      "latency": {
+        "p50": 17,
+        "p95": 42.17,
+        "max": "2237.75"
+      }
+    },
+    "httpStatsAfter": {
+      "http": {
+        "accepted": 74654,
+        "active_connections": 31,
+        "active_requests": 0,
+        "internal_errors": 0,
+        "last_request_at": "2026-10-29T16:48:35.376947+00:00",
+        "max_active_requests": 16,
+        "max_body_bytes": 65536,
+        "max_concurrency": 32,
+        "rejected_auth": 0,
+        "rejected_concurrency": 0,
+        "rejected_overload": 0,
+        "rejected_parse": 1,
+        "requests": 74664
+      },
+      "pipeline": {
+        "batches": 749,
+        "coalesce_ms": 250,
+        "commit_failures": 0,
+        "db_write_latency": {
+          "max_ms": 95.6,
+          "p50_ms": 19.32,
+          "p95_ms": 62.58,
+          "p99_ms": 76.83,
+          "samples": 749
+        },
+        "events_merged": 55182,
+        "events_processed": 19472,
+        "events_received": 74654,
+        "events_sampled": 0,
+        "fallback_jobs": 0,
+        "ingest_latency": {
+          "max_ms": 507.81,
+          "p50_ms": 119.26,
+          "p95_ms": 294.03,
+          "p99_ms": 389.62,
+          "samples": 2048
+        },
+        "last_batch_size": 17,
+        "last_flush_at": "2026-10-29T16:48:32.224832500+00:00",
+        "lifecycle": "running",
+        "max_batch_size": 33,
+        "merge_buffer": 0,
+        "overload_rejects": 0,
+        "queue_capacity": 1024,
+        "queue_depth_events": 0,
+        "queue_depth_jobs": 0,
+        "running": true,
+        "submissions": 74654,
+        "uptime_secs": 255
+      }
+    }
+  },
+  "ui": {
+    "cycles": 44,
+    "open": {
+      "p50": 359.23,
+      "p95": 512.74,
+      "max": "536.12"
+    },
+    "close": {
+      "p50": 150.38,
+      "p95": 263.89,
+      "max": "408.58"
+    },
+    "view": {
+      "count": 55,
+      "p50": 320.11,
+      "p95": 2990.92,
+      "max": "3132.44"
+    },
+    "searches": [
+      {
+        "ms": 1021.6999999880791,
+        "items": 80
+      },
+      {
+        "ms": 808.2999999821186,
+        "items": 80
+      },
+      {
+        "ms": 813,
+        "items": 80
+      },
+      {
+        "ms": 706.5999999940395,
+        "items": 80
+      },
+      {
+        "ms": 837.1999999880791,
+        "items": 80
+      },
+      {
+        "ms": 780.2000000178814,
+        "items": 80
+      }
+    ],
+    "lastCycles": [
+      {
+        "openMs": 396.68,
+        "drawerMs": 0.1,
+        "items": 80
+      },
+      {
+        "openMs": 384.96,
+        "drawerMs": 0.1,
+        "items": 80
+      },
+      {
+        "openMs": 468.54,
+        "drawerMs": 0,
+        "items": 80
+      }
+    ]
+  },
+  "status": {
+    "before": {
+      "activeJob": null,
+      "captureAllowed": true,
+      "configError": null,
+      "enabled": true,
+      "monitor": {
+        "captured": 0,
+        "content_queue_capacity": 8,
+        "content_queue_max_bytes": 134217728,
+        "dropped_contents": 0,
+        "dropped_events": 0,
+        "duplicates": 0,
+        "event_queue_capacity": 64,
+        "failed": 0,
+        "max_capture_latency_ms": 0,
+        "max_process_latency_ms": 0,
+        "merged_events": 0,
+        "observed_events": 0,
+        "peak_content_queue": 0,
+        "peak_event_queue": 0,
+        "recorded": 0,
+        "skipped": 0
+      },
+      "monitoring": true,
+      "paused": false,
+      "platform": "windows"
+    },
+    "after": {
+      "activeJob": null,
+      "captureAllowed": true,
+      "configError": null,
+      "enabled": true,
+      "monitor": {
+        "captured": 0,
+        "content_queue_capacity": 8,
+        "content_queue_max_bytes": 134217728,
+        "dropped_contents": 0,
+        "dropped_events": 0,
+        "duplicates": 0,
+        "event_queue_capacity": 64,
+        "failed": 0,
+        "max_capture_latency_ms": 0,
+        "max_process_latency_ms": 0,
+        "merged_events": 0,
+        "observed_events": 0,
+        "peak_content_queue": 0,
+        "peak_event_queue": 0,
+        "recorded": 0,
+        "skipped": 0
+      },
+      "monitoring": true,
+      "paused": false,
+      "platform": "windows"
+    }
+  },
+  "errors": []
+}

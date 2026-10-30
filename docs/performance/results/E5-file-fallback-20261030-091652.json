@@ -1,0 +1,56 @@
+{
+  "scenario": "file-fallback-quota",
+  "started_at": "2026-10-30T01:16:55+00:00",
+  "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept-v05\\data-fallback",
+  "exe": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept-v05\\task-dock-accept.exe",
+  "cases": [
+    {
+      "case": "running-over-quota",
+      "files_before": 5050,
+      "files_after": 5050,
+      "accepted": false,
+      "event": "PreToolUse",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "started_at": "2026-10-30T01:16:54+00:00",
+      "elapsed_ms": 37,
+      "failure_log": [
+        "2026-10-30T01:16:54.844Z pid=69872 hook fallback: 投递目录已满（5050 个文件 / 101000 字节，关键事件预留空间保留）"
+      ]
+    },
+    {
+      "case": "critical-headroom",
+      "files_before": 5050,
+      "files_after": 5051,
+      "accepted": true,
+      "event": "Stop",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "started_at": "2026-10-30T01:16:54+00:00",
+      "elapsed_ms": 39,
+      "failure_log": [
+        "2026-10-30T01:16:54.844Z pid=69872 hook fallback: 投递目录已满（5050 个文件 / 101000 字节，关键事件预留空间保留）"
+      ]
+    },
+    {
+      "case": "critical-exhausted",
+      "files_before": 5260,
+      "files_after": 5260,
+      "accepted": false,
+      "prefilled": 5260,
+      "event": "Stop",
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "started_at": "2026-10-30T01:16:55+00:00",
+      "elapsed_ms": 32,
+      "failure_log": [
+        "2026-10-30T01:16:54.844Z pid=69872 hook fallback: 投递目录已满（5050 个文件 / 101000 字节，关键事件预留空间保留）",
+        "2026-10-30T01:16:55.131Z pid=78956 hook fallback: 投递目录已满（5260 个文件 / 105464 字节，关键预留也已耗尽）"
+      ]
+    }
+  ],
+  "pass": true
+}

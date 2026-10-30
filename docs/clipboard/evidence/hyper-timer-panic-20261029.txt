@@ -1,0 +1,8 @@
+
+thread 'tokio-rt-worker' (75284) panicked at C:\Users\ASUS\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\hyper-1.12.0\src\common\time.rs:84:32:
+timeout `header_read_timeout` set, but no timer set
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'tokio-rt-worker' (75284) panicked at C:\Users\ASUS\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\hyper-1.12.0\src\common\time.rs:84:32:
+timeout `header_read_timeout` set, but no timer set
+

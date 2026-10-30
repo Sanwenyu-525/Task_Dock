@@ -1,0 +1,77 @@
+{
+  "scenario": "quit-under-load",
+  "started_at": "20261030-092003",
+  "submitted_total": 1107,
+  "submitted_critical": 885,
+  "quit_t0": 1793323211.336517,
+  "quit_exited_after_s": 16.52,
+  "quit_automation": [
+    "icon=2124,1183 quit=fallback"
+  ],
+  "shutdown_report": {
+    "lifecycle": "stopped",
+    "already_stopped": false,
+    "timed_out": false,
+    "elapsed_ms": 141,
+    "queued_events_at_start": 14,
+    "merge_events_at_start": 0,
+    "drained_events": 14,
+    "events_processed": 1027,
+    "unfinished_events": 0,
+    "recovery": "全部已受理事件均已写入（关键事件提交均收到确认）"
+  },
+  "inbox_after_exit": {
+    "files": 80,
+    "critical": 48,
+    "sample": [
+      {
+        "file": "hook-1793323227365-045f4309.json",
+        "session": "Q-20261030-092003-01029",
+        "state": "completed"
+      },
+      {
+        "file": "hook-1793323227365-534f7569.json",
+        "session": "Q-20261030-092003-01027",
+        "state": "waiting"
+      },
+      {
+        "file": "hook-1793323227365-77add2ef.json",
+        "session": "Q-20261030-092003-01034",
+        "state": "completed"
+      },
+      {
+        "file": "hook-1793323227365-d7d19952.json",
+        "session": "Q-20261030-092003-01031",
+        "state": "completed"
+      },
+      {
+        "file": "hook-1793323227366-159c3fc6.json",
+        "session": "Q-20261030-092003-01032",
+        "state": "waiting"
+      }
+    ]
+  },
+  "inbox_failure_log_tail": [],
+  "critical_db_present": 821,
+  "critical_db_duplicates": {},
+  "critical_missing_db_not_in_inbox": [
+    "Q-20261030-092003-01028",
+    "Q-20261030-092003-01033",
+    "Q-20261030-092003-01038",
+    "Q-20261030-092003-01043",
+    "Q-20261030-092003-01048",
+    "Q-20261030-092003-01053",
+    "Q-20261030-092003-01058",
+    "Q-20261030-092003-01063",
+    "Q-20261030-092003-01068",
+    "Q-20261030-092003-01073",
+    "Q-20261030-092003-01078",
+    "Q-20261030-092003-01083",
+    "Q-20261030-092003-01088",
+    "Q-20261030-092003-01093",
+    "Q-20261030-092003-01098",
+    "Q-20261030-092003-01103"
+  ],
+  "critical_covered": 869,
+  "ok": false
+}

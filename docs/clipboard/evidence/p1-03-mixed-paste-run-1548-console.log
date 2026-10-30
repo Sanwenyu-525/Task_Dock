@@ -1,0 +1,24 @@
+PASS 应用以隔离数据目录启动并处于监听状态 :: fresh_default
+PASS 剪贴板配置无异常
+PASS CDP 目标即本次隔离实例（Agent 收件目录在隔离数据目录内） :: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-4zgd_d4m\data\agent-inbox
+PASS 安全测试窗口已出现 :: TaskDock Paste Acceptance 847755c7 - 用户配置 1 - Microsoft​ Edge
+PASS 复制阶段前台为外部应用（否则命中自写抑制、测不到采集链路） :: {'step': 'before-copies', 'foreground_source': 'workbuddy.exe', 'foreground_hwnd': 7541026, 'target_hwnd': 8589312}
+PASS 测试页编辑器已聚焦 :: {'ok': True, 'title': 'TaskDock Paste Acceptance 847755c7', 'activeId': 'editor', 'focused': True}
+PASS 复制 A-red 后采集入库（1/4） :: {'copied': 'A-red', 'foreground': {'step': 'copy-1-A-red', 'foreground_source': 'workbuddy.exe', 'foreground_hwnd': 7541026, 'target_hwnd': 8589312}, 'items_total': 1, 'expected_total': 1, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}
+PASS 复制 B-green 后采集入库（2/4） :: {'copied': 'B-green', 'foreground': {'step': 'copy-2-B-green', 'foreground_source': 'workbuddy.exe', 'foreground_hwnd': 7541026, 'target_hwnd': 8589312}, 'items_total': 2, 'expected_total': 2, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}
+PASS 复制 text-C 后采集入库（3/4） :: {'copied': 'text-C', 'foreground': {'step': 'copy-3-text-C', 'foreground_source': 'workbuddy.exe', 'foreground_hwnd': 7541026, 'target_hwnd': 8589312}, 'items_total': 3, 'expected_total': 3, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}
+FAIL 复制 D-blue 后采集入库（4/4） :: {'copied': 'D-blue', 'foreground': {'step': 'copy-4-D-blue', 'foreground_source': 'task-dock.exe', 'foreground_hwnd': 8916456, 'target_hwnd': 8589312, 'blocked_by_own_foreground': True}, 'items_total': 3, 'expected_total': 4, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 0, 'duplicates': 0, 'skipped': 1, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}
+FAIL 复制 D-blue 时前台仍为 Task Dock 自身 :: {'step': 'copy-4-D-blue', 'foreground_source': 'task-dock.exe', 'foreground_hwnd': 8916456, 'target_hwnd': 8589312, 'blocked_by_own_foreground': True}
+FAIL 历史新增条目数恰为 4 :: 0 -> 3
+FAIL 采集到 3 张图片与 1 条文字 :: {'new_items': 3, 'images': 2, 'texts': 1}
+PASS 采集入库的 A-red 像素可见且颜色正确 :: {'width': 240, 'height': 160, 'alphaMin': 255, 'alphaMax': 255, 'transparentPixels': 0, 'opaquePixels': 38400, 'avgRgb': [220, 30, 30], 'samples': {'center': [220, 30, 30, 255], 'topLeft': [220, 30, 30, 255], 'bottomRight': [220, 30, 30, 255]}, 'id': 'c8ac9e94-11b2-476e-965a-ff8bf1aecbe9', 'copy_count': 1, 'width_field': 240, 'height_field': 160, 'expected': 'A-red'}
+PASS 采集入库的 A-red 尺寸为 240x160 :: [240, 160]
+PASS 采集入库的 B-green 像素可见且颜色正确 :: {'width': 240, 'height': 160, 'alphaMin': 255, 'alphaMax': 255, 'transparentPixels': 0, 'opaquePixels': 38400, 'avgRgb': [30, 180, 60], 'samples': {'center': [30, 180, 60, 255], 'topLeft': [30, 180, 60, 255], 'bottomRight': [30, 180, 60, 255]}, 'id': '83b56a36-2bd1-4d59-8803-e07267b6e763', 'copy_count': 1, 'width_field': 240, 'height_field': 160, 'expected': 'B-green'}
+PASS 采集入库的 B-green 尺寸为 240x160 :: [240, 160]
+FAIL 采集入库的 D-blue 像素可见且颜色正确
+FAIL 采集入库的 D-blue 尺寸为 240x160
+PASS 文字内容完整入库 :: {'length': 26, 'matches': True}
+PASS 粘贴前测试页编辑器仍是焦点 :: {'ok': True, 'title': 'TaskDock Paste Acceptance 847755c7', 'activeId': 'editor', 'focused': True}
+PASS 目标预检通过且进程/窗口匹配 :: {'hwnd': 8589312, 'pid': 86336, 'title': 'TaskDock Paste Acceptance 847755c7 - 用户配置 1 - Microsoft\u200b Edge', 'exe_path': 'c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe'}
+ERROR RuntimeError: clipboard_create_group 调用失败（重试 8 次）: 校验失败: 未选择有效条目 :: {'command': 'clipboard_create_group', 'error': '校验失败: 未选择有效条目', 'app_alive': True, 'app_exit_code': None, 'cdp_port': 9417, 'port_listeners': ['TCP    127.0.0.1:9417         0.0.0.0:0              LISTENING       85788']}
+EVIDENCE D:\Develop\task_dock\docs\clipboard\evidence\p1-03-mixed-paste-20261030-154950-847755c7.json

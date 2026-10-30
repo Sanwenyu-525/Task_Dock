@@ -1,0 +1,347 @@
+{
+  "arm": "db_only",
+  "database": {
+    "main_bytes": 54841344,
+    "page_count": 13389,
+    "rows_agent_events": 36000,
+    "shm_bytes": 32768,
+    "wal_bytes": 5463152
+  },
+  "events": 36000,
+  "load_secs": 61.7811688,
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "memory": {
+    "private_after_bytes": 5246976,
+    "private_base_bytes": 2461696,
+    "private_growth_bytes": 2785280,
+    "private_growth_per_event_bytes": 77.37,
+    "working_set_after_bytes": 10035200,
+    "working_set_base_bytes": 7135232
+  },
+  "samples": [
+    {
+      "db_main_bytes": 4096,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 918792,
+      "page_count": 119,
+      "private_bytes": 2551808,
+      "t_ms": 0,
+      "working_set_bytes": 7217152
+    },
+    {
+      "db_main_bytes": 16281600,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5388992,
+      "page_count": 3975,
+      "private_bytes": 4825088,
+      "t_ms": 0,
+      "working_set_bytes": 9502720
+    },
+    {
+      "db_main_bytes": 29769728,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 7301,
+      "private_bytes": 5050368,
+      "t_ms": 0,
+      "working_set_bytes": 9768960
+    },
+    {
+      "db_main_bytes": 42024960,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 10334,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10051584
+    },
+    {
+      "db_main_bytes": 53452800,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13131,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10051584
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5341184,
+      "t_ms": 0,
+      "working_set_bytes": 10063872
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10014720
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10035200
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10035200
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10035200
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10035200
+    },
+    {
+      "db_main_bytes": 54841344,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 5463152,
+      "page_count": 13389,
+      "private_bytes": 5246976,
+      "t_ms": 0,
+      "working_set_bytes": 10035200
+    }
+  ],
+  "settle_secs": 60,
+  "submit_batch": 100
+}

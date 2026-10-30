@@ -81,6 +81,7 @@ pub fn adapter() -> HooksAdapter {
         hooks_files,
         events: supported_events,
         detect_impl,
+        hook_command: super::hooks_install::hook_command,
         limitations: vec![
             "事件名以官方 Hook 配置参考为准（SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Stop/Notification）；未在本机完成真实会话联调前标记「待验证」".into(),
             "国际版与 CN 版配置独立，接入会同时写入已安装版本的配置".into(),

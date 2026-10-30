@@ -1,0 +1,29 @@
+{
+  "scenario": "restart-inbox-recovery",
+  "source_report": "docs/performance/results/E6-quit-under-load-20261030-092535.json",
+  "inbox_before": 102,
+  "inbox_after": 0,
+  "critical_rows_in_db": 464,
+  "critical_distinct_event_ids": 464,
+  "submitted_critical": 464,
+  "critical_missing": 0,
+  "critical_duplicates": 0,
+  "session_rows_after_recovery": 773,
+  "submitted_total": 773,
+  "duplicate_event_ids": 0,
+  "integrity": "ok",
+  "shutdown_report": {
+    "lifecycle": "stopped",
+    "already_stopped": false,
+    "timed_out": false,
+    "elapsed_ms": 81,
+    "queued_events_at_start": 14,
+    "merge_events_at_start": 0,
+    "drained_events": 14,
+    "events_processed": 703,
+    "unfinished_events": 0,
+    "recovery": "全部已受理事件均已写入（关键事件提交均收到确认）"
+  },
+  "notes": "应用退出后 102 个 inbox 文件（70 个关键）在重启扫描中全部入库；464 个关键事件按 session+event 逐条比对，DB 中存在且各恰好 1 条。inbox 清零耗时约 42s（人工轮询观测，未作为精确指标；精确定时见 E8）。",
+  "ok": true
+}

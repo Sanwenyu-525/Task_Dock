@@ -1,0 +1,89 @@
+{
+  "backup": {
+    "bytes": 61877483,
+    "counts": {
+      "action_acks": 500,
+      "agent_events": 100000,
+      "agent_instances": 1,
+      "agent_runs": 100,
+      "agent_sessions": 10,
+      "agent_sources": 10,
+      "application_settings": 48,
+      "archive_bytes": 4275560,
+      "archives": 2,
+      "asset_bytes": 3105708,
+      "assets": 500,
+      "clipboard_assets": 500,
+      "clipboard_group_items": 500,
+      "clipboard_groups": 50,
+      "clipboard_items": 5000,
+      "clipboard_paste_jobs": 100,
+      "clipboard_snapshot_links": 100,
+      "clipboard_task_links": 100,
+      "navigation_log": 500,
+      "navigation_targets": 100,
+      "notification_history": 10000,
+      "recurrence_rules": 10,
+      "task_agent_links": 100,
+      "task_categories": 10,
+      "task_navigation_targets": 100,
+      "task_reminders": 200,
+      "tasks": 1000,
+      "workspace_snapshot_items": 400,
+      "workspace_snapshots": 100
+    },
+    "ms": 724,
+    "observed_max_ws_bytes": 18276352,
+    "sha256": "2803f235d8b4dee19daccffdf60efb460cbf26c76c97dbc734d81450a4682457",
+    "sqlite_read_latency_us": {
+      "errors": 0,
+      "max_us": 615877,
+      "n": 11,
+      "p50_us": 137,
+      "p95_us": 615877,
+      "p99_us": 615877
+    }
+  },
+  "generated_at": "2026-10-30T01:28:36.490967200+00:00",
+  "memory_mb": {
+    "after_backup": 17.4,
+    "after_restore": 21.9,
+    "baseline": 13.5,
+    "before_restore": 10.1,
+    "observed_peak": 686.2
+  },
+  "restore": {
+    "archives": 2,
+    "assets": 500,
+    "backup_kind": "full",
+    "ms": 7696,
+    "observed_max_ws_bytes": 719556608,
+    "partial": false,
+    "pre_backup": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\td-backup-scale-dst-fb6bdcca-8267-40f7-9618-6d25eb90ae07\\backups\\restore-pre-20261030-092831-e152cdb3.json",
+    "sqlite_read_latency_us": {
+      "errors": 0,
+      "max_us": 9594,
+      "n": 729,
+      "p50_us": 65,
+      "p95_us": 142,
+      "p99_us": 270
+    },
+    "state": "completed"
+  },
+  "seed": {
+    "clipboard_assets": 500,
+    "clipboard_image_items": 250,
+    "clipboard_items": 5000,
+    "events": 100000,
+    "ms": 1603,
+    "notifications": 10000,
+    "tasks": 1000,
+    "workspaces": 100
+  },
+  "sizes": {
+    "bundle_bytes": 61877483,
+    "dst_db_bytes": 114944608,
+    "source_db_bytes": 56836096
+  },
+  "test": "full_backup_100k_events_10k_notifications_roundtrip"
+}

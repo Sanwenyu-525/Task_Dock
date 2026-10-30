@@ -197,7 +197,7 @@ fn opencode_session_resume_support() -> Option<bool> {
 
 fn probe_opencode_resume() -> Option<bool> {
     let exe = crate::agents::managed::find_exe(&["opencode"])?;
-    let out = std::process::Command::new(&exe)
+    let out = crate::winproc::hidden(&exe)
         .args(["resume", "--help"])
         .output()
         .ok()?;

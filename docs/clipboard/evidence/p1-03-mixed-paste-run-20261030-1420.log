@@ -1,0 +1,5 @@
+ERROR RuntimeError: Task Dock 未就绪: clipboard_status 调用失败（重试 8 次）: CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417
+Call log:
+[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417[22m
+ :: {'command': 'clipboard_status', 'error': 'CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\x1b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\x1b[22m\n', 'app_alive': False, 'app_exit_code': None, 'cdp_port': 9417, 'port_listeners': []}
+EVIDENCE D:\Develop\task_dock\docs\clipboard\evidence\p1-03-mixed-paste-20261030-141914-63e04749.json

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use rusqlite::OptionalExtension;
 use serde::Serialize;
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
@@ -365,7 +365,7 @@ pub fn start_background(app: tauri::AppHandle, db: Arc<Db>) {
         tokio::time::sleep(Duration::from_secs(20)).await;
         loop {
             let db2 = db.clone();
-            let dir = app.path().app_data_dir().ok();
+            let dir = Some(crate::app_data_dir(&app));
             let report = tauri::async_runtime::spawn_blocking(move || {
                 let settings = Settings::load(&db2).unwrap_or_default();
                 run_retention(&db2, &settings, dir.as_deref(), MAX_PRUNE_PER_RUN)

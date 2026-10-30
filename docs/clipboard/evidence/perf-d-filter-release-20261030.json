@@ -1,0 +1,63 @@
+{
+  "at": "2026-10-29T16:49:46.805Z",
+  "steps": {
+    "initialTotal": 1250,
+    "image": {
+      "label": "图片",
+      "before": 1250,
+      "after": 45,
+      "changed": true,
+      "expectChange": true,
+      "ms": 567,
+      "items": 45,
+      "kinds": [
+        "clip-kind kind-image"
+      ]
+    },
+    "files": {
+      "label": "文件",
+      "before": 45,
+      "after": 20,
+      "changed": true,
+      "expectChange": true,
+      "ms": 561,
+      "items": 20,
+      "kinds": [
+        "clip-kind kind-files"
+      ]
+    },
+    "text": {
+      "label": "文字",
+      "before": 20,
+      "after": 1185,
+      "changed": true,
+      "expectChange": true,
+      "ms": 477,
+      "items": 80,
+      "kinds": [
+        "clip-kind kind-text"
+      ]
+    },
+    "all": {
+      "label": "全部",
+      "before": 1185,
+      "after": 1250,
+      "changed": true,
+      "expectChange": true,
+      "ms": 577,
+      "items": 80,
+      "kinds": [
+        "clip-kind kind-text",
+        "clip-kind kind-image"
+      ]
+    },
+    "favorite": {
+      "total": 0,
+      "items": 0,
+      "ms": 1024
+    },
+    "favoriteRestored": {
+      "total": 1250
+    }
+  }
+}

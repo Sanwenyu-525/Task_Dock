@@ -1,0 +1,22 @@
+[2m2026-10-30T06:18:09.897959Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v1
+[2m2026-10-30T06:18:09.908729Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v2
+[2m2026-10-30T06:18:09.913481Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v3
+[2m2026-10-30T06:18:09.918035Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v4
+[2m2026-10-30T06:18:09.922373Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v5
+[2m2026-10-30T06:18:09.929325Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v6
+[2m2026-10-30T06:18:09.934479Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v7
+[2m2026-10-30T06:18:09.939998Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v8
+[2m2026-10-30T06:18:09.944296Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v9
+[2m2026-10-30T06:18:09.949611Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v10
+[2m2026-10-30T06:18:09.953773Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v11
+[2m2026-10-30T06:18:09.964025Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v12
+[2m2026-10-30T06:18:09.971330Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v13
+[2m2026-10-30T06:18:09.976504Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 已回填事件来源分类（v12）
+[2m2026-10-30T06:18:10.109580Z[0m [32m INFO[0m [2mtask_dock_lib::clipboard[0m[2m:[0m 剪贴板监听已启动
+[2m2026-10-30T06:18:10.211153Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-10-30T06:18:10.211673Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-10-30T06:18:10.211705Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-zb57hvi5\\data"）
+[2m2026-10-30T06:18:10.212149Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-zb57hvi5\\data\\agent-inbox"
+[2m2026-10-30T06:18:10.215319Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 本地 HTTP 接入监听 127.0.0.1:47821
+[2m2026-10-30T06:18:10.223581Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 本地备份完成: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-zb57hvi5\data\backups\backup-20261030-141810-quick.json（quick，部分=true，10930 字节，SHA-256 3d3eef1d697b68980164a8766cb1437a896faba18b36b208796f28d508675408）
+[2m2026-10-30T06:18:10.223622Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 启动自动备份完成: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-zb57hvi5\data\backups\backup-20261030-141810-quick.json

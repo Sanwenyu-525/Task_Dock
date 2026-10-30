@@ -19,12 +19,13 @@ const shim = `
   const THEME = q.get("theme") || "system";
   const MATERIAL = q.get("material") || "glass";
   const MODE = q.get("mode") || "full";
+  const PRESET = q.get("preset") || "dream-gradient";
   const EMPTY = q.get("agents") === "empty";
   const now = new Date();
   const iso = (minAgo) => new Date(now.getTime() - minAgo * 60000).toISOString();
 
   const settings = {
-    theme: THEME, mode: MODE, material: MATERIAL,
+    theme: THEME, mode: MODE, material: MATERIAL, visual_preset: PRESET,
     snap_enabled: true, autostart: false, hotkey_enabled: true,
     http_enabled: true, http_port: 47821,
     http_token: "3f1c9e2a-8b4d-4f6e-a1b2-previewmock01",
@@ -139,6 +140,19 @@ const shim = `
 
   const stats = { pending: 3, overdue: 1, due_today: 2, completed_today: 1, next_due_at: iso(-30) };
 
+  const taskAgentLinks = [
+    { id: "tal1", task_id: "t1", source_id: "codex", session_external_id: "sess-alpha-0123456789", run_external_id: "run-a1", created_at: iso(200), available: true },
+    { id: "tal2", task_id: "t2", source_id: "trae", session_external_id: "sess-gamma", run_external_id: null, created_at: iso(150), available: true },
+  ];
+
+  // ?tasks=empty：空状态走查（列表与统计为空，其他 fixture 仍完整，避免互相引用报错）
+  const LIST_TASKS = q.get("tasks") === "empty" ? [] : tasks;
+  if (q.get("tasks") === "empty") {
+    stats.pending = 0;
+    stats.overdue = 0;
+    stats.due_today = 0;
+  }
+
   const notifications = [
     { id: "n1", kind: "agent_waiting", title: "Codex 等待处理", body: "重构登录模块 · 等待人工确认", ref_type: "agent_run", ref_id: "run1", occurrence: "x1", is_read: false, created_at: iso(2) },
     { id: "n2", kind: "reminder", title: "审阅 v0.3 视觉验收报告", body: "今天 到期", ref_type: "task", ref_id: "t1", occurrence: "x2", is_read: false, created_at: iso(30) },
@@ -206,6 +220,43 @@ const shim = `
     { id: "csl1", snapshot_id: "ws1", target_type: "item", target_id: "ci1", created_at: iso(35), label: "接口返回示例", kind: "text" },
     { id: "csl2", snapshot_id: "ws1", target_type: "group", target_id: "cg1", created_at: iso(34), label: "调试截图（3 项）", kind: "image" },
   ];
+  const clipboardTaskLinks = [
+    { id: "cl1", task_id: "t1", target_type: "item", target_id: "ci1", created_at: iso(80), label: "接口返回示例", kind: "text" },
+    { id: "cl2", task_id: "t1", target_type: "group", target_id: "cg1", created_at: iso(70), label: "调试截图（3 项）", kind: "image" },
+  ];
+  const clipboardStatus = {
+    enabled: true, paused: false, monitoring: true, activeJob: null,
+    platform: "win32", configError: null, configOrigin: "settings",
+    captureAllowed: true,
+    monitor: { captured: 128, ignored: 6, errors: 0, last_at: iso(1) },
+  };
+
+  // ── 智能剪贴板夹具（v0.6 视觉走查：抽屉展开态）──
+  const clipboardItems = [
+    { id: "ci1", kind: "text", text: "POST /api/session/start 返回 202，已进入队列。", html: "", preview: "POST /api/session/start 返回 202…", byte_size: 168, source_app: "Code.exe", source_title: "session.rs - task-dock", image_width: null, image_height: null, file_paths: [], favorite: true, pinned: false, copy_count: 2, created_at: iso(12), last_seen_at: iso(12), sensitive: false },
+    { id: "ci2", kind: "link", text: "https://tauri.app/", html: "", preview: "https://tauri.app/", byte_size: 21, source_app: "msedge.exe", source_title: "Tauri", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: true, copy_count: 1, created_at: iso(26), last_seen_at: iso(26), sensitive: false },
+    { id: "ci3", kind: "html", text: "", html: "<p>周报要点</p>", preview: "周报要点", byte_size: 92, source_app: "WINWORD.EXE", source_title: "周报.docx", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(48), last_seen_at: iso(48), sensitive: false },
+    { id: "ci4", kind: "image", text: "", html: "", preview: "截图 1280×720", byte_size: 24576, source_app: "SnippingTool.exe", source_title: "截屏", image_width: 1280, image_height: 720, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(64), last_seen_at: iso(64), sensitive: false },
+    { id: "ci5", kind: "files", text: "", html: "", preview: "3 个文件", byte_size: 0, source_app: "Explorer.exe", source_title: "资源管理器", image_width: null, image_height: null, file_paths: ["D:\\Develop\\task_dock\\README.md", "D:\\Develop\\task_dock\\docs\\ARCHITECTURE.md", "D:\\Develop\\task_dock\\package.json"], favorite: false, pinned: false, copy_count: 1, created_at: iso(90), last_seen_at: iso(90), sensitive: false },
+  ];
+  const clipboardGroups = [
+    { id: "cg1", name: "调试截图（3 项）", mode: "auto", status: "closed", favorite: false, pinned: false, created_at: iso(70), updated_at: iso(60), closed_at: iso(60), item_count: 3 },
+  ];
+  const clipboardStats = {
+    items: clipboardItems.length,
+    groups: clipboardGroups.length,
+    images: 1,
+    files: 1,
+    favorites: 1,
+    bytes: 24857,
+    asset_bytes: 24576,
+    max_items: 2000,
+    max_storage_bytes: 2048 * 1024 * 1024,
+    enabled: true,
+    paused: false,
+    auto_group: true,
+  };
+  const clipboardView = { items: clipboardItems, groups: clipboardGroups, stats: clipboardStats, total_items: clipboardItems.length };
   const contextAgents = [
     { link_id: "al1", source_id: "codex", source_name: "Codex", session_external_id: "sess-alpha", title: "重构认证中间件", state: "failed", last_seen_at: iso(6), origin: "user" },
     { link_id: null, source_id: "trae", source_name: "Trae", session_external_id: "sess-gamma", title: "补充需求讨论", state: "waiting", last_seen_at: iso(40), origin: "nav" },
@@ -230,8 +281,9 @@ const shim = `
     switch (cmd) {
       case "get_settings": return settings;
       case "update_settings": return { ...settings, ...(args?.patch || {}) };
-      case "list_tasks": return tasks.filter((t) => (args?.filter?.status === "all" ? true : t.status === (args?.filter?.status || "pending")));
+      case "list_tasks": return LIST_TASKS.filter((t) => (args?.filter?.status === "all" ? true : t.status === (args?.filter?.status || "pending")));
       case "task_stats": return stats;
+      case "list_task_links": return taskAgentLinks.filter((l) => l.task_id === args?.taskId);
       case "parse_quick_add": return { title: (args?.text || "").replace(/明天|下午|三点/g, "").trim() || "新任务", due_at: iso(1440), recurrence: null, advance_minutes: null, matched: ["明天", "下午三点"], has_explicit_time: true, date_only: false };
       case "agent_snapshot": return snapshot;
       case "discovery_scan": return discovered;
@@ -265,9 +317,26 @@ const shim = `
       case "workspace_detach_task": return null;
       case "clipboard_snapshot_links":
         return clipboardSnapLinks.filter((l) => l.snapshot_id === args?.snapshotId);
-      case "clipboard_link_snapshot":
+      case "clipboard_view": return clipboardView;
+      case "clipboard_stats": return clipboardStats;
+      case "clipboard_item": return clipboardItems.find((i) => i.id === args?.itemId) ?? clipboardItems[0];
+      case "clipboard_group": return clipboardGroups[0];
+      case "clipboard_thumb": return null;      case "clipboard_link_snapshot":
         return { id: "csl-new", snapshot_id: args?.snapshotId, target_type: args?.targetType, target_id: args?.targetId, created_at: iso(0), label: "预览素材", kind: "text" };
       case "clipboard_unlink_snapshot": return null;
+      case "clipboard_task_links": return clipboardTaskLinks.filter((l) => l.task_id === args?.taskId);
+      case "clipboard_link_task": return { id: "cl-new", task_id: args?.taskId, target_type: args?.targetType, target_id: args?.targetId, created_at: iso(0), label: "预览素材", kind: "text" };
+      case "clipboard_unlink_task": return null;
+      case "clipboard_status": return clipboardStatus;
+      case "clipboard_probe": return { ok: true, message: "预览夹具：剪贴板可用", keys: ["Ctrl+C"], checked_at: iso(0) };
+      case "clipboard_visible_targets": return [];
+      case "clipboard_foreground_target": return null;
+      case "clipboard_copy_item":
+      case "clipboard_copy_group_rich":
+      case "clipboard_copy_group_files": return { ok: true, copied: 1, total: 1, restored: true };
+      case "clipboard_toggle_item":
+      case "clipboard_toggle_group": return null;
+      case "clipboard_cleanup": return { groups_closed: 0, bytes_freed: 0, orphan_files_removed: 0 };
       case "task_context": {
         const task = tasks.find((t) => t.id === args?.taskId) || tasks[0];
         return {
@@ -305,6 +374,7 @@ const shim = `
       case "nav_link_task": return "nl-preview";
       case "nav_prune_logs": return 0;
       case "apply_window_material": return { material: args?.material || "glass", applied: MATERIAL === "glass", effect: MATERIAL === "glass" ? "mica" : "none", os_version: "10.0.26100" };
+      case "apply_window_radius": return true;
       case "get_agent_inbox_dir": return "C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\com.taskdock.desktop\\\\agent-inbox";
       case "plugin:event|listen": {
         const id = ++cbId;
@@ -326,6 +396,18 @@ const shim = `
     plugins: {},
   };
   window.__TAURI_OS_PLUGIN_INTERNALS__ = { platform: "win32", version: "10.0.26100", arch: "x86_64" };
+  // @tauri-apps/api@2.9 的 event.js 在 unlisten 时会调用这里的 unregisterListener。
+  // 缺了这一段，React 卸载组件时抛 "Cannot read properties of undefined"。
+  const eventHandlers = new Map();
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    registerListener: (event, eventId, handler) => {
+      eventHandlers.set(eventId, { event, handler });
+      return eventId;
+    },
+    unregisterListener: (event, eventId) => {
+      eventHandlers.delete(eventId);
+    },
+  };
 
   // 背景模拟桌面壁纸，验证毛玻璃透出效果（仅预览用）
   // 注意：shim 在 <head> 中执行，此时 document.body 还不存在，

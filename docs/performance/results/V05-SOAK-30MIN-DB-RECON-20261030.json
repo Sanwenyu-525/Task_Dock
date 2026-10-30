@@ -1,0 +1,45 @@
+{
+ "test": "v05-final-release-full-desktop-30min-db-reconciliation",
+ "queried_at": "2026-10-30T11:45:00+08:00",
+ "source_artifact": "http-soak-20261030-101315.json",
+ "raw_sampler": "D-soak-20261030-101315.jsonl",
+ "data_dir": "isolated acceptance data-v3",
+ "query": "SELECT ... FROM agent_events WHERE event_id LIKE 'http-soak2-20261030-101315%'",
+ "db_bytes": 156246016,
+ "rows": 21282,
+ "distinct_event_ids": 21282,
+ "sessions": 4,
+ "states": {
+  "completed": 1800,
+  "running": 17682,
+  "waiting": 1800
+ },
+ "critical_non_running_rows": 3600,
+ "duplicate_event_ids": 0,
+ "max_received_at": "2026-10-30T02:43:16.083772800+00:00",
+ "integrity_check": "ok",
+ "foreign_key_violations": 0,
+ "client": {
+  "sent": 36000,
+  "critical_sent": 3600,
+  "critical_ok": 3600,
+  "network_errors": 27,
+  "retries": 27
+ },
+ "server": {
+  "accepted": 36000,
+  "received": 36005,
+  "processed": 21287,
+  "merged": 14718,
+  "overload_rejects": 0,
+  "commit_failures": 0
+ },
+ "reconciliation": {
+  "received_minus_deduped": "36,005 received - 5 重复 = 36,000 unique",
+  "running_rows": "32,400 running - 14,718 merged = 17,682 rows",
+  "critical_rows": "3,600 critical = 1,800 waiting + 1,800 completed, 每条恰好 1 行",
+  "db_rows": "17,682 running + 3,600 critical = 21,282",
+  "server_processed_explained": "21,287 processed = 21,282 unique rows + 5 次重复接收（event_id 去重未新增行）"
+ },
+ "verdict": "3,600/3,600 critical present exactly once; 0 duplicate event_id; integrity ok"
+}

@@ -106,6 +106,7 @@ export const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   agent_waiting: "介入",
   agent_done: "完成",
   agent_failed: "失败",
+  agent_disconnected: "连接中断",
   system: "系统",
 };
 

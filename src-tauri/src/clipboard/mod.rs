@@ -18,8 +18,9 @@ pub mod platform;
 pub mod store;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -37,6 +38,11 @@ pub const MAX_TEXT_BYTES: usize = 512 * 1024;
 pub const MAX_HTML_BYTES: usize = 512 * 1024;
 /// 单张图片上限（解码前字节）。
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+/// 图片边长上限：解码后的 RGBA 是 `边长²×4` 字节，必须先卡住再分配。
+pub const MAX_IMAGE_EDGE: u32 = 20_000;
+/// 像素总数上限（≈400MB RGBA）。PNG 容器能压缩到几十 KB，
+/// 只按压缩前字节判断会让一张超大纯色图吃掉整块内存。
+pub const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 /// 单次复制的文件数上限。
 pub const MAX_FILE_COUNT: usize = 200;
 /// 缩略图最长边。
@@ -181,6 +187,10 @@ pub struct ClipboardRuntime {
     pub self_write: Arc<AtomicU32>,
     pub paste: paste::PasteManager,
     monitor: Mutex<Option<platform::ClipboardMonitor>>,
+    /// 维护线程代数：停止/重启时递增，旧线程看到代数变化即退出
+    maintenance_gen: AtomicU64,
+    /// 维护线程停止信号（Condvar 让 300s 轮询可被立即打断）
+    maintenance_stop: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl ClipboardRuntime {
@@ -197,11 +207,21 @@ impl ClipboardRuntime {
             self_write,
             paste,
             monitor: Mutex::new(None),
+            maintenance_gen: AtomicU64::new(0),
+            maintenance_stop: Arc::new((Mutex::new(false), Condvar::new())),
         })
     }
 
     /// 启动监听与后台维护。监听失败只降级为「不自动记录」，不阻塞应用启动。
     pub fn start(self: &Arc<Self>) {
+        self.start_monitor();
+        self.start_maintenance();
+    }
+
+    fn start_monitor(&self) {
+        if self.monitoring() {
+            return;
+        }
         let sink = Arc::new(platform::CaptureSink {
             db: self.db.clone(),
             root: self.root.clone(),
@@ -217,49 +237,77 @@ impl ClipboardRuntime {
                 tracing::warn!("剪贴板监听启动失败（自动记录不可用）: {}", e);
             }
         }
-        // 启动维护：关闭残留的收集会话、标记中断的粘贴任务、清理过期内容
-        let db = self.db.clone();
-        let root = self.root.clone();
-        let app = self.app.clone();
+    }
+
+    fn start_maintenance(self: &Arc<Self>) {
+        let generation = self.maintenance_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        {
+            let (lock, cv) = &*self.maintenance_stop;
+            *lock.lock().unwrap_or_else(|e| e.into_inner()) = false;
+            cv.notify_all();
+        }
+        let stop = self.maintenance_stop.clone();
         let runtime = Arc::clone(self);
         std::thread::Builder::new()
             .name("clipboard-maintenance".into())
             .spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(8));
+                if wait_or_stop(&stop, Duration::from_secs(8)) {
+                    return;
+                }
                 loop {
-                    let settings = crate::db::Settings::load(&db).unwrap_or_default();
-                    // 本进程正在逐项粘贴时不判定为「陈旧任务」
-                    if !runtime.paste.is_active() {
-                        let _ = store::interrupt_stale_paste_jobs(&db);
+                    if runtime.maintenance_gen.load(Ordering::SeqCst) != generation {
+                        return;
                     }
-                    match store::cleanup(&db, &root, &settings) {
-                        Ok(r)
-                            if r.items_deleted > 0
-                                || r.groups_closed > 0
-                                || r.orphan_files_removed > 0 =>
-                        {
-                            tracing::info!(
-                                "剪贴板清理：条目 {}，关闭分组 {}，释放 {} 字节，孤儿文件 {}",
-                                r.items_deleted,
-                                r.groups_closed,
-                                r.bytes_freed,
-                                r.orphan_files_removed
-                            );
-                            let _ = app.emit(
-                                "clipboard-changed",
-                                serde_json::json!({ "kind": "cleanup" }),
-                            );
+                    // 模块关闭期间不再执行清理/巡检；配置不可靠时也必须停手，
+                    // 避免按错误的容量/保留参数删除历史数据。
+                    let config = crate::db::Settings::load_clipboard(&runtime.db);
+                    if config.error.is_none() && config.settings.clipboard_enabled {
+                        // 粘贴进行中不做清理：删除条目/资产会让正在发送的素材
+                        // 在下一项读取时消失，宁可推迟到下一轮。
+                        if !runtime.paste.is_active() {
+                            let _ = store::interrupt_stale_paste_jobs(&runtime.db);
+                            match store::cleanup(&runtime.db, &runtime.root, &config.settings) {
+                                Ok(r)
+                                    if r.items_deleted > 0
+                                        || r.groups_closed > 0
+                                        || r.orphan_files_removed > 0 =>
+                                {
+                                    tracing::info!(
+                                        "剪贴板清理：条目 {}，关闭分组 {}，释放 {} 字节，孤儿文件 {}",
+                                        r.items_deleted,
+                                        r.groups_closed,
+                                        r.bytes_freed,
+                                        r.orphan_files_removed
+                                    );
+                                    let _ = runtime.app.emit(
+                                        "clipboard-changed",
+                                        serde_json::json!({ "kind": "cleanup" }),
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(e) => tracing::warn!("剪贴板清理失败: {}", e),
+                            }
                         }
-                        Ok(_) => {}
-                        Err(e) => tracing::warn!("剪贴板清理失败: {}", e),
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(300));
+                    if wait_or_stop(&stop, Duration::from_secs(300)) {
+                        return;
+                    }
                 }
             })
             .ok();
     }
 
-    /// 停止监听（应用退出或测试用）。
+    /// 模块级启停：关闭时停止监听、维护线程与进行中的粘贴；重新开启后恢复。
+    pub fn set_enabled(self: &Arc<Self>, enabled: bool) {
+        if enabled {
+            self.start_monitor();
+            self.start_maintenance();
+        } else {
+            self.stop();
+        }
+    }
+
+    /// 停止监听（应用退出、模块关闭或测试用）。
     pub fn stop(&self) {
         if let Some(m) = self
             .monitor
@@ -270,6 +318,10 @@ impl ClipboardRuntime {
             m.stop();
         }
         self.paste.cancel_all();
+        self.maintenance_gen.fetch_add(1, Ordering::SeqCst);
+        let (lock, cv) = &*self.maintenance_stop;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_all();
     }
 
     /// 监听线程是否在运行（启动失败时降级为 false）。
@@ -280,14 +332,58 @@ impl ClipboardRuntime {
             .is_some()
     }
 
-    /// 记录一次用户复制（供命令层在写入后同步序列号，避免自录）。
+    /// 记录一次自写序列号（仅供无法使用 `write_payload_notifying` 的调用方；
+    /// 常规复制/粘贴/恢复都应在访问锁内完成写入与登记）。
     pub fn note_self_write(&self, sequence: u32) {
-        self.self_write.fetch_max(sequence, Ordering::SeqCst);
+        platform::note_self_write_watermark(&self.self_write, sequence);
     }
 
     pub fn emit_changed(&self, kind: &str) {
         let _ = self
             .app
             .emit("clipboard-changed", serde_json::json!({ "kind": kind }));
+    }
+}
+
+/// 可被停止信号立即打断的等待；返回 true 表示收到停止请求。
+fn wait_or_stop(stop: &Arc<(Mutex<bool>, Condvar)>, dur: Duration) -> bool {
+    let (lock, cv) = &**stop;
+    let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let (guard, _) = cv
+        .wait_timeout_while(guard, dur, |stopped| !*stopped)
+        .unwrap_or_else(|e| e.into_inner());
+    *guard
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn stop_signal_wakes_maintenance_wait_immediately() {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let waiter = stop.clone();
+        let begin = Instant::now();
+        let handle = std::thread::spawn(move || wait_or_stop(&waiter, Duration::from_secs(30)));
+        std::thread::sleep(Duration::from_millis(50));
+        {
+            let (lock, cv) = &*stop;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        assert!(handle.join().unwrap(), "停止后应返回 true");
+        assert!(
+            begin.elapsed() < Duration::from_secs(2),
+            "维护线程必须被立即唤醒，而不是等满 30s"
+        );
+    }
+
+    #[test]
+    fn wait_times_out_without_stop_signal() {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let begin = Instant::now();
+        assert!(!wait_or_stop(&stop, Duration::from_millis(20)));
+        assert!(begin.elapsed() < Duration::from_secs(2));
     }
 }

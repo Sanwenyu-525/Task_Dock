@@ -2,12 +2,13 @@
 pub mod models;
 pub use models::*;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
@@ -530,13 +531,164 @@ CREATE TABLE clipboard_snapshot_links (
 CREATE INDEX idx_clip_snapshot_links ON clipboard_snapshot_links(snapshot_id);
 "#,
     ),
+    (
+        10,
+        r#"
+-- v10（Task Dock 0.5.1）：事件因果顺序水位。
+-- ingest_seq 由服务端受理时分配（客户端不可设置）；agent_runs.last_ingest_seq
+-- 记录该轮次已应用的最大序号，旧序号事件只入流水、不覆盖新状态。
+-- 默认 0 表示旧数据/旧备份，不参与顺序屏障（保持既有行为）。
+ALTER TABLE agent_runs ADD COLUMN last_ingest_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agent_events ADD COLUMN ingest_seq INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_events_ingest_seq ON agent_events(ingest_seq);
+"#,
+    ),
+    (
+        11,
+        r#"
+-- v11（Task Dock 0.5.1）：轮次已应用事件时间水位。
+-- 文件积压、离线 Hook、跨通道延迟会把旧事件排到新事件之后受理；
+-- 除受理序号外再用事件时间兜底：比水位更旧的事件只入流水，不回退状态。
+-- 空字符串表示旧数据，未建立水位（保持既有行为）。
+ALTER TABLE agent_runs ADD COLUMN last_event_at TEXT NOT NULL DEFAULT '';
+"#,
+    ),
+    (
+        12,
+        r#"
+-- v12（Task Dock 0.5.2）：事件来源可信分类与测试数据隔离。
+-- category 由服务端来源注册表维护；origin 由摄取入口按「来源类别 + 服务端判定的
+-- 传输通道 + 自测会话前缀」确定，客户端载荷无法把测试/压测事件标成真实事件。
+-- 默认 'real' 只用于旧数据，随后由 backfill_origin_labels() 修正可证明的测试数据。
+ALTER TABLE agent_sources ADD COLUMN category TEXT NOT NULL DEFAULT 'real';
+ALTER TABLE agent_events ADD COLUMN origin TEXT NOT NULL DEFAULT 'real';
+ALTER TABLE agent_sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'real';
+ALTER TABLE agent_runs ADD COLUMN origin TEXT NOT NULL DEFAULT 'real';
+ALTER TABLE agent_instances ADD COLUMN origin TEXT NOT NULL DEFAULT 'real';
+ALTER TABLE notification_history ADD COLUMN agent_origin TEXT NOT NULL DEFAULT 'real';
+
+-- 内部压测来源：隐藏、不可在来源列表中选择，事件与真实状态/行动中心/系统通知隔离。
+INSERT OR IGNORE INTO agent_sources
+  (id, display_name, kind, enabled, verified, homepage, note, config, adapter, icon, hidden, category, created_at, updated_at)
+VALUES
+  ('bench', '性能基准（内部）', 'benchmark', 1, 0, '',
+   '仅用于性能/压力测试：事件与真实 Agent 状态、行动中心、系统通知隔离，可在数据审计中单独清理',
+   '{}', 'benchmark', '', 1, 'benchmark',
+   strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+UPDATE agent_sources SET category = 'mock' WHERE kind = 'mock' OR id = 'mock';
+
+CREATE INDEX IF NOT EXISTS idx_sources_category ON agent_sources(category);
+CREATE INDEX IF NOT EXISTS idx_events_origin_received ON agent_events(origin, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_run_latest ON agent_events(source_id, run_external_id, ingest_seq DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_origin_status ON agent_runs(origin, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_origin_updated ON agent_runs(origin, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_origin_last ON agent_sessions(origin, last_seen_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_instances_origin_last ON agent_instances(origin, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_origin_created ON notification_history(agent_origin, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_unread_origin ON notification_history(is_read, agent_origin, created_at DESC);
+"#,
+    ),
+    (
+        13,
+        r#"
+-- v13（Task Dock 0.5.2）：历史 keyset 分页索引。
+-- 历史时间轴按 (received_at/created_at DESC, id DESC) 翻页，并要求来源/时间筛选
+-- 与游标使用同一口径；复合索引避免深页排序、以及"筛选后翻页"退化为全表扫描。
+CREATE INDEX IF NOT EXISTS idx_events_origin_received_id
+  ON agent_events(origin, received_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_events_origin_source_received_id
+  ON agent_events(origin, source_id, received_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_origin_created_id
+  ON notification_history(agent_origin, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_origin_kind_created_id
+  ON notification_history(agent_origin, kind, created_at DESC, id DESC);
+"#,
+    ),
 ];
+
+/// 历史测试数据的保守回填（幂等）。
+///
+/// 只标记「可证明」的测试数据：压测脚本固定使用 `http-perf-` 会话/轮次前缀且
+/// 会话与轮次必须同时命中；自测会话使用保留前缀；mock 来源整体隔离。
+/// 不满足组合条件的行保持 `real`，由数据审计报告列为「需人工确认」，绝不误删。
+pub fn backfill_origin_labels(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(
+        r#"
+-- 来源类别
+UPDATE agent_sources SET category = 'mock' WHERE (kind = 'mock' OR id = 'mock') AND category = 'real';
+UPDATE agent_sources SET category = 'benchmark' WHERE id = 'bench' AND category = 'real';
+
+-- 事件：先自测，再压测（要求 session/run 双前缀），最后 mock 来源覆盖
+UPDATE agent_events SET origin = 'selftest'
+WHERE origin = 'real' AND session_external_id LIKE 'taskdock-selftest-%';
+UPDATE agent_events SET origin = 'benchmark'
+WHERE origin = 'real' AND source_id <> 'mock'
+  AND session_external_id LIKE 'http-perf-%' AND run_external_id LIKE 'http-perf-%';
+UPDATE agent_events SET origin = 'mock' WHERE origin = 'real' AND source_id = 'mock';
+UPDATE agent_events SET origin = 'benchmark' WHERE origin = 'real' AND source_id = 'bench';
+
+-- 会话：压测会话必须存在同来源、同会话的 http-perf 轮次作为佐证
+UPDATE agent_sessions SET origin = 'mock' WHERE origin = 'real' AND source_id = 'mock';
+UPDATE agent_sessions SET origin = 'selftest'
+WHERE origin = 'real' AND external_id LIKE 'taskdock-selftest-%';
+UPDATE agent_sessions SET origin = 'benchmark'
+WHERE origin = 'real' AND source_id <> 'mock' AND external_id LIKE 'http-perf-%'
+  AND EXISTS (
+    SELECT 1 FROM agent_runs r
+    WHERE r.session_id = agent_sessions.id AND r.external_run_id LIKE 'http-perf-%'
+  );
+UPDATE agent_sessions SET origin = 'benchmark' WHERE origin = 'real' AND source_id = 'bench';
+
+-- 轮次
+UPDATE agent_runs SET origin = 'mock' WHERE origin = 'real' AND source_id = 'mock';
+UPDATE agent_runs SET origin = 'selftest'
+WHERE origin = 'real' AND EXISTS (
+  SELECT 1 FROM agent_sessions s
+  WHERE s.id = agent_runs.session_id AND s.external_id LIKE 'taskdock-selftest-%'
+);
+UPDATE agent_runs SET origin = 'benchmark'
+WHERE origin = 'real' AND source_id <> 'mock' AND external_run_id LIKE 'http-perf-%'
+  AND EXISTS (
+    SELECT 1 FROM agent_sessions s
+    WHERE s.id = agent_runs.session_id AND s.external_id LIKE 'http-perf-%'
+  );
+UPDATE agent_runs SET origin = 'benchmark' WHERE origin = 'real' AND source_id = 'bench';
+
+-- 实例：来源可证明，或只被压测轮次引用且从未被真实轮次引用
+UPDATE agent_instances SET origin = 'mock' WHERE origin = 'real' AND source_id = 'mock';
+UPDATE agent_instances SET origin = 'benchmark' WHERE origin = 'real' AND source_id = 'bench';
+UPDATE agent_instances SET origin = 'benchmark'
+WHERE origin = 'real' AND source_id <> 'mock'
+  AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.instance_id = agent_instances.id AND r.origin = 'benchmark')
+  AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.instance_id = agent_instances.id AND r.origin = 'real');
+
+-- 通知：按所属轮次的 origin 归类；轮次已删除的通知无法证明，保持 real 待人工确认
+UPDATE notification_history SET agent_origin = COALESCE(
+  (SELECT r.origin FROM agent_runs r WHERE r.id = notification_history.ref_id), agent_origin
+) WHERE ref_type = 'agent_run' AND agent_origin = 'real';
+
+-- 旧版按事件 ID 的「已处理」映射到轮次级稳定 ID（保留审计记录，不删除旧行）
+INSERT OR IGNORE INTO action_acks (event_id, acked_at)
+SELECT 'run:' || r.id, a.acked_at
+FROM action_acks a
+JOIN agent_events e ON e.id = a.event_id
+JOIN agent_runs r ON r.source_id = e.source_id AND r.external_run_id = e.run_external_id
+WHERE e.run_external_id IS NOT NULL
+  AND a.event_id NOT LIKE 'run:%'
+  AND a.event_id NOT LIKE 'notification:%'
+  AND r.origin = 'real';
+"#,
+    )?;
+    Ok(())
+}
 
 pub struct Db {
     /// 唯一写连接：SQLite 单写者，写事务在它上面串行化。
     writer: Mutex<Connection>,
     /// 只读连接池（WAL 快照读）；内存库为空，回退写连接。
     readers: Vec<Mutex<Connection>>,
+    /// 数据库文件路径（内存库为 None），用于诊断 WAL/主库文件大小。
+    path: Option<std::path::PathBuf>,
     next_reader: AtomicUsize,
     /// 读查询延迟采样（轻量原子计数，供性能诊断；采样本身 < 1µs）。
     read_calls: AtomicU64,
@@ -552,16 +704,20 @@ impl Db {
         }
         let conn = Connection::open(path)?;
         configure_writer(&conn)?;
+        let prior_version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap_or(0);
         let mut db = Self {
             writer: Mutex::new(conn),
             readers: Vec::new(),
+            path: Some(path.to_path_buf()),
             next_reader: AtomicUsize::new(0),
             read_calls: AtomicU64::new(0),
             read_nanos: AtomicU64::new(0),
             read_slow: AtomicU64::new(0),
         };
         db.migrate()?;
-        db.seed()?;
+        db.seed(prior_version)?;
         db.readers = (0..READ_POOL_SIZE)
             .filter_map(|_| match open_reader(path) {
                 Ok(c) => Some(Mutex::new(c)),
@@ -582,13 +738,14 @@ impl Db {
         let db = Self {
             writer: Mutex::new(conn),
             readers: Vec::new(),
+            path: None,
             next_reader: AtomicUsize::new(0),
             read_calls: AtomicU64::new(0),
             read_nanos: AtomicU64::new(0),
             read_slow: AtomicU64::new(0),
         };
         db.migrate()?;
-        db.seed()?;
+        db.seed(0)?;
         Ok(db)
     }
 
@@ -604,8 +761,29 @@ impl Db {
             return self.with_conn(f);
         }
         let started = Instant::now();
-        let idx = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
-        let conn = self.readers[idx].lock().unwrap_or_else(|e| e.into_inner());
+        let start = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+        // 跳过被长快照读占用的连接（如完整备份），否则普通查询会排队等整个备份结束。
+        // 全部繁忙时仍阻塞在起始连接上（不失败，保持旧行为）。
+        let mut conn = None;
+        for offset in 0..self.readers.len() {
+            match self.readers[(start + offset) % self.readers.len()].try_lock() {
+                Ok(guard) => {
+                    conn = Some(guard);
+                    break;
+                }
+                Err(std::sync::TryLockError::Poisoned(e)) => {
+                    conn = Some(e.into_inner());
+                    break;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+        }
+        let conn = match conn {
+            Some(guard) => guard,
+            None => self.readers[start]
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        };
         let out = f(&conn);
         let elapsed = started.elapsed();
         self.read_calls.fetch_add(1, Ordering::Relaxed);
@@ -634,14 +812,93 @@ impl Db {
         })
     }
 
+    /// SQLite 文件与缓存诊断：页缓存/空闲页/WAL 大小，用于区分「SQLite 缓存增长」与其他内存。
+    /// 只读 PRAGMA，不改变任何状态。
+    pub fn storage_stats(&self) -> serde_json::Value {
+        let pragmas = self
+            .with_read(|conn| {
+                let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+                let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+                let freelist: i64 =
+                    conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+                let cache_size: i64 = conn.query_row("PRAGMA cache_size", [], |r| r.get(0))?;
+                let journal: String =
+                    conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+                let autockpt: i64 = conn
+                    .query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
+                    .unwrap_or(-1);
+                Ok(serde_json::json!({
+                    "page_count": page_count,
+                    "page_size": page_size,
+                    "freelist_pages": freelist,
+                    "cache_size": cache_size,
+                    "cache_kib": if cache_size < 0 { -cache_size } else { cache_size * page_size / 1024 },
+                    "journal_mode": journal,
+                    "wal_autocheckpoint_pages": autockpt,
+                }))
+            })
+            .unwrap_or_else(|e| serde_json::json!({ "error": e.to_string() }));
+        let size_of = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let (db_bytes, wal_bytes, shm_bytes) = match &self.path {
+            Some(p) => {
+                let wal = std::path::PathBuf::from(format!("{}-wal", p.display()));
+                let shm = std::path::PathBuf::from(format!("{}-shm", p.display()));
+                (size_of(p), size_of(&wal), size_of(&shm))
+            }
+            None => (0, 0, 0),
+        };
+        serde_json::json!({
+            "read_pool": self.readers.len(),
+            "db_bytes": db_bytes,
+            "wal_bytes": wal_bytes,
+            "shm_bytes": shm_bytes,
+            "pragma": pragmas,
+            "read": self.read_stats(),
+        })
+    }
+
+    /// 库内已应用的最大事件受理序号（启动/恢复备份后抬高全局序号起点）。
+    pub fn max_ingest_seq(&self) -> AppResult<u64> {
+        self.with_read(|conn| {
+            conn.query_row(
+                "SELECT COALESCE(MAX(last_ingest_seq), 0) FROM agent_runs",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|v| v.max(0) as u64)
+            .map_err(AppError::from)
+        })
+    }
+
     pub fn migrate(&self) -> AppResult<()> {
         let conn = self.conn();
         let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        apply_migrations(&conn, current, MIGRATIONS)
+        apply_migrations(&conn, current, MIGRATIONS)?;
+        // v12 一次性回填：只在首次升级时扫描历史；导入备份后由 data 模块显式重跑。
+        let backfilled: Option<String> = conn
+            .query_row(
+                "SELECT value FROM application_settings WHERE key = 'origin_backfill_v12'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if backfilled.is_none() {
+            backfill_origin_labels(&conn)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO application_settings (key, value, updated_at) VALUES ('origin_backfill_v12', 'true', ?1)",
+                rusqlite::params![crate::agents::now_iso()],
+            )?;
+            tracing::info!("已回填事件来源分类（v12）");
+        }
+        Ok(())
     }
 
     /// 首次启动写入默认数据。
-    fn seed(&self) -> AppResult<()> {
+    ///
+    /// `prior_version` 是迁移前的 `PRAGMA user_version`：0 表示全新库，
+    /// < 7 表示从没有剪贴板模块的旧版本升级。剪贴板键不再每次启动补齐，
+    /// 否则用户配置丢失会被默认值静默覆盖（详见 `seed_clipboard_config`）。
+    fn seed(&self, prior_version: i64) -> AppResult<()> {
         let now = crate::agents::now_iso();
         let conn = self.conn();
         // 来源预置由迁移（含 v2 INSERT OR IGNORE）统一完成，避免两份清单漂移。
@@ -659,6 +916,9 @@ impl Db {
             ("notify_reminder", "true"),
             ("notify_agent", "true"),
             ("notify_muted", "false"),
+            ("notify_burst_max", "3"),
+            ("notify_rate_window_secs", "60"),
+            ("notify_done_aggregate", "true"),
             ("overdue_grace_hours", "24"),
             ("stale_run_minutes", "15"),
             ("auto_backup", "true"),
@@ -673,28 +933,6 @@ impl Db {
             ("agent_inbox_max_file_bytes", "4194304"),
             ("agent_inbox_max_files", "200"),
             ("perf_diagnostics_enabled", "true"),
-            // 智能剪贴板（v0.5）
-            ("clipboard_enabled", "true"),
-            ("clipboard_paused", "false"),
-            ("clipboard_capture_images", "true"),
-            ("clipboard_capture_files", "true"),
-            ("clipboard_capture_html", "true"),
-            ("clipboard_auto_group", "true"),
-            ("clipboard_group_window_secs", "45"),
-            ("clipboard_retention_days", "30"),
-            ("clipboard_max_items", "1000"),
-            ("clipboard_max_storage_mb", "512"),
-            (
-                "clipboard_exclude_apps",
-                "\"keepass.exe,keepassxc.exe,1password.exe,bitwarden.exe,lastpass.exe,dashlane.exe,enpass.exe\"",
-            ),
-            ("clipboard_paste_interval_ms", "350"),
-            ("clipboard_paste_interval_image_ms", "1200"),
-            ("clipboard_paste_interval_html_ms", "600"),
-            ("clipboard_paste_interval_files_ms", "900"),
-            ("clipboard_sensitive_filter", "true"),
-            // 自动分组序号（内部状态，不属于用户偏好）
-            ("clipboard_group_seq", "0"),
         ];
         for (k, v) in defaults {
             conn.execute(
@@ -715,6 +953,7 @@ impl Db {
                 rusqlite::params![serde_json::to_string(&token)?, now],
             )?;
         }
+        seed_clipboard_config(&conn, prior_version)?;
         Ok(())
     }
 
@@ -757,10 +996,127 @@ impl Db {
         Ok(serde_json::Value::Object(map))
     }
 
+    /// 原始键值读取：保留 JSON 损坏的字符串，供剪贴板配置做 fail-closed 判断。
+    ///
+    /// `all_settings` 会把非法 JSON 静默转成 Null，无法区分「键缺失」「值损坏」
+    /// 与「数据库读取失败」；剪贴板隐私开关不能建立在这种有损视图上。
+    pub fn all_settings_raw(&self) -> AppResult<Vec<(String, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT key, value FROM application_settings")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_setting_raw(&self, key: &str) -> AppResult<Option<String>> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT value FROM application_settings WHERE key = ?1",
+            rusqlite::params![key],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(AppError::from)
+    }
+
     pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> AppResult<T>) -> AppResult<T> {
         let conn = self.conn();
         f(&conn)
     }
+}
+
+/// 事务内写入设置：缺失时插入，已存在时覆盖。
+fn put_setting(
+    conn: &Connection,
+    key: &str,
+    value: &serde_json::Value,
+    now: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO application_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        rusqlite::params![key, serde_json::to_string(value)?, now],
+    )?;
+    Ok(())
+}
+
+/// 事务内写入设置：已存在时不覆盖（初始化专用）。
+fn insert_setting_if_absent(
+    conn: &Connection,
+    key: &str,
+    value: &serde_json::Value,
+    now: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO application_settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![key, serde_json::to_string(value)?, now],
+    )?;
+    Ok(())
+}
+
+/// 剪贴板配置的初始化策略。
+///
+/// - 已有来源标记：配置已初始化，绝不补齐缺失键；
+/// - 全新库（user_version=0）：写入产品默认值，来源 `fresh_default`；
+/// - 无剪贴板模块的旧库（0<version<7）：写入默认值但强制暂停，来源
+///   `legacy_upgrade_paused`，等待用户确认后显式恢复；
+/// - v7+ 已初始化库却没有任何剪贴板键：只记录 `missing`，保持缺失并
+///   fail-closed，等待用户显式修复，不得按默认值自动开启；
+/// - 只有部分键：记录 `existing`，不补齐，缺失键由读取路径 fail-closed。
+///
+/// 整个初始化在一个事务内完成，失败不留下半套配置。
+fn seed_clipboard_config(conn: &Connection, prior_version: i64) -> AppResult<()> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let marker: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM application_settings WHERE key = ?1",
+        rusqlite::params![CLIPBOARD_ORIGIN_KEY],
+        |r| r.get(0),
+    )?;
+    if marker > 0 {
+        return Ok(());
+    }
+    let now = crate::agents::now_iso();
+    let mut present = 0usize;
+    for key in CLIPBOARD_SETTING_KEYS {
+        let exists: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM application_settings WHERE key = ?1",
+            rusqlite::params![key],
+            |r| r.get(0),
+        )?;
+        if exists > 0 {
+            present += 1;
+        }
+    }
+    let origin = if present > 0 {
+        CLIPBOARD_ORIGIN_EXISTING
+    } else if prior_version == 0 {
+        write_clipboard_defaults(&tx, false, &now)?;
+        CLIPBOARD_ORIGIN_FRESH
+    } else if prior_version < 7 {
+        write_clipboard_defaults(&tx, true, &now)?;
+        CLIPBOARD_ORIGIN_LEGACY_PAUSED
+    } else {
+        CLIPBOARD_ORIGIN_MISSING
+    };
+    put_setting(&tx, CLIPBOARD_ORIGIN_KEY, &serde_json::json!(origin), &now)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn write_clipboard_defaults(conn: &Connection, paused: bool, now: &str) -> AppResult<()> {
+    for key in CLIPBOARD_SETTING_KEYS {
+        let Some(mut value) = Settings::clipboard_setting_default(key) else {
+            continue;
+        };
+        if *key == "clipboard_paused" {
+            value = serde_json::json!(paused);
+        }
+        insert_setting_if_absent(conn, key, &value, now)?;
+    }
+    Ok(())
 }
 
 fn configure_writer(conn: &Connection) -> AppResult<()> {
@@ -824,6 +1180,10 @@ pub struct Settings {
     /// 窗口材质：solid（不透明）| glass（毛玻璃，不支持时自动回退 solid）
     #[serde(default = "default_material")]
     pub material: String,
+    /// 视觉预设（v0.6）：dream-gradient | liquid-glass。
+    /// 与 theme（明暗）/ material（材质）正交；未知值由前端回退到默认预设。
+    #[serde(default = "default_visual_preset")]
+    pub visual_preset: String,
     #[serde(default = "default_true")]
     pub snap_enabled: bool,
     #[serde(default)]
@@ -844,6 +1204,15 @@ pub struct Settings {
     pub notify_agent: bool,
     #[serde(default)]
     pub notify_muted: bool,
+    /// 通知风暴治理：窗口内最多独立弹窗数（1~20）
+    #[serde(default = "default_notify_burst")]
+    pub notify_burst_max: u32,
+    /// 通知风暴治理：限流窗口（秒，10~3600）
+    #[serde(default = "default_notify_window")]
+    pub notify_rate_window_secs: u32,
+    /// 高频完成合并为一条摘要（关闭后逐个弹出，仍受频率上限约束）
+    #[serde(default = "default_true")]
+    pub notify_done_aggregate: bool,
     #[serde(default = "default_grace")]
     pub overdue_grace_hours: u32,
     #[serde(default = "default_stale")]
@@ -899,6 +1268,13 @@ pub struct Settings {
     /// 工作区批量启动数量上限
     #[serde(default = "default_workspace_max")]
     pub nav_workspace_max: u32,
+    // ── 模块独立启停（v0.5.2；关闭只停本模块的后台动作，Agent 接入不受影响）──
+    /// 工作现场：关闭后停止捕获与后台恢复，历史数据保留
+    #[serde(default = "default_true")]
+    pub workspace_enabled: bool,
+    /// 行动中心：关闭后停止聚合刷新与徽标，原始事件仍照常入库
+    #[serde(default = "default_true")]
+    pub actions_enabled: bool,
     // ── 智能剪贴板（v0.5；全部带默认值，旧库无键也能反序列化）──
     /// 全局监听开关（关闭后不再记录任何新的剪贴板内容）
     #[serde(default = "default_true")]
@@ -956,6 +1332,9 @@ fn default_mode() -> String {
 fn default_material() -> String {
     "glass".into()
 }
+fn default_visual_preset() -> String {
+    "dream-gradient".into()
+}
 fn default_true() -> bool {
     true
 }
@@ -967,6 +1346,12 @@ fn default_grace() -> u32 {
 }
 fn default_stale() -> u32 {
     15
+}
+fn default_notify_burst() -> u32 {
+    3
+}
+fn default_notify_window() -> u32 {
+    60
 }
 fn default_retain() -> u32 {
     7
@@ -1030,12 +1415,598 @@ impl Default for Settings {
     }
 }
 
+/// 剪贴板设置键白名单：安全读取、缺失兼容与显式修复都以此为准。
+pub const CLIPBOARD_SETTING_KEYS: &[&str] = &[
+    "clipboard_enabled",
+    "clipboard_paused",
+    "clipboard_capture_images",
+    "clipboard_capture_files",
+    "clipboard_capture_html",
+    "clipboard_auto_group",
+    "clipboard_group_window_secs",
+    "clipboard_retention_days",
+    "clipboard_max_items",
+    "clipboard_max_storage_mb",
+    "clipboard_exclude_apps",
+    "clipboard_paste_interval_ms",
+    "clipboard_paste_interval_image_ms",
+    "clipboard_paste_interval_html_ms",
+    "clipboard_paste_interval_files_ms",
+    "clipboard_sensitive_filter",
+];
+
+/// 剪贴板配置初始化来源（内部诊断标记，不出现在设置界面）。
+///
+/// 用来区分「首次安装默认值」「旧版本升级保守暂停」「已有配置」与
+/// 「配置整体丢失」；只有后两者中的已有配置才谈得上用户授权。
+pub const CLIPBOARD_ORIGIN_KEY: &str = "clipboard_config_origin";
+pub const CLIPBOARD_ORIGIN_FRESH: &str = "fresh_default";
+pub const CLIPBOARD_ORIGIN_LEGACY_PAUSED: &str = "legacy_upgrade_paused";
+pub const CLIPBOARD_ORIGIN_EXISTING: &str = "existing";
+pub const CLIPBOARD_ORIGIN_MISSING: &str = "missing";
+
+/// 剪贴板配置读取失败的类别（只描述结构问题，不含任何设置值）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ClipboardConfigErrorKind {
+    Database,
+    /// 已初始化的配置缺少键：可能是用户配置丢失，不得按默认值自动开启。
+    Missing,
+    Json,
+    Type,
+    Range,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardConfigError {
+    pub kind: ClipboardConfigErrorKind,
+    /// 只记录键名，绝不包含值（排除名单也可能含应用路径）。
+    pub keys: Vec<String>,
+}
+
+impl ClipboardConfigError {
+    pub fn message(&self) -> String {
+        match self.kind {
+            ClipboardConfigErrorKind::Database => {
+                "无法读取剪贴板设置（数据库错误），已停止自动记录".into()
+            }
+            ClipboardConfigErrorKind::Json => format!(
+                "剪贴板设置已损坏（{}），已停止自动记录",
+                self.keys.join("、")
+            ),
+            ClipboardConfigErrorKind::Missing => format!(
+                "剪贴板设置缺失（{}），无法确认用户授权，已停止自动记录",
+                self.keys.join("、")
+            ),
+            ClipboardConfigErrorKind::Type => format!(
+                "剪贴板设置类型错误（{}），已停止自动记录",
+                self.keys.join("、")
+            ),
+            ClipboardConfigErrorKind::Range => format!(
+                "剪贴板设置超出安全范围（{}），已停止自动记录",
+                self.keys.join("、")
+            ),
+        }
+    }
+}
+
+/// 剪贴板配置的安全视图：任一相关键不可靠时 `capture_allowed=false`。
+#[derive(Debug, Clone)]
+pub struct ClipboardConfig {
+    pub settings: Settings,
+    pub error: Option<ClipboardConfigError>,
+    /// 初始化来源；缺失键被判定为异常时也保留来源用于诊断。
+    pub origin: Option<String>,
+}
+
+impl ClipboardConfig {
+    pub fn capture_allowed(&self) -> bool {
+        self.error.is_none() && self.settings.clipboard_enabled && !self.settings.clipboard_paused
+    }
+}
+
+fn clipboard_value<T: serde::de::DeserializeOwned>(
+    raw: &HashMap<String, String>,
+    key: &str,
+    json_keys: &mut Vec<String>,
+    type_keys: &mut Vec<String>,
+) -> Option<T> {
+    let text = raw.get(key)?;
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => match serde_json::from_value::<T>(value) {
+            Ok(parsed) => Some(parsed),
+            Err(_) => {
+                type_keys.push(key.to_string());
+                None
+            }
+        },
+        Err(_) => {
+            json_keys.push(key.to_string());
+            None
+        }
+    }
+}
+
+fn clipboard_u32(
+    raw: &HashMap<String, String>,
+    key: &str,
+    min: u32,
+    max: u32,
+    json_keys: &mut Vec<String>,
+    type_keys: &mut Vec<String>,
+    range_keys: &mut Vec<String>,
+) -> Option<u32> {
+    let value = clipboard_value::<u32>(raw, key, json_keys, type_keys)?;
+    if !(min..=max).contains(&value) {
+        range_keys.push(key.to_string());
+        return None;
+    }
+    Some(value)
+}
+
+/// 单个剪贴板键的 JSON 值是否可安全采用（供 `Settings::load` 剔除损坏字段）。
+fn clipboard_value_valid(key: &str, value: &serde_json::Value) -> bool {
+    let boolean = matches!(
+        key,
+        "clipboard_enabled"
+            | "clipboard_paused"
+            | "clipboard_capture_images"
+            | "clipboard_capture_files"
+            | "clipboard_capture_html"
+            | "clipboard_auto_group"
+            | "clipboard_sensitive_filter"
+    );
+    if boolean {
+        return value.is_boolean();
+    }
+    if key == "clipboard_exclude_apps" {
+        return value
+            .as_str()
+            .map(|v| {
+                v.chars().count() <= 4096
+                    && !v
+                        .chars()
+                        .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+            })
+            .unwrap_or(false);
+    }
+    let range = match key {
+        "clipboard_group_window_secs" => Some((5, 600)),
+        "clipboard_retention_days" => Some((1, 3650)),
+        "clipboard_max_items" => Some((20, 50_000)),
+        "clipboard_max_storage_mb" => Some((16, 102_400)),
+        "clipboard_paste_interval_ms"
+        | "clipboard_paste_interval_image_ms"
+        | "clipboard_paste_interval_html_ms"
+        | "clipboard_paste_interval_files_ms" => Some((100, 5_000)),
+        _ => None,
+    };
+    match range {
+        Some((min, max)) => value
+            .as_u64()
+            .map(|n| n <= u32::MAX as u64 && (min..=max).contains(&(n as u32)))
+            .unwrap_or(false),
+        None => true,
+    }
+}
+
 impl Settings {
     pub fn load(db: &Db) -> AppResult<Self> {
         let raw = db.all_settings()?;
-        let s: Settings = serde_json::from_value(raw).unwrap_or_default();
+        // 单个损坏的剪贴板键不能让整套设置回退默认（会连带影响任务/Agent 的
+        // 端口、主题、通知等）。这里先剔除不可靠的剪贴板字段，剪贴板的
+        // fail-closed 由 `load_clipboard` 单独负责。
+        let mut obj = match raw {
+            serde_json::Value::Object(obj) => obj,
+            _ => serde_json::Map::new(),
+        };
+        for key in CLIPBOARD_SETTING_KEYS {
+            if obj
+                .get(*key)
+                .map(|v| !clipboard_value_valid(key, v))
+                .unwrap_or(false)
+            {
+                obj.remove(*key);
+            }
+        }
+        let s: Settings =
+            serde_json::from_value(serde_json::Value::Object(obj)).unwrap_or_default();
         Ok(s)
     }
+
+    /// 剪贴板字段的 fail-closed 解析：缺失键沿用默认（兼容旧库），
+    /// 损坏/类型错误/越界/数据库失败都返回错误，调用方必须停止自动采集。
+    pub fn reload_clipboard(&mut self, db: &Db) -> Option<ClipboardConfigError> {
+        match db.all_settings_raw() {
+            Ok(rows) => {
+                let raw: HashMap<String, String> = rows.into_iter().collect();
+                self.reload_clipboard_raw(&raw)
+            }
+            Err(_) => Some(ClipboardConfigError {
+                kind: ClipboardConfigErrorKind::Database,
+                keys: CLIPBOARD_SETTING_KEYS
+                    .iter()
+                    .map(|k| k.to_string())
+                    .collect(),
+            }),
+        }
+    }
+
+    /// 从原始键值解析剪贴板字段；已初始化配置缺少键即 fail-closed。
+    fn reload_clipboard_raw(
+        &mut self,
+        raw: &HashMap<String, String>,
+    ) -> Option<ClipboardConfigError> {
+        let missing: Vec<String> = CLIPBOARD_SETTING_KEYS
+            .iter()
+            .filter(|key| !raw.contains_key(**key))
+            .map(|key| (*key).to_string())
+            .collect();
+        let mut json_keys = Vec::new();
+        let mut type_keys = Vec::new();
+        let mut range_keys = Vec::new();
+
+        macro_rules! boolean {
+            ($field:ident, $key:literal) => {
+                if let Some(v) = clipboard_value::<bool>(&raw, $key, &mut json_keys, &mut type_keys)
+                {
+                    self.$field = v;
+                }
+            };
+        }
+        macro_rules! ranged {
+            ($field:ident, $key:literal, $min:expr, $max:expr) => {
+                if let Some(v) = clipboard_u32(
+                    &raw,
+                    $key,
+                    $min,
+                    $max,
+                    &mut json_keys,
+                    &mut type_keys,
+                    &mut range_keys,
+                ) {
+                    self.$field = v;
+                }
+            };
+        }
+
+        boolean!(clipboard_enabled, "clipboard_enabled");
+        boolean!(clipboard_paused, "clipboard_paused");
+        boolean!(clipboard_capture_images, "clipboard_capture_images");
+        boolean!(clipboard_capture_files, "clipboard_capture_files");
+        boolean!(clipboard_capture_html, "clipboard_capture_html");
+        boolean!(clipboard_auto_group, "clipboard_auto_group");
+        boolean!(clipboard_sensitive_filter, "clipboard_sensitive_filter");
+        ranged!(
+            clipboard_group_window_secs,
+            "clipboard_group_window_secs",
+            5,
+            600
+        );
+        ranged!(
+            clipboard_retention_days,
+            "clipboard_retention_days",
+            1,
+            3650
+        );
+        ranged!(clipboard_max_items, "clipboard_max_items", 20, 50_000);
+        ranged!(
+            clipboard_max_storage_mb,
+            "clipboard_max_storage_mb",
+            16,
+            102_400
+        );
+        ranged!(
+            clipboard_paste_interval_ms,
+            "clipboard_paste_interval_ms",
+            100,
+            5_000
+        );
+        ranged!(
+            clipboard_paste_interval_image_ms,
+            "clipboard_paste_interval_image_ms",
+            100,
+            5_000
+        );
+        ranged!(
+            clipboard_paste_interval_html_ms,
+            "clipboard_paste_interval_html_ms",
+            100,
+            5_000
+        );
+        ranged!(
+            clipboard_paste_interval_files_ms,
+            "clipboard_paste_interval_files_ms",
+            100,
+            5_000
+        );
+
+        if let Some(v) = clipboard_value::<String>(
+            raw,
+            "clipboard_exclude_apps",
+            &mut json_keys,
+            &mut type_keys,
+        ) {
+            let illegal = v.chars().count() > 4096
+                || v.chars()
+                    .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t');
+            if illegal {
+                range_keys.push("clipboard_exclude_apps".into());
+            } else {
+                self.clipboard_exclude_apps = v;
+            }
+        }
+
+        let had_missing = !missing.is_empty();
+        let mut invalid: Vec<String> = missing;
+        for key in json_keys.iter().chain(&type_keys).chain(&range_keys) {
+            if !invalid.contains(key) {
+                invalid.push(key.clone());
+            }
+        }
+        if invalid.is_empty() {
+            return None;
+        }
+        let kind = if had_missing {
+            ClipboardConfigErrorKind::Missing
+        } else if !json_keys.is_empty() {
+            ClipboardConfigErrorKind::Json
+        } else if !type_keys.is_empty() {
+            ClipboardConfigErrorKind::Type
+        } else {
+            ClipboardConfigErrorKind::Range
+        };
+        Some(ClipboardConfigError {
+            kind,
+            keys: invalid,
+        })
+    }
+
+    /// 只面向剪贴板调用方：非剪贴板字段为默认值，不能用于任务/Agent 设置。
+    pub fn load_clipboard(db: &Db) -> ClipboardConfig {
+        match db.all_settings_raw() {
+            Ok(rows) => {
+                let raw: HashMap<String, String> = rows.into_iter().collect();
+                Self::clipboard_config_from_raw(&raw)
+            }
+            Err(_) => ClipboardConfig {
+                settings: Settings::default(),
+                error: Some(ClipboardConfigError {
+                    kind: ClipboardConfigErrorKind::Database,
+                    keys: CLIPBOARD_SETTING_KEYS
+                        .iter()
+                        .map(|k| k.to_string())
+                        .collect(),
+                }),
+                origin: None,
+            },
+        }
+    }
+
+    fn clipboard_config_from_raw(raw: &HashMap<String, String>) -> ClipboardConfig {
+        let mut settings = Settings::default();
+        let error = settings.reload_clipboard_raw(raw);
+        let origin = raw
+            .get(CLIPBOARD_ORIGIN_KEY)
+            .and_then(|s| serde_json::from_str::<String>(s).ok());
+        ClipboardConfig {
+            settings,
+            error,
+            origin,
+        }
+    }
+
+    /// 设置界面读取：配置异常时把剪贴板字段展示为「已停用 + 已暂停」，
+    /// 其他模块设置保持原值（绝不因剪贴板损坏影响任务/Agent）。
+    pub fn load_display(db: &Db) -> AppResult<Self> {
+        let mut settings = Self::load(db)?;
+        if settings.reload_clipboard(db).is_some() {
+            settings.clipboard_enabled = false;
+            settings.clipboard_paused = true;
+        }
+        Ok(settings)
+    }
+
+    pub fn clipboard_setting_default(key: &str) -> Option<serde_json::Value> {
+        let d = Settings::default();
+        Some(match key {
+            "clipboard_enabled" => serde_json::json!(d.clipboard_enabled),
+            "clipboard_paused" => serde_json::json!(d.clipboard_paused),
+            "clipboard_capture_images" => serde_json::json!(d.clipboard_capture_images),
+            "clipboard_capture_files" => serde_json::json!(d.clipboard_capture_files),
+            "clipboard_capture_html" => serde_json::json!(d.clipboard_capture_html),
+            "clipboard_auto_group" => serde_json::json!(d.clipboard_auto_group),
+            "clipboard_group_window_secs" => serde_json::json!(d.clipboard_group_window_secs),
+            "clipboard_retention_days" => serde_json::json!(d.clipboard_retention_days),
+            "clipboard_max_items" => serde_json::json!(d.clipboard_max_items),
+            "clipboard_max_storage_mb" => serde_json::json!(d.clipboard_max_storage_mb),
+            "clipboard_exclude_apps" => serde_json::json!(d.clipboard_exclude_apps),
+            "clipboard_paste_interval_ms" => serde_json::json!(d.clipboard_paste_interval_ms),
+            "clipboard_paste_interval_image_ms" => {
+                serde_json::json!(d.clipboard_paste_interval_image_ms)
+            }
+            "clipboard_paste_interval_html_ms" => {
+                serde_json::json!(d.clipboard_paste_interval_html_ms)
+            }
+            "clipboard_paste_interval_files_ms" => {
+                serde_json::json!(d.clipboard_paste_interval_files_ms)
+            }
+            "clipboard_sensitive_filter" => serde_json::json!(d.clipboard_sensitive_filter),
+            _ => return None,
+        })
+    }
+
+    /// 用户显式修复损坏的剪贴板配置。
+    ///
+    /// 整个「读取 → 备份 → 修复 → 校验」在一写事务内完成：监听线程读取设置
+    /// 走同一写连接，事务提交前只能看到修复前的 fail-closed 状态，提交后
+    /// 才能看到完整的合法状态；中途失败整体回滚。
+    ///
+    /// - `resume=false`：只修复，强制暂停，绝不自动恢复采集；
+    /// - `resume=true`：仅由用户显式触发，全部键修复并校验通过后才恢复。
+    pub fn repair_clipboard(db: &Db, resume: bool) -> AppResult<ClipboardConfig> {
+        db.with_conn(|conn| Self::repair_clipboard_tx(conn, resume))?;
+        Ok(Self::load_clipboard(db))
+    }
+
+    fn repair_clipboard_tx(conn: &Connection, resume: bool) -> AppResult<()> {
+        let tx = match rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate) {
+            Ok(tx) => tx,
+            // 数据库不可用：不写任何东西，由调用方重新读取并 fail-closed。
+            Err(_) => return Ok(()),
+        };
+        let raw = match read_all_settings_raw(&tx) {
+            Ok(raw) => raw,
+            Err(_) => return Ok(()),
+        };
+        repair_hook(RepairPhase::AfterRead)?;
+        let config = Self::clipboard_config_from_raw(&raw);
+        let now = crate::agents::now_iso();
+
+        let Some(error) = config.error.as_ref() else {
+            if !resume {
+                // 配置本身健康且用户只要「仅修复」：不写库，避免无意义变更。
+                return Ok(());
+            }
+            put_setting(&tx, "clipboard_enabled", &serde_json::json!(true), &now)?;
+            put_setting(&tx, "clipboard_paused", &serde_json::json!(false), &now)?;
+            verify_clipboard_repair(&tx, true)?;
+            repair_hook(RepairPhase::BeforeCommit)?;
+            tx.commit()?;
+            return Ok(());
+        };
+
+        // 原始值备份（缺失键记 null），保留损坏原因与来源，绝不静默删除。
+        let mut backup = match raw
+            .get("clipboard_config_corrupt_backup")
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .and_then(|v| v.as_object().cloned())
+        {
+            Some(obj) => obj,
+            None => {
+                let mut obj = serde_json::Map::new();
+                if let Some(prev) = raw.get("clipboard_config_corrupt_backup") {
+                    obj.insert(
+                        "_replaced_backup_raw".into(),
+                        serde_json::Value::String(prev.clone()),
+                    );
+                }
+                obj
+            }
+        };
+        for key in &error.keys {
+            backup.insert(
+                key.clone(),
+                match raw.get(key) {
+                    Some(raw_value) => serde_json::Value::String(raw_value.clone()),
+                    None => serde_json::Value::Null,
+                },
+            );
+        }
+        backup.insert(
+            "_last_repair".into(),
+            serde_json::json!({
+                "kind": error.kind,
+                "keys": error.keys,
+                "origin": config.origin,
+                "at": now,
+                "resume": resume,
+            }),
+        );
+        put_setting(
+            &tx,
+            "clipboard_config_corrupt_backup",
+            &serde_json::Value::Object(backup),
+            &now,
+        )?;
+        repair_hook(RepairPhase::AfterBackup)?;
+
+        for key in &error.keys {
+            let value = match (resume, key.as_str()) {
+                // 无法解析/缺失的开关：仅修复时按最保守值落盘；
+                // 显式恢复是唯一允许写 true 的路径。
+                (true, "clipboard_enabled") => serde_json::json!(true),
+                (false, "clipboard_enabled") => serde_json::json!(false),
+                (_, "clipboard_paused") => serde_json::json!(!resume),
+                _ => match Self::clipboard_setting_default(key) {
+                    Some(v) => v,
+                    None => continue,
+                },
+            };
+            put_setting(&tx, key, &value, &now)?;
+        }
+        // 最终启停状态单独落定：即使开关键没坏，「仅修复」也必须保持暂停。
+        if resume {
+            put_setting(&tx, "clipboard_enabled", &serde_json::json!(true), &now)?;
+            put_setting(&tx, "clipboard_paused", &serde_json::json!(false), &now)?;
+        } else {
+            put_setting(&tx, "clipboard_paused", &serde_json::json!(true), &now)?;
+        }
+        repair_hook(RepairPhase::AfterWrites)?;
+        verify_clipboard_repair(&tx, resume)?;
+        repair_hook(RepairPhase::BeforeCommit)?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// 修复事务内的校验：所有键可解析，且采集状态恰好等于用户选择。
+fn verify_clipboard_repair(conn: &Connection, resume: bool) -> AppResult<()> {
+    let raw = read_all_settings_raw(conn)?;
+    let config = Settings::clipboard_config_from_raw(&raw);
+    if config.error.is_some() || config.capture_allowed() != resume {
+        return Err(AppError::Validation("剪贴板配置修复校验失败".into()));
+    }
+    Ok(())
+}
+
+fn read_all_settings_raw(conn: &Connection) -> AppResult<HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT key, value FROM application_settings")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (key, value) = row?;
+        out.insert(key, value);
+    }
+    Ok(out)
+}
+
+/// 修复事务的测试检查点（生产构建为空实现，无运行时开销）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepairPhase {
+    AfterRead,
+    AfterBackup,
+    AfterWrites,
+    BeforeCommit,
+}
+
+#[cfg(test)]
+type RepairHook = std::sync::Arc<dyn Fn(RepairPhase) -> AppResult<()>>;
+
+#[cfg(test)]
+thread_local! {
+    static REPAIR_HOOK: std::cell::RefCell<Option<RepairHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_repair_hook(hook: Option<RepairHook>) {
+    REPAIR_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+fn repair_hook(phase: RepairPhase) -> AppResult<()> {
+    let hook = REPAIR_HOOK.with(|slot| slot.borrow().clone());
+    match hook {
+        Some(hook) => hook(phase),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(test))]
+fn repair_hook(_phase: RepairPhase) -> AppResult<()> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1068,6 +2039,144 @@ mod tests {
             ))
             .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn backfill_origin_marks_only_provable_test_data() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_conn(|conn| {
+            let now = "2026-10-20T10:00:00+00:00";
+            // codex / mock 为迁移预置来源，直接复用
+            for (id, source, external) in [
+                ("real-sess", "codex", "real-1"),
+                ("perf-sess", "codex", "http-perf-x-session-0"),
+                ("perf-uncertain", "codex", "http-perf-y-session-0"),
+                ("self-sess", "codex", "taskdock-selftest-codex"),
+                ("mock-sess", "mock", "mock-1"),
+            ] {
+                conn.execute(
+                    "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                     VALUES (?1, ?2, ?3, '', 'idle', ?4, ?4)",
+                    rusqlite::params![id, source, external, now],
+                )?;
+            }
+            conn.execute(
+                "INSERT INTO agent_instances (id, source_id, instance_key, first_seen_at, last_seen_at)
+                 VALUES ('perf-inst', 'codex', 'http-instance-0', ?1, ?1)",
+                rusqlite::params![now],
+            )?;
+            conn.execute(
+                "INSERT INTO agent_instances (id, source_id, instance_key, first_seen_at, last_seen_at)
+                 VALUES ('shared-inst', 'codex', 'shared', ?1, ?1)",
+                rusqlite::params![now],
+            )?;
+            for (id, session, run, state, instance) in [
+                ("run-real", "real-sess", "real-run-1", "completed", "shared-inst"),
+                ("run-perf", "perf-sess", "http-perf-x-run-0-0", "completed", "perf-inst"),
+                ("run-shared", "real-sess", "real-run-2", "running", "shared-inst"),
+            ] {
+                conn.execute(
+                    "INSERT INTO agent_runs (id, session_id, source_id, external_run_id, status, started_at, updated_at, instance_id)
+                     VALUES (?1, ?2, 'codex', ?3, ?4, ?5, ?5, ?6)",
+                    rusqlite::params![id, session, run, state, now, instance],
+                )?;
+            }
+            for (id, session, run) in [
+                ("ev-real", "real-1", Some("real-run-1")),
+                ("ev-self", "taskdock-selftest-codex", None),
+                ("ev-perf", "http-perf-x-session-0", Some("http-perf-x-run-0-0")),
+                // 只有会话前缀命中、轮次不符合：不可证明，保持 real 待人工确认
+                ("ev-uncertain", "http-perf-y-session-0", Some("custom-run")),
+            ] {
+                conn.execute(
+                    "INSERT INTO agent_events (id, source_id, session_external_id, run_external_id, state, received_at)
+                     VALUES (?1, 'codex', ?2, ?3, 'completed', ?4)",
+                    rusqlite::params![id, session, run, now],
+                )?;
+            }
+            conn.execute(
+                "INSERT INTO agent_events (id, source_id, session_external_id, state, received_at)
+                 VALUES ('ev-mock', 'mock', 'mock-1', 'waiting', ?1)",
+                rusqlite::params![now],
+            )?;
+            conn.execute(
+                "INSERT INTO notification_history (id, kind, title, ref_type, ref_id, occurrence, created_at)
+                 VALUES ('n-perf', 'agent_done', '完成', 'agent_run', 'run-perf', 'run-perf:completed', ?1)",
+                rusqlite::params![now],
+            )?;
+            conn.execute(
+                "INSERT INTO notification_history (id, kind, title, ref_type, ref_id, occurrence, created_at)
+                 VALUES ('n-lost', 'agent_done', '完成', 'agent_run', 'run-deleted', 'run-deleted:completed', ?1)",
+                rusqlite::params![now],
+            )?;
+            backfill_origin_labels(conn)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let origin = |table: &str, id: &str| {
+            db.with_conn(|conn| {
+                conn.query_row(
+                    &format!("SELECT origin FROM {} WHERE id = ?1", table),
+                    rusqlite::params![id],
+                    |r| r.get::<_, String>(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap()
+        };
+        assert_eq!(origin("agent_sessions", "real-sess"), "real");
+        assert_eq!(origin("agent_sessions", "perf-sess"), "benchmark");
+        assert_eq!(
+            origin("agent_sessions", "perf-uncertain"),
+            "real",
+            "缺少轮次佐证时不标记"
+        );
+        assert_eq!(origin("agent_sessions", "self-sess"), "selftest");
+        assert_eq!(origin("agent_sessions", "mock-sess"), "mock");
+        assert_eq!(origin("agent_runs", "run-perf"), "benchmark");
+        assert_eq!(origin("agent_runs", "run-real"), "real");
+        assert_eq!(origin("agent_events", "ev-perf"), "benchmark");
+        assert_eq!(origin("agent_events", "ev-self"), "selftest");
+        assert_eq!(origin("agent_events", "ev-uncertain"), "real");
+        assert_eq!(origin("agent_events", "ev-mock"), "mock");
+        assert_eq!(origin("agent_instances", "perf-inst"), "benchmark");
+        assert_eq!(
+            origin("agent_instances", "shared-inst"),
+            "real",
+            "被真实轮次引用过的实例不得标记为测试"
+        );
+        let n_origin = |id: &str| {
+            db.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT agent_origin FROM notification_history WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get::<_, String>(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap()
+        };
+        assert_eq!(n_origin("n-perf"), "benchmark");
+        assert_eq!(n_origin("n-lost"), "real", "无法证明的通知保持 real");
+        // 再一次回填必须幂等
+        db.with_conn(|conn| {
+            backfill_origin_labels(conn)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        assert_eq!(
+            db.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM agent_sessions WHERE origin <> 'real'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap(),
+            3
         );
     }
 
@@ -1181,6 +2290,246 @@ mod tests {
         })
         .unwrap();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// v12/v13（0.5 数据可信 + 分页索引）：从 v11 库升级 —— 老数据一行不少、
+    /// 新列默认值正确、可证明的测试数据被回填隔离、v13 索引齐备、幂等重开不重复回填。
+    #[test]
+    fn v11_to_v13_upgrade_keeps_rows_and_isolates_provable_test_data() {
+        let dir = std::env::temp_dir().join(format!("td-mig13-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let now = "2026-10-27T09:00:00+00:00";
+        {
+            // 先按 v11 建库并放入旧结构数据（模拟用户升级前的真实库）
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            apply_migrations(&conn, 0, &MIGRATIONS[..11]).unwrap();
+            conn.execute(
+                "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES ('sess-real', 'codex', 'real-sess', '真实会话', 'failed', ?1, ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_runs (id, session_id, source_id, external_run_id, status, started_at, updated_at)
+                 VALUES ('run-real', 'sess-real', 'codex', 'real-run', 'failed', ?1, ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_events (id, source_id, session_external_id, run_external_id, state, received_at)
+                 VALUES ('evt-real', 'codex', 'real-sess', 'real-run', 'failed', ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            // 自测会话：保留前缀，可证明
+            conn.execute(
+                "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES ('sess-self', 'codex', 'taskdock-selftest-codex', '自测会话', 'idle', ?1, ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_events (id, source_id, session_external_id, state, received_at)
+                 VALUES ('evt-self', 'codex', 'taskdock-selftest-codex', 'running', ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            // 压测轮次：会话与轮次双前缀，可证明
+            conn.execute(
+                "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES ('sess-perf', 'codex', 'http-perf-sess', '压测会话', 'idle', ?1, ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_runs (id, session_id, source_id, external_run_id, status, started_at, updated_at)
+                 VALUES ('run-perf', 'sess-perf', 'codex', 'http-perf-run', 'failed', ?1, ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO notification_history (id, kind, title, body, ref_type, ref_id, occurrence, is_read, created_at)
+                 VALUES ('notif-1', 'agent_failed', '失败', '', 'agent_run', 'run-real', 'occ-1', 0, ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+        }
+
+        // 用新版本打开同一文件 → 触发 v12/v13 迁移与一次性回填
+        let db = Db::open(&path).unwrap();
+        db.with_conn(|c| {
+            let version: i64 = c
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(
+                version,
+                MIGRATIONS[MIGRATIONS.len() - 1].0,
+                "升级后应到达最新迁移版本"
+            );
+            // 老数据一行不少
+            for (table, expected) in [
+                ("agent_sessions", 3),
+                ("agent_runs", 2),
+                ("agent_events", 2),
+                ("notification_history", 1),
+            ] {
+                let n: i64 = c
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                    .map_err(AppError::from)?;
+                assert_eq!(n, expected, "{} 的行数在升级后不得变化", table);
+            }
+            // 旧行默认判为真实；可证明的自测/压测数据被回填隔离
+            let origin_of = |table: &str, id: &str| -> AppResult<String> {
+                c.query_row(
+                    &format!("SELECT origin FROM {table} WHERE id = ?1"),
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            };
+            assert_eq!(origin_of("agent_events", "evt-real")?, "real");
+            assert_eq!(origin_of("agent_runs", "run-real")?, "real");
+            assert_eq!(origin_of("agent_sessions", "sess-real")?, "real");
+            assert_eq!(origin_of("agent_events", "evt-self")?, "selftest");
+            assert_eq!(origin_of("agent_sessions", "sess-self")?, "selftest");
+            assert_eq!(origin_of("agent_sessions", "sess-perf")?, "benchmark");
+            assert_eq!(origin_of("agent_runs", "run-perf")?, "benchmark");
+            // 通知按所属轮次归类
+            let notif_origin: String = c
+                .query_row(
+                    "SELECT agent_origin FROM notification_history WHERE id = 'notif-1'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(notif_origin, "real", "真实轮次的通知应保持 real");
+            // 隐藏的压测来源已注册且被隔离
+            let (category, hidden): (String, i64) = c
+                .query_row(
+                    "SELECT category, hidden FROM agent_sources WHERE id = 'bench'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(category, "benchmark");
+            assert_eq!(hidden, 1, "压测来源必须隐藏，不可被选中");
+            // v13 的分页索引齐备
+            for idx in [
+                "idx_events_origin_received_id",
+                "idx_events_origin_source_received_id",
+                "idx_notifications_origin_created_id",
+                "idx_notifications_origin_kind_created_id",
+            ] {
+                let n: i64 = c
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
+                        rusqlite::params![idx],
+                        |r| r.get(0),
+                    )
+                    .map_err(AppError::from)?;
+                assert_eq!(n, 1, "v13 索引 {} 必须存在", idx);
+            }
+            // 外键无破损
+            let fk: i64 = c
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)?;
+            assert_eq!(fk, 0, "升级后不得出现外键破损");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        // 幂等：再次打开不重复回填、不改写既有归类
+        let db2 = Db::open(&path).unwrap();
+        db2.with_conn(|c| {
+            let n: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM application_settings WHERE key = 'origin_backfill_v12'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(n, 1, "回填标记只应写一次");
+            let origin: String = c
+                .query_row(
+                    "SELECT origin FROM agent_events WHERE id = 'evt-self'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(origin, "selftest", "重复打开不得改变归类");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 逐个历史 schema 版本（v1…v13）升级到最新：版本推进、任务行不丢、
+    /// 外键零违规、重复打开幂等。覆盖 v0.1–v0.4 各历史库的真实升级入口。
+    #[test]
+    fn every_historical_schema_version_upgrades_to_latest_without_losing_rows() {
+        let latest = MIGRATIONS[MIGRATIONS.len() - 1].0;
+        let now = "2026-10-27T09:00:00+00:00";
+        for from in 1..=MIGRATIONS.len() {
+            let dir = std::env::temp_dir().join(format!("td-migall-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("t.db");
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+                apply_migrations(&conn, 0, &MIGRATIONS[..from]).unwrap();
+                // 每个历史版本都放一条任务：验证升级前后任务行不丢
+                conn.execute(
+                    "INSERT INTO tasks (id, title, created_at, updated_at)
+                     VALUES ('task-old', '历史任务', ?1, ?1)",
+                    rusqlite::params![now],
+                )
+                .unwrap();
+                let version: i64 = conn
+                    .query_row("PRAGMA user_version", [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(version, from as i64, "夹具的 schema 版本应等于 {}", from);
+            }
+
+            let db = Db::open(&path).unwrap();
+            db.with_conn(|c| {
+                let version: i64 = c
+                    .query_row("PRAGMA user_version", [], |r| r.get(0))
+                    .map_err(AppError::from)?;
+                assert_eq!(version, latest, "v{} 升级后应到达最新迁移版本", from);
+                let tasks: i64 = c
+                    .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+                    .map_err(AppError::from)?;
+                assert_eq!(tasks, 1, "v{} 升级后历史任务不得丢失", from);
+                let fk: i64 = c
+                    .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                        r.get(0)
+                    })
+                    .map_err(AppError::from)?;
+                assert_eq!(fk, 0, "v{} 升级后不得出现外键破损", from);
+                Ok::<_, AppError>(())
+            })
+            .unwrap();
+
+            // 幂等：再次打开版本不再推进、数据仍在
+            let db2 = Db::open(&path).unwrap();
+            db2.with_conn(|c| {
+                let version: i64 = c
+                    .query_row("PRAGMA user_version", [], |r| r.get(0))
+                    .map_err(AppError::from)?;
+                assert_eq!(version, latest, "v{} 重复打开不得再次推进版本", from);
+                let tasks: i64 = c
+                    .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+                    .map_err(AppError::from)?;
+                assert_eq!(tasks, 1, "v{} 重复打开后历史任务不得丢失", from);
+                Ok::<_, AppError>(())
+            })
+            .unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     /// v4（0.4 统一导航）：从 v3 库升级 —— 新表齐备、旧数据原样、task_agent_links 兼容并存。
@@ -1354,6 +2703,30 @@ mod tests {
                      DROP TABLE workspace_snapshot_items;
                      DROP TABLE workspace_snapshots;
                      DROP TABLE action_acks;
+                     DROP INDEX IF EXISTS idx_events_ingest_seq;
+                     DROP INDEX IF EXISTS idx_events_run_latest;
+                     DROP INDEX IF EXISTS idx_events_origin_received;
+                     DROP INDEX IF EXISTS idx_sources_category;
+                     DROP INDEX IF EXISTS idx_runs_origin_status;
+                     DROP INDEX IF EXISTS idx_runs_origin_updated;
+                     DROP INDEX IF EXISTS idx_sessions_origin_last;
+                     DROP INDEX IF EXISTS idx_instances_origin_last;
+                     DROP INDEX IF EXISTS idx_notifications_origin_created;
+                     DROP INDEX IF EXISTS idx_notifications_unread_origin;
+                     DROP INDEX IF EXISTS idx_events_origin_received_id;
+                     DROP INDEX IF EXISTS idx_events_origin_source_received_id;
+                     DROP INDEX IF EXISTS idx_notifications_origin_created_id;
+                     DROP INDEX IF EXISTS idx_notifications_origin_kind_created_id;
+                     ALTER TABLE agent_events DROP COLUMN ingest_seq;
+                     ALTER TABLE agent_events DROP COLUMN origin;
+                     ALTER TABLE agent_sources DROP COLUMN category;
+                     ALTER TABLE agent_sessions DROP COLUMN origin;
+                     ALTER TABLE agent_runs DROP COLUMN origin;
+                     ALTER TABLE agent_instances DROP COLUMN origin;
+                     ALTER TABLE notification_history DROP COLUMN agent_origin;
+                     ALTER TABLE agent_runs DROP COLUMN last_ingest_seq;
+                     ALTER TABLE agent_runs DROP COLUMN last_event_at;
+                     DELETE FROM application_settings WHERE key = 'origin_backfill_v12';
                      PRAGMA user_version = 4;",
                 )?;
                 Ok::<_, AppError>(())
@@ -1444,5 +2817,704 @@ mod tests {
         assert_eq!(s.clipboard_paste_interval_html_ms, 600);
         assert_eq!(s.clipboard_paste_interval_files_ms, 900);
         assert_eq!(s.clipboard_paste_interval_image_ms, 1200);
+    }
+
+    // ── 剪贴板配置 fail-closed 故障注入（P0）──
+
+    fn raw_setting(db: &Db, key: &str, raw: &str) {
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO application_settings (key, value, updated_at) VALUES (?1, ?2, '2026-10-29T00:00:00+00:00')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                rusqlite::params![key, raw],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("td-{}-{}", tag, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 只执行迁移、不执行 seed 的文件库，用于模拟旧版本升级/配置丢失。
+    fn db_file_with_version(dir: &Path, migration_count: usize) -> std::path::PathBuf {
+        let path = dir.join("t.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            apply_migrations(&conn, 0, &MIGRATIONS[..migration_count]).unwrap();
+        }
+        path
+    }
+
+    fn wait_flag(flag: &std::sync::atomic::AtomicBool, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while !flag.load(Ordering::SeqCst) {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        true
+    }
+
+    fn sorted_raw(db: &Db) -> Vec<(String, String)> {
+        let mut rows = db.all_settings_raw().unwrap();
+        rows.sort();
+        rows
+    }
+
+    /// 全新安装：seed 一次性写入默认值并标记来源，读取本身绝不自愈写入。
+    #[test]
+    fn clipboard_fresh_install_seeds_defaults_and_marks_origin() {
+        let db = Db::open_in_memory().unwrap();
+        let before = sorted_raw(&db);
+        let config = Settings::load_clipboard(&db);
+        assert!(config.error.is_none());
+        assert!(config.settings.clipboard_enabled);
+        assert!(!config.settings.clipboard_paused);
+        assert!(config.capture_allowed());
+        assert_eq!(
+            config.origin.as_deref(),
+            Some(CLIPBOARD_ORIGIN_FRESH),
+            "全新安装来源必须可追溯"
+        );
+        assert_eq!(before, sorted_raw(&db), "读取不得自愈写入");
+    }
+
+    /// 单个剪贴板键 JSON 损坏：停止采集，但不得把整套设置回退默认。
+    #[test]
+    fn clipboard_corrupt_json_fails_closed_and_keeps_unrelated_settings() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "theme", "\"dark\"");
+        raw_setting(&db, "http_port", "50123");
+        raw_setting(&db, "clipboard_enabled", "{not-json");
+        let before = sorted_raw(&db);
+
+        let config = Settings::load_clipboard(&db);
+        let error = config.error.as_ref().expect("损坏配置必须报错");
+        assert_eq!(error.kind, ClipboardConfigErrorKind::Json);
+        assert!(error.keys.iter().any(|k| k == "clipboard_enabled"));
+        assert!(!config.capture_allowed(), "配置损坏时绝不能采集");
+        assert!(error.message().contains("clipboard_enabled"));
+        assert!(
+            !error.message().contains("not-json"),
+            "错误信息不得包含原始值"
+        );
+
+        let settings = Settings::load(&db).unwrap();
+        assert_eq!(settings.theme, "dark", "剪贴板损坏不得重置主题");
+        assert_eq!(settings.http_port, 50123, "剪贴板损坏不得重置端口");
+        let _ = Settings::load_display(&db).unwrap();
+        assert_eq!(before, sorted_raw(&db), "所有读取路径都不得改写设置");
+    }
+
+    /// 类型错误（布尔键给字符串、字符串键给数字）→ fail-closed。
+    #[test]
+    fn clipboard_type_errors_fail_closed() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "clipboard_sensitive_filter", "\"yes\"");
+        raw_setting(&db, "clipboard_exclude_apps", "42");
+        let config = Settings::load_clipboard(&db);
+        let error = config.error.as_ref().expect("类型错误必须报错");
+        assert_eq!(error.kind, ClipboardConfigErrorKind::Type);
+        assert!(error.keys.iter().any(|k| k == "clipboard_sensitive_filter"));
+        assert!(error.keys.iter().any(|k| k == "clipboard_exclude_apps"));
+        assert!(!config.capture_allowed());
+    }
+
+    /// 越界值（间隔、条目数）与非法排除名单（控制字符）→ fail-closed。
+    #[test]
+    fn clipboard_range_errors_fail_closed() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "clipboard_paste_interval_ms", "50");
+        raw_setting(&db, "clipboard_max_items", "1");
+        raw_setting(&db, "clipboard_exclude_apps", "\"a.exe\\u0000b.exe\"");
+        let config = Settings::load_clipboard(&db);
+        let error = config.error.as_ref().expect("越界必须报错");
+        assert_eq!(error.kind, ClipboardConfigErrorKind::Range);
+        for key in [
+            "clipboard_paste_interval_ms",
+            "clipboard_max_items",
+            "clipboard_exclude_apps",
+        ] {
+            assert!(error.keys.iter().any(|k| k == key), "缺少 {}", key);
+        }
+        assert!(!config.capture_allowed());
+    }
+
+    /// 数据库读取失败：不得默认开启采集。
+    #[test]
+    fn clipboard_database_failure_fails_closed() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_conn(|c| {
+            c.execute("DROP TABLE application_settings", [])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let config = Settings::load_clipboard(&db);
+        let error = config.error.as_ref().expect("数据库失败必须报错");
+        assert_eq!(error.kind, ClipboardConfigErrorKind::Database);
+        assert!(!config.capture_allowed());
+    }
+
+    /// 用户已关闭/暂停时，其他键损坏不得把开关自动打开。
+    #[test]
+    fn clipboard_config_never_enables_after_user_disabled() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "clipboard_enabled", "false");
+        raw_setting(&db, "clipboard_paused", "true");
+        raw_setting(&db, "clipboard_group_window_secs", "0");
+        let config = Settings::load_clipboard(&db);
+        assert!(config.error.is_some());
+        assert!(!config.settings.clipboard_enabled);
+        assert!(config.settings.clipboard_paused);
+        assert!(!config.capture_allowed());
+        let repaired = Settings::repair_clipboard(&db, false).unwrap();
+        assert!(!repaired.capture_allowed(), "修复后仍须保持暂停");
+    }
+
+    /// 显式修复：备份原始损坏值、只重写损坏键、默认保持暂停，恢复需显式 resume。
+    #[test]
+    fn clipboard_repair_backs_up_raw_values_and_requires_explicit_resume() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "clipboard_enabled", "true");
+        raw_setting(&db, "clipboard_paused", "false");
+        raw_setting(&db, "clipboard_max_items", "oops");
+
+        let repaired = Settings::repair_clipboard(&db, false).unwrap();
+        assert!(repaired.error.is_none(), "修复后应可解析");
+        assert!(!repaired.capture_allowed(), "仅修复必须保持暂停");
+        assert!(repaired.settings.clipboard_paused);
+
+        let backup = db
+            .get_setting("clipboard_config_corrupt_backup")
+            .unwrap()
+            .expect("原始损坏值必须备份");
+        assert_eq!(
+            backup.get("clipboard_max_items").and_then(|v| v.as_str()),
+            Some("oops"),
+            "备份必须是原始字符串，不得静默删除"
+        );
+        let raw: HashMap<_, _> = db.all_settings_raw().unwrap().into_iter().collect();
+        assert_eq!(
+            raw.get("clipboard_enabled").map(String::as_str),
+            Some("true"),
+            "用户的总开关偏好不得被改写"
+        );
+        assert_eq!(
+            raw.get("clipboard_max_items").map(String::as_str),
+            Some("1000"),
+            "只重写损坏键"
+        );
+
+        let resumed = Settings::repair_clipboard(&db, true).unwrap();
+        assert!(resumed.error.is_none());
+        assert!(resumed.capture_allowed(), "显式恢复后应重新允许采集");
+        assert!(
+            db.get_setting("clipboard_config_corrupt_backup")
+                .unwrap()
+                .is_some(),
+            "恢复采集不得丢弃备份"
+        );
+    }
+
+    #[test]
+    fn with_read_skips_reader_held_by_long_snapshot() {
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+
+        let dir = std::env::temp_dir().join(format!("td-readpool-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir.join("t.db")).unwrap();
+        assert_eq!(db.readers.len(), READ_POOL_SIZE);
+
+        // 0 号读连接被完整备份式的长快照占用，且下一次轮询起点也指向它。
+        let held = db.readers[0].lock().unwrap();
+        db.next_reader.store(0, Ordering::Relaxed);
+        let started = Instant::now();
+        let value: i64 = db
+            .with_read(|c| {
+                c.query_row("SELECT 1", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(value, 1);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "普通读不应排队等待长快照结束，实际 {:?}",
+            started.elapsed()
+        );
+        drop(held);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 数据库损坏时 repair 不得假装成功写入。
+    #[test]
+    fn clipboard_repair_does_not_write_when_database_broken() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_conn(|c| {
+            c.execute("DROP TABLE application_settings", [])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let config = Settings::repair_clipboard(&db, true).unwrap();
+        assert_eq!(
+            config.error.as_ref().map(|e| e.kind),
+            Some(ClipboardConfigErrorKind::Database)
+        );
+        assert!(!config.capture_allowed());
+    }
+
+    // ── 缺失键初始化策略（P1-02）──
+
+    /// 没有剪贴板模块的旧库升级：写入默认值但强制暂停，其他设置不受影响。
+    #[test]
+    fn clipboard_legacy_upgrade_starts_paused() {
+        let dir = temp_dir("legacy-clip");
+        let path = db_file_with_version(&dir, 6);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO application_settings (key, value, updated_at) VALUES ('theme', '\"dark\"', '2026-10-01T00:00:00+00:00')",
+                [],
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let config = Settings::load_clipboard(&db);
+        assert!(config.error.is_none());
+        assert!(config.settings.clipboard_enabled);
+        assert!(
+            config.settings.clipboard_paused,
+            "旧版本升级不得默认开始采集"
+        );
+        assert!(!config.capture_allowed());
+        assert_eq!(
+            config.origin.as_deref(),
+            Some(CLIPBOARD_ORIGIN_LEGACY_PAUSED)
+        );
+        assert_eq!(Settings::load(&db).unwrap().theme, "dark");
+        drop(db);
+
+        let db = Db::open(&path).unwrap();
+        assert!(
+            Settings::load_clipboard(&db).settings.clipboard_paused,
+            "重启后仍保持升级时的暂停状态"
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 已初始化库的剪贴板键全部丢失：只记录 missing，绝不按默认值自动开启。
+    #[test]
+    fn clipboard_missing_config_never_reenables_across_restarts() {
+        let dir = temp_dir("missing-clip");
+        let path = db_file_with_version(&dir, MIGRATIONS.len());
+        let db = Db::open(&path).unwrap();
+        let config = Settings::load_clipboard(&db);
+        let error = config
+            .error
+            .as_ref()
+            .expect("已初始化库缺少全部剪贴板键必须报错");
+        assert_eq!(error.kind, ClipboardConfigErrorKind::Missing);
+        assert!(!config.capture_allowed());
+        assert_eq!(config.origin.as_deref(), Some(CLIPBOARD_ORIGIN_MISSING));
+        let raw: HashMap<_, _> = db.all_settings_raw().unwrap().into_iter().collect();
+        for key in CLIPBOARD_SETTING_KEYS {
+            assert!(
+                !raw.contains_key(*key),
+                "配置丢失后不得自动补默认键: {}",
+                key
+            );
+        }
+        drop(db);
+
+        let db = Db::open(&path).unwrap();
+        let config = Settings::load_clipboard(&db);
+        assert_eq!(
+            config.error.as_ref().map(|e| e.kind),
+            Some(ClipboardConfigErrorKind::Missing),
+            "重启不得把缺失配置当成首次安装"
+        );
+        assert!(!config.capture_allowed());
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 部分键缺失：不补齐、不恢复采集，重启后仍然 fail-closed。
+    #[test]
+    fn clipboard_partial_missing_is_not_filled_on_restart() {
+        let dir = temp_dir("partial-clip");
+        let path = dir.join("t.db");
+        let db = Db::open(&path).unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "DELETE FROM application_settings WHERE key = 'clipboard_paused'",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        drop(db);
+
+        let db = Db::open(&path).unwrap();
+        let config = Settings::load_clipboard(&db);
+        let error = config.error.as_ref().expect("缺失键必须 fail-closed");
+        assert_eq!(error.kind, ClipboardConfigErrorKind::Missing);
+        assert!(error.keys.iter().any(|k| k == "clipboard_paused"));
+        assert!(!config.capture_allowed());
+        let raw: HashMap<_, _> = db.all_settings_raw().unwrap().into_iter().collect();
+        assert!(
+            !raw.contains_key("clipboard_paused"),
+            "重启不得静默补齐缺失键"
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 用户明确关闭后某个键丢失：修复只能还原损坏键，不得静默恢复开启。
+    #[test]
+    fn clipboard_user_disabled_survives_key_loss_and_repair_only() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "clipboard_enabled", "false");
+        raw_setting(&db, "clipboard_paused", "true");
+        db.with_conn(|c| {
+            c.execute(
+                "DELETE FROM application_settings WHERE key = 'clipboard_max_items'",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let config = Settings::load_clipboard(&db);
+        assert_eq!(
+            config.error.as_ref().map(|e| e.kind),
+            Some(ClipboardConfigErrorKind::Missing)
+        );
+        assert!(!config.settings.clipboard_enabled);
+        assert!(!config.capture_allowed());
+
+        let repaired = Settings::repair_clipboard(&db, false).unwrap();
+        assert!(repaired.error.is_none());
+        assert!(
+            !repaired.settings.clipboard_enabled,
+            "用户关闭意图不得因缺失键修复而改变"
+        );
+        assert!(repaired.settings.clipboard_paused);
+        assert!(!repaired.capture_allowed());
+    }
+
+    /// 缺失的开关按最保守值修复；只有显式 resume 才允许恢复采集。
+    #[test]
+    fn clipboard_repair_missing_switch_is_conservative() {
+        let db = Db::open_in_memory().unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "DELETE FROM application_settings WHERE key IN
+                 ('clipboard_enabled', 'clipboard_paused', 'clipboard_capture_images')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let config = Settings::load_clipboard(&db);
+        assert_eq!(
+            config.error.as_ref().map(|e| e.kind),
+            Some(ClipboardConfigErrorKind::Missing)
+        );
+
+        let repaired = Settings::repair_clipboard(&db, false).unwrap();
+        assert!(repaired.error.is_none());
+        assert!(
+            !repaired.settings.clipboard_enabled,
+            "缺失的开关必须视为未授权"
+        );
+        assert!(repaired.settings.clipboard_paused);
+        assert!(!repaired.capture_allowed());
+
+        let backup = db
+            .get_setting("clipboard_config_corrupt_backup")
+            .unwrap()
+            .expect("缺失键必须留下备份记录");
+        assert!(
+            backup.get("clipboard_enabled").map(|v| v.is_null()) == Some(true),
+            "缺失键应以 null 记录，便于追溯"
+        );
+        let diagnostic = backup.get("_last_repair").expect("必须记录修复诊断");
+        assert_eq!(
+            diagnostic.get("kind").and_then(|v| v.as_str()),
+            Some("missing")
+        );
+        assert_eq!(
+            diagnostic.get("resume").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+
+        let resumed = Settings::repair_clipboard(&db, true).unwrap();
+        assert!(resumed.capture_allowed(), "显式恢复是唯一允许采集的路径");
+    }
+
+    // ── P0-01 修复事务的并发与故障注入 ──
+
+    fn repair_concurrency_case(resume: bool) {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        raw_setting(&db, "clipboard_max_items", "oops");
+        let before = Settings::load_clipboard(&db);
+        assert!(before.error.is_some());
+        assert!(!before.capture_allowed());
+
+        let history_before: i64 = db
+            .with_conn(|c| {
+                Ok(c.query_row("SELECT COUNT(*) FROM clipboard_items", [], |r| r.get(0))?)
+            })
+            .unwrap();
+
+        let tx_open = Arc::new(AtomicBool::new(false));
+        let monitor_attempted = Arc::new(AtomicBool::new(false));
+        let monitor_done = Arc::new(AtomicBool::new(false));
+        let theme_started = Arc::new(AtomicBool::new(false));
+        let theme_done = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(Mutex::new(None));
+
+        let repair_db = Arc::clone(&db);
+        let tx_open_hook = Arc::clone(&tx_open);
+        let monitor_attempted_hook = Arc::clone(&monitor_attempted);
+        let monitor_done_hook = Arc::clone(&monitor_done);
+        let theme_started_hook = Arc::clone(&theme_started);
+        let theme_done_hook = Arc::clone(&theme_done);
+        let repair = std::thread::spawn(move || {
+            set_repair_hook(Some(Arc::new(move |phase| {
+                if phase == RepairPhase::AfterWrites {
+                    tx_open_hook.store(true, Ordering::SeqCst);
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !(monitor_attempted_hook.load(Ordering::SeqCst)
+                        && theme_started_hook.load(Ordering::SeqCst))
+                    {
+                        assert!(
+                            Instant::now() < deadline,
+                            "并发线程未能在超时前发起读取/写入"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                    assert!(
+                        !monitor_done_hook.load(Ordering::SeqCst),
+                        "事务未提交时监听线程不得读到任何配置"
+                    );
+                    assert!(
+                        !theme_done_hook.load(Ordering::SeqCst),
+                        "事务未提交时其他设置写入不得穿透"
+                    );
+                }
+                Ok(())
+            })));
+            let result = Settings::repair_clipboard(&repair_db, resume);
+            set_repair_hook(None);
+            result
+        });
+
+        assert!(
+            wait_flag(&tx_open, Duration::from_secs(5)),
+            "修复事务未进入写入阶段"
+        );
+
+        let monitor_db = Arc::clone(&db);
+        let m_attempt = Arc::clone(&monitor_attempted);
+        let m_done = Arc::clone(&monitor_done);
+        let seen = Arc::clone(&observed);
+        let monitor = std::thread::spawn(move || {
+            m_attempt.store(true, Ordering::SeqCst);
+            let config = Settings::load_clipboard(&monitor_db);
+            *seen.lock().unwrap() = Some(config);
+            m_done.store(true, Ordering::SeqCst);
+        });
+        let theme_db = Arc::clone(&db);
+        let t_started = Arc::clone(&theme_started);
+        let t_done = Arc::clone(&theme_done);
+        let theme = std::thread::spawn(move || {
+            t_started.store(true, Ordering::SeqCst);
+            theme_db
+                .set_setting("theme", serde_json::json!("dark"))
+                .unwrap();
+            t_done.store(true, Ordering::SeqCst);
+        });
+
+        let repaired = repair.join().unwrap().unwrap();
+        monitor.join().unwrap();
+        theme.join().unwrap();
+
+        assert!(repaired.error.is_none());
+        assert_eq!(repaired.capture_allowed(), resume);
+        let seen = observed
+            .lock()
+            .unwrap()
+            .take()
+            .expect("监听线程必须读到提交后的配置");
+        assert!(
+            seen.error.is_none(),
+            "监听线程不得观察到半修复状态（resume={}）",
+            resume
+        );
+        assert_eq!(
+            seen.capture_allowed(),
+            resume,
+            "监听线程只能看到修复前 fail-closed 或完整提交后的状态"
+        );
+        assert_eq!(
+            Settings::load(&db).unwrap().theme,
+            "dark",
+            "修复不得覆盖并发写入的其他设置"
+        );
+        let history_after: i64 = db
+            .with_conn(|c| {
+                Ok(c.query_row("SELECT COUNT(*) FROM clipboard_items", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(history_before, history_after, "修复过程不得新增剪贴板历史");
+    }
+
+    #[test]
+    fn clipboard_repair_blocks_monitor_until_commit_without_resume() {
+        repair_concurrency_case(false);
+    }
+
+    #[test]
+    fn clipboard_repair_blocks_monitor_until_commit_with_resume() {
+        repair_concurrency_case(true);
+    }
+
+    /// 事务中途失败：备份与已修复键一起回滚，不留下半修复状态。
+    #[test]
+    fn clipboard_repair_fault_after_writes_rolls_back() {
+        use std::sync::Arc;
+
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "clipboard_max_items", "oops");
+        let before = sorted_raw(&db);
+        set_repair_hook(Some(Arc::new(|phase| {
+            if phase == RepairPhase::AfterWrites {
+                return Err(AppError::Validation("injected failure".into()));
+            }
+            Ok(())
+        })));
+        let result = Settings::repair_clipboard(&db, false);
+        set_repair_hook(None);
+
+        assert!(result.is_err(), "注入失败必须向外报告");
+        assert_eq!(
+            before,
+            sorted_raw(&db),
+            "失败后所有写入（含备份）都必须回滚"
+        );
+        assert!(db
+            .get_setting("clipboard_config_corrupt_backup")
+            .unwrap()
+            .is_none());
+        let config = Settings::load_clipboard(&db);
+        assert!(config.error.is_some());
+        assert!(!config.capture_allowed());
+    }
+
+    /// 真实数据库写入失败（触发器 ABORT）：已写入的部分与备份一并回滚。
+    #[test]
+    fn clipboard_repair_database_write_failure_rolls_back_backup() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "clipboard_max_items", "oops");
+        raw_setting(&db, "clipboard_auto_group", "\"yes\"");
+        let before = sorted_raw(&db);
+        db.with_conn(|c| {
+            c.execute_batch(
+                "CREATE TRIGGER fail_clipboard_repair
+                 BEFORE UPDATE ON application_settings
+                 WHEN NEW.key = 'clipboard_auto_group'
+                 BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;",
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let result = Settings::repair_clipboard(&db, true);
+        assert!(result.is_err(), "数据库写入失败必须向外报告");
+        assert_eq!(before, sorted_raw(&db), "回滚后原始值必须完全一致");
+        assert!(db
+            .get_setting("clipboard_config_corrupt_backup")
+            .unwrap()
+            .is_none());
+        let config = Settings::load_clipboard(&db);
+        assert!(config.error.is_some());
+        assert!(!config.capture_allowed());
+    }
+
+    /// 进程在提交前异常终止：未提交的修复（含备份）必须由 WAL 回滚。
+    ///
+    /// 父进程准备真实文件库并拉起当前测试二进制；子进程在 BeforeCommit
+    /// 直接 exit(9)，模拟崩溃/断电，然后父进程重开数据库核对。
+    #[test]
+    fn clipboard_repair_process_death_rolls_back_on_reopen() {
+        use std::process::{Command, Stdio};
+
+        const ENV_DIR: &str = "TASKDOCK_REPAIR_CRASH_DIR";
+        if let Some(dir) = std::env::var_os(ENV_DIR) {
+            let dir = std::path::PathBuf::from(dir);
+            let db = Db::open(&dir.join("t.db")).unwrap();
+            raw_setting(&db, "clipboard_max_items", "oops");
+            set_repair_hook(Some(std::sync::Arc::new(|phase| {
+                if phase == RepairPhase::BeforeCommit {
+                    std::process::exit(9);
+                }
+                Ok(())
+            })));
+            let _ = Settings::repair_clipboard(&db, false);
+            std::process::exit(0);
+        }
+
+        let dir = temp_dir("crash-clip");
+        let path = dir.join("t.db");
+        {
+            let db = Db::open(&path).unwrap();
+            raw_setting(&db, "clipboard_enabled", "true");
+            raw_setting(&db, "clipboard_paused", "false");
+            raw_setting(&db, "clipboard_max_items", "oops");
+        }
+        let before: HashMap<_, _> = {
+            let db = Db::open(&path).unwrap();
+            db.all_settings_raw().unwrap().into_iter().collect()
+        };
+
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "db::tests::clipboard_repair_process_death_rolls_back_on_reopen",
+                "--nocapture",
+            ])
+            .env(ENV_DIR, &dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(9), "子进程必须在提交前异常退出");
+
+        let db = Db::open(&path).unwrap();
+        let after: HashMap<_, _> = db.all_settings_raw().unwrap().into_iter().collect();
+        assert_eq!(after, before, "进程终止后未提交的修复必须完整回滚");
+        let config = Settings::load_clipboard(&db);
+        assert!(config.error.is_some());
+        assert!(!config.capture_allowed());
+        assert!(db
+            .get_setting("clipboard_config_corrupt_backup")
+            .unwrap()
+            .is_none());
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

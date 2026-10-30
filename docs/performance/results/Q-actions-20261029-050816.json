@@ -1,0 +1,72 @@
+{
+  "budget": {
+    "p95_ms_max": 60.0
+  },
+  "fixture": {
+    "events": 600,
+    "note": "每条事件消息唯一，600 个合并组，默认过滤 limit=120",
+    "sessions": 60,
+    "sources": 6,
+    "task_links": 12
+  },
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "pass": true,
+  "query": {
+    "counts": {
+      "authorization": 0,
+      "completed": 0,
+      "disconnected": 0,
+      "failed": 60,
+      "reminder": 0,
+      "running": 480,
+      "waiting_input": 60
+    },
+    "iterations": 30,
+    "max_ms": 6.26,
+    "mean_ms": 2.87,
+    "p50_ms": 2.73,
+    "p95_ms": 3.62,
+    "returned_items": 120,
+    "scanned_events": 600
+  },
+  "samples_ms": [
+    3.24,
+    2.83,
+    2.82,
+    2.74,
+    2.63,
+    2.77,
+    2.73,
+    2.73,
+    2.92,
+    2.7,
+    2.55,
+    3.08,
+    2.63,
+    2.51,
+    2.4,
+    2.67,
+    3.34,
+    2.44,
+    2.73,
+    3.62,
+    6.26,
+    3.0,
+    2.64,
+    2.5,
+    2.45,
+    2.32,
+    2.77,
+    2.62,
+    2.7,
+    2.72
+  ],
+  "scenario": "actions-feed-600"
+}

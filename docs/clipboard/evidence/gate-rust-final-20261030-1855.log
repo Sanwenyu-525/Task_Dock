@@ -1,0 +1,59 @@
+===== cargo fmt --all -- --check =====
+2026-10-30T18:52:57+08:00
+Diff in \\?\D:\Develop\task_dock\src-tauri\tests\real_upgrade.rs:145:
+             .query_row("PRAGMA user_version", [], |r| r.get(0))
+             .map_err(task_dock_lib::error::AppError::from)?;
+         assert_eq!(
+[31m-            version,
+[0m[31m-            migrated_version,
+[0m[32m+            version, migrated_version,
+[0m             "重复打开不得再次推进版本（迁移应当是幂等的）"
+         );
+         Ok::<_, task_dock_lib::error::AppError>(())
+FMT_EXIT=1
+===== cargo clippy --all-targets --all-features -- -D warnings =====
+2026-10-30T18:52:59+08:00
+    Checking task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.88s
+CLIPPY_EXIT=0
+===== cargo test --all --no-fail-fast =====
+2026-10-30T18:53:15+08:00
+running 448 tests
+test agents::spool::tests::write_failure_returns_error_and_leaves_no_temp ... ok
+test commands::data::tests::export_to_unwritable_path_returns_error_not_panic ... ok
+test db::tests::clipboard_range_errors_fail_closed ... ok
+test db::tests::clipboard_type_errors_fail_closed ... ok
+test result: ok. 445 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 22.11s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 1 test
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 2 tests
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 1 test
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
+running 6 tests
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 1 test
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 3 tests
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 1 test
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+RUSTTEST_PIPE_EXIT=0
+RUSTTEST_EXIT=0
+2026-10-30T18:55:06+08:00
+===== cargo fmt --all（应用格式化） =====
+2026-10-30T18:56:12+08:00
+FMT_APPLY_EXIT=0
+===== cargo fmt --all -- --check（复验） =====
+2026-10-30T18:56:13+08:00
+FMT_EXIT=0
+===== cargo clippy --all-targets --all-features -- -D warnings（复验） =====
+2026-10-30T18:56:13+08:00
+    Checking task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.74s
+CLIPPY_EXIT=0
+2026-10-30T18:56:18+08:00

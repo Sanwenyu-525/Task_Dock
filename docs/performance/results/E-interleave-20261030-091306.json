@@ -1,0 +1,72 @@
+{
+  "scenario": "fault-inject",
+  "started_at": "2026-10-30T01:13:31.805Z",
+  "config": {
+    "base": "http://127.0.0.1:47821",
+    "token": "<redacted>",
+    "mode": "interleave",
+    "count": 200,
+    "timeoutMs": 5,
+    "out": "docs/performance/results/E-interleave-20261030-091306.json",
+    "runId": "E-interleave-20261030-091306"
+  },
+  "result": {
+    "mode": "interleave",
+    "run_id": "E-interleave-20261030-091306",
+    "session_id": "E-interleave-20261030-091306-interleave-session",
+    "run_id_external": "E-interleave-20261030-091306-interleave-run",
+    "steps": [
+      {
+        "id": "E-interleave-20261030-091306-i1-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:13:31.806Z",
+        "status": "AbortError: This operation was aborted"
+      },
+      {
+        "id": "E-interleave-20261030-091306-i2-waiting",
+        "state": "waiting",
+        "occurred_at": "2026-10-30T01:13:32.806Z",
+        "status": "AbortError: This operation was aborted"
+      },
+      {
+        "id": "E-interleave-20261030-091306-i3-late-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:13:21.806Z",
+        "status": 200,
+        "body": {
+          "accepted": 1,
+          "merged": 0,
+          "queued": true,
+          "rejected": 0,
+          "sampled": 0
+        }
+      },
+      {
+        "id": "E-interleave-20261030-091306-i4-completed",
+        "state": "completed",
+        "occurred_at": "2026-10-30T01:13:33.806Z",
+        "status": "AbortError: This operation was aborted"
+      },
+      {
+        "id": "E-interleave-20261030-091306-i5-new-round-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:13:34.806Z",
+        "status": 200,
+        "body": {
+          "accepted": 1,
+          "merged": 0,
+          "queued": true,
+          "rejected": 0,
+          "sampled": 0
+        }
+      },
+      {
+        "id": "E-interleave-20261030-091306-i6-waiting",
+        "state": "waiting",
+        "occurred_at": "2026-10-30T01:13:35.806Z",
+        "status": "AbortError: This operation was aborted"
+      }
+    ],
+    "expect_final_state": "waiting"
+  }
+}

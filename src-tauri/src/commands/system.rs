@@ -10,7 +10,9 @@ use crate::error::AppResult;
 
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
-    app.exit(0);
+    // 统一走异步排空（QUIESCING→DRAINING→STOPPED），完成后由后台任务真正退出；
+    // 命令本身立即返回，不阻塞 UI/命令线程。
+    crate::request_exit(&app);
 }
 
 /// 显示模式对应的窗口尺寸。
@@ -115,7 +117,7 @@ pub fn set_hotkeys_enabled(
 /// Agent 文件投递目录（文档与钩子脚本使用）。
 #[tauri::command]
 pub fn get_agent_inbox_dir(app: tauri::AppHandle) -> AppResult<String> {
-    let dir = app.path().app_data_dir()?.join("agent-inbox");
+    let dir = crate::app_data_dir(&app).join("agent-inbox");
     std::fs::create_dir_all(&dir)?;
     Ok(dir.to_string_lossy().to_string())
 }
@@ -128,6 +130,22 @@ pub fn show_main_window(app: tauri::AppHandle) -> AppResult<()> {
         let _ = win.set_focus();
     }
     Ok(())
+}
+
+/// 设置窗口圆角半径（逻辑像素）并立即应用到 Win32 窗口区域。
+///
+/// 前端按视觉预设下发：dream-gradient 18px / liquid-glass 20px。
+/// 返回值表示 Win32 区域是否真正应用成功（失败时 CSS 圆角仍在，
+/// 只是原生背景可能在四角露出直角，由前端记录到验收日志）。
+#[tauri::command]
+pub fn apply_window_radius(app: AppHandle, radius: f64) -> AppResult<bool> {
+    let applied_radius = crate::window_shape::set_radius(radius);
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
+    let applied = crate::window_shape::apply_on_main_thread(&win);
+    tracing::debug!("窗口圆角 {}px，Win32 区域应用: {}", applied_radius, applied);
+    Ok(applied)
 }
 
 #[derive(Debug, Deserialize, Serialize)]

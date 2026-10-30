@@ -8,7 +8,11 @@ dist/
 src-tauri/target/
 src-tauri/target-accept/
 src-tauri/target-accept-dbg/
+src-tauri/target-measure/
 src-tauri/gen/
+
+# Python bytecode cache
+__pycache__/
 
 # Editors / OS
 .vscode/*
@@ -36,3 +40,7 @@ taskdock_icons_tauri_ready.zip
 
 # Local acceptance-test artifacts (real-DB safety backup, MSI logs)
 .acceptance-backup/
+
+# Stray visual-audit output from an earlier script revision
+visual-audit.json
+visual-audit.err

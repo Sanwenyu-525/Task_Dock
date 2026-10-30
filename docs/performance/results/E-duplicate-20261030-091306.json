@@ -1,0 +1,233 @@
+{
+  "scenario": "fault-inject",
+  "started_at": "2026-10-30T01:13:06.400Z",
+  "config": {
+    "base": "http://127.0.0.1:47821",
+    "token": "<redacted>",
+    "mode": "duplicate",
+    "count": 200,
+    "timeoutMs": 5,
+    "out": "docs/performance/results/E-duplicate-20261030-091306.json",
+    "runId": "E-duplicate-20261030-091306"
+  },
+  "result": {
+    "mode": "duplicate",
+    "run_id": "E-duplicate-20261030-091306",
+    "single": {
+      "id": "E-duplicate-20261030-091306-dup-waiting",
+      "statuses": [
+        "AbortError: This operation was aborted",
+        "AbortError: This operation was aborted"
+      ],
+      "bodies": [
+        null,
+        null
+      ]
+    },
+    "concurrent_pairs": [
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-0",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-1",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-2",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-3",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-4",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-5",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-6",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-7",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-8",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-9",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-10",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-11",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-12",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-13",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-14",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-15",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-16",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-17",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-18",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      },
+      {
+        "id": "E-duplicate-20261030-091306-dup-completed-19",
+        "first": "AbortError: This operation was aborted",
+        "second": "AbortError: This operation was aborted",
+        "bodies": [
+          null,
+          null
+        ]
+      }
+    ],
+    "unique_event_ids": [
+      "E-duplicate-20261030-091306-dup-waiting",
+      "E-duplicate-20261030-091306-dup-completed-0",
+      "E-duplicate-20261030-091306-dup-completed-1",
+      "E-duplicate-20261030-091306-dup-completed-2",
+      "E-duplicate-20261030-091306-dup-completed-3",
+      "E-duplicate-20261030-091306-dup-completed-4",
+      "E-duplicate-20261030-091306-dup-completed-5",
+      "E-duplicate-20261030-091306-dup-completed-6",
+      "E-duplicate-20261030-091306-dup-completed-7",
+      "E-duplicate-20261030-091306-dup-completed-8",
+      "E-duplicate-20261030-091306-dup-completed-9",
+      "E-duplicate-20261030-091306-dup-completed-10",
+      "E-duplicate-20261030-091306-dup-completed-11",
+      "E-duplicate-20261030-091306-dup-completed-12",
+      "E-duplicate-20261030-091306-dup-completed-13",
+      "E-duplicate-20261030-091306-dup-completed-14",
+      "E-duplicate-20261030-091306-dup-completed-15",
+      "E-duplicate-20261030-091306-dup-completed-16",
+      "E-duplicate-20261030-091306-dup-completed-17",
+      "E-duplicate-20261030-091306-dup-completed-18",
+      "E-duplicate-20261030-091306-dup-completed-19"
+    ]
+  }
+}

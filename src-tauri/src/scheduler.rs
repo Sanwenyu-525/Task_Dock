@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use tauri::{AppHandle, Emitter};
 
+use crate::agents::notify::NotifyItem;
 use crate::agents::{now_iso, AgentHub};
 use crate::db::{Db, Reminder, Settings};
 use crate::error::{AppError, AppResult};
@@ -23,7 +24,7 @@ pub fn start_scheduler(app: AppHandle, db: Arc<Db>, hub: Arc<AgentHub>) {
         tracing::info!("提醒调度引擎启动（1s 粒度）");
         let mut tick_count: u64 = 0;
         loop {
-            if let Err(e) = tick(&app, &db).await {
+            if let Err(e) = tick(&app, &db, &hub).await {
                 tracing::error!("提醒调度 tick 失败: {}", e);
             }
             tick_count += 1;
@@ -33,6 +34,8 @@ pub fn start_scheduler(app: AppHandle, db: Arc<Db>, hub: Arc<AgentHub>) {
                     tracing::error!("Agent 过期清理失败: {}", e);
                 }
             }
+            // 跨批次通知摘要：窗口结束/尾部抑制通知每秒检查一次
+            hub.flush_notification_digest();
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
@@ -45,7 +48,7 @@ pub struct DueItem {
     task_due_at: Option<String>,
 }
 
-async fn tick(app: &AppHandle, db: &Db) -> AppResult<()> {
+async fn tick(app: &AppHandle, db: &Db, hub: &AgentHub) -> AppResult<()> {
     let settings = Settings::load(db)?;
     let now: DateTime<Utc> = Utc::now();
     let now_str = now.to_rfc3339();
@@ -77,9 +80,27 @@ async fn tick(app: &AppHandle, db: &Db) -> AppResult<()> {
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     })?;
 
+    // 同一批到期提醒先全部落库，再统一走全局弹窗额度：
+    // 避免一批到期任务在同一秒内弹出 N 条系统通知。
+    let mut fired: Vec<FiredNotify> = Vec::new();
     for item in due {
-        fire(app, db, &settings, &item, &now)?;
+        if let Some(n) = fire_reminder_core(db, &item, &now, &settings)? {
+            fired.push(n);
+        }
     }
+    if fired.is_empty() {
+        return Ok(());
+    }
+    let popups: Vec<NotifyItem> = fired
+        .iter()
+        .map(|n| NotifyItem::new("reminder", &n.title, &n.body))
+        .collect();
+    hub.notify_reminder_popups(&popups);
+    let task_ids: Vec<String> = fired.iter().map(|n| n.task_id.clone()).collect();
+    let _ = app.emit(
+        "reminder-fired",
+        serde_json::json!({ "task_ids": task_ids }),
+    );
     Ok(())
 }
 
@@ -183,33 +204,6 @@ pub fn fire_reminder_core(
         })
         .filter(|_| inserted && notify))
     })
-}
-
-/// 兼容旧调用路径（tick 循环）：核心事务 + OS 通知 + UI 广播。
-fn fire(
-    app: &AppHandle,
-    db: &Db,
-    settings: &Settings,
-    item: &DueItem,
-    now: &DateTime<Utc>,
-) -> AppResult<()> {
-    let Some(n) = fire_reminder_core(db, item, now, settings)? else {
-        return Ok(());
-    };
-    {
-        use tauri_plugin_notification::NotificationExt;
-        let _ = app
-            .notification()
-            .builder()
-            .title(&n.title)
-            .body(&n.body)
-            .show();
-    }
-    let _ = app.emit(
-        "reminder-fired",
-        serde_json::json!({ "task_id": n.task_id }),
-    );
-    Ok(())
 }
 
 /// 重复任务推进到下一次发生（跨过当前时刻，补偿休眠/停机期间错过的期次）。

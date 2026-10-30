@@ -1,0 +1,33 @@
+===== cargo fmt --all（应用格式化） =====
+2026-10-30T18:36:46+08:00
+FMT_APPLY_EXIT=0
+===== 1/3 cargo fmt --all -- --check =====
+2026-10-30T18:36:47+08:00
+FMT_EXIT=0
+===== 2/3 cargo clippy --all-targets --all-features -- -D warnings =====
+2026-10-30T18:36:48+08:00
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on build directory
+    Checking task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 55.87s
+CLIPPY_EXIT=0
+===== 3/3 cargo test --all --no-fail-fast =====
+2026-10-30T18:37:44+08:00
+running 447 tests
+test result: ok. 444 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 20.56s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 2 tests
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+running 6 tests
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 3 tests
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+RUSTTEST_PIPE_EXIT=0
+RUSTTEST_EXIT=0
+2026-10-30T18:39:22+08:00

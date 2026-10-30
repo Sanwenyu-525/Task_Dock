@@ -14,6 +14,7 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { navNavigate, verificationLabel, type NavigationResult } from "../../lib/navigation";
 import { summarizeWorkspace } from "../../lib/workspace";
+import { useOverlayLayer } from "../ui/overlay";
 
 type ItemState =
   | { phase: "pending" }
@@ -51,6 +52,9 @@ export default function WorkspaceLauncher() {
   );
   const list = useMemo(() => links.slice(0, cap), [links, cap]);
   const truncated = links.length > cap;
+
+  // 弹层栈：工作区启动器是模态对话框，Escape 只关它
+  useOverlayLayer("dialog", workspace.open && !!task, closeWorkspace);
 
   if (!workspace.open || !task) return null;
 

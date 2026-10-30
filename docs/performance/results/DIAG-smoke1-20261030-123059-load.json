@@ -1,0 +1,36 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47841",
+    "token": "b403b1b2-922f-4132-be62-73b6763106dd",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 60,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "smoke1-20261030-123059",
+    "source": "bench",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-smoke1-20261030-123059-load.json"
+  },
+  "elapsed_ms": 60009,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 1200,
+    "ok": 1200,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 120,
+    "critical_ok": 120,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 2.14,
+    "p95": 136.36,
+    "max": 285.7
+  }
+}

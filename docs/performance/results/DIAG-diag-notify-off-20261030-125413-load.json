@@ -1,0 +1,36 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47852",
+    "token": "356068a4-3ae3-4e4b-ad55-83b9c7f436d5",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 240,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "diag-notify-off-20261030-125413",
+    "source": "bridge",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-diag-notify-off-20261030-125413-load.json"
+  },
+  "elapsed_ms": 240003,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 4800,
+    "ok": 4800,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 480,
+    "critical_ok": 480,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.76,
+    "p95": 102.75,
+    "max": 295.06
+  }
+}

@@ -1,0 +1,32 @@
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+running 449 tests
+test result: ok. 446 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 19.27s
+     Running unittests src\main.rs (target\debug\deps\task_dock-3b7bbca453631292.exe)
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\actions_perf.rs (target\debug\deps\actions_perf-cbbd029806e208b8.exe)
+running 1 test
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\clipboard_perf.rs (target\debug\deps\clipboard_perf-f74753a90d8661a6.exe)
+running 2 tests
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\inbox_processes.rs (target\debug\deps\inbox_processes-190b0b2ac8e419b0.exe)
+running 1 test
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.94s
+     Running tests\ingest_perf.rs (target\debug\deps\ingest_perf-d59a2eddecd1f76d.exe)
+running 6 tests
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\memory_attrib.rs (target\debug\deps\memory_attrib-50f7b9f39e3b25c5.exe)
+running 1 test
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\real_backup_restore.rs (target\debug\deps\real_backup_restore-9b5d53700feb1f39.exe)
+running 1 test
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\real_clipboard.rs (target\debug\deps\real_clipboard-a6f1d75360a75927.exe)
+running 3 tests
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\real_upgrade.rs (target\debug\deps\real_upgrade-c1a4ca7b4724aaf4.exe)
+running 1 test
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

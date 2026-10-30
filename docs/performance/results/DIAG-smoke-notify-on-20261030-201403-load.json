@@ -1,0 +1,38 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47910",
+    "token": "fb87ae39-bdc7-43e5-8d00-968a44cde456",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 60,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "smoke-notify-on-20261030-201403",
+    "source": "bridge",
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\td-smoke-notify\\smoke-notify-on-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-smoke-notify-on-20261030-201403-load.json"
+  },
+  "elapsed_ms": 60009,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 1200,
+    "ok": 1200,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 120,
+    "critical_ok": 120,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.79,
+    "p95": 90.01,
+    "max": 279.87
+  }
+}

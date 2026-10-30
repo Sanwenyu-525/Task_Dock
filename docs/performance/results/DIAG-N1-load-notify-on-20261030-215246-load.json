@@ -1,0 +1,56 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47890",
+    "token": "88bb3556-a151-4eb4-8ccb-42d705350c7b",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 480,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "N1-load-notify-on-20261030-215246",
+    "source": "bridge",
+    "allowRealSource": true,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc-v05r3\\N1-load-notify-on-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-215246-load.json"
+  },
+  "elapsed_ms": 616606,
+  "actual_rate": 5.75,
+  "counts": {
+    "sent": 3548,
+    "ok": 3504,
+    "failed": 44,
+    "retries": 1760,
+    "critical_sent": 352,
+    "critical_ok": 348,
+    "critical_failed": 4,
+    "failed_ids": [
+      {
+        "id": "mem-N1-load-notify-on-20261030-215246-a0-e879",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-N1-load-notify-on-20261030-215246-a3-e879",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-N1-load-notify-on-20261030-215246-a1-e879",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-N1-load-notify-on-20261030-215246-a2-e879",
+        "error": "TypeError: fetch failed"
+      }
+    ]
+  },
+  "latency_ms": {
+    "p50": 1.71,
+    "p95": 259.93,
+    "max": 299.06
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "scenario": "quit-under-load",
+  "started_at": "20261030-091723",
+  "submitted_total": 867,
+  "submitted_critical": 693,
+  "quit_t0": 1793323051.854631,
+  "quit_exited_after_s": 7.07,
+  "quit_automation": [
+    "no-icon"
+  ],
+  "shutdown_report": null,
+  "inbox_after_exit": {
+    "files": 0,
+    "critical": 0,
+    "sample": []
+  },
+  "inbox_failure_log_tail": [],
+  "critical_db_present": 693,
+  "critical_db_duplicates": {},
+  "critical_missing_db_not_in_inbox": [],
+  "critical_covered": 693,
+  "ok": true
+}

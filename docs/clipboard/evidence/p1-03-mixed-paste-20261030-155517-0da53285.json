@@ -1,0 +1,1447 @@
+{
+  "name": "P1-03 mixed image/text paste acceptance",
+  "timestamp": "2026-10-30T15:54:40+0800",
+  "nonce": "0da53285",
+  "environment": {
+    "exe": "D:\\Develop\\task_dock\\src-tauri\\target-accept\\release\\task-dock.exe",
+    "exe_mtime": "2026-10-30T15:54:13",
+    "edge": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "screen": [
+      2048,
+      1152
+    ],
+    "desktop": {
+      "input_desktop": true,
+      "desktop_name": "Default",
+      "foreground_hwnd": 6686710
+    },
+    "preexisting_instances": [],
+    "waited_for_clear_window_s": 101.0,
+    "work_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-9r4ic63c",
+    "app_cdp": 9417,
+    "edge_cdp": 9418,
+    "default_app_cdp_stale_listeners": []
+  },
+  "checks": {
+    "pass": [
+      {
+        "name": "应用以隔离数据目录启动并处于监听状态",
+        "ok": true,
+        "detail": "fresh_default"
+      },
+      {
+        "name": "剪贴板配置无异常",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "CDP 目标即本次隔离实例（Agent 收件目录在隔离数据目录内）",
+        "ok": true,
+        "detail": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-9r4ic63c\\data\\agent-inbox"
+      },
+      {
+        "name": "安全测试窗口已出现",
+        "ok": true,
+        "detail": "TaskDock Paste Acceptance 0da53285 - 用户配置 1 - Microsoft​ Edge"
+      },
+      {
+        "name": "复制阶段前台为外部应用（否则命中自写抑制、测不到采集链路）",
+        "ok": true,
+        "detail": {
+          "step": "before-copies",
+          "foreground_source": "msedge.exe",
+          "foreground_hwnd": 5047894,
+          "target_hwnd": 5047894
+        }
+      },
+      {
+        "name": "测试页编辑器已聚焦",
+        "ok": true,
+        "detail": {
+          "ok": true,
+          "title": "TaskDock Paste Acceptance 0da53285",
+          "activeId": "editor",
+          "focused": true
+        }
+      },
+      {
+        "name": "复制 A-red 后采集入库（1/4）",
+        "ok": true,
+        "detail": {
+          "copied": "A-red",
+          "attempts": [
+            {
+              "attempt": 1,
+              "foreground": {
+                "step": "copy-A-red#1",
+                "foreground_source": "msedge.exe",
+                "foreground_hwnd": 5047894,
+                "target_hwnd": 5047894
+              },
+              "items_total": 1,
+              "expected_total": 1,
+              "monitor_delta": {
+                "observed_events": 1,
+                "captured": 1,
+                "recorded": 1,
+                "duplicates": 0,
+                "skipped": 0,
+                "dropped_events": 0,
+                "dropped_contents": 0,
+                "failed": 0
+              }
+            }
+          ],
+          "final": {
+            "attempt": 1,
+            "foreground": {
+              "step": "copy-A-red#1",
+              "foreground_source": "msedge.exe",
+              "foreground_hwnd": 5047894,
+              "target_hwnd": 5047894
+            },
+            "items_total": 1,
+            "expected_total": 1,
+            "monitor_delta": {
+              "observed_events": 1,
+              "captured": 1,
+              "recorded": 1,
+              "duplicates": 0,
+              "skipped": 0,
+              "dropped_events": 0,
+              "dropped_contents": 0,
+              "failed": 0
+            }
+          }
+        }
+      },
+      {
+        "name": "复制 B-green 后采集入库（2/4）",
+        "ok": true,
+        "detail": {
+          "copied": "B-green",
+          "attempts": [
+            {
+              "attempt": 1,
+              "foreground": {
+                "step": "copy-B-green#1",
+                "foreground_source": "msedge.exe",
+                "foreground_hwnd": 5047894,
+                "target_hwnd": 5047894
+              },
+              "items_total": 2,
+              "expected_total": 2,
+              "monitor_delta": {
+                "observed_events": 1,
+                "captured": 1,
+                "recorded": 1,
+                "duplicates": 0,
+                "skipped": 0,
+                "dropped_events": 0,
+                "dropped_contents": 0,
+                "failed": 0
+              }
+            }
+          ],
+          "final": {
+            "attempt": 1,
+            "foreground": {
+              "step": "copy-B-green#1",
+              "foreground_source": "msedge.exe",
+              "foreground_hwnd": 5047894,
+              "target_hwnd": 5047894
+            },
+            "items_total": 2,
+            "expected_total": 2,
+            "monitor_delta": {
+              "observed_events": 1,
+              "captured": 1,
+              "recorded": 1,
+              "duplicates": 0,
+              "skipped": 0,
+              "dropped_events": 0,
+              "dropped_contents": 0,
+              "failed": 0
+            }
+          }
+        }
+      },
+      {
+        "name": "复制 text-C 后采集入库（3/4）",
+        "ok": true,
+        "detail": {
+          "copied": "text-C",
+          "attempts": [
+            {
+              "attempt": 1,
+              "foreground": {
+                "step": "copy-text-C#1",
+                "foreground_source": "msedge.exe",
+                "foreground_hwnd": 5047894,
+                "target_hwnd": 5047894
+              },
+              "items_total": 3,
+              "expected_total": 3,
+              "monitor_delta": {
+                "observed_events": 1,
+                "captured": 1,
+                "recorded": 1,
+                "duplicates": 0,
+                "skipped": 0,
+                "dropped_events": 0,
+                "dropped_contents": 0,
+                "failed": 0
+              }
+            }
+          ],
+          "final": {
+            "attempt": 1,
+            "foreground": {
+              "step": "copy-text-C#1",
+              "foreground_source": "msedge.exe",
+              "foreground_hwnd": 5047894,
+              "target_hwnd": 5047894
+            },
+            "items_total": 3,
+            "expected_total": 3,
+            "monitor_delta": {
+              "observed_events": 1,
+              "captured": 1,
+              "recorded": 1,
+              "duplicates": 0,
+              "skipped": 0,
+              "dropped_events": 0,
+              "dropped_contents": 0,
+              "failed": 0
+            }
+          }
+        }
+      },
+      {
+        "name": "复制 D-blue 后采集入库（4/4）",
+        "ok": true,
+        "detail": {
+          "copied": "D-blue",
+          "attempts": [
+            {
+              "attempt": 1,
+              "foreground": {
+                "step": "copy-D-blue#1",
+                "foreground_source": "msedge.exe",
+                "foreground_hwnd": 5047894,
+                "target_hwnd": 5047894
+              },
+              "items_total": 4,
+              "expected_total": 4,
+              "monitor_delta": {
+                "observed_events": 1,
+                "captured": 1,
+                "recorded": 1,
+                "duplicates": 0,
+                "skipped": 0,
+                "dropped_events": 0,
+                "dropped_contents": 0,
+                "failed": 0
+              }
+            }
+          ],
+          "final": {
+            "attempt": 1,
+            "foreground": {
+              "step": "copy-D-blue#1",
+              "foreground_source": "msedge.exe",
+              "foreground_hwnd": 5047894,
+              "target_hwnd": 5047894
+            },
+            "items_total": 4,
+            "expected_total": 4,
+            "monitor_delta": {
+              "observed_events": 1,
+              "captured": 1,
+              "recorded": 1,
+              "duplicates": 0,
+              "skipped": 0,
+              "dropped_events": 0,
+              "dropped_contents": 0,
+              "failed": 0
+            }
+          }
+        }
+      },
+      {
+        "name": "历史新增条目数恰为 4",
+        "ok": true,
+        "detail": "0 -> 4"
+      },
+      {
+        "name": "采集到 3 张图片与 1 条文字",
+        "ok": true,
+        "detail": {
+          "new_items": 4,
+          "images": 3,
+          "texts": 1
+        }
+      },
+      {
+        "name": "采集入库的 A-red 像素可见且颜色正确",
+        "ok": true,
+        "detail": {
+          "width": 240,
+          "height": 160,
+          "alphaMin": 255,
+          "alphaMax": 255,
+          "transparentPixels": 0,
+          "opaquePixels": 38400,
+          "avgRgb": [
+            220,
+            30,
+            30
+          ],
+          "samples": {
+            "center": [
+              220,
+              30,
+              30,
+              255
+            ],
+            "topLeft": [
+              220,
+              30,
+              30,
+              255
+            ],
+            "bottomRight": [
+              220,
+              30,
+              30,
+              255
+            ]
+          },
+          "id": "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+          "copy_count": 1,
+          "width_field": 240,
+          "height_field": 160,
+          "expected": "A-red"
+        }
+      },
+      {
+        "name": "采集入库的 A-red 尺寸为 240x160",
+        "ok": true,
+        "detail": [
+          240,
+          160
+        ]
+      },
+      {
+        "name": "采集入库的 B-green 像素可见且颜色正确",
+        "ok": true,
+        "detail": {
+          "width": 240,
+          "height": 160,
+          "alphaMin": 255,
+          "alphaMax": 255,
+          "transparentPixels": 0,
+          "opaquePixels": 38400,
+          "avgRgb": [
+            30,
+            180,
+            60
+          ],
+          "samples": {
+            "center": [
+              30,
+              180,
+              60,
+              255
+            ],
+            "topLeft": [
+              30,
+              180,
+              60,
+              255
+            ],
+            "bottomRight": [
+              30,
+              180,
+              60,
+              255
+            ]
+          },
+          "id": "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+          "copy_count": 1,
+          "width_field": 240,
+          "height_field": 160,
+          "expected": "B-green"
+        }
+      },
+      {
+        "name": "采集入库的 B-green 尺寸为 240x160",
+        "ok": true,
+        "detail": [
+          240,
+          160
+        ]
+      },
+      {
+        "name": "采集入库的 D-blue 像素可见且颜色正确",
+        "ok": true,
+        "detail": {
+          "width": 240,
+          "height": 160,
+          "alphaMin": 255,
+          "alphaMax": 255,
+          "transparentPixels": 0,
+          "opaquePixels": 38400,
+          "avgRgb": [
+            30,
+            60,
+            220
+          ],
+          "samples": {
+            "center": [
+              30,
+              60,
+              220,
+              255
+            ],
+            "topLeft": [
+              30,
+              60,
+              220,
+              255
+            ],
+            "bottomRight": [
+              30,
+              60,
+              220,
+              255
+            ]
+          },
+          "id": "d5d72348-143c-4b89-9156-84514bf4d126",
+          "copy_count": 1,
+          "width_field": 240,
+          "height_field": 160,
+          "expected": "D-blue"
+        }
+      },
+      {
+        "name": "采集入库的 D-blue 尺寸为 240x160",
+        "ok": true,
+        "detail": [
+          240,
+          160
+        ]
+      },
+      {
+        "name": "文字内容完整入库",
+        "ok": true,
+        "detail": {
+          "length": 26,
+          "matches": true
+        }
+      },
+      {
+        "name": "粘贴前测试页编辑器仍是焦点",
+        "ok": true,
+        "detail": {
+          "ok": true,
+          "title": "TaskDock Paste Acceptance 0da53285",
+          "activeId": "editor",
+          "focused": true
+        }
+      },
+      {
+        "name": "目标预检通过且进程/窗口匹配",
+        "ok": true,
+        "detail": {
+          "hwnd": 5047894,
+          "pid": 83664,
+          "title": "TaskDock Paste Acceptance 0da53285 - 用户配置 1 - Microsoft​ Edge",
+          "exe_path": "c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe"
+        }
+      },
+      {
+        "name": "手动分组顺序为 A/B/C/D",
+        "ok": true,
+        "detail": [
+          "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+          "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+          "bd7f35af-2c60-429f-8a4a-c3b4790a5afe",
+          "d5d72348-143c-4b89-9156-84514bf4d126"
+        ]
+      },
+      {
+        "name": "分组包含 4 项",
+        "ok": true,
+        "detail": 4
+      },
+      {
+        "name": "粘贴任务结束",
+        "ok": true,
+        "detail": "failed"
+      },
+      {
+        "name": "剪贴板未被 A/B/C 覆盖",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "粘贴后历史条数不变",
+        "ok": true,
+        "detail": []
+      },
+      {
+        "name": "粘贴不增加 copy_count",
+        "ok": true,
+        "detail": {
+          "before": {
+            "d5d72348-143c-4b89-9156-84514bf4d126": 1,
+            "bd7f35af-2c60-429f-8a4a-c3b4790a5afe": 1,
+            "8fee5965-49fe-41b6-b098-44d8634ab7d5": 1,
+            "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88": 1
+          },
+          "after": {
+            "d5d72348-143c-4b89-9156-84514bf4d126": 1,
+            "bd7f35af-2c60-429f-8a4a-c3b4790a5afe": 1,
+            "8fee5965-49fe-41b6-b098-44d8634ab7d5": 1,
+            "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88": 1
+          }
+        }
+      },
+      {
+        "name": "粘贴自写内容未进入采集链路",
+        "ok": true,
+        "detail": {
+          "captured": 0,
+          "recorded": 0
+        }
+      },
+      {
+        "name": "监听无丢弃事件",
+        "ok": true,
+        "detail": {
+          "captured": 4,
+          "content_queue_capacity": 8,
+          "content_queue_max_bytes": 134217728,
+          "dropped_contents": 0,
+          "dropped_events": 0,
+          "duplicates": 0,
+          "event_queue_capacity": 64,
+          "failed": 0,
+          "max_capture_latency_ms": 10,
+          "max_process_latency_ms": 26,
+          "merged_events": 0,
+          "observed_events": 4,
+          "peak_content_queue": 1,
+          "peak_event_queue": 1,
+          "recorded": 4,
+          "skipped": 0
+        }
+      }
+    ],
+    "fail": [
+      {
+        "name": "粘贴任务完成且发送 4/4",
+        "ok": false,
+        "detail": {
+          "id": "654222e5-a29d-43aa-8e2e-f4ffc57ec7f3",
+          "group_id": "80209bfa-b783-4079-b6c3-d9054a07680e",
+          "target_title": "TaskDock Paste Acceptance 0da53285 - 用户配置 1 - Microsoft​ Edge",
+          "target_exe": "c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe",
+          "status": "failed",
+          "total": 4,
+          "sent": 0,
+          "started_at": "2026-10-30T07:55:12.220345400+00:00",
+          "ended_at": "2026-10-30T07:55:12.334095+00:00",
+          "message": "已发送 0/4 项粘贴动作；目标应用是否接收无法自动验证；任务已停止。第 1 项写入前检测到剪贴板已被其他程序更新，本项未写入、也未覆盖新内容",
+          "remaining_items": [
+            "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+            "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+            "bd7f35af-2c60-429f-8a4a-c3b4790a5afe",
+            "d5d72348-143c-4b89-9156-84514bf4d126"
+          ],
+          "restored": false
+        }
+      },
+      {
+        "name": "粘贴任务无剩余项",
+        "ok": false,
+        "detail": [
+          "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+          "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+          "bd7f35af-2c60-429f-8a4a-c3b4790a5afe",
+          "d5d72348-143c-4b89-9156-84514bf4d126"
+        ]
+      },
+      {
+        "name": "粘贴后恢复原剪贴板",
+        "ok": false,
+        "detail": "已发送 0/4 项粘贴动作；目标应用是否接收无法自动验证；任务已停止。第 1 项写入前检测到剪贴板已被其他程序更新，本项未写入、也未覆盖新内容"
+      },
+      {
+        "name": "目标页面图片数量为 3",
+        "ok": false,
+        "detail": 0
+      },
+      {
+        "name": "目标页面文字完整",
+        "ok": false,
+        "detail": ""
+      },
+      {
+        "name": "DOM 顺序为 图/图/文/图",
+        "ok": false,
+        "detail": []
+      },
+      {
+        "name": "文字位于第三位且完整",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 1 张图片尺寸为 240x160",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 1 张图片 Alpha 正确",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 1 张图片 RGB 正确",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 1 张图片可见",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 2 张图片尺寸为 240x160",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 2 张图片 Alpha 正确",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 2 张图片 RGB 正确",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 2 张图片可见",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 3 张图片尺寸为 240x160",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 3 张图片 Alpha 正确",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 3 张图片 RGB 正确",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标第 3 张图片可见",
+        "ok": false,
+        "detail": null
+      },
+      {
+        "name": "目标图片无重复颜色/无重复插入",
+        "ok": false,
+        "detail": []
+      },
+      {
+        "name": "剪贴板恢复为蓝图 D（颜色/Alpha/尺寸）",
+        "ok": false,
+        "detail": {
+          "width": 240,
+          "height": 160,
+          "alphaMin": 0,
+          "alphaMax": 0,
+          "transparentPixels": 38400,
+          "opaquePixels": 0,
+          "avgRgb": null,
+          "samples": {
+            "center": [
+              30,
+              60,
+              220,
+              0
+            ],
+            "topLeft": [
+              30,
+              60,
+              220,
+              0
+            ],
+            "bottomRight": [
+              30,
+              60,
+              220,
+              0
+            ]
+          },
+          "kind": "PNG"
+        }
+      }
+    ]
+  },
+  "app_status_initial": {
+    "activeJob": null,
+    "captureAllowed": true,
+    "configError": null,
+    "configOrigin": "fresh_default",
+    "enabled": true,
+    "monitor": {
+      "captured": 0,
+      "content_queue_capacity": 8,
+      "content_queue_max_bytes": 134217728,
+      "dropped_contents": 0,
+      "dropped_events": 0,
+      "duplicates": 0,
+      "event_queue_capacity": 64,
+      "failed": 0,
+      "max_capture_latency_ms": 0,
+      "max_process_latency_ms": 0,
+      "merged_events": 0,
+      "observed_events": 0,
+      "peak_content_queue": 0,
+      "peak_event_queue": 0,
+      "recorded": 0,
+      "skipped": 0
+    },
+    "monitoring": true,
+    "paused": false,
+    "platform": "windows"
+  },
+  "instance_identity": {
+    "agent_inbox_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-9r4ic63c\\data\\agent-inbox",
+    "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-9r4ic63c\\data"
+  },
+  "own_windows_minimized": {
+    "pid": 83164,
+    "hwnds": [
+      3473812,
+      3279638,
+      3869614
+    ]
+  },
+  "target_window": {
+    "hwnd": 5047894,
+    "pid": 83664,
+    "title": "TaskDock Paste Acceptance 0da53285 - 用户配置 1 - Microsoft​ Edge",
+    "class": "Chrome_WidgetWin_1"
+  },
+  "foreground_before_copies": {
+    "step": "before-copies",
+    "foreground_source": "msedge.exe",
+    "foreground_hwnd": 5047894,
+    "target_hwnd": 5047894
+  },
+  "clipboard_quiet_before_copies": {
+    "quiet": true,
+    "external_changes": 0,
+    "waited_s": 4.0,
+    "sequence_start": 7563,
+    "sequence_now": 7563
+  },
+  "baseline_items": 0,
+  "baseline_clipboard_sequence": 7563,
+  "source_content": {
+    "A-red": {
+      "rgba": [
+        220,
+        30,
+        30,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_RGB(alpha=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    },
+    "B-green": {
+      "rgba": [
+        30,
+        180,
+        60,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_BITFIELDS(alphaMask=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    },
+    "D-blue": {
+      "rgba": [
+        30,
+        60,
+        220,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_RGB(alpha=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    }
+  },
+  "copy_trace": [
+    {
+      "copied": "A-red",
+      "attempts": [
+        {
+          "attempt": 1,
+          "foreground": {
+            "step": "copy-A-red#1",
+            "foreground_source": "msedge.exe",
+            "foreground_hwnd": 5047894,
+            "target_hwnd": 5047894
+          },
+          "items_total": 1,
+          "expected_total": 1,
+          "monitor_delta": {
+            "observed_events": 1,
+            "captured": 1,
+            "recorded": 1,
+            "duplicates": 0,
+            "skipped": 0,
+            "dropped_events": 0,
+            "dropped_contents": 0,
+            "failed": 0
+          }
+        }
+      ],
+      "final": {
+        "attempt": 1,
+        "foreground": {
+          "step": "copy-A-red#1",
+          "foreground_source": "msedge.exe",
+          "foreground_hwnd": 5047894,
+          "target_hwnd": 5047894
+        },
+        "items_total": 1,
+        "expected_total": 1,
+        "monitor_delta": {
+          "observed_events": 1,
+          "captured": 1,
+          "recorded": 1,
+          "duplicates": 0,
+          "skipped": 0,
+          "dropped_events": 0,
+          "dropped_contents": 0,
+          "failed": 0
+        }
+      }
+    },
+    {
+      "copied": "B-green",
+      "attempts": [
+        {
+          "attempt": 1,
+          "foreground": {
+            "step": "copy-B-green#1",
+            "foreground_source": "msedge.exe",
+            "foreground_hwnd": 5047894,
+            "target_hwnd": 5047894
+          },
+          "items_total": 2,
+          "expected_total": 2,
+          "monitor_delta": {
+            "observed_events": 1,
+            "captured": 1,
+            "recorded": 1,
+            "duplicates": 0,
+            "skipped": 0,
+            "dropped_events": 0,
+            "dropped_contents": 0,
+            "failed": 0
+          }
+        }
+      ],
+      "final": {
+        "attempt": 1,
+        "foreground": {
+          "step": "copy-B-green#1",
+          "foreground_source": "msedge.exe",
+          "foreground_hwnd": 5047894,
+          "target_hwnd": 5047894
+        },
+        "items_total": 2,
+        "expected_total": 2,
+        "monitor_delta": {
+          "observed_events": 1,
+          "captured": 1,
+          "recorded": 1,
+          "duplicates": 0,
+          "skipped": 0,
+          "dropped_events": 0,
+          "dropped_contents": 0,
+          "failed": 0
+        }
+      }
+    },
+    {
+      "copied": "text-C",
+      "attempts": [
+        {
+          "attempt": 1,
+          "foreground": {
+            "step": "copy-text-C#1",
+            "foreground_source": "msedge.exe",
+            "foreground_hwnd": 5047894,
+            "target_hwnd": 5047894
+          },
+          "items_total": 3,
+          "expected_total": 3,
+          "monitor_delta": {
+            "observed_events": 1,
+            "captured": 1,
+            "recorded": 1,
+            "duplicates": 0,
+            "skipped": 0,
+            "dropped_events": 0,
+            "dropped_contents": 0,
+            "failed": 0
+          }
+        }
+      ],
+      "final": {
+        "attempt": 1,
+        "foreground": {
+          "step": "copy-text-C#1",
+          "foreground_source": "msedge.exe",
+          "foreground_hwnd": 5047894,
+          "target_hwnd": 5047894
+        },
+        "items_total": 3,
+        "expected_total": 3,
+        "monitor_delta": {
+          "observed_events": 1,
+          "captured": 1,
+          "recorded": 1,
+          "duplicates": 0,
+          "skipped": 0,
+          "dropped_events": 0,
+          "dropped_contents": 0,
+          "failed": 0
+        }
+      }
+    },
+    {
+      "copied": "D-blue",
+      "attempts": [
+        {
+          "attempt": 1,
+          "foreground": {
+            "step": "copy-D-blue#1",
+            "foreground_source": "msedge.exe",
+            "foreground_hwnd": 5047894,
+            "target_hwnd": 5047894
+          },
+          "items_total": 4,
+          "expected_total": 4,
+          "monitor_delta": {
+            "observed_events": 1,
+            "captured": 1,
+            "recorded": 1,
+            "duplicates": 0,
+            "skipped": 0,
+            "dropped_events": 0,
+            "dropped_contents": 0,
+            "failed": 0
+          }
+        }
+      ],
+      "final": {
+        "attempt": 1,
+        "foreground": {
+          "step": "copy-D-blue#1",
+          "foreground_source": "msedge.exe",
+          "foreground_hwnd": 5047894,
+          "target_hwnd": 5047894
+        },
+        "items_total": 4,
+        "expected_total": 4,
+        "monitor_delta": {
+          "observed_events": 1,
+          "captured": 1,
+          "recorded": 1,
+          "duplicates": 0,
+          "skipped": 0,
+          "dropped_events": 0,
+          "dropped_contents": 0,
+          "failed": 0
+        }
+      }
+    }
+  ],
+  "captured_items": [
+    {
+      "id": "d5d72348-143c-4b89-9156-84514bf4d126",
+      "kind": "image",
+      "byte_size": 1241,
+      "image_width": 240,
+      "image_height": 160,
+      "copy_count": 1,
+      "created_at": "2026-10-30T07:55:00.404417700+00:00",
+      "last_seen_at": "2026-10-30T07:55:00.404417700+00:00",
+      "has_image": true
+    },
+    {
+      "id": "bd7f35af-2c60-429f-8a4a-c3b4790a5afe",
+      "kind": "text",
+      "byte_size": 38,
+      "image_width": null,
+      "image_height": null,
+      "copy_count": 1,
+      "created_at": "2026-10-30T07:54:57.935123600+00:00",
+      "last_seen_at": "2026-10-30T07:54:57.935123600+00:00",
+      "has_image": false
+    },
+    {
+      "id": "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+      "kind": "image",
+      "byte_size": 1241,
+      "image_width": 240,
+      "image_height": 160,
+      "copy_count": 1,
+      "created_at": "2026-10-30T07:54:55.553876100+00:00",
+      "last_seen_at": "2026-10-30T07:54:55.553876100+00:00",
+      "has_image": true
+    },
+    {
+      "id": "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+      "kind": "image",
+      "byte_size": 1241,
+      "image_width": 240,
+      "image_height": 160,
+      "copy_count": 1,
+      "created_at": "2026-10-30T07:54:53.074442500+00:00",
+      "last_seen_at": "2026-10-30T07:54:53.074442500+00:00",
+      "has_image": true
+    }
+  ],
+  "history_delta_after_copies": 4,
+  "counts": {
+    "new_items": 4,
+    "images": 3,
+    "texts": 1
+  },
+  "stored_images": [
+    {
+      "width": 240,
+      "height": 160,
+      "alphaMin": 255,
+      "alphaMax": 255,
+      "transparentPixels": 0,
+      "opaquePixels": 38400,
+      "avgRgb": [
+        30,
+        60,
+        220
+      ],
+      "samples": {
+        "center": [
+          30,
+          60,
+          220,
+          255
+        ],
+        "topLeft": [
+          30,
+          60,
+          220,
+          255
+        ],
+        "bottomRight": [
+          30,
+          60,
+          220,
+          255
+        ]
+      },
+      "id": "d5d72348-143c-4b89-9156-84514bf4d126",
+      "copy_count": 1,
+      "width_field": 240,
+      "height_field": 160,
+      "expected": "D-blue"
+    },
+    {
+      "width": 240,
+      "height": 160,
+      "alphaMin": 255,
+      "alphaMax": 255,
+      "transparentPixels": 0,
+      "opaquePixels": 38400,
+      "avgRgb": [
+        30,
+        180,
+        60
+      ],
+      "samples": {
+        "center": [
+          30,
+          180,
+          60,
+          255
+        ],
+        "topLeft": [
+          30,
+          180,
+          60,
+          255
+        ],
+        "bottomRight": [
+          30,
+          180,
+          60,
+          255
+        ]
+      },
+      "id": "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+      "copy_count": 1,
+      "width_field": 240,
+      "height_field": 160,
+      "expected": "B-green"
+    },
+    {
+      "width": 240,
+      "height": 160,
+      "alphaMin": 255,
+      "alphaMax": 255,
+      "transparentPixels": 0,
+      "opaquePixels": 38400,
+      "avgRgb": [
+        220,
+        30,
+        30
+      ],
+      "samples": {
+        "center": [
+          220,
+          30,
+          30,
+          255
+        ],
+        "topLeft": [
+          220,
+          30,
+          30,
+          255
+        ],
+        "bottomRight": [
+          220,
+          30,
+          30,
+          255
+        ]
+      },
+      "id": "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+      "copy_count": 1,
+      "width_field": 240,
+      "height_field": 160,
+      "expected": "A-red"
+    }
+  ],
+  "unrelated_image_items": 0,
+  "intended_group_order": [
+    "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+    "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+    "bd7f35af-2c60-429f-8a4a-c3b4790a5afe",
+    "d5d72348-143c-4b89-9156-84514bf4d126"
+  ],
+  "external_items_during_run": [],
+  "external_clipboard_changes": 20,
+  "clipboard_quiet_before_paste": {
+    "quiet": true,
+    "external_changes": 0,
+    "waited_s": 3.0,
+    "sequence_start": 7583,
+    "sequence_now": 7583
+  },
+  "foreground_before_paste": {
+    "set_foreground_ok": true,
+    "foreground_hwnd": 5047894,
+    "target_hwnd": 5047894,
+    "foreground_source": "msedge.exe"
+  },
+  "precheck": {
+    "hwnd": 5047894,
+    "pid": 83664,
+    "title": "TaskDock Paste Acceptance 0da53285 - 用户配置 1 - Microsoft​ Edge",
+    "exe_path": "c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe"
+  },
+  "group": {
+    "id": "80209bfa-b783-4079-b6c3-d9054a07680e",
+    "mode": "manual",
+    "status": "closed",
+    "item_count": 4,
+    "image_count": 3,
+    "items": [
+      {
+        "id": "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+        "kind": "image",
+        "byte_size": 1241,
+        "image_width": 240,
+        "image_height": 160,
+        "copy_count": 1,
+        "created_at": "2026-10-30T07:54:53.074442500+00:00",
+        "last_seen_at": "2026-10-30T07:54:53.074442500+00:00",
+        "has_image": true
+      },
+      {
+        "id": "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+        "kind": "image",
+        "byte_size": 1241,
+        "image_width": 240,
+        "image_height": 160,
+        "copy_count": 1,
+        "created_at": "2026-10-30T07:54:55.553876100+00:00",
+        "last_seen_at": "2026-10-30T07:54:55.553876100+00:00",
+        "has_image": true
+      },
+      {
+        "id": "bd7f35af-2c60-429f-8a4a-c3b4790a5afe",
+        "kind": "text",
+        "byte_size": 38,
+        "image_width": null,
+        "image_height": null,
+        "copy_count": 1,
+        "created_at": "2026-10-30T07:54:57.935123600+00:00",
+        "last_seen_at": "2026-10-30T07:54:57.935123600+00:00",
+        "has_image": false
+      },
+      {
+        "id": "d5d72348-143c-4b89-9156-84514bf4d126",
+        "kind": "image",
+        "byte_size": 1241,
+        "image_width": 240,
+        "image_height": 160,
+        "copy_count": 1,
+        "created_at": "2026-10-30T07:55:00.404417700+00:00",
+        "last_seen_at": "2026-10-30T07:55:00.404417700+00:00",
+        "has_image": true
+      }
+    ]
+  },
+  "pre_paste": {
+    "history_count": 4,
+    "copy_counts": {
+      "d5d72348-143c-4b89-9156-84514bf4d126": 1,
+      "bd7f35af-2c60-429f-8a4a-c3b4790a5afe": 1,
+      "8fee5965-49fe-41b6-b098-44d8634ab7d5": 1,
+      "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88": 1
+    },
+    "captured": 4,
+    "recorded": 4,
+    "duplicates": 0
+  },
+  "paste_start": {
+    "job_id": "654222e5-a29d-43aa-8e2e-f4ffc57ec7f3",
+    "target": {
+      "hwnd": 5047894,
+      "pid": 83664,
+      "title": "TaskDock Paste Acceptance 0da53285 - 用户配置 1 - Microsoft​ Edge",
+      "exe_path": "c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe"
+    },
+    "total": 4,
+    "interval_ms": 350,
+    "intervals": {
+      "text_ms": 350,
+      "html_ms": 600,
+      "image_ms": 1200,
+      "files_ms": 900
+    }
+  },
+  "paste_job": {
+    "id": "654222e5-a29d-43aa-8e2e-f4ffc57ec7f3",
+    "group_id": "80209bfa-b783-4079-b6c3-d9054a07680e",
+    "target_title": "TaskDock Paste Acceptance 0da53285 - 用户配置 1 - Microsoft​ Edge",
+    "target_exe": "c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe",
+    "status": "failed",
+    "total": 4,
+    "sent": 0,
+    "started_at": "2026-10-30T07:55:12.220345400+00:00",
+    "ended_at": "2026-10-30T07:55:12.334095+00:00",
+    "message": "已发送 0/4 项粘贴动作；目标应用是否接收无法自动验证；任务已停止。第 1 项写入前检测到剪贴板已被其他程序更新，本项未写入、也未覆盖新内容",
+    "remaining_items": [
+      "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+      "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+      "bd7f35af-2c60-429f-8a4a-c3b4790a5afe",
+      "d5d72348-143c-4b89-9156-84514bf4d126"
+    ],
+    "restored": false
+  },
+  "target_dom": {
+    "title": "TaskDock Paste Acceptance 0da53285",
+    "hasFocus": true,
+    "activeId": "editor",
+    "childCount": 0,
+    "imageCount": 0,
+    "textContent": "",
+    "flatOrder": [],
+    "images": [],
+    "html": ""
+  },
+  "clipboard_after": {
+    "width": 240,
+    "height": 160,
+    "alphaMin": 0,
+    "alphaMax": 0,
+    "transparentPixels": 38400,
+    "opaquePixels": 0,
+    "avgRgb": null,
+    "samples": {
+      "center": [
+        30,
+        60,
+        220,
+        0
+      ],
+      "topLeft": [
+        30,
+        60,
+        220,
+        0
+      ],
+      "bottomRight": [
+        30,
+        60,
+        220,
+        0
+      ]
+    },
+    "kind": "PNG"
+  },
+  "history_after": {
+    "count": 4,
+    "items": [
+      {
+        "id": "d5d72348-143c-4b89-9156-84514bf4d126",
+        "kind": "image",
+        "byte_size": 1241,
+        "image_width": 240,
+        "image_height": 160,
+        "copy_count": 1,
+        "created_at": "2026-10-30T07:55:00.404417700+00:00",
+        "last_seen_at": "2026-10-30T07:55:00.404417700+00:00",
+        "has_image": true
+      },
+      {
+        "id": "bd7f35af-2c60-429f-8a4a-c3b4790a5afe",
+        "kind": "text",
+        "byte_size": 38,
+        "image_width": null,
+        "image_height": null,
+        "copy_count": 1,
+        "created_at": "2026-10-30T07:54:57.935123600+00:00",
+        "last_seen_at": "2026-10-30T07:54:57.935123600+00:00",
+        "has_image": false
+      },
+      {
+        "id": "8fee5965-49fe-41b6-b098-44d8634ab7d5",
+        "kind": "image",
+        "byte_size": 1241,
+        "image_width": 240,
+        "image_height": 160,
+        "copy_count": 1,
+        "created_at": "2026-10-30T07:54:55.553876100+00:00",
+        "last_seen_at": "2026-10-30T07:54:55.553876100+00:00",
+        "has_image": true
+      },
+      {
+        "id": "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88",
+        "kind": "image",
+        "byte_size": 1241,
+        "image_width": 240,
+        "image_height": 160,
+        "copy_count": 1,
+        "created_at": "2026-10-30T07:54:53.074442500+00:00",
+        "last_seen_at": "2026-10-30T07:54:53.074442500+00:00",
+        "has_image": true
+      }
+    ],
+    "new_ids_since_paste": [],
+    "copy_counts": {
+      "d5d72348-143c-4b89-9156-84514bf4d126": 1,
+      "bd7f35af-2c60-429f-8a4a-c3b4790a5afe": 1,
+      "8fee5965-49fe-41b6-b098-44d8634ab7d5": 1,
+      "2722c7bb-0e82-4c87-8a7d-6031d6ad7e88": 1
+    }
+  },
+  "monitor_before": {
+    "captured": 4,
+    "content_queue_capacity": 8,
+    "content_queue_max_bytes": 134217728,
+    "dropped_contents": 0,
+    "dropped_events": 0,
+    "duplicates": 0,
+    "event_queue_capacity": 64,
+    "failed": 0,
+    "max_capture_latency_ms": 10,
+    "max_process_latency_ms": 26,
+    "merged_events": 0,
+    "observed_events": 4,
+    "peak_content_queue": 1,
+    "peak_event_queue": 1,
+    "recorded": 4,
+    "skipped": 0
+  },
+  "monitor_after": {
+    "captured": 4,
+    "content_queue_capacity": 8,
+    "content_queue_max_bytes": 134217728,
+    "dropped_contents": 0,
+    "dropped_events": 0,
+    "duplicates": 0,
+    "event_queue_capacity": 64,
+    "failed": 0,
+    "max_capture_latency_ms": 10,
+    "max_process_latency_ms": 26,
+    "merged_events": 0,
+    "observed_events": 4,
+    "peak_content_queue": 1,
+    "peak_event_queue": 1,
+    "recorded": 4,
+    "skipped": 0
+  },
+  "self_write_delta": {
+    "captured": 0,
+    "recorded": 0
+  },
+  "overall": "FAIL",
+  "app_alive_before_cleanup": true,
+  "app_exit_code_before_cleanup": null,
+  "app_exit_code": null,
+  "cdp_diagnostics": [],
+  "raw_logs": {
+    "app": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-9r4ic63c\\app.log",
+    "app_copy": "D:\\Develop\\task_dock\\docs\\clipboard\\evidence\\p1-03-mixed-paste-20261030-155517-0da53285-app.log",
+    "edge": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-9r4ic63c\\edge.log"
+  }
+}

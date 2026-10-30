@@ -1,0 +1,148 @@
+{
+  "scenario": "N1-load-notify-on",
+  "source_exe": "src-tauri/target/release/task-dock.exe",
+  "source_exe_bytes": 15400960,
+  "started_at": "2026-10-30T13:52:47.503238+00:00",
+  "duration_s": 480,
+  "post_s": 90,
+  "mode": "mixed",
+  "source": "bridge",
+  "allow_real_source": true,
+  "rate_per_agent": 5,
+  "agents": 4,
+  "batch": 1,
+  "transport": "http",
+  "notifications": "on",
+  "window": {
+    "ok": true,
+    "hwnd": 11865420,
+    "visible": true,
+    "iconic": false
+  },
+  "settings": {
+    "http_enabled": true,
+    "http_port": 47890,
+    "mock_enabled": false,
+    "clipboard_enabled": false,
+    "auto_backup": false,
+    "notify_agent": true,
+    "notify_reminder": false,
+    "notify_muted": false,
+    "snap_enabled": false,
+    "hotkey_enabled": false,
+    "stale_run_minutes": 15,
+    "perf_diagnostics_enabled": true
+  },
+  "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc-v05r3\\N1-load-notify-on-data",
+  "sampler_jsonl": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-215246.jsonl",
+  "app_log": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-215246-app.log",
+  "load_json": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-215246-load.json",
+  "stats_end_of_load": null,
+  "stats_after_post": null,
+  "error": "URLError: <urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>",
+  "instance_exited_after_s": null,
+  "instance_exit_code": 1,
+  "summary": {
+    "samples": 116,
+    "elapsed_s": 582.9,
+    "taskdock_private_mb": {
+      "n": 116,
+      "first": 41.8,
+      "last": 0,
+      "min": 0,
+      "max": 47.3,
+      "mean": 14.144
+    },
+    "taskdock_ws_mb": {
+      "n": 116,
+      "first": 70.6,
+      "last": 0,
+      "min": 0,
+      "max": 79.8,
+      "mean": 24.238
+    },
+    "webview2_private_mb": {
+      "n": 116,
+      "first": 239,
+      "last": 0,
+      "min": 0,
+      "max": 244.9,
+      "mean": 74.353
+    },
+    "slope_private_mb_per_min": -5.993,
+    "slope_ws_mb_per_min": -10.292,
+    "slope_live_mb_per_min": -0.0853,
+    "first_last": {
+      "taskdock_private_mb": [
+        41.8,
+        0
+      ],
+      "taskdock_ws_mb": [
+        70.6,
+        0
+      ],
+      "webview2_private_mb": [
+        239,
+        0
+      ],
+      "live_bytes": [
+        877050,
+        1063158
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 0,
+      "events_processed": 0,
+      "events_merged": 0,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 0,
+      "http_requests": 3,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 13136,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 9205,
+        "live_bytes": 877050,
+        "peak_bytes": 2489384,
+        "total_allocated_bytes": 4215896
+      },
+      "runtime": {
+        "alive_tasks": 8
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.86,
+          "calls": 5,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    },
+    "stats_last": {
+      "error": "使用“0”个参数调用“GetResult”时发生异常:“发送请求时出错。”"
+    }
+  }
+}

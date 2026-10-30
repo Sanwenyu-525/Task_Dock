@@ -2,10 +2,13 @@
 
 pub mod actions;
 pub mod agents;
+pub mod audit;
+pub mod backup;
 pub mod clipboard;
 pub mod context;
 pub mod data;
 pub mod navigation;
+pub mod restore;
 pub mod settings;
 pub mod system;
 pub mod tasks;

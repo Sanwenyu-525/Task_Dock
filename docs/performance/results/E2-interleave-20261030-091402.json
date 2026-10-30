@@ -1,0 +1,100 @@
+{
+  "scenario": "fault-inject",
+  "started_at": "2026-10-30T01:14:12.939Z",
+  "config": {
+    "base": "http://127.0.0.1:47821",
+    "token": "<redacted>",
+    "mode": "interleave",
+    "count": 200,
+    "timeoutMs": 15000,
+    "out": "docs/performance/results/E2-interleave-20261030-091402.json",
+    "runId": "E2-interleave-20261030-091402"
+  },
+  "result": {
+    "mode": "interleave",
+    "run_id": "E2-interleave-20261030-091402",
+    "session_id": "E2-interleave-20261030-091402-interleave-session",
+    "run_id_external": "E2-interleave-20261030-091402-interleave-run",
+    "steps": [
+      {
+        "id": "E2-interleave-20261030-091402-i1-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:14:12.940Z",
+        "status": 200,
+        "body": {
+          "accepted": 1,
+          "merged": 0,
+          "queued": true,
+          "rejected": 0,
+          "sampled": 0
+        }
+      },
+      {
+        "id": "E2-interleave-20261030-091402-i2-waiting",
+        "state": "waiting",
+        "occurred_at": "2026-10-30T01:14:13.940Z",
+        "status": 200,
+        "body": {
+          "accepted": 1,
+          "merged": 0,
+          "queued": false,
+          "rejected": 0,
+          "sampled": 0
+        }
+      },
+      {
+        "id": "E2-interleave-20261030-091402-i3-late-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:14:02.940Z",
+        "status": 200,
+        "body": {
+          "accepted": 1,
+          "merged": 0,
+          "queued": true,
+          "rejected": 0,
+          "sampled": 0
+        }
+      },
+      {
+        "id": "E2-interleave-20261030-091402-i4-completed",
+        "state": "completed",
+        "occurred_at": "2026-10-30T01:14:14.940Z",
+        "status": 200,
+        "body": {
+          "accepted": 1,
+          "merged": 0,
+          "queued": false,
+          "rejected": 0,
+          "sampled": 0
+        }
+      },
+      {
+        "id": "E2-interleave-20261030-091402-i5-new-round-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:14:15.940Z",
+        "status": 200,
+        "body": {
+          "accepted": 1,
+          "merged": 0,
+          "queued": true,
+          "rejected": 0,
+          "sampled": 0
+        }
+      },
+      {
+        "id": "E2-interleave-20261030-091402-i6-waiting",
+        "state": "waiting",
+        "occurred_at": "2026-10-30T01:14:16.940Z",
+        "status": 200,
+        "body": {
+          "accepted": 1,
+          "merged": 0,
+          "queued": false,
+          "rejected": 0,
+          "sampled": 0
+        }
+      }
+    ],
+    "expect_final_state": "waiting"
+  }
+}

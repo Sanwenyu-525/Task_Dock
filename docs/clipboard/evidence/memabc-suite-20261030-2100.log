@@ -1,0 +1,114 @@
+=== Ê∫êÁ†ÅÊåáÁ∫π ===
+git_head_short=66d1eb7
+dirty_tracked= 91 files changed, 15539 insertions(+), 3278 deletions(-)
+-rwxr-xr-x 2 ASUS 197121 15553024 2026-10-30 20:36:59.981873500 +0800 src-tauri/target/release/task-dock.exe
+
+=== [N1-load-notify-on] ÂºÄÂßã 20:39:14 ===
+    args: --mode mixed --duration 480 --post 90 --agents 4 --rate 5 --window visible --notify on --transport http --source bridge --port 47890
+    log:  docs/performance/results/MEMABC-N1-load-notify-on-20261030-203908.log
+=== [N1-load-notify-on] ÁªìÊùü 20:49:06 rc=0 ===
+      },
+      "notifications": {
+        "attempted": 45,
+        "failed": 0,
+        "succeeded": 45
+      },
+      "db": {
+        "db_bytes": 10567680,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 2599,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.75,
+          "calls": 2651,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4713312
+      }
+    }
+  }
+}
+
+=== [N2-load-notify-off] ÂºÄÂßã 20:49:06 ===
+    args: --mode mixed --duration 480 --post 90 --agents 4 --rate 5 --window visible --notify off --transport http --source bridge --port 47891
+    log:  docs/performance/results/MEMABC-N2-load-notify-off-20261030-203908.log
+=== [N2-load-notify-off] ÁªìÊùü 20:58:57 rc=0 ===
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 11186176,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 2740,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.84,
+          "calls": 2863,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4676232
+      }
+    }
+  }
+}
+
+=== [N3-idle] ÂºÄÂßã 20:58:57 ===
+    args: --mode running --duration 0 --post 480 --window visible --notify off --port 47892
+    log:  docs/performance/results/MEMABC-N3-idle-20261030-203908.log
+=== [N3-idle] ÁªìÊùü 21:07:11 rc=0 ===
+    ~~~~~~~~~~~~^^^^
+ConnectionRefusedError: [WinError 10061] ”…”⁄ƒø±Íº∆À„ª˙ª˝º´æ‹æ¯£¨Œﬁ∑®¡¨Ω”°£
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 369, in <module>
+    main()
+    ~~~~^^
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 335, in main
+    stats_after = http_json(f"{base}/api/v1/stats", token, timeout=10)
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 68, in http_json
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python\Lib\urllib\request.py", line 189, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python\Lib\urllib\request.py", line 489, in open
+    response = self._open(req, data)
+  File "D:\Python\Lib\urllib\request.py", line 506, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+                              '_open', req)
+  File "D:\Python\Lib\urllib\request.py", line 466, in _call_chain
+    result = func(*args)
+  File "D:\Python\Lib\urllib\request.py", line 1348, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Python\Lib\urllib\request.py", line 1322, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [WinError 10061] ”…”⁄ƒø±Íº∆À„ª˙ª˝º´æ‹æ¯£¨Œﬁ∑®¡¨Ω”°£>
+
+=== ‰∏âËáÇÂÆåÊàê 21:07:11 ===
+-rw-r--r-- 1 ASUS 197121 91506 Oct 30 20:49 docs/performance/results/DIAG-N1-load-notify-on-20261030-203915.jsonl
+-rw-r--r-- 1 ASUS 197121 91553 Oct 30 20:58 docs/performance/results/DIAG-N2-load-notify-off-20261030-204906.jsonl
+-rw-r--r-- 1 ASUS 197121 93942 Oct 30 21:07 docs/performance/results/DIAG-N3-idle-20261030-205857.jsonl

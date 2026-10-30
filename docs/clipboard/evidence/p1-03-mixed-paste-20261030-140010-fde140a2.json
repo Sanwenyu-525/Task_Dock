@@ -1,0 +1,25 @@
+{
+  "name": "P1-03 mixed image/text paste acceptance",
+  "timestamp": "2026-10-30T13:58:59+0800",
+  "nonce": "fde140a2",
+  "environment": {
+    "exe": "D:\\Develop\\task_dock\\src-tauri\\target\\release\\task-dock.exe",
+    "exe_mtime": "2026-10-30T13:52:35",
+    "edge": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "screen": [
+      2048,
+      1152
+    ],
+    "work_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-qvfatue6"
+  },
+  "checks": {
+    "pass": [],
+    "fail": []
+  },
+  "overall": "FAIL",
+  "error": "RuntimeError: Task Dock 未就绪: clipboard_status 调用失败: CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+  "raw_logs": {
+    "app": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-qvfatue6\\app.log",
+    "edge": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-qvfatue6\\edge.log"
+  }
+}

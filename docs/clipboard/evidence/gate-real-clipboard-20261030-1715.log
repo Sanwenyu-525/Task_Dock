@@ -1,0 +1,44 @@
+START 2026-10-30 16:45:24
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.34s
+     Running tests\real_clipboard.rs (target\debug\deps\real_clipboard-a6f1d75360a75927.exe)
+
+running 3 tests
+开始真机验收；用户原剪贴板=Text{text_bytes=15418, html=22616}
+真机目标层只读校验通过：可见目标 9 个（本进程已排除）/ 预检通过 9 个 / 提权拒绝 0 个
+test real_visible_targets_exclude_self_and_pass_precheck ... ok
+分组顺序正确：4 项 / 3 图
+  写入 第 1 项(image) · Image{37x23} · 回读一致（seq=8137）
+  写入 第 2 项(image) · Image{53x31} · 回读一致（seq=8142）
+  写入 第 3 项(text) · Text{text_bytes=37, html=0} · 回读一致（seq=8147）
+  写入 第 4 项(image) · Image{61x17} · 回读一致（seq=8152）
+  写入 全透明图 · Image{24x18} · 回读一致（seq=8157）
+  全透明图回读：Alpha 已按文档归一化为不透明（RGB 保持源色）
+  写入 文件 · Files{count=2} · 回读一致（seq=8163）
+  文件写入后即时采样: seq=8163 kind=files files=2 text_len=218 html_len=0 image=-
+  文件回读成功采样: seq=8163 kind=files files=2 text_len=218 html_len=0 image=-
+  写入 富文本 · Text{text_bytes=35, html=42} · 回读一致（seq=8169）
+  已写入模拟的用户内容（平台边界：守卫只看内容归属）
+用户原剪贴板已恢复：Text{text_bytes=15418, html=22616}
+真机验收完成：4 条历史 / 顺序与像素全部一致 / 自写去重生效 / 用户内容已恢复
+test real_clipboard_roundtrip_keeps_order_alpha_and_user_content ... ok
+开始写入失败恢复验证；用户剪贴板=Text{text_bytes=15418, html=22616}
+写入失败恢复验证通过：用户内容仍在剪贴板中
+test real_failed_write_restores_previous_content ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+REAL_CLIPBOARD_EXIT=0
+=== 2026-10-30 16:45:38 前台聚焦两个测试 ===
+test navigation::router::tests::effective_memory_honors_user_pick_even_when_remember_disabled ... ok
+test navigation::router::tests::explicit_window_selection_requires_unique_identity_and_marks_fallback ... ok
+test navigation::router::tests::uwp_decision_respects_launch_preference ... ok
+test navigation::router::tests::application_target_with_gone_exe_fails_not_fake ... ok
+test navigation::router::tests::agent_session_target_requires_existing_session ... ok
+test navigation::router::tests::url_revalidated_at_execution_time ... ok
+test navigation::router::tests::uwp_target_refused_before_any_process_spawn_when_launch_disallowed ... ok
+test navigation::router::tests::own_process_window_is_enumerated_and_focus_reported_truthfully ... ok
+test navigation::router::tests::notepad_launch_focuses_existing_window_of_owned_process ... ok
+test navigation::router::tests::launch_disallowed_reports_failure_or_focus_only ... ok
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 434 filtered out; finished in 1.85s
+ROUTER_EXIT=0
+END 2026-10-30 16:45:42

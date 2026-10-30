@@ -1,0 +1,75 @@
+{
+  "budget": {
+    "p95_ms_max": 60.0
+  },
+  "fixture": {
+    "events": 600,
+    "note": "42 个失败/等待轮次进入需介入；单页 40 条，全局筛选总数 42（验证计数不随分页退化）；500 条未读提醒进入全局计数",
+    "reminders": 500,
+    "runs": 60,
+    "sessions": 60,
+    "sources": 6,
+    "task_links": 12
+  },
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "pass": true,
+  "query": {
+    "counts": {
+      "authorization": 0,
+      "failed": 24,
+      "history": 60,
+      "intervention": 42,
+      "notification": 500,
+      "reminder": 500,
+      "total": 542,
+      "waiting_input": 18
+    },
+    "filtered_total": 42,
+    "iterations": 30,
+    "max_ms": 3.23,
+    "mean_ms": 2.99,
+    "p50_ms": 2.99,
+    "p95_ms": 3.22,
+    "returned_items": 40
+  },
+  "samples_ms": [
+    2.95,
+    2.99,
+    2.99,
+    2.94,
+    3.23,
+    3.22,
+    3.03,
+    3.03,
+    2.97,
+    3.16,
+    3.15,
+    2.93,
+    3.08,
+    2.92,
+    3.08,
+    3.03,
+    2.98,
+    2.87,
+    3.1,
+    3.19,
+    3.03,
+    2.99,
+    2.91,
+    2.8,
+    3.02,
+    2.8,
+    2.7,
+    2.77,
+    2.79,
+    2.95
+  ],
+  "scenario": "actions-feed-runs-60-reminders-500"
+}

@@ -1,0 +1,38 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47911",
+    "token": "362defb9-0580-439b-836c-912cf6fdbdb4",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 120,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "CTRL-base-notify-on-20261030-211443",
+    "source": "bridge",
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-ctrl\\CTRL-base-notify-on-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-CTRL-base-notify-on-20261030-211443-load.json"
+  },
+  "elapsed_ms": 120449,
+  "actual_rate": 19.93,
+  "counts": {
+    "sent": 2400,
+    "ok": 2400,
+    "failed": 0,
+    "retries": 4,
+    "critical_sent": 240,
+    "critical_ok": 240,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.62,
+    "p95": 265.49,
+    "max": 462.59
+  }
+}

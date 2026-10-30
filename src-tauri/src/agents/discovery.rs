@@ -55,10 +55,7 @@ fn uninstall_key_lines() -> &'static Vec<String> {
             r"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
         ];
         for key in keys {
-            if let Ok(out) = std::process::Command::new("reg")
-                .args(["query", key])
-                .output()
-            {
+            if let Ok(out) = crate::winproc::hidden("reg").args(["query", key]).output() {
                 for line in String::from_utf8_lossy(&out.stdout).lines() {
                     lines.push(line.to_string());
                 }

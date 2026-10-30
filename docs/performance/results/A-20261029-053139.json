@@ -1,0 +1,84 @@
+{
+  "backend_only": true,
+  "config": {
+    "agents": 40,
+    "batch_size": 100,
+    "coalesce_ms": 250,
+    "duration_secs": 60,
+    "expected_events": 120000,
+    "queue_capacity": 1024,
+    "rate_per_agent": 50
+  },
+  "counts": {
+    "critical_failed": 0,
+    "critical_missing_in_db": 0,
+    "critical_ok": 12000,
+    "critical_retries": 1195,
+    "critical_sent": 12000,
+    "max_batch_size": 100,
+    "max_queue_depth": 1024,
+    "merged": 36405,
+    "running_accepted": 108000,
+    "sampled": 0,
+    "submit_errors": 0,
+    "submitted": 120000
+  },
+  "db": {
+    "by_state": {
+      "completed": 6000,
+      "running": 47248,
+      "waiting": 6000
+    },
+    "events": 59248
+  },
+  "db_file_mb": 51.9,
+  "elapsed_ms": 63616,
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "note": "真实 IngestPipeline + 真实 SQLite 状态机；不含 WebView2/Tauri 窗口与托盘 UI",
+  "pass": true,
+  "pipeline": {
+    "batches": 1225,
+    "coalesce_ms": 250,
+    "commit_failures": 0,
+    "db_write_latency": {
+      "max_ms": 248.42,
+      "p50_ms": 26.64,
+      "p95_ms": 118.86,
+      "p99_ms": 194.98,
+      "samples": 1024
+    },
+    "events_merged": 60752,
+    "events_processed": 59248,
+    "events_received": 120000,
+    "events_sampled": 0,
+    "fallback_jobs": 0,
+    "ingest_latency": {
+      "max_ms": 7722.27,
+      "p50_ms": 3390.35,
+      "p95_ms": 7434.83,
+      "p99_ms": 7722.2,
+      "samples": 2048
+    },
+    "last_batch_size": 95,
+    "last_flush_at": "2026-10-29T05:31:39.310074300+00:00",
+    "max_batch_size": 100,
+    "merge_buffer": 0,
+    "overload_rejects": 1195,
+    "queue_capacity": 1024,
+    "queue_depth_events": 0,
+    "queue_depth_jobs": 0,
+    "running": true,
+    "submissions": 83595,
+    "uptime_secs": 63
+  },
+  "scenario": "A",
+  "started_at": "2026-10-29T05:31:39.827983+00:00",
+  "throughput_ev_per_s": 1886.32
+}

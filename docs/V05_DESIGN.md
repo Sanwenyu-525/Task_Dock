@@ -291,6 +291,8 @@ HTTP/文件/插件 ──try_send──▶ bounded channel(1024) ──▶ worke
 | 前端 300 行任务列表全量重渲染 | 提交 p50 ≤ 100ms | `scripts/render-perf.mjs`（真实 Chromium） |
 
 预算不达标必须调整实现或下调承诺，文档记录实测值，不以"已优化"代替数据。
+2026-10-29 实测结果（含运行环境、未完成项与 1080p 截图采集编码成本）见
+[PERFORMANCE_ACCEPTANCE_REPORT.md](PERFORMANCE_ACCEPTANCE_REPORT.md)。
 
 ### 8.3 稳定性
 

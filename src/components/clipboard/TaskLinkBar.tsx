@@ -5,6 +5,7 @@ import { Link2 } from "lucide-react";
 import { clipboardLinkTask } from "../../lib/bridge";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
+import { Combobox } from "../ui";
 
 export default function TaskLinkBar({
   targetType,
@@ -44,18 +45,15 @@ export default function TaskLinkBar({
         <span className="clip-hint">任务列表为空，请先在任务页加载任务后再关联。</span>
       ) : (
         <>
-          <select
+          <Combobox
+            ariaLabel="选择要关联的任务"
             value={taskId}
-            onChange={(e) => setTaskId(e.target.value)}
-            aria-label="选择要关联的任务"
-          >
-            <option value="">选择任务…</option>
-            {tasks.slice(0, 100).map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.title}
-              </option>
-            ))}
-          </select>
+            options={tasks.slice(0, 100).map((t) => ({ value: t.id, label: t.title }))}
+            onChange={(v) => setTaskId(v)}
+            searchPlaceholder="搜索任务…"
+            emptyText="没有匹配的任务"
+            placeholder="选择任务…"
+          />
           <button className="btn sm" onClick={onLink} disabled={!taskId || busy}>
             关联
           </button>

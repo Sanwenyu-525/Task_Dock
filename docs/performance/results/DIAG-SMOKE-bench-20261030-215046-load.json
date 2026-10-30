@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47990",
+    "token": "e42bb031-418d-4b4c-a8d8-f126e7b2787b",
+    "mode": "mixed",
+    "agents": 2,
+    "rate": 2,
+    "duration": 20,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "SMOKE-bench-20261030-215046",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-smoke\\SMOKE-bench-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-SMOKE-bench-20261030-215046-load.json"
+  },
+  "elapsed_ms": 20002,
+  "actual_rate": 4,
+  "counts": {
+    "sent": 80,
+    "ok": 80,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 8,
+    "critical_ok": 8,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.68,
+    "p95": 268.26,
+    "max": 269.33
+  }
+}

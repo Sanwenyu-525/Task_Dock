@@ -1,0 +1,110 @@
+{
+  "scenario": "db-audit",
+  "general": {
+    "db_path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept-v05\\data-v3\\task-dock.db",
+    "db_bytes": 98054144,
+    "wal_bytes": 5772152,
+    "user_version": 11,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "tables": {
+      "action_acks": 0,
+      "agent_events": 71941,
+      "agent_instances": 11,
+      "agent_runs": 15614,
+      "agent_sessions": 28,
+      "agent_sources": 9,
+      "application_settings": 44,
+      "clipboard_assets": 0,
+      "clipboard_group_items": 0,
+      "clipboard_groups": 0,
+      "clipboard_items": 0,
+      "clipboard_paste_jobs": 0,
+      "clipboard_snapshot_links": 0,
+      "clipboard_task_links": 0,
+      "navigation_log": 0,
+      "navigation_targets": 0,
+      "notification_history": 31184,
+      "recurrence_rules": 0,
+      "task_agent_links": 0,
+      "task_categories": 0,
+      "task_navigation_targets": 0,
+      "task_reminders": 0,
+      "tasks": 0,
+      "workspace_snapshot_items": 0,
+      "workspace_snapshots": 0
+    },
+    "events_by_source": {
+      "bridge": 71926,
+      "codex": 5,
+      "trae": 5,
+      "workbuddy": 5
+    },
+    "events_by_state": {
+      "completed": 15807,
+      "running": 40387,
+      "waiting": 15747
+    },
+    "event_seq": {
+      "min": 1793321920563543,
+      "max": 1793322878330081,
+      "distinct": 71941
+    },
+    "received_range": [
+      "2026-10-30T00:58:40.565912400+00:00",
+      "2026-10-30T01:14:38.528510200+00:00"
+    ],
+    "dedupe_key_duplicates": 0,
+    "runs_by_status": {
+      "completed": 15612,
+      "waiting": 2
+    },
+    "runs_with_watermark": 15614,
+    "runs_without_last_event_at": 0
+  },
+  "reconcile": {
+    "mode": "interleave",
+    "session_id": "E2-interleave-20261030-091402-interleave-session",
+    "external_run_id": "E2-interleave-20261030-091402-interleave-run",
+    "run_row": {
+      "status": "waiting",
+      "last_ingest_seq": 1793322855556081,
+      "last_event_at": "2026-10-30T01:14:16.940+00:00",
+      "updated_at": "2026-10-30T01:14:16.940+00:00"
+    },
+    "events": [
+      {
+        "event_id": "E2-interleave-20261030-091402-i1-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:14:12.940+00:00"
+      },
+      {
+        "event_id": "E2-interleave-20261030-091402-i2-waiting",
+        "state": "waiting",
+        "occurred_at": "2026-10-30T01:14:13.940+00:00"
+      },
+      {
+        "event_id": "E2-interleave-20261030-091402-i3-late-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:14:02.940+00:00"
+      },
+      {
+        "event_id": "E2-interleave-20261030-091402-i4-completed",
+        "state": "completed",
+        "occurred_at": "2026-10-30T01:14:14.940+00:00"
+      },
+      {
+        "event_id": "E2-interleave-20261030-091402-i5-new-round-running",
+        "state": "running",
+        "occurred_at": "2026-10-30T01:14:15.940+00:00"
+      },
+      {
+        "event_id": "E2-interleave-20261030-091402-i6-waiting",
+        "state": "waiting",
+        "occurred_at": "2026-10-30T01:14:16.940+00:00"
+      }
+    ],
+    "expected_final_state": "waiting",
+    "ok": true
+  }
+}

@@ -1,0 +1,22 @@
+PASS 应用以隔离数据目录启动并处于监听状态 :: fresh_default
+PASS 剪贴板配置无异常
+PASS CDP 目标即本次隔离实例（Agent 收件目录在隔离数据目录内） :: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-154q8qd7\data\agent-inbox
+PASS 安全测试窗口已出现 :: TaskDock Paste Acceptance 7e3aecaf - 用户配置 1 - Microsoft​ Edge
+PASS 复制阶段前台为外部应用（否则命中自写抑制、测不到采集链路） :: {'step': 'before-copies', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 525158}
+PASS 测试页编辑器已聚焦 :: {'ok': True, 'title': 'TaskDock Paste Acceptance 7e3aecaf', 'activeId': 'editor', 'focused': True}
+PASS 复制 A-red 后采集入库（1/4） :: {'copied': 'A-red', 'foreground': {'step': 'copy-1-A-red', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 525158}, 'items_total': 8, 'expected_total': 1, 'monitor_delta': {'observed_events': 11, 'captured': 10, 'recorded': 10, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}
+PASS 复制 B-green 后采集入库（2/4） :: {'copied': 'B-green', 'foreground': {'step': 'copy-2-B-green', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 525158}, 'items_total': 11, 'expected_total': 2, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}
+PASS 复制 text-C 后采集入库（3/4） :: {'copied': 'text-C', 'foreground': {'step': 'copy-3-text-C', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 525158}, 'items_total': 12, 'expected_total': 3, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}
+PASS 复制 D-blue 后采集入库（4/4） :: {'copied': 'D-blue', 'foreground': {'step': 'copy-4-D-blue', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 525158}, 'items_total': 13, 'expected_total': 4, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}
+FAIL 历史新增条目数恰为 4 :: 0 -> 13
+FAIL 采集到 3 张图片与 1 条文字 :: {'new_items': 13, 'images': 8, 'texts': 3}
+PASS 采集入库的 A-red 像素可见且颜色正确 :: {'width': 240, 'height': 160, 'alphaMin': 255, 'alphaMax': 255, 'transparentPixels': 0, 'opaquePixels': 38400, 'avgRgb': [220, 30, 30], 'samples': {'center': [220, 30, 30, 255], 'topLeft': [220, 30, 30, 255], 'bottomRight': [220, 30, 30, 255]}, 'id': 'e078f303-8bec-4b4b-a056-2b6c825428f1', 'copy_count': 1, 'width_field': 240, 'height_field': 160, 'expected': 'A-red'}
+PASS 采集入库的 A-red 尺寸为 240x160 :: [240, 160]
+PASS 采集入库的 B-green 像素可见且颜色正确 :: {'width': 240, 'height': 160, 'alphaMin': 255, 'alphaMax': 255, 'transparentPixels': 0, 'opaquePixels': 38400, 'avgRgb': [30, 180, 60], 'samples': {'center': [30, 180, 60, 255], 'topLeft': [30, 180, 60, 255], 'bottomRight': [30, 180, 60, 255]}, 'id': '62120375-afbd-4d85-9942-e2813a3c4d59', 'copy_count': 1, 'width_field': 240, 'height_field': 160, 'expected': 'B-green'}
+PASS 采集入库的 B-green 尺寸为 240x160 :: [240, 160]
+PASS 采集入库的 D-blue 像素可见且颜色正确 :: {'width': 240, 'height': 160, 'alphaMin': 255, 'alphaMax': 255, 'transparentPixels': 0, 'opaquePixels': 38400, 'avgRgb': [30, 60, 220], 'samples': {'center': [30, 60, 220, 255], 'topLeft': [30, 60, 220, 255], 'bottomRight': [30, 60, 220, 255]}, 'id': '8cef7e98-7e29-4f8b-a728-1210aaaa8b25', 'copy_count': 1, 'width_field': 240, 'height_field': 160, 'expected': 'D-blue'}
+PASS 采集入库的 D-blue 尺寸为 240x160 :: [240, 160]
+PASS 粘贴前测试页编辑器仍是焦点 :: {'ok': True, 'title': 'TaskDock Paste Acceptance 7e3aecaf', 'activeId': 'editor', 'focused': True}
+PASS 目标预检通过且进程/窗口匹配 :: {'hwnd': 525158, 'pid': 6760, 'title': 'TaskDock Paste Acceptance 7e3aecaf - 用户配置 1 - Microsoft\u200b Edge', 'exe_path': 'c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe'}
+ERROR RuntimeError: clipboard_create_group 调用失败（重试 8 次）: 校验失败: 未选择有效条目 :: {'command': 'clipboard_create_group', 'error': '校验失败: 未选择有效条目', 'app_alive': True, 'app_exit_code': None, 'cdp_port': 9417, 'port_listeners': ['TCP    127.0.0.1:9417         0.0.0.0:0              LISTENING       76408']}
+EVIDENCE D:\Develop\task_dock\docs\clipboard\evidence\p1-03-mixed-paste-20261030-153447-7e3aecaf.json

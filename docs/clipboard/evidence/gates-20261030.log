@@ -1,0 +1,67 @@
+# v0.5 final engineering gates — 2026-10-30 (Windows 11 x64, 20 logical CPUs)
+
+## Environment
+v22.22.3
+10.9.8
+cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+rustc 1.95.0 (59807616e 2026-04-14)
+
+## Summary
+=== fmt start 2026-10-30T01:26:08+08:00 ===
+fmt exit=0 secs=2
+=== tsc start 2026-10-30T01:26:10+08:00 ===
+tsc exit=0 secs=12
+=== build start 2026-10-30T01:26:22+08:00 ===
+build exit=0 secs=23
+=== vitest start 2026-10-30T01:26:46+08:00 ===
+vitest exit=0 secs=66
+=== clippy start 2026-10-30T01:27:51+08:00 ===
+clippy exit=0 secs=18
+=== cargo_test start 2026-10-30T01:28:09+08:00 ===
+cargo_test exit=101 secs=118
+=== perf_release start 2026-10-30T01:30:07+08:00 ===
+perf_release exit=0 secs=152
+ALL DONE 2026-10-30T01:32:39+08:00
+
+## vitest
+[2m Test Files [22m [1m[32m21 passed[39m[22m[90m (21)[39m
+[2m      Tests [22m [1m[32m133 passed[39m[22m[90m (133)[39m
+
+## build
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.40 kB[22m[1m[22m[2m │ gzip:   0.27 kB[22m
+[2mdist/[22m[35massets/index-FM_djo1E.css  [39m[1m[2m 68.51 kB[22m[1m[22m[2m │ gzip:  10.96 kB[22m
+[2mdist/[22m[36massets/index-BWKB40EI.js   [39m[1m[2m464.88 kB[22m[1m[22m[2m │ gzip: 138.75 kB[22m
+[32m✓ built in 8.46s[39m
+
+## cargo test (full, --no-fail-fast)
+failures:
+failures:
+    navigation::router::tests::launch_disallowed_reports_failure_or_focus_only
+    navigation::router::tests::notepad_launch_focuses_existing_window_of_owned_process
+test result: FAILED. 302 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 19.61s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+## release clipboard_perf
+test clipboard_perf_sample ... ok
+test clipboard_stress_300_history_and_200_screenshots has been running for over 60 seconds
+test clipboard_stress_300_history_and_200_screenshots ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 65.40s
+
+## tauri build
+    Finished `release` profile [optimized] target(s) in 8m 26s
+        Info Patching D:\Develop\task_dock\src-tauri\target\release\task-dock.exe with bundle type information: nsis
+     Running makensis to produce D:\Develop\task_dock\src-tauri\target\release\bundle\nsis\Task Dock_0.5.0_x64-setup.exe
+        Info Patching D:\Develop\task_dock\src-tauri\target\release\task-dock.exe with bundle type information: msi
+     Running light to produce D:\Develop\task_dock\src-tauri\target\release\bundle\msi\Task Dock_0.5.0_x64_en-US.msi
+    Finished 2 bundles at:
+        D:\Develop\task_dock\src-tauri\target\release\bundle\nsis\Task Dock_0.5.0_x64-setup.exe (4.01 MiB)
+        D:\Develop\task_dock\src-tauri\target\release\bundle\msi\Task Dock_0.5.0_x64_en-US.msi (6.15 MiB)
+
+## clipboard-only rust tests
+
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 0.68s
+

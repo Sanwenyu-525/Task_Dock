@@ -1,0 +1,40 @@
+{
+  "burst": {
+    "asset_cap_mb": 32,
+    "assets_after_mb": 30.214842796325684,
+    "budget_ms": 8000.0,
+    "cleanup_ms": 131.6017,
+    "disk_after_mb": 30.214842796325684,
+    "disk_before_mb": 464.84312438964844,
+    "encode_setup_ms_excluded": 27334.1197,
+    "group_ok": true,
+    "groups": 1,
+    "image_size": "1920x1080",
+    "ingest_ms": 4089.1873,
+    "pass": true,
+    "quota_ok": true,
+    "screenshots": 200,
+    "total_ms": 4220.789
+  },
+  "history": {
+    "budget_ms": 120.0,
+    "image_size": "960x540",
+    "images": 100,
+    "items": 300,
+    "list200_p50_ms": 0.9779000000000001,
+    "list200_p95_ms": 1.1065,
+    "list80_p50_ms": 0.8503000000000001,
+    "list80_p95_ms": 0.959,
+    "pass": true
+  },
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "pass": true,
+  "scenario": "CLIP"
+}

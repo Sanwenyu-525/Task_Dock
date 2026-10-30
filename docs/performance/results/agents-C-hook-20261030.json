@@ -1,0 +1,191 @@
+{
+  "ts": "20261030-091248",
+  "invocations": [
+    {
+      "source": "codex",
+      "event": "SessionStart",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "codex",
+      "event": "UserPromptSubmit",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "codex",
+      "event": "PreToolUse",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "codex",
+      "event": "PermissionRequest",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "codex",
+      "event": "Stop",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "trae",
+      "event": "SessionStart",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "trae",
+      "event": "UserPromptSubmit",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "trae",
+      "event": "PreToolUse",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "trae",
+      "event": "PermissionRequest",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "trae",
+      "event": "Stop",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "workbuddy",
+      "event": "SessionStart",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "workbuddy",
+      "event": "UserPromptSubmit",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "workbuddy",
+      "event": "PreToolUse",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "workbuddy",
+      "event": "PermissionRequest",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "source": "workbuddy",
+      "event": "Stop",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "events_by_source_state": [
+    [
+      "codex",
+      "completed",
+      1
+    ],
+    [
+      "codex",
+      "running",
+      1
+    ],
+    [
+      "codex",
+      "waiting",
+      1
+    ],
+    [
+      "trae",
+      "completed",
+      1
+    ],
+    [
+      "trae",
+      "running",
+      1
+    ],
+    [
+      "trae",
+      "waiting",
+      1
+    ],
+    [
+      "workbuddy",
+      "completed",
+      1
+    ],
+    [
+      "workbuddy",
+      "running",
+      1
+    ],
+    [
+      "workbuddy",
+      "waiting",
+      1
+    ]
+  ],
+  "sessions": [
+    [
+      "C-codex-20261030-091248",
+      "codex",
+      "completed"
+    ],
+    [
+      "C-trae-20261030-091248",
+      "trae",
+      "completed"
+    ],
+    [
+      "C-workbuddy-20261030-091248",
+      "workbuddy",
+      "completed"
+    ]
+  ],
+  "runs": [
+    [
+      "codex",
+      "completed",
+      1
+    ],
+    [
+      "trae",
+      "completed",
+      1
+    ],
+    [
+      "workbuddy",
+      "completed",
+      1
+    ]
+  ]
+}

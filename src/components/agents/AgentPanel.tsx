@@ -427,7 +427,7 @@ function EndpointInfo({
         </code>
         <button
           className="icon-btn sm"
-          title={revealed ? "隐藏令牌" : "显示令牌"}
+          data-tip={revealed ? "隐藏令牌" : "显示令牌"}
           aria-label={revealed ? "隐藏令牌" : "显示令牌"}
           onClick={() => setRevealed((v) => !v)}
         >
@@ -435,7 +435,7 @@ function EndpointInfo({
         </button>
         <button
           className="icon-btn sm"
-          title="复制完整令牌"
+          data-tip="复制完整令牌"
           aria-label="复制完整令牌"
           onClick={async () => {
             const ok = await copyText(token);
@@ -515,7 +515,7 @@ function AgentNode({
         </button>
         <button
           className="icon-btn sm"
-          title={caps?.can_launch.supported ? `打开 ${agent.name}` : caps ? caps.can_launch.note : "探测跳转能力…"}
+          data-tip={caps?.can_launch.supported ? `打开 ${agent.name}` : caps ? caps.can_launch.note : "探测跳转能力…"}
           aria-label={`打开 ${agent.name} 应用`}
           disabled={!caps?.can_launch.supported}
           onClick={async () => {
@@ -546,7 +546,7 @@ function AgentNode({
                 </button>
                 <button
                   className="icon-btn sm"
-                  title={`唤醒 ${agent.name} 实例窗口`}
+                  data-tip={`唤醒 ${agent.name} 实例窗口`}
                   aria-label={`唤醒 ${agent.name} 实例窗口`}
                   disabled={!caps?.can_focus_window.supported}
                   onClick={async () => {
@@ -656,7 +656,7 @@ function SessionNode({
         </button>
         <button
           className="icon-btn sm"
-          title={canResume ? `恢复会话 — ${resumeNote}` : jumpSupported ? "该 Agent 暂不支持精准恢复会话，将尝试唤醒/启动应用" : "探测跳转能力…"}
+          data-tip={canResume ? `恢复会话 — ${resumeNote}` : jumpSupported ? "该 Agent 暂不支持精准恢复会话，将尝试唤醒/启动应用" : "探测跳转能力…"}
           aria-label={canResume ? `恢复会话 ${session.externalId}` : `打开 ${agentName}`}
           onClick={async (e) => {
             e.stopPropagation();
@@ -768,7 +768,7 @@ function CustomSourceForm({ onCreated, showToast }: { onCreated: () => Promise<v
               {s.display_name}（{s.id}）
               <button
                 className="icon-btn sm"
-                title="删除来源（保留关联任务与历史链接）"
+                data-tip="删除来源（保留关联任务与历史链接）"
                 aria-label={`删除来源 ${s.id}`}
                 onClick={async () => {
                   try {

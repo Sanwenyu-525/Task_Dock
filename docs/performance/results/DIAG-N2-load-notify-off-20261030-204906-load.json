@@ -1,0 +1,38 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47891",
+    "token": "8c056823-d60c-4cab-88a5-81ecd262fc0e",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 480,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "N2-load-notify-off-20261030-204906",
+    "source": "bridge",
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc\\N2-load-notify-off-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N2-load-notify-off-20261030-204906-load.json"
+  },
+  "elapsed_ms": 480001,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 9600,
+    "ok": 9600,
+    "failed": 0,
+    "retries": 6,
+    "critical_sent": 960,
+    "critical_ok": 960,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.63,
+    "p95": 256.46,
+    "max": 320.17
+  }
+}

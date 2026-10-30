@@ -25,6 +25,32 @@ Task Dock 用统一的 `AgentEvent` 模型接入所有 AI 编程 Agent。任何 
 - **failed**：执行失败；**disconnected**：连接中断或状态不可确认；
 - 状态过期（默认 15 分钟无更新）自动转 `disconnected`，不会把任务判定为成功。
 
+### 1.1 来源归属由服务端判定（v0.5，客户端无法伪造）
+
+事件载荷里**没有**「这是真实还是压测」的字段，也**不采信**客户端自报的 `transport`。
+归属（`EventOrigin`）由服务端在摄取入口判定，只看三个客户端改不了的输入：
+
+| 归属 | 判定依据 | 对真实侧的影响 |
+| --- | --- | --- |
+| `real` | 已注册的真实来源（`agent_sources.category='real'`） | 可改状态、进行动中心、弹系统通知 |
+| `selftest` | 会话 ID 使用保留前缀 `taskdock-selftest-` | **完全隔离**：不改真实状态、不进行动中心、不弹通知 |
+| `benchmark` | 来源 `bench`（服务端注册、UI 隐藏）或会话/轮次同时使用 `http-perf-` 前缀 | 同上，隔离 |
+| `mock` | 来源 `mock`（模拟适配器） | 同上，隔离（UI 另行标注「模拟」） |
+
+因此：
+- 自测与压测脚本**必须**使用隔离来源（`bench`）或保留前缀，否则会污染真实状态；
+  `scripts/perf/ingest-load.mjs` 默认 `--source bench`，显式指定非 `bench` 来源会被拒绝
+  （除非加 `--allow-real-source`）。
+- **同一条闸门覆盖内存采样链路**：`scripts/perf/memory-probe.mjs` 与
+  `scripts/perf/memory-scenario.py` 默认同为 `bench`，非 `bench` 必须显式
+  `--allow-real-source`；两个套件脚本（`memory-af-suite.sh` / `memory-notify-suite.sh`）
+  用 `SOURCE=bridge` 时会自动追加该标志。
+- 例外说明（不是后门）：要测「系统通知路径」的内存成本，只能用 `real` 归属的事件
+  （服务端只对 `real` 产生通知）。此时隔离性由**隔离实例**保证——独立数据目录 /
+  APPDATA / 端口，用完即弃，绝不接触用户真实库；测完的库整体丢弃。
+- 适配器**不要**自己实现归属判断，也不要在载荷里加自定义「测试」标记——那类标记不可信，
+  服务端不采信。
+
 ## 二、两种通用接入通道（任何 Agent 可用）
 
 ### 1. 本地 HTTP 接入（推荐有网络能力的 Agent）

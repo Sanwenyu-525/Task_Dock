@@ -1,0 +1,111 @@
+{
+  "at": "2026-10-29T16:49:58.557Z",
+  "status": {
+    "activeJob": null,
+    "captureAllowed": true,
+    "configError": null,
+    "enabled": true,
+    "monitor": {
+      "captured": 0,
+      "content_queue_capacity": 8,
+      "content_queue_max_bytes": 134217728,
+      "dropped_contents": 0,
+      "dropped_events": 0,
+      "duplicates": 0,
+      "event_queue_capacity": 64,
+      "failed": 0,
+      "max_capture_latency_ms": 0,
+      "max_process_latency_ms": 0,
+      "merged_events": 0,
+      "observed_events": 0,
+      "peak_content_queue": 0,
+      "peak_event_queue": 0,
+      "recorded": 0,
+      "skipped": 0
+    },
+    "monitoring": true,
+    "paused": false,
+    "platform": "windows"
+  },
+  "stats": {
+    "items": 1250,
+    "groups": 1,
+    "images": 45,
+    "files": 20,
+    "favorites": 0,
+    "bytes": 555068,
+    "asset_bytes": 559676,
+    "max_items": 5000,
+    "max_storage_bytes": 536870912,
+    "enabled": true,
+    "paused": false,
+    "auto_group": true
+  },
+  "health": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "queue": {
+        "capacity": 1024,
+        "depth_events": 0
+      },
+      "service": "task-dock"
+    }
+  },
+  "pipeline": {
+    "status": 200,
+    "body": {
+      "http": {
+        "accepted": 74654,
+        "active_connections": 2,
+        "active_requests": 0,
+        "internal_errors": 0,
+        "last_request_at": "2026-10-29T16:49:58.586127300+00:00",
+        "max_active_requests": 16,
+        "max_body_bytes": 65536,
+        "max_concurrency": 32,
+        "rejected_auth": 0,
+        "rejected_concurrency": 0,
+        "rejected_overload": 0,
+        "rejected_parse": 1,
+        "requests": 74666
+      },
+      "pipeline": {
+        "batches": 749,
+        "coalesce_ms": 250,
+        "commit_failures": 0,
+        "db_write_latency": {
+          "max_ms": 95.6,
+          "p50_ms": 19.32,
+          "p95_ms": 62.58,
+          "p99_ms": 76.83,
+          "samples": 749
+        },
+        "events_merged": 55182,
+        "events_processed": 19472,
+        "events_received": 74654,
+        "events_sampled": 0,
+        "fallback_jobs": 0,
+        "ingest_latency": {
+          "max_ms": 507.81,
+          "p50_ms": 119.26,
+          "p95_ms": 294.03,
+          "p99_ms": 389.62,
+          "samples": 2048
+        },
+        "last_batch_size": 17,
+        "last_flush_at": "2026-10-29T16:48:32.224832500+00:00",
+        "lifecycle": "running",
+        "max_batch_size": 33,
+        "merge_buffer": 0,
+        "overload_rejects": 0,
+        "queue_capacity": 1024,
+        "queue_depth_events": 0,
+        "queue_depth_jobs": 0,
+        "running": true,
+        "submissions": 74654,
+        "uptime_secs": 338
+      }
+    }
+  }
+}

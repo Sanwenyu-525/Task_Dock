@@ -1,0 +1,1 @@
+[{"File":"pasted-1.png","Size":"480x300","Sampled":5760,"Opaque":0,"MidRGBA":"255,255,255,0","CornerRGBA":"220,40,40,0"},{"File":"pasted-2.png","Size":"480x300","Sampled":5760,"Opaque":0,"MidRGBA":"40,160,60,0","CornerRGBA":"40,160,60,0"},{"File":"pasted-3.png","Size":"480x300","Sampled":5760,"Opaque":0,"MidRGBA":"40,70,200,0","CornerRGBA":"40,70,200,0"}]

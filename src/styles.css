@@ -276,48 +276,6 @@ code {
   margin-left: 1px;
 }
 
-.menu-popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  min-width: 132px;
-  padding: 4px;
-  background: var(--surface-overlay);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  box-shadow: var(--shadow-overlay);
-  z-index: 80;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--text-primary);
-  text-align: left;
-}
-
-.menu-item:hover {
-  background: var(--surface-hover);
-}
-
-.menu-item.active {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.menu-check {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--accent);
-}
 
 /* ══ 通用控件 ═════════════════════════════════════════════════ */
 
@@ -1630,7 +1588,7 @@ code {
   padding: 8px 12px 4px;
   background: color-mix(in srgb, var(--surface-base) 82%, transparent);
   backdrop-filter: blur(8px);
-  z-index: 5;
+  z-index: var(--z-sticky);
 }
 
 .dock-window.material-solid .history-day-label {
@@ -1645,8 +1603,27 @@ code {
 
 .history-more {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
+  gap: 6px;
   padding: 6px 0 2px;
+}
+
+.history-new-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-card);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.history-new-banner span {
+  flex: 1;
+  min-width: 0;
 }
 
 .history-item {
@@ -1922,7 +1899,7 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 60;
+  z-index: var(--z-modal);
   padding: 16px;
 }
 
@@ -2106,9 +2083,27 @@ code {
   padding: 7px 12px;
   border-radius: 999px;
   box-shadow: var(--shadow-overlay);
-  z-index: 100;
+  z-index: var(--z-toast);
   max-width: 88%;
   cursor: default;
+  animation: toast-in 0.16s var(--ease-out, ease);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
 }
 
 :root[data-theme="dark"] .toast {
@@ -2120,8 +2115,15 @@ code {
   flex-shrink: 0;
 }
 
-.toast.kind-success .toast-icon { color: var(--status-success); }
-.toast.kind-error .toast-icon { color: var(--status-error); }
+/* Toast 是反色气泡：图标颜色不能直接用主题的状态色
+   （深色主题的浅绿配浅底会糊成一片），单独给一套。 */
+.toast.kind-success .toast-icon { color: #86efac; }
+.toast.kind-error .toast-icon { color: #fca5a5; }
+.toast.kind-info .toast-icon { color: #93c5fd; }
+
+:root[data-theme="dark"] .toast.kind-success .toast-icon { color: #047857; }
+:root[data-theme="dark"] .toast.kind-error .toast-icon { color: #dc2626; }
+:root[data-theme="dark"] .toast.kind-info .toast-icon { color: #2563eb; }
 
 .toast-message {
   overflow: hidden;
@@ -2902,16 +2904,20 @@ code {
 .clipboard-layer {
   position: absolute;
   inset: 0;
-  z-index: 45;
+  z-index: var(--z-drawer);
   display: flex;
   justify-content: flex-end;
   pointer-events: none;
 }
 
-/* 关联模式由任务编辑器弹窗（60）发起，必须叠在弹窗之上，
-   否则遮罩会拦掉所有点选，关联流程不可用。 */
+/* 关联模式由任务编辑器弹窗发起，必须叠在弹窗之上，
+   否则遮罩会拦掉所有点选，关联流程不可用。
+   同时脱离 .dock-body 的定位盒改用视口定位：只盖内容区的话，
+   编辑器的标题会被抽屉上沿切掉半截，看起来像渲染错位。 */
 .clipboard-layer.link-mode {
-  z-index: 70;
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal-top);
 }
 
 .clipboard-scrim {
@@ -2921,23 +2927,37 @@ code {
   pointer-events: auto;
 }
 
+/* 完整模式：剪贴板是左侧导航里的独立页面，直接占据右侧内容区。
+   与抽屉共用同一套内部结构（头 / 工具条 / 列表 / 底栏）。 */
+.clipboard-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.clipboard-page .clip-body {
+  flex: 1;
+}
+
 .clipboard-drawer {
   position: relative;
-  width: min(560px, 100%);
+  width: min(500px, 100%);
   height: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  /* 剪贴板抽屉必须不透明：玻璃/亚克力模式下也保持可读，
+     否则底层任务列表会透出来干扰逐项粘贴这类精细操作。 */
   background: var(--surface-overlay);
   border-left: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-overlay);
   pointer-events: auto;
   outline: none;
   animation: clip-slide-in 0.18s ease-out;
-}
-
-.dock-window.material-glass .clipboard-drawer {
-  background: color-mix(in srgb, var(--surface-overlay) 92%, transparent);
 }
 
 @keyframes clip-slide-in {
@@ -3022,6 +3042,15 @@ code {
 .clip-link-banner span {
   flex: 1;
   min-width: 0;
+}
+
+.clip-config-banner {
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
+  color: var(--text-primary);
+}
+
+.clip-config-banner svg {
+  color: var(--status-error);
 }
 
 /* ── 搜索与筛选 ── */
@@ -4113,6 +4142,28 @@ code {
   gap: 6px;
 }
 
+.clip-config-error {
+  border: 1px solid color-mix(in srgb, var(--status-error) 45%, transparent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 6px 0;
+  background: color-mix(in srgb, var(--status-error) 9%, transparent);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.clip-config-error strong {
+  color: var(--status-error);
+  font-size: 11.5px;
+}
+
+.clip-config-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
 .setting-textarea {
   width: 100%;
   min-height: 46px;
@@ -4184,6 +4235,29 @@ code {
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+.action-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 10px;
+  padding: 1px 2px 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.action-summary .pending {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.action-summary .muted {
+  opacity: 0.75;
+}
+
+.action-summary .warn {
+  color: var(--p1);
 }
 
 .action-item {
@@ -4445,7 +4519,7 @@ code {
 /* ══ 任务上下文抽屉（v0.5）════════════════════════════════════ */
 
 .context-layer {
-  z-index: 46;
+  z-index: var(--z-drawer);
 }
 
 .context-drawer {

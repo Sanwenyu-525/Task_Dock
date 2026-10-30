@@ -1,0 +1,20 @@
+PASS 应用以隔离数据目录启动并处于监听状态 :: fresh_default
+PASS 剪贴板配置无异常
+PASS CDP 目标即本次隔离实例（Agent 收件目录在隔离数据目录内） :: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-4o_rrwfo\data\agent-inbox
+FAIL 复制 A-red 后采集入库（1/4） :: 0
+FAIL 复制 B-green 后采集入库（2/4） :: 0
+FAIL 复制 text-C 后采集入库（3/4） :: 0
+FAIL 复制 D-blue 后采集入库（4/4） :: 0
+FAIL 历史新增条目数恰为 4 :: 0 -> 0
+FAIL 采集到 3 张图片与 1 条文字 :: {'new_items': 0, 'images': 0, 'texts': 0}
+FAIL 采集入库的 A-red 像素可见且颜色正确
+FAIL 采集入库的 A-red 尺寸为 240x160
+FAIL 采集入库的 B-green 像素可见且颜色正确
+FAIL 采集入库的 B-green 尺寸为 240x160
+FAIL 采集入库的 D-blue 像素可见且颜色正确
+FAIL 采集入库的 D-blue 尺寸为 240x160
+PASS 安全测试窗口已出现 :: TaskDock Paste Acceptance 4c065a1f - 用户配置 1 - Microsoft​ Edge
+PASS 测试页编辑器已聚焦 :: {'ok': True, 'title': 'TaskDock Paste Acceptance 4c065a1f', 'activeId': 'editor', 'focused': True}
+PASS 目标预检通过且进程/窗口匹配 :: {'hwnd': 5506252, 'pid': 78608, 'title': 'TaskDock Paste Acceptance 4c065a1f - 用户配置 1 - Microsoft\u200b Edge', 'exe_path': 'c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe'}
+ERROR RuntimeError: clipboard_create_group 调用失败（重试 8 次）: 校验失败: 未选择有效条目 :: {'command': 'clipboard_create_group', 'error': '校验失败: 未选择有效条目', 'app_alive': True, 'app_exit_code': None, 'cdp_port': 9417, 'port_listeners': ['TCP    127.0.0.1:9417         0.0.0.0:0              LISTENING       80564']}
+EVIDENCE D:\Develop\task_dock\docs\clipboard\evidence\p1-03-mixed-paste-20261030-143004-4c065a1f.json

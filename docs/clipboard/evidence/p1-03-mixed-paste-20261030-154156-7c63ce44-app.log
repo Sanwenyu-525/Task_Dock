@@ -1,0 +1,25 @@
+[2m2026-10-30T07:41:29.656787Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v1
+[2m2026-10-30T07:41:29.662787Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v2
+[2m2026-10-30T07:41:29.667036Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v3
+[2m2026-10-30T07:41:29.674034Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v4
+[2m2026-10-30T07:41:29.678639Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v5
+[2m2026-10-30T07:41:29.681934Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v6
+[2m2026-10-30T07:41:29.685829Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v7
+[2m2026-10-30T07:41:29.691312Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v8
+[2m2026-10-30T07:41:29.694752Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v9
+[2m2026-10-30T07:41:29.698574Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v10
+[2m2026-10-30T07:41:29.701766Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v11
+[2m2026-10-30T07:41:29.711317Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v12
+[2m2026-10-30T07:41:29.715808Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 数据库迁移至 v13
+[2m2026-10-30T07:41:29.719143Z[0m [32m INFO[0m [2mtask_dock_lib::db[0m[2m:[0m 已回填事件来源分类（v12）
+[2m2026-10-30T07:41:29.830523Z[0m [32m INFO[0m [2mtask_dock_lib::clipboard[0m[2m:[0m 剪贴板监听已启动
+[2m2026-10-30T07:41:29.880115Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-10-30T07:41:29.880406Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-10-30T07:41:29.880418Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-rea2v303\\data\\agent-inbox"
+[2m2026-10-30T07:41:29.880445Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-rea2v303\\data"）
+[2m2026-10-30T07:41:29.881726Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 本地 HTTP 接入监听 127.0.0.1:47821
+[2m2026-10-30T07:41:29.888260Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 本地备份完成: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-rea2v303\data\backups\backup-20261030-154129-quick.json（quick，部分=true，10930 字节，SHA-256 efaa97649838f03530a9028f48beed9f658186ca77ec2657859ab599b45ef49a）
+[2m2026-10-30T07:41:29.888289Z[0m [32m INFO[0m [2mtask_dock_lib::commands::data[0m[2m:[0m 启动自动备份完成: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-rea2v303\data\backups\backup-20261030-154129-quick.json
+[2m2026-10-30T07:41:41.336241Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 POST /api/v1/events -> 401 (127.0.0.1:4212, 0ms)
+[2m2026-10-30T07:41:41.827624Z[0m [34mDEBUG[0m [2mtask_dock_lib::clipboard::platform[0m[2m:[0m 剪贴板记录：kind=image size=1241 created=true grouped=true
+[2m2026-10-30T07:41:44.193571Z[0m [34mDEBUG[0m [2mtask_dock_lib::clipboard::platform[0m[2m:[0m 剪贴板记录：kind=image size=1241 created=true grouped=true

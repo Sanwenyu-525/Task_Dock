@@ -1,0 +1,58 @@
+=== 2026-10-30 16:18:21 fmt ===
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\clipboard\image.rs:804:
+         let mut unused: Vec<u8> = (0..4 * 4).flat_map(|i| [i as u8, 9, 7, 0u8]).collect();
+         canonicalize_unused_alpha(&mut unused);
+         assert!(unused.chunks_exact(4).all(|px| px[3] == 255));
+[31m-        let rgb_before: Vec<u8> = unused.chunks_exact(4).flat_map(|px| [px[0], px[1], px[2]]).collect();
+[0m[32m+        let rgb_before: Vec<u8> = unused
+[0m[32m+            .chunks_exact(4)
+[0m[32m+            .flat_map(|px| [px[0], px[1], px[2]])
+[0m[32m+            .collect();
+[0m         canonicalize_unused_alpha(&mut unused);
+[31m-        let rgb_after: Vec<u8> = unused.chunks_exact(4).flat_map(|px| [px[0], px[1], px[2]]).collect();
+[0m[32m+        let rgb_after: Vec<u8> = unused
+[0m[32m+            .chunks_exact(4)
+[0m[32m+            .flat_map(|px| [px[0], px[1], px[2]])
+[0m[32m+            .collect();
+[0m         assert_eq!(rgb_before, rgb_after, "归一只能改 Alpha，不得动颜色");
+ 
+         // 任一非 0 Alpha 就是真实透明信息，绝不当成未使用通道。
+FMT_EXIT=1
+=== 2026-10-30 16:18:22 clippy ===
+    Checking task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+error: `format!` in `format!` args
+   --> tests\real_clipboard.rs:218:17
+    |
+218 | / ...   format!(
+219 | | ...       " · 图片诊断：期望png={} 实际png={} png相同={same_png} 期望尺寸={width}x{height} 实际尺寸={}x{} 重解码期望像素={} 像素...
+220 | | ...       expect_png.len(),
+221 | | ...       img.png.len(),
+...   |
+229 | | ...           .all(|(a, b)| a[3] == b[3]),
+230 | | ...   )
+    | |_______^
+    |
+    = help: combine the `format!(..)` arguments with the outer `format!(..)` call
+    = help: or consider changing `format!` to `format_args!`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#format_in_format_args
+    = note: `-D clippy::format-in-format-args` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::format_in_format_args)]`
+
+error: field assignment outside of initializer for an instance created with Default::default()
+   --> tests\real_clipboard.rs:384:5
+    |
+384 |     settings.clipboard_auto_group = true;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `task_dock_lib::db::Settings { clipboard_auto_group: true, clipboard_group_window_secs: 60, ..Default::default() }` and removing relevant reassignments
+   --> tests\real_clipboard.rs:383:5
+    |
+383 |     let mut settings = Settings::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#field_reassign_with_default
+    = note: `-D clippy::field-reassign-with-default` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::field_reassign_with_default)]`
+
+error: could not compile `task-dock` (test "real_clipboard") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+CLIPPY_EXIT=101

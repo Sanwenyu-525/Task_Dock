@@ -1,0 +1,16 @@
+# command: cargo test --release --test actions_perf -- --ignored --nocapture
+# started: 2026-10-30T18:12:35+08:00
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `release` profile [optimized] target(s) in 5m 40s
+     Running tests\actions_perf.rs (target\release\deps\actions_perf-3b0ed1818bd42f5f.exe)
+
+running 1 test
+
+[行动中心] 返回 40 条（筛选共 42）→ p50 2.99ms · p95 3.22ms · max 3.23ms（预算 p95 ≤ 60ms）
+[报告] \\?\D:\Develop\task_dock\docs\performance\results\Q-actions-20261030-101816.json
+test actions_feed_perf_sample ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+EXIT=0
+# finished: 2026-10-30T18:18:16+08:00

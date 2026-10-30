@@ -1,0 +1,48 @@
+===== 1/2 npm test (vitest) =====
+2026-10-30T18:39:02+08:00
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m切换到通知分类后不展示优先级筛选，并显示通知空态 [33m 385[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/PastePanel.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 1070[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m展示分类间隔；开始后显示逐项状态与剩余数量 [33m 775[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/ClipboardDrawer.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 1547[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m分页：80/100 时加载更多只追加一页 [33m 997[2mms[22m[39m
+ [32m✓[39m src/components/history/HistoryPanel.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 2232[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 全局未读与筛选[2m > [22m时间筛选从第一页重新查询，并把 since 传给两条数据流 [33m 354[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m刷新页与已加载页不重叠时提示刷新，不合并出带缺口的时间轴 [33m 572[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m首屏为空后到达的新事件会重新启用「加载更早」 [33m 559[2mms[22m[39m
+ [32m✓[39m src/components/FullView.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 521[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TaskEditor.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 852[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改标题时不提交重复规则或未修改的时间 [33m 466[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TasksPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 853[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m点击搜索按钮展开输入框，输入关键词过滤任务列表 [33m 494[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m清空搜索恢复全部；点击状态按钮过滤任务列表 [33m 357[2mms[22m[39m
+ [32m✓[39m src/components/tasks/QuickAdd.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 1063[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m输入自然语言 + Enter：先解析出预览，再 Enter 创建（store/bridge 被正确调用） [33m 472[2mms[22m[39m
+ [32m✓[39m src/components/navigation/AppPicker.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 1440[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m渲染应用列表；搜索框输入与分类按钮切换都能过滤列表 [33m 492[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m23 passed[39m[22m[90m (23)[39m
+[2m      Tests [22m [1m[32m166 passed[39m[22m[90m (166)[39m
+[2m   Start at [22m 18:39:12
+[2m   Duration [22m 37.44s[2m (transform 4.86s, setup 0ms, collect 74.11s, tests 12.68s, environment 333.37s, prepare 29.93s)[22m
+
+NPMTEST_EXIT=0
+===== 2/2 npm run build =====
+2026-10-30T18:39:50+08:00
+
+> task-dock@0.5.0 build
+> tsc --noEmit && vite build
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 1637 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.40 kB[22m[1m[22m[2m │ gzip:   0.27 kB[22m
+[2mdist/[22m[35massets/index-vARTo3bU.css  [39m[1m[2m 94.72 kB[22m[1m[22m[2m │ gzip:  16.10 kB[22m
+[2mdist/[22m[36massets/index-BRjVUOyg.js   [39m[1m[2m481.35 kB[22m[1m[22m[2m │ gzip: 144.29 kB[22m
+[32m✓ built in 7.84s[39m
+NPMBUILD_EXIT=0
+===== npx tsc --noEmit =====
+2026-10-30T18:40:06+08:00
+TSC_EXIT=0
+2026-10-30T18:40:12+08:00

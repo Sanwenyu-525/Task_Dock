@@ -525,8 +525,8 @@ fn scan_uwp() -> Vec<DiscoveredApp> {
 #[cfg(windows)]
 fn run_powershell_with_timeout(args: &[&str], timeout: Duration) -> Option<String> {
     use std::io::Read;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new("powershell.exe")
+    use std::process::Stdio;
+    let mut child = crate::winproc::hidden("powershell.exe")
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

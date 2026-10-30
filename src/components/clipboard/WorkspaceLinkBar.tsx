@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Layers } from "lucide-react";
 import { clipboardLinkSnapshot, workspaceList, type SnapshotSummary } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+import { Combobox } from "../ui";
 
 export default function WorkspaceLinkBar({
   targetType,
@@ -62,19 +63,18 @@ export default function WorkspaceLinkBar({
         <span className="clip-hint">还没有工作现场；先在任务上下文或工作区中保存现场。</span>
       ) : (
         <>
-          <select
+          <Combobox
+            ariaLabel="选择要关联的工作现场"
             value={snapshotId}
-            onChange={(e) => setSnapshotId(e.target.value)}
-            aria-label="选择要关联的工作现场"
-          >
-            <option value="">选择现场…</option>
-            {snapshots.slice(0, 100).map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-                {s.task_title ? `（${s.task_title}）` : ""}
-              </option>
-            ))}
-          </select>
+            options={snapshots.slice(0, 100).map((s) => ({
+              value: s.id,
+              label: `${s.name}${s.task_title ? `（${s.task_title}）` : ""}`,
+            }))}
+            onChange={(v) => setSnapshotId(v)}
+            searchPlaceholder="搜索现场…"
+            emptyText="没有匹配的工作现场"
+            placeholder="选择现场…"
+          />
           <button className="btn sm" onClick={onLink} disabled={!snapshotId || busy}>
             关联
           </button>

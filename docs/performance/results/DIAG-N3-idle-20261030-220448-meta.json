@@ -1,0 +1,43 @@
+{
+  "scenario": "N3-idle",
+  "source_exe": "src-tauri/target/release/task-dock.exe",
+  "source_exe_bytes": 15400960,
+  "started_at": "2026-10-30T14:04:50.014543+00:00",
+  "duration_s": 0,
+  "post_s": 480,
+  "mode": "running",
+  "source": "bridge",
+  "allow_real_source": true,
+  "rate_per_agent": 5,
+  "agents": 4,
+  "batch": 1,
+  "transport": "http",
+  "notifications": "off",
+  "window": null,
+  "settings": {
+    "http_enabled": true,
+    "http_port": 47892,
+    "mock_enabled": false,
+    "clipboard_enabled": false,
+    "auto_backup": false,
+    "notify_agent": false,
+    "notify_reminder": false,
+    "notify_muted": false,
+    "snap_enabled": false,
+    "hotkey_enabled": false,
+    "stale_run_minutes": 15,
+    "perf_diagnostics_enabled": true
+  },
+  "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc-v05r3\\N3-idle-data",
+  "sampler_jsonl": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N3-idle-20261030-220448.jsonl",
+  "app_log": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N3-idle-20261030-220448-app.log",
+  "load_json": null,
+  "stats_end_of_load": null,
+  "stats_after_post": null,
+  "error": "RuntimeError: 等待健康检查超时: <urlopen error timed out>",
+  "instance_exited_after_s": null,
+  "instance_exit_code": 0,
+  "summary": {
+    "samples": 0
+  }
+}

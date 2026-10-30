@@ -98,7 +98,9 @@ export function groupHistory(
       });
     }
   }
-  entries.sort((a, b) => b.ts - a.ts);
+  entries.sort((a, b) =>
+    b.ts === a.ts ? (a.key < b.key ? 1 : a.key > b.key ? -1 : 0) : b.ts - a.ts,
+  );
 
   // 先按日分组（倒序遍历 → 组按日期倒序）
   const groups: DayGroup[] = [];

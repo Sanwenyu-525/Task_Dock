@@ -1,0 +1,38 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47890",
+    "token": "bee4d0b9-1d9f-4d48-86a9-b003142f1d45",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 480,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "N1-load-notify-on-20261030-203915",
+    "source": "bridge",
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc\\N1-load-notify-on-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-203915-load.json"
+  },
+  "elapsed_ms": 480079,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 9600,
+    "ok": 9600,
+    "failed": 0,
+    "retries": 23,
+    "critical_sent": 960,
+    "critical_ok": 960,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.66,
+    "p95": 260.43,
+    "max": 2795.26
+  }
+}

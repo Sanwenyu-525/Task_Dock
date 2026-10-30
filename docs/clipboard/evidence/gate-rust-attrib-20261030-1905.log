@@ -1,0 +1,94 @@
+=== CLIPPY 20:00:47 ===
+    Checking rand v0.9.5
+    Checking hyper v1.12.0
+    Checking hashlink v0.9.1
+    Checking rusqlite v0.32.1
+    Checking image v0.25.10
+    Checking hyper-util v0.1.21
+    Checking global-hotkey v0.8.0
+    Checking window-vibrancy v0.6.0
+    Checking winreg v0.55.0
+   Compiling tauri-plugin v2.7.2
+   Compiling tauri-build v2.7.4
+   Compiling tauri-codegen v2.7.4
+   Compiling tauri v2.12.5
+   Compiling tauri-macros v2.7.4
+   Compiling tauri-plugin-fs v2.7.1
+   Compiling tauri-plugin-global-shortcut v2.4.1
+   Compiling tauri-plugin-opener v2.7.2
+   Compiling tauri-plugin-notification v2.7.0
+   Compiling tauri-plugin-dialog v2.8.3
+   Compiling tauri-plugin-autostart v2.7.0
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Checking tao v0.37.2
+    Checking tauri-winrt-notification v0.8.1
+    Checking notify-rust v4.18.2
+    Checking webview2-com v0.39.1
+    Checking tauri-runtime v2.12.2
+    Checking wry v0.57.1
+    Checking tauri-runtime-wry v2.12.3
+    Checking tauri-plugin-single-instance v2.5.4
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 10s
+CLIPPY_EXIT=0
+=== TEST 20:01:58 ===
+test clipboard_perf_sample ... ignored, 性能采样：需手动运行并记录环境
+test clipboard_stress_300_history_and_200_screenshots ... ignored, 性能验收：需手动运行并记录环境
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\inbox_processes.rs (target\debug\deps\inbox_processes-190b0b2ac8e419b0.exe)
+
+running 1 test
+test fifty_concurrent_hook_processes_write_complete_events ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running tests\ingest_perf.rs (target\debug\deps\ingest_perf-d59a2eddecd1f76d.exe)
+
+running 6 tests
+test scenario_a_sustained_10_agents ... ignored, 压测场景 A：需手动运行（默认 10 分钟）
+test scenario_b_burst_200eps ... ignored, 压测场景 B：需手动运行（默认 60 秒突发 + 排空）
+test scenario_baseline_write_comparison ... ignored, 压测基线：旧写路径 vs 新管线（默认 5000 事件）
+test scenario_c_overload_recovers ... ignored, 压测场景 C：需手动运行（持续过载 + 恢复）
+test scenario_d_failure_injection ... ignored, 压测场景 D：故障注入（可随时运行，约 5 秒）
+test scenario_e_soak_30min ... ignored, 压测场景 E：需手动运行（默认 30 分钟）
+
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\memory_attrib.rs (target\debug\deps\memory_attrib-50f7b9f39e3b25c5.exe)
+
+running 1 test
+test memory_growth_attribution ... ignored, 内存归因工具：需手动运行并逐臂对比
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\real_backup_restore.rs (target\debug\deps\real_backup_restore-9b5d53700feb1f39.exe)
+
+running 1 test
+test real_backup_file_imports_into_fresh_database ... ignored, 真机验收工具：需要 TD_REAL_BACKUP_PATH 指向真实备份文件
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\real_clipboard.rs (target\debug\deps\real_clipboard-a6f1d75360a75927.exe)
+
+running 3 tests
+test real_clipboard_roundtrip_keeps_order_alpha_and_user_content ... ignored, 真机验收工具：会短暂占用本机剪贴板（结束前恢复原内容），需 TD_REAL_CLIPBOARD=1
+test real_failed_write_restores_previous_content ... ignored, 真机验收工具：会写入本机剪贴板（失败恢复路径），需 TD_REAL_CLIPBOARD=1
+test real_visible_targets_exclude_self_and_pass_precheck ... ignored, 真机验收工具：只读枚举本机可见窗口并做目标预检，不注入按键
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\real_upgrade.rs (target\debug\deps\real_upgrade-c1a4ca7b4724aaf4.exe)
+
+running 1 test
+test real_user_database_upgrades_without_losing_rows ... ignored, 真机验收工具：需要 TD_REAL_UPGRADE_DB 指向真实用户库副本
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests task_dock_lib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+TEST_EXIT=0

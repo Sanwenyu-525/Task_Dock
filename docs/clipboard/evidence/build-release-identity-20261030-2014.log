@@ -1,0 +1,5 @@
+=== BUILD 20:16:17 ===
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `release` profile [optimized] target(s) in 5m 18s
+BUILD_EXIT=0
+-rwxr-xr-x 2 ASUS 197121 15400960 2026-10-30 20:21:35.826356800 +0800 target/release/task-dock.exe

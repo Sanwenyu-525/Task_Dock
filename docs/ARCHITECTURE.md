@@ -78,6 +78,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 过期补偿：超过 `overdue_grace_hours`（默认 24h）的提醒只记历史不发通知，避免远古提醒轰炸。
 - 去重：`UNIQUE(task_id, occurrence)` + `fired` 标志 + 通知历史唯一约束，三重保障。
 - 重复推进：仅「截止」类提醒触发推进，删除旧未触发提醒并生成下一轮；**不改变任务完成状态**。
+- **通知限频（v0.5）**：一个 tick 内到期的提醒**不再逐条弹系统通知**——本轮全部到期项先收集起来，
+  一次性交给 `AgentHub::notify_reminder_popups`，与 Agent 事件共用**同一个** `NotifyGate`
+  窗口预算（跨批次生效）；多条提醒合并为一条「任务提醒汇总」，
+  等待/失败类通知优先占用额度；UI 广播也合并为一条 `reminder-fired`（携带 `task_ids`）。
+  `notify_reminder` / `notify_muted` 开关对提醒与 Agent 通知分别生效。
 
 ### 3. Agent 接入层（agents/）
 - 统一接入管线（`pipeline.rs`）：HTTP / 文件投递 / Hook CLI / 插件桥接 / Mock 的事件
@@ -95,6 +100,21 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 事件保留（`retention.rs`）：启动 20s 后运行一次、此后每 6 小时；默认保留 30 天或
   最多 20 万行，仅 `running`/`idle` 可清理，归档失败则中止删除。
 - Adapter trait：`spawn(Box<Self>, Arc<AgentHub>)`，新增 Agent 只需新增一个 Adapter。
+- **v0.5 最终可靠性补强（2026-10-30）**：
+  - **来源可信分类（origin）**：`EventOrigin{Real,Selftest,Benchmark,Mock,Manual}` 由**服务端**判定，
+    只依据三个客户端无法伪造的输入——来源注册表的 `category`、摄取入口判定的 `Transport`、
+    以及保留的自测会话前缀。事件载荷里**没有** `origin` 字段，客户端声明的 `transport` 会被忽略；
+    `agent_events / agent_sessions / agent_runs / agent_instances / notification_history`
+    都落 origin 列（迁移 v12），压测来源 `bench` 由服务端注册为隐藏来源。
+    只有 `Real` 能改真实状态、进入行动中心、产生系统通知；非 real 轮次不参与失联判定。
+  - 事件顺序：`submit` 在入口、任何等待之前分配全局 `ingest_seq`；消费者把主队列与合并缓冲
+    稳定排序后统一落库；waiting/failed/completed 等关键状态形成合并屏障；数据库层用
+    `last_ingest_seq` 与 `last_event_at` 阻止终态被迟到 running 回退。
+  - 退出：`QUIESCING → DRAINING → STOPPED`；排空队列、合并缓冲与在途事务。超时把未落库事件
+    原子写入 spool（`.tmp` + fsync + rename），重启幂等重放，并在报告中区分
+    `spooled_events` 与 `unsaved_events`，不伪报持久化。
+  - 文件投递：目录上限 5,000 文件 / 256MiB、单文件 8MiB、单轮读取 16MiB / 1,000 事件；
+    关键状态预留 250 文件 / 16MiB；失败隔离到 `failed/`，不删除他人文件。
 - 性能设计与边界见 [PERFORMANCE_ARCHITECTURE.md](PERFORMANCE_ARCHITECTURE.md)。
 
 ### 4. Adapter 清单
@@ -122,6 +142,9 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   卸载注册表（winreg）+ UWP（Get-StartApps 单次调用、8s 超时）+ 常用软件路径探测。
   扫描带 5 分钟缓存；只扫明确位置，绝不全盘搜索；浏览器渲染进程等子进程不构成独立应用
   （窗口层只枚举顶层窗口，天然排除）。
+- 控制台工具（`tasklist`/`reg`/`where`/`powershell`/opencode 探测）统一经
+  `winproc::hidden()` 启动并设置 `CREATE_NO_WINDOW`：Release 为 `windows` 子系统，
+  不隐藏控制台会在每次 Agent/应用扫描时闪出终端窗口。
 - `target_resolver.rs`：`navigation_targets`（用户确认过的可信启动配置，按
   app_key+target_type 幂等去重）、`task_navigation_targets`（任务关联：display_order /
   is_default / launch_behavior，UNIQUE(task_id, target_id)）、`navigation_log`（执行流水）。
@@ -131,7 +154,14 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   无官方接口的 Agent 诚实降级为启动/唤醒并标注 fallback，不臆造 Deep Link。
 
 ### 6. 前端（src/）
-- 三种显示模式对应三套视图；完整模式五标签页（任务/动作/Agent/历史/设置）。
+- 三种显示模式对应三套视图；完整模式六标签页（任务/Agent/行动/剪贴板/历史/设置）。
+- UI 基元层（v0.6）：`components/ui/` 提供 Select / Combobox / DropdownMenu / Popover /
+  DateTimePicker / Dialog / Checkbox / Switch / NumberInput / Tooltip，
+  项目内**不再有原生 `<select>`**；浮层定位统一交给 `@floating-ui/react`（只做定位，
+  不引入整套 UI 框架），Escape 由 `lib/overlayStack.ts` 全局栈统一分发，
+  优先级 确认框 > 子弹层 > 菜单 > 抽屉 > 主窗口，一次按键只关一层。
+  规范与 API 见 [ui-themes/08-interaction-spec.md](ui-themes/08-interaction-spec.md)、
+  [ui-themes/09-component-api.md](ui-themes/09-component-api.md)。
 - 刷新调度（v0.5）：`useAgentsStore` 单飞 + 节流（critical 100ms / normal 400ms）+
   脏标记追赶；窗口隐藏只置脏，恢复可见补一次；100 条事件不再触发 100 次全量快照。
 - 历史面板：默认加载 100 条，`list_agent_events(before=...)` keyset 分页加载更早事件，
@@ -144,22 +174,42 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `AppPicker` 应用选择器（搜索/分类/当前窗口/手动登记）；`WorkspaceLauncher` 工作区
   顺序批量启动（可取消、部分成功明确）；设置页新增「应用与快捷方式」管理区。
   系统级窗口控制全部在 Rust 后端，React 不触碰 Win32。
-- 智能剪贴板（v0.5）：标题栏唯一入口 + 内容区次级抽屉（不新增主标签页）；
-  `useClipboardStore` 管理筛选/分页/多选，监听 `clipboard-changed` 合并刷新；
+- 智能剪贴板（v0.6 起进入侧边栏）：完整模式为**第 4 个导航入口**（任务 / Agent /
+  行动 / 剪贴板 / 历史 / 设置），标题栏不再保留入口按钮；任务关联场景仍以
+  次级抽屉呈现（`openClipboard({ linkTask })`），紧凑/最小模式保留临时抽屉入口。
+  业务内容抽到 `ClipboardWorkspace`，页面与抽屉共用同一份加载 / 订阅 / 操作逻辑，
+  `useClipboardStore` 用全局引用计数保证**整个应用只有一条 `clipboard-changed` 监听**；
   列表 DTO 只含预览，完整正文/大图按需读取；所有粘贴与 Agent 导出均为显式操作。
-  模块与边界见 [clipboard/02-architecture.md](clipboard/02-architecture.md)。
+  模块与边界见 [clipboard/02-architecture.md](clipboard/02-architecture.md)，
+  导航迁移说明见 [ui-themes/10-clipboard-navigation.md](ui-themes/10-clipboard-navigation.md)。
 - 行动中心（v0.5）：`useActionsStore` 去抖单飞刷新（1200ms），事件批量到达只唤醒一次；
   `ActionCenterPanel` 提供 kind/来源/任务/优先级筛选、覆盖度披露、ack/unack、
   跳转 Agent 会话或任务上下文。
 - 任务上下文抽屉（v0.5）：`TaskContextDrawer` 复用次级抽屉视觉，按需加载
   `task_context`；现场恢复进度订阅 `workspace-restore-progress`，与剪贴板抽屉互斥。
-- 应用内快捷键：Ctrl+1…5 切换标签、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板；
-  输入框内不拦截，窗口聚焦时生效。
+- 应用内快捷键：Ctrl+1…6 切换标签（顺序与侧边栏一致，取自 `useUiStore` 的
+  `TAB_ORDER` 单一事实源）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
+  （完整模式切到剪贴板页，紧凑/最小模式开关临时抽屉）；
+  输入框内不拦截，窗口聚焦时生效。实现见 `src/hooks/useGlobalShortcuts.ts`。
+- 视觉系统（v0.6）：三个正交维度——视觉预设 `visual_preset`
+  （dream-gradient / liquid-glass）、明暗 `theme`、材质 `material`；
+  统一在 `useSettingsStore` 一条管道里落到 `html[data-preset|data-theme|data-material]`，
+  老组件只认 `--surface-*` 等语义变量，因此两套皮肤共用一套组件代码。
+  界面材质跟随**实际生效值**（`materialInfo.resolved`），原生 Mica/Acrylic 失败时自动回退 solid；
+  每次重算都重新探测原生材质，系统「减少透明效果」关闭后能真正恢复。
+  完整模式改为**左侧垂直导航**（62px，窄窗收敛为 46px 图标轨）。
+  窗口圆角在 Win32 层用 `SetWindowRgn(CreateRoundRectRgn)` 裁剪（DWM 背景不受 CSS radius 影响，
+  否则四角露黑），并按 `scale_factor` 换算物理像素。
+  详见 [ui-themes/](ui-themes/) 目录。
 
 ### 7. 智能剪贴板（clipboard/，v0.5）
 - `platform.rs` 是唯一的 Win32 层：`AddClipboardFormatListener` 消息窗口监听，
   读取 CF_UNICODETEXT / HTML Format / PNG / DIB / CF_HDROP，快照与恢复、
   `SendInput` Ctrl+V、系统敏感标记检查；非 Windows 为明确降级桩。
+  32bpp BI_RGB DIB 合成出的“全透明 PNG”经 `image::normalize_clipboard_png`
+  归一化为不透明（仅当所有像素 Alpha=0），避免历史与粘贴结果不可见。
+- 剪贴板设置读取 fail-closed：键缺失可用默认值；JSON/类型/范围/数据库读取失败时
+  停止自动采集并在抽屉显示“配置异常，自动记录已暂停”，修复需用户显式操作并备份原值。
 - 采集分三个线程：`clipboard-monitor` 只把序列号入队（64 条，丢最旧），
   `clipboard-capture` 合并最新序列号/读取/过滤/图片编码，`clipboard-worker` 入库；
   内容队列 8 条 / 128 MB，丢弃计数经 `clipboard_status.monitor` 暴露。
@@ -184,16 +234,29 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   整改分类证据见 [clipboard/10-remediation-acceptance.md](clipboard/10-remediation-acceptance.md)。
 
 ### 8. 行动中心（actions/，v0.5）
-- `actions::feed` 是只读读模型：`agent_events`（近 7 天、最多 600 条）+ `agent_runs` +
-  任务关联 + `notification_history` 提醒 → 合并为「需要人处理的动作」。
-- 合并规则：同来源/会话/轮次/类型/消息且间隔 ≤10 分钟的事件合并计数，保留全部
-  `event_ids` 供批量确认；`taskdock-selftest-*` 自测事件不进入行动中心。
-- 分类与优先级：failed=P0、waiting=P1（含授权关键词时标记 `authorization` 且
-  `authorization_inferred=true`）、disconnected/running=P2、completed=P3。
-- 覆盖度：`enabled && transport_verified` 才算「监控中」，并给出 `live/stale/no-events/
+`actions::feed` 是**只读读模型**，与写路径完全分离：确认操作只写 `action_acks` 与通知已读位，
+**绝不修改 `agent_runs` / `agent_sessions`**，更晚的事件可以让同一条目重新出现。
+
+- **三个互不影响的类别**（前端分区展示，各自独立分页与计数）：
+  - `intervention`（需介入）：`agent_runs.status IN ('waiting','failed')` 且 `origin='real'`；
+    状态**只读轮次当前值**，采用「最新事件胜出」，不从事件窗口推断。
+  - `notification`（未确认通知）：`notification_history` 中 `is_read=0` 且 `agent_origin='real'`
+    的提醒类通知，以及**尚未被行动中心覆盖**的失败通知（同一轮次已是 failed 时不重复占位）。
+  - `history`（历史事件）：近 30 天内更新过的真实轮次；完成/断连**只进历史、不进徽标**。
+- **来源可信隔离**：所有查询都带 `origin='real'` 条件；自测（`taskdock-selftest-*`）、
+  压测（`bench` 来源 / `http-perf-*`）与模拟来源不进入行动中心，也不改变真实状态、不弹系统通知。
+- **分类与优先级**：failed=P0、waiting=P1（命中授权关键词时标记 `authorization` 且
+  `authorization_inferred=true`，UI 必须标注「推断」）、disconnected/running=P2、completed=P3。
+- **覆盖度**：`enabled && transport_verified` 才算「监控中」，并给出 `live/stale/no-events/
   disabled/not-configured` 与一句话解释；不支持的状态不伪造。
-- 确认：`action_acks(event_id)` 幂等持久化，提醒类同时标记已读；可撤销。
-- 查询上限：单次扫描 600 条、返回 ≤300 条（默认 120）。
+- **确认**：`ack(ids)` 幂等持久化到 `action_acks`（ID 形如 `run:<轮次行 ID>` / `notification:<通知 ID>`），
+  提醒类同时标记已读；可撤销；历史条目被确认后仍保留在历史里。
+- **计数与分页口径分离**：`counts` 走**显式 SQL 聚合**，与筛选条件、分页游标无关（全局总数）；
+  列表用 **keyset 复合游标**（只接受服务端下发的 `next_cursor`），单页默认 40 条、上限 200，
+  `filtered_total` 为全局筛选总数、`loaded` 为本次加载条数——三者含义不同，前端分别展示，
+  新事件到达时不会丢条目、重复或重排。
+- 配套：`commands/audit.rs` 提供**测试/压测数据审计**（先 dry-run 预览 → 二次确认 → 自动快照 →
+  事务化删除 → 外键校验），只删除「可证明」的测试数据，无法证明归属的数据只报数不删除。
 
 ### 9. 工作现场与统一上下文（workspace/、commands/context.rs，v0.5）
 - 捕获：任务已关联目标一键成快照（`source=task`），或枚举当前可见窗口勾选
@@ -215,10 +278,11 @@ tasks ──┬── recurrence_rules (1:0..1)
         ├── task_agent_links (1:N，v0.1~0.3 Agent 会话关联，保留)
         └── task_navigation_targets (1:N，v0.4 通用目标关联)
 
-agent_sources (codex/qoder/workbuddy/mock …)
-agent_sessions (UNIQUE(source_id, external_id))
-agent_runs     (UNIQUE(source_id, external_run_id) WHERE NOT NULL)
-agent_events   (流水，仅元数据)
+agent_sources (codex/qoder/workbuddy/mock/bench …，v0.5 起带 category=real/mock/benchmark)
+agent_sessions (UNIQUE(source_id, external_id)；v0.5 起带 origin)
+agent_runs     (UNIQUE(source_id, external_run_id) WHERE NOT NULL；v0.5 起带 origin)
+agent_events   (流水，仅元数据；v0.5 起带 origin + (origin, received_at) 复合索引)
+agent_instances(v0.5 起带 origin)
 
 navigation_targets        （用户确认的目标；app_key+target_type 幂等去重）
 navigation_log            （导航执行流水，供失败回看）
@@ -248,6 +312,46 @@ task_categories · notification_history (UNIQUE(kind, ref_id, occurrence)) · ap
 - 应用自动记忆在同一数据库锁内检查来源并写入，不能覆盖 user 记忆。任务窗口选择与关联创建事务化保存。
 - Agent 徽标按旧关联与导航关联的 source/session 并集计数。手工关联将 auto 影子升级为 user；解除导航只删除 auto，手工列表只展示 user，失效引用保留。
 - 备份格式 v4 保存任务窗口配置并兼容导入 v1～v3；旧程序应拒绝新版本文件，避免静默丢失窗口配置。SQLite schema 版本与备份格式版本分别维护。
+
+### v0.5 备份与恢复架构（2026-10-30）
+
+**统一注册表**：`src-tauri/src/commands/backup.rs` 的 `BACKUP_TABLES` 声明全部用户业务表
+（当前 25 张）、恢复顺序与外键依赖；`EXTENDED_TABLES` 标记剪贴板、工作现场与行动中心等
+v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_schema_table` 会直接失败，
+防止“新模块数据从未进入备份却无人发现”。
+
+**完整与快速备份**：
+
+- full：全量业务表 + 事件归档 JSONL + 全部剪贴板原图/缩略图；不静默截断。
+- quick：事件最近 20000 行 + 全部 running/waiting 保护行，通知 500、导航流水 500、
+  剪贴板条目 2000、粘贴作业 500；header 记录数据库总量、`partial=true`、
+  `partial_reasons` 与 `truncated_tables`。快速备份不打包事件归档，并只打包被导出条目
+  引用的资产，避免恢复出“有数据库行、无图片文件”的半套数据。
+- bundle 为流式 JSONL（header/section/archive/asset/integrity），表行 500 行/块，
+  归档 1 MiB/块，资产 512 KiB/块；先写临时文件再原子替换，已有目标轮换为 `.previous`。
+- header 声明 `manifest_version`、`registry`、`excluded_settings` 与
+  `device_specific_settings`；integrity 行是此前全部字节的 SHA-256，读取时逐行重算。
+
+**设置分类**：
+
+- 普通用户设置：外观、提醒、导航偏好、剪贴板策略、工作现场与 Agent 接入参数等，随 full 导出；
+- 设备相关设置：`window_rect`、`snap_state`、`nav_window_memory`、`autostart`，允许导出，
+  但恢复后按本机窗口/自启动状态重新校验；
+- 本机安全项：`http_token` 与恢复内部标记 `restore_commit_id` **绝不进入任何导出文件**；
+  恢复后 `http_token` 在本机重新生成，验收比较时按设计排除。
+
+**恢复原子性**：`src-tauri/src/commands/restore.rs` 使用会话目录（staging / vault）与
+`restore-journal.json` 状态机：
+`preparing → validated → ready_to_commit → committing → completed`；
+失败进入 `rollback_required → rolling_back → rolled_back`，回滚失败为
+`failed_unrecovered`（保留 pre-backup、vault 与日志作为证据）。
+数据库替换与 `restore_commit_id` 标记在同一 SQLite 事务提交；资产/归档在提交前先留底，
+逐个原子替换，回滚按逆序还原并删除新建文件。进程在任意时刻退出，启动时由
+`recover_pending` 依据标记决定续跑还是回滚。旧版 JSON/bundle 恢复使用
+`allow_extended=false`，保留库内剪贴板、工作现场与行动中心数据。
+
+**兼容性**：旧版 JSON 导出仍可导入；旧 bundle 缺少扩展模块时不会删除新模块数据；
+新程序拒绝高于 `MANIFEST_VERSION` 的备份，避免静默丢失未知模块。
 
 ## 四、安全设计
 

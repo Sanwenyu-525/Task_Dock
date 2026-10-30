@@ -13,6 +13,7 @@ import {
   resultMessage, TARGET_TYPE_LABELS,
   type NavLogRow,
 } from "../../lib/navigation";
+import { NumberInput, Select, Switch } from "../ui";
 
 /** 记住的窗口身份（类名+标题），targetId → 身份；无记忆的不在表里。 */
 type WinMemories = Record<string, { class_name: string; title: string }>;
@@ -90,60 +91,60 @@ export default function AppManagement() {
         <div className="panel-block-head">
           <span><Navigation size={12} /> 导航偏好</span>
         </div>
-        <label className="setting-row">
+        <div className="setting-row">
           <span>优先唤醒现有窗口（而非重复启动）</span>
-          <input
-            type="checkbox"
+          <Switch
             checked={settings.nav_prefer_focus}
-            onChange={(e) => update({ nav_prefer_focus: e.target.checked })}
+            ariaLabel="优先唤醒现有窗口（而非重复启动）"
+            onChange={(v) => update({ nav_prefer_focus: v })}
           />
-        </label>
-        <label className="setting-row">
+        </div>
+        <div className="setting-row">
           <span>允许启动未运行的程序</span>
-          <input
-            type="checkbox"
+          <Switch
             checked={settings.nav_allow_launch}
-            onChange={(e) => update({ nav_allow_launch: e.target.checked })}
+            ariaLabel="允许启动未运行的程序"
+            onChange={(v) => update({ nav_allow_launch: v })}
           />
-        </label>
-        <label className="setting-row">
+        </div>
+        <div className="setting-row">
           <span>精准跳转失败时按层级降级（关闭则直接报错）</span>
-          <input
-            type="checkbox"
+          <Switch
             checked={settings.nav_fallback}
-            onChange={(e) => update({ nav_fallback: e.target.checked })}
+            ariaLabel="精准跳转失败时按层级降级（关闭则直接报错）"
+            onChange={(v) => update({ nav_fallback: v })}
           />
-        </label>
-        <label className="setting-row">
+        </div>
+        <div className="setting-row">
           <span>记住上次选择的窗口（多窗口应用）</span>
-          <input
-            type="checkbox"
+          <Switch
             checked={settings.nav_remember_window}
-            onChange={(e) => update({ nav_remember_window: e.target.checked })}
+            ariaLabel="记住上次选择的窗口（多窗口应用）"
+            onChange={(v) => update({ nav_remember_window: v })}
           />
-        </label>
-        <label className="setting-row">
+        </div>
+        <div className="setting-row">
           <span>工作区批量启动数量上限（{settings.nav_workspace_max}）</span>
-          <input
-            type="number"
+          <NumberInput
+            value={settings.nav_workspace_max}
             min={1}
             max={20}
-            value={settings.nav_workspace_max}
-            onChange={(e) => update({ nav_workspace_max: Number(e.target.value) })}
+            ariaLabel="工作区批量启动数量上限（{settings.nav_workspace_max}）"
+            onChange={(v) => update({ nav_workspace_max: v })}
           />
-        </label>
+        </div>
         <label className="setting-row">
           <span>默认浏览器</span>
-          <select
-            className="input sm"
+          <Select
+            ariaLabel="默认浏览器"
+            size="sm"
             value={settings.nav_default_browser}
-            onChange={(e) => update({ nav_default_browser: e.target.value })}
-          >
-            <option value="">系统默认</option>
-            {browsers.map((b) => (
-              <option key={b.id} value={b.app_key}>{b.display_name}</option>
-            ))}
-          </select>
+            options={[
+              { value: "", label: "系统默认" },
+              ...browsers.map((b) => ({ value: b.app_key, label: b.display_name })),
+            ]}
+            onChange={(v) => update({ nav_default_browser: v })}
+          />
         </label>
       </div>
 
@@ -188,7 +189,7 @@ export default function AppManagement() {
                   </span>
                   <button
                     className="icon-btn sm"
-                    title="清除窗口记忆（下次导航恢复按标题匹配）"
+                    data-tip="清除窗口记忆（下次导航恢复按标题匹配）"
                     aria-label={`清除窗口记忆 ${t.display_name}`}
                     onClick={async () => {
                       try {
@@ -210,7 +211,7 @@ export default function AppManagement() {
               )}
               <button
                 className={`icon-btn sm ${t.favorite ? "default-on" : ""}`}
-                title={t.favorite ? "取消收藏" : "收藏"}
+                data-tip={t.favorite ? "取消收藏" : "收藏"}
                 aria-label={t.favorite ? `取消收藏 ${t.display_name}` : `收藏 ${t.display_name}`}
                 onClick={async () => {
                   await navUpdateTarget(t.id, { favorite: !t.favorite }).catch((e) => showToast(String(e), { kind: "error" }));
@@ -221,7 +222,7 @@ export default function AppManagement() {
               </button>
               <button
                 className={`icon-btn sm ${t.hidden ? "default-on" : ""}`}
-                title={t.hidden ? "取消隐藏" : "隐藏（不显示在选择器）"}
+                data-tip={t.hidden ? "取消隐藏" : "隐藏（不显示在选择器）"}
                 aria-label={t.hidden ? `取消隐藏 ${t.display_name}` : `隐藏 ${t.display_name}`}
                 onClick={async () => {
                   await navUpdateTarget(t.id, { hidden: !t.hidden }).catch((e) => showToast(String(e), { kind: "error" }));
@@ -232,7 +233,7 @@ export default function AppManagement() {
               </button>
               <button
                 className="icon-btn sm"
-                title="测试跳转"
+                data-tip="测试跳转"
                 aria-label={`测试跳转 ${t.display_name}`}
                 onClick={async () => {
                   try {
@@ -248,7 +249,7 @@ export default function AppManagement() {
               </button>
               <button
                 className="icon-btn sm"
-                title="删除目标（关联任务会同步解除）"
+                data-tip="删除目标（关联任务会同步解除）"
                 aria-label={`删除 ${t.display_name}`}
                 onClick={async () => {
                   await navDeleteTarget(t.id).catch((e) => showToast(String(e), { kind: "error" }));

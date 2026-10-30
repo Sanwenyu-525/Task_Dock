@@ -1,0 +1,51 @@
+=== Ê∫êÁ†ÅÊåáÁ∫π ===
+git_head_short=66d1eb7
+dirty_tracked= 91 files changed, 15395 insertions(+), 3226 deletions(-)
+-rwxr-xr-x 2 ASUS 197121 15398912 2026-10-30 19:54:01.777742100 +0800 src-tauri/target/release/task-dock.exe
+
+=== [N1-load-notify-on] ÂºÄÂßã 20:05:01 ===
+    args: --mode mixed --duration 480 --post 90 --agents 4 --rate 5 --window visible --notify on --transport http --source bridge --port 47890
+    log:  docs/performance/results/MEMABC-N1-load-notify-on-20261030-200458.log
+=== [N1-load-notify-on] ÁªìÊùü 20:06:34 rc=0 ===
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N1-load-notify-on-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N1-load-notify-on-appdata port=47890
+Traceback (most recent call last):
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 369, in <module>
+    main()
+    ~~~~^^
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 288, in main
+    health = wait_health(base)
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 81, in wait_health
+    raise RuntimeError(f"µ»¥˝Ω°øµºÏ≤È≥¨ ±: {last}")
+RuntimeError: µ»¥˝Ω°øµºÏ≤È≥¨ ±: <urlopen error timed out>
+
+=== [N2-load-notify-off] ÂºÄÂßã 20:06:34 ===
+    args: --mode mixed --duration 480 --post 90 --agents 4 --rate 5 --window visible --notify off --transport http --source bridge --port 47891
+    log:  docs/performance/results/MEMABC-N2-load-notify-off-20261030-200458.log
+=== [N2-load-notify-off] ÁªìÊùü 20:08:05 rc=0 ===
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N2-load-notify-off-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N2-load-notify-off-appdata port=47891
+Traceback (most recent call last):
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 369, in <module>
+    main()
+    ~~~~^^
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 288, in main
+    health = wait_health(base)
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 81, in wait_health
+    raise RuntimeError(f"µ»¥˝Ω°øµºÏ≤È≥¨ ±: {last}")
+RuntimeError: µ»¥˝Ω°øµºÏ≤È≥¨ ±: <urlopen error timed out>
+
+=== [N3-idle] ÂºÄÂßã 20:08:05 ===
+    args: --mode running --duration 0 --post 480 --window visible --notify off --port 47892
+    log:  docs/performance/results/MEMABC-N3-idle-20261030-200458.log
+=== [N3-idle] ÁªìÊùü 20:09:36 rc=0 ===
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N3-idle-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N3-idle-appdata port=47892
+Traceback (most recent call last):
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 369, in <module>
+    main()
+    ~~~~^^
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 288, in main
+    health = wait_health(base)
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 81, in wait_health
+    raise RuntimeError(f"µ»¥˝Ω°øµºÏ≤È≥¨ ±: {last}")
+RuntimeError: µ»¥˝Ω°øµºÏ≤È≥¨ ±: <urlopen error timed out>
+
+=== ‰∏âËáÇÂÆåÊàê 20:09:36 ===

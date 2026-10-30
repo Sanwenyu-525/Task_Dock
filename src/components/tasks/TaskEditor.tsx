@@ -1,6 +1,6 @@
 //! 任务编辑器：新建/编辑、优先级、时间、重复规则、Agent 关联、导航目标关联。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Trash2, Link2, Unlink, X, ArrowUp, ArrowDown, AppWindow, Star, ClipboardList, Layers,
 } from "lucide-react";
@@ -26,6 +26,8 @@ import { useNavigationStore } from "../../store/useNavigationStore";
 import { describeRecurrence, fromLocalInputValue, toLocalInputValue } from "../../lib/format";
 import AppPicker from "../navigation/AppPicker";
 import { TargetAvatar } from "../navigation/TargetMenu";
+import { DateTimePicker, NumberInput, Select } from "../ui";
+import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -60,6 +62,7 @@ export default function TaskEditor() {
   const openClipboard = useUiStore((s) => s.openClipboard);
   const openContext = useUiStore((s) => s.openContext);
   const clipboardLinkVersion = useUiStore((s) => s.clipboardLinkVersion);
+  const clipboardOpen = useUiStore((s) => s.clipboardOpen);
 
   const task = editor.task;
   const [title, setTitle] = useState("");
@@ -90,6 +93,7 @@ export default function TaskEditor() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerLink, setPickerLink] = useState<TaskNavLink | null>(null);
   const [clipLinks, setClipLinks] = useState<ClipboardTaskLink[]>([]);
+  const modalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!editor.open) return;
@@ -134,8 +138,16 @@ export default function TaskEditor() {
       setClipLinks([]);
       return;
     }
-    clipboardTaskLinks(task.id).then(setClipLinks).catch(() => setClipLinks([]));
+    clipboardTaskLinks(task.id)
+      .then((links) => setClipLinks(links ?? []))
+      .catch(() => setClipLinks([]));
   }, [editor.open, task, clipboardLinkVersion]);
+
+  // 弹层栈：任务编辑器是模态对话框，Escape 只关它，不会顺带隐藏主窗口。
+  // 关联剪贴板时抽屉盖在编辑器之上，弹层栈让给抽屉（它自己注册为 dialog）。
+  useOverlayLayer("dialog", editor.open && !clipboardOpen, closeEditor, modalRef);
+  // 关联目标选择器是内层模态，Tab 焦点归它管——两层同时陷阱会把焦点放回外层
+  useFocusTrap(editor.open && !pickerOpen && !clipboardOpen, modalRef);
 
   if (!editor.open) return null;
 
@@ -184,14 +196,6 @@ export default function TaskEditor() {
       await refreshTasks();
     } catch (e) {
       showToast(String(e), { kind: "error" });
-    }
-  }
-
-  // Escape 关闭（输入框内同样生效；不与窗口隐藏冲突——事件在此消费）
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      closeEditor();
     }
   }
 
@@ -273,7 +277,7 @@ export default function TaskEditor() {
   async function onClipUnlink(id: string) {
     try {
       await clipboardUnlinkTask(id);
-      setClipLinks(await clipboardTaskLinks(task!.id));
+      setClipLinks((await clipboardTaskLinks(task!.id)) ?? []);
     } catch (e) {
       showToast(String(e), { kind: "error" });
     }
@@ -282,18 +286,19 @@ export default function TaskEditor() {
   const sessions = (agents?.sessions ?? []).slice(0, 50);
 
   return (
-    <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && closeEditor()} onKeyDown={onKeyDown}>
-      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && closeEditor()}>
+      <div className="modal" ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true"
+        aria-label={task ? "编辑任务" : "新建任务"} onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span>{task ? "编辑任务" : "新建任务"}</span>
-          <button className="icon-btn sm" onClick={closeEditor}>
+          <button className="icon-btn sm" onClick={closeEditor} aria-label="关闭">
             <X size={14} />
           </button>
         </div>
         <div className="modal-body">
           <label className="field">
             <span>标题</span>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
+            <input value={title} onChange={(e) => setTitle(e.target.value)} data-autofocus />
           </label>
           <label className="field">
             <span>描述</span>
@@ -302,12 +307,18 @@ export default function TaskEditor() {
           <div className="field-row">
             <label className="field">
               <span>优先级</span>
-              <select value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
-                <option value={0}>P0 紧急</option>
-                <option value={1}>P1 高</option>
-                <option value={2}>P2 中</option>
-                <option value={3}>P3 低</option>
-              </select>
+              <Select
+                ariaLabel="优先级"
+                size="sm"
+                value={String(priority)}
+                options={[
+                  { value: "0", label: "P0 紧急" },
+                  { value: "1", label: "P1 高" },
+                  { value: "2", label: "P2 中" },
+                  { value: "3", label: "P3 低" },
+                ]}
+                onChange={(v) => setPriority(Number(v))}
+              />
             </label>
             <label className="field">
               <span>分类</span>
@@ -321,37 +332,40 @@ export default function TaskEditor() {
           <div className="field-row">
             <label className="field">
               <span>截止时间</span>
-              <input
-                type="datetime-local"
+              <DateTimePicker
+                ariaLabel="截止时间"
                 value={due}
-                onChange={(e) => {
-                  setDue(e.target.value);
+                onChange={(v) => {
+                  setDue(v);
                   setDueTouched(true);
                 }}
               />
             </label>
-            <label className="field">
+            <label
+              className="field"
+              title="独立提醒时间：可与截止时间不同，留空表示不单独提醒"
+            >
               <span>提醒时间</span>
-              <input
-                type="datetime-local"
+              <DateTimePicker
+                ariaLabel="提醒时间"
                 value={remind}
-                onChange={(e) => {
-                  setRemind(e.target.value);
+                onChange={(v) => {
+                  setRemind(v);
                   setRemindTouched(true);
                 }}
-                title="独立提醒时间：可与截止时间不同，留空表示不单独提醒"
               />
             </label>
           </div>
           <div className="field-row">
             <label className="field">
               <span>提前提醒（分钟）</span>
-              <input
-                type="number"
+              <NumberInput
+                size="sm"
                 min={0}
                 max={1440}
                 value={advance}
-                onChange={(e) => setAdvance(Number(e.target.value))}
+                ariaLabel="提前提醒（分钟）"
+                onChange={setAdvance}
               />
             </label>
           </div>
@@ -394,24 +408,26 @@ export default function TaskEditor() {
           {freq === "monthly" && (
             <label className="field">
               <span>每月几日</span>
-              <input
-                type="number"
+              <NumberInput
+                size="sm"
                 min={1}
                 max={31}
                 value={monthday}
-                onChange={(e) => setMonthday(Number(e.target.value))}
+                ariaLabel="每月几日"
+                onChange={setMonthday}
               />
             </label>
           )}
           {freq && (
             <label className="field">
               <span>间隔（{freq === "daily" ? "天" : freq === "weekly" ? "周" : "个月"}）</span>
-              <input
-                type="number"
+              <NumberInput
+                size="sm"
                 min={1}
                 max={30}
                 value={interval}
-                onChange={(e) => setIntervalValue(Number(e.target.value))}
+                ariaLabel="重复间隔"
+                onChange={setIntervalValue}
               />
             </label>
           )}
@@ -440,19 +456,20 @@ export default function TaskEditor() {
                       {l.target.display_name}
                     </span>
                     <span className={`nav-link-state tone-${badge.tone}`}>{badge.label}</span>
-                    <select
-                      className="input sm nav-link-behavior"
+                    <Select
+                      className="nav-link-behavior"
+                      size="sm"
                       value={l.launch_behavior}
-                      aria-label="跳转行为"
-                      onChange={(e) => onNavBehavior(l.id, e.target.value)}
-                    >
-                      {Object.entries(BEHAVIOR_LABELS).map(([v, label]) => (
-                        <option key={v} value={v}>{label}</option>
-                      ))}
-                    </select>
+                      ariaLabel="跳转行为"
+                      options={Object.entries(BEHAVIOR_LABELS).map(([v, label]) => ({
+                        value: v,
+                        label,
+                      }))}
+                      onChange={(v) => onNavBehavior(l.id, v)}
+                    />
                     <button
                       className={`icon-btn sm ${l.is_default ? "default-on" : ""}`}
-                      title={l.is_default ? "默认目标（点击图标直接打开）" : "设为默认目标"}
+                      data-tip={l.is_default ? "默认目标（点击图标直接打开）" : "设为默认目标"}
                       aria-label={l.is_default ? `默认目标：${l.target.display_name}` : `设 ${l.target.display_name} 为默认`}
                       onClick={() => onNavDefault(l.id)}
                     >
@@ -460,7 +477,7 @@ export default function TaskEditor() {
                     </button>
                     <button
                       className="icon-btn sm"
-                      title="上移"
+                      data-tip="上移"
                       aria-label={`上移 ${l.target.display_name}`}
                       disabled={i === 0}
                       onClick={() => onNavMove(i, -1)}
@@ -469,7 +486,7 @@ export default function TaskEditor() {
                     </button>
                     <button
                       className="icon-btn sm"
-                      title="下移"
+                      data-tip="下移"
                       aria-label={`下移 ${l.target.display_name}`}
                       disabled={i === navLinks.length - 1}
                       onClick={() => onNavMove(i, 1)}
@@ -478,7 +495,7 @@ export default function TaskEditor() {
                     </button>
                     <button
                       className="icon-btn sm"
-                      title="取消关联（不删除目标配置）"
+                      data-tip="取消关联（不删除目标配置）"
                       aria-label={`取消关联 ${l.target.display_name}`}
                       onClick={() => onNavRemove(l.id)}
                     >
@@ -497,14 +514,22 @@ export default function TaskEditor() {
                         try { await navForgetTaskWindow(l.id); await reloadNav(); }
                         catch (e) { showToast(String(e), { kind: "error" }); }
                       }}>清除窗口</button>}
-                      {l.window_identity && <select aria-label={`窗口未找到时 ${l.target.display_name}`} value={l.window_fallback ?? "reselect"} onChange={async (e) => {
-                        try { await navSetTaskWindowFallback(l.id, e.target.value); await reloadNav(); }
-                        catch (err) { showToast(String(err), { kind: "error" }); }
-                      }}>
-                        <option value="reselect">提示重新选择</option>
-                        <option value="focus_app">降级唤醒应用</option>
-                        <option value="launch">降级启动应用</option>
-                      </select>}
+                      {l.window_identity && (
+                        <Select
+                          size="sm"
+                          ariaLabel={`窗口未找到时 ${l.target.display_name}`}
+                          value={l.window_fallback ?? "reselect"}
+                          options={[
+                            { value: "reselect", label: "提示重新选择" },
+                            { value: "focus_app", label: "降级唤醒应用" },
+                            { value: "launch", label: "降级启动应用" },
+                          ]}
+                          onChange={async (v) => {
+                            try { await navSetTaskWindowFallback(l.id, v); await reloadNav(); }
+                            catch (err) { showToast(String(err), { kind: "error" }); }
+                          }}
+                        />
+                      )}
                     </div>
                   )}
                   </div>
@@ -519,14 +544,19 @@ export default function TaskEditor() {
                 <Link2 size={12} /> 关联 Agent 会话
               </span>
               <div className="link-row">
-                <select value={linkSession} onChange={(e) => setLinkSession(e.target.value)}>
-                  <option value="">选择会话…</option>
-                  {sessions.map((s) => (
-                    <option key={s.id} value={`${s.source_id}::${s.external_id}`}>
-                      [{s.source_id}] {s.title || s.external_id}（{s.status}）
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  ariaLabel="选择 Agent 会话"
+                  size="sm"
+                  value={linkSession}
+                  options={[
+                    { value: "", label: "选择会话…" },
+                    ...sessions.map((s) => ({
+                      value: `${s.source_id}::${s.external_id}`,
+                      label: `[${s.source_id}] ${s.title || s.external_id}（${s.status}）`,
+                    })),
+                  ]}
+                  onChange={setLinkSession}
+                />
                 <button className="btn sm" onClick={onLink} disabled={!linkSession}>
                   关联
                 </button>

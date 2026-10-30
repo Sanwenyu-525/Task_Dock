@@ -1,37 +1,130 @@
 # 测试结果与未解决问题
 
-> 测试日期：2026-10-29（v0.5）· 环境：Windows 11 · Node 24.18.0 · Rust 1.95.0 (MSVC)
+> 测试日期：2026-10-29（基线）· 2026-10-30（最终复核）· 环境：Windows 11 · Node 22.22.3 · Rust 1.95.0 (MSVC)
 > 原则：**不以模拟测试冒充真实接入**；所有未验证项明确列出。
-> v0.5 智能剪贴板的详细测试、性能与阻塞项见
+> v0.5 智能剪贴板的最终门禁、性能与阻塞项见
 > [clipboard/08-testing-performance.md](clipboard/08-testing-performance.md)、
-> [clipboard/09-implementation-report.md](clipboard/09-implementation-report.md) 与
-> [clipboard/10-remediation-acceptance.md](clipboard/10-remediation-acceptance.md)。
+> [clipboard/09-implementation-report.md](clipboard/09-implementation-report.md)、
+> [clipboard/10-remediation-acceptance.md](clipboard/10-remediation-acceptance.md) 与
+> [clipboard/11-final-release-acceptance.md](clipboard/11-final-release-acceptance.md)。
 
 ## 一、自动化测试结果
 
-### 0. v0.5 汇总（2026-10-29）
+### 0.0.1 v0.6 全局 UI/UX 交互精修与剪贴板侧边栏整合（2026-10-30）
 
 | 检查 | 结果 |
 |---|---|
-| `cargo fmt --check` | 通过 |
-| `cargo clippy --all-targets --all-features` | 通过，0 警告 |
-| `cargo test --all-targets` | **244 passed / 0 failed**（lib）；10 ignored（手动性能与真机工具） |
-| `npx tsc --noEmit` | 通过 |
-| `npx vitest run` | 16 文件 / 109 测试通过 |
-| `npm run build` | 通过（459.80 kB JS / 67.70 kB CSS） |
-| `npx tauri build`（release） | 通过，4m49s；NSIS 3.98 MiB / MSI 6.11 MiB |
-| release 剪贴板性能 | 2/2 通过，列表 p95 1.001 ms、200 连拍 2.799 s（预算 8 s） |
-| 真机验收 | **46/46 PASS**（`clipboard/evidence/acceptance-final13.log`） |
-| 第三方应用矩阵 | **5/5 PASS**；微信 ENVIRONMENT BLOCKED、Agent NOT VERIFIED |
+| `npx tsc --noEmit` | 通过（0 错误） |
+| `npx vitest run` | **36 文件 / 260 测试通过**（v0.6 前 35 文件 / 257 项 + 新增 `TitleBar.test.tsx` 3 项；v0.6 新增/改写 `Select` 9、`DropdownMenu` 11、`Popover.edge` 3、`overlayEscape` 7、`DateTimePicker` 10、`TooltipLayer` 4、`useGlobalShortcuts` 8、`useUiStore` 5、`ClipboardPanel` 9、`useClipboardStore.live` 4、`styles-themes` 10） |
+| `cargo test --release` | 通过（lib 449 passed / 0 failed / 3 ignored；集成 1 passed，其余真机验收工具按惯例 ignored） |
+| `npm run build` | 通过（JS 534.88 kB / gzip 163.14 kB；CSS 114.91 kB / gzip 19.52 kB） |
+| `npm run tauri build -- --no-bundle` | 通过（Release 可执行文件产出；注意必须用该命令，裸 `cargo build --release` 会漏 `custom-protocol` 特性导致启动即退出） |
+| `node scripts/visual-v06.mjs` | **26 场景全部通过**：0 横向溢出、0 元素越界、0 导航项裁剪、0 运行期错误 |
+| `node scripts/visual-themes.mjs` | 16 场景全部通过：0 横向溢出、关键元素无越界、0 运行期错误 |
+| `node scripts/layout-regression.mjs` | **37 组合全部达标**：六个侧边栏入口全部可达、快速添加按钮未被遮挡、无横向溢出、0 运行期错误 |
+| 原生窗口取证（`scripts/capture-native-set.ps1` + `scripts/native-verify.ps1` + `scripts/check-corners.py`） | 4 组原生截图（梦幻/液态 × 浅/深）：`region_probe=00001`（四角在 Win32 窗口区域外）、角点像素与窗外桌面逐像素一致（diff = 0.0） |
+| 未验证 | Windows 10 真机、100%/150% DPI、Dev 模式、拖动/贴边/托盘交互回归、长时间常驻资源曲线 |
 
-其中 v0.5 剪贴板模块内 Rust 测试 61 例：分类优先级、去重哈希、45s 分组与文本穿插、
+关键回归点（详见 [ui-themes/11-test-results.md](ui-themes/11-test-results.md)）：
+
+- **Escape 优先级**：确认框 > 子弹层 > 菜单 > 抽屉 > 主窗口，一次按键只关一层。
+- **剪贴板侧边栏化**：六个导航入口；页面与关联抽屉共用 `ClipboardWorkspace`，
+  底层只有一条 `onClipboardChanged` 监听（引用计数断言通过）。
+- **日期时间数据完整性**：仅打开浮层不改值、不截断秒、截止与提醒互相独立。
+- **快捷键**：Ctrl+1…6 顺序取自 `TAB_ORDER` 单一事实源；完整模式 Ctrl+Shift+C 切页，
+  紧凑/极简模式开关临时抽屉。
+
+### 0.0 v0.6 双视觉主题汇总（2026-10-30）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 通过（0 错误） |
+| `npx vitest run` | **23 文件 / 166 测试通过**（v0.5 的 21 文件 / 133 项 + 新增 theme / useSettingsStore / FullView 三个文件共 13 项） |
+| `cargo test --release` | 通过（lib + 集成；真机验收工具按惯例 ignored） |
+| `npm run build` | 通过（478.09 kB JS / 94.72 kB CSS） |
+| `npm run tauri build -- --no-bundle` | 通过（Release 可执行文件产出；注意必须用该命令，裸 `cargo build --release` 会漏 `custom-protocol` 特性导致启动即退出） |
+| `node scripts/visual-themes.mjs` | 18 场景全部通过：0 横向溢出、关键元素无越界、0 运行期错误 |
+| `node scripts/theme-perf.mjs` | 空闲 3 s 主线程 6.4–8.9 ms、布局 0 次、`backdrop-filter` 0 个、常驻动画 1 个、主题切换 20 次 29–63 ms |
+| 原生窗口取证（`scripts/native-verify.ps1` + `scripts/check-corners.py`） | 4 组原生截图（梦幻/液态 × 浅/深）：`region_probe=00001`（四角在 Win32 窗口区域外，区域尺寸=窗口尺寸）、角点像素与窗外桌面逐像素一致（diff = 0.0）、`ontop_check` 差值 0 —— 「四角黑色直角」已消除 |
+| 未验证 | Windows 10 真机、100%/150% DPI、Dev 模式、拖动/贴边/托盘交互回归、长时间常驻资源曲线 |
+
+详见 [视觉主题专项文档](ui-themes/05-test-plan.md) 与
+[视觉验收](ui-themes/07-visual-acceptance.md)。
+
+### 0. v0.5 汇总（2026-10-30 最终复核）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo fmt --check` | 通过（无差异） |
+| `cargo clippy --all-targets --all-features` | 通过，0 警告（16.17 s） |
+| `cargo test --all-targets` | **2026-10-30 09:44 交互复跑：382 passed / 0 failed / 13 ignored**（lib 381 + inbox 进程测试 1）；**控制台闪窗修复后 10:0x 复跑：lib 380 passed / 2 failed / 3 ignored，lib 失败后 cargo 中止，集成另行执行 1 passed / 10 ignored，合并 381 passed / 2 failed / 13 ignored**（2 例为 `navigation::router` 前台聚焦测试被 Windows 前台锁拒绝，环境性失败，断言未改）；更早 01:26 锁屏会话 302 passed / 2 failed / 11 ignored。三次结果都保留，见 §4 |
+| `npx tsc --noEmit` | 通过 |
+| `npx vitest run` | 21 文件 / 133 测试通过（55.44 s） |
+| `npm run build` | 通过（467.06 kB JS / 68.51 kB CSS；gzip 139.65 / 10.96 kB） |
+| `npm run tauri build`（release） | 通过，release 编译 5m19s（首次）/ 4m53s（控制台闪窗修复后重建，10:10）；NSIS 4.17 MiB / MSI 6.37 MiB |
+| 100k 规模备份/恢复 | 通过：最终源码 backup 571ms / 61,877,483 B；restore 5,019ms；25 表逐行一致、500 资产/2 归档 SHA 一致；恢复峰值 WS 619.0MB（非流式，见 §4） |
+| 恢复原子性故障矩阵 | 21 个恢复测试全部通过（含数据库已提交但归档失败回滚、崩溃续跑、权限/磁盘满/文件锁、旧备份保留扩展模块） |
+| 退出超时事件恢复 | 17 个 pipeline 退出/暂存测试 + 6 个 spool 测试通过（3000 条跨队列与合并缓冲、500 条排空、HTTP 在途、暂存失败如实报告、重启幂等重放） |
+| 控制台闪窗修复 | `winproc::hidden()` + `CREATE_NO_WINDOW`；新增单元测试通过；隔离实例 `--agentctl scan` 采样 201 次控制台工具进程，0 个可见窗口句柄 |
+| 剪贴板真机/性能 | 2/2 通过：列表 p95 2.364 ms、200 张 1080p 入库 6.984 s（预算 8 s）、配额 30.21 MB（预算 32 MB） |
+| 真机验收 | **46/46 PASS（2026-10-29 历史证据，本轮未重跑）**（`clipboard/evidence/acceptance-final13.log`） |
+| 第三方应用矩阵 | **5/5 PASS（历史）**；微信 ENVIRONMENT BLOCKED、Agent NOT VERIFIED |
+
+**2026-10-30 16:15→16:47 追加复跑（P0/P1 综合整改后，不改写上表任何历史数值）**：
+
+| 检查 | 结果 | 退出码 | 日志 |
+|---|---|---|---|
+| `cargo test --all --no-fail-fast` | **lib 441 passed / 0 failed / 3 ignored**（17.99 s）；`inbox_processes` 1 passed；`actions_perf`/`clipboard_perf`/`ingest_perf`/`real_backup_restore`/`real_clipboard` 为真机/性能工具（ignored） | 0 | `clipboard/evidence/gate-rust-all-20261030-1615.log` |
+| `cargo clippy --all-targets --all-features -- -D warnings` | 首两次失败（共 6 处：未用变量、恒等乘法、多余 `as`、两处嵌套 `format!`、`Default::default()` 后逐字段赋值）→ 逐条修根因后 **0 警告** | 101 → 0 | `gate-fmt-clippy-20261030-1620.log`、`gate-clippy-test-20261030-1625.log` |
+| `cargo fmt --all -- --check` | 无差异 | 0 | `gate-fmt-20261030-1700.log` |
+| `npm run build` | `✓ built in 10.73s`；js 478.09 kB / css 94.72 kB | 0 | `release-build-accept-20261030-161144.log` |
+| `npx vitest run` | **23 文件 / 164 用例通过**（Duration 37.64s） | 0 | `gate-npmtest-20261030-1630.log` |
+| Windows Release 构建 | `Finished release in 8m 08s` → `target-accept/release/task-dock.exe`（15,515,136 B，16:20） | 0 | `release-build-accept-20261030-161144.log` |
+| 真实桌面图文混合粘贴验收 | **PASS 52 / FAIL 0 / BLOCKED 0**（含「剪贴板已恢复为粘贴前哨兵」15/15 采样、序列号全程一致、DOM 图/图/文/图、三图像素级 Alpha=255）；另有 1 轮 2 条 FAIL（断言写法问题）与 1 轮 EXIT=3（隔离实例被外部终止）完整保留 | 1 / 3 / 0 | `p1-03-mixed-paste-run-1635-console.log`、`…-1700-console.log`、`…-1710-console.log` + `p1-03-mixed-paste-20261030-164201-c07922a9.json` |
+| `TD_REAL_CLIPBOARD=1 cargo test --test real_clipboard -- --ignored --nocapture` | **3 passed / 0 failed**（真实剪贴板 4 项分组顺序、逐条写入回读、全透明图、CF_HDROP、富文本、自写去重、用户原剪贴板恢复） | 0 | `gate-real-clipboard-20261030-1715.log` |
+| `cargo test --lib navigation::router` | **10 passed / 0 failed**——上表 10:0x 会话里被前台锁拒绝的 2 例（`launch_disallowed_reports_failure_or_focus_only`、`notepad_launch_focuses_existing_window_of_owned_process`）本轮真实通过 | 0 | 同上 |
+| `npm run tauri build`（安装包） | **本轮未执行**：`target-accept/release/bundle/` 的 NSIS/MSI 仍是 10-29 00:42/00:43 产物，不代表本轮源码；升级迁移与安装/卸载因此维持「未验证」 | — | — |
+
+**如实披露**：16:05 前后两次 `npm test` 各出现 2 例 5000 ms 超时（`TasksPanel 筛选交互` 等 jsdom 用例），
+当时同机正在编译 release；空闲复跑 23 文件 / 164 用例全绿。未删除用例、未放宽断言、未调大超时阈值。
+完整判定见 `docs/V05_FINAL_ACCEPTANCE.md`，过程记录见 `docs/V05_COMPREHENSIVE_REMEDIATION.md`。
+
+**2026-10-30 18:08→18:56 第二轮追加复跑（第二轮补漏修复之后，不改写上方任何历史数值）**：
+
+第二轮补了五处（历史分页失同步、行动中心分页竞态、压测数据审计无前端入口、调度器提醒绕过限频、
+性能夹具期望值算错），因此门禁全部重跑，并新增两个迁移相关的测试。
+
+| 检查 | 结果 | 退出码 | 日志 |
+|---|---|---|---|
+| `cargo fmt --all -- --check` | **首次失败**（新增代码有 2 处格式差异）→ `cargo fmt --all` 后复验无差异 | 1 → 0 | `clipboard/evidence/gate-rust-final-20261030-1832.log`、`…-1836.log`、`…-1855.log` |
+| `cargo clippy --all-targets --all-features -- -D warnings` | 0 警告 | 0 | 同上 |
+| `cargo test --all --no-fail-fast` | **lib 445 passed / 0 failed / 3 ignored**（22.11 s；第一轮 441 → 第二轮补 3 个 notify 用例 → 445 再补 1 个 v11→v13 迁移升级用例）；`inbox_processes` 1 passed；新增真机工具 `real_upgrade`（默认 ignored） | 0 | `gate-rust-final-20261030-1855.log` |
+| `npm test`（vitest） | **23 文件 / 166 用例通过**（Duration 37.44s；第一轮 164） | 0 | `gate-npm-final-20261030-1842.log` |
+| `npm run build` + `npx tsc --noEmit` | `✓ built in 7.84s`（js 481.35 kB / css 94.72 kB）；tsc 无错误 | 0 | 同上 |
+| `cargo test --release --test actions_perf -- --ignored --nocapture` | **首次失败**（全局筛选总数 42 ≠ 夹具期望 40，根因在夹具公式）→ 修正期望值后通过：p50 2.99 ms · **p95 3.22 ms** · max 3.23 ms（预算 p95 ≤ 60 ms） | 101 → 0 | `perf-actions-release-20261030-180830.log`（失败轮原样保留）、`…-1813.log` |
+| `cargo test --release --test clipboard_perf -- --ignored --nocapture` | **2 passed / 0 failed**：`insert_avg 0.097 ms`、`list80 p95 3.416 ms`、`count p95 0.013 ms`、`search_miss p95 0.839 ms`、`thumb max 8.653 ms`、`png_encode 105.81 ms` / `png_decode 15.47 ms`、`rgba_to_dib 5.49 ms` / `dib_to_rgba 5.73 ms` | 0 | `perf-clipboard-release-20261030-1819.log` |
+| `npm run tauri build`（**安装包，本轮首次用当前源码执行**） | **EXIT=0**：release exe 15,531,520 B；**NSIS `Task Dock_0.5.0_x64-setup.exe` 4,493,352 B**；**MSI `Task Dock_0.5.0_x64_en-US.msi` 6,840,320 B**（均 18:44）。**未执行实际安装→升级→卸载**（会改动用户机器） | 0 | `bundle-build-20261030-1841.log` |
+| `TD_REAL_UPGRADE_DB=<真实用户库 v11 副本> cargo test --test real_upgrade -- --ignored --nocapture` | **ok**：version 11 → 13；8,734 事件 / 36 会话 / 248 轮次 / 310 通知行数无减少；外键零违规；`integrity_check=ok`；回填把 6 个 `taskdock-selftest-` 会话及其 12 事件/12 轮次/12 通知标为 `selftest`，其余保持 `real`；重复打开不重复推进版本 | 0 | `gate-real-upgrade-20261030-1855.log` |
+
+**本轮新增的测试入口**：
+
+- `src-tauri/src/db/mod.rs` → `v11_to_v13_upgrade_keeps_rows_and_isolates_provable_test_data`：
+  建 v11 库并放入旧结构数据 → 用 `Db::open` 升级 → 断言版本推进、四张表行数不变、
+  旧行默认 `real`、可证明的自测/压测数据被隔离、`bench` 来源 `category=benchmark & hidden=1`、
+  v13 四个分页索引齐备、`pragma_foreign_key_check` 零违规、**重复打开不重复回填也不改写归类**。
+- `src-tauri/tests/real_upgrade.rs` → `real_user_database_upgrades_without_losing_rows`（`#[ignore]`）：
+  真机工具，`TD_REAL_UPGRADE_DB` 指向**真实用户库副本**；迁移只发生在副本上，用户原库只读。
+
+剪贴板模块内 Rust 测试覆盖：分类优先级、去重哈希、45s 分组与文本穿插、
 300/组上限、HTML 清洗、高置信敏感模式、来源未知保守凭据模式、排除名单 basename、
-恢复不覆盖用户新内容、富文本整组顺序、DIB/PNG/缩略图、CF_HTML 偏移、HDROP 解析、
-资产清理与引用安全、保留期/条数上限、任务删除级联保留内容、图片落盘失败无半行、
+恢复不覆盖用户新内容、富文本整组顺序、DIB/PNG/缩略图/全透明归一化、CF_HTML 偏移、
+HDROP 解析、资产清理与引用安全、保留期/条数上限、任务删除级联保留内容、
+图片落盘失败无半行、配置损坏 fail-closed 与修复备份、HTTP header timeout 回归、
 粘贴状态机（写后不重发、取消保留未处理、目标关闭/焦点失败、内容竞态、恢复失败、
 续跑不重发）、监听有界队列（100/1000 事件峰值与丢弃计数）、panic 隔离。
-前端 109 例：`useClipboardStore` 4 例、`clipboardUi` 预检 9 例、
-`PastePanel` 3 例、`ClipboardDrawer` 3 例、`AgentExportPanel` 2 例及既有测试。
+前端 133 例（21 文件）：`useAgentsStore` 刷新调度、`useClipboardStore` 4 例、
+`clipboardUi` 预检 9 例、`PastePanel` 3 例、`ClipboardDrawer` 4 例、
+`AgentExportPanel` 2 例及任务/导航既有测试。
 
 ### 1. Rust 单元测试（cargo test，v0.4 记录）
 
@@ -77,22 +170,75 @@ datetime-local 互转、Agent 树聚合（10 例）；
 | 命令 | 结果 |
 |---|---|
 | `npx tsc --noEmit`（strict + noUnusedLocals） | ✅ 0 错误（v0.5 复测） |
-| `npm run build`（tsc + vite build） | ✅ 通过（v0.5：459.80 kB JS + 67.70 kB CSS） |
+| `npm run build`（tsc + vite build） | ✅ 通过（v0.5 最终：464.88 kB JS + 68.51 kB CSS） |
 | `cargo clippy --all-targets --all-features` | ✅ 0 警告（v0.5 复测） |
 
 ### 4. 已知测试缺口（诚实记录）
 
 - 真机剪贴板/逐项粘贴验收已完成（46/46）；微信与 Agent 类应用因环境阻塞未验证，
   详见 §六与 `clipboard/10-remediation-acceptance.md`。
-- 真实监听 observed/captured/dropped/latency 未单独采样；
-  队列压力为进程内测试，不能外推。
-- WebView 帧率、空闲 CPU/内存、30 分钟长跑、大分组滚动、多显示器/DPI 未测量。
-- 图片/文件粘贴到图形界面应用未验证（仅记事本拒绝图片时如实报告）。
+- `cargo test --all-targets` 的 2 例导航前台聚焦测试在锁屏/非交互会话会被 Windows 前台锁
+  拒绝置前；生产代码如实返回失败原因（不伪装成功），未放宽断言、未跳过。
+  **2026-10-30 01:26 锁屏会话**：302 passed / 2 failed / 11 ignored，整体退出码非 0；
+  **2026-10-30 09:44 交互会话**：382 passed / 0 failed / 13 ignored，两例通过；
+  **2026-10-30 10:0x 控制台修复后复跑**：lib 380 passed / 2 failed / 3 ignored，两例再次被
+  前台锁拒绝（错误信息“Windows 前台锁定拒绝了切换”）；lib 失败后 cargo 中止，集成另行执行
+  1 passed / 10 ignored，合并 381 passed / 2 failed / 13 ignored。该两例与剪贴板/备份改动无关，
+  未修改断言、未跳过；不能把“09:44 曾通过”写成“最终始终全部通过”。
+  **2026-10-30 16:45 追加**：同机交互会话复跑 `cargo test --lib navigation::router`
+  → **10 passed / 0 failed**，两例真实通过（此前挡住它们的记事本「他人已存在的单实例多标签进程」已不在）。
+- **2026-10-30 16:41 追加**：上条「真机剪贴板 46/46」之外，本轮另跑 `TD_REAL_CLIPBOARD=1`
+  真机套件 **3 passed / 0 failed** 与图文混合粘贴 GUI 验收 **52/52 PASS**；
+  微信/Office/Word 与 Agent 类应用接收在本轮**仍未复跑**（矩阵脚本从未入库，见
+  `docs/V05_FINAL_ACCEPTANCE.md` 第六节 C.2）。
+- **恢复侧内存**：100k 事件 + 10k 通知 + 5k 剪贴板条目的 61.9MB bundle，恢复进程观测
+  峰值 WS **619.0MB**（备份侧约 27.4MB）。备份是流式写入，但恢复读取仍把表行
+  materialize 为 JSON 与强类型行；不满足“恢复也常量内存”的理想目标，未虚报为 PASS。
+  数据正确性、外键、资产/归档 SHA 与崩溃回滚均通过；详见
+  `performance/results/V05-SCALE-100K-FINAL-20261030.json`。
+- WebView2 真机帧率、多显示器/DPI 组合、真实监听 observed/captured/dropped 仍未测量；
+  30 分钟空闲资源、95 秒 Agent 并发、1000+ 历史/大分组滚动已由 release 真机采样覆盖
+  （`clipboard/evidence/perf-*-20261030.json`）。后端 30 分钟长稳见 §一.5。
+  **2026-10-30 最终 Release 整桌面 30 分钟已完成**（36,000 事件 0 失败、队列峰值 20/1,024、
+  HTTP p95 268.63ms）；但主进程 private 11.4→95.1MB 持续增长、停止负载后未回落，
+  内存泄漏尚未定位，不能写成“30 分钟无泄漏”。
+- 图片/文件粘贴到图形界面应用未验证（仅记事本拒绝图片时如实报告）；修复后的图文混合
+  像素级复验仍为 ENVIRONMENT BLOCKED，不能算通过。
+  → **2026-10-30 16:41 更新（原文保留作历史）**：工作站解锁后已用 16:20 release 二进制完成该复验，
+  **52/52 PASS**（DOM 顺序图/图/文/图、三图 Alpha=255 与 RGB 逐点断言、恢复哨兵 15/15 命中），
+  见 §0 追加表与 `clipboard/11-final-release-acceptance.md` §4.6；
+  但「图形界面应用矩阵」仍只在 Edge contenteditable 一个目标上通过，记事本/Word/微信等未复跑。
 - 安装/卸载/签名未验证。
 - ESLint：仓库无配置文件，`npm run lint` 不存在，未伪造 lint 结果。
 - 前端既有测试在 CPU 满载并行编译时出现过 3 例 5 s 超时；本次全量通过（未改阈值）。
 - v0.3 记录的两项缺口（AgentHub::ingest 集成测试、前端组件 UI 测试）中，
   前端已引入 testing-library 并补充组件测试；AgentHub 集成测试仍缺。
+
+### 5. v0.5 性能验收（实测摘要，详见 [最终验收](PERFORMANCE_FINAL_ACCEPTANCE.md) 与 PERFORMANCE_ACCEPTANCE_REPORT.md）
+
+| 场景 | 实测 | 判定 |
+|---|---|---|
+| 持续吞吐（10 Agent × 50/s × 600s） | 300,000 条 = **499.72 事件/秒**，关键 30,000/30,000 | PASS |
+| 高并发（40 Agent × 50/s × 60s） | **1,886.32 事件/秒**，队列 1024/1024，1,195 次可重试拒绝，零丢失 | PASS |
+| 200 事件/秒突发（60s） | 12,000 条 = 198.1/s，关键 1,200/1,200 | PASS |
+| 持续过载与恢复（队列 64） | 8,579 次显式拒绝，关键 1,600/1,600 落库，`recovery_ok` | PASS |
+| 单批落库 p95 | 45.8ms（A1）/ 118.9ms（A2）/ 14.1ms（B）/ 57.9ms（C） | PASS |
+| 基线对比（5,000 事件） | 新管线 1,065ms vs 旧 21,556ms → **20.24×** | PASS |
+| 行动中心查询 p95（600 事件） | 3.6ms | PASS |
+| 剪贴板 300 条历史列表 p95 | 0.96 / 1.11ms（80 / 200 行） | PASS |
+| 200 张连续截图入库+分组+配额 | 4.22s，磁盘 30.2MB（配额 32MB） | PASS（不含 PNG 采集编码） |
+| 前端 300 行重渲染 | 提交中位数 0.2ms，到绘制 30.5ms | PASS（preview harness） |
+| 前端刷新调度 | 100 事件 → 2 次快照请求（最大并发 1） | PASS（真实模块单测） |
+| 稳定性（30 分钟，4×5/s） | 36,000 条，关键 3,600/3,600；RSS +2.4MB（峰值 18.0MB）；队列 12/1024 | PASS |
+| 故障注入 | 坏事件隔离/幂等/乱序保护/重连 全部成立 | PASS |
+
+已补充（2026-10-30）：真机 HTTP 全链路压测 10 Agent × 50/s × 600s（300,000 条，
+499.69/s，关键 30,000/30,000，p95 184.39ms）与 200/s × 60s（12,000 条，关键 1,200/1,200）；
+30 分钟整桌面资源采样（主进程 + WebView2 进程树 + 其他 Agent，36,000 条、0 丢弃）；
+100k 备份/恢复。该轮**应用层内存未通过**：主进程 private 11.4→95.1MB 持续增长、
+停止负载后未回落，根因未定位，不记为“内存稳定”；真实 Agent 只验证安装发现与 Hook CLI
+协议投递，实时会话未验证。仍未执行：WebView2 逐帧帧率、真实监听事件率、修复后图文混合
+GUI 复验（锁屏阻塞）、磁盘写满真机注入与强杀/断电物理恢复。
 
 ## 二、端到端运行验证（真实运行，非模拟冒充）
 
@@ -182,8 +328,12 @@ release exe 直接运行验证：进程稳定、全部适配器启动、`GET /ap
 ## 四、复现命令
 
 ```bash
-npm test                              # 前端 109 例（16 文件）
-cd src-tauri && cargo test            # Rust 244 例（另有 10 个 ignored 手动性能/真机工具）
+npm test                              # 前端 133 例（21 文件）
+cd src-tauri && cargo test            # lib 380 通过 + 2 前台锁环境失败 + 3 ignored；集成 1 通过 + 10 ignored
+cargo test --lib commands::restore::tests -- --nocapture   # 恢复原子性 21 例
+cargo test --release --lib \
+  commands::backup::tests::full_backup_100k_events_10k_notifications_roundtrip \
+  -- --ignored --nocapture            # 100k 规模备份/恢复（约 11s 测试体，构建另计）
 npm run build                         # tsc + vite
 npm run tauri build                   # 安装包
 ```
@@ -228,24 +378,31 @@ otepad.exe | ✅ 目标落库 → 任务关联落库 → 编辑器条目（上�
 - Win11 商店版记事本等 UWP 化应用的窗口不在自身 exe 名下 → 窗口级唤醒按设计如实降级为
   process-spawned；如需窗口级支持，后续可按 AUMID/ApplicationFrameHost 特判（列入待办）。
 
-## 六、v0.5 智能剪贴板真机验收（2026-10-29 已执行）
+## 六、v0.5 智能剪贴板真机验收（2026-10-29 历史 + 2026-10-30 复核）
 
 > 方法：隔离实例（identifier `com.taskdock.desktop.accept`、独立 appdata、CDP 9417、
 > 内嵌前端 debug 构建）；真实系统剪贴板 + 真实外部窗口；每项读回来自目标应用/磁盘/
 > 独立进程。原始证据：`clipboard/evidence/acceptance-final13.log`。
+> **10-30 复核后最终判定为 CONDITIONAL PASS**，完整依据见
+> [`clipboard/11-final-release-acceptance.md`](clipboard/11-final-release-acceptance.md)。
 
-- 结果：**46/46 PASS**（A0、B1–B17 及 b 补充项、C1–C12、D1–D5、E1、F1、
-  G1–G2、H1–H2）。覆盖 22 个必测场景；场景与检查项对应关系见
-  `clipboard/08-testing-performance.md` §三。
+- 结果（2026-10-29）：**46/46 PASS**（A0、B1–B17 及 b 补充项、C1–C12、D1–D5、
+  E1、F1、G1–G2、H1–H2）。覆盖 22 个必测场景；场景与检查项对应关系见
+  `clipboard/08-testing-performance.md` §三。**10-30 未重跑这 46 项**（锁屏）。
 - 关键真机证据：C3 记事本真实接收 3 项且顺序正确；C5 粘贴后恢复原剪贴板；
   C10 目标关闭停止；C11 用户中途复制的新内容不被覆盖；C12 目标拒绝图片时只报
   “动作已发送”；C6 自身粘贴不产生新历史。
-- 第三方矩阵：记事本、资源管理器（CF_HDROP）、Edge 文本与 contenteditable 富文本、
-  VS Code（保存后磁盘读回）均 **PASS**；微信因已登录真实用户会话
+- 第三方矩阵（10-29）：记事本、资源管理器（CF_HDROP）、Edge 文本与 contenteditable
+  富文本、VS Code（保存后磁盘读回）均 **PASS**；微信因已登录真实用户会话
   **ENVIRONMENT BLOCKED / NOT VERIFIED**；Trae CN（Agent）停在登录/引导页
   **NOT VERIFIED**。
+- 10-30 新增：P0 隐私配置损坏的隔离真实运行（暂停→修复→恢复，任务设置不受影响）、
+  场景 C Agent 并发（74,653 次请求 0 失败）、场景 D（1,250 条历史/大分组/滚动/
+  抽屉/清理）、场景 A 30 分钟空闲采样。
+- 修复前的图文混合真机记录：顺序正确但三张图 Alpha 全 0；修复 Alpha 后
+  **GUI 复验被锁屏阻塞**。不把单测折算为应用层通过。
 - 真机发现并修复两处 UI 缺陷：任务关联模式抽屉 z-index 低于编辑弹窗导致不可点选；
   删除确认框继承 `pointer-events:none` 导致可见但不可点击。D1/D3 回归通过。
-- 未执行：WebView 帧率、空闲 CPU/内存、30 分钟长跑、>1000 截图、多显示器/DPI、
-  图片/文件粘贴到图形界面应用；微信与 Agent 应用的接收行为未验证。
+- 未执行/阻塞：修复后图文混合复验、场景 B 连续 30 分钟真实采集、>1000 截图、
+  多显示器/DPI、图片/文件粘贴到图形界面应用；微信与 Agent 应用的接收行为未验证。
 - 不把格式层单元测试折算为应用层兼容性证明，也不把未验证应用写成“支持”。

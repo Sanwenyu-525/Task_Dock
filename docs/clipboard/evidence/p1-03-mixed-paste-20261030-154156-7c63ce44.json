@@ -1,0 +1,218 @@
+{
+  "name": "P1-03 mixed image/text paste acceptance",
+  "timestamp": "2026-10-30T15:41:28+0800",
+  "nonce": "7c63ce44",
+  "environment": {
+    "exe": "D:\\Develop\\task_dock\\src-tauri\\target-accept\\release\\task-dock.exe",
+    "exe_mtime": "2026-10-30T15:19:54",
+    "edge": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "screen": [
+      2048,
+      1152
+    ],
+    "desktop": {
+      "input_desktop": true,
+      "desktop_name": "Default",
+      "foreground_hwnd": 198790
+    },
+    "preexisting_instances": [],
+    "waited_for_clear_window_s": 3.7,
+    "work_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-rea2v303",
+    "app_cdp": 9417,
+    "edge_cdp": 9418,
+    "default_app_cdp_stale_listeners": []
+  },
+  "checks": {
+    "pass": [
+      {
+        "name": "应用以隔离数据目录启动并处于监听状态",
+        "ok": true,
+        "detail": "fresh_default"
+      },
+      {
+        "name": "剪贴板配置无异常",
+        "ok": true,
+        "detail": null
+      },
+      {
+        "name": "CDP 目标即本次隔离实例（Agent 收件目录在隔离数据目录内）",
+        "ok": true,
+        "detail": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-rea2v303\\data\\agent-inbox"
+      },
+      {
+        "name": "安全测试窗口已出现",
+        "ok": true,
+        "detail": "TaskDock Paste Acceptance 7c63ce44 - 用户配置 1 - Microsoft​ Edge"
+      },
+      {
+        "name": "复制阶段前台为外部应用（否则命中自写抑制、测不到采集链路）",
+        "ok": true,
+        "detail": {
+          "step": "before-copies",
+          "foreground_source": "msedge.exe",
+          "foreground_hwnd": 5182830,
+          "target_hwnd": 5182830
+        }
+      },
+      {
+        "name": "测试页编辑器已聚焦",
+        "ok": true,
+        "detail": {
+          "ok": true,
+          "title": "TaskDock Paste Acceptance 7c63ce44",
+          "activeId": "editor",
+          "focused": true
+        }
+      },
+      {
+        "name": "复制 A-red 后采集入库（1/4）",
+        "ok": true,
+        "detail": {
+          "copied": "A-red",
+          "foreground": {
+            "step": "copy-1-A-red",
+            "foreground_source": "msedge.exe",
+            "foreground_hwnd": 5182830,
+            "target_hwnd": 5182830
+          },
+          "items_total": 1,
+          "expected_total": 1,
+          "monitor_delta": {
+            "observed_events": 1,
+            "captured": 1,
+            "recorded": 1,
+            "duplicates": 0,
+            "skipped": 0,
+            "dropped_events": 0,
+            "dropped_contents": 0,
+            "failed": 0
+          }
+        }
+      }
+    ],
+    "fail": []
+  },
+  "app_status_initial": {
+    "activeJob": null,
+    "captureAllowed": true,
+    "configError": null,
+    "configOrigin": "fresh_default",
+    "enabled": true,
+    "monitor": {
+      "captured": 0,
+      "content_queue_capacity": 8,
+      "content_queue_max_bytes": 134217728,
+      "dropped_contents": 0,
+      "dropped_events": 0,
+      "duplicates": 0,
+      "event_queue_capacity": 64,
+      "failed": 0,
+      "max_capture_latency_ms": 0,
+      "max_process_latency_ms": 0,
+      "merged_events": 0,
+      "observed_events": 0,
+      "peak_content_queue": 0,
+      "peak_event_queue": 0,
+      "recorded": 0,
+      "skipped": 0
+    },
+    "monitoring": true,
+    "paused": false,
+    "platform": "windows"
+  },
+  "instance_identity": {
+    "agent_inbox_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-rea2v303\\data\\agent-inbox",
+    "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-rea2v303\\data"
+  },
+  "target_window": {
+    "hwnd": 5182830,
+    "pid": 64168,
+    "title": "TaskDock Paste Acceptance 7c63ce44 - 用户配置 1 - Microsoft​ Edge",
+    "class": "Chrome_WidgetWin_1"
+  },
+  "foreground_before_copies": {
+    "step": "before-copies",
+    "foreground_source": "msedge.exe",
+    "foreground_hwnd": 5182830,
+    "target_hwnd": 5182830
+  },
+  "clipboard_quiet_before_copies": {
+    "quiet": true,
+    "external_changes": 0,
+    "waited_s": 4.0,
+    "sequence_start": 7533,
+    "sequence_now": 7533
+  },
+  "baseline_items": 0,
+  "baseline_clipboard_sequence": 7533,
+  "source_content": {
+    "A-red": {
+      "rgba": [
+        220,
+        30,
+        30,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_RGB(alpha=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    },
+    "B-green": {
+      "rgba": [
+        30,
+        180,
+        60,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_BITFIELDS(alphaMask=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    },
+    "D-blue": {
+      "rgba": [
+        30,
+        60,
+        220,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_RGB(alpha=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    }
+  },
+  "overall": "FAIL",
+  "error": "RuntimeError: clipboard_view 调用失败（重试 8 次）: CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n :: {'command': 'clipboard_view', 'error': 'CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\\nCall log:\\n\\x1b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\\x1b[22m\\n', 'app_alive': False, 'app_exit_code': 4294967295, 'cdp_port': 9417, 'port_listeners': []}",
+  "app_alive_before_cleanup": false,
+  "app_exit_code_before_cleanup": 4294967295,
+  "app_exit_code": 4294967295,
+  "cdp_diagnostics": [
+    {
+      "command": "clipboard_view",
+      "error": "CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+      "app_alive": false,
+      "app_exit_code": 4294967295,
+      "cdp_port": 9417,
+      "port_listeners": []
+    }
+  ],
+  "raw_logs": {
+    "app": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-rea2v303\\app.log",
+    "app_copy": "D:\\Develop\\task_dock\\docs\\clipboard\\evidence\\p1-03-mixed-paste-20261030-154156-7c63ce44-app.log",
+    "edge": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-rea2v303\\edge.log"
+  }
+}

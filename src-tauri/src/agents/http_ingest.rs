@@ -23,7 +23,7 @@ use hyper::body::Incoming;
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use serde_json::json;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -40,6 +40,16 @@ const MAX_INFLIGHT: usize = 32;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// hyper 1.x 在设置 `header_read_timeout` 时必须同时提供 timer，否则每个连接都会 panic。
+fn http1_builder() -> hyper::server::conn::http1::Builder {
+    let mut builder = hyper::server::conn::http1::Builder::new();
+    builder
+        .keep_alive(true)
+        .header_read_timeout(HEADER_TIMEOUT)
+        .timer(TokioTimer::new());
+    builder
+}
 
 #[derive(Default)]
 struct HttpStats {
@@ -163,8 +173,21 @@ struct HttpState {
     pipeline: Arc<IngestPipeline>,
     token: Arc<String>,
     request_sem: Arc<Semaphore>,
+    db: Arc<crate::db::Db>,
     #[allow(dead_code)]
     port: u16,
+}
+
+fn runtime_stats() -> serde_json::Value {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            let metrics = handle.metrics();
+            json!({
+                "alive_tasks": metrics.num_alive_tasks(),
+            })
+        }
+        Err(_) => json!({ "alive_tasks": null }),
+    }
 }
 
 fn authorized(req: &Request<Incoming>, token: &str) -> bool {
@@ -207,8 +230,18 @@ async fn read_body(req: Request<Incoming>) -> Result<Vec<u8>, Response<Full<Byte
     }
 }
 
+/// 在途请求计数守卫：客户端中断时 future 会被丢弃，Drop 仍会执行，
+/// 不会像手工 fetch_sub 那样让诊断值单调泄漏（超过并发上限）。
+struct ActiveRequestGuard;
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        stats().active_requests.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 async fn handle_events(req: Request<Incoming>, state: Arc<HttpState>) -> Response<Full<Bytes>> {
-    let permit = match state.request_sem.clone().try_acquire_owned() {
+    let _permit = match state.request_sem.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
             stats().rejected_concurrency.fetch_add(1, Ordering::Relaxed);
@@ -223,11 +256,9 @@ async fn handle_events(req: Request<Incoming>, state: Arc<HttpState>) -> Respons
     stats()
         .max_active_requests
         .fetch_max(active, Ordering::Relaxed);
+    let _active_guard = ActiveRequestGuard;
 
-    let response = process_events(req, &state).await;
-    drop(permit);
-    stats().active_requests.fetch_sub(1, Ordering::Relaxed);
-    response
+    process_events(req, &state).await
 }
 
 async fn process_events(req: Request<Incoming>, state: &HttpState) -> Response<Full<Bytes>> {
@@ -394,6 +425,10 @@ async fn handle_request(
                     json!({
                         "pipeline": state.pipeline.stats(),
                         "http": stats_snapshot(),
+                        "process": crate::alloc_stats::snapshot(),
+                        "runtime": runtime_stats(),
+                        "notifications": crate::agents::notification_stats(),
+                        "db": state.db.storage_stats(),
                     }),
                     None,
                 )
@@ -443,10 +478,7 @@ async fn handle_conn(stream: TcpStream, peer: SocketAddr, state: Arc<HttpState>)
             Ok::<_, Infallible>(resp)
         }
     });
-    let conn = hyper::server::conn::http1::Builder::new()
-        .keep_alive(true)
-        .header_read_timeout(HEADER_TIMEOUT)
-        .serve_connection(io, service);
+    let conn = http1_builder().serve_connection(io, service);
     // 连接最长存活 120s：防止半开/慢连接长期占用连接配额
     let _ = tokio::time::timeout(Duration::from_secs(120), conn).await;
 }
@@ -475,12 +507,17 @@ async fn run_listener(
         pipeline,
         token: Arc::new(token.clone()),
         request_sem: Arc::new(Semaphore::new(MAX_INFLIGHT)),
+        db: hub.db_arc(),
         port,
     });
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = crate::agents::shutdown_signal::wait() => {
+                tracing::info!("应用退出：关闭 HTTP 接入监听，不再接受新事件");
+                return;
+            }
             _ = tick.tick() => {
                 let s = Settings::load(hub.db()).unwrap_or_default();
                 if !s.http_enabled || s.http_port != port || s.http_token != token {
@@ -531,6 +568,10 @@ impl AgentAdapter for HttpIngestAdapter {
             let conn_sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
             let mut current: Option<(u16, String)> = None;
             loop {
+                if crate::agents::shutdown_signal::is_set() {
+                    tracing::info!("应用退出：HTTP 接入适配器停止");
+                    return;
+                }
                 let settings = Settings::load(hub.db()).unwrap_or_default();
                 let desired = if settings.http_enabled {
                     Some((settings.http_port, settings.http_token.clone()))
@@ -541,12 +582,18 @@ impl AgentAdapter for HttpIngestAdapter {
                     if current.take().is_some() {
                         tracing::info!("HTTP 接入已关闭");
                     }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    tokio::select! {
+                        _ = crate::agents::shutdown_signal::wait() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
                     continue;
                 }
                 let (port, token) = desired.unwrap();
                 if current.as_ref() == Some(&(port, token.clone())) {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    tokio::select! {
+                        _ = crate::agents::shutdown_signal::wait() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
                     continue;
                 }
                 match TcpListener::bind(("127.0.0.1", port)).await {
@@ -565,7 +612,10 @@ impl AgentAdapter for HttpIngestAdapter {
                     }
                     Err(e) => {
                         tracing::error!("绑定 127.0.0.1:{} 失败: {}", port, e);
-                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        tokio::select! {
+                            _ = crate::agents::shutdown_signal::wait() => return,
+                            _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                        }
                     }
                 }
             }
@@ -582,5 +632,42 @@ mod tests {
         assert!(constant_time_eq("abc", "abc"));
         assert!(!constant_time_eq("abc", "abd"));
         assert!(!constant_time_eq("abc", "ab"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn http1_connection_with_header_timeout_answers_instead_of_panicking() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
+            let service = service_fn(|_req: Request<Incoming>| async {
+                Ok::<_, Infallible>(json_response(StatusCode::OK, json!({"ok": true}), None))
+            });
+            let _ = http1_builder().serve_connection(io, service).await;
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(
+                b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut buf = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut buf)).await;
+        let n = read
+            .expect("连接超时：header_read_timeout 缺少 timer 时会 panic")
+            .unwrap();
+        assert!(n > 0, "服务器返回空响应");
+        let text = String::from_utf8_lossy(&buf);
+        assert!(
+            text.starts_with("HTTP/1.1 200"),
+            "unexpected response: {text}"
+        );
+        assert!(text.contains("\"ok\":true"), "unexpected body: {text}");
+        server.await.unwrap();
     }
 }

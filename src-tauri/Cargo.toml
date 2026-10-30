@@ -25,7 +25,8 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# raw_value：分块备份的 section 行按原始 JSON 文本落盘，省掉中间 Value 树
+serde_json = { version = "1", features = ["raw_value"] }
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "io-util", "net"] }
@@ -50,6 +51,7 @@ windows-sys = { version = "0.60", features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_System_Threading",
+  "Win32_System_ProcessStatus",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_Graphics_Dwm",
   # 智能剪贴板（v0.5）：剪贴板读写/监听、全局内存、隐藏消息窗口、进程令牌

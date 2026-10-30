@@ -1,0 +1,179 @@
+{
+  "at": "2026-10-29T16:29:46.830Z",
+  "steps": {
+    "ensureClosed": true,
+    "open": {
+      "openMs": 239.11,
+      "drawerMs": 0.1,
+      "bodyMs": 0,
+      "firstItems": {
+        "ms": 0,
+        "items": 80
+      },
+      "renderedItems": 80,
+      "attempts": 1
+    },
+    "scroll": {
+      "frames": 395,
+      "scrollHeight": 7317,
+      "clientHeight": 345
+    },
+    "search": {
+      "before": {
+        "items": 80,
+        "total": 1700
+      },
+      "after": {
+        "items": 80,
+        "total": 1210
+      },
+      "restored": {
+        "items": 80,
+        "total": 1700
+      },
+      "stableMs": 367.4,
+      "longTasks": 2,
+      "elapsedMs": 2182,
+      "drawerOpen": true
+    },
+    "detail": {
+      "ms": 56.4,
+      "itemLoadedMs": 18.1,
+      "hasImage": true,
+      "naturalWidth": 960,
+      "naturalHeight": 540,
+      "drawerOpen": true
+    },
+    "groups": {
+      "cardMs": 7.8,
+      "cards": 1,
+      "detailMs": 15.6,
+      "rows": 50,
+      "groupApiMs": 18.15,
+      "groupApiDetailMs": 19.6,
+      "groupApiItems": 50,
+      "groupId": "dc1e1a58-bb54-428b-b808-c8e5d5fd8aae"
+    },
+    "toggle10": [
+      {
+        "openMs": 97.58,
+        "drawerMs": 0,
+        "itemsMs": 0.1,
+        "closeMs": 16.21,
+        "closeWait": 0
+      },
+      {
+        "openMs": 113.22,
+        "drawerMs": 0,
+        "itemsMs": 0.1,
+        "closeMs": 14.74,
+        "closeWait": 0
+      },
+      {
+        "openMs": 106.3,
+        "drawerMs": 0,
+        "itemsMs": 0.1,
+        "closeMs": 18.13,
+        "closeWait": 0
+      },
+      {
+        "openMs": 151.73,
+        "drawerMs": 0,
+        "itemsMs": 0.1,
+        "closeMs": 18.95,
+        "closeWait": 0
+      },
+      {
+        "openMs": 129.69,
+        "drawerMs": 0,
+        "itemsMs": 0,
+        "closeMs": 20.68,
+        "closeWait": 0.19999998807907104
+      },
+      {
+        "openMs": 116.39,
+        "drawerMs": 0,
+        "itemsMs": 0,
+        "closeMs": 22.1,
+        "closeWait": 0.09999999403953552
+      },
+      {
+        "openMs": 100.94,
+        "drawerMs": 0,
+        "itemsMs": 0.1,
+        "closeMs": 18.42,
+        "closeWait": 0.09999999403953552
+      },
+      {
+        "openMs": 127.63,
+        "drawerMs": 0,
+        "itemsMs": 0.1,
+        "closeMs": 19.03,
+        "closeWait": 0
+      },
+      {
+        "openMs": 98.92,
+        "drawerMs": 0,
+        "itemsMs": 0.1,
+        "closeMs": 15.22,
+        "closeWait": 0.10000002384185791
+      },
+      {
+        "openMs": 85.31,
+        "drawerMs": 0,
+        "itemsMs": 0,
+        "closeMs": 13.2,
+        "closeWait": 0
+      }
+    ],
+    "backend": {
+      "list80": {
+        "p50": 30.52,
+        "p95": 40.769,
+        "max": 42.94
+      },
+      "list200": {
+        "p50": 47.107,
+        "p95": 52.459,
+        "max": 56.01
+      },
+      "search": {
+        "p50": 30.632,
+        "p95": 43.863,
+        "max": 47.21
+      }
+    },
+    "cleanup": {
+      "frames": 325,
+      "result": {
+        "items_deleted": 440,
+        "groups_closed": 0,
+        "bytes_freed": 1275695,
+        "orphan_files_removed": 0
+      }
+    },
+    "delete10": {
+      "count": 10,
+      "ms": 23.76,
+      "deleted": 10
+    },
+    "scrollSummary": {
+      "samples": 395,
+      "p50": 15.2,
+      "p95": 17.2,
+      "max": 32,
+      "over50ms": 0
+    },
+    "cleanupSummary": {
+      "samples": 325,
+      "p50": 8,
+      "p95": 8.6,
+      "max": 17.03,
+      "over50ms": 0
+    },
+    "longTasks": [
+      53,
+      53
+    ]
+  }
+}

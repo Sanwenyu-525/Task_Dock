@@ -1,0 +1,19 @@
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.79s
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 9 tests
+test navigation::router::tests::agent_session_target_requires_existing_session ... ok
+test navigation::router::tests::application_target_with_gone_exe_fails_not_fake ... ok
+test navigation::router::tests::effective_memory_honors_user_pick_even_when_remember_disabled ... ok
+test navigation::router::tests::explicit_window_selection_requires_unique_identity_and_marks_fallback ... ok
+test navigation::router::tests::launch_disallowed_reports_failure_or_focus_only ... 跳过：未出现归属本测试子进程的记事本窗口
+ok
+test navigation::router::tests::notepad_launch_focuses_existing_window_of_owned_process ... 跳过：6 秒内未出现归属本测试子进程的记事本窗口（可能为静默启动形态），不做任何清理动作
+ok
+test navigation::router::tests::url_revalidated_at_execution_time ... ok
+test navigation::router::tests::uwp_decision_respects_launch_preference ... ok
+test navigation::router::tests::uwp_target_refused_before_any_process_spawn_when_launch_disallowed ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 424 filtered out; finished in 12.48s
+

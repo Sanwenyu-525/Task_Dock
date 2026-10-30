@@ -104,14 +104,14 @@ export default function AgentExportPanel({
               <div className="clip-export-line">
                 <span>导出目录</span>
                 <code>{pkg.dir}</code>
-                <button className="icon-btn sm" title="复制目录" aria-label="复制导出目录" onClick={() => onCopyPath(pkg.dir)}>
+                <button className="icon-btn sm" data-tip="复制目录" aria-label="复制导出目录" onClick={() => onCopyPath(pkg.dir)}>
                   <Copy size={11} />
                 </button>
               </div>
               <div className="clip-export-line">
                 <span>Markdown</span>
                 <code>{pkg.markdown_path}</code>
-                <button className="icon-btn sm" title="复制路径" aria-label="复制 Markdown 路径" onClick={() => onCopyPath(pkg.markdown_path)}>
+                <button className="icon-btn sm" data-tip="复制路径" aria-label="复制 Markdown 路径" onClick={() => onCopyPath(pkg.markdown_path)}>
                   <Copy size={11} />
                 </button>
               </div>

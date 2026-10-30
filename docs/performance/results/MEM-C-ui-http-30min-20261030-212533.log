@@ -1,0 +1,2 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-af\C-ui-http-30min-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-af\C-ui-http-30min-appdata port=47882
+[app] pid=91756 health={'ok': True, 'queue': {'capacity': 1024, 'depth_events': 0}, 'service': 'task-dock'}

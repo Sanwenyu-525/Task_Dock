@@ -1,0 +1,4 @@
+=== BUILD 20:04:14 ===
+    Finished `release` profile [optimized] target(s) in 1.02s
+BUILD_EXIT=0
+-rwxr-xr-x 2 ASUS 197121 15398912 2026-10-30 19:54:01.777742100 +0800 target/release/task-dock.exe

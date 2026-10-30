@@ -266,7 +266,7 @@ export default function ClipboardGroupDetail({
     return (
       <div className="clip-detail">
         <div className="clip-detail-head">
-          <button className="icon-btn sm" onClick={onBack} title="返回" aria-label="返回分组列表">
+          <button className="icon-btn sm" onClick={onBack} data-tip="返回" aria-label="返回分组列表">
             <ArrowLeft size={13} />
           </button>
           <span>分组详情</span>
@@ -281,14 +281,14 @@ export default function ClipboardGroupDetail({
   return (
     <div className="clip-detail">
       <div className="clip-detail-head">
-        <button className="icon-btn sm" onClick={onBack} title="返回" aria-label="返回分组列表">
+        <button className="icon-btn sm" onClick={onBack} data-tip="返回" aria-label="返回分组列表">
           <ArrowLeft size={13} />
         </button>
         <span className="clip-group-title" title={group.name}>{group.name}</span>
         <div className="clip-detail-actions">
           <button
             className={`icon-btn sm ${group.pinned ? "active" : ""}`}
-            title={group.pinned ? "取消置顶" : "置顶分组"}
+            data-tip={group.pinned ? "取消置顶" : "置顶分组"}
             aria-label={group.pinned ? "取消置顶" : "置顶分组"}
             aria-pressed={group.pinned}
             onClick={() => onToggle("pinned")}
@@ -297,7 +297,7 @@ export default function ClipboardGroupDetail({
           </button>
           <button
             className={`icon-btn sm ${group.favorite ? "active" : ""}`}
-            title={group.favorite ? "取消收藏" : "收藏分组"}
+            data-tip={group.favorite ? "取消收藏" : "收藏分组"}
             aria-label={group.favorite ? "取消收藏" : "收藏分组"}
             aria-pressed={group.favorite}
             onClick={() => onToggle("favorite")}
@@ -306,7 +306,7 @@ export default function ClipboardGroupDetail({
           </button>
           <button
             className="icon-btn sm danger-ghost"
-            title="删除分组（保留条目）"
+            data-tip="删除分组（保留条目）"
             aria-label="删除分组（保留条目）"
             onClick={() => onDelete(false)}
           >
@@ -421,7 +421,7 @@ export default function ClipboardGroupDetail({
                   <div className="clip-order-actions">
                     <button
                       className="icon-btn sm"
-                      title="上移"
+                      data-tip="上移"
                       aria-label={`上移第 ${i + 1} 项`}
                       disabled={i === 0 || busy !== null}
                       onClick={() => onMove(item.id, -1)}
@@ -430,7 +430,7 @@ export default function ClipboardGroupDetail({
                     </button>
                     <button
                       className="icon-btn sm"
-                      title="下移"
+                      data-tip="下移"
                       aria-label={`下移第 ${i + 1} 项`}
                       disabled={i === group.items.length - 1 || busy !== null}
                       onClick={() => onMove(item.id, 1)}
@@ -439,7 +439,7 @@ export default function ClipboardGroupDetail({
                     </button>
                     <button
                       className="icon-btn sm"
-                      title="从分组移除（不删除内容）"
+                      data-tip="从分组移除（不删除内容）"
                       aria-label={`从分组移除第 ${i + 1} 项`}
                       disabled={busy !== null}
                       onClick={() => onRemove(item.id)}

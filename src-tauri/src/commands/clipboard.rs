@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 use crate::clipboard::agent_bridge::{self, AgentClipboardTarget, ExportPackage};
 use crate::clipboard::paste::{self, PasteStartReport};
@@ -34,7 +34,7 @@ pub fn clipboard_view(
     filter: Option<ClipboardFilter>,
 ) -> AppResult<ClipboardView> {
     let rt = runtime(&state);
-    let settings = Settings::load(&rt.db)?;
+    let settings = Settings::load_clipboard(&rt.db).settings;
     let filter = filter.unwrap_or_default();
     let mut view = store::view(&rt.db, &filter, &settings)?;
     for item in &mut view.items {
@@ -67,7 +67,7 @@ pub fn clipboard_group(
 #[tauri::command]
 pub fn clipboard_stats(state: State<'_, Arc<ClipboardRuntime>>) -> AppResult<ClipboardStats> {
     let rt = runtime(&state);
-    let settings = Settings::load(&rt.db)?;
+    let settings = Settings::load_clipboard(&rt.db).settings;
     store::stats(&rt.db, &settings)
 }
 
@@ -126,7 +126,7 @@ fn item_copy_warnings(item: &ClipboardItem) -> Vec<String> {
     }
 }
 
-/// 单条复制（显式操作）：写入后记录序列号，监听侧不会重复记录。
+/// 单条复制（显式操作）：写入与自写登记在同一访问锁内完成，监听侧不会重复记录。
 #[tauri::command]
 pub fn clipboard_copy_item(
     state: State<'_, Arc<ClipboardRuntime>>,
@@ -137,8 +137,7 @@ pub fn clipboard_copy_item(
     let payload = crate::clipboard::paste::payload_for_item(&rt.db, &rt.root, &item)?;
     let mode = variant_mode(&payload);
     let bytes = payload_bytes(&payload);
-    let seq = platform::write_payload(&payload)?;
-    rt.note_self_write(seq);
+    let seq = platform::write_payload_notifying(&payload, &rt.self_write)?;
     store::bump_copy(&rt.db, &item_id)?;
     rt.emit_changed("copy-item");
     Ok(CopyReport {
@@ -172,8 +171,7 @@ pub fn clipboard_copy_group_rich(
         html: Some(html),
     };
     let bytes = payload_bytes(&payload);
-    let seq = platform::write_payload(&payload)?;
-    rt.note_self_write(seq);
+    let seq = platform::write_payload_notifying(&payload, &rt.self_write)?;
     warnings.push("已写入富文本；目标应用若不支持 HTML 将退回纯文本".into());
     rt.emit_changed("copy-group-rich");
     Ok(CopyReport {
@@ -225,8 +223,7 @@ pub fn clipboard_copy_group_files(
     let payload = ClipboardPayload::Files {
         paths: paths.clone(),
     };
-    let seq = platform::write_payload(&payload)?;
-    rt.note_self_write(seq);
+    let seq = platform::write_payload_notifying(&payload, &rt.self_write)?;
     rt.emit_changed("copy-group-files");
     Ok(CopyReport {
         mode: "files".into(),
@@ -515,8 +512,21 @@ pub fn clipboard_paste_active(state: State<'_, Arc<ClipboardRuntime>>) -> Option
 #[tauri::command]
 pub fn clipboard_cleanup(state: State<'_, Arc<ClipboardRuntime>>) -> AppResult<CleanupReport> {
     let rt = runtime(&state);
-    let settings = Settings::load(&rt.db)?;
-    let report = store::cleanup(&rt.db, &rt.root, &settings)?;
+    if rt.paste.is_active() {
+        // 清理会删除条目与资产；粘贴队列按 id 逐项读取，删除会让后续项直接丢失。
+        return Err(AppError::Validation(
+            "粘贴进行中，暂不清理剪贴板历史".into(),
+        ));
+    }
+    let config = Settings::load_clipboard(&rt.db);
+    if let Some(error) = config.error.as_ref() {
+        // 容量/保留参数不可靠时不得按错误上限清理历史数据。
+        return Err(AppError::Validation(format!(
+            "剪贴板配置异常，已停止清理：{}",
+            error.message()
+        )));
+    }
+    let report = store::cleanup(&rt.db, &rt.root, &config.settings)?;
     rt.emit_changed("cleanup");
     Ok(report)
 }
@@ -524,11 +534,15 @@ pub fn clipboard_cleanup(state: State<'_, Arc<ClipboardRuntime>>) -> AppResult<C
 #[tauri::command]
 pub fn clipboard_status(state: State<'_, Arc<ClipboardRuntime>>) -> serde_json::Value {
     let rt = runtime(&state);
-    let settings = Settings::load(&rt.db).unwrap_or_default();
+    let config = Settings::load_clipboard(&rt.db);
     serde_json::json!({
-        "enabled": settings.clipboard_enabled,
-        "paused": settings.clipboard_paused,
+        // 配置异常时对外如实报告「未启用 / 已暂停」，避免界面显示“监听中”。
+        "enabled": config.error.is_none() && config.settings.clipboard_enabled,
+        "paused": config.error.is_some() || config.settings.clipboard_paused,
         "monitoring": rt.monitoring(),
+        "configError": config.error,
+        "configOrigin": config.origin,
+        "captureAllowed": config.capture_allowed(),
         "activeJob": rt.paste.active_job(),
         "platform": std::env::consts::OS,
         "monitor": platform::monitor_stats(),
@@ -551,10 +565,7 @@ pub fn clipboard_export_for_agent(
     task_id: Option<String>,
 ) -> AppResult<ExportPackage> {
     let rt = runtime(&state);
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| AppError::Validation(format!("无法获取应用数据目录: {e}")))?;
+    let data_dir = crate::app_data_dir(&app);
     let pkg = agent_bridge::export_package(
         &rt.db,
         &rt.root,

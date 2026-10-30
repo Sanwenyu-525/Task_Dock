@@ -1,0 +1,64 @@
+{
+  "scenario": "restart-timed-recovery",
+  "ts": "20261030-093218",
+  "events_submitted": 200,
+  "critical_submitted": 120,
+  "inbox_files_before_start": 200,
+  "submit_elapsed_s": 37.04,
+  "app_pid": 23644,
+  "drain_seconds": 55.67,
+  "inbox_files_after": 0,
+  "samples_tail": [
+    [
+      54.3,
+      5
+    ],
+    [
+      54.5,
+      4
+    ],
+    [
+      54.7,
+      4
+    ],
+    [
+      54.9,
+      3
+    ],
+    [
+      55.1,
+      2
+    ],
+    [
+      55.3,
+      1
+    ],
+    [
+      55.5,
+      1
+    ],
+    [
+      55.7,
+      0
+    ]
+  ],
+  "db_present": 200,
+  "db_missing": 0,
+  "db_duplicates": 0,
+  "critical_present": 120,
+  "integrity": "ok",
+  "last_shutdown_report": {
+    "lifecycle": "stopped",
+    "already_stopped": false,
+    "timed_out": false,
+    "elapsed_ms": 0,
+    "queued_events_at_start": 0,
+    "merge_events_at_start": 0,
+    "drained_events": 0,
+    "events_processed": 102,
+    "unfinished_events": 0,
+    "recovery": "全部已受理事件均已写入（关键事件提交均收到确认）"
+  },
+  "notes": "应用停止期间经 Hook CLI 文件回退写入；启动后扫描入库，drain_seconds 从进程启动到 inbox 清空。",
+  "ok": true
+}

@@ -1,0 +1,12 @@
+{
+  "os": "Windows-11-10.0.22631-SP0",
+  "machine": "AMD64",
+  "cpu_count": 20,
+  "python": "3.13.2",
+  "err": "[WinError 2] 系统找不到指定的文件。",
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "ram_gb": 15.6,
+  "disk": "NVMe KINGSTON SNV3S500G",
+  "build": "release (task-dock.exe sha256 3948dedf5bad0771874d965550b8539e3977d6e971bfb7dc2aefb308ac06ca8c)",
+  "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept-v05\\data-v3"
+}

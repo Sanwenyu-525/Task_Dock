@@ -48,6 +48,8 @@ import {
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useActionsStore, kindLabel as actionKindLabel } from "../../store/useActionsStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { createSubscriptionScope } from "../../lib/subscriptions";
 import { kindLabel as clipKindLabel } from "../../lib/clipboardUi";
 import { AGENT_STATE_LABELS, formatRelative } from "../../lib/format";
 import {
@@ -59,6 +61,8 @@ import {
   type TaskNavLink,
 } from "../../lib/navigation";
 import { TargetAvatar } from "../navigation/TargetMenu";
+import { Checkbox } from "../ui";
+import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 
 const ITEM_KIND_LABELS: Record<string, string> = {
   application: "应用",
@@ -96,6 +100,7 @@ export default function TaskContextDrawer() {
   const showToast = useUiStore((s) => s.showToast);
   const loadAgents = useAgentsStore((s) => s.load);
   const reloadActions = useActionsStore((s) => s.load);
+  const workspaceEnabled = useSettingsStore((s) => s.settings?.workspace_enabled ?? true);
 
   const taskId = task?.id ?? null;
   const [ctx, setCtx] = useState<TaskContext | null>(null);
@@ -140,41 +145,37 @@ export default function TaskContextDrawer() {
     setProgress(null);
     setCaptureOpen(false);
     void refresh();
-    workspaceRestoreStatus()
-      .then((s) => {
-        if (s.running && s.snapshot_id) setRestoringId(s.snapshot_id);
-      })
-      .catch(() => {});
+    if (workspaceEnabled) {
+      workspaceRestoreStatus()
+        .then((s) => {
+          if (s.running && s.snapshot_id) setRestoringId(s.snapshot_id);
+        })
+        .catch(() => {});
+    }
     const raf = requestAnimationFrame(() => drawerRef.current?.focus());
     return () => cancelAnimationFrame(raf);
-  }, [open, taskId, refresh]);
+  }, [open, taskId, refresh, workspaceEnabled]);
 
   // 现场变化（捕获 / 删除 / 恢复完成）→ 短去抖后刷新上下文
   useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    let unlisten: (() => void) | undefined;
+    if (!open || !workspaceEnabled) return;
+    const scope = createSubscriptionScope();
     let timer: number | undefined;
-    onWorkspaceChanged(() => {
+    scope.add(onWorkspaceChanged(() => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => void refresh(), 300);
-    }).then((u) => {
-      if (alive) unlisten = u;
-      else u();
-    });
+    }));
     return () => {
-      alive = false;
       if (timer) window.clearTimeout(timer);
-      unlisten?.();
+      scope.dispose();
     };
-  }, [open, refresh]);
+  }, [open, refresh, workspaceEnabled]);
 
   // 恢复进度：只做增量展示，不做整表高频重拉
   useEffect(() => {
-    if (!open) return;
-    let alive = true;
-    let unlisten: (() => void) | undefined;
-    onWorkspaceRestoreProgress((p) => {
+    if (!open || !workspaceEnabled) return;
+    const scope = createSubscriptionScope();
+    scope.add(onWorkspaceRestoreProgress((p) => {
       if (p.phase === "started") {
         setRestoringId((cur) => cur ?? p.snapshot_id);
         setLiveResults([]);
@@ -214,31 +215,16 @@ export default function TaskContextDrawer() {
       setProgress(null);
       showToast(`现场恢复失败：${p.error ?? "未知错误"}`, { kind: "error" });
       void refresh();
-    }).then((u) => {
-      if (alive) unlisten = u;
-      else u();
-    });
-    return () => {
-      alive = false;
-      unlisten?.();
-    };
-  }, [open, refresh, showToast]);
+    }));
+    return () => scope.dispose();
+  }, [open, refresh, showToast, workspaceEnabled]);
 
-  // Escape：捕获对话框 → 抽屉（标题栏已对上下文抽屉避让）
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (captureOpen) {
-        setCaptureOpen(false);
-        e.preventDefault();
-        return;
-      }
-      closeContext();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, captureOpen, closeContext]);
+  // Escape 走全局弹层栈：捕获对话框(dialog) → 上下文抽屉(drawer) → 主窗口。
+  // 一次 Escape 只关最上层，窗口不会跟着被藏进托盘。
+  useOverlayLayer("dialog", captureOpen, () => setCaptureOpen(false));
+  useOverlayLayer("drawer", open, () => closeContext());
+  // 焦点陷阱：捕获对话框打开时由它自己接管
+  useFocusTrap(open && !captureOpen, drawerRef);
 
   if (!open || !task) return null;
 
@@ -251,6 +237,10 @@ export default function TaskContextDrawer() {
 
   async function onSaveScene() {
     if (!taskId) return;
+    if (!workspaceEnabled) {
+      showToast("工作现场模块已关闭，请在设置中开启", { kind: "info" });
+      return;
+    }
     setBusy("save");
     try {
       const snap = await workspaceCaptureTask(taskId);
@@ -264,6 +254,10 @@ export default function TaskContextDrawer() {
   }
 
   async function openCaptureDialog() {
+    if (!workspaceEnabled) {
+      showToast("工作现场模块已关闭，请在设置中开启", { kind: "info" });
+      return;
+    }
     setCaptureOpen(true);
     setCaptureLoading(true);
     setCaptureSelected(new Set());
@@ -321,6 +315,10 @@ export default function TaskContextDrawer() {
   }
 
   async function onRestore(s: SnapshotSummary) {
+    if (!workspaceEnabled) {
+      showToast("工作现场模块已关闭，请在设置中开启", { kind: "info" });
+      return;
+    }
     setBusy(s.id);
     try {
       const started = await workspaceRestore(s.id);
@@ -474,7 +472,7 @@ export default function TaskContextDrawer() {
               <button className="icon-btn sm" onClick={() => void refresh()} title="刷新上下文" aria-label="刷新上下文">
                 <RefreshCw size={12} />
               </button>
-              <button className="icon-btn sm" onClick={close} title="关闭" aria-label="关闭">
+              <button className="icon-btn sm" onClick={close} data-tip="关闭" aria-label="关闭">
                 <X size={13} />
               </button>
             </div>
@@ -501,17 +499,30 @@ export default function TaskContextDrawer() {
                     <button
                       className="btn sm"
                       onClick={onSaveScene}
-                      disabled={busy === "save"}
-                      title="按任务关联目标与当前窗口保存现场"
+                      disabled={!workspaceEnabled || busy === "save"}
+                      title={
+                        workspaceEnabled
+                          ? "按任务关联目标与当前窗口保存现场"
+                          : "工作现场模块已关闭，请在设置中开启"
+                      }
                     >
                       <Save size={12} /> 保存当前现场
                     </button>
-                    <button className="btn sm" onClick={openCaptureDialog} disabled={busy === "capture"} title="选择当前窗口保存">
+                    <button
+                      className="btn sm"
+                      onClick={openCaptureDialog}
+                      disabled={!workspaceEnabled || busy === "capture"}
+                      title={
+                        workspaceEnabled ? "选择当前窗口保存" : "工作现场模块已关闭，请在设置中开启"
+                      }
+                    >
                       <Camera size={12} /> 捕获窗口…
                     </button>
                   </div>
                   <div className="endpoint-hint">
-                    只记录窗口标识（标题/类名/进程）与目标信息；不读取窗口内容、不截图。恢复结果按验证级别如实展示。
+                    {workspaceEnabled
+                      ? "只记录窗口标识（标题/类名/进程）与目标信息；不读取窗口内容、不截图。恢复结果按验证级别如实展示。"
+                      : "工作现场模块已关闭：不会捕获或恢复；已有现场与记录仍保留，可在设置中重新开启。"}
                   </div>
 
                   {ctx.snapshots.length === 0 && (
@@ -541,8 +552,12 @@ export default function TaskContextDrawer() {
                           <button
                             className="btn sm"
                             onClick={() => void onRestore(s)}
-                            disabled={Boolean(restoringId) || busy === s.id}
-                            title="恢复该现场（优先聚焦已存在窗口）"
+                            disabled={!workspaceEnabled || Boolean(restoringId) || busy === s.id}
+                            title={
+                              workspaceEnabled
+                                ? "恢复该现场（优先聚焦已存在窗口）"
+                                : "工作现场模块已关闭，请在设置中开启"
+                            }
                           >
                             {isRestoring ? "恢复中…" : "恢复"}
                           </button>
@@ -799,10 +814,10 @@ export default function TaskContextDrawer() {
                     const selectable = Boolean(w.exe_path);
                     return (
                       <label key={w.hwnd} className={`capture-row ${selectable ? "" : "disabled"}`}>
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={captureSelected.has(w.hwnd)}
                           disabled={!selectable}
+                          ariaLabel={w.title || "（无标题窗口）"}
                           onChange={() => toggleWindow(w.hwnd)}
                         />
                         <span className="capture-title" title={w.title}>

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Play, FlaskConical } from "lucide-react";
 import { mockStartScenario } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+import { Select } from "../ui";
 
 export default function MockControls() {
   const showToast = useUiStore((s) => s.showToast);
@@ -21,11 +22,17 @@ export default function MockControls() {
       </div>
       <div className="mock-row">
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="会话标题" />
-        <select value={outcome} onChange={(e) => setOutcome(e.target.value)}>
-          <option value="completed">完成（含待处理事项）</option>
-          <option value="failed">失败</option>
-          <option value="waiting_only">仅等待处理</option>
-        </select>
+        <Select
+          size="sm"
+          ariaLabel="模拟结果"
+          value={outcome}
+          options={[
+            { value: "completed", label: "完成（含待处理事项）" },
+            { value: "failed", label: "失败" },
+            { value: "waiting_only", label: "仅等待处理" },
+          ]}
+          onChange={setOutcome}
+        />
         <button
           className="btn primary sm"
           disabled={running}

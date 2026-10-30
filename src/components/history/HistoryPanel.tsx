@@ -2,23 +2,34 @@
 //! 按日分组、连续重复（失联/重连等）聚合、来源/类型/时间过滤、
 //! 点击展开详情、通知点击标已读、清空需二次确认；
 //! 订阅 notification / agent-changed 事件实时刷新。
+//!
+//! 分页与筛选全部在数据库完成：通知与事件各自 keyset 翻页，`has_more` 与
+//! `filtered_total` 使用同一筛选口径；未读数来自全库统计，不受首页 100 条限制。
+//! 后台刷新只合并在时间上连续的页；若新数据与已加载旧页之间出现空隙，则保留
+//! 旧页并提示刷新，绝不把有缺口的列表伪装成完整时间轴。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Bot, CheckCheck, Trash2, ChevronRight, ChevronDown, Inbox } from "lucide-react";
 import {
   clearNotifications,
   listAgentEvents,
-  listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  notificationInboxStats,
+  notificationPage,
   onAgentChanged,
   onNotification,
+  type AgentEventPage,
   type AgentEventRow,
+  type NotificationPage,
   type NotificationRow,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+import { useAgentsStore } from "../../store/useAgentsStore";
+import { createSubscriptionScope } from "../../lib/subscriptions";
+import { Select } from "../ui";
 import { NOTIFICATION_KIND_LABELS, AGENT_STATE_LABELS, formatRelative } from "../../lib/format";
-import { filterGroupsByTime, groupHistory } from "../../lib/historyGroup";
+import { groupHistory } from "../../lib/historyGroup";
 
 type KindFilter = "all" | "notification" | "event";
 type TimeFilter = "today" | "3d" | "7d" | "all";
@@ -33,12 +44,17 @@ const TIME_FILTERS: { id: TimeFilter; label: string }[] = [
 const DAY = 86400000;
 const PAGE = 100;
 
-/** 合并事件页并按 (received_at, id) 倒序去重（新页覆盖旧页同 id 记录）。 */
-function mergeEvents(prev: AgentEventRow[], next: AgentEventRow[]): AgentEventRow[] {
-  const map = new Map<string, AgentEventRow>();
-  for (const e of prev) map.set(e.id, e);
-  for (const e of next) map.set(e.id, e);
-  return [...map.values()].sort((a, b) =>
+function sinceIso(filter: TimeFilter): string | undefined {
+  if (filter === "all") return undefined;
+  const now = new Date();
+  if (filter === "today") {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  }
+  return new Date(now.getTime() - (filter === "3d" ? 3 : 7) * DAY).toISOString();
+}
+
+function sortEvents(rows: AgentEventRow[]): AgentEventRow[] {
+  return [...rows].sort((a, b) =>
     a.received_at === b.received_at
       ? a.id < b.id
         ? 1
@@ -49,101 +65,185 @@ function mergeEvents(prev: AgentEventRow[], next: AgentEventRow[]): AgentEventRo
   );
 }
 
+function sortNotifications(rows: NotificationRow[]): NotificationRow[] {
+  return [...rows].sort((a, b) =>
+    a.created_at === b.created_at
+      ? a.id < b.id
+        ? 1
+        : -1
+      : a.created_at < b.created_at
+        ? 1
+        : -1,
+  );
+}
+
+/** 合并已加载页与新到的首页，返回是否出现无法自动衔接的空隙。 */
+function mergeRefresh<T extends { id: string }>(
+  prev: T[],
+  next: T[],
+  sort: (rows: T[]) => T[],
+): { items: T[]; gap: boolean } {
+  if (prev.length === 0) return { items: next, gap: false };
+  if (next.length === 0) return { items: [], gap: false };
+  const prevIds = new Set(prev.map((r) => r.id));
+  if (!next.some((r) => prevIds.has(r.id))) {
+    // 首页与已加载页不重叠：旧页与最新页之间可能有未加载记录。
+    // 保留旧页并提示刷新，避免显示一个缺少中间记录的时间轴。
+    return { items: prev, gap: true };
+  }
+  const map = new Map<string, T>();
+  for (const r of prev) map.set(r.id, r);
+  for (const r of next) map.set(r.id, r);
+  return { items: sort([...map.values()]), gap: false };
+}
+
 export default function HistoryPanel() {
   const showToast = useUiStore((s) => s.showToast);
+  const agentSnapshot = useAgentsStore((s) => s.snapshot);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [events, setEvents] = useState<AgentEventRow[]>([]);
+  const [notificationsHasMore, setNotificationsHasMore] = useState(false);
   const [eventsHasMore, setEventsHasMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const loadedRef = useRef(false);
+  const [notificationsTotal, setNotificationsTotal] = useState(0);
+  const [eventsTotal, setEventsTotal] = useState(0);
+  const [unread, setUnread] = useState(0);
+  const [inboxTotal, setInboxTotal] = useState(0);
+  const [hasNew, setHasNew] = useState(false);
+  const [loadingMore, setLoadingMore] = useState<"events" | "notifications" | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
   const [detailKey, setDetailKey] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const queryKey = `${sourceFilter}\u0000${timeFilter}`;
+  const queryKeyRef = useRef(queryKey);
+  queryKeyRef.current = queryKey;
+  const notificationsRef = useRef(notifications);
+  notificationsRef.current = notifications;
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+  const queryOpts = useMemo(
+    () => ({
+      sourceId: sourceFilter === "all" ? undefined : sourceFilter,
+      since: sinceIso(timeFilter),
+    }),
+    [sourceFilter, timeFilter],
+  );
 
-  const refresh = useCallback(async () => {
-    try {
-      const [ns, evs] = await Promise.all([listNotifications(false, PAGE), listAgentEvents(PAGE)]);
-      setNotifications(ns);
-      // 增量合并：保留用户已翻页加载的旧事件，避免刷新把时间轴截断回最新一页
-      setEvents((prev) => mergeEvents(prev, evs));
-      if (!loadedRef.current) {
-        loadedRef.current = true;
-        setEventsHasMore(evs.length >= PAGE);
+  const applyFirstPages = useCallback((np: NotificationPage, ep: AgentEventPage) => {
+    setNotifications(np.items);
+    setNotificationsHasMore(np.has_more);
+    setNotificationsTotal(np.filtered_total);
+    setEvents(ep.items);
+    setEventsHasMore(ep.has_more);
+    setEventsTotal(ep.filtered_total);
+    setHasNew(false);
+  }, []);
+
+  const refresh = useCallback(
+    async (mode: "replace" | "merge") => {
+      const key = queryKeyRef.current;
+      try {
+        const [np, ep, stats] = await Promise.all([
+          notificationPage({ ...queryOpts, limit: PAGE }),
+          listAgentEvents(PAGE, queryOpts),
+          notificationInboxStats(),
+        ]);
+        if (queryKeyRef.current !== key) return; // 筛选已变化，丢弃旧响应
+        setUnread(stats.unread);
+        setInboxTotal(stats.total);
+        setNotificationsTotal(np.filtered_total);
+        setEventsTotal(ep.filtered_total);
+        if (mode === "replace") {
+          applyFirstPages(np, ep);
+        } else {
+          const n = mergeRefresh(notificationsRef.current, np.items, sortNotifications);
+          const e = mergeRefresh(eventsRef.current, ep.items, sortEvents);
+          setNotifications(n.items);
+          setEvents(e.items);
+          // 合并刷新同样要推进分页状态：否则首屏为空后到达的新事件会让
+          // 「加载更早」永远不出现（has_more 停在挂载时的值）。
+          setNotificationsHasMore(n.items.length < np.filtered_total);
+          setEventsHasMore(e.items.length < ep.filtered_total);
+          if (n.gap || e.gap) setHasNew(true);
+        }
+        setLoaded(true);
+      } catch (err) {
+        showToast(`加载历史失败：${String(err)}`, { kind: "error" });
       }
-      setLoaded(true);
-    } catch (e) {
-      showToast(`加载历史失败：${String(e)}`, { kind: "error" });
-    }
-  }, [showToast]);
+    },
+    [applyFirstPages, queryOpts, showToast],
+  );
 
+  // 时间/来源筛选变化：两个列表一起按新口径重置（分页游标随之失效）。
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    setLoaded(false);
+    setNotifications([]);
+    setEvents([]);
+    setHasNew(false);
+    void refresh("replace");
+    // refresh 已包含筛选与当前列表；此处只在筛选变化时重置
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryKey]);
 
   // 新通知 / Agent 事件到达 → 合并刷新（500ms 窗口，避免事件风暴下反复拉取全量历史）
   useEffect(() => {
-    const cleanups: (() => void)[] = [];
+    const scope = createSubscriptionScope();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const bump = () => {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
         if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-        void refresh();
+        void refresh("merge");
       }, 500);
     };
-    onNotification(() => bump()).then((u) => cleanups.push(u));
-    onAgentChanged((payload) => {
+    scope.add(onNotification(() => bump()));
+    scope.add(onAgentChanged((payload) => {
       if (payload?.changed === false) return;
       bump();
-    }).then((u) => cleanups.push(u));
+    }));
     return () => {
       if (timer) clearTimeout(timer);
-      cleanups.forEach((u) => u());
+      scope.dispose();
     };
   }, [refresh]);
 
-  const sources = useMemo(() => {
-    const ids = new Set<string>([
-      ...events.map((e) => e.source_id),
-      ...notifications.map((n) => n.kind),
-    ]);
-    return [...ids].sort();
-  }, [events, notifications]);
+  const sourceOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of agentSnapshot?.sources ?? []) map.set(s.id, s.display_name);
+    for (const [kind, label] of Object.entries(NOTIFICATION_KIND_LABELS)) {
+      map.set(kind, `通知 · ${label}`);
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1], "zh-CN"));
+  }, [agentSnapshot]);
 
   const groups = useMemo(() => {
     let g = groupHistory(notifications, events);
-    if (timeFilter !== "all") {
-      const from = Date.now() - (timeFilter === "today" ? 1 : timeFilter === "3d" ? 3 : 7) * DAY;
-      g = filterGroupsByTime(g, timeFilter === "today" ? new Date(new Date().toDateString()).getTime() : from);
-    }
-    if (kindFilter !== "all" || sourceFilter !== "all") {
+    if (kindFilter !== "all") {
       g = g
         .map((day) => ({
           ...day,
-          entries: day.entries.filter((e) => {
-            if (kindFilter !== "all" && e.kind !== kindFilter) return false;
-            if (sourceFilter !== "all" && e.source !== sourceFilter) return false;
-            return true;
-          }),
+          entries: day.entries.filter((e) => e.kind === kindFilter),
         }))
         .filter((day) => day.entries.length > 0);
     }
     return g;
-  }, [notifications, events, kindFilter, sourceFilter, timeFilter]);
+  }, [notifications, events, kindFilter]);
 
-  const unreadCount = notifications.filter((n) => !n.is_read).length;
   const total = groups.reduce((acc, g) => acc + g.entries.length, 0);
+  const filtering = sourceFilter !== "all" || timeFilter !== "all" || kindFilter !== "all";
 
   async function onEntryClick(key: string, notification?: NotificationRow) {
     setDetailKey((k) => (k === key ? null : key));
     if (notification && !notification.is_read) {
       try {
         await markNotificationRead(notification.id);
-        setNotifications((ns) => ns.map((n) => (n.id === notification.id ? { ...n, is_read: true } : n)));
+        setNotifications((ns) =>
+          ns.map((n) => (n.id === notification.id ? { ...n, is_read: true } : n)),
+        );
+        setUnread((u) => Math.max(0, u - 1));
       } catch (e) {
         showToast(String(e), { kind: "error" });
       }
@@ -153,7 +253,7 @@ export default function HistoryPanel() {
   async function onMarkAll() {
     try {
       await markAllNotificationsRead();
-      await refresh();
+      await refresh("replace");
     } catch (e) {
       showToast(String(e), { kind: "error" });
     }
@@ -167,7 +267,7 @@ export default function HistoryPanel() {
     }
     try {
       await clearNotifications();
-      await refresh();
+      await refresh("replace");
       showToast("通知已清空（Agent 事件流水保留）", { kind: "success" });
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -176,18 +276,34 @@ export default function HistoryPanel() {
     }
   }
 
-  async function onLoadMore() {
-    if (loadingMore || events.length === 0) return;
-    const cursor = events[events.length - 1].id;
-    setLoadingMore(true);
+  async function onLoadMore(kind: "events" | "notifications") {
+    if (loadingMore) return;
+    const key = queryKeyRef.current;
+    setLoadingMore(kind);
     try {
-      const older = await listAgentEvents(PAGE, undefined, cursor);
-      setEvents((prev) => mergeEvents(prev, older));
-      setEventsHasMore(older.length >= PAGE);
+      if (kind === "events") {
+        const cursor = events[events.length - 1]?.id;
+        if (!cursor) return;
+        const page = await listAgentEvents(PAGE, { ...queryOpts, before: cursor });
+        if (queryKeyRef.current !== key) return;
+        setEvents((prev) => sortEvents([...prev, ...page.items.filter((p) => !prev.some((x) => x.id === p.id))]));
+        setEventsHasMore(page.has_more);
+        setEventsTotal(page.filtered_total);
+      } else {
+        const cursor = notifications[notifications.length - 1]?.id;
+        if (!cursor) return;
+        const page = await notificationPage({ ...queryOpts, before: cursor, limit: PAGE });
+        if (queryKeyRef.current !== key) return;
+        setNotifications((prev) =>
+          sortNotifications([...prev, ...page.items.filter((p) => !prev.some((x) => x.id === p.id))]),
+        );
+        setNotificationsHasMore(page.has_more);
+        setNotificationsTotal(page.filtered_total);
+      }
     } catch (e) {
-      showToast(`加载更早事件失败：${String(e)}`, { kind: "error" });
+      showToast(`加载更早记录失败：${String(e)}`, { kind: "error" });
     } finally {
-      setLoadingMore(false);
+      setLoadingMore(null);
     }
   }
 
@@ -213,17 +329,14 @@ export default function HistoryPanel() {
           ))}
         </div>
         <span className="flex-spacer" />
-        <select
+        <Select
           className="sort-select"
-          aria-label="来源筛选"
+          size="sm"
+          ariaLabel="来源筛选"
           value={sourceFilter}
-          onChange={(e) => setSourceFilter(e.target.value)}
-        >
-          <option value="all">全部来源</option>
-          {sources.map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))}
-        </select>
+          options={[{ value: "all", label: "全部来源" }, ...sourceOptions.map(([value, label]) => ({ value, label }))]}
+          onChange={(v) => setSourceFilter(v)}
+        />
       </div>
       <div className="filter-bar secondary">
         <div className="seg-group subtle" role="group" aria-label="时间范围">
@@ -238,8 +351,10 @@ export default function HistoryPanel() {
           ))}
         </div>
         <span className="flex-spacer" />
-        {unreadCount > 0 && <span className="history-unread-hint">{unreadCount} 条未读</span>}
-        <button className="btn sm" onClick={onMarkAll} disabled={unreadCount === 0} title="全部标为已读">
+        <span className="history-unread-hint">
+          {unread} 条未读 / 共 {inboxTotal}
+        </span>
+        <button className="btn sm" onClick={onMarkAll} disabled={unread === 0} title="全部标为已读">
           <CheckCheck size={12} /> 全部已读
         </button>
         <button className={`btn sm ${confirmClear ? "danger" : ""}`} onClick={onClear} title={confirmClear ? "再次点击确认清空" : "清空通知"}>
@@ -247,13 +362,24 @@ export default function HistoryPanel() {
         </button>
       </div>
 
+      {hasNew && (
+        <div className="history-new-banner">
+          <span>有新记录到达，当前列表与最新数据之间还有未加载的空隙。</span>
+          <button className="btn sm" onClick={() => void refresh("replace")}>刷新到最新</button>
+        </div>
+      )}
+
       {/* 时间轴 */}
       {!loaded && <div className="empty-hint">加载中…</div>}
       {loaded && total === 0 && (
         <div className="empty-state">
           <div className="empty-icon"><Inbox size={22} /></div>
-          <div className="empty-title">暂无历史记录</div>
-          <div className="empty-hint">任务提醒与 Agent 事件会在这里按日期归档</div>
+          <div className="empty-title">{filtering ? "当前筛选下暂无记录" : "暂无历史记录"}</div>
+          <div className="empty-hint">
+            {filtering
+              ? `筛选范围内共 ${eventsTotal} 条 Agent 事件、${notificationsTotal} 条通知；可调整来源/时间/类型。`
+              : "任务提醒与 Agent 事件会在这里按日期归档"}
+          </div>
         </div>
       )}
       {groups.map((g) => (
@@ -326,11 +452,30 @@ export default function HistoryPanel() {
           </div>
         </div>
       ))}
-      {loaded && eventsHasMore && (
+      {loaded && (eventsHasMore || notificationsHasMore) && (
         <div className="history-more">
-          <button className="btn sm" onClick={onLoadMore} disabled={loadingMore}>
-            {loadingMore ? "加载中…" : "加载更早的事件"}
-          </button>
+          {eventsHasMore && (
+            <button
+              className="btn sm"
+              onClick={() => void onLoadMore("events")}
+              disabled={loadingMore !== null}
+            >
+              {loadingMore === "events"
+                ? "加载中…"
+                : `加载更早的 Agent 事件（已加载 ${events.length}/${eventsTotal}）`}
+            </button>
+          )}
+          {notificationsHasMore && (
+            <button
+              className="btn sm"
+              onClick={() => void onLoadMore("notifications")}
+              disabled={loadingMore !== null}
+            >
+              {loadingMore === "notifications"
+                ? "加载中…"
+                : `加载更早的通知（已加载 ${notifications.length}/${notificationsTotal}）`}
+            </button>
+          )}
         </div>
       )}
     </div>

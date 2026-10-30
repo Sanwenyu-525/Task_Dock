@@ -1,0 +1,77 @@
+{
+  "scenario": "db-audit",
+  "general": {
+    "db_path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept-v05\\data-v3\\task-dock.db",
+    "db_bytes": 98467840,
+    "wal_bytes": 5772152,
+    "user_version": 11,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "tables": {
+      "action_acks": 0,
+      "agent_events": 72317,
+      "agent_instances": 12,
+      "agent_runs": 15618,
+      "agent_sessions": 32,
+      "agent_sources": 9,
+      "application_settings": 44,
+      "clipboard_assets": 0,
+      "clipboard_group_items": 0,
+      "clipboard_groups": 0,
+      "clipboard_items": 0,
+      "clipboard_paste_jobs": 0,
+      "clipboard_snapshot_links": 0,
+      "clipboard_task_links": 0,
+      "navigation_log": 0,
+      "navigation_targets": 0,
+      "notification_history": 31187,
+      "recurrence_rules": 0,
+      "task_agent_links": 0,
+      "task_categories": 0,
+      "task_navigation_targets": 0,
+      "task_reminders": 0,
+      "tasks": 0,
+      "workspace_snapshot_items": 0,
+      "workspace_snapshots": 0
+    },
+    "events_by_source": {
+      "bridge": 72302,
+      "codex": 5,
+      "trae": 5,
+      "workbuddy": 5
+    },
+    "events_by_state": {
+      "completed": 15975,
+      "running": 40429,
+      "waiting": 15913
+    },
+    "event_seq": {
+      "min": 1793321920563543,
+      "max": 1793322988636860,
+      "distinct": 72317
+    },
+    "received_range": [
+      "2026-10-30T00:58:40.565912400+00:00",
+      "2026-10-30T01:16:28.891109500+00:00"
+    ],
+    "dedupe_key_duplicates": 0,
+    "runs_by_status": {
+      "completed": 15615,
+      "running": 1,
+      "waiting": 2
+    },
+    "runs_with_watermark": 15618,
+    "runs_without_last_event_at": 0
+  },
+  "reconcile": {
+    "critical_total": 24,
+    "critical_present": 24,
+    "critical_missing": [],
+    "critical_duplicates": {},
+    "markers_total": 10,
+    "markers_present": 10,
+    "markers_missing": [],
+    "client_critical_failed": [],
+    "ok": true
+  }
+}

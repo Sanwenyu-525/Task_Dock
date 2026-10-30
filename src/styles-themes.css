@@ -1,0 +1,1544 @@
+/* ════════════════════════════════════════════════════════════════
+   Task Dock v0.6 — 双视觉预设（梦幻渐变 / 液态玻璃）
+   ────────────────────────────────────────────────────────────────
+   本文件只做两件事，不复制第二套组件样式：
+
+   1. 语义 Token 层：把既有变量（--surface-* / --border-* / --accent*
+      / --shadow-*）按「预设 × 明暗」重新赋值。老组件（Agent / 历史 /
+      行动 / 剪贴板 / 设置）因此自动获得新皮肤，无需逐个改写。
+   2. 结构层：v0.6 新增的左侧导航轨、标题栏品牌、空状态插画、预设选择卡，
+      以及少量必须覆盖的旧规则（去掉 1px 外框、改卡片材质）。
+
+   取值优先级（后者覆盖前者）：
+     :root（= dream 浅色，保证首帧不闪）
+     :root[data-preset="dream-gradient"][data-theme="dark"]
+     :root[data-preset="liquid-glass"]（浅色）
+     :root[data-preset="liquid-glass"][data-theme="dark"]
+     …material-solid / [data-native-glass="false"] 的可读性兜底
+     …prefers-contrast: more 的强制对比度兜底
+
+   性能约定：整份文件没有常驻动画、没有全窗口 backdrop-filter；
+   背景装饰是单个伪元素上的静态渐变层（一次绘制，空闲 0 帧）。
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 0. 结构尺寸（与预设无关） ───────────────────────────────── */
+
+:root {
+  --rail-w: 62px;
+  --radius-window: 18px;
+  --radius-card: 13px;
+  --radius-control: 9px;
+  --badge-ring: rgba(255, 255, 255, 0.9);
+}
+
+/* ── 1. 梦幻渐变 · 浅色（同时作为默认值） ───────────────────── */
+
+:root,
+:root[data-preset="dream-gradient"] {
+  /* 窗口：低饱和蓝紫粉渐变，几乎无描边 */
+  --window-fill: linear-gradient(158deg, #fbfcff 0%, #f5f3ff 34%, #fdf4fa 68%, #f7faff 100%);
+  --window-edge:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -24px 48px -34px rgba(90, 96, 170, 0.22);
+  --decor:
+    radial-gradient(190px 160px at 4% 0%, rgba(190, 214, 255, 1), transparent 70%),
+    radial-gradient(200px 170px at 98% 6%, rgba(212, 203, 255, 0.95), transparent 72%),
+    radial-gradient(230px 190px at 90% 98%, rgba(249, 213, 234, 0.9), transparent 74%),
+    radial-gradient(180px 160px at 0% 92%, rgba(198, 218, 255, 0.7), transparent 74%);
+  --decor-opacity: 1;
+
+  /* 表面层级：卡片 > 控件 > 背景 */
+  --card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.62));
+  --card-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.6),
+    0 8px 18px -12px rgba(99, 102, 241, 0.4);
+  --card-shadow-hover:
+    0 0 0 1px rgba(255, 255, 255, 0.85),
+    0 10px 22px -12px rgba(99, 102, 241, 0.5);
+  --control-face: rgba(255, 255, 255, 0.72);
+  --control-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.75),
+    0 4px 12px -8px rgba(99, 102, 241, 0.35);
+  --control-shadow-hover:
+    0 0 0 1px rgba(255, 255, 255, 0.9),
+    0 6px 16px -10px rgba(99, 102, 241, 0.42);
+  --control-shadow-press:
+    0 0 0 1px rgba(255, 255, 255, 0.68),
+    0 2px 8px -6px rgba(99, 102, 241, 0.28);
+
+  --control-shadow-focus:
+    0 0 0 1.5px rgba(99, 102, 241, 0.55),
+    0 6px 16px -8px rgba(99, 102, 241, 0.45);
+
+  /* 分段控件 / 药丸 */
+  --pill-face: rgba(236, 236, 250, 0.72);
+  --pill-active-face: #ffffff;
+  --pill-active-text: #4f46e5;
+  --pill-active-shadow: 0 2px 6px -2px rgba(79, 70, 229, 0.28);
+  --pill-soft-active-face: rgba(255, 255, 255, 0.92);
+
+  /* 左侧导航 */
+  --rail-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.05));
+  --rail-divider: none;
+  --rail-hover-face: rgba(99, 102, 241, 0.07);
+  --rail-active-face: linear-gradient(180deg, rgba(99, 102, 241, 0.14), rgba(99, 102, 241, 0.08));
+  --rail-active-text: #4f46e5;
+  --rail-active-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
+  --rail-active-bar: #6366f1;
+
+  /* 强调与文字 */
+  --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6366f1 55%, #8b5cf6 100%);
+  --orb-gradient: linear-gradient(140deg, #b9d0ff 0%, #cbbdfd 46%, #f8c8e2 100%);
+  --orb-face: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(240, 240, 255, 0.7));
+  --orb-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9), 0 6px 14px -8px rgba(99, 102, 241, 0.6);
+
+  --text-primary: #22263c;
+  --text-secondary: #59607a;
+  --text-tertiary: #8a90a8;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-soft: rgba(99, 102, 241, 0.1);
+  --divider: rgba(34, 38, 60, 0.07);
+
+  --icon-accent: #6366f1;
+  --icon-violet: #8b5cf6;
+  --icon-warn: #f97316;
+
+  /* 兼容旧变量名，避免老组件失色 */
+  --surface-base: var(--window-fill);
+  --surface-raised: var(--card-face);
+  --surface-overlay: rgba(255, 255, 255, 0.96);
+  --surface-hover: rgba(99, 102, 241, 0.08);
+  --border-subtle: rgba(34, 38, 60, 0.06);
+  --border-strong: rgba(34, 38, 60, 0.12);
+  --glass-tint: var(--window-fill);
+  --shadow-raised: var(--card-shadow);
+}
+
+/* ── 2. 梦幻渐变 · 深色 ─────────────────────────────────────── */
+
+:root[data-preset="dream-gradient"][data-theme="dark"] {
+  --window-fill: linear-gradient(158deg, #171a2b 0%, #1a1729 36%, #1e1728 68%, #151827 100%);
+  --window-edge:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -24px 48px -34px rgba(0, 0, 0, 0.55);
+  --decor:
+    radial-gradient(150px 130px at 6% 2%, rgba(96, 120, 190, 0.38), transparent 72%),
+    radial-gradient(170px 150px at 97% 8%, rgba(120, 100, 190, 0.34), transparent 74%),
+    radial-gradient(200px 170px at 88% 96%, rgba(180, 100, 160, 0.28), transparent 76%),
+    radial-gradient(160px 140px at 2% 88%, rgba(80, 110, 180, 0.24), transparent 76%);
+
+  --card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.035));
+  --card-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 10px 22px -16px rgba(0, 0, 0, 0.9);
+  --card-shadow-hover:
+    0 0 0 1px rgba(255, 255, 255, 0.13),
+    0 12px 26px -16px rgba(0, 0, 0, 1);
+  --control-face: rgba(255, 255, 255, 0.055);
+  --control-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 6px 16px -12px rgba(0, 0, 0, 0.8);
+  --control-shadow-hover:
+    0 0 0 1px rgba(255, 255, 255, 0.13),
+    0 8px 20px -12px rgba(0, 0, 0, 0.85);
+  --control-shadow-press:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 3px 10px -8px rgba(0, 0, 0, 0.7);
+
+  --control-shadow-focus:
+    0 0 0 1.5px rgba(165, 168, 255, 0.55),
+    0 8px 20px -12px rgba(0, 0, 0, 0.9);
+
+  --pill-face: rgba(255, 255, 255, 0.05);
+  --pill-active-face: rgba(255, 255, 255, 0.11);
+  --pill-active-text: #c7c9ff;
+  --pill-active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --pill-soft-active-face: rgba(255, 255, 255, 0.1);
+
+  --rail-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0));
+  --rail-divider: none;
+  --rail-hover-face: rgba(255, 255, 255, 0.06);
+  --rail-active-face: linear-gradient(180deg, rgba(165, 168, 255, 0.18), rgba(165, 168, 255, 0.09));
+  --rail-active-text: #c7c9ff;
+  --rail-active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --rail-active-bar: #a5a8ff;
+
+  --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6f6ef0 55%, #9a7cf0 100%);
+  --orb-gradient: linear-gradient(140deg, #6f8fd8 0%, #8f7fd0 48%, #c07fa8 100%);
+  --orb-face: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04));
+  --orb-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+
+  --text-primary: #e9eaf6;
+  --text-secondary: #a4a9c2;
+  --text-tertiary: #7b8199;
+  --accent: #a5a8ff;
+  --accent-hover: #bbbdff;
+  --accent-soft: rgba(165, 168, 255, 0.14);
+  --divider: rgba(255, 255, 255, 0.07);
+
+  --icon-accent: #a5a8ff;
+  --icon-violet: #c4b5fd;
+  --icon-warn: #fb923c;
+
+  --surface-overlay: #232634;
+  --surface-hover: rgba(165, 168, 255, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --badge-ring: rgba(23, 26, 43, 0.95);
+}
+
+/* ── 3. 液态玻璃 · 浅色 ─────────────────────────────────────── */
+
+:root[data-preset="liquid-glass"] {
+  /* 显式半透明：真正的模糊来自原生 Mica/Acrylic，CSS 只做 tint 与高光 */
+  --window-fill: linear-gradient(
+    152deg,
+    rgba(255, 255, 255, 0.84) 0%,
+    rgba(242, 245, 255, 0.72) 42%,
+    rgba(252, 241, 250, 0.74) 72%,
+    rgba(240, 246, 255, 0.8) 100%
+  );
+  --window-edge:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -30px 60px -40px rgba(80, 90, 170, 0.35);
+  --decor:
+    radial-gradient(160px 140px at 4% 0%, rgba(190, 214, 255, 0.55), transparent 70%),
+    radial-gradient(180px 150px at 98% 6%, rgba(214, 202, 255, 0.5), transparent 72%),
+    radial-gradient(220px 180px at 92% 98%, rgba(255, 214, 238, 0.42), transparent 74%),
+    radial-gradient(180px 150px at 0% 92%, rgba(196, 226, 255, 0.4), transparent 74%);
+  --decor-opacity: 1;
+
+  --card-face: linear-gradient(
+    158deg,
+    rgba(255, 255, 255, 0.86) 0%,
+    rgba(255, 255, 255, 0.74) 52%,
+    rgba(250, 251, 255, 0.66) 100%
+  );
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.28),
+    0 0 0 1px rgba(255, 255, 255, 0.46),
+    0 10px 24px -16px rgba(72, 82, 160, 0.55);
+  --card-shadow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    0 0 0 1px rgba(255, 255, 255, 0.66),
+    0 14px 30px -16px rgba(72, 82, 160, 0.6);
+  --control-face: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.82),
+    rgba(255, 255, 255, 0.64)
+  );
+  --control-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 0 0 1px rgba(255, 255, 255, 0.42),
+    0 6px 16px -12px rgba(72, 82, 160, 0.5);
+  --control-shadow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 0 0 1px rgba(255, 255, 255, 0.5),
+    0 8px 20px -12px rgba(72, 82, 160, 0.55);
+  --control-shadow-press:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 0 0 1px rgba(255, 255, 255, 0.34),
+    0 4px 12px -10px rgba(72, 82, 160, 0.4);
+
+  --control-shadow-focus:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 0 0 1.5px rgba(99, 102, 241, 0.5),
+    0 8px 20px -12px rgba(72, 82, 160, 0.6);
+
+  --pill-face: rgba(255, 255, 255, 0.3);
+  --pill-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.62));
+  --pill-active-text: #4f46e5;
+  --pill-active-shadow:
+    inset 0 1px 0 #ffffff,
+    0 4px 12px -6px rgba(99, 102, 241, 0.45);
+  --pill-soft-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.55));
+
+  --rail-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.1));
+  --rail-divider: none;
+  --rail-hover-face: rgba(255, 255, 255, 0.4);
+  --rail-active-face: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.82) 0%,
+    rgba(240, 240, 255, 0.55) 48%,
+    rgba(232, 236, 255, 0.42) 100%
+  );
+  --rail-active-text: #4f46e5;
+  --rail-active-shadow:
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(255, 255, 255, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 6px 16px -8px rgba(99, 102, 241, 0.5);
+  --rail-active-bar: rgba(99, 102, 241, 0.55);
+
+  --accent-gradient: linear-gradient(140deg, #8f8ff8 0%, #6366f1 48%, #a855f7 100%);
+  --orb-gradient: conic-gradient(
+    from 210deg,
+    #c9dcff,
+    #dcd4ff,
+    #f7d9eb,
+    #c9f0ff,
+    #c9dcff
+  );
+  --orb-face: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(238, 240, 255, 0.5));
+  --orb-shadow:
+    inset 0 1px 0 #ffffff,
+    0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 6px 16px -8px rgba(99, 102, 241, 0.55);
+
+  --text-primary: #232840;
+  --text-secondary: #565d78;
+  --text-tertiary: #767d96;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-soft: rgba(99, 102, 241, 0.12);
+  --divider: rgba(35, 40, 64, 0.08);
+
+  --icon-accent: #6366f1;
+  --icon-violet: #8b5cf6;
+  --icon-warn: #f97316;
+
+  --surface-base: var(--window-fill);
+  --surface-raised: var(--card-face);
+  --surface-overlay: rgba(252, 252, 255, 0.92);
+  --surface-hover: rgba(255, 255, 255, 0.5);
+  --border-subtle: rgba(35, 40, 64, 0.06);
+  --border-strong: rgba(35, 40, 64, 0.12);
+  --glass-tint: var(--window-fill);
+  --shadow-raised: var(--card-shadow);
+}
+
+/* ── 4. 液态玻璃 · 深色 ─────────────────────────────────────── */
+
+:root[data-preset="liquid-glass"][data-theme="dark"] {
+  --window-fill: linear-gradient(
+    152deg,
+    rgba(34, 38, 58, 0.84) 0%,
+    rgba(26, 26, 45, 0.78) 42%,
+    rgba(33, 26, 45, 0.78) 72%,
+    rgba(24, 31, 49, 0.84) 100%
+  );
+  --window-edge:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -30px 60px -40px rgba(0, 0, 0, 0.6);
+  --decor:
+    radial-gradient(160px 140px at 4% 0%, rgba(90, 120, 200, 0.4), transparent 70%),
+    radial-gradient(180px 150px at 98% 6%, rgba(120, 100, 200, 0.36), transparent 72%),
+    radial-gradient(220px 180px at 92% 98%, rgba(170, 90, 150, 0.3), transparent 74%),
+    radial-gradient(180px 150px at 0% 92%, rgba(70, 110, 190, 0.28), transparent 74%);
+
+  --card-face:
+    linear-gradient(158deg, rgba(255, 255, 255, 0.15) 0%, rgba(255, 255, 255, 0.06) 100%),
+    linear-gradient(158deg, rgba(40, 45, 66, 0.72) 0%, rgba(26, 30, 45, 0.62) 100%);
+  --card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    0 12px 26px -18px rgba(0, 0, 0, 0.95);
+  --card-shadow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 0 0 1px rgba(255, 255, 255, 0.15),
+    0 14px 30px -18px rgba(0, 0, 0, 1);
+  --control-face:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.05)),
+    linear-gradient(160deg, rgba(38, 42, 62, 0.68), rgba(26, 30, 44, 0.58));
+  --control-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    0 8px 20px -16px rgba(0, 0, 0, 0.9);
+  --control-shadow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 0 0 1px rgba(255, 255, 255, 0.13),
+    0 10px 26px -16px rgba(0, 0, 0, 0.95);
+  --control-shadow-press:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 5px 14px -12px rgba(0, 0, 0, 0.8);
+
+  --control-shadow-focus:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 0 0 1.5px rgba(165, 168, 255, 0.5),
+    0 10px 24px -16px rgba(0, 0, 0, 0.95);
+
+  --pill-face: rgba(255, 255, 255, 0.06);
+  --pill-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.1));
+  --pill-active-text: #cfd1ff;
+  --pill-active-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 4px 12px -6px rgba(0, 0, 0, 0.8);
+  --pill-soft-active-face: rgba(255, 255, 255, 0.12);
+
+  --rail-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.015));
+  --rail-divider: none;
+  --rail-hover-face: rgba(255, 255, 255, 0.08);
+  --rail-active-face: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(165, 168, 255, 0.14) 50%,
+    rgba(165, 168, 255, 0.08) 100%
+  );
+  --rail-active-text: #d5d6ff;
+  --rail-active-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 6px 16px -10px rgba(0, 0, 0, 0.9);
+  --rail-active-bar: rgba(165, 168, 255, 0.6);
+
+  --accent-gradient: linear-gradient(140deg, #8f8ff8 0%, #6f6ef0 48%, #a855f7 100%);
+  --orb-gradient: conic-gradient(
+    from 210deg,
+    #4f6fb8,
+    #6f5fb8,
+    #b06a94,
+    #4f8fb8,
+    #4f6fb8
+  );
+  --orb-face: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.04));
+  --orb-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
+
+  --text-primary: #edeffa;
+  --text-secondary: #b0b5cd;
+  --text-tertiary: #838aa4;
+  --accent: #a5a8ff;
+  --accent-hover: #bbbdff;
+  --accent-soft: rgba(165, 168, 255, 0.16);
+  --divider: rgba(255, 255, 255, 0.08);
+
+  --icon-accent: #a5a8ff;
+  --icon-violet: #c4b5fd;
+  --icon-warn: #fb923c;
+
+  --surface-overlay: #21242f;
+  --surface-hover: rgba(255, 255, 255, 0.1);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --badge-ring: rgba(24, 26, 40, 0.9);
+}
+
+/* ── 5. 降级：原生材质不可用时提高不透明度（可读性优先） ────── */
+
+:root[data-preset="liquid-glass"][data-native-glass="false"],
+:root[data-preset="liquid-glass"][data-material="solid"] {
+  --window-fill: linear-gradient(
+    152deg,
+    rgba(255, 255, 255, 0.97) 0%,
+    rgba(244, 246, 255, 0.96) 42%,
+    rgba(252, 244, 252, 0.96) 72%,
+    rgba(242, 248, 255, 0.97) 100%
+  );
+  --card-face: linear-gradient(
+    158deg,
+    rgba(255, 255, 255, 0.95) 0%,
+    rgba(250, 250, 255, 0.88) 60%,
+    rgba(246, 247, 255, 0.82) 100%
+  );
+  --rail-active-face: linear-gradient(180deg, #ffffff, #f4f4ff);
+}
+
+:root[data-preset="liquid-glass"][data-theme="dark"][data-native-glass="false"],
+:root[data-preset="liquid-glass"][data-theme="dark"][data-material="solid"] {
+  --window-fill: linear-gradient(152deg, #1a1d2c 0%, #1b1929 45%, #1d1a28 75%, #181c2a 100%);
+  --card-face: linear-gradient(158deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+  --rail-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.09));
+}
+
+/* ── 5b. 弹层 Token（下拉菜单 / 弹窗 / 工具提示） ────────────────
+   两套预设共用同一套结构，差异只落在表面、描边、高光与选中态上。
+   约定：弹层**不做实时背景模糊**（成本高且在 WebView2 里掉帧），
+   玻璃感来自半透明 + 内高光 + 边缘反射。
+
+   弹层表面（菜单 / 对话框）是**盖在内容之上**的，底下通常是深色文字的
+   任务列表；只要表面还有几个百分点的透明度，下面的标题就会以浅灰「重影」
+   的形式透进菜单项和日历格里，读起来像渲染错位。
+   所以弹层表面用不透明渐变（玻璃感由渐变、内高光、边缘反射和阴影承担），
+   而卡片这类「本身就是内容」的表面才保留半透明。 */
+
+:root,
+:root[data-preset="dream-gradient"] {
+  --menu-radius: 11px;
+  --menu-face: linear-gradient(180deg, #ffffff, #fbfaff);
+  --menu-border: rgba(255, 255, 255, 0.82);
+  --menu-ring: rgba(99, 102, 241, 0.1);
+  --menu-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  --menu-edge: inset 0 0 0 1px rgba(99, 102, 241, 0.06);
+  --menu-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.72),
+    0 12px 26px -14px rgba(99, 102, 241, 0.5);
+  --menu-text: #262a42;
+  --menu-text-dim: #6b7190;
+  --menu-hover: rgba(99, 102, 241, 0.08);
+  --menu-active-face: rgba(99, 102, 241, 0.14);
+  --menu-active-text: #4f46e5;
+  --menu-danger: #dc2626;
+  --menu-danger-hover: rgba(220, 38, 38, 0.1);
+
+  --dialog-face: linear-gradient(180deg, #ffffff, #faf9ff);
+  --dialog-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.8),
+    0 24px 56px -20px rgba(49, 46, 129, 0.42);
+  --dialog-scrim: rgba(38, 42, 64, 0.28);
+}
+
+:root[data-preset="dream-gradient"][data-theme="dark"] {
+  --menu-face: linear-gradient(180deg, #2d3048, #212336);
+  --menu-border: rgba(255, 255, 255, 0.1);
+  --menu-ring: rgba(165, 168, 255, 0.16);
+  --menu-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --menu-edge: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --menu-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 16px 34px -16px rgba(0, 0, 0, 0.92);
+  --menu-text: #e8eaf6;
+  --menu-text-dim: #9aa0bd;
+  --menu-hover: rgba(255, 255, 255, 0.07);
+  --menu-active-face: rgba(139, 124, 246, 0.28);
+  --menu-active-text: #c7c2ff;
+  --menu-danger: #f87171;
+  --menu-danger-hover: rgba(248, 113, 113, 0.14);
+
+  --dialog-face: linear-gradient(180deg, #2a2d44, #1e2032);
+  --dialog-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    0 28px 64px -22px rgba(0, 0, 0, 0.95);
+  --dialog-scrim: rgba(6, 8, 18, 0.5);
+}
+
+:root[data-preset="liquid-glass"] {
+  --menu-radius: 12px;
+  /* 玻璃弹层表面同样不透明（见文件头说明）：不做实时模糊的前提下，
+     半透明面会把底下的任务标题透成重影。玻璃感由冷调渐变、
+     内高光、边缘反射和投影承担，不靠填充的透明度。 */
+  --menu-face: linear-gradient(165deg, #fbfdff, #e9efff);
+  --menu-border: rgba(255, 255, 255, 0.52);
+  --menu-ring: rgba(99, 102, 241, 0.12);
+  --menu-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  --menu-edge: inset 0 0 0 1px rgba(255, 255, 255, 0.26);
+  --menu-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 0 0 1px rgba(255, 255, 255, 0.34),
+    0 16px 34px -18px rgba(72, 82, 160, 0.62);
+  --menu-text: #232840;
+  --menu-text-dim: #5b6280;
+  --menu-hover: rgba(255, 255, 255, 0.5);
+  --menu-active-face: rgba(99, 102, 241, 0.17);
+  --menu-active-text: #4338ca;
+  --menu-danger: #dc2626;
+  --menu-danger-hover: rgba(220, 38, 38, 0.1);
+
+  --dialog-face: linear-gradient(165deg, #fbfdff, #e9efff);
+  --dialog-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 0 0 1px rgba(255, 255, 255, 0.36),
+    0 28px 64px -22px rgba(72, 82, 160, 0.66);
+  --dialog-scrim: rgba(40, 46, 80, 0.24);
+}
+
+:root[data-preset="liquid-glass"][data-theme="dark"] {
+  --menu-face: linear-gradient(165deg, #303753, #191d2f);
+  --menu-border: rgba(255, 255, 255, 0.12);
+  --menu-ring: rgba(129, 140, 248, 0.2);
+  --menu-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  --menu-edge: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --menu-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 18px 38px -18px rgba(0, 0, 0, 0.92);
+  --menu-text: #e9ecf8;
+  --menu-text-dim: #9aa2c0;
+  --menu-hover: rgba(255, 255, 255, 0.09);
+  --menu-active-face: rgba(129, 140, 248, 0.3);
+  --menu-active-text: #c7d2fe;
+  --menu-danger: #f87171;
+  --menu-danger-hover: rgba(248, 113, 113, 0.16);
+
+  --dialog-face: linear-gradient(165deg, #303753, #191d2f);
+  --dialog-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 30px 70px -24px rgba(0, 0, 0, 0.95);
+  --dialog-scrim: rgba(4, 6, 16, 0.48);
+}
+
+/* Solid 材质：弹层必须不透明，否则叠在正文上会读不清 */
+:root[data-material="solid"],
+:root[data-native-glass="false"] {
+  --menu-face: linear-gradient(180deg, #fdfdff, #f6f5fd);
+  --menu-border: rgba(34, 38, 60, 0.08);
+  --menu-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --menu-edge: none;
+  --menu-shadow:
+    0 0 0 1px rgba(34, 38, 60, 0.06),
+    0 14px 30px -16px rgba(49, 46, 129, 0.45);
+  --dialog-face: linear-gradient(180deg, #fdfdff, #f7f6fd);
+}
+
+:root[data-theme="dark"][data-material="solid"],
+:root[data-theme="dark"][data-native-glass="false"] {
+  --menu-face: linear-gradient(180deg, #262a3f, #1b1e2f);
+  --menu-border: rgba(255, 255, 255, 0.1);
+  --menu-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --menu-edge: none;
+  --menu-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 18px 38px -18px rgba(0, 0, 0, 0.95);
+  --dialog-face: linear-gradient(180deg, #23273a, #191c2b);
+}
+
+/* 高对比度：弹层收敛到实心 + 明确描边 */
+@media (prefers-contrast: more) {
+  :root,
+  :root[data-preset] {
+    --menu-face: #ffffff;
+    --menu-border: currentColor;
+    --menu-shadow: 0 0 0 1px currentColor;
+    --menu-active-face: rgba(99, 102, 241, 0.24);
+    --dialog-face: #ffffff;
+    --dialog-shadow: 0 0 0 1px currentColor;
+  }
+  :root[data-theme="dark"],
+  :root[data-theme="dark"][data-preset] {
+    --menu-face: #14161f;
+    --menu-border: currentColor;
+    --dialog-face: #14161f;
+  }
+}
+
+/* 高对比度：所有预设都收敛到「实心表面 + 明确描边」 */
+@media (prefers-contrast: more) {
+  :root,
+  :root[data-preset],
+  :root[data-theme="dark"][data-preset] {
+    --card-face: var(--surface-base, #ffffff);
+    --control-face: #ffffff;
+    --rail-active-face: rgba(99, 102, 241, 0.18);
+    --decor-opacity: 0;
+    --card-shadow: 0 0 0 1px currentColor;
+    --control-shadow: 0 0 0 1px currentColor;
+    --rail-active-shadow: 0 0 0 1px currentColor;
+  }
+  :root[data-theme="dark"],
+  :root[data-theme="dark"][data-preset] {
+    --card-face: #1a1e29;
+    --control-face: #1a1e29;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   结构层
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 6. 窗口骨架：无外框、边光表层次 ────────────────────────── */
+
+.dock-window,
+.dock-window.material-glass {
+  position: relative;
+  isolation: isolate;
+  background: var(--window-fill);
+  border: none;
+  border-radius: var(--radius-window);
+  box-shadow: var(--window-edge);
+  background-clip: padding-box;
+}
+
+.dock-window::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background-image: var(--decor);
+  opacity: var(--decor-opacity);
+  pointer-events: none;
+}
+
+/* 标题栏与内容区**不能**建立层叠上下文。
+   一旦给它们 z-index，.dock-body 里的浮层（剪贴板关联抽屉、任务上下文抽屉）
+   就会被关在 z=1 的上下文里，永远压在 .modal-mask（z=70）下面——
+   「任务编辑器里打开剪贴板关联」时抽屉会被遮罩吞掉。
+   两者都保持 position: relative + z-index: auto：装饰背景 ::before（z=0）
+   在树序上更早，同样按 z=0 组绘制，内容自然盖在装饰上，
+   而浮层可以直接参与窗口级层级刻度（抽屉 80 > 遮罩 70）。 */
+.dock-window > .titlebar,
+.dock-window > .dock-body {
+  position: relative;
+}
+
+:root[data-theme="dark"] .dock-window.material-glass {
+  /* 覆盖 v0.5 的白色内高光（深色下会形成灰边） */
+  box-shadow: var(--window-edge);
+}
+
+/* ── 7. 标题栏 ───────────────────────────────────────────────── */
+
+.titlebar {
+  gap: 6px;
+  padding: 9px 9px 6px 11px;
+  border-bottom: none;
+}
+
+.brand-orb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--orb-gradient);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 0 0 1px rgba(255, 255, 255, 0.45),
+    0 3px 8px -3px rgba(99, 102, 241, 0.55);
+}
+
+.titlebar .agent-dot {
+  width: 6px;
+  height: 6px;
+  margin-left: 1px;
+  box-shadow: 0 0 0 1.5px var(--badge-ring);
+}
+
+.titlebar-title {
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+  color: var(--text-primary);
+  padding-left: 1px;
+}
+
+.titlebar-actions {
+  gap: 2px;
+}
+
+.titlebar .icon-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+.titlebar .icon-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.titlebar .icon-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.titlebar .menu-trigger {
+  width: 30px;
+  gap: 0;
+}
+
+.titlebar-divider {
+  height: 12px;
+  background: var(--divider);
+  margin: 0 3px;
+}
+
+/* 预设菜单项：左侧小色板预览 */
+.preset-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 0 0 1px var(--divider);
+}
+
+.preset-swatch.swatch-dream-gradient {
+  background: linear-gradient(140deg, #dbe6ff, #e2dbff 52%, #fbdcec);
+}
+
+.preset-swatch.swatch-liquid-glass {
+  background:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.95), transparent 60%),
+    linear-gradient(140deg, #b9cdf6, #cfc4f5 50%, #f3c6e0);
+}
+
+/* ── 8. 左侧导航轨 ──────────────────────────────────────────── */
+
+.full-view {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.rail {
+  width: var(--rail-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 2px 6px 10px;
+  background: var(--rail-bg);
+  border-right: var(--rail-divider);
+  overflow: hidden;
+}
+
+.rail-items {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  /* 六个入口在矮窗口里放不下时这里滚动，底部「快速添加」始终留在视野内 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.rail-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 2px 6px;
+  border-radius: 12px;
+  color: var(--text-secondary);
+  transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.rail-item:hover {
+  background: var(--rail-hover-face);
+  color: var(--text-primary);
+}
+
+.rail-item.active {
+  background: var(--rail-active-face);
+  color: var(--rail-active-text);
+  box-shadow: var(--rail-active-shadow);
+  font-weight: 600;
+}
+
+.rail-item.active::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2.5px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--rail-active-bar);
+}
+
+.rail-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 20px;
+}
+
+.rail-label {
+  font-size: 9.5px;
+  line-height: 1.1;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.rail-badge {
+  position: absolute;
+  top: -5px;
+  right: -9px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--status-error);
+  color: #fff;
+  font-size: 8.5px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 0 1.5px var(--badge-ring);
+}
+
+.rail-badge.subtle {
+  background: var(--accent);
+  color: #fff;
+}
+
+.rail-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 8px;
+  margin-top: 8px;
+  border-top: 1px solid var(--divider);
+  /* 固定在底部：不参与 .rail-items 的滚动 */
+  flex: 0 0 auto;
+}
+
+.rail-add {
+  color: var(--text-tertiary);
+}
+
+.rail-add:hover {
+  color: var(--accent);
+}
+
+/* ── 9. 内容区与任务面板 ────────────────────────────────────── */
+
+.tab-content {
+  padding: 4px 10px 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tasks-panel {
+  gap: 8px;
+}
+
+.tasks-overview {
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.overview-card {
+  position: relative;
+  gap: 0;
+  padding: 9px 4px 8px;
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+  transition: box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.overview-card.warn {
+  border: none;
+  cursor: pointer;
+}
+
+.overview-card.warn:hover {
+  background: var(--card-face);
+  box-shadow: var(--card-shadow-hover);
+}
+
+.overview-icon {
+  margin-bottom: 1px;
+}
+
+.tone-accent .overview-icon {
+  color: var(--icon-accent);
+}
+
+.tone-violet .overview-icon {
+  color: var(--icon-violet);
+}
+
+.tone-warn .overview-icon {
+  color: var(--icon-warn);
+}
+
+.overview-value {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--text-primary);
+}
+
+.overview-card.warn .overview-value {
+  color: var(--text-primary);
+}
+
+.overview-card.warn .overview-label {
+  color: var(--text-tertiary);
+}
+
+.overview-label {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+
+/* 快速添加 */
+
+.quick-add-row {
+  gap: 6px;
+  padding: 5px 5px 5px 10px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: var(--control-face);
+  box-shadow: var(--control-shadow);
+  transition: box-shadow 0.16s ease;
+}
+
+.quick-add-row:focus-within {
+  box-shadow: var(--control-shadow-focus);
+}
+
+.quick-add-icon {
+  color: var(--accent);
+}
+
+.quick-add-input {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.quick-add-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.quick-add-btn.btn.primary {
+  border: none;
+  border-radius: 8px;
+  background: var(--accent-gradient);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 4px 12px -6px rgba(99, 102, 241, 0.75);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.quick-add-btn.btn.primary:hover {
+  background: var(--accent-gradient);
+  filter: brightness(1.06);
+  color: #fff;
+}
+
+/* 筛选与排序 */
+
+.filter-bar {
+  gap: 6px;
+}
+
+.seg-group {
+  background: var(--pill-face);
+  border-radius: 9px;
+  padding: 2px;
+  gap: 1px;
+}
+
+.seg-group.subtle {
+  background: transparent;
+  padding: 2px 0;
+}
+
+.seg-btn {
+  border-radius: 7px;
+  padding: 3.5px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.seg-btn.active {
+  background: var(--pill-active-face);
+  color: var(--pill-active-text);
+  box-shadow: var(--pill-active-shadow);
+  font-weight: 600;
+}
+
+.seg-group.subtle .seg-btn.active {
+  background: var(--pill-soft-active-face);
+  color: var(--accent);
+  box-shadow: var(--pill-active-shadow);
+}
+
+.sort-select {
+  border: none;
+  border-radius: 8px;
+  background: var(--pill-active-face);
+  box-shadow: var(--pill-active-shadow);
+  color: var(--text-primary);
+  font-weight: 500;
+  padding: 3px 6px;
+  max-width: 88px;
+}
+
+.search-box {
+  border: none;
+  background: var(--control-face);
+  box-shadow: var(--control-shadow);
+  border-radius: 9px;
+  padding: 4px 8px;
+}
+
+.search-box:focus-within {
+  box-shadow: var(--control-shadow-focus);
+}
+
+select,
+input[type="text"],
+input[type="number"],
+input[type="datetime-local"],
+textarea {
+  background: var(--control-face);
+  border: none;
+  box-shadow: 0 0 0 1px var(--divider);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+}
+
+select:focus,
+input:focus,
+textarea:focus {
+  box-shadow: var(--control-shadow-focus);
+}
+
+/* 任务卡 */
+
+.task-item {
+  border: none;
+  border-left: 2.5px solid var(--p2);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+  padding: 8px 9px;
+  transition: box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+.task-item:hover {
+  box-shadow: var(--card-shadow-hover);
+}
+
+.task-item.priority-0 { border-left-color: var(--p0); }
+.task-item.priority-1 { border-left-color: var(--p1); }
+.task-item.priority-2 { border-left-color: var(--p2); }
+.task-item.priority-3 { border-left-color: var(--p3); }
+
+.task-title {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.task-check {
+  border-width: 1.5px;
+  border-color: var(--border-strong);
+}
+
+/* ── 10. 空状态插画（纯 CSS，无位图） ───────────────────────── */
+
+.empty-state {
+  flex: 1;
+  justify-content: center;
+  gap: 3px;
+  padding: 14px 12px 26px;
+}
+
+.task-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.empty-art {
+  position: relative;
+  width: 168px;
+  height: 118px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+/* 主气泡：内高光 + 柔和外发光，不用 backdrop-filter（性能与降级都更稳） */
+.empty-orb {
+  position: absolute;
+  left: 50%;
+  top: 20px;
+  transform: translateX(-50%);
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  background:
+    radial-gradient(circle at 50% 118%, rgba(255, 255, 255, 0.9), transparent 62%),
+    radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.98), rgba(214, 222, 255, 0.52) 62%, rgba(186, 196, 255, 0.36) 100%);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.95),
+    inset 0 -6px 12px -8px rgba(120, 130, 240, 0.45),
+    0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 12px 26px -14px rgba(99, 102, 241, 0.65);
+}
+
+.empty-orb::after {
+  content: "";
+  position: absolute;
+  top: 9px;
+  left: 13px;
+  width: 18px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), transparent);
+  transform: rotate(-18deg);
+  opacity: 0.85;
+}
+
+.empty-orb svg {
+  position: relative;
+  opacity: 0.92;
+}
+
+.empty-bubble {
+  position: absolute;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 30% 24%,
+    rgba(255, 255, 255, 1),
+    rgba(214, 222, 255, 0.5) 58%,
+    rgba(186, 196, 255, 0.34) 100%
+  );
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.95),
+    0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 8px 16px -10px rgba(99, 102, 241, 0.7);
+}
+
+.empty-bubble.b1 { width: 34px; height: 34px; left: 6px; top: 30px; }
+.empty-bubble.b2 { width: 20px; height: 20px; right: 18px; top: 8px; }
+.empty-bubble.b3 { width: 13px; height: 13px; right: 6px; bottom: 26px; }
+.empty-bubble.b4 { width: 24px; height: 24px; left: 20px; bottom: 18px; opacity: 0.85; }
+
+.empty-spark {
+  position: absolute;
+  color: var(--accent);
+  opacity: 0.6;
+}
+
+.empty-spark.s1 { left: 60px; top: 4px; }
+.empty-spark.s2 { right: 34px; top: 60px; opacity: 0.45; }
+
+.empty-cloud {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  transform: translateX(-50%);
+  width: 150px;
+  height: 38px;
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse at 50% 58%,
+    rgba(255, 255, 255, 0.85),
+    rgba(255, 255, 255, 0.22) 68%,
+    transparent 100%
+  );
+}
+
+:root[data-theme="dark"] .empty-orb,
+:root[data-theme="dark"] .empty-bubble {
+  background: radial-gradient(
+    circle at 32% 24%,
+    rgba(255, 255, 255, 0.45),
+    rgba(255, 255, 255, 0.1) 58%,
+    rgba(130, 150, 255, 0.12) 100%
+  );
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 10px 22px -14px rgba(0, 0, 0, 0.9);
+}
+
+:root[data-theme="dark"] .empty-cloud {
+  background: radial-gradient(
+    ellipse at 50% 58%,
+    rgba(255, 255, 255, 0.14),
+    transparent 74%
+  );
+}
+
+.empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.empty-hint {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  max-width: 236px;
+  line-height: 1.55;
+}
+
+.empty-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* ── 11. 设置面板：预设选择卡 ───────────────────────────────── */
+
+.settings-section {
+  background: var(--card-face);
+  border: none;
+  border-radius: var(--radius-card);
+  box-shadow: var(--card-shadow);
+}
+
+.settings-section-head:hover {
+  background: var(--surface-hover);
+}
+
+.setting-row {
+  border-bottom-color: var(--divider);
+}
+
+.setting-row.column {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  padding: 8px 0 10px;
+}
+
+.setting-note {
+  color: var(--text-tertiary);
+}
+
+.preset-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.preset-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--control-face);
+  box-shadow: var(--control-shadow);
+  text-align: left;
+  transition: box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.preset-card:hover {
+  transform: translateY(-1px);
+}
+
+.preset-card.active {
+  box-shadow:
+    0 0 0 1.5px var(--accent),
+    var(--control-shadow);
+}
+
+.preset-preview {
+  position: relative;
+  display: flex;
+  gap: 3px;
+  height: 44px;
+  padding: 4px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.preset-card.preset-dream-gradient .preset-preview {
+  background: linear-gradient(150deg, #eef4ff, #efeaff 46%, #fdeef7);
+}
+
+.preset-card.preset-liquid-glass .preset-preview {
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.9), transparent 55%),
+    linear-gradient(150deg, #cfdcff, #d9ceff 48%, #fbd6ea);
+}
+
+.preset-card.preset-liquid-glass .preset-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.55) 0%, transparent 42%, rgba(255, 255, 255, 0.4) 100%);
+  pointer-events: none;
+}
+
+.pp-rail {
+  width: 9px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+.pp-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: 8px;
+  gap: 2px;
+  align-content: start;
+}
+
+.pp-card {
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 1px 2px rgba(99, 102, 241, 0.12);
+}
+
+.pp-row {
+  grid-column: 1 / -1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.preset-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 0 2px 2px;
+}
+
+.preset-meta strong {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.preset-meta em {
+  font-size: 9.5px;
+  font-style: normal;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-radio {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.4);
+}
+
+.preset-card.active .preset-radio {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+}
+
+/* ── 12. 抽屉 / 弹窗：跟随预设表面 ──────────────────────────── */
+
+.modal,
+.clipboard-drawer,
+.context-drawer {
+  border: none;
+}
+
+.modal {
+  background: var(--surface-overlay);
+  box-shadow: 0 0 0 1px var(--divider), 0 24px 60px -24px rgba(20, 24, 60, 0.55);
+}
+
+.clipboard-drawer,
+.context-drawer {
+  background: var(--surface-overlay);
+}
+
+:root[data-preset] .clipboard-drawer,
+:root[data-preset] .context-drawer {
+  /* 抽屉叠在内容之上，需要比卡片更高一级的表面 */
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.82)),
+    var(--window-fill);
+}
+
+:root[data-theme="dark"][data-preset] .clipboard-drawer,
+:root[data-theme="dark"][data-preset] .context-drawer {
+  background:
+    linear-gradient(180deg, rgba(32, 34, 48, 0.96), rgba(26, 28, 40, 0.94)),
+    var(--window-fill);
+}
+
+/* ── 13. 响应式：窄窗收纳为图标轨 ───────────────────────────── */
+
+@media (max-width: 384px) {
+  :root {
+    --rail-w: 46px;
+  }
+
+  .rail {
+    padding: 2px 4px 8px;
+  }
+
+  .rail-item {
+    padding: 8px 2px;
+    border-radius: 10px;
+  }
+
+  .rail-label,
+  .rail-foot .rail-label {
+    display: none;
+  }
+
+  .rail-item.active::before {
+    left: -4px;
+    height: 18px;
+  }
+
+  .rail-badge {
+    right: -7px;
+  }
+
+  .tab-content {
+    padding: 4px 8px 8px;
+  }
+
+  .overview-value {
+    font-size: 17px;
+  }
+}
+
+/* 340px 极限宽度：标题让位给窗口操作，只保留品牌球（避免标题被压成 0 宽） */
+@media (max-width: 360px) {
+  .titlebar-title {
+    display: none;
+  }
+
+  .titlebar {
+    padding-left: 9px;
+  }
+}
+
+/* 极简模式标题栏：右键菜单/托盘仍可切主题，这里只保留窗口操作 */
+.dock-window.mode-minimal .titlebar {
+  padding: 5px 7px 4px 9px;
+  gap: 5px;
+}
+
+.dock-window.mode-minimal .theme-menu,
+.dock-window.mode-minimal .preset-menu {
+  display: none;
+}
+
+.dock-window.mode-minimal .titlebar .icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+/* 紧凑模式：隐藏预设菜单，避免与模式/主题菜单挤在一行 */
+.dock-window.mode-compact .preset-menu {
+  display: none;
+}
+
+/* ── 14. 减少动态：只保留状态变化，不做位移动画 ─────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-item,
+  .overview-card,
+  .task-item,
+  .quick-add-row,
+  .preset-card {
+    transition: none;
+  }
+
+  .preset-card:hover {
+    transform: none;
+  }
+
+  .icon-btn:active,
+  .btn:active {
+    transform: none;
+  }
+}

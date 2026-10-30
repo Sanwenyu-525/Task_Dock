@@ -1,0 +1,3 @@
+git_head_short=66d1eb7
+dirty_tracked= 91 files changed, 15395 insertions(+), 3226 deletions(-)
+-rwxr-xr-x 2 ASUS 197121 15398912 2026-10-30 19:54:01.777742100 +0800 src-tauri/target/release/task-dock.exe

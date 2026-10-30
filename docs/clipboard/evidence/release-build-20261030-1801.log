@@ -1,0 +1,6 @@
+# command: cargo build --release
+# started: 2026-10-30T18:01:46+08:00
+error: could not find `Cargo.toml` in `D:\Develop\task_dock` or any parent directory
+EXIT=101
+# finished: 2026-10-30T18:01:47+08:00
+ls: cannot access 'target/release/task-dock.exe': No such file or directory

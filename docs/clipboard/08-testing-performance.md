@@ -1,9 +1,13 @@
 # 08 · 测试、兼容性与性能
 
-> 测试日期：2026-10-29 · 应用版本 0.5.0 · 本文为 P0/P1/P2 整改后的复测记录
+> 测试日期：2026-10-29（基线）· 2026-10-30（最终复核）· 2026-10-30 18:18（第二轮复核重跑）· 应用版本 0.5.0
+> 本文 §一–§四、§五.1–§五.5 为 2026-10-29 的记录；§五.6 起与 §六–§九
+> 为 2026-10-30 最终复核结果；§五.11 与 §八 的第二轮条目为 2026-10-30 18:18 之后的复核。
+> **最终判定为 CONDITIONAL PASS**，
+> 依据与完整证据见 [11-final-release-acceptance.md](11-final-release-acceptance.md)。
 > 原则：自动化结果与真机结果分开记录；**未执行的验收不写成通过**。
-> 结果原始文件：`docs/performance/results/CLIP-20261029-080326.json`（最新）
-> 及同目录早期 CLIP 记录（00:26 / 00:27）。
+> 结果原始文件：`docs/performance/results/CLIP-20261029-080326.json`（历史基线）
+> 及同目录 CLIP 记录（00:26 / 00:27 / 13:08 / 23:36 / 23:59 与本轮重跑）。
 
 ## 一、测试分层
 
@@ -18,7 +22,11 @@
 | 端到端 UI + 系统剪贴板 | 隔离实例 Playwright 验收脚本（临时目录，不入库） | 真实监听、真实逐项粘贴、真实目标窗口、重启持久化 | 微信/Agent 应用、长时挂机 |
 | 性能 | `cargo test --release --test clipboard_perf -- --ignored` | 入库、列表、搜索、缩略图、编解码、200 连拍+配额 | WebView 帧率、空闲 CPU/内存、真实硬件长跑 |
 
-## 二、自动化检查结果（2026-10-29 最终复测）
+## 二、自动化检查结果（2026-10-29 基线）
+
+> 本节数字是 10-29 基线，不再代表最终源码；最终门禁计数（302 passed / 2 锁屏失败 /
+> 11 ignored、前端 133 例、构建 464.88 kB JS + 68.51 kB CSS）见
+> [11-final-release-acceptance.md](11-final-release-acceptance.md) §三。
 
 ### 2.1 Rust
 
@@ -62,6 +70,12 @@ platform / agent_bridge）内的单元测试共 **61 例**，另有跨模块集�
 | store | `image_capture_failure_leaves_no_partial_row` | 图片落盘失败不留半条记录 |
 | db | `clipboard_paste_intervals_keep_conservative_defaults` | 默认间隔 350/600/900/1200 ms |
 | engine | `conservative_filter_catches_credentials_only_when_source_unknown` | 保守模式只匹配凭据赋值/认证头/JSON 凭据 |
+| db | `clipboard_corrupt_json_fails_closed_and_keeps_unrelated_settings` | 配置损坏时停止采集，任务/Agent 设置不受影响 |
+| db | `clipboard_config_never_enables_after_user_disabled` | 用户关闭后不会被默认值重新启用 |
+| db | `clipboard_repair_backs_up_raw_values_and_requires_explicit_resume` | 修复备份原始值；仅修复保持暂停 |
+| db | `clipboard_repair_does_not_write_when_database_broken` | DB 不可读时不写入 |
+| image | `fully_transparent_png_is_treated_as_opaque` / `transparent_png_from_clipboard_is_reencoded_visible` / `opaque_clipboard_png_is_kept_byte_identical` | 全透明归一化；部分透明/正常图不动 |
+| agents/http_ingest | `http1_connection_with_header_timeout_answers_instead_of_panicking` | 真实 TCP：设置 `header_read_timeout` 后返回 200 而非 panic |
 
 ### 2.2 前端
 
@@ -78,7 +92,7 @@ platform / agent_bridge）内的单元测试共 **61 例**，另有跨模块集�
 |---|---|
 | `src/lib/clipboardUi.test.ts` | 9 例：未知来源文案、预检无警告、6 MB 图片预算、超预算占位+替代方案、文件模式只传路径、超大 HTML 降级、混合统计、NaN 容错 |
 | `src/components/clipboard/PastePanel.test.tsx` | 3 例：分类型间隔提示；启动后逐项状态/剩余/进度条；取消后 unverified 与继续入口；完成文案且无取消/继续 |
-| `src/components/clipboard/ClipboardDrawer.test.tsx` | 3 例：监听中 + 80/100 加载更多只追加；监听未启动 vs 暂停；错误 + 重试 |
+| `src/components/clipboard/ClipboardDrawer.test.tsx` | 4 例：监听中 + 80/100 加载更多只追加；监听未启动 vs 暂停；错误 + 重试；**配置损坏时显示“已暂停”，绝不显示“监听中”** |
 | `src/components/clipboard/AgentExportPanel.test.tsx` | 2 例：能力矩阵文案（直接发送不支持/文件导入未验证/桌面粘贴可手动/本地导出可用）；本地导出参数与“未发送”提示 |
 | `src/store/useClipboardStore.test.ts` | 4 例（原有）：筛选清空多选、刷新剔除失效选中、追加分页、加载失败 |
 
@@ -90,7 +104,7 @@ platform / agent_bridge）内的单元测试共 **61 例**，另有跨模块集�
 | 项目 | 结果 |
 |---|---|
 | `npm run build` | 通过（459.80 kB JS / 67.70 kB CSS） |
-| `npx tauri build`（release） | 通过，4m49s；NSIS 3.98 MiB + MSI 6.11 MiB（产物时间 10:16，晚于最终 UI 修复） |
+| `npx tauri build`（release） | 通过，4m49s；NSIS 3.98 MiB + MSI 6.11 MiB（产物时间 10:16，晚于最终 UI 修复）；**本轮最终重建见 `11` §三** |
 | 隔离 debug 实例（acceptance identifier，内嵌前端） | 构建通过并完成真机验收 46/46 |
 
 **打包产物**：
@@ -106,7 +120,10 @@ target/release/bundle/msi/Task Dock_0.5.0_x64_en-US.msi   6.11 MiB
 
 “自动化覆盖”指单元/集成测试；“真机”指真实系统剪贴板与第三方窗口。验收脚本共
 **46 项检查**（A0、B1–B17 及 b 补充项、C1–C12、D1–D5、E1、F1、G1–G2、H1–H2），
-2026-10-29 在未锁屏桌面运行 **46/46 PASS**。
+2026-10-29 在未锁屏桌面运行 **46/46 PASS**。**本轮（2026-10-30）未重跑这 46 项**：
+工作站自 16:36 起锁屏，只完成场景 C/D、30 分钟空闲（A）与 P0 配置损坏的真实运行；
+表中“真机结果”列是 10-29 历史证据，不冒充本轮结果。修复 Alpha 后的图文混合
+像素级复验仍为 `ENVIRONMENT BLOCKED / NOT VERIFIED`（见 §七）。
 
 | # | 场景 | 自动化覆盖 | 真机结果（2026-10-29） |
 |---|---|---|---|
@@ -129,7 +146,7 @@ target/release/bundle/msi/Task Dock_0.5.0_x64_en-US.msi   6.11 MiB
 | 17 | 粘贴中用户修改剪贴板 | paste 内容竞态/恢复守卫 | **PASS**：C11 `failed`、`clip_keeps_user=true`、未恢复 |
 | 18 | 自动粘贴不产生自记录 | self_write 单测 | **PASS**：C6 历史行数不增 |
 | 19 | 大量截图不明显卡顿 | 200 连拍 release 实测 | **PASS（有限）**：G2 200 条列表 `p50=5ms`、200 连拍 2.73 s；1000 张 UI 未测 |
-| 20 | 任务/Agent 原有功能正常 | 244 Rust + 109 前端 | **PASS**：H2 任务列表与快速添加正常 |
+| 20 | 任务/Agent 原有功能正常 | 10-29：244 Rust + 109 前端 | **PASS**：H2 任务列表与快速添加正常 |
 | 21 | 隐私排除名单有效 | 过滤/basename 单测 | **PASS**：B13 被排除应用未入库 |
 | 22 | 关闭监听后不保存新内容 | 过滤单测 | **PASS**：B11b 关闭期间 0 行，重新启用后恢复 |
 
@@ -145,6 +162,11 @@ target/release/bundle/msi/Task Dock_0.5.0_x64_en-US.msi   6.11 MiB
 | CF_HDROP | 宽字符路径单测 + B10b/M2 | 通过（资源管理器真实落盘） |
 | 自写入隔离 | self_write 单测 + C6 | 通过 |
 | 内容守卫/恢复 | `write_guarded` / `restore_if_own_content` 单测 + C11 | 通过（真机保留用户新内容） |
+| 图片 Alpha 归一化 | 3 个 image 单测 + 修复前真机像素审计（0/5760 不透明） | **单测通过；修复后 GUI 未验证（锁屏）** |
+
+Alpha 一行的含义：单元测试只证明“全透明 PNG 会被改写为不透明”，不证明真实
+目标应用能显示粘贴结果。修复前的真实记录只证明顺序正确、图片不可见，
+因此应用层结论保持 `NOT VERIFIED`，不把单测折算为兼容性证明。
 
 目标应用层（2026-10-29 真实桌面）：
 
@@ -230,25 +252,145 @@ observed/captured/latency/CPU/内存未测量（见 §七）。
   时只能容纳约 220 张全尺寸截图，长期使用会触发清理。
 - 截图 PNG 编码属于平台采集阶段，未计入入库预算；真实截图管线会逐张编码，
   用户连续截图 200 张的实际落库节奏受此限制。
-- **未测量**：WebView2 渲染帧率、空闲 CPU、常驻内存、真实硬件 30 分钟长跑、
-  大分组滚动、抽屉快速开关、并发 Agent 事件/任务更新、剪贴板监听对前台应用的影响。
-  上述项目需要可交互桌面与性能计数器，本次未执行，不得用上表数字外推。
+- **2026-10-29 时未测量**：WebView2 渲染帧率、空闲 CPU、常驻内存、真实硬件 30 分钟
+  长跑、大分组滚动、抽屉快速开关、并发 Agent 事件/任务更新。**这些项目已在
+  2026-10-30 的场景 A/C/D 中补测，见 §五.6–§五.9**；其中真实剪贴板事件
+  仍因锁屏为 0，不能外推为“真实事件节奏下稳定”。
 - 1000 条文本历史（+1 图）的列表查询已由 §5.1 覆盖（p95 2.659 ms）；
   “>1000”未覆盖的是连续截图数量与大分组滚动，不是历史条数本身。
+
+### 5.6 本轮 release 剪贴板预算（2026-10-30）
+
+干净重跑（`cargo test --release --test clipboard_perf -- --ignored --nocapture`，
+01:30–01:32，机器仅运行该测试），报告 `docs/performance/results/CLIP-20261030-013239.json`：
+
+| 项 | 实测 | 预算 | 判定 |
+|---|---|---|---|
+| 300 条历史（含 100 图）列表 80 条 p95 | 1.964 ms | ≤120 ms | PASS |
+| 300 条历史列表 200 条 p95 | 2.364 ms | ≤120 ms | PASS |
+| 200 张 1920×1080 截图入库+分组+配额 | 6,984.09 ms | ≤8,000 ms | PASS |
+| 其中清理 | 179.07 ms | — | — |
+| 资产落盘 | 30.21 MB | ≤32 MB 配额 | PASS |
+| PNG 编码准备（不计入入库） | 47,584.97 ms | — | — |
+| 总脚本 `pass` | `true` | — | PASS |
+
+此前 2026-10-29 23:36 / 23:59 两次失败（ingest 16.75 s / 17.01 s，setup 112–113 s）
+发生在机器有其他编译负载时；失败 JSON 保留在 `docs/performance/results/`，
+预算未调整。本次重跑与 §5.10 记录并列，不覆盖失败记录。
+
+### 5.7 场景 A：30 分钟空闲（2026-10-30）
+
+release 实例 + 隔离数据目录（1,250 条历史），30 s 间隔采样 58 个样本
+（1804 s，20 逻辑 CPU，进程树 7–9 个）：
+
+| 指标 | 结果 |
+|---|---|
+| CPU 平均 / 峰值 | **0.324% / 0.594%** |
+| 工作集 WS | 546.11–643.63 MB（平均 564.28） |
+| 私有内存 | 375.85–455.05 MB（平均 390.69） |
+| 线程 / 句柄 | 204–225 / 10,074–10,470 |
+| 历史规模 | 1,250 条 / 555,068 B，前后一致 |
+| 监听状态 | `monitoring=true`、`paused=false`，未漂移 |
+| 监听计数 | 全 0（锁屏无真实剪贴板事件）；队列峰值 0 |
+| 健康检查 | 200（前/中/后） |
+
+限制：锁屏使真实事件为 0，只证明空闲无泄漏、线程存活，不证明真实事件节奏；
+采样期间未运行编译/压测。原始数据：`evidence/perf-a-idle-30min-20261030.json`。
+独立第二次采样（00:54:45–01:24:17，1,803 s，58 样本，与前次重叠约 25 分钟）：
+CPU 平均 0.294% / 峰值 0.607%；WS 546.31–594.04 MB；私有内存 376.32–403.02 MB；
+线程 203–223；句柄 10,074–10,096，结论一致；
+原始数据：`evidence/perf-a-idle-30min-final-20261030.json`。
+
+### 5.8 场景 C：Agent 高频事件 + UI + 任务提醒 + 抽屉（2026-10-30）
+
+两轮 16 worker × 60 s，每 23 条事件插入一条 `completed`，同时 3 个提醒任务、
+抽屉开关、列表刷新与搜索。摘要：
+
+| 指标 | 第 1 轮 | 第 2 轮 |
+|---|---|---|
+| 事件请求 / HTTP 200 | 33,649 / 33,649 | 41,004 / 41,004 |
+| 过载拒绝 / 提交失败 / 内部错误 | 0 / 0 / 0 | 0 / 0 / 0 |
+| 请求延迟 p50 / p95 / max | 17.78 / 89.72 / 2583.07 ms | 17.00 / 42.17 / 2237.75 ms |
+| 单批写库 p50 / p95 / max | 18.56 / 52.67 / 68.31 ms | 19.32 / 62.58 / 95.60 ms |
+| ingest p50 / p95 / max | 119.80 / 2486.59 / 2612.57 ms | 119.26 / 294.03 / 507.81 ms |
+| 进程 CPU / 私有 / WS 峰值 | — | 2.719% / 545.48 / 720.89 MB |
+| 线程 / 句柄峰值 | — | 243 / 10,155 |
+
+解释：Agent 管线零丢失/零拒绝；`events_processed < events_received` 是最新事件
+合并策略（非丢弃）。高频事件期间 WebView 主线程被列表刷新/搜索占用，抽屉 p95
+约 0.51–0.55 s，后端列表仍为几十毫秒。**剪贴板侧为 0 事件（锁屏），不能称
+“剪贴板 + Agent 联合压测通过”。** 原始数据：`evidence/perf-c-*.json`。
+
+### 5.9 场景 D：>1000 条历史、大分组、滚动、预览、抽屉与清理（2026-10-30 release）
+
+数据集 1,250 条（1,185 文本 + 45 图片 + 20 文件 + 1 个 50 条分组），960×540 图片，
+DB 约 10 MB。摘要：
+
+| 指标 | release 实测 |
+|---|---|
+| 抽屉首次打开 | 239.11 ms |
+| 快速滚动 5 s（395 帧） | p50 15.2 / p95 17.2 / max 32 ms，>50 ms 0 帧 |
+| 搜索 `BURST` | 稳定 367.4 ms，2 个 53 ms long task |
+| 图片详情（含解码） | 56.4 ms |
+| 分组卡片 / 50 行详情 | 7.8 / 15.6 ms（后端 18.15 / 19.6 ms） |
+| 10 次抽屉开关 | 打开 85–152 ms；关闭 13–22 ms |
+| 后端列表 80 / 200 条 p95 | 40.77 / 52.46 ms |
+| 后端搜索 p95 / max | 43.86 / 47.21 ms |
+| 清理（440 条 / 1,275,695 B）期间帧 | p50 8 / p95 8.6 / max 17.03 ms，>50 ms 0 |
+| 删除 10 条 | 23.76 ms |
+| 类型筛选 | 图片 45 / 文件 20 / 文字 1,185 / 全部 1,250；耗时 477–577 ms |
+
+原始数据：`evidence/perf-d-ui-release-20261030.json`、`perf-d-filter-release-20261030.json`。
+
+### 5.10 失败运行与解释（不得只报成功）
+
+| 时间 | 结果 | 观察 |
+|---|---|---|
+| 2026-10-29 23:36 | **FAIL** | ingest 16.75 s（预算 8 s），encode setup 112.27 s |
+| 2026-10-29 23:59 | **FAIL** | ingest 17.01 s，encode setup 113.25 s |
+| 2026-10-29 13:08 | PASS | ingest 4.09 s，encode setup 27.33 s |
+
+两次失败发生在机器有其他编译/负载时，setup 从约 20–27 s 升至 112–113 s，
+不是“仅入库变慢”；失败记录保留在 `docs/performance/results/CLIP-20261029-233606.json`、
+`CLIP-20261029-235948.json`，未删除、未篡改预算。最终干净重跑见 §5.6。
+
+### 5.11 第二轮复核重跑（2026-10-30 18:18–18:30，当前源码）
+
+`cargo test --release --test clipboard_perf -- --ignored --nocapture`，
+**2 passed / 0 failed（EXIT=0）**，结果 `docs/performance/results/CLIP-20261030-183022.json`，
+日志 `docs/clipboard/evidence/perf-clipboard-release-20261030-1819.log`：
+
+| 项 | 实测 | 预算 | 判定 |
+|---|---|---|---|
+| 1000 条历史（1 张 1920×1080）列表 80 条 | p50 2.944 / p95 3.416 ms | — | — |
+| 1000 条历史计数 | p50 0.011 / p95 0.013 ms | — | — |
+| 搜索未命中 | p50 0.713 / p95 0.839 ms | — | — |
+| 缩略图 | p50 8.368 / max 8.653 ms | — | — |
+| PNG 编码 / 解码 | 105.810 / 15.474 ms | — | — |
+| RGBA→DIB / DIB→RGBA | 5.489 / 5.726 ms | — | — |
+| 200 张 1920×1080 连拍入库 | **4,279.54 ms** | ≤8,000 ms | PASS |
+| 其中清理 / 总计 | 150.28 / 4,429.82 ms | — | — |
+| 资产占用 | 464.8 MB → **30.2 MB** | ≤32 MB 配额 | PASS |
+
+与 §5.6（01:32 的 6,984.09 ms）并列保留：入库耗时差异来自机器负载，
+**预算未调整**。同窗口还重跑了行动中心查询
+（`actions_perf` p95 3.22 ms，预算 ≤60 ms；该用例首跑因夹具期望值算错失败，
+失败记录保留，见 `docs/PERFORMANCE_TESTING.md` §8.1）。
 
 ## 六、稳定性测试
 
 | 项目 | 状态 |
 |---|---|
-| 单元/集成重复运行 | 通过（244 例；fmt/clippy/tsc/vitest/build 全绿） |
+| 单元/集成重复运行 | 完成（最终计数见 `11` §三：302 passed / 2 锁屏失败 / 11 ignored；fmt/clippy/tsc/vitest/build 全绿，2 例未跳过）；**第二轮复核 445 passed / 0 failed / 3 ignored（lib）** |
 | 粘贴状态机竞态（注入假 IO） | 通过（paste 模块 16 例，覆盖取消/外部更新/目标关闭/焦点失败/恢复失败/重启） |
-| 监听队列压力 | 通过（100/1000 事件，容量与丢弃计数断言） |
-| 200 连拍 + 配额 | 通过（release 实测） |
-| 真机验收重复运行 | 通过（验收脚本 final13：46/46；第三方矩阵 5/5） |
-| 30 分钟空闲监听 CPU/内存 | 未执行（需长时挂机与性能计数器） |
+| 监听队列压力 | 通过（100/1000 事件，容量与丢弃断言） |
+| 200 连拍 + 配额 | 通过（10-29：2.799 s；10-30 最终重跑：6.984 s；10-30 18:19 第二轮重跑：4.280 s，均低于 8 s；失败运行见 §五.10） |
+| 真机验收重复运行 | 前轮 final13：46/46；第三方矩阵 5/5（历史证据） |
+| 30 分钟空闲监听 CPU/内存 | **已完成**：场景 A 30 分钟采样（见 §五.7）；锁屏下无真实剪贴板事件 |
 | 长时间截图循环（>1000 张） | 未执行 |
 | 崩溃/断电恢复 | 仅单测层面覆盖（粘贴任务 interrupted、资产清理） |
-| 并发 Agent 事件/任务更新 | 未做剪贴板与 Agent 的联合真机压测 |
+| 并发 Agent 事件/任务更新 | **场景 C 已完成**（两轮 60 s、74,653 次请求）；剪贴板侧为 0 事件（锁屏），不能称联合压测 |
+| 连续真实剪贴板采集 30 分钟（场景 B） | **ENVIRONMENT BLOCKED / NOT VERIFIED**（锁屏；不以队列压力替代） |
 
 ## 七、未覆盖与环境阻塞（诚实清单）
 
@@ -257,32 +399,66 @@ observed/captured/latency/CPU/内存未测量（见 §七）。
    记为 **ENVIRONMENT BLOCKED / NOT VERIFIED**。
 2. **Agent 类应用**：Trae CN 以隔离 profile 启动后停在登录/引导窗口（标题 `TRAE CN`），
    CLI `--goto` 无法进入编辑区，自动化输入无法确认落点，记为 **NOT VERIFIED**。
-3. **ESLint 缺失**：仓库无 ESLint 配置文件，`npm run lint` 不存在；未以禁用规则
+3. **修复 Alpha 后的真实图文混合粘贴**：2026-10-29 16:36 起锁屏，无法在真实目标
+   完成像素级复验；修复前记录见 `11` §4.2，**不得**用单元测试替代，
+   记为 **ENVIRONMENT BLOCKED / NOT VERIFIED**。
+4. **场景 B 连续真实剪贴板采集 30 分钟**：锁屏下剪贴板写入阻塞/`ERROR_ACCESS_DENIED=5`，
+   未执行；不以队列压力或缩短时长替代。
+5. **场景 A 的监听计数**：30 分钟空闲已完成，但锁屏下真实剪贴板事件为 0，
+   observed/captured/dropped/latency 全 0，**真实事件节奏下的长跑计数未验证**。
+6. **写入中途格式失败**：若 EmptyClipboard 后主格式写入失败，任务停止，
+   但 `restore_if_own_content` 可能因内容不匹配选择 `KeepUserCopy`，原快照不保证恢复；
+   未构造故障注入（`11` §2.5 #4）。
+7. **ESLint 缺失**：仓库无 ESLint 配置文件，`npm run lint` 不存在；未以禁用规则
    的方式“通过”lint，而是如实记录该工程缺口。
-4. **图片/文件粘贴到图形界面应用**：仅验证了记事本拒绝图片时如实报告（C12）；
+8. **图片/文件粘贴到图形界面应用**：仅验证了记事本拒绝图片时如实报告（C12）；
    Word/微信/设计软件等未验证。
-5. **UI 帧率/空闲资源/长跑**：见 §五.5；WebView2 渲染帧率、常驻内存、
-   30 分钟以上挂机、多显示器/不同 DPI 均未测量。
-6. **真实监听计数**：`clipboard_status.monitor` 已暴露 observed/captured/dropped/latency，
-   本次真机验收未单独采样这些计数（只验证了采集结果与暂停/停用行为）。
-7. **安装/卸载/签名**：未实测；产物未签名。
-8. **前端测试超时抖动**：早前并行重负载下 3 例任务面板测试曾超过默认 5 s；
-   本次全量运行通过，未修改超时阈值掩盖问题。
+9. **WebView 多显示器/不同 DPI**：场景 D 已采帧率与抽屉操作，但多显示器/DPI 未验证。
+10. **安装/卸载/签名**：未实测；产物未签名。第二轮重建的安装包（18:44）同样
+    **只验证了打包成功**，未执行安装→升级→卸载。
+11. **前端测试超时抖动**：早前并行重负载下 3 例任务面板测试曾超过默认 5 s；
+    最终全量运行通过，未修改超时阈值掩盖问题。
+12. **长跑内存稳定性在最终二进制上未重跑**：30 分钟采样证据（§5.7）对应当时的
+    release 二进制；第二轮在当前源码上重跑的是**功能与性能门禁**与
+    `clipboard_perf`（§5.11），长跑仍是 **NOT PROVEN**，不得据此宣称无泄漏。
 
 ## 八、打包结果
 
-- Release 构建：`npx tauri build` 通过，4m49s（release profile：codegen-units=1 + LTO），
-  产物时间 10:16，晚于最终 UI 修复（09:40/10:02）。
-- NSIS：`Task Dock_0.5.0_x64-setup.exe` 3.98 MiB。
-- MSI：`Task Dock_0.5.0_x64_en-US.msi` 6.11 MiB。
+- Release 构建：`npm run tauri build` 通过，release 编译 8m26s（codegen-units=1 + LTO），
+  产物时间 2026-10-30 01:44，晚于全部源码修改。
+- NSIS：`Task Dock_0.5.0_x64-setup.exe` 4.01 MiB（4,201,417 B）。
+- MSI：`Task Dock_0.5.0_x64_en-US.msi` 6.15 MiB（6,447,104 B）。
 - 产物路径：`src-tauri/target/release/bundle/{nsis,msi}/`。
+- 冒烟：最终 `task-dock.exe` + 隔离数据目录启动，`/api/v1/health` 200，
+  `clipboard_status.monitoring=true`，1,250 条历史可读（`evidence/final-release-smoke-20261030.json`）。
 - 产物未签名；未做安装/卸载与签名验证。与早期 `target-accept` 产物（3.92/5.39 MiB）
   大小不同，来源是不同构建目录/打包时间，不作为回归结论。
 
+**第二轮重建（2026-10-30 18:44，当前源码）**：整改收尾后用同一命令重新打包，
+release 编译 4m03s，`TAURI_BUILD_EXIT=0`，日志 `evidence/bundle-build-20261030-1841.log`：
+
+| 产物 | 大小 | 时间 |
+|---|---|---|
+| `task-dock.exe` | 15,531,520 B | 18:44 |
+| `Task Dock_0.5.0_x64-setup.exe`（NSIS） | 4,493,352 B（4.29 MiB） | 18:44 |
+| `Task Dock_0.5.0_x64_en-US.msi` | 6,840,320 B（6.52 MiB） | 18:44 |
+
+与 §八 上方的 01:44 产物并列保留（大小不同源于代码与构建时间差异）。
+**安装→升级→卸载仍未执行**（会改动用户机器），记为 **NOT VERIFIED**；
+产物未签名这一点不变。
+
 ## 九、结论
 
-- 自动化层：fmt / clippy（0 警告）/ 244 Rust / 109 前端 / tsc / vite build 全部通过；
-  release 性能预算 2/2 通过；队列与粘贴竞态有针对性测试。
-- 真机层：验收脚本 46/46、第三方矩阵 5/5 通过；微信与 Agent 应用如实记录为
-  `ENVIRONMENT BLOCKED / NOT VERIFIED`，未用单元测试替代。
-- UI 帧率、空闲资源、长时挂机、安装/卸载未验证；发布判定见 `09` / `10` 文档。
+- 自动化层：fmt / clippy（0 警告）/ Rust 与前端测试 / tsc / vite build /
+  release 性能预算的最终计数见 §二 与 `11` §三；队列与粘贴竞态有针对性测试。
+- 真机层：前轮验收 46/46、第三方矩阵 5/5；本轮完成场景 C/D、30 分钟空闲（A）与
+  P0 配置损坏真实运行；**修复 Alpha 后的图文混合粘贴、场景 B 因锁屏未验证**。
+- 第二轮复核（18:08–18:56，当前源码）：`cargo fmt` / `clippy -D warnings` /
+  `cargo test --all --no-fail-fast`（lib 445 passed / 0 failed / 3 ignored）/
+  `npx tsc --noEmit` / `npm run build` / `npx vitest run`（23 文件 / 166 用例）/
+  `npm run tauri build` 全绿；`clipboard_perf` 2/2、`actions_perf` p95 3.22 ms、
+  真实用户库 v11→v13 升级通过。详见
+  [../V05_FINAL_ACCEPTANCE.md](../V05_FINAL_ACCEPTANCE.md)。
+- 微信与 Agent 应用保持 `ENVIRONMENT BLOCKED / NOT VERIFIED`，未用单元测试替代。
+- 总体判定 **CONDITIONAL PASS**：不得把本文的历史 PASS 或部分数据外推为
+  “所有应用/所有场景已验证”。最终依据见 `11-final-release-acceptance.md`。

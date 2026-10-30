@@ -1,0 +1,79 @@
+{
+  "scenario": "db-audit",
+  "general": {
+    "db_path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-accept-v05\\data-v3\\task-dock.db",
+    "db_bytes": 93691904,
+    "wal_bytes": 5772152,
+    "user_version": 11,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "tables": {
+      "action_acks": 0,
+      "agent_events": 68456,
+      "agent_instances": 10,
+      "agent_runs": 15000,
+      "agent_sessions": 10,
+      "agent_sources": 9,
+      "application_settings": 43,
+      "clipboard_assets": 0,
+      "clipboard_group_items": 0,
+      "clipboard_groups": 0,
+      "clipboard_items": 0,
+      "clipboard_paste_jobs": 0,
+      "clipboard_snapshot_links": 0,
+      "clipboard_task_links": 0,
+      "navigation_log": 0,
+      "navigation_targets": 0,
+      "notification_history": 29962,
+      "recurrence_rules": 0,
+      "task_agent_links": 0,
+      "task_categories": 0,
+      "task_navigation_targets": 0,
+      "task_reminders": 0,
+      "tasks": 0,
+      "workspace_snapshot_items": 0,
+      "workspace_snapshots": 0
+    },
+    "events_by_source": {
+      "bridge": 68456
+    },
+    "events_by_state": {
+      "completed": 15000,
+      "running": 38456,
+      "waiting": 15000
+    },
+    "event_seq": {
+      "min": 1793321920563543,
+      "max": 1793322520364582,
+      "distinct": 68456
+    },
+    "received_range": [
+      "2026-10-30T00:58:40.565912400+00:00",
+      "2026-10-30T01:08:40.638766100+00:00"
+    ],
+    "dedupe_key_duplicates": 0,
+    "runs_by_status": {
+      "completed": 15000
+    },
+    "runs_with_watermark": 15000,
+    "runs_without_last_event_at": 0
+  },
+  "reconcile": {
+    "run_id": "A3-20261030-085817",
+    "reconstructed_critical_ids": 30000,
+    "client_critical_sent": 30000,
+    "client_critical_ok": 30000,
+    "client_critical_failed": 0,
+    "db_critical_present": 30000,
+    "db_critical_missing": 0,
+    "db_events_with_prefix": 68456,
+    "client_running_sent": 270000,
+    "client_ok": 300000,
+    "client_sampled": 0,
+    "client_validation_errors": 0,
+    "client_network_errors": 45,
+    "client_rejected_429": 0,
+    "client_rejected_503": 0,
+    "ok": true
+  }
+}

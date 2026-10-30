@@ -344,6 +344,23 @@ pub fn hook_command(exe: &Path, source_id: &str, event: &str) -> String {
     )
 }
 
+/// Codex 专用 hook 命令行。
+///
+/// Codex 在 Windows 上把 command 交给 `cmd` 执行，且不会像 Claude 兼容产品那样
+/// 自行剥离引号：命令以 `"` 开头时，cmd 会把引号当作路径的一部分，
+/// 导致 `hook: <Event> Failed`（0.165.0-alpha.1.2 实测）。
+/// `cmd /c call "<exe>" ...` 让 cmd 二次解析参数，带空格的安装路径也能正确执行，
+/// 且比 `powershell -Command` 少约 300ms 冷启动。
+pub fn codex_hook_command(exe: &Path, source_id: &str, event: &str) -> String {
+    format!(
+        "cmd.exe /c call \"{}\" {} --source {} --event {}",
+        exe.to_string_lossy(),
+        MARKER,
+        source_id,
+        event
+    )
+}
+
 /// 旧版 PowerShell 脚本路径（仅用于卸载清理与兼容检测）。
 pub fn legacy_script_path(app_data: &Path, source_id: &str) -> PathBuf {
     app_data
@@ -368,6 +385,27 @@ mod tests {
             command: format!("powershell -File task-dock-agent-hook.ps1 {}", MARKER),
             timeout_secs: Some(10),
         }
+    }
+
+    #[test]
+    fn codex_hook_command_survives_cmd_quote_handling() {
+        // Codex 在 Windows 上把 command 交给 cmd 且不剥离引号：
+        // 命令不能以 `"` 开头，否则 cmd 会把引号当成路径的一部分（实测 hook: <Event> Failed）。
+        let exe = PathBuf::from(r"C:\Program Files\Task Dock\task-dock.exe");
+        let cmd = codex_hook_command(&exe, "codex", "Stop");
+        assert!(cmd.starts_with("cmd.exe /c call \""), "{}", cmd);
+        assert!(cmd.contains("--agent-hook --source codex --event Stop"));
+        assert!(!cmd.trim_start().starts_with('"'), "命令不得以引号开头");
+    }
+
+    #[test]
+    fn generic_hook_command_keeps_claude_compatible_form() {
+        let exe = PathBuf::from(r"C:\Program Files\Task Dock\task-dock.exe");
+        let cmd = hook_command(&exe, "workbuddy", "Stop");
+        assert_eq!(
+            cmd,
+            r#""C:\Program Files\Task Dock\task-dock.exe" --agent-hook --source workbuddy --event Stop"#
+        );
     }
 
     #[test]

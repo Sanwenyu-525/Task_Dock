@@ -1,0 +1,111 @@
+{
+  "at": "2026-10-29T17:45:19.109Z",
+  "status": {
+    "activeJob": null,
+    "captureAllowed": true,
+    "configError": null,
+    "enabled": true,
+    "monitor": {
+      "captured": 0,
+      "content_queue_capacity": 8,
+      "content_queue_max_bytes": 134217728,
+      "dropped_contents": 0,
+      "dropped_events": 0,
+      "duplicates": 0,
+      "event_queue_capacity": 64,
+      "failed": 0,
+      "max_capture_latency_ms": 0,
+      "max_process_latency_ms": 0,
+      "merged_events": 0,
+      "observed_events": 0,
+      "peak_content_queue": 0,
+      "peak_event_queue": 0,
+      "recorded": 0,
+      "skipped": 0
+    },
+    "monitoring": true,
+    "paused": false,
+    "platform": "windows"
+  },
+  "stats": {
+    "items": 1250,
+    "groups": 1,
+    "images": 45,
+    "files": 20,
+    "favorites": 0,
+    "bytes": 555068,
+    "asset_bytes": 559676,
+    "max_items": 5000,
+    "max_storage_bytes": 536870912,
+    "enabled": true,
+    "paused": false,
+    "auto_group": true
+  },
+  "health": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "queue": {
+        "capacity": 1024,
+        "depth_events": 0
+      },
+      "service": "task-dock"
+    }
+  },
+  "pipeline": {
+    "status": 200,
+    "body": {
+      "http": {
+        "accepted": 0,
+        "active_connections": 2,
+        "active_requests": 0,
+        "internal_errors": 0,
+        "last_request_at": "2026-10-29T17:45:20.639564100+00:00",
+        "max_active_requests": 0,
+        "max_body_bytes": 65536,
+        "max_concurrency": 32,
+        "rejected_auth": 0,
+        "rejected_concurrency": 0,
+        "rejected_overload": 0,
+        "rejected_parse": 0,
+        "requests": 2
+      },
+      "pipeline": {
+        "batches": 0,
+        "coalesce_ms": 250,
+        "commit_failures": 0,
+        "db_write_latency": {
+          "max_ms": 0,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "samples": 0
+        },
+        "events_merged": 0,
+        "events_processed": 0,
+        "events_received": 0,
+        "events_sampled": 0,
+        "fallback_jobs": 0,
+        "ingest_latency": {
+          "max_ms": 0,
+          "p50_ms": 0,
+          "p95_ms": 0,
+          "p99_ms": 0,
+          "samples": 0
+        },
+        "last_batch_size": 0,
+        "last_flush_at": null,
+        "lifecycle": "running",
+        "max_batch_size": 0,
+        "merge_buffer": 0,
+        "overload_rejects": 0,
+        "queue_capacity": 1024,
+        "queue_depth_events": 0,
+        "queue_depth_jobs": 0,
+        "running": true,
+        "submissions": 0,
+        "uptime_secs": 3
+      }
+    }
+  }
+}

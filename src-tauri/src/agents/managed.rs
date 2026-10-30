@@ -9,7 +9,7 @@
 //! - uninstall：可逆卸载（只删自己的配置，第三方原样保留）
 //! - health：连接健康状态（结合 DB 中的最近事件证据）
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -89,7 +89,7 @@ fn process_snapshot() -> Vec<ProcessInfo> {
         return guard.1.clone();
     }
     let mut out = Vec::new();
-    if let Ok(output) = std::process::Command::new("tasklist")
+    if let Ok(output) = crate::winproc::hidden("tasklist")
         .args(["/FO", "CSV", "/NH"])
         .output()
     {
@@ -136,7 +136,7 @@ pub fn process_snapshot_names() -> Vec<String> {
 
 /// 运行 exe --version 并截取首行。
 pub fn probe_version(exe: &PathBuf, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(exe).args(args).output().ok()?;
+    let out = crate::winproc::hidden(exe).args(args).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text.lines().next()?.trim();
     if line.is_empty() {
@@ -150,7 +150,7 @@ pub fn probe_version(exe: &PathBuf, args: &[&str]) -> Option<String> {
 pub fn find_exe(names: &[&str]) -> Option<PathBuf> {
     for n in names {
         // where 命令（Windows）
-        if let Ok(out) = std::process::Command::new("where").arg(n).output() {
+        if let Ok(out) = crate::winproc::hidden("where").arg(n).output() {
             let text = String::from_utf8_lossy(&out.stdout);
             if let Some(first) = text.lines().next() {
                 let p = PathBuf::from(first.trim());
@@ -268,6 +268,8 @@ pub struct HooksAdapter {
     pub events: fn() -> Vec<String>,
     /// 安装探测（第 1/2 层）
     pub detect_impl: fn(&mut DetectionReport),
+    /// hook 命令行构造（各产品对引号的处理不同，Codex 需要 cmd /c call 包裹）
+    pub hook_command: fn(&Path, &str, &str) -> String,
     pub limitations: Vec<String>,
     pub timeout_secs: u64,
 }
@@ -281,7 +283,7 @@ impl HooksAdapter {
             .map(|e| hooks_install::HookSpec {
                 event: e.clone(),
                 matcher: None,
-                command: hooks_install::hook_command(&exe, self.source_id, e),
+                command: (self.hook_command)(&exe, self.source_id, e),
                 timeout_secs: Some(self.timeout_secs),
             })
             .collect())

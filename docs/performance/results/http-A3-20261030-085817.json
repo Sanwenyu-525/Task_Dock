@@ -1,0 +1,63 @@
+{
+  "scenario": "http-load",
+  "started_at": "2026-10-30T00:58:40.375Z",
+  "machine": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v22.22.3"
+  },
+  "config": {
+    "base": "http://127.0.0.1:47821",
+    "token": "<redacted>",
+    "agents": 10,
+    "rate": 50,
+    "duration": 600,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 24,
+    "out": "docs/performance/results/http-A3-20261030-085817.json",
+    "source": "bridge",
+    "runId": "A3-20261030-085817"
+  },
+  "health": {
+    "ok": true,
+    "queue": {
+      "capacity": 1024,
+      "depth_events": 0
+    },
+    "service": "task-dock"
+  },
+  "elapsed_ms": 600368,
+  "actual_rate": 499.69,
+  "counts": {
+    "sent": 300000,
+    "running_sent": 270000,
+    "critical_sent": 30000,
+    "ok": 300000,
+    "merged": 0,
+    "sampled": 0,
+    "rejected_429": 0,
+    "rejected_503": 0,
+    "validation_errors": 0,
+    "network_errors": 45,
+    "retries": 45,
+    "critical_ok": 30000,
+    "critical_failed": 0,
+    "critical_failed_ids": []
+  },
+  "latency_all": {
+    "count": 300000,
+    "p50_ms": 2.98,
+    "p95_ms": 184.39,
+    "p99_ms": 233.8,
+    "max_ms": 7291.14
+  },
+  "latency_critical": {
+    "count": 30000,
+    "p50_ms": 183.85,
+    "p95_ms": 766.56,
+    "p99_ms": 1360.21,
+    "max_ms": 7291.14
+  }
+}

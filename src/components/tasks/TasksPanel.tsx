@@ -1,11 +1,13 @@
-//! 任务面板：全局概览 → 快速添加 → 日期筛选（主）→ 状态/排序（次级）→ 列表。
+//! 任务面板：统计概览 → 快速添加 → 日期筛选（主）→ 状态/排序（次级）→ 列表。
 //! 筛选器视觉权重低于任务本身；搜索可展开收起，不占常驻高度。
+//! v0.6：卡片层级与空状态插画按视觉预设重绘（结构不变，两套皮肤共用）。
 
 import { useState } from "react";
 import QuickAdd from "./QuickAdd";
 import TaskItem from "./TaskItem";
 import { useTasksStore } from "../../store/useTasksStore";
-import { Search, X, ListChecks, CalendarClock, AlertTriangle, Inbox } from "lucide-react";
+import { Select } from "../ui";
+import { Search, X, ListChecks, CalendarClock, AlertTriangle, Inbox, Sparkles } from "lucide-react";
 
 const VIEWS = [
   { id: "today", label: "今日" },
@@ -42,25 +44,25 @@ export default function TasksPanel() {
     <div className="tasks-panel">
       {/* 全局概览（跨筛选视图） */}
       <div className="tasks-overview">
-        <div className="overview-card" title="全部未完成任务">
-          <ListChecks size={14} className="overview-icon" />
+        <div className="overview-card tone-accent" title="全部未完成任务">
+          <ListChecks size={15} strokeWidth={1.9} className="overview-icon" />
           <span className="overview-value">{stats?.pending ?? "–"}</span>
           <span className="overview-label">待完成</span>
         </div>
-        <div className="overview-card" title="今天到期">
-          <CalendarClock size={14} className="overview-icon" />
+        <div className="overview-card tone-violet" title="今天到期">
+          <CalendarClock size={15} strokeWidth={1.9} className="overview-icon" />
           <span className="overview-value">{stats?.due_today ?? "–"}</span>
           <span className="overview-label">今日到期</span>
         </div>
         <div
-          className={`overview-card ${stats?.overdue ? "warn" : ""}`}
+          className={`overview-card tone-warn ${stats?.overdue ? "warn" : ""}`}
           title="已过期未完成"
           onClick={() => setFilter({ view: "overdue" })}
           role="button"
           tabIndex={0}
           onKeyDown={(e) => e.key === "Enter" && setFilter({ view: "overdue" })}
         >
-          <AlertTriangle size={14} className="overview-icon" />
+          <AlertTriangle size={15} strokeWidth={1.9} className="overview-icon" />
           <span className="overview-value">{stats?.overdue ?? "–"}</span>
           <span className="overview-label">逾期</span>
         </div>
@@ -84,7 +86,7 @@ export default function TasksPanel() {
         <span className="flex-spacer" />
         <button
           className={`icon-btn sm ${searchVisible ? "active" : ""}`}
-          title={searchVisible ? "收起搜索" : "搜索任务"}
+          data-tip={searchVisible ? "收起搜索" : "搜索任务"}
           aria-label={searchVisible ? "收起搜索" : "搜索任务"}
           onClick={() => {
             if (searchOpen && !hasSearch) setSearchOpen(false);
@@ -112,19 +114,14 @@ export default function TasksPanel() {
           ))}
         </div>
         <span className="flex-spacer" />
-        <select
+        <Select
           className="sort-select"
-          title="排序方式"
+          size="sm"
+          ariaLabel="排序方式"
           value={filter.sort ?? "due"}
-          onChange={(e) => setFilter({ sort: e.target.value })}
-          aria-label="排序方式"
-        >
-          {SORTS.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.label}
-            </option>
-          ))}
-        </select>
+          options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
+          onChange={(v) => setFilter({ sort: v })}
+        />
       </div>
 
       {searchVisible && (
@@ -137,13 +134,15 @@ export default function TasksPanel() {
             onChange={(e) => setFilter({ search: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
+                // stopPropagation：别让 Escape 继续冒泡到窗口级「隐藏到托盘」的动作
+                e.stopPropagation();
                 setFilter({ search: "" });
                 setSearchOpen(false);
               }
             }}
           />
           {hasSearch && (
-            <button className="icon-btn sm" title="清空搜索" aria-label="清空搜索" onClick={() => setFilter({ search: "" })}>
+            <button className="icon-btn sm" data-tip="清空搜索" aria-label="清空搜索" onClick={() => setFilter({ search: "" })}>
               <X size={11} />
             </button>
           )}
@@ -159,7 +158,19 @@ export default function TasksPanel() {
         )}
         {!loading && tasks.length === 0 && (
           <div className="empty-state">
-            <div className="empty-icon"><Inbox size={22} /></div>
+            {/* 轻量插画：纯 CSS 渐变气泡 + 一个 SVG 图标，无位图资源 */}
+            <div className="empty-art" aria-hidden="true">
+              <span className="empty-bubble b1" />
+              <span className="empty-bubble b2" />
+              <span className="empty-bubble b3" />
+              <span className="empty-bubble b4" />
+              <Sparkles size={12} className="empty-spark s1" />
+              <Sparkles size={9} className="empty-spark s2" />
+              <span className="empty-cloud" />
+              <span className="empty-orb">
+                <Inbox size={26} strokeWidth={1.7} />
+              </span>
+            </div>
             <div className="empty-title">
               {hasSearch ? "没有匹配的任务" : filter.view === "overdue" ? "没有逾期任务，很好" : "这里还很清爽"}
             </div>

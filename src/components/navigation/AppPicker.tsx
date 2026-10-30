@@ -3,7 +3,7 @@
 //! 数据策略：打开时用 store 缓存的扫描结果（后端另有 5 分钟缓存），
 //! 不做全量重扫；「刷新」按钮才触发强制扫描。
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   X, Search, RefreshCw, Plus, Star, Clock, Globe, FolderOpen, Monitor, AppWindow, Bot,
 } from "lucide-react";
@@ -12,6 +12,7 @@ import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import type { AgentSession } from "../../lib/bridge";
+import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 import {
   navLinkTask, navListWindows, navListTargets, navLinkTaskWindow, navPickTaskWindow, navPickWindowIdentity, navSaveTarget, navSaveAgentSessionTarget,
   CATEGORY_LABELS, avatarHue,
@@ -46,6 +47,12 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
   const [agentOpen, setAgentOpen] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const sessions = useAgentsStore((s) => s.snapshot?.sessions ?? EMPTY_SESSIONS);
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  // 弹层栈：关联目标选择器是模态对话框。Escape 只关它，
+  // 不会越过它去关外层（任务编辑器），更不会把主窗口藏进托盘。
+  useOverlayLayer("dialog", true, onClose, modalRef);
+  useFocusTrap(true, modalRef);
 
   useEffect(() => {
     if (!scan) loadApps(false);
@@ -198,7 +205,8 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
     const matches = windows?.filter((w) => w.exe_path?.toLowerCase() === windowLink.target.exe_path.toLowerCase());
     return (
       <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-        <div className="modal app-picker" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal app-picker" ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true"
+        aria-label="选择关联目标" onMouseDown={(e) => e.stopPropagation()}>
           <div className="modal-head"><span>为 {windowLink.target.display_name} 选择窗口</span>
             <button className="icon-btn sm" onClick={onClose} aria-label="关闭"><X size={14} /></button>
           </div>
@@ -215,7 +223,8 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
 
   return (
     <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal app-picker" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="modal app-picker" ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true"
+        aria-label="选择关联目标" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span><AppWindow size={14} /> 选择关联目标{taskId ? "（将关联到任务）" : ""}</span>
           <button className="icon-btn sm" onClick={onClose} aria-label="关闭"><X size={14} /></button>
@@ -226,7 +235,7 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
             <div className="picker-search">
               <Search size={12} />
               <input
-                autoFocus
+                data-autofocus
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="搜索已安装软件…"

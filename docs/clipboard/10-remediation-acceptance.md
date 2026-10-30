@@ -1,11 +1,22 @@
-# 10 · v0.5 整改验收（按证据分类）
+# 10 · v0.5 整改验收（按证据分类，2026-10-29 上午轮）
 
 > 日期：2026-10-29 · 版本：0.5.0 · 平台：Windows 11 x64 · 20 逻辑 CPU
 > 原则：**未执行的验收不写成通过；单元测试不替代真实桌面验收；文档与最终源码一致。**
+
+> **历史报告声明（2026-10-30 更新）**：本文记录 2026-10-29 上午整改轮的验收与
+> **当轮 PASS**。该轮之后又发现并修复了三个缺陷（32bpp DIB 全透明 PNG、
+> 隐私配置 fail-open、hyper `header_read_timeout` 缺 timer），随后工作站锁屏，
+> 修复后的真实图文混合粘贴与场景 B 无法复验。因此**当前发布判定已改为
+> CONDITIONAL PASS，见 [11-final-release-acceptance.md](11-final-release-acceptance.md)**；
+> 本文的 244/109、46/46、5/5 与性能数字是当轮历史值，不冒充本轮门禁结果。
 > 原始证据：`docs/clipboard/evidence/acceptance-final13.log`、
 > `apps-matrix-report.json`、`apps-matrix-initial.log`、`matrix-vscode-report.json`。
 > 验收脚本与临时数据位于 `C:\Users\ASUS\AppData\Local\Temp\taskdock-accept\`
 > （含机器相关路径，按既有约定不入库；关键输出已归档到 evidence）。
+>
+> **第二轮复核声明（2026-10-30 18:08→18:56）**：整改收尾后在**当前源码**上重跑了
+> 全部工程门禁与两项性能/迁移采样，结果见 **§8.1**；现行发布判定以
+> [../V05_FINAL_ACCEPTANCE.md](../V05_FINAL_ACCEPTANCE.md) 为准。
 
 ## 一、结论摘要
 
@@ -19,7 +30,7 @@
 | release 性能 | **2/2 预算通过**（列表 p95 1.001 ms；200 连拍 2.799 s / 8 s） |
 | 真机桌面 | **46/46 PASS**；第三方矩阵 **5/5 PASS** |
 | 不可执行项 | 微信（已登录用户会话）、Agent 应用（登录/引导页）→ 明确记为环境阻塞/未验证 |
-| 总体 | **PASS**：核心 P0 已修复并有真机证据；未验证项与有损边界如实列明 |
+| 总体 | **当轮 PASS**（历史）；现行判定 **CONDITIONAL PASS**，见 `11` |
 
 **为什么是 PASS**：核心 P0（粘贴生命周期、安全写入）均已修复，并通过真实 Windows
 桌面上的逐项粘贴、恢复、用户中途复制保护等检查；全部工程门禁与 release 性能预算通过。
@@ -317,14 +328,47 @@ M5 首轮粘贴落在 VS Code 欢迎页，文件未变化；任务如实报告 `
 
 未删除/跳过核心测试，未添加 lint 忽略，未修改无关构建配置。
 
+### 8.1 第二轮复核门禁（2026-10-30 18:08→18:56，当前源码）
+
+上表为 10-29 上午轮记录，保留不改。下表是整改收尾后在**当前源码**上重跑的结果：
+
+| 检查 | 结果 | 退出码 | 日志 |
+|---|---|---|---|
+| `cargo fmt --all -- --check` | 首次失败（`real_upgrade.rs` 格式）→ 格式化后复验通过 | 1 → 0 | `gate-rust-final-20261030-1855.log` |
+| `cargo clippy --all-targets --all-features -- -D warnings` | 通过，0 警告 | 0 | 同上 |
+| `cargo test --all --no-fail-fast` | **lib 445 passed / 0 failed / 3 ignored**（22.11 s）；`inbox_processes` 1 passed；其余为 ignored 的真机/性能工具 | 0 | 同上 |
+| `cargo test --lib db::tests -- --nocapture` | **28 passed / 0 failed**（含新增 `v11_to_v13_upgrade_keeps_rows_and_isolates_provable_test_data`） | 0 | `gate-migration-v13-20261030-1855.log` |
+| `TD_REAL_UPGRADE_DB=<真实用户库 v11 副本> cargo test --test real_upgrade -- --ignored --nocapture` | **1 passed / 0 failed**：version 11 → 13，行数无减少，外键零违规，`integrity_check ok` | 0 | `gate-real-upgrade-20261030-1855.log` |
+| `cargo test --release --test clipboard_perf -- --ignored --nocapture` | **2 passed / 0 failed**：200 张 1920×1080 入库 4,279.54 ms（预算 8 s），资产 30.2 MB（配额 32 MB） | 0 | `perf-clipboard-release-20261030-1819.log` |
+| `cargo test --release --test actions_perf -- --ignored --nocapture` | 首次 **FAIL（EXIT=101）**，夹具期望值算错（应为 42，写成 40）；修正后 **PASS**，p95 3.22 ms（预算 60 ms） | 101 → 0 | `perf-actions-release-20261030-180830.log` / `…-1813.log` |
+| `npx vitest run` | **23 文件 / 166 用例通过**（Duration 37.44 s） | 0 | `gate-npm-final-20261030-1842.log` |
+| `npx tsc --noEmit` / `npm run build` | 通过（481.35 kB JS / 94.72 kB CSS） | 0 | `gate-npm-final-20261030-1842.log` |
+| `npm run tauri build`（release） | 通过，release 编译 4m03s：exe 15,531,520 B / NSIS 4.29 MiB / MSI 6.52 MiB（18:44） | 0 | `bundle-build-20261030-1841.log` |
+
+**失败记录全部保留**：首次 `actions_perf` 失败与两次 `cargo fmt` 失败均在日志中留档，
+未删除、未放宽断言、未放宽预算。第二轮整体判定与剩余未验证项见
+[../V05_FINAL_ACCEPTANCE.md](../V05_FINAL_ACCEPTANCE.md)。
+
 ## 九、文档同步
 
 - 更新：`02-architecture.md`（ACCESS_LOCK/内容守卫/自写登记/最终状态机）、
   `06-copy-paste-protection.md`（真机验收与未验证边界）、
   `08-testing-performance.md`（244/109、46/46、矩阵与剩余项）、
   `09-implementation-report.md`（最终结论与遗留项）、本文件。
+- 2026-10-30 新增 `11-final-release-acceptance.md`（Alpha、隐私 fail-closed、
+  HTTP timer、场景 A/C/D、锁屏阻塞与最终 CONDITIONAL PASS），并同步
+  `08`/`09`/`README.md`。
 - 同步：`docs/TESTING.md`、`docs/ARCHITECTURE.md`、`README.md`。
 - 证据归档：`docs/clipboard/evidence/`。
+- **2026-10-30 第二轮复核新增同步**：`docs/V05_COMPREHENSIVE_REMEDIATION.md`（§十一
+  复核与补漏、§8.1 第二轮门禁）、`docs/V05_FINAL_ACCEPTANCE.md`（§2.1 补漏闭环、
+  §3.3 第二轮门禁、§5.3 当前二进制性能复测、§六 C 未验证、§八 发布判定）、
+  `docs/PERFORMANCE_TESTING.md`（§1 工具表、§3 命令、§4 压测来源隔离、§8 第二轮采样）、
+  `docs/PERFORMANCE_ARCHITECTURE.md`（§5.2 keyset 分页与全局计数、§6 NotifyGate
+  跨批次限频、§8 可靠性边界第 7/8 条）、`docs/ARCHITECTURE.md`、`docs/AGENT_ADAPTERS.md`
+  （来源归属由服务端判定）、`docs/TESTING.md`、`README.md`、
+  本文件 §8.1 与 `08-testing-performance.md` §5.11/§八/§九。
+  **历史测量数值一律未被覆写**，新增内容以「第二轮/复核」小节并列呈现。
 
 ## 十、最终 A–J 判定
 
@@ -341,7 +385,11 @@ M5 首轮粘贴落在 VS Code 欢迎页，文件未变化；任务如实报告 `
 | I | 测试体系（可注入适配器/受控时序/竞态） | **PASS** | `PasteIo` 注入 16 例；队列压力；244 Rust + 109 前端 |
 | J | 真实 Windows 验收、门禁与文档 | **PASS** | 46/46 + 矩阵 5/5；fmt/clippy/test/tsc/vitest/build/release 全绿；文档同步 |
 
-### 最终判定：PASS
+### 最终判定：PASS（2026-10-29 上午轮，已被 11 号报告取代）
+
+> 该判定只对本轮列出的证据成立。随后发现的 Alpha 合成缺陷与锁屏复验缺口
+> 使现行发布判定改为 **CONDITIONAL PASS**；以 `11-final-release-acceptance.md`
+> 为准，本段不得单独引用为当前发布结论。
 
 理由：
 

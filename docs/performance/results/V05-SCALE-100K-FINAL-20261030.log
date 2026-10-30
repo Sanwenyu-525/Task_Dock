@@ -1,0 +1,16 @@
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `release` profile [optimized] target(s) in 2m 42s
+     Running unittests src\lib.rs (target\release\deps\task_dock_lib-6772d1dd2f085104.exe)
+
+running 1 test
+SCALE backup: bytes=61877483 ms=571 assets=500 archives=2 sha256=9e63ed4b88fe6d7ff9d94b5d00d5691f3eefc43622570c008fe460510ad8758d
+SCALE restore: ms=5019 state=completed pre_backup=C:\Users\ASUS\AppData\Local\Temp\td-backup-scale-dst-5b53dbc7-ba6e-4779-b2e9-a85b032ebc2e\backups\restore-pre-20261030-105127-1da53634.json
+SCALE memory_mb: baseline=19.9 after_backup=24.2 before_restore=16.6 after_restore=25.9 observed_peak=619
+SCALE sqlite_latency_us backup: n=55 p50=68 p95=96 p99=149 max=819 errors=0
+SCALE sqlite_latency_us restore: n=481 p50=44 p95=81 p99=141 max=6722 errors=0
+SCALE_EVIDENCE_FILE D:\Develop\task_dock\src-tauri\target\acceptance\v05-scale-100k.json
+SCALE_EVIDENCE {"backup":{"bytes":61877483,"counts":{"action_acks":500,"agent_events":100000,"agent_instances":1,"agent_runs":100,"agent_sessions":10,"agent_sources":10,"application_settings":48,"archive_bytes":4275560,"archives":2,"asset_bytes":3105708,"assets":500,"clipboard_assets":500,"clipboard_group_items":500,"clipboard_groups":50,"clipboard_items":5000,"clipboard_paste_jobs":100,"clipboard_snapshot_links":100,"clipboard_task_links":100,"navigation_log":500,"navigation_targets":100,"notification_history":10000,"recurrence_rules":10,"task_agent_links":100,"task_categories":10,"task_navigation_targets":100,"task_reminders":200,"tasks":1000,"workspace_snapshot_items":400,"workspace_snapshots":100},"ms":571,"observed_max_ws_bytes":28749824,"sha256":"9e63ed4b88fe6d7ff9d94b5d00d5691f3eefc43622570c008fe460510ad8758d","sqlite_read_latency_us":{"errors":0,"max_us":819,"n":55,"p50_us":68,"p95_us":96,"p99_us":149}},"generated_at":"2026-10-30T02:51:30.809614400+00:00","memory_mb":{"after_backup":24.2,"after_restore":25.9,"baseline":19.9,"before_restore":16.6,"observed_peak":619.0},"restore":{"archives":2,"assets":500,"backup_kind":"full","ms":5019,"observed_max_ws_bytes":649072640,"partial":false,"pre_backup":"C:\\Users\\ASUS\\AppData\\Local\\Temp\\td-backup-scale-dst-5b53dbc7-ba6e-4779-b2e9-a85b032ebc2e\\backups\\restore-pre-20261030-105127-1da53634.json","sqlite_read_latency_us":{"errors":0,"max_us":6722,"n":481,"p50_us":44,"p95_us":81,"p99_us":141},"state":"completed"},"seed":{"clipboard_assets":500,"clipboard_image_items":250,"clipboard_items":5000,"events":100000,"ms":1627,"notifications":10000,"tasks":1000,"workspaces":100},"sizes":{"bundle_bytes":61877483,"dst_db_bytes":114944608,"source_db_bytes":56836096},"test":"full_backup_100k_events_10k_notifications_roundtrip"}
+test commands::backup::tests::full_backup_100k_events_10k_notifications_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 384 filtered out; finished in 8.95s
+

@@ -118,13 +118,13 @@ pub(crate) trait PasteIo {
     fn clipboard_match(&self, expected: &ClipboardPayload) -> ClipboardMatch;
     fn snapshot(&self) -> Snapshot;
     fn target_alive(&self, hwnd: isize) -> bool;
-    fn focus(&self, hwnd: isize, cancel: &AtomicBool) -> AppResult<()>;
+    fn focus(&self, hwnd: isize, pid: u32, cancel: &AtomicBool) -> AppResult<()>;
     fn write_guarded(
         &self,
         payload: &ClipboardPayload,
         guard: WriteGuard<'_>,
     ) -> AppResult<WriteOutcome>;
-    fn send_paste(&self) -> AppResult<()>;
+    fn send_paste(&self, hwnd: isize, pid: u32) -> AppResult<()>;
     fn restore_if_own_content(
         &self,
         snapshot: &Snapshot,
@@ -349,7 +349,7 @@ pub(crate) fn run_plan(
             }
         };
 
-        if let Err(e) = io.focus(plan.target.hwnd, cancel) {
+        if let Err(e) = io.focus(plan.target.hwnd, plan.target.pid, cancel) {
             if canceled(cancel) {
                 status = "cancelled";
                 set_state(
@@ -509,7 +509,7 @@ pub(crate) fn run_plan(
             &remaining,
             None,
         );
-        if let Err(e) = io.send_paste() {
+        if let Err(e) = io.send_paste(plan.target.hwnd, plan.target.pid) {
             status = "failed";
             notes.push(format!(
                 "第 {} 项按键发送失败：{e}（内容已写入剪贴板，不会自动重发）",
@@ -733,7 +733,7 @@ impl PasteManager {
                 "已有粘贴任务进行中，请先取消或等待完成".into(),
             ));
         }
-        let settings = Settings::load(&self.db).unwrap_or_default();
+        let settings = Settings::load_clipboard(&self.db).settings;
         let timing = PasteTiming::from_settings(&settings);
 
         let (job_id, total, sent) = match &resume {
@@ -925,13 +925,40 @@ pub fn payload_for_item(db: &Db, root: &Path, item: &ClipboardItem) -> AppResult
     }
 }
 
-fn focus_target(hwnd: isize, cancel: &AtomicBool) -> AppResult<()> {
+/// HWND 会被系统复用：聚焦/按键前必须确认窗口仍属于启动时校验过的进程。
+fn ensure_target_pid(actual: Option<u32>, expected: u32) -> AppResult<()> {
+    match actual {
+        Some(pid) if pid == expected => Ok(()),
+        _ => Err(AppError::Validation(
+            "目标窗口已关闭或已被其他窗口复用，已停止发送".into(),
+        )),
+    }
+}
+
+/// 按键前的最终门：仍是同一进程且仍在前台（写入期间焦点可能被抢走）。
+fn ensure_send_target(
+    actual_pid: Option<u32>,
+    expected_pid: u32,
+    foreground: bool,
+) -> AppResult<()> {
+    ensure_target_pid(actual_pid, expected_pid)?;
+    if !foreground {
+        return Err(AppError::Validation(
+            "目标窗口已失去焦点，按键未发送".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn focus_target(hwnd: isize, pid: u32, cancel: &AtomicBool) -> AppResult<()> {
+    ensure_target_pid(platform::window_pid(hwnd), pid)?;
     for attempt in 0..3 {
         if canceled(cancel) {
             return Err(AppError::Validation("已取消".into()));
         }
         let _ = crate::navigation::window_manager::focus_window(hwnd);
         for _ in 0..10 {
+            ensure_target_pid(platform::window_pid(hwnd), pid)?;
             if platform::is_foreground(hwnd) {
                 return Ok(());
             }
@@ -972,8 +999,8 @@ impl PasteIo for PlatformIo {
         platform::window_pid(hwnd).is_some()
     }
 
-    fn focus(&self, hwnd: isize, cancel: &AtomicBool) -> AppResult<()> {
-        let result = focus_target(hwnd, cancel);
+    fn focus(&self, hwnd: isize, pid: u32, cancel: &AtomicBool) -> AppResult<()> {
+        let result = focus_target(hwnd, pid, cancel);
         if result.is_ok() {
             tracing::debug!("逐项粘贴：目标窗口已在前台 hwnd={hwnd}");
         }
@@ -993,8 +1020,13 @@ impl PasteIo for PlatformIo {
         outcome
     }
 
-    fn send_paste(&self) -> AppResult<()> {
-        // 按键只会送达当前前台窗口：发送前记录一次，便于区分“未送达”与“目标未接收”。
+    fn send_paste(&self, hwnd: isize, pid: u32) -> AppResult<()> {
+        // HWND 复用与焦点被抢都会让按键落到别的窗口：发送前用 PID + 前台双重核对。
+        ensure_send_target(
+            platform::window_pid(hwnd),
+            pid,
+            platform::is_foreground(hwnd),
+        )?;
         if let Some(fg) = platform::foreground_target() {
             tracing::debug!("逐项粘贴：按键将发往前台窗口 {} pid={}", fg.title, fg.pid);
         }
@@ -1010,11 +1042,11 @@ impl PasteIo for PlatformIo {
         snapshot: &Snapshot,
         last_written: &ClipboardPayload,
     ) -> AppResult<RestoreOutcome> {
-        platform::restore_if_own_content(snapshot, last_written)
+        platform::restore_if_own_content(snapshot, last_written, &self.self_write)
     }
 
     fn note_self_write(&self, sequence: u32) {
-        self.self_write.fetch_max(sequence, Ordering::SeqCst);
+        platform::note_self_write_watermark(&self.self_write, sequence);
     }
 
     fn sleep_ms(&self, ms: u64) {
@@ -1148,6 +1180,7 @@ mod tests {
         restore_result: RefCell<RestoreOutcome>,
         applied: Cell<usize>,
         writes: RefCell<Vec<String>>,
+        payloads: RefCell<Vec<ClipboardPayload>>,
         guards: RefCell<Vec<String>>,
         restores: RefCell<Vec<String>>,
         sleeps: RefCell<Vec<u64>>,
@@ -1185,6 +1218,7 @@ mod tests {
                 restore_result: RefCell::new(RestoreOutcome::Restored),
                 applied: Cell::new(0),
                 writes: RefCell::new(Vec::new()),
+                payloads: RefCell::new(Vec::new()),
                 guards: RefCell::new(Vec::new()),
                 restores: RefCell::new(Vec::new()),
                 sleeps: RefCell::new(Vec::new()),
@@ -1228,7 +1262,7 @@ mod tests {
             self.target_alive.get()
         }
 
-        fn focus(&self, _hwnd: isize, _cancel: &AtomicBool) -> AppResult<()> {
+        fn focus(&self, _hwnd: isize, _pid: u32, _cancel: &AtomicBool) -> AppResult<()> {
             match self.focus_error.borrow().as_deref() {
                 Some(e) => Err(AppError::Validation(e.into())),
                 None => Ok(()),
@@ -1247,6 +1281,7 @@ mod tests {
                 WriteGuard::Unconditional => "unconditional".into(),
             });
             self.writes.borrow_mut().push(text.clone());
+            self.payloads.borrow_mut().push(payload.clone());
             self.timeline.borrow_mut().push(format!("write:{text}"));
             if self.force_sequence_changed.get() {
                 self.seq.set(self.seq.get() + 1);
@@ -1278,7 +1313,7 @@ mod tests {
             Ok(WriteOutcome::Written(final_seq))
         }
 
-        fn send_paste(&self) -> AppResult<()> {
+        fn send_paste(&self, _hwnd: isize, _pid: u32) -> AppResult<()> {
             self.timeline.borrow_mut().push("send".into());
             if self.send_fails.get() {
                 return Err(AppError::Validation("按键被拦截".into()));
@@ -1544,6 +1579,20 @@ mod tests {
     }
 
     #[test]
+    fn reused_or_unfocused_target_is_rejected_before_pressing_keys() {
+        assert!(ensure_send_target(Some(42), 42, true).is_ok());
+        let reused = ensure_send_target(Some(43), 42, true).unwrap_err();
+        assert!(reused.to_string().contains("复用"), "{reused}");
+        let gone = ensure_send_target(None, 42, true).unwrap_err();
+        assert!(gone.to_string().contains("关闭"), "{gone}");
+        let unfocused = ensure_send_target(Some(42), 42, false).unwrap_err();
+        assert!(unfocused.to_string().contains("焦点"), "{unfocused}");
+        assert!(ensure_target_pid(Some(42), 42).is_ok());
+        assert!(ensure_target_pid(Some(7), 42).is_err());
+        assert!(ensure_target_pid(None, 42).is_err());
+    }
+
+    #[test]
     fn send_failure_removes_written_item_to_prevent_duplicate_paste() {
         let io = FakeIo::new(1);
         io.send_fails.set(true);
@@ -1663,5 +1712,154 @@ mod tests {
         );
         assert!(outcome.restored, "写入过剪贴板且按键未发送时应恢复原内容");
         assert_eq!(io.restores.borrow().as_slice(), ["a".to_string()]);
+    }
+
+    fn solid_capture(color: [u8; 4], w: u32, h: u32) -> crate::clipboard::CapturedContent {
+        use crate::clipboard::{CapturedContent, CapturedImage};
+        let rgba: Vec<u8> = color
+            .iter()
+            .copied()
+            .cycle()
+            .take((w * h * 4) as usize)
+            .collect();
+        CapturedContent {
+            kind: crate::clipboard::KIND_IMAGE.into(),
+            text: String::new(),
+            html: String::new(),
+            preview: String::new(),
+            file_paths: vec![],
+            image: Some(CapturedImage {
+                png: crate::clipboard::image::encode_png(&rgba, w, h).unwrap(),
+                width: w,
+                height: h,
+                rgba,
+            }),
+            source_app: "snippingtool.exe".into(),
+            source_title: "截图工具".into(),
+            byte_size: 0,
+        }
+    }
+
+    #[test]
+    fn red_green_text_blue_pastes_each_item_in_order_with_exact_pixels() {
+        use crate::clipboard::{image, store, CapturedContent, KIND_TEXT};
+        let root = std::env::temp_dir().join(format!("td-paste-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let settings = crate::db::Settings::default();
+
+        let text = CapturedContent {
+            kind: KIND_TEXT.into(),
+            text: "文本 C".into(),
+            html: String::new(),
+            preview: String::new(),
+            file_paths: vec![],
+            image: None,
+            source_app: "notepad.exe".into(),
+            source_title: "记事本".into(),
+            byte_size: 0,
+        };
+        let colors = [
+            ([220u8, 40, 40, 255], 37u32, 23u32),
+            ([40, 180, 80, 255], 53, 31),
+            ([40, 80, 220, 255], 61, 17),
+        ];
+        let a = store::record_capture(
+            &db,
+            &root,
+            &solid_capture(colors[0].0, colors[0].1, colors[0].2),
+            &settings,
+        )
+        .unwrap();
+        let b = store::record_capture(
+            &db,
+            &root,
+            &solid_capture(colors[1].0, colors[1].1, colors[1].2),
+            &settings,
+        )
+        .unwrap();
+        let c = store::record_capture(&db, &root, &text, &settings).unwrap();
+        let d = store::record_capture(
+            &db,
+            &root,
+            &solid_capture(colors[2].0, colors[2].1, colors[2].2),
+            &settings,
+        )
+        .unwrap();
+        let gid = a.group_id.clone().expect("首张图片应建组");
+        let group = store::get_group(&db, &gid).unwrap();
+        assert_eq!(
+            group
+                .items
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                a.item.id.as_str(),
+                b.item.id.as_str(),
+                c.item.id.as_str(),
+                d.item.id.as_str()
+            ],
+            "A/B/C/D 顺序必须与复制顺序一致"
+        );
+
+        let mut p = plan(&[], timing());
+        p.item_ids = group.items.iter().map(|i| i.id.clone()).collect();
+        p.total = p.item_ids.len() as i64;
+        let mut load = |id: &str| -> AppResult<LoadedPayload> {
+            let item = store::get_item(&db, id)?;
+            Ok(LoadedPayload {
+                payload: payload_for_item(&db, &root, &item)?,
+                kind: item.kind,
+            })
+        };
+        let io = FakeIo::new(7);
+        let cancel = AtomicBool::new(false);
+        let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
+        assert_eq!(outcome.status, "completed");
+        assert_eq!(outcome.sent, 4);
+        assert_eq!(outcome.skipped, 0);
+        assert!(outcome.restored);
+
+        let payloads = io.payloads.borrow();
+        assert_eq!(payloads.len(), 4);
+        for (idx, (expected, w, h)) in colors.iter().enumerate() {
+            let image_idx = if idx < 2 { idx } else { 3 };
+            match &payloads[image_idx] {
+                ClipboardPayload::Image {
+                    png, width, height, ..
+                } => {
+                    assert_eq!((*width, *height), (*w, *h));
+                    let (rgba, pw, ph) = image::decode_png_rgba(png).unwrap();
+                    assert_eq!((pw, ph), (*w, *h));
+                    assert_eq!(&rgba[0..4], expected.as_slice());
+                    assert!(
+                        rgba.chunks_exact(4).all(|px| px == expected.as_slice()),
+                        "第 {} 张图片写入剪贴板的像素必须与复制时一致",
+                        image_idx + 1
+                    );
+                }
+                other => panic!("第 {} 项应为图片，实际 {:?}", image_idx + 1, other),
+            }
+        }
+        match &payloads[2] {
+            ClipboardPayload::Text { text, html } => {
+                assert_eq!(text, "文本 C");
+                assert!(html.is_none());
+            }
+            other => panic!("第 3 项应为文本，实际 {:?}", other),
+        }
+        let timeline = io.timeline.borrow();
+        let events: Vec<&str> = timeline
+            .iter()
+            .filter(|e| e.starts_with("write:") || e.as_str() == "send")
+            .map(String::as_str)
+            .collect();
+        assert_eq!(events.len(), 8, "四项各一次写入 + 一次按键");
+        for chunk in events.chunks(2) {
+            assert!(chunk[0].starts_with("write:"));
+            assert_eq!(chunk[1], "send", "必须逐项写入后立即粘贴，不能批量发送");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

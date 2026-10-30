@@ -1,0 +1,374 @@
+{
+  "arm": "full_checkpoint",
+  "database": {
+    "main_bytes": 55095296,
+    "page_count": 13451,
+    "rows_agent_events": 36000,
+    "shm_bytes": 32768,
+    "wal_bytes": 0
+  },
+  "events": 36000,
+  "load_secs": 61.9282687,
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "memory": {
+    "private_after_bytes": 6193152,
+    "private_base_bytes": 2420736,
+    "private_growth_bytes": 3772416,
+    "private_growth_per_event_bytes": 104.79,
+    "working_set_after_bytes": 10817536,
+    "working_set_base_bytes": 7102464
+  },
+  "samples": [
+    {
+      "db_main_bytes": 4096,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 918792,
+      "page_count": 119,
+      "private_bytes": 2510848,
+      "t_ms": 0,
+      "working_set_bytes": 7229440
+    },
+    {
+      "db_main_bytes": 8757248,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 32,
+      "page_count": 2138,
+      "private_bytes": 5505024,
+      "t_ms": 0,
+      "working_set_bytes": 10055680
+    },
+    {
+      "db_main_bytes": 17354752,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 4237,
+      "private_bytes": 5734400,
+      "t_ms": 0,
+      "working_set_bytes": 10330112
+    },
+    {
+      "db_main_bytes": 25735168,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 6283,
+      "private_bytes": 5799936,
+      "t_ms": 0,
+      "working_set_bytes": 10403840
+    },
+    {
+      "db_main_bytes": 34717696,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 1487352,
+      "page_count": 8476,
+      "private_bytes": 5963776,
+      "t_ms": 0,
+      "working_set_bytes": 10510336
+    },
+    {
+      "db_main_bytes": 41709568,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 10183,
+      "private_bytes": 5935104,
+      "t_ms": 0,
+      "working_set_bytes": 10567680
+    },
+    {
+      "db_main_bytes": 48324608,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 11798,
+      "private_bytes": 6070272,
+      "t_ms": 0,
+      "working_set_bytes": 10731520
+    },
+    {
+      "db_main_bytes": 54771712,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 1685112,
+      "page_count": 13417,
+      "private_bytes": 6250496,
+      "t_ms": 0,
+      "working_set_bytes": 10752000
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 5865472,
+      "t_ms": 0,
+      "working_set_bytes": 10629120
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6328320,
+      "t_ms": 0,
+      "working_set_bytes": 10858496
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6328320,
+      "t_ms": 0,
+      "working_set_bytes": 10858496
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6328320,
+      "t_ms": 0,
+      "working_set_bytes": 10858496
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6328320,
+      "t_ms": 0,
+      "working_set_bytes": 10858496
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6275072,
+      "t_ms": 0,
+      "working_set_bytes": 10842112
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6275072,
+      "t_ms": 0,
+      "working_set_bytes": 10842112
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6189056,
+      "t_ms": 0,
+      "working_set_bytes": 10797056
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6189056,
+      "t_ms": 0,
+      "working_set_bytes": 10797056
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10801152
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10817536
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10817536
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10817536
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10817536
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10817536
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10817536
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10817536
+    },
+    {
+      "db_main_bytes": 55095296,
+      "db_shm_bytes": 32768,
+      "db_wal_bytes": 0,
+      "page_count": 13451,
+      "private_bytes": 6193152,
+      "t_ms": 0,
+      "working_set_bytes": 10817536
+    }
+  ],
+  "settle_secs": 60,
+  "submit_batch": 100
+}

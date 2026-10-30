@@ -8,6 +8,7 @@ import { parseQuickAdd, type ParsedInput } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { describeRecurrence, fromLocalInputValue, toLocalInputValue } from "../../lib/format";
+import { DateTimePicker } from "../ui";
 
 interface Props {
   compact?: boolean;
@@ -101,7 +102,7 @@ export default function QuickAdd({ compact }: Props) {
         />
         {busy && <Loader2 size={12} className="spin quick-add-spinner" />}
         <button
-          className="btn primary sm"
+          className="btn primary sm quick-add-btn"
           onClick={parsed ? onCreate : onParse}
           disabled={!text.trim() || busy}
         >
@@ -113,18 +114,19 @@ export default function QuickAdd({ compact }: Props) {
         <div className="quick-add-preview">
           <div className="preview-line">
             <strong>{parsed.title}</strong>
-            <button className="icon-btn sm" onClick={onCancel} title="取消" aria-label="取消">
+            <button className="icon-btn sm" onClick={onCancel} data-tip="取消" aria-label="取消">
               <X size={12} />
             </button>
           </div>
           <div className="preview-meta">
             <label>
               时间
-              <input
-                type="datetime-local"
+              <DateTimePicker
+                size="sm"
+                ariaLabel="时间"
                 value={dueInput}
                 disabled={creating}
-                onChange={(e) => setDueInput(e.target.value)}
+                onChange={setDueInput}
               />
             </label>
             {parsed.recurrence && (

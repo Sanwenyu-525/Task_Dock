@@ -1,7 +1,9 @@
-//! Agent 行动中心：把散落事件聚合成可处理的动作。
+//! Agent 行动中心：按「需介入 / 通知 / 历史」三层展示。
 //!
-//! - 「行动」子视图：优先级排序的待处理动作、去重合并计数、批量确认、跳回会话；
-//! - 「历史」子视图：复用既有 HistoryPanel（通知 + 原始事件流水）；
+//! - 需介入：当前轮次停在等待/失败且未确认；授权为关键词推断并明确标注；
+//! - 通知：未读任务提醒与已恢复轮次遗留的失败（不与需介入重复计数）；
+//! - 历史：最近 30 天真实轮次，只读，不受确认影响；
+//! - 计数来自后端全局 SQL，与筛选/分页无关；列表使用 keyset 游标加载更多；
 //! - 监控覆盖度单独展示：未接入/未验证的来源明确说明，绝不显示成「监控中」。
 
 import { useEffect, useMemo, useState } from "react";
@@ -11,39 +13,95 @@ import {
   Bot,
   Check,
   ChevronDown,
+  Inbox,
   Layers,
   RefreshCw,
   ShieldQuestion,
-  Inbox,
   Undo2,
 } from "lucide-react";
-import HistoryPanel from "../history/HistoryPanel";
-import { useActionsStore, attentionCount, kindLabel } from "../../store/useActionsStore";
+import {
+  useActionsStore,
+  attentionCount,
+  categoryCount,
+  kindLabel,
+} from "../../store/useActionsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
-import { taskContext, type ActionItem, type ActionKind } from "../../lib/bridge";
+import {
+  taskContext,
+  type ActionCategory,
+  type ActionItem,
+  type ActionKind,
+} from "../../lib/bridge";
 import { formatRelative } from "../../lib/format";
+import { Checkbox, Select } from "../ui";
 
-const KIND_FILTERS: { id: ActionKind | "all"; label: string }[] = [
-  { id: "all", label: "全部" },
-  { id: "failed", label: "失败" },
-  { id: "authorization", label: "授权" },
-  { id: "waiting_input", label: "等待" },
-  { id: "running", label: "运行" },
-  { id: "completed", label: "完成" },
-  { id: "reminder", label: "提醒" },
-];
+const KIND_FILTERS: Record<ActionCategory, { id: ActionKind | "all"; label: string }[]> = {
+  intervention: [
+    { id: "all", label: "全部" },
+    { id: "failed", label: "失败" },
+    { id: "authorization", label: "授权" },
+    { id: "waiting_input", label: "等待" },
+  ],
+  notification: [
+    { id: "all", label: "全部" },
+    { id: "failed", label: "重要失败" },
+    { id: "reminder", label: "提醒" },
+  ],
+  history: [
+    { id: "all", label: "全部" },
+    { id: "failed", label: "失败" },
+    { id: "authorization", label: "授权" },
+    { id: "waiting_input", label: "等待" },
+    { id: "running", label: "运行" },
+    { id: "completed", label: "完成" },
+    { id: "disconnected", label: "中断" },
+  ],
+};
+
+const CATEGORY_LABELS: Record<ActionCategory, string> = {
+  intervention: "需介入",
+  notification: "通知",
+  history: "历史",
+};
 
 const PRIORITY_LABELS = ["P0", "P1", "P2", "P3"];
 
+function emptyTitle(category: ActionCategory, filteredTotal: number, globalTotal: number): string {
+  if (filteredTotal === 0 && globalTotal > 0) return "当前筛选没有匹配项";
+  switch (category) {
+    case "intervention":
+      return "没有需要介入的动作";
+    case "notification":
+      return "没有未确认通知";
+    case "history":
+      return "最近 30 天没有历史轮次";
+  }
+}
+
+function emptyHint(category: ActionCategory, filteredTotal: number, globalTotal: number): string {
+  if (filteredTotal === 0 && globalTotal > 0) {
+    return `「${CATEGORY_LABELS[category]}」仍有 ${globalTotal} 条，调整来源/任务/类型筛选或清除条件。`;
+  }
+  switch (category) {
+    case "intervention":
+      return "失败、等待输入与需授权（关键词推断）的当前轮次会出现在这里；运行中与已完成在「历史」中。";
+    case "notification":
+      return "未读任务提醒、以及已恢复轮次遗留的失败通知会出现在这里；完成与断连通知只进历史，不占用徽标。";
+    case "history":
+      return "最近 30 天的真实轮次（运行中 / 已完成 / 历史等待 / 失败 / 断连）会出现在这里；原始事件流水在主导航「历史」。";
+  }
+}
+
 export default function ActionCenterPanel() {
-  const [view, setView] = useState<"actions" | "history">("actions");
   const [coverageOpen, setCoverageOpen] = useState(false);
   const feed = useActionsStore((s) => s.feed);
   const loading = useActionsStore((s) => s.loading);
+  const loadingMore = useActionsStore((s) => s.loadingMore);
   const error = useActionsStore((s) => s.error);
   const filter = useActionsStore((s) => s.filter);
   const load = useActionsStore((s) => s.load);
+  const loadMore = useActionsStore((s) => s.loadMore);
   const setFilter = useActionsStore((s) => s.setFilter);
   const ack = useActionsStore((s) => s.ack);
   const unack = useActionsStore((s) => s.unack);
@@ -54,12 +112,17 @@ export default function ActionCenterPanel() {
   const openContext = useUiStore((s) => s.openContext);
   const [busy, setBusy] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (view !== "actions") return;
-    if (!feed) void load();
-  }, [view, feed, load]);
-
+  const category: ActionCategory = filter.category ?? "intervention";
+  // 分类切换后、新数据到达前不展示旧分类列表
+  const current = feed && feed.category === category ? feed : null;
+  const counts = feed?.counts;
   const attention = attentionCount(feed);
+  const categoryTotal = categoryCount(feed, category);
+
+  useEffect(() => {
+    if (!feed) void load();
+  }, [feed, load]);
+
   const coverageIssues = useMemo(
     () => (feed?.coverage ?? []).filter((c) => c.level !== "live"),
     [feed],
@@ -67,21 +130,36 @@ export default function ActionCenterPanel() {
   const activeCount = (feed?.coverage ?? []).filter((c) => c.level === "live").length;
   const taskOptions = useMemo(() => {
     const map = new Map<string, string>();
-    for (const it of feed?.items ?? []) {
+    for (const it of current?.items ?? []) {
       if (it.task_id && it.task_title) map.set(it.task_id, it.task_title);
     }
     return [...map.entries()].map(([id, title]) => ({ id, title }));
-  }, [feed]);
+  }, [current]);
+
+  function switchCategory(next: ActionCategory) {
+    if (next === category) return;
+    setFilter({
+      category: next,
+      kind: undefined,
+      priority: undefined,
+      include_acked: false,
+    });
+  }
+
+  function canAck(item: ActionItem): boolean {
+    if (item.category !== "history") return true;
+    return ["failed", "authorization", "waiting_input"].includes(item.kind);
+  }
 
   async function onAck(item: ActionItem) {
     if (busy) return;
     setBusy(item.id);
     try {
       if (item.acked) {
-        await unack(item.event_ids);
+        await unack([item.id]);
         showToast("已恢复为待处理", { kind: "info" });
       } else {
-        await ack(item.event_ids);
+        await ack([item.id]);
       }
     } catch (e) {
       showToast(`确认失败：${String(e)}`, { kind: "error" });
@@ -129,36 +207,43 @@ export default function ActionCenterPanel() {
   return (
     <div className="action-panel">
       <div className="filter-bar primary">
-        <div className="seg-group subtle" role="group" aria-label="视图">
-          <button
-            className={`seg-btn ${view === "actions" ? "active" : ""}`}
-            onClick={() => setView("actions")}
-          >
-            行动
-            {attention > 0 && <em className="badge">{attention}</em>}
-          </button>
-          <button
-            className={`seg-btn ${view === "history" ? "active" : ""}`}
-            onClick={() => setView("history")}
-          >
-            历史
-          </button>
+        <div className="seg-group subtle" role="group" aria-label="行动分类">
+          {(["intervention", "notification", "history"] as ActionCategory[]).map((id) => {
+            const badge = categoryCount(feed, id);
+            return (
+              <button
+                key={id}
+                className={`seg-btn ${category === id ? "active" : ""}`}
+                onClick={() => switchCategory(id)}
+                aria-pressed={category === id}
+              >
+                {CATEGORY_LABELS[id]}
+                {id !== "history" && badge > 0 && <em className="badge">{badge}</em>}
+              </button>
+            );
+          })}
         </div>
         <span className="flex-spacer" />
-        {view === "actions" && (
-          <button className="btn sm" onClick={() => load()} title="重新聚合动作">
-            <RefreshCw size={12} /> 刷新
-          </button>
-        )}
+        <button className="btn sm" onClick={() => load()} title="重新聚合动作">
+          <RefreshCw size={12} /> 刷新
+        </button>
       </div>
 
-      {view === "history" && <HistoryPanel />}
-
-      {view === "actions" && (
+      {feed?.enabled === false ? (
+        <div className="empty-state">
+          <div className="empty-icon">
+            <Inbox size={22} />
+          </div>
+          <div className="empty-title">行动中心已关闭</div>
+          <div className="empty-hint">
+            Agent 事件仍会照常入库，历史与会话跳转不受影响；可在「设置」中重新开启行动中心以恢复聚合与徽标。
+          </div>
+        </div>
+      ) : (
         <>
           <div className="filter-bar secondary">
             <div className="seg-group subtle action-kind-filter" role="group" aria-label="类型筛选">
-              {KIND_FILTERS.map((k) => (
+              {KIND_FILTERS[category].map((k) => (
                 <button
                   key={k.id}
                   className={`seg-btn ${(filter.kind ?? "all") === k.id ? "active" : ""}`}
@@ -169,55 +254,70 @@ export default function ActionCenterPanel() {
               ))}
             </div>
             <span className="flex-spacer" />
-            <select
-              className="sort-select"
-              aria-label="优先级筛选"
-              value={filter.priority ?? ""}
-              onChange={(e) =>
-                setFilter({ priority: e.target.value === "" ? undefined : Number(e.target.value) })
-              }
-            >
-              <option value="">全部优先级</option>
-              {PRIORITY_LABELS.map((label, p) => (
-                <option key={label} value={p}>{label}</option>
-              ))}
-            </select>
+            {category !== "notification" && (
+              <Select
+                className="sort-select"
+                size="sm"
+                ariaLabel="优先级筛选"
+                value={filter.priority === undefined ? "" : String(filter.priority)}
+                options={[
+                  { value: "", label: "全部优先级" },
+                  ...PRIORITY_LABELS.map((label, p) => ({ value: String(p), label })),
+                ]}
+                onChange={(v) =>
+                  setFilter({
+                    priority: v === "" ? undefined : Number(v),
+                  })
+                }
+              />
+            )}
           </div>
           <div className="filter-bar secondary">
-            <select
+            <Select
               className="sort-select"
-              aria-label="来源筛选"
+              size="sm"
+              ariaLabel="来源筛选"
               value={filter.source_id ?? ""}
-              onChange={(e) => setFilter({ source_id: e.target.value || undefined })}
-            >
-              <option value="">全部来源</option>
-              {(feed?.coverage ?? []).map((c) => (
-                <option key={c.source_id} value={c.source_id}>
-                  {c.display_name}
-                </option>
-              ))}
-            </select>
-            <select
+              options={[
+                { value: "", label: "全部来源" },
+                ...(feed?.coverage ?? []).map((c) => ({ value: c.source_id, label: c.display_name })),
+              ]}
+              onChange={(v) => setFilter({ source_id: v || undefined })}
+            />
+            <Select
               className="sort-select"
-              aria-label="任务筛选"
+              size="sm"
+              ariaLabel="任务筛选"
               value={filter.task_id ?? ""}
-              onChange={(e) => setFilter({ task_id: e.target.value || undefined })}
-            >
-              <option value="">全部任务</option>
-              {taskOptions.map((t) => (
-                <option key={t.id} value={t.id}>{t.title}</option>
-              ))}
-            </select>
+              options={[
+                { value: "", label: "全部任务" },
+                ...taskOptions.map((t) => ({ value: t.id, label: t.title })),
+              ]}
+              onChange={(v) => setFilter({ task_id: v || undefined })}
+            />
             <span className="flex-spacer" />
-            <label className="check-inline">
-              <input
-                type="checkbox"
-                checked={filter.include_acked ?? false}
-                onChange={(e) => setFilter({ include_acked: e.target.checked })}
-              />
-              显示已确认
-            </label>
+            {category === "intervention" && (
+              <label className="check-inline">
+                <Checkbox
+                  checked={filter.include_acked ?? false}
+                  ariaLabel="显示已确认"
+                  onChange={(v) => setFilter({ include_acked: v })}
+                />
+                显示已确认
+              </label>
+            )}
           </div>
+
+          {counts && (
+            <div className="action-summary" role="status">
+              <span>需关注 {attention}</span>
+              <span className="pending">需介入 {counts.intervention}</span>
+              <span>通知 {counts.notification}</span>
+              <span className="muted">历史 {counts.history}</span>
+              {current && <span>当前筛选 {current.filtered_total}</span>}
+              {current && <span className="muted">已加载 {current.loaded}</span>}
+            </div>
+          )}
 
           {/* 监控覆盖度：未接入/未验证必须显式说明 */}
           {(feed?.coverage.length ?? 0) > 0 && (
@@ -254,22 +354,24 @@ export default function ActionCenterPanel() {
             </div>
           )}
 
-          {loading && !feed && <div className="empty-hint">加载中…</div>}
           {error && <div className="empty-hint error-text">加载失败：{error}</div>}
-          {feed && feed.items.length === 0 && (
+          {!current && !error && <div className="empty-hint">加载中…</div>}
+          {current && current.items.length === 0 && (
             <div className="empty-state">
               <div className="empty-icon">
                 <Inbox size={22} />
               </div>
-              <div className="empty-title">没有待处理动作</div>
+              <div className="empty-title">
+                {emptyTitle(category, current.filtered_total, categoryTotal)}
+              </div>
               <div className="empty-hint">
-                失败、等待输入、需授权与未读提醒会出现在这里；Agent 原始流水在「历史」中。
+                {emptyHint(category, current.filtered_total, categoryTotal)}
               </div>
             </div>
           )}
-          {feed && feed.items.length > 0 && (
+          {current && current.items.length > 0 && (
             <div className="action-list">
-              {feed.items.map((item) => (
+              {current.items.map((item) => (
                 <div
                   key={item.id}
                   className={`action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""}`}
@@ -287,10 +389,8 @@ export default function ActionCenterPanel() {
                         {item.kind === "reminder" ? <Bell size={10} /> : <Bot size={10} />}
                         {kindLabel(item.kind)}
                       </span>
-                      {item.count > 1 && (
-                        <span className="action-count" title={`合并 ${item.count} 条相同事件`}>
-                          ×{item.count}
-                        </span>
+                      {item.category === "notification" && (
+                        <span className="action-inferred">未确认</span>
                       )}
                       <span className="flex-spacer" />
                       <span className="action-time">{formatRelative(item.occurred_at)}</span>
@@ -299,7 +399,9 @@ export default function ActionCenterPanel() {
                     {item.message && <div className="action-msg">{item.message}</div>}
                     <div className="action-meta">
                       <span>{item.source_name}</span>
-                      {item.task_title && <span className="action-task">任务：{item.task_title}</span>}
+                      {item.task_title && (
+                        <span className="action-task">任务：{item.task_title}</span>
+                      )}
                       {item.authorization_inferred && (
                         <span className="action-inferred">
                           <AlertTriangle size={10} /> 推断
@@ -319,20 +421,32 @@ export default function ActionCenterPanel() {
                         <Layers size={12} />
                       </button>
                     )}
-                    <button
-                      className={`icon-btn sm action-ack ${item.acked ? "acked" : ""}`}
-                      onClick={() => void onAck(item)}
-                      disabled={busy === item.id}
-                      title={item.acked ? "恢复为待处理" : "标记已处理"}
-                      aria-label={item.acked ? "恢复为待处理" : "标记已处理"}
-                    >
-                      {item.acked ? <Undo2 size={13} /> : <Check size={13} />}
-                    </button>
+                    {canAck(item) && (
+                      <button
+                        className={`icon-btn sm action-ack ${item.acked ? "acked" : ""}`}
+                        onClick={() => void onAck(item)}
+                        disabled={busy === item.id}
+                        title={item.acked ? "恢复为待处理" : "标记已处理"}
+                        aria-label={item.acked ? "恢复为待处理" : "标记已处理"}
+                      >
+                        {item.acked ? <Undo2 size={13} /> : <Check size={13} />}
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
-              {feed.truncated && (
-                <div className="empty-hint">已显示前 {feed.items.length} 条，使用筛选缩小范围。</div>
+              {current.has_more && (
+                <div className="action-more">
+                  <button
+                    className="btn sm"
+                    onClick={() => void loadMore()}
+                    disabled={loadingMore || loading}
+                  >
+                    {loadingMore
+                      ? "加载中…"
+                      : `加载更多（已加载 ${current.loaded}/${current.filtered_total}）`}
+                  </button>
+                </div>
               )}
             </div>
           )}

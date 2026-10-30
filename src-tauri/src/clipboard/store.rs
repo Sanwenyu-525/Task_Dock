@@ -331,7 +331,18 @@ fn write_assets(
     let dir_thumb = root.join("thumbs");
     std::fs::create_dir_all(&dir_img)?;
     std::fs::create_dir_all(&dir_thumb)?;
-    let (thumb_rgba, tw, th) = image::thumbnail(&img.rgba, img.width, img.height);
+    // 超大条目为守住内存预算不携带解码像素；像素缺失或与尺寸不符时按 png 重新解码，
+    // 保证缩略图与入库原图来自同一份像素。
+    let need = img.width as usize * img.height as usize * 4;
+    let decoded;
+    let (rgba, width, height) = if img.rgba.len() < need {
+        let (r, w, h) = image::decode_png_rgba(&img.png)?;
+        decoded = (r, w, h);
+        (&decoded.0, decoded.1, decoded.2)
+    } else {
+        (&img.rgba, img.width, img.height)
+    };
+    let (thumb_rgba, tw, th) = image::thumbnail(rgba, width, height);
     let thumb_png = image::encode_png(&thumb_rgba, tw, th)?;
 
     let rel_img = format!("images/{item_id}.png");
@@ -1815,6 +1826,117 @@ mod tests {
         }
     }
 
+    fn solid_image(rgba_color: [u8; 4], w: u32, h: u32) -> CapturedContent {
+        let rgba: Vec<u8> = rgba_color
+            .iter()
+            .copied()
+            .cycle()
+            .take((w * h * 4) as usize)
+            .collect();
+        let img = CapturedImage {
+            png: image::encode_png(&rgba, w, h).unwrap(),
+            width: w,
+            height: h,
+            rgba,
+        };
+        CapturedContent {
+            kind: "image".into(),
+            text: String::new(),
+            html: String::new(),
+            preview: String::new(),
+            file_paths: vec![],
+            image: Some(img),
+            source_app: "snippingtool.exe".into(),
+            source_title: "截图工具".into(),
+            byte_size: 0,
+        }
+    }
+
+    #[test]
+    fn red_green_text_blue_group_survives_restart_with_exact_pixels() {
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let root = tmp.0.join("clipboard");
+        let mut s = settings();
+        s.clipboard_group_window_secs = 45;
+        let payloads = [
+            solid_image([220, 40, 40, 255], 37, 23),
+            solid_image([40, 180, 80, 255], 53, 31),
+            text_payload("中间文本 C"),
+            solid_image([40, 80, 220, 255], 61, 17),
+        ];
+
+        let (group_id, ids) = {
+            let db = Db::open(&db_path).unwrap();
+            let mut group_id: Option<String> = None;
+            let mut ids = Vec::new();
+            for p in &payloads {
+                let out = record_capture(&db, &root, p, &s).unwrap();
+                assert!(out.created, "四种内容互不相同，必须各建一条");
+                if p.kind == "image" {
+                    group_id = group_id.or(out.group_id);
+                }
+                ids.push(out.item.id);
+            }
+            (group_id.expect("首张图片应建组"), ids)
+        };
+
+        // 模拟重启：关闭数据库后重新打开，顺序/分组/像素/哈希必须全部持久化。
+        let db = Db::open(&db_path).unwrap();
+        let g = get_group(&db, &group_id).unwrap();
+        assert_eq!(g.items.len(), 4);
+        assert_eq!(
+            g.items.iter().map(|i| i.kind.as_str()).collect::<Vec<_>>(),
+            vec!["image", "image", "text", "image"],
+            "A/B/C/D 的实际复制顺序不得被分组打乱"
+        );
+        assert_eq!(g.image_count, 3);
+        assert_eq!(
+            g.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ids.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+        );
+
+        let expected = [
+            ([220u8, 40, 40, 255], 37u32, 23u32),
+            ([40, 180, 80, 255], 53, 31),
+            ([0, 0, 0, 0], 0, 0),
+            ([40, 80, 220, 255], 61, 17),
+        ];
+        for (idx, (color, w, h)) in expected.iter().enumerate() {
+            let item = &g.items[idx];
+            if item.kind == "text" {
+                assert_eq!(item.text, "中间文本 C");
+                continue;
+            }
+            let png = image_png(&db, &root, &item.id).expect("原图必须落盘");
+            let (rgba, pw, ph) = image::decode_png_rgba(&png).unwrap();
+            assert_eq!((pw, ph), (*w, *h), "第 {} 张图片尺寸不符", idx + 1);
+            assert_eq!(item.image_width, Some(*w));
+            assert_eq!(item.image_height, Some(*h));
+            assert_eq!(&rgba[0..4], color.as_slice());
+            assert_eq!(&rgba[rgba.len() - 4..], color.as_slice());
+            assert!(
+                rgba.chunks_exact(4).all(|px| px == color.as_slice()),
+                "纯色图片的所有像素必须保持原色（含 Alpha）"
+            );
+            let (hash, byte_size): (String, i64) = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT content_hash, byte_size FROM clipboard_items WHERE id = ?1",
+                        params![item.id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(hash, engine::hash_of(&normalize(&payloads[idx])));
+            assert_eq!(
+                byte_size,
+                png.len() as i64,
+                "记录的文件大小必须是真实 PNG 字节数"
+            );
+        }
+    }
+
     fn task(db: &Db, id: &str) {
         db.with_conn(|c| {
             c.execute(
@@ -1959,6 +2081,50 @@ mod tests {
             "任务删除不得删除剪贴板内容"
         );
         let _ = link;
+    }
+
+    #[test]
+    fn oversized_capture_without_rgba_still_gets_exact_thumb() {
+        // 超预算条目为了守住内存只带 png 入队；缩略图必须由 png 重新解码，
+        // 既不能缺文件，也不能用与尺寸不符的残缺像素生成。
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let reference = |color: u8| -> Vec<u8> {
+            let mut c = image_payload(color);
+            let img = c.image.take().unwrap();
+            let (rgba, w, h) = image::decode_png_rgba(&img.png).unwrap();
+            let (thumb, tw, th) = image::thumbnail(&rgba, w, h);
+            image::encode_png(&thumb, tw, th).unwrap()
+        };
+
+        let mut no_rgba = image_payload(77);
+        no_rgba.image.as_mut().unwrap().rgba = Vec::new();
+        let a = record_capture(&db, &root.0, &no_rgba, &s).unwrap();
+        assert!(a.created, "去掉像素不影响入库");
+        assert!(a.item.has_image && a.item.has_thumb);
+
+        let mut short_rgba = image_payload(88);
+        short_rgba.image.as_mut().unwrap().rgba.truncate(4);
+        let b = record_capture(&db, &root.0, &short_rgba, &s).unwrap();
+        assert!(b.created && b.item.has_thumb);
+
+        let read_thumb = |id: &str| -> Vec<u8> {
+            let rel = asset_rel(&db, id, "thumb").unwrap().unwrap();
+            std::fs::read(asset_abs(&root.0, &rel).unwrap()).unwrap()
+        };
+        assert_eq!(
+            read_thumb(&a.item.id),
+            reference(77),
+            "无像素条目必须由 png 重新解码生成同一份缩略图"
+        );
+        assert_eq!(
+            read_thumb(&b.item.id),
+            reference(88),
+            "像素长度不足时不得用残缺数据生成缩略图"
+        );
     }
 
     #[test]

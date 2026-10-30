@@ -1,0 +1,28 @@
+START 2026-10-30 16:24:22
+ [32m✓[39m src/components/actions/ActionCenterPanel.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 525[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/PastePanel.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 609[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m展示分类间隔；开始后显示逐项状态与剩余数量 [33m 394[2mms[22m[39m
+ [32m✓[39m src/components/history/HistoryPanel.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 1282[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m刷新页与已加载页不重叠时提示刷新，不合并出带缺口的时间轴 [33m 616[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/ClipboardDrawer.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 1818[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m分页：80/100 时加载更多只追加一页 [33m 946[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m监听中、监听线程未启动与手动暂停显示不同状态 [33m 325[2mms[22m[39m
+ [32m✓[39m src/components/FullView.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 575[2mms[22m[39m
+   [33m[2m✓[22m[39m 完整模式左侧导航[2m > [22m渲染五个导航入口与底部快捷入口 [33m 339[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TasksPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 991[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m点击搜索按钮展开输入框，输入关键词过滤任务列表 [33m 560[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m清空搜索恢复全部；点击状态按钮过滤任务列表 [33m 429[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TaskEditor.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 1078[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改标题时不提交重复规则或未修改的时间 [33m 568[2mms[22m[39m
+ [32m✓[39m src/components/tasks/QuickAdd.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 1184[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m输入自然语言 + Enter：先解析出预览，再 Enter 创建（store/bridge 被正确调用） [33m 577[2mms[22m[39m
+ [32m✓[39m src/components/navigation/AppPicker.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 1644[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m渲染应用列表；搜索框输入与分类按钮切换都能过滤列表 [33m 536[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m23 passed[39m[22m[90m (23)[39m
+[2m      Tests [22m [1m[32m164 passed[39m[22m[90m (164)[39m
+[2m   Start at [22m 16:24:25
+[2m   Duration [22m 37.64s[2m (transform 5.45s, setup 0ms, collect 70.96s, tests 10.91s, environment 355.38s, prepare 17.63s)[22m
+
+NPM_TEST_EXIT=0
+END 2026-10-30 16:25:03

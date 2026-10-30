@@ -1,0 +1,49 @@
+{
+  "scenario": "fault-inject",
+  "started_at": "2026-10-30T01:13:20.839Z",
+  "config": {
+    "base": "http://127.0.0.1:47821",
+    "token": "<redacted>",
+    "mode": "burst",
+    "count": 200,
+    "timeoutMs": 5,
+    "out": "docs/performance/results/E-burst-20261030-091306.json",
+    "runId": "E-burst-20261030-091306"
+  },
+  "result": {
+    "mode": "burst",
+    "run_id": "E-burst-20261030-091306",
+    "submitted": 220,
+    "running_submitted": 200,
+    "critical_submitted": 20,
+    "elapsed_ms": 873,
+    "statuses": {
+      "200": 220
+    },
+    "ok": 220,
+    "errors": 0,
+    "critical_ok_ids": [
+      "E-burst-20261030-091306-burst-waiting-9",
+      "E-burst-20261030-091306-burst-waiting-29",
+      "E-burst-20261030-091306-burst-waiting-169",
+      "E-burst-20261030-091306-burst-waiting-189",
+      "E-burst-20261030-091306-burst-waiting-199",
+      "E-burst-20261030-091306-burst-waiting-159",
+      "E-burst-20261030-091306-burst-waiting-179",
+      "E-burst-20261030-091306-burst-waiting-19",
+      "E-burst-20261030-091306-burst-waiting-149",
+      "E-burst-20261030-091306-burst-waiting-139",
+      "E-burst-20261030-091306-burst-waiting-129",
+      "E-burst-20261030-091306-burst-waiting-119",
+      "E-burst-20261030-091306-burst-waiting-49",
+      "E-burst-20261030-091306-burst-waiting-79",
+      "E-burst-20261030-091306-burst-waiting-99",
+      "E-burst-20261030-091306-burst-waiting-39",
+      "E-burst-20261030-091306-burst-waiting-59",
+      "E-burst-20261030-091306-burst-waiting-69",
+      "E-burst-20261030-091306-burst-waiting-89",
+      "E-burst-20261030-091306-burst-waiting-109"
+    ],
+    "critical_failed": []
+  }
+}

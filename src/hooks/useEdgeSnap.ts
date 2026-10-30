@@ -10,6 +10,7 @@ import { useEffect, useRef } from "react";
 import { getCurrentWindow, cursorPosition, currentMonitor } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { getSnapState, saveSnapState, saveWindowRect } from "../lib/bridge";
+import { createSubscriptionScope } from "../lib/subscriptions";
 
 const SNAP_DIST = 28; // 触发吸附的距离（物理像素）
 const STRIP = 6; // 隐藏时留在屏幕内的像素
@@ -152,12 +153,12 @@ export function useWindowPersistence() {
         }
       }, 600);
     };
-    const unlisten: (() => void)[] = [];
-    win.onMoved(save).then((u) => unlisten.push(u));
-    win.onResized(save).then((u) => unlisten.push(u));
+    const scope = createSubscriptionScope();
+    scope.add(win.onMoved(save));
+    scope.add(win.onResized(save));
     return () => {
       window.clearTimeout(timer);
-      unlisten.forEach((u) => u());
+      scope.dispose();
     };
   }, []);
 }

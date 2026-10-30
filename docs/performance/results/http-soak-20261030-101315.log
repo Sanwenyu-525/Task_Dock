@@ -1,0 +1,67 @@
+[health] {"ok":true,"queue":{"capacity":1024,"depth_events":0},"service":"task-dock"}
+[load] 4 agents × 5 ev/s × 1800s = 约 36000 事件，batch=1
+{
+  "scenario": "http-load",
+  "started_at": "2026-10-30T02:13:16.012Z",
+  "machine": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v22.22.3"
+  },
+  "config": {
+    "base": "http://127.0.0.1:47821",
+    "token": "<redacted>",
+    "agents": 4,
+    "rate": 5,
+    "duration": 1800,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\http-soak-20261030-101315.json",
+    "source": "bridge",
+    "runId": "soak2-20261030-101315"
+  },
+  "health": {
+    "ok": true,
+    "queue": {
+      "capacity": 1024,
+      "depth_events": 0
+    },
+    "service": "task-dock"
+  },
+  "elapsed_ms": 1800079,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 36000,
+    "running_sent": 32400,
+    "critical_sent": 3600,
+    "ok": 36000,
+    "merged": 0,
+    "sampled": 0,
+    "rejected_429": 0,
+    "rejected_503": 0,
+    "validation_errors": 0,
+    "network_errors": 27,
+    "retries": 27,
+    "critical_ok": 3600,
+    "critical_failed": 0,
+    "critical_failed_ids": []
+  },
+  "latency_all": {
+    "count": 36000,
+    "p50_ms": 1.3,
+    "p95_ms": 268.63,
+    "p99_ms": 284.68,
+    "max_ms": 1970.43
+  },
+  "latency_critical": {
+    "count": 3600,
+    "p50_ms": 268.63,
+    "p95_ms": 319.18,
+    "p99_ms": 378.53,
+    "max_ms": 1970.43
+  }
+}
+[结果] D:\Develop\task_dock\docs\performance\results\http-soak-20261030-101315.json
+[判定] PASS（客户端视角）

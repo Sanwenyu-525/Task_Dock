@@ -1,0 +1,7 @@
+PASS Ó¦ÓÃÒÔ¸ôÀëÊı¾İÄ¿Â¼Æô¶¯²¢´¦ÓÚ¼àÌı×´Ì¬ :: fresh_default
+PASS ¼ôÌù°åÅäÖÃÎŞÒì³£
+ERROR RuntimeError: clipboard_view µ÷ÓÃÊ§°Ü: CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417
+Call log:
+[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417[22m
+
+EVIDENCE D:\Develop\task_dock\docs\clipboard\evidence\p1-03-mixed-paste-20261030-141119-e3518f2a.json

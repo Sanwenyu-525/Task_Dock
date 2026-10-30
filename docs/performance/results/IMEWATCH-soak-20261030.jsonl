@@ -1,0 +1,39 @@
+{"record": "ime", "t": "2026-10-30T13:25:30.351603+00:00", "elapsed_s": 0.2, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:25:45.612466+00:00", "elapsed_s": 15.5, "pids": [91756], "private_mb": 8.84, "ws_mb": 29.14, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:26:01.160207+00:00", "elapsed_s": 31.0, "pids": [91756], "private_mb": 9.86, "ws_mb": 30.45, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:26:16.661467+00:00", "elapsed_s": 46.5, "pids": [91756], "private_mb": 10.65, "ws_mb": 31.35, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:26:32.210587+00:00", "elapsed_s": 62.1, "pids": [91756], "private_mb": 11.81, "ws_mb": 32.55, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:26:48.624750+00:00", "elapsed_s": 78.5, "pids": [91756], "private_mb": 12.15, "ws_mb": 32.99, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:27:04.845683+00:00", "elapsed_s": 94.7, "pids": [91756], "private_mb": 13.04, "ws_mb": 33.75, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:27:20.349557+00:00", "elapsed_s": 110.2, "pids": [91756], "private_mb": 12.07, "ws_mb": 32.94, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:27:35.879940+00:00", "elapsed_s": 125.8, "pids": [91756], "private_mb": 13.64, "ws_mb": 34.39, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:27:51.439229+00:00", "elapsed_s": 141.3, "pids": [91756], "private_mb": 15.3, "ws_mb": 36.04, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:28:07.028658+00:00", "elapsed_s": 156.9, "pids": [91756], "private_mb": 15.0, "ws_mb": 35.82, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:28:23.838199+00:00", "elapsed_s": 173.7, "pids": [91756], "private_mb": 15.02, "ws_mb": 36.55, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:28:40.142119+00:00", "elapsed_s": 190.0, "pids": [91756], "private_mb": 16.95, "ws_mb": 37.85, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:28:57.190875+00:00", "elapsed_s": 207.1, "pids": [91756], "private_mb": 16.96, "ws_mb": 38.04, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:29:15.126961+00:00", "elapsed_s": 225.0, "pids": [91756], "private_mb": 16.97, "ws_mb": 38.14, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:29:36.870954+00:00", "elapsed_s": 246.7, "pids": [91756], "private_mb": 16.98, "ws_mb": 38.17, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:29:52.581593+00:00", "elapsed_s": 262.5, "pids": [91756], "private_mb": 15.88, "ws_mb": 37.43, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:30:08.056016+00:00", "elapsed_s": 277.9, "pids": [91756], "private_mb": 16.98, "ws_mb": 38.21, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:30:23.494014+00:00", "elapsed_s": 293.4, "pids": [91756], "private_mb": 17.13, "ws_mb": 36.89, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:30:38.999008+00:00", "elapsed_s": 308.9, "pids": [91756], "private_mb": 17.14, "ws_mb": 36.54, "module_count": 46, "ime_modules": [], "ime_attached": false}
+{"record": "ime", "t": "2026-10-30T13:30:54.383144+00:00", "elapsed_s": 324.3, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:31:09.561026+00:00", "elapsed_s": 339.4, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:31:24.739703+00:00", "elapsed_s": 354.6, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:31:39.907632+00:00", "elapsed_s": 369.8, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:31:55.109263+00:00", "elapsed_s": 385.0, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:32:10.299683+00:00", "elapsed_s": 400.2, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:32:25.533884+00:00", "elapsed_s": 415.4, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:32:40.736625+00:00", "elapsed_s": 430.6, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:32:55.925517+00:00", "elapsed_s": 445.8, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:33:11.122997+00:00", "elapsed_s": 461.0, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:33:26.555877+00:00", "elapsed_s": 476.4, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:33:41.736652+00:00", "elapsed_s": 491.6, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:33:56.947651+00:00", "elapsed_s": 506.8, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:34:12.127188+00:00", "elapsed_s": 522.0, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:34:27.311964+00:00", "elapsed_s": 537.2, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:34:42.499104+00:00", "elapsed_s": 552.4, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:34:57.801854+00:00", "elapsed_s": 567.7, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:35:13.035761+00:00", "elapsed_s": 582.9, "pids": []}
+{"record": "ime", "t": "2026-10-30T13:35:28.243935+00:00", "elapsed_s": 598.1, "pids": []}

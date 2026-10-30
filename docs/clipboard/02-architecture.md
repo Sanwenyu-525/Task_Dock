@@ -99,6 +99,14 @@ Windows 剪贴板内容**不可重放**：事件被丢弃后无法补读当时�
 - SQLite 由现有 `Mutex<Connection>` 串行化；WAL + `busy_timeout`。
 - 粘贴任务互斥：`PasteManager::begin` 在锁内检查活动任务，重复启动返回校验错误。
 - 监听侧不信任事件时间：每次事件重新加载设置；暂停/停用立即生效。
+- 剪贴板配置读取 fail-closed：`Settings::load_clipboard` 区分键缺失（沿用默认，兼容旧库）、
+  单项 JSON 损坏、类型错误、数值越界与数据库读取失败；后四类返回
+  `ClipboardConfigError { kind, keys }`，`capture_allowed=false`，采集线程与 worker
+  直接跳过并限频记录日志（最多 60 秒一次），**不会**按默认值恢复自动记录。
+  整个 `Settings::load` 会先剔除损坏的剪贴板字段，任务/Agent 等其他设置不受牵连。
+- 维护线程在逐项粘贴进行中跳过自动清理（`interrupt_stale_paste_jobs` 与
+  `store::cleanup` 都不执行）；手动 `clipboard_cleanup` 在粘贴进行中直接返回校验错误。
+  清理会删除条目与资产，而粘贴队列按 id 逐项读取，删除会让后续条目凭空丢失。
 - 采集线程只读取一次剪贴板；读取使用 10 次、每次 12 ms 的 `OpenClipboard` 重试，
   失败计入 `skipped`（原因“剪贴板被其他程序占用”），不记录、不崩溃。
 - 单个内容处理被 `catch_unwind` 隔离：解析/入库 panic 只记 `failed`，不杀死采集线程。
@@ -191,6 +199,10 @@ capture 线程
   → 合并队列，只保留最新序列号（merged_events）
   → 重新读取设置（enabled / paused）
   → 读取格式（文本 / HTML / PNG / DIB / HDROP），系统敏感标记检查
+      PNG 优先于 DIB；但 Windows 会从 32bpp BI_RGB 的 DIB 合成 Alpha 全 0 的 PNG，
+      若直接原样保存，历史里和粘贴出去的图片会变成完全透明。读取时统一走
+      `image::normalize_clipboard_png`：仅当**所有**像素 Alpha 都为 0 时改写为不透明并重编码，
+      部分透明的图标/贴纸保持原样；有可见像素的 PNG 不重编码（字节保持不变）。
   → 格式优先级判定（files > image > URL > html > text）
   → 自身来源/排除名单/采集类型开关/敏感过滤（高置信；来源未知时加保守凭据模式）
   → 大小与数量上限；图片 PNG 编码/缩略图
@@ -236,6 +248,14 @@ failed/cancelled/confirmed`，其中 `confirmed` 仅在存在独立接收信号�
 
 - 监听启动失败：`ClipboardRuntime::start` 记录警告，运行时继续工作；
   `clipboard_status.monitoring=false`，抽屉状态显示“监听未启动”。
+- 配置损坏：监听线程保持运行（可被重新启用/继续接收事件），但 `capture_allowed=false`，
+  不读取、不入库；`clipboard_status` 对外报告 `enabled=false`、`paused=true` 与
+  `configError`，抽屉显示“配置异常，自动记录已暂停”，不会显示“监听中”。
+  用户可在设置中“修复配置”（原始值备份到 `clipboard_config_corrupt_backup`，
+  修复后保持暂停）或“修复并恢复记录”。数据库读取失败不能靠修复解决，UI 如实说明。
+- 目标窗口复用：粘贴的聚焦与 `SendInput` 前都会用 PID 复核 HWND 归属，并再次确认
+  目标仍在前台；窗口关闭或被系统复用则失败停止，不向其他窗口发送按键。
+- 清理与粘贴争用：粘贴进行中不执行自动清理，手动清理被拒绝，避免删除正在发送的资产。
 - 非 Windows：`platform` 编译桩返回空读/明确写入错误；不伪装监听可用。
 - 图片文件缺失：复制/粘贴时返回“图片文件缺失”，不阻塞其他条目。
 - 原文件被移动/删除：文件条目复制时只保留仍存在的路径；全部不存在则报错。

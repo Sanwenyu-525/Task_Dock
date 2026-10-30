@@ -1,0 +1,10 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N2-load-notify-off-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N2-load-notify-off-appdata port=47891
+Traceback (most recent call last):
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 369, in <module>
+    main()
+    ~~~~^^
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 288, in main
+    health = wait_health(base)
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 81, in wait_health
+    raise RuntimeError(f"µÈ´ý½¡¿µ¼ì²é³¬Ê±: {last}")
+RuntimeError: µÈ´ý½¡¿µ¼ì²é³¬Ê±: <urlopen error timed out>

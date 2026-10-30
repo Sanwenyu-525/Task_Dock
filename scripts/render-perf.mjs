@@ -61,7 +61,10 @@ page.on("console", (m) => {
 
 const url = `http://127.0.0.1:${PORT}/preview.html?mode=full&theme=light&perf=${ROWS}`;
 await page.goto(url, { waitUntil: "networkidle" });
-await page.waitForFunction((n) => document.querySelectorAll(".task-item").length >= n, ROWS);
+await page.waitForFunction(
+  (n) => document.querySelectorAll(".tasks-panel .task-item").length === n,
+  ROWS,
+);
 const firstVisibleMs = await page.evaluate(() => performance.now());
 
 /** 搜索开关是纯前端 state 变更：TasksPanel 及其 300 个 TaskItem 全部重渲染。 */
@@ -69,7 +72,8 @@ async function measureRender() {
   return page.evaluate(() => {
     const btn = document.querySelector('button[aria-label="搜索任务"], button[aria-label="收起搜索"]');
     if (!btn) throw new Error("搜索按钮不存在");
-    const rowCount = document.querySelectorAll(".task-item").length;
+    // 完整模式仍会挂载收起状态的 CompactView（5 行），必须限定在任务面板内计数
+    const rowCount = document.querySelectorAll(".tasks-panel .task-item").length;
     const t0 = performance.now();
     btn.click();
     const commitMs = performance.now() - t0;

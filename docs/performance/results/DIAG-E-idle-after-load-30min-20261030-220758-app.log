@@ -1,0 +1,3 @@
+[2m2026-10-30T14:08:16.708841Z[0m [31mERROR[0m [2mtask_dock_lib[0m[2m:[0m 开发服务器预检失败: http://localhost:1420/ 无法连接
+[2m2026-10-30T14:09:16.974821Z[0m [33m WARN[0m [2mtask_dock_lib[0m[2m:[0m 退出时未找到接入管线（可能为无头模式或启动未完成）
+[2m2026-10-30T14:09:16.974903Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 接入管线退出排空完成 [3mlifecycle[0m[2m=[0mstopped [3mtimed_out[0m[2m=[0mfalse [3mdrained[0m[2m=[0m0 [3munfinished[0m[2m=[0m0 [3mspooled[0m[2m=[0m0 [3munsaved[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0

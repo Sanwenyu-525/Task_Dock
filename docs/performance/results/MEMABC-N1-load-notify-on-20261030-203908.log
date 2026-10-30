@@ -1,0 +1,157 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N1-load-notify-on-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc\N1-load-notify-on-appdata port=47890
+[app] pid=70716 health={'ok': True, 'queue': {'capacity': 1024, 'depth_events': 0}, 'service': 'task-dock'}
+[load] rc=0
+{
+  "meta": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-203915-meta.json",
+  "summary": {
+    "samples": 116,
+    "elapsed_s": 581.5,
+    "taskdock_private_mb": {
+      "n": 116,
+      "first": 40.9,
+      "last": 50.4,
+      "min": 40.9,
+      "max": 50.6,
+      "mean": 48.182
+    },
+    "taskdock_ws_mb": {
+      "n": 116,
+      "first": 70,
+      "last": 66.9,
+      "min": 64.9,
+      "max": 80.1,
+      "mean": 73.572
+    },
+    "webview2_private_mb": {
+      "n": 116,
+      "first": 233.4,
+      "last": 269.6,
+      "min": 233.4,
+      "max": 326,
+      "mean": 272.782
+    },
+    "slope_private_mb_per_min": 0.555,
+    "slope_ws_mb_per_min": -1.754,
+    "slope_live_mb_per_min": -0.0061,
+    "first_last": {
+      "taskdock_private_mb": [
+        40.9,
+        50.4
+      ],
+      "taskdock_ws_mb": [
+        70,
+        66.9
+      ],
+      "webview2_private_mb": [
+        233.4,
+        269.6
+      ],
+      "live_bytes": [
+        880865,
+        974569
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 0,
+      "events_processed": 0,
+      "events_merged": 0,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 0,
+      "http_requests": 3,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 14348,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 10349,
+        "live_bytes": 880865,
+        "peak_bytes": 2519811,
+        "total_allocated_bytes": 4361366
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.89,
+          "calls": 5,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    },
+    "stats_last": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 9620,
+      "events_processed": 5457,
+      "events_merged": 4163,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 9600,
+      "http_requests": 9758,
+      "http_rejected_overload": 9,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 4696576,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 4691986,
+        "live_bytes": 974569,
+        "peak_bytes": 2519811,
+        "total_allocated_bytes": 610408622
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 45,
+        "failed": 0,
+        "succeeded": 45
+      },
+      "db": {
+        "db_bytes": 10567680,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 2599,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.75,
+          "calls": 2651,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4713312
+      }
+    }
+  }
+}

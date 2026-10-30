@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-10-30T04:22:26.518424+00:00",
+  "tool": "scripts/perf/sampler-recompute.py",
+  "raw_data_modified": false,
+  "files": [
+    {
+      "file": "docs/performance/results/D-soak-20261030-101315.jsonl",
+      "samples": 359,
+      "meta_started_at": "2026-10-30T10:13:16.3363936+08:00",
+      "meta_ended_at": "2026-10-30T10:43:16.3321168+08:00",
+      "planned_interval_sec_meta": 5,
+      "timestamp_span_s": 1794.94,
+      "elapsed_span_s": 1794.9,
+      "gap_from_timestamps_s": {
+        "n": 358,
+        "min": 4.104,
+        "median": 5.002,
+        "mean": 5.014,
+        "max": 10.024,
+        "p95": 5.21
+      },
+      "actual_interval_s": null,
+      "planned_interval_s": null,
+      "legacy_interval_s": {
+        "n": 359,
+        "min": 2.37,
+        "median": 2.51,
+        "mean": 2.544,
+        "max": 3.97,
+        "p95": 2.79
+      },
+      "sample_duration_s": null,
+      "legacy_interval_semantics": "旧 sampler 的 interval_s = 本轮采样耗时（elapsed - tickStart），不是相邻样本间隔；新 sampler 已拆为 actual_interval_s / sample_duration_s / planned_interval_s，interval_s 现等于 actual_interval_s。",
+      "cpu_note": "旧版 CPU% 计算使用 tickStart 差值（真实间隔），不是 interval_s 字段，因此 CPU 统计不受该字段语义错误影响。"
+    }
+  ]
+}

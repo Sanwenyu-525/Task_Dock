@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Globe, FileText, FolderOpen, Bot, AppWindow, ChevronRight, Rocket } from "lucide-react";
 import type { TaskNavLink, NavigationTargetType } from "../../lib/navigation";
 import { avatarHue, buildTargetMenuItems, moveMenuIndex, stateBadge } from "../../lib/navigation";
+import { useOverlayLayer } from "../ui/overlay";
 
 export function TargetTypeIcon({ type, size = 12 }: { type: NavigationTargetType; size?: number }) {
   switch (type) {
@@ -74,6 +75,9 @@ export default function TargetMenu({ links, onNavigate, onClose, onOpenAll }: Pr
   const [index, setIndex] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
 
+  // 弹层栈：本菜单属于「下拉菜单」层，Escape 只关它，不会顺手把主窗口藏进托盘。
+  useOverlayLayer("menu", true, onClose, ref);
+
   // 条目集合变化（目标增删）时收敛索引，避免越界后 Enter 无响应
   useEffect(() => {
     setIndex((i) => Math.min(i, Math.max(items.length - 1, 0)));
@@ -94,10 +98,7 @@ export default function TargetMenu({ links, onNavigate, onClose, onOpenAll }: Pr
 
   function onKeyDown(e: React.KeyboardEvent) {
     switch (e.key) {
-      case "Escape":
-        e.stopPropagation();
-        onClose();
-        break;
+      // Escape 交给全局弹层栈（见 lib/overlayStack）：只关最上层，且主窗口不会被连带隐藏。
       case "ArrowDown":
         e.preventDefault();
         setIndex((i) => moveMenuIndex(i, 1, items.length));

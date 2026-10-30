@@ -18,17 +18,23 @@ pub mod file_drop;
 pub mod hook_cli;
 pub mod hooks_install;
 pub mod http_ingest;
+pub mod inbox;
 pub mod managed;
 pub mod mock;
+pub mod notify;
 pub mod opencode;
 pub mod pipeline;
 pub mod qoder;
 pub mod retention;
+pub mod shutdown_signal;
+pub mod spool;
 pub mod trae;
 pub mod workbuddy;
 pub mod zcode;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, OptionalExtension};
@@ -38,8 +44,52 @@ use tauri::{AppHandle, Emitter};
 use crate::db::{AgentInstance, AgentRun, AgentSession, AgentSource, Db};
 use crate::error::{AppError, AppResult};
 
+use self::notify::{NotificationPolicy, NotifyGate, NotifyItem};
+
 pub fn now_iso() -> String {
     Utc::now().to_rfc3339()
+}
+
+/// 服务端受理序号：跨 HTTP/文件/插件/合并缓冲的因果顺序基准。
+///
+/// 客户端载荷不能设置该字段（`serde(skip)`），一律由服务端在受理时分配。
+/// 进程内严格递增；跨重启以 Unix 微秒抬高起点，避免重启后序号回退。
+/// 若系统时钟被回拨，`bump_ingest_seq` 会在启动时把起点抬到库内最大值。
+static INGEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// OS 通知诊断计数（每次调用与结果；不记录标题/正文）。
+static NOTIFY_ATTEMPTED: AtomicU64 = AtomicU64::new(0);
+static NOTIFY_SUCCEEDED: AtomicU64 = AtomicU64::new(0);
+static NOTIFY_FAILED: AtomicU64 = AtomicU64::new(0);
+
+pub fn notification_stats() -> serde_json::Value {
+    serde_json::json!({
+        "attempted": NOTIFY_ATTEMPTED.load(Ordering::Relaxed),
+        "succeeded": NOTIFY_SUCCEEDED.load(Ordering::Relaxed),
+        "failed": NOTIFY_FAILED.load(Ordering::Relaxed),
+    })
+}
+
+pub fn next_ingest_seq() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
+        .unwrap_or(1);
+    let mut cur = INGEST_SEQ.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(cur.saturating_add(1));
+        match INGEST_SEQ.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => cur = actual,
+        }
+    }
+}
+
+/// 启动/恢复备份后抬高序号起点（不会降低）。
+pub fn bump_ingest_seq(min: u64) {
+    if min > 0 {
+        INGEST_SEQ.fetch_max(min, Ordering::AcqRel);
+    }
 }
 
 /// 传输通道（由服务端按接入入口确定，客户端载荷声明的 transport 一律不作为可信依据）。
@@ -73,6 +123,19 @@ impl Transport {
             Transport::Http | Transport::File | Transport::Hook | Transport::Plugin
         )
     }
+
+    /// 磁盘暂存重放时还原服务端判定的通道。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "http" => Some(Transport::Http),
+            "file" => Some(Transport::File),
+            "hook" => Some(Transport::Hook),
+            "plugin" => Some(Transport::Plugin),
+            "mock" => Some(Transport::Mock),
+            "manual" => Some(Transport::Manual),
+            _ => None,
+        }
+    }
 }
 
 /// 自测会话前缀：verify_hook_pipeline 生成的事件使用该前缀，
@@ -81,6 +144,55 @@ const SELFTEST_PREFIX: &str = "taskdock-selftest-";
 
 fn is_selftest_session(session_id: &str) -> bool {
     session_id.starts_with(SELFTEST_PREFIX)
+}
+
+/// 事件来源可信分类（完全由服务端判定，客户端载荷无法设置或提升）。
+///
+/// 判定依据：来源注册表的 `category`（服务端维护）、接入入口判定的 `Transport`
+/// 以及验证器签发的保留会话前缀。客户端最多只能把自己的事件降级为测试数据，
+/// 无法把压测/自测/模拟事件伪装成真实 Agent 事件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventOrigin {
+    /// 真实 Agent 通过真实通道产生的事件：唯一能改变真实状态、验证来源、
+    /// 进入行动中心与系统通知的分类。
+    Real,
+    /// 接入向导自测：只证明通道可用，不产生真实状态/通知。
+    Selftest,
+    /// 性能基准：隐藏来源，不进入真实状态/行动中心/通知，可整体审计清理。
+    Benchmark,
+    /// 内置模拟器或 mock 来源：永不参与验证。
+    Mock,
+    /// 人工/调试上报：不作为接入证据。
+    Manual,
+}
+
+impl EventOrigin {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EventOrigin::Real => "real",
+            EventOrigin::Selftest => "selftest",
+            EventOrigin::Benchmark => "benchmark",
+            EventOrigin::Mock => "mock",
+            EventOrigin::Manual => "manual",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "real" => Some(EventOrigin::Real),
+            "selftest" => Some(EventOrigin::Selftest),
+            "benchmark" => Some(EventOrigin::Benchmark),
+            "mock" => Some(EventOrigin::Mock),
+            "manual" => Some(EventOrigin::Manual),
+            _ => None,
+        }
+    }
+
+    /// 只有真实事件可以驱动真实 Agent 状态、行动中心与系统通知。
+    pub fn is_real(&self) -> bool {
+        matches!(self, EventOrigin::Real)
+    }
 }
 
 /// Agent 统一状态。
@@ -151,7 +263,7 @@ impl AgentState {
 }
 
 /// Adapter 上报的统一事件（v0.2 扩展字段全部可选，兼容 v0.1 载荷）。
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AgentEvent {
     /// 事件 schema 版本（当前 1）
     #[serde(default)]
@@ -186,6 +298,10 @@ pub struct AgentEvent {
     /// 事件发生时间（ISO8601，可选；缺省用服务端接收时间）
     #[serde(default)]
     pub occurred_at: Option<String>,
+    /// 服务端受理序号：仅内部使用，客户端 JSON 不可设置。
+    /// 同一轮次内以此为因果顺序，数据库按轮次水位拒绝旧事件覆盖新状态。
+    #[serde(skip)]
+    pub ingest_seq: Option<u64>,
     /// 传输通道声明（兼容字段）：服务端不信任此值，落库与验证一律按接入入口
     /// 的服务端判定（见 `Transport`）。
     #[serde(default)]
@@ -202,7 +318,6 @@ const MAX_ID_LEN: usize = 128;
 const MAX_TITLE_LEN: usize = 200;
 const MAX_MSG_LEN: usize = 500;
 /// 单批最多逐条弹出的 OS 通知数；其余合并为一条摘要（数据库仍逐条记录）。
-const MAX_OS_POPUPS_PER_BATCH: usize = 3;
 const MAX_PENDING: usize = 20;
 
 fn check_id(v: &str, field: &str) -> AppResult<()> {
@@ -278,6 +393,8 @@ pub struct IngestOutcome {
     pub session_row_id: String,
     pub state: AgentState,
     pub prev_state: Option<AgentState>,
+    /// 服务端判定的来源可信分类（真实/自测/压测/模拟/人工）。
+    pub origin: EventOrigin,
     /// 重复事件：命中幂等去重，未产生任何状态变化
     pub deduplicated: bool,
     /// 迟到事件：occurred_at 早于轮次结束时间，仅记录、不改终态
@@ -332,6 +449,8 @@ pub fn ingest_core(
 ) -> AppResult<IngestOutcome> {
     let state = validate_event(ev)?;
     let occurred = normalize_ts(ev.occurred_at.as_deref().unwrap_or(now));
+    // 因果序号：由入口受理时分配；直接调用 ingest_core 的旧路径/测试在此补齐。
+    let ingest_seq = ev.ingest_seq.unwrap_or_else(next_ingest_seq) as i64;
     let title = ev.task_title.clone().unwrap_or_default();
     let pending: Vec<String> = ev.pending_items.clone().unwrap_or_default();
     let pending_json = if pending.is_empty() {
@@ -365,19 +484,30 @@ pub fn ingest_core(
     let confidence = ev.confidence.unwrap_or(1.0).clamp(0.0, 1.0);
     let schema_version = ev.schema_version.unwrap_or(1);
 
-    // 1. 来源必须已注册且启用
-    let source_enabled: Option<bool> = conn
+    // 1. 来源必须已注册且启用；category 由服务端注册表维护，是可信分类的根。
+    let source: Option<(bool, String)> = conn
         .query_row(
-            "SELECT enabled FROM agent_sources WHERE id = ?1",
+            "SELECT enabled, category FROM agent_sources WHERE id = ?1",
             rusqlite::params![ev.source_id],
-            |r| r.get::<_, i64>(0).map(|v| v != 0),
+            |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, String>(1)?)),
         )
         .optional()?;
-    let source_enabled =
-        source_enabled.ok_or_else(|| AppError::Agent(format!("未注册的来源: {}", ev.source_id)))?;
+    let (source_enabled, source_category) =
+        source.ok_or_else(|| AppError::Agent(format!("未注册的来源: {}", ev.source_id)))?;
     if !source_enabled {
         return Err(AppError::Agent(format!("来源已禁用: {}", ev.source_id)));
     }
+    let origin = if source_category == "benchmark" {
+        EventOrigin::Benchmark
+    } else if source_category == "mock" || transport == Transport::Mock {
+        EventOrigin::Mock
+    } else if transport == Transport::Manual {
+        EventOrigin::Manual
+    } else if selftest {
+        EventOrigin::Selftest
+    } else {
+        EventOrigin::Real
+    };
 
     // 2. 事件级幂等：唯一 dedupe_key，重复事件直接短路
     let dkey = dedupe_key(ev, state, &occurred);
@@ -385,8 +515,8 @@ pub fn ingest_core(
     let inserted = conn.execute(
         "INSERT INTO agent_events
            (id, source_id, session_external_id, run_external_id, event_type, state, message, received_at,
-            schema_version, event_id, instance_id, parent_run_id, occurred_at, transport, evidence_type, confidence, dedupe_key)
-         VALUES (?1, ?2, ?3, ?4, 'status', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            schema_version, event_id, instance_id, parent_run_id, occurred_at, transport, evidence_type, confidence, dedupe_key, ingest_seq, origin)
+         VALUES (?1, ?2, ?3, ?4, 'status', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT(dedupe_key) DO NOTHING",
         rusqlite::params![
             event_row_id,
@@ -405,6 +535,8 @@ pub fn ingest_core(
             evidence,
             confidence,
             dkey,
+            ingest_seq,
+            origin.as_str(),
         ],
     )? > 0;
     if !inserted {
@@ -423,8 +555,56 @@ pub fn ingest_core(
             session_row_id,
             state,
             prev_state: None,
+            origin,
             deduplicated: true,
             late: false,
+            notification: None,
+        });
+    }
+
+    // 2.5 来源隔离：同一会话/轮次不允许跨可信分类混写。
+    // 例如真实会话 ID 被压测脚本复用，或自测会话伪造真实会话 ID：
+    // 事件仍保留流水（供审计），但绝不改变既有真实/测试轮次状态，也不发通知。
+    let existing_session_origin: Option<String> = conn
+        .query_row(
+            "SELECT origin FROM agent_sessions WHERE source_id = ?1 AND external_id = ?2",
+            rusqlite::params![ev.source_id, ev.session_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let origin_conflict = existing_session_origin
+        .as_deref()
+        .map(|o| o != origin.as_str())
+        .unwrap_or(false);
+    if origin_conflict {
+        conn.execute(
+            "UPDATE agent_sources SET last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, ev.source_id],
+        )?;
+        let run_row_id: Option<String> = if let Some(ext) = &run_ext {
+            conn.query_row(
+                "SELECT id FROM agent_runs WHERE source_id = ?1 AND external_run_id = ?2",
+                rusqlite::params![ev.source_id, ext],
+                |r| r.get(0),
+            )
+            .optional()?
+        } else {
+            conn.query_row(
+                "SELECT last_run_id FROM agent_sessions WHERE source_id = ?1 AND external_id = ?2",
+                rusqlite::params![ev.source_id, ev.session_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+        };
+        return Ok(IngestOutcome {
+            run_row_id: run_row_id.unwrap_or_default(),
+            session_row_id: String::new(),
+            state,
+            prev_state: None,
+            origin,
+            deduplicated: false,
+            late: true,
             notification: None,
         });
     }
@@ -436,10 +616,10 @@ pub fn ingest_core(
         } else {
             let iid = uuid::Uuid::new_v4().to_string();
             conn.execute(
-                "INSERT INTO agent_instances (id, source_id, instance_key, display_name, exe_path, first_seen_at, last_seen_at)
-                 VALUES (?1, ?2, ?3, ?3, '', ?4, ?4)
-                 ON CONFLICT(source_id, instance_key) DO UPDATE SET last_seen_at = excluded.last_seen_at",
-                rusqlite::params![iid, ev.source_id, iext, occurred],
+                "INSERT INTO agent_instances (id, source_id, instance_key, display_name, exe_path, first_seen_at, last_seen_at, origin)
+                 VALUES (?1, ?2, ?3, ?3, '', ?4, ?4, ?5)
+                 ON CONFLICT(source_id, instance_key) DO UPDATE SET last_seen_at = MAX(agent_instances.last_seen_at, excluded.last_seen_at)",
+                rusqlite::params![iid, ev.source_id, iext, occurred, origin.as_str()],
             )?;
             conn.query_row(
                 "SELECT id FROM agent_instances WHERE source_id = ?1 AND instance_key = ?2",
@@ -455,12 +635,11 @@ pub fn ingest_core(
     // 4. 会话 upsert（scope = 来源 + 会话外部 ID；不同来源同外部 ID 不冲突）
     let new_session_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at, last_run_id, instance_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, NULL, ?7)
+        "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at, last_run_id, instance_id, origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, NULL, ?7, ?8)
          ON CONFLICT(source_id, external_id) DO UPDATE SET
            title = CASE WHEN length(excluded.title) > 0 THEN excluded.title ELSE agent_sessions.title END,
-           instance_id = COALESCE(excluded.instance_id, agent_sessions.instance_id),
-           last_seen_at = excluded.last_seen_at",
+           instance_id = COALESCE(excluded.instance_id, agent_sessions.instance_id)",
         rusqlite::params![
             new_session_id,
             ev.source_id,
@@ -469,6 +648,7 @@ pub fn ingest_core(
             state.as_str(),
             occurred,
             instance_row_id,
+            origin.as_str(),
         ],
     )?;
     let session_row_id: String = conn.query_row(
@@ -482,71 +662,155 @@ pub fn ingest_core(
         id: String,
         status: String,
         ended_at: Option<String>,
+        last_ingest_seq: i64,
+        last_event_at: String,
     }
     let existing: Option<ExistingRun> = if let Some(ext) = &run_ext {
         conn.query_row(
-            "SELECT id, status, ended_at FROM agent_runs WHERE source_id = ?1 AND external_run_id = ?2",
+            "SELECT id, status, ended_at, last_ingest_seq, last_event_at FROM agent_runs WHERE source_id = ?1 AND external_run_id = ?2",
             rusqlite::params![ev.source_id, ext],
-            |r| Ok(ExistingRun { id: r.get(0)?, status: r.get(1)?, ended_at: r.get(2)? }),
+            |r| Ok(ExistingRun { id: r.get(0)?, status: r.get(1)?, ended_at: r.get(2)?, last_ingest_seq: r.get(3)?, last_event_at: r.get(4)? }),
         )
         .optional()?
     } else {
         conn.query_row(
-            "SELECT id, status, ended_at FROM agent_runs WHERE session_id = ?1 AND status IN ('running','waiting','idle')
+            "SELECT id, status, ended_at, last_ingest_seq, last_event_at FROM agent_runs WHERE session_id = ?1 AND status IN ('running','waiting','idle')
              ORDER BY updated_at DESC LIMIT 1",
             rusqlite::params![session_row_id],
-            |r| Ok(ExistingRun { id: r.get(0)?, status: r.get(1)?, ended_at: r.get(2)? }),
+            |r| Ok(ExistingRun { id: r.get(0)?, status: r.get(1)?, ended_at: r.get(2)?, last_ingest_seq: r.get(3)?, last_event_at: r.get(4)? }),
         )
         .optional()?
         .or_else(|| {
             conn.query_row(
-                "SELECT id, status, ended_at FROM agent_runs WHERE session_id = ?1
+                "SELECT id, status, ended_at, last_ingest_seq, last_event_at FROM agent_runs WHERE session_id = ?1
                  ORDER BY updated_at DESC LIMIT 1",
                 rusqlite::params![session_row_id],
-                |r| Ok(ExistingRun { id: r.get(0)?, status: r.get(1)?, ended_at: r.get(2)? }),
+                |r| Ok(ExistingRun { id: r.get(0)?, status: r.get(1)?, ended_at: r.get(2)?, last_ingest_seq: r.get(3)?, last_event_at: r.get(4)? }),
             )
             .optional()
             .unwrap_or(None)
         })
     };
 
+    // 因果顺序屏障（受理序号）：该轮次已经应用过更大的受理序号时，本次只记录
+    // 事件流水，不改变轮次/会话状态、不发通知。适用于合并缓冲、批处理、跨通道交错。
+    let ordered_late = existing
+        .as_ref()
+        .map(|r| r.last_ingest_seq > 0 && ingest_seq <= r.last_ingest_seq)
+        .unwrap_or(false);
+
+    // 因果顺序屏障（事件时间）：文件积压/离线恢复会把很旧的事件排在新事件之后受理，
+    // 此时序号更新但事件时间更旧；只入流水，不回退状态。终态后确实更新的事件时间
+    // 仍允许开启新一轮，避免误杀重连。时间无法解析时不启用该屏障（只用序号）。
+    let prev_terminal = existing
+        .as_ref()
+        .and_then(|r| AgentState::parse(&r.status))
+        .map(|s| s.is_terminal())
+        .unwrap_or(false);
+    let opens_new_round = prev_terminal
+        && !state.is_terminal()
+        && existing
+            .as_ref()
+            .and_then(|r| r.ended_at.as_deref())
+            .map(|e| occurred.as_str() > e)
+            .unwrap_or(true);
+    let time_late = existing
+        .as_ref()
+        .filter(|r| !r.last_event_at.is_empty())
+        .filter(|_| !opens_new_round)
+        .and_then(|r| {
+            match (
+                DateTime::parse_from_rfc3339(&r.last_event_at),
+                DateTime::parse_from_rfc3339(&occurred),
+            ) {
+                (Ok(prev), Ok(cur)) => Some(cur < prev),
+                _ => None,
+            }
+        })
+        .unwrap_or(false);
+    let stale = ordered_late || time_late;
+
     let mut prev_state: Option<AgentState> = None;
-    let mut late = false;
+    let mut late = stale;
     let run_row_id: String = match existing {
         Some(run) => {
             let prev = AgentState::parse(&run.status);
             prev_state = prev;
-            let prev_terminal = prev.map(|p| p.is_terminal()).unwrap_or(false);
-            let is_new_round = prev_terminal
-                && !state.is_terminal()
-                && run
-                    .ended_at
-                    .as_deref()
-                    .map(|e| occurred.as_str() > e)
-                    .unwrap_or(true);
-            if prev_terminal && !state.is_terminal() && !is_new_round {
-                // 乱序保护：终态后的迟到活跃事件（如 completed 之后到达的旧 running）
-                // 只记录事件，绝不让已结束的轮次复活。
-                late = true;
+            if stale {
                 run.id
-            } else if is_new_round {
-                // 终态后重连/新一轮：携带同一 external_run_id 时唯一索引
-                // idx_runs_external(source_id, external_run_id) 禁止开第二行，
-                // 必须重开原轮次（状态回活跃、ended_at 清空）。
-                if run_ext.is_some() {
-                    conn.execute(
-                        "UPDATE agent_runs SET
+            } else {
+                let prev_terminal = prev.map(|p| p.is_terminal()).unwrap_or(false);
+                let is_new_round = prev_terminal
+                    && !state.is_terminal()
+                    && run
+                        .ended_at
+                        .as_deref()
+                        .map(|e| occurred.as_str() > e)
+                        .unwrap_or(true);
+                if prev_terminal && !state.is_terminal() && !is_new_round {
+                    // 乱序保护：终态后的迟到活跃事件（如 completed 之后到达的旧 running）
+                    // 只记录事件，绝不让已结束的轮次复活。
+                    late = true;
+                    run.id
+                } else if is_new_round {
+                    // 终态后重连/新一轮：携带同一 external_run_id 时唯一索引
+                    // idx_runs_external(source_id, external_run_id) 禁止开第二行，
+                    // 必须重开原轮次（状态回活跃、ended_at 清空）。
+                    if run_ext.is_some() {
+                        conn.execute(
+                            "UPDATE agent_runs SET
                            status = ?1,
-                           updated_at = ?2,
+                           updated_at = MAX(updated_at, ?2),
                            ended_at = NULL,
                            pending_items = CASE WHEN length(?3) > 2 THEN ?3 ELSE pending_items END,
                            task_title = CASE WHEN length(?4) > 0 THEN ?4 ELSE task_title END,
                            instance_id = COALESCE(?5, instance_id),
                            parent_run_id = COALESCE(?6, parent_run_id)
                          WHERE id = ?7",
+                            rusqlite::params![
+                                state.as_str(),
+                                occurred,
+                                pending_json,
+                                title,
+                                instance_row_id,
+                                ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
+                                run.id,
+                            ],
+                        )?;
+                        run.id
+                    } else {
+                        // 无 run_id 的会话新一轮执行：旧轮次保持终态，新开一个轮次
+                        insert_new_run(
+                            conn,
+                            &ev.source_id,
+                            &session_row_id,
+                            instance_row_id.as_deref(),
+                            run_ext.as_deref(),
+                            ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
+                            &title,
+                            state,
+                            &occurred,
+                            &pending_json,
+                            ingest_seq,
+                            origin,
+                        )?
+                    }
+                } else {
+                    // 常规更新（含终态间修正，如 completed 修正为 failed；ended_at 保留首个）
+                    conn.execute(
+                        "UPDATE agent_runs SET
+                       status = ?1,
+                       updated_at = MAX(updated_at, ?2),
+                       ended_at = CASE WHEN ?3 THEN COALESCE(ended_at, ?2) ELSE ended_at END,
+                       pending_items = CASE WHEN length(?4) > 2 THEN ?4 ELSE pending_items END,
+                       task_title = CASE WHEN length(?5) > 0 THEN ?5 ELSE task_title END,
+                       instance_id = COALESCE(?6, instance_id),
+                       parent_run_id = COALESCE(?7, parent_run_id)
+                     WHERE id = ?8",
                         rusqlite::params![
                             state.as_str(),
                             occurred,
+                            state.is_terminal(),
                             pending_json,
                             title,
                             instance_row_id,
@@ -555,45 +819,7 @@ pub fn ingest_core(
                         ],
                     )?;
                     run.id
-                } else {
-                    // 无 run_id 的会话新一轮执行：旧轮次保持终态，新开一个轮次
-                    insert_new_run(
-                        conn,
-                        &ev.source_id,
-                        &session_row_id,
-                        instance_row_id.as_deref(),
-                        run_ext.as_deref(),
-                        ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
-                        &title,
-                        state,
-                        &occurred,
-                        &pending_json,
-                    )?
                 }
-            } else {
-                // 常规更新（含终态间修正，如 completed 修正为 failed；ended_at 保留首个）
-                conn.execute(
-                    "UPDATE agent_runs SET
-                       status = ?1,
-                       updated_at = ?2,
-                       ended_at = CASE WHEN ?3 THEN COALESCE(ended_at, ?2) ELSE ended_at END,
-                       pending_items = CASE WHEN length(?4) > 2 THEN ?4 ELSE pending_items END,
-                       task_title = CASE WHEN length(?5) > 0 THEN ?5 ELSE task_title END,
-                       instance_id = COALESCE(?6, instance_id),
-                       parent_run_id = COALESCE(?7, parent_run_id)
-                     WHERE id = ?8",
-                    rusqlite::params![
-                        state.as_str(),
-                        occurred,
-                        state.is_terminal(),
-                        pending_json,
-                        title,
-                        instance_row_id,
-                        ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
-                        run.id,
-                    ],
-                )?;
-                run.id
             }
         }
         None => insert_new_run(
@@ -607,18 +833,30 @@ pub fn ingest_core(
             state,
             &occurred,
             &pending_json,
+            ingest_seq,
+            origin,
         )?,
     };
 
-    // 6. 会话指针更新
+    // 6. 水位：受理序号无论是否应用状态都推进；事件时间只向前推进。
+    //    旧序号/旧时间事件（合并缓冲/文件积压/跨通道迟到）因此无法覆盖新状态。
+    conn.execute(
+        "UPDATE agent_runs SET
+           last_ingest_seq = MAX(last_ingest_seq, ?1),
+           last_event_at = CASE WHEN length(?2) > 0 AND ?2 > last_event_at THEN ?2 ELSE last_event_at END
+         WHERE id = ?3",
+        rusqlite::params![ingest_seq, occurred, run_row_id],
+    )?;
+
+    // 7. 会话指针更新（迟到事件不改变会话状态/指针；时间戳只向前）
     if !late {
         conn.execute(
-            "UPDATE agent_sessions SET last_run_id = ?1, status = ?2, last_seen_at = ?3 WHERE id = ?4",
+            "UPDATE agent_sessions SET last_run_id = ?1, status = ?2, last_seen_at = MAX(last_seen_at, ?3) WHERE id = ?4",
             rusqlite::params![run_row_id, state.as_str(), occurred, session_row_id],
         )?;
     }
 
-    // 7. 补齐事件行的轮次外部 ID
+    // 8. 补齐事件行的轮次外部 ID
     if run_ext.is_some() {
         conn.execute(
             "UPDATE agent_events SET run_external_id = ?1 WHERE id = ?2",
@@ -626,33 +864,37 @@ pub fn ingest_core(
         )?;
     }
 
-    // 8. 来源健康分层（v3）：
+    // 8. 来源健康分层（v3 + v12）：
     //    - event_received：任何事件都记录（流水 + last_event_at）；
-    //    - transport_verified：真实通道打通（Hook 自测事件即可证明通道，Mock/Manual 永不）；
-    //    - verified（natural_session_verified）：真实通道 + 非自测会话 才置位。
-    if transport.is_real() {
-        if selftest {
-            conn.execute(
-                "UPDATE agent_sources SET transport_verified = 1, last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, ev.source_id],
-            )?;
-        } else {
+    //    - transport_verified：真实通道打通（自测事件即可证明通道，Mock/Manual/压测永不）；
+    //    - verified（natural_session_verified）：真实来源 + 真实通道 + 非自测会话 才置位。
+    match origin {
+        EventOrigin::Real => {
             conn.execute(
                 "UPDATE agent_sources SET verified = 1, transport_verified = 1, last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, ev.source_id],
             )?;
         }
-    } else {
-        conn.execute(
-            "UPDATE agent_sources SET last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
-            rusqlite::params![now, ev.source_id],
-        )?;
+        EventOrigin::Selftest if transport.is_real() => {
+            conn.execute(
+                "UPDATE agent_sources SET transport_verified = 1, last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, ev.source_id],
+            )?;
+        }
+        _ => {
+            conn.execute(
+                "UPDATE agent_sources SET last_event_at = ?1, updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, ev.source_id],
+            )?;
+        }
     }
 
     // 9. 状态跃迁通知（事务内写通知记录；Agent 执行结束 ≠ 关联任务完成，仅通知、不改任务状态）
+    //    只有真实事件可以产生通知：自测/压测/模拟/人工事件即使状态跃迁也不进入收件箱。
     let mut notification = None;
     let changed = prev_state.map(|p| p != state).unwrap_or(true);
-    if !late
+    if origin.is_real()
+        && !late
         && changed
         && matches!(
             state,
@@ -680,8 +922,8 @@ pub fn ingest_core(
         let occurrence = format!("{}:{}", run_row_id, state.as_str());
         let n = conn.execute(
             "INSERT OR IGNORE INTO notification_history
-               (id, kind, title, body, ref_type, ref_id, occurrence, is_read, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'agent_run', ?5, ?6, 0, ?7)",
+               (id, kind, title, body, ref_type, ref_id, occurrence, is_read, created_at, agent_origin)
+             VALUES (?1, ?2, ?3, ?4, 'agent_run', ?5, ?6, 0, ?7, 'real')",
             rusqlite::params![
                 uuid::Uuid::new_v4().to_string(),
                 kind,
@@ -702,6 +944,7 @@ pub fn ingest_core(
         session_row_id,
         state,
         prev_state,
+        origin,
         deduplicated: false,
         late,
         notification,
@@ -720,12 +963,14 @@ fn insert_new_run(
     state: AgentState,
     occurred: &str,
     pending_json: &str,
+    ingest_seq: i64,
+    origin: EventOrigin,
 ) -> AppResult<String> {
     let rid = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO agent_runs
-           (id, session_id, source_id, external_run_id, task_title, status, started_at, updated_at, ended_at, pending_items, meta, instance_id, parent_run_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, CASE WHEN ?8 THEN ?7 ELSE NULL END, ?9, '{}', ?10, ?11)",
+           (id, session_id, source_id, external_run_id, task_title, status, started_at, updated_at, ended_at, pending_items, meta, instance_id, parent_run_id, last_ingest_seq, last_event_at, origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, CASE WHEN ?8 THEN ?7 ELSE NULL END, ?9, '{}', ?10, ?11, ?12, ?7, ?13)",
         rusqlite::params![
             rid,
             session_row_id,
@@ -738,6 +983,8 @@ fn insert_new_run(
             pending_json,
             instance_id,
             parent_run_id,
+            ingest_seq,
+            origin.as_str(),
         ],
     )?;
     Ok(rid)
@@ -798,7 +1045,7 @@ pub fn cleanup_stale_core(
     let stale: Vec<(String, String)> = {
         let mut stmt = tx.prepare(
             "SELECT id, source_id FROM agent_runs
-             WHERE status IN ('running','waiting') AND updated_at < ?1",
+             WHERE origin = 'real' AND status IN ('running','waiting') AND updated_at < ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![cutoff], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -808,7 +1055,7 @@ pub fn cleanup_stale_core(
     if !stale.is_empty() {
         tx.execute(
             "UPDATE agent_runs SET status = 'disconnected', updated_at = ?1
-             WHERE status IN ('running','waiting') AND updated_at < ?2",
+             WHERE origin = 'real' AND status IN ('running','waiting') AND updated_at < ?2",
             rusqlite::params![now.to_rfc3339(), cutoff],
         )?;
         for (run_id, source_id) in &stale {
@@ -834,10 +1081,10 @@ pub fn cleanup_stale_core(
             )?;
         }
     }
-    // 同步会话状态：没有活跃轮次的会话回到 idle
+    // 同步会话状态：没有活跃轮次的真实会话回到 idle（测试来源不参与真实状态）
     tx.execute(
-        "UPDATE agent_sessions SET status = 'idle' WHERE status IN ('running','waiting')
-         AND id NOT IN (SELECT session_id FROM agent_runs WHERE status IN ('running','waiting'))",
+        "UPDATE agent_sessions SET status = 'idle' WHERE origin = 'real' AND status IN ('running','waiting')
+         AND id NOT IN (SELECT session_id FROM agent_runs WHERE origin = 'real' AND status IN ('running','waiting'))",
         [],
     )?;
     tx.commit()?;
@@ -857,15 +1104,25 @@ pub struct AgentSnapshot {
 pub struct AgentHub {
     app: AppHandle,
     db: Arc<Db>,
+    /// 跨批次 OS 通知限流/合并状态（静音时不消耗额度）。
+    notify_gate: std::sync::Mutex<NotifyGate>,
 }
 
 impl AgentHub {
     pub fn new(app: AppHandle, db: Arc<Db>) -> Self {
-        Self { app, db }
+        Self {
+            app,
+            db,
+            notify_gate: std::sync::Mutex::new(NotifyGate::new()),
+        }
     }
 
     pub fn db(&self) -> &Db {
         &self.db
+    }
+
+    pub fn db_arc(&self) -> Arc<Db> {
+        self.db.clone()
     }
 
     pub fn app(&self) -> &AppHandle {
@@ -930,35 +1187,14 @@ impl AgentHub {
         if outcomes.is_empty() {
             return;
         }
-        let settings = crate::db::Settings::load(&self.db).unwrap_or_default();
-        let mut shown = 0usize;
-        let mut suppressed = 0usize;
-        let mut has_notification = false;
-        for outcome in outcomes {
-            let Some((kind, title, body)) = outcome.notification.as_ref() else {
-                continue;
-            };
-            has_notification = true;
-            let allowed = if kind == "reminder" {
-                settings.notify_reminder
-            } else {
-                settings.notify_agent
-            };
-            if !allowed || settings.notify_muted {
-                continue;
-            }
-            if shown < MAX_OS_POPUPS_PER_BATCH {
-                self.show_os_notification(title, body);
-                shown += 1;
-            } else {
-                suppressed += 1;
-            }
-        }
-        if suppressed > 0 {
-            self.show_os_notification(
-                "Agent 状态更新",
-                &format!("另有 {} 条状态变化已记录到 Agent 面板", suppressed),
-            );
+        let has_notification = outcomes.iter().any(|o| o.notification.is_some());
+        if has_notification {
+            let items: Vec<NotifyItem> = outcomes
+                .iter()
+                .filter_map(|o| o.notification.as_ref())
+                .map(|(kind, title, body)| NotifyItem::new(kind, title, body))
+                .collect();
+            self.notify_agent_popups(&items);
         }
         if has_notification {
             let _ = self.app.emit("notification", ());
@@ -1002,13 +1238,23 @@ impl AgentHub {
     /// OS 通知（调用方已按设置过滤）。
     fn show_os_notification(&self, title: &str, body: &str) {
         use tauri_plugin_notification::NotificationExt;
-        let _ = self
+        NOTIFY_ATTEMPTED.fetch_add(1, Ordering::Relaxed);
+        match self
             .app
             .notification()
             .builder()
             .title(title)
             .body(body)
-            .show();
+            .show()
+        {
+            Ok(()) => {
+                NOTIFY_SUCCEEDED.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                NOTIFY_FAILED.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!("OS 通知发送失败（不影响事件落库）: {}", e);
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -1039,6 +1285,61 @@ impl AgentHub {
             self.show_os_notification(title, body);
         }
         let _ = self.app.emit("notification", ());
+    }
+
+    /// 调度器周期调用：窗口结束后补发被抑制通知的汇总摘要。
+    /// 静音/关闭时不消耗额度，也不弹摘要。
+    pub fn flush_notification_digest(&self) {
+        let settings = crate::db::Settings::load(&self.db).unwrap_or_default();
+        if settings.notify_muted || (!settings.notify_agent && !settings.notify_reminder) {
+            return;
+        }
+        let policy = NotificationPolicy::from_settings(&settings);
+        let popup = self
+            .notify_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .flush(std::time::Instant::now(), &policy);
+        if let Some(p) = popup {
+            self.show_os_notification(&p.title, &p.body);
+        }
+    }
+
+    /// Agent 状态通知弹窗：跨批次共用同一窗口额度（等待/失败优先，完成合并）。
+    /// 静音或关闭 Agent 通知时不消耗额度。
+    pub fn notify_agent_popups(&self, items: &[NotifyItem]) -> usize {
+        let settings = crate::db::Settings::load(&self.db).unwrap_or_default();
+        if !settings.notify_agent || settings.notify_muted {
+            return 0;
+        }
+        self.plan_popups(items, &settings)
+    }
+
+    /// 任务提醒弹窗：与 Agent 通知共用同一窗口额度，
+    /// 避免一批到期提醒在同一秒内刷屏（通知历史仍逐条落库）。
+    pub fn notify_reminder_popups(&self, items: &[NotifyItem]) -> usize {
+        let settings = crate::db::Settings::load(&self.db).unwrap_or_default();
+        if !settings.notify_reminder || settings.notify_muted {
+            return 0;
+        }
+        self.plan_popups(items, &settings)
+    }
+
+    fn plan_popups(&self, items: &[NotifyItem], settings: &crate::db::Settings) -> usize {
+        if items.is_empty() {
+            return 0;
+        }
+        let policy = NotificationPolicy::from_settings(settings);
+        let popups = self
+            .notify_gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .plan(std::time::Instant::now(), &policy, items);
+        let shown = popups.len();
+        for p in popups {
+            self.show_os_notification(&p.title, &p.body);
+        }
+        shown
     }
 
     /// 写通知历史（带去重）；返回是否实际写入（供非 ingest 场景，如提醒调度）。
@@ -1082,11 +1383,14 @@ impl AgentHub {
             .with_conn(|conn| cleanup_stale_core(conn, stale_minutes))?;
         let notified = stale;
         if !notified.is_empty() {
-            self.show_notification(
+            self.notify_agent_popups(&[NotifyItem::new(
                 "agent_disconnected",
                 "Agent 连接中断",
-                "部分 Agent 轮次长时间无心跳，已标记为断开",
-            );
+                &format!(
+                    "{} 个 Agent 轮次长时间无心跳，已标记为断开（不推断任务成败）",
+                    notified.len()
+                ),
+            )]);
             let _ = self.app.emit(
                 "agent-changed",
                 serde_json::json!({ "stale_cleanup": notified.len() }),
@@ -1103,14 +1407,24 @@ impl AgentHub {
     }
 
     pub fn snapshot(&self) -> AppResult<AgentSnapshot> {
-        // 单个只读快照：四张表在同一个读事务内取，避免与写入并发时的跨表不一致，
-        // 且只占用读连接池，不与事件批量写入争抢唯一写锁。
-        self.db.with_read(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            let mut stmt = tx.prepare(
-                "SELECT id, display_name, kind, enabled, verified, homepage, note, config, created_at, updated_at
-                 FROM agent_sources WHERE hidden = 0 ORDER BY id",
-            )?;
+        snapshot_query(&self.db)
+    }
+
+    /// 当前最需要关注的 Agent 状态（托盘图标用）。
+    pub fn worst_state(&self) -> AgentState {
+        worst_state_query(&self.db)
+    }
+}
+
+/// 单个只读快照：四张表在同一个读事务内取，避免与写入并发时的跨表不一致，
+/// 且只占用读连接池，不与事件批量写入争抢唯一写锁。
+pub(crate) fn snapshot_query(db: &Db) -> AppResult<AgentSnapshot> {
+    db.with_read(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare(
+            "SELECT id, display_name, kind, enabled, verified, homepage, note, config, created_at, updated_at
+             FROM agent_sources WHERE hidden = 0 ORDER BY id",
+        )?;
             let sources = stmt
                 .query_map([], |r| {
                     Ok(AgentSource {
@@ -1131,7 +1445,7 @@ impl AgentHub {
             drop(stmt);
             let mut stmt = tx.prepare(
                 "SELECT id, source_id, instance_key, display_name, exe_path, first_seen_at, last_seen_at
-                 FROM agent_instances ORDER BY last_seen_at DESC LIMIT 200",
+                 FROM agent_instances WHERE origin = 'real' ORDER BY last_seen_at DESC LIMIT 200",
             )?;
             let instances = stmt
                 .query_map([], |r| {
@@ -1148,7 +1462,7 @@ impl AgentHub {
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
             let mut stmt = tx.prepare(
-                "SELECT id, source_id, external_id, title, status, first_seen_at, last_seen_at, last_run_id, instance_id FROM agent_sessions ORDER BY last_seen_at DESC LIMIT 200",
+                "SELECT id, source_id, external_id, title, status, first_seen_at, last_seen_at, last_run_id, instance_id FROM agent_sessions WHERE origin = 'real' ORDER BY last_seen_at DESC LIMIT 200",
             )?;
             let sessions = stmt
                 .query_map([], |r| {
@@ -1168,7 +1482,7 @@ impl AgentHub {
             drop(stmt);
             let mut stmt = tx.prepare(
                 "SELECT id, session_id, source_id, external_run_id, task_title, status, started_at, updated_at, ended_at, pending_items, instance_id
-                 FROM agent_runs ORDER BY updated_at DESC LIMIT 300",
+                 FROM agent_runs WHERE origin = 'real' ORDER BY updated_at DESC LIMIT 300",
             )?;
             let runs = stmt
                 .query_map([], |r| {
@@ -1197,34 +1511,34 @@ impl AgentHub {
                 runs,
             })
         })
-    }
+}
 
-    /// 当前最需要关注的 Agent 状态（托盘图标用）。
-    pub fn worst_state(&self) -> AgentState {
-        let states: Vec<String> = self
-            .db
-            .with_read(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT status FROM agent_runs
-                     WHERE status IN ('running','waiting','completed','failed')
-                       AND updated_at > ?1",
-                )?;
-                let cutoff = (Utc::now() - Duration::seconds(120)).to_rfc3339();
-                let rows = stmt.query_map(rusqlite::params![cutoff], |r| r.get::<_, String>(0))?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
-            })
-            .unwrap_or_default();
-        let mut worst = AgentState::Idle;
-        for s in states {
-            if let Some(st) = AgentState::parse(&s) {
-                if st.priority() > worst.priority() {
-                    worst = st;
-                }
+/// 当前最需要关注的 Agent 状态（托盘图标用）；只统计真实来源。
+pub(crate) fn worst_state_query(db: &Db) -> AgentState {
+    let states: Vec<String> = db
+        .with_read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT status FROM agent_runs
+                 WHERE origin = 'real' AND status IN ('running','waiting','completed','failed')
+                   AND updated_at > ?1",
+            )?;
+            let cutoff = (Utc::now() - Duration::seconds(120)).to_rfc3339();
+            let rows = stmt.query_map(rusqlite::params![cutoff], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+        })
+        .unwrap_or_default();
+    let mut worst = AgentState::Idle;
+    for s in states {
+        if let Some(st) = AgentState::parse(&s) {
+            if st.priority() > worst.priority() {
+                worst = st;
             }
         }
-        worst
     }
+    worst
+}
 
+impl AgentHub {
     /// 更新托盘图标与提示（由 lib.rs 提供的回调实现）。
     pub fn update_tray(&self) {
         crate::refresh_tray(self.app(), self.worst_state());
@@ -1604,6 +1918,153 @@ mod tests {
             ),
             "1"
         );
+    }
+
+    #[test]
+    fn benchmark_source_is_fully_isolated() {
+        let db = memdb();
+        let mut e = ev(
+            "bench",
+            "http-perf-t1-session-0",
+            Some("http-perf-t1-run-0-0"),
+            "waiting",
+        );
+        e.instance_id = Some("http-instance-0".into());
+        let out = ingest(&db, &e, "2026-10-25T10:00:00+00:00").unwrap();
+        assert_eq!(out.origin, EventOrigin::Benchmark);
+        assert!(out.notification.is_none(), "压测事件不得产生通知");
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT origin FROM agent_events WHERE session_external_id = 'http-perf-t1-session-0'",
+                rusqlite::params![]
+            ),
+            "benchmark"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT origin FROM agent_sessions WHERE external_id = 'http-perf-t1-session-0'",
+                rusqlite::params![]
+            ),
+            "benchmark"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT origin FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&out.run_row_id]
+            ),
+            "benchmark"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT origin FROM agent_instances WHERE instance_key = 'http-instance-0'",
+                rusqlite::params![]
+            ),
+            "benchmark"
+        );
+        // 来源健康：压测来源不置 verified / transport_verified
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT CAST(verified AS TEXT) || '/' || CAST(transport_verified AS TEXT)
+                 FROM agent_sources WHERE id = 'bench'",
+                rusqlite::params![]
+            ),
+            "0/0"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 0);
+        // 快照与托盘状态只含真实数据
+        let snap = snapshot_query(&db).unwrap();
+        assert!(snap.instances.is_empty());
+        assert!(snap.sessions.is_empty());
+        assert!(snap.runs.is_empty());
+        assert_eq!(worst_state_query(&db), AgentState::Idle);
+        // 失联清理不会把压测轮次标记断开，也不会生成断连通知
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_runs SET updated_at = '2000-01-01T00:00:00+00:00' WHERE id = ?1",
+                rusqlite::params![&out.run_row_id],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let stale = db.with_conn(|conn| cleanup_stale_core(conn, 1)).unwrap();
+        assert!(stale.is_empty(), "压测轮次不参与失联判定");
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&out.run_row_id]
+            ),
+            "waiting"
+        );
+    }
+
+    #[test]
+    fn cross_origin_events_cannot_mutate_existing_session() {
+        let db = memdb();
+        // 先建立真实会话与轮次
+        let real = ingest(
+            &db,
+            &ev("codex", "shared-sess", Some("shared-run"), "running"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(real.origin, EventOrigin::Real);
+        // 管理员把来源改为压测类别后，同一会话的后续事件必须被隔离
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_sources SET category = 'benchmark' WHERE id = 'codex'",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let forged = ingest(
+            &db,
+            &ev("codex", "shared-sess", Some("shared-run"), "waiting"),
+            "2026-10-25T10:01:00+00:00",
+        )
+        .unwrap();
+        assert!(forged.late, "跨来源类别的事件只能入流水");
+        assert!(forged.notification.is_none());
+        assert_eq!(forged.origin, EventOrigin::Benchmark);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&real.run_row_id]
+            ),
+            "running",
+            "真实轮次状态不得被压测事件改写"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT origin FROM agent_sessions WHERE external_id = 'shared-sess'",
+                rusqlite::params![]
+            ),
+            "real",
+            "既有会话的可信类别不得被后续事件改写"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 0);
+    }
+
+    #[test]
+    fn selftest_waiting_never_notifies() {
+        let db = memdb();
+        let out = ingest(
+            &db,
+            &ev("codex", "taskdock-selftest-codex", None, "waiting"),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(out.origin, EventOrigin::Selftest);
+        assert!(out.notification.is_none());
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 0);
     }
 
     #[test]
@@ -2070,5 +2531,454 @@ mod tests {
         );
         assert_eq!(mock_t, "mock");
         assert_eq!(real_t, "http");
+    }
+
+    // ── P0-01 事件顺序屏障 ─────────────────────────────────────
+
+    fn seq_ev(source: &str, session: &str, run: Option<&str>, state: &str, seq: u64) -> AgentEvent {
+        let mut e = ev(source, session, run, state);
+        e.ingest_seq = Some(seq);
+        e
+    }
+
+    #[test]
+    fn older_running_does_not_override_newer_waiting() {
+        // 合并缓冲里的旧 running（序号更小）晚于 waiting 落库：只记流水，不改状态。
+        let db = memdb();
+        ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 100),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let waiting = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "waiting", 200),
+            "2026-10-25T10:00:01+00:00",
+        )
+        .unwrap();
+        assert!(!waiting.late);
+        let late = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 150),
+            "2026-10-25T10:00:02+00:00",
+        )
+        .unwrap();
+        assert!(late.late, "旧序号 running 必须标记为迟到");
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&waiting.run_row_id]
+            ),
+            "waiting"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_sessions WHERE external_id = 's1'",
+                rusqlite::params![]
+            ),
+            "waiting",
+            "会话状态不得被迟到事件回退"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_events WHERE state = 'running'"
+            ),
+            2,
+            "迟到事件仍须保留在历史流水"
+        );
+    }
+
+    #[test]
+    fn newer_running_after_waiting_applies() {
+        // waiting → running（序号更新）必须正常应用，不得被迟到保护误伤。
+        let db = memdb();
+        let waiting = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "waiting", 100),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let running = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 200),
+            "2026-10-25T10:00:01+00:00",
+        )
+        .unwrap();
+        assert!(!running.late);
+        assert_eq!(running.prev_state, Some(AgentState::Waiting));
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&waiting.run_row_id]
+            ),
+            "running"
+        );
+    }
+
+    #[test]
+    fn backlog_event_with_newer_seq_but_older_time_is_history_only() {
+        // 文件积压/离线恢复：新关键事件先受理（序号小），旧文件后受理（序号大但事件时间更早）。
+        // 事件时间屏障必须阻止旧 running 覆盖新 waiting。
+        let db = memdb();
+        let waiting = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "waiting", 100),
+            "2026-10-25T10:05:00+00:00",
+        )
+        .unwrap();
+        let backlog = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 900),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        assert!(backlog.late, "事件时间更旧的事件必须标记为迟到");
+        assert_eq!(backlog.run_row_id, waiting.run_row_id);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&waiting.run_row_id]
+            ),
+            "waiting",
+            "旧积压事件不得回退新状态"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_sessions WHERE external_id = 's1'",
+                rusqlite::params![]
+            ),
+            "waiting"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_events WHERE state = 'running'"
+            ),
+            1,
+            "旧事件仍须保留在历史流水"
+        );
+    }
+
+    #[test]
+    fn older_completed_is_not_reopened_by_late_running_with_newer_timestamp() {
+        // 即使 occurred_at 更晚（时钟偏差/跨通道），只要受理序号更旧，
+        // 就不能复活已结束轮次。
+        let db = memdb();
+        ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 100),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let done = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "completed", 300),
+            "2026-10-25T10:05:00+00:00",
+        )
+        .unwrap();
+        let late = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 200),
+            "2026-10-25T10:10:00+00:00",
+        )
+        .unwrap();
+        assert!(late.late);
+        assert_eq!(late.run_row_id, done.run_row_id);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&done.run_row_id]
+            ),
+            "completed"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_runs"), 1);
+    }
+
+    #[test]
+    fn older_failed_is_not_reopened_by_late_running() {
+        let db = memdb();
+        ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 100),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let failed = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "failed", 300),
+            "2026-10-25T10:05:00+00:00",
+        )
+        .unwrap();
+        let late = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 200),
+            "2026-10-25T10:10:00+00:00",
+        )
+        .unwrap();
+        assert!(late.late);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&failed.run_row_id]
+            ),
+            "failed"
+        );
+    }
+
+    #[test]
+    fn equal_ingest_seq_is_history_only() {
+        // 序号相等无法证明先后：保守按迟到处理，先落库状态不被覆盖。
+        let db = memdb();
+        ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 100),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        let equal = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "waiting", 100),
+            "2026-10-25T10:00:01+00:00",
+        )
+        .unwrap();
+        assert!(equal.late);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE external_run_id = 'r1'",
+                rusqlite::params![]
+            ),
+            "running"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_events"), 2);
+    }
+
+    #[test]
+    fn missing_occurred_at_uses_server_time_and_still_respects_seq() {
+        // 缺少 occurred_at：以服务端时间补齐；顺序仍由受理序号决定。
+        let db = memdb();
+        let mut a = ev("codex", "s1", Some("r1"), "running");
+        a.ingest_seq = Some(100);
+        a.occurred_at = None;
+        ingest(&db, &a, "2026-10-25T10:00:00+00:00").unwrap();
+
+        let mut w = ev("codex", "s1", Some("r1"), "waiting");
+        w.ingest_seq = Some(200);
+        w.occurred_at = None;
+        let applied = ingest(&db, &w, "2026-10-25T10:00:05+00:00").unwrap();
+        assert!(!applied.late);
+
+        let mut late = ev("codex", "s1", Some("r1"), "running");
+        late.ingest_seq = Some(150);
+        late.occurred_at = None;
+        // 服务端收到时间更晚，但受理序号更旧 → 迟到
+        let out = ingest(&db, &late, "2026-10-25T10:00:10+00:00").unwrap();
+        assert!(out.late);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE external_run_id = 'r1'",
+                rusqlite::params![]
+            ),
+            "waiting"
+        );
+    }
+
+    #[test]
+    fn late_progress_is_recorded_without_duplicate_notifications() {
+        // 迟到事件不产生通知；关键状态各自只通知一次。
+        let db = memdb();
+        ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 100),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "completed", 300),
+            "2026-10-25T10:05:00+00:00",
+        )
+        .unwrap();
+        let late = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 200),
+            "2026-10-25T10:10:00+00:00",
+        )
+        .unwrap();
+        assert!(late.notification.is_none());
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM notification_history WHERE kind = 'agent_done'"
+            ),
+            1
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 1);
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_events"), 3);
+    }
+
+    #[test]
+    fn cross_source_same_session_id_keeps_independent_order() {
+        // 多 Agent 使用相同外部会话 ID：顺序水位按轮次隔离，互不干扰。
+        let db = memdb();
+        ingest(
+            &db,
+            &seq_ev("codex", "shared", Some("r1"), "running", 100),
+            "2026-10-25T10:00:00+00:00",
+        )
+        .unwrap();
+        ingest(
+            &db,
+            &seq_ev("trae", "shared", Some("r1"), "running", 110),
+            "2026-10-25T10:00:01+00:00",
+        )
+        .unwrap();
+        let w = ingest(
+            &db,
+            &seq_ev("codex", "shared", Some("r1"), "waiting", 200),
+            "2026-10-25T10:00:02+00:00",
+        )
+        .unwrap();
+        assert!(!w.late);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE source_id = 'codex'",
+                rusqlite::params![]
+            ),
+            "waiting"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE source_id = 'trae'",
+                rusqlite::params![]
+            ),
+            "running",
+            "另一个来源的轮次不得被跨来源序号影响"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_sessions"), 2);
+    }
+
+    #[test]
+    fn http_and_file_transport_interleaving_respects_seq() {
+        // 跨通道（HTTP ↔ 文件投递）交错：最终状态按受理序号，不按通道先后。
+        let db = memdb();
+        ingest_with(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 100),
+            "2026-10-25T10:00:00+00:00",
+            Transport::Http,
+        )
+        .unwrap();
+        let waiting = ingest_with(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "waiting", 200),
+            "2026-10-25T10:00:01+00:00",
+            Transport::File,
+        )
+        .unwrap();
+        let resumed = ingest_with(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "running", 300),
+            "2026-10-25T10:00:02+00:00",
+            Transport::Http,
+        )
+        .unwrap();
+        assert!(!resumed.late);
+        assert_eq!(resumed.prev_state, Some(AgentState::Waiting));
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&waiting.run_row_id]
+            ),
+            "running"
+        );
+        let final_wait = ingest_with(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "waiting", 400),
+            "2026-10-25T10:00:03+00:00",
+            Transport::File,
+        )
+        .unwrap();
+        assert!(!final_wait.late);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&waiting.run_row_id]
+            ),
+            "waiting"
+        );
+    }
+
+    #[test]
+    fn restart_reopens_above_persisted_watermark_after_clock_rollback() {
+        // 重启 + 时钟回拨：启动时 bump 到库内最大序号，新事件仍严格新于历史。
+        let dir = std::env::temp_dir().join(format!("taskdock-seq-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("task-dock.db");
+        let (run_id, watermark) = {
+            let db = Db::open(&path).unwrap();
+            let out = ingest(
+                &db,
+                &seq_ev("codex", "s1", Some("r1"), "running", 100),
+                "2026-10-25T10:00:00+00:00",
+            )
+            .unwrap();
+            // 模拟库内水位远高于当前时钟（时钟回拨后的历史库）
+            let future = 9_000_000_000_000_000i64;
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE agent_runs SET last_ingest_seq = ?1 WHERE id = ?2",
+                    rusqlite::params![future, out.run_row_id],
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+            (out.run_row_id, future as u64)
+        };
+
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.max_ingest_seq().unwrap(), watermark);
+        bump_ingest_seq(db.max_ingest_seq().unwrap());
+        let next = next_ingest_seq();
+        assert!(next > watermark, "重启后受理序号必须高于库内水位");
+
+        // 旧序号事件仍是历史记录，不回退状态
+        let old = ingest(
+            &db,
+            &seq_ev("codex", "s1", Some("r1"), "waiting", 200),
+            "2026-10-25T10:01:00+00:00",
+        )
+        .unwrap();
+        assert!(old.late);
+
+        // 重启后分配的新序号事件正常应用
+        let mut fresh = ev("codex", "s1", Some("r1"), "waiting");
+        fresh.ingest_seq = Some(next);
+        let applied = ingest(&db, &fresh, "2026-10-25T10:02:00+00:00").unwrap();
+        assert!(!applied.late);
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&run_id]
+            ),
+            "waiting"
+        );
+        drop(db);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

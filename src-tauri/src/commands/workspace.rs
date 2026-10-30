@@ -61,7 +61,10 @@ pub fn workspace_delete(db: State<'_, Arc<Db>>, id: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn workspace_prune(db: State<'_, Arc<Db>>, keep: Option<usize>) -> AppResult<usize> {
+pub fn workspace_prune(
+    db: State<'_, Arc<Db>>,
+    keep: Option<usize>,
+) -> AppResult<workspace::PruneReport> {
     workspace::prune_snapshots(&db, keep.unwrap_or(MAX_SNAPSHOTS))
 }
 

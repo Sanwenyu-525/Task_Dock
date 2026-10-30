@@ -1,0 +1,24 @@
+=== 2026-10-30 16:19:47 clippy ===
+    Checking task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.66s
+CLIPPY_EXIT=0
+=== 2026-10-30 16:19:58 cargo test --all ===
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+test result: ok. 441 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 22.13s
+     Running unittests src\main.rs (target\debug\deps\task_dock-3b7bbca453631292.exe)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\actions_perf.rs (target\debug\deps\actions_perf-cbbd029806e208b8.exe)
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\clipboard_perf.rs (target\debug\deps\clipboard_perf-f74753a90d8661a6.exe)
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\inbox_processes.rs (target\debug\deps\inbox_processes-190b0b2ac8e419b0.exe)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.67s
+     Running tests\ingest_perf.rs (target\debug\deps\ingest_perf-d59a2eddecd1f76d.exe)
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\real_backup_restore.rs (target\debug\deps\real_backup_restore-9b5d53700feb1f39.exe)
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests\real_clipboard.rs (target\debug\deps\real_clipboard-a6f1d75360a75927.exe)
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests task_dock_lib
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+TEST_EXIT=0

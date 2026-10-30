@@ -1,0 +1,31 @@
+{
+  "scenario": "frontend-render-300",
+  "machine": {
+    "os": "win32",
+    "arch": "x64",
+    "logical_cpus": 20,
+    "browser": "chromium (playwright)"
+  },
+  "fixture": {
+    "rows": 300,
+    "viewport": "400x700",
+    "trigger": "搜索开关 → TasksPanel 全量重渲染"
+  },
+  "measurements": {
+    "first_visible_ms": 572.2,
+    "rerender_commit_samples_ms": [
+      0.1,
+      0.2,
+      0.2,
+      0.2,
+      0.4
+    ],
+    "rerender_commit_median_ms": 0.2,
+    "rerender_to_paint_max_ms": 30.5
+  },
+  "budget": {
+    "rerender_commit_median_ms_max": 100
+  },
+  "errors": [],
+  "pass": true
+}

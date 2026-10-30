@@ -1,0 +1,7 @@
+# command: cargo build --release
+# started: 2026-10-30T18:02:07+08:00
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `release` profile [optimized] target(s) in 5m 44s
+EXIT=0
+# finished: 2026-10-30T18:07:51+08:00
+-rwxr-xr-x 2 ASUS 197121 15398912 2026-10-30 18:07:51.652585900 +0800 target/release/task-dock.exe

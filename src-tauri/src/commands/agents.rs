@@ -2,7 +2,7 @@
 
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::State;
 
 use crate::agents::codex;
 use crate::agents::discovery;
@@ -173,7 +173,7 @@ pub fn discovery_scan(db: State<'_, Arc<Db>>) -> AppResult<Vec<discovery::Discov
 pub fn adapter_preview(adapter_id: String, app: tauri::AppHandle) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
-    let app_data = app.path().app_data_dir()?;
+    let app_data = crate::app_data_dir(&app);
     a.preview(&app_data)
 }
 
@@ -185,7 +185,7 @@ pub fn adapter_install(
 ) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
-    let app_data = app.path().app_data_dir()?;
+    let app_data = crate::app_data_dir(&app);
     a.install(&app_data, &db)
 }
 
@@ -197,7 +197,7 @@ pub fn adapter_verify(
 ) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
-    let app_data = app.path().app_data_dir()?;
+    let app_data = crate::app_data_dir(&app);
     a.verify(&app_data, &db)
 }
 
@@ -208,7 +208,7 @@ pub fn adapter_uninstall(
 ) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
-    let app_data = app.path().app_data_dir()?;
+    let app_data = crate::app_data_dir(&app);
     a.uninstall(&app_data)
 }
 
@@ -220,7 +220,7 @@ pub fn adapter_status(
 ) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
-    let app_data = app.path().app_data_dir()?;
+    let app_data = crate::app_data_dir(&app);
     let mut status = a.config_status(&app_data)?;
     if let Some(obj) = status.as_object_mut() {
         obj.insert("health".into(), managed::source_health(&db, a.id()));
@@ -276,7 +276,7 @@ pub fn codex_hooks_install(
 ) -> AppResult<serde_json::Value> {
     let a =
         managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
-    let app_data = app.path().app_data_dir()?;
+    let app_data = crate::app_data_dir(&app);
     a.install(&app_data, &db)
 }
 
@@ -284,7 +284,7 @@ pub fn codex_hooks_install(
 pub fn codex_hooks_uninstall(app: tauri::AppHandle) -> AppResult<serde_json::Value> {
     let a =
         managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
-    let app_data = app.path().app_data_dir()?;
+    let app_data = crate::app_data_dir(&app);
     a.uninstall(&app_data)
 }
 
@@ -313,21 +313,80 @@ pub fn open_agent_session(
 
 // ── 通知收件箱 ──────────────────────────────────────────────
 
+/// 通知分页：只返回真实来源（测试/压测通知留作审计，不进入用户历史）。
+/// 使用 (created_at, id) 键集游标；`has_more` 与 `filtered_total` 都基于同一筛选。
+#[derive(Debug, serde::Serialize)]
+pub struct NotificationPage {
+    pub items: Vec<NotificationRow>,
+    pub has_more: bool,
+    pub filtered_total: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct NotificationInboxStats {
+    pub unread: i64,
+    pub total: i64,
+}
+
 #[tauri::command]
-pub fn list_notifications(
+pub fn notification_page(
     db: State<'_, Arc<Db>>,
-    unread_only: Option<bool>,
+    source_id: Option<String>,
+    since: Option<String>,
+    before: Option<String>,
     limit: Option<i64>,
-) -> AppResult<Vec<NotificationRow>> {
+) -> AppResult<NotificationPage> {
     let limit = limit.unwrap_or(100).clamp(1, 500);
-    let mut sql = "SELECT id, kind, title, body, ref_type, ref_id, occurrence, is_read, created_at FROM notification_history".to_string();
-    if unread_only.unwrap_or(false) {
-        sql += " WHERE is_read = 0";
-    }
-    sql += " ORDER BY created_at DESC LIMIT ?1";
-    db.with_conn(|conn| {
+    db.with_read(|conn| {
+        let mut filter = String::from(" WHERE agent_origin = 'real'");
+        let mut filter_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(kind) = source_id.as_deref().filter(|s| !s.is_empty()) {
+            filter.push_str(" AND kind = ?");
+            filter_params.push(Box::new(kind.to_string()));
+        }
+        if let Some(since) = since.as_deref().filter(|s| !s.is_empty()) {
+            filter.push_str(" AND julianday(created_at) >= julianday(?)");
+            filter_params.push(Box::new(since.to_string()));
+        }
+        let total_refs: Vec<&dyn rusqlite::ToSql> =
+            filter_params.iter().map(|p| p.as_ref()).collect();
+        let filtered_total: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM notification_history{}", filter),
+            total_refs.as_slice(),
+            |r| r.get(0),
+        )?;
+
+        let mut sql = format!(
+            "SELECT id, kind, title, body, ref_type, ref_id, occurrence, is_read, created_at
+             FROM notification_history{}",
+            filter
+        );
+        let mut params = filter_params;
+        if let Some(anchor) = before.as_deref().filter(|s| !s.is_empty()) {
+            let anchor_ts: Option<String> = conn
+                .query_row(
+                    "SELECT created_at FROM notification_history WHERE id = ?1",
+                    rusqlite::params![anchor],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(anchor_ts) = anchor_ts else {
+                return Ok(NotificationPage {
+                    items: Vec::new(),
+                    has_more: false,
+                    filtered_total,
+                });
+            };
+            sql.push_str(" AND (created_at < ? OR (created_at = ? AND id < ?))");
+            params.push(Box::new(anchor_ts.clone()));
+            params.push(Box::new(anchor_ts));
+            params.push(Box::new(anchor.to_string()));
+        }
+        sql.push_str(" ORDER BY created_at DESC, id DESC LIMIT ?");
+        params.push(Box::new(limit + 1));
+        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params![limit], |r| {
+        let rows = stmt.query_map(refs.as_slice(), |r| {
             Ok(NotificationRow {
                 id: r.get(0)?,
                 kind: r.get(1)?,
@@ -340,7 +399,33 @@ pub fn list_notifications(
                 created_at: r.get(8)?,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+        let mut items = rows.collect::<Result<Vec<_>, _>>()?;
+        let has_more = items.len() > limit as usize;
+        items.truncate(limit as usize);
+        Ok(NotificationPage {
+            items,
+            has_more,
+            filtered_total,
+        })
+    })
+}
+
+/// 全库未读/总数：不受列表分页或筛选影响，1000+ 通知也准确。
+#[tauri::command]
+pub fn notification_inbox_stats(db: State<'_, Arc<Db>>) -> AppResult<NotificationInboxStats> {
+    db.with_read(|conn| {
+        conn.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0), COUNT(*)
+             FROM notification_history WHERE agent_origin = 'real'",
+            [],
+            |r| {
+                Ok(NotificationInboxStats {
+                    unread: r.get(0)?,
+                    total: r.get(1)?,
+                })
+            },
+        )
+        .map_err(AppError::from)
     })
 }
 
@@ -348,7 +433,7 @@ pub fn list_notifications(
 pub fn mark_notification_read(db: State<'_, Arc<Db>>, id: String) -> AppResult<()> {
     db.with_conn(|conn| {
         conn.execute(
-            "UPDATE notification_history SET is_read = 1 WHERE id = ?1",
+            "UPDATE notification_history SET is_read = 1 WHERE id = ?1 AND agent_origin = 'real'",
             rusqlite::params![id],
         )?;
         Ok::<_, AppError>(())
@@ -359,7 +444,8 @@ pub fn mark_notification_read(db: State<'_, Arc<Db>>, id: String) -> AppResult<(
 pub fn mark_all_notifications_read(db: State<'_, Arc<Db>>) -> AppResult<()> {
     db.with_conn(|conn| {
         conn.execute(
-            "UPDATE notification_history SET is_read = 1 WHERE is_read = 0",
+            "UPDATE notification_history SET is_read = 1
+             WHERE is_read = 0 AND agent_origin = 'real'",
             [],
         )?;
         Ok::<_, AppError>(())
@@ -369,7 +455,11 @@ pub fn mark_all_notifications_read(db: State<'_, Arc<Db>>) -> AppResult<()> {
 #[tauri::command]
 pub fn clear_notifications(db: State<'_, Arc<Db>>) -> AppResult<()> {
     db.with_conn(|conn| {
-        conn.execute("DELETE FROM notification_history", [])?;
+        // 只清用户可见的真实通知；测试/压测通知保留供数据审计。
+        conn.execute(
+            "DELETE FROM notification_history WHERE agent_origin = 'real'",
+            [],
+        )?;
         Ok::<_, AppError>(())
     })
 }
@@ -377,25 +467,49 @@ pub fn clear_notifications(db: State<'_, Arc<Db>>) -> AppResult<()> {
 /// Agent 事件流水（历史记录；扩展列：occurred_at / transport / evidence_type）。
 /// `before` 为上一页最后一行的 id：按 (received_at, id) 键集分页，
 /// 同一批次事件时间戳相同时也绝不会翻页丢行；只走只读连接池。
+/// 只返回真实来源事件；筛选在数据库内完成，翻页与筛选口径一致。
+#[derive(Debug, serde::Serialize)]
+pub struct AgentEventPage {
+    pub items: Vec<crate::db::AgentEventRow>,
+    pub has_more: bool,
+    pub filtered_total: i64,
+}
+
 #[tauri::command]
 pub fn list_agent_events(
     db: State<'_, Arc<Db>>,
     source_id: Option<String>,
+    since: Option<String>,
     before: Option<String>,
     limit: Option<i64>,
-) -> AppResult<Vec<crate::db::AgentEventRow>> {
+) -> AppResult<AgentEventPage> {
     let limit = limit.unwrap_or(100).clamp(1, 500);
     db.with_read(|conn| {
-        let mut sql = String::from(
-            "SELECT id, source_id, session_external_id, run_external_id, event_type, state, message, received_at, occurred_at, transport, evidence_type
-             FROM agent_events WHERE 1 = 1",
-        );
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if let Some(s) = &source_id {
-            sql.push_str(" AND source_id = ?");
-            params.push(Box::new(s.clone()));
+        let mut filter = String::from(" WHERE origin = 'real'");
+        let mut filter_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(s) = source_id.as_deref().filter(|s| !s.is_empty()) {
+            filter.push_str(" AND source_id = ?");
+            filter_params.push(Box::new(s.to_string()));
         }
-        if let Some(anchor) = &before {
+        if let Some(since) = since.as_deref().filter(|s| !s.is_empty()) {
+            filter.push_str(" AND julianday(received_at) >= julianday(?)");
+            filter_params.push(Box::new(since.to_string()));
+        }
+        let total_refs: Vec<&dyn rusqlite::ToSql> =
+            filter_params.iter().map(|p| p.as_ref()).collect();
+        let filtered_total: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM agent_events{}", filter),
+            total_refs.as_slice(),
+            |r| r.get(0),
+        )?;
+
+        let mut sql = format!(
+            "SELECT id, source_id, session_external_id, run_external_id, event_type, state, message, received_at, occurred_at, transport, evidence_type
+             FROM agent_events{}",
+            filter
+        );
+        let mut params = filter_params;
+        if let Some(anchor) = before.as_deref().filter(|s| !s.is_empty()) {
             let anchor_ts: Option<String> = conn
                 .query_row(
                     "SELECT received_at FROM agent_events WHERE id = ?1",
@@ -404,18 +518,22 @@ pub fn list_agent_events(
                 )
                 .optional()?;
             let Some(anchor_ts) = anchor_ts else {
-                return Ok(Vec::new());
+                return Ok(AgentEventPage {
+                    items: Vec::new(),
+                    has_more: false,
+                    filtered_total,
+                });
             };
             sql.push_str(" AND (received_at < ? OR (received_at = ? AND id < ?))");
             params.push(Box::new(anchor_ts.clone()));
             params.push(Box::new(anchor_ts));
-            params.push(Box::new(anchor.clone()));
+            params.push(Box::new(anchor.to_string()));
         }
         sql.push_str(" ORDER BY received_at DESC, id DESC LIMIT ?");
-        params.push(Box::new(limit));
+        params.push(Box::new(limit + 1));
+        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(param_refs.as_slice(), |r| {
+        let rows = stmt.query_map(refs.as_slice(), |r| {
             Ok(crate::db::AgentEventRow {
                 id: r.get(0)?,
                 source_id: r.get(1)?,
@@ -430,7 +548,14 @@ pub fn list_agent_events(
                 evidence_type: r.get(10)?,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+        let mut items = rows.collect::<Result<Vec<_>, _>>()?;
+        let has_more = items.len() > limit as usize;
+        items.truncate(limit as usize);
+        Ok(AgentEventPage {
+            items,
+            has_more,
+            filtered_total,
+        })
     })
 }
 
@@ -452,7 +577,7 @@ pub async fn agent_retention_run(
     let db = db.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let settings = crate::db::Settings::load(&db)?;
-        let dir = app.path().app_data_dir().ok();
+        let dir = Some(crate::app_data_dir(&app));
         crate::agents::retention::run_retention(
             &db,
             &settings,
@@ -467,7 +592,7 @@ pub async fn agent_retention_run(
 /// 归档文件清单（JSONL，可在文件管理器中打开/复制备份）。
 #[tauri::command]
 pub fn agent_archive_list(app: tauri::AppHandle) -> AppResult<Vec<serde_json::Value>> {
-    let dir = app.path().app_data_dir()?;
+    let dir = crate::app_data_dir(&app);
     crate::agents::retention::list_archives(&dir)
 }
 

@@ -83,18 +83,18 @@ export default function ClipboardGroupCard({
             <Link2 size={11} /> 关联
           </button>
         )}
-        <button className="icon-btn sm" title="复制富文本（整组）" aria-label="复制富文本" onClick={onCopyRich}>
+        <button className="icon-btn sm" data-tip="复制富文本（整组）" aria-label="复制富文本" onClick={onCopyRich}>
           <Copy size={12} />
         </button>
-        <button className="icon-btn sm" title="复制文件（整组）" aria-label="复制文件" onClick={onCopyFiles}>
+        <button className="icon-btn sm" data-tip="复制文件（整组）" aria-label="复制文件" onClick={onCopyFiles}>
           <Files size={12} />
         </button>
-        <button className="icon-btn sm" title="逐项粘贴" aria-label="逐项粘贴" onClick={onPaste}>
+        <button className="icon-btn sm" data-tip="逐项粘贴" aria-label="逐项粘贴" onClick={onPaste}>
           <Play size={12} />
         </button>
         <button
           className={`icon-btn sm ${group.pinned ? "active" : ""}`}
-          title={group.pinned ? "取消置顶" : "置顶"}
+          data-tip={group.pinned ? "取消置顶" : "置顶"}
           aria-label={group.pinned ? "取消置顶" : "置顶"}
           aria-pressed={group.pinned}
           onClick={() => onToggle("pinned")}
@@ -103,17 +103,17 @@ export default function ClipboardGroupCard({
         </button>
         <button
           className={`icon-btn sm ${group.favorite ? "active" : ""}`}
-          title={group.favorite ? "取消收藏" : "收藏"}
+          data-tip={group.favorite ? "取消收藏" : "收藏"}
           aria-label={group.favorite ? "取消收藏" : "收藏"}
           aria-pressed={group.favorite}
           onClick={() => onToggle("favorite")}
         >
           <Star size={12} />
         </button>
-        <button className="icon-btn sm" title="详情" aria-label="详情" onClick={onDetail}>
+        <button className="icon-btn sm" data-tip="详情" aria-label="详情" onClick={onDetail}>
           <Maximize2 size={12} />
         </button>
-        <button className="icon-btn sm danger-ghost" title="删除分组（保留条目）" aria-label="删除分组" onClick={onDelete}>
+        <button className="icon-btn sm danger-ghost" data-tip="删除分组（保留条目）" aria-label="删除分组" onClick={onDelete}>
           <Trash2 size={12} />
         </button>
       </div>

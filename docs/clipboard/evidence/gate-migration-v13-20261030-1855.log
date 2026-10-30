@@ -1,0 +1,34 @@
+# command: cargo test --lib db::tests -- --nocapture
+2026-10-30T18:49:57+08:00
+test db::tests::clipboard_repair_fault_after_writes_rolls_back ... ok
+test db::tests::clipboard_repair_missing_switch_is_conservative ... ok
+test db::tests::clipboard_range_errors_fail_closed ... ok
+test db::tests::clipboard_repair_backs_up_raw_values_and_requires_explicit_resume ... ok
+test db::tests::clipboard_type_errors_fail_closed ... ok
+test db::tests::clipboard_repair_blocks_monitor_until_commit_with_resume ... ok
+test db::tests::clipboard_repair_does_not_write_when_database_broken ... ok
+test db::tests::backfill_origin_marks_only_provable_test_data ... ok
+test db::tests::migration_failure_rolls_back_atomically_and_can_retry ... ok
+test db::tests::clipboard_config_never_enables_after_user_disabled ... ok
+test db::tests::clipboard_corrupt_json_fails_closed_and_keeps_unrelated_settings ... ok
+test db::tests::clipboard_user_disabled_survives_key_loss_and_repair_only ... ok
+test db::tests::clipboard_repair_database_write_failure_rolls_back_backup ... ok
+test db::tests::clipboard_database_failure_fails_closed ... ok
+test db::tests::clipboard_fresh_install_seeds_defaults_and_marks_origin ... ok
+test db::tests::clipboard_repair_process_death_rolls_back_on_reopen ... ok
+test db::tests::v3_adds_transport_verified_column ... ok
+test db::tests::v5_to_v6_preserves_links_and_defaults_to_reselection ... ok
+test db::tests::clipboard_repair_blocks_monitor_until_commit_without_resume ... ok
+test db::tests::clipboard_partial_missing_is_not_filled_on_restart ... ok
+test db::tests::clipboard_legacy_upgrade_starts_paused ... ok
+test db::tests::clipboard_missing_config_never_reenables_across_restarts ... ok
+test db::tests::with_read_skips_reader_held_by_long_snapshot ... ok
+test db::tests::v3_to_v4_upgrade_adds_navigation_tables_and_keeps_old_links ... ok
+test db::tests::v1_to_v2_upgrade_preserves_data_and_fixes_run_ids ... ok
+test db::tests::v11_to_v13_upgrade_keeps_rows_and_isolates_provable_test_data ... ok
+test db::tests::v5_backfills_auto_compat_links_and_keeps_user_links ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 420 filtered out; finished in 1.94s
+
+EXIT=0
+2026-10-30T18:51:39+08:00

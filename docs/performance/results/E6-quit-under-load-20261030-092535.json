@@ -1,0 +1,7020 @@
+{
+  "scenario": "quit-under-load",
+  "started_at": "20261030-092535",
+  "submitted_total": 773,
+  "submitted_critical": 464,
+  "quit_t0": 1793323543.6913207,
+  "quit_exited_after_s": 12.71,
+  "quit_automation": [
+    "True",
+    "icon=2084,1233 menu=2084,934,205,299 quit=2144,1208"
+  ],
+  "shutdown_report": {
+    "lifecycle": "stopped",
+    "already_stopped": false,
+    "timed_out": false,
+    "elapsed_ms": 81,
+    "queued_events_at_start": 14,
+    "merge_events_at_start": 0,
+    "drained_events": 14,
+    "events_processed": 703,
+    "unfinished_events": 0,
+    "recovery": "全部已受理事件均已写入（关键事件提交均收到确认）"
+  },
+  "inbox_after_exit": {
+    "files": 102,
+    "critical": 70,
+    "sample": [
+      {
+        "file": "hook-1793323552201-3332574b.json",
+        "session": "Q-20261030-092535-00629",
+        "state": "completed"
+      },
+      {
+        "file": "hook-1793323552217-9c4e1d30.json",
+        "session": "Q-20261030-092535-00627",
+        "state": "waiting"
+      },
+      {
+        "file": "hook-1793323552217-ac7407c8.json",
+        "session": "Q-20261030-092535-00632",
+        "state": "waiting"
+      },
+      {
+        "file": "hook-1793323552217-ba0f27db.json",
+        "session": "Q-20261030-092535-00631",
+        "state": "completed"
+      },
+      {
+        "file": "hook-1793323552233-49c6b63d.json",
+        "session": "Q-20261030-092535-00636",
+        "state": "completed"
+      }
+    ]
+  },
+  "inbox_failure_log_tail": [],
+  "critical_db_present": 416,
+  "critical_db_duplicates": {},
+  "critical_missing_db_not_in_inbox": [],
+  "critical_covered": 464,
+  "records": [
+    {
+      "i": 3,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00003",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323535.7159722
+    },
+    {
+      "i": 5,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00005",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323535.716449
+    },
+    {
+      "i": 0,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00000",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323535.7171795
+    },
+    {
+      "i": 8,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00008",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323535.734474
+    },
+    {
+      "i": 10,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00010",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323535.734593
+    },
+    {
+      "i": 12,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00012",
+      "critical": true,
+      "exit": 0,
+      "ms": 252,
+      "at": 1793323535.9865012
+    },
+    {
+      "i": 11,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00011",
+      "critical": true,
+      "exit": 0,
+      "ms": 252,
+      "at": 1793323535.9867194
+    },
+    {
+      "i": 4,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00004",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323535.9869232
+    },
+    {
+      "i": 1,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00001",
+      "critical": true,
+      "exit": 0,
+      "ms": 299,
+      "at": 1793323535.9870367
+    },
+    {
+      "i": 2,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00002",
+      "critical": true,
+      "exit": 0,
+      "ms": 298,
+      "at": 1793323535.987227
+    },
+    {
+      "i": 9,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00009",
+      "critical": true,
+      "exit": 0,
+      "ms": 271,
+      "at": 1793323535.9873593
+    },
+    {
+      "i": 7,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00007",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323535.9874985
+    },
+    {
+      "i": 6,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00006",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323535.9878073
+    },
+    {
+      "i": 13,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00013",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323536.0122354
+    },
+    {
+      "i": 20,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00020",
+      "critical": false,
+      "exit": 0,
+      "ms": 25,
+      "at": 1793323536.012415
+    },
+    {
+      "i": 15,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00015",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323536.016872
+    },
+    {
+      "i": 18,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00018",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323536.0172043
+    },
+    {
+      "i": 23,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00023",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323536.0364351
+    },
+    {
+      "i": 25,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00025",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323536.062797
+    },
+    {
+      "i": 24,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00024",
+      "critical": true,
+      "exit": 0,
+      "ms": 283,
+      "at": 1793323536.3007476
+    },
+    {
+      "i": 21,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00021",
+      "critical": true,
+      "exit": 0,
+      "ms": 289,
+      "at": 1793323536.3008974
+    },
+    {
+      "i": 22,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00022",
+      "critical": true,
+      "exit": 0,
+      "ms": 289,
+      "at": 1793323536.301007
+    },
+    {
+      "i": 14,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00014",
+      "critical": true,
+      "exit": 0,
+      "ms": 314,
+      "at": 1793323536.3010805
+    },
+    {
+      "i": 16,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00016",
+      "critical": true,
+      "exit": 0,
+      "ms": 314,
+      "at": 1793323536.30119
+    },
+    {
+      "i": 17,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00017",
+      "critical": true,
+      "exit": 0,
+      "ms": 314,
+      "at": 1793323536.3013003
+    },
+    {
+      "i": 26,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00026",
+      "critical": true,
+      "exit": 0,
+      "ms": 239,
+      "at": 1793323536.3016274
+    },
+    {
+      "i": 19,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00019",
+      "critical": true,
+      "exit": 0,
+      "ms": 315,
+      "at": 1793323536.3027127
+    },
+    {
+      "i": 28,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00028",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323536.324359
+    },
+    {
+      "i": 30,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00030",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323536.3251488
+    },
+    {
+      "i": 33,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00033",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323536.3256888
+    },
+    {
+      "i": 35,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00035",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323536.3425503
+    },
+    {
+      "i": 38,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00038",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323536.358348
+    },
+    {
+      "i": 32,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00032",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323536.5922146
+    },
+    {
+      "i": 29,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00029",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323536.5923514
+    },
+    {
+      "i": 31,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00031",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323536.5924969
+    },
+    {
+      "i": 27,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00027",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323536.5926309
+    },
+    {
+      "i": 36,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00036",
+      "critical": true,
+      "exit": 0,
+      "ms": 268,
+      "at": 1793323536.5927963
+    },
+    {
+      "i": 34,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00034",
+      "critical": true,
+      "exit": 0,
+      "ms": 290,
+      "at": 1793323536.5929058
+    },
+    {
+      "i": 39,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00039",
+      "critical": true,
+      "exit": 0,
+      "ms": 235,
+      "at": 1793323536.5930116
+    },
+    {
+      "i": 37,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00037",
+      "critical": true,
+      "exit": 0,
+      "ms": 267,
+      "at": 1793323536.5931425
+    },
+    {
+      "i": 40,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00040",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323536.6182792
+    },
+    {
+      "i": 45,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00045",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323536.6192825
+    },
+    {
+      "i": 43,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00043",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323536.6196368
+    },
+    {
+      "i": 48,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00048",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323536.6338646
+    },
+    {
+      "i": 50,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00050",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323536.635011
+    },
+    {
+      "i": 46,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00046",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323536.8897352
+    },
+    {
+      "i": 42,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00042",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323536.889978
+    },
+    {
+      "i": 44,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00044",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323536.8901103
+    },
+    {
+      "i": 51,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00051",
+      "critical": true,
+      "exit": 0,
+      "ms": 256,
+      "at": 1793323536.8902004
+    },
+    {
+      "i": 49,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00049",
+      "critical": true,
+      "exit": 0,
+      "ms": 271,
+      "at": 1793323536.8903143
+    },
+    {
+      "i": 41,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00041",
+      "critical": true,
+      "exit": 0,
+      "ms": 298,
+      "at": 1793323536.8903854
+    },
+    {
+      "i": 52,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00052",
+      "critical": true,
+      "exit": 0,
+      "ms": 255,
+      "at": 1793323536.8904955
+    },
+    {
+      "i": 47,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00047",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323536.8906379
+    },
+    {
+      "i": 53,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00053",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323536.9141133
+    },
+    {
+      "i": 60,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00060",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323536.9149263
+    },
+    {
+      "i": 58,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00058",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323536.918134
+    },
+    {
+      "i": 55,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00055",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323536.9191167
+    },
+    {
+      "i": 63,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00063",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323536.9348454
+    },
+    {
+      "i": 65,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00065",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323536.9499142
+    },
+    {
+      "i": 62,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00062",
+      "critical": true,
+      "exit": 0,
+      "ms": 268,
+      "at": 1793323537.1825526
+    },
+    {
+      "i": 64,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00064",
+      "critical": true,
+      "exit": 0,
+      "ms": 263,
+      "at": 1793323537.1827087
+    },
+    {
+      "i": 56,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00056",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323537.182815
+    },
+    {
+      "i": 61,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00061",
+      "critical": true,
+      "exit": 0,
+      "ms": 269,
+      "at": 1793323537.1829476
+    },
+    {
+      "i": 57,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00057",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323537.1830103
+    },
+    {
+      "i": 66,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00066",
+      "critical": true,
+      "exit": 0,
+      "ms": 233,
+      "at": 1793323537.1831763
+    },
+    {
+      "i": 54,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00054",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323537.1832907
+    },
+    {
+      "i": 59,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00059",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323537.1833947
+    },
+    {
+      "i": 70,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00070",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323537.2137651
+    },
+    {
+      "i": 73,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00073",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323537.2160091
+    },
+    {
+      "i": 68,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00068",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323537.2175238
+    },
+    {
+      "i": 75,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00075",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323537.2341397
+    },
+    {
+      "i": 78,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00078",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323537.249971
+    },
+    {
+      "i": 72,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00072",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323537.4780586
+    },
+    {
+      "i": 79,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00079",
+      "critical": true,
+      "exit": 0,
+      "ms": 228,
+      "at": 1793323537.4782424
+    },
+    {
+      "i": 67,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00067",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323537.4783602
+    },
+    {
+      "i": 71,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00071",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323537.4785757
+    },
+    {
+      "i": 69,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00069",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323537.4787183
+    },
+    {
+      "i": 77,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00077",
+      "critical": true,
+      "exit": 0,
+      "ms": 261,
+      "at": 1793323537.4788146
+    },
+    {
+      "i": 74,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00074",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323537.4788969
+    },
+    {
+      "i": 76,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00076",
+      "critical": true,
+      "exit": 0,
+      "ms": 263,
+      "at": 1793323537.478972
+    },
+    {
+      "i": 85,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00085",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323537.5115383
+    },
+    {
+      "i": 83,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00083",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323537.5116944
+    },
+    {
+      "i": 80,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00080",
+      "critical": false,
+      "exit": 0,
+      "ms": 34,
+      "at": 1793323537.512226
+    },
+    {
+      "i": 88,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00088",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323537.528607
+    },
+    {
+      "i": 90,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00090",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323537.5288937
+    },
+    {
+      "i": 84,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00084",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323537.772415
+    },
+    {
+      "i": 86,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00086",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323537.7725196
+    },
+    {
+      "i": 87,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00087",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323537.7726536
+    },
+    {
+      "i": 81,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00081",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323537.7728813
+    },
+    {
+      "i": 91,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00091",
+      "critical": true,
+      "exit": 0,
+      "ms": 244,
+      "at": 1793323537.773066
+    },
+    {
+      "i": 89,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00089",
+      "critical": true,
+      "exit": 0,
+      "ms": 261,
+      "at": 1793323537.773201
+    },
+    {
+      "i": 82,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00082",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323537.773267
+    },
+    {
+      "i": 92,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00092",
+      "critical": true,
+      "exit": 0,
+      "ms": 244,
+      "at": 1793323537.7734442
+    },
+    {
+      "i": 98,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00098",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323537.7938967
+    },
+    {
+      "i": 95,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00095",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323537.7966435
+    },
+    {
+      "i": 93,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00093",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323537.7968569
+    },
+    {
+      "i": 100,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00100",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323537.7969916
+    },
+    {
+      "i": 103,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00103",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323537.8166907
+    },
+    {
+      "i": 105,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00105",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323537.832115
+    },
+    {
+      "i": 101,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00101",
+      "critical": true,
+      "exit": 0,
+      "ms": 299,
+      "at": 1793323538.0932076
+    },
+    {
+      "i": 94,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00094",
+      "critical": true,
+      "exit": 0,
+      "ms": 321,
+      "at": 1793323538.0933797
+    },
+    {
+      "i": 102,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00102",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323538.093522
+    },
+    {
+      "i": 97,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00097",
+      "critical": true,
+      "exit": 0,
+      "ms": 320,
+      "at": 1793323538.0936222
+    },
+    {
+      "i": 99,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00099",
+      "critical": true,
+      "exit": 0,
+      "ms": 320,
+      "at": 1793323538.0937665
+    },
+    {
+      "i": 104,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00104",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323538.09391
+    },
+    {
+      "i": 96,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00096",
+      "critical": true,
+      "exit": 0,
+      "ms": 321,
+      "at": 1793323538.0940719
+    },
+    {
+      "i": 106,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00106",
+      "critical": true,
+      "exit": 0,
+      "ms": 262,
+      "at": 1793323538.0943425
+    },
+    {
+      "i": 110,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00110",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323538.126282
+    },
+    {
+      "i": 113,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00113",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323538.1263974
+    },
+    {
+      "i": 108,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00108",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323538.126496
+    },
+    {
+      "i": 115,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00115",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323538.1437492
+    },
+    {
+      "i": 118,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00118",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323538.159296
+    },
+    {
+      "i": 107,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00107",
+      "critical": true,
+      "exit": 0,
+      "ms": 289,
+      "at": 1793323538.3825297
+    },
+    {
+      "i": 116,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00116",
+      "critical": true,
+      "exit": 0,
+      "ms": 256,
+      "at": 1793323538.3826833
+    },
+    {
+      "i": 111,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00111",
+      "critical": true,
+      "exit": 0,
+      "ms": 289,
+      "at": 1793323538.3827796
+    },
+    {
+      "i": 119,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00119",
+      "critical": true,
+      "exit": 0,
+      "ms": 224,
+      "at": 1793323538.3830488
+    },
+    {
+      "i": 114,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00114",
+      "critical": true,
+      "exit": 0,
+      "ms": 289,
+      "at": 1793323538.3832092
+    },
+    {
+      "i": 117,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00117",
+      "critical": true,
+      "exit": 0,
+      "ms": 257,
+      "at": 1793323538.3833492
+    },
+    {
+      "i": 109,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00109",
+      "critical": true,
+      "exit": 0,
+      "ms": 290,
+      "at": 1793323538.383987
+    },
+    {
+      "i": 112,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00112",
+      "critical": true,
+      "exit": 0,
+      "ms": 290,
+      "at": 1793323538.3840988
+    },
+    {
+      "i": 125,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00125",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323538.4038482
+    },
+    {
+      "i": 120,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00120",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323538.405962
+    },
+    {
+      "i": 123,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00123",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323538.4069595
+    },
+    {
+      "i": 130,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00130",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323538.4311855
+    },
+    {
+      "i": 128,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00128",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323538.431311
+    },
+    {
+      "i": 122,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00122",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323538.6763837
+    },
+    {
+      "i": 126,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00126",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323538.6765957
+    },
+    {
+      "i": 129,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00129",
+      "critical": true,
+      "exit": 0,
+      "ms": 271,
+      "at": 1793323538.676693
+    },
+    {
+      "i": 132,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00132",
+      "critical": true,
+      "exit": 0,
+      "ms": 245,
+      "at": 1793323538.6768253
+    },
+    {
+      "i": 131,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00131",
+      "critical": true,
+      "exit": 0,
+      "ms": 246,
+      "at": 1793323538.6769288
+    },
+    {
+      "i": 124,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00124",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323538.6771474
+    },
+    {
+      "i": 127,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00127",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323538.677238
+    },
+    {
+      "i": 121,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00121",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323538.6773427
+    },
+    {
+      "i": 133,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00133",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323538.697387
+    },
+    {
+      "i": 135,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00135",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323538.6983185
+    },
+    {
+      "i": 138,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00138",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323538.7003732
+    },
+    {
+      "i": 140,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00140",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323538.7005227
+    },
+    {
+      "i": 143,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00143",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323538.7324193
+    },
+    {
+      "i": 145,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00145",
+      "critical": false,
+      "exit": 0,
+      "ms": 14,
+      "at": 1793323538.746811
+    },
+    {
+      "i": 139,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00139",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323538.9718053
+    },
+    {
+      "i": 142,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00142",
+      "critical": true,
+      "exit": 0,
+      "ms": 274,
+      "at": 1793323538.9723113
+    },
+    {
+      "i": 144,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00144",
+      "critical": true,
+      "exit": 0,
+      "ms": 272,
+      "at": 1793323538.9724302
+    },
+    {
+      "i": 137,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00137",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323538.9725304
+    },
+    {
+      "i": 136,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00136",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323538.9726415
+    },
+    {
+      "i": 141,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00141",
+      "critical": true,
+      "exit": 0,
+      "ms": 275,
+      "at": 1793323538.9727173
+    },
+    {
+      "i": 134,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00134",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323538.9728775
+    },
+    {
+      "i": 146,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00146",
+      "critical": true,
+      "exit": 0,
+      "ms": 226,
+      "at": 1793323538.9730716
+    },
+    {
+      "i": 148,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00148",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323538.9919643
+    },
+    {
+      "i": 150,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00150",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323538.992873
+    },
+    {
+      "i": 153,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00153",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323538.9947343
+    },
+    {
+      "i": 155,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00155",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323539.010485
+    },
+    {
+      "i": 158,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00158",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323539.0366862
+    },
+    {
+      "i": 149,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00149",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323539.269553
+    },
+    {
+      "i": 159,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00159",
+      "critical": true,
+      "exit": 0,
+      "ms": 233,
+      "at": 1793323539.2697182
+    },
+    {
+      "i": 156,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00156",
+      "critical": true,
+      "exit": 0,
+      "ms": 277,
+      "at": 1793323539.2699966
+    },
+    {
+      "i": 147,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00147",
+      "critical": true,
+      "exit": 0,
+      "ms": 298,
+      "at": 1793323539.2701828
+    },
+    {
+      "i": 157,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00157",
+      "critical": true,
+      "exit": 0,
+      "ms": 276,
+      "at": 1793323539.2705147
+    },
+    {
+      "i": 152,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00152",
+      "critical": true,
+      "exit": 0,
+      "ms": 298,
+      "at": 1793323539.2707639
+    },
+    {
+      "i": 154,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00154",
+      "critical": true,
+      "exit": 0,
+      "ms": 298,
+      "at": 1793323539.2711282
+    },
+    {
+      "i": 151,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00151",
+      "critical": true,
+      "exit": 0,
+      "ms": 299,
+      "at": 1793323539.271731
+    },
+    {
+      "i": 160,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00160",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323539.3017104
+    },
+    {
+      "i": 165,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00165",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323539.3056383
+    },
+    {
+      "i": 163,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00163",
+      "critical": false,
+      "exit": 0,
+      "ms": 40,
+      "at": 1793323539.3106694
+    },
+    {
+      "i": 168,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00168",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323539.324935
+    },
+    {
+      "i": 170,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00170",
+      "critical": false,
+      "exit": 0,
+      "ms": 41,
+      "at": 1793323539.3519266
+    },
+    {
+      "i": 162,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00162",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323539.5647213
+    },
+    {
+      "i": 172,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00172",
+      "critical": true,
+      "exit": 0,
+      "ms": 213,
+      "at": 1793323539.564969
+    },
+    {
+      "i": 167,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00167",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323539.5651486
+    },
+    {
+      "i": 169,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00169",
+      "critical": true,
+      "exit": 0,
+      "ms": 259,
+      "at": 1793323539.5652525
+    },
+    {
+      "i": 171,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00171",
+      "critical": true,
+      "exit": 0,
+      "ms": 240,
+      "at": 1793323539.5653617
+    },
+    {
+      "i": 164,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00164",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323539.5654645
+    },
+    {
+      "i": 161,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00161",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323539.5657153
+    },
+    {
+      "i": 166,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00166",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323539.566027
+    },
+    {
+      "i": 178,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00178",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323539.5920503
+    },
+    {
+      "i": 173,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00173",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323539.5931566
+    },
+    {
+      "i": 180,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00180",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323539.5957806
+    },
+    {
+      "i": 175,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00175",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323539.5959704
+    },
+    {
+      "i": 183,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00183",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323539.616803
+    },
+    {
+      "i": 185,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00185",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323539.6339426
+    },
+    {
+      "i": 177,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00177",
+      "critical": true,
+      "exit": 0,
+      "ms": 319,
+      "at": 1793323539.8847425
+    },
+    {
+      "i": 181,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00181",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323539.88496
+    },
+    {
+      "i": 176,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00176",
+      "critical": true,
+      "exit": 0,
+      "ms": 320,
+      "at": 1793323539.8850741
+    },
+    {
+      "i": 186,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00186",
+      "critical": true,
+      "exit": 0,
+      "ms": 251,
+      "at": 1793323539.8851936
+    },
+    {
+      "i": 174,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00174",
+      "critical": true,
+      "exit": 0,
+      "ms": 320,
+      "at": 1793323539.88538
+    },
+    {
+      "i": 184,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00184",
+      "critical": true,
+      "exit": 0,
+      "ms": 289,
+      "at": 1793323539.8854802
+    },
+    {
+      "i": 182,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00182",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323539.8856232
+    },
+    {
+      "i": 179,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00179",
+      "critical": true,
+      "exit": 0,
+      "ms": 320,
+      "at": 1793323539.8857653
+    },
+    {
+      "i": 188,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00188",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323539.9171832
+    },
+    {
+      "i": 190,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00190",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323539.9173133
+    },
+    {
+      "i": 193,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00193",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323539.9175036
+    },
+    {
+      "i": 195,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00195",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323539.936588
+    },
+    {
+      "i": 198,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00198",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323539.9628294
+    },
+    {
+      "i": 197,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00197",
+      "critical": true,
+      "exit": 0,
+      "ms": 272,
+      "at": 1793323540.189481
+    },
+    {
+      "i": 196,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00196",
+      "critical": true,
+      "exit": 0,
+      "ms": 272,
+      "at": 1793323540.1896708
+    },
+    {
+      "i": 194,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00194",
+      "critical": true,
+      "exit": 0,
+      "ms": 304,
+      "at": 1793323540.1898365
+    },
+    {
+      "i": 187,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00187",
+      "critical": true,
+      "exit": 0,
+      "ms": 305,
+      "at": 1793323540.1899712
+    },
+    {
+      "i": 191,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00191",
+      "critical": true,
+      "exit": 0,
+      "ms": 305,
+      "at": 1793323540.1900601
+    },
+    {
+      "i": 192,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00192",
+      "critical": true,
+      "exit": 0,
+      "ms": 305,
+      "at": 1793323540.190262
+    },
+    {
+      "i": 199,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00199",
+      "critical": true,
+      "exit": 0,
+      "ms": 227,
+      "at": 1793323540.1903775
+    },
+    {
+      "i": 189,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00189",
+      "critical": true,
+      "exit": 0,
+      "ms": 305,
+      "at": 1793323540.1905174
+    },
+    {
+      "i": 205,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00205",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323540.2142177
+    },
+    {
+      "i": 200,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00200",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323540.2202911
+    },
+    {
+      "i": 203,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00203",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323540.2204852
+    },
+    {
+      "i": 208,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00208",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323540.23312
+    },
+    {
+      "i": 210,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00210",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323540.2410386
+    },
+    {
+      "i": 211,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00211",
+      "critical": true,
+      "exit": 0,
+      "ms": 252,
+      "at": 1793323540.4853876
+    },
+    {
+      "i": 201,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00201",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323540.48593
+    },
+    {
+      "i": 202,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00202",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323540.4860327
+    },
+    {
+      "i": 207,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00207",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323540.4862273
+    },
+    {
+      "i": 209,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00209",
+      "critical": true,
+      "exit": 0,
+      "ms": 266,
+      "at": 1793323540.4863296
+    },
+    {
+      "i": 212,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00212",
+      "critical": true,
+      "exit": 0,
+      "ms": 245,
+      "at": 1793323540.4864738
+    },
+    {
+      "i": 204,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00204",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323540.4866092
+    },
+    {
+      "i": 206,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00206",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323540.486772
+    },
+    {
+      "i": 213,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00213",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323540.5128336
+    },
+    {
+      "i": 218,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00218",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323540.5193212
+    },
+    {
+      "i": 220,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00220",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323540.5196242
+    },
+    {
+      "i": 215,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00215",
+      "critical": false,
+      "exit": 0,
+      "ms": 34,
+      "at": 1793323540.5200255
+    },
+    {
+      "i": 223,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00223",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323540.542557
+    },
+    {
+      "i": 225,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00225",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323540.5611467
+    },
+    {
+      "i": 224,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00224",
+      "critical": true,
+      "exit": 0,
+      "ms": 256,
+      "at": 1793323540.7758794
+    },
+    {
+      "i": 221,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00221",
+      "critical": true,
+      "exit": 0,
+      "ms": 263,
+      "at": 1793323540.7760372
+    },
+    {
+      "i": 222,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00222",
+      "critical": true,
+      "exit": 0,
+      "ms": 257,
+      "at": 1793323540.7767563
+    },
+    {
+      "i": 226,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00226",
+      "critical": true,
+      "exit": 0,
+      "ms": 216,
+      "at": 1793323540.7772956
+    },
+    {
+      "i": 216,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00216",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323540.7774515
+    },
+    {
+      "i": 217,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00217",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323540.7776148
+    },
+    {
+      "i": 214,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00214",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323540.7777615
+    },
+    {
+      "i": 219,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00219",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323540.7778847
+    },
+    {
+      "i": 228,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00228",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323540.8083942
+    },
+    {
+      "i": 233,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00233",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323540.8145635
+    },
+    {
+      "i": 230,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00230",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323540.814882
+    },
+    {
+      "i": 235,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00235",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323540.8340805
+    },
+    {
+      "i": 238,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00238",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323540.857128
+    },
+    {
+      "i": 236,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00236",
+      "critical": true,
+      "exit": 0,
+      "ms": 257,
+      "at": 1793323541.0717294
+    },
+    {
+      "i": 237,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00237",
+      "critical": true,
+      "exit": 0,
+      "ms": 257,
+      "at": 1793323541.0719218
+    },
+    {
+      "i": 234,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00234",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323541.072219
+    },
+    {
+      "i": 227,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00227",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323541.0723543
+    },
+    {
+      "i": 229,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00229",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323541.0725012
+    },
+    {
+      "i": 232,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00232",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323541.0726323
+    },
+    {
+      "i": 239,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00239",
+      "critical": true,
+      "exit": 0,
+      "ms": 216,
+      "at": 1793323541.0727804
+    },
+    {
+      "i": 231,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00231",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323541.073213
+    },
+    {
+      "i": 240,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00240",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323541.1018746
+    },
+    {
+      "i": 245,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00245",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323541.1044881
+    },
+    {
+      "i": 243,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00243",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323541.107123
+    },
+    {
+      "i": 248,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00248",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323541.1233408
+    },
+    {
+      "i": 250,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00250",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323541.127876
+    },
+    {
+      "i": 252,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00252",
+      "critical": true,
+      "exit": 0,
+      "ms": 248,
+      "at": 1793323541.3764455
+    },
+    {
+      "i": 249,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00249",
+      "critical": true,
+      "exit": 0,
+      "ms": 272,
+      "at": 1793323541.3766575
+    },
+    {
+      "i": 247,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00247",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323541.3767812
+    },
+    {
+      "i": 244,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00244",
+      "critical": true,
+      "exit": 0,
+      "ms": 304,
+      "at": 1793323541.3769462
+    },
+    {
+      "i": 242,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00242",
+      "critical": true,
+      "exit": 0,
+      "ms": 305,
+      "at": 1793323541.377218
+    },
+    {
+      "i": 246,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00246",
+      "critical": true,
+      "exit": 0,
+      "ms": 305,
+      "at": 1793323541.3774228
+    },
+    {
+      "i": 241,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00241",
+      "critical": true,
+      "exit": 0,
+      "ms": 306,
+      "at": 1793323541.3775632
+    },
+    {
+      "i": 251,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00251",
+      "critical": true,
+      "exit": 0,
+      "ms": 254,
+      "at": 1793323541.377694
+    },
+    {
+      "i": 253,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00253",
+      "critical": false,
+      "exit": 0,
+      "ms": 41,
+      "at": 1793323541.4174612
+    },
+    {
+      "i": 260,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00260",
+      "critical": false,
+      "exit": 0,
+      "ms": 40,
+      "at": 1793323541.4180365
+    },
+    {
+      "i": 258,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00258",
+      "critical": false,
+      "exit": 0,
+      "ms": 41,
+      "at": 1793323541.4182029
+    },
+    {
+      "i": 255,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00255",
+      "critical": false,
+      "exit": 0,
+      "ms": 42,
+      "at": 1793323541.418798
+    },
+    {
+      "i": 263,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00263",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323541.4410255
+    },
+    {
+      "i": 265,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00265",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323541.457964
+    },
+    {
+      "i": 257,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00257",
+      "critical": true,
+      "exit": 0,
+      "ms": 301,
+      "at": 1793323541.6782103
+    },
+    {
+      "i": 266,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00266",
+      "critical": true,
+      "exit": 0,
+      "ms": 221,
+      "at": 1793323541.6787007
+    },
+    {
+      "i": 261,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00261",
+      "critical": true,
+      "exit": 0,
+      "ms": 261,
+      "at": 1793323541.6788526
+    },
+    {
+      "i": 259,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00259",
+      "critical": true,
+      "exit": 0,
+      "ms": 301,
+      "at": 1793323541.6789393
+    },
+    {
+      "i": 254,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00254",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323541.6790879
+    },
+    {
+      "i": 264,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00264",
+      "critical": true,
+      "exit": 0,
+      "ms": 260,
+      "at": 1793323541.6791747
+    },
+    {
+      "i": 262,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00262",
+      "critical": true,
+      "exit": 0,
+      "ms": 261,
+      "at": 1793323541.679252
+    },
+    {
+      "i": 256,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00256",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323541.6794708
+    },
+    {
+      "i": 270,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00270",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323541.7060475
+    },
+    {
+      "i": 268,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00268",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323541.707867
+    },
+    {
+      "i": 273,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00273",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323541.709611
+    },
+    {
+      "i": 275,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00275",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323541.7278366
+    },
+    {
+      "i": 278,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00278",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323541.7463655
+    },
+    {
+      "i": 279,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00279",
+      "critical": true,
+      "exit": 0,
+      "ms": 234,
+      "at": 1793323541.980327
+    },
+    {
+      "i": 269,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00269",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323541.980501
+    },
+    {
+      "i": 271,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00271",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323541.980739
+    },
+    {
+      "i": 274,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00274",
+      "critical": true,
+      "exit": 0,
+      "ms": 301,
+      "at": 1793323541.9808986
+    },
+    {
+      "i": 272,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00272",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323541.9810882
+    },
+    {
+      "i": 276,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00276",
+      "critical": true,
+      "exit": 0,
+      "ms": 273,
+      "at": 1793323541.98134
+    },
+    {
+      "i": 267,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00267",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323541.981499
+    },
+    {
+      "i": 277,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00277",
+      "critical": true,
+      "exit": 0,
+      "ms": 272,
+      "at": 1793323541.981796
+    },
+    {
+      "i": 285,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00285",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323542.012852
+    },
+    {
+      "i": 280,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00280",
+      "critical": false,
+      "exit": 0,
+      "ms": 34,
+      "at": 1793323542.0146353
+    },
+    {
+      "i": 283,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00283",
+      "critical": false,
+      "exit": 0,
+      "ms": 34,
+      "at": 1793323542.0148354
+    },
+    {
+      "i": 288,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00288",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323542.0314736
+    },
+    {
+      "i": 290,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00290",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323542.0322158
+    },
+    {
+      "i": 286,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00286",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323542.2782433
+    },
+    {
+      "i": 291,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00291",
+      "critical": true,
+      "exit": 0,
+      "ms": 247,
+      "at": 1793323542.2784207
+    },
+    {
+      "i": 289,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00289",
+      "critical": true,
+      "exit": 0,
+      "ms": 264,
+      "at": 1793323542.2785618
+    },
+    {
+      "i": 287,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00287",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323542.278722
+    },
+    {
+      "i": 282,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00282",
+      "critical": true,
+      "exit": 0,
+      "ms": 298,
+      "at": 1793323542.279312
+    },
+    {
+      "i": 284,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00284",
+      "critical": true,
+      "exit": 0,
+      "ms": 298,
+      "at": 1793323542.2794924
+    },
+    {
+      "i": 292,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00292",
+      "critical": true,
+      "exit": 0,
+      "ms": 247,
+      "at": 1793323542.27964
+    },
+    {
+      "i": 281,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00281",
+      "critical": true,
+      "exit": 0,
+      "ms": 300,
+      "at": 1793323542.2806895
+    },
+    {
+      "i": 295,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00295",
+      "critical": false,
+      "exit": 0,
+      "ms": 36,
+      "at": 1793323542.3146842
+    },
+    {
+      "i": 300,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00300",
+      "critical": false,
+      "exit": 0,
+      "ms": 36,
+      "at": 1793323542.316614
+    },
+    {
+      "i": 293,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00293",
+      "critical": false,
+      "exit": 0,
+      "ms": 38,
+      "at": 1793323542.316755
+    },
+    {
+      "i": 298,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00298",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323542.316894
+    },
+    {
+      "i": 303,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00303",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323542.338679
+    },
+    {
+      "i": 305,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00305",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323542.3550756
+    },
+    {
+      "i": 294,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00294",
+      "critical": true,
+      "exit": 0,
+      "ms": 299,
+      "at": 1793323542.5773487
+    },
+    {
+      "i": 299,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00299",
+      "critical": true,
+      "exit": 0,
+      "ms": 298,
+      "at": 1793323542.5775456
+    },
+    {
+      "i": 302,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00302",
+      "critical": true,
+      "exit": 0,
+      "ms": 261,
+      "at": 1793323542.5777104
+    },
+    {
+      "i": 301,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00301",
+      "critical": true,
+      "exit": 0,
+      "ms": 263,
+      "at": 1793323542.577834
+    },
+    {
+      "i": 296,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00296",
+      "critical": true,
+      "exit": 0,
+      "ms": 299,
+      "at": 1793323542.5779908
+    },
+    {
+      "i": 304,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00304",
+      "critical": true,
+      "exit": 0,
+      "ms": 261,
+      "at": 1793323542.5780811
+    },
+    {
+      "i": 306,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00306",
+      "critical": true,
+      "exit": 0,
+      "ms": 223,
+      "at": 1793323542.5781443
+    },
+    {
+      "i": 297,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00297",
+      "critical": true,
+      "exit": 0,
+      "ms": 299,
+      "at": 1793323542.5782247
+    },
+    {
+      "i": 313,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00313",
+      "critical": false,
+      "exit": 0,
+      "ms": 38,
+      "at": 1793323542.616293
+    },
+    {
+      "i": 308,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00308",
+      "critical": false,
+      "exit": 0,
+      "ms": 39,
+      "at": 1793323542.6164126
+    },
+    {
+      "i": 310,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00310",
+      "critical": false,
+      "exit": 0,
+      "ms": 39,
+      "at": 1793323542.6165934
+    },
+    {
+      "i": 315,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00315",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323542.634411
+    },
+    {
+      "i": 318,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00318",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323542.6491177
+    },
+    {
+      "i": 311,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00311",
+      "critical": true,
+      "exit": 0,
+      "ms": 290,
+      "at": 1793323542.8684752
+    },
+    {
+      "i": 317,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00317",
+      "critical": true,
+      "exit": 0,
+      "ms": 252,
+      "at": 1793323542.8688657
+    },
+    {
+      "i": 309,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00309",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323542.8690207
+    },
+    {
+      "i": 314,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00314",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323542.8693173
+    },
+    {
+      "i": 312,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00312",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323542.8698008
+    },
+    {
+      "i": 319,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00319",
+      "critical": true,
+      "exit": 0,
+      "ms": 221,
+      "at": 1793323542.869965
+    },
+    {
+      "i": 316,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00316",
+      "critical": true,
+      "exit": 0,
+      "ms": 255,
+      "at": 1793323542.8710382
+    },
+    {
+      "i": 307,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00307",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323542.8711524
+    },
+    {
+      "i": 323,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00323",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323542.891147
+    },
+    {
+      "i": 320,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00320",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323542.8913064
+    },
+    {
+      "i": 325,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00325",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323542.8938327
+    },
+    {
+      "i": 328,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00328",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323542.9224005
+    },
+    {
+      "i": 330,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00330",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323542.9225893
+    },
+    {
+      "i": 324,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00324",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323543.1669242
+    },
+    {
+      "i": 327,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00327",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323543.167088
+    },
+    {
+      "i": 326,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00326",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323543.1673172
+    },
+    {
+      "i": 331,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00331",
+      "critical": true,
+      "exit": 0,
+      "ms": 245,
+      "at": 1793323543.167508
+    },
+    {
+      "i": 329,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00329",
+      "critical": true,
+      "exit": 0,
+      "ms": 276,
+      "at": 1793323543.1676228
+    },
+    {
+      "i": 332,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00332",
+      "critical": true,
+      "exit": 0,
+      "ms": 245,
+      "at": 1793323543.1677294
+    },
+    {
+      "i": 322,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00322",
+      "critical": true,
+      "exit": 0,
+      "ms": 299,
+      "at": 1793323543.1678936
+    },
+    {
+      "i": 321,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00321",
+      "critical": true,
+      "exit": 0,
+      "ms": 299,
+      "at": 1793323543.168203
+    },
+    {
+      "i": 338,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00338",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323543.1971495
+    },
+    {
+      "i": 340,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00340",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323543.2030394
+    },
+    {
+      "i": 333,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00333",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323543.2035546
+    },
+    {
+      "i": 335,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00335",
+      "critical": false,
+      "exit": 0,
+      "ms": 36,
+      "at": 1793323543.203674
+    },
+    {
+      "i": 343,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00343",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323543.2237012
+    },
+    {
+      "i": 345,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00345",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323543.2402744
+    },
+    {
+      "i": 341,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00341",
+      "critical": true,
+      "exit": 0,
+      "ms": 300,
+      "at": 1793323543.497497
+    },
+    {
+      "i": 346,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00346",
+      "critical": true,
+      "exit": 0,
+      "ms": 257,
+      "at": 1793323543.497671
+    },
+    {
+      "i": 344,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00344",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323543.4980223
+    },
+    {
+      "i": 342,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00342",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323543.4981291
+    },
+    {
+      "i": 339,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00339",
+      "critical": true,
+      "exit": 0,
+      "ms": 330,
+      "at": 1793323543.4982843
+    },
+    {
+      "i": 334,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00334",
+      "critical": true,
+      "exit": 0,
+      "ms": 331,
+      "at": 1793323543.4985065
+    },
+    {
+      "i": 337,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00337",
+      "critical": true,
+      "exit": 0,
+      "ms": 331,
+      "at": 1793323543.4986691
+    },
+    {
+      "i": 336,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00336",
+      "critical": true,
+      "exit": 0,
+      "ms": 331,
+      "at": 1793323543.4988623
+    },
+    {
+      "i": 353,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00353",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323543.5281832
+    },
+    {
+      "i": 348,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00348",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323543.5283463
+    },
+    {
+      "i": 350,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00350",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323543.528881
+    },
+    {
+      "i": 355,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00355",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323543.5464303
+    },
+    {
+      "i": 358,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00358",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323543.5612168
+    },
+    {
+      "i": 359,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00359",
+      "critical": true,
+      "exit": 0,
+      "ms": 240,
+      "at": 1793323543.8010905
+    },
+    {
+      "i": 352,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00352",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323543.8012726
+    },
+    {
+      "i": 349,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00349",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323543.8014123
+    },
+    {
+      "i": 351,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00351",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323543.801621
+    },
+    {
+      "i": 347,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00347",
+      "critical": true,
+      "exit": 0,
+      "ms": 304,
+      "at": 1793323543.801736
+    },
+    {
+      "i": 356,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00356",
+      "critical": true,
+      "exit": 0,
+      "ms": 274,
+      "at": 1793323543.8020449
+    },
+    {
+      "i": 354,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00354",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323543.8022082
+    },
+    {
+      "i": 357,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00357",
+      "critical": true,
+      "exit": 0,
+      "ms": 274,
+      "at": 1793323543.8025904
+    },
+    {
+      "i": 360,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00360",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323543.833559
+    },
+    {
+      "i": 365,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00365",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323543.8337314
+    },
+    {
+      "i": 363,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00363",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323543.833874
+    },
+    {
+      "i": 370,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00370",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323543.8539467
+    },
+    {
+      "i": 368,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00368",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323543.854609
+    },
+    {
+      "i": 366,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00366",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323544.0961459
+    },
+    {
+      "i": 361,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00361",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323544.0963352
+    },
+    {
+      "i": 364,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00364",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323544.0965295
+    },
+    {
+      "i": 372,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00372",
+      "critical": true,
+      "exit": 0,
+      "ms": 242,
+      "at": 1793323544.0967383
+    },
+    {
+      "i": 371,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00371",
+      "critical": true,
+      "exit": 0,
+      "ms": 243,
+      "at": 1793323544.096938
+    },
+    {
+      "i": 367,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00367",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323544.097108
+    },
+    {
+      "i": 369,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00369",
+      "critical": true,
+      "exit": 0,
+      "ms": 263,
+      "at": 1793323544.0973175
+    },
+    {
+      "i": 362,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00362",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323544.0975256
+    },
+    {
+      "i": 380,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00380",
+      "critical": false,
+      "exit": 0,
+      "ms": 40,
+      "at": 1793323544.137465
+    },
+    {
+      "i": 375,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00375",
+      "critical": false,
+      "exit": 0,
+      "ms": 41,
+      "at": 1793323544.137677
+    },
+    {
+      "i": 378,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00378",
+      "critical": false,
+      "exit": 0,
+      "ms": 41,
+      "at": 1793323544.1378088
+    },
+    {
+      "i": 373,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00373",
+      "critical": false,
+      "exit": 0,
+      "ms": 42,
+      "at": 1793323544.1380274
+    },
+    {
+      "i": 383,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00383",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323544.15888
+    },
+    {
+      "i": 385,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00385",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323544.1762278
+    },
+    {
+      "i": 379,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00379",
+      "critical": true,
+      "exit": 0,
+      "ms": 308,
+      "at": 1793323544.4055276
+    },
+    {
+      "i": 381,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00381",
+      "critical": true,
+      "exit": 0,
+      "ms": 268,
+      "at": 1793323544.405719
+    },
+    {
+      "i": 384,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00384",
+      "critical": true,
+      "exit": 0,
+      "ms": 268,
+      "at": 1793323544.4059174
+    },
+    {
+      "i": 376,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00376",
+      "critical": true,
+      "exit": 0,
+      "ms": 309,
+      "at": 1793323544.4060724
+    },
+    {
+      "i": 374,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00374",
+      "critical": true,
+      "exit": 0,
+      "ms": 310,
+      "at": 1793323544.4062078
+    },
+    {
+      "i": 386,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00386",
+      "critical": true,
+      "exit": 0,
+      "ms": 230,
+      "at": 1793323544.4063265
+    },
+    {
+      "i": 377,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00377",
+      "critical": true,
+      "exit": 0,
+      "ms": 309,
+      "at": 1793323544.4064667
+    },
+    {
+      "i": 382,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00382",
+      "critical": true,
+      "exit": 0,
+      "ms": 269,
+      "at": 1793323544.4066393
+    },
+    {
+      "i": 388,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00388",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323544.4411116
+    },
+    {
+      "i": 390,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00390",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323544.4414203
+    },
+    {
+      "i": 393,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00393",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323544.441584
+    },
+    {
+      "i": 395,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00395",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323544.4592612
+    },
+    {
+      "i": 398,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00398",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323544.4765484
+    },
+    {
+      "i": 394,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00394",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323544.699651
+    },
+    {
+      "i": 399,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00399",
+      "critical": true,
+      "exit": 0,
+      "ms": 223,
+      "at": 1793323544.6999686
+    },
+    {
+      "i": 389,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00389",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323544.700191
+    },
+    {
+      "i": 396,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00396",
+      "critical": true,
+      "exit": 0,
+      "ms": 259,
+      "at": 1793323544.7007165
+    },
+    {
+      "i": 397,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00397",
+      "critical": true,
+      "exit": 0,
+      "ms": 259,
+      "at": 1793323544.7008944
+    },
+    {
+      "i": 387,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00387",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323544.701055
+    },
+    {
+      "i": 392,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00392",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323544.701204
+    },
+    {
+      "i": 391,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00391",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323544.7013302
+    },
+    {
+      "i": 405,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00405",
+      "critical": false,
+      "exit": 0,
+      "ms": 25,
+      "at": 1793323544.7263613
+    },
+    {
+      "i": 400,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00400",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323544.7265828
+    },
+    {
+      "i": 403,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00403",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323544.7301204
+    },
+    {
+      "i": 408,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00408",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323544.7463698
+    },
+    {
+      "i": 410,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00410",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323544.7509542
+    },
+    {
+      "i": 401,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00401",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323544.9935405
+    },
+    {
+      "i": 404,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00404",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323544.9938116
+    },
+    {
+      "i": 411,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00411",
+      "critical": true,
+      "exit": 0,
+      "ms": 248,
+      "at": 1793323544.9940367
+    },
+    {
+      "i": 406,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00406",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323544.9941857
+    },
+    {
+      "i": 407,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00407",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323544.994326
+    },
+    {
+      "i": 409,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00409",
+      "critical": true,
+      "exit": 0,
+      "ms": 268,
+      "at": 1793323544.9944563
+    },
+    {
+      "i": 412,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00412",
+      "critical": true,
+      "exit": 0,
+      "ms": 244,
+      "at": 1793323544.994598
+    },
+    {
+      "i": 402,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00402",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323544.9948885
+    },
+    {
+      "i": 420,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00420",
+      "critical": false,
+      "exit": 0,
+      "ms": 25,
+      "at": 1793323545.0204654
+    },
+    {
+      "i": 413,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00413",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323545.0225925
+    },
+    {
+      "i": 418,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00418",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323545.022913
+    },
+    {
+      "i": 415,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00415",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323545.023666
+    },
+    {
+      "i": 423,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00423",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323545.0499406
+    },
+    {
+      "i": 425,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00425",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323545.066975
+    },
+    {
+      "i": 422,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00422",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323545.3139832
+    },
+    {
+      "i": 414,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00414",
+      "critical": true,
+      "exit": 0,
+      "ms": 320,
+      "at": 1793323545.3142073
+    },
+    {
+      "i": 424,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00424",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323545.3144205
+    },
+    {
+      "i": 421,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00421",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323545.3145843
+    },
+    {
+      "i": 417,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00417",
+      "critical": true,
+      "exit": 0,
+      "ms": 320,
+      "at": 1793323545.3148031
+    },
+    {
+      "i": 419,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00419",
+      "critical": true,
+      "exit": 0,
+      "ms": 320,
+      "at": 1793323545.3149362
+    },
+    {
+      "i": 426,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00426",
+      "critical": true,
+      "exit": 0,
+      "ms": 248,
+      "at": 1793323545.315087
+    },
+    {
+      "i": 416,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00416",
+      "critical": true,
+      "exit": 0,
+      "ms": 321,
+      "at": 1793323545.3152704
+    },
+    {
+      "i": 428,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00428",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323545.351261
+    },
+    {
+      "i": 430,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00430",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323545.351425
+    },
+    {
+      "i": 433,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00433",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323545.3517027
+    },
+    {
+      "i": 435,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00435",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323545.3700204
+    },
+    {
+      "i": 438,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00438",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323545.388339
+    },
+    {
+      "i": 439,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00439",
+      "critical": true,
+      "exit": 0,
+      "ms": 228,
+      "at": 1793323545.616619
+    },
+    {
+      "i": 427,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00427",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323545.6167836
+    },
+    {
+      "i": 436,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00436",
+      "critical": true,
+      "exit": 0,
+      "ms": 265,
+      "at": 1793323545.616919
+    },
+    {
+      "i": 429,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00429",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323545.6170855
+    },
+    {
+      "i": 432,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00432",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323545.6172206
+    },
+    {
+      "i": 431,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00431",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323545.617508
+    },
+    {
+      "i": 434,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00434",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323545.6177287
+    },
+    {
+      "i": 437,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00437",
+      "critical": true,
+      "exit": 0,
+      "ms": 266,
+      "at": 1793323545.6179435
+    },
+    {
+      "i": 440,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00440",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323545.6541197
+    },
+    {
+      "i": 445,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00445",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323545.6543214
+    },
+    {
+      "i": 443,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00443",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323545.6544683
+    },
+    {
+      "i": 450,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00450",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323545.6739082
+    },
+    {
+      "i": 448,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00448",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323545.6741095
+    },
+    {
+      "i": 451,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00451",
+      "critical": true,
+      "exit": 0,
+      "ms": 235,
+      "at": 1793323545.9086828
+    },
+    {
+      "i": 446,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00446",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323545.9089012
+    },
+    {
+      "i": 449,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00449",
+      "critical": true,
+      "exit": 0,
+      "ms": 255,
+      "at": 1793323545.9090657
+    },
+    {
+      "i": 444,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00444",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323545.909256
+    },
+    {
+      "i": 442,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00442",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323545.9093943
+    },
+    {
+      "i": 452,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00452",
+      "critical": true,
+      "exit": 0,
+      "ms": 235,
+      "at": 1793323545.9095352
+    },
+    {
+      "i": 447,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00447",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323545.909707
+    },
+    {
+      "i": 441,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00441",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323545.9106812
+    },
+    {
+      "i": 455,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00455",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323545.9312656
+    },
+    {
+      "i": 453,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00453",
+      "critical": false,
+      "exit": 0,
+      "ms": 25,
+      "at": 1793323545.933923
+    },
+    {
+      "i": 458,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00458",
+      "critical": false,
+      "exit": 0,
+      "ms": 25,
+      "at": 1793323545.9342253
+    },
+    {
+      "i": 460,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00460",
+      "critical": false,
+      "exit": 0,
+      "ms": 25,
+      "at": 1793323545.935706
+    },
+    {
+      "i": 463,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00463",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323545.9629984
+    },
+    {
+      "i": 465,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00465",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323545.9780262
+    },
+    {
+      "i": 454,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00454",
+      "critical": true,
+      "exit": 0,
+      "ms": 1257,
+      "at": 1793323547.165575
+    },
+    {
+      "i": 456,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00456",
+      "critical": true,
+      "exit": 0,
+      "ms": 1282,
+      "at": 1793323547.1917949
+    },
+    {
+      "i": 462,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00462",
+      "critical": true,
+      "exit": 0,
+      "ms": 1266,
+      "at": 1793323547.1999657
+    },
+    {
+      "i": 461,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00461",
+      "critical": true,
+      "exit": 0,
+      "ms": 1271,
+      "at": 1793323547.2020202
+    },
+    {
+      "i": 468,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00468",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323547.2112749
+    },
+    {
+      "i": 464,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00464",
+      "critical": true,
+      "exit": 0,
+      "ms": 1282,
+      "at": 1793323547.217867
+    },
+    {
+      "i": 470,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00470",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323547.2207055
+    },
+    {
+      "i": 457,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00457",
+      "critical": true,
+      "exit": 0,
+      "ms": 1325,
+      "at": 1793323547.2346048
+    },
+    {
+      "i": 473,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00473",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323547.2371047
+    },
+    {
+      "i": 466,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00466",
+      "critical": true,
+      "exit": 0,
+      "ms": 1273,
+      "at": 1793323547.250918
+    },
+    {
+      "i": 475,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00475",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323547.2536428
+    },
+    {
+      "i": 459,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00459",
+      "critical": true,
+      "exit": 0,
+      "ms": 1356,
+      "at": 1793323547.2656066
+    },
+    {
+      "i": 478,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00478",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323547.2932353
+    },
+    {
+      "i": 476,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00476",
+      "critical": true,
+      "exit": 0,
+      "ms": 598,
+      "at": 1793323547.8488948
+    },
+    {
+      "i": 477,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00477",
+      "critical": true,
+      "exit": 0,
+      "ms": 595,
+      "at": 1793323547.849106
+    },
+    {
+      "i": 479,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00479",
+      "critical": true,
+      "exit": 0,
+      "ms": 556,
+      "at": 1793323547.8492975
+    },
+    {
+      "i": 474,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00474",
+      "critical": true,
+      "exit": 0,
+      "ms": 615,
+      "at": 1793323547.8495884
+    },
+    {
+      "i": 471,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00471",
+      "critical": true,
+      "exit": 0,
+      "ms": 638,
+      "at": 1793323547.849758
+    },
+    {
+      "i": 467,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00467",
+      "critical": true,
+      "exit": 0,
+      "ms": 684,
+      "at": 1793323547.8499572
+    },
+    {
+      "i": 469,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00469",
+      "critical": true,
+      "exit": 0,
+      "ms": 650,
+      "at": 1793323547.8501918
+    },
+    {
+      "i": 472,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00472",
+      "critical": true,
+      "exit": 0,
+      "ms": 633,
+      "at": 1793323547.8507783
+    },
+    {
+      "i": 480,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00480",
+      "critical": false,
+      "exit": 0,
+      "ms": 51,
+      "at": 1793323547.899669
+    },
+    {
+      "i": 485,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00485",
+      "critical": false,
+      "exit": 0,
+      "ms": 50,
+      "at": 1793323547.8998547
+    },
+    {
+      "i": 483,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00483",
+      "critical": false,
+      "exit": 0,
+      "ms": 50,
+      "at": 1793323547.9000034
+    },
+    {
+      "i": 488,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00488",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323547.9221773
+    },
+    {
+      "i": 490,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00490",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323547.9236617
+    },
+    {
+      "i": 482,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00482",
+      "critical": true,
+      "exit": 0,
+      "ms": 301,
+      "at": 1793323548.1506805
+    },
+    {
+      "i": 491,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00491",
+      "critical": true,
+      "exit": 0,
+      "ms": 229,
+      "at": 1793323548.1510842
+    },
+    {
+      "i": 489,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00489",
+      "critical": true,
+      "exit": 0,
+      "ms": 251,
+      "at": 1793323548.1512535
+    },
+    {
+      "i": 492,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00492",
+      "critical": true,
+      "exit": 0,
+      "ms": 228,
+      "at": 1793323548.1514132
+    },
+    {
+      "i": 484,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00484",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323548.1515262
+    },
+    {
+      "i": 487,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00487",
+      "critical": true,
+      "exit": 0,
+      "ms": 301,
+      "at": 1793323548.1516724
+    },
+    {
+      "i": 481,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00481",
+      "critical": true,
+      "exit": 0,
+      "ms": 303,
+      "at": 1793323548.1519516
+    },
+    {
+      "i": 486,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00486",
+      "critical": true,
+      "exit": 0,
+      "ms": 302,
+      "at": 1793323548.1524036
+    },
+    {
+      "i": 493,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00493",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323548.178917
+    },
+    {
+      "i": 500,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00500",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323548.179217
+    },
+    {
+      "i": 495,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00495",
+      "critical": false,
+      "exit": 0,
+      "ms": 30,
+      "at": 1793323548.1810079
+    },
+    {
+      "i": 498,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00498",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323548.1811724
+    },
+    {
+      "i": 503,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00503",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323548.2086444
+    },
+    {
+      "i": 505,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00505",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323548.2280796
+    },
+    {
+      "i": 499,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00499",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323548.444016
+    },
+    {
+      "i": 502,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00502",
+      "critical": true,
+      "exit": 0,
+      "ms": 267,
+      "at": 1793323548.4458792
+    },
+    {
+      "i": 496,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00496",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323548.4460168
+    },
+    {
+      "i": 494,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00494",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323548.4463558
+    },
+    {
+      "i": 501,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00501",
+      "critical": true,
+      "exit": 0,
+      "ms": 268,
+      "at": 1793323548.446613
+    },
+    {
+      "i": 497,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00497",
+      "critical": true,
+      "exit": 0,
+      "ms": 295,
+      "at": 1793323548.4467447
+    },
+    {
+      "i": 506,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00506",
+      "critical": true,
+      "exit": 0,
+      "ms": 219,
+      "at": 1793323548.4471414
+    },
+    {
+      "i": 504,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00504",
+      "critical": true,
+      "exit": 0,
+      "ms": 269,
+      "at": 1793323548.450378
+    },
+    {
+      "i": 508,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00508",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323548.4700885
+    },
+    {
+      "i": 510,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00510",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323548.470463
+    },
+    {
+      "i": 513,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00513",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323548.4753315
+    },
+    {
+      "i": 515,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00515",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323548.4906652
+    },
+    {
+      "i": 518,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00518",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323548.5099213
+    },
+    {
+      "i": 511,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00511",
+      "critical": true,
+      "exit": 0,
+      "ms": 273,
+      "at": 1793323548.7199001
+    },
+    {
+      "i": 517,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00517",
+      "critical": true,
+      "exit": 0,
+      "ms": 245,
+      "at": 1793323548.7202387
+    },
+    {
+      "i": 514,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00514",
+      "critical": true,
+      "exit": 0,
+      "ms": 270,
+      "at": 1793323548.720426
+    },
+    {
+      "i": 507,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00507",
+      "critical": true,
+      "exit": 0,
+      "ms": 277,
+      "at": 1793323548.72074
+    },
+    {
+      "i": 519,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00519",
+      "critical": true,
+      "exit": 0,
+      "ms": 211,
+      "at": 1793323548.721037
+    },
+    {
+      "i": 512,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00512",
+      "critical": true,
+      "exit": 0,
+      "ms": 274,
+      "at": 1793323548.721267
+    },
+    {
+      "i": 509,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00509",
+      "critical": true,
+      "exit": 0,
+      "ms": 275,
+      "at": 1793323548.7215312
+    },
+    {
+      "i": 516,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00516",
+      "critical": true,
+      "exit": 0,
+      "ms": 251,
+      "at": 1793323548.7217047
+    },
+    {
+      "i": 520,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00520",
+      "critical": false,
+      "exit": 0,
+      "ms": 36,
+      "at": 1793323548.756234
+    },
+    {
+      "i": 525,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00525",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323548.7564178
+    },
+    {
+      "i": 523,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00523",
+      "critical": false,
+      "exit": 0,
+      "ms": 36,
+      "at": 1793323548.7565699
+    },
+    {
+      "i": 528,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00528",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323548.7771184
+    },
+    {
+      "i": 530,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00530",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323548.7773013
+    },
+    {
+      "i": 527,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00527",
+      "critical": true,
+      "exit": 0,
+      "ms": 265,
+      "at": 1793323548.9866152
+    },
+    {
+      "i": 532,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00532",
+      "critical": true,
+      "exit": 0,
+      "ms": 209,
+      "at": 1793323548.9868
+    },
+    {
+      "i": 526,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00526",
+      "critical": true,
+      "exit": 0,
+      "ms": 265,
+      "at": 1793323548.9870014
+    },
+    {
+      "i": 531,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00531",
+      "critical": true,
+      "exit": 0,
+      "ms": 210,
+      "at": 1793323548.987152
+    },
+    {
+      "i": 529,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00529",
+      "critical": true,
+      "exit": 0,
+      "ms": 231,
+      "at": 1793323548.9873142
+    },
+    {
+      "i": 524,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00524",
+      "critical": true,
+      "exit": 0,
+      "ms": 266,
+      "at": 1793323548.9874187
+    },
+    {
+      "i": 521,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00521",
+      "critical": true,
+      "exit": 0,
+      "ms": 267,
+      "at": 1793323548.9877586
+    },
+    {
+      "i": 522,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00522",
+      "critical": true,
+      "exit": 0,
+      "ms": 268,
+      "at": 1793323548.9880316
+    },
+    {
+      "i": 540,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00540",
+      "critical": false,
+      "exit": 0,
+      "ms": 36,
+      "at": 1793323549.024286
+    },
+    {
+      "i": 533,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00533",
+      "critical": false,
+      "exit": 0,
+      "ms": 38,
+      "at": 1793323549.024568
+    },
+    {
+      "i": 535,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00535",
+      "critical": false,
+      "exit": 0,
+      "ms": 38,
+      "at": 1793323549.0247526
+    },
+    {
+      "i": 538,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00538",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323549.0248966
+    },
+    {
+      "i": 543,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00543",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323549.0483215
+    },
+    {
+      "i": 545,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00545",
+      "critical": false,
+      "exit": 0,
+      "ms": 19,
+      "at": 1793323549.0674863
+    },
+    {
+      "i": 546,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00546",
+      "critical": true,
+      "exit": 0,
+      "ms": 190,
+      "at": 1793323549.2576802
+    },
+    {
+      "i": 534,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00534",
+      "critical": true,
+      "exit": 0,
+      "ms": 271,
+      "at": 1793323549.2579594
+    },
+    {
+      "i": 544,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00544",
+      "critical": true,
+      "exit": 0,
+      "ms": 234,
+      "at": 1793323549.2587743
+    },
+    {
+      "i": 536,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00536",
+      "critical": true,
+      "exit": 0,
+      "ms": 272,
+      "at": 1793323549.2589896
+    },
+    {
+      "i": 539,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00539",
+      "critical": true,
+      "exit": 0,
+      "ms": 272,
+      "at": 1793323549.2598214
+    },
+    {
+      "i": 542,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00542",
+      "critical": true,
+      "exit": 0,
+      "ms": 235,
+      "at": 1793323549.2600763
+    },
+    {
+      "i": 541,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00541",
+      "critical": true,
+      "exit": 0,
+      "ms": 236,
+      "at": 1793323549.2606742
+    },
+    {
+      "i": 537,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00537",
+      "critical": true,
+      "exit": 0,
+      "ms": 274,
+      "at": 1793323549.2617047
+    },
+    {
+      "i": 548,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00548",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323549.2823265
+    },
+    {
+      "i": 550,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00550",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323549.2846906
+    },
+    {
+      "i": 553,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00553",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323549.2922847
+    },
+    {
+      "i": 555,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00555",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323549.3022897
+    },
+    {
+      "i": 558,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00558",
+      "critical": false,
+      "exit": 0,
+      "ms": 24,
+      "at": 1793323549.326338
+    },
+    {
+      "i": 554,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00554",
+      "critical": true,
+      "exit": 0,
+      "ms": 266,
+      "at": 1793323549.5279357
+    },
+    {
+      "i": 559,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00559",
+      "critical": true,
+      "exit": 0,
+      "ms": 202,
+      "at": 1793323549.528666
+    },
+    {
+      "i": 556,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00556",
+      "critical": true,
+      "exit": 0,
+      "ms": 244,
+      "at": 1793323549.5289536
+    },
+    {
+      "i": 551,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00551",
+      "critical": true,
+      "exit": 0,
+      "ms": 269,
+      "at": 1793323549.5292063
+    },
+    {
+      "i": 547,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00547",
+      "critical": true,
+      "exit": 0,
+      "ms": 272,
+      "at": 1793323549.5294487
+    },
+    {
+      "i": 549,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00549",
+      "critical": true,
+      "exit": 0,
+      "ms": 271,
+      "at": 1793323549.5295732
+    },
+    {
+      "i": 557,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00557",
+      "critical": true,
+      "exit": 0,
+      "ms": 238,
+      "at": 1793323549.5305407
+    },
+    {
+      "i": 552,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00552",
+      "critical": true,
+      "exit": 0,
+      "ms": 271,
+      "at": 1793323549.5312507
+    },
+    {
+      "i": 565,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00565",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323549.5566623
+    },
+    {
+      "i": 560,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00560",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323549.5569744
+    },
+    {
+      "i": 563,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00563",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323549.5571592
+    },
+    {
+      "i": 568,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00568",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323549.5768042
+    },
+    {
+      "i": 570,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00570",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323549.5770302
+    },
+    {
+      "i": 571,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00571",
+      "critical": true,
+      "exit": 0,
+      "ms": 217,
+      "at": 1793323549.793493
+    },
+    {
+      "i": 561,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00561",
+      "critical": true,
+      "exit": 0,
+      "ms": 265,
+      "at": 1793323549.793658
+    },
+    {
+      "i": 569,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00569",
+      "critical": true,
+      "exit": 0,
+      "ms": 237,
+      "at": 1793323549.793921
+    },
+    {
+      "i": 564,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00564",
+      "critical": true,
+      "exit": 0,
+      "ms": 265,
+      "at": 1793323549.79413
+    },
+    {
+      "i": 567,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00567",
+      "critical": true,
+      "exit": 0,
+      "ms": 263,
+      "at": 1793323549.7942774
+    },
+    {
+      "i": 566,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00566",
+      "critical": true,
+      "exit": 0,
+      "ms": 264,
+      "at": 1793323549.794657
+    },
+    {
+      "i": 562,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00562",
+      "critical": true,
+      "exit": 0,
+      "ms": 266,
+      "at": 1793323549.7948246
+    },
+    {
+      "i": 572,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00572",
+      "critical": true,
+      "exit": 0,
+      "ms": 218,
+      "at": 1793323549.795182
+    },
+    {
+      "i": 573,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00573",
+      "critical": false,
+      "exit": 0,
+      "ms": 39,
+      "at": 1793323549.8322666
+    },
+    {
+      "i": 580,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00580",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323549.8325326
+    },
+    {
+      "i": 575,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00575",
+      "critical": false,
+      "exit": 0,
+      "ms": 39,
+      "at": 1793323549.8329835
+    },
+    {
+      "i": 578,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00578",
+      "critical": false,
+      "exit": 0,
+      "ms": 38,
+      "at": 1793323549.8331509
+    },
+    {
+      "i": 583,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00583",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323549.8563817
+    },
+    {
+      "i": 585,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00585",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323549.877456
+    },
+    {
+      "i": 574,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00574",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323550.084387
+    },
+    {
+      "i": 581,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00581",
+      "critical": true,
+      "exit": 0,
+      "ms": 252,
+      "at": 1793323550.0845459
+    },
+    {
+      "i": 586,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00586",
+      "critical": true,
+      "exit": 0,
+      "ms": 207,
+      "at": 1793323550.0848415
+    },
+    {
+      "i": 582,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00582",
+      "critical": true,
+      "exit": 0,
+      "ms": 252,
+      "at": 1793323550.0849636
+    },
+    {
+      "i": 576,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00576",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323550.0852373
+    },
+    {
+      "i": 579,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00579",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323550.08545
+    },
+    {
+      "i": 577,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00577",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323550.0855966
+    },
+    {
+      "i": 584,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00584",
+      "critical": true,
+      "exit": 0,
+      "ms": 253,
+      "at": 1793323550.0857623
+    },
+    {
+      "i": 593,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00593",
+      "critical": false,
+      "exit": 0,
+      "ms": 40,
+      "at": 1793323550.1254647
+    },
+    {
+      "i": 588,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00588",
+      "critical": false,
+      "exit": 0,
+      "ms": 58,
+      "at": 1793323550.142354
+    },
+    {
+      "i": 590,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00590",
+      "critical": false,
+      "exit": 0,
+      "ms": 58,
+      "at": 1793323550.142682
+    },
+    {
+      "i": 595,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00595",
+      "critical": false,
+      "exit": 0,
+      "ms": 23,
+      "at": 1793323550.1482635
+    },
+    {
+      "i": 598,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00598",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323550.169789
+    },
+    {
+      "i": 591,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00591",
+      "critical": true,
+      "exit": 0,
+      "ms": 307,
+      "at": 1793323550.3919466
+    },
+    {
+      "i": 596,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00596",
+      "critical": true,
+      "exit": 0,
+      "ms": 250,
+      "at": 1793323550.3921163
+    },
+    {
+      "i": 592,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00592",
+      "critical": true,
+      "exit": 0,
+      "ms": 307,
+      "at": 1793323550.3922715
+    },
+    {
+      "i": 599,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00599",
+      "critical": true,
+      "exit": 0,
+      "ms": 223,
+      "at": 1793323550.392453
+    },
+    {
+      "i": 587,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00587",
+      "critical": true,
+      "exit": 0,
+      "ms": 308,
+      "at": 1793323550.3926363
+    },
+    {
+      "i": 589,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00589",
+      "critical": true,
+      "exit": 0,
+      "ms": 308,
+      "at": 1793323550.392891
+    },
+    {
+      "i": 597,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00597",
+      "critical": true,
+      "exit": 0,
+      "ms": 250,
+      "at": 1793323550.3930106
+    },
+    {
+      "i": 594,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00594",
+      "critical": true,
+      "exit": 0,
+      "ms": 308,
+      "at": 1793323550.3933742
+    },
+    {
+      "i": 605,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00605",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323550.4209423
+    },
+    {
+      "i": 603,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00603",
+      "critical": false,
+      "exit": 0,
+      "ms": 29,
+      "at": 1793323550.4211338
+    },
+    {
+      "i": 600,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00600",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323550.424795
+    },
+    {
+      "i": 608,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00608",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323550.4561272
+    },
+    {
+      "i": 610,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00610",
+      "critical": false,
+      "exit": 0,
+      "ms": 32,
+      "at": 1793323550.456684
+    },
+    {
+      "i": 607,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00607",
+      "critical": true,
+      "exit": 0,
+      "ms": 288,
+      "at": 1793323550.6818736
+    },
+    {
+      "i": 606,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00606",
+      "critical": true,
+      "exit": 0,
+      "ms": 289,
+      "at": 1793323550.6821961
+    },
+    {
+      "i": 609,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00609",
+      "critical": true,
+      "exit": 0,
+      "ms": 261,
+      "at": 1793323550.68261
+    },
+    {
+      "i": 612,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00612",
+      "critical": true,
+      "exit": 0,
+      "ms": 226,
+      "at": 1793323550.682771
+    },
+    {
+      "i": 601,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00601",
+      "critical": true,
+      "exit": 0,
+      "ms": 291,
+      "at": 1793323550.6831107
+    },
+    {
+      "i": 611,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00611",
+      "critical": true,
+      "exit": 0,
+      "ms": 227,
+      "at": 1793323550.6832402
+    },
+    {
+      "i": 604,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00604",
+      "critical": true,
+      "exit": 0,
+      "ms": 292,
+      "at": 1793323550.684506
+    },
+    {
+      "i": 602,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00602",
+      "critical": true,
+      "exit": 0,
+      "ms": 293,
+      "at": 1793323550.6849058
+    },
+    {
+      "i": 615,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00615",
+      "critical": false,
+      "exit": 0,
+      "ms": 28,
+      "at": 1793323550.710919
+    },
+    {
+      "i": 620,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00620",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323550.718253
+    },
+    {
+      "i": 618,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00618",
+      "critical": false,
+      "exit": 0,
+      "ms": 35,
+      "at": 1793323550.7184393
+    },
+    {
+      "i": 613,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00613",
+      "critical": false,
+      "exit": 0,
+      "ms": 37,
+      "at": 1793323550.718666
+    },
+    {
+      "i": 623,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00623",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323550.7409163
+    },
+    {
+      "i": 625,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00625",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323550.7583578
+    },
+    {
+      "i": 622,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00622",
+      "critical": true,
+      "exit": 0,
+      "ms": 260,
+      "at": 1793323550.9786737
+    },
+    {
+      "i": 616,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00616",
+      "critical": true,
+      "exit": 0,
+      "ms": 296,
+      "at": 1793323550.9788442
+    },
+    {
+      "i": 619,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00619",
+      "critical": true,
+      "exit": 0,
+      "ms": 294,
+      "at": 1793323550.9790766
+    },
+    {
+      "i": 626,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00626",
+      "critical": true,
+      "exit": 0,
+      "ms": 221,
+      "at": 1793323550.9792855
+    },
+    {
+      "i": 614,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00614",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323550.9794767
+    },
+    {
+      "i": 624,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00624",
+      "critical": true,
+      "exit": 0,
+      "ms": 261,
+      "at": 1793323550.9796457
+    },
+    {
+      "i": 621,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00621",
+      "critical": true,
+      "exit": 0,
+      "ms": 269,
+      "at": 1793323550.9797513
+    },
+    {
+      "i": 617,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00617",
+      "critical": true,
+      "exit": 0,
+      "ms": 297,
+      "at": 1793323550.9799142
+    },
+    {
+      "i": 628,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00628",
+      "critical": false,
+      "exit": 0,
+      "ms": 25,
+      "at": 1793323551.00442
+    },
+    {
+      "i": 630,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00630",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323551.0054095
+    },
+    {
+      "i": 633,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00633",
+      "critical": false,
+      "exit": 0,
+      "ms": 27,
+      "at": 1793323551.0064476
+    },
+    {
+      "i": 635,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00635",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323551.022489
+    },
+    {
+      "i": 638,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00638",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323551.0386353
+    },
+    {
+      "i": 629,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00629",
+      "critical": true,
+      "exit": 0,
+      "ms": 1241,
+      "at": 1793323552.2198138
+    },
+    {
+      "i": 632,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00632",
+      "critical": true,
+      "exit": 0,
+      "ms": 1255,
+      "at": 1793323552.2344382
+    },
+    {
+      "i": 640,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00640",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323552.238448
+    },
+    {
+      "i": 636,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00636",
+      "critical": true,
+      "exit": 0,
+      "ms": 1247,
+      "at": 1793323552.252718
+    },
+    {
+      "i": 643,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00643",
+      "critical": false,
+      "exit": 0,
+      "ms": 31,
+      "at": 1793323552.283649
+    },
+    {
+      "i": 631,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00631",
+      "critical": true,
+      "exit": 0,
+      "ms": 1305,
+      "at": 1793323552.2841833
+    },
+    {
+      "i": 639,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00639",
+      "critical": true,
+      "exit": 0,
+      "ms": 1250,
+      "at": 1793323552.2888844
+    },
+    {
+      "i": 645,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00645",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323552.3037841
+    },
+    {
+      "i": 627,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00627",
+      "critical": true,
+      "exit": 0,
+      "ms": 1328,
+      "at": 1793323552.3069358
+    },
+    {
+      "i": 648,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00648",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323552.3238668
+    },
+    {
+      "i": 634,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00634",
+      "critical": true,
+      "exit": 0,
+      "ms": 1345,
+      "at": 1793323552.3250453
+    },
+    {
+      "i": 637,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00637",
+      "critical": true,
+      "exit": 0,
+      "ms": 1335,
+      "at": 1793323552.3420293
+    },
+    {
+      "i": 650,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00650",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323552.3421943
+    },
+    {
+      "i": 642,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00642",
+      "critical": true,
+      "exit": 0,
+      "ms": 1236,
+      "at": 1793323553.4742486
+    },
+    {
+      "i": 653,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00653",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323553.4902806
+    },
+    {
+      "i": 641,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00641",
+      "critical": true,
+      "exit": 0,
+      "ms": 1256,
+      "at": 1793323553.4905422
+    },
+    {
+      "i": 655,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00655",
+      "critical": false,
+      "exit": 0,
+      "ms": 18,
+      "at": 1793323553.508225
+    },
+    {
+      "i": 644,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00644",
+      "critical": true,
+      "exit": 0,
+      "ms": 1238,
+      "at": 1793323553.5213208
+    },
+    {
+      "i": 647,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00647",
+      "critical": true,
+      "exit": 0,
+      "ms": 1237,
+      "at": 1793323553.5413728
+    },
+    {
+      "i": 658,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00658",
+      "critical": false,
+      "exit": 0,
+      "ms": 20,
+      "at": 1793323553.561789
+    },
+    {
+      "i": 646,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00646",
+      "critical": true,
+      "exit": 0,
+      "ms": 1276,
+      "at": 1793323553.5649853
+    },
+    {
+      "i": 649,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00649",
+      "critical": true,
+      "exit": 0,
+      "ms": 1261,
+      "at": 1793323553.5851624
+    },
+    {
+      "i": 660,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00660",
+      "critical": false,
+      "exit": 0,
+      "ms": 22,
+      "at": 1793323553.5870104
+    },
+    {
+      "i": 652,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00652",
+      "critical": true,
+      "exit": 0,
+      "ms": 1265,
+      "at": 1793323553.6074846
+    },
+    {
+      "i": 651,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00651",
+      "critical": true,
+      "exit": 0,
+      "ms": 1274,
+      "at": 1793323553.6160648
+    },
+    {
+      "i": 663,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00663",
+      "critical": false,
+      "exit": 0,
+      "ms": 17,
+      "at": 1793323553.6245744
+    },
+    {
+      "i": 665,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00665",
+      "critical": false,
+      "exit": 0,
+      "ms": 16,
+      "at": 1793323553.641131
+    },
+    {
+      "i": 654,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00654",
+      "critical": true,
+      "exit": 0,
+      "ms": 1249,
+      "at": 1793323554.7393012
+    },
+    {
+      "i": 656,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00656",
+      "critical": true,
+      "exit": 0,
+      "ms": 1245,
+      "at": 1793323554.7532887
+    },
+    {
+      "i": 668,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00668",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323554.768098
+    },
+    {
+      "i": 657,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00657",
+      "critical": true,
+      "exit": 0,
+      "ms": 1254,
+      "at": 1793323554.7755933
+    },
+    {
+      "i": 670,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00670",
+      "critical": false,
+      "exit": 0,
+      "ms": 14,
+      "at": 1793323554.7899327
+    },
+    {
+      "i": 659,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00659",
+      "critical": true,
+      "exit": 0,
+      "ms": 1234,
+      "at": 1793323554.7955587
+    },
+    {
+      "i": 662,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00662",
+      "critical": true,
+      "exit": 0,
+      "ms": 1247,
+      "at": 1793323554.834393
+    },
+    {
+      "i": 661,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00661",
+      "critical": true,
+      "exit": 0,
+      "ms": 1253,
+      "at": 1793323554.8385673
+    },
+    {
+      "i": 673,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00673",
+      "critical": false,
+      "exit": 0,
+      "ms": 14,
+      "at": 1793323554.8485165
+    },
+    {
+      "i": 664,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00664",
+      "critical": true,
+      "exit": 0,
+      "ms": 1240,
+      "at": 1793323554.8566384
+    },
+    {
+      "i": 675,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00675",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323554.8632464
+    },
+    {
+      "i": 666,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00666",
+      "critical": true,
+      "exit": 0,
+      "ms": 1233,
+      "at": 1793323554.8738942
+    },
+    {
+      "i": 678,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00678",
+      "critical": false,
+      "exit": 0,
+      "ms": 15,
+      "at": 1793323554.8885925
+    },
+    {
+      "i": 679,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00679",
+      "critical": true,
+      "exit": 0,
+      "ms": 594,
+      "at": 1793323555.4829516
+    },
+    {
+      "i": 674,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00674",
+      "critical": true,
+      "exit": 0,
+      "ms": 645,
+      "at": 1793323555.4831762
+    },
+    {
+      "i": 671,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00671",
+      "critical": true,
+      "exit": 0,
+      "ms": 693,
+      "at": 1793323555.4833586
+    },
+    {
+      "i": 667,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00667",
+      "critical": true,
+      "exit": 0,
+      "ms": 744,
+      "at": 1793323555.4835503
+    },
+    {
+      "i": 672,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00672",
+      "critical": true,
+      "exit": 0,
+      "ms": 688,
+      "at": 1793323555.4837189
+    },
+    {
+      "i": 669,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00669",
+      "critical": true,
+      "exit": 0,
+      "ms": 716,
+      "at": 1793323555.4840279
+    },
+    {
+      "i": 677,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00677",
+      "critical": true,
+      "exit": 0,
+      "ms": 621,
+      "at": 1793323555.484197
+    },
+    {
+      "i": 676,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00676",
+      "critical": true,
+      "exit": 0,
+      "ms": 628,
+      "at": 1793323555.4843626
+    },
+    {
+      "i": 680,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00680",
+      "critical": false,
+      "exit": 0,
+      "ms": 33,
+      "at": 1793323555.5164251
+    },
+    {
+      "i": 685,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00685",
+      "critical": false,
+      "exit": 0,
+      "ms": 38,
+      "at": 1793323555.5218472
+    },
+    {
+      "i": 683,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00683",
+      "critical": false,
+      "exit": 0,
+      "ms": 39,
+      "at": 1793323555.5222225
+    },
+    {
+      "i": 688,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00688",
+      "critical": false,
+      "exit": 0,
+      "ms": 26,
+      "at": 1793323555.5429666
+    },
+    {
+      "i": 690,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00690",
+      "critical": false,
+      "exit": 0,
+      "ms": 21,
+      "at": 1793323555.5435495
+    },
+    {
+      "i": 681,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00681",
+      "critical": true,
+      "exit": 0,
+      "ms": 265,
+      "at": 1793323555.7482243
+    },
+    {
+      "i": 689,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00689",
+      "critical": true,
+      "exit": 0,
+      "ms": 227,
+      "at": 1793323555.7485914
+    },
+    {
+      "i": 686,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00686",
+      "critical": true,
+      "exit": 0,
+      "ms": 264,
+      "at": 1793323555.748779
+    },
+    {
+      "i": 691,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00691",
+      "critical": true,
+      "exit": 0,
+      "ms": 206,
+      "at": 1793323555.7489154
+    },
+    {
+      "i": 687,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00687",
+      "critical": true,
+      "exit": 0,
+      "ms": 265,
+      "at": 1793323555.7493212
+    },
+    {
+      "i": 682,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00682",
+      "critical": true,
+      "exit": 0,
+      "ms": 266,
+      "at": 1793323555.7495627
+    },
+    {
+      "i": 684,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00684",
+      "critical": true,
+      "exit": 0,
+      "ms": 266,
+      "at": 1793323555.7500005
+    },
+    {
+      "i": 692,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00692",
+      "critical": true,
+      "exit": 0,
+      "ms": 207,
+      "at": 1793323555.7501965
+    },
+    {
+      "i": 695,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00695",
+      "critical": false,
+      "exit": 0,
+      "ms": 217,
+      "at": 1793323555.9659915
+    },
+    {
+      "i": 699,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00699",
+      "critical": true,
+      "exit": 0,
+      "ms": 246,
+      "at": 1793323555.9962327
+    },
+    {
+      "i": 693,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00693",
+      "critical": false,
+      "exit": 0,
+      "ms": 263,
+      "at": 1793323556.011301
+    },
+    {
+      "i": 696,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00696",
+      "critical": true,
+      "exit": 0,
+      "ms": 278,
+      "at": 1793323556.0270007
+    },
+    {
+      "i": 697,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00697",
+      "critical": true,
+      "exit": 0,
+      "ms": 300,
+      "at": 1793323556.0493078
+    },
+    {
+      "i": 694,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00694",
+      "critical": true,
+      "exit": 0,
+      "ms": 314,
+      "at": 1793323556.0628202
+    },
+    {
+      "i": 700,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00700",
+      "critical": false,
+      "exit": 0,
+      "ms": 344,
+      "at": 1793323556.0938911
+    },
+    {
+      "i": 698,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00698",
+      "critical": false,
+      "exit": 0,
+      "ms": 376,
+      "at": 1793323556.1258726
+    },
+    {
+      "i": 701,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00701",
+      "critical": true,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323556.6986358
+    },
+    {
+      "i": 702,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00702",
+      "critical": true,
+      "exit": 0,
+      "ms": 732,
+      "at": 1793323556.7284603
+    },
+    {
+      "i": 703,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00703",
+      "critical": false,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323556.7440999
+    },
+    {
+      "i": 704,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00704",
+      "critical": true,
+      "exit": 0,
+      "ms": 734,
+      "at": 1793323556.7606964
+    },
+    {
+      "i": 705,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00705",
+      "critical": false,
+      "exit": 0,
+      "ms": 740,
+      "at": 1793323556.7897184
+    },
+    {
+      "i": 706,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00706",
+      "critical": true,
+      "exit": 0,
+      "ms": 745,
+      "at": 1793323556.807662
+    },
+    {
+      "i": 707,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00707",
+      "critical": true,
+      "exit": 0,
+      "ms": 742,
+      "at": 1793323556.8362775
+    },
+    {
+      "i": 708,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00708",
+      "critical": false,
+      "exit": 0,
+      "ms": 742,
+      "at": 1793323556.867718
+    },
+    {
+      "i": 709,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00709",
+      "critical": true,
+      "exit": 0,
+      "ms": 730,
+      "at": 1793323557.4290118
+    },
+    {
+      "i": 710,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00710",
+      "critical": false,
+      "exit": 0,
+      "ms": 730,
+      "at": 1793323557.458678
+    },
+    {
+      "i": 711,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00711",
+      "critical": true,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323557.477039
+    },
+    {
+      "i": 712,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00712",
+      "critical": true,
+      "exit": 0,
+      "ms": 735,
+      "at": 1793323557.495519
+    },
+    {
+      "i": 713,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00713",
+      "critical": false,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323557.5225606
+    },
+    {
+      "i": 714,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00714",
+      "critical": true,
+      "exit": 0,
+      "ms": 730,
+      "at": 1793323557.537786
+    },
+    {
+      "i": 715,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00715",
+      "critical": false,
+      "exit": 0,
+      "ms": 732,
+      "at": 1793323557.568407
+    },
+    {
+      "i": 716,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00716",
+      "critical": true,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323557.6006625
+    },
+    {
+      "i": 717,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00717",
+      "critical": true,
+      "exit": 0,
+      "ms": 738,
+      "at": 1793323558.1675696
+    },
+    {
+      "i": 718,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00718",
+      "critical": false,
+      "exit": 0,
+      "ms": 736,
+      "at": 1793323558.194895
+    },
+    {
+      "i": 719,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00719",
+      "critical": true,
+      "exit": 0,
+      "ms": 732,
+      "at": 1793323558.2096338
+    },
+    {
+      "i": 720,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00720",
+      "critical": false,
+      "exit": 0,
+      "ms": 731,
+      "at": 1793323558.2264805
+    },
+    {
+      "i": 721,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00721",
+      "critical": true,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323558.2557745
+    },
+    {
+      "i": 722,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00722",
+      "critical": true,
+      "exit": 0,
+      "ms": 734,
+      "at": 1793323558.2720673
+    },
+    {
+      "i": 723,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00723",
+      "critical": false,
+      "exit": 0,
+      "ms": 737,
+      "at": 1793323558.3056767
+    },
+    {
+      "i": 724,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00724",
+      "critical": true,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323558.334143
+    },
+    {
+      "i": 725,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00725",
+      "critical": false,
+      "exit": 0,
+      "ms": 728,
+      "at": 1793323558.8960726
+    },
+    {
+      "i": 726,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00726",
+      "critical": true,
+      "exit": 0,
+      "ms": 730,
+      "at": 1793323558.9254107
+    },
+    {
+      "i": 727,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00727",
+      "critical": true,
+      "exit": 0,
+      "ms": 732,
+      "at": 1793323558.9417448
+    },
+    {
+      "i": 728,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00728",
+      "critical": false,
+      "exit": 0,
+      "ms": 730,
+      "at": 1793323558.9562817
+    },
+    {
+      "i": 729,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00729",
+      "critical": true,
+      "exit": 0,
+      "ms": 731,
+      "at": 1793323558.9867432
+    },
+    {
+      "i": 730,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00730",
+      "critical": false,
+      "exit": 0,
+      "ms": 744,
+      "at": 1793323559.0161197
+    },
+    {
+      "i": 731,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00731",
+      "critical": true,
+      "exit": 0,
+      "ms": 730,
+      "at": 1793323559.0359757
+    },
+    {
+      "i": 732,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00732",
+      "critical": true,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323559.0670767
+    },
+    {
+      "i": 733,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00733",
+      "critical": false,
+      "exit": 0,
+      "ms": 734,
+      "at": 1793323559.6301334
+    },
+    {
+      "i": 734,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00734",
+      "critical": true,
+      "exit": 0,
+      "ms": 735,
+      "at": 1793323559.660491
+    },
+    {
+      "i": 735,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00735",
+      "critical": false,
+      "exit": 0,
+      "ms": 736,
+      "at": 1793323559.6776774
+    },
+    {
+      "i": 736,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00736",
+      "critical": true,
+      "exit": 0,
+      "ms": 751,
+      "at": 1793323559.7075539
+    },
+    {
+      "i": 737,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00737",
+      "critical": true,
+      "exit": 0,
+      "ms": 740,
+      "at": 1793323559.7272384
+    },
+    {
+      "i": 738,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00738",
+      "critical": false,
+      "exit": 0,
+      "ms": 739,
+      "at": 1793323559.7552946
+    },
+    {
+      "i": 739,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00739",
+      "critical": true,
+      "exit": 0,
+      "ms": 734,
+      "at": 1793323559.7704206
+    },
+    {
+      "i": 740,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00740",
+      "critical": false,
+      "exit": 0,
+      "ms": 734,
+      "at": 1793323559.801351
+    },
+    {
+      "i": 741,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00741",
+      "critical": true,
+      "exit": 0,
+      "ms": 729,
+      "at": 1793323560.359454
+    },
+    {
+      "i": 742,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00742",
+      "critical": true,
+      "exit": 0,
+      "ms": 738,
+      "at": 1793323560.3987095
+    },
+    {
+      "i": 743,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00743",
+      "critical": false,
+      "exit": 0,
+      "ms": 728,
+      "at": 1793323560.405853
+    },
+    {
+      "i": 744,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00744",
+      "critical": true,
+      "exit": 0,
+      "ms": 730,
+      "at": 1793323560.4371514
+    },
+    {
+      "i": 745,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00745",
+      "critical": false,
+      "exit": 0,
+      "ms": 741,
+      "at": 1793323560.4680383
+    },
+    {
+      "i": 746,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00746",
+      "critical": true,
+      "exit": 0,
+      "ms": 727,
+      "at": 1793323560.4822564
+    },
+    {
+      "i": 747,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00747",
+      "critical": true,
+      "exit": 0,
+      "ms": 728,
+      "at": 1793323560.4981334
+    },
+    {
+      "i": 748,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00748",
+      "critical": false,
+      "exit": 0,
+      "ms": 731,
+      "at": 1793323560.5320773
+    },
+    {
+      "i": 749,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00749",
+      "critical": true,
+      "exit": 0,
+      "ms": 735,
+      "at": 1793323561.0947556
+    },
+    {
+      "i": 751,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00751",
+      "critical": true,
+      "exit": 0,
+      "ms": 735,
+      "at": 1793323561.141112
+    },
+    {
+      "i": 750,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00750",
+      "critical": false,
+      "exit": 0,
+      "ms": 761,
+      "at": 1793323561.1602116
+    },
+    {
+      "i": 752,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00752",
+      "critical": true,
+      "exit": 0,
+      "ms": 738,
+      "at": 1793323561.1752489
+    },
+    {
+      "i": 753,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00753",
+      "critical": false,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323561.2012029
+    },
+    {
+      "i": 754,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00754",
+      "critical": true,
+      "exit": 0,
+      "ms": 733,
+      "at": 1793323561.2157383
+    },
+    {
+      "i": 755,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00755",
+      "critical": false,
+      "exit": 0,
+      "ms": 740,
+      "at": 1793323561.2383335
+    },
+    {
+      "i": 756,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00756",
+      "critical": true,
+      "exit": 0,
+      "ms": 734,
+      "at": 1793323561.2663038
+    },
+    {
+      "i": 757,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00757",
+      "critical": true,
+      "exit": 0,
+      "ms": 730,
+      "at": 1793323561.824496
+    },
+    {
+      "i": 758,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00758",
+      "critical": false,
+      "exit": 0,
+      "ms": 731,
+      "at": 1793323561.8724658
+    },
+    {
+      "i": 759,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00759",
+      "critical": true,
+      "exit": 0,
+      "ms": 727,
+      "at": 1793323561.8873441
+    },
+    {
+      "i": 760,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00760",
+      "critical": false,
+      "exit": 0,
+      "ms": 742,
+      "at": 1793323561.9173706
+    },
+    {
+      "i": 761,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00761",
+      "critical": true,
+      "exit": 0,
+      "ms": 744,
+      "at": 1793323561.9455204
+    },
+    {
+      "i": 762,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00762",
+      "critical": true,
+      "exit": 0,
+      "ms": 731,
+      "at": 1793323561.9471498
+    },
+    {
+      "i": 763,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00763",
+      "critical": false,
+      "exit": 0,
+      "ms": 740,
+      "at": 1793323561.9782298
+    },
+    {
+      "i": 764,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00764",
+      "critical": true,
+      "exit": 0,
+      "ms": 731,
+      "at": 1793323561.9976683
+    },
+    {
+      "i": 765,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00765",
+      "critical": false,
+      "exit": 0,
+      "ms": 735,
+      "at": 1793323562.5594704
+    },
+    {
+      "i": 766,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00766",
+      "critical": true,
+      "exit": 0,
+      "ms": 732,
+      "at": 1793323562.6046424
+    },
+    {
+      "i": 767,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00767",
+      "critical": true,
+      "exit": 0,
+      "ms": 735,
+      "at": 1793323562.6227798
+    },
+    {
+      "i": 768,
+      "event": "PostToolUse",
+      "session": "Q-20261030-092535-00768",
+      "critical": false,
+      "exit": 0,
+      "ms": 736,
+      "at": 1793323562.6531818
+    },
+    {
+      "i": 769,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00769",
+      "critical": true,
+      "exit": 0,
+      "ms": 771,
+      "at": 1793323562.7165492
+    },
+    {
+      "i": 772,
+      "event": "PermissionRequest",
+      "session": "Q-20261030-092535-00772",
+      "critical": true,
+      "exit": 0,
+      "ms": 754,
+      "at": 1793323562.7522347
+    },
+    {
+      "i": 770,
+      "event": "PreToolUse",
+      "session": "Q-20261030-092535-00770",
+      "critical": false,
+      "exit": 0,
+      "ms": 805,
+      "at": 1793323562.752278
+    },
+    {
+      "i": 771,
+      "event": "Stop",
+      "session": "Q-20261030-092535-00771",
+      "critical": true,
+      "exit": 0,
+      "ms": 794,
+      "at": 1793323562.7721052
+    }
+  ],
+  "ok": true
+}

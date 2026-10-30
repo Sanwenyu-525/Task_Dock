@@ -1,0 +1,121 @@
+{
+  "name": "P1-03 mixed image/text paste acceptance",
+  "timestamp": "2026-10-30T14:11:02+0800",
+  "nonce": "e3518f2a",
+  "environment": {
+    "exe": "D:\\Develop\\task_dock\\src-tauri\\target-accept\\release\\task-dock.exe",
+    "exe_mtime": "2026-10-30T14:08:41",
+    "edge": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "screen": [
+      2048,
+      1152
+    ],
+    "desktop": {
+      "input_desktop": true,
+      "desktop_name": "Default",
+      "foreground_hwnd": 6361480
+    },
+    "preexisting_instances": [],
+    "work_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-j8owly4q"
+  },
+  "checks": {
+    "pass": [
+      {
+        "name": "应用以隔离数据目录启动并处于监听状态",
+        "ok": true,
+        "detail": "fresh_default"
+      },
+      {
+        "name": "剪贴板配置无异常",
+        "ok": true,
+        "detail": null
+      }
+    ],
+    "fail": []
+  },
+  "app_status_initial": {
+    "activeJob": null,
+    "captureAllowed": true,
+    "configError": null,
+    "configOrigin": "fresh_default",
+    "enabled": true,
+    "monitor": {
+      "captured": 0,
+      "content_queue_capacity": 8,
+      "content_queue_max_bytes": 134217728,
+      "dropped_contents": 0,
+      "dropped_events": 0,
+      "duplicates": 0,
+      "event_queue_capacity": 64,
+      "failed": 0,
+      "max_capture_latency_ms": 0,
+      "max_process_latency_ms": 0,
+      "merged_events": 0,
+      "observed_events": 0,
+      "peak_content_queue": 0,
+      "peak_event_queue": 0,
+      "recorded": 0,
+      "skipped": 0
+    },
+    "monitoring": true,
+    "paused": false,
+    "platform": "windows"
+  },
+  "baseline_items": 0,
+  "source_content": {
+    "A-red": {
+      "rgba": [
+        220,
+        30,
+        30,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_RGB(alpha=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    },
+    "B-green": {
+      "rgba": [
+        30,
+        180,
+        60,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_BITFIELDS(alphaMask=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    },
+    "D-blue": {
+      "rgba": [
+        30,
+        60,
+        220,
+        0
+      ],
+      "formats": [
+        "PNG(alpha=0)",
+        "CF_DIB 32bpp BI_RGB(alpha=0)"
+      ],
+      "size": [
+        240,
+        160
+      ]
+    }
+  },
+  "overall": "FAIL",
+  "error": "RuntimeError: clipboard_view 调用失败: CDP connect failed: browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:9417\nCall log:\n\u001b[2m  - <ws preparing> retrieving websocket url from http://127.0.0.1:9417\u001b[22m\n",
+  "raw_logs": {
+    "app": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-j8owly4q\\app.log",
+    "edge": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p1-03-j8owly4q\\edge.log"
+  }
+}

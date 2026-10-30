@@ -1,0 +1,485 @@
+{
+  "scenario": "fault-inject",
+  "started_at": "2026-10-30T01:14:02.868Z",
+  "config": {
+    "base": "http://127.0.0.1:47821",
+    "token": "<redacted>",
+    "mode": "duplicate",
+    "count": 200,
+    "timeoutMs": 15000,
+    "out": "docs/performance/results/E2-duplicate-20261030-091402.json",
+    "runId": "E2-duplicate-20261030-091402"
+  },
+  "result": {
+    "mode": "duplicate",
+    "run_id": "E2-duplicate-20261030-091402",
+    "single": {
+      "id": "E2-duplicate-20261030-091402-dup-waiting",
+      "statuses": [
+        200,
+        200
+      ],
+      "bodies": [
+        {
+          "accepted": 1,
+          "merged": 0,
+          "queued": false,
+          "rejected": 0,
+          "sampled": 0
+        },
+        {
+          "accepted": 1,
+          "merged": 0,
+          "queued": false,
+          "rejected": 0,
+          "sampled": 0
+        }
+      ]
+    },
+    "concurrent_pairs": [
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-0",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-1",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-2",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-3",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-4",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-5",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-6",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-7",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-8",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-9",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-10",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-11",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-12",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-13",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-14",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-15",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-16",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-17",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-18",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      },
+      {
+        "id": "E2-duplicate-20261030-091402-dup-completed-19",
+        "first": 200,
+        "second": 200,
+        "bodies": [
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          },
+          {
+            "accepted": 1,
+            "merged": 0,
+            "queued": false,
+            "rejected": 0,
+            "sampled": 0
+          }
+        ]
+      }
+    ],
+    "unique_event_ids": [
+      "E2-duplicate-20261030-091402-dup-waiting",
+      "E2-duplicate-20261030-091402-dup-completed-0",
+      "E2-duplicate-20261030-091402-dup-completed-1",
+      "E2-duplicate-20261030-091402-dup-completed-2",
+      "E2-duplicate-20261030-091402-dup-completed-3",
+      "E2-duplicate-20261030-091402-dup-completed-4",
+      "E2-duplicate-20261030-091402-dup-completed-5",
+      "E2-duplicate-20261030-091402-dup-completed-6",
+      "E2-duplicate-20261030-091402-dup-completed-7",
+      "E2-duplicate-20261030-091402-dup-completed-8",
+      "E2-duplicate-20261030-091402-dup-completed-9",
+      "E2-duplicate-20261030-091402-dup-completed-10",
+      "E2-duplicate-20261030-091402-dup-completed-11",
+      "E2-duplicate-20261030-091402-dup-completed-12",
+      "E2-duplicate-20261030-091402-dup-completed-13",
+      "E2-duplicate-20261030-091402-dup-completed-14",
+      "E2-duplicate-20261030-091402-dup-completed-15",
+      "E2-duplicate-20261030-091402-dup-completed-16",
+      "E2-duplicate-20261030-091402-dup-completed-17",
+      "E2-duplicate-20261030-091402-dup-completed-18",
+      "E2-duplicate-20261030-091402-dup-completed-19"
+    ]
+  }
+}

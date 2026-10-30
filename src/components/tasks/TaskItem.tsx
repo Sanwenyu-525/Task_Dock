@@ -195,7 +195,7 @@ export default function TaskItem({ task, compact }: Props) {
       {canLaunchWorkspace && (
         <button
           className="icon-btn sm task-workspace"
-          title="打开工作区（批量启动关联目标）"
+          data-tip="打开工作区（批量启动关联目标）"
           aria-label="打开工作区"
           onClick={() => openWorkspace(task)}
         >

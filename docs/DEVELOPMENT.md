@@ -34,6 +34,27 @@ npm run icons
 # 构建 Windows 安装包（NSIS + MSI）
 npm run tauri build
 # 产物：src-tauri/target/release/bundle/nsis/Task Dock_0.5.0_x64-setup.exe
+
+# 仅构建可执行文件（跳过打包；等价于 npm run tauri build -- --no-bundle）
+npm run tauri build -- --no-bundle
+# 注意：不要用 `cargo build --release` 代替——那会漏掉 tauri 的 custom-protocol 特性，
+# 导致 is_dev() 为真、启动时走「开发服务器预检」分支而弹框退出。
+
+# v0.6 视觉走查（两套预设 × 明暗 × 材质 × 宽度 + 布局溢出审计）
+npx vite preview --port 4173 --strictPort   # 另开一个终端
+node scripts/visual-themes.mjs
+node scripts/theme-perf.mjs
+
+# v0.6 交互场景走查（排序菜单 / 主题下拉 / 日期浮层 / 剪贴板页 / 关联抽屉 /
+#                    深色菜单 / 320px 窄布局，两套预设 × 明暗）
+node scripts/visual-v06.mjs
+
+# v0.6 布局回归矩阵（37 组合：宽高 × DPR × 预设 × 明暗 × 材质 × 模式）
+node scripts/layout-regression.mjs
+
+# v0.6 原生窗口取证（真实 Win32 窗口截图，验证四角/材质）
+powershell -ExecutionPolicy Bypass -NoProfile -File scripts/native-verify.ps1 `
+  -Out docs/screenshots/v06/native-dream.png -WaitSeconds 10
 ```
 
 ## 三、项目结构
@@ -45,11 +66,20 @@ task_dock/
 │   ├── lib/navigation.ts       # 导航桥接 + 展示辅助纯函数（含单测）
 │   ├── lib/clipboardUi.ts      # 剪贴板类型/时间/状态展示纯函数
 │   ├── lib/format.ts           # 纯函数时间/文本格式化（含单测）
+│   ├── lib/theme.ts            # 视觉预设 / 明暗 / 材质解析（纯函数，含单测）
+│   ├── lib/datetime.ts         # 本地日期时间解析/格式化/日历网格纯函数
+│   ├── lib/overlayStack.ts     # 全局弹层栈 + Escape 优先级分发（单例）
+│   ├── styles.css              # v0.5 组件样式
+│   ├── styles-themes.css       # v0.6 视觉预设 Token 与结构层（双主题皮肤）
+│   ├── styles-ui.css           # UI 基元结构层 + --z-* 层级刻度
 │   ├── store/                  # Zustand：tasks / agents / actions / clipboard / settings / ui / navigation
 │   ├── hooks/useEdgeSnap.ts    # 贴边吸附 + 窗口持久化
+│   ├── hooks/useGlobalShortcuts.ts  # Ctrl+1…6 / Ctrl+K / Ctrl+Shift+C（可单测）
+│   ├── components/ui/          # v0.6 UI 基元：Select / Combobox / DropdownMenu / Popover /
+│   │                           #   DateTimePicker / Dialog / Toggle / NumberInput / Tooltip
 │   ├── components/navigation/  # TargetMenu / AppPicker / WorkspaceLauncher
 │   ├── components/actions/     # 动作中心（筛选/覆盖度/确认）
-│   ├── components/clipboard/   # 剪贴板抽屉、详情、粘贴与现场/任务关联
+│   ├── components/clipboard/   # 剪贴板工作区（页面 / 抽屉共用）、详情、粘贴与现场/任务关联
 │   ├── components/context/     # 任务上下文抽屉（现场 / Agent / 关联 / 素材 / 动作）
 │   └── components/             # TitleBar / 三模式视图 / 任务 / Agent / 历史 / 设置
 ├── src-tauri/                  # Rust 后端
@@ -71,8 +101,14 @@ task_dock/
 ├── scripts/gen-icons.mjs       # 图标生成器
 ├── scripts/make-preview.mjs    # 视觉预览 harness（IPC mock）
 ├── scripts/visual-audit.mjs    # Playwright 320/400 视觉走查
+├── scripts/visual-themes.mjs   # v0.6 双预设视觉走查（截图 + 布局溢出审计）
+├── scripts/theme-perf.mjs      # v0.6 主题性能测量（空闲占用/布局/backdrop-filter/切换耗时）
+├── scripts/native-verify.ps1   # v0.6 原生窗口取证（桌面合成像素 + PrintWindow）
+├── scripts/capture-native.ps1  # 原生窗口截图（仅抓屏）
+├── scripts/seed-settings.py    # 验收用：写入本地设置（预设/明暗）
 ├── scripts/render-perf.mjs     # 真实 Chromium 300 行渲染采样
-└── docs/                       # 架构 / 许可证 / Adapter / 测试 / 性能 / 路线图
+├── docs/                       # 架构 / 许可证 / Adapter / 测试 / 性能 / 路线图
+└── docs/ui-themes/             # v0.6 视觉主题专项文档（设计规范/架构/窗口合成/性能/测试/报告/验收）
 ```
 
 ### 导航系统命令速查（v0.4）
@@ -132,6 +168,21 @@ npm run build && node scripts/make-preview.mjs && node scripts/render-perf.mjs
 - 导航新增目标类型：同步 `NavigationTargetType`、`target_resolver::validate_input`、
   `router::execute_with_ctx` 分支与 `APP_NAVIGATION_MATRIX.md`；新增 Agent 跳转能力必须给证据标注。
 
+### UI 组件（v0.6）
+
+- **不要写原生 `<select>`**：用 `src/components/ui/` 的 `Select` / `Combobox`。
+  `src/styles-themes.test.ts` 会扫描 `src/` 拦截回归。
+- **不要写裸 `z-index` 数字**：用 `src/styles-ui.css` 的 `--z-*` 刻度。
+  层级问题要靠结构解决，不靠堆数字。
+- **新弹层必须调 `useOverlayLayer(kind, active, onClose)`**：
+  否则 Escape 不会关它，而是直接隐藏整个窗口。
+  优先级：`dialog` > `sublayer` > `menu` > `drawer` > 主窗口。
+- **图标按钮必须给 `aria-label`**（窄窗下文字标签会被隐藏），
+  提示文案同时写 `data-tip`（走统一提示条，不用原生 `title`）。
+- **浮层定位交给 `Popover`**，不要自己算坐标——翻转与边界收敛已由 floating-ui 处理。
+- 详情见 [ui-themes/08-interaction-spec.md](ui-themes/08-interaction-spec.md)、
+  [ui-themes/09-component-api.md](ui-themes/09-component-api.md)。
+
 ## 五、调试技巧
 
 - 日志：默认 `info` 级别，`RUST_LOG=debug npm run tauri dev` 看详细日志；
@@ -145,6 +196,12 @@ npm run build && node scripts/make-preview.mjs && node scripts/render-perf.mjs
   确实需要并行跑两个实例做对照时，用临时配置换 identifier（注意数据目录也会跟着变）：
   `src-tauri/tauri.dev.conf.json` 写 `{ "identifier": "com.taskdock.desktop.dev" }`，
   再 `npm run tauri dev -- --config src-tauri/tauri.dev.conf.json`。
+- **数据目录即实例边界**（v0.5）：设置 `TASK_DOCK_DATA_DIR` 时，应用标识会按
+  **数据目录路径的哈希**派生为 `{identifier}.iso.{hash}`（`src-tauri/src/lib.rs` →
+  `instance_identifier_for`），单实例互斥锁与通知 AUMID 都随之区分。
+  因此压测/验收用的隔离实例不会再被正式安装实例顶掉，两边数据也天然不串；
+  未设置 `TASK_DOCK_DATA_DIR` 时标识**一字不变**，正式安装的单实例保护行为不受影响。
+  指向同一目录的两个隔离实例仍会互相拦下（哈希一致）。
 
 ## 六、已知构建注意
 

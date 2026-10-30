@@ -1,0 +1,54 @@
+START 2026-10-30 16:26:07
+PASS 应用以隔离数据目录启动并处于监听状态 :: fresh_default
+PASS 剪贴板配置无异常
+PASS CDP 目标即本次隔离实例（Agent 收件目录在隔离数据目录内） :: C:\Users\ASUS\AppData\Local\Temp\taskdock-p1-03-4so1rz2f\data\agent-inbox
+PASS 安全测试窗口已出现 :: TaskDock Paste Acceptance ecb8e568 - 用户配置 1 - Microsoft​ Edge
+PASS 复制阶段前台为外部应用（否则命中自写抑制、测不到采集链路） :: {'step': 'before-copies', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}
+PASS 测试页编辑器已聚焦 :: {'ok': True, 'title': 'TaskDock Paste Acceptance ecb8e568', 'activeId': 'editor', 'focused': True}
+PASS 复制 A-red 后采集入库（1/4） :: {'copied': 'A-red', 'attempts': [{'attempt': 1, 'foreground': {'step': 'copy-A-red#1', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}, 'items_total': 1, 'expected_total': 1, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}], 'final': {'attempt': 1, 'foreground': {'step': 'copy-A-red#1', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}, 'items_total': 1, 'expected_total': 1, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}}
+PASS 复制 B-green 后采集入库（2/4） :: {'copied': 'B-green', 'attempts': [{'attempt': 1, 'foreground': {'step': 'copy-B-green#1', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}, 'items_total': 2, 'expected_total': 2, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}], 'final': {'attempt': 1, 'foreground': {'step': 'copy-B-green#1', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}, 'items_total': 2, 'expected_total': 2, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}}
+PASS 复制 text-C 后采集入库（3/4） :: {'copied': 'text-C', 'attempts': [{'attempt': 1, 'foreground': {'step': 'copy-text-C#1', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}, 'items_total': 4, 'expected_total': 3, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}], 'final': {'attempt': 1, 'foreground': {'step': 'copy-text-C#1', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}, 'items_total': 4, 'expected_total': 3, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}}
+PASS 复制 D-blue 后采集入库（4/4） :: {'copied': 'D-blue', 'attempts': [{'attempt': 1, 'foreground': {'step': 'copy-D-blue#1', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}, 'items_total': 5, 'expected_total': 4, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}], 'final': {'attempt': 1, 'foreground': {'step': 'copy-D-blue#1', 'foreground_source': 'chrome.exe', 'foreground_hwnd': 198790, 'target_hwnd': 1378252}, 'items_total': 5, 'expected_total': 4, 'monitor_delta': {'observed_events': 1, 'captured': 1, 'recorded': 1, 'duplicates': 0, 'skipped': 0, 'dropped_events': 0, 'dropped_contents': 0, 'failed': 0}}}
+FAIL 历史新增条目数恰为 4 :: 0 -> 5
+PASS 采集到 3 张图片与 1 条文字 :: {'new_items': 5, 'images': 3, 'texts': 1}
+PASS 采集入库的 A-red 像素可见且颜色正确 :: {'width': 240, 'height': 160, 'alphaMin': 255, 'alphaMax': 255, 'transparentPixels': 0, 'opaquePixels': 38400, 'avgRgb': [220, 30, 30], 'samples': {'center': [220, 30, 30, 255], 'topLeft': [220, 30, 30, 255], 'bottomRight': [220, 30, 30, 255]}, 'id': 'e616d1da-9cfb-46bb-a5d0-5e574fe7087b', 'copy_count': 1, 'width_field': 240, 'height_field': 160, 'expected': 'A-red'}
+PASS 采集入库的 A-red 尺寸为 240x160 :: [240, 160]
+PASS 采集入库的 B-green 像素可见且颜色正确 :: {'width': 240, 'height': 160, 'alphaMin': 255, 'alphaMax': 255, 'transparentPixels': 0, 'opaquePixels': 38400, 'avgRgb': [30, 180, 60], 'samples': {'center': [30, 180, 60, 255], 'topLeft': [30, 180, 60, 255], 'bottomRight': [30, 180, 60, 255]}, 'id': '479cf756-2cdc-4ba5-9c46-343b049629ef', 'copy_count': 1, 'width_field': 240, 'height_field': 160, 'expected': 'B-green'}
+PASS 采集入库的 B-green 尺寸为 240x160 :: [240, 160]
+PASS 采集入库的 D-blue 像素可见且颜色正确 :: {'width': 240, 'height': 160, 'alphaMin': 255, 'alphaMax': 255, 'transparentPixels': 0, 'opaquePixels': 38400, 'avgRgb': [30, 60, 220], 'samples': {'center': [30, 60, 220, 255], 'topLeft': [30, 60, 220, 255], 'bottomRight': [30, 60, 220, 255]}, 'id': '7dc0a9a5-d476-4d79-b8ef-62b95f90bb93', 'copy_count': 1, 'width_field': 240, 'height_field': 160, 'expected': 'D-blue'}
+PASS 采集入库的 D-blue 尺寸为 240x160 :: [240, 160]
+PASS 文字内容完整入库 :: {'length': 26, 'matches': True}
+PASS 粘贴前测试页编辑器仍是焦点 :: {'ok': True, 'title': 'TaskDock Paste Acceptance ecb8e568', 'activeId': 'editor', 'focused': True}
+PASS 目标预检通过且进程/窗口匹配 :: {'hwnd': 1378252, 'pid': 70896, 'title': 'TaskDock Paste Acceptance ecb8e568 - 用户配置 1 - Microsoft\u200b Edge', 'exe_path': 'c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe'}
+PASS 手动分组顺序为 A/B/C/D :: ['e616d1da-9cfb-46bb-a5d0-5e574fe7087b', '479cf756-2cdc-4ba5-9c46-343b049629ef', '06a75535-91ea-4d0f-8ff4-2014c4b6c659', '7dc0a9a5-d476-4d79-b8ef-62b95f90bb93']
+PASS 分组包含 4 项 :: 4
+PASS 粘贴任务结束 :: completed
+PASS 粘贴任务完成且发送 4/4 :: {'id': 'f94dbefa-7db0-4b0a-acec-6d3d9d537948', 'group_id': '64d338fc-f55d-463e-a5e0-57dbe4e93574', 'target_title': 'TaskDock Paste Acceptance ecb8e568 - 用户配置 1 - Microsoft\u200b Edge', 'target_exe': 'c:\\program files (x86)\\microsoft\\edge\\application\\msedge.exe', 'status': 'completed', 'total': 4, 'sent': 4, 'started_at': '2026-10-30T08:28:11.787748300+00:00', 'ended_at': '2026-10-30T08:28:17.553255500+00:00', 'message': '已发送 4/4 项粘贴动作；目标应用是否接收无法自动验证（4 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容', 'remaining_items': [], 'restored': True}
+PASS 粘贴任务无剩余项 :: []
+PASS 粘贴后恢复原剪贴板 :: 已发送 4/4 项粘贴动作；目标应用是否接收无法自动验证（4 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容
+PASS 目标页面图片数量为 3 :: 3
+PASS 目标页面文字完整 :: MIXED-TEXT-C-7f3a9d-图文混合粘贴
+PASS DOM 顺序为 图/图/文/图 :: ['image', 'image', 'text', 'image']
+PASS 文字位于第三位且完整 :: {'type': 'text', 'text': 'MIXED-TEXT-C-7f3a9d-图文混合粘贴'}
+PASS 目标第 1 张图片尺寸为 240x160 :: [240, 160]
+PASS 目标第 1 张图片 Alpha 正确 :: [255, 255, 0]
+PASS 目标第 1 张图片 RGB 正确 :: [220, 30, 30]
+PASS 目标第 1 张图片可见 :: [True, 240, 160]
+PASS 目标第 2 张图片尺寸为 240x160 :: [240, 160]
+PASS 目标第 2 张图片 Alpha 正确 :: [255, 255, 0]
+PASS 目标第 2 张图片 RGB 正确 :: [30, 180, 60]
+PASS 目标第 2 张图片可见 :: [True, 240, 160]
+PASS 目标第 3 张图片尺寸为 240x160 :: [240, 160]
+PASS 目标第 3 张图片 Alpha 正确 :: [255, 255, 0]
+PASS 目标第 3 张图片 RGB 正确 :: [30, 60, 220]
+PASS 目标第 3 张图片可见 :: [True, 240, 160]
+PASS 目标图片无重复颜色/无重复插入 :: [(220, 30, 30), (30, 180, 60), (30, 60, 220)]
+FAIL 剪贴板恢复为蓝图 D（颜色/Alpha/尺寸）
+PASS 剪贴板未被 A/B/C 覆盖 :: UI-11｜Tooltip 与气泡设计
+PASS 粘贴后历史条数不变 :: []
+PASS 粘贴不增加 copy_count :: {'before': {'7dc0a9a5-d476-4d79-b8ef-62b95f90bb93': 1, '06a75535-91ea-4d0f-8ff4-2014c4b6c659': 1, '479cf756-2cdc-4ba5-9c46-343b049629ef': 1, 'e616d1da-9cfb-46bb-a5d0-5e574fe7087b': 1}, 'after': {'7dc0a9a5-d476-4d79-b8ef-62b95f90bb93': 1, '06a75535-91ea-4d0f-8ff4-2014c4b6c659': 1, '479cf756-2cdc-4ba5-9c46-343b049629ef': 1, 'e616d1da-9cfb-46bb-a5d0-5e574fe7087b': 1}}
+PASS 粘贴自写内容未进入采集链路 :: {'captured': 0, 'recorded': 0}
+PASS 监听无丢弃事件 :: {'captured': 6, 'content_queue_capacity': 8, 'content_queue_max_bytes': 134217728, 'dropped_contents': 0, 'dropped_events': 0, 'duplicates': 1, 'event_queue_capacity': 64, 'failed': 0, 'max_capture_latency_ms': 9, 'max_process_latency_ms': 30, 'merged_events': 0, 'observed_events': 11, 'peak_content_queue': 1, 'peak_event_queue': 1, 'recorded': 6, 'skipped': 0}
+EVIDENCE D:\Develop\task_dock\docs\clipboard\evidence\p1-03-mixed-paste-20261030-162822-ecb8e568.json
+EXIT=1
+END 2026-10-30 16:28:23

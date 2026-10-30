@@ -1,0 +1,8 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc-v05r3\N2-load-notify-off-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc-v05r3\N2-load-notify-off-appdata port=47891
+[error] RuntimeError: µÈ´ý½¡¿µ¼ì²é³¬Ê±: <urlopen error timed out>
+{
+  "meta": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N2-load-notify-off-20261030-220316-meta.json",
+  "summary": {
+    "samples": 0
+  }
+}

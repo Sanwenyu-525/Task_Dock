@@ -1,0 +1,339 @@
+{
+  "test": "real-agent-automatic-integration",
+  "generated_at": "2026-10-30T14:59:19.074471+08:00",
+  "source_exe": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-acc\\task-dock.exe",
+  "source_exe_bytes": 15502848,
+  "git_head": "66d1eb7",
+  "isolated_root": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-agent-int-20261030-145152",
+  "real_user_configs": "只读复制 auth/credentials；未写入任何真实 Agent 配置目录",
+  "tools": {
+    "codex": {
+      "exe": "C:\\Users\\ASUS\\AppData\\Local\\OpenAI\\Codex\\bin\\codex.exe",
+      "found": true
+    },
+    "dsh": {
+      "exe": "C:\\Users\\ASUS\\AppData\\Local\\Programs\\DeepSeek Harness\\resources\\runtime\\cli\\bin\\dsh.cmd",
+      "found": true
+    },
+    "opencode": {
+      "exe": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\oc-isolated\\node_modules\\.bin\\opencode.cmd",
+      "found": true
+    }
+  },
+  "settings": {
+    "http_enabled": true,
+    "http_port": 47861,
+    "mock_enabled": false,
+    "clipboard_enabled": false,
+    "auto_backup": false,
+    "notify_agent": false,
+    "notify_reminder": false,
+    "notify_muted": false,
+    "snap_enabled": false,
+    "hotkey_enabled": false,
+    "stale_run_minutes": 15,
+    "perf_diagnostics_enabled": true
+  },
+  "installs": {
+    "codex": {
+      "rc": 0,
+      "ms": 194,
+      "result": {
+        "adapter": "codex",
+        "health": {
+          "configured": true,
+          "enabled": true,
+          "last_event_at": null,
+          "recent_event": false,
+          "state": "no-events",
+          "verified": false
+        },
+        "limitations": [
+          "Codex App（桌面版）与 CLI 共用 ~/.codex；App Server（JSON-RPC）可观测能力未在本轮验证",
+          "Hook 由 Codex 在会话生命周期触发；配置写入成功 ≠ 事件已到达，以真实事件为准"
+        ],
+        "note": "配置已写入；首次真实事件到达前，接入状态为「已配置，待事件验证」",
+        "reports": [
+          {
+            "backup": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-agent-int-20261030-145152\\codex\\hooks.taskdock-bak-20261030-065153.json",
+            "existed_before": true,
+            "installed_events": [
+              "SessionStart",
+              "UserPromptSubmit",
+              "PreToolUse",
+              "PostToolUse",
+              "PermissionRequest",
+              "Stop",
+              "Notification"
+            ],
+            "path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-agent-int-20261030-145152\\codex\\hooks.json",
+            "third_party_entries": 1,
+            "valid_json_after_write": true
+          }
+        ]
+      },
+      "stderr": ""
+    },
+    "dsh": {
+      "rc": 0,
+      "ms": 41,
+      "result": {
+        "adapter": "dsh",
+        "health": {
+          "state": "unregistered"
+        },
+        "note": "插件已写入；重启 DSH 后生效",
+        "plugin_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-agent-int-20261030-145152\\home\\.dsh\\plugins\\task-dock-bridge"
+      },
+      "stderr": ""
+    },
+    "opencode": {
+      "rc": 0,
+      "ms": 35,
+      "result": {
+        "adapter": "opencode",
+        "health": {
+          "configured": true,
+          "enabled": true,
+          "last_event_at": null,
+          "recent_event": false,
+          "state": "no-events",
+          "verified": false
+        },
+        "note": "插件已写入；重启 OpenCode 会话后生效",
+        "plugin_file": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-agent-int-20261030-145152\\home\\.config\\opencode\\plugins\\task-dock-bridge.ts"
+      },
+      "stderr": ""
+    }
+  },
+  "config_preservation": {
+    "codex_third_party_stop_preserved": true,
+    "codex_marker_written": true,
+    "opencode_third_party_plugin_kept": true,
+    "opencode_bridge_written": true,
+    "dsh_third_party_plugin_kept": true,
+    "dsh_bridge_written": true,
+    "dsh_bridge_points_port": true
+  },
+  "sources": {
+    "mock": {
+      "adapter": "mock",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "codex": {
+      "adapter": "codex",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "trae": {
+      "adapter": "trae",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "workbuddy": {
+      "adapter": "workbuddy",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "qoder": {
+      "adapter": "qoder",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "deepseek-harness": {
+      "adapter": "dsh",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "opencode": {
+      "adapter": "opencode",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "zcode": {
+      "adapter": "zcode",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "bridge": {
+      "adapter": "bridge",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    },
+    "bench": {
+      "adapter": "benchmark",
+      "enabled": 1,
+      "verified": 0,
+      "transport_verified": 0
+    }
+  },
+  "agents": {
+    "codex": {
+      "status": "NOT TESTED",
+      "source_id": "codex",
+      "rc": 1,
+      "wall_ms": 198063,
+      "events_before": 0,
+      "events_after": 0,
+      "detail": {},
+      "stdout_tail": "",
+      "stderr_tail": "in the `commentary` channel whenever a skill causes you to take an action or pause your work.\\n\\nWhen using a skill the user did not explicitly name, follow this procedure:\\n\\n- First, tell the user in the commentary channel **why** you are using the skill.\\n- Then, use the skill as long as it stays within the scope of the task.\\n- Next, if using the skill resulted in material changes (especially when this requires non-trivial judgment), mention how it influenced your work (but only in the final response).\\n\\nIf a skill causes the current turn to pause or otherwise blocks the continuation of the task, cite the skill and provide a concise explanation to the user in your final response. Do not cite skills you merely inspected.\\n\",\"available_access_programs\":{\"cyber\":[\"standard\"]}}]}\nERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.6-sol' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\"}}\nERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.6-sol' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\"}}\n"
+    },
+    "dsh": {
+      "status": "NOT TESTED",
+      "source_id": "deepseek-harness",
+      "rc": 1,
+      "wall_ms": 3295,
+      "events_before": 0,
+      "events_after": 0,
+      "detail": {},
+      "stdout_tail": "{\"type\":\"session\",\"sessionId\":\"session-a41bf66f-16a1-4fba-9ecf-d83c645bd664\",\"cwd\":\"C:\\\\Users\\\\ASUS\\\\AppData\\\\Local\\\\Temp\\\\taskdock-agent-int-20261030-145152\\\\workspace\"}\n{\"type\":\"status\",\"phase\":\"turn_start\",\"turn\":1}\n{\"type\":\"status\",\"phase\":\"step_start\",\"turn\":1,\"step\":1}\n{\"type\":\"status\",\"phase\":\"step_end\",\"turn\":1,\"step\":1}\n{\"type\":\"status\",\"phase\":\"turn_end\",\"turn\":1,\"reason\":{\"kind\":\"error\",\"error\":{\"message\":\"Authentication Fails, Your api key: ****18e0 is invalid (request_id: 533816c4-f82d-403b-82a3-b15f0bd797e7)\",\"code\":\"AUTH\",\"status\":401}}}\n{\"type\":\"final\",\"text\":\"\"}\n",
+      "stderr_tail": "[llm-deepseek-api-key] model listing from https://api.deepseek.com/models failed (LlmError: https://api.deepseek.com/models answered HTTP 401); using the bundled catalog\ndsh: AUTH: Authentication Fails, Your api key: ****18e0 is invalid (request_id: 533816c4-f82d-403b-82a3-b15f0bd797e7)\n"
+    },
+    "opencode": {
+      "status": "NOT TESTED",
+      "source_id": "opencode",
+      "rc": 1,
+      "wall_ms": 179761,
+      "events_before": 0,
+      "events_after": 0,
+      "detail": {},
+      "stdout_tail": "58c6ffeggBviPkkixyeEo\",\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"Model id : deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported\",\"statusCode\":400,\"isRetryable\":false,\"responseHeaders\":{\"access-control-allow-credentials\":\"true\",\"access-control-allow-headers\":\"DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization\",\"access-control-allow-methods\":\"OPTION,HEAD,GET,POST\",\"access-control-allow-origin\":\"*\",\"access-control-max-age\":\"1728000\",\"connection\":\"keep-alive\",\"content-length\":\"146\",\"content-type\":\"application/json; charset=utf-8\",\"date\":\"Fri, 30 Oct 2026 06:58:56 GMT\",\"strict-transport-security\":\"max-age=15724800; includeSubDomains\",\"set-cookie\":\"acw_tc=276385c317933435364565703ed32cc35d6e6effcb2caa25e41b06cc9d6f13;path=/;HttpOnly;Max-Age=1800\"},\"responseBody\":\"{\\\"error\\\":{\\\"message\\\":\\\"Model id : deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported\\\",\\\"request_id\\\":\\\"8938978d-075a-4a27-8092-b83e59b6b5aa\\\"}}\",\"metadata\":{\"url\":\"https://api-inference.modelscope.cn/v1/chat/completions\"}}}}\n[task-dock] critical report failed (ECONNREFUSED: Unable to connect. Is the computer able to access the url?), fallback=true\n",
+      "stderr_tail": ""
+    }
+  },
+  "hook_latency": {},
+  "lingering_hook_processes": [
+    {
+      "pid": 35872,
+      "cmd": "powershell -NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--agent-hook*' } | Select-Object ProcessId,CommandLine | C"
+    }
+  ],
+  "events": {
+    "by_source": {},
+    "dedupe_keys": 0,
+    "duplicate_dedupe_keys": 0
+  },
+  "stats_start": {
+    "db": {
+      "db_bytes": 487424,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 119,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 1.0,
+        "calls": 3,
+        "pool_size": 3,
+        "slow_queries_100ms": 0
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 0
+    },
+    "http": {
+      "accepted": 0,
+      "active_connections": 1,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-30T06:51:54.402135700+00:00",
+      "max_active_requests": 0,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 2
+    },
+    "notifications": {
+      "attempted": 0,
+      "failed": 0,
+      "succeeded": 0
+    },
+    "pipeline": {
+      "batches": 0,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 0.0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "samples": 0
+      },
+      "events_merged": 0,
+      "events_processed": 0,
+      "events_received": 0,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 0.0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "samples": 0
+      },
+      "last_batch_size": 0,
+      "last_flush_at": null,
+      "lifecycle": "running",
+      "max_batch_size": 0,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 0,
+      "uptime_secs": 0
+    },
+    "process": {
+      "alloc_calls": 6123,
+      "alloc_stats_enabled": true,
+      "dealloc_calls": 2718,
+      "live_bytes": 837743,
+      "peak_bytes": 1926778,
+      "total_allocated_bytes": 2936781
+    },
+    "runtime": {
+      "alive_tasks": 7
+    }
+  },
+  "stats_end": {},
+  "uninstall": {
+    "codex": {
+      "rc": 0,
+      "marker_removed": true,
+      "third_party_kept": true
+    },
+    "dsh": {
+      "rc": 0,
+      "marker_removed": null,
+      "third_party_kept": true
+    },
+    "opencode": {
+      "rc": 0,
+      "marker_removed": null,
+      "third_party_kept": true
+    }
+  }
+}
