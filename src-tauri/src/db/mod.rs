@@ -932,6 +932,7 @@ impl Db {
             ("notify_burst_max", "3"),
             ("notify_rate_window_secs", "60"),
             ("notify_done_aggregate", "true"),
+            ("agent_alert_sound", "true"),
             ("overdue_grace_hours", "24"),
             ("stale_run_minutes", "15"),
             ("auto_backup", "true"),
@@ -1226,6 +1227,9 @@ pub struct Settings {
     /// 高频完成合并为一条摘要（关闭后逐个弹出，仍受频率上限约束）
     #[serde(default = "default_true")]
     pub notify_done_aggregate: bool,
+    /// Agent 异常（waiting/failed）时隐藏态胶囊脉动 + 提示音（v0.6 异常变响）
+    #[serde(default = "default_true")]
+    pub agent_alert_sound: bool,
     #[serde(default = "default_grace")]
     pub overdue_grace_hours: u32,
     #[serde(default = "default_stale")]

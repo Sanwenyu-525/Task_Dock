@@ -238,3 +238,47 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 | 侧栏宽约 78/700 | 62/400 | 窄幅工具，需给统计卡与筛选留空间 |
 | 卡片几乎全透明 | 浅色 86%→66% | 真实壁纸下文字对比度会失效（用户明确禁止牺牲可读性） |
 | 空状态有折射高光 | 渐变模拟的静态高光 | 实时折射需要 WebGL/着色器，收益不抵性能风险（04 详述） |
+
+---
+
+## 9. color-mix 常量化重构（2026-10-31 追加）
+
+`src/styles-themes.css` 已从「手写 rgba」重构为「基础色常量 + `color-mix` 派生」（本次不改任何
+视觉值；上文第 4/5 节的色板字面量仍为有效渲染值，读法见下）：
+
+- **常量**：每个「预设×明暗」主组合块头部声明 `--c-paper / --c-night / --c-ink / --c-accent /
+  --c-accent-deep / --c-danger` 六个基础色；其余块（弹层/胶囊/降级/结构层）经 CSS 级联引用。
+  **全站改色从这些常量开始**（如液态玻璃 accent 冷调化这类改动，预期只改常量行）。
+- **派生公式**：`rgba(C, a)` ≡ `color-mix(in srgb, var(--c-x) N%, transparent)`（N = a×100），
+  sRGB 混透明渲染严格等价；本文各色板表的 `rgba(…)` 字面量此后应读作「对应常量 + 该百分比」。
+- **token 别名**：值与常量相等的 `--accent / --icon-accent / --rail-active-bar / --accent-hover /
+  --pill-active-text / --rail-active-text / --menu-active-text / --menu-danger` 已改写为
+  `var(--c-*)` 引用。
+- **保留手写字面量**（有意不常量化）：一次性装饰渐变 stop（--window-fill/--decor/--orb-gradient
+  等艺术层）、阴影色相（钢蓝系，如 `72,82,160`）、accent 变体（`129,140,248` / `139,124,246` /
+  `148,162,255`）——单次使用强转常量只增加间接层；这些随艺术层手调。
+- **边界**：跨预设/裸 `:root` 上下文只派生 paper/night（全预设同值）；accent/ink/danger 分预设
+  变值，仅在选择器精确锁定单一「预设×明暗」的块内派生。
+- **等价性证据**：转换前后 804 条声明逐 (上下文, 变量) 归一化比对 0 差异
+  （`tmp/acceptance/agent-alert-colormix-20261031/verify-parity.mjs`，2026-10-31 运行，退出码 0）。
+
+---
+
+## 10. 圆角半径对齐与主窗滚动条（2026-10-31 追加）
+
+- **圆角对齐**：`--radius-window` 必须与 `PRESET_WINDOW_RADIUS`（`lib/theme.ts`，逻辑像素）
+  及 Rust 端 Win32 区域半径一致。液态玻璃的 `:root[data-preset="liquid-glass"]` 块显式声明
+  `--radius-window: 20px`（dream 为 18px）；此前 liquid 沿用 18px，CSS 填充到不了 20px 区域
+  边缘，圆角处留下透明缝隙带（solid 下呈白边、glass 下混入桌面色）。两套预设都显式声明该
+  token，保持令牌结构一致（`styles-themes.test.ts`）。
+- **主窗滚动条**：内容滚动容器使用透明轨道 + 6px 圆角 thumb
+  （`styles.css` `.dock-window ::-webkit-scrollbar`，thumb =
+  `color-mix(in srgb, var(--text-tertiary) 35%, transparent)`），与右键菜单同款；
+  默认系统滚动条的亮灰轨道会在圆角窗口边缘形成白色竖条。滚动能力不隐藏。
+- **幽灵溢出**：≤384px 窄窗断点的导航轨间距由 3px 收到 2px，消除 340px 高窗口下
+  `rail-items` 只滚 2px 的原生滚动条（等同于 context-menu 的 +2px 容差先例）。
+- **glass 原生材质（2026-10-31 晚更正）**：Win11 + 区域裁剪时 Mica/Acrylic 与 legacy
+  blur 都会越过区域圆角留下暗楔，默认后端改为 `css`（不挂原生材质）；玻璃由
+  `--window-fill` 的半透明渐变承担（liquid 76–86% 不透明，dream 为不透明）。
+  `data-material=glass` / `data-native-glass=true` 保持不变，设置页文案标注
+  「CSS 半透明玻璃（原生模糊已停用）」。

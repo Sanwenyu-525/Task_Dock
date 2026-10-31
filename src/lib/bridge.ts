@@ -200,6 +200,8 @@ export interface Settings {
   notify_rate_window_secs: number;
   /** 高频完成合并为一条摘要 */
   notify_done_aggregate: boolean;
+  /** Agent 异常（waiting/failed）时隐藏态胶囊脉动 + 提示音（v0.6 异常变响） */
+  agent_alert_sound: boolean;
   overdue_grace_hours: number;
   stale_run_minutes: number;
   auto_backup: boolean;
@@ -627,10 +629,10 @@ export const saveWindowRect = (rect: { x: number; y: number; w: number; h: numbe
   invoke<void>("save_window_rect", { rect });
 export const getWindowRect = () =>
   invoke<{ x: number; y: number; w: number; h: number } | null>("get_window_rect");
-export const saveSnapState = (edge: string, hidden: boolean) =>
-  invoke<void>("save_snap_state", { state: { edge, hidden } });
+export const saveSnapState = (edge: string, hidden: boolean, center: number | null = null) =>
+  invoke<void>("save_snap_state", { state: { edge, hidden, center } });
 export const getSnapState = () =>
-  invoke<{ edge: string; hidden: boolean } | null>("get_snap_state");
+  invoke<{ edge: string; hidden: boolean; center?: number | null } | null>("get_snap_state");
 
 // ── 数据 ──
 export interface BackupEntry {
@@ -742,14 +744,17 @@ export const setHotkeysEnabled = (enabled: boolean) =>
   invoke<void>("set_hotkeys_enabled", { enabled });
 export const getAgentInboxDir = () => invoke<string>("get_agent_inbox_dir");
 
+/** 胶囊区域模式：off = 整窗；rail = 只露分类轨道；panel = 轨道 ∪ 功能面板。 */
+export type CapsuleRegionMode = "off" | "rail" | "panel";
+
 /**
- * 隐藏态胶囊区域裁剪（Smart Dock Capsule）：enabled=true 时把主窗口的
- * Win32 区域收窄为停靠边上的短胶囊（其余部分不绘制、不命中鼠标）；
- * enabled=false 恢复整窗圆角区域。edge: left|right|top|bottom。
- * 返回 false 表示应用失败（前端应按可见性兜底，不得假设胶囊形态生效）。
+ * 分类胶囊区域（Smart Dock Capsule）：把主窗口的 Win32 区域裁成
+ * 轨道（折叠态）或「轨道 ∪ 面板」（展开态），区域外不绘制、不命中鼠标。
+ * **窗口位置与尺寸不变**——这是命中区稳定的前提。
+ * 返回 false 表示应用失败（前端按可见性兜底，不得假设胶囊形态生效）。
  */
-export const applyWindowCapsule = (enabled: boolean, edge: string) =>
-  invoke<boolean>("apply_window_capsule", { enabled, edge });
+export const applyWindowCapsule = (mode: CapsuleRegionMode, edge: string) =>
+  invoke<boolean>("apply_window_capsule", { mode, edge });
 
 /** 唤回事件：托盘/快捷键等入口发现主窗口"可见但大部分在屏外"时下发，
  *  前端吸附引擎据此安全展开（物理位置在屏外时仅 show/focus 找不回窗口）。 */

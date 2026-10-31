@@ -81,17 +81,38 @@ impl RegionCache {
 
 static REGIONS: LazyLock<Mutex<RegionCache>> = LazyLock::new(|| Mutex::new(RegionCache::new()));
 
-/// 隐藏态胶囊区域参数（Smart Dock Capsule）。
-/// 数值与前端 `src/lib/edgeSnap.ts` 的 CAPSULE_THICKNESS_CSS / CAPSULE_LENGTH_CSS
-/// 保持一致（跨端契约，system.rs 有单测锁定）。
+// ── 分类胶囊几何常量（CSS px）────────────────────────────────
+//
+// 与前端 `src/lib/capsuleLayout.ts` 是**跨端契约**（两端各有单测锁定同一组
+// 数字）：轨道（rail）竖排分类导航 + 右侧功能面板，折叠时窗口只露出轨道，
+// 展开时露出「轨道 ∪ 面板」的联合区域。窗口本身在停靠期间**不移动、不缩放**，
+// 因此不存在"鼠标跨越胶囊与面板时命中区跟着窗口跑"的抖动来源。
+
+/// 轨道厚度（垂直停靠时为宽，水平停靠时为高）。
+pub const CAPSULE_RAIL_THICKNESS_CSS: u32 = 56;
+/// 轨道长度（沿边方向）。
+pub const CAPSULE_RAIL_LENGTH_CSS: u32 = 300;
+/// 功能面板宽。
+pub const CAPSULE_PANEL_WIDTH_CSS: u32 = 336;
+/// 功能面板高。
+pub const CAPSULE_PANEL_HEIGHT_CSS: u32 = 420;
+/// 轨道与面板之间的间隙（视觉分隔，区域上不连通）。
+pub const CAPSULE_GAP_CSS: u32 = 8;
+/// 面板圆角（轨道为全圆角 = 厚度/2）。
+pub const CAPSULE_PANEL_RADIUS_CSS: u32 = 22;
+
+/// 胶囊区域参数（Smart Dock Capsule）。
+/// 数值与前端 `src/lib/capsuleLayout.ts` 保持一致（跨端契约，两端单测锁定）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CapsuleParams {
     /// 停靠边：0=left 1=right 2=top 3=bottom
     pub edge: u8,
-    /// 胶囊厚度（CSS px）＝隐藏窗口露出的真实宽度
+    /// 轨道厚度（CSS px）
     pub thickness_css: u32,
-    /// 胶囊长度（CSS px）＝沿边方向长度
+    /// 轨道长度（CSS px，沿边方向）
     pub length_css: u32,
+    /// true = 展开态（轨道 ∪ 面板）；false = 折叠态（仅轨道）
+    pub expanded: bool,
 }
 
 /// 胶囊模式按 **hwnd** 绑定：只作用于主窗口，右键菜单弹窗
@@ -99,46 +120,26 @@ pub struct CapsuleParams {
 struct CapsuleState {
     hwnd: isize,
     params: CapsuleParams,
-    /// 设置时刻：自愈宽限窗基准（见 CAPSULE_HEAL_GRACE）。
-    set_at: std::time::Instant,
 }
 
 static CAPSULE: LazyLock<Mutex<Option<CapsuleState>>> = LazyLock::new(|| Mutex::new(None));
 
-/// 自愈宽限窗：胶囊模式刚设置的一段时间内**不做**"窗口大部分可见 → 撤销胶囊"
-/// 的判定。根因防护：前端在 setPosition 之后立刻发起裁剪，而主线程可能尚未
-/// 处理完移动——此刻读取窗口位置仍为完全可见的旧坐标，旧实现会据此错误清除
-/// 胶囊模式并回落整窗区域，形成截图中"全高浅色竖条 + 完整圆角阴影"的残留。
-/// 前端已改为等待坐标落定后再裁剪（双重保险），此处宽限窗兜底残余时序。
-const CAPSULE_HEAL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// 自愈宽限判定（纯函数，可测）：距胶囊设置不足宽限窗时不允许自愈撤销。
-fn capsule_heal_allowed(set_at: std::time::Instant, now: std::time::Instant) -> bool {
-    now.duration_since(set_at) >= CAPSULE_HEAL_GRACE
-}
-
 /// 设置/清除某窗口的胶囊区域模式（调用方负责随后在主线程 apply）。
+///
+/// v0.7 起**取消**了「窗口大部分可见 → 自动撤销胶囊」的自愈：
+/// 新架构中窗口在停靠期间始终完整可见（贴边齐平、不再滑出屏幕），
+/// 「大部分可见」是正常状态，旧自愈会把胶囊区域瞬间撤销成整窗矩形。
+/// 取而代之的安全网是：区域由前端在停靠/解除/关闭吸附三条路径上显式设置，
+/// 且窗口本身始终可见可点击（最坏情况是露出整窗而不是消失在屏外）。
 pub fn set_capsule(hwnd: isize, params: Option<CapsuleParams>) {
     let mut cap = CAPSULE.lock().unwrap_or_else(|e| e.into_inner());
-    *cap = params.map(|p| CapsuleState {
-        hwnd,
-        params: p,
-        set_at: std::time::Instant::now(),
-    });
+    *cap = params.map(|p| CapsuleState { hwnd, params: p });
 }
 
 fn capsule_for(hwnd: isize) -> Option<CapsuleParams> {
     let cap = CAPSULE.lock().unwrap_or_else(|e| e.into_inner());
     match *cap {
         Some(ref s) if s.hwnd == hwnd => Some(s.params),
-        _ => None,
-    }
-}
-
-fn capsule_set_at(hwnd: isize) -> Option<std::time::Instant> {
-    let cap = CAPSULE.lock().unwrap_or_else(|e| e.into_inner());
-    match *cap {
-        Some(ref s) if s.hwnd == hwnd => Some(s.set_at),
         _ => None,
     }
 }
@@ -260,23 +261,11 @@ fn apply_pass<R: Runtime>(win: &WebviewWindow<R>, hwnd: isize, logical_radius: f
         return false;
     }
 
-    // ── 隐藏态胶囊模式：只露出停靠边上的短胶囊 ─────────────────
-    // 区域外的内容不被绘制、也不接收鼠标命中（Win32 SetWindowRgn 语义），
-    // 解决"整窗切片在胶囊以外露出界面内容/残留命中区"的结构性问题。
+    // ── 分类胶囊模式：只露出轨道（折叠）或「轨道 ∪ 面板」（展开）──
+    // 区域外的内容不被绘制、也不接收鼠标命中（Win32 SetWindowRgn 语义）。
+    // 窗口位置/尺寸在停靠期间保持不变，区域切换是唯一的视觉状态变化。
     if let Some(cap) = capsule_for(hwnd) {
-        // 自愈：窗口其实大部分可见（前端异常退出未清理、恢复路径竞态）→
-        // 清除胶囊模式并回落整窗区域，绝不让可见窗口保持胶囊形态。
-        // 宽限窗内不判定：刚设置胶囊时窗口坐标可能尚未被主线程处理完
-        // （ setPosition 异步），单次位置读取不可靠（真机截图根因之一）。
-        let heal_allowed = capsule_set_at(hwnd)
-            .map(|set_at| capsule_heal_allowed(set_at, std::time::Instant::now()))
-            .unwrap_or(false);
-        if heal_allowed && capsule_window_mostly_visible(win) {
-            set_capsule(hwnd, None);
-            tracing::warn!("胶囊模式自愈清除：窗口大部分可见（hwnd={hwnd}）");
-        } else {
-            return apply_capsule_pass(hwnd, w, h, scale, cap);
-        }
+        return apply_capsule_pass(hwnd, w, h, scale, cap);
     }
 
     let stamp = RegionStamp {
@@ -319,40 +308,6 @@ fn apply_pass<R: Runtime>(win: &WebviewWindow<R>, hwnd: isize, logical_radius: f
     ok
 }
 
-/// 胶囊模式自愈判定：窗口位置「大部分可见」时不得保持胶囊形态
-/// （前端异常退出未清理、隐藏/展开竞态的兜底，防窗口变成不可用的小块）。
-#[cfg(windows)]
-fn capsule_window_mostly_visible<R: Runtime>(win: &WebviewWindow<R>) -> bool {
-    let rect = (|| {
-        let pos = win.outer_position().ok()?;
-        let size = win.outer_size().ok()?;
-        Some(crate::commands::settings::WindowRect {
-            x: pos.x,
-            y: pos.y,
-            w: size.width,
-            h: size.height,
-        })
-    })();
-    let Some(rect) = rect else {
-        return false; // 几何未知：保守认为不可见，维持胶囊形态等下一次 apply
-    };
-    let Ok(monitors) = win.available_monitors() else {
-        return false;
-    };
-    let bounds: Vec<(i32, i32, u32, u32)> = monitors
-        .iter()
-        .map(|m| {
-            (
-                m.position().x,
-                m.position().y,
-                m.size().width,
-                m.size().height,
-            )
-        })
-        .collect();
-    crate::commands::settings::is_rect_mostly_visible(&rect, &bounds)
-}
-
 /// 胶囊区域矩形（**显式宽高**，杜绝依赖变量名推断方向）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CapsuleRegionRect {
@@ -363,21 +318,55 @@ pub(crate) struct CapsuleRegionRect {
     pub radius: i32,
 }
 
+impl CapsuleRegionRect {
+    fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + self.height
+    }
+    fn center(&self) -> (i32, i32) {
+        (self.x + self.width / 2, self.y + self.height / 2)
+    }
+}
+
+/// 胶囊区域集合：折叠态只有轨道；展开态 = 轨道 ∪ 面板（两块圆角矩形，
+/// 中间由 `gap` 分隔，**不连通**——间隙既不属于区域也不拦截鼠标）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CapsuleRegionSet {
+    pub rail: CapsuleRegionRect,
+    pub panel: Option<CapsuleRegionRect>,
+    /// 间隙中点：必须落在区域之外（回读验证用）。
+    pub gap_probe: Option<(i32, i32)>,
+}
+
+impl CapsuleRegionSet {
+    /// 联合区域包围盒（x, y, right, bottom）。
+    pub fn bounds(&self) -> (i32, i32, i32, i32) {
+        let (mut left, mut top) = (self.rail.x, self.rail.y);
+        let (mut right, mut bottom) = (self.rail.x + self.rail.width, self.rail.y + self.rail.height);
+        if let Some(p) = self.panel {
+            left = left.min(p.x);
+            top = top.min(p.y);
+            right = right.max(p.x + p.width);
+            bottom = bottom.max(p.y + p.height);
+        }
+        (left, top, right, bottom)
+    }
+}
+
 /// 胶囊区域几何（纯函数，跨平台可测）。
 ///
 /// 尺寸约定（与前端 CSS 对齐）：
-/// - Left / Right：**纵向**胶囊，width = 厚度、height = 长度；
-/// - Top / Bottom：**横向**胶囊，width = 长度、height = 厚度。
+/// - Left / Right：**纵向**轨道，width = 厚度、height = 长度；轨道贴停靠边；
+/// - Top / Bottom：**横向**轨道，width = 长度、height = 厚度；
+/// - 面板始终在轨道**内侧**（朝屏幕内部），与轨道同轴居中、间隔 `gap`。
 ///
-/// 物理像素按 DPI 换算；方位为「停靠边的对侧」——left 停靠的窗口向左滑出，
-/// 屏幕内露出窗口右缘竖条。窗口尺寸不足时**安全钳制**（长/厚不超过对应
-/// 维度、坐标不越出窗口），绝不产生负尺寸或越界区域。
-pub(crate) fn capsule_rect(
+/// 物理像素按 DPI 换算。窗口尺寸不足以容纳面板时**放弃面板**（只保留轨道），
+/// 绝不产生负尺寸或越界区域——前端会先把窗口撑到容器尺寸，这里是退化兜底。
+pub(crate) fn capsule_regions(
     window_w: i32,
     window_h: i32,
     scale: f64,
     cap: &CapsuleParams,
-) -> Option<CapsuleRegionRect> {
+) -> Option<CapsuleRegionSet> {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -388,6 +377,10 @@ pub(crate) fn capsule_rect(
     }
     let thickness = ((cap.thickness_css as f64) * scale).round() as i32;
     let length = ((cap.length_css as f64) * scale).round() as i32;
+    let panel_w = ((CAPSULE_PANEL_WIDTH_CSS as f64) * scale).round() as i32;
+    let panel_h = ((CAPSULE_PANEL_HEIGHT_CSS as f64) * scale).round() as i32;
+    let gap = ((CAPSULE_GAP_CSS as f64) * scale).round().max(1.0) as i32;
+    let panel_radius = ((CAPSULE_PANEL_RADIUS_CSS as f64) * scale).round() as i32;
     if thickness <= 0 || length <= 0 {
         return None; // 退化防护：胶囊至少 1px
     }
@@ -402,68 +395,139 @@ pub(crate) fn capsule_rect(
         return None;
     }
     let radius = (width.min(height) / 2).max(1);
-    let (mut x, mut y) = match cap.edge {
-        0 => (window_w - width, (window_h - height) / 2), // left  → 窗口右缘竖条
-        1 => (0, (window_h - height) / 2),                // right → 窗口左缘竖条
-        2 => ((window_w - width) / 2, window_h - height), // top   → 窗口下缘横条
-        _ => ((window_w - width) / 2, 0),                 // bottom→ 窗口上缘横条
+    // 轨道贴停靠边（与旧实现相反：旧实现窗口滑出屏幕，露出的是对侧窄条；
+    // 新实现窗口齐平贴边、不再移动，轨道就在窗口的停靠侧）
+    let (x, y) = match cap.edge {
+        0 => (0, (window_h - height) / 2),                // left  → 窗口左缘竖条
+        1 => (window_w - width, (window_h - height) / 2), // right → 窗口右缘竖条
+        2 => ((window_w - width) / 2, 0),                 // top   → 窗口上缘横条
+        _ => ((window_w - width) / 2, window_h - height), // bottom→ 窗口下缘横条
     };
-    // 钳制：区域不得越出窗口几何
-    x = x.clamp(0, window_w - width);
-    y = y.clamp(0, window_h - height);
-    Some(CapsuleRegionRect {
-        x,
-        y,
+    let rail = CapsuleRegionRect {
+        x: x.clamp(0, window_w - width),
+        y: y.clamp(0, window_h - height),
         width,
         height,
         radius,
+    };
+    if !cap.expanded {
+        return Some(CapsuleRegionSet {
+            rail,
+            panel: None,
+            gap_probe: None,
+        });
+    }
+    let (pw, ph) = (panel_w.min(window_w), panel_h.min(window_h));
+    if pw <= 0 || ph <= 0 {
+        return Some(CapsuleRegionSet {
+            rail,
+            panel: None,
+            gap_probe: None,
+        });
+    }
+    let (px, py) = match cap.edge {
+        0 => (rail.x + rail.width + gap, (window_h - ph) / 2),
+        1 => (rail.x - gap - pw, (window_h - ph) / 2),
+        2 => ((window_w - pw) / 2, rail.y + rail.height + gap),
+        _ => ((window_w - pw) / 2, rail.y - gap - ph),
+    };
+    // 越界即放弃面板：宁可只显示轨道，也不让区域跑到窗口外/压住轨道
+    if px < 0 || py < 0 || px + pw > window_w || py + ph > window_h {
+        tracing::warn!(
+            "胶囊面板区域越界，退化为仅轨道（w={window_w} h={window_h} edge={} px={px} py={py} pw={pw} ph={ph}）",
+            cap.edge
+        );
+        return Some(CapsuleRegionSet {
+            rail,
+            panel: None,
+            gap_probe: None,
+        });
+    }
+    let panel = CapsuleRegionRect {
+        x: px,
+        y: py,
+        width: pw,
+        height: ph,
+        radius: panel_radius.max(1),
+    };
+    let gap_probe = match cap.edge {
+        0 => Some((rail.x + rail.width + gap / 2, rail.center().1)),
+        1 => Some((panel.x + panel.width + gap / 2, rail.center().1)),
+        2 => Some((rail.center().0, rail.y + rail.height + gap / 2)),
+        _ => Some((rail.center().0, panel.y + panel.height + gap / 2)),
+    };
+    Some(CapsuleRegionSet {
+        rail,
+        panel: Some(panel),
+        gap_probe,
     })
 }
 
-/// 应用隐藏态胶囊区域：停靠边对侧的短圆角矩形（物理像素按当前 DPI 换算）。
+/// 应用胶囊区域：折叠 = 轨道圆角矩形；展开 = 轨道 ∪ 面板（CombineRgn OR）。
 /// 区域外不绘制、不接收鼠标；DPI/尺寸变化由外层 apply 重算。
-/// 成功后用 GetWindowRgn **回读验证**包围盒与目标矩形一致——
-/// SetWindowRgn 返回成功不代表区域内容正确（真机取证要求）。
+/// 成功后用 GetWindowRgn **回读验证**：包围盒一致 + 轨道/面板中心在区域内 +
+/// 间隙中点在区域外——SetWindowRgn 返回成功不代表区域内容正确。
 #[cfg(windows)]
 fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParams) -> bool {
-    use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn};
+    use windows_sys::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, RGN_ERROR, RGN_OR,
+    };
 
-    let Some(rect) = capsule_rect(w, h, scale, &cap) else {
+    let Some(set) = capsule_regions(w, h, scale, &cap) else {
         tracing::warn!(
             "胶囊区域几何退化（w={w} h={h} scale={scale} edge={}）",
             cap.edge
         );
         return false;
     };
-    let applied = unsafe {
+    let round = |r: &CapsuleRegionRect| unsafe {
         // 右/下边界开区间，+1 覆盖最后一行像素（与整窗区域口径一致）
-        let rgn = CreateRoundRectRgn(
-            rect.x,
-            rect.y,
-            rect.x + rect.width + 1,
-            rect.y + rect.height + 1,
-            rect.radius * 2,
-            rect.radius * 2,
-        );
+        CreateRoundRectRgn(
+            r.x,
+            r.y,
+            r.x + r.width + 1,
+            r.y + r.height + 1,
+            r.radius * 2,
+            r.radius * 2,
+        )
+    };
+    let applied = unsafe {
+        let rgn = round(&set.rail);
         if rgn.is_null() {
             false
-        } else if SetWindowRgn(hwnd as _, rgn, 1) == 0 {
-            // 失败时区域未被系统接管，仍归调用方，必须释放。
-            DeleteObject(rgn as _);
-            false
         } else {
-            true
+            let mut ok = true;
+            if let Some(p) = set.panel {
+                let pr = round(&p);
+                if pr.is_null() || CombineRgn(rgn, rgn, pr, RGN_OR) == RGN_ERROR {
+                    ok = false;
+                }
+                if !pr.is_null() {
+                    DeleteObject(pr as _);
+                }
+            }
+            if !ok {
+                DeleteObject(rgn as _);
+                false
+            } else if SetWindowRgn(hwnd as _, rgn, 1) == 0 {
+                // 失败时区域未被系统接管，仍归调用方，必须释放。
+                DeleteObject(rgn as _);
+                false
+            } else {
+                true
+            }
         }
     };
-    // 回读验证：实际区域包围盒必须与目标一致（±1px 容差，见 region_is_current 口径）
-    let verified = applied && capsule_region_matches(hwnd, &rect);
+    let verified = applied && capsule_region_matches(hwnd, &set);
     tracing::debug!(
         hwnd,
         edge = cap.edge,
-        x = rect.x,
-        y = rect.y,
-        width = rect.width,
-        height = rect.height,
+        expanded = cap.expanded,
+        rail_x = set.rail.x,
+        rail_y = set.rail.y,
+        rail_w = set.rail.width,
+        rail_h = set.rail.height,
+        panel = set.panel.is_some(),
         applied,
         verified,
         "胶囊区域应用"
@@ -472,12 +536,15 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
     verified
 }
 
-/// 回读验证胶囊区域：GetWindowRgn 包围盒与目标矩形一致（±1px 容差）。
+/// 回读验证胶囊区域：包围盒 + 关键点包含关系（±1px 容差）。
 #[cfg(windows)]
-fn capsule_region_matches(hwnd: isize, expect: &CapsuleRegionRect) -> bool {
+fn capsule_region_matches(hwnd: isize, expect: &CapsuleRegionSet) -> bool {
     use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, GetRgnBox, GetWindowRgn};
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateRectRgn, DeleteObject, GetRgnBox, GetWindowRgn, PtInRegion,
+    };
 
+    let (left, top, right, bottom) = expect.bounds();
     unsafe {
         let rgn = CreateRectRgn(0, 0, 0, 0);
         if rgn.is_null() {
@@ -492,11 +559,21 @@ fn capsule_region_matches(hwnd: isize, expect: &CapsuleRegionRect) -> bool {
                 bottom: 0,
             };
             let box_kind = GetRgnBox(rgn, &mut bounds);
-            box_kind != 0
-                && (bounds.left - expect.x).abs() <= 1
-                && (bounds.top - expect.y).abs() <= 1
-                && (bounds.right - (expect.x + expect.width + 1)).abs() <= 1
-                && (bounds.bottom - (expect.y + expect.height + 1)).abs() <= 1
+            let bbox_ok = box_kind != 0
+                && (bounds.left - left).abs() <= 1
+                && (bounds.top - top).abs() <= 1
+                && (bounds.right - (right + 1)).abs() <= 1
+                && (bounds.bottom - (bottom + 1)).abs() <= 1;
+            let (rx, ry) = expect.rail.center();
+            let mut points_ok = PtInRegion(rgn, rx, ry) != 0;
+            if let Some(p) = expect.panel {
+                let (px, py) = p.center();
+                points_ok &= PtInRegion(rgn, px, py) != 0;
+            }
+            if let Some((gx, gy)) = expect.gap_probe {
+                points_ok &= PtInRegion(rgn, gx, gy) == 0;
+            }
+            bbox_ok && points_ok
         };
         DeleteObject(rgn as _);
         ok
@@ -804,104 +881,109 @@ mod tests {
         assert_eq!(cache.last_pass_size(200), Some((313, 775)));
     }
 
-    // ── Smart Dock Capsule 区域几何 ──────────────────────────
+    // ── 分类胶囊区域几何 ──────────────────────────────────────
 
     const CAP: CapsuleParams = CapsuleParams {
         edge: 0,
-        thickness_css: 32,
-        length_css: 120,
+        thickness_css: 56,
+        length_css: 300,
+        expanded: false,
     };
+    /// 胶囊容器（前端在停靠时把窗口撑到该尺寸）：垂直停靠 400×420。
+    const CONTAINER_W: i32 = 400;
+    const CONTAINER_H: i32 = 420;
 
     #[test]
-    fn capsule_rect_follows_dpi_and_side_semantics() {
-        // 断言**最终矩形**（CreateRoundRectRgn 实际使用的宽高），不只中间参数。
-        // 100%：left 停靠 → 窗口右缘**纵向**胶囊 32 宽 × 120 高，垂直居中
-        let r = capsule_rect(800, 1120, 1.0, &CAP).unwrap();
-        assert_eq!(
-            (r.x, r.y, r.width, r.height),
-            (800 - 32, (1120 - 120) / 2, 32, 120)
-        );
-        assert_eq!(r.radius, 16); // 全胶囊圆角 = min(w,h)/2
-                                  // right 停靠 → 窗口左缘纵向胶囊
-        let r = capsule_rect(800, 1120, 1.0, &CapsuleParams { edge: 1, ..CAP }).unwrap();
-        assert_eq!(
-            (r.x, r.y, r.width, r.height),
-            (0, (1120 - 120) / 2, 32, 120)
-        );
-        // top 停靠 → 窗口下缘**横向**胶囊 120 宽 × 32 高（回归 P1-02：旧实现给成 32×120）
-        let r = capsule_rect(800, 1120, 1.0, &CapsuleParams { edge: 2, ..CAP }).unwrap();
-        assert_eq!(
-            (r.x, r.y, r.width, r.height),
-            ((800 - 120) / 2, 1120 - 32, 120, 32)
-        );
-        assert_eq!(r.radius, 16);
-        // bottom 停靠 → 窗口上缘横向胶囊
-        let r = capsule_rect(800, 1120, 1.0, &CapsuleParams { edge: 3, ..CAP }).unwrap();
-        assert_eq!((r.x, r.y, r.width, r.height), ((800 - 120) / 2, 0, 120, 32));
+    fn capsule_contract_matches_frontend_constants() {
+        // 跨端契约：与 src/lib/capsuleLayout.ts 同一组数字（两端各有单测）
+        assert_eq!(CAP.thickness_css, 56);
+        assert_eq!(CAP.length_css, 300);
+        assert_eq!(CAPSULE_PANEL_WIDTH_CSS, 336);
+        assert_eq!(CAPSULE_PANEL_HEIGHT_CSS, 420);
+        assert_eq!(CAPSULE_GAP_CSS, 8);
     }
 
     #[test]
-    fn capsule_rect_dpi_scaling_matches_frontend_contract() {
-        // 物理宽 = round(32 × scale)，与前端 capsuleStripPhysical 同口径
-        for (scale, expect_t) in [(1.0f64, 32i32), (1.25, 40), (1.5, 48), (2.0, 64)] {
-            let expect_l = (120.0 * scale).round() as i32;
-            // 纵向（left）：width=厚度 height=长度
-            let r = capsule_rect(2000, 1200, scale, &CAP).unwrap();
-            assert_eq!((r.width, r.height), (expect_t, expect_l));
-            // 横向（top）：width=长度 height=厚度
-            let r = capsule_rect(2000, 1200, scale, &CapsuleParams { edge: 2, ..CAP }).unwrap();
-            assert_eq!((r.width, r.height), (expect_l, expect_t));
+    fn capsule_rail_is_flush_to_dock_side_and_centered() {
+        // 100%：left → 轨道贴窗口左缘、垂直居中、56×300、全圆角 28
+        let s = capsule_regions(CONTAINER_W, CONTAINER_H, 1.0, &CAP).unwrap();
+        assert_eq!(
+            (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
+            (0, (420 - 300) / 2, 56, 300)
+        );
+        assert_eq!(s.rail.radius, 28);
+        assert!(s.panel.is_none(), "折叠态不得包含面板区域");
+        assert_eq!(s.bounds(), (0, 60, 56, 360));
+
+        // right → 贴窗口右缘
+        let s = capsule_regions(400, 420, 1.0, &CapsuleParams { edge: 1, ..CAP }).unwrap();
+        assert_eq!((s.rail.x, s.rail.y), (400 - 56, 60));
+        // top → 贴窗口上缘的横向轨道 300×56
+        let s = capsule_regions(400, 484, 1.0, &CapsuleParams { edge: 2, ..CAP }).unwrap();
+        assert_eq!((s.rail.x, s.rail.y, s.rail.width, s.rail.height), (50, 0, 300, 56));
+        // bottom → 贴窗口下缘
+        let s = capsule_regions(400, 484, 1.0, &CapsuleParams { edge: 3, ..CAP }).unwrap();
+        assert_eq!((s.rail.x, s.rail.y, s.rail.width, s.rail.height), (50, 484 - 56, 300, 56));
+    }
+
+    #[test]
+    fn capsule_expanded_region_is_rail_or_panel_with_gap() {
+        // left 展开：面板在轨道内侧（右），同轴居中，间隙 8px
+        let s = capsule_regions(CONTAINER_W, CONTAINER_H, 1.0, &CapsuleParams { expanded: true, ..CAP })
+            .unwrap();
+        let p = s.panel.expect("展开态必须有面板区域");
+        assert_eq!((p.x, p.y, p.width, p.height), (56 + 8, 0, 336, 420));
+        assert_eq!(p.radius, 22);
+        // 联合包围盒 = 整块容器
+        assert_eq!(s.bounds(), (0, 0, 400, 420));
+        // 间隙中点必须落在区域之外（两块矩形不连通）
+        let (gx, gy) = s.gap_probe.expect("展开态应有间隙探针");
+        assert!(!s.rail.contains(gx, gy));
+        assert!(!p.contains(gx, gy));
+
+        // right 展开：面板在轨道左侧，同样不越界
+        let s = capsule_regions(400, 420, 1.0, &CapsuleParams { edge: 1, expanded: true, ..CAP })
+            .unwrap();
+        let p = s.panel.unwrap();
+        assert_eq!((p.x, p.width), (0, 336));
+        assert_eq!(s.rail.x, 400 - 56);
+
+        // top 展开：面板在轨道下方
+        let s = capsule_regions(400, 484, 1.0, &CapsuleParams { edge: 2, expanded: true, ..CAP })
+            .unwrap();
+        let p = s.panel.unwrap();
+        assert_eq!((p.x, p.y, p.width, p.height), (32, 56 + 8, 336, 420));
+
+        // bottom 展开：面板在轨道上方
+        let s = capsule_regions(400, 484, 1.0, &CapsuleParams { edge: 3, expanded: true, ..CAP })
+            .unwrap();
+        let p = s.panel.unwrap();
+        assert_eq!((p.x, p.y), (32, 484 - 56 - 8 - 420));
+    }
+
+    #[test]
+    fn capsule_region_scales_with_dpi() {
+        for (scale, t, l) in [(1.0f64, 56i32, 300i32), (1.25, 70, 375), (1.5, 84, 450)] {
+            let s = capsule_regions(2000, 2000, scale, &CAP).unwrap();
+            assert_eq!((s.rail.width, s.rail.height), (t, l));
+            assert_eq!(s.rail.radius, t / 2);
         }
     }
 
     #[test]
-    fn capsule_rect_rejects_degenerate_params() {
-        assert!(capsule_rect(
-            800,
-            1120,
-            1.0,
-            &CapsuleParams {
-                edge: 0,
-                thickness_css: 0,
-                length_css: 120
-            }
-        )
-        .is_none());
-        assert!(capsule_rect(800, 1120, 0.0, &CAP).is_some()); // 非法 DPI 回退 1
-        assert!(capsule_rect(800, 1120, f64::NAN, &CAP).is_some());
-        assert!(capsule_rect(0, 1120, 1.0, &CAP).is_none()); // 非法窗口几何
-        assert!(capsule_rect(800, -5, 1.0, &CAP).is_none());
-    }
+    fn capsule_region_rejects_degenerate_and_drops_overflow_panel() {
+        assert!(capsule_regions(400, 420, 1.0, &CapsuleParams { thickness_css: 0, ..CAP }).is_none());
+        assert!(capsule_regions(0, 420, 1.0, &CAP).is_none());
+        assert!(capsule_regions(400, -5, 1.0, &CAP).is_none());
+        assert!(capsule_regions(400, 420, 0.0, &CAP).is_some(), "非法 DPI 回退 1");
 
-    #[test]
-    fn capsule_rect_clamps_to_window_geometry() {
-        // 窗口高度小于胶囊长度：高度钳制到窗口高，且不越界（需求 五.10）
-        let r = capsule_rect(800, 90, 1.0, &CAP).unwrap();
-        assert_eq!((r.x, r.y, r.width, r.height), (800 - 32, 0, 32, 90));
-        // 窗口宽度小于横向胶囊长度：宽度钳制
-        let r = capsule_rect(100, 600, 1.0, &CapsuleParams { edge: 2, ..CAP }).unwrap();
-        assert_eq!((r.x, r.y, r.width, r.height), (0, 600 - 32, 100, 32));
-        assert!(r.radius >= 1);
-        // 极小窗口：厚度也钳制，区域仍完整落在窗口内
-        let r = capsule_rect(20, 20, 1.0, &CAP).unwrap();
-        assert_eq!((r.width, r.height), (20, 20));
-        assert_eq!((r.x, r.y), (0, 0));
-    }
-
-    #[test]
-    fn capsule_heal_grace_blocks_premature_revert() {
-        // 根因防护：胶囊刚设置时（<500ms）不得因单次位置读取撤销胶囊模式
-        let now = std::time::Instant::now();
-        assert!(!capsule_heal_allowed(now, now));
-        assert!(!capsule_heal_allowed(
-            now,
-            now + std::time::Duration::from_millis(499)
-        ));
-        assert!(capsule_heal_allowed(now, now + CAPSULE_HEAL_GRACE));
-        assert!(capsule_heal_allowed(
-            now,
-            now + std::time::Duration::from_secs(5)
-        ));
+        // 窗口太窄放不下面板：只保留轨道，绝不产生越界区域
+        let s = capsule_regions(120, 420, 1.0, &CapsuleParams { expanded: true, ..CAP }).unwrap();
+        assert!(s.panel.is_none());
+        assert!(s.rail.x + s.rail.width <= 120);
+        // 窗口太矮：轨道长度钳制到窗口高
+        let s = capsule_regions(400, 90, 1.0, &CAP).unwrap();
+        assert_eq!((s.rail.y, s.rail.height), (0, 90));
     }
 
     #[test]
@@ -953,7 +1035,7 @@ mod tests {
                 -2000,
                 -2000,
                 400,
-                560,
+                484,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -961,36 +1043,68 @@ mod tests {
             );
             assert!(!hwnd.is_null(), "CreateWindowExW 失败");
 
-            let set_capsule_region = |edge: u8| -> CapsuleRegionRect {
-                let cap = CapsuleParams { edge, ..CAP };
-                let rect = capsule_rect(400, 560, 1.0, &cap).unwrap();
+            // 真实 Win32 窗口上逐边应用「折叠 / 展开」区域并回读验证：
+            // 折叠 = 单块圆角矩形；展开 = 轨道 ∪ 面板（CombineRgn OR），
+            // 包围盒、两块中心与间隙中点都必须与几何一致。
+            let apply_region = |edge: u8, expanded: bool| -> CapsuleRegionSet {
+                // 容器取 400×484（水平停靠所需高度），四边都能放下轨道与面板
+                let cap = CapsuleParams { edge, expanded, ..CAP };
+                let set = capsule_regions(400, 484, 1.0, &cap).unwrap();
                 let rgn = CreateRoundRectRgn(
-                    rect.x,
-                    rect.y,
-                    rect.x + rect.width + 1,
-                    rect.y + rect.height + 1,
-                    rect.radius * 2,
-                    rect.radius * 2,
+                    set.rail.x,
+                    set.rail.y,
+                    set.rail.x + set.rail.width + 1,
+                    set.rail.y + set.rail.height + 1,
+                    set.rail.radius * 2,
+                    set.rail.radius * 2,
                 );
                 assert!(!rgn.is_null());
+                if let Some(p) = set.panel {
+                    let pr = CreateRoundRectRgn(
+                        p.x,
+                        p.y,
+                        p.x + p.width + 1,
+                        p.y + p.height + 1,
+                        p.radius * 2,
+                        p.radius * 2,
+                    );
+                    assert!(!pr.is_null());
+                    assert_ne!(
+                        windows_sys::Win32::Graphics::Gdi::CombineRgn(
+                            rgn,
+                            rgn,
+                            pr,
+                            windows_sys::Win32::Graphics::Gdi::RGN_OR
+                        ),
+                        windows_sys::Win32::Graphics::Gdi::RGN_ERROR
+                    );
+                    DeleteObject(pr as _);
+                }
                 assert_ne!(SetWindowRgn(hwnd as _, rgn, 1), 0);
                 assert!(
-                    capsule_region_matches(hwnd as isize, &rect),
-                    "edge={edge} 回读验证失败"
+                    capsule_region_matches(hwnd as isize, &set),
+                    "edge={edge} expanded={expanded} 回读验证失败"
                 );
-                rect
+                set
             };
 
-            // 四边：SetWindowRgn → GetWindowRgn 回读一致
-            let left = set_capsule_region(0);
-            assert_eq!((left.width, left.height), (32, 120));
-            let top = set_capsule_region(2);
-            assert_eq!((top.width, top.height), (120, 32), "顶边必须横向 120×32");
-            set_capsule_region(1);
-            set_capsule_region(3);
+            // 四边折叠：只有轨道，尺寸随方向变化
+            let left = apply_region(0, false);
+            assert_eq!((left.rail.width, left.rail.height), (56, 300));
+            assert!(left.panel.is_none());
+            let top = apply_region(2, false);
+            assert_eq!((top.rail.width, top.rail.height), (300, 56), "顶边必须横向 300×56");
+
+            // 四边展开：轨道 + 面板联合区域，间隙处不连通
+            for edge in [0u8, 1, 2, 3] {
+                let set = apply_region(edge, true);
+                assert!(set.panel.is_some(), "edge={edge} 展开必须有面板");
+                let (gx, gy) = set.gap_probe.unwrap();
+                assert!(gx >= 0 && gy >= 0);
+            }
 
             // 清理：恢复无区域并销毁窗口
-            let full = CreateRoundRectRgn(0, 0, 401, 561, 36, 36);
+            let full = CreateRoundRectRgn(0, 0, 401, 485, 36, 36);
             SetWindowRgn(hwnd as _, full, 1);
             DeleteObject(full as _);
             DestroyWindow(hwnd as HWND);

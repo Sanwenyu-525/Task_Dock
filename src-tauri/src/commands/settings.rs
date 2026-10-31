@@ -29,6 +29,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "notify_burst_max",
     "notify_rate_window_secs",
     "notify_done_aggregate",
+    // Agent 异常（waiting/failed）隐藏态胶囊提示音（v0.6 异常变响）
+    "agent_alert_sound",
     "overdue_grace_hours",
     "stale_run_minutes",
     "auto_backup",
@@ -115,6 +117,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "notify_agent"
         | "notify_muted"
         | "notify_done_aggregate"
+        | "agent_alert_sound"
         | "auto_backup"
         | "nav_prefer_focus"
         | "nav_allow_launch"

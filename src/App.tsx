@@ -24,6 +24,7 @@ import TaskContextDrawer from "./components/context/TaskContextDrawer";
 import Toast from "./components/Toast";
 import TooltipLayer from "./components/ui/TooltipLayer";
 import SnapOverlay from "./components/SnapOverlay";
+import CapsuleDock from "./components/capsule/CapsuleDock";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
 import { isDockedPhase } from "./lib/edgeSnap";
 import { createSubscriptionScope } from "./lib/subscriptions";
@@ -67,10 +68,11 @@ export default function App() {
   // 设置未加载完成前**不启用**贴边吸附：否则启动瞬间会按默认值 true 生效，
   // 可能把窗口滑出屏幕（并把该位置持久化），随后又因设置到达而停用。
   const snapEnabled = settings?.snap_enabled === true;
-  // 吸附视觉层（候选提示 / 已吸附反馈 / 隐藏触发条 / 停靠细线）：
-  // 引擎把 phase 写入 store，这里同步到窗口根节点的 data 属性供 CSS 主题化。
-  const snapCandidate = useEdgeSnapStore((s) => (s.phase === "candidate" ? s.candidateEdge : null));
-  const snapDocked = useEdgeSnapStore((s) => (isDockedPhase(s.phase) ? s.dockedEdge : null));
+  // 吸附视觉层（候选提示 / 停靠细线）：引擎把 phase 写入 store。
+  // 停靠期（docked-*）：窗口被 Win32 区域裁成分类胶囊（轨道 / 轨道+面板），
+  // 主界面整块隐藏，只渲染 CapsuleDock —— 避免"看不见但可聚焦"的残留控件。
+  const snapPhase = useEdgeSnapStore((s) => s.phase);
+  const capsuleMode = isDockedPhase(snapPhase);
   // 用**实际生效**的材质上 class：原生 Mica/Acrylic 回退 solid 时，
   // 界面必须跟随降级，不能继续渲染半透明表面（v0.5 缺陷修复）。
   const material = materialInfo?.resolved ?? settings?.material ?? "solid";
@@ -180,28 +182,31 @@ export default function App() {
 
   return (
     <div
-      className={`dock-window mode-${mode} material-${material}`}
-      data-snap-candidate={snapCandidate ?? undefined}
-      data-snap-docked={snapDocked ?? undefined}
+      className={`dock-window mode-${mode} material-${material}${capsuleMode ? " is-capsule" : ""}`}
       onContextMenu={onDockContextMenu}
     >
-      <TitleBar />
-      <div className="dock-body">
-        {/* 三个模式视图常驻挂载（CSS 隐藏非当前项），切换保留内容状态与滚动位置 */}
-        <div className={`view-slot ${mode === "minimal" ? "active" : ""}`}>
-          <MinimalView />
+      {/* 主界面：停靠期整体隐藏（display:none，同时 inert），
+          但保持挂载以保留三视图的内容状态与滚动位置。 */}
+      <div className="dock-app" inert={capsuleMode}>
+        <TitleBar />
+        <div className="dock-body">
+          {/* 三个模式视图常驻挂载（CSS 隐藏非当前项），切换保留内容状态与滚动位置 */}
+          <div className={`view-slot ${mode === "minimal" ? "active" : ""}`}>
+            <MinimalView />
+          </div>
+          <div className={`view-slot ${mode === "compact" ? "active" : ""}`}>
+            <CompactView />
+          </div>
+          <div className={`view-slot ${mode === "full" ? "active" : ""}`}>
+            <FullView />
+          </div>
+          <ClipboardDrawer />
+          <TaskContextDrawer />
         </div>
-        <div className={`view-slot ${mode === "compact" ? "active" : ""}`}>
-          <CompactView />
-        </div>
-        <div className={`view-slot ${mode === "full" ? "active" : ""}`}>
-          <FullView />
-        </div>
-        <ClipboardDrawer />
-        <TaskContextDrawer />
+        <TaskEditor />
+        <WorkspaceLauncher />
       </div>
-      <TaskEditor />
-      <WorkspaceLauncher />
+      {capsuleMode && <CapsuleDock />}
       <SnapOverlay />
       <Toast />
       <TooltipLayer />

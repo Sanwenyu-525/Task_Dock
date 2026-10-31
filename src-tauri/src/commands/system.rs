@@ -148,17 +148,21 @@ pub fn apply_window_radius(app: AppHandle, radius: f64) -> AppResult<bool> {
     Ok(applied)
 }
 
-/// 胶囊几何常量：与前端 `src/lib/edgeSnap.ts` 的 CAPSULE_*_CSS 跨端契约
-/// （单测锁定；修改必须两端同步）。
-pub const CAPSULE_THICKNESS_CSS: u32 = 32;
-pub const CAPSULE_LENGTH_CSS: u32 = 120;
+/// 胶囊几何常量：与前端 `src/lib/capsuleLayout.ts` 的 CAPSULE_* 跨端契约
+/// （两端单测锁定；修改必须同步）。
+pub const CAPSULE_THICKNESS_CSS: u32 = 56;
+pub const CAPSULE_LENGTH_CSS: u32 = 300;
 
-/// 隐藏态胶囊区域（Smart Dock Capsule）：把主窗口 Win32 区域收窄为
-/// 停靠边上的短胶囊——区域外不绘制、不接收鼠标命中，消除"整窗切片
-/// 在胶囊以外露出内容"的结构性问题。enabled=false 恢复整窗圆角区域。
-/// 按 hwnd 绑定（右键菜单弹窗不受影响）；窗口大部分可见时后端会自愈清除。
+/// 胶囊区域模式（分类胶囊）：
+/// - `off`   ：恢复整窗圆角区域（未停靠 / 解除吸附）
+/// - `rail`  ：只露出分类轨道（折叠态）
+/// - `panel` ：露出「轨道 ∪ 功能面板」（展开态）
+///
+/// 窗口位置与尺寸在停靠期间**不变**，区域切换是唯一的状态变化——
+/// 这是「鼠标在吸附条与悬浮窗口之间来回跳动」的结构性修复：
+/// 命中区不再随窗口移动而移动。
 #[tauri::command]
-pub fn apply_window_capsule(app: AppHandle, enabled: bool, edge: String) -> AppResult<bool> {
+pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String) -> AppResult<bool> {
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
@@ -166,35 +170,38 @@ pub fn apply_window_capsule(app: AppHandle, enabled: bool, edge: String) -> AppR
         .hwnd()
         .map(|h| h.0 as isize)
         .map_err(|e| crate::error::AppError::Agent(format!("无法获取主窗口句柄: {e}")))?;
-    if enabled {
-        let edge_id = match edge.as_str() {
-            "left" => 0,
-            "right" => 1,
-            "top" => 2,
-            "bottom" => 3,
-            other => {
-                return Err(crate::error::AppError::Validation(format!(
-                    "apply_window_capsule.edge 非法: {other}（允许: left|right|top|bottom）"
-                )));
-            }
-        };
-        crate::window_shape::set_capsule(
-            hwnd,
-            Some(crate::window_shape::CapsuleParams {
-                edge: edge_id,
-                thickness_css: CAPSULE_THICKNESS_CSS,
-                length_css: CAPSULE_LENGTH_CSS,
-            }),
-        );
-    } else {
-        crate::window_shape::set_capsule(hwnd, None);
+    match mode.as_str() {
+        "off" => crate::window_shape::set_capsule(hwnd, None),
+        "rail" | "panel" => {
+            let edge_id = match edge.as_str() {
+                "left" => 0,
+                "right" => 1,
+                "top" => 2,
+                "bottom" => 3,
+                other => {
+                    return Err(crate::error::AppError::Validation(format!(
+                        "apply_window_capsule.edge 非法: {other}（允许: left|right|top|bottom）"
+                    )));
+                }
+            };
+            crate::window_shape::set_capsule(
+                hwnd,
+                Some(crate::window_shape::CapsuleParams {
+                    edge: edge_id,
+                    thickness_css: CAPSULE_THICKNESS_CSS,
+                    length_css: CAPSULE_LENGTH_CSS,
+                    expanded: mode == "panel",
+                }),
+            );
+        }
+        other => {
+            return Err(crate::error::AppError::Validation(format!(
+                "apply_window_capsule.mode 非法: {other}（允许: off|rail|panel）"
+            )));
+        }
     }
     let applied = crate::window_shape::apply_on_main_thread(&win);
-    tracing::debug!(
-        "胶囊区域{}（edge={edge}）应用: {}",
-        if enabled { "开" } else { "关" },
-        applied
-    );
+    tracing::debug!("胶囊区域 mode={mode}（edge={edge}）应用: {applied}");
     Ok(applied)
 }
 
@@ -202,6 +209,10 @@ pub fn apply_window_capsule(app: AppHandle, enabled: bool, edge: String) -> AppR
 pub struct WindowSnapState {
     pub edge: String, // left | right | top | bottom | none
     pub hidden: bool,
+    /// 胶囊沿边中心（物理像素）：left/right 用 y，top/bottom 用 x。
+    /// 可选——旧版本记录没有该字段，缺失时按当前窗口中心重新停靠。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<f64>,
 }
 
 impl WindowSnapState {
@@ -283,7 +294,8 @@ pub fn performance_diagnostics(
 // （tauri/src/vibrancy/windows.rs 的 apply_effects 返回 ()，set_effects 恒 Ok），
 // 无法可靠判断是否生效。因此直接使用 window-vibrancy（Tauri 自身的
 // Windows 传递依赖，零新增 crate）拿到真实 Result：
-// - Win11（build ≥ 22000）：Mica（首选，性能好）
+// - Win11 + 区域裁剪（默认）：**CSS 玻璃**（不挂原生材质，避免圆角暗楔）
+// - Win11 关闭区域裁剪（矩阵对照）：Mica
 // - Win10 1803+（build ≥ 17134）：Acrylic
 // - 更早/失败：返回 applied=false，前端回退 solid 不透明主题。
 
@@ -291,9 +303,10 @@ pub fn performance_diagnostics(
 pub struct MaterialResult {
     /// 请求的材质
     pub material: String,
-    /// 是否真正应用了原生效果
+    /// 是否应用了玻璃效果（原生材质或 CSS 半透明均计为 true；
+    /// CSS 模式下桌面仍可透出，只是不做原生模糊）
     pub applied: bool,
-    /// 实际命中的效果名（mica / acrylic / none）
+    /// 实际命中的效果名（mica / acrylic / blur / css / none）
     pub effect: String,
     /// Windows 版本（含 build 号），供 UI 展示降级原因
     pub os_version: String,
@@ -326,11 +339,7 @@ where
         .unwrap_or(false)
 }
 
-/// 原生玻璃后端选择（真机矩阵验收用）。
-/// - `auto`：Win11 且区域裁剪开启 → blur；Win11 未裁剪 → Mica；Win10 → Acrylic
-/// - `mica` / `acrylic` / `blur`：强制指定后端（blur 走 SetWindowCompositionAttribute，
-///   由窗口自身合成，受 SetWindowRgn 约束）
-/// - `none`：不保留 DWM 系统背景，只依赖透明窗口 + CSS 玻璃
+/// 原生玻璃后端选择（环境变量，矩阵对照/回归用）。
 fn glass_backend() -> String {
     std::env::var("TASK_DOCK_GLASS_BACKEND")
         .ok()
@@ -352,24 +361,28 @@ fn region_clipping_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// auto 模式的实际后端。
+/// 原生玻璃后端选择（真机矩阵验收用）。
+/// - `auto`：Win11 且区域裁剪开启 → **css**（不挂原生材质，CSS 玻璃）；
+///   Win11 未裁剪 → Mica；Win10 → Acrylic
+/// - `mica` / `acrylic` / `blur` / `css` / `none`：强制指定后端（矩阵对照/回归用）
 ///
-/// Win11 的 Mica/Acrylic 是 DWM SystemBackdrop，按**整个窗口矩形**绘制、不受
-/// `SetWindowRgn` 约束；真机抓图（docs/ui-themes/12-v06-window-corners.md）
-/// 在区域圆角之外留下了黑色月牙。开启区域裁剪时改用窗口自身合成的 blur，
-/// 它是唯一与区域裁剪兼容的原生玻璃后端。显式指定的后端原样保留，供矩阵对照。
+/// 为什么默认不是 blur：Win11（build ≥ 22621）的 legacy
+/// `ACCENT_ENABLE_BLURBEHIND` 由 DWM 按**整个窗口矩形**合成，`SetWindowRgn`
+/// 裁不到它；圆角外会留下暗/亮楔形（真机像素：blur 角部 [1,11,1]、
+/// acrylic [84,84,84]，无原生材质时同位置干净）。CSS 半透明玻璃没有原生层，
+/// 圆角外直接透出桌面，且 liquid 的 `--window-fill` 本就 76–86% 不透明，
+/// 视觉损失仅限于「原生模糊」这一层。显式指定的后端原样保留，供矩阵对照。
 fn effective_backend(requested: &str, build: u32, region_enabled: bool) -> String {
     match requested {
-        "mica" | "acrylic" | "blur" | "none" => requested.to_string(),
-        _ if build >= 22000 && region_enabled => "blur".to_string(),
+        "mica" | "acrylic" | "blur" | "css" | "none" => requested.to_string(),
+        _ if build >= 22000 && region_enabled => "css".to_string(),
         _ => "auto".to_string(),
     }
 }
 
 /// 对**任意**应用窗口应用/清除原生材质（主窗与右键菜单弹窗共用）。
-/// 后端选择走同一套 `effective_backend`：Win11 + 区域裁剪 → blur
-/// （窗口自身合成，受 SetWindowRgn 约束，不会在圆角外画 DWM 背景），
-/// Win10 → Acrylic（同为窗口合成），显式后端原样保留供矩阵对照。
+/// 后端选择走同一套 `effective_backend`：Win11 + 区域裁剪 → css（CSS 玻璃，
+/// 无原生层），Win10 → Acrylic，显式后端原样保留供矩阵对照。
 /// material: "solid" | "glass"；持久化由调用方负责，这里只动窗口。
 pub fn apply_material_to_window<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -387,6 +400,21 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
             material: "solid".into(),
             applied: false,
             effect: "none".into(),
+            os_version,
+        };
+    }
+
+    // CSS 玻璃（Win11 + 区域裁剪的默认路径）：不挂任何原生材质。
+    // 原生 blur/acr 层会越过区域圆角（暗楔），而 CSS 半透明没有原生层，
+    // 圆角外直接透出桌面；liquid 的 window-fill 本就 76–86% 不透明，
+    // 停用原生模糊的视觉损失有限，且彻底消除暗楔。
+    if backend == "css" {
+        let w = win.clone();
+        let _ = run_material(app, move || clear_native_materials(&w));
+        return MaterialResult {
+            material: "glass".into(),
+            applied: true,
+            effect: "css".into(),
             os_version,
         };
     }
@@ -506,21 +534,22 @@ mod tests {
 
     #[test]
     fn capsule_geometry_contract_matches_frontend() {
-        // 跨端契约：与 src/lib/edgeSnap.ts 的 capsuleStripPhysical / CAPSULE_LENGTH_CSS 一致
-        assert_eq!(CAPSULE_THICKNESS_CSS, 32);
-        assert_eq!(CAPSULE_LENGTH_CSS, 120);
-        for (scale, expect) in [(1.0f64, 32i32), (1.25, 40), (1.5, 48), (2.0, 64)] {
+        // 跨端契约：与 src/lib/capsuleLayout.ts 的 CAPSULE_RAIL_THICKNESS/LENGTH 一致
+        assert_eq!(CAPSULE_THICKNESS_CSS, 56);
+        assert_eq!(CAPSULE_LENGTH_CSS, 300);
+        for (scale, expect_t) in [(1.0f64, 56i32), (1.25, 70), (1.5, 84), (2.0, 112)] {
             let cap = crate::window_shape::CapsuleParams {
                 edge: 0,
                 thickness_css: CAPSULE_THICKNESS_CSS,
                 length_css: CAPSULE_LENGTH_CSS,
+                expanded: false,
             };
             // 断言**最终矩形**：left 纵向 → width=厚度、height=长度
-            let rect = crate::window_shape::capsule_rect(2000, 1200, scale, &cap).unwrap();
-            assert_eq!(rect.width, expect, "scale={scale}");
+            let set = crate::window_shape::capsule_regions(2000, 1200, scale, &cap).unwrap();
+            assert_eq!(set.rail.width, expect_t, "scale={scale}");
             assert_eq!(
-                rect.height,
-                (120.0f64 * scale).round() as i32,
+                set.rail.height,
+                (300.0f64 * scale).round() as i32,
                 "scale={scale}"
             );
         }
@@ -530,30 +559,35 @@ mod tests {
     fn snap_state_edge_whitelist() {
         assert!(WindowSnapState {
             edge: "left".into(),
-            hidden: true
+            hidden: true,
+            center: None
         }
         .is_valid());
         assert!(WindowSnapState {
             edge: "none".into(),
-            hidden: false
+            hidden: false,
+            center: Some(540.0)
         }
         .is_valid());
         assert!(!WindowSnapState {
             edge: "banana".into(),
-            hidden: true
+            hidden: true,
+            center: None
         }
         .is_valid());
         assert!(!WindowSnapState {
             edge: String::new(),
-            hidden: false
+            hidden: false,
+            center: None
         }
         .is_valid());
     }
 
     #[test]
-    fn win11_auto_backend_avoids_dwm_backdrop_when_region_clipping() {
-        // 区域裁剪 + Win11：Mica/Acrylic 会画到区域外，必须换成窗口合成的 blur
-        assert_eq!(effective_backend("auto", 26100, true), "blur");
+    fn win11_auto_backend_uses_css_when_region_clipping() {
+        // 区域裁剪 + Win11：Mica/Acrylic 与 legacy blur 都会越过区域圆角留下暗楔，
+        // 默认改为无原生材质的 CSS 玻璃（桌面经半透明 tint 透出）。
+        assert_eq!(effective_backend("auto", 26100, true), "css");
         // 关闭区域（矩阵对照）时才允许 DWM SystemBackdrop
         assert_eq!(effective_backend("auto", 26100, false), "auto");
         // Win10 的 Acrylic 走 SetWindowCompositionAttribute，不受此限制
@@ -562,12 +596,12 @@ mod tests {
 
     #[test]
     fn explicit_backend_is_never_rewritten() {
-        for backend in ["mica", "acrylic", "blur", "none"] {
+        for backend in ["mica", "acrylic", "blur", "css", "none"] {
             assert_eq!(effective_backend(backend, 26100, true), backend);
             assert_eq!(effective_backend(backend, 26100, false), backend);
         }
         // 未知值按 auto 处理，保持原有容错
-        assert_eq!(effective_backend("weird", 26100, true), "blur");
+        assert_eq!(effective_backend("weird", 26100, true), "css");
         assert_eq!(effective_backend("weird", 26100, false), "auto");
     }
 }

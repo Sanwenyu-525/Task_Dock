@@ -14,6 +14,20 @@
 
 ## 一、自动化测试结果
 
+### 0.0.5 停靠态极简（圆角细线/删除磁铁/拖拽解除）与白角滚动条诊断（2026-10-31）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 错误 |
+| `npx vitest run` | **46 文件 / 441 测试通过**（新增：停靠中拖离 >24px 自动解除且不被拉回、≤24px 仍拉回齐平、程序移动不解除；细线四个方位与 hot/停靠/隐藏态渲染；主题令牌结构守卫补齐 `--radius-window`） |
+| `npm run build` | 通过（tsc + vite；1674 modules，CSS 137.40 kB / gzip 22.25 kB） |
+| `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings`（src-tauri） | 通过（0 warning） |
+| `cargo test`（src-tauri） | **487 passed / 1 failed / 3 ignored**（`commands::system::tests` 4/4 通过，含 `win11_auto_backend_uses_css_when_region_clipping`）。唯一失败 `actions::tests::ack_never_changes_agent_state_and_new_event_resurfaces` 为**既有时间依赖用例**：硬编码新事件时间 `2026-10-31T10:00Z` 早于当前 `now`（11:30Z），与本次材质改动无关；单跑稳定复现，未改动该模块 |
+| Dev WebView2（CDP 9223，隔离数据目录）滚动条诊断 | 全屏 400×560：任务/Agent/行动/剪贴板/历史 0 溢出；设置页 1 个真实滚动容器（2476/521）。紧凑 400×380、极简 280×140：0 个原生滚动条。340×340 窄窗：`rail-items` 231/229（只滚 2px 的幽灵滚动条）→ 收紧断点间距后消除；设置页滚动条改为透明轨道 + 6px thumb |
+| 真机四角像素（受控背景 + CopyFromScreen + 隐藏窗口基线） | 修复前 liquid 深色 solid：角外 0 个暗像素（46–48 个仅因窗口阴影带偏离背景）；glass（blur）：角/弧带 102–104 个暗像素。修复后（默认后端 `css`，无原生材质）浅/深主题对角 0/2/4/6px 像素与背景逐值一致（如 `(0,0,0)`），内容从 8px 开始，暗楔消失；半径缝隙带已由 20px 对齐修复 |
+| 前端材质状态 | `data-material=glass`、`data-native-glass=true`、`materialInfo.effect=css`、`osVersion=10.0.22631`（CSS 玻璃，原生模糊停用） |
+| 真实鼠标拖拽解除手感 | ⬜ **ENVIRONMENT BLOCKED**：合成 `mouse_event` 注入未触发原生窗口移动（窗口位置不变），无法在本会话完成真机拖拽；引擎行为由集成测试覆盖 |
+
 ### 0.0.4 吸附胶囊真实显示异常修复（区域提交协议/顶底几何/自愈宽限窗，2026-10-31）
 
 | 检查 | 结果 |
@@ -577,3 +591,23 @@ otepad.exe | ✅ 目标落库 → 任务关联落库 → 编辑器条目（上�
 - 未执行/阻塞：修复后图文混合复验、场景 B 连续 30 分钟真实采集、>1000 截图、
   多显示器/DPI、图片/文件粘贴到图形界面应用；微信与 Agent 应用的接收行为未验证。
 - 不把格式层单元测试折算为应用层兼容性证明，也不把未验证应用写成“支持”。
+
+## 分类胶囊（v0.7，2026-10-31）
+
+新增/改写的用例（全部随 `npx vitest run` 执行）：
+
+| 文件 | 覆盖 |
+|---|---|
+| `src/lib/capsuleLayout.test.ts` | 胶囊常量契约（与 `window_shape.rs` 同步）、四边停靠位置与钳制、可见区域（物理像素）、DPI 换算、命中判定、容器补足 |
+| `src/components/capsule/CapsuleDock.test.tsx` | 折叠只挂轨道、点击展开、再次点击收起、切换分类不重复展开、Esc 只收面板、徽标口径（0 不显示、waiting+failed 才计数）、四类空状态 |
+| `src/components/capsule/format.test.ts` | 截止文案（逾期/今天/明天/月日）与待办排序 |
+| `src/hooks/useEdgeSnap.integration.test.tsx` | 停靠贴边与撑容器、折叠/展开不改窗口几何、重启恢复、托盘唤回、拖离解除、关闭开关、候选超时、右缘停靠 |
+| `src/components/SnapOverlay.test.tsx` | 仅拖拽相位渲染反馈；停靠相位不渲染覆盖层；反馈 1.2s 自动清除 |
+
+Rust：`cargo test --lib` 覆盖 `capsule_regions`（四边 × 折叠/展开、DPI、退化钳制）与
+真实（不可见）Win32 窗口上的 `SetWindowRgn`/`CombineRgn` 回读验证。
+
+**真机验收未执行**：真实窗口的吸附手感、多显示器、DPI 125%/150%/200%、系统阴影与
+透明区域未验证，不得以浏览器渲染或单测替代。详细口径见
+[ui-themes/13-capsule-redesign.md](ui-themes/13-capsule-redesign.md) 与
+`tmp/acceptance/capsule-redesign/report.md`。

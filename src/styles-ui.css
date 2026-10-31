@@ -370,6 +370,11 @@
   font-weight: 600;
 }
 
+/* 勾选行的 trailing 标记继承强调色，不用默认 dim 色 */
+.ui-menu-item.is-checked .ui-menu-trailing {
+  color: var(--menu-active-text);
+}
+
 .ui-menu-item.is-danger {
   color: var(--menu-danger);
 }

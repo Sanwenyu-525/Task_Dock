@@ -401,7 +401,11 @@ export default function SettingsPanel() {
               <>已自动回退为不透明：当前系统不支持（{materialInfo?.osVersion || "版本未知"}）
                 或开启了高对比度 / 减少透明效果</>
             ) : materialInfo?.applied ? (
-              <>原生效果已生效（{materialInfo.effect}），桌面背景将透出窗口</>
+              materialInfo.effect === "css" ? (
+                <>CSS 半透明玻璃已生效（原生模糊已停用，圆角无暗楔），桌面背景按主题透明度透出</>
+              ) : (
+                <>原生效果已生效（{materialInfo.effect}），桌面背景将透出窗口</>
+              )
             ) : (
               <>正在探测系统材质支持…</>
             )
@@ -757,6 +761,14 @@ export default function SettingsPanel() {
             checked={settings.notify_done_aggregate}
             ariaLabel="高频完成合并为一条摘要"
             onChange={(v) => update({ notify_done_aggregate: v })}
+          />
+        </div>
+        <div className="setting-row">
+          <span>Agent 异常提示音（隐藏态胶囊）</span>
+          <Switch
+            checked={settings.agent_alert_sound}
+            ariaLabel="Agent 异常提示音（隐藏态胶囊）"
+            onChange={(v) => update({ agent_alert_sound: v })}
           />
         </div>
         <div className="setting-row">

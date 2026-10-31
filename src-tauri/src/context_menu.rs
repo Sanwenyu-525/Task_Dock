@@ -420,7 +420,8 @@ pub fn fit_context_menu(app: AppHandle, height: f64) {
 }
 
 /// 动作执行结果（v0.6 整改）：成功回传**最新设置快照**（菜单据此渲染勾选态，
-/// 不做乐观更新）；失败返回可读原因 —— 主题/自启动失败时不会广播成功状态。
+/// 不做乐观更新）并隐藏菜单；失败返回可读原因并保留菜单展示行内反馈 ——
+/// 主题/自启动失败时不会广播成功状态，也不会显示虚假成功。
 #[derive(Debug, Serialize)]
 pub struct MenuActionResult {
     pub ok: bool,
@@ -468,14 +469,15 @@ fn err_result(db: &Db, message: String) -> MenuActionResult {
 /// 菜单项动作：与前端 items.ts 的 action 字符串一一对应。
 /// 复用原托盘 on_menu_event 的全部业务路径，不另起状态源。
 /// 返回执行结果与最新快照；失败时错误信息进入现有日志与弹窗内联反馈。
+/// **成功才隐藏菜单**：失败保留菜单展示行内反馈（前端 role=alert）——
+/// 若先隐藏，反馈就渲染在不可见窗口里，用户视角是「按了没反应」的静默失败。
 #[tauri::command]
 pub fn context_menu_action(
     app: AppHandle,
     db: tauri::State<'_, std::sync::Arc<Db>>,
     action: String,
 ) -> MenuActionResult {
-    hide(&app);
-    match action.as_str() {
+    let result = match action.as_str() {
         "show" => {
             crate::toggle_main(&app);
             ok_result(&db)
@@ -534,7 +536,12 @@ pub fn context_menu_action(
             tracing::warn!("未知菜单动作: {other}");
             err_result(&db, format!("未知菜单动作：{other}"))
         }
+    };
+    // 失败路径必须保持菜单可见（行内反馈），成功才收起
+    if result.ok {
+        hide(&app);
     }
+    result
 }
 
 #[cfg(test)]

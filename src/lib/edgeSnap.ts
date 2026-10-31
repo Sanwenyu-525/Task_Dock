@@ -53,8 +53,6 @@ export const SNAP_REVEAL_DIST = 20;
 export const SNAP_SEGMENT_MARGIN = 12;
 /** 光标离开窗口多少算「离开」（超过才自动隐藏）。 */
 export const SNAP_HIDE_MARGIN = 40;
-/** 解除吸附时的内推距离（明确操作解除时把窗口推离边缘）。 */
-export const SNAP_UNDOCK_NUDGE = 48;
 /** onMoved 静默多久视为「已松开」（原生拖拽不保证 DOM mouseup）。
  *  配合 DOM 指针恢复信号使用：拖拽期间无 DOM 指针事件，恢复即松手，
  *  静默只是去抖，不单独作为松手证据。 */
@@ -81,6 +79,10 @@ export const SNAP_CANDIDATE_ENTER_DIST = 28;
 /** 磁吸区**退出**阈值（滞回）：> 该值才退出 candidate / 解除停靠。
  *  28↔42 之间是死区，防止阈值附近来回抖动。 */
 export const SNAP_CANDIDATE_EXIT_DIST = 42;
+/** **拖拽解除阈值**（CSS px）：停靠中窗口被拖离齐平位超过该值且非程序移动，
+ *  视为用户解除意图（v0.6 极简停靠 UI：取代原标题栏磁铁按钮的解除路径；
+ *  ≤ 该值仍按误碰拉回齐平）。 */
+export const SNAP_UNDOCK_DRAG_PX = 24;
 /** 唤出**驻留确认**：光标在胶囊有效区持续 ≥ 该值才自动展开（点击立即）。 */
 export const SNAP_REVEAL_DWELL_MS = 180;
 /** **展开保护期**：reveal 完成后该时段内禁止自动隐藏（防 reveal→hide 循环）。 */
@@ -114,7 +116,6 @@ export const EDGE_LABELS: Record<SnapEdge, string> = {
 };
 
 export const dockFeedbackText = (edge: SnapEdge): string => `已吸附${EDGE_LABELS[edge]}`;
-export const candidateHintText = (edge: SnapEdge): string => `松开吸附${EDGE_LABELS[edge]}`;
 
 export function isSnapEdge(v: unknown): v is SnapEdge {
   return typeof v === "string" && (SNAP_EDGES as readonly string[]).includes(v);
@@ -124,12 +125,14 @@ export function isSnapEdge(v: unknown): v is SnapEdge {
 
 /**
  * 合法相位转移。free → docked-hidden 仅用于重启恢复（读取持久化
- * snap_state 后直接重新隐藏），运行时路径一律经 docked-visible/revealed。
+ * snap_state 后直接重新停靠），运行时路径一律经 docked-visible/revealed。
+ * v0.7：docked-visible → docked-revealed 合法——停靠后可直接点分类展开面板
+ * （旧模型只能从隐藏态唤出）。
  */
 const LEGAL_TRANSITIONS: Record<SnapPhase, readonly SnapPhase[]> = {
   free: ["candidate", "docked-visible", "docked-hidden"],
   candidate: ["free", "docked-visible"],
-  "docked-visible": ["docked-hidden", "free"],
+  "docked-visible": ["docked-hidden", "docked-revealed", "free"],
   "docked-hidden": ["docked-revealed", "free"],
   "docked-revealed": ["docked-hidden", "docked-visible", "free"],
 };

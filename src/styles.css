@@ -57,9 +57,6 @@
   --snap-capsule-t: 32px;
   --snap-capsule-l: 120px;
   --snap-hint-band: var(--accent-gradient);
-  --snap-hint-bg: var(--surface-raised);
-  --snap-hint-border: var(--border-strong);
-  --snap-hint-text: var(--accent);
   --snap-feedback-bg: var(--surface-raised);
   --snap-feedback-border: var(--border-strong);
   --snap-feedback-text: var(--accent);
@@ -245,6 +242,25 @@ code {
 
 :root[data-theme="dark"] .dock-window.material-glass {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* 主窗滚动条：透明轨道 + 6px 细 thumb（与右键菜单同款）。
+   默认系统滚动条的亮灰轨道会在圆角窗口边缘露出白色竖条，被误读为「白角」；
+   这里只改外观，不隐藏滚动能力（设置页等内容仍需可滚动）。 */
+.dock-window ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.dock-window ::-webkit-scrollbar-track,
+.dock-window ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.dock-window ::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-tertiary) 35%, transparent);
+}
+.dock-window ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-tertiary) 55%, transparent);
 }
 
 .dock-body {
@@ -5052,7 +5068,6 @@ code {
 .snap-glow-top { top: 0; }
 .snap-glow-bottom { bottom: 0; }
 
-.snap-hint,
 .snap-feedback {
   position: absolute;
   z-index: 51;
@@ -5065,73 +5080,64 @@ code {
   line-height: 1.3;
   white-space: nowrap;
   pointer-events: none;
-  background: var(--snap-hint-bg);
-  border: 1px solid var(--snap-hint-border);
-  color: var(--snap-hint-text);
-  box-shadow: var(--shadow-overlay);
-  animation: snap-rise-in 0.18s ease-out backwards;
-}
-.snap-feedback {
   background: var(--snap-feedback-bg);
-  border-color: var(--snap-feedback-border);
+  border: 1px solid var(--snap-feedback-border);
   color: var(--snap-feedback-text);
-  animation-duration: 0.22s;
+  box-shadow: var(--shadow-overlay);
+  animation: snap-rise-in 0.22s ease-out backwards;
 }
-.snap-hint-left,
 .snap-feedback-left { left: 12px; top: 50%; translate: 0 -50%; }
-.snap-hint-right,
 .snap-feedback-right { right: 12px; top: 50%; translate: 0 -50%; }
-.snap-hint-top,
 .snap-feedback-top { top: 6px; left: 50%; translate: -50% 0; }
-.snap-hint-bottom,
 .snap-feedback-bottom { bottom: 6px; left: 50%; translate: -50% 0; }
 
-/* 停靠中的低调指示：停靠边内侧 2px 渐隐细线 */
+/* 吸附反馈细线（v0.6 重设计）：整窗描边层，border 沿 .dock-window 的圆角
+   曲线走——覆盖圆角（旧版 2px 直条盖不到），并向窗口内侧 18px 渐隐。
+   拖拽（candidate）相位加 .snap-dock-line-hot 高亮，停靠相位低调常驻。 */
 .snap-dock-line {
   position: absolute;
+  inset: 0;
   z-index: 49;
   pointer-events: none;
+  border-radius: var(--radius-window);
   opacity: 0.5;
+}
+.snap-dock-line-hot {
+  opacity: 0.95;
+}
+.snap-dock-line-left {
+  border-left: 2px solid var(--snap-dock-line);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--snap-dock-line) 22%, transparent), transparent 18px) padding-box;
+}
+.snap-dock-line-right {
+  border-right: 2px solid var(--snap-dock-line);
+  background: linear-gradient(270deg, color-mix(in srgb, var(--snap-dock-line) 22%, transparent), transparent 18px) padding-box;
+}
+.snap-dock-line-top {
+  border-top: 2px solid var(--snap-dock-line);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--snap-dock-line) 22%, transparent), transparent 18px) padding-box;
+}
+.snap-dock-line-bottom {
+  border-bottom: 2px solid var(--snap-dock-line);
+  background: linear-gradient(0deg, color-mix(in srgb, var(--snap-dock-line) 22%, transparent), transparent 18px) padding-box;
 }
 
 /* 磁吸"锁边"脉冲：新停靠瞬间的一次性强调（无循环动画；
-   reduced-motion 由文件头部全局媒体查询收敛）。唤出路径不加此类，不重复反馈 */
+   reduced-motion 由文件头部全局媒体查询收敛）。唤出路径不加此类，不重复反馈。
+   v0.6 几何改为整窗描边层后脉冲只动透明度（原 scale 会放大整层）。 */
 .snap-dock-line-fresh {
   animation: snap-lock-pulse 0.32s ease-out backwards;
 }
 @keyframes snap-lock-pulse {
   0% {
     opacity: 1;
-    scale: 1;
   }
   40% {
     opacity: 1;
-    scale: 2.6;
   }
   100% {
     opacity: 0.5;
-    scale: 1;
   }
-}
-.snap-dock-line-left,
-.snap-dock-line-right { top: 0; bottom: 0; width: 2px; }
-.snap-dock-line-top,
-.snap-dock-line-bottom { left: 0; right: 0; height: 2px; }
-.snap-dock-line-left {
-  left: 0;
-  background: linear-gradient(180deg, transparent, var(--snap-dock-line) 20%, var(--snap-dock-line) 80%, transparent);
-}
-.snap-dock-line-right {
-  right: 0;
-  background: linear-gradient(180deg, transparent, var(--snap-dock-line) 20%, var(--snap-dock-line) 80%, transparent);
-}
-.snap-dock-line-top {
-  top: 0;
-  background: linear-gradient(90deg, transparent, var(--snap-dock-line) 20%, var(--snap-dock-line) 80%, transparent);
-}
-.snap-dock-line-bottom {
-  bottom: 0;
-  background: linear-gradient(90deg, transparent, var(--snap-dock-line) 20%, var(--snap-dock-line) 80%, transparent);
 }
 
 /* 隐藏态 Smart Dock Capsule：短胶囊（32×120 CSS px，对侧定位见区块头注释）。
@@ -5182,7 +5188,7 @@ code {
 .capsule-top { bottom: 0; left: 50%; translate: -50% 0; }
 .capsule-bottom { top: 0; left: 50%; translate: -50% 0; }
 
-.capsule-brand { color: var(--snap-hint-text); flex-shrink: 0; }
+.capsule-brand { color: var(--accent); flex-shrink: 0; }
 .capsule-stat {
   display: inline-flex;
   align-items: center;
@@ -5206,7 +5212,10 @@ code {
 .capsule-dot.dot-waiting { background: var(--status-waiting); }
 .capsule-dot.dot-failed { background: var(--status-error); }
 .capsule-dot.dot-idle { background: var(--text-tertiary); }
-/* 异常状态提升视觉优先级：克制的状态色描边环，不闪烁 */
+/* 异常状态提升视觉优先级（v0.6 异常变响）：静态描边环 + 呼吸光晕。
+   光晕只动 ::after 透明度（合成层友好）；reduced-motion 全局媒体查询会
+   关停动画，此时仅剩静态环 —— 与早期「不闪烁」约束相比是推翻性变更，
+   契约说明见 SnapOverlay.tsx 头注释。 */
 .capsule-alert-failed {
   border-color: var(--status-error);
   box-shadow: 0 0 0 1px var(--snap-alert-ring-failed), var(--shadow-raised);
@@ -5215,6 +5224,30 @@ code {
   border-color: var(--status-waiting);
   box-shadow: 0 0 0 1px var(--snap-alert-ring-waiting), var(--shadow-raised);
 }
+.capsule-alert-failed::after,
+.capsule-alert-waiting::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: capsule-alert-pulse 2s ease-in-out infinite;
+}
+.capsule-alert-failed::after {
+  box-shadow: 0 0 0 2px var(--snap-alert-ring-failed);
+}
+.capsule-alert-waiting::after {
+  box-shadow: 0 0 0 2px var(--snap-alert-ring-waiting);
+}
+@keyframes capsule-alert-pulse {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
 /* 展开箭头：始终朝向屏幕内部（left 停靠 → 屏内为右 → 0deg；其余旋转） */
 .capsule-chevron { color: var(--snap-capsule-text); flex-shrink: 0; }
 .capsule-left .capsule-chevron { rotate: 0deg; }
@@ -5222,14 +5255,8 @@ code {
 .capsule-top .capsule-chevron { rotate: 90deg; }
 .capsule-bottom .capsule-chevron { rotate: -90deg; }
 
-/* 磁吸区（≤28px）提示增强：吸附趋势更明确，仍保持轻量 */
-.snap-hint-magnet {
-  border-color: var(--accent);
-  color: var(--accent);
-  box-shadow:
-    var(--shadow-overlay),
-    0 0 0 2px var(--accent-soft);
-}
+/* 磁吸区（≤28px）提示增强已随 .snap-hint 移除（v0.6 极简停靠：拖拽反馈
+   由 snap-glow 光晕 + 圆角细线 .snap-dock-line-hot 承担） */
 
 @keyframes snap-fade-in {
   from { opacity: 0; }
@@ -5240,4 +5267,506 @@ code {
     scale: 0.96;
   }
 }
+
+/* ══ 分类胶囊（v0.7 重设计）══════════════════════════════════
+   结构：轨道（56×300）+ 间隙 8 + 功能面板（336×420）。
+   窗口在停靠期间不移动、不缩放，展开/收起只切 Win32 区域
+   （见 src-tauri/src/window_shape.rs 的 capsule_regions）。
+   因此这里的尺寸必须与 lib/capsuleLayout.ts 常量一致：改动要三端同步。
+
+   视觉：轨道与面板各自是一块独立的圆角玻璃卡片，面板比轨道高、
+   二者同轴居中；不使用常驻外发光，强调色只出现在选中态与徽标。 */
+
+/* 主界面容器：停靠期整块隐藏（保留挂载以维持视图状态） */
+.dock-app {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 胶囊模式：窗口由区域裁剪成胶囊形状，根节点必须完全透明 */
+.dock-window.is-capsule {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  overflow: visible;
+}
+.dock-window.is-capsule .dock-app {
+  display: none;
+}
+
+.capsule-dock {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  /* 主轴必须从停靠边开始排：折叠态只有一个子元素，居中会让轨道离开
+     区域所在的边缘（Win32 区域按 x=0 裁，轨道跑到窗口中间就看不见了） */
+  justify-content: flex-start;
+  gap: 8px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* 轨道永远贴停靠边，面板永远朝屏幕内部展开。
+   row-reverse / column-reverse 下 flex-start 即停靠边一侧。 */
+.capsule-dock.dock-v { flex-direction: row; }
+.capsule-dock.edge-right { flex-direction: row-reverse; }
+.capsule-dock.dock-h { flex-direction: column; }
+.capsule-dock.edge-bottom { flex-direction: column-reverse; }
+
+/* ── 轨道 ── */
+.capsule-rail {
+  flex: 0 0 auto;
+  display: flex;
+  background: var(--card-face);
+  border: 1px solid var(--border-subtle);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 55%, transparent),
+    var(--shadow-raised);
+  color: var(--text-secondary);
+}
+.cap-v {
+  flex-direction: column;
+  width: 56px;
+  height: 300px;
+  border-radius: 28px;
+  padding: 8px 0;
+}
+.cap-h {
+  flex-direction: row;
+  width: 300px;
+  height: 56px;
+  border-radius: 28px;
+  padding: 0 8px;
+}
+
+/* 吸附成功：短促一次脉冲（不循环；reduced-motion 由全局规则收敛） */
+.capsule-dock.is-snap .capsule-rail {
+  animation: capsule-snap 0.34s var(--ease-out, ease-out);
+}
+@keyframes capsule-snap {
+  0% { scale: 1; }
+  35% { scale: 1.022; }
+  100% { scale: 1; }
+}
+
+.cap-sep {
+  flex: 0 0 auto;
+  align-self: center;
+  background: var(--divider);
+  border-radius: 1px;
+}
+.cap-v .cap-sep { width: 20px; height: 1px; margin: 4px 0; }
+.cap-h .cap-sep { height: 20px; width: 1px; margin: 0 4px; }
+
+.cap-nav {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.cap-v .cap-nav { flex-direction: column; }
+.cap-h .cap-nav { flex-direction: row; }
+
+/* Agent 总状态按钮：渐变球 + 状态环（空闲中性 / 运行蓝 / 等待橙 / 失败红） */
+.cap-orb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 4px 10px -6px color-mix(in srgb, var(--c-accent) 80%, transparent);
+  transition: filter 0.12s ease, box-shadow 0.12s ease;
+}
+.cap-orb:hover { filter: brightness(1.06); }
+.cap-orb:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-orb[data-tone="idle"] {
+  background: color-mix(in srgb, var(--c-paper) 82%, transparent);
+  color: var(--text-tertiary);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.cap-orb[data-tone="unknown"] {
+  background: color-mix(in srgb, var(--c-paper) 82%, transparent);
+  color: var(--text-tertiary);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.cap-orb[data-tone="running"] { box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-running) 55%, transparent); }
+.cap-orb[data-tone="waiting"] { background: var(--status-waiting); box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-waiting) 45%, transparent); }
+.cap-orb[data-tone="failed"] { background: var(--status-error); box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-error) 45%, transparent); }
+.cap-orb[data-tone="disconnected"] { background: var(--status-disconnected); }
+
+.cap-orb-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--status-error);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 1.5px var(--surface-raised);
+}
+
+/* 分类按钮 */
+.cap-btn {
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.cap-btn:hover { background: var(--surface-hover); color: var(--text-primary); }
+.cap-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* 选中态：轻微背景提亮 + 内层玻璃感，不用竖线/双圆弧 */
+.cap-btn.is-active {
+  background: color-mix(in srgb, var(--c-accent) 12%, transparent);
+  color: var(--rail-active-text, var(--accent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 22%, transparent);
+}
+.cap-icon { position: relative; display: grid; place-items: center; }
+.cap-dot {
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1.5px var(--surface-raised);
+}
+.cap-dot.dot-running { background: var(--status-running); }
+.cap-dot.dot-waiting { background: var(--status-waiting); }
+.cap-dot.dot-failed { background: var(--status-error); }
+.cap-dot.dot-disconnected { background: var(--status-disconnected); }
+
+.cap-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.cap-collapse {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.cap-collapse:hover { background: var(--surface-hover); color: var(--text-primary); }
+.cap-collapse:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-collapse[aria-disabled="true"] { opacity: 0.35; cursor: default; }
+.cap-collapse[aria-disabled="true"]:hover { background: transparent; color: var(--text-tertiary); }
+
+/* ── 功能面板 ── */
+.capsule-panel {
+  flex: 0 0 auto;
+  width: 336px;
+  height: 420px;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 10px 8px;
+  border-radius: 22px;
+  border: 1px solid var(--border-subtle);
+  background: var(--card-face);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 55%, transparent),
+    var(--shadow-raised);
+  overflow: hidden;
+  animation: capsule-panel-in 0.16s var(--ease-out, ease-out);
+}
+@keyframes capsule-panel-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+
+.capsule-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 8px;
+}
+.capsule-title {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+.capsule-meta {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.capsule-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 2px;
+}
+
+.capsule-row,
+.capsule-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 5px 6px;
+  border-radius: 10px;
+  transition: background 0.12s ease;
+}
+.capsule-row:hover,
+.capsule-group:hover { background: var(--surface-hover); }
+
+.capsule-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.capsule-row-title {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.capsule-row-title.clip-1 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; }
+.capsule-row-sub {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.capsule-row-sub.tone-overdue { color: var(--status-error); }
+.capsule-row-sub.tone-soon { color: var(--status-waiting); }
+.capsule-row-sub.state-failed { color: var(--status-error); }
+.capsule-row-sub.state-waiting { color: var(--status-waiting); }
+.capsule-row-sub.state-running { color: var(--status-running); }
+
+.capsule-check {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.capsule-check:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.capsule-check:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.capsule-state-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+}
+.capsule-state-dot.state-running { background: var(--status-running); }
+.capsule-state-dot.state-waiting { background: var(--status-waiting); }
+.capsule-state-dot.state-failed { background: var(--status-error); }
+.capsule-state-dot.state-disconnected { background: var(--status-disconnected); }
+
+.capsule-group-thumb {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--pill-face);
+  color: var(--text-tertiary);
+}
+.capsule-group-thumb img { width: 100%; height: 100%; object-fit: cover; }
+
+.capsule-icon-btn {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.capsule-icon-btn:hover { background: var(--surface-hover); color: var(--accent); }
+.capsule-icon-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.capsule-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 8px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.capsule-empty p { font-size: 11.5px; }
+
+.capsule-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 4px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--divider);
+}
+.capsule-hint { font-size: 10px; color: var(--text-tertiary); }
+.capsule-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.capsule-link:hover { background: var(--accent-soft); }
+.capsule-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.capsule-add {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 9px;
+  background: var(--control-face);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  color: var(--text-tertiary);
+}
+.capsule-add input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11.5px;
+}
+.capsule-add input::placeholder { color: var(--text-tertiary); }
+.capsule-add:focus-within { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* 应用网格：3 列，图标 + 名称 */
+.capsule-app-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 4px 2px;
+}
+.capsule-app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 4px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.capsule-app:hover { background: var(--surface-hover); }
+.capsule-app:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.capsule-app-avatar {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: hsl(var(--app-hue, 250) 62% 42%);
+  background: hsl(var(--app-hue, 250) 70% 92%);
+}
+:root[data-preset][data-theme="dark"] .capsule-app-avatar {
+  color: hsl(var(--app-hue, 250) 70% 78%);
+  background: hsl(var(--app-hue, 250) 40% 26%);
+}
+.capsule-app-name {
+  max-width: 100%;
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 窄窗兜底：容器被系统压到小于胶囊容器时，面板退化为轨道内滚动，
+   不出现横向溢出（正常情况下引擎会把窗口撑到 400×420）。 */
+@media (max-width: 399px) {
+  .capsule-panel { width: calc(100vw - 64px); }
+}
+
 }

@@ -25,7 +25,6 @@ import {
   type SnapArea,
   type SnapRect,
   approachPositionFor,
-  candidateHintText,
   canAutoHide,
   canTransition,
   capsuleRevealDistPhysical,
@@ -350,10 +349,9 @@ describe("程序移动守卫 createSnapMoveGuard（window_rect 防污染）", ()
 });
 
 describe("文案与类型守卫", () => {
-  it("反馈与提示文案覆盖四边", () => {
+  it("反馈文案覆盖四边", () => {
     for (const e of ["left", "right", "top", "bottom"] as const) {
       expect(dockFeedbackText(e)).toBe(`已吸附${EDGE_LABELS[e]}`);
-      expect(candidateHintText(e)).toBe(`松开吸附${EDGE_LABELS[e]}`);
     }
   });
 

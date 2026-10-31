@@ -4,6 +4,7 @@
 //! 字母键快速定位。禁用项不可触发，单选组用 menuitemradio + aria-checked。
 
 import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Check } from "lucide-react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
 
@@ -212,7 +213,14 @@ export default function DropdownMenu({
                 <span className="ui-menu-label">{it.label}</span>
                 {it.description ? <em className="ui-menu-desc">{it.description}</em> : null}
               </span>
-              {it.trailing ? <span className="ui-menu-trailing">{it.trailing}</span> : null}
+              {/* 单选项勾选标记：与右键菜单统一「选中」视觉词汇（此前仅底色+字重） */}
+              {it.trailing ? (
+                <span className="ui-menu-trailing">{it.trailing}</span>
+              ) : it.radio ? (
+                <span className="ui-menu-trailing" aria-hidden="true">
+                  {it.checked ? <Check size={14} strokeWidth={2.5} /> : null}
+                </span>
+              ) : null}
             </button>
           ))}
         </div>

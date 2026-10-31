@@ -67,7 +67,7 @@
 | 层 | 实现 | 作用 |
 | --- | --- | --- |
 | 1 | `SetWindowRgn(CreateRoundRectRgn(0,0,w+1,h+1,2r,2r))` | 裁掉 WebView2/GDI 内容 |
-| 2 | `effective_backend`：Win11 + 区域裁剪时 default 用 **blur**（窗口自身合成） | 不再让 DWM 背景画到区域外；显式 `mica/acrylic/none` 保留供矩阵对照 |
+| 2 | `effective_backend`：Win11 + 区域裁剪时 default 用 **css**（不挂原生材质，CSS 玻璃；2026-10-31 晚更正，原为 blur） | 圆角外无原生层，直接透出桌面；显式 `mica/acrylic/blur/css/none` 保留供矩阵对照 |
 | 3 | `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` + `DWMWA_WINDOW_CORNER_PREFERENCE` | 去掉默认 1px 边框，保留系统圆角偏好 |
 
 文件：`src-tauri/src/window_shape.rs`、`src-tauri/src/commands/system.rs`。
@@ -182,9 +182,16 @@ Win11 上 `DWMWCP_ROUND` 会额外提供系统级阴影与抗锯齿圆角（若�
 
 | 系统 | build | 效果 |
 | --- | --- | --- |
-| Windows 11 | ≥ 22000 | `apply_mica`（首选，性能好） |
+| Windows 11 + 区域裁剪（默认） | ≥ 22000 | **css**：不挂原生材质，玻璃由 CSS 半透明承担（无圆角暗楔） |
+| Windows 11 关闭区域裁剪（矩阵对照） | ≥ 22000 | `apply_mica` |
 | Windows 10 | ≥ 17134 | `apply_acrylic` |
 | 更早 / 失败 | — | `applied=false`，前端回退 solid |
+
+> **2026-10-31 更正**：Win11 22631 的 legacy `ACCENT_ENABLE_BLURBEHIND` 也被真机像素
+> 证明会在区域圆角外留下暗楔（角部 `[1,11,1]`，solid 同位置为背景色），
+> `SetWindowRgn` 无法裁剪原生层。默认后端因此从 `blur` 改为 `css`；
+> 显式 `TASK_DOCK_GLASS_BACKEND=blur` 仍可用于矩阵复现。证据见
+> `tmp/acceptance/dock-line-undock-20261031/report.md`。
 
 - 使用 `window-vibrancy`（Tauri 自身的 Windows 传递依赖，**不新增 crate**）。
   之所以不用 `tauri::Window::set_effects`：它在 Windows 上吞掉底层错误（恒返回 Ok），

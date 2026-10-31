@@ -7,13 +7,11 @@
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Palette, Clipboard, Magnet,
+  Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Palette, Clipboard,
 } from "lucide-react";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useAgentsStore } from "../store/useAgentsStore";
 import { useUiStore } from "../store/useUiStore";
-import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
-import { EDGE_LABELS } from "../lib/edgeSnap";
 import { applyMode } from "../lib/bridge";
 import { AGENT_STATE_LABELS } from "../lib/format";
 import { worstAgentState } from "../lib/agentTree";
@@ -72,16 +70,13 @@ function MenuButton({
   );
 }
 
-export default function TitleBar() {
+export default function TitleBar({ inert = false }: { inert?: boolean }) {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const snapshot = useAgentsStore((s) => s.snapshot);
   const openClipboard = useUiStore((s) => s.openClipboard);
   const closeClipboard = useUiStore((s) => s.closeClipboard);
   const clipboardOpen = useUiStore((s) => s.clipboardOpen);
-  // 停靠状态：低调磁铁图标 + 点击解除吸附（明确操作路径，需求 C/F）
-  const snapDockedEdge = useEdgeSnapStore((s) => (s.phase.startsWith("docked-") ? s.dockedEdge : null));
-  const snapUndock = useEdgeSnapStore((s) => s.undock);
   const mode = settings?.mode ?? "full";
   const theme = settings?.theme ?? "system";
   const preset = resolveVisualPreset(settings?.visual_preset);
@@ -120,11 +115,11 @@ export default function TitleBar() {
   }));
 
   return (
-    <div className="titlebar" data-tauri-drag-region>
+    <div className="titlebar" data-tauri-drag-region inert={inert}>
       <span className="brand-orb" aria-hidden="true" />
       <span
         className={`agent-dot state-${state}`}
-        title={`Agent: ${AGENT_STATE_LABELS[state] ?? state}`}
+        data-tip={`Agent 状态：${AGENT_STATE_LABELS[state] ?? state}`}
         aria-label={`Agent 状态：${AGENT_STATE_LABELS[state] ?? state}`}
       />
       <span className="titlebar-title" data-tauri-drag-region>
@@ -141,17 +136,6 @@ export default function TitleBar() {
           items={presetItems}
         />
         <span className="titlebar-divider" />
-        {/* 停靠状态指示：仅吸附生效时出现；点击解除吸附（隐藏态会先安全展开） */}
-        {snapDockedEdge && (
-          <button
-            className="icon-btn win-btn snap-docked-btn"
-            data-tip={`已吸附${EDGE_LABELS[snapDockedEdge]} · 点击解除吸附`}
-            aria-label={`已吸附${EDGE_LABELS[snapDockedEdge]}，点击解除吸附`}
-            onClick={() => snapUndock?.()}
-          >
-            <Magnet size={14} />
-          </button>
-        )}
         {/* 完整模式的剪贴板入口在左侧导航；紧凑/极简没有侧栏，这里保留临时入口 */}
         {mode !== "full" && (
           <button

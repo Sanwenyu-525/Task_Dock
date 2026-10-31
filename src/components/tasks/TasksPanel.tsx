@@ -44,23 +44,29 @@ export default function TasksPanel() {
     <div className="tasks-panel">
       {/* 全局概览（跨筛选视图） */}
       <div className="tasks-overview">
-        <div className="overview-card tone-accent" title="全部未完成任务">
+        <div className="overview-card tone-accent" data-tip="全部未完成任务">
           <ListChecks size={15} strokeWidth={1.9} className="overview-icon" />
           <span className="overview-value">{stats?.pending ?? "–"}</span>
           <span className="overview-label">待完成</span>
         </div>
-        <div className="overview-card tone-violet" title="今天到期">
+        <div className="overview-card tone-violet" data-tip="今天到期">
           <CalendarClock size={15} strokeWidth={1.9} className="overview-icon" />
           <span className="overview-value">{stats?.due_today ?? "–"}</span>
           <span className="overview-label">今日到期</span>
         </div>
         <div
           className={`overview-card tone-warn ${stats?.overdue ? "warn" : ""}`}
-          title="已过期未完成"
+          data-tip="已过期未完成"
           onClick={() => setFilter({ view: "overdue" })}
           role="button"
           tabIndex={0}
-          onKeyDown={(e) => e.key === "Enter" && setFilter({ view: "overdue" })}
+          onKeyDown={(e) => {
+            // role=button 键盘契约：Enter 与 Space 都可激活（Space 需阻止默认滚动）
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setFilter({ view: "overdue" });
+            }
+          }}
         >
           <AlertTriangle size={15} strokeWidth={1.9} className="overview-icon" />
           <span className="overview-value">{stats?.overdue ?? "–"}</span>
@@ -77,6 +83,7 @@ export default function TasksPanel() {
             <button
               key={v.id}
               className={`seg-btn ${filter.view === v.id ? "active" : ""}`}
+              aria-pressed={filter.view === v.id}
               onClick={() => setFilter({ view: v.id })}
             >
               {v.label}
@@ -107,6 +114,7 @@ export default function TasksPanel() {
             <button
               key={s.id}
               className={`seg-btn ${(filter.status ?? "pending") === s.id ? "active" : ""}`}
+              aria-pressed={(filter.status ?? "pending") === s.id}
               onClick={() => setFilter({ status: s.id })}
             >
               {s.label}

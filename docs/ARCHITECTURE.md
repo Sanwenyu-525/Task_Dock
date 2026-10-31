@@ -205,6 +205,29 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   停靠显示器记忆替代每 tick currentMonitor；⑥唤出命中以**胶囊区段**为准（居中 120 CSS px
   ±24px），不再把整条屏幕边缘当唤出区。隐藏实现策略取舍见
   `tmp/acceptance/edge-snap-system-remediation/architecture-decision.md`。
+- 停靠态极简 + 拖拽解除（v0.6 · 2026-10-31）：删除标题栏磁铁按钮与拖拽时的
+  「松开吸附」提示胶囊，吸附反馈只保留一条**整窗描边细线**——`inset:0` +
+  `border-radius: var(--radius-window)` 使描边沿窗口圆角弯曲，四边各自向窗口内侧
+  18px 渐隐（candidate 相位 opacity 0.95 = hot，停靠相位 0.5；`styles.css`
+  `.snap-dock-line`）。解除吸附不再有按钮路径：停靠可见/唤出相位的 tick 检测
+  窗口偏离 `clampDockedPosition` 齐平位 > `SNAP_UNDOCK_DRAG_PX`(24 CSS px) 且
+  `snapMoveGuard` 判定非程序移动时，走 `undockCore` 清停靠/持久化并记录当前位置
+  （不做 48px 内推）；≤24px 仍由 `realignDocked` 拉回齐平（`moveWindow` 的
+  force 参数跳过目标缓存，修复实测偏离被缓存短路、拉回不生效的问题）。
+  隐藏态解除仍走「胶囊唤出 → 拖离」，`undock` store 字段随按钮一并删除。
+- 主窗圆角与滚动条（2026-10-31）：液态玻璃预设 `--radius-window: 20px` 与
+  `PRESET_WINDOW_RADIUS` / Win32 区域半径（逻辑像素，按 DPI 换算）对齐，消除
+  dream/glass 18px 时 CSS 填充到不了区域边缘留下的圆角缝隙带；主窗滚动容器改用
+  透明轨道 + 6px thumb（`styles.css` `.dock-window ::-webkit-scrollbar`，与右键
+  菜单同款），窄窗导航轨间距在 ≤384px 断点收紧，消除 340px 高时只滚 2px 的幽灵
+  滚动条。
+- glass 圆角暗楔修复（2026-10-31 晚）：Win11 + 区域裁剪时原生 Mica/Acrylic 与
+  legacy `ACCENT_ENABLE_BLURBEHIND` 都会按整窗矩形绘制，`SetWindowRgn` 裁不到，
+  圆角外留下暗/亮楔（真机：blur 角部 [1,11,1]、acrylic [84,84,84]。默认后端改为
+  **css**——不挂任何原生材质，玻璃由 CSS 半透明 `--window-fill` 承担；圆角外
+  直接透出桌面（真机复测角点与背景逐像素一致，暗楔消失）。liquid 的 tint 本就
+  76–86% 不透明，停用原生模糊的视觉损失有限。显式 `TASK_DOCK_GLASS_BACKEND=
+  mica|acrylic|blur|css|none` 仍保留供矩阵对照。
 - 主题：CSS 变量 + `data-theme`，跟随系统时监听 `prefers-color-scheme`。
 - 导航（v0.4）：`lib/navigation.ts` 类型化桥接 + `useNavigationStore`（扫描缓存/任务关联映射，
   运行状态按需刷新不轮询）；任务卡最多直列 3 个目标图标，其余折叠进快捷菜单（键盘可操作）；
@@ -308,6 +331,24 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 统一上下文：`task_context(task_id)` 聚合任务、快照、Agent 会话、关联目标、
   剪贴板素材与待处理动作，前端以单一抽屉呈现；各模块可独立启停。
 - 剪贴板素材绑定现场：`clipboard_snapshot_links` 只存关联，不复制内容。
+
+### 10. 分类胶囊（v0.7）
+
+停靠期主窗口**不移动、不缩放**，只切换 Win32 区域（轨道 / 轨道 ∪ 面板），
+这是"鼠标在吸附条与悬浮窗口之间来回跳动"的结构性修复。细节见
+[docs/ui-themes/13-capsule-redesign.md](ui-themes/13-capsule-redesign.md)。
+
+- 几何唯一来源：`src/lib/capsuleLayout.ts`（前端布局与命中判定）与
+  `src-tauri/src/window_shape.rs::capsule_regions`（区域裁剪），两端单测锁定同一组常量
+  （轨道 56×300、面板 336×420、间隙 8）。
+- 区域：折叠 = 轨道圆角矩形；展开 = `CombineRgn(RGN_OR)` 合并两块圆角矩形，
+  应用后 `GetWindowRgn` 回读验证（包围盒 + 中心点 + 间隙点）。
+- 状态：`useEdgeSnap` 仍是唯一写入方（五相状态机 + `docked-visible → docked-revealed`
+  新转移）；`useCapsuleStore` 只保存"当前分类"这一纯 UI 选择。
+- 数据：任务/Agent/剪贴板/应用全部读既有 store 与既有命令，不新增轮询、不新增状态源；
+  Agent 徽标只统计 waiting + failed。
+- 兼容：`snap_state` 新增可选 `center`；停靠期不写 `window_rect`；
+  解除吸附按模式尺寸恢复。
 
 ## 三、数据模型（SQLite）
 

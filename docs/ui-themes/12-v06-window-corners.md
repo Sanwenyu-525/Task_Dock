@@ -393,3 +393,32 @@ cdylib 导出上限会导致链接失败，不能把 GNU 的退出码当作测�
 > `system_backdrop=2` 与 `corner_preference=2` 同时成立时，DWM 会画出带抗锯齿的
 > 系统圆角与背景，但 `SetWindowRgn` 在 GDI 层又裁了一次；两套圆角半径/中心不一致，
 > 就是「黑楔 + 白晕 + 灰边」并存的直接原因。
+
+---
+
+## 11. 更正（2026-10-31 真机复测）
+
+第 3.2 节的假设「默认 blur 受 `SetWindowRgn` 约束、不会在圆角外绘制」被新的
+受控背景真机像素证据**部分推翻**：
+
+- 方法：`tmp/acceptance/dock-line-undock-20261031/corner-lab-task.ps1`（`scripts/corner-lab.ps1`
+  的任务内副本，仅补 `WaitForInputIdle` 容错）+ `scripts/check-corners.py`；纯绿背景 +
+  隐藏窗口基线，四组 `baseline valid=True`；窗口 500×700 物理 @125%，区域半径 25 物理 px。
+- 读数：liquid 深色 **solid** 角外 0 个暗像素（46–48 个非背景像素仅为窗口柔和阴影带）；
+  liquid 深/浅色 **glass（auto → blur）** 角/弧带 102–104 个暗像素，`transparent_ratio=0.0`
+  （solid 约 0.36）；对角 (4.5,4.5) 像素 solid 为纯背景，glass 为 (1,11,1)/(4,14,4)。
+- 结论：blur 层仍按窗口矩形合成，`SetWindowRgn` 未裁掉圆角外的透明像素；暗楔形在
+  深色下呈黑边、浅色下呈亮边（与用户「圆角处白色」的观感一致）。第 10 节
+  `system_backdrop=2` 的 Mica 读数不适用于当前默认 blur 路径。
+- 本轮处理：`--radius-window` 已与区域半径对齐（liquid 20px / dream 18px），消除
+  18px 时的圆角缝隙带；glass 的 blur 暗楔按计划**接受并记录**，未改主窗材质策略。
+  若要彻底消除，只能主窗 glass 降级 solid（`applied=false` → 前端回落 solid）或改用
+  其他合成路径，属于产品决策。
+- **2026-10-31 晚修复**：最终没有降级 solid，而是把 Win11 + 区域裁剪的默认后端从
+  `blur` 改为 **`css`**：清除一切原生材质，玻璃由 CSS 半透明 `--window-fill`
+  承担（liquid 76–86% 不透明）。真机复测（同一 debug 实例、隔离数据、125%）：
+  浅/深主题下圆角对角 0/2/4/6px 像素与背景逐值一致（如 `(0,0,0)`），内容从 8px
+  才开始，暗楔消失；前端 `data-material=glass`、`data-native-glass=true`、
+  `materialInfo.effect=css`。显式 `TASK_DOCK_GLASS_BACKEND=blur` 仍保留供矩阵复现。
+- 证据：`tmp/acceptance/dock-line-undock-20261031/corner/liquid-*-glass-css-green-visible.png`、
+  `tmp/acceptance/dock-line-undock-20261031/report.md`。

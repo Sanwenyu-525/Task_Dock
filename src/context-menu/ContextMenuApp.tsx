@@ -85,8 +85,8 @@ export default function ContextMenuApp() {
 
   const runAction = useCallback(
     (action: MenuAction) => {
-      // 后端执行动作并隐藏菜单；成功回传最新快照（不做乐观更新），
-      // 失败回传权威快照 + 行内错误反馈 —— 不虚假显示成功。
+      // 后端执行动作，成功才隐藏菜单；成功回传最新快照（不做乐观更新），
+      // 失败保留菜单 + 行内错误反馈 —— 不虚假显示成功，也不静默失败。
       void invoke<MenuActionResult>("context_menu_action", { action })
         .then((result) => {
           if (result.snapshot) setSnap(result.snapshot);
@@ -114,6 +114,11 @@ export default function ContextMenuApp() {
     const scope = createSubscriptionScope();
     scope.add(
       listen(SHOW_EVENT, () => {
+        // 重开/重定位时清掉上一轮失败反馈：失败反馈有 2.5s 自动消失窗口，
+        // 若在窗口内重开菜单，残留的旧错误会闪现误导用户。
+        if (feedbackTimer.current !== null) window.clearTimeout(feedbackTimer.current);
+        feedbackTimer.current = null;
+        setFeedback(null);
         // 仅「从隐藏到显示」才重放入场动画；已打开时的再次右键只更新
         // 快照与焦点（统一重定位策略），不重挂载 —— 否则连续右键会闪。
         const alreadyShown =
