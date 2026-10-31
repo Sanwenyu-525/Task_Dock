@@ -404,6 +404,7 @@ def main():
     )
     ap.add_argument("--clipboard-interval", type=float, default=5.0)
     ap.add_argument("--clipboard-image-every", type=int, default=6)
+    ap.add_argument("--clipboard-marker", default="taskdock-p1-05-clipboard-probe-", help="剪贴板测试文本唯一标识前缀")
     ap.add_argument(
         "--transport",
         choices=["http", "file"],
@@ -505,6 +506,8 @@ def main():
                     str(args.clipboard_image_every),
                     "--out",
                     str(stimulus_out),
+                    "--marker",
+                    str(args.clipboard_marker),
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

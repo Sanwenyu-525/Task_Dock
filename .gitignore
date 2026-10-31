@@ -7,8 +7,8 @@ dist/
 # 任务级工作区（验收/调试/实验；长期证据请归档到 docs/ 对应目录并更新索引）
 /tmp/
 
-# 仓库根的外置 Rust 构建目录（性能/验收用）
-/target-test/
+# 仓库根的外置 Rust 构建目录（性能/验收用；target-* 通配覆盖未来新增隔离目录）
+/target-*/
 
 # 本地真机验收临时区（二进制副本、数据库快照）
 /.acceptance/
@@ -16,11 +16,10 @@ dist/
 # 视觉走查 harness（由 scripts/make-preview.mjs 生成，不入库）
 .preview/
 
-# Tauri / Rust
+# Tauri / Rust（src-tauri/target-* 通配覆盖 target-accept/-dbg/-measure/-gate 及未来隔离目录；
+# 归属与清理见 scripts/build-guard.mjs，docs/DEVELOPMENT.md「构建产物与磁盘空间管理」）
 src-tauri/target/
-src-tauri/target-accept/
-src-tauri/target-accept-dbg/
-src-tauri/target-measure/
+src-tauri/target-*/
 src-tauri/gen/
 
 # Python bytecode cache

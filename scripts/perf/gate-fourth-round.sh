@@ -12,6 +12,8 @@ OUT_DIR="$ROOT/docs/clipboard/evidence"
 mkdir -p "$OUT_DIR"
 
 export CARGO_TARGET_DIR="$ROOT/src-tauri/target-accept"
+# 构建前守卫：磁盘空间不足或缓存异常时阻塞（退出码 2）。
+node "$ROOT/scripts/build-guard.mjs" precheck || exit 2
 cd "$ROOT/src-tauri"
 
 run() {

@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47869",
+    "token": "eb7df704-de95-40fd-a0bc-5234266c46de",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 300,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "p5d-20261031-160857",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-v05\\p5d-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-p5d-20261031-160857-load.json"
+  },
+  "elapsed_ms": 300008,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 6000,
+    "ok": 6000,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 600,
+    "critical_ok": 600,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.42,
+    "p95": 257.46,
+    "max": 640
+  }
+}

@@ -293,12 +293,19 @@ body {
   }
 }
 
-/* 滚动条（小屏/工作区不足时出现，保证「退出」可达） */
+/* 滚动条（小屏/工作区不足时出现，保证「退出」可达）：
+   轨道必须透明 —— 默认轨道是系统亮灰，深色菜单下就是右侧一条「白边」 */
 .liquid-context-menu::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
+}
+.liquid-context-menu::-webkit-scrollbar-track {
+  background: transparent;
 }
 .liquid-context-menu::-webkit-scrollbar-thumb {
-  border-radius: 4px;
+  border-radius: 3px;
   background: rgba(128, 138, 160, 0.35);
+}
+:root[data-theme="dark"] .liquid-context-menu::-webkit-scrollbar-thumb {
+  background: rgba(158, 180, 220, 0.28);
 }
 }

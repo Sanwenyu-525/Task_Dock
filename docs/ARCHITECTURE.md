@@ -183,6 +183,28 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   程序移动后 150ms 坐标静默期；隐藏相位的几何使用 hide 时记录的停靠显示器
   （修复 currentMonitor 在多屏下按重叠最大取错屏的问题）；松手确认 = 移动静默 +
   （光标出窗 ∨ DOM 指针事件恢复）。状态与窗口矩形持久化（程序移动/屏外矩形不写入）。
+- 吸附胶囊真实显示修复（v0.6 · 2026-10-31 第二轮）：区域裁剪改为**提交协议**——
+  隐藏 = 移动 → waitForPosition 有界轮询（50ms×≤600ms，等坐标落定）→ 裁剪
+  （await + 返回值检查）→ 才提交 docked-hidden 与持久化，任一步失败回滚到原
+  可见位；展开 = 移动 → 落定 → 清裁剪（一次重试）→ 提交 revealed，清除失败回滚
+  隐藏位。区域操作带序号，过期响应作废并按最新期望重同步。后端
+  `apply_window_capsule` 在 SetWindowRgn 后用 GetWindowRgn 回读验证包围盒
+  （±1px），返回值代表真实生效；自愈判定加 500ms 宽限窗（`capsule_heal_allowed`），
+  防止"移动未落定时单次位置读取撤销胶囊"（真机长条残留根因）。胶囊区域矩形为
+  显式 `CapsuleRegionRect{x,y,width,height,radius}`：left/right 纵向 32×120、
+  top/bottom 横向 120×32，窗口尺寸不足时钳制；真实 HWND 测试覆盖四边回读。
+- 吸附系统性修复（v0.6 · 2026-10-31）：①**胶囊区域裁剪**——隐藏时经
+  `apply_window_capsule` 把主窗口 Win32 区域收窄为停靠边上的短胶囊
+  （区域外不绘制、不接收鼠标；hwnd 绑定不影响右键菜单弹窗；窗口大部分可见时后端自愈清除），
+  消除整窗切片在胶囊外露出内容/残留命中区的结构性问题；②**多屏接缝安全降级**——
+  停靠边外侧紧贴邻屏（内部接缝）时允许停靠但禁止自动隐藏（`findAdjacentMonitorAcrossEdge`），
+  邻屏断连 3s 重检恢复，隐藏中接缝形成由健康检查（每 20 tick）立即安全展开；
+  ③**唤回**——托盘/快捷键经 `show_and_focus` 检测窗口"可见但大部分在屏外"时下发
+  `snap-recall`，引擎安全展开；④持久化写串行（promise 链）+ 恢复兜底（restore 失效按
+  停靠显示器记忆齐平位展开）；⑤IPC 收敛——free 相位 0 次轮询 IPC，停靠/隐藏相位用
+  停靠显示器记忆替代每 tick currentMonitor；⑥唤出命中以**胶囊区段**为准（居中 120 CSS px
+  ±24px），不再把整条屏幕边缘当唤出区。隐藏实现策略取舍见
+  `tmp/acceptance/edge-snap-system-remediation/architecture-decision.md`。
 - 主题：CSS 变量 + `data-theme`，跟随系统时监听 `prefers-color-scheme`。
 - 导航（v0.4）：`lib/navigation.ts` 类型化桥接 + `useNavigationStore`（扫描缓存/任务关联映射，
   运行状态按需刷新不轮询）；任务卡最多直列 3 个目标图标，其余折叠进快捷菜单（键盘可操作）；

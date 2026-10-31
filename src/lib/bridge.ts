@@ -741,6 +741,21 @@ export const applyWindowRadius = (radius: number) =>
 export const setHotkeysEnabled = (enabled: boolean) =>
   invoke<void>("set_hotkeys_enabled", { enabled });
 export const getAgentInboxDir = () => invoke<string>("get_agent_inbox_dir");
+
+/**
+ * 隐藏态胶囊区域裁剪（Smart Dock Capsule）：enabled=true 时把主窗口的
+ * Win32 区域收窄为停靠边上的短胶囊（其余部分不绘制、不命中鼠标）；
+ * enabled=false 恢复整窗圆角区域。edge: left|right|top|bottom。
+ * 返回 false 表示应用失败（前端应按可见性兜底，不得假设胶囊形态生效）。
+ */
+export const applyWindowCapsule = (enabled: boolean, edge: string) =>
+  invoke<boolean>("apply_window_capsule", { enabled, edge });
+
+/** 唤回事件：托盘/快捷键等入口发现主窗口"可见但大部分在屏外"时下发，
+ *  前端吸附引擎据此安全展开（物理位置在屏外时仅 show/focus 找不回窗口）。 */
+export const onSnapRecall = (cb: () => void): Promise<UnlistenFn> =>
+  listen("snap-recall", () => cb());
+
 export const hubHealth = () =>
   invoke<{ sources: number; sessions: number; runs: number; worst_state: string }>("hub_health");
 

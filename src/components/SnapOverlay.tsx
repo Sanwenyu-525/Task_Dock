@@ -101,9 +101,15 @@ export default function SnapOverlay() {
         </>
       )}
 
-      {/* 停靠状态低调提示：停靠边内侧 2px 主题色细线 */}
+      {/* 停靠状态低调提示：停靠边内侧 2px 主题色细线。
+          仅新停靠（docked-visible）播放一次锁边脉冲；唤出（revealed）不重复反馈 */}
       {dockedEdge && phase !== "docked-hidden" && (
-        <div className={`snap-dock-line snap-dock-line-${dockedEdge}`} aria-hidden="true" />
+        <div
+          className={`snap-dock-line snap-dock-line-${dockedEdge}${
+            phase === "docked-visible" ? " snap-dock-line-fresh" : ""
+          }`}
+          aria-hidden="true"
+        />
       )}
 
       {/* 停靠确认反馈（仅停靠完成瞬间，1.2s） */}

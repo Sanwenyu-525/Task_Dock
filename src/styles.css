@@ -5093,6 +5093,26 @@ code {
   pointer-events: none;
   opacity: 0.5;
 }
+
+/* 磁吸"锁边"脉冲：新停靠瞬间的一次性强调（无循环动画；
+   reduced-motion 由文件头部全局媒体查询收敛）。唤出路径不加此类，不重复反馈 */
+.snap-dock-line-fresh {
+  animation: snap-lock-pulse 0.32s ease-out backwards;
+}
+@keyframes snap-lock-pulse {
+  0% {
+    opacity: 1;
+    scale: 1;
+  }
+  40% {
+    opacity: 1;
+    scale: 2.6;
+  }
+  100% {
+    opacity: 0.5;
+    scale: 1;
+  }
+}
 .snap-dock-line-left,
 .snap-dock-line-right { top: 0; bottom: 0; width: 2px; }
 .snap-dock-line-top,

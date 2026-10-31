@@ -14,6 +14,28 @@
 
 ## 一、自动化测试结果
 
+### 0.0.4 吸附胶囊真实显示异常修复（区域提交协议/顶底几何/自愈宽限窗，2026-10-31）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 错误（并行任务的 cdpMainWindow.test.ts 曾短暂阻塞 build，其会话已自行修复） |
+| `npx vitest run` | **45 文件 / 431 测试通过**（集成测试新增：裁剪返回 false / IPC 抛异常 → 拒绝隐藏并回滚、坐标滞后下的提交顺序断言、迟到响应按最新期望重同步） |
+| `npm run build` | 通过 |
+| `cargo test`（src-tauri） | **489 passed / 0 failed**（新增：四边最终矩形断言、DPI 契约、窗口钳制、自愈宽限窗、**真实 HWND SetWindowRgn→GetWindowRgn 回读**） |
+| `cargo clippy --all-targets` | 0 warning |
+| 真机截图复摄 / 50 次循环 / 点击穿透 | ⬜ **未执行**：`tmp/acceptance/edge-snap-real-capsule-fix/manual-checklist.md` |
+
+### 0.0.3 贴边吸附系统性修复（胶囊区域/接缝降级/唤回/持久化串行，2026-10-31）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 通过（0 错误） |
+| `npx vitest run` | **44 文件 / 406 测试通过**（新增：引擎集成测试 9 例——Mock Tauri Window API + 可控时钟驱动完整状态序列：吸附→隐藏→展开→再隐藏、重启恢复、snap-recall 唤回、关闭吸附安全展开、隐藏中 resize、setPosition 失败重试、接缝降级与邻屏断连恢复；纯函数新增多屏接缝判定与胶囊区段唤出） |
+| `npm run build` | 通过 |
+| `cargo test`（src-tauri） | **486 passed / 0 failed**（新增：胶囊区域几何 DPI 契约 4 组、snap_state/edge 校验沿用） |
+| `cargo clippy --all-targets` | 0 warning |
+| 真机（50 次循环/四边/多屏/DPI 矩阵） | ⬜ **未执行**：清单见 `tmp/acceptance/edge-snap-system-remediation/manual-checklist.md` |
+
 ### 0.0.2 Smart Dock Capsule（贴边吸附磁吸与状态胶囊专项，2026-10-31）
 
 | 检查 | 结果 |

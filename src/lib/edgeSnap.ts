@@ -55,8 +55,10 @@ export const SNAP_SEGMENT_MARGIN = 12;
 export const SNAP_HIDE_MARGIN = 40;
 /** 解除吸附时的内推距离（明确操作解除时把窗口推离边缘）。 */
 export const SNAP_UNDOCK_NUDGE = 48;
-/** onMoved 静默多久视为「已松开」（原生拖拽不保证 DOM mouseup）。 */
-export const SNAP_DRAG_SETTLE_MS = 300;
+/** onMoved 静默多久视为「已松开」（原生拖拽不保证 DOM mouseup）。
+ *  配合 DOM 指针恢复信号使用：拖拽期间无 DOM 指针事件，恢复即松手，
+ *  静默只是去抖，不单独作为松手证据。 */
+export const SNAP_DRAG_SETTLE_MS = 220;
 /** candidate 提示的兜底超时：松手光标未离开窗口时提示不残留。 */
 export const SNAP_CANDIDATE_TIMEOUT_MS = 8000;
 /** 「已吸附 X 侧」反馈时长。 */
@@ -99,6 +101,10 @@ export const SNAP_PULL_IN_DELAY_MS = 70;
 export const CAPSULE_THICKNESS_CSS = 32;
 /** 胶囊长度（CSS px）：左右停靠为高度、顶底停靠为宽度。 */
 export const CAPSULE_LENGTH_CSS = 120;
+/** 多屏接缝判定容差（物理像素）：邻屏边界与本屏边界的吻合范围。 */
+export const SNAP_SEAM_TOLERANCE = 4;
+/** 接缝停靠（允许吸附但不自动隐藏）的重检间隔：邻屏断连后恢复自动隐藏。 */
+export const SNAP_SEAM_RECHECK_MS = 3000;
 
 export const EDGE_LABELS: Record<SnapEdge, string> = {
   left: "左侧",
@@ -260,6 +266,12 @@ export function capsuleRevealDistPhysical(scaleFactor: number): number {
   return capsuleStripPhysical(scaleFactor) + SNAP_REVEAL_APPROACH;
 }
 
+/** 胶囊长度（物理）＝ round(120 × scale)；沿边方向命中区段据此计算。 */
+export function capsuleLengthPhysical(scaleFactor: number): number {
+  const s = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  return Math.max(12, Math.round(CAPSULE_LENGTH_CSS * s));
+}
+
 /** 磁吸两段齐平的第一段位置：把窗口移到距 edge 恰好 gap 物理像素处（沿边 clamp 同齐平位）。 */
 export function approachPositionFor(
   rect: SnapRect,
@@ -308,6 +320,84 @@ export function cursorInCapsuleCorridor(
   return edge === "left" || edge === "right"
     ? cursor.y >= spanStart - margin && cursor.y <= spanEnd + margin
     : cursor.x >= spanStart - margin && cursor.x <= spanEnd + margin;
+}
+
+// ── 多屏接缝（内部边 vs 桌面外边缘）────────────────────────
+
+function boundsEqual(a: SnapArea, b: SnapArea, tolerance: number): boolean {
+  return (
+    Math.abs(a.x - b.x) <= tolerance &&
+    Math.abs(a.y - b.y) <= tolerance &&
+    Math.abs(a.w - b.w) <= tolerance &&
+    Math.abs(a.h - b.h) <= tolerance
+  );
+}
+
+/**
+ * 判断停靠显示器的某条边是否为**内部接缝**（边缘外侧紧贴另一台显示器）。
+ * 返回相邻显示器 bounds；桌面外边缘返回 null。
+ * 用于安全降级：接缝处允许停靠（齐平贴边），但**不得自动隐藏**——
+ * 把窗口滑出 A 会整体进入邻屏 B（并未隐藏），还会造成跨屏切片与丢失唤出入口。
+ */
+export function findAdjacentMonitorAcrossEdge(
+  area: SnapArea,
+  edge: SnapEdge,
+  monitors: readonly SnapArea[],
+  tolerance: number = SNAP_SEAM_TOLERANCE,
+): SnapArea | null {
+  for (const m of monitors) {
+    if (boundsEqual(m, area, tolerance)) continue; // 自己
+    // 垂直/水平方向必须有实际重叠（> 容差），排除仅角点相触的斜排屏
+    if (edge === "left" || edge === "right") {
+      const overlap =
+        Math.min(area.y + area.h, m.y + m.h) - Math.max(area.y, m.y);
+      if (overlap <= tolerance) continue;
+      if (edge === "left" && Math.abs(m.x + m.w - area.x) <= tolerance) return m;
+      if (edge === "right" && Math.abs(m.x - (area.x + area.w)) <= tolerance) return m;
+    } else {
+      const overlap = Math.min(area.x + area.w, m.x + m.w) - Math.max(area.x, m.x);
+      if (overlap <= tolerance) continue;
+      if (edge === "top" && Math.abs(m.y + m.h - area.y) <= tolerance) return m;
+      if (edge === "bottom" && Math.abs(m.y - (area.y + area.h)) <= tolerance) return m;
+    }
+  }
+  return null;
+}
+
+// ── 胶囊区段（唤出命中以胶囊为准，不再按整窗跨度）──────────
+
+/** 胶囊沿边区段：居中于窗口沿边跨度，长度 min(lengthPhys, 窗口跨度)。 */
+export function capsuleSpanFor(
+  windowRect: SnapRect,
+  edge: SnapEdge,
+  lengthPhys: number,
+): { start: number; end: number } {
+  const spanStart = edge === "left" || edge === "right" ? windowRect.y : windowRect.x;
+  const spanLen = edge === "left" || edge === "right" ? windowRect.h : windowRect.w;
+  const center = spanStart + spanLen / 2;
+  const half = Math.max(0, Math.min(lengthPhys / 2, spanLen / 2));
+  return { start: center - half, end: center + half };
+}
+
+/**
+ * 胶囊唤出命中（v2）：边缘距离 0..thickness+approach **且** 沿边坐标落在
+ * **胶囊区段**（居中、± margin）内——修复旧实现按整窗跨度判定、把整条
+ * 屏幕边缘都当成唤出区的问题。
+ */
+export function cursorNearCapsule(
+  cursor: SnapPoint,
+  area: SnapArea,
+  edge: SnapEdge,
+  windowRect: SnapRect,
+  opts: { thicknessPhys: number; lengthPhys: number; margin?: number; approach?: number },
+): boolean {
+  const d = cursorEdgeDistance(cursor, area, edge);
+  if (d < 0 || d > opts.thicknessPhys + (opts.approach ?? SNAP_REVEAL_APPROACH)) return false;
+  const span = capsuleSpanFor(windowRect, edge, opts.lengthPhys);
+  const margin = opts.margin ?? SNAP_CORRIDOR_MARGIN;
+  return edge === "left" || edge === "right"
+    ? cursor.y >= span.start - margin && cursor.y <= span.end + margin
+    : cursor.x >= span.start - margin && cursor.x <= span.end + margin;
 }
 
 // ── 光标判定 ────────────────────────────────────────────────

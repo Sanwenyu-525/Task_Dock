@@ -125,9 +125,9 @@ pub fn get_agent_inbox_dir(app: tauri::AppHandle) -> AppResult<String> {
 #[tauri::command]
 pub fn show_main_window(app: tauri::AppHandle) -> AppResult<()> {
     if let Some(win) = app.get_webview_window("main") {
-        let _ = win.show();
-        let _ = win.unminimize();
-        let _ = win.set_focus();
+        // 复用 show_and_focus：吸附隐藏态（窗口物理位置在屏外）时
+        // 会下发 snap-recall 让前端引擎安全展开，仅 show/focus 找不回窗口。
+        crate::show_and_focus(&win);
     }
     Ok(())
 }
@@ -145,6 +145,56 @@ pub fn apply_window_radius(app: AppHandle, radius: f64) -> AppResult<bool> {
         .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
     let applied = crate::window_shape::apply_on_main_thread(&win);
     tracing::debug!("窗口圆角 {}px，Win32 区域应用: {}", applied_radius, applied);
+    Ok(applied)
+}
+
+/// 胶囊几何常量：与前端 `src/lib/edgeSnap.ts` 的 CAPSULE_*_CSS 跨端契约
+/// （单测锁定；修改必须两端同步）。
+pub const CAPSULE_THICKNESS_CSS: u32 = 32;
+pub const CAPSULE_LENGTH_CSS: u32 = 120;
+
+/// 隐藏态胶囊区域（Smart Dock Capsule）：把主窗口 Win32 区域收窄为
+/// 停靠边上的短胶囊——区域外不绘制、不接收鼠标命中，消除"整窗切片
+/// 在胶囊以外露出内容"的结构性问题。enabled=false 恢复整窗圆角区域。
+/// 按 hwnd 绑定（右键菜单弹窗不受影响）；窗口大部分可见时后端会自愈清除。
+#[tauri::command]
+pub fn apply_window_capsule(app: AppHandle, enabled: bool, edge: String) -> AppResult<bool> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
+    let hwnd = win
+        .hwnd()
+        .map(|h| h.0 as isize)
+        .map_err(|e| crate::error::AppError::Agent(format!("无法获取主窗口句柄: {e}")))?;
+    if enabled {
+        let edge_id = match edge.as_str() {
+            "left" => 0,
+            "right" => 1,
+            "top" => 2,
+            "bottom" => 3,
+            other => {
+                return Err(crate::error::AppError::Validation(format!(
+                    "apply_window_capsule.edge 非法: {other}（允许: left|right|top|bottom）"
+                )));
+            }
+        };
+        crate::window_shape::set_capsule(
+            hwnd,
+            Some(crate::window_shape::CapsuleParams {
+                edge: edge_id,
+                thickness_css: CAPSULE_THICKNESS_CSS,
+                length_css: CAPSULE_LENGTH_CSS,
+            }),
+        );
+    } else {
+        crate::window_shape::set_capsule(hwnd, None);
+    }
+    let applied = crate::window_shape::apply_on_main_thread(&win);
+    tracing::debug!(
+        "胶囊区域{}（edge={edge}）应用: {}",
+        if enabled { "开" } else { "关" },
+        applied
+    );
     Ok(applied)
 }
 
@@ -453,6 +503,28 @@ pub fn apply_menu_material<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capsule_geometry_contract_matches_frontend() {
+        // 跨端契约：与 src/lib/edgeSnap.ts 的 capsuleStripPhysical / CAPSULE_LENGTH_CSS 一致
+        assert_eq!(CAPSULE_THICKNESS_CSS, 32);
+        assert_eq!(CAPSULE_LENGTH_CSS, 120);
+        for (scale, expect) in [(1.0f64, 32i32), (1.25, 40), (1.5, 48), (2.0, 64)] {
+            let cap = crate::window_shape::CapsuleParams {
+                edge: 0,
+                thickness_css: CAPSULE_THICKNESS_CSS,
+                length_css: CAPSULE_LENGTH_CSS,
+            };
+            // 断言**最终矩形**：left 纵向 → width=厚度、height=长度
+            let rect = crate::window_shape::capsule_rect(2000, 1200, scale, &cap).unwrap();
+            assert_eq!(rect.width, expect, "scale={scale}");
+            assert_eq!(
+                rect.height,
+                (120.0f64 * scale).round() as i32,
+                "scale={scale}"
+            );
+        }
+    }
 
     #[test]
     fn snap_state_edge_whitelist() {

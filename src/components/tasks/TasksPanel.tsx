@@ -121,7 +121,6 @@ export default function TasksPanel() {
           value={filter.sort ?? "due"}
           options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
           onChange={(v) => setFilter({ sort: v })}
-          menuMinWidth={146}
         />
       </div>
 

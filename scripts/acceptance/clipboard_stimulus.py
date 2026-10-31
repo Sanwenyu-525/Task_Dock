@@ -352,6 +352,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--duration", type=int, default=600, help="持续秒数")
     ap.add_argument("--interval", type=float, default=5.0, help="两次文本写入间隔秒")
+    ap.add_argument("--marker", default="taskdock-p1-05-clipboard-probe-", help="测试文本唯一标识前缀（用于把本轮激励与外部真实复制区分开）")
     ap.add_argument("--image-every", type=int, default=6, help="每 N 次文本写入插入一次图片")
     ap.add_argument("--out", default="")
     ap.add_argument("--no-restore", action="store_true", help="不恢复用户原剪贴板")
@@ -390,7 +391,7 @@ def main():
     next_at = started
     while time.time() < deadline:
         index += 1
-        payload = f"taskdock-p1-05-clipboard-probe-{index}"
+        payload = f"{args.marker}{index}"
         stats["text_attempted"] += 1
         try:
             if set_clipboard_text(payload, stats):

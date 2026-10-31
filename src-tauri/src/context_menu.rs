@@ -250,7 +250,9 @@ mod foreground_hook {
                 )
             };
             if hook.is_null() {
-                tracing::debug!("EVENT_SYSTEM_FOREGROUND 钩子安装失败（依赖 Focused 事件路径关闭）");
+                tracing::debug!(
+                    "EVENT_SYSTEM_FOREGROUND 钩子安装失败（依赖 Focused 事件路径关闭）"
+                );
             } else {
                 tracing::debug!("前台切换钩子已安装（菜单外点击关闭）");
             }
@@ -264,10 +266,7 @@ mod foreground_hook {
 }
 
 /// 解析锚点所在显示器的工作区与缩放；取不到时退回主显示器。
-fn monitor_at(
-    app: &AppHandle,
-    anchor: (f64, f64),
-) -> Option<(WorkArea, f64)> {
+fn monitor_at(app: &AppHandle, anchor: (f64, f64)) -> Option<(WorkArea, f64)> {
     let from_point = app.monitor_from_point(anchor.0, anchor.1).ok().flatten();
     let monitor = from_point.or_else(|| {
         app.available_monitors()

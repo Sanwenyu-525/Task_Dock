@@ -248,11 +248,17 @@ fn restore_window(app: &AppHandle, db: &Db) {
     // 圆角外形：窗口尺寸/DPI 变化后必须按新的物理像素重算，否则区域会停在
     // 旧尺寸上把内容裁掉（v0.6 视觉重构引入）。从最小化/托盘恢复时窗口区域
     // 可能被系统重置，拿回焦点时再做一次“校验 + 必要时重设”。
+    // Moved 也在监听之列：贴边吸附的隐藏/恢复只改窗口位置不改尺寸，而吸附
+    // 流程会把区域留在中间状态（真机实测恢复后区域卡在 40x150 碎片上），
+    // 只监听 Resized/Focused 时位置恢复后内容将永久被裁。apply() 内部有
+    // GetWindowRgn 实况校验与缓存，区域已正确时是纯读检查，拖动产生的高频
+    // Moved 不会引发昂贵的重设。
     let win_for_shape = win.clone();
     win.on_window_event(move |event| {
         if matches!(
             event,
             tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::Moved(_)
                 | tauri::WindowEvent::ScaleFactorChanged { .. }
                 | tauri::WindowEvent::Focused(true)
         ) {
@@ -650,6 +656,7 @@ pub fn run() {
             commands::system::performance_diagnostics,
             commands::system::apply_window_material,
             commands::system::apply_window_radius,
+            commands::system::apply_window_capsule,
             // 液态玻璃右键菜单（v0.6）
             context_menu::show_context_menu,
             context_menu::hide_context_menu,
@@ -839,6 +846,36 @@ pub fn request_exit(app: &AppHandle) {
     });
 }
 
+/// 主窗口「可见但大部分在屏外」（吸附隐藏态）判定。
+/// 托盘/快捷键等唤回入口必须据此通知前端吸附引擎安全展开——
+/// 仅 show()+set_focus() 无法找回物理位置在屏外的窗口。
+fn window_mostly_offscreen<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>) -> bool {
+    (|| {
+        let pos = win.outer_position().ok()?;
+        let size = win.outer_size().ok()?;
+        let monitors = win.available_monitors().ok()?;
+        let rect = commands::settings::WindowRect {
+            x: pos.x,
+            y: pos.y,
+            w: size.width,
+            h: size.height,
+        };
+        let bounds: Vec<(i32, i32, u32, u32)> = monitors
+            .iter()
+            .map(|m| {
+                (
+                    m.position().x,
+                    m.position().y,
+                    m.size().width,
+                    m.size().height,
+                )
+            })
+            .collect();
+        Some(!commands::settings::is_rect_mostly_visible(&rect, &bounds))
+    })()
+    .unwrap_or(false)
+}
+
 /// 唤回窗口：显示 + 还原最小化 + 聚焦。
 /// skipTaskbar 窗口最小化后任务栏没有入口，所有唤回路径都必须带 unminimize，
 /// 否则最小化的窗口 show() 后仍停留在最小化状态。
@@ -846,6 +883,11 @@ pub(crate) fn show_and_focus(win: &tauri::WebviewWindow) {
     let _ = win.show();
     let _ = win.unminimize();
     let _ = win.set_focus();
+    // 吸附隐藏态（物理位置在屏外）：通知前端引擎安全展开，
+    // 否则用户按托盘/快捷键后窗口仍然"看不见"。
+    if window_mostly_offscreen(win) {
+        let _ = win.app_handle().emit("snap-recall", ());
+    }
     // 恢复显示后重新校验区域：最小化/隐藏期间系统可能重置窗口区域，
     // 不阻塞托盘菜单线程，直接投递到事件循环。
     let w = win.clone();

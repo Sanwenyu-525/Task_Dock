@@ -1,0 +1,33 @@
+{
+  "text_attempted": 80,
+  "text_ok": 80,
+  "text_failed": 0,
+  "text_verified": 80,
+  "image_attempted": 8,
+  "image_ok": 8,
+  "image_failed": 0,
+  "image_verified": 8,
+  "image_aux_written": 8,
+  "bytes_written": 2631,
+  "open_failures": 0,
+  "open_failure_blockers": {},
+  "clipboard_sequence_start": 15731,
+  "clipboard_sequence_end": 16188,
+  "errors": [],
+  "duration_s": 240.0,
+  "started_at": "2026-10-31T07:57:28.772590+00:00",
+  "ended_at": "2026-10-31T08:01:28.776991+00:00",
+  "text_interval_s": 3.0,
+  "image_every": 10,
+  "original_clipboard_formats": [
+    "text"
+  ],
+  "original_clipboard_was_text": true,
+  "original_clipboard_was_image": false,
+  "restored": true,
+  "restored_kind": "text",
+  "restore_skipped": false,
+  "clipboard_sequence_delta": 457,
+  "expected_updates": 88,
+  "error_count": 0
+}

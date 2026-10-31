@@ -33,20 +33,17 @@ const THEMES = [
 ] as const;
 
 /** 标题栏菜单按钮：图标 + 下拉箭头，菜单本体由统一的 DropdownMenu 承载。
- *  菜单相对触发按钮水平居中、按内容声明最小宽度（模式/明暗是纯图标短标签
- *  菜单，156px；预设菜单带描述行，交给内容自然撑宽）。 */
+ *  菜单相对触发按钮水平居中；宽度由最长选项文本自然撑宽（不设固定下限）。 */
 function MenuButton({
   label,
   icon: Icon,
   items,
   className,
-  menuMinWidth,
 }: {
   label: string;
   icon: typeof Sun;
   items: DropdownMenuItem[];
   className?: string;
-  menuMinWidth?: number;
 }) {
   return (
     <div className={`titlebar-menu ${className ?? ""}`}>
@@ -54,7 +51,6 @@ function MenuButton({
         items={items}
         menuLabel={label}
         placement="bottom"
-        menuMinWidth={menuMinWidth}
         className="titlebar-menu-popover"
         trigger={({ ref, expanded, onClick, onKeyDown }) => (
           <button
@@ -136,8 +132,8 @@ export default function TitleBar() {
       </span>
 
       <div className="titlebar-actions">
-        <MenuButton className="mode-menu" label={`显示模式（当前：${modeItem.title}）`} icon={modeItem.icon} items={modeItems} menuMinWidth={156} />
-        <MenuButton className="theme-menu" label={`明暗（当前：${themeItem.title}）`} icon={themeItem.icon} items={themeItems} menuMinWidth={156} />
+        <MenuButton className="mode-menu" label={`显示模式（当前：${modeItem.title}）`} icon={modeItem.icon} items={modeItems} />
+        <MenuButton className="theme-menu" label={`明暗（当前：${themeItem.title}）`} icon={themeItem.icon} items={themeItems} />
         <MenuButton
           className="preset-menu"
           label={`视觉主题（当前：${PRESET_LABELS[preset].name}）`}

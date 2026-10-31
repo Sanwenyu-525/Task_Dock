@@ -221,4 +221,65 @@ npm run build && node scripts/make-preview.mjs && node scripts/render-perf.mjs
   链接阶段可能需要数分钟，属正常。
 - `cargo test` 会执行 `tauri::generate_context!()`，需 `dist/` 存在（先 `npm run build`）。
   若遇「拒绝访问」写入缓存，删除 `src-tauri/target/debug/build/task-dock-*` 后重试。
+
+## 七、构建产物与磁盘空间管理
+
+Rust 构建缓存是本仓库最大的磁盘开销项（2026-10-31 实测各隔离缓存合计约 52 GB，而 D 盘
+剩余约 37–40 GB）。`scripts/build-guard.mjs`（零依赖 Node）与 package.json 的 `pretauri`
+钩子构成构建产物的生命周期机制：构建前检查、任务专属缓存登记、任务后安全回收。
+
+### 7.1 CARGO_TARGET_DIR 纪律（历史事故根因）
+
+- **必须用绝对路径**：`export CARGO_TARGET_DIR="$REPO_ROOT/src-tauri/target-xxx"`。
+  相对路径会随 cwd 漂移——2026-10-31 事故：在 `src-tauri/` 内用相对路径
+  `src-tauri/target-accept` 执行构建，产生嵌套目录 `src-tauri/src-tauri/target-accept`（约 1.9 GB）。
+- 环境变量 `CARGO_TARGET_DIR` 为相对路径时 precheck 直接阻塞（exit 2）。
+- 默认（未设置）使用 `src-tauri/target` 共享增量缓存，**优先复用**；只有需要隔离
+  （真机验收、性能门禁互相锁文件）才建 `target-<name>` 隔离目录。
+
+### 7.2 已知缓存目录（`node scripts/build-guard.mjs report` 实测）
+
+| 目录 | 用途 | 占用（2026-10-31） |
+|---|---|---|
+| src-tauri/target | 共享增量缓存（dev/debug/test） | 19.74 GB |
+| src-tauri/target-accept | 第四轮剪贴板验收 release 门禁 | 18.37 GB |
+| src-tauri/target-accept-dbg | 第四轮验收 debug 门禁 | 6.59 GB |
+| src-tauri/target-measure | 性能测量 | 1.90 GB |
+| target-test（仓库根） | 历史 debug 测试缓存 | 3.68 GB |
+| src-tauri/src-tauri | ⚠️ 嵌套事故产物，人工确认后删除 | 1.91 GB |
+
+全部被 `.gitignore` 忽略（`/target-*/` 与 `src-tauri/target-*/` 通配），新建任何
+`target-<name>` 隔离目录不会误入 Git。
+
+### 7.3 build-guard.mjs 用法
+
+```bash
+node scripts/build-guard.mjs precheck            # 空间+缓存检查；npm run tauri 前自动执行
+node scripts/build-guard.mjs precheck --min-free-gb 8 --warn-free-gb 20   # 自定义阈值
+node scripts/build-guard.mjs report              # precheck + 各缓存目录大小统计
+node scripts/build-guard.mjs register --dir <绝对路径> --task <任务名>     # 登记隔离目录归属
+node scripts/build-guard.mjs cleanup --dir <绝对路径>            # dry-run（默认）
+node scripts/build-guard.mjs cleanup --dir <绝对路径> --execute  # 真删
+```
+
+退出码：0 正常；2 precheck 阻塞（空间不足 / CARGO_TARGET_DIR 相对路径）；3 cleanup 目标被
+拒绝（边界、白名单、标记、占用）；4 删除失败（可能被进程占用）。
+
+### 7.4 隔离目录生命周期（多 Agent 并行安全）
+
+1. **建**：以绝对路径 `CARGO_TARGET_DIR` 创建 `src-tauri/target-<task>`（或 `tmp/` 下任务目录）。
+2. **登记**：`register --dir ... --task ...` 写入 `.build-guard-owner.json`（task/pid/时间/用途）。
+3. **用**：正常构建；cleanup 只认有登记标记的目录。
+4. **收尾**：构建成功、失败、取消后都执行 `cleanup --dir ... --execute`；清理失败不掩盖构建结果。
+5. **安全边界**（cleanup 全部满足才删）：显式绝对路径、realpath 后仍在仓库内、目标非符号链接/
+   联接点、目录名为 `target-*` 或位于 `tmp/` 下、存在归属标记、标记 PID 已退出。任一不满足即跳过并记录。
+6. **历史遗留目录**（无标记，如 `src-tauri/src-tauri`）永不自动删除，只在 report 中列出，
+   人工确认后手动处理。
+7. **清理记录**：`tmp/build-guard/cleanup-log.jsonl`（不入库）。
+
+### 7.5 空间阈值
+
+- 硬阈值（默认 12 GB，`--min-free-gb`）：低于则禁止完整 Release/打包构建（exit 2），先清理再构建。
+- 预警阈值（默认 25 GB，`--warn-free-gb`）：低于则警告并建议先 `report`。
+- `scripts/perf/gate-run.sh`、`gate-fourth-round.sh` 已在开头接入 precheck（失败 exit 2 中止门禁）。
 - 未签名安装包首次运行会被 SmartScreen 拦截（「更多信息 → 仍要运行」），属预期现象。

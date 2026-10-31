@@ -64,16 +64,17 @@
 }
 
 .ui-select-popover {
-  /* --menu-min-w：调用方按菜单内容声明的目标宽度（Select 的 menuMinWidth）；
-     未声明时回落到 146px——勾选标记 + 中文选项 + 内边距的合理下限 */
-  min-width: max(146px, var(--menu-min-w, 0px), var(--popover-min-w, 0px));
+  /* 宽度贴合触发器：min-width 跟随触发器（matchWidth），内容更宽时自然扩展；
+     不再设固定下限（146px 会让 66px 的排序触发器弹出两倍宽的菜单） */
+  min-width: max(var(--menu-min-w, 0px), var(--popover-min-w, 0px));
 }
 .ui-combobox-popover {
-  min-width: max(180px, var(--menu-min-w, 0px), var(--popover-min-w, 0px));
+  min-width: max(var(--menu-min-w, 0px), var(--popover-min-w, 0px));
 }
 .ui-menu-popover {
-  /* 同上：DropdownMenu 的 menuMinWidth；132px 是纯图标+短标签菜单的兜底下限 */
-  min-width: max(132px, var(--menu-min-w, 0px), var(--popover-min-w, 0px));
+  /* 无锚定宽度的独立菜单：由最长选项文本 + 图标 + 勾选标记自然撑宽；
+     调用方可用 menuMinWidth 声明目标下限 */
+  min-width: max(var(--menu-min-w, 0px), var(--popover-min-w, 0px));
 }
 .ui-dtp-popover {
   min-width: 0;

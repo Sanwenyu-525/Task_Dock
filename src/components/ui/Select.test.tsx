@@ -171,4 +171,33 @@ describe("Select 基元", () => {
     // 回到首项：首项在视口之上 → 滚回 0
     expect(scrollTop).toBe(0);
   });
+
+  // ui-polish-round2 回归：菜单宽度贴合触发器。
+  // 未传 menuMinWidth 时不注入 --menu-min-w（CSS 兜底下限已移除，
+  // 弹层宽度 = max(触发器宽, 内容宽)）；传入时经 Popover style 注入该变量。
+  it("弹层宽度策略：默认不注入 --menu-min-w，声明 menuMinWidth 时注入", async () => {
+    const user = userEvent.setup();
+    render(
+      <Select ariaLabel="来源筛选" value="codex" options={OPTIONS} onChange={() => {}} />,
+    );
+    await user.click(screen.getByRole("combobox", { name: "来源筛选" }));
+    let popover = document.querySelector(".ui-select-popover") as HTMLElement;
+    expect(popover).not.toBeNull();
+    expect(popover.style.getPropertyValue("--menu-min-w")).toBe("");
+
+    cleanup();
+    render(
+      <Select
+        ariaLabel="来源筛选"
+        value="codex"
+        options={OPTIONS}
+        onChange={() => {}}
+        menuMinWidth={146}
+      />,
+    );
+    await user.click(screen.getByRole("combobox", { name: "来源筛选" }));
+    popover = document.querySelector(".ui-select-popover") as HTMLElement;
+    expect(popover).not.toBeNull();
+    expect(popover.style.getPropertyValue("--menu-min-w")).toBe("146px");
+  });
 });

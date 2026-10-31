@@ -177,13 +177,16 @@ export default function ContextMenuApp() {
   // 由后端 0.5px 阈值去重，不会反复 resize。
   // 高度必须用 scrollHeight：菜单被 max-height 钳制时 getBoundingClientRect
   // 只能拿到被裁后的高度，会让 fit 把窗口钉在钳制值上（内容被滚动截断）。
+  // +2px 容差：分数 DPI（125%/150%）下 WebView 视口高度可能比窗口逻辑高度
+  // 矮 1px，若窗口高度 == 内容高度，max-height:100vh 会比 scrollHeight 矮，
+  // 触发 1px 幽灵溢出 → 右侧出现一条系统滚动条（视觉上就是「白边」）。
   useEffect(() => {
     showTickRef.current = showTick;
     const raf = requestAnimationFrame(() => {
       const el = menuRef.current;
       if (!el) return;
       void invoke("fit_context_menu", {
-        height: Math.ceil(el.scrollHeight),
+        height: Math.ceil(el.scrollHeight) + 2,
       }).catch(() => {});
     });
     return () => cancelAnimationFrame(raf);

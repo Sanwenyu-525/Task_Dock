@@ -49,6 +49,10 @@ import {
   shouldLeaveMagnetRange,
   shouldRevealByDwell,
   visibleFraction,
+  capsuleLengthPhysical,
+  cursorNearCapsule,
+  findAdjacentMonitorAcrossEdge,
+  SNAP_SEAM_TOLERANCE,
 } from "./edgeSnap";
 
 /** 主屏工作区（1920×1080，任务栏在底部时高度 1032）。 */
@@ -503,5 +507,111 @@ describe("胶囊交互走廊 cursorInCapsuleCorridor", () => {
     const dockedTop = clampDockedPosition(rect(700, 0), wa, "top");
     expect(cursorInCapsuleCorridor({ x: 800, y: 20 }, wa, "top", dockedTop, strip)).toBe(true);
     expect(cursorInCapsuleCorridor({ x: 100, y: 20 }, wa, "top", dockedTop, strip)).toBe(false);
+  });
+});
+
+// ══ 系统性修复专项：多屏接缝 / 胶囊区段唤出 / 释放确认 ════════
+
+describe("多屏接缝 findAdjacentMonitorAcrossEdge", () => {
+  // 主屏 + 右侧邻屏（主屏右缘 = 邻屏左缘 = 1920）
+  const MAIN: SnapArea = { x: 0, y: 0, w: 1920, h: 1080 };
+  const RIGHT: SnapArea = { x: 1920, y: 0, w: 1920, h: 1080 };
+  // 左侧负坐标邻屏
+  const LEFT: SnapArea = { x: -1920, y: 0, w: 1920, h: 1080 };
+  // 上下排列
+  const BELOW: SnapArea = { x: 0, y: 1080, w: 1920, h: 1080 };
+
+  it("右缘有邻屏 → right 是内部接缝，其余边是桌面外边缘", () => {
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "right", [MAIN, RIGHT])).toEqual(RIGHT);
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "left", [MAIN, RIGHT])).toBeNull();
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "top", [MAIN, RIGHT])).toBeNull();
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "bottom", [MAIN, RIGHT])).toBeNull();
+  });
+
+  it("左侧负坐标邻屏 → left 是接缝", () => {
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "left", [MAIN, LEFT])).toEqual(LEFT);
+  });
+
+  it("下侧邻屏 → bottom 是接缝；上侧是外边缘", () => {
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "bottom", [MAIN, BELOW])).toEqual(BELOW);
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "top", [MAIN, BELOW])).toBeNull();
+  });
+
+  it("双屏左右 + 上下同时存在时各边独立判定", () => {
+    const all = [MAIN, RIGHT, LEFT, BELOW];
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "left", all)).toEqual(LEFT);
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "right", all)).toEqual(RIGHT);
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "bottom", all)).toEqual(BELOW);
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "top", all)).toBeNull();
+  });
+
+  it("仅角点相触的斜排屏不算接缝（垂直/水平重叠不足）", () => {
+    const diagonal: SnapArea = { x: 1920, y: 1080, w: 1920, h: 1080 };
+    // 只在 (1920,1080) 角点相触：右缘重叠为 0，不构成接缝
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "right", [MAIN, diagonal])).toBeNull();
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "bottom", [MAIN, diagonal])).toBeNull();
+  });
+
+  it("不把自身误判为邻屏；容差内边界抖动仍识别", () => {
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "right", [MAIN])).toBeNull();
+    const jittered: SnapArea = { x: 1920 + SNAP_SEAM_TOLERANCE - 1, y: 2, w: 1920, h: 1076 };
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "right", [MAIN, jittered])).toEqual(jittered);
+    // 超出容差的缝隙（断开的虚拟屏）不算接缝
+    const gap: SnapArea = { x: 1920 + SNAP_SEAM_TOLERANCE + 8, y: 0, w: 1920, h: 1080 };
+    expect(findAdjacentMonitorAcrossEdge(MAIN, "right", [MAIN, gap])).toBeNull();
+  });
+});
+
+describe("胶囊区段唤出 cursorNearCapsule（修复整条边缘误判为唤出区）", () => {
+  const wa: SnapArea = { x: 0, y: 0, w: 1920, h: 1032 };
+  // 隐藏中的窗口：left 停靠，窗口沿边跨度 y ∈ [100, 660]（窗口高 560）
+  const hiddenLeft = hiddenPositionFor(rect(0, 100), wa, "left");
+  const thickness = capsuleStripPhysical(1); // 32
+  const length = capsuleLengthPhysical(1); // 120
+  // 胶囊区段（居中于窗口跨度）：center = 100 + 560/2 = 380 → [320, 440]
+
+  it("胶囊区段内 + 边缘距离内 → 命中", () => {
+    expect(cursorNearCapsule({ x: 16, y: 380 }, wa, "left", hiddenLeft, { thicknessPhys: thickness, lengthPhys: length })).toBe(true);
+  });
+
+  it("窗口跨度内但胶囊区段外 → 不命中（旧实现会误命中）", () => {
+    // y=200 在窗口跨度 [100,932] 内，但在胶囊区段 [456,576] 之外
+    expect(cursorNearCapsule({ x: 16, y: 200 }, wa, "left", hiddenLeft, { thicknessPhys: thickness, lengthPhys: length })).toBe(false);
+    expect(cursorNearCapsule({ x: 16, y: 600 }, wa, "left", hiddenLeft, { thicknessPhys: thickness, lengthPhys: length })).toBe(false);
+  });
+
+  it("区段两端 ±margin 放宽后命中；再远不命中", () => {
+    const m = SNAP_CORRIDOR_MARGIN;
+    expect(cursorNearCapsule({ x: 16, y: 320 - m }, wa, "left", hiddenLeft, { thicknessPhys: thickness, lengthPhys: length })).toBe(true);
+    expect(cursorNearCapsule({ x: 16, y: 320 - m - 1 }, wa, "left", hiddenLeft, { thicknessPhys: thickness, lengthPhys: length })).toBe(false);
+  });
+
+  it("边缘距离超过胶囊厚度 + 接近带 → 不命中", () => {
+    expect(cursorNearCapsule({ x: 32 + 16 + 1, y: 516 }, wa, "left", hiddenLeft, { thicknessPhys: thickness, lengthPhys: length })).toBe(false);
+  });
+
+  it("顶边横向胶囊区段", () => {
+    const hiddenTop = hiddenPositionFor(rect(600, 0, 720, 560), wa, "top");
+    // 窗口 x ∈ [600,1320]，胶囊区段 x ∈ [600+300, 1320-300] = [900, 1020]
+    expect(cursorNearCapsule({ x: 960, y: 20 }, wa, "top", hiddenTop, { thicknessPhys: thickness, lengthPhys: length })).toBe(true);
+    expect(cursorNearCapsule({ x: 700, y: 20 }, wa, "top", hiddenTop, { thicknessPhys: thickness, lengthPhys: length })).toBe(false);
+  });
+
+  it("capsuleLengthPhysical 按 DPI 缩放", () => {
+    expect(capsuleLengthPhysical(1)).toBe(120);
+    expect(capsuleLengthPhysical(1.5)).toBe(180);
+    expect(capsuleLengthPhysical(2)).toBe(240);
+  });
+});
+
+describe("释放确认与长时间静止拖拽（需求 6.4/12.1）", () => {
+  it("长时间静止拖拽（>8s 无移动且无 DOM 事件）由兜底超时退出 candidate", () => {
+    // 静默到达但光标在窗口上、无 DOM 事件 → 不确认停靠（可能仍在拖拽）
+    expect(shouldConfirmDock("candidate", "left", 10_000, true, false)).toBe(false);
+    // 兜底：candidate 超时退出，提示不残留
+    expect(shouldExpireCandidate("candidate", 10_000)).toBe(true);
+    // 一旦松手（DOM 指针恢复或光标出窗）立即确认
+    expect(shouldConfirmDock("candidate", "left", 10_000, true, true)).toBe(true);
+    expect(shouldConfirmDock("candidate", "left", 10_000, false, false)).toBe(true);
   });
 });

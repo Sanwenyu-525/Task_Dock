@@ -4,6 +4,7 @@
 //   node cdp-bridge.mjs edge-click <port> <title>
 //   node cdp-bridge.mjs edge-dump <port> <title>
 import { chromium } from 'playwright';
+import { attachMainWindow } from './cdp-main-window.mjs';
 
 const [, , action, portArg, ...rest] = process.argv;
 const port = Number(portArg);
@@ -23,14 +24,38 @@ async function connect() {
   }
 }
 
+// P1-01：主窗口识别不再取「第一个非 devtools 页面」——
+// 历史上把 context-menu.html 辅助窗口当成了主窗口。
+// 这里复用 cdp-main-window.mjs 的统一识别（URL 分类 + Tauri 窗口 label + 挂载状态）。
 async function findAppPage(browser) {
-  for (const context of browser.contexts()) {
-    for (const page of context.pages()) {
-      const url = page.url();
-      if (!url.startsWith('devtools://')) return page;
-    }
-  }
-  return null;
+  const picked = await attachMainWindow({
+    port,
+    deadlineMs: 10000,
+    intervalMs: 300,
+    probe: async (info) => {
+      const page = browser
+        .contexts()
+        .flatMap((ctx) => ctx.pages())
+        .find((p) => !p.url().startsWith('devtools://') && p.url() === info.url);
+      if (!page) throw new Error(`target ${info.targetId} 无对应页面`);
+      return page.evaluate(() => {
+        const meta = window.__TAURI_INTERNALS__?.metadata;
+        return {
+          label: meta?.currentWindow?.label ?? null,
+          webviewLabel: meta?.currentWebview?.label ?? null,
+          tauri: typeof window.__TAURI_INTERNALS__?.invoke === 'function',
+          mounted: (document.querySelector('#root')?.childElementCount ?? 0) > 0,
+        };
+      });
+    },
+  });
+  if (!picked.ok) fail(`main window not identified: ${picked.reason}`);
+  const page = browser
+    .contexts()
+    .flatMap((ctx) => ctx.pages())
+    .find((p) => !p.url().startsWith('devtools://') && p.url() === picked.target.url);
+  if (!page) fail(`selected target ${picked.target.targetId} (${picked.target.url}) has no page`);
+  return page;
 }
 
 async function findEdgePage(browser, titlePart) {

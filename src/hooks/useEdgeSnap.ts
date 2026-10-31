@@ -1,45 +1,44 @@
-//! 贴边吸附引擎（v0.6 · Smart Dock Capsule）。
+//! 贴边吸附引擎（v0.6 · Smart Dock Capsule · 系统性修复版）。
 //!
-//! 架构：判定全部在 `lib/edgeSnap.ts`（纯函数，单测口径）；本文件只执行
-//! 副作用（窗口移动、持久化、UI 同步）。五相状态机：
-//! free / candidate / docked-visible / docked-hidden / docked-revealed。
+//! 判定全部在 `lib/edgeSnap.ts`（纯函数，单测口径）；本文件只执行副作用。
+//! 五相状态机：free / candidate / docked-visible / docked-hidden / docked-revealed。
 //!
-//! 本版（智能状态胶囊与磁吸专项）解决的三类根因：
+//! 前两轮已建立的机制（时间积分防抖、磁吸滞回、停靠显示器记忆、
+//! window_rect 防污染、关闭吸附安全展开、snap_state/window_rect 兼容）
+//! 详见 lib/edgeSnap.ts 与验收文档；此处不赘述。
 //!
-//! 1. **悬停抖动**（docked-hidden → revealed → hidden 循环）：
-//!    - 旧逻辑单点采样直接触发动作；现在所有转换都有时间积分：
-//!      唤出需驻留 ≥ SNAP_REVEAL_DWELL_MS；隐藏需连续离开有效交互区
-//!      ≥ SNAP_HIDE_LEAVE_MS；展开后还有 SNAP_REVEAL_PROTECT_MS 保护期；
-//!    - reveal/hide 判定在程序移动后的坐标静默期内跳过（setPosition 跨进程
-//!      异步，outerPosition 可能短暂返回旧值）；
-//!    - 有效交互区 = 窗口矩形(外扩 margin) ∪ 胶囊走廊（沿边区段 × 法向带），
-//!      覆盖胶囊与展开窗口之间的过渡走廊；
-//!    - 弹层栈非空（菜单/对话框交互中）不自动隐藏。
-//!
-//! 2. **停靠显示器错配**：窗口隐藏后大部分矩形在停靠显示器之外，
-//!    `currentMonitor()` 按「重叠最大」可能返回另一台显示器（尤其停靠边
-//!    另一侧有屏时）。现在 hide 时记录停靠显示器（workArea/bounds/DPI），
-//!    hidden 相位所有几何用记忆值，恢复/展开后再刷新。
-//!
-//! 3. **磁吸手感**：进入 28px / 退出 42px 滞回；candidate 相位区分磁吸区
-//!    （≤28，强提示）与预览带（28–42）；松手确认 = 静默期 +（光标出窗 或
-//!    DOM 指针事件恢复——原生拖拽期间 WebView2 收不到指针事件，恢复即松手）；
-//!    确认后两段式齐平（先到距边 8px，70ms 后贴紧），非逐帧动画。
-//!
-//! 其余不变量沿用上一专项：隐藏态绝不二次隐藏（可见性闸门）、
-//! window_rect 防污染（snapMoveGuard + isRectMostlyVisible + 后端同口径）、
-//! 关闭吸附安全展开、snap_state/window_rect 兼容。
+//! 本轮（系统性修复）新增：
+//! 1. **胶囊区域裁剪**：隐藏时经 `apply_window_capsule` 把主窗口 Win32 区域
+//!    收窄为停靠边上的短胶囊——区域外不绘制、不接收鼠标，消除"整窗切片
+//!    在胶囊以外露出内容/残留命中区"的结构性问题（选择依据见 ADR）。
+//! 2. **多屏接缝安全降级**：停靠边外侧紧贴另一台显示器（内部接缝）时
+//!    **允许停靠但禁止自动隐藏**（滑出会整体进入邻屏）；邻屏断连后 3s
+//!    重检恢复自动隐藏；隐藏中接缝形成 → 健康检查立即安全展开。
+//! 3. **唤回**：托盘/快捷键发现窗口"可见但大部分在屏外"时下发 `snap-recall`，
+//!    引擎安全展开（仅 show/focus 找不回屏外窗口）。
+//! 4. **持久化串行**：snap_state/window_rect 写入经模块级 promise 链串行，
+//!    杜绝异步乱序旧值覆盖新值。
+//! 5. **恢复兜底**：显示器断连/restore 失效时按停靠显示器记忆齐平位展开，
+//!    不再因缺 restore 坐标而永久不可见。
+//! 6. **IPC 收敛**：free 相位 0 次轮询 IPC；停靠/隐藏相位不再每 tick 调
+//!    currentMonitor（用停靠显示器记忆）；健康检查降频到每 20 tick。
 
 import { useEffect } from "react";
 import { getCurrentWindow, cursorPosition, currentMonitor } from "@tauri-apps/api/window";
 import { availableMonitors, type Window } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
-import { getSnapState, saveSnapState, saveWindowRect } from "../lib/bridge";
+import {
+  applyWindowCapsule,
+  getSnapState,
+  onSnapRecall,
+  saveSnapState,
+  saveWindowRect,
+} from "../lib/bridge";
 import { createSubscriptionScope } from "../lib/subscriptions";
 import { topOverlay } from "../lib/overlayStack";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 import {
-  CAPSULE_THICKNESS_CSS,
+  CAPSULE_LENGTH_CSS,
   SNAP_CANDIDATE_ENTER_DIST,
   SNAP_CORRIDOR_MARGIN,
   SNAP_DRAG_SETTLE_MS,
@@ -47,17 +46,19 @@ import {
   SNAP_POLL_MS,
   SNAP_PULL_IN_DELAY_MS,
   SNAP_PULL_IN_GAP,
+  SNAP_SEAM_RECHECK_MS,
   SNAP_UNDOCK_NUDGE,
   approachPositionFor,
   canTransition,
-  capsuleRevealDistPhysical,
+  capsuleLengthPhysical,
   capsuleStripPhysical,
   clampDockedPosition,
   cursorInCapsuleCorridor,
-  cursorNearTriggerStrip,
+  cursorNearCapsule,
   cursorOverWindow,
   detectCandidateEdge,
   edgeDistance,
+  findAdjacentMonitorAcrossEdge,
   hiddenPositionFor,
   isDockedPhase,
   isMoveSettling,
@@ -100,7 +101,7 @@ const toWorkArea = (m: MonitorLike): SnapArea => ({
   h: m.workArea.size.height,
 });
 
-/** 停靠显示器记忆：hidden 相位的几何唯一事实来源（修复 currentMonitor 错配）。 */
+/** 停靠显示器记忆：停靠/隐藏相位的几何唯一事实来源（修复 currentMonitor 错配）。 */
 interface DockedMonitor {
   workArea: SnapArea;
   bounds: SnapArea;
@@ -123,12 +124,27 @@ interface SnapMachine {
   restore: SnapPoint | null;
 }
 
+// ── 持久化写串行（模块级）：杜绝异步乱序旧值覆盖新值 ────────
+
+let writeChain: Promise<void> = Promise.resolve();
+
+function enqueueWrite(task: () => Promise<void>): Promise<void> {
+  const run = writeChain.then(task, task); // 前序失败不阻塞后续写入
+  writeChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 async function persistSnap(edge: SnapEdge | null, hidden: boolean): Promise<void> {
-  try {
-    await saveSnapState(edge ?? "none", hidden);
-  } catch {
-    // 持久化失败不阻塞吸附行为（重启后最多回到可见态）
-  }
+  return enqueueWrite(async () => {
+    try {
+      await saveSnapState(edge ?? "none", hidden);
+    } catch {
+      // 持久化失败不阻塞吸附行为（重启后最多回到可见态）
+    }
+  });
 }
 
 export function useEdgeSnap(enabled: boolean) {
@@ -147,9 +163,11 @@ export function useEdgeSnap(enabled: boolean) {
     let revealArmSince: number | null = null; // 唤出驻留起点（null = 不在唤出区）
     let leftSince: number | null = null; // 连续离开有效区起点
     let revealedAt = 0; // 最近一次 reveal 完成时刻（保护期基准）
-    let healthCheckTick = 0; // 隐藏态显示器健康检查计数（每 20 tick 一次）
+    let healthCheckTick = 0; // 健康检查计数（每 20 tick ≈3s 一次）
     let pendingRestore: SnapEdge | null = null; // 重启恢复边（tick 串行消费）
     let dockedMonitor: DockedMonitor | null = null; // 停靠显示器记忆
+    let seamDock = false; // 内部接缝停靠：允许吸附但禁止自动隐藏
+    let seamRecheckAt = 0; // 接缝重检时刻（邻屏断连后恢复自动隐藏）
     let magnetizedNow = false; // candidate 是否在磁吸区（≤28；仅在变化时同步 store）
     const machine: SnapMachine = { phase: "free", edge: null, restore: null };
 
@@ -180,6 +198,7 @@ export function useEdgeSnap(enabled: boolean) {
         dockedMonitor = null;
         revealArmSince = null;
         leftSince = null;
+        seamDock = false;
       }
       if (machine.phase !== "candidate") magnetizedNow = false;
       syncUi();
@@ -193,6 +212,12 @@ export function useEdgeSnap(enabled: boolean) {
         currentMonitor(),
       ]);
       return { rect: { x: pos.x, y: pos.y, w: size.width, h: size.height }, monitor };
+    }
+
+    /** 轻量矩形读取（2 次 IPC；显示器信息用停靠记忆，供停靠/隐藏相位使用）。 */
+    async function fetchRectOnly(): Promise<SnapRect> {
+      const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
+      return { x: pos.x, y: pos.y, w: size.width, h: size.height };
     }
 
     /** 程序移动：幂等（同目标跳过）、登记防污染守卫、失败返回 false。 */
@@ -211,19 +236,67 @@ export function useEdgeSnap(enabled: boolean) {
         lastEngineMoveAt = Date.now();
         return true;
       } catch {
-        lastMoveTarget = null;
+        lastMoveTarget = null; // 移动失败：位置缓存立即失效
         return false;
       }
     }
 
-    /** 保存「有效可见」矩形（引擎主动保存路径；持久化钩子另有双保险）。 */
+    /** 保存「有效可见」矩形（串行写队列；持久化钩子另有双保险）。 */
     async function saveVisibleRect(r: SnapRect): Promise<void> {
+      return enqueueWrite(async () => {
+        try {
+          const monitors = await availableMonitors();
+          if (!isRectMostlyVisible(r, monitors.map(toArea))) return;
+          await saveWindowRect({ x: r.x, y: r.y, w: r.w, h: r.h });
+        } catch {
+          // 忽略
+        }
+      });
+    }
+
+    /** 胶囊区域期望状态与操作序号（防过期命令覆盖新状态，需求 4.4）。 */
+    let capsuleSeq = 0;
+    let desiredCapsule: { enabled: boolean; edge: SnapEdge } = { enabled: false, edge: "left" };
+
+    /**
+     * 胶囊区域开关（**await + 结果检查 + 序号防护**，替换旧的 fire-and-forget）。
+     * - 返回 false = 后端报告未应用（含 GetWindowRgn 回读验证失败）或 IPC 失败；
+     * - 响应迟到且期间有更新命令：结果作废并按最新期望**重同步**一次，
+     *   杜绝旧 hidden 裁剪覆盖新展开状态。
+     */
+    async function setCapsuleRegion(enabled: boolean, edge: SnapEdge): Promise<boolean> {
+      const seq = ++capsuleSeq;
+      desiredCapsule = { enabled, edge };
+      let ok = false;
       try {
-        const monitors = await availableMonitors();
-        if (!isRectMostlyVisible(r, monitors.map(toArea))) return;
-        await saveWindowRect({ x: r.x, y: r.y, w: r.w, h: r.h });
+        ok = (await applyWindowCapsule(enabled, edge)) === true;
       } catch {
-        // 忽略
+        ok = false;
+      }
+      if (disposed) return false;
+      if (seq !== capsuleSeq) {
+        // 过期响应：以最新期望重同步（raw 调用，不再递增序号）
+        void applyWindowCapsule(desiredCapsule.enabled, desiredCapsule.edge).catch(() => {});
+        return false;
+      }
+      return ok;
+    }
+
+    /**
+     * 等待窗口位置落定（OS 已处理移动）。根因防护：setPosition 跨进程异步，
+     * 若在移动被主线程处理前读取坐标（尤其是区域自愈/验证），会拿到完全
+     * 可见的旧位置——真机截图中"全高浅色竖条"的第一根因。
+     * 有界轮询（50ms × 最多 600ms），失败由调用方回退。
+     */
+    async function waitForPosition(target: SnapPoint, deadlineMs = 600): Promise<boolean> {
+      const start = Date.now();
+      for (;;) {
+        if (disposed) return false;
+        const pos = await win.outerPosition();
+        if (disposed) return false;
+        if (Math.abs(pos.x - target.x) <= 1 && Math.abs(pos.y - target.y) <= 1) return true;
+        if (Date.now() - start >= deadlineMs) return false;
+        await sleep(50);
       }
     }
 
@@ -232,12 +305,12 @@ export function useEdgeSnap(enabled: boolean) {
         window.setTimeout(resolve, ms);
       });
 
-    // ── 动作：停靠 / 隐藏 / 唤出 / 解除 ──────────────────────
+    // ── 动作：停靠 / 隐藏 / 唤出 / 解除 / 恢复 ───────────────
 
     /**
      * 确认停靠（磁吸释放）：candidate → docked-visible。
-     * 两段式齐平：距边较远时先到 gap 处、短暂停顿后贴紧——磁吸「吸入」手感。
-     * 只用 2 次 setPosition（非逐帧动画，不与系统拖拽竞争）。
+     * 两段式齐平（gap>12px：先到距边 8px、70ms 后贴紧）——"啪一下"锁边感。
+     * 接缝判定：停靠边外侧紧贴邻屏时允许停靠但禁止自动隐藏（安全降级）。
      */
     async function confirmDock(rect: SnapRect): Promise<void> {
       const edge = machine.edge;
@@ -250,11 +323,19 @@ export function useEdgeSnap(enabled: boolean) {
       }
       const wa = toWorkArea(monitor);
       dockedMonitor = memorizeMonitor(monitor);
+      // 接缝判定（每次停靠时评估一次；后续由 tick 低频重检）
+      try {
+        const monitors = await availableMonitors();
+        seamDock =
+          findAdjacentMonitorAcrossEdge(dockedMonitor.bounds, edge, monitors.map(toArea)) !== null;
+      } catch {
+        seamDock = false; // 查询失败按桌面外边缘处理（applyHide 还有同款闸门兜底）
+      }
+      seamRecheckAt = Date.now();
       const docked = clampDockedPosition(rect, wa, edge);
       if (!setPhase("docked-visible")) return;
       const gap = Math.abs(edgeDistance(rect, wa, edge));
       if (gap > SNAP_PULL_IN_GAP + 4) {
-        // 第一段：移到距边 gap=8px 处（沿边坐标保持 clamp）
         const approach = approachPositionFor(rect, wa, edge, SNAP_PULL_IN_GAP);
         if (!(await moveWindow(approach.x, approach.y))) {
           return; // 移动失败：保持 docked-visible，realign 兜底
@@ -265,16 +346,21 @@ export function useEdgeSnap(enabled: boolean) {
       if (gap > 1 && !(await moveWindow(docked.x, docked.y))) {
         return; // 贴紧失败：保持 docked-visible，下一轮 realign 重试
       }
-      // 停靠完成才反馈（短暂、轻量）
+      // 停靠完成才反馈（短暂、轻量；reveal 路径不经过这里，不重复反馈）
       ui.notifyDocked(edge);
       void persistSnap(edge, false);
       void saveVisibleRect(docked);
     }
 
     /**
-     * 滑出隐藏。核心闸门：当前位置必须「大部分可见」——隐藏态/屏外位置
-     * 绝不二次隐藏，restore 永不指向屏外坐标。strip = 胶囊物理宽度
-     * （CSS 32px × DPI），保证胶囊内容不被窗口边界裁切。
+     * 滑出隐藏。提交协议（需求 4.1）：
+     * 1. 闸门：当前位置「大部分可见」+ 接缝判定；
+     * 2. setPosition 隐藏目标；
+     * 3. **等待坐标落定**（OS 已处理移动，自愈/验证以真实位置为准）；
+     * 4. **原生裁剪并验证**（apply_window_capsule 内含 GetWindowRgn 回读）；
+     * 5. 全部成功才提交 docked-hidden 与持久化。
+     * 任一步失败：回滚到原可见位置、restore 作废、保持 docked-visible——
+     * **绝不以整条切片形态停留在隐藏态**（真机失败用例）。
      */
     async function applyHide(): Promise<boolean> {
       if (!machine.edge) return false;
@@ -282,32 +368,56 @@ export function useEdgeSnap(enabled: boolean) {
       if (disposed || !monitor) return false;
       const monitors = await availableMonitors();
       if (disposed) return false;
-      if (!isRectMostlyVisible(rect, monitors.map(toArea))) return false;
+      const areas = monitors.map(toArea);
+      if (!isRectMostlyVisible(rect, areas)) return false;
       const edge = machine.edge;
       dockedMonitor = memorizeMonitor(monitor);
-      const strip = capsuleStripPhysical(dockedMonitor.scaleFactor);
-      const hidden = hiddenPositionFor(rect, dockedMonitor.workArea, edge, strip);
-      machine.restore = { x: rect.x, y: rect.y };
-      if (!(await moveWindow(hidden.x, hidden.y))) {
-        machine.restore = null;
+      // 接缝闸门：内部边缘不得自动隐藏
+      if (findAdjacentMonitorAcrossEdge(dockedMonitor.bounds, edge, areas)) {
+        seamDock = true;
+        seamRecheckAt = Date.now();
         return false;
       }
+      const strip = capsuleStripPhysical(dockedMonitor.scaleFactor);
+      const hidden = hiddenPositionFor(rect, dockedMonitor.workArea, edge, strip);
+      const revert = async (): Promise<false> => {
+        machine.restore = null;
+        await moveWindow(rect.x, rect.y); // 回滚到原可见位置（防长条残留）
+        return false;
+      };
+      machine.restore = { x: rect.x, y: rect.y };
+      if (!(await moveWindow(hidden.x, hidden.y))) return revert();
+      if (!(await waitForPosition({ x: hidden.x, y: hidden.y }))) return revert();
+      // 原生裁剪：失败（含后端回读验证失败）不得提交隐藏态
+      if (!(await setCapsuleRegion(true, edge))) return revert();
       snapMoveGuard.setHidden(true);
       setPhase("docked-hidden");
+      seamDock = false;
       void persistSnap(edge, true);
       return true;
     }
 
+    /** 区域清除带一次重试（失败时后端自愈兜底：宽限窗外窗口可见必清除）。 */
+    async function clearCapsuleWithRetry(edge: SnapEdge): Promise<boolean> {
+      if (await setCapsuleRegion(false, edge)) return true;
+      await sleep(300);
+      if (disposed) return false;
+      return setCapsuleRegion(false, edge);
+    }
+
     /**
      * 唤出到可见位置（restore 优先，失效则用停靠显示器记忆齐平位）。
-     * 成功后进入保护期（防 reveal→hide 循环），清驻留/离开计时。
+     * 提交协议（需求 4.2）：移动 → **等待坐标落定** → **验证清除裁剪** →
+     * 提交 docked-revealed。清除失败：回滚到隐藏位并重开裁剪，保持
+     * "隐藏态 = 胶囊形态"的一致性，不留下半展开的胶囊形窗口。
+     * 移动在前、清裁剪在后：飞行期间区域仍为胶囊（随窗口移动），无整条切片闪烁。
      */
     async function revealToVisible(): Promise<boolean> {
       if (machine.phase !== "docked-hidden" || !machine.edge) return false;
       const edge = machine.edge;
-      const { rect, monitor } = await fetchRect();
+      const rect = await fetchRectOnly();
       if (disposed) return false;
-      const m = dockedMonitor ?? (monitor ? memorizeMonitor(monitor) : null);
+      const m = dockedMonitor;
       if (!m) return false;
       let target: SnapRect | null = null;
       const r = machine.restore;
@@ -318,7 +428,14 @@ export function useEdgeSnap(enabled: boolean) {
         if (isRectMostlyVisible(cand, monitors.map(toArea))) target = cand;
       }
       if (!target) target = clampDockedPosition(rect, m.workArea, edge);
+      const rollbackToHidden = async (): Promise<false> => {
+        await moveWindow(rect.x, rect.y); // 回滚到隐藏位
+        await setCapsuleRegion(true, edge); // 重开裁剪，保持隐藏态形态一致
+        return false;
+      };
       if (!(await moveWindow(target.x, target.y))) return false;
+      if (!(await waitForPosition({ x: target.x, y: target.y }))) return rollbackToHidden();
+      if (!(await clearCapsuleWithRetry(edge))) return rollbackToHidden();
       snapMoveGuard.setHidden(false);
       setPhase("docked-revealed");
       revealArmSince = null;
@@ -332,30 +449,50 @@ export function useEdgeSnap(enabled: boolean) {
     /** 停靠中沿边拖动后松手 → 重新齐平（幂等：已齐平时不动）。 */
     async function realignDocked(): Promise<void> {
       const edge = machine.edge;
-      if (!edge) return;
-      const { rect, monitor } = await fetchRect();
-      if (disposed || !monitor) return;
-      const docked = clampDockedPosition(rect, toWorkArea(monitor), edge);
+      if (!edge || !dockedMonitor) return;
+      const rect = await fetchRectOnly();
+      if (disposed) return;
+      const docked = clampDockedPosition(rect, dockedMonitor.workArea, edge);
       if (Math.abs(docked.x - rect.x) <= 2 && Math.abs(docked.y - rect.y) <= 2) return;
       if (await moveWindow(docked.x, docked.y)) {
         if (machine.phase === "docked-visible") void saveVisibleRect(docked);
       }
     }
 
-    /** 隐藏中停靠显示器丢失（断连）：restore 仍可见则回退，否则保留状态等重试。 */
+    /**
+     * 隐藏中异常恢复（显示器断连 / 接缝形成 / restore 失效）：
+     * restore 可见 → 回 restore；否则按停靠显示器记忆齐平位展开。
+     * 不因缺 restore 坐标而永久保留不可见窗口。
+     */
     async function recoverHiddenWindow(): Promise<void> {
-      const r = machine.restore;
-      if (!r) return;
       try {
         const size = await win.outerSize();
         const monitors = await availableMonitors();
-        const cand = { x: r.x, y: r.y, w: size.width, h: size.height };
-        if (!isRectMostlyVisible(cand, monitors.map(toArea))) return;
-        if (await moveWindow(r.x, r.y)) {
+        const edge = machine.edge ?? "left";
+        let target: SnapPoint | null = null;
+        const r = machine.restore;
+        if (r) {
+          const cand = { x: r.x, y: r.y, w: size.width, h: size.height };
+          if (isRectMostlyVisible(cand, monitors.map(toArea))) target = { x: r.x, y: r.y };
+        }
+        if (!target && dockedMonitor) {
+          const rect = await fetchRectOnly();
+          const docked = clampDockedPosition(rect, dockedMonitor.workArea, edge);
+          target = { x: docked.x, y: docked.y };
+        }
+        if (!target || disposed) return;
+        if (await moveWindow(target.x, target.y)) {
+          if (!(await waitForPosition(target))) return; // 未落定：下轮 tick 重试
           snapMoveGuard.setHidden(false);
           // 转移表不允许 docked-hidden → docked-visible（唤出必须经 revealed），
-          // 断连恢复同样走 docked-revealed 语义（可见、光标离开后可再隐藏）
+          // 异常恢复同样走 docked-revealed 语义（可见、光标离开后可再隐藏）
           setPhase("docked-revealed");
+          revealArmSince = null;
+          leftSince = null;
+          revealedAt = Date.now();
+          // 区域清除失败时窗口仍是胶囊形态：已重试一次；仍失败则依赖后端
+          // 自愈（宽限窗外窗口可见时下次 apply 必清除）兜底，状态保持一致
+          await clearCapsuleWithRetry(edge);
           void persistSnap(machine.edge, false);
         }
       } catch {
@@ -393,24 +530,27 @@ export function useEdgeSnap(enabled: boolean) {
     // ── 评估：tick 与 onMoved（busy 互斥 + 尾随补评估）────────
 
     async function tickBody(): Promise<void> {
-      const cursor = await cursorPosition();
       if (disposed) return;
-      const now = Date.now();
       switch (machine.phase) {
         case "free": {
-          // 重启恢复：持久化的隐藏态经同一闸门重新隐藏（无反馈、不弹提示）
+          // 重启恢复：持久化的隐藏态经同一闸门重新隐藏（无反馈、不弹提示）；
+          // 接缝处 applyHide 会拒绝并降级为"停靠不隐藏"。
           if (pendingRestore) {
             const edge = pendingRestore;
             pendingRestore = null;
             machine.edge = edge;
             if (!(await applyHide())) {
-              machine.edge = null; // 当前位置无效/移动失败：清除隐藏态避免每次启动重试
-              void persistSnap(null, false);
+              machine.edge = null;
+              // 接缝降级时保留停靠记录（hidden=false）；其他失败清除隐藏态
+              void persistSnap(seamDock ? edge : null, false);
             }
           }
           return;
         }
         case "candidate": {
+          const cursor = await cursorPosition();
+          if (disposed) return;
+          const now = Date.now();
           const sinceMove = now - lastMoveAt;
           const { rect, monitor } = await fetchRect();
           if (disposed || !monitor) return;
@@ -433,16 +573,26 @@ export function useEdgeSnap(enabled: boolean) {
         }
         case "docked-visible":
         case "docked-revealed": {
-          const { rect, monitor } = await fetchRect();
-          if (disposed || !monitor) return;
+          const cursor = await cursorPosition();
+          if (disposed) return;
+          const now = Date.now();
           const edge = machine.edge;
           if (!edge) return;
-          const strip = capsuleStripPhysical(dockedMonitor?.scaleFactor ?? monitor.scaleFactor ?? 1);
+          // 显示器信息用停靠记忆（省 1 次 IPC/tick）；缺失时重建一次
+          if (!dockedMonitor) {
+            const { monitor } = await fetchRect();
+            if (!monitor) return;
+            dockedMonitor = memorizeMonitor(monitor);
+          }
+          const m = dockedMonitor;
+          const rect = await fetchRectOnly();
+          if (disposed) return;
+          const strip = capsuleStripPhysical(m.scaleFactor);
           // 有效交互区 = 窗口(外扩 margin) ∪ 胶囊走廊（覆盖胶囊↔展开窗口过渡带）
           const inWindow = cursorOverWindow(cursor, rect, SNAP_HIDE_MARGIN);
           const inCorridor = cursorInCapsuleCorridor(
             cursor,
-            toWorkArea(monitor),
+            m.workArea,
             edge,
             rect,
             strip,
@@ -465,6 +615,20 @@ export function useEdgeSnap(enabled: boolean) {
             !settling &&
             shouldHideAfterLeave(leftSince, now)
           ) {
+            // 接缝停靠：禁止自动隐藏；低频重检（邻屏断连后恢复）
+            if (seamDock) {
+              if (now - seamRecheckAt >= SNAP_SEAM_RECHECK_MS) {
+                seamRecheckAt = now;
+                try {
+                  const monitors = await availableMonitors();
+                  seamDock =
+                    findAdjacentMonitorAcrossEdge(m.bounds, edge, monitors.map(toArea)) !== null;
+                } catch {
+                  // 查询失败维持降级，下轮再检
+                }
+              }
+              if (seamDock) return;
+            }
             await applyHide(); // 连续离开确认后再次隐藏（不重复反馈）
             return;
           }
@@ -473,10 +637,13 @@ export function useEdgeSnap(enabled: boolean) {
           return;
         }
         case "docked-hidden": {
-          const { rect, monitor } = await fetchRect();
+          const cursor = await cursorPosition();
+          if (disposed) return;
+          const rect = await fetchRectOnly();
           if (disposed) return;
           // 停靠显示器记忆缺失（异常路径）：尝试用当前显示器重建
           if (!dockedMonitor) {
+            const { monitor } = await fetchRect();
             dockedMonitor = monitor ? memorizeMonitor(monitor) : null;
           }
           const m = dockedMonitor;
@@ -484,20 +651,23 @@ export function useEdgeSnap(enabled: boolean) {
             await recoverHiddenWindow();
             return;
           }
-          // 健康检查（每 20 tick ≈3s）：停靠显示器已断连 → 走恢复路径
+          const edge = machine.edge ?? "left";
+          // 健康检查（每 20 tick ≈3s）：
+          //  a) 停靠显示器断连 → 恢复；
+          //  b) 停靠边缘出现新邻屏（接缝形成，隐藏不再成立）→ 恢复。
           if (++healthCheckTick % 20 === 0) {
             try {
               const monitors = await availableMonitors();
-              const alive = monitors.some((x) => {
-                const b = toArea(x);
-                return (
+              const areas = monitors.map(toArea);
+              const alive = areas.some(
+                (b) =>
                   b.x < m.bounds.x + m.bounds.w &&
                   b.x + b.w > m.bounds.x &&
                   b.y < m.bounds.y + m.bounds.h &&
-                  b.y + b.h > m.bounds.y
-                );
-              });
-              if (!alive) {
+                  b.y + b.h > m.bounds.y,
+              );
+              const seam = findAdjacentMonitorAcrossEdge(m.bounds, edge, areas) !== null;
+              if (!alive || seam) {
                 await recoverHiddenWindow();
                 return;
               }
@@ -505,10 +675,12 @@ export function useEdgeSnap(enabled: boolean) {
               // 查询失败按存活处理，下轮再查
             }
           }
-          // 唤出判定：边缘距离（胶囊厚度+接近带，随 DPI）+ 胶囊区段双约束
-          const near = cursorNearTriggerStrip(cursor, m.workArea, machine.edge ?? "left", rect, {
-            revealDist: capsuleRevealDistPhysical(m.scaleFactor),
-            segmentMargin: SNAP_CORRIDOR_MARGIN,
+          // 唤出判定：边缘距离（胶囊厚度+接近带，随 DPI）+ **胶囊区段**双约束
+          //（修复旧实现按整窗跨度判定、把整条屏幕边缘都当成唤出区）
+          const near = cursorNearCapsule(cursor, m.workArea, edge, rect, {
+            thicknessPhys: capsuleStripPhysical(m.scaleFactor),
+            lengthPhys: capsuleLengthPhysical(m.scaleFactor),
+            margin: SNAP_CORRIDOR_MARGIN,
           });
           if (near) {
             if (revealArmSince === null) revealArmSince = Date.now();
@@ -606,6 +778,8 @@ export function useEdgeSnap(enabled: boolean) {
         runExclusive(handleMoved);
       }),
     );
+    // 唤回：托盘/快捷键发现窗口"可见但大部分在屏外"时安全展开
+    scope.add(onSnapRecall(() => runExclusive(revealToVisible)));
 
     // DOM 指针事件哨兵：原生标题栏拖拽（Win32 移动循环）期间 WebView2 收不到
     // 指针事件；恢复收到 = 拖拽已结束。用于磁吸释放确认，不需要 DOM mouseup
@@ -642,12 +816,14 @@ export function useEdgeSnap(enabled: boolean) {
       ui.setUndock(null);
       ui.setReveal(null);
       snapMoveGuard.setHidden(false);
-      // 关闭吸附时若已隐藏，先安全展开再清持久化；停靠可见态只清记录
+      // 关闭吸附时若已隐藏，先安全展开再清持久化；停靠可见态只清记录；
+      // 无论何种相位都关闭胶囊区域（幂等，防残留裁剪形态）
       if (machine.phase === "docked-hidden") {
         void safeExpandAfterDisable(win, machine.edge, machine.restore);
       } else if (isDockedPhase(machine.phase)) {
         void persistSnap(null, false);
       }
+      setCapsuleRegion(false, machine.edge ?? "left");
       useEdgeSnapStore.getState().reset();
     };
   }, [enabled]);
@@ -735,5 +911,6 @@ export function useWindowPersistence() {
   }, []);
 }
 
-/** 胶囊 CSS 厚度（供样式/文档对齐引用；实际几何计算在 lib/edgeSnap）。 */
-export const SNAP_CAPSULE_THICKNESS_CSS = CAPSULE_THICKNESS_CSS;
+/** 胶囊 CSS 几何（供样式/文档对齐引用；实际几何计算在 lib/edgeSnap）。 */
+export const SNAP_CAPSULE_THICKNESS_CSS = 32;
+export const SNAP_CAPSULE_LENGTH_CSS = CAPSULE_LENGTH_CSS;

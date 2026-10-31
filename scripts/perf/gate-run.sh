@@ -21,6 +21,8 @@ STAMP="$(date +%Y%m%d-%H%M)"
 mkdir -p "$OUT_DIR"
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/src-tauri/target-gate}"
+# 构建前守卫：磁盘空间不足或缓存异常时阻塞（退出码 2），先清理再跑门禁。
+node "$REPO_ROOT/scripts/build-guard.mjs" precheck || exit 2
 # Rust 工程在 src-tauri/，仓库根目录没有 Cargo.toml。
 # cargo 命令必须显式带上 manifest，否则会以 exit_code=101 失败
 # （此前版本在仓库根执行，fmt/clippy/test 三条 Rust 门禁全部假失败）。

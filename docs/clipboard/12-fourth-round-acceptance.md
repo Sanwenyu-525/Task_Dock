@@ -370,6 +370,11 @@ Rust 堆 live 全程 1.34–1.65 MB 且 post 持平；`rust.peak_bytes` 的高�
 > 同时用 CDP 驱动真实抽屉/搜索/图片详情/返回/关闭、真实提醒、真实历史清理，
 > 并读取 observed/captured/recorded/dropped/merged 计数器与 UI 操作 p95。
 
+**【2026-10-31 第五轮补记——本节在第四轮未执行，历史原文保留如上】**：该项已于第五轮完成
+（GUI 驱动目标识别修复后的 p5/p5e 两臂：五类操作 n=4 有效样本、像素级颜色验证、真实提醒、
+清理路径、监控计数闭合），完整数据与证据见 `13-fifth-round-final-acceptance.md` 第四、五节。
+第四轮的 P1-05 判定范围不变（后端负载 + 真实剪贴板）。
+
 ### 6.4 判定
 
 - **后端负载 + 真实剪贴板（30 分钟）**：**完成且通过**。36,000/36,000 Agent 事件成功；
@@ -461,10 +466,30 @@ Rust 堆 live 全程 1.34–1.65 MB 且 post 持平；`rust.peak_bytes` 的高�
 
 > 记录每条门禁的命令、开始/结束时间、退出码、通过/失败/忽略数与原始输出路径。
 
+**【2026-10-31 第五轮补齐——第四轮当时未填】**：第四轮门禁的原始记录见
+`docs/clipboard/evidence/` 下 10:04–10:14 轮（v0.5 验收依据，gate-final2-*）；
+`gate-final4-summary-20261031-1028.md` 为并行会话编辑期快照（当时 fmt/clippy 失败）。
+第五轮在共享工作树上完成整仓收口（fmt 修复 10 处、clippy 0 警告、Rust 488 passed / 0 failed /
+3 ignored、tsc 通过、vitest 431 全绿、Release 构建三产物），逐条命令与退出码见
+`13-fifth-round-final-acceptance.md` 第六节与 `tmp/acceptance/clipboard-fifth-round/logs/`。
+
 ---
 
 ## 十、实际发布阻断项
 
+**【2026-10-31 第五轮补齐】**：
+
+1. ~~fmt/clippy 失败~~ → 第五轮已收口（P1-04）。
+2. ~~GUI 验收脚本连接 context-menu.html~~ → 第五轮已修复并真机验证（P1-01）。
+3. **采集完整度环境性退化**（同二进制 99.2% → 22.5%，A/B 已排除本轮代码）——非阻断，
+   列为发布后第一个受控复测项，见 `13-fifth-round-final-acceptance.md` 第七节。
+4. 安装包安装/卸载与签名验证 NOT VERIFIED（未授权执行）。
+
 ---
 
 ## 十一、最终验收结论
+
+**【2026-10-31 第五轮补齐】**：第四轮范围内的判定维持原文（§6.4：后端负载 + 真实剪贴板完成且通过）。
+第五轮在共享工作树上完成 GUI 联合验收、隐私隔离、工程门禁与发布证据链后，整仓发布判定为
+**CONDITIONAL PASS**——条件与遗留项见 `13-fifth-round-final-acceptance.md` 第八、九节。
+本文件第四轮历史结论不做改写。

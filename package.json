@@ -7,8 +7,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "pretauri": "node scripts/build-guard.mjs precheck",
     "preview": "vite preview",
     "tauri": "tauri",
+    "guard:precheck": "node scripts/build-guard.mjs precheck",
+    "guard:report": "node scripts/build-guard.mjs report",
+    "guard:register": "node scripts/build-guard.mjs register",
+    "guard:cleanup": "node scripts/build-guard.mjs cleanup",
     "test": "vitest run",
     "test:watch": "vitest",
     "icons": "node scripts/gen-icons.mjs"

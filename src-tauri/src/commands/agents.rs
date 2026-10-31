@@ -162,23 +162,37 @@ pub(crate) fn delete_source_inner(db: &Db, id: &str, also_delete_data: bool) -> 
 
 // ── 自动发现（第二阶段）────────────────────────────────────
 
+/// 发现扫描是重 IO（注册表枚举、where 探测、进程列表，逐适配器执行），
+/// 在 Tauri v2 里**同步命令跑在主线程**——点击 Agent 页挂载时触发扫描会把
+/// 整个 UI 冻结到扫描结束（真机复现的「点 Agent 页卡死」）。
+/// 因此必须 spawn_blocking 移出主线程；前端本来就是 promise 调用，签名不变。
 #[tauri::command]
-pub fn discovery_scan(db: State<'_, Arc<Db>>) -> AppResult<Vec<discovery::DiscoveredAgent>> {
-    Ok(discovery::scan_all(&db))
+pub async fn discovery_scan(db: State<'_, Arc<Db>>) -> AppResult<Vec<discovery::DiscoveredAgent>> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || discovery::scan_all(&db))
+        .await
+        .map_err(|e| AppError::Agent(format!("发现扫描任务失败: {e}")))
 }
 
 // ── 接入向导（一键接入：预览 → 确认 → 安装 → 验证）────────
 
+/// 接入向导动作同样会做文件/配置写入与测试事件发送（秒级 IO），统一移出主线程。
+/// 适配器实例是 `Box<dyn ManagedAdapter>`（Send + Sync），可以直接搬进阻塞线程。
 #[tauri::command]
-pub fn adapter_preview(adapter_id: String, app: tauri::AppHandle) -> AppResult<serde_json::Value> {
+pub async fn adapter_preview(
+    adapter_id: String,
+    app: tauri::AppHandle,
+) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
     let app_data = crate::app_data_dir(&app);
-    a.preview(&app_data)
+    tauri::async_runtime::spawn_blocking(move || a.preview(&app_data))
+        .await
+        .map_err(|e| AppError::Agent(format!("适配器预览任务失败: {e}")))?
 }
 
 #[tauri::command]
-pub fn adapter_install(
+pub async fn adapter_install(
     adapter_id: String,
     app: tauri::AppHandle,
     db: State<'_, Arc<Db>>,
@@ -186,11 +200,14 @@ pub fn adapter_install(
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
     let app_data = crate::app_data_dir(&app);
-    a.install(&app_data, &db)
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || a.install(&app_data, &db))
+        .await
+        .map_err(|e| AppError::Agent(format!("适配器安装任务失败: {e}")))?
 }
 
 #[tauri::command]
-pub fn adapter_verify(
+pub async fn adapter_verify(
     adapter_id: String,
     app: tauri::AppHandle,
     db: State<'_, Arc<Db>>,
@@ -198,22 +215,27 @@ pub fn adapter_verify(
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
     let app_data = crate::app_data_dir(&app);
-    a.verify(&app_data, &db)
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || a.verify(&app_data, &db))
+        .await
+        .map_err(|e| AppError::Agent(format!("适配器验证任务失败: {e}")))?
 }
 
 #[tauri::command]
-pub fn adapter_uninstall(
+pub async fn adapter_uninstall(
     adapter_id: String,
     app: tauri::AppHandle,
 ) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
     let app_data = crate::app_data_dir(&app);
-    a.uninstall(&app_data)
+    tauri::async_runtime::spawn_blocking(move || a.uninstall(&app_data))
+        .await
+        .map_err(|e| AppError::Agent(format!("适配器卸载任务失败: {e}")))?
 }
 
 #[tauri::command]
-pub fn adapter_status(
+pub async fn adapter_status(
     adapter_id: String,
     app: tauri::AppHandle,
     db: State<'_, Arc<Db>>,
@@ -221,11 +243,16 @@ pub fn adapter_status(
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
     let app_data = crate::app_data_dir(&app);
-    let mut status = a.config_status(&app_data)?;
-    if let Some(obj) = status.as_object_mut() {
-        obj.insert("health".into(), managed::source_health(&db, a.id()));
-    }
-    Ok(status)
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut status = a.config_status(&app_data)?;
+        if let Some(obj) = status.as_object_mut() {
+            obj.insert("health".into(), managed::source_health(&db, a.id()));
+        }
+        Ok::<_, AppError>(status)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("适配器状态任务失败: {e}")))?
 }
 
 /// 各适配器的静态能力清单（UI 徽标用）。
@@ -270,45 +297,56 @@ pub fn codex_hooks_status(app: tauri::AppHandle) -> AppResult<serde_json::Value>
 }
 
 #[tauri::command]
-pub fn codex_hooks_install(
+pub async fn codex_hooks_install(
     app: tauri::AppHandle,
     db: State<'_, Arc<Db>>,
 ) -> AppResult<serde_json::Value> {
     let a =
         managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
     let app_data = crate::app_data_dir(&app);
-    a.install(&app_data, &db)
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || a.install(&app_data, &db))
+        .await
+        .map_err(|e| AppError::Agent(format!("钩子安装任务失败: {e}")))?
 }
 
 #[tauri::command]
-pub fn codex_hooks_uninstall(app: tauri::AppHandle) -> AppResult<serde_json::Value> {
+pub async fn codex_hooks_uninstall(app: tauri::AppHandle) -> AppResult<serde_json::Value> {
     let a =
         managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
     let app_data = crate::app_data_dir(&app);
-    a.uninstall(&app_data)
+    tauri::async_runtime::spawn_blocking(move || a.uninstall(&app_data))
+        .await
+        .map_err(|e| AppError::Agent(format!("钩子卸载任务失败: {e}")))?
 }
 
 /// 跳转到 Agent 会话（v0.4 起走统一导航系统：证据化能力 + 诚实降级）。
+/// 导航会探测/唤起第三方进程（秒级），移出主线程避免 UI 冻结。
 /// 返回结构化结果；前端也可用 nav_navigate(target_id) 获得相同语义。
 #[tauri::command]
-pub fn open_agent_session(
+pub async fn open_agent_session(
     db: State<'_, Arc<Db>>,
     source_id: String,
     session_id: String,
 ) -> AppResult<crate::navigation::NavigationResult> {
-    let r = crate::navigation::agent_navigation::resume_session(&db, &source_id, &session_id);
-    crate::navigation::target_resolver::write_log(
-        &db,
-        &r,
-        &format!("{}:{}", source_id, session_id),
-    );
-    if r.success {
-        Ok(r)
-    } else {
-        Err(AppError::Agent(
-            r.reason.unwrap_or_else(|| "跳转失败".into()),
-        ))
-    }
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let r = crate::navigation::agent_navigation::resume_session(&db, &source_id, &session_id);
+        crate::navigation::target_resolver::write_log(
+            &db,
+            &r,
+            &format!("{}:{}", source_id, session_id),
+        );
+        if r.success {
+            Ok(r)
+        } else {
+            Err(AppError::Agent(
+                r.reason.unwrap_or_else(|| "跳转失败".into()),
+            ))
+        }
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("会话跳转任务失败: {e}")))?
 }
 
 // ── 通知收件箱 ──────────────────────────────────────────────
