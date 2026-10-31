@@ -55,3 +55,8 @@ taskdock_icons_tauri_ready.zip
 # Stray visual-audit output from an earlier script revision
 visual-audit.json
 visual-audit.err
+
+# 性能 harness 原始运行日志（DIAG-*）只在本地 tmp/ 归档，不入库；
+# 结构化结果（meta/load/stimulus JSON，含 p50/p95、计数、退出码）仍归档 docs/performance/results/
+docs/performance/results/DIAG-*-app.log
+docs/performance/results/DIAG-*.jsonl
