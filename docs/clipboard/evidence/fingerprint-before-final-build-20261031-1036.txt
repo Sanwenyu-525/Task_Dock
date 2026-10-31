@@ -1,0 +1,10 @@
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 29 files changed, 2610 insertions(+), 254 deletions(-)
+dirty_count=4494
+untracked_src=0
+source_files=189
+source_tree_sha256=dfd6b8522ae60d6491a0e0eb32774d46fab4ab952b1338303bc21fd059c3a1f9
+release_exe_sha256=8900bd9d71e2ea19f730dd985505cfecda12d649ff85de809f4368072e021029
+release_exe_bytes=15792128
+release_exe_mtime=2026-10-31 09:20:46.500867800 +0800

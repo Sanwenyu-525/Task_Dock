@@ -724,3 +724,251 @@ HTTP 端口根本起不来，健康检查超时 —— 而本机同时有一个�
 4. **机器固有噪声**：`gitfox`（nssm 管理）约 128 s 周期的崩溃重启、其他项目的常驻 dev server，
    会抬高全机 `webview2_other`/`other_agents` 的 CPU 读数；解读只看本进程树分组。
 
+### 13.4 第四轮（22:08→）：把「谁杀了被测实例」查到具体一条命令，并修掉装置缺陷
+
+第三轮之后又跑了一轮三臂（N1/N2/N3），**三臂再次全部作废**，但这次根因不是推测而是实证。
+
+**证据链**：
+
+| 事实 | 证据 |
+|---|---|
+| 21:55:52 被测实例被外部终止 | 应用日志末尾只有正常的 `HTTP 接入 POST … -> 200`；**没有** `last-shutdown-report.json`（非优雅退出）；Windows 应用程序日志无崩溃条目 → 外部 `TerminateProcess` |
+| 杀手是**按镜像名**的 `taskkill` | 同机另一会话的会话日志中存在 `taskkill //IM task-dock.exe //F`，时间戳 `2026-10-30T13:55:52.715Z`（= 本地 21:55:52），与实例死亡**逐秒吻合**；同一命令在 22:05:14 再出现一次，杀死了当时正在跑的 N3 臂 |
+| 产物被换成 dev-mode | 21:55:59 另一会话启动 `cargo test --release`，21:58:33 把 `src-tauri/target/release/task-dock.exe` 换成 15,400,960 B、`sha256=9f666133…` 的 **dev-mode** 产物；此后各臂测的都不是被指纹记录的二进制 |
+| 采样器可能一条样本都产不出来 | `scripts/perf/sampler.ps1` 是 UTF-8 **无 BOM**：Windows PowerShell 5.1 按系统 ANSI（本机 GB2312）解码，行尾中文标点（如「。」）的字节被当成半个双字节字符，**吞掉换行**，把下一行并进注释；本轮实测该脚本 `ParseFile` 直接报错、采样 0 样本，而场景脚本当时仍以 `rc=0` 退出 |
+
+**因此第三轮的「三臂 + C/E 长跑」结论一个都不能用**，本轮把装置级缺陷补齐后重跑。
+
+**新增的五个装置级修正（都已落代码）**：
+
+| # | 缺陷 | 后果 | 修正 | 文件 |
+|---|---|---|---|---|
+| 7 | 被测实例与别的会话共用镜像名 | 别的会话一次 `taskkill /IM task-dock.exe` 就能杀掉正在测量的实例，且**不留任何优雅退出痕迹** | 测量改用**改名副本** `tdmeas.exe`；采样器新增 `-ProcessNamePattern` 按实际镜像名归组；场景脚本按 exe 文件名自动传入 | `sampler.ps1`、`memory-scenario.py` |
+| 8 | 产物与构建目录与别的会话共用 | 别的会话重建 `target/release` 会换掉被测二进制（本轮就发生了） | 构建到独立 `target-measure` 目录 + 独立前端产物目录，产物复制出去后再指纹化 | 复现命令见 `docs/PERFORMANCE_TESTING.md` §9.6 |
+| 9 | 污染检查把「异名实例」也当阻断项 | 机器上只要有别人的 Task Dock 实例就拒绝测量 | 只有**同名**实例才阻断；异名实例进程树独立、不会串组，记入 `meta.other_task_dock_instances` 作为环境干扰 | `memory-scenario.py` |
+| 10 | **0 样本仍以 rc=0 退出** | 「采样器解析失败」会被当成「内存平稳」的空结果——最危险的一类假数据 | 0 样本写 `error` 并 `SystemExit(1)`；归因工具对「进程中途退出」的臂拒绝出差值 | `memory-scenario.py`、`memory-compare.py` |
+| 11 | `.ps1` 的编码没有体检 | UTF-8 无 BOM + 中文注释 = 在本机必然解析失败，且失败是**静默的** | `scripts/perf/sampler.ps1` 补 UTF-8 BOM；新增回归测试 `src/test/powershellScripts.test.ts`：用 PowerShell 自己的解析器体检全部 `.ps1`，并要求含非 ASCII 的 `.ps1` 必须带 BOM | `sampler.ps1`、`src/test/powershellScripts.test.ts` |
+
+第 11 项的负向验证：临时放一个「UTF-8 无 BOM + 中文注释」的 `.ps1` 进 `scripts/perf/`，
+新测试的 BOM 断言立即失败（`Tests 1 failed | 3 passed`），移除后恢复全绿——
+说明这条回归测试确实能抓住该类缺陷，不是摆设。
+
+### 13.5 第五轮（23:00→）：「自行退出」归因到仓库自己的一条脚本，同源复发被封死
+
+第四轮把「谁杀的」查到了**一条命令**（按镜像名 `taskkill`）。第五轮继续追剩下的另一半：
+**四次自退既不是崩溃、也不是被 kill，而是产品自己的优雅退出路径**——是谁按了那个按钮？
+
+#### 13.5.1 四个历史自退观测
+
+| 观测 | 存活时长 | 退出码 | `last-shutdown-report.json` | 判定 |
+|---|---|---|---|---|
+| N2 臂（22:03 前一轮） | 515.5 s | 0 | 有 | 优雅退出 |
+| N3 臂（同轮） | 144.3 s | 0 | 有 | 优雅退出 |
+| 复现 A | 42.1 s | 0 | 有 | 优雅退出 |
+| 复现 B | 26.8 s | 0 | 有 | 优雅退出 |
+
+`last-shutdown-report.json` 是 `request_exit()` 写出的**唯一**产物；有它 + 退出码 0 ⇒ 走的是
+产品自身的退出链路，而不是外部 `TerminateProcess`、不是崩溃、不是 OS 会话结束。
+
+#### 13.5.2 逐项排除
+
+| 假设 | 排除依据 |
+|---|---|
+| single-instance 插件冲突 | Windows 实现是 `CreateMutexW` + 隐藏 `WS_EX_TOOLWINDOW` 目标窗；命中时走 `cleanup_before_exit(); std::process::exit(0)`，**不写** shutdown report → 与观测不符 |
+| dev-mode 预检退出 | dev-mode 会弹「开发模式」对话框并退出，不写 shutdown report → 与观测不符 |
+| OS 会话结束 / 注销 | `tao-0.37.2` 不处理 `WM_QUERYENDSESSION` → 该路径不存在 |
+| `notify_agent` 等设置导致 | 设置只影响通知开关，不在退出路径上 |
+| HTTP 接入负载 | 四个自退的负载时长各不相同（26.8 s ~ 515.5 s），无相关性 |
+| 前端调用 `quit_app` | `commands/system.rs:15` 的 `quit_app` 只在 `src/lib/bridge.ts:724` 导出，**前端从未调用** |
+
+**源码级收敛**：产品的退出路径只有三条 —— `request_exit()`（`src-tauri/src/lib.rs:797`）、
+`quit_app`（未被调用）、`RunEvent::ExitRequested` 处理器（`lib.rs:782-787` → `prevent_exit()`
+→ 异步收尾 → `app.exit(0)`）。而 `RunEvent::ExitRequested` 在 tauri-runtime-wry 2.12.3 中只有两个来源：
+最后一个窗口被销毁、`app.exit(code)`。因此「优雅退出」必然是**有人触发了托盘「退出」菜单**。
+
+#### 13.5.3 真凶：仓库自带的托盘自动化没有实例区分
+
+`scripts/perf/quit-under-load.py` 驱动 `tray-quit5.ps1`，后者在通知区里这样找图标：
+
+```powershell
+FindIcon | Where-Object { $_.Name.StartsWith("Task Dock") } | Select-Object -First 1
+```
+
+**所有** Task Dock 实例的托盘提示都是 `"Task Dock"`（`lib.rs:169`），脚本既不区分实例、
+也不核对 PID，于是在多实例并存时，「第一个 Task Dock 图标」= **别人正在测量的那个实例**。
+并行会话跑一次托盘退出自动化，被测实例就被「优雅退出」了——这正是四个自退观测的共同成因。
+
+**受控复现**（新增取证工具 `scripts/perf/exit-forensics.py`，监视被测实例全部顶层窗口）：
+
+```
+[  20.1s] 执行托盘退出自动化
+[  20.1s] 托盘脚本输出: icon=2084,1233 menu=2084,934,205,299 quit=2144,1208
+[  20.1s] 窗口失效 hwnd=0x15f0dec ...（全部顶层窗口同时失效）
+[  29.2s] 进程退出 {"exited_after_s": 29.2, "exit_code": 0, "shutdown_report": true}
+[verdict] GRACEFUL_REQUEST_EXIT
+```
+
+应用日志尾部与四个历史自退**逐字节一致**。
+
+#### 13.5.4 修正与新增装置
+
+| # | 缺陷 | 后果 | 修正 | 文件 |
+|---|---|---|---|---|
+| 12 | 托盘自动化不区分实例 | 多实例并存时退出的是**别人的**实例，且伪装成被测实例的「自行退出」，四轮测量连续作废 | 脚本执行前枚举机器上所有 Task Dock 实例，发现除自己以外还有实例即**拒绝执行**（`SystemExit(3)`），并把 `other_taskdock_instances` 写进输出 JSON | `scripts/perf/quit-under-load.py` |
+| 13 | 没有区分「优雅退出 / 外部 kill / 存活」的取证工具 | 每次都要靠日志尾部人工推断 | 新增 `scripts/perf/exit-forensics.py`：枚举被测实例全部顶层窗口（含 `WS_EX_TOOLWINDOW`），按「shutdown report 是否存在」判定 `GRACEFUL_REQUEST_EXIT` / `EXTERNAL_KILL` / `SURVIVED` | `scripts/perf/exit-forensics.py` |
+| 14 | 门禁脚本在仓库根目录跑 cargo | 无 `Cargo.toml` → `fmt` exit 1、`clippy`/`test-all` exit 101 的**假失败** | 全部 Rust 门禁改用 `--manifest-path src-tauri/Cargo.toml`；实测 `cargo fmt --manifest-path … --all -- --check` rc=0 | `scripts/perf/gate-run.sh` |
+| 15 | 测量副本名可能被并行会话占用 | 场景脚本按「精确进程名」拒绝同名多实例，本次首跑即被并行会话的 `task-dock-acc1.exe` 拦下 | 副本名可配置（`ACC_NAME`），第五轮用 `task-dock-acc9.exe`：既含 task/dock（触发 #12 的拒绝执行）又与并行会话不同名 | `scripts/perf/v05r5-memory-chain.sh` |
+| 16 | 门禁脚本用 `--manifest-path` 在仓库根调 cargo，**绕过 `src-tauri/rust-toolchain.toml`** | rustup 落到机器默认的 GNU 工具链；GNU `ld` 给 cdylib（本 crate 无导出符号）自动导出全部符号，序号 >65535 → 链接失败（debug 175,971 / release 71,629），`test-all` 与 `perf-clipboard` 双双 101。**这不是源码缺陷**：同一命令在 `src-tauri` 内（MSVC）3m00s 链接成功 | 门禁改为**在 `src-tauri` 内执行 cargo**，指纹记录 `rustup show active-toolchain` / `cargo -V` / `rustc -vV` | `scripts/perf/gate-rerun-failed.sh` |
+| 17 | 归因产物既不是单文档 JSON，也不是 UTF-8 | Windows 控制台默认 GBK + 逐臂打印，`MEM-ATTRIBUTION-*.json` 实为**多段 GBK 文本**，标准 JSON 工具直接解码失败 | 新增 `--out <单文件>`：写 `{"arms": [...], "attribution": …}` 的单文档 UTF-8 JSON；stdout 显式 UTF-8。原文件留档为 `MEM-ATTRIBUTION-v05r5-raw-gbk.txt`，重生成后数值逐项一致（3.2 / 4.7 / −0.1 MB，72.8 KB/条） | `scripts/perf/memory-compare.py` |
+| 18 | 门禁复跑前没有核对可用空间 | D: 只剩 0.03 GB 时链接与元数据写入失败：`LNK1201`（写 PDB，exit 1201/1318）与 `error: failed to write to …rmeta: 磁盘空间不足 (os error 112)`，`test-all`/`perf-clipboard` 再次 101——是**磁盘写满**，不是源码问题 | 清理**自建**的 `src-tauri/target-gate`（14.39 GB，仅本会话门禁缓存），并把 `CARGO_TARGET_DIR` 指向 C:（42 GB 可用）；0907/0921 两份失败日志原样保留 | `scripts/perf/gate-rerun-failed.sh` |
+
+**取证记录**：`docs/performance/results/EXIT-FORENSICS-20261030.md`（含四步证据链、排除表、
+复现 transcript、机制说明与复跑命令）；方法论沉淀到 `docs/PERFORMANCE_TESTING.md` §9.7。
+
+#### 13.5.5 第四轮工程门禁（23:36 → 23:50）
+
+| 门禁 | 命令 | Exit | 原始输出 |
+|---|---|---|---|
+| fmt | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | **0** | `gate-fmt-20261030-2336.log` |
+| clippy | `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` | **0** | `gate-clippy-20261030-2336.log` |
+| test-all | `cargo test --manifest-path src-tauri/Cargo.toml --all --no-fail-fast` | 101 | `gate-test-all-20261030-2336.log` |
+| tsc | `npx tsc --noEmit` | **0** | `gate-tsc-20261030-2336.log` |
+| vitest | `npx vitest run` | **0** | `gate-vitest-20261030-2336.log` |
+| npm-build | `npm run build` | **0** | `gate-npm-build-20261030-2336.log` |
+| perf-clipboard | `cargo test --release --test clipboard_perf -- --ignored --nocapture` | 101 | `gate-perf-clipboard-20261030-2336.log` |
+
+（汇总表：`docs/clipboard/evidence/gates-20261030-2336.md`）
+
+**两个 101 的定性——不是被测代码的缺陷，是共享工作区的并发编辑**：失败日志里的 5 条编译错误
+全部指向并行会话当时正在改的文件：
+
+```
+error[E0425]: cannot find function `apply_with_radius` in module `crate::window_shape`  → src/context_menu.rs:251
+error[E0425]: cannot find type `Db` in this scope                                      → src/context_menu.rs:299
+error[E0609]: no field `x` on type `tauri::Position`                                  → src/lib.rs:153
+error[E0609]: no field `width` on type `tauri::Size`                                  → src/lib.rs:153
+error[E0609]: no field `y` on type `tauri::Position`                                  → src/lib.rs:154
+```
+
+同一时刻（23:41 → 23:50）我方用**同一份源码**做 release 构建 `cargo build --bins --features
+tauri/custom-protocol --release` **rc=0**（9m28s，产物 15,603,200 B，
+`sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378`），
+证明该树可编译；clippy（23:39 通过）也说明 23:39 时源码是好的。**结论：这是「另一个会话把工作区
+改到编译不过」的时间窗事故，必须复跑，不能拿 101 当通过，也必须如实标注它的来源。**
+
+#### 13.5.6 第五轮测量链（23:53 起）
+
+测量链入口 `scripts/perf/v05r5-memory-chain.sh`，串行跑：
+
+1. **三臂归因** N1（负载+通知开）/ N2（负载+通知关）/ N3（空闲基线），480 s 负载 + 90 s 后段；
+2. **C/E 30 分钟臂**：C = UI+HTTP 负载 1800 s + 120 s 后段，E = 600 s 负载 + 1800 s 空闲后段。
+
+隔离：改名副本 `task-dock-acc9.exe`（含 task/dock 触发 #12 的拒绝执行，且与并行会话不同名）、
+每臂独立数据目录 / APPDATA / 端口、`SOURCE=bridge --allow-real-source`（只有 real 来源才触发系统通知，
+否则「通知路径差值」恒为 0）、采样器按精确镜像名归组。结果见
+`docs/V05_FINAL_ACCEPTANCE.md` §5.5 与 `docs/performance/results/` 下 `DIAG-*` 采样文件。
+
+
+#### 13.6 第五轮测量结果（23:53 → 01:35 完成）：五臂 rc=0、自退归零、出现平台期
+
+五臂全部 `rc=0`，`instance_exited_after_s = None`，`process_gone_samples = 0`
+（存活期样本 97 / 59 / 51 / 188 / 255）。与第四轮的「N2/N3 中途自行退出」形成直接对照：
+托盘自动化守卫 + 改名副本之后，同源复发没有再出现。
+
+| 臂 | 时段 | 样本 | Private 首→末 | Δ | 负载段斜率 | 后段斜率 | 事件 | 通知 |
+|---|---|---|---|---|---|---|---|---|
+| N1 负载+通知开 | 23:53:22→00:03:17 | 97 | 41.3→49.1 MB | +7.8 MB | +0.809 MB/min | −0.657 MB/min | 9,616（0 丢弃） | 45/45 |
+| N2 负载+通知关 | 00:03:18→00:13:24 | 59 | 9.0→13.6 MB | +4.6 MB | +0.590 MB/min | −0.467 MB/min | 9,604（0 丢弃） | 0 |
+| N3 空闲基线 | 00:13:25→00:21:55 | 51 | 8.3→8.2 MB | −0.1 MB | +0.018 MB/min | — | 0 | 0 |
+| C 30 min 负载 | 00:22:04→00:54:49 | 188 | 9.1→17.8 MB | +8.7 MB | 前 20 min +0.218 / 尾段 9.1 min +0.066 | 结束后 116 s **0.000**（恒定 17.8） | 36,070 收 / 15,665 提交 / 20,405 合并 / 0 丢弃 | 0 |
+| E 10 min 负载 + 30 min 空闲 | 00:54:50→01:35:29 | 255 | 11.9→18.9→19.3 MB | 负载 +7.0 / 空闲 +0.4 | +0.542 MB/min | 空闲前 15 min +0.0028 / 其后 14.5 min −0.0275 | 11,914 | 55/55 |
+
+**归因（`docs/performance/results/MEM-ATTRIBUTION-v05r5.json`）**：
+通知路径 N1−N2 = **+3.2 MB / 10 min**（45 条 → ≈72.8 KB/条）；
+接入路径 N2−N3 = **+4.7 MB / 10 min**（≈9,600 事件 → ≈0.49 KB/事件的**增量**）；
+基线 N3 = −0.1 MB。N1 首样本 41.3 MB / 42 线程 / 663 句柄 vs N2 9.0 MB / 33 线程 / 364 句柄，
+即通知开启本身带来 **≈30 MB / 9 线程 / ≈300 句柄**的 WinRT toast + COM 固定开销（比较增量时已扣除）。
+
+**增长不在 Rust 堆上**：N1 的 Private +7.8 MB 对应 `live_bytes` +0.038 MB（`private_minus_live = 7.76 MB`），
+N2 的 Private +4.6 MB 对应 `live_bytes` −0.163 MB ⇒ 分配器保留 / 原生内存（SQLite 页缓存与 WAL、
+COM/GDI、线程栈），不是 Rust 可达对象泄漏。
+
+**平台期判据**：C 臂的分段斜率 0.218 → 0.066 → **0.000 MB/min**，末段 116 s 恒为 17.8 MB，
+同时 DB 从 487,424 B 长到 31,309,824 B、36,070 事件零丢弃；E 臂空闲 30 分钟总变化 ±0.4 MB。
+分段斜率由 `scripts/perf/memory-window-slopes.py` 从原始 jsonl 计算（窗口：C 负载起点 85.2 s，
+`WINDOWS-C-ui-http-30min-20261031-002204.json`；E 负载起点 78.1 s，`WINDOWS-E-idle-after-load-30min-20261031-005450.json`），
+可直接复算，不再依赖口头分段。
+⇒ 「负载有平台期、空闲不增长」在**当前源码构建 + 20 事件/秒 + UI 真实可见**的条件下成立。
+
+**环境（如实记录）**：本机同时有并行会话的 A–F 套件实例（`task-dock-memaf.exe`、`task-dock-acc1.exe`）
+与正式产物 `task-dock.exe`；采样器按精确镜像名归组不会串组，但竞争把采样间隔从 5 s 拉长到 6.9–9.4 s。
+CPU 口径：C 臂主进程均值 0.08% / 峰值 0.26%，WebView2 树均值 1.27% / 峰值 7.26%。
+
+**证据**：`docs/performance/results/DIAG-N1-load-notify-on-20261030-235323.*`、
+`DIAG-N2-load-notify-off-20261031-000318.*`、`DIAG-N3-idle-20261031-001325.*`、
+`DIAG-C-ui-http-30min-20261031-002204.*`、`DIAG-E-idle-after-load-30min-20261031-005450.*`、
+`MEM-C-ui-http-30min-20261031-002156.log`、`MEM-E-idle-after-load-30min-20261031-002156.log`、
+`MEM-fingerprint-20261031-002156.txt`、`PHASES-C-…-002204.json`、`PHASES-E-…-005450.json`。
+
+**边界（不因平台期改写）**：只覆盖 20 事件/秒、单实例、单显示器；未做 ETW/Heap 逐分配点归因；
+通知路径的 ≈30 MB 固定开销与 ≈73 KB/条增量**只量化、未压缩**；未覆盖 500 事件/秒持续负载、
+8 小时以上长跑、安装形态（NSIS/MSI）与长时间 UI 交互。§5.4 的旧结论保持原样、不改写。
+
+#### 13.7 第五轮工程门禁复跑（2026-10-31 09:07 → 09:41）：两次失败都归因到装置/环境
+
+第四轮的两个 101（并行会话把共享工作区改到编译不过，§13.5.5）必须在源码可编译窗口内复跑。
+复跑一共跑了三次，**前两次的失败原样保留**：
+
+| 轮次 | 时间 | 结果 | 归因 |
+|---|---|---|---|
+| 第 1 次 | 09:07→09:15 | `test-all` 与 `perf-clipboard` 均 exit 101 | 门禁脚本 `--manifest-path` 在仓库根调用，绕过 `src-tauri/rust-toolchain.toml` → GNU ld `export ordinal too large`（装置缺陷 #16） |
+| 第 2 次 | 09:21→09:28 | 同上两个 101 | D: 盘写满：`LNK1201` 写 PDB 失败、`failed to write … full.rmeta: 磁盘空间不足 (os error 112)`（装置缺陷 #18） |
+| 第 3 次 | 09:29→09:41 | `test-all` 101（**仅 3 个前台聚焦用例**），`perf-clipboard` **rc=0（2/2）** | 三个 `navigation::router` 测试被 Windows 前台锁拒绝（当时前台为 Geek Uninstaller 窗口），ENVIRONMENT-BLOCKED，不是代码回归 |
+
+第 3 次的明细：
+
+| 门禁 | 命令（cwd=`src-tauri`） | 结果 | Exit | 日志 |
+|---|---|---|---|---|
+| test-all | `cargo test --all --no-fail-fast` | lib **472 passed / 3 failed / 3 ignored**；其余目标通过（`inbox_processes` 1 passed；性能/真机 ignored） | 101 | `gate-test-all-20261031-0929.log` |
+| test-all（过滤 3 个前台用例） | `cargo test --lib -- --skip navigation::router::tests::{own_process_window_is_enumerated_and_focus_reported_truthfully,launch_disallowed_reports_failure_or_focus_only,notepad_launch_focuses_existing_window_of_owned_process}` | **474 passed / 0 failed / 3 ignored / 3 filtered out** | 0 | `gate-test-all-filtered-20261031-0943.log` |
+| perf-clipboard | `cargo test --release --test clipboard_perf -- --ignored --nocapture` | **2 passed / 0 failed**（34.82 s） | 0 | `gate-perf-clipboard-20261031-0929.log` |
+
+三个失败用例的真实报错是 `assertion left: None / right: Some("focus_window")`，
+`focus_window` 回报 `foreground-denied`——桌面正在被用户使用，Windows 不允许后台进程抢占前台。
+**同一组用例在第四轮安静桌面上逐条通过**（23:34/23:35，`p2-06-focus-tests-fourth-round-20261030.log`），
+断言未改、用例未删、未用 `#[ignore]` 掩盖；过滤复跑只是把 3 个环境依赖用例显式列出并排除，
+其余 474 例（比 09:29 轮多 2 例，因为并行会话在这 11 分钟内又新增了测试）全部通过。
+
+**工具链与源码指纹**（`gate-rerun-fingerprint-20261031-0929.txt`）：
+`stable-x86_64-pc-windows-msvc (overridden by '…\src-tauri\rust-toolchain.toml')`、
+cargo 1.95.0 / rustc 1.95.0（host `x86_64-pc-windows-msvc`）。
+复跑开始 152 files changed / +6,088（`sha256=1217fb86…`），结束 159 files changed / +6,479
+（`sha256=052adaee…`）——并行会话在这段时间仍在编辑，**门禁结果对应的是这期间可编译的树**，
+所以不把「472」与「474」的差额当成矛盾，也不把它当成稳定计数。
+
+#### 13.7.1 第 4–6 次：补齐前端/Rust 全门禁，最终快照被并行编辑打断（09:46 → 10:24）
+
+第 3 次只覆盖 Rust 三个门禁。为了给 v0.5 留一份完整门禁，09:46 起再跑两轮，并把失败原样保留：
+
+| 轮次 | 时间 | 结果 | 关键输出 |
+|---|---|---|---|
+| 第 4 次 | 09:46→10:01 | `fmt` **exit 1**、`clippy` **exit 101**；`tsc` / `vitest` / `npm run build` / `release` 均 exit 0 | fmt 报 16 处格式差异（如 `commands/settings.rs` 的 `map` 闭包与 `tracing::debug!` 换行）；clippy 报 `needless_borrow`（`src/lib.rs:275`，`schedule_blur_close(&win_for_menu.app_handle())`） |
+| 修复 | 09:51→10:03 | — | `cargo fmt --all`；去掉该 `&`。两处都是本次整改新增代码引入的，不是历史遗留 |
+| 第 5 次 | 10:04→10:14 | `fmt` **0**、`clippy` **0**、`test-all` **101（474 passed / 3 failed / 3 ignored）**、过滤复跑 **0（474/0/3/3）**、`release` **0（6m10s）** | 3 个失败 = 2 个前台聚焦用例（前台锁，ENVIRONMENT BLOCKED）+ `agents::inbox::tests::concurrent_writers_never_exceed_capacity`（见下） |
+| 第 6 次 | 10:19→10:20 | fmt 0；clippy / test-all / perf **全部 101** | 并行会话正在改 v0.6 `window_shape.rs` / `context_menu.rs` / `commands/system.rs`，工作区处于不可编译中间态（`cannot find type AtomicU32` 等 11 处），本轮**判为无效快照**，不用于验收 |
+
+**第 5 次的产物**：release 二进制 15,799,296 B，`sha256=4fddaa06d3db6fb710ad371412889a8a127367207af9e03646ca093b8972a948`，
+构建 6m10s（10:08:16→10:14:27，`CARGO_TARGET_DIR` 在 C: 临时目录、cwd=`src-tauri`、MSVC 工具链）。
+日志：`gate-final2-fmt/clippy/test-all/test-filtered/release-20261031-1004.log`、
+指纹 `gate-final2-fingerprint-20261031-1004.txt`。
+
+**`concurrent_writers_never_exceed_capacity` 一次性失败（10:05）**：断言 `ok <= 10` 实际得到 11。
+失败后做了两级复现，均为绿：单测连续 20 次、整 lib 套件连续 5 次（**477 passed / 0 failed / 3 ignored**，
+10:16–10:18 终端输出，未落日志文件）。另用独占方式打开 `hook-a.json`（`share_mode(0)`）验证
+`measure()` 不会漏数——结果仍计为 1，**机制未复现**。因此没有做推测性修改，按「负载相关偶发、
+机制未证实」记录为遗留风险，而不是宣称已修复。并发用例本身留在门禁内，未删除、未放宽断言。
+
+**第 6 次的边界**：这与第四轮 §13.5.5 是同一类问题——共享工作树里另一会话正在实现 v0.6 窗口圆角，
+文件处于半成品状态。当时 `src-tauri/src/window_shape.rs` mtime 10:21、`git status` 为 `MM`；
+`cargo check --lib` 复现 11 处编译错误。**验收证据以第 5 次（10:04–10:14）为准**：
+此后我们只改文档，未再改源码；第 6 次及之后的源码变化属于并行会话的 v0.6 工作，不在 v0.5 范围内。

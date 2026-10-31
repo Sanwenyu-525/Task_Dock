@@ -531,3 +531,349 @@ WORK=C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-af-v05r3 SOURCE=bridge \
 `DIAG-<臂名>-<时间戳>-app.log`（被测实例自身日志）、
 `MEMABC-<臂名>-<时间戳>.log`（套件日志）、`MEMABC-fingerprint-<时间戳>.txt`（源码与二进制指纹）。
 
+### 9.5 第四轮（22:08→）：并行会话把测量环境打穿，三处「测量装置本身」缺陷
+
+第三轮的数据仍然作废，原因和 §9.1 同源但更具体：**有其它会话在同一台机器、同一份工作区上并行操作**。
+本轮把「谁杀了被测实例」查到了具体一条命令，并把由此暴露的测量装置缺陷全部修掉。
+
+**证据（会话日志时间戳与被测实例死亡时刻对齐）**：
+
+| 事实 | 证据 |
+|---|---|
+| 被测实例在 t≈190 s 被外部 `TerminateProcess` | 21:55:52 实例消失；应用日志末尾只有正常的 `HTTP 接入 POST … -> 200`；**没有** `last-shutdown-report.json`（非优雅退出）；Windows 应用程序日志无崩溃条目 |
+| 杀手是按镜像名的 `taskkill` | 另一会话的会话日志里存在 `taskkill //IM task-dock.exe //F`，时间戳 `2026-10-30T13:55:52.715Z`（= 本地 21:55:52），**与实例死亡时刻逐秒吻合**；同一条命令在 22:05:14 又出现一次，正好杀死当时正在跑的 N3 臂 |
+| 产物被换掉 | 21:55:59 另一会话启动 `cargo test --release`，21:58:33 把 `src-tauri/target/release/task-dock.exe` 换成 **dev-mode** 产物（15,400,960 B，`sha256=9f666133…`）；此后所有臂测的都不是被指纹记录过的那个二进制 |
+| 采样器本身可能一条样本都产不出来 | `scripts/perf/sampler.ps1` 是 **UTF-8 无 BOM**，Windows PowerShell 5.1 按系统 ANSI（本机 GB2312）解码，行尾中文标点（如「。」）的字节被当作半个双字节字符，**吞掉换行**，把下一行并进注释 |
+
+**由「并行会话按镜像名杀进程」推出的三条装置级修正**：
+
+1. **测量用改名副本，避开按镜像名的误杀**。
+   把产物复制成 `tdmeas.exe` 再测：另一个会话的 `taskkill //IM task-dock.exe` 不再命中被测实例。
+   代价是采样器必须按**实际镜像名**归组，因此 `sampler.ps1` 增加 `-ProcessNamePattern` 参数，
+   场景脚本按被测 exe 的文件名自动传入（`^tdmeas`）。
+2. **产物与构建目录隔离**：用 `CARGO_TARGET_DIR=src-tauri/target-measure` + 独立的前端产物目录构建，
+   产物复制到 `C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe` 后再指纹化。
+   这样别的会话重建 `target/release` 不会影响本轮测量。
+3. **「同名实例」才是阻断项，「异名实例」只是环境噪声**：
+   场景脚本的污染检查从「机器上有任何 `task-dock.exe` 就拒绝执行」改成
+   「有**同名**实例才拒绝」；异名实例进程树独立、不会串进 `taskdock` 分组，
+   只记录到 `meta.other_task_dock_instances` 作为环境干扰说明。
+
+**由「采样器 0 样本」推出的两条修正**：
+
+4. **0 样本必须判失败**。此前采样器解析失败时，场景脚本仍以 `rc=0` 退出、
+   `samples: 0` 被当成「内存平稳」的空结果——这是最危险的一类假数据。
+   现在 `memory-scenario.py` 在 0 样本时写入 `error` 并 `SystemExit(1)`。
+5. **`.ps1` 必须能被 PowerShell 自己解析**。新增回归测试
+   `src/test/powershellScripts.test.ts`：用 `[System.Management.Automation.Language.Parser]::ParseFile`
+   体检仓库里所有 `.ps1`（必须零错误），并要求**含非 ASCII 的 `.ps1` 必须带 UTF-8 BOM**。
+   `scripts/perf/sampler.ps1` 已补 BOM（其余 `.ps1` 本来就是纯 ASCII，不受 GB2312 影响）。
+   注意：**Edit 保留 BOM、Write 会丢 BOM**，后续改这个文件要留意。
+
+### 9.6 第四轮复现命令
+
+```bash
+# 0) 先把产物构建到独立目录并改名，避开其它会话的 cargo 与按名 taskkill
+npx vite build --outDir "C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-build/dist" --emptyOutDir
+npx tauri build --no-bundle \
+  --config '{"build":{"frontendDist":"C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-build/dist","beforeBuildCommand":""}}' \
+  -- --target-dir D:/Develop/task_dock/src-tauri/target-measure
+mkdir -p "C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin"
+cp src-tauri/target-measure/release/task-dock.exe \
+   "C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe"
+sha256sum "C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe"
+
+# 1) 三臂对照（通知路径 / 接入路径 / 空闲基线）
+EXE="C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe" \
+WORK="C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-abc-v05r4" SOURCE=bridge \
+  DURATION=480 POST=90 PORT_BASE=47890 bash scripts/perf/memory-notify-suite.sh
+
+# 2) 30 分钟长跑（C 持续负载 / E 负载后空闲）
+EXE="C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe" \
+WORK="C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-af-v05r4" SOURCE=bridge \
+  ONLY=C-ui-http-30min,E-idle-after-load-30min PORT_BASE=47900 \
+  bash scripts/perf/memory-af-suite.sh
+
+# 3) 归因（进程中途退出的臂会被拒绝出归因，而不是给出假差值）
+python scripts/perf/memory-compare.py docs/performance/results/DIAG-N[123]-*.jsonl
+```
+
+### 9.7 第四轮：被测实例「自行退出」的取证（不是被测二进制的缺陷）
+
+第四轮三臂里 N2、N3 两臂的实例在观察窗口内**自行退出**（N2 存活 515.5 s、N3 存活 144.3 s，
+reproA 42.1 s、reproB 26.8 s），退出码 0 且写出 `last-shutdown-report.json`，
+`memory-compare.py` 因此拒绝输出三臂差值归因。
+
+**排查结论：退出不是被测二进制触发的，而是「托盘自动化误伤别的 Task Dock 实例」。**
+
+取证链：
+
+1. **源码级收敛**。产品里优雅退出只有一个入口 `request_exit()`
+   （`src-tauri/src/lib.rs:797`），调用方仅三处：托盘菜单 `quit`（`lib.rs:205`）、
+   `commands/system.rs:15` 的 `quit_app`（前端从未调用）、`RunEvent::ExitRequested`（`lib.rs:782`）。
+   而 `RunEvent::ExitRequested` 在 `tauri-runtime-wry` 里只有两个来源：
+   **最后一个窗口被销毁**（`TaoWindowEvent::Destroyed`）或 **`app.exit()`**（本产品只有 `request_exit` 末尾自己调）。
+   于是只剩两种可能：有人点了托盘「退出」，或主窗口被销毁。
+2. **排除崩溃与强杀**。退出前应用日志无任何 WARN/ERROR；Windows 应用程序事件日志无崩溃记录；
+   被测产物已改名 `tdmeas.exe`，按镜像名的误杀脚本打不中它；退出码 0 + 退出报告 = 产品自身退出。
+3. **受控复现**。新增 `scripts/perf/exit-forensics.py` 盯住实例的全部顶层窗口句柄，
+   在机器上没有其它 Task Dock 实例时执行仓库自带的托盘自动化
+   （`scripts/perf/quit-under-load.py` 使用的 `tray-quit5.ps1`）：
+
+   ```
+   [  20.1s] 执行托盘退出自动化
+   [  20.1s] 托盘脚本输出: icon=2084,1233 menu=2084,934,205,299 quit=2144,1208
+   [  20.1s] 窗口失效 hwnd=0x15f0dec ...（全部顶层窗口同时失效）
+   [  29.2s] 进程退出 {"exited_after_s": 29.2, "exit_code": 0, "shutdown_report": true}
+   [verdict] GRACEFUL_REQUEST_EXIT
+   ```
+
+   应用日志尾与四次历史退出**逐行一致**（同样三条 INFO + 同一条 Chromium 收尾 ERROR）。
+4. **机理**。`tray-quit5.ps1` 按**通知区图标名**定位实例：
+   `if($n.StartsWith("Task Dock") …)` 后取 `Select-Object -First 1`，**不区分实例**。
+   所有 Task Dock 实例的托盘提示词都是 `Task Dock`，所以并行会话跑托盘退出自动化时，
+   退出的是**通知区里第一个匹配的图标**——可能是正在压测的隔离实例。
+   这与 §9.5 记录的「按镜像名 `taskkill` 误杀」是同一类跨实例污染，只是选择器换成了托盘图标名。
+
+**处置**：
+
+- `scripts/perf/quit-under-load.py` 增加前置检查：机器上存在除本实例外的其它 Task Dock 进程时
+  **拒绝执行**托盘自动化（托盘自动化无法按 PID 定位），检查结果写入证据 JSON 的
+  `other_taskdock_instances` 字段。
+- 测量侧保留「实例中途退出即判该臂无效」的硬失败（`memory-scenario.py` 记录
+  `instance_exited_after_s` / `instance_exit_code`，`memory-compare.py` 见到
+  `process_exited_during_run` 即拒绝出归因），避免把死掉的实例读成「内存回落到 0」。
+- 新增 `scripts/perf/exit-forensics.py`：区分「窗口先失效 → 产品优雅退出」与「被外部杀掉」，
+  并用退出报告判别二者，可作为后续压测的前置体检。
+
+完整取证记录：[performance/results/EXIT-FORENSICS-20261030.md](performance/results/EXIT-FORENSICS-20261030.md)。
+
+### 9.8 剪贴板第四轮专项（P1-04 / P1-05）：三臂长跑方法学
+
+§9.5–§9.7 的教训直接决定了本轮套件的设计：**测量装置本身必须先被怀疑**。
+本轮（2026-10-30 23:51 起）用 `scripts/perf/fourth-round-memory-suite.sh` 跑三臂，
+每一臂都满足以下前置条件：
+
+| 前置 | 本轮做法 | 针对的历史事故 |
+|---|---|---|
+| 被测产物改名 | 复制为 `task-dock-acc1.exe` 后再测；采样器用 `-ProcessNamePattern '^task\-dock\-acc1'` 归组 | §9.5 记录的另一会话 `taskkill /IM task-dock.exe` 误杀 |
+| 构建目录隔离 | `CARGO_TARGET_DIR=src-tauri/target-accept`，产物与并行会话的 `target/release` 不共用 | §9.5 记录的产物被换成 dev-mode 二进制 |
+| 单实例锁隔离 | 每臂独立 `TASK_DOCK_DATA_DIR`（单实例锁标识 = 数据目录哈希），三臂互不互斥 | 多臂并行时第二实例直接退出 |
+| 真实二进制 | `npx tauri build --no-bundle` 产出，带 `custom-protocol` 特性 | §9.3「裸 cargo build 不等于 tauri build」 |
+| 零样本判失败 | `memory-scenario.py` 在 0 样本时写 `error` 并 `SystemExit(1)` | §9.5 记录的「采样器 0 样本被当成内存平稳」 |
+| 实例中途退出即判该臂无效 | 记录 `instance_exited_after_s` / `instance_exit_code`，`process_exited_during_run` 为真则拒绝出结论 | §9.1/§9.7 记录的「死掉的实例被读成内存回落到 0」 |
+| 分段而非整段斜率 | `memory-phases.py` 按 warmup / load / load_tail_quarter / post 切分，边界由 `http_accepted` 增长数据驱动 | §9.1「把负载期爬升与负载后回落平均成一条直线」 |
+
+三臂参数（`memory-scenario.py`）：
+
+| 臂 | 名称 | 负载 | 剪贴板 | 窗口 | 端口 |
+|---|---|---|---|---|---|
+| A | `fourth-round-memory-a` | 4 Agent × 5 事件/秒，通知开 | 关 | visible | 47851 |
+| B | `fourth-round-memory-b` | 同 A（**可重复性对照**） | 关 | visible | 47852 |
+| C | `fourth-round-joint-clipboard` | 同 A | **开**（真实 Windows 剪贴板事件 + 图片） | minimized | 47853 |
+
+- A/B 参数完全相同但独立跑完 30 分钟负载 + 10 分钟后段，用于判断结论**是否可重复**，
+  而不是一次偶然。臂 C 与 A 的唯一差异是剪贴板激励，用来分离“剪贴板路径”的贡献。
+- 剪贴板激励由 `scripts/acceptance/clipboard_stimulus.py` 产生：它写的是**真实系统剪贴板**
+  （每 3 s 一次 `CF_UNICODETEXT` 文本；每第 10 次**额外**写入图片：注册格式 `PNG` 为主、
+  `CF_DIBV5` 为辅，文本不因此跳过），因此触发的是真正的 `WM_CLIPBOARDUPDATE`，
+  **不是**向队列塞模拟事件。图片使用确定性构造的 RGBA 图（不透明/半透明/全透明三段），
+  事后可按种子重算并逐字节比对入库 PNG 与 Alpha 通道。脚本会先把用户原剪贴板读入
+  进程内存（不落盘、不写日志），结束时尽力恢复，恢复不了就如实记 `restored=false`；
+  纯 ctypes 实现，不弹控制台窗口。
+  （`CF_DIB` 单格式在本机 `SetClipboardData` 返回 `ERROR_INVALID_HANDLE=6`，已弃用；
+  `CF_DIBV5` 与注册 `PNG` 均可真实写入并被系统广播。）
+- 臂 C 的设置通过 `--settings-json` 注入 `clipboard_enabled=true` +
+  `clipboard_capture_images=true` + `clipboard_capture_html=true`；
+  `clipboard_enabled=false` 时采集被配置门控关掉（这一点在 P0-01/P1-02 后是硬约束）。
+
+复现命令：
+
+```bash
+WORK=C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05-fourth \
+  SRC_EXE="$PWD/src-tauri/target-accept/release/task-dock.exe" \
+  DURATION=1800 POST=600 bash scripts/perf/fourth-round-memory-suite.sh
+```
+
+原始产物：`docs/performance/results/DIAG-fourth-round-*-<时间戳>.jsonl`（逐样本）、
+`DIAG-fourth-round-*-<时间戳>-meta.json`（口径与退出码）、
+`DIAG-fourth-round-*-<时间戳>-app.log`（被测实例自身日志）、
+`analysis-fourth-round-*-<时间戳>.json`（分段分析），
+套件日志 `docs/clipboard/evidence/perf-fourth-round-suite-*.log`。
+
+### 9.9 剪贴板第四轮专项：分段分析口径
+
+`scripts/perf/memory-phases.py` 的切分规则：
+
+- `warmup`：采样起点 → 负载开始。负载起点取 `http_accepted` **首次增长**的样本。
+- `load`：负载开始 → 负载结束。负载结束取 `http_accepted` **最后一次增长**样本之后的
+  第一条样本。
+- `load_tail_quarter`：负载期的后 1/4。线性增长会在后半段平坦，**尾段斜率最能暴露泄漏**。
+- `post`：负载结束 → 采样结束（10 分钟观察窗）。
+- 进程死亡后的样本一律剔除：内存读数为 0 代表「实例已退出」，不是「内存回落」。
+
+每个指标给出 `n / first / last / min / max / mean / delta / slope_per_min`。
+解读原则：**先看尾段斜率与 post 段回落**，再看整段均值差；单看整段斜率会把
+「负载期爬升 + 负载后回落」平均成一条无意义的直线。
+
+对照口径：
+- `rust.live_bytes` 来自 `TrackingAllocator`（`src-tauri/src/alloc_stats.rs`），
+  是 `#[global_allocator]`，**只统计 Rust 堆**；bundled SQLite 的 C 堆不在其中。
+- `taskdock.private_mb` 是整个进程树的私有内存（含原生分配）。
+- 因此 `private_mb` 与 `live_bytes` 的差值可以区分「Rust 侧持有」与「原生/SQLite 侧增长」，
+  `db.page_count` / `db.wal_bytes` 则单独跟踪数据库增长。
+
+## 10. 复验轮测试方法（2026-10-30 23:00→）
+
+### 10.1 异常退出与文件/磁盘故障注入（`scripts/perf/fault-injection.py`）
+
+```bash
+python scripts/perf/fault-injection.py \
+  --exe src-tauri/target/release/task-dock.exe --port 47875
+# 只跑单个场景：--only F3
+```
+
+隔离约束（脚本内强制）：独立 `TASK_DOCK_DATA_DIR`/`APPDATA`/`USERPROFILE`/`TEMP`；
+只用 `taskkill /PID <本脚本启动的 PID> /T /F` 终止**自己**启动的进程；
+不触碰真实 Task Dock 进程、用户数据目录或系统盘。卷级磁盘写满需要管理员创建 VHD，
+未提升时按要求标记 **NOT TESTED** 并用真实二进制上的写失败等价场景补证据。
+
+| 编号 | 场景 | 注入方式 |
+|---|---|---|
+| F1/F2 | 投递期间强制结束进程 | `taskkill /T /F`（不给收尾机会） |
+| F3 | 写库失败 → 落盘暂存；暂存文件被截断 / 残留半写 `.tmp` 文件 | **锁 WAL 帧区**（偏移 32 起 1MiB，`msvcrt.locking LK_NBLCK`）。WAL 模式下写入落在 `-wal` 的帧区，锁住它会让提交真实失败（disk I/O error） |
+| F4/F5 | 恢复过程中强制结束进程 | 恢复进行到 `journal_state=committing` 时 `taskkill /F` |
+| F6 | 恢复期间数据库文件被独占锁定 | `msvcrt.locking(LK_NBLCK)` 锁住 DB 首字节 |
+| F7 | 卷级磁盘写满 | 需管理员创建隔离 VHD/VHDX；未提升 → NOT TESTED |
+| F8 | 同一 `event_id` 同时走 HTTP 与文件投递 | HTTP POST + 写 `agent-inbox/*.json` |
+
+**测量装置自身的两个坑（已修，务必保留这两个修复）**：
+
+1. `/api/v1/health` 是**免鉴权**端点。残留的隔离实例会替后续场景应答，导致静默串台。
+   → `Instance.start()` 除健康检查外，还用**带 token 的 `/api/v1/stats`** 确认应答者就是
+   本轮实例；并维护实例登记表，场景之间与 `finally` 中强制回收；
+   运行前检查目标端口是否被占用并直接中止。
+2. 场景内抛异常会让隔离实例残留（上一轮 F3 的 `TypeError` 就是这样让实例活到了下一轮）。
+   → 每个场景执行完毕后无条件 `Instance.stop_all()`。
+
+### 10.2 真实 Agent 自动接入（`scripts/perf/agent-integration.py`）
+
+```bash
+python scripts/perf/agent-integration.py \
+  --exe src-tauri/target/release/task-dock.exe --dsh-profile headless
+```
+
+要点：
+
+- **必须由 Agent 自身会话产生事件**，手工调用 Hook CLI 不算自动接入。
+- 每个 Agent 用独立 `HOME`/`APPDATA`/`DSH_HOME`；真实 Agent 的 auth/credentials **只读复制**，
+  不写入任何真实用户配置目录。
+- DSH 侧需要两个前提，缺一不可：
+  1. profile 存在（`dsh --profile <name> --help` 会自动创建 `$DSH_HOME/profiles/<name>`）；
+  2. provider 可用——`settings.yaml` 写 `llm-pi-ai.providers.agnes`（`apiKeyEnv: AGNES_API_KEY`），
+     并用 `--patch` 把 `agent-default-model` 覆盖为 `agnes`，否则 headless profile 默认
+     `provider: deepseek-official` 会 401。
+- 判定：事件增量 > 0、状态序列含 running→终态、来源 `verified=1` 且 `transport_verified=1`、
+  Agent 自身 stdout 能看到桥接生效的痕迹（DSH 打印 `[task-dock-bridge] loaded`）。
+
+### 10.3 内存 A–F 实验矩阵（`scripts/perf/memory-af-suite.sh`）
+
+```bash
+WORK="C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-af-<ts>" \
+EXE=".acceptance/task-dock-memaf.exe" PORT_BASE=47880 \
+  bash scripts/perf/memory-af-suite.sh
+# 只跑部分场景：ONLY=A,C
+```
+
+| 场景 | 配置 | 目的 |
+|---|---|---|
+| A | 空载 30min，窗口可见，通知关 | 纯基线漂移 |
+| B | 仅 HTTP（窗口隐藏）30min，4 Agent × 5/s | 分离「接入路径」贡献 |
+| C | 完整 UI + HTTP 30min | 分离「渲染路径」贡献 |
+| D | 整桌面 + 文件回退 + 系统通知 30min | 最接近真实使用的负载 |
+| E | 负载 10min 后空闲 30min | 看是否回落/平台化 |
+| F | 重复负载 60min | 看是否随时长继续爬升 |
+
+**测量装置要求**（这几条决定数据可不可信）：
+
+- **被测二进制要改名**：采样器按镜像名归组资源占用，同名实例会污染本臂数据。
+  把 `task-dock.exe` 复制为 `task-dock-memaf.exe` 再测，并在
+  `scripts/perf/source-fingerprint.sh` 里记录 `measured_exe_sha256`，
+  保证证据指向真正跑出数据的那份二进制。
+- **必须带 `-Token`**：否则 `/api/v1/stats` 取不到，采样行里 `stats: null`，
+  Rust 堆 / Tokio / SQLite 的归因数据全部缺失（2026-10-30 10:13 那轮 30 分钟 soak 就是
+  因为漏了 `-Token`，只能看到 WS/private 两个黑盒数字）。
+- **串行执行**：不与其他压测/编译重叠；采样期间不跑 cargo/npm。
+- **0 样本即失败**：`memory-scenario.py` 在采样器没产出样本时直接 `SystemExit(1)`，
+  不允许把「没测到」读成「内存平稳」。
+- **实例中途退出即该臂无效**：`instance_exited_after_s` 非空即判失败，
+  防止把死掉的实例读成「内存回落到 0」。
+
+### 10.4 采样器新增字段
+
+`sampler.ps1` 除 `planned_interval_s` / `actual_interval_s` / `sample_duration_s` 外，
+本轮新增系统级 **Committed Bytes / Commit Limit**，用于区分「本进程增长」与「全机提交量增长」。
+`memory-scenario.py` 的 `analyze_sampler()` 相应新增斜率字段
+（private / ws / live / threads / handles / committed / alive_tasks / wal / db）与
+`rust_live_bytes`、`tokio_alive_tasks`、`sqlite_wal_bytes`、`sqlite_page_count` 等首末值。
+
+
+
+### 10.5 第五轮内存链（2026-10-30 23:53 → 10-31 01:35）：三臂归因 + C/E 长跑复跑
+
+目的：给 §9 遗留的「2.3 KB/事件、无平台期」一个可重复的**归因口径**，并用**当前源码构建**的
+release 二进制重跑 30 分钟负载与 30 分钟空闲。装置要点（缺一不可）：
+
+- 被测副本改名 `task-dock-acc9.exe`（进程名含 task/dock，触发托盘自动化的拒绝执行；
+  又与并行会话的副本名不同，采样器按精确镜像名归组不会串组）；
+- 每臂独立 `--data-dir` / `APPDATA` / 端口，绝不接触用户真实库；
+- `SOURCE=bridge --allow-real-source`：只有服务端判定为 `real` 的来源才发系统通知，
+  否则「通知路径差值」恒为 0；
+- **0 样本 / 实例中途退出即该臂失败**（`memory-scenario.py` 直接 `SystemExit(1)`）。
+
+复现命令（整链串行，约 100 分钟）：
+
+```bash
+EXE=src-tauri/target/release/task-dock.exe \
+WORK=C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5 \
+ACC_NAME=task-dock-acc9.exe PORT_TRIAD=47910 PORT_AF=47920 \
+DURATION=480 POST=90 SOURCE=bridge \
+bash scripts/perf/v05r5-memory-chain.sh
+```
+
+归因与分段分析：
+
+```bash
+python scripts/perf/memory-compare.py docs/performance/results/DIAG-N1-*.jsonl \
+  docs/performance/results/DIAG-N2-*.jsonl docs/performance/results/DIAG-N3-*.jsonl \
+  --out docs/performance/results/MEM-ATTRIBUTION-v05r5.json
+python scripts/perf/memory-phases.py --jsonl docs/performance/results/DIAG-C-ui-http-30min-20261031-002204.jsonl \
+  --meta docs/performance/results/DIAG-C-ui-http-30min-20261031-002204-meta.json
+```
+
+被测二进制：15,603,200 B，`sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378`，
+2026-10-30 23:50 由 `cargo build --bins --features tauri/custom-protocol --release`
+从 `356bc44` + 工作区改动构建（9m28s）。
+
+| 臂 | 样本 | Private 首→末 | 负载段斜率 | 后段斜率 | 结论 |
+|---|---|---|---|---|---|
+| N1 负载+通知开（480 s） | 97 | 41.3→49.1 MB | +0.809 MB/min | −0.657 MB/min | 41.3 MB 起点的 ≈30 MB 是 toast/COM 固定开销 |
+| N2 负载+通知关（480 s） | 59 | 9.0→13.6 MB | +0.590 MB/min | −0.467 MB/min | 与 N1 差值即通知路径贡献 |
+| N3 空闲（480 s） | 51 | 8.3→8.2 MB | +0.018 MB/min | — | 空闲基线平 |
+| C UI+HTTP 负载（1800 s + 120 s） | 188 | 9.1→17.8 MB | 0.218（前 20 min）→ 0.066（尾段 9.1 min）MB/min | 结束后 116 s **0.000** | **出现平台期**；36,070 事件 / 0 丢弃 |
+| E 负载 600 s + 空闲 1800 s | 255 | 11.9→18.9→19.3 MB | +0.542 MB/min | +0.0028（前 15 min）→ −0.0275（其后 14.5 min）MB/min | 负载结束不增长 |
+
+分段斜率由 `scripts/perf/memory-window-slopes.py` 依据负载起点（C 85.2 s、E 78.1 s）对原始 jsonl
+做最小二乘计算，窗口定义与结果见 `docs/performance/results/WINDOWS-C-ui-http-30min-20261031-002204.json`
+与 `WINDOWS-E-idle-after-load-30min-20261031-005450.json`，可逐项复算。
+
+归因：通知路径 **+3.2 MB/10 min（45 条 → ≈72.8 KB/条）**；接入路径 **+4.7 MB/10 min
+（≈9,600 事件 → ≈0.49 KB/事件增量）**；基线 −0.1 MB。N1 `live_bytes` 仅 +0.038 MB
+（`private_minus_live = 7.76 MB`）⇒ 不是 Rust 堆泄漏，是分配器保留 / 原生内存。
+
+证据：`docs/performance/results/MEM-ATTRIBUTION-v05r5.json`、`PHASES-C-…-002204.json`、
+`PHASES-E-…-005450.json`、`DIAG-*.jsonl` 与 `MEM-*.log`（见
+[V05_FINAL_ACCEPTANCE.md](V05_FINAL_ACCEPTANCE.md) §5.5）。
+
+**边界**：只覆盖 20 事件/秒、单实例、单显示器；未做 ETW/Heap 逐分配点归因；
+未覆盖 500 事件/秒持续负载、8 小时以上长跑、安装形态与长时间 UI 交互。

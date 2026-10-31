@@ -3,13 +3,19 @@
 //! 2. 页面上 `backdrop-filter` 元素数、常驻 CSS 动画数、合成层数量；
 //! 3. 主题连续切换 20 次的耗时（验证切换路径无同步重排爆炸）。
 //!
-//!   npx vite preview --port 4173 --strictPort
+//!   node scripts/serve-preview.mjs
 //!   node scripts/theme-perf.mjs
 
 import { chromium } from "playwright";
+import { execFileSync } from "node:child_process";
+
+// vite build 会清空 dist，harness 必须在每次走查前重建
+execFileSync(process.execPath, ["scripts/make-preview.mjs"], { stdio: "inherit" });
 
 const BASE = "http://localhost:4173/preview.html";
 const IDLE_MS = 3000;
+// 首屏渲染与 Agent 面板首次轮询会落在测量窗口里，必须等它跑完再开始计时
+const SETTLE_MS = 1500;
 
 const cases = [
   { name: "dream-gradient", preset: "dream-gradient", theme: "light" },
@@ -28,7 +34,7 @@ for (const c of cases) {
   await page.goto(`${BASE}?preset=${c.preset}&theme=${c.theme}&material=glass&mode=full`, {
     waitUntil: "networkidle",
   });
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(SETTLE_MS);
 
   const before = Object.fromEntries((await client.send("Performance.getMetrics")).metrics.map((m) => [m.name, m.value]));
   await page.waitForTimeout(IDLE_MS);

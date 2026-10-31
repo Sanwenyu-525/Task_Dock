@@ -41,7 +41,7 @@ npm run tauri build -- --no-bundle
 # 导致 is_dev() 为真、启动时走「开发服务器预检」分支而弹框退出。
 
 # v0.6 视觉走查（两套预设 × 明暗 × 材质 × 宽度 + 布局溢出审计）
-npx vite preview --port 4173 --strictPort   # 另开一个终端
+node scripts/serve-preview.mjs        # 另开一个终端
 node scripts/visual-themes.mjs
 node scripts/theme-perf.mjs
 
@@ -56,6 +56,12 @@ node scripts/layout-regression.mjs
 powershell -ExecutionPolicy Bypass -NoProfile -File scripts/native-verify.ps1 `
   -Out docs/screenshots/v06/native-dream.png -WaitSeconds 10
 ```
+
+> 视觉走查的预览服务用 `scripts/serve-preview.mjs`，不要用 `npx vite preview`：
+> `vite build` 会清空 `dist/`，并发的构建会让 `dist/preview.html` 消失，
+> 走查页面于是退化成 404（拿不到 Tauri IPC mock，画面全白而断言仍全绿）。
+> `serve-preview.mjs` 从 `.preview/` 提供 harness、从 `dist/` 提供产物，
+> 不受并发构建影响；三个走查脚本还加了「白屏守卫」，`#root` 为空即判失败。
 
 ## 三、项目结构
 
@@ -99,9 +105,12 @@ task_dock/
 │   └── icons/                  # 应用图标与托盘状态图标（脚本生成）
 ├── src-tauri/tests/            # 集成测试；ingest_perf / actions_perf / clipboard_perf 为手动压测
 ├── scripts/gen-icons.mjs       # 图标生成器
-├── scripts/make-preview.mjs    # 视觉预览 harness（IPC mock）
+├── scripts/make-preview.mjs    # 视觉预览 harness（IPC mock）→ dist/ 与 .preview/
+├── scripts/serve-preview.mjs   # 视觉走查静态服务（harness 取 .preview/，产物取 dist/）
 ├── scripts/visual-audit.mjs    # Playwright 320/400 视觉走查
-├── scripts/visual-themes.mjs   # v0.6 双预设视觉走查（截图 + 布局溢出审计）
+├── scripts/visual-themes.mjs   # v0.6 双预设视觉走查（18 场景 + 布局溢出审计）
+├── scripts/visual-v06.mjs      # v0.6 交互场景走查（26 场景）
+├── scripts/layout-regression.mjs # v0.6 布局回归矩阵（37 组合）
 ├── scripts/theme-perf.mjs      # v0.6 主题性能测量（空闲占用/布局/backdrop-filter/切换耗时）
 ├── scripts/native-verify.ps1   # v0.6 原生窗口取证（桌面合成像素 + PrintWindow）
 ├── scripts/capture-native.ps1  # 原生窗口截图（仅抓屏）

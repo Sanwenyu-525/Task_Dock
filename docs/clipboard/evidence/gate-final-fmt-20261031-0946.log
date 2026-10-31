@@ -1,0 +1,309 @@
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\commands\settings.rs:313:
+         .and_then(|w| w.available_monitors().ok())
+         .map(|ms| {
+             ms.iter()
+[31m-                .map(|m| (m.position().x, m.position().y, m.size().width, m.size().height))
+[0m[32m+                .map(|m| {
+[0m[32m+                    (
+[0m[32m+                        m.position().x,
+[0m[32m+                        m.position().y,
+[0m[32m+                        m.size().width,
+[0m[32m+                        m.size().height,
+[0m[32m+                    )
+[0m[32m+                })
+[0m                 .collect()
+         })
+         .unwrap_or_default();
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\commands\settings.rs:320:
+     // 拿不到显示器信息时保持旧行为（保存），由前端校验兜底
+     if !monitors.is_empty() && !is_rect_mostly_visible(&rect, &monitors) {
+[31m-        tracing::debug!("拒绝保存屏外 window_rect: x={} y={} w={} h={}", rect.x, rect.y, rect.w, rect.h);
+[0m[32m+        tracing::debug!(
+[0m[32m+            "拒绝保存屏外 window_rect: x={} y={} w={} h={}",
+[0m[32m+            rect.x,
+[0m[32m+            rect.y,
+[0m[32m+            rect.w,
+[0m[32m+            rect.h
+[0m[32m+        );
+[0m         return Ok(());
+     }
+     db.set_setting("window_rect", serde_json::to_value(&rect)?)
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\commands\settings.rs:381:
+         let main = (0i32, 0i32, 1920u32, 1080u32);
+         let left = (-1920i32, 0i32, 1920u32, 1080u32);
+         // 完全在屏内
+[31m-        assert!(is_rect_mostly_visible(&WindowRect { x: 100, y: 100, w: 400, h: 560 }, &[main]));
+[0m[32m+        assert!(is_rect_mostly_visible(
+[0m[32m+            &WindowRect {
+[0m[32m+                x: 100,
+[0m[32m+                y: 100,
+[0m[32m+                w: 400,
+[0m[32m+                h: 560
+[0m[32m+            },
+[0m[32m+            &[main]
+[0m[32m+        ));
+[0m         // 跨屏（主副屏各占 50%）按可见总面积判定 → 有效
+[31m-        assert!(is_rect_mostly_visible(&WindowRect { x: -200, y: 100, w: 400, h: 560 }, &[main, left]));
+[0m[32m+        assert!(is_rect_mostly_visible(
+[0m[32m+            &WindowRect {
+[0m[32m+                x: -200,
+[0m[32m+                y: 100,
+[0m[32m+                w: 400,
+[0m[32m+                h: 560
+[0m[32m+            },
+[0m[32m+            &[main, left]
+[0m[32m+        ));
+[0m         // 贴边隐藏位（滑出左缘只留 12px）→ 拒绝
+[31m-        assert!(!is_rect_mostly_visible(&WindowRect { x: -388, y: 300, w: 400, h: 560 }, &[main]));
+[0m[32m+        assert!(!is_rect_mostly_visible(
+[0m[32m+            &WindowRect {
+[0m[32m+                x: -388,
+[0m[32m+                y: 300,
+[0m[32m+                w: 400,
+[0m[32m+                h: 560
+[0m[32m+            },
+[0m[32m+            &[main]
+[0m[32m+        ));
+[0m         // 显示器断连（空列表）→ 保守拒绝
+[31m-        assert!(!is_rect_mostly_visible(&WindowRect { x: 100, y: 100, w: 400, h: 560 }, &[]));
+[0m[32m+        assert!(!is_rect_mostly_visible(
+[0m[32m+            &WindowRect {
+[0m[32m+                x: 100,
+[0m[32m+                y: 100,
+[0m[32m+                w: 400,
+[0m[32m+                h: 560
+[0m[32m+            },
+[0m[32m+            &[]
+[0m[32m+        ));
+[0m         // 无效矩形
+[31m-        assert!(!is_rect_mostly_visible(&WindowRect { x: 0, y: 0, w: 0, h: 100 }, &[main]));
+[0m[32m+        assert!(!is_rect_mostly_visible(
+[0m[32m+            &WindowRect {
+[0m[32m+                x: 0,
+[0m[32m+                y: 0,
+[0m[32m+                w: 0,
+[0m[32m+                h: 100
+[0m[32m+            },
+[0m[32m+            &[main]
+[0m[32m+        ));
+[0m         // 可见占比不足 60%
+[31m-        assert!(!is_rect_mostly_visible(&WindowRect { x: 1200, y: 100, w: 1920, h: 560 }, &[main]));
+[0m[32m+        assert!(!is_rect_mostly_visible(
+[0m[32m+            &WindowRect {
+[0m[32m+                x: 1200,
+[0m[32m+                y: 100,
+[0m[32m+                w: 1920,
+[0m[32m+                h: 560
+[0m[32m+            },
+[0m[32m+            &[main]
+[0m[32m+        ));
+[0m     }
+ }
+ 
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\commands\system.rs:362:
+     // 强制 Acrylic（Win11 上同样走 DWM SystemBackdrop，用于对照验证）。
+     if backend == "acrylic" {
+         let w = win.clone();
+[31m-        if run_material(&app, move || window_vibrancy::apply_acrylic(&w, None).is_ok()) {
+[0m[32m+        if run_material(&app, move || {
+[0m[32m+            window_vibrancy::apply_acrylic(&w, None).is_ok()
+[0m[32m+        }) {
+[0m             return Ok(MaterialResult {
+                 material: "glass".into(),
+                 applied: true,
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\commands\system.rs:413:
+ mod tests {
+     use super::*;
+ 
+[31m-#[test]
+[0m[31m-fn snap_state_edge_whitelist() {
+[0m[31m-    assert!(WindowSnapState { edge: "left".into(), hidden: true }.is_valid());
+[0m[31m-    assert!(WindowSnapState { edge: "none".into(), hidden: false }.is_valid());
+[0m[31m-    assert!(!WindowSnapState { edge: "banana".into(), hidden: true }.is_valid());
+[0m[31m-    assert!(!WindowSnapState { edge: String::new(), hidden: false }.is_valid());
+[0m[31m-}
+[0m[32m+    #[test]
+[0m[32m+    fn snap_state_edge_whitelist() {
+[0m[32m+        assert!(WindowSnapState {
+[0m[32m+            edge: "left".into(),
+[0m[32m+            hidden: true
+[0m[32m+        }
+[0m[32m+        .is_valid());
+[0m[32m+        assert!(WindowSnapState {
+[0m[32m+            edge: "none".into(),
+[0m[32m+            hidden: false
+[0m[32m+        }
+[0m[32m+        .is_valid());
+[0m[32m+        assert!(!WindowSnapState {
+[0m[32m+            edge: "banana".into(),
+[0m[32m+            hidden: true
+[0m[32m+        }
+[0m[32m+        .is_valid());
+[0m[32m+        assert!(!WindowSnapState {
+[0m[32m+            edge: String::new(),
+[0m[32m+            hidden: false
+[0m[32m+        }
+[0m[32m+        .is_valid());
+[0m[32m+    }
+[0m 
+[31m-#[test]
+[0m[31m-fn win11_auto_backend_avoids_dwm_backdrop_when_region_clipping() {
+[0m[32m+    #[test]
+[0m[32m+    fn win11_auto_backend_avoids_dwm_backdrop_when_region_clipping() {
+[0m         // 区域裁剪 + Win11：Mica/Acrylic 会画到区域外，必须换成窗口合成的 blur
+         assert_eq!(effective_backend("auto", 26100, true), "blur");
+         // 关闭区域（矩阵对照）时才允许 DWM SystemBackdrop
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\context_menu.rs:83:
+     scale: f64,
+     wa: WorkArea,
+ ) -> (i32, i32) {
+[31m-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+[0m[32m+    let scale = if scale.is_finite() && scale > 0.0 {
+[0m[32m+        scale
+[0m[32m+    } else {
+[0m[32m+        1.0
+[0m[32m+    };
+[0m     let mw = (menu_logical.0 * scale).round();
+     let mh = (menu_logical.1 * scale).round();
+     let wa_right = wa.x as f64 + wa.w as f64;
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\context_menu.rs:127:
+     }
+     let Some(win) = menu_window(app) else { return };
+     let w = win.clone();
+[31m-    let ok = run_on_main(app, move || window_vibrancy::apply_acrylic(&w, None).is_ok());
+[0m[32m+    let ok = run_on_main(app, move || {
+[0m[32m+        window_vibrancy::apply_acrylic(&w, None).is_ok()
+[0m[32m+    });
+[0m     MATERIAL_APPLIED.store(ok, Ordering::Relaxed);
+     if !ok {
+         tracing::debug!("右键菜单原生 Acrylic 应用失败，回退为 CSS 半透明");
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\context_menu.rs:141:
+ {
+     use std::sync::mpsc;
+     let (tx, rx) = mpsc::channel();
+[31m-    if app.run_on_main_thread(move || {
+[0m[31m-        let _ = tx.send(f());
+[0m[31m-    })
+[0m[31m-    .is_err()
+[0m[32m+    if app
+[0m[32m+        .run_on_main_thread(move || {
+[0m[32m+            let _ = tx.send(f());
+[0m[32m+        })
+[0m[32m+        .is_err()
+[0m     {
+         return false;
+     }
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\context_menu.rs:156:
+ }
+ 
+ fn cached_size() -> (f64, f64) {
+[31m-    (DEFAULT_SIZE.0, *MENU_HEIGHT.lock().unwrap_or_else(|e| e.into_inner()))
+[0m[32m+    (
+[0m[32m+        DEFAULT_SIZE.0,
+[0m[32m+        *MENU_HEIGHT.lock().unwrap_or_else(|e| e.into_inner()),
+[0m[32m+    )
+[0m }
+ 
+ fn cancel_pending_blur_close() {
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\context_menu.rs:261:
+         .and_then(|win| {
+             let pos = win.outer_position().ok()?;
+             let size = win.outer_size().ok()?;
+[31m-            Some((
+[0m[31m-                pos.x as f64 + size.width as f64 / 2.0,
+[0m[31m-                pos.y as f64,
+[0m[31m-            ))
+[0m[32m+            Some((pos.x as f64 + size.width as f64 / 2.0, pos.y as f64))
+[0m         })
+         // 窗口几何取不到（异常早退场景）时退回光标位置
+[31m-        .or_else(|| {
+[0m[31m-            app.cursor_position()
+[0m[31m-                .ok()
+[0m[31m-                .map(|p| (p.x, p.y))
+[0m[31m-        });
+[0m[32m+        .or_else(|| app.cursor_position().ok().map(|p| (p.x, p.y)));
+[0m     match anchor {
+         Some(anchor) => show_at(app, anchor),
+         None => tracing::warn!("右键菜单锚点不可用（主窗口与光标位置均不可得）"),
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\context_menu.rs:374:
+                 .flatten()
+                 .and_then(|v| v.as_bool())
+                 .unwrap_or(false);
+[31m-            if let Err(e) =
+[0m[31m-                crate::commands::system::set_autostart_inner(&app, &db, !current)
+[0m[31m-            {
+[0m[32m+            if let Err(e) = crate::commands::system::set_autostart_inner(&app, &db, !current) {
+[0m                 tracing::warn!("切换开机自启动失败: {e}");
+             }
+         }
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\lib.rs:151:
+                     MouseButton::Right => {
+                         let pos = rect.position.to_physical::<f64>(1.0);
+                         let size = rect.size.to_physical::<f64>(1.0);
+[31m-                        context_menu::show_at(
+[0m[31m-                            app,
+[0m[31m-                            (
+[0m[31m-                                pos.x + size.width / 2.0,
+[0m[31m-                                pos.y,
+[0m[31m-                            ),
+[0m[31m-                        );
+[0m[32m+                        context_menu::show_at(app, (pos.x + size.width / 2.0, pos.y));
+[0m                     }
+                     _ => {}
+                 }
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\window_shape.rs:135:
+     let h = size.height as i32;
+     let r = (logical_radius.clamp(0.0, 40.0) * scale).round() as i32;
+     let scale_milli = (scale * 1000.0).round() as u32;
+[31m-    LAST_PASS_SIZE.store(((w as u32 & 0xFFFF) << 16) | (h as u32 & 0xFFFF), Ordering::Relaxed);
+[0m[32m+    LAST_PASS_SIZE.store(
+[0m[32m+        ((w as u32 & 0xFFFF) << 16) | (h as u32 & 0xFFFF),
+[0m[32m+        Ordering::Relaxed,
+[0m[32m+    );
+[0m 
+     if !flag("TASK_DOCK_WINDOW_REGION") {
+         // 诊断模式：不设置区域，同时丢弃缓存，避免下次开启时误判为已应用。
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\window_shape.rs:213:
+             && (bounds.right - (w + 1)).abs() <= 1
+             && (bounds.bottom - (h + 1)).abs() <= 1;
+         // 区域被重置成直角矩形时 (1,1) 会在区域内；圆角区域必然裁掉它。
+[31m-        let radius_ok =
+[0m[31m-            r <= 1 || (PtInRegion(rgn, 1, 1) == 0 && PtInRegion(rgn, r, r) != 0);
+[0m[32m+        let radius_ok = r <= 1 || (PtInRegion(rgn, 1, 1) == 0 && PtInRegion(rgn, r, r) != 0);
+[0m         DeleteObject(rgn as _);
+         bounds_ok && radius_ok
+     }
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\window_shape.rs:348:
+         };
+         assert_ne!(base, RegionStamp { hwnd: 2, ..base });
+         assert_ne!(base, RegionStamp { width: 501, ..base });
+[31m-        assert_ne!(base, RegionStamp { height: 701, ..base });
+[0m[32m+        assert_ne!(
+[0m[32m+            base,
+[0m[32m+            RegionStamp {
+[0m[32m+                height: 701,
+[0m[32m+                ..base
+[0m[32m+            }
+[0m[32m+        );
+[0m         assert_ne!(base, RegionStamp { radius: 24, ..base });
+[31m-        assert_ne!(base, RegionStamp { scale_milli: 1000, ..base });
+[0m[32m+        assert_ne!(
+[0m[32m+            base,
+[0m[32m+            RegionStamp {
+[0m[32m+                scale_milli: 1000,
+[0m[32m+                ..base
+[0m[32m+            }
+[0m[32m+        );
+[0m     }
+ 
+     #[test]
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\window_shape.rs:357:
+     fn last_pass_size_packs_positive_dimensions() {
+[31m-        LAST_PASS_SIZE.store(((500u32 & 0xFFFF) << 16) | (700u32 & 0xFFFF), Ordering::Relaxed);
+[0m[32m+        LAST_PASS_SIZE.store(
+[0m[32m+            ((500u32 & 0xFFFF) << 16) | (700u32 & 0xFFFF),
+[0m[32m+            Ordering::Relaxed,
+[0m[32m+        );
+[0m         assert_eq!(last_size(), (500, 700));
+         LAST_PASS_SIZE.store(0, Ordering::Relaxed);
+         assert_eq!(last_size(), (0, 0));

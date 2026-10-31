@@ -94,6 +94,31 @@ Windows 剪贴板内容**不可重放**：事件被丢弃后无法补读当时�
 `peak_event_queue`、`peak_content_queue`、`max_capture_latency_ms`、
 `max_process_latency_ms` 及三个容量常量。
 
+**采集事件的处置与去重水位**（第四轮整改）：
+
+`WM_CLIPBOARDUPDATE` 给出的序列号取自**消息处理时刻**，而采集线程真正读到的内容
+属于**读取时刻**的剪贴板状态，两者可能对不上（例如两次复制之间还有其他程序写过）。
+采集线程因此维护一个「已采集水位」`last`，并用纯函数
+`classify_event(event_sequence, last_captured, self_write)` 把每个事件分成三类：
+
+| 处置 | 判定 | 计数 |
+|---|---|---|
+| `Read` | 事件序列号晚于已采集水位，且不是本进程自写 | 继续读取 |
+| `Superseded` | 事件序列号不晚于已采集水位（同一份剪贴板状态已记过） | `superseded_events` |
+| `SelfWrite` | 事件序列号不晚于自写水位（本进程自己的写入/恢复） | `self_write_events` |
+
+读取成功后水位推进到**读取时刻**的序列号（`ClipboardRead::Content { sequence, content }`
+把两者一起返回），从而保证「同一份剪贴板状态只入库一次」：
+既不会漏采，也不会把同一次复制重复抬成多条历史或抬高 `copy_count`。
+自写判定排在覆盖判定之前，使「本进程自己写的」与「用户重复复制」在计数器里分开归因。
+
+剪贴板当前为空或只有无法识别的格式时，事件计入 `empty_events` 并记日志，
+不再像早期实现那样**既不计数也不留痕**——这条静默路径正是第四轮一次真实验收失败
+（`observed=6` 而 `captured=4`）无法定位的直接原因。
+现在 `observed_events` 的每一次去向都有归属：
+`observed = captured + self_write_events + superseded_events + empty_events + dropped_events`。
+
+
 并发约定：
 
 - SQLite 由现有 `Mutex<Connection>` 串行化；WAL + `busy_timeout`。
@@ -197,6 +222,7 @@ WM_CLIPBOARDUPDATE（消息线程）
   → 只入队 {sequence, observed_at}（事件队列 64，满则丢最旧并计数）
 capture 线程
   → 合并队列，只保留最新序列号（merged_events）
+  → classify_event：Read / Superseded（superseded_events）/ SelfWrite（self_write_events）
   → 重新读取设置（enabled / paused）
   → 读取格式（文本 / HTML / PNG / DIB / HDROP），系统敏感标记检查
       PNG 优先于 DIB；但 Windows 会从 32bpp BI_RGB 的 DIB 合成 Alpha 全 0 的 PNG，
@@ -207,6 +233,7 @@ capture 线程
   → 自身来源/排除名单/采集类型开关/敏感过滤（高置信；来源未知时加保守凭据模式）
   → 大小与数量上限；图片 PNG 编码/缩略图
   → 放入内容队列（8 条 / 128 MB，满则丢最旧并计数）
+  → 采集水位推进到**读取时刻**的序列号（同一份剪贴板状态只入库一次）
 worker 线程
   → store::record_capture
        → 归一化 + HTML 清洗 + SHA-256

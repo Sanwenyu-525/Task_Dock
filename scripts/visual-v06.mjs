@@ -4,12 +4,29 @@
 //! 并输出横向溢出审计（内容不得溢出窗口、六个侧边栏入口不得被裁掉）。
 //!
 //!   npm run build && node scripts/make-preview.mjs
-//!   npx vite preview --port 4173 --strictPort   # 另开一个终端
+//!   node scripts/serve-preview.mjs          # 另开一个终端
 //!   node scripts/visual-v06.mjs
 
 import { chromium } from "playwright";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+
+/**
+ * 截图落盘。并发构建/索引器会偶发占住目标文件（Windows 返回 errno -4094），
+ * 因此先取缓冲区再带重试写盘。
+ */
+async function saveShot(page, path) {
+  const buf = await page.screenshot();
+  for (let i = 0; ; i++) {
+    try {
+      writeFileSync(path, buf);
+      return;
+    } catch (e) {
+      if (i >= 4) throw e;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+}
 
 const OUT = "docs/screenshots/v06";
 mkdirSync(OUT, { recursive: true });
@@ -95,10 +112,12 @@ async function shoot(c) {
       theme: doc.dataset.theme,
       material: doc.dataset.material,
       labelsVisible: rail ? getComputedStyle(rail.querySelector(".rail-label")).display !== "none" : null,
+      // 白屏守卫：IPC mock 缺失时页面只剩空 #root，截图会变成废图而断言仍然全绿
+      blank: (document.querySelector("#root")?.childElementCount ?? 0) === 0,
     };
   });
 
-  await page.screenshot({ path: `${OUT}/${c.name}.png` });
+  await saveShot(page, `${OUT}/${c.name}.png`);
   results.push({ name: c.name, ...audit, errors });
   await page.close();
 }
@@ -218,7 +237,7 @@ await browser.close();
 writeFileSync(`${OUT}/audit.json`, JSON.stringify(results, null, 2));
 console.log(JSON.stringify(results, null, 2));
 const bad = results.filter(
-  (r) => r.overflowX > 0 || r.offscreen.length || r.errors.length || r.clippedEntries.length || r.addVisible === false,
+  (r) => r.blank || r.overflowX > 0 || r.offscreen.length || r.errors.length || r.clippedEntries.length || r.addVisible === false,
 );
 if (bad.length) {
   console.error("布局/运行错误：", JSON.stringify(bad, null, 2));

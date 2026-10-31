@@ -275,6 +275,13 @@ pub fn clipboard_delete_items(
     ids: Vec<String>,
 ) -> AppResult<DeleteReport> {
     let rt = runtime(&state);
+    if rt.paste.is_active() {
+        // 删除会连带删掉图片资产；粘贴队列按 id 逐项读取，
+        // 资产先没了，后面的项只能以「图片文件缺失」跳过。
+        return Err(AppError::Validation(
+            "粘贴进行中，暂不删除剪贴板条目".into(),
+        ));
+    }
     let report = store::delete_items(&rt.db, &rt.root, &ids)?;
     rt.emit_changed("delete-items");
     Ok(report)
@@ -287,6 +294,11 @@ pub fn clipboard_delete_group(
     also_delete_items: bool,
 ) -> AppResult<DeleteReport> {
     let rt = runtime(&state);
+    if rt.paste.is_active() && also_delete_items {
+        return Err(AppError::Validation(
+            "粘贴进行中，暂不删除剪贴板条目".into(),
+        ));
+    }
     let report = store::delete_group(&rt.db, &rt.root, &group_id, also_delete_items)?;
     rt.emit_changed("delete-group");
     Ok(report)
@@ -592,7 +604,7 @@ pub fn clipboard_export_preview(
 #[tauri::command]
 pub fn clipboard_probe() -> serde_json::Value {
     match platform::read_clipboard(true) {
-        platform::ClipboardRead::Content(c) => serde_json::json!({
+        platform::ClipboardRead::Content { content: c, .. } => serde_json::json!({
             "readable": true,
             "kind": c.kind,
             "bytes": if c.kind == KIND_IMAGE {
@@ -606,8 +618,8 @@ pub fn clipboard_probe() -> serde_json::Value {
         platform::ClipboardRead::Skip(reason) => {
             serde_json::json!({ "readable": false, "reason": reason })
         }
-        platform::ClipboardRead::Empty => {
-            serde_json::json!({ "readable": false, "reason": "剪贴板为空或格式不支持" })
+        platform::ClipboardRead::Empty(reason) => {
+            serde_json::json!({ "readable": false, "reason": reason })
         }
     }
 }

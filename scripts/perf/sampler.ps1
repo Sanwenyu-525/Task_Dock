@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true)][string]$Out,
   [int]$IntervalSec = 5,
   [int]$DurationSec = 1800,
@@ -82,6 +82,21 @@ $http = New-Object System.Net.Http.HttpClient($handler)
 $http.Timeout = [TimeSpan]::FromSeconds(5)
 $statsHeaders = @{ Authorization = "Bearer $Token" }
 
+# 系统级提交内存（Committed / Commit Limit）：单进程 Private Bytes 只能反映
+# 该进程的提交量，看不出「整台机器的提交压力」；PerformanceCounter 预先建好
+# 再逐轮 NextValue，避免每轮拉起 Get-Counter 子进程造成采样抖动。
+$committedCounter = $null
+$commitLimitCounter = $null
+try {
+  $committedCounter = New-Object System.Diagnostics.PerformanceCounter('Memory', 'Committed Bytes')
+  $commitLimitCounter = New-Object System.Diagnostics.PerformanceCounter('Memory', 'Commit Limit')
+  [void]$committedCounter.NextValue()
+  [void]$commitLimitCounter.NextValue()
+} catch {
+  $committedCounter = $null
+  $commitLimitCounter = $null
+}
+
 function Write-Line([string]$text) {
   [System.IO.File]::AppendAllText($Out, $text + "`n", $utf8)
 }
@@ -106,12 +121,17 @@ Write-Line (@{
 function ConvertTo-Group($procMap, $ids, [double]$interval) {
   $cpuDelta = 0.0; $ws = 0.0; $priv = 0.0; $count = 0
   $maxDelta = 0.0; $maxPid = 0; $maxCpu = 0.0; $maxPrev = 0.0; $missingPrev = 0
+  $threads = 0; $handles = 0
   foreach ($procId in $ids) {
     $p = $procMap[$procId]
     if ($null -eq $p) { continue }
     $count++
     $ws += [double]$p.WorkingSet64
     $priv += [double]$p.PrivateMemorySize64
+    # 线程数与句柄数是长跑泄漏的两个最灵敏的先行指标：
+    # 内存指标会因为分配器保留而看不出趋势，线程/句柄泄漏却会单调上升。
+    $threads += [int]$p.Threads.Count
+    try { $handles += [int]$p.HandleCount } catch { $handles += -1 }
     $cpu = [double]$p.CPU
     if ($prevCpu.ContainsKey($procId)) {
       $prev = [double]$prevCpu[$procId]
@@ -132,6 +152,8 @@ function ConvertTo-Group($procMap, $ids, [double]$interval) {
     ws_mb = [math]::Round($ws / 1MB, 1)
     private_mb = [math]::Round($priv / 1MB, 1)
     window_s = [math]::Round($interval, 3)
+    threads = $threads
+    handles = $handles
   }
 }
 
@@ -226,6 +248,15 @@ while ($sw.Elapsed.TotalSeconds -lt $DurationSec) {
   $sampleDuration = $sw.Elapsed.TotalSeconds - $tickStart
   $actualRounded = $null
   if ($null -ne $actualInterval) { $actualRounded = [math]::Round($actualInterval, 3) }
+  $committedBytes = $null
+  $commitLimitBytes = $null
+  if ($null -ne $committedCounter) {
+    try {
+      $committedBytes = [int64]$committedCounter.NextValue()
+      $commitLimitBytes = [int64]$commitLimitCounter.NextValue()
+    } catch { $committedBytes = $null; $commitLimitBytes = $null }
+  }
+
   $record = [pscustomobject]@{
     record = "sample"
     n = $sampleNo
@@ -239,7 +270,11 @@ while ($sw.Elapsed.TotalSeconds -lt $DurationSec) {
     webview2_tree = ConvertTo-Group $procMap $treeWeb $interval
     webview2_other = ConvertTo-Group $procMap $otherWeb $interval
     other_agents = ConvertTo-Group $procMap $otherAgents $interval
-    system = [pscustomobject]@{ process_count = $names.Count }
+    system = [pscustomobject]@{
+      process_count = $names.Count
+      committed_bytes = $committedBytes
+      commit_limit_bytes = $commitLimitBytes
+    }
     health = $health
     stats = $stats
   }

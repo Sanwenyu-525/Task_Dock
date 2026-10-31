@@ -1,0 +1,55 @@
+
+=== DIAG-B-http-noui-30min-20261031-000241.jsonl  samples=204 elapsed=1937s ===
+  taskdock_private_mb        0-5min=0.597 MB/min · 5-15min=0.056 MB/min · 15min-end=0.085 MB/min · range=[8.4, 14.6] end=13.9
+  taskdock_ws_mb             0-5min=0.641 MB/min · 5-15min=-0.244 MB/min · 15min-end=-0.53 MB/min · range=[15, 35] end=15.5
+  webview2_tree_private_mb   0-5min=-5.911 MB/min · 5-15min=0.316 MB/min · 15min-end=-0.101 MB/min · range=[212.7, 249.3] end=221
+  handles                    0-5min=1.007 MB/min · 5-15min=-0.967 MB/min · 15min-end=-0.475 MB/min · range=[364, 389] end=369
+  threads                    0-5min=0.039 MB/min · 5-15min=-0.465 MB/min · 15min-end=-0.068 MB/min · range=[27, 33] end=27
+  rust_live_bytes            range=[887143, 1080743] end=887143
+  alive_tasks                range=[7, 15] end=7
+  wal_bytes                  range=[2838712, 4643272] end=4643272
+  notifications.attempted    end=0
+
+=== DIAG-C-ui-http-30min-20261031-003523.jsonl  samples=181 elapsed=1946s ===
+  taskdock_private_mb        0-5min=0.39 MB/min · 5-15min=0.078 MB/min · 15min-end=0.067 MB/min · range=[10.5, 14.8] end=14.1
+  taskdock_ws_mb             0-5min=0.393 MB/min · 5-15min=-0.204 MB/min · 15min-end=-1.194 MB/min · range=[12.3, 35.2] end=14.5
+  webview2_tree_private_mb   0-5min=1.573 MB/min · 5-15min=0.244 MB/min · 15min-end=-0.108 MB/min · range=[211.2, 234.1] end=218
+  handles                    0-5min=-0.211 MB/min · 5-15min=-0.328 MB/min · 15min-end=-0.511 MB/min · range=[386, 411] end=386
+  threads                    0-5min=-0.082 MB/min · 5-15min=-0.135 MB/min · 15min-end=-0.071 MB/min · range=[27, 33] end=27
+  rust_live_bytes            range=[892176, 1308335] end=892176
+  alive_tasks                range=[7, 26] end=7
+  wal_bytes                  range=[4350752, 4618552] end=4618552
+  notifications.attempted    end=0
+
+=== DIAG-D-ui-file-notify-30min-20261031-010816.jsonl  samples=239 elapsed=1935s ===
+  taskdock_private_mb        0-5min=0.604 MB/min · 5-15min=0.097 MB/min · 15min-end=0.032 MB/min · range=[9.8, 21.3] end=13.9
+  taskdock_ws_mb             0-5min=1.367 MB/min · 5-15min=-0.107 MB/min · 15min-end=0.05 MB/min · range=[10.6, 21.1] end=15
+  webview2_tree_private_mb   0-5min=-0.537 MB/min · 5-15min=0.083 MB/min · 15min-end=0.052 MB/min · range=[212.7, 225.6] end=221.7
+  handles                    0-5min=1.754 MB/min · 5-15min=-0.628 MB/min · 15min-end=0.12 MB/min · range=[366, 380] end=372
+  threads                    0-5min=1.329 MB/min · 5-15min=-0.311 MB/min · 15min-end=0.009 MB/min · range=[29, 34] end=29
+  rust_live_bytes            range=[913194, 6821980] end=990637
+  alive_tasks                range=[7, 7] end=7
+  wal_bytes                  range=[4231272, 4288952] end=4288952
+  notifications.attempted    end=0
+
+=== DIAG-E-idle-after-load-30min-20261031-014135.jsonl  samples=482 elapsed=2413s ===
+  taskdock_private_mb        0-5min=0.479 MB/min · 5-15min=0.034 MB/min · 15min-end=0.008 MB/min · range=[9.4, 12.9] end=12.8
+  taskdock_ws_mb             0-5min=0.516 MB/min · 5-15min=0.031 MB/min · 15min-end=0.0 MB/min · range=[31.3, 34.7] end=33.7
+  webview2_tree_private_mb   0-5min=2.605 MB/min · 5-15min=-0.339 MB/min · 15min-end=0.015 MB/min · range=[224.6, 246.8] end=236.8
+  handles                    0-5min=-0.084 MB/min · 5-15min=-2.143 MB/min · 15min-end=0.0 MB/min · range=[367, 387] end=367
+  threads                    0-5min=-0.525 MB/min · 5-15min=-0.567 MB/min · 15min-end=0.001 MB/min · range=[27, 34] end=27
+  rust_live_bytes            range=[883137, 1072212] end=883172
+  alive_tasks                range=[7, 15] end=7
+  wal_bytes                  range=[2261912, 4511432] end=4511432
+  notifications.attempted    end=0
+
+=== DIAG-F-repeat-load-60min-20261031-022204.jsonl  samples=782 elapsed=3912s ===
+  taskdock_private_mb        0-5min=0.511 MB/min · 5-15min=0.024 MB/min · 15min-end=0.027 MB/min · range=[8.8, 13.9] end=13.8
+  taskdock_ws_mb             0-5min=0.52 MB/min · 5-15min=-0.171 MB/min · 15min-end=0.005 MB/min · range=[30.9, 35.1] end=34
+  webview2_tree_private_mb   0-5min=2.954 MB/min · 5-15min=-0.665 MB/min · 15min-end=-0.006 MB/min · range=[223.9, 253.3] end=233
+  handles                    0-5min=0.538 MB/min · 5-15min=-0.671 MB/min · 15min-end=-0.106 MB/min · range=[369, 389] end=369
+  threads                    0-5min=-0.224 MB/min · 5-15min=-0.415 MB/min · 15min-end=-0.011 MB/min · range=[27, 34] end=27
+  rust_live_bytes            range=[879956, 1074888] end=879956
+  alive_tasks                range=[7, 15] end=7
+  wal_bytes                  range=[1021792, 4667992] end=4667992
+  notifications.attempted    end=0

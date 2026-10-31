@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47886",
+    "token": "182b4a3c-4743-4bd8-97c7-8ddb5d664c8c",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 1800,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "G-real-notify-30min-20261031-094222",
+    "source": "bridge",
+    "allowRealSource": true,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-ag2\\G-real-notify-30min-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-G-real-notify-30min-20261031-094222-load.json"
+  },
+  "elapsed_ms": 1800091,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 36000,
+    "ok": 36000,
+    "failed": 0,
+    "retries": 59,
+    "critical_sent": 3600,
+    "critical_ok": 3600,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.63,
+    "p95": 261.6,
+    "max": 14154.64
+  }
+}

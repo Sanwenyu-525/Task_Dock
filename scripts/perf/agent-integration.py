@@ -21,6 +21,7 @@ import sqlite3
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -173,6 +174,47 @@ def wait_health(
     return last
 
 
+def windows_crash_events(since_minutes: int = 120) -> list[dict]:
+    """抓取 Windows 事件日志里与 task-dock 相关的崩溃/应用错误记录。"""
+    ps = (
+        "Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-"
+        + str(since_minutes)
+        + ")} -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Message -like '*task-dock*' } | "
+        "Select-Object TimeCreated,Id,ProviderName | ConvertTo-Json -Compress"
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        ).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return []
+    if not out:
+        return []
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    return data
+
+
+def file_sha256(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def existing_task_dock_instances() -> list[dict]:
     """列出本机已在运行的 Task Dock 实例（单实例插件按应用标识互斥）。"""
     ps = (
@@ -290,6 +332,44 @@ def events_by_source(db_path: Path) -> dict[str, dict]:
     return {"by_source": out, "dedupe_keys": dedupe, "duplicate_dedupe_keys": dupes}
 
 
+def status_update_latency(db_path: Path, source_id: str) -> dict:
+    """状态更新延迟：事件发生时间 → 落库时间（毫秒）。"""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "SELECT occurred_at, received_at FROM agent_events "
+            "WHERE source_id = ?1 AND occurred_at IS NOT NULL AND received_at IS NOT NULL",
+            (source_id,),
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return {}
+    finally:
+        con.close()
+    deltas = []
+    for occurred, received in rows:
+        try:
+            o = datetime.fromisoformat(str(occurred).replace("Z", "+00:00"))
+            r = datetime.fromisoformat(str(received).replace("Z", "+00:00"))
+            deltas.append((r - o).total_seconds() * 1000)
+        except ValueError:
+            continue
+    if not deltas:
+        return {}
+    deltas.sort()
+
+    def pct(p: float) -> float:
+        return round(deltas[min(len(deltas) - 1, int(round((len(deltas) - 1) * p)))], 1)
+
+    return {
+        "n": len(deltas),
+        "p50_ms": pct(0.50),
+        "p95_ms": pct(0.95),
+        "p99_ms": pct(0.99),
+        "max_ms": round(deltas[-1], 1),
+        "mean_ms": round(sum(deltas) / len(deltas), 1),
+    }
+
+
 def third_party_probe_files(root: Path, codex_model: str) -> None:
     """预置第三方 Hook 配置：安装必须保留它们，且可逆卸载。"""
     codex = root / "codex"
@@ -345,10 +425,81 @@ def preserved(path: Path, needle: str) -> bool:
     return path.exists() and needle in path.read_text(encoding="utf-8", errors="replace")
 
 
+def materialize_dsh_profile(exe: Path, env: dict[str, str], profile: str, cwd: Path) -> dict:
+    """首次运行 dsh 会自动创建 profile 目录。
+
+    DSH 的宿主插件必须以 profile bundle 形式安装，而 bundle 只能装进已初始化的
+    profile —— 所以必须先让 dsh 建出 `profiles/<name>/package.json`，适配器才知道
+    该往哪个 profile 的 bundles 列表里登记自己。
+    """
+    r = run([str(exe), "--profile", profile, "--help"], env, 300, cwd=cwd)
+    pdir = Path(env["DSH_HOME"]) / "profiles" / profile
+    return {
+        "rc": r["rc"],
+        "profile_dir": str(pdir),
+        "package_json": (pdir / "package.json").is_file(),
+        "stdout_tail": r["stdout"][-600:],
+        "stderr_tail": r["stderr"][-600:],
+    }
+
+
+def dsh_profile_manifest(profile_dir: Path) -> dict:
+    try:
+        m = json.loads((profile_dir / "package.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - 清单不存在/损坏都视为「读不到」
+        return {}
+    return {
+        "bundles": m.get("dsh", {}).get("profile", {}).get("bundles", []),
+        "dependencies": m.get("dependencies", {}),
+        "raw": m,
+    }
+
+
+def dsh_model_setup(env: dict[str, str]) -> dict:
+    """隔离目录里的 dsh 模型配置。
+
+    - API key 只从真实 `.credentials.yaml` **只读**解析，只注入子进程环境，
+      不写进证据 JSON；
+    - `settings.yaml` 与 patch 文件都写在隔离的 DSH_HOME 内，不动用户真实配置。
+    """
+    dsh_home = Path(env["DSH_HOME"])
+    dsh_home.mkdir(parents=True, exist_ok=True)
+    real_cred = Path(os.environ.get("USERPROFILE", "")) / ".dsh/.credentials.yaml"
+    key = ""
+    if real_cred.exists():
+        m = re.search(
+            r"^\s*AGNES_API_KEY:\s*(\S+)\s*$",
+            real_cred.read_text(encoding="utf-8", errors="replace"),
+            re.M,
+        )
+        key = m.group(1) if m else ""
+    (dsh_home / "settings.yaml").write_text(
+        "llm-pi-ai:\n  providers:\n    agnes:\n      displayName: Agnes\n      apiKeyEnv: AGNES_API_KEY\n"
+        "      api: openai-completions\n      baseURL: https://api.agnes-ai.cn/v1\n      models:\n"
+        "        - id: agnes-2.5-flash\n          name: agnes-2.5-flash\n          contextWindow: 1000000\n"
+        "agent-default-model:\n  provider: agnes\n  model: agnes-2.5-flash\n"
+        "permission:\n  defaultPreset: danger-full-access\n",
+        encoding="utf-8",
+    )
+    patch = dsh_home / "agnes.patch.yml"
+    patch.write_text(
+        "- id: agent-default-model\n  config:\n    provider: agnes\n    model: agnes-2.5-flash\n",
+        encoding="utf-8",
+    )
+    return {
+        "settings_yaml": str(dsh_home / "settings.yaml"),
+        "patch_file": str(patch),
+        "api_key_present": bool(key),
+        "api_key_env": "AGNES_API_KEY",
+        # 仅供注入子进程环境；main 里立刻 pop 掉，不进证据文件
+        "api_key": key,
+    }
+
+
 def hook_latency(exe: Path, env: dict[str, str], port: int, token: str, n: int) -> dict:
     """直接驱动原生 Hook CLI：测单次进程开销与落库延迟（真实 Agent 用的就是这条路径）。"""
     stats_before = http_json(f"http://127.0.0.1:{port}/api/v1/stats", token) or {}
-    received_before = stats_before.get("events_received", 0)
+    received_before = stats_before.get("pipeline", {}).get("events_received", 0)
     samples: list[int] = []
     errors = 0
     for i in range(n):
@@ -387,8 +538,13 @@ def hook_latency(exe: Path, env: dict[str, str], port: int, token: str, n: int) 
             "max": samples[-1],
             "mean": round(statistics.fmean(samples), 1),
         },
-        "events_received_delta": stats_after.get("events_received", 0) - received_before,
-        "http_requests_delta": stats_after.get("http_requests", 0) - stats_before.get("http_requests", 0),
+        "events_received_delta": stats_after.get("pipeline", {}).get("events_received", 0)
+        - received_before,
+        "http_requests_delta": stats_after.get("http", {}).get("requests", 0)
+        - stats_before.get("http", {}).get("requests", 0),
+        "http_accepted_delta": stats_after.get("http", {}).get("accepted", 0)
+        - stats_before.get("http", {}).get("accepted", 0),
+        "note": "直接驱动原生 Hook CLI 测进程开销；真实 Agent 自动接入证据见 agents 段",
     }
 
 
@@ -432,7 +588,13 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
     ap.add_argument("--hook-calls", type=int, default=40)
     ap.add_argument("--agent-timeout", type=int, default=240)
     ap.add_argument("--only", default=None, help="逗号分隔：codex,dsh,opencode")
+    ap.add_argument("--dsh-profile", default="headless", help="dsh profile 名（宿主插件按 profile bundle 装载）")
     ap.add_argument("--codex-model", default="gpt-6.1-sol")
+    ap.add_argument(
+        "--opencode-model",
+        default="",
+        help="opencode 使用的模型（留空=用其默认模型；默认模型在本机无受支持 provider）",
+    )
     ap.add_argument(
         "--codex-bypass-hook-trust",
         default="1",
@@ -479,6 +641,25 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
         return 2
     token, settings = patch_settings(db_path, args.port)
 
+    # 1b. dsh profile 必须先初始化（宿主插件以 profile bundle 装载，只有已初始化的
+    #     profile 才能登记 bundle），模型配置写进隔离 DSH_HOME。
+    cwd = root / "workspace"
+    cwd.mkdir(parents=True, exist_ok=True)
+    dsh_profile_dir = root / "home/.dsh/profiles" / args.dsh_profile
+    dsh_setup: dict = {"profile_materialized": None, "model": {}}
+    dsh_api_key = ""
+    if tools["dsh"]["found"]:
+        dsh_setup["profile_materialized"] = materialize_dsh_profile(
+            Path(tools["dsh"]["exe"]), env, args.dsh_profile, cwd
+        )
+        dsh_setup["model"] = dsh_model_setup(env)
+        dsh_api_key = dsh_setup["model"].pop("api_key", "")
+        log(
+            "dsh profile 初始化: "
+            f"{dsh_setup['profile_materialized']['package_json']}；"
+            f"api_key_present={dsh_setup['model']['api_key_present']}"
+        )
+
     # 2. 安装 Hook（隔离配置目录；必须保留第三方条目）
     installs = {}
     for adapter in ("codex", "dsh", "opencode"):
@@ -490,6 +671,7 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
             pass
         installs[adapter] = {"rc": r["rc"], "ms": r["ms"], "result": parsed, "stderr": r["stderr"][:400]}
 
+    dsh_manifest_after_install = dsh_profile_manifest(dsh_profile_dir)
     preserved_checks = {
         "codex_third_party_stop_preserved": preserved(root / "codex/hooks.json", "echo third-party-stop"),
         "codex_marker_written": preserved(root / "codex/hooks.json", "--agent-hook"),
@@ -501,6 +683,19 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
         or any(
             preserved(p, str(args.port))
             for p in (root / "home/.dsh/plugins/task-dock-bridge").glob("**/*.js")
+        ),
+        # profile bundle 机制：宿主只在 profile 的 bundles 列表里装载插件
+        "dsh_profile_bundle_package_written": (
+            dsh_profile_dir / "node_modules/task-dock-bridge/package.json"
+        ).is_file(),
+        "dsh_profile_listed_in_bundles": "task-dock-bridge"
+        in (dsh_manifest_after_install.get("bundles") or []),
+        "dsh_profile_base_bundles_kept": all(
+            b in (dsh_manifest_after_install.get("bundles") or [])
+            for b in ("@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless")
+        ),
+        "dsh_profile_manifest_other_fields_kept": bool(
+            dsh_manifest_after_install.get("raw", {}).get("name")
         ),
     }
 
@@ -528,7 +723,6 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
     health = wait_health(args.port, token, proc=proc)
     if not health or not health.get("ok"):
         log(f"实例健康检查失败: {health}")
-        app_log.flush()
         exit_code = proc.poll()
         log(f"实例退出码: {exit_code}；本机其他 Task Dock 实例: {existing_task_dock_instances()}")
         subprocess.run(
@@ -565,12 +759,36 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
         return 2
     log(f"隔离实例已启动 pid={proc.pid} port={args.port}")
 
+    # 看门狗：实例在验收过程中异常退出必须被抓住（记录死亡时刻、退出码、应用日志尾部、
+    # Windows 事件日志），否则「事件没落库」会被误判成 Agent 没接入。
+    watchdog: dict = {"death_at": None, "exit_code": None, "event_log": []}
+
+    def watchdog_loop() -> None:
+        while True:
+            time.sleep(2.0)
+            if proc.poll() is None:
+                continue
+            watchdog["death_at"] = now_iso()
+            watchdog["exit_code"] = proc.poll()
+            try:
+                app_log.flush()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                tail = app_log_path.read_text(encoding="utf-8", errors="replace")[-3000:]
+            except OSError:
+                tail = ""
+            watchdog["app_log_tail"] = tail
+            watchdog["event_log"] = windows_crash_events()
+            log(f"看门狗捕获：实例在验收期间退出，退出码={watchdog['exit_code']}")
+            return
+
+    threading.Thread(target=watchdog_loop, daemon=True).start()
+
     stats_start = http_json(f"http://127.0.0.1:{args.port}/api/v1/stats", token) or {}
 
     # 4. 真实 Agent 会话（自动事件由 Agent 自己的 Hook/插件产生）
     agents = {}
-    cwd = root / "workspace"
-    cwd.mkdir(parents=True, exist_ok=True)
     prompt = "只回复两个字母 OK，不要调用任何工具。"
     liveness: list[dict] = []
 
@@ -604,8 +822,10 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
                 break
             time.sleep(1.0)
         detail = events_by_source(db_path)["by_source"].get(source_id, {})
-        hook_lines = [
-            ln for ln in (r["stderr"] or "").splitlines() if "hook:" in ln.lower()
+        combined = (r["stderr"] or "") + "\n" + (r["stdout"] or "")
+        hook_lines = [ln for ln in combined.splitlines() if "hook:" in ln.lower()]
+        bridge_lines = [
+            ln for ln in combined.splitlines() if "task-dock-bridge" in ln
         ]
         agents[name] = {
             "status": "PASS" if after > before else ("FAIL" if r["rc"] == 0 else "NOT TESTED"),
@@ -616,6 +836,7 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
             "events_after": after,
             "detail": detail,
             "agent_reported_hook_lines": hook_lines[:40],
+            "agent_reported_bridge_lines": bridge_lines[:40],
             "stdout_tail": r["stdout"][-1200:],
             "stderr_tail": r["stderr"][-1200:],
         }
@@ -638,13 +859,28 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
     observe(
         "dsh",
         "deepseek-harness",
-        [tools["dsh"]["exe"], "headless", "--json", prompt],
-        None,
+        [
+            tools["dsh"]["exe"],
+            "--profile",
+            args.dsh_profile,
+            "--patch",
+            str(root / "home/.dsh/agnes.patch.yml"),
+            "--json",
+            prompt,
+        ],
+        {"AGNES_API_KEY": dsh_api_key},
     )
     observe(
         "opencode",
         "opencode",
-        [tools["opencode"]["exe"], "run", "--format", "json", prompt],
+        [
+            tools["opencode"]["exe"],
+            "run",
+            *(["--model", args.opencode_model] if args.opencode_model else []),
+            "--format",
+            "json",
+            prompt,
+        ],
         None,
     )
 
@@ -652,6 +888,9 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
     latency = hook_latency(exe, env, args.port, token, args.hook_calls) if proc.poll() is None else {}
     lingering = lingering_hook_procs(exe.name)
     final_events = events_by_source(db_path)
+    latency_by_source = {
+        src: status_update_latency(db_path, src) for src in final_events["by_source"]
+    }
     stats_end = http_json(f"http://127.0.0.1:{args.port}/api/v1/stats", token) or {}
     sources = enabled_sources(db_path)
 
@@ -672,6 +911,18 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
                 else (root / "home/.dsh/plugins/third-party-plugin/package.json").exists()
             ),
         }
+        if adapter == "dsh":
+            after_uninstall = dsh_profile_manifest(dsh_profile_dir)
+            uninstall[adapter]["profile_bundle_removed"] = not (
+                dsh_profile_dir / "node_modules/task-dock-bridge"
+            ).exists()
+            uninstall[adapter]["profile_listing_removed"] = "task-dock-bridge" not in (
+                after_uninstall.get("bundles") or []
+            )
+            uninstall[adapter]["profile_base_bundles_kept"] = all(
+                b in (after_uninstall.get("bundles") or [])
+                for b in ("@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless")
+            )
 
     subprocess.run(
         ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
@@ -694,6 +945,7 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
         "generated_at": now_iso(),
         "source_exe": str(exe),
         "source_exe_bytes": exe.stat().st_size,
+        "source_exe_sha256": file_sha256(exe),
         "git_head": run(["git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "--short", "HEAD"], os.environ.copy(), 30)["stdout"].strip(),
         "isolated_root": str(root),
         "real_user_configs": "只读复制 auth/credentials；未写入任何真实 Agent 配置目录",
@@ -705,16 +957,23 @@ def main() -> int:  # noqa: C901 - 顺序式验收脚本，保持线性可读
         "installs": installs,
         "installed_hook_artifacts": installed_hook_artifacts,
         "config_preservation": preserved_checks,
+        "dsh_profile": {
+            "profile": args.dsh_profile,
+            "setup": dsh_setup,
+            "manifest_after_install": dsh_manifest_after_install,
+        },
         "sources": sources,
         "agents": agents,
         "hook_latency": latency,
         "lingering_hook_processes": lingering,
         "events": final_events,
+        "status_update_latency": latency_by_source,
         "stats_start": stats_start,
         "stats_end": stats_end,
         "uninstall": uninstall,
         "app_liveness": liveness,
         "app_exit_code": proc.poll(),
+        "watchdog": watchdog,
         "app_log_path": str(app_log_path),
         "app_log_tail": app_log_text[-4000:],
     }

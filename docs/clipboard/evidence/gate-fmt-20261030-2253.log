@@ -1,0 +1,12 @@
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\clipboard\paste.rs:683:
+     }
+ 
+     fn running(&self) -> bool {
+[31m-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+[0m[32m+        self.inner
+[0m[32m+            .lock()
+[0m[32m+            .unwrap_or_else(|e| e.into_inner())
+[0m[32m+            .is_some()
+[0m     }
+ 
+     /// 等待线程结束并回收句柄。返回 false 表示超时（线程仍在运行）。

@@ -1,0 +1,17 @@
+[2m2026-10-30T14:57:51.004819Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 智能剪贴板已停用：不启动监听与后台维护
+[2m2026-10-30T14:57:52.920571Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-10-30T14:57:52.925012Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-repro-a\\reproA-notifyoff-data\\agent-inbox"
+[2m2026-10-30T14:57:52.974008Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-repro-a\\reproA-notifyoff-data"）
+[2m2026-10-30T14:57:52.976311Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-10-30T14:57:52.985085Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 本地 HTTP 接入监听 127.0.0.1:47893
+[2m2026-10-30T14:57:53.369651Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3429, 3ms)
+[2m2026-10-30T14:58:01.206237Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:8097, 0ms)
+[2m2026-10-30T14:58:01.266481Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:8097, 3ms)
+[2m2026-10-30T14:58:02.785107Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:8100, 0ms)
+[2m2026-10-30T14:58:10.200175Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:11762, 0ms)
+[2m2026-10-30T14:58:14.678042Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:11762, 0ms)
+[2m2026-10-30T14:58:19.766294Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:13683, 0ms)
+[2m2026-10-30T14:58:20.001647Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 应用退出：关闭 HTTP 接入监听，不再接受新事件
+[2m2026-10-30T14:58:20.001724Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 应用退出：HTTP 接入适配器停止
+[2m2026-10-30T14:58:20.002641Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 接入管线退出排空完成 [3mlifecycle[0m[2m=[0mstopped [3mtimed_out[0m[2m=[0mfalse [3mdrained[0m[2m=[0m0 [3munfinished[0m[2m=[0m0 [3mspooled[0m[2m=[0m0 [3munsaved[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0
+[1030/225821.085:ERROR:ui\gfx\win\window_impl.cc:172] Failed to unregister class Chrome_WidgetWin_0. Error = 1412

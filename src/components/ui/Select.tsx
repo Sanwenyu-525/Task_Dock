@@ -6,7 +6,7 @@
 //! 行为：点击展开/收起 · 外部点击关闭 · Escape 只关本层 · ↑↓ 导航 ·
 //! Enter/Space 选择 · Home/End 跳首尾 · Tab 正常离开 · 禁用项不可选。
 
-import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ChevronDown, Check } from "lucide-react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
@@ -34,6 +34,9 @@ export interface SelectProps<T extends string = string> {
   placement?: "bottom-start" | "bottom-end" | "top-start" | "top-end";
   /** 触发按钮宽度策略 */
   block?: boolean;
+  /** 列表目标最小宽度（px）：按最长选项文本 + 勾选标记 + 内边距声明；
+   *  默认跟随触发器宽度，但不会低于 146px 兜底 */
+  menuMinWidth?: number;
 }
 
 export default function Select<T extends string = string>({
@@ -49,6 +52,7 @@ export default function Select<T extends string = string>({
   size = "md",
   placement = "bottom-start",
   block = false,
+  menuMinWidth,
 }: SelectProps<T>) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -193,6 +197,7 @@ export default function Select<T extends string = string>({
         anchorRef={anchorRef}
         placement={placement}
         matchWidth
+        style={menuMinWidth ? ({ "--menu-min-w": `${menuMinWidth}px` } as CSSProperties) : undefined}
         className="ui-select-popover"
         role="listbox"
         id={listId}

@@ -1,0 +1,304 @@
+@layer base, theme, ui, menu;
+@layer menu {
+/* ════════════════════════════════════════════════════════════════
+   液态玻璃右键菜单（v0.6 视觉整改）— 仅右键菜单弹窗装载
+   ────────────────────────────────────────────────────────────────
+   材质模型与主窗一致：
+   - 桌面模糊来自原生 **blur**（context_menu.rs 经 apply_material_to_window
+     共用主窗后端选择：Win11 + 区域裁剪 → blur，由窗口自身合成、受
+     SetWindowRgn 约束；不再用 Acrylic —— Win11 上它是 DWM SystemBackdrop，
+     会越过区域在圆角外画出灰蓝残影）；
+   - CSS 层只做**染色与高光**：底色是有层次的半透明渐变（不是纯色填充），
+     backdrop-filter 仅作为浏览器预览环境的渐进增强；
+   - 文本与图标直接落在玻璃层上，不加 filter，保持清晰。
+
+   颜色基调沿用既有主题令牌（--text-* / --accent* / --divider，来自
+   styles-themes.css 的 预设 × 明暗 令牌层）；玻璃底色/高光为菜单专用
+   取值，明暗两套都经视觉验证调整，不机械套用固定数值。
+
+   状态层级（互不混淆）：
+   - Hover：中性玻璃染色（浅色白染 / 深色冷染），无色彩倾向；
+   - Checked：主题色染色 + 右侧 Check（微弱背景、不描边，非仅靠颜色）；
+   - 键盘焦点：focus-visible 2px 主题色描边（鼠标 hover 不劫持 DOM 焦点，
+     描边只在键盘导航时出现），与 Hover/Checked 视觉完全不同。
+
+   性能约定：唯一动画是显示时一次性的入场过渡；无轮询、无常驻光效。
+   ════════════════════════════════════════════════════════════════ */
+
+/* 弹窗本体：窗口即菜单，页面透明让窗口外区域完全透出桌面 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    -apple-system, sans-serif;
+  font-size: 13px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ── 玻璃容器 ─────────────────────────────────────────────────
+   尺寸：宽 250（设计常量）、圆角 16、内边距 8 —— 与 Win32 圆角区域
+   （context_menu.rs MENU_RADIUS=16）一致。高度由内容撑开，
+   fit_context_menu 在挂载时即收放窗口（首开无跳动），绝不能设固定 height。 */
+
+.liquid-context-menu {
+  box-sizing: border-box;
+  position: relative;
+  width: 100vw;
+  height: fit-content;
+  max-height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+
+  border-radius: 16px;
+  /* 冰蓝→珍珠白的三段渐变：半透明染色层，透出原生 blur 的桌面色彩 */
+  background: linear-gradient(
+    175deg,
+    rgba(250, 252, 255, 0.72),
+    rgba(238, 245, 255, 0.6) 55%,
+    rgba(243, 248, 255, 0.66)
+  );
+  backdrop-filter: blur(28px) saturate(1.2);
+  -webkit-backdrop-filter: blur(28px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  /* 高光只走 inset（外阴影交给 DWM 圆角阴影，窗口外无内容可画） */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 0 0 1px rgba(214, 228, 252, 0.25);
+
+  padding: 8px;
+  color: var(--text-primary);
+  transform-origin: top center;
+  animation: liquid-menu-in 150ms cubic-bezier(0.25, 0.8, 0.35, 1);
+}
+
+/* 深色：分层蓝黑玻璃 —— 压低黑色覆盖感、透出桌面色彩，
+   冷色高光替代白色边框（避免「不透明塑料板」观感） */
+:root[data-theme="dark"] .liquid-context-menu {
+  background: linear-gradient(
+    175deg,
+    rgba(46, 60, 92, 0.58),
+    rgba(24, 33, 54, 0.66) 55%,
+    rgba(17, 24, 42, 0.7)
+  );
+  border-color: rgba(150, 180, 235, 0.2);
+  box-shadow:
+    inset 0 1px 0 rgba(165, 197, 255, 0.16),
+    inset 0 -1px 0 rgba(10, 14, 26, 0.4),
+    inset 0 0 0 1px rgba(90, 120, 180, 0.12);
+}
+
+@keyframes liquid-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── 分组与分隔（密度收紧）────────────────────────────────── */
+
+.menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* 分组标题：次级文字色（比 tertiary 提升对比度）+ 微字距 */
+.menu-group-label {
+  padding: 2px 10px 3px;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 500;
+  color: var(--text-secondary);
+  opacity: 0.82;
+  letter-spacing: 0.05em;
+}
+
+/* 分组之间非常淡的分隔线（自带 5px 呼吸间距） */
+.menu-sep {
+  flex: none;
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--divider);
+}
+
+:root[data-theme="dark"] .menu-sep {
+  background: rgba(158, 180, 220, 0.14);
+}
+
+/* ── 菜单项（高度 34px，密度整改）──────────────────────────── */
+
+.menu-item {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  flex: none;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+/* Hover：中性玻璃染色（浅色白染 / 深色冷染），与 Checked 的主题色染色明确区分 */
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.52);
+}
+
+:root[data-theme="dark"] .menu-item:hover {
+  background: rgba(148, 172, 224, 0.15);
+}
+
+.menu-item:active {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+:root[data-theme="dark"] .menu-item:active {
+  background: rgba(148, 172, 224, 0.24);
+}
+
+/* 键盘焦点：明确可识别的 2px 主题色描边。焦点只由键盘导航移动
+   （鼠标不再劫持 DOM 焦点），鼠标 hover 不产生描边 */
+.menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Checked：主题色微染 + 文字/图标强调 + 右侧 Check（非仅靠颜色表达）；
+   Checked + Hover 用更深的主题色染色（inset 铺色叠加），仍与中性 Hover 不同 */
+.menu-item.is-checked {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.menu-item.is-checked:hover {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 999px rgba(99, 102, 241, 0.08);
+}
+
+.menu-item-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+}
+
+.menu-item.is-checked .menu-item-icon {
+  color: var(--accent);
+}
+
+.menu-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 退出操作：略高的视觉权重（默认不加红色，Hover/焦点与其他项同样清晰） */
+.menu-item-quit .menu-item-label {
+  font-weight: 500;
+}
+
+.menu-item-trailing {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+}
+
+/* ── 动作失败反馈（行内浮层，不参与布局、不影响 fit 测量）──── */
+
+.menu-feedback {
+  position: fixed;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 10;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: rgba(250, 251, 255, 0.96);
+  color: #9a3412;
+  box-shadow: 0 4px 14px rgba(20, 35, 65, 0.22);
+  pointer-events: none;
+}
+
+:root[data-theme="dark"] .menu-feedback {
+  background: rgba(38, 30, 22, 0.96);
+  color: #fdba74;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+/* ── 可读性兜底（与主题体系的降级约定一致）──────────────────── */
+
+/* 系统关闭透明效果：玻璃退为近实底，防文字压桌面 */
+@media (prefers-reduced-transparency: more) {
+  .liquid-context-menu {
+    background: rgba(246, 250, 255, 0.97);
+  }
+  :root[data-theme="dark"] .liquid-context-menu {
+    background: rgba(20, 28, 46, 0.97);
+  }
+}
+
+/* 高对比度：彻底实底 + 强化边框 */
+@media (prefers-contrast: more) {
+  .liquid-context-menu {
+    background: #ffffff;
+    border-color: rgba(34, 38, 60, 0.55);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  :root[data-theme="dark"] .liquid-context-menu {
+    background: #151c2e;
+    border-color: rgba(255, 255, 255, 0.5);
+  }
+}
+
+/* 减少动态：去掉入场动画与 hover 过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .liquid-context-menu {
+    animation: none;
+  }
+  .menu-item {
+    transition: none;
+  }
+}
+
+/* 滚动条（小屏/工作区不足时出现，保证「退出」可达） */
+.liquid-context-menu::-webkit-scrollbar {
+  width: 8px;
+}
+.liquid-context-menu::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: rgba(128, 138, 160, 0.35);
+}
+}

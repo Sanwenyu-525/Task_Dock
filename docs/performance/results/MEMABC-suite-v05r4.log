@@ -1,0 +1,119 @@
+=== Ê∫êÁ†ÅÊåáÁ∫π ===
+git_head_short=356bc44
+dirty_tracked= 38 files changed, 42 insertions(+), 9 deletions(-)
+-rwxr-xr-x 1 ASUS 197121 15389184 2026-10-30 22:21:48.085632600 +0800 C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe
+a0d17ab672f60b6009144355e98a09711b682f70e9799e823106f214efba6b7e *C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe
+
+=== [N1-load-notify-on] ÂºÄÂßã 22:29:07 ===
+    args: --mode mixed --duration 480 --post 90 --agents 4 --rate 5 --window visible --notify on --transport http --source bridge --allow-real-source --port 47890
+    log:  docs/performance/results/MEMABC-N1-load-notify-on-20261030-222906.log
+=== [N1-load-notify-on] ÁªìÊùü 22:38:59 rc=0 ===
+      },
+      "notifications": {
+        "attempted": 45,
+        "failed": 0,
+        "succeeded": 45
+      },
+      "db": {
+        "db_bytes": 11059200,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 2715,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.15,
+          "calls": 1468,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4663872
+      }
+    }
+  }
+}
+
+=== [N2-load-notify-off] ÂºÄÂßã 22:38:59 ===
+    args: --mode mixed --duration 480 --post 90 --agents 4 --rate 5 --window visible --notify off --transport http --source bridge --allow-real-source --port 47891
+    log:  docs/performance/results/MEMABC-N2-load-notify-off-20261030-222906.log
+=== [N2-load-notify-off] ÁªìÊùü 22:48:51 rc=1 ===
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.81,
+          "calls": 3,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    },
+    "stats_last": {
+      "error": " π”√°∞0°±∏ˆ≤Œ ˝µ˜”√°∞GetResult°± ±∑¢…˙“Ï≥£:°∞∑¢ÀÕ«Î«Û ±≥ˆ¥Ì°£°±"
+    }
+  }
+}
+
+=== [N3-idle] ÂºÄÂßã 22:48:51 ===
+    args: --mode running --duration 0 --post 480 --window visible --notify off --source bridge --allow-real-source --port 47892
+    log:  docs/performance/results/MEMABC-N3-idle-20261030-222906.log
+=== [N3-idle] ÁªìÊùü 22:57:46 rc=1 ===
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.72,
+          "calls": 3,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    },
+    "stats_last": {
+      "error": " π”√°∞0°±∏ˆ≤Œ ˝µ˜”√°∞GetResult°± ±∑¢…˙“Ï≥£:°∞∑¢ÀÕ«Î«Û ±≥ˆ¥Ì°£°±"
+    }
+  }
+}
+
+=== ‰∏âËáÇÂÆåÊàê 22:57:47 ===
+-rw-r--r-- 1 ASUS 197121  91506 Oct 30 20:49 docs/performance/results/DIAG-N1-load-notify-on-20261030-203915.jsonl
+-rw-r--r-- 1 ASUS 197121 201275 Oct 30 22:02 docs/performance/results/DIAG-N1-load-notify-on-20261030-215246.jsonl
+-rw-r--r-- 1 ASUS 197121 104253 Oct 30 22:38 docs/performance/results/DIAG-N1-load-notify-on-20261030-222907.jsonl
+-rw-r--r-- 1 ASUS 197121  91553 Oct 30 20:58 docs/performance/results/DIAG-N2-load-notify-off-20261030-204906.jsonl
+-rw-r--r-- 1 ASUS 197121 127680 Oct 30 22:48 docs/performance/results/DIAG-N2-load-notify-off-20261030-223859.jsonl
+-rw-r--r-- 1 ASUS 197121  98350 Oct 30 21:07 docs/performance/results/DIAG-N3-idle-20261030-205857.jsonl
+-rw-r--r-- 1 ASUS 197121 182165 Oct 30 22:57 docs/performance/results/DIAG-N3-idle-20261030-224851.jsonl

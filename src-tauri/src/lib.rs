@@ -7,6 +7,7 @@ pub mod alloc_stats;
 static GLOBAL_ALLOCATOR: alloc_stats::TrackingAllocator = alloc_stats::TrackingAllocator;
 pub mod clipboard;
 pub mod commands;
+pub mod context_menu;
 pub mod db;
 pub mod error;
 pub mod navigation;
@@ -21,7 +22,6 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::error::AppError;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
@@ -130,90 +130,31 @@ pub fn refresh_tray(app: &AppHandle, state: AgentState) {
 }
 
 fn setup_tray(app: &App) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let show = MenuItem::with_id(app, "show", "显示 / 隐藏", true, None::<&str>)?;
-    let quick = MenuItem::with_id(app, "quick_add", "快速添加任务", true, None::<&str>)?;
-    let m_min = MenuItem::with_id(app, "mode_min", "极简模式", true, None::<&str>)?;
-    let m_compact = MenuItem::with_id(app, "mode_compact", "紧凑模式", true, None::<&str>)?;
-    let m_full = MenuItem::with_id(app, "mode_full", "完整模式", true, None::<&str>)?;
-    let theme_light = MenuItem::with_id(app, "theme_light", "浅色主题", true, None::<&str>)?;
-    let theme_dark = MenuItem::with_id(app, "theme_dark", "深色主题", true, None::<&str>)?;
-    let theme_system = MenuItem::with_id(app, "theme_system", "跟随系统", true, None::<&str>)?;
-    let autostart = MenuItem::with_id(app, "autostart", "开机自启动", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-
-    let sep1 = PredefinedMenuItem::separator(app)?;
-    let sep2 = PredefinedMenuItem::separator(app)?;
-    let sep3 = PredefinedMenuItem::separator(app)?;
-
-    let menu = Menu::with_items(
-        app,
-        &[
-            &show,
-            &quick,
-            &sep1,
-            &m_min,
-            &m_compact,
-            &m_full,
-            &sep2,
-            &theme_light,
-            &theme_dark,
-            &theme_system,
-            &autostart,
-            &sep3,
-            &quit,
-        ],
-    )?;
-
+    // 液态玻璃右键菜单（context_menu.rs）已取代原生 Menu：
+    // 左键切换主窗显示，右键在托盘图标上方弹出玻璃菜单（无原生菜单入口残留）。
     let tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("Task Dock")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => toggle_main(app),
-            "quick_add" => {
-                if let Some(win) = app.get_webview_window("main") {
-                    show_and_focus(&win);
-                }
-                let _ = app.emit("focus-quick-add", ());
-            }
-            "mode_min" | "mode_compact" | "mode_full" => {
-                let mode = event.id.as_ref().replace("mode_", "");
-                if let Some(db) = app.try_state::<Arc<Db>>() {
-                    let _ = commands::system::apply_mode_inner(app, &db, &mode);
-                }
-                let _ = app.emit("mode-changed", mode);
-            }
-            "theme_light" | "theme_dark" | "theme_system" => {
-                let theme = event.id.as_ref().replace("theme_", "");
-                if let Some(db) = app.try_state::<Arc<Db>>() {
-                    let _ = db.set_setting("theme", serde_json::json!(theme));
-                }
-                let _ = app.emit("theme-changed", theme);
-            }
-            "autostart" => {
-                if let Some(db) = app.try_state::<Arc<Db>>() {
-                    let current = db
-                        .get_setting("autostart")
-                        .ok()
-                        .flatten()
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let _ = commands::system::set_autostart_inner(app, &db, !current);
-                }
-            }
-            "quit" => crate::request_exit(app),
-            _ => {}
-        })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
-                button: MouseButton::Left,
+                button,
                 button_state: MouseButtonState::Up,
+                rect,
                 ..
             } = event
             {
                 let app = tray.app_handle();
-                toggle_main(app);
+                match button {
+                    MouseButton::Left => toggle_main(app),
+                    // 锚点：托盘图标上缘中点，菜单在其上方展开并按工作区收边
+                    // （tauri 的 Position/Size 是枚举；托盘事件里恒为物理坐标）
+                    MouseButton::Right => {
+                        let pos = rect.position.to_physical::<f64>(1.0);
+                        let size = rect.size.to_physical::<f64>(1.0);
+                        context_menu::show_at(app, (pos.x + size.width / 2.0, pos.y));
+                    }
+                    _ => {}
+                }
             }
         })
         .build(app)?;
@@ -267,18 +208,24 @@ fn restore_window(app: &AppHandle, db: &Db) {
         .flatten()
         .and_then(|v| serde_json::from_value::<commands::settings::WindowRect>(v).ok())
     {
+        // 物理像素 60% 交集判定（与前端 lib/edgeSnap、save_window_rect 同口径）：
+        // 旧实现按「逻辑像素 ±80」判断，scale≠1 时会把屏内的有效位置误判为越界
+        // （或反之），跨屏/负坐标也不准确。空列表（断连）按不可见处理。
         let on_screen = win
             .available_monitors()
             .map(|monitors| {
-                monitors.iter().any(|m| {
-                    let pos = m.position();
-                    let size = m.size();
-                    let scale = m.scale_factor();
-                    rect.x as f64 >= pos.x as f64 / scale - 80.0
-                        && (rect.x as f64) < (pos.x as f64 + size.width as f64 / scale)
-                        && rect.y as f64 >= pos.y as f64 / scale - 80.0
-                        && (rect.y as f64) < (pos.y as f64 + size.height as f64 / scale)
-                })
+                let bounds: Vec<(i32, i32, u32, u32)> = monitors
+                    .iter()
+                    .map(|m| {
+                        (
+                            m.position().x,
+                            m.position().y,
+                            m.size().width,
+                            m.size().height,
+                        )
+                    })
+                    .collect();
+                commands::settings::is_rect_mostly_visible(&rect, &bounds)
             })
             .unwrap_or(false);
         if on_screen {
@@ -299,14 +246,27 @@ fn restore_window(app: &AppHandle, db: &Db) {
     });
 
     // 圆角外形：窗口尺寸/DPI 变化后必须按新的物理像素重算，否则区域会停在
-    // 旧尺寸上把内容裁掉（v0.6 视觉重构引入）。
+    // 旧尺寸上把内容裁掉（v0.6 视觉重构引入）。从最小化/托盘恢复时窗口区域
+    // 可能被系统重置，拿回焦点时再做一次“校验 + 必要时重设”。
     let win_for_shape = win.clone();
     win.on_window_event(move |event| {
         if matches!(
             event,
-            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+            tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::ScaleFactorChanged { .. }
+                | tauri::WindowEvent::Focused(true)
         ) {
             window_shape::apply(&win_for_shape);
+        }
+    });
+
+    // 右键菜单收起（含兜底）：主窗夺焦 = 用户点击了菜单外区域，延迟收起；
+    // 右键重开时 show 会取消该未决关闭。即使弹窗 set_focus 在受限前台策略下
+    // 未生效（收不到自身失焦事件），这条路径也能保证「点击外部关闭」。
+    let win_for_menu = win.clone();
+    win.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Focused(true)) {
+            context_menu::schedule_blur_close(win_for_menu.app_handle());
         }
     });
 }
@@ -490,6 +450,8 @@ pub fn run() {
                 // 启动阶段窗口尺寸会连续变化（模式尺寸 → 记忆矩形 → 前端布局稳定），
                 // 延迟重算保证区域最终与窗口尺寸一致。
                 window_shape::schedule_reapply(&win);
+                // 销毁时清理区域缓存（防句柄复用后误判「已应用」）
+                window_shape::watch_destroy(&win);
             }
 
             // 窗口材质（毛玻璃）：在显示窗口之前应用，避免透明闪烁；
@@ -546,6 +508,9 @@ pub fn run() {
             // 托盘
             setup_tray(app).expect("托盘初始化失败");
             refresh_tray(&handle, AgentState::Idle);
+
+            // 液态玻璃右键菜单：挂接弹窗窗口事件（失焦关闭 / 圆角区域）
+            context_menu::init(&handle);
 
             // Agent 适配器
             Box::new(agents::file_drop::FileDropAdapter::new(pipeline.clone())).spawn(hub.clone());
@@ -685,6 +650,11 @@ pub fn run() {
             commands::system::performance_diagnostics,
             commands::system::apply_window_material,
             commands::system::apply_window_radius,
+            // 液态玻璃右键菜单（v0.6）
+            context_menu::show_context_menu,
+            context_menu::hide_context_menu,
+            context_menu::fit_context_menu,
+            context_menu::context_menu_action,
             // 统一导航（v0.4）
             commands::navigation::nav_scan_apps,
             commands::navigation::nav_list_windows,
@@ -834,6 +804,22 @@ pub fn request_exit(app: &AppHandle) {
             elapsed_ms = report.elapsed_ms,
             "接入管线退出排空完成"
         );
+        // 剪贴板模块收尾：停监听线程并等待粘贴工作线程结束。
+        // 若跳过这一步，进程被杀会留下「永远运行中」的粘贴任务，
+        // 以及被残留粘贴内容覆盖的用户剪贴板。
+        let clipboard_stopped = tauri::async_runtime::spawn_blocking({
+            let app = app.clone();
+            move || match app.try_state::<Arc<clipboard::ClipboardRuntime>>() {
+                Some(rt) => rt.shutdown(std::time::Duration::from_secs(3)),
+                None => {
+                    tracing::info!("退出时未找到剪贴板运行时（模块未启用或启动未完成）");
+                    true
+                }
+            }
+        })
+        .await
+        .unwrap_or(true);
+        tracing::info!("剪贴板退出收尾完成（粘贴线程已停止={clipboard_stopped}）");
         // 保留机器可读的退出证据，供验收与故障复盘
         {
             let dir = app_data_dir(&app);
@@ -856,13 +842,19 @@ pub fn request_exit(app: &AppHandle) {
 /// 唤回窗口：显示 + 还原最小化 + 聚焦。
 /// skipTaskbar 窗口最小化后任务栏没有入口，所有唤回路径都必须带 unminimize，
 /// 否则最小化的窗口 show() 后仍停留在最小化状态。
-fn show_and_focus(win: &tauri::WebviewWindow) {
+pub(crate) fn show_and_focus(win: &tauri::WebviewWindow) {
     let _ = win.show();
     let _ = win.unminimize();
     let _ = win.set_focus();
+    // 恢复显示后重新校验区域：最小化/隐藏期间系统可能重置窗口区域，
+    // 不阻塞托盘菜单线程，直接投递到事件循环。
+    let w = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        let _ = window_shape::apply(&w);
+    });
 }
 
-fn toggle_main(app: &AppHandle) {
+pub(crate) fn toggle_main(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         // 最小化中的窗口 is_visible 仍为 true，必须先判最小化，否则托盘/热键会误执行隐藏
         if win.is_minimized().unwrap_or(false) || !win.is_visible().unwrap_or(false) {

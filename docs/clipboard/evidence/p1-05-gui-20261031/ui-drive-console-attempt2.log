@@ -1,0 +1,149 @@
+DRIVER_START=2026-10-31 11:07:55 +0800
+{
+  "started_at": "2026-10-31T03:07:55.651Z",
+  "port": 9229,
+  "cycles": 6,
+  "open_ms": [],
+  "search_ms": [],
+  "preview_ms": [],
+  "back_ms": [],
+  "close_ms": [],
+  "ui_mode": null,
+  "search_counts": [],
+  "preview_pixels": [],
+  "reminder": {
+    "created_id": "017df7a4-15a0-4897-8ba9-fad58ebc187e",
+    "remind_at": "2026-10-31T03:08:35.725Z",
+    "notified": {
+      "unread": 1,
+      "total": 1
+    }
+  },
+  "monitor_start": {
+    "monitoring": true,
+    "capture_allowed": true,
+    "config_error": null,
+    "captured": 17,
+    "content_queue_capacity": 8,
+    "content_queue_max_bytes": 134217728,
+    "dropped_contents": 0,
+    "dropped_events": 0,
+    "duplicates": 0,
+    "empty_events": 17,
+    "event_queue_capacity": 64,
+    "failed": 0,
+    "max_capture_latency_ms": 3,
+    "max_process_latency_ms": 14,
+    "merged_events": 0,
+    "observed_events": 34,
+    "peak_content_queue": 1,
+    "peak_event_queue": 1,
+    "recorded": 17,
+    "self_write_events": 0,
+    "skipped": 0,
+    "superseded_events": 0
+  },
+  "monitor_end": {
+    "monitoring": true,
+    "capture_allowed": true,
+    "config_error": null,
+    "captured": 35,
+    "content_queue_capacity": 8,
+    "content_queue_max_bytes": 134217728,
+    "dropped_contents": 0,
+    "dropped_events": 0,
+    "duplicates": 0,
+    "empty_events": 54,
+    "event_queue_capacity": 64,
+    "failed": 0,
+    "max_capture_latency_ms": 3,
+    "max_process_latency_ms": 14,
+    "merged_events": 0,
+    "observed_events": 89,
+    "peak_content_queue": 1,
+    "peak_event_queue": 1,
+    "recorded": 25,
+    "self_write_events": 0,
+    "skipped": 10,
+    "superseded_events": 0
+  },
+  "console_errors": [],
+  "screenshots": [],
+  "failures": [
+    "找不到剪贴板入口：TimeoutError: locator.waitFor: Timeout 25000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('nav[aria-label=\"主导航\"] button[aria-label^=\"剪贴板\"]').first() to be visible\u001b[22m\n",
+    "第 1 轮失败：TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('nav[aria-label=\"主导航\"] button[aria-label^=\"剪贴板\"]').first()\u001b[22m\n",
+    "第 2 轮失败：TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('nav[aria-label=\"主导航\"] button[aria-label^=\"剪贴板\"]').first()\u001b[22m\n",
+    "第 3 轮失败：TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('nav[aria-label=\"主导航\"] button[aria-label^=\"剪贴板\"]').first()\u001b[22m\n",
+    "第 4 轮失败：TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('nav[aria-label=\"主导航\"] button[aria-label^=\"剪贴板\"]').first()\u001b[22m\n",
+    "第 5 轮失败：TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('nav[aria-label=\"主导航\"] button[aria-label^=\"剪贴板\"]').first()\u001b[22m\n",
+    "第 6 轮失败：TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('nav[aria-label=\"主导航\"] button[aria-label^=\"剪贴板\"]').first()\u001b[22m\n"
+  ],
+  "page_url": "http://tauri.localhost/context-menu.html",
+  "stats_before_cleanup": {
+    "items": 25,
+    "groups": 2,
+    "images": 3,
+    "files": 0,
+    "favorites": 0,
+    "bytes": 13775,
+    "asset_bytes": 2339,
+    "max_items": 1000,
+    "max_storage_bytes": 536870912,
+    "enabled": true,
+    "paused": false,
+    "auto_group": true
+  },
+  "cleanup": {
+    "items_deleted": 0,
+    "groups_closed": 0,
+    "bytes_freed": 0,
+    "orphan_files_removed": 0
+  },
+  "stats_after_cleanup": {
+    "items": 25,
+    "groups": 2,
+    "images": 3,
+    "files": 0,
+    "favorites": 0,
+    "bytes": 13775,
+    "asset_bytes": 2339,
+    "max_items": 1000,
+    "max_storage_bytes": 536870912,
+    "enabled": true,
+    "paused": false,
+    "auto_group": true
+  },
+  "finished_at": "2026-10-31T03:11:31.336Z",
+  "open_ms_summary": {
+    "n": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+  },
+  "search_ms_summary": {
+    "n": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+  },
+  "preview_ms_summary": {
+    "n": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+  },
+  "back_ms_summary": {
+    "n": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+  },
+  "close_ms_summary": {
+    "n": 0,
+    "p50": null,
+    "p95": null,
+    "max": null
+  }
+}
+DRIVER_EXIT=0
+DRIVER_END=2026-10-31 11:11:31 +0800

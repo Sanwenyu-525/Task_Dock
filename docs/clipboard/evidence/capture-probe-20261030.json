@@ -1,0 +1,51 @@
+{
+  "name": "clipboard capture probe",
+  "timestamp": "2026-10-30T23:20:33+0800",
+  "exe": "D:\\Develop\\task_dock\\src-tauri\\target-accept\\release\\task-dock.exe",
+  "exe_mtime": "2026-10-30T23:09:00",
+  "work_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-capture-probe-a6ot46zo",
+  "app_cdp": 9427,
+  "cases": [
+    {
+      "case": "pywin32",
+      "wrote": true,
+      "sequence_before": 8884,
+      "sequence_after": 8889,
+      "items_before": 0,
+      "items_after": 1,
+      "captured_delta": 1,
+      "recorded_delta": 1,
+      "skipped_delta": 0,
+      "observed_delta": 1,
+      "dropped_events_delta": 0,
+      "merged_delta": 0,
+      "hit": true
+    },
+    {
+      "case": "manual_utf16",
+      "wrote": true,
+      "sequence_before": 8889,
+      "sequence_after": 8894,
+      "items_before": 1,
+      "items_after": 2,
+      "captured_delta": 1,
+      "recorded_delta": 1,
+      "skipped_delta": 0,
+      "observed_delta": 1,
+      "dropped_events_delta": 0,
+      "merged_delta": 0,
+      "hit": true
+    }
+  ],
+  "own_windows_minimized": [
+    15467938,
+    14092884,
+    3674536
+  ],
+  "clipboard_restored": true,
+  "clipboard_log_lines": [
+    "\u001b[2m2026-10-30T15:20:34.365978Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::clipboard\u001b[0m\u001b[2m:\u001b[0m 剪贴板监听已启动",
+    "\u001b[2m2026-10-30T15:20:36.784573Z\u001b[0m \u001b[34mDEBUG\u001b[0m \u001b[2mtask_dock_lib::clipboard::platform\u001b[0m\u001b[2m:\u001b[0m 剪贴板记录：kind=text size=43 created=true grouped=false",
+    "\u001b[2m2026-10-30T15:20:50.664430Z\u001b[0m \u001b[34mDEBUG\u001b[0m \u001b[2mtask_dock_lib::clipboard::platform\u001b[0m\u001b[2m:\u001b[0m 剪贴板记录：kind=text size=48 created=true grouped=false"
+  ]
+}

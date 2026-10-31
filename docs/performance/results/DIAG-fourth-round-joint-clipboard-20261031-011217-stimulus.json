@@ -1,0 +1,18 @@
+{
+  "text_attempted": 344,
+  "text_ok": 0,
+  "text_failed": 344,
+  "image_attempted": 57,
+  "image_ok": 57,
+  "image_failed": 0,
+  "bytes_written": 0,
+  "errors": [
+    "OpenClipboard 失败（剪贴板被占用）"
+  ],
+  "duration_s": 1800.4,
+  "original_clipboard_formats": [],
+  "original_clipboard_was_text": false,
+  "restored": false,
+  "restore_skipped": true,
+  "error_count": 344
+}

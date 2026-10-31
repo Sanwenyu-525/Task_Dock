@@ -604,6 +604,19 @@ CREATE INDEX IF NOT EXISTS idx_notifications_origin_kind_created_id
   ON notification_history(agent_origin, kind, created_at DESC, id DESC);
 "#,
     ),
+    (
+        14,
+        r#"
+-- v14（Task Dock 0.5.3）：DSH 宿主插件机制修正。
+-- ~/.dsh/plugins/ 只是客户端插件位；宿主插件必须以 profile bundle 形式安装
+-- （package.json 声明 dsh.bundle.patch + 登记进 profile 的 dsh.profile.bundles）。
+-- 来源说明同步为真实机制，避免用户误以为「放进 plugins 目录即生效」。
+UPDATE agent_sources
+SET note = 'DSH：宿主插件须以 profile bundle 安装（~/.dsh/profiles/<profile>/node_modules + dsh.profile.bundles），桥接 agent/status 等事件',
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+WHERE id = 'deepseek-harness';
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

@@ -120,16 +120,18 @@ fn describe(payload: &ClipboardPayload) -> String {
 
 fn read_content(label: &str) -> CapturedContent {
     match platform::read_clipboard(true) {
-        ClipboardRead::Content(c) => *c,
+        ClipboardRead::Content { content: c, .. } => *c,
         ClipboardRead::Skip(reason) => panic!("{label}：真实剪贴板读取被跳过：{reason}"),
-        ClipboardRead::Empty => panic!("{label}：真实剪贴板为空，写入未生效"),
+        ClipboardRead::Empty(reason) => {
+            panic!("{label}：真实剪贴板为空，写入未生效：{reason}")
+        }
     }
 }
 
 fn write_and_verify(payload: &ClipboardPayload, watermark: &AtomicU32, label: &str) -> u32 {
     let outcome = platform::write_guarded_notifying(payload, WriteGuard::Unconditional, watermark)
         .unwrap_or_else(|e| panic!("{label}：真实剪贴板写入失败：{e}"));
-    let WriteOutcome::Written(seq) = outcome else {
+    let WriteOutcome::Written { seq, .. } = outcome else {
         panic!("{label}：无条件写入必须成功，实际 {outcome:?}");
     };
     // 立即比较一次；若真机存在「写入已关闭、格式尚未发布完」的瞬态窗口，
@@ -168,7 +170,7 @@ fn mismatch_report(label: &str, expected: &ClipboardPayload, written_seq: u32) -
     let now = platform::current_sequence();
     let read = platform::read_clipboard(true);
     let current = match &read {
-        ClipboardRead::Content(c) => format!(
+        ClipboardRead::Content { content: c, .. } => format!(
             "kind={} byte_size={} text_len={} html_len={} files={} image={}",
             c.kind,
             c.byte_size,
@@ -181,11 +183,11 @@ fn mismatch_report(label: &str, expected: &ClipboardPayload, written_seq: u32) -
                 .unwrap_or_else(|| "-".into()),
         ),
         ClipboardRead::Skip(reason) => format!("skip={reason}"),
-        ClipboardRead::Empty => "empty".into(),
+        ClipboardRead::Empty(_) => "empty".into(),
     };
     // 图片不一致时进一步区分：PNG 容器差异还是像素差异。
     let text_detail = match (expected, &read) {
-        (ClipboardPayload::Text { text: et, html }, ClipboardRead::Content(c)) => {
+        (ClipboardPayload::Text { text: et, html }, ClipboardRead::Content { content: c, .. }) => {
             // 探针：期望「文本完全相同 + 空 HTML 片段」时是否判定一致。
             // 若探针一致而原断言不一致，唯一差别就是剪贴板上存在空的 HTML Format。
             let probe = platform::clipboard_match(&ClipboardPayload::Text {
@@ -209,7 +211,7 @@ fn mismatch_report(label: &str, expected: &ClipboardPayload, written_seq: u32) -
                 height,
                 ..
             },
-            ClipboardRead::Content(c),
+            ClipboardRead::Content { content: c, .. },
         ) => match c.image.as_ref() {
             Some(img) => {
                 let same_png = img.png == *expect_png;
@@ -245,11 +247,11 @@ fn restorable_snapshot() -> Option<Snapshot> {
     let snapshot = platform::snapshot();
     match snapshot.payload.as_ref() {
         None => match platform::read_clipboard(true) {
-            ClipboardRead::Empty => {
+            ClipboardRead::Empty(_) => {
                 println!("本机剪贴板为空：结束后无需恢复");
                 Some(snapshot)
             }
-            ClipboardRead::Content(c) => {
+            ClipboardRead::Content { content: c, .. } => {
                 eprintln!(
                     "中止：本机剪贴板有内容（kind={}）但无法读成可写回载荷，拒绝开始真机写入以免丢失用户内容",
                     c.kind
@@ -279,7 +281,7 @@ fn sample_line(tag: &str) -> String {
     let read = platform::read_clipboard(true);
     let seq = platform::current_sequence();
     let desc = match &read {
-        ClipboardRead::Content(c) => format!(
+        ClipboardRead::Content { content: c, .. } => format!(
             "kind={} files={} text_len={} html_len={} image={}",
             c.kind,
             c.file_paths.len(),
@@ -291,7 +293,7 @@ fn sample_line(tag: &str) -> String {
                 .unwrap_or_else(|| "-".into()),
         ),
         ClipboardRead::Skip(reason) => format!("skip={reason}"),
-        ClipboardRead::Empty => "empty".into(),
+        ClipboardRead::Empty(_) => "empty".into(),
     };
     format!("{tag}: seq={seq} {desc}")
 }
@@ -705,7 +707,7 @@ fn real_failed_write_restores_previous_content() {
             );
             return;
         }
-        Ok(WriteOutcome::Written(_)) => {
+        Ok(WriteOutcome::Written { .. }) => {
             panic!("无效文件载荷绝不能报告写入成功");
         }
     };

@@ -1,0 +1,142 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock[39m
+
+ [32m✓[39m src/components/navigation/TargetMenu.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 589[2mms[22m[39m
+   [33m[2m✓[22m[39m TargetMenu 键盘交互[2m > [22m打开即聚焦第 0 项；工作区入口排第 0 位、索引与 DOM 顺序一致 [33m 318[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/PastePanel.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 761[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m展示分类间隔；开始后显示逐项状态与剩余数量 [33m 494[2mms[22m[39m
+ [32m✓[39m src/components/ui/TooltipLayer.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 859[2mms[22m[39m
+   [33m[2m✓[22m[39m 全局提示条层[2m > [22m悬停带 data-tip 的控件后出现提示，内容取自 data-tip [33m 681[2mms[22m[39m
+ [32m✓[39m src/components/actions/ActionCenterPanel.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 1099[2mms[22m[39m
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m切换到通知分类后不展示优先级筛选，并显示通知空态 [33m 528[2mms[22m[39m
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m加载更多使用后端游标追加，且按钮展示已加载/总数 [33m 319[2mms[22m[39m
+ [32m✓[39m src/components/ui/Popover.edge.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 1097[2mms[22m[39m
+   [33m[2m✓[22m[39m 弹层边缘定位[2m > [22m下方空间充足时向下展开 [33m 805[2mms[22m[39m
+ [32m✓[39m src/components/FullView.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 1339[2mms[22m[39m
+   [33m[2m✓[22m[39m 完整模式左侧导航[2m > [22m渲染六个导航入口与底部快捷入口 [33m 731[2mms[22m[39m
+ [32m✓[39m src/components/history/HistoryPanel.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 3214[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 全局未读与筛选[2m > [22m时间筛选从第一页重新查询，并把 since 传给两条数据流 [33m 664[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m刷新页与已加载页不重叠时提示刷新，不合并出带缺口的时间轴 [33m 757[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m首屏为空后到达的新事件会重新启用「加载更早」 [33m 1021[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/AgentExportPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 332[2mms[22m[39m
+ [32m✓[39m src/components/ui/Select.test.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 2980[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m渲染触发器并暴露 combobox 语义 [33m 714[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m点击展开并列出选项，已选项可辨识 [33m 709[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m长列表：跳到末尾时把高亮项滚进可视区域 [33m 521[2mms[22m[39m
+ [32m✓[39m src/store/useSettingsStore.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 67[2mms[22m[39m
+ [32m✓[39m src/components/ui/overlayEscape.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 3407[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m没有任何弹层时，Escape 才交给窗口级动作（隐藏到托盘） [33m 398[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m抽屉打开时，Escape 只关抽屉，主窗口不受影响 [33m 833[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m确认框优先级最高：Escape 先关确认框，菜单与抽屉保持不动 [33m 869[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m连续按 Escape 逐层关闭，最后一层关闭后主窗口才收到 Escape [33m 717[2mms[22m[39m
+ [32m✓[39m src/hooks/useGlobalShortcuts.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[32m 189[2mms[22m[39m
+ [32m✓[39m src/components/tasks/QuickAdd.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 3187[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m输入自然语言 + Enter：先解析出预览，再 Enter 创建（store/bridge 被正确调用） [33m 2201[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22mEscape 关闭：预览消失、可重新编辑 [33m 378[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m创建失败：错误 toast 可见且输入不丢失 [33m 327[2mms[22m[39m
+ [32m✓[39m src/components/TitleBar.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 1805[2mms[22m[39m
+   [33m[2m✓[22m[39m TitleBar 剪贴板入口[2m > [22m完整模式不显示剪贴板按钮（入口在左侧导航） [33m 690[2mms[22m[39m
+   [33m[2m✓[22m[39m TitleBar 剪贴板入口[2m > [22m紧凑模式保留剪贴板按钮，点击后打开抽屉 [33m 592[2mms[22m[39m
+   [33m[2m✓[22m[39m TitleBar 剪贴板入口[2m > [22m极简模式保留剪贴板按钮，再次点击关闭抽屉 [33m 520[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TasksPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 2420[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m点击搜索按钮展开输入框，输入关键词过滤任务列表 [33m 1437[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m清空搜索恢复全部；点击状态按钮过滤任务列表 [33m 980[2mms[22m[39m
+ [32m✓[39m src/lib/overlayStack.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/context-menu/ContextMenuApp.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 3217[2mms[22m[39m
+   [33m[2m✓[22m[39m 渲染结构[2m > [22m渲染四组标题与全部 10 个菜单项 [33m 755[2mms[22m[39m
+   [33m[2m✓[22m[39m 渲染结构[2m > [22m勾选态与设置快照同步（mode=compact / theme=dark / 自启动开） [33m 457[2mms[22m[39m
+   [33m[2m✓[22m[39m 渲染结构[2m > [22m收到 theme-changed 事件时勾选态实时更新（与主窗同步） [33m 439[2mms[22m[39m
+   [33m[2m✓[22m[39m 动作分发[2m > [22m点击菜单项调用后端动作（退出） [33m 468[2mms[22m[39m
+   [33m[2m✓[22m[39m 键盘交互[2m > [22mshow 后初始焦点落在勾选项，↑↓ 移动，Enter 触发当前项 [33m 540[2mms[22m[39m
+ [32m✓[39m src/components/ui/DateTimePicker.test.tsx [2m([22m[2m10 tests[22m[2m)[22m[33m 4246[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m触发器展示本地时间，展开后 aria-expanded 为真 [33m 653[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m只是打开浮层不会改值（不截断秒数） [33m 1153[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m点回原来那一天不产生变更 [33m 482[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m换日期保留原来的时分 [33m 405[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m改时间保留原来的日期 [33m 494[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m日历网格支持方向键移动焦点 [33m 378[2mms[22m[39m
+ [32m✓[39m src/components/ui/DropdownMenu.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[33m 4671[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m触发器暴露 menu 语义与展开状态 [33m 1076[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m点击展开、再次点击收起 [33m 457[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m方向键在菜单项之间移动，并跳过禁用项 [33m 512[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22mHome / End 跳到首尾可用项 [33m 487[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m禁用项不可触发，菜单保持展开 [33m 389[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m字母键快速定位到对应菜单项 [33m 352[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22mEscape 只关闭菜单，焦点回到触发器 [33m 422[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m点击外部关闭菜单 [33m 412[2mms[22m[39m
+ [32m✓[39m src/lib/edgeSnap.test.ts [2m([22m[2m45 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/store/useActionsStore.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 77[2mms[22m[39m
+ [32m✓[39m src/lib/historyGroup.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/store/useClipboardStore.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m src/lib/agentTree.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/ClipboardPanel.test.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 4327[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m进入页面即拉取历史，并渲染条目与统计 [33m 375[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m类型筛选会带着新的 kind 重新拉取 [33m 1477[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m只看收藏会以 favorite=true 重新拉取 [33m 480[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m搜索输入防抖后按关键词重新拉取 [33m 612[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m复制单条：调用后端命令并回报结果 [33m 532[2mms[22m[39m
+ [32m✓[39m src/styles-themes.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m src/lib/navigation.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/lib/workspace.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/context-menu/styles-context-menu.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TaskEditor.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 4177[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改标题时不提交重复规则或未修改的时间 [33m 2089[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 描述 时不重写重复规则 [33m 419[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 优先级 时不重写重复规则 [33m 319[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 标签（逗号分隔） 时不重写重复规则 [33m 332[2mms[22m[39m
+   [33m[2m✓[22m[39m 主动取消或修改重复规则时提交明确意图 [33m 587[2mms[22m[39m
+ [32m✓[39m src/lib/format.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/components/navigation/AppPicker.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 4101[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m渲染应用列表；搜索框输入与分类按钮切换都能过滤列表 [33m 1692[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m点击应用项：按 TargetInput 保存目标 → 关联任务 → 关闭弹窗 [33m 336[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m窗口身份记录失败时显示错误并保留选择器，便于重试 [33m 340[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m两个任务重用同一应用时分别更新各自关联的窗口 [33m 775[2mms[22m[39m
+ [32m✓[39m src/context-menu/items.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/ClipboardDrawer.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[33m 6418[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m分页：80/100 时加载更多只追加一页 [33m 3361[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m监听中、监听线程未启动与手动暂停显示不同状态 [33m 1268[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m剪贴板配置损坏时提示已暂停，绝不显示监听中 [33m 365[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m关联模式：条目卡片出现关联按钮，普通模式不出现 [33m 443[2mms[22m[39m
+ [32m✓[39m src/lib/clipboardUi.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/lib/subscriptions.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/lib/theme.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+[90mstderr[2m | src/components/SnapOverlay.test.tsx[2m > [22m[2mSnapOverlay 渲染[2m > [22m[2mcandidate 相位显示「松开吸附左侧」提示与光带
+[22m[39mThe current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+[90mstderr[2m | src/components/SnapOverlay.test.tsx[2m > [22m[2mSnapOverlay 渲染[2m > [22m[2mcandidate 边切换时提示跟随（拖过角落）
+[22m[39mThe current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+[90mstderr[2m | src/components/SnapOverlay.test.tsx[2m > [22m[2mSnapOverlay 渲染[2m > [22m[2m停靠反馈显示「已吸附右侧」（role=status）
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | src/components/SnapOverlay.test.tsx[2m > [22m[2mSnapOverlay 渲染[2m > [22m[2m停靠反馈 1.2s 后自动消失（不残留持续元素）
+[22m[39mThe current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+[90mstderr[2m | src/components/SnapOverlay.test.tsx[2m > [22m[2mSnapOverlay 渲染[2m > [22m[2mdocked-hidden 渲染触发条按钮，点击调用引擎 reveal
+[22m[39mThe current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+[90mstderr[2m | src/components/SnapOverlay.test.tsx[2m > [22m[2mSnapOverlay 渲染[2m > [22m[2mdocked-visible 渲染停靠细线但不渲染触发条
+[22m[39mThe current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+[90mstderr[2m | src/components/SnapOverlay.test.tsx[2m > [22m[2mSnapOverlay 渲染[2m > [22m[2mdocked-revealed 不再重复触发已吸附反馈
+[22m[39mThe current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+ [32m✓[39m src/components/SnapOverlay.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[32m 228[2mms[22m[39m
+ [32m✓[39m src/test/powershellScripts.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 567[2mms[22m[39m
+   [33m[2m✓[22m[39m Windows PowerShell 脚本[2m > [22m全部 .ps1 都能被 PowerShell 解析（零错误） [33m 560[2mms[22m[39m
+ [32m✓[39m src/store/useClipboardStore.live.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/store/useAgentsStore.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32m✓[39m src/store/useUiStore.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m42 passed[39m[22m[90m (42)[39m
+[2m      Tests [22m [1m[32m343 passed[39m[22m[90m (343)[39m
+[2m   Start at [22m 09:51:50
+[2m   Duration [22m 46.82s[2m (transform 18.58s, setup 4.28s, collect 159.43s, tests 55.65s, environment 587.91s, prepare 22.83s)[22m
+

@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "running",
+  "config": {
+    "base": "http://127.0.0.1:47892",
+    "token": "5efd9f97-2576-4ab6-a56e-9eb2260cbc59",
+    "mode": "running",
+    "agents": 4,
+    "rate": 5,
+    "duration": 0,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "N3-idle-20261030-224851",
+    "source": "bridge",
+    "allowRealSource": true,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc-v05r4\\N3-idle-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N3-idle-20261030-224851-load.json"
+  },
+  "elapsed_ms": 0,
+  "actual_rate": 0,
+  "counts": {
+    "sent": 0,
+    "ok": 0,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 0,
+    "critical_ok": 0,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 0,
+    "p95": 0,
+    "max": 0
+  }
+}

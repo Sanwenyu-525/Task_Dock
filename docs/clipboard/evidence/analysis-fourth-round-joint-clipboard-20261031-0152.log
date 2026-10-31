@@ -1,0 +1,1107 @@
+{
+  "jsonl": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-fourth-round-joint-clipboard-20261031-011217.jsonl",
+  "meta": "D:/Develop/task_dock/docs/performance/results/DIAG-fourth-round-joint-clipboard-20261031-011217-meta.json",
+  "scenario": "fourth-round-joint-clipboard",
+  "source_exe": "C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05-fourth/task-dock-acc1.exe",
+  "source_exe_bytes": 15603200,
+  "samples_total": 452,
+  "samples_alive": 452,
+  "samples_after_process_exit": 0,
+  "process_exited_during_run": false,
+  "bounds": {
+    "warmup": [
+      0.0,
+      96
+    ],
+    "load": [
+      96,
+      1814.4
+    ],
+    "post": [
+      1814.4,
+      2416.1
+    ],
+    "span_s": 2416.1,
+    "boundary_source": "http_accepted 增长区间"
+  },
+  "phases": {
+    "warmup": {
+      "window_s": [
+        0.0,
+        96
+      ],
+      "samples": 7,
+      "metrics": {
+        "taskdock.private_mb": {
+          "n": 7,
+          "first": 9.6,
+          "last": 10.3,
+          "min": 9.6,
+          "max": 11.4,
+          "mean": 10.3,
+          "delta": 0.7,
+          "slope_per_min": 0.59102
+        },
+        "taskdock.ws_mb": {
+          "n": 7,
+          "first": 31.0,
+          "last": 32.2,
+          "min": 31.0,
+          "max": 33.3,
+          "mean": 32.057,
+          "delta": 1.2,
+          "slope_per_min": 0.88533
+        },
+        "taskdock.threads": {
+          "n": 7,
+          "first": 38.0,
+          "last": 35.0,
+          "min": 35.0,
+          "max": 38.0,
+          "mean": 36.143,
+          "delta": -3.0,
+          "slope_per_min": -2.42545
+        },
+        "taskdock.handles": {
+          "n": 7,
+          "first": 378.0,
+          "last": 389.0,
+          "min": 378.0,
+          "max": 389.0,
+          "mean": 387.143,
+          "delta": 11.0,
+          "slope_per_min": 5.30235
+        },
+        "taskdock.cpu_pct": {
+          "n": 7,
+          "first": 0.0,
+          "last": 0.03,
+          "min": 0.0,
+          "max": 0.35,
+          "mean": 0.104,
+          "delta": 0.03,
+          "slope_per_min": 0.01773
+        },
+        "webview2_tree.private_mb": {
+          "n": 7,
+          "first": 237.3,
+          "last": 244.2,
+          "min": 237.3,
+          "max": 244.7,
+          "mean": 241.086,
+          "delta": 6.9,
+          "slope_per_min": 4.80116
+        },
+        "webview2_tree.threads": {
+          "n": 7,
+          "first": 174.0,
+          "last": 183.0,
+          "min": 174.0,
+          "max": 190.0,
+          "mean": 182.857,
+          "delta": 9.0,
+          "slope_per_min": 6.88214
+        },
+        "rust.live_bytes": {
+          "n": 2,
+          "first": 1064990.0,
+          "last": 1040346.0,
+          "min": 1040346.0,
+          "max": 1064990.0,
+          "mean": 1052668.0,
+          "delta": -24644.0,
+          "slope_per_min": null
+        },
+        "rust.peak_bytes": {
+          "n": 2,
+          "first": 2491553.0,
+          "last": 2491553.0,
+          "min": 2491553.0,
+          "max": 2491553.0,
+          "mean": 2491553.0,
+          "delta": 0.0,
+          "slope_per_min": null
+        },
+        "tokio.alive_tasks": {
+          "n": 2,
+          "first": 15.0,
+          "last": 14.0,
+          "min": 14.0,
+          "max": 15.0,
+          "mean": 14.5,
+          "delta": -1.0,
+          "slope_per_min": null
+        },
+        "db.page_count": {
+          "n": 2,
+          "first": 164.0,
+          "last": 573.0,
+          "min": 164.0,
+          "max": 573.0,
+          "mean": 368.5,
+          "delta": 409.0,
+          "slope_per_min": null
+        },
+        "db.db_bytes": {
+          "n": 2,
+          "first": 487424.0,
+          "last": 2224128.0,
+          "min": 487424.0,
+          "max": 2224128.0,
+          "mean": 1355776.0,
+          "delta": 1736704.0,
+          "slope_per_min": null
+        },
+        "db.wal_bytes": {
+          "n": 2,
+          "first": 3794552.0,
+          "last": 4470232.0,
+          "min": 3794552.0,
+          "max": 4470232.0,
+          "mean": 4132392.0,
+          "delta": 675680.0,
+          "slope_per_min": null
+        },
+        "db.read_avg_ms": {
+          "n": 2,
+          "first": 1.19,
+          "last": 1.1,
+          "min": 1.1,
+          "max": 1.19,
+          "mean": 1.145,
+          "delta": -0.09,
+          "slope_per_min": null
+        },
+        "pipeline.queue_depth_events": {
+          "n": 2,
+          "first": 4.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 4.0,
+          "mean": 2.0,
+          "delta": -4.0,
+          "slope_per_min": null
+        },
+        "pipeline.merge_buffer": {
+          "n": 2,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": null
+        },
+        "pipeline.events_received": {
+          "n": 2,
+          "first": 224.0,
+          "last": 1816.0,
+          "min": 224.0,
+          "max": 1816.0,
+          "mean": 1020.0,
+          "delta": 1592.0,
+          "slope_per_min": null
+        },
+        "pipeline.events_processed": {
+          "n": 2,
+          "first": 128.0,
+          "last": 1089.0,
+          "min": 128.0,
+          "max": 1089.0,
+          "mean": 608.5,
+          "delta": 961.0,
+          "slope_per_min": null
+        },
+        "pipeline.events_merged": {
+          "n": 2,
+          "first": 92.0,
+          "last": 727.0,
+          "min": 92.0,
+          "max": 727.0,
+          "mean": 409.5,
+          "delta": 635.0,
+          "slope_per_min": null
+        },
+        "pipeline.commit_failures": {
+          "n": 2,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": null
+        },
+        "pipeline.overload_rejects": {
+          "n": 2,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": null
+        },
+        "http.accepted": {
+          "n": 2,
+          "first": 224.0,
+          "last": 1816.0,
+          "min": 224.0,
+          "max": 1816.0,
+          "mean": 1020.0,
+          "delta": 1592.0,
+          "slope_per_min": null
+        },
+        "notify.attempted": {
+          "n": 2,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": null
+        },
+        "notify.succeeded": {
+          "n": 2,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": null
+        },
+        "notify.failed": {
+          "n": 2,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": null
+        },
+        "system.process_count": {
+          "n": 7,
+          "first": 541.0,
+          "last": 557.0,
+          "min": 541.0,
+          "max": 557.0,
+          "mean": 549.286,
+          "delta": 16.0,
+          "slope_per_min": 11.60088
+        }
+      }
+    },
+    "load": {
+      "window_s": [
+        96,
+        1814.4
+      ],
+      "samples": 248,
+      "metrics": {
+        "taskdock.private_mb": {
+          "n": 248,
+          "first": 10.3,
+          "last": 13.1,
+          "min": 10.3,
+          "max": 13.9,
+          "mean": 13.424,
+          "delta": 2.8,
+          "slope_per_min": 0.04213
+        },
+        "taskdock.ws_mb": {
+          "n": 248,
+          "first": 32.2,
+          "last": 15.0,
+          "min": 12.1,
+          "max": 33.9,
+          "mean": 17.089,
+          "delta": -17.2,
+          "slope_per_min": -0.33769
+        },
+        "taskdock.threads": {
+          "n": 248,
+          "first": 35.0,
+          "last": 32.0,
+          "min": 32.0,
+          "max": 36.0,
+          "mean": 32.556,
+          "delta": -3.0,
+          "slope_per_min": -0.07996
+        },
+        "taskdock.handles": {
+          "n": 248,
+          "first": 389.0,
+          "last": 384.0,
+          "min": 383.0,
+          "max": 405.0,
+          "mean": 391.351,
+          "delta": -5.0,
+          "slope_per_min": 0.01203
+        },
+        "taskdock.cpu_pct": {
+          "n": 248,
+          "first": 0.03,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.28,
+          "mean": 0.036,
+          "delta": -0.03,
+          "slope_per_min": -0.00105
+        },
+        "webview2_tree.private_mb": {
+          "n": 248,
+          "first": 244.2,
+          "last": 224.3,
+          "min": 221.3,
+          "max": 275.8,
+          "mean": 227.587,
+          "delta": -19.9,
+          "slope_per_min": -0.58754
+        },
+        "webview2_tree.threads": {
+          "n": 248,
+          "first": 183.0,
+          "last": 172.0,
+          "min": 170.0,
+          "max": 184.0,
+          "mean": 173.343,
+          "delta": -11.0,
+          "slope_per_min": -0.19077
+        },
+        "rust.live_bytes": {
+          "n": 42,
+          "first": 1040346.0,
+          "last": 892991.0,
+          "min": 892991.0,
+          "max": 1089150.0,
+          "mean": 1051535.095,
+          "delta": -147355.0,
+          "slope_per_min": -742.59726
+        },
+        "rust.peak_bytes": {
+          "n": 42,
+          "first": 2491553.0,
+          "last": 2491553.0,
+          "min": 2491553.0,
+          "max": 2491553.0,
+          "mean": 2491553.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "tokio.alive_tasks": {
+          "n": 42,
+          "first": 14.0,
+          "last": 7.0,
+          "min": 7.0,
+          "max": 15.0,
+          "mean": 14.262,
+          "delta": -7.0,
+          "slope_per_min": -0.04098
+        },
+        "db.page_count": {
+          "n": 42,
+          "first": 573.0,
+          "last": 9871.0,
+          "min": 573.0,
+          "max": 9871.0,
+          "mean": 5886.357,
+          "delta": 9298.0,
+          "slope_per_min": 327.28657
+        },
+        "db.db_bytes": {
+          "n": 42,
+          "first": 2224128.0,
+          "last": 40374272.0,
+          "min": 2224128.0,
+          "max": 40374272.0,
+          "mean": 24056003.048,
+          "delta": 38150144.0,
+          "slope_per_min": 1339561.36026
+        },
+        "db.wal_bytes": {
+          "n": 42,
+          "first": 4470232.0,
+          "last": 4618552.0,
+          "min": 4470232.0,
+          "max": 4618552.0,
+          "mean": 4579019.619,
+          "delta": 148320.0,
+          "slope_per_min": 5438.71577
+        },
+        "db.read_avg_ms": {
+          "n": 42,
+          "first": 1.1,
+          "last": 1.24,
+          "min": 1.09,
+          "max": 1.97,
+          "mean": 1.37,
+          "delta": 0.14,
+          "slope_per_min": -0.00745
+        },
+        "pipeline.queue_depth_events": {
+          "n": 42,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 12.0,
+          "mean": 2.952,
+          "delta": 0.0,
+          "slope_per_min": -0.03438
+        },
+        "pipeline.merge_buffer": {
+          "n": 42,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.events_received": {
+          "n": 42,
+          "first": 1816.0,
+          "last": 36002.0,
+          "min": 1816.0,
+          "max": 36002.0,
+          "mean": 21424.0,
+          "delta": 34186.0,
+          "slope_per_min": 1199.62247
+        },
+        "pipeline.events_processed": {
+          "n": 42,
+          "first": 1089.0,
+          "last": 21527.0,
+          "min": 1089.0,
+          "max": 21527.0,
+          "mean": 12790.524,
+          "delta": 20438.0,
+          "slope_per_min": 718.14198
+        },
+        "pipeline.events_merged": {
+          "n": 42,
+          "first": 727.0,
+          "last": 14475.0,
+          "min": 727.0,
+          "max": 14475.0,
+          "mean": 8630.619,
+          "delta": 13748.0,
+          "slope_per_min": 481.49854
+        },
+        "pipeline.commit_failures": {
+          "n": 42,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.overload_rejects": {
+          "n": 42,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "http.accepted": {
+          "n": 42,
+          "first": 1816.0,
+          "last": 36000.0,
+          "min": 1816.0,
+          "max": 36000.0,
+          "mean": 21422.667,
+          "delta": 34184.0,
+          "slope_per_min": 1199.48373
+        },
+        "notify.attempted": {
+          "n": 42,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "notify.succeeded": {
+          "n": 42,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "notify.failed": {
+          "n": 42,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "system.process_count": {
+          "n": 248,
+          "first": 557.0,
+          "last": 502.0,
+          "min": 498.0,
+          "max": 585.0,
+          "mean": 544.331,
+          "delta": -55.0,
+          "slope_per_min": -1.94246
+        }
+      }
+    },
+    "post": {
+      "window_s": [
+        1814.4,
+        2416.1
+      ],
+      "samples": 199,
+      "metrics": {
+        "taskdock.private_mb": {
+          "n": 199,
+          "first": 13.1,
+          "last": 13.1,
+          "min": 13.1,
+          "max": 13.1,
+          "mean": 13.1,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "taskdock.ws_mb": {
+          "n": 199,
+          "first": 15.0,
+          "last": 14.7,
+          "min": 14.7,
+          "max": 15.0,
+          "mean": 14.833,
+          "delta": -0.3,
+          "slope_per_min": -0.03651
+        },
+        "taskdock.threads": {
+          "n": 199,
+          "first": 32.0,
+          "last": 31.0,
+          "min": 31.0,
+          "max": 32.0,
+          "mean": 31.015,
+          "delta": -1.0,
+          "slope_per_min": -0.00873
+        },
+        "taskdock.handles": {
+          "n": 199,
+          "first": 384.0,
+          "last": 382.0,
+          "min": 382.0,
+          "max": 384.0,
+          "mean": 382.03,
+          "delta": -2.0,
+          "slope_per_min": -0.01746
+        },
+        "taskdock.cpu_pct": {
+          "n": 199,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.09,
+          "mean": 0.001,
+          "delta": 0.0,
+          "slope_per_min": 0.00029
+        },
+        "webview2_tree.private_mb": {
+          "n": 199,
+          "first": 224.3,
+          "last": 223.6,
+          "min": 223.4,
+          "max": 224.4,
+          "mean": 223.749,
+          "delta": -0.7,
+          "slope_per_min": -0.04714
+        },
+        "webview2_tree.threads": {
+          "n": 199,
+          "first": 172.0,
+          "last": 170.0,
+          "min": 170.0,
+          "max": 176.0,
+          "mean": 171.573,
+          "delta": -2.0,
+          "slope_per_min": -0.30194
+        },
+        "rust.live_bytes": {
+          "n": 33,
+          "first": 892954.0,
+          "last": 892954.0,
+          "min": 892919.0,
+          "max": 892954.0,
+          "mean": 892945.879,
+          "delta": 0.0,
+          "slope_per_min": 0.47287
+        },
+        "rust.peak_bytes": {
+          "n": 33,
+          "first": 2491553.0,
+          "last": 2491553.0,
+          "min": 2491553.0,
+          "max": 2491553.0,
+          "mean": 2491553.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "tokio.alive_tasks": {
+          "n": 33,
+          "first": 7.0,
+          "last": 7.0,
+          "min": 7.0,
+          "max": 7.0,
+          "mean": 7.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "db.page_count": {
+          "n": 33,
+          "first": 9871.0,
+          "last": 9871.0,
+          "min": 9871.0,
+          "max": 9871.0,
+          "mean": 9871.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "db.db_bytes": {
+          "n": 33,
+          "first": 40374272.0,
+          "last": 40374272.0,
+          "min": 40374272.0,
+          "max": 40374272.0,
+          "mean": 40374272.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "db.wal_bytes": {
+          "n": 33,
+          "first": 4618552.0,
+          "last": 4618552.0,
+          "min": 4618552.0,
+          "max": 4618552.0,
+          "mean": 4618552.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "db.read_avg_ms": {
+          "n": 33,
+          "first": 1.24,
+          "last": 1.23,
+          "min": 1.23,
+          "max": 1.24,
+          "mean": 1.235,
+          "delta": -0.01,
+          "slope_per_min": -0.00147
+        },
+        "pipeline.queue_depth_events": {
+          "n": 33,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.merge_buffer": {
+          "n": 33,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.events_received": {
+          "n": 33,
+          "first": 36002.0,
+          "last": 36002.0,
+          "min": 36002.0,
+          "max": 36002.0,
+          "mean": 36002.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.events_processed": {
+          "n": 33,
+          "first": 21527.0,
+          "last": 21527.0,
+          "min": 21527.0,
+          "max": 21527.0,
+          "mean": 21527.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.events_merged": {
+          "n": 33,
+          "first": 14475.0,
+          "last": 14475.0,
+          "min": 14475.0,
+          "max": 14475.0,
+          "mean": 14475.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.commit_failures": {
+          "n": 33,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.overload_rejects": {
+          "n": 33,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "http.accepted": {
+          "n": 33,
+          "first": 36000.0,
+          "last": 36000.0,
+          "min": 36000.0,
+          "max": 36000.0,
+          "mean": 36000.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "notify.attempted": {
+          "n": 33,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "notify.succeeded": {
+          "n": 33,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "notify.failed": {
+          "n": 33,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "system.process_count": {
+          "n": 199,
+          "first": 502.0,
+          "last": 506.0,
+          "min": 494.0,
+          "max": 516.0,
+          "mean": 506.085,
+          "delta": 4.0,
+          "slope_per_min": 0.45677
+        }
+      }
+    },
+    "load_tail_quarter": {
+      "window_s": [
+        1384.8,
+        1814.4
+      ],
+      "samples": 89,
+      "metrics": {
+        "taskdock.private_mb": {
+          "n": 89,
+          "first": 13.8,
+          "last": 13.1,
+          "min": 13.1,
+          "max": 13.9,
+          "mean": 13.671,
+          "delta": -0.7,
+          "slope_per_min": -0.03248
+        },
+        "taskdock.ws_mb": {
+          "n": 89,
+          "first": 15.7,
+          "last": 15.0,
+          "min": 15.0,
+          "max": 15.9,
+          "mean": 15.551,
+          "delta": -0.7,
+          "slope_per_min": -0.08031
+        },
+        "taskdock.threads": {
+          "n": 89,
+          "first": 33.0,
+          "last": 32.0,
+          "min": 32.0,
+          "max": 33.0,
+          "mean": 32.146,
+          "delta": -1.0,
+          "slope_per_min": -0.11239
+        },
+        "taskdock.handles": {
+          "n": 89,
+          "first": 392.0,
+          "last": 384.0,
+          "min": 384.0,
+          "max": 392.0,
+          "mean": 391.225,
+          "delta": -8.0,
+          "slope_per_min": -0.20534
+        },
+        "taskdock.cpu_pct": {
+          "n": 89,
+          "first": 0.05,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.16,
+          "mean": 0.029,
+          "delta": -0.05,
+          "slope_per_min": 0.00048
+        },
+        "webview2_tree.private_mb": {
+          "n": 89,
+          "first": 225.7,
+          "last": 224.3,
+          "min": 223.0,
+          "max": 226.6,
+          "mean": 224.647,
+          "delta": -1.4,
+          "slope_per_min": 0.00592
+        },
+        "webview2_tree.threads": {
+          "n": 89,
+          "first": 177.0,
+          "last": 172.0,
+          "min": 170.0,
+          "max": 177.0,
+          "mean": 171.933,
+          "delta": -5.0,
+          "slope_per_min": -0.69719
+        },
+        "rust.live_bytes": {
+          "n": 15,
+          "first": 1066886.0,
+          "last": 892991.0,
+          "min": 892991.0,
+          "max": 1089150.0,
+          "mean": 1048113.133,
+          "delta": -173895.0,
+          "slope_per_min": -8117.24464
+        },
+        "rust.peak_bytes": {
+          "n": 15,
+          "first": 2491553.0,
+          "last": 2491553.0,
+          "min": 2491553.0,
+          "max": 2491553.0,
+          "mean": 2491553.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "tokio.alive_tasks": {
+          "n": 15,
+          "first": 15.0,
+          "last": 7.0,
+          "min": 7.0,
+          "max": 15.0,
+          "mean": 14.0,
+          "delta": -8.0,
+          "slope_per_min": -0.39331
+        },
+        "db.page_count": {
+          "n": 15,
+          "first": 7683.0,
+          "last": 9871.0,
+          "min": 7683.0,
+          "max": 9871.0,
+          "mean": 8935.467,
+          "delta": 2188.0,
+          "slope_per_min": 327.00442
+        },
+        "db.db_bytes": {
+          "n": 15,
+          "first": 31367168.0,
+          "last": 40374272.0,
+          "min": 31367168.0,
+          "max": 40374272.0,
+          "mean": 36536320.0,
+          "delta": 9007104.0,
+          "slope_per_min": 1339462.92963
+        },
+        "db.wal_bytes": {
+          "n": 15,
+          "first": 4618552.0,
+          "last": 4618552.0,
+          "min": 4618552.0,
+          "max": 4618552.0,
+          "mean": 4618552.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "db.read_avg_ms": {
+          "n": 15,
+          "first": 1.3,
+          "last": 1.24,
+          "min": 1.24,
+          "max": 1.3,
+          "mean": 1.262,
+          "delta": -0.06,
+          "slope_per_min": -0.00974
+        },
+        "pipeline.queue_depth_events": {
+          "n": 15,
+          "first": 4.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 8.0,
+          "mean": 2.933,
+          "delta": -4.0,
+          "slope_per_min": -0.13004
+        },
+        "pipeline.merge_buffer": {
+          "n": 15,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.events_received": {
+          "n": 15,
+          "first": 28018.0,
+          "last": 36002.0,
+          "min": 28018.0,
+          "max": 36002.0,
+          "mean": 32583.6,
+          "delta": 7984.0,
+          "slope_per_min": 1194.39639
+        },
+        "pipeline.events_processed": {
+          "n": 15,
+          "first": 16741.0,
+          "last": 21527.0,
+          "min": 16741.0,
+          "max": 21527.0,
+          "mean": 19475.8,
+          "delta": 4786.0,
+          "slope_per_min": 715.84397
+        },
+        "pipeline.events_merged": {
+          "n": 15,
+          "first": 11273.0,
+          "last": 14475.0,
+          "min": 11273.0,
+          "max": 14475.0,
+          "mean": 13104.867,
+          "delta": 3202.0,
+          "slope_per_min": 478.68247
+        },
+        "pipeline.commit_failures": {
+          "n": 15,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "pipeline.overload_rejects": {
+          "n": 15,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "http.accepted": {
+          "n": 15,
+          "first": 28016.0,
+          "last": 36000.0,
+          "min": 28016.0,
+          "max": 36000.0,
+          "mean": 32580.533,
+          "delta": 7984.0,
+          "slope_per_min": 1194.29896
+        },
+        "notify.attempted": {
+          "n": 15,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "notify.succeeded": {
+          "n": 15,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "notify.failed": {
+          "n": 15,
+          "first": 0.0,
+          "last": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "mean": 0.0,
+          "delta": 0.0,
+          "slope_per_min": 0.0
+        },
+        "system.process_count": {
+          "n": 89,
+          "first": 532.0,
+          "last": 502.0,
+          "min": 498.0,
+          "max": 537.0,
+          "mean": 517.775,
+          "delta": -30.0,
+          "slope_per_min": -3.87005
+        }
+      }
+    }
+  },
+  "load_json": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-fourth-round-joint-clipboard-20261031-011217-load.json"
+}
+写入 D:/Develop/task_dock/docs/performance/results/analysis-fourth-round-joint-clipboard-20261031-0152.json

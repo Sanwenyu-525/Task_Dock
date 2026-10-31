@@ -1,0 +1,89 @@
+{
+  "backend_only": true,
+  "config": {
+    "agents": 10,
+    "batch_size": 100,
+    "coalesce_ms": 250,
+    "duration_secs": 600,
+    "expected_events": 300000,
+    "queue_capacity": 1024,
+    "rate_per_agent": 50
+  },
+  "counts": {
+    "critical_failed": 0,
+    "critical_missing_in_db": 0,
+    "critical_ok": 30000,
+    "critical_retries": 0,
+    "critical_sent": 30000,
+    "max_batch_size": 40,
+    "max_queue_depth": 234,
+    "merged": 0,
+    "running_accepted": 270000,
+    "sampled": 0,
+    "submit_errors": 0,
+    "submitted": 300000
+  },
+  "db": {
+    "by_state": {
+      "completed": 15000,
+      "running": 30460,
+      "waiting": 15000
+    },
+    "events": 60460
+  },
+  "db_file_mb": 120.4,
+  "elapsed_ms": 600341,
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "note": "真实 IngestPipeline + 真实 SQLite 状态机；不含 WebView2/Tauri 窗口与托盘 UI",
+  "pass": true,
+  "pipeline": {
+    "batches": 3000,
+    "coalesce_ms": 250,
+    "commit_failures": 0,
+    "db_write_latency": {
+      "max_ms": 94.86,
+      "p50_ms": 16.72,
+      "p95_ms": 55.96,
+      "p99_ms": 67.62,
+      "samples": 1024
+    },
+    "events_merged": 239540,
+    "events_processed": 60460,
+    "events_received": 300000,
+    "events_sampled": 0,
+    "events_spooled": 0,
+    "events_unsaved": 0,
+    "fallback_jobs": 0,
+    "ingest_latency": {
+      "max_ms": 243.37,
+      "p50_ms": 113.21,
+      "p95_ms": 207.59,
+      "p99_ms": 227.33,
+      "samples": 2048
+    },
+    "last_batch_size": 30,
+    "last_flush_at": "2026-10-30T15:52:50.977572900+00:00",
+    "lifecycle": "running",
+    "max_batch_size": 40,
+    "merge_buffer": 0,
+    "overload_rejects": 0,
+    "queue_capacity": 1024,
+    "queue_depth_events": 0,
+    "queue_depth_jobs": 0,
+    "running": true,
+    "spool_failures": 0,
+    "spool_pending_files": 0,
+    "submissions": 300000,
+    "uptime_secs": 600
+  },
+  "scenario": "A",
+  "started_at": "2026-10-30T15:52:51.830643400+00:00",
+  "throughput_ev_per_s": 499.72
+}

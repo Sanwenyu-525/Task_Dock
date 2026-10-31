@@ -1,0 +1,112 @@
+    Finished `release` profile [optimized] target(s) in 10.43s
+     Running tests\ingest_perf.rs (target\release\deps\ingest_perf-ec28ce36b1402588.exe)
+
+running 1 test
+
+==== 压测结果 "C" ====
+{
+  "backend_only": true,
+  "config": {
+    "agents": 8,
+    "batch_size": 10,
+    "coalesce_ms": 100,
+    "duration_secs": 20,
+    "injected_sink_delay_ms": 30,
+    "queue_capacity": 64,
+    "rate_per_agent": 100
+  },
+  "counts": {
+    "critical_failed": 0,
+    "critical_missing_in_db": 0,
+    "critical_ok": 1592,
+    "critical_retries": 0,
+    "critical_sent": 1592,
+    "max_queue_depth": 64,
+    "merge_buffer_after_load": 782,
+    "merged": 10890,
+    "overload_rejects": 0,
+    "recovery_ok": true,
+    "sampled": 0,
+    "submit_errors": 0,
+    "submitted": 15992
+  },
+  "db": {
+    "by_state": {
+      "completed": 793,
+      "running": 3287,
+      "waiting": 800
+    },
+    "events": 4880
+  },
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "note": "真实 IngestPipeline + 真实 SQLite 状态机；不含 WebView2/Tauri 窗口与托盘 UI",
+  "pass": false,
+  "pipeline": {
+    "batches": 511,
+    "coalesce_ms": 100,
+    "commit_failures": 0,
+    "db_write_latency": {
+      "max_ms": 66.57,
+      "p50_ms": 37.71,
+      "p95_ms": 54.05,
+      "p99_ms": 61.58,
+      "samples": 511
+    },
+    "events_merged": 11113,
+    "events_processed": 4087,
+    "events_received": 15992,
+    "events_sampled": 0,
+    "events_spooled": 0,
+    "events_unsaved": 0,
+    "fallback_jobs": 0,
+    "ingest_latency": {
+      "max_ms": 374.65,
+      "p50_ms": 252.32,
+      "p95_ms": 295.7,
+      "p99_ms": 308.78,
+      "samples": 2048
+    },
+    "last_batch_size": 10,
+    "last_flush_at": "2026-10-30T15:53:34.425170700+00:00",
+    "lifecycle": "running",
+    "max_batch_size": 10,
+    "merge_buffer": 792,
+    "overload_rejects": 0,
+    "queue_capacity": 64,
+    "queue_depth_events": 0,
+    "queue_depth_jobs": 0,
+    "running": true,
+    "spool_failures": 0,
+    "spool_pending_files": 0,
+    "submissions": 5102,
+    "uptime_secs": 20
+  },
+  "scenario": "C",
+  "started_at": "2026-10-30T15:53:37.744510700+00:00"
+}
+
+判定：FAIL / 需复核
+
+[报告] \\?\D:\Develop\task_dock-r2-acc\docs\performance\results\C-20261030-155337.json
+
+thread 'scenario_c_overload_recovers' (72128) panicked at tests\ingest_perf.rs:694:5:
+场景 C 未达标：过载未显式拒绝或关键事件丢失
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test scenario_c_overload_recovers ... FAILED
+
+failures:
+
+failures:
+    scenario_c_overload_recovers
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 23.92s
+
+error: test failed, to rerun pass `--test ingest_perf`
+C_exit=101

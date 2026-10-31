@@ -1,0 +1,105 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.35s
+     Running unittests src\lib.rs (target-accept\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 94 tests
+test clipboard::agent_bridge::tests::agent_capability_matrix_is_honest ... ok
+test clipboard::engine::tests::classify_prefers_files_then_image_then_url_then_html ... ok
+test clipboard::engine::tests::cf_html_offsets_point_into_payload ... ok
+test clipboard::image::tests::dib_bitfields_with_alpha_mask_keeps_transparency ... ok
+test clipboard::engine::tests::restore_never_overwrites_new_user_content ... ok
+test clipboard::image::tests::decodes_bottom_up_and_top_down_dib ... ok
+test clipboard::engine::tests::hash_dedupes_identical_and_separates_types ... ok
+test clipboard::engine::tests::preview_is_bounded_and_never_full_body ... ok
+test clipboard::engine::tests::rich_group_orders_items_and_marks_missing_images ... ok
+test clipboard::image::tests::dib_32bpp_bi_rgb_with_zero_alpha_is_visible ... ok
+test clipboard::image::tests::dib_32bpp_with_real_alpha_keeps_transparency ... ok
+test clipboard::image::tests::dib_bitfields_without_alpha_mask_is_visible ... ok
+test clipboard::engine::tests::grouping_window_and_interleaving ... ok
+test clipboard::image::tests::fully_transparent_png_is_treated_as_opaque ... ok
+test clipboard::image::tests::canonicalize_unused_alpha_covers_the_last_pixel_and_keeps_real_transparency ... ok
+test clipboard::image::tests::malformed_dib_is_not_reported_as_alpha_unused ... ok
+test clipboard::image::tests::rejects_truncated_or_compressed_dib ... ok
+test clipboard::image::tests::partially_transparent_png_is_never_normalized ... ok
+test clipboard::image::tests::legitimate_transparent_png_without_dib_provenance_is_preserved ... ok
+test clipboard::image::tests::opaque_clipboard_png_is_kept_byte_identical ... ok
+test clipboard::image::tests::rgba_dib_roundtrip_preserves_visible_colors ... ok
+test clipboard::image::tests::repeated_copy_paste_roundtrip_keeps_visible_pixels ... ok
+test clipboard::image::tests::transparent_png_from_clipboard_is_reencoded_visible ... ok
+test clipboard::paste::tests::cancel_preserves_unprocessed_items_and_still_finishes ... ok
+test clipboard::paste::tests::closed_target_fails_without_writes ... ok
+test clipboard::paste::tests::external_update_between_items_stops_without_restore ... ok
+test clipboard::paste::tests::each_write_is_guarded_by_the_last_own_content ... ok
+test clipboard::paste::tests::per_type_intervals_and_settle_are_conservative ... ok
+test clipboard::paste::tests::focus_failure_keeps_item_pending ... ok
+test clipboard::paste::tests::persistently_unreadable_clipboard_stops_before_sending_keys ... ok
+test clipboard::paste::tests::post_write_sequence_settling_does_not_abort_multi_item_paste ... ok
+test clipboard::paste::tests::restore_failure_is_reported_honestly ... ok
+test clipboard::paste::tests::resumed_plan_does_not_retry_consumed_items ... ok
+test clipboard::paste::tests::reused_or_unfocused_target_is_rejected_before_pressing_keys ... ok
+test clipboard::paste::tests::send_failure_removes_written_item_to_prevent_duplicate_paste ... ok
+test clipboard::image::tests::png_decode_refuses_dimensions_beyond_the_cap ... ok
+test clipboard::paste::tests::sequence_race_between_check_and_write_never_overwrites ... ok
+test clipboard::paste::tests::text_image_text_keeps_order_and_never_claims_confirmed ... ok
+test clipboard::paste::tests::unreadable_clipboard_is_retried_and_does_not_stop_the_job ... ok
+test clipboard::paste::tests::unavailable_item_is_skipped_and_others_continue ... ok
+test clipboard::paste::tests::user_copy_after_write_blocks_key_and_preserves_new_content ... ok
+test clipboard::paste::tests::worker_slot_clears_itself_when_thread_ends ... ok
+test clipboard::platform::tests::bounded_queue_respects_byte_budget ... ok
+test clipboard::platform::tests::bounded_queue_drops_oldest_and_keeps_latest ... ok
+test clipboard::platform::tests::capture_filter_excludes_configured_apps ... ok
+test clipboard::platform::tests::content_queue_estimates_image_and_text_bytes ... ok
+test clipboard::platform::tests::event_burst_is_bounded_and_keeps_latest_sequence ... ok
+test clipboard::platform::tests::degraded_payload_matches_what_is_actually_on_the_clipboard ... ok
+test clipboard::platform::tests::exclusion_list_matches_basename ... ok
+test clipboard::platform::tests::mixed_content_backlog_respects_count_and_byte_budgets ... ok
+test clipboard::platform::tests::hdrop_parser_reads_wide_paths ... ok
+test clipboard::platform::tests::monitor_queue_stress_keeps_backlog_bounded ... ok
+test clipboard::platform::tests::only_comparable_forms_can_be_put_back_after_failed_write ... ok
+test clipboard::platform::tests::oversized_capture_drops_rgba_to_stay_inside_queue_budget ... ok
+test clipboard::platform::tests::payload_match_compares_image_bytes_and_file_names ... ok
+test clipboard::platform::tests::partial_format_write_reports_status_and_narrows_payload ... ok
+test clipboard::platform::tests::payload_match_ignores_empty_html_fragment ... ok
+test clipboard::platform::tests::payload_match_requires_same_text_and_html_presence ... ok
+test clipboard::platform::tests::process_catching_panic_converts_panic_to_failed ... ok
+test clipboard::platform::tests::payload_match_treats_zero_alpha_png_container_as_unused ... ok
+test clipboard::platform::tests::restore_registers_self_write_only_on_success ... ok
+test clipboard::platform::tests::sequence_wrap_does_not_pin_self_write_watermark ... ok
+test clipboard::platform::tests::self_write_gate_skips_only_covered_events ... ok
+test clipboard::platform::tests::payload_match_falls_back_to_pixels_when_png_container_changes ... ok
+test clipboard::platform::tests::unconditional_write_has_no_guard_constraint ... ok
+test clipboard::platform::tests::write_guard_uses_content_for_own_writes ... ok
+test clipboard::platform::tests::write_guard_uses_sequence_only_for_uncomparable_baseline ... ok
+test clipboard::engine::tests::sensitive_filter_only_high_confidence_patterns ... ok
+test clipboard::platform::tests::capture_filter_honors_pause_and_kind_toggles ... ok
+test clipboard::platform::tests::capture_filter_uses_conservative_sensitive_policy_for_unknown_source ... ok
+test clipboard::engine::tests::conservative_filter_catches_credentials_only_when_source_unknown ... ok
+test clipboard::engine::tests::html_sanitizer_removes_active_content ... ok
+test clipboard::lifecycle_tests::wait_times_out_without_stop_signal ... ok
+test clipboard::lifecycle_tests::stop_signal_wakes_maintenance_wait_immediately ... ok
+test clipboard::image::tests::png_roundtrip_and_thumbnail_bounds ... ok
+test clipboard::paste::tests::worker_slot_reports_timeout_for_stuck_thread ... ok
+test clipboard::paste::tests::worker_slot_waits_for_thread_to_finish ... ok
+test clipboard::agent_bridge::tests::export_item_with_task_context ... ok
+test clipboard::agent_bridge::tests::export_group_keeps_order_and_copies_images ... ok
+test clipboard::store::tests::paste_job_tracks_remaining_and_interruption ... ok
+test clipboard::paste::tests::red_green_text_blue_pastes_each_item_in_order_with_exact_pixels ... ok
+test clipboard::store::tests::retention_and_item_cap_delete_only_unprotected ... ok
+test clipboard::store::tests::oversized_capture_without_rgba_still_gets_exact_thumb ... ok
+test clipboard::store::tests::records_text_and_dedupes_without_new_row ... ok
+test clipboard::store::tests::task_link_cascades_on_task_delete_but_content_survives ... ok
+test clipboard::store::tests::separate_sessions_create_new_group_after_window ... ok
+test clipboard::store::tests::reorder_remove_and_split_persist ... ok
+test clipboard::store::tests::interleaved_text_keeps_screenshot_group_order ... ok
+test clipboard::image::tests::dib_32bpp_top_down_and_large_screenshot ... ok
+test clipboard::store::tests::html_is_sanitized_before_storage ... ok
+test clipboard::store::tests::image_capture_failure_leaves_no_partial_row ... ok
+test clipboard::store::tests::group_deletion_is_reference_safe ... ok
+test clipboard::store::tests::image_assets_land_on_disk_and_cleanup_removes_files ... ok
+test clipboard::store::tests::red_green_text_blue_group_survives_restart_with_exact_pixels ... ok
+
+test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 365 filtered out; finished in 1.10s
+

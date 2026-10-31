@@ -1,0 +1,27 @@
+CMD: CARGO_TARGET_DIR=D:/Develop/task_dock/src-tauri/target-accept npx tauri build --no-bundle
+CWD: /d/Develop/task_dock
+START=2026-10-31T02:38:37Z LOCAL=2026-10-31 10:38:38
+TREE_SHA256=dfd6b8522ae60d6491a0e0eb32774d46fab4ab952b1338303bc21fd059c3a1f9
+---
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `npm run build`
+
+> task-dock@0.5.0 build
+> tsc --noEmit && vite build
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 1672 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                        [39m[1m[2m  0.48 kB[22m[1m[22m[2m │ gzip:  0.30 kB[22m
+[2mdist/[22m[32mcontext-menu.html                 [39m[1m[2m  0.51 kB[22m[1m[22m[2m │ gzip:  0.31 kB[22m
+[2mdist/[22m[35massets/style-DemsZCu_.css         [39m[1m[2m127.00 kB[22m[1m[22m[2m │ gzip: 21.25 kB[22m
+[2mdist/[22m[36massets/context-menu-CnDpx7VR.js   [39m[1m[2m  4.89 kB[22m[1m[22m[2m │ gzip:  2.14 kB[22m
+[2mdist/[22m[36massets/styles-themes-YYY9gK_C.js  [39m[1m[2m235.16 kB[22m[1m[22m[2m │ gzip: 74.25 kB[22m
+[2mdist/[22m[36massets/main-CdvVP26I.js           [39m[1m[2m309.46 kB[22m[1m[22m[2m │ gzip: 92.98 kB[22m
+[32m✓ built in 3.22s[39m
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+    Finished `release` profile [optimized] target(s) in 6m 03s
+       Built application at: D:\Develop\task_dock\src-tauri\target-accept\release\task-dock.exe
+EXIT=0 END=2026-10-31T02:44:55Z LOCAL=2026-10-31 10:44:56

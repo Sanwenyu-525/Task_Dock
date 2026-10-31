@@ -1,0 +1,11 @@
+   Compiling tauri v2.12.5
+   Compiling tauri-macros v2.7.4
+   Compiling tauri-plugin-fs v2.7.1
+   Compiling tauri-plugin-global-shortcut v2.4.1
+   Compiling tauri-plugin-autostart v2.7.0
+   Compiling tauri-plugin-notification v2.7.0
+   Compiling tauri-plugin-opener v2.7.2
+   Compiling tauri-plugin-dialog v2.8.3
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+   Compiling tauri-plugin-single-instance v2.5.4
+    Finished `release` profile [optimized] target(s) in 8m 05s

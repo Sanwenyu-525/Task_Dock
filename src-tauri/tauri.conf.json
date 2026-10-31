@@ -25,6 +25,23 @@
         "skipTaskbar": true,
         "resizable": true,
         "visible": false
+      },
+      {
+        "label": "context-menu",
+        "title": "",
+        "url": "context-menu.html",
+        "width": 250,
+        "height": 620,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "focus": false,
+        "visible": false
       }
     ],
     "security": {

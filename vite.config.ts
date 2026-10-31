@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 
 // Tauri 开发服务器固定端口（与 tauri.conf.json devUrl 保持一致）
@@ -7,6 +8,19 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  // 多页入口：index.html（主窗）+ context-menu.html（液态玻璃右键菜单弹窗）
+  build: {
+    // 多入口时共享 CSS 会被拆成独立 chunk，浏览器按 chunk 顺序加载会让
+    // styles-themes.css 排在 styles.css 之前，覆盖关系反转。合并为单文件，
+    // 保持 import 顺序（base → themes → ui）。
+    cssCodeSplit: false,
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, "index.html"),
+        "context-menu": resolve(__dirname, "context-menu.html"),
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

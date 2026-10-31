@@ -1,0 +1,10 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-v05r5\N3-idle-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-v05r5\N3-idle-appdata port=47912
+Traceback (most recent call last):
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 619, in <module>
+    main()
+    ~~~~^^
+  File "D:\Develop\task_dock\scripts\perf\memory-scenario.py", line 431, in main
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: 检测到 1 个已在运行的同名实例 task-dock-acc1.exe（PID [72416]）：采样器按进程名归组资源占用，同名多余实例会污染本臂数据。请先关闭它们再测量。

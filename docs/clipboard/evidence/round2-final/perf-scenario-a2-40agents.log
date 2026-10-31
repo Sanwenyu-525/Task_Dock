@@ -1,0 +1,105 @@
+    Finished `release` profile [optimized] target(s) in 0.66s
+     Running tests\ingest_perf.rs (target\release\deps\ingest_perf-ec28ce36b1402588.exe)
+
+running 1 test
+test scenario_a_sustained_10_agents has been running for over 60 seconds
+
+==== 压测结果 "A" ====
+{
+  "backend_only": true,
+  "config": {
+    "agents": 40,
+    "batch_size": 100,
+    "coalesce_ms": 250,
+    "duration_secs": 60,
+    "expected_events": 120000,
+    "queue_capacity": 1024,
+    "rate_per_agent": 50
+  },
+  "counts": {
+    "critical_failed": 0,
+    "critical_missing_in_db": 0,
+    "critical_ok": 12000,
+    "critical_retries": 0,
+    "critical_sent": 12000,
+    "max_batch_size": 100,
+    "max_queue_depth": 880,
+    "merged": 0,
+    "running_accepted": 108000,
+    "sampled": 0,
+    "submit_errors": 0,
+    "submitted": 120000
+  },
+  "db": {
+    "by_state": {
+      "completed": 6000,
+      "running": 47964,
+      "waiting": 6000
+    },
+    "events": 59964
+  },
+  "db_file_mb": 91.8,
+  "elapsed_ms": 60594,
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "note": "真实 IngestPipeline + 真实 SQLite 状态机；不含 WebView2/Tauri 窗口与托盘 UI",
+  "pass": true,
+  "pipeline": {
+    "batches": 1200,
+    "coalesce_ms": 250,
+    "commit_failures": 0,
+    "db_write_latency": {
+      "max_ms": 119.64,
+      "p50_ms": 49.05,
+      "p95_ms": 93.58,
+      "p99_ms": 110.45,
+      "samples": 1024
+    },
+    "events_merged": 60036,
+    "events_processed": 59964,
+    "events_received": 120000,
+    "events_sampled": 0,
+    "events_spooled": 0,
+    "events_unsaved": 0,
+    "fallback_jobs": 0,
+    "ingest_latency": {
+      "max_ms": 386.0,
+      "p50_ms": 325.19,
+      "p95_ms": 369.38,
+      "p99_ms": 384.53,
+      "samples": 2048
+    },
+    "last_batch_size": 80,
+    "last_flush_at": "2026-10-30T15:54:39.062304900+00:00",
+    "lifecycle": "running",
+    "max_batch_size": 100,
+    "merge_buffer": 0,
+    "overload_rejects": 0,
+    "queue_capacity": 1024,
+    "queue_depth_events": 0,
+    "queue_depth_jobs": 0,
+    "running": true,
+    "spool_failures": 0,
+    "spool_pending_files": 0,
+    "submissions": 120000,
+    "uptime_secs": 60
+  },
+  "scenario": "A",
+  "started_at": "2026-10-30T15:54:39.434796200+00:00",
+  "throughput_ev_per_s": 1980.39
+}
+
+判定：PASS（本次运行范围内）
+
+[报告] \\?\D:\Develop\task_dock-r2-acc\docs\performance\results\A-20261030-155439.json
+test scenario_a_sustained_10_agents ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 60.87s
+
+A2_exit=0

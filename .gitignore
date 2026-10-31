@@ -4,6 +4,18 @@ node_modules/
 # Build output
 dist/
 
+# 任务级工作区（验收/调试/实验；长期证据请归档到 docs/ 对应目录并更新索引）
+/tmp/
+
+# 仓库根的外置 Rust 构建目录（性能/验收用）
+/target-test/
+
+# 本地真机验收临时区（二进制副本、数据库快照）
+/.acceptance/
+
+# 视觉走查 harness（由 scripts/make-preview.mjs 生成，不入库）
+.preview/
+
 # Tauri / Rust
 src-tauri/target/
 src-tauri/target-accept/

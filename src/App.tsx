@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, type MouseEvent as ReactMouseEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { showContextMenu } from "./lib/bridge";
 import { useSettingsStore } from "./store/useSettingsStore";
 import { useTasksStore } from "./store/useTasksStore";
 import { useAgentsStore, scheduleAgentRefresh } from "./store/useAgentsStore";
@@ -22,6 +23,9 @@ import ClipboardDrawer from "./components/clipboard/ClipboardDrawer";
 import TaskContextDrawer from "./components/context/TaskContextDrawer";
 import Toast from "./components/Toast";
 import TooltipLayer from "./components/ui/TooltipLayer";
+import SnapOverlay from "./components/SnapOverlay";
+import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
+import { isDockedPhase } from "./lib/edgeSnap";
 import { createSubscriptionScope } from "./lib/subscriptions";
 import { setWindowEscapeHandler } from "./lib/overlayStack";
 import {
@@ -33,6 +37,18 @@ import {
   onReminderFired,
   onThemeChanged,
 } from "./lib/bridge";
+
+// 右键：在悬浮栏非编辑区域打开液态玻璃菜单（后端锚定悬浮栏顶边中点，
+// 菜单在其上方展开）。编辑区（输入框/文本域/可编辑元素）保留系统右键的
+// 复制/粘贴能力 —— 只拦截本容器，不做全局 preventDefault。
+function onDockContextMenu(e: ReactMouseEvent) {
+  const target = e.target as HTMLElement | null;
+  if (target?.closest("input, textarea, [contenteditable='true'], [contenteditable='']")) {
+    return;
+  }
+  e.preventDefault();
+  void showContextMenu().catch(() => {});
+}
 
 export default function App() {
   const settings = useSettingsStore((s) => s.settings);
@@ -51,6 +67,10 @@ export default function App() {
   // 设置未加载完成前**不启用**贴边吸附：否则启动瞬间会按默认值 true 生效，
   // 可能把窗口滑出屏幕（并把该位置持久化），随后又因设置到达而停用。
   const snapEnabled = settings?.snap_enabled === true;
+  // 吸附视觉层（候选提示 / 已吸附反馈 / 隐藏触发条 / 停靠细线）：
+  // 引擎把 phase 写入 store，这里同步到窗口根节点的 data 属性供 CSS 主题化。
+  const snapCandidate = useEdgeSnapStore((s) => (s.phase === "candidate" ? s.candidateEdge : null));
+  const snapDocked = useEdgeSnapStore((s) => (isDockedPhase(s.phase) ? s.dockedEdge : null));
   // 用**实际生效**的材质上 class：原生 Mica/Acrylic 回退 solid 时，
   // 界面必须跟随降级，不能继续渲染半透明表面（v0.5 缺陷修复）。
   const material = materialInfo?.resolved ?? settings?.material ?? "solid";
@@ -159,7 +179,12 @@ export default function App() {
   }, []);
 
   return (
-    <div className={`dock-window mode-${mode} material-${material}`}>
+    <div
+      className={`dock-window mode-${mode} material-${material}`}
+      data-snap-candidate={snapCandidate ?? undefined}
+      data-snap-docked={snapDocked ?? undefined}
+      onContextMenu={onDockContextMenu}
+    >
       <TitleBar />
       <div className="dock-body">
         {/* 三个模式视图常驻挂载（CSS 隐藏非当前项），切换保留内容状态与滚动位置 */}
@@ -177,6 +202,7 @@ export default function App() {
       </div>
       <TaskEditor />
       <WorkspaceLauncher />
+      <SnapOverlay />
       <Toast />
       <TooltipLayer />
     </div>

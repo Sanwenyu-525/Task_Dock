@@ -1,0 +1,1333 @@
+{
+  "generated_at": "2026-10-30T17:01:34.458Z",
+  "base": "http://localhost:4173/preview.html",
+  "results": [
+    {
+      "name": "v07-dream-light-tasks-400x620",
+      "path": "docs/screenshots/v07/v07-dream-light-tasks-400x620.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-clip-400x620",
+      "path": "docs/screenshots/v07/v07-dream-light-clip-400x620.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(34, 38, 60, 0.07) 18%, rgba(34, 38, 60, 0.07) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": true
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-dark-tasks-400x620",
+      "path": "docs/screenshots/v07/v07-dream-dark-tasks-400x620.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "dark",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.06)",
+          "opacity": "1",
+          "color": "rgb(164, 169, 194)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-dark-clip-400x620",
+      "path": "docs/screenshots/v07/v07-dream-dark-clip-400x620.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "dark",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.06)",
+          "opacity": "1",
+          "color": "rgb(164, 169, 194)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(255, 255, 255, 0.07) 18%, rgba(255, 255, 255, 0.07) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": true
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-light-tasks-400x620",
+      "path": "docs/screenshots/v07/v07-glass-light-tasks-400x620.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "light",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(86, 93, 120)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-light-clip-400x620",
+      "path": "docs/screenshots/v07/v07-glass-light-clip-400x620.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "light",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(86, 93, 120)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(35, 40, 64, 0.08) 18%, rgba(35, 40, 64, 0.08) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": true
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-tasks-400x620",
+      "path": "docs/screenshots/v07/v07-glass-dark-tasks-400x620.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-clip-400x620",
+      "path": "docs/screenshots/v07/v07-glass-dark-clip-400x620.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(255, 255, 255, 0.08) 18%, rgba(255, 255, 255, 0.08) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": true
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-tasks-320x560",
+      "path": "docs/screenshots/v07/v07-dream-light-tasks-320x560.png",
+      "w": 320,
+      "h": 560,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-clip-320x560",
+      "path": "docs/screenshots/v07/v07-dream-light-clip-320x560.png",
+      "w": 320,
+      "h": 560,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(34, 38, 60, 0.07) 18%, rgba(34, 38, 60, 0.07) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": true
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-tasks-340x460",
+      "path": "docs/screenshots/v07/v07-dream-light-tasks-340x460.png",
+      "w": 340,
+      "h": 460,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-tasks-380x560",
+      "path": "docs/screenshots/v07/v07-dream-light-tasks-380x560.png",
+      "w": 380,
+      "h": 560,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-clip-500x760",
+      "path": "docs/screenshots/v07/v07-dream-light-clip-500x760.png",
+      "w": 500,
+      "h": 760,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(34, 38, 60, 0.07) 18%, rgba(34, 38, 60, 0.07) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": false
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-dark-clip-320x560",
+      "path": "docs/screenshots/v07/v07-dream-dark-clip-320x560.png",
+      "w": 320,
+      "h": 560,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "dark",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.06)",
+          "opacity": "1",
+          "color": "rgb(164, 169, 194)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(255, 255, 255, 0.07) 18%, rgba(255, 255, 255, 0.07) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": true
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-light-tasks-320x560",
+      "path": "docs/screenshots/v07/v07-glass-light-tasks-320x560.png",
+      "w": 320,
+      "h": 560,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "light",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(86, 93, 120)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-light-tasks-400x620-solid",
+      "path": "docs/screenshots/v07/v07-glass-light-tasks-400x620-solid.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(86, 93, 120)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-light-clip-340x460",
+      "path": "docs/screenshots/v07/v07-glass-light-clip-340x460.png",
+      "w": 340,
+      "h": 460,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "light",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(86, 93, 120)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(35, 40, 64, 0.08) 18%, rgba(35, 40, 64, 0.08) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": true
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-tasks-340x460",
+      "path": "docs/screenshots/v07/v07-glass-dark-tasks-340x460.png",
+      "w": 340,
+      "h": 460,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": null,
+      "overlays": [],
+      "activeElement": "",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-clip-320x560",
+      "path": "docs/screenshots/v07/v07-glass-dark-clip-320x560.png",
+      "w": 320,
+      "h": 560,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": false,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 38,
+          "h": 38,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(255, 255, 255, 0.08) 18%, rgba(255, 255, 255, 0.08) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": true
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-clip-500x760",
+      "path": "docs/screenshots/v07/v07-glass-dark-clip-500x760.png",
+      "w": 500,
+      "h": 760,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": {
+        "integrated": true,
+        "bg": "rgba(0, 0, 0, 0)",
+        "border": "0px",
+        "headBorder": "0px",
+        "footVisible": true,
+        "footDivider": "linear-gradient(90deg, rgba(0, 0, 0, 0), rgba(255, 255, 255, 0.08) 18%, rgba(255, 255, 255, 0.08) 82%, rgba(0, 0, 0, 0))",
+        "bodyScrollable": false
+      },
+      "overlays": [],
+      "activeElement": "rail-item active",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-sort-menu",
+      "path": "docs/screenshots/v07/v07-dream-light-sort-menu.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".ui-select-popover",
+          "x": 250,
+          "y": 232,
+          "w": 140,
+          "h": 94,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-select-trigger size-sm  is-open   sort-select",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-theme-select",
+      "path": "docs/screenshots/v07/v07-dream-light-theme-select.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".ui-select-popover",
+          "x": 238,
+          "y": 256,
+          "w": 140,
+          "h": 94,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-select-trigger size-sm  is-open   ",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-datetime",
+      "path": "docs/screenshots/v07/v07-dream-light-datetime.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".ui-dtp-popover",
+          "x": 28,
+          "y": 8,
+          "w": 278,
+          "h": 345,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-dtp-trigger size-md is-open  ",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-link-drawer",
+      "path": "docs/screenshots/v07/v07-dream-light-link-drawer.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".clipboard-layer.link-mode",
+          "x": 0,
+          "y": 0,
+          "w": 400,
+          "h": 620,
+          "inside": true,
+          "z": "80"
+        }
+      ],
+      "activeElement": "clipboard-drawer",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-light-titlebar-menu",
+      "path": "docs/screenshots/v07/v07-dream-light-titlebar-menu.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "light",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.44)",
+          "opacity": "1",
+          "color": "rgb(89, 96, 122)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".titlebar-menu-popover",
+          "x": 166,
+          "y": 39,
+          "w": 132,
+          "h": 100,
+          "inside": true,
+          "z": "auto"
+        },
+        {
+          "sel": ".ui-menu",
+          "x": 171,
+          "y": 44,
+          "w": 122,
+          "h": 90,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-menu-item is-checked   is-active",
+      "errors": []
+    },
+    {
+      "name": "v07-dream-dark-sort-menu",
+      "path": "docs/screenshots/v07/v07-dream-dark-sort-menu.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "dream-gradient",
+      "theme": "dark",
+      "material": "solid",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "rgba(255, 255, 255, 0.06)",
+          "opacity": "1",
+          "color": "rgb(164, 169, 194)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".ui-select-popover",
+          "x": 250,
+          "y": 232,
+          "w": 140,
+          "h": 94,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-select-trigger size-sm  is-open   sort-select",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-light-datetime",
+      "path": "docs/screenshots/v07/v07-glass-light-datetime.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "light",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(86, 93, 120)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".ui-dtp-popover",
+          "x": 28,
+          "y": 8,
+          "w": 278,
+          "h": 345,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-dtp-trigger size-md is-open  ",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-sort-menu",
+      "path": "docs/screenshots/v07/v07-glass-dark-sort-menu.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".ui-select-popover",
+          "x": 250,
+          "y": 232,
+          "w": 140,
+          "h": 94,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-select-trigger size-sm  is-open   sort-select",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-theme-select",
+      "path": "docs/screenshots/v07/v07-glass-dark-theme-select.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".ui-select-popover",
+          "x": 238,
+          "y": 256,
+          "w": 140,
+          "h": 94,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-select-trigger size-sm  is-open   ",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-datetime",
+      "path": "docs/screenshots/v07/v07-glass-dark-datetime.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".ui-dtp-popover",
+          "x": 28,
+          "y": 8,
+          "w": 278,
+          "h": 345,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-dtp-trigger size-md is-open  ",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-link-drawer",
+      "path": "docs/screenshots/v07/v07-glass-dark-link-drawer.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".clipboard-layer.link-mode",
+          "x": 0,
+          "y": 0,
+          "w": 400,
+          "h": 620,
+          "inside": true,
+          "z": "80"
+        }
+      ],
+      "activeElement": "clipboard-drawer",
+      "errors": []
+    },
+    {
+      "name": "v07-glass-dark-titlebar-menu",
+      "path": "docs/screenshots/v07/v07-glass-dark-titlebar-menu.png",
+      "w": 400,
+      "h": 620,
+      "overflowX": 0,
+      "overflowY": 0,
+      "offscreen": [],
+      "blank": false,
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "material": "glass",
+      "rail": {
+        "items": 6,
+        "labelsVisible": true,
+        "named": true,
+        "scrollable": false,
+        "lastEntryReachable": true,
+        "add": {
+          "visible": true,
+          "w": 50,
+          "h": 44,
+          "cursor": "pointer",
+          "face": "gradient",
+          "opacity": "1",
+          "color": "rgb(176, 181, 205)"
+        }
+      },
+      "clip": null,
+      "overlays": [
+        {
+          "sel": ".titlebar-menu-popover",
+          "x": 166,
+          "y": 39,
+          "w": 132,
+          "h": 100,
+          "inside": true,
+          "z": "auto"
+        },
+        {
+          "sel": ".ui-menu",
+          "x": 171,
+          "y": 44,
+          "w": 122,
+          "h": 90,
+          "inside": true,
+          "z": "auto"
+        }
+      ],
+      "activeElement": "ui-menu-item is-checked   is-active",
+      "errors": []
+    }
+  ],
+  "interactions": [
+    {
+      "scenario": "escape",
+      "preset": "dream-gradient",
+      "theme": "light",
+      "dtOpen": true,
+      "dtClosed": true,
+      "editorKept": true,
+      "editorClosed": true,
+      "drawerOpen": true,
+      "drawerZ": "80",
+      "drawerClosed": true,
+      "editorKeptAfterDrawer": true
+    },
+    {
+      "scenario": "escape",
+      "preset": "liquid-glass",
+      "theme": "dark",
+      "dtOpen": true,
+      "dtClosed": true,
+      "editorKept": true,
+      "editorClosed": true,
+      "drawerOpen": true,
+      "drawerZ": "80",
+      "drawerClosed": true,
+      "editorKeptAfterDrawer": true
+    },
+    {
+      "scenario": "add-states",
+      "hover": {
+        "color": "rgb(99, 102, 241)",
+        "borderColor": "color(srgb 0.388235 0.4 0.945098 / 0.26)",
+        "face": "rgba(99, 102, 241, 0.1)"
+      },
+      "focus": {
+        "outline": "rgb(99, 102, 241) none 3px",
+        "boxShadow": "rgba(99, 102, 241, 0.55) 0px 0px 0px 1.5px, rgba(99, 102, 241, 0.45) 0px 6px 16px -8px"
+      }
+    },
+    {
+      "scenario": "add-states",
+      "hover": {
+        "color": "rgb(165, 168, 255)",
+        "borderColor": "color(srgb 0.647059 0.658824 1 / 0.26)",
+        "face": "rgba(165, 168, 255, 0.16)"
+      },
+      "focus": {
+        "outline": "rgb(165, 168, 255) none 3px",
+        "boxShadow": "rgba(255, 255, 255, 0.2) 0px 1px 0px 0px inset, rgba(165, 168, 255, 0.5) 0px 0px 0px 1.5px, rgba(0, 0, 0, 0.95) 0px 10px 24px -16px"
+      }
+    }
+  ],
+  "failed": []
+}

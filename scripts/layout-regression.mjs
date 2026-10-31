@@ -10,7 +10,7 @@
 //!
 //! 用法：
 //!   npm run build && node scripts/make-preview.mjs
-//!   npx vite preview --port 4173 --strictPort   # 另开一个终端
+//!   node scripts/serve-preview.mjs          # 另开一个终端
 //!   node scripts/layout-regression.mjs
 //!
 //! 产物：docs/screenshots/v06/layout-audit.json（有失败项时退出码为 1）。
@@ -27,6 +27,20 @@ const BASE = "http://localhost:4173/preview.html";
 
 const browser = await chromium.launch();
 const results = [];
+
+// 截图落盘可能被其它进程（并发构建/走查）短暂锁住，errno -4094 是瞬时的，重试即可。
+async function saveShot(page, path) {
+  const buf = await page.screenshot();
+  for (let i = 0; ; i++) {
+    try {
+      writeFileSync(path, buf);
+      return;
+    } catch (e) {
+      if (i >= 4) throw e;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+}
 
 /** 页面内布局度量。 */
 const AUDIT = () => {
@@ -94,7 +108,7 @@ async function run(c) {
   if (c.prepare) await c.prepare(page);
 
   const audit = await page.evaluate(AUDIT);
-  await page.screenshot({ path: `${OUT}/layout-${c.name}.png` });
+  await saveShot(page, `${OUT}/layout-${c.name}.png`);
   results.push({ name: c.name, w: c.w, h: c.h, dpr: c.dpr ?? 1, mode: c.mode, ...audit, errors });
   await page.close();
 }

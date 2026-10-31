@@ -102,6 +102,41 @@
 说明：本工作区同时存在 v0.5 其他方向（actions/context/workspace/agent pipeline、
 性能文档）的改动，**不属于本次剪贴板整改**，未回退、未纳入本报告结论。
 
+### C.1 第四轮整改新增变更（2026-10-30 22:00 → 23:42）
+
+后端：
+
+- `src-tauri/src/db/mod.rs`：
+  - `repair_clipboard` / `repair_clipboard_tx` / `verify_clipboard_repair`——配置修复改为
+    **单个事务内**完成“备份原值 → 写入修复值 → 校验”，失败整体回滚，不留半修复状态；
+  - `seed_clipboard_config` 记录 `clipboard_config_origin`（`fresh_default` /
+    `legacy_upgrade_paused` / `existing` / `missing`），供升级路径判定；
+  - `reload_clipboard_raw` 区分「键缺失」与「键损坏」，缺失沿用默认（兼容旧库），
+    损坏/类型错误/越界/DB 读取失败返回 `ClipboardConfigError { kind, keys }`。
+- `src-tauri/src/clipboard/platform.rs`：
+  - 新增纯函数 `classify_event(event_sequence, last_captured, self_write) -> EventDisposition`
+    （`Read` / `Superseded` / `SelfWrite` 三态）；
+  - 去重水位由**事件通知时刻**改为**读取时刻**的序列号，保证一份剪贴板状态只入库一次；
+  - 自写判定前置，自写与“用户重复复制”分列计数；
+  - 新增计数器 `superseded_events` / `self_write_events` / `empty_events`，
+    补齐此前**无计数、无日志的静默丢弃路径**。
+- `src-tauri/src/commands/clipboard.rs`：`clipboard_probe` 匹配新的
+  `ClipboardRead::Content { sequence, content }` / `Skip(reason)` / `Empty(reason)` 结构。
+- `src-tauri/tests/real_clipboard.rs`：随 `ClipboardRead` 结构变更同步 10 处调用点。
+
+测试与脚本：
+
+- `src-tauri/src/clipboard/platform.rs` 新增回归测试
+  `event_disposition_separates_read_superseded_and_self_write`（三态归因 + 读取水位去重 +
+  `u32` 序列号回绕）。
+- `scripts/perf/fourth-round-memory-suite.sh`：第四轮三臂内存/联合负载套件。
+- `scripts/perf/memory-phases.py`：按 warmup / load / post / load_tail_quarter 切分采样序列，
+  数据驱动定位负载区间，避免把“负载期爬升 + 负载后回落”平均成一条无意义直线。
+
+文档：新增 `docs/clipboard/12-fourth-round-acceptance.md`（第四轮 11 节验收报告）；
+同步 `02`、`04`、`06`、`08`、`09`、`10`、`11` 及 `docs/PERFORMANCE_*`、`docs/TESTING.md`、
+`README.md`。
+
 ## D. 文档清单
 
 `docs/clipboard/`：
@@ -116,6 +151,8 @@
 8. `08-testing-performance.md`：测试矩阵、性能实测、阻塞项
 9. `09-implementation-report.md`：本文件
 10. `10-remediation-acceptance.md`：整改分类验收（自动证明/真机证明/仅代码审查/未验证/未解决/环境阻塞）
+11. `11-final-release-acceptance.md`：v0.5 最终发布验收（A–I 判定与发布结论）
+12. `12-fourth-round-acceptance.md`：第四轮专项整改验收（隐私事务安全、图文粘贴、内存稳定性与正式发布验收）
 
 ## E. 测试结果
 
@@ -136,11 +173,30 @@
 | 真机验收（隔离实例 + 真实剪贴板） | **46/46 PASS**（final13） |
 | 第三方应用矩阵 | **5/5 PASS**（记事本/资源管理器/Edge 文本/Edge 富文本/VS Code）；微信 ENVIRONMENT BLOCKED、Agent NOT VERIFIED |
 
+### E.1 第四轮结果（2026-10-30 22:00 → 23:50）
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| `cargo fmt --all -- --check` | 通过（无差异） | `evidence/gates-fourth-round-20261030-2221.md` |
+| `cargo clippy --all-targets --all-features` | 通过，0 警告 | 同上 |
+| `cargo test --all-targets --no-fail-fast` | **lib 449 passed / 0 failed / 3 ignored**；全部测试二进制合计 **450 passed / 0 failed / 19 ignored** | 同上 |
+| `cargo test --lib clipboard::` | **89 passed / 0 failed / 0 ignored**（含新增 `event_disposition_separates_read_superseded_and_self_write`） | 同上 |
+| P2-06 前台焦点测试 | `cargo test --lib navigation::router` → **10 passed / 0 failed / 0 ignored** | `evidence/p2-06-focus-tests-fourth-round-20261030.log` |
+| P1-03 真实图文混合粘贴（像素级） | **52 PASS / 0 FAIL / 0 BLOCKED，overall = PASS** | `evidence/p1-03-mixed-paste-20261030-235050-76869ab9.json` |
+| 采集计数器对账 | `observed 10 = captured 5 + self_write 5`，`superseded 0`、`empty 0`、`dropped 0`、`merged 0`、`skipped 0` | 同上 |
+| Release 构建（真实 Tauri，隔离 target 目录） | 退出码 0，`task-dock.exe` 15,603,200 B，时间 23:42:45 | `evidence/release-build-fourth-round-20261030-2305.log` |
+
+第四轮门禁的完整命令、时间、退出码与原始输出见
+`docs/clipboard/12-fourth-round-acceptance.md` §九。
+
 ## F. 兼容性
 
 - 格式层：CF_UNICODETEXT、CF_HTML、PNG+CF_DIB、CF_HDROP 均有单元测试与真机读回；
-  内容守卫/恢复由 C11 真机证明；全透明 32bpp DIB 合成 PNG 已归一化（单测），
-  但修复后的真实图文混合显示复验被锁屏阻塞。
+  内容守卫/恢复由 C11 真机证明；全透明 32bpp DIB 合成 PNG 已归一化。
+- **第四轮更新**：修复后的真实图文混合粘贴已在未锁屏桌面完成像素级复验（52/52 PASS），
+  目标端三张图 `alphaMin=alphaMax=255`、`transparentPixels=0`，中心像素分别为
+  `(220,30,30,255)` / `(30,180,60,255)` / `(30,60,220,255)`。第三轮的
+  `ENVIRONMENT BLOCKED` 结论到此解除（历史记录保留在 `06` §七 与 `11` §4.3）。
 - 应用层：记事本（3 项有序）、资源管理器（CF_HDROP 落盘）、Chromium/Edge
   文本框与 contenteditable 富文本、VS Code（保存后磁盘读回）均 **PASS**；
   微信（已登录真实会话）为 **ENVIRONMENT BLOCKED**，Trae CN（登录/引导页）

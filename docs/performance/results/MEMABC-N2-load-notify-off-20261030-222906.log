@@ -1,0 +1,110 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc-v05r4\N2-load-notify-off-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-abc-v05r4\N2-load-notify-off-appdata port=47891
+[app] pid=71160 health={'ok': True, 'queue': {'capacity': 1024, 'depth_events': 0}, 'service': 'task-dock'}
+[load] rc=0
+[instance] 进程在负载结束后 515.5s 自行退出 (code=0)，剩余观察窗口作废
+{
+  "meta": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N2-load-notify-off-20261030-223859-meta.json",
+  "summary": {
+    "samples": 116,
+    "elapsed_s": 582.9,
+    "taskdock_private_mb": {
+      "n": 116,
+      "first": 40.8,
+      "last": 0,
+      "min": 0,
+      "max": 62.4,
+      "mean": 38.843
+    },
+    "taskdock_ws_mb": {
+      "n": 116,
+      "first": 70.5,
+      "last": 0,
+      "min": 0,
+      "max": 72.3,
+      "mean": 18.615
+    },
+    "webview2_private_mb": {
+      "n": 116,
+      "first": 209.6,
+      "last": 0,
+      "min": 0,
+      "max": 209.6,
+      "mean": 159.013
+    },
+    "slope_private_mb_per_min": -2.693,
+    "slope_ws_mb_per_min": -3.326,
+    "slope_live_mb_per_min": -0.0107,
+    "first_last": {
+      "taskdock_private_mb": [
+        40.8,
+        0
+      ],
+      "taskdock_ws_mb": [
+        70.5,
+        0
+      ],
+      "webview2_private_mb": [
+        209.6,
+        0
+      ],
+      "live_bytes": [
+        838886,
+        843193
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 0,
+      "events_processed": 0,
+      "events_merged": 0,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 0,
+      "http_requests": 3,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 7110,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 3696,
+        "live_bytes": 838886,
+        "peak_bytes": 841097,
+        "total_allocated_bytes": 1440924
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.81,
+          "calls": 3,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    },
+    "stats_last": {
+      "error": "使用“0”个参数调用“GetResult”时发生异常:“发送请求时出错。”"
+    }
+  }
+}

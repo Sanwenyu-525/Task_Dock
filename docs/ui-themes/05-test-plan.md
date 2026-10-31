@@ -3,6 +3,13 @@
 > 状态取值：
 > **✅ 已验证**（本环境有证据） · **⚠️ 部分验证** · **⬜ 未验证**（当前环境无法执行，已在 07 文档列出原因与复现方法）
 
+> **2026-10-31 更正（v0.7 圆角整改）**：本文原「10-30 全部通过」的结论中，
+> **原生窗口四角一项已被真机截图证伪**，现改为「修复前 FAIL / 修复后未验证」。
+> 当前测试计数为前端 **40 文件 / 290 用例**、Rust **472 passed / 3 failed / 3 ignored**
+> （失败为锁屏会话下的前台置前用例，非本轮改动模块）。
+> 圆角验收方法、矩阵与证据见 [12-v06-window-corners.md](12-v06-window-corners.md)；
+> 视觉验收结论见 [07-visual-acceptance.md](07-visual-acceptance.md)。
+
 ---
 
 ## 1. 自动化测试
@@ -10,15 +17,15 @@
 | 套件 | 命令 | 覆盖点 | 状态 |
 | --- | --- | --- | --- |
 | 前端类型检查 | `npx tsc --noEmit` | 类型与契约（`Settings.visual_preset` 等） | ✅ 通过 |
-| 前端单测 | `npx vitest run` | 主题解析、材质管道、导航、UI 基元、剪贴板页面与抽屉、既有业务组件 | ✅ **36 文件 / 260 项通过**（见 1.1） |
-| Rust 测试 | `cd src-tauri && cargo test --release` | 设置校验、圆角夹取、既有后端逻辑 | ✅ lib 449 passed / 0 failed / 3 ignored；集成 1 passed（其余为真机验收工具，ignored） |
+| 前端单测 | `npx vitest run` | 主题解析、材质管道、导航、UI 基元、剪贴板页面与抽屉、既有业务组件 | ✅ **40 文件 / 290 用例通过**（2026-10-31 复测；v0.6 时为 37/264，见 1.1） |
+| Rust 测试 | `cd src-tauri && cargo +stable-x86_64-pc-windows-msvc test` | 设置校验、圆角缓存/重入、区域有效性与既有后端逻辑 | ⚠️ **472 passed / 3 failed / 3 ignored**；3 例失败为锁屏会话下 `navigation::router` 前台置前用例（`ENVIRONMENT-BLOCKED`），不属于本轮改动模块，详见 11 文档 1.2 |
 | 前端构建 | `npm run build` | 生产构建 | ✅ 通过 |
-| Tauri Release 构建 | `npm run tauri build -- --no-bundle` | 正式构建链路 | ✅ 通过 |
-| 视觉走查（基线） | `node scripts/visual-themes.mjs` | 两套预设 × 明暗 × 材质 × 宽度，附布局溢出审计 | ✅ 16 场景通过 |
+| Tauri Release 构建 | `npm run tauri build -- --no-bundle` | 正式构建链路 | ✅ 修复后重建通过（2026-10-31 01:35，14m25s，15,793,664 B；见 11 文档 1.3）；原生取证仍受锁屏限制 |
+| 视觉走查（基线） | `node scripts/visual-themes.mjs` | 两套预设 × 明暗 × 材质 × 宽度，附布局溢出审计 | ✅ 18 场景通过 |
 | 视觉走查（v0.6 交互） | `node scripts/visual-v06.mjs` | 排序菜单 / 主题下拉 / 日期浮层 / 剪贴板页 / 关联抽屉 / 深色菜单 / 320px 窄布局 | ✅ 26 场景通过 |
 | 布局回归 | `node scripts/layout-regression.mjs` | 宽高 × DPR × 预设 × 明暗 × 材质 × 模式，37 组合 | ✅ 全部达标 |
 | 性能走查 | `node scripts/theme-perf.mjs` | 空闲占用、布局次数、backdrop-filter 数量、切换耗时 | ✅ 通过 |
-| 原生窗口取证 | `scripts/capture-native-set.ps1` + `scripts/native-verify.ps1` | 真实 Win32 窗口截图 + 四角像素校验 | ✅ 4 组合通过，见第 4 节 |
+| 原生窗口取证 | `scripts/corner-lab.ps1` + `scripts/check-corners.py` | 真实 Win32 窗口截图 + 独立背景基线四角判定 | ⬜ **修复后未验证**（会话锁定）；修复前同方法实测 glass/solid 均 FAIL，见 12 文档 |
 
 新增单测明细：
 
@@ -47,7 +54,8 @@
 | `src/store/useClipboardStore.live.test.ts` | 4 | 高频采集事件只在防抖窗口结束后刷新一次 / **页面与抽屉同时存在时只建立一个后端监听** / 引用计数归零后才真正取消监听 / 连续采集被合并成一次刷新 |
 | `src/styles-themes.test.ts` | 10 | 原生 `<select>` 守卫 / 弹层表面不透明 / 弹层无整层实时 `backdrop-filter` / `--z-*` 刻度单调 / 业务样式无裸 `z-index` / 焦点环未被取消 / reduced-motion 与高对比度媒体查询存在 |
 
-**v0.6 后前端总计：36 个测试文件 / 260 个用例全部通过。**
+**v0.6 后前端总计：40 个测试文件 / 290 个用例全部通过**（2026-10-31 复测）
+（v0.6 当时为 37 文件 / 264 用例；新增的 3 个文件来自 v0.7 整改与并行的剪贴板加固工作）。
 
 ---
 
@@ -156,13 +164,13 @@
 
 | 维度 | 目标 | 验证方式 | 状态 |
 | --- | --- | --- | --- |
-| Win11 | 四角无黑色直角、圆角生效 | `scripts/native-verify.ps1` 抓取桌面合成像素 | ✅ 见 07 文档 |
+| Win11 | 四角无黑色直角、圆角生效 | `scripts/corner-lab.ps1` + `scripts/check-corners.py`：独立背景基线 + `GetWindowRgn` + 四角像素联合判定 | ⬜ **修复后未验证**（会话锁定）；修复前同方法实测 FAIL（glass 每角 44–45 暗像素、solid 半径 31.75 ≠ 22）→ 12 文档 |
 | Win10 | 同上 + 边缘锯齿可接受 | 同上 | ⬜ 本机为 Windows 11，Win10 未覆盖 |
-| Release | 正式构建可运行 | `npm run tauri build` + 启动取证 | ✅ |
+| Release | 正式构建可运行 | `npm run tauri build` + 启动取证 | ⚠️ 修复前构建可运行；修复后构建进行中，见 11 文档 1.3 |
 | Dev | 开发模式可运行 | `npm run tauri dev` | ⬜ 未在本轮执行 |
-| DPI 125%（本机） | 圆角与 CSS 半径一致 | 窗口 500×700 物理像素 = 400×560 逻辑像素 | ✅ |
+| DPI 125%（本机） | 圆角与 CSS 半径一致 | 修复前实测 solid 半径 31.75px ≠ 期望 22px | ⬜ 修复后未验证 |
 | DPI 100% / 150% | 同上 | 需切换显示缩放 | ⬜ 未覆盖 |
-| 原生材质（Mica） | 桌面透出 + 高光 | 截图 + `data-native-glass` 标记 | ✅（见 07） |
+| 原生材质（Mica） | 桌面透出 + 高光 | 截图 + `data-native-glass` 标记 | ⚠️ Mica 在区域裁剪下会产生黑角，Win11 自动后端已改为 `blur`；修复后真机取证未验证 |
 | 原生材质不可用 | 自动回退 solid，界面不透明 | harness `material=solid` 用例 + `data-material` 断言 | ✅ |
 | 系统关闭透明度 | 恢复 solid，恢复后重新应用原生材质 | `useSettingsStore.test.ts` | ✅ |
 | 减少动态 | 无位移/缩放动画 | CSS 媒体查询 + 视觉核对 | ✅（CSS 层） |
@@ -201,7 +209,8 @@
 
 ### 窗口
 
-15. 四角无黑色直角（桌面合成像素可见）。
+15. 四角无黑色直角：**必须**用「独立背景基线 + 四角像素差 + 半径拟合 + `GetWindowRgn`」联合判定；
+    仅 `SetWindowRgn`/`GetWindowRgn` 成功、或缺少有效背景基线，一律记为 **UNVERIFIED**，不得判 PASS。
 16. 无 1px 明显外框；保留拖动、缩放、贴边、托盘与位置恢复。
 17. 圆角半径在 100/125/150% DPI 下与视觉预期一致。
 
@@ -222,12 +231,21 @@ npx vitest run
 npm run build
 npm run tauri build -- --no-bundle
 
-npx vite preview --port 4173 --strictPort   # 另开终端
-node scripts/visual-themes.mjs        # 基线矩阵（16 场景）
+node scripts/serve-preview.mjs        # 另开终端（提供 /preview.html 与 dist 资源）
+node scripts/visual-themes.mjs        # 基线矩阵（18 场景）
 node scripts/visual-v06.mjs           # v0.6 交互场景（26 场景）
 node scripts/layout-regression.mjs    # 布局回归矩阵（37 组合）
 node scripts/theme-perf.mjs
 
-powershell -ExecutionPolicy Bypass -NoProfile -File scripts/capture-native-set.ps1 `
-  -DataDir "$env:TEMP\taskdock-v06" -OutDir "docs/screenshots/v06"
+powershell -ExecutionPolicy Bypass -NoProfile -File scripts/corner-lab.ps1 `
+  -DataDir "$env:TEMP\taskdock-corner" -Out "docs\screenshots\v07\lab-glass.png" `
+  -Preset dream-gradient -Material glass
+python scripts/check-corners.py docs/screenshots/v07/lab-glass-region-dwm.json
+python scripts/test-check-corners.py       # 验收脚本自身的合成用例（不得误判 PASS）
+
+powershell -ExecutionPolicy Bypass -NoProfile -File scripts/diagnose-corner.ps1 `
+  -OutDir "docs\screenshots\v07\matrix" -Backends "blur,none"
 ```
+
+> 原生脚本要求**未锁屏的交互式会话**；若会话锁定，`corner-lab.ps1` 会返回 UNVERIFIED，
+> `check-corners.py` 在缺少有效背景基线时退出码 2，绝不会标记 PASS。

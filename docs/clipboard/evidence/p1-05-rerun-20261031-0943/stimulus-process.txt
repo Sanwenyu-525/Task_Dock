@@ -1,0 +1,17 @@
+
+
+ProcessId    : 33604
+CreationDate : 2026/10/31 ÐÇÆÚÁù 9:43:18
+CommandLine  : D:\Python\python.exe D:\Develop\task_dock\scripts\acceptance\clipboard_stimulus.py --duration 1800 --int
+               erval 3.0 --image-every 10 --out D:\Develop\task_dock\docs\performance\results\DIAG-joint-clipboard-reru
+               n-20261031-0943-20261031-094304-stimulus.json
+
+
+
+
+
+ProcessId    : 77792
+CreationDate : 2026/10/31 ÐÇÆÚÁù 9:43:06
+
+
+

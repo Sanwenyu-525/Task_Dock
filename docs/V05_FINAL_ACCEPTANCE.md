@@ -11,9 +11,14 @@
     同批产出安装包 NSIS 4,493,352 B / MSI 6,840,320 B，日志 `docs/clipboard/evidence/bundle-build-20261030-1841.log`
 - 结论：**CONDITIONAL PASS**
   - 数据可信/隐私（P0）、状态正确性（P1）、通知风暴（P1）、**智能剪贴板可靠性（P1）**
-    四项已在**真实桌面**上闭环并有可判定证据；全套工程门禁退出码 0。
+    四项已在**真实桌面**上闭环并有可判定证据；工程门禁在第五轮收口复跑（§3.4/§3.5）：
+    `fmt` 0、`clippy` 0、`tsc`/`vitest`/`npm run build` 0、`clipboard_perf` 2/2、
+    release 构建 0（`sha256=4fddaa06…`）；`test-all` 仅 3 例未过——2 个前台聚焦用例被
+    Windows 前台锁拒绝（ENVIRONMENT-BLOCKED），1 个并发配额用例偶发一次且随后 5 轮全绿，
+    过滤前台用例后 lib **474 passed / 0 failed**。
   - 不升级为 PASS 的原因只有三条，且全部如实标注、未以任何方式放宽预算或断言：
-    **① 长时间运行内存稳定性 NOT PROVEN；② 本轮代码的安装包（NSIS/MSI）与升级迁移路径未复验；
+    **① 长时间运行内存曲线仍不能称为「已证明无泄漏」（第五轮已用当前源码 release 复跑并完成三臂归因，
+    出现平台期，见 §5.5）；② 本轮代码的安装包（NSIS/MSI）与升级迁移路径未复验；
     ③ 第三方目标应用矩阵与 DPI/窄窗口真实渲染走查未在 v0.5 二进制上重跑**。
 - 过程记录（缺陷 → 根因 → 修复 → 证据）见 `docs/V05_COMPREHENSIVE_REMEDIATION.md`，本文只做发布判定与风险清单，
   不改写 `docs/clipboard/10-*.md`、`docs/clipboard/11-*.md`、`docs/PERFORMANCE-*.md` 中的历史测量数值。
@@ -33,7 +38,7 @@
 | P1 | 通知风暴治理 | ✅ 闭环（`agents/notify.rs` 全局窗口限流 + 合并摘要；**第二轮把调度器到期提醒也并入同一闸门**） |
 | P1 | 智能剪贴板可靠性 | ✅ 闭环（**真实桌面 52/52**，含「恢复为粘贴前哨兵」） |
 | P2 | UI / UX | ✅ 代码与 DOM 测试闭环；DPI 真机走查未做（见第六节） |
-| P2 | 性能 | ✅ 当前二进制上的查询/剪贴板采样实测通过；⚠️ **内存 NOT PROVEN**（压测仍对应 10:10 二进制） |
+| P2 | 性能 | ✅ 当前二进制上的查询/剪贴板采样实测通过；⚠️ **内存仍不能称「已证明无泄漏」**（§5.4 旧轮 NOT PROVEN；第五轮 §5.5 已用当前源码 release 复跑并归因，出现平台期） |
 | P2 | 安装包与真机链路 | ⚠️ **安装包已用当前源码重建**（NSIS/MSI 18:44）；**实际安装→升级→卸载未实测**（见第六节 C.1） |
 
 ---
@@ -136,6 +141,58 @@
 **这一轮与第一轮的关键差异**：lib 用例数 441 → **444**（补漏新增 3 个 notify 用例）→ **445**
 （再补 1 个 v11→v13 迁移升级测试）；vitest 用例数 164 → **166**（历史面板 + 行动中心分页各 1 个回归用例）。
 **三次失败都被原样保留**（fmt 差异轮 ×2、perf 夹具轮），没有改写、没有删除、没有用放宽断言的方式「修绿」。
+
+### 3.4 第五轮门禁复跑（2026-10-31 09:07 → 09:41）
+
+第四轮的两个 101 在复查时复跑，共三次，**前两次失败原样保留、均归因到装置/环境**：
+
+| 轮次 | 结果 | 归因 |
+|---|---|---|
+| 09:07→09:15 | 两个门禁 exit 101 | `--manifest-path` 从仓库根调用绕过 `src-tauri/rust-toolchain.toml` → GNU ld `export ordinal too large`；同命令在 `src-tauri` 内用 MSVC 3m00s 链接成功（装置缺陷 #16） |
+| 09:21→09:28 | 两个门禁 exit 101 | D: 盘写满（0.03 GB）：`LNK1201` 写 PDB 失败、`os error 112` 写 rmeta 失败（装置缺陷 #18） |
+| 09:29→09:41 | `test-all` 101（仅 3 个前台聚焦用例）、`perf-clipboard` **0（2/2）** | Windows 前台锁拒绝置前（当时前台为 Geek Uninstaller），ENVIRONMENT-BLOCKED |
+
+| 检查 | 结果 | Exit | 日志（`docs/clipboard/evidence/`） |
+|---|---|---|---|
+| `cargo test --all --no-fail-fast` | lib **472 passed / 3 failed / 3 ignored**；其余目标通过 | 101 | `gate-test-all-20261031-0929.log` |
+| `cargo test --lib -- --skip <3 个前台用例>` | **474 passed / 0 failed / 3 ignored / 3 filtered out** | 0 | `gate-test-all-filtered-20261031-0943.log` |
+| `cargo test --release --test clipboard_perf -- --ignored --nocapture` | **2 passed / 0 failed**（34.82 s） | 0 | `gate-perf-clipboard-20261031-0929.log` |
+
+工具链指纹：`stable-x86_64-pc-windows-msvc (overridden by '…\src-tauri\rust-toolchain.toml')`、
+cargo 1.95.0 / rustc 1.95.0（见 `gate-rerun-fingerprint-20261031-0929.txt`）。
+三个前台用例在第四轮安静桌面上已逐条通过（`p2-06-focus-tests-fourth-round-20261030.log`），
+本轮未改断言、未删用例、未加 `#[ignore]`。源码在复跑期间被并行会话持续编辑
+（开始 152 files/+6,088、结束 159 files/+6,479），因此 472/474 的计数差异如实记录。
+
+### 3.5 第五轮收口：全门禁绿与最终产物（2026-10-31 09:46 → 10:24）
+
+第 3 次只跑了 Rust 三个门禁，本段补齐前端与 release，并把 09:46、10:19 两次失败原样记录：
+
+| 轮次 | 时间 | 结果 | 判定 |
+|---|---|---|---|
+| 09:46→10:01 | fmt **1**（16 处格式差异）、clippy **101**（`src/lib.rs:275` `needless_borrow`）；tsc / vitest / `npm run build` / release 全 0 | 本次整改新增代码引入；已 `cargo fmt --all` 并去掉多余 `&` | 失败留证，修复后重跑 |
+| 10:04→10:14 | fmt **0**、clippy **0**、test-all **101（474 passed / 3 failed / 3 ignored）**、过滤复跑 **0（474/0/3/3）**、release **0（6m10s）** | 3 个失败 = 2 个前台聚焦 + 1 个并发配额偶发（见下） | **本轮视为验收依据** |
+| 10:19→10:20 | fmt 0；clippy / test-all / perf 全 101 | 并行会话正在改 v0.6 `window_shape.rs` 等文件，工作区处于不可编译中间态（11 处编译错误） | **无效快照，不用于验收** |
+
+- 最终产物：`task-dock.exe` **15,799,296 B**，
+  `sha256=4fddaa06d3db6fb710ad371412889a8a127367207af9e03646ca093b8972a948`
+  （构建目录 `%LOCALAPPDATA%\Temp\taskdock-gate\release`，cwd=`src-tauri`、MSVC 工具链）。
+- 前端（第 4 次）：`npx tsc --noEmit` 0、`npm test`（vitest）0、`npm run build` 0。
+- `clipboard_perf`：第 3 次 **2/2、exit 0**（09:41，34.82 s）。
+- `agents::inbox::tests::concurrent_writers_never_exceed_capacity` 在 10:05 失败一次
+  （`并发预留必须严格不超上限，实际 11`）；随后单测连跑 20 次、整 lib 套件连跑 5 次
+  均为 **477 passed / 0 failed / 3 ignored**（10:16–10:18 终端输出，未落日志文件），
+  独占打开探针也未能复现计数偏差 → 按「负载相关偶发、机制未证实」列入遗留风险，
+  **未做推测性修改、未删除用例、未放宽断言**。
+- 10:19 快照失败的根因不在本任务代码：`src-tauri/src/window_shape.rs` 处于并行会话 v0.6 编辑中间态
+  （`cannot find type AtomicU32`、`LAST_REGION` 缺失、`WebviewWindow<R>` 类型不匹配等，`cargo check --lib` 可复现）。
+  此后我们只改文档；该快照与之后源码变化都不属于 v0.5 验收范围。
+- **补充快照（10:28→10:33，`gate-final4-*20261031-1028.*`）**：并行会话的 v0.6 编辑恢复到可编译后，在
+  同一共享树上重跑 `test-all` → **exit 0，lib 480 passed / 0 failed / 3 ignored**，`inbox_processes` 1 passed；
+  10:05 失败的 3 例（2 个前台聚焦 + `concurrent_writers_never_exceed_capacity`）**本次全部通过**，
+  进一步支持「环境阻塞 + 负载相关偶发」的判定。该轮 `fmt`/`clippy` 仍非 0，但失败点**只在并行会话的
+  v0.6 文件**（`context_menu.rs:250/264`、`window_shape.rs:142`；clippy 为 `window_shape.rs:169`
+  `empty line after doc comment`），不涉及 v0.5 代码；本快照仅作补充，**不作为 v0.5 验收依据**。
 
 ---
 
@@ -244,14 +301,107 @@
 （`binary = release (console-window fix, built 2026-10-30 10:10)`），早于包含 Alpha 归一修复的
 **16:20** 最终二进制约 6 小时。压测结论对该二进制成立，**未对最终二进制复跑**。
 
+> **后续（2026-10-30 23:53 → 10-31 01:35）**：已用当前源码构建的 release 二进制作了
+> 三臂归因 + 30 分钟负载 + 30 分钟空闲复跑，结论与边界见 **§5.5**。
+> §5.4 的原始测量与判定**保持原样、不改写**。
+
+### 5.5 第五轮（2026-10-30 23:53 → 10-31 01:35）：自退归零、三臂归因与 30 分钟复跑
+
+**被测对象**：改名副本 `task-dock-acc9.exe`，**15,603,200 B**，
+`sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378`，
+由 `cargo build --bins --features tauri/custom-protocol --release` 于 2026-10-30 23:50
+从 `356bc44` + 工作区改动（**123 files changed, +2,680/−385**）构建，用时 9m28s。
+产物含 `task_dock.pdb` 字符串，可确认由仓库固定的 **MSVC 工具链**（`src-tauri/rust-toolchain.toml`）
+构建，与产品打包一致。产物已复制到隔离目录后再测量，**不受并行会话重建 `target/release` 影响**。
+
+**环境（如实记录）**：本机同时跑着另一会话的 A–F 套件实例（`task-dock-memaf.exe`、`task-dock-acc1.exe`）
+与一个正式产物 `task-dock.exe`。采样器按**精确镜像名**归组，不会串组；但 CPU/磁盘存在竞争，
+采样实际间隔由 5 s 被拉长到 6.9–9.4 s。机器 20 逻辑 CPU。
+
+#### 5.5.1 「被测实例自行退出」不再出现
+
+五臂全部 `rc=0`，`instance_exited_after_s = None`，存活期样本数 97 / 59 / 51 / 188 / 255，
+`process_gone_samples = 0`。整链输出（含每臂开始/结束与 rc）已归档为
+`docs/performance/results/MEM-CHAIN-v05r5-20261030-2353.log`。前几轮 N2/N3 中途退出的成因与修正见
+`docs/V05_COMPREHENSIVE_REMEDIATION.md` §13.5 与 `docs/PERFORMANCE_TESTING.md` §9.7。
+
+#### 5.5.2 三臂归因（480 s 负载 + 90 s 后段；20 事件/秒；窗口真实可见）
+
+| 臂 | 负载 | 通知 | 样本 | 时长 | Private 首→末 | Δ | 负载段斜率 | 后段斜率 | Rust `live_bytes` Δ | 事件 | 通知 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| N1 | mixed 4×5/s | 开 | 97 | 586.2 s | 41.3 → 49.1 MB | **+7.8 MB** | +0.809 MB/min | **−0.657 MB/min** | +0.038 MB | 9,616（0 丢弃） | 45/45 成功 |
+| N2 | mixed 4×5/s | 关 | 59 | 586 s | 9.0 → 13.6 MB | **+4.6 MB** | +0.590 MB/min | **−0.467 MB/min** | −0.163 MB | 9,604（0 丢弃） | 0 |
+| N3 | 空闲 | 关 | 51 | 480 s | 8.3 → 8.2 MB | **−0.1 MB** | +0.018 MB/min | — | 0.000 MB | 0 | 0 |
+
+**差值归因**（`docs/performance/results/MEM-ATTRIBUTION-v05r5.json`）：
+
+| 通路 | 增量（10 分钟） | 斜率 | 判读 |
+|---|---|---|---|
+| 通知路径 N1−N2 | **+3.2 MB** | +0.332 MB/min | 45 条真实系统通知 → **约 72.8 KB/条**（含 toast 生命周期分配） |
+| 接入路径 N2−N3 | **+4.7 MB** | +0.306 MB/min | 约 9,600 事件 → ≈ **0.49 KB/事件**的**增量**（非稳态驻留，见 5.5.4 的平台期） |
+| 基线漂移 N3 | **−0.1 MB** | +0.018 MB/min | 空闲路径不增长 |
+
+**通知基础设施的固定开销（读绝对值必须先扣掉）**：N1 首个样本即为 41.3 MB / 42 线程 / 663 句柄，
+N2 为 9.0 MB / 33 线程 / 364 句柄 → 通知开启时主进程常驻多出 **≈30 MB / 9 线程 / 约 300 句柄**
+（WinRT toast + COM apartment）。归因工具比较的是**增量**，不受这段固定开销影响。
+
+#### 5.5.3 增长不在 Rust 堆上
+
+N1 的 Private +7.8 MB 对应 `live_bytes` **+0.038 MB**（`private_minus_live = 7.76 MB`）；
+N2 的 Private +4.6 MB 对应 `live_bytes` **−0.163 MB**；N3 两者皆平。
+⇒ 负载期的增长是**分配器保留 / 原生内存**（SQLite 页缓存与 WAL、COM/GDI、线程栈），
+不是 Rust 可达对象泄漏；与 §5.4 的排查方向一致。
+
+#### 5.5.4 C 臂：30 分钟负载（当前二进制）
+
+- **36,070** 事件接收 / **15,665** 提交 / **20,405** 合并 / **0 丢弃**（`events_sampled=0`）；
+  通知关；DB 487,424 B → 31,309,824 B（+30.8 MB）。
+- 主进程 Private **9.1 → 17.8 MB**；分段斜率（负载起点 85.2 s；窗口见
+  `docs/performance/results/WINDOWS-C-ui-http-30min-20261031-002204.json`，
+  由 `scripts/perf/memory-window-slopes.py` 计算）：负载前 20 分钟（85.2→1285.2 s）**+0.218 MB/min**，
+  负载尾段（1285.2→1829.8 s，约 9.1 分钟）**+0.066 MB/min**，结束后 116 s（1829.8→1945.6 s）
+  **0.000 MB/min（恒定 17.8 MB）** → **出现平台期**。
+- WorkingSet 30.9 → 26.4 MB（末段被系统回收），线程 34 → 27，句柄 373 → 383（基本持平）。
+- 进程 CPU：均值 **0.08%**、峰值 0.26%；WebView2 进程树均值 1.27%、峰值 7.26%。
+
+#### 5.5.5 E 臂：10 分钟负载 + 30 分钟空闲
+
+- 11,914 事件、**55 条通知全部成功**。
+- Private 11.9 → 18.9 MB（负载段 **+0.542 MB/min**）→ 19.3 MB（30 分钟空闲：
+  前 15 分钟（900 s）**+0.0028 MB/min**，其后 14.5 分钟 **−0.0275 MB/min**；
+  窗口与工具同上，`WINDOWS-E-idle-after-load-30min-20261031-005450.json`）。
+- 空闲期 WorkingSet 被压到 5.5–18.9 MB；进程 CPU 均值 0.02%。
+- ⇒ **负载结束后不增长**，与 10-29「空闲路径收敛」的结论一致。
+
+#### 5.5.6 与 §5.4 的关系：改写结论边界，但不推翻历史、也不宣称「已修复」
+
+§5.4 的「2.3 KB/事件、无平台期」对应 **10:10 二进制 + 旧采样装置**；那套装置后来查出的缺陷共 15 项
+（见 `docs/V05_COMPREHENSIVE_REMEDIATION.md` §13.2/§13.4/§13.5），其中至少三项直接改变量级与形状：
+①`--window visible` 实际显示的是单实例插件的工具窗（主窗口从未渲染）；
+②采样按进程名归组（同机其它 `task-dock.exe` 会被并入同一分组）；
+③0 样本 / 实例退出会被读成「内存回落到 0」。
+
+因此**旧数值不能再作为基线**。在**同一速率（20 事件/秒）、UI 真实可见、当前源码构建**的条件下，
+本轮实测给出的是：**主进程驻留内存在 30 分钟内出现平台期（≈18 MB），负载结束后 30 分钟空闲不增长（±0.4 MB）**。
+这**不等于**「不存在任何泄漏」，覆盖边界如下：
+
+- 只覆盖 20 事件/秒、单实例、单显示器；未覆盖 500 事件/秒持续负载、8 小时以上长跑、长时间 UI 交互路径；
+- 通知路径的固定开销（≈30 MB）与每条增量（≈73 KB）已量化，但**未做进一步压缩**；
+- 归因只到「分配器保留 / 原生内存」这一层，**未做 ETW/Heap 逐分配点归因**；
+- 安装形态（NSIS/MSI 安装后）未复跑，与 §六 C 一致。
+
 ---
 
 ## 六、残留风险（三分法）
 
 ### A. 代码侧（已确认的缺陷状态）
 
-1. **长时间运行内存驻留量级未知**（非崩溃、非功能缺陷）：见 §5.4。压测 30 分钟未见失败、丢弃、泄漏型退化，
-   但内存曲线不满足「有平台期」的稳定性判据。若用户以常驻方式长时间高负载接入，需要按本节归因后修复。
+1. **长时间运行内存驻留（已归因、非泄漏型；仍不是「已证明无泄漏」）**：见 §5.4 与 §5.5。
+   第五轮在当前源码 release 上取得平台期证据（30 分钟负载末段 0.000 MB/min，负载后 30 分钟空闲
+   ±0.4 MB），增长落在分配器保留 / 原生内存（`private_minus_live` 7.76 MB），并量化了
+   通知路径（≈30 MB 固定开销 + ≈73 KB/条）与接入路径（≈0.49 KB/事件增量）。
+   **剩余边界**：只覆盖 20 事件/秒、单实例、单显示器；未做 ETW/Heap 逐分配点归因；
+   通知路径开销只量化、未压缩；500 事件/秒持续负载与 8 小时以上长跑未验证。
 
 ### B. 环境侧（本轮无法安全取得证据）
 
@@ -259,6 +409,11 @@
    已按纪律判 `ENVIRONMENT BLOCKED`，第 3 轮在安静环境下取到完整证据。
 2. **本机剪贴板为共享资源**：同口径 100k 与 GUI 验收都需要安静窗口；外部程序持续复制会显著影响
    「按全局条数」类断言，因此这类断言已全部改成按内容归属 + 序列号佐证。
+3. **本机有并行会话在同一份工作区上按镜像名结束进程**（第四轮实测，见 §5.5）：
+   另一会话执行 `taskkill //IM task-dock.exe //F`，时间戳 `2026-10-30T13:55:52.715Z`
+   与被测实例死亡时刻逐秒吻合；该会话随后重建 `target/release`，把被测二进制换成
+   dev-mode 产物。**任何在本机做的长时测量，都必须先隔离产物与镜像名**，
+   否则测到的可能是「被杀掉 / 被换掉」的进程。
 
 ### C. 未验证（不宣称通过）
 
@@ -290,9 +445,10 @@
 5. **DPI / 窄窗口真实渲染走查未做**：CSS 断点 280/360/520 与 320/400/500px 规则有代码与单测依据，
    真机截图覆盖 280/320/340/400 宽度，但**没有 125%/150% 缩放下、也没有 500px 满抽屉的真实渲染截图**。
 6. **真实休眠唤醒补偿、真实第三方 Agent 端到端接入**：沿用 v0.4 的验证结论，本轮未重跑。
-7. **长时压测未在最终二进制上复跑**：§5.1 的 30 分钟吞吐压测与 §5.4 的内存结论仍对应
-   **10:10 构建**的二进制；本轮未用 18:44 的最终二进制重跑长时压测，
-   因此「内存有平台期」这件事**仍然不成立**（NOT PROVEN，不是「已修复」）。
+7. **长时压测的覆盖边界**：第五轮已用**当前源码构建的 release 副本**（`task-dock-acc9.exe`，
+   15,603,200 B，`sha256=fb5e0eef…`，23:50 构建）复跑 30 分钟负载与 30 分钟空闲（§5.5）；
+   仍**未覆盖** 500 事件/秒持续负载、8 小时以上长跑、安装形态（NSIS/MSI）与长时间 UI 交互，
+   且 §5.1 的吞吐结论仍对应 10:10 构建的二进制。
 
 ---
 
@@ -313,6 +469,11 @@
 | **第二轮门禁**（fmt/clippy/rust test/npm test/npm build/tsc） | `docs/clipboard/evidence/gate-rust-final-20261030-1832.log`（fmt 失败轮）、`gate-rust-final-20261030-1836.log`（fmt 0 / clippy 0 / 444 lib tests）、`gate-npm-final-20261030-1842.log`（166 vitest / build 0 / tsc 0） |
 | **第二轮性能采样**（当前二进制） | `perf-actions-release-20261030-180830.log`（**失败轮，原样保留**）、`perf-actions-release-20261030-1813.log`、`perf-clipboard-release-20261030-1819.log`；报告 `docs/performance/results/Q-actions-20261030-101135.json`（pass=false）、`Q-actions-20261030-101816.json`、`CLIP-20261030-183022.json` |
 | **安装包构建尝试** | `docs/clipboard/evidence/bundle-build-20261030-1841.log` |
+| **第五轮三臂归因**（N1/N2/N3 采样与元数据） | `docs/performance/results/DIAG-N1-load-notify-on-20261030-235323.*`、`DIAG-N2-load-notify-off-20261031-000318.*`、`DIAG-N3-idle-20261031-001325.*`；归因 `MEM-ATTRIBUTION-v05r5.json` |
+| **第五轮长跑**（C/E 臂） | `DIAG-C-ui-http-30min-20261031-002204.*`、`DIAG-E-idle-after-load-30min-20261031-005450.*`；驱动日志 `MEM-CHAIN-v05r5-20261030-2353.log`（整链，含每臂 rc）、`MEM-C-ui-http-30min-20261031-002156.log`、`MEM-E-idle-after-load-30min-20261031-002156.log`、`MEM-fingerprint-20261031-002156.txt`；分段分析 `PHASES-C-ui-http-30min-20261031-002204.json`、`PHASES-E-idle-after-load-30min-20261031-005450.json` |
+| **「被测实例自行退出」取证** | `docs/performance/results/EXIT-FORENSICS-20261030.md`、`scripts/perf/exit-forensics.py`、`scripts/perf/quit-under-load.py`（实例守卫，`SystemExit(3)`） |
+| **第五轮测量脚本** | `scripts/perf/v05r5-memory-chain.sh`（链入口）、`scripts/perf/gate-rerun-failed.sh`（复跑装置）、`scripts/perf/memory-window-slopes.py`（分段斜率） |
+| **第五轮门禁复跑**（含两次失败轮） | `docs/clipboard/evidence/gate-test-all-20261031-0907.log`、`gate-perf-clipboard-20261031-0907.log`、`gate-rerun-fingerprint-20261031-0907.txt`（GNU 工具链失败）、`gate-test-all-20261031-0921.log`、`gate-perf-clipboard-20261031-0921.log`（磁盘写满）、`gate-test-all-20261031-0929.log`、`gate-perf-clipboard-20261031-0929.log`、`gate-test-all-filtered-20261031-0943.log`、`gate-rerun-fingerprint-20261031-0929.txt` |
 
 ---
 
@@ -335,15 +496,34 @@
   `cargo test --release --test actions_perf -- --ignored --nocapture` → p95 **3.22ms**（预算 60ms）；
   `cargo test --release --test clipboard_perf -- --ignored --nocapture` → 2 passed；
   `TD_REAL_UPGRADE_DB=… cargo test --test real_upgrade -- --ignored` → ok（真实用户库 v11→v13）。
+- **第五轮门禁复跑（2026-10-31 09:07 → 09:41，§3.4）**：前两次失败均为装置/环境问题并已留证
+  （GNU 工具链绕过、D: 盘写满）；第 3 次 `perf-clipboard` **2/2、exit 0**，
+  `test-all` 仅 3 个 `navigation::router` 前台聚焦用例被 Windows 前台锁拒绝（ENVIRONMENT-BLOCKED，
+  第四轮安静桌面已逐条通过，断言未改、用例未删），过滤这 3 例后 lib **474 passed / 0 failed**。
+- **第五轮收口（2026-10-31 09:46 → 10:24，§3.5）**：`fmt` 1 → 修复 → **0**；`clippy` 101
+  （`needless_borrow`）→ 修复 → **0**；`tsc`/`vitest`/`npm run build` **0**；release **0**，
+  产物 15,799,296 B `sha256=4fddaa06…`。`test-all` 仍报 474/3/3：2 个前台锁环境阻塞 +
+  `concurrent_writers_never_exceed_capacity` 偶发一次（随后单测 20 次、整 lib 5 次全绿，
+  机制未复现，未改为放宽断言）。10:19 的复跑因并行会话 v0.6 编辑使工作区不可编译而**判为无效快照**；
+  10:28–10:33 补充快照（并行 v0.6 编辑恢复可编译后）`test-all` **exit 0、lib 480 passed / 0 failed**，
+  此前 3 例失败全部通过（fmt/clippy 的失败点只在并行会话的 v0.6 文件，不涉及 v0.5 代码）。
 - **发布条件（建议人工执行后再打 tag）**：
   1. 在真实环境执行一次 **NSIS/MSI 安装→升级→卸载**（会改动用户机器，本轮未擅自执行），
      并在真实用户库上确认 v12/v13 迁移后的界面表现；
-  2. 用**最终二进制**（18:44 构建）重跑 30 分钟吞吐压测，接上 §5.4 的 2.3 KB/事件归因：
-     做一次 Heap/ETW 分析，给出「驻留原因 + 是否需要在预算内主动收缩」的结论；
+  2. 内存驻留已用当前源码 release 复跑 30 分钟（§5.5，出现平台期）并完成三臂归因；
+     若要进一步压缩常驻量，再做一次 ETW/Heap 逐分配点归因，给出「是否需要主动收缩」的结论；
+     另需用最终二进制重跑 §5.1 的 30 分钟吞吐压测（现仍对应 10:10 构建）；
   3. 在安静桌面环境复跑目标应用矩阵（记事本/资源管理器/Edge textarea/VS Code，微信与 Office/Word 需人工在场），
      并把矩阵脚本入库，避免证据再次不可复现；
   4. 补 125%/150% DPI 与 500px 满抽屉的真实截图走查；
   5. 补 v0.1~v0.4 各自真实历史库到 v13 的逐版本升级验证（本次只覆盖 v11→v13）。
-- **不构成发布阻断但必须随包说明**：内存曲线尚未取得平台期证据（压测对应 10:10 二进制，最终二进制未复跑）；
+- **不构成发布阻断但必须随包说明**：内存曲线已在**当前源码 release** 上取得平台期（§5.5），
+  但覆盖只有 20 事件/秒、30 分钟负载 + 30 分钟空闲；未做 ETW/Heap 逐分配点归因，
+  通知路径的 ≈30 MB 固定开销未压缩，500 事件/秒持续负载与 8 小时以上长跑未验证，
+  因此只能表述为「未观察到泄漏型增长」，不能表述为「已证明无泄漏」；
   「粘贴中途被用户复制」的真机现场证据本轮缺失，但该行为有守卫单测与真机套件支撑，
-  不会因为本轮未复现而被视为已修复。
+  不会因为本轮未复现而被视为已修复；
+  `agents::inbox::tests::concurrent_writers_never_exceed_capacity` 在 10:05 全量门禁中偶发失败一次
+  （实测 11 > 上限 10），随后 20 次单测 + 5 次整 lib 套件均通过、机制未能复现（§3.5），
+  按「负载相关偶发」随包记录；若发布后在低配机器复现，需按 `write_reserved` 的锁获取
+  与 `measure()` 统计口径重新归因，不得直接放宽断言或提高上限。

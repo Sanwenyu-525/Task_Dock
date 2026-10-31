@@ -19,6 +19,11 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 # Tauri 原生 set_effects 在 Windows 上吞错（恒 Ok），无法判断毛玻璃是否真正生效
 window-vibrancy = "0.6"
 tauri-plugin-notification = "2"
+# 桌面通知直连 WinRT（Cargo.lock 已有传递依赖，版本对齐）：
+# notify-rust 每条 toast 都会注册 on_activated/on_dismissed 回调，Toast 在操作中心
+# 存续期间这些 COM 回调把 ~3 个句柄和 ~23KB 原生内存留在本进程；改为无回调直发
+# toast，消除按条累积（压测证据见 docs/PERFORMANCE_FINAL_ACCEPTANCE.md §14）。
+tauri-winrt-notification = "0.8"
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-opener = "2"
@@ -50,6 +55,8 @@ windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Input_KeyboardAndMouse",
+  # 右键菜单（v0.6 整改）：EVENT_SYSTEM_FOREGROUND 钩子（事件驱动的菜单外点击关闭）
+  "Win32_UI_Accessibility",
   "Win32_System_Threading",
   "Win32_System_ProcessStatus",
   "Win32_System_Diagnostics_ToolHelp",

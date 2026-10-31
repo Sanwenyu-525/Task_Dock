@@ -1,0 +1,50 @@
+﻿{
+    "out":  "D:\\Develop\\task_dock\\docs\\screenshots\\v07\\lab-v071-solid-region-dwm.png",
+    "visible":  "D:\\Develop\\task_dock\\docs\\screenshots\\v07\\lab-v071-solid-region-dwm-visible.png",
+    "baseline":  "D:\\Develop\\task_dock\\docs\\screenshots\\v07\\lab-v071-solid-region-dwm-baseline.png",
+    "reshow":  "D:\\Develop\\task_dock\\docs\\screenshots\\v07\\lab-v071-solid-region-dwm-reshow.png",
+    "window":  {
+                   "y":  120,
+                   "w":  500,
+                   "h":  700,
+                   "x":  200
+               },
+    "capture":  {
+                    "y":  72,
+                    "w":  596,
+                    "h":  796,
+                    "x":  152
+                },
+    "dpi":  120,
+    "scale":  1.25,
+    "region_probe":  "00001 bounds=0,0,500,700",
+    "dwm":  {
+                "nc_policy":  0,
+                "dark_mode":  1,
+                "corner_preference":  2,
+                "border_color":  0,
+                "system_backdrop":  2
+            },
+    "preset":  "dream-gradient",
+    "theme":  "light",
+    "material":  "solid",
+    "radius_logical":  18,
+    "radius_phys":  22,
+    "backdrop":  {
+                     "g":  255,
+                     "r":  0,
+                     "b":  0
+                 },
+    "glass_backend":  "auto",
+    "dwm_border_env":  "1",
+    "region_env":  "1",
+    "dwm_env":  "1",
+    "nc_policy_env":  "",
+    "visible_before":  true,
+    "baseline_check":  {
+                           "expected":  "0,255,0",
+                           "corner_px":  "0,0,0",
+                           "valid":  false,
+                           "far_px":  "0,0,0"
+                       }
+}

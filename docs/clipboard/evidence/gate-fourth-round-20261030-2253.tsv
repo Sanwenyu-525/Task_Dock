@@ -1,0 +1,7 @@
+fmt	1	1	/d/Develop/task_dock/docs/clipboard/evidence/gate-fmt-20261030-2253.log
+clippy	101	17	/d/Develop/task_dock/docs/clipboard/evidence/gate-clippy-20261030-2253.log
+test-all	101	114	/d/Develop/task_dock/docs/clipboard/evidence/gate-test-all-20261030-2253.log
+test-clipboard	0	14	/d/Develop/task_dock/docs/clipboard/evidence/gate-test-clipboard-20261030-2253.log
+tsc	2	13	/d/Develop/task_dock/docs/clipboard/evidence/gate-tsc-20261030-2253.log
+vitest	1	118	/d/Develop/task_dock/docs/clipboard/evidence/gate-vitest-20261030-2253.log
+npm-build	2	9	/d/Develop/task_dock/docs/clipboard/evidence/gate-npm-build-20261030-2253.log

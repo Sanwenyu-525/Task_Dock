@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47885",
+    "token": "9540c489-e994-4a93-b1dc-cc1beab81cdc",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 3600,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "F-repeat-load-60min-20261031-022204",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-af-20261030-235719\\F-repeat-load-60min-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-F-repeat-load-60min-20261031-022204-load.json"
+  },
+  "elapsed_ms": 3600004,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 72000,
+    "ok": 72000,
+    "failed": 0,
+    "retries": 65,
+    "critical_sent": 7200,
+    "critical_ok": 7200,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.7,
+    "p95": 247.29,
+    "max": 319.89
+  }
+}

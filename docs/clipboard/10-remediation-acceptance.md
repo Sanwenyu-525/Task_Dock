@@ -349,6 +349,101 @@ M5 首轮粘贴落在 VS Code 欢迎页，文件未变化；任务如实报告 `
 未删除、未放宽断言、未放宽预算。第二轮整体判定与剩余未验证项见
 [../V05_FINAL_ACCEPTANCE.md](../V05_FINAL_ACCEPTANCE.md)。
 
+### 8.2 第四轮门禁（2026-10-30 23:36→23:50）与「自退」取证归因
+
+第四轮把上一轮遗留的两个门禁装置缺陷先修掉再复跑：门禁脚本此前在**仓库根目录**执行 cargo
+（该目录没有 `Cargo.toml`），产生 `fmt` exit 1 / `clippy`、`test-all` exit 101 的**假失败**；
+修正为 `--manifest-path src-tauri/Cargo.toml` 后各门禁才真正跑在源码上。
+
+| 检查 | 结果 | 退出码 | 日志 |
+|---|---|---|---|
+| `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | 通过 | 0 | `gate-fmt-20261030-2336.log` |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` | 通过，0 警告 | 0 | `gate-clippy-20261030-2336.log` |
+| `cargo test --manifest-path src-tauri/Cargo.toml --all --no-fail-fast` | **未完成**：编译期失败（5 处），见下方定性 | 101 | `gate-test-all-20261030-2336.log` |
+| `npx tsc --noEmit` | 通过 | 0 | `gate-tsc-20261030-2336.log` |
+| `npx vitest run` | 通过 | 0 | `gate-vitest-20261030-2336.log` |
+| `npm run build` | 通过 | 0 | `gate-npm-build-20261030-2336.log` |
+| `cargo test --release --test clipboard_perf -- --ignored --nocapture` | **未完成**：同一批编译期失败 | 101 | `gate-perf-clipboard-20261030-2336.log` |
+| `cargo build --bins --features tauri/custom-protocol --release`（同一份源码） | **通过**（9m28s，产物 15,603,200 B，`sha256=fb5e0eef…`） | 0 | `docs/V05_COMPREHENSIVE_REMEDIATION.md` §13.5.5 |
+
+**两个 101 的定性（不拿失败当通过，也不拿失败当缺陷）**：失败日志里的 5 条编译错误全部指向
+**并行会话当时正在编辑的文件**（`src/context_menu.rs:251/299`、`src/lib.rs:153-154`：
+`window_shape::apply_with_radius` 尚不存在、`Db` 未导入、`tauri::Position` 没有 `x`/`y` 字段）。
+同一时段（23:41→23:50）我方用同一份源码的 release 构建 **rc=0** 证明该树可编译，
+23:39 的 clippy 也已通过 ⇒ 这是「另一个会话把共享工作区改到编译不过」的时间窗事故，
+不是被测代码缺陷。复跑结果见 §8.3。
+
+**「被测实例自行退出」的取证归因（第四轮→第五轮）**：前几轮有四次「被测实例自己退掉」，
+取证结论是——那是**产品自己的优雅退出路径**（退出码 0 + `last-shutdown-report.json`），
+触发源是仓库自带的托盘退出自动化 `scripts/perf/quit-under-load.py` → `tray-quit5.ps1`：
+后者按**通知区图标名前缀 `Task Dock`** 取 `Select-Object -First 1`，**不区分实例**，
+在多实例并存时退出的是「通知区里第一个匹配的图标」——可能正是正在压测的隔离实例。
+已做三件事：①`quit-under-load.py` 在执行前枚举机器上所有 Task Dock 实例，
+发现除自己以外还有实例即**拒绝执行**（`SystemExit(3)`）；②新增取证工具
+`scripts/perf/exit-forensics.py`，按「shutdown report 是否存在」区分
+`GRACEFUL_REQUEST_EXIT` / `EXTERNAL_KILL` / `SURVIVED`；③测量副本改名（进程名含 task/dock
+且与并行会话不同名），既让 ① 的拒绝检查生效，又避免采样按进程名串组。
+完整证据链见 [../performance/results/EXIT-FORENSICS-20261030.md](../performance/results/EXIT-FORENSICS-20261030.md)
+与 [../PERFORMANCE_TESTING.md](../PERFORMANCE_TESTING.md) §9.7。
+
+### 8.3 第五轮门禁复跑（2026-10-31 09:07 → 09:41）：两次失败归因到装置/环境
+
+§8.2 的两个 101 需要复跑。实际跑了三次，**前两次的失败日志原样保留**：
+
+| 轮次 | 时间 | 结果 | 归因 |
+|---|---|---|---|
+| 1 | 09:07→09:15 | 两个门禁 exit 101 | 脚本 `--manifest-path` 从仓库根调用，**绕过 `src-tauri/rust-toolchain.toml`** → GNU 工具链；GNU ld 对零导出 cdylib 报 `export ordinal too large`（175,971 / 71,629）。同一条命令在 `src-tauri` 内用 MSVC **3m00s 链接成功**，证明不是源码缺陷 |
+| 2 | 09:21→09:28 | 两个门禁 exit 101 | D: 盘写满（0.03 GB）：`LNK1201` 写 PDB 失败、`failed to write … full.rmeta: 磁盘空间不足 (os error 112)` |
+| 3 | 09:29→09:41 | `test-all` 101（**仅 3 个前台聚焦用例**）、`perf-clipboard` **rc=0** | Windows 前台锁：测试进程不具备前台资格（当时前台是 Geek Uninstaller），ENVIRONMENT-BLOCKED，不是代码回归 |
+
+第 3 次明细（工具链：`stable-x86_64-pc-windows-msvc`，由 `src-tauri/rust-toolchain.toml` 覆盖；
+cargo 1.95.0 / rustc 1.95.0；`cwd=src-tauri`）：
+
+| 门禁 | 结果 | Exit | 日志 |
+|---|---|---|---|
+| `cargo test --all --no-fail-fast` | lib **472 passed / 3 failed / 3 ignored**；其余目标通过（`inbox_processes` 1 passed；性能与真机套件 ignored） | 101 | `gate-test-all-20261031-0929.log` |
+| `cargo test --lib -- --skip <3 个前台用例>` | **474 passed / 0 failed / 3 ignored / 3 filtered out**（`running 477 tests`） | 0 | `gate-test-all-filtered-20261031-0943.log` |
+| `cargo test --release --test clipboard_perf -- --ignored --nocapture` | **2 passed / 0 failed**（34.82 s） | 0 | `gate-perf-clipboard-20261031-0929.log` |
+
+三个失败用例是 `navigation::router::tests::own_process_window_is_enumerated_and_focus_reported_truthfully`、
+`…::launch_disallowed_reports_failure_or_focus_only`、`…::notepad_launch_focuses_existing_window_of_owned_process`，
+报错为 `left: None / right: Some("focus_window")`，且 `focus_window` 回报 `foreground-denied`。
+**同一组用例在第四轮安静桌面上逐条通过**（23:34/23:35，`p2-06-focus-tests-fourth-round-20261030.log`）；
+本轮未改断言、未删用例、未加 `#[ignore]`，过滤复跑是把 3 个环境依赖用例**显式列出并排除**后，
+其余 474 例全绿（比 09:29 轮多 2 例，因为并行会话在这 11 分钟内新增了测试）。
+
+**源码指纹**（`gate-rerun-fingerprint-20261031-0929.txt`）：开始 152 files changed / +6,088
+（`sha256=1217fb86…`），结束 159 files changed / +6,479（`sha256=052adaee…`）。
+并行会话在此期间持续编辑，门禁对应的是「这期间可编译的树」，因此 472/474 的差额如实记录、不当成稳定计数。
+装置缺陷 #16（工具链绕过）与 #18（未核对磁盘空间）已写入
+[../V05_COMPREHENSIVE_REMEDIATION.md](../V05_COMPREHENSIVE_REMEDIATION.md) §13.5.4。
+
+### 8.4 第五轮收口（2026-10-31 09:46 → 10:24）：fmt/clippy 修复与最终产物
+
+09:46 起补齐 Rust 格式/静态检查与前端门禁，09:46 与 10:19 两次失败同样原样保留：
+
+| 轮次 | 检查 | 结果 | Exit | 日志 |
+|---|---|---|---|---|
+| 09:46 | `cargo fmt --all -- --check` | **失败**：16 处差异（本次整改新增代码） | 1 | `gate-final-fmt-20261031-0946.log` |
+| 09:46 | `cargo clippy --all-targets --all-features -- -D warnings` | **失败**：`needless_borrow`（`src/lib.rs:275` 的 `&win_for_menu.app_handle()`） | 101 | `gate-final-clippy-20261031-0946.log` |
+| 09:51–09:53 | `npx tsc --noEmit` / `npm test` / `npm run build` | 全通过 | 0 | `gate-final-{tsc,vitest,npm-build}-20261031-0946.log` |
+| 10:04 | fmt / clippy（`cargo fmt --all` + 去掉 `&` 后） | **0 / 0** | 0 | `gate-final2-{fmt,clippy}-20261031-1004.log` |
+| 10:05 | `cargo test --all --no-fail-fast` | lib **474 passed / 3 failed / 3 ignored** | 101 | `gate-final2-test-all-20261031-1004.log` |
+| 10:07 | 过滤 3 个前台用例 | **474 passed / 0 failed / 3 ignored / 3 filtered out** | 0 | `gate-final2-test-filtered-20261031-1004.log` |
+| 10:08–10:14 | release 构建 | 15,799,296 B，`sha256=4fddaa06…`，6m10s | 0 | `gate-final2-release-20261031-1004.log` |
+| 10:19 | 全门禁快照 | 并行会话 v0.6 编辑使工作区不可编译（11 处）→ **无效快照** | 101 | `gate-final3-*-20261031-1019.log` |
+
+3 个失败 = 2 个前述前台锁用例 + `agents::inbox::tests::concurrent_writers_never_exceed_capacity`
+偶发一次（`实际 11 > 上限 10`）。后者随后单测 20 次、整 lib 套件 5 次全绿（477/0/3），
+独占打开探针也未能复现统计偏差 → 未做推测性修改，按遗留风险记录
+（[../V05_FINAL_ACCEPTANCE.md](../V05_FINAL_ACCEPTANCE.md) §3.5）。
+`clipboard_perf` 未在本轮重跑，沿用 09:41 的 **2/2、exit 0**。
+
+补充快照（10:28→10:33，`gate-final4-*20261031-1028.*`）：并行会话 v0.6 编辑恢复可编译后，
+`cargo test --all --no-fail-fast` **exit 0，lib 480 passed / 0 failed / 3 ignored**，
+上述 3 例全部通过；同轮 fmt/clippy 的失败点只在并行会话的 `context_menu.rs`、`window_shape.rs`，
+不在剪贴板或 v0.5 整改代码内。此快照仅作补充，不作为 v0.5 验收依据。
+
 ## 九、文档同步
 
 - 更新：`02-architecture.md`（ACCESS_LOCK/内容守卫/自写登记/最终状态机）、
@@ -360,6 +455,22 @@ M5 首轮粘贴落在 VS Code 欢迎页，文件未变化；任务如实报告 `
   `08`/`09`/`README.md`。
 - 同步：`docs/TESTING.md`、`docs/ARCHITECTURE.md`、`README.md`。
 - 证据归档：`docs/clipboard/evidence/`。
+- **2026-10-30 第四轮专项整改新增同步**（隐私事务安全 / 图文粘贴 / 内存稳定性 / 发布门禁）：
+  - 新增 `docs/clipboard/12-fourth-round-acceptance.md`（第四轮 11 节验收报告，
+    含 §九 其余可靠性边界 10 条逐条核实表）；
+  - `02-architecture.md`：新增「采集事件的处置与去重水位（第四轮整改）」小节
+    （`classify_event` 三态表、三个新计数器、对账等式）与修订后的采集流程图；
+  - `04-monitor-security.md`：新增「事件处置与去重水位（第四轮整改）」小节，
+    诊断计数补 `superseded_events` / `self_write_events` / `empty_events`，并给出对账等式；
+  - `06-copy-paste-protection.md`：新增「2026-10-30 第四轮：图文混合粘贴复验」与
+    「第四轮采控可观测性整改」两节；第三轮的 ENVIRONMENT BLOCKED 记录原样保留；
+  - `08-testing-performance.md`：新增 §5.12 第四轮复测（门禁、真实图文混合、聚焦测试）；
+  - `09-implementation-report.md`：新增 C.1 第四轮变更清单、E.1 第四轮测试结果，
+    并更新 F/G/H/I 的第四轮状态；
+  - `11-final-release-acceptance.md`：新增 §十一 第四轮专项判定（与前轮 A–I 并列，不回改历史）；
+  - `docs/PERFORMANCE_TESTING.md`：新增 §9.8 第四轮三臂长跑方法学与 §9.9 分段分析口径；
+  - `docs/PERFORMANCE_FINAL_ACCEPTANCE.md`、`docs/TESTING.md`、`README.md` 同步。
+  **历史测量数值一律未被覆写**，第四轮内容以「第四轮」小节并列呈现。
 - **2026-10-30 第二轮复核新增同步**：`docs/V05_COMPREHENSIVE_REMEDIATION.md`（§十一
   复核与补漏、§8.1 第二轮门禁）、`docs/V05_FINAL_ACCEPTANCE.md`（§2.1 补漏闭环、
   §3.3 第二轮门禁、§5.3 当前二进制性能复测、§六 C 未验证、§八 发布判定）、

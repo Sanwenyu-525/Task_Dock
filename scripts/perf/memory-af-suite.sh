@@ -19,7 +19,7 @@ OUT_DIR="docs/performance/results"
 mkdir -p "$OUT_DIR"
 
 echo "=== 源码指纹 ==="
-bash scripts/perf/source-fingerprint.sh | tee "$OUT_DIR/MEM-fingerprint-$STAMP.txt"
+bash scripts/perf/source-fingerprint.sh "$EXE" | tee "$OUT_DIR/MEM-fingerprint-$STAMP.txt"
 ls -la --time-style=full-iso "$EXE" | tee -a "$OUT_DIR/MEM-fingerprint-$STAMP.txt"
 sha256sum "$EXE" | tee -a "$OUT_DIR/MEM-fingerprint-$STAMP.txt"
 
@@ -51,7 +51,7 @@ run() {
 
 # A：空闲 30 分钟（无负载、无通知）——基线漂移
 should_run A-idle-30min && run "A-idle-30min" \
-  --mode running --duration 0 --post 1800 \
+  --idle --mode running --duration 1800 --post 120 \
   --window visible --notify off "${EXTRA_ARGS[@]}" --port "$PORT_BASE"
 
 # B：仅 HTTP、无 UI 30 分钟（窗口隐藏）
@@ -78,6 +78,21 @@ should_run E-idle-after-load-30min && run "E-idle-after-load-30min" \
 should_run F-repeat-load-60min && run "F-repeat-load-60min" \
   --mode mixed --duration 3600 --post 300 --agents 4 --rate 5 \
   --window visible --notify on --transport http "${EXTRA_ARGS[@]}" --port "$((PORT_BASE+5))"
+
+# G：真实来源 + 系统通知 30 分钟
+# 复现 2026-10-30 10:13「整桌面 soak」的等价条件（source=bridge 被判为 real，
+# 会真正走通知弹窗 / 真实状态跃迁 / 行动中心），用来判定 bench 臂看不到的路径。
+# 只在隔离实例内运行：数据目录独立，弹窗来自本轮事件，不触碰用户实例。
+should_run G-real-notify-30min && run "G-real-notify-30min" \
+  --mode mixed --duration 1800 --post 120 --agents 4 --rate 5 \
+  --window visible --notify on --transport http \
+  --source bridge --allow-real-source --port "$((PORT_BASE+6))"
+
+# H：真实来源但不弹通知 30 分钟（仅在 G 出现增长时运行，用于隔离弹窗路径）
+should_run H-real-nonotify-30min && run "H-real-nonotify-30min" \
+  --mode mixed --duration 1800 --post 120 --agents 4 --rate 5 \
+  --window visible --notify off --transport http \
+  --source bridge --allow-real-source --port "$((PORT_BASE+7))"
 
 echo ""
 echo "=== 全部场景完成 $(date '+%H:%M:%S') ==="

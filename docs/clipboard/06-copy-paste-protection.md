@@ -284,15 +284,57 @@ ACCESS_LOCK
 已新增 `image::normalize_clipboard_png` 与 3 个单元测试（全透明→不透明重编码；
 部分透明保持；有可见像素时字节不变），`read_png` 统一走该入口。
 
-**修复后的真机复验未完成**：工作站进入锁屏（`WTSInfoEx.SessionFlags=0`、
+**修复后的真机复验（第三轮）未完成**：工作站进入锁屏（`WTSInfoEx.SessionFlags=0`、
 `LogonUI` 存在、剪贴板写入 `ERROR_ACCESS_DENIED=5`），无法安全操作 GUI，
-记为 **ENVIRONMENT BLOCKED / NOT VERIFIED**。因此本轮不得声称“图文混合粘贴已通过”，
-最终判定见 `11-final-release-acceptance.md`。
+记为 **ENVIRONMENT BLOCKED / NOT VERIFIED**。第三轮因此不得声称“图文混合粘贴已通过”。
+该阻塞已在第四轮解除——见下节，第四轮在未锁屏桌面上取得真实像素级证据。
+（保留本段是为了让“当时未验证”的事实不被后来的通过结论覆盖。）
+
+### 2026-10-30 第四轮：图文混合粘贴复验（Alpha 归一化后，真实像素级证据）
+
+第四轮（P1-03）在**未锁屏**的真实 Windows 11 桌面上重跑了图文混合粘贴，用
+**2026-10-30 23:42:45 重建的 Release 二进制**（`src-tauri/target-accept/release/task-dock.exe`，
+15,603,200 字节，构建退出码 0）。证据：
+`docs/clipboard/evidence/p1-03-mixed-paste-20261030-235050-76869ab9.json`
+（配套 `…-app.log`）。
+
+结果 **52 PASS / 0 FAIL / 0 BLOCKED，overall = PASS**。
+
+关键事实（均取自证据 JSON，非人工摘要）：
+
+| 项 | 实测值 |
+|---|---|
+| 采集的 3 张图（入库 PNG） | `width 240 × height 160`、`alphaMin 255`、`alphaMax 255`、`transparentPixels 0`、`opaquePixels 38400`、`alphaChannelUnused false` |
+| 目标 DOM 顺序 | `image → image → text → image`（与分组顺序一致） |
+| 目标 `<img>` 逐像素采样 | 红 `(220,30,30,255)`、绿 `(30,180,60,255)`、蓝 `(30,60,220,255)`；三张 `alphaMin=alphaMax=255`、`transparentPixels=0` |
+| 粘贴任务 | `completed`，`sent 4/4`，`confirmed 0`（如实报告“目标应用是否接收无法自动验证”） |
+| 剪贴板恢复 | 15 次哨兵采样全部命中同一序列号 `9039`，`left_on_pasted_item 0`、`our_text_left []` |
+| 历史副作用 | `history_delta 4`、`copy_count` 前后完全一致 |
+| 采集计数器 | `observed_events 10 = captured 5 + self_write_events 5`，`superseded_events 0`、`empty_events 0`、`dropped_events 0`、`merged_events 0`、`skipped 0`、`duplicates 0`、`failed 0` |
+| 延迟 | `max_capture_latency_ms 6`、`max_process_latency_ms 28` |
+
+即：**透明图片的合法语义被保护**（可见像素的图不再被“全部 Alpha 归零”），
+且目标端拿到的是真实不透明像素，而不是上一轮发现的 `255,255,255,0` 全透明图。
+
+### 第四轮采控可观测性整改（由本轮验收失败驱动）
+
+第三轮复验曾出现 `observed=6` 而 `captured=4` 的差额，无法判定是“被丢弃”还是
+“被记录”。根因是采集线程存在三条**无计数、无日志**的静默丢弃路径。整改后：
+
+- 新增 `platform::classify_event(event_sequence, last_captured, self_write)` 纯函数，
+  返回 `Read` / `Superseded` / `SelfWrite` 三态；
+- 去重水位改为**读取时刻**的序列号（原先用事件通知时刻的序列号），保证同一份
+  剪贴板状态只入库一次，不会虚高 `copy_count`；
+- 自写判定前置，自写与“用户重复复制”分列计数；
+- 三条丢弃路径各自计数（`superseded_events` / `self_write_events` / `empty_events`），
+  计数器可对账（见 `04-monitor-security.md`）。
+
+回归测试：`platform::event_disposition_separates_read_superseded_and_self_write`
+覆盖三态归因、读取水位去重与 `u32` 序列号回绕。
 
 仍未验证（不得声称通过）：
 
 - 微信与 Agent 类应用的接收行为；
-- 修复 Alpha 归一化后的图文混合粘贴真机复验（锁屏阻塞，见上）；
 - 图片/文件粘贴到图形界面应用（仅验证了记事本拒绝图片时如实报告）；
 - 长时间、高频连续粘贴的稳定性（已有 200 条历史列表性能与队列压测，但不等于长时挂机）；
 - 多显示器/不同 DPI 下的焦点与坐标行为。

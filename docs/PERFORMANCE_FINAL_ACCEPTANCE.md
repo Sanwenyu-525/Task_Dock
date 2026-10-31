@@ -7,6 +7,12 @@
 > **编号说明**：本报告按任务书编号：**P0-01 事件顺序、P0-02 退出排空、P1-03 文件队列容量、
 > P1-04 快速/完整备份与恢复、P1-05 真机全链路验收**。开发过程中曾把“全量备份/恢复原子性/
 > 退出超时”写作 P0-01/P0-02/P1-03，那套编号与本报告不同；引用旧文档时以内容为准，不以编号为准。
+>
+> **复验轮编号（2026-10-30 23:00 起的追加轮次）**：追加轮次采用另一套编号，为避免与上表混淆，
+> 本轮条目一律加前缀 **R-**（复验）：
+> **R-P1-01 内存专项与 A–F 归因、R-P1-02 有界内存恢复、R-P1-03 真实 Agent 自动接入、
+> R-P1-04 异常退出与文件/磁盘故障注入、R-P2-01 采样器统计、R-P2-02 前台焦点与桌面 GUI**。
+> 详见 §14。
 
 ## 1. 结论摘要
 
@@ -19,15 +25,146 @@
 | P1-04 备份与恢复 | **PASS（有边界）** | 100k 夹具 61.9MB 往返 + 真机 78.44MB 全量恢复 14.28s、25 表一致、21 个恢复故障测试；恢复非常量内存、多 GB 包 NOT TESTED |
 | P1-05-A 500/s × 10min | **PASS** | 300,000 / 600.368s = 499.69/s；30,000/30,000 关键；0 拒绝 |
 | P1-05-B 200/s × 60s | **PASS** | 12,000 / 60.262s = 199.13/s；1,200/1,200 关键 |
-| P1-05-C ≥3 真实安装 Agent | **PARTIAL** | 检测到 7 个真实安装来源；codex/trae/workbuddy 各 5 次 Hook CLI 投递全部成功；**实时会话接入未验证**（`configured=false`、`verified=false`） |
-| P1-05-D 30 分钟整桌面 | **吞吐 PASS / 内存 NOT PROVEN** | 36,000/36,000 成功、3,600/3,600 关键、0 丢弃；主进程 private 11.4→95.1MB 未平台 |
+| P1-05-C ≥3 真实安装 Agent | **PARTIAL（原轮）→ R-P1-03 已补测为 PASS** | 原轮：7 个真实安装来源检测到，codex/trae/workbuddy 各 5 次 Hook CLI 投递成功，但 `configured=false`、实时会话未验证。复验轮：codex / DeepSeek Harness / OpenCode **三个 Agent 的自动事件全部落库**，见 §14.2 |
+| P1-05-D 30 分钟整桌面 | **吞吐 PASS / 内存 NOT PROVEN** | 36,000/36,000 成功、3,600/3,600 关键、0 丢弃；主进程 private 11.4→95.1MB 未平台；R-P1-01 复验轮 A–F 实验进行中，见 §14.4 |
 | P1-05-E 故障注入 | **PASS（除注明项）** | 重复/乱序/超时/突发/SQLite busy/文件回退/退出/重启/备份恢复均实测；真实满盘、真实强杀 NOT TESTED |
 | 工程门禁 | **通过（2 例环境失败）** | fmt/check/clippy/tsc/build 通过；Rust 381 passed / 2 failed / 13 ignored；前端 133/133 |
+| R-P1-03 真实 Agent 自动接入 | **PASS** | codex / DSH / OpenCode 三方**自动**产生 running→completed 事件并落库；DSH 适配器由「写插件目录但宿主不加载」修正为真正的 profile bundle 安装；证据 `AGENT-agent-integration-20261030-233909.json`（§14.2） |
+| R-P1-04 异常退出与文件/磁盘故障 | **PASS（F7 除外）** | 真实 `taskkill /F` 强杀、恢复中断强杀、文件独占锁、HTTP+文件同事件幂等、写入失败落盘暂存、损坏暂存隔离与幂等重放全部实测通过；卷级磁盘写满 NOT TESTED（无提升权限）（§14.3） |
+| R-P2-01 采样器统计 | **PASS** | 采样间隔字段拆成 `planned/actual/sample_duration` 三项并按时间戳重算，原始 jsonl 未改动（§8.4、`sampler-recompute-D-soak-20261030.json`） |
 
 **最终判定：CONDITIONAL PASS（有条件通过）**。P0-01、P0-02（正常退出）、P1-03、P1-04 的
 实现与自动化测试完成，并通过真机规模/故障数据复核；但 30 分钟负载下主进程内存持续增长、
 恢复读取不是常量内存、真实满盘/断电/强杀未测、C 场景实时 Agent 会话未验证，因此不记为
 无条件 PASS，也不把未测项写成 PASS。
+
+## 14. 复验轮（2026-10-30 23:00 起）：内存专项、真实 Agent、异常退出与故障注入
+
+复验轮针对原报告 §11 中「内存根因未定位」「C 场景实时会话未验证」「异常退出未实测」三处
+缺口补做实验。所有结论标注被测二进制指纹，**不与旧数据混用**。
+
+### 14.1 被测版本
+
+| 项 | 值 |
+|---|---|
+| `git_head` | `356bc44`（工作树为未提交修改） |
+| 复验轮源码树指纹 | `source_tree_sha256=b30399039c0194820ce112a10f5726c09bf14c9bd1352c62371442a324a3d01c`（测量开始时刻） |
+| R-P1-03 被测二进制 | `sha256=82ec60a3352e4ee639ef2d979d0d7a57af0bf9b3bf7c14bd611148c5ba1f2182`，15,612,416 字节（23:38:49 构建） |
+| R-P1-04 被测二进制 | `sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378`，15,603,200 字节（23:50:36 构建） |
+| R-P1-01 被测二进制 | `sha256=fb5e0eef…`（改名副本 `.acceptance/task-dock-memaf.exe`，与上一行同一份构建产物） |
+
+> **改名副本的理由**：测量期间同一工作树上存在另一会话的 `task-dock.exe` 实例。采样器按
+> 镜像名归组资源占用，同名实例会污染本臂数据，因此把被测二进制复制为异名副本
+> （`task-dock-memaf.exe`）后测量，其 sha256 与 `src-tauri/target/release/task-dock.exe`
+> 完全一致，可溯源到同一份源码构建产物。
+
+### 14.2 R-P1-03 真实 Agent 自动接入：**PASS**
+
+原报告 §8.3 记为 PARTIAL 的原因是「只调用了 Hook CLI，没有真实会话触发」。复验轮改为
+**由 Agent 自身会话产生事件**，不再手工注入。
+
+证据：`docs/performance/results/AGENT-agent-integration-20261030-233909.json`
+
+| Agent | 结果 | 事件增量 | 状态序列 | 传输 | Agent 侧自证 |
+|---|---|---|---|---|---|
+| codex（0.165.0-alpha.1.2） | **PASS** | 0→3 | running→completed | http | 自身 stdout 打印 `hook: SessionStart / UserPromptSubmit / Stop` |
+| DeepSeek Harness（DSH） | **PASS** | 0→2 | running→completed | http | 自身 stdout 打印 `[task-dock-bridge] loaded` |
+| OpenCode | **PASS** | 0→3 | running→completed→failed | http | 会话事件由插件写入 |
+
+- 来源健康状态：`codex` / `deepseek-harness` / `opencode` 三者 `verified=1`、
+  `transport_verified=1`；其余来源（trae/workbuddy/qoder/zcode/bridge）仍为 0。
+- **多 Agent 隔离**：三个 Agent 使用不同 `session` 与不同来源标识，事件互不串台；
+  DSH 与 OpenCode 的会话 ID、通道与时间轴互相独立。
+- **Hook 非阻塞**：Hook 进程开销 40 次调用 p50 38ms / p95 74ms / p99 91ms / max 91ms，0 错误；
+  退出后残留 Hook 进程 0（仅 1 个测量用的 PowerShell 枚举命令）。
+- **状态更新延迟**：codex p50 159.0 / p95 263.1ms；OpenCode p50 318.7 / p95 640.1ms；
+  DSH p50 267.9 / p95 350.3ms。
+- **配置不被破坏**：卸载后 codex `marker_removed=true`、DSH `profile_bundle_removed=true` +
+  `profile_listing_removed=true` 且 `profile_base_bundles_kept=true`；三方
+  `third_party_kept=true`；全程只读复制真实 Agent 的 auth/credentials，
+  **未写入任何真实用户 Agent 配置目录**（隔离 `DSH_HOME`/APPDATA/USERPROFILE）。
+
+#### 14.2.1 修复：DSH 适配器此前是「功能空操作」
+
+复验轮发现 DSH 适配器写出的插件包**宿主根本不会加载**：`~/.dsh/plugins/` 只是客户端插件位，
+宿主插件必须以 **profile bundle** 形式安装。修复后（`src-tauri/src/agents/dsh.rs`）：
+
+- 生成 `package.json`（声明 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`）+
+  `cordis.patch.yml` + `lib/index.js`；
+- 安装到 `<profile>/node_modules/task-dock-bridge/`，并登记进 profile 的
+  `dependencies["task-dock-bridge"]` 与 `dsh.profile.bundles`；
+- **只改动这两个字段**，第三方 dependency/bundle 与其它顶层字段原样保留
+  （`config_preservation.dsh_profile_base_bundles_kept=true`、
+  `dsh_profile_manifest_other_fields_kept=true`）；
+- 卸载只删 Task Dock 自己的条目与目录，保留 `node_modules` 下的第三方包；
+- 迁移 v14（`src-tauri/src/db/mod.rs`）修正 `agent_sources` 里原先会误导用户的说明。
+
+新增 6 个单元测试（manifest 声明、bundle 登记与第三方条目保留、幂等安装、
+无 manifest 的 profile 跳过、卸载只删自己的条目、卸载保留第三方包）全部通过。
+
+### 14.3 R-P1-04 异常退出与文件/磁盘故障注入：**PASS**（F7 卷级写满除外）
+
+证据：`docs/performance/results/FAULT-fault-injection-20261030-235312.json`
+（隔离根 `C:\Users\ASUS\AppData\Local\Temp\taskdock-fault-20261030-235312`）
+
+> **隔离约束**：全程独立 `TASK_DOCK_DATA_DIR`/`APPDATA`/`USERPROFILE`/`TEMP`；
+> 只用 `taskkill /PID <本脚本启动的 PID> /T /F` 终止**自己**启动的进程；
+> 未触碰真实 Task Dock 进程、用户数据目录或系统盘。
+
+| 编号 | 场景 | 实测结果 | 结论 |
+|---|---|---|---|
+| F1/F2 | 投递期间强制结束进程（真实 `taskkill /F`） | 投递 175 条 / 接受 174 / 强杀成功；强杀前已提交 168 条，**重启后仍为 168 条**；0 重复 `event_id`；`integrity_check=ok`；WAL 存在 | **PASS** |
+| F3 | 写库失败 → 落盘暂存 + 暂存文件被截断/残留半写文件 | 锁 WAL 帧区后 6 次写入全部 **HTTP 500 且 `retryable=true`**；生成 6 个 `spool-*.jsonl`；重启后**损坏文件被隔离到 `corrupt/`**（`files_quarantined=1`），5 个完整文件**幂等重放 5/5 事件**（`deduplicated=0`），0 重复 `event_id`，`integrity_check=ok`，启动未受阻 | **PASS** |
+| F4/F5 | 恢复过程中强制结束进程 | 恢复进行到 `journal_state=committing` 时被强杀；**重启后 journal 已被正确判定并清理**（`journal_left_after_restart=false`）；事件数恢复前后均 60,000；`integrity_check=ok`；健康检查 ok | **PASS** |
+| F6 | 恢复期间数据库文件被独占锁定 | 恢复整体失败（rc=1，`disk I/O error`）；事件数前后均 60,000；**未留下 journal**；`integrity_check=ok`；健康检查 ok | **PASS** |
+| F8 | 同一 `event_id` 同时走 HTTP 与文件投递 | HTTP 200；DB 中该 `event_id` **恰好 1 行** | **PASS** |
+| F7 | 卷级磁盘写满（隔离 VHD/VHDX） | 未执行：`fltmc` 探测返回 `0x80070005`（会话未提升）。按隔离要求不对真实卷做写满注入 | **NOT TESTED** |
+
+**F7 的等价证据（真实二进制）**：E1 备份目标是已存在目录 → 备份 rc=1 且**未留下任何半截产物**；
+E2 备份包被截断 → 恢复 rc=1（`备份第 44 行不是合法 JSON`）、事件数前后均 60,000、
+`integrity_check=ok`。另有两个 Rust 单元测试覆盖写满/权限拒绝路径：
+`commands::restore::tests::disk_full_during_archive_commit_rolls_back`、
+`commands::restore::tests::permission_denied_during_asset_commit_rolls_back`。
+
+#### 14.3.1 故障注入期间的实测结论（数据可靠性边界）
+
+- **已提交事务**：强杀后完整保留，0 重复，0 损坏（`integrity_check=ok`）。
+- **已 fsync 的 spool**：重启后幂等重放，重复投递由 `event_id` 去重，损坏文件隔离保留而非丢弃。
+- **内存中未持久化的事件**：F1/F2 中 174 条被接受、168 条已提交，**差额 6 条随强杀丢失**。
+  这是**已落库前只在内存里的事件**，任务书明确不允许为其承诺断电零丢失，此处如实记录。
+- **客户端重试语义**：写失败一律返回 HTTP 500 且 `retryable=true`；客户端可安全重试，
+  重试由 `event_id` 保证幂等。
+- **证据保留**：损坏的暂存文件被移到 `ingest-spool/corrupt/`，不删除。
+
+#### 14.3.2 过程中修正的两处验收脚本缺陷（不影响产品结论）
+
+1. `db_query()` 缺少参数位，导致 F3 的参数化查询抛 `TypeError` → 已修（补 `params` 形参）。
+2. 场景内异常会让隔离实例**残留**，其免鉴权的 `/api/v1/health` 会替后续场景应答，
+   造成静默串台（F3/F6 曾因此误判）→ 已修：
+   - `Instance` 增加实例登记表，场景之间与 `finally` 中强制回收；
+   - 实例启动后额外用**带 token 的 `/api/v1/stats`** 确认应答者就是本轮实例；
+   - 运行前检查目标端口是否被占用并直接中止。
+
+   > 该缺陷也解释了「同一次运行里 F3/F6 结果与另一次运行相反」的现象：两轮结果都不可信，
+   > 修好后才得到上表的全部 PASS。
+
+### 14.4 R-P1-01 内存专项与 A–F 归因：进行中
+
+结论待 §14.6 的实验矩阵完成后填入；未填前不得据本节引用任何内存结论。
+
+### 14.5 R-P1-02 有界内存恢复
+
+结论待 §14.6 填入。
+
+### 14.6 复验轮实验矩阵与结论
+
+> 本节在 A–F 实验完成后填写；未完成前不得据本节下任何结论。
+
+
+> **复验轮对判定的修正（见 §14）**：复验轮补齐了原报告的两处缺口——C 场景真实 Agent 会话
+> （已升级为 R-P1-03 PASS）与异常退出/文件故障注入（已升级为 R-P1-04 PASS），
+> 并把「内存未定位」升级为有插桩的 A–F 归因实验。**内存条目在 §14.4 出结果前仍为
+> NOT PROVEN**，总体判定仍为 CONDITIONAL PASS。
 
 ## 2. Git 基线、变更范围与证据位置
 
@@ -332,6 +469,7 @@ v0.5 的接入链路是“有界队列 → 250ms 合并窗口 → 批处理”�
 ### 8.4 D：30 分钟整桌面 soak（最终 Release）
 
 - 2026-10-30 10:13:15–10:43:16，359 样本 / 1,797.4s；应用 UI + 4 Agent × 5/s HTTP + 5s 采样。
+- **采样间隔字段更正（P2-01）**：旧 `sampler.ps1` 的 `interval_s` 记的是**本轮采样耗时**而不是**相邻样本间隔**，旧报告里「平均间隔 2.544s」不成立。按时间戳重算的真实间隔为 min 4.104 / 中位 5.002 / 均值 5.014 / max 10.024 / p95 5.21s，与 359 样本 / 1,794.94s 跨度自洽（原始 jsonl 未改动；重算见 `docs/performance/results/sampler-recompute-D-soak-20261030.json`）。旧 CPU% 按 `tickStart` 差值计算，不受该缺陷影响。
 - 客户端 36,000/36,000 成功、3,600/3,600 关键、27 次网络错误重试后全部成功、0 个 429/503；
   p95 268.63 / p99 284.68 / max 1,970.43ms；关键 p95 319.18 / p99 378.53ms。
 - 服务端 accepted 36,000、received 36,005、processed 21,287、merged 14,718；

@@ -1,0 +1,16 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock-r2-acc[39m
+
+ [32m✓[39m src/components/clipboard/ClipboardDrawer.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[33m 6286[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m分页：80/100 时加载更多只追加一页 [33m 3155[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m监听中、监听线程未启动与手动暂停显示不同状态 [33m 787[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m剪贴板配置损坏时提示已暂停，绝不显示监听中 [33m 635[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m确认框打开时焦点进入弹层，Escape 只关确认框并把焦点还给触发按钮 [33m 343[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m关联模式：条目卡片出现关联按钮，普通模式不出现 [33m 472[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m关联模式：点击关联后写入后端、提示成功并关闭抽屉 [33m 465[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m11 passed[39m[22m[90m (11)[39m
+[2m   Start at [22m 23:06:05
+[2m   Duration [22m 26.84s[2m (transform 11.14s, setup 289ms, collect 13.19s, tests 6.29s, environment 5.14s, prepare 297ms)[22m
+

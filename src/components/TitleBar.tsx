@@ -7,11 +7,13 @@
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Palette, Clipboard,
+  Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Palette, Clipboard, Magnet,
 } from "lucide-react";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useAgentsStore } from "../store/useAgentsStore";
 import { useUiStore } from "../store/useUiStore";
+import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
+import { EDGE_LABELS } from "../lib/edgeSnap";
 import { applyMode } from "../lib/bridge";
 import { AGENT_STATE_LABELS } from "../lib/format";
 import { worstAgentState } from "../lib/agentTree";
@@ -30,24 +32,29 @@ const THEMES = [
   { id: "system", icon: Monitor, title: "跟随系统" },
 ] as const;
 
-/** 标题栏菜单按钮：图标 + 下拉箭头，菜单本体由统一的 DropdownMenu 承载。 */
+/** 标题栏菜单按钮：图标 + 下拉箭头，菜单本体由统一的 DropdownMenu 承载。
+ *  菜单相对触发按钮水平居中、按内容声明最小宽度（模式/明暗是纯图标短标签
+ *  菜单，156px；预设菜单带描述行，交给内容自然撑宽）。 */
 function MenuButton({
   label,
   icon: Icon,
   items,
   className,
+  menuMinWidth,
 }: {
   label: string;
   icon: typeof Sun;
   items: DropdownMenuItem[];
   className?: string;
+  menuMinWidth?: number;
 }) {
   return (
     <div className={`titlebar-menu ${className ?? ""}`}>
       <DropdownMenu
         items={items}
         menuLabel={label}
-        placement="bottom-end"
+        placement="bottom"
+        menuMinWidth={menuMinWidth}
         className="titlebar-menu-popover"
         trigger={({ ref, expanded, onClick, onKeyDown }) => (
           <button
@@ -76,6 +83,9 @@ export default function TitleBar() {
   const openClipboard = useUiStore((s) => s.openClipboard);
   const closeClipboard = useUiStore((s) => s.closeClipboard);
   const clipboardOpen = useUiStore((s) => s.clipboardOpen);
+  // 停靠状态：低调磁铁图标 + 点击解除吸附（明确操作路径，需求 C/F）
+  const snapDockedEdge = useEdgeSnapStore((s) => (s.phase.startsWith("docked-") ? s.dockedEdge : null));
+  const snapUndock = useEdgeSnapStore((s) => s.undock);
   const mode = settings?.mode ?? "full";
   const theme = settings?.theme ?? "system";
   const preset = resolveVisualPreset(settings?.visual_preset);
@@ -126,8 +136,8 @@ export default function TitleBar() {
       </span>
 
       <div className="titlebar-actions">
-        <MenuButton className="mode-menu" label={`显示模式（当前：${modeItem.title}）`} icon={modeItem.icon} items={modeItems} />
-        <MenuButton className="theme-menu" label={`明暗（当前：${themeItem.title}）`} icon={themeItem.icon} items={themeItems} />
+        <MenuButton className="mode-menu" label={`显示模式（当前：${modeItem.title}）`} icon={modeItem.icon} items={modeItems} menuMinWidth={156} />
+        <MenuButton className="theme-menu" label={`明暗（当前：${themeItem.title}）`} icon={themeItem.icon} items={themeItems} menuMinWidth={156} />
         <MenuButton
           className="preset-menu"
           label={`视觉主题（当前：${PRESET_LABELS[preset].name}）`}
@@ -135,6 +145,17 @@ export default function TitleBar() {
           items={presetItems}
         />
         <span className="titlebar-divider" />
+        {/* 停靠状态指示：仅吸附生效时出现；点击解除吸附（隐藏态会先安全展开） */}
+        {snapDockedEdge && (
+          <button
+            className="icon-btn win-btn snap-docked-btn"
+            data-tip={`已吸附${EDGE_LABELS[snapDockedEdge]} · 点击解除吸附`}
+            aria-label={`已吸附${EDGE_LABELS[snapDockedEdge]}，点击解除吸附`}
+            onClick={() => snapUndock?.()}
+          >
+            <Magnet size={14} />
+          </button>
+        )}
         {/* 完整模式的剪贴板入口在左侧导航；紧凑/极简没有侧栏，这里保留临时入口 */}
         {mode !== "full" && (
           <button

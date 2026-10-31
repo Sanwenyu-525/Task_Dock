@@ -46,6 +46,13 @@ pub const QUICK_CLIPBOARD_PASTE_LIMIT: i64 = 500;
 pub const RESTORE_COMMIT_KEY: &str = "restore_commit_id";
 /// 本机安全项与恢复内部标记：绝不进入任何导出文件。
 pub const EXCLUDED_SETTINGS: &[&str] = &["http_token", RESTORE_COMMIT_KEY];
+/// 本机隐私偏好：备份里可以带，但导入/恢复时一律不写回本机。
+///
+/// 剪贴板记录开关（是否记录、是否暂停）必须留在用户当前的选择上：
+/// 备份里存的是「备份那一刻」的值，用户后来关闭或暂停了记录，
+/// 恢复一份旧备份若把它写回去，就会在用户不知情时重新打开剪贴板采集。
+/// 缺省即开启的语义在这里尤其危险。
+pub const LOCAL_PRIVACY_SETTINGS: &[&str] = &["clipboard_enabled", "clipboard_paused"];
 /// 设备相关设置：允许导出，但恢复后仍需按本机窗口/自启动状态重新校验。
 pub const DEVICE_SPECIFIC_SETTINGS: &[&str] = &[
     "window_rect",
@@ -298,6 +305,13 @@ pub(crate) fn commit_file(tmp: &Path, target: &Path) -> AppResult<()> {
     if !target.exists() {
         std::fs::rename(tmp, target)?;
         return Ok(());
+    }
+    // 目标是目录时绝不能轮换：否则用户的目录会被改名让位给备份文件。
+    if target.is_dir() {
+        return Err(AppError::Validation(format!(
+            "备份目标是已存在的目录，拒绝覆盖: {}",
+            target.display()
+        )));
     }
     let backup = target.with_extension(format!(
         "previous-{}",
@@ -2648,6 +2662,28 @@ mod tests {
                 .filter(|e| e.file_name().to_string_lossy().contains("previous"))
                 .count(),
             0
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn directory_target_is_never_replaced_by_backup_file() {
+        let dir = temp_dir("dirtarget");
+        let target = dir.join("target-dir");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), "user-data").unwrap();
+        std::fs::write(dir.join("new.tmp"), "new-bundle").unwrap();
+        let err = commit_file(&dir.join("new.tmp"), &target).unwrap_err();
+        assert!(
+            err.to_string().contains("目录"),
+            "目标是目录时必须明确拒绝，实际错误: {}",
+            err
+        );
+        assert!(target.is_dir(), "目录必须仍在原路径，不能被备份文件顶替");
+        assert_eq!(
+            std::fs::read_to_string(target.join("keep.txt")).unwrap(),
+            "user-data",
+            "目录内容不得被动过"
         );
         std::fs::remove_dir_all(dir).ok();
     }

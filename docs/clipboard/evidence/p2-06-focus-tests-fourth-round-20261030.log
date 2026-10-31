@@ -1,0 +1,18 @@
+===== p2-06-focus-tests-fourth-round-20261030-2334.log =====
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.98s
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 1 test
+test navigation::router::tests::launch_disallowed_reports_failure_or_focus_only ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 1.13s
+
+===== p2-06-focus-tests-fourth-round-20261030-2335.log =====
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.08s
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 1 test
+test navigation::router::tests::notepad_launch_focuses_existing_window_of_owned_process ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 1.65s
+

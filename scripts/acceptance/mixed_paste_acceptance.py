@@ -1233,14 +1233,23 @@ def main() -> int:
         # 不等这一步，剪贴板结束时是 D-blue 既可能是恢复成功，也可能是任务把第 4 项
         # 留在原地，两种结果根本分不开。
         sentinel_before = view_items()
+        monitor_pre_sentinel = monitor_stats()
         set_text_clipboard(SENTINEL_TEXT)
         sentinel_item_count = len(sentinel_before) + 1
         sentinel_waited = wait_item_count(sentinel_item_count, timeout=12)
+        monitor_post_sentinel = monitor_stats()
+        # 哨兵写入前后的监控增量：observed 增加但 captured 没增加，说明事件到了
+        # 却没有内容可采；observed 没增加，说明系统事件根本没送达监听窗口。
+        sentinel_monitor_delta = {
+            key: monitor_post_sentinel.get(key, 0) - monitor_pre_sentinel.get(key, 0)
+            for key in MONITOR_DELTA_KEYS
+        }
         evidence["sentinel"] = {
             "marker": SENTINEL_MARKER,
             "sequence_after_write": clipboard_sequence(),
             "history_count": len(sentinel_waited),
             "expected_at_least": sentinel_item_count,
+            "monitor_delta": sentinel_monitor_delta,
         }
         check(
             "粘贴前哨兵已写入并被采集入库",

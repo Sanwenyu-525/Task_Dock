@@ -1,0 +1,244 @@
+{
+  "scenario": "N3-idle",
+  "source_exe": "C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe",
+  "source_exe_bytes": 15389184,
+  "source_exe_image_name": "tdmeas.exe",
+  "sampler_process_name_pattern": "^tdmeas",
+  "other_task_dock_instances": [],
+  "started_at": "2026-10-30T14:48:53.940063+00:00",
+  "duration_s": 0,
+  "post_s": 480,
+  "mode": "running",
+  "source": "bridge",
+  "allow_real_source": true,
+  "rate_per_agent": 5,
+  "agents": 4,
+  "batch": 1,
+  "transport": "http",
+  "notifications": "off",
+  "window": {
+    "ok": true,
+    "hwnd": 20185880,
+    "visible": true,
+    "iconic": false
+  },
+  "settings": {
+    "http_enabled": true,
+    "http_port": 47892,
+    "mock_enabled": false,
+    "clipboard_enabled": false,
+    "auto_backup": false,
+    "notify_agent": false,
+    "notify_reminder": false,
+    "notify_muted": false,
+    "snap_enabled": false,
+    "hotkey_enabled": false,
+    "stale_run_minutes": 15,
+    "perf_diagnostics_enabled": true
+  },
+  "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc-v05r4\\N3-idle-data",
+  "sampler_jsonl": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N3-idle-20261030-224851.jsonl",
+  "app_log": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N3-idle-20261030-224851-app.log",
+  "load_json": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N3-idle-20261030-224851-load.json",
+  "stats_end_of_load": {
+    "db": {
+      "db_bytes": 487424,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 119,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 0.56,
+        "calls": 4,
+        "pool_size": 3,
+        "slow_queries_100ms": 0
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 0
+    },
+    "http": {
+      "accepted": 0,
+      "active_connections": 2,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-30T14:49:04.171922300+00:00",
+      "max_active_requests": 0,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 4
+    },
+    "notifications": {
+      "attempted": 0,
+      "failed": 0,
+      "succeeded": 0
+    },
+    "pipeline": {
+      "batches": 0,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 0.0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "samples": 0
+      },
+      "events_merged": 0,
+      "events_processed": 0,
+      "events_received": 0,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 0.0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "samples": 0
+      },
+      "last_batch_size": 0,
+      "last_flush_at": null,
+      "lifecycle": "running",
+      "max_batch_size": 0,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 0,
+      "uptime_secs": 9
+    },
+    "process": {
+      "alloc_calls": 8610,
+      "alloc_stats_enabled": true,
+      "dealloc_calls": 5184,
+      "live_bytes": 860114,
+      "peak_bytes": 862325,
+      "total_allocated_bytes": 1563255
+    },
+    "runtime": {
+      "alive_tasks": 8
+    }
+  },
+  "stats_after_post": null,
+  "error": null,
+  "instance_exited_after_s": 144.3,
+  "instance_exit_code": 0,
+  "summary": {
+    "samples": 97,
+    "elapsed_s": 497.9,
+    "taskdock_private_mb": {
+      "n": 97,
+      "first": 7.7,
+      "last": 0,
+      "min": 0,
+      "max": 42,
+      "mean": 3.225
+    },
+    "taskdock_ws_mb": {
+      "n": 97,
+      "first": 27.4,
+      "last": 0,
+      "min": 0,
+      "max": 75.4,
+      "mean": 9.247
+    },
+    "webview2_private_mb": {
+      "n": 97,
+      "first": 184.1,
+      "last": 0,
+      "min": 0,
+      "max": 196.5,
+      "mean": 52.229
+    },
+    "slope_private_mb_per_min": -1.516,
+    "slope_ws_mb_per_min": -4.621,
+    "slope_live_mb_per_min": -0.0816,
+    "first_last": {
+      "taskdock_private_mb": [
+        7.7,
+        0
+      ],
+      "taskdock_ws_mb": [
+        27.4,
+        0
+      ],
+      "webview2_private_mb": [
+        184.1,
+        0
+      ],
+      "live_bytes": [
+        838698,
+        838626
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 0,
+      "events_processed": 0,
+      "events_merged": 0,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 0,
+      "http_requests": 3,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 7110,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 3696,
+        "live_bytes": 838698,
+        "peak_bytes": 840909,
+        "total_allocated_bytes": 1439394
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.72,
+          "calls": 3,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    },
+    "stats_last": {
+      "error": "使用“0”个参数调用“GetResult”时发生异常:“发送请求时出错。”"
+    }
+  }
+}

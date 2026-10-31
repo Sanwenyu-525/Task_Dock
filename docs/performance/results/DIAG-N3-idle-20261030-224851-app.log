@@ -1,0 +1,44 @@
+[2m2026-10-30T14:48:54.759544Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 智能剪贴板已停用：不启动监听与后台维护
+[2m2026-10-30T14:48:54.859496Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-10-30T14:48:54.860020Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc-v05r4\\N3-idle-data\\agent-inbox"
+[2m2026-10-30T14:48:54.860412Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc-v05r4\\N3-idle-data"）
+[2m2026-10-30T14:48:54.860467Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-10-30T14:48:54.862174Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 本地 HTTP 接入监听 127.0.0.1:47892
+[2m2026-10-30T14:48:55.058832Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:5746, 0ms)
+[2m2026-10-30T14:48:59.360462Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:14409, 0ms)
+[2m2026-10-30T14:48:59.399649Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:14409, 0ms)
+[2m2026-10-30T14:49:04.172320Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:1779, 0ms)
+[2m2026-10-30T14:49:09.403321Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:1783, 0ms)
+[2m2026-10-30T14:49:14.342148Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:1783, 0ms)
+[2m2026-10-30T14:49:19.432174Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:13639, 0ms)
+[2m2026-10-30T14:49:24.468104Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6871, 0ms)
+[2m2026-10-30T14:49:29.465104Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6871, 0ms)
+[2m2026-10-30T14:49:34.351754Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6871, 0ms)
+[2m2026-10-30T14:49:34.353174Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:6871, 0ms)
+[2m2026-10-30T14:49:39.329161Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6871, 0ms)
+[2m2026-10-30T14:49:44.383700Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9378, 0ms)
+[2m2026-10-30T14:49:49.214439Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9378, 0ms)
+[2m2026-10-30T14:49:54.360341Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9399, 0ms)
+[2m2026-10-30T14:49:59.412071Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:10987, 0ms)
+[2m2026-10-30T14:50:04.207933Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:10987, 0ms)
+[2m2026-10-30T14:50:04.209064Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:10987, 0ms)
+[2m2026-10-30T14:50:09.233184Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9615, 0ms)
+[2m2026-10-30T14:50:14.399321Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9631, 0ms)
+[2m2026-10-30T14:50:19.556988Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:10520, 0ms)
+[2m2026-10-30T14:50:24.262126Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:10520, 0ms)
+[2m2026-10-30T14:50:29.629073Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:8203, 0ms)
+[2m2026-10-30T14:50:37.482442Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:1792, 0ms)
+[2m2026-10-30T14:50:37.484208Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:1792, 0ms)
+[2m2026-10-30T14:50:41.362827Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:1792, 0ms)
+[2m2026-10-30T14:50:46.380976Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6810, 0ms)
+[2m2026-10-30T14:50:49.436159Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6810, 0ms)
+[2m2026-10-30T14:50:54.199281Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6810, 0ms)
+[2m2026-10-30T14:50:59.139538Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6810, 0ms)
+[2m2026-10-30T14:51:04.210905Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9019, 0ms)
+[2m2026-10-30T14:51:04.211923Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:9019, 0ms)
+[2m2026-10-30T14:51:09.439041Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9027, 0ms)
+[2m2026-10-30T14:51:14.221248Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9027, 0ms)
+[2m2026-10-30T14:51:17.450211Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 应用退出：关闭 HTTP 接入监听，不再接受新事件
+[2m2026-10-30T14:51:17.450268Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 应用退出：HTTP 接入适配器停止
+[2m2026-10-30T14:51:17.450445Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 接入管线退出排空完成 [3mlifecycle[0m[2m=[0mstopped [3mtimed_out[0m[2m=[0mfalse [3mdrained[0m[2m=[0m0 [3munfinished[0m[2m=[0m0 [3mspooled[0m[2m=[0m0 [3munsaved[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0
+[1030/225117.590:ERROR:ui\gfx\win\window_impl.cc:172] Failed to unregister class Chrome_WidgetWin_0. Error = 1412

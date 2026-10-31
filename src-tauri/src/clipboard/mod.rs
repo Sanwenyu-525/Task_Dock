@@ -324,6 +324,16 @@ impl ClipboardRuntime {
         cv.notify_all();
     }
 
+    /// 应用退出前的完整收尾：停止监听线程，并等待粘贴工作线程结束。
+    ///
+    /// 与 `stop()` 的区别是「等待」：退出时若还有粘贴线程在写剪贴板，
+    /// 进程被杀会留下运行中的任务与被残留内容覆盖的用户剪贴板。
+    /// 返回 true 表示粘贴线程已在时限内收尾。
+    pub fn shutdown(&self, timeout: Duration) -> bool {
+        self.stop();
+        self.paste.stop(timeout)
+    }
+
     /// 监听线程是否在运行（启动失败时降级为 false）。
     pub fn monitoring(&self) -> bool {
         self.monitor

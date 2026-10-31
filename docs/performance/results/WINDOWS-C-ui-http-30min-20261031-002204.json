@@ -1,0 +1,35 @@
+{
+  "file": "docs/performance/results/DIAG-C-ui-http-30min-20261031-002204.jsonl",
+  "metric": "taskdock.private_mb",
+  "samples_total": 188,
+  "samples_alive": 188,
+  "windows": [
+    {
+      "start_s": 85.2,
+      "end_s": 1285.2,
+      "n": 119,
+      "first": 11.8,
+      "last": 17.9,
+      "delta_mb": 6.1,
+      "slope_mb_per_min": 0.218
+    },
+    {
+      "start_s": 1285.2,
+      "end_s": 1829.8,
+      "n": 50,
+      "first": 18.1,
+      "last": 17.9,
+      "delta_mb": -0.2,
+      "slope_mb_per_min": 0.066
+    },
+    {
+      "start_s": 1829.8,
+      "end_s": 1945.6,
+      "n": 12,
+      "first": 17.8,
+      "last": 17.8,
+      "delta_mb": 0.0,
+      "slope_mb_per_min": 0.0
+    }
+  ]
+}

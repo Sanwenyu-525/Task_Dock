@@ -1,0 +1,6 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock[39m
+
+ [32m✓[39m src/components/clipboard/AgentExportPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 761[2mms[22m[39m
+   [33m[2m✓[22m[39m AgentExportPanel[2m > [22m区分直接发送、文件导入、桌面粘贴与本地导出 [33m 635[2mms[22m[39m
+exit_code=1

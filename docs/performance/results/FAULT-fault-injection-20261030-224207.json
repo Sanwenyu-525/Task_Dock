@@ -1,0 +1,174 @@
+{
+  "test": "abnormal-exit-and-file-disk-fault-injection",
+  "generated_at": "2026-10-30T22:43:06.843756+08:00",
+  "source_exe": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-acc\\task-dock.exe",
+  "source_exe_bytes": 15553536,
+  "isolated_root": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-fault-20261030-224207",
+  "isolation_note": "仅操作隔离数据目录；只终止本脚本启动的 PID；未触碰真实 Task Dock 进程与用户数据",
+  "seed": {
+    "events": 60000,
+    "sessions": 20,
+    "runs": 200,
+    "rows_in_db": 60000
+  },
+  "backup_bundle": {
+    "bytes": 31363921,
+    "counts": {
+      "action_acks": 0,
+      "agent_events": 60000,
+      "agent_instances": 0,
+      "agent_runs": 200,
+      "agent_sessions": 20,
+      "agent_sources": 10,
+      "application_settings": 46,
+      "archive_bytes": 0,
+      "archives": 0,
+      "asset_bytes": 0,
+      "assets": 0,
+      "clipboard_assets": 0,
+      "clipboard_group_items": 0,
+      "clipboard_groups": 0,
+      "clipboard_items": 0,
+      "clipboard_paste_jobs": 0,
+      "clipboard_snapshot_links": 0,
+      "clipboard_task_links": 0,
+      "navigation_log": 0,
+      "navigation_targets": 0,
+      "notification_history": 0,
+      "recurrence_rules": 0,
+      "task_agent_links": 0,
+      "task_categories": 0,
+      "task_navigation_targets": 0,
+      "task_reminders": 0,
+      "tasks": 0,
+      "workspace_snapshot_items": 0,
+      "workspace_snapshots": 0
+    },
+    "kind": "full",
+    "partial": false,
+    "path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-fault-20261030-224207\\restore\\backup-full.taskdock",
+    "sha256": "e39c90ec1c6a4d69771a7d3cebe373d2264d8d8d14355a56f3c00095bda3d44b",
+    "ok": true,
+    "bytes_on_disk": 31364655
+  },
+  "results": {
+    "F1_F2_force_kill_during_ingest": {
+      "status": "PASS",
+      "killed": true,
+      "http_sent": 163,
+      "http_accepted": 162,
+      "http_retryable_503": 0,
+      "committed_before_restart": 144,
+      "committed_after_restart": 144,
+      "spool_files_after_kill": [],
+      "spool_files_after_restart": [],
+      "spool_replay_report": null,
+      "duplicate_event_ids": 0,
+      "integrity_check": "ok",
+      "wal_present_after_kill": true,
+      "restart_health_ok": true,
+      "note": "强制结束无收尾机会故不产生暂存文件；已提交事件必须保留且不重复，仅内存中未持久化的事件允许丢失"
+    },
+    "F3_spool_write_failure_and_interrupted_spool": {
+      "status": "FAIL",
+      "reason": "写失败后未产生磁盘暂存文件，无法验证暂存路径",
+      "write_fail_responses": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "app_log_tail": [
+        "\u001b[2m2026-10-30T14:42:19.250997Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib\u001b[0m\u001b[2m:\u001b[0m 智能剪贴板已停用：不启动监听与后台维护",
+        "\u001b[2m2026-10-30T14:42:19.289216Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::mock\u001b[0m\u001b[2m:\u001b[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）",
+        "\u001b[2m2026-10-30T14:42:19.289610Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::file_drop\u001b[0m\u001b[2m:\u001b[0m 文件投递 Adapter 启动，监听目录 \"C:\\\\Users\\\\ASUS\\\\AppData\\\\Local\\\\Temp\\\\taskdock-fault-20261030-224207\\\\ingest\\\\data\\\\agent-inbox\"",
+        "\u001b[2m2026-10-30T14:42:19.289738Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib\u001b[0m\u001b[2m:\u001b[0m Task Dock 启动完成（数据目录: \"C:\\\\Users\\\\ASUS\\\\AppData\\\\Local\\\\Temp\\\\taskdock-fault-20261030-224207\\\\ingest\\\\data\"）",
+        "\u001b[2m2026-10-30T14:42:19.289775Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::scheduler\u001b[0m\u001b[2m:\u001b[0m 提醒调度引擎启动（1s 粒度）",
+        "\u001b[2m2026-10-30T14:42:19.291881Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m 本地 HTTP 接入监听 127.0.0.1:47871",
+        "\u001b[2m2026-10-30T14:42:19.417644Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3720, 0ms)",
+        "\u001b[2m2026-10-30T14:42:22.432564Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6761, 0ms)",
+        "\u001b[2m2026-10-30T14:42:23.682650Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib\u001b[0m\u001b[2m:\u001b[0m 智能剪贴板已停用：不启动监听与后台维护",
+        "\u001b[2m2026-10-30T14:42:23.724970Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::mock\u001b[0m\u001b[2m:\u001b[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）",
+        "\u001b[2m2026-10-30T14:42:23.725524Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::scheduler\u001b[0m\u001b[2m:\u001b[0m 提醒调度引擎启动（1s 粒度）",
+        "\u001b[2m2026-10-30T14:42:23.725546Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib\u001b[0m\u001b[2m:\u001b[0m Task Dock 启动完成（数据目录: \"C:\\\\Users\\\\ASUS\\\\AppData\\\\Local\\\\Temp\\\\taskdock-fault-20261030-224207\\\\ingest\\\\data\"）",
+        "\u001b[2m2026-10-30T14:42:23.725570Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::file_drop\u001b[0m\u001b[2m:\u001b[0m 文件投递 Adapter 启动，监听目录 \"C:\\\\Users\\\\ASUS\\\\AppData\\\\Local\\\\Temp\\\\taskdock-fault-20261030-224207\\\\ingest\\\\data\\\\agent-inbox\"",
+        "\u001b[2m2026-10-30T14:42:23.728457Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m 本地 HTTP 接入监听 127.0.0.1:47871",
+        "\u001b[2m2026-10-30T14:42:23.796475Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:6762, 0ms)",
+        "\u001b[2m2026-10-30T14:42:23.797869Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:13261, 0ms)",
+        "\u001b[2m2026-10-30T14:42:23.873514Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:13263, 0ms)",
+        "\u001b[2m2026-10-30T14:42:23.925374Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:13264, 0ms)",
+        "\u001b[2m2026-10-30T14:42:23.977315Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:13267, 0ms)",
+        "\u001b[2m2026-10-30T14:42:24.029239Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:13140, 0ms)",
+        "\u001b[2m2026-10-30T14:42:34.124266Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:7946, 0ms)",
+        "\u001b[2m2026-10-30T14:42:34.187046Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:7947, 0ms)",
+        "\u001b[2m2026-10-30T14:42:34.238482Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:7948, 0ms)",
+        "\u001b[2m2026-10-30T14:42:34.311487Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:7949, 0ms)",
+        "\u001b[2m2026-10-30T14:42:34.362902Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2mtask_dock_lib::agents::http_ingest\u001b[0m\u001b[2m:\u001b[0m HTTP 接入 POST /api/v1/events -> 200 (127.0.0.1:7950, 0ms)"
+      ]
+    },
+    "F8_http_file_interleaving": {
+      "status": "PASS",
+      "http_status": 200,
+      "rows_for_event_id": 1,
+      "note": "HTTP 与文件投递同事件必须按 event_id 幂等，只留一条"
+    },
+    "F6_locked_file_during_restore": {
+      "status": "PASS",
+      "restore_rc": 1,
+      "restore_stderr": "数据库打开失败: 数据库错误: disk I/O error\n",
+      "events_before": 60000,
+      "events_after": 60000,
+      "integrity_check": "ok",
+      "journal_left": false,
+      "health_ok": true,
+      "note": "文件被锁时恢复必须整体失败并回滚，原数据保持不变"
+    },
+    "F4_F5_kill_during_restore": {
+      "status": "PASS",
+      "killed_mid_restore": true,
+      "kill_delay_s": 1.2,
+      "journal_state_after_kill": "committing",
+      "journal_left_after_restart": false,
+      "events_before": 60000,
+      "events_after": 60000,
+      "integrity_check": "ok",
+      "health_ok": true,
+      "note": "恢复中断后必须由 journal 判定回滚或续做，且原数据不丢"
+    },
+    "F7_disk_full_isolated_volume": {
+      "status": "NOT TESTED",
+      "reason": "创建隔离 VHD/VHDX 并写满需要管理员权限；本机会话未提升（fltmc 返回 0x80070005），按隔离要求不对真实卷做写满注入",
+      "elevation_probe": "fltmc -> 0x80070005 (Access Denied)",
+      "equivalent_real_binary_tests": [
+        {
+          "id": "E1_backup_target_unwritable",
+          "backup_rc": 0,
+          "stderr": "",
+          "partial_artifacts_left": [],
+          "pass": false,
+          "expectation": "备份失败必须返回非零并说明原因，不得留下半截产物"
+        },
+        {
+          "id": "E2_truncated_bundle_restore_rejected",
+          "restore_rc": 1,
+          "stderr": "恢复失败: 校验失败: 备份第 44 行不是合法 JSON: EOF while parsing a string at line 1 column 197752\n",
+          "events_before": 60000,
+          "events_after": 60000,
+          "integrity_check": "ok",
+          "pass": true,
+          "expectation": "损坏备份包必须整体失败并回滚，原数据不变"
+        }
+      ],
+      "unit_test_equivalents": [
+        "commands::restore::tests::disk_full_during_archive_commit_rolls_back",
+        "commands::restore::tests::permission_denied_during_asset_commit_rolls_back"
+      ]
+    }
+  }
+}

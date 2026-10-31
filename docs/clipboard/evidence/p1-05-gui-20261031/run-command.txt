@@ -1,0 +1,12 @@
+CMD: python scripts/perf/memory-scenario.py --exe C:/Users/ASUS/AppData/Local/Temp/taskdock-p105-gui-20261031/task-dock-p105gui.exe --name p105-gui --duration 240 --post 60 --agents 4 --rate 5 --port 47863 --window visible --clipboard-stimulus on --clipboard-interval 3 --clipboard-image-every 10 --settings-json {"clipboard_enabled": true, "clipboard_capture_images": true, "clipboard_capture_html": true, "mode": "compact", "notify_reminder": true, "notify_muted": false}
+ENV: WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9226
+ENV: WEBVIEW2_USER_DATA_FOLDER=<workdir>/webview2
+BINARY_SHA256=918c03ec8629e4827713c153c98fbc2b92887d8571ab4289c1a9be6b335a585d
+BINARY_BYTES=15811072
+BINARY_MTIME=2026-10-31 10:44:55.601717800 +0800
+TREE_SHA256=dfd6b8522ae60d6491a0e0eb32774d46fab4ab952b1338303bc21fd059c3a1f9
+BUILD_LOG=docs/clipboard/evidence/build-release-fourth-round-final3-20261031.log
+CDP_PORT=9226 HTTP_PORT=47863
+WORK_DIR=C:/Users/ASUS/AppData/Local/Temp/taskdock-p105-gui-20261031
+UI_DRIVER: node scripts/acceptance/joint-ui-drive.mjs --port 9226 --out docs/clipboard/evidence/p1-05-gui-20261031 --cycles 6
+STARTED_AT=2026-10-31 10:47 (local, UTC+8)

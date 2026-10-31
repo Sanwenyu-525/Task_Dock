@@ -17,21 +17,22 @@ This file exists as a hello-style top-level file for connection verification.
 
 - **技术栈**：Tauri 2 + Rust + React + TypeScript + Vite + Zustand + SQLite（rusqlite bundled）
 - **快速开始**：`npm install` → `npm run tauri dev`（开发）/ `npm run tauri build`（安装包）
-- **测试**：`cd src-tauri && cargo test --all --no-fail-fast`（2026-10-30 16:15 一轮：lib 441 通过 / 0 失败 / 3 ignored；集成 `inbox_processes` 1 通过；性能与真机套件按门禁 ignored）· 真机套件 `TD_REAL_CLIPBOARD=1 cargo test --test real_clipboard -- --ignored`（3 通过）· `npm test`（23 文件 / 164 项）· 真实桌面图文混合粘贴验收 52/52（`scripts/acceptance/mixed_paste_acceptance.py`）· 无头联调 `task-dock.exe --agentctl scan|install|verify <id>` · 历史轮次：09:44 交互会话 382/0/13、10:0x 锁屏会话 380 通过 + 2 例前台聚焦环境失败、01:xx 锁屏会话 302/2/11 与 vitest 133 项（均保留，不互相覆盖）· 100k 备份/恢复见 [最终验收](docs/PERFORMANCE_FINAL_ACCEPTANCE.md)
+- **测试**：`cd src-tauri && cargo test --all-targets --no-fail-fast`（2026-10-31 00:11 第二轮验收轮：10 个测试目标合计 **450 通过 / 0 失败 / 18 ignored**，其中 lib 449 通过 / 3 ignored、集成 `inbox_processes` 1 通过；性能与真机套件按门禁 ignored）· 真机套件 `TD_REAL_CLIPBOARD=1 cargo test --test real_clipboard -- --ignored`（3 通过）· `npm test`（**36 文件 / 260 项**）· 真实桌面图文混合粘贴验收 52/52（`scripts/acceptance/mixed_paste_acceptance.py`）· 无头联调 `task-dock.exe --agentctl scan|install|verify <id>` · 历史轮次：10-30 16:15 lib 441/0/3 与 vitest 164、09:44 交互会话 382/0/13、10:0x 锁屏会话 380 通过 + 2 例前台聚焦环境失败、01:xx 锁屏会话 302/2/11 与 vitest 133 项（均保留，不互相覆盖）· 10-31 09:29 第五轮门禁复跑（MSVC 工具链、`cwd=src-tauri`）：lib **472 通过 / 3 失败 / 3 ignored**，3 个失败均为 `navigation::router` 前台聚焦用例被 Windows 前台锁拒绝（ENVIRONMENT-BLOCKED，第四轮安静桌面已逐条通过），显式过滤后 lib **474 通过 / 0 失败**；`clipboard_perf` **2/2**；复跑前两次失败（GNU 工具链、磁盘写满）留证于 `docs/clipboard/evidence/gate-*20261031-09*.log` · 10-31 10:04 第五轮收口：`fmt` 0、`clippy` 0、`tsc` 0、vitest 0、`npm run build` 0；test-all lib **474 / 3 / 3**（2 个前台锁 + `concurrent_writers_never_exceed_capacity` 偶发一次，随后单测 20 次与整 lib 5 次均 477/0/3，机制未复现）；release 构建 0（15,799,296 B，`sha256=4fddaa06…`）；10:19 快照因并行会话 v0.6 编辑导致工作区不可编译，判为**无效快照**；日志见 `docs/clipboard/evidence/gate-final*20261031-*.log` · 10-31 10:33 补充快照（并行 v0.6 编辑后，非 v0.5 依据）：`cargo test --all --no-fail-fast` **exit 0，lib 480 通过 / 0 失败 / 3 ignored**，此前 3 例失败全部通过；同轮 fmt/clippy 失败点只在并行会话的 `context_menu.rs`/`window_shape.rs` · 100k 备份/恢复见 [最终验收](docs/PERFORMANCE_FINAL_ACCEPTANCE.md)
 - **文档**：
       - [Agent 覆盖矩阵（含跳转能力）](AGENT_COVERAGE_MATRIX.md) · [通用应用导航矩阵](APP_NAVIGATION_MATRIX.md) · [Adapter 开发指南](ADAPTER_DEVELOPMENT.md)
-      - 版本验收：[v0.5 综合整改记录](docs/V05_COMPREHENSIVE_REMEDIATION.md) · [v0.5 最终发布验收](docs/V05_FINAL_ACCEPTANCE.md) · [v0.4 最终发布验收](V04_FINAL_RELEASE_ACCEPTANCE.md) · [v0.4 整改复核](docs/V04_REMEDIATION_VERIFICATION.md)
+      - 版本验收：[v0.5 第二轮工程验收与缺陷整改](docs/V05_ROUND2_ACCEPTANCE.md) · [v0.5 综合整改记录](docs/V05_COMPREHENSIVE_REMEDIATION.md) · [v0.5 最终发布验收](docs/V05_FINAL_ACCEPTANCE.md) · [v0.4 最终发布验收](V04_FINAL_RELEASE_ACCEPTANCE.md) · [v0.4 整改复核](docs/V04_REMEDIATION_VERIFICATION.md)
       - [架构说明](docs/ARCHITECTURE.md) · [第三方代码与许可证清单](docs/THIRD_PARTY.md) · [开发与构建指南](docs/DEVELOPMENT.md) · [测试记录](docs/TESTING.md) · [路线图](docs/ROADMAP.md)
       - 性能专项：[性能架构](docs/PERFORMANCE_ARCHITECTURE.md) · [压测方法](docs/PERFORMANCE_TESTING.md) · [验收报告](docs/PERFORMANCE_ACCEPTANCE_REPORT.md) · [v0.5 最终验收](docs/PERFORMANCE_FINAL_ACCEPTANCE.md)
-      - 智能剪贴板（v0.5）：[需求与验收](docs/clipboard/01-requirements.md) · [架构](docs/clipboard/02-architecture.md) · [数据模型](docs/clipboard/03-data-model.md) · [监听与安全](docs/clipboard/04-monitor-security.md) · [分组引擎](docs/clipboard/05-grouping-engine.md) · [复制粘贴与保护](docs/clipboard/06-copy-paste-protection.md) · [UI 与集成](docs/clipboard/07-ui-and-integrations.md) · [测试与性能](docs/clipboard/08-testing-performance.md) · [实施与验收](docs/clipboard/09-implementation-report.md) · [整改分类验收](docs/clipboard/10-remediation-acceptance.md) · [最终发布验收](docs/clipboard/11-final-release-acceptance.md)
-      - 视觉主题（v0.6）：[设计规范](docs/ui-themes/01-design-spec.md) · [主题架构](docs/ui-themes/02-theme-architecture.md) · [窗口合成](docs/ui-themes/03-window-composition.md) · [性能](docs/ui-themes/04-performance.md) · [测试计划](docs/ui-themes/05-test-plan.md) · [实施报告](docs/ui-themes/06-implementation-report.md) · [视觉验收](docs/ui-themes/07-visual-acceptance.md)
+      - 智能剪贴板（v0.5）：[需求与验收](docs/clipboard/01-requirements.md) · [架构](docs/clipboard/02-architecture.md) · [数据模型](docs/clipboard/03-data-model.md) · [监听与安全](docs/clipboard/04-monitor-security.md) · [分组引擎](docs/clipboard/05-grouping-engine.md) · [复制粘贴与保护](docs/clipboard/06-copy-paste-protection.md) · [UI 与集成](docs/clipboard/07-ui-and-integrations.md) · [测试与性能](docs/clipboard/08-testing-performance.md) · [实施与验收](docs/clipboard/09-implementation-report.md) · [整改分类验收](docs/clipboard/10-remediation-acceptance.md) · [最终发布验收](docs/clipboard/11-final-release-acceptance.md) · [第四轮专项验收](docs/clipboard/12-fourth-round-acceptance.md)
+      - 视觉主题（v0.6）：[设计规范](docs/ui-themes/01-design-spec.md) · [主题架构](docs/ui-themes/02-theme-architecture.md) · [窗口合成](docs/ui-themes/03-window-composition.md) · [性能](docs/ui-themes/04-performance.md) · [测试计划](docs/ui-themes/05-test-plan.md) · [实施报告](docs/ui-themes/06-implementation-report.md) · [视觉验收](docs/ui-themes/07-visual-acceptance.md) · [圆角专项整改](docs/ui-themes/12-v06-window-corners.md)
 
 核心能力：
 - **悬浮任务栏**：无边框透明置顶（极简/紧凑/完整三模式、贴边自动隐藏、托盘、开机自启、毛玻璃/深浅色）、
   中文自然语言快速录入、后端提醒调度、重复任务；
 - **双视觉主题（v0.6）**：「梦幻渐变」与「液态玻璃」两套预设共用一套组件与一套语义 Token，
   完整模式改为左侧垂直导航（窄窗自动收敛为图标轨）；明暗、材质、预设三者正交且即时生效、
-  重启恢复；窗口圆角在 Win32 层裁剪（不再出现四角黑色直角）；
+  重启恢复；窗口圆角在 Win32 层裁剪并去除 DWM 边框（修复后的原生像素验收待解锁复验，
+  见 [圆角专项整改](docs/ui-themes/12-v06-window-corners.md)）；
   规范与验收见 [视觉主题文档](docs/ui-themes/01-design-spec.md)；
 - **统一导航（v0.4）**：任务可关联任意软件 / 网址 / 文件 / 目录 / Agent 会话；任务卡点击图标即可
   打开或唤醒（L1 启动 → L2 唤醒窗口 → L3 打开页面/文件 → L4 恢复 Agent 会话，按偏好降级，
@@ -59,8 +60,11 @@ This file exists as a hello-style top-level file for connection verification.
   丢弃可计数；任务手动关联与 Agent 本地导出（能力矩阵明确“直接发送不支持/文件导入未验证/桌面
   粘贴仅手动/本地导出可用”，不上传、不自动发送），素材可进一步绑定到工作现场快照；
   2026-10-29 真机验收 46/46、第三方矩阵 5/5（记事本/资源管理器/Edge 文本与富文本/VS Code），
-  微信与 Agent 应用因环境阻塞未验证；修复后的图文混合像素级复验与场景 B 因锁屏未完成，
-  当前发布判定为 **CONDITIONAL PASS**，详见
+  微信与 Agent 应用因环境阻塞未验证；**2026-10-30 第四轮在未锁屏桌面完成图文混合像素级复验
+  52/52**（目标端图片 `alphaMin=alphaMax=255`、`transparentPixels=0`），并补齐采集事件的
+  三态处置与可对账计数（`observed = captured + self_write + superseded + empty + skipped +
+  merged + dropped`），发布判定见
+  [第四轮验收](docs/clipboard/12-fourth-round-acceptance.md) 与
   [最终发布验收](docs/clipboard/11-final-release-acceptance.md)；
 - **备份与恢复（v0.5 最终）**：统一注册表覆盖 25 张用户业务表；完整备份流式写入
   全量数据、事件归档与全部剪贴板图片，快速备份显式 `partial=true` 并记录截断原因；
@@ -71,6 +75,15 @@ This file exists as a hello-style top-level file for connection verification.
 - **Agent 监控**：自动发现 + 一键接入向导 + 分层监控树（Agent→实例→会话→轮次→事件，
   事务性 ingest + 幂等/乱序/终态保护）；Agent 跳转能力证据化（Codex `codex resume` 实测基线；
   OpenCode 运行时探测；无官方接口的诚实降级，不臆造 Deep Link）；
+  **2026-10-30 复验轮真实自动接入**：codex / DeepSeek Harness / OpenCode 三个 Agent 由
+  **自身会话**自动产生事件并落库（`verified=1`、`transport_verified=1`），Hook 开销
+  p95 74ms、不阻塞宿主、卸载后不破坏第三方配置；DSH 侧采用 **profile bundle** 安装形态
+  （`~/.dsh/plugins/` 只是客户端插件位，宿主不加载），详见
+  [性能架构 §3.4.1](docs/PERFORMANCE_ARCHITECTURE.md)；
+- **可靠性（复验轮实测）**：隔离实例上真实 `taskkill /F` 强杀后，已提交事件全部保留、0 重复、
+  `integrity_check=ok`；写库失败时事件原子落盘暂存并返回可重试错误，重启后损坏暂存被隔离、
+  完整暂存幂等重放；恢复过程中被强杀由 journal 判定回滚/续做，原数据不丢。
+  卷级磁盘写满因需管理员创建隔离 VHD 而**未测试**，如实标注；
 - **性能与稳定性（v0.5 专项）**：所有接入通道统一进入**有界队列**（默认 1024）→ 合并窗口
   250ms → 单事务批处理；关键状态（waiting/failed/completed）永不合并、过载时返回可重试错误；
   前端快照**单飞 + 节流**（100 条事件不再触发 100 次全量刷新）；SQLite 读写分离（WAL 读池）+

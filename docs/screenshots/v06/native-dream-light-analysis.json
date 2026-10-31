@@ -1,0 +1,7 @@
+{
+  "meta": "docs\\screenshots\\v06\\native-dream-light.json",
+  "status": "UNVERIFIED",
+  "reasons": [
+    "meta 读取失败: [Errno 2] No such file or directory: 'docs\\\\screenshots\\\\v06\\\\native-dream-light.json'"
+  ]
+}

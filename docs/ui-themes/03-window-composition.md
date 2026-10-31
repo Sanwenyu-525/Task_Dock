@@ -2,6 +2,12 @@
 
 > 适用：Task Dock 的无边框悬浮窗口（`decorations: false` + `transparent: true` + `shadow: false`）。
 > 本文记录**真实原生实现**，以及 v0.5 遗留的「四角黑色直角」问题的根因与修复。
+>
+> **2026-10-31 更正**：本文第 3 节原先「`SetWindowRgn` 会把 DWM 背景一起裁掉」的结论
+> 已被真机像素证伪——Win11 的 Mica/Acrylic SystemBackdrop 按整个窗口矩形绘制，
+> 不受区域约束；Solid 模式也测到半径 31.75 vs 22 与 1px 描边。
+> 修复必须同时包含「区域 + 原生后端选择 + DWM 边框策略」，详见
+> **[12-v06-window-corners.md](12-v06-window-corners.md)**。本文 3.0 节已补上原因。
 
 ---
 
@@ -44,14 +50,27 @@
 
 ---
 
-## 3. v0.6 的修复：Win32 窗口区域裁剪
+## 3. v0.6 的修复：窗口区域 + 原生后端 + DWM 边框
 
-新增 `src-tauri/src/window_shape.rs`：
+### 3.0 为什么仅靠 `SetWindowRgn` 不够
 
-| 步骤 | API | 作用 |
+真机受控背景采集（`lab-glass-region-dwm.json`）显示：
+
+- `region_probe=00001 bounds=0,0,500,700`（区域已设置、四角点在区域外）；
+- 玻璃（`system_backdrop=2`）四角仍有 44–45 个深色像素、49 个非背景像素；
+- Solid（`system_backdrop=1`）四角虽无深色连通块，但半径实测 31.75 vs 22，
+  且底/右仍有 1px 描边（ΔL=101.0 / 59.3）。
+
+`SetWindowRgn` 只约束 GDI/窗口自身合成层；DWM 的 Mica/Acrylic SystemBackdrop
+按窗口矩形绘制，仍会在区域外留黑月牙。因此修复分三层：
+
+| 层 | 实现 | 作用 |
 | --- | --- | --- |
-| 1 | `SetWindowRgn(hwnd, CreateRoundRectRgn(...), TRUE)` | 在 GDI 层把窗口外形裁成圆角矩形，DWM 背景与 WebView2 合成层一起被裁 → 四角彻底透明 |
-| 2 | `DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)` | Win11 22000+ 上让系统给出抗锯齿圆角与系统阴影（失败无副作用） |
+| 1 | `SetWindowRgn(CreateRoundRectRgn(0,0,w+1,h+1,2r,2r))` | 裁掉 WebView2/GDI 内容 |
+| 2 | `effective_backend`：Win11 + 区域裁剪时 default 用 **blur**（窗口自身合成） | 不再让 DWM 背景画到区域外；显式 `mica/acrylic/none` 保留供矩阵对照 |
+| 3 | `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` + `DWMWA_WINDOW_CORNER_PREFERENCE` | 去掉默认 1px 边框，保留系统圆角偏好 |
+
+文件：`src-tauri/src/window_shape.rs`、`src-tauri/src/commands/system.rs`。
 
 ### 3.1 半径来源
 
@@ -70,20 +89,27 @@ Rust 端 `window_shape::set_radius()` 把半径夹取到 `0..=40`，非法值（
 
 ```rust
 win.on_window_event(move |event| {
-    if matches!(event, WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }) {
+    if matches!(
+        event,
+        WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. }
+            | WindowEvent::Focused(true)
+    ) {
         window_shape::apply(&win);
     }
 });
 ```
 
-窗口缩放、贴边吸附导致的尺寸变化、显示器 DPI 切换都会重新裁剪，
-不会出现「区域停留在旧尺寸、把内容裁掉」的残缺窗口。
+窗口缩放、贴边吸附、DPI 切换、从最小化/托盘恢复（`show_and_focus` 也补一次重算）
+都会重新校验。
 
-此外有两处配套处理：
+配套处理：
 
 | 处理 | 原因 |
 | --- | --- |
-| `LAST_APPLIED` 缓存（物理宽/高/半径） | 尺寸未变时不重复裁剪，避免区域状态与窗口状态错位 |
+| `RegionStamp` 缓存（`hwnd`/物理宽高/半径/DPI） | 句柄、尺寸、DPI、半径任一变化都失效，不能只看宽高与半径 |
+| `region_is_current()` 回读 `GetWindowRgn`/`GetRgnBox`/`PtInRegion` | 系统重置区域后即使缓存参数相同也必须重设；无区域/包围盒不符/角落仍实心都判失效 |
+| `APPLYING + PENDING` | 重入请求不再丢弃：内层置 PENDING，外层按最新尺寸最多 8 次重算，收尾再补一次异步应用 |
 | `schedule_reapply()`（150/500/1200/2500 ms 四次延迟重算） | 启动阶段窗口会连续变化（模式尺寸 → 记忆矩形 → 前端布局稳定），延迟重算保证区域最终与窗口尺寸一致 |
 
 ### 3.2.1 顺带修掉的 v0.5 缺陷：窗口尺寸逐次放大
@@ -108,7 +134,9 @@ win.set_size(tauri::PhysicalSize::new(rect.w, rect.h));
 
 ### 3.4 防重入
 
-`APPLYING` 原子标志避免「应用区域 → 触发窗口消息 → 再次应用」的重入。
+`APPLYING` 只表示「外层正在应用」；期间到达的请求置 `PENDING`，由外层合并重算，
+不能在重入时直接 return——否则拖拽缩放的最后一帧可能永远得不到圆角。
+外层结束后若仍有 PENDING，投递一次异步应用兜底（见 3.2 表）。
 
 ### 3.5 诊断开关
 
@@ -195,27 +223,28 @@ Win11 上 `DWMWCP_ROUND` 会额外提供系统级阴影与抗锯齿圆角（若�
 
 ## 8. 验收方法（可复现）
 
+**旧的「`region_probe=00001` + 同帧像素差 0.0」不能作为圆角通过依据**：
+区域成功不代表 DWM 没在区域外绘制，同帧自比也发现不了黑角。
+
+现行方法（`scripts/corner-lab.ps1` + `scripts/check-corners.py`）：
+
 ```powershell
-# 启动真实 Release 构建（隔离数据目录），强制显示并抓取桌面合成结果
+# 1) 受控纯色背景上采集：隐藏窗口的基线帧 + 显示窗口的可见帧
 powershell -ExecutionPolicy Bypass -NoProfile -File scripts/native-verify.ps1 `
-  -Out docs/screenshots/v06/native-dream.png -WaitSeconds 10
+  -Out docs/screenshots/v07/lab-solid-region-dwm.png `
+  -Material solid -Preset dream-gradient -Width 500 -Height 700
+powershell -ExecutionPolicy Bypass -NoProfile -File scripts/native-verify.ps1 `
+  -Out docs/screenshots/v07/lab-glass-region-dwm.png `
+  -Material glass -Preset liquid-glass -Backend blur -Width 500 -Height 700
+
+# 2) 独立基线判定（0 PASS / 1 FAIL / 2 UNVERIFIED）
+python scripts/check-corners.py docs/screenshots/v07/lab-*-region-dwm.json --summary
+
+# 3) 几何矩阵（Region/DWM × Solid/Glass，按需加 -Backends mica,blur,none）
+powershell -ExecutionPolicy Bypass -NoProfile -File scripts/diagnose-corner.ps1 `
+  -Out docs/screenshots/v07/matrix
 ```
 
-脚本产出三类证据：
-
-| 文件 | 含义 |
-| --- | --- |
-| `native-*.png` | 窗口矩形的**桌面合成像素**（四角处应能看到桌面，而不是黑色直角） |
-| `native-*-context.png` | 窗口周边（确认窗口真实位置与层级） |
-| `native-*-printwindow.png` | `PrintWindow` 直接取窗口自身绘制（确认渲染正常） |
-
-脚本还会输出两项**与 z-order 无关的客观判定**：
-
-| 输出 | 含义 | 期望值 |
-| --- | --- | --- |
-| `region_probe` | 直接读 Win32 窗口区域：四角是否被裁掉、中心是否在区域内、区域边界框 | `00001`，边界框与窗口尺寸一致 |
-| `ontop_check` | 屏幕像素中心 vs `PrintWindow` 中心 | 差值 ≈ 0（说明抓到的确实是应用本身） |
-
-> 抓屏前置条件：验收数据目录里需 `snap_enabled=false`。否则贴边吸附会在光标靠近屏幕边缘时
-> 把窗口移到屏幕外（只留 6px 触发条），此时抓到的是别的窗口而不是应用。
-> 这也是 v0.5 期间「原生截图时好时坏」的真实原因之一。
+判定项：基线纯色有效性、圆角外像素与基线吻合、深色连通块、1px 描边/外扩阴影、
+半径拟合（逻辑半径 × DPI）、DWM 角偏好与边框可读性、区域包围盒。
+缺少有效基线 → `UNVERIFIED`，绝不以 `GetWindowRgn` 成功代替。

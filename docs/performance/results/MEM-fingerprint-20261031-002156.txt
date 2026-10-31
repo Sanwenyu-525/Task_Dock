@@ -1,0 +1,13 @@
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 136 files changed, 4386 insertions(+), 559 deletions(-)
+source_tree_sha256=2b2dea925a2bb7d0d2957a964eba698af1aafe159a22f981e10501401cc7257c
+release_exe_sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378
+release_exe_bytes=15603200
+release_exe_mtime=2026-10-30 23:50:36.096250500 +0800
+measured_exe_path=C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+measured_exe_sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378
+measured_exe_bytes=15603200
+measured_exe_mtime=2026-10-30 23:53:18.572974200 +0800
+-rwxr-xr-x 1 ASUS 197121 15603200 2026-10-30 23:53:18.572974200 +0800 C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378 *C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe

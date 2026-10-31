@@ -7,7 +7,7 @@ import { registerOverlay, type OverlayEntry, type OverlayKind } from "../../lib/
  * 把当前组件注册为弹层栈的一层。
  *
  * Escape 只会命中栈顶（最高优先级、同类中最内层的那层），因此嵌套弹层天然按
- * 确认框 → 子弹层 → 菜单 → 抽屉 的顺序逐层关闭。
+ * 确认框 → 菜单 → 子弹层 → 模态 → 抽屉 的顺序逐层关闭。
  *
  * rootRef 可选：提供后按 DOM 嵌套深度判断「谁更内层」。React 的 effect 是子先于父
  * 执行的，只看注册顺序会让外层反超内层。

@@ -1,0 +1,238 @@
+{
+  "meta": "docs\\screenshots\\v07\\lab-solid-region-dwm.json",
+  "status": "FAIL",
+  "region": true,
+  "dwm": "1",
+  "material": "solid",
+  "glass_backend": null,
+  "window": {
+    "w": 500,
+    "h": 700,
+    "dpi": 120,
+    "scale": 1.25
+  },
+  "radius_expected_phys": 22,
+  "native": {
+    "region_probe": "00001 bounds=0,0,500,700",
+    "dwm": {
+      "dark_mode": 1,
+      "corner_preference": 2,
+      "border_color": 0,
+      "system_backdrop": 1
+    }
+  },
+  "corners": [
+    {
+      "corner": "top-left",
+      "transparent_ratio": 0.102,
+      "bg_diff_px": 40,
+      "bg_dark_px": 0,
+      "dark_components": [],
+      "radius": {
+        "measured": false,
+        "points": 2
+      },
+      "edge": {
+        "top": {
+          "inner_darken": -2.6,
+          "outer": {}
+        },
+        "bottom": {
+          "inner_darken": -0.7,
+          "outer": {
+            "d1": 101.0,
+            "d2": 98.2,
+            "d3": 95.2
+          }
+        },
+        "left": {
+          "inner_darken": -1.1,
+          "outer": {}
+        },
+        "right": {
+          "inner_darken": -1.5,
+          "outer": {
+            "d1": 59.3,
+            "d2": 55.5,
+            "d3": 52.0
+          }
+        }
+      }
+    },
+    {
+      "corner": "top-right",
+      "transparent_ratio": 0.102,
+      "bg_diff_px": 41,
+      "bg_dark_px": 0,
+      "dark_components": [],
+      "radius": {
+        "measured": false,
+        "points": 1
+      },
+      "edge": {
+        "top": {
+          "inner_darken": -2.6,
+          "outer": {}
+        },
+        "bottom": {
+          "inner_darken": -0.7,
+          "outer": {
+            "d1": 101.0,
+            "d2": 98.2,
+            "d3": 95.2
+          }
+        },
+        "left": {
+          "inner_darken": -1.1,
+          "outer": {}
+        },
+        "right": {
+          "inner_darken": -1.5,
+          "outer": {
+            "d1": 59.3,
+            "d2": 55.5,
+            "d3": 52.0
+          }
+        }
+      }
+    },
+    {
+      "corner": "bottom-left",
+      "transparent_ratio": 0.102,
+      "bg_diff_px": 42,
+      "bg_dark_px": 0,
+      "dark_components": [],
+      "radius": {
+        "measured": false,
+        "points": 3
+      },
+      "edge": {
+        "top": {
+          "inner_darken": -2.6,
+          "outer": {}
+        },
+        "bottom": {
+          "inner_darken": -0.7,
+          "outer": {
+            "d1": 101.0,
+            "d2": 98.2,
+            "d3": 95.2
+          }
+        },
+        "left": {
+          "inner_darken": -1.1,
+          "outer": {}
+        },
+        "right": {
+          "inner_darken": -1.5,
+          "outer": {
+            "d1": 59.3,
+            "d2": 55.5,
+            "d3": 52.0
+          }
+        }
+      }
+    },
+    {
+      "corner": "bottom-right",
+      "transparent_ratio": 0.102,
+      "bg_diff_px": 42,
+      "bg_dark_px": 0,
+      "dark_components": [],
+      "radius": {
+        "measured": true,
+        "radius_est": 31.75,
+        "radius_err": 21.57,
+        "points": 13,
+        "max_step": 2,
+        "steps_ge3": 0
+      },
+      "edge": {
+        "top": {
+          "inner_darken": -2.6,
+          "outer": {}
+        },
+        "bottom": {
+          "inner_darken": -0.7,
+          "outer": {
+            "d1": 101.0,
+            "d2": 98.2,
+            "d3": 95.2
+          }
+        },
+        "left": {
+          "inner_darken": -1.1,
+          "outer": {}
+        },
+        "right": {
+          "inner_darken": -1.5,
+          "outer": {
+            "d1": 59.3,
+            "d2": 55.5,
+            "d3": 52.0
+          }
+        }
+      }
+    }
+  ],
+  "edges": {
+    "top": {
+      "inner_darken": -2.6,
+      "outer": {
+        "d1": 0.0,
+        "d2": 0.0,
+        "d3": 0.0
+      }
+    },
+    "bottom": {
+      "inner_darken": -0.7,
+      "outer": {
+        "d1": 101.0,
+        "d2": 98.2,
+        "d3": 95.2
+      }
+    },
+    "left": {
+      "inner_darken": -1.1,
+      "outer": {
+        "d1": 0.0,
+        "d2": 0.0,
+        "d3": 0.0
+      }
+    },
+    "right": {
+      "inner_darken": -1.5,
+      "outer": {
+        "d1": 59.3,
+        "d2": 55.5,
+        "d3": 52.0
+      }
+    }
+  },
+  "reasons": [
+    "top-left: 圆角未透出背景（吻合 0.102）",
+    "top-left: 圆角外仍有 40 个像素不是背景（未裁净）",
+    "top-right: 圆角未透出背景（吻合 0.102）",
+    "top-right: 圆角外仍有 41 个像素不是背景（未裁净）",
+    "bottom-left: 圆角未透出背景（吻合 0.102）",
+    "bottom-left: 圆角外仍有 42 个像素不是背景（未裁净）",
+    "bottom-right: 圆角未透出背景（吻合 0.102）",
+    "bottom-right: 圆角外仍有 42 个像素不是背景（未裁净）",
+    "bottom-right: 实测圆角 31.75px 与预期 22px 不符",
+    "bottom 边外 1px 存在深色描边/阴影（ΔL=101.0）",
+    "right 边外 1px 存在深色描边/阴影（ΔL=59.3）"
+  ],
+  "unverified": [
+    "top-left: 内容与背景对比不足，半径无法从像素测量",
+    "top-right: 内容与背景对比不足，半径无法从像素测量",
+    "bottom-left: 内容与背景对比不足，半径无法从像素测量"
+  ],
+  "warnings": [
+    "DWM 边框属性读取结果未记录（旧采集），以像素判定为准"
+  ],
+  "screenshots": {
+    "visible": "D:\\Develop\\task_dock\\docs\\screenshots\\v07\\lab-solid-region-dwm-visible.png",
+    "baseline": "D:\\Develop\\task_dock\\docs\\screenshots\\v07\\lab-solid-region-dwm-baseline.png",
+    "reshow": "D:\\Develop\\task_dock\\docs\\screenshots\\v07\\lab-solid-region-dwm-reshow.png"
+  }
+}

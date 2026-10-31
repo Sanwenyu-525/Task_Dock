@@ -724,6 +724,11 @@ export const auditTestData = (apply = false) =>
 export const quitApp = () => invoke<void>("quit_app");
 export const setAutostart = (enabled: boolean) => invoke<boolean>("set_autostart", { enabled });
 export const applyMode = (mode: string) => invoke<void>("apply_mode", { mode });
+
+// ── 液态玻璃右键菜单（v0.6）──
+/** 悬浮栏右键：后端锚定悬浮栏顶边中点弹出玻璃菜单。 */
+export const showContextMenu = () => invoke<void>("show_context_menu");
+export const hideContextMenu = () => invoke<void>("hide_context_menu");
 export const applyWindowMaterial = (material: string) =>
   invoke<MaterialResult>("apply_window_material", { material });
 

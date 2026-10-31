@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47852",
+    "token": "47697809-61dc-4f6b-a9ae-273e07e902ab",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 1800,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "fourth-round-memory-b-20261031-003145",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-v05\\fourth-round-memory-b-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-fourth-round-memory-b-20261031-003145-load.json"
+  },
+  "elapsed_ms": 1800009,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 36000,
+    "ok": 36000,
+    "failed": 0,
+    "retries": 23,
+    "critical_sent": 3600,
+    "critical_ok": 3600,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 3.04,
+    "p95": 258.51,
+    "max": 855.04
+  }
+}

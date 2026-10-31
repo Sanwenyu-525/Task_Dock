@@ -1,0 +1,28 @@
+[2m2026-10-31T01:37:41.994615Z[0m [32m INFO[0m [2mtask_dock_lib::clipboard[0m[2m:[0m 剪贴板监听已启动
+[2m2026-10-31T01:37:42.044435Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-10-31T01:37:42.044973Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-10-31T01:37:42.044998Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-v05\\probe-stimulus-p105-0938-data"）
+[2m2026-10-31T01:37:42.045017Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-v05\\probe-stimulus-p105-0938-data\\agent-inbox"
+[2m2026-10-31T01:37:42.047225Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 本地 HTTP 接入监听 127.0.0.1:47860
+[2m2026-10-31T01:37:42.111040Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3692, 0ms)
+[2m2026-10-31T01:37:51.320273Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:5935, 0ms)
+[2m2026-10-31T01:37:51.355071Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:5935, 0ms)
+[2m2026-10-31T01:37:59.804924Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3149, 0ms)
+[2m2026-10-31T01:38:06.342116Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:12936, 0ms)
+[2m2026-10-31T01:38:11.055975Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:12936, 0ms)
+[2m2026-10-31T01:38:17.756686Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3604, 0ms)
+[2m2026-10-31T01:38:23.454947Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3096, 0ms)
+[2m2026-10-31T01:38:28.294496Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3096, 0ms)
+[2m2026-10-31T01:38:28.295980Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:3096, 0ms)
+[2m2026-10-31T01:38:31.529847Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3096, 0ms)
+[2m2026-10-31T01:38:34.873583Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:3096, 0ms)
+[2m2026-10-31T01:38:39.956889Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9512, 0ms)
+[2m2026-10-31T01:38:44.718925Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9512, 0ms)
+[2m2026-10-31T01:38:49.701026Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9512, 0ms)
+[2m2026-10-31T01:38:52.613087Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:2596, 0ms)
+[2m2026-10-31T01:38:54.525087Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9512, 0ms)
+[2m2026-10-31T01:38:54.526305Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:9512, 0ms)
+[2m2026-10-31T01:39:00.558323Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:10517, 0ms)
+[2m2026-10-31T01:39:02.615353Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:10550, 0ms)
+[2m2026-10-31T01:39:04.588656Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:10517, 0ms)
+[2m2026-10-31T01:39:09.827595Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:9015, 0ms)

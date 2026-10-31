@@ -1,0 +1,25 @@
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock-r2-acc\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.42s
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 1 test
+test actions::tests::ack_never_changes_agent_state_and_new_event_resurfaces ... FAILED
+
+failures:
+
+---- actions::tests::ack_never_changes_agent_state_and_new_event_resurfaces stdout ----
+
+thread 'actions::tests::ack_never_changes_agent_state_and_new_event_resurfaces' (5808) panicked at src\actions\mod.rs:1462:9:
+assertion `left == right` failed: 确认轮次必须同时消除对应未读通知
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    actions::tests::ack_never_changes_agent_state_and_new_event_resurfaces
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 451 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--lib`
+mutation_exit=101

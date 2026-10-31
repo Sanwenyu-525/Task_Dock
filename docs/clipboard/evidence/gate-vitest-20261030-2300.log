@@ -1,0 +1,107 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock[39m
+
+ [32m✓[39m src/components/clipboard/AgentExportPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 846[2mms[22m[39m
+   [33m[2m✓[22m[39m AgentExportPanel[2m > [22m区分直接发送、文件导入、桌面粘贴与本地导出 [33m 718[2mms[22m[39m
+ [32m✓[39m src/components/navigation/TargetMenu.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 1627[2mms[22m[39m
+   [33m[2m✓[22m[39m TargetMenu 键盘交互[2m > [22m打开即聚焦第 0 项；工作区入口排第 0 位、索引与 DOM 顺序一致 [33m 742[2mms[22m[39m
+ [32m✓[39m src/components/ui/Popover.edge.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 1807[2mms[22m[39m
+   [33m[2m✓[22m[39m 弹层边缘定位[2m > [22m下方空间充足时向下展开 [33m 1048[2mms[22m[39m
+   [33m[2m✓[22m[39m 弹层边缘定位[2m > [22m底部空间不足时自动向上翻转 [33m 680[2mms[22m[39m
+ [32m✓[39m src/components/ui/TooltipLayer.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 1581[2mms[22m[39m
+   [33m[2m✓[22m[39m 全局提示条层[2m > [22m悬停带 data-tip 的控件后出现提示，内容取自 data-tip [33m 1205[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/PastePanel.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 1713[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m展示分类间隔；开始后显示逐项状态与剩余数量 [33m 961[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m取消只发送取消请求，不把未确认当作失败 [33m 556[2mms[22m[39m
+ [32m✓[39m src/components/TitleBar.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 1535[2mms[22m[39m
+   [33m[2m✓[22m[39m TitleBar 剪贴板入口[2m > [22m完整模式不显示剪贴板按钮（入口在左侧导航） [33m 611[2mms[22m[39m
+   [33m[2m✓[22m[39m TitleBar 剪贴板入口[2m > [22m极简模式保留剪贴板按钮，再次点击关闭抽屉 [33m 666[2mms[22m[39m
+ [32m✓[39m src/components/ui/Select.test.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 2663[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m渲染触发器并暴露 combobox 语义 [33m 474[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m方向键导航 + Enter 选择 [33m 576[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m禁用项不可选择 [33m 429[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m长列表：跳到末尾时把高亮项滚进可视区域 [33m 397[2mms[22m[39m
+ [32m✓[39m src/components/actions/ActionCenterPanel.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 1630[2mms[22m[39m
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m同时展示需关注、需介入、通知、历史与当前筛选/已加载 [33m 496[2mms[22m[39m
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m切换到通知分类后不展示优先级筛选，并显示通知空态 [33m 740[2mms[22m[39m
+ [32m✓[39m src/components/FullView.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 1953[2mms[22m[39m
+   [33m[2m✓[22m[39m 完整模式左侧导航[2m > [22m渲染六个导航入口与底部快捷入口 [33m 1269[2mms[22m[39m
+   [33m[2m✓[22m[39m 完整模式左侧导航[2m > [22m点击导航切换面板，并保留 aria-current 语义 [33m 364[2mms[22m[39m
+ [32m✓[39m src/components/ui/overlayEscape.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 2143[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m抽屉打开时，Escape 只关抽屉，主窗口不受影响 [33m 911[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m菜单与抽屉同时存在时，Escape 先关菜单 [33m 405[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m确认框优先级最高：Escape 先关确认框，菜单与抽屉保持不动 [33m 337[2mms[22m[39m
+ [32m✓[39m src/store/useActionsStore.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 72[2mms[22m[39m
+ [32m✓[39m src/styles-themes.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/lib/navigation.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TasksPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 3392[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m点击搜索按钮展开输入框，输入关键词过滤任务列表 [33m 1829[2mms[22m[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m清空搜索恢复全部；点击状态按钮过滤任务列表 [33m 1560[2mms[22m[39m
+ [32m✓[39m src/components/ui/DropdownMenu.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[33m 4810[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m触发器暴露 menu 语义与展开状态 [33m 925[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m方向键在菜单项之间移动，并跳过禁用项 [33m 588[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22mEnter 触发当前高亮项并收起菜单 [33m 507[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22mHome / End 跳到首尾可用项 [33m 540[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m禁用项不可触发，菜单保持展开 [33m 363[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m字母键快速定位到对应菜单项 [33m 502[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22mEscape 只关闭菜单，焦点回到触发器 [33m 401[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m点击外部关闭菜单 [33m 446[2mms[22m[39m
+ [32m✓[39m src/components/navigation/AppPicker.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 4694[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m渲染应用列表；搜索框输入与分类按钮切换都能过滤列表 [33m 1336[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m点击应用项：按 TargetInput 保存目标 → 关联任务 → 关闭弹窗 [33m 610[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m「从当前运行的窗口选择」展开后渲染窗口条目；点击窗口保存目标并固化窗口身份 [33m 528[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m窗口身份记录失败时显示错误并保留选择器，便于重试 [33m 706[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m两个任务重用同一应用时分别更新各自关联的窗口 [33m 1054[2mms[22m[39m
+ [32m✓[39m src/components/tasks/QuickAdd.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 3745[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m输入自然语言 + Enter：先解析出预览，再 Enter 创建（store/bridge 被正确调用） [33m 1370[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22mEscape 关闭：预览消失、可重新编辑 [33m 879[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m创建进行中禁用重复提交：挂起期间连按 Enter 只创建一次 [33m 767[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m创建失败：错误 toast 可见且输入不丢失 [33m 728[2mms[22m[39m
+ [32m✓[39m src/components/history/HistoryPanel.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 3363[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 订阅生命周期[2m > [22m卸载后才兑现的监听 Promise 会被立即反订阅 [33m 321[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 全局未读与筛选[2m > [22m时间筛选从第一页重新查询，并把 since 传给两条数据流 [33m 635[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m刷新页与已加载页不重叠时提示刷新，不合并出带缺口的时间轴 [33m 884[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m首屏为空后到达的新事件会重新启用「加载更早」 [33m 694[2mms[22m[39m
+ [32m✓[39m src/components/ui/DateTimePicker.test.tsx [2m([22m[2m10 tests[22m[2m)[22m[33m 4826[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m触发器展示本地时间，展开后 aria-expanded 为真 [33m 917[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m只是打开浮层不会改值（不截断秒数） [33m 1407[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m点回原来那一天不产生变更 [33m 407[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m换日期保留原来的时分 [33m 566[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m两个实例互不干扰（截止时间与提醒时间） [33m 420[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m日历网格支持方向键移动焦点 [33m 306[2mms[22m[39m
+ [32m✓[39m src/lib/agentTree.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/components/tasks/TaskEditor.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 4479[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改标题时不提交重复规则或未修改的时间 [33m 1948[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 描述 时不重写重复规则 [33m 497[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 优先级 时不重写重复规则 [33m 465[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 标签（逗号分隔） 时不重写重复规则 [33m 402[2mms[22m[39m
+   [33m[2m✓[22m[39m 主动取消或修改重复规则时提交明确意图 [33m 712[2mms[22m[39m
+ [32m✓[39m src/store/useClipboardStore.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/test/powershellScripts.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 786[2mms[22m[39m
+   [33m[2m✓[22m[39m Windows PowerShell 脚本[2m > [22m全部 .ps1 都能被 PowerShell 解析（零错误） [33m 776[2mms[22m[39m
+ [32m✓[39m src/lib/subscriptions.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/lib/historyGroup.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/lib/workspace.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/lib/clipboardUi.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/lib/theme.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/lib/format.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/store/useClipboardStore.live.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/store/useAgentsStore.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 52[2mms[22m[39m
+ [32m✓[39m src/store/useSettingsStore.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 72[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/ClipboardPanel.test.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 3621[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m进入页面即拉取历史，并渲染条目与统计 [33m 556[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m类型筛选会带着新的 kind 重新拉取 [33m 936[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m只看收藏会以 favorite=true 重新拉取 [33m 348[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m搜索输入防抖后按关键词重新拉取 [33m 772[2mms[22m[39m
+ [32m✓[39m src/lib/overlayStack.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/store/useUiStore.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m src/hooks/useGlobalShortcuts.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[32m 189[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/ClipboardDrawer.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[33m 4484[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m分页：80/100 时加载更多只追加一页 [33m 2505[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m监听中、监听线程未启动与手动暂停显示不同状态 [33m 769[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m37 passed[39m[22m[90m (37)[39m
+[2m      Tests [22m [1m[32m264 passed[39m[22m[90m (264)[39m
+[2m   Start at [22m 23:00:16
+[2m   Duration [22m 18.14s[2m (transform 25.12s, setup 1.23s, collect 73.80s, tests 56.27s, environment 152.25s, prepare 11.78s)[22m
+

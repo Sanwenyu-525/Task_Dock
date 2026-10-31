@@ -1,0 +1,21 @@
+源码指纹（整改后门禁前）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 13 files changed, 473 insertions(+), 62 deletions(-)
+source_tree_sha256=94081a7fe16a74c94045f0eb75031efcb07cfdabe0877a0b0025c31b07a11a39
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800
+cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+host: x86_64-pc-windows-msvc
+release: 1.95.0
+源码指纹（整改后门禁后）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 13 files changed, 810 insertions(+), 62 deletions(-)
+source_tree_sha256=87eab6ec81fa913ebe216ce2a2d0b75055c18c60e391d4f043fa7192eff72f9a
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800
+4fddaa06d3db6fb710ad371412889a8a127367207af9e03646ca093b8972a948 *C:/Users/ASUS/AppData/Local/Temp/taskdock-gate/release/task-dock.exe
+15799296 bytes 2026-10-31 10:14:27.005420300 +0800

@@ -1,0 +1,88 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47916",
+    "token": "05eb25af-86ee-4379-ac62-25ee2d75ab77",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 1800,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "G-real-notify-30min-20261031-111352",
+    "source": "bridge",
+    "allowRealSource": true,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-af2\\G-real-notify-30min-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-G-real-notify-30min-20261031-111352-load.json"
+  },
+  "elapsed_ms": 1878953,
+  "actual_rate": 8.31,
+  "counts": {
+    "sent": 15620,
+    "ok": 15504,
+    "failed": 116,
+    "retries": 4651,
+    "critical_sent": 1560,
+    "critical_ok": 1548,
+    "critical_failed": 12,
+    "failed_ids": [
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a0-e3879",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a3-e3879",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a2-e3879",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a1-e3879",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a0-e3890",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a3-e3890",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a2-e3890",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a1-e3890",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a0-e3899",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a3-e3899",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a2-e3899",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-G-real-notify-30min-20261031-111352-a1-e3899",
+        "error": "TypeError: fetch failed"
+      }
+    ]
+  },
+  "latency_ms": {
+    "p50": 1.55,
+    "p95": 274.62,
+    "max": 16567.88
+  }
+}

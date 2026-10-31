@@ -1,0 +1,6 @@
+=== fmt ===
+CMD: cargo fmt --all -- --check
+CWD: /d/Develop/task_dock/src-tauri
+START: 2026-10-30 22:21:18
+END: 2026-10-30 22:21:20
+EXIT: 0

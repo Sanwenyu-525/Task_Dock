@@ -1,0 +1,217 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-af2\G-real-notify-30min-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-af2\G-real-notify-30min-appdata port=47916
+[env] 检测到 1 个异名 Task Dock 实例（task-dock.exe，PID [95752]）：进程树独立不串组，但会竞争 CPU/磁盘，已记录为环境干扰。
+[app] pid=94540 health={'ok': True, 'queue': {'capacity': 1024, 'depth_events': 0}, 'service': 'task-dock'}
+[load] rc=0
+[error] URLError: <urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接。>
+{
+  "meta": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-G-real-notify-30min-20261031-111352-meta.json",
+  "summary": {
+    "samples": 376,
+    "elapsed_s": 1882.8,
+    "taskdock_private_mb": {
+      "n": 376,
+      "first": 10,
+      "last": 0,
+      "min": 0,
+      "max": 18.8,
+      "mean": 5.977
+    },
+    "taskdock_ws_mb": {
+      "n": 376,
+      "first": 32.2,
+      "last": 0,
+      "min": 0,
+      "max": 40.7,
+      "mean": 13.302
+    },
+    "webview2_private_mb": {
+      "n": 376,
+      "first": 283.1,
+      "last": 0,
+      "min": 0,
+      "max": 298.2,
+      "mean": 107.881
+    },
+    "taskdock_threads": {
+      "n": 376,
+      "first": 35,
+      "last": 0,
+      "min": 0,
+      "max": 36,
+      "mean": 12.519
+    },
+    "taskdock_handles": {
+      "n": 376,
+      "first": 385,
+      "last": 0,
+      "min": 0,
+      "max": 489,
+      "mean": 165.399
+    },
+    "system_committed_mb": {
+      "n": 376,
+      "first": 36907.289,
+      "last": 32238.637,
+      "min": 32019.012,
+      "max": 53719.277,
+      "mean": 35793.95
+    },
+    "slope_private_mb_per_min": -0.709,
+    "slope_ws_mb_per_min": -1.68,
+    "slope_live_mb_per_min": -0.0301,
+    "slope_threads_per_min": -1.5244,
+    "slope_handles_per_min": -19.9145,
+    "slope_committed_mb_per_min": -288.1724,
+    "slope_alive_tasks_per_min": null,
+    "slope_wal_mb_per_min": null,
+    "slope_db_mb_per_min": null,
+    "rust_live_bytes": {
+      "n": 24,
+      "first": 955206,
+      "last": 1387498,
+      "min": 955206,
+      "max": 1406908,
+      "mean": 1151771.542
+    },
+    "rust_peak_bytes": {
+      "n": 24,
+      "first": 2293048,
+      "last": 2293048,
+      "min": 2293048,
+      "max": 2293048,
+      "mean": 2293048.0
+    },
+    "rust_total_allocated_bytes": {
+      "n": 24,
+      "first": 5542127,
+      "last": 946772087,
+      "min": 5542127,
+      "max": 946772087,
+      "mean": 424406630.167
+    },
+    "rust_alloc_calls": {
+      "n": 24,
+      "first": 16745,
+      "last": 7049227,
+      "min": 16745,
+      "max": 7049227,
+      "mean": 3229797.292
+    },
+    "tokio_alive_tasks": {
+      "n": 24,
+      "first": 7,
+      "last": 21,
+      "min": 7,
+      "max": 25,
+      "mean": 15.208
+    },
+    "sqlite_wal_bytes": {
+      "n": 24,
+      "first": 0,
+      "last": 4853392,
+      "min": 0,
+      "max": 4853392,
+      "mean": 4407915.667
+    },
+    "sqlite_db_bytes": {
+      "n": 24,
+      "first": 487424,
+      "last": 15917056,
+      "min": 487424,
+      "max": 15917056,
+      "mean": 8103424.0
+    },
+    "sqlite_page_count": {
+      "n": 24,
+      "first": 119,
+      "last": 3915,
+      "min": 119,
+      "max": 3915,
+      "mean": 1994.833
+    },
+    "first_last": {
+      "taskdock_private_mb": [
+        10,
+        0
+      ],
+      "taskdock_ws_mb": [
+        32.2,
+        0
+      ],
+      "webview2_private_mb": [
+        283.1,
+        0
+      ],
+      "live_bytes": [
+        955206,
+        1387498
+      ],
+      "alive_tasks": [
+        7,
+        21
+      ],
+      "wal_bytes": [
+        0,
+        4853392
+      ],
+      "db_bytes": [
+        487424,
+        15917056
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 0,
+      "events_processed": 0,
+      "events_merged": 0,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 0,
+      "http_requests": 3,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 16745,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 12399,
+        "live_bytes": 955206,
+        "peak_bytes": 2293048,
+        "total_allocated_bytes": 5542127
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 1.08,
+          "calls": 5,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    },
+    "stats_last": {
+      "error": "使用“0”个参数调用“GetResult”时发生异常:“发送请求时出错。”"
+    }
+  }
+}

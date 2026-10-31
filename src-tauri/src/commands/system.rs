@@ -154,9 +154,25 @@ pub struct WindowSnapState {
     pub hidden: bool,
 }
 
+impl WindowSnapState {
+    /// edge 白名单校验：垃圾值不得入库（重启恢复按该值直接停靠）。
+    pub fn is_valid(&self) -> bool {
+        matches!(
+            self.edge.as_str(),
+            "left" | "right" | "top" | "bottom" | "none"
+        )
+    }
+}
+
 /// 贴边隐藏状态由前端维护并持久化（重启后恢复）。
 #[tauri::command]
 pub fn save_snap_state(db: State<'_, Arc<Db>>, state: WindowSnapState) -> AppResult<()> {
+    if !state.is_valid() {
+        return Err(crate::error::AppError::Validation(format!(
+            "snap_state.edge 非法: {}（允许: left|right|top|bottom|none）",
+            state.edge
+        )));
+    }
     db.set_setting("snap_state", serde_json::to_value(&state)?)
 }
 
@@ -247,7 +263,7 @@ fn windows_build() -> u32 {
 
 /// 在主线程上执行窗口材质调用（Win32 窗口操作统一走主线程）。
 /// 带超时：主线程卡死/应用退出时不得无限等待。
-fn run_material<F>(app: &AppHandle, f: F) -> bool
+fn run_material<R: tauri::Runtime, F>(app: &AppHandle<R>, f: F) -> bool
 where
     F: FnOnce() -> bool + Send + 'static,
 {
@@ -260,6 +276,144 @@ where
         .unwrap_or(false)
 }
 
+/// 原生玻璃后端选择（真机矩阵验收用）。
+/// - `auto`：Win11 且区域裁剪开启 → blur；Win11 未裁剪 → Mica；Win10 → Acrylic
+/// - `mica` / `acrylic` / `blur`：强制指定后端（blur 走 SetWindowCompositionAttribute，
+///   由窗口自身合成，受 SetWindowRgn 约束）
+/// - `none`：不保留 DWM 系统背景，只依赖透明窗口 + CSS 玻璃
+fn glass_backend() -> String {
+    std::env::var("TASK_DOCK_GLASS_BACKEND")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "auto".into())
+}
+
+fn clear_native_materials<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>) -> bool {
+    window_vibrancy::clear_mica(win).is_ok()
+        | window_vibrancy::clear_acrylic(win).is_ok()
+        | window_vibrancy::clear_blur(win).is_ok()
+}
+
+/// Win32 区域裁剪是否启用（口径与 window_shape::flag 一致）。
+fn region_clipping_enabled() -> bool {
+    std::env::var("TASK_DOCK_WINDOW_REGION")
+        .map(|v| v != "0")
+        .unwrap_or(true)
+}
+
+/// auto 模式的实际后端。
+///
+/// Win11 的 Mica/Acrylic 是 DWM SystemBackdrop，按**整个窗口矩形**绘制、不受
+/// `SetWindowRgn` 约束；真机抓图（docs/ui-themes/12-v06-window-corners.md）
+/// 在区域圆角之外留下了黑色月牙。开启区域裁剪时改用窗口自身合成的 blur，
+/// 它是唯一与区域裁剪兼容的原生玻璃后端。显式指定的后端原样保留，供矩阵对照。
+fn effective_backend(requested: &str, build: u32, region_enabled: bool) -> String {
+    match requested {
+        "mica" | "acrylic" | "blur" | "none" => requested.to_string(),
+        _ if build >= 22000 && region_enabled => "blur".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+/// 对**任意**应用窗口应用/清除原生材质（主窗与右键菜单弹窗共用）。
+/// 后端选择走同一套 `effective_backend`：Win11 + 区域裁剪 → blur
+/// （窗口自身合成，受 SetWindowRgn 约束，不会在圆角外画 DWM 背景），
+/// Win10 → Acrylic（同为窗口合成），显式后端原样保留供矩阵对照。
+/// material: "solid" | "glass"；持久化由调用方负责，这里只动窗口。
+pub fn apply_material_to_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+    material: &str,
+) -> MaterialResult {
+    let build = windows_build();
+    let os_version = format!("10.0.{}", build);
+    let backend = effective_backend(&glass_backend(), build, region_clipping_enabled());
+
+    if material != "glass" {
+        let w = win.clone();
+        let _ = run_material(app, move || clear_native_materials(&w));
+        return MaterialResult {
+            material: "solid".into(),
+            applied: false,
+            effect: "none".into(),
+            os_version,
+        };
+    }
+
+    // 区域裁剪兼容后端：系统背景由窗口自身合成，不会被 DWM 画到区域之外。
+    if backend == "blur" || backend == "none" {
+        let w = win.clone();
+        let want_blur = backend == "blur";
+        let ok = run_material(app, move || {
+            let _ = window_vibrancy::clear_mica(&w);
+            let _ = window_vibrancy::clear_acrylic(&w);
+            if want_blur {
+                window_vibrancy::apply_blur(&w, None).is_ok()
+            } else {
+                true
+            }
+        });
+        return MaterialResult {
+            material: "glass".into(),
+            applied: want_blur && ok,
+            effect: if want_blur { "blur" } else { "none" }.into(),
+            os_version,
+        };
+    }
+
+    // 强制 Acrylic（Win11 上同样走 DWM SystemBackdrop，用于对照验证）。
+    if backend == "acrylic" {
+        let w = win.clone();
+        if run_material(app, move || {
+            window_vibrancy::apply_acrylic(&w, None).is_ok()
+        }) {
+            return MaterialResult {
+                material: "glass".into(),
+                applied: true,
+                effect: "acrylic".into(),
+                os_version,
+            };
+        }
+    }
+
+    // Win11：Mica 优先
+    if backend != "acrylic" && build >= 22000 {
+        let w = win.clone();
+        if run_material(app, move || window_vibrancy::apply_mica(&w, None).is_ok()) {
+            return MaterialResult {
+                material: "glass".into(),
+                applied: true,
+                effect: "mica".into(),
+                os_version,
+            };
+        }
+    }
+    // Win10 1803+：Acrylic
+    if build >= 17134 {
+        let w = win.clone();
+        if run_material(app, move || {
+            window_vibrancy::apply_acrylic(&w, None).is_ok()
+        }) {
+            return MaterialResult {
+                material: "glass".into(),
+                applied: true,
+                effect: "acrylic".into(),
+                os_version,
+            };
+        }
+    }
+    // 不支持：确保无残留效果
+    let w = win.clone();
+    let _ = run_material(app, move || clear_native_materials(&w));
+    MaterialResult {
+        material: "glass".into(),
+        applied: false,
+        effect: "none".into(),
+        os_version,
+    }
+}
+
 /// 应用/清除窗口原生材质效果。material: "solid" | "glass"。
 /// 持久化由前端 update_settings 完成；这里只动窗口。
 #[tauri::command]
@@ -267,57 +421,81 @@ pub fn apply_window_material(app: AppHandle, material: String) -> AppResult<Mate
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
-    let build = windows_build();
-    let os_version = format!("10.0.{}", build);
+    Ok(apply_material_to_window(&app, &win, &material))
+}
 
-    if material != "glass" {
-        let w = win.clone();
-        let _ = run_material(&app, move || {
-            window_vibrancy::clear_mica(&w).is_ok() | window_vibrancy::clear_acrylic(&w).is_ok()
-        });
-        return Ok(MaterialResult {
-            material: "solid".into(),
-            applied: false,
-            effect: "none".into(),
-            os_version,
-        });
+/// 右键菜单弹窗的材质策略（真机矩阵结论，visual-remediation/native-composition）：
+/// **默认不挂任何原生材质**。DWM 的 blur/acrylic 层按整个窗口矩形合成，
+/// 透明像素按黑处理 —— 区域裁剪管不到它，半透明玻璃的圆角外/圆角带处
+/// 必然出现黑楔（真机像素：blur 角部 [12,12,12]、acrylic [84,84,84]，
+/// 无材质时同位置干净）。菜单玻璃由 CSS 半透明承担，桌面色彩仍可透出。
+/// 显式设置 `TASK_DOCK_GLASS_BACKEND` 时按指定后端应用（矩阵对照/回归用）。
+pub fn apply_menu_material<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+) -> MaterialResult {
+    let forced = std::env::var("TASK_DOCK_GLASS_BACKEND")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    if forced {
+        return apply_material_to_window(app, win, "glass");
     }
-
-    // Win11：Mica 优先
-    if build >= 22000 {
-        let w = win.clone();
-        if run_material(&app, move || window_vibrancy::apply_mica(&w, None).is_ok()) {
-            return Ok(MaterialResult {
-                material: "glass".into(),
-                applied: true,
-                effect: "mica".into(),
-                os_version,
-            });
-        }
-    }
-    // Win10 1803+：Acrylic
-    if build >= 17134 {
-        let w = win.clone();
-        if run_material(&app, move || {
-            window_vibrancy::apply_acrylic(&w, None).is_ok()
-        }) {
-            return Ok(MaterialResult {
-                material: "glass".into(),
-                applied: true,
-                effect: "acrylic".into(),
-                os_version,
-            });
-        }
-    }
-    // 不支持：确保无残留效果
     let w = win.clone();
-    let _ = run_material(&app, move || {
-        window_vibrancy::clear_mica(&w).is_ok() | window_vibrancy::clear_acrylic(&w).is_ok()
-    });
-    Ok(MaterialResult {
+    let _ = run_material(app, move || clear_native_materials(&w));
+    MaterialResult {
         material: "glass".into(),
         applied: false,
         effect: "none".into(),
-        os_version,
-    })
+        os_version: format!("10.0.{}", windows_build()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snap_state_edge_whitelist() {
+        assert!(WindowSnapState {
+            edge: "left".into(),
+            hidden: true
+        }
+        .is_valid());
+        assert!(WindowSnapState {
+            edge: "none".into(),
+            hidden: false
+        }
+        .is_valid());
+        assert!(!WindowSnapState {
+            edge: "banana".into(),
+            hidden: true
+        }
+        .is_valid());
+        assert!(!WindowSnapState {
+            edge: String::new(),
+            hidden: false
+        }
+        .is_valid());
+    }
+
+    #[test]
+    fn win11_auto_backend_avoids_dwm_backdrop_when_region_clipping() {
+        // 区域裁剪 + Win11：Mica/Acrylic 会画到区域外，必须换成窗口合成的 blur
+        assert_eq!(effective_backend("auto", 26100, true), "blur");
+        // 关闭区域（矩阵对照）时才允许 DWM SystemBackdrop
+        assert_eq!(effective_backend("auto", 26100, false), "auto");
+        // Win10 的 Acrylic 走 SetWindowCompositionAttribute，不受此限制
+        assert_eq!(effective_backend("auto", 19045, true), "auto");
+    }
+
+    #[test]
+    fn explicit_backend_is_never_rewritten() {
+        for backend in ["mica", "acrylic", "blur", "none"] {
+            assert_eq!(effective_backend(backend, 26100, true), backend);
+            assert_eq!(effective_backend(backend, 26100, false), backend);
+        }
+        // 未知值按 auto 处理，保持原有容错
+        assert_eq!(effective_backend("weird", 26100, true), "blur");
+        assert_eq!(effective_backend("weird", 26100, false), "auto");
+    }
 }

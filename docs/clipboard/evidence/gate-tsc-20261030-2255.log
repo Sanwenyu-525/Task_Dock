@@ -1,0 +1,8 @@
+src/test/powershellScripts.test.ts(14,30): error TS2307: Cannot find module 'node:child_process' or its corresponding type declarations.
+src/test/powershellScripts.test.ts(15,65): error TS2307: Cannot find module 'node:fs' or its corresponding type declarations.
+src/test/powershellScripts.test.ts(16,31): error TS2307: Cannot find module 'node:path' or its corresponding type declarations.
+src/test/powershellScripts.test.ts(19,22): error TS2304: Cannot find name '__dirname'.
+src/test/powershellScripts.test.ts(75,13): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/test/powershellScripts.test.ts(79,13): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/test/powershellScripts.test.ts(84,13): error TS2591: Cannot find name 'process'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+src/test/powershellScripts.test.ts(88,34): error TS7006: Parameter 'b' implicitly has an 'any' type.

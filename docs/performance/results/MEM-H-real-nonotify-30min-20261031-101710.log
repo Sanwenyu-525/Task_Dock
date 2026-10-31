@@ -1,0 +1,263 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-ag3\H-real-nonotify-30min-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-ag3\H-real-nonotify-30min-appdata port=47897
+[app] pid=98284 health={'ok': True, 'queue': {'capacity': 1024, 'depth_events': 0}, 'service': 'task-dock'}
+[load] rc=0
+{
+  "meta": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-H-real-nonotify-30min-20261031-101711-meta.json",
+  "summary": {
+    "samples": 386,
+    "elapsed_s": 1932.2,
+    "taskdock_private_mb": {
+      "n": 386,
+      "first": 8.4,
+      "last": 47.1,
+      "min": 8.4,
+      "max": 49.4,
+      "mean": 16.172
+    },
+    "taskdock_ws_mb": {
+      "n": 386,
+      "first": 30.6,
+      "last": 70.7,
+      "min": 3.7,
+      "max": 73,
+      "mean": 26.299
+    },
+    "webview2_private_mb": {
+      "n": 386,
+      "first": 223.4,
+      "last": 234.2,
+      "min": 223.4,
+      "max": 257.1,
+      "mean": 245.207
+    },
+    "taskdock_threads": {
+      "n": 386,
+      "first": 34,
+      "last": 41,
+      "min": 27,
+      "max": 41,
+      "mean": 29.026
+    },
+    "taskdock_handles": {
+      "n": 386,
+      "first": 399,
+      "last": 696,
+      "min": 383,
+      "max": 697,
+      "mean": 399.484
+    },
+    "system_committed_mb": {
+      "n": 386,
+      "first": 38670.41,
+      "last": 37229.965,
+      "min": 34889.191,
+      "max": 51505.664,
+      "mean": 37565.185
+    },
+    "slope_private_mb_per_min": 0.263,
+    "slope_ws_mb_per_min": -0.485,
+    "slope_live_mb_per_min": -0.0026,
+    "slope_threads_per_min": -0.0671,
+    "slope_handles_per_min": 1.0657,
+    "slope_committed_mb_per_min": -8.4836,
+    "slope_alive_tasks_per_min": -0.1269,
+    "slope_wal_mb_per_min": 0.0158,
+    "slope_db_mb_per_min": 1.2373,
+    "rust_live_bytes": {
+      "n": 65,
+      "first": 1302978,
+      "last": 889976,
+      "min": 889976,
+      "max": 1387676,
+      "mean": 1070010.954
+    },
+    "rust_peak_bytes": {
+      "n": 65,
+      "first": 2489511,
+      "last": 2489511,
+      "min": 2489511,
+      "max": 2489511,
+      "mean": 2489511.0
+    },
+    "rust_total_allocated_bytes": {
+      "n": 65,
+      "first": 14519383,
+      "last": 2600045313,
+      "min": 14519383,
+      "max": 2600045313,
+      "mean": 1315275434.246
+    },
+    "rust_alloc_calls": {
+      "n": 65,
+      "first": 70910,
+      "last": 19079938,
+      "min": 70910,
+      "max": 19079938,
+      "mean": 9700456.338
+    },
+    "tokio_alive_tasks": {
+      "n": 65,
+      "first": 26,
+      "last": 7,
+      "min": 7,
+      "max": 26,
+      "mean": 14.815
+    },
+    "sqlite_wal_bytes": {
+      "n": 65,
+      "first": 2987032,
+      "last": 4898712,
+      "min": 2987032,
+      "max": 4898712,
+      "mean": 4774161.231
+    },
+    "sqlite_db_bytes": {
+      "n": 65,
+      "first": 487424,
+      "last": 40296448,
+      "min": 487424,
+      "max": 40296448,
+      "mean": 21482889.846
+    },
+    "sqlite_page_count": {
+      "n": 65,
+      "first": 169,
+      "last": 9838,
+      "min": 169,
+      "max": 9838,
+      "mean": 5257.4
+    },
+    "first_last": {
+      "taskdock_private_mb": [
+        8.4,
+        47.1
+      ],
+      "taskdock_ws_mb": [
+        30.6,
+        70.7
+      ],
+      "webview2_private_mb": [
+        223.4,
+        234.2
+      ],
+      "live_bytes": [
+        1302978,
+        889976
+      ],
+      "alive_tasks": [
+        26,
+        7
+      ],
+      "wal_bytes": [
+        2987032,
+        4898712
+      ],
+      "db_bytes": [
+        487424,
+        40296448
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 4,
+      "merge_buffer": 0,
+      "events_received": 476,
+      "events_processed": 124,
+      "events_merged": 348,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 472,
+      "http_requests": 479,
+      "http_rejected_overload": 4,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 70910,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 66568,
+        "live_bytes": 1302978,
+        "peak_bytes": 2489511,
+        "total_allocated_bytes": 14519383
+      },
+      "runtime": {
+        "alive_tasks": 26
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 169,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.59,
+          "calls": 43,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 2987032
+      }
+    },
+    "stats_last": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 36023,
+      "events_processed": 20159,
+      "events_merged": 15864,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 36000,
+      "http_requests": 36476,
+      "http_rejected_overload": 20,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 19079938,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 19075900,
+        "live_bytes": 889976,
+        "peak_bytes": 2489511,
+        "total_allocated_bytes": 2600045313
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 40296448,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 9838,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 4.09,
+          "calls": 9541,
+          "pool_size": 3,
+          "slow_queries_100ms": 63
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4898712
+      }
+    }
+  }
+}

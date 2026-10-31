@@ -1,0 +1,183 @@
+{
+  "test": "abnormal-exit-and-file-disk-fault-injection",
+  "generated_at": "2026-10-30T23:54:19.343203+08:00",
+  "source_exe": "D:\\Develop\\task_dock\\src-tauri\\target\\release\\task-dock.exe",
+  "source_exe_bytes": 15603200,
+  "isolated_root": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-fault-20261030-235312",
+  "isolation_note": "仅操作隔离数据目录；只终止本脚本启动的 PID；未触碰真实 Task Dock 进程与用户数据",
+  "seed": {
+    "events": 60000,
+    "sessions": 20,
+    "runs": 200,
+    "rows_in_db": 60000
+  },
+  "backup_bundle": {
+    "bytes": 31363997,
+    "counts": {
+      "action_acks": 0,
+      "agent_events": 60000,
+      "agent_instances": 0,
+      "agent_runs": 200,
+      "agent_sessions": 20,
+      "agent_sources": 10,
+      "application_settings": 46,
+      "archive_bytes": 0,
+      "archives": 0,
+      "asset_bytes": 0,
+      "assets": 0,
+      "clipboard_assets": 0,
+      "clipboard_group_items": 0,
+      "clipboard_groups": 0,
+      "clipboard_items": 0,
+      "clipboard_paste_jobs": 0,
+      "clipboard_snapshot_links": 0,
+      "clipboard_task_links": 0,
+      "navigation_log": 0,
+      "navigation_targets": 0,
+      "notification_history": 0,
+      "recurrence_rules": 0,
+      "task_agent_links": 0,
+      "task_categories": 0,
+      "task_navigation_targets": 0,
+      "task_reminders": 0,
+      "tasks": 0,
+      "workspace_snapshot_items": 0,
+      "workspace_snapshots": 0
+    },
+    "kind": "full",
+    "partial": false,
+    "path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-fault-20261030-235312\\restore\\backup-full.taskdock",
+    "sha256": "866fa26502e85d48b44c044e9d14148989a337758ac4e7471f37198328227fe3",
+    "ok": true,
+    "bytes_on_disk": 31364731
+  },
+  "results": {
+    "F1_F2_force_kill_during_ingest": {
+      "status": "PASS",
+      "killed": true,
+      "http_sent": 175,
+      "http_accepted": 174,
+      "http_retryable_503": 0,
+      "committed_before_restart": 168,
+      "committed_after_restart": 168,
+      "spool_files_after_kill": [],
+      "spool_files_after_restart": [],
+      "spool_replay_report": null,
+      "duplicate_event_ids": 0,
+      "integrity_check": "ok",
+      "wal_present_after_kill": true,
+      "restart_health_ok": true,
+      "note": "强制结束无收尾机会故不产生暂存文件；已提交事件必须保留且不重复，仅内存中未持久化的事件允许丢失"
+    },
+    "F3_spool_write_failure_and_interrupted_spool": {
+      "status": "PASS",
+      "write_fail_responses": [
+        500,
+        500,
+        500,
+        500,
+        500,
+        500
+      ],
+      "write_fail_all_retryable": true,
+      "spool_files_created": [
+        "spool-1793375609553-fallback-0-3fb3fe9d.jsonl",
+        "spool-1793375612760-fallback-0-cf00b839.jsonl",
+        "spool-1793375616003-fallback-0-03b5756d.jsonl",
+        "spool-1793375619254-fallback-0-d1e5f3d7.jsonl",
+        "spool-1793375622472-fallback-0-165645b1.jsonl",
+        "spool-1793375625737-fallback-0-b0855294.jsonl"
+      ],
+      "truncated_file": "spool-1793375609553-fallback-0-3fb3fe9d.jsonl",
+      "partial_tmp_file": ".tmp-769ef32ab7cb413db06d2143a90db2c3.jsonl",
+      "quarantined_after_restart": [
+        "spool-1793375609553-fallback-0-3fb3fe9d.jsonl"
+      ],
+      "spool_dir_after_restart": [
+        ".tmp-769ef32ab7cb413db06d2143a90db2c3.jsonl",
+        "corrupt"
+      ],
+      "tmp_files_left": [
+        ".tmp-769ef32ab7cb413db06d2143a90db2c3.jsonl"
+      ],
+      "replay_report": {
+        "files_found": 6,
+        "files_replayed": 5,
+        "files_quarantined": 1,
+        "events_replayed": 5,
+        "deduplicated": 0,
+        "failed_files": 1,
+        "stopped_early": false,
+        "elapsed_ms": 2096,
+        "errors": [
+          "spool-1793375609553-fallback-0-3fb3fe9d.jsonl: 校验失败: 暂存文件第 2 行非法: EOF while parsing a string at line 1 column 122",
+          "已隔离到 \"C:\\\\Users\\\\ASUS\\\\AppData\\\\Local\\\\Temp\\\\taskdock-fault-20261030-235312\\\\ingest\\\\data\\\\ingest-spool\\\\corrupt\\\\spool-1793375609553-fallback-0-3fb3fe9d.jsonl\""
+        ]
+      },
+      "intact_spool_events": 5,
+      "intact_spool_events_replayed_to_db": 5,
+      "duplicate_event_ids": 0,
+      "integrity_check": "ok",
+      "health_ok": true,
+      "note": "写失败事件必须落盘暂存并向调用方报可重试错误；损坏/半写暂存文件必须被隔离且不阻断启动，完整暂存文件必须幂等重放且不重复"
+    },
+    "F8_http_file_interleaving": {
+      "status": "PASS",
+      "http_status": 200,
+      "rows_for_event_id": 1,
+      "note": "HTTP 与文件投递同事件必须按 event_id 幂等，只留一条"
+    },
+    "F6_locked_file_during_restore": {
+      "status": "PASS",
+      "restore_rc": 1,
+      "restore_stderr": "数据库打开失败: 数据库错误: disk I/O error\n",
+      "events_before": 60000,
+      "events_after": 60000,
+      "integrity_check": "ok",
+      "journal_left": false,
+      "health_ok": true,
+      "note": "文件被锁时恢复必须整体失败并回滚，原数据保持不变"
+    },
+    "F4_F5_kill_during_restore": {
+      "status": "PASS",
+      "killed_mid_restore": true,
+      "kill_delay_s": 1.2,
+      "journal_state_after_kill": "committing",
+      "journal_left_after_restart": false,
+      "events_before": 60000,
+      "events_after": 60000,
+      "integrity_check": "ok",
+      "health_ok": true,
+      "note": "恢复中断后必须由 journal 判定回滚或续做，且原数据不丢"
+    },
+    "F7_disk_full_isolated_volume": {
+      "status": "NOT TESTED",
+      "reason": "创建隔离 VHD/VHDX 并写满需要管理员权限；本机会话未提升（fltmc 返回 0x80070005），按隔离要求不对真实卷做写满注入",
+      "elevation_probe": "fltmc -> 0x80070005 (Access Denied)",
+      "equivalent_real_binary_tests": [
+        {
+          "id": "E1_backup_target_unwritable",
+          "backup_rc": 1,
+          "stderr": "备份失败: 校验失败: 备份目标是已存在的目录，拒绝覆盖: C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-fault-20261030-235312\\restore\\backup-target-is-a-dir\n",
+          "partial_artifacts_left": [],
+          "pass": true,
+          "expectation": "备份失败必须返回非零并说明原因，不得留下半截产物"
+        },
+        {
+          "id": "E2_truncated_bundle_restore_rejected",
+          "restore_rc": 1,
+          "stderr": "恢复失败: 校验失败: 备份第 44 行不是合法 JSON: EOF while parsing a string at line 1 column 197701\n",
+          "events_before": 60000,
+          "events_after": 60000,
+          "integrity_check": "ok",
+          "pass": true,
+          "expectation": "损坏备份包必须整体失败并回滚，原数据不变"
+        }
+      ],
+      "unit_test_equivalents": [
+        "commands::restore::tests::disk_full_during_archive_commit_rolls_back",
+        "commands::restore::tests::permission_denied_during_asset_commit_rolls_back"
+      ]
+    }
+  }
+}

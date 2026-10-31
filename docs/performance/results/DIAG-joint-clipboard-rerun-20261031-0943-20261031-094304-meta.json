@@ -1,0 +1,524 @@
+{
+  "scenario": "joint-clipboard-rerun-20261031-0943",
+  "source_exe": "C:/Users/ASUS/AppData/Local/Temp/taskdock-p105/task-dock-p105.exe",
+  "source_exe_bytes": 15792128,
+  "source_exe_image_name": "task-dock-p105.exe",
+  "sampler_process_name_pattern": "^task\\-dock\\-p105",
+  "other_task_dock_instances": [],
+  "started_at": "2026-10-31T01:43:06.924485+00:00",
+  "duration_s": 1800,
+  "post_s": 600,
+  "mode": "mixed",
+  "idle": false,
+  "source": "bench",
+  "allow_real_source": false,
+  "rate_per_agent": 5,
+  "agents": 4,
+  "batch": 1,
+  "transport": "http",
+  "notifications": "on",
+  "window": {
+    "ok": true,
+    "hwnd": 10684212,
+    "visible": true,
+    "iconic": true
+  },
+  "settings": {
+    "http_enabled": true,
+    "http_port": 47861,
+    "mock_enabled": false,
+    "clipboard_enabled": true,
+    "auto_backup": false,
+    "notify_agent": true,
+    "notify_reminder": false,
+    "notify_muted": false,
+    "snap_enabled": false,
+    "hotkey_enabled": false,
+    "stale_run_minutes": 15,
+    "perf_diagnostics_enabled": true,
+    "clipboard_capture_images": true,
+    "clipboard_capture_html": true
+  },
+  "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-v05\\joint-clipboard-rerun-20261031-0943-data",
+  "sampler_jsonl": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-joint-clipboard-rerun-20261031-0943-20261031-094304.jsonl",
+  "app_log": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-joint-clipboard-rerun-20261031-0943-20261031-094304-app.log",
+  "load_json": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-joint-clipboard-rerun-20261031-0943-20261031-094304-load.json",
+  "clipboard_stimulus": {
+    "text_attempted": 600,
+    "text_ok": 600,
+    "text_failed": 0,
+    "text_verified": 600,
+    "image_attempted": 60,
+    "image_ok": 60,
+    "image_failed": 0,
+    "image_verified": 60,
+    "image_aux_written": 60,
+    "bytes_written": 20292,
+    "open_failures": 0,
+    "open_failure_blockers": {},
+    "clipboard_sequence_start": 9436,
+    "clipboard_sequence_end": 12773,
+    "errors": [],
+    "duration_s": 1800.0,
+    "original_clipboard_formats": [
+      "text"
+    ],
+    "original_clipboard_was_text": true,
+    "original_clipboard_was_image": false,
+    "restored": true,
+    "restored_kind": "text",
+    "restore_skipped": false,
+    "clipboard_sequence_delta": 3337,
+    "expected_updates": 660,
+    "error_count": 0
+  },
+  "clipboard_stimulus_json": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-joint-clipboard-rerun-20261031-0943-20261031-094304-stimulus.json",
+  "stats_end_of_load": {
+    "db": {
+      "db_bytes": 42532864,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 10393,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 1.36,
+        "calls": 10418,
+        "pool_size": 3,
+        "slow_queries_100ms": 17
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 4684472
+    },
+    "http": {
+      "accepted": 36000,
+      "active_connections": 2,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-31T02:13:18.790292100+00:00",
+      "max_active_requests": 8,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 36431
+    },
+    "notifications": {
+      "attempted": 0,
+      "failed": 0,
+      "succeeded": 0
+    },
+    "pipeline": {
+      "batches": 4441,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 780.4,
+        "p50_ms": 6.79,
+        "p95_ms": 56.65,
+        "p99_ms": 161.53,
+        "samples": 1024
+      },
+      "events_merged": 14705,
+      "events_processed": 21304,
+      "events_received": 36009,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 296.92,
+        "p50_ms": 254.07,
+        "p95_ms": 276.96,
+        "p99_ms": 290.43,
+        "samples": 2048
+      },
+      "last_batch_size": 8,
+      "last_flush_at": "2026-10-31T02:13:18.458084500+00:00",
+      "lifecycle": "running",
+      "max_batch_size": 12,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 36009,
+      "uptime_secs": 1810
+    },
+    "process": {
+      "alloc_calls": 5806464,
+      "alloc_stats_enabled": true,
+      "dealloc_calls": 5800488,
+      "live_bytes": 1427092,
+      "peak_bytes": 4565595,
+      "total_allocated_bytes": 905190374
+    },
+    "runtime": {
+      "alive_tasks": 8
+    }
+  },
+  "stats_after_post": {
+    "db": {
+      "db_bytes": 42532864,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 10414,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 1.35,
+        "calls": 10440,
+        "pool_size": 3,
+        "slow_queries_100ms": 17
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 4684472
+    },
+    "http": {
+      "accepted": 36000,
+      "active_connections": 2,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-31T02:23:18.802695200+00:00",
+      "max_active_requests": 8,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 36572
+    },
+    "notifications": {
+      "attempted": 0,
+      "failed": 0,
+      "succeeded": 0
+    },
+    "pipeline": {
+      "batches": 4441,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 780.4,
+        "p50_ms": 6.79,
+        "p95_ms": 56.65,
+        "p99_ms": 161.53,
+        "samples": 1024
+      },
+      "events_merged": 14705,
+      "events_processed": 21304,
+      "events_received": 36009,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 296.92,
+        "p50_ms": 254.07,
+        "p95_ms": 276.96,
+        "p99_ms": 290.43,
+        "samples": 2048
+      },
+      "last_batch_size": 8,
+      "last_flush_at": "2026-10-31T02:13:18.458084500+00:00",
+      "lifecycle": "running",
+      "max_batch_size": 12,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 36009,
+      "uptime_secs": 2410
+    },
+    "process": {
+      "alloc_calls": 6015490,
+      "alloc_stats_enabled": true,
+      "dealloc_calls": 6009511,
+      "live_bytes": 1427892,
+      "peak_bytes": 5331188,
+      "total_allocated_bytes": 943836030
+    },
+    "runtime": {
+      "alive_tasks": 8
+    }
+  },
+  "error": null,
+  "instance_exited_after_s": null,
+  "instance_exit_code": 1,
+  "summary": {
+    "samples": 482,
+    "elapsed_s": 2413.3,
+    "taskdock_private_mb": {
+      "n": 482,
+      "first": 42.8,
+      "last": 47.8,
+      "min": 42.8,
+      "max": 50.9,
+      "mean": 48.697
+    },
+    "taskdock_ws_mb": {
+      "n": 482,
+      "first": 74.6,
+      "last": 17.5,
+      "min": 7.7,
+      "max": 79.4,
+      "mean": 25.239
+    },
+    "webview2_private_mb": {
+      "n": 482,
+      "first": 284.4,
+      "last": 274.7,
+      "min": 252.2,
+      "max": 291.9,
+      "mean": 275.0
+    },
+    "taskdock_threads": {
+      "n": 482,
+      "first": 47,
+      "last": 37,
+      "min": 37,
+      "max": 47,
+      "mean": 39.373
+    },
+    "taskdock_handles": {
+      "n": 482,
+      "first": 692,
+      "last": 732,
+      "min": 692,
+      "max": 742,
+      "mean": 731.766
+    },
+    "system_committed_mb": {
+      "n": 482,
+      "first": 38071.191,
+      "last": 36154.457,
+      "min": 34644.703,
+      "max": 72462.797,
+      "mean": 38990.972
+    },
+    "slope_private_mb_per_min": 0.047,
+    "slope_ws_mb_per_min": -0.775,
+    "slope_live_mb_per_min": -0.004,
+    "slope_threads_per_min": -0.146,
+    "slope_handles_per_min": 0.3137,
+    "slope_committed_mb_per_min": -106.9523,
+    "slope_alive_tasks_per_min": -0.2303,
+    "slope_wal_mb_per_min": 0.0129,
+    "slope_db_mb_per_min": 1.1235,
+    "rust_live_bytes": {
+      "n": 81,
+      "first": 1338338,
+      "last": 1406508,
+      "min": 1338338,
+      "max": 1645828,
+      "mean": 1516976.691
+    },
+    "rust_peak_bytes": {
+      "n": 81,
+      "first": 2594514,
+      "last": 5331188,
+      "min": 2594514,
+      "max": 5331188,
+      "mean": 4048576.951
+    },
+    "rust_total_allocated_bytes": {
+      "n": 81,
+      "first": 9614784,
+      "last": 944010155,
+      "min": 9614784,
+      "max": 944010155,
+      "mean": 594953073.889
+    },
+    "rust_alloc_calls": {
+      "n": 81,
+      "first": 29571,
+      "last": 6016669,
+      "min": 29571,
+      "max": 6016669,
+      "mean": 3802535.136
+    },
+    "tokio_alive_tasks": {
+      "n": 81,
+      "first": 11,
+      "last": 7,
+      "min": 7,
+      "max": 19,
+      "mean": 12.852
+    },
+    "sqlite_wal_bytes": {
+      "n": 81,
+      "first": 391432,
+      "last": 4684472,
+      "min": 391432,
+      "max": 4684472,
+      "mean": 4582489.284
+    },
+    "sqlite_db_bytes": {
+      "n": 81,
+      "first": 487424,
+      "last": 42532864,
+      "min": 487424,
+      "max": 42532864,
+      "mean": 27576193.58
+    },
+    "sqlite_page_count": {
+      "n": 81,
+      "first": 121,
+      "last": 10414,
+      "min": 121,
+      "max": 10414,
+      "mean": 6747.062
+    },
+    "first_last": {
+      "taskdock_private_mb": [
+        42.8,
+        47.8
+      ],
+      "taskdock_ws_mb": [
+        74.6,
+        17.5
+      ],
+      "webview2_private_mb": [
+        284.4,
+        274.7
+      ],
+      "live_bytes": [
+        1338338,
+        1406508
+      ],
+      "alive_tasks": [
+        11,
+        7
+      ],
+      "wal_bytes": [
+        391432,
+        4684472
+      ],
+      "db_bytes": [
+        487424,
+        42532864
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 24,
+      "events_processed": 12,
+      "events_merged": 12,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 24,
+      "http_requests": 27,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 29571,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 24188,
+        "live_bytes": 1338338,
+        "peak_bytes": 2594514,
+        "total_allocated_bytes": 9614784
+      },
+      "runtime": {
+        "alive_tasks": 11
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 121,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.98,
+          "calls": 11,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 391432
+      }
+    },
+    "stats_last": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 36009,
+      "events_processed": 21304,
+      "events_merged": 14705,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 36000,
+      "http_requests": 36574,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 6016669,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 6010702,
+        "live_bytes": 1406508,
+        "peak_bytes": 5331188,
+        "total_allocated_bytes": 944010155
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 42532864,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 10414,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 1.35,
+          "calls": 10441,
+          "pool_size": 3,
+          "slow_queries_100ms": 17
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4684472
+      }
+    }
+  }
+}

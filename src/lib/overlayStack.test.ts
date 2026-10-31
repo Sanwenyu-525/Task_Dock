@@ -5,7 +5,7 @@
 //!
 //! 验收点（用户要求）：
 //! - 一次 Escape 只执行**一个**最高优先级的关闭动作；
-//! - 优先级：最上层确认框 → 子弹层 → 下拉菜单 → 临时抽屉 → 主窗口；
+//! - 优先级与 z 序一致：确认框 → 下拉菜单 → 子弹层 → 模态 → 临时抽屉 → 主窗口；
 //! - 栈里还有任何一层时，主窗口不会被隐藏（不会被顺手藏进托盘）；
 //! - 同类嵌套时，DOM 上更内层的那个优先（不看注册顺序）。
 
@@ -54,28 +54,32 @@ describe("弹层栈 Escape 优先级", () => {
     expect(hide).toHaveBeenCalledTimes(1);
   });
 
-  it("优先级链：确认框 → 子弹层 → 下拉菜单 → 临时抽屉", () => {
+  it("优先级链与 z 序一致：确认框 → 菜单 → 子弹层 → 模态 → 临时抽屉", () => {
     const calls: string[] = [];
     setWindowEscapeHandler(() => calls.push("window"));
     registerOverlay({ kind: "drawer", onEscape: () => calls.push("drawer") });
-    registerOverlay({ kind: "menu", onEscape: () => calls.push("menu") });
+    registerOverlay({ kind: "modal", onEscape: () => calls.push("modal") });
     registerOverlay({ kind: "sublayer", onEscape: () => calls.push("sublayer") });
+    registerOverlay({ kind: "menu", onEscape: () => calls.push("menu") });
     registerOverlay({ kind: "dialog", onEscape: () => calls.push("dialog") });
 
     pressEscape();
     expect(calls).toEqual(["dialog"]);
 
     pressEscape();
-    expect(calls).toEqual(["dialog", "sublayer"]);
+    expect(calls).toEqual(["dialog", "menu"]);
 
     pressEscape();
-    expect(calls).toEqual(["dialog", "sublayer", "menu"]);
+    expect(calls).toEqual(["dialog", "menu", "sublayer"]);
 
     pressEscape();
-    expect(calls).toEqual(["dialog", "sublayer", "menu", "drawer"]);
+    expect(calls).toEqual(["dialog", "menu", "sublayer", "modal"]);
 
     pressEscape();
-    expect(calls).toEqual(["dialog", "sublayer", "menu", "drawer", "window"]);
+    expect(calls).toEqual(["dialog", "menu", "sublayer", "modal", "drawer"]);
+
+    pressEscape();
+    expect(calls).toEqual(["dialog", "menu", "sublayer", "modal", "drawer", "window"]);
   });
 
   it("一次 Escape 只关闭一层：连续按不会连关", () => {
@@ -106,6 +110,28 @@ describe("弹层栈 Escape 优先级", () => {
     pressEscape();
 
     expect(calls).toEqual(["inner"]);
+  });
+
+  it("模态里的下拉弹层在模态之上：Escape 先关弹层，不关模态", () => {
+    const calls: string[] = [];
+    // 任务编辑器（modal）先注册，日期选择器（menu）后展开
+    registerOverlay({ kind: "modal", onEscape: () => calls.push("editor") });
+    registerOverlay({ kind: "menu", onEscape: () => calls.push("date-picker") });
+
+    pressEscape();
+    expect(calls).toEqual(["date-picker"]);
+
+    pressEscape();
+    expect(calls).toEqual(["date-picker", "editor"]);
+  });
+
+  it("模态垫在抽屉之上：抽屉里打开的模态不会被抽屉抢先关闭", () => {
+    const calls: string[] = [];
+    registerOverlay({ kind: "drawer", onEscape: () => calls.push("drawer") });
+    registerOverlay({ kind: "modal", onEscape: () => calls.push("modal") });
+
+    pressEscape();
+    expect(calls).toEqual(["modal"]);
   });
 
   it("同类同级（兄弟）：最后注册的那个优先", () => {

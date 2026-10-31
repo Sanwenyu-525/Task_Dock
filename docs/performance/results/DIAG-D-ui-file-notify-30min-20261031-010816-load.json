@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47883",
+    "token": "d19728f4-8e94-4123-81c8-db065e9511ac",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 1800,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "D-ui-file-notify-30min-20261031-010816",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "file",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-af-20261030-235719\\D-ui-file-notify-30min-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-D-ui-file-notify-30min-20261031-010816-load.json"
+  },
+  "elapsed_ms": 1800009,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 36000,
+    "ok": 36000,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 3600,
+    "critical_ok": 3600,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 7.5,
+    "p95": 60.59,
+    "max": 1541.3
+  }
+}

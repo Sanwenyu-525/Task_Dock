@@ -1,7 +1,11 @@
 # 测试结果与未解决问题
 
-> 测试日期：2026-10-29（基线）· 2026-10-30（最终复核）· 环境：Windows 11 · Node 22.22.3 · Rust 1.95.0 (MSVC)
+> 测试日期：2026-10-29（基线）· 2026-10-30（最终复核）· 2026-10-31（v0.7 圆角整改复测）· 环境：Windows 11 · Node 24.18.0 · Rust 1.95.0 (MSVC)
 > 原则：**不以模拟测试冒充真实接入**；所有未验证项明确列出。
+> **2026-10-31 更正**：v0.6 节中「四角黑色直角已消除（diff = 0.0）」的原生验收结论
+> **已被真机截图证伪并撤回**。`GetWindowRgn` 成功不能证明像素正确，旧判定缺少独立背景基线，
+> 且未发现 Win11 Mica/Acrylic 系统背景忽略窗口区域。现行方法与证据见
+> [ui-themes/12-v06-window-corners.md](ui-themes/12-v06-window-corners.md)。
 > v0.5 智能剪贴板的最终门禁、性能与阻塞项见
 > [clipboard/08-testing-performance.md](clipboard/08-testing-performance.md)、
 > [clipboard/09-implementation-report.md](clipboard/09-implementation-report.md)、
@@ -10,19 +14,31 @@
 
 ## 一、自动化测试结果
 
-### 0.0.1 v0.6 全局 UI/UX 交互精修与剪贴板侧边栏整合（2026-10-30）
+### 0.0.2 Smart Dock Capsule（贴边吸附磁吸与状态胶囊专项，2026-10-31）
 
 | 检查 | 结果 |
 |---|---|
 | `npx tsc --noEmit` | 通过（0 错误） |
-| `npx vitest run` | **36 文件 / 260 测试通过**（v0.6 前 35 文件 / 257 项 + 新增 `TitleBar.test.tsx` 3 项；v0.6 新增/改写 `Select` 9、`DropdownMenu` 11、`Popover.edge` 3、`overlayEscape` 7、`DateTimePicker` 10、`TooltipLayer` 4、`useGlobalShortcuts` 8、`useUiStore` 5、`ClipboardPanel` 9、`useClipboardStore.live` 4、`styles-themes` 10） |
-| `cargo test --release` | 通过（lib 449 passed / 0 failed / 3 ignored；集成 1 passed，其余真机验收工具按惯例 ignored） |
-| `npm run build` | 通过（JS 534.88 kB / gzip 163.14 kB；CSS 114.91 kB / gzip 19.52 kB） |
+| `npx vitest run` | **43 文件 / 384 测试通过**（含新增：磁吸滞回/驻留/保护期/离开确认/坐标静默期、胶囊几何 DPI 换算、胶囊信息聚合与异常优先级、胶囊组件渲染与可访问性） |
+| `npm run build` | 通过 |
+| `cargo test`（src-tauri） | **481 passed / 0 failed**（本专项未改 Rust；运行确认无回归） |
+| 悬停防抖 | 自动化覆盖纯判定函数（驻留/保护期/离开确认/静默期/滞回）；**真实窗口悬停 10s 无往复循环为真机验证项**，见 `tmp/acceptance/edge-snap-smart-capsule/manual-checklist.md` |
+| 真机 50 次吸附-隐藏-展开循环 | ⬜ **未执行**（需真实桌面交互），清单与记录表见 `tmp/acceptance/edge-snap-smart-capsule/manual-checklist.md` |
+
+### 0.0.1 v0.6 全局 UI/UX 交互精修与剪贴板侧边栏整合（2026-10-30；测试计数于 2026-10-31 复测）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 通过（0 错误） |
+| `npx vitest run` | **40 文件 / 290 测试通过**（2026-10-31 复测；v0.6 时为 37 文件 / 264 项） |
+| `cargo test --release` | **472 passed / 3 failed / 3 ignored**（2026-10-31 复测；3 例失败为锁屏会话下 `navigation::router` 前台置前用例，`ENVIRONMENT-BLOCKED`，见 [ui-themes/11-test-results.md](ui-themes/11-test-results.md) 1.2） |
+| `npm run build` | 通过（JS 535.40 kB / gzip 163.28 kB；CSS 114.91 kB / gzip 19.52 kB） |
 | `npm run tauri build -- --no-bundle` | 通过（Release 可执行文件产出；注意必须用该命令，裸 `cargo build --release` 会漏 `custom-protocol` 特性导致启动即退出） |
 | `node scripts/visual-v06.mjs` | **26 场景全部通过**：0 横向溢出、0 元素越界、0 导航项裁剪、0 运行期错误 |
-| `node scripts/visual-themes.mjs` | 16 场景全部通过：0 横向溢出、关键元素无越界、0 运行期错误 |
+| `node scripts/visual-themes.mjs` | 18 场景全部通过：0 横向溢出、关键元素无越界、0 运行期错误 |
 | `node scripts/layout-regression.mjs` | **37 组合全部达标**：六个侧边栏入口全部可达、快速添加按钮未被遮挡、无横向溢出、0 运行期错误 |
-| 原生窗口取证（`scripts/capture-native-set.ps1` + `scripts/native-verify.ps1` + `scripts/check-corners.py`） | 4 组原生截图（梦幻/液态 × 浅/深）：`region_probe=00001`（四角在 Win32 窗口区域外）、角点像素与窗外桌面逐像素一致（diff = 0.0） |
+| 原生窗口取证（旧：`native-verify.ps1` + `check-corners.py`） | ❌ **结论已撤回**：旧方法只用 `region_probe` + 同帧自比，无法发现黑角；真机受控背景复测为 FAIL（glass 每角 44–45 暗像素、solid 半径 31.75 ≠ 22）。现行方法：`corner-lab.ps1` + `check-corners.py`（独立背景基线 + 四角像素 + `GetWindowRgn` 联合判定，缺基线返回 UNVERIFIED） |
+| 修复后原生窗口验收 | ⬜ **UNVERIFIED**：本机会话锁定（LogonUI 运行），无法进行真实窗口取证；见 [ui-themes/12-v06-window-corners.md](ui-themes/12-v06-window-corners.md) |
 | 未验证 | Windows 10 真机、100%/150% DPI、Dev 模式、拖动/贴边/托盘交互回归、长时间常驻资源曲线 |
 
 关键回归点（详见 [ui-themes/11-test-results.md](ui-themes/11-test-results.md)）：
@@ -34,7 +50,43 @@
 - **快捷键**：Ctrl+1…6 顺序取自 `TAB_ORDER` 单一事实源；完整模式 Ctrl+Shift+C 切页，
   紧凑/极简模式开关临时抽屉。
 
+### 0.0.2 剪贴板第四轮专项整改（2026-10-30 22:00→，隐私事务安全 / 图文粘贴 / 内存稳定性）
+
+> 完整报告见 [clipboard/12-fourth-round-acceptance.md](clipboard/12-fourth-round-acceptance.md)。
+> 本节只列可复现的结论与原始证据路径；**未执行的验收不写成通过**。
+
+| 检查 | 结果 |
+|---|---|
+| `cargo fmt --all -- --check` | 通过（无差异，22:21:18→22:21:20，exit 0） |
+| `cargo clippy --all-targets --all-features` | 通过，0 警告（22:21:20→22:22:48，exit 0） |
+| `cargo test --all-targets --no-fail-fast` | lib **449 passed / 0 failed / 3 ignored**；全部测试二进制合计 450 passed / 0 failed / 19 ignored（22:22:48→22:25:39，exit 0） |
+| `cargo test --lib clipboard::` | **89 passed / 0 failed / 0 ignored**（22:25:39→22:25:42，exit 0） |
+| `npx tsc --noEmit` | 通过（22:25:42→22:25:48，exit 0） |
+| `npx vitest run` | **36 文件 / 260 测试通过**（22:25:48→22:26:35，exit 0） |
+| `npm run build` | 通过（22:26:35→22:26:46，exit 0） |
+| `cargo test --release --test clipboard_perf -- --ignored --nocapture` | **2 passed / 0 failed**（22:26:46→22:32:18，exit 0） |
+| Release 构建（`npx tauri build --no-bundle`，`CARGO_TARGET_DIR=src-tauri/target-accept`） | 退出码 0，`task-dock.exe` 15,603,200 B，时间 23:42:45 |
+| P2-06 前台焦点测试（`cargo test --lib navigation::router`） | **10 passed / 0 failed / 0 ignored**（真实交互桌面，断言未改、未跳过） |
+| P1-03 真实图文混合粘贴（像素级） | **52 PASS / 0 FAIL / 0 BLOCKED**，overall = PASS；目标端三图 `alphaMin=alphaMax=255`、`transparentPixels=0`、RGB 精确匹配 |
+| 采集事件计数器对账 | `observed 10 = captured 5 + self_write 5`，`superseded 0` / `empty 0` / `dropped 0` / `merged 0` / `skipped 0` / `duplicates 0` / `failed 0` |
+
+第四轮新增回归测试：
+
+| 位置 | 用例 | 验证点 |
+|---|---|---|
+| `src-tauri/src/clipboard/platform.rs` | `event_disposition_separates_read_superseded_and_self_write` | 事件三态归因（读取/覆盖/自写）、读取水位去重、`u32` 序列号回绕 |
+| `src-tauri/src/db/mod.rs` | `clipboard_repair_fault_after_writes_rolls_back` / `clipboard_repair_database_write_failure_rolls_back_backup` / `clipboard_repair_process_death_rolls_back_on_reopen` / `clipboard_repair_blocks_monitor_until_commit_with_resume` | 修复事务性：故障注入后不留半修复状态、备份回滚、进程中途死亡后重开仍回滚、提交前监控被门控 |
+| `src-tauri/src/db/mod.rs` | `clipboard_fresh_install_seeds_defaults_and_marks_origin` / `clipboard_missing_config_never_reenables_across_restarts` / `clipboard_partial_missing_is_not_filled_on_restart` / `clipboard_user_disabled_survives_key_loss_and_repair_only` / `clipboard_repair_missing_switch_is_conservative` | 缺失键策略：全新安装标记来源、缺键跨重启不自动开启、缺键不被静默补齐、用户关闭在键丢失与「仅修复」后仍保持关闭、缺失开关按保守值处理 |
+
+原始输出：`docs/clipboard/evidence/gate-*-20261030-2221.log`、
+`gates-fourth-round-20261030-2221.md`、`p2-06-focus-tests-fourth-round-20261030.log`、
+`p1-03-mixed-paste-20261030-235050-76869ab9.json`、
+`release-build-fourth-round-20261030-2305.log`。
+
 ### 0.0 v0.6 双视觉主题汇总（2026-10-30）
+
+> 本节记录的是 v0.6 **双视觉主题**子版本当时的验收数据（已被后续的 UI 交互精修取代）；
+> 当前最新数据见上方 [0.0.1](#001-v06-全局-uiux-交互精修与剪贴板侧边栏整合2026-10-30) 一节。
 
 | 检查 | 结果 |
 |---|---|
@@ -45,11 +97,108 @@
 | `npm run tauri build -- --no-bundle` | 通过（Release 可执行文件产出；注意必须用该命令，裸 `cargo build --release` 会漏 `custom-protocol` 特性导致启动即退出） |
 | `node scripts/visual-themes.mjs` | 18 场景全部通过：0 横向溢出、关键元素无越界、0 运行期错误 |
 | `node scripts/theme-perf.mjs` | 空闲 3 s 主线程 6.4–8.9 ms、布局 0 次、`backdrop-filter` 0 个、常驻动画 1 个、主题切换 20 次 29–63 ms |
-| 原生窗口取证（`scripts/native-verify.ps1` + `scripts/check-corners.py`） | 4 组原生截图（梦幻/液态 × 浅/深）：`region_probe=00001`（四角在 Win32 窗口区域外，区域尺寸=窗口尺寸）、角点像素与窗外桌面逐像素一致（diff = 0.0）、`ontop_check` 差值 0 —— 「四角黑色直角」已消除 |
+| 原生窗口取证（`scripts/native-verify.ps1` + `scripts/check-corners.py`） | ❌ **原结论已撤回**：旧采集的 `region_probe=00001` / `diff = 0.0` 不能证明圆角正确；受控背景复测为 FAIL，修复后验收因会话锁定 UNVERIFIED。见 [12 文档](ui-themes/12-v06-window-corners.md) |
 | 未验证 | Windows 10 真机、100%/150% DPI、Dev 模式、拖动/贴边/托盘交互回归、长时间常驻资源曲线 |
 
 详见 [视觉主题专项文档](ui-themes/05-test-plan.md) 与
 [视觉验收](ui-themes/07-visual-acceptance.md)。
+
+### 0.0.3 复验轮：真实 Agent 自动接入 / 异常退出与故障注入 / 内存归因（2026-10-30 23:00→）
+
+> 完整结论见 [PERFORMANCE_FINAL_ACCEPTANCE.md](PERFORMANCE_FINAL_ACCEPTANCE.md) §14；
+> 方法学见 [PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md) §10。
+> **每条结论绑定被测二进制 sha256，不与历史数据混用。**
+
+| 验收项 | 结果 | 证据 |
+|---|---|---|
+| 真实 Agent 自动接入（≥3） | **PASS** — codex 0→3 事件、DeepSeek Harness 0→2、OpenCode 0→3，均为 Agent **自身会话**自动产生，状态 running→completed；三者 `verified=1` / `transport_verified=1` | `performance/results/AGENT-agent-integration-20261030-233909.json` |
+| Hook 非阻塞 | 40 次调用 p50 38ms / p95 74ms / p99 91ms / max 91ms，0 错误；残留 Hook 进程 0 | 同上 |
+| 状态更新延迟 | codex p50 159.0ms、DSH p50 267.9ms、OpenCode p50 318.7ms | 同上 |
+| 多 Agent 隔离 | 三个 Agent 会话 ID / 来源 / 通道互相独立，事件互不串台 | 同上 |
+| 用户配置不被破坏 | 卸载后第三方 dependency/bundle 全部保留（`third_party_kept=true`）；全程未写入真实用户 Agent 配置目录 | 同上 |
+| DSH 适配器修复 | 此前是「功能空操作」（插件写在 `~/.dsh/plugins/`，宿主不加载）→ 改为真正的 **profile bundle** 安装；新增 6 个单元测试；迁移 v14 修正来源说明 | `src-tauri/src/agents/dsh.rs`、`src-tauri/src/db/mod.rs` |
+| 异常退出（真实 `taskkill /F`） | **PASS** — 投递 175 条/接受 174；强杀前已提交 168 条，重启后仍 168 条；0 重复 `event_id`；`integrity_check=ok` | `performance/results/FAULT-fault-injection-20261030-235312.json` |
+| 写库失败落盘暂存 + 损坏暂存隔离 + 幂等重放 | **PASS** — 6 次写入全部 HTTP 500 且 `retryable=true`；生成 6 个 spool；重启后损坏文件隔离到 `corrupt/`，5 个完整文件重放 5/5、0 重复 | 同上 |
+| 恢复中断强杀 | **PASS** — `journal_state=committing` 时强杀，重启后 journal 正确判定并清理；60,000 行前后一致 | 同上 |
+| 恢复期间文件被独占锁 | **PASS** — 恢复整体失败（rc=1，`disk I/O error`），事件数不变，未留 journal，`integrity_check=ok` | 同上 |
+| HTTP + 文件同事件幂等 | **PASS** — 同一 `event_id` DB 中恰好 1 行 | 同上 |
+| 卷级磁盘写满 | **NOT TESTED** — `fltmc` 探测 `0x80070005`（会话未提升）；按隔离要求不对真实卷写满；等价场景 E1/E2 与 2 个 Rust 回滚测试已覆盖 | 同上 |
+| 内存 A–F 归因 | **进行中** — 插桩（Rust 堆 live/peak、Tokio 存活任务、SQLite WAL/页数、线程/句柄、系统 Committed）已就位 | `performance/results/DIAG-[A-F]-*.jsonl` |
+
+**如实披露的数据可靠性边界**：F1/F2 中 174 条被接受、168 条已提交，**差额 6 条随强杀丢失**
+（尚未落库、只在内存里的事件）。任务书明确不允许为未持久化的内存事件承诺断电零丢失，
+此处如实记录，不粉饰。
+
+**过程中修正的两处验收脚本自身缺陷**（不影响产品结论，但会让结论不可信，必须保留修复）：
+`db_query()` 缺参数位导致 F3 抛 `TypeError`；场景异常导致隔离实例残留、其**免鉴权**的
+`/api/v1/health` 替后续场景应答造成静默串台（曾让 F3/F6 在不同轮次给出相反结论）。
+修复：实例启动后额外用带 token 的 `/api/v1/stats` 确认应答者身份；场景之间与 `finally`
+强制回收实例；运行前检查端口占用。
+
+### 0.0.4 第五轮：五臂长跑与门禁复跑（2026-10-30 23:53 → 10-31 09:44）
+
+> 被测 release 二进制：15,603,200 B，`sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378`
+> （2026-10-30 23:50 由 `cargo build --bins --features tauri/custom-protocol --release` 构建，
+> **MSVC 工具链**，产物含 `task_dock.pdb`）。每条结论绑定该二进制，不与历史采样混用。
+> 方法学见 [PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md) §10.5，完整结论见
+> [V05_FINAL_ACCEPTANCE.md](V05_FINAL_ACCEPTANCE.md) §5.5。
+
+**五臂内存链**（20 事件/秒，隔离数据目录，`task-dock-acc9.exe` 改名副本）：
+
+| 臂 | 样本 | Private 首→末 | 关键结果 | 自退 |
+|---|---|---|---|---|
+| N1 负载 + 通知开（480 s + 90 s） | 97 | 41.3→49.1 MB | 9,616 事件 / 0 丢弃；通知 45/45 | 无 |
+| N2 负载 + 通知关（480 s + 90 s） | 59 | 9.0→13.6 MB | 9,604 事件 / 0 丢弃 | 无 |
+| N3 空闲（480 s + 90 s） | 51 | 8.3→8.2 MB | 基线平 | 无 |
+| C UI+HTTP 30 min（+120 s） | 188 | 9.1→17.8 MB | 36,070 收 / 15,665 提交 / 20,405 合并 / **0 丢弃**；分段斜率 +0.218 → +0.066 → **0.000 MB/min**（末 116 s 恒定） | 无 |
+| E 10 min 负载 + 30 min 空闲 | 255 | 11.9→18.9→19.3 MB | 11,914 事件；通知 55/55；负载 +0.542、空闲 +0.0028 → −0.0275 MB/min | 无 |
+
+**归因**：通知路径 N1−N2 = **+3.2 MB / 10 min（45 条 → ≈72.8 KB/条）**；接入路径 N2−N3 =
+**+4.7 MB / 10 min（≈9,600 事件 → ≈0.49 KB/事件）**；基线 −0.1 MB。N1 的 `live_bytes` 仅 +0.038 MB
+（`private_minus_live = 7.76 MB`）⇒ **不是 Rust 堆泄漏**，是分配器保留 / 原生内存（SQLite 页缓存与 WAL、
+COM/GDI、线程栈）。通知开启本身带 ≈30 MB / 9 线程 / ≈300 句柄的 WinRT toast + COM 固定开销。
+结论只能表述为「**未观察到泄漏型增长**、负载段出现平台期、空闲段不增长」，不能表述为「已证明无泄漏」。
+
+证据：`docs/performance/results/` 下 `DIAG-{N1,N2,N3,C,E}-*.jsonl`、`MEM-CHAIN-v05r5-20261030-2353.log`、
+`MEM-ATTRIBUTION-v05r5.json`（单文档 UTF-8）、`WINDOWS-{C,E}-*.json`（分段窗口与斜率）。
+
+**门禁复跑**（前两次失败原样保留）：
+
+| 轮次 | 时间 | 检查 | 结果 | Exit | 日志（`clipboard/evidence/`） |
+|---|---|---|---|---|---|
+| 1 | 09:07→09:15 | test-all / perf-clipboard | **失败**：`--manifest-path` 从仓库根调用绕过 `src-tauri/rust-toolchain.toml` → GNU ld `export ordinal too large`（装置缺陷 #16） | 101 | `gate-test-all-20261031-0907.log`、`gate-perf-clipboard-20261031-0907.log` |
+| 2 | 09:21→09:28 | test-all / perf-clipboard | **失败**：D: 盘写满（0.03 GB），`LNK1201` / `os error 112`（装置缺陷 #18） | 101 | `gate-test-all-20261031-0921.log`、`gate-perf-clipboard-20261031-0921.log` |
+| 3 | 09:29→09:33 | `cargo test --all --no-fail-fast` | lib **472 passed / 3 failed / 3 ignored**；其余目标通过（`inbox_processes` 1 passed） | 101 | `gate-test-all-20261031-0929.log` |
+| 3 | 09:43→09:44 | `cargo test --lib -- --skip <3 个前台聚焦用例>` | **474 passed / 0 failed / 3 ignored / 3 filtered out** | 0 | `gate-test-all-filtered-20261031-0943.log` |
+| 3 | 09:33→09:41 | `cargo test --release --test clipboard_perf -- --ignored --nocapture` | **2 passed / 0 failed**（34.82 s） | 0 | `gate-perf-clipboard-20261031-0929.log` |
+
+3 个失败用例全部是 `navigation::router` 前台聚焦测试，报错 `foreground-denied`（当时桌面前台是
+Geek Uninstaller 窗口，Windows 前台锁不允许后台进程抢占）→ **ENVIRONMENT-BLOCKED**。
+同一组用例在第四轮安静桌面上逐条通过（`p2-06-focus-tests-fourth-round-20261030.log`，23:34/23:35）；
+本轮未改断言、未删用例、未加 `#[ignore]`。工具链与指纹见 `gate-rerun-fingerprint-20261031-0929.txt`
+（MSVC 覆盖生效；开始 152 files/+6,088 → 结束 159 files/+6,479，并行会话仍在编辑，计数不作稳定值）。
+
+**收口复跑（09:46 → 10:24，补齐前端与 release）**：
+
+| 轮次 | 时间 | 检查 | 结果 | Exit | 日志 |
+|---|---|---|---|---|---|
+| 4 | 09:46→10:01 | fmt / clippy | **失败**：fmt 16 处差异；clippy `needless_borrow`（`src/lib.rs:275`）。均为本次整改新增代码引入，已修复 | 1 / 101 | `gate-final-fmt-20261031-0946.log`、`gate-final-clippy-20261031-0946.log` |
+| 4 | 09:51→09:53 | tsc / vitest / `npm run build` | 全通过 | 0 | `gate-final-tsc/vitest/npm-build-20261031-0946.log` |
+| 5 | 10:04→10:14 | fmt / clippy | **0 / 0**（修复后重跑） | 0 | `gate-final2-fmt/clippy-20261031-1004.log` |
+| 5 | 10:05→10:08 | `cargo test --all --no-fail-fast` | lib **474 passed / 3 failed / 3 ignored**（2 前台锁 + 1 偶发并发，见下） | 101 | `gate-final2-test-all-20261031-1004.log` |
+| 5 | 10:07→10:08 | `cargo test --lib -- --skip <3 个前台用例>` | **474 passed / 0 failed / 3 ignored / 3 filtered out** | 0 | `gate-final2-test-filtered-20261031-1004.log` |
+| 5 | 10:08→10:14 | release 构建（cwd=`src-tauri`，MSVC） | **成功**：15,799,296 B，`sha256=4fddaa06…`，6m10s | 0 | `gate-final2-release-20261031-1004.log` |
+| 6 | 10:19→10:20 | fmt / clippy / test-all / perf | fmt 0；其余 **101**：并行会话 v0.6 编辑使工作区不可编译（`window_shape.rs` 等 11 处错误）→ **无效快照** | — | `gate-final3-*-20261031-1019.log` |
+
+`agents::inbox::tests::concurrent_writers_never_exceed_capacity` 在 10:05 失败一次（`实际 11 > 上限 10`）。
+随后单测连跑 20 次、整 lib 套件连跑 5 次均 **477 passed / 0 failed / 3 ignored**（10:16–10:18 终端输出，
+未落日志文件）；用独占打开 `hook-a.json` 的探针验证 `measure()` 未漏数 → 机制未复现。
+未删除用例、未放宽断言，按「负载相关偶发」列入遗留风险（`V05_FINAL_ACCEPTANCE.md` §3.5/§八）。
+
+**补充快照（10:28→10:33，并行会话 v0.6 编辑后、非 v0.5 验收依据）**：
+`cargo test --all --no-fail-fast` → **exit 0，lib 480 passed / 0 failed / 3 ignored**（`inbox_processes` 1 passed），
+10:05 失败的 3 例全部通过；同轮 `fmt`/`clippy` 的失败点只在并行会话的 `context_menu.rs`、`window_shape.rs`。
+日志：`gate-final4-{fmt,clippy,test-all,summary}-20261031-1028.*`。
 
 ### 0. v0.5 汇总（2026-10-30 最终复核）
 

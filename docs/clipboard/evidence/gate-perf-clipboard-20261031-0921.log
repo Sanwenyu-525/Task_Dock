@@ -1,0 +1,77 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling serde_core v1.0.229
+   Compiling windows-link v0.2.1
+   Compiling thiserror v2.0.21
+   Compiling siphasher v1.0.4
+   Compiling cfg-if v1.0.5
+   Compiling icu_properties_data v2.4.0
+   Compiling icu_normalizer_data v2.4.0
+   Compiling fastrand v2.5.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling zmij v1.0.23
+   Compiling smallvec v1.16.4
+   Compiling getrandom v0.4.3
+   Compiling parking_lot_core v0.9.12
+   Compiling serde v1.0.229
+   Compiling typeid v1.0.3
+   Compiling memchr v2.8.3
+   Compiling autocfg v1.5.1
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling phf_shared v0.13.1
+   Compiling strsim v0.11.1
+   Compiling itoa v1.0.18
+   Compiling litemap v0.8.3
+   Compiling erased-serde v0.4.11
+   Compiling writeable v0.6.4
+   Compiling ident_case v1.0.1
+   Compiling windows-sys v0.61.2
+   Compiling utf8_iter v1.0.4
+   Compiling phf_generator v0.13.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling scopeguard v1.2.0
+   Compiling anyhow v1.0.104
+   Compiling serde_json v1.0.154
+error: failed to write D:/Develop/task_dock/src-tauri/target-gate\release\deps\rustcR0xrxw\lib.rmeta: 磁盘空间不足。 (os error 112)
+
+error: could not compile `memchr` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: linking with `link.exe` failed: exit code: 1140
+  |
+  = note: "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\link.exe" "/NOLOGO" "D:/Develop/task_dock/src-tauri/target-gate\\release\\build\\erased-serde-b3be9f38c83a6055\\rustc3WMd5k\\symbols.o" "<2 object files omitted>" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libstd-*,libpanic_unwind-*,libcfg_if-*,libwindows_link-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libunwind-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "ntdll.lib" "userenv.lib" "ws2_32.lib" "dbghelp.lib" "/defaultlib:msvcrt" "/NXCOMPAT" "/OUT:D:/Develop/task_dock/src-tauri/target-gate\\release\\build\\erased-serde-b3be9f38c83a6055\\build_script_build-b3be9f38c83a6055.exe" "/OPT:REF,NOICF" "/DEBUG" "/PDBALTPATH:%_PDB%" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\intrinsic.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\liballoc.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libcore.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libstd.natvis"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: LINK : fatal error LNK1140: 超出了程序数据库的限制；使用 /PDB:NONE 链接
+          
+
+error: could not compile `erased-serde` (build script) due to 1 previous error
+rustc-LLVM ERROR: IO failure on output stream: no space on device
+error: could not compile `phf_generator` (lib)
+
+Caused by:
+  process didn't exit successfully: `C:\Users\ASUS\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin\rustc.exe --crate-name phf_generator --edition=2021 'C:\Users\ASUS\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\phf_generator-0.13.1\src\lib.rs' --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debug-assertions=off --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=6cbf3665c6525efb -C extra-filename=-c5f53a7a1cf2559f --out-dir 'D:/Develop/task_dock/src-tauri/target-gate\release\deps' -C strip=debuginfo -L 'dependency=D:/Develop/task_dock/src-tauri/target-gate\release\deps' --extern 'fastrand=D:/Develop/task_dock/src-tauri/target-gate\release\deps\libfastrand-83aeb9283421962f.rmeta' --extern 'phf_shared=D:/Develop/task_dock/src-tauri/target-gate\release\deps\libphf_shared-ca30d942f954eb14.rmeta' --cap-lints allow` (exit code: 101)
+error: failed to write to `D:/Develop/task_dock/src-tauri/target-gate\release\deps\rmetaSw9RUY\full.rmeta`: 磁盘空间不足。 (os error 112)
+
+error: could not compile `scopeguard` (lib) due to 1 previous error
+error: failed to write `D:/Develop/task_dock/src-tauri/target-gate\release\.fingerprint\new_debug_unreachable-71551a8b2516f62a\lib-debug_unreachable`
+
+Caused by:
+  磁盘空间不足。 (os error 112)
+error: could not write output to D:/Develop/task_dock/src-tauri/target-gate\release\build\anyhow-7050b91624c72a84\build_script_build-7050b91624c72a84.build_script_build.86a1980715692ff9-cgu.0.rcgu.o: no space on device
+
+error: could not compile `anyhow` (build script) due to 1 previous error
+error: failed to write `D:/Develop/task_dock/src-tauri/target-gate\release\build\zmij-4717e5a9683faacc\root-output`
+
+Caused by:
+  磁盘空间不足。 (os error 112)
+error: could not write output to D:/Develop/task_dock/src-tauri/target-gate\release\build\serde_json-625fc0a704bab176\build_script_build-625fc0a704bab176.build_script_build.12e0a46a0945032f-cgu.0.rcgu.o: no space on device
+
+error: could not compile `serde_json` (build script) due to 1 previous error
+error: failed to write to `D:/Develop/task_dock/src-tauri/target-gate\release\deps\rmetawfaBUx\full.rmeta`: 磁盘空间不足。 (os error 112)
+
+error: could not compile `serde_core` (lib) due to 1 previous error
+error: failed to write to `D:/Develop/task_dock/src-tauri/target-gate\release\deps\rmeta5U2YQQ\full.rmeta`: 磁盘空间不足。 (os error 112)
+
+error: could not compile `windows-sys` (lib) due to 1 previous error
+exit_code=101

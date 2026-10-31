@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47895",
+    "token": "8e30e8d9-6a7b-47bf-96f7-4956201bcc35",
+    "mode": "mixed",
+    "agents": 2,
+    "rate": 3,
+    "duration": 60,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "smoke-memaf-20261030-235458",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-smoke\\smoke-memaf-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-smoke-memaf-20261030-235458-load.json"
+  },
+  "elapsed_ms": 60013,
+  "actual_rate": 6,
+  "counts": {
+    "sent": 360,
+    "ok": 360,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 36,
+    "critical_ok": 36,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 2.03,
+    "p95": 269.81,
+    "max": 276.73
+  }
+}

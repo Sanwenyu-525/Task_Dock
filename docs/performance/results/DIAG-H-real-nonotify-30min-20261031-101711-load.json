@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47897",
+    "token": "462568bf-b2e3-445b-9023-b313c1c67da4",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 1800,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "H-real-nonotify-30min-20261031-101711",
+    "source": "bridge",
+    "allowRealSource": true,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-ag3\\H-real-nonotify-30min-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-H-real-nonotify-30min-20261031-101711-load.json"
+  },
+  "elapsed_ms": 1800092,
+  "actual_rate": 20,
+  "counts": {
+    "sent": 36000,
+    "ok": 36000,
+    "failed": 0,
+    "retries": 50,
+    "critical_sent": 3600,
+    "critical_ok": 3600,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.48,
+    "p95": 269.37,
+    "max": 15054.27
+  }
+}

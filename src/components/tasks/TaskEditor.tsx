@@ -143,9 +143,10 @@ export default function TaskEditor() {
       .catch(() => setClipLinks([]));
   }, [editor.open, task, clipboardLinkVersion]);
 
-  // 弹层栈：任务编辑器是模态对话框，Escape 只关它，不会顺带隐藏主窗口。
+  // 弹层栈：任务编辑器是普通模态（--z-modal 70），不是确认框（--z-dialog 940）。
+  // 编辑器里的日期/下拉弹层 z 更高，Escape 必须先关它们（见 KIND_PRIORITY）。
   // 关联剪贴板时抽屉盖在编辑器之上，弹层栈让给抽屉（它自己注册为 dialog）。
-  useOverlayLayer("dialog", editor.open && !clipboardOpen, closeEditor, modalRef);
+  useOverlayLayer("modal", editor.open && !clipboardOpen, closeEditor, modalRef);
   // 关联目标选择器是内层模态，Tab 焦点归它管——两层同时陷阱会把焦点放回外层
   useFocusTrap(editor.open && !pickerOpen && !clipboardOpen, modalRef);
 

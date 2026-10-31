@@ -22,3 +22,13 @@ if [ -f src-tauri/target/release/task-dock.exe ]; then
   echo "release_exe_bytes=$(stat -c%s src-tauri/target/release/task-dock.exe)"
   echo "release_exe_mtime=$(stat -c%y src-tauri/target/release/task-dock.exe)"
 fi
+
+# 实际被测量的可执行文件：可能是改名后的测量副本（避免与其它会话的同名实例串组）。
+# 证据必须指向真正跑出数据的那一份二进制。
+MEASURED_EXE="${1:-${EXE:-}}"
+if [ -n "$MEASURED_EXE" ] && [ -f "$MEASURED_EXE" ]; then
+  echo "measured_exe_path=$MEASURED_EXE"
+  echo "measured_exe_sha256=$(sha256sum "$MEASURED_EXE" | cut -d' ' -f1)"
+  echo "measured_exe_bytes=$(stat -c%s "$MEASURED_EXE")"
+  echo "measured_exe_mtime=$(stat -c%y "$MEASURED_EXE")"
+fi

@@ -420,6 +420,12 @@ export default function SettingsPanel() {
             onChange={(v) => update({ snap_enabled: v })}
           />
         </div>
+        <div className="setting-note">
+          把窗口拖近屏幕边缘（约 28px 内）会显示「松开吸附」提示，松开即停靠并自动隐藏；
+          之后把鼠标移到屏幕边缘的状态胶囊上稍作停留（或点击）即可唤出，移开后再次隐藏。
+          胶囊上会显示待办数量与 Agent 运行状态。向屏幕中间拖离边缘，或点击标题栏的
+          磁铁图标即可解除吸附；关闭此开关时若窗口已隐藏，会先自动展开。
+        </div>
         <div className="setting-row">
           <span>开机自启动</span>
           <Switch

@@ -4,11 +4,28 @@
 //! 用途：设计走查与回归（**浏览器合成，不等同于原生窗口验收**；
 //! 原生窗口的四角/材质证据见 docs/ui-themes/07-visual-acceptance.md）。
 //!
-//!   npx vite preview --port 4173 --strictPort   # 另开一个终端
+//!   node scripts/make-preview.mjs && node scripts/serve-preview.mjs
 //!   node scripts/visual-themes.mjs
 
 import { chromium } from "playwright";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+
+/**
+ * 截图落盘。并发构建/索引器会偶发占住目标文件（Windows 返回 errno -4094），
+ * 因此先取缓冲区再带重试写盘。
+ */
+async function saveShot(page, path) {
+  const buf = await page.screenshot();
+  for (let i = 0; ; i++) {
+    try {
+      writeFileSync(path, buf);
+      return;
+    } catch (e) {
+      if (i >= 4) throw e;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+}
 
 const OUT = "docs/screenshots/v06";
 mkdirSync(OUT, { recursive: true });
@@ -80,10 +97,12 @@ async function shoot(c, opts = {}) {
       material: doc.dataset.material,
       native: doc.dataset.nativeGlass,
       labelsVisible: rail ? getComputedStyle(rail.querySelector(".rail-label")).display !== "none" : null,
+      // 白屏守卫：IPC mock 缺失时页面只剩空 #root，截图会变成废图而断言仍然全绿
+      blank: (document.querySelector("#root")?.childElementCount ?? 0) === 0,
     };
   });
 
-  await page.screenshot({ path: `${OUT}/${c.name}.png` });
+  await saveShot(page, `${OUT}/${c.name}.png`);
   results.push({ ...c, ...audit, errors });
   await page.close();
 }
@@ -133,7 +152,7 @@ await shoot(
 await browser.close();
 
 console.log(JSON.stringify(results, null, 2));
-const bad = results.filter((r) => r.overflowX > 0 || r.offscreen.length || r.errors.length);
+const bad = results.filter((r) => r.blank || r.overflowX > 0 || r.offscreen.length || r.errors.length);
 if (bad.length) {
   console.error("布局/运行错误：", JSON.stringify(bad, null, 2));
   process.exitCode = 1;

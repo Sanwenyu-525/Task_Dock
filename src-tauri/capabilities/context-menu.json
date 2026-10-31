@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "context-menu",
+  "description": "液态玻璃右键菜单弹窗权限：窗口尺寸/隐藏/焦点 + 事件订阅 + 自定义菜单命令",
+  "windows": ["context-menu"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-size",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-inner-size",
+    "core:window:allow-scale-factor",
+    "core:window:allow-current-monitor",
+    "core:window:allow-available-monitors",
+    "core:window:allow-is-focused",
+    "core:window:allow-is-visible"
+  ]
+}

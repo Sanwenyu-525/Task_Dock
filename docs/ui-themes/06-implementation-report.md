@@ -3,6 +3,12 @@
 > 范围：视觉预设系统、左侧导航重构、窗口圆角与材质一致性修复、性能与降级处理、测试与文档。
 > 不含任何与本次任务无关的新功能；既有业务逻辑（任务/Agent/行动/历史/剪贴板/导航/备份）全部保留。
 
+> **2026-10-31 更正（v0.7 圆角整改）**：本文原先「四角黑色直角已消除」及
+> 「原生截图 diff = 0.0」的结论**已被真机截图证伪**，现全部撤回：
+> `GetWindowRgn` 返回成功只说明区域已设置，不能证明四角像素正确；
+> 旧判定缺少独立背景基线，且未覆盖 Mica 系统背景忽略窗口区域的情况。
+> 新方法、矩阵与修复后证据状态见 [12-v06-window-corners.md](12-v06-window-corners.md)。
+
 ---
 
 ## 1. 改动文件清单
@@ -13,9 +19,9 @@
 | --- | --- | --- |
 | `src-tauri/src/db/mod.rs` | 新增 `Settings.visual_preset` + `default_visual_preset()` | 旧库缺键走默认值 `dream-gradient` |
 | `src-tauri/src/commands/settings.rs` | 白名单 + 枚举校验 + 单测 | 只接受 `dream-gradient` / `liquid-glass` |
-| `src-tauri/src/window_shape.rs` | **新增文件** | Win32 圆角区域裁剪 + DWM 角偏好 + 半径管理 + 区域缓存 + 延迟重算 + 诊断开关 + 单测 |
-| `src-tauri/src/commands/system.rs` | 新增 `apply_window_radius` 命令 | 前端按预设下发圆角半径 |
-| `src-tauri/src/lib.rs` | 启动落圆角、resize/DPI 重算、注册命令 | 见 03 文档 |
+| `src-tauri/src/window_shape.rs` | **新增文件** | Win32 圆角区域裁剪 + DWM 角偏好/边框去除 + `RegionStamp` 缓存 + 区域有效性复核 + 重入 `PENDING` 队列 + 1–2.5s 延迟重算 + 诊断开关 + 单测 |
+| `src-tauri/src/commands/system.rs` | 新增 `apply_window_radius` 命令；`effective_backend` 处理区域裁剪与 Win11 后端的兼容 | 区域裁剪开启时 Win11 自动后端改为 `blur`，显式后端不被改写 |
+| `src-tauri/src/lib.rs` | 启动落圆角、`Resized`/`ScaleFactorChanged`/`Focused(true)` 重算、注册命令 | 见 03 文档 |
 
 ### 1.2 前端
 
@@ -40,13 +46,15 @@
 | `src/lib/theme.test.ts` | 预设解析、圆角映射、原生玻璃判定（+6 例） |
 | `src/store/useSettingsStore.test.ts` | **新增**：材质管道与预设切换回归（4 例） |
 | `src/components/FullView.test.tsx` | **新增**：左侧导航结构与徽标口径（5 例） |
-| `scripts/visual-themes.mjs` | **新增**：双预设视觉走查（16 个场景 + 布局审计） |
+| `scripts/visual-themes.mjs` | **新增**：双预设视觉走查（18 个场景 + 布局审计） |
 | `scripts/theme-perf.mjs` | **新增**：主题性能测量 |
-| `scripts/native-verify.ps1` | **新增**：原生窗口取证（桌面合成像素 + PrintWindow + 应用日志） |
+| `scripts/native-verify.ps1` | **新增**：原生窗口取证（桌面合成像素 + PrintWindow + 应用日志），支持 `-Backend` |
+| `scripts/corner-lab.ps1` | **新增**：受控背景下的「显示/隐藏」同帧取证、resize 突发、最小化循环 |
+| `scripts/check-corners.py` | **新增**：独立背景基线 + 四角像素 + 半径拟合 + DWM 联合判定；缺基线返回 UNVERIFIED |
+| `scripts/test-check-corners.py` | **新增**：验收脚本自身的合成用例（干净/PASS、黑楔/FAIL、缺基线/UNVERIFIED） |
 | `scripts/capture-native.ps1` | **新增**：仅抓屏版本 |
 | `scripts/native-probe.ps1` | **新增**：窗口可见性/尺寸探测 |
 | `scripts/dump-windows.ps1` | **新增**：顶层窗口枚举（诊断用） |
-| `scripts/check-corners.py` | **新增**：圆角几何校验（角点像素 vs 桌面像素） |
 | `scripts/seed-settings.py` | **新增**：验收用设置写入（含 `window_rect=x,y,w,h` 特殊形式） |
 | `scripts/capture-native-set.ps1` | **新增**：四组主题的原生批量取证 |
 | `scripts/diagnose-corner.ps1` | **新增**：圆角机制诊断矩阵（区域/DWM 开关 × solid/glass） |
@@ -92,9 +100,18 @@
 
 ### 2.4 窗口圆角
 
-- Rust：`SetWindowRgn(CreateRoundRectRgn)` + `DWMWA_WINDOW_CORNER_PREFERENCE=ROUND`。
+- Rust：`SetWindowRgn(CreateRoundRectRgn)` + `DWMWA_WINDOW_CORNER_PREFERENCE=ROUND`
+  + `DWMWA_BORDER_COLOR=DWMWA_COLOR_NONE`。
 - 半径：梦幻 18 / 液态 20（逻辑像素），按 `scale_factor` 换算物理像素。
-- resize 与 DPI 变化时重算；`APPLYING` 原子标志防重入；region 所有权按 `SetWindowRgn` 返回值处理。
+- **Windows 11 的 Mica/Acrylic 系统背景由 DWM 按整窗矩形绘制且忽略窗口区域**，
+  会在四角画出黑色月牙；因此区域裁剪开启时，`auto` 后端改为 `blur`
+  （`SetWindowCompositionAttribute`，跟随窗口区域合成），显式指定的后端保持原样用于矩阵实验。
+- 缓存 `RegionStamp` 含 `hwnd / width / height / radius / scale_milli`；
+  命中缓存后仍调用 `region_is_current` 复核（`GetWindowRgn` 非空、`GetRgnBox`
+  与窗口尺寸一致、角点在区域外且半径内点在区域内），系统重置区域或句柄变化后自动重建。
+- resize 与 DPI 变化时重算；重入时只置 `PENDING`，由外层循环补跑，最多 8 轮，
+  最后再异步重算一次，保证不丢最后一次尺寸。
+- 区域所有权按 `SetWindowRgn` 返回值处理（成功后系统拥有 region，不得重复删除）。
 
 ### 2.5 性能
 
@@ -108,7 +125,7 @@
 
 | 缺陷（v0.5） | 根因 | 修复 |
 | --- | --- | --- |
-| 四角黑色直角 | DWM 系统背景按整窗矩形绘制，CSS `border-radius` 裁不掉 | Win32 窗口区域裁剪（见 03 文档），并用 `GetWindowRgn` 客观验证 |
+| 四角黑色直角 | DWM 的 Mica/Acrylic 系统背景按整窗矩形绘制且忽略 `SetWindowRgn`（黑月牙）；旧缓存只看宽高/半径，系统重置区域后仍命中；仅用 `GetWindowRgn` 成功做验收是假阳性 | 区域裁剪开启时 Win11 `auto` 后端改用 `blur`；DWM 边框设为 `COLOR_NONE`；缓存命中后复核区域几何；重入改 `PENDING` 队列；验收改为独立背景基线 + 四角像素 + 半径拟合联合判定（见 12 文档） |
 | 窗口尺寸逐次放大 25% | 前端保存物理像素，后端按逻辑像素还原 | `restore_window` 改用 `PhysicalSize`/`PhysicalPosition` |
 | 启动瞬间窗口被滑出屏幕 | 设置未加载时 `snap_enabled` 默认 true，贴边吸附先生效一次并把位置持久化 | 设置到达前不启用贴边吸附（`settings?.snap_enabled === true`） |
 | 界面 class 用请求材质而非实际材质 | `App.tsx` 用 `settings.material` | 改用 `materialInfo.resolved` |
@@ -144,7 +161,8 @@
 - 统计卡、快速添加、筛选/排序、空状态插画、任务列表全部按新皮肤重绘
 - 设置页预设选择卡 + 即时切换 + 持久化 + 旧库安全默认
 - 原生材质状态与界面状态一致（实际值驱动）
-- Win32 圆角裁剪（四角黑色直角已消除）
+- Win32 圆角裁剪 + DWM 角偏好/边框去除 + 区域有效性复核（**修复前实测四角仍为黑楔/半径偏大，
+  修复后原生验收因会话锁定未完成**，见 12 文档；不再宣称「已消除」）
 - 响应式：400px 完整、340px/320px 图标轨，极简/紧凑模式保持原用途
 - 降级：原生不可用、高对比度、减少透明、减少动态
 - 性能：无 backdrop-filter、无常驻动画、空闲近零开销
@@ -152,13 +170,17 @@
 ### 已测试通过
 
 - `npx tsc --noEmit` ✅
-- `npx vitest run` ✅（36 文件 / 260 项全绿）
-- `cd src-tauri && cargo test --release` ✅（lib 449 passed / 0 failed / 3 ignored；集成 1 passed）
+- `npx vitest run` ✅（40 文件 / 290 用例全绿，2026-10-31 复测）
+- `cd src-tauri && cargo test --release` ⚠️（472 passed / 3 failed / 3 ignored；失败为锁屏会话下的前台置前用例，见 11 文档 1.2）
 - `npm run build` ✅
-- `npm run tauri build -- --no-bundle` ✅（Release 可执行文件产出）
+- `npm run tauri build -- --no-bundle` ✅（修复后重建于 2026-10-31 01:35 通过，14m25s，15,793,664 B）
 - `node scripts/visual-themes.mjs` ✅（18 场景，0 溢出、0 运行错误）
+- `node scripts/visual-v06.mjs` ✅（26 场景）
+- `node scripts/layout-regression.mjs` ✅（37 组合）
 - `node scripts/theme-perf.mjs` ✅
-- `scripts/native-verify.ps1` + `scripts/check-corners.py` ✅（4 组原生截图：`region_probe=00001` 四角已被 Win32 区域裁掉；角点像素与桌面**完全一致**，diff = 0.0；`ontop_check` 差值 0）
+- `python scripts/test-check-corners.py` ✅（合成用例：干净 PASS / 黑楔 FAIL / 缺基线 UNVERIFIED）
+- `scripts/corner-lab.ps1` + `scripts/check-corners.py` ⬜ **修复后原生取证未完成**（会话锁定）；
+  修复前同方法实测 glass/solid 均 FAIL，详见 12 文档
 
 ### 尚未验证（本环境无法执行）
 

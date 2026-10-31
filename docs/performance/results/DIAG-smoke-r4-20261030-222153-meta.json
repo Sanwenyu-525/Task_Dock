@@ -1,0 +1,237 @@
+{
+  "scenario": "smoke-r4",
+  "source_exe": "C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe",
+  "source_exe_bytes": 15389184,
+  "source_exe_image_name": "tdmeas.exe",
+  "sampler_process_name_pattern": "^tdmeas",
+  "other_task_dock_instances": [],
+  "started_at": "2026-10-30T14:21:56.130041+00:00",
+  "duration_s": 30,
+  "post_s": 15,
+  "mode": "mixed",
+  "source": "bench",
+  "allow_real_source": false,
+  "rate_per_agent": 1,
+  "agents": 1,
+  "batch": 1,
+  "transport": "http",
+  "notifications": "off",
+  "window": {
+    "ok": true,
+    "hwnd": 3212506,
+    "visible": false,
+    "iconic": false
+  },
+  "settings": {
+    "http_enabled": true,
+    "http_port": 47899,
+    "mock_enabled": false,
+    "clipboard_enabled": false,
+    "auto_backup": false,
+    "notify_agent": false,
+    "notify_reminder": false,
+    "notify_muted": false,
+    "snap_enabled": false,
+    "hotkey_enabled": false,
+    "stale_run_minutes": 15,
+    "perf_diagnostics_enabled": true
+  },
+  "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-smoke-r4\\smoke-r4-data",
+  "sampler_jsonl": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-smoke-r4-20261030-222153.jsonl",
+  "app_log": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-smoke-r4-20261030-222153-app.log",
+  "load_json": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-smoke-r4-20261030-222153-load.json",
+  "stats_end_of_load": {
+    "db": {
+      "db_bytes": 487424,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 122,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 0.3,
+        "calls": 42,
+        "pool_size": 3,
+        "slow_queries_100ms": 0
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 3258952
+    },
+    "http": {
+      "accepted": 30,
+      "active_connections": 1,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-30T14:22:39.509175500+00:00",
+      "max_active_requests": 1,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 32
+    },
+    "notifications": {
+      "attempted": 0,
+      "failed": 0,
+      "succeeded": 0
+    },
+    "pipeline": {
+      "batches": 30,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 16.03,
+        "p50_ms": 5.01,
+        "p95_ms": 15.24,
+        "p99_ms": 16.03,
+        "samples": 30
+      },
+      "events_merged": 0,
+      "events_processed": 30,
+      "events_received": 30,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 321.33,
+        "p50_ms": 269.02,
+        "p95_ms": 280.86,
+        "p99_ms": 321.33,
+        "samples": 30
+      },
+      "last_batch_size": 1,
+      "last_flush_at": "2026-10-30T14:22:38.761067300+00:00",
+      "lifecycle": "running",
+      "max_batch_size": 1,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 30,
+      "uptime_secs": 39
+    },
+    "process": {
+      "alloc_calls": 22182,
+      "alloc_stats_enabled": true,
+      "dealloc_calls": 18767,
+      "live_bytes": 838533,
+      "peak_bytes": 840744,
+      "total_allocated_bytes": 2677321
+    },
+    "runtime": {
+      "alive_tasks": 7
+    }
+  },
+  "stats_after_post": {
+    "db": {
+      "db_bytes": 487424,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 122,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 0.29,
+        "calls": 43,
+        "pool_size": 3,
+        "slow_queries_100ms": 0
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 3258952
+    },
+    "http": {
+      "accepted": 30,
+      "active_connections": 1,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-30T14:22:54.511536200+00:00",
+      "max_active_requests": 1,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 33
+    },
+    "notifications": {
+      "attempted": 0,
+      "failed": 0,
+      "succeeded": 0
+    },
+    "pipeline": {
+      "batches": 30,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 16.03,
+        "p50_ms": 5.01,
+        "p95_ms": 15.24,
+        "p99_ms": 16.03,
+        "samples": 30
+      },
+      "events_merged": 0,
+      "events_processed": 30,
+      "events_received": 30,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 321.33,
+        "p50_ms": 269.02,
+        "p95_ms": 280.86,
+        "p99_ms": 321.33,
+        "samples": 30
+      },
+      "last_batch_size": 1,
+      "last_flush_at": "2026-10-30T14:22:38.761067300+00:00",
+      "lifecycle": "running",
+      "max_batch_size": 1,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 30,
+      "uptime_secs": 54
+    },
+    "process": {
+      "alloc_calls": 26737,
+      "alloc_stats_enabled": true,
+      "dealloc_calls": 23323,
+      "live_bytes": 838461,
+      "peak_bytes": 845384,
+      "total_allocated_bytes": 2971508
+    },
+    "runtime": {
+      "alive_tasks": 7
+    }
+  },
+  "error": null,
+  "instance_exited_after_s": null,
+  "instance_exit_code": 1,
+  "summary": {
+    "samples": 0
+  }
+}

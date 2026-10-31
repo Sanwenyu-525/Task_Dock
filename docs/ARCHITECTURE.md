@@ -123,9 +123,18 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 | MockAdapter | 内置模拟会话（UI 明确标注「模拟」） | 已实现，默认开启 |
 | FileDropAdapter | 轮询 `%APPDATA%/com.taskdock.desktop/agent-inbox/*.json`（大小/数量/重试上限） | 已实现，常开 |
 | HttpIngestAdapter | 127.0.0.1 HTTP + Bearer + 并发/超时/64KB 上限 + 429/503 重试提示 | 已实现，可配置 |
-| Codex 钩子 | 原生 Hook CLI（`task-dock --agent-hook`）+ HTTP 优先、文件兜底 | 已实现，需真实 Codex 环境验证 |
-| DSH / OpenCode 插件 | 宿主插件桥接：有界队列、2.5s 超时、running 合并、指数退避 | 已实现，需对应宿主验证 |
+| Codex 钩子 | 原生 Hook CLI（`task-dock --agent-hook`）+ HTTP 优先、文件兜底 | 已实现，已用真实 Codex 会话验证（自动事件落库） |
+| DSH 插件 | 宿主 **profile bundle**：`package.json` 声明 `dsh.bundle.patch` + 安装到 `<profile>/node_modules/` + 登记进 `dependencies` 与 `dsh.profile.bundles` | 已实现，已用真实 DSH 会话验证（`[task-dock-bridge] loaded`） |
+| OpenCode 插件 | 宿主插件桥接：有界队列、2.5s 超时、running 合并、指数退避 | 已实现，已用真实 OpenCode 会话验证（自动事件落库） |
 | Qoder / WorkBuddy | 官方接口未核实 → stub 来源，通过通用接入上报 | 未验证（见 AGENT_ADAPTERS.md） |
+
+> **DSH 安装形态的坑（2026-10-30 验收发现并修复）**：`~/.dsh/plugins/` 只是**客户端**插件位，
+> 把包放进去宿主不会加载。DSH 的宿主插件必须以 **profile bundle** 形式安装：
+> `package.json` 声明 `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`，包放进
+> `<DSH_HOME>/profiles/<profile>/node_modules/`，并在 profile 的 `package.json` 里登记
+> `dependencies["task-dock-bridge"]` 与 `dsh.profile.bundles`。
+> `src-tauri/src/agents/dsh.rs` 只改这两处，保留第三方 dependency/bundle 与其它顶层字段；
+> `DSH_HOME` 可整体改写，使安装/卸载与验收可在隔离目录完成。
 
 ### 5. 统一导航系统（navigation/，v0.4）
 与 Agent 观测层完全解耦：agents/ 只产生事件，navigation/ 只负责「把用户送到正确的窗口/页面/会话」。
@@ -166,8 +175,14 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   脏标记追赶；窗口隐藏只置脏，恢复可见补一次；100 条事件不再触发 100 次全量快照。
 - 历史面板：默认加载 100 条，`list_agent_events(before=...)` keyset 分页加载更早事件，
   刷新增量合并；新通知/事件 500ms 防抖刷新。
-- 贴边吸附：轮询光标与窗口位置（220ms），靠近边缘且光标离开窗口才收起（留 6px 触发条），
-  光标回边缘即展开；状态与窗口矩形持久化。
+- 贴边吸附（v0.6 重写为 Smart Dock Capsule）：判定在 `lib/edgeSnap.ts`（纯函数），
+  副作用在 `hooks/useEdgeSnap.ts`。五相状态机 free/candidate/docked-visible/docked-hidden/
+  docked-revealed；磁吸滞回（进入 28px / 退出 42px）；隐藏时留 32 CSS px 状态胶囊
+  （物理宽 = round(32×DPI)，与隐藏坐标严格一致），展示待办数与 Agent 运行状态。
+  防抖全部为时间积分：唤出驻留 180ms、展开保护期 500ms、连续离开确认 450ms、
+  程序移动后 150ms 坐标静默期；隐藏相位的几何使用 hide 时记录的停靠显示器
+  （修复 currentMonitor 在多屏下按重叠最大取错屏的问题）；松手确认 = 移动静默 +
+  （光标出窗 ∨ DOM 指针事件恢复）。状态与窗口矩形持久化（程序移动/屏外矩形不写入）。
 - 主题：CSS 变量 + `data-theme`，跟随系统时监听 `prefers-color-scheme`。
 - 导航（v0.4）：`lib/navigation.ts` 类型化桥接 + `useNavigationStore`（扫描缓存/任务关联映射，
   运行状态按需刷新不轮询）；任务卡最多直列 3 个目标图标，其余折叠进快捷菜单（键盘可操作）；
@@ -175,8 +190,10 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   顺序批量启动（可取消、部分成功明确）；设置页新增「应用与快捷方式」管理区。
   系统级窗口控制全部在 Rust 后端，React 不触碰 Win32。
 - 智能剪贴板（v0.6 起进入侧边栏）：完整模式为**第 4 个导航入口**（任务 / Agent /
-  行动 / 剪贴板 / 历史 / 设置），标题栏不再保留入口按钮；任务关联场景仍以
-  次级抽屉呈现（`openClipboard({ linkTask })`），紧凑/最小模式保留临时抽屉入口。
+  行动 / 剪贴板 / 历史 / 设置），**完整模式标题栏不再保留剪贴板入口按钮**；
+  任务关联场景仍以
+  次级抽屉呈现（`openClipboard({ linkTask })`），紧凑/最小模式因没有侧栏，
+  标题栏保留临时抽屉入口（`TitleBar.test.tsx` 锁定该行为）。
   业务内容抽到 `ClipboardWorkspace`，页面与抽屉共用同一份加载 / 订阅 / 操作逻辑，
   `useClipboardStore` 用全局引用计数保证**整个应用只有一条 `clipboard-changed` 监听**；
   列表 DTO 只含预览，完整正文/大图按需读取；所有粘贴与 Agent 导出均为显式操作。

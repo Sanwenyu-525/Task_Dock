@@ -11,8 +11,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -387,15 +388,34 @@ pub(crate) fn run_plan(
             None => WriteGuard::Sequence(last_seq),
         };
         match io.write_guarded(&loaded.payload, guard) {
-            Ok(WriteOutcome::Written(final_seq)) => {
+            Ok(WriteOutcome::Written {
+                seq: final_seq,
+                effective,
+                degraded,
+            }) => {
                 last_seq = final_seq;
-                last_payload = Some(loaded.payload.clone());
+                // 比对与自写登记一律以「剪贴板上实际存在的形态」为准：
+                // 辅助格式没写成时剪贴板里本来就没有它，拿原形态去比
+                // 会把「我们自己少写了一个格式」误判成用户接管而中止粘贴。
+                if !degraded.is_empty() {
+                    notes.push(format!(
+                        "第 {} 项部分格式写入失败（{}），已按其余可用格式粘贴",
+                        idx + 1,
+                        degraded.join("、")
+                    ));
+                }
+                let degraded_note = if degraded.is_empty() {
+                    None
+                } else {
+                    Some(format!("部分格式写入失败（{}）", degraded.join("、")))
+                };
+                last_payload = Some(effective.clone());
                 wrote_any = true;
                 io.note_self_write(final_seq);
                 // 序列号不是安全证据：发送按键前必须以内容为准。
                 // 若用户在这次写入后立刻复制了新内容，绝不发送按键、绝不覆盖。
                 // 「读不到」先重试再判定，避免被本进程采集线程的短暂占用误判为用户接管。
-                match match_settled(io, &loaded.payload, cancel) {
+                match match_settled(io, &effective, cancel) {
                     ClipboardMatch::Same => {}
                     ClipboardMatch::Different => {
                         status = "failed";
@@ -460,7 +480,7 @@ pub(crate) fn run_plan(
                     ItemState::ClipboardWritten,
                     sent,
                     &remaining,
-                    None,
+                    degraded_note.as_deref(),
                 );
             }
             Ok(WriteOutcome::SequenceChanged) => {
@@ -626,6 +646,70 @@ struct Active {
     cancel: Arc<AtomicBool>,
 }
 
+/// 粘贴工作线程句柄。`tid` 用于识别「这个句柄是不是我自己的」，
+/// 线程结束时据此把自己的槽位清空。
+struct Worker {
+    tid: std::thread::ThreadId,
+    handle: JoinHandle<()>,
+}
+
+/// 可等待的工作线程槽：登记句柄 → 线程结束自清理 → 停止时按时限等待。
+///
+/// 退出流程必须能等到粘贴线程真正结束，否则进程被杀会留下「永远运行中」
+/// 的任务和被残留粘贴内容覆盖的用户剪贴板。
+#[derive(Clone)]
+struct WorkerSlot {
+    inner: Arc<Mutex<Option<Worker>>>,
+}
+
+impl WorkerSlot {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn register(&self, tid: std::thread::ThreadId, handle: JoinHandle<()>) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(Worker { tid, handle });
+    }
+
+    /// 线程体结束时调用：只清理属于自己的槽位。
+    fn clear(&self, tid: std::thread::ThreadId) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.as_ref().map(|w| w.tid == tid).unwrap_or(false) {
+            *guard = None;
+        }
+    }
+
+    fn running(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// 等待线程结束并回收句柄。返回 false 表示超时（线程仍在运行）。
+    fn wait(&self, timeout: Duration) -> bool {
+        let worker = {
+            let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            guard.take()
+        };
+        let Some(worker) = worker else {
+            return true;
+        };
+        let deadline = Instant::now() + timeout;
+        while !worker.handle.is_finished() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = worker.handle.join();
+        true
+    }
+}
+
 /// 粘贴管理器：同一时刻只允许一个活动队列，避免两个线程互相抢剪贴板。
 pub struct PasteManager {
     db: Arc<Db>,
@@ -633,6 +717,7 @@ pub struct PasteManager {
     app: AppHandle,
     self_write: Arc<AtomicU32>,
     active: Arc<Mutex<Option<Active>>>,
+    worker: WorkerSlot,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -669,6 +754,7 @@ impl PasteManager {
             app,
             self_write,
             active: Arc::new(Mutex::new(None)),
+            worker: WorkerSlot::new(),
         }
     }
 
@@ -773,6 +859,7 @@ impl PasteManager {
         let app = self.app.clone();
         let self_write = self.self_write.clone();
         let active = self.active.clone();
+        let worker_slot = self.worker.clone();
         let job_for_thread = job_id.clone();
         let plan = PastePlan {
             target,
@@ -781,9 +868,18 @@ impl PasteManager {
             sent_start: sent,
             timing,
         };
+        // 握手：工作线程先等父线程登记句柄再开工，
+        // 否则「线程刚起来就退出」与「父线程刚要登记」会交错，
+        // 退出流程可能漏掉一个仍在运行的粘贴线程。
+        let (go_tx, go_rx) = mpsc::sync_channel::<()>(0);
         let spawned = std::thread::Builder::new()
             .name("clipboard-paste".into())
             .spawn(move || {
+                if go_rx.recv().is_err() {
+                    // 父线程没能登记句柄（启动失败），直接退出，不做任何写剪贴板的动作。
+                    return;
+                }
+                let tid = std::thread::current().id();
                 let fail_db = db.clone();
                 let fail_app = app.clone();
                 let fail_active = active.clone();
@@ -831,22 +927,31 @@ impl PasteManager {
                         }),
                     );
                 }
+                // 线程收尾：清掉自己的句柄槽，避免留下已结束线程的句柄。
+                worker_slot.clear(tid);
             });
-        if let Err(e) = spawned {
-            let mut guard = self.active.lock().unwrap_or_else(|x| x.into_inner());
-            if guard.as_ref().map(|a| a.job_id == job_id).unwrap_or(false) {
-                *guard = None;
+        match spawned {
+            Ok(handle) => {
+                self.worker.register(handle.thread().id(), handle);
+                // 登记完成后才放行工作线程。
+                let _ = go_tx.send(());
             }
-            let _ = store::finish_paste_job(
-                &self.db,
-                &job_id,
-                "failed",
-                sent,
-                &item_ids,
-                "无法创建粘贴线程，任务未开始",
-                false,
-            );
-            return Err(AppError::Io(e));
+            Err(e) => {
+                let mut guard = self.active.lock().unwrap_or_else(|x| x.into_inner());
+                if guard.as_ref().map(|a| a.job_id == job_id).unwrap_or(false) {
+                    *guard = None;
+                }
+                let _ = store::finish_paste_job(
+                    &self.db,
+                    &job_id,
+                    "failed",
+                    sent,
+                    &item_ids,
+                    "无法创建粘贴线程，任务未开始",
+                    false,
+                );
+                return Err(AppError::Io(e));
+            }
         }
         Ok(report)
     }
@@ -872,6 +977,28 @@ impl PasteManager {
         {
             a.cancel.store(true, Ordering::SeqCst);
         }
+    }
+
+    /// 是否有正在运行（或刚结束尚未登记清理）的粘贴工作线程。
+    pub fn worker_running(&self) -> bool {
+        self.worker.running()
+    }
+
+    /// 停止粘贴工作线程：取消当前任务，并在时限内等待线程真正收尾。
+    ///
+    /// 退出流程必须走这里：线程若在应用退出时仍在写剪贴板，
+    /// 会留下「任务永远运行中」和「用户剪贴板被残留内容覆盖」两个问题。
+    /// 返回 true 表示线程已在时限内结束。
+    pub fn stop(&self, timeout: Duration) -> bool {
+        self.cancel_all();
+        let stopped = self.worker.wait(timeout);
+        if !stopped {
+            tracing::warn!(
+                "粘贴工作线程未在 {}ms 内结束，放弃等待（进程退出时由系统回收）",
+                timeout.as_millis()
+            );
+        }
+        stopped
     }
 }
 
@@ -1014,8 +1141,8 @@ impl PasteIo for PlatformIo {
     ) -> AppResult<WriteOutcome> {
         // 自写序列号在剪贴板访问锁内登记，采集线程不会在本进程写入后重复占用剪贴板。
         let outcome = platform::write_guarded_notifying(payload, guard, &self.self_write);
-        if let Ok(WriteOutcome::Written(seq)) = &outcome {
-            tracing::debug!("逐项粘贴：写入剪贴板完成 seq={seq}");
+        if let Ok(WriteOutcome::Written { seq, degraded, .. }) = &outcome {
+            tracing::debug!("逐项粘贴：写入剪贴板完成 seq={seq} 降级格式={degraded:?}");
         }
         outcome
     }
@@ -1310,7 +1437,11 @@ mod tests {
                 // 模拟 Windows 在 CloseClipboard 之后继续递增序列号，内容仍是自己的
                 self.seq.set(final_seq + 3);
             }
-            Ok(WriteOutcome::Written(final_seq))
+            Ok(WriteOutcome::Written {
+                seq: final_seq,
+                effective: payload.clone(),
+                degraded: Vec::new(),
+            })
         }
 
         fn send_paste(&self, _hwnd: isize, _pid: u32) -> AppResult<()> {
@@ -1861,5 +1992,60 @@ mod tests {
             assert_eq!(chunk[1], "send", "必须逐项写入后立即粘贴，不能批量发送");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// §九-8：退出时必须能等到粘贴工作线程真正结束，
+    /// 否则会留下「永远运行中」的任务和被残留内容覆盖的用户剪贴板。
+    #[test]
+    fn worker_slot_waits_for_thread_to_finish() {
+        let slot = WorkerSlot::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag2 = flag.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(120));
+            flag2.store(true, Ordering::SeqCst);
+        });
+        slot.register(handle.thread().id(), handle);
+        assert!(slot.running(), "线程存活期间槽位必须报告有工作线程");
+
+        assert!(slot.wait(Duration::from_secs(5)), "线程应按时结束");
+        assert!(flag.load(Ordering::SeqCst), "等待返回时线程必须已跑完");
+        assert!(!slot.running(), "等待结束后槽位必须清空");
+    }
+
+    /// 超时不得谎报成功：退出流程据此知道线程仍在运行。
+    #[test]
+    fn worker_slot_reports_timeout_for_stuck_thread() {
+        let slot = WorkerSlot::new();
+        let handle = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        slot.register(handle.thread().id(), handle);
+        assert!(
+            !slot.wait(Duration::from_millis(120)),
+            "线程未结束时必须返回 false（超时），不得谎报已收尾"
+        );
+    }
+
+    /// 线程正常结束后自清理槽位：不留下已结束线程的句柄。
+    #[test]
+    fn worker_slot_clears_itself_when_thread_ends() {
+        let slot = WorkerSlot::new();
+        let slot2 = slot.clone();
+        let (go_tx, go_rx) = mpsc::sync_channel::<()>(0);
+        let handle = std::thread::spawn(move || {
+            // 与生产代码一致：先等父线程登记句柄再清理，避免竞态。
+            let _ = go_rx.recv();
+            let tid = std::thread::current().id();
+            slot2.clear(tid);
+        });
+        let tid = handle.thread().id();
+        slot.register(tid, handle);
+        let _ = go_tx.send(());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while slot.running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!slot.running(), "线程结束后槽位必须自行清空");
     }
 }

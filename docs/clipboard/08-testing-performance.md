@@ -377,8 +377,120 @@ DB 约 10 MB。摘要：
 （`actions_perf` p95 3.22 ms，预算 ≤60 ms；该用例首跑因夹具期望值算错失败，
 失败记录保留，见 `docs/PERFORMANCE_TESTING.md` §8.1）。
 
-## 六、稳定性测试
+### 5.12 第四轮复测（2026-10-30 22:00 → 23:50）
 
+第四轮专项整改（隐私事务安全 / 图文粘贴 / 内存稳定性 / 发布门禁）的测试结果。
+完整报告见 [12-fourth-round-acceptance.md](12-fourth-round-acceptance.md)。
+
+#### 5.12.1 工程门禁（22:21:18 → 22:32:18，全部 exit 0）
+
+| 命令 | 开始 | 结束 | Exit | 统计 |
+|---|---|---|---|---|
+| `cargo fmt --all -- --check` | 22:21:18 | 22:21:20 | 0 | — |
+| `cargo clippy --all-targets --all-features` | 22:21:20 | 22:22:48 | 0 | 0 警告 |
+| `cargo test --all-targets --no-fail-fast` | 22:22:48 | 22:25:39 | 0 | lib 449 passed / 0 failed / 3 ignored；全部二进制合计 450 passed / 0 failed / 19 ignored |
+| `cargo test --lib clipboard::` | 22:25:39 | 22:25:42 | 0 | 89 passed / 0 failed / 0 ignored |
+| `npx tsc --noEmit` | 22:25:42 | 22:25:48 | 0 | — |
+| `npx vitest run` | 22:25:48 | 22:26:35 | 0 | 36 文件 / 260 测试通过 |
+| `npm run build` | 22:26:35 | 22:26:46 | 0 | — |
+| `cargo test --release --test clipboard_perf -- --ignored --nocapture` | 22:26:46 | 22:32:18 | 0 | 2 passed / 0 failed |
+
+原始输出：`evidence/gate-*-20261030-2221.log`；汇总：`evidence/gates-fourth-round-20261030-2221.md`。
+环境：`CARGO_TARGET_DIR=src-tauri/target-accept`（与并行会话的构建目录隔离）、
+cargo 1.95.0 / rustc 1.95.0 / Node v22.22.3 / npm 10.9.8、Git HEAD `356bc44`。
+
+#### 5.12.2 真实图文混合粘贴（P1-03，23:50:01）
+
+隔离实例 + **真实 Windows 剪贴板** + 真实 Edge 目标页，release 二进制
+（`src-tauri/target-accept/release/task-dock.exe`，23:42:45 构建，15,603,200 B）。
+
+**52 PASS / 0 FAIL / 0 BLOCKED，overall = PASS。**
+证据：`evidence/p1-03-mixed-paste-20261030-235050-76869ab9.json`（+ `-app.log`）。
+
+| 断言组 | 结果 |
+|---|---|
+| 采集入库 4 项（图 3 + 文字 1） | PASS：`history_delta=4`、图片 240×160、`alphaMin=alphaMax=255`、`transparentPixels=0`、`opaquePixels=38400` |
+| 目标 DOM 顺序 | PASS：`image → image → text → image` |
+| 目标图片像素 | PASS：红 `(220,30,30,255)`、绿 `(30,180,60,255)`、蓝 `(30,60,220,255)`，三图 `visible=true` |
+| 粘贴任务 | PASS：`completed`、`sent 4/4`、`remaining_items=[]`、`restored=true` |
+| 剪贴板恢复 | PASS：15 次采样全部命中哨兵（序列号全程 `9039`），`left_on_pasted_item=0`、`our_text_left=[]` |
+| 历史副作用 | PASS：`copy_count` 前后均为 1，历史条数不变 |
+| 采集计数器对账 | PASS：`observed_events 10 = captured 5 + self_write_events 5`；`superseded 0`/`empty 0`/`dropped 0`/`merged 0`/`skipped 0`/`duplicates 0`/`failed 0` |
+| 延迟 | `max_capture_latency_ms 6`、`max_process_latency_ms 28` |
+
+**这一轮同时修掉了一个真实的产品缺陷**：整改前存在三条无计数、无日志的静默丢弃路径，
+导致 `observed=6` / `captured=4` 的差额无法解释。修复内容见 `04-monitor-security.md`
+的「事件处置与去重水位（第四轮整改）」。
+
+#### 5.12.3 Windows 前台聚焦测试（P2-06）
+
+`cargo test --lib navigation::router` → **10 passed / 0 failed / 0 ignored**
+（真实交互桌面；两个聚焦测试均为 `ok`，不是 skip，也不是无条件跳过）。
+证据：`evidence/p2-06-focus-tests-fourth-round-20261030.log`。
+前轮的 ENVIRONMENT-BLOCKED 日志原样保留。
+
+#### 5.12.4 第五轮长跑复跑（2026-10-30 23:53 → 10-31 01:35，当前源码 release）
+
+针对「内存稳定性 NOT PROVEN」用当前源码构建的 release 副本（`task-dock-acc9.exe`，
+15,603,200 B，`sha256=fb5e0eef…`）重跑，C 臂（UI+HTTP 负载 30 分钟）与 E 臂
+（10 分钟负载 + 30 分钟空闲）均 `rc=0`、无实例中途退出：
+
+| 臂 | 事件 | Private | 分段斜率 | 结论 |
+|---|---|---|---|---|
+| C（30 min 负载） | 36,070 收 / 15,665 提交 / 20,405 合并 / **0 丢弃**，DB +30.8 MB | 9.1→17.8 MB | 前 20 min +0.218 → 尾段 9.1 min +0.066 → 结束后 116 s **0.000** MB/min | 出现平台期 |
+| E（10 min 负载 + 30 min 空闲） | 11,914 事件、55 条通知全部成功 | 11.9→18.9→19.3 MB | 负载 +0.542；空闲前 15 min +0.0028 → 其后 14.5 min −0.0275 MB/min | 空闲不增长 |
+
+三臂归因（N1 通知开 / N2 通知关 / N3 空闲）：通知路径 **≈72.8 KB/条**（另有 ≈30 MB 的
+toast/COM 固定开销），接入路径 **≈0.49 KB/事件增量**，`live_bytes` 基本不动
+（`private_minus_live = 7.76 MB`）⇒ 分配器保留 / 原生内存，不是 Rust 堆泄漏。
+完整数据与边界见 [../V05_FINAL_ACCEPTANCE.md](../V05_FINAL_ACCEPTANCE.md) §5.5、
+`docs/performance/results/MEM-ATTRIBUTION-v05r5.json`。第五轮门禁复跑见
+[10-remediation-acceptance.md](10-remediation-acceptance.md) §8.3。
+
+### 5.13 剪贴板＋Agent 真实联合长跑（P1-05，2026-10-31 09:43 → 10:23）
+
+> 完整数据与判定见 [12-fourth-round-acceptance.md](12-fourth-round-acceptance.md) §六。
+> 本节只摘录可复核的数字与边界。
+
+**为什么要复跑**：第一臂（01:12）的激励器文本写入 **344/344 全部因
+`OpenClipboard` 被占用失败**（图片 57/57 成功），该臂不能作为“真实联合负载”证据；
+修复激励器（失败计数 + 占用进程 + 每次校验）后用同一 release 副本复跑。
+
+**结果（30 min 负载 + 10 min 静置，窗口最小化，GUI 另见 §5.13.2）**：
+
+| 项 | 结果 |
+|---|---|
+| 真实剪贴板写入 | 文本 **600/600 verified**、图片 **60/60 verified**；`open_failures=0`；原剪贴板恢复成功 |
+| Agent 负载 | **36,000/36,000** 成功；0 拒绝/解析/并发错误；管道 0 丢弃、0 提交失败；ingest p95 276.96 ms |
+| 入库对账 | 库内 667 条 = 激励派生 655（595 文本 + 60 图片）+ 真实外部复制 12；日志 672 = 667 + 5 去重 |
+| 图片完整性 | 60/60 入库 PNG 与激励器同 seed 重算字节**完全一致**（含 Alpha），0 缺失资产 |
+| 5 条文本缺口 | 索引 110/227/228/229/233：最新状态语义下被后续写入覆盖；`dropped=0`、`store_failed=0`，不是静默丢弃 |
+| 入库延迟 | 相对最快样本 p50 1.9 ms / p95 85.6 ms / max 3602 ms（尖峰与并行 clippy 时间窗重合） |
+| DB/锁 | `database is locked` 0 条；db.read avg 1.36 ms、慢查询 17/10,418；写 p95 56.65 ms |
+| 内存 | private 45.4→49.2 MB（+3.8）→ 尾段 +0.004 MB/min、post −0.062 MB/min；rust.live 1.34–1.65 MB 持平 |
+| CPU | 主进程 mean 0.029%、p95 0.12%（最小化） |
+
+**证据**：`docs/performance/results/DIAG-joint-clipboard-rerun-20261031-0943-*`、
+`analysis-joint-clipboard-rerun-20261031-0943.json`、`phases-joint-clipboard-rerun-20261031-0943.json`、
+`docs/clipboard/evidence/p1-05-rerun-20261031-0943/`。
+
+#### 5.13.1 边界（不得省略）
+
+1. 本次激励进程运行的是 09:45:08 之前的脚本版本（`started_at` 字段尚未加入），
+   因此绝对写入时刻没有持久化；表中延迟是**相对最快样本**的分布。
+2. 5/600 文本未入库，按“剪贴板只保留最新状态”的设计解释；该臂没有 `merged_events`
+   计数器快照，计数器级证据由 §5.13.2 的短程 GUI 跑补足。
+3. 30 分钟臂窗口最小化、不做 GUI 操作；GUI 交互与提醒链路在 §5.13.2 单独执行。
+4. 并行会话的 clippy/Release 构建与本臂争用 CPU，延迟尖峰与 5 条覆盖都落在其时间窗内；
+   如实记录，不把干扰归因成产品缺陷，也不隐藏。
+
+#### 5.13.2 可见窗口短程 GUI 联合跑
+
+> 待最终 Release 重建后执行并回填：真实抽屉/搜索/图片详情/返回/关闭、
+> 真实提醒、真实历史清理、observed/captured/recorded/merged/dropped 计数器、
+> UI 操作 p95 与截图延迟。
+
+## 六、稳定性测试
 | 项目 | 状态 |
 |---|---|
 | 单元/集成重复运行 | 完成（最终计数见 `11` §三：302 passed / 2 锁屏失败 / 11 ignored；fmt/clippy/tsc/vitest/build 全绿，2 例未跳过）；**第二轮复核 445 passed / 0 failed / 3 ignored（lib）** |
@@ -389,8 +501,8 @@ DB 约 10 MB。摘要：
 | 30 分钟空闲监听 CPU/内存 | **已完成**：场景 A 30 分钟采样（见 §五.7）；锁屏下无真实剪贴板事件 |
 | 长时间截图循环（>1000 张） | 未执行 |
 | 崩溃/断电恢复 | 仅单测层面覆盖（粘贴任务 interrupted、资产清理） |
-| 并发 Agent 事件/任务更新 | **场景 C 已完成**（两轮 60 s、74,653 次请求）；剪贴板侧为 0 事件（锁屏），不能称联合压测 |
-| 连续真实剪贴板采集 30 分钟（场景 B） | **ENVIRONMENT BLOCKED / NOT VERIFIED**（锁屏；不以队列压力替代） |
+| 并发 Agent 事件/任务更新 | **已完成（第四轮联合长跑）**：36,000/36,000 Agent 事件 + 600/600 文本、60/60 图片真实剪贴板写入，剪贴板侧真实入库 655/660（5 条文本被最新状态覆盖），见 §5.13 |
+| 连续真实剪贴板采集 30 分钟（场景 B） | **已完成（第四轮复跑，09:43–10:23）**：0 次 OpenClipboard 失败、0 队列丢弃、60/60 图片字节一致；见 §5.13。锁屏期的 ENVIRONMENT BLOCKED 记录保留在 §七.4 |
 
 ## 七、未覆盖与环境阻塞（诚实清单）
 
@@ -399,13 +511,16 @@ DB 约 10 MB。摘要：
    记为 **ENVIRONMENT BLOCKED / NOT VERIFIED**。
 2. **Agent 类应用**：Trae CN 以隔离 profile 启动后停在登录/引导窗口（标题 `TRAE CN`），
    CLI `--goto` 无法进入编辑区，自动化输入无法确认落点，记为 **NOT VERIFIED**。
-3. **修复 Alpha 后的真实图文混合粘贴**：2026-10-29 16:36 起锁屏，无法在真实目标
-   完成像素级复验；修复前记录见 `11` §4.2，**不得**用单元测试替代，
-   记为 **ENVIRONMENT BLOCKED / NOT VERIFIED**。
-4. **场景 B 连续真实剪贴板采集 30 分钟**：锁屏下剪贴板写入阻塞/`ERROR_ACCESS_DENIED=5`，
-   未执行；不以队列压力或缩短时长替代。
-5. **场景 A 的监听计数**：30 分钟空闲已完成，但锁屏下真实剪贴板事件为 0，
-   observed/captured/dropped/latency 全 0，**真实事件节奏下的长跑计数未验证**。
+3. ~~**修复 Alpha 后的真实图文混合粘贴**~~：2026-10-29 16:36 起锁屏，2026-10-30 16:36 的
+   解锁会话已补上 52/52 真机断言（§4.6）；**第四轮 23:50 在当前 release 二进制上再次复验，
+   52 PASS / 0 FAIL / 0 BLOCKED**，像素级证据见 §5.12.2。该项**已解除**。
+4. **场景 B 连续真实剪贴板采集 30 分钟**：锁屏期确实无法写入（`ERROR_ACCESS_DENIED=5`），
+   当时记为未执行。**第四轮已在未锁屏桌面完成真实复跑**（09:43–10:23，600/600 文本 +
+   60/60 图片写入，0 次 OpenClipboard 失败，0 队列丢弃），见 §5.13 与
+   `docs/clipboard/12-fourth-round-acceptance.md` §六；首臂 01:12 的
+   `OpenClipboard` 全失败证据原样保留在 `docs/performance/results/DIAG-fourth-round-joint-clipboard-20261031-011217-stimulus.json`。
+5. **场景 A 的监听计数**：锁屏期 30 分钟空闲已完成但事件为 0。**第四轮联合长跑在真实
+   事件节奏下补上了采集对账**（595/600 文本、60/60 图片、0 丢弃），见 §5.13。
 6. **写入中途格式失败**：若 EmptyClipboard 后主格式写入失败，任务停止，
    但 `restore_if_own_content` 可能因内容不匹配选择 `KeepUserCopy`，原快照不保证恢复；
    未构造故障注入（`11` §2.5 #4）。
@@ -418,9 +533,13 @@ DB 约 10 MB。摘要：
     **只验证了打包成功**，未执行安装→升级→卸载。
 11. **前端测试超时抖动**：早前并行重负载下 3 例任务面板测试曾超过默认 5 s；
     最终全量运行通过，未修改超时阈值掩盖问题。
-12. **长跑内存稳定性在最终二进制上未重跑**：30 分钟采样证据（§5.7）对应当时的
-    release 二进制；第二轮在当前源码上重跑的是**功能与性能门禁**与
-    `clipboard_perf`（§5.11），长跑仍是 **NOT PROVEN**，不得据此宣称无泄漏。
+12. ~~**长跑内存稳定性在最终二进制上未重跑**~~：第四轮已补齐——P1-04 三分段
+    （预热/负载/负载尾 1/4）在第四轮 release 二进制（`task-dock-acc1.exe`，23:42:45）
+    上完成 30 分钟采样与 60 分钟静置，负载尾段私有字节 **+0.004 MB/min**，
+    见 `12-fourth-round-acceptance.md` §五；联合长跑（09:43–10:23，09:20 release
+    二进制）负载尾段同样平缓，见 §5.13。**仍待补**的是全部整改与重建之后的最终
+    二进制未再跑一次长跑（当前代码树受并行会话编辑影响，最终构建时间未定），
+    届时需按同一脚本复测才能把该行改为完全闭环；在此之前不宣称“最终二进制无泄漏”。
 
 ## 八、打包结果
 

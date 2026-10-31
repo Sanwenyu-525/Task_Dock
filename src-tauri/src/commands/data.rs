@@ -1820,6 +1820,13 @@ pub(crate) fn import_parsed_with(
                 if k == "http_token" {
                     continue;
                 }
+                if crate::commands::backup::LOCAL_PRIVACY_SETTINGS.contains(&k.as_str()) {
+                    // 剪贴板记录开关是本机隐私偏好，不随数据导入/恢复变更。
+                    // 备份里存的是「备份那一刻」的值：用户后来关闭或暂停了记录，
+                    // 恢复一份旧备份若把它写回去，等于在用户不知情时重新打开
+                    // 剪贴板采集。缺省即开启的语义在这里尤其危险，必须保留本机当前值。
+                    continue;
+                }
                 if crate::commands::settings::validate_setting(k, v).is_err() {
                     continue; // 未知键（跨版本）跳过
                 }

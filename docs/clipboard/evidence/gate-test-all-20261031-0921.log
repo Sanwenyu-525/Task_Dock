@@ -1,0 +1,345 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling windows-link v0.2.1
+   Compiling cfg-if v1.0.5
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling siphasher v1.0.4
+   Compiling litemap v0.8.3
+   Compiling writeable v0.6.4
+   Compiling fastrand v2.5.0
+   Compiling thiserror v2.0.21
+   Compiling utf8_iter v1.0.4
+   Compiling stable_deref_trait v1.2.1
+   Compiling icu_properties_data v2.4.0
+   Compiling icu_normalizer_data v2.4.0
+   Compiling zmij v1.0.23
+   Compiling smallvec v1.16.4
+   Compiling serde v1.0.229
+   Compiling parking_lot_core v0.9.12
+   Compiling getrandom v0.4.3
+   Compiling regex-syntax v0.8.11
+   Compiling phf_shared v0.13.1
+   Compiling autocfg v1.5.1
+   Compiling scopeguard v1.2.0
+   Compiling bytes v1.12.1
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling powerfmt v0.2.1
+   Compiling phf_generator v0.13.1
+   Compiling lock_api v0.4.14
+   Compiling strsim v0.11.1
+   Compiling ident_case v1.0.1
+   Compiling typeid v1.0.3
+   Compiling aho-corasick v1.1.5
+   Compiling winnow v1.0.4
+   Compiling http v1.5.0
+   Compiling windows-sys v0.61.2
+   Compiling toml_writer v1.1.3+spec-1.1.0
+   Compiling erased-serde v0.4.11
+   Compiling phf_codegen v0.13.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling fnv v1.0.7
+   Compiling web-time v1.1.0
+   Compiling precomputed-hash v0.1.1
+   Compiling serde_json v1.0.154
+   Compiling dunce v1.0.5
+   Compiling equivalent v1.0.3
+   Compiling hashbrown v0.17.1
+   Compiling alloc-no-stdlib v3.0.0
+   Compiling quick-xml v0.42.0
+   Compiling anyhow v1.0.104
+   Compiling base64 v0.23.1
+   Compiling percent-encoding v2.3.2
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling parking_lot v0.12.5
+   Compiling alloc-stdlib v0.3.0
+   Compiling bitflags v2.13.2
+   Compiling dtoa v1.0.11
+   Compiling log v0.4.34
+   Compiling indexmap v2.14.2
+   Compiling brotli-decompressor v6.0.1
+   Compiling syn v3.0.9
+   Compiling syn v2.0.119
+   Compiling string_cache_codegen v0.6.1
+   Compiling string_cache v0.9.0
+   Compiling dtoa-short v0.3.5
+   Compiling form_urlencoded v1.2.2
+   Compiling selectors v0.38.0
+   Compiling tendril v0.5.1
+   Compiling indexmap v1.9.3
+   Compiling glob v0.3.4
+   Compiling camino v1.2.6
+   Compiling ctor v1.0.13
+   Compiling web_atoms v0.2.6
+   Compiling regex-automata v0.4.18
+   Compiling servo_arc v0.4.3
+   Compiling schemars v0.8.22
+   Compiling brotli v9.0.0
+   Compiling bit-vec v0.8.0
+   Compiling semver v1.0.28
+   Compiling toml_datetime v1.1.2+spec-1.1.0
+   Compiling serde_spanned v1.1.2
+   Compiling uuid v1.29.0
+   Compiling hashbrown v0.12.3
+   Compiling rustc-hash v2.1.3
+   Compiling deranged v0.5.9
+   Compiling bit-set v0.8.0
+   Compiling toml v1.1.8+spec-1.1.0
+   Compiling cfb v0.14.0
+   Compiling shlex v2.0.1
+   Compiling foldhash v0.2.0
+   Compiling dyn-clone v1.0.20
+   Compiling find-msvc-tools v0.1.15
+   Compiling tauri-utils v2.10.2
+   Compiling version_check v0.9.5
+   Compiling serde-untagged v0.1.9
+   Compiling libc v0.2.191
+   Compiling windows-result v0.4.1
+   Compiling windows-strings v0.5.1
+   Compiling cc v1.10.0
+   Compiling option-ext v0.2.0
+   Compiling rustc_version v0.4.1
+   Compiling once_cell v1.21.4
+   Compiling heck v0.5.0
+   Compiling regex v1.13.1
+   Compiling time v0.3.55
+   Compiling static_vcruntime v3.0.0
+   Compiling infer v0.22.0
+   Compiling windows-threading v0.2.1
+   Compiling simd-adler32 v0.3.10
+   Compiling adler2 v2.0.1
+   Compiling crc32fast v1.5.3
+   Compiling generic-array v0.14.7
+   Compiling pin-project-lite v0.2.17
+   Compiling winapi-util v0.1.11
+   Compiling winreg v0.56.0
+   Compiling dirs-sys v0.5.0
+   Compiling crossbeam-utils v0.8.23
+   Compiling raw-window-handle v0.6.2
+   Compiling serde_derive_internals v0.29.1
+   Compiling miniz_oxide v0.9.1
+   Compiling same-file v1.0.6
+   Compiling dirs v7.0.0
+   Compiling synstructure v0.14.0
+   Compiling darling_core v0.24.1
+   Compiling walkdir v2.5.0
+   Compiling time-macros v0.2.32
+   Compiling windows-version v0.1.7
+   Compiling vswhom-sys v0.1.3
+   Compiling typenum v1.20.1
+   Compiling flate2 v1.1.10
+   Compiling fdeflate v0.3.7
+   Compiling miniz_oxide v0.8.9
+   Compiling num-traits v0.2.19
+   Compiling tracing-core v0.1.36
+   Compiling cookie v0.18.2
+   Compiling crossbeam-channel v0.5.17
+   Compiling getrandom v0.3.4
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling byteorder v1.5.0
+   Compiling vswhom v0.1.0
+   Compiling unicode-segmentation v1.13.3
+   Compiling png v0.18.1
+   Compiling embed-resource v3.0.12
+   Compiling digest v0.10.7
+   Compiling wry v0.57.1
+   Compiling cpufeatures v0.2.17
+   Compiling phf_macros v0.13.1
+   Compiling derive_more-impl v2.1.1
+   Compiling schemars_derive v0.8.22
+   Compiling windows-interface v0.59.3
+   Compiling windows-implement v0.60.2
+   Compiling tauri-winres v0.3.7
+   Compiling webview2-com-macros v0.8.1
+   Compiling tracing-attributes v0.1.31
+   Compiling muda v0.20.0
+   Compiling tauri-runtime v2.12.2
+   Compiling ico v0.6.0
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling serde_derive v1.0.229
+   Compiling zerovec-derive v0.11.7
+   Compiling displaydoc v0.2.7
+   Compiling thiserror-impl v2.0.21
+   Compiling darling_macro v0.24.1
+   Compiling cssparser-macros v0.7.1
+   Compiling windows-core v0.62.2
+   Compiling phf v0.13.1
+   Compiling tokio-macros v2.7.2
+   Compiling derive_more v2.1.1
+   Compiling darling v0.24.1
+   Compiling cssparser v0.37.0
+   Compiling sha2 v0.10.9
+   Compiling pxfm v0.1.30
+   Compiling zerocopy v0.8.63
+   Compiling tray-icon v0.25.1
+   Compiling tracing v0.1.44
+   Compiling tauri-runtime-wry v2.12.3
+   Compiling serde_with_macros v3.24.0
+   Compiling windows-collections v0.3.2
+   Compiling windows-future v0.3.2
+   Compiling windows-numerics v0.3.1
+   Compiling serialize-to-javascript-impl v0.1.2
+   Compiling zerofrom v0.1.8
+   Compiling mio v1.2.4
+   Compiling socket2 v0.6.5
+   Compiling softbuffer v0.4.8
+   Compiling yoke v0.8.4
+   Compiling markup5ever v0.39.0
+   Compiling webview2-com-sys v0.39.1
+   Compiling tokio v1.54.1
+   Compiling html5ever v0.39.0
+   Compiling windows v0.62.2
+   Compiling bytemuck v1.25.2
+   Compiling zerovec v0.11.9
+   Compiling zerotrie v0.2.5
+   Compiling byteorder-lite v0.1.0
+   Compiling serde_with v3.24.0
+   Compiling window-vibrancy v0.8.1
+   Compiling serde_repr v0.1.21
+   Compiling windows_x86_64_msvc v0.52.6
+   Compiling mime v0.3.17
+   Compiling windows_x86_64_msvc v0.53.1
+   Compiling dom_query v0.28.0
+   Compiling ahash v0.8.12
+   Compiling syn v1.0.109
+   Compiling httparse v1.10.1
+   Compiling tinystr v0.8.5
+   Compiling potential_utf v0.1.6
+   Compiling dpi v0.1.2
+   Compiling jsonptr v0.7.1
+   Compiling plist v1.10.3
+   Compiling icu_collections v2.4.0
+   Compiling icu_locale_core v2.4.0
+   Compiling cargo-platform v0.1.9
+   Compiling cargo_toml v1.0.1
+   Compiling json-patch v4.2.0
+   Compiling cargo_metadata v0.19.2
+   Compiling keyboard-types v0.8.3
+   Compiling moxcms v0.8.1
+   Compiling serialize-to-javascript v0.1.2
+   Compiling windows-targets v0.52.6
+   Compiling icu_provider v2.4.0
+   Compiling windows-sys v0.59.0
+   Compiling icu_properties v2.4.0
+   Compiling icu_normalizer v2.4.0
+   Compiling pkg-config v0.3.34
+   Compiling vcpkg v0.2.15
+   Compiling ppv-lite86 v0.2.21
+   Compiling windows-targets v0.53.5
+   Compiling rand_core v0.9.5
+   Compiling http-body v1.1.0
+   Compiling futures-core v0.3.34
+   Compiling idna_adapter v1.2.2
+   Compiling rfd v0.16.1
+   Compiling httpdate v1.0.3
+   Compiling windows-sys v0.60.2
+   Compiling idna v1.1.0
+   Compiling rand_chacha v0.9.0
+   Compiling hashbrown v0.14.5
+   Compiling keyboard-types v0.7.0
+   Compiling os_info v3.15.0
+   Compiling windows-registry v0.6.1
+   Compiling lazy_static v1.5.1
+   Compiling atomic-waker v1.1.2
+   Compiling sharded-slab v0.1.7
+   Compiling url v2.5.8
+   Compiling libsqlite3-sys v0.30.1
+   Compiling hashlink v0.9.1
+   Compiling urlpattern v0.6.0
+   Compiling global-hotkey v0.8.0
+   Compiling auto-launch v0.6.0
+   Compiling hyper v1.12.0
+   Compiling rand v0.9.5
+   Compiling chrono v0.4.45
+   Compiling nu-ansi-term v0.50.3
+   Compiling matchers v0.2.0
+   Compiling tracing-log v0.2.0
+   Compiling open v5.4.5
+   Compiling thread_local v1.1.10
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling fallible-iterator v0.3.0
+   Compiling ascii v1.1.0
+   Compiling chunked_transfer v1.5.0
+   Compiling bitflags v1.3.2
+   Compiling tracing-subscriber v0.3.23
+   Compiling num-derive v0.3.3
+   Compiling http-body-util v0.1.5
+   Compiling winreg v0.55.0
+   Compiling window-vibrancy v0.6.0
+   Compiling image v0.25.10
+   Compiling tiny_http v0.12.0
+   Compiling hyper-util v0.1.21
+   Compiling lnk v0.5.1
+   Compiling rusqlite v0.32.1
+   Compiling tauri-plugin v2.7.2
+   Compiling tauri-build v2.7.4
+   Compiling tauri-codegen v2.7.4
+   Compiling tauri v2.12.5
+   Compiling tauri-macros v2.7.4
+   Compiling tauri-plugin-fs v2.7.1
+   Compiling tauri-plugin-notification v2.7.0
+   Compiling tauri-plugin-autostart v2.7.0
+   Compiling tauri-plugin-dialog v2.8.3
+   Compiling tauri-plugin-global-shortcut v2.4.1
+   Compiling tauri-plugin-opener v2.7.2
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+   Compiling tao v0.37.2
+   Compiling tauri-winrt-notification v0.8.1
+   Compiling notify-rust v4.18.2
+   Compiling webview2-com v0.39.1
+   Compiling tauri-plugin-single-instance v2.5.4
+error: linking with `link.exe` failed: exit code: 1318
+  |
+  = note: "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\link.exe" "/NOLOGO" "D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcHvjNlA\\symbols.o" "<6 object files omitted>" "D:\\Develop\\task_dock\\src-tauri\\target-gate\\debug\\deps/{libtask_dock_lib,libtracing_subscriber-057e8ed88ebe426d,libsharded_slab-8ba457e32c0a7368,liblazy_static-8665586f781aa239,libmatchers-3260f8eac270cc2a,libnu_ansi_term-eb82ef14cbed3eff,libthread_local-b954ccf0707e47cc,libtracing_log-078e3cf24d976d74,libtauri_plugin_single_instance-530db76558c2c757,liblnk-b96c4ac10b208224,libbitflags-bcc7c6ba485b329a,libbyteorder-4d93519b2e6bb4a2,libwindow_vibrancy-cd35ac58d950aefe,libtracing-5e303d78370b441d,libtracing_core-8e91ac65b2988746,libtauri_plugin_global_shortcut-a38171c3c710f5b6,libglobal_hotkey-2ced35404f783231,libkeyboard_types-48650f95976689be,libtauri_plugin_dialog-4f1208c9ea6adebb,librfd-538354e0e6edbaed,libtauri_plugin_fs-22e5640a9a22e4ca,libtauri_plugin_opener-645549176e289e12,libopen-28ba3319e1aa1807,libwinreg-047c4ce88336ebc2,libwindows_sys-29120a4c8b505a1d,libwindows_targets-590feafdefb3c496,libtauri_plugin_autostart-d50b9532283c81e8,libauto_launch-15b35016d5f71fc4,libos_info-787bacc0192165a4,libwindows_registry-7f287e0392e8241f,libtauri_plugin_notification-90830183817e962a,librand-bca8c99d2c690563,librand_chacha-82fe7c192a4e759e,libppv_lite86-35914bc3320a9d59,librand_core-5816ecbb78a5c80e,libnotify_rust-b032b1a7b85c35bd,libtauri_winrt_notification-471d75d707f664d0,libtauri-130f095ecb107856,libdirs-40fca6ae0a1a534f,libdirs_sys-e52d7b2a71723b4b,liboption_ext-67d9f5da85bf83ef,libwindow_vibrancy-6a07235f1a0ede37,libmime-5ebd57ae1089c459,libgetrandom-d877269b6f34fc03,libimage-a7f960e77e91961c,libbytemuck-0cd88b7a03a1dfd1,libbyteorder_lite-9a3f6a89142db763,libmoxcms-152a36d15a6f720a,libpxfm-ac1c72582d9a8e42,libpng-1c84290379bb9df8,libflate2-2ba8c655ede105c7,libminiz_oxide-fa9751969d90bf3b,libfdeflate-830012d2d485ae65,libsimd_adler32-82098859a6610d4e,libcrc32fast-5812bc2b29450487,libtauri_runtime_wry-d2a11f81cf0189b7,libsoftbuffer-a3ef656f3a312f32,libwry-161c735baa6447fa,libtao-16d51c983a1ffab2,libwindows_version-613fcb40e0b7cb99,libunicode_segmentation-c716c9ab8d026d00,libparking_lot-f1e4b2326a64fe77,libparking_lot_core-556101293546d865,liblock_api-b0b014ba706d527d,libscopeguard-43b7de8c906f0ce3,liblog-37db645f776ad51f,libtray_icon-4aba999c1cf8d115,libmuda-52d7fd15c8826137,libcrossbeam_channel-3dd3492dc4184769,libcrossbeam_utils-c2a7ab1674c6a983,libkeyboard_types-506d97a484ed7472,libtauri_runtime-a300af2681ecc6a9,libwebview2_com-7e8bfd503b6ac7a8,libwebview2_com_sys-46b1819e1d937159,libcookie-f1d333da90dbd960,libwindows-1025a72c93d6852a,libwindows_collections-a26f6aa60b54c996,libwindows_future-7400d975458017e0,libwindows_threading-1a07b39acef9b125,libwindows_core-f7fb598bbe3fc96c,libwindows_strings-e6c3d5ecfe2bd4c7,libwindows_result-0709f54c2c74d8de,libdpi-428d85b7371f95bb,libserialize_to_javascript-694f55e28212fb68,libraw_window_handle-85e7c6b858fa242a,libtauri_utils-d60df38cd002c04e,libdunce-3bbf492c93751cb6,libinfer-789be137e5343420,libcfb-e4c90f242b016fd9,libweb_time-6c8a6a2036e3eda0,libfnv-718c0e003653b645,libuuid-b679816028f4db29,libgetrandom-23a8bd03ff22ed92,libbrotli-a2502a946cd4a2be,libbrotli_decompressor-46cbd6fc6286f4dc,liballoc_stdlib-294eff6f868cc396,liballoc_no_stdlib-0b6e9dc65b5342d4,liburlpattern-d9517049fcf03280,libregex-329511b41a05d504,libregex_automata-b8749d18c9564c84,libaho_corasick-a6fe793e434de496,libregex_syntax-5ba8a5be732f5017,libglob-58ef35162c16499b,libwalkdir-c114632b4dc972dc,libsame_file-b13dc18be501b5c3,libwinapi_util-ca2d6a004922979f,libctor-7658dab8343621d0,libplist-a727a9dc9b9284c2,libtime-a3eba71895def5b5,libpowerfmt-c2f48f68315a93d8,libnum_conv-6039523dce9d96a9,libderanged-220db720f9204b25,libtime_core-089f464278787487,libquick_xml-c7d72734c0efc2ef,libbase64-0b3b5cb7d752ce07,libindexmap-1e4ed4acb47d1bbd,libequivalent-bcba1df92b1c5e11,libhashbrown-d655d88fa2a50db5,libjson_patch-e6cac7a0165c2bd2,libjsonptr-7489d4c638ff8f6d,libserde_with-cbadbf38dec452cc,libphf-9e6242cdc025c31f,libphf_shared-c00d3f4ce53bf424,libsiphasher-14f6d2faf6ffb77d,libtoml-f668b0138a378629,libtoml_writer-977e63d7a23d8118,libtoml_parser-4b872ff72350abc3,libwinnow-31d2274f84ae956b,libserde_spanned-5f15b545479cc20f,libtoml_datetime-96733e47cdeb15d3,libserde_untagged-5affb62ef68dce7c,liberased_serde-b6810526ab5929a7,libtypeid-54ded009c49a74c8,liburl-c4e954b2b7bbb988,libidna-089130fe1ee59937,libidna_adapter-d426645a41034e1d,libicu_properties-0e5b18a8cbaa8bfa,libicu_properties_data-feffc7a3eac20189,libicu_normalizer-50898b83bfb13c36,libicu_normalizer_data-1336c476c206629e,libicu_collections-5858d11741caadeb,libutf8_iter-750510237b1ffb7d,libpotential_utf-ec3709bbba7d77ed,libicu_provider-9111e4aec85faa72,libicu_locale_core-acf7e84c72755bf6,libtinystr-032db2341feebae1,liblitemap-04e830be1ffecfa4,libwriteable-14061b4f922d7e56,libzerovec-ca68e28fbf8fe215,libzerotrie-8254f0e98b297c51,libyoke-97f5bd96471a41c3,libstable_deref_trait-e11c66869e64fa55,libzerofrom-1cc71ee97d664ca6,libform_urlencoded-3e41bbcde0cb36ab,libpercent_encoding-dcc8de800d85c95d,libthiserror-ba1e08c36a6e93ce,libanyhow-838f21ce53020717,libsemver-893696602b283328,libwindows_sys-6f7df6f716d58c7c,libwindows_targets-cb79204816494ca5,libhyper_util-bc148f2f46415d36,libhyper-52fe5c93a4d13788,libhttparse-1d44b1d5b2b84e1d,libtokio-751849957d8c6164,libsocket2-04ccef6a4d9b6de0,libmio-e836f2addf4e237a,libwindows_sys-fd7fe91f511d1890,libhttpdate-e23a11d823d7e1c0,libatomic_waker-de3ef4b7faa6c845,libhttp_body_util-1acfc94884f6d76d,libpin_project_lite-f7bef5802155e12f,libfutures_core-72e5725d60670c13,libhttp_body-06496ee54db890ba,libhttp-489c94ec706f2fec,libbytes-d6781330b805e419,libsha2-1681d3e6622808ae,libcpufeatures-8371cf97c1209807,libdigest-88e85f41e4183e81,libblock_buffer-97c069863322c9e0,libcrypto_common-328f11b12b34bc22,libgeneric_array-39dbc3bd0202e859,libtypenum-dd5a30518b26858f,librusqlite-81e3c615e2ed1461,libbitflags-426661a0a903a93c,libsmallvec-c27c1ef66be3ef84,libserde_json-33712a882672a1dc,libmemchr-fd3494b1a8fd9017,libitoa-2671aa452abccd39,libzmij-3cf01cd5a3363f72,libfallible_streaming_iterator-9fc3f0caefe8db0d,libfallible_iterator-55200d46279fb0bd,libhashlink-02e9acbd08785554,libhashbrown-3928f71f86e75d40,libahash-1b51446c60149389,libonce_cell-2565311cad9f2da9,libcfg_if-7db0968296cf6d39,libzerocopy-1bb784510badaebb,liblibsqlite3_sys-a33e04fb1d4c142b,libchrono-56b15ca77585fa77,libwindows_link-d2f160bb0547be5e,libnum_traits-9ada6e9ca8a8edc8,libserde-8a1996bfcefd0ec7,libserde_core-74142dc14684ad3d}.rlib" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libtest-*,libgetopts-*,librustc_std_workspace_std-*,libstd-*,libpanic_unwind-*,libcfg_if-*,libwindows_link-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libunwind-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "ntdll.lib" "advapi32.lib" "shell32.lib" "ole32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib\\windows.0.52.0.lib" "advapi32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib\\windows.0.53.0.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "ntdll.lib" "userenv.lib" "ws2_32.lib" "dbghelp.lib" "/defaultlib:msvcrt" "/NXCOMPAT" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\libsqlite3-sys-2589d48684c56b81\\out" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\webview2-com-sys-42d2ae0f5c8df1cb\\out\\x64" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib" "/OUT:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\task_dock-3b7bbca453631292.exe" "/OPT:REF,NOICF" "/DEBUG" "/PDBALTPATH:%_PDB%" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\intrinsic.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\liballoc.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libcore.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libstd.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcHvjNlA\\task_dock-0.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcHvjNlA\\task_dock-1.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcHvjNlA\\task_dock-2.natvis" "D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\task-dock-8916071fb88de002\\out\\resource.lib" "/NODEFAULTLIB:libvcruntimed.lib" "/NODEFAULTLIB:vcruntime.lib" "/NODEFAULTLIB:vcruntimed.lib" "/NODEFAULTLIB:libcmtd.lib" "/NODEFAULTLIB:msvcrt.lib" "/NODEFAULTLIB:msvcrtd.lib" "/NODEFAULTLIB:libucrt.lib" "/NODEFAULTLIB:libucrtd.lib" "/DEFAULTLIB:libcmt.lib" "/DEFAULTLIB:libvcruntime.lib" "/DEFAULTLIB:ucrt.lib"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: LINK : fatal error LNK1318: 非意外的 PDB 错误: LIMIT (12)“D:\Develop\task_dock\src-tauri\target-gate\debug\deps\task_dock-3b7bbca453631292.pdb”
+          
+
+error: linking with `link.exe` failed: exit code: 1318
+  |
+  = note: "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\link.exe" "/NOLOGO" "D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcSDDNjZ\\symbols.o" "<22 object files omitted>" "D:\\Develop\\task_dock\\src-tauri\\target-gate\\debug\\deps/{libtask_dock_lib,libtracing_subscriber-057e8ed88ebe426d,libsharded_slab-8ba457e32c0a7368,liblazy_static-8665586f781aa239,libmatchers-3260f8eac270cc2a,libnu_ansi_term-eb82ef14cbed3eff,libthread_local-b954ccf0707e47cc,libtracing_log-078e3cf24d976d74,libtauri_plugin_single_instance-530db76558c2c757,liblnk-b96c4ac10b208224,libbitflags-bcc7c6ba485b329a,libbyteorder-4d93519b2e6bb4a2,libwindow_vibrancy-cd35ac58d950aefe,libtracing-5e303d78370b441d,libtracing_core-8e91ac65b2988746,libtauri_plugin_global_shortcut-a38171c3c710f5b6,libglobal_hotkey-2ced35404f783231,libkeyboard_types-48650f95976689be,libtauri_plugin_dialog-4f1208c9ea6adebb,librfd-538354e0e6edbaed,libtauri_plugin_fs-22e5640a9a22e4ca,libtauri_plugin_opener-645549176e289e12,libopen-28ba3319e1aa1807,libwinreg-047c4ce88336ebc2,libwindows_sys-29120a4c8b505a1d,libwindows_targets-590feafdefb3c496,libtauri_plugin_autostart-d50b9532283c81e8,libauto_launch-15b35016d5f71fc4,libos_info-787bacc0192165a4,libwindows_registry-7f287e0392e8241f,libtauri_plugin_notification-90830183817e962a,librand-bca8c99d2c690563,librand_chacha-82fe7c192a4e759e,libppv_lite86-35914bc3320a9d59,librand_core-5816ecbb78a5c80e,libnotify_rust-b032b1a7b85c35bd,libtauri_winrt_notification-471d75d707f664d0,libtauri-130f095ecb107856,libdirs-40fca6ae0a1a534f,libdirs_sys-e52d7b2a71723b4b,liboption_ext-67d9f5da85bf83ef,libwindow_vibrancy-6a07235f1a0ede37,libmime-5ebd57ae1089c459,libgetrandom-d877269b6f34fc03,libimage-a7f960e77e91961c,libbytemuck-0cd88b7a03a1dfd1,libbyteorder_lite-9a3f6a89142db763,libmoxcms-152a36d15a6f720a,libpxfm-ac1c72582d9a8e42,libpng-1c84290379bb9df8,libflate2-2ba8c655ede105c7,libminiz_oxide-fa9751969d90bf3b,libfdeflate-830012d2d485ae65,libsimd_adler32-82098859a6610d4e,libcrc32fast-5812bc2b29450487,libtauri_runtime_wry-d2a11f81cf0189b7,libsoftbuffer-a3ef656f3a312f32,libwry-161c735baa6447fa,libtao-16d51c983a1ffab2,libwindows_version-613fcb40e0b7cb99,libunicode_segmentation-c716c9ab8d026d00,libparking_lot-f1e4b2326a64fe77,libparking_lot_core-556101293546d865,liblock_api-b0b014ba706d527d,libscopeguard-43b7de8c906f0ce3,liblog-37db645f776ad51f,libtray_icon-4aba999c1cf8d115,libmuda-52d7fd15c8826137,libcrossbeam_channel-3dd3492dc4184769,libcrossbeam_utils-c2a7ab1674c6a983,libkeyboard_types-506d97a484ed7472,libtauri_runtime-a300af2681ecc6a9,libwebview2_com-7e8bfd503b6ac7a8,libwebview2_com_sys-46b1819e1d937159,libcookie-f1d333da90dbd960,libwindows-1025a72c93d6852a,libwindows_collections-a26f6aa60b54c996,libwindows_future-7400d975458017e0,libwindows_threading-1a07b39acef9b125,libwindows_core-f7fb598bbe3fc96c,libwindows_strings-e6c3d5ecfe2bd4c7,libwindows_result-0709f54c2c74d8de,libdpi-428d85b7371f95bb,libserialize_to_javascript-694f55e28212fb68,libraw_window_handle-85e7c6b858fa242a,libtauri_utils-d60df38cd002c04e,libdunce-3bbf492c93751cb6,libinfer-789be137e5343420,libcfb-e4c90f242b016fd9,libweb_time-6c8a6a2036e3eda0,libfnv-718c0e003653b645,libuuid-b679816028f4db29,libgetrandom-23a8bd03ff22ed92,libbrotli-a2502a946cd4a2be,libbrotli_decompressor-46cbd6fc6286f4dc,liballoc_stdlib-294eff6f868cc396,liballoc_no_stdlib-0b6e9dc65b5342d4,liburlpattern-d9517049fcf03280,libregex-329511b41a05d504,libregex_automata-b8749d18c9564c84,libaho_corasick-a6fe793e434de496,libregex_syntax-5ba8a5be732f5017,libglob-58ef35162c16499b,libwalkdir-c114632b4dc972dc,libsame_file-b13dc18be501b5c3,libwinapi_util-ca2d6a004922979f,libctor-7658dab8343621d0,libplist-a727a9dc9b9284c2,libtime-a3eba71895def5b5,libpowerfmt-c2f48f68315a93d8,libnum_conv-6039523dce9d96a9,libderanged-220db720f9204b25,libtime_core-089f464278787487,libquick_xml-c7d72734c0efc2ef,libbase64-0b3b5cb7d752ce07,libindexmap-1e4ed4acb47d1bbd,libequivalent-bcba1df92b1c5e11,libhashbrown-d655d88fa2a50db5,libjson_patch-e6cac7a0165c2bd2,libjsonptr-7489d4c638ff8f6d,libserde_with-cbadbf38dec452cc,libphf-9e6242cdc025c31f,libphf_shared-c00d3f4ce53bf424,libsiphasher-14f6d2faf6ffb77d,libtoml-f668b0138a378629,libtoml_writer-977e63d7a23d8118,libtoml_parser-4b872ff72350abc3,libwinnow-31d2274f84ae956b,libserde_spanned-5f15b545479cc20f,libtoml_datetime-96733e47cdeb15d3,libserde_untagged-5affb62ef68dce7c,liberased_serde-b6810526ab5929a7,libtypeid-54ded009c49a74c8,liburl-c4e954b2b7bbb988,libidna-089130fe1ee59937,libidna_adapter-d426645a41034e1d,libicu_properties-0e5b18a8cbaa8bfa,libicu_properties_data-feffc7a3eac20189,libicu_normalizer-50898b83bfb13c36,libicu_normalizer_data-1336c476c206629e,libicu_collections-5858d11741caadeb,libutf8_iter-750510237b1ffb7d,libpotential_utf-ec3709bbba7d77ed,libicu_provider-9111e4aec85faa72,libicu_locale_core-acf7e84c72755bf6,libtinystr-032db2341feebae1,liblitemap-04e830be1ffecfa4,libwriteable-14061b4f922d7e56,libzerovec-ca68e28fbf8fe215,libzerotrie-8254f0e98b297c51,libyoke-97f5bd96471a41c3,libstable_deref_trait-e11c66869e64fa55,libzerofrom-1cc71ee97d664ca6,libform_urlencoded-3e41bbcde0cb36ab,libpercent_encoding-dcc8de800d85c95d,libthiserror-ba1e08c36a6e93ce,libanyhow-838f21ce53020717,libsemver-893696602b283328,libwindows_sys-6f7df6f716d58c7c,libwindows_targets-cb79204816494ca5,libhyper_util-bc148f2f46415d36,libhyper-52fe5c93a4d13788,libhttparse-1d44b1d5b2b84e1d,libtokio-751849957d8c6164,libsocket2-04ccef6a4d9b6de0,libmio-e836f2addf4e237a,libwindows_sys-fd7fe91f511d1890,libhttpdate-e23a11d823d7e1c0,libatomic_waker-de3ef4b7faa6c845,libhttp_body_util-1acfc94884f6d76d,libpin_project_lite-f7bef5802155e12f,libfutures_core-72e5725d60670c13,libhttp_body-06496ee54db890ba,libhttp-489c94ec706f2fec,libbytes-d6781330b805e419,libsha2-1681d3e6622808ae,libcpufeatures-8371cf97c1209807,libdigest-88e85f41e4183e81,libblock_buffer-97c069863322c9e0,libcrypto_common-328f11b12b34bc22,libgeneric_array-39dbc3bd0202e859,libtypenum-dd5a30518b26858f,librusqlite-81e3c615e2ed1461,libbitflags-426661a0a903a93c,libsmallvec-c27c1ef66be3ef84,libfallible_streaming_iterator-9fc3f0caefe8db0d,libfallible_iterator-55200d46279fb0bd,libhashlink-02e9acbd08785554,libhashbrown-3928f71f86e75d40,libahash-1b51446c60149389,libonce_cell-2565311cad9f2da9,libcfg_if-7db0968296cf6d39,libzerocopy-1bb784510badaebb,liblibsqlite3_sys-a33e04fb1d4c142b,libchrono-56b15ca77585fa77,libwindows_link-d2f160bb0547be5e,libnum_traits-9ada6e9ca8a8edc8,libserde-8a1996bfcefd0ec7,libserde_json-33712a882672a1dc,libmemchr-fd3494b1a8fd9017,libitoa-2671aa452abccd39,libzmij-3cf01cd5a3363f72,libserde_core-74142dc14684ad3d}.rlib" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libtest-*,libgetopts-*,librustc_std_workspace_std-*,libstd-*,libpanic_unwind-*,libcfg_if-*,libwindows_link-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libunwind-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "ntdll.lib" "advapi32.lib" "shell32.lib" "ole32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib\\windows.0.52.0.lib" "advapi32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib\\windows.0.53.0.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "ntdll.lib" "userenv.lib" "ws2_32.lib" "dbghelp.lib" "/defaultlib:msvcrt" "/NXCOMPAT" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\libsqlite3-sys-2589d48684c56b81\\out" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\webview2-com-sys-42d2ae0f5c8df1cb\\out\\x64" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib" "/OUT:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\inbox_processes-190b0b2ac8e419b0.exe" "/OPT:REF,NOICF" "/DEBUG" "/PDBALTPATH:%_PDB%" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\intrinsic.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\liballoc.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libcore.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libstd.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcSDDNjZ\\inbox_processes-0.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcSDDNjZ\\inbox_processes-1.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcSDDNjZ\\inbox_processes-2.natvis" "/NODEFAULTLIB:libvcruntimed.lib" "/NODEFAULTLIB:vcruntime.lib" "/NODEFAULTLIB:vcruntimed.lib" "/NODEFAULTLIB:libcmtd.lib" "/NODEFAULTLIB:msvcrt.lib" "/NODEFAULTLIB:msvcrtd.lib" "/NODEFAULTLIB:libucrt.lib" "/NODEFAULTLIB:libucrtd.lib" "/DEFAULTLIB:libcmt.lib" "/DEFAULTLIB:libvcruntime.lib" "/DEFAULTLIB:ucrt.lib"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: LINK : fatal error LNK1318: 非意外的 PDB 错误: LIMIT (12)“D:\Develop\task_dock\src-tauri\target-gate\debug\deps\inbox_processes-190b0b2ac8e419b0.pdb”
+          
+
+error: linking with `link.exe` failed: exit code: 1201
+  |
+  = note: "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\link.exe" "/NOLOGO" "D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcxklolp\\symbols.o" "<79 object files omitted>" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libtest-*,libgetopts-*,librustc_std_workspace_std-*}.rlib" "D:\\Develop\\task_dock\\src-tauri\\target-gate\\debug\\deps/{libtask_dock_lib,libtracing_subscriber-057e8ed88ebe426d,libsharded_slab-8ba457e32c0a7368,liblazy_static-8665586f781aa239,libmatchers-3260f8eac270cc2a,libnu_ansi_term-eb82ef14cbed3eff,libthread_local-b954ccf0707e47cc,libtracing_log-078e3cf24d976d74,libtauri_plugin_single_instance-530db76558c2c757,liblnk-b96c4ac10b208224,libbitflags-bcc7c6ba485b329a,libbyteorder-4d93519b2e6bb4a2,libwindow_vibrancy-cd35ac58d950aefe,libtracing-5e303d78370b441d,libtracing_core-8e91ac65b2988746,libtauri_plugin_global_shortcut-a38171c3c710f5b6,libglobal_hotkey-2ced35404f783231,libkeyboard_types-48650f95976689be,libtauri_plugin_dialog-4f1208c9ea6adebb,librfd-538354e0e6edbaed,libtauri_plugin_fs-22e5640a9a22e4ca,libtauri_plugin_opener-645549176e289e12,libopen-28ba3319e1aa1807,libwinreg-047c4ce88336ebc2,libwindows_sys-29120a4c8b505a1d,libwindows_targets-590feafdefb3c496,libtauri_plugin_autostart-d50b9532283c81e8,libauto_launch-15b35016d5f71fc4,libos_info-787bacc0192165a4,libwindows_registry-7f287e0392e8241f,libtauri_plugin_notification-90830183817e962a,librand-bca8c99d2c690563,librand_chacha-82fe7c192a4e759e,libppv_lite86-35914bc3320a9d59,librand_core-5816ecbb78a5c80e,libnotify_rust-b032b1a7b85c35bd,libtauri_winrt_notification-471d75d707f664d0,libtauri-130f095ecb107856,libdirs-40fca6ae0a1a534f,libdirs_sys-e52d7b2a71723b4b,liboption_ext-67d9f5da85bf83ef,libwindow_vibrancy-6a07235f1a0ede37,libmime-5ebd57ae1089c459,libgetrandom-d877269b6f34fc03,libimage-a7f960e77e91961c,libbytemuck-0cd88b7a03a1dfd1,libbyteorder_lite-9a3f6a89142db763,libmoxcms-152a36d15a6f720a,libpxfm-ac1c72582d9a8e42,libpng-1c84290379bb9df8,libflate2-2ba8c655ede105c7,libminiz_oxide-fa9751969d90bf3b,libfdeflate-830012d2d485ae65,libsimd_adler32-82098859a6610d4e,libcrc32fast-5812bc2b29450487,libtauri_runtime_wry-d2a11f81cf0189b7,libsoftbuffer-a3ef656f3a312f32,libwry-161c735baa6447fa,libtao-16d51c983a1ffab2,libwindows_version-613fcb40e0b7cb99,libunicode_segmentation-c716c9ab8d026d00,libparking_lot-f1e4b2326a64fe77,libparking_lot_core-556101293546d865,liblock_api-b0b014ba706d527d,libscopeguard-43b7de8c906f0ce3,liblog-37db645f776ad51f,libtray_icon-4aba999c1cf8d115,libmuda-52d7fd15c8826137,libcrossbeam_channel-3dd3492dc4184769,libcrossbeam_utils-c2a7ab1674c6a983,libkeyboard_types-506d97a484ed7472,libtauri_runtime-a300af2681ecc6a9,libwebview2_com-7e8bfd503b6ac7a8,libwebview2_com_sys-46b1819e1d937159,libcookie-f1d333da90dbd960,libwindows-1025a72c93d6852a,libwindows_collections-a26f6aa60b54c996,libwindows_future-7400d975458017e0,libwindows_threading-1a07b39acef9b125,libwindows_core-f7fb598bbe3fc96c,libwindows_strings-e6c3d5ecfe2bd4c7,libwindows_result-0709f54c2c74d8de,libdpi-428d85b7371f95bb,libserialize_to_javascript-694f55e28212fb68,libraw_window_handle-85e7c6b858fa242a,libtauri_utils-d60df38cd002c04e,libdunce-3bbf492c93751cb6,libinfer-789be137e5343420,libcfb-e4c90f242b016fd9,libweb_time-6c8a6a2036e3eda0,libfnv-718c0e003653b645,libuuid-b679816028f4db29,libgetrandom-23a8bd03ff22ed92,libbrotli-a2502a946cd4a2be,libbrotli_decompressor-46cbd6fc6286f4dc,liballoc_stdlib-294eff6f868cc396,liballoc_no_stdlib-0b6e9dc65b5342d4,liburlpattern-d9517049fcf03280,libregex-329511b41a05d504,libregex_automata-b8749d18c9564c84,libaho_corasick-a6fe793e434de496,libregex_syntax-5ba8a5be732f5017,libglob-58ef35162c16499b,libwalkdir-c114632b4dc972dc,libsame_file-b13dc18be501b5c3,libwinapi_util-ca2d6a004922979f,libctor-7658dab8343621d0,libplist-a727a9dc9b9284c2,libtime-a3eba71895def5b5,libpowerfmt-c2f48f68315a93d8,libnum_conv-6039523dce9d96a9,libderanged-220db720f9204b25,libtime_core-089f464278787487,libquick_xml-c7d72734c0efc2ef,libbase64-0b3b5cb7d752ce07,libindexmap-1e4ed4acb47d1bbd,libequivalent-bcba1df92b1c5e11,libhashbrown-d655d88fa2a50db5,libjson_patch-e6cac7a0165c2bd2,libjsonptr-7489d4c638ff8f6d,libserde_with-cbadbf38dec452cc,libphf-9e6242cdc025c31f,libphf_shared-c00d3f4ce53bf424,libsiphasher-14f6d2faf6ffb77d,libtoml-f668b0138a378629,libtoml_writer-977e63d7a23d8118,libtoml_parser-4b872ff72350abc3,libwinnow-31d2274f84ae956b,libserde_spanned-5f15b545479cc20f,libtoml_datetime-96733e47cdeb15d3,libserde_untagged-5affb62ef68dce7c,liberased_serde-b6810526ab5929a7,libtypeid-54ded009c49a74c8,liburl-c4e954b2b7bbb988,libidna-089130fe1ee59937,libidna_adapter-d426645a41034e1d,libicu_properties-0e5b18a8cbaa8bfa,libicu_properties_data-feffc7a3eac20189,libicu_normalizer-50898b83bfb13c36,libicu_normalizer_data-1336c476c206629e,libicu_collections-5858d11741caadeb,libutf8_iter-750510237b1ffb7d,libpotential_utf-ec3709bbba7d77ed,libicu_provider-9111e4aec85faa72,libicu_locale_core-acf7e84c72755bf6,libtinystr-032db2341feebae1,liblitemap-04e830be1ffecfa4,libwriteable-14061b4f922d7e56,libzerovec-ca68e28fbf8fe215,libzerotrie-8254f0e98b297c51,libyoke-97f5bd96471a41c3,libstable_deref_trait-e11c66869e64fa55,libzerofrom-1cc71ee97d664ca6,libform_urlencoded-3e41bbcde0cb36ab,libpercent_encoding-dcc8de800d85c95d,libthiserror-ba1e08c36a6e93ce,libanyhow-838f21ce53020717,libsemver-893696602b283328,libwindows_sys-6f7df6f716d58c7c,libwindows_targets-cb79204816494ca5,libhyper_util-bc148f2f46415d36,libhyper-52fe5c93a4d13788,libhttparse-1d44b1d5b2b84e1d,libtokio-751849957d8c6164,libsocket2-04ccef6a4d9b6de0,libmio-e836f2addf4e237a,libwindows_sys-fd7fe91f511d1890,libhttpdate-e23a11d823d7e1c0,libatomic_waker-de3ef4b7faa6c845,libhttp_body_util-1acfc94884f6d76d,libpin_project_lite-f7bef5802155e12f,libfutures_core-72e5725d60670c13,libhttp_body-06496ee54db890ba,libhttp-489c94ec706f2fec,libbytes-d6781330b805e419,libsha2-1681d3e6622808ae,libcpufeatures-8371cf97c1209807,libdigest-88e85f41e4183e81,libblock_buffer-97c069863322c9e0,libcrypto_common-328f11b12b34bc22,libgeneric_array-39dbc3bd0202e859,libtypenum-dd5a30518b26858f,librusqlite-81e3c615e2ed1461,libbitflags-426661a0a903a93c,libsmallvec-c27c1ef66be3ef84,libfallible_streaming_iterator-9fc3f0caefe8db0d,libfallible_iterator-55200d46279fb0bd,libhashlink-02e9acbd08785554,libhashbrown-3928f71f86e75d40,libahash-1b51446c60149389,libonce_cell-2565311cad9f2da9,libcfg_if-7db0968296cf6d39,libzerocopy-1bb784510badaebb,liblibsqlite3_sys-a33e04fb1d4c142b,libchrono-56b15ca77585fa77,libwindows_link-d2f160bb0547be5e,libnum_traits-9ada6e9ca8a8edc8,libserde-8a1996bfcefd0ec7,libserde_json-33712a882672a1dc,libmemchr-fd3494b1a8fd9017,libitoa-2671aa452abccd39,libzmij-3cf01cd5a3363f72,libserde_core-74142dc14684ad3d}.rlib" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libstd-*,libpanic_unwind-*,libcfg_if-*,libwindows_link-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libunwind-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "kernel32.lib" "ntdll.lib" "advapi32.lib" "shell32.lib" "ole32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib\\windows.0.52.0.lib" "advapi32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib\\windows.0.53.0.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "ntdll.lib" "userenv.lib" "ws2_32.lib" "dbghelp.lib" "/defaultlib:msvcrt" "/NXCOMPAT" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\libsqlite3-sys-2589d48684c56b81\\out" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\webview2-com-sys-42d2ae0f5c8df1cb\\out\\x64" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib" "/OUT:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\memory_attrib-50f7b9f39e3b25c5.exe" "/OPT:REF,NOICF" "/DEBUG" "/PDBALTPATH:%_PDB%" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\intrinsic.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\liballoc.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libcore.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libstd.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcxklolp\\memory_attrib-0.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcxklolp\\memory_attrib-1.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcxklolp\\memory_attrib-2.natvis" "/NODEFAULTLIB:libvcruntimed.lib" "/NODEFAULTLIB:vcruntime.lib" "/NODEFAULTLIB:vcruntimed.lib" "/NODEFAULTLIB:libcmtd.lib" "/NODEFAULTLIB:msvcrt.lib" "/NODEFAULTLIB:msvcrtd.lib" "/NODEFAULTLIB:libucrt.lib" "/NODEFAULTLIB:libucrtd.lib" "/DEFAULTLIB:libcmt.lib" "/DEFAULTLIB:libvcruntime.lib" "/DEFAULTLIB:ucrt.lib"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: LINK : fatal error LNK1201: 写入程序数据库“D:\Develop\task_dock\src-tauri\target-gate\debug\deps\memory_attrib-50f7b9f39e3b25c5.pdb”时出错；请检查是否是磁盘空间不足、路径无效或权限不够
+          
+
+error: linking with `link.exe` failed: exit code: 1318
+  |
+  = note: "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\link.exe" "/NOLOGO" "D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcNgiXNb\\symbols.o" "<119 object files omitted>" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libtest-*,libgetopts-*,librustc_std_workspace_std-*}.rlib" "D:\\Develop\\task_dock\\src-tauri\\target-gate\\debug\\deps/{libtask_dock_lib,libtracing_subscriber-057e8ed88ebe426d,libsharded_slab-8ba457e32c0a7368,liblazy_static-8665586f781aa239,libmatchers-3260f8eac270cc2a,libnu_ansi_term-eb82ef14cbed3eff,libthread_local-b954ccf0707e47cc,libtracing_log-078e3cf24d976d74,libtauri_plugin_single_instance-530db76558c2c757,liblnk-b96c4ac10b208224,libbitflags-bcc7c6ba485b329a,libbyteorder-4d93519b2e6bb4a2,libwindow_vibrancy-cd35ac58d950aefe,libtracing-5e303d78370b441d,libtracing_core-8e91ac65b2988746,libtauri_plugin_global_shortcut-a38171c3c710f5b6,libglobal_hotkey-2ced35404f783231,libkeyboard_types-48650f95976689be,libtauri_plugin_dialog-4f1208c9ea6adebb,librfd-538354e0e6edbaed,libtauri_plugin_fs-22e5640a9a22e4ca,libtauri_plugin_opener-645549176e289e12,libopen-28ba3319e1aa1807,libwinreg-047c4ce88336ebc2,libwindows_sys-29120a4c8b505a1d,libwindows_targets-590feafdefb3c496,libtauri_plugin_autostart-d50b9532283c81e8,libauto_launch-15b35016d5f71fc4,libos_info-787bacc0192165a4,libwindows_registry-7f287e0392e8241f,libtauri_plugin_notification-90830183817e962a,librand-bca8c99d2c690563,librand_chacha-82fe7c192a4e759e,libppv_lite86-35914bc3320a9d59,librand_core-5816ecbb78a5c80e,libnotify_rust-b032b1a7b85c35bd,libtauri_winrt_notification-471d75d707f664d0,libtauri-130f095ecb107856,libdirs-40fca6ae0a1a534f,libdirs_sys-e52d7b2a71723b4b,liboption_ext-67d9f5da85bf83ef,libwindow_vibrancy-6a07235f1a0ede37,libmime-5ebd57ae1089c459,libgetrandom-d877269b6f34fc03,libimage-a7f960e77e91961c,libbytemuck-0cd88b7a03a1dfd1,libbyteorder_lite-9a3f6a89142db763,libmoxcms-152a36d15a6f720a,libpxfm-ac1c72582d9a8e42,libpng-1c84290379bb9df8,libflate2-2ba8c655ede105c7,libminiz_oxide-fa9751969d90bf3b,libfdeflate-830012d2d485ae65,libsimd_adler32-82098859a6610d4e,libcrc32fast-5812bc2b29450487,libtauri_runtime_wry-d2a11f81cf0189b7,libsoftbuffer-a3ef656f3a312f32,libwry-161c735baa6447fa,libtao-16d51c983a1ffab2,libwindows_version-613fcb40e0b7cb99,libunicode_segmentation-c716c9ab8d026d00,libparking_lot-f1e4b2326a64fe77,libparking_lot_core-556101293546d865,liblock_api-b0b014ba706d527d,libscopeguard-43b7de8c906f0ce3,liblog-37db645f776ad51f,libtray_icon-4aba999c1cf8d115,libmuda-52d7fd15c8826137,libcrossbeam_channel-3dd3492dc4184769,libcrossbeam_utils-c2a7ab1674c6a983,libkeyboard_types-506d97a484ed7472,libtauri_runtime-a300af2681ecc6a9,libwebview2_com-7e8bfd503b6ac7a8,libwebview2_com_sys-46b1819e1d937159,libcookie-f1d333da90dbd960,libwindows-1025a72c93d6852a,libwindows_collections-a26f6aa60b54c996,libwindows_future-7400d975458017e0,libwindows_threading-1a07b39acef9b125,libwindows_core-f7fb598bbe3fc96c,libwindows_strings-e6c3d5ecfe2bd4c7,libwindows_result-0709f54c2c74d8de,libdpi-428d85b7371f95bb,libserialize_to_javascript-694f55e28212fb68,libraw_window_handle-85e7c6b858fa242a,libtauri_utils-d60df38cd002c04e,libdunce-3bbf492c93751cb6,libinfer-789be137e5343420,libcfb-e4c90f242b016fd9,libweb_time-6c8a6a2036e3eda0,libfnv-718c0e003653b645,libuuid-b679816028f4db29,libgetrandom-23a8bd03ff22ed92,libbrotli-a2502a946cd4a2be,libbrotli_decompressor-46cbd6fc6286f4dc,liballoc_stdlib-294eff6f868cc396,liballoc_no_stdlib-0b6e9dc65b5342d4,liburlpattern-d9517049fcf03280,libregex-329511b41a05d504,libregex_automata-b8749d18c9564c84,libaho_corasick-a6fe793e434de496,libregex_syntax-5ba8a5be732f5017,libglob-58ef35162c16499b,libwalkdir-c114632b4dc972dc,libsame_file-b13dc18be501b5c3,libwinapi_util-ca2d6a004922979f,libctor-7658dab8343621d0,libplist-a727a9dc9b9284c2,libtime-a3eba71895def5b5,libpowerfmt-c2f48f68315a93d8,libnum_conv-6039523dce9d96a9,libderanged-220db720f9204b25,libtime_core-089f464278787487,libquick_xml-c7d72734c0efc2ef,libbase64-0b3b5cb7d752ce07,libindexmap-1e4ed4acb47d1bbd,libequivalent-bcba1df92b1c5e11,libhashbrown-d655d88fa2a50db5,libjson_patch-e6cac7a0165c2bd2,libjsonptr-7489d4c638ff8f6d,libserde_with-cbadbf38dec452cc,libphf-9e6242cdc025c31f,libphf_shared-c00d3f4ce53bf424,libsiphasher-14f6d2faf6ffb77d,libtoml-f668b0138a378629,libtoml_writer-977e63d7a23d8118,libtoml_parser-4b872ff72350abc3,libwinnow-31d2274f84ae956b,libserde_spanned-5f15b545479cc20f,libtoml_datetime-96733e47cdeb15d3,libserde_untagged-5affb62ef68dce7c,liberased_serde-b6810526ab5929a7,libtypeid-54ded009c49a74c8,liburl-c4e954b2b7bbb988,libidna-089130fe1ee59937,libidna_adapter-d426645a41034e1d,libicu_properties-0e5b18a8cbaa8bfa,libicu_properties_data-feffc7a3eac20189,libicu_normalizer-50898b83bfb13c36,libicu_normalizer_data-1336c476c206629e,libicu_collections-5858d11741caadeb,libutf8_iter-750510237b1ffb7d,libpotential_utf-ec3709bbba7d77ed,libicu_provider-9111e4aec85faa72,libicu_locale_core-acf7e84c72755bf6,libtinystr-032db2341feebae1,liblitemap-04e830be1ffecfa4,libwriteable-14061b4f922d7e56,libzerovec-ca68e28fbf8fe215,libzerotrie-8254f0e98b297c51,libyoke-97f5bd96471a41c3,libstable_deref_trait-e11c66869e64fa55,libzerofrom-1cc71ee97d664ca6,libform_urlencoded-3e41bbcde0cb36ab,libpercent_encoding-dcc8de800d85c95d,libthiserror-ba1e08c36a6e93ce,libanyhow-838f21ce53020717,libsemver-893696602b283328,libwindows_sys-6f7df6f716d58c7c,libwindows_targets-cb79204816494ca5,libhyper_util-bc148f2f46415d36,libhyper-52fe5c93a4d13788,libhttparse-1d44b1d5b2b84e1d,libtokio-751849957d8c6164,libsocket2-04ccef6a4d9b6de0,libmio-e836f2addf4e237a,libwindows_sys-fd7fe91f511d1890,libhttpdate-e23a11d823d7e1c0,libatomic_waker-de3ef4b7faa6c845,libhttp_body_util-1acfc94884f6d76d,libpin_project_lite-f7bef5802155e12f,libfutures_core-72e5725d60670c13,libhttp_body-06496ee54db890ba,libhttp-489c94ec706f2fec,libbytes-d6781330b805e419,libsha2-1681d3e6622808ae,libcpufeatures-8371cf97c1209807,libdigest-88e85f41e4183e81,libblock_buffer-97c069863322c9e0,libcrypto_common-328f11b12b34bc22,libgeneric_array-39dbc3bd0202e859,libtypenum-dd5a30518b26858f,librusqlite-81e3c615e2ed1461,libbitflags-426661a0a903a93c,libsmallvec-c27c1ef66be3ef84,libfallible_streaming_iterator-9fc3f0caefe8db0d,libfallible_iterator-55200d46279fb0bd,libhashlink-02e9acbd08785554,libhashbrown-3928f71f86e75d40,libahash-1b51446c60149389,libonce_cell-2565311cad9f2da9,libcfg_if-7db0968296cf6d39,libzerocopy-1bb784510badaebb,liblibsqlite3_sys-a33e04fb1d4c142b,libchrono-56b15ca77585fa77,libwindows_link-d2f160bb0547be5e,libnum_traits-9ada6e9ca8a8edc8,libserde-8a1996bfcefd0ec7,libserde_json-33712a882672a1dc,libmemchr-fd3494b1a8fd9017,libitoa-2671aa452abccd39,libzmij-3cf01cd5a3363f72,libserde_core-74142dc14684ad3d}.rlib" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libstd-*,libpanic_unwind-*,libcfg_if-*,libwindows_link-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libunwind-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "kernel32.lib" "ntdll.lib" "advapi32.lib" "shell32.lib" "ole32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib\\windows.0.52.0.lib" "advapi32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib\\windows.0.53.0.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "ntdll.lib" "userenv.lib" "ws2_32.lib" "dbghelp.lib" "/defaultlib:msvcrt" "/NXCOMPAT" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\libsqlite3-sys-2589d48684c56b81\\out" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\webview2-com-sys-42d2ae0f5c8df1cb\\out\\x64" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib" "/OUT:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\ingest_perf-d59a2eddecd1f76d.exe" "/OPT:REF,NOICF" "/DEBUG" "/PDBALTPATH:%_PDB%" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\intrinsic.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\liballoc.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libcore.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libstd.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcNgiXNb\\ingest_perf-0.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcNgiXNb\\ingest_perf-1.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcNgiXNb\\ingest_perf-2.natvis" "/NODEFAULTLIB:libvcruntimed.lib" "/NODEFAULTLIB:vcruntime.lib" "/NODEFAULTLIB:vcruntimed.lib" "/NODEFAULTLIB:libcmtd.lib" "/NODEFAULTLIB:msvcrt.lib" "/NODEFAULTLIB:msvcrtd.lib" "/NODEFAULTLIB:libucrt.lib" "/NODEFAULTLIB:libucrtd.lib" "/DEFAULTLIB:libcmt.lib" "/DEFAULTLIB:libvcruntime.lib" "/DEFAULTLIB:ucrt.lib"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: LINK : fatal error LNK1318: 非意外的 PDB 错误: LIMIT (12)“D:\Develop\task_dock\src-tauri\target-gate\debug\deps\ingest_perf-d59a2eddecd1f76d.pdb”
+          
+
+error: could not compile `task-dock` (test "memory_attrib") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `task-dock` (test "ingest_perf") due to 1 previous error
+error: could not compile `task-dock` (bin "task-dock" test) due to 1 previous error
+error: could not compile `task-dock` (test "inbox_processes") due to 1 previous error
+error: linking with `link.exe` failed: exit code: 1318
+  |
+  = note: "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\link.exe" "/NOLOGO" "D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcv5hlaR\\symbols.o" "<53 object files omitted>" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libtest-*,libgetopts-*,librustc_std_workspace_std-*}.rlib" "D:\\Develop\\task_dock\\src-tauri\\target-gate\\debug\\deps/{libtask_dock_lib,libtracing_subscriber-057e8ed88ebe426d,libsharded_slab-8ba457e32c0a7368,liblazy_static-8665586f781aa239,libmatchers-3260f8eac270cc2a,libnu_ansi_term-eb82ef14cbed3eff,libthread_local-b954ccf0707e47cc,libtracing_log-078e3cf24d976d74,libtauri_plugin_single_instance-530db76558c2c757,liblnk-b96c4ac10b208224,libbitflags-bcc7c6ba485b329a,libbyteorder-4d93519b2e6bb4a2,libwindow_vibrancy-cd35ac58d950aefe,libtracing-5e303d78370b441d,libtracing_core-8e91ac65b2988746,libtauri_plugin_global_shortcut-a38171c3c710f5b6,libglobal_hotkey-2ced35404f783231,libkeyboard_types-48650f95976689be,libtauri_plugin_dialog-4f1208c9ea6adebb,librfd-538354e0e6edbaed,libtauri_plugin_fs-22e5640a9a22e4ca,libtauri_plugin_opener-645549176e289e12,libopen-28ba3319e1aa1807,libwinreg-047c4ce88336ebc2,libwindows_sys-29120a4c8b505a1d,libwindows_targets-590feafdefb3c496,libtauri_plugin_autostart-d50b9532283c81e8,libauto_launch-15b35016d5f71fc4,libos_info-787bacc0192165a4,libwindows_registry-7f287e0392e8241f,libtauri_plugin_notification-90830183817e962a,librand-bca8c99d2c690563,librand_chacha-82fe7c192a4e759e,libppv_lite86-35914bc3320a9d59,librand_core-5816ecbb78a5c80e,libnotify_rust-b032b1a7b85c35bd,libtauri_winrt_notification-471d75d707f664d0,libtauri-130f095ecb107856,libdirs-40fca6ae0a1a534f,libdirs_sys-e52d7b2a71723b4b,liboption_ext-67d9f5da85bf83ef,libwindow_vibrancy-6a07235f1a0ede37,libmime-5ebd57ae1089c459,libgetrandom-d877269b6f34fc03,libimage-a7f960e77e91961c,libbytemuck-0cd88b7a03a1dfd1,libbyteorder_lite-9a3f6a89142db763,libmoxcms-152a36d15a6f720a,libpxfm-ac1c72582d9a8e42,libpng-1c84290379bb9df8,libflate2-2ba8c655ede105c7,libminiz_oxide-fa9751969d90bf3b,libfdeflate-830012d2d485ae65,libsimd_adler32-82098859a6610d4e,libcrc32fast-5812bc2b29450487,libtauri_runtime_wry-d2a11f81cf0189b7,libsoftbuffer-a3ef656f3a312f32,libwry-161c735baa6447fa,libtao-16d51c983a1ffab2,libwindows_version-613fcb40e0b7cb99,libunicode_segmentation-c716c9ab8d026d00,libparking_lot-f1e4b2326a64fe77,libparking_lot_core-556101293546d865,liblock_api-b0b014ba706d527d,libscopeguard-43b7de8c906f0ce3,liblog-37db645f776ad51f,libtray_icon-4aba999c1cf8d115,libmuda-52d7fd15c8826137,libcrossbeam_channel-3dd3492dc4184769,libcrossbeam_utils-c2a7ab1674c6a983,libkeyboard_types-506d97a484ed7472,libtauri_runtime-a300af2681ecc6a9,libwebview2_com-7e8bfd503b6ac7a8,libwebview2_com_sys-46b1819e1d937159,libcookie-f1d333da90dbd960,libwindows-1025a72c93d6852a,libwindows_collections-a26f6aa60b54c996,libwindows_future-7400d975458017e0,libwindows_threading-1a07b39acef9b125,libwindows_core-f7fb598bbe3fc96c,libwindows_strings-e6c3d5ecfe2bd4c7,libwindows_result-0709f54c2c74d8de,libdpi-428d85b7371f95bb,libserialize_to_javascript-694f55e28212fb68,libraw_window_handle-85e7c6b858fa242a,libtauri_utils-d60df38cd002c04e,libdunce-3bbf492c93751cb6,libinfer-789be137e5343420,libcfb-e4c90f242b016fd9,libweb_time-6c8a6a2036e3eda0,libfnv-718c0e003653b645,libuuid-b679816028f4db29,libgetrandom-23a8bd03ff22ed92,libbrotli-a2502a946cd4a2be,libbrotli_decompressor-46cbd6fc6286f4dc,liballoc_stdlib-294eff6f868cc396,liballoc_no_stdlib-0b6e9dc65b5342d4,liburlpattern-d9517049fcf03280,libregex-329511b41a05d504,libregex_automata-b8749d18c9564c84,libaho_corasick-a6fe793e434de496,libregex_syntax-5ba8a5be732f5017,libglob-58ef35162c16499b,libwalkdir-c114632b4dc972dc,libsame_file-b13dc18be501b5c3,libwinapi_util-ca2d6a004922979f,libctor-7658dab8343621d0,libplist-a727a9dc9b9284c2,libtime-a3eba71895def5b5,libpowerfmt-c2f48f68315a93d8,libnum_conv-6039523dce9d96a9,libderanged-220db720f9204b25,libtime_core-089f464278787487,libquick_xml-c7d72734c0efc2ef,libbase64-0b3b5cb7d752ce07,libindexmap-1e4ed4acb47d1bbd,libequivalent-bcba1df92b1c5e11,libhashbrown-d655d88fa2a50db5,libjson_patch-e6cac7a0165c2bd2,libjsonptr-7489d4c638ff8f6d,libserde_with-cbadbf38dec452cc,libphf-9e6242cdc025c31f,libphf_shared-c00d3f4ce53bf424,libsiphasher-14f6d2faf6ffb77d,libtoml-f668b0138a378629,libtoml_writer-977e63d7a23d8118,libtoml_parser-4b872ff72350abc3,libwinnow-31d2274f84ae956b,libserde_spanned-5f15b545479cc20f,libtoml_datetime-96733e47cdeb15d3,libserde_untagged-5affb62ef68dce7c,liberased_serde-b6810526ab5929a7,libtypeid-54ded009c49a74c8,liburl-c4e954b2b7bbb988,libidna-089130fe1ee59937,libidna_adapter-d426645a41034e1d,libicu_properties-0e5b18a8cbaa8bfa,libicu_properties_data-feffc7a3eac20189,libicu_normalizer-50898b83bfb13c36,libicu_normalizer_data-1336c476c206629e,libicu_collections-5858d11741caadeb,libutf8_iter-750510237b1ffb7d,libpotential_utf-ec3709bbba7d77ed,libicu_provider-9111e4aec85faa72,libicu_locale_core-acf7e84c72755bf6,libtinystr-032db2341feebae1,liblitemap-04e830be1ffecfa4,libwriteable-14061b4f922d7e56,libzerovec-ca68e28fbf8fe215,libzerotrie-8254f0e98b297c51,libyoke-97f5bd96471a41c3,libstable_deref_trait-e11c66869e64fa55,libzerofrom-1cc71ee97d664ca6,libform_urlencoded-3e41bbcde0cb36ab,libpercent_encoding-dcc8de800d85c95d,libthiserror-ba1e08c36a6e93ce,libanyhow-838f21ce53020717,libsemver-893696602b283328,libwindows_sys-6f7df6f716d58c7c,libwindows_targets-cb79204816494ca5,libhyper_util-bc148f2f46415d36,libhyper-52fe5c93a4d13788,libhttparse-1d44b1d5b2b84e1d,libtokio-751849957d8c6164,libsocket2-04ccef6a4d9b6de0,libmio-e836f2addf4e237a,libwindows_sys-fd7fe91f511d1890,libhttpdate-e23a11d823d7e1c0,libatomic_waker-de3ef4b7faa6c845,libhttp_body_util-1acfc94884f6d76d,libpin_project_lite-f7bef5802155e12f,libfutures_core-72e5725d60670c13,libhttp_body-06496ee54db890ba,libhttp-489c94ec706f2fec,libbytes-d6781330b805e419,libsha2-1681d3e6622808ae,libcpufeatures-8371cf97c1209807,libdigest-88e85f41e4183e81,libblock_buffer-97c069863322c9e0,libcrypto_common-328f11b12b34bc22,libgeneric_array-39dbc3bd0202e859,libtypenum-dd5a30518b26858f,librusqlite-81e3c615e2ed1461,libbitflags-426661a0a903a93c,libsmallvec-c27c1ef66be3ef84,libfallible_streaming_iterator-9fc3f0caefe8db0d,libfallible_iterator-55200d46279fb0bd,libhashlink-02e9acbd08785554,libhashbrown-3928f71f86e75d40,libahash-1b51446c60149389,libonce_cell-2565311cad9f2da9,libcfg_if-7db0968296cf6d39,libzerocopy-1bb784510badaebb,liblibsqlite3_sys-a33e04fb1d4c142b,libserde_json-33712a882672a1dc,libmemchr-fd3494b1a8fd9017,libitoa-2671aa452abccd39,libzmij-3cf01cd5a3363f72,libchrono-56b15ca77585fa77,libwindows_link-d2f160bb0547be5e,libnum_traits-9ada6e9ca8a8edc8,libserde-8a1996bfcefd0ec7,libserde_core-74142dc14684ad3d}.rlib" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libstd-*,libpanic_unwind-*,libcfg_if-*,libwindows_link-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libunwind-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "kernel32.lib" "ntdll.lib" "advapi32.lib" "shell32.lib" "ole32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib\\windows.0.52.0.lib" "advapi32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib\\windows.0.53.0.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "ntdll.lib" "userenv.lib" "ws2_32.lib" "dbghelp.lib" "/defaultlib:msvcrt" "/NXCOMPAT" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\libsqlite3-sys-2589d48684c56b81\\out" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\webview2-com-sys-42d2ae0f5c8df1cb\\out\\x64" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib" "/OUT:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\clipboard_perf-f74753a90d8661a6.exe" "/OPT:REF,NOICF" "/DEBUG" "/PDBALTPATH:%_PDB%" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\intrinsic.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\liballoc.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libcore.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libstd.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcv5hlaR\\clipboard_perf-0.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcv5hlaR\\clipboard_perf-1.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcv5hlaR\\clipboard_perf-2.natvis" "/NODEFAULTLIB:libvcruntimed.lib" "/NODEFAULTLIB:vcruntime.lib" "/NODEFAULTLIB:vcruntimed.lib" "/NODEFAULTLIB:libcmtd.lib" "/NODEFAULTLIB:msvcrt.lib" "/NODEFAULTLIB:msvcrtd.lib" "/NODEFAULTLIB:libucrt.lib" "/NODEFAULTLIB:libucrtd.lib" "/DEFAULTLIB:libcmt.lib" "/DEFAULTLIB:libvcruntime.lib" "/DEFAULTLIB:ucrt.lib"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: LINK : fatal error LNK1318: 非意外的 PDB 错误: LIMIT (12)“D:\Develop\task_dock\src-tauri\target-gate\debug\deps\clipboard_perf-f74753a90d8661a6.pdb”
+          
+
+error: could not compile `task-dock` (test "clipboard_perf") due to 1 previous error
+error: linking with `link.exe` failed: exit code: 1201
+  |
+  = note: "C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Tools\\MSVC\\14.51.36231\\bin\\HostX64\\x64\\link.exe" "/NOLOGO" "D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcGBqKZR\\symbols.o" "<57 object files omitted>" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libtest-*,libgetopts-*,librustc_std_workspace_std-*}.rlib" "D:\\Develop\\task_dock\\src-tauri\\target-gate\\debug\\deps/{libtask_dock_lib,libtracing_subscriber-057e8ed88ebe426d,libsharded_slab-8ba457e32c0a7368,liblazy_static-8665586f781aa239,libmatchers-3260f8eac270cc2a,libnu_ansi_term-eb82ef14cbed3eff,libthread_local-b954ccf0707e47cc,libtracing_log-078e3cf24d976d74,libtauri_plugin_single_instance-530db76558c2c757,liblnk-b96c4ac10b208224,libbitflags-bcc7c6ba485b329a,libbyteorder-4d93519b2e6bb4a2,libwindow_vibrancy-cd35ac58d950aefe,libtracing-5e303d78370b441d,libtracing_core-8e91ac65b2988746,libtauri_plugin_global_shortcut-a38171c3c710f5b6,libglobal_hotkey-2ced35404f783231,libkeyboard_types-48650f95976689be,libtauri_plugin_dialog-4f1208c9ea6adebb,librfd-538354e0e6edbaed,libtauri_plugin_fs-22e5640a9a22e4ca,libtauri_plugin_opener-645549176e289e12,libopen-28ba3319e1aa1807,libwinreg-047c4ce88336ebc2,libwindows_sys-29120a4c8b505a1d,libwindows_targets-590feafdefb3c496,libtauri_plugin_autostart-d50b9532283c81e8,libauto_launch-15b35016d5f71fc4,libos_info-787bacc0192165a4,libwindows_registry-7f287e0392e8241f,libtauri_plugin_notification-90830183817e962a,librand-bca8c99d2c690563,librand_chacha-82fe7c192a4e759e,libppv_lite86-35914bc3320a9d59,librand_core-5816ecbb78a5c80e,libnotify_rust-b032b1a7b85c35bd,libtauri_winrt_notification-471d75d707f664d0,libtauri-130f095ecb107856,libdirs-40fca6ae0a1a534f,libdirs_sys-e52d7b2a71723b4b,liboption_ext-67d9f5da85bf83ef,libwindow_vibrancy-6a07235f1a0ede37,libmime-5ebd57ae1089c459,libgetrandom-d877269b6f34fc03,libimage-a7f960e77e91961c,libbytemuck-0cd88b7a03a1dfd1,libbyteorder_lite-9a3f6a89142db763,libmoxcms-152a36d15a6f720a,libpxfm-ac1c72582d9a8e42,libpng-1c84290379bb9df8,libflate2-2ba8c655ede105c7,libminiz_oxide-fa9751969d90bf3b,libfdeflate-830012d2d485ae65,libsimd_adler32-82098859a6610d4e,libcrc32fast-5812bc2b29450487,libtauri_runtime_wry-d2a11f81cf0189b7,libsoftbuffer-a3ef656f3a312f32,libwry-161c735baa6447fa,libtao-16d51c983a1ffab2,libwindows_version-613fcb40e0b7cb99,libunicode_segmentation-c716c9ab8d026d00,libparking_lot-f1e4b2326a64fe77,libparking_lot_core-556101293546d865,liblock_api-b0b014ba706d527d,libscopeguard-43b7de8c906f0ce3,liblog-37db645f776ad51f,libtray_icon-4aba999c1cf8d115,libmuda-52d7fd15c8826137,libcrossbeam_channel-3dd3492dc4184769,libcrossbeam_utils-c2a7ab1674c6a983,libkeyboard_types-506d97a484ed7472,libtauri_runtime-a300af2681ecc6a9,libwebview2_com-7e8bfd503b6ac7a8,libwebview2_com_sys-46b1819e1d937159,libcookie-f1d333da90dbd960,libwindows-1025a72c93d6852a,libwindows_collections-a26f6aa60b54c996,libwindows_future-7400d975458017e0,libwindows_threading-1a07b39acef9b125,libwindows_core-f7fb598bbe3fc96c,libwindows_strings-e6c3d5ecfe2bd4c7,libwindows_result-0709f54c2c74d8de,libdpi-428d85b7371f95bb,libserialize_to_javascript-694f55e28212fb68,libraw_window_handle-85e7c6b858fa242a,libtauri_utils-d60df38cd002c04e,libdunce-3bbf492c93751cb6,libinfer-789be137e5343420,libcfb-e4c90f242b016fd9,libweb_time-6c8a6a2036e3eda0,libfnv-718c0e003653b645,libuuid-b679816028f4db29,libgetrandom-23a8bd03ff22ed92,libbrotli-a2502a946cd4a2be,libbrotli_decompressor-46cbd6fc6286f4dc,liballoc_stdlib-294eff6f868cc396,liballoc_no_stdlib-0b6e9dc65b5342d4,liburlpattern-d9517049fcf03280,libregex-329511b41a05d504,libregex_automata-b8749d18c9564c84,libaho_corasick-a6fe793e434de496,libregex_syntax-5ba8a5be732f5017,libglob-58ef35162c16499b,libwalkdir-c114632b4dc972dc,libsame_file-b13dc18be501b5c3,libwinapi_util-ca2d6a004922979f,libctor-7658dab8343621d0,libplist-a727a9dc9b9284c2,libtime-a3eba71895def5b5,libpowerfmt-c2f48f68315a93d8,libnum_conv-6039523dce9d96a9,libderanged-220db720f9204b25,libtime_core-089f464278787487,libquick_xml-c7d72734c0efc2ef,libbase64-0b3b5cb7d752ce07,libindexmap-1e4ed4acb47d1bbd,libequivalent-bcba1df92b1c5e11,libhashbrown-d655d88fa2a50db5,libjson_patch-e6cac7a0165c2bd2,libjsonptr-7489d4c638ff8f6d,libserde_with-cbadbf38dec452cc,libphf-9e6242cdc025c31f,libphf_shared-c00d3f4ce53bf424,libsiphasher-14f6d2faf6ffb77d,libtoml-f668b0138a378629,libtoml_writer-977e63d7a23d8118,libtoml_parser-4b872ff72350abc3,libwinnow-31d2274f84ae956b,libserde_spanned-5f15b545479cc20f,libtoml_datetime-96733e47cdeb15d3,libserde_untagged-5affb62ef68dce7c,liberased_serde-b6810526ab5929a7,libtypeid-54ded009c49a74c8,liburl-c4e954b2b7bbb988,libidna-089130fe1ee59937,libidna_adapter-d426645a41034e1d,libicu_properties-0e5b18a8cbaa8bfa,libicu_properties_data-feffc7a3eac20189,libicu_normalizer-50898b83bfb13c36,libicu_normalizer_data-1336c476c206629e,libicu_collections-5858d11741caadeb,libutf8_iter-750510237b1ffb7d,libpotential_utf-ec3709bbba7d77ed,libicu_provider-9111e4aec85faa72,libicu_locale_core-acf7e84c72755bf6,libtinystr-032db2341feebae1,liblitemap-04e830be1ffecfa4,libwriteable-14061b4f922d7e56,libzerovec-ca68e28fbf8fe215,libzerotrie-8254f0e98b297c51,libyoke-97f5bd96471a41c3,libstable_deref_trait-e11c66869e64fa55,libzerofrom-1cc71ee97d664ca6,libform_urlencoded-3e41bbcde0cb36ab,libpercent_encoding-dcc8de800d85c95d,libthiserror-ba1e08c36a6e93ce,libanyhow-838f21ce53020717,libsemver-893696602b283328,libwindows_sys-6f7df6f716d58c7c,libwindows_targets-cb79204816494ca5,libhyper_util-bc148f2f46415d36,libhyper-52fe5c93a4d13788,libhttparse-1d44b1d5b2b84e1d,libtokio-751849957d8c6164,libsocket2-04ccef6a4d9b6de0,libmio-e836f2addf4e237a,libwindows_sys-fd7fe91f511d1890,libhttpdate-e23a11d823d7e1c0,libatomic_waker-de3ef4b7faa6c845,libhttp_body_util-1acfc94884f6d76d,libpin_project_lite-f7bef5802155e12f,libfutures_core-72e5725d60670c13,libhttp_body-06496ee54db890ba,libhttp-489c94ec706f2fec,libbytes-d6781330b805e419,libsha2-1681d3e6622808ae,libcpufeatures-8371cf97c1209807,libdigest-88e85f41e4183e81,libblock_buffer-97c069863322c9e0,libcrypto_common-328f11b12b34bc22,libgeneric_array-39dbc3bd0202e859,libtypenum-dd5a30518b26858f,librusqlite-81e3c615e2ed1461,libbitflags-426661a0a903a93c,libsmallvec-c27c1ef66be3ef84,libserde_json-33712a882672a1dc,libmemchr-fd3494b1a8fd9017,libitoa-2671aa452abccd39,libzmij-3cf01cd5a3363f72,libfallible_streaming_iterator-9fc3f0caefe8db0d,libfallible_iterator-55200d46279fb0bd,libhashlink-02e9acbd08785554,libhashbrown-3928f71f86e75d40,libahash-1b51446c60149389,libonce_cell-2565311cad9f2da9,libcfg_if-7db0968296cf6d39,libzerocopy-1bb784510badaebb,liblibsqlite3_sys-a33e04fb1d4c142b,libchrono-56b15ca77585fa77,libwindows_link-d2f160bb0547be5e,libnum_traits-9ada6e9ca8a8edc8,libserde-8a1996bfcefd0ec7,libserde_core-74142dc14684ad3d}.rlib" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libstd-*,libpanic_unwind-*,libcfg_if-*,libwindows_link-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libunwind-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "kernel32.lib" "ntdll.lib" "advapi32.lib" "shell32.lib" "ole32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib\\windows.0.52.0.lib" "advapi32.lib" "C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib\\windows.0.53.0.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "ntdll.lib" "userenv.lib" "ws2_32.lib" "dbghelp.lib" "/defaultlib:msvcrt" "/NXCOMPAT" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\libsqlite3-sys-2589d48684c56b81\\out" "/LIBPATH:D:/Develop/task_dock/src-tauri/target-gate\\debug\\build\\webview2-com-sys-42d2ae0f5c8df1cb\\out\\x64" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.53.1\\lib" "/LIBPATH:C:\\Users\\ASUS\\.cargo\\registry\\src\\rsproxy.cn-e3de039b2554c837\\windows_x86_64_msvc-0.52.6\\lib" "/OUT:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\actions_perf-cbbd029806e208b8.exe" "/OPT:REF,NOICF" "/DEBUG" "/PDBALTPATH:%_PDB%" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\intrinsic.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\liballoc.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libcore.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libstd.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcGBqKZR\\actions_perf-0.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcGBqKZR\\actions_perf-1.natvis" "/NATVIS:D:/Develop/task_dock/src-tauri/target-gate\\debug\\deps\\rustcGBqKZR\\actions_perf-2.natvis" "/NODEFAULTLIB:libvcruntimed.lib" "/NODEFAULTLIB:vcruntime.lib" "/NODEFAULTLIB:vcruntimed.lib" "/NODEFAULTLIB:libcmtd.lib" "/NODEFAULTLIB:msvcrt.lib" "/NODEFAULTLIB:msvcrtd.lib" "/NODEFAULTLIB:libucrt.lib" "/NODEFAULTLIB:libucrtd.lib" "/DEFAULTLIB:libcmt.lib" "/DEFAULTLIB:libvcruntime.lib" "/DEFAULTLIB:ucrt.lib"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: LINK : fatal error LNK1201: 写入程序数据库“D:\Develop\task_dock\src-tauri\target-gate\debug\deps\actions_perf-cbbd029806e208b8.pdb”时出错；请检查是否是磁盘空间不足、路径无效或权限不够
+          
+
+error: could not compile `task-dock` (test "actions_perf") due to 1 previous error
+exit_code=101

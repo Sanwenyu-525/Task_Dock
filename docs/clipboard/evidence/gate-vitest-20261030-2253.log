@@ -1,0 +1,1213 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock[39m
+
+ [32m✓[39m src/components/clipboard/AgentExportPanel.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 3444[2mms[22m[39m
+   [33m[2m✓[22m[39m AgentExportPanel[2m > [22m区分直接发送、文件导入、桌面粘贴与本地导出 [33m 2593[2mms[22m[39m
+   [33m[2m✓[22m[39m AgentExportPanel[2m > [22m导出只生成本地文件包，并明确提示未发送 [33m 849[2mms[22m[39m
+ [31m❯[39m src/components/ui/Popover.edge.test.tsx [2m([22m[2m3 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 6134[2mms[22m[39m
+[31m   [31m×[31m 弹层边缘定位[2m > [22m下方空间充足时向下展开[39m[33m 5172[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m 弹层边缘定位[2m > [22m底部空间不足时自动向上翻转 [33m 390[2mms[22m[39m
+   [33m[2m✓[22m[39m 弹层边缘定位[2m > [22m弹层挂在 document.body 上，不受内容区裁剪 [33m 570[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/PastePanel.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 5470[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m展示分类间隔；开始后显示逐项状态与剩余数量 [33m 4328[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m取消只发送取消请求，不把未确认当作失败 [33m 754[2mms[22m[39m
+   [33m[2m✓[22m[39m PastePanel[2m > [22m完成后显示如实结论，不再提供取消或继续入口 [33m 386[2mms[22m[39m
+ [32m✓[39m src/components/actions/ActionCenterPanel.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 7276[2mms[22m[39m
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m同时展示需关注、需介入、通知、历史与当前筛选/已加载 [33m 2091[2mms[22m[39m
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m切换到通知分类后不展示优先级筛选，并显示通知空态 [33m 3783[2mms[22m[39m
+   [33m[2m✓[22m[39m ActionCenterPanel 三层展示[2m > [22m加载更多使用后端游标追加，且按钮展示已加载/总数 [33m 1068[2mms[22m[39m
+ [31m❯[39m src/components/ui/TooltipLayer.test.tsx [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 12102[2mms[22m[39m
+[31m   [31m×[31m 全局提示条层[2m > [22m悬停带 data-tip 的控件后出现提示，内容取自 data-tip[39m[33m 10764[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [32m✓[39m 全局提示条层[2m > [22m键盘聚焦同样会给出提示[32m 291[2mms[22m[39m
+   [33m[2m✓[22m[39m 全局提示条层[2m > [22m提示条关闭时不抢走焦点 [33m 613[2mms[22m[39m
+   [32m✓[39m 全局提示条层[2m > [22mEscape 收起提示条但不消费按键（窗口级 Escape 仍生效）[32m 289[2mms[22m[39m
+ [31m❯[39m src/components/tasks/TasksPanel.test.tsx [2m([22m[2m2 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 7264[2mms[22m[39m
+[31m   [31m×[31m TasksPanel 筛选交互[2m > [22m点击搜索按钮展开输入框，输入关键词过滤任务列表[39m[33m 5162[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m TasksPanel 筛选交互[2m > [22m清空搜索恢复全部；点击状态按钮过滤任务列表 [33m 2034[2mms[22m[39m
+ [32m✓[39m src/components/history/HistoryPanel.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 9273[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 订阅生命周期[2m > [22m卸载后才兑现的监听 Promise 会被立即反订阅 [33m 1985[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 订阅生命周期[2m > [22m挂载期间建立的监听在卸载时释放 [33m 379[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 全局未读与筛选[2m > [22m时间筛选从第一页重新查询，并把 since 传给两条数据流 [33m 3087[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 全局未读与筛选[2m > [22m清空通知后 Agent 事件仍在时间轴中 [33m 526[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m加载更早事件使用最旧 ID 作游标并展示已加载/总数 [33m 1048[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m刷新页与已加载页不重叠时提示刷新，不合并出带缺口的时间轴 [33m 1174[2mms[22m[39m
+   [33m[2m✓[22m[39m HistoryPanel 分页与刷新空隙[2m > [22m首屏为空后到达的新事件会重新启用「加载更早」 [33m 854[2mms[22m[39m
+ [32m✓[39m src/components/ui/Select.test.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 10096[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m渲染触发器并暴露 combobox 语义 [33m 5523[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m点击展开并列出选项，已选项可辨识 [33m 1747[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m方向键导航 + Enter 选择 [33m 558[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22mEscape 只关闭菜单，焦点回到触发器 [33m 366[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m点击外部关闭菜单 [33m 300[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22mTab 正常离开（收起菜单但不拦截焦点移动） [33m 606[2mms[22m[39m
+   [33m[2m✓[22m[39m Select 基元[2m > [22m长列表：跳到末尾时把高亮项滚进可视区域 [33m 564[2mms[22m[39m
+ [31m❯[39m src/components/FullView.test.tsx [2m([22m[2m6 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 8187[2mms[22m[39m
+[31m   [31m×[31m 完整模式左侧导航[2m > [22m渲染六个导航入口与底部快捷入口[39m[33m 6068[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m 完整模式左侧导航[2m > [22m点击导航切换面板，并保留 aria-current 语义 [33m 1444[2mms[22m[39m
+   [33m[2m✓[22m[39m 完整模式左侧导航[2m > [22m剪贴板是第 4 个入口，点击后进入剪贴板页面 [33m 313[2mms[22m[39m
+   [32m✓[39m 完整模式左侧导航[2m > [22m徽标复用任务统计与行动中心计数[32m 99[2mms[22m[39m
+   [32m✓[39m 完整模式左侧导航[2m > [22m底部快速添加入口：切回任务页并触发聚焦信号[32m 244[2mms[22m[39m
+   [32m✓[39m 完整模式左侧导航[2m > [22m行动中心关闭时不显示行动徽标（与行动中心口径一致）[32m 17[2mms[22m[39m
+ [31m❯[39m src/components/TitleBar.test.tsx [2m([22m[2m3 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 9054[2mms[22m[39m
+[31m   [31m×[31m TitleBar 剪贴板入口[2m > [22m完整模式不显示剪贴板按钮（入口在左侧导航）[39m[33m 5451[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m TitleBar 剪贴板入口[2m > [22m紧凑模式保留剪贴板按钮，点击后打开抽屉 [33m 2894[2mms[22m[39m
+   [33m[2m✓[22m[39m TitleBar 剪贴板入口[2m > [22m极简模式保留剪贴板按钮，再次点击关闭抽屉 [33m 706[2mms[22m[39m
+ [31m❯[39m src/components/tasks/TaskEditor.test.tsx [2m([22m[2m7 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 10033[2mms[22m[39m
+[31m   [31m×[31m 只修改标题时不提交重复规则或未修改的时间[39m[33m 5857[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m 只修改 描述 时不重写重复规则 [33m 1355[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 优先级 时不重写重复规则 [33m 537[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 标签（逗号分隔） 时不重写重复规则 [33m 325[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 提醒时间 时不重写重复规则 [33m 522[2mms[22m[39m
+   [33m[2m✓[22m[39m 只修改 截止时间 时不重写重复规则 [33m 354[2mms[22m[39m
+   [33m[2m✓[22m[39m 主动取消或修改重复规则时提交明确意图 [33m 1080[2mms[22m[39m
+ [31m❯[39m src/components/tasks/QuickAdd.test.tsx [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 9106[2mms[22m[39m
+[31m   [31m×[31m QuickAdd[2m > [22m输入自然语言 + Enter：先解析出预览，再 Enter 创建（store/bridge 被正确调用）[39m[33m 5215[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22mEscape 关闭：预览消失、可重新编辑 [33m 2523[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m创建进行中禁用重复提交：挂起期间连按 Enter 只创建一次 [33m 757[2mms[22m[39m
+   [33m[2m✓[22m[39m QuickAdd[2m > [22m创建失败：错误 toast 可见且输入不丢失 [33m 609[2mms[22m[39m
+ [31m❯[39m src/components/ui/DropdownMenu.test.tsx [2m([22m[2m11 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 14409[2mms[22m[39m
+[31m   [31m×[31m DropdownMenu 基元[2m > [22m触发器暴露 menu 语义与展开状态[39m[33m 9436[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m点击展开、再次点击收起 [33m 1126[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m方向键在菜单项之间移动，并跳过禁用项 [33m 927[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22mEnter 触发当前高亮项并收起菜单 [33m 876[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22mHome / End 跳到首尾可用项 [33m 535[2mms[22m[39m
+   [33m[2m✓[22m[39m DropdownMenu 基元[2m > [22m禁用项不可触发，菜单保持展开 [33m 538[2mms[22m[39m
+   [32m✓[39m DropdownMenu 基元[2m > [22m字母键快速定位到对应菜单项[32m 248[2mms[22m[39m
+   [32m✓[39m DropdownMenu 基元[2m > [22mEscape 只关闭菜单，焦点回到触发器[32m 176[2mms[22m[39m
+   [32m✓[39m DropdownMenu 基元[2m > [22m点击外部关闭菜单[32m 144[2mms[22m[39m
+   [32m✓[39m DropdownMenu 基元[2m > [22m单选组用 menuitemradio + aria-checked 表达选中态[32m 142[2mms[22m[39m
+   [32m✓[39m DropdownMenu 基元[2m > [22m禁用的触发器打不开菜单[32m 156[2mms[22m[39m
+ [31m❯[39m src/components/navigation/TargetMenu.test.tsx [2m([22m[2m6 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 7420[2mms[22m[39m
+[31m   [31m×[31m TargetMenu 键盘交互[2m > [22m打开即聚焦第 0 项；工作区入口排第 0 位、索引与 DOM 顺序一致[39m[33m 6201[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m TargetMenu 键盘交互[2m > [22mArrowDown/ArrowUp 循环移动焦点，首尾自动回绕 [33m 954[2mms[22m[39m
+   [32m✓[39m TargetMenu 键盘交互[2m > [22mEnter 触发当前焦点项：目标项走 onNavigate 并关闭菜单[32m 136[2mms[22m[39m
+   [32m✓[39m TargetMenu 键盘交互[2m > [22mEnter 在工作区入口触发 onOpenAll（旧缺陷回归：工作区必须可键盘触发）[32m 32[2mms[22m[39m
+   [32m✓[39m TargetMenu 键盘交互[2m > [22mEscape 关闭菜单[32m 50[2mms[22m[39m
+   [32m✓[39m TargetMenu 键盘交互[2m > [22m没有工作区入口时目标从索引 0 开始[32m 44[2mms[22m[39m
+ [32m✓[39m src/components/clipboard/ClipboardPanel.test.tsx [2m([22m[2m9 tests[22m[2m)[22m[33m 9798[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m进入页面即拉取历史，并渲染条目与统计 [33m 3283[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m类型筛选会带着新的 kind 重新拉取 [33m 2837[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m只看收藏会以 favorite=true 重新拉取 [33m 874[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m搜索输入防抖后按关键词重新拉取 [33m 1253[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m复制单条：调用后端命令并回报结果 [33m 440[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m复制失败时给出错误提示，不静默吞掉 [33m 317[2mms[22m[39m
+   [33m[2m✓[22m[39m 剪贴板主页面[2m > [22m页面形态没有关闭按钮（那是抽屉才有的） [33m 311[2mms[22m[39m
+ [31m❯[39m src/components/ui/DateTimePicker.test.tsx [2m([22m[2m10 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 11310[2mms[22m[39m
+[31m   [31m×[31m DateTimePicker 数据完整性[2m > [22m触发器展示本地时间，展开后 aria-expanded 为真[39m[33m 5398[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m只是打开浮层不会改值（不截断秒数） [33m 1365[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m点回原来那一天不产生变更 [33m 1299[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m换日期保留原来的时分 [33m 1610[2mms[22m[39m
+   [32m✓[39m DateTimePicker 数据完整性[2m > [22m改时间保留原来的日期[32m 186[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m非法输入只提示不提交 [33m 305[2mms[22m[39m
+   [32m✓[39m DateTimePicker 数据完整性[2m > [22m直接键入合法时间可以提交[32m 181[2mms[22m[39m
+   [32m✓[39m DateTimePicker 数据完整性[2m > [22m清空会提交空值并触发 onClear[32m 121[2mms[22m[39m
+   [32m✓[39m DateTimePicker 数据完整性[2m > [22m两个实例互不干扰（截止时间与提醒时间）[32m 296[2mms[22m[39m
+   [33m[2m✓[22m[39m DateTimePicker 数据完整性[2m > [22m日历网格支持方向键移动焦点 [33m 545[2mms[22m[39m
+ [31m❯[39m src/components/navigation/AppPicker.test.tsx [2m([22m[2m8 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[33m 12281[2mms[22m[39m
+[31m   [31m×[31m AppPicker[2m > [22m渲染应用列表；搜索框输入与分类按钮切换都能过滤列表[39m[33m 5524[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[31m   [31m×[31m AppPicker[2m > [22m点击应用项：按 TargetInput 保存目标 → 关联任务 → 关闭弹窗[39m[33m 2461[2mms[22m[39m
+[31m     → expected "spy" to be called 1 times, but got 0 times
+
+Ignored nodes: comments, script, style
+[36m<html>[31m
+  [36m<head />[31m
+  [36m<body>[31m
+    [36m<div>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"modal-mask"[31m
+      [36m>[31m
+        [36m<div[31m
+          [33maria-label[31m=[32m"选择关联目标"[31m
+          [33maria-modal[31m=[32m"true"[31m
+          [33mclass[31m=[32m"modal app-picker"[31m
+          [33mrole[31m=[32m"dialog"[31m
+          [33mtabindex[31m=[32m"-1"[31m
+        [36m>[31m
+          [36m<div[31m
+            [33mclass[31m=[32m"modal-head"[31m
+          [36m>[31m
+            [36m<span>[31m
+              [36m<svg[31m
+                [33mclass[31m=[32m"lucide lucide-app-window"[31m
+                [33mfill[31m=[32m"none"[31m
+                [33mheight[31m=[32m"14"[31m
+                [33mstroke[31m=[32m"currentColor"[31m
+                [33mstroke-linecap[31m=[32m"round"[31m
+                [33mstroke-linejoin[31m=[32m"round"[31m
+                [33mstroke-width[31m=[32m"2"[31m
+                [33mviewBox[31m=[32m"0 0 24 24"[31m
+                [33mwidth[31m=[32m"14"[31m
+                [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+              [36m>[31m
+                [36m<rect[31m
+                  [33mheight[31m=[32m"16"[31m
+                  [33mrx[31m=[32m"2"[31m
+                  [33mwidth[31m=[32m"20"[31m
+                  [33mx[31m=[32m"2"[31m
+                  [33my[31m=[32m"4"[31m
+                [36m/>[31m
+                [36m<path[31m
+                  [33md[31m=[32m"M10 4v4"[31m
+                [36m/>[31m
+                [36m<path[31m
+                  [33md[31m=[32m"M2 8h20"[31m
+                [36m/>[31m
+                [36m<path[31m
+                  [33md[31m=[32m"M6 4v4"[31m
+                [36m/>[31m
+              [36m</svg>[31m
+              [0m 选择关联目标[0m
+              [0m（将关联到任务）[0m
+            [36m</span>[31m
+            [36m<button[31m
+              [33maria-label[31m=[32m"关闭"[31m
+              [33mclass[31m=[32m"icon-btn sm"[31m
+            [36m>[31m
+              [36m<svg[31m
+                [33mclass[31m=[32m"lucide lucide-x"[31m
+                [33mfill[31m=[32m"none"[31m
+                [33mheight[31m=[32m"14"[31m
+                [33mstroke[31m=[32m"currentColor"[31m
+                [33mstroke-linecap[31m=[32m"round"[31m
+                [33mstroke-linejoin[31m=[32m"round"[31m
+                [33mstroke-width[31m=[32m"2"[31m
+                [33mviewBox[31m=[32m"0 0 24 24"[31m
+                [33mwidth[31m=[32m"14"[31m
+                [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+              [36m>[31m
+                [36m<path[31m
+                  [33md[31m=[32m"M18 6 6 18"[31m
+                [36m/>[31m
+                [36m<path[31m
+                  [33md[31m=[32m"m6 6 12 12"[31m
+                [36m/>[31m
+              [36m</svg>[31m
+            [36m</button>[31m
+          [36m</div>[31m
+          [36m<div[31m
+            [33mclass[31m=[32m"modal-body"[31m
+          [36m>[31m
+            [36m<div[31m
+              [33mclass[31m=[32m"picker-search-row"[31m
+            [36m>[31m
+              [36m<div[31m
+                [33mclass[31m=[32m"picker-search"[31m
+              [36m>[31m
+                [36m<svg[31m
+                  [33mclass[31m=[32m"lucide lucide-search"[31m
+                  [33mfill[31m=[32m"none"[31m
+                  [33mheight[31m=[32m"12"[31m
+                  [33mstroke[31m=[32m"currentColor"[31m
+                  [33mstroke-linecap[31m=[32m"round"[31m
+                  [33mstroke-linejoin[31m=[32m"round"[31m
+                  [33mstroke-width[31m=[32m"2"[31m
+                  [33mviewBox[31m=[32m"0 0 24 24"[31m
+                  [33mwidth[31m=[32m"12"[31m
+                  [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+                [36m>[31m
+                  [36m<circle[31m
+                    [33mcx[31m=[32m"11"[31m
+                    [33mcy[31m=[32m"11"[31m
+                    [33mr[31m=[32m"8"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"m21 21-4.3-4.3"[31m
+                  [36m/>[31m
+                [36m</svg>[31m
+                [36m<input[31m
+                  [33maria-label[31m=[32m"搜索应用"[31m
+                  [33mdata-autofocus[31m=[32m"true"[31m
+                  [33mplaceholder[31m=[32m"搜索已安装软件…"[31m
+                  [33mvalue[31m=[32m"chr"[31m
+                [36m/>[31m
+              [36m</div>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"btn sm"[31m
+                [33mtitle[31m=[32m"重新扫描开始菜单 / 注册表 / 应用商店（不扫描全盘）"[31m
+              [36m>[31m
+                [36m<svg[31m
+                  [33mclass[31m=[32m"lucide lucide-refresh-cw"[31m
+                  [33mfill[31m=[32m"none"[31m
+                  [33mheight[31m=[32m"12"[31m
+                  [33mstroke[31m=[32m"currentColor"[31m
+                  [33mstroke-linecap[31m=[32m"round"[31m
+                  [33mstroke-linejoin[31m=[32m"round"[31m
+                  [33mstroke-width[31m=[32m"2"[31m
+                  [33mviewBox[31m=[32m"0 0 24 24"[31m
+                  [33mwidth[31m=[32m"12"[31m
+                  [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+                [36m>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M21 3v5h-5"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M8 16H3v5"[31m
+                  [36m/>[31m
+                [36m</svg>[31m
+                [0m [0m
+                [0m刷新[0m
+              [36m</button>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"btn sm"[31m
+              [36m>[31m
+                [36m<svg[31m
+                  [33mclass[31m=[32m"lucide lucide-plus"[31m
+                  [33mfill[31m=[32m"none"[31m
+                  [33mheight[31m=[32m"12"[31m
+                  [33mstroke[31m=[32m"currentColor"[31m
+                  [33mstroke-linecap[31m=[32m"round"[31m
+                  [33mstroke-linejoin[31m=[32m"round"[31m
+                  [33mstroke-width[31m=[32m"2"[31m
+                  [33mviewBox[31m=[32m"0 0 24 24"[31m
+                  [33mwidth[31m=[32m"12"[31m
+                  [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+                [36m>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M5 12h14"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M12 5v14"[31m
+                  [36m/>[31m
+                [36m</svg>[31m
+                [0m 手动添加[0m
+              [36m</button>[31m
+            [36m</div>[31m
+            [36m<div[31m
+              [33maria-label[31m=[32m"分类筛选"[31m
+              [33mclass[31m=[32m"seg-group subtle picker-cats"[31m
+              [33mrole[31m=[32m"group"[31m
+            [36m>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"seg-btn active"[31m
+              [36m>[31m
+                [0m全部[0m
+              [36m</button>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"seg-btn "[31m
+              [36m>[31m
+                [0m浏览器[0m
+              [36m</button>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"seg-btn "[31m
+              [36m>[31m
+                [0m通讯[0m
+              [36m</button>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"seg-btn "[31m
+              [36m>[31m
+                [0m音乐[0m
+              [36m</button>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"seg-btn "[31m
+              [36m>[31m
+                [0m开发[0m
+              [36m</button>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"seg-btn "[31m
+              [36m>[31m
+                [0m文件管理[0m
+              [36m</button>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"seg-btn "[31m
+              [36m>[31m
+                [0m应用商店[0m
+              [36m</button>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"seg-btn "[31m
+              [36m>[31m
+                [0m其他[0m
+              [36m</button>[31m
+            [36m</div>[31m
+            [36m<div[31m
+              [33mclass[31m=[32m"picker-windows"[31m
+            [36m>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"link-btn"[31m
+              [36m>[31m
+                [36m<svg[31m
+                  [33mclass[31m=[32m"lucide lucide-monitor"[31m
+                  [33mfill[31m=[32m"none"[31m
+                  [33mheight[31m=[32m"11"[31m
+                  [33mstroke[31m=[32m"currentColor"[31m
+                  [33mstroke-linecap[31m=[32m"round"[31m
+                  [33mstroke-linejoin[31m=[32m"round"[31m
+                  [33mstroke-width[31m=[32m"2"[31m
+                  [33mviewBox[31m=[32m"0 0 24 24"[31m
+                  [33mwidth[31m=[32m"11"[31m
+                  [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+                [36m>[31m
+                  [36m<rect[31m
+                    [33mheight[31m=[32m"14"[31m
+                    [33mrx[31m=[32m"2"[31m
+                    [33mwidth[31m=[32m"20"[31m
+                    [33mx[31m=[32m"2"[31m
+                    [33my[31m=[32m"3"[31m
+                  [36m/>[31m
+                  [36m<line[31m
+                    [33mx1[31m=[32m"8"[31m
+                    [33mx2[31m=[32m"16"[31m
+                    [33my1[31m=[32m"21"[31m
+                    [33my2[31m=[32m"21"[31m
+                  [36m/>[31m
+                  [36m<line[31m
+                    [33mx1[31m=[32m"12"[31m
+                    [33mx2[31m=[32m"12"[31m
+                    [33my1[31m=[32m"17"[31m
+                    [33my2[31m=[32m"21"[31m
+                  [36m/>[31m
+                [36m</svg>[31m
+                [0m [0m
+                [0m从当前运行的窗口选择…[0m
+              [36m</button>[31m
+            [36m</div>[31m
+            [36m<div[31m
+              [33mclass[31m=[32m"picker-windows"[31m
+            [36m>[31m
+              [36m<button[31m
+                [33mclass[31m=[32m"link-btn"[31m
+              [36m>[31m
+                [36m<svg[31m
+                  [33mclass[31m=[32m"lucide lucide-bot"[31m
+                  [33mfill[31m=[32m"none"[31m
+                  [33mheight[31m=[32m"11"[31m
+                  [33mstroke[31m=[32m"currentColor"[31m
+                  [33mstroke-linecap[31m=[32m"round"[31m
+                  [33mstroke-linejoin[31m=[32m"round"[31m
+                  [33mstroke-width[31m=[32m"2"[31m
+                  [33mviewBox[31m=[32m"0 0 24 24"[31m
+                  [33mwidth[31m=[32m"11"[31m
+                  [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+                [36m>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M12 8V4H8"[31m
+                  [36m/>[31m
+                  [36m<rect[31m
+                    [33mheight[31m=[32m"12"[31m
+                    [33mrx[31m=[32m"2"[31m
+                    [33mwidth[31m=[32m"16"[31m
+                    [33mx[31m=[32m"4"[31m
+                    [33my[31m=[32m"8"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M2 14h2"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M20 14h2"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M15 13v2"[31m
+                  [36m/>[31m
+                  [36m<path[31m
+                    [33md[31m=[32m"M9 13v2"[31m
+                  [36m/>[31m
+                [36m</svg>[31m
+                [0m [0m
+                [0m从 Agent 会话选择…[0m
+              [36m</button>[31m
+            [36m</div>[31m
+            [36m<div[31m
+              [33maria-label[31m=[32m"已安装软件"[31m
+              [33mclass[31m=[32m"picker-list"[31m
+              [33mrole[31m=[32m"listbox"[31m
+            [36m>[31m
+              [36m<button[31m
+                [33maria-selected[31m=[32m"false"[31m
+                [33mclass[31m=[32m"picker-app "[31m
+                [33mrole[31m=[32m"option"[31m
+                [33mtitle[31m=[32m"C:\\Program Files\\chrome\\chrome.exe"[31m
+              [36m>[31m
+                [36m<span[31m
+                  [33mclass[31m=[32m"picker-app-avatar"[31m
+                  [33mstyle[31m=[32m"background: rgb(98, 178, 52);"[31m
+                [36m>[31m
+                  [36m<svg[31m
+                    [33mclass[31m=[32m"lucide lucide-globe"[31m
+                    [33mfill[31m=[32m"none"[31m
+                    [33mheight[31m=[32m"12"[31m
+                    [33mstroke[31m=[32m"currentColor"[31m
+                    [33mstroke-linecap[31m=[32m"round"[31m
+                    [33mstroke-linejoin[31m=[32m"round"[31m
+                    [33mstroke-width[31m=[32m"2"[31m
+                    [33mviewBox[31m=[32m"0 0 24 24"[31m
+                    [33mwidth[31m=[32m"12"[31m
+                    [33mxmlns[31m=[32m"http://www.w3.org/2000/svg"[31m
+                  [36m>[31m
+                    [36m<circle[31m
+                      [33mcx[31m=[32m"12"[31m
+                      [33mcy[31m=[32m"12"[31m
+                      [33mr[31m=[32m"10"[31m
+                    [36m/>[31m
+                    [36m<path[31m
+                      [33md[31m=[32m"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"[31m
+                    [36m/>[31m
+                    [36m<path[31m
+                      [33md[31m=[32m"M2 12h20"[31m
+                    [36m/>[31m
+                  [36m</svg>[31m
+                [36m</span>[31m
+                [36m<span[31m
+                  [33mclass[31m=[32m"picker-app-name"[31m
+                [36m>[31m
+                  [0mChrome[0m
+                [36m</span>[31m
+                [36m<span[31m
+                  [33mclass[31m=[32m"picker-app-meta"[31m
+                [36m/>[31m
+              [36m</button>[31m
+            [36m</div>[31m
+          [36m</div>[31m
+        [36m</div>[31m
+      [36m</div>[31m
+      [36m<div[31m
+        [33mdata-kind[31m=[32m""[31m
+        [33mdata-testid[31m=[32m"toast"[31m
+      [36m/>[31m
+    [36m</div>[31m
+  [36m</body>[31m
+[36m</html>[31m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m点击已关联（linkedKeys 命中）的应用：提示已关联，不重复 navLinkTask [33m 584[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m「从当前运行的窗口选择」展开后渲染窗口条目；点击窗口保存目标并固化窗口身份 [33m 1914[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m窗口身份记录失败时显示错误并保留选择器，便于重试 [33m 465[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22m两个任务重用同一应用时分别更新各自关联的窗口 [33m 766[2mms[22m[39m
+   [33m[2m✓[22m[39m AppPicker[2m > [22mbusyKey 防重复：连点两次同一应用，navSaveTarget 只调用一次 [33m 427[2mms[22m[39m
+   [32m✓[39m AppPicker[2m > [22mnavSaveTarget 失败：错误 toast 可见，弹窗不关闭[32m 137[2mms[22m[39m
+ [31m❯[39m src/components/ui/overlayEscape.test.tsx [2m([22m[2m7 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[33m 12743[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m没有任何弹层时，Escape 才交给窗口级动作（隐藏到托盘） [33m 1365[2mms[22m[39m
+[31m   [31m×[31m Escape 关闭优先级[2m > [22m抽屉打开时，Escape 只关抽屉，主窗口不受影响[39m[33m 6519[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[31m   [31m×[31m Escape 关闭优先级[2m > [22m菜单与抽屉同时存在时，Escape 先关菜单[39m[33m 2973[2mms[22m[39m
+[31m     → Unable to find an accessible element with the role "dialog" and name "临时抽屉"
+
+Here are the accessible roles:
+
+  button:
+
+  Name "打开抽屉":
+  [36m<button[31m
+    [33mtype[31m=[32m"button"[31m
+  [36m/>[31m
+
+  Name "更多":
+  [36m<button[31m
+    [33maria-expanded[31m=[32m"false"[31m
+    [33maria-haspopup[31m=[32m"menu"[31m
+    [33mtype[31m=[32m"button"[31m
+  [36m/>[31m
+
+  Name "打开确认框":
+  [36m<button[31m
+    [33mtype[31m=[32m"button"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<div>[31m
+      [36m<button[31m
+        [33mtype[31m=[32m"button"[31m
+      [36m>[31m
+        [0m打开抽屉[0m
+      [36m</button>[31m
+      [36m<button[31m
+        [33maria-expanded[31m=[32m"false"[31m
+        [33maria-haspopup[31m=[32m"menu"[31m
+        [33mtype[31m=[32m"button"[31m
+      [36m>[31m
+        [0m更多[0m
+      [36m</button>[31m
+      [36m<button[31m
+        [33mtype[31m=[32m"button"[31m
+      [36m>[31m
+        [0m打开确认框[0m
+      [36m</button>[31m
+    [36m</div>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m确认框优先级最高：Escape 先关确认框，菜单与抽屉保持不动 [33m 909[2mms[22m[39m
+   [32m✓[39m Escape 关闭优先级[2m > [22m子弹层优先于抽屉：Escape 先关子弹层[32m 117[2mms[22m[39m
+   [33m[2m✓[22m[39m Escape 关闭优先级[2m > [22m连续按 Escape 逐层关闭，最后一层关闭后主窗口才收到 Escape [33m 668[2mms[22m[39m
+   [32m✓[39m Escape 关闭优先级[2m > [22m菜单关闭后焦点回到触发它的按钮[32m 143[2mms[22m[39m
+ [32m✓[39m src/lib/workspace.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/lib/historyGroup.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/styles-themes.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/lib/theme.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/lib/agentTree.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/lib/navigation.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/lib/subscriptions.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/store/useClipboardStore.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/lib/clipboardUi.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/lib/format.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m src/store/useActionsStore.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 80[2mms[22m[39m
+ [31m❯[39m src/components/clipboard/ClipboardDrawer.test.tsx [2m([22m[2m11 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 12750[2mms[22m[39m
+[31m   [31m×[31m ClipboardDrawer[2m > [22m分页：80/100 时加载更多只追加一页[39m[33m 8900[2mms[22m[39m
+[31m     → Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m监听中、监听线程未启动与手动暂停显示不同状态 [33m 2135[2mms[22m[39m
+   [32m✓[39m ClipboardDrawer[2m > [22m读取失败时显示错误并可重试[32m 75[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m剪贴板配置损坏时提示已暂停，绝不显示监听中 [33m 339[2mms[22m[39m
+   [32m✓[39m ClipboardDrawer[2m > [22m旧版本升级默认暂停并提示用户确认[32m 211[2mms[22m[39m
+   [32m✓[39m ClipboardDrawer[2m > [22mTab 在抽屉内循环：末项回到首项、首项回到末项[32m 69[2mms[22m[39m
+   [32m✓[39m ClipboardDrawer[2m > [22m焦点漏到背景时按 Tab 立即拉回抽屉，蒙层不接收焦点[32m 137[2mms[22m[39m
+   [33m[2m✓[22m[39m ClipboardDrawer[2m > [22m确认框打开时焦点进入弹层，Escape 只关确认框并把焦点还给触发按钮 [33m 339[2mms[22m[39m
+   [32m✓[39m ClipboardDrawer[2m > [22m关联模式：条目卡片出现关联按钮，普通模式不出现[32m 285[2mms[22m[39m
+   [32m✓[39m ClipboardDrawer[2m > [22m关联模式：点击关联后写入后端、提示成功并关闭抽屉[32m 167[2mms[22m[39m
+   [32m✓[39m ClipboardDrawer[2m > [22m关联模式下 Escape 只关抽屉，不会连带关掉任务编辑器[32m 89[2mms[22m[39m
+ [32m✓[39m src/store/useUiStore.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m src/lib/overlayStack.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/store/useAgentsStore.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 73[2mms[22m[39m
+ [32m✓[39m src/store/useClipboardStore.live.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/store/useSettingsStore.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 82[2mms[22m[39m
+ [32m✓[39m src/test/powershellScripts.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 855[2mms[22m[39m
+   [33m[2m✓[22m[39m Windows PowerShell 脚本[2m > [22m全部 .ps1 都能被 PowerShell 解析（零错误） [33m 839[2mms[22m[39m
+ [32m✓[39m src/hooks/useGlobalShortcuts.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[32m 257[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 15 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/components/FullView.test.tsx[2m > [22m完整模式左侧导航[2m > [22m渲染六个导航入口与底部快捷入口
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/FullView.test.tsx:[2m49:3[22m[39m
+    [90m 47| [39m  const navItem = (label: string) => screen.getByRole("button", { name…
+    [90m 48| [39m
+    [90m 49| [39m  [34mit[39m([32m"渲染六个导航入口与底部快捷入口"[39m[33m,[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m 50| [39m    [34mrender[39m([33m<[39m[33mFullView[39m [33m/[39m[33m>[39m)[33m;[39m
+    [90m 51| [39m    [35mconst[39m nav [33m=[39m screen[33m.[39m[34mgetByRole[39m([32m"navigation"[39m[33m,[39m { name[33m:[39m [32m"主导航"[39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/TitleBar.test.tsx[2m > [22mTitleBar 剪贴板入口[2m > [22m完整模式不显示剪贴板按钮（入口在左侧导航）
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/TitleBar.test.tsx:[2m37:3[22m[39m
+    [90m 35| [39m  [34mafterEach[39m(() [33m=>[39m [34mcleanup[39m())[33m;[39m
+    [90m 36| [39m
+    [90m 37| [39m  [34mit[39m([32m"完整模式不显示剪贴板按钮（入口在左侧导航）"[39m[33m,[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m 38| [39m    [34mrender[39m([33m<[39m[33mTitleBar[39m [33m/[39m[33m>[39m)[33m;[39m
+    [90m 39| [39m    expect(screen.queryByRole("button", { name: "打开智能剪贴板" })).toBeNull…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/clipboard/ClipboardDrawer.test.tsx[2m > [22mClipboardDrawer[2m > [22m分页：80/100 时加载更多只追加一页
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/clipboard/ClipboardDrawer.test.tsx:[2m126:3[22m[39m
+    [90m124| [39m  [90m// 只保留列表/分页断言在这一组：80 张卡片在 jsdom 里渲染本身就要秒级，[39m
+    [90m125| [39m  [90m// 状态类断言用下面的小样本，避免把 DOM 体积当成功能问题。[39m
+    [90m126| [39m  [34mit[39m([32m"分页：80/100 时加载更多只追加一页"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m127| [39m    [35mconst[39m { container } [33m=[39m [34mrender[39m([33m<[39m[33mClipboardDrawer[39m [33m/[39m[33m>[39m)[33m;[39m
+    [90m128| [39m    [90m// 80 张卡片在 jsdom 中按 role 扫描很慢；这里只验证分页按钮与追加调用。[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/navigation/AppPicker.test.tsx[2m > [22mAppPicker[2m > [22m渲染应用列表；搜索框输入与分类按钮切换都能过滤列表
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/navigation/AppPicker.test.tsx:[2m176:3[22m[39m
+    [90m174| [39m
+    [90m175| [39m[34mdescribe[39m([32m"AppPicker"[39m[33m,[39m () [33m=>[39m {
+    [90m176| [39m  [34mit[39m([32m"渲染应用列表；搜索框输入与分类按钮切换都能过滤列表"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m177| [39m    [35mconst[39m user [33m=[39m userEvent[33m.[39m[34msetup[39m()[33m;[39m
+    [90m178| [39m    [34mseedStores[39m()[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/navigation/AppPicker.test.tsx[2m > [22mAppPicker[2m > [22m点击应用项：按 TargetInput 保存目标 → 关联任务 → 关闭弹窗
+[31m[1mAssertionError[22m[39m: expected "spy" to be called 1 times, but got 0 times
+
+Ignored nodes: comments, script, style
+[36m<html>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"modal-mask"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33maria-label[39m=[32m"选择关联目标"[39m
+          [33maria-modal[39m=[32m"true"[39m
+          [33mclass[39m=[32m"modal app-picker"[39m
+          [33mrole[39m=[32m"dialog"[39m
+          [33mtabindex[39m=[32m"-1"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"modal-head"[39m
+          [36m>[39m
+            [36m<span>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-app-window"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"14"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<rect[39m
+                  [33mheight[39m=[32m"16"[39m
+                  [33mrx[39m=[32m"2"[39m
+                  [33mwidth[39m=[32m"20"[39m
+                  [33mx[39m=[32m"2"[39m
+                  [33my[39m=[32m"4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M10 4v4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M2 8h20"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M6 4v4"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [0m 选择关联目标[0m
+              [0m（将关联到任务）[0m
+            [36m</span>[39m
+            [36m<button[39m
+              [33maria-label[39m=[32m"关闭"[39m
+              [33mclass[39m=[32m"icon-btn sm"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33mclass[39m=[32m"lucide lucide-x"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"14"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M18 6 6 18"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m6 6 12 12"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+            [36m</button>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"modal-body"[39m
+          [36m>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"picker-search-row"[39m
+            [36m>[39m
+              [36m<div[39m
+                [33mclass[39m=[32m"picker-search"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-search"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"12"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"2"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"12"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<circle[39m
+                    [33mcx[39m=[32m"11"[39m
+                    [33mcy[39m=[32m"11"[39m
+                    [33mr[39m=[32m"8"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"m21 21-4.3-4.3"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [36m<input[39m
+                  [33maria-label[39m=[32m"搜索应用"[39m
+                  [33mdata-autofocus[39m=[32m"true"[39m
+                  [33mplaceholder[39m=[32m"搜索已安装软件…"[39m
+                  [33mvalue[39m=[32m"chr"[39m
+                [36m/>[39m
+              [36m</div>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"btn sm"[39m
+                [33mtitle[39m=[32m"重新扫描开始菜单 / 注册表 / 应用商店（不扫描全盘）"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-refresh-cw"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"12"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"2"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"12"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M21 3v5h-5"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M8 16H3v5"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [0m [0m
+                [0m刷新[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"btn sm"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-plus"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"12"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"2"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"12"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M5 12h14"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M12 5v14"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [0m 手动添加[0m
+              [36m</button>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"分类筛选"[39m
+              [33mclass[39m=[32m"seg-group subtle picker-cats"[39m
+              [33mrole[39m=[32m"group"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"seg-btn active"[39m
+              [36m>[39m
+                [0m全部[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"seg-btn "[39m
+              [36m>[39m
+                [0m浏览器[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"seg-btn "[39m
+              [36m>[39m
+                [0m通讯[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"seg-btn "[39m
+              [36m>[39m
+                [0m音乐[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"seg-btn "[39m
+              [36m>[39m
+                [0m开发[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"seg-btn "[39m
+              [36m>[39m
+                [0m文件管理[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"seg-btn "[39m
+              [36m>[39m
+                [0m应用商店[0m
+              [36m</button>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"seg-btn "[39m
+              [36m>[39m
+                [0m其他[0m
+              [36m</button>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"picker-windows"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"link-btn"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-monitor"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"11"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"2"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"11"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"14"[39m
+                    [33mrx[39m=[32m"2"[39m
+                    [33mwidth[39m=[32m"20"[39m
+                    [33mx[39m=[32m"2"[39m
+                    [33my[39m=[32m"3"[39m
+                  [36m/>[39m
+                  [36m<line[39m
+                    [33mx1[39m=[32m"8"[39m
+                    [33mx2[39m=[32m"16"[39m
+                    [33my1[39m=[32m"21"[39m
+                    [33my2[39m=[32m"21"[39m
+                  [36m/>[39m
+                  [36m<line[39m
+                    [33mx1[39m=[32m"12"[39m
+                    [33mx2[39m=[32m"12"[39m
+                    [33my1[39m=[32m"17"[39m
+                    [33my2[39m=[32m"21"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [0m [0m
+                [0m从当前运行的窗口选择…[0m
+              [36m</button>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33mclass[39m=[32m"picker-windows"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33mclass[39m=[32m"link-btn"[39m
+              [36m>[39m
+                [36m<svg[39m
+                  [33mclass[39m=[32m"lucide lucide-bot"[39m
+                  [33mfill[39m=[32m"none"[39m
+                  [33mheight[39m=[32m"11"[39m
+                  [33mstroke[39m=[32m"currentColor"[39m
+                  [33mstroke-linecap[39m=[32m"round"[39m
+                  [33mstroke-linejoin[39m=[32m"round"[39m
+                  [33mstroke-width[39m=[32m"2"[39m
+                  [33mviewBox[39m=[32m"0 0 24 24"[39m
+                  [33mwidth[39m=[32m"11"[39m
+                  [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                [36m>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M12 8V4H8"[39m
+                  [36m/>[39m
+                  [36m<rect[39m
+                    [33mheight[39m=[32m"12"[39m
+                    [33mrx[39m=[32m"2"[39m
+                    [33mwidth[39m=[32m"16"[39m
+                    [33mx[39m=[32m"4"[39m
+                    [33my[39m=[32m"8"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M2 14h2"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M20 14h2"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M15 13v2"[39m
+                  [36m/>[39m
+                  [36m<path[39m
+                    [33md[39m=[32m"M9 13v2"[39m
+                  [36m/>[39m
+                [36m</svg>[39m
+                [0m [0m
+                [0m从 Agent 会话选择…[0m
+              [36m</button>[39m
+            [36m</div>[39m
+            [36m<div[39m
+              [33maria-label[39m=[32m"已安装软件"[39m
+              [33mclass[39m=[32m"picker-list"[39m
+              [33mrole[39m=[32m"listbox"[39m
+            [36m>[39m
+              [36m<button[39m
+                [33maria-selected[39m=[32m"false"[39m
+                [33mclass[39m=[32m"picker-app "[39m
+                [33mrole[39m=[32m"option"[39m
+                [33mtitle[39m=[32m"C:\\Program Files\\chrome\\chrome.exe"[39m
+              [36m>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"picker-app-avatar"[39m
+                  [33mstyle[39m=[32m"background: rgb(98, 178, 52);"[39m
+                [36m>[39m
+                  [36m<svg[39m
+                    [33mclass[39m=[32m"lucide lucide-globe"[39m
+                    [33mfill[39m=[32m"none"[39m
+                    [33mheight[39m=[32m"12"[39m
+                    [33mstroke[39m=[32m"currentColor"[39m
+                    [33mstroke-linecap[39m=[32m"round"[39m
+                    [33mstroke-linejoin[39m=[32m"round"[39m
+                    [33mstroke-width[39m=[32m"2"[39m
+                    [33mviewBox[39m=[32m"0 0 24 24"[39m
+                    [33mwidth[39m=[32m"12"[39m
+                    [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+                  [36m>[39m
+                    [36m<circle[39m
+                      [33mcx[39m=[32m"12"[39m
+                      [33mcy[39m=[32m"12"[39m
+                      [33mr[39m=[32m"10"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"[39m
+                    [36m/>[39m
+                    [36m<path[39m
+                      [33md[39m=[32m"M2 12h20"[39m
+                    [36m/>[39m
+                  [36m</svg>[39m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"picker-app-name"[39m
+                [36m>[39m
+                  [0mChrome[0m
+                [36m</span>[39m
+                [36m<span[39m
+                  [33mclass[39m=[32m"picker-app-meta"[39m
+                [36m/>[39m
+              [36m</button>[39m
+            [36m</div>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [36m<div[39m
+        [33mdata-kind[39m=[32m""[39m
+        [33mdata-testid[39m=[32m"toast"[39m
+      [36m/>[39m
+    [36m</div>[39m
+  [36m</body>[39m
+[36m</html>[39m
+[36m [2m❯[22m src/components/navigation/AppPicker.test.tsx:[2m209:41[22m[39m
+    [90m207| [39m    await user.click(await screen.findByRole("option", { name: /VS Cod…
+    [90m208| [39m
+    [90m209| [39m    [35mawait[39m [34mwaitFor[39m(() [33m=>[39m [34mexpect[39m(onClose)[33m.[39m[34mtoHaveBeenCalledTimes[39m([34m1[39m))[33m;[39m
+    [90m   | [39m                                        [31m^[39m
+    [90m210| [39m    [34mexpect[39m(vi[33m.[39m[34mmocked[39m(navSaveTarget))[33m.[39m[34mtoHaveBeenCalledWith[39m(
+    [90m211| [39m      expect[33m.[39m[34mobjectContaining[39m({
+[90m [2m❯[22m runWithExpensiveErrorDiagnosticsDisabled node_modules/@testing-library/dom/dist/config.js:[2m47:12[22m[39m
+[90m [2m❯[22m checkCallback node_modules/@testing-library/dom/dist/wait-for.js:[2m124:77[22m[39m
+[90m [2m❯[22m Timeout.checkRealTimersCallback node_modules/@testing-library/dom/dist/wait-for.js:[2m118:16[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/navigation/TargetMenu.test.tsx[2m > [22mTargetMenu 键盘交互[2m > [22m打开即聚焦第 0 项；工作区入口排第 0 位、索引与 DOM 顺序一致
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/navigation/TargetMenu.test.tsx:[2m83:3[22m[39m
+    [90m 81| [39m
+    [90m 82| [39m[34mdescribe[39m([32m"TargetMenu 键盘交互"[39m[33m,[39m () [33m=>[39m {
+    [90m 83| [39m  [34mit[39m([32m"打开即聚焦第 0 项；工作区入口排第 0 位、索引与 DOM 顺序一致"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m 84| [39m    [34mrenderMenu[39m({ onOpenAll[33m:[39m vi[33m.[39m[34mfn[39m() })[33m;[39m
+    [90m 85| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/tasks/QuickAdd.test.tsx[2m > [22mQuickAdd[2m > [22m输入自然语言 + Enter：先解析出预览，再 Enter 创建（store/bridge 被正确调用）
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/tasks/QuickAdd.test.tsx:[2m101:3[22m[39m
+    [90m 99| [39m
+    [90m100| [39m[34mdescribe[39m([32m"QuickAdd"[39m[33m,[39m () [33m=>[39m {
+    [90m101| [39m  it("输入自然语言 + Enter：先解析出预览，再 Enter 创建（store/bridge 被正确调用）", async () …
+    [90m   | [39m  [31m^[39m
+    [90m102| [39m    [35mconst[39m user [33m=[39m userEvent[33m.[39m[34msetup[39m()[33m;[39m
+    [90m103| [39m    vi[33m.[39m[34mmocked[39m(parseQuickAdd)[33m.[39m[34mmockResolvedValue[39m([34mparseFix[39m([32m"开会"[39m))[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/tasks/TaskEditor.test.tsx[2m > [22m只修改标题时不提交重复规则或未修改的时间
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/tasks/TaskEditor.test.tsx:[2m39:1[22m[39m
+    [90m 37| [39m[34mafterEach[39m(cleanup)[33m;[39m
+    [90m 38| [39m
+    [90m 39| [39m[34mit[39m([32m"只修改标题时不提交重复规则或未修改的时间"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m[31m^[39m
+    [90m 40| [39m  [35mconst[39m user [33m=[39m userEvent[33m.[39m[34msetup[39m()[33m;[39m
+    [90m 41| [39m  [34mrender[39m([33m<[39m[33mTaskEditor[39m [33m/[39m[33m>[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/tasks/TasksPanel.test.tsx[2m > [22mTasksPanel 筛选交互[2m > [22m点击搜索按钮展开输入框，输入关键词过滤任务列表
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/tasks/TasksPanel.test.tsx:[2m96:3[22m[39m
+    [90m 94| [39m
+    [90m 95| [39m[34mdescribe[39m([32m"TasksPanel 筛选交互"[39m[33m,[39m () [33m=>[39m {
+    [90m 96| [39m  [34mit[39m([32m"点击搜索按钮展开输入框，输入关键词过滤任务列表"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m 97| [39m    [35mconst[39m user [33m=[39m userEvent[33m.[39m[34msetup[39m()[33m;[39m
+    [90m 98| [39m    [34mseedTasks[39m()[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/ui/DateTimePicker.test.tsx[2m > [22mDateTimePicker 数据完整性[2m > [22m触发器展示本地时间，展开后 aria-expanded 为真
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/ui/DateTimePicker.test.tsx:[2m45:3[22m[39m
+    [90m 43| [39m
+    [90m 44| [39m[34mdescribe[39m([32m"DateTimePicker 数据完整性"[39m[33m,[39m () [33m=>[39m {
+    [90m 45| [39m  [34mit[39m([32m"触发器展示本地时间，展开后 aria-expanded 为真"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m 46| [39m    [35mconst[39m user [33m=[39m userEvent[33m.[39m[34msetup[39m()[33m;[39m
+    [90m 47| [39m    [34mrender[39m([33m<[39m[33mHarness[39m [33m/[39m[33m>[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/ui/DropdownMenu.test.tsx[2m > [22mDropdownMenu 基元[2m > [22m触发器暴露 menu 语义与展开状态
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/ui/DropdownMenu.test.tsx:[2m75:3[22m[39m
+    [90m 73| [39m
+    [90m 74| [39m[34mdescribe[39m([32m"DropdownMenu 基元"[39m[33m,[39m () [33m=>[39m {
+    [90m 75| [39m  [34mit[39m([32m"触发器暴露 menu 语义与展开状态"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m 76| [39m    [35mconst[39m user [33m=[39m userEvent[33m.[39m[34msetup[39m()[33m;[39m
+    [90m 77| [39m    [34mrender[39m([33m<[39m[33mHarness[39m [33m/[39m[33m>[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/ui/overlayEscape.test.tsx[2m > [22mEscape 关闭优先级[2m > [22m抽屉打开时，Escape 只关抽屉，主窗口不受影响
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/ui/overlayEscape.test.tsx:[2m105:3[22m[39m
+    [90m103| [39m  })[33m;[39m
+    [90m104| [39m
+    [90m105| [39m  [34mit[39m([32m"抽屉打开时，Escape 只关抽屉，主窗口不受影响"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m106| [39m    [35mconst[39m user [33m=[39m userEvent[33m.[39m[34msetup[39m()[33m;[39m
+    [90m107| [39m    [34mrender[39m([33m<[39m[33mLayerHarness[39m [33m/[39m[33m>[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/ui/overlayEscape.test.tsx[2m > [22mEscape 关闭优先级[2m > [22m菜单与抽屉同时存在时，Escape 先关菜单
+[31m[1mTestingLibraryElementError[22m: Unable to find an accessible element with the role "dialog" and name "临时抽屉"
+
+Here are the accessible roles:
+
+  button:
+
+  Name "打开抽屉":
+  [36m<button[31m
+    [33mtype[31m=[32m"button"[31m
+  [36m/>[31m
+
+  Name "更多":
+  [36m<button[31m
+    [33maria-expanded[31m=[32m"false"[31m
+    [33maria-haspopup[31m=[32m"menu"[31m
+    [33mtype[31m=[32m"button"[31m
+  [36m/>[31m
+
+  Name "打开确认框":
+  [36m<button[31m
+    [33mtype[31m=[32m"button"[31m
+  [36m/>[31m
+
+  --------------------------------------------------
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<div>[31m
+      [36m<button[31m
+        [33mtype[31m=[32m"button"[31m
+      [36m>[31m
+        [0m打开抽屉[0m
+      [36m</button>[31m
+      [36m<button[31m
+        [33maria-expanded[31m=[32m"false"[31m
+        [33maria-haspopup[31m=[32m"menu"[31m
+        [33mtype[31m=[32m"button"[31m
+      [36m>[31m
+        [0m更多[0m
+      [36m</button>[31m
+      [36m<button[31m
+        [33mtype[31m=[32m"button"[31m
+      [36m>[31m
+        [0m打开确认框[0m
+      [36m</button>[31m
+    [36m</div>[31m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/components/ui/overlayEscape.test.tsx:[2m128:19[22m[39m
+    [90m126| [39m    [34mexpect[39m(screen[33m.[39m[34mqueryByRole[39m([32m"menu"[39m))[33m.[39m[34mtoBeNull[39m()[33m;[39m
+    [90m127| [39m    [90m// 抽屉还在：一次 Escape 只做一个动作[39m
+    [90m128| [39m    [34mexpect[39m(screen[33m.[39m[34mgetByRole[39m([32m"dialog"[39m[33m,[39m { name[33m:[39m [32m"临时抽屉"[39m }))[33m.[39m[34mtoBeTruthy[39m()[33m;[39m
+    [90m   | [39m                  [31m^[39m
+    [90m129| [39m    [34mexpect[39m(hideWindow)[33m.[39mnot[33m.[39m[34mtoHaveBeenCalled[39m()[33m;[39m
+    [90m130| [39m  })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/ui/Popover.edge.test.tsx[2m > [22m弹层边缘定位[2m > [22m下方空间充足时向下展开
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/ui/Popover.edge.test.tsx:[2m101:3[22m[39m
+    [90m 99| [39m
+    [90m100| [39m[34mdescribe[39m([32m"弹层边缘定位"[39m[33m,[39m () [33m=>[39m {
+    [90m101| [39m  [34mit[39m([32m"下方空间充足时向下展开"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m102| [39m    [35mconst[39m user [33m=[39m userEvent[33m.[39m[34msetup[39m()[33m;[39m
+    [90m103| [39m    [34mstubGeometry[39m({ [33m...[39m[33mNARROW[39m[33m,[39m anchorTop[33m:[39m [34m100[39m[33m,[39m anchorLeft[33m:[39m [34m40[39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/15]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/components/ui/TooltipLayer.test.tsx[2m > [22m全局提示条层[2m > [22m悬停带 data-tip 的控件后出现提示，内容取自 data-tip
+[31m[1mError[22m: Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+[36m [2m❯[22m src/components/ui/TooltipLayer.test.tsx:[2m33:3[22m[39m
+    [90m 31| [39m
+    [90m 32| [39m[34mdescribe[39m([32m"全局提示条层"[39m[33m,[39m () [33m=>[39m {
+    [90m 33| [39m  [34mit[39m([32m"悬停带 data-tip 的控件后出现提示，内容取自 data-tip"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m   | [39m  [31m^[39m
+    [90m 34| [39m    [34mrender[39m(
+    [90m 35| [39m      [33m<[39m[33m>[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/15]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m13 failed[39m[22m[2m | [22m[1m[32m24 passed[39m[22m[90m (37)[39m
+[2m      Tests [22m [1m[31m15 failed[39m[22m[2m | [22m[1m[32m249 passed[39m[22m[90m (264)[39m
+[2m   Start at [22m 22:56:10
+[2m   Duration [22m 110.36s[2m (transform 184.02s, setup 139.41s, collect 855.55s, tests 179.69s, environment 787.81s, prepare 27.93s)[22m
+

@@ -1,0 +1,353 @@
+{
+  "scenario": "p1-05-joint-clipboard",
+  "stimulus": {
+    "text_attempted": 600,
+    "text_ok": 600,
+    "text_failed": 0,
+    "text_verified": 600,
+    "image_attempted": 60,
+    "image_ok": 60,
+    "image_failed": 0,
+    "image_verified": 60,
+    "image_aux_written": 60,
+    "bytes_written": 20292,
+    "open_failures": 0,
+    "open_failure_blockers": {},
+    "clipboard_sequence_start": 9436,
+    "clipboard_sequence_end": 12773,
+    "errors": [],
+    "duration_s": 1800.0,
+    "original_clipboard_formats": [
+      "text"
+    ],
+    "original_clipboard_was_text": true,
+    "original_clipboard_was_image": false,
+    "restored": true,
+    "restored_kind": "text",
+    "restore_skipped": false,
+    "clipboard_sequence_delta": 3337,
+    "expected_updates": 660,
+    "error_count": 0
+  },
+  "load": {
+    "elapsed_ms": 1800003,
+    "actual_rate": 20,
+    "counts": {
+      "sent": 36000,
+      "ok": 36000,
+      "failed": 0,
+      "retries": 38,
+      "critical_sent": 3600,
+      "critical_ok": 3600,
+      "critical_failed": 0,
+      "failed_ids": []
+    },
+    "latency_ms": {
+      "p50": 1.86,
+      "p95": 264.73,
+      "max": 7031.11
+    }
+  },
+  "db": {
+    "db_path": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-v05\\joint-clipboard-rerun-20261031-0943-data\\task-dock.db",
+    "exists": true,
+    "items_by_kind": {
+      "html": 7,
+      "image": 65,
+      "text": 595
+    },
+    "items_total": 667,
+    "byte_size_sum": 523993,
+    "created_at_min": "2026-10-31T01:43:18.713836400+00:00",
+    "created_at_max": "2026-10-31T02:22:39.813996900+00:00",
+    "groups": [
+      {
+        "name": "截图组 1",
+        "mode": "auto",
+        "status": "closed",
+        "items": 300
+      },
+      {
+        "name": "截图组 5",
+        "mode": "auto",
+        "status": "closed",
+        "items": 3
+      },
+      {
+        "name": "截图组 2",
+        "mode": "auto",
+        "status": "closed",
+        "items": 300
+      },
+      {
+        "name": "截图组 4",
+        "mode": "auto",
+        "status": "closed",
+        "items": 1
+      },
+      {
+        "name": "截图组 3",
+        "mode": "auto",
+        "status": "closed",
+        "items": 36
+      }
+    ],
+    "group_items": 640,
+    "group_origin": {
+      "auto": 640
+    },
+    "assets_by_role": {
+      "image": {
+        "n": 65,
+        "bytes": 406479
+      },
+      "thumb": {
+        "n": 65,
+        "bytes": 95360
+      }
+    },
+    "assets_missing": 0
+  },
+  "app_log": {
+    "path": "docs\\performance\\results\\DIAG-joint-clipboard-rerun-20261031-0943-20261031-094304-app.log",
+    "exists": true,
+    "recorded": 672,
+    "recorded_created_false": 5,
+    "recorded_by_kind": {
+      "text": 596,
+      "image": 66,
+      "html": 10
+    },
+    "skipped": 4,
+    "dropped": 0,
+    "superseded": 0,
+    "mismatch": 0,
+    "store_failed": 0,
+    "config_unreliable": 0,
+    "first_record_at": "2026-10-31T01:43:18.719082Z",
+    "last_record_at": "2026-10-31T02:22:39.818007Z"
+  },
+  "reconciliation": {
+    "stimulus_events": 660,
+    "db_items": 667,
+    "db_minus_stimulus": 7,
+    "log_recorded": 672,
+    "log_recorded_created_false": 5,
+    "skipped": 4,
+    "dropped": 0,
+    "superseded": 0,
+    "mismatch": 0,
+    "store_failed": 0,
+    "config_unreliable": 0,
+    "sequence": {
+      "start": 9436,
+      "end": 12773,
+      "delta": 3337,
+      "expected_writes": 660,
+      "writes_per_update": 5.06
+    }
+  },
+  "ingestion_latency": {
+    "scheduled_from": null,
+    "interval_s": null,
+    "text": {},
+    "image": {},
+    "note": "缺少 started_at/interval，跳过延迟估算"
+  },
+  "lock_sampler": {
+    "path": "docs\\clipboard\\evidence\\p1-05-rerun-20261031-0943\\lock-sampler.jsonl",
+    "samples": 484,
+    "owned": 0,
+    "owners": {}
+  },
+  "png_verify": {
+    "checked": 65,
+    "matched": 60,
+    "mismatched": [
+      {
+        "item": "7c12632e-28a0-4dd3-8aad-0afb7fad4369",
+        "sha256": "144d090fb7ae3188",
+        "size": 87812
+      },
+      {
+        "item": "4004d14d-b028-471e-86ad-5c8b1e2258b7",
+        "sha256": "8948f0133ef7a111",
+        "size": 65994
+      },
+      {
+        "item": "465af276-6302-4f92-a3ae-79380f1bf3cb",
+        "sha256": "a14f6182df0a917a",
+        "size": 79634
+      },
+      {
+        "item": "02171fed-0037-489a-adf8-567153bae62c",
+        "sha256": "0c23756ee60fdc25",
+        "size": 82662
+      },
+      {
+        "item": "8e61f39c-7a90-4200-bdf6-d9efd9147ec9",
+        "sha256": "a416269c394155b8",
+        "size": 73421
+      }
+    ],
+    "missing_files": [],
+    "expected": 65
+  },
+  "runtime": {
+    "instance_exited_after_s": null,
+    "other_task_dock_instances": [],
+    "notifications": {
+      "attempted": 0,
+      "failed": 0,
+      "succeeded": 0
+    },
+    "http": {
+      "accepted": 36000,
+      "active_connections": 2,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-31T02:13:18.790292100+00:00",
+      "max_active_requests": 8,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 36431
+    },
+    "pipeline": {
+      "batches": 4441,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 780.4,
+        "p50_ms": 6.79,
+        "p95_ms": 56.65,
+        "p99_ms": 161.53,
+        "samples": 1024
+      },
+      "events_merged": 14705,
+      "events_processed": 21304,
+      "events_received": 36009,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 296.92,
+        "p50_ms": 254.07,
+        "p95_ms": 276.96,
+        "p99_ms": 290.43,
+        "samples": 2048
+      },
+      "last_batch_size": 8,
+      "last_flush_at": "2026-10-31T02:13:18.458084500+00:00",
+      "lifecycle": "running",
+      "max_batch_size": 12,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 36009,
+      "uptime_secs": 1810
+    },
+    "db": {
+      "db_bytes": 42532864,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 10393,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 1.36,
+        "calls": 10418,
+        "pool_size": 3,
+        "slow_queries_100ms": 17
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 4684472
+    },
+    "runtime": {
+      "alive_tasks": 8
+    },
+    "sampler": {
+      "taskdock_private_mb": {
+        "n": 482,
+        "first": 42.8,
+        "last": 47.8,
+        "min": 42.8,
+        "max": 50.9,
+        "mean": 48.697
+      },
+      "taskdock_ws_mb": {
+        "n": 482,
+        "first": 74.6,
+        "last": 17.5,
+        "min": 7.7,
+        "max": 79.4,
+        "mean": 25.239
+      },
+      "taskdock_threads": {
+        "n": 482,
+        "first": 47,
+        "last": 37,
+        "min": 37,
+        "max": 47,
+        "mean": 39.373
+      },
+      "taskdock_handles": {
+        "n": 482,
+        "first": 692,
+        "last": 732,
+        "min": 692,
+        "max": 742,
+        "mean": 731.766
+      },
+      "webview2_private_mb": {
+        "n": 482,
+        "first": 284.4,
+        "last": 274.7,
+        "min": 252.2,
+        "max": 291.9,
+        "mean": 275.0
+      },
+      "rust_live_bytes": {
+        "n": 81,
+        "first": 1338338,
+        "last": 1406508,
+        "min": 1338338,
+        "max": 1645828,
+        "mean": 1516976.691
+      },
+      "rust_peak_bytes": {
+        "n": 81,
+        "first": 2594514,
+        "last": 5331188,
+        "min": 2594514,
+        "max": 5331188,
+        "mean": 4048576.951
+      }
+    },
+    "slopes": {
+      "slope_private_mb_per_min": 0.047,
+      "slope_ws_mb_per_min": -0.775,
+      "slope_live_mb_per_min": -0.004,
+      "slope_threads_per_min": -0.146,
+      "slope_handles_per_min": 0.3137,
+      "slope_committed_mb_per_min": -106.9523,
+      "slope_alive_tasks_per_min": -0.2303,
+      "slope_wal_mb_per_min": 0.0129,
+      "slope_db_mb_per_min": 1.1235
+    }
+  }
+}

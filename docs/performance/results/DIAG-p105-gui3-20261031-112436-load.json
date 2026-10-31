@@ -1,0 +1,56 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47865",
+    "token": "a94b1f4a-fe70-4968-aa58-2b20e69479ad",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 240,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "p105-gui3-20261031-112436",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p105-gui-20261031\\p105-gui3-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-p105-gui3-20261031-112436-load.json"
+  },
+  "elapsed_ms": 347295,
+  "actual_rate": 3.07,
+  "counts": {
+    "sent": 1066,
+    "ok": 1038,
+    "failed": 28,
+    "retries": 1120,
+    "critical_sent": 105,
+    "critical_ok": 101,
+    "critical_failed": 4,
+    "failed_ids": [
+      {
+        "id": "mem-p105-gui3-20261031-112436-a1-e259",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-p105-gui3-20261031-112436-a2-e259",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-p105-gui3-20261031-112436-a3-e259",
+        "error": "TypeError: fetch failed"
+      },
+      {
+        "id": "mem-p105-gui3-20261031-112436-a0-e270",
+        "error": "TypeError: fetch failed"
+      }
+    ]
+  },
+  "latency_ms": {
+    "p50": 2.16,
+    "p95": 250.15,
+    "max": 10448.6
+  }
+}

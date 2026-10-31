@@ -3,7 +3,7 @@
 //! 键盘：↑↓ 移动 · Enter/Space 触发 · Home/End 跳首尾 · Esc 只关本层 ·
 //! 字母键快速定位。禁用项不可触发，单选组用 menuitemradio + aria-checked。
 
-import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
 
@@ -32,8 +32,12 @@ export interface DropdownMenuProps {
   trigger: (props: DropdownMenuTriggerProps) => ReactNode;
   items: ReadonlyArray<DropdownMenuItem>;
   menuLabel?: string;
-  placement?: "bottom-start" | "bottom-end" | "top-start" | "top-end";
+  /** bottom/top = 相对触发器水平居中；start/end 对齐左右缘 */
+  placement?: "bottom" | "bottom-start" | "bottom-end" | "top" | "top-start" | "top-end";
   matchWidth?: boolean;
+  /** 菜单目标最小宽度（px）：按最长选项文本 + 图标 + 勾选标记 + 内边距声明，
+   *  内容更宽时仍会自然增长，绝不截断选项 */
+  menuMinWidth?: number;
   className?: string;
   disabled?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -45,6 +49,7 @@ export default function DropdownMenu({
   menuLabel,
   placement = "bottom-end",
   matchWidth = false,
+  menuMinWidth,
   className,
   disabled = false,
   onOpenChange,
@@ -181,6 +186,7 @@ export default function DropdownMenu({
         anchorRef={anchorRef}
         placement={placement}
         matchWidth={matchWidth}
+        style={menuMinWidth ? ({ "--menu-min-w": `${menuMinWidth}px` } as CSSProperties) : undefined}
         className={`ui-menu-popover ${className ?? ""}`}
         role="menu"
         ariaLabel={menuLabel}

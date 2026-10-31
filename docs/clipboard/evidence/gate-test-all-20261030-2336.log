@@ -1,0 +1,286 @@
+   Compiling windows-link v0.2.1
+   Compiling cfg-if v1.0.5
+   Compiling memchr v2.8.3
+   Compiling siphasher v1.0.4
+   Compiling itoa v1.0.18
+   Compiling litemap v0.8.3
+   Compiling writeable v0.6.4
+   Compiling utf8_iter v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling icu_properties_data v2.4.0
+   Compiling icu_normalizer_data v2.4.0
+   Compiling zmij v1.0.23
+   Compiling regex-syntax v0.8.11
+   Compiling time-core v0.1.9
+   Compiling bytes v1.12.1
+   Compiling scopeguard v1.2.0
+   Compiling num-conv v0.2.2
+   Compiling winnow v1.0.4
+   Compiling zerofrom v0.1.8
+   Compiling thiserror v2.0.21
+   Compiling getrandom v0.4.3
+   Compiling powerfmt v0.2.1
+   Compiling lock_api v0.4.14
+   Compiling phf_shared v0.13.1
+   Compiling yoke v0.8.4
+   Compiling toml_writer v1.1.3+spec-1.1.0
+   Compiling typeid v1.0.3
+   Compiling fnv v1.0.7
+   Compiling web-time v1.1.0
+   Compiling parking_lot_core v0.9.12
+   Compiling dunce v1.0.5
+   Compiling equivalent v1.0.3
+   Compiling hashbrown v0.17.1
+   Compiling alloc-no-stdlib v3.0.0
+   Compiling windows-sys v0.61.2
+   Compiling base64 v0.23.1
+   Compiling toml_datetime v1.1.2+spec-1.1.0
+   Compiling alloc-stdlib v0.3.0
+   Compiling zerovec v0.11.9
+   Compiling zerotrie v0.2.5
+   Compiling serde_spanned v1.1.2
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling form_urlencoded v1.2.2
+   Compiling anyhow v1.0.104
+   Compiling phf_generator v0.13.1
+   Compiling aho-corasick v1.1.5
+   Compiling quick-xml v0.42.0
+   Compiling parking_lot v0.12.5
+   Compiling http v1.5.0
+   Compiling serde_json v1.0.154
+   Compiling brotli-decompressor v6.0.1
+   Compiling phf_codegen v0.13.1
+   Compiling phf_macros v0.13.1
+   Compiling string_cache_codegen v0.6.1
+   Compiling string_cache v0.9.0
+   Compiling indexmap v2.14.2
+   Compiling selectors v0.38.0
+   Compiling toml v1.1.8+spec-1.1.0
+   Compiling uuid v1.29.0
+   Compiling ctor v1.0.13
+   Compiling glob v0.3.4
+   Compiling tinystr v0.8.5
+   Compiling potential_utf v0.1.6
+   Compiling time v0.3.55
+   Compiling erased-serde v0.4.11
+   Compiling icu_locale_core v2.4.0
+   Compiling icu_collections v2.4.0
+   Compiling web_atoms v0.2.6
+   Compiling brotli v9.0.0
+   Compiling jsonptr v0.7.1
+   Compiling cfb v0.14.0
+   Compiling cargo_metadata v0.19.2
+   Compiling regex-automata v0.4.18
+   Compiling serde-untagged v0.1.9
+   Compiling json-patch v4.2.0
+   Compiling serde_with v3.24.0
+   Compiling icu_provider v2.4.0
+   Compiling winapi-util v0.1.11
+   Compiling infer v0.22.0
+   Compiling serde v1.0.229
+   Compiling stable_deref_trait v1.2.1
+   Compiling windows-strings v0.5.1
+   Compiling icu_properties v2.4.0
+   Compiling icu_normalizer v2.4.0
+   Compiling windows-result v0.4.1
+   Compiling same-file v1.0.6
+   Compiling smallvec v1.16.4
+   Compiling phf v0.13.1
+   Compiling walkdir v2.5.0
+   Compiling option-ext v0.2.0
+   Compiling once_cell v1.21.4
+   Compiling windows-core v0.62.2
+   Compiling dirs-sys v0.5.0
+   Compiling embed-resource v3.0.12
+   Compiling heck v0.5.0
+   Compiling plist v1.10.3
+   Compiling log v0.4.34
+   Compiling dirs v7.0.0
+   Compiling cargo_toml v1.0.1
+   Compiling bitflags v2.13.2
+   Compiling tauri-winres v0.3.7
+   Compiling windows-threading v0.2.1
+   Compiling simd-adler32 v0.3.10
+   Compiling windows-future v0.3.2
+   Compiling windows-numerics v0.3.1
+   Compiling windows-collections v0.3.2
+   Compiling adler2 v2.0.1
+   Compiling raw-window-handle v0.6.2
+   Compiling cssparser v0.37.0
+   Compiling pin-project-lite v0.2.17
+   Compiling miniz_oxide v0.9.1
+   Compiling regex v1.13.1
+   Compiling idna_adapter v1.2.2
+   Compiling crc32fast v1.5.3
+   Compiling deranged v0.5.9
+   Compiling windows v0.62.2
+   Compiling idna v1.1.0
+   Compiling markup5ever v0.39.0
+   Compiling time-macros v0.2.32
+   Compiling windows-version v0.1.7
+   Compiling percent-encoding v2.3.2
+   Compiling typenum v1.20.1
+   Compiling html5ever v0.39.0
+   Compiling flate2 v1.1.10
+   Compiling url v2.5.8
+   Compiling crossbeam-utils v0.8.23
+   Compiling miniz_oxide v0.8.9
+   Compiling fdeflate v0.3.7
+   Compiling urlpattern v0.6.0
+   Compiling schemars v0.8.22
+   Compiling generic-array v0.14.7
+   Compiling dpi v0.1.2
+   Compiling dom_query v0.28.0
+   Compiling webview2-com-sys v0.39.1
+   Compiling crossbeam-channel v0.5.17
+   Compiling tracing-core v0.1.36
+   Compiling num-traits v0.2.19
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling tauri-utils v2.10.2
+   Compiling unicode-segmentation v1.13.3
+   Compiling byteorder v1.5.0
+   Compiling tracing v0.1.44
+   Compiling digest v0.10.7
+   Compiling getrandom v0.3.4
+   Compiling png v0.18.1
+   Compiling semver v1.0.28
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling libc v0.2.191
+   Compiling keyboard-types v0.8.3
+   Compiling pxfm v0.1.30
+   Compiling bytemuck v1.25.2
+   Compiling byteorder-lite v0.1.0
+   Compiling serialize-to-javascript v0.1.2
+   Compiling ico v0.6.0
+   Compiling zerocopy v0.8.63
+   Compiling mime v0.3.17
+   Compiling windows_x86_64_gnu v0.52.6
+   Compiling windows_x86_64_gnu v0.53.1
+   Compiling windows-targets v0.52.6
+   Compiling windows-targets v0.53.5
+   Compiling windows-sys v0.59.0
+   Compiling rand_core v0.9.5
+   Compiling http-body v1.1.0
+   Compiling httpdate v1.0.3
+   Compiling futures-core v0.3.34
+   Compiling windows-sys v0.60.2
+   Compiling httparse v1.10.1
+   Compiling keyboard-types v0.7.0
+   Compiling windows-registry v0.6.1
+   Compiling lazy_static v1.5.1
+   Compiling atomic-waker v1.1.2
+   Compiling sharded-slab v0.1.7
+   Compiling cookie v0.18.2
+   Compiling libsqlite3-sys v0.30.1
+   Compiling matchers v0.2.0
+   Compiling chrono v0.4.45
+   Compiling tracing-log v0.2.0
+   Compiling open v5.4.5
+   Compiling thread_local v1.1.10
+   Compiling mio v1.2.4
+   Compiling socket2 v0.6.5
+   Compiling moxcms v0.8.1
+   Compiling tokio v1.54.1
+   Compiling muda v0.20.0
+   Compiling softbuffer v0.4.8
+   Compiling window-vibrancy v0.8.1
+   Compiling os_info v3.15.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling auto-launch v0.6.0
+   Compiling chunked_transfer v1.5.0
+   Compiling ascii v1.1.0
+   Compiling fallible-iterator v0.3.0
+   Compiling bitflags v1.3.2
+   Compiling lnk v0.5.1
+   Compiling tracing-subscriber v0.3.23
+   Compiling http-body-util v0.1.5
+   Compiling tiny_http v0.12.0
+   Compiling tray-icon v0.25.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling ahash v0.8.12
+   Compiling rfd v0.16.1
+   Compiling hashbrown v0.14.5
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling hashlink v0.9.1
+   Compiling rusqlite v0.32.1
+   Compiling global-hotkey v0.8.0
+   Compiling window-vibrancy v0.6.0
+   Compiling winreg v0.55.0
+   Compiling image v0.25.10
+   Compiling tauri-plugin v2.7.2
+   Compiling tauri-build v2.7.4
+   Compiling tauri-codegen v2.7.4
+   Compiling hyper v1.12.0
+   Compiling hyper-util v0.1.21
+   Compiling tauri v2.12.5
+   Compiling tauri-macros v2.7.4
+   Compiling tauri-plugin-fs v2.7.1
+   Compiling tauri-plugin-notification v2.7.0
+   Compiling tauri-plugin-autostart v2.7.0
+   Compiling tauri-plugin-dialog v2.8.3
+   Compiling tauri-plugin-opener v2.7.2
+   Compiling tauri-plugin-global-shortcut v2.4.1
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+   Compiling tao v0.37.2
+   Compiling tauri-winrt-notification v0.8.1
+   Compiling notify-rust v4.18.2
+   Compiling webview2-com v0.39.1
+   Compiling tauri-runtime v2.12.2
+   Compiling wry v0.57.1
+   Compiling tauri-runtime-wry v2.12.3
+   Compiling tauri-plugin-single-instance v2.5.4
+error[E0425]: cannot find function `apply_with_radius` in module `crate::window_shape`
+   --> src\context_menu.rs:251:38
+    |
+251 |                 crate::window_shape::apply_with_radius(&w, MENU_RADIUS);
+    |                                      ^^^^^^^^^^^^^^^^^ not found in `crate::window_shape`
+
+error[E0425]: cannot find type `Db` in this scope
+   --> src\context_menu.rs:299:41
+    |
+299 |     db: tauri::State<'_, std::sync::Arc<Db>>,
+    |                                         ^^ not found in this scope
+    |
+help: consider importing this struct through its public re-export
+    |
+ 21 + use crate::Db;
+    |
+
+warning: unused import: `PhysicalPosition`
+  --> src\lib.rs:26:47
+   |
+26 | use tauri::{App, AppHandle, Emitter, Manager, PhysicalPosition};
+   |                                               ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0609]: no field `x` on type `tauri::Position`
+   --> src\lib.rs:153:43
+    |
+153 | ...                   rect.position.x as f64 + rect.size.width as f64 / 2.0,
+    |                                     ^ unknown field
+
+error[E0609]: no field `width` on type `tauri::Size`
+   --> src\lib.rs:153:64
+    |
+153 | ...                   rect.position.x as f64 + rect.size.width as f64 / 2.0,
+    |                                                          ^^^^^ unknown field
+
+error[E0609]: no field `y` on type `tauri::Position`
+   --> src\lib.rs:154:43
+    |
+154 | ...                   rect.position.y as f64,
+    |                                     ^ unknown field
+
+Some errors have detailed explanations: E0425, E0609.
+For more information about an error, try `rustc --explain E0425`.
+warning: `task-dock` (lib) generated 1 warning
+error: could not compile `task-dock` (lib) due to 5 previous errors; 1 warning emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `task-dock` (lib test) generated 1 warning (1 duplicate)
+error: could not compile `task-dock` (lib test) due to 5 previous errors; 1 warning emitted
+exit_code=101

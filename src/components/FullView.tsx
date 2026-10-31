@@ -94,7 +94,7 @@ export default function FullView() {
           </button>
         </div>
       </nav>
-      <div className="tab-content">
+      <div className={`tab-content tab-content-${tab}`}>
         {tab === "tasks" && <TasksPanel />}
         {tab === "agents" && <AgentPanel />}
         {tab === "actions" && <ActionCenterPanel />}

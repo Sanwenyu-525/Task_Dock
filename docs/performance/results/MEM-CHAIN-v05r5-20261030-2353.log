@@ -1,0 +1,305 @@
+[chain] 测量副本=C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe 2026-10-30T23:53:18+08:00
+-rwxr-xr-x 1 ASUS 197121 15603200 2026-10-30 23:53:18.572974200 +0800 C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378 *C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+git_head_short=356bc44
+dirty_tracked= 123 files changed, 2680 insertions(+), 385 deletions(-)
+
+[chain] === 三臂归因开始 2026-10-30T23:53:20+08:00 ===
+=== 源码指纹 ===
+git_head_short=356bc44
+dirty_tracked= 123 files changed, 2680 insertions(+), 385 deletions(-)
+-rwxr-xr-x 1 ASUS 197121 15603200 2026-10-30 23:53:18.572974200 +0800 C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378 *C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+
+=== [N1-load-notify-on] 开始 23:53:22 ===
+    args: --mode mixed --duration 480 --post 90 --agents 4 --rate 5 --window visible --notify on --transport http --source bridge --allow-real-source --port 47910
+    log:  docs/performance/results/MEMABC-N1-load-notify-on-20261030-235320.log
+=== [N1-load-notify-on] 结束 00:03:17 rc=0 ===
+      },
+      "notifications": {
+        "attempted": 45,
+        "failed": 0,
+        "succeeded": 45
+      },
+      "db": {
+        "db_bytes": 10137600,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 2499,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 1.41,
+          "calls": 2469,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4630912
+      }
+    }
+  }
+}
+
+=== [N2-load-notify-off] 开始 00:03:17 ===
+    args: --mode mixed --duration 480 --post 90 --agents 4 --rate 5 --window visible --notify off --transport http --source bridge --allow-real-source --port 47911
+    log:  docs/performance/results/MEMABC-N2-load-notify-off-20261030-235320.log
+=== [N2-load-notify-off] 结束 00:13:24 rc=0 ===
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 8908800,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 2193,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 2.12,
+          "calls": 2004,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4705072
+      }
+    }
+  }
+}
+
+=== [N3-idle] 开始 00:13:24 ===
+    args: --mode running --duration 0 --post 480 --window visible --notify off --source bridge --allow-real-source --port 47912
+    log:  docs/performance/results/MEMABC-N3-idle-20261030-235320.log
+=== [N3-idle] 结束 00:21:55 rc=0 ===
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.82,
+          "calls": 17,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    }
+  }
+}
+
+=== 三臂完成 00:21:55 ===
+-rw-r--r-- 1 ASUS 197121  91506 Oct 30 20:49 docs/performance/results/DIAG-N1-load-notify-on-20261030-203915.jsonl
+-rw-r--r-- 1 ASUS 197121 201275 Oct 30 22:02 docs/performance/results/DIAG-N1-load-notify-on-20261030-215246.jsonl
+-rw-r--r-- 1 ASUS 197121 104253 Oct 30 22:38 docs/performance/results/DIAG-N1-load-notify-on-20261030-222907.jsonl
+-rw-r--r-- 1 ASUS 197121  94640 Oct 31 00:03 docs/performance/results/DIAG-N1-load-notify-on-20261030-235323.jsonl
+-rw-r--r-- 1 ASUS 197121  91553 Oct 30 20:58 docs/performance/results/DIAG-N2-load-notify-off-20261030-204906.jsonl
+-rw-r--r-- 1 ASUS 197121 127680 Oct 30 22:48 docs/performance/results/DIAG-N2-load-notify-off-20261030-223859.jsonl
+-rw-r--r-- 1 ASUS 197121  57664 Oct 31 00:13 docs/performance/results/DIAG-N2-load-notify-off-20261031-000318.jsonl
+-rw-r--r-- 1 ASUS 197121  98350 Oct 30 21:07 docs/performance/results/DIAG-N3-idle-20261030-205857.jsonl
+-rw-r--r-- 1 ASUS 197121 182165 Oct 30 22:57 docs/performance/results/DIAG-N3-idle-20261030-224851.jsonl
+-rw-r--r-- 1 ASUS 197121  49648 Oct 31 00:21 docs/performance/results/DIAG-N3-idle-20261031-001325.jsonl
+[chain] === 三臂归因结束 rc=0 2026-10-31T00:21:56+08:00 ===
+
+[chain] === C/E 30 分钟臂开始 2026-10-31T00:21:56+08:00 ===
+=== 源码指纹 ===
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+warning: in the working copy of '.gitignore', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ARCHITECTURE.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/DEVELOPMENT.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/PERFORMANCE_ACCEPTANCE_REPORT.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/PERFORMANCE_ARCHITECTURE.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/PERFORMANCE_FINAL_ACCEPTANCE.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/PERFORMANCE_TESTING.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/TESTING.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/V05_COMPREHENSIVE_REMEDIATION.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/02-architecture.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/04-monitor-security.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/06-copy-paste-protection.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/08-testing-performance.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/09-implementation-report.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/10-remediation-acceptance.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/clipboard/evidence/README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/screenshots/v06/audit.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ui-themes/04-performance.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ui-themes/05-test-plan.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ui-themes/06-implementation-report.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ui-themes/07-visual-acceptance.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/ui-themes/11-test-results.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/acceptance/mixed_paste_acceptance.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/check-corners.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/layout-regression.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/make-preview.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/perf/fault-injection.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/perf/sampler.ps1', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/perf/source-fingerprint.sh', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/theme-perf.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/visual-themes.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/visual-v06.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/agents/dsh.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/clipboard/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/clipboard/paste.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/clipboard/platform.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/backup.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/clipboard.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/restore.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/commands/system.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/db/mod.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/lib.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/src/window_shape.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src-tauri/tests/real_clipboard.rs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/App.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/bridge.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tsconfig.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'vite.config.ts', LF will be replaced by CRLF the next time Git touches it
+dirty_tracked= 136 files changed, 4386 insertions(+), 559 deletions(-)
+source_tree_sha256=2b2dea925a2bb7d0d2957a964eba698af1aafe159a22f981e10501401cc7257c
+release_exe_sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378
+release_exe_bytes=15603200
+release_exe_mtime=2026-10-30 23:50:36.096250500 +0800
+measured_exe_path=C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+measured_exe_sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378
+measured_exe_bytes=15603200
+measured_exe_mtime=2026-10-30 23:53:18.572974200 +0800
+-rwxr-xr-x 1 ASUS 197121 15603200 2026-10-30 23:53:18.572974200 +0800 C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378 *C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc9.exe
+
+=== [C-ui-http-30min] 开始 00:22:03 ===
+    args: --mode mixed --duration 1800 --post 120 --agents 4 --rate 5 --window visible --notify off --transport http --source bridge --allow-real-source --port 47922
+    log:  docs/performance/results/MEM-C-ui-http-30min-20261031-002156.log
+=== [C-ui-http-30min] 结束 00:54:49 rc=0 ===
+      "process": {
+        "alloc_calls": 14384536,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 14380482,
+        "live_bytes": 891518,
+        "peak_bytes": 2489633,
+        "total_allocated_bytes": 1993343046
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 31309824,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 7651,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 2.58,
+          "calls": 6921,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4808072
+      }
+    }
+  }
+}
+
+=== [E-idle-after-load-30min] 开始 00:54:49 ===
+    args: --mode mixed --duration 600 --post 1800 --agents 4 --rate 5 --window visible --notify on --transport http --source bridge --allow-real-source --port 47924
+    log:  docs/performance/results/MEM-E-idle-after-load-30min-20261031-002156.log
+=== [E-idle-after-load-30min] 结束 01:35:29 rc=0 ===
+      "process": {
+        "alloc_calls": 4985316,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 4981080,
+        "live_bytes": 926520,
+        "peak_bytes": 2489761,
+        "total_allocated_bytes": 647170849
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 55,
+        "failed": 0,
+        "succeeded": 55
+      },
+      "db": {
+        "db_bytes": 11288576,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 2769,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 3.67,
+          "calls": 2467,
+          "pool_size": 3,
+          "slow_queries_100ms": 13
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4783352
+      }
+    }
+  }
+}
+
+=== 全部场景完成 01:35:29 ===
+-rw-r--r-- 1 ASUS 197121 345860 Oct 31 00:29 docs/performance/results/DIAG-A-idle-30min-20261030-235723.jsonl
+-rw-r--r-- 1 ASUS 197121 198254 Oct 31 00:35 docs/performance/results/DIAG-B-http-noui-30min-20261031-000241.jsonl
+-rw-r--r-- 1 ASUS 197121 606647 Oct 30 21:52 docs/performance/results/DIAG-C-ui-http-30min-20261030-212540.jsonl
+-rw-r--r-- 1 ASUS 197121 183831 Oct 31 00:54 docs/performance/results/DIAG-C-ui-http-30min-20261031-002204.jsonl
+-rw-r--r-- 1 ASUS 197121 177001 Oct 31 01:08 docs/performance/results/DIAG-C-ui-http-30min-20261031-003523.jsonl
+-rw-r--r-- 1 ASUS 197121 166729 Oct 31 01:35 docs/performance/results/DIAG-D-ui-file-notify-30min-20261031-010816.jsonl
+-rw-r--r-- 1 ASUS 197121 247378 Oct 31 01:35 docs/performance/results/DIAG-E-idle-after-load-30min-20261031-005450.jsonl
+[chain] === C/E 结束 rc=0 2026-10-31T01:35:29+08:00 ===
+
+[chain] 全部结束 2026-10-31T01:35:29+08:00
+docs/performance/results/DIAG-N3-idle-20261031-001325.jsonl
+docs/performance/results/DIAG-N2-load-notify-off-20261031-000318.jsonl
+docs/performance/results/DIAG-N1-load-notify-on-20261030-235323.jsonl
+docs/performance/results/DIAG-N3-idle-20261030-224851.jsonl
+docs/performance/results/DIAG-N2-load-notify-off-20261030-223859.jsonl
+docs/performance/results/DIAG-N1-load-notify-on-20261030-222907.jsonl

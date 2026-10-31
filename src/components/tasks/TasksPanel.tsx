@@ -121,6 +121,7 @@ export default function TasksPanel() {
           value={filter.sort ?? "due"}
           options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
           onChange={(v) => setFilter({ sort: v })}
+          menuMinWidth={146}
         />
       </div>
 
@@ -129,6 +130,7 @@ export default function TasksPanel() {
           <Search size={12} />
           <input
             autoFocus
+            className="input-embedded"
             placeholder="搜索标题 / 描述（Enter 确认）"
             value={filter.search ?? ""}
             onChange={(e) => setFilter({ search: e.target.value })}

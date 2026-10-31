@@ -1,0 +1,31 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock-r2-acc[39m
+
+ [31m❯[39m src/lib/subscriptions.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m | [22m[33m3 skipped[39m[2m)[22m[32m 10[2mms[22m[39m
+[31m   [31m×[31m createSubscriptionScope[2m > [22m延迟兑现的订阅在关闭后立即反订阅[39m[32m 8[2mms[22m[39m
+[31m     → expected "spy" to be called 1 times, but got 0 times[39m
+   [2m[90m↓[39m[22m createSubscriptionScope[2m > [22m正常关闭释放全部已建立订阅且幂等
+   [2m[90m↓[39m[22m createSubscriptionScope[2m > [22m订阅失败不抛出未处理异常
+   [2m[90m↓[39m[22m createSubscriptionScope[2m > [22m关闭后添加的订阅即使兑现也不会滞留
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/lib/subscriptions.test.ts[2m > [22mcreateSubscriptionScope[2m > [22m延迟兑现的订阅在关闭后立即反订阅
+[31m[1mAssertionError[22m: expected "spy" to be called 1 times, but got 0 times[39m
+[36m [2m❯[22m src/lib/subscriptions.test.ts:[2m21:22[22m[39m
+    [90m 19| [39m    [35mawait[39m pending[33m.[39mpromise[33m;[39m
+    [90m 20| [39m    [35mawait[39m [33mPromise[39m[33m.[39m[34mresolve[39m()[33m;[39m
+    [90m 21| [39m    [34mexpect[39m(unlisten)[33m.[39m[34mtoHaveBeenCalledTimes[39m([34m1[39m)[33m;[39m
+    [90m   | [39m                     [31m^[39m
+    [90m 22| [39m  })[33m;[39m
+    [90m 23| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[33m3 skipped[39m[90m (4)[39m
+[2m   Start at [22m 23:59:13
+[2m   Duration [22m 867ms[2m (transform 92ms, setup 57ms, collect 68ms, tests 10ms, environment 0ms, prepare 302ms)[22m
+
+mutation_exit=1

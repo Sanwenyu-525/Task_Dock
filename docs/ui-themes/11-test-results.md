@@ -1,7 +1,10 @@
 # 11 · v0.6 测试结果
 
-> 测试日期：**2026-10-30** · 环境：Windows 11（build 26100）· 125% DPI ·
-> Node 22.22.3 · Rust 1.95.0 (MSVC) · Vitest 3.2.7 · Playwright 1.64.1
+> 测试日期：**2026-10-31** · 环境：Windows 11（build 26100）· 125% DPI ·
+> Node 24.18.0 · Rust stable GNU/MSVC 双工具链 · Vitest 3.2.7 · Playwright 1.64.1
+>
+> **当前 Windows 会话处于锁屏状态**：前端与浏览器 harness 结果有效；
+> 原生窗口像素/窗口操作无法取证，相关结论一律标 `UNVERIFIED`（见第 5、6 节）。
 >
 > 原则：**不以模拟冒充真实**。浏览器 harness 截图与 Windows Release 原生截图
 > 分开记录（见第 5 节）；未验证项逐条列出，不做推测性结论。
@@ -12,27 +15,75 @@
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 前端类型检查 | `npx tsc --noEmit` | ✅ 通过，0 错误 |
-| 前端单元测试 | `npx vitest run` | ✅ **36 文件 / 260 用例通过**（0 failed） |
-| 前端构建 | `npm run build` | ✅ 通过（JS 534.88 kB / gzip 163.14 kB；CSS 114.91 kB / gzip 19.52 kB） |
-| Rust 单元测试 | `cd src-tauri && cargo test --release` | ✅ lib **449 passed / 0 failed / 3 ignored**；集成 **1 passed**（其余 15 项为真机验收工具，按惯例 ignored） |
-| Release 构建 | `npm run tauri build -- --no-bundle` | ✅ 通过（`src-tauri/target/release/task-dock.exe`） |
-| 视觉走查（基线矩阵） | `node scripts/visual-themes.mjs` | ✅ 18 场景全部通过，退出码 0 |
-| 视觉走查（v0.6 交互场景） | `node scripts/visual-v06.mjs` | ✅ **26 场景全部通过**：0 横向溢出、0 元素越界、0 导航项裁剪、0 运行期错误 |
-| 布局回归矩阵 | `node scripts/layout-regression.mjs` | ✅ **37 组合全部达标**，退出码 0 |
-| 性能走查 | `node scripts/theme-perf.mjs` | ✅ 空闲 3 s 主线程 0.2–0.3 ms、布局 0 次、样式重算 0 次、`backdrop-filter` **0 个**、`css-filter` 0 个、常驻动画 **0 个**、主题切换 20 次 0–0.2 ms |
+| 前端类型检查 | `npx tsc --noEmit` | ✅ 0 错误（含并行的剪贴板加固工作新文件 `src/test/powershellScripts.test.ts`） |
+| 前端单元测试 | `npx vitest run` | ✅ **40 文件 / 290 用例通过**（0 failed；新增 `overlayStack` 9 例等） |
+| 前端构建 | `npm run build` | ✅ 通过（`main` 300.99 kB / gzip 90.18 kB，主题页 235.16 kB / gzip 74.25 kB，`context-menu` 4.54 kB；单一 CSS 120.80 kB / gzip 20.07 kB） |
+| Rust 单元测试 | `cd src-tauri && cargo +stable-x86_64-pc-windows-msvc test` | ⚠️ **472 passed / 3 failed / 3 ignored**（详见 1.2；3 条失败均为锁屏会话下导航置前被拒的环境阻塞，不在 v0.6 改动模块） |
+| Release 构建 | `npm run tauri build -- --no-bundle` | ✅ 通过（2026-10-31 01:35，14m25s；产物 `src-tauri/target/release/task-dock.exe`，15,793,664 B） |
+| 视觉走查（v0.7 全矩阵） | `node scripts/visual-v07.mjs` | ✅ **32 场景 + 4 交互全部通过**：`failed: []`、0 横向溢出、0 越界、0 运行期错误 |
+| 视觉走查（v0.6 交互场景） | `node scripts/visual-v06.mjs` | ✅ 26 场景全部通过（历史轮次） |
+| 布局回归矩阵 | `node scripts/layout-regression.mjs` | ✅ 37 组合全部达标（历史轮次） |
+| 性能走查 | `node scripts/theme-perf.mjs` | ✅ 空闲 3 s 主线程 5.7–6.3 ms、布局 0 次、样式重算 9 次、`backdrop-filter` **0 个**、`css-filter` 0 个、常驻动画 1 个（Agent 等待态状态点，v0.5 既有）、主题切换 20 次 28–33 ms |
 
 > Rust 集成测试里的 `ignored` 是真机验收工具（真实剪贴板、真实窗口操作），
 > 按惯例需显式环境变量才会执行，不计入自动门禁。
 
-### 1.1 v0.6 新增/改写的前端用例
+### 1.2 Rust 测试明细（MSVC；锁屏会话）
+
+GNU 工具链在 `cargo test` 链接 cdylib 时会报
+`error: export ordinal too large`（MinGW 导出序号上限），测试二进制无法生成，
+因此本轮用 MSVC 工具链执行：
+
+```
+test result: FAILED. 472 passed; 3 failed; 3 ignored
+failures:
+  navigation::router::tests::launch_disallowed_reports_failure_or_focus_only
+  navigation::router::tests::notepad_launch_focuses_existing_window_of_owned_process
+  navigation::router::tests::own_process_window_is_enumerated_and_focus_reported_truthfully
+```
+
+单测单独复跑（`--nocapture`）得到的现场：
+
+```
+ENVIRONMENT-BLOCKED [own_process_window_is_enumerated_and_focus_reported_truthfully]
+  Windows 前台锁定拒绝置前（本测试进程不具备前台资格，需在交互会话前台复跑）
+REAL-DESKTOP hwnd=13894032 已被产品窗口枚举看到；focus_window 回报=foreground-denied
+assertion left: None, right: Some("focus_window")
+```
+
+原因分层：
+
+- 当前会话锁屏，`SetForegroundWindow` 被系统拒绝，`focus_window` 返回
+  `ForegroundDenied`，这是环境事实，测试自身也打印了 `ENVIRONMENT-BLOCKED`；
+- 失败断言在「路由器决策」层：产品在置前失败时返回 `actual_action = None`，
+  而测试要求「窗口已存在 → 决策必须是 `focus_window`」。这是**导航模块**的
+  语义/测试契约问题，v0.6 未改动 `navigation/`；本轮不把它伪造成通过，
+  也不在圆角整改里顺手改导航语义；
+- 该组用例需要在未锁屏的交互桌面上复跑才能得到最终结论（见第 6 节）。
+
+### 1.3 Release 构建
+
+重建命令与产物路径：
+
+```bash
+npm run tauri build -- --no-bundle
+# 产物：src-tauri/target/release/task-dock.exe
+```
+
+结果：✅ 通过。`Finished release profile [optimized] target(s) in 14m 25s`，
+产物时间 **2026-10-31 01:35**，大小 **15,793,664 B**，
+SHA-256 `FAFF0D9BB84E6B5897BE29353D16E235781B75744F589ED6E4C8B67BD8922F56`。
+该产物包含本轮 `window_shape`/`effective_backend` 修复，但**原生窗口取证仍受锁屏限制**
+（见第 5、6 节），旧产物（10-30 23:50）的截图不能代表本次修复。
+
+### 1.4 v0.6 新增/改写的前端用例
 
 | 文件 | 用例 | 覆盖点 |
 | --- | --- | --- |
 | `src/components/ui/Select.test.tsx` | 9 | 触发器 combobox 语义 / 点击展开 / ↑↓+Enter 选择 / 禁用项不可选 / **Esc 只关菜单且焦点回触发器** / 外部点击关闭 / Home·End / Tab 正常离开 / **长列表滚动到可见区** |
 | `src/components/ui/DropdownMenu.test.tsx` | 11 | `aria-expanded` / 方向键跳过禁用项 / Enter 触发并收起 / Home·End / 字母键定位 / 禁用项 / 单选组 `menuitemradio`+`aria-checked` / Esc 只关本层 |
 | `src/components/ui/Popover.edge.test.tsx` | 3 | 下方空间充足时向下展开 / **底部空间不足自动向上翻转** / 浮层挂在 `document.body` 不受内容区裁剪 |
-| `src/components/ui/overlayEscape.test.tsx` | 7 | **Escape 优先级：确认框 > 子弹层 > 菜单 > 抽屉 > 主窗口** / 无弹层时才隐藏到托盘 / 抽屉开着时菜单先关 / 连续按 Esc 逐层关闭 / 菜单关闭后焦点回到触发按钮 |
+| `src/components/ui/overlayEscape.test.tsx` | 7 | **Escape 优先级与 z 序一致：确认框 > 菜单 > 子弹层 > 模态 > 抽屉 > 主窗口** / 无弹层时才隐藏到托盘 / 抽屉开着时菜单先关 / 连续按 Esc 逐层关闭 / 菜单关闭后焦点回到触发按钮 |
 | `src/components/ui/DateTimePicker.test.tsx` | 10 | 本地时间展示 / **仅打开浮层不改值（不截断秒）** / 截止与提醒互相独立 / 清除时间 / 非法日期拒绝 / 未触碰字段保持原值 / 键盘输入 |
 | `src/components/ui/TooltipLayer.test.tsx` | 4 | 悬停显示 / 聚焦显示 / **关闭不抢焦点** / **Esc 收起提示条但不吞按键** |
 | `src/hooks/useGlobalShortcuts.test.tsx` | 8 | Ctrl+1…6 映射六页 / Ctrl+7 无效 / Ctrl+K / 输入框内不劫持 / 完整模式 Ctrl+Shift+C 切页 / 紧凑模式开关抽屉 / 卸载后不响应 |
@@ -50,7 +101,7 @@
 | --- | --- | --- | --- |
 | 1 | 所有 `<select>` 换成统一基元（深层设置页 / 任务编辑器 / 关联目标 / 剪贴板内部都不漏） | `styles-themes.test.ts` 扫描 `src/` 无原生 `<select>` | ✅ |
 | 2 | 下拉支持鼠标点击开合、外部点击关闭、↑↓/Enter/Space/Home/End、Tab 正常离开、禁用项不可选、选中可辨识、底部空间不足向上翻转、窄窗不溢出、ARIA 正确、焦点恢复 | `Select` 9 例 + `DropdownMenu` 11 例 + `Popover.edge` 3 例 | ✅ |
-| 3 | 一个 Escape 只做一次关闭动作（确认框→子弹层→菜单→抽屉→主窗口） | `overlayEscape.test.tsx` 7 例 | ✅ |
+| 3 | 一个 Escape 只做一次关闭动作（确认框→菜单→子弹层→模态→抽屉→主窗口） | `overlayEscape.test.tsx` 7 例 + `overlayStack.test.ts` 9 例 | ✅ |
 | 4 | 剪贴板成为侧边栏第 6 项，完整模式在内容区呈现；抽屉模式保留任务关联 | `FullView.test.tsx` + `ClipboardPanel.test.tsx` + `ClipboardDrawer.test.tsx` + `useUiStore.test.ts` | ✅ |
 | 5 | 剪贴板业务只有一份加载/监听/操作逻辑 | `ClipboardWorkspace` 被页面与抽屉共用；`useClipboardStore.live.test.ts` 断言单监听 | ✅ |
 | 6 | 日期时间数据语义不被破坏（不截断秒、不改未触碰字段、截止与提醒独立、可清空、校验） | `DateTimePicker.test.tsx` 10 例 | ✅ |
@@ -58,7 +109,9 @@
 | 8 | 六个侧边栏入口在各种高度下可达，且不遮挡底部快速添加 | `layout-regression.mjs` 37 组合（含 380px 低高度） | ✅ |
 | 9 | 320/340/400/500 宽度无横向溢出 | `layout-regression.mjs` + `visual-v06.mjs`（`overflowX === 0`） | ✅ |
 | 10 | 高频剪贴板更新下性能不退化 | `useClipboardStore.live.test.ts`（300ms 去抖合并）+ 页面按需加载（不在页不订阅） | ✅ |
-| 11 | 两套主题的视觉与交互一致 | `visual-v06.mjs` 26 场景 × 两套预设 | ✅ |
+| 11 | 两套主题的视觉与交互一致 | `visual-v07.mjs` 32 场景 + 4 交互；`visual-v06.mjs` 26 场景 | ✅ |
+| 12 | 圆角无黑楔/黑边/直角残留（原生） | `check-corners.py` 独立基线判定 | ❌ **UNVERIFIED（锁屏）**；修复前为 `FAIL`，见 12 号报告 |
+| 13 | 最小化/托盘/恢复/缩放/最大化/主题/材质切换（原生） | `native-verify.ps1 -MinimizeCycle/-ResizeTo` | ❌ **UNVERIFIED（锁屏）** |
 
 ---
 
@@ -86,13 +139,18 @@
 
 | 组合 | 空闲主线程 | 空闲布局次数 | 空闲样式重算 | `backdrop-filter` | `css-filter` | 常驻动画 | 主题切换 20 次 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| dream-gradient | 0.3 ms | 0 | 0 | 0 | 0 | 0 | 0.1 ms |
-| liquid-glass | 0.2 ms | 0 | 0 | 0 | 0 | 0 | 0.2 ms |
-| dream-dark | 0.3 ms | 0 | 0 | 0 | 0 | 0 | 0 ms |
-| glass-dark | 0.3 ms | 0 | 0 | 0 | 0 | 0 | 0.1 ms |
+| dream-gradient | 6.3 ms | 0 | 9 | 0 | 0 | 1 | 32.7 ms |
+| liquid-glass | 6.0 ms | 0 | 9 | 0 | 0 | 1 | 29.5 ms |
+| dream-dark | 5.7 ms | 0 | 9 | 0 | 0 | 1 | 28.5 ms |
+| glass-dark | 6.1 ms | 0 | 9 | 0 | 0 | 1 | 28.4 ms |
 
 对照验收标准：空闲 3 s 主线程占用 < 1%、布局 0 次、`backdrop-filter` 0 个、
 常驻动画 ≤ 1、切换 20 次 < 100 ms —— **全部满足，余量很大**。
+
+> 唯一常驻动画是 Agent「等待中」状态点的 `pulse`（`src/styles.css` 的 `@keyframes pulse`，
+> v0.5 既有，`git diff HEAD -- src/styles.css` 无改动）。实测把它取消后：空闲主线程
+> 3.2 ms、样式重算降到 1 次，说明余量开销来自状态点动画与状态轮询，与 v0.6 的
+> 组件拆分/剪贴板页面无关——剪贴板主页面单独测得同一水平（5.9 ms / 0 布局 / 8 次重算）。
 
 > 关键点：弹层菜单**没有**整层实时 `backdrop-filter`（全页 0 个），
 > 玻璃感来自静态渐变与高光绘制；浮层浮出动画只做 `opacity`/`translateY`。
@@ -125,6 +183,28 @@
 solid 回退、空状态、60 条任务密度、极简/紧凑模式、设置页预设卡、剪贴板主页面），
 全部 `scrollWidth - clientWidth === 0`、关键元素无越界、0 运行期错误。
 
+### 4.3 v0.7 全矩阵（32 场景 + 4 交互）
+
+`scripts/visual-v07.mjs` / `docs/screenshots/v07/audit-v07.json`：
+
+| 维度 | 覆盖 | 结果 |
+| --- | --- | --- |
+| 场景 | 梦幻/液态 × 浅/深 × 320/340/380/400/500 宽 × 任务/剪贴板/设置/空状态/标题栏菜单/排序/日期/关联抽屉 | 32/32 |
+| 溢出 | `overflowX === 0 && overflowY === 0` | 32/32 |
+| 越界 | `offscreen = []`、`blank = false` | 32/32 |
+| 运行期错误 | `errors = []` | 32/32 |
+| 侧栏 | 6 项、全部有可访问名称；>384px 时文字标签可见 | 32/32 |
+| 剪贴板整页 | 320/340 宽 `clip.integrated = true` | 全部 |
+| 交互 | 日期弹层 / 编辑器 / 抽屉的 Escape 链路；添加按钮 hover/focus | 4/4 |
+| 汇总 | `failed: []` | ✅ |
+
+Escape 实测（两套主题一致）：
+
+```
+dtOpen:true, dtClosed:true, editorKept:true, editorClosed:true,
+drawerOpen:true, drawerZ:"80", drawerClosed:true, editorKeptAfterDrawer:true
+```
+
 ---
 
 ## 5. 原生窗口截图（**与 harness 分开标记**）
@@ -132,23 +212,29 @@ solid 回退、空状态、60 条任务密度、极简/紧凑模式、设置页�
 | 类别 | 目录 / 命名 | 性质 |
 | --- | --- | --- |
 | 浏览器 harness | `docs/screenshots/v06/*.png`（**无** `native-` 前缀） | 真实 `dist` 产物 + IPC mock + 模拟壁纸，2× 缩放。**只验证 CSS 布局与配色** |
-| **Windows Release 原生** | `docs/screenshots/v06/native-*.png` | 真实 Release 程序的 Win32 窗口，**桌面合成像素**。可验证圆角、材质、层级 |
+| **Windows Release 原生** | `docs/screenshots/v06/native-*.png`（**修复前旧图，圆角结论已作废**） | 真实 Release 程序的 Win32 窗口，**桌面合成像素**。可验证圆角、材质、层级；但旧图缺独立基线，不能作为本轮通过证据 |
 
-本轮原生取证（`scripts/native-verify.ps1` + `scripts/capture-native-set.ps1`）：
+> **撤回**：上一版的「四角像素差 0.0 ✅」表格无效，已删除。旧脚本用同一帧的
+> 窗外像素与窗内角块自比，且没有独立背景基线，真机截图（黑月牙、灰边、白晕）
+> 已将其证伪。专项报告见 [12-v06-window-corners.md](12-v06-window-corners.md)。
 
-| 原生截图 | 预设 / 明暗 | `region_probe` | 四角像素差 |
+本轮 v0.7 原生取证（`scripts/corner-lab.ps1`，修复前构建）：
+
+| 原生证据 | 预设 / 材质 | 分析器结论 | 关键读数 |
 | --- | --- | --- | --- |
-| `native-dream-light.png` | 梦幻 / 浅 | `00001` | 0.0 / 0.0 / 0.0 / 0.0 ✅ |
-| `native-dream-dark.png` | 梦幻 / 深 | `00001` | 0.0 / 0.0 / 0.0 / 0.0 ✅ |
-| `native-glass-light.png` | 液态 / 浅 | `00001` | 0.0 / 0.0 / 0.0 / 0.0 ✅ |
-| `native-glass-dark.png` | 液态 / 深 | `00001` | 0.0 / 0.0 / 0.0 / 0.0 ✅ |
+| `lab-glass-region-dwm.json` | 液态玻璃 / glass（Mica） | `FAIL`（exit 1） | 四角 44–45 个深色像素、49 个非背景像素；底/右 1px 描边 |
+| `lab-solid-region-dwm.json` | 梦幻 / solid | `FAIL`（exit 1） | 四角 40–42 个非背景像素；右下半径 31.75 vs 22 |
+| `lab-resize-solid-region-dwm.json` | 梦幻 / solid（缩放链路） | `FAIL`（exit 1） | 与上同 |
+| `lab-v071-solid-region-dwm.json` | 锁屏会话采集 | `FAIL` + `UNVERIFIED` | 基线 `0,0,0` 无效，分析器拒绝 PASS |
 
-> `region_probe = 00001` 表示四个角点**都在 Win32 窗口区域之外**（被裁掉），
-> 区域尺寸 = 窗口尺寸；角点像素与窗外桌面逐像素一致（差值 0.0），
-> 说明圆角是「被裁掉的透明区域」而不是深色直角块。
+`region_probe = 00001 bounds=0,0,500,700` 只说明区域已设置，**不能证明最终像素**；
+DWM 读数（`system_backdrop=2`、`corner_preference=2`、`border_color` 读取失败）
+与像素结论共同支撑第 12 号报告的根因。
 
-原生图可用于验证**圆角裁剪、原生材质透出、窗口层级**；
-harness 图用于验证 **CSS 布局、配色、弹层层级、交互状态**。两者互不替代。
+修复后的原生像素验收当前为 **`UNVERIFIED`**（锁屏，无法建立有效基线）。
+
+harness 图用于验证 **CSS 布局、配色、弹层层级、交互状态**；
+原生图用于验证**圆角裁剪、原生材质透出、窗口层级**。两者互不替代。
 
 ---
 
@@ -156,6 +242,9 @@ harness 图用于验证 **CSS 布局、配色、弹层层级、交互状态**。
 
 | 项 | 原因 | 复现方法 |
 | --- | --- | --- |
+| **修复后原生圆角像素（Solid / Glass）** | 会话锁屏（LogonUI 运行中），屏幕捕获全黑，无有效背景基线 | 解锁后跑 `native-verify.ps1` + `check-corners.py`，见 12 号报告第 9 节 |
+| **原生最小化/托盘/恢复/缩放/最大化/主题/材质切换** | 需要未锁屏的真实桌面交互 | `native-verify.ps1 -MinimizeCycle`、`-ResizeTo` 后重采 |
+| **导航置前 3 条 Rust 用例** | 锁屏使 `SetForegroundWindow` 被拒；产品在置前失败时 `actual_action=None`，与测试契约不符 | 在交互桌面前台复跑 `navigation::router::tests::*` |
 | Windows 10 真机 | 本机仅 Windows 11 | 在 Win10 上执行 `scripts/native-verify.ps1` 取证 |
 | 100% / 150% DPI | 本机显示缩放为 125% | 改显示缩放后重跑取证，核对 `--radius` 与 CSS 半径一致 |
 | Dev 模式（`npm run tauri dev`） | 本轮只验证 Release | 执行后人工核对 |
@@ -169,9 +258,14 @@ harness 图用于验证 **CSS 布局、配色、弹层层级、交互状态**。
 
 ## 7. 结论
 
-- 需求点名的 **11 组验收点全部有可执行证据**（自动化用例或走查脚本），无一条靠推测。
-- 前端 **36 文件 / 260 用例**与 Rust **449 + 1 用例**全部通过，0 失败。
-- 视觉走查 **26（v0.6 交互）+ 16（基线）场景**全部达标；
+- 需求点名的 **13 组验收点全部有可执行证据**（自动化用例或走查脚本），无一条靠推测；
+  浏览器层新增 v0.7 **32 场景 + 4 交互**全绿。
+- 前端 **40 文件 / 290 用例全部通过**。
+- Rust **472 通过 / 3 失败 / 3 ignored**：3 条失败均为锁屏会话下导航置前被拒的环境阻塞
+  （测试自身打印 `ENVIRONMENT-BLOCKED`），不属于 v0.6 圆角改动模块，也不伪造成通过。
+- **圆角结论已重写**：旧的 `0.0 ✅ PASS` 撤回；修复前真机证据为 `FAIL`，
+  修复后原生像素验收为 `UNVERIFIED`（锁屏），在解锁并得到 `PASS` 前不宣称修复完成。
+- 视觉走查 **32（v0.7 全矩阵）+ 26（v0.6 交互）+ 18（基线）场景**全部达标；
   布局回归 **37 组合**全部达标（六入口可达、快速添加不被遮挡、无横向溢出）。
 - 剪贴板侧边栏化后**没有出现重复监听**（单监听断言通过），
   **没有复制第二套加载/操作逻辑**（页面与抽屉共用 `ClipboardWorkspace`）。

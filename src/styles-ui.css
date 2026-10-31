@@ -1,3 +1,5 @@
+@layer base, theme, ui, menu;
+@layer ui {
 /* ════════════════════════════════════════════════════════════════
    Task Dock v0.6 — 交互控件基元（Select / Combobox / Menu / Popover /
    DateTimePicker / Dialog / Checkbox / Switch / NumberInput / Tooltip）
@@ -62,13 +64,16 @@
 }
 
 .ui-select-popover {
-  min-width: max(140px, var(--popover-min-w, 0px));
+  /* --menu-min-w：调用方按菜单内容声明的目标宽度（Select 的 menuMinWidth）；
+     未声明时回落到 146px——勾选标记 + 中文选项 + 内边距的合理下限 */
+  min-width: max(146px, var(--menu-min-w, 0px), var(--popover-min-w, 0px));
 }
 .ui-combobox-popover {
-  min-width: max(180px, var(--popover-min-w, 0px));
+  min-width: max(180px, var(--menu-min-w, 0px), var(--popover-min-w, 0px));
 }
 .ui-menu-popover {
-  min-width: max(132px, var(--popover-min-w, 0px));
+  /* 同上：DropdownMenu 的 menuMinWidth；132px 是纯图标+短标签菜单的兜底下限 */
+  min-width: max(132px, var(--menu-min-w, 0px), var(--popover-min-w, 0px));
 }
 .ui-dtp-popover {
   min-width: 0;
@@ -88,6 +93,12 @@
 .ui-popover :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* 弹层内的文本输入（日期输入 / Combobox 等）不画 outline，
+   焦点指示交给自身边框/阴影，避免与弹层描边形成双重矩形 */
+.ui-popover :is(input, textarea, select):focus-visible {
+  outline: none;
 }
 
 /* 滚动条：细、低对比、不抢视觉 */
@@ -310,6 +321,20 @@
 .ui-combobox-caret {
   flex-shrink: 0;
   opacity: 0.6;
+}
+
+/* ── 嵌入式输入原语 ─────────────────────────────────────────── */
+/* 嵌在组合输入容器（快速添加 / 搜索框 / 剪贴板搜索 / 目标选择搜索等）
+   里的透明 input：容器负责背景、边框、圆角与聚焦反馈（唯一可见边界），
+   input 自身不再绘制任何边框、阴影或外描边。
+   ui 层优先级高于 theme，用于豁免 theme 层 input:focus 的焦点阴影环，
+   否则容器 + input 会形成双重矩形。 */
+.input-embedded,
+.input-embedded:focus,
+.input-embedded:focus-visible {
+  border: none;
+  box-shadow: none;
+  outline: none;
 }
 
 /* ── 菜单 ───────────────────────────────────────────────────── */
@@ -1017,4 +1042,5 @@
   .ui-number {
     border: 1px solid CanvasText;
   }
+}
 }

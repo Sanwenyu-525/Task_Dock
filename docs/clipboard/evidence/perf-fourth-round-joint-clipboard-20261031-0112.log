@@ -1,0 +1,266 @@
+[setup] data=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-v05\fourth-round-joint-clipboard-data appdata=C:\Users\ASUS\AppData\Local\Temp\taskdock-mem-v05\fourth-round-joint-clipboard-appdata port=47853
+[env] 检测到 1 个异名 Task Dock 实例（task-dock.exe，PID [61536]）：进程树独立不串组，但会竞争 CPU/磁盘，已记录为环境干扰。
+[app] pid=84068 health={'ok': True, 'queue': {'capacity': 1024, 'depth_events': 0}, 'service': 'task-dock'}
+[stimulus] 真实剪贴板激励已启动 pid=67208
+[load] rc=0
+[stimulus] 真实剪贴板激励结束 rc=0 证据=D:\Develop\task_dock\docs\performance\results\DIAG-fourth-round-joint-clipboard-20261031-011217-stimulus.json
+{
+  "meta": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-fourth-round-joint-clipboard-20261031-011217-meta.json",
+  "summary": {
+    "samples": 452,
+    "elapsed_s": 2416.1,
+    "taskdock_private_mb": {
+      "n": 452,
+      "first": 9.6,
+      "last": 13.1,
+      "min": 9.6,
+      "max": 13.9,
+      "mean": 13.24
+    },
+    "taskdock_ws_mb": {
+      "n": 452,
+      "first": 31,
+      "last": 14.7,
+      "min": 12.1,
+      "max": 33.9,
+      "mean": 16.299
+    },
+    "webview2_private_mb": {
+      "n": 452,
+      "first": 237.3,
+      "last": 223.6,
+      "min": 221.3,
+      "max": 275.8,
+      "mean": 226.077
+    },
+    "taskdock_threads": {
+      "n": 452,
+      "first": 38,
+      "last": 31,
+      "min": 31,
+      "max": 38,
+      "mean": 31.929
+    },
+    "taskdock_handles": {
+      "n": 452,
+      "first": 378,
+      "last": 382,
+      "min": 378,
+      "max": 405,
+      "mean": 387.204
+    },
+    "system_committed_mb": {
+      "n": 452,
+      "first": 36030.301,
+      "last": 33328.91,
+      "min": 33315.664,
+      "max": 50088.789,
+      "mean": 35093.185
+    },
+    "slope_private_mb_per_min": 0.01,
+    "slope_ws_mb_per_min": -0.226,
+    "slope_live_mb_per_min": -0.0055,
+    "slope_threads_per_min": -0.0895,
+    "slope_handles_per_min": -0.3109,
+    "slope_committed_mb_per_min": -130.7272,
+    "slope_alive_tasks_per_min": -0.2646,
+    "slope_wal_mb_per_min": 0.0049,
+    "slope_db_mb_per_min": 1.0049,
+    "rust_live_bytes": {
+      "n": 76,
+      "first": 1064990,
+      "last": 892954,
+      "min": 892919,
+      "max": 1089150,
+      "mean": 982851.026
+    },
+    "rust_peak_bytes": {
+      "n": 76,
+      "first": 2491553,
+      "last": 2491553,
+      "min": 2491553,
+      "max": 2491553,
+      "mean": 2491553.0
+    },
+    "rust_total_allocated_bytes": {
+      "n": 76,
+      "first": 9508474,
+      "last": 868055606,
+      "min": 9508474,
+      "max": 868055606,
+      "mean": 649633767.684
+    },
+    "rust_alloc_calls": {
+      "n": 76,
+      "first": 48150,
+      "last": 5750193,
+      "min": 48150,
+      "max": 5750193,
+      "mean": 4286489.789
+    },
+    "tokio_alive_tasks": {
+      "n": 76,
+      "first": 15,
+      "last": 7,
+      "min": 7,
+      "max": 15,
+      "mean": 11.118
+    },
+    "sqlite_wal_bytes": {
+      "n": 76,
+      "first": 3794552,
+      "last": 4618552,
+      "min": 3794552,
+      "max": 4618552,
+      "mean": 4585863.053
+    },
+    "sqlite_db_bytes": {
+      "n": 76,
+      "first": 487424,
+      "last": 40374272,
+      "min": 487424,
+      "max": 40374272,
+      "mean": 30831454.316
+    },
+    "sqlite_page_count": {
+      "n": 76,
+      "first": 164,
+      "last": 9871,
+      "min": 164,
+      "max": 9871,
+      "mean": 7541.237
+    },
+    "first_last": {
+      "taskdock_private_mb": [
+        9.6,
+        13.1
+      ],
+      "taskdock_ws_mb": [
+        31,
+        14.7
+      ],
+      "webview2_private_mb": [
+        237.3,
+        223.6
+      ],
+      "live_bytes": [
+        1064990,
+        892954
+      ],
+      "alive_tasks": [
+        15,
+        7
+      ],
+      "wal_bytes": [
+        3794552,
+        4618552
+      ],
+      "db_bytes": [
+        487424,
+        40374272
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 4,
+      "merge_buffer": 0,
+      "events_received": 224,
+      "events_processed": 128,
+      "events_merged": 92,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 224,
+      "http_requests": 227,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 48150,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 43941,
+        "live_bytes": 1064990,
+        "peak_bytes": 2491553,
+        "total_allocated_bytes": 9508474
+      },
+      "runtime": {
+        "alive_tasks": 15
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 164,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 1.19,
+          "calls": 72,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 3794552
+      }
+    },
+    "stats_last": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 36002,
+      "events_processed": 21527,
+      "events_merged": 14475,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 36000,
+      "http_requests": 36532,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 5750193,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 5746125,
+        "live_bytes": 892954,
+        "peak_bytes": 2491553,
+        "total_allocated_bytes": 868055606
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 40374272,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 9871,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 1.23,
+          "calls": 10585,
+          "pool_size": 3,
+          "slow_queries_100ms": 5
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4618552
+      }
+    }
+  }
+}

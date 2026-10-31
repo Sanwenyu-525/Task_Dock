@@ -1,0 +1,33 @@
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\context_menu.rs:250:
+                 )
+             };
+             if hook.is_null() {
+[31m-                tracing::debug!("EVENT_SYSTEM_FOREGROUND 钩子安装失败（依赖 Focused 事件路径关闭）");
+[0m[32m+                tracing::debug!(
+[0m[32m+                    "EVENT_SYSTEM_FOREGROUND 钩子安装失败（依赖 Focused 事件路径关闭）"
+[0m[32m+                );
+[0m             } else {
+                 tracing::debug!("前台切换钩子已安装（菜单外点击关闭）");
+             }
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\context_menu.rs:264:
+ }
+ 
+ /// 解析锚点所在显示器的工作区与缩放；取不到时退回主显示器。
+[31m-fn monitor_at(
+[0m[31m-    app: &AppHandle,
+[0m[31m-    anchor: (f64, f64),
+[0m[31m-) -> Option<(WorkArea, f64)> {
+[0m[32m+fn monitor_at(app: &AppHandle, anchor: (f64, f64)) -> Option<(WorkArea, f64)> {
+[0m     let from_point = app.monitor_from_point(anchor.0, anchor.1).ok().flatten();
+     let monitor = from_point.or_else(|| {
+         app.available_monitors()
+Diff in \\?\D:\Develop\task_dock\src-tauri\src\window_shape.rs:142:
+         applied |= apply_pass(win, hwnd, logical_radius);
+         let stable = match win.outer_size() {
+             Ok(size) => {
+[31m-                REGIONS.lock()
+[0m[32m+                REGIONS
+[0m[32m+                    .lock()
+[0m                     .unwrap_or_else(|e| e.into_inner())
+                     .last_pass_size(hwnd)
+                     == Some((size.width as i32, size.height as i32))

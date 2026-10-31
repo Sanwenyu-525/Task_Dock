@@ -236,6 +236,7 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
               <Search size={12} />
               <input
                 data-autofocus
+                className="input-embedded"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="搜索已安装软件…"

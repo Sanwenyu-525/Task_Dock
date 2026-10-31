@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47900",
+    "token": "2e1ad9c3-8627-4187-be6b-ab4a46a7a99e",
+    "mode": "mixed",
+    "agents": 1,
+    "rate": 2,
+    "duration": 90,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "smoke-toast-20261031-110942",
+    "source": "bridge",
+    "allowRealSource": true,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-smoke\\smoke-toast-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-smoke-toast-20261031-110942-load.json"
+  },
+  "elapsed_ms": 90013,
+  "actual_rate": 2,
+  "counts": {
+    "sent": 180,
+    "ok": 180,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 18,
+    "critical_ok": 18,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.22,
+    "p95": 292.07,
+    "max": 664.94
+  }
+}

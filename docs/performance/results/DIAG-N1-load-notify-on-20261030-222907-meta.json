@@ -1,0 +1,385 @@
+{
+  "scenario": "N1-load-notify-on",
+  "source_exe": "C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe",
+  "source_exe_bytes": 15389184,
+  "source_exe_image_name": "tdmeas.exe",
+  "sampler_process_name_pattern": "^tdmeas",
+  "other_task_dock_instances": [],
+  "started_at": "2026-10-30T14:29:09.129223+00:00",
+  "duration_s": 480,
+  "post_s": 90,
+  "mode": "mixed",
+  "source": "bridge",
+  "allow_real_source": true,
+  "rate_per_agent": 5,
+  "agents": 4,
+  "batch": 1,
+  "transport": "http",
+  "notifications": "on",
+  "window": {
+    "ok": true,
+    "hwnd": 2229090,
+    "visible": true,
+    "iconic": false
+  },
+  "settings": {
+    "http_enabled": true,
+    "http_port": 47890,
+    "mock_enabled": false,
+    "clipboard_enabled": false,
+    "auto_backup": false,
+    "notify_agent": true,
+    "notify_reminder": false,
+    "notify_muted": false,
+    "snap_enabled": false,
+    "hotkey_enabled": false,
+    "stale_run_minutes": 15,
+    "perf_diagnostics_enabled": true
+  },
+  "data_dir": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-abc-v05r4\\N1-load-notify-on-data",
+  "sampler_jsonl": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-222907.jsonl",
+  "app_log": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-222907-app.log",
+  "load_json": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-N1-load-notify-on-20261030-222907-load.json",
+  "stats_end_of_load": {
+    "db": {
+      "db_bytes": 11059200,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 2715,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 0.15,
+        "calls": 1464,
+        "pool_size": 3,
+        "slow_queries_100ms": 0
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 4663872
+    },
+    "http": {
+      "accepted": 9600,
+      "active_connections": 2,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-30T14:37:19.370561300+00:00",
+      "max_active_requests": 6,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 9714
+    },
+    "notifications": {
+      "attempted": 44,
+      "failed": 0,
+      "succeeded": 44
+    },
+    "pipeline": {
+      "batches": 1201,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 45.91,
+        "p50_ms": 5.57,
+        "p95_ms": 15.94,
+        "p99_ms": 25.24,
+        "samples": 1024
+      },
+      "events_merged": 3840,
+      "events_processed": 5760,
+      "events_received": 9600,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 304.85,
+        "p50_ms": 242.51,
+        "p95_ms": 275.35,
+        "p99_ms": 289.02,
+        "samples": 2048
+      },
+      "last_batch_size": 8,
+      "last_flush_at": "2026-10-30T14:37:19.225354100+00:00",
+      "lifecycle": "running",
+      "max_batch_size": 8,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 9600,
+      "uptime_secs": 489
+    },
+    "process": {
+      "alloc_calls": 1467515,
+      "alloc_stats_enabled": true,
+      "dealloc_calls": 1463936,
+      "live_bytes": 893365,
+      "peak_bytes": 1091922,
+      "total_allocated_bytes": 210384883
+    },
+    "runtime": {
+      "alive_tasks": 8
+    }
+  },
+  "stats_after_post": {
+    "db": {
+      "db_bytes": 11059200,
+      "pragma": {
+        "cache_kib": 2000,
+        "cache_size": -2000,
+        "freelist_pages": 0,
+        "journal_mode": "wal",
+        "page_count": 2715,
+        "page_size": 4096,
+        "wal_autocheckpoint_pages": 1000
+      },
+      "read": {
+        "avg_ms": 0.15,
+        "calls": 1469,
+        "pool_size": 3,
+        "slow_queries_100ms": 0
+      },
+      "read_pool": 3,
+      "shm_bytes": 32768,
+      "wal_bytes": 4663872
+    },
+    "http": {
+      "accepted": 9600,
+      "active_connections": 2,
+      "active_requests": 0,
+      "internal_errors": 0,
+      "last_request_at": "2026-10-30T14:38:49.373670800+00:00",
+      "max_active_requests": 6,
+      "max_body_bytes": 65536,
+      "max_concurrency": 32,
+      "rejected_auth": 0,
+      "rejected_concurrency": 0,
+      "rejected_overload": 0,
+      "rejected_parse": 0,
+      "requests": 9738
+    },
+    "notifications": {
+      "attempted": 45,
+      "failed": 0,
+      "succeeded": 45
+    },
+    "pipeline": {
+      "batches": 1201,
+      "coalesce_ms": 250,
+      "commit_failures": 0,
+      "db_write_latency": {
+        "max_ms": 45.91,
+        "p50_ms": 5.57,
+        "p95_ms": 15.94,
+        "p99_ms": 25.24,
+        "samples": 1024
+      },
+      "events_merged": 3840,
+      "events_processed": 5760,
+      "events_received": 9600,
+      "events_sampled": 0,
+      "events_spooled": 0,
+      "events_unsaved": 0,
+      "fallback_jobs": 0,
+      "ingest_latency": {
+        "max_ms": 304.85,
+        "p50_ms": 242.51,
+        "p95_ms": 275.35,
+        "p99_ms": 289.02,
+        "samples": 2048
+      },
+      "last_batch_size": 8,
+      "last_flush_at": "2026-10-30T14:37:19.225354100+00:00",
+      "lifecycle": "running",
+      "max_batch_size": 8,
+      "merge_buffer": 0,
+      "overload_rejects": 0,
+      "queue_capacity": 1024,
+      "queue_depth_events": 0,
+      "queue_depth_jobs": 0,
+      "running": true,
+      "spool_failures": 0,
+      "spool_pending_files": 0,
+      "submissions": 9600,
+      "uptime_secs": 579
+    },
+    "process": {
+      "alloc_calls": 1495943,
+      "alloc_stats_enabled": true,
+      "dealloc_calls": 1492363,
+      "live_bytes": 893821,
+      "peak_bytes": 1091922,
+      "total_allocated_bytes": 213543123
+    },
+    "runtime": {
+      "alive_tasks": 8
+    }
+  },
+  "error": null,
+  "instance_exited_after_s": null,
+  "instance_exit_code": 1,
+  "summary": {
+    "samples": 116,
+    "elapsed_s": 580.8,
+    "taskdock_private_mb": {
+      "n": 116,
+      "first": 40.4,
+      "last": 46.9,
+      "min": 40.4,
+      "max": 47.1,
+      "mean": 45.631
+    },
+    "taskdock_ws_mb": {
+      "n": 116,
+      "first": 70.1,
+      "last": 65.2,
+      "min": 64.6,
+      "max": 76.4,
+      "mean": 71.422
+    },
+    "webview2_private_mb": {
+      "n": 116,
+      "first": 200.7,
+      "last": 188.5,
+      "min": 181.6,
+      "max": 202.2,
+      "mean": 195.002
+    },
+    "slope_private_mb_per_min": 0.474,
+    "slope_ws_mb_per_min": -1.289,
+    "slope_live_mb_per_min": -0.0075,
+    "first_last": {
+      "taskdock_private_mb": [
+        40.4,
+        46.9
+      ],
+      "taskdock_ws_mb": [
+        70.1,
+        65.2
+      ],
+      "webview2_private_mb": [
+        200.7,
+        188.5
+      ],
+      "live_bytes": [
+        838874,
+        872405
+      ]
+    },
+    "stats_first": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 0,
+      "events_processed": 0,
+      "events_merged": 0,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 0,
+      "http_requests": 3,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 7102,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 3688,
+        "live_bytes": 838874,
+        "peak_bytes": 841085,
+        "total_allocated_bytes": 1438736
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 0,
+        "failed": 0,
+        "succeeded": 0
+      },
+      "db": {
+        "db_bytes": 487424,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 119,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 1.06,
+          "calls": 3,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 0
+      }
+    },
+    "stats_last": {
+      "queue_depth_events": 0,
+      "merge_buffer": 0,
+      "events_received": 9600,
+      "events_processed": 5760,
+      "events_merged": 3840,
+      "events_sampled": 0,
+      "overload_rejects": 0,
+      "commit_failures": 0,
+      "http_accepted": 9600,
+      "http_requests": 9737,
+      "http_rejected_overload": 0,
+      "http_active": 0,
+      "process": {
+        "alloc_calls": 1495740,
+        "alloc_stats_enabled": true,
+        "dealloc_calls": 1492172,
+        "live_bytes": 872405,
+        "peak_bytes": 1091922,
+        "total_allocated_bytes": 213465478
+      },
+      "runtime": {
+        "alive_tasks": 7
+      },
+      "notifications": {
+        "attempted": 45,
+        "failed": 0,
+        "succeeded": 45
+      },
+      "db": {
+        "db_bytes": 11059200,
+        "pragma": {
+          "cache_kib": 2000,
+          "cache_size": -2000,
+          "freelist_pages": 0,
+          "journal_mode": "wal",
+          "page_count": 2715,
+          "page_size": 4096,
+          "wal_autocheckpoint_pages": 1000
+        },
+        "read": {
+          "avg_ms": 0.15,
+          "calls": 1468,
+          "pool_size": 3,
+          "slow_queries_100ms": 0
+        },
+        "read_pool": 3,
+        "shm_bytes": 32768,
+        "wal_bytes": 4663872
+      }
+    }
+  }
+}

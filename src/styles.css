@@ -1,3 +1,5 @@
+@layer base, theme, ui, menu;
+@layer base {
 /* ════════════════════════════════════════════════════════════════
    Task Dock v0.3 全局样式
    设计 Token 体系：配色（light/dark/system）× 材质（solid/glass）正交。
@@ -47,6 +49,27 @@
   --radius-window: 14px;
   --radius-card: 10px;
   --radius-control: 8px;
+  /* 贴边吸附反馈 / Smart Dock Capsule（v0.6 专项）：
+     引用 accent / surface / status 系 Token，明暗与两套视觉预设自动跟随 */
+  --accent-gradient: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  /* 胶囊几何（CSS px）：隐藏坐标用 capsuleStripPhysical = round(32 × DPI)，
+     两者严格对应，内容不被窗口边界裁切 */
+  --snap-capsule-t: 32px;
+  --snap-capsule-l: 120px;
+  --snap-hint-band: var(--accent-gradient);
+  --snap-hint-bg: var(--surface-raised);
+  --snap-hint-border: var(--border-strong);
+  --snap-hint-text: var(--accent);
+  --snap-feedback-bg: var(--surface-raised);
+  --snap-feedback-border: var(--border-strong);
+  --snap-feedback-text: var(--accent);
+  --snap-dock-line: var(--accent);
+  --snap-capsule-face: var(--surface-raised);
+  --snap-capsule-border: var(--border-strong);
+  --snap-capsule-text: var(--text-secondary);
+  --snap-capsule-num: var(--text-primary);
+  --snap-alert-ring-failed: rgba(239, 68, 68, 0.5);
+  --snap-alert-ring-waiting: rgba(249, 115, 22, 0.5);
   color-scheme: light;
 }
 
@@ -75,6 +98,9 @@
   --p3: #64748b;
   --shadow-overlay: 0 10px 34px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-raised: 0 2px 8px rgba(0, 0, 0, 0.28);
+  /* Smart Dock Capsule 深色覆盖 */
+  --snap-alert-ring-failed: rgba(248, 113, 113, 0.55);
+  --snap-alert-ring-waiting: rgba(251, 146, 60, 0.55);
   color-scheme: dark;
 }
 
@@ -168,11 +194,22 @@ textarea:disabled {
   cursor: not-allowed;
 }
 
-/* 统一键盘焦点可见性 */
+/* 统一键盘焦点可见性。
+   注意：文本输入元素不在此画 outline——
+   - 裸输入框的焦点指示是自身 :focus 的边框/阴影（见 input:focus 及 theme 层）；
+   - 包在组合容器里的输入（快速添加 / 搜索框 / 剪贴板搜索等）由容器
+     :focus-within 的边框或阴影环表达聚焦；
+   若在这里再画一层 outline，容器与 input 会出现双重矩形描边，
+   且 Chromium 对文本输入无论鼠标还是键盘聚焦都匹配 :focus-visible。 */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
-  border-radius: 4px;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
 }
 
 code {
@@ -189,6 +226,7 @@ code {
 /* ══ 窗口骨架 ═════════════════════════════════════════════════ */
 
 .dock-window {
+  position: relative; /* 吸附反馈层（SnapOverlay）的定位基准 */
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -758,11 +796,23 @@ code {
   white-space: nowrap;
 }
 
+/* 筛选工具栏（任务 / 历史 / 各页共用）：
+   - flex-wrap：空间不足时子项有序换行，而不是把相邻控件挤到重叠；
+   - 不可换行的操作类子项（按钮 / 统计文案 / 下拉触发器）禁止压缩，
+     由换行兜底；seg-group 允许收缩到自身以内滚动，作为最后防线。 */
 .filter-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
+}
+
+.filter-bar > .btn,
+.filter-bar > .icon-btn,
+.filter-bar > .history-unread-hint,
+.filter-bar > .ui-select-trigger {
+  flex-shrink: 0;
 }
 
 .filter-bar.secondary {
@@ -770,7 +820,9 @@ code {
 }
 
 .filter-bar .seg-group {
-  max-width: calc(100% - 40px);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: nowrap;
   overflow-x: auto;
   scrollbar-width: none;
@@ -2928,19 +2980,61 @@ code {
 }
 
 /* 完整模式：剪贴板是左侧导航里的独立页面，直接占据右侧内容区。
-   与抽屉共用同一套内部结构（头 / 工具条 / 列表 / 底栏）。 */
+   与抽屉共用同一套内部结构（头 / 工具条 / 列表 / 底栏），
+   但不再套一层带边框和圆角的外壳——页面与窗口表面连成一体。 */
 .clipboard-page {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
-  background: var(--surface-base);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
+  flex: 1;
+  min-height: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   overflow: hidden;
 }
 
 .clipboard-page .clip-body {
   flex: 1;
+  min-height: 0;
+}
+
+.clipboard-page .clip-head {
+  padding: 10px 14px 6px;
+  border-bottom: none;
+}
+
+.clipboard-page .clip-toolbar {
+  padding: 4px 14px 2px;
+}
+
+.clipboard-page .clip-chips {
+  margin: 2px 14px 4px;
+}
+
+.clipboard-page .clip-tabs {
+  padding: 2px 14px 0;
+}
+
+.clipboard-page .clip-body {
+  padding: 8px 14px 12px;
+}
+
+.clipboard-page .clip-foot {
+  position: relative;
+  padding: 8px 14px 10px;
+  border-top: none;
+}
+
+/* 页脚分隔同样是两端渐隐的细线，避免又把页面切回“卡片” */
+.clipboard-page .clip-foot::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--divider) 18%, var(--divider) 82%, transparent);
+  pointer-events: none;
 }
 
 .clipboard-drawer {
@@ -3070,7 +3164,7 @@ code {
   align-items: center;
   gap: 5px;
   padding: 2px 4px 2px 7px;
-  background: var(--surface-base);
+  background: var(--control-face);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-control);
   color: var(--text-tertiary);
@@ -4924,4 +5018,206 @@ code {
   .snapshot-name {
     max-width: 55%;
   }
+}
+
+/* ══ 贴边吸附反馈（v0.6 专项）══════════════════════════════
+   候选高亮 / 「松开吸附」提示 / 「已吸附」反馈 / 停靠细线 / 隐藏触发条。
+   约束：无循环动画、无系统 Toast/音效；reduced-motion 由文件头部
+   全局媒体查询收敛（0.01ms）。z-index 压过抽屉/Toast（≤41）。
+   方位语义：隐藏窗口滑出后留在屏幕内的是**停靠边的对侧**
+   （left 停靠向左滑出，露出窗口右缘窄条），触发条按此定位。 */
+
+.snap-glow {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  animation: snap-fade-in 0.16s ease-out backwards;
+}
+.snap-glow-left,
+.snap-glow-right {
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--snap-hint-band);
+}
+.snap-glow-top,
+.snap-glow-bottom {
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--snap-hint-band);
+}
+.snap-glow-left { left: 0; }
+.snap-glow-right { right: 0; }
+.snap-glow-top { top: 0; }
+.snap-glow-bottom { bottom: 0; }
+
+.snap-hint,
+.snap-feedback {
+  position: absolute;
+  z-index: 51;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  background: var(--snap-hint-bg);
+  border: 1px solid var(--snap-hint-border);
+  color: var(--snap-hint-text);
+  box-shadow: var(--shadow-overlay);
+  animation: snap-rise-in 0.18s ease-out backwards;
+}
+.snap-feedback {
+  background: var(--snap-feedback-bg);
+  border-color: var(--snap-feedback-border);
+  color: var(--snap-feedback-text);
+  animation-duration: 0.22s;
+}
+.snap-hint-left,
+.snap-feedback-left { left: 12px; top: 50%; translate: 0 -50%; }
+.snap-hint-right,
+.snap-feedback-right { right: 12px; top: 50%; translate: 0 -50%; }
+.snap-hint-top,
+.snap-feedback-top { top: 6px; left: 50%; translate: -50% 0; }
+.snap-hint-bottom,
+.snap-feedback-bottom { bottom: 6px; left: 50%; translate: -50% 0; }
+
+/* 停靠中的低调指示：停靠边内侧 2px 渐隐细线 */
+.snap-dock-line {
+  position: absolute;
+  z-index: 49;
+  pointer-events: none;
+  opacity: 0.5;
+}
+.snap-dock-line-left,
+.snap-dock-line-right { top: 0; bottom: 0; width: 2px; }
+.snap-dock-line-top,
+.snap-dock-line-bottom { left: 0; right: 0; height: 2px; }
+.snap-dock-line-left {
+  left: 0;
+  background: linear-gradient(180deg, transparent, var(--snap-dock-line) 20%, var(--snap-dock-line) 80%, transparent);
+}
+.snap-dock-line-right {
+  right: 0;
+  background: linear-gradient(180deg, transparent, var(--snap-dock-line) 20%, var(--snap-dock-line) 80%, transparent);
+}
+.snap-dock-line-top {
+  top: 0;
+  background: linear-gradient(90deg, transparent, var(--snap-dock-line) 20%, var(--snap-dock-line) 80%, transparent);
+}
+.snap-dock-line-bottom {
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, var(--snap-dock-line) 20%, var(--snap-dock-line) 80%, transparent);
+}
+
+/* 隐藏态 Smart Dock Capsule：短胶囊（32×120 CSS px，对侧定位见区块头注释）。
+   CSS 厚度与隐藏坐标严格对应：capsuleStripPhysical = round(32 × DPI)，
+   窗口只露出胶囊所在的边缘区段，内容不会被窗口边界裁切。
+   左右停靠为纵向胶囊（数字保持水平不旋转），顶底为横向胶囊。 */
+.snap-capsule {
+  position: absolute;
+  z-index: 52;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0;
+  border: 1px solid var(--snap-capsule-border);
+  border-radius: 999px;
+  background: var(--snap-capsule-face);
+  color: var(--snap-capsule-text);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    var(--shadow-raised);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  transition: filter 0.12s ease, box-shadow 0.12s ease;
+}
+.snap-capsule:hover,
+.snap-capsule:focus-visible {
+  filter: brightness(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    var(--shadow-raised),
+    0 0 0 2px var(--accent-soft);
+}
+.capsule-v {
+  flex-direction: column;
+  width: var(--snap-capsule-t);
+  height: var(--snap-capsule-l);
+}
+.capsule-h {
+  flex-direction: row;
+  height: var(--snap-capsule-t);
+  width: var(--snap-capsule-l);
+}
+/* 对侧定位：left 停靠 → 露出窗口右缘（贴屏幕左边） */
+.capsule-left { right: 0; top: 50%; translate: 0 -50%; }
+.capsule-right { left: 0; top: 50%; translate: 0 -50%; }
+.capsule-top { bottom: 0; left: 50%; translate: -50% 0; }
+.capsule-bottom { top: 0; left: 50%; translate: -50% 0; }
+
+.capsule-brand { color: var(--snap-hint-text); flex-shrink: 0; }
+.capsule-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.capsule-num {
+  color: var(--snap-capsule-num);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.capsule-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--status-disconnected);
+  flex-shrink: 0;
+}
+.capsule-dot.dot-running { background: var(--status-running); }
+.capsule-dot.dot-waiting { background: var(--status-waiting); }
+.capsule-dot.dot-failed { background: var(--status-error); }
+.capsule-dot.dot-idle { background: var(--text-tertiary); }
+/* 异常状态提升视觉优先级：克制的状态色描边环，不闪烁 */
+.capsule-alert-failed {
+  border-color: var(--status-error);
+  box-shadow: 0 0 0 1px var(--snap-alert-ring-failed), var(--shadow-raised);
+}
+.capsule-alert-waiting {
+  border-color: var(--status-waiting);
+  box-shadow: 0 0 0 1px var(--snap-alert-ring-waiting), var(--shadow-raised);
+}
+/* 展开箭头：始终朝向屏幕内部（left 停靠 → 屏内为右 → 0deg；其余旋转） */
+.capsule-chevron { color: var(--snap-capsule-text); flex-shrink: 0; }
+.capsule-left .capsule-chevron { rotate: 0deg; }
+.capsule-right .capsule-chevron { rotate: 180deg; }
+.capsule-top .capsule-chevron { rotate: 90deg; }
+.capsule-bottom .capsule-chevron { rotate: -90deg; }
+
+/* 磁吸区（≤28px）提示增强：吸附趋势更明确，仍保持轻量 */
+.snap-hint-magnet {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow:
+    var(--shadow-overlay),
+    0 0 0 2px var(--accent-soft);
+}
+
+@keyframes snap-fade-in {
+  from { opacity: 0; }
+}
+@keyframes snap-rise-in {
+  from {
+    opacity: 0;
+    scale: 0.96;
+  }
+}
 }

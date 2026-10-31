@@ -1,0 +1,15 @@
+[2m2026-10-30T14:57:55.669154Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 智能剪贴板已停用：不启动监听与后台维护
+[2m2026-10-30T14:57:55.849541Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m Task Dock 启动完成（数据目录: "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-repro-b\\reproB-notifyon-data"）
+[2m2026-10-30T14:57:55.849717Z[0m [32m INFO[0m [2mtask_dock_lib::agents::mock[0m[2m:[0m Mock Adapter 启动（仅手动触发，不再自动生成模拟事件）
+[2m2026-10-30T14:57:55.849885Z[0m [32m INFO[0m [2mtask_dock_lib::scheduler[0m[2m:[0m 提醒调度引擎启动（1s 粒度）
+[2m2026-10-30T14:57:55.850704Z[0m [32m INFO[0m [2mtask_dock_lib::agents::file_drop[0m[2m:[0m 文件投递 Adapter 启动，监听目录 "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-repro-b\\reproB-notifyon-data\\agent-inbox"
+[2m2026-10-30T14:57:55.855967Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 本地 HTTP 接入监听 127.0.0.1:47894
+[2m2026-10-30T14:57:56.296807Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:12083, 0ms)
+[2m2026-10-30T14:58:01.731758Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:8098, 0ms)
+[2m2026-10-30T14:58:01.797328Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:8098, 1ms)
+[2m2026-10-30T14:58:05.528034Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/stats -> 200 (127.0.0.1:12031, 0ms)
+[2m2026-10-30T14:58:11.705169Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m HTTP 接入 GET /api/v1/health -> 200 (127.0.0.1:5225, 0ms)
+[2m2026-10-30T14:58:17.233263Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 应用退出：关闭 HTTP 接入监听，不再接受新事件
+[2m2026-10-30T14:58:17.233346Z[0m [32m INFO[0m [2mtask_dock_lib::agents::http_ingest[0m[2m:[0m 应用退出：HTTP 接入适配器停止
+[2m2026-10-30T14:58:17.234532Z[0m [32m INFO[0m [2mtask_dock_lib[0m[2m:[0m 接入管线退出排空完成 [3mlifecycle[0m[2m=[0mstopped [3mtimed_out[0m[2m=[0mfalse [3mdrained[0m[2m=[0m0 [3munfinished[0m[2m=[0m0 [3mspooled[0m[2m=[0m0 [3munsaved[0m[2m=[0m0 [3melapsed_ms[0m[2m=[0m0
+[1030/225817.960:ERROR:ui\gfx\win\window_impl.cc:172] Failed to unregister class Chrome_WidgetWin_0. Error = 1412

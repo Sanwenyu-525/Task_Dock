@@ -1,0 +1,9 @@
+file:///D:/Develop/task_dock/scripts/acceptance/joint-ui-drive.mjs:40
+  throw new Error(`CDP 连接失败：127.0.0.1:${port}`);
+        ^
+
+Error: CDP 连接失败：127.0.0.1:9226
+    at connect (file:///D:/Develop/task_dock/scripts/acceptance/joint-ui-drive.mjs:40:9)
+    at async file:///D:/Develop/task_dock/scripts/acceptance/joint-ui-drive.mjs:69:27
+
+Node.js v22.22.3

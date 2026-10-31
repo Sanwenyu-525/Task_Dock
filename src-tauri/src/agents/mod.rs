@@ -1236,17 +1236,18 @@ impl AgentHub {
     }
 
     /// OS 通知（调用方已按设置过滤）。
+    ///
+    /// 直接发 WinRT toast，不经 notify-rust：后者会给每条 toast 注册
+    /// on_activated/on_dismissed 回调，Toast 在操作中心存续期间这些 COM 回调
+    /// 把句柄与原生内存留在本进程，随通知条数线性累积（实测 ≈3 句柄/23KB 一条）。
     fn show_os_notification(&self, title: &str, body: &str) {
-        use tauri_plugin_notification::NotificationExt;
         NOTIFY_ATTEMPTED.fetch_add(1, Ordering::Relaxed);
-        match self
-            .app
-            .notification()
-            .builder()
+        let result = tauri_winrt_notification::Toast::new(&self.toast_app_id())
             .title(title)
-            .body(body)
+            .text1(body)
             .show()
-        {
+            .map_err(|e| e.to_string());
+        match result {
             Ok(()) => {
                 NOTIFY_SUCCEEDED.fetch_add(1, Ordering::Relaxed);
             }
@@ -1254,6 +1255,20 @@ impl AgentHub {
                 NOTIFY_FAILED.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!("OS 通知发送失败（不影响事件落库）: {}", e);
             }
+        }
+    }
+
+    /// 与 tauri-plugin-notification 一致的 AppUserModelID 选择：
+    /// 开发/便携构建（target/debug|release）没有已注册的 AUMID，回退到 PowerShell。
+    fn toast_app_id(&self) -> String {
+        let dev = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .is_some_and(|d| d.ends_with("target\\debug") || d.ends_with("target\\release"));
+        if dev {
+            tauri_winrt_notification::Toast::POWERSHELL_APP_ID.to_string()
+        } else {
+            self.app.config().identifier.clone()
         }
     }
 

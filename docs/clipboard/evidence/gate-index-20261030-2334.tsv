@@ -1,0 +1,5 @@
+fmt|cargo fmt --all -- --check|2026-10-30 23:34:44|2026-10-30 23:34:44|1|docs/clipboard/evidence/gate-fmt-20261030-2334.log
+clippy|cargo clippy --all-targets --all-features -- -D warnings|2026-10-30 23:34:44|2026-10-30 23:34:45|101|docs/clipboard/evidence/gate-clippy-20261030-2334.log
+test-all|cargo test --all --no-fail-fast|2026-10-30 23:34:45|2026-10-30 23:34:45|101|docs/clipboard/evidence/gate-test-all-20261030-2334.log
+tsc|npx tsc --noEmit|2026-10-30 23:34:45|2026-10-30 23:34:57|0|docs/clipboard/evidence/gate-tsc-20261030-2334.log
+vitest|npx vitest run|2026-10-30 23:34:57|2026-10-30 23:35:21|1|docs/clipboard/evidence/gate-vitest-20261030-2334.log

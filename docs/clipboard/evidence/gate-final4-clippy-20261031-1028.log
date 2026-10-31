@@ -1,0 +1,19 @@
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+error: empty line after doc comment
+   --> src\window_shape.rs:169:1
+    |
+169 | / /// 最近一次 pass 实际使用的窗口尺寸：已并入 RegionCache（按 hwnd 隔离）。
+170 | |
+    | |_^
+171 |   #[cfg(windows)]
+172 |   fn apply_pass<R: Runtime>(win: &WebviewWindow<R>, hwnd: isize, logical_radius: f64) -> bool {
+    |   ------------- the comment documents this function
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#empty_line_after_doc_comments
+    = note: `-D clippy::empty-line-after-doc-comments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::empty_line_after_doc_comments)]`
+    = help: if the empty line is unintentional, remove it
+
+error: could not compile `task-dock` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `task-dock` (lib test) due to 1 previous error

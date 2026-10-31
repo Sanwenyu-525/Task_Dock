@@ -309,8 +309,28 @@ export default function HistoryPanel() {
 
   return (
     <div className="history-panel">
-      {/* 过滤工具栏 */}
+      {/* 过滤工具栏：第一行 = 筛选（时间 → 来源 → 类型，窄窗口时靠后的先换行），
+          第二行 = 统计 + 批量操作，两行职责分离互不挤压 */}
       <div className="filter-bar primary">
+        <div className="seg-group subtle" role="group" aria-label="时间范围">
+          {TIME_FILTERS.map((t) => (
+            <button
+              key={t.id}
+              className={`seg-btn ${timeFilter === t.id ? "active" : ""}`}
+              onClick={() => setTimeFilter(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <Select
+          className="sort-select"
+          size="sm"
+          ariaLabel="来源筛选"
+          value={sourceFilter}
+          options={[{ value: "all", label: "全部来源" }, ...sourceOptions.map(([value, label]) => ({ value, label }))]}
+          onChange={(v) => setSourceFilter(v)}
+        />
         <div className="seg-group subtle" role="group" aria-label="类型">
           {(
             [
@@ -328,32 +348,12 @@ export default function HistoryPanel() {
             </button>
           ))}
         </div>
-        <span className="flex-spacer" />
-        <Select
-          className="sort-select"
-          size="sm"
-          ariaLabel="来源筛选"
-          value={sourceFilter}
-          options={[{ value: "all", label: "全部来源" }, ...sourceOptions.map(([value, label]) => ({ value, label }))]}
-          onChange={(v) => setSourceFilter(v)}
-        />
       </div>
       <div className="filter-bar secondary">
-        <div className="seg-group subtle" role="group" aria-label="时间范围">
-          {TIME_FILTERS.map((t) => (
-            <button
-              key={t.id}
-              className={`seg-btn ${timeFilter === t.id ? "active" : ""}`}
-              onClick={() => setTimeFilter(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <span className="flex-spacer" />
         <span className="history-unread-hint">
           {unread} 条未读 / 共 {inboxTotal}
         </span>
+        <span className="flex-spacer" />
         <button className="btn sm" onClick={onMarkAll} disabled={unread === 0} title="全部标为已读">
           <CheckCheck size={12} /> 全部已读
         </button>

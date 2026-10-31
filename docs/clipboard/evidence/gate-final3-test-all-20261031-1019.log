@@ -1,0 +1,272 @@
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+error[E0425]: cannot find type `AtomicU32` in this scope
+  --> src\window_shape.rs:27:22
+   |
+27 | static RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
+   |                      ^^^^^^^^^ not found in this scope
+   |
+   = note: struct `crate::clipboard::platform::imp::AtomicU32` exists but is inaccessible
+help: consider importing this struct
+   |
+20 + use std::sync::atomic::AtomicU32;
+   |
+
+error[E0433]: cannot find type `AtomicU32` in this scope
+  --> src\window_shape.rs:27:34
+   |
+27 | static RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
+   |                                  ^^^^^^^^^ use of undeclared type `AtomicU32`
+   |
+   = note: struct `crate::clipboard::platform::imp::AtomicU32` exists but is inaccessible
+help: consider importing this struct
+   |
+20 + use std::sync::atomic::AtomicU32;
+   |
+
+error[E0425]: cannot find type `AtomicU32` in this scope
+   --> src\window_shape.rs:170:24
+    |
+170 | static LAST_PASS_SIZE: AtomicU32 = AtomicU32::new(0);
+    |                        ^^^^^^^^^ not found in this scope
+    |
+    = note: struct `crate::clipboard::platform::imp::AtomicU32` exists but is inaccessible
+help: consider importing this struct
+    |
+ 20 + use std::sync::atomic::AtomicU32;
+    |
+
+error[E0433]: cannot find type `AtomicU32` in this scope
+   --> src\window_shape.rs:170:36
+    |
+170 | static LAST_PASS_SIZE: AtomicU32 = AtomicU32::new(0);
+    |                                    ^^^^^^^^^ use of undeclared type `AtomicU32`
+    |
+    = note: struct `crate::clipboard::platform::imp::AtomicU32` exists but is inaccessible
+help: consider importing this struct
+    |
+ 20 + use std::sync::atomic::AtomicU32;
+    |
+
+error[E0425]: cannot find value `LAST_REGION` in this scope
+   --> src\window_shape.rs:198:10
+    |
+198 |         *LAST_REGION.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    |          ^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `LAST_REGION` in this scope
+   --> src\window_shape.rs:210:19
+    |
+210 |     let cached = *LAST_REGION.lock().unwrap_or_else(|e| e.into_inner());
+    |                   ^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `LAST_REGION` in this scope
+   --> src\window_shape.rs:229:24
+    |
+229 |         let mut last = LAST_REGION.lock().unwrap_or_else(|e| e.into_inner());
+    |                        ^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find type `AtomicU32` in this scope
+  --> src\window_shape.rs:27:22
+   |
+27 | static RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
+   |                      ^^^^^^^^^ not found in this scope
+   |
+   = note: struct `crate::clipboard::lifecycle_tests::AtomicU32` exists but is inaccessible
+help: consider importing this struct
+   |
+20 + use std::sync::atomic::AtomicU32;
+   |
+
+error[E0433]: cannot find type `AtomicU32` in this scope
+  --> src\window_shape.rs:27:34
+   |
+27 | static RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
+   |                                  ^^^^^^^^^ use of undeclared type `AtomicU32`
+   |
+   = note: struct `crate::clipboard::lifecycle_tests::AtomicU32` exists but is inaccessible
+help: consider importing this struct
+   |
+20 + use std::sync::atomic::AtomicU32;
+   |
+
+error[E0425]: cannot find type `AtomicU32` in this scope
+   --> src\window_shape.rs:170:24
+    |
+170 | static LAST_PASS_SIZE: AtomicU32 = AtomicU32::new(0);
+    |                        ^^^^^^^^^ not found in this scope
+    |
+    = note: struct `crate::clipboard::lifecycle_tests::AtomicU32` exists but is inaccessible
+help: consider importing this struct
+    |
+ 20 + use std::sync::atomic::AtomicU32;
+    |
+
+error[E0433]: cannot find type `AtomicU32` in this scope
+   --> src\window_shape.rs:170:36
+    |
+170 | static LAST_PASS_SIZE: AtomicU32 = AtomicU32::new(0);
+    |                                    ^^^^^^^^^ use of undeclared type `AtomicU32`
+    |
+    = note: struct `crate::clipboard::lifecycle_tests::AtomicU32` exists but is inaccessible
+help: consider importing this struct
+    |
+ 20 + use std::sync::atomic::AtomicU32;
+    |
+
+error[E0308]: mismatched types
+   --> src\commands\system.rs:335:66
+    |
+324 | pub fn apply_material_to_window<R: tauri::Runtime>(
+    |                                 - found this type parameter
+...
+335 |         let _ = run_material(app, move || clear_native_materials(&w));
+    |                                           ---------------------- ^^ expected `&WebviewWindow`, found `&WebviewWindow<R>`
+    |                                           |
+    |                                           arguments to this function are incorrect
+    |
+    = note: expected reference `&tauri::WebviewWindow<tauri_runtime_wry::Wry<EventLoopMessage>>`
+               found reference `&tauri::WebviewWindow<R>`
+note: function defined here
+   --> src\commands\system.rs:292:4
+    |
+292 | fn clear_native_materials(win: &tauri::WebviewWindow) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^ --------------------------
+
+error[E0308]: mismatched types
+   --> src\commands\system.rs:335:30
+    |
+324 | pub fn apply_material_to_window<R: tauri::Runtime>(
+    |                                 - found this type parameter
+...
+335 |         let _ = run_material(app, move || clear_native_materials(&w));
+    |                 ------------ ^^^ expected `&AppHandle`, found `&AppHandle<R>`
+    |                 |
+    |                 arguments to this function are incorrect
+    |
+    = note: expected reference `&AppHandle<tauri_runtime_wry::Wry<EventLoopMessage>>`
+               found reference `&AppHandle<R>`
+note: function defined here
+   --> src\commands\system.rs:266:4
+    |
+266 | fn run_material<F>(app: &AppHandle, f: F) -> bool
+    |    ^^^^^^^^^^^^    ---------------
+
+error[E0308]: mismatched types
+   --> src\commands\system.rs:348:31
+    |
+324 | pub fn apply_material_to_window<R: tauri::Runtime>(
+    |                                 - found this type parameter
+...
+348 |         let ok = run_material(app, move || {
+    |                  ------------ ^^^ expected `&AppHandle`, found `&AppHandle<R>`
+    |                  |
+    |                  arguments to this function are incorrect
+    |
+    = note: expected reference `&AppHandle<tauri_runtime_wry::Wry<EventLoopMessage>>`
+               found reference `&AppHandle<R>`
+note: function defined here
+   --> src\commands\system.rs:266:4
+    |
+266 | fn run_material<F>(app: &AppHandle, f: F) -> bool
+    |    ^^^^^^^^^^^^    ---------------
+
+error[E0308]: mismatched types
+   --> src\commands\system.rs:368:25
+    |
+324 | pub fn apply_material_to_window<R: tauri::Runtime>(
+    |                                 - found this type parameter
+...
+368 |         if run_material(app, move || {
+    |            ------------ ^^^ expected `&AppHandle`, found `&AppHandle<R>`
+    |            |
+    |            arguments to this function are incorrect
+    |
+    = note: expected reference `&AppHandle<tauri_runtime_wry::Wry<EventLoopMessage>>`
+               found reference `&AppHandle<R>`
+note: function defined here
+   --> src\commands\system.rs:266:4
+    |
+266 | fn run_material<F>(app: &AppHandle, f: F) -> bool
+    |    ^^^^^^^^^^^^    ---------------
+
+error[E0308]: mismatched types
+   --> src\commands\system.rs:383:25
+    |
+324 | pub fn apply_material_to_window<R: tauri::Runtime>(
+    |                                 - found this type parameter
+...
+383 |         if run_material(app, move || window_vibrancy::apply_mica(&w, None).is_ok()) {
+    |            ------------ ^^^ expected `&AppHandle`, found `&AppHandle<R>`
+    |            |
+    |            arguments to this function are incorrect
+    |
+    = note: expected reference `&AppHandle<tauri_runtime_wry::Wry<EventLoopMessage>>`
+               found reference `&AppHandle<R>`
+note: function defined here
+   --> src\commands\system.rs:266:4
+    |
+266 | fn run_material<F>(app: &AppHandle, f: F) -> bool
+    |    ^^^^^^^^^^^^    ---------------
+
+error[E0308]: mismatched types
+   --> src\commands\system.rs:395:25
+    |
+324 | pub fn apply_material_to_window<R: tauri::Runtime>(
+    |                                 - found this type parameter
+...
+395 |         if run_material(app, move || {
+    |            ------------ ^^^ expected `&AppHandle`, found `&AppHandle<R>`
+    |            |
+    |            arguments to this function are incorrect
+    |
+    = note: expected reference `&AppHandle<tauri_runtime_wry::Wry<EventLoopMessage>>`
+               found reference `&AppHandle<R>`
+note: function defined here
+   --> src\commands\system.rs:266:4
+    |
+266 | fn run_material<F>(app: &AppHandle, f: F) -> bool
+    |    ^^^^^^^^^^^^    ---------------
+
+error[E0308]: mismatched types
+   --> src\commands\system.rs:408:62
+    |
+324 | pub fn apply_material_to_window<R: tauri::Runtime>(
+    |                                 - found this type parameter
+...
+408 |     let _ = run_material(app, move || clear_native_materials(&w));
+    |                                       ---------------------- ^^ expected `&WebviewWindow`, found `&WebviewWindow<R>`
+    |                                       |
+    |                                       arguments to this function are incorrect
+    |
+    = note: expected reference `&tauri::WebviewWindow<tauri_runtime_wry::Wry<EventLoopMessage>>`
+               found reference `&tauri::WebviewWindow<R>`
+note: function defined here
+   --> src\commands\system.rs:292:4
+    |
+292 | fn clear_native_materials(win: &tauri::WebviewWindow) -> bool {
+    |    ^^^^^^^^^^^^^^^^^^^^^^ --------------------------
+
+error[E0308]: mismatched types
+   --> src\commands\system.rs:408:26
+    |
+324 | pub fn apply_material_to_window<R: tauri::Runtime>(
+    |                                 - found this type parameter
+...
+408 |     let _ = run_material(app, move || clear_native_materials(&w));
+    |             ------------ ^^^ expected `&AppHandle`, found `&AppHandle<R>`
+    |             |
+    |             arguments to this function are incorrect
+    |
+    = note: expected reference `&AppHandle<tauri_runtime_wry::Wry<EventLoopMessage>>`
+               found reference `&AppHandle<R>`
+note: function defined here
+   --> src\commands\system.rs:266:4
+    |
+266 | fn run_material<F>(app: &AppHandle, f: F) -> bool
+    |    ^^^^^^^^^^^^    ---------------
+
+Some errors have detailed explanations: E0308, E0425, E0433.
+For more information about an error, try `rustc --explain E0308`.
+error: could not compile `task-dock` (lib) due to 15 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `task-dock` (lib test) due to 15 previous errors

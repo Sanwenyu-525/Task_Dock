@@ -1,0 +1,24 @@
+=== npm-build ===
+CMD: npm run build
+CWD: /d/Develop/task_dock
+START: 2026-10-30 22:26:35
+
+> task-dock@0.5.0 build
+> tsc --noEmit && vite build
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 1664 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.40 kB[22m[1m[22m[2m │ gzip:   0.27 kB[22m
+[2mdist/[22m[35massets/index-CUrl_xzT.css  [39m[1m[2m114.91 kB[22m[1m[22m[2m │ gzip:  19.52 kB[22m
+[2mdist/[22m[36massets/index-C4bEYKAS.js   [39m[1m[33m535.40 kB[39m[22m[2m │ gzip: 163.28 kB[22m
+[33m
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+[32m✓ built in 5.79s[39m
+END: 2026-10-30 22:26:46
+EXIT: 0

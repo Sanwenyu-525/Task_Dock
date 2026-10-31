@@ -519,6 +519,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             <div className="clip-search">
               <Search size={12} />
               <input
+                className="input-embedded"
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
                 placeholder="搜索文字、来源应用、文件名…"

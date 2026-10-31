@@ -1,0 +1,4 @@
+git_head_short=356bc44
+dirty_tracked= 123 files changed, 2672 insertions(+), 384 deletions(-)
+-rwxr-xr-x 1 ASUS 197121 15603200 2026-10-30 23:52:04.889980500 +0800 C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc1.exe
+fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378 *C:/Users/ASUS/AppData/Local/Temp/taskdock-mem-v05r5/task-dock-acc1.exe

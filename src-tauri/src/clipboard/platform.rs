@@ -33,9 +33,17 @@ pub struct CaptureSink {
 
 #[derive(Debug)]
 pub enum ClipboardRead {
-    Content(Box<CapturedContent>),
+    /// 采集到的内容，以及**读取那一刻**观察到的剪贴板序列号。
+    ///
+    /// 序列号随内容一起返回，采集线程才能把水位推进到「真正读到的状态」：
+    /// 同一份剪贴板状态只记一次，随后的同内容事件不会把 copy_count 顶上去。
+    Content {
+        sequence: u32,
+        content: Box<CapturedContent>,
+    },
     Skip(&'static str),
-    Empty,
+    /// 剪贴板当前没有可采集的内容（为空，或只有无法识别的格式）。
+    Empty(&'static str),
 }
 
 // ── 有界队列与诊断计数（监听链路不允无限积压）──────────────
@@ -153,6 +161,12 @@ struct MonitorCounters {
     recorded: AtomicU64,
     duplicates: AtomicU64,
     skipped: AtomicU64,
+    /// 序列号不晚于已采集水位：同一份剪贴板状态已经记过，不再重复入库。
+    superseded_events: AtomicU64,
+    /// 本进程自己的写入（复制/粘贴/恢复）产生的事件。
+    self_write_events: AtomicU64,
+    /// 事件到达但剪贴板里没有可采集的内容（为空或格式无法识别）。
+    empty_events: AtomicU64,
     dropped_events: AtomicU64,
     dropped_contents: AtomicU64,
     failed: AtomicU64,
@@ -171,6 +185,9 @@ impl MonitorCounters {
             recorded: AtomicU64::new(0),
             duplicates: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
+            superseded_events: AtomicU64::new(0),
+            self_write_events: AtomicU64::new(0),
+            empty_events: AtomicU64::new(0),
             dropped_events: AtomicU64::new(0),
             dropped_contents: AtomicU64::new(0),
             failed: AtomicU64::new(0),
@@ -196,6 +213,9 @@ pub struct MonitorStats {
     pub recorded: u64,
     pub duplicates: u64,
     pub skipped: u64,
+    pub superseded_events: u64,
+    pub self_write_events: u64,
+    pub empty_events: u64,
     pub dropped_events: u64,
     pub dropped_contents: u64,
     pub failed: u64,
@@ -218,6 +238,9 @@ pub fn monitor_stats() -> MonitorStats {
         recorded: c.recorded.load(Ordering::Relaxed),
         duplicates: c.duplicates.load(Ordering::Relaxed),
         skipped: c.skipped.load(Ordering::Relaxed),
+        superseded_events: c.superseded_events.load(Ordering::Relaxed),
+        self_write_events: c.self_write_events.load(Ordering::Relaxed),
+        empty_events: c.empty_events.load(Ordering::Relaxed),
         dropped_events: c.dropped_events.load(Ordering::Relaxed),
         dropped_contents: c.dropped_contents.load(Ordering::Relaxed),
         failed: c.failed.load(Ordering::Relaxed),
@@ -472,13 +495,32 @@ pub enum WriteGuard<'a> {
 }
 
 /// 带守卫校验的写入结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WriteOutcome {
     /// 写入成功，返回 CloseClipboard 之后读取的最终序列号
     /// （锁内读到的值可能因合成格式的延迟渲染而偏小）。
-    Written(u32),
+    Written {
+        /// CloseClipboard 之后读取的最终序列号。
+        seq: u32,
+        /// 剪贴板上实际存在的形态：辅助格式写入失败时已剔除对应字段。
+        /// 后续内容比对、自写登记必须以它为准——拿「原本想写的形态」去比，
+        /// 会把自己少写的一个格式误判成用户接管，逐项粘贴会无故中止。
+        effective: ClipboardPayload,
+        /// 未能写入的辅助格式名（用户可见提示用）。
+        degraded: Vec<String>,
+    },
     /// 守卫拒绝：剪贴板内容或序列号已变化，本次没有执行 EmptyClipboard。
     SequenceChanged,
+}
+
+/// 单次格式写入的结果。
+///
+/// `effective` 是剪贴板上实际存在的形态（辅助格式失败时已剔除对应字段），
+/// `degraded` 记录没能写入的辅助格式，供界面如实提示「部分格式写入失败」。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatWrite {
+    pub effective: ClipboardPayload,
+    pub degraded: Vec<String>,
 }
 
 /// 只读内容比对结果。
@@ -521,6 +563,36 @@ pub(crate) fn sequence_after(candidate: u32, reference: u32) -> bool {
 #[inline]
 pub(crate) fn is_own_write_sequence(event_sequence: u32, self_write: u32) -> bool {
     !sequence_after(event_sequence, self_write)
+}
+
+/// 采集事件的处置结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventDisposition {
+    /// 继续读取剪贴板。
+    Read,
+    /// 序列号不晚于已采集水位：同一份剪贴板状态已经记过，不再重复入库。
+    Superseded,
+    /// 本进程自己的写入（复制/粘贴/恢复）产生的事件。
+    SelfWrite,
+}
+
+/// 判定一个剪贴板事件是否还值得读取。
+///
+/// `last_captured` 是**已经读到的内容**对应的序列号，而不是事件序列号：
+/// 事件序列号取自消息处理时刻，可能比真正读到的内容更晚或更早；
+/// 用读取时的水位才能保证「同一份剪贴板状态只记一次」。
+///
+/// 自写判定放在覆盖判定之前：自写通知既可能被水位覆盖，也可能是
+/// 更早的重复通知，先判自写才能把「本进程自己写的」与「用户重复复制」
+/// 在计数器里分开归因。
+fn classify_event(event_sequence: u32, last_captured: u32, self_write: u32) -> EventDisposition {
+    if is_own_write_sequence(event_sequence, self_write) {
+        return EventDisposition::SelfWrite;
+    }
+    if !sequence_after(event_sequence, last_captured) {
+        return EventDisposition::Superseded;
+    }
+    EventDisposition::Read
 }
 
 /// 登记自写水位：正常前进；序列号回绕时回退到新水位。
@@ -694,7 +766,7 @@ pub fn clipboard_match(payload: &ClipboardPayload) -> ClipboardMatch {
 /// 无条件写入（用户主动复制）。仍走进程级写锁，避免与逐项粘贴互相覆盖。
 pub fn write_payload(payload: &ClipboardPayload) -> AppResult<u32> {
     match write_guarded(payload, WriteGuard::Unconditional)? {
-        WriteOutcome::Written(seq) => Ok(seq),
+        WriteOutcome::Written { seq, .. } => Ok(seq),
         WriteOutcome::SequenceChanged => {
             Err(AppError::Validation("剪贴板状态已变化，写入已取消".into()))
         }
@@ -710,7 +782,7 @@ pub fn write_payload_notifying(
     self_write: &AtomicU32,
 ) -> AppResult<u32> {
     match write_guarded_notifying(payload, WriteGuard::Unconditional, self_write)? {
-        WriteOutcome::Written(seq) => Ok(seq),
+        WriteOutcome::Written { seq, .. } => Ok(seq),
         WriteOutcome::SequenceChanged => {
             Err(AppError::Validation("剪贴板状态已变化，写入已取消".into()))
         }
@@ -1139,6 +1211,9 @@ mod imp {
 
     /// 调用方必须已持有剪贴板锁；返回前不关闭。
     unsafe fn read_open(ignore_markers: bool) -> ClipboardRead {
+        // 读到的内容属于「此刻」的剪贴板状态：必须在锁内取序列号，
+        // 之后任何写入都会让事件序列号与内容对不上。
+        let sequence = current_sequence();
         if !ignore_markers {
             if let Some(reason) = os_marker() {
                 return ClipboardRead::Skip(reason);
@@ -1156,7 +1231,7 @@ mod imp {
 
         let kind = match super::super::engine::classify(&text, &html, image.is_some(), &files) {
             Some(k) => k,
-            None => return ClipboardRead::Empty,
+            None => return ClipboardRead::Empty("剪贴板为空或只有无法识别的格式"),
         };
         if matches!(
             kind,
@@ -1174,17 +1249,20 @@ mod imp {
             image.as_ref().map(|i| i.width),
             image.as_ref().map(|i| i.height),
         );
-        ClipboardRead::Content(Box::new(CapturedContent {
-            kind: kind.into(),
-            text,
-            html,
-            preview,
-            file_paths: files,
-            image,
-            source_app,
-            source_title,
-            byte_size: 0,
-        }))
+        ClipboardRead::Content {
+            sequence,
+            content: Box::new(CapturedContent {
+                kind: kind.into(),
+                text,
+                html,
+                preview,
+                file_paths: files,
+                image,
+                source_app,
+                source_title,
+                byte_size: 0,
+            }),
+        }
     }
 
     unsafe fn close() {
@@ -1216,7 +1294,7 @@ mod imp {
     /// 避免两条路径对「什么算可恢复」给出不同答案。
     pub(super) fn payload_from_read(read: ClipboardRead) -> Option<ClipboardPayload> {
         let c = match read {
-            ClipboardRead::Content(c) => c,
+            ClipboardRead::Content { content, .. } => content,
             _ => return None,
         };
         match c.kind.as_str() {
@@ -1313,23 +1391,56 @@ mod imp {
         Ok(GetClipboardSequenceNumber())
     }
 
-    /// 调用方必须已持有剪贴板锁并已清空剪贴板；只写格式，不清空。
-    unsafe fn write_formats(payload: &ClipboardPayload) -> AppResult<()> {
-        let mut ok = true;
+    /// 调用方必须已持有剪贴板锁；已清空剪贴板；只写格式，不清空。
+    unsafe fn write_formats(payload: &ClipboardPayload) -> AppResult<FormatWrite> {
+        write_formats_with(payload, |fmt, data| unsafe { set_bytes(fmt, data) })
+    }
+
+    /// 每种内容有且只有一个必需格式，其余为辅助格式：
+    /// - 必需格式失败 → 整体失败，调用方负责把清空前的内容放回去；
+    /// - 辅助格式失败 → 记为降级，实际形态里剔除该字段，
+    ///   后续比对以实际形态为准。
+    ///
+    /// 之所以必须区分必需与辅助：必需格式缺失时剪贴板里根本没有这份内容，
+    /// 报成功等于骗用户；辅助格式缺失只影响部分应用，剪贴板里仍有可用内容，
+    /// 应当如实降级而不是中止整轮粘贴。
+    pub(super) fn write_formats_with<F>(
+        payload: &ClipboardPayload,
+        mut set: F,
+    ) -> AppResult<FormatWrite>
+    where
+        F: FnMut(u32, &[u8]) -> bool,
+    {
         match payload {
             ClipboardPayload::Text { text, html } => {
-                let mut primary_ok = false;
-                if !text.is_empty() {
-                    primary_ok |= set_bytes(CF_UNICODETEXT as u32, &text_utf16_bytes(text));
+                if text.is_empty() {
+                    return Err(AppError::Validation("写入剪贴板失败".into()));
                 }
-                if let Some(html) = html {
-                    let fmt = format_id("HTML Format");
-                    if fmt != 0 {
-                        // HTML 为目标所需时也视为主要格式；任一成功即可
-                        primary_ok |= set_bytes(fmt, engine::cf_html(html).as_bytes());
+                if !set(CF_UNICODETEXT as u32, &text_utf16_bytes(text)) {
+                    return Err(AppError::Validation("写入剪贴板失败".into()));
+                }
+                let mut degraded = Vec::new();
+                let html_ok = match html {
+                    Some(html) => {
+                        let fmt = format_id("HTML Format");
+                        if fmt == 0 {
+                            false
+                        } else {
+                            set(fmt, engine::cf_html(html).as_bytes())
+                        }
                     }
+                    None => true,
+                };
+                if !html_ok {
+                    degraded.push("HTML".to_string());
                 }
-                ok &= primary_ok;
+                Ok(FormatWrite {
+                    effective: ClipboardPayload::Text {
+                        text: text.clone(),
+                        html: if html_ok { html.clone() } else { None },
+                    },
+                    degraded,
+                })
             }
             ClipboardPayload::Image {
                 png,
@@ -1338,9 +1449,8 @@ mod imp {
                 height,
             } => {
                 let fmt = format_id("PNG");
-                let mut primary_ok = false;
-                if fmt != 0 && !png.is_empty() {
-                    primary_ok |= set_bytes(fmt, png);
+                if fmt == 0 || png.is_empty() || !set(fmt, png) {
+                    return Err(AppError::Validation("写入剪贴板失败".into()));
                 }
                 let dib = match rgba {
                     Some(rgba) if rgba.len() >= (*width as usize * *height as usize * 4) => {
@@ -1350,10 +1460,23 @@ mod imp {
                         .ok()
                         .map(|(r, w, h)| image::rgba_to_dib(&r, w, h)),
                 };
+                let mut degraded = Vec::new();
+                let mut dib_ok = false;
                 if let Some(dib) = dib {
-                    primary_ok |= set_bytes(CF_DIB as u32, &dib);
+                    dib_ok = set(CF_DIB as u32, &dib);
                 }
-                ok &= primary_ok;
+                if !dib_ok {
+                    degraded.push("DIB".to_string());
+                }
+                Ok(FormatWrite {
+                    effective: ClipboardPayload::Image {
+                        png: png.clone(),
+                        rgba: rgba.clone(),
+                        width: *width,
+                        height: *height,
+                    },
+                    degraded,
+                })
             }
             ClipboardPayload::Files { paths } => {
                 let valid: Vec<String> = paths
@@ -1366,21 +1489,25 @@ mod imp {
                     .cloned()
                     .collect();
                 if valid.is_empty() {
-                    ok = false;
-                } else {
-                    ok &= set_bytes(CF_HDROP as u32, &hdrop_bytes(&valid));
-                    // 纯文本路径是辅助格式，失败不影响文件粘贴
-                    let _ = set_bytes(
-                        CF_UNICODETEXT as u32,
-                        &text_utf16_bytes(&valid.join("\r\n")),
-                    );
+                    return Err(AppError::Validation("写入剪贴板失败".into()));
                 }
+                if !set(CF_HDROP as u32, &hdrop_bytes(&valid)) {
+                    return Err(AppError::Validation("写入剪贴板失败".into()));
+                }
+                // 纯文本路径是辅助格式，失败不影响文件粘贴
+                let mut degraded = Vec::new();
+                if !set(
+                    CF_UNICODETEXT as u32,
+                    &text_utf16_bytes(&valid.join("\r\n")),
+                ) {
+                    degraded.push("纯文本".to_string());
+                }
+                Ok(FormatWrite {
+                    effective: ClipboardPayload::Files { paths: valid },
+                    degraded,
+                })
             }
         }
-        if !ok {
-            return Err(AppError::Validation("写入剪贴板失败".into()));
-        }
-        Ok(())
     }
 
     /// 调用方必须已持有剪贴板锁；读取全部可比较格式并判断内容是否一致。
@@ -1497,14 +1624,18 @@ mod imp {
         match written {
             // Windows 可能在 CloseClipboard 之后继续为合成/延迟渲染格式递增序列号，
             // 锁内读到的值不是最终值。必须返回关闭后的序列号，调用方仍需内容比较兜底。
-            Ok(_) => {
+            Ok(report) => {
                 let final_seq = unsafe { GetClipboardSequenceNumber() };
                 if let Some(sw) = notify {
                     // 仍在访问锁内：采集线程的锁内复核必然读到该值，
                     // 不会再为本次写入打开剪贴板。
                     note_self_write_watermark(sw, final_seq);
                 }
-                Ok(WriteOutcome::Written(final_seq))
+                Ok(WriteOutcome::Written {
+                    seq: final_seq,
+                    effective: report.effective,
+                    degraded: report.degraded,
+                })
             }
             Err(e) => Err(e),
         }
@@ -1872,12 +2003,26 @@ mod imp {
                                 .fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    if !sequence_after(ev.sequence, last) {
-                        continue;
-                    }
-                    last = ev.sequence;
-                    if is_own_write_sequence(ev.sequence, sink.self_write.load(Ordering::SeqCst)) {
-                        continue;
+                    match classify_event(ev.sequence, last, sink.self_write.load(Ordering::SeqCst))
+                    {
+                        EventDisposition::Superseded => {
+                            MONITOR_COUNTERS
+                                .superseded_events
+                                .fetch_add(1, Ordering::Relaxed);
+                            tracing::debug!(
+                                "剪贴板事件已覆盖：序列 {} 不晚于已采集水位 {}",
+                                ev.sequence,
+                                last
+                            );
+                            continue;
+                        }
+                        EventDisposition::SelfWrite => {
+                            MONITOR_COUNTERS
+                                .self_write_events
+                                .fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        EventDisposition::Read => {}
                     }
                     // fail-closed：配置缺失键走默认（兼容旧库），任一剪贴板键
                     // 损坏/类型错误/越界或数据库读取失败都停止本次采集。
@@ -1886,16 +2031,20 @@ mod imp {
                         if let Some(error) = config.error.as_ref() {
                             log_config_error(error);
                         }
+                        MONITOR_COUNTERS.skipped.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
                     match read_clipboard_for_event(false, ev.sequence, &sink.self_write) {
-                        ClipboardRead::Content(c) => {
+                        ClipboardRead::Content { sequence, content } => {
+                            // 水位推进到「真正读到的状态」的序列号：同一份剪贴板
+                            // 状态只记一次，随后的同内容事件不会重复入库。
+                            last = sequence;
                             MONITOR_COUNTERS.captured.fetch_add(1, Ordering::Relaxed);
                             let latency = ev.seen.elapsed().as_millis() as u64;
                             MONITOR_COUNTERS
                                 .max_capture_latency_ms
                                 .fetch_max(latency, Ordering::Relaxed);
-                            let mut content = *c;
+                            let mut content = *content;
                             let weight = queue_weight_for(&mut content);
                             match content_q.push(content, weight) {
                                 PushOutcome::Pushed => MonitorCounters::bump_peak(
@@ -1923,7 +2072,12 @@ mod imp {
                             MONITOR_COUNTERS.skipped.fetch_add(1, Ordering::Relaxed);
                             tracing::debug!("剪贴板跳过：{}", reason);
                         }
-                        ClipboardRead::Empty => {}
+                        ClipboardRead::Empty(reason) => {
+                            MONITOR_COUNTERS
+                                .empty_events
+                                .fetch_add(1, Ordering::Relaxed);
+                            tracing::debug!("剪贴板丢弃：{}", reason);
+                        }
                     }
                 }
             })
@@ -2027,7 +2181,7 @@ mod imp {
     }
 
     pub fn read_clipboard(_ignore_markers: bool) -> ClipboardRead {
-        ClipboardRead::Empty
+        ClipboardRead::Empty("当前平台不支持剪贴板读取")
     }
 
     pub fn read_clipboard_for_event(
@@ -2035,7 +2189,7 @@ mod imp {
         _event_sequence: u32,
         _self_write: &AtomicU32,
     ) -> ClipboardRead {
-        ClipboardRead::Empty
+        ClipboardRead::Empty("当前平台不支持剪贴板读取")
     }
 
     pub fn clipboard_match(_expected: &ClipboardPayload) -> ClipboardMatch {
@@ -2114,6 +2268,100 @@ mod imp {
 mod tests {
     use super::*;
 
+    /// 部分格式写入的契约（§九-2）：
+    /// - 必需格式写失败 → 整体失败，调用方负责回滚；
+    /// - 辅助格式写失败 → 降级成功，实际形态里剔除该字段，
+    ///   后续比对以实际形态为准，不会把自己少写的格式误判成用户接管。
+    #[cfg(windows)]
+    #[test]
+    fn partial_format_write_reports_status_and_narrows_payload() {
+        use super::imp::write_formats_with;
+
+        // 第 n 次写入失败（n 从 1 计）
+        fn failing_at(fail_at: usize) -> impl FnMut(u32, &[u8]) -> bool {
+            let mut seen = 0usize;
+            move |_fmt: u32, _data: &[u8]| {
+                seen += 1;
+                seen != fail_at
+            }
+        }
+
+        // 纯文本 + HTML：CF_UNICODETEXT 是必需格式，HTML 是辅助格式。
+        let rich = ClipboardPayload::Text {
+            text: "正文".into(),
+            html: Some("<b>正文</b>".into()),
+        };
+        let ok = write_formats_with(&rich, failing_at(0)).expect("全部格式写成功");
+        assert!(ok.degraded.is_empty(), "全部成功不应有降级格式");
+        assert!(matches!(
+            &ok.effective,
+            ClipboardPayload::Text { html: Some(_), .. }
+        ));
+
+        let html_failed = write_formats_with(&rich, failing_at(2)).expect("辅助格式失败应降级成功");
+        assert_eq!(html_failed.degraded, vec!["HTML".to_string()]);
+        assert!(
+            matches!(
+                &html_failed.effective,
+                ClipboardPayload::Text { html: None, .. }
+            ),
+            "HTML 没写成时实际形态里不能还带着 HTML，否则比对必然失败"
+        );
+
+        // 必需格式失败：必须整体失败，不能报成功。
+        let text_failed = write_formats_with(&rich, failing_at(1));
+        assert!(
+            text_failed.is_err(),
+            "必需格式失败必须整体失败，实际 {:?}",
+            text_failed.map(|r| r.degraded)
+        );
+
+        // 图片：PNG 是必需格式，DIB 是辅助格式。
+        let rgba = vec![255u8; 2 * 2 * 4];
+        let image = ClipboardPayload::Image {
+            png: vec![0x89, b'P', b'N', b'G', 1, 2, 3],
+            rgba: Some(rgba.clone()),
+            width: 2,
+            height: 2,
+        };
+        let dib_failed = write_formats_with(&image, failing_at(2)).expect("DIB 失败应降级成功");
+        assert_eq!(dib_failed.degraded, vec!["DIB".to_string()]);
+        assert!(
+            matches!(&dib_failed.effective, ClipboardPayload::Image { .. }),
+            "PNG 写成功时实际形态仍是图片"
+        );
+
+        let png_failed = write_formats_with(&image, failing_at(1));
+        assert!(
+            png_failed.is_err(),
+            "PNG 写失败必须整体失败（剪贴板里没有这份图片）"
+        );
+    }
+
+    /// 降级后的实际形态必须与「剪贴板上真实存在的内容」判定为一致，
+    /// 否则逐项粘贴会在自己少写一个格式时误判成用户接管并中止。
+    #[cfg(windows)]
+    #[test]
+    fn degraded_payload_matches_what_is_actually_on_the_clipboard() {
+        let expected = ClipboardPayload::Text {
+            text: "正文".into(),
+            html: None,
+        };
+        assert!(
+            payload_matches_read(&expected, Some("正文"), None, None, &[]),
+            "只写了纯文本时，按纯文本形态比对必须一致"
+        );
+        // 期望里有 HTML、实际没有 → 不一致（这正是降级要规避的误判来源）。
+        let with_html = ClipboardPayload::Text {
+            text: "正文".into(),
+            html: Some("<b>正文</b>".into()),
+        };
+        assert!(
+            !payload_matches_read(&with_html, Some("正文"), None, None, &[]),
+            "实际没有 HTML 时，带 HTML 的期望形态不该判为一致"
+        );
+    }
+
     #[test]
     fn hdrop_parser_reads_wide_paths() {
         let paths = ["C:\\temp\\a.txt", "D:\\图片\\b.png"];
@@ -2176,6 +2424,69 @@ mod tests {
         assert!(is_own_write_sequence(u32::MAX, 42));
         // 启动时未登记任何自写：所有事件都应被读取
         assert!(!is_own_write_sequence(1, 0));
+    }
+
+    /// 事件处置必须区分「读」「已覆盖」「自写」三条路径。
+    ///
+    /// 覆盖判定用的是**读取时刻**的序列号水位：事件序列号取自消息处理时刻，
+    /// 可能晚于真正读到的内容，于是同一份剪贴板状态会被第二个事件再读一次。
+    /// 这条测试锁住「一份状态只记一次」的去重语义。
+    #[test]
+    fn event_disposition_separates_read_superseded_and_self_write() {
+        // 启动时 self_write 水位就是当时的剪贴板序列号（通常是几十以上）
+        let sw = 50u32;
+
+        // 用户复制，水位停在 100：更晚的事件要读
+        assert_eq!(
+            classify_event(101, 100, sw),
+            EventDisposition::Read,
+            "晚于水位且不是自写，必须读取"
+        );
+
+        // 同一份状态的通知再来一次：序列号不晚于水位，不得重复入库
+        assert_eq!(
+            classify_event(100, 100, sw),
+            EventDisposition::Superseded,
+            "不晚于水位的事件不得重复读取"
+        );
+        assert_eq!(
+            classify_event(99, 100, sw),
+            EventDisposition::Superseded,
+            "早于水位的事件属于过去，不得读取"
+        );
+
+        // 关键回归：上一条事件读到的内容对应 105（水位推进到读取时刻），
+        // 随后到达的 102 号通知属于同一份状态，必须判为覆盖而不是再次入库。
+        assert_eq!(
+            classify_event(102, 105, sw),
+            EventDisposition::Superseded,
+            "读取水位之后的旧通知不得把同一份内容记两遍"
+        );
+
+        // 自写事件即便晚于水位也必须先判为自写，便于单独归因
+        assert_eq!(
+            classify_event(110, 105, 110),
+            EventDisposition::SelfWrite,
+            "本进程写入的事件必须归因为自写"
+        );
+        assert_eq!(
+            classify_event(105, 105, 110),
+            EventDisposition::SelfWrite,
+            "自写的重复/延迟通知同样归因为自写"
+        );
+
+        // 回绕：水位 u32::MAX 之后，序列号 0 是最新内容
+        let sw_wrap = u32::MAX - 5;
+        assert_eq!(
+            classify_event(0, u32::MAX, sw_wrap),
+            EventDisposition::Read,
+            "回绕后的新内容必须放行"
+        );
+        assert_eq!(
+            classify_event(u32::MAX, u32::MAX, sw_wrap),
+            EventDisposition::Superseded,
+            "回绕前的状态不得重复入库"
+        );
     }
 
     #[test]
@@ -2775,11 +3086,10 @@ mod tests {
         use super::imp::payload_from_read;
         use ClipboardPayload as P;
 
-        let text = payload_from_read(ClipboardRead::Content(Box::new(captured(
-            "text",
-            "原文",
-            "notepad.exe",
-        ))));
+        let text = payload_from_read(ClipboardRead::Content {
+            sequence: 0,
+            content: Box::new(captured("text", "原文", "notepad.exe")),
+        });
         assert!(
             matches!(text, Some(P::Text { ref text, html: None }) if text == "原文"),
             "纯文本必须可回写"
@@ -2789,7 +3099,10 @@ mod tests {
         rich.html = "<b>hi</b>".into();
         assert!(
             matches!(
-                payload_from_read(ClipboardRead::Content(Box::new(rich))),
+                payload_from_read(ClipboardRead::Content {
+                    sequence: 0,
+                    content: Box::new(rich)
+                }),
                 Some(P::Text { html: Some(_), .. })
             ),
             "只有 HTML 时也必须能按原样回写"
@@ -2804,7 +3117,10 @@ mod tests {
         });
         assert!(
             matches!(
-                payload_from_read(ClipboardRead::Content(Box::new(image))),
+                payload_from_read(ClipboardRead::Content {
+                    sequence: 0,
+                    content: Box::new(image)
+                }),
                 Some(P::Image {
                     width: 4,
                     height: 2,
@@ -2818,7 +3134,10 @@ mod tests {
         let mut kind_says_image = captured("image", "", "snipping.exe");
         kind_says_image.image = None;
         assert_eq!(
-            payload_from_read(ClipboardRead::Content(Box::new(kind_says_image))),
+            payload_from_read(ClipboardRead::Content {
+                sequence: 0,
+                content: Box::new(kind_says_image)
+            }),
             None,
             "声称是图片却没解出像素时不能假装可恢复"
         );
@@ -2826,7 +3145,10 @@ mod tests {
         let mut no_paths = captured("files", "", "explorer.exe");
         no_paths.file_paths.clear();
         assert_eq!(
-            payload_from_read(ClipboardRead::Content(Box::new(no_paths))),
+            payload_from_read(ClipboardRead::Content {
+                sequence: 0,
+                content: Box::new(no_paths)
+            }),
             None,
             "文件列表为空时没有任何可回写的信息"
         );
@@ -2834,12 +3156,15 @@ mod tests {
         let mut empty_text = captured("text", "", "unknown");
         empty_text.text.clear();
         assert_eq!(
-            payload_from_read(ClipboardRead::Content(Box::new(empty_text))),
+            payload_from_read(ClipboardRead::Content {
+                sequence: 0,
+                content: Box::new(empty_text)
+            }),
             None,
             "空文本不是用户的原内容"
         );
 
-        assert_eq!(payload_from_read(ClipboardRead::Empty), None);
+        assert_eq!(payload_from_read(ClipboardRead::Empty("剪贴板为空")), None);
         assert_eq!(payload_from_read(ClipboardRead::Skip("格式不支持")), None);
     }
 }

@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47899",
+    "token": "66589503-9e4f-4136-b4e2-162f1dc2e506",
+    "mode": "mixed",
+    "agents": 1,
+    "rate": 1,
+    "duration": 30,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "smoke-r4-20261030-222153",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-smoke-r4\\smoke-r4-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-smoke-r4-20261030-222153-load.json"
+  },
+  "elapsed_ms": 30004,
+  "actual_rate": 1,
+  "counts": {
+    "sent": 30,
+    "ok": 30,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 2,
+    "critical_ok": 2,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.47,
+    "p95": 258.07,
+    "max": 258.91
+  }
+}

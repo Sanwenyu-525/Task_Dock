@@ -1884,6 +1884,56 @@ mod tests {
         assert!(!config.capture_allowed());
     }
 
+    /// 备份里带着「备份那一刻」的剪贴板开关（enabled=true/paused=false），
+    /// 而用户此刻已经关闭并暂停了记录：恢复必须保留本机当前偏好，
+    /// 绝不能因为旧备份里的开关值把剪贴板采集重新打开。
+    #[test]
+    fn bundle_with_stale_clipboard_switches_keeps_local_preference() {
+        let (_, source) = make_source_bundle("stale-settings", false);
+        // 先确认这份备份确实带着会「打开记录」的旧开关值，否则本用例是空转。
+        let bundle_settings = bundle_lines(&source.bundle)
+            .iter()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|value| {
+                value.get("record").and_then(|r| r.as_str()) == Some("section")
+                    && value.get("table").and_then(|t| t.as_str()) == Some("settings")
+            })
+            .and_then(|value| value.get("value").and_then(|v| v.as_object()).cloned())
+            .expect("备份必须带设置段");
+        assert_eq!(
+            bundle_settings
+                .get("clipboard_enabled")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "备份里必须含开启状态的旧开关值，本用例才有意义"
+        );
+
+        let root = temp_dir("stale-settings-target");
+        let db = make_target_db();
+        db.set_setting("clipboard_enabled", json!(false)).unwrap();
+        db.set_setting("clipboard_paused", json!(true)).unwrap();
+
+        let outcome = restore_bundle(
+            &root,
+            &db,
+            &source.bundle,
+            &restore_opts(RestoreFaults::default()),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, RestoreState::Completed);
+        let config = crate::db::Settings::load_clipboard(&db);
+        assert!(config.error.is_none());
+        assert!(
+            !config.settings.clipboard_enabled,
+            "旧备份里的开关值不得把用户已关闭的剪贴板记录重新打开"
+        );
+        assert!(
+            config.settings.clipboard_paused,
+            "旧备份里的开关值不得覆盖用户当前的暂停偏好"
+        );
+        assert!(!config.capture_allowed());
+    }
+
     #[test]
     fn duplicate_archive_name_is_rejected() {
         let (_, source) = make_source_bundle("dup-archive", false);

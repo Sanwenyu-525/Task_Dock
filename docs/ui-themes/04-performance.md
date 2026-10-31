@@ -49,7 +49,7 @@
 
 ## 4. 性能测量（Chromium / 预览 harness 实测）
 
-`node scripts/theme-perf.mjs`（需先 `npx vite preview --port 4173`）：
+`node scripts/theme-perf.mjs`（需先 `node scripts/serve-preview.mjs`）：
 
 | 用例 | 空闲 3s 主线程耗时 | 空闲布局次数 | 样式重算 | 脚本耗时 | 元素数 | backdrop-filter | 常驻动画 | 连续切换 20 次 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

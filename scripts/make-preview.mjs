@@ -4,7 +4,7 @@
 //! 输出 dist/preview.html + dist/preview-shim.js。
 //! 配合 `npx vite preview` 或任意静态服务器访问 /preview.html 使用。
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -429,4 +429,11 @@ const preview = html.replace(
   '<script src="/preview-shim.js"></script>\n    <script type="module"',
 );
 writeFileSync(join(dist, "preview.html"), preview);
-console.log("preview.html + preview-shim.js 已生成（dist/）");
+
+// 同时落到 .preview/：vite build 会清空 dist/，并发构建时 dist 里的 harness 会
+// 被抹掉，导致走查页面退化成 404/无 IPC mock。.preview/ 不参与构建，保留一份稳定副本，
+// 由 scripts/serve-preview.mjs 直接提供，dist/ 里的副本仅作兼容。
+mkdirSync(join(root, ".preview"), { recursive: true });
+writeFileSync(join(root, ".preview", "preview-shim.js"), shim);
+writeFileSync(join(root, ".preview", "preview.html"), preview);
+console.log("preview.html + preview-shim.js 已生成（dist/ 与 .preview/）");

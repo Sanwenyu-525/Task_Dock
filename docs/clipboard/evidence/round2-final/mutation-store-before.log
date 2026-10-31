@@ -1,0 +1,46 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Develop/task_dock-r2-acc[39m
+
+ [31m❯[39m src/store/useClipboardStore.test.ts [2m([22m[2m10 tests[22m[2m | [22m[31m1 failed[39m[2m | [22m[33m9 skipped[39m[2m)[22m[32m 19[2mms[22m[39m
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m修改筛选时清空多选
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m加载首页并剔除已不存在于列表中的多选项
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m追加分页时保留已有条目并以 offset 请求下一页
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m加载失败时记录错误并结束加载态
+[31m   [31m×[31m useClipboardStore[2m > [22m快速切换筛选时，旧请求的迟到响应不得覆盖新结果[39m[32m 17[2mms[22m[39m
+[31m     → expected [ 'stale' ] to deeply equal [ 'fresh' ][39m
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m旧筛选请求失败也不会污染新筛选的错误状态
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m追加分页按 id 去重，重叠页不会产生重复条目
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m加载更多与后台刷新并发时，较早的追加页必须被丢弃
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m筛选切换后迟到的追加响应不得拼接旧页
+   [2m[90m↓[39m[22m useClipboardStore[2m > [22m列表刷新后清理已删除条目的选择，保留仍存在项
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/store/useClipboardStore.test.ts[2m > [22museClipboardStore[2m > [22m快速切换筛选时，旧请求的迟到响应不得覆盖新结果
+[31m[1mAssertionError[22m: expected [ 'stale' ] to deeply equal [ 'fresh' ][39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[2m  [[22m
+[32m-   "fresh",[39m
+[31m+   "stale",[39m
+[2m  ][22m
+
+[36m [2m❯[22m src/store/useClipboardStore.test.ts:[2m111:71[22m[39m
+    [90m109| [39m    [35mawait[39m first[33m;[39m
+    [90m110| [39m
+    [90m111| [39m    expect(useClipboardStore.getState().view?.items.map((i) => i.id)).…
+    [90m   | [39m                                                                      [31m^[39m
+    [90m112| [39m    [34mexpect[39m(useClipboardStore[33m.[39m[34mgetState[39m()[33m.[39merror)[33m.[39m[34mtoBeNull[39m()[33m;[39m
+    [90m113| [39m  })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[33m9 skipped[39m[90m (10)[39m
+[2m   Start at [22m 23:59:01
+[2m   Duration [22m 923ms[2m (transform 101ms, setup 34ms, collect 129ms, tests 19ms, environment 0ms, prepare 216ms)[22m
+
+mutation_exit=1

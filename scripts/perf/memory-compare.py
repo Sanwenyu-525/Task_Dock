@@ -227,10 +227,24 @@ def attribution(results):
 
 
 def main():
-    paths = [Path(p) for p in sys.argv[1:]]
+    args = sys.argv[1:]
+    out_path = None
+    if "--out" in args:
+        i = args.index("--out")
+        if i + 1 >= len(args):
+            print("--out 需要一个路径")
+            return 2
+        out_path = Path(args[i + 1])
+        del args[i : i + 2]
+    paths = [Path(p) for p in args]
     if not paths:
-        print("用法: memory-compare.py <DIAG-*.jsonl> [...]")
+        print("用法: memory-compare.py <DIAG-*.jsonl> [...] [--out <单文件 JSON>]")
         return 1
+    try:
+        # Windows 控制台默认 GBK：不重设会把中文写进 .json，其他工具无法按 UTF-8 解析
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
     results = [analyze(p) for p in paths]
     for r in results:
         print(json.dumps(r, ensure_ascii=False, indent=2))
@@ -239,6 +253,13 @@ def main():
         print("")
         print("=== 三臂差值归因 ===")
         print(json.dumps(attr, ensure_ascii=False, indent=2))
+    if out_path is not None:
+        # 单文件、单文档、UTF-8；stdout 仍保留逐臂输出便于人读
+        payload = {"arms": results, "attribution": attr}
+        out_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"\n[memory-compare] 已写入 {out_path}")
     return 0
 
 

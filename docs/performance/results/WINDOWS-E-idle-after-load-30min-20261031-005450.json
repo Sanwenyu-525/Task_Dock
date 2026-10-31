@@ -1,0 +1,35 @@
+{
+  "file": "docs/performance/results/DIAG-E-idle-after-load-30min-20261031-005450.jsonl",
+  "metric": "taskdock.private_mb",
+  "samples_total": 255,
+  "samples_alive": 255,
+  "windows": [
+    {
+      "start_s": 78.1,
+      "end_s": 650.2,
+      "n": 55,
+      "first": 14.0,
+      "last": 18.9,
+      "delta_mb": 4.9,
+      "slope_mb_per_min": 0.5421
+    },
+    {
+      "start_s": 650.2,
+      "end_s": 1550.2,
+      "n": 78,
+      "first": 18.9,
+      "last": 19.5,
+      "delta_mb": 0.6,
+      "slope_mb_per_min": 0.0028
+    },
+    {
+      "start_s": 1550.2,
+      "end_s": 2423.2,
+      "n": 115,
+      "first": 19.5,
+      "last": 19.3,
+      "delta_mb": -0.2,
+      "slope_mb_per_min": -0.0275
+    }
+  ]
+}

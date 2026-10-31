@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47924",
+    "token": "d8331caa-36a4-45ab-afbe-cb27971b45df",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 600,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "E-idle-after-load-30min-20261031-005450",
+    "source": "bridge",
+    "allowRealSource": true,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-v05r5\\E-idle-after-load-30min-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-E-idle-after-load-30min-20261031-005450-load.json"
+  },
+  "elapsed_ms": 601543,
+  "actual_rate": 19.76,
+  "counts": {
+    "sent": 11888,
+    "ok": 11888,
+    "failed": 0,
+    "retries": 29,
+    "critical_sent": 1188,
+    "critical_ok": 1188,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 3.62,
+    "p95": 287.61,
+    "max": 12264.52
+  }
+}

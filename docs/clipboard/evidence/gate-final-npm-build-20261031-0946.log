@@ -1,0 +1,16 @@
+
+> task-dock@0.5.0 build
+> tsc --noEmit && vite build
+
+[36mvite v7.3.7 [32mbuilding client environment for production...[36m[39m
+transforming...
+[32m✓[39m 1672 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                        [39m[1m[2m  0.48 kB[22m[1m[22m[2m │ gzip:  0.30 kB[22m
+[2mdist/[22m[32mcontext-menu.html                 [39m[1m[2m  0.51 kB[22m[1m[22m[2m │ gzip:  0.31 kB[22m
+[2mdist/[22m[35massets/style-CERsUd61.css         [39m[1m[2m126.20 kB[22m[1m[22m[2m │ gzip: 21.04 kB[22m
+[2mdist/[22m[36massets/context-menu-DDiKNJOi.js   [39m[1m[2m  4.47 kB[22m[1m[22m[2m │ gzip:  1.98 kB[22m
+[2mdist/[22m[36massets/styles-themes-YYY9gK_C.js  [39m[1m[2m235.16 kB[22m[1m[22m[2m │ gzip: 74.25 kB[22m
+[2mdist/[22m[36massets/main-CdvVP26I.js           [39m[1m[2m309.46 kB[22m[1m[22m[2m │ gzip: 92.98 kB[22m
+[32m✓ built in 19.47s[39m

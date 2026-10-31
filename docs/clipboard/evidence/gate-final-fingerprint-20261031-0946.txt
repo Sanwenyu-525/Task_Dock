@@ -1,0 +1,25 @@
+源码指纹（门禁前）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 159 files changed, 6634 insertions(+), 1184 deletions(-)
+source_tree_sha256=b7c34e6b62086339b6848bdfcce417956f8cc1ba74eab479b688710d0197aa96
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800
+stable-x86_64-pc-windows-msvc (overridden by 'D:\Develop\task_dock\src-tauri\rust-toolchain.toml')
+cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+rustc 1.95.0 (59807616e 2026-04-14)
+binary: rustc
+commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860
+commit-date: 2026-04-14
+host: x86_64-pc-windows-msvc
+release: 1.95.0
+LLVM version: 22.1.2
+源码指纹（门禁后）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 7 files changed, 174 insertions(+), 6 deletions(-)
+source_tree_sha256=3c52f22c9e96c76a3e91348ca5ac36acdd95e5d840cac7fc87143fe0ccb0ce7e
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800

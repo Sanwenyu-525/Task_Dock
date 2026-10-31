@@ -132,6 +132,26 @@ HTTP / 文件投递 / Hook CLI / 插件桥接 / Mock
 - 关键事件 HTTP 失败时写文件回退；仍失败则回队重试。
 - 定时器 `unref()`；Task Dock 不可用不会卡住/退出 Agent。
 
+#### 3.4.1 DSH 的安装形态：profile bundle（不是 `~/.dsh/plugins/`）
+
+DSH 的宿主插件**不能**靠把包放进 `~/.dsh/plugins/` 生效——那个目录只放客户端插件。
+宿主插件必须以 **profile bundle** 形式安装，DSH 才会加载它：
+
+1. bundle 包必须自带 `package.json`，并声明
+   `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`；
+2. 包要放在 **profile 目录的 `node_modules/`** 下（`<DSH_HOME>/profiles/<profile>/node_modules/`），
+   DSH 从 profile 的 `node_modules` 或安装目录的 `node_modules` 解析；
+3. profile 的 `package.json` 里必须登记两处：
+   `dependencies["task-dock-bridge"]` 与 `dsh.profile.bundles`（数组，追加 bundle 包名）。
+
+`src-tauri/src/agents/dsh.rs` 的安装/卸载只触碰这两处，第三方 dependency、第三方 bundle
+与其它顶层字段原样保留；卸载只删除 Task Dock 自己的条目与目录，不动 `node_modules` 下的
+第三方包。`DSH_HOME` 环境变量可整体改写 `~/.dsh`，因此测量与验收可在隔离目录下完成，
+不触碰真实用户配置。
+
+> 验收证据：DSH 自身 stdout 打印 `[task-dock-bridge] loaded`，且库中落库 2 条
+> running→completed 事件（`AGENT-agent-integration-20261030-233909.json`）。
+
 ## 4. 前端刷新调度
 
 代码：`src/store/useAgentsStore.ts`、`src/App.tsx`、`src/components/history/HistoryPanel.tsx`
@@ -270,6 +290,27 @@ HTTP / 文件投递 / Hook CLI / 插件桥接 / Mock
 - 前端刷新指标由前端自行上报（`getAgentRefreshMetrics()`），后端不伪造。
 - 诊断关闭后仅保留最小计数，不采样延迟分位。
 
+### 7.1 内存驻留采样口径（真机分进程）
+
+脚本：`scripts/perf/sampler.ps1`（采样器）、`scripts/perf/memory-scenario.py`（场景编排）、
+`scripts/perf/memory-af-suite.sh` / `memory-notify-suite.sh`（臂套件）、
+`scripts/perf/memory-compare.py`（多臂归因）。
+
+- **按进程树分组**：`taskdock` = 被测主进程及其 WebView2 子进程树；
+  `webview2_other` = 其它 WebView2；`other_agents` = 其它 Agent 进程。
+  主进程用**镜像名正则**匹配（`-ProcessNamePattern`，默认 `^task-dock`），
+  测量用改名副本时按实际文件名传入，避免与其它会话的同名实例串组。
+- **样本有效性**：进程不在时采样器仍写一行（计数 0、读数 0），
+  因此归因工具**只使用进程存活期内的样本**，并显式标出 `process_gone_samples`；
+  任何一臂在采样期间退出，**拒绝输出差值归因**（不做「内存回落」的假解读）。
+- **0 样本 = 失败**：采样器解析失败/未匹配到进程时，场景脚本以 `rc=1` 退出，
+  不允许把空结果当成「内存平稳」。
+- **口径一致性**：同一轮各臂必须用同一份二进制（记录 `sha256`），
+  独立数据目录 / APPDATA / 端口，且**不同时跑 cargo/npm**（会抢占磁盘 CPU 并可能换掉产物）。
+- **Rust 侧 vs 进程侧**：同时采集 `alloc_stats.live_bytes`（Rust 活跃分配）与
+  进程 Private Bytes，二者之差用于区分「Rust 泄漏」与「分配器保留 / 原生内存
+  （WebView2、SQLite 页缓存与 WAL、GDI/COM）」。
+
 ## 8. 可靠性边界（诚实声明）
 
 1. **合并会丢失 running 的中间过程**：同一轮次在合并窗口内的重复 running
@@ -290,11 +331,17 @@ HTTP / 文件投递 / Hook CLI / 插件桥接 / Mock
    也不触发系统通知；历史压测/自测数据的清理走「设置 → 数据审计」的
    预览→确认流程，**只删除可证明的测试数据，不确定的数据保留并标记人工复核**，
    清理前自动生成数据库快照。
-8. **长跑与内存稳定性**：30 分钟采样证据对应的是当时的 release 二进制；
-   第二轮复核在**当前源码**上重跑了行动中心与剪贴板性能采样
-   （`actions_perf` p95 3.22 ms、`clipboard_perf` 2/2 通过），
-   但**长跑内存稳定性在最终二进制上未重跑**，不得据此宣称「已证明无泄漏」。
-   详见 [V05_FINAL_ACCEPTANCE.md](V05_FINAL_ACCEPTANCE.md) §5.4。
+8. **长跑与内存稳定性**：第二轮在当前源码上重跑了行动中心与剪贴板性能采样
+   （`actions_perf` p95 3.22 ms、`clipboard_perf` 2/2 通过）。第五轮（23:53→01:35）
+   用**当前源码构建的 release 副本**（`task-dock-acc9.exe`，`sha256=fb5e0eef…`）完成
+   三臂归因 + 30 分钟负载 + 30 分钟空闲：主进程驻留在 30 分钟内出现平台期（≈18 MB，
+   末段斜率 0.000 MB/min），负载结束后 30 分钟空闲不增长（±0.4 MB），
+   增长落在「分配器保留 / 原生内存」而非 Rust 堆（`private_minus_live` 7.76 MB）。
+   归因数值：通知路径 ≈72.8 KB/条（另有 ≈30 MB 的 WinRT toast/COM 固定开销），
+   接入路径 ≈0.49 KB/事件。
+   **边界**：只覆盖 20 事件/秒、单实例、单显示器；未做 ETW/Heap 逐分配点归因；
+   未覆盖 500 事件/秒持续负载、8 小时以上长跑与安装形态；这不等于「已证明无泄漏」。
+   详见 [V05_FINAL_ACCEPTANCE.md](V05_FINAL_ACCEPTANCE.md) §5.5（§5.4 的历史判定不改写）。
 
 ## 9. 智能剪贴板采集与渲染（v0.5）
 

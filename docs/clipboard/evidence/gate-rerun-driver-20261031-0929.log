@@ -1,0 +1,37 @@
+源码指纹（复跑前）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 152 files changed, 6088 insertions(+), 1143 deletions(-)
+source_tree_sha256=1217fb8611535cf09e3a6dfb88842650ca18d4f4bec9ca281f5d5938296d45c2
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800
+stable-x86_64-pc-windows-msvc (overridden by 'D:\Develop\task_dock\src-tauri\rust-toolchain.toml')
+cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+rustc 1.95.0 (59807616e 2026-04-14)
+binary: rustc
+commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860
+commit-date: 2026-04-14
+host: x86_64-pc-windows-msvc
+release: 1.95.0
+LLVM version: 22.1.2
+
+=== [test-all] (cwd=src-tauri) cargo test --all --no-fail-fast
+!!! [test-all] 退出码 101，日志：/d/Develop/task_dock/docs/clipboard/evidence/gate-test-all-20261031-0929.log
+
+=== [perf-clipboard] (cwd=src-tauri) cargo test --release --test clipboard_perf -- --ignored --nocapture
+[perf-clipboard] rc=0
+
+源码指纹（复跑后）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 159 files changed, 6479 insertions(+), 1181 deletions(-)
+source_tree_sha256=052adaeec431167d5fb6e3df1a7e177e249c1b71a99590d5e8255733d353eb5c
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800
+
+=== 复跑汇总 ===
+| test-all | `cargo test --all --no-fail-fast` | 2026-10-31 09:29:11 | 2026-10-31 09:33:50 | 101 | `/d/Develop/task_dock/docs/clipboard/evidence/gate-test-all-20261031-0929.log` |
+| perf-clipboard | `cargo test --release --test clipboard_perf -- --ignored --nocapture` | 2026-10-31 09:33:50 | 2026-10-31 09:41:16 | 0 | `/d/Develop/task_dock/docs/clipboard/evidence/gate-perf-clipboard-20261031-0929.log` |
+STAMP=20261031-0929

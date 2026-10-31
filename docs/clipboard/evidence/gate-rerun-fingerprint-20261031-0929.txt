@@ -1,0 +1,9 @@
+
+源码指纹（复跑后）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 159 files changed, 6479 insertions(+), 1181 deletions(-)
+source_tree_sha256=052adaeec431167d5fb6e3df1a7e177e249c1b71a99590d5e8255733d353eb5c
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800

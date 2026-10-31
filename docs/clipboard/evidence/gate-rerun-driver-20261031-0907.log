@@ -1,0 +1,28 @@
+源码指纹（复跑前）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 147 files changed, 5208 insertions(+), 999 deletions(-)
+source_tree_sha256=9f06a96fd080b2ae0f81058df83caf206f2e3856ea2aaafd29d116cf099aed23
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800
+
+=== [test-all] cargo test --manifest-path /d/Develop/task_dock/src-tauri/Cargo.toml --all --no-fail-fast
+!!! [test-all] 退出码 101，日志：docs/clipboard/evidence/gate-test-all-20261031-0907.log
+
+=== [perf-clipboard] cargo test --manifest-path /d/Develop/task_dock/src-tauri/Cargo.toml --release --test clipboard_perf -- --ignored --nocapture
+!!! [perf-clipboard] 退出码 101，日志：docs/clipboard/evidence/gate-perf-clipboard-20261031-0907.log
+
+源码指纹（复跑后）
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 147 files changed, 5468 insertions(+), 1013 deletions(-)
+source_tree_sha256=828b63ca661fdaf961950ed9593d6350c550ee1e3733dd061f55ce878d691feb
+release_exe_sha256=faff0d9bb84e6b5897be29353d16e235781b75744f589ed6e4c8b67bd8922f56
+release_exe_bytes=15793664
+release_exe_mtime=2026-10-31 01:35:29.145866300 +0800
+
+=== 复跑汇总 ===
+| test-all | `cargo test --manifest-path /d/Develop/task_dock/src-tauri/Cargo.toml --all --no-fail-fast` | 2026-10-31 09:07:21 | 2026-10-31 09:11:09 | 101 | `docs/clipboard/evidence/gate-test-all-20261031-0907.log` |
+| perf-clipboard | `cargo test --manifest-path /d/Develop/task_dock/src-tauri/Cargo.toml --release --test clipboard_perf -- --ignored --nocapture` | 2026-10-31 09:11:09 | 2026-10-31 09:15:48 | 101 | `docs/clipboard/evidence/gate-perf-clipboard-20261031-0907.log` |
+STAMP=20261031-0907

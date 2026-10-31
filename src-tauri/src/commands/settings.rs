@@ -268,8 +268,73 @@ pub struct WindowRect {
     pub h: u32,
 }
 
+/// window_rect 持久化的最低可见面积占比（与前端 lib/edgeSnap 口径一致）。
+const WINDOW_RECT_VISIBLE_FRACTION: f64 = 0.6;
+
+type MonitorBounds = (i32, i32, u32, u32);
+
+/// rect 在单个显示器边界内的可见面积占比（物理像素，0.0~1.0）。
+pub(crate) fn visible_fraction_on(rect: &WindowRect, m: &MonitorBounds) -> f64 {
+    if rect.w == 0 || rect.h == 0 {
+        return 0.0;
+    }
+    let ix0 = rect.x.max(m.0);
+    let iy0 = rect.y.max(m.1);
+    let ix1 = (rect.x + rect.w as i32).min(m.0 + m.2 as i32);
+    let iy1 = (rect.y + rect.h as i32).min(m.1 + m.3 as i32);
+    let iw = (ix1 - ix0).max(0) as f64;
+    let ih = (iy1 - iy0).max(0) as f64;
+    (iw * ih) / (rect.w as f64 * rect.h as f64)
+}
+
+/// rect 是否「大部分可见」（按全部显示器的可见总面积判定，跨屏窗口同样成立）。
+/// 显示器列表为空（断连/获取失败）时保守返回 false。
+/// 供 lib.rs 启动恢复与持久化命令共用（前端 lib/edgeSnap 同口径）。
+pub(crate) fn is_rect_mostly_visible(rect: &WindowRect, monitors: &[MonitorBounds]) -> bool {
+    if monitors.is_empty() || rect.w == 0 || rect.h == 0 {
+        return false;
+    }
+    // visible_fraction_on 返回的是单屏占比（0.0~1.0），求和即「总可见占比」
+    let visible: f64 = monitors.iter().map(|m| visible_fraction_on(rect, m)).sum();
+    visible >= WINDOW_RECT_VISIBLE_FRACTION
+}
+
 #[tauri::command]
-pub fn save_window_rect(db: State<'_, Arc<Db>>, rect: WindowRect) -> AppResult<()> {
+pub fn save_window_rect(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+    rect: WindowRect,
+) -> AppResult<()> {
+    // 屏外坐标防御：贴边吸附隐藏、程序 setPosition 竞态等产生的不可见位置
+    // 不得进入 window_rect（否则重启恢复会把窗口摆到屏幕外，用户找不回）。
+    // 与前端持久化钩子的 isRectMostlyVisible 双保险。
+    let monitors: Vec<MonitorBounds> = app
+        .get_webview_window("main")
+        .and_then(|w| w.available_monitors().ok())
+        .map(|ms| {
+            ms.iter()
+                .map(|m| {
+                    (
+                        m.position().x,
+                        m.position().y,
+                        m.size().width,
+                        m.size().height,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // 拿不到显示器信息时保持旧行为（保存），由前端校验兜底
+    if !monitors.is_empty() && !is_rect_mostly_visible(&rect, &monitors) {
+        tracing::debug!(
+            "拒绝保存屏外 window_rect: x={} y={} w={} h={}",
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h
+        );
+        return Ok(());
+    }
     db.set_setting("window_rect", serde_json::to_value(&rect)?)
 }
 
@@ -322,5 +387,71 @@ mod tests {
             err.to_string().contains("未知设置键"),
             "未知键不得被静默忽略"
         );
+    }
+
+    #[test]
+    fn window_rect_visibility_math() {
+        let main = (0i32, 0i32, 1920u32, 1080u32);
+        let left = (-1920i32, 0i32, 1920u32, 1080u32);
+        // 完全在屏内
+        assert!(is_rect_mostly_visible(
+            &WindowRect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 560
+            },
+            &[main]
+        ));
+        // 跨屏（主副屏各占 50%）按可见总面积判定 → 有效
+        assert!(is_rect_mostly_visible(
+            &WindowRect {
+                x: -200,
+                y: 100,
+                w: 400,
+                h: 560
+            },
+            &[main, left]
+        ));
+        // 贴边隐藏位（滑出左缘只留 12px）→ 拒绝
+        assert!(!is_rect_mostly_visible(
+            &WindowRect {
+                x: -388,
+                y: 300,
+                w: 400,
+                h: 560
+            },
+            &[main]
+        ));
+        // 显示器断连（空列表）→ 保守拒绝
+        assert!(!is_rect_mostly_visible(
+            &WindowRect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 560
+            },
+            &[]
+        ));
+        // 无效矩形
+        assert!(!is_rect_mostly_visible(
+            &WindowRect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 100
+            },
+            &[main]
+        ));
+        // 可见占比不足 60%
+        assert!(!is_rect_mostly_visible(
+            &WindowRect {
+                x: 1200,
+                y: 100,
+                w: 1920,
+                h: 560
+            },
+            &[main]
+        ));
     }
 }

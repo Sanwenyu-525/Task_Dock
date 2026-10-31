@@ -1,0 +1,64 @@
+{
+  "test": "abnormal-exit-and-file-disk-fault-injection",
+  "generated_at": "2026-10-30T22:37:59.049450+08:00",
+  "source_exe": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-acc\\task-dock.exe",
+  "source_exe_bytes": 15553536,
+  "isolated_root": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-fault-20261030-223734",
+  "isolation_note": "仅操作隔离数据目录；只终止本脚本启动的 PID；未触碰真实 Task Dock 进程与用户数据",
+  "results": {
+    "F1_F2_force_kill_during_ingest": {
+      "status": "PASS",
+      "killed": true,
+      "http_sent": 124,
+      "http_accepted": 123,
+      "committed_before_restart": 7,
+      "committed_after_restart": 7,
+      "spool_files_after_kill": [],
+      "spool_files_after_restart": [],
+      "spool_replay_report": null,
+      "duplicate_event_ids": 0,
+      "integrity_check": "ok",
+      "restart_health_ok": true,
+      "note": "仅内存中未持久化的事件允许丢失；已 fsync 的 spool 事件必须重放且不重复"
+    },
+    "F3_interrupted_spool_write": {
+      "status": "NOT TESTED",
+      "reason": "无 spool 文件（上一场景未触发落盘暂存）"
+    },
+    "F8_http_file_interleaving": {
+      "status": "PASS",
+      "http_status": 200,
+      "rows_for_event_id": 1,
+      "note": "HTTP 与文件投递同事件必须按 event_id 幂等，只留一条"
+    },
+    "F6_locked_file_during_restore": {
+      "status": "PASS",
+      "restore_rc": 1,
+      "restore_stderr": "数据库打开失败: 数据库错误: disk I/O error\n",
+      "events_before": 8,
+      "events_after": 8,
+      "integrity_check": "ok",
+      "journal_left": false,
+      "note": "文件被锁时恢复必须整体失败并回滚，原数据保持不变"
+    },
+    "F4_F5_kill_during_restore": {
+      "status": "PASS",
+      "killed_mid_restore": false,
+      "journal_state_after_kill": null,
+      "journal_left_after_restart": false,
+      "events_before": 8,
+      "events_after": 8,
+      "integrity_check": "ok",
+      "health_ok": true,
+      "note": "恢复中断后必须由 journal 判定回滚或续做，且原数据不丢"
+    },
+    "F7_disk_full_isolated_volume": {
+      "status": "NOT TESTED",
+      "reason": "创建隔离 VHD/VHDX 并写满需要管理员权限；本机会话无管理员权限，按隔离要求不对真实卷做写满注入",
+      "equivalent_code_path_tests": [
+        "commands::restore::tests::disk_full_during_archive_commit_rolls_back",
+        "commands::restore::tests::permission_denied_during_asset_commit_rolls_back"
+      ]
+    }
+  }
+}

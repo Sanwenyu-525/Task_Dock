@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "running",
+  "config": {
+    "base": "http://127.0.0.1:47894",
+    "token": "a7812a47-9354-4d9a-bc37-db889c4315a7",
+    "mode": "running",
+    "agents": 4,
+    "rate": 5,
+    "duration": 0,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "reproB-notifyon-20261030-225729",
+    "source": "bridge",
+    "allowRealSource": true,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-mem-repro-b\\reproB-notifyon-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-reproB-notifyon-20261030-225729-load.json"
+  },
+  "elapsed_ms": 0,
+  "actual_rate": 0,
+  "counts": {
+    "sent": 0,
+    "ok": 0,
+    "failed": 0,
+    "retries": 0,
+    "critical_sent": 0,
+    "critical_ok": 0,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 0,
+    "p95": 0,
+    "max": 0
+  }
+}

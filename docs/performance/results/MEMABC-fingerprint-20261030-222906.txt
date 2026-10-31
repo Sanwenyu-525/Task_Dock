@@ -1,0 +1,4 @@
+git_head_short=356bc44
+dirty_tracked= 38 files changed, 42 insertions(+), 9 deletions(-)
+-rwxr-xr-x 1 ASUS 197121 15389184 2026-10-30 22:21:48.085632600 +0800 C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe
+a0d17ab672f60b6009144355e98a09711b682f70e9799e823106f214efba6b7e *C:/Users/ASUS/AppData/Local/Temp/taskdock-measure-bin/tdmeas.exe

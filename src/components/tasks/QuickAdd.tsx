@@ -83,7 +83,7 @@ export default function QuickAdd({ compact }: Props) {
         <Sparkles size={14} className="quick-add-icon" />
         <input
           ref={inputRef}
-          className="quick-add-input"
+          className="quick-add-input input-embedded"
           placeholder="快速添加：明天下午三点开会 / 每周一早上九点提交周报"
           value={text}
           disabled={creating}

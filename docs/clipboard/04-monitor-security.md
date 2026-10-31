@@ -29,10 +29,53 @@
   本次事件不读取剪贴板、不入库，日志按 60 秒限频记录（只含键名与错误类别，不含值）。
   监听线程本身保持运行，用户在设置中修复后可继续，不需要重启应用。
 
+### 事件处置与去重水位（第四轮整改）
+
+采集线程对每条事件先做**处置判定**，再决定是否读取剪贴板。判定函数
+`platform::classify_event(event_sequence, last_captured, self_write)` 是纯函数，
+返回三种结果：
+
+| 判定 | 条件 | 计数器 | 是否读取剪贴板 |
+|---|---|---|---|
+| `SelfWrite` | 事件序列号命中本进程写入水位（回绕安全） | `self_write_events` | 否 |
+| `Superseded` | 事件序列号不晚于**读取水位**（`last_captured`） | `superseded_events` | 否 |
+| `Read` | 其余情况 | `captured`（读成功）/ `empty_events`（读为空） | 是 |
+
+要点：
+
+- 去重水位取自**读取时刻**的序列号，而不是事件通知时刻的序列号。事件通知与真正读取
+  之间内容可能被覆盖，按事件序列号去重会把同一份剪贴板状态记两遍（并抬高 `copy_count`），
+  按读取水位去重则保证「一份剪贴板状态只入库一次」。
+- **自写判定先于覆盖判定**：自写通知既可能被水位覆盖，也可能是更早的重复通知；
+  先判自写才能把「本进程自己写的」与「用户重复复制」在计数器里分开归因。
+- 读取结果为 `ClipboardRead::Empty`（内容已被其它程序清空或不可解析）时计入
+  `empty_events` 并记录日志，不入库、不崩溃——此时用户内容已被覆盖，不可恢复。
+- 判定结果全部有计数器，**没有静默丢弃路径**；这是第四轮整改的直接动因：
+  整改前 `observed_events` 与 `captured` 的差额无法解释，验收中无法判定是
+  「被丢弃」还是「被记录」。
+
 诊断：`clipboard_status.monitor` 返回 `observed_events`、`merged_events`、`captured`、
 `recorded`、`duplicates`、`skipped`、`dropped_events`、`dropped_contents`、`failed`、
+`self_write_events`、`superseded_events`、`empty_events`、
 `peak_event_queue`、`peak_content_queue`、`max_capture_latency_ms`、
 `max_process_latency_ms` 与队列容量；只含计数，不含任何剪贴板内容。
+
+计数可对账（第四轮新增，用于验收核对）：
+
+```
+observed_events = dropped_events + merged_events + superseded_events
+                + self_write_events + captured + empty_events + skipped
+```
+
+- `observed_events`：监听线程收到的 `WM_CLIPBOARDUPDATE` 通知数。
+- `dropped_events`：事件队列溢出被丢弃的最旧事件数。
+- `merged_events`：队列合并时被丢弃的中间事件数（只保留最新序列号）。
+- `skipped`：判定为需要读取、但因配置 fail-closed 或剪贴板被占用而未读取的事件数。
+- `captured`：成功读取到内容的事件数（`recorded`/`duplicates` 是入库阶段的另一层计数）。
+
+第四轮真机验收实测：`observed_events 10 = captured 5 + self_write_events 5`，
+`superseded_events 0`、`empty_events 0`、`dropped_events 0`、`merged_events 0`、`skipped 0`，
+完全对账——这在整改前是不可能做到的（当时存在无计数、无日志的静默丢弃路径）。
 
 ## 二、读取的格式与优先级
 

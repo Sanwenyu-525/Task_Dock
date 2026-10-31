@@ -1,0 +1,39 @@
+{
+  "scenario": "memory-probe",
+  "mode": "mixed",
+  "config": {
+    "base": "http://127.0.0.1:47863",
+    "token": "34e3c452-2aac-44d6-ae48-089a455a1a2f",
+    "mode": "mixed",
+    "agents": 4,
+    "rate": 5,
+    "duration": 240,
+    "batch": 1,
+    "timeoutMs": 15000,
+    "maxRetries": 40,
+    "inflight": 8,
+    "runId": "p105-gui-20261031-105050",
+    "source": "bench",
+    "allowRealSource": false,
+    "transport": "http",
+    "inbox": "C:\\Users\\ASUS\\AppData\\Local\\Temp\\taskdock-p105-gui-20261031\\p105-gui-data\\agent-inbox",
+    "out": "D:\\Develop\\task_dock\\docs\\performance\\results\\DIAG-p105-gui-20261031-105050-load.json"
+  },
+  "elapsed_ms": 240069,
+  "actual_rate": 19.99,
+  "counts": {
+    "sent": 4800,
+    "ok": 4800,
+    "failed": 0,
+    "retries": 3,
+    "critical_sent": 480,
+    "critical_ok": 480,
+    "critical_failed": 0,
+    "failed_ids": []
+  },
+  "latency_ms": {
+    "p50": 1.03,
+    "p95": 256.58,
+    "max": 285.03
+  }
+}

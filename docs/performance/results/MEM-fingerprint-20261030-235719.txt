@@ -1,0 +1,13 @@
+git_head=356bc44fade4c400bfffa17de4c9fa3bd7e184ee
+git_head_short=356bc44
+dirty_tracked= 130 files changed, 2929 insertions(+), 388 deletions(-)
+source_tree_sha256=b30399039c0194820ce112a10f5726c09bf14c9bd1352c62371442a324a3d01c
+release_exe_sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378
+release_exe_bytes=15603200
+release_exe_mtime=2026-10-30 23:50:36.096250500 +0800
+measured_exe_path=.acceptance/task-dock-memaf.exe
+measured_exe_sha256=fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378
+measured_exe_bytes=15603200
+measured_exe_mtime=2026-10-30 23:54:47.398170100 +0800
+-rwxr-xr-x 1 ASUS 197121 15603200 2026-10-30 23:54:47.398170100 +0800 .acceptance/task-dock-memaf.exe
+fb5e0eef708ff3e7193e5094f703d81f35ebbf422e6445fed61efdb718e27378 *.acceptance/task-dock-memaf.exe

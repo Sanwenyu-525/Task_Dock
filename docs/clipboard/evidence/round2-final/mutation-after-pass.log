@@ -1,0 +1,26 @@
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock-r2-acc\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.14s
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 1 test
+test workspace::gate::tests::stale_operation_cannot_release_new_slot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 451 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.75s
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 1 test
+test workspace::tests::prune_protects_task_linked_and_prefers_oldest_unlinked ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 451 filtered out; finished in 0.06s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.65s
+     Running unittests src\lib.rs (target\debug\deps\task_dock_lib-151616928458daaa.exe)
+
+running 1 test
+test actions::tests::ack_never_changes_agent_state_and_new_event_resurfaces ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 451 filtered out; finished in 0.10s
+
+after_exit=0

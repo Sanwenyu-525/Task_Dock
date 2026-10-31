@@ -39,12 +39,45 @@ def worker():
 executor = ThreadPoolExecutor(max_workers=8)
 futures = [executor.submit(worker) for _ in range(8)]
 time.sleep(8)
+
+# 托盘「退出」自动化只能按通知区里的图标名定位实例，无法指定 PID。
+# 若机器上还有别的 Task Dock 实例，它挑中的第一个「Task Dock」图标可能属于别人，
+# 那台实例会被误退（2026-10-30 第四轮内存实测的两个臂就是这样自行退出的，
+# 表现为优雅退出 + last-shutdown-report.json，而不是被强杀）。
+# 因此这里先做前置检查：除本实例外不允许再有其它 Task Dock 进程。
+def other_taskdock_processes(own_pid):
+    out = subprocess.run(['tasklist', '/FO', 'CSV', '/NH'],
+                         capture_output=True, text=True, errors='replace').stdout
+    others = []
+    for line in out.splitlines():
+        parts = [p.strip('" ') for p in line.split('","')]
+        if len(parts) < 2:
+            continue
+        name, pid_s = parts[0], parts[1]
+        low = name.lower()
+        if 'task' not in low or 'dock' not in low:
+            continue
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid != own_pid:
+            others.append({'name': name, 'pid': pid})
+    return others
+
+
+own_pid = int((BASE/'app-v3.pid').read_text().strip())
+others = other_taskdock_processes(own_pid)
+if others:
+    print('[abort] 机器上存在其它 Task Dock 实例，托盘自动化无法区分实例，拒绝执行：', others)
+    raise SystemExit(3)
+
 quit_t0 = time.time()
 q = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(BASE/'tray-quit5.ps1')],
                    capture_output=True, text=True, timeout=60)
 quit_out = (q.stdout or '') + (q.stderr or '')
 # 等待进程退出（最长 30 秒）
-pid = int((BASE/'app-v3.pid').read_text().strip())
+pid = own_pid
 exited_at = None
 for _ in range(300):
     out = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], capture_output=True, text=True, errors='replace').stdout
@@ -90,6 +123,7 @@ out = {
     'started_at': TS,
     'submitted_total': len(records),
     'submitted_critical': len(submitted_crit),
+    'other_taskdock_instances': others,
     'quit_t0': quit_t0,
     'quit_exited_after_s': None if exited_at is None else round(exited_at - quit_t0, 2),
     'quit_automation': quit_out.strip().splitlines()[-3:],

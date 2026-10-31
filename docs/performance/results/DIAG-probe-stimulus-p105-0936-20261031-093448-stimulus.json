@@ -1,0 +1,30 @@
+{
+  "text_attempted": 20,
+  "text_ok": 20,
+  "text_failed": 0,
+  "text_verified": 20,
+  "image_attempted": 6,
+  "image_ok": 0,
+  "image_failed": 6,
+  "image_verified": 0,
+  "bytes_written": 651,
+  "open_failures": 0,
+  "open_failure_blockers": {},
+  "clipboard_sequence_start": 9183,
+  "clipboard_sequence_end": 9293,
+  "errors": [
+    "CF_DIB 图片写入失败"
+  ],
+  "duration_s": 60.0,
+  "original_clipboard_formats": [
+    "dibv5"
+  ],
+  "original_clipboard_was_text": false,
+  "original_clipboard_was_image": true,
+  "restored": true,
+  "restored_kind": "image",
+  "restore_skipped": false,
+  "clipboard_sequence_delta": 110,
+  "expected_updates": 20,
+  "error_count": 6
+}

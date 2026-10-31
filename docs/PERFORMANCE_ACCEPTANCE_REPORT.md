@@ -402,6 +402,7 @@ mock `agentSnapshot`）：
 
 - 第一次运行于 09:34:32 启动，26.3 分钟（315 样本 / 1,577.6s）时因上述闪窗调查被主动终止；该数据仅作为中断记录，**不冒充 30 分钟通过**。
 - 修复后最终 Release 于 10:13:15 完整运行 30 分钟：359 样本 / 1,797.4s；客户端 36,000/36,000 成功、关键 3,600/3,600，27 次网络错误重试后全部成功；服务端 accepted 36,000、processed+merged 36,005，队列峰值 20/1,024，0 过载/0 提交失败/0 未保存；HTTP p95 268.63ms、p99 284.68ms；CPU 平均 0.339%、峰值 0.72%；无可见控制台窗口。
+- **采样间隔字段更正（P2-01）**：旧 `sampler.ps1` 只输出一个 `interval_s`，但它记的是**本轮采样耗时**而非**相邻样本间隔**，因此旧报告里的「平均间隔 2.544s」是错的。按时间戳重算的真实间隔为 min 4.104 / 中位 5.002 / 均值 5.014 / max 10.024 / p95 5.21s，与 359 样本 / 1,794.94s 跨度自洽（原始 jsonl 未改动，见 `docs/performance/results/sampler-recompute-D-soak-20261030.json`）。旧 CPU% 用的是 `tickStart` 差值（真实间隔），**不受该字段语义缺陷影响**，故 CPU 平均 0.339% / 峰值 0.72% 结论不变。新采样器已拆为 `planned_interval_s` / `actual_interval_s` / `sample_duration_s` 三个互不依赖的字段。
 - **内存保留项**：主进程 WS 39.5→124.0MB、private 11.4→95.1MB 持续上升，30 分钟未平台，停止负载 90s 后仍为 124.1/95.2MB；WebView2 进程树 WS 394→405MB（区间 394–440）、private 219.0→246.5MB，增幅明显小于主进程。吞吐与队列通过，但“主进程内存无持续增长”不成立，根因未定位。详见 `docs/PERFORMANCE_FINAL_ACCEPTANCE.md` §8.4/§13。
 - **数据库对账（10-30 补测）**：以 `event_id LIKE 'http-soak2-20261030-101315%'` 直查现场库，21,282 行 / 21,282 个 `event_id`（0 重复）；1,800 completed + 1,800 waiting + 17,682 running = 21,282；3,600 条关键事件每条恰好 1 行；`integrity_check=ok`、外键违规 0。服务端 processed 21,287 = 21,282 唯一行 + 5 次重复接收。证据 `docs/performance/results/V05-SOAK-30MIN-DB-RECON-20261030.json`。
 - **真实 Agent（C）边界**：只验证了 3 个已安装 Agent 的发现与 15 次 Hook CLI 协议投递（`configured=false`/`verified=false`），没有实时 Agent 会话接入；C 在最终报告中记为 PARTIAL / NOT VERIFIED，不按 PASS 计。
@@ -412,3 +413,55 @@ mock `agentSnapshot`）：
 
 > 编号说明：本节标题中的旧编号沿用 2026-10-30 复核时的任务分解；与最终发布报告的对应关系为
 > 全量备份/恢复 = P1-04、退出 = P0-02、事件顺序 = P0-01、真机验收 = P1-05。
+
+## 13. 2026-10-30 23:00→ 复验轮：真实 Agent 自动接入 / 异常退出与故障注入 / 内存归因
+
+本轮针对第 12 节留下的三处缺口补做实验：① C 场景只有 Hook CLI 协议投递、无实时 Agent 会话；
+② 异常退出与文件/磁盘故障只有注入式模拟、无真实强杀；③ 主进程内存增长根因未定位。
+**每条结论都绑定被测二进制 sha256，不与第 12 节数据混用**；完整版见
+`docs/PERFORMANCE_FINAL_ACCEPTANCE.md` §14。
+
+### 13.1 真实 Agent 自动接入（R-P1-03）：PASS
+
+改为**由 Agent 自身会话产生事件**（不再手工调用 Hook CLI）。codex / DeepSeek Harness /
+OpenCode 三个 Agent 均 PASS，事件增量分别为 0→3、0→2、0→3，状态序列 running→completed，
+传输均为 http；三者 `verified=1`、`transport_verified=1`。Hook 进程开销 40 次调用
+p50 38ms / p95 74ms / p99 91ms，0 错误；状态更新延迟 codex p50 159ms、DSH p50 268ms、
+OpenCode p50 319ms。全程隔离配置目录，未写入真实用户 Agent 配置；卸载后第三方条目全部保留。
+
+**顺带修掉一个「功能空操作」**：DSH 适配器此前把插件写进 `~/.dsh/plugins/`，而 DSH 宿主
+根本不加载该目录 → 事件永远送不到。已改为真正的 profile bundle 安装（`package.json` 声明
+`dsh.bundle.patch` + 放进 profile 的 `node_modules` + 登记 `dependencies` 与
+`dsh.profile.bundles`），并新增 6 个单元测试 + 迁移 v14 修正来源说明。
+证据：`docs/performance/results/AGENT-agent-integration-20261030-233909.json`。
+
+### 13.2 异常退出与文件/磁盘故障注入（R-P1-04）：PASS（F7 除外）
+
+隔离实例上真实执行（`docs/performance/results/FAULT-fault-injection-20261030-235312.json`）：
+
+| 场景 | 结论 |
+|---|---|
+| 投递期间 `taskkill /F` 强杀：已提交 168 条重启后仍 168 条、0 重复、`integrity_check=ok` | PASS |
+| 写库失败（WAL 帧区被锁）→ 6 次 HTTP 500 且 `retryable=true` → 落盘 6 个 spool；重启后损坏文件隔离到 `corrupt/`，5 个完整文件幂等重放 5/5、0 重复 | PASS |
+| 恢复中途强杀（journal=`committing`）→ 重启后 journal 正确判定并清理，60,000 行前后一致 | PASS |
+| 恢复期间数据库被独占锁 → 恢复整体失败、事件数不变、未留 journal、`integrity_check=ok` | PASS |
+| 同一 `event_id` 同时走 HTTP 与文件投递 → DB 恰好 1 行 | PASS |
+| 卷级磁盘写满（隔离 VHD/VHDX） | **NOT TESTED**（`fltmc` 探测 `0x80070005`，会话未提升；按隔离要求不对真实卷写满） |
+
+数据可靠性边界如实记录：F1/F2 中 174 条被接受、168 条已提交，**差额 6 条随强杀丢失**
+（未落库的内存事件，任务书不允许为此承诺断电零丢失）。
+
+过程中修掉两处**验收脚本自身**的缺陷（`db_query` 缺参数位；场景异常导致隔离实例残留、
+其免鉴权 `/api/v1/health` 替后续场景应答造成静默串台）。串台缺陷使此前两轮 F3/F6 结果
+都不可信，修好后才得到上表的全部 PASS。
+
+### 13.3 内存归因（R-P1-01）：A–F 实验矩阵进行中
+
+插桩已就位：Rust 全局分配器实时 `live_bytes`/`peak_bytes`/分配次数、Tokio `alive_tasks`、
+SQLite `wal_bytes`/`page_count`/缓存大小、主进程与 WebView2 子树的 WS/private/线程/句柄、
+系统级 Committed Bytes。实验矩阵 A（空闲 30min）/ B（仅 HTTP 无 UI）/ C（完整 UI+HTTP）/
+D（整桌面+文件回退+通知）/ E（负载后空闲 30min）/ F（重复负载 60min）串行执行，
+结论待实验完成后写入 `docs/PERFORMANCE_FINAL_ACCEPTANCE.md` §14.4/§14.6。
+
+**在结果出来之前，原报告「主进程内存增长根因未定位」这一保留项维持不变**，不因插桩就宣称
+「无泄漏」。

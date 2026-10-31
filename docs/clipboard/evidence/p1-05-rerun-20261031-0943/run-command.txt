@@ -1,0 +1,27 @@
+P1-05 第四轮联合负载复跑（真实 Windows 剪贴板 + Agent 负载）
+================================================================
+
+开始时间：2026-10-31 09:44 前后（本机 UTC+8）
+二进制：C:\Users\ASUS\AppData\Local\Temp\taskdock-p105\task-dock-p105.exe
+        sha256=8900bd9d71e2ea19f730dd985505cfecda12d649ff85de809f4368072e021029
+        （由 src-tauri/target-accept/release/task-dock.exe 复制并改名；
+         npx tauri build --no-bundle 产物，mtime 09:20:15）
+
+命令（仓库根目录）：
+RUST_LOG='info,task_dock_lib::clipboard=debug' python scripts/perf/memory-scenario.py \
+  --exe C:/Users/ASUS/AppData/Local/Temp/taskdock-p105/task-dock-p105.exe \
+  --name joint-clipboard-rerun-20261031-0943 \
+  --duration 1800 --post 600 --agents 4 --rate 5 \
+  --port 47861 --window minimized \
+  --clipboard-stimulus on --clipboard-interval 3 --clipboard-image-every 10 \
+  --settings-json '{"clipboard_enabled": true, "clipboard_capture_images": true, "clipboard_capture_html": true}'
+
+剪贴板激励：scripts/acceptance/clipboard_stimulus.py（本轮修复版）
+- 文本：ctypes CF_UNICODETEXT，真实 EmptyClipboard+SetClipboardData，写后校验；
+- 图片：注册格式 PNG（主，含不透明/半透明/全透明像素）+ CF_DIBV5（辅），真实系统写入；
+- 记录剪贴板序列号起止、OpenClipboard 失败次数与占用进程（仅 exe 名+PID）；
+- 结束后尽力恢复原剪贴板（文本或 DIBV5），不落盘、不记录剪贴板正文。
+
+环境干扰（如实记录）：并行会话的 Task Dock 实例
+`task-dock-memaf.exe` PID 33848（启动于 09:42:23）在本次运行期间同时采样；
+其数据目录/进程名与本臂隔离，本臂按 image name 分组，不会串组，但会竞争 CPU/磁盘。

@@ -1,3 +1,5 @@
+@layer base, theme, ui, menu;
+@layer theme {
 /* ════════════════════════════════════════════════════════════════
    Task Dock v0.6 — 双视觉预设（梦幻渐变 / 液态玻璃）
    ────────────────────────────────────────────────────────────────
@@ -79,13 +81,18 @@
   --pill-soft-active-face: rgba(255, 255, 255, 0.92);
 
   /* 左侧导航 */
-  --rail-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.05));
+  /* 左侧导航：横向淡出，配合 .rail::before 的顶部渐隐，
+     避免导航轨顶端出现一条生硬的横向色块接缝 */
+  --rail-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.02) 78%, rgba(255, 255, 255, 0));
   --rail-divider: none;
   --rail-hover-face: rgba(99, 102, 241, 0.07);
   --rail-active-face: linear-gradient(180deg, rgba(99, 102, 241, 0.14), rgba(99, 102, 241, 0.08));
   --rail-active-text: #4f46e5;
   --rail-active-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
   --rail-active-bar: #6366f1;
+  --rail-add-face: rgba(255, 255, 255, 0.44);
+  --rail-add-border: rgba(34, 38, 60, 0.07);
+  --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
   /* 强调与文字 */
   --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6366f1 55%, #8b5cf6 100%);
@@ -158,13 +165,16 @@
   --pill-active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
   --pill-soft-active-face: rgba(255, 255, 255, 0.1);
 
-  --rail-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0));
+  --rail-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.005) 78%, rgba(255, 255, 255, 0));
   --rail-divider: none;
   --rail-hover-face: rgba(255, 255, 255, 0.06);
   --rail-active-face: linear-gradient(180deg, rgba(165, 168, 255, 0.18), rgba(165, 168, 255, 0.09));
   --rail-active-text: #c7c9ff;
   --rail-active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
   --rail-active-bar: #a5a8ff;
+  --rail-add-face: rgba(255, 255, 255, 0.06);
+  --rail-add-border: rgba(255, 255, 255, 0.09);
+  --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 
   --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6f6ef0 55%, #9a7cf0 100%);
   --orb-gradient: linear-gradient(140deg, #6f8fd8 0%, #8f7fd0 48%, #c07fa8 100%);
@@ -258,7 +268,7 @@
     0 4px 12px -6px rgba(99, 102, 241, 0.45);
   --pill-soft-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.55));
 
-  --rail-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.1));
+  --rail-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.04) 72%, rgba(255, 255, 255, 0));
   --rail-divider: none;
   --rail-hover-face: rgba(255, 255, 255, 0.4);
   --rail-active-face: linear-gradient(
@@ -274,6 +284,9 @@
     0 0 0 1px rgba(255, 255, 255, 0.55),
     0 6px 16px -8px rgba(99, 102, 241, 0.5);
   --rail-active-bar: rgba(99, 102, 241, 0.55);
+  --rail-add-face: linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.24));
+  --rail-add-border: rgba(255, 255, 255, 0.55);
+  --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 
   --accent-gradient: linear-gradient(140deg, #8f8ff8 0%, #6366f1 48%, #a855f7 100%);
   --orb-gradient: conic-gradient(
@@ -372,7 +385,7 @@
     0 4px 12px -6px rgba(0, 0, 0, 0.8);
   --pill-soft-active-face: rgba(255, 255, 255, 0.12);
 
-  --rail-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.015));
+  --rail-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.008) 72%, rgba(255, 255, 255, 0));
   --rail-divider: none;
   --rail-hover-face: rgba(255, 255, 255, 0.08);
   --rail-active-face: linear-gradient(
@@ -387,6 +400,9 @@
     0 0 0 1px rgba(255, 255, 255, 0.1),
     0 6px 16px -10px rgba(0, 0, 0, 0.9);
   --rail-active-bar: rgba(165, 168, 255, 0.6);
+  --rail-add-face: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+  --rail-add-border: rgba(255, 255, 255, 0.14);
+  --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
 
   --accent-gradient: linear-gradient(140deg, #8f8ff8 0%, #6f6ef0 48%, #a855f7 100%);
   --orb-gradient: conic-gradient(
@@ -590,6 +606,48 @@
   --dialog-face: linear-gradient(180deg, #23273a, #191c2b);
 }
 
+/* ── 5.5 Smart Dock Capsule（v0.6 专项）：按预设微调，保持轻量 ─
+   基线 Token 在 styles.css（引用 surface / border / accent 系）。
+   胶囊本体跟随主题表面，只给两套预设各自的玻璃质感与强调边界；
+   不使用贯穿全长的高饱和渐变。不新增设置选项。 */
+
+:root,
+:root[data-preset="dream-gradient"] {
+  --snap-capsule-face: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 242, 255, 0.88));
+  --snap-capsule-border: rgba(99, 102, 241, 0.28);
+  --snap-hint-band: linear-gradient(90deg, rgba(167, 139, 250, 0.5), rgba(244, 114, 182, 0.4));
+}
+
+:root[data-preset="dream-gradient"][data-theme="dark"] {
+  --snap-capsule-face: linear-gradient(180deg, rgba(43, 47, 68, 0.96), rgba(32, 35, 52, 0.92));
+  --snap-capsule-border: rgba(165, 168, 255, 0.32);
+  --snap-hint-band: linear-gradient(90deg, rgba(139, 124, 246, 0.55), rgba(236, 72, 153, 0.4));
+}
+
+:root[data-preset="liquid-glass"] {
+  --snap-capsule-face: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.34));
+  --snap-capsule-border: rgba(99, 102, 241, 0.3);
+  --snap-hint-band: linear-gradient(90deg, rgba(99, 102, 241, 0.34), rgba(168, 85, 247, 0.24));
+}
+
+:root[data-preset="liquid-glass"][data-theme="dark"] {
+  --snap-capsule-face: linear-gradient(180deg, rgba(48, 55, 83, 0.66), rgba(25, 29, 47, 0.55));
+  --snap-capsule-border: rgba(255, 255, 255, 0.14);
+  --snap-hint-band: linear-gradient(90deg, rgba(129, 140, 248, 0.42), rgba(168, 85, 247, 0.28));
+}
+
+/* 高对比度：胶囊/提示收敛到实心表面 + 明确描边 */
+@media (prefers-contrast: more) {
+  :root,
+  :root[data-preset] {
+    --snap-capsule-face: var(--surface-raised, #ffffff);
+    --snap-capsule-border: currentColor;
+    --snap-hint-band: var(--accent);
+    --snap-hint-bg: var(--surface-raised, #ffffff);
+    --snap-feedback-bg: var(--surface-raised, #ffffff);
+  }
+}
+
 /* 高对比度：弹层收敛到实心 + 明确描边 */
 @media (prefers-contrast: more) {
   :root,
@@ -768,18 +826,32 @@
 }
 
 .rail {
+  position: relative;
   width: var(--rail-w);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 2px 6px 10px;
-  background: var(--rail-bg);
-  border-right: var(--rail-divider);
+  padding: 4px 6px 10px;
+  background: transparent;
+  border-right: none;
   overflow: hidden;
 }
 
+/* 顶部渐隐：导航轨不再像一块从标题栏下方突然开始的色带 */
+.rail::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--rail-bg);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 30px);
+  mask-image: linear-gradient(180deg, transparent 0, #000 30px);
+  pointer-events: none;
+}
+
 .rail-items {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -789,6 +861,9 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+  /* 矮窗口下滚动区底部渐隐，避免最后一个入口被硬切成半截 */
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 14px), transparent 100%);
 }
 
 .rail-item {
@@ -867,22 +942,65 @@
 }
 
 .rail-foot {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   padding-top: 8px;
   margin-top: 8px;
-  border-top: 1px solid var(--divider);
+  border-top: none;
   /* 固定在底部：不参与 .rail-items 的滚动 */
   flex: 0 0 auto;
 }
 
+/* 弱化的分隔：两端渐隐，不再是一条贯穿整个导航轨的硬线 */
+.rail-foot::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--divider) 28%, var(--divider) 72%, transparent);
+  pointer-events: none;
+}
+
 .rail-add {
-  color: var(--text-tertiary);
+  gap: 2px;
+  padding: 5px 2px 5px;
+  color: var(--text-secondary);
+  background: var(--rail-add-face);
+  border: 1px solid var(--rail-add-border);
+  border-radius: 12px;
+  box-shadow: var(--rail-add-shadow);
 }
 
 .rail-add:hover {
   color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+.rail-add:active {
+  transform: scale(0.97);
+}
+
+.rail-add:focus-visible {
+  outline: none;
+  box-shadow: var(--control-shadow-focus);
+}
+
+.rail-add .rail-icon {
+  width: 22px;
+  height: 20px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.rail-add .rail-label {
+  color: inherit;
 }
 
 /* ── 9. 内容区与任务面板 ────────────────────────────────────── */
@@ -891,6 +1009,16 @@
   padding: 4px 10px 10px;
   flex: 1;
   min-width: 0;
+}
+
+/* 剪贴板页直接铺在窗口表面（不再套一层白色圆角卡片），
+   滚动交给页内的 .clip-body，避免双层滚动条与外层卡片感 */
+.tab-content-clipboard {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 .tasks-panel {
@@ -972,6 +1100,26 @@
 }
 
 .quick-add-row:focus-within {
+  box-shadow: var(--control-shadow-focus);
+}
+
+/* 组合输入容器统一悬停反馈：只抬一档阴影，聚焦态优先（:not 排除，不依赖声明顺序） */
+.quick-add-row:hover:not(:focus-within),
+.search-box:hover:not(:focus-within),
+.clip-search:hover:not(:focus-within) {
+  box-shadow: var(--control-shadow-hover, var(--control-shadow));
+}
+
+/* 剪贴板搜索框与快速添加/任务搜索统一为玻璃胶囊：
+   唯一可见边界 = 阴影环，去掉 base 层残留的 1px 硬边框与聚焦变色边框 */
+.clip-search {
+  border: none;
+  border-radius: 9px;
+  background: var(--control-face);
+  box-shadow: var(--control-shadow);
+}
+
+.clip-search:focus-within {
   box-shadow: var(--control-shadow-focus);
 }
 
@@ -1485,6 +1633,11 @@ textarea:focus {
     padding: 4px 8px 8px;
   }
 
+  /* 剪贴板页是无边框的整面布局，窄窗也不能被通用内边距缩进去 */
+  .tab-content-clipboard {
+    padding: 0;
+  }
+
   .overview-value {
     font-size: 17px;
   }
@@ -1541,4 +1694,5 @@ textarea:focus {
   .btn:active {
     transform: none;
   }
+}
 }

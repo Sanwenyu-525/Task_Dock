@@ -1,0 +1,33 @@
+=== perf-clipboard ===
+CMD: cargo test --release --test clipboard_perf -- --ignored --nocapture
+CWD: /d/Develop/task_dock/src-tauri
+START: 2026-10-30 22:26:46
+   Compiling task-dock v0.5.0 (D:\Develop\task_dock\src-tauri)
+   Compiling tauri-plugin-dialog v2.8.3
+    Finished `release` profile [optimized] target(s) in 4m 52s
+     Running tests\clipboard_perf.rs (target-accept\release\deps\clipboard_perf-7f2215025c68e7b8.exe)
+
+running 2 tests
+clipboard_perf n=1000 image=1920x1080
+insert_avg=0.230 ms insert_p95=0.230 ms
+list80_p50=6.889 ms list80_p95=9.159 ms
+count_p50=0.029 ms count_p95=0.035 ms
+search_miss_p50=1.958 ms search_miss_p95=6.317 ms
+thumb_p50=14.071 ms thumb_max=15.366 ms
+png_encode=148.695 ms png_decode=15.799 ms
+rgba_to_dib=5.910 ms dib_to_rgba=5.949 ms
+image_capture_1920x1080=20.024 ms
+assets=2441144 bytes image_items=1 items=1001
+test clipboard_perf_sample ... ok
+clipboard_stress history=300(images=100 960x540)
+list80_p50=0.907 ms list80_p95=1.157 ms list200_p50=1.044 ms list200_p95=1.200 ms
+clipboard_stress burst=200(1920x1080) group_ok=true
+ingest_200=4563.815 ms cleanup_ms=86.133 ms total=4649.948 ms encode_setup=28104.152 ms
+assets_before=464.8 MB disk_before=464.8 MB assets_after=30.2 MB disk_after=30.2 MB deleted_items=187
+报告已写入 D:\Develop\task_dock\src-tauri\../docs/performance/results\CLIP-20261030-223218.json
+test clipboard_stress_300_history_and_200_screenshots ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 38.60s
+
+END: 2026-10-30 22:32:18
+EXIT: 0
