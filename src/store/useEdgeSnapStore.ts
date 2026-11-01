@@ -18,6 +18,12 @@ export interface EdgeSnapUiState {
   magnetized: boolean;
   /** 停靠边（docked-* 相位下非空） */
   dockedEdge: SnapEdge | null;
+  /**
+   * 原生区域是否与 UI 相位失准（写入/回读失败且校准也失败）。
+   * 为 true 时引擎不会推进相位、不进入 free，按有界退避重试校准；
+   * 这是一条诊断/兜底状态，正常情况下恒为 false。
+   */
+  regionUnsynced: boolean;
   /** 「已吸附 X 侧」反馈；seq 递增使同一 edge 的重复停靠也能重新触发 */
   feedback: { edge: SnapEdge; seq: number } | null;
   /** 引擎注入：展开功能面板（折叠态点击分类 / 托盘唤回）。未启用为 null。 */
@@ -33,6 +39,7 @@ export interface EdgeSnapUiState {
     dockedEdge: SnapEdge | null;
   }) => void;
   notifyDocked: (edge: SnapEdge) => void;
+  setRegionUnsynced: (v: boolean) => void;
   clearFeedback: () => void;
   setReveal: (fn: (() => void) | null) => void;
   setCollapse: (fn: (() => void) | null) => void;
@@ -45,12 +52,14 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   candidateEdge: null,
   magnetized: false,
   dockedEdge: null,
+  regionUnsynced: false,
   feedback: null,
   reveal: null,
   collapse: null,
   undock: null,
   sync: (p) => set(p),
   notifyDocked: (edge) => set({ feedback: { edge, seq: ++feedbackSeq } }),
+  setRegionUnsynced: (v) => set({ regionUnsynced: v }),
   clearFeedback: () => set({ feedback: null }),
   setReveal: (fn) => set({ reveal: fn }),
   setCollapse: (fn) => set({ collapse: fn }),
@@ -61,6 +70,7 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
       candidateEdge: null,
       magnetized: false,
       dockedEdge: null,
+      regionUnsynced: false,
       feedback: null,
       reveal: null,
       collapse: null,

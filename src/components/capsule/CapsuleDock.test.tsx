@@ -36,7 +36,7 @@ import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useCapsuleStore } from "../../store/useCapsuleStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
-import { overlayStack } from "../../lib/overlayStack";
+import { overlayStack, registerOverlay, topOverlay } from "../../lib/overlayStack";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import type { AgentRun, AgentSnapshot } from "../../lib/bridge";
 
@@ -80,7 +80,8 @@ function mountAt(phase: "docked-hidden" | "docked-revealed", edge = "left" as co
 beforeEach(() => {
   reveal.mockReset();
   collapse.mockReset();
-  useCapsuleStore.setState({ active: null });
+  // active 是模块级 store，会跨用例残留，必须复位到默认分类
+  useCapsuleStore.setState({ active: "tasks" });
   useTasksStore.setState({ stats: null });
   useAgentsStore.setState({ snapshot: null });
 });
@@ -118,7 +119,8 @@ describe("CapsuleDock · 折叠 / 展开", () => {
       container.querySelector<HTMLButtonElement>('.cap-btn[aria-label^="任务"]')!.click();
     });
     expect(collapse).toHaveBeenCalledTimes(1);
-    expect(useCapsuleStore.getState().active).toBeNull();
+    // 收起只切相位，分类保持——下次展开仍是这一个，不需要兜底回填
+    expect(useCapsuleStore.getState().active).toBe("tasks");
   });
 
   it("切换分类不重新触发展开（已在展开态）", () => {
@@ -147,6 +149,71 @@ describe("CapsuleDock · 折叠 / 展开", () => {
     expect(btn.getAttribute("aria-disabled")).toBe("true");
     act(() => btn.click());
     expect(collapse).not.toHaveBeenCalled();
+  });
+});
+
+describe("CapsuleDock · 分类与相位的单一事实来源", () => {
+  it("托盘/热键/重启恢复只切相位：默认分类就有面板内容，不存在空白面板", async () => {
+    const { container } = mountAt("docked-revealed");
+    expect(useCapsuleStore.getState().active).toBe("tasks");
+    expect(container.querySelector(".capsule-panel")).toBeTruthy();
+    await screen.findByText("暂无待办");
+  });
+
+  it("展开保留上一次的分类选择，而不是每次都跳回默认", async () => {
+    useCapsuleStore.setState({ active: "agents" });
+    useAgentsStore.setState({ snapshot: snapshotWith() });
+    const { container } = mountAt("docked-revealed");
+    expect(useCapsuleStore.getState().active).toBe("agents");
+    expect(container.querySelector('.capsule-panel[aria-label="Agent面板"]')).toBeTruthy();
+    await screen.findByText("未检测到运行中的 Agent");
+  });
+
+  it("收起后再展开（只切相位、不经过分类点击）：仍是刚才那个分类", async () => {
+    useCapsuleStore.setState({ active: "clipboard" });
+    const { container } = mountAt("docked-revealed");
+    act(() => {
+      container.querySelector<HTMLButtonElement>('.cap-btn[aria-label="剪贴板"]')!.click();
+    });
+    expect(collapse).toHaveBeenCalledTimes(1);
+    // 收起不清空分类：面板可见性只由相位决定，避免「相位已展开、分类已为空」的中间帧
+    expect(useCapsuleStore.getState().active).toBe("clipboard");
+
+    // 引擎折叠完成 → 再次展开（只切相位，不经过分类点击）
+    act(() => useEdgeSnapStore.setState({ phase: "docked-hidden" }));
+    act(() => useEdgeSnapStore.setState({ phase: "docked-revealed" }));
+    expect(useCapsuleStore.getState().active).toBe("clipboard");
+    await screen.findByText("剪贴板暂无记录");
+  });
+
+  it("折叠态连续快速点击同一分类：只推进展开意图，不产生收起抖动", () => {
+    const { container } = mountAt("docked-hidden");
+    const btn = () => container.querySelector<HTMLButtonElement>('.cap-btn[aria-label^="任务"]')!;
+    act(() => btn().click());
+    act(() => btn().click());
+    act(() => btn().click());
+    // 三次点击都发生在折叠态（相位由引擎确认区域写入后才推进），因此只登记展开
+    expect(reveal).toHaveBeenCalledTimes(3);
+    expect(collapse).not.toHaveBeenCalled();
+    expect(useCapsuleStore.getState().active).toBe("tasks");
+  });
+
+  it("面板内层弹层优先消费 Escape，且内层打开时不被自动收起", () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    mountAt("docked-revealed");
+    const inner = vi.fn();
+    const release = registerOverlay({ kind: "menu", onEscape: inner });
+
+    // 优先级按弹层种类：面板是 drawer（最低），内层菜单必须盖过它
+    expect(topOverlay()?.kind).toBe("menu");
+    act(() => topOverlay()!.onEscape());
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(collapse).not.toHaveBeenCalled(); // 一次按键只关一层
+    // 引擎的光标离开判定读同一个栈：栈非空 → 不触发 collapse
+    expect(topOverlay()).toBeDefined();
+
+    release();
+    expect(topOverlay()?.kind).toBe("drawer");
   });
 });
 

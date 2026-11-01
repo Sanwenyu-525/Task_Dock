@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   CAPSULE_THICKNESS_CSS,
   EDGE_LABELS,
+  GEOMETRY_ROLLBACK_TTL_MS,
   PERSIST_VISIBLE_FRACTION,
   PROGRAMMATIC_MOVE_TTL_MS,
   SNAP_CANDIDATE_DIST,
@@ -42,6 +43,7 @@ import {
   isRectMostlyVisible,
   isRevealProtected,
   isSnapEdge,
+  isCapsuleMode,
   shouldConfirmDock,
   shouldExpireCandidate,
   shouldHideAfterLeave,
@@ -229,6 +231,15 @@ describe("状态机转移表 canTransition", () => {
     expect(canAutoHide("free")).toBe(false);
     expect(canAutoHide("candidate")).toBe(false);
   });
+
+  it("isCapsuleMode：停靠相位缺停靠边时不进入胶囊模式（不隐藏主界面、不挂载空胶囊）", () => {
+    for (const phase of ["docked-visible", "docked-hidden", "docked-revealed"] as const) {
+      expect(isCapsuleMode(phase, null)).toBe(false);
+      expect(isCapsuleMode(phase, "left")).toBe(true);
+    }
+    expect(isCapsuleMode("free", "left")).toBe(false);
+    expect(isCapsuleMode("candidate", "left")).toBe(false);
+  });
 });
 
 describe("停靠确认时序 shouldConfirmDock / shouldExpireCandidate", () => {
@@ -332,6 +343,18 @@ describe("程序移动守卫 createSnapMoveGuard（window_rect 防污染）", ()
     expect(g.isHidden()).toBe(true);
     g.setHidden(false);
     expect(g.isHidden()).toBe(false);
+  });
+
+  it("几何回滚在有限时间内抑制持久化，过期后自动恢复", () => {
+    const g = createSnapMoveGuard(() => 1000);
+    expect(g.isPersistenceSuppressed(1000)).toBe(false);
+    g.noteGeometryRollback();
+    expect(g.isPersistenceSuppressed(1000)).toBe(true);
+    expect(g.isPersistenceSuppressed(1000 + GEOMETRY_ROLLBACK_TTL_MS - 1)).toBe(true);
+    expect(g.isPersistenceSuppressed(1000 + GEOMETRY_ROLLBACK_TTL_MS)).toBe(false);
+    // 隐藏态仍然优先（隐藏期间不因回滚窗口过期而恢复写入）
+    g.setHidden(true);
+    expect(g.isPersistenceSuppressed(1000 + GEOMETRY_ROLLBACK_TTL_MS + 10)).toBe(true);
   });
 
   it("多次登记只保留最近目标；reset 清空（用例间隔离）", () => {

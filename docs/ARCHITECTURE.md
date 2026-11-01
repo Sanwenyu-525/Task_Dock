@@ -260,8 +260,15 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   界面材质跟随**实际生效值**（`materialInfo.resolved`），原生 Mica/Acrylic 失败时自动回退 solid；
   每次重算都重新探测原生材质，系统「减少透明效果」关闭后能真正恢复。
   完整模式改为**左侧垂直导航**（62px，窄窗收敛为 46px 图标轨）。
-  窗口圆角在 Win32 层用 `SetWindowRgn(CreateRoundRectRgn)` 裁剪（DWM 背景不受 CSS radius 影响，
-  否则四角露黑），并按 `scale_factor` 换算物理像素。
+  **2026-11-01 晚更正（主窗不再用圆角区域）**：真机像素证明 DWM 的圆角裁剪（约 8 DIP）
+  与 `SetWindowRgn` 的圆角区域（CSS 物理半径 − 2px）在同一窗口矩形上相交，二者之间露出
+  一条透明月牙；区域硬边还会切进 WebView 的抗锯齿弧线，形成「外圈平滑 + 内圈阶梯」。
+  现在**完整主窗**改为：`SetWindowRgn` 只设整窗矩形 + `DWMWCP_DONOTROUND`，可见轮廓完全
+  由 WebView2 CSS 的 18/20px 抗锯齿弧定义（渐变覆盖到边缘，无月牙、无 GDI 硬边）。
+  透明角由 `WM_NCHITTEST` 子类化按 CSS 圆角判定（`point_in_rounded_rect`）；WebView2 的
+  真实鼠标命中走子窗口，实际行为与原生 Win11 圆角窗口一致（见验收报告「遗留问题」）。
+  区域仍按 hwnd/尺寸/DPI/缓存并用 `GetWindowRgn` 回读校验；胶囊与右键菜单弹窗继续使用
+  圆角区域（各自独立的几何）。
   详见 [ui-themes/](ui-themes/) 目录。
 
 ### 7. 智能剪贴板（clipboard/，v0.5）
@@ -342,9 +349,16 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `src-tauri/src/window_shape.rs::capsule_regions`（区域裁剪），两端单测锁定同一组常量
   （轨道 56×300、面板 336×420、间隙 8）。
 - 区域：折叠 = 轨道圆角矩形；展开 = `CombineRgn(RGN_OR)` 合并两块圆角矩形，
-  应用后 `GetWindowRgn` 回读验证（包围盒 + 中心点 + 间隙点）。
+  应用后 `GetWindowRgn` 回读验证（包围盒 + 中心点 + 间隙点）。胶囊仍由区域定义可见外形
+  （区域外的容器部分不绘制、不接收鼠标）；区域半径比 CSS 圆角小 2 物理像素
+  （`REGION_AA_INSET`）。主窗不再使用该内收，改由 CSS 轮廓定义（见 §7）。
+- 几何事务：停靠时窗口**归一**为容器尺寸（大于容器也收拢，覆盖 Aero Snap 的半屏
+  尺寸）；尺寸/移动/区域任一步失败都回滚到进入停靠前的用户矩形，并抑制
+  `window_rect` 持久化 2.5s。区域写入失败时先校准回当前相位形态；仍失败则保持
+  相位、置 `regionUnsynced` 并有界退避重试，绝不把「off 请求已发出」当成已解除。
 - 状态：`useEdgeSnap` 仍是唯一写入方（五相状态机 + `docked-visible → docked-revealed`
-  新转移）；`useCapsuleStore` 只保存"当前分类"这一纯 UI 选择。
+  新转移）；`useCapsuleStore` 只保存"当前分类"这一纯 UI 选择，且**恒有值**——
+  收起面板不清空分类，面板可见性只由相位决定（避免两处状态源的提交时机差）。
 - 数据：任务/Agent/剪贴板/应用全部读既有 store 与既有命令，不新增轮询、不新增状态源；
   Agent 徽标只统计 waiting + failed。
 - 兼容：`snap_state` 新增可选 `center`；停靠期不写 `window_rect`；

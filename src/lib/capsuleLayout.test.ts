@@ -11,7 +11,7 @@ import {
   capsuleContainerSize,
   capsuleRegionsPhysical,
   capsuleWindowRect,
-  containerTarget,
+  isCapsuleContainerSize,
   needsContainerResize,
   pointInCapsule,
   toPhysical,
@@ -126,13 +126,22 @@ describe("命中判定", () => {
   });
 });
 
-describe("容器补足", () => {
-  it("只在当前尺寸不足时调整", () => {
+describe("容器归一", () => {
+  it("大于或小于容器都要调整（Aero Snap 的半屏尺寸也收拢）", () => {
     const c = { w: 400, h: 420 };
-    expect(needsContainerResize({ w: 400, h: 560 }, c)).toBe(false);
+    expect(needsContainerResize({ w: 400, h: 420 }, c)).toBe(false);
     expect(needsContainerResize({ w: 280, h: 140 }, c)).toBe(true);
-    expect(containerTarget({ w: 280, h: 140 }, c)).toEqual({ w: 400, h: 420 });
-    expect(containerTarget({ w: 400, h: 560 }, c)).toEqual({ w: 400, h: 560 });
+    expect(needsContainerResize({ w: 400, h: 560 }, c)).toBe(true);
+    expect(needsContainerResize({ w: 1280, h: 690 }, c)).toBe(true);
+  });
+
+  it("能识别「解除后仍停在胶囊容器尺寸」（垂直 400×420 / 水平 400×484）", () => {
+    // 125% DPI 的物理尺寸
+    expect(isCapsuleContainerSize({ w: 500, h: 525 }, 1.25)).toBe(true);
+    expect(isCapsuleContainerSize({ w: 500, h: 605 }, 1.25)).toBe(true);
+    // 用户模式尺寸不是容器尺寸
+    expect(isCapsuleContainerSize({ w: 500, h: 700 }, 1.25)).toBe(false); // full
+    expect(isCapsuleContainerSize({ w: 500, h: 475 }, 1.25)).toBe(false); // compact
   });
 
   it("沿边中心换算：垂直用 y、水平用 x", () => {

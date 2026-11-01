@@ -67,6 +67,9 @@
 
   /* 表面层级：卡片 > 控件 > 背景 */
   --card-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 86%, transparent), color-mix(in srgb, var(--c-paper) 62%, transparent));
+  /* 胶囊卡片的不透明底（窗口底色）：停靠期根窗口透明，卡片必须自带表面。
+     必须是不含 alpha 的实色——半透明会让胶囊在深色桌面上「消失」。 */
+  --capsule-face: #f9faff;
   --card-shadow:
     0 0 0 1px color-mix(in srgb, var(--c-paper) 60%, transparent),
     0 8px 18px -12px color-mix(in srgb, var(--c-accent) 40%, transparent);
@@ -163,6 +166,8 @@
     radial-gradient(160px 140px at 2% 88%, rgba(80, 110, 180, 0.24), transparent 76%);
 
   --card-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 7.5%, transparent), color-mix(in srgb, var(--c-paper) 3.5%, transparent));
+  /* 胶囊不透明底：深色下 `--card-face` 只有 7.5% 白，没有底色时等于消失 */
+  --capsule-face: #191c2c;
   --card-shadow:
     0 0 0 1px color-mix(in srgb, var(--c-paper) 7%, transparent),
     0 10px 22px -16px color-mix(in srgb, var(--c-night) 90%, transparent);
@@ -270,6 +275,8 @@
     rgba(252, 254, 255, 0.76) 52%,
     rgba(246, 250, 254, 0.68) 100%
   );
+  /* 胶囊不透明底：玻璃预设的卡片面本身带 alpha，必须另给实色底 */
+  --capsule-face: #f5f9fd;
   --card-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--c-paper) 92%, transparent),
     inset 0 -1px 0 color-mix(in srgb, var(--c-paper) 28%, transparent),
@@ -401,6 +408,8 @@
 
   /* 单层冷玻璃：颜色直接调进面里，不再用白色渐变叠加提灰 */
   --card-face: linear-gradient(158deg, rgba(56, 68, 92, 0.55) 0%, rgba(30, 40, 58, 0.5) 100%);
+  /* 胶囊不透明底：卡片面 alpha 仅 0.5，必须自带深色实底 */
+  --capsule-face: #171b28;
   --card-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--c-paper) 16%, transparent),
     0 0 0 1px color-mix(in srgb, var(--c-paper) 9%, transparent),
@@ -1766,7 +1775,11 @@ textarea:focus {
    停靠期根容器仍被填成不透明底色、装饰伪元素 ::before 继续绘制，
    于是出现「轨道旁边一整块空白窗口」的巨型矩形。
    修复：把胶囊覆盖写进同一 theme 层，并置于本文件末尾（同层后位胜出），
-   不删除主窗口的底色 / 圆角 / 阴影规则，也不关闭透明。 */
+   不删除主窗口的底色 / 圆角 / 阴影规则，也不关闭透明。
+   **根窗口透明不等于胶囊透明**：透明只作用在根容器，胶囊自己的表面由
+   `.capsule-rail` / `.capsule-panel` 的 `--capsule-face`（实色底）+
+   `--card-face`（玻璃渐变）承担；这条分层关系必须保持，否则深色主题下
+   只剩 7.5% alpha 的卡片面，胶囊会「整个消失」。 */
 @layer theme {
   .dock-window.is-capsule,
   .dock-window.is-capsule.material-glass,

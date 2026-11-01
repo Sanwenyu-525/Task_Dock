@@ -14,6 +14,75 @@
 
 ## 一、自动化测试结果
 
+### 0.0.9 胶囊可见性与窗口状态修复（2026-11-01 晚）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 错误（`D:/Develop/task_dock`，2026-11-01 19:02，随 `npm run build` 执行） |
+| `npx vitest run`（全量） | 49 文件 / **496 用例通过**（26.53s，2026-11-01 19:02） |
+| `npm run build` | 通过（tsc + vite；1684 modules，7.33s，CSS 147.98 kB / gzip 23.89 kB） |
+| `cargo build`（`src-tauri`） | 通过（2026-11-01 19:05，debug 二进制重新编译；当前 `window_shape.rs` 可编译） |
+| `cargo test --lib window_shape` | **16 通过 / 0 失败**（0.03s，2026-11-01 19:05） |
+| 真机（125% DPI、隔离数据、局部黑底 + CopyFromScreen + GetWindowRgn 回读） | 折叠单态区域：左 `0,75,70,450`、右 `430,75,500,450`、上 `62,0,437,70`、下 `62,535,437,605`；左展开 `0,0,500,525`；浅色/深色/液态玻璃胶囊均真实可见；解除吸附 **4/4** 恢复 500×700 整窗；`TASK_DOCK_WINDOW_REGION=0` 时保持完整主窗口（`no-region`），不进入透明胶囊态 |
+| 修复前后像素（黑底采样，轨道中心） | 浅色修复前 `205,205,205`（根透明 + 86% alpha 卡片面），修复后 `253,254,255`；深色修复后 `38,40,56` 不透明（修复前仅 7.5% 白，等于消失） |
+| 未覆盖 | 100%/150% DPI、Windows 10、多显示器/断连、右/上/下展开态、原生 mica/blur 后端矩阵 |
+
+证据：`tmp/acceptance/capsule-visibility-fix/`（`report.md`、`raw/`、`final-*.log`）。
+说明：0.0.8 的窗口轮廓结论保持有效；本节只追加胶囊表面不透明底、渲染门控、
+重启恢复重试与解除后模式尺寸验证。
+
+### 0.0.8 窗口圆角真机复核与主窗轮廓改造（2026-11-01 晚）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 错误（`D:/Develop/task_dock`，2026-11-01 18:09） |
+| `npx vitest run`（全量） | 49 文件 / **494 用例通过**（31.82s） |
+| `npm run build` | 通过（tsc + vite；1684 modules，9.80s，CSS 147.98 kB / gzip 23.89 kB） |
+| `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` | 通过（0 warning） |
+| `cargo test` | **490 通过 / 1 失败 / 3 ignored**；唯一失败是既有日期敏感测试 `actions::tests::ack_never_changes_agent_state_and_new_event_resurfaces`（新事件硬编码 2026-10-31，ack 用当前时间），`src/actions/` 本轮未改动；`navigation::router` 3 项本轮通过 |
+| `window_shape` 单测 | 16 项通过（含矩形区域失效、CSS 圆角命中 100/125/150%、命中状态按 hwnd 隔离） |
+| 真机（125% DPI、隔离数据、纯白/纯黑置顶背景 + CopyFromScreen） | dream/liquid × light/dark × solid/glass 四角均为**单条 CSS 抗锯齿弧**（50% 边界为小数像素），无透明月牙、无第二圈；region 探针为 `111111111 bounds=0,0,w+1,h+1`、DWM corner=1（DONOTROUND） |
+| 状态切换 | 5 次尺寸抖动 → 600×800 后区域仍为整窗矩形、圆角平滑；最小化/恢复后同样；左缘停靠折叠/展开/收起三态区域与截图复测通过 |
+| 未覆盖 | 100%/150% 原生渲染、Windows 10、多显示器（本机仅 125% 单屏）；透明角点击穿透（平台限制，见报告） |
+
+证据：`tmp/acceptance/window-corner-unification/after/`（截图 + meta + 8x 四角放大）、
+`tmp/acceptance/window-corner-unification/after/capsule/`（停靠三态）、
+`tmp/acceptance/window-corner-unification/report.md`。
+> 说明：0.0.7 记录的「区域半径内收 2px 已消除第二圈」在 0.0.8 真机复测中被推翻，
+> 旧记录保留，以 0.0.8 为准。
+
+### 0.0.7 综合修复与最终验收（圆角第二圈 / 区域提交 / 几何回滚 / Aero Snap，2026-11-01）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 错误（工作目录 `D:/Develop/task_dock`，2026-11-01 15:53） |
+| `npx vitest run`（全量） | 49 文件 / **488 用例通过**（28.23s） |
+| `npm run build` | 通过（tsc + vite；1684 modules，9.89s，CSS 147.85 kB / gzip 23.86 kB） |
+| `cargo fmt --check`（`src-tauri`） | 通过（仅格式化 `window_shape.rs`，无逻辑改动） |
+| `cargo clippy --all-targets -- -D warnings` | 通过（0 warning） |
+| `cargo test` | **485 通过 / 4 失败 / 3 ignored**；4 项失败均与本次改动无关：3 项 `navigation::router` 为 `ENVIRONMENT-BLOCKED`（Windows 前台锁定拒绝置前），1 项 `actions::tests::ack_never_changes_agent_state_and_new_event_resurfaces` 为**既有日期敏感测试**（新事件硬编码 2026-10-31，ack 使用当前时间 2026-11-01，导致新事件被视为已确认）；`src/actions/` 本轮未改动 |
+| 真机（125% DPI、隔离数据、纯黑置顶背景 + CopyFromScreen） | 主窗 dream/liquid、solid/glass(css) 四角均无白色/黑色第二圈；修复后角点出现 CSS 抗锯齿过渡像素 `(185,193,208)`；胶囊轨道/面板边缘平滑；重启恢复、点击展开、再次点击收起三态截图均真实 |
+| 区域探针 | `GetWindowRgn` 包围盒 `0,0,500,700`，角点 `(3,3)` 不在区域、`(8,8)` 在区域；回读校验通过 |
+
+证据：`tmp/acceptance/20261101-comprehensive-fix/report.md`、`raw/black-default.png`（修复前硬边）、
+`raw/black-inset-final.png`、`raw/black-dwmonly.png`、`raw/capsule-collapsed-final.png`、
+`raw/capsule-expanded-final.png`、`raw/capsule-collapse-after-expand.png`。
+
+### 0.0.6 分类胶囊收尾（分类单一事实来源 / 停靠失败回滚，2026-11-01）
+
+| 检查 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 0 错误（工作目录 `D:/Develop/task_dock`，2026-11-01 13:19） |
+| `npx vitest run`（定向） | 5 文件 / **143 用例通过**（CapsuleDock / useEdgeSnap.integration / capsuleLayout / capsuleModel / edgeSnap，24.58s） |
+| `npx vitest run`（全量） | 49 文件 / **478 用例通过**（20.43s） |
+| `npm run build` | 通过（tsc + vite；1684 modules，7.71s，CSS 147.85 kB / gzip 23.86 kB） |
+| 真机停靠三态（Win32 区域探针 + CopyFromScreen 截图） | 重启恢复 `bounds=0,162,70,537`（轨道 56×300 逻辑 / 70×375 物理）→ 点击轨道球展开 `bounds=0,87,500,612`（轨道 ∪ 面板，500×525 物理）→ 再次点击收起 `bounds=0,162,70,537`；三态截图均有真实面板内容，区域外为桌面，无整块底色 |
+| Rust | 本轮未改 `src-tauri/`，未重跑 cargo（复用的调试二进制于 2026-11-01 10:44 构建） |
+
+**测试用例语义变更**：`useCapsuleStore` 删除 `lastActive` / `ensureActive`，`active` 改为恒有值（收起不清空）。
+`CapsuleDock.test.tsx` 相应用例由「兜底回填最近分类」改写为「收起后再展开保留同一分类」。
+证据：`tmp/acceptance/capsule-docking-fix/`（report.md / lab.log / probe.log / 四张截图）。
+
 ### 0.0.5 停靠态极简（圆角细线/删除磁铁/拖拽解除）与白角滚动条诊断（2026-10-31）
 
 | 检查 | 结果 |
@@ -611,3 +680,4 @@ Rust：`cargo test --lib` 覆盖 `capsule_regions`（四边 × 折叠/展开、D
 透明区域未验证，不得以浏览器渲染或单测替代。详细口径见
 [ui-themes/13-capsule-redesign.md](ui-themes/13-capsule-redesign.md) 与
 `tmp/acceptance/capsule-redesign/report.md`。
+

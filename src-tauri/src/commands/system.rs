@@ -39,7 +39,22 @@ pub fn set_mode_window_size<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>, mo
     let (w, h) = mode_size(mode);
     let (mw, mh) = mode_min_size(mode);
     let _ = win.set_min_size(Some(tauri::LogicalSize::new(mw, mh)));
-    let _ = win.set_size(tauri::LogicalSize::new(w, h));
+    if let Err(e) = win.set_size(tauri::LogicalSize::new(w, h)) {
+        // 原生拖拽循环期间 set_size 可能被拒绝；调用方需要回读验证（见前端 restoreModeSize）。
+        tracing::warn!(mode, "设置模式窗口尺寸失败: {e}");
+        return;
+    }
+    match win.outer_size() {
+        Ok(size) => tracing::info!(
+            mode,
+            target_w = w,
+            target_h = h,
+            actual_w = size.width,
+            actual_h = size.height,
+            "模式窗口尺寸已应用"
+        ),
+        Err(e) => tracing::warn!(mode, "回读模式窗口尺寸失败: {e}"),
+    }
 }
 
 /// 应用显示模式（托盘菜单与命令共用）。
@@ -313,7 +328,7 @@ pub struct MaterialResult {
 }
 
 /// Windows build 号（Win11 = 22000+，Acrylic = 1803/17134+）。
-fn windows_build() -> u32 {
+pub(crate) fn windows_build() -> u32 {
     // 不引入 winapi/winreg：ntdll 始终在进程内，直接取版本号
     #[link(name = "ntdll")]
     extern "system" {

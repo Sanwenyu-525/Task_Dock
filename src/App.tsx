@@ -26,7 +26,7 @@ import TooltipLayer from "./components/ui/TooltipLayer";
 import SnapOverlay from "./components/SnapOverlay";
 import CapsuleDock from "./components/capsule/CapsuleDock";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
-import { isDockedPhase } from "./lib/edgeSnap";
+import { isCapsuleMode } from "./lib/edgeSnap";
 import { createSubscriptionScope } from "./lib/subscriptions";
 import { setWindowEscapeHandler } from "./lib/overlayStack";
 import {
@@ -72,7 +72,11 @@ export default function App() {
   // 停靠期（docked-*）：窗口被 Win32 区域裁成分类胶囊（轨道 / 轨道+面板），
   // 主界面整块隐藏，只渲染 CapsuleDock —— 避免"看不见但可聚焦"的残留控件。
   const snapPhase = useEdgeSnapStore((s) => s.phase);
-  const capsuleMode = isDockedPhase(snapPhase);
+  const dockedEdge = useEdgeSnapStore((s) => s.dockedEdge);
+  // 胶囊模式必须同时有相位与停靠边：只有相位时为 false，主界面保持可见，
+  // 与 CapsuleDock 的 `edge` 判据保持同一个事实来源（不会再出现
+  // 「主界面被隐藏、胶囊因缺少 edge 不渲染」的空窗口）。
+  const capsuleMode = isCapsuleMode(snapPhase, dockedEdge);
   // 用**实际生效**的材质上 class：原生 Mica/Acrylic 回退 solid 时，
   // 界面必须跟随降级，不能继续渲染半透明表面（v0.5 缺陷修复）。
   const material = materialInfo?.resolved ?? settings?.material ?? "solid";

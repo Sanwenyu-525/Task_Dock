@@ -76,7 +76,13 @@ describe("主题令牌结构", () => {
     for (const preset of PRESETS) {
       for (const dark of [false, true]) {
         const decls = effectiveDecls(preset, dark);
-        for (const required of ["--menu-face", "--dialog-face", "--card-face", "--window-fill"]) {
+        for (const required of [
+          "--menu-face",
+          "--dialog-face",
+          "--card-face",
+          "--window-fill",
+          "--capsule-face",
+        ]) {
           expect(decls[required], `${preset}/${dark ? "dark" : "light"} 缺少 ${required}`).toBeTruthy();
         }
       }
@@ -109,6 +115,30 @@ describe("弹层表面可读性", () => {
 
   it("卡片表面仍允许半透明（玻璃感来源），没有被一刀切成不透明", () => {
     expect(effectiveDecls("liquid-glass", true)["--card-face"]).toBeTruthy();
+  });
+
+  it("胶囊表面令牌在四个上下文里都不透明（根窗口透明时胶囊不能跟着透明）", () => {
+    for (const preset of PRESETS) {
+      for (const dark of [false, true]) {
+        const face = effectiveDecls(preset, dark)["--capsule-face"];
+        expect(face, `${preset}/${dark ? "dark" : "light"} 未定义 --capsule-face`).toBeTruthy();
+        expect(
+          hasAlpha(face),
+          `${preset}/${dark ? "dark" : "light"} 的 --capsule-face 是半透明的：${face}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("胶囊轨道/面板使用不透明底 + 卡片渐变，而不是只剩半透明渐变", () => {
+    for (const selector of [".capsule-rail", ".capsule-panel"]) {
+      const block = new RegExp(`${selector.replace(".", "\\.")}\\s*\\{([\\s\\S]*?)\\}`).exec(
+        appCss,
+      );
+      expect(block, `styles.css 缺少 ${selector}`).toBeTruthy();
+      expect(block![1]).toMatch(/background-color:\s*var\(--capsule-face\)/);
+      expect(block![1]).toMatch(/background-image:\s*var\(--card-face\)/);
+    }
   });
 });
 

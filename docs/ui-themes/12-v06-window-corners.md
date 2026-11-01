@@ -422,3 +422,53 @@ cdylib 导出上限会导致链接失败，不能把 GNU 的退出码当作测�
   `materialInfo.effect=css`。显式 `TASK_DOCK_GLASS_BACKEND=blur` 仍保留供矩阵复现。
 - 证据：`tmp/acceptance/dock-line-undock-20261031/corner/liquid-*-glass-css-green-visible.png`、
   `tmp/acceptance/dock-line-undock-20261031/report.md`。
+
+## 12. 更正（2026-11-01 第二圈轮廓）
+
+用户真机截图显示同一窗口外缘有两种圆角轮廓：一条较大、平滑的白色弧线，和一条带主题色但
+有轻微锯齿/阶梯的弧线。本轮用**纯黑置顶背景 + 真实窗口截屏**隔离合成层，结论：
+
+- 在 125% DPI、dream/liquid、solid/glass(css) 下，`SetWindowRgn` 的区域圆角（物理 23/25）
+  比 CSS 理想弧线（22.5/25）**略大或相等**，GDI 的二值硬边会切进 WebView 的抗锯齿像素：
+  之前角点序列为 `… (0,0,0) → 主题色`（无过渡像素），即硬边；去掉区域（DWM-only）时同一
+  角点是 `… (0,0,0) → (185,193,208) → 主题色`（有抗锯齿过渡）。
+- 因此「第二圈」不是第二个 HTML 背景，也不是 DWM 背景，而是 **Win32 区域硬边与 CSS
+  抗锯齿弧线的错位**。`DWMWCP_ROUND` 不会给区域裁剪补抗锯齿；`DWMWA_BORDER_COLOR`
+  在本机读取/写入返回 `E_INVALIDARG`，也不能作为修复手段。
+- 修复：`REGION_AA_INSET = 2` 物理像素。原生区域半径 = CSS 物理半径 − 2px，区域成为
+  CSS 圆角的**透明超集**，硬边落在透明像素上不可见；可见外轮廓保持 CSS 18/20px 的抗锯齿
+  弧线。主窗、轨道、面板同一口径；胶囊窗口尺寸同时归一为容器（大于也收拢）。
+- 复测：修复后角点序列与 DWM-only 完全一致（`(185,193,208)` 过渡像素保留），轨道/面板
+  边缘平滑；`GetWindowRgn` 包围盒仍为 `0,0,500,700`，回读校验通过。
+- 证据（真实窗口 + 纯黑背景截屏）：
+  `tmp/acceptance/20261101-comprehensive-fix/raw/black-default.png`（修复前硬边）、
+  `raw/black-inset-final.png`（修复后）、`raw/black-dwmonly.png`（CSS 平滑基线）、
+  `raw/capsule-collapsed-final.png`、`raw/capsule-expanded-final.png`。
+- 未覆盖：100%/150% DPI、Windows 10、其他缩放系数下的逐像素验收；区域硬边为主窗
+  四角留下 ≤2px 透明命中区（视觉不可见）。
+
+## 13. 更正（2026-11-01 晚：主窗改为 CSS 轮廓）
+
+第 12 节的「区域半径内收 2px」结论**不完整**：真机复测（125% DPI、纯黑/纯白置顶背景、
+`CopyFromScreen`）显示外圈平滑弧仍是 **DWM 的圆角裁剪（约 8 DIP）**，内圈阶梯弧是
+`SetWindowRgn` 的硬边（区域半径 20 物理，并未成为 CSS 22.5 的透明超集），两条弧之间是
+透明月牙（白底呈白、黑底呈黑）。
+
+本轮改为：
+
+- **完整主窗**：`SetWindowRgn` 只设整窗矩形（`CreateRectRgn(0,0,w+1,h+1)`），
+  `DWMWCP_DONOTROUND` + 边框色 NONE；可见轮廓由 WebView2 CSS `border-radius`
+  （dream 18 / liquid 20 逻辑像素，125% 下 22.5/25 物理）的抗锯齿弧定义。
+  像素测量：黑底四角 50% 边界呈小数（非整数硬边），与 CSS 弧一致；渐变覆盖到弧线，
+  无月牙、无第二圈。
+- **命中**：新增 `WM_NCHITTEST` 子类化（`point_in_rounded_rect` 按 CSS 圆角判定）；
+  Windows 会把真实鼠标命中直接送到 WebView2 子窗口，实测透明角点击/拖动与原生
+  Win11 圆角窗口一致（不穿透桌面）。这是当前平台限制，见验收报告「遗留问题」。
+- **胶囊/右键菜单弹窗**：保持 `CreateRoundRectRgn`（胶囊含 `REGION_AA_INSET`），
+  几何独立。真机回归：左缘停靠 → 轨道区域 `bounds=0,75,70,450`；展开 → `0,0,500,525`；
+  再次点击 → 回到轨道。
+
+证据：`tmp/acceptance/window-corner-unification/after/`（白/黑 × dream/liquid ×
+light/dark×solid/glass、四角 8x 放大、缩放抖动+最小化恢复）、
+`tmp/acceptance/window-corner-unification/after/capsule/`（停靠/展开/收起）。
+

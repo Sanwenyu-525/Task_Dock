@@ -267,10 +267,17 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 ## 10. 圆角半径对齐与主窗滚动条（2026-10-31 追加）
 
 - **圆角对齐**：`--radius-window` 必须与 `PRESET_WINDOW_RADIUS`（`lib/theme.ts`，逻辑像素）
-  及 Rust 端 Win32 区域半径一致。液态玻璃的 `:root[data-preset="liquid-glass"]` 块显式声明
-  `--radius-window: 20px`（dream 为 18px）；此前 liquid 沿用 18px，CSS 填充到不了 20px 区域
-  边缘，圆角处留下透明缝隙带（solid 下呈白边、glass 下混入桌面色）。两套预设都显式声明该
-  token，保持令牌结构一致（`styles-themes.test.ts`）。
+  一致——它是**可见**圆角。液态玻璃显式声明 `--radius-window: 20px`（dream 为 18px），
+  两套预设都声明该 token（`styles-themes.test.ts`）。
+  **2026-11-01 更正**：原生 Win32 区域半径 = CSS 物理半径 **− 2px**（`REGION_AA_INSET`），
+  不再要求与 CSS 相等。`SetWindowRgn` 无抗锯齿；等半径时 GDI 硬边会切进 WebView 的平滑弧线，
+  形成「第二圈阶梯状轮廓」。内收后区域是 CSS 圆角的透明超集，可见外轮廓与主题覆盖只由
+  CSS 弧线定义；四角 ≤2px 透明命中区。
+  **2026-11-01 晚更正（本条前半段被真机推翻）**：内收方案仍会与 DWM 的圆角裁剪相交，
+  留下透明月牙与内圈阶梯。主窗已改为 **整窗矩形区域 + `DWMWCP_DONOTROUND`**，可见圆角
+  完全由 CSS 18/20px 抗锯齿弧定义（渐变覆盖到边缘）。`--radius-window` 仍是唯一定义
+  「可见圆角」的 token；胶囊/右键菜单弹窗继续用区域裁剪。
+  `--radius-window` 仍驱动 CSS 填充/边光/描边层，改预设时同步下发 `apply_window_radius`。
 - **主窗滚动条**：内容滚动容器使用透明轨道 + 6px 圆角 thumb
   （`styles.css` `.dock-window ::-webkit-scrollbar`，thumb =
   `color-mix(in srgb, var(--text-tertiary) 35%, transparent)`），与右键菜单同款；

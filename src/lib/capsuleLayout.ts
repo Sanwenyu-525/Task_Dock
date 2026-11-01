@@ -95,17 +95,35 @@ export function alongCenterOf(edge: SnapEdge, rect: { x: number; y: number; w: n
   return isVerticalEdge(edge) ? rect.y + rect.h / 2 : rect.x + rect.w / 2;
 }
 
-/** 停靠后窗口是否需要撑到容器尺寸（当前尺寸更小时才调整，避免无谓 IPC）。 */
+/**
+ * 停靠后窗口是否需要调整到容器尺寸。
+ * **两个方向都收拢**：窗口大于容器时同样缩小（例如 Windows Aero Snap 把窗口
+ * 先吸成半屏 1280×690），否则停靠期会残留一个尺寸异常的大窗口，且解除吸附
+ * 前后的几何不一致。容器是停靠期唯一合法的窗口尺寸（可见区域只由区域裁剪决定）。
+ */
 export function needsContainerResize(current: Size, container: Size): boolean {
-  return current.w + 1 < container.w || current.h + 1 < container.h;
+  return Math.abs(current.w - container.w) > 1 || Math.abs(current.h - container.h) > 1;
 }
 
-/** 撑到容器尺寸的目标（保持当前更大的那一维，只补不足的维度）。 */
-export function containerTarget(current: Size, container: Size): Size {
-  return {
-    w: Math.max(current.w, container.w),
-    h: Math.max(current.h, container.h),
-  };
+/**
+ * 物理矩形是否恰好是某个停靠方向的「胶囊容器」尺寸。
+ *
+ * 停靠期间窗口被归一为容器尺寸；解除吸附后如果 `apply_mode` 的 `set_size`
+ * 被原生拖拽循环吞掉，窗口会停在这个尺寸。它**不是**任何模式尺寸
+ * （minimal 280×140 / compact 400×380 / full 400×560），因此可以安全地
+ * 用它识别「解除未真正恢复几何」，并阻止把容器尺寸写进 `window_rect`。
+ */
+export function isCapsuleContainerSize(rect: { w: number; h: number }, scale: number): boolean {
+  for (const edge of ["left", "top"] as const) {
+    const c = capsuleContainerSize(edge);
+    if (
+      Math.abs(rect.w - toPhysical(c.w, scale)) <= 2 &&
+      Math.abs(rect.h - toPhysical(c.h, scale)) <= 2
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ── 可见区域（物理像素，窗口局部坐标）────────────────────────

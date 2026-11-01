@@ -52,6 +52,10 @@
   /* 贴边吸附反馈 / Smart Dock Capsule（v0.6 专项）：
      引用 accent / surface / status 系 Token，明暗与两套视觉预设自动跟随 */
   --accent-gradient: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  /* 胶囊卡片自带的不透明底：停靠期根窗口必须透明（区域外不能绘制），
+     `--card-face` 只是叠在窗口底色上的半透明渐变，不能单独承担胶囊表面。
+     主题层会按预设 × 明暗覆盖为对应底色；这里只是兜底。 */
+  --capsule-face: #f7f8fc;
   /* 胶囊几何（CSS px）：隐藏坐标用 capsuleStripPhysical = round(32 × DPI)，
      两者严格对应，内容不被窗口边界裁切 */
   --snap-capsule-t: 32px;
@@ -95,6 +99,7 @@
   --p3: #64748b;
   --shadow-overlay: 0 10px 34px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-raised: 0 2px 8px rgba(0, 0, 0, 0.28);
+  --capsule-face: #1f2532;
   /* Smart Dock Capsule 深色覆盖 */
   --snap-alert-ring-failed: rgba(248, 113, 113, 0.55);
   --snap-alert-ring-waiting: rgba(251, 146, 60, 0.55);
@@ -5285,13 +5290,10 @@ code {
   min-height: 0;
 }
 
-/* 胶囊模式：窗口由区域裁剪成胶囊形状，根节点必须完全透明 */
-.dock-window.is-capsule {
-  background: transparent;
-  border-color: transparent;
-  border-radius: 0;
-  overflow: visible;
-}
+/* 胶囊模式：主界面整块隐藏（保留挂载以维持三视图状态）。
+   根容器的透明**只**由 `@layer theme` 的 `.dock-window.is-capsule` 负责：
+   `.dock-window` 的底色写在 theme 层，按 CSS Layer 顺序 theme 恒压过 base，
+   在 base 层再写一份透明会被覆盖——那正是「轨道旁边一整块白色矩形」的来源。 */
 .dock-window.is-capsule .dock-app {
   display: none;
 }
@@ -5319,7 +5321,12 @@ code {
 .capsule-rail {
   flex: 0 0 auto;
   display: flex;
-  background: var(--card-face);
+  /* 停靠期根窗口是透明的（区域外不绘制），胶囊必须自带不透明底：
+     `--capsule-face` 是预设对应的窗口底色，`--card-face` 的玻璃渐变叠在其上。
+     只写 `--card-face` 会让表面只剩 86%→62%（深色主题 7.5%→3.5%）的 alpha，
+     在深色桌面上就是「整个胶囊消失」。 */
+  background-color: var(--capsule-face);
+  background-image: var(--card-face);
   border: 1px solid var(--border-subtle);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--c-paper) 55%, transparent),
@@ -5506,7 +5513,9 @@ code {
   padding: 10px 10px 8px;
   border-radius: 22px;
   border: 1px solid var(--border-subtle);
-  background: var(--card-face);
+  /* 与轨道同款：自带不透明底，避免面板继承根窗口的透明状态 */
+  background-color: var(--capsule-face);
+  background-image: var(--card-face);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--c-paper) 55%, transparent),
     var(--shadow-raised);

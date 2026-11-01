@@ -286,7 +286,10 @@ while ((Get-Date) -lt $deadline) {
 }
 if ($handle -eq [IntPtr]::Zero) { throw "no app window" }
 
-[void]$proc.WaitForInputIdle(5000)
+# A Tauri process may report "no message loop yet" for WaitForInputIdle and the
+# .NET call throws; with ErrorActionPreference=Stop that aborted the whole lab
+# before any capture. The settle sleep below already covers the wait.
+try { [void]$proc.WaitForInputIdle(5000) } catch { Write-Output ("WaitForInputIdle skipped: " + $_.Exception.Message) }
 Start-Sleep -Milliseconds $SettleMs
 
 [void][Lab]::SetCursorPos(2, 2)

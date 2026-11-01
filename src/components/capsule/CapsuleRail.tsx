@@ -55,7 +55,8 @@ export default function CapsuleRail({
 }: {
   edge: SnapEdge;
   status: RailStatus;
-  active: RailCategory | null;
+  /** 当前分类恒有值（折叠态也保留），高亮与否由 `expanded` 决定 */
+  active: RailCategory;
   expanded: boolean;
   onSelect: (c: RailCategory) => void;
   onCollapse: () => void;
@@ -81,7 +82,7 @@ export default function CapsuleRail({
         className="cap-orb"
         data-tone={status.agentsLoaded ? status.agentTone : "unknown"}
         aria-label={`${toneLabel}，打开 Agent 面板`}
-        aria-pressed={active === "agents"}
+        aria-pressed={expanded && active === "agents"}
         onClick={() => onSelect("agents")}
       >
         <Sparkles size={16} strokeWidth={1.8} aria-hidden="true" />

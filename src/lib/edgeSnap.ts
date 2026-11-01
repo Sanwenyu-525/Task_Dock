@@ -67,6 +67,8 @@ export const SNAP_POLL_MS = 150;
 export const PROGRAMMATIC_MOVE_TTL_MS = 2500;
 /** 程序移动目标匹配容差（物理像素）。 */
 export const PROGRAMMATIC_MOVE_TOLERANCE = 3;
+/** 停靠回滚期间抑制 window_rect 持久化的时长（与程序移动 TTL 同量级）。 */
+export const GEOMETRY_ROLLBACK_TTL_MS = PROGRAMMATIC_MOVE_TTL_MS;
 /** window_rect 持久化的最低可见面积占比（多屏/断连防护）。 */
 export const PERSIST_VISIBLE_FRACTION = 0.6;
 
@@ -143,6 +145,17 @@ export function canTransition(from: SnapPhase, to: SnapPhase): boolean {
 
 export const isDockedPhase = (p: SnapPhase): boolean => p.startsWith("docked-");
 export const isHiddenPhase = (p: SnapPhase): boolean => p === "docked-hidden";
+
+/**
+ * 胶囊模式（隐藏主界面 + 挂载 CapsuleDock）的唯一判据。
+ *
+ * 必须同时满足「相位已停靠」与「停靠边已知」：只看相位会让 App 把主界面
+ * 藏起来、而 CapsuleDock 因 `edge === null` 返回 null——窗口变成一块
+ * 没有内容的透明矩形（用户看到的「整个胶囊消失」）。缺边时宁可保持
+ * 主界面可见，也不进入一个无法渲染的胶囊态。
+ */
+export const isCapsuleMode = (phase: SnapPhase, edge: SnapEdge | null): boolean =>
+  isDockedPhase(phase) && edge !== null;
 /** 处于可自动隐藏的相位（停靠且可见）。 */
 export const canAutoHide = (p: SnapPhase): boolean =>
   p === "docked-visible" || p === "docked-revealed";
@@ -565,10 +578,20 @@ export interface ProgrammaticMoveRecord {
 export function createSnapMoveGuard(now: () => number = () => Date.now()) {
   let last: ProgrammaticMoveRecord | null = null;
   let hidden = false;
+  let suppressUntil = 0;
   return {
     /** 引擎即将执行 setPosition 前调用。 */
     noteProgrammaticMove(x: number, y: number): void {
       last = { x, y, at: now() };
+    },
+    /**
+     * 停靠失败、开始回滚几何（setSize/setPosition）前调用：回滚期间窗口会
+     * 经历容器尺寸与贴边位置，这些都不是用户窗口矩形，必须在有限时间内
+     * 禁止 `useWindowPersistence` 写入 `window_rect`。回滚失败时同样生效，
+     * 避免把「放大的窗口 + 贴边位置」持久化成用户几何。
+     */
+    noteGeometryRollback(): void {
+      suppressUntil = now() + GEOMETRY_ROLLBACK_TTL_MS;
     },
     /** onMoved/持久化路径调用：命中最近一次程序移动目标则应跳过保存。 */
     isProgrammaticMove(x: number, y: number, at: number = now()): boolean {
@@ -589,10 +612,15 @@ export function createSnapMoveGuard(now: () => number = () => Date.now()) {
     setHidden(v: boolean): void {
       hidden = v;
     },
+    /** 持久化总闸：隐藏期与几何回滚窗口内都不写 window_rect。 */
+    isPersistenceSuppressed(at: number = now()): boolean {
+      return hidden || at < suppressUntil;
+    },
     /** 测试辅助：清空记录。 */
     reset(): void {
       last = null;
       hidden = false;
+      suppressUntil = 0;
     },
   };
 }
