@@ -1757,3 +1757,35 @@ textarea:focus {
   }
 }
 }
+
+/* ── 分类胶囊：CSS 层叠修复（v0.7 回归根因）──────────────────────────
+   `.dock-window.is-capsule` 的透明声明原先只写在 `@layer base`，
+   而 `.dock-window{background:var(--window-fill); border-radius:...;
+   box-shadow:var(--window-edge)}` 写在 `@layer theme`。
+   CSS Cascade Layers 中**层顺序优先于选择器权重**：theme 层恒定压过 base 层，
+   停靠期根容器仍被填成不透明底色、装饰伪元素 ::before 继续绘制，
+   于是出现「轨道旁边一整块空白窗口」的巨型矩形。
+   修复：把胶囊覆盖写进同一 theme 层，并置于本文件末尾（同层后位胜出），
+   不删除主窗口的底色 / 圆角 / 阴影规则，也不关闭透明。 */
+@layer theme {
+  .dock-window.is-capsule,
+  .dock-window.is-capsule.material-glass,
+  .dock-window.is-capsule.material-solid {
+    background: transparent;
+    background-image: none;
+    background-clip: border-box;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+    isolation: auto;
+  }
+
+  /* 装饰伪元素（--decor 光晕）在胶囊模式不绘制：它沿窗口整矩形铺开，
+     区域裁剪之外虽然被 Win32 裁掉，但区域内部仍会染上一层装饰底色。 */
+  .dock-window.is-capsule::before {
+    content: none;
+    background-image: none;
+    opacity: 0;
+  }
+}

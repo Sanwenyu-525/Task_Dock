@@ -7,19 +7,34 @@
 import { create } from "zustand";
 import type { RailCategory } from "../lib/capsuleModel";
 
+/** 首次展开且从未选择过分类时的默认入口（方案 D：任务）。 */
+export const DEFAULT_CAPSULE_CATEGORY: RailCategory = "tasks";
+
 export const useCapsuleStore = create<{
   /** 当前展开的分类；null = 只显示轨道（折叠态） */
   active: RailCategory | null;
+  /** 最近一次有效选择：展开态兜底与「保留用户最近选择」的依据 */
+  lastActive: RailCategory | null;
   /** 切换分类：同一分类再次点击 = 收起（返回 null） */
   select: (c: RailCategory) => RailCategory | null;
   /** 直接设定（Esc/收起按钮 → null） */
   setActive: (c: RailCategory | null) => void;
+  /** 展开态兜底：当前无有效分类时回到最近选择，从未选过则用默认入口。
+   *  托盘 / 全局热键 / 重启恢复只切窗口相位，不经过分类点击，
+   *  必须由这里保证「展开态总有明确分类」，否则会出现空白面板。 */
+  ensureActive: () => void;
 }>((set, get) => ({
   active: null,
+  lastActive: null,
   select: (c) => {
     const next = get().active === c ? null : c;
-    set({ active: next });
+    if (next === null) set({ active: null });
+    else set({ active: next, lastActive: next });
     return next;
   },
-  setActive: (c) => set({ active: c }),
+  setActive: (c) => (c === null ? set({ active: null }) : set({ active: c, lastActive: c })),
+  ensureActive: () => {
+    if (get().active !== null) return;
+    set({ active: get().lastActive ?? DEFAULT_CAPSULE_CATEGORY });
+  },
 }));

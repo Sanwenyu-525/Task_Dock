@@ -41,6 +41,7 @@ export default function CapsuleDock() {
   const active = useCapsuleStore((s) => s.active);
   const setActive = useCapsuleStore((s) => s.setActive);
   const select = useCapsuleStore((s) => s.select);
+  const ensureActive = useCapsuleStore((s) => s.ensureActive);
   const stats = useTasksStore((s) => s.stats);
   const snapshot = useAgentsStore((s) => s.snapshot);
 
@@ -70,6 +71,13 @@ export default function CapsuleDock() {
     collapse?.();
   }, [setActive, collapse]);
 
+  // 展开态必须始终有明确的有效分类（首次展开默认「任务」，之后保留最近选择）。
+  // 托盘 / 全局热键 / 重启恢复只切相位，不经过分类点击，这是最后一道兜底：
+  // 不允许出现「有面板裁剪区域、却没有面板内容」的空白态。
+  useEffect(() => {
+    if (expanded) ensureActive();
+  }, [expanded, ensureActive]);
+
   // Escape：作为最低优先级弹层注册，一次 Esc 只收面板、不隐藏窗口
   useEffect(() => {
     if (!expanded) return;
@@ -88,7 +96,9 @@ export default function CapsuleDock() {
 
   if (!edge) return null;
   const vertical = edge === "left" || edge === "right";
-  const Panel = expanded && active ? PANELS[active] : null;
+  // 渲染兜底：即使 store 尚未回填（首帧），展开态也用默认分类而不是空白面板
+  const activeCategory: RailCategory | null = expanded ? (active ?? "tasks") : null;
+  const Panel = activeCategory ? PANELS[activeCategory] : null;
 
   return (
     <div
@@ -113,11 +123,11 @@ export default function CapsuleDock() {
         onSelect={onSelect}
         onCollapse={closePanel}
       />
-      {Panel && active && (
+      {Panel && activeCategory && (
         <section
-          key={active}
+          key={activeCategory}
           className={`capsule-panel panel-${edge}`}
-          aria-label={`${CATEGORY_LABELS[active]}面板`}
+          aria-label={`${CATEGORY_LABELS[activeCategory]}面板`}
         >
           <Panel />
         </section>

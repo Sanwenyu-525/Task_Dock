@@ -22,6 +22,7 @@
 //! window_rect 防污染、持久化串行、busy 互斥与尾随补评估。
 
 import { useEffect } from "react";
+import { useCapsuleStore } from "../store/useCapsuleStore";
 import { getCurrentWindow, cursorPosition, currentMonitor } from "@tauri-apps/api/window";
 import { availableMonitors } from "@tauri-apps/api/window";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
@@ -123,6 +124,9 @@ interface SnapMachine {
 
 let writeChain: Promise<void> = Promise.resolve();
 
+/** 引擎实例世代（StrictMode 双重挂载）：旧实例的清理不得覆盖新实例的区域设置。 */
+let engineEpoch = 0;
+
 function enqueueWrite(task: () => Promise<void>): Promise<void> {
   const run = writeChain.then(task, task); // 前序失败不阻塞后续写入
   writeChain = run.then(
@@ -149,6 +153,8 @@ async function persistSnap(
 export function useEdgeSnap(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
+    // 本次挂载的世代号：清理时若已有更新实例接管，旧实例不得再写区域。
+    const epoch = ++engineEpoch;
     const win = getCurrentWindow();
     const ui = useEdgeSnapStore.getState();
 
@@ -277,6 +283,34 @@ export function useEdgeSnap(enabled: boolean) {
       return ok;
     }
 
+    /** 相位 → 区域形态的唯一映射（恢复时据此把区域校准回已提交状态）。 */
+    function regionForPhase(phase: SnapPhase): CapsuleRegionMode {
+      if (phase === "docked-revealed") return "panel";
+      if (isDockedPhase(phase)) return "rail";
+      return "off";
+    }
+
+    /**
+     * 区域 → 相位的提交协议：**先应用 Win32 区域并校验回读结果，成功后才提交
+     * React 相位**。失败时有界恢复（最多再写两次区域）：先校准回与当前相位一致
+     * 的形态；仍失败则退回完整窗口（区域 off + free）。任何情况下都不允许出现
+     * 「前端已胶囊 / 原生仍是矩形」或「原生已裁成轨道 / React 显示完整主窗口」。
+     */
+    async function setRegionThenPhase(mode: CapsuleRegionMode, next: SnapPhase): Promise<boolean> {
+      if (await setCapsuleRegion(mode)) {
+        setPhase(next);
+        return true;
+      }
+      if (disposed) return false;
+      if (await setCapsuleRegion(regionForPhase(machine.phase))) return false;
+      // 区域彻底不可用：优先恢复完整、可见、可操作的窗口，绝不谎报停靠
+      if (machine.phase !== "free") {
+        setPhase("free");
+        void persistSnap(null, false, null);
+      }
+      return false;
+    }
+
     // ── 动作：停靠 / 折叠 / 展开 / 解除 ─────────────────────
 
     /**
@@ -307,7 +341,6 @@ export function useEdgeSnap(enabled: boolean) {
         }
       }
       machine.edge = edge;
-      if (!setPhase(phase)) return false;
       const pos = capsuleWindowRect(edge, dockedMonitor.workArea, center, {
         w: rect.w,
         h: rect.h,
@@ -315,7 +348,15 @@ export function useEdgeSnap(enabled: boolean) {
       await moveWindow(pos.x, pos.y, true);
       dockedPos = { x: pos.x, y: pos.y };
       capsuleCenter = center;
-      await setCapsuleRegion("rail");
+      // 区域成功后才提交停靠相位；失败时清掉本次半成立的停靠上下文
+      if (!(await setRegionThenPhase("rail", phase))) {
+        machine.edge = null;
+        dockedMonitor = null;
+        dockedPos = null;
+        capsuleCenter = null;
+        syncUi();
+        return false;
+      }
       if (feedback) ui.notifyDocked(edge);
       void persistSnap(edge, phase === "docked-hidden", center);
       return true;
@@ -324,9 +365,8 @@ export function useEdgeSnap(enabled: boolean) {
     /** 折叠：只保留轨道（面板收起）。窗口不动，只切区域。 */
     async function collapseToRail(hidden: boolean): Promise<boolean> {
       if (!machine.edge) return false;
-      const ok = await setCapsuleRegion("rail");
-      setPhase(hidden ? "docked-hidden" : "docked-visible");
-      void persistSnap(machine.edge, hidden, capsuleCenter);
+      const ok = await setRegionThenPhase("rail", hidden ? "docked-hidden" : "docked-visible");
+      if (ok) void persistSnap(machine.edge, hidden, capsuleCenter);
       return ok;
     }
 
@@ -335,11 +375,14 @@ export function useEdgeSnap(enabled: boolean) {
       if (!machine.edge) return false;
       if (machine.phase === "docked-revealed") return true;
       if (machine.phase !== "docked-hidden" && machine.phase !== "docked-visible") return false;
-      const ok = await setCapsuleRegion("panel");
-      setPhase("docked-revealed");
+      // 托盘 / 全局热键 / 重启恢复只切相位、不经过分类点击：展开态必须有有效分类，
+      // 否则会得到「面板区域已裁好、面板内容为空」的空白面板。
+      useCapsuleStore.getState().ensureActive();
+      const ok = await setRegionThenPhase("panel", "docked-revealed");
+      if (!ok) return false;
       leftSince = null;
       void persistSnap(machine.edge, false, capsuleCenter);
-      return ok;
+      return true;
     }
 
     /** 收起功能面板（Esc / 收起按钮 / 再次点击当前分类）。 */
@@ -353,7 +396,11 @@ export function useEdgeSnap(enabled: boolean) {
     async function undockCore(targetMode?: string): Promise<boolean> {
       if (!machine.edge) return false;
       pendingRestore = null; // 用户意图优先：不得再被重启恢复队列拉回停靠
-      await setCapsuleRegion("off");
+      // 区域必须真的清掉才算解除：失败时保持停靠相位（轨道仍可见可用），
+      // 不允许出现「原生已裁成轨道 / React 显示完整主窗口」的假解除。
+      let offOk = await setCapsuleRegion("off");
+      if (!offOk) offOk = await setCapsuleRegion("off"); // 有界重试一次
+      if (!offOk) return false;
       setPhase("free");
       void persistSnap(null, false, null);
       // 停靠期间窗口被撑到胶囊容器尺寸：解除后恢复目标模式（默认当前模式）的尺寸
@@ -633,16 +680,23 @@ export function useEdgeSnap(enabled: boolean) {
       ui.setCollapse(null);
       ui.setUndock(null);
       snapMoveGuard.setHidden(false);
-      // 关闭吸附：清区域并恢复模式尺寸（窗口始终可见，不存在"留在屏外"）
-      if (isDockedPhase(machine.phase)) {
-        void setCapsuleRegion("off");
-        void persistSnap(null, false, null);
-        const mode = useSettingsStore.getState().settings?.mode ?? "full";
-        void applyMode(mode).catch(() => {});
-      } else {
-        void setCapsuleRegion("off");
-      }
-      useEdgeSnapStore.getState().reset();
+      // 延迟一个宏任务再决定是否清区域：StrictMode 会在同一轮里立即重挂载新实例
+      // （世代号前进），此时旧实例的 off 会覆盖新实例的 rail/panel，
+      // 造成「Win32 已恢复整窗 / React 进了胶囊」。仅当无人接管时才清理。
+      const myEpoch = epoch;
+      const wasDocked = isDockedPhase(machine.phase);
+      window.setTimeout(() => {
+        if (engineEpoch !== myEpoch) return;
+        if (wasDocked) {
+          void setCapsuleRegion("off");
+          void persistSnap(null, false, null);
+          const mode = useSettingsStore.getState().settings?.mode ?? "full";
+          void applyMode(mode).catch(() => {});
+        } else {
+          void setCapsuleRegion("off");
+        }
+        useEdgeSnapStore.getState().reset();
+      }, 0);
     };
   }, [enabled]);
 }
