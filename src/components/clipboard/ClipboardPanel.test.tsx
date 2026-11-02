@@ -119,6 +119,7 @@ beforeEach(() => {
     deleted: 1,
     freed_bytes: 20,
     retained_shared: 0,
+    groups_deleted: 0,
   });
   useClipboardStore.setState({
     view: null,
@@ -481,6 +482,7 @@ describe("操作反馈与离场", () => {
       deleted: 1,
       freed_bytes: 20,
       retained_shared: 1,
+      groups_deleted: 0,
     });
 
     await user.click(screen.getByRole("button", { name: "删除所选" }));
@@ -522,14 +524,14 @@ describe("操作反馈与离场", () => {
     expect(bridge.clipboardDeleteItems).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
 
-    pending.resolve({ deleted: 1, freed_bytes: 20, retained_shared: 0 });
+    pending.resolve({ deleted: 1, freed_bytes: 20, retained_shared: 0, groups_deleted: 0 });
     await waitFor(() => expect(document.querySelector(".clip-item.removing")).toBeTruthy());
     expect(card.classList.contains("pending")).toBe(false);
   });
 
   it("后端一条都没删掉时只提示并刷新，绝不演一场成功", async () => {
     const user = userEvent.setup();
-    bridge.clipboardDeleteItems.mockResolvedValueOnce({ deleted: 0, freed_bytes: 0, retained_shared: 0 });
+    bridge.clipboardDeleteItems.mockResolvedValueOnce({ deleted: 0, freed_bytes: 0, retained_shared: 0, groups_deleted: 0 });
     render(<ClipboardPanel />);
     await screen.findByText("第 0 条剪贴板预览");
 
@@ -643,7 +645,7 @@ describe("操作反馈与离场", () => {
       ...viewOfItems([makeItem(0)]),
       groups: [makeGroup()] as unknown as ClipboardView["groups"],
     });
-    bridge.clipboardDeleteGroup.mockResolvedValue({ deleted: 0, freed_bytes: 0, retained_shared: 0 });
+    bridge.clipboardDeleteGroup.mockResolvedValue({ deleted: 0, freed_bytes: 0, retained_shared: 0, groups_deleted: 1 });
     render(<ClipboardPanel />);
     await screen.findByText("第 0 条剪贴板预览");
 
@@ -673,5 +675,70 @@ describe("操作反馈与离场", () => {
     expect(removingCard()?.dataset.clipId).toBe("ci0");
     await waitFor(() => expect(useClipboardStore.getState().exiting).toEqual({}));
     expect(useUiStore.getState().toast?.message).toContain("已删除");
+  });
+
+  it("动画中途关闭抽屉：store 收尾离场状态，重开抽屉不会复活已删条目", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<ClipboardWorkspace variant="drawer" active onClose={vi.fn()} />);
+    await screen.findByText("第 0 条剪贴板预览");
+
+    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
+    await user.click(await within(dialog).findByRole("button", { name: "删除" }));
+    await waitFor(() => expect(useClipboardStore.getState().exiting["ci0"]).toBeTruthy());
+
+    // 离场没播完就卸载抽屉；组件定时器随之销毁，收尾必须由 store 完成
+    unmount();
+    // 服务端结果里 ci0 已不存在
+    bridge.clipboardView.mockResolvedValue(viewOfItems([makeItem(1), makeItem(2)]));
+
+    await waitFor(() => expect(useClipboardStore.getState().exiting).toEqual({}));
+    expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual(["ci1", "ci2"]);
+
+    // 重新打开抽屉：以服务端数据为准，已删条目不以快照形式复活
+    render(<ClipboardWorkspace variant="drawer" active onClose={vi.fn()} />);
+    await screen.findByText("第 1 条剪贴板预览");
+    expect(screen.queryByText("第 0 条剪贴板预览")).toBeNull();
+  });
+
+  it("离场卡片键盘不可达：勾选按钮禁用、整卡 inert、自身不可聚焦", async () => {
+    const user = userEvent.setup();
+    render(<ClipboardPanel />);
+    await screen.findByText("第 0 条剪贴板预览");
+
+    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
+    await user.click(await within(dialog).findByRole("button", { name: "删除" }));
+    await waitFor(() => expect(removingCard()?.dataset.clipId).toBe("ci0"));
+
+    const card = removingCard()!;
+    // aria-hidden 的子树里不允许残留可聚焦元素：inert + 全部内部控件禁用
+    expect(card.hasAttribute("inert")).toBe(true);
+    expect(card.getAttribute("tabindex")).toBe("-1");
+    for (const btn of card.querySelectorAll<HTMLButtonElement>("button")) {
+      expect(btn.disabled).toBe(true);
+    }
+  });
+
+  it("置顶后列表按新顺序重排（FLIP 位移由浏览器播放，数据顺序立即正确）", async () => {
+    const user = userEvent.setup();
+    render(<ClipboardPanel />);
+    await screen.findByText("第 0 条剪贴板预览");
+
+    bridge.clipboardToggleItem.mockResolvedValue({ ...makeItem(2), pinned: true });
+    // 置顶后的静默刷新返回新顺序：ci2 排到最前
+    bridge.clipboardView.mockResolvedValue(
+      viewOfItems([makeItem(2), makeItem(0), makeItem(1)]),
+    );
+    await user.click(
+      within(document.querySelector<HTMLElement>('[data-clip-id="ci2"]')!).getByRole("button", {
+        name: "置顶",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(cards().map((c) => c.dataset.clipId)).toEqual(["ci2", "ci0", "ci1"]),
+    );
+    expect(useUiStore.getState().toast?.message).toContain("已置顶");
   });
 });

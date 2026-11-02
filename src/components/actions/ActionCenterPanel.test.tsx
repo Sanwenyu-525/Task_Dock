@@ -27,6 +27,7 @@ import type {
   ActionItem,
 } from "../../lib/bridge";
 import { useActionsStore } from "../../store/useActionsStore";
+import { useUiStore } from "../../store/useUiStore";
 
 const feedMock = vi.mocked(actionsFeed);
 
@@ -247,5 +248,91 @@ describe("ActionCenterPanel 三层展示", () => {
     render(<ActionCenterPanel />);
     expect(screen.getByText("需授权（推断）")).toBeTruthy();
     expect(screen.getAllByText("推断").length).toBeGreaterThan(0);
+  });
+});
+
+describe("ActionCenterPanel 已处理退出反馈", () => {
+  it("默认筛选下标记已处理：先收拢离场再确认，行随后退出待处理列表", async () => {
+    useActionsStore.setState({
+      feed: feedOf({
+        items: [itemOf("run:1")],
+        counts: countsOf({ intervention: 1 }),
+      }),
+    });
+    // 确认后的静默刷新里该行已不在待处理列表（初始 feed 由 setState 预置，不走请求）
+    feedMock.mockResolvedValue(feedOf({ items: [], counts: countsOf({ intervention: 1 }) }));
+    const { actionsAck } = await import("../../lib/bridge");
+    vi.mocked(actionsAck).mockResolvedValue(1);
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+
+    // 动画先播：收拢淡出，行仍在 DOM；确认完成随刷新退出
+    await waitFor(() => expect(container.querySelector(".action-item.leaving")).toBeTruthy());
+    await waitFor(() => expect(vi.mocked(actionsAck)).toHaveBeenCalledWith(["run:1"]));
+    await waitFor(() => expect(container.querySelector(".action-item")).toBeNull());
+    expect(useUiStore.getState().toast?.message).toContain("退出待处理列表");
+  });
+
+  it("已处理筛选下标记已处理：行不退出列表，只翻状态，不播离场", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+      filter: { category: "intervention", include_acked: true, limit: 40 },
+    });
+    feedMock.mockResolvedValue(feedOf({ items: [itemOf("run:1", { acked: true })] }));
+    const { actionsAck } = await import("../../lib/bridge");
+    vi.mocked(actionsAck).mockResolvedValue(1);
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+
+    await waitFor(() => expect(vi.mocked(actionsAck)).toHaveBeenCalledWith(["run:1"]));
+    await waitFor(() => expect(container.querySelector(".action-item.acked")).toBeTruthy());
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+    expect(container.querySelector(".action-item")).not.toBeNull();
+  });
+
+  it("历史分类标记已处理：该行仍留在历史列表，不播退出动画", async () => {
+    useActionsStore.setState({
+      feed: feedOf({
+        category: "history",
+        items: [itemOf("run:1", { category: "history", kind: "failed" })],
+      }),
+      filter: { category: "history", include_acked: false, limit: 40 },
+    });
+    feedMock.mockResolvedValue(
+      feedOf({
+        category: "history",
+        items: [itemOf("run:1", { category: "history", kind: "failed", acked: true })],
+      }),
+    );
+    const { actionsAck } = await import("../../lib/bridge");
+    vi.mocked(actionsAck).mockResolvedValue(1);
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+
+    await waitFor(() => expect(container.querySelector(".action-item.acked")).toBeTruthy());
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+  });
+
+  it("确认失败：离场状态撤掉，行弹回原位并提示错误", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    const { actionsAck } = await import("../../lib/bridge");
+    vi.mocked(actionsAck).mockRejectedValue(new Error("db locked"));
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("error"));
+    const row = container.querySelector<HTMLElement>(".action-item")!;
+    expect(row.classList.contains("leaving")).toBe(false);
+    expect(row.textContent).toContain("构建失败");
   });
 });

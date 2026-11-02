@@ -282,6 +282,54 @@ describe("useClipboardStore", () => {
       expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual(["a", "c"]);
     });
 
+    it("离场收尾定时器归 store 所有：组件卸载后到点仍会自动收尾", () => {
+      vi.useFakeTimers();
+      try {
+        useClipboardStore.setState({ view: viewOf(["a", "b", "c"]) });
+        // 模拟「删除成功 → 动画中途关闭抽屉」：beginExit 之后没有任何组件再调 endExit
+        useClipboardStore.getState().beginExit(["b"], "item");
+        expect(useClipboardStore.getState().exiting.b).toBeTruthy();
+
+        vi.advanceTimersByTime(190);
+        const state = useClipboardStore.getState();
+        expect(state.exiting).toEqual({});
+        expect(state.view?.items.map((i) => i.id)).toEqual(["a", "c"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("endExit 幂等：重复或多余 id 不影响仍在离场的其他行", () => {
+      vi.useFakeTimers();
+      try {
+        useClipboardStore.setState({ view: viewOf(["a", "b", "c"]) });
+        useClipboardStore.getState().beginExit(["b", "c"], "item");
+        useClipboardStore.getState().endExit(["b"]);
+        // 组件定时器与 store 定时器可能先后各调一次：幂等是硬要求
+        useClipboardStore.getState().endExit(["b"]);
+        expect(useClipboardStore.getState().exiting.c).toBeTruthy();
+
+        vi.advanceTimersByTime(190);
+        expect(useClipboardStore.getState().exiting).toEqual({});
+        expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual(["a"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("resetClipboardRequestState 回收离场收尾定时器，不产生残留状态", () => {
+      vi.useFakeTimers();
+      try {
+        useClipboardStore.setState({ view: viewOf(["a", "b"]) });
+        useClipboardStore.getState().beginExit(["b"], "item");
+        resetClipboardRequestState();
+        vi.advanceTimersByTime(500);
+        expect(useClipboardStore.getState().exiting).toEqual({});
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("详情页删除后立刻摘除本地行，返回列表不会闪回已删内容", () => {
       useClipboardStore.setState({ view: viewOf(["a", "b"], ["g1"]) });
       useClipboardStore.getState().endExit(["b", "g1"]);

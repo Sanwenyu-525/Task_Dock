@@ -3420,6 +3420,17 @@ code {
   color: var(--text-tertiary);
   font-size: 11px;
   line-height: 1.5;
+  /* 空列表出现：轻量淡入，一次性，不占常驻开销 */
+  animation: soft-fade-in 0.18s ease-out;
+}
+
+@keyframes soft-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .clip-empty strong {
@@ -3504,6 +3515,36 @@ code {
     border-top-width: 0;
     border-bottom-width: 0;
     /* 抵消所在列表的 gap，收拢到底不留缝；分组内行距不同，各自给值 */
+    margin-bottom: var(--clip-exit-gap, -5px);
+  }
+}
+
+/* ── 筛选退出反馈（区别于删除）──
+   完成任务、标记已处理这类「条目离开当前筛选但内容仍在」的操作：
+   只淡出收拢，不做删除的侧移语言，避免被误读成删除。
+   `--clip-exit-h` 由组件在操作前实测一次；失败时组件移除 .leaving，
+   行立即弹回原位；reduced-motion 由全局规则收敛为瞬时。 */
+.task-item.leaving,
+.action-item.leaving {
+  --clip-exit-gap: -5px;
+  pointer-events: none;
+  overflow: hidden;
+  max-height: var(--clip-exit-h, 48px);
+  animation: list-collapse-out 0.19s ease-in forwards;
+}
+
+@keyframes list-collapse-out {
+  from {
+    max-height: var(--clip-exit-h, 48px);
+    opacity: 1;
+  }
+  to {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
     margin-bottom: var(--clip-exit-gap, -5px);
   }
 }

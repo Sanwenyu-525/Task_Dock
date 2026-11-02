@@ -369,6 +369,8 @@ export interface DeleteReport {
   deleted: number;
   freed_bytes: number;
   retained_shared: number;
+  /** 实际删除的分组数；0 表示分组不存在（delete_items 恒为 0） */
+  groups_deleted: number;
 }
 
 export interface CleanupReport {

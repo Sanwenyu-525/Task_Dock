@@ -60,6 +60,8 @@ export default function ClipboardGroupCard({
       tabIndex={locked ? -1 : 0}
       role="button"
       aria-hidden={removing || undefined}
+      // 离场期间整棵子树不可交互：inert 补上 pointer-events 挡不住的键盘焦点
+      inert={removing || undefined}
       aria-busy={pending || undefined}
       aria-label={`分组 ${group.name}，${group.item_count} 项`}
     >
@@ -67,6 +69,7 @@ export default function ClipboardGroupCard({
         className="clip-check"
         aria-label={selected ? "取消选择分组" : "选择分组"}
         aria-pressed={selected}
+        disabled={locked}
         onClick={(e) => {
           stop(e);
           onSelect();

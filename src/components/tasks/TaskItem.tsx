@@ -4,9 +4,10 @@
 //! 数量入口）；点击图标 = 打开该目标（≠ 任务完成）；多目标经快捷菜单选择；
 //! 菜单顶部提供「打开工作区」（批量启动由 WorkspaceLauncher 执行）。
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Check, Clock, Repeat, Link2, Pencil, Rocket, Layers } from "lucide-react";
 import type { Task } from "../../lib/bridge";
+import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
@@ -35,13 +36,29 @@ export default function TaskItem({ task, compact }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   /** 状态切换请求在途：挡住连点把同一条任务翻回翻去 */
   const [busy, setBusy] = useState(false);
+  /**
+   * 完成（默认未完成筛选下会退出列表）：先播一段收拢淡出再提交刷新。
+   * 动画只是反馈层——失败会立即移除该状态弹回原位，结果永远以后端为准。
+   */
+  const [leaving, setLeaving] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
   const overdue = task.status === "pending" && isOverdue(task.due_at);
 
   async function onToggle() {
     if (busy) return;
     const was = task.status;
+    const willExitList = was === "pending" && (statusFilter ?? "pending") === "pending";
     setBusy(true);
     try {
+      if (willExitList && !prefersReducedMotion()) {
+        const el = rowRef.current;
+        if (el) {
+          // 高度只量这一次；等收拢播完再刷新，避免列表先抽走这一行导致动画被截断
+          el.style.setProperty("--clip-exit-h", `${el.offsetHeight}px`);
+          setLeaving(true);
+          await new Promise((r) => setTimeout(r, EXIT_MS));
+        }
+      }
       const updated = await toggle(task.id);
       if (was === "pending" && updated.status === "completed") {
         // 默认停在「未完成」筛选：这一行会消失，说清是退出筛选而不是被删掉
@@ -64,6 +81,8 @@ export default function TaskItem({ task, compact }: Props) {
         showToast(`已重新打开「${updated.title}」`, { kind: "info" });
       }
     } catch (e) {
+      // 后端没成功：撤掉离场状态，任务原位保持正常
+      setLeaving(false);
       showToast(`操作失败：${String(e)}`, { kind: "error" });
     } finally {
       setBusy(false);
@@ -96,7 +115,10 @@ export default function TaskItem({ task, compact }: Props) {
   const canLaunchWorkspace = links.length >= 2;
 
   return (
-    <div className={`task-item priority-${task.priority} ${task.status}`}>
+    <div
+      ref={rowRef}
+      className={`task-item priority-${task.priority} ${task.status} ${leaving ? "leaving" : ""}`}
+    >
       <button
         className={`task-check ${task.status === "completed" ? "done" : ""}`}
         onClick={onToggle}

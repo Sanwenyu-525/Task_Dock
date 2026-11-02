@@ -72,6 +72,9 @@ export default function ClipboardItemCard({
       tabIndex={locked ? -1 : 0}
       role="button"
       aria-hidden={removing || undefined}
+      // 离场期间整棵子树不可交互：不能只靠 pointer-events，Tab 仍能把焦点
+      // 送进 aria-hidden 的元素（无障碍违规）；inert 把内部控件全部隔离。
+      inert={removing || undefined}
       aria-busy={pending || undefined}
       aria-label={`${kindLabel(item.kind)}：${headline || item.preview || "空内容"}`}
     >
@@ -79,6 +82,7 @@ export default function ClipboardItemCard({
         className="clip-check"
         aria-label={selected ? "取消选择" : "选择条目"}
         aria-pressed={selected}
+        disabled={locked}
         onClick={(e) => {
           stop(e);
           onSelect();

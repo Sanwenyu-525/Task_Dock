@@ -138,8 +138,44 @@ describe("TaskItem 交互", () => {
     );
   });
 
-  it("toggle 失败：弹错误 Toast，不静默吞异常", async () => {
+  it("默认「未完成」筛选下完成任务：先收拢离场再提交刷新，行自然退出列表", async () => {
     const user = userEvent.setup();
+    seed(PENDING);
+    useTasksStore.setState({ filter: { view: "all", status: "pending", sort: "due" } });
+    const done = taskFix({ ...PENDING, status: "completed" });
+    toggleTask.mockResolvedValue(done);
+    listTasks.mockResolvedValue([done]);
+    const { container } = render(<TaskItem task={PENDING} />);
+
+    await user.click(screen.getByRole("button", { name: "完成任务" }));
+
+    // 动画只是反馈层：先收拢（不偏移成删除的侧移语言），到点后再提交 toggle
+    const row = container.querySelector<HTMLElement>(".task-item")!;
+    await waitFor(() => expect(row.classList.contains("leaving")).toBe(true));
+    expect(row.style.getPropertyValue("--clip-exit-h")).not.toBe("");
+    expect(row.classList.contains("removing")).toBe(false);
+    await waitFor(() => expect(toggleTask).toHaveBeenCalledWith("t1"));
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("success"));
+    // 撤销入口必须保留
+    expect(useUiStore.getState().toast?.action?.label).toBe("撤销");
+  });
+
+  it("未完成筛选下 toggle 失败：离场状态撤掉，行弹回原位", async () => {
+    const user = userEvent.setup();
+    seed(PENDING);
+    useTasksStore.setState({ filter: { view: "all", status: "pending", sort: "due" } });
+    toggleTask.mockRejectedValue(new Error("db locked"));
+    const { container } = render(<TaskItem task={PENDING} />);
+
+    await user.click(screen.getByRole("button", { name: "完成任务" }));
+
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("error"));
+    const row = container.querySelector<HTMLElement>(".task-item")!;
+    expect(row.classList.contains("leaving")).toBe(false);
+    expect(useTasksStore.getState().tasks[0]?.status).toBe("pending");
+  });
+
+  it("toggle 失败：弹错误 Toast，不静默吞异常", async () => {    const user = userEvent.setup();
     seed(PENDING);
     toggleTask.mockRejectedValue(new Error("db locked"));
     render(<TaskItem task={PENDING} />);

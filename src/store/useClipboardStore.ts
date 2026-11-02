@@ -10,6 +10,7 @@
 
 import { create } from "zustand";
 import { clipboardView, onClipboardChanged, type ClipboardGroup, type ClipboardItem, type ClipboardView } from "../lib/bridge";
+import { EXIT_MS, prefersReducedMotion } from "../lib/motion";
 import { createSubscriptionScope } from "../lib/subscriptions";
 
 const PAGE_SIZE = 80;
@@ -40,6 +41,16 @@ interface ExitEntry {
 
 let filterGen = 0;
 let reqSeq = 0;
+/**
+ * 离场收尾定时器（id → timer），归 **store** 所有而非组件。
+ *
+ * 根因：此前定时器挂在组件实例上，删除动画中途关闭抽屉时定时器被卸载清理，
+ * 但 `exiting` 快照留在 store 里无人收尾——重新打开抽屉时 `load()` 会把
+ * 服务端已删除的行按快照钉回列表，看起来像「删除的内容复活了」。
+ * 现在定时器与离场 ID 一一对应、随快照同生共死，组件卸载不影响收尾；
+ * 每个条目只清自己的定时器，互不误伤。
+ */
+const exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function mergeItems(current: ClipboardView["items"], next: ClipboardView["items"]) {
   const seen = new Set(current.map((i) => i.id));
@@ -137,9 +148,11 @@ export const useClipboardStore = create<{
   /**
    * 标记这些 id 正在离场：快照当前行并按原位钉住，直到 `endExit`。
    * 只应在后端确认删除成功之后调用。
+   * 收尾定时器由 store 持有：到点自动 `endExit`，组件卸载（关闭抽屉）也不会
+   * 让快照滞留——重开抽屉时不会把已删除的行钉回列表。
    */
   beginExit: (ids: string[], kind: "item" | "group") => void;
-  /** 结束离场：放开钉住的行并从本地视图剔除（服务端已经没有它们）。 */
+  /** 结束离场：放开钉住的行并从本地视图剔除（服务端已经没有它们）。幂等。 */
   endExit: (ids: string[]) => void;
   toggleItemSelection: (id: string) => void;
   toggleGroupSelection: (id: string) => void;
@@ -282,22 +295,47 @@ export const useClipboardStore = create<{
       if (!s.view || ids.length === 0) return {};
       const rows = kind === "item" ? s.view.items : s.view.groups;
       const exiting = { ...s.exiting };
+      const started: string[] = [];
       for (const id of ids) {
         if (exiting[id]) continue;
         const index = rows.findIndex((r) => r.id === id);
         if (index < 0) continue;
         exiting[id] = { kind, row: rows[index], index, gen: filterGen };
+        started.push(id);
+      }
+      // 收尾定时器由 store 持有：即使组件在动画期间卸载（关闭抽屉/切页），
+      // 到点也会结束离场并从本地视图剔除，已确认的删除结果不会以快照形式复活。
+      // 用全局 setTimeout（而非 window.）：store 也会在 node 环境测试中运行。
+      for (const id of started) {
+        if (exitTimers.has(id)) continue;
+        exitTimers.set(
+          id,
+          setTimeout(() => {
+            exitTimers.delete(id);
+            useClipboardStore.getState().endExit([id]);
+          }, prefersReducedMotion() ? 0 : EXIT_MS),
+        );
       }
       return { exiting };
     }),
 
   endExit: (ids) =>
     set((s) => {
+      // 只结束自己名下的定时器：批量与单个条目的收尾互不干扰
+      for (const id of ids) {
+        const t = exitTimers.get(id);
+        if (t !== undefined) {
+          clearTimeout(t);
+          exitTimers.delete(id);
+        }
+      }
       if (ids.length === 0) return {};
       const exiting = { ...s.exiting };
       for (const id of ids) delete exiting[id];
       if (!s.view) return { exiting };
-      // 服务端确认已删除：本地视图同步剔除，不再等下一次刷新
+      // 服务端确认已删除：本地视图同步剔除，不再等下一次刷新。
+      // 无条件按 id 过滤（不要求 id 曾在 exiting 里）：分组详情删除等路径
+      // 直接调 endExit 摘除已确认删除的行；重复调用是空操作，幂等。
       const gone = new Set(ids);
       return {
         exiting,
@@ -371,6 +409,8 @@ function releaseLive() {
 export function resetClipboardRequestState() {
   filterGen += 1;
   reqSeq += 1;
-  // 代际已推进，任何遗留的离场快照都不该再钉进新列表
+  // 代际已推进，任何遗留的离场快照都不该再钉进新列表；收尾定时器一并回收
+  for (const t of exitTimers.values()) clearTimeout(t);
+  exitTimers.clear();
   useClipboardStore.setState({ exiting: {} });
 }

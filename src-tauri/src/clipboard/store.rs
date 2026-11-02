@@ -933,6 +933,7 @@ pub fn delete_items(db: &Db, root: &Path, ids: &[String]) -> AppResult<DeleteRep
             deleted: 0,
             freed_bytes: 0,
             retained_shared: 0,
+            groups_deleted: 0,
         });
     }
     let (deleted, paths) = db.with_conn(|conn| {
@@ -946,6 +947,7 @@ pub fn delete_items(db: &Db, root: &Path, ids: &[String]) -> AppResult<DeleteRep
         deleted,
         freed_bytes: freed,
         retained_shared: 0,
+        groups_deleted: 0,
     })
 }
 
@@ -990,10 +992,11 @@ pub fn delete_group(
             "DELETE FROM clipboard_task_links WHERE target_type = 'group' AND target_id = ?1",
             params![group_id],
         )?;
-        tx.execute(
+        // rows affected：0 说明分组本来就不存在，不能让前端当成删除成功
+        let groups_deleted = tx.execute(
             "DELETE FROM clipboard_groups WHERE id = ?1",
             params![group_id],
-        )?;
+        )? as i64;
         let (deleted, paths) = delete_items_conn(&tx, &candidates)?;
         tx.commit()?;
         let retained = if also_delete_items {
@@ -1006,6 +1009,7 @@ pub fn delete_group(
                 deleted,
                 freed_bytes: 0,
                 retained_shared: retained,
+                groups_deleted,
             },
             paths,
         ))
@@ -2431,6 +2435,7 @@ mod tests {
         let report = delete_group(&db, &root.0, &g1.id, true).unwrap();
         assert_eq!(report.deleted, 1, "只删除不再被引用的独占条目");
         assert_eq!(report.retained_shared, 1);
+        assert_eq!(report.groups_deleted, 1);
         assert!(
             get_item(&db, &a.item.id).is_ok(),
             "仍被组二引用的条目必须保留"
@@ -2439,8 +2444,14 @@ mod tests {
         assert!(get_group(&db, &g2.id).is_ok());
 
         // 删除分组（不删内容）后条目仍在
-        delete_group(&db, &root.0, &g2.id, false).unwrap();
+        let report = delete_group(&db, &root.0, &g2.id, false).unwrap();
+        assert_eq!(report.groups_deleted, 1, "分组本身被删除");
+        assert_eq!(report.deleted, 0, "保留条目时不删除内容");
         assert!(get_item(&db, &a.item.id).is_ok());
+
+        // 分组不存在：命令成功但 groups_deleted 为 0，前端不能当成删除成功
+        let missing = delete_group(&db, &root.0, "no-such-group", false).unwrap();
+        assert_eq!(missing.groups_deleted, 0);
     }
 
     #[test]

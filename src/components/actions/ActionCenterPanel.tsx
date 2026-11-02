@@ -6,7 +6,7 @@
 //! - 计数来自后端全局 SQL，与筛选/分页无关；列表使用 keyset 游标加载更多；
 //! - 监控覆盖度单独展示：未接入/未验证的来源明确说明，绝不显示成「监控中」。
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bell,
@@ -34,6 +34,7 @@ import {
   type ActionKind,
 } from "../../lib/bridge";
 import { formatRelative } from "../../lib/format";
+import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { Checkbox, Select } from "../ui";
 
 const KIND_FILTERS: Record<ActionCategory, { id: ActionKind | "all"; label: string }[]> = {
@@ -111,6 +112,12 @@ export default function ActionCenterPanel() {
   const refreshAgents = useAgentsStore((s) => s.load);
   const openContext = useUiStore((s) => s.openContext);
   const [busy, setBusy] = useState<string | null>(null);
+  /**
+   * 标记已处理（默认筛选不含已处理时该行会退出列表）：先播收拢淡出再提交。
+   * 动画只是反馈层——失败立即弹回原位；「历史」分类 ack 后仍留在列表，不播。
+   */
+  const [leavingId, setLeavingId] = useState<string | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
 
   const category: ActionCategory = filter.category ?? "intervention";
   // 分类切换后、新数据到达前不展示旧分类列表
@@ -153,8 +160,18 @@ export default function ActionCenterPanel() {
 
   async function onAck(item: ActionItem) {
     if (busy) return;
+    // 历史/已处理筛选下该行不会离开列表，没有「退出」可演
+    const exitsList = category !== "history" && !item.acked && !(filter.include_acked ?? false);
     setBusy(item.id);
     try {
+      if (exitsList && !prefersReducedMotion()) {
+        const el = rowRefs.current.get(item.id);
+        if (el) {
+          el.style.setProperty("--clip-exit-h", `${el.offsetHeight}px`);
+          setLeavingId(item.id);
+          await new Promise((r) => setTimeout(r, EXIT_MS));
+        }
+      }
       if (item.acked) {
         await unack([item.id]);
         showToast("已恢复为待处理", { kind: "info" });
@@ -173,6 +190,8 @@ export default function ActionCenterPanel() {
     } catch (e) {
       showToast(`确认失败：${String(e)}`, { kind: "error" });
     } finally {
+      // 失败时撤掉离场状态让行弹回原位；成功时行已随刷新离开列表
+      setLeavingId(null);
       setBusy(null);
     }
   }
@@ -383,7 +402,13 @@ export default function ActionCenterPanel() {
               {current.items.map((item) => (
                 <div
                   key={item.id}
-                  className={`action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""}`}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(item.id, el);
+                    else rowRefs.current.delete(item.id);
+                  }}
+                  className={`action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""} ${
+                    leavingId === item.id ? "leaving" : ""
+                  }`}
                 >
                   <button
                     className="action-main"

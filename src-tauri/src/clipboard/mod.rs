@@ -161,6 +161,9 @@ pub struct DeleteReport {
     pub freed_bytes: i64,
     /// 因仍被其他分组/任务引用而保留的条目数
     pub retained_shared: i64,
+    /// 实际删除的分组数：`delete_group` 用它区分「分组不存在」与「删除成功」，
+    /// 前端据此避免把不存在的分组当成成功删除来播放离场动画。
+    pub groups_deleted: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

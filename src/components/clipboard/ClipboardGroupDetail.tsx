@@ -69,6 +69,7 @@ export default function ClipboardGroupDetail({
   const rowEls = useRef(new Map<string, HTMLLIElement>());
   const topsRef = useRef<Map<string, number>>(new Map());
   const rowTimers = useRef<number[]>([]);
+  const backRef = useRef<HTMLButtonElement>(null);
 
   useEffect(
     () => () => {
@@ -91,12 +92,59 @@ export default function ClipboardGroupDetail({
   const rowOrder = (group?.items.map((i) => i.id).join("|") ?? "") + `#${exitRows.length}`;
 
   /**
+   * 离场结束后焦点要去的相邻行：在实际展示顺序（含仍在离场的行）里，
+   * 找被移除行之后第一个会留下的行；没有则往前提一个。
+   * `gone` 是这次操作要离开的所有行（拆分时是多行）。
+   */
+  function rowAnchor(gone: string[]): string | null {
+    const goneSet = new Set(gone);
+    const first = rows.findIndex((r) => goneSet.has(r.id));
+    if (first < 0) return null;
+    const alive = (r: ClipboardItem) => !goneSet.has(r.id) && !exitingRows.has(r.id);
+    const next = rows.slice(first + 1).find(alive);
+    const prev = rows.slice(0, first).reverse().find(alive);
+    return (next ?? prev)?.id ?? null;
+  }
+
+  /**
+   * 让一行以收拢淡出离场：高度在还以正常高度渲染时实测一次，
+   * 各行的定时器只摘掉自己；结束时把焦点交还给相邻行或返回按钮。
+   */
+  function scheduleRowExit(row: ClipboardItem, index: number, height: number, anchorId: string | null) {
+    setExitRows((prev) => [...prev, { row, index, height }]);
+    const timer = window.setTimeout(
+      () => {
+        rowTimers.current = rowTimers.current.filter((t) => t !== timer);
+        setExitRows((prev) => prev.filter((e) => e.row.id !== row.id));
+        if (anchorId) {
+          const el = rowListRef.current?.querySelector<HTMLElement>(
+            `[data-clip-row="${CSS.escape(anchorId)}"] .clip-group-item-main`,
+          );
+          // 锚点行也可能已进入离场（inert 接管不了焦点），这时退回返回按钮
+          if (el && !el.closest("[inert]")) {
+            el.focus();
+            return;
+          }
+        }
+        backRef.current?.focus();
+      },
+      prefersReducedMotion() ? 0 : EXIT_MS,
+    );
+    rowTimers.current.push(timer);
+  }
+
+  /**
    * 上移/下移的轻量 FLIP：只在这几行之间做一次位移补偿动画。
    *
    * 不引动画库、不常驻监听：读一次 offsetTop、用 Web Animations API 播完即走。
    * 减少动态模式下不做位移；行数过多时跳过（逐行读布局会让长列表掉帧）；
-   * 移除离场期间也跳过——那一行自己会把下方行推上去，两套位移会打架。
+   * 离场开始或结束的渲染也跳过——收拢动画已经在表达「下方行上移」的位移，
+   * 再叠一次 FLIP 会让这些行先跳回去再滑一遍（两套位移打架）。
    */
+  const prevExitCountRef = useRef(0);
+  useEffect(() => {
+    prevExitCountRef.current = exitRows.length;
+  }, [exitRows.length]);
   useLayoutEffect(() => {
     const el = rowListRef.current;
     if (!el) {
@@ -106,8 +154,9 @@ export default function ClipboardGroupDetail({
     const list = Array.from(el.querySelectorAll<HTMLElement>("[data-clip-row]"));
     const tops = new Map(list.map((r) => [r.dataset.clipRow ?? "", r.offsetTop]));
     const prev = topsRef.current;
+    const prevExiting = prevExitCountRef.current;
     topsRef.current = tops;
-    if (prefersReducedMotion() || exitRows.length > 0 || list.length > 60) return;
+    if (prefersReducedMotion() || exitRows.length > 0 || prevExiting > 0 || list.length > 60) return;
     for (const r of list) {
       const before = prev.get(r.dataset.clipRow ?? "");
       if (before === undefined) continue;
@@ -248,8 +297,14 @@ export default function ClipboardGroupDetail({
   }
 
   async function onRemove(itemId: string) {
-    const index = group?.items.findIndex((i) => i.id === itemId) ?? -1;
-    const row = index >= 0 ? group!.items[index] : undefined;
+    // 位置必须按**实际展示顺序**（含仍在离场的行）计算：连续移除时后端列表
+    // 已经少了先前移除的条目，按 group.items 找索引会让后移除的行钉到
+    // 已离场行的前面，顺序错乱。
+    const displayIndex = rows.findIndex((r) => r.id === itemId);
+    const row = displayIndex >= 0 ? rows[displayIndex] : undefined;
+    const anchorId = row ? rowAnchor([itemId]) : null;
+    // 高度在请求发出前测一次：此时这一行一定还以正常高度渲染
+    const height = row ? (rowEls.current.get(itemId)?.offsetHeight ?? 0) : 0;
     setBusy("remove");
     try {
       const next = await clipboardRemoveGroupItem(groupId, itemId);
@@ -264,17 +319,7 @@ export default function ClipboardGroupDetail({
       onChanged();
       if (row) {
         // 后端已经解除关联；先让这一行收拢淡出，动画结束只摘掉自己。
-        // 高度在动画开始前测一次（此时这一行还是正常高度）。
-        const height = rowEls.current.get(itemId)?.offsetHeight ?? 0;
-        setExitRows((prev) => [...prev, { row, index, height }]);
-        const timer = window.setTimeout(
-          () => {
-            rowTimers.current = rowTimers.current.filter((t) => t !== timer);
-            setExitRows((prev) => prev.filter((e) => e.row.id !== itemId));
-          },
-          prefersReducedMotion() ? 0 : EXIT_MS,
-        );
-        rowTimers.current.push(timer);
+        scheduleRowExit(row, displayIndex, height, anchorId);
       }
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -290,8 +335,21 @@ export default function ClipboardGroupDetail({
     try {
       const g = await clipboardSplitGroup(groupId, splitSelected, splitName.trim() || "拆分分组");
       const movedCount = Math.max(0, before - g.items.length);
+      // 拆分成功的条目用与移除一致的收拢离场；失败走 catch，不播任何成功动画。
+      // 焦点锚点对所有被拆行统一取一次（拆分块之后的第一个存活行）。
+      const anchorId = rowAnchor(splitSelected);
+      const leaving = rows
+        .filter((r) => splitSelected.includes(r.id))
+        .map((r) => ({
+          row: r,
+          index: rows.findIndex((x) => x.id === r.id),
+          height: rowEls.current.get(r.id)?.offsetHeight ?? 0,
+        }));
       setSplitSelected([]);
       setSplitName("");
+      for (const e of leaving) scheduleRowExit(e.row, e.index, e.height, anchorId);
+      // 服务端已把条目移入新分组：刷新拿到真实数据，被拆行由快照按原位钉住
+      // 播完离场，剩余行不会被挤跳。
       await reload();
       showToast(
         `已把 ${movedCount} 项拆分为新分组，本分组剩 ${g.items.length} 项`,
@@ -389,7 +447,13 @@ export default function ClipboardGroupDetail({
   return (
     <div className="clip-detail">
       <div className="clip-detail-head">
-        <button className="icon-btn sm" onClick={onBack} data-tip="返回" aria-label="返回分组列表">
+        <button
+          className="icon-btn sm"
+          onClick={onBack}
+          data-tip="返回"
+          aria-label="返回分组列表"
+          ref={backRef}
+        >
           <ArrowLeft size={13} />
         </button>
         <span className="clip-group-title" title={group.name}>{group.name}</span>
@@ -527,6 +591,8 @@ export default function ClipboardGroupDetail({
                   }}
                   className={`${selected ? "selected" : ""} ${leaving ? "removing" : ""}`}
                   aria-hidden={leaving ? true : undefined}
+                  // 离场行整棵子树不可交互：inert 补上 pointer-events 挡不住的键盘焦点
+                  inert={leaving ? true : undefined}
                   // 离场用收拢动画：高度在点击移除时实测一次，不留常驻测量
                   style={leaving ? ({ "--clip-exit-h": `${leaving.height}px` } as React.CSSProperties) : undefined}
                 >
@@ -536,6 +602,7 @@ export default function ClipboardGroupDetail({
                         className="clip-check"
                         aria-label={selected ? "取消拆分选择" : "选择用于拆分"}
                         aria-pressed={selected}
+                        disabled={leaving !== undefined}
                         onClick={() =>
                           setSplitSelected((s) =>
                             s.includes(item.id) ? s.filter((x) => x !== item.id) : [...s, item.id],
@@ -547,7 +614,11 @@ export default function ClipboardGroupDetail({
                       <span className="clip-order">{i + 1}</span>
                     </>
                   )}
-                  <button className="clip-group-item-main" onClick={() => setItemDetailId(item.id)}>
+                  <button
+                    className="clip-group-item-main"
+                    onClick={() => setItemDetailId(item.id)}
+                    disabled={leaving !== undefined}
+                  >
                     {item.kind === "image" && (
                       <ClipboardThumb itemId={item.id} hasThumb={item.has_thumb} size={30} />
                     )}

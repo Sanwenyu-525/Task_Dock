@@ -14,5 +14,9 @@ export const REORDER_MS = 200;
  * 拖慢了数据同步；因此这里读取同一个标志，减少动态时直接跳过等待与位移。
  */
 export function prefersReducedMotion(): boolean {
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  // store 层也会在 node 测试环境运行，先确认 window 存在再读媒体查询
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  );
 }

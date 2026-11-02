@@ -9,7 +9,7 @@
 //!   因此页面与抽屉同时存在时不会重复处理同一次采集事件；
 //! - Escape 走全局弹层栈：确认框(dialog) → 子弹层(sublayer) → 抽屉(drawer) → 主窗口。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Merge, Pause, Play, RefreshCw, Search,
   Settings as SettingsIcon, Star, Trash2, X,
@@ -36,7 +36,7 @@ import {
   type DeleteReport,
 } from "../../lib/bridge";
 import { formatBytes, objectHint } from "../../lib/clipboardUi";
-import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
+import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -109,8 +109,10 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const drawerRef = useRef<HTMLElement>(null);
 
   // 删除反馈链：执行中（等后端确认）→ 目标卡片离场 → 离场结束再静默补位。
-  // 离场中的行由 store 钉在原位，后台采集事件与静默刷新都不能把它提前卸载。
-  // 定时器只在删除期间存在、到点自删，卸载时统一回收；不做常驻轮询或高频刷新。
+  // 离场中的行由 store 钉在原位，后台采集事件与静默刷新都不能把它提前卸载；
+  // 快照的收尾定时器归 store 所有，动画中途关闭抽屉（卸载）也能正常收尾，
+  // 不会把已删除的行以快照形式带回列表。这里的组件定时器只负责收尾后的
+  // 静默刷新与焦点交接，卸载时统一回收；不做常驻轮询或高频刷新。
   const exiting = useClipboardStore((s) => s.exiting);
   const beginExit = useClipboardStore((s) => s.beginExit);
   const endExit = useClipboardStore((s) => s.endExit);
@@ -130,6 +132,46 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     },
     [],
   );
+
+  // 主列表轻量重排（FLIP）：置顶/取消置顶、静默刷新带来的顺序变化用一次
+  // 位移补偿过渡。不引动画库、不常驻 rAF；只读一次 offsetTop，播完即走。
+  // 与删除离场互斥：离场行的高度收拢已经在表达位移，再叠 FLIP 会来回打架。
+  const listTopsRef = useRef<Map<string, number>>(new Map());
+  const prevExitCountRef = useRef(0);
+  const exitCount = Object.keys(exiting).length;
+  useEffect(() => {
+    prevExitCountRef.current = exitCount;
+  }, [exitCount]);
+  const flipSig =
+    section +
+    "|" +
+    (view?.items.map((i) => i.id).join("|") ?? "") +
+    "|" +
+    (view?.groups.map((g) => g.id).join("|") ?? "");
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const rows = Array.from(el.querySelectorAll<HTMLElement>("[data-clip-id]"));
+    const tops = new Map(rows.map((r) => [r.dataset.clipId ?? "", r.offsetTop]));
+    const prev = listTopsRef.current;
+    const prevExiting = prevExitCountRef.current;
+    listTopsRef.current = tops;
+    // 首次渲染没有参照位置；离场开始/结束的渲染不做重排（收拢动画已表达位移）
+    if (prev.size === 0 || exitCount > 0 || prevExiting > 0) return;
+    if (prefersReducedMotion() || rows.length > 60) return;
+    for (const r of rows) {
+      const id = r.dataset.clipId ?? "";
+      const before = prev.get(id);
+      if (before === undefined) continue;
+      const delta = before - (tops.get(id) ?? before);
+      if (delta === 0 || typeof r.animate !== "function") continue;
+      r.animate(
+        [{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }],
+        { duration: REORDER_MS, easing: "ease" },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flipSig]);
 
   /** 焦点在被删卡片上时，先记下相邻行的 id，供离场结束后接管焦点。 */
   function captureFocusAnchor(ids: string[]): string | null {
@@ -400,13 +442,14 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       detail: "只删除分组本身，分组内的历史条目仍保留。若要连同内容删除，请在分组详情中操作。",
       confirmLabel: "删除分组",
       danger: true,
-      // 保留条目时报告的 deleted 只统计条目（恒为 0），分组本身删没删看命令是否成功
+      // 保留条目时报告的 deleted 只统计条目（恒为 0），分组本身删没删看 groups_deleted：
+      // 分组不存在时（groups_deleted = 0）如实提示并刷新，绝不演一场成功
       run: () =>
         runDelete(
           [group.id],
           "group",
           () => clipboardDeleteGroup(group.id, false),
-          () => 1,
+          (r) => r.groups_deleted,
           () => showToast(`分组「${group.name}」已删除，历史条目仍保留`, { kind: "success" }),
         ),
     });
