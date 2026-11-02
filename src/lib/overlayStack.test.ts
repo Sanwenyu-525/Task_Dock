@@ -11,6 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  hasAutoHideBlockingOverlay,
   registerOverlay,
   resetOverlayStack,
   setWindowEscapeHandler,
@@ -153,5 +154,38 @@ describe("弹层栈 Escape 优先级", () => {
     pressEscape();
 
     expect(calls).toEqual(["drawer"]);
+  });
+});
+
+describe("胶囊自动收起与弹层判定", () => {
+  beforeEach(() => {
+    resetOverlayStack();
+  });
+
+  afterEach(() => {
+    resetOverlayStack();
+    setWindowEscapeHandler(null);
+  });
+
+  it("胶囊自己的 Escape 层（blocksAutoHide=false）不阻止自动收起", () => {
+    registerOverlay({ kind: "drawer", onEscape: () => {}, blocksAutoHide: false });
+    expect(topOverlay()).toBeDefined(); // Esc 仍然归它
+    expect(hasAutoHideBlockingOverlay()).toBe(false); // 但不阻止自动收起
+  });
+
+  it("菜单 / 对话框 / 模态阻止自动收起（默认行为不变）", () => {
+    registerOverlay({ kind: "drawer", onEscape: () => {}, blocksAutoHide: false });
+    for (const kind of ["menu", "dialog", "modal", "sublayer"] as const) {
+      registerOverlay({ kind, onEscape: () => {} });
+      expect(hasAutoHideBlockingOverlay()).toBe(true);
+    }
+  });
+
+  it("胶囊层与其他层同时在场：仍按其他层阻止自动收起", () => {
+    registerOverlay({ kind: "drawer", onEscape: () => {}, blocksAutoHide: false });
+    const release = registerOverlay({ kind: "dialog", onEscape: () => {} });
+    expect(hasAutoHideBlockingOverlay()).toBe(true);
+    release();
+    expect(hasAutoHideBlockingOverlay()).toBe(false);
   });
 });

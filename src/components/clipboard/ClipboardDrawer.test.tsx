@@ -41,6 +41,8 @@ function makeItem(i: number): ClipboardItem {
     text: "",
     html: "",
     preview: `第 ${i} 条剪贴板预览`,
+    title: "",
+    title_source: "none",
     byte_size: 20,
     source_app: "notepad.exe",
     source_title: "记事本",

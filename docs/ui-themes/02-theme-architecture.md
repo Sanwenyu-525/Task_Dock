@@ -144,3 +144,22 @@ Token 覆盖顺序（后者胜出）：
 | `src/components/tasks/*` | 统计卡色调、空状态插画、按钮材质 |
 | `src/components/settings/SettingsPanel.tsx` | 预设选择卡（含迷你预览） |
 | `src/styles-themes.css` | 新增：Token 与结构层 |
+
+---
+
+## 6. 立体层级 Token（2026-11-01 追加）
+
+v0.7 在原有三维（预设 / 明暗 / 材质）之上只新增**高度维度**，不改变状态机：
+
+- 每个「预设 × 明暗」块同时声明 `--header-wash`、`--inset-face`、`--inset-shadow`、
+  `--inset-shadow-hover`、`--inset-shadow-focus`、`--inset-shadow-sm`、`--shadow-overlay`；
+  `styles-themes.test.ts` 守卫四个上下文同名，避免某套主题缺一层高度。
+- 既有 `--card-shadow` / `--control-shadow*` / `--rail-active-shadow` / `--pill-active-shadow`
+  / `--menu-shadow` / `--dialog-shadow` 的**取值**被重写，组件选择器不变。
+- 结构层集中在 `styles-themes.css` 第 15 节：窗口受光、导航上浮/按下、卡片悬停抬升、
+  输入内凹、按钮/分段/预设卡凸起、状态标签、胶囊厚度、吸附反馈条。所有规则只消费 Token。
+- 明确不做：窗口外投影、全窗口 `backdrop-filter`、常驻光影动画、按帧更新装饰层。
+  这与 03 的透明窗口区域约束、04 的性能约束保持一致。
+
+验收边界：浏览器 harness 与真实 Tauri 窗口截图只能证明各自层级；
+受控背景像素分析与胶囊状态机回归须在无并发实例、无其他置顶窗口的会话中单独执行。

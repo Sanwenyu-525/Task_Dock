@@ -1,6 +1,5 @@
-import { useEffect, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { showContextMenu } from "./lib/bridge";
 import { useSettingsStore } from "./store/useSettingsStore";
 import { useTasksStore } from "./store/useTasksStore";
 import { useAgentsStore, scheduleAgentRefresh } from "./store/useAgentsStore";
@@ -26,10 +25,11 @@ import TooltipLayer from "./components/ui/TooltipLayer";
 import SnapOverlay from "./components/SnapOverlay";
 import CapsuleDock from "./components/capsule/CapsuleDock";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
-import { isCapsuleMode } from "./lib/edgeSnap";
+import { isCapsuleMode, measureTitlebarHeight } from "./lib/edgeSnap";
 import { createSubscriptionScope } from "./lib/subscriptions";
 import { setWindowEscapeHandler } from "./lib/overlayStack";
 import {
+  notifyUiReady,
   onAgentChanged,
   onAppReady,
   onFocusQuickAdd,
@@ -38,18 +38,6 @@ import {
   onReminderFired,
   onThemeChanged,
 } from "./lib/bridge";
-
-// 右键：在悬浮栏非编辑区域打开液态玻璃菜单（后端锚定悬浮栏顶边中点，
-// 菜单在其上方展开）。编辑区（输入框/文本域/可编辑元素）保留系统右键的
-// 复制/粘贴能力 —— 只拦截本容器，不做全局 preventDefault。
-function onDockContextMenu(e: ReactMouseEvent) {
-  const target = e.target as HTMLElement | null;
-  if (target?.closest("input, textarea, [contenteditable='true'], [contenteditable='']")) {
-    return;
-  }
-  e.preventDefault();
-  void showContextMenu().catch(() => {});
-}
 
 export default function App() {
   const settings = useSettingsStore((s) => s.settings);
@@ -83,6 +71,22 @@ export default function App() {
 
   useEdgeSnap(snapEnabled);
   useWindowPersistence();
+
+  // 预热标题栏高度实测缓存：拖离解除的鼠标锚定需要它把光标对到标题栏中心，
+  // 而停靠期主界面 display:none 量不到（回退设计常量）。主界面可见时量一次，
+  // 之后无论从哪种状态解除都用上真实值。
+  useEffect(() => {
+    if (!capsuleMode) measureTitlebarHeight();
+  }, [capsuleMode]);
+
+  // 启动显示门：后端在「上次退出为停靠态」时先把窗口裁成 1×1 空白区域再 show，
+  // 避免先露出完整主窗口再缩成胶囊。停靠恢复由 `useEdgeSnap` 在区域生效后放行；
+  // 未启用吸附时这里直接放行（无恢复可等）。
+  useEffect(() => {
+    if (settings === null) return;
+    if (snapEnabled) return;
+    void notifyUiReady().catch(() => {});
+  }, [settings, snapEnabled]);
 
   useEffect(() => {
     loadSettings();
@@ -187,7 +191,6 @@ export default function App() {
   return (
     <div
       className={`dock-window mode-${mode} material-${material}${capsuleMode ? " is-capsule" : ""}`}
-      onContextMenu={onDockContextMenu}
     >
       {/* 主界面：停靠期整体隐藏（display:none，同时 inert），
           但保持挂载以保留三视图的内容状态与滚动位置。 */}

@@ -19,7 +19,12 @@ import {
   SNAP_DRAG_SETTLE_MS,
   SNAP_HIDE_LEAVE_MS,
   SNAP_MOVE_SETTLE_QUIET_MS,
+  SNAP_MAGNET_MAX_LEAD,
+  SNAP_MAGNET_RANGE,
+  SNAP_MAGNET_REARM,
+  SNAP_MAGNET_RELEASE,
   SNAP_PULL_IN_GAP,
+  SNAP_UNDOCK_DRAG_PX,
   SNAP_REVEAL_DWELL_MS,
   SNAP_REVEAL_PROTECT_MS,
   SNAP_STRIP,
@@ -36,6 +41,7 @@ import {
   cursorNearTriggerStrip,
   cursorOverWindow,
   detectCandidateEdge,
+  alongDeviation,
   dockFeedbackText,
   edgeDistance,
   hiddenPositionFor,
@@ -47,13 +53,20 @@ import {
   shouldConfirmDock,
   shouldExpireCandidate,
   shouldHideAfterLeave,
+  normalDeviation,
+  rebaseAlong,
   shouldLeaveMagnetRange,
+  shouldUndockByDrag,
   shouldRevealByDwell,
   visibleFraction,
   capsuleLengthPhysical,
   cursorNearCapsule,
   findAdjacentMonitorAcrossEdge,
   SNAP_SEAM_TOLERANCE,
+  TITLEBAR_HEIGHT_CSS,
+  measureTitlebarHeight,
+  resetTitlebarHeightCache,
+  undockAnchorTarget,
 } from "./edgeSnap";
 
 /** 主屏工作区（1920×1080，任务栏在底部时高度 1032）。 */
@@ -444,19 +457,19 @@ describe("胶囊几何 capsuleStripPhysical（CSS px ↔ 物理 px 严格对应�
   });
 });
 
-describe("磁吸滞回 shouldLeaveMagnetRange（进入 28 / 退出 42）", () => {
-  it("退出阈值严格大于 42（42 本身仍留在磁吸范围）", () => {
+describe("磁吸滞回 shouldLeaveMagnetRange（进入 24 / 退出 38）", () => {
+  it("退出阈值严格大于 38（38 本身仍留在磁吸范围）", () => {
     expect(shouldLeaveMagnetRange(SNAP_CANDIDATE_ENTER_DIST)).toBe(false);
     expect(shouldLeaveMagnetRange(SNAP_CANDIDATE_EXIT_DIST)).toBe(false);
     expect(shouldLeaveMagnetRange(SNAP_CANDIDATE_EXIT_DIST + 1)).toBe(true);
     expect(shouldLeaveMagnetRange(200)).toBe(true);
   });
 
-  it("死区（28–42）内既不退出也不重新进入：candidate 判定用进入阈值", () => {
+  it("死区（24–38）内既不退出也不重新进入：candidate 判定用进入阈值", () => {
     const wa: SnapArea = { x: 0, y: 0, w: 1920, h: 1032 };
-    // 35px：在滞回带内
+    // 31px：在滞回带内
     const inBand = rect(SNAP_CANDIDATE_ENTER_DIST + 7, 300);
-    expect(detectCandidateEdge(inBand, wa)).toBeNull(); // 新进入不触发（>28）
+    expect(detectCandidateEdge(inBand, wa)).toBeNull(); // 新进入不触发（>24）
     expect(shouldLeaveMagnetRange(edgeDistance(inBand, wa, "left"))).toBe(false); // 已进入者不退出
   });
 
@@ -634,5 +647,213 @@ describe("释放确认与长时间静止拖拽（需求 6.4/12.1）", () => {
     // 一旦松手（DOM 指针恢复或光标出窗）立即确认
     expect(shouldConfirmDock("candidate", "left", 10_000, true, true)).toBe(true);
     expect(shouldConfirmDock("candidate", "left", 10_000, false, false)).toBe(true);
+  });
+});
+
+// ── 拖拽磁力：法向模型与跨端契约 ──────────────────────────────
+//
+// 曲线本身（吸引强度 / 阻力位移）在原生 `src-tauri/src/magnetic.rs` 实现并单测；
+// 这里锁定**前端真正使用的判定**：法向位移、解除阈值、沿边正交性，
+// 以及两端必须一致的参数（跨端契约，改动要同时改两边）。
+
+describe("拖拽磁力：法向位移模型", () => {
+  const base = { x: 0, y: 300 };
+
+  it("四边一致：外法向位移为正，内推为负", () => {
+    const rect = { x: 12, y: 340, w: 400, h: 420 };
+    expect(normalDeviation(rect, base, "left")).toBe(12);
+    expect(normalDeviation(rect, base, "right")).toBe(-12);
+    expect(normalDeviation(rect, base, "top")).toBe(40);
+    expect(normalDeviation(rect, base, "bottom")).toBe(-40);
+  });
+
+  it("沿边位移与法向位移正交（沿边滑动不得改变法向读数）", () => {
+    const rect = { x: 0, y: 300 + 137, w: 400, h: 420 };
+    expect(alongDeviation(rect, base, "left")).toBe(137);
+    expect(normalDeviation(rect, base, "left")).toBe(0);
+    // 水平停靠：沿边是 x
+    const topBase = { x: 700, y: 0 };
+    const moved = { x: 700 + 90, y: 0, w: 400, h: 420 };
+    expect(alongDeviation(moved, topBase, "top")).toBe(90);
+    expect(normalDeviation(moved, topBase, "top")).toBe(0);
+  });
+
+  it("解除判定只看沿法向拖出的距离", () => {
+    // 沿边拖 200px：不是拖离
+    expect(shouldUndockByDrag({ x: 0, y: 500, w: 400, h: 420 }, base, "left")).toBe(false);
+    // 法向拖 24px：恰好等于阈值不解除（严格大于才算）
+    expect(shouldUndockByDrag({ x: SNAP_UNDOCK_DRAG_PX, y: 300, w: 400, h: 420 }, base, "left")).toBe(
+      false,
+    );
+    expect(
+      shouldUndockByDrag({ x: SNAP_UNDOCK_DRAG_PX + 1, y: 300, w: 400, h: 420 }, base, "left"),
+    ).toBe(true);
+    // 往屏幕边里推（负位移）永远不是解除
+    expect(shouldUndockByDrag({ x: -30, y: 300, w: 400, h: 420 }, base, "left")).toBe(false);
+  });
+
+  it("负坐标多屏（副屏在主屏左侧）同样正确", () => {
+    const leftBase = { x: -1920, y: 100 };
+    const rect = { x: -1920 + 30, y: 100, w: 400, h: 420 };
+    expect(normalDeviation(rect, leftBase, "left")).toBe(30);
+    expect(shouldUndockByDrag(rect, leftBase, "left")).toBe(true);
+    // 副屏右缘（接缝）：外法向 = 坐标减小
+    const seamBase = { x: -400, y: 100 };
+    expect(normalDeviation({ x: -430, y: 100, w: 400, h: 420 }, seamBase, "right")).toBe(30);
+  });
+
+  it("沿边基准更新只采纳沿边分量：法向基准必须是真实齐平位", () => {
+    // 拖动中窗口被磁力拉出 12px（法向）：基准不得跟着走
+    const dragged = { x: 12, y: 480, w: 400, h: 420 };
+    expect(rebaseAlong(dragged, base, "left")).toEqual({ x: 0, y: 480 });
+    // 水平停靠只更新 x
+    expect(rebaseAlong({ x: 760, y: 8, w: 400, h: 420 }, { x: 700, y: 0 }, "top")).toEqual({
+      x: 760,
+      y: 0,
+    });
+  });
+});
+
+describe("拖拽磁力：跨端契约常量", () => {
+  it("与 src-tauri/src/magnetic.rs 的 MAGNET_* 同值", () => {
+    // Rust 侧 `magnet_contract_matches_frontend` 断言同一组数字
+    // 2026-11-02：吸引范围 56 → 50（用户反馈介入过早，收窄几个像素）
+    expect(SNAP_MAGNET_RANGE).toBe(50);
+    expect(SNAP_MAGNET_MAX_LEAD).toBe(16);
+    expect(SNAP_MAGNET_RELEASE).toBe(32);
+    expect(SNAP_MAGNET_REARM).toBe(96);
+  });
+
+  it("参数落在需求给定的手感区间内", () => {
+    expect(SNAP_MAGNET_RANGE).toBeGreaterThanOrEqual(48);
+    expect(SNAP_MAGNET_RANGE).toBeLessThanOrEqual(64);
+    expect(SNAP_MAGNET_MAX_LEAD).toBeGreaterThanOrEqual(12);
+    expect(SNAP_MAGNET_MAX_LEAD).toBeLessThanOrEqual(20);
+    expect(SNAP_MAGNET_RELEASE).toBeGreaterThanOrEqual(28);
+    expect(SNAP_MAGNET_RELEASE).toBeLessThanOrEqual(40);
+    // 提交阈值必须小于释放阈值：否则会出现"已放手但仍判定未脱离"的空档
+    expect(SNAP_UNDOCK_DRAG_PX).toBeLessThan(SNAP_MAGNET_RELEASE);
+    // 重新武装距离必须大于吸引范围（否则脱离后立刻被吸回）
+    expect(SNAP_MAGNET_REARM).toBeGreaterThan(SNAP_MAGNET_RANGE);
+  });
+});
+
+// ── 拖离解除的鼠标锚定（与 Rust `magnetic::undock_anchor_rect` 同口径）──
+
+describe("拖离解除锚定 undockAnchorTarget（标题栏中心 = 光标）", () => {
+  const TB = 41; // 物理像素（100% DPI）
+
+  it("光标在屏幕中部：窗口宽度中点对准光标 x；y 受任务栏钳制时取最小位移", () => {
+    // 光标 y=500 处标题栏居中会让窗口下缘压进任务栏（480+560 > 1032），
+    // 因此 y 钳到 472——光标仍在标题栏带（472..513）内
+    const t = undockAnchorTarget({ x: 960, y: 500 }, { w: 400, h: 560 }, TB, WA);
+    expect(t).toEqual({ x: 760, y: 472, w: 400, h: 560 });
+    expect(500 >= t.y && 500 <= t.y + TB).toBe(true);
+    // 光标更高时不受钳制：标题栏严格居中
+    const free = undockAnchorTarget({ x: 960, y: 400 }, { w: 400, h: 560 }, TB, WA);
+    expect(free.y).toBe(380);
+    expect(400 >= free.y && 400 <= free.y + TB).toBe(true);
+  });
+
+  it("左缘：窗口不越出工作区，光标仍在窗口内", () => {
+    const t = undockAnchorTarget({ x: 5, y: 500 }, { w: 400, h: 560 }, TB, WA);
+    expect(t.x).toBe(0);
+    expect(5 >= t.x && 5 <= t.x + t.w).toBe(true);
+  });
+
+  it("右缘：窗口右缘齐工作区，光标保持窗内", () => {
+    const t = undockAnchorTarget({ x: 1915, y: 500 }, { w: 400, h: 560 }, TB, WA);
+    expect(t.x + t.w).toBe(1920);
+    expect(1915 >= t.x && 1915 <= t.x + t.w).toBe(true);
+  });
+
+  it("顶缘：窗口完整可见优先，光标不落窗外", () => {
+    const t = undockAnchorTarget({ x: 900, y: 3 }, { w: 400, h: 560 }, TB, WA);
+    expect(t.y).toBe(0);
+    expect(3 >= t.y && 3 <= t.y + t.h).toBe(true);
+  });
+
+  it("底缘：窗口比剩余空间高时取最小位移（下缘齐工作区），光标保持窗内", () => {
+    const t = undockAnchorTarget({ x: 900, y: 1030 }, { w: 400, h: 560 }, TB, WA);
+    expect(t.y + t.h).toBe(1032);
+    expect(1030 >= t.y && 1030 <= t.y + t.h).toBe(true);
+  });
+
+  it("负坐标多屏（副屏在主屏左侧）：几何正确", () => {
+    const wa: SnapArea = { x: -1920, y: 0, w: 1920, h: 1032 };
+    const t = undockAnchorTarget({ x: -1000, y: 400 }, { w: 400, h: 560 }, TB, wa);
+    expect(t).toEqual({ x: -1200, y: 380, w: 400, h: 560 });
+    const clamped = undockAnchorTarget({ x: -1915, y: 400 }, { w: 400, h: 560 }, TB, wa);
+    expect(clamped.x).toBe(-1920);
+    expect(-1915 >= clamped.x && -1915 <= clamped.x + clamped.w).toBe(true);
+  });
+
+  it("125% / 150% / 200% DPI：标题栏中心对准光标（±1px 取整误差）", () => {
+    for (const scale of [1.25, 1.5, 2.0]) {
+      const w = Math.round(400 * scale);
+      const h = Math.round(560 * scale);
+      const tb = Math.round(41 * scale);
+      const wa: SnapArea = { x: 0, y: 0, w: Math.round(1920 * scale), h: Math.round(1032 * scale) };
+      const cx = Math.round(960 * scale);
+      // 光标取偏上位置，避免窗口下缘压进任务栏触发钳制（居中不受干扰）
+      const cy = Math.round(400 * scale);
+      const t = undockAnchorTarget({ x: cx, y: cy }, { w, h }, tb, wa);
+      expect(Math.abs(t.x + Math.round(w / 2) - cx)).toBeLessThanOrEqual(1);
+      expect(Math.abs(t.y + Math.round(tb / 2) - cy)).toBeLessThanOrEqual(1);
+      // 光标在标题栏带内
+      expect(cy >= t.y && cy <= t.y + tb).toBe(true);
+    }
+  });
+
+  it("光标在任务栏上（工作区外）：按钳进工作区的参考光标摆放，窗口完整落在工作区", () => {
+    const t = undockAnchorTarget({ x: 900, y: 1062 }, { w: 400, h: 560 }, TB, WA);
+    expect(t.y + t.h).toBeLessThanOrEqual(1032);
+  });
+
+  it("不变量：工作区内任意光标都在结果窗口内且窗口完整可见；区外光标只要求完整可见", () => {
+    for (const ox of [-1920, 0, 2560]) {
+      for (const oy of [-400, 0, 800]) {
+        const wa: SnapArea = { x: ox, y: oy, w: 1920, h: 1032 };
+        // 工作区内（含边缘）：光标必须落在窗口内
+        for (const cx of [ox, ox + 1, ox + 960, ox + 1919]) {
+          for (const cy of [oy, oy + 1, oy + 500, oy + 1031]) {
+            const t = undockAnchorTarget({ x: cx, y: cy }, { w: 400, h: 560 }, TB, wa);
+            expect(cx >= t.x && cx <= t.x + t.w).toBe(true);
+            expect(cy >= t.y && cy <= t.y + t.h).toBe(true);
+            expect(t.x).toBeGreaterThanOrEqual(wa.x);
+            expect(t.y).toBeGreaterThanOrEqual(wa.y);
+            expect(t.x + t.w).toBeLessThanOrEqual(wa.x + wa.w);
+            expect(t.y + t.h).toBeLessThanOrEqual(wa.y + wa.h);
+          }
+        }
+        // 工作区外（任务栏/屏外）：几何上不可能既完整可见又含光标，
+        // 只断言窗口完整可见
+        for (const cx of [ox - 50, ox + 2000]) {
+          const t = undockAnchorTarget({ x: cx, y: oy + 500 }, { w: 400, h: 560 }, TB, wa);
+          expect(t.x).toBeGreaterThanOrEqual(wa.x);
+          expect(t.x + t.w).toBeLessThanOrEqual(wa.x + wa.w);
+          expect(t.y).toBeGreaterThanOrEqual(wa.y);
+          expect(t.y + t.h).toBeLessThanOrEqual(wa.y + wa.h);
+        }
+      }
+    }
+  });
+
+  it("窗口大于工作区：收敛到工作区尺寸，钳制区间恒合法", () => {
+    const t = undockAnchorTarget({ x: 960, y: 500 }, { w: 4000, h: 3000 }, TB, WA);
+    expect(t).toEqual({ x: 0, y: 0, w: 1920, h: 1032 });
+  });
+
+  it("非法标题栏高度（0 / NaN）按 0 处理，不产生 NaN 坐标", () => {
+    expect(undockAnchorTarget({ x: 960, y: 400 }, { w: 400, h: 560 }, 0, WA).y).toBe(400);
+    expect(undockAnchorTarget({ x: 960, y: 400 }, { w: 400, h: 560 }, Number.NaN, WA).y).toBe(400);
+  });
+});
+
+describe("标题栏高度量取 measureTitlebarHeight", () => {
+  it("无 DOM（node 环境）：回退设计常量 41（styles-themes 层 padding 9+6 + 内容 26）", () => {
+    resetTitlebarHeightCache();
+    expect(measureTitlebarHeight()).toBe(TITLEBAR_HEIGHT_CSS);
+    expect(TITLEBAR_HEIGHT_CSS).toBe(41);
   });
 });

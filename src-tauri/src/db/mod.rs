@@ -617,6 +617,17 @@ SET note = 'DSH：宿主插件须以 profile bundle 安装（~/.dsh/profiles/<pr
 WHERE id = 'deepseek-harness';
 "#,
     ),
+    (
+        15,
+        r#"
+-- v15（Task Dock 0.7）：剪贴板条目标题（自动生成 + 手动覆盖）。
+-- title：自动标题 ≤30 字符（engine::make_title 本地规则）；手动标题 ≤80 字符。
+-- title_source：none（旧记录，未生成）/ auto（采集时生成）/ manual（用户编辑）。
+-- 标题不参与去重哈希（content_hash 不变）；旧记录 title='' 由前端回退到 preview 展示。
+ALTER TABLE clipboard_items ADD COLUMN title TEXT NOT NULL DEFAULT '';
+ALTER TABLE clipboard_items ADD COLUMN title_source TEXT NOT NULL DEFAULT 'none';
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

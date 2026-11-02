@@ -285,6 +285,10 @@ export interface ClipboardItem {
   /** 列表接口为空；详情接口返回完整 HTML */
   html: string;
   preview: string;
+  /** 展示标题：自动生成（≤30 字符）或手动编辑（≤80）；空串时回退 preview */
+  title: string;
+  /** none（旧记录）/ auto / manual */
+  title_source: string;
   byte_size: number;
   source_app: string;
   source_title: string;
@@ -372,6 +376,14 @@ export interface CleanupReport {
   groups_closed: number;
   bytes_freed: number;
   orphan_files_removed: number;
+}
+
+/** 一键清空历史的结果；`failed_files` 为数据库已清空但缓存文件未删除的数量。 */
+export interface ClearReport {
+  items: number;
+  groups: number;
+  freed_bytes: number;
+  failed_files: number;
 }
 
 export interface ClipboardTaskLink {
@@ -728,8 +740,6 @@ export const setAutostart = (enabled: boolean) => invoke<boolean>("set_autostart
 export const applyMode = (mode: string) => invoke<void>("apply_mode", { mode });
 
 // ── 液态玻璃右键菜单（v0.6）──
-/** 悬浮栏右键：后端锚定悬浮栏顶边中点弹出玻璃菜单。 */
-export const showContextMenu = () => invoke<void>("show_context_menu");
 export const hideContextMenu = () => invoke<void>("hide_context_menu");
 export const applyWindowMaterial = (material: string) =>
   invoke<MaterialResult>("apply_window_material", { material });
@@ -756,10 +766,57 @@ export type CapsuleRegionMode = "off" | "rail" | "panel";
 export const applyWindowCapsule = (mode: CapsuleRegionMode, edge: string) =>
   invoke<boolean>("apply_window_capsule", { mode, edge });
 
+/**
+ * 拖拽磁力参数（CSS px）：吸引范围 / 最大额外位移 / 脱离拖动距离。
+ *
+ * 原生侧在 `WM_MOVING` 里按这组参数修正移动矩形，前端不参与逐帧移动。
+ * `enabled=false` 时吸引与阻力同时失效（`snap_enabled` 关闭必须彻底停用）。
+ * 返回值表示子类化是否已安装（false = 退化为纯阈值吸附，不影响停靠正确性）。
+ */
+export const setMagneticDragConfig = (
+  enabled: boolean,
+  range: number,
+  maxLead: number,
+  release: number,
+) => invoke<boolean>("set_magnetic_drag_config", { enabled, range, maxLead, release });
+
+/**
+ * 停靠位（物理像素，齐平位置）：`edge=null` 表示未停靠（阻力失效）。
+ * 前端只在停靠事务**提交成功后**下发，解除/关闭吸附/卸载时清除。
+ */
+export const setMagneticDock = (edge: string | null, x = 0, y = 0) =>
+  invoke<boolean>("set_magnetic_dock", { edge, x, y });
+
+/**
+ * 拖离解除的鼠标锚定：请求原生在**拖拽循环内**把窗口恢复为 `mode` 的尺寸，
+ * 并以「标题栏中心 = 光标」对齐（含工作区钳制，见 `magnetic::undock_anchor_rect`）。
+ *
+ * **只有用户拖离胶囊的解除路径调用**：按钮解除 / 打开完整页 / 托盘唤回等
+ * 路径保持各自原有的定位策略。返回 false = 原生磁力层未安装，
+ * 解除流程照常，由调用方按实际恢复后的窗口尺寸回退定位。
+ */
+export const setUndockAnchor = (mode: string, titlebarCss: number) =>
+  invoke<boolean>("set_undock_anchor", { mode, titlebarCss });
+
+/** 锚定请求是否已在拖拽循环内应用（取后复位）；false 时调用方需自行定位。 */
+export const takeUndockAnchorApplied = () => invoke<boolean>("take_undock_anchor_applied");
+
+/** 作废尚未应用的锚定请求（解除中止 / 回滚时防残留到下一次拖拽）。 */
+export const cancelUndockAnchor = () => invoke<void>("cancel_undock_anchor");
+
 /** 唤回事件：托盘/快捷键等入口发现主窗口"可见但大部分在屏外"时下发，
  *  前端吸附引擎据此安全展开（物理位置在屏外时仅 show/focus 找不回窗口）。 */
 export const onSnapRecall = (cb: () => void): Promise<UnlistenFn> =>
   listen("snap-recall", () => cb());
+
+/**
+ * 首屏就绪：设置已加载且**启动时的停靠恢复结论已确定**，放行主窗口显示。
+ *
+ * 后端在「上次退出为停靠态」时延后 `show()`：先显示会露出完整主窗口再缩成
+ * 胶囊（实测约 1.9s 的矩形窗口）。非停靠启动时窗口早已显示，本调用是 no-op。
+ * 幂等，失败不重试（后端有 4s 兜底显示）。
+ */
+export const notifyUiReady = () => invoke<boolean>("notify_ui_ready");
 
 export const hubHealth = () =>
   invoke<{ sources: number; sessions: number; runs: number; worst_state: string }>("hub_health");
@@ -836,10 +893,22 @@ export const clipboardImage = (itemId: string) =>
   invoke<string | null>("clipboard_image", { itemId });
 export const clipboardCopyItem = (itemId: string) =>
   invoke<CopyReport>("clipboard_copy_item", { itemId });
+/** 通用文本写入：与单项复制共用后端受控写入与自写登记。 */
+export const clipboardCopyText = (text: string) =>
+  invoke<void>("clipboard_copy_text", { text });
 export const clipboardCopyGroupRich = (groupId: string) =>
   invoke<CopyReport>("clipboard_copy_group_rich", { groupId });
 export const clipboardCopyGroupFiles = (groupId: string) =>
   invoke<CopyReport>("clipboard_copy_group_files", { groupId });
+/** 任意多选批量富文本复制：按选择顺序整合，不创建永久分组。 */
+export const clipboardCopyItemsRich = (itemIds: string[]) =>
+  invoke<CopyReport>("clipboard_copy_items_rich", { itemIds });
+/** 任意多选批量文件复制：文件/图片条目取本地路径，普通文字不转为文件。 */
+export const clipboardCopyItemsFiles = (itemIds: string[]) =>
+  invoke<CopyReport>("clipboard_copy_items_files", { itemIds });
+/** 编辑条目标题：非空设为手动标题；空串恢复自动生成。 */
+export const clipboardRenameItem = (itemId: string, title: string) =>
+  invoke<ClipboardItem>("clipboard_rename_item", { itemId, title });
 export const clipboardToggleItem = (itemId: string, flag: "favorite" | "pinned") =>
   invoke<ClipboardItem>("clipboard_toggle_item", { itemId, flag });
 export const clipboardToggleGroup = (groupId: string, flag: "favorite" | "pinned") =>
@@ -850,6 +919,9 @@ export const clipboardDeleteItems = (ids: string[]) =>
   invoke<DeleteReport>("clipboard_delete_items", { ids });
 export const clipboardDeleteGroup = (groupId: string, alsoDeleteItems: boolean) =>
   invoke<DeleteReport>("clipboard_delete_group", { groupId, alsoDeleteItems });
+/** 清空全部剪贴板历史（含收藏/置顶），不影响系统剪贴板与外部文件。 */
+export const clipboardClearHistory = () =>
+  invoke<ClearReport>("clipboard_clear_history");
 export const clipboardCreateGroup = (name: string, itemIds: string[]) =>
   invoke<ClipboardGroup>("clipboard_create_group", { name, itemIds });
 export const clipboardRenameGroup = (groupId: string, name: string) =>
@@ -878,6 +950,9 @@ export const clipboardPastePrecheck = (hwnd: number) =>
   invoke<PasteTarget>("clipboard_paste_precheck", { hwnd });
 export const clipboardPasteGroup = (groupId: string, targetHwnd: number, itemIds?: string[]) =>
   invoke<PasteStartReport>("clipboard_paste_group", { groupId, targetHwnd, itemIds });
+/** 任意多选逐项粘贴：不依赖永久分组，按传入顺序逐条写入并发送。 */
+export const clipboardPasteItems = (targetHwnd: number, itemIds: string[]) =>
+  invoke<PasteStartReport>("clipboard_paste_items", { targetHwnd, itemIds });
 export const clipboardPasteCancel = (jobId: string) =>
   invoke<void>("clipboard_paste_cancel", { jobId });
 export const clipboardPasteResume = (jobId: string, targetHwnd: number) =>

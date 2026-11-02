@@ -14,6 +14,23 @@
 
 ## 一、自动化测试结果
 
+### 0.0.11 窗口圆角二轮整改（矩形区域 → CSS 像素支撑区域，2026-11-01 深夜）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo check`（`D:/Develop/task_dock/src-tauri`） | 0（2026-11-01 22:2x） |
+| `cargo build`（隔离 `target-cornerfix`，绝对路径 `CARGO_TARGET_DIR`） | 0；当前工作树源码 debug 二进制 |
+| `cargo test --lib window_shape`（HEAD 快照 + 最终 `window_shape.rs`） | **15 passed / 0 failed**（含真实 Win32 胶囊区域回读、`css_support_left` 实测对齐 15/13/11/9/7/3） |
+| 共享工作树 `cargo test --lib window_shape` | **阻塞**：并行未完成的 `wing_outline_golden_points_match_frontend`（`window_shape.rs:1386-1387`，f64/i32）编译失败；非本轮改动 |
+| 真机矩阵（125% DPI、隔离数据、置顶纯色背景 + 隐藏基线） | round5 13 场景全部 `baseline valid=True`、`region=00001`、四角精确点与 ±2px `delta=[0,0,0,0]`；覆盖灰 64/128/200、白/黑/洋红、dream/liquid × light/dark × solid/glass、active/inactive、600×800、最小化恢复 |
+| 最终共享构建复采 | `final-*` 四场景（灰 64/200、洋红、liquid 灰 128）四角 delta 全部 0；四角外白色来自并行 UI 新增 1px 白色 `--window-edge`，非底层矩形 |
+| 透明角命中（真实鼠标点击） | 四角精确点 `app_hit=False`；透明条 (5,5) False；可见弧 (10,10) 与中心 True |
+| 未覆盖 | 100%/150% DPI 原生、Windows 10、多显示器、安装版；液态玻璃失焦短暂白边（8s 后平滑）；胶囊真机停靠由并行任务复验 |
+
+证据：`tmp/acceptance/window-corner-unification/report-round2-20261101.md`、
+`grey-20261101/`（round5/final 截图、json、crops、日志）、
+`summary-round5-20261101.py`、`hit-test-round2-20261101.ps1`。
+
 ### 0.0.9 胶囊可见性与窗口状态修复（2026-11-01 晚）
 
 | 检查 | 结果 |
@@ -681,3 +698,17 @@ Rust：`cargo test --lib` 覆盖 `capsule_regions`（四边 × 折叠/展开、D
 [ui-themes/13-capsule-redesign.md](ui-themes/13-capsule-redesign.md) 与
 `tmp/acceptance/capsule-redesign/report.md`。
 
+
+## 停靠态可见性与启动显示门（v0.7，2026-11-02）
+
+| 文件 | 新增覆盖 |
+|---|---|
+| `src/App.test.tsx` | 停靠外壳 DOM 契约：未停靠 / 折叠 / 展开 / 缺停靠边 四种状态下根节点 `is-capsule`、`.dock-app` 的 `inert`、`CapsuleDock` 挂载 |
+| `src/styles-themes.test.ts` | `@layer` 顺序；`.dock-window.is-capsule` 最终规则必须落在 theme 层且清空 `background / background-image / border / box-shadow / border-radius`；`::before` 不绘制；`.dock-app` 隐藏；`.capsule-rail` 不得写矩形外观（背景/描边/阴影/圆角） |
+| `src/hooks/useEdgeSnap.integration.test.tsx` | 启动显示门：无停靠记录立即放行；有记录必须**区域写入成功之后**放行且只放行一次；恢复连续失败仍放行；区域写入失败不得提前放行 |
+
+真机口径（`tmp/acceptance/docked-window-hidden/`）：启动后用 250ms 采样
+`GetWindowRgn`，任何一次都不得出现「包围盒 = 整窗」；停靠态以黑色背景截图做
+区域外像素审计（`audit.py`，区域外每隔 2px 采样，要求与背景一致且无近白像素）。
+2026-11-02 结果：12 张截图 0 越界；四边 × 明暗/玻璃、展开、解除、启动恢复均通过；
+100%/150% DPI、Windows 10、多显示器、release 构建未验证。

@@ -3,6 +3,7 @@
 //! 列表接口只返回预览（正文与 HTML 清空），完整内容通过 `clipboard_item` 单条获取，
 //! 避免一次把数百条大文本/网页塞进前端内存。
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
@@ -12,8 +13,8 @@ use crate::clipboard::paste::{self, PasteStartReport};
 use crate::clipboard::platform::{self, ClipboardPayload, TargetWindow};
 use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteJob};
 use crate::clipboard::{
-    engine, CleanupReport, ClipboardGroup, ClipboardItem, ClipboardRuntime, ClipboardStats,
-    ClipboardView, CopyReport, DeleteReport, KIND_FILES, KIND_IMAGE,
+    engine, CleanupReport, ClearReport, ClipboardGroup, ClipboardItem, ClipboardRuntime,
+    ClipboardStats, ClipboardView, CopyReport, DeleteReport, KIND_FILES, KIND_IMAGE,
 };
 use crate::db::Settings;
 use crate::error::{AppError, AppResult};
@@ -138,8 +139,8 @@ pub fn clipboard_copy_item(
     let mode = variant_mode(&payload);
     let bytes = payload_bytes(&payload);
     let seq = platform::write_payload_notifying(&payload, &rt.self_write)?;
+    // 只累加使用次数，列表顺序不变；前端局部更新该条目，无需整表刷新。
     store::bump_copy(&rt.db, &item_id)?;
-    rt.emit_changed("copy-item");
     Ok(CopyReport {
         mode: mode.into(),
         bytes,
@@ -149,23 +150,27 @@ pub fn clipboard_copy_item(
     })
 }
 
+/// 通用文本写入（路径、目录、令牌等）：与单项复制共用同一条受控写入路径。
+///
+/// 必须走 Rust 端 `write_payload_notifying`：WebView 的 Clipboard API 写入
+/// 无法登记自写序列号，监听线程会把它当成外部复制重新入库。
+#[tauri::command]
+pub fn clipboard_copy_text(state: State<'_, Arc<ClipboardRuntime>>, text: String) -> AppResult<()> {
+    let rt = runtime(&state);
+    let payload = ClipboardPayload::Text { text, html: None };
+    platform::write_payload_notifying(&payload, &rt.self_write)?;
+    Ok(())
+}
+
 fn load_group_items(rt: &ClipboardRuntime, group_id: &str) -> AppResult<ClipboardGroup> {
     store::get_group(&rt.db, group_id)
 }
 
-/// 整组富文本复制：文字/HTML/链接按顺序拼接，图片以 data URI 内嵌（≤6MB）。
-#[tauri::command]
-pub fn clipboard_copy_group_rich(
-    state: State<'_, Arc<ClipboardRuntime>>,
-    group_id: String,
-) -> AppResult<CopyReport> {
-    let rt = runtime(&state);
-    let group = load_group_items(rt, &group_id)?;
-    if group.items.is_empty() {
-        return Err(AppError::Validation("分组为空，无可复制内容".into()));
-    }
+/// 富文本批量复制共享实现（整组与任意多选共用）：
+/// 文字/HTML/链接按传入顺序拼接，图片以 data URI 内嵌（≤6MB）。
+fn copy_rich_impl(rt: &ClipboardRuntime, items: &[ClipboardItem]) -> AppResult<CopyReport> {
     let (html, plain, mut warnings) =
-        engine::group_rich_html(&group.items, &|id| store::image_png(&rt.db, &rt.root, id));
+        engine::group_rich_html(items, &|id| store::image_png(&rt.db, &rt.root, id));
     let payload = ClipboardPayload::Text {
         text: plain,
         html: Some(html),
@@ -173,27 +178,20 @@ pub fn clipboard_copy_group_rich(
     let bytes = payload_bytes(&payload);
     let seq = platform::write_payload_notifying(&payload, &rt.self_write)?;
     warnings.push("已写入富文本；目标应用若不支持 HTML 将退回纯文本".into());
-    rt.emit_changed("copy-group-rich");
     Ok(CopyReport {
         mode: "html".into(),
         bytes,
         warnings,
         sequence: seq,
-        item_count: group.items.len() as i64,
+        item_count: items.len() as i64,
     })
 }
 
-/// 整组文件复制：把分组内的文件与图片原图作为文件列表写入剪贴板。
-#[tauri::command]
-pub fn clipboard_copy_group_files(
-    state: State<'_, Arc<ClipboardRuntime>>,
-    group_id: String,
-) -> AppResult<CopyReport> {
-    let rt = runtime(&state);
-    let group = load_group_items(rt, &group_id)?;
+/// 文件列表批量复制共享实现：文件条目取原始路径、图片条目取本地缓存原图。
+fn copy_files_impl(rt: &ClipboardRuntime, items: &[ClipboardItem]) -> AppResult<CopyReport> {
     let mut paths: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    for (idx, item) in group.items.iter().enumerate() {
+    for (idx, item) in items.iter().enumerate() {
         match item.kind.as_str() {
             KIND_FILES => {
                 for p in &item.file_paths {
@@ -215,7 +213,7 @@ pub fn clipboard_copy_group_files(
         }
     }
     if paths.is_empty() {
-        return Err(AppError::Validation("分组内没有可复制的文件或图片".into()));
+        return Err(AppError::Validation("没有可复制的文件或图片".into()));
     }
     if !warnings.is_empty() {
         warnings.push("图片使用 Task Dock 本地缓存路径，清理历史后该路径会失效".into());
@@ -224,7 +222,6 @@ pub fn clipboard_copy_group_files(
         paths: paths.clone(),
     };
     let seq = platform::write_payload_notifying(&payload, &rt.self_write)?;
-    rt.emit_changed("copy-group-files");
     Ok(CopyReport {
         mode: "files".into(),
         bytes: paths.iter().map(|p| p.len()).sum::<usize>() as i64,
@@ -232,6 +229,59 @@ pub fn clipboard_copy_group_files(
         sequence: seq,
         item_count: paths.len() as i64,
     })
+}
+
+/// 整组富文本复制。
+#[tauri::command]
+pub fn clipboard_copy_group_rich(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    group_id: String,
+) -> AppResult<CopyReport> {
+    let rt = runtime(&state);
+    let group = load_group_items(rt, &group_id)?;
+    if group.items.is_empty() {
+        return Err(AppError::Validation("分组为空，无可复制内容".into()));
+    }
+    copy_rich_impl(rt, &group.items)
+}
+
+/// 任意多选批量富文本复制：按选择顺序整合，不创建永久分组。
+#[tauri::command]
+pub fn clipboard_copy_items_rich(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    item_ids: Vec<String>,
+) -> AppResult<CopyReport> {
+    let rt = runtime(&state);
+    let items = store::get_items_by_ids(&rt.db, &item_ids)?;
+    if items.is_empty() {
+        return Err(AppError::Validation("所选条目不存在或已删除".into()));
+    }
+    copy_rich_impl(rt, &items)
+}
+
+/// 整组文件复制：把分组内的文件与图片原图作为文件列表写入剪贴板。
+#[tauri::command]
+pub fn clipboard_copy_group_files(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    group_id: String,
+) -> AppResult<CopyReport> {
+    let rt = runtime(&state);
+    let group = load_group_items(rt, &group_id)?;
+    copy_files_impl(rt, &group.items)
+}
+
+/// 任意多选批量文件复制：不把普通文字变成文件；缺失文件跳过并在警告中说明。
+#[tauri::command]
+pub fn clipboard_copy_items_files(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    item_ids: Vec<String>,
+) -> AppResult<CopyReport> {
+    let rt = runtime(&state);
+    let items = store::get_items_by_ids(&rt.db, &item_ids)?;
+    if items.is_empty() {
+        return Err(AppError::Validation("所选条目不存在或已删除".into()));
+    }
+    copy_files_impl(rt, &items)
 }
 
 #[tauri::command]
@@ -243,6 +293,20 @@ pub fn clipboard_toggle_item(
     let rt = runtime(&state);
     let item = store::toggle_item_flag(&rt.db, &item_id, &flag)?;
     rt.emit_changed("toggle-item");
+    Ok(item)
+}
+
+/// 编辑条目标题：非空设为手动标题（自动规则不再覆盖）；空串恢复自动生成。
+#[tauri::command]
+pub fn clipboard_rename_item(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    item_id: String,
+    title: String,
+) -> AppResult<ClipboardItem> {
+    let rt = runtime(&state);
+    let item = store::rename_item(&rt.db, &item_id, &title)?;
+    // 标题影响列表与分组搜索结果，广播让已打开的列表静默刷新
+    rt.emit_changed("rename-item");
     Ok(item)
 }
 
@@ -301,6 +365,25 @@ pub fn clipboard_delete_group(
     }
     let report = store::delete_group(&rt.db, &rt.root, &group_id, also_delete_items)?;
     rt.emit_changed("delete-group");
+    Ok(report)
+}
+
+/// 一键清空：删除全部历史条目与分组（含收藏/置顶），解除任务/现场关联，
+/// 并在提交后清理失去引用的内部缓存。系统剪贴板与外部原始文件不受影响。
+#[tauri::command]
+pub fn clipboard_clear_history(state: State<'_, Arc<ClipboardRuntime>>) -> AppResult<ClearReport> {
+    let rt = runtime(&state);
+    if rt.paste.is_active() {
+        return Err(AppError::Validation(
+            "粘贴进行中，暂不清空剪贴板历史".into(),
+        ));
+    }
+    // 与入库线程互斥：先推进采集代数再删库，清空前产生的事件/排队内容
+    // 不会在清空完成后把旧内容重新写回历史；清空期间新的外部复制仍会被记录。
+    let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
+    rt.capture_epoch.fetch_add(1, Ordering::SeqCst);
+    let report = store::clear_history(&rt.db, &rt.root)?;
+    rt.emit_changed("clear-history");
     Ok(report)
 }
 
@@ -491,6 +574,24 @@ pub fn clipboard_paste_group(
     rt.paste.start(&group_id, target_hwnd, &ids)
 }
 
+/// 任意多选逐项粘贴：不依赖永久分组，按传入顺序逐条写入并发送按键。
+/// 复用整组粘贴的 PasteManager（互斥、取消、恢复、Unverified 语义全部一致），
+/// 审计记录的 group_id 为空串。
+#[tauri::command]
+pub fn clipboard_paste_items(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    target_hwnd: isize,
+    item_ids: Vec<String>,
+) -> AppResult<PasteStartReport> {
+    let rt = runtime(&state);
+    let items = store::get_items_by_ids(&rt.db, &item_ids)?;
+    if items.is_empty() {
+        return Err(AppError::Validation("所选条目不存在或已删除".into()));
+    }
+    let ids: Vec<String> = items.into_iter().map(|i| i.id).collect();
+    rt.paste.start("", target_hwnd, &ids)
+}
+
 #[tauri::command]
 pub fn clipboard_paste_cancel(
     state: State<'_, Arc<ClipboardRuntime>>,
@@ -538,6 +639,8 @@ pub fn clipboard_cleanup(state: State<'_, Arc<ClipboardRuntime>>) -> AppResult<C
             error.message()
         )));
     }
+    // 与采集入库/清空互斥：避免在“资产文件已写、条目未插库”之间删除新采集的图片。
+    let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
     let report = store::cleanup(&rt.db, &rt.root, &config.settings)?;
     rt.emit_changed("cleanup");
     Ok(report)

@@ -82,6 +82,10 @@ pub struct ClipboardItem {
     pub text: String,
     pub html: String,
     pub preview: String,
+    /// 展示标题：自动生成（≤30 字符）或手动编辑（≤80）；空串时前端回退 preview。
+    pub title: String,
+    /// none（旧记录）/ auto（采集时生成）/ manual（用户编辑，不被自动生成覆盖）
+    pub title_source: String,
     pub byte_size: i64,
     pub source_app: String,
     pub source_title: String,
@@ -167,6 +171,16 @@ pub struct CleanupReport {
     pub orphan_files_removed: i64,
 }
 
+/// 一键清空历史的执行结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct ClearReport {
+    pub items: i64,
+    pub groups: i64,
+    pub freed_bytes: i64,
+    /// 数据库已清空但缓存文件未能删除的数量；下次清理会重试。
+    pub failed_files: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CopyReport {
     /// text | html | image | files
@@ -185,6 +199,11 @@ pub struct ClipboardRuntime {
     /// 本进程最后一次写剪贴板后的序列号；监听线程跳过 <= 该值的事件，
     /// 避免把自己的复制/逐项粘贴当成用户复制。
     pub self_write: Arc<AtomicU32>,
+    /// 历史清空代数：采集事件在产生时记录代数，清空之前的事件/排队内容
+    /// 不允许在清空之后回写历史。
+    pub capture_epoch: Arc<AtomicU64>,
+    /// 清空与入库的文件/事务临界区：清空期间禁止入库线程写资产。
+    pub capture_gate: Arc<Mutex<()>>,
     pub paste: paste::PasteManager,
     monitor: Mutex<Option<platform::ClipboardMonitor>>,
     /// 维护线程代数：停止/重启时递增，旧线程看到代数变化即退出
@@ -205,6 +224,8 @@ impl ClipboardRuntime {
             root,
             app,
             self_write,
+            capture_epoch: Arc::new(AtomicU64::new(0)),
+            capture_gate: Arc::new(Mutex::new(())),
             paste,
             monitor: Mutex::new(None),
             maintenance_gen: AtomicU64::new(0),
@@ -227,6 +248,8 @@ impl ClipboardRuntime {
             root: self.root.clone(),
             app: self.app.clone(),
             self_write: self.self_write.clone(),
+            capture_epoch: self.capture_epoch.clone(),
+            capture_gate: self.capture_gate.clone(),
         });
         match platform::ClipboardMonitor::start(sink) {
             Ok(m) => {
@@ -266,6 +289,12 @@ impl ClipboardRuntime {
                         // 在下一项读取时消失，宁可推迟到下一轮。
                         if !runtime.paste.is_active() {
                             let _ = store::interrupt_stale_paste_jobs(&runtime.db);
+                            // 与采集入库/清空互斥：入库线程先写资产文件再插库，
+                            // 清理若在两步之间扫目录，会把新采集的图片当成孤儿删掉。
+                            let _gate = runtime
+                                .capture_gate
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
                             match store::cleanup(&runtime.db, &runtime.root, &config.settings) {
                                 Ok(r)
                                     if r.items_deleted > 0

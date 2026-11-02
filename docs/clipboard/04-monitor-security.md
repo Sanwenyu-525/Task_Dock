@@ -39,6 +39,7 @@
 |---|---|---|---|
 | `SelfWrite` | 事件序列号命中本进程写入水位（回绕安全） | `self_write_events` | 否 |
 | `Superseded` | 事件序列号不晚于**读取水位**（`last_captured`） | `superseded_events` | 否 |
+| `Cleared` | 事件产生时的清空代数早于当前值（用户清空历史前的事件） | `cleared_stale_events` | 否 |
 | `Read` | 其余情况 | `captured`（读成功）/ `empty_events`（读为空） | 是 |
 
 要点：
@@ -56,16 +57,21 @@
 
 诊断：`clipboard_status.monitor` 返回 `observed_events`、`merged_events`、`captured`、
 `recorded`、`duplicates`、`skipped`、`dropped_events`、`dropped_contents`、`failed`、
-`self_write_events`、`superseded_events`、`empty_events`、
-`peak_event_queue`、`peak_content_queue`、`max_capture_latency_ms`、
-`max_process_latency_ms` 与队列容量；只含计数，不含任何剪贴板内容。
+`self_write_events`、`superseded_events`、`empty_events`、`cleared_stale_events`、
+`cleared_stale_contents`、`peak_event_queue`、`peak_content_queue`、
+`max_capture_latency_ms`、`max_process_latency_ms` 与队列容量；只含计数，
+不含任何剪贴板内容。
 
 计数可对账（第四轮新增，用于验收核对）：
 
 ```
 observed_events = dropped_events + merged_events + superseded_events
                 + self_write_events + captured + empty_events + skipped
+                + cleared_stale_events
 ```
+
+`cleared_stale_contents` 属于入库阶段：清空前已入队、清空后才轮到处理的内容，
+单独计数，不参与上面的“事件”对账。旧事件/旧内容在清空后不会把历史写回。
 
 - `observed_events`：监听线程收到的 `WM_CLIPBOARDUPDATE` 通知数。
 - `dropped_events`：事件队列溢出被丢弃的最旧事件数。
@@ -129,6 +135,15 @@ URL 判定：`http://` / `https://`、无空白、≤4096 字符、不含引号/
 3. **以内容为准**：序列号在合成格式/延迟渲染下会继续增长，粘贴的写前检查、
    写后确认与恢复都以锁内内容比较为准；序列号只作快速变化检测。
 4. **来源应用过滤**：读取后若来源 exe 等于当前进程 exe，直接跳过（兜底，不作为主判据）。
+   **（2026-11-02 更正：该兜底已移除）** 该跳过依据的是采集读取时刻的前台推断，
+   而读取是异步的：截图工具（如 Snipaste）复制后立即关闭覆盖层、前台切回 Task Dock，
+   外部图片会被误判成自身复制而丢弃（用户实测 Snipaste `Ctrl+C` 不入库的根因；
+   历史诊断日志中该跳过多次真实触发，见 `docs/clipboard/evidence/p1-03-mixed-paste-*.log`
+   与 `docs/performance/results/DIAG-joint-clipboard-rerun-*.log`）。自身写入的识别
+   只依赖本节第 1–3 条的自写序列号水位与锁内复核：所有 Rust 写入路径（单项复制、
+   富文本/文件复制、逐项粘贴、恢复）都在 `ACCESS_LOCK` 内登记水位，覆盖完整；
+   WebView 内用户主动的复制（如选中文本按 Ctrl+C）视同外部复制入库，与系统
+   剪贴板历史行为一致，不构成回流（入库不再触发写剪贴板）。
 
 恢复不是无条件写入：`restore_if_own_content` 先确认当前内容仍等于本任务最后写入，
 才写回快照并登记；用户后来复制的内容只会得到 `KeepUserCopy`，绝不被恢复覆盖。
@@ -249,6 +264,8 @@ URL 判定：`http://` / `https://`、无空白、≤4096 字符、不含引号/
 7. 高频复制可能触发有界队列丢弃（事件或内容）；Windows 剪贴板不可回放，
    被丢弃的内容不会出现在历史中，只能通过 `clipboard_status.monitor` 的计数发现。
 8. 来源是前台窗口推断值，可能不准确；来源未知时按更保守的凭据模式过滤，但仍不保证识别全部敏感内容。
+   外部复制发生时若前台已切回本应用（如截图工具关闭覆盖层后），来源可能显示为
+   `task-dock.exe`——这只影响展示与排除名单的匹配，不影响是否入库（2026-11-02）。
 9. 监听已暂停/停用期间发生的复制不会补录；恢复后只记录新事件。
 10. 剪贴板配置损坏时采用 fail-closed：自动记录停止，必须由用户在设置中显式修复；
    数据库读取失败无法通过修复键值解决，需排查数据库本身。

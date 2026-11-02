@@ -1,7 +1,7 @@
 //! 分类胶囊外壳：轨道 + 功能面板。
 //!
 //! 结构（与 Win32 区域一一对应，见 `lib/capsuleLayout.ts`）：
-//!   [ 轨道 56×300 ][ 间隙 8 ][ 面板 336×420 ]
+//!   [ 轨道 56×400 ][ 间隙 12 ][ 面板 340×440 ]
 //!
 //! 关键约束（v0.7）：
 //! - **窗口在停靠期间不移动、不缩放**，展开/收起只切 Win32 区域；
@@ -70,10 +70,12 @@ export default function CapsuleDock() {
     collapse?.();
   }, [collapse]);
 
-  // Escape：作为最低优先级弹层注册，一次 Esc 只收面板、不隐藏窗口
+  // Escape：作为最低优先级弹层注册，一次 Esc 只收面板、不隐藏窗口。
+  // blocksAutoHide=false：本层不阻止引擎的「光标离开 450ms 自动收起」——
+  // 它只是 Esc 归属，不代表用户正在菜单/对话框里交互。
   useEffect(() => {
     if (!expanded) return;
-    return registerOverlay({ kind: "drawer", onEscape: closePanel });
+    return registerOverlay({ kind: "drawer", onEscape: closePanel, blocksAutoHide: false });
   }, [expanded, closePanel]);
 
   const onSelect = (c: RailCategory) => {

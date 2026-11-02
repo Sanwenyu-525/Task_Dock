@@ -3,7 +3,7 @@
 //! v0.6：由顶部横向标签改为**左侧垂直导航**（两套视觉预设共用同一结构）。
 //! - 图标 + 文字，选中态由预设决定（梦幻渐变=淡色药丸，液态玻璃=玻璃胶囊）
 //! - 徽标口径与行动中心一致（见下），不新造第二套计数
-//! - 底部保留「快速添加」入口，Ctrl+K 与标题栏入口行为一致
+//! - 「新建任务」置于导航顶部，仅图标（可访问名由 aria-label 提供），复用 Ctrl+K / 标题栏的快速添加行为
 //! - 窄窗（< 380px）时只留图标，避免挤压右侧统计卡与筛选行
 //! - v0.6：剪贴板正式成为第 4 个入口（不再是覆盖整屏的抽屉）
 
@@ -50,6 +50,19 @@ export default function FullView() {
   return (
     <div className="full-view">
       <nav className="rail" aria-label="主导航">
+        <div className="rail-head">
+          <button
+            className="rail-new-task"
+            data-tip="新建任务 (Ctrl+K)"
+            aria-label="新建任务"
+            onClick={() => {
+              setTab("tasks");
+              bumpQuickAdd();
+            }}
+          >
+            <Plus size={15} strokeWidth={1.9} aria-hidden="true" />
+          </button>
+        </div>
         <div className="rail-items">
           {TABS.map((t) => {
             const count = t.badge ? counts[t.badge] : 0;
@@ -76,22 +89,6 @@ export default function FullView() {
               </button>
             );
           })}
-        </div>
-        <div className="rail-foot">
-          <button
-            className="rail-item rail-add"
-            data-tip="快速添加任务 (Ctrl+K)"
-            aria-label="快速添加任务"
-            onClick={() => {
-              setTab("tasks");
-              bumpQuickAdd();
-            }}
-          >
-            <span className="rail-icon">
-              <Plus size={17} strokeWidth={1.9} />
-            </span>
-            <span className="rail-label">添加</span>
-          </button>
         </div>
       </nav>
       <div className={`tab-content tab-content-${tab}`}>

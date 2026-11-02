@@ -10,6 +10,7 @@ pub mod commands;
 pub mod context_menu;
 pub mod db;
 pub mod error;
+mod magnetic;
 pub mod navigation;
 pub mod nlp;
 pub mod recurrence;
@@ -32,6 +33,10 @@ use db::Db;
 
 static TRAY: OnceLock<TrayIcon> = OnceLock::new();
 static TRAY_STATE: AtomicU8 = AtomicU8::new(255);
+
+/// 启动「空白区域」兜底时长：前端就绪信号迟迟不到（webview 崩溃/加载失败）时，
+/// 必须把窗口恢复成正常区域，否则会留下一个只有 1px 的不可见窗口。
+const BLANK_REGION_FALLBACK_MS: u64 = 4000;
 
 // ── 托盘 ────────────────────────────────────────────────────
 
@@ -458,6 +463,17 @@ pub fn run() {
                 window_shape::schedule_reapply(&win);
                 // 销毁时清理区域缓存（防句柄复用后误判「已应用」）
                 window_shape::watch_destroy(&win);
+                // 拖拽磁力：在**主窗**上安装 WM_MOVING 子类化（只此一个窗口；
+                // 右键菜单等独立窗口不接管）。必须在窗口所属线程调用。
+                match win.hwnd() {
+                    Ok(h) => {
+                        if !magnetic::install(h.0 as isize) {
+                            tracing::warn!("拖拽磁力子类化安装失败，吸附手感退化为纯阈值");
+                        }
+                    }
+                    Err(e) => tracing::warn!("无法获取主窗句柄，拖拽磁力未安装: {e}"),
+                }
+                magnetic::watch_destroy(&win);
             }
 
             // 窗口材质（毛玻璃）：在显示窗口之前应用，避免透明闪烁；
@@ -492,8 +508,48 @@ pub fn run() {
                 }
             }
 
-            // 预检已通过（或为正式版），此时才显示窗口
+            // 预检已通过（或为正式版），此时才显示窗口。
+            //
+            // 若上次退出时是停靠态（snap_enabled + snap_state.edge），先把区域裁成
+            // 1×1 空白：窗口立刻 show（前台可见 → 定时器不被节流，恢复更快），
+            // 但屏幕上没有任何主窗口像素；前端把容器尺寸 + 贴边位置 + 轨道区域
+            // 一次做完后由 `notify_ui_ready` 清掉空白区域。旧实现先露出完整主窗口
+            // 约 1.9s 再缩成胶囊，正是「停靠态仍看到主窗口矩形」的启动路径。
+            let docked_restore = settings.snap_enabled
+                && db
+                    .get_setting("snap_state")
+                    .ok()
+                    .flatten()
+                    .and_then(|v| {
+                        serde_json::from_value::<commands::system::WindowSnapState>(v).ok()
+                    })
+                    .map(|s| s.is_valid() && s.edge != "none")
+                    .unwrap_or(false);
             if let Some(win) = handle.get_webview_window("main") {
+                if docked_restore {
+                    if let Ok(h) = win.hwnd() {
+                        window_shape::set_blank(h.0 as isize, true);
+                        // 必须在 show() 之前真正裁好：否则窗口会带着上一次的
+                        // 整窗区域先显示出来（哪怕只有一帧，也是完整主窗口）。
+                        window_shape::apply(&win);
+                        tracing::debug!(
+                            "启动为停靠恢复：先裁成 1×1 空白区域，等前端区域就绪（兜底 {}ms）",
+                            BLANK_REGION_FALLBACK_MS
+                        );
+                    }
+                    let fallback = handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            BLANK_REGION_FALLBACK_MS,
+                        ));
+                        if clear_startup_blank(&fallback) {
+                            tracing::warn!(
+                                "前端未在 {}ms 内确认就绪，已撤销启动空白区域",
+                                BLANK_REGION_FALLBACK_MS
+                            );
+                        }
+                    });
+                }
                 let _ = win.show();
             }
 
@@ -657,8 +713,13 @@ pub fn run() {
             commands::system::apply_window_material,
             commands::system::apply_window_radius,
             commands::system::apply_window_capsule,
-            // 液态玻璃右键菜单（v0.6）
-            context_menu::show_context_menu,
+            commands::system::set_magnetic_drag_config,
+            commands::system::set_magnetic_dock,
+            commands::system::set_undock_anchor,
+            commands::system::take_undock_anchor_applied,
+            commands::system::cancel_undock_anchor,
+            commands::system::notify_ui_ready,
+            // 液态玻璃右键菜单（v0.6；仅托盘右键入口，主窗右键不弹菜单）
             context_menu::hide_context_menu,
             context_menu::fit_context_menu,
             context_menu::context_menu_action,
@@ -696,13 +757,18 @@ pub fn run() {
             commands::clipboard::clipboard_thumb,
             commands::clipboard::clipboard_image,
             commands::clipboard::clipboard_copy_item,
+            commands::clipboard::clipboard_copy_text,
             commands::clipboard::clipboard_copy_group_rich,
             commands::clipboard::clipboard_copy_group_files,
+            commands::clipboard::clipboard_copy_items_rich,
+            commands::clipboard::clipboard_copy_items_files,
             commands::clipboard::clipboard_toggle_item,
+            commands::clipboard::clipboard_rename_item,
             commands::clipboard::clipboard_toggle_group,
             commands::clipboard::clipboard_close_group,
             commands::clipboard::clipboard_delete_items,
             commands::clipboard::clipboard_delete_group,
+            commands::clipboard::clipboard_clear_history,
             commands::clipboard::clipboard_create_group,
             commands::clipboard::clipboard_rename_group,
             commands::clipboard::clipboard_add_to_group,
@@ -717,6 +783,7 @@ pub fn run() {
             commands::clipboard::clipboard_foreground_target,
             commands::clipboard::clipboard_paste_precheck,
             commands::clipboard::clipboard_paste_group,
+            commands::clipboard::clipboard_paste_items,
             commands::clipboard::clipboard_paste_cancel,
             commands::clipboard::clipboard_paste_resume,
             commands::clipboard::clipboard_paste_job,
@@ -874,6 +941,27 @@ fn window_mostly_offscreen<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>) -> 
         Some(!commands::settings::is_rect_mostly_visible(&rect, &bounds))
     })()
     .unwrap_or(false)
+}
+
+/// 启动阶段的主窗口显示：窗口始终 show()，但若上次退出是停靠态，先把 Win32
+/// 区域裁成 1×1 空白区域——窗口"可见"（定时器不被后台节流）但屏幕上没有
+/// 任何主窗口像素，直到前端把容器尺寸 + 贴边位置 + 轨道区域一次做完。
+/// 这是「停靠态仍看到主窗口矩形」的启动路径修复：旧实现先露出完整主窗口
+/// （实测约 1.9s）再缩成胶囊。
+///
+/// `notify_ui_ready`（前端就绪）或 `BLANK_REGION_FALLBACK_MS` 兜底会把空白
+/// 区域清掉；清掉后由 `apply` 按当前状态重算（停靠 → 轨道，未停靠 → 整窗）。
+pub(crate) fn clear_startup_blank<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
+    let Some(win) = app.get_webview_window("main") else {
+        return false;
+    };
+    let Ok(handle) = win.hwnd() else {
+        return false;
+    };
+    if !window_shape::take_blank(handle.0 as isize) {
+        return false;
+    }
+    window_shape::apply_on_main_thread(&win)
 }
 
 /// 唤回窗口：显示 + 还原最小化 + 聚焦。

@@ -1,7 +1,8 @@
 //! 系统级命令：退出、自启动、窗口模式、热键开关。
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agents::AgentHub;
@@ -163,10 +164,15 @@ pub fn apply_window_radius(app: AppHandle, radius: f64) -> AppResult<bool> {
     Ok(applied)
 }
 
-/// 胶囊几何常量：与前端 `src/lib/capsuleLayout.ts` 的 CAPSULE_* 跨端契约
-/// （两端单测锁定；修改必须同步）。
+/// 胶囊几何常量：与前端 `src/lib/capsuleShape.ts` / `src/lib/capsuleLayout.ts`
+/// 的 `WING_*` 是跨端契约（两端单测锁定；修改必须同步）。
+///
+/// 外框 = 平直主体 `LENGTH` + 两侧肩部 `CAPSULE_SHOULDER_CSS`（88）：
+/// 224 + 2×88 = 400，与 CSS `.cap-v / .cap-h` 的 400px 和 SVG viewBox 一致。
+/// 旧值 300 属于「外扩 26」时代的尺寸，会让 Rust 区域比 CSS 翼片高 38%（可见胶囊
+/// 之外留下一条透明但可点击的命中带）。
 pub const CAPSULE_THICKNESS_CSS: u32 = 56;
-pub const CAPSULE_LENGTH_CSS: u32 = 300;
+pub const CAPSULE_LENGTH_CSS: u32 = 224;
 
 /// 胶囊区域模式（分类胶囊）：
 /// - `off`   ：恢复整窗圆角区域（未停靠 / 解除吸附）
@@ -215,9 +221,137 @@ pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String) -> AppRe
             )));
         }
     }
+    let entering = mode != "off";
+    if entering {
+        // 胶囊停靠态只用 CSS 玻璃：DWM 原生背景会越过区域，先把主窗的原生层停用
+        // （解除吸附后恢复，见 restore_native_backdrop）。
+        // 归属与 `window_shape::set_capsule` 同步：即使这次区域写入失败，
+        // window_shape 里的胶囊参数仍然处于「已设置」，后续 apply 仍可能裁成轨道，
+        // 因此原生层必须保持停用，直到 off 真正把区域恢复成整窗。
+        set_capsule_owner(Some(hwnd));
+        suspend_native_backdrop(&app, &win, hwnd);
+    }
     let applied = crate::window_shape::apply_on_main_thread(&win);
+    if !entering && applied {
+        // 只有区域确实回到整窗才恢复原生背景：否则会立刻把原生底色画到
+        // 仍是胶囊形状的窗口矩形之外（本任务修复的正是这种错配）。
+        set_capsule_owner(None);
+        restore_native_backdrop(&app, &win, hwnd, true);
+    }
     tracing::debug!("胶囊区域 mode={mode}（edge={edge}）应用: {applied}");
     Ok(applied)
+}
+
+// ── 拖拽磁力（v0.7）──────────────────────────────────────────
+//
+// 吸引 / 阻力在原生 `WM_MOVING` 里完成（`crate::magnetic`）：系统模态移动循环
+// 每帧给窗口一次"提议矩形"，改写它就能让窗口偏离鼠标 1:1 轨迹。
+// 前端只下发**参数与停靠位**（低频、幂等），不参与逐帧移动——
+// React 高频 `setPosition` 会与系统拖拽循环争抢窗口位置，必然抖动。
+
+/// 磁力参数（CSS px）。`enabled=false` 时吸引与阻力**同时**失效，
+/// 窗口完全按系统默认移动（`snap_enabled` 关闭必须彻底停用）。
+///
+/// 参数口径与前端 `src/lib/edgeSnap.ts` 的 `SNAP_MAGNET_*` 是跨端契约；
+/// 越界/非法值按安全范围收敛，不写坏全局状态。
+#[tauri::command]
+pub fn set_magnetic_drag_config(
+    enabled: bool,
+    range: f64,
+    max_lead: f64,
+    release: f64,
+) -> bool {
+    let range = if range.is_finite() { range.clamp(8.0, 200.0) } else { 56.0 };
+    let max_lead = if max_lead.is_finite() { max_lead.clamp(0.0, 64.0) } else { 16.0 };
+    let release = if release.is_finite() { release.clamp(4.0, 200.0) } else { 32.0 };
+    crate::magnetic::set_config(enabled, range, max_lead, release);
+    crate::magnetic::installed()
+}
+
+/// 停靠位（物理像素，**齐平位置**）：`edge=null` 表示当前未停靠。
+///
+/// 阻力只对"已停靠且位置已知"的窗口生效；前端在停靠事务提交成功后调用，
+/// 解除 / 关闭吸附 / 卸载引擎时传 `null` 清除。坐标非法时不写入，
+/// 保持上一次状态（宁可没有阻力，也不按错误基准拉扯窗口）。
+#[tauri::command]
+pub fn set_magnetic_dock(edge: Option<String>, x: Option<f64>, y: Option<f64>) -> AppResult<bool> {
+    let Some(edge) = edge else {
+        crate::magnetic::set_dock(None, 0, 0);
+        return Ok(true);
+    };
+    let id = match edge.as_str() {
+        "left" => 0u8,
+        "right" => 1,
+        "top" => 2,
+        "bottom" => 3,
+        other => {
+            return Err(crate::error::AppError::Validation(format!(
+                "set_magnetic_dock.edge 非法: {other}（允许: left|right|top|bottom）"
+            )))
+        }
+    };
+    let (Some(x), Some(y)) = (x, y) else {
+        return Ok(false);
+    };
+    if !x.is_finite() || !y.is_finite() {
+        return Ok(false);
+    }
+    // 物理像素坐标：±2^23 之外不可能是真实窗口位置（防止 NaN/溢出写入）
+    let (xi, yi) = (x.round(), y.round());
+    if xi.abs() > 8_388_608.0 || yi.abs() > 8_388_608.0 {
+        return Ok(false);
+    }
+    crate::magnetic::set_dock(crate::magnetic::Edge::from_id(id), xi as i32, yi as i32);
+    Ok(true)
+}
+
+/// 拖离解除的鼠标锚定：请求原生在**拖拽循环内**把窗口恢复为 `mode` 的尺寸，
+/// 并以「标题栏中心 = 光标」对齐（`magnetic::undock_anchor_rect`，含工作区钳制）。
+///
+/// **只有用户拖离胶囊的解除路径调用**：按钮解除 / 打开完整页 / 托盘唤回 /
+/// 启动恢复等路径保持各自原有的定位策略，不得把窗口挪到鼠标下方。
+/// `titlebar_css` 由前端从真实标题栏布局量取（不可测时回退其设计常量）。
+/// 返回 false = 原生磁力层未安装（解除流程照常，由前端回退定位兜底）。
+#[tauri::command]
+pub fn set_undock_anchor(mode: String, titlebar_css: f64) -> bool {
+    let mode = match mode.as_str() {
+        "minimal" | "compact" | "full" => mode.as_str(),
+        _ => "full",
+    };
+    let (w, h) = mode_size(mode);
+    let tb = if titlebar_css.is_finite() {
+        titlebar_css.clamp(16.0, 120.0)
+    } else {
+        41.0
+    };
+    crate::magnetic::request_undock_anchor(w, h, tb)
+}
+
+/// 查询锚定请求是否已在拖拽循环内应用（取后复位）。
+/// false 时前端按**实际恢复后**的窗口尺寸自行定位（`undockAnchorTarget` 同口径）。
+#[tauri::command]
+pub fn take_undock_anchor_applied() -> bool {
+    crate::magnetic::take_undock_anchor_applied()
+}
+
+/// 作废尚未应用的锚定请求（解除中止 / 区域清理失败回滚时防残留）。
+#[tauri::command]
+pub fn cancel_undock_anchor() {
+    crate::magnetic::cancel_undock_anchor()
+}
+
+/// 前端首屏就绪：撤销启动阶段的 1×1 空白区域，让窗口按真实状态重算区域
+/// （停靠恢复已完成 → 轨道；无恢复 → 整窗）。幂等。
+///
+/// 与 `show_main_window`（唤回：显示 + 聚焦 + snap-recall）职责不同：
+/// 这条只做启动放行，不抢焦点、不触发唤回，也不会在未撤销时重复写区域。
+#[tauri::command]
+pub fn notify_ui_ready(app: AppHandle) -> bool {
+    let cleared = crate::clear_startup_blank(&app);
+    if cleared {
+        tracing::debug!("前端首屏就绪，已撤销启动空白区域");
+    }
+    cleared
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -369,6 +503,170 @@ fn clear_native_materials<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>) -> b
         | window_vibrancy::clear_blur(win).is_ok()
 }
 
+// ── 胶囊停靠态的独立合成策略 ────────────────────────────────
+//
+// 真机像素证据（`tmp/acceptance/capsule-native-composition/`，2026-11-01）：
+// 强制 `TASK_DOCK_GLASS_BACKEND=mica|acrylic` 时，即使 `GetWindowRgn` 回读只有轨道，
+// DWM 的 SystemBackdrop 仍按**整个胶囊容器矩形**绘制——屏幕上表现为「胶囊上方/
+// 周围一整块原生底色，桌面只能部分透出」。`SetWindowRgn` 只约束窗口自身合成层，
+// 管不到 DWM 背景（与主窗圆角暗楔同源，见 docs/ui-themes/03-window-composition.md §3.0）。
+//
+// 因此胶囊停靠态使用**独立合成策略**：临时停用原生背景，只保留 CSS 玻璃；
+// 期望效果记录在 desire 表，解除吸附（区域恢复整窗）后再恢复。
+// 不新建窗口、不改系统级 DWM 设置，普通主窗的材质行为完全不变。
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeBackdrop {
+    None,
+    Mica,
+    Acrylic,
+    Blur,
+}
+
+/// 主窗「未停靠时应当生效」的原生背景（由材质应用路径写入）。
+static NATIVE_DESIRE: LazyLock<Mutex<HashMap<isize, NativeBackdrop>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 因胶囊停靠被临时停用的窗口（解除吸附时据此恢复）。
+static NATIVE_SUSPENDED: LazyLock<Mutex<HashMap<isize, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 当前处于胶囊停靠态的主窗 hwnd（与 `window_shape::set_capsule` 同一入口写入）。
+/// 用于「停靠期间切换材质」时拒绝重新挂原生层。
+static CAPSULE_OWNER: LazyLock<Mutex<Option<isize>>> = LazyLock::new(|| Mutex::new(None));
+
+fn hwnd_of<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>) -> Option<isize> {
+    win.hwnd().ok().map(|h| h.0 as isize)
+}
+
+fn note_native_desire(hwnd: isize, effect: NativeBackdrop) {
+    NATIVE_DESIRE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(hwnd, effect);
+}
+
+fn desired_backdrop(hwnd: isize) -> NativeBackdrop {
+    NATIVE_DESIRE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&hwnd)
+        .copied()
+        .unwrap_or(NativeBackdrop::None)
+}
+
+fn capsule_active(hwnd: isize) -> bool {
+    *CAPSULE_OWNER.lock().unwrap_or_else(|e| e.into_inner()) == Some(hwnd)
+}
+
+fn set_capsule_owner(hwnd: Option<isize>) {
+    *CAPSULE_OWNER.lock().unwrap_or_else(|e| e.into_inner()) = hwnd;
+}
+
+fn clear_native_on_main<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+) -> bool {
+    let w = win.clone();
+    run_material(app, move || clear_native_materials(&w))
+}
+
+/// 胶囊停靠态的材质结果：原生层已停用，玻璃完全由 CSS 承担。
+fn capsule_glass<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+    hwnd: Option<isize>,
+    os_version: String,
+) -> MaterialResult {
+    if let Some(h) = hwnd {
+        suspend_native_backdrop(app, win, h);
+    }
+    MaterialResult {
+        material: "glass".into(),
+        applied: true,
+        effect: "css".into(),
+        os_version,
+    }
+}
+
+/// 进入胶囊停靠态：清除原生背景（幂等；没有期望效果时不做任何事）。
+fn suspend_native_backdrop<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+    hwnd: isize,
+) {
+    let desired = desired_backdrop(hwnd);
+    if desired == NativeBackdrop::None {
+        return; // 本来就没有原生层（CSS 玻璃 / solid）
+    }
+    if NATIVE_SUSPENDED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&hwnd)
+        .copied()
+        .unwrap_or(false)
+    {
+        return; // 已停用
+    }
+    if clear_native_on_main(app, win) {
+        NATIVE_SUSPENDED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(hwnd, true);
+        tracing::debug!(
+            hwnd,
+            ?desired,
+            "胶囊停靠：已暂停原生 DWM 背景（它不受 SetWindowRgn 约束）"
+        );
+    } else {
+        tracing::warn!(
+            hwnd,
+            ?desired,
+            "胶囊停靠：暂停原生 DWM 背景失败，胶囊容器矩形可能被整块原生底色覆盖"
+        );
+    }
+}
+
+/// 退出胶囊停靠态：按记录的期望效果恢复原生背景（幂等）。
+///
+/// 只有**区域确实恢复整窗**（调用方传入 verified）才恢复：区域写入失败时窗口仍是
+/// 胶囊形状，此时挂原生层会立刻把整块原生底色画到区域之外。
+fn restore_native_backdrop<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+    hwnd: isize,
+    verified: bool,
+) {
+    if !verified {
+        return;
+    }
+    let was = NATIVE_SUSPENDED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&hwnd)
+        .unwrap_or(false);
+    if !was {
+        return;
+    }
+    let desired = desired_backdrop(hwnd);
+    let w = win.clone();
+    let ok = run_material(app, move || match desired {
+        NativeBackdrop::None => true,
+        NativeBackdrop::Mica => window_vibrancy::apply_mica(&w, None).is_ok(),
+        NativeBackdrop::Acrylic => window_vibrancy::apply_acrylic(&w, None).is_ok(),
+        NativeBackdrop::Blur => window_vibrancy::apply_blur(&w, None).is_ok(),
+    });
+    if ok {
+        tracing::debug!(hwnd, ?desired, "解除吸附：已恢复原生背景");
+    } else {
+        tracing::warn!(
+            hwnd,
+            ?desired,
+            "解除吸附：恢复原生背景失败，界面回退 CSS 玻璃"
+        );
+    }
+}
+
 /// Win32 区域裁剪是否启用（口径与 window_shape::flag 一致）。
 fn region_clipping_enabled() -> bool {
     std::env::var("TASK_DOCK_WINDOW_REGION")
@@ -407,8 +705,16 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
     let build = windows_build();
     let os_version = format!("10.0.{}", build);
     let backend = effective_backend(&glass_backend(), build, region_clipping_enabled());
+    // 胶囊停靠态：原生背景（Mica/Acrylic/blur）一律不挂到窗口——DWM 按整个窗口
+    // 矩形绘制它，SetWindowRgn 裁不到（真机证据见文件上方「胶囊停靠态」小节）。
+    // 只记录「未停靠时应生效」的效果，解除吸附后恢复；玻璃由 CSS 承担。
+    let hwnd = hwnd_of(win);
+    let in_capsule = hwnd.map(capsule_active).unwrap_or(false);
 
     if material != "glass" {
+        if let Some(h) = hwnd {
+            note_native_desire(h, NativeBackdrop::None);
+        }
         let w = win.clone();
         let _ = run_material(app, move || clear_native_materials(&w));
         return MaterialResult {
@@ -424,6 +730,9 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
     // 圆角外直接透出桌面；liquid 的 window-fill 本就 76–86% 不透明，
     // 停用原生模糊的视觉损失有限，且彻底消除暗楔。
     if backend == "css" {
+        if let Some(h) = hwnd {
+            note_native_desire(h, NativeBackdrop::None);
+        }
         let w = win.clone();
         let _ = run_material(app, move || clear_native_materials(&w));
         return MaterialResult {
@@ -438,6 +747,16 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
     if backend == "blur" || backend == "none" {
         let w = win.clone();
         let want_blur = backend == "blur";
+        if want_blur {
+            if let Some(h) = hwnd {
+                note_native_desire(h, NativeBackdrop::Blur);
+            }
+        } else if let Some(h) = hwnd {
+            note_native_desire(h, NativeBackdrop::None);
+        }
+        if want_blur && in_capsule {
+            return capsule_glass(app, win, hwnd, os_version);
+        }
         let ok = run_material(app, move || {
             let _ = window_vibrancy::clear_mica(&w);
             let _ = window_vibrancy::clear_acrylic(&w);
@@ -457,6 +776,12 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
 
     // 强制 Acrylic（Win11 上同样走 DWM SystemBackdrop，用于对照验证）。
     if backend == "acrylic" {
+        if let Some(h) = hwnd {
+            note_native_desire(h, NativeBackdrop::Acrylic);
+        }
+        if in_capsule {
+            return capsule_glass(app, win, hwnd, os_version);
+        }
         let w = win.clone();
         if run_material(app, move || {
             window_vibrancy::apply_acrylic(&w, None).is_ok()
@@ -472,6 +797,12 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
 
     // Win11：Mica 优先
     if backend != "acrylic" && build >= 22000 {
+        if let Some(h) = hwnd {
+            note_native_desire(h, NativeBackdrop::Mica);
+        }
+        if in_capsule {
+            return capsule_glass(app, win, hwnd, os_version);
+        }
         let w = win.clone();
         if run_material(app, move || window_vibrancy::apply_mica(&w, None).is_ok()) {
             return MaterialResult {
@@ -484,6 +815,12 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
     }
     // Win10 1803+：Acrylic
     if build >= 17134 {
+        if let Some(h) = hwnd {
+            note_native_desire(h, NativeBackdrop::Acrylic);
+        }
+        if in_capsule {
+            return capsule_glass(app, win, hwnd, os_version);
+        }
         let w = win.clone();
         if run_material(app, move || {
             window_vibrancy::apply_acrylic(&w, None).is_ok()
@@ -497,6 +834,9 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
         }
     }
     // 不支持：确保无残留效果
+    if let Some(h) = hwnd {
+        note_native_desire(h, NativeBackdrop::None);
+    }
     let w = win.clone();
     let _ = run_material(app, move || clear_native_materials(&w));
     MaterialResult {
@@ -549,9 +889,10 @@ mod tests {
 
     #[test]
     fn capsule_geometry_contract_matches_frontend() {
-        // 跨端契约：与 src/lib/capsuleLayout.ts 的 CAPSULE_RAIL_THICKNESS/LENGTH 一致
+        // 跨端契约：与 src/lib/capsuleShape.ts / capsuleLayout.ts 同一组数字
         assert_eq!(CAPSULE_THICKNESS_CSS, 56);
-        assert_eq!(CAPSULE_LENGTH_CSS, 300);
+        assert_eq!(CAPSULE_LENGTH_CSS, 224);
+        assert_eq!(crate::window_shape::CAPSULE_SHOULDER_CSS, 88);
         for (scale, expect_t) in [(1.0f64, 56i32), (1.25, 70), (1.5, 84), (2.0, 112)] {
             let cap = crate::window_shape::CapsuleParams {
                 edge: 0,
@@ -559,14 +900,33 @@ mod tests {
                 length_css: CAPSULE_LENGTH_CSS,
                 expanded: false,
             };
-            // 断言**最终矩形**：left 纵向 → width=厚度、height=长度
+            // 断言**最终外框**：left 纵向 → width=厚度、
+            // height=平直主体 + 2×肩部（88）
             let set = crate::window_shape::capsule_regions(2000, 1200, scale, &cap).unwrap();
             assert_eq!(set.rail.width, expect_t, "scale={scale}");
+            // 主体与肩部**各自**取整后再相加（与 wing_metrics 一致），
+            // 不能先加后乘：125% 下 round(110)=110、round(280)=280。
             assert_eq!(
                 set.rail.height,
-                (300.0f64 * scale).round() as i32,
+                (224.0f64 * scale).round() as i32 + 2 * (88.0f64 * scale).round() as i32,
                 "scale={scale}"
             );
+            // 区域是多边形而非外框矩形：外框缺角必须在区域之外
+            let (nx, ny) = set.notch_probe.expect("应有缺角探针");
+            let n = set.rail_polygon.len();
+            let mut inside = false;
+            for i in 0..n {
+                let a = set.rail_polygon[i];
+                let b = set.rail_polygon[(i + n - 1) % n];
+                if (a.1 > ny) != (b.1 > ny) {
+                    let x =
+                        (b.0 - a.0) as f64 * (ny - a.1) as f64 / (b.1 - a.1) as f64 + a.0 as f64;
+                    if (nx as f64) < x {
+                        inside = !inside;
+                    }
+                }
+            }
+            assert!(!inside, "scale={scale} 缺角不得落在区域多边形内");
         }
     }
 
@@ -618,5 +978,33 @@ mod tests {
         // 未知值按 auto 处理，保持原有容错
         assert_eq!(effective_backend("weird", 26100, true), "css");
         assert_eq!(effective_backend("weird", 26100, false), "auto");
+    }
+
+    /// 胶囊归属必须按 hwnd 隔离：右键菜单弹窗不得继承主窗的胶囊态，
+    /// 否则菜单也会被当作「停靠中」而拒绝挂原生材质。
+    #[test]
+    fn capsule_owner_is_scoped_to_one_hwnd() {
+        set_capsule_owner(Some(100));
+        assert!(capsule_active(100));
+        assert!(!capsule_active(200), "其他窗口不得继承胶囊归属");
+        set_capsule_owner(None);
+        assert!(!capsule_active(100), "解除吸附必须清空归属");
+    }
+
+    /// 期望原生背景按 hwnd 记录，缺省为 None（CSS 玻璃 / solid 不产生原生层）。
+    #[test]
+    fn native_desire_is_hwnd_scoped_and_defaults_to_none() {
+        note_native_desire(100, NativeBackdrop::Mica);
+        note_native_desire(200, NativeBackdrop::Acrylic);
+        assert_eq!(desired_backdrop(100), NativeBackdrop::Mica);
+        assert_eq!(desired_backdrop(200), NativeBackdrop::Acrylic);
+        assert_eq!(
+            desired_backdrop(300),
+            NativeBackdrop::None,
+            "未记录的窗口视为无原生层"
+        );
+        // 切回 solid / css 必须覆盖旧期望，解除吸附后不得恢复已弃用的效果
+        note_native_desire(100, NativeBackdrop::None);
+        assert_eq!(desired_backdrop(100), NativeBackdrop::None);
     }
 }

@@ -7,29 +7,54 @@
 //! 2. 窗口应放在哪（贴边齐平 + 胶囊沿边居中）。
 //!
 //! 尺寸与 `src-tauri/src/window_shape.rs` 的 `CAPSULE_*` 常量是跨端契约
-//! （两端各有单测锁定同一组数字）：轨道 56×300、面板 336×420、间隙 8。
+//! （两端各有单测锁定同一组数字）：厚 56、平直主体 224、单侧液态肩部 88
+//! （外框 400×56）、面板 340×440、间隙 12。外形本身由 `lib/capsuleShape.ts`
+//! 唯一定义，本文件只负责**摆放**（容器、贴边位置、区域矩形与轮廓）。
+//!
+//! 面板尺寸与间隙在 v0.7 方案 B（液态融合翼片）里按参考图重新标定：
+//! 参考图中面板宽高比 ≈ 0.72、面板/翼片厚度比 ≈ 4.0、间隙 ≈ 面板宽的 2%。
+//! 336×420 → 340×440 是「按真实桌面尺寸还原布局关系」的结果，不是逐像素抄图。
 //!
 //! 坐标口径：本文件同时提供 CSS 尺寸常量（供样式与布局引用）与**物理像素**
 //! 计算（供 Tauri setPosition 使用），换算只发生在 `capsuleWindowRect` 内。
 
 import type { SnapArea, SnapEdge } from "./edgeSnap";
+import {
+  WING_AA_INSET,
+  WING_LENGTH_CSS,
+  WING_SHOULDER_CSS,
+  WING_THICKNESS_CSS,
+  pointInPolygon,
+  wingShape,
+  type Point,
+} from "./capsuleShape";
 
 /** 轨道厚度（CSS px）：垂直停靠为宽，水平停靠为高。 */
-export const RAIL_THICKNESS_CSS = 56;
-/** 轨道长度（CSS px，沿边方向）。 */
-export const RAIL_LENGTH_CSS = 300;
+export const RAIL_THICKNESS_CSS = WING_THICKNESS_CSS;
+/** 轨道平直主体长度（CSS px，沿边方向）：不含两侧液态肩部。 */
+export const RAIL_LENGTH_CSS = WING_LENGTH_CSS;
+/** 单侧液态肩部沿边跨度（CSS px）：轨道外框 = 主体长度 + 2×肩宽 = 400。 */
+export const RAIL_SHOULDER_CSS = WING_SHOULDER_CSS;
 /** 功能面板宽（CSS px）。 */
-export const PANEL_WIDTH_CSS = 336;
+export const PANEL_WIDTH_CSS = 340;
 /** 功能面板高（CSS px）。 */
-export const PANEL_HEIGHT_CSS = 420;
-/** 轨道与面板之间的视觉间隙（CSS px）；区域上两块矩形不连通。 */
-export const CAPSULE_GAP_CSS = 8;
+export const PANEL_HEIGHT_CSS = 440;
+/**
+ * 轨道与面板之间的视觉间隙（CSS px）；区域上两块矩形不连通。
+ *
+ * 参考图的连接处是一道**真实的负空间**：翼片内侧高光 → 接触阴影 → 桌面 →
+ * 面板外缘高光。把它改成实心桥接会在 12px 的跨距上必然形成「细脖子」，
+ * 而用一条竖高光掩盖缝隙又正是本次明令禁止的做法。因此这里保留间隙，
+ * 由「翼片肩部曲线 + 面板大圆角 + 双向柔和阴影」共同表达连接；
+ * 间隙本身由 `pointInCapsule` 的 slop 纳入命中区，鼠标跨越不会触发收起。
+ */
+export const CAPSULE_GAP_CSS = 12;
 /** 面板圆角（CSS px）；轨道为全圆角（厚度/2）。 */
-export const PANEL_RADIUS_CSS = 22;
+export const PANEL_RADIUS_CSS = 24;
 
 /** 胶囊容器：停靠时窗口至少要这么大，才能同时容纳轨道与面板。 */
-export const CAPSULE_CONTAINER_W_CSS = RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_WIDTH_CSS; // 400
-export const CAPSULE_CONTAINER_H_CSS = PANEL_HEIGHT_CSS; // 420
+export const CAPSULE_CONTAINER_W_CSS = RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_WIDTH_CSS; // 408
+export const CAPSULE_CONTAINER_H_CSS = PANEL_HEIGHT_CSS; // 440
 
 export interface Size {
   w: number;
@@ -40,8 +65,8 @@ export const isVerticalEdge = (edge: SnapEdge): boolean => edge === "left" || ed
 
 /**
  * 胶囊容器尺寸（CSS px）。垂直停靠：宽 = 轨道 + 间隙 + 面板，高 = 面板高；
- * 水平停靠：宽 = 容器宽（面板宽 336 与轨道长 300 都要放下，取 400 与竖直一致），
- * 高 = 轨道 + 间隙 + 面板。
+ * 水平停靠：宽 = 容器宽（面板宽 340 与轨道长 400 都要放下，取 408 与竖直一致），
+ * 高 = 轨道 + 间隙 + 面板（56 + 12 + 440 = 508）。
  */
 export function capsuleContainerSize(edge: SnapEdge): Size {
   return isVerticalEdge(edge)
@@ -129,8 +154,9 @@ export function isCapsuleContainerSize(rect: { w: number; h: number }, scale: nu
 // ── 可见区域（物理像素，窗口局部坐标）────────────────────────
 //
 // 与 Rust `capsule_regions` 是同一套几何：窗口局部坐标、物理像素、同一组
-// 常量。Rust 侧负责真正裁剪（绘制 + 命中），这里负责**命中判定**（自动收起
-// 判定不能按整窗矩形算——折叠态窗口有 400×420，但只有 56×300 的轨道可见）。
+// 常量、同一套采样规则。Rust 侧负责真正裁剪（绘制 + 命中），这里负责
+// **命中判定**（自动收起判定不能按整窗矩形算——折叠态窗口有 400×420，
+// 但只有一块 56×400 的翼片可见）。
 
 export interface PhysRect {
   x: number;
@@ -140,10 +166,52 @@ export interface PhysRect {
 }
 
 export interface CapsuleRegions {
+  /** 轨道外框（含两侧外扩）：布局与包围盒用，**不是**命中区 */
   rail: PhysRect;
+  /** 轨道可见轮廓多边形（已含 AA 外扩、已钳制进窗口）：命中判定与原生区域共用 */
+  railOutline: Point[];
   panel: PhysRect | null;
+  /** 面板圆角（物理像素）：命中判定与原生区域用同一值 */
+  panelRadius: number;
 }
 
+const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+
+/**
+ * 轨道外框在窗口内的位置。
+ * 垂直停靠：贴左/右边、沿边居中；水平停靠：贴上/下边、沿边居中。
+ * 与 `.capsule-dock` 的 flex 布局一致（`justify-content:flex-start` 贴停靠边、
+ * `align-items:center` 沿边居中）。
+ */
+function railBoxRect(
+  windowW: number,
+  windowH: number,
+  edge: SnapEdge,
+  box: { w: number; h: number },
+): PhysRect {
+  const w = Math.min(box.w, windowW);
+  const h = Math.min(box.h, windowH);
+  const vertical = isVerticalEdge(edge);
+  const x = vertical
+    ? edge === "left"
+      ? 0
+      : Math.max(0, windowW - w)
+    : Math.max(0, Math.round((windowW - w) / 2));
+  const y = vertical
+    ? Math.max(0, Math.round((windowH - h) / 2))
+    : edge === "top"
+      ? 0
+      : Math.max(0, windowH - h);
+  return { x, y, w, h };
+}
+
+/**
+ * 可见区域（物理像素，窗口局部）。
+ *
+ * 轨道轮廓 = `wingShape` 采样点平移到外框位置后钳制进窗口：
+ * 贴边侧的外扩会越过窗口边界，钳制后与 Rust `CreatePolygonRgn` 被系统
+ * 裁剪的结果一致，两端命中判定因此仍逐点相同。
+ */
 export function capsuleRegionsPhysical(
   windowW: number,
   windowH: number,
@@ -151,28 +219,20 @@ export function capsuleRegionsPhysical(
   expanded: boolean,
   scale: number,
 ): CapsuleRegions {
-  const t = toPhysical(RAIL_THICKNESS_CSS, scale);
-  const l = toPhysical(RAIL_LENGTH_CSS, scale);
+  const shape = wingShape(edge, scale, WING_AA_INSET);
+  const rail = railBoxRect(windowW, windowH, edge, shape.box);
+  const railOutline = shape.outline.map((p) => ({
+    x: clamp(Math.round(p.x + rail.x), 0, windowW),
+    y: clamp(Math.round(p.y + rail.y), 0, windowH),
+  }));
+  // 与 Rust `capsule_regions` 同口径：圆角比 CSS 小 2px（AA 内收），硬边落在透明像素上
+  const panelRadius = Math.max(1, Math.floor(PANEL_RADIUS_CSS * scale) - WING_AA_INSET);
+  if (!expanded) return { rail, railOutline, panel: null, panelRadius };
+
   const pw = toPhysical(PANEL_WIDTH_CSS, scale);
   const ph = toPhysical(PANEL_HEIGHT_CSS, scale);
   const gap = toPhysical(CAPSULE_GAP_CSS, scale);
   const vertical = isVerticalEdge(edge);
-  const rw = Math.min(vertical ? t : l, windowW);
-  const rh = Math.min(vertical ? l : t, windowH);
-  const rail: PhysRect = vertical
-    ? {
-        x: edge === "left" ? 0 : Math.max(0, windowW - rw),
-        y: Math.max(0, Math.round((windowH - rh) / 2)),
-        w: rw,
-        h: rh,
-      }
-    : {
-        x: Math.max(0, Math.round((windowW - rw) / 2)),
-        y: edge === "top" ? 0 : Math.max(0, windowH - rh),
-        w: rw,
-        h: rh,
-      };
-  if (!expanded) return { rail, panel: null };
   const panelW = Math.min(pw, windowW);
   const panelH = Math.min(ph, windowH);
   const px = vertical
@@ -189,22 +249,51 @@ export function capsuleRegionsPhysical(
   const fits = px >= 0 && py >= 0 && px + panelW <= windowW && py + panelH <= windowH;
   return {
     rail,
+    railOutline,
     panel: fits ? { x: px, y: py, w: panelW, h: panelH } : null,
+    panelRadius,
   };
 }
 
-const inRect = (px: number, py: number, r: PhysRect, m: number): boolean =>
-  px >= r.x - m && px <= r.x + r.w + m && py >= r.y - m && py <= r.y + r.h + m;
+/**
+ * 圆角矩形点内判定（与 `CreateRoundRectRgn` 的填充语义一致）。
+ * 四角用「圆心到点」的欧氏距离判定，避免把面板圆角外的桌面算成面板。
+ */
+export function pointInRoundedRect(
+  px: number,
+  py: number,
+  r: PhysRect,
+  radius: number,
+  m = 0,
+): boolean {
+  const x0 = r.x - m;
+  const y0 = r.y - m;
+  const x1 = r.x + r.w + m;
+  const y1 = r.y + r.h + m;
+  if (px < x0 || px > x1 || py < y0 || py > y1) return false;
+  const rad = Math.max(0, Math.min(radius + m, Math.min(x1 - x0, y1 - y0) / 2));
+  if (rad <= 0) return true;
+  // 只在四角做距离判定：把点折叠到「圆角圆心构成的矩形」上
+  const cx = Math.min(Math.max(px, x0 + rad), x1 - rad);
+  const cy = Math.min(Math.max(py, y0 + rad), y1 - rad);
+  const dx = px - cx;
+  const dy = py - cy;
+  return dx * dx + dy * dy <= rad * rad;
+}
 
 /**
- * 光标是否落在胶囊**可见区域**内（窗口局部坐标，margin 外扩）。
- * 间隙两侧都算「在内」由 margin 覆盖，鼠标从轨道移到面板不会被判成离开。
+ * 光标是否落在胶囊**可见区域**内（窗口局部坐标）。
+ *
+ * - 轨道用轮廓多边形判定：外框的四个「缺角」（外扩之外）是桌面，不能算在内；
+ * - 面板用圆角矩形 + `margin`：`margin` 取间隙宽度，鼠标从轨道跨到面板不会被判成离开。
  */
 export function pointInCapsule(
   cursorLocal: { x: number; y: number },
   regions: CapsuleRegions,
   margin: number = 0,
 ): boolean {
-  if (inRect(cursorLocal.x, cursorLocal.y, regions.rail, margin)) return true;
-  return regions.panel ? inRect(cursorLocal.x, cursorLocal.y, regions.panel, margin) : false;
+  if (pointInPolygon(cursorLocal, regions.railOutline)) return true;
+  return regions.panel
+    ? pointInRoundedRect(cursorLocal.x, cursorLocal.y, regions.panel, regions.panelRadius, margin)
+    : false;
 }

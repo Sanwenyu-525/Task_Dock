@@ -35,14 +35,14 @@
 │   ├─ 条目详情 / 分组详情（大图、HTML 源码、排序、拆分、合并）        │
 │   ├─ PastePanel（目标窗口、进度、取消、继续）                       │
 │   ├─ AgentExportPanel（本地导出） / TaskLinkBar（任务关联）          │
-│   └─ useClipboardStore（筛选/分页/多选） + bridge.ts（41 个命令）    │
+│   └─ useClipboardStore（筛选/分页/多选） + bridge.ts（47 个命令）    │
 └───────────────────────────────┬────────────────────────────────────┘
                                 │ invoke / emit（camelCase 参数、snake_case DTO）
 ┌───────────────────────────────▼────────────────────────────────────┐
 │ commands/clipboard.rs：参数校验、DTO 压实、运行时取用                 │
 ├────────────────────────────────────────────────────────────────────┤
 │ clipboard/                                                          │
-│  engine.rs      纯逻辑：类型判定/哈希/预览/敏感特征/HTML 清洗/        │
+│  engine.rs      纯逻辑：类型判定/哈希/预览/自动标题/敏感特征/HTML 清洗/ │
 │                  CF_HTML/整组富文本/自动分组与恢复决策（可单测）       │
 │  image.rs       PNG 编解码、缩略图、DIB ↔ RGBA（不接触剪贴板）         │
 │  store.rs       SQLite 持久化、资产文件引用、去重、分组、清理、分页     │
@@ -187,19 +187,19 @@ ACCESS_LOCK
   `SendInput` 均在锁外，目标应用无响应不会阻塞用户复制，也不会持锁等待目标。
 - 无法打开剪贴板时返回“剪贴板被其他程序占用，请稍后重试”，不进入半写入状态。
 
-## 四、IPC 命令（41 个）
+## 四、IPC 命令（47 个）
 
 注册位置：`src-tauri/src/lib.rs` 的 `invoke_handler`；前端封装：`src/lib/bridge.ts`。
 
 | 分组 | 命令 |
 |---|---|
 | 查询 | `clipboard_view`、`clipboard_item`、`clipboard_group`、`clipboard_stats`、`clipboard_thumb`、`clipboard_image` |
-| 复制 | `clipboard_copy_item`、`clipboard_copy_group_rich`、`clipboard_copy_group_files` |
-| 整理 | `clipboard_toggle_item`、`clipboard_toggle_group`、`clipboard_close_group`、`clipboard_delete_items`、`clipboard_delete_group`、`clipboard_create_group`、`clipboard_rename_group`、`clipboard_add_to_group`、`clipboard_remove_group_item`、`clipboard_move_group_item`、`clipboard_split_group`、`clipboard_merge_groups` |
+| 复制 | `clipboard_copy_item`、`clipboard_copy_text`、`clipboard_copy_group_rich`、`clipboard_copy_group_files`、`clipboard_copy_items_rich`、`clipboard_copy_items_files` |
+| 整理 | `clipboard_toggle_item`、`clipboard_toggle_group`、`clipboard_close_group`、`clipboard_delete_items`、`clipboard_delete_group`、`clipboard_create_group`、`clipboard_rename_group`、`clipboard_rename_item`、`clipboard_add_to_group`、`clipboard_remove_group_item`、`clipboard_move_group_item`、`clipboard_split_group`、`clipboard_merge_groups` |
 | 任务关联 | `clipboard_link_task`、`clipboard_unlink_task`、`clipboard_task_links` |
 | 快照关联（v0.5 并行模块） | `clipboard_link_snapshot`、`clipboard_unlink_snapshot`、`clipboard_snapshot_links` |
-| 粘贴 | `clipboard_visible_targets`、`clipboard_foreground_target`、`clipboard_paste_precheck`、`clipboard_paste_group`、`clipboard_paste_cancel`、`clipboard_paste_resume`、`clipboard_paste_job`、`clipboard_paste_active` |
-| 维护/诊断 | `clipboard_cleanup`、`clipboard_status`、`clipboard_probe` |
+| 粘贴 | `clipboard_visible_targets`、`clipboard_foreground_target`、`clipboard_paste_precheck`、`clipboard_paste_group`、`clipboard_paste_items`、`clipboard_paste_cancel`、`clipboard_paste_resume`、`clipboard_paste_job`、`clipboard_paste_active` |
+| 维护/诊断 | `clipboard_cleanup`、`clipboard_clear_history`、`clipboard_status`、`clipboard_probe` |
 | Agent | `clipboard_agent_targets`、`clipboard_export_for_agent`、`clipboard_export_preview` |
 
 约定：
@@ -209,9 +209,11 @@ ACCESS_LOCK
 - 列表/分组详情接口返回“压实” DTO：`text` = 预览，`html` 清空；完整正文/HTML
   只在 `clipboard_item` / `clipboard_group` 详情接口返回。
 - 错误沿用 `AppError`：校验失败/未找到/IO/数据库，前端直接展示错误文本。
-- 事件：`clipboard-changed`（采集/整理/清理，payload 为 `kind`、`created`、`grouped`），
+- 事件：`clipboard-changed`（采集/整理/清理/清空，payload 为 `kind`、`created`、`grouped`），
   `clipboard-paste`（任务进度与结束，camelCase：`jobId`、`status`、`sent`、`total`、
   `pending`、`message`、`restored`）。
+- 复制命令（单项/整组/通用文本）**不广播 `clipboard-changed`**：复制只增加使用次数、
+  不改变列表排序，前端就地更新该条目的 `copy_count`；整表刷新会缩水分页并让滚动位置跳变。
 
 ## 五、关键流程
 
@@ -230,17 +232,31 @@ capture 线程
       `image::normalize_clipboard_png`：仅当**所有**像素 Alpha 都为 0 时改写为不透明并重编码，
       部分透明的图标/贴纸保持原样；有可见像素的 PNG 不重编码（字节保持不变）。
   → 格式优先级判定（files > image > URL > html > text）
-  → 自身来源/排除名单/采集类型开关/敏感过滤（高置信；来源未知时加保守凭据模式）
   → 大小与数量上限；图片 PNG 编码/缩略图
   → 放入内容队列（8 条 / 128 MB，满则丢最旧并计数）
   → 采集水位推进到**读取时刻**的序列号（同一份剪贴板状态只入库一次）
 worker 线程
+  → filter_capture 过滤（2026-11-02 起：排除名单 / 采集类型开关 / 敏感过滤；不再按
+    「前台推断来源 == 本进程」跳过——该推断会误丢截图工具复制后前台切回 Task Dock
+    的外部图片，自身写入已由上方 SelfWrite 水位完整识别）
   → store::record_capture
        → 归一化 + HTML 清洗 + SHA-256
-       → 命中哈希：copy_count+1、last_seen_at、来源更新，结束
-       → 未命中：图片落盘 → 事务插入条目/资产 → 自动分组决策
+       → 命中哈希：copy_count+1、last_seen_at、来源更新，结束（不覆盖已有标题）
+       → 未命中：图片落盘 → engine::make_title 生成自动标题（≤30 字符，纯本地规则，
+         不在 Win32 回调/UI 路径执行）→ 事务插入条目/资产 → 自动分组决策
   → emit clipboard-changed
 ```
+
+多选命令（2026-11-02 新增）复用整组实现，不依赖永久分组：
+
+- `clipboard_copy_items_rich` / `clipboard_copy_items_files`：与
+  `clipboard_copy_group_rich` / `clipboard_copy_group_files` 共享同一拼接与写入实现，
+  只是把“组内条目”换成“按传入顺序的任意条目列表”（`store::get_items_by_ids`）。
+- `clipboard_paste_items`：与 `clipboard_paste_group` 共用 `PasteManager` 状态机，
+  任务记录 `group_id` 存空串（仅审计，无外键），其余语义（互斥、守卫、取消、
+  恢复、Unverified）完全一致。
+- `clipboard_rename_item`：手动编辑标题；非空 → `title_source='manual'`（≤80 字符），
+  空串 → 按现有内容重新生成 `auto`；自动规则与去重不覆盖 manual 标题。
 
 ### 逐项粘贴
 

@@ -43,7 +43,8 @@ interface ActionsState {
   setFilter: (patch: Partial<ActionFilter>) => void;
   load: (opts?: LoadOpts) => Promise<void>;
   loadMore: () => Promise<void>;
-  ack: (ids: string[]) => Promise<void>;
+  /** 返回后端实际改动的条数，调用方据此给出真实反馈。 */
+  ack: (ids: string[]) => Promise<number>;
   unack: (ids: string[]) => Promise<void>;
   openSession: (sourceId: string, sessionId: string) => Promise<NavigationResult>;
 }
@@ -142,10 +143,12 @@ export const useActionsStore = create<ActionsState>((set, get) => ({
       set({ loadingMore: false, error: String(e) });
     }
   },
+  /** 标记已处理；返回后端实际改动的条数（0 表示这条已经被处理过了）。 */
   ack: async (ids) => {
-    if (!ids.length) return;
-    await actionsAck(ids);
+    if (!ids.length) return 0;
+    const n = await actionsAck(ids);
     await get().load({ silent: true });
+    return n;
   },
   unack: async (ids) => {
     if (!ids.length) return;

@@ -7,7 +7,7 @@
 //! - 切到剪贴板页面（Tab）不等于打开抽屉，两者互不影响。
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { useUiStore } from "./useUiStore";
+import { useUiStore, TOAST_QUEUE_MAX } from "./useUiStore";
 import type { Task } from "../lib/bridge";
 
 const TASK = { id: "t1", title: "写周报" } as unknown as Task;
@@ -21,6 +21,8 @@ beforeEach(() => {
     clipboardOpen: false,
     clipboardLinkTask: null,
     clipboardLinkVersion: 0,
+    toast: null,
+    toasts: [],
   });
 });
 
@@ -61,5 +63,55 @@ describe("浮层互斥", () => {
     const before = useUiStore.getState().clipboardLinkVersion;
     useUiStore.getState().bumpClipboardLink();
     expect(useUiStore.getState().clipboardLinkVersion).toBe(before + 1);
+  });
+});
+
+describe("Toast 队列", () => {
+  it("连续消息进入队列，旧消息不被覆盖", () => {
+    const { showToast } = useUiStore.getState();
+    showToast("已复制", { kind: "success" });
+    showToast("已删除", { kind: "info" });
+    const toasts = useUiStore.getState().toasts;
+    expect(toasts).toHaveLength(2);
+    expect(toasts.map((t) => t.message)).toEqual(["已复制", "已删除"]);
+  });
+
+  it("支持 warning 类型", () => {
+    useUiStore.getState().showToast("配置已降级", { kind: "warning" });
+    expect(useUiStore.getState().toasts[0].kind).toBe("warning");
+  });
+
+  it("相同消息短时间去重：同文案同类型不重复入队", () => {
+    const { showToast } = useUiStore.getState();
+    showToast("已复制", { kind: "success" });
+    showToast("已复制", { kind: "success" });
+    expect(useUiStore.getState().toasts).toHaveLength(1);
+    // 类型不同仍视为不同提示
+    showToast("已复制", { kind: "error" });
+    expect(useUiStore.getState().toasts).toHaveLength(2);
+  });
+
+  it("队列有上限：超出时优先挤掉最早的普通提示，错误保留", () => {
+    const { showToast } = useUiStore.getState();
+    showToast("普通 1", { kind: "info" });
+    showToast("普通 2", { kind: "success" });
+    showToast("出错了", { kind: "error" });
+    showToast("普通 3", { kind: "info" }); // 超上限：挤掉最早的普通提示「普通 1」
+    const toasts = useUiStore.getState().toasts;
+    expect(toasts).toHaveLength(TOAST_QUEUE_MAX);
+    expect(toasts.map((t) => t.message)).toEqual(["普通 2", "出错了", "普通 3"]);
+    expect(toasts.some((t) => t.kind === "error"), "错误提示不被挤出队列").toBe(true);
+  });
+
+  it("dismissToast(id) 只关对应条目；无参调用清空全部", () => {
+    const { showToast, dismissToast } = useUiStore.getState();
+    showToast("A", { kind: "info" });
+    showToast("B", { kind: "info" });
+    const first = useUiStore.getState().toasts[0];
+    dismissToast(first.id);
+    expect(useUiStore.getState().toasts.map((t) => t.message)).toEqual(["B"]);
+    dismissToast();
+    expect(useUiStore.getState().toasts).toHaveLength(0);
+    expect(useUiStore.getState().toast).toBeNull();
   });
 });

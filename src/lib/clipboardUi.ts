@@ -53,6 +53,24 @@ export function sourceLabel(sourceApp: string, sourceTitle: string): string {
   return sourceTitle && sourceTitle !== sourceApp ? `${app} · ${sourceTitle}` : app;
 }
 
+/**
+ * 操作提示里带的对象信息：优先标题，其次截断预览，最后退回来源。
+ * 只用来让用户认出「刚才动的是哪一条」，不展开完整正文。
+ */
+export function objectHint(item: {
+  kind: string;
+  title?: string;
+  preview?: string;
+  source_app?: string;
+  source_title?: string;
+}): string {
+  const raw =
+    item.title || item.preview || sourceLabel(item.source_app ?? "", item.source_title ?? "");
+  const flat = raw.replace(/\s+/g, " ").trim();
+  if (!flat) return kindLabel(item.kind);
+  return flat.length > 24 ? `${flat.slice(0, 24)}…` : flat;
+}
+
 export const RICH_EMBED_BUDGET = 6 * 1024 * 1024;
 export const RICH_HTML_ITEM_LIMIT = 512 * 1024;
 

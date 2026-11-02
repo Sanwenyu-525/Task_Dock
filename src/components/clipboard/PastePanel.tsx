@@ -7,6 +7,7 @@ import {
   clipboardPasteActive,
   clipboardPasteCancel,
   clipboardPasteGroup,
+  clipboardPasteItems,
   clipboardPasteJob,
   clipboardPastePrecheck,
   clipboardPasteResume,
@@ -71,10 +72,14 @@ const ITEM_STATE_LABELS: Record<string, string> = {
 export default function PastePanel({
   groupId,
   groupName,
+  itemIds,
   onBack,
 }: {
-  groupId: string;
-  groupName: string;
+  /** 分组模式：粘贴整个分组（与 itemIds 二选一） */
+  groupId?: string;
+  groupName?: string;
+  /** 多选模式：按传入顺序逐项粘贴，不依赖永久分组 */
+  itemIds?: string[];
   onBack: () => void;
 }) {
   const settings = useSettingsStore((s) => s.settings);
@@ -84,6 +89,7 @@ export default function PastePanel({
   const [job, setJob] = useState<JobState | null>(null);
   const [otherJob, setOtherJob] = useState<JobState | null>(null);
   const [busy, setBusy] = useState<"start" | "cancel" | "resume" | "refresh" | null>(null);
+  const groupMode = !!groupId;
 
   async function loadTargets() {
     setBusy("refresh");
@@ -107,7 +113,9 @@ export default function PastePanel({
         if (!alive || !id) return;
         const j = await clipboardPasteJob(id).catch(() => null);
         if (!alive || !j) return;
-        if (j.group_id === groupId) setJob(fromJob(j));
+        // 分组模式按 group_id 匹配；多选模式的后端审计 group_id 为空串
+        const mine = groupMode ? j.group_id === groupId : j.group_id === "";
+        if (mine) setJob(fromJob(j));
         else setOtherJob(fromJob(j));
       })
       .catch(() => {});
@@ -115,7 +123,7 @@ export default function PastePanel({
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId]);
+  }, [groupId, groupMode]);
 
   useEffect(() => {
     const scope = createSubscriptionScope();
@@ -147,13 +155,16 @@ export default function PastePanel({
 
   async function onStart() {
     if (targetHwnd === null) return;
+    if (!groupMode && (!itemIds || itemIds.length === 0)) return;
     setBusy("start");
     try {
       const target = await clipboardPastePrecheck(targetHwnd);
-      const r = await clipboardPasteGroup(groupId, targetHwnd);
+      const r = groupMode
+        ? await clipboardPasteGroup(groupId, targetHwnd)
+        : await clipboardPasteItems(targetHwnd, itemIds!);
       setJob({
         id: r.job_id,
-        groupId,
+        groupId: groupMode ? groupId! : "",
         status: "running",
         sent: 0,
         total: r.total,
@@ -220,7 +231,7 @@ export default function PastePanel({
         <button className="icon-btn sm" onClick={onBack} data-tip="返回" aria-label="返回分组详情">
           <ArrowLeft size={13} />
         </button>
-        <span>逐项粘贴 · {groupName}</span>
+        <span>逐项粘贴 · {groupName ?? `所选 ${itemIds?.length ?? 0} 项`}</span>
       </div>
 
       <div className="clip-detail-body">

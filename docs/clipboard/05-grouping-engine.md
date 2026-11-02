@@ -15,13 +15,15 @@
 
 ## 二、决策表
 
-`engine::decide_group(kind, auto_group, now, window_secs, open_last_image_at, open_item_count)`
+`engine::decide_group(kind, auto_group, now, window_secs, open_last_image_at,
+open_item_count, item_source_app, group_image_source_app)`
 
 | 条件 | 结果 |
 |---|---|
 | 自动分组关闭 | `None` |
 | `kind = files` | `None`（文件列表不参与截图分组） |
-| 存在收集组，`now - 最后截图时间 ≤ 窗口`，且组内条数 < 300 | `Append`（任何非文件类型） |
+| 存在收集组，`now - 最后截图时间 ≤ 窗口`，且组内条数 < 300，且（类型为 image，或文本类来源与组内截图来源一致/任一方未知） | `Append` |
+| 收集组窗口内，但文本/HTML/URL 的来源应用与组内最后截图的来源应用**均已知且不同** | `None`（跨来源文本大概率是无关复制，降低误分组；图片不受此限制，截图连续性优先） |
 | 不满足追加，且 `kind = image` | `Create`（先关闭所有 `collecting` 组，再建新组） |
 | 不满足追加，且类型为 text/html/url | `None`（不新建组；若窗口已过期，顺手关闭残留收集组） |
 
@@ -29,6 +31,10 @@
 
 - “最后截图时间”取组内最新 **image** 条目的 `created_at`，不是组更新时间；
   因此组内插入文字不会延长截图窗口。
+- “组内截图来源”取组内 `position` 最大的 image 条目的 `source_app`（`open_group`
+  子查询）；任一方为空串（来源未知）时保持窗口内追加的原行为，不因缺失信息拒绝。
+- “截图 A→文字说明→截图 B”：同一应用会话（如聊天工具内截图并复制文字）顺序完整
+  保留；来自**其他应用**的说明文字不会自动并入，可手动创建分组补充。
 - 窗口默认 45 秒，可在 5–600 秒配置；比较使用 `≤`。
 - 组内条数上限 300；达到后下一张截图 `Create` 新组。
 - 无收集组时，第一张截图 `Create`；第一段文字不会凭空建组。
@@ -97,7 +103,11 @@
 | 测试 | 验证点 |
 |---|---|
 | `engine::grouping_window_and_interleaving` | 首图建组、窗口内图片/文字追加、超窗图片新建、超窗文字不建组、文件不参与、关闭开关不动作、达到 300 条新建 |
-| `store::interleaved_text_keeps_screenshot_group_order` | 真实入库后组内顺序为图→文→图，`position` 正确 |
+| `engine::auto_title_rules_per_kind`（2026-11-02） | 文字/长文/URL/HTML/代码/图片/文件各自的标题规则、≤30 字符上限（省略号计入） |
+| `store::cross_source_text_does_not_join_screenshot_group`（2026-11-02） | 跨来源文本不自动并入截图组；来源未知文本仍追加；后续截图仍追加原组 |
+| `store::auto_title_lifecycle_and_search`（2026-11-02） | auto 生成 → manual 覆盖 → 去重不覆盖 → 标题参与搜索 → 空串恢复 auto → 不存在 id 报 NotFound |
+| `store::auto_title_covers_image_and_files_kinds`（2026-11-02） | 图片标题含尺寸描述、文件标题含首名与数量，不推断内容 |
+| `store::interleaved_text_keeps_screenshot_group_order` | 真实入库后组内顺序为图→文→图，`position` 正确（同应用会话：文本与截图同 `source_app`） |
 | `store::separate_sessions_create_new_group_after_window` | 超窗后新组、旧组 closed |
 | `store::reorder_remove_and_split_persist` | 重排/移除/拆分落库并可读回 |
 | `store::group_deletion_is_reference_safe` | 删除分组保留共享条目，连带删除只清未保护项 |

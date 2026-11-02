@@ -20,6 +20,7 @@ import {
   ListTodo,
   Sparkles,
 } from "lucide-react";
+import CapsuleWing from "./CapsuleWing";
 import { RAIL_CATEGORIES, type RailCategory, type RailStatus } from "../../lib/capsuleModel";
 import type { SnapEdge } from "../../lib/edgeSnap";
 
@@ -76,6 +77,10 @@ export default function CapsuleRail({
       aria-orientation={vertical ? "vertical" : "horizontal"}
       aria-label="胶囊分类导航"
     >
+      {/* 表面层：液态翼片的唯一可见轮廓（贴边齐平、两侧外扩），
+          绝对定位在按钮之下，不参与 flex 排布 */}
+      <CapsuleWing edge={edge} />
+
       {/* 顶部：Agent 总状态（真实聚合；空闲中性、运行蓝、等待/失败语义色） */}
       <button
         type="button"
@@ -85,7 +90,7 @@ export default function CapsuleRail({
         aria-pressed={expanded && active === "agents"}
         onClick={() => onSelect("agents")}
       >
-        <Sparkles size={16} strokeWidth={1.8} aria-hidden="true" />
+        <Sparkles size={18} strokeWidth={1.8} aria-hidden="true" />
         {status.agentAttention > 0 && (
           <span className="cap-orb-badge" aria-hidden="true">
             {status.agentAttention > 9 ? "9+" : status.agentAttention}
@@ -93,8 +98,8 @@ export default function CapsuleRail({
         )}
       </button>
 
-      <div className="cap-sep" aria-hidden="true" />
-
+      {/* 效果图里状态球与分类组之间没有分隔线：状态球靠尺寸/材质已足够分组，
+          多一条线只会让轨道看起来像「被切开的工具栏」。 */}
       <div className="cap-nav">
         {RAIL_CATEGORIES.map((c) => {
           const Icon = ICONS[c];
@@ -118,27 +123,32 @@ export default function CapsuleRail({
               onClick={() => onSelect(c)}
             >
               <span className="cap-icon">
-                <Icon size={17} strokeWidth={1.8} aria-hidden="true" />
-                {dot && <span className={`cap-dot dot-${dot}`} aria-hidden="true" />}
-              </span>
+              <Icon size={18} strokeWidth={1.72} aria-hidden="true" />
+              {dot && <span className={`cap-dot dot-${dot}`} aria-hidden="true" />}
               {badge && (
                 <span className="cap-badge" aria-hidden="true">
                   {badge}
                 </span>
               )}
+            </span>
             </button>
           );
         })}
       </div>
 
-      <div className="cap-sep" aria-hidden="true" />
+      <div className="cap-sep cap-sep-bottom" aria-hidden="true" />
 
-      {/* 底部：收起（箭头朝向屏幕边缘 = 面板实际收起方向） */}
+      {/* 底部：收起（箭头朝向屏幕边缘 = 面板实际收起方向）。
+          折叠态没有「再收起」这件事，因此保留占位（避免图标在两种状态间跳动）
+          但不渲染可见控件，也不进 Tab 序列——不再长期摆一个灰箭头。 */}
       <button
         type="button"
         className="cap-collapse"
+        data-inert={expanded ? "false" : "true"}
         aria-label={expanded ? "收起功能面板" : "功能面板已收起"}
         aria-disabled={!expanded}
+        tabIndex={expanded ? 0 : -1}
+        aria-hidden={!expanded}
         onClick={() => {
           if (expanded) onCollapse();
         }}

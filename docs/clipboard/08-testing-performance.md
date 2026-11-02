@@ -581,3 +581,74 @@ release 编译 4m03s，`TAURI_BUILD_EXIT=0`，日志 `evidence/bundle-build-2026
 - 微信与 Agent 应用保持 `ENVIRONMENT BLOCKED / NOT VERIFIED`，未用单元测试替代。
 - 总体判定 **CONDITIONAL PASS**：不得把本文的历史 PASS 或部分数据外推为
   “所有应用/所有场景已验证”。最终依据见 `11-final-release-acceptance.md`。
+
+## 十、2026-11-02 剪贴板专项（自动标题 / 跨来源分组 / 多选批量复制与逐项粘贴）
+
+本次专项在当前工作树（含并行未提交改动）上实施，只补自动化验证，不重复历史真机项：
+
+- 变更范围：迁移 v15（`title` / `title_source`）、`engine::make_title` 与
+  `truncate_chars`（省略号计入 30 字符上限）、`decide_group` 跨来源规则
+  （8 参数）、`clipboard_copy_items_rich` / `clipboard_copy_items_files` /
+  `clipboard_rename_item` / `clipboard_paste_items` 四个命令及前端接入。
+- 自动化结果（命令 + 工作目录 + 退出码见
+  `tmp/acceptance/clipboard-improvement/report.md`）：
+  - `cargo test clipboard::`（`src-tauri/`）：**102 passed / 0 failed**，含新增
+    `engine::auto_title_rules_per_kind`、`store::cross_source_text_does_not_join_screenshot_group`、
+    `store::auto_title_lifecycle_and_search`、`store::auto_title_covers_image_and_files_kinds`；
+  - 全量 `cargo test`（`src-tauri/`）：504 passed / 1 failed（`actions::ack_never_changes_agent_state…`，
+    并行任务域既有失败，非本次改动）/ 3 ignored；
+  - `npx tsc -b`：通过（exit 0）；`npx vitest run` 剪贴板相关 6 文件 46 用例通过。
+- **真机验收未执行**（本机为用户正在使用的真实会话，涉及真实系统剪贴板与目标窗口）：
+  自动标题实际显示效果、多选批量复制到第三方应用、无分组逐项粘贴的真实接收，
+  均需后续在可控环境验证；本次不得以单测替代宣称通过。
+- 性能边界：标题生成在 worker 线程 `record_capture` 内完成（限制输入长度，
+  无长期后台负担）；四个新命令均为既有路径复用，未新增线程、依赖或定时器。
+
+## 十一、2026-11-02 UI 精简与删除反馈复核（7.3 / 7.4）
+
+本轮只复核「分组详情整理模式」与「删除离场反馈」两块 UI，并补齐清空历史竞态的单测。
+证据与产品报告同在 `tmp/acceptance/clipboard-improvement/`（未覆盖任何历史证据文件）。
+
+### 11.1 自动化
+
+| 命令 | 工作目录 | 结果 | 证据 |
+|---|---|---|---|
+| `cargo test --quiet clipboard` | `src-tauri/` | 127 passed / 0 failed / 0 ignored（exit 0） | `cargo-clipboard-final-1102.txt` |
+| `npx tsc -b` | 仓库根 | exit 0 | `final-frontend-1102.txt` |
+| `npx vitest run` | 仓库根 | 569 passed / 0 failed（52 文件，exit 0） | `final-frontend-1102.txt` |
+| `npx vite build` | 仓库根 | ✓ built in 2.72 s | — |
+
+新增用例 `platform::stale_capture_epoch_blocks_work_queued_before_clear`：把「入队盖章 →
+清空推进代数 → worker 出队核对」抽成纯函数 `epoch_is_stale` 并覆盖三种情形
+（同代放行 / 清空前的在途事件与内容被拦 / 清空后的新复制照常入库）。
+此前该竞态只有实现没有单测。
+
+本轮中途曾观测到 `ClipboardPanel.test.tsx > 删掉当前聚焦的卡片后…` 失败
+（`expected undefined to be 'ci1'`）与浏览器走查中「鼠标路径删除后焦点落在 `<body>`」
+一致，均指向 `captureFocusAnchor` 在确认框打开后才读取 `document.activeElement`。
+该区域由并行会话在同一次共享工作树内补齐（新增 `confirmAnchor`），
+最终两条验证均已通过；本文件不重复记录中间态证据。
+
+### 11.2 真机（只读）
+
+| 命令 | 结果 | 证据 |
+|---|---|---|
+| `TD_REAL_CLIPBOARD=1 cargo test --test real_clipboard -- --ignored --exact real_visible_targets_exclude_self_and_pass_precheck --nocapture` | 1 passed（可见目标 9 个，本进程已排除，预检通过 9，提权拒绝 0） | `cargo-real-targets-env-1102.txt` |
+
+另两个真机用例会写本机剪贴板（`real_clipboard_roundtrip_…`、`real_failed_write_restores_previous_content`），
+**本轮未执行**：本机 `task-dock.exe`（PID 101100）处于监听状态，写入会被真实实例采集进用户库，
+违反“独立数据目录 + 可识别测试内容”的隔离要求。需要关闭应用或授权暂停监听后另行执行。
+
+### 11.3 浏览器走查（`scripts/serve-preview.mjs` 夹具 + Playwright Chromium）
+
+- 入口：`PREVIEW_PORT=4179 node scripts/serve-preview.mjs`，脚本
+  `tmp/acceptance/clipboard-improvement/visual-walkthrough.mjs`，结果 `visual-result.json`，
+  截图 `shots/01–12*.png`。
+- 覆盖：深浅主题列表层级、320px 窄窗、毛玻璃材质、删除确认/执行中/离场/失败四态、
+  离场逐帧高度（81 → 60.6 → 15.8，11 帧单调收窄）、`prefers-reduced-motion`、
+  分组卡片单行元信息、组内缩略图与标题优先、整理模式开关、多选操作栏遮挡与动作齐全、
+  复制后滚动位置。
+- 结果：**55 / 55 通过，控制台 0 错误**。删除后的焦点接管（含经确认框的鼠标路径）
+  在并行会话补齐 `confirmAnchor` 后一并通过。
+- 夹具修正：`clipboard_view` 改为每次返回快照。原先直接回传夹具数组引用，
+  删除类 mock 就地 `splice` 会改写 store 里的 view，使「离场原位钉住」在走查前失效（假阴性）。

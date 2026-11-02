@@ -1253,7 +1253,10 @@ impl AgentHub {
             }
             Err(e) => {
                 NOTIFY_FAILED.fetch_add(1, Ordering::Relaxed);
-                tracing::debug!("OS 通知发送失败（不影响事件落库）: {}", e);
+                // warn 级 + 错误原文：通知历史已提交不受影响，失败可通过
+                // notification_stats()（attempted/succeeded/failed）复核；
+                // 权限拒绝等环境问题不计为「已展示」，也不重试。
+                tracing::warn!("OS 通知发送失败（不影响事件落库）: {}", e);
             }
         }
     }

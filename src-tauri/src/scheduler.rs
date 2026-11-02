@@ -82,6 +82,8 @@ async fn tick(app: &AppHandle, db: &Db, hub: &AgentHub) -> AppResult<()> {
 
     // 同一批到期提醒先全部落库，再统一走全局弹窗额度：
     // 避免一批到期任务在同一秒内弹出 N 条系统通知。
+    // 注意：业务状态变化（fired=1、重复任务推进）与「允许弹 OS 通知」分离——
+    // 静音/关闭提醒时 reminder-fired 广播照发（前端刷新任务状态），只是不弹。
     let mut fired: Vec<FiredNotify> = Vec::new();
     for item in due {
         if let Some(n) = fire_reminder_core(db, &item, &now, &settings)? {
@@ -93,9 +95,12 @@ async fn tick(app: &AppHandle, db: &Db, hub: &AgentHub) -> AppResult<()> {
     }
     let popups: Vec<NotifyItem> = fired
         .iter()
+        .filter(|n| n.popup)
         .map(|n| NotifyItem::new("reminder", &n.title, &n.body))
         .collect();
-    hub.notify_reminder_popups(&popups);
+    if !popups.is_empty() {
+        hub.notify_reminder_popups(&popups);
+    }
     let task_ids: Vec<String> = fired.iter().map(|n| n.task_id.clone()).collect();
     let _ = app.emit(
         "reminder-fired",
@@ -110,11 +115,14 @@ fn parse_utc(s: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-/// 触发结果：领取成功且需要弹出的 OS 通知（None = 未领取到或任务已被用户处理）。
+/// 触发结果：领取成功且任务仍存活（业务状态已变化，需要广播刷新）。
+/// `popup = false` 表示只记录历史、不弹 OS 通知（静音/关闭提醒/超宽限期）。
 pub struct FiredNotify {
     pub title: String,
     pub body: String,
     pub task_id: String,
+    /// 是否允许弹 OS 通知：与业务状态分离，静音不影响 fired/推进/广播
+    pub popup: bool,
 }
 
 /// 触发一条提醒：领取 → 通知记录 →（重复任务）推进，全部在同一个事务内完成。
@@ -197,12 +205,13 @@ pub fn fire_reminder_core(
             advance_recurrence_tx(&tx, &rem.task_id, item.task_due_at.as_deref(), now)?;
         }
         tx.commit()?;
+        // 通知历史无论是否静音都入库（不因限流/静音丢失）；弹窗权限单独判定。
         Ok(Some(FiredNotify {
             title,
             body,
             task_id: rem.task_id.clone(),
-        })
-        .filter(|_| inserted && notify))
+            popup: inserted && notify,
+        }))
     })
 }
 
@@ -625,6 +634,56 @@ mod tests {
     }
 
     #[test]
+    fn muted_reminder_still_advances_and_reports() {
+        // P2 回归：静音只影响打扰行为——历史照常入库、重复任务照常推进、
+        // 业务状态变化仍需广播（popup=false 只是不弹 OS 通知）
+        let db = setup();
+        let past = (Utc::now() - chrono::Duration::minutes(5)).with_timezone(&chrono::Local);
+        let task_id = seed_recurring_task(&db, past);
+        let mut settings = Settings::load(&db).unwrap();
+        settings.notify_muted = true;
+
+        let item = due_item(&db, &task_id);
+        let out = fire_reminder_core(&db, &item, &Utc::now(), &settings)
+            .unwrap()
+            .expect("静音时业务状态仍变化，必须返回以驱动 reminder-fired 广播");
+        assert!(!out.popup, "静音时不得弹 OS 通知");
+
+        let logged: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM notification_history WHERE kind = 'reminder' AND ref_id = ?1",
+                    rusqlite::params![task_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(logged, 1, "静音时通知历史仍应记录");
+
+        let due: String = db
+            .with_conn(|c| {
+                c.query_row("SELECT due_at FROM tasks WHERE id = ?1", [&task_id], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert!(parse_utc(&due).unwrap() > Utc::now(), "静音时重复任务仍照常推进");
+        let pending: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM task_reminders WHERE task_id = ?1 AND fired = 0",
+                    rusqlite::params![task_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(pending, 1, "推进后必须重建下一轮未触发提醒");
+    }
+
+    #[test]
     fn reminder_for_completed_task_is_skipped() {
         // 竞争回归：选取后、触发前任务被完成 → 不通知、不推进
         let db = setup();
@@ -716,10 +775,11 @@ mod tests {
         let item_after = due_item(&db, &task_id);
         assert_eq!(item_after.reminder.id, item_before.reminder.id);
         let settings = Settings::load(&db).unwrap();
-        // 3 天前的提醒超过 24h 宽限期：按设计只记历史、不弹通知（返回 None），
+        // 3 天前的提醒超过 24h 宽限期：按设计只记历史、不弹通知（popup=false），
         // 但重复任务必须照常推进——这正是编辑后不能丢重复规则的回归点。
         let fired = fire_reminder_core(&db, &item_after, &Utc::now(), &settings).unwrap();
-        assert!(fired.is_none(), "超过宽限期不得补弹通知");
+        let fired = fired.expect("业务状态已变化（fired/推进），必须广播前端刷新");
+        assert!(!fired.popup, "超过宽限期不得补弹通知");
         let logged: i64 = db
             .with_conn(|c| {
                 c.query_row(

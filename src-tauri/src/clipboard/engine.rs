@@ -107,7 +107,8 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
-    let mut out: String = s.chars().take(max).collect();
+    // 省略号计入上限：截断结果总长不超过 max（标题承诺 ≤30 字符）
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
 }
@@ -290,6 +291,147 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+// ── 自动标题 ────────────────────────────────────────────────
+
+/// 自动标题长度上限（按字符数，中文一字算一个字符）。
+pub const MAX_AUTO_TITLE_CHARS: usize = 30;
+
+/// 根据复制内容生成本地化轻量标题：纯规则，不调用外部 AI / OCR / 网络。
+///
+/// 规则（按类型）：
+/// - 文本：代码声明行 > Markdown 标题行 > 首个非空行（代表性短句）；
+/// - URL：域名 + 首段可辨识路径；
+/// - HTML：`<h1>` / `<title>` 文本 > 剥离标签后的文本规则；
+/// - 图片：截图尺寸描述，**不推断图片内容**；
+/// - 文件列表：首个文件名 + 数量。
+/// 没有可靠标题时返回安全类型描述；结果总是 ≤ `MAX_AUTO_TITLE_CHARS` 字符。
+pub fn make_title(
+    kind: &str,
+    text: &str,
+    html: &str,
+    files: &[String],
+    width: Option<u32>,
+    height: Option<u32>,
+) -> String {
+    match kind {
+        KIND_IMAGE => match (width, height) {
+            (Some(w), Some(h)) => truncate_chars(&format!("截图 {w}×{h}"), MAX_AUTO_TITLE_CHARS),
+            _ => "图片".into(),
+        },
+        KIND_FILES => {
+            let first = files
+                .first()
+                .map(|p| base_name(p))
+                .unwrap_or_else(|| "文件".into());
+            if files.len() > 1 {
+                truncate_chars(
+                    &format!("{first} 等 {} 个文件", files.len()),
+                    MAX_AUTO_TITLE_CHARS,
+                )
+            } else {
+                truncate_chars(&first, MAX_AUTO_TITLE_CHARS)
+            }
+        }
+        KIND_URL => title_from_url(text),
+        KIND_HTML => html_heading_title(html)
+            .unwrap_or_else(|| title_from_text(&html_to_text(html), "网页内容")),
+        _ => title_from_text(text, "文本"),
+    }
+}
+
+fn base_name(p: &str) -> String {
+    std::path::Path::new(p)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string())
+}
+
+/// URL 标题：域名 + 首个非空路径段（如 `example.com/a`）。
+fn title_from_url(text: &str) -> String {
+    let t = text.trim();
+    let rest = t.split_once("://").map(|(_, r)| r).unwrap_or(t);
+    let (host, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let mut title = host.to_string();
+    if let Some(first) = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .split('/')
+        .find(|s| !s.is_empty())
+    {
+        title.push('/');
+        title.push_str(first);
+    }
+    let title = truncate_chars(&title, MAX_AUTO_TITLE_CHARS);
+    if title.is_empty() {
+        "链接".into()
+    } else {
+        title
+    }
+}
+
+/// 文本标题：代码声明行 > Markdown 标题行 > 首个非空行。
+fn title_from_text(text: &str, fallback: &str) -> String {
+    static CODE_DECL: OnceLock<Regex> = OnceLock::new();
+    let code = CODE_DECL.get_or_init(|| {
+        Regex::new(
+            r"(?m)^[ \t]*(?:pub(?:\s+\([^)]*\))?\s+)?(?:async\s+)?(?:fn|struct|enum|impl|trait|mod|type|const|static|class|def|function|interface)\s+[A-Za-z_]",
+        )
+        .expect("代码声明正则")
+    });
+    if let Some(m) = code.find(text) {
+        let line_end = text[m.start()..]
+            .find('\n')
+            .map(|i| m.start() + i)
+            .unwrap_or(text.len());
+        let line = collapse_ws(&text[m.start()..line_end]);
+        if !line.is_empty() {
+            return truncate_chars(&line, MAX_AUTO_TITLE_CHARS);
+        }
+    }
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Markdown 标题行去掉前导 #
+        let stripped = line.trim_start_matches('#').trim();
+        let candidate = if stripped.len() < line.len() && !stripped.is_empty() {
+            stripped
+        } else {
+            line
+        };
+        let c = collapse_ws(candidate);
+        if !c.is_empty() {
+            return truncate_chars(&c, MAX_AUTO_TITLE_CHARS);
+        }
+    }
+    fallback.into()
+}
+
+/// HTML 标题：优先 `<h1>` / `<title>` 的文本内容（清理标签后）。
+fn html_heading_title(html: &str) -> Option<String> {
+    static H1: OnceLock<Regex> = OnceLock::new();
+    static TITLE: OnceLock<Regex> = OnceLock::new();
+    let h1 = H1.get_or_init(|| Regex::new(r"(?is)<h1[^>]*>(.*?)</h1>").expect("h1 正则"));
+    let title =
+        TITLE.get_or_init(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").expect("title 正则"));
+    for re in [h1, title] {
+        if let Some(caps) = re.captures(html) {
+            let inner = caps.get(1)?.as_str();
+            let text = collapse_ws(&strip_tags(inner));
+            if !text.is_empty() {
+                return Some(truncate_chars(&text, MAX_AUTO_TITLE_CHARS));
+            }
+        }
+    }
+    None
+}
+
 fn text_to_html(text: &str) -> String {
     escape_html(text)
         .replace("\r\n", "\n")
@@ -381,6 +523,8 @@ pub fn group_rich_html(
 
 /// 自动分组决策：
 /// - 仅截图开启新组；文本/HTML/URL 只有在截图窗口仍有效时按实际顺序追加；
+/// - 非截图内容来自与组内截图**不同的应用**时不追加（大概率是无关复制，降低误分组）；
+///   任一方来源未知（空串）时保持窗口内追加的原行为；
 /// - 文件列表不参与截图自动分组；
 /// - 组内条数达到上限后，下一张截图开新组。
 pub fn decide_group(
@@ -390,6 +534,8 @@ pub fn decide_group(
     window_secs: i64,
     open_last_image_at: Option<DateTime<Utc>>,
     open_item_count: usize,
+    item_source_app: &str,
+    group_image_source_app: Option<&str>,
 ) -> GroupAction {
     if !auto_group || kind == KIND_FILES {
         return GroupAction::None;
@@ -397,6 +543,13 @@ pub fn decide_group(
     let window = Duration::seconds(window_secs.max(1));
     if let Some(last) = open_last_image_at {
         if now - last <= window && open_item_count < MAX_AUTO_GROUP_ITEMS {
+            if kind != KIND_IMAGE {
+                if let Some(group_src) = group_image_source_app.filter(|s| !s.is_empty()) {
+                    if !item_source_app.is_empty() && item_source_app != group_src {
+                        return GroupAction::None;
+                    }
+                }
+            }
             return GroupAction::Append;
         }
     }
@@ -438,6 +591,8 @@ mod tests {
             text: text.into(),
             html: html.into(),
             preview: text.into(),
+            title: String::new(),
+            title_source: "none".into(),
             byte_size: text.len() as i64,
             source_app: "test.exe".into(),
             source_title: "测试".into(),
@@ -588,46 +743,219 @@ mod tests {
         let now = Utc::now();
         let t0 = now - Duration::seconds(10);
         assert_eq!(
-            decide_group(KIND_IMAGE, true, now, 45, None, 0),
+            decide_group(KIND_IMAGE, true, now, 45, None, 0, "snip.exe", None),
             GroupAction::Create
         );
         assert_eq!(
-            decide_group(KIND_IMAGE, true, now, 45, Some(t0), 3),
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                45,
+                Some(t0),
+                3,
+                "snip.exe",
+                Some("snip.exe")
+            ),
             GroupAction::Append
         );
         assert_eq!(
-            decide_group(KIND_TEXT, true, now, 45, Some(t0), 3),
+            decide_group(
+                KIND_TEXT,
+                true,
+                now,
+                45,
+                Some(t0),
+                3,
+                "snip.exe",
+                Some("snip.exe")
+            ),
             GroupAction::Append,
             "窗口内文本插入同一组并保留顺序"
         );
         assert_eq!(
-            decide_group(KIND_TEXT, true, now, 45, Some(t0), 3),
-            GroupAction::Append
+            decide_group(
+                KIND_TEXT,
+                true,
+                now,
+                45,
+                Some(t0),
+                3,
+                "word.exe",
+                Some("snip.exe")
+            ),
+            GroupAction::None,
+            "与截图来源不同的文本不并入截图组（降低误分组）"
         );
         assert_eq!(
-            decide_group(KIND_IMAGE, true, now, 5, Some(t0), 3),
+            decide_group(KIND_TEXT, true, now, 45, Some(t0), 3, "", Some("snip.exe")),
+            GroupAction::Append,
+            "条目来源未知时保持原行为"
+        );
+        assert_eq!(
+            decide_group(KIND_TEXT, true, now, 45, Some(t0), 3, "word.exe", Some("")),
+            GroupAction::Append,
+            "组内截图来源未知时保持原行为"
+        );
+        assert_eq!(
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                5,
+                Some(t0),
+                3,
+                "other.exe",
+                Some("snip.exe")
+            ),
             GroupAction::Create,
             "超过窗口后新截图开新组"
         );
         assert_eq!(
-            decide_group(KIND_TEXT, true, now, 5, Some(t0), 3),
+            decide_group(
+                KIND_TEXT,
+                true,
+                now,
+                5,
+                Some(t0),
+                3,
+                "snip.exe",
+                Some("snip.exe")
+            ),
             GroupAction::None,
             "过期后文本不新建组"
         );
         assert_eq!(
-            decide_group(KIND_FILES, true, now, 45, Some(t0), 3),
+            decide_group(
+                KIND_FILES,
+                true,
+                now,
+                45,
+                Some(t0),
+                3,
+                "snip.exe",
+                Some("snip.exe")
+            ),
             GroupAction::None,
             "文件列表不参与截图分组"
         );
         assert_eq!(
-            decide_group(KIND_IMAGE, false, now, 45, Some(t0), 3),
+            decide_group(
+                KIND_IMAGE,
+                false,
+                now,
+                45,
+                Some(t0),
+                3,
+                "snip.exe",
+                Some("snip.exe")
+            ),
             GroupAction::None,
             "关闭自动分组后不动作"
         );
         assert_eq!(
-            decide_group(KIND_IMAGE, true, now, 45, Some(t0), MAX_AUTO_GROUP_ITEMS),
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                45,
+                Some(t0),
+                MAX_AUTO_GROUP_ITEMS,
+                "snip.exe",
+                Some("snip.exe")
+            ),
             GroupAction::Create,
             "达到组上限后开新组"
+        );
+    }
+
+    #[test]
+    fn auto_title_rules_per_kind() {
+        // 普通文本：首个有效短句
+        assert_eq!(
+            make_title(KIND_TEXT, "会议纪要要点\n第二行内容", "", &[], None, None),
+            "会议纪要要点"
+        );
+        // 长文章首行超长时截断
+        let long = "字".repeat(50);
+        let t = make_title(KIND_TEXT, &long, "", &[], None, None);
+        assert!(t.chars().count() <= MAX_AUTO_TITLE_CHARS && t.ends_with('…'));
+        // Markdown 标题行去掉 #
+        assert_eq!(
+            make_title(KIND_TEXT, "# 项目周报\n正文内容", "", &[], None, None),
+            "项目周报"
+        );
+        // 代码片段优先声明行
+        assert_eq!(
+            make_title(
+                KIND_TEXT,
+                "// 注释\npub fn parse_config(path: &Path) -> Result<Config> {\n}",
+                "",
+                &[],
+                None,
+                None
+            ),
+            "pub fn parse_config(path: &Pa…"
+        );
+        // URL：域名 + 首段路径
+        assert_eq!(
+            make_title(KIND_URL, "https://example.com/a/b?x=1", "", &[], None, None),
+            "example.com/a"
+        );
+        assert_eq!(
+            make_title(KIND_URL, "https://example.com", "", &[], None, None),
+            "example.com"
+        );
+        // HTML：优先 h1 / title，清理标签
+        assert_eq!(
+            make_title(
+                KIND_HTML,
+                "正文",
+                "<h1>发布说明</h1><p>v2</p>",
+                &[],
+                None,
+                None
+            ),
+            "发布说明"
+        );
+        assert_eq!(
+            make_title(
+                KIND_HTML,
+                "正文文本",
+                "<html><title>页面标题</title><p>正文文本</p></html>",
+                &[],
+                None,
+                None
+            ),
+            "页面标题"
+        );
+        // HTML 无标题时回退剥离标签后的文本
+        assert_eq!(
+            make_title(KIND_HTML, "正文文本", "<p>正文文本</p>", &[], None, None),
+            "正文文本"
+        );
+        // 图片：尺寸描述，不推断内容
+        assert_eq!(
+            make_title(KIND_IMAGE, "", "", &[], Some(1920), Some(1080)),
+            "截图 1920×1080"
+        );
+        assert_eq!(make_title(KIND_IMAGE, "", "", &[], None, None), "图片");
+        // 文件列表：首名 + 数量
+        assert_eq!(
+            make_title(
+                KIND_FILES,
+                "",
+                "",
+                &["C:\\a\\报告.pdf".into(), "C:\\b\\图.png".into()],
+                None,
+                None
+            ),
+            "报告.pdf 等 2 个文件"
+        );
+        // 空白/换行归一
+        assert_eq!(
+            make_title(KIND_TEXT, "  多个   空格\n\n第二行", "", &[], None, None),
+            "多个 空格"
         );
     }
 

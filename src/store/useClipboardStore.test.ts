@@ -27,6 +27,10 @@ function viewOf(itemIds: string[], groupIds: string[] = []): ClipboardView {
   } as unknown as ClipboardView;
 }
 
+function itemOf(id: string, copyCount = 1) {
+  return { id, copy_count: copyCount };
+}
+
 function resetStore() {
   resetClipboardRequestState();
   useClipboardStore.setState({
@@ -42,6 +46,8 @@ function resetStore() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks 不会清掉 mockImplementation，跨用例必须显式重置。
+  mockedView.mockReset();
   resetStore();
 });
 
@@ -176,6 +182,63 @@ describe("useClipboardStore", () => {
     expect(state.loadingMore).toBe(false);
   });
 
+  it("复制后只就地累加使用次数，不请求整表、不改变顺序", () => {
+    useClipboardStore.setState({
+      view: {
+        ...viewOf(["a", "b", "c"]),
+        items: [itemOf("a"), itemOf("b"), itemOf("c")],
+      } as unknown as ClipboardView,
+    });
+
+    useClipboardStore.getState().bumpItemCopy("b");
+
+    const state = useClipboardStore.getState();
+    expect(state.view?.items.map((i) => i.id)).toEqual(["a", "b", "c"]);
+    expect(state.view?.items.map((i) => i.copy_count)).toEqual([1, 2, 1]);
+    expect(mockedView).not.toHaveBeenCalled();
+  });
+
+  it("静默刷新保留已加载的多页，不退化成第一页", async () => {
+    const ids = Array.from({ length: 240 }, (_, i) => `i${i}`);
+    useClipboardStore.setState({ view: viewOf(ids) });
+    const calls: { limit?: number; offset?: number }[] = [];
+    mockedView.mockImplementation(async (filter) => {
+      const offset = filter?.offset ?? 0;
+      const limit = filter?.limit ?? 80;
+      calls.push({ limit, offset });
+      const page = ids.slice(offset, offset + limit).map((id) => ({
+        id,
+        copy_count: 1,
+      }));
+      return { items: page, groups: [], stats: {}, total_items: ids.length } as unknown as ClipboardView;
+    });
+
+    await useClipboardStore.getState().load({ silent: true });
+
+    expect(calls).toEqual([
+      { limit: 200, offset: 0 },
+      { limit: 40, offset: 200 },
+    ]);
+    const items = useClipboardStore.getState().view?.items ?? [];
+    expect(items.length).toBe(240);
+    expect(items[0].id).toBe("i0");
+    expect(items[239].id).toBe("i239");
+    expect(useClipboardStore.getState().view?.total_items).toBe(240);
+  });
+
+  it("静默刷新遇到短页即停止，不做多余请求", async () => {
+    useClipboardStore.setState({ view: viewOf(["a", "b"]) });
+    const calls: { limit?: number; offset?: number }[] = [];
+    mockedView.mockImplementation(async (filter) => {
+      calls.push({ limit: filter?.limit, offset: filter?.offset });
+      return viewOf(["a", "b"]) as ClipboardView;
+    });
+
+    await useClipboardStore.getState().load({ silent: true });
+
+    expect(calls).toEqual([{ limit: 80, offset: 0 }]);
+  });
+
   it("列表刷新后清理已删除条目的选择，保留仍存在项", async () => {
     useClipboardStore.setState({ selectedItems: ["a", "gone"], selectedGroups: ["g1", "g2"] });
     mockedView.mockResolvedValueOnce(viewOf(["a"], ["g1"]));
@@ -183,5 +246,109 @@ describe("useClipboardStore", () => {
     const state = useClipboardStore.getState();
     expect(state.selectedItems).toEqual(["a"]);
     expect(state.selectedGroups).toEqual(["g1"]);
+  });
+
+  describe("离场中的行", () => {
+    it("静默刷新不得提前卸载离场中的条目，且按原位钉回", async () => {
+      useClipboardStore.setState({ view: viewOf(["a", "b", "c"]) });
+      useClipboardStore.getState().beginExit(["b"], "item");
+
+      mockedView.mockResolvedValueOnce(viewOf(["a", "c"]));
+      await useClipboardStore.getState().load({ silent: true });
+
+      expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual(["a", "b", "c"]);
+      expect(useClipboardStore.getState().exiting.b).toBeTruthy();
+    });
+
+    it("后台新采集的条目照常进入列表，不影响离场行", async () => {
+      useClipboardStore.setState({ view: viewOf(["a", "b"]) });
+      useClipboardStore.getState().beginExit(["b"], "item");
+
+      mockedView.mockResolvedValueOnce(viewOf(["new", "a"]));
+      await useClipboardStore.getState().load({ silent: true });
+
+      const ids = useClipboardStore.getState().view?.items.map((i) => i.id) ?? [];
+      expect(ids).toContain("new");
+      expect(ids).toContain("b");
+      expect(ids.filter((id) => id === "b")).toHaveLength(1);
+    });
+
+    it("endExit 放手并把这一行从本地视图剔除", async () => {
+      useClipboardStore.setState({ view: viewOf(["a", "b", "c"]) });
+      useClipboardStore.getState().beginExit(["b"], "item");
+      useClipboardStore.getState().endExit(["b"]);
+
+      expect(useClipboardStore.getState().exiting).toEqual({});
+      expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual(["a", "c"]);
+    });
+
+    it("详情页删除后立刻摘除本地行，返回列表不会闪回已删内容", () => {
+      useClipboardStore.setState({ view: viewOf(["a", "b"], ["g1"]) });
+      useClipboardStore.getState().endExit(["b", "g1"]);
+
+      const state = useClipboardStore.getState();
+      expect(state.view?.items.map((i) => i.id)).toEqual(["a"]);
+      expect(state.view?.groups.map((g) => g.id)).toEqual([]);
+    });
+
+    it("分组卡片同样走离场钉回", async () => {
+      useClipboardStore.setState({ view: viewOf([], ["g1", "g2"]) });
+      useClipboardStore.getState().beginExit(["g1"], "group");
+
+      mockedView.mockResolvedValueOnce(viewOf([], ["g2"]));
+      await useClipboardStore.getState().load({ silent: true });
+
+      expect(useClipboardStore.getState().view?.groups.map((g) => g.id)).toEqual(["g1", "g2"]);
+    });
+
+    it("删除期间切换筛选：离场快照不再钉进新列表", async () => {
+      useClipboardStore.setState({ view: viewOf(["a", "b"]) });
+      useClipboardStore.getState().beginExit(["b"], "item");
+
+      useClipboardStore.getState().setFilters({ kind: "image" });
+      mockedView.mockResolvedValueOnce(viewOf(["img1"]));
+      await useClipboardStore.getState().load();
+
+      const state = useClipboardStore.getState();
+      expect(state.view?.items.map((i) => i.id)).toEqual(["img1"]);
+      // 代际不符的快照被回收，不会一直占着内存
+      expect(state.exiting).toEqual({});
+    });
+
+    it("离场不改变服务端统计口径，选择也只按服务端结果清理", async () => {
+      useClipboardStore.setState({
+        view: viewOf(["a", "b"]),
+        selectedItems: ["a", "b"],
+      });
+      useClipboardStore.getState().beginExit(["b"], "item");
+
+      mockedView.mockResolvedValueOnce({ ...viewOf(["a"]), stats: { items: 1 } } as unknown as ClipboardView);
+      await useClipboardStore.getState().load({ silent: true });
+
+      const state = useClipboardStore.getState();
+      expect(state.view?.stats).toEqual({ items: 1 });
+      expect(state.selectedItems).toEqual(["a"]);
+    });
+
+    it("不在列表里的 id 标记离场是空操作", () => {
+      useClipboardStore.setState({ view: viewOf(["a"]) });
+      useClipboardStore.getState().beginExit(["ghost"], "item");
+      expect(useClipboardStore.getState().exiting).toEqual({});
+    });
+
+    it("patchItem 就地更新图标状态，不重新请求整表", () => {
+      useClipboardStore.setState({ view: viewOf(["a", "b"]) });
+      useClipboardStore.getState().patchItem({ id: "a", favorite: true } as never);
+
+      const state = useClipboardStore.getState();
+      expect((state.view?.items[0] as { favorite?: boolean }).favorite).toBe(true);
+      expect(mockedView).not.toHaveBeenCalled();
+    });
+
+    it("patchItem 对不在列表里的 id 不做任何改动", () => {
+      useClipboardStore.setState({ view: viewOf(["a"]) });
+      useClipboardStore.getState().patchItem({ id: "ghost", favorite: true } as never);
+      expect(useClipboardStore.getState().view?.items).toHaveLength(1);
+    });
   });
 });

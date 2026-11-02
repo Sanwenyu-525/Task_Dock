@@ -2,9 +2,10 @@
 //!
 //! 数据库中的通知历史逐条保留（同事务提交，不因限流丢失），这里只决定
 //! 「哪些弹出到桌面」：
-//! - 全局窗口限流：窗口内最多 `burst_max` 条独立弹窗，跨批次累计；
+//! - 双额度限流：等待/失败等关键通知与完成/提醒等普通通知各自拥有独立的
+//!   `burst_max` 窗口额度。普通通知（哪怕跨批次）刷满自己的额度后，关键
+//!   通知仍可弹出，不会被挤进摘要；两类额度都有上界，不会无限弹窗；
 //! - 完成合并：同一批/同一窗口的高频完成合并为一条摘要，避免刷屏；
-//! - 等待/失败优先：先于完成占用弹窗额度，保证需要介入的状态及时到达；
 //! - 被抑制的通知在窗口结束时汇总一条摘要（调度器每秒调用 `flush`），
 //!   摘要本身也每窗口最多一条。
 //!
@@ -58,6 +59,12 @@ impl NotifyItem {
         }
     }
 
+    /// 关键类型（等待/失败/断连）：使用独立的保底弹窗额度，
+    /// 不与可合并的普通通知（完成、提醒）争抢，也不会被它们挤占。
+    fn is_critical(&self) -> bool {
+        !self.is_aggregateable()
+    }
+
     /// 可合并类型：同一批出现多条时合并为一条摘要（完成、任务提醒）。
     fn is_aggregateable(&self) -> bool {
         matches!(self.kind.as_str(), "agent_done" | "reminder")
@@ -82,7 +89,10 @@ impl Popup {
 #[derive(Debug, Default)]
 pub struct NotifyGate {
     window_start: Option<Instant>,
+    /// 本窗口内普通（可合并）通知已弹出的条数
     emitted: u32,
+    /// 本窗口内关键（等待/失败/断连）通知已弹出的条数——独立保底额度
+    emitted_critical: u32,
     /// 本窗口内被抑制、尚未汇总的通知数
     pending: u32,
     /// 本窗口是否已经发过摘要（每窗口最多一条）
@@ -104,24 +114,31 @@ impl NotifyGate {
     ) -> Vec<Popup> {
         let mut popups = self.roll_window(now, policy);
 
-        // 等待/失败/断连优先占用额度；完成与任务提醒合并后使用剩余额度。
-        let mut priority: Vec<&NotifyItem> = Vec::new();
+        // 关键通知（等待/失败/断连）走独立保底额度，优先弹出；
+        // 完成与任务提醒合并后走普通额度。
+        let mut critical: Vec<&NotifyItem> = Vec::new();
         let mut aggregateable: Vec<&NotifyItem> = Vec::new();
         for item in items {
-            if item.is_aggregateable() {
-                aggregateable.push(item);
+            if item.is_critical() {
+                critical.push(item);
             } else {
-                priority.push(item);
+                aggregateable.push(item);
             }
         }
-        for item in priority {
-            self.emit_or_suppress(&mut popups, item.title.clone(), item.body.clone(), policy);
+        for item in critical {
+            self.emit_or_suppress(
+                &mut popups,
+                item.title.clone(),
+                item.body.clone(),
+                policy,
+                true,
+            );
         }
 
         for (kind, group) in group_by_kind(aggregateable) {
             if policy.aggregate_done && group.len() > 1 {
                 let (title, body) = summary_for(&kind, &group);
-                self.emit_or_suppress(&mut popups, title, body, policy);
+                self.emit_or_suppress(&mut popups, title, body, policy, false);
             } else {
                 for item in group {
                     self.emit_or_suppress(
@@ -129,6 +146,7 @@ impl NotifyGate {
                         item.title.clone(),
                         item.body.clone(),
                         policy,
+                        false,
                     );
                 }
             }
@@ -164,9 +182,17 @@ impl NotifyGate {
         title: String,
         body: String,
         policy: &NotificationPolicy,
+        critical: bool,
     ) {
-        if self.emitted < policy.burst_max {
-            self.emitted += 1;
+        // 关键与普通通知各用一份 burst_max 额度：普通通知刷满自己的额度后，
+        // 关键通知仍可及时弹出；两类额度均有上界。
+        let emitted = if critical {
+            &mut self.emitted_critical
+        } else {
+            &mut self.emitted
+        };
+        if *emitted < policy.burst_max {
+            *emitted += 1;
             popups.push(Popup::new(title, body));
         } else {
             self.pending += 1;
@@ -199,6 +225,7 @@ impl NotifyGate {
         };
         self.window_start = Some(now);
         self.emitted = 0;
+        self.emitted_critical = 0;
         self.digest_sent = false;
         tail.into_iter().collect()
     }
@@ -327,9 +354,47 @@ mod tests {
         assert_eq!(popups[0].title, "Agent 等待处理", "等待优先于完成");
         assert_eq!(popups[1].title, "Agent 执行失败", "失败优先于完成");
         assert!(
-            popups.iter().any(|p| p.body.contains("已合并")),
-            "被抑制的通知要汇总"
+            popups.iter().any(|p| p.title == "Agent 批量完成"),
+            "完成走普通额度，合并为一条摘要"
         );
+    }
+
+    #[test]
+    fn critical_not_starved_by_exhausted_low_budget() {
+        // P1 回归：普通通知先刷满额度，之后到达的失败/等待仍必须独立弹出
+        let p = policy(2, 60, false);
+        let t0 = Instant::now();
+        let mut gate = NotifyGate::new();
+        let first = gate.plan(t0, &p, &[done(1), done(2)]);
+        assert_eq!(first.len(), 2, "普通通知用满自己的额度");
+
+        let second = gate.plan(t0 + Duration::from_secs(1), &p, &[failure(9)]);
+        assert_eq!(second.len(), 1, "关键通知走保底额度，不被挤进摘要");
+        assert_eq!(second[0].body, "失败 9");
+
+        let third = gate.plan(t0 + Duration::from_secs(2), &p, &[waiting(7)]);
+        assert_eq!(third.len(), 1);
+        assert_eq!(third[0].title, "Agent 等待处理");
+    }
+
+    #[test]
+    fn critical_budget_is_bounded_too() {
+        // 保底额度也有上界：超出的关键通知进入摘要，不无限弹窗
+        let p = policy(2, 60, true);
+        let mut gate = NotifyGate::new();
+        let popups = gate.plan(
+            Instant::now(),
+            &p,
+            &[failure(1), failure(2), failure(3), failure(4)],
+        );
+        assert_eq!(
+            popups
+                .iter()
+                .filter(|p| p.title == "Agent 执行失败")
+                .count(),
+            2
+        );
+        assert!(popups.last().unwrap().body.contains("已合并"));
     }
 
     #[test]

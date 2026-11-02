@@ -13,13 +13,23 @@
 //! 新模型：**停靠期间窗口不移动、不缩放**。窗口贴边齐平、撑到胶囊容器尺寸
 //! （400×420 / 400×484），只有 Win32 区域在变：
 //! - 折叠：区域 = 轨道（56×300）；
-//! - 展开：区域 = 轨道 ∪ 面板（336×420，中间 8px 间隙不连通）。
+//! - 展开：区域 = 轨道 ∪ 面板（340×440，中间 12px 间隙不连通）。
 //! 区域切换是原子操作，轨道在屏幕上的位置与尺寸全程不变，命中区因此稳定。
 //!
 //! 由此可以删掉一批旧机制（它们只在"窗口滑出屏幕"时才需要）：
 //! 离屏位置计算、restore 坐标校验、接缝禁止自动隐藏、隐藏态不可见兜底恢复。
 //! 保留的仍然是：时间积分防抖、磁吸滞回、候选边判定、拖拽解除、
 //! window_rect 防污染、持久化串行、busy 互斥与尾随补评估。
+//!
+//! ## 拖离解除的鼠标锚定（v0.7）
+//!
+//! 用户**拖离**胶囊的解除（`undockByDrag` 与 onMoved 的磁吸区退出路径）会先
+//! `setUndockAnchor` 请求原生在拖拽循环内把窗口恢复为模式尺寸并以
+//! 「标题栏中心 = 光标」对齐（`magnetic::undock_anchor_rect`）——恢复与重定位
+//! 在同一拖拽帧内原子完成，用户无需松手重抓标题栏。请求未被应用（拖拽已结束
+//! / 磁力层未安装）时，尺寸恢复确认后按实际窗口尺寸回退定位
+//! （`undockAnchorTarget`）。按钮解除 / 打开完整页 / 托盘唤回 / 启动恢复等
+//! 非拖拽路径不请求锚定，保持各自原有定位策略。
 
 import { useEffect } from "react";
 import { getCurrentWindow, cursorPosition, currentMonitor } from "@tauri-apps/api/window";
@@ -28,32 +38,46 @@ import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import {
   applyMode,
   applyWindowCapsule,
+  cancelUndockAnchor,
   getSnapState,
+  notifyUiReady,
   onSnapRecall,
   saveSnapState,
   saveWindowRect,
+  setMagneticDock,
+  setMagneticDragConfig,
+  setUndockAnchor,
+  takeUndockAnchorApplied,
   type CapsuleRegionMode,
 } from "../lib/bridge";
 import { createSubscriptionScope } from "../lib/subscriptions";
-import { topOverlay } from "../lib/overlayStack";
+import { hasAutoHideBlockingOverlay } from "../lib/overlayStack";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import {
   SNAP_CANDIDATE_ENTER_DIST,
   SNAP_DRAG_SETTLE_MS,
+  SNAP_MAGNET_MAX_LEAD,
+  SNAP_MAGNET_RANGE,
+  SNAP_MAGNET_RELEASE,
   SNAP_POLL_MS,
-  SNAP_UNDOCK_DRAG_PX,
   canTransition,
   detectCandidateEdge,
   edgeDistance,
   isDockedPhase,
+  isHiddenPhase,
   isRectMostlyVisible,
   isSnapEdge,
+  alongDeviation,
+  measureTitlebarHeight,
+  rebaseAlong,
   shouldConfirmDock,
   shouldExpireCandidate,
   shouldHideAfterLeave,
   shouldLeaveMagnetRange,
+  shouldUndockByDrag,
   snapMoveGuard,
+  undockAnchorTarget,
   type SnapArea,
   type SnapEdge,
   type SnapPhase,
@@ -166,7 +190,18 @@ async function persistSnap(
 
 export function useEdgeSnap(enabled: boolean) {
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      // 吸附关闭：磁力（吸引 + 阻力）必须**完全**停用，窗口按系统默认拖拽。
+      // 卸载/切换开关都走这里，避免"关掉开关但原生仍在拉扯窗口"的残留。
+      void setMagneticDragConfig(
+        false,
+        SNAP_MAGNET_RANGE,
+        SNAP_MAGNET_MAX_LEAD,
+        SNAP_MAGNET_RELEASE,
+      ).catch(() => {});
+      void setMagneticDock(null).catch(() => {});
+      return;
+    }
     // 本次挂载的世代号：清理时若已有更新实例接管，旧实例不得再写区域。
     const epoch = ++engineEpoch;
     const win = getCurrentWindow();
@@ -186,7 +221,28 @@ export function useEdgeSnap(enabled: boolean) {
     let dockedPos: SnapPoint | null = null; // 停靠时窗口目标位置（偏离判定基准）
     let capsuleCenter: number | null = null; // 胶囊沿边中心（物理像素）
     let magnetizedNow = false; // candidate 是否在磁吸区（≤28；仅在变化时同步 store）
+    /** 最近一次写入 snap_state 的沿边中心（沿边重定位只在变化时落库）。 */
+    let persistedCenter: number | null = null;
+    /**
+     * 拖拽期间曾观察到「法向位移超过解除阈值」：折叠态（docked-hidden）不做
+     * 光标轮询，靠这个一次性标记在静止后补一次解除判定（拖出后不会停在半脱开）。
+     */
+    let undockCheckDue = false;
     const machine: SnapMachine = { phase: "free", edge: null };
+
+    // ── 启动显示门 ──────────────────────────────────────────
+    // 后端在「上次退出为停靠态」时先把窗口裁成 1×1 空白区域（窗口可见但屏幕上
+    // 没有主窗口像素），直到本 hook 确认恢复结论（已按胶囊几何完成停靠、或确认
+    // 无需/无法恢复）才撤销。否则会先露出完整主窗口再缩成胶囊——正是停靠态
+    // 仍看到主窗口矩形的启动路径。
+    let readySent = false;
+    function markReady(): void {
+      if (readySent) return;
+      readySent = true;
+      void notifyUiReady().catch(() => {
+        // 失败不重试：后端 BLANK_REGION_FALLBACK_MS 后兜底撤销空白区域。
+      });
+    }
 
     function syncUi() {
       ui.sync({
@@ -195,6 +251,19 @@ export function useEdgeSnap(enabled: boolean) {
         magnetized: machine.phase === "candidate" ? magnetizedNow : false,
         dockedEdge: isDockedPhase(machine.phase) ? machine.edge : null,
       });
+    }
+
+    /**
+     * 把停靠位同步给原生磁力层（`WM_MOVING` 里的脱离阻力基准）。
+     * 阻力只对「已停靠且齐平位已知」的窗口生效；停靠失败 / 解除 / 卸载都必须清掉，
+     * 否则下一次普通拖拽会被当成"从停靠位往外拉"而突然变沉。
+     */
+    function syncMagnetDock(): void {
+      if (isDockedPhase(machine.phase) && machine.edge && dockedPos) {
+        void setMagneticDock(machine.edge, dockedPos.x, dockedPos.y).catch(() => {});
+      } else {
+        void setMagneticDock(null).catch(() => {});
+      }
     }
 
     /** 磁吸强度仅在跨越阈值时同步（拖拽期间 onMoved 高频，避免逐帧渲染） */
@@ -506,7 +575,12 @@ export function useEdgeSnap(enabled: boolean) {
           await win.setSize(new PhysicalSize(want.w, want.h));
           rect = { ...rect, w: want.w, h: want.h };
         } catch {
-          // 撑不到容器尺寸：区域会退化为只显示轨道（后端有同款兜底）
+          // 撑不到容器尺寸：轨道/面板区域无法完整覆盖，继续移动与切区域会留下
+          // 半尺寸的贴边窗口。停在这里回滚（§5.1），有界退避后重试。
+          await restoreDockGeometry(prevRect, dockedMonitor.workArea);
+          dockRetryAt = Date.now() + DOCK_RETRY_MS;
+          abortDock(prevEdge);
+          return false;
         }
       }
       machine.edge = edge;
@@ -535,6 +609,9 @@ export function useEdgeSnap(enabled: boolean) {
       dockRetryAt = 0;
       if (feedback) ui.notifyDocked(edge);
       void persistSnap(edge, phase === "docked-hidden", center);
+      persistedCenter = center;
+      // 停靠事务已提交（区域已生效、窗口已齐平）：现在才把基准交给原生磁力层
+      syncMagnetDock();
       return true;
     }
 
@@ -631,13 +708,53 @@ export function useEdgeSnap(enabled: boolean) {
       return false;
     }
 
-    /** 解除吸附核心：清区域 → 退出停靠 → 恢复模式尺寸并收回工作区。
-     *  `targetMode` 由「打开完整页」传入（避免先恢复旧模式再切新模式的两次缩放）。 */
-    async function undockCore(targetMode?: string): Promise<boolean> {
+    /**
+     * 解除后把窗口以鼠标为锚点重新定位（标题栏中心 = 光标）。
+     *
+     * 仅作为**原生拖拽锚定未应用**时的回退（请求时拖拽已结束 / 子类化未安装）：
+     * 用实际恢复后的窗口尺寸（回读，而非理论模式尺寸）与实测标题栏高度计算，
+     * 目标经 `undockAnchorTarget` 钳制进工作区（窗口完整可见优先，光标保持窗内）。
+     */
+    async function anchorRestoredWindowToCursor(scale: number): Promise<void> {
+      try {
+        const [cursor, rect, monitor] = await Promise.all([
+          cursorPosition(),
+          fetchRectOnly(),
+          currentMonitor(),
+        ]);
+        if (disposed || !monitor) return;
+        const wa = toWorkArea(monitor);
+        const target = undockAnchorTarget(
+          cursor,
+          { w: rect.w, h: rect.h },
+          toPhysical(measureTitlebarHeight(), scale),
+          wa,
+        );
+        if (target.x === rect.x && target.y === rect.y) return;
+        if (await moveWindow(target.x, target.y, true)) {
+          void saveVisibleRect({ ...rect, x: target.x, y: target.y });
+        }
+      } catch {
+        // 定位失败不阻塞解除：窗口仍由 clampIntoWorkArea 保证可见
+      }
+    }
+
+    /**
+     * 解除吸附核心：清区域 → 退出停靠 → 恢复模式尺寸并收回工作区。
+     * `targetMode` 由「打开完整页」传入（避免先恢复旧模式再切新模式的两次缩放）。
+     *
+     * `anchorCursor=true`（仅用户拖离路径）：先请求原生在拖拽循环内做鼠标锚定
+     * （恢复模式尺寸 + 标题栏中心对齐光标，一个拖拽帧内原子完成）；拖拽已结束
+     * 导致请求没被应用时，尺寸恢复确认后回退到 `anchorRestoredWindowToCursor`。
+     * 按钮解除 / 打开完整页 / 托盘唤回等路径保持各自原有定位，不传该参数。
+     */
+    async function undockCore(targetMode?: string, anchorCursor = false): Promise<boolean> {
       if (!machine.edge) return false;
       // 停靠期缩放系数：setPhase(free) 会清空 dockedMonitor，先取出来用于尺寸回读。
       const scale = dockedMonitor?.scaleFactor ?? 1;
       pendingRestore = null; // 用户意图优先：不得再被重启恢复队列拉回停靠
+      // 停靠期间窗口被撑到胶囊容器尺寸：解除后恢复目标模式（默认当前模式）的尺寸
+      const mode = targetMode ?? useSettingsStore.getState().settings?.mode ?? "full";
       // 区域必须真的清掉才算解除：失败时保持停靠相位（轨道仍可见可用），
       // 不允许出现「原生已裁成轨道 / React 显示完整主窗口」的假解除。
       let offOk = await setCapsuleRegion("off");
@@ -646,16 +763,89 @@ export function useEdgeSnap(enabled: boolean) {
         // 两次都失败：保持停靠相位（区域仍是轨道），并给自动路径一个重试间隔，
         // 避免拖离/跨边判定在每个 tick 都重发 off。
         undockRetryAt = Date.now() + UNDOCK_RETRY_MS;
+        if (anchorCursor) void cancelUndockAnchor().catch(() => {});
         return false;
       }
       undockRetryAt = 0;
+      // 拖离路径：请求原生鼠标锚定。在区域清理之后发出——锚定帧到来时窗口
+      // 区域已恢复整窗，不会出现「轨道裁剪贴在锚定后新位置」的瞬时错位。
+      // 请求是否被消费由 takeUndockAnchorApplied 在尺寸恢复后确认。
+      let anchorRequested = false;
+      if (anchorCursor) {
+        try {
+          anchorRequested = await setUndockAnchor(mode, measureTitlebarHeight());
+        } catch {
+          anchorRequested = false; // IPC 异常按无锚定处理，解除流程照常
+        }
+      }
       setPhase("free");
+      // 已解除：立刻清掉原生阻力基准（后续普通拖拽不得再被"停靠位"牵制）
+      void setMagneticDock(null).catch(() => {});
+      persistedCenter = null;
+      undockCheckDue = false;
       void persistSnap(null, false, null);
-      // 停靠期间窗口被撑到胶囊容器尺寸：解除后恢复目标模式（默认当前模式）的尺寸
-      const mode = targetMode ?? useSettingsStore.getState().settings?.mode ?? "full";
-      await restoreModeSize(mode, scale);
+      const sizeRestored = await restoreModeSize(mode, scale);
       await clampIntoWorkArea();
+      if (!sizeRestored) {
+        // 重试用尽：区域已确认解除（offOk），但模式尺寸仍未恢复。这里把
+        // 四件事分开记录，避免把「解除成功」误当成「几何已复原」：
+        // 区域 / 尺寸 / 工作区可见性 / 是否已持久化。
+        let inWorkArea = false;
+        try {
+          const rect = await fetchRectOnly();
+          const monitors = await availableMonitors();
+          inWorkArea = monitors.length > 0 && isRectMostlyVisible(rect, monitors.map(toArea));
+        } catch {
+          // 读不回按「无法确认」处理
+        }
+        console.warn("[edge-snap] 解除完成但模式尺寸未恢复", {
+          mode,
+          regionUndocked: true,
+          sizeRestored: false,
+          inWorkArea,
+          persisted: false, // 容器尺寸在持久化路径被显式拒绝
+        });
+      }
+      if (anchorRequested && !disposed) {
+        let applied = false;
+        try {
+          applied = await takeUndockAnchorApplied();
+        } catch {
+          applied = false;
+        }
+        // 原生没在拖拽循环内应用（拖拽在请求前已结束等）：按实际恢复后的
+        // 尺寸回退定位。已应用时窗口在拖拽中就已标题栏居中跟手，不得再动。
+        if (!applied) await anchorRestoredWindowToCursor(scale);
+      }
       return true;
+    }
+
+    /**
+     * 沿边重定位提交：停靠期窗口允许**沿边**滑动（法向由原生磁力钳住），
+     * 松手后沿边位置属于用户意图，必须写回基准与持久化——否则解除判定、
+     * 断连恢复、重启恢复都会回到旧位置。
+     *
+     * 只更新**沿边分量**：法向基准必须始终保持真实齐平位，拖动中的弹性位移
+     * 绝不能写进基准（否则解除判定的零点会被越推越远，越拉越容易脱开）。
+     */
+    function commitAlong(rect: SnapRect): void {
+      const edge = machine.edge;
+      if (!edge || !dockedPos) return;
+      if (Math.abs(alongDeviation(rect, dockedPos, edge)) >= 1) {
+        dockedPos = rebaseAlong(rect, dockedPos, edge);
+        capsuleCenter = alongCenterOf(edge, rect);
+      }
+      // 拖动中只更新内存基准；落库与原生下发在静止后**只做一次**
+      // （用 persistedCenter 而不是"本次是否位移"判定，否则拖动中先更新基准、
+      //   静止后位移已归零，就永远等不到那次落库）。
+      if (Date.now() - lastMoveAt < SNAP_DRAG_SETTLE_MS) return;
+      const center = capsuleCenter;
+      if (center === null) return;
+      if (persistedCenter !== null && Math.abs(persistedCenter - center) < 1) return;
+      persistedCenter = center;
+      // 原生基准的沿边分量同步（阻力只用法向，但基准要保持真实）
+      syncMagnetDock();
+      void persistSnap(edge, isHiddenPhase(machine.phase), center);
     }
 
     /** 解除后把窗口收回工作区（模式尺寸可能比胶囊容器大，贴边位置会溢出）。 */
@@ -677,9 +867,10 @@ export function useEdgeSnap(enabled: boolean) {
       }
     }
 
-    /** 拖拽解除：用户把胶囊拖离停靠位超过阈值。不内推——窗口已在用户手上。 */
+    /** 拖拽解除：用户把胶囊拖离停靠位超过阈值。不内推——窗口已在用户手上。
+     *  唯一使用鼠标锚定的解除路径（原生拖拽循环内对齐，未应用时回退定位）。 */
     async function undockByDrag(): Promise<void> {
-      if (!(await undockCore())) return;
+      if (!(await undockCore(undefined, true))) return;
       const rect = await fetchRectOnly();
       if (disposed) return;
       void saveVisibleRect(rect);
@@ -730,6 +921,8 @@ export function useEdgeSnap(enabled: boolean) {
             if (ok) {
               pendingRestore = null;
               restoreAttempts = 0;
+              // 停靠几何与轨道区域已生效：现在才放行窗口显示（不会露出主窗口）
+              markReady();
             } else {
               restoreAttempts += 1;
               dockRetryAt = Date.now() + DOCK_RETRY_MS;
@@ -739,6 +932,8 @@ export function useEdgeSnap(enabled: boolean) {
                   edge,
                   attempts: restoreAttempts,
                 });
+                // 放弃恢复：放行显示（主窗口可见但未停靠），不能一直隐藏
+                markReady();
               }
             }
           }
@@ -800,23 +995,27 @@ export function useEdgeSnap(enabled: boolean) {
           } else if (leftSince === null) {
             leftSince = now;
           }
-          const overlayOpen = topOverlay() !== undefined; // 菜单/对话框交互中不收起
+          // 菜单/对话框交互中不收起。注意胶囊面板自己也会注册一层（Esc 只收面板），
+          // 那不属于「用户正在弹层里交互」——用 hasAutoHideBlockingOverlay 排除它，
+          // 否则自动收起永远不触发，面板会一直悬在轨道上方。
+          const overlayOpen = hasAutoHideBlockingOverlay();
           if (!inZone && !overlayOpen && shouldHideAfterLeave(leftSince, now)) {
             await collapseToRail(true); // 收起面板，回到轨道常驻
             return;
           }
-          // 拖离解除：偏离停靠位超过阈值且非程序移动 = 用户拖离意图
+          // 沿边重定位：停靠期窗口可沿边滑动，松手后把沿边位置写回基准。
+          commitAlong(rect);
+          // 拖离解除：**法向**位移超过阈值且非程序移动 = 用户拖离意图。
+          // 只看法向——沿边滑动 24px 不是拖离（旧实现按两轴绝对值会误解除），
+          // 阈值与原生 `COMMIT_DRAG_CSS` 同值，两套规则指向同一物理量。
           const sinceMove = now - lastMoveAt;
           if (dockedPos && sinceMove >= SNAP_DRAG_SETTLE_MS) {
-            const deviated =
-              Math.abs(rect.x - dockedPos.x) > SNAP_UNDOCK_DRAG_PX ||
-              Math.abs(rect.y - dockedPos.y) > SNAP_UNDOCK_DRAG_PX;
-            if (
-              deviated &&
-              now >= undockRetryAt &&
-              !snapMoveGuard.isProgrammaticMove(rect.x, rect.y)
-            ) {
-              await undockByDrag();
+            if (shouldUndockByDrag(rect, dockedPos, edge)) {
+              if (now >= undockRetryAt && !snapMoveGuard.isProgrammaticMove(rect.x, rect.y)) {
+                await undockByDrag();
+              }
+            } else {
+              undockCheckDue = false;
             }
           }
           return;
@@ -824,21 +1023,31 @@ export function useEdgeSnap(enabled: boolean) {
         case "docked-hidden": {
           // 折叠态不需要光标轮询（点击轨道即可展开，不做悬停自动展开——
           // 悬停自动展开/收起正是历史上"来回跳动"的来源）。
-          // 只做低频可见性健康检查（显示器热插拔 / 系统挪窗）。
-          // 例外：上一次解除失败后窗口可能已被判为「离开」而收起，
-          // 这里按冷却间隔补一次偏离检测，避免停在「想解除但一直收着」。
-          if (undockRetryAt > 0 && Date.now() >= undockRetryAt) {
+          // 只保留两类低成本检查：
+          // 1) 拖拽收尾的一次性解除判定（`undockCheckDue` 由 handleMoved 置位）——
+          //    原生磁力未达阈值时会回弹贴平，这里只处理真正被拖离的；
+          // 2) 低频可见性健康检查（显示器热插拔 / 系统挪窗）。
+          if (undockCheckDue || (undockRetryAt > 0 && Date.now() >= undockRetryAt)) {
             const rect = await fetchRectOnly();
             if (disposed) return;
-            const deviated =
-              dockedPos !== null &&
-              (Math.abs(rect.x - dockedPos.x) > SNAP_UNDOCK_DRAG_PX ||
-                Math.abs(rect.y - dockedPos.y) > SNAP_UNDOCK_DRAG_PX);
-            if (deviated) {
-              await undockByDrag();
-              return;
+            const settled = Date.now() - lastMoveAt >= SNAP_DRAG_SETTLE_MS;
+            if (settled) {
+              const deviated =
+                machine.edge !== null &&
+                dockedPos !== null &&
+                shouldUndockByDrag(rect, dockedPos, machine.edge);
+              if (deviated && Date.now() >= undockRetryAt) {
+                await undockByDrag();
+                undockCheckDue = false;
+                return;
+              }
+              if (!deviated) {
+                undockCheckDue = false;
+                undockRetryAt = 0; // 已回到停靠位：无需再补解除
+              }
             }
-            undockRetryAt = 0; // 已回到停靠位：无需再补解除
+            // 折叠态同样支持沿边重定位（拖动中只更新内存基准）
+            commitAlong(rect);
           }
           if (++healthCheckTick % 20 === 0) await recoverVisibility();
           return;
@@ -853,6 +1062,11 @@ export function useEdgeSnap(enabled: boolean) {
       if (isDockedPhase(machine.phase)) {
         const edge = machine.edge;
         if (!edge) return;
+        // 拖离意图标记：法向位移越过解除阈值就置位，由 tick 在静止后收尾。
+        // 折叠态（docked-hidden）不做轮询，没有这个标记就会"拖出去停在半脱开"。
+        if (dockedPos && shouldUndockByDrag(rect, dockedPos, edge)) {
+          undockCheckDue = true;
+        }
         const other = detectCandidateEdge(rect, wa);
         if (other && other !== edge) {
           // 拖向另一条边：先完整解除（清区域 + 恢复尺寸 + 清持久化），
@@ -869,12 +1083,13 @@ export function useEdgeSnap(enabled: boolean) {
           }
           return;
         }
-        // 磁吸滞回：> 42px 才解除（28–42 死区内保持停靠，避免阈值抖动）
+        // 磁吸滞回：> EXIT_DIST 才解除（进入/退出阈值间的死区保持停靠，
+        // 避免阈值抖动）。onMoved 驱动 = 拖拽进行中，走鼠标锚定解除。
         if (
           Date.now() >= undockRetryAt &&
           shouldLeaveMagnetRange(edgeDistance(rect, wa, edge))
         ) {
-          await undockCore();
+          await undockCore(undefined, true);
         }
         return;
       }
@@ -952,15 +1167,29 @@ export function useEdgeSnap(enabled: boolean) {
             edge: saved.edge,
             center: typeof saved.center === "number" && Number.isFinite(saved.center) ? saved.center : null,
           };
+        } else {
+          // 无停靠记录：窗口无需等恢复，立即放行显示
+          markReady();
         }
       } catch {
-        // 忽略：读取失败按未停靠处理
+        // 读取失败按未停靠处理（不阻塞窗口显示）
+        markReady();
       }
     })();
 
     ui.setReveal(() => runExclusive(expandPanel));
     ui.setCollapse(() => runExclusive(collapsePanel));
     ui.setUndock((mode) => runExclusive(() => undockCore(mode)));
+
+    // 磁力参数下发（一次，非逐帧）：原生侧据此在 WM_MOVING 里修正移动矩形。
+    void setMagneticDragConfig(
+      true,
+      SNAP_MAGNET_RANGE,
+      SNAP_MAGNET_MAX_LEAD,
+      SNAP_MAGNET_RELEASE,
+    ).catch(() => {
+      // 下发失败只影响手感（退化为纯阈值吸附），不影响停靠正确性
+    });
 
     const timer = window.setInterval(runTick, SNAP_POLL_MS);
 
@@ -974,6 +1203,9 @@ export function useEdgeSnap(enabled: boolean) {
       ui.setCollapse(null);
       ui.setUndock(null);
       snapMoveGuard.setHidden(false);
+      // 磁力层随引擎一起停用：残留的停靠基准会让下一次普通拖拽被"拉住"。
+      // 与区域一样延后一个宏任务再决定——StrictMode 重挂载时新实例会先递增
+      // 世代号，旧实例此时不得把新实例刚打开的参数关掉（IPC 顺序不保证）。
       // 延迟一个宏任务再决定是否清区域：StrictMode 会在同一轮里立即重挂载新实例
       // （世代号前进），此时旧实例的 off 会覆盖新实例的 rail/panel，
       // 造成「Win32 已恢复整窗 / React 进了胶囊」。仅当无人接管时才清理。
@@ -981,6 +1213,13 @@ export function useEdgeSnap(enabled: boolean) {
       const wasDocked = isDockedPhase(machine.phase);
       window.setTimeout(() => {
         if (engineEpoch !== myEpoch) return;
+        void setMagneticDock(null).catch(() => {});
+        void setMagneticDragConfig(
+          false,
+          SNAP_MAGNET_RANGE,
+          SNAP_MAGNET_MAX_LEAD,
+          SNAP_MAGNET_RELEASE,
+        ).catch(() => {});
         if (wasDocked) {
           void setCapsuleRegion("off");
           void persistSnap(null, false, null);

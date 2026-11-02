@@ -26,31 +26,47 @@ const MAX_INLINE_TARGETS_COMPACT = 2;
 
 export default function TaskItem({ task, compact }: Props) {
   const toggle = useTasksStore((s) => s.toggle);
+  const statusFilter = useTasksStore((s) => s.filter.status);
   const openEditor = useUiStore((s) => s.openEditor);
   const showToast = useUiStore((s) => s.showToast);
   const openWorkspace = useUiStore((s) => s.openWorkspace);
   const openContext = useUiStore((s) => s.openContext);
   const links = useNavigationStore((s) => s.linksByTask[task.id]) ?? [];
   const [menuOpen, setMenuOpen] = useState(false);
+  /** 状态切换请求在途：挡住连点把同一条任务翻回翻去 */
+  const [busy, setBusy] = useState(false);
   const overdue = task.status === "pending" && isOverdue(task.due_at);
 
   async function onToggle() {
+    if (busy) return;
     const was = task.status;
+    setBusy(true);
     try {
       const updated = await toggle(task.id);
       if (was === "pending" && updated.status === "completed") {
-        showToast(`已完成「${updated.title}」`, {
-          kind: "success",
-          action: {
-            label: "撤销",
-            run: () => {
-              toggle(updated.id).catch((e) => showToast(`撤销失败：${String(e)}`, { kind: "error" }));
+        // 默认停在「未完成」筛选：这一行会消失，说清是退出筛选而不是被删掉
+        showToast(
+          (statusFilter ?? "pending") === "pending"
+            ? `已完成「${updated.title}」，已退出「未完成」列表（任务仍在，切到「已完成」可看到）`
+            : `已完成「${updated.title}」`,
+          {
+            kind: "success",
+            action: {
+              label: "撤销",
+              run: () => {
+                toggle(updated.id).catch((e) => showToast(`撤销失败：${String(e)}`, { kind: "error" }));
+              },
             },
           },
-        });
+        );
+      } else if (was === "completed") {
+        // 取消完成此前完全静默：状态翻了却没有任何反馈
+        showToast(`已重新打开「${updated.title}」`, { kind: "info" });
       }
     } catch (e) {
       showToast(`操作失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -86,6 +102,8 @@ export default function TaskItem({ task, compact }: Props) {
         onClick={onToggle}
         title={task.status === "completed" ? "取消完成" : "完成"}
         aria-label={task.status === "completed" ? "取消完成" : "完成任务"}
+        aria-busy={busy}
+        disabled={busy}
       >
         {task.status === "completed" && <Check size={12} />}
       </button>

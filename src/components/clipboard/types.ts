@@ -11,6 +11,8 @@ export type AskConfirm = (opts: {
 export type ClipboardDetail =
   | { kind: "item"; id: string }
   | { kind: "group"; id: string }
-  | { kind: "paste"; id: string; name: string };
+  | { kind: "paste"; id: string; name: string }
+  /** 任意多选逐项粘贴：不依赖永久分组 */
+  | { kind: "paste-items"; ids: string[] };
 
 export type LinkTask = Task | null;

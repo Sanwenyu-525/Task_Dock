@@ -14,15 +14,17 @@
 | `text` | TEXT | 纯文本正文（≤512 KB，超出截断） |
 | `html` | TEXT | 清洗后的 HTML 片段（≤512 KB） |
 | `preview` | TEXT | 列表预览（≤220 字符 + 省略号） |
-| `content_hash` | TEXT | SHA-256（类型 + 正文/文件路径/图片字节参与），**唯一索引** |
+| `title` | TEXT | 展示标题：自动生成（≤30 字符，省略号计入上限）或手动编辑（≤80）；空串时前端回退 `preview`（v15） |
+| `title_source` | TEXT | `none`（旧记录，未生成）/ `auto`（采集时生成）/ `manual`（用户编辑，自动规则与去重不覆盖）（v15） |
+| `content_hash` | TEXT | SHA-256（类型 + 正文/文件路径/图片字节参与），**唯一索引**；标题不参与哈希 |
 | `byte_size` | INTEGER | 文字/HTML 为字节数；图片为 PNG 字节数；文件为现存文件大小合计 |
 | `source_app` | TEXT | 来源 exe 文件名（小写） |
 | `source_title` | TEXT | 来源窗口标题 |
 | `image_width` / `image_height` | INTEGER | 图片尺寸（可空） |
 | `file_paths` | TEXT | 文件路径 JSON 数组（≤200 条） |
 | `favorite` / `pinned` | INTEGER | 0/1；自动清理不触碰 |
-| `copy_count` | INTEGER | 去重命中时 +1 |
-| `created_at` / `last_seen_at` | TEXT | RFC3339；排序与保留期依据 |
+| `copy_count` | INTEGER | 去重命中或显式复制时 +1（使用次数） |
+| `created_at` / `last_seen_at` | TEXT | RFC3339；`last_seen_at` 只由真实采集事件推进，显式复制**不更新**，避免复制旧条目时改变排序 |
 
 索引：`content_hash` 唯一；`last_seen_at DESC`；`(kind, last_seen_at DESC)`；
 `(favorite, last_seen_at DESC)`。
@@ -115,6 +117,9 @@
   - **v7**：5 张剪贴板表 + 索引（属于 v0.5 开发线，旧库升级时自动创建）。
   - **v8**：Agent 事件/通知索引（并行性能专项，仅 `CREATE INDEX IF NOT EXISTS`）。
   - **v9**：工作现场/行动中心表 + `clipboard_snapshot_links`。
+  - **v15**：`clipboard_items` 追加 `title` / `title_source` 两列（默认 `''` / `'none'`）。
+    旧记录保持空标题由前端回退 `preview` 展示；标题不参与去重哈希，备份/恢复、
+    DTO、命令签名同步扩展（`ClipboardItem` 新增两个字段）。
 - 版本检查在测试中覆盖：旧库逐级升级到最新、迁移中途失败回滚后重试成功。
 - 回滚/重置路径：数据管理命令删除表时同时删除 `clipboard_snapshot_links`，
   避免外键残留（`db/mod.rs` 的清理 SQL）。
@@ -127,12 +132,19 @@
    `javascript:`）、正文按 UTF-8 边界截断、重新生成预览、计算 `byte_size`。
 2. `engine::hash_of`：类型 + 文本 + HTML + 文件路径 + 图片字节 → SHA-256。
 3. 命中 `content_hash`：只更新 `copy_count + 1`、`last_seen_at`、来源应用/标题，
-   返回 `created=false`；不新建行、不重新落盘、不参与分组。
+   返回 `created=false`；不新建行、不重新落盘、不参与分组、**不覆盖已有标题**
+   （手动标题在重复采集中保持不变）。
 4. 未命中：图片先写原图 + 缩略图（临时文件 + 原子 rename），再在单事务中插入
-   条目与资产；事务失败删除已写文件；唯一约束冲突按重复处理。
+   条目与资产；插入前在 worker 线程用 `engine::make_title` 生成自动标题
+   （`title_source='auto'`，≤30 字符）；事务失败删除已写文件；唯一约束冲突按重复处理。
 5. 自动分组在同一事务内完成，避免“条目入库但分组失败”的半状态。
 
 不同 `kind` 的内容即使文本相同也哈希不同（例如纯文本与 URL），避免错误合并。
+标题生成规则见 `engine::make_title`：代码声明行 > Markdown 标题行 > 首个非空行；
+URL 取域名 + 首段路径；HTML 优先 `<h1>`/`<title>`；图片为尺寸描述（不推断内容）；
+文件列表为首个文件名 + 数量。搜索匹配 `title` 列（`push_search`）。
+手动编辑走 `clipboard_rename_item`：非空 → `manual`（≤80 字符），空串 → 按现有内容
+重新生成 `auto`。
 
 ## 四、删除与引用安全
 
@@ -143,6 +155,8 @@
 | 显式删除条目 | 用户明确删除内容：条目、资产引用、组内关系、任务关联一并移除；因此从所有分组消失。界面文案已明确提示，不再声称“仍被引用会保留” |
 | 任务删除 | 仅级联删除 `clipboard_task_links`，剪贴板内容与分组不变 |
 | 资产文件 | 删除后检查 `clipboard_assets` 是否仍引用同一路径；无引用才删文件 |
+| 清空全部历史（`clipboard_clear_history`） | 删除**全部**条目与分组（含收藏/置顶），解除全部任务/工作现场关联；提交成功后清理 `images/`、`thumbs/` 中失去引用的缓存文件；系统剪贴板、外部原始文件、任务与现场记录均保留；粘贴进行中拒绝执行 |
+| 清空时的采集竞态 | 清空前推进 `capture_epoch`；事件在产生时携带代数，旧代数的事件与排队内容在清空后直接丢弃，不会把清空前的复制重新写回；清空后才产生的复制使用新代数，正常记录。若清空因数据库错误回滚，此前排队未入库的采集会被丢弃（历史本身保持原样），这是“旧内容不得回写”的保守取舍 |
 
 空分组在条目删除后自动清理（含分组任务关联），避免留下空壳。
 
@@ -160,6 +174,10 @@
 4. 报告删除条数、关闭分组数、释放字节、孤儿文件数。
 
 收藏/置顶条目永不自动清理；文件条目不计入“释放字节”（不拥有原文件）。
+
+`cleanup` 是**按保留期/容量**的增量清理，不能当作“清空全部”：用户显式清空走
+`store::clear_history`，删除全部条目与分组，并在返回报告中区分“已释放字节”与
+“数据库已删除但缓存文件删除失败的数量”（后者下次清理会重试，不谎报成功）。
 
 ## 六、查询与分页
 

@@ -27,6 +27,56 @@ const RULES: Rule[] = [...themesCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) =
   body: m[2],
 }));
 
+const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** 取样式表里的 `@layer <name> { … }` 块（含同名的多个块，保持文件顺序）。 */
+function layerBlocks(css: string): { name: string; body: string }[] {
+  const out: { name: string; body: string }[] = [];
+  const re = /@layer\s+([\w-]+)\s*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(css)) !== null) {
+    let depth = 1;
+    let i = re.lastIndex;
+    for (; i < css.length && depth > 0; i += 1) {
+      if (css[i] === "{") depth += 1;
+      else if (css[i] === "}") depth -= 1;
+    }
+    out.push({ name: m[1], body: css.slice(re.lastIndex, i - 1) });
+    re.lastIndex = i;
+  }
+  return out;
+}
+
+/** 规则块 → 单条选择器（按逗号拆分并归一空白）。 */
+const selectorsOf = (rule: Rule): string[] =>
+  rule.selector.split(",").map((s) => s.trim().replace(/\s+/g, " "));
+
+/** 某层里「根容器」规则体：选择器列表中**恰好**包含 `.dock-window.is-capsule`。 */
+function capsuleRootBodies(css: string, layer: string): string[] {
+  const bodies: string[] = [];
+  for (const block of layerBlocks(stripComments(css))) {
+    if (block.name !== layer) continue;
+    for (const rule of [...block.body.matchAll(/([^{}]+)\{([^{}]*)\}/g)]) {
+      const selectors = selectorsOf({ selector: rule[1].trim(), body: rule[2] });
+      if (selectors.includes(".dock-window.is-capsule")) bodies.push(rule[2]);
+    }
+  }
+  return bodies;
+}
+
+/** 某层里某个选择器的规则体（用于 `::before` 这类唯一规则）。 */
+function ruleBodies(css: string, layer: string, selector: string): string[] {
+  const bodies: string[] = [];
+  for (const block of layerBlocks(stripComments(css))) {
+    if (block.name !== layer) continue;
+    for (const rule of [...block.body.matchAll(/([^{}]+)\{([^{}]*)\}/g)]) {
+      const selectors = selectorsOf({ selector: rule[1].trim(), body: rule[2] });
+      if (selectors.includes(selector)) bodies.push(rule[2]);
+    }
+  }
+  return bodies;
+}
+
 const PRESETS = ["dream-gradient", "liquid-glass"] as const;
 
 function rulesOf(preset: string, dark: boolean): Rule[] {
@@ -89,6 +139,25 @@ describe("主题令牌结构", () => {
     }
   });
 
+  it("立体层级令牌在四个上下文都有定义（避免某套主题少一层高度）", () => {
+    for (const preset of PRESETS) {
+      for (const dark of [false, true]) {
+        const decls = effectiveDecls(preset, dark);
+        for (const required of [
+          "--header-wash",
+          "--inset-face",
+          "--inset-shadow",
+          "--inset-shadow-hover",
+          "--inset-shadow-focus",
+          "--inset-shadow-sm",
+          "--shadow-overlay",
+        ]) {
+          expect(decls[required], `${preset}/${dark ? "dark" : "light"} 缺少 ${required}`).toBeTruthy();
+        }
+      }
+    }
+  });
+
   it("深色主题不会沿用浅色的窗口底色（否则底色与文字对不上）", () => {
     for (const preset of PRESETS) {
       expect(effectiveDecls(preset, true)["--window-fill"]).not.toBe(
@@ -130,14 +199,70 @@ describe("弹层表面可读性", () => {
     }
   });
 
-  it("胶囊轨道/面板使用不透明底 + 卡片渐变，而不是只剩半透明渐变", () => {
-    for (const selector of [".capsule-rail", ".capsule-panel"]) {
-      const block = new RegExp(`${selector.replace(".", "\\.")}\\s*\\{([\\s\\S]*?)\\}`).exec(
-        appCss,
+  it("胶囊表面使用不透明底：面板实色底 + 翼片三段渐变全部不含 alpha", () => {
+    const panel = /\.capsule-panel\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(panel, "styles.css 缺少 .capsule-panel").toBeTruthy();
+    expect(panel![1]).toMatch(/background-color:\s*var\(--wing-panel-base\)/);
+    expect(panel![1]).toMatch(/background-image:\s*var\(--wing-panel-face\)/);
+
+    // 翼片 fill 由 CapsuleWing 内联成 userSpaceOnUse 渐变（方向按停靠边换算），
+    // 因此不变量从「fill 指向实色 Token」改为「跨厚度的三个停靠色都不含 alpha」：
+    // 只要有一个半透明，深色桌面上胶囊就会局部消失（历史回归点）。
+    for (const preset of PRESETS) {
+      for (const dark of [false, true]) {
+        const decls = effectiveDecls(preset, dark);
+        const tag = `${preset}/${dark ? "dark" : "light"}`;
+        for (const key of ["--wing-panel-base", "--wing-near", "--wing-mid", "--wing-far"]) {
+          const v = decls[key];
+          expect(v, `${tag} 未定义 ${key}`).toBeTruthy();
+          expect(hasAlpha(v), `${tag} 的 ${key} 是半透明的：${v}`).toBe(false);
+        }
+      }
+    }
+  });
+});
+
+describe("停靠态根窗口（胶囊模式）", () => {
+  // 层叠顺序优先于选择器权重：`.dock-window` 的底色写在 theme 层，
+  // 只在 base 层写 transparent 会被无条件压过——历史回归「轨道旁边一整块矩形」。
+  it("layer 顺序声明一致：theme 排在 base 之后", () => {
+    for (const css of [appCss, themesCss, uiCss]) {
+      expect(css).toMatch(/@layer\s+base,\s*theme/);
+    }
+  });
+
+  it("根容器的最终规则在 theme 层，并清空所有整窗绘制", () => {
+    expect(capsuleRootBodies(themesCss, "theme").length).toBeGreaterThan(0);
+    const bodies = capsuleRootBodies(themesCss, "theme");
+    const body = bodies[bodies.length - 1]; // 同层后位胜出
+    expect(body).toMatch(/background:\s*transparent/);
+    expect(body).toMatch(/background-image:\s*none/);
+    expect(body).toMatch(/border:\s*none/);
+    expect(body).toMatch(/box-shadow:\s*none/);
+    expect(body).toMatch(/border-radius:\s*0/);
+  });
+
+  it("装饰伪元素在胶囊模式不绘制（否则会在区域内部染一层整窗光晕）", () => {
+    const bodies = ruleBodies(themesCss, "theme", ".dock-window.is-capsule::before");
+    expect(bodies.length).toBeGreaterThan(0);
+    const body = bodies[bodies.length - 1];
+    expect(body).toMatch(/content:\s*none/);
+    expect(body).toMatch(/background-image:\s*none/);
+  });
+
+  it("主界面容器在胶囊模式整块隐藏（保留挂载以维持视图状态）", () => {
+    expect(appCss).toMatch(
+      /\.dock-window\.is-capsule\s+\.dock-app\s*\{[^}]*display:\s*none/,
+    );
+  });
+
+  it("轨道容器自身不写矩形外观（背景/描边/阴影/圆角由翼片 SVG 承担）", () => {
+    const rail = /\.capsule-rail\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(rail).toBeTruthy();
+    for (const forbidden of ["background", "border", "box-shadow", "border-radius"]) {
+      expect(rail![1], `.capsule-rail 不应设置 ${forbidden}`).not.toMatch(
+        new RegExp(`(^|[;\\s])${forbidden}\\s*:`),
       );
-      expect(block, `styles.css 缺少 ${selector}`).toBeTruthy();
-      expect(block![1]).toMatch(/background-color:\s*var\(--capsule-face\)/);
-      expect(block![1]).toMatch(/background-image:\s*var\(--card-face\)/);
     }
   });
 });

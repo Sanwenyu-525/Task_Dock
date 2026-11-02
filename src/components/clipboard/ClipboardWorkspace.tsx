@@ -11,13 +11,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Clipboard, FolderPlus, Info, Link2, Merge, Pause, Play, RefreshCw, Search,
+  AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Merge, Pause, Play, RefreshCw, Search,
   Settings as SettingsIcon, Star, Trash2, X,
 } from "lucide-react";
 import {
+  clipboardClearHistory,
   clipboardCopyGroupFiles,
   clipboardCopyGroupRich,
   clipboardCopyItem,
+  clipboardCopyItemsFiles,
+  clipboardCopyItemsRich,
   clipboardCreateGroup,
   clipboardDeleteGroup,
   clipboardDeleteItems,
@@ -30,8 +33,10 @@ import {
   type ClipboardItem,
   type ClipboardStatus,
   type CopyReport,
+  type DeleteReport,
 } from "../../lib/bridge";
-import { formatBytes } from "../../lib/clipboardUi";
+import { formatBytes, objectHint } from "../../lib/clipboardUi";
+import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -103,7 +108,109 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   } | null>(null);
   const drawerRef = useRef<HTMLElement>(null);
 
-  const askConfirm: AskConfirm = (opts) =>
+  // 删除反馈链：执行中（等后端确认）→ 目标卡片离场 → 离场结束再静默补位。
+  // 离场中的行由 store 钉在原位，后台采集事件与静默刷新都不能把它提前卸载。
+  // 定时器只在删除期间存在、到点自删，卸载时统一回收；不做常驻轮询或高频刷新。
+  const exiting = useClipboardStore((s) => s.exiting);
+  const beginExit = useClipboardStore((s) => s.beginExit);
+  const endExit = useClipboardStore((s) => s.endExit);
+  const patchItem = useClipboardStore((s) => s.patchItem);
+  const patchGroup = useClipboardStore((s) => s.patchGroup);
+  /** 后端尚未确认：目标卡片显示执行中并挡住重复提交 */
+  const [pendingIds, setPendingIds] = useState<string[]>([]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  /** 发起操作时用户所在的卡片：确认框会抢走焦点，等到确认后再取就拿不到了 */
+  const confirmAnchor = useRef<string | null>(null);
+  const exitTimers = useRef<number[]>([]);
+  useEffect(
+    () => () => {
+      exitTimers.current.forEach((t) => window.clearTimeout(t));
+      exitTimers.current = [];
+    },
+    [],
+  );
+
+  /** 焦点在被删卡片上时，先记下相邻行的 id，供离场结束后接管焦点。 */
+  function captureFocusAnchor(ids: string[]): string | null {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return null;
+    const card = active.closest<HTMLElement>("[data-clip-id]");
+    if (!card) return null;
+    const gone = new Set(ids);
+    const rows = Array.from(
+      card.parentElement?.querySelectorAll<HTMLElement>("[data-clip-id]") ?? [],
+    );
+    const self = rows.indexOf(card);
+    const alive = (el: HTMLElement) => !gone.has(el.dataset.clipId ?? "");
+    const next = rows.slice(self + 1).find(alive);
+    const prev = rows.slice(0, Math.max(self, 0)).reverse().find(alive);
+    return (next ?? prev)?.dataset.clipId ?? null;
+  }
+  /** 离场结束：放手让列表补位、静默刷新，并把焦点交还给相邻卡片或搜索框。 */
+  function scheduleExitEnd(ids: string[], anchorId: string | null, after?: () => void) {
+    const timer = window.setTimeout(
+      () => {
+        exitTimers.current = exitTimers.current.filter((t) => t !== timer);
+        endExit(ids);
+        void load({ silent: true });
+        if (anchorId) {
+          const selector = `[data-clip-id="${CSS.escape(anchorId)}"]`;
+          const el = listRef.current?.querySelector<HTMLElement>(selector);
+          (el ?? searchRef.current)?.focus();
+        }
+        after?.();
+      },
+      prefersReducedMotion() ? 0 : EXIT_MS,
+    );
+    exitTimers.current.push(timer);
+  }
+
+  /**
+   * 删除的统一反馈链。`countOf` 决定「后端到底删掉了几个目标对象」：
+   * 条目看 `deleted`，分组看命令是否成功（`deleted` 只统计连带删除的条目）。
+   * 数量为 0 时如实提示并刷新，绝不演一场成功。
+   */
+  async function runDelete(
+    ids: string[],
+    kind: "item" | "group",
+    invokeDelete: () => Promise<DeleteReport>,
+    countOf: (r: DeleteReport) => number,
+    report: (deleted: number) => void,
+    after?: () => void,
+  ) {
+    setPendingIds((prev) => [...prev, ...ids]);
+    // 优先用发起操作时记下的相邻行；没有（例如批量操作在工具栏发起）就不接管焦点
+    const anchorId = confirmAnchor.current ?? captureFocusAnchor(ids);
+    confirmAnchor.current = null;
+    try {
+      const r = await invokeDelete();
+      const deleted = countOf(r);
+      if (deleted <= 0) {
+        showToast("这些内容已经不存在，列表已刷新", { kind: "warning" });
+        void load({ silent: true });
+        return;
+      }
+      if (deleted < ids.length) {
+        // 后端只删掉一部分，而且报告里说不清是哪几条：整批演离场等于把没删掉的
+        // 也伪装成已删除。如实报数并按服务端结果重新同步，剩下由刷新来定性。
+        showToast(`选中 ${ids.length} 条，实际删除 ${deleted} 条，其余仍在列表中`, { kind: "warning" });
+        void load({ silent: true });
+        return;
+      }
+      beginExit(ids, kind);
+      report(deleted);
+      scheduleExitEnd(ids, anchorId, after);
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    } finally {
+      setPendingIds((prev) => prev.filter((x) => !ids.includes(x)));
+    }
+  }
+
+  const askConfirm: AskConfirm = (opts) => {
+    // 确认框打开后会夺走焦点，此刻还没删任何东西，先记下相邻卡片
+    confirmAnchor.current = captureFocusAnchor([]);
     setConfirm({
       title: opts.title,
       detail: opts.detail,
@@ -111,6 +218,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       danger: opts.danger,
       run: opts.run,
     });
+  };
 
   // 打开或筛选变化时拉取
   useEffect(() => {
@@ -200,7 +308,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   async function onCopyItem(item: ClipboardItem) {
     try {
       reportCopy(await clipboardCopyItem(item.id));
-      void load({ silent: true });
+      // 复制不改变排序：只就地更新使用次数，避免整表刷新导致分页丢失或滚动跳顶。
+      useClipboardStore.getState().bumpItemCopy(item.id);
     } catch (e) {
       showToast(`复制失败：${String(e)}`, { kind: "error" });
     }
@@ -208,7 +317,29 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
 
   async function onToggleItem(item: ClipboardItem, flag: "favorite" | "pinned") {
     try {
-      await clipboardToggleItem(item.id, flag);
+      const updated = await clipboardToggleItem(item.id, flag);
+      // 后端返回最新实体：图标就地翻转，不必等整表刷新才确认操作生效
+      patchItem(updated);
+      const hint = objectHint(item);
+      if (flag === "favorite") {
+        showToast(
+          updated.favorite
+            ? `已收藏「${hint}」`
+            : filters.favorite
+              // 只看收藏下取消收藏会让它离开当前列表：说清是退出筛选，不是删除
+              ? `已取消收藏「${hint}」，退出「只看收藏」列表，内容仍保留在历史中`
+              : `已取消收藏「${hint}」，内容仍保留在历史中`,
+          { kind: "success" },
+        );
+      } else {
+        showToast(
+          updated.pinned
+            ? `已置顶「${hint}」，将排到列表前面`
+            : `已取消置顶「${hint}」，按时间回到原位`,
+          { kind: "success" },
+        );
+      }
+      // 置顶会改变排序，仍需静默刷新拿到新的顺序
       void load({ silent: true });
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -223,11 +354,15 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         : "将同时从所属分组和任务关联中移除。",
       confirmLabel: "删除",
       danger: true,
-      run: async () => {
-        const r = await clipboardDeleteItems([item.id]);
-        showToast(`已删除 ${r.deleted} 条`, { kind: "success" });
-        void load({ silent: true });
-      },
+      run: () =>
+        runDelete(
+          [item.id],
+          "item",
+          () => clipboardDeleteItems([item.id]),
+          (r) => r.deleted,
+          // 带上对象信息：相似内容连排时，只有一句「删除成功」认不出动的是哪条
+          () => showToast(`已删除「${objectHint(item)}」`, { kind: "success" }),
+        ),
     });
   }
 
@@ -247,7 +382,12 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
 
   async function onToggleGroup(group: ClipboardGroup, flag: "favorite" | "pinned") {
     try {
-      await clipboardToggleGroup(group.id, flag);
+      const updated = await clipboardToggleGroup(group.id, flag);
+      patchGroup(updated);
+      const action = flag === "favorite"
+        ? updated.favorite ? "已收藏" : "已取消收藏"
+        : updated.pinned ? "已置顶" : "已取消置顶";
+      showToast(`${action}分组「${group.name}」`, { kind: "success" });
       void load({ silent: true });
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -260,10 +400,46 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       detail: "只删除分组本身，分组内的历史条目仍保留。若要连同内容删除，请在分组详情中操作。",
       confirmLabel: "删除分组",
       danger: true,
+      // 保留条目时报告的 deleted 只统计条目（恒为 0），分组本身删没删看命令是否成功
+      run: () =>
+        runDelete(
+          [group.id],
+          "group",
+          () => clipboardDeleteGroup(group.id, false),
+          () => 1,
+          () => showToast(`分组「${group.name}」已删除，历史条目仍保留`, { kind: "success" }),
+        ),
+    });
+  }
+
+  function onClearHistory() {
+    if (historyCount === 0) return;
+    askConfirm({
+      title: "确定清空全部剪贴板历史？",
+      detail:
+        "将删除 Dock 保存的全部历史条目、分组和相关内部图片缓存，包括收藏和置顶内容。此操作不可撤销。" +
+        "不会清除系统当前剪贴板，也不会删除电脑中的原始文件。",
+      confirmLabel: "确认清空",
+      danger: true,
       run: async () => {
-        await clipboardDeleteGroup(group.id, false);
-        showToast("分组已删除，历史条目已保留", { kind: "success" });
-        void load({ silent: true });
+        setBusy("clear-history");
+        try {
+          const r = await clipboardClearHistory();
+          clearSelection();
+          setDetail(null);
+          const warn = r.failed_files > 0
+            ? `；${r.failed_files} 个缓存文件删除失败，将在下次清理时重试`
+            : "";
+          showToast(
+            `已清空 ${r.items} 条历史、${r.groups} 个分组${warn}`,
+            { kind: r.failed_files > 0 ? "info" : "success" },
+          );
+          await load();
+        } catch (e) {
+          showToast(`清空失败：${String(e)}`, { kind: "error" });
+        } finally {
+          setBusy(null);
+        }
       },
     });
   }
@@ -285,16 +461,36 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     }
   }
 
+  /** 任意多选批量复制：rich=富文本整合；files=文件/图片本地路径。 */
+  async function onCopySelectedItems(mode: "rich" | "files") {
+    if (selectedItems.length === 0) return;
+    setBusy(`copy-selected-${mode}`);
+    try {
+      const r = mode === "rich"
+        ? await clipboardCopyItemsRich(selectedItems)
+        : await clipboardCopyItemsFiles(selectedItems);
+      reportCopy(r);
+    } catch (e) {
+      showToast(`批量复制失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function onMergeGroups() {
     if (selectedGroups.length < 2) return;
+    const ids = [...selectedGroups];
     setBusy("merge");
     try {
-      const g = await clipboardMergeGroups(selectedGroups, mergeName.trim() || "合并分组");
+      const g = await clipboardMergeGroups(ids, mergeName.trim() || "合并分组");
       setMergeName("");
+      // 原分组用与删除一致的离场语言退场，新分组随刷新出现
+      beginExit(ids, "group");
       clearSelection();
       setSection("groups");
-      showToast(`已合并为「${g.name}」，共 ${g.item_count} 项`, { kind: "success" });
-      void load({ silent: true });
+      showToast(`已合并为「${g.name}」，共 ${g.item_count} 项；原 ${ids.length} 个分组不再单独显示`, { kind: "success" });
+      // 离场结束时 scheduleExitEnd 已带一次静默刷新，这里不再重复请求
+      scheduleExitEnd(ids, null);
     } catch (e) {
       showToast(`合并失败：${String(e)}`, { kind: "error" });
     } finally {
@@ -303,19 +499,23 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   }
 
   function onDeleteSelectedItems() {
-    const n = selectedItems.length;
-    if (n === 0) return;
+    const ids = [...selectedItems];
+    if (ids.length === 0) return;
     askConfirm({
-      title: `删除选中的 ${n} 条历史？`,
+      title: `删除选中的 ${ids.length} 条历史？`,
       detail: "将同时从所属分组和任务关联中移除；文件条目只删除记录，不会删除磁盘文件。",
       confirmLabel: "删除所选",
       danger: true,
-      run: async () => {
-        const r = await clipboardDeleteItems(selectedItems);
-        showToast(`已删除 ${r.deleted} 条`, { kind: "success" });
-        clearSelection();
-        void load({ silent: true });
-      },
+      run: () =>
+        runDelete(
+          ids,
+          "item",
+          () => clipboardDeleteItems(ids),
+          (r) => r.deleted,
+          // 走到这里说明选中项已全部删除；数量仍以后端为准
+          (deleted) => showToast(`已删除 ${deleted} 条`, { kind: "success" }),
+          clearSelection,
+        ),
     });
   }
 
@@ -346,6 +546,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   }
 
   const filterActive = filters.kind !== "all" || filters.favorite || filters.search.trim() !== "";
+  /** 清空入口的可用性：条目与分组都为空时没有可清空的内容。 */
+  const historyCount = (stats?.items ?? 0) + (stats?.groups ?? 0);
 
   function renderList() {
     if (section === "groups") {
@@ -369,12 +571,14 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         );
       }
       return (
-        <div className="clip-list">
+        <div className="clip-list" ref={listRef}>
           {groups.map((g) => (
             <ClipboardGroupCard
               key={g.id}
               group={g}
               selected={selectedGroups.includes(g.id)}
+              removing={!!exiting[g.id]}
+              pending={pendingIds.includes(g.id)}
               linkMode={!!linkTask}
               onSelect={() => toggleGroupSelection(g.id)}
               onToggle={(flag) => void onToggleGroup(g, flag)}
@@ -421,12 +625,14 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     }
     return (
       <>
-        <div className="clip-list">
+        <div className="clip-list" ref={listRef}>
           {items.map((item) => (
             <ClipboardItemCard
               key={item.id}
               item={item}
               selected={selectedItems.includes(item.id)}
+              removing={!!exiting[item.id]}
+              pending={pendingIds.includes(item.id)}
               linkMode={!!linkTask}
               onSelect={() => toggleItemSelection(item.id)}
               onCopy={() => void onCopyItem(item)}
@@ -520,6 +726,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               <Search size={12} />
               <input
                 className="input-embedded"
+                ref={searchRef}
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
                 placeholder="搜索文字、来源应用、文件名…"
@@ -599,6 +806,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           />
         ) : detail?.kind === "paste" ? (
           <PastePanel groupId={detail.id} groupName={detail.name} onBack={() => setDetail(null)} />
+        ) : detail?.kind === "paste-items" ? (
+          <PastePanel itemIds={detail.ids} onBack={() => setDetail(null)} />
         ) : (
           renderList()
         )}
@@ -607,6 +816,30 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       {!detail && section === "items" && selectedItems.length > 0 && (
         <div className="clip-selectbar">
           <span>{selectedItems.length} 项已选</span>
+          <button
+            className="btn sm primary"
+            onClick={() => void onCopySelectedItems("rich")}
+            disabled={busy !== null}
+            data-tip="按选择顺序整合文字与图片，写入富文本"
+          >
+            {busy === "copy-selected-rich" ? <RefreshCw size={11} className="spin" /> : <Copy size={11} />} 复制所选
+          </button>
+          <button
+            className="btn sm"
+            onClick={() => void onCopySelectedItems("files")}
+            disabled={busy !== null}
+            data-tip="把所选文件/图片作为文件列表复制；普通文字不包含在内"
+          >
+            {busy === "copy-selected-files" ? <RefreshCw size={11} className="spin" /> : <Copy size={11} />} 复制为文件
+          </button>
+          <button
+            className="btn sm"
+            onClick={() => setDetail({ kind: "paste-items", ids: selectedItems })}
+            disabled={busy !== null}
+            data-tip="选择目标窗口后按顺序逐条粘贴"
+          >
+            <Play size={11} /> 逐项粘贴
+          </button>
           <input
             value={groupName}
             onChange={(e) => setGroupName(e.target.value)}
@@ -654,9 +887,22 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         <span className={`clip-status tone-${statusTone}`}><i />{statusLabel}</span>
         <span>{stats?.items ?? 0} 条 · {stats?.groups ?? 0} 组</span>
         <span>图片缓存 {formatBytes(stats?.asset_bytes ?? 0)}</span>
-        <button className="link-btn" onClick={goSettings}>
-          <SettingsIcon size={11} /> 剪贴板设置
-        </button>
+        <div className="clip-foot-actions">
+          <button
+            className="link-btn clip-clear-btn"
+            onClick={onClearHistory}
+            disabled={historyCount === 0 || busy === "clear-history" || loading}
+            data-tip={historyCount === 0 ? "没有可清空的剪贴板历史" : "删除全部历史、分组与内部图片缓存"}
+            aria-label="清空剪贴板历史"
+          >
+            {busy === "clear-history"
+              ? <RefreshCw size={11} className="spin" />
+              : <Trash2 size={11} />} 清空历史
+          </button>
+          <button className="link-btn" onClick={goSettings}>
+            <SettingsIcon size={11} /> 剪贴板设置
+          </button>
+        </div>
       </footer>
     </>
   );
@@ -689,7 +935,10 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         detail={confirm?.detail}
         confirmLabel={confirm?.confirmLabel}
         danger={confirm?.danger}
-        onCancel={() => setConfirm(null)}
+        onCancel={() => {
+          confirmAnchor.current = null;
+          setConfirm(null);
+        }}
         onConfirm={() => {
           const run = confirm?.run;
           setConfirm(null);

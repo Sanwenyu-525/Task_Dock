@@ -8,9 +8,17 @@ import {
 import { useSettingsStore } from "../store/useSettingsStore";
 import type { Settings } from "./bridge";
 
-/** 最小可用 Settings 桩：本套件只关心 agent_alert_sound */
-const fakeSettings = (agentAlertSound: boolean): Settings =>
-  ({ agent_alert_sound: agentAlertSound }) as unknown as Settings;
+/** 最小可用 Settings 桩：本套件只关心 agent_alert_sound / notify_muted / notify_agent */
+const fakeSettings = (
+  agentAlertSound: boolean,
+  muted = false,
+  notifyAgent = true,
+): Settings =>
+  ({
+    agent_alert_sound: agentAlertSound,
+    notify_muted: muted,
+    notify_agent: notifyAgent,
+  }) as unknown as Settings;
 
 class FakeGainNode {
   gain = { setValueAtTime: vi.fn(), exponentialRampToValueAtTime: vi.fn() };
@@ -81,6 +89,18 @@ describe("playAgentAlert", () => {
   it("设置关闭时不发声也不创建 AudioContext", () => {
     useSettingsStore.setState({ settings: fakeSettings(false) });
     expect(playAgentAlert("failed")).toBe(false);
+    expect(FakeAudioContext.instances).toHaveLength(0);
+  });
+
+  it("全部静音时不发声（胶囊提示音不得绕过 notify_muted）", () => {
+    useSettingsStore.setState({ settings: fakeSettings(true, true) });
+    expect(playAgentAlert("failed")).toBe(false);
+    expect(FakeAudioContext.instances).toHaveLength(0);
+  });
+
+  it("关闭 Agent 通知时不发声（不通过胶囊声音绕过 notify_agent）", () => {
+    useSettingsStore.setState({ settings: fakeSettings(true, false, false) });
+    expect(playAgentAlert("waiting")).toBe(false);
     expect(FakeAudioContext.instances).toHaveLength(0);
   });
 

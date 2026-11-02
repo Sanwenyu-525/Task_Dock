@@ -14,15 +14,17 @@ use serde::{Deserialize, Serialize};
 use super::engine::{self, GroupAction};
 use super::image;
 use super::{
-    CaptureOutcome, CapturedContent, CleanupReport, ClipboardGroup, ClipboardItem, ClipboardStats,
-    ClipboardView, DeleteReport, KIND_FILES, KIND_IMAGE, MAX_HTML_BYTES, MAX_TEXT_BYTES,
+    CaptureOutcome, CapturedContent, CleanupReport, ClearReport, ClipboardGroup, ClipboardItem,
+    ClipboardStats, ClipboardView, DeleteReport, KIND_FILES, KIND_IMAGE, MAX_HTML_BYTES,
+    MAX_TEXT_BYTES,
 };
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
 
-const ITEM_FIELDS: &str = "i.id, i.kind, i.text, i.html, i.preview, i.byte_size, i.source_app,
- i.source_title, i.image_width, i.image_height, i.file_paths, i.favorite, i.pinned, i.copy_count,
- i.created_at, i.last_seen_at,
+const ITEM_FIELDS: &str =
+    "i.id, i.kind, i.text, i.html, i.preview, i.title, i.title_source, i.byte_size,
+ i.source_app, i.source_title, i.image_width, i.image_height, i.file_paths, i.favorite, i.pinned,
+ i.copy_count, i.created_at, i.last_seen_at,
  EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'image') AS has_image,
  EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'thumb') AS has_thumb";
 
@@ -35,26 +37,28 @@ const GROUP_FIELDS: &str = "g.id, g.name, g.mode, g.status, g.favorite, g.pinned
    WHERE gi.group_id = g.id ORDER BY gi.position LIMIT 1), '') AS preview";
 
 fn map_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
-    let raw_paths: String = row.get(10)?;
+    let raw_paths: String = row.get(12)?;
     Ok(ClipboardItem {
         id: row.get(0)?,
         kind: row.get(1)?,
         text: row.get(2)?,
         html: row.get(3)?,
         preview: row.get(4)?,
-        byte_size: row.get(5)?,
-        source_app: row.get(6)?,
-        source_title: row.get(7)?,
-        image_width: row.get::<_, Option<i64>>(8)?.map(|v| v.max(0) as u32),
-        image_height: row.get::<_, Option<i64>>(9)?.map(|v| v.max(0) as u32),
+        title: row.get(5)?,
+        title_source: row.get(6)?,
+        byte_size: row.get(7)?,
+        source_app: row.get(8)?,
+        source_title: row.get(9)?,
+        image_width: row.get::<_, Option<i64>>(10)?.map(|v| v.max(0) as u32),
+        image_height: row.get::<_, Option<i64>>(11)?.map(|v| v.max(0) as u32),
         file_paths: serde_json::from_str(&raw_paths).unwrap_or_default(),
-        favorite: row.get::<_, i64>(11)? != 0,
-        pinned: row.get::<_, i64>(12)? != 0,
-        copy_count: row.get(13)?,
-        created_at: row.get(14)?,
-        last_seen_at: row.get(15)?,
-        has_image: row.get::<_, i64>(16)? != 0,
-        has_thumb: row.get::<_, i64>(17)? != 0,
+        favorite: row.get::<_, i64>(13)? != 0,
+        pinned: row.get::<_, i64>(14)? != 0,
+        copy_count: row.get(15)?,
+        created_at: row.get(16)?,
+        last_seen_at: row.get(17)?,
+        has_image: row.get::<_, i64>(18)? != 0,
+        has_thumb: row.get::<_, i64>(19)? != 0,
     })
 }
 
@@ -100,10 +104,10 @@ fn like_pattern(q: &str) -> String {
 fn push_search(sql: &mut String, args: &mut Vec<Value>, q: &str) {
     let pat = like_pattern(q);
     sql.push_str(
-        " AND (i.text LIKE ? ESCAPE '\\' OR i.preview LIKE ? ESCAPE '\\' OR i.source_app LIKE ? ESCAPE '\\'
-          OR i.source_title LIKE ? ESCAPE '\\' OR i.file_paths LIKE ? ESCAPE '\\')",
+        " AND (i.text LIKE ? ESCAPE '\\' OR i.preview LIKE ? ESCAPE '\\' OR i.title LIKE ? ESCAPE '\\'
+          OR i.source_app LIKE ? ESCAPE '\\' OR i.source_title LIKE ? ESCAPE '\\' OR i.file_paths LIKE ? ESCAPE '\\')",
     );
-    for _ in 0..5 {
+    for _ in 0..6 {
         args.push(Value::Text(pat.clone()));
     }
 }
@@ -438,22 +442,25 @@ fn find_by_hash(db: &Db, hash: &str) -> AppResult<Option<ClipboardItem>> {
     })
 }
 
-type OpenGroup = Option<(String, Option<DateTime<Utc>>, usize)>;
+type OpenGroup = Option<(String, Option<DateTime<Utc>>, usize, Option<String>)>;
 
+/// 当前收集中的自动分组：id、最后一张截图时间、条数、组内最后一张截图的来源应用。
 fn open_group(conn: &Connection) -> AppResult<OpenGroup> {
-    let row: Option<(String, Option<String>, i64)> = conn
+    let row: Option<(String, Option<String>, i64, Option<String>)> = conn
         .query_row(
             "SELECT g.id,
                 (SELECT MAX(i.created_at) FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
                  WHERE gi.group_id = g.id AND i.kind = 'image') AS last_image,
-                (SELECT COUNT(*) FROM clipboard_group_items gi WHERE gi.group_id = g.id) AS cnt
+                (SELECT COUNT(*) FROM clipboard_group_items gi WHERE gi.group_id = g.id) AS cnt,
+                (SELECT i.source_app FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = g.id AND i.kind = 'image' ORDER BY gi.position DESC LIMIT 1) AS image_source
              FROM clipboard_groups g WHERE g.status = 'collecting'
              ORDER BY g.updated_at DESC LIMIT 1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    Ok(row.map(|(id, last, cnt)| {
+    Ok(row.map(|(id, last, cnt, src)| {
         (
             id,
             last.and_then(|s| {
@@ -462,6 +469,7 @@ fn open_group(conn: &Connection) -> AppResult<OpenGroup> {
                     .map(|d| d.with_timezone(&Utc))
             }),
             cnt.max(0) as usize,
+            src,
         )
     }))
 }
@@ -592,21 +600,32 @@ pub fn record_capture(
     let now = Utc::now();
     let now_iso = now.to_rfc3339();
     let file_paths_json = serde_json::to_string(&p.file_paths)?;
+    // 标题在入库前一次性生成（worker 线程内，不在 Win32 回调/UI 路径）；
+    // 输入已受 MAX_TEXT_BYTES / MAX_HTML_BYTES 限制，规则本身 O(行数)。
+    let title = engine::make_title(
+        &p.kind,
+        &p.text,
+        &p.html,
+        &p.file_paths,
+        p.image.as_ref().map(|i| i.width),
+        p.image.as_ref().map(|i| i.height),
+    );
 
     let result = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         // 文件已落盘；若此处唯一约束冲突（极端并发），回滚后按重复处理
         let insert = tx.execute(
             "INSERT INTO clipboard_items
-             (id, kind, text, html, preview, content_hash, byte_size, source_app, source_title,
+             (id, kind, text, html, preview, title, title_source, content_hash, byte_size, source_app, source_title,
               image_width, image_height, file_paths, favorite, pinned, copy_count, created_at, last_seen_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,0,1,?13,?13)",
+             VALUES (?1,?2,?3,?4,?5,?6,'auto',?7,?8,?9,?10,?11,?12,?13,0,0,1,?14,?14)",
             params![
                 item_id,
                 p.kind,
                 p.text,
                 p.html,
                 p.preview,
+                title,
                 hash,
                 p.byte_size,
                 p.source_app,
@@ -632,9 +651,9 @@ pub fn record_capture(
         }
 
         let open = open_group(&tx)?;
-        let (open_id, last_image, count) = match open {
-            Some(v) => (Some(v.0), v.1, v.2),
-            None => (None, None, 0),
+        let (open_id, last_image, count, image_source) = match open {
+            Some(v) => (Some(v.0), v.1, v.2, v.3),
+            None => (None, None, 0, None),
         };
         let action = engine::decide_group(
             &p.kind,
@@ -643,6 +662,8 @@ pub fn record_capture(
             settings.clipboard_group_window_secs as i64,
             last_image,
             count,
+            &p.source_app,
+            image_source.as_deref(),
         );
         let group_id = match action {
             GroupAction::Append => {
@@ -697,14 +718,82 @@ pub fn record_capture(
 
 // ── 编辑操作 ────────────────────────────────────────────────
 
+/// 记录一次显式复制（使用次数）。
+///
+/// 只累加 `copy_count`，**不更新 `last_seen_at`**：列表按 `last_seen_at` 排序，
+/// 复制旧条目若同时刷新时间，会让它立刻跳到列表顶部，用户正在浏览的位置随之丢失。
+/// 「最近采集时间」只应由 `record_capture`（真实剪贴板事件）推进。
 pub fn bump_copy(db: &Db, item_id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
         conn.execute(
-            "UPDATE clipboard_items SET copy_count = copy_count + 1, last_seen_at = ?1 WHERE id = ?2",
-            params![crate::agents::now_iso(), item_id],
+            "UPDATE clipboard_items SET copy_count = copy_count + 1 WHERE id = ?1",
+            params![item_id],
         )?;
         Ok(())
     })
+}
+
+/// 手动编辑标题：`title` 非空时设为 manual（此后自动规则与去重都不再覆盖）；
+/// 传空串表示清除手动标题，按现有内容重新生成 auto 标题。
+pub fn rename_item(db: &Db, item_id: &str, title: &str) -> AppResult<ClipboardItem> {
+    let trimmed = title.trim();
+    let (new_title, source) = if trimmed.is_empty() {
+        let item = get_item(db, item_id)?;
+        let regen = engine::make_title(
+            &item.kind,
+            &item.text,
+            &item.html,
+            &item.file_paths,
+            item.image_width,
+            item.image_height,
+        );
+        (regen, "auto")
+    } else {
+        (engine::truncate_chars(trimmed, 80), "manual")
+    };
+    let n = db.with_conn(|conn| {
+        Ok(conn.execute(
+            "UPDATE clipboard_items SET title = ?1, title_source = ?2 WHERE id = ?3",
+            params![new_title, source, item_id],
+        )?)
+    })?;
+    if n == 0 {
+        return Err(AppError::NotFound("剪贴板条目不存在".into()));
+    }
+    get_item(db, item_id)
+}
+
+/// 按传入顺序批量读取条目（多选批量复制/粘贴用）；不存在的 id 跳过。
+pub fn get_items_by_ids(db: &Db, ids: &[String]) -> AppResult<Vec<ClipboardItem>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 去重保持首次顺序，避免同一条目重复写入剪贴板
+    let mut unique: Vec<&String> = Vec::new();
+    for id in ids {
+        if !unique.contains(&id) {
+            unique.push(id);
+        }
+    }
+    let ph = placeholders(unique.len());
+    let sql = format!("SELECT {ITEM_FIELDS} FROM clipboard_items i WHERE i.id IN ({ph})");
+    let map: std::collections::HashMap<String, ClipboardItem> = db.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params_from_iter(unique.iter().map(|s| s.to_string())),
+            map_item,
+        )?;
+        let mut m = std::collections::HashMap::new();
+        for r in rows {
+            let item = r?;
+            m.insert(item.id.clone(), item);
+        }
+        Ok(m)
+    })?;
+    Ok(unique
+        .into_iter()
+        .filter_map(|id| map.get(id.as_str()).cloned())
+        .collect())
 }
 
 pub fn toggle_item_flag(db: &Db, item_id: &str, flag: &str) -> AppResult<ClipboardItem> {
@@ -1680,7 +1769,19 @@ pub fn cleanup(db: &Db, root: &Path, settings: &Settings) -> AppResult<CleanupRe
     Ok(report)
 }
 
-fn cleanup_orphan_files(db: &Db, root: &Path) -> AppResult<i64> {
+#[derive(Debug, Default, Clone, Copy)]
+struct FilePurge {
+    removed: i64,
+    freed_bytes: i64,
+    failed: i64,
+}
+
+/// 删除剪贴板根目录下所有「数据库已不再引用」的内部缓存文件。
+///
+/// 删除失败必须计数：数据库已经清空时，文件残留不能谎报为清理成功；
+/// 下次清理会再尝试。只处理 `images/`、`thumbs/` 下的普通文件，
+/// 绝不触碰外部路径指向的原始文件。
+fn purge_orphan_files(db: &Db, root: &Path) -> AppResult<FilePurge> {
     let referenced: HashSet<String> = db.with_conn(|conn| {
         let mut stmt = conn.prepare("SELECT path FROM clipboard_assets")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
@@ -1690,21 +1791,74 @@ fn cleanup_orphan_files(db: &Db, root: &Path) -> AppResult<i64> {
         }
         Ok(set)
     })?;
-    let mut removed = 0;
+    let mut report = FilePurge::default();
     for sub in ["images", "thumbs"] {
         let dir = root.join(sub);
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let rel = format!("{sub}/{name}");
-            if !referenced.contains(&rel) && std::fs::remove_file(entry.path()).is_ok() {
-                removed += 1;
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let rel = format!("{sub}/{}", entry.file_name().to_string_lossy());
+            if referenced.contains(&rel) {
+                continue;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    report.removed += 1;
+                    report.freed_bytes += meta.len() as i64;
+                }
+                // 文件已被其他维护动作删掉不算失败。
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    report.failed += 1;
+                    tracing::warn!("剪贴板缓存文件删除失败：{}", e.kind());
+                }
             }
         }
     }
-    Ok(removed)
+    Ok(report)
+}
+
+fn cleanup_orphan_files(db: &Db, root: &Path) -> AppResult<i64> {
+    Ok(purge_orphan_files(db, root)?.removed)
+}
+
+/// 清空全部剪贴板历史（用户显式操作，不可撤销）。
+///
+/// 与时间/容量清理不同：这里删除**全部**条目与分组，包括收藏、置顶、
+/// 被任务或工作现场关联的内容；只解除剪贴板关联，任务与现场本身保留。
+/// 数据库删除在单事务中完成，提交成功后才按实际引用关系清理内部缓存；
+/// 系统剪贴板与外部原始文件完全不受影响。
+pub fn clear_history(db: &Db, root: &Path) -> AppResult<ClearReport> {
+    let (items, groups) = db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let items: i64 = tx.query_row("SELECT COUNT(*) FROM clipboard_items", [], |r| r.get(0))?;
+        let groups: i64 =
+            tx.query_row("SELECT COUNT(*) FROM clipboard_groups", [], |r| r.get(0))?;
+        // 任务/工作现场只解除指向剪贴板的关联，不删除任务或现场本身。
+        tx.execute("DELETE FROM clipboard_task_links", [])?;
+        tx.execute("DELETE FROM clipboard_snapshot_links", [])?;
+        tx.execute("DELETE FROM clipboard_group_items", [])?;
+        tx.execute("DELETE FROM clipboard_groups", [])?;
+        tx.execute("DELETE FROM clipboard_assets", [])?;
+        tx.execute("DELETE FROM clipboard_items", [])?;
+        tx.commit()?;
+        Ok((items, groups))
+    })?;
+    let purge = purge_orphan_files(db, root)?;
+    Ok(ClearReport {
+        items,
+        groups,
+        freed_bytes: purge.freed_bytes,
+        failed_files: purge.failed,
+    })
 }
 
 // ── 资产读取（缩略图/大图 data URL）──────────────────────────
@@ -1859,10 +2013,13 @@ mod tests {
         let root = tmp.0.join("clipboard");
         let mut s = settings();
         s.clipboard_group_window_secs = 45;
+        let mut mid_text = text_payload("中间文本 C");
+        // 「截图 A→文字说明→截图 B」：说明文字与截图来自同一应用会话时必须保留顺序
+        mid_text.source_app = "snippingtool.exe".into();
         let payloads = [
             solid_image([220, 40, 40, 255], 37, 23),
             solid_image([40, 180, 80, 255], 53, 31),
-            text_payload("中间文本 C"),
+            mid_text,
             solid_image([40, 80, 220, 255], 61, 17),
         ];
 
@@ -1964,6 +2121,137 @@ mod tests {
     }
 
     #[test]
+    fn copy_bump_counts_usage_without_reordering_history() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let old = record_capture(&db, &root.0, &text_payload("旧内容"), &s).unwrap();
+        let newest = record_capture(&db, &root.0, &text_payload("新内容"), &s).unwrap();
+        // 固定时间，避免断言依赖两次 record_capture 的纳秒差
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE clipboard_items SET last_seen_at = ?1 WHERE id = ?2",
+                params!["2026-01-01T00:00:00Z", old.item.id],
+            )?;
+            c.execute(
+                "UPDATE clipboard_items SET last_seen_at = ?1 WHERE id = ?2",
+                params!["2026-01-02T00:00:00Z", newest.item.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        bump_copy(&db, &old.item.id).unwrap();
+        let items = list_items(&db, &ClipboardFilter::default()).unwrap();
+        assert_eq!(items[0].id, newest.item.id, "复制旧条目不得改变排序");
+        assert_eq!(items[1].id, old.item.id);
+        assert_eq!(
+            items[1].copy_count,
+            old.item.copy_count + 1,
+            "使用次数仍要累加"
+        );
+        assert_eq!(
+            items[1].last_seen_at, "2026-01-01T00:00:00Z",
+            "复制是使用操作，不得把 last_seen_at 当作新的采集时间"
+        );
+    }
+
+    #[test]
+    fn clear_history_removes_items_groups_links_and_internal_assets() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        // 外部原始文件：清空历史绝不能删除它（不在剪贴板缓存目录内）
+        let external =
+            std::env::temp_dir().join(format!("td-clip-external-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&external, b"original").unwrap();
+        let mut file_payload = text_payload("");
+        file_payload.kind = "files".into();
+        file_payload.file_paths = vec![external.to_string_lossy().into_owned()];
+
+        let text = record_capture(&db, &root.0, &text_payload("收藏内容"), &s).unwrap();
+        toggle_item_flag(&db, &text.item.id, "favorite").unwrap();
+        let image = record_capture(&db, &root.0, &image_payload(9), &s).unwrap();
+        toggle_item_flag(&db, &image.item.id, "pinned").unwrap();
+        record_capture(&db, &root.0, &file_payload, &s).unwrap();
+        let group = create_manual_group(
+            &db,
+            "测试分组",
+            &[text.item.id.clone(), image.item.id.clone()],
+        )
+        .unwrap();
+
+        task(&db, "t1");
+        link_task(&db, "t1", "item", &text.item.id).unwrap();
+        link_task(&db, "t1", "group", &group.id).unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO workspace_snapshots
+                 (id, name, note, source, item_count, created_at, updated_at)
+                 VALUES ('w1', '现场', '', 'manual', 0, 'now', 'now')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        link_snapshot(&db, "w1", "item", &text.item.id).unwrap();
+
+        let rel_image = asset_rel(&db, &image.item.id, "image").unwrap().unwrap();
+        let abs_image = asset_abs(&root.0, &rel_image).unwrap();
+        let rel_thumb = asset_rel(&db, &image.item.id, "thumb").unwrap().unwrap();
+        let abs_thumb = asset_abs(&root.0, &rel_thumb).unwrap();
+        assert!(abs_image.exists() && abs_thumb.exists());
+
+        let report = clear_history(&db, &root.0).unwrap();
+        assert_eq!(report.items, 3, "全部条目都要删除，而不是只删当前页");
+        assert_eq!(report.groups, 1);
+        assert!(report.freed_bytes > 0);
+        assert_eq!(report.failed_files, 0);
+
+        assert_eq!(count_items(&db, &ClipboardFilter::default()).unwrap(), 0);
+        let stats_now = stats(&db, &s).unwrap();
+        assert_eq!(stats_now.items, 0);
+        assert_eq!(stats_now.groups, 0);
+        assert!(!abs_image.exists(), "失去引用的原图缓存必须清理");
+        assert!(!abs_thumb.exists(), "失去引用的缩略图缓存必须清理");
+        assert!(external.exists(), "外部原始文件绝不能被删除");
+        assert!(
+            task_links(&db, "t1").unwrap().is_empty(),
+            "只解除剪贴板关联"
+        );
+        assert!(snapshot_links(&db, "w1").unwrap().is_empty());
+        let tasks: i64 = db
+            .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(tasks, 1, "任务本身不得被删除");
+        let snapshots: i64 = db
+            .with_conn(|c| {
+                Ok(c.query_row("SELECT COUNT(*) FROM workspace_snapshots", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(snapshots, 1, "工作现场本身不得被删除");
+        assert!(
+            Settings::load_clipboard(&db).settings.clipboard_enabled,
+            "应用设置不属于剪贴板历史，必须保留"
+        );
+        let _ = std::fs::remove_file(&external);
+    }
+
+    #[test]
+    fn clear_history_is_idempotent_on_empty_store() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let first = clear_history(&db, &root.0).unwrap();
+        assert_eq!(first.items, 0);
+        assert_eq!(first.groups, 0);
+        let second = clear_history(&db, &root.0).unwrap();
+        assert_eq!(second.items, 0);
+        assert_eq!(second.groups, 0);
+    }
+
+    #[test]
     fn interleaved_text_keeps_screenshot_group_order() {
         let db = Db::open_in_memory().unwrap();
         let root = TempRoot::new();
@@ -1971,9 +2259,13 @@ mod tests {
         s.clipboard_group_window_secs = 45;
         let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
         let gid = a.group_id.expect("截图应建组");
-        record_capture(&db, &root.0, &text_payload("第一段说明"), &s).unwrap();
+        let mut note1 = text_payload("第一段说明");
+        note1.source_app = "snippingtool.exe".into();
+        record_capture(&db, &root.0, &note1, &s).unwrap();
         record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
-        record_capture(&db, &root.0, &text_payload("第二段说明"), &s).unwrap();
+        let mut note2 = text_payload("第二段说明");
+        note2.source_app = "snippingtool.exe".into();
+        record_capture(&db, &root.0, &note2, &s).unwrap();
         let g = get_group(&db, &gid).unwrap();
         assert_eq!(g.items.len(), 4);
         let kinds: Vec<&str> = g.items.iter().map(|i| i.kind.as_str()).collect();
@@ -1985,6 +2277,96 @@ mod tests {
         assert_eq!(g.image_count, 2);
         assert_eq!(g.mode, "auto");
         assert_eq!(g.status, "collecting");
+    }
+
+    #[test]
+    fn cross_source_text_does_not_join_screenshot_group() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_group_window_secs = 45;
+        let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
+        let gid = a.group_id.expect("截图应建组");
+
+        // 与截图来源不同的文本（如截图后顺手从浏览器复制）大概率无关，不并入
+        let mut unrelated = text_payload("来自其他应用的无关内容");
+        unrelated.source_app = "chrome.exe".into();
+        let out = record_capture(&db, &root.0, &unrelated, &s).unwrap();
+        assert!(out.created);
+        assert!(out.group_id.is_none(), "跨来源文本不得自动并入截图组");
+
+        // 来源未知的文本保持原行为（窗口内追加）
+        let mut unknown_src = text_payload("来源未知的说明");
+        unknown_src.source_app = String::new();
+        let out2 = record_capture(&db, &root.0, &unknown_src, &s).unwrap();
+        assert_eq!(out2.group_id.as_deref(), Some(gid.as_str()));
+
+        // 截图连续性不受影响：后续截图仍追加进原组
+        let c = record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
+        assert_eq!(c.group_id.as_deref(), Some(gid.as_str()));
+        let g = get_group(&db, &gid).unwrap();
+        assert_eq!(g.items.len(), 3);
+        assert_eq!(g.image_count, 2);
+    }
+
+    #[test]
+    fn auto_title_lifecycle_and_search() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &text_payload("第一条说明文字"), &s).unwrap();
+        assert_eq!(a.item.title_source, "auto");
+        assert!(!a.item.title.is_empty(), "文本采集时应生成自动标题");
+
+        // 手动标题：非空 → manual
+        let renamed = rename_item(&db, &a.item.id, "  我的手动标题  ").unwrap();
+        assert_eq!(renamed.title, "我的手动标题");
+        assert_eq!(renamed.title_source, "manual");
+
+        // 去重路径不覆盖手动标题（同内容再次采集只累加计数）
+        let again = record_capture(&db, &root.0, &text_payload("第一条说明文字"), &s).unwrap();
+        assert!(!again.created);
+        assert_eq!(again.item.title, "我的手动标题");
+        assert_eq!(again.item.title_source, "manual");
+
+        // 标题可被搜索命中（内容中不含该关键词）
+        let f = ClipboardFilter {
+            search: Some("独特关键词XYZ".into()),
+            ..Default::default()
+        };
+        assert!(list_items(&db, &f).unwrap().is_empty());
+        rename_item(&db, &a.item.id, "独特关键词XYZ").unwrap();
+        let hits = list_items(&db, &f).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, a.item.id);
+
+        // 清空（纯空白）→ 恢复自动标题
+        let regen = rename_item(&db, &a.item.id, "   ").unwrap();
+        assert_eq!(regen.title_source, "auto");
+        assert!(!regen.title.is_empty());
+        assert_ne!(regen.title, "独特关键词XYZ");
+
+        // 不存在的条目返回 NotFound
+        let err = rename_item(&db, "no-such-id", "标题").unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[test]
+    fn auto_title_covers_image_and_files_kinds() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+        let img = record_capture(&db, &root.0, &image_payload(5), &s).unwrap();
+        assert_eq!(img.item.title, "截图 40×30");
+        assert_eq!(img.item.title_source, "auto");
+
+        let mut files = text_payload("");
+        files.kind = "files".into();
+        files.file_paths = vec!["C:\\tmp\\设计稿.png".into(), "C:\\tmp\\说明.txt".into()];
+        let f = record_capture(&db, &root.0, &files, &s).unwrap();
+        assert!(f.item.title.starts_with("设计稿"), "文件标题应含首个文件名");
+        assert!(f.item.title.contains("2 个文件"));
     }
 
     #[test]

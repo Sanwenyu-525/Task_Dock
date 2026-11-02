@@ -56,6 +56,49 @@
      `--card-face` 只是叠在窗口底色上的半透明渐变，不能单独承担胶囊表面。
      主题层会按预设 × 明暗覆盖为对应底色；这里只是兜底。 */
   --capsule-face: #f7f8fc;
+  /* 液态翼片（v0.7 方案 B）表面材质：**跨厚度**三段冷蓝白渐变。
+     near = 贴屏幕边缘（环境遮蔽，最深）· mid = 中段 · far = 朝屏幕内部（最亮）。
+     方向由 `CapsuleWing` 按停靠边换算成 SVG 渐变坐标，四边共用一套语义。
+     透明感靠「稳定实色 + 分层高光」制造，不靠降低 alpha——历史上把 alpha
+     调低会让胶囊在深色桌面上直接消失。 */
+  --wing-near: #ccdaf6;
+  --wing-mid: #e0eafd;
+  --wing-far: #f6faff;
+  /* 内侧高光带 / 环境色反射 / 贴边暗部的不透明度 */
+  --wing-spec: 0.55;
+  --wing-haze: rgba(108, 124, 240, 0.10);
+  --wing-shade: 0.10;
+  /* 轮廓高光：只在内侧边缘可见，靠屏幕边缘完全淡出（不是一圈 border） */
+  --wing-rim-a: 0.03;
+  --wing-rim-b: 0.45;
+  /* 轨道内部元素 */
+  --wing-divider: color-mix(in srgb, var(--c-night) 12%, transparent);
+  --wing-hover: color-mix(in srgb, var(--c-accent) 9%, transparent);
+  --wing-active: color-mix(in srgb, var(--c-accent) 13%, transparent);
+  --wing-active-inner: color-mix(in srgb, var(--c-paper) 85%, transparent);
+  --wing-icon: color-mix(in srgb, var(--text-secondary) 55%, var(--c-night));
+  --wing-collapse: color-mix(in srgb, var(--text-secondary) 72%, transparent);
+  --wing-badge: color-mix(in srgb, var(--c-accent) 88%, #4f46e5);
+  --wing-badge-ring: color-mix(in srgb, var(--capsule-face) 92%, transparent);
+  /* Agent 总状态节点：浅色下是**翼片上的玻璃片**（浅底 + 紫罗兰字形），
+     与效果图一致——不是一个漂浮的紫色按钮；深色才用实色渐变球保证对比。 */
+  /* 总状态是胶囊的「主按钮」，恒为蓝紫渐变（效果图口径）；语义色只做外圈环，
+     不用整块换色——等待确认时整颗球变橙会把品牌色让位给告警色。 */
+  --cap-orb-face: linear-gradient(148deg, #4d5bd6 0%, #5b57cf 52%, #7c4ee0 100%);
+  --cap-orb-glyph: rgba(255, 255, 255, 0.94);
+  --cap-orb-inner: rgba(255, 255, 255, 0.18);
+  /* 功能面板：与翼片同一套冷蓝玻璃（顶部环境光 + 内侧边缘高光 + 轻投影） */
+  /* 玻璃面：顶部环境光 + 冷白偏蓝的斜向渐变（对照 01..04 四张效果图）。
+     只做静态叠色，不引入实时模糊/滤镜。 */
+  --wing-panel-face:
+    radial-gradient(120% 78% at 6% -8%, rgba(255, 255, 255, 0.92), transparent 62%),
+    linear-gradient(168deg, rgba(255, 255, 255, 0.66) 0%, rgba(238, 244, 255, 0.34) 46%, rgba(226, 234, 252, 0.22) 100%);
+  --wing-panel-base: #e9f1fd;
+  --wing-panel-border: color-mix(in srgb, #ffffff 60%, transparent);
+  --wing-panel-inner: rgba(255, 255, 255, 0.92);
+  --wing-panel-shadow:
+    0 1px 2px rgba(52, 62, 110, 0.05),
+    0 12px 28px -18px rgba(52, 62, 110, 0.45);
   /* 胶囊几何（CSS px）：隐藏坐标用 capsuleStripPhysical = round(32 × DPI)，
      两者严格对应，内容不被窗口边界裁切 */
   --snap-capsule-t: 32px;
@@ -100,6 +143,36 @@
   --shadow-overlay: 0 10px 34px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-raised: 0 2px 8px rgba(0, 0, 0, 0.28);
   --capsule-face: #1f2532;
+  /* 翼片深色：深蓝灰玻璃——跨厚度渐变从近边缘的深色抬到内侧的蓝灰，
+     保留足够实色底，光泽只做边缘反射，不靠高强度外发光。 */
+  --wing-near: #0f1420;
+  --wing-mid: #1d2434;
+  --wing-far: #313b50;
+  --wing-spec: 0.26;
+  --wing-haze: rgba(129, 140, 248, 0.16);
+  --wing-shade: 0.28;
+  --wing-rim-a: 0.02;
+  --wing-rim-b: 0.32;
+  --wing-divider: color-mix(in srgb, #ffffff 10%, transparent);
+  --wing-hover: color-mix(in srgb, var(--c-accent) 16%, transparent);
+  --wing-active: color-mix(in srgb, var(--c-accent) 20%, transparent);
+  --wing-active-inner: color-mix(in srgb, #ffffff 16%, transparent);
+  --wing-icon: color-mix(in srgb, var(--text-secondary) 92%, #ffffff);
+  --wing-collapse: color-mix(in srgb, var(--text-secondary) 76%, transparent);
+  --wing-badge: color-mix(in srgb, var(--c-accent) 78%, #4338ca);
+  --wing-badge-ring: color-mix(in srgb, var(--capsule-face) 94%, transparent);
+  --cap-orb-face: linear-gradient(148deg, #4d5bd6 0%, #5b57cf 52%, #7c4ee0 100%);
+  --cap-orb-glyph: rgba(255, 255, 255, 0.94);
+  --cap-orb-inner: rgba(255, 255, 255, 0.18);
+  --wing-panel-base: #171c29;
+  --wing-panel-face:
+    radial-gradient(120% 78% at 6% -8%, rgba(255, 255, 255, 0.10), transparent 62%),
+    linear-gradient(168deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.028) 46%, rgba(0, 0, 0, 0.10) 100%);
+  --wing-panel-border: rgba(255, 255, 255, 0.09);
+  --wing-panel-inner: rgba(255, 255, 255, 0.10);
+  --wing-panel-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 14px 30px -18px rgba(0, 0, 0, 0.85);
   /* Smart Dock Capsule 深色覆盖 */
   --snap-alert-ring-failed: rgba(248, 113, 113, 0.55);
   --snap-alert-ring-waiting: rgba(251, 146, 60, 0.55);
@@ -888,6 +961,8 @@ code {
   gap: 5px;
 }
 
+/* 任务卡（方案 D）：优先级由 .priority-tag 表达，卡片本体不再画常驻左色条；
+   玻璃材质（流线高光 / 卡面渐变 / 阴影层级）由 theme 层按预设下发。 */
 .task-item {
   display: flex;
   align-items: flex-start;
@@ -896,21 +971,16 @@ code {
   border-radius: var(--radius-card);
   background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
-  border-left: 3px solid var(--p2);
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
 }
 
 .task-item:hover {
   border-color: var(--border-strong);
 }
 
-.task-item.priority-0 { border-left-color: var(--p0); }
-.task-item.priority-1 { border-left-color: var(--p1); }
-.task-item.priority-2 { border-left-color: var(--p2); }
-.task-item.priority-3 { border-left-color: var(--p3); }
-
 .task-item.completed {
-  opacity: 0.6;
+  /* 弱化信息层级，但保留可读性（整卡透明度不宜低于 0.7） */
+  opacity: 0.72;
 }
 
 .task-item.completed .task-title {
@@ -929,11 +999,16 @@ code {
   flex-shrink: 0;
   margin-top: 1px;
   color: #fff;
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s, background 0.12s, transform 0.12s;
 }
 
 .task-check:hover {
   border-color: var(--status-success);
+}
+
+/* 按压反馈只落在真实可点元素上（卡片本体无单击动作） */
+.task-check:active {
+  transform: scale(0.9);
 }
 
 .task-check.done {
@@ -2142,11 +2217,27 @@ code {
 
 /* ══ Toast ════════════════════════════════════════════════════ */
 
-.toast {
+/* 栈容器：队列化 Toast（容量上限见 useUiStore.TOAST_QUEUE_MAX） */
+.toast-stack {
   position: fixed;
   left: 50%;
   bottom: 18px;
   transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: var(--z-toast);
+  max-width: 88%;
+  pointer-events: none;
+}
+
+.toast-stack .toast {
+  pointer-events: auto;
+}
+
+.toast {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -2156,8 +2247,7 @@ code {
   padding: 7px 12px;
   border-radius: 999px;
   box-shadow: var(--shadow-overlay);
-  z-index: var(--z-toast);
-  max-width: 88%;
+  max-width: 100%;
   cursor: default;
   animation: toast-in 0.16s var(--ease-out, ease);
 }
@@ -2165,11 +2255,11 @@ code {
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translate(-50%, 6px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, 0);
+    transform: translateY(0);
   }
 }
 
@@ -2192,10 +2282,12 @@ code {
    （深色主题的浅绿配浅底会糊成一片），单独给一套。 */
 .toast.kind-success .toast-icon { color: #86efac; }
 .toast.kind-error .toast-icon { color: #fca5a5; }
+.toast.kind-warning .toast-icon { color: #fcd34d; }
 .toast.kind-info .toast-icon { color: #93c5fd; }
 
 :root[data-theme="dark"] .toast.kind-success .toast-icon { color: #047857; }
 :root[data-theme="dark"] .toast.kind-error .toast-icon { color: #dc2626; }
+:root[data-theme="dark"] .toast.kind-warning .toast-icon { color: #b45309; }
 :root[data-theme="dark"] .toast.kind-info .toast-icon { color: #2563eb; }
 
 .toast-message {
@@ -2210,11 +2302,19 @@ code {
   font-weight: 600;
   color: #a5b4fc;
   padding: 1px 6px;
+  border: none;
+  background: transparent;
   border-radius: 5px;
+  cursor: pointer;
 }
 
 .toast-action:hover {
   background: rgba(255, 255, 255, 0.14);
+}
+
+.toast-action:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: 1px;
 }
 
 :root[data-theme="dark"] .toast-action {
@@ -2227,7 +2327,25 @@ code {
 
 .toast-close {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: inherit;
   opacity: 0.6;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.toast-close:hover {
+  opacity: 1;
+}
+
+.toast-close:focus-visible {
+  opacity: 1;
+  outline: 1px solid currentColor;
+  outline-offset: 1px;
 }
 
 /* ══ 通用提示 ═════════════════════════════════════════════════ */
@@ -2359,11 +2477,16 @@ code {
   background: var(--surface-raised);
   cursor: pointer;
   line-height: 0;
+  transition: border-color 0.12s, background 0.12s, transform 0.12s;
 }
 
 .task-nav-btn:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+.task-nav-btn:active {
+  transform: scale(0.94);
 }
 
 .task-nav-more {
@@ -3040,6 +3163,13 @@ code {
   padding: 8px 14px 12px;
 }
 
+/* 完整页水平内边距是 14px（抽屉是 12px）：浮动卡片与提示条在本页与内容对齐 */
+.clipboard-page .clip-selectbar,
+.clipboard-page .clip-link-banner {
+  margin-left: 14px;
+  margin-right: 14px;
+}
+
 .clipboard-page .clip-foot {
   position: relative;
   padding: 8px 14px 10px;
@@ -3336,6 +3466,48 @@ code {
   background: var(--accent-soft);
 }
 
+/* ── 删除退出反馈 ──
+   被删卡片收拢淡出，相邻卡片随之上移补位；`--clip-exit-h` 是删除瞬间测得的
+   卡片自身高度（只量一次，无常驻测量/轮询），时长与 `EXIT_MS`(190ms) 对齐。
+   `pointer-events: none` 避免动画期间误点已删除条目；reduced-motion 由全局规则收敛为瞬时。 */
+.clip-item.removing,
+.clip-group-card.removing {
+  pointer-events: none;
+  overflow: hidden;
+  max-height: var(--clip-exit-h, 160px);
+  animation: clip-remove 0.19s ease-in forwards;
+}
+
+/* 删除请求在途（后端尚未确认）：克制的执行中态。既挡住重复提交，
+   也先让用户认出「动的就是这一条」，确认成功后才进入上面的离场。 */
+.clip-item.pending,
+.clip-group-card.pending {
+  pointer-events: none;
+  opacity: 0.62;
+  border-color: var(--border-strong);
+  transition: opacity 0.12s, border-color 0.12s;
+}
+
+@keyframes clip-remove {
+  from {
+    max-height: var(--clip-exit-h, 160px);
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    max-height: 0;
+    opacity: 0;
+    /* 轻微侧移表示「这一条走了」，幅度小到不会把相邻卡片带得晃起来 */
+    transform: translateX(10px);
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
+    /* 抵消所在列表的 gap，收拢到底不留缝；分组内行距不同，各自给值 */
+    margin-bottom: var(--clip-exit-gap, -5px);
+  }
+}
+
 .clip-check {
   display: inline-flex;
   align-items: center;
@@ -3432,6 +3604,9 @@ code {
   align-items: center;
 }
 
+/* 分组卡片的预览仍是 `.clip-preview` 的直系 span：单行省略。
+   条目卡片把 span 移进了 `.clip-preview-body`，不再命中这条规则——
+   截断约束必须同时挂在新的父级上（见下），不能只靠这里。 */
 .clip-preview > span {
   min-width: 0;
   overflow: hidden;
@@ -3439,12 +3614,53 @@ code {
   white-space: nowrap;
 }
 
-.clip-preview .clip-text {
+/* 标题 + 预览次行的纵向组合：标题为主信息，预览降权。
+   横向必须显式收窄：`min-width: 0` 解除 flex 项的 min-content 下限，
+   `max-width: 100%` 挡住长英文/URL/连续字符串把卡片撑宽。 */
+.clip-preview-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* 预览体里的每一行（标题、普通文本、链接、文件摘要）：单行省略 */
+.clip-preview-body > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 正文预览：两行截断。
+   `overflow: hidden` 是 `-webkit-line-clamp` 的生效前提，必须写在正文元素
+   自身——之前它由 `.clip-preview > span` 顺带提供，DOM 一换父级就整段失效，
+   文本按原始行数撑高卡片并盖住相邻条目。`overflow-wrap: anywhere` 负责
+   没有空格的长串（URL、文件名、哈希）。 */
+.clip-preview-body > .clip-text {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+}
+
+.clip-preview .clip-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-preview .clip-preview-sub {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
 }
 
 .clip-thumb {
@@ -3556,14 +3772,20 @@ code {
 
 /* ── 底部状态与多选操作条 ── */
 
+/* 独立浮动操作卡片：与列表卡片同一套卡片 Token（边框/圆角/表面/阴影），
+   不再是贴边的通栏色带。抽屉内左右留 12px，完整页由 .clipboard-page 覆写为 14px，
+   与 .clip-body 的水平内边距对齐。 */
 .clip-selectbar {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  padding: 8px 12px;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--surface-base);
+  margin: 0 12px 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
   font-size: 11px;
   color: var(--text-secondary);
   flex-shrink: 0;
@@ -3596,12 +3818,29 @@ code {
   white-space: nowrap;
 }
 
-.clip-foot .link-btn {
+.clip-foot-actions {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.clip-foot .link-btn {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   flex-shrink: 0;
+}
+
+.clip-foot .link-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+.clip-clear-btn {
+  color: var(--status-error);
 }
 
 /* ── 确认框（抽屉内） ── */
@@ -3661,6 +3900,9 @@ code {
   min-width: 0;
 }
 
+/* 详情工具栏：sticky 的圆角卡片，与列表内容同宽对齐（不再负 margin 全出血）。
+   背景必须足够不透明——条目/分组/逐项粘贴三页共用，滚动时内容从它下方划过，
+   `--surface-overlay` 在四套预设×明暗下均 ≥92% 不透明度，避免透出底层文字。 */
 .clip-detail-head {
   position: sticky;
   top: 0;
@@ -3668,17 +3910,15 @@ code {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: -8px -12px 0;
-  padding: 8px 12px 6px;
+  margin: 0;
+  padding: 5px 8px 5px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
   background: var(--surface-overlay);
-  border-bottom: 1px solid var(--border-subtle);
+  box-shadow: var(--card-shadow);
   font-size: 11.5px;
   color: var(--text-secondary);
   flex-shrink: 0;
-}
-
-.dock-window.material-glass .clip-detail-head {
-  background: color-mix(in srgb, var(--surface-overlay) 92%, transparent);
 }
 
 .clip-detail-head > span {
@@ -3702,6 +3942,50 @@ code {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+
+/* 详情页标题行：展示 + 行内编辑 */
+.clip-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.clip-title-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-title-flag {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.clip-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  background: var(--surface-base);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.clip-title-input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
 }
 
 .clip-detail-meta {
@@ -3895,6 +4179,16 @@ code {
   background: var(--accent-soft);
 }
 
+/* 分组内的行沿用同一套离场语言：移除时收拢淡出（gap 是 3px，不是历史列表的 5px）。
+   上移/下移只过渡位置，不做删除动画——三者必须是不同的反馈。 */
+.clip-group-items li.removing {
+  --clip-exit-gap: -3px;
+  pointer-events: none;
+  overflow: hidden;
+  max-height: var(--clip-exit-h, 48px);
+  animation: clip-remove 0.19s ease-in forwards;
+}
+
 .clip-order {
   width: 16px;
   text-align: center;
@@ -3907,9 +4201,24 @@ code {
   flex: 1;
   min-width: 0;
   display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+}
+
+/* 截图条目的缩略图主导识别，正文与元信息保持上下两行 */
+.clip-group-item-main .clip-thumb,
+.clip-group-item-main .clip-thumb-placeholder {
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+
+.clip-group-item-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
   flex-direction: column;
   gap: 1px;
-  text-align: left;
 }
 
 .clip-group-item-preview {
@@ -5273,14 +5582,84 @@ code {
   }
 }
 
-/* ══ 分类胶囊（v0.7 重设计）══════════════════════════════════
-   结构：轨道（56×300）+ 间隙 8 + 功能面板（336×420）。
+/* ══ 分类胶囊（v0.7 方案 B：液态融合翼片）══════════════════════════
+   结构：轨道（56×400，贴屏翼片）+ 间隙 12 + 功能面板（340×440）。
    窗口在停靠期间不移动、不缩放，展开/收起只切 Win32 区域
    （见 src-tauri/src/window_shape.rs 的 capsule_regions）。
    因此这里的尺寸必须与 lib/capsuleLayout.ts 常量一致：改动要三端同步。
 
-   视觉：轨道与面板各自是一块独立的圆角玻璃卡片，面板比轨道高、
-   二者同轴居中；不使用常驻外发光，强调色只出现在选中态与徽标。 */
+   视觉基准：`停靠效果图/01..04`。四张图共用一套材质——
+   冷白偏蓝的玻璃底、低强度边缘高光、单层卡片、无整圈描边。
+   所有颜色都从既有语义 Token 派生（`--wing-*` 随预设变化，
+   `--c-paper`/`--c-ink` 随明暗变化），因此两套预设 × 明暗自动一致。
+
+   ⚠ 这里**不能**给 `.capsule-rail` 或 `.capsule-dock` 写 background /
+   border / box-shadow：任何一条都会在翼片轮廓之外多画一个矩形，
+   正是历史上「轨道旁边一整块白色矩形」的回归路径。 */
+
+/* ── 胶囊内设计 Token（浅色基准，深色在下方覆盖）─────────────── */
+.capsule-dock {
+  /* 面板表面：不透明底（停靠期根窗口透明，卡片必须自带表面）+ 静态玻璃渐变。
+     底色的不透明度由 styles-themes.test.ts 守卫（四个主题上下文都不含 alpha）。 */
+  /* 边缘：只留一圈 1px 白色内描边（参考图没有蓝色外框） */
+  --cap-panel-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+  --cap-panel-inner: inset 0 1px 0 rgba(255, 255, 255, 0.96);
+  /* 阴影只向下/向内落，不产生整窗矩形投影 */
+  --cap-panel-shadow:
+    0 18px 40px -26px rgba(52, 60, 132, 0.58),
+    0 3px 10px -6px rgba(52, 60, 132, 0.24);
+
+  --cap-card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.90) 0%, rgba(255, 255, 255, 0.66) 100%);
+  --cap-card-face-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.82) 100%);
+  --cap-card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    0 1px 2px -1px rgba(52, 60, 132, 0.10);
+
+  --cap-chip-face: rgba(255, 255, 255, 0.58);
+  --cap-chip-face-hover: rgba(255, 255, 255, 0.86);
+  --cap-seg-face: rgba(226, 233, 250, 0.55);
+  --cap-seg-active: #ffffff;
+
+  --cap-tile-face: linear-gradient(180deg, #ffffff 0%, #eef2ff 100%);
+  --cap-tile-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+  --cap-tile-shadow: 0 1px 3px -1px rgba(52, 60, 132, 0.18);
+
+  --cap-text-1: var(--text-primary);
+  --cap-text-2: var(--text-secondary);
+  --cap-text-3: var(--text-tertiary);
+  --cap-divider: color-mix(in srgb, var(--c-ink) 8%, transparent);
+  --cap-track: color-mix(in srgb, var(--c-ink) 9%, transparent);
+  --cap-accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --cap-shadow-soft: 0 1px 2px -1px rgba(52, 60, 132, 0.12);
+}
+
+:root[data-theme="dark"] .capsule-dock {
+  --cap-panel-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+  --cap-panel-inner: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --cap-panel-shadow:
+    0 20px 44px -26px rgba(0, 0, 0, 0.78),
+    0 3px 10px -6px rgba(0, 0, 0, 0.5);
+
+  --cap-card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.085) 0%, rgba(255, 255, 255, 0.045) 100%);
+  --cap-card-face-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.13) 0%, rgba(255, 255, 255, 0.07) 100%);
+  --cap-card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 1px 2px -1px rgba(0, 0, 0, 0.4);
+
+  --cap-chip-face: rgba(255, 255, 255, 0.07);
+  --cap-chip-face-hover: rgba(255, 255, 255, 0.14);
+  --cap-seg-face: rgba(0, 0, 0, 0.22);
+  --cap-seg-active: rgba(255, 255, 255, 0.14);
+
+  --cap-tile-face: linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.05) 100%);
+  --cap-tile-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
+  --cap-tile-shadow: 0 1px 3px -1px rgba(0, 0, 0, 0.5);
+
+  --cap-divider: color-mix(in srgb, var(--c-paper) 10%, transparent);
+  --cap-track: color-mix(in srgb, var(--c-paper) 12%, transparent);
+  --cap-accent-soft: color-mix(in srgb, var(--accent) 20%, transparent);
+  --cap-shadow-soft: 0 1px 2px -1px rgba(0, 0, 0, 0.45);
+}
 
 /* 主界面容器：停靠期整块隐藏（保留挂载以维持视图状态） */
 .dock-app {
@@ -5306,7 +5685,7 @@ code {
   /* 主轴必须从停靠边开始排：折叠态只有一个子元素，居中会让轨道离开
      区域所在的边缘（Win32 区域按 x=0 裁，轨道跑到窗口中间就看不见了） */
   justify-content: flex-start;
-  gap: 8px;
+  gap: 12px;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -5317,465 +5696,903 @@ code {
 .capsule-dock.dock-h { flex-direction: column; }
 .capsule-dock.edge-bottom { flex-direction: column-reverse; }
 
-/* ── 轨道 ── */
+/* ── 轨道（液态融合翼片）──
+   表面全部由 `CapsuleWing` 的 SVG 承担：贴边一侧与屏幕边缘齐平、两侧经单段
+   三次贝塞尔肩部平滑过渡（几何见 lib/capsuleShape.ts，参数由效果图像素拟合）。
+
+   这里**不能**再写 background / border / box-shadow / border-radius：
+   任何一条都会在翼片轮廓之外多画一个矩形，正是历史上「轨道旁边一整块
+   白色矩形」的回归路径。 */
 .capsule-rail {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
-  /* 停靠期根窗口是透明的（区域外不绘制），胶囊必须自带不透明底：
-     `--capsule-face` 是预设对应的窗口底色，`--card-face` 的玻璃渐变叠在其上。
-     只写 `--card-face` 会让表面只剩 86%→62%（深色主题 7.5%→3.5%）的 alpha，
-     在深色桌面上就是「整个胶囊消失」。 */
-  background-color: var(--capsule-face);
-  background-image: var(--card-face);
-  border: 1px solid var(--border-subtle);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 55%, transparent),
-    var(--shadow-raised);
+  align-items: center;
+  justify-content: center;
+  /* 自成层叠上下文：SVG 用 z-index:-1 垫在内容之下，不会跑到面板后面 */
+  isolation: isolate;
   color: var(--text-secondary);
 }
-.cap-v {
-  flex-direction: column;
-  width: 56px;
-  height: 300px;
-  border-radius: 28px;
-  padding: 8px 0;
-}
-.cap-h {
-  flex-direction: row;
-  width: 300px;
-  height: 56px;
-  border-radius: 28px;
-  padding: 0 8px;
-}
+/* 外框 = 平直主体 224 + 两侧肩部各 88 = 400；厚度 56。
+   内容组（36 + 8 + 168 = 212）居中后落在 ±106，仍在「肩部厚度 ≥ 36px」的
+   可点击范围内（±121），因此端头按钮不会被曲线切掉。 */
+.cap-v { flex-direction: column; width: 56px; height: 400px; }
+.cap-h { flex-direction: row; width: 400px; height: 56px; }
 
-/* 吸附成功：短促一次脉冲（不循环；reduced-motion 由全局规则收敛） */
+/* 翼片表面：viewBox 与 CSS 尺寸 1:1，渐变按停靠方向换算，坐标由组件内联给 */
+.cap-wing {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+  overflow: visible;
+}
+/* 四层材质，全部是同一条轮廓的填充（天然被轮廓裁剪，不需要 clipPath）：
+   1 基底冷蓝白跨厚度渐变 · 2 内侧高光带 · 3 环境色反射 · 4 贴边暗部。
+   **没有 1px 描边**：轮廓感由高光带与暗部共同表达，避免「普通 UI 边框」。 */
+/* fill 由组件按停靠边内联成 userSpaceOnUse 渐变；这里**不要**再写 fill，
+   否则 class 会盖掉内联的 url(#…)（var 未定义 → 初始值黑色）。 */
+.cap-wing-spec { opacity: 1; transition: opacity 0.18s var(--ease-out, ease-out); }
+.cap-wing-haze { opacity: 1; }
+.cap-wing-shade { opacity: 1; }
+/* 悬停：只提亮高光带（合成层不透明度，不触发重排/重绘滤镜） */
+.capsule-dock:hover .cap-wing-spec { opacity: 0.82; }
+
+/* 渐变停靠点：颜色/透明度全部来自语义 Token，四边共用同一组。 */
+.cap-stop-near { stop-color: var(--wing-near); }
+.cap-stop-mid { stop-color: var(--wing-mid); }
+.cap-stop-far { stop-color: var(--wing-far); }
+.cap-stop-clear { stop-color: transparent; stop-opacity: 0; }
+.cap-stop-shade { stop-color: var(--c-night); stop-opacity: var(--wing-shade); }
+.cap-stop-haze { stop-color: var(--wing-haze); }
+/* 镜面高光按定义是白色，不跟随主题的 paper/night */
+.cap-stop-spec { stop-color: #ffffff; stop-opacity: var(--wing-spec); }
+.cap-stop-spec-soft { stop-color: #ffffff; stop-opacity: calc(var(--wing-spec) * 0.28); }
+.cap-stop-rim-ends { stop-color: #ffffff; stop-opacity: var(--wing-rim-a); }
+.cap-stop-rim-mid { stop-color: #ffffff; stop-opacity: var(--wing-rim-b); }
+.cap-wing-rim { stroke-width: 0.75; }
+
+/* 吸附成功：短促一次「吸住」的收缩回弹（不循环；reduced-motion 由全局规则收敛）。
+   用**收缩**而不是放大：缩放始终落在原生区域内部，不会被区域切出硬边；
+   transform-origin 落在停靠边一侧，收缩过程中翼片始终贴着屏幕边缘。 */
+.capsule-dock.edge-bottom .capsule-rail { transform-origin: 50% 100%; }
+.capsule-dock.edge-top .capsule-rail { transform-origin: 50% 0; }
+.capsule-dock.edge-left .capsule-rail { transform-origin: 0 50%; }
+.capsule-dock.edge-right .capsule-rail { transform-origin: 100% 50%; }
+
 .capsule-dock.is-snap .capsule-rail {
   animation: capsule-snap 0.34s var(--ease-out, ease-out);
 }
 @keyframes capsule-snap {
   0% { scale: 1; }
-  35% { scale: 1.022; }
+  30% { scale: 0.985; }
   100% { scale: 1; }
 }
 
+/* 分隔线：只承担结构分组，绝不比图标更抢眼（16px 长、极低 alpha） */
 .cap-sep {
   flex: 0 0 auto;
   align-self: center;
-  background: var(--divider);
+  background: var(--wing-divider);
   border-radius: 1px;
 }
-.cap-v .cap-sep { width: 20px; height: 1px; margin: 4px 0; }
-.cap-h .cap-sep { height: 20px; width: 1px; margin: 0 4px; }
+.cap-v .cap-sep { width: 16px; height: 1px; margin: 6px 0; }
+.cap-h .cap-sep { height: 16px; width: 1px; margin: 0 6px; }
 
+/* 分类组：图标间距按参考图标定（节距 ≈ 44px：36 命中区 + 8 间隙） */
 .cap-nav {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 8px;
 }
 .cap-v .cap-nav { flex-direction: column; }
 .cap-h .cap-nav { flex-direction: row; }
 
-/* Agent 总状态按钮：渐变球 + 状态环（空闲中性 / 运行蓝 / 等待橙 / 失败红） */
+/* Agent 总状态：翼片上的主状态节点，不是独立浮起的紫色按钮。
+   36px、蓝→紫柔和渐变、内高光、阴影克制；状态环只在运行/等待/失败时出现。 */
 .cap-orb {
   position: relative;
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 10px;
   display: grid;
   place-items: center;
   border: 0;
   border-radius: 999px;
-  background: var(--accent-gradient);
-  color: #fff;
+  background: var(--cap-orb-face);
+  color: var(--cap-orb-glyph);
   cursor: pointer;
-  box-shadow: 0 4px 10px -6px color-mix(in srgb, var(--c-accent) 80%, transparent);
-  transition: filter 0.12s ease, box-shadow 0.12s ease;
+  box-shadow:
+    inset 0 1px 0 var(--cap-orb-inner),
+    inset 0 -1px 1px color-mix(in srgb, var(--c-night) 10%, transparent),
+    0 1px 2px -1px color-mix(in srgb, var(--c-accent) 45%, transparent);
+  transition: filter 0.12s ease, box-shadow 0.12s ease, scale 0.12s ease;
 }
-.cap-orb:hover { filter: brightness(1.06); }
+.cap-h .cap-orb { margin-bottom: 0; margin-right: 10px; }
+.cap-orb:hover { filter: brightness(1.04); scale: 1.03; }
 .cap-orb:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.cap-orb[data-tone="idle"] {
-  background: color-mix(in srgb, var(--c-paper) 82%, transparent);
-  color: var(--text-tertiary);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
+.cap-orb[data-tone="idle"],
+.cap-orb[data-tone="unknown"] { box-shadow: inset 0 1px 0 var(--cap-orb-inner); }
+.cap-orb[data-tone="running"] {
+  box-shadow:
+    inset 0 1px 0 var(--cap-orb-inner),
+    0 0 0 2px color-mix(in srgb, var(--status-running) 42%, transparent),
+    0 4px 10px -6px color-mix(in srgb, var(--c-accent) 70%, transparent);
 }
-.cap-orb[data-tone="unknown"] {
-  background: color-mix(in srgb, var(--c-paper) 82%, transparent);
-  color: var(--text-tertiary);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
+.cap-orb[data-tone="waiting"] {
+  box-shadow:
+    inset 0 1px 0 var(--cap-orb-inner),
+    0 0 0 2px color-mix(in srgb, var(--status-waiting) 55%, transparent),
+    0 4px 10px -6px color-mix(in srgb, var(--c-accent) 70%, transparent);
 }
-.cap-orb[data-tone="running"] { box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-running) 55%, transparent); }
-.cap-orb[data-tone="waiting"] { background: var(--status-waiting); box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-waiting) 45%, transparent); }
-.cap-orb[data-tone="failed"] { background: var(--status-error); box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-error) 45%, transparent); }
-.cap-orb[data-tone="disconnected"] { background: var(--status-disconnected); }
+.cap-orb[data-tone="failed"] {
+  box-shadow:
+    inset 0 1px 0 var(--cap-orb-inner),
+    0 0 0 2px color-mix(in srgb, var(--status-error) 55%, transparent),
+    0 4px 10px -6px color-mix(in srgb, var(--c-accent) 70%, transparent);
+}
+.cap-orb[data-tone="disconnected"] {
+  box-shadow:
+    inset 0 1px 0 var(--cap-orb-inner),
+    0 0 0 2px color-mix(in srgb, var(--status-disconnected) 45%, transparent);
+}
 
 .cap-orb-badge {
   position: absolute;
   top: -3px;
   right: -3px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
   border-radius: 999px;
   background: var(--status-error);
   color: #fff;
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 700;
-  line-height: 15px;
+  line-height: 13px;
   text-align: center;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 0 0 1.5px var(--surface-raised);
+  box-shadow: 0 0 0 1.5px var(--wing-badge-ring);
 }
 
-/* 分类按钮 */
+/* 分类按钮：命中区 36，图标 19 / stroke 1.8（与 56px 翼片厚度成比例） */
 .cap-btn {
   position: relative;
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 14px;
+  border-radius: 12px;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--wing-icon);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
 }
-.cap-btn:hover { background: var(--surface-hover); color: var(--text-primary); }
+.cap-btn:hover {
+  background: var(--wing-hover);
+  color: var(--text-primary);
+}
 .cap-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-/* 选中态：轻微背景提亮 + 内层玻璃感，不用竖线/双圆弧 */
+/* 选中态：柔和玻璃光斑 + 图标提色，不是一整块圆角底色 */
 .cap-btn.is-active {
-  background: color-mix(in srgb, var(--c-accent) 12%, transparent);
+  background: var(--wing-active);
   color: var(--rail-active-text, var(--accent));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 22%, transparent);
+  box-shadow: inset 0 1px 0 var(--wing-active-inner);
 }
 .cap-icon { position: relative; display: grid; place-items: center; }
 .cap-dot {
   position: absolute;
-  right: -4px;
-  bottom: -3px;
-  width: 6px;
-  height: 6px;
+  right: -3px;
+  bottom: -2px;
+  width: 5.5px;
+  height: 5.5px;
   border-radius: 999px;
-  box-shadow: 0 0 0 1.5px var(--surface-raised);
+  box-shadow: 0 0 0 1.5px var(--wing-badge-ring);
 }
 .cap-dot.dot-running { background: var(--status-running); }
 .cap-dot.dot-waiting { background: var(--status-waiting); }
 .cap-dot.dot-failed { background: var(--status-error); }
 .cap-dot.dot-disconnected { background: var(--status-disconnected); }
 
+/* 数字徽标：更小、贴住图标右上角，与状态点共用环形规则 */
 .cap-badge {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 14px;
-  height: 14px;
+  top: -4px;
+  right: -5px;
+  min-width: 12px;
+  height: 12px;
   padding: 0 3px;
   border-radius: 999px;
-  background: var(--accent);
+  background: var(--wing-badge);
   color: #fff;
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 700;
-  line-height: 14px;
+  line-height: 12px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 1.2px var(--wing-badge-ring);
 }
 
+/* 收起按钮：折叠态没有「再收起」这回事 → 保留占位但不渲染可见控件
+   （data-inert），避免长期摆一个灰箭头；展开态对比度略高于分隔线。 */
 .cap-collapse {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-.cap-collapse:hover { background: var(--surface-hover); color: var(--text-primary); }
-.cap-collapse:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.cap-collapse[aria-disabled="true"] { opacity: 0.35; cursor: default; }
-.cap-collapse[aria-disabled="true"]:hover { background: transparent; color: var(--text-tertiary); }
-
-/* ── 功能面板 ── */
-.capsule-panel {
-  flex: 0 0 auto;
-  width: 336px;
-  height: 420px;
-  display: flex;
-  flex-direction: column;
-  padding: 10px 10px 8px;
-  border-radius: 22px;
-  border: 1px solid var(--border-subtle);
-  /* 与轨道同款：自带不透明底，避免面板继承根窗口的透明状态 */
-  background-color: var(--capsule-face);
-  background-image: var(--card-face);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 55%, transparent),
-    var(--shadow-raised);
-  overflow: hidden;
-  animation: capsule-panel-in 0.16s var(--ease-out, ease-out);
-}
-@keyframes capsule-panel-in {
-  from { opacity: 0; transform: translateY(2px); }
-  to { opacity: 1; transform: none; }
-}
-
-.capsule-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 4px 8px;
-}
-.capsule-title {
-  font-size: 12.5px;
-  font-weight: 650;
-  color: var(--text-primary);
-  letter-spacing: 0.01em;
-}
-.capsule-meta {
-  font-size: 10.5px;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.capsule-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-right: 2px;
-}
-
-.capsule-row,
-.capsule-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 5px 6px;
-  border-radius: 10px;
-  transition: background 0.12s ease;
-}
-.capsule-row:hover,
-.capsule-group:hover { background: var(--surface-hover); }
-
-.capsule-row-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.capsule-row-title {
-  font-size: 12px;
-  color: var(--text-primary);
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.capsule-row-title.clip-1 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal; }
-.capsule-row-sub {
-  font-size: 10.5px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.capsule-row-sub.tone-overdue { color: var(--status-error); }
-.capsule-row-sub.tone-soon { color: var(--status-waiting); }
-.capsule-row-sub.state-failed { color: var(--status-error); }
-.capsule-row-sub.state-waiting { color: var(--status-waiting); }
-.capsule-row-sub.state-running { color: var(--status-running); }
-
-.capsule-check {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  border: 1.5px solid var(--border-strong);
-  border-radius: 999px;
-  background: transparent;
-  color: transparent;
-  cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
-}
-.capsule-check:hover {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.capsule-check:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-
-.capsule-state-dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--text-tertiary);
-}
-.capsule-state-dot.state-running { background: var(--status-running); }
-.capsule-state-dot.state-waiting { background: var(--status-waiting); }
-.capsule-state-dot.state-failed { background: var(--status-error); }
-.capsule-state-dot.state-disconnected { background: var(--status-disconnected); }
-
-.capsule-group-thumb {
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  border-radius: 8px;
-  background: var(--pill-face);
-  color: var(--text-tertiary);
-}
-.capsule-group-thumb img { width: 100%; height: 100%; object-fit: cover; }
-
-.capsule-icon-btn {
   flex: 0 0 auto;
   width: 26px;
   height: 26px;
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
-  color: var(--text-tertiary);
+  color: var(--wing-collapse);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease, opacity 0.12s ease;
 }
-.capsule-icon-btn:hover { background: var(--surface-hover); color: var(--accent); }
-.capsule-icon-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-collapse:hover { background: var(--wing-hover); color: var(--text-primary); }
+.cap-collapse:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-collapse[data-inert="true"] {
+  opacity: 0;
+  pointer-events: none;
+  cursor: default;
+}
 
-.capsule-empty {
-  flex: 1 1 auto;
+/* ── 功能面板外壳 ─────────────────────────────────────────────
+   参考图的面板是一块**单层**玻璃卡：一个 24px 圆角、一圈 1px 白内描边、
+   一条向下的柔和投影，内部不再叠第二层圆角背景。
+   内容区只靠间距与 14px 圆角的小卡片分层。 */
+.capsule-panel {
+  position: relative;
+  flex: 0 0 auto;
+  width: 340px;
+  height: 440px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 16px 8px;
-  color: var(--text-tertiary);
-  text-align: center;
+  padding: 15px 14px 11px;
+  border: 0;
+  border-radius: 24px;
+  background-color: var(--wing-panel-base);
+  background-image: var(--wing-panel-face);
+  box-shadow: var(--cap-panel-inner), var(--cap-panel-ring), var(--cap-panel-shadow);
+  overflow: hidden;
+  /* 展开方向：面板从翼片一侧朝屏幕内部轻移 6px 并淡入（不缩放，避免文字抖动） */
+  --cap-from-x: 0px;
+  --cap-from-y: 0px;
+  animation: capsule-panel-in 0.18s var(--ease-out, ease-out);
 }
-.capsule-empty p { font-size: 11.5px; }
+.capsule-panel.panel-left { --cap-from-x: -6px; }
+.capsule-panel.panel-right { --cap-from-x: 6px; }
+.capsule-panel.panel-top { --cap-from-y: -6px; }
+.capsule-panel.panel-bottom { --cap-from-y: 6px; }
+@keyframes capsule-panel-in {
+  from { opacity: 0; transform: translate(var(--cap-from-x), var(--cap-from-y)); }
+  to { opacity: 1; transform: none; }
+}
 
-.capsule-foot {
+/* ── 面板通用组件 ─────────────────────────────────────────────
+   四个面板共用同一套标题/摘要/分段/列表/卡片/徽标/空状态/底栏，
+   避免出现四种圆角、四种边框、四种间距。 */
+
+/* 头部：标题 + 次级说明 + 右侧动作组 */
+.cap-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 1px 2px 11px;
+}
+.cap-head-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.cap-title {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: 0.01em;
+  color: var(--cap-text-1);
+}
+.cap-sub {
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--cap-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.cap-iconbtn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: var(--cap-chip-face);
+  box-shadow: var(--cap-shadow-soft);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+.cap-iconbtn:hover { background: var(--cap-chip-face-hover); }
+.cap-iconbtn:active { transform: scale(0.96); }
+.cap-iconbtn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-iconbtn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+
+/* 分段筛选（全部 / 今日 / 逾期 …）：容器内凹，选中项是白色凸起药丸 */
+.cap-seg {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 4px 2px;
-  margin-top: 4px;
-  border-top: 1px solid var(--divider);
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 9px;
+  border-radius: 12px;
+  background: var(--cap-seg-face);
+  box-shadow: inset 0 1px 2px -1px color-mix(in srgb, var(--c-night) 8%, transparent);
 }
-.capsule-hint { font-size: 10px; color: var(--text-tertiary); }
-.capsule-link {
+.cap-seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--cap-text-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cap-seg-btn:hover { color: var(--cap-text-1); }
+.cap-seg-btn[aria-selected="true"] {
+  background: var(--cap-seg-active);
+  color: var(--accent);
+  font-weight: 650;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 1px 3px -1px color-mix(in srgb, var(--c-accent) 26%, transparent);
+}
+.cap-seg-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* 列表：竖向滚动，滚动条极细（面板内不出现系统粗滚动条） */
+.cap-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 1px 2px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--cap-track) transparent;
+}
+.cap-list::-webkit-scrollbar { width: 4px; }
+.cap-list::-webkit-scrollbar-thumb {
+  background: var(--cap-track);
+  border-radius: 999px;
+}
+.cap-list::-webkit-scrollbar-track { background: transparent; }
+
+/* 内容卡片：单层白玻璃，无边框，靠 1px 内高光与极轻投影分层 */
+.cap-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: var(--cap-card-face);
+  box-shadow: var(--cap-card-shadow);
+  transition: background 0.14s ease, box-shadow 0.14s ease;
+}
+.cap-item:hover { background: var(--cap-card-face-hover); }
+.cap-item.is-done { opacity: 0.62; }
+
+/* 图标/缩略图方块：40px，圆角 11px，浅色玻璃底 */
+.cap-tile {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 11px;
+  background: var(--cap-tile-face);
+  box-shadow: var(--cap-tile-ring), var(--cap-tile-shadow);
+  color: var(--accent);
+}
+.cap-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cap-tile.tile-sm { width: 30px; height: 30px; border-radius: 9px; }
+/* 文件类型色块（PDF / 文本 / 图片） */
+.cap-tile.tone-pdf { color: #e2494f; background: linear-gradient(180deg, #fff6f6, #ffe9ea); }
+.cap-tile.tone-text { color: #5b63e8; background: linear-gradient(180deg, #f7f7ff, #e9e9ff); }
+.cap-tile.tone-image { color: #7c5cf0; background: linear-gradient(180deg, #fbf8ff, #efe8ff); }
+.cap-tile.tone-files { color: #e09a2d; background: linear-gradient(180deg, #fffaf0, #fff1d9); }
+
+.cap-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.cap-item-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--cap-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-item-title.clip-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+}
+.cap-item-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: var(--cap-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-item-sub svg { flex: 0 0 auto; opacity: 0.75; }
+
+/* 分类标签（任务的「工作 / 会议 / 设计」）：极浅底色 + 语义色文字 */
+.cap-tag {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  border: 0;
-  background: transparent;
-  padding: 2px 4px;
-  border-radius: 6px;
+  max-width: 96px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--cap-accent-soft);
   color: var(--accent);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  cursor: pointer;
-}
-.capsule-link:hover { background: var(--accent-soft); }
-.capsule-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-
-.capsule-add {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 8px;
-  border-radius: 9px;
-  background: var(--control-face);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
-  color: var(--text-tertiary);
-}
-.capsule-add input {
-  flex: 1 1 auto;
-  min-width: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 11.5px;
-}
-.capsule-add input::placeholder { color: var(--text-tertiary); }
-.capsule-add:focus-within { box-shadow: inset 0 0 0 1px var(--accent); }
-
-/* 应用网格：3 列，图标 + 名称 */
-.capsule-app-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-  padding: 4px 2px;
-}
-.capsule-app {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  padding: 8px 4px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background 0.12s ease;
-}
-.capsule-app:hover { background: var(--surface-hover); }
-.capsule-app:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-.capsule-app-avatar {
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 700;
-  color: hsl(var(--app-hue, 250) 62% 42%);
-  background: hsl(var(--app-hue, 250) 70% 92%);
-}
-:root[data-preset][data-theme="dark"] .capsule-app-avatar {
-  color: hsl(var(--app-hue, 250) 70% 78%);
-  background: hsl(var(--app-hue, 250) 40% 26%);
-}
-.capsule-app-name {
-  max-width: 100%;
-  font-size: 10.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 时间药丸（今天 10:00 / 逾期 2h）：中性玻璃底，逾期/临近用语义色 */
+.cap-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--cap-chip-face);
+  color: var(--cap-text-2);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cap-pill.tone-overdue { color: var(--status-error); background: color-mix(in srgb, var(--status-error) 12%, transparent); }
+.cap-pill.tone-soon { color: var(--accent); background: var(--cap-accent-soft); }
+.cap-pill.tone-done { color: var(--status-success); background: color-mix(in srgb, var(--status-success) 12%, transparent); }
+
+/* 状态标签（Agent）：**必须有文字**，颜色只做辅助 */
+.cap-state {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+  background: var(--cap-chip-face);
+  color: var(--cap-text-2);
+}
+.cap-state::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.cap-state.state-running { color: var(--status-running); background: color-mix(in srgb, var(--status-running) 12%, transparent); }
+.cap-state.state-waiting { color: var(--status-waiting); background: color-mix(in srgb, var(--status-waiting) 14%, transparent); }
+.cap-state.state-failed { color: var(--status-error); background: color-mix(in srgb, var(--status-error) 12%, transparent); }
+.cap-state.state-idle,
+.cap-state.state-completed { color: var(--status-success); background: color-mix(in srgb, var(--status-success) 12%, transparent); }
+.cap-state.state-disconnected { color: var(--status-disconnected); background: color-mix(in srgb, var(--status-disconnected) 12%, transparent); }
+.cap-state.state-unknown { color: var(--cap-text-3); }
+
+/* 行内动作按钮（打开会话 / 复制 / 查看） */
+.cap-mini {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--cap-accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+.cap-mini:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.cap-mini:active { transform: scale(0.97); }
+.cap-mini:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-mini.is-icon { width: 26px; padding: 0; justify-content: center; }
+.cap-mini.is-ok { color: var(--status-success); }
+
+/* 圆形勾选框（任务完成）：40px 命中区，视觉 18px */
+.cap-check {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid color-mix(in srgb, var(--c-ink) 30%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease, scale 0.12s ease;
+}
+.cap-check.is-static { cursor: default; pointer-events: none; }
+.cap-check:hover {
+  border-color: var(--accent);
+  background: var(--cap-accent-soft);
+  color: var(--accent);
+}
+.cap-check:active { scale: 0.9; }
+.cap-check:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-check.is-checked {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+/* 摘要条（Agent 的「监控中 4 · 运行中 1 · 待处理 1」） */
+.cap-summary {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+  padding: 7px 10px;
+  border-radius: 12px;
+  background: var(--cap-chip-face);
+  box-shadow: var(--cap-shadow-soft);
+  color: var(--cap-text-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.cap-summary b { color: var(--cap-text-1); font-weight: 650; }
+
+/* 底栏：左侧摘要、右侧入口，一条极淡分隔线 */
+.cap-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 2px 0;
+  border-top: 1px solid var(--cap-divider);
+}
+.cap-foot-note {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--cap-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-link {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.cap-link:hover { background: var(--cap-accent-soft); }
+.cap-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* 进度条（任务底栏「已完成 1 项」） */
+.cap-progress {
+  flex: 0 0 auto;
+  width: 74px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--cap-track);
+  overflow: hidden;
+}
+.cap-progress > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.24s var(--ease-out, ease-out);
+}
+
+/* 空状态 / 读取中 */
+.cap-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 18px 10px;
+  color: var(--cap-text-3);
+  text-align: center;
+}
+.cap-empty p { font-size: 11.5px; }
+.cap-empty .cap-link { height: 24px; }
+
+/* 行内输入（任务快速新增 / 应用搜索） */
+.cap-input {
+  /* 只在水平方向撑满：竖直方向必须由内容决定高度，否则面板 flex 列会把
+     30px 的输入框拉成上百像素高的白块（应用面板搜索框曾因此变成一大片）。 */
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 10px;
+  background: var(--cap-chip-face);
+  box-shadow: inset 0 1px 2px -1px color-mix(in srgb, var(--c-night) 8%, transparent);
+  color: var(--cap-text-3);
+  transition: box-shadow 0.12s ease, background 0.12s ease;
+}
+.cap-input input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--cap-text-1);
+  font-size: 11.5px;
+}
+.cap-input input::placeholder { color: var(--cap-text-3); }
+.cap-input:focus-within {
+  background: var(--cap-chip-face-hover);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* ── 任务面板 ─────────────────────────────────────────────── */
+.cap-task-row { padding: 7px 10px 7px 9px; }
+.cap-task-row .cap-main { gap: 4px; }
+.cap-task-tags { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.cap-task-side {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.cap-task-bell {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--cap-text-3);
+  cursor: default;
+}
+.cap-task-add { margin-top: 7px; }
+
+/* ── Agent 面板 ──────────────────────────────────────────── */
+.cap-agent-row { padding: 8px 10px; align-items: flex-start; }
+.cap-agent-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cap-agent-name {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--cap-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-agent-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--cap-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cap-agent-meta .sep { width: 1px; height: 9px; background: var(--cap-divider); }
+.cap-agent-side { display: flex; align-items: center; padding-top: 2px; }
+
+.cap-agent-initial {
+  font-size: 13px;
+  font-weight: 700;
+  color: hsl(var(--app-hue, 250) 58% 40%);
+}
+:root[data-theme="dark"] .cap-agent-initial { color: hsl(var(--app-hue, 250) 72% 80%); }
+
+/* ── 剪贴板面板 ──────────────────────────────────────────── */
+.cap-clip-row { padding: 7px 8px 7px 9px; }
+.cap-clip-thumb {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 38px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--cap-tile-face);
+  box-shadow: var(--cap-tile-ring), var(--cap-tile-shadow);
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+.cap-clip-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 截图组：三张叠放缩略图 */
+.cap-stack { position: relative; width: 46px; height: 38px; }
+.cap-stack > i {
+  position: absolute;
+  inset: 0;
+  border-radius: 9px;
+  background: var(--cap-tile-face);
+  box-shadow: var(--cap-tile-ring), var(--cap-tile-shadow);
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  overflow: hidden;
+}
+.cap-stack > i:nth-child(1) { transform: translate(6px, -3px) scale(0.92); opacity: 0.42; }
+.cap-stack > i:nth-child(2) { transform: translate(3px, -1px) scale(0.96); opacity: 0.72; }
+.cap-stack > i:nth-child(3) { z-index: 1; }
+
+/* ── 应用面板 ────────────────────────────────────────────── */
+.cap-search { margin-bottom: 9px; }
+.cap-app-grid {
+  display: grid;
+  /* minmax(0,1fr)：1fr 的最小值是 min-content，长应用名会把整列顶宽，
+     四个格子随即互相挤压并溢出面板（浏览器走查里表现为标签串到隔壁格）。 */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  padding: 1px 1px 2px;
+}
+.cap-app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  gap: 5px;
+  padding: 7px 3px 6px;
+  border: 0;
+  border-radius: 13px;
+  background: var(--cap-card-face);
+  box-shadow: var(--cap-card-shadow);
+  color: var(--cap-text-2);
+  cursor: pointer;
+  transition: background 0.14s ease, transform 0.14s ease;
+}
+.cap-app:hover { background: var(--cap-card-face-hover); transform: translateY(-1px); }
+.cap-app:active { transform: none; }
+.cap-app:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-app-avatar {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: hsl(var(--app-hue, 250) 62% 40%);
+  background: linear-gradient(180deg, hsl(var(--app-hue, 250) 82% 97%), hsl(var(--app-hue, 250) 74% 90%));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7), 0 1px 3px -1px rgba(52, 60, 132, 0.22);
+}
+.cap-app-avatar.is-add { color: var(--accent); background: var(--cap-accent-soft); }
+.cap-app-name {
+  width: 100%;
+  max-width: 100%;
+  font-size: 10.5px;
+  line-height: 1.2;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:root[data-theme="dark"] .cap-app-avatar {
+  color: hsl(var(--app-hue, 250) 78% 82%);
+  background: linear-gradient(180deg, hsl(var(--app-hue, 250) 34% 30%), hsl(var(--app-hue, 250) 32% 24%));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10), 0 1px 3px -1px rgba(0, 0, 0, 0.5);
+}
+:root[data-theme="dark"] .cap-app-avatar.is-add {
+  color: var(--accent);
+  background: var(--cap-accent-soft);
+}
+
+/* 最近使用：横向排列的胶囊 */
+.cap-recent {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  overflow: hidden;
+}
+.cap-recent-title {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--cap-text-2);
+}
+.cap-recent-list { flex: 1 1 auto; display: flex; gap: 5px; min-width: 0; overflow: hidden; }
+.cap-recent-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 88px;
+  height: 26px;
+  padding: 0 9px 0 6px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--cap-card-face);
+  box-shadow: var(--cap-card-shadow);
+  color: var(--cap-text-1);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.cap-recent-chip:hover { background: var(--cap-card-face-hover); }
+.cap-recent-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-recent-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-recent-dot {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: hsl(var(--app-hue, 250) 62% 40%);
+  background: hsl(var(--app-hue, 250) 76% 92%);
+}
+
 /* 窄窗兜底：容器被系统压到小于胶囊容器时，面板退化为轨道内滚动，
-   不出现横向溢出（正常情况下引擎会把窗口撑到 400×420）。 */
-@media (max-width: 399px) {
-  .capsule-panel { width: calc(100vw - 64px); }
+   不出现横向溢出（正常情况下引擎会把窗口撑到 408×440）。 */
+@media (max-width: 407px) {
+  .capsule-panel { width: calc(100vw - 68px); }
 }
 
 }

@@ -2,10 +2,10 @@
  * @vitest-environment jsdom
  */
 //! 完整模式左侧导航（v0.6）：
-//! - 六个入口 + 底部「快速添加」始终存在，标签与图标语义正确；
+//! - 六个入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
 //! - 点击切换 tab（保持 Ctrl+1…6 同一套 store）；
 //! - 徽标直接复用任务统计 / 行动中心口径，不新造计数；
-//! - 底部入口切到任务页并聚焦快速添加。
+//! - 顶部入口切到任务页并聚焦快速添加。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -46,14 +46,16 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("渲染六个导航入口与底部快捷入口", () => {
+  it("渲染六个导航入口与顶部新建按钮", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
     for (const label of ["任务", "Agent", "行动", "剪贴板", "历史", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
-    expect(screen.getByRole("button", { name: "快速添加任务" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新建任务" })).toBeTruthy();
+    expect(nav.firstElementChild?.className).toBe("rail-head");
+    expect(nav.lastElementChild?.className).toBe("rail-items");
     // 默认任务页
     expect(screen.getByText("tasks-panel")).toBeTruthy();
   });
@@ -91,13 +93,13 @@ describe("完整模式左侧导航", () => {
     expect(badges).toContain("2");
   });
 
-  it("底部快速添加入口：切回任务页并触发聚焦信号", async () => {
+  it("顶部新建任务入口：切回任务页并触发聚焦信号", async () => {
     const user = userEvent.setup();
     useUiStore.setState({ tab: "settings" });
     render(<FullView />);
 
     const before = useUiStore.getState().quickAddToken;
-    await user.click(screen.getByRole("button", { name: "快速添加任务" }));
+    await user.click(screen.getByRole("button", { name: "新建任务" }));
     expect(useUiStore.getState().tab).toBe("tasks");
     expect(useUiStore.getState().quickAddToken).toBe(before + 1);
   });

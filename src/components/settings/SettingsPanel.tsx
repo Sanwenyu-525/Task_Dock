@@ -2,7 +2,7 @@
 //! 统一控件风格；高级选项（Agent 接入细节、开发者工具）默认折叠。
 
 import { useEffect, useState } from "react";
-import { save, open as openDialog, confirm } from "@tauri-apps/plugin-dialog";
+import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Bot, Database, FlaskConical, Copy, Eye, EyeOff,
   RefreshCw, ChevronDown, ChevronRight, Navigation, Clipboard, Trash2, Gauge, Layers,
@@ -45,6 +45,7 @@ import { copyText } from "../../lib/clipboard";
 import MockControls from "../agents/MockControls";
 import AppManagement from "./AppManagement";
 import { NumberInput, Select, Switch } from "../ui";
+import { ConfirmDialog } from "../ui/Dialog";
 
 function sumAuditCounts(c: AuditTableCounts): number {
   return c.events + c.sessions + c.runs + c.instances + c.notifications;
@@ -94,6 +95,13 @@ export default function SettingsPanel() {
   const [excludeApps, setExcludeApps] = useState("");
   const [diag, setDiag] = useState<PerformanceDiagnostics | null>(null);
   const [testAudit, setTestAudit] = useState<TestDataAudit | null>(null);
+  // 危险操作的应用内确认（替代系统原生 confirm，统一液态玻璃视觉与键盘交互）
+  const [pendingDanger, setPendingDanger] = useState<
+    | { type: "audit-apply"; count: number }
+    | { type: "import"; path: string; partial: boolean; detail: string }
+    | null
+  >(null);
+  const [dangerBusy, setDangerBusy] = useState(false);
 
   useEffect(() => {
     listBackups().then(setBackups).catch(() => setBackups([]));
@@ -183,13 +191,16 @@ export default function SettingsPanel() {
         showToast("没有可证明的测试数据，无需清理", { kind: "success" });
         return;
       }
-      const ok = await confirm(
-        `将删除 ${n} 条可证明的测试/压测数据（事件、会话、轮次、实例与通知）。\n\n` +
-          "清理前会自动生成数据库快照（VACUUM INTO），失败即中止；\n" +
-          "无法证明来源的数据保持不动，并列入待人工确认。\n\n继续清理？",
-        { title: "清理测试/压测数据", kind: "warning" },
-      );
-      if (!ok) return;
+      // 危险操作：改走应用内确认框（保留完整风险说明；确认后 runAuditApply 执行）
+      setPendingDanger({ type: "audit-apply", count: n });
+    });
+  }
+
+  /** 确认清理测试数据：执行期间禁用重复提交，失败保留错误反馈 */
+  async function runAuditApply() {
+    if (pendingDanger?.type !== "audit-apply" || dangerBusy) return;
+    setDangerBusy(true);
+    try {
       const r = await auditTestData(true);
       setTestAudit(r);
       const deleted = r.deleted ? sumAuditCounts(r.deleted) : 0;
@@ -199,7 +210,12 @@ export default function SettingsPanel() {
           : r.notes[0] ?? "未删除任何数据",
         { kind: r.fk_violations > 0 ? "error" : "success" },
       );
-    });
+    } catch (e) {
+      showToast(`清理失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setDangerBusy(false);
+      setPendingDanger(null);
+    }
   }
 
   async function refreshClipStats() {
@@ -291,12 +307,22 @@ export default function SettingsPanel() {
         "恢复前会自动创建完整恢复点；任一环节失败将自动回滚到恢复前状态。",
         "继续恢复？",
       ].filter(Boolean);
-      const ok = await confirm(lines.join("\n\n"), {
-        title: meta.partial ? "恢复部分备份" : "恢复备份",
-        kind: "warning",
+      // 危险操作：改走应用内确认框（保留完整风险说明；确认后 runImport 执行）
+      setPendingDanger({
+        type: "import",
+        path,
+        partial: meta.partial,
+        detail: lines.join("\n\n"),
       });
-      if (!ok) return;
-      const outcome = await importData(path, meta.partial);
+    });
+  }
+
+  /** 确认恢复备份：执行期间禁用重复提交，失败保留错误反馈 */
+  async function runImport() {
+    if (pendingDanger?.type !== "import" || dangerBusy) return;
+    setDangerBusy(true);
+    try {
+      const outcome = await importData(pendingDanger.path, pendingDanger.partial);
       setBackups(await listBackups());
       showToast(
         `恢复完成：${outcome.message}${
@@ -304,7 +330,12 @@ export default function SettingsPanel() {
         }`,
         { kind: "success" },
       );
-    });
+    } catch (e) {
+      showToast(`恢复失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setDangerBusy(false);
+      setPendingDanger(null);
+    }
   }
 
   async function onCopyInbox() {
@@ -1137,6 +1168,39 @@ export default function SettingsPanel() {
         <div className="setting-note">模拟控制台仅用于无真实 Agent 环境下验证 UI / 通知 / 托盘链路，事件明确标注「模拟」，不作为真实接入证据。</div>
         <MockControls />
       </Section>
+
+      {/* 危险操作统一确认框：深浅主题一致、危险标识、执行中禁用重复提交 */}
+      <ConfirmDialog
+        open={pendingDanger !== null}
+        danger
+        title={
+          pendingDanger?.type === "audit-apply"
+            ? "清理测试/压测数据"
+            : pendingDanger?.type === "import"
+              ? pendingDanger.partial
+                ? "恢复部分备份"
+                : "恢复备份"
+              : ""
+        }
+        detail={
+          pendingDanger?.type === "audit-apply"
+            ? `将删除 ${pendingDanger.count} 条可证明的测试/压测数据（事件、会话、轮次、实例与通知）。\n\n` +
+              "清理前会自动生成数据库快照（VACUUM INTO），失败即中止；\n" +
+              "无法证明来源的数据保持不动，并列入待人工确认。"
+            : pendingDanger?.type === "import"
+              ? pendingDanger.detail
+              : undefined
+        }
+        confirmLabel="继续"
+        busy={dangerBusy}
+        onConfirm={() => {
+          if (pendingDanger?.type === "audit-apply") void runAuditApply();
+          else if (pendingDanger?.type === "import") void runImport();
+        }}
+        onCancel={() => {
+          if (!dangerBusy) setPendingDanger(null);
+        }}
+      />
     </div>
   );
 }

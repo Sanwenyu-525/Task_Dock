@@ -5,6 +5,8 @@
 //! 契约（CapsuleDock 头注释同步维护）：
 //! - 仅在「进入异常」时响：同状态 60s 冷却；跨状态（waiting→failed）立即重响；
 //! - 设置门：`agent_alert_sound = false` 时不响（设置面板「通知」区）；
+//!   「全部静音」（notify_muted）或关闭 Agent 通知（notify_agent）时同样不响，
+//!   胶囊声音不得绕过通知总开关——静音只影响打扰，不影响 Agent 状态采集；
 //! - WebView2 无手势自动播放被拒时静默跳过（AudioContext 创建失败 /
 //!   start 抛错均吞掉并 console.debug），绝不打断用户、绝不弹错误 UI；
 //! - 只在**停靠期**响本通道（胶囊是停靠期唯一界面）；未停靠（完整窗口可见）
@@ -67,9 +69,17 @@ function tone(state: AgentAlertState): boolean {
   }
 }
 
-/** 播放异常提示音；返回是否真的发声（冷却中 / 设置关 / 音频不可用 = false） */
+/** 播放异常提示音；返回是否真的发声（冷却中 / 设置关 / 静音 / 音频不可用 = false） */
 export function playAgentAlert(state: AgentAlertState): boolean {
-  if (useSettingsStore.getState().settings?.agent_alert_sound === false) return false;
+  const s = useSettingsStore.getState().settings;
+  // 单独关闭异常提示音、全部静音、关闭 Agent 通知：都不发声（不绕过总开关）
+  if (
+    s?.agent_alert_sound === false ||
+    s?.notify_muted === true ||
+    s?.notify_agent === false
+  ) {
+    return false;
+  }
   const t = nowMs();
   const last = lastPlayedAt.get(state);
   if (last !== undefined && t - last < AGENT_ALERT_COOLDOWN_MS) return false;

@@ -1,8 +1,9 @@
-//! 分组详情：顺序、重命名、结束收集、拆分、整组复制、逐项粘贴、任务关联与删除策略。
+//! 分组详情：顺序、重命名、结束收集、整组复制与粘贴为主操作；
+//! 拆分、上移/下移等整理类高级操作收进「整理与拆分」模式，默认不占每条的主区域。
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  ArrowDown, ArrowLeft, ArrowUp, CheckSquare, Copy, Files, Link2, Pencil,
+  ArrowDown, ArrowLeft, ArrowUp, CheckSquare, Copy, Files, Link2, ListChecks, Pencil,
   Play, Scissors, Square, Star, Pin, Trash2, X,
 } from "lucide-react";
 import {
@@ -18,12 +19,16 @@ import {
   clipboardSplitGroup,
   clipboardToggleGroup,
   type ClipboardGroup,
+  type ClipboardItem,
   type CopyReport,
 } from "../../lib/bridge";
-import { copyPreflight, formatBytes, groupModeLabel, groupStatusLabel, kindLabel } from "../../lib/clipboardUi";
+import { copyPreflight, formatBytes, groupModeLabel, groupStatusLabel, kindLabel, objectHint } from "../../lib/clipboardUi";
+import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
+import { useClipboardStore } from "../../store/useClipboardStore";
 import { useUiStore } from "../../store/useUiStore";
 import AgentExportPanel from "./AgentExportPanel";
 import ClipboardItemDetail from "./ClipboardItemDetail";
+import { ClipboardThumb } from "./Media";
 import PastePanel from "./PastePanel";
 import TaskLinkBar from "./TaskLinkBar";
 import WorkspaceLinkBar from "./WorkspaceLinkBar";
@@ -51,8 +56,70 @@ export default function ClipboardGroupDetail({
   const [nameInput, setNameInput] = useState("");
   const [splitSelected, setSplitSelected] = useState<string[]>([]);
   const [splitName, setSplitName] = useState("");
+  /** 整理模式：显示拆分选择与上移/下移（高级操作），默认只显示主操作 */
+  const [tidy, setTidy] = useState(false);
   const [itemDetailId, setItemDetailId] = useState<string | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
+  /**
+   * 正在离场的行：`group` 立刻落到服务端结果，这些行作为视觉快照按原位多渲染一会，
+   * 各自的定时器到点只摘掉自己。连续移除多行时互不覆盖，也不会把旧顺序写回去。
+   */
+  const [exitRows, setExitRows] = useState<{ row: ClipboardItem; index: number; height: number }[]>([]);
+  const rowListRef = useRef<HTMLUListElement>(null);
+  const rowEls = useRef(new Map<string, HTMLLIElement>());
+  const topsRef = useRef<Map<string, number>>(new Map());
+  const rowTimers = useRef<number[]>([]);
+
+  useEffect(
+    () => () => {
+      rowTimers.current.forEach((t) => window.clearTimeout(t));
+      rowTimers.current = [];
+    },
+    [],
+  );
+
+  const exitingRows = new Map(exitRows.map((e) => [e.row.id, e]));
+  const rows = (() => {
+    let out = group?.items ?? [];
+    for (const e of [...exitRows].sort((a, b) => a.index - b.index)) {
+      if (out.some((i) => i.id === e.row.id)) continue;
+      const at = Math.min(e.index, out.length);
+      out = [...out.slice(0, at), e.row, ...out.slice(at)];
+    }
+    return out;
+  })();
+  const rowOrder = (group?.items.map((i) => i.id).join("|") ?? "") + `#${exitRows.length}`;
+
+  /**
+   * 上移/下移的轻量 FLIP：只在这几行之间做一次位移补偿动画。
+   *
+   * 不引动画库、不常驻监听：读一次 offsetTop、用 Web Animations API 播完即走。
+   * 减少动态模式下不做位移；行数过多时跳过（逐行读布局会让长列表掉帧）；
+   * 移除离场期间也跳过——那一行自己会把下方行推上去，两套位移会打架。
+   */
+  useLayoutEffect(() => {
+    const el = rowListRef.current;
+    if (!el) {
+      topsRef.current = new Map();
+      return;
+    }
+    const list = Array.from(el.querySelectorAll<HTMLElement>("[data-clip-row]"));
+    const tops = new Map(list.map((r) => [r.dataset.clipRow ?? "", r.offsetTop]));
+    const prev = topsRef.current;
+    topsRef.current = tops;
+    if (prefersReducedMotion() || exitRows.length > 0 || list.length > 60) return;
+    for (const r of list) {
+      const before = prev.get(r.dataset.clipRow ?? "");
+      if (before === undefined) continue;
+      const delta = before - (tops.get(r.dataset.clipRow ?? "") ?? before);
+      if (delta === 0 || typeof r.animate !== "function") continue;
+      r.animate(
+        [{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }],
+        { duration: REORDER_MS, easing: "ease" },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowOrder]);
 
   async function reload() {
     try {
@@ -123,7 +190,15 @@ export default function ClipboardGroupDetail({
 
   async function onToggle(flag: "favorite" | "pinned") {
     try {
-      setGroup(await clipboardToggleGroup(groupId, flag));
+      const updated = await clipboardToggleGroup(groupId, flag);
+      setGroup(updated);
+      // 排序可能因置顶而变，静默刷新拿新顺序；图标已经就地翻转，不用等这一趟
+      showToast(
+        flag === "favorite"
+          ? updated.favorite ? "已收藏分组" : "已取消收藏，内容仍保留在历史中"
+          : updated.pinned ? "已置顶分组，将排到前面" : "已取消置顶分组",
+        { kind: "success" },
+      );
       onChanged();
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -173,12 +248,34 @@ export default function ClipboardGroupDetail({
   }
 
   async function onRemove(itemId: string) {
+    const index = group?.items.findIndex((i) => i.id === itemId) ?? -1;
+    const row = index >= 0 ? group!.items[index] : undefined;
     setBusy("remove");
     try {
-      setGroup(await clipboardRemoveGroupItem(groupId, itemId));
+      const next = await clipboardRemoveGroupItem(groupId, itemId);
+      setGroup(next);
       setSplitSelected((s) => s.filter((x) => x !== itemId));
-      showToast("已从分组移除（内容仍保留在历史中）", { kind: "info" });
+      showToast(
+        row
+          ? `已把「${objectHint(row)}」从分组移除，内容仍保留在历史中`
+          : "已从分组移除（内容仍保留在历史中）",
+        { kind: "info" },
+      );
       onChanged();
+      if (row) {
+        // 后端已经解除关联；先让这一行收拢淡出，动画结束只摘掉自己。
+        // 高度在动画开始前测一次（此时这一行还是正常高度）。
+        const height = rowEls.current.get(itemId)?.offsetHeight ?? 0;
+        setExitRows((prev) => [...prev, { row, index, height }]);
+        const timer = window.setTimeout(
+          () => {
+            rowTimers.current = rowTimers.current.filter((t) => t !== timer);
+            setExitRows((prev) => prev.filter((e) => e.row.id !== itemId));
+          },
+          prefersReducedMotion() ? 0 : EXIT_MS,
+        );
+        rowTimers.current.push(timer);
+      }
     } catch (e) {
       showToast(String(e), { kind: "error" });
     } finally {
@@ -188,13 +285,18 @@ export default function ClipboardGroupDetail({
 
   async function onSplit() {
     if (splitSelected.length === 0) return;
+    const before = group?.items.length ?? 0;
     setBusy("split");
     try {
-      await clipboardSplitGroup(groupId, splitSelected, splitName.trim() || "拆分分组");
+      const g = await clipboardSplitGroup(groupId, splitSelected, splitName.trim() || "拆分分组");
+      const movedCount = Math.max(0, before - g.items.length);
       setSplitSelected([]);
       setSplitName("");
       await reload();
-      showToast("已拆分为新分组", { kind: "success" });
+      showToast(
+        `已把 ${movedCount} 项拆分为新分组，本分组剩 ${g.items.length} 项`,
+        { kind: "success" },
+      );
       onChanged();
     } catch (e) {
       showToast(`拆分失败：${String(e)}`, { kind: "error" });
@@ -232,6 +334,12 @@ export default function ClipboardGroupDetail({
             : "分组已删除，历史条目已保留",
           { kind: "success" },
         );
+        // 立刻从本地视图摘掉已确认删除的内容：否则返回列表时到下一次刷新落地之前，
+        // 会短暂看到已经删掉的东西。有条目因仍被引用而保留时分不清是哪几条，
+        // 宁可让刷新来定性，也不能把保留的条目本地抹掉（看起来像丢数据）。
+        const gone = [groupId];
+        if (alsoItems && r.retained_shared === 0) gone.push(...group.items.map((i) => i.id));
+        useClipboardStore.getState().endExit(gone);
         onChanged();
         onBack();
       },
@@ -388,60 +496,99 @@ export default function ClipboardGroupDetail({
 
         <div className="clip-block-head">
           <span>分组内容（按顺序）</span>
+          <button
+            className={`btn sm ${tidy ? "primary" : ""}`}
+            aria-pressed={tidy}
+            disabled={group.items.length === 0}
+            data-tip={tidy ? "收起拆分与排序操作" : "显示勾选拆分与上移/下移"}
+            onClick={() => {
+              if (tidy) setSplitSelected([]);
+              setTidy((v) => !v);
+            }}
+          >
+            <ListChecks size={11} /> 整理与拆分
+          </button>
         </div>
 
-        {group.items.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="clip-hint">分组为空。可从历史中勾选条目创建新分组。</div>
         ) : (
-          <ul className="clip-group-items">
-            {group.items.map((item, i) => {
+          <ul className="clip-group-items" ref={rowListRef}>
+            {rows.map((item, i) => {
               const selected = splitSelected.includes(item.id);
+              const leaving = exitingRows.get(item.id);
               return (
-                <li key={item.id} className={selected ? "selected" : ""}>
-                  <button
-                    className="clip-check"
-                    aria-label={selected ? "取消拆分选择" : "选择用于拆分"}
-                    aria-pressed={selected}
-                    onClick={() =>
-                      setSplitSelected((s) =>
-                        s.includes(item.id) ? s.filter((x) => x !== item.id) : [...s, item.id],
-                      )
-                    }
-                  >
-                    {selected ? <CheckSquare size={13} /> : <Square size={13} />}
-                  </button>
-                  <span className="clip-order">{i + 1}</span>
+                <li
+                  key={item.id}
+                  data-clip-row={item.id}
+                  ref={(el) => {
+                    if (el) rowEls.current.set(item.id, el);
+                    else rowEls.current.delete(item.id);
+                  }}
+                  className={`${selected ? "selected" : ""} ${leaving ? "removing" : ""}`}
+                  aria-hidden={leaving ? true : undefined}
+                  // 离场用收拢动画：高度在点击移除时实测一次，不留常驻测量
+                  style={leaving ? ({ "--clip-exit-h": `${leaving.height}px` } as React.CSSProperties) : undefined}
+                >
+                  {tidy && (
+                    <>
+                      <button
+                        className="clip-check"
+                        aria-label={selected ? "取消拆分选择" : "选择用于拆分"}
+                        aria-pressed={selected}
+                        onClick={() =>
+                          setSplitSelected((s) =>
+                            s.includes(item.id) ? s.filter((x) => x !== item.id) : [...s, item.id],
+                          )
+                        }
+                      >
+                        {selected ? <CheckSquare size={13} /> : <Square size={13} />}
+                      </button>
+                      <span className="clip-order">{i + 1}</span>
+                    </>
+                  )}
                   <button className="clip-group-item-main" onClick={() => setItemDetailId(item.id)}>
-                    <span className="clip-group-item-preview">{item.preview || "（无文本预览）"}</span>
-                    <span className="clip-group-item-meta">
-                      {kindLabel(item.kind)} · {formatBytes(item.byte_size)}
-                      {item.favorite ? " · 已收藏" : ""}
+                    {item.kind === "image" && (
+                      <ClipboardThumb itemId={item.id} hasThumb={item.has_thumb} size={30} />
+                    )}
+                    <span className="clip-group-item-text">
+                      <span className="clip-group-item-preview">
+                        {item.title || item.preview || "（无文本预览）"}
+                      </span>
+                      <span className="clip-group-item-meta">
+                        {kindLabel(item.kind)} · {formatBytes(item.byte_size)}
+                        {item.favorite ? " · 已收藏" : ""}
+                      </span>
                     </span>
                   </button>
                   <div className="clip-order-actions">
-                    <button
-                      className="icon-btn sm"
-                      data-tip="上移"
-                      aria-label={`上移第 ${i + 1} 项`}
-                      disabled={i === 0 || busy !== null}
-                      onClick={() => onMove(item.id, -1)}
-                    >
-                      <ArrowUp size={11} />
-                    </button>
-                    <button
-                      className="icon-btn sm"
-                      data-tip="下移"
-                      aria-label={`下移第 ${i + 1} 项`}
-                      disabled={i === group.items.length - 1 || busy !== null}
-                      onClick={() => onMove(item.id, 1)}
-                    >
-                      <ArrowDown size={11} />
-                    </button>
+                    {tidy && (
+                      <>
+                        <button
+                          className="icon-btn sm"
+                          data-tip="上移"
+                          aria-label={`上移第 ${i + 1} 项`}
+                          disabled={i === 0 || busy !== null || leaving !== undefined}
+                          onClick={() => onMove(item.id, -1)}
+                        >
+                          <ArrowUp size={11} />
+                        </button>
+                        <button
+                          className="icon-btn sm"
+                          data-tip="下移"
+                          aria-label={`下移第 ${i + 1} 项`}
+                          disabled={i === rows.length - 1 || busy !== null || leaving !== undefined}
+                          onClick={() => onMove(item.id, 1)}
+                        >
+                          <ArrowDown size={11} />
+                        </button>
+                      </>
+                    )}
                     <button
                       className="icon-btn sm"
                       data-tip="从分组移除（不删除内容）"
                       aria-label={`从分组移除第 ${i + 1} 项`}
-                      disabled={busy !== null}
+                      disabled={busy !== null || leaving !== undefined}
                       onClick={() => onRemove(item.id)}
                     >
                       <X size={11} />

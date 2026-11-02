@@ -16,12 +16,28 @@
    - `files`：过滤仍存在的路径；全部不存在报“原文件已不存在”；
    - `html`：写 `text + CF_HTML`；文本为空则由 HTML 提取纯文本；
    - `text`/`url`：写纯文本。
-3. `platform::write_payload` 写系统剪贴板；
-4. 记录 `self_write` 序列号，避免监听自记录；
-5. `bump_copy` 更新使用次数/最近时间；广播 `clipboard-changed`；
+3. `platform::write_payload_notifying` 写系统剪贴板，并在同一访问锁内登记
+   `self_write` 序列号，监听侧不会把这次复制当成外部采集；
+4. `bump_copy` 只累加 `copy_count`，**不更新 `last_seen_at`**：复制是使用操作，
+   不是新的采集事件；列表排序保持稳定；
+5. 不广播 `clipboard-changed`；前端收到复制结果后就地更新该条目的使用次数，
+   不重新请求列表（避免已加载分页被缩回第一页、滚动位置跳变）；
 6. 返回 `CopyReport { mode, bytes, warnings, sequence, item_count }`。
 
 文件条目若部分路径失效，复制仍成功，但返回“N 个文件路径已不存在”的警告。
+
+### 通用文本复制（路径 / 目录 / 令牌）
+
+`clipboard_copy_text` 与单项复制共用 `write_payload_notifying`：
+
+- 原生窗口内，`src/lib/clipboard.ts` 的 `copyText()` 一律调用该命令，
+  不再直接使用 `navigator.clipboard.writeText` / `document.execCommand("copy")`；
+- 受控写入失败时直接返回失败，**不回退 Web API**：绕过自写登记会让这次写入
+  被监听器重新采集，且失败原因（剪贴板占用/系统拒绝）并不会因为换一条路径消失；
+- 只有浏览器预览（非 Tauri）没有监听器时才使用 Web API / `execCommand`；
+- 写入失败不登记自写水位（`write_payload_notifying` 只在写入成功后登记），
+  随后的外部复制仍会正常记录；若清空后主格式失败、回写原内容成功，同样不登记——
+  回写的是用户此前的内容，不属于本次写入。
 
 ### 写入并发与安全边界
 
@@ -87,6 +103,22 @@ ACCESS_LOCK
 - 若没有任何可用文件，报“分组内没有可复制的文件或图片”。
 - 通过 `CF_HDROP` 一次写入多文件，目标应用按文件列表接收。
 
+### 任意多选批量复制（2026-11-02 新增）
+
+`clipboard_copy_items_rich(item_ids)` / `clipboard_copy_items_files(item_ids)`
+与整组版本共享同一实现（`commands/clipboard.rs` 的 `copy_rich_impl` /
+`copy_files_impl`），只是条目来源从“组内 position 顺序”换成
+“`store::get_items_by_ids` 按传入 id 顺序”：
+
+- 不创建临时分组，不写入 `clipboard_groups` / `clipboard_group_items`；
+- 富文本：按选择顺序拼接文字与图片，同样受 6 MB 内嵌预算、占位符与固定警告
+  约束；目标不支持 HTML 时回退纯文本的语义与整组一致；
+- 文件模式：多文件条目现存路径 + 图片缓存路径；文件不存在跳过并警告，
+  不把普通文字变成文件；
+- 写入同样走 `write_payload_notifying`（用户主动复制，`Unconditional` + 自写登记），
+  不广播 `clipboard-changed`，不改变 `last_seen_at`；
+- `bump_copy` 对每个被复制的条目累加 `copy_count`。
+
 ## 三、逐项粘贴队列
 
 ### 启动前校验（`precheck_target`）
@@ -102,6 +134,17 @@ ACCESS_LOCK
 - 新任务写入 `clipboard_paste_jobs`：分组、目标标题/exe、总数、状态 `running`。
 - 继续任务：只重发 `remaining_items`，累计 `sent/total` 保持不变；无剩余项时报错。
 - 已写入但未确认的条目不会因为“未确认”被自动重发；只有仍在 remaining 的条目会继续。
+
+### 任意多选逐项粘贴（2026-11-02 新增）
+
+`clipboard_paste_items(targetHwnd, itemIds)` 是 `clipboard_paste_group` 的无分组版本：
+
+- 条目来自 `store::get_items_by_ids`，按传入 id 顺序执行，**不要求也不创建永久分组**；
+- 任务记录的 `group_id` 存**空串**（该列仅审计用途，无外键），UI 按
+  `group_id === ""` 识别多选任务；
+- 复用同一 `PasteManager`：互斥、precheck、内容守卫、取消、收尾恢复、
+  `remaining_items` 继续、Unverified 语义与分组粘贴完全一致；
+- 用户未明确操作时不会向任何窗口发送按键（与既有约束一致）。
 
 ### 条目状态机
 

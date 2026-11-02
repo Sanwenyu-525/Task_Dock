@@ -83,6 +83,18 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   窗口预算（跨批次生效）；多条提醒合并为一条「任务提醒汇总」，
   等待/失败类通知优先占用额度；UI 广播也合并为一条 `reminder-fired`（携带 `task_ids`）。
   `notify_reminder` / `notify_muted` 开关对提醒与 Agent 通知分别生效。
+- **通知可靠性修订（2026-11-02）**：
+  - `NotifyGate` 改为**双额度限流**：等待/失败/断连等关键通知与完成/提醒等普通通知各持
+    一份独立的 `burst_max` 窗口额度。普通通知（跨批次）刷满自己的额度后，关键通知仍能弹出，
+    不再被挤进摘要；两类额度均有上界（每窗口最多 2×burst_max 条弹窗）。
+  - **业务状态与弹窗权限分离**：`fire_reminder_core` 只要领取成功且任务存活即返回
+    （`FiredNotify.popup=false` 表示只记历史不弹系统通知）。静音/关闭提醒时
+    `reminder-fired` 广播照常发出（前端任务状态及时刷新）、重复任务照常推进、
+    通知历史照常入库——静音只影响打扰行为。
+  - 停靠胶囊的 Agent 异常提示音受三层开关约束：`agent_alert_sound`、`notify_muted`、
+    `notify_agent` 任一关闭即不发声（胶囊声音不绕过通知总开关）。
+  - OS 通知发送失败从 `debug` 升为 `warn` 日志（含错误原文），结果可通过
+    `notification_stats()`（attempted/succeeded/failed）复核；失败不影响通知历史提交，不重试。
 
 ### 3. Agent 接入层（agents/）
 - 统一接入管线（`pipeline.rs`）：HTTP / 文件投递 / Hook CLI / 插件桥接 / Mock 的事件
@@ -173,6 +185,14 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   [ui-themes/09-component-api.md](ui-themes/09-component-api.md)。
 - 刷新调度（v0.5）：`useAgentsStore` 单飞 + 节流（critical 100ms / normal 400ms）+
   脏标记追赶；窗口隐藏只置脏，恢复可见补一次；100 条事件不再触发 100 次全量快照。
+- 应用内反馈（2026-11-02 修订）：
+  - Toast 改为**有界队列**（`useUiStore.toasts`，容量 3）：连续消息排队展示不再相互覆盖，
+    相同消息 2s 内去重，错误/警告优先保留并停留更久（8s）；四态 info/success/warning/error；
+    关闭走带 `aria-label` 的按钮（点击正文不关闭），hover/聚焦暂停自动消失计时器；
+    Toast 只是瞬时操作反馈，业务通知历史以 `notification_history` 为准。
+  - 设置面板危险操作（清理测试/压测数据、恢复备份）由原生 `confirm` 统一改为
+    `components/ui/Dialog.tsx` 的 `ConfirmDialog`（危险标识、执行中禁用重复提交、
+    Escape/焦点管理走既有 overlay 栈）；原生文件选择器保留。
 - 历史面板：默认加载 100 条，`list_agent_events(before=...)` keyset 分页加载更早事件，
   刷新增量合并；新通知/事件 500ms 防抖刷新。
 - 贴边吸附（v0.6 重写为 Smart Dock Capsule）：判定在 `lib/edgeSnap.ts`（纯函数），
@@ -269,6 +289,13 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   真实鼠标命中走子窗口，实际行为与原生 Win11 圆角窗口一致（见验收报告「遗留问题」）。
   区域仍按 hwnd/尺寸/DPI/缓存并用 `GetWindowRgn` 回读校验；胶囊与右键菜单弹窗继续使用
   圆角区域（各自独立的几何）。
+  **2026-11-01 深夜二轮更正（恢复原生圆角区域）**：整窗矩形方案在非激活态被真机推翻——
+  灰底 200 下窗口矩形四角为纯白 255，CSS 圆角外出现矩形三角（WebView2 失焦回填默认底色，
+  矩形区域不裁它）。主窗改为**逐行像素支撑区域** `main_region_rgn()`（`css_support_left`
+  按行取 CSS 圆角触及的首个像素，合并为矩形并集）+ `DWMWCP_DONOTROUND`：区域恰好覆盖
+  CSS 抗锯齿支撑形状、不覆盖透明像素，定义真实原生圆角，CSS 只负责抗锯齿边缘；删除
+  `WM_NCHITTEST` 子类化（圆角区域即命中区）。DWM 原生圆角固定 8 DIP，无法满足 18/20px
+  设计半径，故不使用。证据见 `tmp/acceptance/window-corner-unification/report.md` 二轮章节。
   详见 [ui-themes/](ui-themes/) 目录。
 
 ### 7. 智能剪贴板（clipboard/，v0.5）
@@ -351,7 +378,8 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 区域：折叠 = 轨道圆角矩形；展开 = `CombineRgn(RGN_OR)` 合并两块圆角矩形，
   应用后 `GetWindowRgn` 回读验证（包围盒 + 中心点 + 间隙点）。胶囊仍由区域定义可见外形
   （区域外的容器部分不绘制、不接收鼠标）；区域半径比 CSS 圆角小 2 物理像素
-  （`REGION_AA_INSET`）。主窗不再使用该内收，改由 CSS 轮廓定义（见 §7）。
+  （`REGION_AA_INSET`）。主窗也使用同一内收口径（2026-11-01 深夜二轮更正，
+  见 §6）。
 - 几何事务：停靠时窗口**归一**为容器尺寸（大于容器也收拢，覆盖 Aero Snap 的半屏
   尺寸）；尺寸/移动/区域任一步失败都回滚到进入停靠前的用户矩形，并抑制
   `window_rect` 持久化 2.5s。区域写入失败时先校准回当前相位形态；仍失败则保持

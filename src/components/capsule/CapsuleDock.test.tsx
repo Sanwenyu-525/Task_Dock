@@ -27,7 +27,14 @@ vi.mock("../../lib/bridge", () => ({
 }));
 
 vi.mock("../../lib/navigation", () => ({
-  navNavigate: async () => ({ ok: true }),
+  navNavigate: async () => ({
+    success: true,
+    requested_action: "launch",
+    actual_action: "launch",
+    fallback_used: false,
+    target_id: "t1",
+    verification_level: "launch",
+  }),
   avatarHue: () => 250,
 }));
 
@@ -143,12 +150,27 @@ describe("CapsuleDock · 折叠 / 展开", () => {
     expect(collapse).toHaveBeenCalledTimes(1);
   });
 
-  it("收起按钮在折叠态不触发收起（aria-disabled）", () => {
-    mountAt("docked-hidden");
-    const btn = screen.getByRole("button", { name: "功能面板已收起" });
-    expect(btn.getAttribute("aria-disabled")).toBe("true");
+  it("折叠态不提供可见的收起控件（没有「再收起」这回事）", () => {
+    const { container } = mountAt("docked-hidden");
+    // 占位保留（避免展开/收起时图标跳动），但对用户与无障碍树都不可见
+    const btn = container.querySelector(".cap-collapse") as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.getAttribute("data-inert")).toBe("true");
+    expect(btn.getAttribute("aria-hidden")).toBe("true");
+    expect(btn.tabIndex).toBe(-1);
+    expect(screen.queryByRole("button", { name: "功能面板已收起" })).toBeNull();
     act(() => btn.click());
     expect(collapse).not.toHaveBeenCalled();
+  });
+
+  it("展开态收起按钮可见、可聚焦，点击即收起", () => {
+    const { container } = mountAt("docked-revealed");
+    const btn = container.querySelector(".cap-collapse") as HTMLButtonElement;
+    expect(btn.getAttribute("data-inert")).toBe("false");
+    expect(btn.tabIndex).toBe(0);
+    expect(screen.getByRole("button", { name: "收起功能面板" })).toBe(btn);
+    act(() => btn.click());
+    expect(collapse).toHaveBeenCalledTimes(1);
   });
 });
 

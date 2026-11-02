@@ -29,6 +29,16 @@ pub struct CaptureSink {
     pub root: PathBuf,
     pub app: AppHandle,
     pub self_write: Arc<AtomicU32>,
+    /// 历史清空代数：事件在产生时记录代数，旧代数的内容不得在清空后回写。
+    pub capture_epoch: Arc<AtomicU64>,
+    /// 清空与入库的临界区：清空期间不允许入库线程写资产。
+    pub capture_gate: Arc<Mutex<()>>,
+}
+
+/// 内容队列条目：带上采集代数，工作线程在清空后据此丢弃旧内容。
+pub(crate) struct QueuedCapture {
+    pub epoch: u64,
+    pub content: CapturedContent,
 }
 
 #[derive(Debug)]
@@ -167,6 +177,10 @@ struct MonitorCounters {
     self_write_events: AtomicU64,
     /// 事件到达但剪贴板里没有可采集的内容（为空或格式无法识别）。
     empty_events: AtomicU64,
+    /// 清空前产生、清空后才处理的事件：不得回写历史（参与事件对账）。
+    cleared_stale_events: AtomicU64,
+    /// 清空前已入队、清空后才轮到处理的内容：不得回写历史。
+    cleared_stale_contents: AtomicU64,
     dropped_events: AtomicU64,
     dropped_contents: AtomicU64,
     failed: AtomicU64,
@@ -188,6 +202,8 @@ impl MonitorCounters {
             superseded_events: AtomicU64::new(0),
             self_write_events: AtomicU64::new(0),
             empty_events: AtomicU64::new(0),
+            cleared_stale_events: AtomicU64::new(0),
+            cleared_stale_contents: AtomicU64::new(0),
             dropped_events: AtomicU64::new(0),
             dropped_contents: AtomicU64::new(0),
             failed: AtomicU64::new(0),
@@ -216,6 +232,8 @@ pub struct MonitorStats {
     pub superseded_events: u64,
     pub self_write_events: u64,
     pub empty_events: u64,
+    pub cleared_stale_events: u64,
+    pub cleared_stale_contents: u64,
     pub dropped_events: u64,
     pub dropped_contents: u64,
     pub failed: u64,
@@ -241,6 +259,8 @@ pub fn monitor_stats() -> MonitorStats {
         superseded_events: c.superseded_events.load(Ordering::Relaxed),
         self_write_events: c.self_write_events.load(Ordering::Relaxed),
         empty_events: c.empty_events.load(Ordering::Relaxed),
+        cleared_stale_events: c.cleared_stale_events.load(Ordering::Relaxed),
+        cleared_stale_contents: c.cleared_stale_contents.load(Ordering::Relaxed),
         dropped_events: c.dropped_events.load(Ordering::Relaxed),
         dropped_contents: c.dropped_contents.load(Ordering::Relaxed),
         failed: c.failed.load(Ordering::Relaxed),
@@ -306,9 +326,12 @@ fn filter_capture(content: &mut CapturedContent, settings: &Settings) -> Capture
     // 来源应用只是采集时的前台推断，不能当作绝对证据。
     let source_unknown =
         content.source_app.trim().is_empty() || content.source_app.eq_ignore_ascii_case("unknown");
-    if is_own_app(&content.source_app) {
-        return CaptureDecision::Skip("来源是 Task Dock 自身");
-    }
+    // 不再按「前台推断 == 本进程」跳过：采集读取是异步的，截图工具（如
+    // Snipaste）复制后立即关闭覆盖层，前台切回 Task Dock，外部图片会被
+    // 误判成自身复制而丢弃。本进程写入的识别只依赖自写序列号水位
+    // （classify_event / read_clipboard_for_event），所有 Rust 写入路径
+    // 都会在访问锁内登记水位；WebView 内用户主动的复制不属于回流，
+    // 与系统剪贴板历史同样入库。
     if excluded(&settings.clipboard_exclude_apps, &content.source_app) {
         return CaptureDecision::Skip("来源应用在排除名单");
     }
@@ -408,14 +431,6 @@ impl CaptureSink {
             }
         }
     }
-}
-
-fn is_own_app(source_app: &str) -> bool {
-    let own = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
-        .unwrap_or_default();
-    !own.is_empty() && source_app.eq_ignore_ascii_case(&own)
 }
 
 fn excluded(list: &str, app: &str) -> bool {
@@ -593,6 +608,15 @@ fn classify_event(event_sequence: u32, last_captured: u32, self_write: u32) -> E
         return EventDisposition::Superseded;
     }
     EventDisposition::Read
+}
+
+/// 采集代数门：清空历史之前排队的事件与内容一律作废。
+///
+/// 两条队列都可能留着「清空前已排队、清空后才被取出」的采集项。内容本身没变，
+/// 但用户已经明确清空历史，放行就会把旧内容重新写回库里。代数只增不减，
+/// 因此不相等即代表它属于清空前。
+pub(crate) fn epoch_is_stale(event_epoch: u64, current_epoch: u64) -> bool {
+    event_epoch != current_epoch
 }
 
 /// 登记自写水位：正常前进；序列号回绕时回退到新水位。
@@ -1604,10 +1628,9 @@ mod imp {
                     let recovered =
                         unsafe { EmptyClipboard() != 0 && write_formats(expected).is_ok() };
                     if recovered {
-                        let seq = unsafe { GetClipboardSequenceNumber() };
-                        if let Some(sw) = notify {
-                            note_self_write_watermark(sw, seq);
-                        }
+                        // 回写的是清空前的内容，不是本次要写入的内容，因此**不得**
+                        // 登记自写水位：否则会把用户此前复制、尚未采集的外部内容
+                        // 当成“本进程写入”丢弃。失败的命令不应声称拥有剪贴板。
                         tracing::warn!("剪贴板写入失败，已恢复写入前内容");
                     } else {
                         tracing::warn!("剪贴板写入失败，且未能恢复写入前内容");
@@ -1824,10 +1847,17 @@ mod imp {
     #[derive(Clone)]
     struct RawEvent {
         sequence: u32,
+        /// 事件产生时的历史清空代数：清空之前的事件不得在清空之后入库。
+        epoch: u64,
         seen: Instant,
     }
 
-    static EVENT_QUEUE: Mutex<Option<Arc<BoundedQueue<RawEvent>>>> = Mutex::new(None);
+    struct EventHub {
+        queue: Arc<BoundedQueue<RawEvent>>,
+        epoch: Arc<AtomicU64>,
+    }
+
+    static EVENT_QUEUE: Mutex<Option<EventHub>> = Mutex::new(None);
 
     unsafe extern "system" fn wnd_proc(
         hwnd: HWND,
@@ -1837,24 +1867,26 @@ mod imp {
     ) -> LRESULT {
         match msg {
             WM_CLIPBOARDUPDATE => {
-                // 消息线程只做一件事：记录序列号并放入有界队列。
+                // 消息线程只做一件事：记录序列号与当前清空代数并放入有界队列。
                 // 图片解码、PNG 编码、SQLite 写入都在后台线程完成。
                 let seq = GetClipboardSequenceNumber();
                 if let Ok(guard) = EVENT_QUEUE.lock() {
-                    if let Some(q) = guard.as_ref() {
+                    if let Some(hub) = guard.as_ref() {
+                        let epoch = hub.epoch.load(Ordering::SeqCst);
                         MONITOR_COUNTERS
                             .observed_events
                             .fetch_add(1, Ordering::Relaxed);
-                        match q.push(
+                        match hub.queue.push(
                             RawEvent {
                                 sequence: seq,
+                                epoch,
                                 seen: Instant::now(),
                             },
                             1,
                         ) {
                             PushOutcome::Pushed => MonitorCounters::bump_peak(
                                 &MONITOR_COUNTERS.peak_event_queue,
-                                q.len(),
+                                hub.queue.len(),
                             ),
                             PushOutcome::DroppedOldest => {
                                 MONITOR_COUNTERS
@@ -1862,7 +1894,7 @@ mod imp {
                                     .fetch_add(1, Ordering::Relaxed);
                                 MonitorCounters::bump_peak(
                                     &MONITOR_COUNTERS.peak_event_queue,
-                                    q.len(),
+                                    hub.queue.len(),
                                 );
                             }
                             _ => {}
@@ -1887,7 +1919,7 @@ mod imp {
     pub struct ClipboardMonitor {
         hwnd: isize,
         event_q: Arc<BoundedQueue<RawEvent>>,
-        content_q: Arc<BoundedQueue<CapturedContent>>,
+        content_q: Arc<BoundedQueue<QueuedCapture>>,
         thread: Option<std::thread::JoinHandle<()>>,
         capture: Option<std::thread::JoinHandle<()>>,
         worker: Option<std::thread::JoinHandle<()>>,
@@ -1901,7 +1933,10 @@ mod imp {
                 if guard.is_some() {
                     return Err(AppError::Validation("剪贴板监听已在运行".into()));
                 }
-                *guard = Some(event_q.clone());
+                *guard = Some(EventHub {
+                    queue: event_q.clone(),
+                    epoch: sink.capture_epoch.clone(),
+                });
             }
             let (ready_tx, ready_rx) = mpsc::channel::<Result<isize, String>>();
             let thread = std::thread::Builder::new()
@@ -1978,13 +2013,13 @@ mod imp {
         }
     }
 
-    fn reset_queue() -> Option<Arc<BoundedQueue<RawEvent>>> {
+    fn reset_queue() -> Option<EventHub> {
         EVENT_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     fn spawn_capture_thread(
         event_q: Arc<BoundedQueue<RawEvent>>,
-        content_q: Arc<BoundedQueue<CapturedContent>>,
+        content_q: Arc<BoundedQueue<QueuedCapture>>,
         sink: Arc<CaptureSink>,
     ) -> std::io::Result<std::thread::JoinHandle<()>> {
         std::thread::Builder::new()
@@ -2002,6 +2037,15 @@ mod imp {
                                 .merged_events
                                 .fetch_add(1, Ordering::Relaxed);
                         }
+                    }
+                    // 事件发生在历史清空之前：剪贴板内容本身没变，但用户已经
+                    // 明确清空历史，旧事件不得在清空之后把内容重新写回。
+                    if epoch_is_stale(ev.epoch, sink.capture_epoch.load(Ordering::SeqCst)) {
+                        MONITOR_COUNTERS
+                            .cleared_stale_events
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!("剪贴板事件属于清空前的采集代数，已丢弃");
+                        continue;
                     }
                     match classify_event(ev.sequence, last, sink.self_write.load(Ordering::SeqCst))
                     {
@@ -2046,7 +2090,13 @@ mod imp {
                                 .fetch_max(latency, Ordering::Relaxed);
                             let mut content = *content;
                             let weight = queue_weight_for(&mut content);
-                            match content_q.push(content, weight) {
+                            match content_q.push(
+                                QueuedCapture {
+                                    epoch: ev.epoch,
+                                    content,
+                                },
+                                weight,
+                            ) {
                                 PushOutcome::Pushed => MonitorCounters::bump_peak(
                                     &MONITOR_COUNTERS.peak_content_queue,
                                     content_q.len(),
@@ -2084,15 +2134,25 @@ mod imp {
     }
 
     fn spawn_process_thread(
-        content_q: Arc<BoundedQueue<CapturedContent>>,
+        content_q: Arc<BoundedQueue<QueuedCapture>>,
         sink: Arc<CaptureSink>,
     ) -> std::io::Result<std::thread::JoinHandle<()>> {
         std::thread::Builder::new()
             .name("clipboard-worker".into())
             .spawn(move || {
-                while let Some(content) = content_q.pop() {
+                while let Some(queued) = content_q.pop() {
+                    // 清空与入库必须互斥：拿到临界区后重新核对代数，
+                    // 避免「核对了旧代数 → 清空删库 → 才写入」把旧内容复活。
+                    let _gate = sink.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
+                    if epoch_is_stale(queued.epoch, sink.capture_epoch.load(Ordering::SeqCst)) {
+                        MONITOR_COUNTERS
+                            .cleared_stale_contents
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!("剪贴板排队内容属于清空前的采集代数，已丢弃");
+                        continue;
+                    }
                     let started = Instant::now();
-                    match process_catching_panic(|| sink.process(content)) {
+                    match process_catching_panic(|| sink.process(queued.content)) {
                         ProcessOutcome::Recorded { created } => {
                             MONITOR_COUNTERS.recorded.fetch_add(1, Ordering::Relaxed);
                             if !created {
@@ -2487,6 +2547,31 @@ mod tests {
             EventDisposition::Superseded,
             "回绕前的状态不得重复入库"
         );
+    }
+
+    /// 清空历史与在途采集的竞态：入队盖章、出队核对，两次之间发生清空也必须拦下。
+    #[test]
+    fn stale_capture_epoch_blocks_work_queued_before_clear() {
+        let epoch = Arc::new(AtomicU64::new(7));
+
+        // 未清空时，正常的新复制必须一路放行：代数门不得误杀常规采集
+        let queued = epoch.load(Ordering::SeqCst);
+        assert_eq!(classify_event(120, 119, 50), EventDisposition::Read);
+        assert!(!epoch_is_stale(queued, epoch.load(Ordering::SeqCst)));
+
+        // 命令侧清空历史的顺序是：持 capture_gate → 代数 +1 → 删库
+        epoch.fetch_add(1, Ordering::SeqCst);
+
+        // worker 此刻才取出「清空前」排队的事件与内容：必须拦下，
+        // 否则旧内容会在删库之后重新出现在历史里。
+        assert!(
+            epoch_is_stale(queued, epoch.load(Ordering::SeqCst)),
+            "清空前排队的事件不得在清空后入库"
+        );
+
+        // 清空之后用户新复制的内容盖的是新一代，采集不能被连带封死
+        let after_clear = epoch.load(Ordering::SeqCst);
+        assert!(!epoch_is_stale(after_clear, epoch.load(Ordering::SeqCst)));
     }
 
     #[test]
@@ -3043,6 +3128,29 @@ mod tests {
         assert_eq!(
             filter_capture(&mut content, &settings),
             CaptureDecision::Skip("来源应用在排除名单")
+        );
+    }
+
+    /// 回归：Snipaste 等截图工具复制后立即关闭覆盖层，采集线程读取时前台
+    /// 已切回 Task Dock，前台推断出的 source_app 会等于本进程 exe 名。
+    /// 自身写入由自写序列号水位识别，过滤层不得再按前台推断丢弃外部内容。
+    #[test]
+    fn capture_filter_accepts_external_content_even_if_source_infers_own_app() {
+        let own = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "task-dock.exe".into());
+        let settings = Settings::default();
+        let mut image = captured("image", "", &own);
+        assert_eq!(
+            filter_capture(&mut image, &settings),
+            CaptureDecision::Accept,
+            "前台推断为本进程不能作为丢弃外部内容的依据"
+        );
+        let mut text = captured("text", "截图说明文字", "task-dock.exe");
+        assert_eq!(
+            filter_capture(&mut text, &settings),
+            CaptureDecision::Accept,
         );
     }
 

@@ -159,7 +159,16 @@ export default function ActionCenterPanel() {
         await unack([item.id]);
         showToast("已恢复为待处理", { kind: "info" });
       } else {
-        await ack([item.id]);
+        // 数量以后端为准；默认筛选不含已处理，要说清这一项是退出筛选而非消失
+        const n = await ack([item.id]);
+        showToast(
+          n > 0
+            ? filter.include_acked
+              ? `已标记「${item.title}」为已处理`
+              : `已标记「${item.title}」为已处理，退出待处理列表（勾选「显示已处理」可回看）`
+            : "这一项已经是已处理状态，列表已刷新",
+          { kind: n > 0 ? "success" : "info" },
+        );
       }
     } catch (e) {
       showToast(`确认失败：${String(e)}`, { kind: "error" });

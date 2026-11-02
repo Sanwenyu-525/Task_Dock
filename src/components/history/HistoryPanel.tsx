@@ -251,9 +251,11 @@ export default function HistoryPanel() {
   }
 
   async function onMarkAll() {
+    const n = unread;
     try {
       await markAllNotificationsRead();
       await refresh("replace");
+      showToast(n > 0 ? `已将 ${n} 条通知标为已读` : "通知已全部为已读", { kind: "success" });
     } catch (e) {
       showToast(String(e), { kind: "error" });
     }

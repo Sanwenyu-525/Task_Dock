@@ -13,6 +13,7 @@ const bridge = vi.hoisted(() => ({
   clipboardPasteJob: vi.fn(),
   clipboardPastePrecheck: vi.fn(),
   clipboardPasteGroup: vi.fn(),
+  clipboardPasteItems: vi.fn(),
   clipboardPasteCancel: vi.fn(),
   clipboardPasteResume: vi.fn(),
   onClipboardPaste: vi.fn(),
@@ -49,6 +50,7 @@ beforeEach(() => {
   bridge.clipboardPasteActive.mockResolvedValue(null);
   bridge.clipboardPastePrecheck.mockResolvedValue(TARGETS[0]);
   bridge.clipboardPasteGroup.mockResolvedValue(START);
+  bridge.clipboardPasteItems.mockResolvedValue(START);
   bridge.clipboardPasteCancel.mockResolvedValue(undefined);
   bridge.onClipboardPaste.mockImplementation((cb: (event: ClipboardPasteEvent) => void) => {
     pasteHandler = cb;
@@ -148,5 +150,19 @@ describe("PastePanel", () => {
     expect(screen.getByText(/已发送 3\/3 项粘贴动作/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /取消粘贴/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /继续剩余/ })).toBeNull();
+  });
+
+  it("任意多选逐项粘贴：按所选顺序调用批量命令，不依赖永久分组", async () => {
+    render(<PastePanel itemIds={["ci2", "ci0", "ci1"]} onBack={vi.fn()} />);
+    await screen.findByText("记事本");
+    expect(await screen.findByText(/所选 3 项/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /开始逐项粘贴/ }));
+
+    await waitFor(() =>
+      expect(bridge.clipboardPasteItems).toHaveBeenCalledWith(101, ["ci2", "ci0", "ci1"]),
+    );
+    expect(bridge.clipboardPasteGroup).not.toHaveBeenCalled();
+    expect(await screen.findByText(/已发送 0\/3 项/)).toBeTruthy();
   });
 });

@@ -472,3 +472,28 @@ cdylib 导出上限会导致链接失败，不能把 GNU 的退出码当作测�
 light/dark×solid/glass、四角 8x 放大、缩放抖动+最小化恢复）、
 `tmp/acceptance/window-corner-unification/after/capsule/`（停靠/展开/收起）。
 
+## 14. 二轮更正（2026-11-01 深夜：整窗矩形区域被真机推翻）
+
+§13 的「整窗矩形区域 + CSS 轮廓」在**非激活态**仍有矩形残留：受控灰底
+（`200,200,200`）下，窗口四角显示纯白 `255,255,255`，CSS 渐变内部仍是圆角，
+即「矩形窗口 + CSS 圆角」的伪修复。隐藏窗口基线帧与可见帧逐像素对比排除了桌面
+背景干扰；根因是 WebView2 失焦后按窗口矩形回填默认底色，矩形 `SetWindowRgn`
+不裁它，`DONOTROUND` / 边框色 NONE 也管不到。
+
+本轮改为**原生圆角区域 + CSS 抗锯齿边缘**：
+
+- 主窗区域由 `main_region_rgn()` 逐行构造：`css_support_left(y,h,r)` 计算每行第一个
+  被 CSS 圆角触及的像素，连续同起点行合并为矩形并集。区域恰好覆盖 CSS 抗锯齿支撑
+  形状（125% 下 22.5px 圆角首行起点 15/13/11/9/7/3），不覆盖完全透明像素；
+  `DWMWCP_DONOTROUND` 保留，避免 8 DIP 系统弧二次切割；
+- CSS `border-radius` 只负责边缘抗锯齿；圆角外被区域真正裁掉，非激活态也不会
+  回填白色；
+- 删除 `WM_NCHITTEST` 子类化与 `point_in_rounded_rect`：圆角区域本身就是命中区；
+- 工作区构建真机矩阵（灰底 64/128/200、白/黑、双预设 × 明暗 × solid/glass、
+  非激活、缩放、最小化恢复、胶囊三态）见
+  `tmp/acceptance/window-corner-unification/grey-20261101/round2-*` 与
+  `tmp/acceptance/window-corner-unification/report.md` 的二轮章节。
+
+旧结论保留：`after/` 的纯白/纯黑截图只能证明「在该背景上不可见」，不能证明圆角
+通过；验收必须包含灰底与非激活态。
+

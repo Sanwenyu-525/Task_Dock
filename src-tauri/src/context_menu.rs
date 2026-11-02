@@ -330,24 +330,6 @@ pub fn show_at(app: &AppHandle, anchor: (f64, f64)) {
     let _ = app.emit_to(WINDOW_LABEL, SHOW_EVENT, ());
 }
 
-/// 悬浮栏右键：锚定悬浮栏顶边中点（菜单优先在其上方展开）。
-pub fn show_from_bar(app: &AppHandle) {
-    tracing::debug!("右键菜单：收到悬浮栏显示请求");
-    let anchor = app
-        .get_webview_window("main")
-        .and_then(|win| {
-            let pos = win.outer_position().ok()?;
-            let size = win.outer_size().ok()?;
-            Some((pos.x as f64 + size.width as f64 / 2.0, pos.y as f64))
-        })
-        // 窗口几何取不到（异常早退场景）时退回光标位置
-        .or_else(|| app.cursor_position().ok().map(|p| (p.x, p.y)));
-    match anchor {
-        Some(anchor) => show_at(app, anchor),
-        None => tracing::warn!("右键菜单锚点不可用（主窗口与光标位置均不可得）"),
-    }
-}
-
 pub fn hide(app: &AppHandle) {
     cancel_pending_blur_close();
     if let Some(win) = menu_window(app) {
@@ -384,12 +366,6 @@ pub fn init(app: &AppHandle) {
 }
 
 // ── 命令 ─────────────────────────────────────────────────────
-
-/// 悬浮栏右键入口（前端作用域化 contextmenu 后调用）。
-#[tauri::command]
-pub fn show_context_menu(app: AppHandle) {
-    show_from_bar(&app);
-}
 
 #[tauri::command]
 pub fn hide_context_menu(app: AppHandle) {

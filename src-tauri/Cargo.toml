@@ -55,6 +55,8 @@ windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Input_KeyboardAndMouse",
+  # 拖拽磁力（v0.7）：按窗口 DPI 换算 CSS 参数（GetDpiForWindow）
+  "Win32_UI_HiDpi",
   # 右键菜单（v0.6 整改）：EVENT_SYSTEM_FOREGROUND 钩子（事件驱动的菜单外点击关闭）
   "Win32_UI_Accessibility",
   "Win32_System_Threading",

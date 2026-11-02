@@ -1,25 +1,30 @@
-//! 窗口外形（v0.6 / 2026-11-01 复核）：主窗由 CSS 抗锯齿弧定义轮廓，
-//! 胶囊与弹窗仍用 Win32 区域裁剪。
+//! 窗口外形（2026-11-01 二轮整改）：主窗**原生圆角区域 + CSS 抗锯齿边缘**，
+//! 胶囊与弹窗沿用各自独立的 Win32 区域。
 //!
 //! 本应用是 `decorations:false` + `transparent:true` + `shadow:false` 的无边框窗口。
-//! 真机验证（docs/ui-themes/12-v06-window-corners.md）确认：
-//! - Win11 的 **Mica / SystemBackdrop 由 DWM 按整个窗口矩形绘制，不受 SetWindowRgn
-//!   约束**，会在区域圆角之外、窗口矩形之内留下近黑色月牙；因此原生材质与区域裁剪
-//!   必须联合验证，不能只靠 CSS 圆角。
-//! - DWM 默认的 1px 边框也会沿窗口矩形绘制，浅色背景上表现为灰/黑描边。
-//! - DWM 的圆角裁剪半径（8 DIP）与 CSS 圆角（18/20px）**不是同一条曲线**：两者在
-//!   同一窗口矩形上必然相交，中间露出一圈透明的「月牙」；再叠加 `SetWindowRgn` 的
-//!   二值硬边，就形成用户看到的「外圈平滑 + 内圈锯齿 + 中间透明带」三层轮廓。
+//! 真机证据（`tmp/acceptance/window-corner-unification/`，含非激活态灰底截图）确认：
+//! - **整窗矩形区域**（`CreateRectRgn`）+ DWM `DONOTROUND` 时，窗口非激活后
+//!   WebView2 会在窗口矩形内回填不透明底色（实测纯白 255,255,255）：CSS 渐变仍是
+//!   圆角，但四角露出**矩形白色/浅灰三角**。在纯白/纯黑桌面上几乎不可见，在灰底与
+//!   浅灰底上明显；这是「CSS 圆角 + 直角原生窗口」的伪修复，不能接受。
+//! - DWM 原生圆角半径固定为 8 DIP（`DWMWCP_ROUND`），无法配置成设计要求的
+//!   18/20 CSS px；`DWMWCP_ROUNDSMALL` 更小，因此不能直接改用 DWM 圆角。
+//! - `SetWindowRgn` 的区域是二值裁剪，无法抗锯齿；主窗因此**逐行构造 CSS 圆角的
+//!   像素支撑形状**（`css_support_left()` + 行矩形并集）：覆盖所有被 CSS 触及的
+//!   像素（含极低 alpha 的抗锯齿外沿），但排除完全透明像素。这样既保留 CSS 平滑
+//!   弧线，又不会让非激活态的白色回填从透明像素露出，也不产生多余命中。
 //!
 //! 因此主窗（完整主界面）的外形策略是：
-//! 1. `SetWindowRgn` 只设**整窗矩形**：窗口仍然可见、可合成、区域缓存口径不变，
-//!    但 GDI 不再提供任何圆角硬边；
-//! 2. `DWMWA_WINDOW_CORNER_PREFERENCE = DONOTROUND` + `DWMWA_BORDER_COLOR = NONE`：
-//!    去掉 DWM 的 8 DIP 圆角与描边，让可见轮廓完全由 WebView2 CSS 抗锯齿弧定义；
-//! 3. `WM_NCHITTEST` 子类化：圆角外的透明角返回 `HTTRANSPARENT`，不新增命中区域。
+//! 1. 主窗设置**圆角** `SetWindowRgn`（逐行像素支撑形状），让原生窗口形状本身
+//!    是圆角，且与 CSS 可见像素一一对应；
+//! 2. DWM 角偏好设为 `DONOTROUND`（否则 8 DIP 系统弧会在自定义大圆角内再切一刀），
+//!    并继续尝试 `DWMWA_BORDER_COLOR = NONE`（该属性在部分 23H2 机器上不可读/不可设，
+//!    因此不依赖它；圆角区域会把矩形边框的角落裁掉）；
+//! 3. CSS `border-radius` 只负责边缘抗锯齿，不再承担「遮盖直角」的职责。
 //!
-//! 胶囊模式（轨道 / 面板）仍需区域裁剪：窗口矩形只露轨道或「轨道 ∪ 面板」，
-//! 区域外的内容不绘制、也不接收鼠标；其几何与主窗独立。
+//! 胶囊模式（轨道 / 面板）仍按独立几何裁剪：窗口矩形只露轨道或「轨道 ∪ 面板」，
+//! 区域外的内容不绘制、也不接收鼠标；其几何与主窗独立。弹窗（右键菜单）继续用
+//! 自己的圆角区域与半径。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -30,11 +35,11 @@ use tauri::{Runtime, WebviewWindow};
 /// 当前圆角半径，存储为「逻辑像素 × 1000」的整数，避免浮点原子。
 static RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
 
-/// 胶囊/弹窗区域半径的「抗锯齿内收」（物理像素）。
+/// 胶囊/弹窗区域半径相对 CSS 物理半径的固定「抗锯齿内收」（物理像素）。
 ///
-/// 这两类窗口仍由 `SetWindowRgn` 定义可见外形：GDI 区域是二值裁剪，没有抗锯齿，
-/// 半径收紧 2 物理像素可减少硬边切进 CSS 弧线的程度。主窗**不再**使用该内收
-/// （见模块文档：矩形区域 + CSS 轮廓）。
+/// `SetWindowRgn` 是二值裁剪，没有抗锯齿；把区域半径收紧后，区域弧线落在 CSS
+/// 圆角之外的透明像素上，GDI 硬边不可见。主窗不使用这个固定值，而是用
+/// `main_region_rgn()` 的逐行像素支撑形状（见该函数文档）。
 const REGION_AA_INSET: i32 = 2;
 /// 正在执行 SetWindowRgn；此期间到达的请求只置 PENDING，由外层合并重算。
 /// （全局短临界区串行化：SetWindowRgn 本身廉价，串行只损失并行度不损正确性。）
@@ -48,60 +53,17 @@ struct RegionStamp {
     hwnd: isize,
     width: u32,
     height: u32,
-    /// 0 且 `rect = true` 表示整窗矩形区域（主窗 CSS 轮廓模式）。
+    /// 实际写入的物理区域半径（0 = 直角矩形区域）。
     radius: u32,
     scale_milli: u32,
-    rect: bool,
 }
 
-/// 应用对象：主窗（可用 CSS 轮廓模式）与独立弹窗（始终用圆角区域）。
+/// 应用对象：完整主窗与独立弹窗（右键菜单）。两者都用圆角区域，
+/// 但主窗的区域半径额外内收 `REGION_AA_INSET`，把硬边藏进 CSS 抗锯齿弧外侧。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShapeTarget {
     Main,
     Popup,
-}
-
-/// `WM_NCHITTEST` 命中判定状态：仅主窗、仅整窗矩形模式生效。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HitState {
-    rect_mode: bool,
-    /// CSS 圆角的物理像素半径（含抗锯齿外沿，向上取整）。
-    radius_phys: i32,
-    scale_milli: u32,
-}
-
-static HIT_STATES: LazyLock<Mutex<HashMap<isize, HitState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// 子类化前的原窗口过程（按 hwnd 保存，未安装则不存在）。
-static HIT_PROCS: LazyLock<Mutex<HashMap<isize, isize>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// 点是否在圆角矩形内（物理像素、客户端坐标）。四角为 1/4 圆。
-///
-/// 命中判定与 CSS `border-radius` 同一口径：圆心在 (r, r) 等四角，
-/// 落在角落方块内且到圆心距离超过 r 的点视为透明角。
-fn point_in_rounded_rect(x: i32, y: i32, w: i32, h: i32, r: i32) -> bool {
-    if w <= 0 || h <= 0 || x < 0 || y < 0 || x >= w || y >= h {
-        return false;
-    }
-    let r = r.clamp(0, w.min(h) / 2);
-    if r == 0 {
-        return true;
-    }
-    let in_left = x < r;
-    let in_right = x >= w - r;
-    let in_top = y < r;
-    let in_bottom = y >= h - r;
-    if !((in_left || in_right) && (in_top || in_bottom)) {
-        return true;
-    }
-    // 圆角圆心：左边 r、右边 w-r-1（像素中心口径），上下同理。
-    let cx = if in_left { r } else { w - r - 1 };
-    let cy = if in_top { r } else { h - r - 1 };
-    let dx = x - cx;
-    let dy = y - cy;
-    (dx * dx + dy * dy) as i64 <= (r as i64) * (r as i64)
 }
 
 /// 按 **HWND** 管理的区域缓存（v0.6 整改）：主窗与右键菜单弹窗各自维护
@@ -152,13 +114,13 @@ static REGIONS: LazyLock<Mutex<RegionCache>> = LazyLock::new(|| Mutex::new(Regio
 // 因此不存在"鼠标跨越胶囊与面板时命中区跟着窗口跑"的抖动来源。
 
 /// 功能面板宽。
-pub const CAPSULE_PANEL_WIDTH_CSS: u32 = 336;
+pub const CAPSULE_PANEL_WIDTH_CSS: u32 = 340;
 /// 功能面板高。
-pub const CAPSULE_PANEL_HEIGHT_CSS: u32 = 420;
+pub const CAPSULE_PANEL_HEIGHT_CSS: u32 = 440;
 /// 轨道与面板之间的间隙（视觉分隔，区域上不连通）。
-pub const CAPSULE_GAP_CSS: u32 = 8;
+pub const CAPSULE_GAP_CSS: u32 = 12;
 /// 面板圆角（轨道为全圆角 = 厚度/2）。
-pub const CAPSULE_PANEL_RADIUS_CSS: u32 = 22;
+pub const CAPSULE_PANEL_RADIUS_CSS: u32 = 24;
 
 /// 胶囊区域参数（Smart Dock Capsule）。
 /// 数值与前端 `src/lib/capsuleLayout.ts` 保持一致（跨端契约，两端单测锁定）。
@@ -203,12 +165,86 @@ fn capsule_for(hwnd: isize) -> Option<CapsuleParams> {
     }
 }
 
+// ── 启动空白区域 ─────────────────────────────────────────────
+//
+// 停靠恢复启动时窗口必须**立刻**显示（隐藏窗口的定时器会被浏览器后台节流，
+// 恢复反而更慢），但屏幕上不能出现主窗口像素。这里把区域裁成 1×1：
+// 窗口仍是 WS_VISIBLE，页面保持前台节流等级，屏幕上只剩一个物理像素。
+//
+// 与胶囊的关系：**胶囊优先**。前端在恢复事务里会先写胶囊区域，那时空白标记
+// 仍然存在——如果空白优先，胶囊区域会被吞掉、`GetWindowRgn` 回读失败，
+// 前端会判定"区域写入失败"并回滚停靠。因此 `apply_pass` 先查胶囊、再查空白。
+
+static BLANK: LazyLock<Mutex<Option<isize>>> = LazyLock::new(|| Mutex::new(None));
+
+/// 设置/清除启动空白区域（调用方负责随后 apply）。
+pub fn set_blank(hwnd: isize, blank: bool) {
+    let mut slot = BLANK.lock().unwrap_or_else(|e| e.into_inner());
+    *slot = if blank { Some(hwnd) } else { None };
+}
+
+/// 清除空白标记，返回此前是否处于空白状态（用于"是否需要重算区域"）。
+pub fn take_blank(hwnd: isize) -> bool {
+    let mut slot = BLANK.lock().unwrap_or_else(|e| e.into_inner());
+    if *slot == Some(hwnd) {
+        *slot = None;
+        true
+    } else {
+        false
+    }
+}
+
+fn blank_for(hwnd: isize) -> bool {
+    *BLANK.lock().unwrap_or_else(|e| e.into_inner()) == Some(hwnd)
+}
+
+/// 1×1 空白区域：不可见、不可命中，但窗口保持可见（不触发后台节流）。
+#[cfg(windows)]
+fn apply_blank_pass(hwnd: isize) -> bool {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateRectRgn, DeleteObject, GetRgnBox, GetWindowRgn, SetWindowRgn,
+    };
+
+    unsafe {
+        let rgn = CreateRectRgn(0, 0, 1, 1);
+        if rgn.is_null() {
+            return false;
+        }
+        if SetWindowRgn(hwnd as _, rgn, 1) == 0 {
+            DeleteObject(rgn as _);
+            return false;
+        }
+        // 回读验证：区域确实只剩 1×1（SetWindowRgn 成功不代表区域内容正确）
+        let probe = CreateRectRgn(0, 0, 0, 0);
+        if probe.is_null() {
+            return false;
+        }
+        let kind = GetWindowRgn(hwnd as _, probe);
+        let mut box_ = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let ok = kind != 0 && GetRgnBox(probe, &mut box_) != 0 && box_.right <= 1 && box_.bottom <= 1;
+        DeleteObject(probe as _);
+        apply_dwm(hwnd, false);
+        if !ok {
+            tracing::warn!(hwnd, "启动空白区域回读失败（区域未生效）");
+        }
+        ok
+    }
+}
+
 /// 窗口销毁时调用：清理该 hwnd 的区域缓存（防句柄复用误判）。
 pub fn forget_window(hwnd: isize) {
     REGIONS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .forget(hwnd);
+    // 启动空白标记同样按 hwnd 绑定：句柄被复用后不得继续裁新窗口
+    let _ = take_blank(hwnd);
 }
 
 /// 诊断开关（环境变量，真机矩阵验收用）：
@@ -300,16 +336,146 @@ fn apply_impl<R: Runtime>(
 
 // 最近一次 pass 实际使用的窗口尺寸：已并入 RegionCache（按 hwnd 隔离）。
 
-/// 主窗是否使用「矩形区域 + CSS 抗锯齿轮廓」模式。
+/// 圆角在某一行像素内的「抗锯齿支撑起点」（窗口左侧，物理像素）。
 ///
-/// 只在 Win11（DWM 圆角存在，能确认系统圆角会与 CSS 曲线打架）启用；
-/// Win10 没有 DWM 圆角，继续用圆角区域裁剪的旧路径。
-#[cfg(windows)]
-fn css_silhouette_mode() -> bool {
-    crate::commands::system::windows_build() >= 22000
+/// 区域必须覆盖 CSS 真正触及的像素（含极低 alpha 的抗锯齿外沿），否则会把
+/// 平滑弧线切成 GDI 硬边；同时又不能覆盖 CSS 完全透明的像素，否则 WebView2
+/// 在非激活态回填的白色会从这些像素露出，形成白色细边。
+///
+/// 判定口径：像素 `[x,x+1] × [y,y+1]` 与圆角圆（圆心 `(r,r)`、半径 `r`）
+/// 相交 ⇔ `(r−x−1)^2 + (r−y−1)^2 ≤ r^2`。对 `x` 解出最小整数即本行起点。
+/// 125% 下 CSS 22.5px 圆角实测最早着色像素 x = 15/13/11/9/7/3（y=0/1/2/3/5/10），
+/// 与本公式逐行一致（见单测与真机截图）。
+fn css_support_left(y: i32, h: i32, radius: f64) -> i32 {
+    if radius <= 0.0 || h <= 0 {
+        return 0;
+    }
+    let top = support_from_edge(y, radius);
+    // 底边圆角：同一行相对底边的距离（最后一行 row=0）。
+    let bottom = support_from_edge(h - 1 - y, radius);
+    top.max(bottom)
 }
 
-/// 弹窗/旧路径的物理区域半径（与 CSS 圆角同一物理值）。
+/// 距最近一条水平边 `row` 行处，圆角圆的支撑起点。
+fn support_from_edge(row: i32, radius: f64) -> i32 {
+    if row < 0 || (row as f64) >= radius {
+        return 0;
+    }
+    let dy = radius - (row as f64 + 1.0);
+    let dx = (radius * radius - dy * dy).max(0.0).sqrt();
+    // 像素 [x,x+1] 与该行圆弧相交的最小整数 x。
+    let x = (radius - 1.0 - dx).ceil() as i32;
+    x.max(0)
+}
+
+/// 主窗圆角区域：按行构造 CSS 圆角的**像素支撑形状**（逐行矩形并集）。
+///
+/// 圆角区域不是简单的 `CreateRoundRectRgn`：单个圆的区域无法同时满足
+/// 「覆盖切点处 7~8px 的 AA 支撑」与「不覆盖任何完全透明像素」。逐行取
+/// `css_support_left()` 得到的矩形并集，既保留 CSS 抗锯齿外沿，又与 CSS
+/// 可见像素一一对应（圆角外不产生白色填充，也不产生多余命中）。
+#[cfg(windows)]
+fn main_region_rgn(w: i32, h: i32, radius: f64) -> Option<windows_sys::Win32::Graphics::Gdi::HRGN> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, RGN_ERROR, RGN_OR,
+    };
+
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    // 与 CSS 的 border-radius 钳制口径一致：半径不超过短边一半。
+    let radius = radius.min(w.min(h) as f64 / 2.0);
+    unsafe {
+        if radius <= 0.0 {
+            let rgn = CreateRectRgn(0, 0, w + 1, h + 1);
+            return (!rgn.is_null()).then_some(rgn);
+        }
+        let rgn = CreateRectRgn(0, 0, 0, 0);
+        if rgn.is_null() {
+            return None;
+        }
+        let mut y = 0;
+        while y < h {
+            let x = css_support_left(y, h, radius).min(w / 2);
+            // 同一起点的连续行合并为一个矩形，避免为每一行都 CombineRgn。
+            let mut y_end = y + 1;
+            while y_end < h && css_support_left(y_end, h, radius).min(w / 2) == x {
+                y_end += 1;
+            }
+            let right = (w - x).max(x + 1);
+            let rect = CreateRectRgn(x, y, right, y_end);
+            if rect.is_null() || CombineRgn(rgn, rgn, rect, RGN_OR) == RGN_ERROR {
+                if !rect.is_null() {
+                    DeleteObject(rect as _);
+                }
+                DeleteObject(rgn as _);
+                return None;
+            }
+            DeleteObject(rect as _);
+            y = y_end;
+        }
+        Some(rgn)
+    }
+}
+
+/// 任意圆角矩形的**像素支撑区域**（与 CSS `border-radius` 的弧逐行对齐）。
+///
+/// `CreateRoundRectRgn` 的弧是 GDI 的硬边椭圆：面板半径 22~24px 时它与 CSS 弧
+/// 最多差 2px，在浅色玻璃面板上会形成一圈可见阶梯（正是「矩形拼接感」的
+/// 来源之一）。这里复用主窗的 `support_from_edge()`：逐行求「CSS 弧最早着色的
+/// 像素」，把相同起点合并成矩形并集，再平移到 `(x0, y0)`。
+///
+/// 右/下边界用**开区间**（`x0 + w`），与 CSS 盒子尺寸一一对应；主窗那套 `+1`
+/// 口径只影响包围盒回读的 1px 容差，这里不需要。
+#[cfg(windows)]
+fn support_rect_rgn(
+    x0: i32,
+    y0: i32,
+    w: i32,
+    h: i32,
+    radius: f64,
+) -> Option<windows_sys::Win32::Graphics::Gdi::HRGN> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, RGN_ERROR, RGN_OR,
+    };
+
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    unsafe {
+        let radius = radius.min(w.min(h) as f64 / 2.0);
+        if radius <= 0.0 {
+            let rgn = CreateRectRgn(x0, y0, x0 + w, y0 + h);
+            return (!rgn.is_null()).then_some(rgn);
+        }
+        let rgn = CreateRectRgn(0, 0, 0, 0);
+        if rgn.is_null() {
+            return None;
+        }
+        let mut y = 0;
+        while y < h {
+            let x = css_support_left(y, h, radius).min(w / 2);
+            let mut y_end = y + 1;
+            while y_end < h && css_support_left(y_end, h, radius).min(w / 2) == x {
+                y_end += 1;
+            }
+            let right = (w - x).max(x + 1);
+            let rect = CreateRectRgn(x0 + x, y0 + y, x0 + right, y0 + y_end);
+            if rect.is_null() || CombineRgn(rgn, rgn, rect, RGN_OR) == RGN_ERROR {
+                if !rect.is_null() {
+                    DeleteObject(rect as _);
+                }
+                DeleteObject(rgn as _);
+                return None;
+            }
+            DeleteObject(rect as _);
+            y = y_end;
+        }
+        Some(rgn)
+    }
+}
+
+/// CSS 圆角对应的物理像素半径（弹窗区域仍用圆角矩形；主窗用支撑形状）。
 fn rounded_region_radius(logical_radius: f64, scale: f64) -> i32 {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -322,136 +488,6 @@ fn rounded_region_radius(logical_radius: f64, scale: f64) -> i32 {
         18.0
     };
     (logical * scale).round() as i32
-}
-
-/// 记录/更新某窗口的命中判定状态；`None` 表示该窗口不使用透明角判定。
-fn set_hit_state(hwnd: isize, state: Option<HitState>) {
-    let mut states = HIT_STATES.lock().unwrap_or_else(|e| e.into_inner());
-    match state {
-        Some(s) => {
-            states.insert(hwnd, s);
-        }
-        None => {
-            states.remove(&hwnd);
-        }
-    }
-}
-
-/// 主窗命中判定状态（供测试与诊断读取）。
-#[cfg(test)]
-fn hit_state(hwnd: isize) -> Option<HitState> {
-    HIT_STATES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&hwnd)
-        .copied()
-}
-
-/// 在窗口过程上安装 WM_NCHITTEST 子类化（幂等）。
-///
-/// 说明：WebView2 的实际鼠标命中由子窗口（Chrome_WidgetWin）处理，系统不会
-/// 先调用顶层窗口的 WM_NCHITTEST；本子类化覆盖非客户区/程序化命中等路径。
-/// 透明角的真实点击行为与原生 Win11 圆角窗口一致（见验收报告）。
-#[cfg(windows)]
-fn install_hit_test(hwnd: isize) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC,
-    };
-
-    let mut procs = HIT_PROCS.lock().unwrap_or_else(|e| e.into_inner());
-    if procs.contains_key(&hwnd) {
-        return;
-    }
-    unsafe {
-        let original = GetWindowLongPtrW(hwnd as _, GWLP_WNDPROC);
-        if original == 0 || original == hit_test_proc as *const () as isize {
-            return;
-        }
-        procs.insert(hwnd, original);
-        // 替换后所有消息都转发给原过程；失败时保持原过程不动。
-        if SetWindowLongPtrW(hwnd as _, GWLP_WNDPROC, hit_test_proc as *const () as isize) == 0 {
-            procs.remove(&hwnd);
-            tracing::warn!(hwnd, "WM_NCHITTEST 子类化失败：透明角退回默认命中");
-        }
-    }
-}
-
-/// 窗口过程：透明角返回 HTTRANSPARENT，其余消息原样转发。
-#[cfg(windows)]
-unsafe extern "system" fn hit_test_proc(
-    hwnd: windows_sys::Win32::Foundation::HWND,
-    msg: u32,
-    wparam: windows_sys::Win32::Foundation::WPARAM,
-    lparam: windows_sys::Win32::Foundation::LPARAM,
-) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::Foundation::{POINT, RECT};
-    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, DefWindowProcW, GetClientRect, HTTRANSPARENT, WM_NCDESTROY, WM_NCHITTEST,
-    };
-
-    let key = hwnd as isize;
-
-    if msg == WM_NCHITTEST {
-        let state = HIT_STATES
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
-            .copied();
-        if let Some(state) = state {
-            if state.rect_mode && state.radius_phys > 0 {
-                let x = (lparam & 0xFFFF) as u16 as i16 as i32;
-                let y = ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32;
-                let mut pt = POINT { x, y };
-                if ScreenToClient(hwnd, &mut pt) != 0 {
-                    let mut rect = RECT {
-                        left: 0,
-                        top: 0,
-                        right: 0,
-                        bottom: 0,
-                    };
-                    if GetClientRect(hwnd, &mut rect) != 0 {
-                        let w = rect.right - rect.left;
-                        let h = rect.bottom - rect.top;
-                        if !point_in_rounded_rect(pt.x, pt.y, w, h, state.radius_phys) {
-                            return HTTRANSPARENT as isize;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let original = HIT_PROCS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&key)
-        .copied();
-
-    if msg == WM_NCDESTROY {
-        HIT_PROCS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&key);
-        HIT_STATES
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&key);
-    }
-
-    match original {
-        Some(orig) => {
-            let proc: unsafe extern "system" fn(
-                windows_sys::Win32::Foundation::HWND,
-                u32,
-                windows_sys::Win32::Foundation::WPARAM,
-                windows_sys::Win32::Foundation::LPARAM,
-            )
-                -> windows_sys::Win32::Foundation::LRESULT = std::mem::transmute(orig);
-            CallWindowProcW(Some(proc), hwnd, msg, wparam, lparam)
-        }
-        None => DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
 }
 
 #[cfg(windows)]
@@ -471,9 +507,22 @@ fn apply_pass<R: Runtime>(
         _ => return false,
     };
     let scale = win.scale_factor().unwrap_or(1.0);
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let w = size.width as i32;
     let h = size.height as i32;
     let r = rounded_region_radius(logical_radius, scale);
+    let css_phys = {
+        let logical = if logical_radius.is_finite() {
+            logical_radius.clamp(0.0, 40.0)
+        } else {
+            18.0
+        };
+        logical * scale
+    };
     let scale_milli = (scale * 1000.0).round() as u32;
     REGIONS
         .lock()
@@ -486,8 +535,7 @@ fn apply_pass<R: Runtime>(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .forget(hwnd);
-        set_hit_state(hwnd, None);
-        apply_dwm(hwnd, r > 0);
+        apply_dwm(hwnd, false);
         return false;
     }
 
@@ -496,51 +544,56 @@ fn apply_pass<R: Runtime>(
     // 窗口位置/尺寸在停靠期间保持不变，区域切换是唯一的视觉状态变化。
     if target == ShapeTarget::Main {
         if let Some(cap) = capsule_for(hwnd) {
-            set_hit_state(hwnd, None);
             return apply_capsule_pass(hwnd, w, h, scale, cap);
+        }
+        // 启动停靠恢复：区域先裁成 1×1 空白，等前端把几何 + 轨道区域一次做完。
+        // 胶囊优先（见 `BLANK` 注释）：这里只在**还没有胶囊状态**时生效。
+        if blank_for(hwnd) {
+            if apply_blank_pass(hwnd) {
+                return true;
+            }
+            // 空白区域没生效：撤销标记并退回正常区域，绝不留下不可见窗口。
+            set_blank(hwnd, false);
         }
     }
 
-    let css_silhouette = target == ShapeTarget::Main && css_silhouette_mode();
-    let region_radius = if css_silhouette { 0 } else { r };
+    // 主窗：逐行构造 CSS 圆角的像素支撑形状（保留 AA 外沿、不覆盖透明像素）；
+    // 弹窗：沿用与 CSS 同值的圆角矩形区域。
     let stamp = RegionStamp {
         hwnd,
         width: size.width,
         height: size.height,
-        radius: region_radius as u32,
+        radius: r as u32,
         scale_milli,
-        rect: css_silhouette,
     };
     let current = {
         let cache = REGIONS.lock().unwrap_or_else(|e| e.into_inner());
         cache.is_current(&stamp)
-    } && region_is_current(hwnd, w, h, region_radius, css_silhouette);
+    } && region_is_current(hwnd, w, h, r);
 
     let mut ok = current;
     if !current {
         ok = unsafe {
-            if css_silhouette {
-                // 整窗矩形区域：不参与任何圆角，窗口仍然可见/可合成；
-                // 可见轮廓完全交给 WebView2 的 CSS 抗锯齿弧。
-                let rgn = CreateRectRgn(0, 0, w + 1, h + 1);
-                if rgn.is_null() {
-                    false
-                } else if SetWindowRgn(hwnd as _, rgn, 1) == 0 {
-                    DeleteObject(rgn as _);
-                    false
-                } else {
-                    true
-                }
+            let rgn = if target == ShapeTarget::Main {
+                main_region_rgn(w, h, css_phys)
+            } else if r <= 1 {
+                // +1 覆盖末行像素（与既有胶囊区域口径一致）。
+                let raw = CreateRectRgn(0, 0, w + 1, h + 1);
+                (!raw.is_null()).then_some(raw)
             } else {
-                // 弹窗 / Win10 旧路径：圆角区域与 CSS 半径一致，+1 覆盖末行像素。
-                let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, (r * 2).max(1), (r * 2).max(1));
-                if rgn.is_null() {
-                    false
-                } else if SetWindowRgn(hwnd as _, rgn, 1) == 0 {
-                    DeleteObject(rgn as _);
-                    false
-                } else {
-                    true
+                let raw = CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2);
+                (!raw.is_null()).then_some(raw)
+            };
+            match rgn {
+                None => false,
+                Some(rgn) => {
+                    if SetWindowRgn(hwnd as _, rgn, 1) == 0 {
+                        // 失败时区域未被系统接管，仍归调用方，必须释放。
+                        DeleteObject(rgn as _);
+                        false
+                    } else {
+                        true
+                    }
                 }
             }
         };
@@ -552,34 +605,27 @@ fn apply_pass<R: Runtime>(
         }
     }
 
-    if css_silhouette {
+    if target == ShapeTarget::Main {
         if ok {
-            // 整窗矩形模式下 DWM 圆角必须关闭，否则 8 DIP 的系统圆角会在 CSS
-            // 弧线之外再切一刀，重新产生透明月牙。
+            // 主窗的可见外形已经由自定义圆角区域定义；DWM 的 8 DIP 圆角半径
+            // 远小于设计半径，若保留会在区域内部再切一刀，必须 DONOTROUND。
             apply_dwm(hwnd, false);
-            set_hit_state(
-                hwnd,
-                Some(HitState {
-                    rect_mode: true,
-                    radius_phys: (logical_radius.clamp(0.0, 40.0) * scale).ceil() as i32,
-                    scale_milli,
-                }),
-            );
-            install_hit_test(hwnd);
         } else {
-            // 区域写入失败：不能把窗口留在「无区域 + DONOTROUND」的不可合成状态，
-            // 退回 DWM 圆角并清除透明角判定（等下一次 apply 重试）。
+            // 区域写入失败：至少退回 DWM 圆角，避免留下直角矩形；
+            // 下一次 apply 会重试区域。
             apply_dwm(hwnd, true);
-            set_hit_state(hwnd, None);
         }
     } else {
         apply_dwm(hwnd, r > 0);
-        set_hit_state(hwnd, None);
     }
     ok
 }
 
 /// 胶囊区域矩形（**显式宽高**，杜绝依赖变量名推断方向）。
+///
+/// 轨道（rail）现在是非矩形轮廓，这里的矩形只作为它的**外框**（包围盒）；
+/// 真正参与裁剪与命中判定的是 `CapsuleRegionSet::rail_polygon`。
+/// 面板仍是圆角矩形，`radius` 只对面板有意义。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CapsuleRegionRect {
     pub x: i32,
@@ -599,24 +645,193 @@ impl CapsuleRegionRect {
     }
 }
 
-/// 胶囊区域集合：折叠态只有轨道；展开态 = 轨道 ∪ 面板（两块圆角矩形，
-/// 中间由 `gap` 分隔，**不连通**——间隙既不属于区域也不拦截鼠标）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// ── 液态融合翼片几何（与 `src/lib/capsuleShape.ts` 逐点一致）────────
+//
+// 单一参数化形状：边空间里「贴边一侧切线水平、壁切线垂直」，四边只换映射
+// 不换形状。前端 SVG 可见轮廓与这里的区域多边形**取自同一个采样函数**
+// （同样的段数、同样的取整），所以「CSS 轮廓 = Win32 区域」是构造性成立的，
+// 不依赖容差。两端各有一组金标准点位单测锁定。
+
+/// 单侧液态肩部的沿边跨度（CSS px）：约为厚度的 1.07 倍 → 宽而浅的过渡。
+pub const CAPSULE_SHOULDER_CSS: u32 = 88;
+/// 肩部起点控制柄占肩宽的比例（与前端 `WING_CREST_RATIO` 相同）。
+pub(crate) const WING_CREST_RATIO: f64 = 0.435;
+/// 肩部终点控制柄占肩宽的比例（与前端 `WING_TAIL_RATIO` 相同）。
+pub(crate) const WING_TAIL_RATIO: f64 = 0.565;
+/// 每个肩部的贝塞尔采样段数（与前端 `WING_SAMPLES` 相同）。
+pub(crate) const WING_SAMPLES: usize = 18;
+
+/// 与前端 `roundPx` 相同的取整（.5 一律向 +∞，避免两端在半点上分叉）。
+fn round_px(v: f64) -> i32 {
+    (v + 0.5).floor() as i32
+}
+
+/// 翼片参数（物理像素）：(厚度, 平直主体长度, 单侧肩宽)。
+pub(crate) fn wing_metrics(scale: f64, thickness_css: u32, length_css: u32) -> (i32, i32, i32) {
+    let s = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let thickness = round_px(thickness_css as f64 * s).max(1);
+    let length = round_px(length_css as f64 * s).max(1);
+    // 肩宽至少 1px：为 0 时肩部退化成一竖直边，形状会重新变成圆角矩形
+    let shoulder = round_px(CAPSULE_SHOULDER_CSS as f64 * s).max(1);
+    (thickness, length, shoulder)
+}
+
+/// 肩部贝塞尔采样：主体端点 `(0, t)` → 贴边尖端 `(s, 0)`，含两端点。
+///
+/// 控制点取 `(k·s, t)` 与 `((1−tail)·s, 0)`：两端切线都严格水平，
+/// 与主体平边、与屏幕边缘都是 C1 相切（与前端 `shoulderCurve` 逐点一致）。
+fn shoulder_curve(s: f64, t: f64) -> Vec<(f64, f64)> {
+    let p0 = (0.0, t);
+    let p1 = (s * WING_CREST_RATIO, t);
+    let p2 = (s * (1.0 - WING_TAIL_RATIO), 0.0);
+    let p3 = (s, 0.0);
+    let mut pts = Vec::with_capacity(WING_SAMPLES + 1);
+    for i in 0..=WING_SAMPLES {
+        let u = i as f64 / WING_SAMPLES as f64;
+        let m = 1.0 - u;
+        let (a, b, c, d) = (m * m * m, 3.0 * m * m * u, 3.0 * m * u * u, u * u * u);
+        pts.push((
+            a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0,
+            a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1,
+        ));
+    }
+    pts
+}
+
+/// 边空间轮廓（u 沿边、v 由边缘向内），闭合多边形，不含重复的收尾点。
+/// 点序：左尖端 → 左肩（逆行）→ 主体 → 右肩 → 右尖端；首尾都落在 `v = 0`。
+fn edge_space_outline(l: f64, t: f64, s: f64) -> Vec<(f64, f64)> {
+    let half = l / 2.0;
+    let curve = shoulder_curve(s, t);
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(2 * curve.len() - 1);
+    for p in curve.iter().rev() {
+        pts.push((-half - p.0, p.1));
+    }
+    // i=0 是平直主体的另一端，不能跳过：跳过会让顶边变成一条斜弦
+    for p in curve.iter() {
+        pts.push((half + p.0, p.1));
+    }
+    pts
+}
+
+fn polygon_signed_area(pts: &[(f64, f64)]) -> f64 {
+    let n = pts.len();
+    let mut a = 0.0;
+    for i in 0..n {
+        let p = pts[i];
+        let q = pts[(i + 1) % n];
+        a += p.0 * q.1 - q.0 * p.1;
+    }
+    a / 2.0
+}
+
+/// 沿外法线整体外扩（与前端 `offsetPolygon` 同一算法、同一判据）。
+/// 平滑顶点走角平分线 + 斜接补偿；尖点（贴边收束处内角仅约 6°）改为**斜切**，
+/// 保证区域到轮廓的距离处处 ≤ delta。
+fn offset_polygon(pts: &[(f64, f64)], delta: f64) -> Vec<(f64, f64)> {
+    let n = pts.len();
+    if n < 3 || delta == 0.0 {
+        return pts.to_vec();
+    }
+    // y 向下：有向面积为正 → 内部在有向边的 (-dy,dx) 侧 → 外法线 = (dy,-dx)
+    let sign = if polygon_signed_area(pts) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let normal = |a: (f64, f64), b: (f64, f64)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+        (sign * dy / len, -sign * dx / len)
+    };
+    let mut out = Vec::with_capacity(n + 4);
+    for i in 0..n {
+        let p = pts[i];
+        let n1 = normal(pts[(i + n - 1) % n], p);
+        let n2 = normal(p, pts[(i + 1) % n]);
+        if n1.0 * n2.0 + n1.1 * n2.1 < 0.7 {
+            out.push((p.0 + n1.0 * delta, p.1 + n1.1 * delta));
+            out.push((p.0 + n2.0 * delta, p.1 + n2.1 * delta));
+            continue;
+        }
+        let (mut nx, mut ny) = (n1.0 + n2.0, n1.1 + n2.1);
+        let len = (nx * nx + ny * ny).sqrt().max(1e-9);
+        nx /= len;
+        ny /= len;
+        let cos = (n1.0 * nx + n1.1 * ny).max(0.5);
+        out.push((p.0 + nx * delta / cos, p.1 + ny * delta / cos));
+    }
+    out
+}
+
+/// 翼片轮廓（轨道**局部**坐标）：返回 `(外框宽, 外框高, 多边形点)`。
+/// `inflate` = 区域相对 CSS 轮廓的外扩（物理像素），见 `REGION_AA_INSET`。
+pub(crate) fn wing_outline(
+    edge: u8,
+    scale: f64,
+    thickness_css: u32,
+    length_css: u32,
+    inflate: f64,
+) -> (i32, i32, Vec<(f64, f64)>) {
+    let (t, l, sh) = wing_metrics(scale, thickness_css, length_css);
+    let vertical = edge <= 1;
+    let along = l + 2 * sh;
+    let (bw, bh) = if vertical { (t, along) } else { (along, t) };
+    let mut pts = edge_space_outline(l as f64, t as f64, sh as f64);
+    for p in pts.iter_mut() {
+        let (u, v) = (p.0, p.1);
+        *p = match edge {
+            0 => (v, bh as f64 / 2.0 + u),             // left  → 贴左缘，沿边向上
+            1 => (bw as f64 - v, bh as f64 / 2.0 + u), // right → 贴右缘
+            2 => (bw as f64 / 2.0 + u, v),             // top   → 贴上缘
+            _ => (bw as f64 / 2.0 + u, bh as f64 - v), // bottom→ 贴下缘
+        };
+    }
+    if inflate > 0.0 {
+        pts = offset_polygon(&pts, inflate);
+    }
+    (bw, bh, pts)
+}
+
+/// 胶囊区域集合：折叠态只有轨道；展开态 = 轨道 ∪ 面板（轨道为翼片多边形，
+/// 面板为圆角矩形，中间由 `gap` 分隔，**不连通**——间隙既不属于区域也不拦截鼠标）。
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CapsuleRegionSet {
+    /// 轨道外框（包围盒，供布局与日志使用；命中区见 `rail_polygon`）
     pub rail: CapsuleRegionRect,
+    /// 轨道多边形（窗口局部物理像素，已含 AA 外扩、已钳制进窗口）
+    pub rail_polygon: Vec<(i32, i32)>,
     pub panel: Option<CapsuleRegionRect>,
     /// 间隙中点：必须落在区域之外（回读验证用）。
     pub gap_probe: Option<(i32, i32)>,
+    /// 外框内、翼片轮廓之外的点：必须落在区域之外——用来证明区域真的是
+    /// 翼片形状，而不是「外框矩形」（那正是历史上白色大矩形的形态）。
+    pub notch_probe: Option<(i32, i32)>,
 }
 
 impl CapsuleRegionSet {
-    /// 联合区域包围盒（x, y, right, bottom）。
+    /// 联合区域包围盒（x, y, right, bottom）：由多边形实际点位求得。
     pub fn bounds(&self) -> (i32, i32, i32, i32) {
-        let (mut left, mut top) = (self.rail.x, self.rail.y);
-        let (mut right, mut bottom) = (
-            self.rail.x + self.rail.width,
-            self.rail.y + self.rail.height,
-        );
+        let mut left = i32::MAX;
+        let mut top = i32::MAX;
+        let mut right = i32::MIN;
+        let mut bottom = i32::MIN;
+        for &(x, y) in &self.rail_polygon {
+            left = left.min(x);
+            top = top.min(y);
+            right = right.max(x);
+            bottom = bottom.max(y);
+        }
+        if self.rail_polygon.is_empty() {
+            left = self.rail.x;
+            top = self.rail.y;
+            right = self.rail.x + self.rail.width;
+            bottom = self.rail.y + self.rail.height;
+        }
         if let Some(p) = self.panel {
             left = left.min(p.x);
             top = top.min(p.y);
@@ -630,8 +845,9 @@ impl CapsuleRegionSet {
 /// 胶囊区域几何（纯函数，跨平台可测）。
 ///
 /// 尺寸约定（与前端 CSS 对齐）：
-/// - Left / Right：**纵向**轨道，width = 厚度、height = 长度；轨道贴停靠边；
-/// - Top / Bottom：**横向**轨道，width = 长度、height = 厚度；
+/// - Left / Right：**纵向**轨道，width = 厚度、height = 主体长度 + 2×外扩；
+/// - Top / Bottom：**横向**轨道，width = 主体长度 + 2×外扩、height = 厚度；
+/// - 轨道贴停靠边齐平（外扩一侧压在屏幕边缘上，切线水平）；
 /// - 面板始终在轨道**内侧**（朝屏幕内部），与轨道同轴居中、间隔 `gap`。
 ///
 /// 物理像素按 DPI 换算。窗口尺寸不足以容纳面板时**放弃面板**（只保留轨道），
@@ -650,13 +866,17 @@ pub(crate) fn capsule_regions(
     if window_w <= 0 || window_h <= 0 {
         return None;
     }
-    let thickness = ((cap.thickness_css as f64) * scale).round() as i32;
-    let length = ((cap.length_css as f64) * scale).round() as i32;
+    // 退化防护必须在取整/钳制之前：0 厚度/长度不得被 `max(1)` 兜成 1px
+    if cap.thickness_css == 0 || cap.length_css == 0 {
+        return None;
+    }
+    let (thickness, length, shoulder) =
+        wing_metrics(scale, cap.thickness_css, cap.length_css);
     let panel_w = ((CAPSULE_PANEL_WIDTH_CSS as f64) * scale).round() as i32;
     let panel_h = ((CAPSULE_PANEL_HEIGHT_CSS as f64) * scale).round() as i32;
     let gap = ((CAPSULE_GAP_CSS as f64) * scale).round().max(1.0) as i32;
     // 与整窗口径一致：区域圆角比 CSS 小 2px，硬边落在透明像素上，
-    // 轨道/面板的可见圆角由 CSS 的抗锯齿弧线定义。
+    // 面板的可见圆角由 CSS 的抗锯齿弧线定义。
     let panel_radius =
         (((CAPSULE_PANEL_RADIUS_CSS as f64) * scale).floor() as i32 - REGION_AA_INSET).max(1);
     if thickness <= 0 || length <= 0 {
@@ -664,44 +884,75 @@ pub(crate) fn capsule_regions(
     }
     // 方向：0/1=left/right（纵） 2/3=top/bottom（横）
     let vertical = cap.edge <= 1;
-    let (width, height) = if vertical {
-        (thickness.min(window_w), length.min(window_h))
+    let along = length + 2 * shoulder;
+    let (box_w, box_h) = if vertical {
+        (thickness, along)
     } else {
-        (length.min(window_w), thickness.min(window_h))
+        (along, thickness)
     };
+    let width = box_w.min(window_w);
+    let height = box_h.min(window_h);
     if width <= 0 || height <= 0 {
         return None;
     }
-    // 轨道 CSS 圆角 = 厚度/2；区域同样内收 2px，让 CSS 的抗锯齿弧线成为可见外轮廓。
-    let radius = (width.min(height) / 2 - REGION_AA_INSET).max(1);
-    // 轨道贴停靠边（与旧实现相反：旧实现窗口滑出屏幕，露出的是对侧窄条；
-    // 新实现窗口齐平贴边、不再移动，轨道就在窗口的停靠侧）
+    // 轨道贴停靠边（窗口齐平贴边、不再移动，轨道就在窗口的停靠侧）
     let (x, y) = match cap.edge {
-        0 => (0, (window_h - height) / 2), // left  → 窗口左缘竖条
-        1 => (window_w - width, (window_h - height) / 2), // right → 窗口右缘竖条
-        2 => ((window_w - width) / 2, 0),  // top   → 窗口上缘横条
-        _ => ((window_w - width) / 2, window_h - height), // bottom→ 窗口下缘横条
+        0 => (0, (window_h - height) / 2), // left  → 窗口左缘
+        1 => (window_w - width, (window_h - height) / 2), // right → 窗口右缘
+        2 => ((window_w - width) / 2, 0),  // top   → 窗口上缘
+        _ => ((window_w - width) / 2, window_h - height), // bottom→ 窗口下缘
     };
     let rail = CapsuleRegionRect {
         x: x.clamp(0, window_w - width),
         y: y.clamp(0, window_h - height),
         width,
         height,
-        radius,
+        radius: 0, // 非矩形：真正的外形是多边形
+    };
+    // 多边形按**自然尺寸**生成后再平移、钳制进窗口：贴边侧的外扩必然越过窗口
+    // 边界，钳制结果与系统对区域做的窗口裁剪一致，前端命中判定用同一份点位。
+    let (_bw, _bh, local) = wing_outline(
+        cap.edge,
+        scale,
+        cap.thickness_css,
+        cap.length_css,
+        REGION_AA_INSET as f64,
+    );
+    let rail_polygon: Vec<(i32, i32)> = local
+        .iter()
+        .map(|&(px, py)| {
+            let gx = round_px(px + rail.x as f64);
+            let gy = round_px(py + rail.y as f64);
+            (gx.clamp(0, window_w), gy.clamp(0, window_h))
+        })
+        .collect();
+    // 外框内、轮廓外：沿边方向距中心 half + 3/4 肩宽处、厚度中点。
+    // 该处肩部曲线已落到约 0.17×厚度，因此厚度中点必然在翼片之外；
+    // 取 3/4（而不是 1/2）是为了留出 ≥16px 余量，区域外扩 2px 也不会碰到。
+    let half = length / 2;
+    let probe_along = half + shoulder * 3 / 4;
+    let notch_probe = if vertical {
+        Some((rail.x + thickness / 2, rail.y + height / 2 + probe_along))
+    } else {
+        Some((rail.x + width / 2 + probe_along, rail.y + thickness / 2))
     };
     if !cap.expanded {
         return Some(CapsuleRegionSet {
             rail,
+            rail_polygon,
             panel: None,
             gap_probe: None,
+            notch_probe,
         });
     }
     let (pw, ph) = (panel_w.min(window_w), panel_h.min(window_h));
     if pw <= 0 || ph <= 0 {
         return Some(CapsuleRegionSet {
             rail,
+            rail_polygon,
             panel: None,
             gap_probe: None,
+            notch_probe,
         });
     }
     let (px, py) = match cap.edge {
@@ -718,8 +969,10 @@ pub(crate) fn capsule_regions(
         );
         return Some(CapsuleRegionSet {
             rail,
+            rail_polygon,
             panel: None,
             gap_probe: None,
+            notch_probe,
         });
     }
     let panel = CapsuleRegionRect {
@@ -737,19 +990,22 @@ pub(crate) fn capsule_regions(
     };
     Some(CapsuleRegionSet {
         rail,
+        rail_polygon,
         panel: Some(panel),
         gap_probe,
+        notch_probe,
     })
 }
 
-/// 应用胶囊区域：折叠 = 轨道圆角矩形；展开 = 轨道 ∪ 面板（CombineRgn OR）。
+/// 应用胶囊区域：折叠 = 翼片多边形；展开 = 翼片 ∪ 面板（CombineRgn OR）。
 /// 区域外不绘制、不接收鼠标；DPI/尺寸变化由外层 apply 重算。
 /// 成功后用 GetWindowRgn **回读验证**：包围盒一致 + 轨道/面板中心在区域内 +
-/// 间隙中点在区域外——SetWindowRgn 返回成功不代表区域内容正确。
+/// 间隙中点在区域外 + 外框缺角在区域外——SetWindowRgn 返回成功不代表区域内容正确。
 #[cfg(windows)]
 fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParams) -> bool {
+    use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, RGN_ERROR, RGN_OR,
+        CombineRgn, CreatePolygonRgn, DeleteObject, SetWindowRgn, RGN_ERROR, RGN_OR, WINDING,
     };
 
     let Some(set) = capsule_regions(w, h, scale, &cap) else {
@@ -759,30 +1015,28 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
         );
         return false;
     };
-    let round = |r: &CapsuleRegionRect| unsafe {
-        // 右/下边界开区间，+1 覆盖最后一行像素（与整窗区域口径一致）
-        CreateRoundRectRgn(
-            r.x,
-            r.y,
-            r.x + r.width + 1,
-            r.y + r.height + 1,
-            r.radius * 2,
-            r.radius * 2,
-        )
-    };
+    let round =
+        |r: &CapsuleRegionRect| support_rect_rgn(r.x, r.y, r.width, r.height, r.radius as f64);
     let applied = unsafe {
-        let rgn = round(&set.rail);
+        let pts: Vec<POINT> = set
+            .rail_polygon
+            .iter()
+            .map(|&(x, y)| POINT { x, y })
+            .collect();
+        let rgn = CreatePolygonRgn(pts.as_ptr(), pts.len() as i32, WINDING);
         if rgn.is_null() {
             false
         } else {
             let mut ok = true;
             if let Some(p) = set.panel {
-                let pr = round(&p);
-                if pr.is_null() || CombineRgn(rgn, rgn, pr, RGN_OR) == RGN_ERROR {
-                    ok = false;
-                }
-                if !pr.is_null() {
-                    DeleteObject(pr as _);
+                match round(&p) {
+                    None => ok = false,
+                    Some(pr) => {
+                        if CombineRgn(rgn, rgn, pr, RGN_OR) == RGN_ERROR {
+                            ok = false;
+                        }
+                        DeleteObject(pr as _);
+                    }
                 }
             }
             if !ok {
@@ -806,6 +1060,7 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
         rail_y = set.rail.y,
         rail_w = set.rail.width,
         rail_h = set.rail.height,
+        rail_pts = set.rail_polygon.len(),
         panel = set.panel.is_some(),
         applied,
         verified,
@@ -852,6 +1107,10 @@ fn capsule_region_matches(hwnd: isize, expect: &CapsuleRegionSet) -> bool {
             if let Some((gx, gy)) = expect.gap_probe {
                 points_ok &= PtInRegion(rgn, gx, gy) == 0;
             }
+            // 缺角必须在区域外：证明裁的是翼片轮廓，不是外框矩形
+            if let Some((nx, ny)) = expect.notch_probe {
+                points_ok &= PtInRegion(rgn, nx, ny) == 0;
+            }
             bbox_ok && points_ok
         };
         DeleteObject(rgn as _);
@@ -860,9 +1119,9 @@ fn capsule_region_matches(hwnd: isize, expect: &CapsuleRegionSet) -> bool {
 }
 
 /// 读取窗口的**实际**区域并与期望几何比对。系统重置区域、窗口缩放后缓存未更新、
-/// 或区域被替换成直角矩形时都会返回 false。
+/// 或圆角区域被替换成直角矩形时都会返回 false。
 #[cfg(windows)]
-fn region_is_current(hwnd: isize, w: i32, h: i32, r: i32, rect: bool) -> bool {
+fn region_is_current(hwnd: isize, w: i32, h: i32, r: i32) -> bool {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::Graphics::Gdi::{
         CreateRectRgn, DeleteObject, GetRgnBox, GetWindowRgn, PtInRegion,
@@ -893,14 +1152,12 @@ fn region_is_current(hwnd: isize, w: i32, h: i32, r: i32, rect: bool) -> bool {
             && bounds.top >= -1
             && (bounds.right - (w + 1)).abs() <= 1
             && (bounds.bottom - (h + 1)).abs() <= 1;
-        // 区域被重置成直角矩形时 (1,1) 会在区域内；圆角区域必然裁掉它。
-        // 整窗矩形模式反过来要求四角都在区域内（未被任何圆角/区域裁掉）。
-        let radius_ok = if rect {
+        // 区域被重置成直角矩形时 (1,1) 会在区域内；圆角区域必然裁掉它，
+        // 而圆心 (r,r) 必须在区域内（确认不是把内容裁没了的退化区域）。
+        let radius_ok = if r <= 1 {
             PtInRegion(rgn, 1, 1) != 0
-                && PtInRegion(rgn, w - 2, 1) != 0
-                && PtInRegion(rgn, 1, h - 2) != 0
         } else {
-            r <= 1 || (PtInRegion(rgn, 1, 1) == 0 && PtInRegion(rgn, r, r) != 0)
+            PtInRegion(rgn, 1, 1) == 0 && PtInRegion(rgn, r, r) != 0
         };
         DeleteObject(rgn as _);
         bounds_ok && radius_ok
@@ -1055,72 +1312,29 @@ mod tests {
         assert_eq!(rounded_region_radius(18.0, 0.0), 18, "非法 DPI 回退 1");
     }
 
-    /// 命中判定必须与 CSS 圆角同一口径：角落方块内、圆心距 > r 的点透明。
-    /// 透明角一旦漏判，整窗矩形区域会多出四个可点击角。
+    /// 圆角区域必须逐行覆盖 CSS 实际着色像素（含极低 alpha 外沿），
+    /// 且不覆盖完全透明像素：否则要么切出 GDI 硬边，要么露出非激活态白底。
     #[test]
-    fn hit_test_excludes_only_transparent_corners() {
-        // 100%：18px 圆角，窗口 400x560
-        let (w, h, r) = (400, 560, 18);
-        assert!(!point_in_rounded_rect(0, 0, w, h, r), "角点本身必须穿透");
-        assert!(!point_in_rounded_rect(2, 2, w, h, r), "左上角外侧必须穿透");
-        assert!(
-            !point_in_rounded_rect(w - 3, 2, w, h, r),
-            "右上角外侧必须穿透"
-        );
-        assert!(
-            !point_in_rounded_rect(2, h - 3, w, h, r),
-            "左下角外侧必须穿透"
-        );
-        assert!(
-            !point_in_rounded_rect(w - 3, h - 3, w, h, r),
-            "右下角外侧必须穿透"
-        );
-        assert!(point_in_rounded_rect(r, r, w, h, r), "圆弧内侧必须命中");
-        assert!(point_in_rounded_rect(w - r - 1, r, w, h, r));
-        assert!(point_in_rounded_rect(w / 2, h / 2, w, h, r));
-        assert!(point_in_rounded_rect(2, h / 2, w, h, r), "直边中点保留");
-        assert!(!point_in_rounded_rect(-1, 0, w, h, r), "窗口外不命中");
-        assert!(!point_in_rounded_rect(w, 0, w, h, r), "右边界开区间");
-
-        // 125%：18px → 22.5 物理，向上取整后 23
-        let r125 = 23;
-        assert!(!point_in_rounded_rect(2, 2, 500, 700, r125));
-        assert!(point_in_rounded_rect(r125, r125, 500, 700, r125));
-        // 150%：20px → 30 物理
-        assert!(!point_in_rounded_rect(2, 2, 600, 840, 30));
-        assert!(point_in_rounded_rect(30, 30, 600, 840, 30));
-
-        // 直角窗口：全部保留；半径过大会钳制到短边一半，不越界
-        assert!(point_in_rounded_rect(0, 0, w, h, 0));
-        assert!(
-            !point_in_rounded_rect(0, 0, w, h, 10_000),
-            "半径钳制后角落仍透明"
-        );
-        assert!(point_in_rounded_rect(w / 2, h / 2, w, h, 10_000));
-    }
-
-    /// 整窗矩形模式必须记录命中状态；胶囊/弹窗路径必须清除，避免误穿透。
-    #[test]
-    fn hit_state_is_scoped_and_cleared() {
-        set_hit_state(
-            7,
-            Some(HitState {
-                rect_mode: true,
-                radius_phys: 23,
-                scale_milli: 1250,
-            }),
-        );
-        assert_eq!(
-            hit_state(7),
-            Some(HitState {
-                rect_mode: true,
-                radius_phys: 23,
-                scale_milli: 1250
-            })
-        );
-        set_hit_state(7, None);
-        assert_eq!(hit_state(7), None, "离开 CSS 轮廓模式必须清除");
-        assert_eq!(hit_state(8), None, "按 hwnd 隔离");
+    fn css_support_left_matches_real_aa_pixels() {
+        // 125% DPI、dream 18px → CSS 物理半径 22.5；真机首着色像素实测值
+        // （round3 / round4 截图逐行 profile）：15/13/11/9/7/3。
+        let r = 22.5;
+        let h = 560;
+        for (y, expect) in [(0, 15), (1, 13), (2, 11), (3, 9), (5, 7), (10, 3)] {
+            assert_eq!(css_support_left(y, h, r), expect, "top y={y}");
+            assert_eq!(
+                css_support_left(h - 1 - y, h, r),
+                expect,
+                "bottom mirror y={y}"
+            );
+        }
+        assert_eq!(css_support_left(100, h, r), 0, "直边中段必须全宽");
+        // 125% DPI、liquid 20px → 25 物理半径：切点第一像素 = 17。
+        assert_eq!(css_support_left(0, h, 25.0), 17);
+        // 100% DPI、18px：第一像素 = 12。
+        assert_eq!(css_support_left(0, h, 18.0), 12);
+        assert_eq!(css_support_left(0, h, 0.0), 0, "直角窗口全宽");
+        assert_eq!(css_support_left(0, 0, r), 0, "退化高度不越界");
     }
 
     #[test]
@@ -1131,7 +1345,6 @@ mod tests {
             height: 700,
             radius: 23,
             scale_milli: 1250,
-            rect: false,
         };
         assert_ne!(base, RegionStamp { hwnd: 2, ..base });
         assert_ne!(base, RegionStamp { width: 501, ..base });
@@ -1150,8 +1363,6 @@ mod tests {
                 ..base
             }
         );
-        // 圆角区域 ↔ 整窗矩形区域必须失效重设（两者形状完全不同）
-        assert_ne!(base, RegionStamp { rect: true, ..base });
     }
 
     fn stamp(hwnd: isize, w: u32, h: u32, r: u32, scale_milli: u32) -> RegionStamp {
@@ -1161,7 +1372,6 @@ mod tests {
             height: h,
             radius: r,
             scale_milli,
-            rect: false,
         }
     }
 
@@ -1260,55 +1470,177 @@ mod tests {
     const CAP: CapsuleParams = CapsuleParams {
         edge: 0,
         thickness_css: 56,
-        length_css: 300,
+        length_css: 224,
         expanded: false,
     };
-    /// 胶囊容器（前端在停靠时把窗口撑到该尺寸）：垂直停靠 400×420。
-    const CONTAINER_W: i32 = 400;
-    const CONTAINER_H: i32 = 420;
+    /// 胶囊容器（前端在停靠时把窗口撑到该尺寸）：垂直停靠 408×440。
+    const CONTAINER_W: i32 = 408;
+    const CONTAINER_H: i32 = 440;
+    /// 水平停靠容器：宽 408（面板宽 340 与轨道长 400 都放得下），高 56+12+440。
+    const CONTAINER_H_HORIZ: i32 = 508;
 
     #[test]
     fn capsule_contract_matches_frontend_constants() {
         // 跨端契约：与 src/lib/capsuleLayout.ts 同一组数字（两端各有单测）
         assert_eq!(CAP.thickness_css, 56);
-        assert_eq!(CAP.length_css, 300);
-        assert_eq!(CAPSULE_PANEL_WIDTH_CSS, 336);
-        assert_eq!(CAPSULE_PANEL_HEIGHT_CSS, 420);
-        assert_eq!(CAPSULE_GAP_CSS, 8);
+        assert_eq!(CAP.length_css, 224);
+        assert_eq!(CAPSULE_SHOULDER_CSS, 88);
+        assert_eq!(WING_SAMPLES, 18);
+        assert_eq!(CAPSULE_PANEL_WIDTH_CSS, 340);
+        assert_eq!(CAPSULE_PANEL_HEIGHT_CSS, 440);
+        assert_eq!(CAPSULE_GAP_CSS, 12);
+        assert_eq!(CAPSULE_PANEL_RADIUS_CSS, 24);
+    }
+
+    /// 射线法点内判定（与 `CreatePolygonRgn` 的填充语义一致，仅测试用）。
+    fn poly_contains(poly: &[(i32, i32)], px: i32, py: i32) -> bool {
+        let mut inside = false;
+        let n = poly.len();
+        for i in 0..n {
+            let a = poly[i];
+            let b = poly[(i + n - 1) % n];
+            if (a.1 > py) != (b.1 > py) {
+                let x = (b.0 - a.0) as f64 * (py - a.1) as f64 / (b.1 - a.1) as f64 + a.0 as f64;
+                if (px as f64) < x {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+
+    #[test]
+    fn wing_outline_golden_points_match_frontend() {
+        // 金标准点位（100%、bottom、inflate=0）：前端 capsuleShape.test.ts 断言同一组
+        // 数字。任何一侧改动采样段数/映射/参数都会让这里先红。
+        let (bw, bh, pts) = wing_outline(3, 1.0, 56, 224, 0.0);
+        assert_eq!((bw, bh), (400, 56), "外框 = 平直主体 224 + 两侧肩部 88");
+        assert_eq!(pts.len(), 38, "两侧各 19 个贝塞尔采样点（含端点）");
+        let at = |i: usize| (pts[i].0.round() as i32, pts[i].1.round() as i32);
+        // 贴边尖端：切线水平，落在下缘（局部 y = 高度）
+        assert_eq!(at(0), (0, 56));
+        assert_eq!(at(37), (400, 56));
+        // 肩部中段（v = 厚度/2）与接近贴边处
+        assert_eq!(at(9), (48, 28));
+        assert_eq!(at(13), (63, 11));
+        // 平直主体两端：顶边完整 224px
+        assert_eq!(at(18), (88, 0));
+        assert_eq!(at(19), (312, 0));
+        // 左右对称：镜像点逐点重合（浮点比较，容差 1e-9）
+        for i in 0..pts.len() {
+            let a = pts[i];
+            let b = pts[pts.len() - 1 - i];
+            assert!((a.0 - (bw as f64 - b.0)).abs() < 1e-9, "对称性在第 {i} 点破裂");
+            assert!((a.1 - b.1).abs() < 1e-9, "对称性在第 {i} 点破裂");
+        }
+    }
+
+    #[test]
+    fn wing_region_is_flush_not_bounding_box() {
+        // 折叠态：区域必须是翼片轮廓，而不是外框矩形——缺角探针在区域外。
+        let s = capsule_regions(CONTAINER_W, CONTAINER_H, 1.0, &CAP).unwrap();
+        let (nx, ny) = s.notch_probe.expect("应有缺角探针");
+        assert!(s.rail.contains(nx, ny), "缺角探针必须落在轨道外框内");
+        assert!(
+            !poly_contains(&s.rail_polygon, nx, ny),
+            "缺角必须落在翼片之外"
+        );
+        // 轨道中心（图标区）在区域内
+        let (cx, cy) = s.rail.center();
+        assert!(poly_contains(&s.rail_polygon, cx, cy));
+        // 贴边侧整条都是形状（与屏幕边缘齐平，无缝）：沿边中线附近逐点命中
+        for y in [s.rail.y + 2, 210, s.rail.y + s.rail.height - 2] {
+            assert!(poly_contains(&s.rail_polygon, 1, y), "flush x=1 y={y}");
+        }
     }
 
     #[test]
     fn capsule_rail_is_flush_to_dock_side_and_centered() {
-        // 100%：left → 轨道贴窗口左缘、垂直居中、56×300、全圆角 28
+        // 100%：left → 轨道贴窗口左缘、垂直居中、外框 56×400（主体 224 + 两侧肩部 88）
         let s = capsule_regions(CONTAINER_W, CONTAINER_H, 1.0, &CAP).unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            (0, (420 - 300) / 2, 56, 300)
+            (0, (440 - 400) / 2, 56, 400)
         );
-        assert_eq!(s.rail.radius, 26, "轨道区域半径比 CSS 28px 内收 2px");
         assert!(s.panel.is_none(), "折叠态不得包含面板区域");
-        assert_eq!(s.bounds(), (0, 60, 56, 360));
+        // 区域多边形含 2px AA 外扩：内侧与两端各多 2px，贴边侧被窗口裁掉
+        assert_eq!(s.bounds(), (0, 20, 58, 420));
 
         // right → 贴窗口右缘
-        let s = capsule_regions(400, 420, 1.0, &CapsuleParams { edge: 1, ..CAP }).unwrap();
-        assert_eq!((s.rail.x, s.rail.y), (400 - 56, 60));
-        // top → 贴窗口上缘的横向轨道 300×56
-        let s = capsule_regions(400, 484, 1.0, &CapsuleParams { edge: 2, ..CAP }).unwrap();
+        let s = capsule_regions(
+            CONTAINER_W,
+            CONTAINER_H,
+            1.0,
+            &CapsuleParams { edge: 1, ..CAP },
+        )
+        .unwrap();
+        assert_eq!((s.rail.x, s.rail.y), (408 - 56, 20));
+        // top → 贴窗口上缘的横向轨道 400×56（x 由容器宽度居中）
+        let s = capsule_regions(
+            CONTAINER_W,
+            CONTAINER_H_HORIZ,
+            1.0,
+            &CapsuleParams { edge: 2, ..CAP },
+        )
+        .unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            (50, 0, 300, 56)
+            ((408 - 400) / 2, 0, 400, 56)
         );
         // bottom → 贴窗口下缘
-        let s = capsule_regions(400, 484, 1.0, &CapsuleParams { edge: 3, ..CAP }).unwrap();
+        let s = capsule_regions(
+            CONTAINER_W,
+            CONTAINER_H_HORIZ,
+            1.0,
+            &CapsuleParams { edge: 3, ..CAP },
+        )
+        .unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            (50, 484 - 56, 300, 56)
+            ((408 - 400) / 2, 508 - 56, 400, 56)
         );
     }
 
     #[test]
+    fn wing_mirrors_across_four_edges() {
+        // 四边同一套形状：外框沿边尺寸相同、贴边侧坐标一致，只是朝向不同。
+        for (edge, expect_flush) in [(0u8, (0, 20)), (1, (408 - 56, 20))] {
+            let s = capsule_regions(
+                CONTAINER_W,
+                CONTAINER_H,
+                1.0,
+                &CapsuleParams { edge, ..CAP },
+            )
+            .unwrap();
+            assert_eq!((s.rail.x, s.rail.y), expect_flush, "edge={edge}");
+            assert_eq!((s.rail.width, s.rail.height), (56, 400), "edge={edge}");
+            let (nx, ny) = s.notch_probe.unwrap();
+            assert!(
+                !poly_contains(&s.rail_polygon, nx, ny),
+                "edge={edge} 缺角在外"
+            );
+        }
+        for (edge, expect_flush) in [(2u8, (4, 0)), (3, (4, 508 - 56))] {
+            let s = capsule_regions(
+                CONTAINER_W,
+                CONTAINER_H_HORIZ,
+                1.0,
+                &CapsuleParams { edge, ..CAP },
+            )
+            .unwrap();
+            assert_eq!((s.rail.x, s.rail.y), expect_flush, "edge={edge}");
+            assert_eq!((s.rail.width, s.rail.height), (400, 56), "edge={edge}");
+            let (nx, ny) = s.notch_probe.unwrap();
+            assert!(
+                !poly_contains(&s.rail_polygon, nx, ny),
+                "edge={edge} 缺角在外"
+            );
+        }
+    }
+
+    #[test]
     fn capsule_expanded_region_is_rail_or_panel_with_gap() {
-        // left 展开：面板在轨道内侧（右），同轴居中，间隙 8px
+        // left 展开：面板在轨道内侧（右），同轴居中，间隙 12px
         let s = capsule_regions(
             CONTAINER_W,
             CONTAINER_H,
@@ -1320,19 +1652,19 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.expect("展开态必须有面板区域");
-        assert_eq!((p.x, p.y, p.width, p.height), (56 + 8, 0, 336, 420));
-        assert_eq!(p.radius, 20, "面板区域半径比 CSS 22px 内收 2px");
+        assert_eq!((p.x, p.y, p.width, p.height), (56 + 12, 0, 340, 440));
+        assert_eq!(p.radius, 22, "面板区域半径比 CSS 24px 内收 2px");
         // 联合包围盒 = 整块容器
-        assert_eq!(s.bounds(), (0, 0, 400, 420));
-        // 间隙中点必须落在区域之外（两块矩形不连通）
+        assert_eq!(s.bounds(), (0, 0, 408, 440));
+        // 间隙中点必须落在区域之外（两块区域不连通）
         let (gx, gy) = s.gap_probe.expect("展开态应有间隙探针");
-        assert!(!s.rail.contains(gx, gy));
+        assert!(!poly_contains(&s.rail_polygon, gx, gy));
         assert!(!p.contains(gx, gy));
 
         // right 展开：面板在轨道左侧，同样不越界
         let s = capsule_regions(
-            400,
-            420,
+            CONTAINER_W,
+            CONTAINER_H,
             1.0,
             &CapsuleParams {
                 edge: 1,
@@ -1342,13 +1674,13 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.unwrap();
-        assert_eq!((p.x, p.width), (0, 336));
-        assert_eq!(s.rail.x, 400 - 56);
+        assert_eq!((p.x, p.width), (0, 340));
+        assert_eq!(s.rail.x, 408 - 56);
 
         // top 展开：面板在轨道下方
         let s = capsule_regions(
-            400,
-            484,
+            CONTAINER_W,
+            CONTAINER_H_HORIZ,
             1.0,
             &CapsuleParams {
                 edge: 2,
@@ -1358,12 +1690,12 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.unwrap();
-        assert_eq!((p.x, p.y, p.width, p.height), (32, 56 + 8, 336, 420));
+        assert_eq!((p.x, p.y, p.width, p.height), (34, 56 + 12, 340, 440));
 
         // bottom 展开：面板在轨道上方
         let s = capsule_regions(
-            400,
-            484,
+            CONTAINER_W,
+            CONTAINER_H_HORIZ,
             1.0,
             &CapsuleParams {
                 edge: 3,
@@ -1373,15 +1705,18 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.unwrap();
-        assert_eq!((p.x, p.y), (32, 484 - 56 - 8 - 420));
+        assert_eq!((p.x, p.y), (34, 508 - 56 - 12 - 440));
     }
 
     #[test]
     fn capsule_region_scales_with_dpi() {
-        for (scale, t, l) in [(1.0f64, 56i32, 300i32), (1.25, 70, 375), (1.5, 84, 450)] {
+        // 厚度 56→70→84；沿边外框 = 主体 + 2×外扩（16→20→24）
+        for (scale, t, along) in [(1.0f64, 56i32, 400i32), (1.25, 70, 500), (1.5, 84, 600)] {
             let s = capsule_regions(2000, 2000, scale, &CAP).unwrap();
-            assert_eq!((s.rail.width, s.rail.height), (t, l));
-            assert_eq!(s.rail.radius, t / 2 - REGION_AA_INSET);
+            assert_eq!((s.rail.width, s.rail.height), (t, along), "scale={scale}");
+            // 缺角探针在任何 DPI 下都必须落在翼片之外
+            let (nx, ny) = s.notch_probe.unwrap();
+            assert!(!poly_contains(&s.rail_polygon, nx, ny), "scale={scale}");
         }
     }
 
@@ -1480,35 +1815,29 @@ mod tests {
             assert!(!hwnd.is_null(), "CreateWindowExW 失败");
 
             // 真实 Win32 窗口上逐边应用「折叠 / 展开」区域并回读验证：
-            // 折叠 = 单块圆角矩形；展开 = 轨道 ∪ 面板（CombineRgn OR），
-            // 包围盒、两块中心与间隙中点都必须与几何一致。
+            // 折叠 = 单块翼片多边形；展开 = 轨道 ∪ 面板（CombineRgn OR），
+            // 包围盒、两块中心、间隙中点、外框缺角都必须与几何一致。
             let apply_region = |edge: u8, expanded: bool| -> CapsuleRegionSet {
-                // 容器取 400×484（水平停靠所需高度），四边都能放下轨道与面板
+                use windows_sys::Win32::Foundation::POINT;
+                use windows_sys::Win32::Graphics::Gdi::{CreatePolygonRgn, WINDING};
+                // 容器取 408×508（水平停靠所需高度），四边都能放下轨道与面板
                 let cap = CapsuleParams {
                     edge,
                     expanded,
                     ..CAP
                 };
-                let set = capsule_regions(400, 484, 1.0, &cap).unwrap();
-                let rgn = CreateRoundRectRgn(
-                    set.rail.x,
-                    set.rail.y,
-                    set.rail.x + set.rail.width + 1,
-                    set.rail.y + set.rail.height + 1,
-                    set.rail.radius * 2,
-                    set.rail.radius * 2,
-                );
+                let set = capsule_regions(408, 508, 1.0, &cap).unwrap();
+                let pts: Vec<POINT> = set
+                    .rail_polygon
+                    .iter()
+                    .map(|&(x, y)| POINT { x, y })
+                    .collect();
+                let rgn = CreatePolygonRgn(pts.as_ptr(), pts.len() as i32, WINDING);
                 assert!(!rgn.is_null());
                 if let Some(p) = set.panel {
-                    let pr = CreateRoundRectRgn(
-                        p.x,
-                        p.y,
-                        p.x + p.width + 1,
-                        p.y + p.height + 1,
-                        p.radius * 2,
-                        p.radius * 2,
-                    );
-                    assert!(!pr.is_null());
+                    // 与生产路径一致：面板圆角用逐行像素支撑区域（不是 GDI 硬边椭圆）
+                    let pr = support_rect_rgn(p.x, p.y, p.width, p.height, p.radius as f64)
+                        .expect("面板支撑区域");
                     assert_ne!(
                         windows_sys::Win32::Graphics::Gdi::CombineRgn(
                             rgn,
@@ -1528,15 +1857,15 @@ mod tests {
                 set
             };
 
-            // 四边折叠：只有轨道，尺寸随方向变化
+            // 四边折叠：只有轨道，外框尺寸随方向变化（主体 224 + 两侧肩部 88）
             let left = apply_region(0, false);
-            assert_eq!((left.rail.width, left.rail.height), (56, 300));
+            assert_eq!((left.rail.width, left.rail.height), (56, 400));
             assert!(left.panel.is_none());
             let top = apply_region(2, false);
             assert_eq!(
                 (top.rail.width, top.rail.height),
-                (300, 56),
-                "顶边必须横向 300×56"
+                (400, 56),
+                "顶边必须横向 400×56"
             );
 
             // 四边展开：轨道 + 面板联合区域，间隙处不连通

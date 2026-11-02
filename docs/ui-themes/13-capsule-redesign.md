@@ -23,28 +23,31 @@ v0.7 的核心决定：**停靠期间窗口不移动、不缩放**，唯一的�
 Win32 区域（`SetWindowRgn`）在「轨道」与「轨道 ∪ 面板」之间切换。
 
 ```
-停靠（左缘）时窗口布局（CSS px，窗口 400×420 或 400×484）
+停靠（左缘）时窗口布局（CSS px，窗口 408×440 或 508×440）
 ┌──────────────────────────── 窗口（贴边齐平，位置固定） ────────────────────────────┐
-│ ┌──────┐   ┌──────────────────────────────┐                                        │
-│ │ 轨道 │ 8 │          功能面板            │   ← 区域外不绘制、不接收鼠标            │
-│ │56×300│px │          336×420             │                                        │
-│ └──────┘   └──────────────────────────────┘                                        │
+│ ┌──────┐    ┌──────────────────────────────┐                                       │
+│ │ 轨道 │ 12 │          功能面板            │   ← 区域外不绘制、不接收鼠标           │
+│ │56×400│ px │          340×440             │                                       │
+│ └──────┘    └──────────────────────────────┘                                       │
 └────────────────────────────────────────────────────────────────────────────────────┘
-折叠态区域 = 轨道圆角矩形；展开态区域 = 轨道 ∪ 面板（两块矩形，间隙不连通）
+轨道外框 400 = 平直主体 224 + 两侧液态肩部各 88；
+折叠态区域 = 翼片多边形；展开态区域 = 翼片 ∪ 面板（间隙不连通）
 ```
 
 - **轨道**永远贴停靠边（left→左、right→右、top→上、bottom→下），**面板**永远朝
-  屏幕内部展开；二者同轴居中，间隙 8px。
-- 区域由 `capsule_regions()`（Rust，纯函数）计算，`CombineRgn(RGN_OR)` 合并；
-  应用后用 `GetWindowRgn` 回读验证：包围盒一致 + 轨道/面板中心在区域内 +
-  间隙中点在区域外。验证失败视为未应用，前端记录并保持原状态。
-- **区域半径比 CSS 圆角小 2 物理像素**（`REGION_AA_INSET`）：`SetWindowRgn` 是
-  二值裁剪、没有抗锯齿；区域与 CSS 半径相等时 GDI 硬边会切进 WebView 的平滑弧线，
-  形成第二圈阶梯状轮廓。收紧后区域是 CSS 圆角的透明超集，可见外轮廓只由 CSS
-  抗锯齿弧线定义，主题色一直覆盖到该弧线；代价是四角 ≤2px 透明命中区。
-  该内收**只用于胶囊/弹窗**：主窗已改为整窗矩形区域 + CSS 轮廓（见
-  [03-window-composition.md](03-window-composition.md) §3.1），两者几何互不影响。
-- 窗口尺寸在停靠时**归一**为「胶囊容器」（垂直 400×420、水平 400×484）；
+  屏幕内部展开；二者同轴居中，间隙 12px（效果图里是**真实负空间**：翼片内侧高光 →
+  接触暗部 → 桌面 → 面板外缘高光，不是实心桥接）。
+- 区域由 `capsule_regions()`（Rust，纯函数）计算：轨道是**多边形**（`CreatePolygonRgn`），
+  面板用**逐行像素支撑形状**（`support_rect_rgn()`，与主窗圆角同一策略：
+  每行按 CSS 圆弧的解析解取覆盖矩形再并集），`CombineRgn(RGN_OR)` 合并；
+  应用后用 `GetWindowRgn` 回读验证：
+  包围盒一致 + 轨道/面板中心在区域内 + 间隙中点在区域外 + **外框缺角在区域外**
+  （后者证明裁的是翼片轮廓而不是外框矩形）。验证失败视为未应用，前端记录并保持原状态。
+- **区域相对 CSS 轮廓外扩 2 物理像素**（`REGION_AA_INSET`）：`SetWindowRgn` 是
+  二值裁剪、没有抗锯齿；区域与 CSS 轮廓重合时 GDI 硬边会切进 WebView 的平滑弧线，
+  形成第二圈阶梯状轮廓。外扩后区域是 CSS 可见像素的**超集**，可见外轮廓只由 CSS
+  曲线定义；代价是轮廓外 ≤2px 的透明命中带。
+- 窗口尺寸在停靠时**归一**为「胶囊容器」（垂直 408×440、水平 508×440）；
   大于容器时也收拢（例如 Windows Aero Snap 先把窗口吸成 1280×690），
   避免停靠期留下尺寸异常的大窗口。解除吸附时恢复当前模式尺寸（`apply_mode`）。
   停靠期间 `window_rect` 不落库。
@@ -76,7 +79,94 @@ Win32 区域（`SetWindowRgn`）在「轨道」与「轨道 ∪ 面板」之间�
 展开只是把一块新的矩形并进区域。没有任何"窗口追上鼠标"的时序问题，
 也不需要靠延迟去掩盖命中区错误。
 
+## 二·五、液态融合翼片几何（2026-11-01 方案 B；2026-11-02 高保真修正）
+
+轨道不再是「四周圆角的独立悬浮条」，而是**贴边一侧与屏幕边缘齐平、两侧经单段
+三次贝塞尔肩部平滑隆起**的翼片。几何唯一定义在 `src/lib/capsuleShape.ts`，Rust
+`window_shape::wing_outline` 是同一算法的镜像实现。
+
+> **2026-11-02 更正**：方案 B 首版用「四分之一椭圆外扩（26×18）+ 垂直直壁 +
+> 26px 内侧圆角」。真机截图与 `停靠效果图.png` 对照后确认这就是「圆角长条」观感
+> 的直接来源——直壁是肉眼可识别的竖直长边，两端只是两个小外扩。现已改为单段
+> 贝塞尔肩部，参数由效果图像素拟合得到（见下）。
+
+### 参数（CSS px，两端常量同名）
+
+| 参数 | 值 | 说明 |
+|---|---|---|
+| 厚度 `WING_THICKNESS_CSS` | 56 | 垂直停靠为宽、水平停靠为高 |
+| 平直主体 `WING_LENGTH_CSS` | 224 | 两侧肩部之间的平直段 |
+| 单侧肩宽 `WING_SHOULDER_CSS` | 88 | 厚度的 **1.57 倍**（像素实测值） |
+| 肩部起点控制柄 `WING_CREST_RATIO` | 0.435 | 占肩宽比例，拟合值 |
+| 肩部终点控制柄 `WING_TAIL_RATIO` | 0.565 | 占肩宽比例，拟合值 |
+| 采样段数 | 18（每肩） | 两端必须相同 |
+| 区域外扩 `WING_AA_INSET` | 2（物理 px） | 见 §二 |
+
+外框沿边尺寸 = 224 + 2×88 = **400**（面板 340×440，间隙 12，容器 408×440 / 508×440；
+400 < 440，翼片两端与窗口上下各留 20px 余量，四边都不裁切）。
+
+**比例是量出来的，不是估的**：`停靠效果图.png` 的「胶囊形态与规格」图给出
+300–420px × 56px 的标注，按像素量得肩宽 47px、厚 30px（比值 1.57）；对同一段
+轮廓做最小二乘拟合得到两个控制柄比例，56px 厚下 RMS 残差 1.32px。
+旧版 26px（0.46 倍）正是「短、圆、陡」的来源。
+
+### 边空间定义
+
+用「边空间」描述：`u` 沿屏幕边缘（中线为 0）、`v` 由边缘指向屏幕内部。四边只换
+映射、不换形状：
+
+```
+ v=T        ┌──────────── 平直主体 224 ────────────┐
+            ╱                                      ╲
+           ╱  单段三次贝塞尔：两端切线都水平        ╲
+ v=0  ────╯                                          ╰────   ← 屏幕边缘
+      u=-200                                       u=+200
+```
+
+三条不可妥协的性质，也是「液态融合」与「圆角胶囊靠近边缘」的区别：
+
+1. **贴边切线水平**：肩部在 `v=0` 处的切线平行于屏幕边缘，翼片是从边缘
+   「长出来」的，因此不会在边缘处留下直角、缝隙或悬浮间隔；
+2. **无直壁、无 90° 拐角**：整条轮廓只有一段贝塞尔 + 两条直线（平直主体与贴边
+   基线），最陡采样段约 60°（单测锁定 < 65°），曲率符号在肩部中段翻转一次；
+3. **肩部不吃操作区**：按钮命中区 36px，内容组 240px 居中后落在 ±120，
+   仍在「肩部厚度 ≥ 36px」的范围（±121）内——端点按钮不会被曲线切到。
+
+### 为什么两端都用采样折线而不是 `C` 弧命令
+
+GDI 区域只能是整数多边形。若 SVG 用曲线命令、Rust 用折线，两者必然有亚像素偏差；
+这里让**两端都从同一个采样函数取点**（同样的 18 段、同样的 `floor(x+0.5)` 取整），
+于是「CSS 可见轮廓 = Win32 区域」是构造性成立的，而不是靠容差凑。
+18 段/肩部的弦长 ≈ 3.3px、弦高误差 < 0.05px，与抗锯齿曲线无法区分。
+
+外扩时平滑顶点走角平分线 + 斜接补偿，**尖点用斜切**（两个偏移点）：肩部贴边尖端
+的内角极小，斜接会把区域顶出 delta 的十倍以上，斜切则保证「区域到轮廓的距离
+处处 ≤ 2px」，与 AA 外扩的语义一致。
+
+### 命中判定
+
+`pointInCapsule()` 对轨道用**轮廓多边形**（已含 2px 外扩、已钳制进窗口），
+面板用**圆角矩形**（半径 24，物理值 = floor(24×scale)−2，与原生区域同源），
+再用 12px 容差覆盖间隙。外框的四个「缺角」是桌面，不能算作胶囊——
+否则光标停在翼片端头的桌面上时，自动收起永远不触发。
+
+### 表面材质（2026-11-02 重做）
+
+四层同轮廓填充，方向按停靠边换算，四边共用一套语义 Token：
+
+| 层 | 作用 | Token |
+|---|---|---|
+| `cap-wing-face` | 跨厚度三段冷蓝白基底（near→mid→far） | `--wing-near/mid/far` |
+| `cap-wing-shade` | 贴边一侧窄暗部（环境遮蔽） | `--wing-shade` |
+| `cap-wing-haze` | 中部环境色反射（accent 径向） | `--wing-haze` |
+| `cap-wing-spec` | 内侧高光带（沿 v 自然淡出到尖端） | `--wing-spec` |
+| `cap-wing-rim` | 沿边渐变的轮廓高光（贴边段不画） | `--wing-rim-a/b` |
+
+**没有整圈描边**：旧版 `stroke: 1px` 的蓝紫环读起来就是普通 UI border。透明感由
+「稳定实色 + 分层高光」制造，不靠降低 alpha（降低 alpha 会让胶囊在深色桌面消失）。
+
 ## 三、状态机
+
 
 相位定义（`src/lib/edgeSnap.ts`）：
 
@@ -127,26 +217,40 @@ docked-revealed → docked-hidden | docked-visible | free
   （store 立即生效、相位要等 Win32 区域写回），会产生「相位已展开、分类为空」的中间帧。
 - **Esc**：胶囊外壳以最低优先级（`kind: "drawer"`）注册到弹层栈，一次 Esc 只收面板，
   不会把窗口藏进托盘。
-- **自动收起**：光标离开「可见区域 ∪ 8px」持续 450ms 后收起（不是隐藏窗口）。
-  判定用**可见区域**（折叠只有轨道），不是窗口矩形——否则 400×420 的窗口会让
-  自动收起永不触发。间隙由 8px 容差覆盖，鼠标从轨道移到面板不算离开。
+- **自动收起**：光标离开「可见区域 ∪ 12px」持续 450ms 后收起（不是隐藏窗口）。
+  判定用**可见区域**（折叠只有轨道），不是窗口矩形——否则 408×440 的窗口会让
+  自动收起永不触发。间隙由 12px 容差覆盖，鼠标从轨道移到面板不算离开。
 - **不做悬停自动展开**：轨道本身就是可点击控件，悬停展开只会制造"反复展开/收起"。
-- **拖离解除**：胶囊空白处可拖动（`data-tauri-drag-region`），偏离停靠位 >24px
-  或离开磁吸区（>42px）即解除：清区域 → 恢复模式尺寸 → 收回工作区 → 清持久化。
+- **拖离解除**：胶囊空白处可拖动（`data-tauri-drag-region`），**沿法向**偏离停靠位
+  >24 CSS px（`SNAP_UNDOCK_DRAG_PX`）即解除：清区域 → 恢复模式尺寸 → 收回工作区 → 清持久化。
+  解除同时请求**鼠标锚定**——恢复后的普通窗口以「标题栏中心 = 光标」出现，
+  用户无需松手重抓标题栏（机制与边界取舍见 §12.5a）。
+  判定只看停靠边法向分量：沿边滑动 200px 也不会误解除（旧实现用「两轴绝对值 >24px」，
+  沿边拖动会误判）。
 - **托盘/快捷键唤回**：`snap-recall` → 展开功能面板（窗口始终可见，无需"找回"）。
 - **吸附反馈**：拖拽阶段有光晕 + 高亮细线 + 「松开吸附到 X 侧」；停靠完成时轨道
   播放一次 0.34s 的轻微缩放脉冲（只播一次，不循环）。
 
 ## 六、视觉规范
 
-- 轨道与面板是两块独立的圆角玻璃卡片：轨道全圆角（28px），面板 22px；
-  背景用 `--capsule-face`（预设 × 明暗对应的**不透明**窗口底色）打底，
-  `--card-face` 玻璃渐变叠在其上；边框 `--border-subtle`、内高光用 `--c-paper`
-  低透明度，阴影 `--shadow-raised`。
+- 轨道是**翼片表面**（`CapsuleWing` 的 SVG，见 §二·五），面板是圆角玻璃卡片（24px，
+  与 `PANEL_RADIUS_CSS` / Rust `CAPSULE_PANEL_RADIUS_CSS` 同源）。
+  2026-11-02：面板改为与翼片同一套冷蓝玻璃（`--wing-panel-base` + `--wing-panel-face`
+  + `--wing-panel-border`），不再是白卡片 + `--card-face`。
+  两层结构：
+  1. `cap-wing-face`：`--capsule-face`（预设 × 明暗对应的**不透明**底色）打底；
+  2. `cap-wing-sheen`：自上而下的玻璃光泽，只用 `--c-paper` 的中性明暗；
+  3. `cap-wing-rim`：**不闭合**描边（`--c-paper` → `--c-accent` 渐变）——
+     贴边那一段刻意不描，否则会在屏幕边缘画出一条 1px 亮线。
   **根窗口透明不等于胶囊透明**：停靠期根容器必须透明（区域外不能绘制），
   `--card-face` 只是叠在窗口底色上的半透明渐变（深色预设仅 7.5% 白），
   只写它会让胶囊在深色桌面上「整个消失」。`styles-themes.test.ts` 守卫
   `--capsule-face` 在四个上下文里不含 alpha。
+- 轨道容器上**不得**再写 `background` / `border` / `box-shadow` / `border-radius`：
+  任何一条都会沿外框画出一整块矩形（历史回归路径）。立体感只由光泽与描边承担；
+  不使用 `filter: drop-shadow`——SVG 视口会把它裁成直角切口，反而露出矩形痕迹。
+- 光泽强度用 `--wing-sheen-*` / `--wing-rim-*` 两个主题变量组（浅色 0.58/0.2/0.04，
+  深色 0.16/0.06/0.02），悬停只改合成层不透明度（0.85 → 1），不跑滤镜动画。
 - 强调色（蓝紫 `--accent` / `--accent-gradient`）只出现在：Agent 状态球、
   选中分类的背景提亮、徽标、链接按钮。**不做常驻外发光**。
 - 选中态用「背景提亮 + 1px 内描边 + 图标变色」，不用竖线 + 双圆弧。
@@ -155,6 +259,39 @@ docked-revealed → docked-hidden | docked-visible | free
   应用图标头像在深色下单独调整对比度。
 - 动效：面板入场 0.16s 淡入 + 2px 位移；吸附脉冲 0.34s 单次；
   全局 `prefers-reduced-motion` 规则会把动画时长压到 0.01ms。
+
+## 六·五、四面板统一视觉基元（2026-11-02 高保真）
+
+四张效果图（`停靠效果图/01-tasks.png` … `04-apps.png`）是同一套语言的四个实例，
+因此四个面板共用 `src/components/capsule/PanelKit.tsx` 的基元，而不是各写一套：
+
+| 基元 | 类名 | 用途 |
+| --- | --- | --- |
+| `PanelHead` | `.cap-head` / `.cap-title`(19px) / `.cap-sub` / `.cap-actions` / `.cap-iconbtn` | 标题 + 一句说明 + 右侧 1–2 颗**可用**按钮 |
+| `Segmented` | `.cap-seg` / `.cap-seg-btn`（`role=tablist` + `aria-selected`） | 分类/类型筛选，全部本地过滤 |
+| 卡片 | `.cap-item` / `.cap-tile` / `.cap-item-title` / `.cap-item-sub` / `.cap-tag` / `.cap-pill` / `.cap-state` | 列表行与状态胶囊（状态**必须带文字**） |
+| `EmptyState` | `.cap-empty` | 空态：一句说明 + 一个真实动作 |
+| 底栏 | `.cap-foot` / `.cap-progress` / `.cap-link` | 计数 + 进度 + 去完整页 |
+
+数据来源（全部是既有 store / 既有 IPC，没有第二套状态源）：
+
+- **任务** `TasksLite`：一次 `list_tasks({view:"all", status:"all", sort:"due"})`，
+  五个分段（全部/待办/今日/日程/已完成）在本地切分；完成走 `useTasksStore.toggle`，
+  失败回滚并重拉，成功先给 320ms 勾选反馈再移出。
+- **Agent** `AgentsLite`：`useAgentsStore.snapshot` 派生 `liveRuns` / `liveSummary`，
+  按 failed → waiting → running → disconnected 排序；会话数/运行数/时间全部来自快照，
+  不写死名称、不伪造进度；每个 Agent 只有「打开会话」「查看」两个真实动作。
+- **剪贴板** `ClipboardLite`：`clipboard_view({limit:20})`；复制不写回历史、不刷新顺序，
+  失败不显示「已复制」；截图组用三张叠放封面（`clipboardGroup` 最多 2 组）。
+- **应用** `AppsLite`：`useNavigationStore.targets`（用户已配置目标），4 列网格最多 7 个 +
+  「添加」；搜索是本地过滤；`navNavigate` 的 `success/actual_action/fallback_used/reason`
+  逐项映射为提示，不把失败说成已启动。
+
+图标：任务=清单、Agent=机器人、剪贴板=剪贴板、应用=四宫格、总状态=蓝紫主按钮（Sparkles）、
+收起=朝屏幕边缘的箭头，全部取自 Lucide，尺寸 15–18 / stroke 1.7–2。
+
+**总状态球的语义色只做外圈环**：球体恒为蓝紫渐变（效果图口径，也是品牌锚点），
+waiting/failed/disconnected 用 2px 环 + 徽标表达，避免整颗球变橙把品牌色让位给告警色。
 
 ## 七、性能与资源
 
@@ -182,10 +319,243 @@ docked-revealed → docked-hidden | docked-visible | free
 
 ## 九、验证
 
-- 纯函数：`src/lib/capsuleLayout.test.ts`、`src/components/capsule/format.test.ts`。
+- 纯函数几何：`src/lib/capsuleShape.test.ts`（金标准点位、四边镜像、贴边切线、
+  外扩单调性、SVG 路径闭合规则）与 `src/lib/capsuleLayout.test.ts`
+  （容器/摆放/可见区域/命中判定）、`src/components/capsule/format.test.ts`。
 - 组件：`src/components/capsule/CapsuleDock.test.tsx`、`src/components/SnapOverlay.test.tsx`。
 - 引擎集成（mock Tauri）：`src/hooks/useEdgeSnap.integration.test.tsx`，
   含"展开/收起不移动窗口"的回归断言。
-- Win32 区域：`src-tauri/src/window_shape.rs` 的 `capsule_region_*` 单测 +
-  真实（不可见）Win32 窗口上的 SetWindowRgn/CombineRgn 回读验证。
+- Win32 区域：`src-tauri/src/window_shape.rs` 的 `capsule_*` / `wing_*` 单测
+  （含与前端同一组金标准点位、四边镜像、DPI 125/150%、缺角探针）+
+  真实（不可见）Win32 窗口上的 `CreatePolygonRgn` → `GetWindowRgn` 回读验证。
 - 真机（可见窗口、多显示器、DPI、吸附手感）**未执行**，见验收报告"未验证项"。
+  2026-11-01 补充：四边停靠、明暗、玻璃、展开、解除与区域回读已在 125% DPI 真机执行，
+  证据见 `tmp/acceptance/capsule-visibility-fix/` 与
+  `tmp/acceptance/capsule-native-composition/`；多显示器与 Win10 仍未覆盖。
+  2026-11-01（方案 B 翼片）真机结果见 `tmp/acceptance/liquid-edge-wing/report.md`。
+  2026-11-02 补充：停靠态「只露出翼片轨道、其余区域透出真实桌面」已在 125% DPI 单显示器
+  真机复验（四边 + 明暗 × 材质矩阵 + 白/黑/灰/棋盘外部底色 + 真实鼠标拖离与重新吸附 +
+  12 轮展开/收起无残留），结论与未覆盖项见 `tmp/acceptance/capsule-docking/report.md`；
+  多显示器热插拔与其他 DPI（100%/150%）仍未覆盖。
+
+## 十、停靠态原生合成策略（2026-11-01 修复）
+
+**真机证据**（`tmp/acceptance/capsule-native-composition/`，Windows 11 23H2、125% DPI）：
+强制 `TASK_DOCK_GLASS_BACKEND=mica`（或 `acrylic`）时，`GetWindowRgn` 回读只有轨道
+（`bounds=62,535,437,605`），但屏幕上出现**整个 500×605 胶囊容器矩形**的原生底色：
+浅色下近似白色、深色下近似黑色，区域外的桌面只能部分透出。Solid / `css` 后端无此现象。
+原因与主窗圆角暗楔同源（[03-window-composition.md](03-window-composition.md) §3.0）：
+**DWM 的 Mica / Acrylic SystemBackdrop 按整个窗口矩形绘制，`SetWindowRgn` 约束不到它**。
+
+因此「胶囊停靠态」是一条**独立的合成策略**，与普通主窗材质无关：
+
+| 状态 | 原生背景 | 玻璃来源 | 说明 |
+|---|---|---|---|
+| 普通主窗（未停靠） | 按设置（css / mica / acrylic / blur） | 原生或 CSS | 行为不变 |
+| 胶囊停靠（rail / panel） | **一律停用**（清除 Mica/Acrylic/blur） | 仅 CSS（`--capsule-face` + `--card-face`） | 原生背景会越过区域，必须停用 |
+| 解除吸附（区域恢复整窗后） | 按「未停靠时应生效」记录的效果恢复 | 原生或 CSS | 区域写失败则不恢复 |
+
+实现（`src-tauri/src/commands/system.rs`）：
+
+- `NATIVE_DESIRE` 记录每个 hwnd「未停靠时应生效」的原生效果；
+  `NATIVE_SUSPENDED` 记录因胶囊被临时停用的窗口；`CAPSULE_OWNER` 记录胶囊归属 hwnd。
+- `apply_window_capsule`：进入 rail/panel 前先 `suspend_native_backdrop`（清原生层），
+  再写区域；`off` 且区域**确实恢复整窗**（`applied=true`）后才
+  `restore_native_backdrop`。区域写失败时保持停用——否则原生底色会立刻画到仍是
+  胶囊形状的窗口矩形之外。
+- `apply_material_to_window`：停靠期间请求 glass 只记录期望效果并保持 CSS 玻璃，
+  返回 `effect="css"`；不会在停靠期重新挂上原生层。未停靠时行为与原来完全一致
+  （含 Win11+区域裁剪默认 `css`、Win10 `acrylic`、显式后端矩阵）。
+- 停靠期间切换材质（托盘菜单 / 设置 / 系统偏好）同样受该守卫保护；
+  解除吸附后按最新期望恢复。
+- 不新建窗口、不改系统级 DWM 设置，也不需要修改 `window_shape.rs` 的区域逻辑。
+
+残余风险：若 `clear_mica/clear_acrylic/clear_blur` 全部失败（极旧系统或远程桌面），
+胶囊容器矩形仍可能出现原生底色；代码会记录 `warn` 并继续（胶囊自身仍可见）。
+
+## 十一、启动停靠恢复：先裁空白再显示（2026-11-02）
+
+**问题**：`setup` 里 `win.show()` 立即执行，而停靠恢复要等 webview 加载 → 设置加载
+→ `get_snap_state` → 150ms tick → `setSize` / `setPosition` / `apply_window_capsule`
+三次 IPC。这段时间窗口是**完整主界面**，Win32 区域也还是整窗圆角区域——真机实测
+1.87s（125% DPI、debug 构建）。
+
+**修复**：把「显示」与「露出主窗口」拆开。上次退出为停靠态（`snap_enabled` 且
+`snap_state.edge` 有效）时：
+
+1. `window_shape::set_blank(hwnd, true)` + `apply` → 区域裁成 **1×1**；
+2. 然后才 `show()`：窗口是 `WS_VISIBLE`（浏览器定时器不被后台节流，恢复更快），
+   但屏幕上没有任何主窗口像素，1×1 区域也不可点击；
+3. 前端在**停靠几何 + 轨道区域回读成功之后**调用 `notify_ui_ready`
+   （`useEdgeSnap` 的 `markReady`：无记录 / 读取失败 / 恢复成功 / 恢复放弃四个
+   结论点各一次，幂等）→ 撤销空白标记并重算区域（此时已是轨道，视觉无变化）；
+4. 兜底：`BLANK_REGION_FALLBACK_MS`（4s）内前端未确认就绪则撤销空白，
+   绝不留下一个不可见的窗口。
+
+**顺序约束**（不可交换）：
+
+- `set_blank` 后必须**先 apply 再 show**：否则第一帧带着上一次的整窗区域；
+- `apply_pass` 里**胶囊优先于空白**：前端恢复事务会先写胶囊区域，空白若优先会
+  吞掉这次写入，`GetWindowRgn` 回读失败会让前端判定「区域写入失败」并回滚停靠；
+- 空白写入失败（`SetWindowRgn` 拒绝 / 回读不符）立即撤销标记并退回正常区域——
+  宁可露出窗口，也不能留一个看不见的窗口。
+
+**验收口径**：启动后以 250ms 采样 `GetWindowRgn`，直到出现轨道区域；任何一次采样
+都不得出现「包围盒 = 整窗」的区域。证据见
+`tmp/acceptance/docked-window-hidden/`（`startup-timeline.png`、`report.md` §4.3）。
+
+## 十二、拖拽磁力：双向手感（2026-11-02）
+
+目标：吸附时窗口像被边缘「吸过去」，取消吸附时像从磁铁上「拉开」。
+逐帧工作在原生层完成，前端不参与逐帧定位。
+
+### 12.1 为什么必须是 `WM_MOVING`
+
+`data-tauri-drag-region` → `drag.js` → `plugin:window|start_dragging` → tao
+`handle_os_dragging()` 用 `PostMessageW(WM_NCLBUTTONDOWN, HTCAPTION)` 起拖，系统进入
+**模态移动循环**。tao 只处理 `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` / `WM_DPICHANGED`，
+**不处理 `WM_MOVING`**，该消息落 `DefWindowProc`，因此可以用 `SetWindowLongPtrW`
+子类化改写 `lParam` 的 `RECT` 实现磁力。`PostMessageW` 起拖也保证了 IPC 线程不被阻塞。
+
+> 不能用 React 逐帧 `setPosition`：系统移动循环同时也在改窗口位置，两股力量互相
+> 追赶会抖动、丢拖拽。
+
+### 12.2 系统移动循环**不是**无反馈的（实测结论）
+
+真机采样（`tmp/acceptance/magnetic-drag-resistance/trace.csv`）显示：
+
+```
+prop= 64 appl= 64 lead=0
+prop= 62 appl= 61 lead=1
+...
+prop= 16 appl=  0 lead=16      ← 本帧施加 16px 领先
+prop= -2 appl= -2 lead=0       ← 下一帧提案直接吃掉这 16px
+```
+
+即 `propₙ₊₁ = appliedₙ + Δcursor`。若拿提案当基准算距离，领先量每帧被吸收成新基准，
+`d` 重新变大，领先量逐帧累积（实测累积到 48px，超上限 3 倍），窗口永久偏移且贴边时
+吸引「消失」。
+
+**对策**：`DragAnchor`（`magnetic.rs`）自己维护锚点——`WM_ENTERSIZEMOVE` 记下起点矩形
+与光标，每帧用「起点矩形 + 光标累积位移」还原**未施加磁力的 1:1 矩形**，磁力只作用在
+还原矩形上，结果不再回流。尺寸被系统改动（Aero Snap）时返回 `None` 并重锚，跳过磁力。
+
+### 12.3 两条曲线
+
+| 阶段 | 量 | 公式 | 参数（CSS px） |
+| --- | --- | --- | --- |
+| 吸附吸引 | 额外领先 `lead` | `M·smoothstep(1 − d/R)`，且 `lead ≤ d` | `R = 50`，`M = 16` |
+| 取消阻力 | 实际位移 `disp` | `d²/(2D)`（`d < D`），`d = D` 一次性释放 | `D = 32` |
+
+- 吸引：`d ≥ R` 完全 1:1；`d → 0` 单调增到 `M`，被 `d` 钳住所以**绝不把窗口推出屏幕边**。
+  平滑、连续、有界，不随时间演化（无常驻动画循环）。
+- 阻力：起点斜率 0（刚开始拉几乎不动 = 被吸住），`d = 16` 时约 4px 位移，
+  `d = 24` 时约 9px（可见弹性），`d = 32` 一次性释放。
+- 释放后残留滞后 `lag = D/2`，按 `LAG_DECAY_MS = 110` 指数衰减到 0，此后 1:1 跟手，
+  **不跳到远处**。
+- 2026-11-02 更正：`R` 由 56 收窄到 50（用户反馈磁吸介入过早）；吸引方向、
+  阻力强度（`M`/`D`）与滞回结构不变。
+
+### 12.4 法向坐标 + 四边一致
+
+所有判定只用**停靠边法向**分量（`normal_offset`，外法向为正），沿边分量（`along_offset`）
+不参与解除判定。四条边共用同一套 `Edge{Left,Right,Top,Bottom}`（`outward_sign` /
+`normal_is_x`），因此四边行为对称。
+
+### 12.5 滞回
+
+| 量 | 值 | 作用 |
+| --- | --- | --- |
+| `SNAP_CANDIDATE_ENTER_DIST` | 24 | 进入候选（前端；2026-11-02 由 28 收窄） |
+| `SNAP_CANDIDATE_EXIT_DIST` | 38 | 退出候选（前端；2026-11-02 由 42 收窄，滞回死区 24–38） |
+| `SNAP_UNDOCK_DRAG_PX` | 24 | 法向拖离解除（前端，= `COMMIT_DRAG_CSS`） |
+| `SNAP_MAGNET_RELEASE` | 32 | 原生阻力释放 |
+| `SNAP_MAGNET_REARM` | 96 | 脱离后需离开边缘 > 96 才重新受吸引 |
+
+`REARM (96) > RANGE (50)`：解除后不会立刻被吸回，避免「反复吸附/解除」抖动。
+
+### 12.5a 拖离解除的鼠标锚定（2026-11-02 新增）
+
+用户**拖离**胶囊的解除路径（`undockByDrag` 与 onMoved 的磁吸区退出路径）在解除时
+把「恢复模式尺寸」与「标题栏中心对齐光标」合成**一个拖拽帧内**的原生操作：
+
+1. 前端判定拖离意图后 `set_undock_anchor(mode, titlebar_css)` 挂起一次锚定请求。
+   `titlebar_css` 由 `measureTitlebarHeight()` 从真实标题栏布局量取并缓存，
+   不可测（停靠期主界面 display:none）时回退设计常量 `TITLEBAR_HEIGHT_CSS = 41`
+   （styles-themes 层 padding 9+6 + 内容 26；App 在非胶囊态预热缓存）。
+2. 下一帧 `WM_MOVING`（仍在系统模态移动循环内）按 `magnetic::undock_anchor_rect`
+   改写提议矩形：目标 = `(cursor − w/2, cursor − titlebar/2)`（物理像素，
+   尺寸 = 模式尺寸 × 当时 DPI）；随后重锚 `DragAnchor`、模型切回 Free——窗口继续
+   1:1 跟手，**用户无需松手重抓标题栏**。若系统未立即接受新尺寸，锚定强制期
+   （≤500ms，有界）按同规则继续改写，直到提案尺寸一致或超时交给前端兜底。
+3. 边界取舍（与前端 `undockAnchorTarget` 同口径，两端单测 + 不变量用例互锁）：
+   光标参考值先钳进工作区；结果保证**光标落在窗口矩形内**；光标贴近边缘导致
+   「窗口完整可见」与「光标在标题栏带」不可兼得时，完整可见优先（最小位移）。
+   不调用 `SetCursorPos`，不动系统鼠标。
+4. 解除发生在拖拽静止后（tick 补判定路径）时请求等不到 `WM_MOVING`：前端在尺寸
+   恢复确认后查询 `take_undock_anchor_applied`，返回 false 则按**实际恢复后**的
+   窗口尺寸（回读值，而非理论模式尺寸）回退定位。
+5. 请求生命周期有界：`WM_EXITSIZEMOVE` / `WM_ENTERSIZEMOVE` / 关闭吸附 / 卸载
+   均作废残留请求，绝不泄漏到后续无关拖拽；解除中止（区域清理失败）时前端
+   `cancel_undock_anchor` 防御性取消。
+6. **只有拖离路径锚定**：按钮解除、点击胶囊功能打开完整窗口、托盘/快捷键唤回、
+   启动恢复、显示器断连恢复、程序切换模式等路径保持各自原有定位策略，
+   不得把窗口挪到鼠标下方。
+
+### 12.6 职责边界
+
+- **原生**：逐帧位移（`WM_MOVING`）、阻力/释放、回弹（`WM_EXITSIZEMOVE` 后
+  `PostMessageW` 延后一拍 `SetWindowPos`，不在退出消息里嵌套定位）。
+- **前端**：只做低频动作——挂载时下发一次参数（`set_magnetic_drag_config`）、
+  停靠/解除/沿边重定位后同步基准（`set_magnetic_dock`）、法向 24px 解除判定与持久化、
+  拖离解除时请求鼠标锚定（`set_undock_anchor` / `take_undock_anchor_applied` /
+  `cancel_undock_anchor`，见 §12.5a）。
+  沿边拖动中**不**逐帧落库，静止后只落一次（`commitAlong`）。
+- **关闭吸附**：`set_magnetic_drag_config(false, …)` + `set_magnetic_dock(null)`，
+  原生 wndproc 在 `enabled == false` 时**完全旁路**（不读状态、不改矩形）。
+
+### 12.7 失败降级
+
+`install()` 幂等；拿不到 `HWND` 或子类化失败只记 `warn`，吸附退化为纯阈值行为，
+不影响停靠事务与区域裁剪。`WindowEvent::Destroyed` 时 `uninstall` 还原原 wndproc。
+
+
+### 12.8 Windows Snap 抑制（停靠期，2026-11-02）
+
+**问题**：停靠态胶囊齐平贴在屏幕边上，向外拖动时**原生拖拽循环的起点光标就落在
+系统贴靠区里**（顶边 = Snap Bar，左右边 = 贴靠飞出）。窗口若具备「可最大化」资格，
+Windows 11 会在拖拽悬停时弹出分屏布局；系统贴靠还会改窗口尺寸，与磁力锚点冲突。
+这是「解除吸附误触发系统分屏」的根因。
+
+**依据**：Aero Snap / Snap Layouts 只作用于**可最大化**窗口（顶部贴靠 = 最大化，
+微软文档《Support snap layouts for desktop apps on Windows 11》将飞出菜单与最大化
+能力绑定；Windows 7 起沿用「无 `WS_MAXIMIZEBOX` 即不参与 Aero Snap」的行为）。
+`WS_MAXIMIZEBOX` 与 `WS_SIZEBOX`（手动缩放）互相独立，清除前者不影响普通拖拽与缩放。
+
+**实现**（`magnetic.rs`，按窗口、按状态，不动系统设置、不影响其他窗口）：
+
+- 停靠事务提交（`set_dock(Some)`）经 `WM_MAGNET_STYLE_SYNC` 投递到窗口线程清除
+  `WS_MAXIMIZEBOX`；解除（`set_dock(None)`）恢复。样式写入都在窗口线程（`apply_snap_suppression`）。
+- 解除若发生在**拖拽循环内**（用户拖出阈值触发），恢复推迟到 `WM_EXITSIZEMOVE`：
+  保证「从吸附状态拖出」的整个手势期间系统贴靠 UI 不介入。
+- `WM_ENTERSIZEMOVE` 时若仍停靠则**重申清除**（自愈：tao 的 `WindowFlags::apply_diff`
+  在任何标志位变化时都会整窗重写样式并还原该位）。
+- `install()` 记录原始样式（`ORIGINAL_MAXBOX`）：原窗口不可最大化时永不改动样式，
+  恢复只还原原本存在的位。`uninstall` 前若仍处于抑制态先恢复。
+- 吸附总开关关闭（`enabled=false`）时无条件恢复系统默认样式。
+- **中途解除不回弹**：`WM_EXITSIZEMOVE` 时若前端已解除停靠（`DOCKED=false`），
+  跳过 `finish()` 回弹——其停靠基准是拖拽起点的快照，按它回弹会把刚解除的窗口拽回停靠位。
+
+**真机验证**（`tmp/acceptance/windows-snap-conflict/`，Win11 23H2，DPI 125%）：
+停靠态（左/右/顶/底四边 + 启动恢复）样式回读 `maximizebox=false`；从顶缘
+Snap Bar 核心区（光标距顶缘 ~8px）悬停 900ms 拖出，`NEWWINCOUNT=0`（无
+`XamlExplorerHostIslandWindow` 等贴靠 UI）；同一位置自由窗口对照悬停 1s，
+Snap Bar 出现（探针有效性 + 自由态保留系统行为）；未达阈值松手精确回弹；
+连续 20 轮停靠/解除样式与几何零漂移。解除后样式与模式尺寸均恢复。
+
+**已知边界**：
+- 候选相位（自由窗口被拖向边缘）不抑制——那是普通窗口的正常 Windows 行为，
+  用户松手时由吸附确认流程接管。
+- 若未来有代码在停靠期间调用 tao 的标志位 setter（`set_resizable` 等），样式会被
+  tao 重写回可最大化；`WM_ENTERSIZEMOVE` 的重申清除保证**拖拽开始时**必然处于
+  抑制态，两次拖拽之间的窗口外观不受影响。

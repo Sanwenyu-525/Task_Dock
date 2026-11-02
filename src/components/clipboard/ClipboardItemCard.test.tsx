@@ -1,0 +1,186 @@
+/**
+ * @vitest-environment jsdom
+ */
+//! 历史条目卡片的「标题一行 + 正文两行」布局守卫。
+//!
+//! 回归背景：标题/预览改成 `.clip-preview-body` 纵向排列后，旧的截断约束
+//! （`.clip-preview > span`）不再命中，`.clip-text` 只剩 `-webkit-line-clamp`
+//! 而没有自己的 `overflow: hidden`。line-clamp 只压布局盒高度，剩余行照样绘制，
+//! 于是卡片高度不变、文字却盖住下一张卡和底部状态栏。
+//!
+//! 这里锁两件事：
+//! 1. DOM 契约——预览文本一律放在 `.clip-preview-body` 里，`.clip-preview`
+//!    不再有直系 span（否则截断规则会再次落空）；
+//! 2. CSS 契约——截断声明必须挂在新的父级上，且 line-clamp 必须自带 overflow。
+//!    jsdom 不做布局，所以样式用 `?raw` 读原文断言，和 `styles-themes.test.ts` 同路。
+
+import { describe, expect, it, vi } from "vitest";
+import { cleanup, render } from "@testing-library/react";
+import { afterEach } from "vitest";
+import appCss from "../../styles.css?raw";
+import ClipboardItemCard from "./ClipboardItemCard";
+import type { ClipboardItem } from "../../lib/bridge";
+
+afterEach(cleanup);
+
+function makeItem(over: Partial<ClipboardItem> = {}): ClipboardItem {
+  return {
+    id: "ci1",
+    kind: "text",
+    text: "",
+    html: "",
+    preview: "预览",
+    title: "",
+    title_source: "none",
+    byte_size: 20,
+    source_app: "notepad.exe",
+    source_title: "记事本",
+    image_width: null,
+    image_height: null,
+    file_paths: [],
+    favorite: false,
+    pinned: false,
+    copy_count: 1,
+    created_at: "2026-11-02T10:00:00Z",
+    last_seen_at: "2026-11-02T10:00:00Z",
+    has_image: false,
+    has_thumb: false,
+    ...over,
+  };
+}
+
+function renderCard(over: Partial<ClipboardItem> = {}) {
+  const { container } = render(
+    <ClipboardItemCard
+      item={makeItem(over)}
+      selected={false}
+      linkMode={false}
+      removing={false}
+      pending={false}
+      onSelect={vi.fn()}
+      onCopy={vi.fn()}
+      onToggle={vi.fn()}
+      onDetail={vi.fn()}
+      onDelete={vi.fn()}
+      onLink={vi.fn()}
+    />,
+  );
+  const card = container.querySelector<HTMLElement>(".clip-item");
+  if (!card) throw new Error("没有渲染出 .clip-item");
+  return card;
+}
+
+/** 取样式表里精确匹配某个选择器的规则体（规则在选择器行单独成段）。 */
+function ruleBody(css: string, selector: string): string {
+  const src = appCssClean(css);
+  const re = new RegExp(`(?:^|\\n)\\s*${escapeRe(selector)}\\s*\\{([^}]*)\\}`);
+  const m = src.match(re);
+  expect(m, `styles.css 缺少规则：${selector}`).not.toBeNull();
+  return m![1];
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const appCssClean = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, "");
+
+describe("ClipboardItemCard 预览结构", () => {
+  it("长中文正文：标题与正文都在 .clip-preview-body 内，文本按原文渲染（截断交给 CSS）", () => {
+    const long =
+      "task_dock — 方案 B 液态融合翼片最终版开发：本次改动集中在翼片表面材质、跨厚度渐变与内侧高光带，" +
+      "同时把停靠边的方向换算进 SVG 渐变坐标，保证四条边共用一套语义 token，并且需要在 125% / 150% DPI 下复核。";
+    const card = renderCard({ title: "task_dock — 方案 B 液态融合翼片最终版开发", preview: long });
+
+    const body = card.querySelector(".clip-preview-body");
+    expect(body).not.toBeNull();
+
+    const title = body!.querySelector(".clip-title");
+    expect(title).not.toBeNull();
+    expect(title!.textContent).toBe("task_dock — 方案 B 液态融合翼片最终版开发");
+    // 单行省略靠 CSS；这里只保证完整标题还在 DOM 里，未被 JS 截断
+    expect(title!.getAttribute("title")).toBe(title!.textContent);
+
+    const text = body!.querySelector(".clip-text");
+    expect(text).not.toBeNull();
+    expect(text!.classList.contains("clip-preview-sub")).toBe(true);
+    expect(text!.textContent).toBe(long);
+
+    // 结构前提：.clip-preview 不再有直系 span，
+    // 否则「.clip-preview > span」的旧截断规则会再次落空
+    expect(card.querySelector(".clip-preview > span")).toBeNull();
+  });
+
+  it("无自动标题：正文占据主位，仍是两行截断类，且不挂弱化次行样式", () => {
+    const card = renderCard({ title: "", preview: "只有正文没有标题的一行预览" });
+    expect(card.querySelector(".clip-title")).toBeNull();
+    const text = card.querySelector(".clip-preview-body > .clip-text");
+    expect(text).not.toBeNull();
+    expect(text!.classList.contains("clip-preview-sub")).toBe(false);
+  });
+
+  it("链接与文件记录：预览走单行省略（不带 clip-text），不会被当成两行正文", () => {
+    for (const kind of ["url", "files"] as const) {
+      cleanup();
+      const card = renderCard({ kind, preview: "https://example.com/" + "a".repeat(200) });
+      const span = card.querySelector(".clip-preview-body > span");
+      expect(span, `${kind} 预览应仍在 .clip-preview-body 内`).not.toBeNull();
+      expect(span!.classList.contains("clip-text")).toBe(false);
+    }
+  });
+
+  it("富文本：预览与标题同时存在时，正文仍是两行截断类", () => {
+    const card = renderCard({ kind: "html", title: "表格：v0.7 验收项", preview: "验收项\t结果\t备注\n翼片材质\t通过" });
+    expect(card.querySelector(".clip-preview-body > .clip-title")).not.toBeNull();
+    const text = card.querySelector(".clip-preview-body > .clip-text");
+    expect(text).not.toBeNull();
+    expect(text!.textContent).toContain("\n");
+  });
+
+  it("图片记录：缩略图与文本预览并排，文本仍受预览体约束", () => {
+    const card = renderCard({ kind: "image", title: "截图 2026-11-02", preview: "1440×900 · PNG" });
+    expect(card.querySelector(".clip-preview.with-thumb")).not.toBeNull();
+    expect(card.querySelector(".clip-thumb-placeholder")).not.toBeNull();
+    expect(card.querySelector(".clip-preview-body > .clip-title")).not.toBeNull();
+  });
+});
+
+describe("styles.css 预览截断契约", () => {
+  it("正文两行截断：line-clamp 自带 overflow:hidden，且长串可断行", () => {
+    const body = ruleBody(appCss, ".clip-preview-body > .clip-text");
+    expect(body).toMatch(/display:\s*-webkit-box/);
+    expect(body).toMatch(/-webkit-line-clamp:\s*2/);
+    expect(body).toMatch(/-webkit-box-orient:\s*vertical/);
+    // 缺这一条时 line-clamp 只压布局盒，文字会画到卡片外
+    expect(body).toMatch(/overflow:\s*hidden/);
+    expect(body).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(body).toMatch(/white-space:\s*pre-wrap/);
+  });
+
+  it("预览体每一行都单行省略，并显式收窄宽度", () => {
+    const body = ruleBody(appCss, ".clip-preview-body > span");
+    expect(body).toMatch(/overflow:\s*hidden/);
+    expect(body).toMatch(/text-overflow:\s*ellipsis/);
+    expect(body).toMatch(/white-space:\s*nowrap/);
+    expect(body).toMatch(/min-width:\s*0/);
+    expect(body).toMatch(/max-width:\s*100%/);
+  });
+
+  it("预览体自身解除 flex 的 min-content 下限，避免长串把卡片撑宽", () => {
+    const body = ruleBody(appCss, ".clip-preview-body");
+    expect(body).toMatch(/min-width:\s*0/);
+    expect(body).toMatch(/max-width:\s*100%/);
+    expect(body).toMatch(/flex-direction:\s*column/);
+  });
+
+  it("正文截断不依赖祖先选择器：凡是用 line-clamp 的 .clip-text 规则都自带 overflow", () => {
+    // 只查剪贴板正文自身：胶囊面板的 .cap-item-title.clip-2 靠同元素的另一条
+    // 规则提供 overflow，属于另一套组件，不在本测试范围。
+    const rules = [...appCssClean(appCss).matchAll(/([^{}]+)\{([^}]*)\}/g)];
+    const clampRules = rules.filter((r) => r[1].includes(".clip-text") && /-webkit-line-clamp/.test(r[2]));
+    expect(clampRules.length).toBeGreaterThan(0);
+    for (const [, selector, body] of clampRules) {
+      expect(
+        /overflow(-y)?:\s*(hidden|clip)/.test(body),
+        `规则「${selector.trim()}」用了 -webkit-line-clamp 却没有自带 overflow`,
+      ).toBe(true);
+    }
+  });
+});

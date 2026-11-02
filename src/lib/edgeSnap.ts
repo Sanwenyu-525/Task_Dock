@@ -44,7 +44,7 @@ export type SnapPhase =
 // ── 常量（物理像素 / 毫秒）──────────────────────────────────
 
 /** 拖动候选范围：窗口距工作区边缘 ≤ 该值时显示吸附提示（= 磁吸进入阈值）。 */
-export const SNAP_CANDIDATE_DIST = 28; // = SNAP_CANDIDATE_ENTER_DIST（下方定义，避免 TDZ）
+export const SNAP_CANDIDATE_DIST = 24; // = SNAP_CANDIDATE_ENTER_DIST（下方定义，避免 TDZ）
 /** 隐藏时留在屏幕内的触发条宽度（10–12 物理像素，取 12）。 */
 export const SNAP_STRIP = 12;
 /** 唤出：光标距屏幕边缘的判定距离。 */
@@ -76,11 +76,12 @@ export const PERSIST_VISIBLE_FRACTION = 0.6;
 //
 // 所有延迟集中定义（禁止散落在组件里）；阈值带滞回，防止单点采样抖动。
 
-/** 磁吸区**进入**阈值：窗口距边缘 ≤ 该值显示吸附提示（candidate）。 */
-export const SNAP_CANDIDATE_ENTER_DIST = 28;
+/** 磁吸区**进入**阈值：窗口距边缘 ≤ 该值显示吸附提示（candidate）。
+ *  2026-11-02：28 → 24（用户反馈磁吸介入过早，随吸引范围一起收窄）。 */
+export const SNAP_CANDIDATE_ENTER_DIST = 24;
 /** 磁吸区**退出**阈值（滞回）：> 该值才退出 candidate / 解除停靠。
- *  28↔42 之间是死区，防止阈值附近来回抖动。 */
-export const SNAP_CANDIDATE_EXIT_DIST = 42;
+ *  24↔38 之间是死区，防止阈值附近来回抖动。 */
+export const SNAP_CANDIDATE_EXIT_DIST = 38;
 /** **拖拽解除阈值**（CSS px）：停靠中窗口被拖离齐平位超过该值且非程序移动，
  *  视为用户解除意图（v0.6 极简停靠 UI：取代原标题栏磁铁按钮的解除路径；
  *  ≤ 该值仍按误碰拉回齐平）。 */
@@ -116,6 +117,135 @@ export const EDGE_LABELS: Record<SnapEdge, string> = {
   top: "顶部",
   bottom: "底部",
 };
+
+// ── 拖拽磁力（原生 WM_MOVING 修正）────────────────────────────
+//
+// 吸引 / 阻力曲线在 `src-tauri/src/magnetic.rs` 实现：系统模态移动循环每帧
+// 给窗口一次「提议矩形」，原生侧按下面这组参数改写它，窗口因此可以领先/落后
+// 鼠标。前端**不参与逐帧移动**（React 高频 setPosition 会与拖拽循环对抗）。
+//
+// 这组数字是**跨端契约**：Rust `magnet_contract_matches_frontend` 与
+// `edgeSnap.test.ts` 各自锁定同一组值，改动必须两端同步。
+
+/** 吸引作用范围（CSS px）：窗口距边缘 ≤ 该值开始受磁力。
+ *  2026-11-02：56 → 50（用户反馈介入过早；Rust `ATTRACT_RANGE_CSS` 同步）。 */
+export const SNAP_MAGNET_RANGE = 50;
+/** 最大额外吸引位移（CSS px）：窗口领先鼠标的上限。 */
+export const SNAP_MAGNET_MAX_LEAD = 16;
+/** 脱离所需拖动位移（CSS px，游标沿法向向外的位移）。 */
+export const SNAP_MAGNET_RELEASE = 32;
+/** 突破后重新受吸引的距离（CSS px，滞回：避免脱离后立刻被吸回）。 */
+export const SNAP_MAGNET_REARM = 96;
+
+// ── 拖离解除的鼠标锚定（标题栏中心 = 光标）────────────────────
+//
+// 仅「用户拖离胶囊」的解除路径使用：原生在拖拽循环内应用
+// （`src-tauri/src/magnetic.rs` 的 `undock_anchor_rect`，同口径纯函数），
+// 拖拽已结束时由前端按实际恢复后的窗口尺寸回退定位。
+
+/**
+ * 标题栏设计高度（CSS px）：`styles-themes.css` 的 `.titlebar`
+ * padding 9 + 6 + 内容 26（`.icon-btn`）＝ 41，与基础层
+ * （7+7+26+1 边框）一致。仅在真实布局不可测（停靠期主界面
+ * display:none）时兜底，优先用 `measureTitlebarHeight` 的实测值。
+ */
+export const TITLEBAR_HEIGHT_CSS = 41;
+
+let titlebarHeightCache: number | null = null;
+
+/**
+ * 量取真实标题栏高度（CSS px）：优先 DOM 实测并缓存；停靠期主界面
+ * display:none 量不到时回退上次缓存或设计常量。App 在非胶囊态会预热缓存。
+ */
+export function measureTitlebarHeight(): number {
+  if (typeof document !== "undefined") {
+    const el = document.querySelector<HTMLElement>(".titlebar");
+    const h = el?.getBoundingClientRect().height ?? 0;
+    if (Number.isFinite(h) && h >= 24) {
+      titlebarHeightCache = h;
+      return h;
+    }
+  }
+  return titlebarHeightCache ?? TITLEBAR_HEIGHT_CSS;
+}
+
+/** 测试辅助：清空标题栏实测缓存（jsdom 无布局，用例间互不污染）。 */
+export function resetTitlebarHeightCache(): void {
+  titlebarHeightCache = null;
+}
+
+/**
+ * 拖离解除的鼠标锚定目标（物理像素）：标题栏中心 = 光标。
+ * 与 Rust `magnetic::undock_anchor_rect` 同口径（两端单测互锁）：
+ * - 光标参考值先钳进工作区（拖到任务栏上时窗口仍按屏内光标摆放）；
+ * - 目标位置 = `(cursor − w/2, cursor − titlebar/2)` 再钳进工作区；
+ * - 结果保证光标落在窗口矩形内；工作区不足时窗口完整可见优先（最小位移）。
+ */
+export function undockAnchorTarget(
+  cursor: SnapPoint,
+  size: { w: number; h: number },
+  titlebarPhysical: number,
+  area: SnapArea,
+): SnapRect {
+  const w = Math.max(1, Math.min(Math.round(size.w), area.w));
+  const h = Math.max(1, Math.min(Math.round(size.h), area.h));
+  const tb = Number.isFinite(titlebarPhysical) && titlebarPhysical > 0 ? titlebarPhysical : 0;
+  const ax = clamp(cursor.x, area.x, area.x + area.w);
+  const ay = clamp(cursor.y, area.y, area.y + area.h);
+  const x = clamp(Math.round(ax - w / 2), area.x, area.x + area.w - w);
+  const y = clamp(Math.round(ay - tb / 2), area.y, area.y + area.h - h);
+  return { x, y, w, h };
+}
+
+/** 停靠边的法向是否沿 x 轴（左右停靠）。 */
+export const normalIsX = (edge: SnapEdge): boolean => edge === "left" || edge === "right";
+
+/**
+ * 相对停靠基准 `base` 的**法向位移**（外法向为正 = 离开屏幕边）。
+ *
+ * 磁力与解除判定都只看法向：沿边方向的位移是「沿边滑动胶囊」，
+ * 绝不能当成拖离意图（旧实现按两轴绝对值判定，沿边拖 24px 就误解除）。
+ */
+export function normalDeviation(rect: SnapRect, base: SnapPoint, edge: SnapEdge): number {
+  switch (edge) {
+    case "left":
+      return rect.x - base.x;
+    case "right":
+      return base.x - rect.x;
+    case "top":
+      return rect.y - base.y;
+    case "bottom":
+      return base.y - rect.y;
+  }
+}
+
+/** 沿边位移（诊断与「沿边重定位」提交用；无正负语义）。 */
+export function alongDeviation(rect: SnapRect, base: SnapPoint, edge: SnapEdge): number {
+  return normalIsX(edge) ? rect.y - base.y : rect.x - base.x;
+}
+
+/**
+ * 拖离解除判定：法向位移超过提交阈值。
+ * 阈值与原生侧 `COMMIT_DRAG_CSS` 同值——两套规则必须指向同一物理量，
+ * 否则会出现「原生已放手、前端仍认为停靠」的半脱开状态。
+ */
+export function shouldUndockByDrag(
+  rect: SnapRect,
+  base: SnapPoint,
+  edge: SnapEdge,
+  threshold: number = SNAP_UNDOCK_DRAG_PX,
+): boolean {
+  return normalDeviation(rect, base, edge) > threshold;
+}
+
+/**
+ * 停靠基准的沿边更新：只采纳沿边分量。
+ * 法向基准必须始终是**真实齐平位**（拖动中的弹性位移不能写进基准，
+ * 否则下一次解除判定的零点会被越推越远）。
+ */
+export function rebaseAlong(rect: SnapRect, base: SnapPoint, edge: SnapEdge): SnapPoint {
+  return normalIsX(edge) ? { x: base.x, y: rect.y } : { x: rect.x, y: base.y };
+}
 
 export const dockFeedbackText = (edge: SnapEdge): string => `已吸附${EDGE_LABELS[edge]}`;
 

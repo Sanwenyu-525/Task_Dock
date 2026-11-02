@@ -1,8 +1,28 @@
-//! 剪贴板写入：navigator.clipboard 优先，失焦/不可用时回退 execCommand。
-//! 不引入 clipboard 插件依赖（WebView2 中 tauri.localhost 为安全上下文，
-//! 但窗口未聚焦时 Clipboard API 可能被拒，需要兜底）。
+//! 剪贴板写入：Tauri 内统一走 Rust 受控写入，只有浏览器预览才用 Web API。
+//!
+//! Windows 下 WebView 的 Clipboard API 写入不会登记自写序列号，后台监听会把
+//! 这次写入当成外部复制重新采集（从 Dock 复制的内容又回到历史）。因此原生窗口
+//! 必须走 `clipboard_copy_text`，且写入失败时**不得**回退到未登记自写的 Web API。
+
+import { isTauri } from "@tauri-apps/api/core";
+import { clipboardCopyText } from "./bridge";
 
 export async function copyText(text: string): Promise<boolean> {
+  if (isTauri()) {
+    try {
+      await clipboardCopyText(text);
+      return true;
+    } catch {
+      // 受控写入失败（剪贴板被占用/系统拒绝）必须如实返回失败：
+      // 回退 Web API 会绕过自写登记，重新引入重复采集，且同样无法保证成功。
+      return false;
+    }
+  }
+  return copyTextInBrowser(text);
+}
+
+/** 浏览器预览没有 Tauri 监听器，才允许直接使用 Web API / execCommand。 */
+async function copyTextInBrowser(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);

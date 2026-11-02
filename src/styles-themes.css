@@ -52,63 +52,131 @@
      两套预设都显式声明，保持令牌结构一致（styles-themes.test.ts 守卫）。 */
   --radius-window: 18px;
 
-  /* 窗口：低饱和蓝紫粉渐变，几乎无描边 */
-  --window-fill: linear-gradient(158deg, #fbfcff 0%, #f5f3ff 34%, #fdf4fa 68%, #f7faff 100%);
+  /* 窗口：低饱和蓝紫粉渐变 + 四角氛围光（v0.7 立体层）
+     底色必须是不透明渐变（最后一层），氛围光只叠在上面，
+     透明窗口下不能把整窗 alpha 交给桌面。 */
+  --window-fill:
+    radial-gradient(120% 86% at 6% -10%, rgba(170, 198, 255, 0.62), transparent 58%),
+    radial-gradient(96% 76% at 104% 10%, rgba(198, 180, 255, 0.56), transparent 62%),
+    radial-gradient(112% 90% at 92% 110%, rgba(255, 178, 220, 0.50), transparent 62%),
+    radial-gradient(84% 70% at -8% 96%, rgba(168, 204, 255, 0.40), transparent 64%),
+    linear-gradient(158deg, #fbfcff 0%, #efeaff 34%, #fdf0f9 68%, #f5faff 100%);
+  /* 四层边光：顶部受光 / 四周 1px 内描边 / 底部内侧厚度 / 顶部柔光 */
   --window-edge:
-    inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 72%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 90%, transparent),
-    inset 0 -24px 48px -34px rgba(90, 96, 170, 0.22);
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 0 0 1px rgba(86, 90, 160, 0.14),
+    inset 0 -1px 0 rgba(82, 86, 160, 0.10),
+    inset 0 -34px 54px -40px rgba(72, 74, 150, 0.45),
+    inset 0 2px 18px -12px rgba(255, 255, 255, 0.92);
+  --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 82%);
   --decor:
-    radial-gradient(190px 160px at 4% 0%, rgba(190, 214, 255, 1), transparent 70%),
-    radial-gradient(200px 170px at 98% 6%, rgba(212, 203, 255, 0.95), transparent 72%),
-    radial-gradient(230px 190px at 90% 98%, rgba(249, 213, 234, 0.9), transparent 74%),
-    radial-gradient(180px 160px at 0% 92%, rgba(198, 218, 255, 0.7), transparent 74%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 26%),
+    radial-gradient(190px 150px at 2% -2%, rgba(167, 198, 255, 0.88), transparent 70%),
+    radial-gradient(200px 160px at 100% 6%, rgba(196, 180, 255, 0.78), transparent 72%),
+    radial-gradient(230px 180px at 94% 100%, rgba(255, 190, 225, 0.66), transparent 74%),
+    radial-gradient(170px 140px at 4% 94%, rgba(186, 214, 255, 0.52), transparent 74%);
   --decor-opacity: 1;
 
-  /* 表面层级：卡片 > 控件 > 背景 */
-  --card-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 86%, transparent), color-mix(in srgb, var(--c-paper) 62%, transparent));
+  /* 表面层级：卡片 > 控件 > 背景。
+     卡片顶部有内高光、底部轻沉降，悬停再抬一档（v0.7 立体层）。 */
+  --card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.80) 52%, rgba(250, 248, 255, 0.74) 100%);
+  /* 任务卡流线高光（方案 D，2026-11-02）：中部向右侧渐起的柔和光带，
+     叠在 --card-face 之上；纯静态渐变，无伪元素、无动画。
+     色相跟随预设（dream 偏紫罗兰 / liquid 偏冰蓝），深色降低亮度差。 */
+  --task-flow:
+    radial-gradient(120% 170% at 100% 78%, rgba(159, 148, 250, 0.15), transparent 62%),
+    linear-gradient(98deg, transparent 42%, rgba(172, 178, 252, 0.06) 68%, rgba(150, 140, 250, 0.12) 100%);
   /* 胶囊卡片的不透明底（窗口底色）：停靠期根窗口透明，卡片必须自带表面。
      必须是不含 alpha 的实色——半透明会让胶囊在深色桌面上「消失」。 */
   --capsule-face: #f9faff;
+  /* 翼片跨厚度渐变（近屏幕边缘 → 屏幕内部）与面板底色：两套预设必须同名 */
+  --wing-near: #d7e2f8;
+  --wing-mid: #eaf1fe;
+  --wing-far: #fcfdff;
+  --wing-panel-base: #e9f1fd;
   --card-shadow:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 60%, transparent),
-    0 8px 18px -12px color-mix(in srgb, var(--c-accent) 40%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 -1px 0 rgba(80, 84, 150, 0.10),
+    0 0 0 1px rgba(255, 255, 255, 0.65),
+    0 2px 4px -2px rgba(42, 46, 96, 0.08),
+    0 10px 22px -12px rgba(76, 72, 160, 0.42),
+    0 22px 38px -28px rgba(76, 72, 160, 0.32);
   --card-shadow-hover:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 85%, transparent),
-    0 10px 22px -12px color-mix(in srgb, var(--c-accent) 50%, transparent);
-  --control-face: color-mix(in srgb, var(--c-paper) 72%, transparent);
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(80, 84, 150, 0.12),
+    0 0 0 1px rgba(99, 102, 241, 0.18),
+    0 4px 10px -5px rgba(42, 46, 96, 0.12),
+    0 16px 32px -16px rgba(76, 72, 160, 0.54);
+  --control-face: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(250, 250, 255, 0.66));
   --control-shadow:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 75%, transparent),
-    0 4px 12px -8px color-mix(in srgb, var(--c-accent) 35%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    0 0 0 1px rgba(255, 255, 255, 0.66),
+    0 1px 2px rgba(42, 46, 96, 0.06),
+    0 5px 12px -8px rgba(76, 72, 160, 0.30);
   /* hover 必须可感知：白环在浅色卡片间不可见，hover 环改用淡主题色 + 更实的投影 */
   --control-shadow-hover:
-    0 0 0 1px color-mix(in srgb, var(--c-accent) 24%, transparent),
-    0 8px 18px -10px rgba(60, 64, 140, 0.45);
+    inset 0 1px 0 #ffffff,
+    0 0 0 1px rgba(99, 102, 241, 0.24),
+    0 2px 5px -3px rgba(42, 46, 96, 0.10),
+    0 9px 20px -10px rgba(60, 64, 140, 0.46);
   --control-shadow-press:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 68%, transparent),
-    0 2px 8px -6px color-mix(in srgb, var(--c-accent) 28%, transparent);
+    inset 0 1px 2px rgba(42, 46, 96, 0.14),
+    0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 2px 6px -5px rgba(76, 72, 160, 0.28);
 
   --control-shadow-focus:
-    0 0 0 1.5px color-mix(in srgb, var(--c-accent) 55%, transparent),
-    0 6px 16px -8px color-mix(in srgb, var(--c-accent) 45%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    0 0 0 1.5px rgba(99, 102, 241, 0.55),
+    0 0 0 4px rgba(99, 102, 241, 0.10),
+    0 8px 18px -10px rgba(76, 72, 160, 0.42);
 
-  /* 分段控件 / 药丸 */
-  --pill-face: rgba(236, 236, 250, 0.72);
-  --pill-active-face: #ffffff;
+  /* 输入容器：浅内凹（顶部沉降 + 底部反光），与凸起按钮形成方向性对比 */
+  --inset-face: linear-gradient(180deg, rgba(233, 235, 250, 0.74) 0%, rgba(250, 250, 255, 0.88) 46%, rgba(255, 255, 255, 0.94) 100%);
+  --inset-shadow:
+    inset 0 1px 2px rgba(42, 46, 96, 0.14),
+    inset 0 2px 5px -3px rgba(42, 46, 96, 0.10),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.78),
+    0 1px 0 rgba(255, 255, 255, 0.40);
+  --inset-shadow-hover:
+    inset 0 1px 2px rgba(42, 46, 96, 0.12),
+    inset 0 2px 5px -3px rgba(42, 46, 96, 0.08),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.88),
+    0 0 0 1px rgba(99, 102, 241, 0.14);
+  --inset-shadow-focus:
+    inset 0 1px 2px rgba(42, 46, 96, 0.12),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.92),
+    0 0 0 1.5px rgba(99, 102, 241, 0.50),
+    0 0 0 4px rgba(99, 102, 241, 0.10);
+  --inset-shadow-sm:
+    inset 0 1px 1px rgba(42, 46, 96, 0.10),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.64);
+
+  /* 分段控件 / 药丸：容器内凹、选中药丸凸起 */
+  --pill-face: rgba(228, 228, 246, 0.64);
+  --pill-active-face: linear-gradient(180deg, #ffffff 0%, #f4f3ff 62%, #ebeaff 100%);
   --pill-active-text: var(--c-accent-deep);
-  --pill-active-shadow: 0 2px 6px -2px color-mix(in srgb, var(--c-accent-deep) 28%, transparent);
-  --pill-soft-active-face: color-mix(in srgb, var(--c-paper) 92%, transparent);
+  --pill-active-shadow:
+    inset 0 1px 0 #ffffff,
+    0 0 0 1px rgba(255, 255, 255, 0.70),
+    0 2px 5px -3px rgba(42, 46, 96, 0.16),
+    0 5px 10px -7px rgba(76, 72, 160, 0.40);
+  --pill-soft-active-face: linear-gradient(180deg, #ffffff, rgba(240, 239, 255, 0.92));
 
   /* 左侧导航 */
   /* 左侧导航：横向淡出，配合 .rail::before 的顶部渐隐，
      避免导航轨顶端出现一条生硬的横向色块接缝 */
   --rail-bg: linear-gradient(90deg, color-mix(in srgb, var(--c-paper) 30%, transparent), color-mix(in srgb, var(--c-paper) 2%, transparent) 78%, color-mix(in srgb, var(--c-paper) 0%, transparent));
   --rail-divider: none;
-  --rail-hover-face: color-mix(in srgb, var(--c-accent) 7%, transparent);
-  --rail-active-face: linear-gradient(180deg, color-mix(in srgb, var(--c-accent) 14%, transparent), color-mix(in srgb, var(--c-accent) 8%, transparent));
+  --rail-hover-face: color-mix(in srgb, var(--c-accent) 8%, transparent);
+  /* 选中胶囊：顶部内高光 + 底部薄阴影 + 外环，形成「从表面浮起」的实体感 */
+  --rail-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(238, 236, 255, 0.92) 54%, rgba(227, 225, 255, 0.86) 100%);
   --rail-active-text: var(--c-accent-deep);
-  --rail-active-shadow: 0 0 0 1px color-mix(in srgb, var(--c-paper) 60%, transparent);
-  --rail-active-bar: var(--c-accent);
+  --rail-active-shadow:
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(99, 102, 241, 0.10),
+    0 0 0 1px rgba(99, 102, 241, 0.16),
+    0 5px 12px -7px rgba(99, 102, 241, 0.42);
+  --rail-active-bar: linear-gradient(180deg, #9a9cf8, #6366f1);
   --rail-add-face: color-mix(in srgb, var(--c-paper) 44%, transparent);
   --rail-add-border: color-mix(in srgb, var(--c-ink) 7%, transparent);
   --rail-add-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 70%, transparent);
@@ -117,7 +185,11 @@
   --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6366f1 55%, #8b5cf6 100%);
   --orb-gradient: linear-gradient(140deg, #b9d0ff 0%, #cbbdfd 46%, #f8c8e2 100%);
   --orb-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 95%, transparent), rgba(240, 240, 255, 0.7));
-  --orb-shadow: 0 0 0 1px color-mix(in srgb, var(--c-paper) 90%, transparent), 0 6px 14px -8px color-mix(in srgb, var(--c-accent) 60%, transparent);
+  --orb-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -2px 4px -2px rgba(80, 90, 180, 0.30),
+    0 0 0 1px rgba(255, 255, 255, 0.90),
+    0 7px 16px -8px rgba(99, 102, 241, 0.65);
 
   --text-primary: #22263c;
   --text-secondary: #59607a;
@@ -154,54 +226,116 @@
   --c-accent: rgb(165, 168, 255);
   --c-danger: rgb(248, 113, 113);
 
-  --window-fill: linear-gradient(158deg, #171a2b 0%, #1a1729 36%, #1e1728 68%, #151827 100%);
+  --window-fill:
+    radial-gradient(112% 82% at 6% -10%, rgba(88, 114, 200, 0.34), transparent 58%),
+    radial-gradient(92% 72% at 104% 10%, rgba(124, 92, 210, 0.28), transparent 62%),
+    radial-gradient(106% 86% at 92% 108%, rgba(186, 82, 158, 0.24), transparent 62%),
+    radial-gradient(82% 66% at -8% 96%, rgba(70, 104, 190, 0.20), transparent 64%),
+    linear-gradient(158deg, #14172a 0%, #191630 36%, #211827 68%, #121626 100%);
   --window-edge:
-    inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 7%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 12%, transparent),
-    inset 0 -24px 48px -34px color-mix(in srgb, var(--c-night) 55%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.17),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.38),
+    inset 0 -36px 58px -40px rgba(0, 0, 0, 0.72),
+    inset 0 2px 16px -10px rgba(255, 255, 255, 0.12);
+  --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 82%);
   --decor:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 26%),
     radial-gradient(150px 130px at 6% 2%, rgba(96, 120, 190, 0.38), transparent 72%),
     radial-gradient(170px 150px at 97% 8%, rgba(120, 100, 190, 0.34), transparent 74%),
     radial-gradient(200px 170px at 88% 96%, rgba(180, 100, 160, 0.28), transparent 76%),
     radial-gradient(160px 140px at 2% 88%, rgba(80, 110, 180, 0.24), transparent 76%);
 
-  --card-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 7.5%, transparent), color-mix(in srgb, var(--c-paper) 3.5%, transparent));
+  --card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.095) 0%, rgba(255, 255, 255, 0.052) 48%, rgba(255, 255, 255, 0.035) 100%);
+  /* 任务卡流线高光（方案 D）：深色下降低 alpha，只留光带方向感 */
+  --task-flow:
+    radial-gradient(120% 170% at 100% 78%, rgba(139, 124, 246, 0.16), transparent 62%),
+    linear-gradient(98deg, transparent 42%, rgba(148, 162, 255, 0.07) 68%, rgba(139, 124, 246, 0.13) 100%);
   /* 胶囊不透明底：深色下 `--card-face` 只有 7.5% 白，没有底色时等于消失 */
   --capsule-face: #191c2c;
+  --wing-near: #10131f;
+  --wing-mid: #1b2131;
+  --wing-far: #2b3448;
+  --wing-panel-base: #1a1f2e;
+  --wing-near: #10131f;
+  --wing-mid: #1b2131;
+  --wing-far: #2b3448;
+  --wing-panel-base: #1a1f2e;
   --card-shadow:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 7%, transparent),
-    0 10px 22px -16px color-mix(in srgb, var(--c-night) 90%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.32),
+    0 0 0 1px rgba(255, 255, 255, 0.055),
+    0 2px 4px -2px rgba(0, 0, 0, 0.45),
+    0 12px 28px -14px rgba(0, 0, 0, 0.90),
+    0 24px 42px -28px rgba(0, 0, 0, 0.82);
   --card-shadow-hover:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 13%, transparent),
-    0 12px 26px -16px color-mix(in srgb, var(--c-night) 100%, transparent);
-  --control-face: color-mix(in srgb, var(--c-paper) 5.5%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.32),
+    0 0 0 1px rgba(139, 124, 246, 0.22),
+    0 4px 10px -5px rgba(0, 0, 0, 0.55),
+    0 18px 34px -18px rgba(0, 0, 0, 0.95);
+  --control-face: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.045));
   --control-shadow:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 8%, transparent),
-    0 6px 16px -12px color-mix(in srgb, var(--c-night) 80%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 6px 16px -12px rgba(0, 0, 0, 0.80);
   --control-shadow-hover:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 13%, transparent),
-    0 8px 20px -12px color-mix(in srgb, var(--c-night) 85%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 0 0 1px rgba(165, 168, 255, 0.26),
+    0 2px 5px -3px rgba(0, 0, 0, 0.45),
+    0 10px 24px -12px rgba(0, 0, 0, 0.85);
   --control-shadow-press:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 7%, transparent),
-    0 3px 10px -8px color-mix(in srgb, var(--c-night) 70%, transparent);
+    inset 0 1px 2px rgba(0, 0, 0, 0.50),
+    0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 3px 10px -8px rgba(0, 0, 0, 0.70);
 
   --control-shadow-focus:
-    0 0 0 1.5px color-mix(in srgb, var(--c-accent) 55%, transparent),
-    0 8px 20px -12px color-mix(in srgb, var(--c-night) 90%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 0 0 1.5px rgba(165, 168, 255, 0.50),
+    0 0 0 4px rgba(165, 168, 255, 0.10),
+    0 8px 20px -12px rgba(0, 0, 0, 0.90);
 
-  --pill-face: color-mix(in srgb, var(--c-paper) 5%, transparent);
-  --pill-active-face: color-mix(in srgb, var(--c-paper) 11%, transparent);
+  --inset-face: linear-gradient(180deg, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.062) 58%, rgba(255, 255, 255, 0.075) 100%);
+  --inset-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.55),
+    inset 0 2px 6px -3px rgba(0, 0, 0, 0.48),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.07),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+  --inset-shadow-hover:
+    inset 0 1px 2px rgba(0, 0, 0, 0.50),
+    inset 0 2px 6px -3px rgba(0, 0, 0, 0.42),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.10),
+    0 0 0 1px rgba(165, 168, 255, 0.18);
+  --inset-shadow-focus:
+    inset 0 1px 2px rgba(0, 0, 0, 0.50),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.10),
+    0 0 0 1.5px rgba(165, 168, 255, 0.48),
+    0 0 0 4px rgba(165, 168, 255, 0.10);
+  --inset-shadow-sm:
+    inset 0 1px 1px rgba(0, 0, 0, 0.42),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06);
+
+  --pill-face: rgba(255, 255, 255, 0.045);
+  --pill-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.10) 100%);
   --pill-active-text: #c7c9ff;
-  --pill-active-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 14%, transparent);
-  --pill-soft-active-face: color-mix(in srgb, var(--c-paper) 10%, transparent);
+  --pill-active-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px rgba(255, 255, 255, 0.055),
+    0 2px 6px -4px rgba(0, 0, 0, 0.70),
+    0 6px 12px -10px rgba(0, 0, 0, 0.85);
+  --pill-soft-active-face: rgba(255, 255, 255, 0.10);
 
   --rail-bg: linear-gradient(90deg, color-mix(in srgb, var(--c-paper) 5%, transparent), color-mix(in srgb, var(--c-paper) 0.5%, transparent) 78%, color-mix(in srgb, var(--c-paper) 0%, transparent));
   --rail-divider: none;
-  --rail-hover-face: color-mix(in srgb, var(--c-paper) 6%, transparent);
-  --rail-active-face: linear-gradient(180deg, color-mix(in srgb, var(--c-accent) 18%, transparent), color-mix(in srgb, var(--c-accent) 9%, transparent));
-  --rail-active-text: #c7c9ff;
-  --rail-active-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 12%, transparent);
-  --rail-active-bar: var(--c-accent);
+  --rail-hover-face: color-mix(in srgb, var(--c-paper) 7%, transparent);
+  --rail-active-face: linear-gradient(180deg, rgba(139, 124, 246, 0.28) 0%, rgba(99, 102, 241, 0.14) 100%);
+  --rail-active-text: #d5d6ff;
+  --rail-active-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 0 0 1px rgba(139, 124, 246, 0.24),
+    0 6px 14px -8px rgba(0, 0, 0, 0.70);
+  --rail-active-bar: linear-gradient(180deg, #c7c2ff, #818cf8);
   --rail-add-face: color-mix(in srgb, var(--c-paper) 6%, transparent);
   --rail-add-border: color-mix(in srgb, var(--c-paper) 9%, transparent);
   --rail-add-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 8%, transparent);
@@ -250,93 +384,139 @@
 
   /* 显式半透明：真正的模糊来自原生 Mica/Acrylic，CSS 只做 tint 与高光。
      与梦幻渐变的分界：这里只用冷调冰蓝/板岩灰，不引入粉紫；
-     渐变克制（同一色相的深浅），玻璃感靠高光边缘而非彩色氛围。 */
-  --window-fill: linear-gradient(
-    152deg,
-    rgba(252, 253, 255, 0.86) 0%,
-    rgba(243, 248, 253, 0.76) 42%,
-    rgba(238, 246, 252, 0.78) 72%,
-    rgba(244, 250, 254, 0.82) 100%
-  );
+     渐变克制（同一色相的深浅），玻璃感靠高光边缘而非彩色氛围。
+     v0.7 立体层：提高透明度到 0.88-0.95，让玻璃表面更「实」，
+     同时用静态折射高光（--decor 中的斜向白色光带）表达厚度。 */
+  --window-fill:
+    radial-gradient(120% 90% at 12% -14%, rgba(255, 255, 255, 0.55), transparent 56%),
+    linear-gradient(
+      152deg,
+      rgba(255, 255, 255, 0.95) 0%,
+      rgba(243, 248, 254, 0.90) 42%,
+      rgba(235, 245, 252, 0.88) 72%,
+      rgba(246, 251, 255, 0.92) 100%
+    );
   --window-edge:
-    inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 60%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 95%, transparent),
-    inset 0 -30px 60px -40px rgba(64, 82, 116, 0.32);
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 0 0 1px rgba(96, 120, 160, 0.18),
+    inset 0 -1px 0 rgba(96, 120, 160, 0.16),
+    inset 0 -34px 60px -42px rgba(64, 82, 116, 0.42),
+    inset 0 2px 16px -10px rgba(255, 255, 255, 0.95);
+  --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 82%);
   --decor:
-    radial-gradient(170px 150px at 4% 0%, rgba(191, 219, 254, 0.5), transparent 70%),
-    radial-gradient(190px 160px at 98% 6%, rgba(186, 214, 240, 0.45), transparent 72%),
-    radial-gradient(220px 180px at 92% 98%, rgba(203, 226, 244, 0.4), transparent 74%),
-    radial-gradient(180px 150px at 0% 92%, rgba(190, 214, 244, 0.38), transparent 74%);
+    linear-gradient(122deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.06) 26%, transparent 48%, rgba(255, 255, 255, 0.16) 78%, rgba(255, 255, 255, 0.30) 100%),
+    radial-gradient(220px 160px at 16% -10%, rgba(255, 255, 255, 0.85), transparent 66%),
+    radial-gradient(190px 160px at 96% 4%, rgba(205, 228, 248, 0.55), transparent 72%),
+    radial-gradient(220px 180px at 92% 98%, rgba(203, 226, 244, 0.45), transparent 74%),
+    radial-gradient(180px 150px at 0% 92%, rgba(190, 214, 244, 0.42), transparent 74%);
   --decor-opacity: 1;
 
   --card-face: linear-gradient(
     158deg,
-    color-mix(in srgb, var(--c-paper) 88%, transparent) 0%,
-    rgba(252, 254, 255, 0.76) 52%,
-    rgba(246, 250, 254, 0.68) 100%
+    rgba(255, 255, 255, 0.93) 0%,
+    rgba(250, 253, 255, 0.84) 52%,
+    rgba(240, 248, 252, 0.76) 100%
   );
+  /* 任务卡流线高光（方案 D）：冷玻璃预设改用冰蓝色相 */
+  --task-flow:
+    radial-gradient(120% 170% at 100% 78%, rgba(125, 168, 232, 0.14), transparent 62%),
+    linear-gradient(98deg, transparent 42%, rgba(148, 190, 240, 0.06) 68%, rgba(118, 162, 232, 0.11) 100%);
   /* 胶囊不透明底：玻璃预设的卡片面本身带 alpha，必须另给实色底 */
   --capsule-face: #f5f9fd;
+  /* 冷玻璃预设：翼片跨厚度渐变偏灰蓝（梦境预设偏紫白，见 styles.css 兜底） */
+  --wing-near: #cfdcee;
+  --wing-mid: #e1ecfa;
+  --wing-far: #f8fcff;
+  --wing-panel-base: #eef4fc;
   --card-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 92%, transparent),
-    inset 0 -1px 0 color-mix(in srgb, var(--c-paper) 28%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 46%, transparent),
-    0 10px 24px -16px rgba(72, 82, 160, 0.55);
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    inset 0 -1px 0 rgba(96, 120, 160, 0.14),
+    0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 2px 4px -2px rgba(70, 90, 130, 0.08),
+    0 12px 28px -14px rgba(72, 82, 160, 0.55);
   --card-shadow-hover:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 100%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 66%, transparent),
-    0 14px 30px -16px rgba(72, 82, 160, 0.6);
+    inset 0 1px 0 #ffffff,
+    inset 0 -1px 0 rgba(96, 120, 160, 0.16),
+    0 0 0 1px rgba(99, 102, 241, 0.18),
+    0 4px 10px -5px rgba(70, 90, 130, 0.12),
+    0 16px 32px -16px rgba(72, 82, 160, 0.62);
   --control-face: linear-gradient(
     160deg,
-    color-mix(in srgb, var(--c-paper) 85%, transparent),
-    rgba(246, 250, 254, 0.68)
+    rgba(255, 255, 255, 0.88),
+    rgba(246, 250, 254, 0.70)
   );
   --control-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 90%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 42%, transparent),
-    0 6px 16px -12px rgba(64, 82, 140, 0.5);
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 0 0 1px rgba(255, 255, 255, 0.50),
+    0 1px 2px rgba(70, 90, 130, 0.06),
+    0 6px 16px -12px rgba(64, 82, 140, 0.48);
   /* hover 必须可感知：白环在浅色玻璃上不可见，hover 环改用淡主题色 + 更实的投影 */
   --control-shadow-hover:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 98%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-accent) 26%, transparent),
-    0 8px 20px -10px rgba(58, 72, 150, 0.55);
+    inset 0 1px 0 #ffffff,
+    0 0 0 1px rgba(99, 102, 241, 0.26),
+    0 2px 5px -3px rgba(70, 90, 130, 0.10),
+    0 9px 22px -12px rgba(58, 72, 150, 0.55);
   --control-shadow-press:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 78%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 34%, transparent),
-    0 4px 12px -10px rgba(64, 82, 140, 0.4);
+    inset 0 1px 2px rgba(64, 82, 140, 0.16),
+    0 0 0 1px rgba(255, 255, 255, 0.42),
+    0 3px 8px -7px rgba(64, 82, 140, 0.40);
 
   --control-shadow-focus:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 95%, transparent),
-    0 0 0 1.5px color-mix(in srgb, var(--c-accent) 50%, transparent),
-    0 8px 20px -12px rgba(72, 82, 160, 0.6);
+    inset 0 1px 0 rgba(255, 255, 255, 0.98),
+    0 0 0 1.5px rgba(99, 102, 241, 0.50),
+    0 0 0 4px rgba(99, 102, 241, 0.10),
+    0 10px 24px -14px rgba(72, 82, 160, 0.56);
 
-  --pill-face: color-mix(in srgb, var(--c-paper) 30%, transparent);
-  --pill-active-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 92%, transparent), color-mix(in srgb, var(--c-paper) 62%, transparent));
+  --inset-face: linear-gradient(180deg, rgba(226, 236, 248, 0.62) 0%, rgba(242, 248, 253, 0.82) 46%, rgba(252, 254, 255, 0.90) 100%);
+  --inset-shadow:
+    inset 0 1px 2px rgba(64, 82, 140, 0.16),
+    inset 0 2px 5px -3px rgba(64, 82, 140, 0.10),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 0 rgba(255, 255, 255, 0.45);
+  --inset-shadow-hover:
+    inset 0 1px 2px rgba(64, 82, 140, 0.14),
+    inset 0 2px 5px -3px rgba(64, 82, 140, 0.08),
+    inset 0 -1px 0 rgba(255, 255, 255, 1),
+    0 0 0 1px rgba(99, 102, 241, 0.16);
+  --inset-shadow-focus:
+    inset 0 1px 2px rgba(64, 82, 140, 0.14),
+    inset 0 -1px 0 rgba(255, 255, 255, 1),
+    0 0 0 1.5px rgba(99, 102, 241, 0.50),
+    0 0 0 4px rgba(99, 102, 241, 0.10);
+  --inset-shadow-sm:
+    inset 0 1px 1px rgba(64, 82, 140, 0.12),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.80);
+
+  --pill-face: rgba(218, 230, 246, 0.52);
+  --pill-active-face: linear-gradient(180deg, #ffffff 0%, rgba(246, 251, 255, 0.94) 60%, rgba(232, 242, 252, 0.90) 100%);
   --pill-active-text: var(--c-accent-deep);
   --pill-active-shadow:
     inset 0 1px 0 #ffffff,
-    0 4px 12px -6px color-mix(in srgb, var(--c-accent) 45%, transparent);
-  --pill-soft-active-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 85%, transparent), color-mix(in srgb, var(--c-paper) 55%, transparent));
+    0 0 0 1px rgba(255, 255, 255, 0.72),
+    0 2px 5px -3px rgba(64, 82, 140, 0.18),
+    0 6px 12px -8px rgba(72, 82, 160, 0.46);
+  --pill-soft-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(232, 242, 252, 0.72));
 
   --rail-bg: linear-gradient(90deg, color-mix(in srgb, var(--c-paper) 34%, transparent), color-mix(in srgb, var(--c-paper) 4%, transparent) 72%, color-mix(in srgb, var(--c-paper) 0%, transparent));
   --rail-divider: none;
-  --rail-hover-face: color-mix(in srgb, var(--c-paper) 60%, transparent);
+  --rail-hover-face: color-mix(in srgb, var(--c-paper) 62%, transparent);
   --rail-active-face: linear-gradient(
     165deg,
-    color-mix(in srgb, var(--c-paper) 85%, transparent) 0%,
-    rgba(242, 247, 253, 0.6) 48%,
-    rgba(230, 240, 252, 0.46) 100%
+    rgba(255, 255, 255, 0.96) 0%,
+    rgba(240, 247, 255, 0.74) 48%,
+    rgba(226, 240, 252, 0.60) 100%
   );
   --rail-active-text: var(--c-accent-deep);
   --rail-active-shadow:
     inset 0 1px 0 #ffffff,
-    inset 0 -1px 0 color-mix(in srgb, var(--c-paper) 40%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 55%, transparent),
-    0 6px 16px -8px color-mix(in srgb, var(--c-accent) 50%, transparent);
-  --rail-active-bar: color-mix(in srgb, var(--c-accent) 55%, transparent);
-  --rail-add-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 50%, transparent), color-mix(in srgb, var(--c-paper) 24%, transparent));
-  --rail-add-border: color-mix(in srgb, var(--c-paper) 55%, transparent);
-  --rail-add-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 80%, transparent);
+    inset 0 -1px 0 rgba(255, 255, 255, 0.42),
+    0 0 0 1px rgba(255, 255, 255, 0.60),
+    0 2px 4px rgba(72, 82, 160, 0.10),
+    0 8px 18px -16px rgba(72, 82, 160, 0.55);
+  --rail-active-bar: linear-gradient(180deg, rgba(129, 140, 248, 0.75), rgba(99, 102, 241, 0.55));
+  --rail-add-face: linear-gradient(180deg, rgba(255, 255, 255, 0.56), rgba(255, 255, 255, 0.28));
+  --rail-add-border: rgba(255, 255, 255, 0.60);
+  --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
 
   --accent-gradient: linear-gradient(140deg, #85a5f5 0%, #5b78e8 48%, #6d8ef2 100%);
   --orb-gradient: conic-gradient(
@@ -347,11 +527,12 @@
     #dce9f7,
     #cfe2ff
   );
-  --orb-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 90%, transparent), rgba(238, 244, 252, 0.5));
+  --orb-face: linear-gradient(180deg, rgba(255, 255, 255, 0.90), rgba(238, 244, 252, 0.5));
   --orb-shadow:
     inset 0 1px 0 #ffffff,
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 70%, transparent),
-    0 6px 16px -8px rgba(90, 110, 190, 0.55);
+    inset 0 -2px 4px -2px rgba(90, 110, 170, 0.28),
+    0 0 0 1px rgba(255, 255, 255, 0.70),
+    0 7px 18px -8px rgba(90, 110, 190, 0.60);
 
   --text-primary: #232840;
   --text-secondary: #565d78;
@@ -388,81 +569,126 @@
   --c-danger: rgb(248, 113, 113);
 
   /* 深色玻璃：冷板岩蓝而非紫，透明度收敛让原生 blur 干净透出，
-     不叠白色薄雾层（白 0.15 叠深底 = 发灰发糊）；氛围光低强度冷色。 */
-  --window-fill: linear-gradient(
-    152deg,
-    rgba(21, 25, 38, 0.78) 0%,
-    rgba(17, 21, 33, 0.76) 42%,
-    rgba(15, 22, 35, 0.76) 72%,
-    rgba(13, 20, 34, 0.8) 100%
-  );
+     不叠白色薄雾层（白 0.15 叠深底 = 发灰发糊）；氛围光低强度冷色。
+     v0.7 立体层：提高到 0.90-0.93，表面更实、卡片与窗口的层级更清楚。 */
+  --window-fill:
+    radial-gradient(115% 86% at 10% -12%, rgba(92, 132, 206, 0.26), transparent 58%),
+    radial-gradient(95% 74% at 104% 12%, rgba(118, 126, 216, 0.22), transparent 62%),
+    linear-gradient(
+      152deg,
+      rgba(28, 34, 52, 0.92) 0%,
+      rgba(20, 26, 41, 0.90) 42%,
+      rgba(17, 25, 41, 0.90) 72%,
+      rgba(15, 23, 39, 0.93) 100%
+    );
   --window-edge:
-    inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 12%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 20%, transparent),
-    inset 0 -30px 60px -40px color-mix(in srgb, var(--c-night) 60%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.46),
+    inset 0 -36px 60px -40px rgba(0, 0, 0, 0.72),
+    inset 0 2px 16px -10px rgba(255, 255, 255, 0.14);
+  --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.09), transparent 82%);
   --decor:
-    radial-gradient(170px 150px at 4% 0%, rgba(96, 140, 210, 0.2), transparent 70%),
-    radial-gradient(190px 160px at 98% 6%, rgba(120, 132, 210, 0.18), transparent 72%),
-    radial-gradient(220px 180px at 92% 98%, rgba(80, 130, 190, 0.16), transparent 74%),
-    radial-gradient(180px 150px at 0% 92%, rgba(90, 120, 200, 0.14), transparent 74%);
+    linear-gradient(122deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.02) 26%, transparent 48%, rgba(148, 162, 255, 0.06) 78%, rgba(255, 255, 255, 0.08) 100%),
+    radial-gradient(180px 150px at 8% -2%, rgba(96, 140, 210, 0.28), transparent 70%),
+    radial-gradient(190px 160px at 98% 6%, rgba(120, 132, 210, 0.26), transparent 72%),
+    radial-gradient(220px 180px at 92% 98%, rgba(80, 130, 190, 0.20), transparent 74%),
+    radial-gradient(180px 150px at 0% 92%, rgba(90, 120, 200, 0.18), transparent 74%);
 
   /* 单层冷玻璃：颜色直接调进面里，不再用白色渐变叠加提灰 */
-  --card-face: linear-gradient(158deg, rgba(56, 68, 92, 0.55) 0%, rgba(30, 40, 58, 0.5) 100%);
+  --card-face: linear-gradient(158deg, rgba(72, 88, 118, 0.60) 0%, rgba(38, 50, 72, 0.55) 55%, rgba(27, 37, 55, 0.52) 100%);
+  /* 任务卡流线高光（方案 D）：深色冷玻璃用低 alpha 蓝紫光带 */
+  --task-flow:
+    radial-gradient(120% 170% at 100% 78%, rgba(148, 162, 255, 0.11), transparent 62%),
+    linear-gradient(98deg, transparent 42%, rgba(148, 162, 255, 0.05) 68%, rgba(148, 162, 255, 0.10) 100%);
   /* 胶囊不透明底：卡片面 alpha 仅 0.5，必须自带深色实底 */
   --capsule-face: #171b28;
+  --wing-near: #0d1119;
+  --wing-mid: #161c27;
+  --wing-far: #262f40;
+  --wing-panel-base: #141922;
   --card-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 16%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 9%, transparent),
-    0 12px 26px -18px color-mix(in srgb, var(--c-night) 95%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.40),
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    0 2px 4px rgba(0, 0, 0, 0.35),
+    0 14px 30px -16px rgba(0, 0, 0, 0.95);
   --card-shadow-hover:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 22%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 15%, transparent),
-    0 14px 30px -18px color-mix(in srgb, var(--c-night) 100%, transparent);
-  --control-face: linear-gradient(160deg, rgba(64, 76, 102, 0.5), rgba(34, 44, 62, 0.46));
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.40),
+    0 0 0 1px rgba(148, 162, 255, 0.22),
+    0 4px 10px -4px rgba(0, 0, 0, 0.45),
+    0 18px 36px -18px rgba(0, 0, 0, 1);
+  --control-face: linear-gradient(160deg, rgba(74, 88, 116, 0.52), rgba(36, 46, 64, 0.48));
   --control-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 14%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 9%, transparent),
-    0 8px 20px -16px color-mix(in srgb, var(--c-night) 90%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 8px 20px -16px rgba(0, 0, 0, 0.90);
   --control-shadow-hover:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 20%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 13%, transparent),
-    0 10px 26px -16px color-mix(in srgb, var(--c-night) 95%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 0 0 1px rgba(148, 162, 255, 0.26),
+    0 2px 5px -3px rgba(0, 0, 0, 0.45),
+    0 10px 26px -16px rgba(0, 0, 0, 0.95);
   --control-shadow-press:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 10%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 6%, transparent),
-    0 5px 14px -12px color-mix(in srgb, var(--c-night) 80%, transparent);
+    inset 0 1px 2px rgba(0, 0, 0, 0.50),
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 5px 14px -12px rgba(0, 0, 0, 0.80);
 
   --control-shadow-focus:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 20%, transparent),
-    0 0 0 1.5px color-mix(in srgb, var(--c-accent) 50%, transparent),
-    0 10px 24px -16px color-mix(in srgb, var(--c-night) 95%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    0 0 0 1.5px rgba(165, 168, 255, 0.50),
+    0 0 0 4px rgba(165, 168, 255, 0.10),
+    0 10px 24px -16px rgba(0, 0, 0, 0.95);
 
-  --pill-face: color-mix(in srgb, var(--c-paper) 6%, transparent);
-  --pill-active-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 20%, transparent), color-mix(in srgb, var(--c-paper) 10%, transparent));
+  --inset-face: linear-gradient(180deg, rgba(10, 16, 28, 0.30) 0%, rgba(255, 255, 255, 0.04) 58%, rgba(255, 255, 255, 0.06) 100%);
+  --inset-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.60),
+    inset 0 2px 6px -3px rgba(0, 0, 0, 0.50),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.04);
+  --inset-shadow-hover:
+    inset 0 1px 2px rgba(0, 0, 0, 0.55),
+    inset 0 2px 6px -3px rgba(0, 0, 0, 0.45),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12),
+    0 0 0 1px rgba(148, 162, 255, 0.20);
+  --inset-shadow-focus:
+    inset 0 1px 2px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12),
+    0 0 0 1.5px rgba(165, 168, 255, 0.48),
+    0 0 0 4px rgba(165, 168, 255, 0.10);
+  --inset-shadow-sm:
+    inset 0 1px 1px rgba(0, 0, 0, 0.45),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+
+  --pill-face: rgba(255, 255, 255, 0.055);
+  --pill-active-face: linear-gradient(180deg, rgba(255, 255, 255, 0.20) 0%, rgba(255, 255, 255, 0.10) 100%);
   --pill-active-text: #cfd1ff;
   --pill-active-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 25%, transparent),
-    0 4px 12px -6px color-mix(in srgb, var(--c-night) 80%, transparent);
-  --pill-soft-active-face: color-mix(in srgb, var(--c-paper) 12%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 2px 6px -4px rgba(0, 0, 0, 0.75),
+    0 6px 14px -10px rgba(0, 0, 0, 0.90);
+  --pill-soft-active-face: rgba(255, 255, 255, 0.12);
 
   --rail-bg: linear-gradient(90deg, color-mix(in srgb, var(--c-paper) 7%, transparent), color-mix(in srgb, var(--c-paper) 0.8%, transparent) 72%, color-mix(in srgb, var(--c-paper) 0%, transparent));
   --rail-divider: none;
   --rail-hover-face: color-mix(in srgb, var(--c-paper) 10%, transparent);
   --rail-active-face: linear-gradient(
     165deg,
-    color-mix(in srgb, var(--c-paper) 20%, transparent) 0%,
-    rgba(148, 162, 255, 0.14) 50%,
-    rgba(148, 162, 255, 0.07) 100%
+    rgba(255, 255, 255, 0.20) 0%,
+    rgba(148, 162, 255, 0.16) 50%,
+    rgba(148, 162, 255, 0.08) 100%
   );
   --rail-active-text: #d5d6ff;
   --rail-active-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 28%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 10%, transparent),
-    0 6px 16px -10px color-mix(in srgb, var(--c-night) 90%, transparent);
-  --rail-active-bar: rgba(148, 162, 255, 0.6);
-  --rail-add-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 10%, transparent), color-mix(in srgb, var(--c-paper) 4%, transparent));
-  --rail-add-border: color-mix(in srgb, var(--c-paper) 14%, transparent);
-  --rail-add-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 14%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 0 0 1px rgba(148, 162, 255, 0.20),
+    0 6px 16px -10px rgba(0, 0, 0, 0.95);
+  --rail-active-bar: linear-gradient(180deg, rgba(165, 180, 252, 0.9), rgba(129, 140, 248, 0.55));
+  --rail-add-face: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04));
+  --rail-add-border: rgba(255, 255, 255, 0.16);
+  --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
 
   --accent-gradient: linear-gradient(140deg, #7d9af0 0%, #5b78e8 48%, #6d8ef2 100%);
   --orb-gradient: conic-gradient(
@@ -473,10 +699,12 @@
     #5b6fb8,
     #4f6fb8
   );
-  --orb-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 14%, transparent), color-mix(in srgb, var(--c-paper) 4%, transparent));
+  --orb-face: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.04));
   --orb-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 25%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 10%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -2px 4px -2px rgba(0, 0, 0, 0.40),
+    0 0 0 1px rgba(255, 255, 255, 0.10),
+    0 7px 18px -10px rgba(0, 0, 0, 0.95);
 
   --text-primary: #edeffa;
   --text-secondary: #b0b5cd;
@@ -546,7 +774,8 @@
   /* 单一边界：border 已是完整描边，shadow 不再叠加 0 0 0 1px 外环，
      否则 border + 外环两条同心圆线读成「双层壳」 */
   --menu-shadow:
-    0 12px 26px -14px color-mix(in srgb, var(--c-accent) 50%, transparent);
+    0 2px 6px -3px rgba(49, 46, 129, 0.20),
+    0 16px 32px -18px rgba(49, 46, 129, 0.50);
   --menu-text: #262a42;
   --menu-text-dim: #6b7190;
   --menu-hover: color-mix(in srgb, var(--c-accent) 8%, transparent);
@@ -557,9 +786,13 @@
 
   --dialog-face: linear-gradient(180deg, #ffffff, #faf9ff);
   --dialog-shadow:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 80%, transparent),
-    0 24px 56px -20px rgba(49, 46, 129, 0.42);
+    0 0 0 1px rgba(255, 255, 255, 0.82),
+    0 6px 16px -8px rgba(49, 46, 129, 0.22),
+    0 30px 64px -24px rgba(49, 46, 129, 0.48);
   --dialog-scrim: rgba(38, 42, 64, 0.28);
+  --shadow-overlay:
+    0 8px 20px -10px rgba(49, 46, 129, 0.24),
+    0 28px 60px -24px rgba(49, 46, 129, 0.50);
 }
 
 :root[data-preset="dream-gradient"][data-theme="dark"] {
@@ -569,7 +802,8 @@
   --menu-highlight: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 12%, transparent);
   --menu-edge: inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 4%, transparent);
   --menu-shadow:
-    0 16px 34px -16px color-mix(in srgb, var(--c-night) 92%, transparent);
+    0 2px 6px -4px rgba(0, 0, 0, 0.55),
+    0 18px 38px -18px rgba(0, 0, 0, 0.92);
   --menu-text: #e8eaf6;
   --menu-text-dim: #9aa0bd;
   --menu-hover: color-mix(in srgb, var(--c-paper) 7%, transparent);
@@ -580,9 +814,13 @@
 
   --dialog-face: linear-gradient(180deg, #2a2d44, #1e2032);
   --dialog-shadow:
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 9%, transparent),
-    0 28px 64px -22px color-mix(in srgb, var(--c-night) 95%, transparent);
+    0 0 0 1px rgba(255, 255, 255, 0.09),
+    0 8px 18px -10px rgba(0, 0, 0, 0.60),
+    0 34px 72px -26px rgba(0, 0, 0, 0.95);
   --dialog-scrim: rgba(6, 8, 18, 0.5);
+  --shadow-overlay:
+    0 10px 24px -12px rgba(0, 0, 0, 0.65),
+    0 34px 72px -26px rgba(0, 0, 0, 0.95);
 }
 
 :root[data-preset="liquid-glass"] {
@@ -596,8 +834,9 @@
   --menu-highlight: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 92%, transparent);
   --menu-edge: inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 26%, transparent);
   --menu-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 85%, transparent),
-    0 16px 34px -18px rgba(72, 82, 160, 0.62);
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 2px 6px -3px rgba(72, 82, 160, 0.24),
+    0 18px 36px -18px rgba(72, 82, 160, 0.62);
   --menu-text: #232840;
   --menu-text-dim: #5b6280;
   --menu-hover: color-mix(in srgb, var(--c-paper) 50%, transparent);
@@ -608,10 +847,14 @@
 
   --dialog-face: linear-gradient(165deg, #fbfdff, #e9efff);
   --dialog-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 90%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 36%, transparent),
-    0 28px 64px -22px rgba(72, 82, 160, 0.66);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 0 0 1px rgba(255, 255, 255, 0.36),
+    0 8px 20px -12px rgba(72, 82, 160, 0.40),
+    0 32px 68px -24px rgba(72, 82, 160, 0.66);
   --dialog-scrim: rgba(40, 46, 80, 0.24);
+  --shadow-overlay:
+    0 8px 22px -12px rgba(72, 82, 160, 0.34),
+    0 30px 66px -24px rgba(72, 82, 160, 0.62);
 }
 
 :root[data-preset="liquid-glass"][data-theme="dark"] {
@@ -621,8 +864,9 @@
   --menu-highlight: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 18%, transparent);
   --menu-edge: inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 5%, transparent);
   --menu-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 16%, transparent),
-    0 18px 38px -18px color-mix(in srgb, var(--c-night) 92%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 2px 6px -4px rgba(0, 0, 0, 0.55),
+    0 20px 42px -18px rgba(0, 0, 0, 0.92);
   --menu-text: #e9ecf8;
   --menu-text-dim: #9aa2c0;
   --menu-hover: color-mix(in srgb, var(--c-paper) 9%, transparent);
@@ -633,10 +877,14 @@
 
   --dialog-face: linear-gradient(165deg, #2b3450, #161b2a);
   --dialog-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 16%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 8%, transparent),
-    0 30px 70px -24px color-mix(in srgb, var(--c-night) 95%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 10px 22px -12px rgba(0, 0, 0, 0.60),
+    0 36px 76px -26px rgba(0, 0, 0, 0.95);
   --dialog-scrim: rgba(4, 6, 16, 0.48);
+  --shadow-overlay:
+    0 10px 24px -12px rgba(0, 0, 0, 0.62),
+    0 36px 76px -26px rgba(0, 0, 0, 0.95);
 }
 
 /* Solid 材质：弹层必须不透明，否则叠在正文上会读不清 */
@@ -728,17 +976,25 @@
   :root[data-preset],
   :root[data-theme="dark"][data-preset] {
     --card-face: var(--surface-base, #ffffff);
+    --task-flow: none; /* 高对比下不画装饰性流线光带 */
     --control-face: #ffffff;
+    --inset-face: #ffffff;
     --rail-active-face: rgba(99, 102, 241, 0.18);
     --decor-opacity: 0;
+    --header-wash: none;
     --card-shadow: 0 0 0 1px currentColor;
     --control-shadow: 0 0 0 1px currentColor;
     --rail-active-shadow: 0 0 0 1px currentColor;
+    --inset-shadow: 0 0 0 1px currentColor;
+    --inset-shadow-hover: 0 0 0 1px currentColor;
+    --inset-shadow-focus: 0 0 0 2px currentColor;
+    --inset-shadow-sm: 0 0 0 1px currentColor;
   }
   :root[data-theme="dark"],
   :root[data-theme="dark"][data-preset] {
     --card-face: #1a1e29;
     --control-face: #1a1e29;
+    --inset-face: #1a1e29;
   }
 }
 
@@ -869,8 +1125,8 @@
 
 .preset-swatch.swatch-liquid-glass {
   background:
-    radial-gradient(circle at 30% 25%, color-mix(in srgb, var(--c-paper) 95%, transparent), transparent 60%),
-    linear-gradient(140deg, #b9cdf6, #cfc4f5 50%, #f3c6e0);
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.95), transparent 60%),
+    linear-gradient(140deg, #cfe2f8, #d7e8f8 52%, #eef6ff);
 }
 
 /* ── 8. 左侧导航轨 ──────────────────────────────────────────── */
@@ -886,7 +1142,7 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
   /* 顶部内边距与 .tab-content 的 10px 严格一致：
      第一个导航胶囊的顶边 = 右侧第一排统计卡片的顶边 */
   padding: 10px 6px 10px;
@@ -912,7 +1168,7 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* 六个入口在矮窗口里放不下时这里滚动，底部「快速添加」始终留在视野内 */
+  /* 六个入口在矮窗口里放不下时滚动，顶部新建入口始终可见 */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -999,66 +1255,45 @@
   color: #fff;
 }
 
-.rail-foot {
+/* 新建任务是跨页面操作，不作为导航选中态；固定在导航轨顶部。 */
+.rail-head {
   position: relative;
   z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-top: 8px;
-  margin-top: 8px;
-  border-top: none;
-  /* 固定在底部：不参与 .rail-items 的滚动 */
   flex: 0 0 auto;
+  margin-bottom: 8px;
 }
 
-/* 弱化的分隔：两端渐隐，不再是一条贯穿整个导航轨的硬线 */
-.rail-foot::before {
-  content: "";
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  top: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--divider) 28%, var(--divider) 72%, transparent);
-  pointer-events: none;
-}
-
-.rail-add {
-  gap: 2px;
-  padding: 5px 2px 5px;
-  color: var(--text-secondary);
+.rail-new-task {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 2px;
+  color: var(--accent);
   background: var(--rail-add-face);
   border: 1px solid var(--rail-add-border);
-  border-radius: 12px;
+  border-radius: 10px;
   box-shadow: var(--rail-add-shadow);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
 }
 
-.rail-add:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
+.rail-new-task:hover {
+  background: var(--rail-hover-face);
   border-color: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
-.rail-add:active {
+.rail-new-task:active {
   transform: scale(0.97);
 }
 
-.rail-add:focus-visible {
+.rail-new-task:focus-visible {
   outline: none;
   box-shadow: var(--control-shadow-focus);
-}
-
-.rail-add .rail-icon {
-  width: 22px;
-  height: 20px;
-  border-radius: 7px;
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.rail-add .rail-label {
-  color: inherit;
 }
 
 /* ── 9. 内容区与任务面板 ────────────────────────────────────── */
@@ -1295,11 +1530,17 @@ textarea:focus {
 
 /* 任务卡 */
 
+/* 任务卡（方案 D，2026-11-02 重绘）：
+   - 常驻左色条移除，优先级只由 .priority-tag 表达；
+   - 卡面 = 流线高光(--task-flow) + 玻璃渐变(--card-face)，
+     顶部内高光 / 底部沉降 / 1px 边缘反射由 --card-shadow 承担；
+   - hover 抬一档阴影（第 15 节再补 -1px 上浮），无大幅位移与发光；
+   - 完成态弱化（opacity 0.72 + 标题删除线）与逾期强调（.task-due.overdue
+     错误语义色）都在 base 层定义，这里不重复。 */
 .task-item {
   border: none;
-  border-left: 2.5px solid var(--p2);
   border-radius: var(--radius-card);
-  background: var(--card-face);
+  background: var(--task-flow), var(--card-face);
   box-shadow: var(--card-shadow);
   padding: 8px 9px;
   transition: box-shadow 0.16s ease, background-color 0.16s ease;
@@ -1308,11 +1549,6 @@ textarea:focus {
 .task-item:hover {
   box-shadow: var(--card-shadow-hover);
 }
-
-.task-item.priority-0 { border-left-color: var(--p0); }
-.task-item.priority-1 { border-left-color: var(--p1); }
-.task-item.priority-2 { border-left-color: var(--p2); }
-.task-item.priority-3 { border-left-color: var(--p3); }
 
 .task-title {
   font-size: 12.5px;
@@ -1541,13 +1777,13 @@ textarea:focus {
 }
 
 .preset-card.preset-dream-gradient .preset-preview {
-  background: linear-gradient(150deg, #eef4ff, #efeaff 46%, #fdeef7);
+  background: linear-gradient(150deg, #e8f0ff, #ece3ff 46%, #ffe8f6);
 }
 
 .preset-card.preset-liquid-glass .preset-preview {
   background:
-    radial-gradient(circle at 22% 18%, color-mix(in srgb, var(--c-paper) 90%, transparent), transparent 55%),
-    linear-gradient(150deg, #cfdcff, #d9ceff 48%, #fbd6ea);
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.92), transparent 55%),
+    linear-gradient(150deg, #dceaff, #d7e7f8 48%, #eef5ff);
 }
 
 .preset-card.preset-liquid-glass .preset-preview::after {
@@ -1683,8 +1919,7 @@ textarea:focus {
     border-radius: 10px;
   }
 
-  .rail-label,
-  .rail-foot .rail-label {
+  .rail-label {
     display: none;
   }
 
@@ -1752,18 +1987,279 @@ textarea:focus {
   .overview-card,
   .task-item,
   .quick-add-row,
-  .preset-card {
+  .preset-card,
+  .clip-item,
+  .clip-group-card,
+  .history-item,
+  .btn,
+  .icon-btn {
     transition: none;
   }
 
-  .preset-card:hover {
+  .preset-card:hover,
+  .rail-item:hover,
+  .rail-item.active,
+  .rail-item.active:active,
+  .clip-item:hover,
+  .clip-group-card:hover,
+  .history-item:hover,
+  .task-item:hover,
+  .task-check:active,
+  .task-nav-btn:active,
+  .btn:active,
+  .icon-btn:active {
     transform: none;
   }
+}
 
-  .icon-btn:active,
-  .btn:active {
-    transform: none;
-  }
+/* ════════════════════════════════════════════════════════════════
+   15. 立体材质层（v0.7 视觉升级）
+   ────────────────────────────────────────────────────────────────
+   目标：窗口 → 表面卡片 → 凸起控件 → 浮层四层高度差清晰，
+   但不引入外投影（透明窗口的 Win32 区域会裁掉窗口外阴影，
+   见 docs/ui-themes/03-window-composition.md §4），也不引入
+   实时 backdrop-filter、常驻动画或按帧更新的光影。
+
+   方向性约定（所有预设共用）：
+   - 光源在左上：顶部/左侧高光，底部/右侧沉降；
+   - 卡片凸起：内高光 + 外投影；输入容器内凹：顶部沉降 + 底部反光；
+   - 选中/按下：选中向上浮 1px，按下回落并换成内凹阴影，形成实体反馈。
+   ════════════════════════════════════════════════════════════════ */
+
+/* 窗口与标题栏：顶部受光带（静态渐变，一次绘制） */
+.dock-window {
+  background-size: 100% 100%;
+}
+
+.titlebar {
+  background-image: var(--header-wash);
+}
+
+/* 左侧导航：选中胶囊轻微浮起，按下回落到表面 */
+.rail-item {
+  transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.rail-item:hover {
+  transform: translateY(-0.5px);
+}
+
+.rail-item.active {
+  transform: translateY(-1px);
+}
+
+.rail-item.active:active {
+  transform: translateY(0.5px);
+  box-shadow: var(--inset-shadow-sm);
+}
+
+.rail-item.active::before {
+  box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--c-accent) 55%, transparent);
+}
+
+/* 一级表面：列表卡 / 统计卡 / 设置分组 / Agent 区块统一凸起 */
+.summary-card,
+.panel-block,
+.clip-item,
+.clip-group-card,
+.history-item,
+.action-item {
+  box-shadow: var(--card-shadow);
+  transition: box-shadow 0.16s ease, transform 0.16s ease, border-color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.clip-item:hover,
+.clip-group-card:hover,
+.history-item:hover {
+  box-shadow: var(--card-shadow-hover);
+  transform: translateY(-1px);
+}
+
+.clip-item.selected,
+.clip-group-card.selected {
+  background: var(--accent-soft);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    var(--card-shadow-hover);
+}
+
+.task-item {
+  transition: box-shadow 0.16s ease, transform 0.16s ease, background-color 0.16s ease;
+}
+
+.task-item:hover {
+  transform: translateY(-1px);
+}
+
+/* 二级控件：按钮凸起；图标按钮悬停只抬一档光照 */
+.btn {
+  box-shadow: var(--control-shadow);
+  transition: box-shadow 0.16s ease, background-color 0.12s ease, border-color 0.12s ease,
+    color 0.12s ease, transform 0.12s ease;
+}
+
+.btn:hover {
+  box-shadow: var(--control-shadow-hover);
+}
+
+.btn:active {
+  box-shadow: var(--control-shadow-press);
+  transform: translateY(0.5px) scale(0.99);
+}
+
+.btn.primary {
+  border-color: transparent;
+  background: var(--accent-gradient);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 42%, transparent),
+    0 1px 2px color-mix(in srgb, var(--c-night) 22%, transparent),
+    0 8px 16px -10px color-mix(in srgb, var(--c-accent) 78%, transparent);
+}
+
+.btn.primary:hover {
+  background: var(--accent-gradient);
+  border-color: transparent;
+  color: var(--accent-text-on);
+  filter: brightness(1.05);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 48%, transparent),
+    0 2px 4px color-mix(in srgb, var(--c-night) 22%, transparent),
+    0 10px 20px -10px color-mix(in srgb, var(--c-accent) 88%, transparent);
+}
+
+.btn.primary:active {
+  filter: brightness(0.98);
+  box-shadow:
+    inset 0 1px 2px color-mix(in srgb, var(--c-night) 26%, transparent),
+    0 3px 8px -6px color-mix(in srgb, var(--c-accent) 60%, transparent);
+  transform: translateY(0.5px) scale(0.99);
+}
+
+.icon-btn {
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s, transform 0.12s;
+}
+
+.icon-btn:hover {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 42%, transparent),
+    0 2px 6px -4px color-mix(in srgb, var(--c-night) 30%, transparent);
+}
+
+.icon-btn:active {
+  box-shadow: var(--inset-shadow-sm);
+  transform: translateY(0.5px) scale(0.97);
+}
+
+/* 输入容器：浅内凹。容器负责唯一可见边界，内部 input 仍完全透明 */
+.quick-add-row,
+.search-box,
+.clip-search {
+  border: none;
+  background: var(--inset-face);
+  box-shadow: var(--inset-shadow);
+  transition: box-shadow 0.16s ease;
+}
+
+.quick-add-row:hover:not(:focus-within),
+.search-box:hover:not(:focus-within),
+.clip-search:hover:not(:focus-within) {
+  box-shadow: var(--inset-shadow-hover);
+}
+
+.quick-add-row:focus-within,
+.search-box:focus-within,
+.clip-search:focus-within {
+  box-shadow: var(--inset-shadow-focus);
+}
+
+/* 独立文本控件（编辑器 / 字段）同样使用内凹表面 */
+select,
+input[type="text"],
+input[type="number"],
+input[type="datetime-local"],
+textarea {
+  background: var(--inset-face);
+  box-shadow: var(--inset-shadow);
+}
+
+select:focus,
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="datetime-local"]:focus,
+textarea:focus {
+  box-shadow: var(--inset-shadow-focus);
+}
+
+/* 分段控件：容器内凹、选中药丸凸起 */
+.seg-group:not(.subtle) {
+  box-shadow: var(--inset-shadow-sm);
+}
+
+/* 预设选择卡：悬停抬升 + 选中环，预览本身也有厚度 */
+.preset-card {
+  transition: box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.preset-card:hover {
+  box-shadow: var(--control-shadow-hover);
+  transform: translateY(-1px);
+}
+
+.preset-card.active {
+  box-shadow:
+    0 0 0 1.5px var(--accent),
+    var(--control-shadow),
+    0 10px 20px -14px color-mix(in srgb, var(--c-accent) 55%, transparent);
+}
+
+.preset-preview {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 60%, transparent),
+    0 2px 6px -4px color-mix(in srgb, var(--c-night) 28%, transparent);
+}
+
+.pp-card {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 70%, transparent),
+    0 1px 2px color-mix(in srgb, var(--c-accent) 16%, transparent);
+}
+
+/* 状态标签：小面积凸起，不改变原有颜色语义 */
+.clip-kind,
+.history-kind,
+.action-kind {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 45%, transparent),
+    0 1px 2px -1px color-mix(in srgb, var(--c-night) 22%, transparent);
+}
+
+/* 分类胶囊：面板与翼片同属一套材质（冷蓝玻璃基底 + 内侧边缘高光）。
+   底色仍由 styles.css 的 --capsule-face（不透明）承担，玻璃层由
+   --wing-panel-face / --wing-panel-border / --wing-panel-shadow 表达，
+   这里只按预设补充边缘厚度，不改背景。
+   **轨道不在此列**：翼片表面由 `CapsuleWing` 的 SVG 轮廓承担，
+   在轨道容器上写 box-shadow / border 会沿矩形外框画出一整块方影。 */
+.capsule-panel {
+  border-color: var(--wing-panel-border);
+  box-shadow:
+    inset 0 1px 0 var(--wing-panel-inner),
+    inset 0 -2px 6px -6px color-mix(in srgb, var(--c-night) 45%, transparent),
+    var(--wing-panel-shadow);
+}
+
+.cap-btn.is-active {
+  background: var(--rail-active-face);
+  color: var(--rail-active-text);
+  box-shadow: var(--rail-active-shadow);
+}
+
+/* 吸附反馈条：与卡片的浮起方向一致 */
+.snap-feedback {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 42%, transparent),
+    var(--shadow-overlay);
 }
 }
 

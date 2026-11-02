@@ -1,5 +1,6 @@
 //! 历史条目卡片：类型/预览/来源/时间 + 复制、收藏、置顶、详情、删除、关联。
 
+import { useLayoutEffect, useRef } from "react";
 import {
   CheckSquare, Code2, Copy, Files, Globe, Image as ImageIcon, Link2, Maximize2,
   Pin, Square, Star, Trash2, Type,
@@ -20,6 +21,8 @@ export default function ClipboardItemCard({
   item,
   selected,
   linkMode,
+  removing,
+  pending,
   onSelect,
   onCopy,
   onToggle,
@@ -30,6 +33,10 @@ export default function ClipboardItemCard({
   item: ClipboardItem;
   selected: boolean;
   linkMode: boolean;
+  /** 已删除、正在播放退出动画：动画结束后才会从列表移除 */
+  removing: boolean;
+  /** 删除请求在途（后端尚未确认）：显示执行中并挡住重复操作 */
+  pending: boolean;
   onSelect: () => void;
   onCopy: () => void;
   onToggle: (flag: "favorite" | "pinned") => void;
@@ -40,17 +47,33 @@ export default function ClipboardItemCard({
   const Icon = KIND_ICONS[item.kind] ?? Type;
   const meta = sourceLabel(item.source_app, item.source_title);
   const stop = (e: React.MouseEvent) => e.stopPropagation();
+  // 在途或正在离场：整卡冻结，任何再次操作都只会制造第二次删除或打开已消失的详情
+  const locked = removing || pending;
+  // 标题优先展示（自动生成或手动编辑）；有标题时预览降为次行弱化信息
+  const headline = item.title || "";
+  const showPreview = item.preview !== "" || !headline;
+  const cardRef = useRef<HTMLElement>(null);
+
+  // 收拢动画需要卡片自身的真实高度；只对被删除的卡片测量一次，不常驻、不轮询。
+  useLayoutEffect(() => {
+    const el = cardRef.current;
+    if (removing && el) el.style.setProperty("--clip-exit-h", `${el.offsetHeight}px`);
+  }, [removing]);
 
   return (
     <article
-      className={`clip-item ${selected ? "selected" : ""}`}
-      onClick={onDetail}
+      ref={cardRef}
+      data-clip-id={item.id}
+      className={`clip-item ${selected ? "selected" : ""} ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
+      onClick={locked ? undefined : onDetail}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onDetail();
+        if (e.key === "Enter" && !locked) onDetail();
       }}
-      tabIndex={0}
+      tabIndex={locked ? -1 : 0}
       role="button"
-      aria-label={`${kindLabel(item.kind)}：${item.preview || "空内容"}`}
+      aria-hidden={removing || undefined}
+      aria-busy={pending || undefined}
+      aria-label={`${kindLabel(item.kind)}：${headline || item.preview || "空内容"}`}
     >
       <button
         className="clip-check"
@@ -79,9 +102,20 @@ export default function ClipboardItemCard({
           {item.kind === "image" && (
             <ClipboardThumb itemId={item.id} hasThumb={item.has_thumb} size={44} />
           )}
-          <span className={item.kind === "text" || item.kind === "html" ? "clip-text" : ""}>
-            {item.preview || "（无文本预览）"}
-          </span>
+          <div className="clip-preview-body">
+            {headline && (
+              <span className="clip-title" title={headline}>{headline}</span>
+            )}
+            {showPreview && (
+              <span
+                className={`${
+                  item.kind === "text" || item.kind === "html" ? "clip-text" : ""
+                } ${headline ? "clip-preview-sub" : ""}`}
+              >
+                {item.preview || "（无文本预览）"}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="clip-meta">
@@ -102,11 +136,11 @@ export default function ClipboardItemCard({
 
       <div className="clip-actions" onClick={stop}>
         {linkMode && (
-          <button className="btn sm primary" onClick={onLink} title="关联到当前任务">
+          <button className="btn sm primary" onClick={onLink} disabled={locked} title="关联到当前任务">
             <Link2 size={11} /> 关联
           </button>
         )}
-        <button className="icon-btn sm" data-tip="复制" aria-label="复制" onClick={onCopy}>
+        <button className="icon-btn sm" data-tip="复制" aria-label="复制" onClick={onCopy} disabled={locked}>
           <Copy size={12} />
         </button>
         <button
@@ -115,6 +149,7 @@ export default function ClipboardItemCard({
           aria-label={item.pinned ? "取消置顶" : "置顶"}
           aria-pressed={item.pinned}
           onClick={() => onToggle("pinned")}
+          disabled={locked}
         >
           <Pin size={12} />
         </button>
@@ -124,13 +159,20 @@ export default function ClipboardItemCard({
           aria-label={item.favorite ? "取消收藏" : "收藏"}
           aria-pressed={item.favorite}
           onClick={() => onToggle("favorite")}
+          disabled={locked}
         >
           <Star size={12} />
         </button>
-        <button className="icon-btn sm" data-tip="详情" aria-label="详情" onClick={onDetail}>
+        <button className="icon-btn sm" data-tip="详情" aria-label="详情" onClick={onDetail} disabled={locked}>
           <Maximize2 size={12} />
         </button>
-        <button className="icon-btn sm danger-ghost" data-tip="删除" aria-label="删除" onClick={onDelete}>
+        <button
+          className="icon-btn sm danger-ghost"
+          data-tip="删除"
+          aria-label="删除"
+          onClick={onDelete}
+          disabled={locked}
+        >
           <Trash2 size={12} />
         </button>
       </div>

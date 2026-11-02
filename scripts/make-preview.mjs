@@ -233,14 +233,14 @@ const shim = `
 
   // ── 智能剪贴板夹具（v0.6 视觉走查：抽屉展开态）──
   const clipboardItems = [
-    { id: "ci1", kind: "text", text: "POST /api/session/start 返回 202，已进入队列。", html: "", preview: "POST /api/session/start 返回 202…", byte_size: 168, source_app: "Code.exe", source_title: "session.rs - task-dock", image_width: null, image_height: null, file_paths: [], favorite: true, pinned: false, copy_count: 2, created_at: iso(12), last_seen_at: iso(12), sensitive: false },
-    { id: "ci2", kind: "link", text: "https://tauri.app/", html: "", preview: "https://tauri.app/", byte_size: 21, source_app: "msedge.exe", source_title: "Tauri", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: true, copy_count: 1, created_at: iso(26), last_seen_at: iso(26), sensitive: false },
-    { id: "ci3", kind: "html", text: "", html: "<p>周报要点</p>", preview: "周报要点", byte_size: 92, source_app: "WINWORD.EXE", source_title: "周报.docx", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(48), last_seen_at: iso(48), sensitive: false },
-    { id: "ci4", kind: "image", text: "", html: "", preview: "截图 1280×720", byte_size: 24576, source_app: "SnippingTool.exe", source_title: "截屏", image_width: 1280, image_height: 720, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(64), last_seen_at: iso(64), sensitive: false },
-    { id: "ci5", kind: "files", text: "", html: "", preview: "3 个文件", byte_size: 0, source_app: "Explorer.exe", source_title: "资源管理器", image_width: null, image_height: null, file_paths: ["D:\\Develop\\task_dock\\README.md", "D:\\Develop\\task_dock\\docs\\ARCHITECTURE.md", "D:\\Develop\\task_dock\\package.json"], favorite: false, pinned: false, copy_count: 1, created_at: iso(90), last_seen_at: iso(90), sensitive: false },
+    { id: "ci1", kind: "text", text: "POST /api/session/start 返回 202，已进入队列。", html: "", preview: "POST /api/session/start 返回 202…", title: "接口返回：POST /api/session/sta…", title_source: "auto", has_image: false, has_thumb: false, byte_size: 168, source_app: "Code.exe", source_title: "session.rs - task-dock", image_width: null, image_height: null, file_paths: [], favorite: true, pinned: false, copy_count: 2, created_at: iso(12), last_seen_at: iso(12), sensitive: false },
+    { id: "ci2", kind: "link", text: "https://tauri.app/", html: "", preview: "https://tauri.app/", title: "tauri.app", title_source: "auto", has_image: false, has_thumb: false, byte_size: 21, source_app: "msedge.exe", source_title: "Tauri", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: true, copy_count: 1, created_at: iso(26), last_seen_at: iso(26), sensitive: false },
+    { id: "ci3", kind: "html", text: "", html: "<p>周报要点</p>", preview: "周报要点", title: "周报要点", title_source: "manual", has_image: false, has_thumb: false, byte_size: 92, source_app: "WINWORD.EXE", source_title: "周报.docx", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(48), last_seen_at: iso(48), sensitive: false },
+    { id: "ci4", kind: "image", text: "", html: "", preview: "截图 1280×720", title: "截图 1280×720", title_source: "auto", has_image: true, has_thumb: true, byte_size: 24576, source_app: "SnippingTool.exe", source_title: "截屏", image_width: 1280, image_height: 720, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(64), last_seen_at: iso(64), sensitive: false },
+    { id: "ci5", kind: "files", text: "", html: "", preview: "3 个文件", title: "README.md 等 3 个文件", title_source: "auto", has_image: false, has_thumb: false, byte_size: 0, source_app: "Explorer.exe", source_title: "资源管理器", image_width: null, image_height: null, file_paths: ["D:\\Develop\\task_dock\\README.md", "D:\\Develop\\task_dock\\docs\\ARCHITECTURE.md", "D:\\Develop\\task_dock\\package.json"], favorite: false, pinned: false, copy_count: 1, created_at: iso(90), last_seen_at: iso(90), sensitive: false },
   ];
   const clipboardGroups = [
-    { id: "cg1", name: "调试截图（3 项）", mode: "auto", status: "closed", favorite: false, pinned: false, created_at: iso(70), updated_at: iso(60), closed_at: iso(60), item_count: 3 },
+    { id: "cg1", name: "调试截图（3 项）", mode: "auto", status: "closed", favorite: false, pinned: false, created_at: iso(70), updated_at: iso(60), closed_at: iso(60), item_count: 3, image_count: 1, preview: "截图 1280×720" },
   ];
   const clipboardStats = {
     items: clipboardItems.length,
@@ -288,7 +288,10 @@ const shim = `
       case "agent_snapshot": return snapshot;
       case "discovery_scan": return discovered;
       case "list_notifications": return notifications;
-      case "list_agent_events": return events;
+      // v0.7 历史页改用分页命令：shim 返回同一批 fixture 包装成页对象
+      case "notification_page": return { items: notifications, has_more: false, filtered_total: notifications.length };
+      case "notification_inbox_stats": return { unread: notifications.filter((n) => !n.is_read).length, total: notifications.length };
+      case "list_agent_events": return { items: events, has_more: false, filtered_total: events.length };
       case "actions_feed": return actionFeed;
       case "actions_ack":
       case "actions_unack": return 1;
@@ -317,11 +320,30 @@ const shim = `
       case "workspace_detach_task": return null;
       case "clipboard_snapshot_links":
         return clipboardSnapLinks.filter((l) => l.snapshot_id === args?.snapshotId);
-      case "clipboard_view": return clipboardView;
-      case "clipboard_stats": return clipboardStats;
+      // 真机 IPC 每次返回新反序列化的对象；夹具必须同样返回快照，
+      // 否则删除类 mock 就地 splice 会直接改写 store 里的 view，
+      // 让「离场中按原位钉住」在走查前就找不到目标行（假阴性）。
+      case "clipboard_view":
+        return {
+          items: clipboardItems.map((i) => ({ ...i })),
+          groups: clipboardGroups.map((g) => ({ ...g })),
+          stats: { ...clipboardStats, items: clipboardItems.length, groups: clipboardGroups.length },
+          total_items: clipboardItems.length,
+        };
+      case "clipboard_stats": return { ...clipboardStats, items: clipboardItems.length, groups: clipboardGroups.length };
       case "clipboard_item": return clipboardItems.find((i) => i.id === args?.itemId) ?? clipboardItems[0];
-      case "clipboard_group": return clipboardGroups[0];
-      case "clipboard_thumb": return null;      case "clipboard_link_snapshot":
+      // 分组详情接口必须带 items/image_count/preview（bridge.ClipboardGroup 的「仅详情接口填充」字段），
+      // 缺 items 会让 ClipboardGroupDetail 遍历 group.items 时直接崩树（白屏）。
+      case "clipboard_group": return {
+        ...clipboardGroups[0],
+        image_count: 1,
+        preview: clipboardItems[3].preview,
+        items: [clipboardItems[3], clipboardItems[0], clipboardItems[2]],
+      };
+      case "clipboard_thumb":
+        // 走查截图缩略图用：给一张占位图（真实链路由后端按 item 返回 PNG data URL）
+        return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='76'><rect width='120' height='76' fill='%2361789a'/><rect x='8' y='8' width='104' height='60' fill='%23dce6f5'/></svg>";
+      case "clipboard_link_snapshot":
         return { id: "csl-new", snapshot_id: args?.snapshotId, target_type: args?.targetType, target_id: args?.targetId, created_at: iso(0), label: "预览素材", kind: "text" };
       case "clipboard_unlink_snapshot": return null;
       case "clipboard_task_links": return clipboardTaskLinks.filter((l) => l.task_id === args?.taskId);
@@ -331,12 +353,50 @@ const shim = `
       case "clipboard_probe": return { ok: true, message: "预览夹具：剪贴板可用", keys: ["Ctrl+C"], checked_at: iso(0) };
       case "clipboard_visible_targets": return [];
       case "clipboard_foreground_target": return null;
+      // 复制类命令统一返回 CopyReport（前端 reportCopy 读 mode/bytes/warnings/item_count）
       case "clipboard_copy_item":
       case "clipboard_copy_group_rich":
-      case "clipboard_copy_group_files": return { ok: true, copied: 1, total: 1, restored: true };
+      case "clipboard_copy_group_files":
+      case "clipboard_copy_items_rich":
+      case "clipboard_copy_items_files":
+        return { mode: "text", bytes: 168, warnings: [], sequence: 1, item_count: 1 };
+      case "clipboard_copy_text": return null;
       case "clipboard_toggle_item":
-      case "clipboard_toggle_group": return null;
-      case "clipboard_cleanup": return { groups_closed: 0, bytes_freed: 0, orphan_files_removed: 0 };
+        return clipboardItems.find((i) => i.id === args?.itemId) ?? clipboardItems[0];
+      case "clipboard_toggle_group":
+        return { ...clipboardGroups[0] };
+      case "clipboard_rename_item": {
+        const it = clipboardItems.find((i) => i.id === args?.itemId);
+        if (it) {
+          it.title = args?.title || it.preview;
+          it.title_source = args?.title ? "manual" : "auto";
+        }
+        return it ?? null;
+      }
+      case "clipboard_delete_items": {
+        const ids = new Set(args?.ids ?? []);
+        const removed = clipboardItems.filter((i) => ids.has(i.id)).length;
+        for (let k = clipboardItems.length - 1; k >= 0; k -= 1) {
+          if (ids.has(clipboardItems[k].id)) clipboardItems.splice(k, 1);
+        }
+        return { deleted: removed, freed_bytes: removed * 20, retained_shared: 0 };
+      }
+      case "clipboard_delete_group": {
+        const gi = clipboardGroups.findIndex((g) => g.id === args?.groupId);
+        if (gi >= 0) clipboardGroups.splice(gi, 1);
+        return { deleted: 0, freed_bytes: 0, retained_shared: 0 };
+      }
+      case "clipboard_clear_history": {
+        const cleared = { items: clipboardItems.length, groups: clipboardGroups.length };
+        clipboardItems.length = 0;
+        clipboardGroups.length = 0;
+        return { ...cleared, freed_bytes: 24576, failed_files: 0 };
+      }
+      case "clipboard_cleanup":
+        return {
+          items_deleted: 0, groups_closed: 0, images_removed: 0, thumbs_removed: 0,
+          orphan_files_removed: 0, bytes_freed: 0, retried: false,
+        };
       case "task_context": {
         const task = tasks.find((t) => t.id === args?.taskId) || tasks[0];
         return {

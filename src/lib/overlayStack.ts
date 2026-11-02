@@ -22,6 +22,14 @@ export interface OverlayEntry {
   onEscape: () => void;
   /** 该层对应的 DOM 根节点；用于判定嵌套深度（内层优先于外层）。 */
   root?: HTMLElement | null;
+  /**
+   * 是否阻止胶囊的「光标离开自动收起」（默认 true）。
+   *
+   * 胶囊面板自己也注册一层（为了 Esc 只收面板、不隐藏窗口），但它**不是**
+   * 「用户正在菜单/对话框里交互」——若不区分，`topOverlay()` 恒有值，
+   * 自动收起永远不触发，展开后的面板会一直停在轨道上方。
+   */
+  blocksAutoHide?: boolean;
 }
 
 const stack: OverlayEntry[] = [];
@@ -96,6 +104,17 @@ export function topOverlay(): OverlayEntry | undefined {
 
 export function hasOverlay(kind?: OverlayKind): boolean {
   return kind ? stack.some((e) => e.kind === kind) : stack.length > 0;
+}
+
+/**
+ * 是否有**会阻止胶囊自动收起**的弹层（菜单 / 对话框 / 模态等）。
+ *
+ * 与 `topOverlay()` 的区别：胶囊面板自己注册的 Escape 层
+ * （`blocksAutoHide: false`）不算「用户正在弹层里交互」，不得阻止自动收起。
+ * 任一其他层在场都阻止——此时用户可能正在菜单/对话框里操作胶囊内容。
+ */
+export function hasAutoHideBlockingOverlay(): boolean {
+  return stack.some((e) => e.blocksAutoHide !== false);
 }
 
 /** 测试用：清空弹层栈。 */
