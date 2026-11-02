@@ -252,8 +252,39 @@ pub fn forget_window(hwnd: isize) {
 /// - `TASK_DOCK_WINDOW_DWM_CORNER=0`：不设置 DWM 角偏好（保持系统默认）
 /// - `TASK_DOCK_WINDOW_DWM_CORNER=dontround`：显式 DONOTROUND（区域自己裁圆角时用）
 /// - `TASK_DOCK_WINDOW_DWM_BORDER=0`：保留 DWM 默认 1px 边框
+///
+/// 注意：这些开关只能把 DWM 圆角**关掉**，任何取值都不会让胶囊态重新打开
+/// `DWMWCP_ROUND`（2026-11-02 真机根因修复的契约，见 `dwm_rounded_for`）。
 fn flag(name: &str) -> bool {
     std::env::var(name).map(|v| v != "0").unwrap_or(true)
+}
+
+/// 主窗当前要应用的区域形态 —— 决定 DWM 角偏好是否参与合成。
+///
+/// **2026-11-02 真机根因（停靠胶囊整窗轮廓/阴影）**：胶囊停靠态的区域只是很小的
+/// 翼片/面板，但历史实现末尾调用 `apply_dwm(hwnd, true)` 设 `DWMWCP_ROUND`。
+/// Win11 的 DWM 会因此**按整个窗口矩形**绘制圆角系统边框 + 外部投影；窗口内容本身
+/// 仍是透明的（像素级 A/B：窗口中心与背景同色，ROUND/DONOTROUND 的差异全部是「比
+/// 背景更暗」的边框/投影像素）。`SetWindowRgn` 只裁窗口自身内容表面、裁不到 DWM 的
+/// NC 合成：真机同刻 `PrintWindow` 只有胶囊，`CopyFromScreen` 却是整窗系统边框 +
+/// 投影；浅色桌面/背景从透明窗口矩形透出，叠加成「大面积白板」观感（深色背景则只
+/// 表现为整窗轮廓 + 阴影）。
+///
+/// 因此契约是：**只有形状接近整窗（主窗区域写入失败、退回系统圆角的兜底）才允许
+/// ROUND；胶囊/整窗正常区域一律 DONOTROUND**，可见外形完全由 `SetWindowRgn` 定义。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MainRegionShape {
+    /// 胶囊停靠态（轨道 / 轨道∪面板，窗口只露一小块区域）。
+    Capsule,
+    /// 主窗正常整窗区域（逐行 CSS 圆角支撑形状）。
+    Full,
+    /// 主窗整窗区域写入失败：退回 DWM 系统圆角，避免留下直角矩形。
+    FullFallback,
+}
+
+/// 区域形态 → 是否设置 `DWMWCP_ROUND`（纯函数，单测锁定「胶囊态绝不 ROUND」契约）。
+fn dwm_rounded_for(shape: MainRegionShape) -> bool {
+    matches!(shape, MainRegionShape::FullFallback)
 }
 
 /// 设置逻辑半径（0 = 直角），返回夹取后的实际值。
@@ -606,15 +637,14 @@ fn apply_pass<R: Runtime>(
     }
 
     if target == ShapeTarget::Main {
-        if ok {
-            // 主窗的可见外形已经由自定义圆角区域定义；DWM 的 8 DIP 圆角半径
-            // 远小于设计半径，若保留会在区域内部再切一刀，必须 DONOTROUND。
-            apply_dwm(hwnd, false);
+        // DWM 角偏好由区域形态决定（纯函数契约，见 `dwm_rounded_for`）：
+        // 整窗区域与胶囊区域都 DONOTROUND；只有区域写入失败、退回系统圆角兜底时才 ROUND。
+        let shape = if ok {
+            MainRegionShape::Full
         } else {
-            // 区域写入失败：至少退回 DWM 圆角，避免留下直角矩形；
-            // 下一次 apply 会重试区域。
-            apply_dwm(hwnd, true);
-        }
+            MainRegionShape::FullFallback
+        };
+        apply_dwm(hwnd, dwm_rounded_for(shape));
     } else {
         apply_dwm(hwnd, r > 0);
     }
@@ -1066,7 +1096,14 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
         verified,
         "胶囊区域应用"
     );
-    apply_dwm(hwnd, true);
+    // 胶囊态的可见外形只由 SetWindowRgn 定义，**绝不设置 DWMWCP_ROUND**（2026-11-02
+    // 真机根因）：区域回读成功 ≠ DWM 合成层被裁。该窗口带 WS_CAPTION|WS_THICKFRAME
+    // （tao 行为），ROUND 会让 DWM 在整个窗口矩形上绘制圆角系统边框 + 外部投影；
+    // 窗口内部仍透明，浅色背景透出形成「大面积白板」观感——真机同刻 PrintWindow
+    // 只有胶囊，CopyFromScreen 却是整窗轮廓 + 阴影（差异像素全部比背景更暗）。
+    // 胶囊态保持主窗一致的 DONOTROUND 后，区域外暗像素/白簇/阴影全部归零，胶囊
+    // 逐像素不变（证据：tmp/acceptance/docked-window-residual-fix/）。
+    apply_dwm(hwnd, dwm_rounded_for(MainRegionShape::Capsule));
     verified
 }
 
@@ -1463,6 +1500,28 @@ mod tests {
         assert_eq!(cache.last_pass_size(100), Some((620, 820)));
         cache.set_last_pass_size(200, (313, 775));
         assert_eq!(cache.last_pass_size(200), Some((313, 775)));
+    }
+
+    /// 回归契约（2026-11-02 停靠胶囊「整窗轮廓 + 外阴影」根因）：
+    /// 胶囊态与整窗正常态都**不得**设置 DWM `DWMWCP_ROUND` —— ROUND 会让 DWM 按
+    /// **整个窗口矩形**绘制圆角系统边框 + 外部投影（窗口内部仍透明，浅色背景透出
+    /// 成「白板」观感），`SetWindowRgn` 的胶囊区域裁不到这层（真机同刻 PrintWindow
+    /// 只有胶囊、CopyFromScreen 是整窗轮廓 + 阴影）。
+    /// 只有整窗区域写入失败、退回系统圆角的兜底路径才允许 ROUND。
+    #[test]
+    fn dwm_round_is_never_used_for_capsule_or_full_region() {
+        assert!(
+            !dwm_rounded_for(MainRegionShape::Capsule),
+            "胶囊态必须 DONOTROUND：否则 DWM 会沿整窗矩形画系统边框/外阴影"
+        );
+        assert!(
+            !dwm_rounded_for(MainRegionShape::Full),
+            "整窗正常态必须 DONOTROUND：可见外形由自定义区域定义，8 DIP 系统弧会二次切割"
+        );
+        assert!(
+            dwm_rounded_for(MainRegionShape::FullFallback),
+            "只有区域写入失败的系统圆角兜底才允许 ROUND"
+        );
     }
 
     // ── 分类胶囊区域几何 ──────────────────────────────────────
@@ -1880,6 +1939,146 @@ mod tests {
             let full = CreateRoundRectRgn(0, 0, 401, 485, 36, 36);
             SetWindowRgn(hwnd as _, full, 1);
             DeleteObject(full as _);
+            DestroyWindow(hwnd as HWND);
+        }
+    }
+
+    /// **OS 层行为验证**（2026-11-02 停靠胶囊残留修复的机制证据；真实 Win32 窗口、
+    /// 不可见、不影响桌面）：
+    ///
+    /// 1. `SetWindowRgn` 设置的小区域（胶囊类 72×500）在
+    ///    `SetWindowLongW(GWL_STYLE)` + `SetWindowPos(SWP_FRAMECHANGED)` 之后**不会被
+    ///    重置**——排除「磁力层停靠/解除时改写样式会把区域打回整窗」这条怀疑；
+    /// 2. DWM 角偏好在带区域的窗口上可写可读（DONOTROUND=1 / ROUND=2），且写 DWM
+    ///    属性不会清掉窗口区域——证明「区域」与「DWM 合成层」是两层，互不替代。
+    ///
+    /// 这两条是「ROUND 只改 DWM 层、区域回读仍只有胶囊，但屏幕上是整窗系统边框 +
+    /// 投影」的结构性前提，纯几何单测算不出来。
+    #[cfg(windows)]
+    #[test]
+    fn window_region_survives_style_change_and_dwm_attributes() {
+        use windows_sys::Win32::Foundation::{HWND, RECT};
+        use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+        use windows_sys::Win32::Graphics::Gdi::{
+            CreateRectRgn, DeleteObject, GetRgnBox, GetWindowRgn, PtInRegion, SetWindowRgn,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongW, RegisterClassW,
+            SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SWP_NOZORDER, WNDCLASSW, WS_MAXIMIZEBOX, WS_POPUP,
+        };
+
+        const CLASS_NAME: &[u16] = &[b'T' as u16, b'D' as u16, b'_' as u16, b'D' as u16, 0];
+        const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+        const EXPECT_BBOX: (i32, i32, i32, i32) = (438, 25, 510, 525);
+
+        unsafe {
+            static REGISTERED: std::sync::Once = std::sync::Once::new();
+            REGISTERED.call_once(|| {
+                let wc = WNDCLASSW {
+                    style: 0,
+                    lpfnWndProc: Some(DefWindowProcW),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: std::ptr::null_mut(),
+                    hIcon: std::ptr::null_mut(),
+                    hCursor: std::ptr::null_mut(),
+                    hbrBackground: std::ptr::null_mut(),
+                    lpszMenuName: std::ptr::null(),
+                    lpszClassName: CLASS_NAME.as_ptr(),
+                };
+                RegisterClassW(&wc);
+            });
+
+            // 不可见窗口（不传 WS_VISIBLE），几何与真机胶囊容器同量级
+            let hwnd = CreateWindowExW(
+                0,
+                CLASS_NAME.as_ptr(),
+                std::ptr::null(),
+                WS_POPUP,
+                -2000,
+                -2000,
+                510,
+                550,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!hwnd.is_null(), "CreateWindowExW 失败");
+
+            // 右侧轨道类区域（真机 box=438,25,510,525）
+            let rgn = CreateRectRgn(EXPECT_BBOX.0, EXPECT_BBOX.1, EXPECT_BBOX.2, EXPECT_BBOX.3);
+            assert!(!rgn.is_null());
+            assert_ne!(SetWindowRgn(hwnd as _, rgn, 1), 0, "SetWindowRgn 失败");
+
+            // 区域的包围盒 + 点包含关系（区域内/区域外各取一点）
+            let read_bbox = || -> RECT {
+                let probe = CreateRectRgn(0, 0, 0, 0);
+                assert!(!probe.is_null());
+                let kind = GetWindowRgn(hwnd as _, probe);
+                assert_ne!(kind, 0, "窗口应带区域");
+                let mut box_ = RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                assert_ne!(GetRgnBox(probe, &mut box_), 0, "GetRgnBox 失败");
+                assert!(PtInRegion(probe, 500, 300) != 0, "轨道中心必须在区域内");
+                assert!(PtInRegion(probe, 100, 300) == 0, "轨道外必须不在区域内");
+                DeleteObject(probe as _);
+                box_
+            };
+            let bbox = |r: RECT| (r.left, r.top, r.right, r.bottom);
+            assert_eq!(bbox(read_bbox()), EXPECT_BBOX);
+
+            // 磁力层停靠/解除路径：改写 GWL_STYLE 后必须 SWP_FRAMECHANGED 才生效
+            let style = GetWindowLongW(hwnd as _, GWL_STYLE) as u32;
+            assert_ne!(
+                SetWindowLongW(hwnd as _, GWL_STYLE, (style | WS_MAXIMIZEBOX) as i32),
+                0,
+                "SetWindowLongW(GWL_STYLE) 失败"
+            );
+            SetWindowPos(
+                hwnd as _,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            assert_eq!(
+                bbox(read_bbox()),
+                EXPECT_BBOX,
+                "样式变更 + SWP_FRAMECHANGED 不得重置窗口区域"
+            );
+
+            // DWM 角偏好：可写可读，且与窗口区域互不影响
+            let set_corner = |want: i32| {
+                let hr = DwmSetWindowAttribute(
+                    hwnd as _,
+                    DWMWA_WINDOW_CORNER_PREFERENCE,
+                    &want as *const i32 as *const std::ffi::c_void,
+                    std::mem::size_of::<i32>() as u32,
+                );
+                assert_eq!(hr, 0, "DwmSetWindowAttribute(corner={want}) 失败");
+                assert_eq!(
+                    dwm_get_i32(hwnd as isize, DWMWA_WINDOW_CORNER_PREFERENCE),
+                    Some(want),
+                    "DWM 角偏好回读不一致"
+                );
+            };
+            set_corner(1); // DWMWCP_DONOTROUND（生产策略）
+            set_corner(2); // DWMWCP_ROUND（历史缺陷态）
+            assert_eq!(
+                bbox(read_bbox()),
+                EXPECT_BBOX,
+                "DWM 属性写入不得清掉/改变窗口区域"
+            );
+            set_corner(1); // 复位为生产策略，避免影响后续用例
+
             DestroyWindow(hwnd as HWND);
         }
     }

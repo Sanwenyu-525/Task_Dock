@@ -308,3 +308,55 @@ powershell -ExecutionPolicy Bypass -NoProfile -File scripts/diagnose-corner.ps1 
 判定项：基线纯色有效性、圆角外像素与基线吻合、深色连通块、1px 描边/外扩阴影、
 半径拟合（逻辑半径 × DPI）、DWM 角偏好与边框可读性、区域包围盒。
 缺少有效基线 → `UNVERIFIED`，绝不以 `GetWindowRgn` 成功代替。
+
+---
+
+## 9. 2026-11-02 更正：停靠胶囊的「整窗轮廓 + 外阴影」根因与修复
+
+**现象**：窗口吸附屏幕边缘进入胶囊停靠态后，屏幕上仍出现**整个窗口矩形的浅/白色圆角矩形 +
+明显外部阴影**，右侧同时显示胶囊轨道（浅色主题下最明显，即用户截图的形态）。此前
+`docked-window-hidden` 验收用纯黑背景 + 激活态截图，阴影/轮廓被背景掩盖，未发现。
+
+**真机 A/B**（隔离数据、125% DPI、edge=right 折叠、窗口 510×550、受控纯色背景 `#D3D3D3`；
+证据 `tmp/acceptance/docked-window-residual-fix/raw/ab3-*`）：
+
+| 组 | cornerPref | 区域外 DWM 边框/内缘暗像素 | 区域外白簇 | 窗口矩形外 60px 阴影像素 | 判定 |
+|---|---|---|---|---|---|
+| round | ROUND(2) | 1,696–1,709 px | 1–32 px（轨道 AA） | 47,966 px | 残留 |
+| dontround | DONOTROUND(1) | 50–63 px | 1 px | 120 px | 干净 |
+| ncr-off | DONOTROUND + NCRENDERING=DISABLED | 50 px | 1 px | 120 px | 干净（无额外收益） |
+
+同条件回读：两种策略 `GetWindowRgn` 都是 `kind=3 box=438,25,510,525`（只右轨道），胶囊轨道
+像素逐像素一致（AA 未退化）；`PrintWindow` 只有胶囊，而 `CopyFromScreen` 在 ROUND 下是整窗
+圆角系统边框 + 柔和外阴影。激活/失焦截图哈希相同 → 与 WebView2 失焦回填无关。
+ROUND 与 DONOTROUND 的逐像素 diff 共 86,123 px，**全部是「比背景更暗」的像素（86,123 darker /
+0 lighter）**，且窗口内部中心像素两者都与背景同色 `(211,211,211)`：**DWM 只画了系统边框 +
+投影，窗口内部仍然透明**，没有不透明背板。
+
+**机制**：停靠期间窗口仍带 `WS_CAPTION | WS_THICKFRAME`（tao 对所有窗口无条件设置 CAPTION、
+RESIZABLE 时加 THICKFRAME；其 `WM_NCCALCSIZE` 返回 0 使客户区=整窗，所以平时看不到 NC 边框）。
+`DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND` 会让 Win11 DWM 在**整个窗口矩形**上绘制圆角
+系统边框 + 外部投影。`SetWindowRgn` 只定义窗口**内容表面**的可见区域（GDI/WebView2 合成），
+裁不到 DWM 的非客户区合成层——同一窗口上「区域 = 胶囊」与「DWM 边框/投影 = 整窗」可以同时成立。
+这与 §3.0 记录的 SystemBackdrop 越界同源。
+
+用户看到的「大面积白色主窗口矩形」= 浅色桌面/背景从透明窗口矩形透出 + DWM 整窗边框/阴影把
+矩形勾出来，二者叠加的观感（不是 DWM 填充了不透明背板）：像素证据显示窗口内部保持透明；
+深色背景上同一残留表现为「整窗轮廓 + 阴影」，不出现白板。
+
+**修复**（`src-tauri/src/window_shape.rs`）：胶囊区域应用后**不再**把 DWM 角偏好设为 ROUND，
+而是与主窗正常态一致的 `DWMWCP_DONOTROUND`；胶囊可见外形完全由 `SetWindowRgn`（翼片多边形外扩
+2px / 面板圆角支撑形状）定义。DWM 角偏好选择收敛为纯函数 `dwm_rounded_for(MainRegionShape)`：
+`Capsule` / `Full` → false，仅 `FullFallback`（整窗区域写入失败的系统圆角兜底）→ true；单测
+`dwm_round_is_never_used_for_capsule_or_full_region` 锁定该契约。另有真实 Win32 窗口单测
+`window_region_survives_style_change_and_dwm_attributes` 证明：`SetWindowLongW(GWL_STYLE)` +
+`SWP_FRAMECHANGED` 不会重置窗口区域；DWM 角偏好可写可读且不影响区域——「区域」与「DWM 合成层」
+互不替代。
+
+**回归口径**：停靠态验证必须用 `CopyFromScreen` 像素统计（区域外白簇、DWM 边框/内缘暗像素、
+窗口矩形外投影像素）而不是只看 `GetWindowRgn` 回读；背景不能用纯黑/纯白掩盖阴影；必须覆盖
+激活/离焦两态与浅/深主题。
+
+**旧结论更正**：§4「Win11 上 `DWMWCP_ROUND` 会额外提供系统级阴影与抗锯齿圆角」在**胶囊小区域**
+场景下不成立且有害——它让 DWM 在整窗矩形上画出系统边框 + 外部投影；该条仅对「区域≈整窗」的
+主窗兜底路径（`FullFallback`）保留。

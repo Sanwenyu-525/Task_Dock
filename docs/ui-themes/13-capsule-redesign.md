@@ -373,6 +373,18 @@ waiting/failed/disconnected 用 2px 环 + 徽标表达，避免整颗球变橙�
 残余风险：若 `clear_mica/clear_acrylic/clear_blur` 全部失败（极旧系统或远程桌面），
 胶囊容器矩形仍可能出现原生底色；代码会记录 `warn` 并继续（胶囊自身仍可见）。
 
+**2026-11-02 更正（胶囊停靠态必须保持 DONOTROUND）**：本节的原生层停用策略之外还有
+第二层 DWM 越界——胶囊停靠期间窗口的 `cornerPref` 曾被 `apply_capsule_pass` 末尾的
+`apply_dwm(hwnd, true)` 设为 `DWMWCP_ROUND`。该窗口仍带 `WS_CAPTION|WS_THICKFRAME`
+（tao 行为），ROUND 会让 DWM 沿**整个窗口矩形**绘制圆角系统边框 + 外部投影；窗口内部
+仍然透明（像素级 diff：差异全部是「比背景更暗」的边框/投影像素，窗口中心与背景同色），
+浅色桌面/背景透出即形成「大面积白板」观感。`SetWindowRgn` 裁不到 DWM 的 NC 合成层：
+真机同刻 `PrintWindow` 只有胶囊、`CopyFromScreen` 却是整窗轮廓 + 阴影（A/B 数字与证据见
+[03-window-composition.md](03-window-composition.md) §9、
+`tmp/acceptance/docked-window-residual-fix/`）。现胶囊态固定 `DWMWCP_DONOTROUND`，
+可见外形只由区域定义；本节的「停靠期停用原生背景」策略保持不变，二者叠加才能保证
+停靠态「只见胶囊」。
+
 ## 十一、启动停靠恢复：先裁空白再显示（2026-11-02）
 
 **问题**：`setup` 里 `win.show()` 立即执行，而停靠恢复要等 webview 加载 → 设置加载
