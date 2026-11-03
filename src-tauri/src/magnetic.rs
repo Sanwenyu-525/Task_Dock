@@ -393,7 +393,8 @@ impl DragAnchor {
 
 /// 一次拖拽的磁力模型。所有时间/几何都从参数注入，纯函数式可单测。
 #[derive(Clone, Copy, Debug)]
-pub struct DragModel {    mode: DragMode,
+pub struct DragModel {
+    mode: DragMode,
     /// 当前作用的边（Free 下 = 最近边，可能是 None）
     pub edge: Option<Edge>,
     /// 停靠边 + 齐平矩形（Resist/Released 有效）
@@ -790,7 +791,7 @@ mod win {
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallWindowProcW, GetCursorPos, GetWindowLongW, GetWindowRect, PostMessageW,
-        SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GWL_STYLE, GWLP_WNDPROC, SWP_FRAMECHANGED,
+        SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GWLP_WNDPROC, GWL_STYLE, SWP_FRAMECHANGED,
         SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_APP, WM_DPICHANGED,
         WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVING, WNDPROC, WS_MAXIMIZEBOX,
     };
@@ -960,7 +961,9 @@ mod win {
         let in_move = IN_SIZE_MOVE.with(|f| f.get());
         let (enabled, _, _, _) = config();
         // 拖拽循环内解除吸附返回 None：推迟到 WM_EXITSIZEMOVE 再恢复
-        if let Some(suppress) = snap_suppression_target(DOCKED.load(Ordering::Acquire), in_move, enabled) {
+        if let Some(suppress) =
+            snap_suppression_target(DOCKED.load(Ordering::Acquire), in_move, enabled)
+        {
             apply_snap_suppression(hwnd, suppress);
         }
     }
@@ -1016,7 +1019,13 @@ mod win {
                 // 新拖拽开始：清掉上一轮解除遗留的锚定请求——它只可能来自
                 // 已收尾的解除（tick 补判定路径），不得在这次拖拽里突然改窗口。
                 ANCHOR_PENDING.store(false, Ordering::Release);
-                trace(0, DragMode::Free, None, Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0));
+                trace(
+                    0,
+                    DragMode::Free,
+                    None,
+                    Rect::new(0, 0, 0, 0),
+                    Rect::new(0, 0, 0, 0),
+                );
                 call_old(hwnd, msg, wparam, lparam)
             }
             WM_DPICHANGED => {
@@ -1080,8 +1089,13 @@ mod win {
                                 if now < en.until_ms
                                     && (proposed.w != en.rect.w || proposed.h != en.rect.h) =>
                             {
-                                let out =
-                                    undock_anchor_rect(c, en.rect.w, en.rect.h, en.titlebar_phys, area);
+                                let out = undock_anchor_rect(
+                                    c,
+                                    en.rect.w,
+                                    en.rect.h,
+                                    en.titlebar_phys,
+                                    area,
+                                );
                                 rt.anchor_enforce = Some(AnchorEnforce {
                                     rect: out,
                                     titlebar_phys: en.titlebar_phys,
@@ -1151,7 +1165,8 @@ mod win {
                 RUNTIME.with(|rt| {
                     let mut rt = rt.borrow_mut();
                     let mut rect: RECT = std::mem::zeroed();
-                    let ok = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect);
+                    let ok =
+                        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect);
                     let applied = if ok != 0 {
                         rect_from(&rect)
                     } else {
@@ -1190,7 +1205,8 @@ mod win {
                 if let Some(suppress) = snap_suppression_target(docked_now, false, enabled) {
                     apply_snap_suppression(hwnd, suppress);
                 }
-                result            }
+                result
+            }
             WM_MAGNET_SNAP => {
                 let target = RUNTIME.with(|rt| rt.borrow_mut().pending_snap.take());
                 if let Some(t) = target {
@@ -1354,7 +1370,13 @@ mod win {
         }
 
         const CLASS_TDMGN: &[u16] = &[
-            b'T' as u16, b'D' as u16, b'_' as u16, b'M' as u16, b'G' as u16, b'N' as u16, 0,
+            b'T' as u16,
+            b'D' as u16,
+            b'_' as u16,
+            b'M' as u16,
+            b'G' as u16,
+            b'N' as u16,
+            0,
         ];
 
         /// **真实 Win32 窗口**上的 `WS_MAXIMIZEBOX` 清除/恢复验证（OS 层证据）：
@@ -1404,8 +1426,14 @@ mod win {
                 let style0 = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                 assert_eq!(style0 & WS_MAXIMIZEBOX, 0, "前置：窗口不可最大化");
 
-                assert!(!apply_snap_suppression(hwnd, true), "原不可最大化时清除是 no-op");
-                assert!(!apply_snap_suppression(hwnd, false), "原不可最大化时恢复是 no-op");
+                assert!(
+                    !apply_snap_suppression(hwnd, true),
+                    "原不可最大化时清除是 no-op"
+                );
+                assert!(
+                    !apply_snap_suppression(hwnd, false),
+                    "原不可最大化时恢复是 no-op"
+                );
                 assert_eq!(
                     GetWindowLongW(hwnd, GWL_STYLE) as u32,
                     style0,
@@ -1500,7 +1528,11 @@ mod tests {
         while d < r {
             let a = attraction_lead(d, r, m);
             let b = attraction_lead(d + 0.25, r, m);
-            assert!((a - b).abs() <= 1.0, "d={d} 处吸引位移跳变 {}", (a - b).abs());
+            assert!(
+                (a - b).abs() <= 1.0,
+                "d={d} 处吸引位移跳变 {}",
+                (a - b).abs()
+            );
             d += 0.25;
         }
     }
@@ -1538,11 +1570,7 @@ mod tests {
         let mut prev_x = i32::MAX;
         for d in (0..=ATTRACT_RANGE_CSS as i32).rev() {
             let r = m.adjust_free(Rect::new(d, 400, 400, 560), AREA, 0.0);
-            assert!(
-                r.x <= d,
-                "窗口不得越过屏幕边缘（d={d} → x={rx}）",
-                rx = r.x
-            );
+            assert!(r.x <= d, "窗口不得越过屏幕边缘（d={d} → x={rx}）", rx = r.x);
             assert!(r.x <= prev_x, "单调靠近：d={d} → x={} prev={prev_x}", r.x);
             prev_x = r.x;
         }
@@ -1752,13 +1780,21 @@ mod tests {
     #[test]
     fn resistance_matches_on_four_edges() {
         let cases = [
-            (Edge::Left, Rect::new(0, 300, 400, 420), Rect::new(12, 300, 400, 420)),
+            (
+                Edge::Left,
+                Rect::new(0, 300, 400, 420),
+                Rect::new(12, 300, 400, 420),
+            ),
             (
                 Edge::Right,
                 Rect::new(1920 - 400, 300, 400, 420),
                 Rect::new(1920 - 400 - 12, 300, 400, 420),
             ),
-            (Edge::Top, Rect::new(700, 0, 400, 420), Rect::new(700, 12, 400, 420)),
+            (
+                Edge::Top,
+                Rect::new(700, 0, 400, 420),
+                Rect::new(700, 12, 400, 420),
+            ),
             (
                 Edge::Bottom,
                 Rect::new(700, 1032 - 420, 400, 420),
@@ -1787,7 +1823,11 @@ mod tests {
             let out = m.adjust_free(Rect::new(d, 400, 400, 560), AREA, 0.0);
             let lead = (d - out.x) as f64;
             let css_lead = lead / scale;
-            let expect = attraction_lead(ATTRACT_RANGE_CSS * 0.5, ATTRACT_RANGE_CSS, ATTRACT_MAX_LEAD_CSS);
+            let expect = attraction_lead(
+                ATTRACT_RANGE_CSS * 0.5,
+                ATTRACT_RANGE_CSS,
+                ATTRACT_MAX_LEAD_CSS,
+            );
             assert!(
                 (css_lead - expect).abs() <= 1.0,
                 "scale={scale} CSS 口径吸引位移 {css_lead} != {expect}"
@@ -1871,13 +1911,21 @@ mod tests {
     /// 吸附关闭时无条件恢复。
     #[test]
     fn snap_suppression_follows_dock_state() {
-        assert_eq!(snap_suppression_target(true, false, true), Some(true), "停靠态应抑制");
+        assert_eq!(
+            snap_suppression_target(true, false, true),
+            Some(true),
+            "停靠态应抑制"
+        );
         assert_eq!(
             snap_suppression_target(true, true, true),
             Some(true),
             "停靠态拖拽中仍抑制"
         );
-        assert_eq!(snap_suppression_target(false, false, true), Some(false), "自由态应恢复");
+        assert_eq!(
+            snap_suppression_target(false, false, true),
+            Some(false),
+            "自由态应恢复"
+        );
         assert_eq!(
             snap_suppression_target(false, true, true),
             None,
@@ -1925,7 +1973,9 @@ mod tests {
     #[test]
     fn anchor_raw_rejects_size_change() {
         let anchor = DragAnchor::new(Rect::new(200, 140, 400, 560), (280.0, 156.0));
-        assert!(anchor.raw(Rect::new(200, 0, 400, 690), (280.0, 16.0)).is_none());
+        assert!(anchor
+            .raw(Rect::new(200, 0, 400, 690), (280.0, 16.0))
+            .is_none());
     }
 
     /// 回归：系统移动循环首帧会送一个全 0 的退化矩形。
@@ -1963,9 +2013,7 @@ mod tests {
 
         for _ in 0..160 {
             cursor -= 2.0;
-            let raw = anchor
-                .raw(system_prop, (cursor, 156.0))
-                .expect("尺寸未变");
+            let raw = anchor.raw(system_prop, (cursor, 156.0)).expect("尺寸未变");
             let applied = model.adjust_free(raw, area, 0.0);
             let lead = raw.x as f64 - applied.x as f64;
             max_lead = max_lead.max(lead);
@@ -1976,7 +2024,10 @@ mod tests {
             );
             if raw.x <= area.x {
                 // 已到/越过边缘：磁力不再施加任何位移，窗口严格 1:1 跟随光标
-                assert_eq!(applied.x, raw.x, "越界后不得继续加力：{applied:?} vs {raw:?}");
+                assert_eq!(
+                    applied.x, raw.x,
+                    "越界后不得继续加力：{applied:?} vs {raw:?}"
+                );
             }
             if raw.x == 0 {
                 lead_at_flush = lead;
@@ -2107,7 +2158,13 @@ mod tests {
     #[test]
     fn anchor_clamps_at_bottom_edge() {
         let bottom = AREA.y + AREA.h;
-        let r = undock_anchor_rect((900.0, (bottom - 2) as f64), ANCHOR_W, ANCHOR_H, ANCHOR_TB, AREA);
+        let r = undock_anchor_rect(
+            (900.0, (bottom - 2) as f64),
+            ANCHOR_W,
+            ANCHOR_H,
+            ANCHOR_TB,
+            AREA,
+        );
         assert_eq!(r.y + r.h, bottom, "窗口下缘齐工作区下缘（最小位移）");
         assert!(
             (bottom - 2) as f64 >= r.y as f64 && (bottom - 2) as f64 <= (r.y + r.h) as f64,
@@ -2131,7 +2188,13 @@ mod tests {
     /// 光标在任务栏上（工作区外）松手：按钳进工作区的参考光标摆放，窗口完整可见。
     #[test]
     fn anchor_cursor_outside_work_area_is_pulled_in() {
-        let r = undock_anchor_rect((900.0, (AREA.y + AREA.h + 30) as f64), ANCHOR_W, ANCHOR_H, ANCHOR_TB, AREA);
+        let r = undock_anchor_rect(
+            (900.0, (AREA.y + AREA.h + 30) as f64),
+            ANCHOR_W,
+            ANCHOR_H,
+            ANCHOR_TB,
+            AREA,
+        );
         assert!(r.y + r.h <= AREA.y + AREA.h, "窗口必须完整落在工作区内");
     }
 
@@ -2143,8 +2206,18 @@ mod tests {
             for &oy in &[-400i32, 0, 800] {
                 let area = Rect::new(ox, oy, 1920, 1032);
                 // 工作区内（含边缘）：光标必须落在窗口内
-                for cx in [ox as f64, ox as f64 + 1.0, ox as f64 + 960.0, ox as f64 + 1919.0] {
-                    for cy in [oy as f64, oy as f64 + 1.0, oy as f64 + 500.0, oy as f64 + 1031.0] {
+                for cx in [
+                    ox as f64,
+                    ox as f64 + 1.0,
+                    ox as f64 + 960.0,
+                    ox as f64 + 1919.0,
+                ] {
+                    for cy in [
+                        oy as f64,
+                        oy as f64 + 1.0,
+                        oy as f64 + 500.0,
+                        oy as f64 + 1031.0,
+                    ] {
                         let r = undock_anchor_rect((cx, cy), ANCHOR_W, ANCHOR_H, ANCHOR_TB, area);
                         assert!(
                             cx >= r.x as f64 && cx <= (r.x + r.w) as f64,
@@ -2160,7 +2233,13 @@ mod tests {
                 }
                 // 工作区外：几何上不可能既完整可见又含光标，只断言窗口完整可见
                 for cx in [ox as f64 - 50.0, ox as f64 + 2000.0] {
-                    let r = undock_anchor_rect((cx, oy as f64 + 500.0), ANCHOR_W, ANCHOR_H, ANCHOR_TB, area);
+                    let r = undock_anchor_rect(
+                        (cx, oy as f64 + 500.0),
+                        ANCHOR_W,
+                        ANCHOR_H,
+                        ANCHOR_TB,
+                        area,
+                    );
                     assert!(r.x >= area.x && r.x + r.w <= area.x + area.w);
                     assert!(r.y >= area.y && r.y + r.h <= area.y + area.h);
                 }

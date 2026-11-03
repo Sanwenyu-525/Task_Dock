@@ -255,15 +255,22 @@ pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String) -> AppRe
 /// 参数口径与前端 `src/lib/edgeSnap.ts` 的 `SNAP_MAGNET_*` 是跨端契约；
 /// 越界/非法值按安全范围收敛，不写坏全局状态。
 #[tauri::command]
-pub fn set_magnetic_drag_config(
-    enabled: bool,
-    range: f64,
-    max_lead: f64,
-    release: f64,
-) -> bool {
-    let range = if range.is_finite() { range.clamp(8.0, 200.0) } else { 56.0 };
-    let max_lead = if max_lead.is_finite() { max_lead.clamp(0.0, 64.0) } else { 16.0 };
-    let release = if release.is_finite() { release.clamp(4.0, 200.0) } else { 32.0 };
+pub fn set_magnetic_drag_config(enabled: bool, range: f64, max_lead: f64, release: f64) -> bool {
+    let range = if range.is_finite() {
+        range.clamp(8.0, 200.0)
+    } else {
+        56.0
+    };
+    let max_lead = if max_lead.is_finite() {
+        max_lead.clamp(0.0, 64.0)
+    } else {
+        16.0
+    };
+    let release = if release.is_finite() {
+        release.clamp(4.0, 200.0)
+    } else {
+        32.0
+    };
     crate::magnetic::set_config(enabled, range, max_lead, release);
     crate::magnetic::installed()
 }

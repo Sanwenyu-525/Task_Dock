@@ -1430,6 +1430,11 @@ mod tests {
     #[test]
     fn ack_never_changes_agent_state_and_new_event_resurfaces() {
         let db = memdb();
+        // 事件受理时间必须相对真实时钟构造：ack() 用 now_iso() 记录确认时间，
+        // 「新事件晚于确认才复活」的断言若用固定日期，时钟越过该日期后必然失效
+        // （2026-11-03 实际踩中的时间炸弹）。
+        let base = Utc::now();
+        let at = |offset: chrono::Duration| (base + offset).to_rfc3339();
         let out = step(
             &db,
             "e1",
@@ -1438,7 +1443,7 @@ mod tests {
             Some("r1"),
             "failed",
             "测试失败",
-            "2026-10-28T10:00:00+00:00",
+            &at(chrono::Duration::days(-3)),
         );
         let run_id = out.run_row_id.clone();
         let f = feed_of(&db, "intervention");
@@ -1470,7 +1475,7 @@ mod tests {
             Some("r1"),
             "failed",
             "再次失败",
-            "2026-10-31T10:00:00+00:00",
+            &at(chrono::Duration::minutes(1)),
         );
         let f = feed_of(&db, "intervention");
         assert_eq!(f.items.len(), 1, "新事件后已确认动作必须重新出现");

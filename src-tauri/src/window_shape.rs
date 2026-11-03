@@ -227,7 +227,8 @@ fn apply_blank_pass(hwnd: isize) -> bool {
             right: 0,
             bottom: 0,
         };
-        let ok = kind != 0 && GetRgnBox(probe, &mut box_) != 0 && box_.right <= 1 && box_.bottom <= 1;
+        let ok =
+            kind != 0 && GetRgnBox(probe, &mut box_) != 0 && box_.right <= 1 && box_.bottom <= 1;
         DeleteObject(probe as _);
         apply_dwm(hwnd, false);
         if !ok {
@@ -900,8 +901,7 @@ pub(crate) fn capsule_regions(
     if cap.thickness_css == 0 || cap.length_css == 0 {
         return None;
     }
-    let (thickness, length, shoulder) =
-        wing_metrics(scale, cap.thickness_css, cap.length_css);
+    let (thickness, length, shoulder) = wing_metrics(scale, cap.thickness_css, cap.length_css);
     let panel_w = ((CAPSULE_PANEL_WIDTH_CSS as f64) * scale).round() as i32;
     let panel_h = ((CAPSULE_PANEL_HEIGHT_CSS as f64) * scale).round() as i32;
     let gap = ((CAPSULE_GAP_CSS as f64) * scale).round().max(1.0) as i32;
@@ -1589,7 +1589,10 @@ mod tests {
         for i in 0..pts.len() {
             let a = pts[i];
             let b = pts[pts.len() - 1 - i];
-            assert!((a.0 - (bw as f64 - b.0)).abs() < 1e-9, "对称性在第 {i} 点破裂");
+            assert!(
+                (a.0 - (bw as f64 - b.0)).abs() < 1e-9,
+                "对称性在第 {i} 点破裂"
+            );
             assert!((a.1 - b.1).abs() < 1e-9, "对称性在第 {i} 点破裂");
         }
     }
