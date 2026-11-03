@@ -1,0 +1,19 @@
+{
+  "task": "replace-with-task-slug",
+  "cases": [
+    {
+      "view": "capsule",
+      "state": "expanded",
+      "theme": "light",
+      "channel": "E",
+      "path": "tmp/acceptance/replace-with-task-slug/screenshots/light.png"
+    },
+    {
+      "view": "capsule",
+      "state": "expanded",
+      "theme": "dark",
+      "channel": "E",
+      "path": "tmp/acceptance/replace-with-task-slug/screenshots/dark.png"
+    }
+  ]
+}

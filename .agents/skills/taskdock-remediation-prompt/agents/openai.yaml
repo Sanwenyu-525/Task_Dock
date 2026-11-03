@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Dock 修复任务"
+  short_description: "由验收证据生成 Codex 任务"
+  default_prompt: "使用 $taskdock-remediation-prompt 根据已确认问题生成可以直接执行的修复提示词。"

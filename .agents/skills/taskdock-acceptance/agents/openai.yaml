@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Dock 功能验收"
+  short_description: "代码、测试与证据分层验收"
+  default_prompt: "使用 $taskdock-acceptance 验收当前 task_dock 需求，按实际证据分级并标明未验证边界。"

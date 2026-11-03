@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "notification-c-scheme-light-v07",
+      "source": "docs/design-refs/v07/通知效果图/task_dock_notification_preview_light.png",
+      "module": "notifications",
+      "component": "notification-card",
+      "state": "six-state-light-preview",
+      "theme": "light",
+      "sha256": "fb503d47d866464b938a3b83b130f5ce554574bce9afe3e90dfc4b370324db0c",
+      "note": "通知 C 方案 HTML 原型预览；src/notifications/styles-notifications.css 第 6 行仅称其为“视觉来源”，未明确写“视觉基准”，故为候选。",
+      "spec": "docs/design-refs/v07/通知效果图/task_dock_notification_ui_demo.html",
+      "uncovered": "深色主题、原生 DWM 合成、真实桌面背景、连续多卡、交互与动画",
+      "status": "candidate"
+    },
+    {
+      "id": "notification-c-scheme-dark-stack-v07",
+      "source": "docs/design-refs/v07/通知效果图/task_dock_notification_preview_stack.png",
+      "module": "notifications",
+      "component": "notification-card",
+      "state": "stacked-dark-preview",
+      "theme": "dark",
+      "sha256": "0a7f7aeb13941e255aeb03cc14f4b2f2785789b711a1c1947689b46a817b53b0",
+      "note": "通知 C 方案 HTML 原型的多卡堆叠预览；src/notifications/styles-notifications.css 第 6 行仅称其为“视觉来源”，未明确写“视觉基准”，故为候选。",
+      "spec": "docs/design-refs/v07/通知效果图/task_dock_notification_ui_demo.html",
+      "uncovered": "浅色主题、原生 DWM 合成、真实桌面背景、超过三卡的堆叠策略、交互与动画",
+      "status": "candidate"
+    },
+    {
+      "id": "planning-center-views-v07",
+      "source": "docs/design-refs/v07/规划中心效果图.png",
+      "module": "planning",
+      "component": "planning-center",
+      "state": "multi-view-overview",
+      "theme": "light",
+      "sha256": "a7988bb477798e93989b4fca9f847e4c2b7b7184f56f407034382dab9e362d36",
+      "note": "规划中心多视图设计板；docs/roadmap/planning-center.md 未明确指定为最终效果图，README 仅称 v07 为设计输入稿，故为候选。",
+      "spec": "docs/roadmap/planning-center.md",
+      "uncovered": "深色主题、真实数据规模、交互与动画、320/400 窄窗",
+      "status": "candidate"
+    },
+    {
+      "id": "theme-system-exploration-v07",
+      "source": "docs/design-refs/v07/3D效果图/3D效果图.png",
+      "module": "theme",
+      "component": "theme-system",
+      "state": "theme-material-3d-exploration",
+      "theme": "both",
+      "sha256": "55b912f003f406a4ea14a1b5121d49fc1b65aba164229e83c0f43c6dd04a66ac",
+      "note": "v0.6 主题/材质/3D 层探索板，含多方案对比；未见最终批准语句，故为候选。",
+      "spec": "docs/ui-themes/01-design-spec.md",
+      "uncovered": "真机材质与 DPI、动态主题切换、窗口合成、最终方案选择",
+      "status": "candidate"
+    },
+    {
+      "id": "capsule-options-a-g-v07",
+      "source": "docs/design-refs/v07/capsule-design-options-20261101.png",
+      "module": "capsule",
+      "component": "capsule",
+      "state": "design-options-a-g",
+      "theme": "both",
+      "sha256": "9ee357470b1843a28468f2ab00504662f4ca35ffa4cc5e0ed7f26c7a830c7010",
+      "note": "胶囊方案 A-G 对比板；最终实现为“分类胶囊 + 液态融合翼片”，文档未指定某方案为最终效果图，故为候选。",
+      "spec": "docs/ui-themes/13-capsule-redesign.md",
+      "uncovered": "最终实现与方案板的逐项差异、真机吸附、四边停靠、展开收起过渡",
+      "status": "candidate"
+    }
+  ]
+}

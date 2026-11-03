@@ -1,0 +1,15 @@
+{
+  "task": "replace-with-task-slug",
+  "items": [
+    {
+      "id": "case-1",
+      "goal": "写出可以观察的成功条件",
+      "channels": ["A"],
+      "status": "NOT_RUN",
+      "action": "本示例尚未执行任何验证",
+      "observation": "未执行",
+      "boundary": "未知项保持未验证",
+      "evidence_paths": []
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "capsule-dock-tasks-v07",
+      "file": "dock/capsule-dock-tasks-v07.png",
+      "source": "docs/design-refs/v07/停靠效果图/01-tasks.png",
+      "module": "dock",
+      "component": "capsule-dock",
+      "state": "expanded-tasks",
+      "theme": "light",
+      "sha256": "ea7f10b6b3981f823172a7eec3bfa121775ed655572272531780d7b382d18ca1",
+      "note": "src/styles.css:6345 明确声明停靠效果图 01..04 为分类胶囊视觉基准；本图为 01-tasks。规格与四点对齐见 docs/ui-themes/13-capsule-redesign.md。",
+      "spec": "docs/ui-themes/13-capsule-redesign.md",
+      "uncovered": "深色主题、四边/横向停靠、展开收起过渡、原生吸附手感、DPI 125/150、320/400 窄窗、真实窗口合成",
+      "status": "approved"
+    },
+    {
+      "id": "capsule-dock-agents-v07",
+      "file": "dock/capsule-dock-agents-v07.png",
+      "source": "docs/design-refs/v07/停靠效果图/02-agents.png",
+      "module": "dock",
+      "component": "capsule-dock",
+      "state": "expanded-agents",
+      "theme": "light",
+      "sha256": "bf759e489e87eb2d6717772526f7d123acc1a99be0b54693c8e08d929b3166a8",
+      "note": "src/styles.css:6345 明确声明停靠效果图 01..04 为分类胶囊视觉基准；本图为 02-agents。规格与四点对齐见 docs/ui-themes/13-capsule-redesign.md。",
+      "spec": "docs/ui-themes/13-capsule-redesign.md",
+      "uncovered": "深色主题、四边/横向停靠、Agent 运行中/等待/失败态、展开收起过渡、原生吸附手感、DPI 125/150、320/400 窄窗、真实窗口合成",
+      "status": "approved"
+    },
+    {
+      "id": "capsule-dock-clipboard-v07",
+      "file": "dock/capsule-dock-clipboard-v07.png",
+      "source": "docs/design-refs/v07/停靠效果图/03-clipboard.png",
+      "module": "dock",
+      "component": "capsule-dock",
+      "state": "expanded-clipboard",
+      "theme": "light",
+      "sha256": "ace856ef813f5631982e8e728d76a49888d93ce7e7e418dbb5323e80f75f1f41",
+      "note": "src/styles.css:6345 明确声明停靠效果图 01..04 为分类胶囊视觉基准；本图为 03-clipboard。规格与四点对齐见 docs/ui-themes/13-capsule-redesign.md。",
+      "spec": "docs/ui-themes/13-capsule-redesign.md",
+      "uncovered": "深色主题、四边/横向停靠、图片/文件/富文本条目、展开收起过渡、原生吸附手感、DPI 125/150、320/400 窄窗、真实窗口合成",
+      "status": "approved"
+    },
+    {
+      "id": "capsule-dock-apps-v07",
+      "file": "dock/capsule-dock-apps-v07.png",
+      "source": "docs/design-refs/v07/停靠效果图/04-apps.png",
+      "module": "dock",
+      "component": "capsule-dock",
+      "state": "expanded-apps",
+      "theme": "light",
+      "sha256": "8ee69b3768de781d368e1846bd60113080df0c41a4e1796ada4fbe3d0487c1c0",
+      "note": "src/styles.css:6345 明确声明停靠效果图 01..04 为分类胶囊视觉基准；本图为 04-apps。规格与四点对齐见 docs/ui-themes/13-capsule-redesign.md。",
+      "spec": "docs/ui-themes/13-capsule-redesign.md",
+      "uncovered": "深色主题、四边/横向停靠、多分组/长列表、展开收起过渡、原生吸附手感、DPI 125/150、320/400 窄窗、真实窗口合成",
+      "status": "approved"
+    },
+    {
+      "id": "task-card-scheme-d-v07",
+      "file": "panels/task-card-scheme-d-v07.png",
+      "source": "docs/design-refs/v07/任务卡效果图/d24e75d6-9d39-47e4-8a93-64dcf57c1149.png",
+      "module": "panels",
+      "component": "task-card",
+      "state": "scheme-d-light-dark-interactions",
+      "theme": "both",
+      "sha256": "70814ae147c54a56f426ad455913746919b75b64a82ab9e4b9a8db9ef156c843",
+      "note": "docs/ui-themes/01-design-spec.md 第 12 节明确采用任务卡效果图方案 D（2026-11-02 追加），本节取代旧任务卡规范。",
+      "spec": "docs/ui-themes/01-design-spec.md §12",
+      "uncovered": "原生窗口合成与字体渲染、真实数据密度与长文本、键盘焦点顺序、reduced-motion、DPI 125/150",
+      "status": "approved"
+    }
+  ]
+}

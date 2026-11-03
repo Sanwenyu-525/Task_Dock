@@ -1,0 +1,19 @@
+{
+  "task": "replace-with-real-task",
+  "context": "描述用户原始需求；以下案例是占位，未进行真实代码验证",
+  "scope": ["只处理本任务涉及的组件/模块"],
+  "out_of_scope": ["不重构无关模块"],
+  "findings": [
+    {
+      "id": "ISSUE-1",
+      "severity": "P2",
+      "status": "NEEDS_VERIFICATION",
+      "observed": "待确认的异常现象",
+      "expected": "需要达到的可观察结果",
+      "evidence": "暂无本轮证据：需先复现",
+      "suspected_cause": "尚未确认，必须通过源码与复现排查"
+    }
+  ],
+  "acceptance": ["复现问题后验证正向行为与至少一个边界条件"],
+  "constraints": ["按仓库 AGENTS.md 和 docs/ACCEPTANCE_ROUTING.md 执行"]
+}
