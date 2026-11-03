@@ -1,0 +1,389 @@
+@layer base, theme, ui, menu, cap;
+@layer cap {
+/* ════════════════════════════════════════════════════════════════
+   全局快速捕获窗口（v0.7）— 仅 capture.html 装载
+   ────────────────────────────────────────────────────────────────
+   窗口 640×360、无边框透明，卡片占满整窗：圆角与主窗圆角区域对齐，
+   窗口外区域完全透出桌面。
+
+   材质与主窗/通知一致：底色直接复用主题令牌 --window-fill（预设 ×
+   明暗由 styles-themes.css 提供），玻璃高光走 --window-edge 的内阴影；
+   不叠加 backdrop-filter（原生材质由后端负责），也不引入第二套配色。
+
+   仅有的动效是 120ms 的一次性入场；无常驻/循环动画，并尊重
+   prefers-reduced-motion。
+   ════════════════════════════════════════════════════════════════ */
+
+/* 主按钮文字色：--accent-text-on 只在主窗 styles.css 定义，
+   独立窗口按主题明暗从基础色常量派生（浅色白字 / 深色墨字）。 */
+:root {
+  --capture-on-accent: var(--c-paper);
+}
+
+:root[data-theme="dark"] {
+  --capture-on-accent: var(--c-night);
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--text-primary);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ── 卡片骨架 ─────────────────────────────────────────────── */
+.capture-shell {
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100vh;
+}
+
+.capture-card {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 16px;
+  background: var(--window-fill);
+  box-shadow: var(--window-edge);
+  color: var(--text-primary);
+  overflow: hidden;
+  animation: capture-enter 120ms ease-out both;
+}
+
+/* ── 头部：标题 + 当前类型 + 关闭 ─────────────────────────── */
+.capture-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.capture-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.capture-kind-tag {
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--pill-face);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.capture-spacer {
+  flex: 1;
+}
+
+.capture-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.capture-close:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.capture-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── 表单主体 ─────────────────────────────────────────────── */
+.capture-form {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.capture-input-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+}
+
+.capture-input {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--radius-card);
+  background: var(--inset-face);
+  box-shadow: var(--inset-shadow);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  outline: none;
+  resize: none;
+  user-select: text;
+  -webkit-user-select: text;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.capture-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.capture-input:hover {
+  box-shadow: var(--inset-shadow-hover);
+}
+
+.capture-input:focus {
+  box-shadow: var(--inset-shadow-focus);
+}
+
+.capture-counter {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--pill-face);
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+/* ── 反馈行 / 类型建议 ────────────────────────────────────── */
+.capture-aux {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+}
+
+.capture-feedback {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-feedback.tone-info {
+  color: var(--text-secondary);
+}
+
+.capture-feedback.tone-success {
+  color: var(--accent);
+}
+
+.capture-feedback.tone-error {
+  color: var(--c-danger);
+}
+
+.capture-suggest {
+  flex: none;
+  padding: 2px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--control-face);
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms;
+}
+
+.capture-suggest:hover {
+  border-color: var(--accent);
+}
+
+.capture-suggest:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── 类型单选组 ───────────────────────────────────────────── */
+.capture-kinds {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: var(--radius-control);
+  background: var(--pill-face);
+}
+
+.capture-kind {
+  flex: 1;
+  padding: 4px 6px;
+  border: none;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.capture-kind:hover {
+  color: var(--text-primary);
+}
+
+.capture-kind.is-active {
+  background: var(--pill-active-face);
+  color: var(--pill-active-text);
+  box-shadow: var(--pill-active-shadow);
+}
+
+.capture-kind:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── 底部：草稿状态 + 快捷键提示 + 主按钮 ─────────────────── */
+.capture-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+
+.capture-status {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.capture-draft {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-draft.is-error {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--c-danger);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.capture-draft.is-error:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.capture-hint {
+  flex: none;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.capture-submit {
+  flex: none;
+  min-width: 84px;
+  padding: 6px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--capture-on-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 120ms, opacity 120ms;
+}
+
+.capture-submit:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.capture-submit:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.capture-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.capture-submit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── 动效（一次性，无常驻） ───────────────────────────────── */
+@keyframes capture-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capture-card {
+    animation: none !important;
+  }
+  .capture-close,
+  .capture-kind,
+  .capture-suggest,
+  .capture-submit {
+    transition: none !important;
+  }
+}
+}

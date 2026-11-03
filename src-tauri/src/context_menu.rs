@@ -465,6 +465,11 @@ pub fn context_menu_action(
             let _ = app.emit("focus-quick-add", ());
             ok_result(&db)
         }
+        // 托盘右键入口：热键被占用/不可用时仍能打开快速捕获窗口（不创建新窗口实例）。
+        "quick-capture" => {
+            crate::quick_capture::toggle(&app);
+            ok_result(&db)
+        }
         "mode:minimal" | "mode:compact" | "mode:full" => {
             let mode = action.trim_start_matches("mode:").to_string();
             match crate::commands::system::apply_mode_inner(&app, &db, &mode) {

@@ -70,13 +70,13 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("渲染结构", () => {
-  it("渲染四组标题与全部 10 个菜单项", async () => {
+  it("渲染四组标题与全部 11 个菜单项", async () => {
     render(<ContextMenuApp />);
     await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
     for (const label of ["常用操作", "布局模式", "外观与系统", "退出操作"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
-    expect(screen.getAllByRole("menuitem")).toHaveLength(3); // 显示/隐藏 · 快速添加 · 退出
+    expect(screen.getAllByRole("menuitem")).toHaveLength(4); // 显示/隐藏 · 快速添加 · 快速捕获 · 退出
     expect(screen.getAllByRole("menuitemradio")).toHaveLength(6); // 3 模式 + 3 主题
     expect(screen.getAllByRole("menuitemcheckbox")).toHaveLength(1); // 自启动
   });

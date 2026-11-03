@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "capture",
+  "description": "全局快速捕获窗口权限：事件订阅（quick-capture-summoned / quick-capture-hidden / capture-flush-draft）+ 核心能力；业务命令为应用自定义命令，无需插件权限",
+  "windows": ["capture"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

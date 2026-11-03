@@ -59,6 +59,23 @@
         "minimizable": false,
         "focus": false,
         "visible": false
+      },
+      {
+        "label": "capture",
+        "title": "Task Dock 快速捕获",
+        "url": "capture.html",
+        "width": 640,
+        "height": 360,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "focus": false,
+        "visible": false
       }
     ],
     "security": {

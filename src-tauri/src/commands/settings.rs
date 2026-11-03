@@ -64,6 +64,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "clipboard_paste_interval_html_ms",
     "clipboard_paste_interval_files_ms",
     "clipboard_sensitive_filter",
+    // 全局快速捕获（v0.7）：上次选择的捕获类型
+    "quick_capture_last_type",
 ];
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
@@ -147,6 +149,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "clipboard_paste_interval_image_ms"
         | "clipboard_paste_interval_html_ms"
         | "clipboard_paste_interval_files_ms" => int_in_range(v, key, 100, 5_000),
+        // 快速捕获上次选择的类型（与 store::KINDS 保持一致）
+        "quick_capture_last_type" => enum_of(v, key, &["task", "idea", "text", "todo", "link"]),
         // 排除名单：逗号/换行分隔的 exe 名或路径（长度受限、无控制字符注入）
         "clipboard_exclude_apps" => {
             let s = v.as_str().ok_or_else(|| {

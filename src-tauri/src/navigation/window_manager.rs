@@ -305,6 +305,128 @@ pub fn exe_path_of(pid: u32) -> Option<String> {
     exe_path_of_pid(pid)
 }
 
+// ── 前台窗口 / 显示器工作区（快速捕获唤起定位用）────────────
+//
+// 只读 Win32 辅助：HWND 与显示器矩形都只在运行时使用，绝不落库。
+// 工作区为物理像素（已排除任务栏），配合 monitor.scale_factor() 做 DPI 换算。
+
+/// 显示器工作区（物理像素，绝对屏幕坐标；已排除任务栏等保留区域）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonitorWorkArea {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    /// 该显示器缩放（1.0 = 100%，1.5 = 150%）
+    pub scale: f64,
+}
+
+/// 当前前台窗口句柄；0 表示无法取得（无桌面会话等）。
+#[cfg(windows)]
+pub fn foreground_window() -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe { GetForegroundWindow() as isize }
+}
+
+#[cfg(not(windows))]
+pub fn foreground_window() -> isize {
+    0
+}
+
+/// 当前前台窗口句柄：有效且不属于本进程时返回 Some。
+///
+/// 唤起快速捕获前记录它，用于关闭时恢复焦点；属于本进程（例如主窗口或
+/// 捕获窗口自身）或无效时返回 None——调用方不得据此抢回焦点。
+pub fn foreground_hwnd() -> Option<isize> {
+    let hwnd = foreground_window();
+    if hwnd == 0 || !window_is_valid(hwnd) {
+        return None;
+    }
+    if window_pid(hwnd) == Some(std::process::id()) {
+        return None;
+    }
+    Some(hwnd)
+}
+
+/// 窗口矩形中心（屏幕物理像素）；取不到矩形返回 None。
+#[cfg(windows)]
+fn window_center(hwnd: isize) -> Option<(f64, f64)> {
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindow};
+    let h = hwnd as HWND;
+    unsafe {
+        if IsWindow(h) == 0 {
+            return None;
+        }
+        let mut rect: RECT = std::mem::zeroed();
+        if GetWindowRect(h, &mut rect) == 0 {
+            return None;
+        }
+        Some((
+            (rect.left as i64 + rect.right as i64) as f64 / 2.0,
+            (rect.top as i64 + rect.bottom as i64) as f64 / 2.0,
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn window_center(_hwnd: isize) -> Option<(f64, f64)> {
+    None
+}
+
+#[cfg(windows)]
+fn window_is_valid(hwnd: isize) -> bool {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+    unsafe { IsWindow(hwnd as HWND) != 0 }
+}
+
+#[cfg(not(windows))]
+fn window_is_valid(_hwnd: isize) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn window_pid(hwnd: isize) -> Option<u32> {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let mut pid: u32 = 0;
+    unsafe {
+        GetWindowThreadProcessId(hwnd as HWND, &mut pid);
+    }
+    if pid == 0 {
+        None
+    } else {
+        Some(pid)
+    }
+}
+
+#[cfg(not(windows))]
+fn window_pid(_hwnd: isize) -> Option<u32> {
+    None
+}
+
+/// 把 Tauri 显示器描述转成物理像素工作区（排除任务栏）。
+pub fn monitor_work_area(monitor: &tauri::Monitor) -> MonitorWorkArea {
+    let rect = monitor.work_area();
+    MonitorWorkArea {
+        x: rect.position.x,
+        y: rect.position.y,
+        w: rect.size.width as i32,
+        h: rect.size.height as i32,
+        scale: monitor.scale_factor(),
+    }
+}
+
+/// 窗口所在显示器的工作区：以窗口矩形中心点做 `monitor_from_point`，
+/// 与 Win32 `MonitorFromWindow`（最近显示器）语义一致，同时复用 Tauri 的
+/// work_area 与 DPI 信息（不新增依赖）。
+pub fn monitor_of_window(app: &tauri::AppHandle, hwnd: isize) -> Option<MonitorWorkArea> {
+    let (cx, cy) = window_center(hwnd)?;
+    let monitor = app.monitor_from_point(cx, cy).ok().flatten()?;
+    Some(monitor_work_area(&monitor))
+}
+
 // ── Windows 实现 ────────────────────────────────────────────
 
 #[cfg(windows)]

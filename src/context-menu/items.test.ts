@@ -18,14 +18,15 @@ const snap: MenuSnapshot = {
 };
 
 describe("菜单配置结构", () => {
-  it("按规范提供四组、共 10 项", () => {
+  it("按规范提供四组、共 11 项", () => {
     expect(MENU_GROUPS.map((g) => g.label)).toEqual([
       "常用操作",
       "布局模式",
       "外观与系统",
       "退出操作",
     ]);
-    expect(FLAT_ITEMS).toHaveLength(10);
+    expect(FLAT_ITEMS).toHaveLength(11);
+    expect(FLAT_ITEMS.some((it) => it.action === "quick-capture")).toBe(true);
   });
 
   it("通过配置校验（动作唯一、单选组非空）", () => {
