@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Task Dock · 通知系统 C 方案 · 六状态交互原型</title>
+<style>
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --ink: #eaf1ff; --muted: #9aaed1; --faint: #778bac;
+  --panel: rgba(14,24,46,.80); --border: rgba(171,198,246,.14);
+  --blue: #3b82f6; --amber: #f59e0b; --green: #22c55e;
+  --red: #ef4444; --orange: #f97316; --purple: #a855f7;
+  --glow: rgba(74,139,255,.24);
+}
+* { box-sizing: border-box; }
+body { margin:0; min-height:100vh; color:var(--ink); background: #091125; }
+button, input { font: inherit; }
+button { cursor:pointer; }
+button:focus-visible, input:focus-visible { outline: 2px solid #8ebaff; outline-offset:3px; }
+button:disabled { opacity:.42; cursor:not-allowed; }
+.app { max-width:1560px; margin:auto; padding:26px clamp(15px,3vw,42px) 36px; }
+.topbar { display:flex; align-items:center; gap:14px; margin-bottom:22px; }
+.brandmark { height:44px;width:44px;border-radius:13px;display:grid;place-items:center;flex:none; background:linear-gradient(130deg,#9fd5ff,#3778ec 60%,#2852c5); border:1px solid #b7d7ff;box-shadow:inset 0 2px 8px #d6eaff80,0 7px 24px #3479f85c; }
+.brandmark svg { height:23px;width:23px; }
+h1,h2,h3,p { margin:0; }
+h1 { font-weight:730; font-size:clamp(21px,2.3vw,28px);letter-spacing:-.5px; }
+.subtitle { font-size:12px; color:var(--muted); margin-top:4px; }
+.topcap { margin-left:auto; padding:7px 11px; border:1px solid #6f96d547; background:#90b6ff14; border-radius:999px;color:#a8c7ff;font-size:11px;white-space:nowrap; }
+.layout { display:grid; grid-template-columns:305px minmax(0,1fr);gap:18px;align-items:stretch; }
+.sidebar { background: linear-gradient(150deg,#172442b8,#101a31c7); border:1px solid var(--border); border-radius:20px;padding:18px; box-shadow:0 18px 50px #0002,inset 0 1px #ffffff0b; }
+.section-overline { color:#729ad8; font-size:11px; font-weight:700;letter-spacing:1px; }
+.sidebar h2 { font-size:17px; margin:5px 0 6px; }
+.section-desc { font-size:12px; line-height:1.65; color:var(--muted);margin-bottom:17px; }
+.state-menu { display:grid;gap:8px; }
+.state-btn { display:flex;align-items:center;gap:11px;width:100%;padding:11px 12px;border:1px solid #ffffff0a; border-radius:12px;background:#0b173020;color:var(--ink);text-align:left;transition:.18s ease; }
+.state-btn:hover {background:#738fee16;border-color:#91aeef40;}
+.state-btn.active {background:linear-gradient(100deg,#537fdc29,#a0bcff0c);border-color:#95b7ff65;box-shadow:inset 2px 0 #6aafff,0 5px 18px #1a6bff12;}
+.state-miniicon { height:35px;width:35px;display:grid;place-items:center;flex:none;border-radius:12px; background:color-mix(in srgb,var(--tone) 17%,transparent);color:var(--tone);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--tone) 21%,transparent); }
+.state-miniicon svg{width:19px;height:19px;}
+.state-titles {flex:1;min-width:0;}.state-titles strong {font-size:13px;display:block;}.state-titles small{font-size:11px;color:var(--faint);display:block;margin-top:3px;}
+.state-chevron {height:14px;width:14px;color:#657fa9;}
+.sidebar-tools {border-top:1px solid var(--border);margin-top:19px;padding-top:16px;}
+.row-between {display:flex;justify-content:space-between;align-items:center;gap:7px;}
+.switch-row {font-size:12px;color:#d3def3;padding:8px 1px;}
+.switch {appearance:none;width:34px;height:20px;border-radius:999px;background:#3a4b66;position:relative;cursor:pointer;transition:background .2s;}
+.switch:before {content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:white;transition:transform .2s;}
+.switch:checked{background:#3c85ee;}.switch:checked:before{transform:translateX(14px);}
+.mini-note {margin-top:13px;color:#8fa5ca;font-size:11px;line-height:1.6;}
+.main-panel {min-width:0;display:flex;flex-direction:column;gap:15px; }
+.scene-bar {display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap; }
+.scene-bar h2 {font-size:16px;font-weight:690;}
+.scene-bar small {color:#8ea2c7;font-size:11px;display:block;margin-top:4px;}
+.actions {display:flex;gap:8px;flex-wrap:wrap;}
+.ctrl {background:#20345b8c; border:1px solid #95b9fd30;color:#d6e5ff;border-radius:10px;padding:9px 13px;font-size:12px;transition:.2s;}
+.ctrl:hover {background:#315187c2;}
+.ctrl.primary {background:linear-gradient(160deg,#4b91ff,#2b6ce7);border-color:#8dc4ff70;color:white;box-shadow:0 7px 20px #2168ef45;}
+.ctrl.primary:hover {filter:brightness(1.1);}
+.desktop { min-height:610px;height:min(68vw,710px);max-height:710px;position:relative;overflow:hidden;border:1px solid #759be445;border-radius:20px;background:radial-gradient(ellipse at 15% 28%,#214baf 0%,transparent 35%),radial-gradient(ellipse at 85% 70%,#173f9b 0%,transparent 55%),linear-gradient(145deg,#071637,#0a275f 38%,#071329 100%);box-shadow:0 26px 70px #0005,inset 0 1px #aac8ff25;isolation:isolate;}
+.desktop:before {content:"";position:absolute;inset:-20% -12% -30% 2%;border-radius:47%;background:radial-gradient(ellipse at 54% 46%,#3677ec67 3%,#2569e630 19%,transparent 46%);transform:rotate(-24deg);filter:blur(10px);pointer-events:none;}
+.desktop:after {content:"";position:absolute;right:-32%;top:-75%;width:105%;height:170%;border:38px solid #3074ef23;border-left-color:#7bafff0a;transform:rotate(34deg);border-radius:46%;box-shadow:inset 0 0 48px #80aefa12,0 0 60px #256ee826;pointer-events:none;}
+.window-sim {position:absolute;left:5.3%;top:13%;width:min(45%,440px);max-width:450px;height:60%;border:1px solid #b6d6ff22;border-radius:16px;background:linear-gradient(147deg,#173361a8,#101b38b9);box-shadow:0 24px 70px #02091765; backdrop-filter:blur(13px);padding:16px;opacity:.8;}
+.sim-head{display:flex;gap:9px;align-items:center;color:#dfeaff;font-weight:700;font-size:14px;}
+.sim-logo{width:24px;height:24px;display:grid;place-items:center;border-radius:7px;background:linear-gradient(135deg,#a0dbff,#316ff4);}
+.sim-head small{margin-left:auto;font-size:10px;color:#8199bd;font-weight:400;}
+.sim-nav{height:26px;display:flex;gap:13px;align-items:center;margin:20px 0;border-bottom:1px solid #ffffff16;color:#859ec9;font-size:11px;}
+.sim-nav b{color:#d5e6ff;border-bottom:2px solid #65a1fa;height:100%;}
+.sim-row{display:flex;align-items:center;gap:10px;border-radius:10px;padding:11px 10px;background:#d2e7ff08;margin-bottom:7px;color:#9cb2d4;font-size:11px;}
+.sim-dot{height:7px;width:7px;border-radius:50%;background:#3e8bff;box-shadow:0 0 8px #3e8bff66;}
+.sim-row span:last-child{margin-left:auto;color:#8daddc;}
+.workspace-tag{position:absolute;left:27px;bottom:65px;font-size:11px;color:#84a6e0aa;letter-spacing:.4px;}
+.desktop-taskbar{position:absolute;bottom:0;left:0;right:0;height:44px;background:#07152bb3;border-top:1px solid #95b9eb20;display:flex;align-items:center;justify-content:center;gap:10px;z-index:1;}
+.taskicon {width:24px;height:24px;border-radius:7px;display:grid;place-items:center;background:#c0d7fe18;border:1px solid #b5d5ff17;color:#b5d6ff;font-size:12px;}
+.taskicon.logo{background:#4389f4;color:white;}
+.tasktime{position:absolute;right:16px;text-align:right;font-size:10px;line-height:1.35;color:#b0c4e7;}
+.corner-label {position:absolute;top:19px;right:22px;font-size:11px;letter-spacing:.2px;color:#a3c4f4b0;display:flex;align-items:center;gap:7px;z-index:2;}
+.corner-label .live-dot{height:6px;width:6px;background:#50daab;border-radius:50%;box-shadow:0 0 8px #50daab;}
+.toast-stack { position:absolute;bottom:63px;right:25px;display:flex;align-items:flex-end;flex-direction:column;gap:10px;width:min(366px,calc(100% - 38px));z-index:3;pointer-events:none; }
+.toast-card {pointer-events:auto;width:100%;--tone:var(--blue);background:radial-gradient(170px 130px at 83% -16%,color-mix(in srgb,var(--tone) 10%,transparent),transparent 86%),linear-gradient(145deg,rgba(31,51,86,.95),rgba(17,29,52,.96) 55%,rgba(22,36,61,.96));border:1px solid rgba(177,209,255,.26);border-radius:16px;padding:14px 15px 13px; color:#f0f5ff; box-shadow:inset 0 1px 0 #ffffff24,inset 0 -1px 0 #03122b83,0 12px 32px #0007,0 4px 15px color-mix(in srgb,var(--tone) 8%,transparent);animation:toastEnter .26s cubic-bezier(.21,.81,.26,1.04) both;position:relative;overflow:hidden;}
+.toast-card:before{content:"";position:absolute;inset:0 0 auto;height:55px;background:linear-gradient(180deg,#c3ddff0d,transparent);pointer-events:none;}
+.toast-card[data-state="running"]{--tone:var(--blue)}.toast-card[data-state="waiting"]{--tone:var(--amber)}.toast-card[data-state="success"]{--tone:var(--green)}.toast-card[data-state="failed"]{--tone:var(--red)}.toast-card[data-state="disconnected"]{--tone:var(--orange)}.toast-card[data-state="merged"]{--tone:var(--purple)}
+.toast-card.leaving {animation:toastExit .2s ease-in both;}
+/* 堆叠态只保留最新卡片的主操作；其余压缩为可展开摘要，避免顶端裁切 */
+.toast-stack.is-stacked .toast-card:not(:last-child) {padding-top:10px;padding-bottom:7px;}
+.toast-stack.is-stacked .toast-card:not(:last-child) .toast-main {margin:8px 0 4px;}
+.toast-stack.is-stacked .toast-card:not(:last-child) .status-icon {width:37px;height:37px;}
+.toast-stack.is-stacked .toast-card:not(:last-child) .status-icon svg {width:21px;height:21px;}
+.toast-stack.is-stacked .toast-card:not(:last-child) .toast-actions,
+.toast-stack.is-stacked .toast-card:not(:last-child) .inline-meta,
+.toast-stack.is-stacked .toast-card:not(:last-child) .progress-row {display:none;}
+.toast-stack.is-stacked .toast-card:not(:last-child) .toast-inline-expand {margin-top:1px;}
+.toast-head{display:flex;align-items:center;gap:7px;font-size:11px;position:relative;z-index:1;}
+.app-symbol{display:grid;place-items:center;width:18px;height:18px;flex:none;border-radius:5px;background:linear-gradient(145deg,#b8e4ff,#478bf8 55%,#2864d4);border:1px solid #d2edff69;box-shadow:0 2px 6px #1367cf55;}
+.app-symbol svg {width:12px;height:12px;}
+.toast-head strong{font-weight:680;}.timestamp{color:#a8b9d5;margin-left:auto;font-size:10px;}
+.icon-btn{border:0;background:transparent;color:#bdcdeb;display:grid;place-items:center;width:20px;height:20px;border-radius:6px;padding:2px;}
+.icon-btn:hover{background:#ffffff24;color:#fff;}.icon-btn svg{width:15px;height:15px;}
+.toast-main{display:flex;align-items:flex-start;gap:12px;margin:14px 0 12px;position:relative;}
+.status-icon{width:47px;height:47px;border-radius:50%;flex:none;display:grid;place-items:center;background:radial-gradient(circle at 35% 25%,color-mix(in srgb,var(--tone) 40%,transparent),color-mix(in srgb,var(--tone) 16%,transparent) 75%);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--tone) 32%,transparent),0 0 24px color-mix(in srgb,var(--tone) 13%,transparent);color:color-mix(in srgb,var(--tone) 89%,white);}
+.status-icon svg{width:25px;height:25px;stroke-width:2.5px;}
+.title-zone{flex:1;min-width:0;padding-top:1px;}
+.toast-title{font-size:15px;font-weight:740;line-height:1.4;letter-spacing:-.2px;}
+.toast-body{font-size:12px;line-height:1.55;color:#b9cae6;margin-top:4px;word-break:break-word;}
+.toast-body strong{color:#e4efff;font-weight:620;}
+.progress-track{height:6px;background:#d3e3ff2a;border-radius:5px;overflow:hidden;flex:1;}
+.progress-fill{height:100%;background:linear-gradient(90deg,#286be7,#50b7ff);width:72%;box-shadow:0 0 10px #368cfb9d;border-radius:5px;}
+.progress-row{display:flex;align-items:center;gap:9px;margin-top:12px;}
+.progress-label{font-size:11px;color:#9dc6ff;font-variant-numeric:tabular-nums;}
+.inline-meta{font-size:11px;color:#d5dfef;display:flex;align-items:center;gap:6px;margin-top:10px;background:#bdceec0d;border:1px solid #afc6e51d;border-radius:8px;padding:6px 8px;}
+.inline-meta svg {width:14px;height:14px;color:var(--tone);}
+.toast-actions{display:flex;gap:8px;position:relative;z-index:1;}
+.toast-cta{height:34px;border:1px solid #bad0f620;color:#dbe8ff;background:#bbccec18;border-radius:9px;font-size:12px;font-weight:600;flex:1;transition:background .12s,transform .12s;}
+.toast-cta:hover{background:#bbccec32;}.toast-cta:active{transform:scale(.98);}
+.toast-cta.strong{background:linear-gradient(150deg,#4a9bff,#2667ec);border-color:#97c8ff52;color:white;box-shadow:inset 0 1px #c5eaff30,0 4px 11px #256cef3d;}
+.toast-cta.strong:hover{filter:brightness(1.12);}
+.toast-extra{border-top:1px solid #c3daff21;padding:10px 3px 2px;margin-top:11px;display:grid;gap:8px;color:#b8cbe7;font-size:11px;line-height:1.5;animation:detailIn .2s ease-out;}
+.toast-extra .extra-line{display:flex;justify-content:space-between;gap:10px;}.toast-extra .extra-line strong{font-weight:550;color:#d9e8fd;text-align:right;max-width:60%;}
+.toast-extra .detail-warning{color:#ffcca4;}
+.toast-inline-expand{display:flex;align-items:center;gap:3px;font-size:10px;color:#adcaff;background:transparent;border:0;margin:9px auto 0;padding:3px 7px;}
+.toast-inline-expand svg{width:13px;height:13px;}
+.toast-inline-expand .flip{transform:rotate(180deg);}
+.toast-card[data-state="success"] .toast-main{margin-bottom:11px;}
+.toast-card[data-state="merged"] .toast-body{margin-bottom:2px;}
+.count-line{display:flex;gap:7px;margin-top:10px;align-items:center;}
+.count-chip{display:inline-flex;gap:4px;align-items:center;padding:4px 7px;border-radius:7px;background:#c2d5ff12;color:#c6d7f4;font-size:10px;}
+.count-chip svg{height:12px;width:12px;}.count-chip b{font-variant-numeric:tabular-nums;}
+.count-chip.done svg{color:#55e996}.count-chip.err svg{color:#ff7777}.count-chip.lost svg{color:#ffb263}
+.merged-stack-illus{position:absolute;right:5px;top:4px;width:33px;height:33px;opacity:.55;}
+.desktop[data-theme="light"]{background:radial-gradient(ellipse at 15% 32%,#b2d1fd,transparent 47%),radial-gradient(ellipse at 89% 64%,#e2eaff,transparent 48%),linear-gradient(135deg,#9dbbf7,#c2d7fa 70%,#acc8f6);}
+.desktop[data-theme="light"] .window-sim{background:linear-gradient(130deg,#f9fcffcd,#eaf3ff9f);border-color:#ffffffc9;color:#183d75;}
+.desktop[data-theme="light"] .sim-head{color:#233d66}.desktop[data-theme="light"] .sim-nav{color:#6583ae}.desktop[data-theme="light"] .sim-nav b{color:#294d8f}.desktop[data-theme="light"] .sim-row{background:#ffffff67;color:#365a92}.desktop[data-theme="light"] .sim-row span:last-child{color:#3672bf}.desktop[data-theme="light"] .desktop-taskbar{background:#e2eeffc7;border-color:#fff5}.desktop[data-theme="light"] .taskicon{color:#436fb3;background:#ffffff99}.desktop[data-theme="light"] .taskicon.logo{color:white;background:#3f8dff}.desktop[data-theme="light"] .tasktime{color:#37619c}.desktop[data-theme="light"] .corner-label{color:#3263a1}.desktop[data-theme="light"] .workspace-tag{color:#386caf94}
+.desktop[data-theme="light"] .toast-card{color:#152d4f;background:radial-gradient(170px 130px at 85% -14%,color-mix(in srgb,var(--tone) 8%,transparent),transparent 85%),linear-gradient(145deg,rgba(246,250,255,.97),rgba(226,238,255,.95));border-color:#ffffffed;box-shadow:inset 0 1px #fff,0 12px 30px #2b5eac40,0 4px 9px #5d85c21c;}
+.desktop[data-theme="light"] .toast-title{color:#162f58}.desktop[data-theme="light"] .toast-body{color:#536d96}.desktop[data-theme="light"] .toast-body strong{color:#23466e}.desktop[data-theme="light"] .timestamp{color:#57739e}.desktop[data-theme="light"] .icon-btn{color:#506c98}.desktop[data-theme="light"] .toast-cta:not(.strong){color:#284d7b;background:#abc8f533;border-color:#7e9fd22e}.desktop[data-theme="light"] .toast-cta:not(.strong):hover{background:#abc8f566}.desktop[data-theme="light"] .inline-meta{color:#3d5d84;background:#b7d4fc3b;border-color:#88b2eb3d}.desktop[data-theme="light"] .toast-extra{border-color:#6e9fd53d;color:#4b6791}.desktop[data-theme="light"] .toast-extra .extra-line strong{color:#275079}.desktop[data-theme="light"] .toast-extra .detail-warning{color:#b45309}.desktop[data-theme="light"] .count-chip{background:#94b9ea35;color:#355b87}.desktop[data-theme="light"] .progress-track{background:#98b7e77a}.desktop[data-theme="light"] .progress-label{color:#3171cb}.desktop[data-theme="light"] .toast-inline-expand{color:#3a6cb9}
+.specs { display:grid;grid-template-columns:1.2fr 1fr 1.1fr;gap:14px; }
+.spec-card { background:linear-gradient(165deg,#172544ab,#111d35d9);border:1px solid var(--border);border-radius:15px;padding:16px 18px;min-height:121px;}
+.spec-card h3{font-size:12px;margin-bottom:11px;color:#e2ebfe;}
+.spec-card p{font-size:11px;line-height:1.8;color:#91a8ca;}
+.swatches {display:flex;gap:8px;flex-wrap:wrap;}
+.swatch {display:flex;align-items:center;gap:5px;font-size:10px;color:#b0c1e0;}
+.swatch:before {content:"";width:9px;height:9px;border-radius:50%;background:var(--c);box-shadow:0 0 12px color-mix(in srgb,var(--c) 35%,transparent);}
+.feedback {position:fixed;left:50%;bottom:21px;transform:translate(-50%,18px);padding:12px 18px;background:#192b4eec;border:1px solid #aec8fd3b;border-radius:13px;font-size:12px;color:white;box-shadow:0 8px 28px #0007;opacity:0;pointer-events:none;transition:.2s;z-index:30;max-width:calc(100vw - 32px);text-align:center;}
+.feedback.visible{opacity:1;transform:translate(-50%,0)}
+.empty {position:absolute;bottom:80px;right:25px;color:#a3c4f0bd;font-size:12px;padding:13px 17px;border:1px dashed #9dbdff5b;border-radius:12px;background:#19396532;}
+.hidden{display:none !important;}
+@keyframes toastEnter{from{opacity:0;transform:translateX(24px) scale(.98)}to{opacity:1;transform:translateX(0) scale(1)}}
+@keyframes toastExit{to{opacity:0;transform:translateX(20px) scale(.98)}}
+@keyframes detailIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
+@media (max-width:1050px){.layout{grid-template-columns:255px minmax(0,1fr)}.desktop{min-height:530px}.specs{grid-template-columns:1fr 1fr}.spec-card:last-child{grid-column:1/-1}}
+@media (max-width:800px){.app{padding:18px 12px 26px}.layout{grid-template-columns:1fr}.state-menu{grid-template-columns:repeat(2,1fr)}.state-btn{padding:9px}.sidebar-tools{display:flex;gap:18px;flex-wrap:wrap}.sidebar-tools .switch-row{gap:10px}.scene-bar{align-items:start}.desktop{height:600px}.window-sim{width:47%;}.topcap{display:none}}
+@media (max-width:530px){.state-menu{grid-template-columns:1fr 1fr}.state-miniicon{width:30px;height:30px}.state-titles small{font-size:10px}.state-btn{gap:7px}.desktop{min-height:510px;height:510px}.window-sim{left:4%;top:9%;width:57%;height:47%;padding:11px}.sim-row{font-size:9px;padding:8px}.sim-nav{gap:7px;font-size:9px}.toast-stack{bottom:56px;right:9px;width:min(352px,calc(100% - 18px));}.toast-card{padding:12px}.specs{grid-template-columns:1fr}.spec-card:last-child{grid-column:auto}.workspace-tag{display:none}}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms !important;transition-duration:.01ms !important;scroll-behavior:auto !important}}
+</style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
+ <symbol id="ic-brand" viewBox="0 0 24 24"><path fill="currentColor" d="m6 3 3.2 1.3 1.3 3.2-1.3 3.2L6 12 2.8 10.7 1.5 7.5l1.3-3.2L6 3Zm9 3 2.3 4.7L22 13l-4.7 2.3L15 20l-2.3-4.7L8 13l4.7-2.3L15 6Z"/></symbol>
+ <symbol id="ic-running" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" stroke-opacity=".24" fill="none"/><path d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" stroke-width="3" stroke-linecap="round" fill="none"/></symbol>
+ <symbol id="ic-waiting" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.3" fill="none"/><path d="M9 8v8m6-8v8" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/></symbol>
+ <symbol id="ic-success" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.3" fill="none"/><path d="m7 12 3.3 3.3L17 8.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+ <symbol id="ic-failed" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.3" fill="none"/><path d="m9 9 6 6m0-6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></symbol>
+ <symbol id="ic-disconnected" viewBox="0 0 24 24"><path d="M8.8 14.8 6.7 17a4 4 0 0 1-5.7-5.7l4.3-4.3a4 4 0 0 1 5.7 0M15.2 9.2l2.1-2.1a4 4 0 0 1 5.7 5.7L18.7 17a4 4 0 0 1-5.7 0M8.5 15.5l7-7" stroke="currentColor" stroke-width="2.1" fill="none" stroke-linecap="round"/></symbol>
+ <symbol id="ic-merged" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 10 9 5 9-5M3 18l9 5 9-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/></symbol>
+ <symbol id="ic-x" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
+ <symbol id="ic-ellipsis" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></g></symbol>
+ <symbol id="ic-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+ <symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" fill="none"/><path d="M12 7v6l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
+ <symbol id="ic-file" viewBox="0 0 24 24"><path d="M7 2h7l5 5v15H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 0v5h5M9 13h6M9 17h6" stroke="currentColor" stroke-width="2" fill="none"/></symbol>
+</svg>
+<div class="app">
+  <header class="topbar">
+    <div class="brandmark"><svg viewBox="0 0 24 24"><use href="#ic-brand"/></svg></div>
+    <div><h1>Task Dock · 通知系统</h1><p class="subtitle">C 方案 · 六状态液态玻璃交互原型 / Windows 桌面通知</p></div>
+    <span class="topcap">视觉与交互演示 · 未连接真实 Agent</span>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="section-overline">NOTIFICATION STATES</div>
+      <h2>六种状态模板</h2>
+      <p class="section-desc">同一骨架，按照状态调整信息密度、语义颜色和操作。选择状态，在右侧桌面预览真实比例。</p>
+      <div id="state-menu" class="state-menu" aria-label="选择通知状态"></div>
+      <div class="sidebar-tools">
+        <div class="row-between switch-row"><span>浅色主题预览</span><input aria-label="浅色主题预览" class="switch" type="checkbox" id="light-mode" /></div>
+        <div class="row-between switch-row"><span>自动消失模拟</span><input aria-label="自动消失模拟" class="switch" type="checkbox" id="auto-dismiss" /></div>
+        <p class="mini-note">进度与状态均为演示数据；不会调用真实 Agent，也不会修改任务数据。自定义弹窗默认不夺取键盘焦点。</p>
+      </div>
+    </aside>
+    <section class="main-panel">
+      <div class="scene-bar">
+        <div><h2>桌面实景预览</h2><small>Windows 桌面 · 右下角悬浮 · 360 px 卡片</small></div>
+        <div class="actions"><button class="ctrl" id="stack-btn">三条堆叠</button><button class="ctrl" id="clear-btn">清空</button><button class="ctrl primary" id="replay-btn">重新播放</button></div>
+      </div>
+      <div class="desktop" data-theme="dark" id="desktop">
+        <div class="corner-label"><span class="live-dot"></span> C · 液态玻璃通知</div>
+        <div class="window-sim" aria-hidden="true">
+          <div class="sim-head"><div class="sim-logo"><svg width="15" height="15"><use href="#ic-brand"/></svg></div>Task Dock <small>效率工作台</small></div>
+          <div class="sim-nav"><b>概览</b><span>Agent</span><span>任务</span><span>历史</span></div>
+          <div class="sim-row"><span class="sim-dot"></span>整理本周项目报告<span>进行中</span></div>
+          <div class="sim-row"><span class="sim-dot" style="background:#f4a94d"></span>代码审查<span>等待处理</span></div>
+          <div class="sim-row"><span class="sim-dot" style="background:#4ddb9a"></span>收集会议资料<span>已完成</span></div>
+        </div>
+        <span class="workspace-tag">DESKTOP PREVIEW · 1920 × 1080 SCALE</span>
+        <div id="toast-stack" class="toast-stack" role="region" aria-label="桌面通知预览" aria-live="polite"></div>
+        <div class="empty hidden" id="empty">通知已清空 · 从左侧选择一个状态继续预览</div>
+        <div class="desktop-taskbar" aria-hidden="true"><span class="taskicon logo">✦</span><span class="taskicon">⊞</span><span class="taskicon">◈</span><span class="taskicon">▤</span><span class="taskicon">◉</span><span class="tasktime">22:45<br/>2026/11/02</span></div>
+      </div>
+      <div class="specs">
+        <div class="spec-card"><h3>颜色语义</h3><div class="swatches"><span class="swatch" style="--c:var(--blue)">执行</span><span class="swatch" style="--c:var(--amber)">等待</span><span class="swatch" style="--c:var(--green)">完成</span><span class="swatch" style="--c:var(--red)">失败</span><span class="swatch" style="--c:var(--orange)">断连</span><span class="swatch" style="--c:var(--purple)">合并</span></div><p style="margin-top:9px">语义由图标 + 标题 + 颜色共同表达，避免仅依靠颜色区分状态。</p></div>
+        <div class="spec-card"><h3>组件尺寸</h3><p>宽 360 px · 圆角 16 px · 内边距 15 px<br>默认高度自适应 · 最多并排显示 3 条<br>轻微顶部高光 · 双层柔和阴影</p></div>
+        <div class="spec-card"><h3>行为与性能</h3><p>入场 260 ms / 退场 200 ms<br>hover、focus、展开时暂停自动关闭<br>低频按需动效 · 支持减少动画偏好<br>真实应用中需要独立无焦点 Tauri 窗口</p></div>
+      </div>
+    </section>
+  </div>
+</div>
+<div class="feedback" id="feedback" role="status"></div>
+<script>
+(() => {
+  'use strict';
+  const data = {
+    running: {title:'Agent 正在执行',short:'进行中',description:'执行任务，显示实时进度',body:'正在生成「本周项目报告」',icon:'running',color:'var(--blue)',primary:'查看详情',secondary:'后台继续',time:6000,rows:[['来源 Agent','Relay-Agent'],['任务','生成本周项目报告'],['状态','执行中 · 72%（演示）'],['启动时间','14:26（演示）']]},
+    waiting: {title:'Agent 等待你的操作',short:'等待中',description:'等待授权或人工确认',body:'需要你确认执行方案后继续',icon:'waiting',color:'var(--amber)',primary:'立即处理',secondary:'稍后提醒',time:12000,rows:[['来源 Agent','Relay-Agent'],['等待事项','确认执行方案'],['等待时长','3 分钟（演示）'],['建议操作','进入 Agent 面板处理']]},
+    success: {title:'任务已完成',short:'已完成',description:'提供可访问的结果入口',body:'「生成项目报告」已成功完成',icon:'success',color:'var(--green)',primary:'打开结果',secondary:'查看日志',time:5000,rows:[['任务','生成项目报告'],['完成结果','项目周报.pdf · 2.4 MB'],['状态','执行完成（演示）']]},
+    failed: {title:'任务执行失败',short:'执行失败',description:'显示错误摘要和修复入口',body:'调用分析工具时发生错误',icon:'failed',color:'var(--red)',primary:'重试',secondary:'查看详情',time:13000,rows:[['失败任务','数据分析工具调用'],['错误码','E_TOOL_403'],['原因','缺少执行权限（演示）'],['建议','检查授权后再重试']]},
+    disconnected: {title:'Agent 连接中断',short:'连接中断',description:'连接问题不等于任务失败',body:'4 个 Agent 轮次长时间无心跳',icon:'disconnected',color:'var(--orange)',primary:'查看详情',secondary:'重新连接',time:13000,rows:[['影响范围','4 个轮次（演示）'],['最新心跳','15 分钟前（演示）'],['结论','连接状态无法确认'],['任务结果','未知，不能推断失败']]},
+    merged: {title:'5 条 Agent 状态更新',short:'合并摘要',description:'抑制高频通知与刷屏',body:'3 个完成 · 1 个失败 · 1 个连接中断',icon:'merged',color:'var(--purple)',primary:'展开详情',secondary:'通知中心',time:8000,rows:[['生成报告','已完成'],['整理项目资料','已完成'],['编写测试摘要','已完成'],['代码分析','工具执行失败'],['Relay-Agent','连接中断，结果未确认']]}
+  };
+  const $ = (id) => document.getElementById(id);
+  const stack = $('toast-stack'), menu = $('state-menu'), desktop=$('desktop'), empty=$('empty');
+  let active = 'disconnected', seq = 0, timers = new Map(), feedbackTimer = null;
+  const icon = (name, className='') => `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true"><use href="#ic-${name}"></use></svg>`;
+  function notifyDemo(msg) { const el=$('feedback'); el.textContent=msg; el.classList.add('visible'); clearTimeout(feedbackTimer); feedbackTimer=setTimeout(()=>el.classList.remove('visible'),2600); }
+  function renderMenu(){menu.innerHTML=Object.keys(data).map((key)=>{const x=data[key];return `<button type="button" class="state-btn ${active===key?'active':''}" data-select="${key}" aria-pressed="${active===key}"><span class="state-miniicon" style="--tone:${x.color}">${icon(x.icon)}</span><span class="state-titles"><strong>${x.short}</strong><small>${x.description}</small></span>${icon('down','state-chevron')}</button>`}).join('');}
+  function cardMarkup(kind,id){
+    const d=data[kind];
+    const special = kind === 'running' ? `<div class="progress-row"><div class="progress-track"><div class="progress-fill"></div></div><span class="progress-label">72%</span></div>` :
+      kind === 'waiting' ? `<div class="inline-meta">${icon('clock')} 等待时长：3 分钟 · 需要人工确认</div>` :
+      kind === 'success' ? `<div class="inline-meta">${icon('file')} 项目周报.pdf · 2.4 MB（演示）</div>` :
+      kind === 'failed' ? `<div class="inline-meta">${icon('failed')} 错误码：E_TOOL_403</div>` :
+      kind === 'disconnected' ? `<div class="inline-meta">${icon('disconnected')} 不代表任务执行失败，结果尚未确认</div>` :
+      `<div class="count-line"><span class="count-chip done">${icon('success')}<b>3</b></span><span class="count-chip err">${icon('failed')}<b>1</b></span><span class="count-chip lost">${icon('disconnected')}<b>1</b></span></div>`;
+    const extra = d.rows.map(([k,v])=>`<div class="extra-line"><span>${k}</span><strong>${v}</strong></div>`).join('');
+    return `<article class="toast-card" data-state="${kind}" data-id="${id}" role="group" aria-label="${d.title}">
+      <div class="toast-head"><span class="app-symbol">${icon('brand')}</span><strong>Task Dock</strong><span class="timestamp">刚刚</span><button type="button" class="icon-btn" data-action="more" aria-label="展开更多操作">${icon('ellipsis')}</button><button type="button" class="icon-btn" data-action="close" aria-label="关闭通知">${icon('x')}</button></div>
+      <div class="toast-main"><div class="status-icon">${icon(d.icon)}</div><div class="title-zone"><h3 class="toast-title">${d.title}</h3><p class="toast-body">${d.body}</p>${special}</div></div>
+      <div class="toast-actions"><button type="button" class="toast-cta strong" data-action="primary">${d.primary}</button><button type="button" class="toast-cta" data-action="secondary">${d.secondary}</button></div>
+      <div class="toast-extra hidden" id="detail-${id}">${extra}${kind==='disconnected'?'<div class="detail-warning">注意：无心跳不是任务失败的充分证据。</div>':''}</div>
+      <button type="button" class="toast-inline-expand" data-action="expand"><span>展开详情</span>${icon('down')}</button>
+    </article>`;
+  }
+  function cancelTimer(id){const t=timers.get(id);if(t){ clearTimeout(t.handle);timers.delete(id); }}
+  function armTimer(card){if(!$('auto-dismiss').checked || card.classList.contains('expanded'))return;let id=card.dataset.id, d=data[card.dataset.state]; const t={remaining:d.time,handle:null,start:performance.now()};const cb=()=>dismiss(id);t.handle=setTimeout(cb,t.remaining);timers.set(id,t);}
+  function pause(card){const id=card.dataset.id,t=timers.get(id);if(!t)return;clearTimeout(t.handle);t.remaining=Math.max(0,t.remaining-(performance.now()-t.start));t.handle=null;}
+  function resume(card){const id=card.dataset.id,t=timers.get(id);if(!t || t.handle || card.classList.contains('expanded'))return;t.start=performance.now();t.handle=setTimeout(()=>dismiss(id),t.remaining);}
+  function dismiss(id){const card=stack.querySelector(`[data-id="${id}"]`);if(!card)return;cancelTimer(id);card.classList.add('leaving');setTimeout(()=>{card.remove();stack.classList.toggle('is-stacked',stack.children.length>1);empty.classList.toggle('hidden',stack.children.length>0);},190);}
+  function add(kind,clear=true){if(clear)clearAll();active=kind;renderMenu();const id=`demo-${++seq}`;stack.insertAdjacentHTML('beforeend',cardMarkup(kind,id));const card=stack.querySelector(`[data-id="${id}"]`);if(stack.children.length>3){const first=stack.firstElementChild;cancelTimer(first.dataset.id);first.remove();}stack.classList.toggle('is-stacked',stack.children.length>1);empty.classList.add('hidden');armTimer(card);return card;}
+  function clearAll(){for(const k of timers.keys())cancelTimer(k);stack.innerHTML='';stack.classList.remove('is-stacked');empty.classList.remove('hidden');}
+  function toggleDetails(card,force){const visible=force===undefined?!card.classList.contains('expanded'):force;if(visible && stack.children.length>1){for(const old of [...stack.querySelectorAll('.toast-card.expanded')]){if(old!==card)toggleDetails(old,false);}stack.appendChild(card);}card.classList.toggle('expanded',visible);card.querySelector('.toast-extra').classList.toggle('hidden',!visible);card.querySelector('[data-action="expand"] span').textContent=visible?'收起详情':'展开详情';card.querySelector('[data-action="expand"] svg').classList.toggle('flip',visible);if(visible)pause(card);else resume(card);}
+  function invoke(card,action){const kind=card.dataset.state;const d=data[kind];if(action==='close'){dismiss(card.dataset.id);return;}
+    if(action==='expand'||action==='more'){toggleDetails(card);return;}
+    if(action==='primary'){
+      if(kind==='running'||kind==='disconnected'||kind==='merged'||kind==='failed') {toggleDetails(card,true);notifyDemo(kind==='failed'?'演示模式：实际重试必须先验证操作安全和权限':kind==='disconnected'?'演示模式：请先确认 Agent 进程与接入通道':'已展开详细信息（演示数据）');return;}
+      if(kind==='waiting'){toggleDetails(card,true);notifyDemo('演示模式：真实应用中将跳转到待处理的 Agent 会话');return;}
+      notifyDemo('演示模式：真实应用中将打开已验证存在的任务结果');return;
+    }
+    if(action==='secondary'){
+      if(kind==='running'){dismiss(card.dataset.id);notifyDemo('通知已关闭；Agent 执行状态不受影响');return;}
+      if(kind==='waiting'){dismiss(card.dataset.id);notifyDemo('演示：本次通知暂时关闭，实际提醒计划未改变');return;}
+      if(kind==='disconnected'){toggleDetails(card,true);notifyDemo('演示：未执行真实重连，正式版本仅在支持时启用');return;}
+      if(kind==='success'||kind==='failed'){toggleDetails(card,true);notifyDemo('已展示日志摘要（演示数据）');return;}
+      if(kind==='merged'){toggleDetails(card,true);notifyDemo('演示模式：正式版将打开通知中心');return;}
+    }
+  }
+  stack.addEventListener('click',e=>{const btn=e.target.closest('[data-action]');if(!btn)return;const card=btn.closest('.toast-card');if(card)invoke(card,btn.dataset.action);});
+  stack.addEventListener('mouseenter',e=>{const card=e.target.closest('.toast-card');if(card)pause(card);},true);
+  stack.addEventListener('mouseleave',e=>{const card=e.target.closest('.toast-card');if(card&&!card.contains(document.activeElement))resume(card);},true);
+  stack.addEventListener('focusin',e=>{const card=e.target.closest('.toast-card');if(card)pause(card);});
+  stack.addEventListener('focusout',e=>{const card=e.target.closest('.toast-card');if(card && !card.contains(e.relatedTarget) && !card.matches(':hover'))resume(card);});
+  menu.addEventListener('click',e=>{const b=e.target.closest('[data-select]');if(b)add(b.dataset.select);});
+  $('light-mode').addEventListener('change',e=>{desktop.dataset.theme=e.target.checked?'light':'dark';});
+  $('auto-dismiss').addEventListener('change',e=>{for(const card of stack.querySelectorAll('.toast-card'))cancelTimer(card.dataset.id);if(e.target.checked){for(const card of stack.querySelectorAll('.toast-card'))armTimer(card);}notifyDemo(e.target.checked?'已启用模拟计时，悬停可暂停':'已暂停自动关闭，方便检查 UI');});
+  $('stack-btn').addEventListener('click',()=>{clearAll();add('running',false);add('success',false);add('disconnected',false);notifyDemo('三条通知按时间堆叠；真实应用需要容量上限和重复事件合并');});
+  $('clear-btn').addEventListener('click',()=>{clearAll();});
+  $('replay-btn').addEventListener('click',()=>add(active));
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'){const card=stack.lastElementChild;if(card)dismiss(card.dataset.id);}});
+  add(active);
+})();
+</script>
+</body>
+</html>

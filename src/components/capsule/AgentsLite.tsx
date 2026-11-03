@@ -1,4 +1,4 @@
-//! Agent 面板（胶囊内，对照 `停靠效果图/02-agents.png`）。
+//! Agent 面板（胶囊内，对照 `docs/screenshots/v07/停靠效果图/02-agents.png`）。
 //!
 //! 「消息数量不能简单用累计历史」的落点：这里只列**实时**运行
 //! （`liveRuns`：running / waiting / 近 1 小时 failed / disconnected），

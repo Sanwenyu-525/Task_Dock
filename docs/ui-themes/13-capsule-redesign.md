@@ -262,7 +262,7 @@ docked-revealed → docked-hidden | docked-visible | free
 
 ## 六·五、四面板统一视觉基元（2026-11-02 高保真）
 
-四张效果图（`停靠效果图/01-tasks.png` … `04-apps.png`）是同一套语言的四个实例，
+四张效果图（`docs/screenshots/v07/停靠效果图/01-tasks.png` … `04-apps.png`）是同一套语言的四个实例，
 因此四个面板共用 `src/components/capsule/PanelKit.tsx` 的基元，而不是各写一套：
 
 | 基元 | 类名 | 用途 |
