@@ -2,10 +2,15 @@
  * @vitest-environment jsdom
  */
 //! 规划中面板测试：五个分类区块、状态计数、四类状态卡片交互、筛选与搜索。
+//!
+//! blocked 卡片使用独立测试夹具（FeatureCard）验证展示与点击行为：
+//! 真实目录未来可能没有任何受阻项，不能为了测试向目录塞入虚假条目。
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen, within, fireEvent } from "@testing-library/react";
-import FeatureRoadmapPanel from "./FeatureRoadmapPanel";
+import { useState } from "react";
+import FeatureRoadmapPanel, { FeatureCard } from "./FeatureRoadmapPanel";
+import type { FeatureEntry } from "../../lib/featureCatalog";
 import { CORE_FEATURE_IDS, featureCatalogSummary } from "../../lib/featureCatalog";
 
 beforeEach(() => {
@@ -20,6 +25,30 @@ function cardOf(title: string): HTMLElement {
   return head.closest(".roadmap-card") as HTMLElement;
 }
 
+/** blocked 夹具：只验证卡片渲染与交互，不进入真实目录 */
+const BLOCKED_FIXTURE: FeatureEntry = {
+  id: "test.blocked-fixture",
+  category: "agent",
+  title: "测试受阻功能",
+  description: "仅用于测试的受阻卡片夹具。",
+  detail: "独立测试数据，不进入真实功能目录。",
+  status: "blocked",
+  priority: "P1",
+  existingFeatures: [],
+  missingFeatures: ["等待外部接口"],
+  dependencies: ["外部接口"],
+  acceptanceCriteria: ["接口可用后真实联调"],
+  verification: "unverified",
+  blockedReason: "测试用受阻原因：官方接口暂不可用",
+};
+
+function BlockedFixtureCard() {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <FeatureCard feature={BLOCKED_FIXTURE} expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
+  );
+}
+
 describe("结构渲染", () => {
   it("渲染五个分类区块", () => {
     for (const label of ["核心效率功能", "工作流与效率增强", "信息管理与生活效率", "Agent 扩展", "长期生态"]) {
@@ -27,7 +56,7 @@ describe("结构渲染", () => {
     }
   });
 
-  it("统计行与目录摘要一致", () => {
+  it("统计行与目录摘要一致，且不再有受阻项", () => {
     const s = featureCatalogSummary();
     expect(screen.getByText(`已实现 ${s.implemented}`)).toBeTruthy();
     expect(screen.getByText(`部分实现 ${s.partial}`)).toBeTruthy();
@@ -35,7 +64,24 @@ describe("结构渲染", () => {
     expect(screen.getByText(`受阻 ${s.blocked}`)).toBeTruthy();
     expect(screen.getByText(`共 ${s.total} 项 · 核心 ${s.coreTotal} 项`)).toBeTruthy();
     expect(s.coreTotal).toBe(12);
+    expect(s.blocked).toBe(0);
     expect(CORE_FEATURE_IDS).toHaveLength(12);
+    // 目录中已没有受阻项：不应渲染任何「受阻」状态卡片
+    expect(screen.queryByRole("button", { name: /（受阻）/ })).toBeNull();
+  });
+
+  it("五个分类区块条目数与目录一致（5 / 9 / 2 / 7 / 5）", () => {
+    const expected: [label: string, count: number][] = [
+      ["核心效率功能", 5],
+      ["工作流与效率增强", 9],
+      ["信息管理与生活效率", 2],
+      ["Agent 扩展", 7],
+      ["长期生态", 5],
+    ];
+    for (const [label, count] of expected) {
+      const section = screen.getByRole("region", { name: label });
+      expect(section.querySelector(".roadmap-section-count")?.textContent).toBe(String(count));
+    }
   });
 });
 
@@ -47,13 +93,21 @@ describe("四类状态卡片交互", () => {
   });
 
   it("partial：点击后显示「功能待完善」并列出已有能力与待补齐缺口", () => {
-    const card = cardOf("全局快速捕获");
+    const card = cardOf("场景工作区");
     fireEvent.click(within(card).getByRole("button"));
     expect(within(card).getByText("功能待完善")).toBeTruthy();
     expect(within(card).getByText("已具备能力")).toBeTruthy();
     expect(within(card).getByText("待补齐")).toBeTruthy();
     // 缺口具体可见，而不是一句空话
-    expect(within(card).getByText(/独立轻量悬浮捕获窗/)).toBeTruthy();
+    expect(within(card).getByText(/独立于任务的「场景」实体/)).toBeTruthy();
+  });
+
+  it("implemented：全局快速捕获落地后显示已实现横幅并给出现有入口", () => {
+    const card = cardOf("全局快速捕获");
+    fireEvent.click(within(card).getByRole("button"));
+    expect(card.querySelector(".roadmap-cta.c-implemented")).toBeTruthy();
+    expect(within(card).getByText("现有入口")).toBeTruthy();
+    expect(within(card).queryByText("待补齐")).toBeNull();
   });
 
   it("implemented：点击后显示已实现横幅并给出现有入口", () => {
@@ -65,11 +119,19 @@ describe("四类状态卡片交互", () => {
     expect(within(card).queryByText("待补齐")).toBeNull();
   });
 
-  it("blocked：显示「等待接口或平台条件确认」与阻塞原因", () => {
-    const card = cardOf("Gemini CLI 接入");
-    fireEvent.click(within(card).getByRole("button"));
+  it("blocked：独立夹具验证「等待接口或平台条件确认」与阻塞原因（可展开/收起）", () => {
+    // 真实目录已无 blocked 项：用独立夹具渲染，不向真实目录添加虚假条目
+    cleanup();
+    render(<BlockedFixtureCard />);
+    const head = screen.getByRole("button", { name: "测试受阻功能（受阻）" });
+    const card = head.closest(".roadmap-card") as HTMLElement;
+
+    fireEvent.click(head);
     expect(within(card).getByText(/等待接口或平台条件确认/)).toBeTruthy();
-    expect(within(card).getByText(/未见官方 hooks/)).toBeTruthy();
+    expect(within(card).getByText(/测试用受阻原因/)).toBeTruthy();
+
+    fireEvent.click(head);
+    expect(within(card).queryByText(/等待接口或平台条件确认/)).toBeNull();
   });
 
   it("再次点击收起详情", () => {
@@ -90,6 +152,15 @@ describe("筛选与搜索", () => {
     expect(screen.getByRole("status").textContent).toContain("筛选结果");
   });
 
+  it("状态筛选 planned：能找到 Gemini CLI，且不再显示受阻说明", () => {
+    fireEvent.click(screen.getByRole("button", { name: "待开发" }));
+    const card = cardOf("Gemini CLI 接入");
+    fireEvent.click(within(card).getByRole("button"));
+    expect(within(card).getByText("功能待开发")).toBeTruthy();
+    expect(within(card).queryByText(/等待接口或平台条件确认/)).toBeNull();
+    expect(within(card).queryByText(/未见官方 hooks/)).toBeNull();
+  });
+
   it("优先级筛选 P0：只剩核心五项", () => {
     fireEvent.click(screen.getByRole("button", { name: "P0" }));
     const cards = document.querySelectorAll(".roadmap-card");
@@ -97,6 +168,26 @@ describe("筛选与搜索", () => {
     for (const title of ["全局快速捕获", "场景工作区", "Agent 行动中心", "工作现场恢复", "智能日程提醒"]) {
       expect(cardOf(title)).toBeTruthy();
     }
+  });
+
+  it("优先级筛选 P1：全局搜索出现在 P1；P2 不再包含全局搜索", () => {
+    fireEvent.click(screen.getByRole("button", { name: "P1" }));
+    expect(cardOf("全局搜索")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "P2" }));
+    expect(screen.queryByRole("button", { name: /^全局搜索（/ })).toBeNull();
+    // 快速笔记与生活例行事项保持 P2
+    const quickNotes = cardOf("快速笔记");
+    expect(within(quickNotes).getByText("P2")).toBeTruthy();
+    expect(within(cardOf("生活例行事项")).getByText("P2")).toBeTruthy();
+  });
+
+  it("目录内搜索「全局搜索」命中唯一功能", () => {
+    const input = screen.getByLabelText("搜索规划功能") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "全局搜索" } });
+    const cards = document.querySelectorAll(".roadmap-card");
+    expect(cards).toHaveLength(1);
+    expect(cardOf("全局搜索")).toBeTruthy();
   });
 
   it("目录内搜索命中唯一功能", () => {

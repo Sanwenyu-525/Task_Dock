@@ -53,7 +53,11 @@ function StatusBadge({ status }: { status: FeatureStatus }) {
   return <em className={`roadmap-status s-${status}`}>{STATUS_META[status].label}</em>;
 }
 
-function FeatureCard({
+/**
+ * 单张功能卡片（导出以便测试用独立夹具覆盖四类状态中的每一种，
+ * 避免为了测试向真实目录塞入虚假条目）。
+ */
+export function FeatureCard({
   feature,
   expanded,
   onToggle,

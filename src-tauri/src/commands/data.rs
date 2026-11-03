@@ -94,6 +94,10 @@ pub struct RuleRow {
     pub interval: i64,
     pub by_weekday: String,
     pub by_monthday: Option<u32>,
+    /// v20 新增：每月第 N 个星期X（1..=5）/ 最后一个（-1）。
+    /// 旧备份文件没有该字段 → None（旧行为）；旧程序读新备份时忽略未知 JSON 键。
+    #[serde(default)]
+    pub by_setpos: Option<i32>,
     pub until: Option<String>,
     pub anchor: String,
     pub created_at: String,
@@ -500,10 +504,10 @@ fn collect(db: &Db) -> AppResult<serde_json::Value> {
                 created_at: r.get(11)?, updated_at: r.get(12)?, completed_at: r.get(13)?,
             }))?;
         let rules: Vec<RuleRow> = query_rows(&tx,
-            "SELECT id, freq, interval, by_weekday, by_monthday, until, anchor, created_at FROM recurrence_rules",
+            "SELECT id, freq, interval, by_weekday, by_monthday, by_setpos, until, anchor, created_at FROM recurrence_rules",
             |r| Ok(RuleRow {
                 id: r.get(0)?, freq: r.get(1)?, interval: r.get(2)?, by_weekday: r.get(3)?,
-                by_monthday: r.get(4)?, until: r.get(5)?, anchor: r.get(6)?, created_at: r.get(7)?,
+                by_monthday: r.get(4)?, by_setpos: r.get(5)?, until: r.get(6)?, anchor: r.get(7)?, created_at: r.get(8)?,
             }))?;
         let reminders: Vec<ReminderRow> = query_rows(&tx,
             "SELECT id, task_id, remind_at, occurrence, kind, fired, fired_at FROM task_reminders",
@@ -1027,6 +1031,13 @@ fn normalize_extended_row(
 }
 
 /// 解析扩展模块行：列白名单来自目标库 schema，未知列/缺必填列/重复主键在写库前拒绝。
+///
+/// 完整性校验以**备份文件自带的 registry 头**为准（扩展模块诞生（v0.5）起每个
+/// bundle 都写入了当时的 BACKUP_TABLES 全集）：文件 registry 里声明且属于当前
+/// EXTENDED_TABLES 的表必须提供 section。这样新版本新增扩展表（如规划中心）后，
+/// 旧备份不会因「缺新表」被误判为模块不完整而无法恢复；反过来，文件声明了却
+/// 缺失 section 仍然报错，防止半份备份静默清空数据。
+/// 无 registry 头的极老文件按 PRE_PLANNING_EXTENDED_TABLES 校验。
 fn parse_extended(
     db: &Db,
     data: &serde_json::Value,
@@ -1036,6 +1047,21 @@ fn parse_extended(
         .get("extended_modules")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let registry_tables: Option<Vec<String>> = data.get("registry").and_then(|v| v.as_array()).map(
+        |arr| {
+            arr.iter()
+                .filter_map(|r| r.get("table").and_then(|t| t.as_str()).map(String::from))
+                .collect()
+        },
+    );
+    let required: Vec<&'static str> = match &registry_tables {
+        Some(names) => crate::commands::backup::EXTENDED_TABLES
+            .iter()
+            .copied()
+            .filter(|t| names.iter().any(|n| n == *t))
+            .collect(),
+        None => crate::commands::backup::PRE_PLANNING_EXTENDED_TABLES.to_vec(),
+    };
     let present: Vec<&'static str> = crate::commands::backup::EXTENDED_TABLES
         .iter()
         .copied()
@@ -1045,7 +1071,7 @@ fn parse_extended(
         return Ok(ExtendedModules::default());
     }
     if flag || !present.is_empty() {
-        for table in crate::commands::backup::EXTENDED_TABLES {
+        for table in &required {
             if !src.has_table(table) {
                 return Err(AppError::Validation(format!(
                     "扩展模块必须完整提供，缺少扩展数据表 {}",
@@ -1739,8 +1765,8 @@ pub(crate) fn import_parsed_with(
             }
             for r in &parsed.rules {
                 conn.execute(
-                    "INSERT INTO recurrence_rules (id, freq, interval, by_weekday, by_monthday, until, anchor, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                    rusqlite::params![r.id, r.freq, r.interval, r.by_weekday, r.by_monthday, r.until, r.anchor, r.created_at],
+                    "INSERT INTO recurrence_rules (id, freq, interval, by_weekday, by_monthday, by_setpos, until, anchor, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                    rusqlite::params![r.id, r.freq, r.interval, r.by_weekday, r.by_monthday, r.by_setpos, r.until, r.anchor, r.created_at],
                 )?;
             }
             for t in &parsed.tasks {

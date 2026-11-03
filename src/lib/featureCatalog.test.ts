@@ -40,15 +40,32 @@ describe("12 项核心功能登记", () => {
     }
   });
 
-  it("12 项核心功能 P0/P1/P2 分层正确（5 + 4 + 3）", () => {
+  it("12 项核心功能 P0/P1/P2 分层正确（5 + 5 + 2）", () => {
     const byPriority = { P0: 0, P1: 0, P2: 0 } as Record<string, number>;
     for (const id of CORE_FEATURE_IDS) {
       const f = getFeatureById(id)!;
       byPriority[f.priority] += 1;
     }
     expect(byPriority.P0).toBe(5);
-    expect(byPriority.P1).toBe(4);
-    expect(byPriority.P2).toBe(3);
+    expect(byPriority.P1).toBe(5);
+    expect(byPriority.P2).toBe(2);
+  });
+
+  it("全局搜索固定 ID 不重命名，且属于 P1 / workflow", () => {
+    expect(CORE_FEATURE_IDS).toContain("core.global-search");
+    const f = getFeatureById("core.global-search")!;
+    expect(f.title).toBe("全局搜索");
+    expect(f.priority).toBe("P1");
+    expect(f.category).toBe("workflow");
+    expect(f.status).toBe("planned");
+  });
+
+  it("快速笔记与生活例行事项保持 P2 / info", () => {
+    for (const id of ["core.quick-notes", "core.life-routines"]) {
+      const f = getFeatureById(id)!;
+      expect(f.priority, `${id} 优先级`).toBe("P2");
+      expect(f.category, `${id} 分类`).toBe("info");
+    }
   });
 
   it("已实现的核心功能没有被错误标记为待开发（行动中心已落地）", () => {
@@ -58,14 +75,32 @@ describe("12 项核心功能登记", () => {
     expect(actionCenter?.existingFeatures.length).toBeGreaterThan(0);
   });
 
+  it("全局快速捕获已落地为独立捕获窗口（不再以 partial 登记）", () => {
+    const f = getFeatureById("core.quick-capture")!;
+    expect(f.status).toBe("implemented");
+    // 真机冒烟尚未完成：已实现 ≠ 已通过验收，verification 必须保持 unverified
+    expect(f.verification).toBe("unverified");
+    expect(f.existingFeatures.length, "已实现须列出现有能力").toBeGreaterThan(0);
+    expect(f.missingFeatures, "已实现不应有缺口").toHaveLength(0);
+    const capabilities = f.existingFeatures.join(" ");
+    expect(capabilities).toMatch(/独立捕获窗口/);
+    expect(capabilities).toMatch(/五种类型/);
+    expect(capabilities).toMatch(/收集箱/);
+    expect(capabilities).toMatch(/幂等/);
+    const entries = (f.entryPoints ?? []).join(" ");
+    expect(entries).toMatch(/Ctrl\+Shift\+Space/);
+    expect(entries).toMatch(/收集箱/);
+    // 旧行为（热键展开主窗并聚焦快速录入）不得再作为现有能力出现
+    expect(capabilities).not.toMatch(/显示主窗并聚焦快速录入框/);
+  });
+
   it("部分实现的核心功能都能列出具体缺口", () => {
     const partialCore = CORE_FEATURE_IDS.map((id) => getFeatureById(id)!).filter(
       (f) => f.status === "partial",
     );
-    // 复核结论：快速捕获 / 场景工作区 / 现场恢复 / 智能提醒 / 通知聚合 / 生活例行 均为 partial
+    // 复核结论：场景工作区 / 现场恢复 / 智能提醒 / 通知聚合 / 生活例行 为 partial（快速捕获已落地）
     expect(partialCore.map((f) => f.id).sort()).toEqual(
       [
-        "core.quick-capture",
         "core.scenario-workspace",
         "core.workspace-restore",
         "core.smart-reminders",
@@ -78,12 +113,27 @@ describe("12 项核心功能登记", () => {
       expect(f.missingFeatures.length, `${f.id} 应列出剩余缺口`).toBeGreaterThan(0);
     }
   });
+
+  it("Gemini CLI 当前为 planned：官方 Hooks 已存在，不再登记为受阻", () => {
+    const f = getFeatureById("agent.gemini-cli")!;
+    expect(f.status).toBe("planned");
+    expect(f.verification).toBe("unverified");
+    expect(f.blockedReason).toBeUndefined();
+    expect(f.missingFeatures.length, "待开发须登记剩余工作").toBeGreaterThan(0);
+    // 过时的受阻结论不得再作为功能说明出现
+    expect(f.detail).not.toMatch(/未见官方 hooks/);
+  });
 });
 
 describe("目录结构契约", () => {
   it("全目录 ID 唯一", () => {
     const ids = FEATURE_CATALOG.map((f) => f.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("全目录功能名称唯一", () => {
+    const titles = FEATURE_CATALOG.map((f) => f.title);
+    expect(new Set(titles).size).toBe(titles.length);
   });
 
   it("五个分类均有条目且元数据齐全", () => {
@@ -94,6 +144,13 @@ describe("目录结构契约", () => {
     const groups = featuresByCategory();
     expect(groups.map((g) => g.category)).toEqual([...CATEGORY_ORDER]);
     expect(groups.reduce((n, g) => n + g.items.length, 0)).toBe(FEATURE_CATALOG.length);
+  });
+
+  it("五个展示分区条目数为 core 5 / workflow 9 / info 2 / agent 7 / ecosystem 5", () => {
+    const counts = Object.fromEntries(
+      featuresByCategory().map((g) => [g.category, g.items.length]),
+    );
+    expect(counts).toEqual({ core: 5, workflow: 9, info: 2, agent: 7, ecosystem: 5 });
   });
 
   it("每项必备字段非空", () => {
@@ -126,6 +183,8 @@ describe("目录结构契约", () => {
         expect((f.blockedReason ?? "").length, `${f.id} 受阻须说明原因`).toBeGreaterThan(0);
       }
     }
+    // 注意：不要求真实目录必须包含 blocked 项——四种状态是合法取值，
+    // 而不是目录必须长期持有的条目；未来受阻项全部解除后测试不应失败。
   });
 
   it("verification 取值合法，已验证项必须已实现", () => {
@@ -145,16 +204,20 @@ describe("目录结构契约", () => {
 });
 
 describe("统计摘要", () => {
-  it("状态计数之和等于总数，核心计数为 12", () => {
+  it("全目录状态计数与验收基线一致（28 = 4 + 8 + 16 + 0）", () => {
     const s = featureCatalogSummary();
+    expect(s.total).toBe(28);
     expect(s.coreTotal).toBe(12);
+    expect(s.implemented).toBe(4);
+    expect(s.partial).toBe(8);
+    expect(s.planned).toBe(16);
+    expect(s.blocked).toBe(0);
+    // 状态计数之和必须等于总功能数
     expect(s.implemented + s.partial + s.planned + s.blocked).toBe(s.total);
+    // verified / unverified 之和必须等于总功能数
+    expect(s.verified).toBe(3);
+    expect(s.unverified).toBe(25);
     expect(s.verified + s.unverified).toBe(s.total);
-    // 各状态都有代表：不允许「所有卡片都显示待开发」的失真目录
-    expect(s.implemented).toBeGreaterThan(0);
-    expect(s.partial).toBeGreaterThan(0);
-    expect(s.planned).toBeGreaterThan(0);
-    expect(s.blocked).toBeGreaterThan(0);
   });
 
   it("按 id 查找命中", () => {

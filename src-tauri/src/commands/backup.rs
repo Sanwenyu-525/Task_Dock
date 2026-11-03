@@ -73,6 +73,27 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "workspace_snapshot_items",
     "action_acks",
     "clipboard_snapshot_links",
+    // 规划中心（v0.7）：导入按此顺序插入（满足外键依赖），清除按逆序。
+    "planning_projects",
+    "planning_milestones",
+    "planning_features",
+    "planning_feature_steps",
+    "planning_activity",
+];
+
+/// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
+/// 保证旧备份在升级后的应用上仍可恢复，不因新表缺失被误判为「模块不完整」）。
+pub const PRE_PLANNING_EXTENDED_TABLES: &[&str] = &[
+    "clipboard_items",
+    "clipboard_assets",
+    "clipboard_groups",
+    "clipboard_group_items",
+    "clipboard_task_links",
+    "clipboard_paste_jobs",
+    "workspace_snapshots",
+    "workspace_snapshot_items",
+    "action_acks",
+    "clipboard_snapshot_links",
 ];
 
 /// 备份分类：决定快速备份策略与恢复顺序。
@@ -107,6 +128,10 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     rule!("recurrence_rules", "core", "all", 20, &[], false),
     rule!("tasks", "core", "all", 30, &["recurrence_rules"], false),
     rule!("task_reminders", "core", "all", 40, &["tasks"], false),
+    // 全局快速捕获（v0.7）：收集箱与草稿。items 的 task_id 软引用 tasks，
+    // 无外键约束，但恢复时先于 draft、后于 tasks 更符合阅读顺序。
+    rule!("quick_capture_items", "core", "all", 45, &["tasks"], false),
+    rule!("quick_capture_draft", "core", "all", 46, &[], false),
     rule!("agent_sources", "agent", "all", 50, &[], false),
     rule!(
         "agent_instances",
@@ -205,6 +230,41 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     ),
     rule!("action_acks", "action", "all", 240, &[], true),
     rule!("application_settings", "settings", "all", 250, &[], false),
+    // 规划中心（v0.7）：用户项目数据，快速备份也全量保存（用户规划不截断）。
+    // 依赖序：项目 → 里程碑 → 功能 → 步骤/历史。
+    rule!("planning_projects", "planning", "all", 260, &[], true),
+    rule!(
+        "planning_milestones",
+        "planning",
+        "all",
+        265,
+        &["planning_projects"],
+        true
+    ),
+    rule!(
+        "planning_features",
+        "planning",
+        "all",
+        270,
+        &["planning_projects", "planning_milestones"],
+        true
+    ),
+    rule!(
+        "planning_feature_steps",
+        "planning",
+        "all",
+        275,
+        &["planning_features"],
+        true
+    ),
+    rule!(
+        "planning_activity",
+        "planning",
+        "all",
+        280,
+        &["planning_projects", "planning_features"],
+        true
+    ),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -447,7 +507,13 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         ),
         "workspace_snapshots"
         | "workspace_snapshot_items"
-        | "action_acks" => format!("SELECT * FROM {} ORDER BY rowid", table),
+        | "action_acks"
+        // 规划中心：用户项目数据在快速备份中也全量保存（不截断，spec 明确要求）
+        | "planning_projects"
+        | "planning_milestones"
+        | "planning_features"
+        | "planning_feature_steps"
+        | "planning_activity" => format!("SELECT * FROM {} ORDER BY rowid", table),
         "clipboard_snapshot_links" => format!(
             "SELECT * FROM clipboard_snapshot_links WHERE (target_type = 'group' AND target_id IN (SELECT id FROM clipboard_groups)) OR (target_type = 'item' AND target_id IN ({})) ORDER BY rowid",
             items
@@ -580,7 +646,7 @@ fn write_small_sections(writer: &mut BundleWriter, tx: &Connection) -> AppResult
         )?;
     }
     {
-        let mut stmt = tx.prepare("SELECT id, freq, interval, by_weekday, by_monthday, until, anchor, created_at FROM recurrence_rules ORDER BY id")?;
+        let mut stmt = tx.prepare("SELECT id, freq, interval, by_weekday, by_monthday, by_setpos, until, anchor, created_at FROM recurrence_rules ORDER BY id")?;
         let rows = stmt.query_map([], |r| {
             Ok(data::RuleRow {
                 id: r.get(0)?,
@@ -588,9 +654,10 @@ fn write_small_sections(writer: &mut BundleWriter, tx: &Connection) -> AppResult
                 interval: r.get(2)?,
                 by_weekday: r.get(3)?,
                 by_monthday: r.get(4)?,
-                until: r.get(5)?,
-                anchor: r.get(6)?,
-                created_at: r.get(7)?,
+                by_setpos: r.get(5)?,
+                until: r.get(6)?,
+                anchor: r.get(7)?,
+                created_at: r.get(8)?,
             })
         })?;
         write_rows(
@@ -2088,6 +2155,9 @@ fn read_bundle_impl(
         "partial": header.get("partial").cloned().unwrap_or(serde_json::Value::Bool(true)),
         "manifest_version": manifest_version,
         "extended_modules": extended,
+        // registry 头透传：导入侧以「导出时的表注册表」校验扩展模块完整性，
+        // 旧备份（registry 无新表）不会因新版新增扩展表被误判为不完整。
+        "registry": header.get("registry").cloned().unwrap_or(serde_json::Value::Null),
         "bundle_payload_sha256": integrity.get("sha256").cloned().unwrap_or(serde_json::Value::Null),
         "asset_manifest": serde_json::Value::Array(
             staged_assets
@@ -2292,6 +2362,123 @@ mod tests {
         assert_eq!(read.kind, "full");
         assert!(!read.partial);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// 规划中心（v0.7）：项目/功能/步骤/里程碑/历史必须进入完整与快速备份，
+    /// 恢复后逐行还原（快速备份对规划数据不截断）。
+    #[test]
+    fn planning_tables_roundtrip_in_full_and_quick_backup() {
+        let db = memdb();
+        let p = crate::commands::planning::create_project_impl(
+            &db,
+            crate::commands::planning::ProjectInput {
+                name: "备份验证项目".into(),
+                description: "描述".into(),
+                status: Some("in_progress".into()),
+                target_date: Some("2026-12-31".into()),
+            },
+        )
+        .unwrap();
+        let m = crate::commands::planning::create_milestone_impl(
+            &db,
+            p.id.clone(),
+            crate::commands::planning::MilestoneInput {
+                name: "v0.1".into(),
+                description: String::new(),
+                target_date: None,
+            },
+        )
+        .unwrap();
+        let f = crate::commands::planning::create_feature_impl(
+            &db,
+            p.id.clone(),
+            crate::commands::planning::FeatureInput {
+                title: "备份功能".into(),
+                description: String::new(),
+                acceptance_criteria: String::new(),
+                status: None,
+                priority: None,
+                milestone_id: Some(m.id.clone()),
+                target_date: None,
+            },
+        )
+        .unwrap();
+        crate::commands::planning::add_step_impl(&db, f.id.clone(), "步骤一".into()).unwrap();
+        crate::commands::planning::add_note_impl(&db, p.id.clone(), None, "开发日志".into()).unwrap();
+
+        for kind in [BackupKind::Full, BackupKind::Quick] {
+            let (_, read, dir) = write_then_read(&db, kind);
+            for table in [
+                "planning_projects",
+                "planning_milestones",
+                "planning_features",
+                "planning_feature_steps",
+                "planning_activity",
+            ] {
+                assert!(
+                    spilled_rows(&read, table).len() >= 1,
+                    "{:?} 备份缺少规划表 {} 数据",
+                    kind,
+                    table
+                );
+            }
+            // 恢复到全新库：规划数据逐行还原
+            let dst = memdb();
+            import_read(&dst, &read).unwrap();
+            let restored = crate::commands::planning::list_projects_impl(&dst, None).unwrap();
+            assert_eq!(restored.len(), 1, "{:?} 备份恢复后项目丢失", kind);
+            assert_eq!(restored[0].name, "备份验证项目");
+            assert_eq!(restored[0].stats.feature_total, 1);
+            let feats = crate::commands::planning::list_features_impl(&dst, restored[0].id.clone()).unwrap();
+            assert_eq!(feats[0].step_total, 1);
+            let acts = crate::commands::planning::activity_page_impl(&dst, restored[0].id.clone(), None, None, None).unwrap();
+            assert!(acts.items.len() >= 2, "{:?} 备份恢复后历史丢失", kind);
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    /// 旧版本备份（registry 头没有规划中心表）在升级后的应用上仍可恢复，
+    /// 不因「缺 planning_* section」被误判为扩展模块不完整。
+    #[test]
+    fn old_backup_without_planning_tables_still_imports() {
+        let db = memdb();
+        seed_minimal(&db);
+        let (_, read, dir) = write_then_read(&db, BackupKind::Full);
+        // 构造旧 registry：从文件头剔除规划中心表
+        let mut header = read.data.clone();
+        let registry = header
+            .get_mut("registry")
+            .and_then(|v| v.as_array_mut())
+            .expect("bundle 头应包含 registry");
+        registry.retain(|r| {
+            r.get("table")
+                .and_then(|t| t.as_str())
+                .map(|t| !t.starts_with("planning_"))
+                .unwrap_or(true)
+        });
+        let dst = memdb();
+        // 直接用改过 registry 的头 + 原始 section 走 bundle 校验导入
+        let parsed = data::validate_bundle(&dst, &header, &read.rows_dir).unwrap();
+        data::import_parsed_with(
+            &dst,
+            parsed,
+            &data::ImportOptions {
+                allow_extended: true,
+                commit_marker: None,
+            },
+        )
+        .unwrap();
+        let tasks = spilled_count(&dst);
+        assert!(tasks >= 1, "旧备份恢复后任务应保留");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn spilled_count(db: &Db) -> i64 {
+        db.with_conn(|c| {
+            c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+                .map_err(AppError::from)
+        })
+        .unwrap()
     }
 
     #[test]

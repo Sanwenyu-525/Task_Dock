@@ -8,6 +8,7 @@ pub mod clipboard;
 pub mod context;
 pub mod data;
 pub mod navigation;
+pub mod planning;
 pub mod restore;
 pub mod settings;
 pub mod system;

@@ -102,26 +102,28 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     id: "core.quick-capture",
     category: "core",
     title: "全局快速捕获",
-    description: "任何界面通过全局快捷键唤起轻量输入，随手记想法、待办与链接。",
+    description: "任意界面按全局快捷键打开独立轻量捕获窗口，随手记想法、待办与链接，提交后主界面不展开。",
     detail:
-      "目标是在不打断当前工作的前提下完成捕获：全局热键唤起独立轻量输入层，支持想法、文字、待办、快速任务、临时链接等类型，键盘提交、自动保存，提交后不强制展开完整主界面。" +
-      "注意：现有剪贴板监听与页面导航快捷键不承担本职能；已有的任务快速录入是其子集而非替代。",
-    status: "partial",
+      "已交付独立捕获窗口（v0.7）：Ctrl+Shift+Space 或托盘/右键菜单「快速捕获」唤起常驻隐藏的 640×360 " +
+      "无边框窗口，记录唤起前前台窗口并在隐藏时尽力恢复焦点；任务/待办在提交事务内直接建任务，" +
+      "想法/文字/链接进入收集箱。草稿 600ms 防抖自动保存并可跨重启恢复，提交以 client_id 单事务幂等，" +
+      "重试不重复建任务。注意：现有剪贴板监听与页面导航快捷键不承担本职能；任务页快速录入框是原有子集。",
+    status: "implemented",
     priority: "P0",
     existingFeatures: [
-      "Ctrl+Shift+Space 全局热键：显示主窗并聚焦快速录入框（后端注册 + focus-quick-add 事件）",
-      "应用内 Ctrl+K 快速添加，托盘与右键菜单入口",
-      "中文自然语言解析：时间 / 重复 / 提前提醒，解析预览确认、不可解析不静默猜测",
+      "Ctrl+Shift+Space 打开/聚焦独立捕获窗口（已可见且聚焦时再按隐藏；不展开主窗、不改胶囊状态）",
+      "托盘/右键菜单「快速捕获」第二入口；任务页顶部快速录入框保留为原有子集",
+      "五种类型：快速任务（NLP 解析时间/重复/提前提醒）、简单待办、想法、文字片段、临时链接",
+      "临时收集箱：完整模式共 8 个导航 tab，新增「收集箱」（Ctrl+5），默认只看未处理，可复制、转任务、标记已处理、删除，徽标显示未处理数",
+      "草稿 600ms 防抖自动保存、重启/再次唤起恢复、提交成功在事务内清除",
+      "提交幂等：client_id 唯一索引 + 单事务，重试/重复提交不重复建任务",
+      "唤起定位（前台窗口显示器 → 光标显示器 → 主显示器 work_area 居中）与隐藏时尽力恢复原前台窗口",
     ],
-    missingFeatures: [
-      "独立轻量悬浮捕获窗（当前热键会展开完整主窗）",
-      "捕获类型选择：临时想法 / 普通文字 / 待办 / 快速任务 / 临时链接",
-      "临时收集箱存储（未归类的捕获内容有处可去，不丢失）",
-      "提交后不强制打开完整主界面",
-    ],
+    missingFeatures: [],
     dependencies: [
-      "轻量捕获窗口形态（独立小窗或胶囊面板层）",
-      "临时收集箱数据模型（可后续转入任务 / 笔记）",
+      "Tauri 静态窗口 capture 与多页构建入口（capture.html）",
+      "SQLite v17：quick_capture_items / quick_capture_draft（已登记 BACKUP_TABLES）",
+      "任务创建事务 create_task_tx 与中文自然语言解析 nlp.rs",
     ],
     acceptanceCriteria: [
       "任意界面下全局热键可唤起捕获输入",
@@ -130,7 +132,12 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "提交后主界面保持不展开（若从隐藏状态唤起）",
     ],
     verification: "unverified",
-    entryPoints: ["任务页顶部快速录入框（现有子集）", "全局 Ctrl+Shift+Space"],
+    entryPoints: [
+      "全局 Ctrl+Shift+Space（打开/聚焦独立捕获窗口）",
+      "托盘 / 右键菜单「快速捕获」",
+      "完整模式左侧导航「收集箱」tab（Ctrl+5）",
+      "任务页顶部快速录入框（原有子集）",
+    ],
   },
   {
     id: "core.scenario-workspace",
@@ -234,15 +241,17 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     priority: "P0",
     existingFeatures: [
       "中文自然语言解析创建：日期 / 时刻 / 相对时间（N 分钟后）/ 重复 / 提前提醒",
-      "重复规则引擎：每日 / 每周多日 / 每月几日 + 间隔 + 周锚点，完成自动推进下一期",
+      "自然语言覆盖工作日、每 N 周、每 N 月、每月第 N 个星期X、每月最后一个工作日（不接节假日 API）",
+      "重复规则引擎：每日 / 每 N 日 / 每周多日 / 每 N 周 / 每月几日 / 每 N 月 / 每月第 N 个星期X / 每月最后一个星期X / 每月最后一个工作日；完成自动推进下一期",
       "到期提醒 + 提前 N 分钟；休眠 / 重启后按挂钟补触发并标注",
-      "贪睡 API（snooze_reminder）已实现后端",
+      "快速提醒与倒计时：任务页 5/10/15/30 分钟、1 小时与自定义时分，页面级共享时钟按绝对时间换算",
+      "延后提醒三处入口（任务详情、任务卡、任务通知），5/10/30 分钟、1 小时与自定义；延后后可撤销且旧撤销不覆盖后续编辑",
+      "任务提醒通知提供查看任务 / 稍后提醒 / 完成任务真实操作",
     ],
     missingFeatures: [
-      "延后 / 贪睡的界面入口（通知与任务卡上可直接延后）",
-      "倒计时式快速提醒体验（「30 分钟后」一键发起 + 倒计时展示）",
-      "更复杂周期规则（每月第 N 个星期几、工作日跳过等）",
       "提醒与场景 / 现场的联动",
+      "法定节假日 / 调休跳过（按设计不接节假日 API，工作日仅自然周语义）",
+      "真机双主题、窄窗与系统通知操作走查（自动化测试已覆盖逻辑，未做真机验收）",
     ],
     dependencies: ["任务调度器（1s 粒度后台循环）", "通知系统（限流 + 摘要）"],
     acceptanceCriteria: [
@@ -250,9 +259,17 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "重复提醒按规则推进，不错报不漏报",
       "延后操作有界面入口且生效可撤销",
       "倒计时可见、可取消",
+      "延后与调度领取竞争不重复触发、旧撤销不覆盖新状态",
+      "每两个月规则真正隔两月，2 月 28/29 与每月 31 日不跳过月份",
     ],
     verification: "unverified",
-    entryPoints: ["任务页快速录入（自然语言）", "任务编辑器重复规则"],
+    entryPoints: [
+      "任务页快速录入（自然语言）",
+      "任务页快捷提醒与倒计时卡片",
+      "任务编辑器重复规则（基础 / 自定义 / 高级每月，带中文预览）",
+      "任务卡与任务详情「稍后提醒」",
+      "任务提醒通知操作（查看任务 / 稍后提醒 / 完成任务）",
+    ],
   },
 
   // ─── 工作流与效率增强（P1）─────────────────────────────────────────
@@ -362,17 +379,15 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     ],
     verification: "unverified",
   },
-
-  // ─── 信息管理与生活效率（P2）───────────────────────────────────────
   {
     id: "core.global-search",
-    category: "info",
+    category: "workflow",
     title: "全局搜索",
     description: "一处搜索任务、剪贴板、应用、Agent 会话、现场与笔记。",
     detail:
       "统一搜索入口：全局快捷键唤起、实时搜索、分类筛选、结果快速跳转、最近搜索记录。复用现有各面板数据查询能力（任务 LIKE 查询、剪贴板标题搜索、历史过滤、应用扫描缓存），不复制数据建立第二套数据库；必要时仅建轻量索引并限制查询规模。",
     status: "planned",
-    priority: "P2",
+    priority: "P1",
     existingFeatures: [],
     missingFeatures: [
       "全局搜索入口与快捷键",
@@ -388,6 +403,8 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     ],
     verification: "unverified",
   },
+
+  // ─── 信息管理与生活效率（P2）───────────────────────────────────────
   {
     id: "core.quick-notes",
     category: "info",
@@ -511,16 +528,29 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     id: "agent.gemini-cli",
     category: "agent",
     title: "Gemini CLI 接入",
-    description: "等待可靠事件接口确认后接入 Gemini CLI。",
-    detail: "本机勘明未见 Gemini CLI 官方 hooks / 事件接口，无法可靠采集状态。等待官方接口确认后再评估接入方式。",
-    status: "blocked",
+    description: "基于 Google Gemini CLI 官方 Hooks 的专用接入（官方事件接口已存在，适配器待开发）。",
+    detail:
+      "官方 Hooks 已存在并文档化（https://geminicli.com/docs/hooks/ 与 /docs/hooks/reference/ ，2026-11-03 核对）：settings.json 的 hooks 定义支持 11 个生命周期事件（SessionStart / SessionEnd / BeforeAgent / AfterAgent / BeforeModel / AfterModel / BeforeToolSelection / BeforeTool / AfterTool / PreCompress / Notification），handler 目前仅支持 command，默认超时 60000ms；事件经 stdin JSON 传入（session_id、hook_event_name、timestamp、cwd、transcript_path 等），stdout 返回 JSON 决策，退出码 / 超时 / 失败语义与 Claude Code 不同，不能套用其配置格式。现有缺口是适配器本身，以及 SessionEnd 为 best-effort（CLI 不等待）且无进程退出码 / 失败专用事件，结束与失败状态需进程兜底。需完成配置发现、事件解析、状态映射与真实联调。",
+    status: "planned",
     priority: "P1",
     existingFeatures: [],
-    missingFeatures: ["适配器实现（待接口确认后定义）"],
-    dependencies: ["官方 hooks / 事件接口可用"],
-    acceptanceCriteria: ["接口确认后重新评估接入方案"],
+    missingFeatures: [
+      "多层配置发现（Project .gemini > User ~/.gemini > System > Extensions）",
+      "11 个生命周期事件到统一事件模型的映射（含 BeforeTool / AfterTool 工具上下文）",
+      "事件到 Agent 运行状态映射及 SessionEnd 缺失时的进程兜底",
+      "本机 Gemini CLI 真实联调与覆盖率矩阵更新",
+    ],
+    dependencies: [
+      "本机安装 Gemini CLI（官方文档对应 v0.66.0 起）",
+      "settings.json Hooks 配置在目标版本生效",
+    ],
+    acceptanceCriteria: [
+      "安装后 SessionStart / SessionEnd / BeforeTool / AfterTool 等事件进入有界管线",
+      "工具调用前后与回合结束状态在 UI 如实显示，无法获取时显示「未知」",
+      "SessionEnd best-effort 未触发时由进程旁路兜底，不虚构状态",
+      "事件字段与 AGENT_COVERAGE_MATRIX.md 记录一致",
+    ],
     verification: "unverified",
-    blockedReason: "未见官方 hooks / 事件接口，无法可靠采集真实执行状态",
   },
   {
     id: "agent.zcode-integration",
@@ -603,7 +633,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     priority: "P1",
     existingFeatures: [
       "固定全局热键 + set_hotkeys_enabled 开关",
-      "应用内快捷键：Ctrl+1…7 / Ctrl+K / Ctrl+Shift+C（顺序取自 TAB_ORDER 单一事实源）",
+      "应用内快捷键：Ctrl+1…8 / Ctrl+K / Ctrl+Shift+C（顺序取自 TAB_ORDER 单一事实源）",
     ],
     missingFeatures: ["快捷键录制控件", "冲突检测与系统占用提示", "与后端热键注册的双向同步"],
     dependencies: ["tauri_plugin_global_shortcut 重新注册能力已具备"],

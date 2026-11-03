@@ -112,7 +112,13 @@ export function ConfirmDialog({
       }
       footer={
         <>
-          <button type="button" className="btn" onClick={onCancel} disabled={busy}>
+          <button
+            type="button"
+            className="btn"
+            onClick={onCancel}
+            disabled={busy}
+            data-autofocus={danger ? true : undefined}
+          >
             {cancelLabel}
           </button>
           <button
