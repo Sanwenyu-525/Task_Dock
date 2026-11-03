@@ -41,6 +41,17 @@ backups/
 # Local tool state / artifacts
 .workbuddy/
 .workbuddy-ai/
+.impeccable/
+.zcode/
+.trae-html-share-packages/
+
+# TS 增量构建信息（tsc --noEmit 也会落盘，纯本机缓存）
+*.tsbuildinfo
+
+# 仓库根的外来物：临时补丁文件、未被任何代码/文档引用的设计稿
+# （被引用的效果图已归档 docs/screenshots/v07/，引用处同步为新路径）
+/*.patch
+/3D效果图/
 
 # Windows redirect artifact
 nul
