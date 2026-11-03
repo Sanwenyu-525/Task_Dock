@@ -9,6 +9,8 @@ export interface RecurrenceRule {
   interval: number;
   by_weekday: number[];
   by_monthday: number | null;
+  /** 每月第 N 个星期X（1..=5）或最后一个（-1）；v20 新增，旧数据为 null */
+  by_setpos?: number | null;
   until: string | null;
   anchor: string;
 }
@@ -29,6 +31,8 @@ export interface Task {
   updated_at: string;
   completed_at: string | null;
   linked_agents: number;
+  /** 最早未触发提醒时间（task_reminders 聚合；展示真实下次通知时间） */
+  next_remind_at?: string | null;
 }
 
 export interface TaskInput {
@@ -48,6 +52,37 @@ export interface RecurrenceRuleInput {
   interval: number;
   by_weekday: number[];
   by_monthday: number | null;
+  /** 每月第 N 个星期X（1..=5）或最后一个（-1）；仅 monthly + by_weekday 有效 */
+  by_setpos?: number | null;
+}
+
+/** 延后实际改动的一条提醒（撤销按 (id, snoozed_to) 条件恢复） */
+export interface SnoozeChange {
+  id: string;
+  snoozedTo: string;
+  restoreTo: string;
+}
+
+/** snooze_reminder 返回：前端据此展示真实下次通知时间与「撤销」 */
+export interface SnoozeResult {
+  taskId: string;
+  taskTitle: string;
+  changed: SnoozeChange[];
+  insertedId: string | null;
+  nextRemindAt: string;
+}
+
+/** 倒计时数据源：未触发提醒 + 任务信息（active_reminders 命令） */
+export interface ActiveReminder {
+  reminderId: string;
+  taskId: string;
+  taskTitle: string;
+  remindAt: string;
+  occurrence: string;
+  kind: string;
+  snoozed: boolean;
+  taskStatus: string;
+  hasRecurrence: boolean;
 }
 
 export interface TaskFilter {
@@ -243,6 +278,11 @@ export interface Settings {
   clipboard_paste_interval_html_ms: number;
   clipboard_paste_interval_files_ms: number;
   clipboard_sensitive_filter: boolean;
+  /**
+   * 快速捕获上次使用的类型（v0.7）：task | idea | text | todo | link。
+   * 旧库缺省该键时后端补默认 "task"；前端再做一次归一兜底。
+   */
+  quick_capture_last_type?: string;
 }
 
 /** 全局任务统计（跨所有筛选视图）。 */
@@ -292,6 +332,8 @@ export interface ClipboardItem {
   byte_size: number;
   source_app: string;
   source_title: string;
+  /** owner / foreground / unknown；旧记录为 ''（未记录） */
+  source_kind?: string;
   image_width: number | null;
   image_height: number | null;
   file_paths: string[];
@@ -441,7 +483,17 @@ export interface ClipboardMonitorStats {
   captured: number;
   recorded: number;
   duplicates: number;
+  /** 策略性跳过：自写、配置拒绝、超限等 */
   skipped: number;
+  /** 打开剪贴板重试后仍失败（被其他程序独占） */
+  read_failed: number;
+  /** 监听线程被看门狗重启的次数 */
+  monitor_restarts: number;
+  superseded_events: number;
+  self_write_events: number;
+  empty_events: number;
+  cleared_stale_events: number;
+  cleared_stale_contents: number;
   dropped_events: number;
   dropped_contents: number;
   failed: number;
@@ -546,7 +598,14 @@ export const createFromQuickAdd = (
   advanceMinutes: number | null,
 ) => invoke<Task>("create_from_quick_add", { text, dueAt, recurrence, advanceMinutes });
 export const snoozeReminder = (taskId: string, minutes: number) =>
-  invoke<void>("snooze_reminder", { taskId, minutes });
+  invoke<SnoozeResult>("snooze_reminder", { taskId, minutes });
+export const undoSnooze = (
+  taskId: string,
+  changes: SnoozeChange[],
+  insertedId: string | null,
+) => invoke<[number, number]>("undo_snooze", { taskId, changes, insertedId });
+export const activeReminders = () => invoke<ActiveReminder[]>("active_reminders");
+export const cancelReminders = (taskId: string) => invoke<number>("cancel_reminders", { taskId });
 export const linkTaskAgent = (
   taskId: string,
   sourceId: string,
@@ -763,10 +822,11 @@ export type CapsuleRegionMode = "off" | "rail" | "panel";
  * 分类胶囊区域（Smart Dock Capsule）：把主窗口的 Win32 区域裁成
  * 轨道（折叠态）或「轨道 ∪ 面板」（展开态），区域外不绘制、不命中鼠标。
  * **窗口位置与尺寸不变**——这是命中区稳定的前提。
- * 返回 false 表示应用失败（前端按可见性兜底，不得假设胶囊形态生效）。
+ * `seq` 为前端单调序号：原生侧据此丢弃迟到的旧请求，保证最终区域由最新状态决定。
+ * 返回 false 表示应用失败或被乱序保护丢弃（前端按可见性兜底，不得假设胶囊形态生效）。
  */
-export const applyWindowCapsule = (mode: CapsuleRegionMode, edge: string) =>
-  invoke<boolean>("apply_window_capsule", { mode, edge });
+export const applyWindowCapsule = (mode: CapsuleRegionMode, edge: string, seq: number) =>
+  invoke<boolean>("apply_window_capsule", { mode, edge, seq });
 
 /**
  * 拖拽磁力参数（CSS px）：吸引范围 / 最大额外位移 / 脱离拖动距离。
@@ -898,9 +958,14 @@ export const clipboardCopyItem = (itemId: string) =>
 /** 通用文本写入：与单项复制共用后端受控写入与自写登记。 */
 export const clipboardCopyText = (text: string) =>
   invoke<void>("clipboard_copy_text", { text });
-/** 图片另存为：把落盘 PNG 写入系统保存对话框返回的路径，返回写入字节数。 */
-export const clipboardSaveImage = (itemId: string, path: string) =>
-  invoke<number>("clipboard_save_image", { itemId, path });
+/**
+ * 图片另存为：把落盘 PNG 写入系统保存对话框返回的路径，返回写入字节数。
+ *
+ * `overwrite` 是覆盖授权：Windows 原生保存对话框（FOS_OVERWRITEPROMPT）已经就
+ * 「替换已有文件」征求过用户确认，前端不再二次确认，把该授权显式传给后端做执行边界。
+ */
+export const clipboardSaveImage = (itemId: string, path: string, overwrite: boolean) =>
+  invoke<number>("clipboard_save_image", { itemId, path, overwrite });
 /** 用系统默认浏览器打开链接条目（后端校验仅 http/https）。 */
 export const clipboardOpenUrl = (itemId: string) =>
   invoke<void>("clipboard_open_url", { itemId });
@@ -1289,6 +1354,95 @@ export interface ClipboardSnapshotLink {
   kind: string;
 }
 
+// ── 全局快速捕获（v0.7）──
+/** 五种捕获类型：任务 / 想法 / 文字 / 待办 / 链接。 */
+export type CaptureKind = "task" | "idea" | "text" | "todo" | "link";
+
+/** 草稿（单行表 active）：窗口隐藏/退出后可恢复。 */
+export interface CaptureDraft {
+  kind: CaptureKind;
+  content: string;
+  updated_at: string;
+}
+
+/** 捕获窗口初始状态：草稿 + 上次类型 + 未处理条目数。 */
+export interface CaptureState {
+  draft: CaptureDraft | null;
+  /** 后端 Settings.quick_capture_last_type；前端仍需归一兜底 */
+  last_type: CaptureKind;
+  inbox_count: number;
+}
+
+/**
+ * 收集箱条目。status：inbox 未处理 / handled 已标记处理 / converted 已转任务。
+ * 字段与后端 serde 一致（snake_case）；url/note 只在链接等类型上有值。
+ */
+export interface CaptureItem {
+  id: string;
+  client_id: string;
+  kind: CaptureKind;
+  content: string;
+  url: string | null;
+  note: string | null;
+  status: "inbox" | "handled" | "converted";
+  task_id: string | null;
+  source: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 提交载荷：client_id 供后端幂等去重（失败重试必须复用同一个）。 */
+export interface SubmitCaptureInput {
+  client_id: string;
+  kind: CaptureKind;
+  content: string;
+  url?: string;
+  note?: string;
+}
+
+export interface SubmitCaptureResult {
+  id: string;
+  kind: CaptureKind;
+  status: string;
+  task_id: string | null;
+  duplicate: boolean;
+  created_at: string;
+}
+
+/** quick_capture_save_draft 返回值：返回即视为已落库。 */
+export interface CaptureDraftSaved {
+  saved_at: string;
+}
+
+export const quickCaptureState = () => invoke<CaptureState>("quick_capture_state");
+/** 保存草稿；content trim 后为空 = 清空草稿（后端仍返回 saved_at）。 */
+export const quickCaptureSaveDraft = (kind: string, content: string) =>
+  invoke<CaptureDraftSaved>("quick_capture_save_draft", { kind, content });
+export const quickCaptureClearDraft = () => invoke<void>("quick_capture_clear_draft");
+export const quickCaptureSetLastType = (kind: string) =>
+  invoke<void>("quick_capture_set_last_type", { kind });
+export const quickCaptureSubmit = (input: SubmitCaptureInput) =>
+  invoke<SubmitCaptureResult>("quick_capture_submit", { input });
+/** status：null/"all" = 全部；"inbox" = 未处理；limit 默认 50、上限 200。 */
+export const quickCaptureList = (
+  status?: string | null,
+  limit?: number,
+  offset?: number,
+) => invoke<CaptureItem[]>("quick_capture_list", { status: status ?? null, limit, offset });
+export const quickCaptureMarkHandled = (id: string) =>
+  invoke<CaptureItem>("quick_capture_mark_handled", { id });
+export const quickCaptureDelete = (id: string) => invoke<void>("quick_capture_delete", { id });
+/** 转为任务（后端复用任务创建链路并回写 task_id/status）。 */
+export const quickCaptureConvertToTask = (id: string) =>
+  invoke<CaptureItem>("quick_capture_convert_to_task", { id });
+/**
+ * 隐藏捕获窗口并恢复原前台焦点（后端实现）。
+ * 后端命令为零参数（`quick_capture_hide()`），不传任何参数；
+ * reason 仅用于前端语义标注（用户关闭 / 保存成功），不会发给后端。
+ */
+export const quickCaptureHide = (_reason?: "user" | "success") =>
+  invoke<void>("quick_capture_hide");
+
 // ── 事件订阅 ──
 /** 后端批量聚合后的 Agent 变化事件（一批一次，不随事件数量线性增长）。 */
 export interface AgentChangedEvent {
@@ -1307,6 +1461,9 @@ export const onAgentChanged = (cb: (payload: AgentChangedEvent) => void): Promis
   listen<AgentChangedEvent>("agent-changed", (e) => cb(e.payload));
 export const onReminderFired = (cb: () => void): Promise<UnlistenFn> =>
   listen("reminder-fired", () => cb());
+/** 延后成功（任意入口）：后端统一广播，主窗口弹带「撤销」的 Toast */
+export const onReminderSnoozed = (cb: (payload: SnoozeResult) => void): Promise<UnlistenFn> =>
+  listen<SnoozeResult>("reminder-snoozed", (e) => cb(e.payload));
 export const onNotification = (cb: () => void): Promise<UnlistenFn> =>
   listen("notification", () => cb());
 export const onModeChanged = (cb: (mode: string) => void): Promise<UnlistenFn> =>
@@ -1318,9 +1475,17 @@ export const onFocusQuickAdd = (cb: () => void): Promise<UnlistenFn> =>
 export const onAppReady = (cb: () => void): Promise<UnlistenFn> =>
   listen("app-ready", () => cb());
 // 通知窗口用户点击跳转（v0.7）：用户在桌面通知上点了「查看详情/通知中心」，
-// 后端已激活主窗口，这里只负责切换到对应标签页。
-export const onNotificationNavigate = (cb: (tab: string) => void): Promise<UnlistenFn> =>
-  listen<{ tab: string }>("notification-navigate", (e) => cb(e.payload.tab));
+// 后端已激活主窗口；payload 携带可定位的 Agent 对象 ID（无可靠 ID 时为空）。
+export interface NotificationNavigatePayload {
+  tab: string;
+  sourceId?: string;
+  sessionId?: string;
+  refId?: string;
+}
+export const onNotificationNavigate = (
+  cb: (payload: NotificationNavigatePayload) => void,
+): Promise<UnlistenFn> =>
+  listen<NotificationNavigatePayload>("notification-navigate", (e) => cb(e.payload));
 export const onClipboardChanged = (
   cb: (payload: { kind: string; created?: boolean; grouped?: boolean }) => void,
 ): Promise<UnlistenFn> =>
@@ -1353,3 +1518,258 @@ export const onWorkspaceChanged = (
 
 export const onAgentRetention = (cb: (payload: RetentionReport) => void): Promise<UnlistenFn> =>
   listen<RetentionReport>("agent-retention", (e) => cb(e.payload));
+
+// ── 快速捕获事件（v0.7）──
+/** 捕获窗口被唤起（后端已 show）后触发：前端借此刷新状态、恢复草稿、聚焦输入框。 */
+export const onQuickCaptureSummoned = (cb: () => void): Promise<UnlistenFn> =>
+  listen("quick-capture-summoned", () => cb());
+/** 捕获窗口被隐藏（用户关闭 / 成功后自动隐藏 / 失焦）。 */
+export const onQuickCaptureHidden = (cb: () => void): Promise<UnlistenFn> =>
+  listen("quick-capture-hidden", () => cb());
+/** 新捕获产生（提交或转任务成功后）：kind/id/task_id/status，非任务类型 task_id 为 null。 */
+export interface QuickCaptureCreatedEvent {
+  kind: CaptureKind;
+  id: string;
+  task_id: string | null;
+  status: string;
+}
+export const onQuickCaptureCreated = (
+  cb: (payload: QuickCaptureCreatedEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<QuickCaptureCreatedEvent>("quick-capture-created", (e) => cb(e.payload));
+/** 应用退出前要求立即落盘草稿（窗口可能即将销毁）。 */
+export const onCaptureFlushDraft = (cb: () => void): Promise<UnlistenFn> =>
+  listen("capture-flush-draft", () => cb());
+
+// ── 规划中心（v0.7）：用户自建项目的功能规划、步骤、里程碑与进度历史 ──
+// 数据边界：Task Dock 内置路线图（lib/featureCatalog.ts）不入库、不可通过本节命令修改。
+
+export type PlanningProjectStatus = "planning" | "in_progress" | "paused" | "completed";
+export type PlanningFeatureStatus =
+  | "planned"
+  | "in_progress"
+  | "review"
+  | "completed"
+  | "blocked"
+  | "paused";
+export type PlanningPriority = "P0" | "P1" | "P2";
+export type PlanningActivityKind = "note" | "status_change" | "step_done";
+
+export interface PlanningProjectStats {
+  feature_total: number;
+  feature_completed: number;
+  feature_in_progress: number;
+  feature_blocked: number;
+  feature_planned: number;
+  feature_review: number;
+  feature_paused: number;
+  /** false = 项目还没有功能；此时 progress_percent 恒为 0，UI 必须显示「尚未添加功能」 */
+  has_features: boolean;
+  progress_percent: number;
+}
+
+export interface PlanningProject {
+  id: string;
+  name: string;
+  description: string;
+  status: PlanningProjectStatus;
+  archived: boolean;
+  target_date: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  stats: PlanningProjectStats;
+}
+
+export interface PlanningProjectInput {
+  name: string;
+  description?: string;
+  status?: PlanningProjectStatus;
+  target_date?: string | null;
+}
+
+export interface PlanningProjectPatch {
+  name?: string;
+  description?: string;
+  status?: PlanningProjectStatus;
+  /** 三态：undefined = 保持；null = 清除；字符串 = 设置 */
+  target_date?: string | null;
+  sort_order?: number;
+}
+
+export interface PlanningStep {
+  id: string;
+  feature_id: string;
+  title: string;
+  done: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface PlanningFeature {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  /** 空串 = 尚未填写；与 steps 分离，不用步骤冒充 */
+  acceptance_criteria: string;
+  status: PlanningFeatureStatus;
+  priority: PlanningPriority;
+  milestone_id: string | null;
+  milestone_name: string | null;
+  target_date: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  steps: PlanningStep[];
+  /** 0 = 未拆分步骤（不产出百分比，UI 如实显示） */
+  step_total: number;
+  step_done: number;
+}
+
+export interface PlanningFeatureInput {
+  title: string;
+  description?: string;
+  acceptance_criteria?: string;
+  status?: PlanningFeatureStatus;
+  priority?: PlanningPriority;
+  milestone_id?: string | null;
+  target_date?: string | null;
+}
+
+export interface PlanningFeaturePatch {
+  title?: string;
+  description?: string;
+  acceptance_criteria?: string;
+  status?: PlanningFeatureStatus;
+  priority?: PlanningPriority;
+  milestone_id?: string | null;
+  target_date?: string | null;
+  sort_order?: number;
+}
+
+export interface PlanningMilestone {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  target_date: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  feature_total: number;
+  feature_completed: number;
+}
+
+export interface PlanningMilestoneInput {
+  name: string;
+  description?: string;
+  target_date?: string | null;
+}
+
+export interface PlanningMilestonePatch {
+  name?: string;
+  description?: string;
+  target_date?: string | null;
+  sort_order?: number;
+}
+
+export interface PlanningActivity {
+  id: string;
+  project_id: string;
+  feature_id: string | null;
+  feature_title: string | null;
+  kind: PlanningActivityKind;
+  old_status: string | null;
+  new_status: string | null;
+  message: string;
+  created_at: string;
+}
+
+export interface PlanningActivityPage {
+  items: PlanningActivity[];
+  has_more: boolean;
+}
+
+export interface PlanningStepPatch {
+  title?: string;
+  done?: boolean;
+}
+
+export const planningListProjects = (includeArchived?: boolean) =>
+  invoke<PlanningProject[]>("planning_list_projects", { includeArchived });
+export const planningCreateProject = (input: PlanningProjectInput) =>
+  invoke<PlanningProject>("planning_create_project", { input });
+export const planningUpdateProject = (id: string, patch: PlanningProjectPatch) =>
+  invoke<PlanningProject>("planning_update_project", { id, patch });
+export const planningArchiveProject = (id: string, archived: boolean) =>
+  invoke<PlanningProject>("planning_archive_project", { id, archived });
+export const planningDeleteProject = (id: string) =>
+  invoke<void>("planning_delete_project", { id });
+export const planningReorderProjects = (ids: string[]) =>
+  invoke<void>("planning_reorder_projects", { ids });
+
+export const planningListFeatures = (projectId: string) =>
+  invoke<PlanningFeature[]>("planning_list_features", { projectId });
+export const planningCreateFeature = (projectId: string, input: PlanningFeatureInput) =>
+  invoke<PlanningFeature>("planning_create_feature", { projectId, input });
+export const planningUpdateFeature = (id: string, patch: PlanningFeaturePatch) =>
+  invoke<PlanningFeature>("planning_update_feature", { id, patch });
+export const planningDeleteFeature = (id: string) =>
+  invoke<void>("planning_delete_feature", { id });
+export const planningReorderFeatures = (projectId: string, ids: string[]) =>
+  invoke<void>("planning_reorder_features", { projectId, ids });
+
+export const planningAddStep = (featureId: string, title: string) =>
+  invoke<PlanningFeature>("planning_add_step", { featureId, title });
+export const planningUpdateStep = (id: string, patch: PlanningStepPatch) =>
+  invoke<PlanningFeature>("planning_update_step", { id, patch });
+export const planningDeleteStep = (id: string) =>
+  invoke<PlanningFeature>("planning_delete_step", { id });
+export const planningReorderSteps = (featureId: string, ids: string[]) =>
+  invoke<PlanningFeature>("planning_reorder_steps", { featureId, ids });
+
+export const planningListMilestones = (projectId: string) =>
+  invoke<PlanningMilestone[]>("planning_list_milestones", { projectId });
+export const planningCreateMilestone = (projectId: string, input: PlanningMilestoneInput) =>
+  invoke<PlanningMilestone>("planning_create_milestone", { projectId, input });
+export const planningUpdateMilestone = (id: string, patch: PlanningMilestonePatch) =>
+  invoke<PlanningMilestone>("planning_update_milestone", { id, patch });
+export const planningDeleteMilestone = (id: string) =>
+  invoke<void>("planning_delete_milestone", { id });
+
+export const planningActivityPage = (
+  projectId: string,
+  opts?: { featureId?: string | null; limit?: number; offset?: number },
+) =>
+  invoke<PlanningActivityPage>("planning_activity_page", {
+    projectId,
+    featureId: opts?.featureId ?? null,
+    limit: opts?.limit ?? null,
+    offset: opts?.offset ?? null,
+  });
+export const planningAddNote = (
+  projectId: string,
+  featureId: string | null,
+  message: string,
+) => invoke<PlanningActivity>("planning_add_note", { projectId, featureId, message });
+
+/** 规划中心展示辅助：功能状态 → 中文标签（与 featureCatalog 状态语义相互独立）。 */
+export const PLANNING_FEATURE_STATUS_LABELS: Record<PlanningFeatureStatus, string> = {
+  planned: "待开发",
+  in_progress: "开发中",
+  review: "待验收",
+  completed: "已完成",
+  blocked: "受阻",
+  paused: "已暂停",
+};
+
+export const PLANNING_PROJECT_STATUS_LABELS: Record<PlanningProjectStatus, string> = {
+  planning: "规划中",
+  in_progress: "进行中",
+  paused: "已暂停",
+  completed: "已完成",
+};

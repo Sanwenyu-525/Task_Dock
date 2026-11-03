@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -120,12 +121,23 @@ pub fn set_hotkeys_enabled(
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
     db.set_setting("hotkey_enabled", serde_json::json!(enabled))?;
     let gs = app.global_shortcut();
-    if enabled {
-        let _ = gs.register("Ctrl+Alt+T".parse::<Shortcut>().unwrap());
-        let _ = gs.register("Ctrl+Shift+Space".parse::<Shortcut>().unwrap());
-    } else {
-        let _ = gs.unregister("Ctrl+Alt+T".parse::<Shortcut>().unwrap());
-        let _ = gs.unregister("Ctrl+Shift+Space".parse::<Shortcut>().unwrap());
+    // 注册/注销失败只告警降级，不 panic：两条快捷键互相独立，
+    // 一条被其他实例占用不影响另一条（如 debug 实例占用 Ctrl+Shift+Space）。
+    for accel in ["Ctrl+Alt+T", "Ctrl+Shift+Space"] {
+        let shortcut = match accel.parse::<Shortcut>() {
+            Ok(shortcut) => shortcut,
+            Err(_) => {
+                tracing::warn!("全局快捷键 {} 解析失败", accel);
+                continue;
+            }
+        };
+        if enabled {
+            if let Err(e) = gs.register(shortcut) {
+                tracing::warn!("全局快捷键 {} 注册失败: {}", accel, e);
+            }
+        } else if let Err(e) = gs.unregister(shortcut) {
+            tracing::warn!("全局快捷键 {} 注销失败: {}", accel, e);
+        }
     }
     Ok(())
 }
@@ -174,6 +186,12 @@ pub fn apply_window_radius(app: AppHandle, radius: f64) -> AppResult<bool> {
 pub const CAPSULE_THICKNESS_CSS: u32 = 56;
 pub const CAPSULE_LENGTH_CSS: u32 = 224;
 
+/// 胶囊区域写入的单调序号。前端在每次状态切换时自增并随请求下发；
+/// IPC 命令可能并发执行，迟到的旧请求若先落到 `set_capsule` 会把区域改回旧形状。
+/// 这里只允许「不小于已见最大序号」的请求通过，保证最终状态由最新请求决定。
+/// 前端序号以页面加载时刻为基数（而非从 0 开始），WebView 重载后仍能保持单调。
+static CAPSULE_APPLY_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// 胶囊区域模式（分类胶囊）：
 /// - `off`   ：恢复整窗圆角区域（未停靠 / 解除吸附）
 /// - `rail`  ：只露出分类轨道（折叠态）
@@ -183,7 +201,12 @@ pub const CAPSULE_LENGTH_CSS: u32 = 224;
 /// 这是「鼠标在吸附条与悬浮窗口之间来回跳动」的结构性修复：
 /// 命中区不再随窗口移动而移动。
 #[tauri::command]
-pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String) -> AppResult<bool> {
+pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String, seq: u64) -> AppResult<bool> {
+    // 乱序保护：已有更高序号的请求落地过，本次旧请求直接丢弃，不再改写区域与原生层。
+    if CAPSULE_APPLY_SEQ.fetch_max(seq, Ordering::SeqCst) > seq {
+        tracing::debug!("忽略乱序的胶囊区域请求 seq={seq}");
+        return Ok(false);
+    }
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;

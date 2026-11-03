@@ -6,16 +6,18 @@ export type Tab =
   | "agents"
   | "actions"
   | "clipboard"
+  | "inbox"
   | "history"
   | "roadmap"
   | "settings";
 
-/** 完整模式侧边栏顺序：导航渲染、Ctrl+1…7、快捷键说明共用这一处定义。 */
+/** 完整模式侧边栏顺序：导航渲染、Ctrl+1…8、快捷键说明共用这一处定义。 */
 export const TAB_ORDER: readonly Tab[] = [
   "tasks",
   "agents",
   "actions",
   "clipboard",
+  "inbox",
   "history",
   "roadmap",
   "settings",
@@ -27,6 +29,15 @@ export interface ToastAction {
 }
 
 export type ToastKind = "info" | "success" | "warning" | "error";
+
+/** 桌面通知点击「定位本轮」：主窗口据此展开 Agent 树并滚动/高亮到具体轮次。 */
+export interface AgentFocusTarget {
+  sourceId: string;
+  sessionId: string;
+  refId: string | null;
+  /** 每次请求自增，便于同一对象重复定位时重新触发（不依赖时间戳碰撞）。 */
+  token: number;
+}
 
 export interface ToastData {
   id: number;
@@ -71,6 +82,10 @@ export const useUiStore = create<{
   /** 任务关联变更计数：任务编辑器据此重读关联列表 */
   clipboardLinkVersion: number;
   bumpClipboardLink: () => void;
+  /** 通知跳转的 Agent 定位目标（只消费一次，AgentPanel 处理后清除） */
+  agentFocus: AgentFocusTarget | null;
+  focusAgent: (target: Omit<AgentFocusTarget, "token">) => void;
+  clearAgentFocus: () => void;
 }>((set) => ({
   tab: "tasks",
   setTab: (t) => set({ tab: t }),
@@ -140,4 +155,10 @@ export const useUiStore = create<{
   closeClipboard: () => set({ clipboardOpen: false, clipboardLinkTask: null }),
   clipboardLinkVersion: 0,
   bumpClipboardLink: () => set((s) => ({ clipboardLinkVersion: s.clipboardLinkVersion + 1 })),
+  agentFocus: null,
+  focusAgent: (target) =>
+    set((s) => ({
+      agentFocus: { ...target, token: (s.agentFocus?.token ?? 0) + 1 },
+    })),
+  clearAgentFocus: () => set({ agentFocus: null }),
 }));

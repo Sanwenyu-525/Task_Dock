@@ -14,6 +14,7 @@ mod magnetic;
 pub mod navigation;
 pub mod nlp;
 pub mod notification_window;
+pub mod quick_capture;
 pub mod recurrence;
 pub mod scheduler;
 mod window_shape;
@@ -349,10 +350,8 @@ pub fn run() {
                     if shortcut.matches(Modifiers::CONTROL | Modifiers::ALT, Code::KeyT) {
                         toggle_main(app);
                     } else if shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::Space) {
-                        if let Some(win) = app.get_webview_window("main") {
-                            show_and_focus(&win);
-                        }
-                        let _ = app.emit("focus-quick-add", ());
+                        // 全局快速捕获：常驻 capture 窗口 toggle（不再展开主窗口）
+                        quick_capture::toggle(app);
                     }
                 })
                 .build(),
@@ -560,12 +559,20 @@ pub fn run() {
                 let _ = handle.autolaunch().enable();
             }
 
-            // 全局热键
+            // 全局热键（注册失败仅告警降级，不 panic：Ctrl+Shift+Space 可能被其他实例占用）
             if settings.hotkey_enabled {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 let gs = handle.global_shortcut();
-                let _ = gs.register("Ctrl+Alt+T".parse::<Shortcut>().unwrap());
-                let _ = gs.register("Ctrl+Shift+Space".parse::<Shortcut>().unwrap());
+                for accel in ["Ctrl+Alt+T", "Ctrl+Shift+Space"] {
+                    match accel.parse::<Shortcut>() {
+                        Ok(shortcut) => {
+                            if let Err(e) = gs.register(shortcut) {
+                                tracing::warn!("全局快捷键 {} 注册失败: {}", accel, e);
+                            }
+                        }
+                        Err(_) => tracing::warn!("全局快捷键 {} 解析失败", accel),
+                    }
+                }
             }
 
             // 托盘
@@ -577,6 +584,9 @@ pub fn run() {
 
             // 自定义通知窗口：挂接生命周期事件（WS_EX_NOACTIVATE 在每次显示前确保）
             notification_window::init(&handle);
+
+            // 全局快速捕获：挂接窗口事件（失焦落草稿后隐藏 / 关闭改为隐藏）
+            quick_capture::init(&handle);
 
             // Agent 适配器
             Box::new(agents::file_drop::FileDropAdapter::new(pipeline.clone())).spawn(hub.clone());
@@ -657,6 +667,9 @@ pub fn run() {
             commands::tasks::parse_quick_add,
             commands::tasks::create_from_quick_add,
             commands::tasks::snooze_reminder,
+            commands::tasks::undo_snooze,
+            commands::tasks::active_reminders,
+            commands::tasks::cancel_reminders,
             commands::tasks::link_task_agent,
             commands::tasks::unlink_task_agent,
             commands::tasks::list_task_links,
@@ -732,6 +745,7 @@ pub fn run() {
             notification_window::hide_notification_window,
             notification_window::notification_snooze,
             notification_window::notification_navigate,
+            notification_window::notification_ui_ready,
             // 统一导航（v0.4）
             commands::navigation::nav_scan_apps,
             commands::navigation::nav_list_windows,
@@ -758,6 +772,28 @@ pub fn run() {
             commands::navigation::nav_agent_capabilities,
             commands::navigation::nav_agent_action,
             commands::navigation::nav_agent_open_workspace,
+            // 规划中心（v0.7）：用户自建项目的功能规划、步骤、里程碑与进度历史
+            commands::planning::planning_list_projects,
+            commands::planning::planning_create_project,
+            commands::planning::planning_update_project,
+            commands::planning::planning_archive_project,
+            commands::planning::planning_delete_project,
+            commands::planning::planning_reorder_projects,
+            commands::planning::planning_list_features,
+            commands::planning::planning_create_feature,
+            commands::planning::planning_update_feature,
+            commands::planning::planning_delete_feature,
+            commands::planning::planning_reorder_features,
+            commands::planning::planning_add_step,
+            commands::planning::planning_update_step,
+            commands::planning::planning_delete_step,
+            commands::planning::planning_reorder_steps,
+            commands::planning::planning_list_milestones,
+            commands::planning::planning_create_milestone,
+            commands::planning::planning_update_milestone,
+            commands::planning::planning_delete_milestone,
+            commands::planning::planning_activity_page,
+            commands::planning::planning_add_note,
             // 智能剪贴板（v0.5）
             commands::clipboard::clipboard_view,
             commands::clipboard::clipboard_item,
@@ -829,6 +865,17 @@ pub fn run() {
             commands::workspace::workspace_restore,
             commands::workspace::workspace_restore_cancel,
             commands::workspace::workspace_restore_status,
+            // 全局快速捕获（v0.7）
+            quick_capture::quick_capture_state,
+            quick_capture::quick_capture_save_draft,
+            quick_capture::quick_capture_clear_draft,
+            quick_capture::quick_capture_set_last_type,
+            quick_capture::quick_capture_submit,
+            quick_capture::quick_capture_list,
+            quick_capture::quick_capture_mark_handled,
+            quick_capture::quick_capture_delete,
+            quick_capture::quick_capture_convert_to_task,
+            quick_capture::quick_capture_hide,
             // 统一任务上下文（v0.5）
             commands::context::task_context,
         ])
@@ -860,6 +907,8 @@ pub fn request_exit(app: &AppHandle) {
     agents::shutdown_signal::begin();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        // 捕获窗口可见时先让前端落草稿（最多等 300ms；未显示则立即返回）
+        quick_capture::flush_draft_before_exit(&app).await;
         let report = match app.try_state::<Arc<agents::pipeline::IngestPipeline>>() {
             Some(pipeline) => pipeline.shutdown().await,
             None => {

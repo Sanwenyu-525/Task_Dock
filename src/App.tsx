@@ -36,9 +36,13 @@ import {
   onModeChanged,
   onNotification,
   onNotificationNavigate,
+  onQuickCaptureCreated,
   onReminderFired,
+  onReminderSnoozed,
   onThemeChanged,
+  undoSnooze,
 } from "./lib/bridge";
+import { useCaptureStore } from "./store/useCaptureStore";
 
 export default function App() {
   const settings = useSettingsStore((s) => s.settings);
@@ -144,6 +148,42 @@ export default function App() {
         scheduleActionsRefresh();
       }
     }));
+    // 延后成功（任务卡 / 倒计时 / 桌面通知任意入口）：统一弹带「撤销」的 Toast。
+    // 撤销只作用于本次实际改动的行；行已被再次延后/编辑/触发时后端按
+    // (id, snoozed_to) 条件恢复，旧撤销不会覆盖新状态（失败如实提示）。
+    scope.add(onReminderSnoozed((p) => {
+      scheduleTaskRefresh();
+      const next = new Date(p.nextRemindAt);
+      const nextLabel = Number.isNaN(next.getTime())
+        ? p.nextRemindAt
+        : `${next.getMonth() + 1}-${String(next.getDate()).padStart(2, "0")} ${String(next.getHours()).padStart(2, "0")}:${String(next.getMinutes()).padStart(2, "0")}`;
+      useUiStore.getState().showToast(
+        `已延后「${p.taskTitle}」至 ${nextLabel}`,
+        {
+          kind: "success",
+          action: {
+            label: "撤销",
+            run: () => {
+              undoSnooze(p.taskId, p.changed, p.insertedId)
+                .then(([restored, dropped]) => {
+                  if (restored === 0 && dropped === 0) {
+                    useUiStore.getState().showToast(
+                      "撤销已失效：提醒在延后后又被修改或触发",
+                      { kind: "warning" },
+                    );
+                  } else {
+                    useUiStore.getState().showToast("已撤销本次延后", { kind: "info" });
+                  }
+                  scheduleTaskRefresh();
+                })
+                .catch((e) =>
+                  useUiStore.getState().showToast(`撤销失败：${String(e)}`, { kind: "error" }),
+                );
+            },
+          },
+        },
+      );
+    }));
     // 新通知/新事件：任务列表（含 Agent 建的任务）与全局统计都要刷新
     scope.add(onNotification(() => {
       scheduleTaskRefresh();
@@ -152,11 +192,27 @@ export default function App() {
       }
     }));
     scope.add(onFocusQuickAdd(() => bumpQuickAdd()));
-    // 桌面通知「查看详情/通知中心」跳转：后端已激活主窗口，这里只切标签页。
+    // 快速捕获产生新条目：task / todo 会自动建任务，收集箱徽标与列表也要更新。
+    // payload 以后端实现为准（仅 kind + 可选 task_id，不含正文）；这里不依赖具体字段，
+    // 收到事件就按既有合并节奏刷新，避免新增第二条全量刷新路径。
+    scope.add(onQuickCaptureCreated(() => {
+      scheduleTaskRefresh();
+      void useCaptureStore.getState().load();
+    }));
+    // 桌面通知「查看详情/定位本轮/通知中心」跳转：后端已激活主窗口，
+    // 这里切换标签页；携带可靠 Agent ID 时把定位目标交给 AgentPanel 展开并高亮。
     // 读取 getState() 避免把 setTab 拉进依赖列表（store 引用恒定）。
-    scope.add(onNotificationNavigate((t) => {
-      const tab: Tab = t === "history" || t === "agents" || t === "tasks" ? t : "agents";
-      useUiStore.getState().setTab(tab);
+    scope.add(onNotificationNavigate((p) => {
+      const tab: Tab = p.tab === "history" || p.tab === "agents" || p.tab === "tasks" ? p.tab : "agents";
+      const ui = useUiStore.getState();
+      ui.setTab(tab);
+      if (tab === "agents" && p.sourceId && p.sessionId) {
+        ui.focusAgent({
+          sourceId: p.sourceId,
+          sessionId: p.sessionId,
+          refId: p.refId ?? null,
+        });
+      }
     }));
     scope.add(onModeChanged((m) => {
       // 尺寸/持久化由后端完成；这里只同步 UI（不触发数据刷新，
@@ -183,7 +239,7 @@ export default function App() {
   // 卸载（或热更新）时清掉未执行的行动中心刷新调度，避免遗留定时器
   useEffect(() => () => cancelActionsRefresh(), []);
 
-  // 应用内快捷键：Ctrl+1…6 切标签（完整模式）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
+  // 应用内快捷键：Ctrl+1…8 切标签（完整模式）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
   useGlobalShortcuts();
 
   // Escape 关闭优先级：弹层栈里有任何一层时由栈顶消费；

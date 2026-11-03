@@ -1,4 +1,4 @@
-//! 完整模式：左侧垂直导航 + 任务 / Agent / 行动 / 剪贴板 / 历史 / 规划中 / 设置 七个面板。
+//! 完整模式：左侧垂直导航 + 任务 / Agent / 行动 / 剪贴板 / 收集箱 / 历史 / 规划中心 / 设置 八个面板。
 //!
 //! v0.6：由顶部横向标签改为**左侧垂直导航**（两套视觉预设共用同一结构）。
 //! - 图标 + 文字，选中态由预设决定（梦幻渐变=淡色药丸，液态玻璃=玻璃胶囊）
@@ -6,31 +6,43 @@
 //! - 「新建任务」置于导航顶部，仅图标（可访问名由 aria-label 提供），复用 Ctrl+K / 标题栏的快速添加行为
 //! - 窄窗（< 380px）时只留图标，避免挤压右侧统计卡与筛选行
 //! - v0.6：剪贴板正式成为第 4 个入口（不再是覆盖整屏的抽屉）
-//! - v0.7：新增「规划中」入口（历史之后、设置之前），统一功能规划目录的展示层
+//! - v0.7：新增「收集箱」（剪贴板之后、历史之前）与「规划中→规划中心」（历史之后、设置之前）入口
+//!
+//! 徽标口径：收集箱徽标 = 未处理捕获条数（useCaptureStore.inboxCount），
+//! 进入完整模式时拉取一次，捕获产生/面板处理后由 store 自身刷新，不做轮询。
 
+import { useEffect } from "react";
 import { useUiStore, TAB_ORDER, type Tab } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
+import { useCaptureStore } from "../store/useCaptureStore";
 import TasksPanel from "./tasks/TasksPanel";
 import AgentPanel from "./agents/AgentPanel";
 import ActionCenterPanel from "./actions/ActionCenterPanel";
 import ClipboardPanel from "./clipboard/ClipboardPanel";
+import CaptureInboxPanel from "./inbox/CaptureInboxPanel";
 import HistoryPanel from "./history/HistoryPanel";
-import FeatureRoadmapPanel from "./roadmap/FeatureRoadmapPanel";
+import PlanningCenterPanel from "./roadmap/PlanningCenterPanel";
 import SettingsPanel from "./settings/SettingsPanel";
-import { ListTodo, Bot, Zap, Clipboard, History, Map, Settings as SettingsIcon, Plus } from "lucide-react";
+import { Inbox, ListTodo, Zap, Clipboard, History, Map, Settings as SettingsIcon, Plus } from "lucide-react";
+import AgentIcon, { type IconComponent } from "./ui/AgentIcon";
 
-const TAB_META: Record<Tab, { label: string; icon: typeof ListTodo; badge?: "intervention" | "attention" | "pending" }> = {
+const TAB_META: Record<
+  Tab,
+  { label: string; icon: IconComponent; badge?: "intervention" | "attention" | "pending" | "inbox" }
+> = {
   tasks: { label: "任务", icon: ListTodo, badge: "pending" },
-  agents: { label: "Agent", icon: Bot, badge: "intervention" },
+  agents: { label: "Agent", icon: AgentIcon, badge: "intervention" },
   actions: { label: "行动", icon: Zap, badge: "attention" },
   clipboard: { label: "剪贴板", icon: Clipboard },
+  inbox: { label: "收集箱", icon: Inbox, badge: "inbox" },
   history: { label: "历史", icon: History },
-  roadmap: { label: "规划中", icon: Map },
+  // v0.7：规划中心（Tab 身份仍为 roadmap，内置路线图保留为其中一个数据源）
+  roadmap: { label: "规划中心", icon: Map },
   settings: { label: "设置", icon: SettingsIcon },
 };
 
-// 顺序取自 TAB_ORDER：导航渲染与 Ctrl+1…6 共用同一份定义，不会各自漂移
+// 顺序取自 TAB_ORDER：导航渲染与 Ctrl+1…8 共用同一份定义，不会各自漂移
 const TABS = TAB_ORDER.map((id) => ({ id, ...TAB_META[id] }));
 
 export default function FullView() {
@@ -39,6 +51,13 @@ export default function FullView() {
   const bumpQuickAdd = useUiStore((s) => s.bumpQuickAdd);
   const stats = useTasksStore((s) => s.stats);
   const actionFeed = useActionsStore((s) => s.feed);
+  const inboxCount = useCaptureStore((s) => s.inboxCount);
+  const refreshInboxCount = useCaptureStore((s) => s.refreshInboxCount);
+
+  // 进入完整模式先拿一次未处理计数（徽标）；条目列表在进入收集箱时由面板加载。
+  useEffect(() => {
+    void refreshInboxCount();
+  }, [refreshInboxCount]);
 
   // 两个徽标共用行动中心口径：需介入（未确认），不再用原始 waiting/failed 计数，
   // 避免同一状态在标签页与行动中心显示两个不同的数字。
@@ -48,7 +67,8 @@ export default function FullView() {
   const intervention = actionsEnabled ? actionFeed?.counts.intervention ?? 0 : 0;
   const actions = actionsEnabled ? attentionCount(actionFeed) : 0;
 
-  const counts = { intervention, attention: actions, pending };
+  const counts = { intervention, attention: actions, pending, inbox: inboxCount };
+
 
   return (
     <div className="full-view">
@@ -99,8 +119,9 @@ export default function FullView() {
         {tab === "agents" && <AgentPanel />}
         {tab === "actions" && <ActionCenterPanel />}
         {tab === "clipboard" && <ClipboardPanel />}
+        {tab === "inbox" && <CaptureInboxPanel />}
         {tab === "history" && <HistoryPanel />}
-        {tab === "roadmap" && <FeatureRoadmapPanel />}
+        {tab === "roadmap" && <PlanningCenterPanel />}
         {tab === "settings" && <SettingsPanel />}
       </div>
     </div>

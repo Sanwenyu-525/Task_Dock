@@ -34,8 +34,11 @@ vi.mock("./lib/bridge", () => ({
   onModeChanged: async () => () => undefined,
   onNotification: async () => () => undefined,
   onNotificationNavigate: async () => () => undefined,
+  onQuickCaptureCreated: async () => () => undefined,
   onReminderFired: async () => () => undefined,
+  onReminderSnoozed: async () => () => undefined,
   onThemeChanged: async () => () => undefined,
+  undoSnooze: async () => [0, 0],
 }));
 
 vi.mock("./hooks/useEdgeSnap", () => ({

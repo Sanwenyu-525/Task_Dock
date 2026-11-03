@@ -2,11 +2,11 @@
  * @vitest-environment jsdom
  */
 //! 完整模式左侧导航（v0.7）：
-//! - 七个入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
-//! - 点击切换 tab（保持 Ctrl+1…7 同一套 store）；
-//! - 徽标直接复用任务统计 / 行动中心口径，不新造计数；
+//! - 八个入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
+//! - 点击切换 tab（保持 Ctrl+1…8 同一套 store）；
+//! - 徽标直接复用任务统计 / 行动中心 / 收集箱未处理计数，不新造计数；
 //! - 顶部入口切到任务页并聚焦快速添加；
-//! - 「规划中」位于历史之后、设置之前（功能规划目录入口）。
+//! - 「收集箱」位于剪贴板之后、历史之前；「规划中心」位于历史之后、设置之前。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -17,14 +17,16 @@ vi.mock("./tasks/TasksPanel", () => ({ default: () => <div>tasks-panel</div> }))
 vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }));
 vi.mock("./actions/ActionCenterPanel", () => ({ default: () => <div>actions-panel</div> }));
 vi.mock("./clipboard/ClipboardPanel", () => ({ default: () => <div>clipboard-panel</div> }));
+vi.mock("./inbox/CaptureInboxPanel", () => ({ default: () => <div>inbox-panel</div> }));
 vi.mock("./history/HistoryPanel", () => ({ default: () => <div>history-panel</div> }));
-vi.mock("./roadmap/FeatureRoadmapPanel", () => ({ default: () => <div>roadmap-panel</div> }));
+vi.mock("./roadmap/PlanningCenterPanel", () => ({ default: () => <div>roadmap-panel</div> }));
 vi.mock("./settings/SettingsPanel", () => ({ default: () => <div>settings-panel</div> }));
 
 import FullView from "./FullView";
 import { useUiStore } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore } from "../store/useActionsStore";
+import { useCaptureStore } from "../store/useCaptureStore";
 
 function seedCounts() {
   useUiStore.setState({ tab: "tasks", quickAddToken: 0 });
@@ -39,6 +41,7 @@ function seedCounts() {
       items: [],
     } as never,
   });
+  useCaptureStore.setState({ items: [], filter: "inbox", loading: false, error: null, inboxCount: 2 });
 }
 
 beforeEach(seedCounts);
@@ -48,11 +51,11 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("渲染七个导航入口与顶部新建按钮", () => {
+  it("渲染八个导航入口与顶部新建按钮", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["任务", "Agent", "行动", "剪贴板", "历史", "规划中", "设置"]) {
+    for (const label of ["任务", "Agent", "行动", "剪贴板", "收集箱", "历史", "规划中心", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
     expect(screen.getByRole("button", { name: "新建任务" })).toBeTruthy();
@@ -86,24 +89,36 @@ describe("完整模式左侧导航", () => {
     expect(navItem("剪贴板").getAttribute("aria-current")).toBe("page");
   });
 
-  it("规划中位于历史之后、设置之前，点击后渲染规划面板", async () => {
+  it("收集箱是第 5 个入口，点击后进入收集箱页面", async () => {
     const user = userEvent.setup();
     render(<FullView />);
 
-    await user.click(navItem("规划中"));
+    await user.click(navItem("收集箱"));
+    expect(screen.getByText("inbox-panel")).toBeTruthy();
+    expect(useUiStore.getState().tab).toBe("inbox");
+    expect(navItem("收集箱").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("规划中心位于历史之后、设置之前，点击后渲染规划面板（Tab 身份仍为 roadmap）", async () => {
+    const user = userEvent.setup();
+    render(<FullView />);
+
+    await user.click(navItem("规划中心"));
     expect(screen.getByText("roadmap-panel")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("roadmap");
-    expect(navItem("规划中").getAttribute("aria-current")).toBe("page");
+    expect(navItem("规划中心").getAttribute("aria-current")).toBe("page");
     expect(navItem("历史").getAttribute("aria-current")).toBeNull();
   });
 
-  it("徽标复用任务统计与行动中心计数", () => {
+  it("徽标复用任务统计、行动中心计数与收集箱未处理数", () => {
     render(<FullView />);
-    // 任务 3、Agent 需介入 1、行动总数 2
+    // 任务 3、Agent 需介入 1、行动总数 2、收集箱未处理 2
     const badges = [...document.querySelectorAll(".rail-badge")].map((b) => b.textContent);
     expect(badges).toContain("3");
     expect(badges).toContain("1");
     expect(badges).toContain("2");
+    // 顺序跟随 TAB_ORDER：任务、Agent、行动、收集箱
+    expect(badges).toEqual(["3", "1", "2", "2"]);
   });
 
   it("顶部新建任务入口：切回任务页并触发聚焦信号", async () => {
@@ -128,7 +143,7 @@ describe("完整模式左侧导航", () => {
     });
     render(<FullView />);
     const badges = [...document.querySelectorAll(".rail-badge")].map((b) => b.textContent);
-    // 行动中心关闭：intervention 与 attention 都归零，只剩任务徽标
-    expect(badges).toEqual(["3"]);
+    // 行动中心关闭：intervention 与 attention 都归零，只剩任务徽标与收集箱未处理徽标
+    expect(badges).toEqual(["3", "2"]);
   });
 });

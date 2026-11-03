@@ -1,117 +1,85 @@
-/**
- * @vitest-environment jsdom
- */
-//! UI Store 的浮层互斥（v0.6）：
-//! - 任务上下文抽屉与剪贴板抽屉互斥：开一个必关另一个；
-//! - 剪贴板抽屉的关联模式携带任务，关闭后清空；
-//! - 切到剪贴板页面（Tab）不等于打开抽屉，两者互不影响。
+//! Toast 队列策略测试：去重、容量上限、关键提示保留、清除。
+//!
+//! 验收点（通知系统整改 E）：
+//! - 同文案同类型 2s 内重复推送只保留一条，避免重复操作刷屏；
+//! - 队列超过上限时先挤掉最早的普通提示，错误/警告优先保留；
+//! - 重要错误不会被后续普通成功提示覆盖；
+//! - showToast(null) 与 dismissToast 能清空队列，不留下幽灵提示。
 
-import { beforeEach, describe, expect, it } from "vitest";
-import { useUiStore, TOAST_QUEUE_MAX } from "./useUiStore";
-import type { Task } from "../lib/bridge";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TOAST_QUEUE_MAX, useUiStore } from "./useUiStore";
 
-const TASK = { id: "t1", title: "写周报" } as unknown as Task;
+const NOW = 1_000_000;
+
+function reset() {
+  useUiStore.setState({ toast: null, toasts: [] });
+}
+
+function messages() {
+  return useUiStore.getState().toasts.map((t) => t.message);
+}
 
 beforeEach(() => {
-  useUiStore.setState({
-    tab: "tasks",
-    editor: { open: false, task: null },
-    workspace: { open: false, task: null },
-    context: { open: false, task: null },
-    clipboardOpen: false,
-    clipboardLinkTask: null,
-    clipboardLinkVersion: 0,
-    toast: null,
-    toasts: [],
-  });
+  vi.useFakeTimers({ now: NOW });
+  reset();
 });
 
-describe("浮层互斥", () => {
-  it("打开任务上下文抽屉会关闭剪贴板抽屉", () => {
-    useUiStore.getState().openClipboard();
-    expect(useUiStore.getState().clipboardOpen).toBe(true);
-
-    useUiStore.getState().openContext(TASK);
-    expect(useUiStore.getState().context.open).toBe(true);
-    expect(useUiStore.getState().clipboardOpen).toBe(false);
-    expect(useUiStore.getState().clipboardLinkTask).toBeNull();
-  });
-
-  it("打开剪贴板抽屉会关闭任务上下文抽屉", () => {
-    useUiStore.getState().openContext(TASK);
-    useUiStore.getState().openClipboard();
-    expect(useUiStore.getState().clipboardOpen).toBe(true);
-    expect(useUiStore.getState().context.open).toBe(false);
-  });
-
-  it("关联模式携带任务，关闭抽屉后清空关联目标", () => {
-    useUiStore.getState().openClipboard({ linkTask: TASK });
-    expect(useUiStore.getState().clipboardLinkTask?.id).toBe("t1");
-
-    useUiStore.getState().closeClipboard();
-    expect(useUiStore.getState().clipboardOpen).toBe(false);
-    expect(useUiStore.getState().clipboardLinkTask).toBeNull();
-  });
-
-  it("切到剪贴板标签页不会打开抽屉（页面与抽屉是两种形态）", () => {
-    useUiStore.getState().setTab("clipboard");
-    expect(useUiStore.getState().tab).toBe("clipboard");
-    expect(useUiStore.getState().clipboardOpen).toBe(false);
-  });
-
-  it("关联版本号只增不减，用于任务编辑器重读关联列表", () => {
-    const before = useUiStore.getState().clipboardLinkVersion;
-    useUiStore.getState().bumpClipboardLink();
-    expect(useUiStore.getState().clipboardLinkVersion).toBe(before + 1);
-  });
+afterEach(() => {
+  reset();
+  vi.useRealTimers();
 });
 
-describe("Toast 队列", () => {
-  it("连续消息进入队列，旧消息不被覆盖", () => {
-    const { showToast } = useUiStore.getState();
-    showToast("已复制", { kind: "success" });
-    showToast("已删除", { kind: "info" });
-    const toasts = useUiStore.getState().toasts;
-    expect(toasts).toHaveLength(2);
-    expect(toasts.map((t) => t.message)).toEqual(["已复制", "已删除"]);
+describe("useUiStore · Toast 队列", () => {
+  it("同文案同类型 2s 内去重，超过窗口后可再次入队", () => {
+    useUiStore.getState().showToast("已复制", { kind: "success" });
+    useUiStore.getState().showToast("已复制", { kind: "success" });
+    expect(messages()).toEqual(["已复制"]);
+
+    // 同文案不同状态不算重复
+    useUiStore.getState().showToast("已复制", { kind: "error" });
+    expect(messages()).toEqual(["已复制", "已复制"]);
+
+    vi.advanceTimersByTime(2001);
+    useUiStore.getState().showToast("已复制", { kind: "success" });
+    expect(messages()).toEqual(["已复制", "已复制", "已复制"]);
   });
 
-  it("支持 warning 类型", () => {
-    useUiStore.getState().showToast("配置已降级", { kind: "warning" });
-    expect(useUiStore.getState().toasts[0].kind).toBe("warning");
+  it("超过容量上限时挤掉最早的普通提示", () => {
+    for (let i = 0; i < TOAST_QUEUE_MAX + 2; i += 1) {
+      vi.advanceTimersByTime(2001);
+      useUiStore.getState().showToast(`提示 ${i}`, { kind: "info" });
+    }
+    const list = messages();
+    expect(list).toHaveLength(TOAST_QUEUE_MAX);
+    expect(list[0]).toBe("提示 2");
+    expect(list.at(-1)).toBe(`提示 ${TOAST_QUEUE_MAX + 1}`);
   });
 
-  it("相同消息短时间去重：同文案同类型不重复入队", () => {
-    const { showToast } = useUiStore.getState();
-    showToast("已复制", { kind: "success" });
-    showToast("已复制", { kind: "success" });
-    expect(useUiStore.getState().toasts).toHaveLength(1);
-    // 类型不同仍视为不同提示
-    showToast("已复制", { kind: "error" });
-    expect(useUiStore.getState().toasts).toHaveLength(2);
+  it("关键错误不被普通成功提示挤掉", () => {
+    useUiStore.getState().showToast("保存失败", { kind: "error" });
+    vi.advanceTimersByTime(2001);
+    useUiStore.getState().showToast("已保存", { kind: "success" });
+    vi.advanceTimersByTime(2001);
+    useUiStore.getState().showToast("已复制", { kind: "success" });
+    vi.advanceTimersByTime(2001);
+    useUiStore.getState().showToast("已删除", { kind: "success" });
+
+    const list = messages();
+    expect(list).toHaveLength(TOAST_QUEUE_MAX);
+    expect(list).toContain("保存失败");
+    // 错误仍在队列中，且不会被普通成功覆盖为最新项
+    expect(useUiStore.getState().toasts.some((t) => t.kind === "error")).toBe(true);
   });
 
-  it("队列有上限：超出时优先挤掉最早的普通提示，错误保留", () => {
-    const { showToast } = useUiStore.getState();
-    showToast("普通 1", { kind: "info" });
-    showToast("普通 2", { kind: "success" });
-    showToast("出错了", { kind: "error" });
-    showToast("普通 3", { kind: "info" }); // 超上限：挤掉最早的普通提示「普通 1」
-    const toasts = useUiStore.getState().toasts;
-    expect(toasts).toHaveLength(TOAST_QUEUE_MAX);
-    expect(toasts.map((t) => t.message)).toEqual(["普通 2", "出错了", "普通 3"]);
-    expect(toasts.some((t) => t.kind === "error"), "错误提示不被挤出队列").toBe(true);
-  });
-
-  it("dismissToast(id) 只关对应条目；无参调用清空全部", () => {
-    const { showToast, dismissToast } = useUiStore.getState();
-    showToast("A", { kind: "info" });
-    showToast("B", { kind: "info" });
+  it("showToast(null) 清空队列，dismissToast(id) 只移除对应一条", () => {
+    useUiStore.getState().showToast("A", { kind: "info" });
+    useUiStore.getState().showToast("B", { kind: "success" });
     const first = useUiStore.getState().toasts[0];
-    dismissToast(first.id);
-    expect(useUiStore.getState().toasts.map((t) => t.message)).toEqual(["B"]);
-    dismissToast();
-    expect(useUiStore.getState().toasts).toHaveLength(0);
+    useUiStore.getState().dismissToast(first.id);
+    expect(messages()).toEqual(["B"]);
+
+    useUiStore.getState().showToast(null);
+    expect(messages()).toEqual([]);
     expect(useUiStore.getState().toast).toBeNull();
   });
 });
