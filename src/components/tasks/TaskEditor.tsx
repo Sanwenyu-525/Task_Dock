@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  Trash2, Link2, Unlink, X, ArrowUp, ArrowDown, AppWindow, Star, ClipboardList, Layers,
+  Trash2, Link2, Unlink, X, ArrowUp, ArrowDown, AppWindow, Star, ClipboardList, Layers, AlarmClock,
 } from "lucide-react";
 import {
   clipboardTaskLinks,
   clipboardUnlinkTask,
   listTaskLinks,
   linkTaskAgent,
+  snoozeReminder,
   unlinkTaskAgent,
   type ClipboardTaskLink,
   type RecurrenceRuleInput,
@@ -23,21 +24,30 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
-import { describeRecurrence, fromLocalInputValue, toLocalInputValue } from "../../lib/format";
+import { describeRecurrence, formatDue, fromLocalInputValue, toLocalInputValue } from "../../lib/format";
 import AppPicker from "../navigation/AppPicker";
 import { TargetAvatar } from "../navigation/TargetMenu";
 import { DateTimePicker, NumberInput, Select } from "../ui";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+const MONTHLY_NTH_LABELS = ["一", "二", "三", "四", "五"];
+
+/** 每月模式：按日 / 第 N 个星期X / 最后一个星期X / 最后一个工作日 */
+type MonthlyMode = "day" | "nth" | "lastWeekday" | "lastWorkday";
+
+function isMonToFri(days: number[]): boolean {
+  return days.length === 5 && [1, 2, 3, 4, 5].every((d) => days.includes(d));
+}
 
 function recurrenceKey(rule: RecurrenceRuleInput | null): string {
   if (!rule) return "";
   return JSON.stringify({
     freq: rule.freq,
     interval: rule.interval,
-    by_weekday: rule.freq === "weekly" ? [...rule.by_weekday].sort((a, b) => a - b) : [],
-    by_monthday: rule.freq === "monthly" ? rule.by_monthday : null,
+    by_weekday: rule.freq === "weekly" || rule.by_setpos != null ? [...rule.by_weekday].sort((a, b) => a - b) : [],
+    by_monthday: rule.freq === "monthly" && rule.by_setpos == null ? rule.by_monthday : null,
+    by_setpos: rule.freq === "monthly" ? rule.by_setpos ?? null : null,
   });
 }
 
@@ -87,6 +97,14 @@ export default function TaskEditor() {
   const [interval, setIntervalValue] = useState(1);
   const [weekdays, setWeekdays] = useState<number[]>([]);
   const [monthday, setMonthday] = useState(1);
+  /** 每月高级模式（渐进展开：默认按日） */
+  const [monthlyMode, setMonthlyMode] = useState<MonthlyMode>("day");
+  const [nthPos, setNthPos] = useState(1);
+  const [nthWeekday, setNthWeekday] = useState(1);
+  /** 自定义区（间隔 / 周几 / 高级每月）渐进展开，默认收起只显示常用项 */
+  const [customOpen, setCustomOpen] = useState(false);
+  const [ruleError, setRuleError] = useState("");
+  const [snoozeBusy, setSnoozeBusy] = useState(false);
   const [links, setLinks] = useState<Awaited<ReturnType<typeof listTaskLinks>>>([]);
   const [linkSession, setLinkSession] = useState("");
   const [navLinks, setNavLinks] = useState<TaskNavLink[]>([]);
@@ -112,6 +130,28 @@ export default function TaskEditor() {
     setIntervalValue(r?.interval ?? 1);
     setWeekdays(r?.by_weekday ?? []);
     setMonthday(r?.by_monthday ?? 1);
+    // 恢复每月高级模式（旧数据 by_setpos 为空 → 默认按日，行为不变）
+    if (r?.freq === "monthly" && r.by_setpos != null && r.by_weekday.length > 0) {
+      if (r.by_setpos === -1 && isMonToFri(r.by_weekday)) {
+        setMonthlyMode("lastWorkday");
+      } else if (r.by_setpos === -1) {
+        setMonthlyMode("lastWeekday");
+        setNthWeekday(r.by_weekday[0] ?? 1);
+      } else {
+        setMonthlyMode("nth");
+        setNthPos(Math.min(5, Math.max(1, r.by_setpos)));
+        setNthWeekday(r.by_weekday[0] ?? 1);
+      }
+    } else {
+      setMonthlyMode("day");
+      setNthPos(1);
+      setNthWeekday(r?.by_weekday[0] ?? 1);
+    }
+    // 高级规则（非默认形态）编辑时自动展开自定义区，避免藏起用户已有配置
+    const isWorkday = r?.freq === "weekly" && isMonToFri(r?.by_weekday ?? []);
+    const advancedMonthly = r?.freq === "monthly" && r.by_setpos != null;
+    setCustomOpen(Boolean(advancedMonthly || (r && r.interval > 1) || (r?.freq === "weekly" && !isWorkday && (r.by_weekday.length === 0 || r.by_weekday.length > 1))));
+    setRuleError("");
     setNavLinks([]);
     setPickerOpen(false);
     setPickerLink(null);
@@ -200,20 +240,86 @@ export default function TaskEditor() {
     }
   }
 
-  const recurrence: RecurrenceRuleInput | null = freq
-    ? {
+  /** 由编辑器状态组装规则草稿（非法组合先在此拦截，后端仍会兜底校验）。 */
+  const recurrence: RecurrenceRuleInput | null = (() => {
+    if (!freq) return null;
+    if (freq === "weekly") {
+      return {
         freq,
         interval,
-        by_weekday: freq === "weekly" ? weekdays : [],
-        by_monthday: freq === "monthly" ? monthday : null,
-      }
-    : null;
+        by_weekday: weekdays.length > 0 ? [...weekdays].sort((a, b) => a - b) : [1],
+        by_monthday: null,
+        by_setpos: null,
+      };
+    }
+    if (freq === "monthly" && monthlyMode === "nth") {
+      return {
+        freq,
+        interval,
+        by_weekday: [nthWeekday],
+        by_monthday: null,
+        by_setpos: nthPos,
+      };
+    }
+    if (freq === "monthly" && monthlyMode === "lastWeekday") {
+      return {
+        freq,
+        interval,
+        by_weekday: [nthWeekday],
+        by_monthday: null,
+        by_setpos: -1,
+      };
+    }
+    if (freq === "monthly" && monthlyMode === "lastWorkday") {
+      return {
+        freq,
+        interval,
+        by_weekday: [1, 2, 3, 4, 5],
+        by_monthday: null,
+        by_setpos: -1,
+      };
+    }
+    return {
+      freq,
+      interval,
+      by_weekday: [],
+      by_monthday: freq === "monthly" ? monthday : null,
+      by_setpos: null,
+    };
+  })();
+
+  /** 前端严格校验：与后端 validate_rule 同口径，错误就地提示不发请求。 */
+  function validateRecurrence(): string {
+    if (!recurrence) return "";
+    if (recurrence.interval < 1 || recurrence.interval > 30) return "重复间隔需在 1-30 之间";
+    if (recurrence.freq === "weekly" && recurrence.by_weekday.length === 0) return "请至少选择一个重复日";
+    if (recurrence.freq === "monthly" && recurrence.by_monthday != null && !(recurrence.by_monthday >= 1 && recurrence.by_monthday <= 31)) {
+      return "每月几日需在 1-31 之间";
+    }
+    if (recurrence.by_setpos != null && !(recurrence.by_setpos === -1 || (recurrence.by_setpos >= 1 && recurrence.by_setpos <= 5))) {
+      return "「第 N 个星期X」的 N 需在 1-5 之间";
+    }
+    return "";
+  }
+
+  /** 规则中文预览：规则 + 时刻（如「每 2 个月第二个周一 09:00」）。 */
+  const rulePreview = (() => {
+    if (!recurrence) return "";
+    const time = due ? due.split("T")[1] : "";
+    return time ? `${describeRecurrence(recurrence)} ${time}` : describeRecurrence(recurrence);
+  })();
 
   async function onSave() {
     if (!title.trim()) {
       showToast("标题不能为空");
       return;
     }
+    const ruleErr = validateRecurrence();
+    if (ruleErr) {
+      setRuleError(ruleErr);
+      return;
+    }
+    setRuleError("");
     const input = {
       title: title.trim(),
       description: description.trim(),
@@ -239,6 +345,20 @@ export default function TaskEditor() {
       closeEditor();
     } catch (e) {
       showToast(String(e));
+    }
+  }
+
+  /** 任务详情内的延后：走真实后端；成功反馈由 reminder-snoozed 事件统一弹（含撤销）。 */
+  async function onSnoozeDetail(minutes: number) {
+    if (!task || snoozeBusy) return;
+    setSnoozeBusy(true);
+    try {
+      await snoozeReminder(task.id, minutes);
+      await refreshTasks();
+    } catch (e) {
+      showToast(`延后失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setSnoozeBusy(false);
     }
   }
 
@@ -371,6 +491,33 @@ export default function TaskEditor() {
             </label>
           </div>
 
+          {/* 延后提醒（任务详情入口）：只对有待触发提醒的未完成任务显示，展示真实下次通知时间 */}
+          {task && task.status === "pending" && task.next_remind_at && (
+            <div className="field">
+              <span>
+                <AlarmClock size={12} /> 下次提醒
+              </span>
+              <div className="link-row">
+                <span className="endpoint-hint">{formatDue(task.next_remind_at)}（延后只移动提醒，不改截止时间）</span>
+                {[
+                  { m: 5, label: "5 分钟" },
+                  { m: 10, label: "10 分钟" },
+                  { m: 30, label: "30 分钟" },
+                  { m: 60, label: "1 小时" },
+                ].map((o) => (
+                  <button
+                    key={o.m}
+                    className="btn sm"
+                    disabled={snoozeBusy}
+                    onClick={() => void onSnoozeDetail(o.m)}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="field">
             <span>重复</span>
             <div className="seg-group">
@@ -380,15 +527,40 @@ export default function TaskEditor() {
               <button className={`seg-btn ${freq === "daily" ? "active" : ""}`} onClick={() => setFreq("daily")}>
                 每天
               </button>
-              <button className={`seg-btn ${freq === "weekly" ? "active" : ""}`} onClick={() => setFreq("weekly")}>
+              <button
+                className={`seg-btn ${freq === "weekly" ? "active" : ""}`}
+                onClick={() => {
+                  setFreq("weekly");
+                  // 默认给周一，避免空规则（后端空 by_weekday 不发生）
+                  if (weekdays.length === 0) setWeekdays([1]);
+                }}
+              >
                 每周
               </button>
               <button className={`seg-btn ${freq === "monthly" ? "active" : ""}`} onClick={() => setFreq("monthly")}>
                 每月
               </button>
+              <button
+                className={`seg-btn ${freq === "weekly" && isMonToFri(weekdays) && interval === 1 ? "active" : ""}`}
+                data-tip="周一至周五（自然周工作日，不含法定节假日调整）"
+                onClick={() => {
+                  setFreq("weekly");
+                  setWeekdays([1, 2, 3, 4, 5]);
+                  setIntervalValue(1);
+                }}
+              >
+                工作日
+              </button>
+              <button
+                className={`seg-btn ${customOpen ? "active" : ""}`}
+                aria-expanded={customOpen}
+                onClick={() => setCustomOpen((v) => !v)}
+              >
+                自定义…
+              </button>
             </div>
           </div>
-          {freq === "weekly" && (
+          {customOpen && freq === "weekly" && (
             <div className="field">
               <span>重复日（周）</span>
               <div className="seg-group">
@@ -406,7 +578,39 @@ export default function TaskEditor() {
               </div>
             </div>
           )}
-          {freq === "monthly" && (
+          {customOpen && freq === "monthly" && (
+            <div className="field">
+              <span>每月规则</span>
+              <div className="seg-group">
+                <button
+                  className={`seg-btn ${monthlyMode === "day" ? "active" : ""}`}
+                  onClick={() => setMonthlyMode("day")}
+                >
+                  指定日
+                </button>
+                <button
+                  className={`seg-btn ${monthlyMode === "nth" ? "active" : ""}`}
+                  onClick={() => setMonthlyMode("nth")}
+                >
+                  第 N 个星期X
+                </button>
+                <button
+                  className={`seg-btn ${monthlyMode === "lastWeekday" ? "active" : ""}`}
+                  onClick={() => setMonthlyMode("lastWeekday")}
+                >
+                  最后一个星期X
+                </button>
+                <button
+                  className={`seg-btn ${monthlyMode === "lastWorkday" ? "active" : ""}`}
+                  data-tip="自然周工作日（周一至周五），不支持法定节假日/调休"
+                  onClick={() => setMonthlyMode("lastWorkday")}
+                >
+                  最后一个工作日
+                </button>
+              </div>
+            </div>
+          )}
+          {customOpen && freq === "monthly" && monthlyMode === "day" && (
             <label className="field">
               <span>每月几日</span>
               <NumberInput
@@ -419,7 +623,43 @@ export default function TaskEditor() {
               />
             </label>
           )}
-          {freq && (
+          {customOpen && freq === "monthly" && monthlyMode === "nth" && (
+            <div className="field-row">
+              <label className="field">
+                <span>第几个</span>
+                <Select
+                  ariaLabel="第几个"
+                  size="sm"
+                  value={String(nthPos)}
+                  options={MONTHLY_NTH_LABELS.map((l, i) => ({ value: String(i + 1), label: `第${l}` }))}
+                  onChange={(v) => setNthPos(Number(v))}
+                />
+              </label>
+              <label className="field">
+                <span>星期</span>
+                <Select
+                  ariaLabel="星期几"
+                  size="sm"
+                  value={String(nthWeekday)}
+                  options={WEEKDAYS.map((d, i) => ({ value: String(i + 1), label: `周${d}` }))}
+                  onChange={(v) => setNthWeekday(Number(v))}
+                />
+              </label>
+            </div>
+          )}
+          {customOpen && freq === "monthly" && monthlyMode === "lastWeekday" && (
+            <label className="field">
+              <span>星期</span>
+              <Select
+                ariaLabel="最后一个星期几"
+                size="sm"
+                value={String(nthWeekday)}
+                options={WEEKDAYS.map((d, i) => ({ value: String(i + 1), label: `周${d}` }))}
+                onChange={(v) => setNthWeekday(Number(v))}
+              />
+            </label>
+          )}
+          {customOpen && freq && (
             <label className="field">
               <span>间隔（{freq === "daily" ? "天" : freq === "weekly" ? "周" : "个月"}）</span>
               <NumberInput
@@ -432,7 +672,8 @@ export default function TaskEditor() {
               />
             </label>
           )}
-          {recurrence && <div className="preview-matched">规则：{describeRecurrence(recurrence)}</div>}
+          {recurrence && <div className="preview-matched">规则：{rulePreview}</div>}
+          {ruleError && <div className="preview-hint error">{ruleError}</div>}
 
           {task && (
             <div className="field">

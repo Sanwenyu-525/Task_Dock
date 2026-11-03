@@ -22,6 +22,10 @@ pub struct Task {
     /// 关联的 Agent 会话数量（UI 展示用）
     #[serde(default)]
     pub linked_agents: i64,
+    /// 最早未触发提醒时间（task_reminders 聚合，UI 展示真实下次通知时间；
+    /// 不落库，由查询时子查询计算，禁止用 tasks.remind_at/due_at 冒充）
+    #[serde(default)]
+    pub next_remind_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +35,10 @@ pub struct RecurrenceRule {
     pub interval: i64,
     pub by_weekday: Vec<u32>, // 1=周一 .. 7=周日
     pub by_monthday: Option<u32>,
+    /// 每月第 N 个星期X（1..=5）或最后一个（-1）；仅 monthly + by_weekday 有效。
+    /// v20 新增列，旧库/旧备份为 NULL → 旧行为不变（#[serde(default)] 兜底）。
+    #[serde(default)]
+    pub by_setpos: Option<i32>,
     pub until: Option<String>,
     #[serde(default)]
     pub anchor: String, // 首次发生日期 YYYY-MM-DD（每周多日规则的周锚点）

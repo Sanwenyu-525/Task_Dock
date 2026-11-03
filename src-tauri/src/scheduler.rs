@@ -98,7 +98,15 @@ async fn tick(app: &AppHandle, db: &Db, hub: &AgentHub) -> AppResult<()> {
     let popups: Vec<NotifyItem> = fired
         .iter()
         .filter(|n| n.popup)
-        .map(|n| NotifyItem::new("reminder", &n.title, &n.body))
+        // ref_id = 任务 id：桌面通知卡据此提供「查看任务 / 稍后提醒 / 完成任务」
+        // 真实操作（多条合并为摘要卡时结构化字段自然丢失，按摘要展示，不伪造操作）。
+        .map(|n| {
+            NotifyItem::new("reminder", &n.title, &n.body).with_ref(
+                Some(n.task_id.clone()),
+                None,
+                None,
+            )
+        })
         .collect();
     if !popups.is_empty() {
         hub.notify_reminder_popups(&popups);
@@ -158,10 +166,18 @@ pub fn fire_reminder_core(
         ""
     };
     let title = format!("{}{}", kind_label, overdue_mark);
+    // 延后标记：snooze 原地后移 remind_at 但保留 occurrence（原定时间），
+    // 两者不同即本条提醒被延后过——通知里如实展示，不冒充原计划时间。
+    let snoozed_mark = if rem.remind_at != rem.occurrence {
+        "（已延后）"
+    } else {
+        ""
+    };
     let body = format!(
-        "{} · {}",
+        "{} · {}{}",
         item.task_title,
-        crate::commands::format_local(&rem.remind_at)
+        crate::commands::format_local(&rem.remind_at),
+        snoozed_mark
     );
 
     db.with_conn(|conn| {
@@ -226,7 +242,7 @@ fn advance_recurrence_tx(
 ) -> AppResult<()> {
     let rule = conn
         .query_row(
-            "SELECT rr.id, rr.freq, rr.interval, rr.by_weekday, rr.by_monthday, rr.until, rr.anchor, t.advance_minutes
+            "SELECT rr.id, rr.freq, rr.interval, rr.by_weekday, rr.by_monthday, rr.by_setpos, rr.until, rr.anchor, t.advance_minutes
              FROM recurrence_rules rr JOIN tasks t ON t.recurrence_rule_id = rr.id
              WHERE t.id = ?1",
             rusqlite::params![task_id],
@@ -237,9 +253,10 @@ fn advance_recurrence_tx(
                     r.get::<_, i64>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, Option<u32>>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, String>(6)?,
-                    r.get::<_, i64>(7)?,
+                    r.get::<_, Option<i32>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, i64>(8)?,
                 ))
             },
         )
@@ -250,6 +267,7 @@ fn advance_recurrence_tx(
         interval,
         by_weekday_json,
         by_monthday,
+        by_setpos,
         until,
         anchor,
         advance_minutes,
@@ -269,11 +287,12 @@ fn advance_recurrence_tx(
     let mut next_utc: Option<DateTime<Utc>> = None;
     for _ in 0..2000 {
         let base_local = base_due.with_timezone(&chrono::Local);
-        let next = crate::recurrence::next_occurrence(
+        let next = crate::recurrence::next_occurrence_ex(
             &freq,
             interval,
             &by_weekday,
             by_monthday,
+            by_setpos,
             anchor_date,
             base_local,
         );
@@ -353,6 +372,7 @@ pub fn advance_task_now(db: &Db, task_id: &str) -> AppResult<()> {
 mod tests {
     use super::*;
     use crate::db::Db;
+    use chrono::{Datelike, TimeZone};
 
     fn setup() -> Db {
         Db::open_in_memory().unwrap()
@@ -689,6 +709,60 @@ mod tests {
     }
 
     #[test]
+    fn reminder_notification_disabled_still_logs_and_advances() {
+        // P2 回归：关闭「任务提醒」通知只影响弹窗权限，不影响触发与历史入库。
+        // 触发 / 入库 / 广播 三个状态必须独立：这里 popup=false，但历史 1 条、
+        // 重复任务照常推进、返回 Some 以驱动前端刷新。
+        let db = setup();
+        let past = (Utc::now() - chrono::Duration::minutes(5)).with_timezone(&chrono::Local);
+        let task_id = seed_recurring_task(&db, past);
+        let mut settings = Settings::load(&db).unwrap();
+        settings.notify_reminder = false;
+
+        let item = due_item(&db, &task_id);
+        let out = fire_reminder_core(&db, &item, &Utc::now(), &settings)
+            .unwrap()
+            .expect("关闭系统通知后仍应返回触发结果，供 reminder-fired 广播");
+        assert!(!out.popup, "关闭任务提醒后不得弹 OS 通知");
+
+        let logged: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM notification_history WHERE kind = 'reminder' AND ref_id = ?1",
+                    rusqlite::params![task_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(logged, 1, "关闭系统通知不影响通知历史入库");
+
+        let due: String = db
+            .with_conn(|c| {
+                c.query_row("SELECT due_at FROM tasks WHERE id = ?1", [&task_id], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert!(
+            parse_utc(&due).unwrap() > Utc::now(),
+            "关闭系统通知后重复任务仍照常推进"
+        );
+        let pending: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM task_reminders WHERE task_id = ?1 AND fired = 0",
+                    rusqlite::params![task_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(pending, 1, "推进后必须重建下一轮未触发提醒");
+    }
+
+    #[test]
     fn reminder_for_completed_task_is_skipped() {
         // 竞争回归：选取后、触发前任务被完成 → 不通知、不推进
         let db = setup();
@@ -816,5 +890,161 @@ mod tests {
             })
             .unwrap();
         assert_eq!(next_reminder, 1, "推进后必须重建下一轮未触发提醒");
+    }
+
+    // ── 智能日程提醒 2.0：monthly.interval / by_setpos 推进回归 ──
+
+    // 测试专用建库助手：规则 7 要素 + 任务 id，参数多但不值得为它再造结构体
+    #[allow(clippy::too_many_arguments)]
+    fn seed_rule_task(
+        db: &Db,
+        freq: &str,
+        interval: i64,
+        by_weekday: &str,
+        by_monthday: Option<u32>,
+        by_setpos: Option<i32>,
+        anchor: &str,
+        due_local: chrono::DateTime<chrono::Local>,
+    ) -> String {
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let rule_id = uuid::Uuid::new_v4().to_string();
+        let due_utc = due_local.with_timezone(&Utc).to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO recurrence_rules (id, freq, interval, by_weekday, by_monthday, by_setpos, until, anchor, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8)",
+                rusqlite::params![rule_id, freq, interval, by_weekday, by_monthday, by_setpos, anchor, now_iso()],
+            )?;
+            conn.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, due_at, remind_at, advance_minutes, recurrence_rule_id, created_at, updated_at, completed_at)
+                 VALUES (?1,'规则任务','',2,'pending','','[]',?2,?2,0,?3,?4,?4,NULL)",
+                rusqlite::params![task_id, due_utc, rule_id, now_iso()],
+            )?;
+            conn.execute(
+                "INSERT INTO task_reminders (id, task_id, remind_at, occurrence, kind, fired, fired_at)
+                 VALUES (?1, ?2, ?3, ?3, 'due', 0, NULL)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), task_id, due_utc],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        task_id
+    }
+
+    fn advance(db: &Db, task_id: &str, due_local: chrono::DateTime<chrono::Local>) {
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            advance_recurrence_tx(
+                &tx,
+                task_id,
+                Some(&due_local.with_timezone(&Utc).to_rfc3339()),
+                &Utc::now(),
+            )?;
+            tx.commit()?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    fn due_of(db: &Db, task_id: &str) -> chrono::DateTime<chrono::Local> {
+        let s: String = db
+            .with_conn(|c| {
+                c.query_row("SELECT due_at FROM tasks WHERE id = ?1", [task_id], |r| {
+                    r.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        parse_utc(&s).unwrap().with_timezone(&chrono::Local)
+    }
+
+    /// 每两个月 10 日（锚点 2026-08-10）：推进后必须是 2026-12-10，而不是 11-10。
+    #[test]
+    fn advance_monthly_interval_2_jumps_two_months() {
+        let db = setup();
+        // due 取「过去」的 2026-10-10（锚点 +2 月的上一期），推进应越过当前时刻到 2026-12-10
+        let due = chrono::Local
+            .with_ymd_and_hms(2026, 10, 10, 9, 0, 0)
+            .unwrap();
+        let task_id = seed_rule_task(&db, "monthly", 2, "[]", Some(10), None, "2026-08-10", due);
+        advance(&db, &task_id, due);
+        let next = due_of(&db, &task_id);
+        assert_eq!(
+            (next.year(), next.month(), next.day()),
+            (2026, 12, 10),
+            "每两个月的推进必须隔两个月，不得退化为每月：实际 {}",
+            next
+        );
+    }
+
+    /// 每月第二个周一（by_setpos=2）：due 落在 2026-11-09（11 月第二个周一），
+    /// 推进后必须是 2026-12-14（12 月第二个周一）。
+    #[test]
+    fn advance_monthly_second_monday() {
+        let db = setup();
+        let due = chrono::Local
+            .with_ymd_and_hms(2026, 11, 9, 10, 0, 0)
+            .unwrap();
+        let task_id = seed_rule_task(&db, "monthly", 1, "[1]", None, Some(2), "2026-11-09", due);
+        advance(&db, &task_id, due);
+        let next = due_of(&db, &task_id);
+        assert_eq!(
+            (next.year(), next.month(), next.day()),
+            (2026, 12, 14),
+            "每月第二个周一推进到 12-14，实际 {}",
+            next
+        );
+        assert_eq!(next.weekday(), chrono::Weekday::Mon);
+    }
+
+    /// 每月最后一个工作日：due = 2026-10-30（周五，10 月最后一个工作日），
+    /// 推进到 2026-11-30（周一，11 月最后一个工作日）。
+    #[test]
+    fn advance_monthly_last_workday() {
+        let db = setup();
+        let due = chrono::Local
+            .with_ymd_and_hms(2026, 10, 30, 18, 0, 0)
+            .unwrap();
+        let task_id = seed_rule_task(
+            &db,
+            "monthly",
+            1,
+            "[1,2,3,4,5]",
+            None,
+            Some(-1),
+            "2026-10-30",
+            due,
+        );
+        advance(&db, &task_id, due);
+        let next = due_of(&db, &task_id);
+        assert_eq!(
+            (next.year(), next.month(), next.day()),
+            (2026, 11, 30),
+            "11 月最后一个工作日是 11-30（周一），实际 {}",
+            next
+        );
+    }
+
+    /// 触发路径返回的通知带延后标记与任务名（ref_id 由 tick 组装，这里验证 body 文本）。
+    #[test]
+    fn fired_body_marks_snoozed_reminder() {
+        let db = setup();
+        let past = (Utc::now() - chrono::Duration::minutes(5)).with_timezone(&chrono::Local);
+        let task_id = seed_recurring_task(&db, past);
+        // 原地延后（保留 occurrence）→ remind_at != occurrence
+        crate::commands::tasks::snooze_reminder_inner(&db, &task_id, 10).unwrap();
+        let settings = Settings::load(&db).unwrap();
+        let item = due_item(&db, &task_id);
+        // 延后到未来，用未来的 now 触发
+        let now = Utc::now() + chrono::Duration::minutes(11);
+        let out = fire_reminder_core(&db, &item, &now, &settings)
+            .unwrap()
+            .expect("延后到点的提醒应触发");
+        assert!(
+            out.body.contains("已延后"),
+            "延后过的提醒通知必须带「已延后」标记：{}",
+            out.body
+        );
+        assert!(out.body.contains("每日汇报"), "通知正文必须含任务名");
     }
 }

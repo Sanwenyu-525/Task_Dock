@@ -4,6 +4,8 @@
 
 import { useState } from "react";
 import QuickAdd from "./QuickAdd";
+import QuickReminder from "./QuickReminder";
+import ActiveReminders from "./ActiveReminders";
 import TaskItem from "./TaskItem";
 import { useTasksStore } from "../../store/useTasksStore";
 import { Select } from "../ui";
@@ -75,6 +77,8 @@ export default function TasksPanel() {
       </div>
 
       <QuickAdd />
+      <QuickReminder />
+      <ActiveReminders />
 
       {/* 主筛选：日期视图优先 */}
       <div className="filter-bar primary">

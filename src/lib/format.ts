@@ -127,19 +127,48 @@ export function fromLocalInputValue(value: string): string | null {
   return d.toISOString();
 }
 
-/** 重复规则的中文描述。 */
+/** 重复规则的中文描述（含每月第 N 个星期X / 最后一个 / 工作日语义）。 */
 export function describeRecurrence(rule: RecurrenceRuleInput | null): string {
   if (!rule || !rule.freq) return "";
   const wd = ["", "一", "二", "三", "四", "五", "六", "日"];
   const days = rule.by_weekday.map((d: number) => `周${wd[d] ?? d}`).join("、");
+  const isMonToFri =
+    rule.by_weekday.length === 5 && [1, 2, 3, 4, 5].every((d) => rule.by_weekday.includes(d));
+  const workdayLike = rule.freq === "weekly" && isMonToFri;
   switch (rule.freq) {
     case "daily":
       return rule.interval === 1 ? "每天" : `每 ${rule.interval} 天`;
     case "weekly":
+      if (workdayLike && rule.interval === 1) return "每个工作日";
       return `${days}${rule.interval > 1 ? `（每 ${rule.interval} 周）` : ""}`;
-    case "monthly":
-      return `每月 ${rule.by_monthday ?? 1} 号`;
+    case "monthly": {
+      const prefix = rule.interval === 1 ? "每月" : `每 ${rule.interval} 个月`;
+      const pos = rule.by_setpos ?? null;
+      if (pos != null && rule.by_weekday.length > 0) {
+        if (isMonToFri && pos === -1) return `${prefix}最后一个工作日`;
+        return pos === -1
+          ? `${prefix}最后一个${days}`
+          : `${prefix}第${wd[pos] ?? pos}个${days}`;
+      }
+      return `${prefix} ${rule.by_monthday ?? 1} 号`;
+    }
     default:
       return "";
   }
+}
+
+/**
+ * 倒计时剩余时间文本：>1h 显示「时:分」（如 1:23），≤1h 显示「分:秒」（如 12:34）。
+ * 只做绝对时间换算（remind_at - now），剩余秒数不落库、不缓存。
+ */
+export function formatCountdown(msRemaining: number): string {
+  const total = Math.max(0, Math.floor(msRemaining / 1000));
+  if (total > 3600) {
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    return `${h}:${pad(m)}`;
+  }
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${pad(m)}:${pad(s)}`;
 }

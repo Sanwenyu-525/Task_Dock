@@ -10,7 +10,7 @@ use regex::{Captures, Regex};
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 
-use crate::recurrence::{next_occurrence, weekday_num, RecurrenceRuleInput};
+use crate::recurrence::{next_occurrence_ex, weekday_num, RecurrenceRuleInput};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ParsedInput {
@@ -201,7 +201,93 @@ pub fn parse(input: &str) -> ParsedInput {
 
     // 2) 重复规则
     let weekly_days = |g: &[Option<String>]| parse_weekday_tail(g[0].as_deref().unwrap_or(""));
-    if let Some(g) = take(
+    // 重复规则：按「最具体 → 最泛化」顺序尝试（月内位置规则先于普通每月 N 日，
+    // 否则「每月第二个星期一」会被后半段的星期尾串吞掉）。
+    if take(
+        r"每(?:个)?月\s*最后\s*一?\s*个?\s*工作日",
+        &mut s,
+        &mut matched,
+    )
+    .is_some()
+    {
+        // 每月最后一个工作日：自然周工作日语义（周一至周五），不接节假日 API
+        recurrence = Some(RecurrenceRuleInput {
+            freq: "monthly".into(),
+            interval: 1,
+            by_weekday: vec![1, 2, 3, 4, 5],
+            by_monthday: None,
+            by_setpos: Some(-1),
+        });
+    } else if let Some(g) = take(
+        r"每(?:个)?月\s*最后\s*一?\s*个?\s*(?:星期|周|礼拜)\s*([一二三四五六日天1-7])",
+        &mut s,
+        &mut matched,
+    ) {
+        if let Some(wd) = g[0]
+            .as_deref()
+            .and_then(|c| c.chars().next())
+            .and_then(weekday_char)
+        {
+            recurrence = Some(RecurrenceRuleInput {
+                freq: "monthly".into(),
+                interval: 1,
+                by_weekday: vec![wd],
+                by_monthday: None,
+                by_setpos: Some(-1),
+            });
+        }
+    } else if let Some(g) = take(
+        r"每(?:个)?月\s*第\s*(一|二|三|四|五|1|2|3|4|5)\s*个?\s*(?:星期|周|礼拜)\s*([一二三四五六日天1-7])",
+        &mut s,
+        &mut matched,
+    ) {
+        let ord = g[0]
+            .as_deref()
+            .and_then(|v| match v {
+                "一" | "1" => Some(1),
+                "二" | "2" => Some(2),
+                "三" | "3" => Some(3),
+                "四" | "4" => Some(4),
+                "五" | "5" => Some(5),
+                _ => None,
+            })
+            .unwrap_or(1);
+        if let Some(wd) = g[1]
+            .as_deref()
+            .and_then(|c| c.chars().next())
+            .and_then(weekday_char)
+        {
+            recurrence = Some(RecurrenceRuleInput {
+                freq: "monthly".into(),
+                interval: 1,
+                by_weekday: vec![wd],
+                by_monthday: None,
+                by_setpos: Some(ord),
+            });
+        }
+    } else if let Some(g) = take(
+        r"每\s*(两|[一二三四五六七八九十]+|\d+)?\s*(?:个)?\s*月\s*(\d{1,2})\s*[日号]",
+        &mut s,
+        &mut matched,
+    ) {
+        // 每月 N 日 / 每两个月 N 日（interval 缺省 1，兼容旧语句「每个月 5 日」）
+        let interval = g[0]
+            .as_deref()
+            .and_then(cn_num)
+            .filter(|n| *n >= 1)
+            .unwrap_or(1);
+        let day = g[1]
+            .as_deref()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(1);
+        recurrence = Some(RecurrenceRuleInput {
+            freq: "monthly".into(),
+            interval,
+            by_weekday: vec![],
+            by_monthday: Some(day.clamp(1, 31)),
+            by_setpos: None,
+        });
+    } else if let Some(g) = take(
         &format!(r"每两(?:个)?(?:周|星期|礼拜)\s*({})", WEEKDAY_TAIL),
         &mut s,
         &mut matched,
@@ -213,8 +299,18 @@ pub fn parse(input: &str) -> ParsedInput {
                 interval: 2,
                 by_weekday: days,
                 by_monthday: None,
+                by_setpos: None,
             });
         }
+    } else if take(r"每(?:个)?工作日", &mut s, &mut matched).is_some() {
+        // 工作日规则：每周一至周五（自然周语义，不接节假日 API、不假装支持调休）
+        recurrence = Some(RecurrenceRuleInput {
+            freq: "weekly".into(),
+            interval: 1,
+            by_weekday: vec![1, 2, 3, 4, 5],
+            by_monthday: None,
+            by_setpos: None,
+        });
     } else if let Some(g) = take(
         &format!(r"每(?:个)?(?:周|星期|礼拜)\s*({})", WEEKDAY_TAIL),
         &mut s,
@@ -227,25 +323,16 @@ pub fn parse(input: &str) -> ParsedInput {
                 interval: 1,
                 by_weekday: days,
                 by_monthday: None,
+                by_setpos: None,
             });
         }
-    } else if let Some(g) = take(r"每(?:个)?月\s*(\d{1,2})\s*[日号]", &mut s, &mut matched) {
-        let day = g[0]
-            .as_deref()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(1);
-        recurrence = Some(RecurrenceRuleInput {
-            freq: "monthly".into(),
-            interval: 1,
-            by_weekday: vec![],
-            by_monthday: Some(day.clamp(1, 31)),
-        });
     } else if take(r"(每天|每日)", &mut s, &mut matched).is_some() {
         recurrence = Some(RecurrenceRuleInput {
             freq: "daily".into(),
             interval: 1,
             by_weekday: vec![],
             by_monthday: None,
+            by_setpos: None,
         });
     }
 
@@ -414,7 +501,7 @@ pub fn parse(input: &str) -> ParsedInput {
         }
         // 8b. 下午三点 / 3点半 / 8点15分 / 九点
         if hour_opt.is_none() {
-            let pattern = r"(凌晨|早上|早晨|清晨|上午|中午|下午|傍晚|晚上|夜里|深夜)?\s*(\d{1,2}|[一二三四五六七八九十]+)\s*[点时]\s*(半|\d{1,2}|[一二三四五六七八九十]+)?\s*分?";
+            let pattern = r"(凌晨|早上|早晨|清晨|上午|中午|下午|傍晚|晚上|夜里|深夜)?\s*(\d{1,2}|[一二两三四五六七八九十]+)\s*[点时]\s*(半|\d{1,2}|[一二两三四五六七八九十]+)?\s*分?";
             let rx = compiled(pattern);
             let hit = {
                 let caps = rx.captures(s.as_str());
@@ -501,11 +588,12 @@ pub fn parse(input: &str) -> ParsedInput {
                 .from_local_datetime(&after_naive)
                 .single()
                 .unwrap_or(now);
-            due = next_occurrence(
+            due = next_occurrence_ex(
                 &rule.freq,
                 rule.interval,
                 &rule.by_weekday,
                 rule.by_monthday,
+                rule.by_setpos,
                 Some(now.date_naive()),
                 after,
             );
@@ -680,6 +768,147 @@ mod tests {
         let r = p("每周一至周五早上九点站会");
         let rule = r.recurrence.unwrap();
         assert_eq!(rule.by_weekday, vec![1, 2, 3, 4, 5]);
+    }
+
+    // ── 智能日程提醒 2.0：新句式 ────────────────────────────────
+
+    #[test]
+    fn parses_every_workday() {
+        // 「每个工作日九点查看邮件」：工作日 = 周一至周五（自然周，不接节假日 API）
+        let r = p("每个工作日九点查看邮件");
+        let rule = r.recurrence.unwrap();
+        assert_eq!(rule.freq, "weekly");
+        assert_eq!(rule.interval, 1);
+        assert_eq!(rule.by_weekday, vec![1, 2, 3, 4, 5]);
+        assert_eq!(rule.by_setpos, None);
+        assert_eq!(r.title, "查看邮件");
+        let due = r.due_at.unwrap();
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+        );
+        // 首次发生必须是工作日
+        assert!(matches!(
+            due.weekday(),
+            Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu | Weekday::Fri
+        ));
+    }
+
+    #[test]
+    fn parses_biweekly_with_full_week_prefix() {
+        // 「每两周星期一下午两点开会」：星期前缀写全也能解析
+        let r = p("每两周星期一下午两点开会");
+        let rule = r.recurrence.unwrap();
+        assert_eq!(rule.freq, "weekly");
+        assert_eq!(rule.interval, 2);
+        assert_eq!(rule.by_weekday, vec![1]);
+        assert_eq!(r.title, "开会");
+        let due = r.due_at.unwrap();
+        assert_eq!(due.weekday(), Weekday::Mon);
+        assert_eq!(
+            due.time(),
+            chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn parses_every_two_months_day() {
+        // 「每两个月 10 日缴费」：monthly.interval = 2（此前会退化成每月）
+        let r = p("每两个月 10 日缴费");
+        let rule = r.recurrence.unwrap();
+        assert_eq!(rule.freq, "monthly");
+        assert_eq!(rule.interval, 2);
+        assert_eq!(rule.by_monthday, Some(10));
+        assert_eq!(r.title, "缴费");
+    }
+
+    #[test]
+    fn parses_monthly_day_with_ge() {
+        // 「每个月 5 日交房租」：旧句式在新模式下 interval 缺省 1
+        let r = p("每个月 5 日交房租");
+        let rule = r.recurrence.unwrap();
+        assert_eq!(rule.freq, "monthly");
+        assert_eq!(rule.interval, 1);
+        assert_eq!(rule.by_monthday, Some(5));
+        assert_eq!(r.title, "交房租");
+    }
+
+    #[test]
+    fn parses_monthly_nth_weekday() {
+        // 「每月第二个星期一开例会」
+        let r = p("每月第二个星期一开例会");
+        let rule = r.recurrence.unwrap();
+        assert_eq!(rule.freq, "monthly");
+        assert_eq!(rule.by_weekday, vec![1]);
+        assert_eq!(rule.by_setpos, Some(2));
+        assert_eq!(r.title, "开例会");
+        // 首次发生确实是某月的第二个周一
+        let due = r.due_at.unwrap();
+        assert_eq!(due.weekday(), Weekday::Mon);
+        assert!(
+            due.day() >= 8 && due.day() <= 14,
+            "第二个周一应在 8-14 日，实际 {}",
+            due.day()
+        );
+    }
+
+    #[test]
+    fn parses_monthly_nth_weekday_numeric() {
+        // 「每月第2个周五」阿拉伯数字序数
+        let r = p("每月第2个周五团建");
+        let rule = r.recurrence.unwrap();
+        assert_eq!(rule.by_weekday, vec![5]);
+        assert_eq!(rule.by_setpos, Some(2));
+        assert_eq!(r.title, "团建");
+    }
+
+    #[test]
+    fn parses_monthly_last_weekday() {
+        // 「每月最后一个星期五」
+        let r = p("每月最后一个星期五提交周报");
+        let rule = r.recurrence.unwrap();
+        assert_eq!(rule.freq, "monthly");
+        assert_eq!(rule.by_weekday, vec![5]);
+        assert_eq!(rule.by_setpos, Some(-1));
+        assert_eq!(r.title, "提交周报");
+        let due = r.due_at.unwrap();
+        assert_eq!(due.weekday(), Weekday::Fri);
+        assert!(
+            due.day() >= 25,
+            "最后一个周五应在 25 日以后，实际 {}",
+            due.day()
+        );
+    }
+
+    #[test]
+    fn parses_monthly_last_workday() {
+        // 「每月最后一个工作日检查账单」
+        let r = p("每月最后一个工作日检查账单");
+        let rule = r.recurrence.unwrap();
+        assert_eq!(rule.freq, "monthly");
+        assert_eq!(rule.by_weekday, vec![1, 2, 3, 4, 5]);
+        assert_eq!(rule.by_setpos, Some(-1));
+        assert_eq!(r.title, "检查账单");
+        // 首次发生：该月最后一个工作日（非周末、且次日要么是周末要么是下月）
+        let due = r.due_at.unwrap();
+        assert!(matches!(
+            due.weekday(),
+            Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu | Weekday::Fri
+        ));
+        let next_day = (due + chrono::Duration::days(1)).date_naive();
+        let is_weekend = matches!(next_day.weekday(), Weekday::Sat | Weekday::Sun);
+        assert!(
+            is_weekend || next_day.month() != due.month(),
+            "次日必须是周末或跨月才算最后一个工作日"
+        );
+    }
+
+    #[test]
+    fn parse_failure_does_not_invent_recurrence() {
+        // 无法解析的重复表达不虚构规则：保留原文、due 交用户确认
+        let r = p("每年农历新年回家");
+        assert!(r.recurrence.is_none(), "未支持的重复表达不得虚构规则");
+        assert!(!r.title.is_empty());
     }
 
     #[test]

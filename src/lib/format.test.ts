@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeRecurrence,
+  formatCountdown,
   formatDayLabel,
   formatDue,
   formatDuration,
@@ -78,5 +80,39 @@ describe("datetime-local 转换", () => {
   it("空值安全", () => {
     expect(toLocalInputValue(null)).toBe("");
     expect(fromLocalInputValue("")).toBeNull();
+  });
+});
+
+describe("describeRecurrence（智能日程提醒 2.0 扩展）", () => {
+  it("旧规则语义不变", () => {
+    expect(describeRecurrence({ freq: "daily", interval: 1, by_weekday: [], by_monthday: null })).toBe("每天");
+    expect(describeRecurrence({ freq: "daily", interval: 3, by_weekday: [], by_monthday: null })).toBe("每 3 天");
+    expect(describeRecurrence({ freq: "weekly", interval: 1, by_weekday: [1, 5], by_monthday: null })).toBe("周一、周五");
+    expect(describeRecurrence({ freq: "weekly", interval: 2, by_weekday: [1, 3], by_monthday: null })).toBe("周一、周三（每 2 周）");
+    expect(describeRecurrence({ freq: "monthly", interval: 1, by_weekday: [], by_monthday: 5, by_setpos: null })).toBe("每月 5 号");
+    expect(describeRecurrence({ freq: "monthly", interval: 2, by_weekday: [], by_monthday: 10, by_setpos: null })).toBe("每 2 个月 10 号");
+  });
+  it("工作日与每月高级规则", () => {
+    expect(describeRecurrence({ freq: "weekly", interval: 1, by_weekday: [1, 2, 3, 4, 5], by_monthday: null })).toBe("每个工作日");
+    expect(describeRecurrence({ freq: "monthly", interval: 1, by_weekday: [1], by_monthday: null, by_setpos: 2 })).toBe("每月第二个周一");
+    expect(describeRecurrence({ freq: "monthly", interval: 1, by_weekday: [5], by_monthday: null, by_setpos: -1 })).toBe("每月最后一个周五");
+    expect(describeRecurrence({ freq: "monthly", interval: 1, by_weekday: [1, 2, 3, 4, 5], by_monthday: null, by_setpos: -1 })).toBe("每月最后一个工作日");
+    expect(describeRecurrence({ freq: "monthly", interval: 2, by_weekday: [1], by_monthday: null, by_setpos: 2 })).toBe("每 2 个月第二个周一");
+  });
+});
+
+describe("formatCountdown（倒计时展示口径）", () => {
+  it(">1h 显示时:分", () => {
+    expect(formatCountdown(90 * 60_000)).toBe("1:30");
+    expect(formatCountdown(25 * 3600_000 + 5 * 60_000)).toBe("25:05");
+  });
+  it("≤1h 显示分:秒", () => {
+    expect(formatCountdown(59 * 60_000 + 59_000)).toBe("59:59");
+    expect(formatCountdown(5_000)).toBe("00:05");
+    expect(formatCountdown(83_000)).toBe("01:23");
+  });
+  it("到期与负值钳制为 0", () => {
+    expect(formatCountdown(0)).toBe("00:00");
+    expect(formatCountdown(-60_000)).toBe("00:00");
   });
 });

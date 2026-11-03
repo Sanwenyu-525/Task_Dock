@@ -5,8 +5,9 @@
 //! 菜单顶部提供「打开工作区」（批量启动由 WorkspaceLauncher 执行）。
 
 import { useRef, useState } from "react";
-import { Check, Clock, Repeat, Link2, Pencil, Rocket, Layers } from "lucide-react";
+import { AlarmClock, Check, Clock, Repeat, Link2, Pencil, Rocket, Layers } from "lucide-react";
 import type { Task } from "../../lib/bridge";
+import { snoozeReminder } from "../../lib/bridge";
 import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -14,6 +15,7 @@ import { useNavigationStore } from "../../store/useNavigationStore";
 import { formatDue, isOverdue, priorityLabel, describeRecurrence } from "../../lib/format";
 import { navNavigate, resultMessage } from "../../lib/navigation";
 import TargetMenu, { TargetAvatar } from "../navigation/TargetMenu";
+import { DropdownMenu } from "../ui";
 
 interface Props {
   task: Task;
@@ -27,6 +29,7 @@ const MAX_INLINE_TARGETS_COMPACT = 2;
 
 export default function TaskItem({ task, compact }: Props) {
   const toggle = useTasksStore((s) => s.toggle);
+  const refreshTasks = useTasksStore((s) => s.refresh);
   const statusFilter = useTasksStore((s) => s.filter.status);
   const openEditor = useUiStore((s) => s.openEditor);
   const showToast = useUiStore((s) => s.showToast);
@@ -36,6 +39,8 @@ export default function TaskItem({ task, compact }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   /** 状态切换请求在途：挡住连点把同一条任务翻回翻去 */
   const [busy, setBusy] = useState(false);
+  /** 延后请求在途：挡住连点发出多次 snooze */
+  const [snoozeBusy, setSnoozeBusy] = useState(false);
   /**
    * 完成（默认未完成筛选下会退出列表）：先播一段收拢淡出再提交刷新。
    * 动画只是反馈层——失败会立即移除该状态弹回原位，结果永远以后端为准。
@@ -107,6 +112,23 @@ export default function TaskItem({ task, compact }: Props) {
     }
   }
 
+  /**
+   * 延后提醒（任务卡入口）：走真实后端 snooze_reminder。
+   * 成功反馈（含撤销）由 reminder-snoozed 事件统一弹 Toast，这里只报失败。
+   */
+  async function onSnooze(minutes: number) {
+    if (snoozeBusy) return;
+    setSnoozeBusy(true);
+    try {
+      await snoozeReminder(task.id, minutes);
+      await refreshTasks();
+    } catch (e) {
+      showToast(`延后失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setSnoozeBusy(false);
+    }
+  }
+
   const inline = links.slice(0, compact ? MAX_INLINE_TARGETS_COMPACT : MAX_INLINE_TARGETS);
   const overflow = links.length - inline.length;
   // 工作区入口在两种模式下都必须可达：
@@ -142,6 +164,11 @@ export default function TaskItem({ task, compact }: Props) {
           {task.due_at && (
             <span className={`task-due ${overdue ? "overdue" : ""}`}>
               <Clock size={11} /> {formatDue(task.due_at)}
+            </span>
+          )}
+          {task.status === "pending" && task.next_remind_at && (
+            <span className="task-next-remind">
+              <AlarmClock size={11} /> 提醒 {formatDue(task.next_remind_at)}
             </span>
           )}
           {task.recurrence && (
@@ -197,6 +224,33 @@ export default function TaskItem({ task, compact }: Props) {
       </div>
       {!compact && (
         <>
+          {task.status === "pending" && task.next_remind_at && (
+            <DropdownMenu
+              disabled={snoozeBusy}
+              trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                <button
+                  ref={ref}
+                  className="icon-btn sm task-snooze"
+                  data-tip="延后提醒"
+                  aria-label={`延后「${task.title}」的提醒`}
+                  aria-expanded={expanded}
+                  aria-haspopup="menu"
+                  disabled={snoozeBusy}
+                  onClick={onClick}
+                  onKeyDown={onKeyDown}
+                >
+                  <AlarmClock size={13} />
+                </button>
+              )}
+              items={[
+                { key: "5", label: "5 分钟后再提醒", onSelect: () => void onSnooze(5) },
+                { key: "10", label: "10 分钟后再提醒", onSelect: () => void onSnooze(10) },
+                { key: "30", label: "30 分钟后再提醒", onSelect: () => void onSnooze(30) },
+                { key: "60", label: "1 小时后再提醒", onSelect: () => void onSnooze(60) },
+              ]}
+              menuLabel="延后提醒"
+            />
+          )}
           <button
             className="icon-btn sm task-context"
             onClick={() => openContext(task)}
