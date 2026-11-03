@@ -33,6 +33,7 @@ vi.mock("./lib/bridge", () => ({
   onFocusQuickAdd: async () => () => undefined,
   onModeChanged: async () => () => undefined,
   onNotification: async () => () => undefined,
+  onNotificationNavigate: async () => () => undefined,
   onReminderFired: async () => () => undefined,
   onThemeChanged: async () => () => undefined,
 }));

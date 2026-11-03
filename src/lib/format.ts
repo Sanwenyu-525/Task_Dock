@@ -103,6 +103,7 @@ export const AGENT_STATE_LABELS: Record<string, string> = {
 
 export const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   reminder: "提醒",
+  agent_running: "执行中",
   agent_waiting: "介入",
   agent_done: "完成",
   agent_failed: "失败",

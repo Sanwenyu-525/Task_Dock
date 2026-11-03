@@ -106,8 +106,16 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   3. 轮次状态机（`agent_runs`：running/waiting → completed/failed/disconnected，记 ended_at）；
   4. 事件流水（`agent_events`，仅元数据）；
   5. 状态跃迁通知（waiting/completed/failed，按 run+state+序号去重）。
-- 提交后副作用每批只执行一次：一次前端广播、一次托盘刷新、聚合系统通知
+- 提交后副作用每批只执行一次：一次前端广播、一次托盘刷新、聚合桌面通知
   （≤3 条弹窗 + 摘要），绝不放进事务。
+- **桌面通知展示（2026-11-03）**：放行的弹窗优先送入独立常驻通知窗口
+  （`notification_window.rs`，label `notification`：透明、无焦点 `WS_EX_NOACTIVATE`、
+  光标所在显示器工作区右下角、前端六状态液态玻璃模板渲染、`fit` 回传收放高度、
+  空栈自动隐藏）；窗口不存在或发送失败才回退 WinRT toast（两路互斥，不重复展示，
+  历史入库与展示成败无关）。执行中（`agent_running`，running 首跳，occurrence 幂等）
+  /等待/完成/失败/断连/提醒共用同一骨架模板；等待卡支持「稍后提醒」（内存暂存、
+  调度器每秒到期重放）；用户点击「查看详情/通知中心」才激活主窗口并跳转标签页。
+  多窗口能力清单见 `src-tauri/capabilities/`（通知窗口需 `core:event:default`）。
 - 过期清理：超过 `stale_run_minutes`（默认 15min）无更新的活跃轮次 → `disconnected`，**不推断任务成败**。
 - 事件保留（`retention.rs`）：启动 20s 后运行一次、此后每 6 小时；默认保留 30 天或
   最多 20 万行，仅 `running`/`idle` 可清理，归档失败则中止删除。

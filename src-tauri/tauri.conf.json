@@ -42,6 +42,23 @@
         "minimizable": false,
         "focus": false,
         "visible": false
+      },
+      {
+        "label": "notification",
+        "title": "Task Dock 通知",
+        "url": "notification.html",
+        "width": 400,
+        "height": 400,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "focus": false,
+        "visible": false
       }
     ],
     "security": {

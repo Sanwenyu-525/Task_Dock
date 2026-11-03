@@ -1,0 +1,569 @@
+@layer base, theme, ui, menu, ntf;
+@layer ntf {
+/* ════════════════════════════════════════════════════════════════
+   六状态液态玻璃通知（v0.7）— 仅通知窗口装载（notification.html）
+   ────────────────────────────────────────────────────────────────
+   视觉来源：通知效果图/task_dock_notification_ui_demo.html（C 方案），
+   深浅两套取值均按原型逐项移植并经视觉验证；状态语义色为模块级
+   --ntf-tone（原型设计值），文本/边框等仍引用主题令牌。
+
+   材质模型与右键菜单一致：CSS 半透明渐变承担玻璃底色（桌面色彩
+   可透出），不做原生 blur/acrylic（DWM 后端按整个窗口矩形合成，
+   会在圆角外留残影）；backdrop-filter 仅作浏览器预览渐进增强。
+
+   动效：入场 260ms / 离场 200ms / 详情 200ms；无常驻高频动画
+   （不确定进度条仅在该卡存续期间循环，且尊重 prefers-reduced-motion）。
+   ════════════════════════════════════════════════════════════════ */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    -apple-system, sans-serif;
+  font-size: 13px;
+  color: #f0f5ff;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 状态语义色（原型 C 方案设计值） */
+:root {
+  --ntf-blue: #3882f6;
+  --ntf-amber: #f5b90b;
+  --ntf-green: #22c55e;
+  --ntf-red: #ef4444;
+  --ntf-orange: #f97316;
+  --ntf-purple: #a855f7;
+}
+
+/* ── 根容器：窗口 400px 宽，卡片 360px 居中，四周留阴影余量 ── */
+.ntf-root {
+  box-sizing: border-box;
+  width: 100vw;
+  min-height: 100vh;
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  pointer-events: none; /* 容器空白区不拦截点击；卡片自身恢复 */
+}
+
+.ntf-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 360px;
+  max-width: 100%;
+}
+
+/* ── 卡片骨架 ─────────────────────────────────────────────── */
+.ntf-card {
+  pointer-events: auto;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  border-radius: 16px;
+  padding: 14px 15px 13px;
+  --tone: var(--ntf-blue);
+  background:
+    radial-gradient(
+      170px 130px at 83% -16%,
+      color-mix(in srgb, var(--tone) 10%, transparent),
+      transparent 86%
+    ),
+    linear-gradient(145deg, rgba(31, 51, 86, 0.95), rgba(17, 29, 52, 0.96) 55%, rgba(22, 36, 61, 0.96));
+  border: 1px solid rgba(177, 209, 255, 0.26);
+  color: #f0f5ff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(3, 18, 43, 0.51),
+    0 12px 32px rgba(0, 0, 0, 0.47),
+    0 4px 15px color-mix(in srgb, var(--tone) 8%, transparent);
+  animation: ntfEnter 0.26s cubic-bezier(0.21, 0.81, 0.26, 1.04) both;
+}
+
+/* 顶部柔和高光 */
+.ntf-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 55px;
+  background: linear-gradient(180deg, rgba(195, 221, 255, 0.05), transparent);
+  pointer-events: none;
+}
+
+.ntf-card[data-state="agent_running"] {
+  --tone: var(--ntf-blue);
+}
+.ntf-card[data-state="agent_waiting"] {
+  --tone: var(--ntf-amber);
+}
+.ntf-card[data-state="agent_done"] {
+  --tone: var(--ntf-green);
+}
+.ntf-card[data-state="agent_failed"] {
+  --tone: var(--ntf-red);
+}
+.ntf-card[data-state="agent_disconnected"] {
+  --tone: var(--ntf-orange);
+}
+.ntf-card[data-state="digest"] {
+  --tone: var(--ntf-purple);
+}
+.ntf-card[data-state="reminder"],
+.ntf-card[data-state="generic"] {
+  --tone: var(--ntf-blue);
+}
+
+.ntf-card.leaving {
+  animation: ntfExit 0.2s ease-in both;
+}
+
+/* ── 头部：应用标识 + 时间 + 关闭 ─────────────────────────── */
+.ntf-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  position: relative;
+  z-index: 1;
+}
+.ntf-head strong {
+  font-weight: 600;
+}
+.ntf-app-symbol {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 5px;
+  background: linear-gradient(145deg, #b8e4ff, #478bf8 55%, #2864d4);
+  border: 1px solid rgba(210, 237, 255, 0.41);
+  box-shadow: 0 2px 6px rgba(19, 103, 207, 0.33);
+  color: #fff;
+}
+.ntf-app-symbol svg {
+  width: 12px;
+  height: 12px;
+}
+.ntf-timestamp {
+  color: #a8b9d5;
+  margin-left: auto;
+  font-size: 10px;
+}
+.ntf-icon-btn {
+  border: 0;
+  background: transparent;
+  color: #bdcdeb;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  padding: 2px;
+  cursor: pointer;
+}
+.ntf-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+/* ── 主体：状态图标 + 标题 + 正文 ─────────────────────────── */
+.ntf-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 14px 0 12px;
+  position: relative;
+}
+.ntf-status-icon {
+  width: 47px;
+  height: 47px;
+  border-radius: 50%;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(
+    circle at 35% 25%,
+    color-mix(in srgb, var(--tone) 40%, transparent),
+    color-mix(in srgb, var(--tone) 16%, transparent) 75%
+  );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--tone) 32%, transparent),
+    0 0 24px color-mix(in srgb, var(--tone) 13%, transparent);
+  color: color-mix(in srgb, var(--tone) 89%, white);
+}
+.ntf-status-glyph {
+  display: block;
+}
+.ntf-spin {
+  animation: ntfSpin 1.6s linear infinite;
+}
+.ntf-title-zone {
+  flex: 1;
+  min-width: 0;
+  padding-top: 1px;
+}
+.ntf-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: -0.2px;
+}
+.ntf-body {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #b9cae6;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── 状态特殊区块 ─────────────────────────────────────────── */
+.ntf-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 12px;
+}
+.ntf-progress-track {
+  height: 6px;
+  background: rgba(211, 227, 255, 0.16);
+  border-radius: 5px;
+  overflow: hidden;
+  flex: 1;
+}
+/* 不确定进度：无真实进度数据，不显示百分比 */
+.ntf-progress-fill.indeterminate {
+  height: 100%;
+  width: 42%;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #286be7, #50b7ff);
+  box-shadow: 0 0 10px rgba(54, 140, 251, 0.62);
+  animation: ntfIndeterminate 2.4s ease-in-out infinite;
+}
+
+.ntf-inline-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: #d5dfef;
+  background: rgba(189, 206, 236, 0.05);
+  border: 1px solid rgba(175, 198, 229, 0.11);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.ntf-inline-meta svg {
+  flex: none;
+  color: var(--tone);
+}
+
+.ntf-count-line {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ntf-count-chip {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 7px;
+  border-radius: 7px;
+  background: rgba(194, 213, 255, 0.07);
+  color: #c6d7f4;
+  font-size: 10px;
+}
+.ntf-count-chip b {
+  font-variant-numeric: tabular-nums;
+}
+.ntf-count-chip.done svg {
+  color: #55e996;
+}
+.ntf-count-chip.err svg {
+  color: #ff7777;
+}
+.ntf-count-chip.lost svg {
+  color: #ffb263;
+}
+
+/* ── 动作按钮 ─────────────────────────────────────────────── */
+.ntf-actions {
+  display: flex;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
+}
+.ntf-cta {
+  height: 34px;
+  border: 1px solid rgba(186, 208, 246, 0.13);
+  color: #dbe8ff;
+  background: rgba(187, 204, 236, 0.09);
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  flex: 1;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.12s;
+}
+.ntf-cta:hover {
+  background: rgba(187, 204, 236, 0.2);
+}
+.ntf-cta:active {
+  transform: scale(0.98);
+}
+.ntf-cta:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.ntf-cta.strong {
+  background: linear-gradient(150deg, #4a9bff, #2667ec);
+  border-color: rgba(151, 200, 255, 0.32);
+  color: white;
+  box-shadow: inset 0 1px rgba(197, 234, 255, 0.19), 0 4px 11px rgba(37, 108, 239, 0.24);
+}
+.ntf-cta.strong:hover {
+  filter: brightness(1.12);
+}
+.ntf-cta:focus-visible,
+.ntf-icon-btn:focus-visible,
+.ntf-inline-expand:focus-visible {
+  outline: 2px solid #8ebaff;
+  outline-offset: 3px;
+}
+
+/* ── 展开详情 ─────────────────────────────────────────────── */
+.ntf-extra {
+  border-top: 1px solid rgba(195, 218, 255, 0.13);
+  padding: 10px 3px 2px;
+  margin-top: 11px;
+  display: grid;
+  gap: 8px;
+  color: #b8cbe7;
+  font-size: 11px;
+  line-height: 1.5;
+  animation: ntfDetailIn 0.2s ease-out;
+}
+.ntf-extra-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ntf-extra-line strong {
+  font-weight: 550;
+  color: #d9e8fd;
+  text-align: right;
+  max-width: 60%;
+  word-break: break-word;
+}
+.ntf-extra-line strong.warning {
+  color: #ffcca4;
+}
+
+.ntf-feedback {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #ffcca4;
+  background: rgba(249, 115, 22, 0.08);
+  border: 1px solid rgba(249, 115, 22, 0.22);
+  border-radius: 8px;
+  padding: 6px 8px;
+  position: relative;
+  z-index: 1;
+}
+
+.ntf-inline-expand {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: #adcaff;
+  background: transparent;
+  border: 0;
+  margin: 9px auto 0;
+  padding: 3px 7px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.ntf-inline-expand:hover {
+  color: #d5e6ff;
+}
+.ntf-inline-expand .flip {
+  transform: rotate(180deg);
+}
+
+/* ── 堆叠压缩：仅最新一张保留完整信息密度 ─────────────────── */
+.ntf-stack.stacked .ntf-card:not(:last-child) {
+  padding-top: 10px;
+  padding-bottom: 7px;
+}
+.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-main {
+  margin: 8px 0 4px;
+}
+.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-status-icon {
+  width: 37px;
+  height: 37px;
+}
+.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-status-icon svg {
+  width: 21px;
+  height: 21px;
+}
+.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-actions,
+.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-inline-meta,
+.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-progress-row,
+.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-count-line,
+.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-feedback {
+  display: none;
+}
+
+/* ── 浅色主题：同布局，浅磨砂 + 深文字，状态色保持语义 ────── */
+html[data-theme="light"] body {
+  color: #152d4f;
+}
+html[data-theme="light"] .ntf-card {
+  background:
+    radial-gradient(
+      170px 130px at 85% -14%,
+      color-mix(in srgb, var(--tone) 8%, transparent),
+      transparent 85%
+    ),
+    linear-gradient(145deg, rgba(246, 250, 255, 0.97), rgba(226, 238, 255, 0.95));
+  border-color: rgba(255, 255, 255, 0.93);
+  box-shadow:
+    inset 0 1px #ffffff,
+    0 12px 30px rgba(43, 94, 172, 0.25),
+    0 4px 9px rgba(93, 133, 194, 0.11);
+}
+html[data-theme="light"] .ntf-title {
+  color: #162f58;
+}
+html[data-theme="light"] .ntf-body {
+  color: #536d96;
+}
+html[data-theme="light"] .ntf-timestamp {
+  color: #57739e;
+}
+html[data-theme="light"] .ntf-icon-btn {
+  color: #506c98;
+}
+html[data-theme="light"] .ntf-icon-btn:hover {
+  background: rgba(21, 45, 79, 0.08);
+  color: #152d4f;
+}
+html[data-theme="light"] .ntf-status-icon {
+  color: color-mix(in srgb, var(--tone) 78%, #1b3a66);
+}
+html[data-theme="light"] .ntf-cta:not(.strong) {
+  color: #284d7b;
+  background: rgba(171, 200, 245, 0.2);
+  border-color: rgba(126, 159, 210, 0.18);
+}
+html[data-theme="light"] .ntf-cta:not(.strong):hover {
+  background: rgba(171, 200, 245, 0.4);
+}
+html[data-theme="light"] .ntf-inline-meta {
+  color: #3d5d84;
+  background: rgba(183, 212, 252, 0.23);
+  border-color: rgba(136, 178, 235, 0.24);
+}
+html[data-theme="light"] .ntf-count-chip {
+  background: rgba(148, 185, 234, 0.21);
+  color: #355b87;
+}
+html[data-theme="light"] .ntf-progress-track {
+  background: rgba(152, 183, 231, 0.48);
+}
+html[data-theme="light"] .ntf-extra {
+  border-color: rgba(110, 159, 213, 0.24);
+  color: #4b6791;
+}
+html[data-theme="light"] .ntf-extra-line strong {
+  color: #275079;
+}
+html[data-theme="light"] .ntf-extra-line strong.warning {
+  color: #b45309;
+}
+html[data-theme="light"] .ntf-feedback {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(180, 83, 9, 0.25);
+}
+html[data-theme="light"] .ntf-inline-expand {
+  color: #3a6cb9;
+}
+html[data-theme="light"] .ntf-inline-expand:hover {
+  color: #23466e;
+}
+
+/* ── 动效 ─────────────────────────────────────────────────── */
+@keyframes ntfEnter {
+  from {
+    opacity: 0;
+    transform: translateX(24px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+@keyframes ntfExit {
+  to {
+    opacity: 0;
+    transform: translateX(20px) scale(0.98);
+  }
+}
+@keyframes ntfDetailIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes ntfSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes ntfIndeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  55% {
+    transform: translateX(150%);
+  }
+  100% {
+    transform: translateX(240%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ntf-card,
+  .ntf-card.leaving,
+  .ntf-extra,
+  .ntf-status-glyph.ntf-spin,
+  .ntf-progress-fill.indeterminate {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+}

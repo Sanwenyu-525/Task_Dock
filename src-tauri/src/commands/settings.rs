@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
@@ -210,6 +210,14 @@ pub fn update_settings(
     }
     for (k, v) in obj {
         db.set_setting(k, v.clone())?;
+    }
+    // 主题/预设变更广播给所有窗口（通知窗口、右键菜单跟随；主窗 store 同值幂等）。
+    // 与托盘/右键菜单路径（context_menu_action 单独 emit）保持同一事件契约。
+    if let Some(theme) = obj.get("theme").and_then(|v| v.as_str()) {
+        let _ = app.emit("theme-changed", theme.to_string());
+    }
+    if let Some(preset) = obj.get("visual_preset").and_then(|v| v.as_str()) {
+        let _ = app.emit("visual-preset-changed", preset.to_string());
     }
     let updated = Settings::load_display(&db)?;
     // 模块级生命周期：关闭工作现场时停止正在进行的恢复；剪贴板启停同步监听线程

@@ -1302,6 +1302,10 @@ export const onFocusQuickAdd = (cb: () => void): Promise<UnlistenFn> =>
   listen("focus-quick-add", () => cb());
 export const onAppReady = (cb: () => void): Promise<UnlistenFn> =>
   listen("app-ready", () => cb());
+// 通知窗口用户点击跳转（v0.7）：用户在桌面通知上点了「查看详情/通知中心」，
+// 后端已激活主窗口，这里只负责切换到对应标签页。
+export const onNotificationNavigate = (cb: (tab: string) => void): Promise<UnlistenFn> =>
+  listen<{ tab: string }>("notification-navigate", (e) => cb(e.payload.tab));
 export const onClipboardChanged = (
   cb: (payload: { kind: string; created?: boolean; grouped?: boolean }) => void,
 ): Promise<UnlistenFn> =>

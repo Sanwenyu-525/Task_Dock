@@ -43,11 +43,17 @@ impl NotificationPolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NotifyItem {
     pub kind: String,
     pub title: String,
     pub body: String,
+    /// 关联对象（agent_runs.id）；用于自定义通知窗口「查看详情」跳转。
+    pub ref_id: Option<String>,
+    /// 来源 Agent（agent_sources.id）。
+    pub source_id: Option<String>,
+    /// 所属会话（agent_sessions.id）。
+    pub session_id: Option<String>,
 }
 
 impl NotifyItem {
@@ -56,32 +62,74 @@ impl NotifyItem {
             kind: kind.into(),
             title: title.into(),
             body: body.into(),
+            ..Default::default()
         }
     }
 
+    /// 携带跳转元数据的完整构造（ingest / 断连清理使用）。
+    pub fn with_ref(
+        mut self,
+        ref_id: Option<String>,
+        source_id: Option<String>,
+        session_id: Option<String>,
+    ) -> Self {
+        self.ref_id = ref_id;
+        self.source_id = source_id;
+        self.session_id = session_id;
+        self
+    }
+
     /// 关键类型（等待/失败/断连）：使用独立的保底弹窗额度，
-    /// 不与可合并的普通通知（完成、提醒）争抢，也不会被它们挤占。
+    /// 不与可合并的普通通知（完成、执行中、提醒）争抢，也不会被它们挤占。
     fn is_critical(&self) -> bool {
         !self.is_aggregateable()
     }
 
-    /// 可合并类型：同一批出现多条时合并为一条摘要（完成、任务提醒）。
+    /// 可合并类型：同一批出现多条时合并为一条摘要（执行中、完成、任务提醒）。
     fn is_aggregateable(&self) -> bool {
-        matches!(self.kind.as_str(), "agent_done" | "reminder")
+        matches!(
+            self.kind.as_str(),
+            "agent_running" | "agent_done" | "reminder"
+        )
     }
 }
 
+/// 一个允许弹出的桌面通知：自定义通知窗口的渲染载荷。
+/// OS toast 兜底只使用 title/body；结构化字段仅供窗口模板使用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Popup {
+    pub kind: String,
     pub title: String,
     pub body: String,
+    pub ref_id: Option<String>,
+    pub source_id: Option<String>,
+    pub session_id: Option<String>,
+    /// 受理时间（RFC3339，本地展示「刚刚 / N 分钟前」）。
+    pub created_at: String,
 }
 
 impl Popup {
-    fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+    fn from_item(item: &NotifyItem, created_at: String) -> Self {
         Self {
-            title: title.into(),
-            body: body.into(),
+            kind: item.kind.clone(),
+            title: item.title.clone(),
+            body: item.body.clone(),
+            ref_id: item.ref_id.clone(),
+            source_id: item.source_id.clone(),
+            session_id: item.session_id.clone(),
+            created_at,
+        }
+    }
+
+    fn digest_popup(n: u32, created_at: String) -> Self {
+        Self {
+            kind: "digest".into(),
+            title: "Agent 通知摘要".into(),
+            body: format!("另有 {n} 条通知已记录到收件箱（已合并，避免打扰）"),
+            ref_id: None,
+            source_id: None,
+            session_id: None,
+            created_at,
         }
     }
 }
@@ -126,28 +174,17 @@ impl NotifyGate {
             }
         }
         for item in critical {
-            self.emit_or_suppress(
-                &mut popups,
-                item.title.clone(),
-                item.body.clone(),
-                policy,
-                true,
-            );
+            self.emit_or_suppress(&mut popups, item, policy, true);
         }
 
         for (kind, group) in group_by_kind(aggregateable) {
             if policy.aggregate_done && group.len() > 1 {
                 let (title, body) = summary_for(&kind, &group);
-                self.emit_or_suppress(&mut popups, title, body, policy, false);
+                let merged = NotifyItem::new(&kind, &title, &body);
+                self.emit_or_suppress(&mut popups, &merged, policy, false);
             } else {
                 for item in group {
-                    self.emit_or_suppress(
-                        &mut popups,
-                        item.title.clone(),
-                        item.body.clone(),
-                        policy,
-                        false,
-                    );
+                    self.emit_or_suppress(&mut popups, item, policy, false);
                 }
             }
         }
@@ -179,8 +216,7 @@ impl NotifyGate {
     fn emit_or_suppress(
         &mut self,
         popups: &mut Vec<Popup>,
-        title: String,
-        body: String,
+        item: &NotifyItem,
         policy: &NotificationPolicy,
         critical: bool,
     ) {
@@ -193,7 +229,7 @@ impl NotifyGate {
         };
         if *emitted < policy.burst_max {
             *emitted += 1;
-            popups.push(Popup::new(title, body));
+            popups.push(Popup::from_item(item, crate::agents::now_iso()));
         } else {
             self.pending += 1;
         }
@@ -203,10 +239,7 @@ impl NotifyGate {
         let n = self.pending;
         self.pending = 0;
         self.digest_sent = true;
-        Popup::new(
-            "Agent 通知摘要",
-            format!("另有 {} 条通知已记录到收件箱（已合并，避免打扰）", n),
-        )
+        Popup::digest_popup(n, crate::agents::now_iso())
     }
 
     /// 窗口结束时先汇总尾部，再重置额度。
@@ -252,6 +285,10 @@ fn summary_for(kind: &str, group: &[&NotifyItem]) -> (String, String) {
             "任务提醒汇总".to_string(),
             format!("{} 个任务提醒 · {}", n, bodies.join("；")),
         ),
+        "agent_running" => (
+            "Agent 批量执行中".to_string(),
+            format!("{} 个轮次正在执行 · {}", n, bodies.join("；")),
+        ),
         _ => (
             "Agent 批量完成".to_string(),
             format!("{} 个轮次已完成 · {}", n, bodies.join("；")),
@@ -281,6 +318,25 @@ mod tests {
 
     fn waiting(i: usize) -> NotifyItem {
         NotifyItem::new("agent_waiting", "Agent 等待处理", &format!("等待 {}", i))
+    }
+
+    fn running(i: usize) -> NotifyItem {
+        NotifyItem::new("agent_running", "Agent 正在执行", &format!("执行 {}", i))
+    }
+
+    #[test]
+    fn running_notifications_are_aggregateable_not_critical() {
+        // v0.7 通知系统：执行中属普通优先级——同批多条合并为摘要，
+        // 且占用普通额度，不挤占等待/失败/断连的保底额度。
+        let p = policy(2, 60, true);
+        let mut gate = NotifyGate::new();
+        let popups = gate.plan(Instant::now(), &p, &[running(1), running(2), failure(9)]);
+        assert_eq!(popups[0].title, "Agent 执行失败", "失败走保底额度优先弹出");
+        assert!(
+            popups.iter().any(|p| p.title == "Agent 批量执行中"),
+            "多条执行中合并为一条摘要"
+        );
+        assert_eq!(popups.len(), 2);
     }
 
     fn reminder(i: usize) -> NotifyItem {

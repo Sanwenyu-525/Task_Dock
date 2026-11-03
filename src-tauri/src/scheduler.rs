@@ -36,6 +36,8 @@ pub fn start_scheduler(app: AppHandle, db: Arc<Db>, hub: Arc<AgentHub>) {
             }
             // 跨批次通知摘要：窗口结束/尾部抑制通知每秒检查一次
             hub.flush_notification_digest();
+            // 稍后提醒：到期的通知卡片重新送自定义通知窗口（无独立定时器）
+            crate::notification_window::poll_snoozed(&app);
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
@@ -669,7 +671,10 @@ mod tests {
                 .map_err(AppError::from)
             })
             .unwrap();
-        assert!(parse_utc(&due).unwrap() > Utc::now(), "静音时重复任务仍照常推进");
+        assert!(
+            parse_utc(&due).unwrap() > Utc::now(),
+            "静音时重复任务仍照常推进"
+        );
         let pending: i64 = db
             .with_conn(|c| {
                 c.query_row(

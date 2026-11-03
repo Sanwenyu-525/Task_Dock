@@ -13,6 +13,7 @@ pub mod error;
 mod magnetic;
 pub mod navigation;
 pub mod nlp;
+pub mod notification_window;
 pub mod recurrence;
 pub mod scheduler;
 mod window_shape;
@@ -574,6 +575,9 @@ pub fn run() {
             // 液态玻璃右键菜单：挂接弹窗窗口事件（失焦关闭 / 圆角区域）
             context_menu::init(&handle);
 
+            // 自定义通知窗口：挂接生命周期事件（WS_EX_NOACTIVATE 在每次显示前确保）
+            notification_window::init(&handle);
+
             // Agent 适配器
             Box::new(agents::file_drop::FileDropAdapter::new(pipeline.clone())).spawn(hub.clone());
             Box::new(agents::http_ingest::HttpIngestAdapter::new(
@@ -723,6 +727,11 @@ pub fn run() {
             context_menu::hide_context_menu,
             context_menu::fit_context_menu,
             context_menu::context_menu_action,
+            // 自定义通知窗口（v0.7 六状态桌面通知）
+            notification_window::fit_notification_window,
+            notification_window::hide_notification_window,
+            notification_window::notification_snooze,
+            notification_window::notification_navigate,
             // 统一导航（v0.4）
             commands::navigation::nav_scan_apps,
             commands::navigation::nav_list_windows,

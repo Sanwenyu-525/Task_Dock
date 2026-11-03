@@ -44,7 +44,7 @@ use tauri::{AppHandle, Emitter};
 use crate::db::{AgentInstance, AgentRun, AgentSession, AgentSource, Db};
 use crate::error::{AppError, AppResult};
 
-use self::notify::{NotificationPolicy, NotifyGate, NotifyItem};
+use self::notify::{NotificationPolicy, NotifyGate, NotifyItem, Popup};
 
 pub fn now_iso() -> String {
     Utc::now().to_rfc3339()
@@ -399,8 +399,26 @@ pub struct IngestOutcome {
     pub deduplicated: bool,
     /// 迟到事件：occurred_at 早于轮次结束时间，仅记录、不改终态
     pub late: bool,
-    /// 本事务内实际写入的通知（kind, title, body）；提交后由 AgentHub 弹 OS 通知
-    pub notification: Option<(String, String, String)>,
+    /// 本事务内实际写入的通知；提交后由 AgentHub 送自定义通知窗口展示
+    /// （窗口不可用时兜底 OS toast）。kind/title/body 之外携带跳转元数据。
+    pub notification: Option<NotificationOut>,
+}
+
+/// 一条已落库通知的结构化载荷（与 notification_history 行一一对应）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationOut {
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    /// notification_history.id（点击查看后按现有机制标记已读）。
+    pub nh_id: String,
+    /// agent_runs.id（ref_type = 'agent_run'）。
+    pub run_id: Option<String>,
+    /// 来源 Agent 与会话（「立即处理/查看详情」跳转用）。
+    pub source_id: Option<String>,
+    pub session_id: Option<String>,
+    /// 来源显示名（卡片展开详情用）。
+    pub source_name: String,
 }
 
 /// 事件幂等键：Adapter 提供事件 ID 时按 ID；否则按内容签名。
@@ -891,6 +909,8 @@ pub fn ingest_core(
 
     // 9. 状态跃迁通知（事务内写通知记录；Agent 执行结束 ≠ 关联任务完成，仅通知、不改任务状态）
     //    只有真实事件可以产生通知：自测/压测/模拟/人工事件即使状态跃迁也不进入收件箱。
+    //    running（非 running → running 跃迁，如新轮次启动/等待后继续）同轮次只通知一次，
+    //    心跳类重复事件由 occurrence 幂等去重，不重复弹出。
     let mut notification = None;
     let changed = prev_state.map(|p| p != state).unwrap_or(true);
     if origin.is_real()
@@ -898,10 +918,11 @@ pub fn ingest_core(
         && changed
         && matches!(
             state,
-            AgentState::Waiting | AgentState::Completed | AgentState::Failed
+            AgentState::Running | AgentState::Waiting | AgentState::Completed | AgentState::Failed
         )
     {
         let (kind, title_cn) = match state {
+            AgentState::Running => ("agent_running", "Agent 正在执行"),
             AgentState::Waiting => ("agent_waiting", "Agent 等待处理"),
             AgentState::Completed => ("agent_done", "Agent 本轮执行完成"),
             _ => ("agent_failed", "Agent 执行失败"),
@@ -920,12 +941,13 @@ pub fn ingest_core(
         };
         // 同一轮次同一状态只通知一次（occurrence 幂等）
         let occurrence = format!("{}:{}", run_row_id, state.as_str());
+        let nh_id = uuid::Uuid::new_v4().to_string();
         let n = conn.execute(
             "INSERT OR IGNORE INTO notification_history
                (id, kind, title, body, ref_type, ref_id, occurrence, is_read, created_at, agent_origin)
              VALUES (?1, ?2, ?3, ?4, 'agent_run', ?5, ?6, 0, ?7, 'real')",
             rusqlite::params![
-                uuid::Uuid::new_v4().to_string(),
+                nh_id,
                 kind,
                 title_cn,
                 body,
@@ -935,7 +957,16 @@ pub fn ingest_core(
             ],
         )?;
         if n > 0 {
-            notification = Some((kind.to_string(), title_cn.to_string(), body));
+            notification = Some(NotificationOut {
+                kind: kind.to_string(),
+                title: title_cn.to_string(),
+                body,
+                nh_id,
+                run_id: Some(run_row_id.clone()),
+                source_id: Some(ev.source_id.clone()),
+                session_id: Some(session_row_id.clone()),
+                source_name,
+            });
         }
     }
 
@@ -1192,7 +1223,13 @@ impl AgentHub {
             let items: Vec<NotifyItem> = outcomes
                 .iter()
                 .filter_map(|o| o.notification.as_ref())
-                .map(|(kind, title, body)| NotifyItem::new(kind, title, body))
+                .map(|n| {
+                    NotifyItem::new(&n.kind, &n.title, &n.body).with_ref(
+                        n.run_id.clone(),
+                        n.source_id.clone(),
+                        n.session_id.clone(),
+                    )
+                })
                 .collect();
             self.notify_agent_popups(&items);
         }
@@ -1319,7 +1356,7 @@ impl AgentHub {
             .unwrap_or_else(|e| e.into_inner())
             .flush(std::time::Instant::now(), &policy);
         if let Some(p) = popup {
-            self.show_os_notification(&p.title, &p.body);
+            self.deliver_popups(vec![p]);
         }
     }
 
@@ -1354,10 +1391,22 @@ impl AgentHub {
             .unwrap_or_else(|e| e.into_inner())
             .plan(std::time::Instant::now(), &policy, items);
         let shown = popups.len();
-        for p in popups {
-            self.show_os_notification(&p.title, &p.body);
-        }
+        self.deliver_popups(popups);
         shown
+    }
+
+    /// 送达一批已放行的弹窗：优先自定义通知窗口（六状态液态玻璃模板），
+    /// 窗口不存在或发送失败才回退 OS toast。两条路径互斥，绝不重复发送；
+    /// 通知历史已在 ingest 事务内落库，与展示成败无关（失败不重试，计数可见）。
+    fn deliver_popups(&self, popups: Vec<Popup>) {
+        if popups.is_empty() {
+            return;
+        }
+        if !crate::notification_window::show_cards(&self.app, &popups) {
+            for p in &popups {
+                self.show_os_notification(&p.title, &p.body);
+            }
+        }
     }
 
     /// 写通知历史（带去重）；返回是否实际写入（供非 ingest 场景，如提醒调度）。
@@ -1401,14 +1450,44 @@ impl AgentHub {
             .with_conn(|conn| cleanup_stale_core(conn, stale_minutes))?;
         let notified = stale;
         if !notified.is_empty() {
-            self.notify_agent_popups(&[NotifyItem::new(
-                "agent_disconnected",
-                "Agent 连接中断",
-                &format!(
-                    "{} 个 Agent 轮次长时间无心跳，已标记为断开（不推断任务成败）",
-                    notified.len()
-                ),
-            )]);
+            // 单轮次断连携带跳转元数据（run → source/session）供通知窗口「查看详情」；
+            // 多条合并为一条汇总时不绑定单一对象，跳转落到 Agent 面板。
+            let item = if notified.len() == 1 {
+                let (run_id, source_id) = &notified[0];
+                let session_id: Option<String> = self
+                    .db
+                    .with_read(|conn| {
+                        conn.query_row(
+                            "SELECT session_id FROM agent_runs WHERE id = ?1",
+                            rusqlite::params![run_id],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .optional()
+                        .map_err(AppError::from)
+                    })
+                    .ok()
+                    .flatten();
+                NotifyItem::new(
+                    "agent_disconnected",
+                    "Agent 连接中断",
+                    "1 个 Agent 轮次长时间无心跳，已标记为断开（不推断任务成败）",
+                )
+                .with_ref(
+                    Some(run_id.clone()),
+                    Some(source_id.clone()),
+                    session_id,
+                )
+            } else {
+                NotifyItem::new(
+                    "agent_disconnected",
+                    "Agent 连接中断",
+                    &format!(
+                        "{} 个 Agent 轮次长时间无心跳，已标记为断开（不推断任务成败）",
+                        notified.len()
+                    ),
+                )
+            };
+            self.notify_agent_popups(&[item]);
             let _ = self.app.emit(
                 "agent-changed",
                 serde_json::json!({ "stale_cleanup": notified.len() }),
@@ -1822,7 +1901,10 @@ mod tests {
             "2026-10-25T10:00:00+00:00",
         )
         .unwrap();
-        assert!(a.notification.is_none(), "running 不通知");
+        // v0.7 通知系统：真实来源首轮 running 产生执行中通知；
+        // 同轮次后续 running 由 occurrence 幂等去重（下方 10:02 事件验证）。
+        assert!(a.notification.is_some(), "running 首跳通知");
+        assert_eq!(a.notification.as_ref().unwrap().kind, "agent_running");
         let w1 = ingest(
             &db,
             &ev("codex", "s1", Some("r1"), "waiting"),
@@ -2068,7 +2150,15 @@ mod tests {
             "real",
             "既有会话的可信类别不得被后续事件改写"
         );
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 0);
+        // 仅真实 running 首跳的一条执行中通知；压测 waiting 事件不得产生通知
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 1);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM notification_history WHERE kind = 'agent_waiting'"
+            ),
+            0
+        );
     }
 
     #[test]
@@ -2841,7 +2931,15 @@ mod tests {
             ),
             1
         );
-        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 1);
+        // 首轮 running（agent_running）+ completed（agent_done）；迟到 running 不产生通知
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 2);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM notification_history WHERE kind = 'agent_running'"
+            ),
+            1
+        );
         assert_eq!(count(&db, "SELECT COUNT(*) FROM agent_events"), 3);
     }
 

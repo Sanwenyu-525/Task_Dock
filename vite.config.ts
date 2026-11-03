@@ -8,7 +8,8 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
-  // 多页入口：index.html（主窗）+ context-menu.html（液态玻璃右键菜单弹窗）
+  // 多页入口：index.html（主窗）+ context-menu.html（右键菜单弹窗）
+  // + notification.html（六状态桌面通知窗口）
   build: {
     // 多入口时共享 CSS 会被拆成独立 chunk，浏览器按 chunk 顺序加载会让
     // styles-themes.css 排在 styles.css 之前，覆盖关系反转。合并为单文件，
@@ -18,6 +19,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         "context-menu": resolve(__dirname, "context-menu.html"),
+        notification: resolve(__dirname, "notification.html"),
       },
     },
   },

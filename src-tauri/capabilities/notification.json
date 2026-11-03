@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "notification",
+  "description": "六状态桌面通知窗口权限：事件订阅（notification-show / theme-changed）+ 核心能力；业务命令为应用自定义命令，无需插件权限",
+  "windows": ["notification"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

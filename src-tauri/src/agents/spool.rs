@@ -560,7 +560,8 @@ mod tests {
         let events_before = count(&db, "SELECT COUNT(*) FROM agent_events");
         let notes_before = count(&db, "SELECT COUNT(*) FROM notification_history");
         assert_eq!(events_before, 2);
-        assert_eq!(notes_before, 1);
+        // v0.7 通知系统：running 首跳 + completed 各一条
+        assert_eq!(notes_before, 2);
 
         // 模拟重启后重放：已提交的两条事件（客户端超时重试）+ 一条迟到 running + 一个新轮次。
         let old_running = AgentEvent {
@@ -609,8 +610,16 @@ mod tests {
         );
         assert_eq!(
             count(&db, "SELECT COUNT(*) FROM notification_history"),
-            notes_before,
-            "重放不得产生重复通知"
+            notes_before + 1,
+            "重放不产生重复通知；批次内唯一的新轮次 r2 正常产生一条执行中通知"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM notification_history WHERE kind = 'agent_running'"
+            ),
+            2,
+            "r2 新轮次一条 + ev-1 首轮一条；迟到 old_running 不重复"
         );
         let status: String = db
             .with_conn(|conn| {

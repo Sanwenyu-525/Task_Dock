@@ -2208,7 +2208,8 @@ mod tests {
             ("agent_sessions", 2),
             ("agent_runs", 2),
             ("agent_events", 3),
-            ("notification_history", 2),
+            // v0.7 通知系统：seed 的真实通道 running 首跳也产生一条执行中通知
+            ("notification_history", 3),
             ("navigation_targets", 2),
             ("task_navigation_targets", 2),
             ("navigation_log", 1),

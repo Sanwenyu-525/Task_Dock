@@ -8,7 +8,7 @@ import {
   scheduleActionsRefresh,
   cancelActionsRefresh,
 } from "./store/useActionsStore";
-import { useUiStore } from "./store/useUiStore";
+import { useUiStore, type Tab } from "./store/useUiStore";
 import { useNavigationStore } from "./store/useNavigationStore";
 import { useEdgeSnap, useWindowPersistence } from "./hooks/useEdgeSnap";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
@@ -35,6 +35,7 @@ import {
   onFocusQuickAdd,
   onModeChanged,
   onNotification,
+  onNotificationNavigate,
   onReminderFired,
   onThemeChanged,
 } from "./lib/bridge";
@@ -151,6 +152,12 @@ export default function App() {
       }
     }));
     scope.add(onFocusQuickAdd(() => bumpQuickAdd()));
+    // 桌面通知「查看详情/通知中心」跳转：后端已激活主窗口，这里只切标签页。
+    // 读取 getState() 避免把 setTab 拉进依赖列表（store 引用恒定）。
+    scope.add(onNotificationNavigate((t) => {
+      const tab: Tab = t === "history" || t === "agents" || t === "tasks" ? t : "agents";
+      useUiStore.getState().setTab(tab);
+    }));
     scope.add(onModeChanged((m) => {
       // 尺寸/持久化由后端完成；这里只同步 UI（不触发数据刷新，
       // 三视图常驻挂载，切换不丢内容状态）
