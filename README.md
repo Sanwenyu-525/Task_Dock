@@ -25,6 +25,8 @@ This file exists as a hello-style top-level file for connection verification.
       - 性能专项：[性能架构](docs/PERFORMANCE_ARCHITECTURE.md) · [压测方法](docs/PERFORMANCE_TESTING.md) · [验收报告](docs/PERFORMANCE_ACCEPTANCE_REPORT.md) · [v0.5 最终验收](docs/PERFORMANCE_FINAL_ACCEPTANCE.md)
       - 智能剪贴板（v0.5）：[需求与验收](docs/clipboard/01-requirements.md) · [架构](docs/clipboard/02-architecture.md) · [数据模型](docs/clipboard/03-data-model.md) · [监听与安全](docs/clipboard/04-monitor-security.md) · [分组引擎](docs/clipboard/05-grouping-engine.md) · [复制粘贴与保护](docs/clipboard/06-copy-paste-protection.md) · [UI 与集成](docs/clipboard/07-ui-and-integrations.md) · [测试与性能](docs/clipboard/08-testing-performance.md) · [实施与验收](docs/clipboard/09-implementation-report.md) · [整改分类验收](docs/clipboard/10-remediation-acceptance.md) · [最终发布验收](docs/clipboard/11-final-release-acceptance.md) · [第四轮专项验收](docs/clipboard/12-fourth-round-acceptance.md)
       - 视觉主题（v0.6）：[设计规范](docs/ui-themes/01-design-spec.md) · [主题架构](docs/ui-themes/02-theme-architecture.md) · [窗口合成](docs/ui-themes/03-window-composition.md) · [性能](docs/ui-themes/04-performance.md) · [测试计划](docs/ui-themes/05-test-plan.md) · [实施报告](docs/ui-themes/06-implementation-report.md) · [视觉验收](docs/ui-themes/07-visual-acceptance.md) · [圆角专项整改](docs/ui-themes/12-v06-window-corners.md)
+      - 设计参考图（**不是验收证据**）：[v0.7 效果图](docs/design-refs/v07/) —— 设计输入稿，仅作代码与文档引用视觉口径的基准；
+        真机与 harness 截图证据仍归 `docs/screenshots/`（按 [视觉验收](docs/ui-themes/07-visual-acceptance.md) 分级），两树不混放
 
 核心能力：
 - **悬浮任务栏**：无边框透明置顶（极简/紧凑/完整三模式、贴边自动隐藏、托盘、开机自启、毛玻璃/深浅色）、

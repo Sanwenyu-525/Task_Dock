@@ -1,4 +1,4 @@
-//! 剪贴板面板（胶囊内，对照 `docs/screenshots/v07/停靠效果图/03-clipboard.png`）。
+//! 剪贴板面板（胶囊内，对照 `docs/design-refs/v07/停靠效果图/03-clipboard.png`）。
 //!
 //! 数据：按需调用既有 `clipboard_view`（limit 20），**不新建采集服务**、
 //! 不订阅第二份实时流；缩略图走既有 `ClipboardThumb`（进程内缓存、上限 240）。

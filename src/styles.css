@@ -6073,7 +6073,7 @@ code {
    （见 src-tauri/src/window_shape.rs 的 capsule_regions）。
    因此这里的尺寸必须与 lib/capsuleLayout.ts 常量一致：改动要三端同步。
 
-   视觉基准：`docs/screenshots/v07/停靠效果图/01..04`。四张图共用一套材质——
+   视觉基准：`docs/design-refs/v07/停靠效果图/01..04`。四张图共用一套材质——
    冷白偏蓝的玻璃底、低强度边缘高光、单层卡片、无整圈描边。
    所有颜色都从既有语义 Token 派生（`--wing-*` 随预设变化，
    `--c-paper`/`--c-ink` 随明暗变化），因此两套预设 × 明暗自动一致。

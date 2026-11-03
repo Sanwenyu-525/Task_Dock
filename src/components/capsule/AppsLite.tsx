@@ -1,4 +1,4 @@
-//! 应用面板（胶囊内，对照 `docs/screenshots/v07/停靠效果图/04-apps.png`）。
+//! 应用面板（胶囊内，对照 `docs/design-refs/v07/停靠效果图/04-apps.png`）。
 //!
 //! 复用既有 `nav_list_targets` 缓存与 `nav_navigate`（窗口识别 / 启动 / 聚焦
 //! 全在后端），胶囊内不实现第二套启动逻辑。

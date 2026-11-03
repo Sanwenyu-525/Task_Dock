@@ -1,4 +1,4 @@
-//! 任务面板（胶囊内，对照 `docs/screenshots/v07/停靠效果图/01-tasks.png`）。
+//! 任务面板（胶囊内，对照 `docs/design-refs/v07/停靠效果图/01-tasks.png`）。
 //!
 //! 数据：直接调用既有 `list_tasks`（view=all, status=pending, sort=due）——
 //! **不是**第二套状态源，只是同一后端命令的按需读取；完成经
