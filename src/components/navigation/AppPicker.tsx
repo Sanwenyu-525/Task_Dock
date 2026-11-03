@@ -5,8 +5,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  X, Search, RefreshCw, Plus, Star, Clock, Globe, FolderOpen, Monitor, AppWindow, Bot,
+  X, Search, RefreshCw, Plus, Star, Clock, Globe, FolderOpen, Monitor, AppWindow,
 } from "lucide-react";
+import AgentIcon from "../ui/AgentIcon";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
@@ -316,7 +317,7 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
           {/* Agent 会话快捷区（v0.4：会话可作为导航目标，支持恢复/工作区跳转） */}
           <div className="picker-windows">
             <button className="link-btn" onClick={() => setAgentOpen((v) => !v)}>
-              <Bot size={11} /> {agentOpen ? "收起 Agent 会话" : "从 Agent 会话选择…"}
+              <AgentIcon size={11} /> {agentOpen ? "收起 Agent 会话" : "从 Agent 会话选择…"}
             </button>
             {agentOpen && (
               <div className="picker-window-list">

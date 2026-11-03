@@ -8,10 +8,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Bot, RefreshCw, Power, PowerOff, ExternalLink, Copy, CheckCircle2, AlertTriangle,
+  RefreshCw, Power, PowerOff, ExternalLink, Copy, CheckCircle2, AlertTriangle,
   ShieldQuestion, ListChecks, Radar, PlugZap, Trash2, Plus, ChevronRight, ChevronDown,
   Activity, X, Eye, EyeOff, CircleSlash, MonitorUp,
 } from "lucide-react";
+import AgentIcon from "../ui/AgentIcon";
 import {
   adapterInstall, adapterPreview, adapterUninstall, adapterVerify,
   createSource, deleteSource, discoveryScan, getAgentInboxDir, openAgentSession,
@@ -94,6 +95,62 @@ export default function AgentPanel() {
 
   const tree = useMemo(() => (snapshot ? buildTree(snapshot) : []), [snapshot]);
   const summary = liveSummary(snapshot);
+
+  // 桌面通知「定位本轮」：展开 Agent/实例/会话，滚动并短暂高亮到具体轮次。
+  // 定位目标由 App 在收到 notification-navigate 后写入，处理完立即消费清除。
+  const agentFocus = useUiStore((s) => s.agentFocus);
+  const clearAgentFocus = useUiStore((s) => s.clearAgentFocus);
+
+  useEffect(() => {
+    if (!agentFocus || tree.length === 0) return; // 快照未就绪时保留目标，等下一次树更新
+    const found = findSessionInTree(tree, agentFocus.sessionId);
+    if (!found) {
+      clearAgentFocus(); // 会话可能已清理：不伪造定位
+      return;
+    }
+    setSection("monitor");
+    setMonitorFilter("all");
+    setExpanded((e) => {
+      const next: Record<string, boolean> = {
+        ...e,
+        [found.agentId]: true,
+        [found.session.id]: true,
+      };
+      if (found.instanceId) next[`${found.agentId}/${found.instanceId}`] = true;
+      return next;
+    });
+    let cancelled = false;
+    let frame = 0;
+    frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        if (cancelled) return;
+        const runId = agentFocus.refId;
+        const el =
+          (runId && document.querySelector(`[data-agent-run-id="${runId}"]`)) ||
+          document.querySelector(`[data-agent-session-id="${found.session.id}"]`);
+        if (el) {
+          const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+          el.scrollIntoView?.({ block: "center", behavior: reduced ? "auto" : "smooth" });
+          if (!reduced && el.animate) {
+            el.animate(
+              [
+                { boxShadow: "0 0 0 0 rgba(79, 125, 186, 0)" },
+                { boxShadow: "0 0 0 2px rgba(79, 125, 186, 0.55)" },
+                { boxShadow: "0 0 0 0 rgba(79, 125, 186, 0)" },
+              ],
+              { duration: 1200, easing: "ease-out" },
+            );
+          }
+        }
+        // 滚动/高亮已发起后再消费目标，避免清除状态提前触发 cleanup 取消动画帧。
+        clearAgentFocus();
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [agentFocus, tree, clearAgentFocus]);
 
   const connectedSources = useMemo(
     () =>
@@ -246,7 +303,7 @@ export default function AgentPanel() {
           {/* ══ 监控树 ══ */}
           {visibleAgents.length === 0 && (
             <div className="empty-state">
-              <div className="empty-icon"><Bot size={22} /></div>
+              <div className="empty-icon"><AgentIcon size={22} /></div>
               <div className="empty-title">没有需要关注的 Agent</div>
               <div className="empty-hint">
                 {monitorFilter === "attention"
@@ -289,7 +346,7 @@ export default function AgentPanel() {
                 {scan.map((a) => (
                   <div key={a.source_id} className={`discovery-card ${a.installed ? "" : "not-installed"}`}>
                     <div className="source-head">
-                      <span className="source-name"><Bot size={13} /> {a.display_name}</span>
+                      <span className="source-name"><AgentIcon size={13} /> {a.display_name}</span>
                       <span className={`health-badge h-${a.health_state}`}>
                         {a.verified ? <CheckCircle2 size={11} /> : a.health_state === "no-events" ? <ShieldQuestion size={11} /> : <Activity size={11} />}
                         {HEALTH_LABELS[a.health_state] ?? a.health_state}
@@ -458,6 +515,22 @@ function EndpointInfo({
 }
 
 // ── 监控树节点 ──
+
+/** 桌面通知「定位本轮」：在监控树里找到内部会话行 ID 对应的 Agent/实例/会话。 */
+function findSessionInTree(
+  tree: TreeAgent[],
+  sessionId: string,
+): { agentId: string; instanceId: string | null; session: TreeSession } | null {
+  for (const agent of tree) {
+    for (const inst of agent.instances) {
+      const session = inst.sessions.find((s) => s.id === sessionId);
+      if (session) return { agentId: agent.id, instanceId: inst.id, session };
+    }
+    const unassigned = agent.unassignedSessions.find((s) => s.id === sessionId);
+    if (unassigned) return { agentId: agent.id, instanceId: null, session: unassigned };
+  }
+  return null;
+}
 
 /** 跳转结果 → Toast（成功/降级/失败都如实反馈）。 */
 function toastNavResult(showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void, r: { success: boolean; reason?: string; fallback_used: boolean; verification_level: string }, name: string) {
@@ -639,7 +712,7 @@ function SessionNode({
   // 能力未知（caps 未加载）时保守显示「跳转」；后端会诚实降级并在 Toast 说明
   const jumpSupported = canResume || canFocus;
   return (
-    <div className={`tree-session attention-${session.liveState}`}>
+    <div className={`tree-session attention-${session.liveState}`} data-agent-session-id={session.id}>
       {/* 行容器 div + 兄弟按钮：展开只负责展开，跳转只负责跳转（修复嵌套 button） */}
       <div className="tree-row">
         <button
@@ -677,7 +750,7 @@ function SessionNode({
       {open && (
         <div className="tree-children">
           {session.runs.map((run) => (
-            <div key={run.id} className={`run-item state-${run.status}`}>
+            <div key={run.id} className={`run-item state-${run.status}`} data-agent-run-id={run.id}>
               <span className={`agent-dot state-${run.status}`} />
               <div className="run-main">
                 <div className="run-title">

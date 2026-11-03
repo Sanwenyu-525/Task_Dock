@@ -10,7 +10,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Bell,
-  Bot,
   Check,
   ChevronDown,
   Inbox,
@@ -19,6 +18,7 @@ import {
   ShieldQuestion,
   Undo2,
 } from "lucide-react";
+import AgentIcon from "../ui/AgentIcon";
 import {
   useActionsStore,
   attentionCount,
@@ -420,7 +420,7 @@ export default function ActionCenterPanel() {
                         {PRIORITY_LABELS[item.priority] ?? "P3"}
                       </span>
                       <span className={`action-kind k-${item.kind}`}>
-                        {item.kind === "reminder" ? <Bell size={10} /> : <Bot size={10} />}
+                        {item.kind === "reminder" ? <Bell size={10} /> : <AgentIcon size={10} />}
                         {kindLabel(item.kind)}
                       </span>
                       {item.category === "notification" && (

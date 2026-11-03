@@ -9,7 +9,8 @@
 //! 旧页并提示刷新，绝不把有缺口的列表伪装成完整时间轴。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Bot, CheckCheck, Trash2, ChevronRight, ChevronDown, Inbox } from "lucide-react";
+import { Bell, CheckCheck, Trash2, ChevronRight, ChevronDown, Inbox } from "lucide-react";
+import AgentIcon from "../ui/AgentIcon";
 import {
   clearNotifications,
   listAgentEvents,
@@ -402,7 +403,7 @@ export default function HistoryPanel() {
                   <div className="history-head">
                     {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                     <span className={`history-kind ${e.kind === "event" ? `ev-${e.event?.state}` : `nk-${e.source}`}`}>
-                      {e.kind === "event" ? <Bot size={10} /> : <Bell size={10} />}
+                      {e.kind === "event" ? <AgentIcon size={10} /> : <Bell size={10} />}
                       {e.kind === "event"
                         ? `${e.source} · ${AGENT_STATE_LABELS[e.event?.state ?? ""] ?? e.event?.state}`
                         : NOTIFICATION_KIND_LABELS[e.source] ?? e.source}

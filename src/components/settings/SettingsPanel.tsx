@@ -4,9 +4,10 @@
 import { useEffect, useState } from "react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  Palette, AppWindow, Bell, Bot, Database, FlaskConical, Copy, Eye, EyeOff,
+  Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
   RefreshCw, ChevronDown, ChevronRight, Navigation, Clipboard, Trash2, Gauge, Layers,
 } from "lucide-react";
+import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
 import {
   auditTestData,
   backupNow,
@@ -59,7 +60,7 @@ function Section({
   defaultOpen = true,
   children,
 }: {
-  icon: typeof Palette;
+  icon: IconComponent;
   title: string;
   description?: string;
   defaultOpen?: boolean;
@@ -474,11 +475,11 @@ export default function SettingsPanel() {
           />
         </div>
         <div className="setting-row">
-          <span>全局快捷键（Ctrl+Alt+T 显示 · Ctrl+Shift+Space 快速添加）</span>
+          <span>全局快捷键（Ctrl+Alt+T 显示 · Ctrl+Shift+Space 打开快速捕获窗口）</span>
           <Switch
             checked={settings.hotkey_enabled}
             disabled={busyKey === "hotkey"}
-            ariaLabel="全局快捷键（Ctrl+Alt+T 显示 · Ctrl+Shift+Space 快速添加）"
+            ariaLabel="全局快捷键（Ctrl+Alt+T 显示 · Ctrl+Shift+Space 打开快速捕获窗口）"
             onChange={(v) => withBusy("hotkey", async () => {
               await setHotkeysEnabled(v);
               await useSettingsStore.getState().load();
@@ -486,12 +487,13 @@ export default function SettingsPanel() {
           />
         </div>
         <div className="setting-row">
-          <span>应用内快捷键（Ctrl+1…6 切换标签 · Ctrl+K 快速添加 · Ctrl+Shift+C 剪贴板）</span>
+          <span>应用内快捷键（Ctrl+1…8 切换标签 · Ctrl+K 快速添加 · Ctrl+Shift+C 剪贴板）</span>
           <span className="setting-value">窗口聚焦时生效</span>
         </div>
         <div className="setting-note">
-          Ctrl+1…6 仅完整模式有效，顺序与左侧导航一致；Ctrl+Shift+C 在完整模式切到剪贴板页，
-          紧凑/极简模式开关临时剪贴板抽屉。
+          Ctrl+1…8 仅完整模式有效，顺序与左侧导航一致：收集箱为 Ctrl+5、历史为 Ctrl+6、
+          规划中心为 Ctrl+7、设置为 Ctrl+8。
+          Ctrl+Shift+C 在完整模式切到剪贴板页，紧凑/极简模式开关临时剪贴板抽屉。
         </div>
       </Section>
 
@@ -712,7 +714,7 @@ export default function SettingsPanel() {
         </div>
         <div className="setting-note">
           敏感过滤只覆盖明确的高置信模式，不宣称能识别全部密码 / 令牌；日志只记录类型、大小与计数，
-          绝不记录剪贴板正文或图片内容。来源应用由前台窗口推断，无法确认时会标记为「未知来源」，
+          绝不记录剪贴板正文或图片内容。来源应用由剪贴板所有者窗口（系统记录）或前台窗口推断，无法识别时会标记为「未知来源」，
           此时排除名单无法证明生效，并会启用更保守的凭据字段过滤。建议把密码管理器加入下方排除名单。
           暂停记录后不会读取也不会上传任何内容；发送给 Agent 必须由你在界面中手动触发。
         </div>
@@ -838,7 +840,7 @@ export default function SettingsPanel() {
         </div>
       </Section>
 
-      <Section icon={Bot} title="Agent 接入" defaultOpen={false} description="HTTP 端口、令牌与健康判定">
+      <Section icon={AgentIcon} title="Agent 接入" defaultOpen={false} description="HTTP 端口、令牌与健康判定">
         <div className="setting-row">
           <span>本地 HTTP 接入（仅回环）</span>
           <Switch

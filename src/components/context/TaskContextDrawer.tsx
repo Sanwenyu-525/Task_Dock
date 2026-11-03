@@ -6,7 +6,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppWindow,
   Bell,
-  Bot,
   Camera,
   Check,
   ChevronDown,
@@ -21,6 +20,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import AgentIcon from "../ui/AgentIcon";
 import {
   actionsOpenSession,
   clipboardSnapshotLinks,
@@ -653,7 +653,7 @@ export default function TaskContextDrawer() {
                 <section className="context-section">
                   <div className="context-section-head">
                     <span className="context-section-title">
-                      <Bot size={12} /> Agent 会话
+                      <AgentIcon size={12} /> Agent 会话
                       <em className="badge subtle">{ctx.agents.length}</em>
                     </span>
                   </div>
@@ -765,7 +765,7 @@ export default function TaskContextDrawer() {
                       title={item.kind === "reminder" ? "查看任务" : "跳转到该 Agent 会话"}
                     >
                       <span className={`action-kind k-${item.kind}`}>
-                        {item.kind === "reminder" ? <Bell size={10} /> : <Bot size={10} />}
+                        {item.kind === "reminder" ? <Bell size={10} /> : <AgentIcon size={10} />}
                         {actionKindLabel(item.kind)}
                       </span>
                       <span className="context-row-main">

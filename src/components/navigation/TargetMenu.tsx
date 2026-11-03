@@ -1,7 +1,8 @@
 //! 目标快捷菜单：任务卡多目标时的弹出选择（键盘可操作）。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Globe, FileText, FolderOpen, Bot, AppWindow, ChevronRight, Rocket } from "lucide-react";
+import { Globe, FileText, FolderOpen, AppWindow, ChevronRight, Rocket } from "lucide-react";
+import AgentIcon from "../ui/AgentIcon";
 import type { TaskNavLink, NavigationTargetType } from "../../lib/navigation";
 import { avatarHue, buildTargetMenuItems, moveMenuIndex, stateBadge } from "../../lib/navigation";
 import { useOverlayLayer } from "../ui/overlay";
@@ -15,7 +16,7 @@ export function TargetTypeIcon({ type, size = 12 }: { type: NavigationTargetType
     case "directory":
       return <FolderOpen size={size} />;
     case "agent_session":
-      return <Bot size={size} />;
+      return <AgentIcon size={size} />;
     default:
       return <AppWindow size={size} />;
   }
