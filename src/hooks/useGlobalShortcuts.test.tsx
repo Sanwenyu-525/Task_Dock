@@ -1,8 +1,8 @@
 /**
  * @vitest-environment jsdom
  */
-//! 全局快捷键契约（v0.6）：
-//! - Ctrl+1…6 依次切到六个侧边栏入口，顺序与左侧导航一致；
+//! 全局快捷键契约（v0.7）：
+//! - Ctrl+1…7 依次切到七个侧边栏入口，顺序与左侧导航一致；
 //! - Ctrl+K 触发快速添加；输入框里不抢按键；
 //! - Ctrl+Shift+C 完整模式进剪贴板页面，紧凑/极简模式开关临时抽屉；
 //! - 非完整模式不响应 Ctrl+数字（避免极简窗口被切到隐藏页面）。
@@ -35,9 +35,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("全局快捷键", () => {
-  it("Ctrl+1…6 依次切到六个侧边栏入口", () => {
+  it("Ctrl+1…7 依次切到七个侧边栏入口", () => {
     renderHook(() => useGlobalShortcuts());
-    const expected: Tab[] = ["tasks", "agents", "actions", "clipboard", "history", "settings"];
+    const expected: Tab[] = [
+      "tasks",
+      "agents",
+      "actions",
+      "clipboard",
+      "history",
+      "roadmap",
+      "settings",
+    ];
     expect([...TAB_ORDER]).toEqual(expected);
     for (let i = 0; i < expected.length; i++) {
       press({ code: `Digit${i + 1}`, ctrlKey: true });
@@ -45,9 +53,9 @@ describe("全局快捷键", () => {
     }
   });
 
-  it("Ctrl+7 及以上没有对应入口，不切页", () => {
+  it("Ctrl+8 及以上没有对应入口，不切页", () => {
     renderHook(() => useGlobalShortcuts());
-    press({ code: "Digit7", ctrlKey: true });
+    press({ code: "Digit8", ctrlKey: true });
     expect(useUiStore.getState().tab).toBe("tasks");
   });
 

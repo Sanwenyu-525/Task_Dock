@@ -1,4 +1,4 @@
-//! 完整模式：左侧垂直导航 + 任务 / Agent / 行动 / 剪贴板 / 历史 / 设置 六个面板。
+//! 完整模式：左侧垂直导航 + 任务 / Agent / 行动 / 剪贴板 / 历史 / 规划中 / 设置 七个面板。
 //!
 //! v0.6：由顶部横向标签改为**左侧垂直导航**（两套视觉预设共用同一结构）。
 //! - 图标 + 文字，选中态由预设决定（梦幻渐变=淡色药丸，液态玻璃=玻璃胶囊）
@@ -6,6 +6,7 @@
 //! - 「新建任务」置于导航顶部，仅图标（可访问名由 aria-label 提供），复用 Ctrl+K / 标题栏的快速添加行为
 //! - 窄窗（< 380px）时只留图标，避免挤压右侧统计卡与筛选行
 //! - v0.6：剪贴板正式成为第 4 个入口（不再是覆盖整屏的抽屉）
+//! - v0.7：新增「规划中」入口（历史之后、设置之前），统一功能规划目录的展示层
 
 import { useUiStore, TAB_ORDER, type Tab } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
@@ -15,8 +16,9 @@ import AgentPanel from "./agents/AgentPanel";
 import ActionCenterPanel from "./actions/ActionCenterPanel";
 import ClipboardPanel from "./clipboard/ClipboardPanel";
 import HistoryPanel from "./history/HistoryPanel";
+import FeatureRoadmapPanel from "./roadmap/FeatureRoadmapPanel";
 import SettingsPanel from "./settings/SettingsPanel";
-import { ListTodo, Bot, Zap, Clipboard, History, Settings as SettingsIcon, Plus } from "lucide-react";
+import { ListTodo, Bot, Zap, Clipboard, History, Map, Settings as SettingsIcon, Plus } from "lucide-react";
 
 const TAB_META: Record<Tab, { label: string; icon: typeof ListTodo; badge?: "intervention" | "attention" | "pending" }> = {
   tasks: { label: "任务", icon: ListTodo, badge: "pending" },
@@ -24,6 +26,7 @@ const TAB_META: Record<Tab, { label: string; icon: typeof ListTodo; badge?: "int
   actions: { label: "行动", icon: Zap, badge: "attention" },
   clipboard: { label: "剪贴板", icon: Clipboard },
   history: { label: "历史", icon: History },
+  roadmap: { label: "规划中", icon: Map },
   settings: { label: "设置", icon: SettingsIcon },
 };
 
@@ -97,6 +100,7 @@ export default function FullView() {
         {tab === "actions" && <ActionCenterPanel />}
         {tab === "clipboard" && <ClipboardPanel />}
         {tab === "history" && <HistoryPanel />}
+        {tab === "roadmap" && <FeatureRoadmapPanel />}
         {tab === "settings" && <SettingsPanel />}
       </div>
     </div>

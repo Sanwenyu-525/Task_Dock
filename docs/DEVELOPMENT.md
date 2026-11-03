@@ -80,7 +80,9 @@ task_dock/
 │   ├── styles-ui.css           # UI 基元结构层 + --z-* 层级刻度
 │   ├── store/                  # Zustand：tasks / agents / actions / clipboard / settings / ui / navigation
 │   ├── hooks/useEdgeSnap.ts    # 贴边吸附 + 窗口持久化
-│   ├── hooks/useGlobalShortcuts.ts  # Ctrl+1…6 / Ctrl+K / Ctrl+Shift+C（可单测）
+│   ├── hooks/useGlobalShortcuts.ts  # Ctrl+1…7 / Ctrl+K / Ctrl+Shift+C（可单测）
+│   ├── lib/featureCatalog.ts    # 统一功能规划目录（12 项核心功能固定 ID，测试锁定）
+│   ├── components/roadmap/      # 「规划中」面板：目录展示层（分类/筛选/详情）
 │   ├── components/ui/          # v0.6 UI 基元：Select / Combobox / DropdownMenu / Popover /
 │   │                           #   DateTimePicker / Dialog / Toggle / NumberInput / Tooltip
 │   ├── components/navigation/  # TargetMenu / AppPicker / WorkspaceLauncher

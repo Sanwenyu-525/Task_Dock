@@ -1,0 +1,164 @@
+//! 功能目录契约测试：12 项核心功能数量锁定、ID 唯一性、字段与状态口径校验。
+//! 这是「防止后续迭代遗漏核心功能」的自动化防线（规划页与 ROADMAP.md 均派生自此处）。
+
+import { describe, expect, it } from "vitest";
+import {
+  CATEGORY_META,
+  CATEGORY_ORDER,
+  CORE_FEATURE_COUNT,
+  CORE_FEATURE_IDS,
+  FEATURE_CATALOG,
+  featureCatalogSummary,
+  featuresByCategory,
+  getFeatureById,
+  type FeatureStatus,
+} from "./featureCatalog";
+
+describe("12 项核心功能登记", () => {
+  it("核心功能常量数量锁定为 12", () => {
+    expect(CORE_FEATURE_COUNT).toBe(12);
+    expect(CORE_FEATURE_IDS).toHaveLength(12);
+  });
+
+  it("12 个固定 ID 在目录中全部存在且不重复登记", () => {
+    for (const id of CORE_FEATURE_IDS) {
+      expect(getFeatureById(id), `核心功能 ${id} 未登记`).toBeTruthy();
+    }
+    // 核心功能按 P0/P1/P2 分属 core/workflow/info 三个分区，
+    // 「核心」由固定 ID 集合定义，而不是某个单一分类
+    const idsInCatalog = FEATURE_CATALOG.map((f) => f.id);
+    const coreOccurrences = idsInCatalog.filter((id) => (CORE_FEATURE_IDS as readonly string[]).includes(id));
+    expect(coreOccurrences).toHaveLength(12);
+  });
+
+  it("P0 五项登记在 core 分区，P1/P2 核心项分属 workflow/info 分区", () => {
+    for (const id of CORE_FEATURE_IDS) {
+      const f = getFeatureById(id)!;
+      if (f.priority === "P0") expect(f.category, `${id}`).toBe("core");
+      if (f.priority === "P1") expect(f.category, `${id}`).toBe("workflow");
+      if (f.priority === "P2") expect(f.category, `${id}`).toBe("info");
+    }
+  });
+
+  it("12 项核心功能 P0/P1/P2 分层正确（5 + 4 + 3）", () => {
+    const byPriority = { P0: 0, P1: 0, P2: 0 } as Record<string, number>;
+    for (const id of CORE_FEATURE_IDS) {
+      const f = getFeatureById(id)!;
+      byPriority[f.priority] += 1;
+    }
+    expect(byPriority.P0).toBe(5);
+    expect(byPriority.P1).toBe(4);
+    expect(byPriority.P2).toBe(3);
+  });
+
+  it("已实现的核心功能没有被错误标记为待开发（行动中心已落地）", () => {
+    const actionCenter = getFeatureById("core.agent-action-center");
+    expect(actionCenter?.status).toBe("implemented");
+    expect(actionCenter?.verification).toBe("verified");
+    expect(actionCenter?.existingFeatures.length).toBeGreaterThan(0);
+  });
+
+  it("部分实现的核心功能都能列出具体缺口", () => {
+    const partialCore = CORE_FEATURE_IDS.map((id) => getFeatureById(id)!).filter(
+      (f) => f.status === "partial",
+    );
+    // 复核结论：快速捕获 / 场景工作区 / 现场恢复 / 智能提醒 / 通知聚合 / 生活例行 均为 partial
+    expect(partialCore.map((f) => f.id).sort()).toEqual(
+      [
+        "core.quick-capture",
+        "core.scenario-workspace",
+        "core.workspace-restore",
+        "core.smart-reminders",
+        "core.notification-aggregation",
+        "core.life-routines",
+      ].sort(),
+    );
+    for (const f of partialCore) {
+      expect(f.existingFeatures.length, `${f.id} 应列出已有能力`).toBeGreaterThan(0);
+      expect(f.missingFeatures.length, `${f.id} 应列出剩余缺口`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("目录结构契约", () => {
+  it("全目录 ID 唯一", () => {
+    const ids = FEATURE_CATALOG.map((f) => f.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("五个分类均有条目且元数据齐全", () => {
+    for (const c of CATEGORY_ORDER) {
+      expect(CATEGORY_META[c].label.length).toBeGreaterThan(0);
+      expect(CATEGORY_META[c].description.length).toBeGreaterThan(0);
+    }
+    const groups = featuresByCategory();
+    expect(groups.map((g) => g.category)).toEqual([...CATEGORY_ORDER]);
+    expect(groups.reduce((n, g) => n + g.items.length, 0)).toBe(FEATURE_CATALOG.length);
+  });
+
+  it("每项必备字段非空", () => {
+    for (const f of FEATURE_CATALOG) {
+      expect(f.title.trim().length, `${f.id} title`).toBeGreaterThan(0);
+      expect(f.description.trim().length, `${f.id} description`).toBeGreaterThan(0);
+      expect(f.detail.trim().length, `${f.id} detail`).toBeGreaterThan(0);
+      expect(f.acceptanceCriteria.length, `${f.id} acceptanceCriteria`).toBeGreaterThan(0);
+      expect(f.dependencies.length, `${f.id} dependencies`).toBeGreaterThan(0);
+    }
+  });
+
+  it("状态取值合法且符合状态约束", () => {
+    const validStatus: FeatureStatus[] = ["implemented", "partial", "planned", "blocked"];
+    for (const f of FEATURE_CATALOG) {
+      expect(validStatus).toContain(f.status);
+      if (f.status === "implemented") {
+        expect(f.existingFeatures.length, `${f.id} 已实现须有 existingFeatures`).toBeGreaterThan(0);
+        expect(f.missingFeatures, `${f.id} 已实现不应有缺口`).toHaveLength(0);
+        expect(f.entryPoints?.length, `${f.id} 已实现须给出入口`).toBeGreaterThan(0);
+      }
+      if (f.status === "partial") {
+        expect(f.existingFeatures.length, `${f.id}`).toBeGreaterThan(0);
+        expect(f.missingFeatures.length, `${f.id}`).toBeGreaterThan(0);
+      }
+      if (f.status === "planned") {
+        expect(f.missingFeatures.length, `${f.id} 待开发须登记剩余工作`).toBeGreaterThan(0);
+      }
+      if (f.status === "blocked") {
+        expect((f.blockedReason ?? "").length, `${f.id} 受阻须说明原因`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("verification 取值合法，已验证项必须已实现", () => {
+    for (const f of FEATURE_CATALOG) {
+      expect(["verified", "unverified"]).toContain(f.verification);
+      if (f.verification === "verified") {
+        expect(f.status, `${f.id} 未实现不应标记已验证`).toBe("implemented");
+      }
+    }
+  });
+
+  it("优先级取值合法", () => {
+    for (const f of FEATURE_CATALOG) {
+      expect(["P0", "P1", "P2"]).toContain(f.priority);
+    }
+  });
+});
+
+describe("统计摘要", () => {
+  it("状态计数之和等于总数，核心计数为 12", () => {
+    const s = featureCatalogSummary();
+    expect(s.coreTotal).toBe(12);
+    expect(s.implemented + s.partial + s.planned + s.blocked).toBe(s.total);
+    expect(s.verified + s.unverified).toBe(s.total);
+    // 各状态都有代表：不允许「所有卡片都显示待开发」的失真目录
+    expect(s.implemented).toBeGreaterThan(0);
+    expect(s.partial).toBeGreaterThan(0);
+    expect(s.planned).toBeGreaterThan(0);
+    expect(s.blocked).toBeGreaterThan(0);
+  });
+
+  it("按 id 查找命中", () => {
+    expect(getFeatureById("core.focus-timer")?.title).toBe("专注与休息");
+    expect(getFeatureById("not-exist")).toBeUndefined();
+  });
+});

@@ -1,11 +1,12 @@
 /**
  * @vitest-environment jsdom
  */
-//! 完整模式左侧导航（v0.6）：
-//! - 六个入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
-//! - 点击切换 tab（保持 Ctrl+1…6 同一套 store）；
+//! 完整模式左侧导航（v0.7）：
+//! - 七个入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
+//! - 点击切换 tab（保持 Ctrl+1…7 同一套 store）；
 //! - 徽标直接复用任务统计 / 行动中心口径，不新造计数；
-//! - 顶部入口切到任务页并聚焦快速添加。
+//! - 顶部入口切到任务页并聚焦快速添加；
+//! - 「规划中」位于历史之后、设置之前（功能规划目录入口）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -17,6 +18,7 @@ vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }
 vi.mock("./actions/ActionCenterPanel", () => ({ default: () => <div>actions-panel</div> }));
 vi.mock("./clipboard/ClipboardPanel", () => ({ default: () => <div>clipboard-panel</div> }));
 vi.mock("./history/HistoryPanel", () => ({ default: () => <div>history-panel</div> }));
+vi.mock("./roadmap/FeatureRoadmapPanel", () => ({ default: () => <div>roadmap-panel</div> }));
 vi.mock("./settings/SettingsPanel", () => ({ default: () => <div>settings-panel</div> }));
 
 import FullView from "./FullView";
@@ -46,11 +48,11 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("渲染六个导航入口与顶部新建按钮", () => {
+  it("渲染七个导航入口与顶部新建按钮", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["任务", "Agent", "行动", "剪贴板", "历史", "设置"]) {
+    for (const label of ["任务", "Agent", "行动", "剪贴板", "历史", "规划中", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
     expect(screen.getByRole("button", { name: "新建任务" })).toBeTruthy();
@@ -82,6 +84,17 @@ describe("完整模式左侧导航", () => {
     expect(screen.getByText("clipboard-panel")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("clipboard");
     expect(navItem("剪贴板").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("规划中位于历史之后、设置之前，点击后渲染规划面板", async () => {
+    const user = userEvent.setup();
+    render(<FullView />);
+
+    await user.click(navItem("规划中"));
+    expect(screen.getByText("roadmap-panel")).toBeTruthy();
+    expect(useUiStore.getState().tab).toBe("roadmap");
+    expect(navItem("规划中").getAttribute("aria-current")).toBe("page");
+    expect(navItem("历史").getAttribute("aria-current")).toBeNull();
   });
 
   it("徽标复用任务统计与行动中心计数", () => {

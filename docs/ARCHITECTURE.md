@@ -277,8 +277,8 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   跳转 Agent 会话或任务上下文。
 - 任务上下文抽屉（v0.5）：`TaskContextDrawer` 复用次级抽屉视觉，按需加载
   `task_context`；现场恢复进度订阅 `workspace-restore-progress`，与剪贴板抽屉互斥。
-- 应用内快捷键：Ctrl+1…6 切换标签（顺序与侧边栏一致，取自 `useUiStore` 的
-  `TAB_ORDER` 单一事实源）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
+- 应用内快捷键：Ctrl+1…7 切换标签（顺序与侧边栏一致，取自 `useUiStore` 的
+  `TAB_ORDER` 单一事实源，v0.7 起含「规划中」）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
   （完整模式切到剪贴板页，紧凑/最小模式开关临时抽屉）；
   输入框内不拦截，窗口聚焦时生效。实现见 `src/hooks/useGlobalShortcuts.ts`。
 - 视觉系统（v0.6）：三个正交维度——视觉预设 `visual_preset`
