@@ -628,6 +628,156 @@ ALTER TABLE clipboard_items ADD COLUMN title TEXT NOT NULL DEFAULT '';
 ALTER TABLE clipboard_items ADD COLUMN title_source TEXT NOT NULL DEFAULT 'none';
 "#,
     ),
+    (
+        16,
+        r#"
+-- v16（Task Dock 0.7）：剪贴板来源识别方式。
+-- owner：GetClipboardOwner() 记录的系统所有者窗口（不保证是实际复制者）；
+-- foreground：只能拿前台窗口，属于推断；unknown：连进程都认不出。
+-- 旧记录保持 ''（未记录），界面不得声称任何一方的准确性。
+ALTER TABLE clipboard_items ADD COLUMN source_kind TEXT NOT NULL DEFAULT ''
+  CHECK (source_kind IN ('', 'owner', 'foreground', 'unknown'));
+"#,
+    ),
+    (
+        17,
+        r#"
+-- v17（Task Dock 0.7）：全局快速捕获（收集箱 + 草稿）。
+-- client_id 由前端生成并加唯一索引，配合单事务实现幂等提交：
+-- 同一 client_id 重复提交只返回已有记录，不重复建任务。
+-- kind：task（建任务，解析时间）/ todo（建任务，仅标题）/ idea / text / link（只进收集箱）。
+-- status：inbox 待处理 / handled 已处理 / converted 已转任务（task_id 指向 tasks.id）。
+-- 正文只存库，不写日志；错误信息也不回显正文。
+CREATE TABLE quick_capture_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  client_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('task', 'idea', 'text', 'todo', 'link')),
+  content TEXT NOT NULL,
+  url TEXT,
+  note TEXT,
+  status TEXT NOT NULL DEFAULT 'inbox' CHECK (status IN ('inbox', 'handled', 'converted')),
+  task_id TEXT,
+  source TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_quick_capture_client ON quick_capture_items(client_id);
+CREATE INDEX idx_quick_capture_status_created ON quick_capture_items(status, created_at);
+CREATE INDEX idx_quick_capture_task ON quick_capture_items(task_id);
+-- 单行草稿（id 恒为 'active'）：前端防抖写入、重启恢复；提交成功在事务内清空。
+CREATE TABLE quick_capture_draft (
+  id TEXT PRIMARY KEY NOT NULL CHECK (id = 'active'),
+  kind TEXT NOT NULL CHECK (kind IN ('task', 'idea', 'text', 'todo', 'link')),
+  content TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+"#,
+    ),
+    (
+        18,
+        r#"
+-- v18（Task Dock 0.7）：规划中心 —— 用户自建的多项目功能规划与进度记录。
+-- 与内置 Task Dock 路线图（featureCatalog.ts 静态目录）严格分离：
+-- 内置目录不迁移、不可被用户编辑覆盖；本组表只存「我的项目」。
+-- 所有主键为应用生成的 UUID；更新时间由命令层维护；
+-- 删除行为：项目级联删除里程碑/功能/步骤/历史，里程碑删除把功能关联置空，
+-- 功能删除级联其步骤与历史（不留悬挂引用）。
+CREATE TABLE planning_projects (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  -- 项目状态（与归档相互独立）：planning 规划中 / in_progress 进行中 /
+  -- paused 已暂停 / completed 已完成
+  status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning','in_progress','paused','completed')),
+  archived INTEGER NOT NULL DEFAULT 0,
+  target_date TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_planning_projects_sort ON planning_projects(archived, sort_order, created_at);
+
+CREATE TABLE planning_milestones (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES planning_projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  target_date TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_planning_milestones_project ON planning_milestones(project_id, sort_order);
+
+CREATE TABLE planning_features (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES planning_projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  -- 状态与进度相互独立：不由步骤完成率推断（5/5 但仍处于 review 是合法状态）
+  status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','in_progress','review','completed','blocked','paused')),
+  priority TEXT NOT NULL DEFAULT 'P1' CHECK (priority IN ('P0','P1','P2')),
+  milestone_id TEXT REFERENCES planning_milestones(id) ON DELETE SET NULL,
+  target_date TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX idx_planning_features_project ON planning_features(project_id, sort_order);
+CREATE INDEX idx_planning_features_status ON planning_features(project_id, status);
+CREATE INDEX idx_planning_features_milestone ON planning_features(milestone_id);
+
+CREATE TABLE planning_feature_steps (
+  id TEXT PRIMARY KEY NOT NULL,
+  feature_id TEXT NOT NULL REFERENCES planning_features(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  done INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX idx_planning_steps_feature ON planning_feature_steps(feature_id, sort_order);
+
+-- 开发进度历史，三类记录显式区分：
+-- note：用户主动提交的开发日志；status_change：功能状态变化（同一事务写入）；
+-- step_done：开发步骤勾选/重开事件。
+-- 不自动根据 Agent 状态写入，不凭日志内容推断进度。
+CREATE TABLE planning_activity (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES planning_projects(id) ON DELETE CASCADE,
+  feature_id TEXT REFERENCES planning_features(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('note','status_change','step_done')),
+  old_status TEXT,
+  new_status TEXT,
+  message TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_planning_activity_project ON planning_activity(project_id, created_at);
+CREATE INDEX idx_planning_activity_feature ON planning_activity(feature_id, created_at);
+"#,
+    ),
+    (
+        19,
+        r#"
+-- v19（Task Dock 0.7）：规划功能增加可选的验收标准文本。
+-- 与开发步骤严格分离：steps 是可勾选的开发拆解，验收标准是交付判据；
+-- 空串表示尚未填写（UI 不得用步骤冒充验收标准或生成占位条目）。
+ALTER TABLE planning_features ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '';
+"#,
+    ),
+    (
+        20,
+        r#"
+-- v20（Task Dock 0.7）：智能日程提醒 2.0 —— 重复规则扩展。
+-- 每月第 N 个星期X（1..=5）/ 每月最后一个星期X / 每月最后一个工作日：
+-- by_setpos 与既有 by_weekday 组合表达；「最后一个工作日」= by_weekday=[1..5] + by_setpos=-1
+-- （自然周工作日语义，不接节假日 API）。旧数据该列为 NULL → 旧行为完全不变；
+-- 备份/恢复按行原样搬运，旧程序读到非 NULL 值会忽略该列（SELECT 未引用）不受影响。
+ALTER TABLE recurrence_rules ADD COLUMN by_setpos INTEGER;
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1349,6 +1499,9 @@ pub struct Settings {
     /// 高置信敏感内容过滤（如 PEM 私钥）；不宣称能识别全部密码/令牌
     #[serde(default = "default_true")]
     pub clipboard_sensitive_filter: bool,
+    /// 全局快速捕获上次选择的类型（task/idea/text/todo/link）
+    #[serde(default = "default_capture_last_type")]
+    pub quick_capture_last_type: String,
 }
 
 fn default_theme() -> String {
@@ -1435,6 +1588,9 @@ fn default_clip_paste_html_interval() -> u32 {
 }
 fn default_clip_paste_files_interval() -> u32 {
     900
+}
+fn default_capture_last_type() -> String {
+    "task".into()
 }
 
 impl Default for Settings {
@@ -2731,6 +2887,8 @@ mod tests {
                      DROP TABLE workspace_snapshot_items;
                      DROP TABLE workspace_snapshots;
                      DROP TABLE action_acks;
+                     DROP TABLE quick_capture_items;
+                     DROP TABLE quick_capture_draft;
                      DROP INDEX IF EXISTS idx_events_ingest_seq;
                      DROP INDEX IF EXISTS idx_events_run_latest;
                      DROP INDEX IF EXISTS idx_events_origin_received;
@@ -2755,6 +2913,14 @@ mod tests {
                      ALTER TABLE agent_runs DROP COLUMN last_ingest_seq;
                      ALTER TABLE agent_runs DROP COLUMN last_event_at;
                      DELETE FROM application_settings WHERE key = 'origin_backfill_v12';
+                     -- v18（规划中心）在降级时尚未存在：撤销到 v4 语义需一并移除
+                     DROP TABLE planning_activity;
+                     DROP TABLE planning_feature_steps;
+                     DROP TABLE planning_features;
+                     DROP TABLE planning_milestones;
+                     DROP TABLE planning_projects;
+                     -- v20（重复规则 by_setpos）同样属于降级后不存在的列
+                     ALTER TABLE recurrence_rules DROP COLUMN by_setpos;
                      PRAGMA user_version = 4;",
                 )?;
                 Ok::<_, AppError>(())
