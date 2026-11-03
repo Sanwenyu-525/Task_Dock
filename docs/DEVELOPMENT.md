@@ -80,7 +80,7 @@ task_dock/
 │   ├── styles-ui.css           # UI 基元结构层 + --z-* 层级刻度
 │   ├── store/                  # Zustand：tasks / agents / actions / clipboard / settings / ui / navigation
 │   ├── hooks/useEdgeSnap.ts    # 贴边吸附 + 窗口持久化
-│   ├── hooks/useGlobalShortcuts.ts  # Ctrl+1…7 / Ctrl+K / Ctrl+Shift+C（可单测）
+│   ├── hooks/useGlobalShortcuts.ts  # Ctrl+1…8 / Ctrl+K / Ctrl+Shift+C（可单测）
 │   ├── lib/featureCatalog.ts    # 统一功能规划目录（12 项核心功能固定 ID，测试锁定）
 │   ├── components/roadmap/      # 「规划中」面板：目录展示层（分类/筛选/详情）
 │   ├── components/ui/          # v0.6 UI 基元：Select / Combobox / DropdownMenu / Popover /
@@ -148,6 +148,25 @@ task_dock/
 | `workspace_detach_task` / `workspace_prune` | 解绑任务（降级手动快照）/ 清理上限 |
 | `task_context(task_id)` | 统一上下文聚合（任务/现场/Agent/关联/素材/动作） |
 | `clipboard_link_snapshot` / `clipboard_unlink_snapshot` / `clipboard_snapshot_links` | 剪贴板素材 ↔ 现场快照关联 |
+
+### 规划中心命令速查（v0.7）
+
+前端封装在 `src/lib/bridge.ts`（planning 段），参数顶层 camelCase、返回字段 snake_case。
+数据边界：只服务用户自建项目；内置路线图（`featureCatalog.ts`）不入库、不可经这些命令修改。
+
+| 命令 | 用途 |
+|---|---|
+| `planning_list_projects(include_archived?)` | 项目列表（含功能统计与整体进度；空项目 has_features=false） |
+| `planning_create_project` / `planning_update_project` / `planning_delete_project` | 项目 CRUD（删除级联功能/步骤/历史；前端必须先确认） |
+| `planning_archive_project(id, archived)` | 归档 / 恢复（与项目状态相互独立） |
+| `planning_reorder_projects(ids)` | 项目排序 |
+| `planning_list_features(project_id)` | 功能列表（含步骤与步骤进度） |
+| `planning_create_feature` / `planning_update_feature` / `planning_delete_feature` | 功能 CRUD；状态变化同事务写入 status_change 历史 |
+| `planning_reorder_features(project_id, ids)` | 功能排序（限定同一项目） |
+| `planning_add_step` / `planning_update_step` / `planning_delete_step` / `planning_reorder_steps` | 步骤 CRUD；勾选/重开同事务写入 step_done 历史 |
+| `planning_list_milestones` / `planning_create_milestone` / `planning_update_milestone` / `planning_delete_milestone` | 里程碑管理（删除时功能关联 SET NULL） |
+| `planning_activity_page(project_id, feature_id?, limit?, offset?)` | 进度历史分页（时间倒序，limit≤100） |
+| `planning_add_note(project_id, feature_id?, message)` | 用户开发日志（kind=note；不解析内容、不推断进度） |
 
 ### 性能测试（需手动运行，不进入 CI）
 

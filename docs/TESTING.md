@@ -11,8 +11,27 @@
 > [clipboard/09-implementation-report.md](clipboard/09-implementation-report.md)、
 > [clipboard/10-remediation-acceptance.md](clipboard/10-remediation-acceptance.md) 与
 > [clipboard/11-final-release-acceptance.md](clipboard/11-final-release-acceptance.md)。
+>
+> 每条结论应选哪条验收通道（自动化测试 / 隔离预览 / CDP + 真实 WebView2 / UIAutomation /
+> Win32-DWM 原生 / 物理操作）见 [ACCEPTANCE_ROUTING.md](ACCEPTANCE_ROUTING.md)；本文只记录结果。
 
 ## 一、自动化测试结果
+
+### 0.0.12 规划中心（多项目功能规划，v0.7，2026-11-03）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo check`（`D:/Develop/task_dock/src-tauri`） | 0（2026-11-03 15:0x，新增 `commands/planning.rs` 与迁移 v18 后） |
+| `cargo test --lib`（同工作树） | **596 passed / 0 failed / 3 ignored**（2026-11-03 15:1x；ignored 为性能/真机套件，不计入通过）。含新增 `commands::planning` 7 项（项目 CRUD+级联、状态历史同事务与 completed_at 语义、步骤进度与统计、里程碑与跨项目守卫、历史分页、输入校验、日期三态）与 `commands::backup` 2 项（规划数据 full/quick 备份往返恢复、旧备份无 planning 表仍可恢复） |
+| `cargo test --tests`（集成套件） | **ENVIRONMENT BLOCKED**：共享 target 链接受阻于运行中的 `task-dock.exe`（os error 5）；未执行，不冒充通过 |
+| `npx tsc --noEmit` | 0（2026-11-03 16:3x） |
+| `npx vitest run`（全量前端） | 931+ 通过；仅 `styles-themes.test.ts` 层叠上下文 1 项失败——`--z-toast(890) < --z-dialog(940)`，定义在 `styles-ui.css`（并行会话未完成工作，本轮 diff 无任何 `z-index`/`--z-*`，见范围外记录）；ClipboardDrawer/ClipboardPanel 3 项在全量并行下超时失败，单独重跑全部通过（负载性抖动） |
+| 新增前端测试 | `usePlanningStore.test` 10 项（乱序防护/删除切换/就地更新/分页追加）、`PlanningCenterPanel.test` 13 项（双数据源切换/空态/概览/筛选/搜索/项目切换/新建/编辑失败保留输入/删除确认影响面/重试/步骤勾选反馈）、`FeatureRoadmapPanel.test` 16 项原样保留通过、`FullView.test` + `FullView.navigationContract.test` 随「规划中心」改名同步 |
+| 生产构建 | 见验收报告（`tmp/acceptance/planning-center/report.md`） |
+
+本轮发现并修复一处真机级缺陷：`ProjectsView` 空项目自动加载 effect 无限重发
+`planning_list_projects`（空列表 + loading 归零使依赖反复成立），以挂载期请求标记修复，
+测试中表现为进程不退出、真机为持续空转。
 
 ### 0.0.11 窗口圆角二轮整改（矩形区域 → CSS 像素支撑区域，2026-11-01 深夜）
 
@@ -166,10 +185,10 @@
 关键回归点（详见 [ui-themes/11-test-results.md](ui-themes/11-test-results.md)）：
 
 - **Escape 优先级**：确认框 > 子弹层 > 菜单 > 抽屉 > 主窗口，一次按键只关一层。
-- **剪贴板侧边栏化**：完整模式七个导航入口（v0.7 起）；页面与关联抽屉共用 `ClipboardWorkspace`，
+- **剪贴板侧边栏化**：完整模式八个导航入口（v0.7 起）；页面与关联抽屉共用 `ClipboardWorkspace`，
   底层只有一条 `onClipboardChanged` 监听（引用计数断言通过）。
 - **日期时间数据完整性**：仅打开浮层不改值、不截断秒、截止与提醒互相独立。
-- **快捷键**：Ctrl+1…7 顺序取自 `TAB_ORDER` 单一事实源；完整模式 Ctrl+Shift+C 切页，
+- **快捷键**：Ctrl+1…8 顺序取自 `TAB_ORDER` 单一事实源；完整模式 Ctrl+Shift+C 切页，
   紧凑/极简模式开关临时抽屉。
 
 ### 0.0.2 剪贴板第四轮专项整改（2026-10-30 22:00→，隐私事务安全 / 图文粘贴 / 内存稳定性）
@@ -712,3 +731,51 @@ Rust：`cargo test --lib` 覆盖 `capsule_regions`（四边 × 折叠/展开、D
 区域外像素审计（`audit.py`，区域外每隔 2px 采样，要求与背景一致且无近白像素）。
 2026-11-02 结果：12 张截图 0 越界；四边 × 明暗/玻璃、展开、解除、启动恢复均通过；
 100%/150% DPI、Windows 10、多显示器、release 构建未验证。
+
+## 快速捕获（v0.7，2026-11-03）
+
+新增/改写的用例（前端随 `npx vitest run`，Rust 随 `cargo test`）：
+
+| 文件 | 覆盖 |
+|---|---|
+| `src/capture/captureUtils.test.ts` | 五类型常量与未知值回落、单选组循环索引、链接识别与句末标点剥离、`suggestKind` 只建议（链接优先于时间词）、空/超长/首行标题校验、提交输入拆分（链接→url+note、`www.` 补协议）、备注截断、草稿状态机与文案、`formatClock`/`newClientId`/`formatError` |
+| `src/capture/CaptureApp.test.tsx` | 挂载同步 last_type 与空内容禁用保存、主题快照、切换类型立即保存草稿、方向键/Home/End 循环、建议不静默改类型、600ms 防抖且只展示后端确认时间、保存失败重试、失焦/`capture-flush-draft`/隐藏事件 flush、唤起恢复草稿提示、字数阈值、Ctrl+Enter 提交成功后约 500ms 隐藏、失败保留内容与同一 client_id、防重复提交、空内容拒绝、链接拆分提交、Esc 关闭、关闭按钮走 bridge、IME 组合中不提交 |
+| `src/components/inbox/CaptureInboxPanel.test.tsx` | 加载未处理列表与类型/内容/时间渲染、筛选全部、复制（链接优先复制 URL）、转任务后移除并递减徽标、标记已处理、全部筛选下禁用处理操作、删除就地二次确认（取消/确认）、两种空态文案、加载失败重试、刷新当前筛选 |
+| `src/lib/featureCatalog.test.ts` | 快速捕获登记为 implemented 且 verification 仍 unverified、能力/入口文本含独立捕获窗口/五类型/收集箱/幂等、partial 集合调整、全目录计数（28 = 4 implemented + 8 partial + 16 planned + 0 blocked） |
+| `src/components/roadmap/FeatureRoadmapPanel.test.tsx` | partial 样例改为场景工作区、quick-capture 显示已实现横幅并给出现有入口 |
+
+Rust：`cargo test --lib` 的 `quick_capture` 模块覆盖窗口定位（主屏居中、副屏 work_area 原点
+偏移、DPI 缩放、工作区过小收缩、非法 scale 回退）、迁移 v17 建表/索引、五种类型落位、空/超长
+内容拒绝且不落行、client_id 重复提交幂等（不重复建任务）、建任务失败回滚捕获行并保留草稿、
+草稿保存/恢复/清空且不混入 items、标记已处理/删除/转任务、task/todo 建可查询任务、列表筛选与
+limit 钳制、last_type 设置与 state。
+
+**真机验收未执行**：全局热键在真实 Windows 桌面的唤起、唤起前前台焦点恢复、DPI
+125%/150%/200%、多显示器定位、置顶/任务栏层级与失焦隐藏未验证；jsdom 单测与浏览器渲染不能
+替代。全量 `cargo test` 本轮在 `src-tauri/target/debug/task-dock.exe` 被并行实例占用时失败
+（os error 5），属环境阻塞，不作为通过证据。详细未验证项见
+[quick-capture/README.md](quick-capture/README.md) 与
+`tmp/acceptance/quick-capture/report.md`。
+
+## 智能日程提醒 2.0（2026-11-03）
+
+新增/改写的用例（前端随 `npx vitest run`，Rust 随 `cargo test`）：
+
+| 文件 | 覆盖 |
+|---|---|
+| `src/lib/sharedClock.test.tsx` | 页面级共享时钟：首个订阅只启动一条 1s interval、多订阅共用同一快照、最后一个退订后释放计时器 |
+| `src/lib/format.test.ts` | `describeRecurrence` 旧规则语义不变 + 工作日 / 每月第 N 个 / 最后一个 / 每 N 月；`formatCountdown` >1h「时:分」、≤1h「分:秒」、到期与负值钳制 |
+| `src/components/tasks/QuickReminder.test.tsx` | 预设 5/10/15/30/60 分钟、自定义时/分校验（1..1440）、创建成功 Toast 含真实提醒时间、失败弹真实错误、创建中防连点 |
+| `src/components/tasks/ActiveReminders.test.tsx` | 无提醒不渲染、倒计时口径与已到期态、延后走 `snoozeReminder`、延后失败显示后端原因、重复任务不提供取消、已延后标记、卸载释放事件订阅 |
+| `src/components/tasks/TaskEditor.test.tsx` | 高级每月模式（第 N 个 / 最后一个星期X / 最后一个工作日）、规则预览、非法组合拒绝、只改标题不清空重复规则 |
+| `src/components/tasks/TaskItem.test.tsx` | 任务卡下次提醒时间与延后菜单（真实命令） |
+| `src/notifications/*` | 任务提醒通知操作（查看 / 稍后 / 完成）与 `ref_id` 路由 |
+
+Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延后后旧时间不再触发、撤销恢复
+与旧撤销失效、重复任务延后后仍推进、每两个月真隔两月、每周多日推进、每月第二个星期一、
+每月最后一个工作日、2 月 28/29 与每月 31 日、跨年边界、重启补偿、已完成/已删除不产生幽灵
+通知、并发延后/取消/领取、旧库重复规则兼容（迁移 v20 升级测试）。
+
+**真机验收未执行**：任务页快捷提醒与倒计时在真实窗口的布局/双主题/320·400 窄窗、系统通知
+弹窗与通知窗口按钮、休眠唤醒后真实补触发未验证；jsdom 单测与预览截图不能替代。
+

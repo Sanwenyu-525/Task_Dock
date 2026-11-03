@@ -52,6 +52,10 @@
 │    · 只存窗口标题/类名/exe、文件路径、URL；不存 HWND/PID          │
 │    · 顺序恢复（默认 350ms 间隔，可取消），逐项验证级别             │
 │                                                               │
+│  quick_capture/   全局快速捕获（v0.7）                        │
+│    · 常驻 capture 窗口、热键 toggle、定位与焦点恢复           │
+│    · 单事务幂等提交、草稿、收集箱读写（SQLite v17）           │
+│                                                               │
 │  nlp.rs / recurrence.rs   中文自然语言解析 · 重复规则计算         │
 │  lib.rs            窗口/托盘/热键/自启动装配                    │
 └──────────────────────────────────────────────────────────────┘
@@ -95,6 +99,25 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     `notify_agent` 任一关闭即不发声（胶囊声音不绕过通知总开关）。
   - OS 通知发送失败从 `debug` 升为 `warn` 日志（含错误原文），结果可通过
     `notification_stats()`（attempted/succeeded/failed）复核；失败不影响通知历史提交，不重试。
+
+### 智能日程提醒 2.0（2026-11-03）
+
+- **快速提醒**：任务页快捷入口（5/10/15/30 分钟、1 小时、自定义时/分，校验 1..=1440 分钟），
+  复用 `tasks` + `task_reminders` 持久化；只存绝对 `remind_at`，**不把剩余秒数写库**。
+- **倒计时**：前端页面级共享时钟（`useSyncExternalStore` + 模块级订阅集合，首个订阅启动 1s
+  interval、最后一个退订释放），只用绝对时间换算；>1h 显示「时:分」，≤1h 显示「分:秒」。
+- **延后**：`snooze_reminder_inner` 在单事务内先读「未触发行」再条件更新，保留 `kind` 与
+  `occurrence`；与调度器 `UPDATE ... WHERE fired=0` 领取串行化。已完成/已取消任务显式拒绝
+  （不补建幽灵提醒）；无未触发提醒时补一条 `custom`，并返回 `inserted_id` 供撤销。
+- **撤销**：`undo_snooze_inner` 以 `(id, snoozed_to, fired=0)` 版本约束恢复原时间；再次延后、
+  编辑或触发后旧撤销自动失效；`inserted_id` 只在本次补建且仍未触发时删除。
+- **通知联动**：任务提醒通知带 `ref_id`（任务 id），卡片提供「查看任务 / 稍后提醒（10 分钟）/
+  完成任务」，全部走真实命令；系统通知无按钮时由应用内通知窗口降级。触发时若
+  `remind_at != occurrence`，body 标注「（已延后）」。
+- **重复规则**：新增 `by_setpos`（1..=5 第 N 个，-1 最后一个）。工作日 = `weekly` +
+  `by_weekday=[1..5]`（自然周，不接节假日 API）；「每月最后一个工作日」= `monthly` +
+  `[1..5]` + `by_setpos=-1`。monthly 以锚点月为相位按 `k*interval` 步进，修复「每两个月」退化为每月。
+- **旧数据兼容**：`by_setpos` 可空，旧规则读回为 null 且行为不变，不静默改写旧设置。
 
 ### 3. Agent 接入层（agents/）
 - 统一接入管线（`pipeline.rs`）：HTTP / 文件投递 / Hook CLI / 插件桥接 / Mock 的事件
@@ -203,6 +226,19 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     Escape/焦点管理走既有 overlay 栈）；原生文件选择器保留。
 - 历史面板：默认加载 100 条，`list_agent_events(before=...)` keyset 分页加载更早事件，
   刷新增量合并；新通知/事件 500ms 防抖刷新。
+- 规划中心（v0.7）：roadmap Tab 升级为双数据源入口
+  （`components/roadmap/PlanningCenterPanel.tsx`，Tab 身份/快捷键不变）：
+  - 「我的项目」：用户自建多项目（SQLite `planning_*` 五表，见数据模型），
+    `store/usePlanningStore.ts` 统一管理（每类列表带请求代际防乱序，变更命令返回
+    后端权威实体就地替换，无轮询）；视图层 `ProjectsView`（项目切换/概览统计/
+    里程碑分组卡片）+ `PlanningFeatureCard`（步骤清单/状态修改/进度历史）+
+    `PlanningDialogs`（项目表单/里程碑管理，走既有 Dialog 与 overlay 栈）。
+  - 进度口径：功能进度 = 已完成步骤/总步骤（无步骤显示「未拆分步骤」，不产出
+    百分比）；项目进度 = 已完成功能/总功能（无功能显示空态，不显示 0%）；功能状态
+    与进度相互独立，不由完成率推断。功能状态变化与步骤勾选在后端同一事务写入
+    `planning_activity`（status_change / step_done / note 三类显式区分）。
+  - 「内置路线图」：Task Dock 自身 28 项功能规划（`lib/featureCatalog.ts` 静态目录）
+    经 `FeatureRoadmapPanel` 原样只读展示，不入库、不被用户项目编辑覆盖。
 - 贴边吸附（v0.6 重写为 Smart Dock Capsule）：判定在 `lib/edgeSnap.ts`（纯函数），
   副作用在 `hooks/useEdgeSnap.ts`。五相状态机 free/candidate/docked-visible/docked-hidden/
   docked-revealed；磁吸滞回（进入 28px / 退出 42px）；隐藏时留 32 CSS px 状态胶囊
@@ -277,8 +313,8 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   跳转 Agent 会话或任务上下文。
 - 任务上下文抽屉（v0.5）：`TaskContextDrawer` 复用次级抽屉视觉，按需加载
   `task_context`；现场恢复进度订阅 `workspace-restore-progress`，与剪贴板抽屉互斥。
-- 应用内快捷键：Ctrl+1…7 切换标签（顺序与侧边栏一致，取自 `useUiStore` 的
-  `TAB_ORDER` 单一事实源，v0.7 起含「规划中」）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
+- 应用内快捷键：Ctrl+1…8 切换标签（顺序与侧边栏一致，取自 `useUiStore` 的
+  `TAB_ORDER` 单一事实源，v0.7 起含「收集箱」「规划中」）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
   （完整模式切到剪贴板页，紧凑/最小模式开关临时抽屉）；
   输入框内不拦截，窗口聚焦时生效。实现见 `src/hooks/useGlobalShortcuts.ts`。
 - 视觉系统（v0.6）：三个正交维度——视觉预设 `visual_preset`
@@ -400,6 +436,56 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 兼容：`snap_state` 新增可选 `center`；停靠期不写 `window_rect`；
   解除吸附按模式尺寸恢复。
 
+### 11. 快速捕获（quick_capture/，v0.7）
+
+任意界面按 `Ctrl+Shift+Space` 打开独立的常驻捕获窗口，主窗口不展开；提交后内容按类型进入任务
+或临时收集箱。窗口与命令在 `src-tauri/src/quick_capture/mod.rs`，数据与校验在 `store.rs`；
+前端窗口在 `capture.html` + `src/capture/`，收集箱面板在 `src/components/inbox/` +
+`src/store/useCaptureStore.ts`。
+
+**静态窗口**（`src-tauri/tauri.conf.json`，全部 `decorations=false`、`transparent=true`、
+`shadow=false`、`alwaysOnTop=true`、`skipTaskbar=true`、默认 `visible=false`；详细能力见
+`src-tauri/capabilities/`）：
+
+| 窗口 | 用途 | 尺寸（逻辑像素） | 关闭语义 |
+|---|---|---|---|
+| `main` | 任务栏主窗（极简/紧凑/完整） | 400×560，可缩放 | 隐藏，可贴边吸附/胶囊区域 |
+| `context-menu` | 托盘/右键菜单 | 250×620，固定 | 失焦隐藏 |
+| `notification` | 桌面通知 | 400×400，固定 | 隐藏后复用 |
+| `capture` | 快速捕获（v0.7） | 640×360，固定、不占任务栏 | `prevent_close` + hide 复用同一 WebView |
+
+捕获窗口 capability 仅 `core:default` + `core:event:default`
+（`src-tauri/capabilities/capture.json`），业务调用走自定义命令，不在窗口内直接调 Tauri
+window API。
+
+**生命周期**：
+- `Ctrl+Shift+Space` 与托盘/右键菜单「快速捕获」都调用 `quick_capture::toggle`：隐藏时记录
+  唤起前前台 HWND（仅进程内存），按「前台窗口显示器 → 光标显示器 → 主显示器」的 work_area
+  物理像素居中并收敛，必要时缩小窗口，`show` + `set_focus` 后发 `quick-capture-summoned`；
+  已可见未聚焦只聚焦；已可见且聚焦则 toggle 隐藏。窗口只创建一次，热键不重复注册。
+- 统一隐藏入口 `hide_capture(app, restore_focus)`：hide → 若隐藏前捕获窗口是前台，单次尽力
+  `focus_window` 恢复唤起前窗口（失败静默、不重试）→ 发 `quick-capture-hidden` → 清 HWND。
+  失焦时先通知前端 flush 草稿再隐藏，不抢回焦点；`Alt+F4` 走 `prevent_close` + hide。
+- 退出路径：窗口可见时发 `capture-flush-draft` 并最多等 300ms 让前端落草稿，再走原有退出排空；
+  隐藏后无轮询。
+- 前端收到 `quick-capture-summoned` 后重读 `quick_capture_state`，恢复草稿与上次类型
+  （设置键 `quick_capture_last_type`）。
+
+**提交与数据流**：`quick_capture_submit` 在单事务内完成「按 `client_id` 查重 → 插入
+`quick_capture_items` → task/todo 在同一事务用 `commands::tasks::create_task_tx` 建任务并回写
+`task_id`/`status='converted'` → 删除 active 草稿 → 提交」；唯一索引冲突时回查并返回
+`duplicate=true`。任务/待办复用现有任务创建链路与中文 NLP 解析，不建第二套任务系统。
+`quick-capture-created` 事件只带 `kind/id/task_id/status`，不含正文。收集箱是完整模式新增的
+第 5 个 tab（导航共 8 个，Ctrl+5），主窗口订阅该事件后合并刷新任务列表与未处理计数。
+
+**数据表**：SQLite v17 追加 `quick_capture_items`（kind 五值、status
+inbox/handled/converted、可选 url/note/task_id、`client_id` 唯一索引）与
+`quick_capture_draft`（单行 `id='active'` 草稿），两表均登记 `BACKUP_TABLES`（core 组）。
+
+**隐私**：捕获内容只来自用户显式输入，不读剪贴板、不采集密码/凭据；日志与错误信息不记录
+正文，错误不拼接内容；无任何外网请求。功能与用户说明见
+[quick-capture/README.md](quick-capture/README.md)。
+
 ## 三、数据模型（SQLite）
 
 ```
@@ -428,6 +514,15 @@ clipboard_snapshot_links  （v0.5 工作现场↔素材，只存关联）
 workspace_snapshots       （任务现场/手动现场；任务删除 SET NULL 降级）
 workspace_snapshot_items  （≤30 项；窗口身份字段，无 HWND/PID）
 action_acks               （行动中心已处理，按 event_id 幂等）
+
+quick_capture_items       （v0.7 捕获记录；client_id 唯一索引幂等；kind 五值；status inbox · handled · converted）
+quick_capture_draft       （v0.7 单行草稿 id='active'；提交成功在同一事务内删除）
+
+planning_projects         （v0.7 规划中心「我的项目」；status planning/in_progress/paused/completed；archived 独立）
+planning_milestones       （v0.7 项目内里程碑；删除时功能关联 SET NULL）
+planning_features         （v0.7 功能规划；状态六值与步骤进度相互独立；completed_at 随状态维护）
+planning_feature_steps    （v0.7 开发步骤；done/completed_at；功能删除级联）
+planning_activity         （v0.7 进度历史：note/status_change/step_done 三类；项目/功能删除级联）
 
 task_categories · notification_history (UNIQUE(kind, ref_id, occurrence)) · application_settings
 ```
@@ -483,6 +578,26 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 **兼容性**：旧版 JSON 导出仍可导入；旧 bundle 缺少扩展模块时不会删除新模块数据；
 新程序拒绝高于 `MANIFEST_VERSION` 的备份，避免静默丢失未知模块。
 
+### v0.7 规划中心数据与备份兼容（2026-11-03）
+
+- 迁移 v18 新增 `planning_*` 五表（项目/里程碑/功能/步骤/进度历史），全部登记
+  `BACKUP_TABLES`（class=planning）与 `EXTENDED_TABLES`（依赖序：项目 → 里程碑 →
+  功能 → 步骤/历史）；完整与快速备份均**全量保存规划数据，不做截断**。
+- 扩展模块完整性校验改为以**备份文件自带的 registry 头**为准（v0.5 起每个 bundle
+  都写入了导出时的表注册表）：文件 registry 声明且属于当前 `EXTENDED_TABLES` 的表
+  必须提供 section；新版本新增扩展表后，**旧备份不会因缺新表被误判为不完整**。
+  无 registry 头的极老文件按 `PRE_PLANNING_EXTENDED_TABLES` 兜底校验。
+- 恢复语义不变：整体替换用户数据。旧备份（无规划数据）恢复会清空当前规划数据
+  （与其余业务表行为一致）；规划中心导入按 `EXTENDED_TABLES` 顺序插入满足外键依赖。
+
+### v0.7 智能日程提醒 2.0 迁移 v20（2026-11-03）
+
+- 迁移 v20 为 `recurrence_rules` 追加可空列 `by_setpos INTEGER`；旧库升级后旧规则
+  `by_setpos = NULL`，`daily` / `weekly(by_weekday)` / `monthly(by_monthday)` 行为不变。
+- `Task.next_remind_at` **不落库**：查询时由
+  `MIN(task_reminders.remind_at) WHERE fired = 0` 子查询计算，避免把调度状态物化成第二份真值。
+- 备份/导出与数据导入同步读写 `by_setpos`；旧备份缺该列时按 null 处理，向前兼容。
+
 ## 四、安全设计
 
 - 本地 HTTP 接入：仅绑 `127.0.0.1`；Bearer 令牌（首次启动随机生成，存本地设置）；
@@ -511,3 +626,9 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   - 自身写入的最终序列号在写入锁内原子登记，采集线程在同一把锁内复核，不产生自记录；
   - 采集有界（事件 64 / 内容 8 条 /128 MB），丢弃计数可查，不伪装零丢失；
   - Agent 导出只写本地文件，不调用网络、不写入 Agent 会话；直接发送明确标注不支持。
+- 快速捕获安全（v0.7）：
+  - 捕获内容只来自用户显式输入；不读剪贴板、不做后台采集，不采集密码/凭据；
+  - 日志与错误信息只记录类型/计数/耗时，**绝不记录捕获正文**，校验错误不回显内容；
+  - 无任何外网请求；草稿与捕获记录只存本地 SQLite，随备份策略处理；
+  - 唤起前前台 HWND 只存进程内存、不落库；焦点恢复单次尽力，失败静默降级；
+  - 捕获窗口 capability 仅 `core:default` + `core:event:default`，业务命令走自定义 IPC。

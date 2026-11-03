@@ -15,7 +15,7 @@
 
 **真实联调通过计数：6 / 7**（Codex、Trae、WorkBuddy、Qoder、DSH、OpenCode；ZCode 待验证不计入）。
 
-范围外但已勘明格式（按用户指示移出本轮）：Claude Code（`~/.claude/settings.json`，本机 v2.1.186）、Cursor（`~/.cursor/hooks.json`，`version:1` + camelCase 事件）、Gemini CLI（未见官方 hooks）。
+范围外但已勘明格式（按用户指示移出本轮）：Claude Code（`~/.claude/settings.json`，本机 v2.1.186）、Cursor（`~/.cursor/hooks.json`，`version:1` + camelCase 事件）、Gemini CLI（2026-11-03 更正：官方 Hooks 已文档化，`settings.json` 的 `hooks` 支持 11 个生命周期事件，见 [geminicli.com/docs/hooks/](https://geminicli.com/docs/hooks/)；原「未见官方 hooks」表述已过时，适配器待开发）。
 
 ---
 

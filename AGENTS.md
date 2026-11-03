@@ -102,6 +102,27 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；能力与当前状态见 [REA
 - 环境失败（锁屏、前台锁拒绝、权限不足、磁盘写满）记 `ENVIRONMENT BLOCKED`，不标记通过也不
   臆断为代码缺陷；同条件复跑结果一并保留；推翻历史结论时保留旧记录并新增带日期的更正。
 
+### 验收方式路由（摘要）
+先定验收目标 → 判断行为层 → 选最低干扰通道 → 必要时组合；完整定义与示例见
+[docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md)。
+- **A 静态与自动化测试**：纯函数、IPC 参数、迁移、契约；不证明真实渲染与系统行为。
+- **B 隔离浏览器预览**：`scripts/serve-preview.mjs` + Playwright；只代表 harness 渲染。
+- **C CDP + 真实 WebView2**：`scripts/acceptance/`、`scripts/native-cdp.mjs`；用 locator
+  click/hover/fill 走真实输入管线；`page.evaluate` 只读状态/诊断，不得改状态后宣称通过；
+  C 只覆盖 WebView2 内交互，不等同原生窗口与系统层。
+- **D UIAutomation**：控件树、可访问名称、disabled 等结构断言；不证明 hover、拖拽、鼠标命中。
+- **E Win32/DWM 原生**：`scripts/native-verify.ps1` 的桌面合成截图与区域/圆角；CDP 页面截图
+  不能替代桌面合成截图。
+- **F 真实物理操作 / computer-use**：仅在无法程序化覆盖时使用；移动光标、抢前台、操作他应用
+  前先取得授权。
+- 默认低干扰：不移动系统光标、不改全局 DPI/通知权限/剪贴板内容；隔离实例用
+  `TASK_DOCK_DATA_DIR`；CDP 只连 `127.0.0.1` 且不连来路不明的 target；结束后释放实例、
+  端口与调试进程。
+- 不移动光标不等于不改变应用状态、焦点、窗口位置或业务数据；证据按项标注通道，
+  `Tooltip hover：C / Playwright CDP / PASS` 只代表该层，跨层结论必须组合通道。
+- CDP 不得用于证明 Win32 裁剪、吸附手感、系统级鼠标命中、系统通知真实展示、实际音效、
+  桌面合成透明度与融合；环境阻塞按上文记录，回退办法见手册第六节。
+
 ## 8. UI/UX 与性能
 - 复用 `src/components/ui/` 基元与语义 Token，不新增平行组件、不硬编码颜色/圆角/阴影。
 - 不产生重复输入框、弹层、事件监听；订阅类逻辑确认引用计数（如剪贴板变更监听全应用只一条）。
