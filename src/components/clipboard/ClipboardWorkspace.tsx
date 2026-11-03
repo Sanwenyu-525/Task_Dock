@@ -7,7 +7,8 @@
 //! - 数据加载、筛选、分页、多选由 useClipboardStore 统一持有；
 //! - 后端变更监听由 store 内部**引用计数**保证全局只有一个 Tauri 监听，
 //!   因此页面与抽屉同时存在时不会重复处理同一次采集事件；
-//! - Escape 走全局弹层栈：确认框(dialog) → 子弹层(sublayer) → 抽屉(drawer) → 主窗口。
+//! - Escape 走全局弹层栈：确认框(dialog) → 顶层模态(modalTop，图片灯箱) →
+//!   子弹层(sublayer) → 抽屉(drawer) → 主窗口。
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
@@ -46,6 +47,7 @@ import ClipboardGroupCard from "./ClipboardGroupCard";
 import ClipboardGroupDetail from "./ClipboardGroupDetail";
 import ClipboardItemCard from "./ClipboardItemCard";
 import ClipboardItemDetail from "./ClipboardItemDetail";
+import ImageLightbox from "./ImageLightbox";
 import PastePanel from "./PastePanel";
 import type { AskConfirm, ClipboardDetail } from "./types";
 
@@ -95,6 +97,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const clearSelection = useClipboardStore((s) => s.clearSelection);
 
   const [detail, setDetail] = useState<ClipboardDetail | null>(null);
+  /** 列表里点缩略图直接打开的原图灯箱（详情视图内的灯箱由 ClipboardItemDetail 自己托管） */
+  const [previewImage, setPreviewImage] = useState<ClipboardItem | null>(null);
   const [status, setStatus] = useState<ClipboardStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [groupName, setGroupName] = useState("");
@@ -591,6 +595,10 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const filterActive = filters.kind !== "all" || filters.favorite || filters.search.trim() !== "";
   /** 清空入口的可用性：条目与分组都为空时没有可清空的内容。 */
   const historyCount = (stats?.items ?? 0) + (stats?.groups ?? 0);
+  /** 所选里是否至少有一条文件/图片；纯文字选区不能「复制为文件」。 */
+  const selectedHasFiles = (view?.items ?? []).some(
+    (i) => selectedItems.includes(i.id) && (i.kind === "image" || i.kind === "files"),
+  );
 
   function renderList() {
     if (section === "groups") {
@@ -683,6 +691,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               onDetail={() => setDetail({ kind: "item", id: item.id })}
               onDelete={() => onDeleteItem(item)}
               onLink={() => void onLink("item", item.id)}
+              onOpenImage={() => setPreviewImage(item)}
             />
           ))}
         </div>
@@ -870,8 +879,12 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           <button
             className="btn sm"
             onClick={() => void onCopySelectedItems("files")}
-            disabled={busy !== null}
-            data-tip="把所选文件/图片作为文件列表复制；普通文字不包含在内"
+            disabled={busy !== null || !selectedHasFiles}
+            data-tip={
+              !selectedHasFiles
+                ? "所选内容没有图片或文件；请使用「复制所选」复制文字"
+                : "把所选文件/图片作为文件列表复制；普通文字不包含在内"
+            }
           >
             {busy === "copy-selected-files" ? <RefreshCw size={11} className="spin" /> : <Copy size={11} />} 复制为文件
           </button>
@@ -916,7 +929,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             className="btn sm primary"
             onClick={onMergeGroups}
             disabled={selectedGroups.length < 2 || busy !== null}
-            title={selectedGroups.length < 2 ? "至少选择两个分组" : "按选择顺序合并"}
+            data-tip={selectedGroups.length < 2 ? "至少选择两个分组" : "按选择顺序合并"}
           >
             {busy === "merge" ? <RefreshCw size={11} className="spin" /> : <Merge size={11} />} 合并
           </button>
@@ -988,6 +1001,14 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           if (run) Promise.resolve(run()).catch((e) => showToast(String(e), { kind: "error" }));
         }}
       />
+
+      {previewImage && (
+        <ImageLightbox
+              item={previewImage}
+              askConfirm={askConfirm}
+              onClose={() => setPreviewImage(null)}
+            />
+      )}
     </>
   );
 }

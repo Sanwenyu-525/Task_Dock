@@ -2,9 +2,17 @@
 //!
 //! - 等比适应窗口（不上采样小图），指针为中心的滚轮缩放、拖拽平移；
 //! - 双击在适应窗口 ↔ 实际尺寸间切换；平移钳制保证图片不会完全拖出可视区；
+//! - 关闭路径三条：遮罩空白处单击、关闭按钮、Escape。图片本体、工具栏、
+//!   缩放控件上的点击一律不关闭；拖拽平移后的那一次 click 也不算「点击遮罩」；
+//!   拖拽的指针捕获会把 click 的 target 重定向到舞台，所以「是否点在遮罩上」
+//!   以 pointerdown 的落点判定，不看 click 的 target；
 //! - 复制原图复用 `clipboard_copy_item` 受控链路（自写登记，不回流）；
-//! - 另存为走系统保存对话框（覆盖确认由对话框完成）+ `clipboard_save_image`；
-//! - 注册为弹层栈 modal 层：Escape 只关灯箱，不会穿透到抽屉/主窗口。
+//! - 另存为：系统保存对话框只负责选路径，目标已存在时由应用内 ConfirmDialog 取得
+//!   显式覆盖授权，再以 overwrite 参数交给 `clipboard_save_image` 的后端执行边界。
+//!   当前 rfd/IFileSaveDialog 不设置 FOS_OVERWRITEPROMPT，系统对话框成功返回路径
+//!   不构成可验证的覆盖授权，因此应用内确认是唯一可靠的授权来源（fail-closed）；
+//! - 注册为弹层栈 modalTop 层（z = --z-modal-top，高于抽屉与详情子视图）：
+//!   Escape 只关灯箱，不会顺带把下层详情一起关掉。
 //!
 //! 性能：原图 data URL 由 Media 的共享缓存提供（去重 IPC、LRU 上限 2 条），
 //! 关闭灯箱只卸载组件状态，缓存条目由 LRU 策略回收。
@@ -17,14 +25,16 @@ import {
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   clipboardCopyItem,
+  clipboardPathStatus,
   clipboardSaveImage,
   type ClipboardItem,
 } from "../../lib/bridge";
-import { formatBytes, sourceLabel } from "../../lib/clipboardUi";
+import { clipSource, formatBytes } from "../../lib/clipboardUi";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 import { useLargeImage } from "./Media";
+import type { AskConfirm } from "./types";
 
 /** 绝对缩放边界：下限允许缩到很小看全貌，上限 16 倍足够看清细节。 */
 const MIN_SCALE = 0.05;
@@ -56,13 +66,18 @@ function clampPan(v: View, nw: number, nh: number, availW: number, availH: numbe
 
 export default function ImageLightbox({
   item,
+  askConfirm,
   onClose,
 }: {
   item: ClipboardItem;
+  /** 应用内覆盖确认通道；缺省时「目标已存在」一律按拒绝覆盖处理（绝不写盘）。 */
+  askConfirm?: AskConfirm;
   onClose: () => void;
 }) {
   const showToast = useUiStore((s) => s.showToast);
   const rootRef = useRef<HTMLDivElement>(null);
+  // 与历史卡片、详情页共用同一套来源结构，避免放大预览又露出原始 exe 名
+  const src = clipSource(item);
   const stageRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const { state, url, error } = useLargeImage(item.id, true);
@@ -70,10 +85,25 @@ export default function ImageLightbox({
   const [view, setView] = useState<View>({ s: 1, x: 0, y: 0 });
   const [isFit, setIsFit] = useState(true);
   const [busy, setBusy] = useState(false);
+  /**
+   * 另存为的同步 in-flight 守卫：busy 是异步 state，连点时第二次 click 可能赶在
+   * 重渲染禁用按钮之前进入事件处理，只有 ref 能同步拦住重复写盘。
+   */
+  const savingRef = useRef(false);
   const viewRef = useRef(view);
   viewRef.current = view;
+  /** 本次指针按下是否发生过真实位移：拖拽结束浏览器仍会补一次 click，不能当成「点遮罩关闭」。 */
+  const movedRef = useRef(false);
+  /**
+   * 本次手势按下时的 target。
+   *
+   * 拖拽用了 setPointerCapture，指针捕获会把后续 click 的 target 重定向到捕获元素（舞台），
+   * 于是「点在图片上」的 click 也会以舞台为 target —— 只看 e.target 会把点图片误判成点遮罩。
+   * 因此以 pointerdown 的落点为准；没有 pointerdown（键盘/程序化 click）时才退回 e.target。
+   */
+  const pressTargetRef = useRef<EventTarget | null>(null);
 
-  useOverlayLayer("modal", true, onClose, rootRef);
+  useOverlayLayer("modalTop", true, onClose, rootRef);
   useFocusTrap(true, rootRef);
 
   /** 当前可用空间（舞台内容区减去呼吸空隙）。 */
@@ -170,11 +200,17 @@ export default function ImageLightbox({
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
+    let startX = 0;
+    let startY = 0;
     const down = (e: PointerEvent) => {
       if (e.button !== 0) return;
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
+      startX = e.clientX;
+      startY = e.clientY;
+      movedRef.current = false;
+      pressTargetRef.current = e.target;
       el.setPointerCapture(e.pointerId);
       el.classList.add("dragging");
     };
@@ -184,6 +220,8 @@ export default function ImageLightbox({
       const dy = e.clientY - lastY;
       lastX = e.clientX;
       lastY = e.clientY;
+      // 4px 以内视为点击抖动：不认定为拖拽，否则点遮罩关闭会被误吞
+      if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > 4) movedRef.current = true;
       const { w, h } = avail();
       setView((v) => clampPan({ ...v, x: v.x + dx, y: v.y + dy }, natural.w, natural.h, w, h));
       setIsFit(false);
@@ -230,6 +268,22 @@ export default function ImageLightbox({
     toggleActual(e.clientX - rect.left, e.clientY - rect.top);
   };
 
+  /**
+   * 点击遮罩关闭：只有「按下」与「抬起后那次 click」都落在舞台空白处才算遮罩。
+   * 图片本体、加载中/缺失提示、工具栏与缩放控件都不是舞台；拖拽平移结束时浏览器补发的
+   * 那一次 click 也不算（movedRef）。指针捕获会把 click 的 target 改成舞台，
+   * 所以起手位置以 pointerdown 的 target 为准。
+   */
+  const onStageClick = (e: React.MouseEvent) => {
+    if (movedRef.current) return;
+    const pressTarget = pressTargetRef.current;
+    pressTargetRef.current = null;
+    const onBackdrop = pressTarget
+      ? pressTarget === stageRef.current
+      : e.target === stageRef.current;
+    if (onBackdrop) onClose();
+  };
+
   /** 「实际尺寸」按钮：总是切到 100%（fit↔1 的往复切换由双击承担）。 */
   const setActualCenter = () => {
     if (!natural) return;
@@ -254,7 +308,17 @@ export default function ImageLightbox({
     }
   };
 
+  /**
+   * 另存为：系统对话框只负责选路径，覆盖授权属于应用层。
+   * - missing  → 无覆盖写入（后端 create_new 原子排他；若目标恰在检查后出现则冲突失败，绝不覆盖）；
+   * - ok       → 必须经应用内 ConfirmDialog 明确授权后才以 overwrite=true 交给后端安全替换；
+   * - inaccessible / 未知 / 空 / IPC 异常 → fail-closed，绝不写盘。
+   * 当前 rfd/IFileSaveDialog 不设置 FOS_OVERWRITEPROMPT，系统对话框成功返回路径不构成
+   * 可验证的覆盖授权，因此应用内确认是唯一可靠的授权来源（任务书 P2 授权兜底）。
+   */
   const onSaveAs = async () => {
+    if (savingRef.current) return; // 连点防护：重复进入直接丢弃，不再走第二次写盘
+    savingRef.current = true;
     setBusy(true);
     try {
       const id8 = item.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "image";
@@ -262,12 +326,66 @@ export default function ImageLightbox({
         defaultPath: `task-dock-clipboard-${id8}.png`,
         filters: [{ name: "PNG 图片", extensions: ["png"] }],
       });
-      if (!path) return; // 用户取消，不视为错误
-      const bytes = await clipboardSaveImage(item.id, path);
-      showToast(`已保存（${formatBytes(bytes)}）：${path}`, { kind: "success" });
-    } catch (e) {
-      showToast(`保存失败：${String(e)}`, { kind: "error" });
+      // 用户取消（原生返回 null/空）：不查状态、不写盘，也不视为错误。
+      if (!path) return;
+      // 目标状态是覆盖授权的唯一依据，必须严格校验：非数组、空数组、首元素非字符串、
+      // 未知值、IPC 异常一律按 unknown 处理（fail-closed，不写盘）。
+      let targetState: "ok" | "missing" | "inaccessible" | "unknown" = "unknown";
+      try {
+        const status = await clipboardPathStatus([path]);
+        if (Array.isArray(status) && typeof status[0] === "string") {
+          const st: string = status[0];
+          if (st === "ok" || st === "missing" || st === "inaccessible") targetState = st;
+        }
+      } catch {
+        // 查询失败不猜测目标状态；下方统一按 unknown 提示并拒绝写盘
+      }
+      if (targetState === "inaccessible") {
+        showToast(`目标文件无访问权限，未保存：${path}`, { kind: "error" });
+        return;
+      }
+      if (targetState !== "ok" && targetState !== "missing") {
+        showToast(`无法确认目标文件状态，未保存：${path}`, { kind: "error" });
+        return;
+      }
+      /** 真正写盘：错误原样展示，绝不因「目标文件已存在」冲突改用 overwrite=true 静默重试。 */
+      const write = async (overwrite: boolean) => {
+        savingRef.current = true;
+        setBusy(true);
+        try {
+          const bytes = await clipboardSaveImage(item.id, path, overwrite);
+          showToast(
+            overwrite
+              ? `已覆盖保存（${formatBytes(bytes)}）：${path}`
+              : `已保存（${formatBytes(bytes)}）：${path}`,
+            { kind: "success" },
+          );
+        } catch (e) {
+          showToast(`保存失败：${String(e)}`, { kind: "error" });
+        } finally {
+          savingRef.current = false;
+          setBusy(false);
+        }
+      };
+      if (targetState === "missing") {
+        // 即使这里判定为 missing，后端仍以 create_new 排他创建；竞态出现的目标不会被覆盖。
+        await write(false);
+        return;
+      }
+      // 目标已存在：覆盖写入必须由用户显式授权；没有确认通道时按拒绝处理，绝不静默覆盖。
+      if (!askConfirm) {
+        showToast(`目标文件已存在，未覆盖：${path}`, { kind: "info" });
+        return;
+      }
+      askConfirm({
+        title: "覆盖已存在的文件？",
+        detail: `${path} 已存在，覆盖后原文件内容将被替换。`,
+        confirmLabel: "覆盖",
+        danger: true,
+        run: () => write(true),
+      });
     } finally {
+      savingRef.current = false;
       setBusy(false);
     }
   };
@@ -284,6 +402,7 @@ export default function ImageLightbox({
       <div
         ref={stageRef}
         className="clip-lightbox-stage"
+        onClick={onStageClick}
         onDoubleClick={onDoubleClick}
       >
         {state === "loading" && (
@@ -319,8 +438,12 @@ export default function ImageLightbox({
               <span>{natural.w}×{natural.h}</span>
               <span>PNG（存储格式）</span>
               <span>{formatBytes(item.byte_size)}</span>
-              <span className="clip-lightbox-source" title={item.source_title || item.source_app}>
-                {sourceLabel(item.source_app, item.source_title)}
+              <span
+                className="clip-lightbox-source"
+                tabIndex={0}
+                data-tip={`应用：${src.app}${src.appRaw ? `（来源进程 ${src.appRaw}）` : ""}${src.windowRaw ? ` · 窗口：${src.windowRaw}` : ""}`}
+              >
+                {src.window ? `${src.app} · ${src.window}` : src.app}
               </span>
             </>
           ) : (

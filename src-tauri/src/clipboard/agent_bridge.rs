@@ -426,6 +426,7 @@ mod tests {
             image: None,
             source_app: "notepad.exe".into(),
             source_title: "记事本".into(),
+            source_kind: "owner".into(),
             byte_size: 0,
         }
     }
@@ -447,6 +448,7 @@ mod tests {
             }),
             source_app: "snippingtool.exe".into(),
             source_title: "截图工具".into(),
+            source_kind: "owner".into(),
             byte_size: 0,
         }
     }

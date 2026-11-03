@@ -15,7 +15,7 @@
 //!    jsdom 不做布局，所以样式用 `?raw` 读原文断言，和 `styles-themes.test.ts` 同路。
 
 import { describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach } from "vitest";
 import appCss from "../../styles.css?raw";
 import ClipboardItemCard from "./ClipboardItemCard";
@@ -95,8 +95,9 @@ describe("ClipboardItemCard 预览结构", () => {
     const title = body!.querySelector(".clip-title");
     expect(title).not.toBeNull();
     expect(title!.textContent).toBe("task_dock — 方案 B 液态融合翼片最终版开发");
-    // 单行省略靠 CSS；这里只保证完整标题还在 DOM 里，未被 JS 截断
-    expect(title!.getAttribute("title")).toBe(title!.textContent);
+    // 单行省略靠 CSS；完整标题进 data-tip（悬停与键盘焦点都能看全），未被 JS 截断
+    expect(title!.getAttribute("data-tip")).toBe(`标题：${title!.textContent}`);
+    expect(title!.getAttribute("tabindex")).toBe("0");
 
     const text = body!.querySelector(".clip-text");
     expect(text).not.toBeNull();
@@ -142,6 +143,70 @@ describe("ClipboardItemCard 预览结构", () => {
   });
 });
 
+describe("ClipboardItemCard 图片缩略图直达灯箱", () => {
+  /** 缩略图按钮化后必须满足：不冒泡到卡片（否则同时打开详情）、键盘可达、有 aria-label。 */
+  function renderImageCard(over: Partial<ClipboardItem> = {}, opts: { locked?: boolean } = {}) {
+    const onOpenImage = vi.fn();
+    const onDetail = vi.fn();
+    const onSelect = vi.fn();
+    const { container } = render(
+      <ClipboardItemCard
+        item={makeItem({ kind: "image", title: "截图 800×500", preview: "800×500", ...over })}
+        selected={false}
+        linkMode={false}
+        removing={false}
+        pending={opts.locked ?? false}
+        onSelect={onSelect}
+        onCopy={vi.fn()}
+        onToggle={vi.fn()}
+        onDetail={onDetail}
+        onDelete={vi.fn()}
+        onLink={vi.fn()}
+        onOpenImage={onOpenImage}
+      />,
+    );
+    const card = container.querySelector<HTMLElement>(".clip-item")!;
+    return { card, onOpenImage, onDetail, onSelect };
+  }
+
+  it("点击缩略图直接打开大图，且不触发卡片详情与选择", () => {
+    const { card, onOpenImage, onDetail, onSelect } = renderImageCard();
+    const btn = card.querySelector<HTMLButtonElement>(".clip-thumb-open");
+    expect(btn, "缩略图应包成独立按钮").not.toBeNull();
+    expect(btn!.getAttribute("aria-label")).toBe("查看大图");
+    fireEvent.click(btn!);
+    expect(onOpenImage).toHaveBeenCalledTimes(1);
+    // 卡片本身 role=button：冒泡会顺带打开详情，必须被拦下
+    expect(onDetail).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("键盘 Enter 激活缩略图，按键不外传给卡片（避免同时打开详情）", () => {
+    const { card, onOpenImage, onDetail } = renderImageCard();
+    const btn = card.querySelector<HTMLButtonElement>(".clip-thumb-open")!;
+    fireEvent.keyDown(btn, { key: "Enter" });
+    // 按键不冒泡：卡片上的 Enter → 打开详情 不应被触发
+    expect(onDetail).not.toHaveBeenCalled();
+    fireEvent.click(btn);
+    expect(onOpenImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("无缩略图时仍可点击：交给灯箱如实报缺失，而不是给一个死图标", () => {
+    const { card, onOpenImage } = renderImageCard({ has_thumb: false });
+    const btn = card.querySelector<HTMLButtonElement>(".clip-thumb-open");
+    expect(btn).not.toBeNull();
+    expect(btn!.querySelector(".clip-thumb-placeholder")).not.toBeNull();
+    fireEvent.click(btn!);
+    expect(onOpenImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("删除在途时缩略图不可点（不打开一个即将消失的条目）", () => {
+    const { card } = renderImageCard({}, { locked: true });
+    expect(card.querySelector(".clip-thumb-open")).toBeNull();
+    expect(card.querySelector(".clip-thumb, .clip-thumb-placeholder")).not.toBeNull();
+  });
+});
+
 describe("styles.css 预览截断契约", () => {
   it("正文两行截断：line-clamp 自带 overflow:hidden，且长串可断行", () => {
     const body = ruleBody(appCss, ".clip-preview-body > .clip-text");
@@ -182,5 +247,38 @@ describe("styles.css 预览截断契约", () => {
         `规则「${selector.trim()}」用了 -webkit-line-clamp 却没有自带 overflow`,
       ).toBe(true);
     }
+  });
+});
+
+describe("ClipboardItemCard 来源信息", () => {
+  it("展示人类可读应用名与「窗口」标题，不直接暴露 exe", () => {
+    const card = renderCard({
+      source_app: "chrome.exe",
+      source_title: "Go | OpenCode Console - Google Chrome",
+    });
+    const app = card.querySelector(".clip-meta-app");
+    expect(app).not.toBeNull();
+    expect(app!.textContent).toBe("Google Chrome");
+
+    const win = card.querySelector(".clip-meta-window");
+    expect(win).not.toBeNull();
+    expect(win!.textContent).toContain("窗口");
+    expect(win!.textContent).toContain("Go | OpenCode Console");
+    // 末尾重复的浏览器名已去掉
+    expect(win!.textContent).not.toContain("Google Chrome");
+
+    // 可见文本里不再出现原始 exe，原始标识只进提示
+    expect(card.textContent).not.toContain("chrome.exe");
+    expect(win!.getAttribute("data-tip")).toContain("chrome.exe");
+    // 可聚焦：TooltipLayer 的 focusin 也能弹同一条提示（键盘可用）
+    expect(win!.getAttribute("tabindex")).toBe("0");
+  });
+
+  it("未知来源渲染为「未知应用」，不崩也不猜", () => {
+    const card = renderCard({ source_app: "unknown", source_title: "" });
+    expect(card.querySelector(".clip-meta-app")!.textContent).toBe("未知应用");
+    expect(card.querySelector(".clip-meta-window")).toBeNull();
+    // 元信息行仍完整（大小还在），不因来源未知而丢结构
+    expect(card.querySelector(".clip-meta")!.textContent).toContain("20 B");
   });
 });

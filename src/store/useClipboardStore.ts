@@ -41,6 +41,8 @@ interface ExitEntry {
 
 let filterGen = 0;
 let reqSeq = 0;
+/** 轻量视图（胶囊面板）的在途请求代际，与完整页的 reqSeq 互不干扰 */
+let liteSeq = 0;
 /**
  * 离场收尾定时器（id → timer），归 **store** 所有而非组件。
  *
@@ -158,6 +160,16 @@ export const useClipboardStore = create<{
   toggleGroupSelection: (id: string) => void;
   clearSelection: () => void;
   /** 订阅后端变更；**全局只建一个** Tauri 监听，页面与抽屉共享 */
+  /**
+   * 胶囊面板的轻量视图：只有 view=all 的前 20 条，不加载分页与历史。
+   * null = 面板未打开（此时 live 回调不刷它，不多付一次 IPC）。
+   */
+  lite: { items: ClipboardItem[]; groups: ClipboardGroup[] } | null;
+  liteLoading: boolean;
+  /** 读一次轻量视图（胶囊面板挂载时调用） */
+  loadLite: () => Promise<void>;
+  /** 面板卸载：作废在途请求并释放轻量视图 */
+  releaseLite: () => void;
   setLive: (active: boolean) => void;
 }>((set, get) => ({
   view: null,
@@ -363,6 +375,25 @@ export const useClipboardStore = create<{
 
   clearSelection: () => set({ selectedItems: [], selectedGroups: [] }),
 
+  lite: null,
+  liteLoading: false,
+  loadLite: async () => {
+    const seq = ++liteSeq;
+    set({ liteLoading: true });
+    try {
+      const view = await clipboardView({ limit: 20 });
+      if (seq !== liteSeq) return; // 已有更新的请求，丢弃这次响应
+      set({ lite: { items: view.items, groups: view.groups }, liteLoading: false });
+    } catch {
+      if (seq !== liteSeq) return;
+      set({ lite: { items: [], groups: [] }, liteLoading: false });
+    }
+  },
+  releaseLite: () => {
+    liteSeq += 1; // 卸载后回来的响应一律作废
+    set({ lite: null, liteLoading: false });
+  },
+
   setLive: (active) => {
     if (active) acquireLive();
     else releaseLive();
@@ -389,6 +420,8 @@ function acquireLive() {
       liveTimer = window.setTimeout(() => {
         liveTimer = undefined;
         void useClipboardStore.getState().load({ silent: true });
+        // 面板打开着就顺带刷一次轻量视图：两个入口同一份状态
+        if (useClipboardStore.getState().lite !== null) void useClipboardStore.getState().loadLite();
       }, 300);
     }),
   );

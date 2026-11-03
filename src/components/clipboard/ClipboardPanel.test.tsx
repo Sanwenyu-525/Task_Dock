@@ -18,6 +18,8 @@ const bridge = vi.hoisted(() => ({
   clipboardStatus: vi.fn(),
   onClipboardChanged: vi.fn(),
   clipboardCopyItem: vi.fn(),
+  clipboardCopyItemsRich: vi.fn(),
+  clipboardCopyItemsFiles: vi.fn(),
   clipboardCopyGroupRich: vi.fn(),
   clipboardCopyGroupFiles: vi.fn(),
   clipboardCreateGroup: vi.fn(),
@@ -108,6 +110,20 @@ beforeEach(() => {
     warnings: [],
     sequence: 1,
     item_count: 1,
+  });
+  bridge.clipboardCopyItemsRich.mockResolvedValue({
+    mode: "rich",
+    bytes: 40,
+    warnings: [],
+    sequence: 1,
+    item_count: 2,
+  });
+  bridge.clipboardCopyItemsFiles.mockResolvedValue({
+    mode: "files",
+    bytes: 40,
+    warnings: [],
+    sequence: 1,
+    item_count: 2,
   });
   bridge.clipboardClearHistory.mockResolvedValue({
     items: 3,
@@ -464,7 +480,9 @@ describe("操作反馈与离场", () => {
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
 
     await waitFor(() => expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ciB"]));
-    expect(removingCard()?.dataset.clipId).toBe("ciB");
+    // 后端已返回 ≠ store 的 beginExit 已提交到 DOM；全量并发下两者有间隙，
+    // 直接取 .removing 会拿到 undefined。等离场卡片真正出现再按 ID 断言。
+    await waitFor(() => expect(removingCard()?.dataset.clipId).toBe("ciB"));
     expect(document.querySelector('[data-clip-id="ciA"]')?.classList.contains("removing")).toBe(false);
     await waitFor(() => expect(useUiStore.getState().toast?.message).toContain("同样的周报正文"));
   });
@@ -740,5 +758,39 @@ describe("操作反馈与离场", () => {
       expect(cards().map((c) => c.dataset.clipId)).toEqual(["ci2", "ci0", "ci1"]),
     );
     expect(useUiStore.getState().toast?.message).toContain("已置顶");
+  });
+
+  it("多选纯文字时禁用「复制为文件」，并说明该用「复制所选」", async () => {
+    const user = userEvent.setup();
+    render(<ClipboardPanel />);
+    await screen.findByText("第 0 条剪贴板预览");
+
+    for (const btn of screen.getAllByRole("button", { name: "选择条目" })) {
+      await user.click(btn);
+    }
+
+    const filesBtn = screen.getByRole("button", { name: /复制为文件/ }) as HTMLButtonElement;
+    expect(filesBtn.disabled).toBe(true);
+    expect(filesBtn.getAttribute("data-tip")).toContain("没有图片或文件");
+    // 文字仍可用富文本复制出口，不能因为禁用一个按钮而失去批量复制能力
+    const richBtn = screen.getByRole("button", { name: /复制所选/ }) as HTMLButtonElement;
+    expect(richBtn.disabled).toBe(false);
+  });
+
+  it("多选含图片时「复制为文件」可用，并按选择顺序提交 id", async () => {
+    const user = userEvent.setup();
+    const image = { ...makeItem(1), id: "ciimg", kind: "image" as const };
+    bridge.clipboardView.mockResolvedValue(viewOfItems([makeItem(0), image]));
+    render(<ClipboardPanel />);
+    await screen.findByText("第 0 条剪贴板预览");
+
+    for (const btn of screen.getAllByRole("button", { name: "选择条目" })) {
+      await user.click(btn);
+    }
+    await user.click(screen.getByRole("button", { name: /复制为文件/ }));
+
+    await waitFor(() =>
+      expect(bridge.clipboardCopyItemsFiles).toHaveBeenCalledWith(["ci0", "ciimg"]),
+    );
   });
 });

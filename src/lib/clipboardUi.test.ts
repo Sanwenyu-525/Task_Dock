@@ -2,23 +2,128 @@ import { describe, expect, it } from "vitest";
 import {
   RICH_EMBED_BUDGET,
   RICH_HTML_ITEM_LIMIT,
+  clipSource,
   copyPreflight,
   formatBytes,
   looksLikeCode,
+  sourceAppKey,
+  sourceAppName,
   sourceLabel,
+  sourceTrustLabel,
+  sourceWindowTitle,
   urlDomain,
 } from "./clipboardUi";
 
-describe("sourceLabel", () => {
-  it("空来源或 unknown 显示未知来源", () => {
-    expect(sourceLabel("", "")).toBe("未知来源");
-    expect(sourceLabel("unknown", "")).toBe("未知来源");
-    expect(sourceLabel("UNKNOWN", "")).toBe("未知来源");
+describe("sourceAppName", () => {
+  it("常见应用使用人类可读名称，而不是 exe 标识", () => {
+    expect(sourceAppName("chrome.exe")).toBe("Google Chrome");
+    expect(sourceAppName("MSEDGE.EXE")).toBe("Microsoft Edge");
+    expect(sourceAppName("Code.exe")).toBe("Visual Studio Code");
+    expect(sourceAppName("Cursor.exe")).toBe("Cursor");
+    expect(sourceAppName("Trae.exe")).toBe("Trae");
+    expect(sourceAppName("WeChat.exe")).toBe("微信");
+    expect(sourceAppName("Weixin.exe")).toBe("微信");
+    expect(sourceAppName("QQ.exe")).toBe("QQ");
+    expect(sourceAppName("kugou.exe")).toBe("酷狗音乐");
+    expect(sourceAppName("cloudmusic.exe")).toBe("网易云音乐");
+    expect(sourceAppName("explorer.exe")).toBe("文件资源管理器");
   });
 
-  it("保留应用名与窗口标题", () => {
-    expect(sourceLabel("C:\\Apps\\Code.exe", "main.rs")).toBe("Code.exe · main.rs");
-    expect(sourceLabel("chrome.exe", "chrome.exe")).toBe("chrome.exe");
+  it("大小写不敏感，完整路径与裸文件名等价", () => {
+    expect(
+      sourceAppName("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"),
+    ).toBe("Google Chrome");
+    expect(sourceAppKey("C:\\Apps\\CODE.EXE")).toBe("code.exe");
+  });
+
+  it("未知应用不猜测：只去扩展名，保留原名", () => {
+    expect(sourceAppName("MyTool.exe")).toBe("MyTool");
+    expect(sourceAppName("C:\\tools\\weird.bin")).toBe("weird.bin");
+  });
+
+  it("空来源与 unknown 统一显示未知应用", () => {
+    expect(sourceAppName("")).toBe("未知应用");
+    expect(sourceAppName("   ")).toBe("未知应用");
+    expect(sourceAppName("unknown")).toBe("未知应用");
+    expect(sourceAppName("UNKNOWN")).toBe("未知应用");
+  });
+});
+
+describe("sourceWindowTitle", () => {
+  it("浏览器标题去掉末尾重复的浏览器名，网页标题本身不动", () => {
+    expect(sourceWindowTitle("chrome.exe", "Go | OpenCode Console - Google Chrome")).toBe(
+      "Go | OpenCode Console",
+    );
+    expect(sourceWindowTitle("msedge.exe", "GitHub - Microsoft Edge")).toBe("GitHub");
+    expect(sourceWindowTitle("firefox.exe", "MDN Web Docs - Mozilla Firefox")).toBe("MDN Web Docs");
+  });
+
+  it("只在末尾重复时才去掉，不动网页标题里的有效内容", () => {
+    expect(sourceWindowTitle("chrome.exe", "Chrome 插件 - 我的页面")).toBe("Chrome 插件 - 我的页面");
+    // 标题本身就等于浏览器名：去掉就成空串了，宁愿原样保留
+    expect(sourceWindowTitle("chrome.exe", "Google Chrome")).toBe("Google Chrome");
+  });
+
+  it("非浏览器应用保留原始标题语义", () => {
+    expect(sourceWindowTitle("notepad.exe", "无标题 - 记事本")).toBe("无标题 - 记事本");
+  });
+
+  it("空标题返回空串，交给调用方给占位文案", () => {
+    expect(sourceWindowTitle("chrome.exe", "   ")).toBe("");
+    expect(sourceWindowTitle("", "")).toBe("");
+  });
+});
+
+describe("clipSource", () => {
+  it("三个展示位置共用的结构：应用名 / 窗口标题 / 识别方式", () => {
+    const s = clipSource({
+      source_app: "chrome.exe",
+      source_title: "Go | OpenCode Console - Google Chrome",
+      source_kind: "owner",
+    });
+    expect(s.app).toBe("Google Chrome");
+    expect(s.appRaw).toBe("chrome.exe");
+    expect(s.window).toBe("Go | OpenCode Console");
+    expect(s.windowRaw).toBe("Go | OpenCode Console - Google Chrome");
+    expect(s.trust).toBe("剪贴板所有者窗口（系统记录）");
+    expect(s.identified).toBe(true);
+  });
+
+  it("旧记录没有 source_kind 时，不假装知道识别方式", () => {
+    const s = clipSource({ source_app: "notepad.exe", source_title: "记事本" });
+    expect(s.kind).toBe("");
+    expect(s.trust).toBe("旧记录未记录识别方式");
+    expect(s.app).toBe("记事本");
+  });
+
+  it("无法识别的来源不冒充具体应用", () => {
+    const s = clipSource({ source_app: "unknown", source_title: "", source_kind: "unknown" });
+    expect(s.identified).toBe(false);
+    expect(s.app).toBe("未知应用");
+    expect(s.window).toBe("");
+    expect(s.trust).toBe("未能识别来源");
+  });
+});
+
+describe("sourceTrustLabel", () => {
+  it("四档文案都不把系统记录说成实际写入方", () => {
+    expect(sourceTrustLabel("owner")).toBe("剪贴板所有者窗口（系统记录）");
+    expect(sourceTrustLabel("foreground")).toBe("前台窗口（推断来源）");
+    expect(sourceTrustLabel("unknown")).toBe("未能识别来源");
+    expect(sourceTrustLabel("")).toContain("旧记录");
+    for (const kind of ["owner", "foreground", "unknown", ""]) {
+      expect(sourceTrustLabel(kind)).not.toContain("确认");
+      expect(sourceTrustLabel(kind)).not.toContain("真实写入");
+    }
+  });
+});
+
+describe("sourceLabel", () => {
+  it("单行摘要：应用 · 窗口", () => {
+    expect(sourceLabel("chrome.exe", "Go | OpenCode Console - Google Chrome")).toBe(
+      "Google Chrome · Go | OpenCode Console",
+    );
+    expect(sourceLabel("unknown", "")).toBe("未知应用");
   });
 });
 

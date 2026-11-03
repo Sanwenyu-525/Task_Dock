@@ -26,7 +26,8 @@ const ITEM_FIELDS: &str =
  i.source_app, i.source_title, i.image_width, i.image_height, i.file_paths, i.favorite, i.pinned,
  i.copy_count, i.created_at, i.last_seen_at,
  EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'image') AS has_image,
- EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'thumb') AS has_thumb";
+ EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'thumb') AS has_thumb,
+ i.source_kind";
 
 const GROUP_FIELDS: &str = "g.id, g.name, g.mode, g.status, g.favorite, g.pinned, g.created_at,
  g.updated_at, g.closed_at,
@@ -59,6 +60,7 @@ fn map_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
         last_seen_at: row.get(17)?,
         has_image: row.get::<_, i64>(18)? != 0,
         has_thumb: row.get::<_, i64>(19)? != 0,
+        source_kind: row.get(20)?,
     })
 }
 
@@ -401,13 +403,18 @@ fn trim_utf8(mut s: String, max: usize) -> String {
 
 fn normalize(payload: &CapturedContent) -> CapturedContent {
     let mut p = payload.clone();
-    p.html = engine::sanitize_html(&p.html);
     p.text = trim_utf8(p.text, MAX_TEXT_BYTES);
+    // 采集侧只做长度截断，不改写 HTML 原文。
+    // 预览安全由渲染层白名单保证（HtmlReader 不渲染主动内容、不发起任何资源请求），
+    // 复制要还原用户原本复制到的格式；采集时的一次性正则清洗既不是可靠的安全边界，
+    // 又会把原文改坏（Word/浏览器富文本的 <style> 块会被整段删除）。
     p.html = trim_utf8(p.html, MAX_HTML_BYTES);
+    // 摘要只需要「可读文本视图」：用净化副本派生，避免 script/style 正文混进预览。
+    let plain_html = engine::sanitize_html(&p.html);
     p.preview = engine::make_preview(
         &p.kind,
         &p.text,
-        &p.html,
+        &plain_html,
         &p.file_paths,
         p.image.as_ref().map(|i| i.width),
         p.image.as_ref().map(|i| i.height),
@@ -428,6 +435,37 @@ fn normalize(payload: &CapturedContent) -> CapturedContent {
         _ => (p.text.len() + p.html.len()) as i64,
     };
     p
+}
+
+/// 应用名是否是可用于覆盖旧值的“已识别来源”。
+/// 空串与 `unknown` 都表示没有识别到，不能覆盖可信来源。
+pub(crate) fn source_app_is_known(app: &str) -> bool {
+    let app = app.trim();
+    !app.is_empty() && !app.eq_ignore_ascii_case("unknown")
+}
+
+/// 识别方式是否是有效快照：只有 `owner`（系统记录的剪贴板所有者）与
+/// `foreground`（前台窗口推断）能作为来源写入；`unknown`/空串不构成一次可信采集。
+pub(crate) fn source_kind_is_known(kind: &str) -> bool {
+    matches!(kind.trim(), "owner" | "foreground")
+}
+
+/// 重复内容再次采集时如何更新来源三字段。
+///
+/// `source_app` / `source_title` / `source_kind` 是**同一次采集的完整快照**：
+/// - 新快照可识别（应用已识别且识别方式有效）→ 三字段全部替换为新采集的值，
+///   新标题为空时也写入空串，绝不保留与新应用无关的旧标题；
+/// - 新快照不可识别（空串或 `unknown`，或识别方式缺失）→ 整体保留旧快照，
+///   不用 `unknown` 覆盖已识别应用，也不拼出“新应用 + 旧标题”的混合来源。
+pub(crate) fn reconcile_source_snapshot(
+    prev: (&str, &str, &str),
+    next: (&str, &str, &str),
+) -> (String, String, String) {
+    let (new_app, new_title, new_kind) = next;
+    if source_app_is_known(new_app) && source_kind_is_known(new_kind) {
+        return (new_app.to_string(), new_title.to_string(), new_kind.to_string());
+    }
+    (prev.0.to_string(), prev.1.to_string(), prev.2.to_string())
 }
 
 fn find_by_hash(db: &Db, hash: &str) -> AppResult<Option<ClipboardItem>> {
@@ -568,16 +606,26 @@ pub fn record_capture(
     }
     let hash = engine::hash_of(&p);
     if let Some(existing) = find_by_hash(db, &hash)? {
+        // 来源三字段作为一个整体决定是否替换，不能各字段独立 CASE：
+        // 否则一次“新应用 + 空标题”的采集会把旧标题留在新应用上。
+        let (source_app, source_title, source_kind) = reconcile_source_snapshot(
+            (
+                &existing.source_app,
+                &existing.source_title,
+                &existing.source_kind,
+            ),
+            (&p.source_app, &p.source_title, &p.source_kind),
+        );
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE clipboard_items SET copy_count = copy_count + 1, last_seen_at = ?1,
-                    source_app = CASE WHEN ?2 <> '' THEN ?2 ELSE source_app END,
-                    source_title = CASE WHEN ?3 <> '' THEN ?3 ELSE source_title END
-                 WHERE id = ?4",
+                    source_app = ?2, source_title = ?3, source_kind = ?4
+                 WHERE id = ?5",
                 params![
                     crate::agents::now_iso(),
-                    p.source_app,
-                    p.source_title,
+                    source_app,
+                    source_title,
+                    source_kind,
                     existing.id
                 ],
             )?;
@@ -602,10 +650,11 @@ pub fn record_capture(
     let file_paths_json = serde_json::to_string(&p.file_paths)?;
     // 标题在入库前一次性生成（worker 线程内，不在 Win32 回调/UI 路径）；
     // 输入已受 MAX_TEXT_BYTES / MAX_HTML_BYTES 限制，规则本身 O(行数)。
+    // 标题与摘要同源：只从净化后的文本视图取，script/style 正文不参与命名。
     let title = engine::make_title(
         &p.kind,
         &p.text,
-        &p.html,
+        &engine::sanitize_html(&p.html),
         &p.file_paths,
         p.image.as_ref().map(|i| i.width),
         p.image.as_ref().map(|i| i.height),
@@ -617,8 +666,8 @@ pub fn record_capture(
         let insert = tx.execute(
             "INSERT INTO clipboard_items
              (id, kind, text, html, preview, title, title_source, content_hash, byte_size, source_app, source_title,
-              image_width, image_height, file_paths, favorite, pinned, copy_count, created_at, last_seen_at)
-             VALUES (?1,?2,?3,?4,?5,?6,'auto',?7,?8,?9,?10,?11,?12,?13,0,0,1,?14,?14)",
+              image_width, image_height, file_paths, favorite, pinned, copy_count, created_at, last_seen_at, source_kind)
+             VALUES (?1,?2,?3,?4,?5,?6,'auto',?7,?8,?9,?10,?11,?12,?13,0,0,1,?14,?14,?15)",
             params![
                 item_id,
                 p.kind,
@@ -633,7 +682,8 @@ pub fn record_capture(
                 p.image.as_ref().map(|i| i.width as i64),
                 p.image.as_ref().map(|i| i.height as i64),
                 file_paths_json,
-                now_iso
+                now_iso,
+                p.source_kind
             ],
         );
         if let Err(e) = insert {
@@ -739,10 +789,13 @@ pub fn rename_item(db: &Db, item_id: &str, title: &str) -> AppResult<ClipboardIt
     let trimmed = title.trim();
     let (new_title, source) = if trimmed.is_empty() {
         let item = get_item(db, item_id)?;
+        // 与采集入库一致：标题只从净化后的 HTML 提取，避免把 <script>/样式
+        // 文本当成正文标题。
+        let safe_html = engine::sanitize_html(&item.html);
         let regen = engine::make_title(
             &item.kind,
             &item.text,
-            &item.html,
+            &safe_html,
             &item.file_paths,
             item.image_width,
             item.image_height,
@@ -1956,6 +2009,7 @@ mod tests {
             image: None,
             source_app: "notepad.exe".into(),
             source_title: "记事本".into(),
+            source_kind: "owner".into(),
             byte_size: 0,
         }
     }
@@ -1980,6 +2034,7 @@ mod tests {
             image: Some(img),
             source_app: "snippingtool.exe".into(),
             source_title: "截图工具".into(),
+            source_kind: "owner".into(),
             byte_size: 0,
         }
     }
@@ -2006,6 +2061,7 @@ mod tests {
             image: Some(img),
             source_app: "snippingtool.exe".into(),
             source_title: "截图工具".into(),
+            source_kind: "owner".into(),
             byte_size: 0,
         }
     }
@@ -2284,7 +2340,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_source_text_does_not_join_screenshot_group() {
+    fn cross_source_text_stays_in_group_but_foreign_image_starts_new_session() {
         let db = Db::open_in_memory().unwrap();
         let root = TempRoot::new();
         let mut s = settings();
@@ -2292,25 +2348,44 @@ mod tests {
         let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
         let gid = a.group_id.expect("截图应建组");
 
-        // 与截图来源不同的文本（如截图后顺手从浏览器复制）大概率无关，不并入
-        let mut unrelated = text_payload("来自其他应用的无关内容");
-        unrelated.source_app = "chrome.exe".into();
-        let out = record_capture(&db, &root.0, &unrelated, &s).unwrap();
+        // 「截图 A → 文字 → 截图 B」：文字来自其他应用也必须留在截图流里，
+        // 不能用来源应用把用户真实顺序拆散。
+        let mut note = text_payload("来自其他应用的说明文字");
+        note.source_app = "chrome.exe".into();
+        let out = record_capture(&db, &root.0, &note, &s).unwrap();
         assert!(out.created);
-        assert!(out.group_id.is_none(), "跨来源文本不得自动并入截图组");
+        assert_eq!(
+            out.group_id.as_deref(),
+            Some(gid.as_str()),
+            "跨来源文本必须并入当前截图组，保持实际顺序"
+        );
 
-        // 来源未知的文本保持原行为（窗口内追加）
         let mut unknown_src = text_payload("来源未知的说明");
         unknown_src.source_app = String::new();
         let out2 = record_capture(&db, &root.0, &unknown_src, &s).unwrap();
         assert_eq!(out2.group_id.as_deref(), Some(gid.as_str()));
 
-        // 截图连续性不受影响：后续截图仍追加进原组
+        // 同来源的下一条截图继续追加
         let c = record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
         assert_eq!(c.group_id.as_deref(), Some(gid.as_str()));
         let g = get_group(&db, &gid).unwrap();
-        assert_eq!(g.items.len(), 3);
+        assert_eq!(g.items.len(), 4);
+        assert_eq!(
+            g.items.iter().map(|i| i.kind.as_str()).collect::<Vec<_>>(),
+            vec!["image", "text", "text", "image"]
+        );
         assert_eq!(g.image_count, 2);
+
+        // 另一张图片且来源明确不同 → 视为新截图会话，旧组结束
+        let mut foreign = image_payload(3);
+        foreign.source_app = "chrome.exe".into();
+        let d = record_capture(&db, &root.0, &foreign, &s).unwrap();
+        let new_gid = d.group_id.expect("异来源图片应另建截图组");
+        assert_ne!(new_gid, gid, "不同来源的图片不得混入同一截图组");
+        let old = get_group(&db, &gid).unwrap();
+        assert_eq!(old.status, "closed", "旧截图会话必须结束");
+        let new = get_group(&db, &new_gid).unwrap();
+        assert_eq!(new.items.len(), 1);
     }
 
     #[test]
@@ -2595,17 +2670,270 @@ mod tests {
     }
 
     #[test]
-    fn html_is_sanitized_before_storage() {
+    fn html_raw_is_preserved_while_preview_stays_clean() {
         let db = Db::open_in_memory().unwrap();
         let root = TempRoot::new();
         let s = settings();
         let mut p = text_payload("正文");
         p.kind = "html".into();
-        p.html = "<div onclick=\"x()\">正文<script>alert(1)</script></div>".into();
+        p.html =
+            "<div onclick=\"x()\">正文<script>alert(1)</script><style>.a{color:red}</style></div>"
+                .into();
         let a = record_capture(&db, &root.0, &p, &s).unwrap();
-        assert!(!a.item.html.contains("<script"));
-        assert!(!a.item.html.contains("onclick"));
-        assert!(a.item.html.contains("正文"));
+        // 原文原样保留：复制富文本要还原用户当时复制到的格式，采集侧不做破坏性改写
+        assert!(a.item.html.contains("<script"), "原始 HTML 必须原样保留");
+        assert!(a.item.html.contains("<style"), "样式块不能被采集侧删除");
+        assert!(a.item.html.contains("onclick"), "属性也不在采集侧剥离");
+        // 但摘要/标题只从净化视图派生，不吸收脚本与样式正文
+        assert!(!a.item.preview.contains("alert"), "预览不得混入脚本正文");
+        assert!(!a.item.title.contains("alert"), "标题不得混入脚本正文");
+        assert!(a.item.preview.contains("正文"));
+        // 去重键按净化视图规范化：同一内容重复复制不会新增条目（升级前后一致）
+        let b = record_capture(&db, &root.0, &p, &s).unwrap();
+        assert!(!b.created, "同一条富文本必须命中去重而不是新增");
+        assert_eq!(b.item.id, a.item.id);
+        assert_eq!(
+            count_items(&db, &ClipboardFilter::default()).unwrap(),
+            1,
+            "去重后只应有一条记录"
+        );
+    }
+
+    /// 来源三字段必须始终来自同一次采集：应用已识别时 kind 必须有效；
+    /// 应用未知时不得挂着标题或 owner/foreground 识别方式。
+    fn assert_source_consistent(item: &ClipboardItem, label: &str) {
+        if source_app_is_known(&item.source_app) {
+            assert!(
+                source_kind_is_known(&item.source_kind),
+                "{label}：已知应用 {} 的识别方式必须有效，实际 {:?}",
+                item.source_app,
+                item.source_kind
+            );
+        } else {
+            assert!(
+                item.source_title.is_empty(),
+                "{label}：来源未知时不得保留标题 {:?}",
+                item.source_title
+            );
+            assert!(
+                matches!(item.source_kind.as_str(), "" | "unknown"),
+                "{label}：来源未知时识别方式只能是空串或 unknown，实际 {:?}",
+                item.source_kind
+            );
+        }
+    }
+
+    fn with_source(
+        text: &str,
+        app: &str,
+        title: &str,
+        kind: &str,
+    ) -> CapturedContent {
+        let mut p = text_payload(text);
+        p.source_app = app.into();
+        p.source_title = title.into();
+        p.source_kind = kind.into();
+        p
+    }
+
+    #[test]
+    fn record_capture_replaces_source_snapshot_atomically() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let text = "跨应用重复复制 · 来源快照";
+
+        let first = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "chrome.exe", "OpenCode Console", "owner"),
+            &s,
+        )
+        .unwrap();
+        assert!(first.created);
+        let id = first.item.id.clone();
+        assert_eq!(first.item.source_app, "chrome.exe");
+        assert_eq!(first.item.source_title, "OpenCode Console");
+        assert_eq!(first.item.source_kind, "owner");
+
+        // 同来源重复采集：三字段保持，次数递增
+        let same = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "chrome.exe", "OpenCode Console", "owner"),
+            &s,
+        )
+        .unwrap();
+        assert!(!same.created);
+        assert_eq!(same.item.copy_count, 2);
+        assert_eq!(
+            (
+                same.item.source_app.as_str(),
+                same.item.source_title.as_str(),
+                same.item.source_kind.as_str()
+            ),
+            ("chrome.exe", "OpenCode Console", "owner")
+        );
+
+        // Chrome → Snipaste，且新标题为空：旧标题必须被清掉，不能拼成混合快照
+        let snip = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "snipaste.exe", "", "owner"),
+            &s,
+        )
+        .unwrap();
+        assert_eq!(snip.item.source_app, "snipaste.exe");
+        assert_eq!(snip.item.source_title, "", "新标题为空时不得保留旧标题");
+        assert_eq!(snip.item.source_kind, "owner");
+        assert_source_consistent(&snip.item, "Chrome→Snipaste");
+
+        // Snipaste → Chrome：应用、标题、识别方式全部来自新采集
+        let chrome = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "chrome.exe", "OpenCode Console", "foreground"),
+            &s,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                chrome.item.source_app.as_str(),
+                chrome.item.source_title.as_str(),
+                chrome.item.source_kind.as_str()
+            ),
+            ("chrome.exe", "OpenCode Console", "foreground")
+        );
+
+        // owner → foreground / foreground → owner：识别方式随同一次快照更新
+        let owner = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "chrome.exe", "OpenCode Console", "owner"),
+            &s,
+        )
+        .unwrap();
+        assert_eq!(owner.item.source_kind, "owner");
+
+        // 已知 → unknown：保守保留可信旧来源，不制造虚假来源
+        let unknown = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "unknown", "", "unknown"),
+            &s,
+        )
+        .unwrap();
+        assert_eq!(unknown.item.source_app, "chrome.exe");
+        assert_eq!(unknown.item.source_title, "OpenCode Console");
+        assert_eq!(unknown.item.source_kind, "owner");
+
+        // 空串来源同理不得覆盖
+        let blank = record_capture(&db, &root.0, &with_source(text, "", "", ""), &s).unwrap();
+        assert_eq!(blank.item.source_app, "chrome.exe");
+
+        // unknown → 已知：可信来源恢复
+        let known = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "msedge.exe", "Edge 窗口", "owner"),
+            &s,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                known.item.source_app.as_str(),
+                known.item.source_title.as_str(),
+                known.item.source_kind.as_str()
+            ),
+            ("msedge.exe", "Edge 窗口", "owner")
+        );
+
+        // 应用已知但识别方式缺失（进行中的半快照）不得覆盖旧快照
+        let half = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "notepad.exe", "记事本", ""),
+            &s,
+        )
+        .unwrap();
+        assert_eq!(half.item.source_app, "msedge.exe");
+
+        // 旧记录 source_kind="" 时，新可信采集必须补齐识别方式
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE clipboard_items SET source_app = 'legacy.exe', source_title = '旧标题',
+                    source_kind = '' WHERE id = ?1",
+                params![id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let legacy = record_capture(
+            &db,
+            &root.0,
+            &with_source(text, "code.exe", "VS Code", "owner"),
+            &s,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                legacy.item.source_app.as_str(),
+                legacy.item.source_title.as_str(),
+                legacy.item.source_kind.as_str()
+            ),
+            ("code.exe", "VS Code", "owner"),
+            "旧记录缺失识别方式时，新快照应完整替换三字段"
+        );
+        assert_eq!(legacy.item.copy_count, 10, "每次重复采集都必须计入次数");
+        assert_eq!(
+            count_items(&db, &ClipboardFilter::default()).unwrap(),
+            1,
+            "来源变化不得改变内容去重：同内容始终只有一条"
+        );
+        let hash: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT content_hash FROM clipboard_items WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            hash,
+            engine::hash_of(&normalize(&with_source(text, "chrome.exe", "x", "owner"))),
+            "来源字段不参与内容去重哈希"
+        );
+        assert_source_consistent(&legacy.item, "最终快照");
+    }
+
+    #[test]
+    fn reconcile_source_snapshot_is_pure_and_snapshot_wide() {
+        let prev = ("chrome.exe", "OpenCode Console", "owner");
+        assert_eq!(
+            reconcile_source_snapshot(prev, ("snipaste.exe", "", "owner")),
+            ("snipaste.exe".into(), "".into(), "owner".into()),
+            "新标题为空也必须整体替换，不能保留旧标题"
+        );
+        assert_eq!(
+            reconcile_source_snapshot(prev, ("unknown", "", "unknown")),
+            ("chrome.exe".into(), "OpenCode Console".into(), "owner".into()),
+            "unknown 不得覆盖已识别来源"
+        );
+        assert_eq!(
+            reconcile_source_snapshot(prev, ("", "", "")),
+            ("chrome.exe".into(), "OpenCode Console".into(), "owner".into())
+        );
+        assert_eq!(
+            reconcile_source_snapshot(prev, ("notepad.exe", "记事本", "unknown")),
+            ("chrome.exe".into(), "OpenCode Console".into(), "owner".into()),
+            "识别方式缺失的半快照不构成可替换来源"
+        );
+        assert_eq!(
+            reconcile_source_snapshot(("legacy.exe", "旧标题", ""), ("code.exe", "VS Code", "foreground")),
+            ("code.exe".into(), "VS Code".into(), "foreground".into()),
+            "旧记录缺 kind 时可被新快照补齐"
+        );
     }
 
     #[test]

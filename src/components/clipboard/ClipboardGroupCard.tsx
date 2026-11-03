@@ -104,7 +104,7 @@ export default function ClipboardGroupCard({
 
       <div className="clip-actions" onClick={stop}>
         {linkMode && (
-          <button className="btn sm primary" onClick={onLink} disabled={locked} title="关联到当前任务">
+          <button className="btn sm primary" onClick={onLink} disabled={locked} data-tip="关联到当前任务">
             <Link2 size={11} /> 关联
           </button>
         )}

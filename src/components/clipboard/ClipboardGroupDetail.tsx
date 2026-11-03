@@ -28,6 +28,7 @@ import { useClipboardStore } from "../../store/useClipboardStore";
 import { useUiStore } from "../../store/useUiStore";
 import AgentExportPanel from "./AgentExportPanel";
 import ClipboardItemDetail from "./ClipboardItemDetail";
+import ImageLightbox from "./ImageLightbox";
 import { ClipboardThumb } from "./Media";
 import PastePanel from "./PastePanel";
 import TaskLinkBar from "./TaskLinkBar";
@@ -59,6 +60,8 @@ export default function ClipboardGroupDetail({
   /** 整理模式：显示拆分选择与上移/下移（高级操作），默认只显示主操作 */
   const [tidy, setTidy] = useState(false);
   const [itemDetailId, setItemDetailId] = useState<string | null>(null);
+  /** 分组内容里点缩略图直接打开的原图灯箱 */
+  const [previewImage, setPreviewImage] = useState<ClipboardItem | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
   /**
    * 正在离场的行：`group` 立刻落到服务端结果，这些行作为视觉快照按原位多渲染一会，
@@ -515,7 +518,7 @@ export default function ClipboardGroupDetail({
             className="btn sm"
             onClick={onCopyRich}
             disabled={busy !== null}
-            title="按分组顺序复制为富文本；图片受 6 MB 内嵌上限约束"
+            data-tip="按分组顺序复制为富文本；图片受 6 MB 内嵌上限约束"
           >
             <Copy size={11} /> 复制富文本
           </button>
@@ -523,7 +526,7 @@ export default function ClipboardGroupDetail({
             className="btn sm"
             onClick={onCopyFiles}
             disabled={busy !== null}
-            title="仅把文件类条目作为文件列表复制；图片与文字不会变成文件"
+            data-tip="仅把文件类条目作为文件列表复制；图片与文字不会变成文件"
           >
             <Files size={11} /> 复制文件
           </button>
@@ -552,7 +555,7 @@ export default function ClipboardGroupDetail({
             <button className="btn sm primary" onClick={onRename} disabled={!nameInput.trim() || busy !== null}>
               保存
             </button>
-            <button className="icon-btn sm" onClick={() => setRenaming(false)} title="取消" aria-label="取消重命名">
+            <button className="icon-btn sm" onClick={() => setRenaming(false)} data-tip="取消" aria-label="取消重命名">
               <X size={12} />
             </button>
           </div>
@@ -614,14 +617,21 @@ export default function ClipboardGroupDetail({
                       <span className="clip-order">{i + 1}</span>
                     </>
                   )}
+                  {/* 缩略图独立成按钮放在行外：按钮里再套按钮是无效结构，
+                      而且点缩略图应当直接看大图，不是打开条目详情 */}
+                  {item.kind === "image" && (
+                    <ClipboardThumb
+                      itemId={item.id}
+                      hasThumb={item.has_thumb}
+                      size={30}
+                      onOpen={leaving !== undefined ? undefined : () => setPreviewImage(item)}
+                    />
+                  )}
                   <button
                     className="clip-group-item-main"
                     onClick={() => setItemDetailId(item.id)}
                     disabled={leaving !== undefined}
                   >
-                    {item.kind === "image" && (
-                      <ClipboardThumb itemId={item.id} hasThumb={item.has_thumb} size={30} />
-                    )}
                     <span className="clip-group-item-text">
                       <span className="clip-group-item-preview">
                         {item.title || item.preview || "（无文本预览）"}
@@ -684,7 +694,7 @@ export default function ClipboardGroupDetail({
             <button className="btn sm" onClick={onSplit} disabled={busy !== null}>
               <Scissors size={11} /> 拆分为新分组
             </button>
-            <button className="icon-btn sm" onClick={() => setSplitSelected([])} title="清除选择" aria-label="清除拆分选择">
+            <button className="icon-btn sm" onClick={() => setSplitSelected([])} data-tip="清除选择" aria-label="清除拆分选择">
               <X size={12} />
             </button>
           </div>
@@ -701,6 +711,14 @@ export default function ClipboardGroupDetail({
           </button>
         </div>
       </div>
+
+      {previewImage && (
+        <ImageLightbox
+            item={previewImage}
+            askConfirm={askConfirm}
+            onClose={() => setPreviewImage(null)}
+          />
+      )}
     </div>
   );
 }

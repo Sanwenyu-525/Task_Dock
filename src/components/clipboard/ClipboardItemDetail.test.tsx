@@ -147,6 +147,12 @@ describe("文件专属操作", () => {
       makeItem({ kind: "files", text: "C:\\a.txt", file_paths: ["C:\\a.txt"] }),
     );
     await waitFor(() => expect(document.querySelectorAll(".clip-path-row").length).toBe(1));
+    // 顶部按钮在状态落地前是禁用的（checking），等它变为可用再点
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: /打开文件/ }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
     fireEvent.click(screen.getByRole("button", { name: /打开文件/ }));
     await waitFor(() =>
       expect(bridge.clipboardOpenLocalPath).toHaveBeenCalledWith("C:\\a.txt"),
@@ -155,6 +161,84 @@ describe("文件专属操作", () => {
     await waitFor(() =>
       expect(bridge.clipboardRevealLocalPath).toHaveBeenCalledWith("C:\\a.txt"),
     );
+  });
+});
+
+describe("单文件顶部操作与文件状态同源", () => {
+  /** 顶部「打开文件 / 资源管理器定位」是单文件专属入口，必须与行内按钮同一判定。 */
+  const topOpen = () => screen.getByRole("button", { name: /打开文件/ }) as HTMLButtonElement;
+  const topReveal = () =>
+    screen.getByRole("button", { name: /资源管理器定位/ }) as HTMLButtonElement;
+
+  async function renderSingleFile(paths = ["C:\\a.txt"]) {
+    await renderDetail(makeItem({ kind: "files", text: paths.join("\n"), file_paths: paths }));
+    await waitFor(() => expect(document.querySelectorAll(".clip-path-row").length).toBe(paths.length));
+  }
+
+  it("文件存在：顶部与行内都可用", async () => {
+    bridge.clipboardPathStatus.mockResolvedValue(["ok"]);
+    await renderSingleFile();
+    await waitFor(() => expect(topOpen().disabled).toBe(false));
+    expect(topReveal().disabled).toBe(false);
+    fireEvent.click(topOpen());
+    await waitFor(() => expect(bridge.clipboardOpenLocalPath).toHaveBeenCalledWith("C:\\a.txt"));
+    fireEvent.click(topReveal());
+    await waitFor(() => expect(bridge.clipboardRevealLocalPath).toHaveBeenCalledWith("C:\\a.txt"));
+  });
+
+  it("文件已不存在：顶部两个按钮同步禁用，并说明原因", async () => {
+    bridge.clipboardPathStatus.mockResolvedValue(["missing"]);
+    await renderSingleFile();
+    await waitFor(() => expect(topOpen().disabled).toBe(true));
+    expect(topReveal().disabled).toBe(true);
+    expect(topOpen().getAttribute("data-tip")).toContain("已不存在");
+    expect(screen.getByText("已不存在", { selector: ".clip-path-state" })).toBeTruthy();
+  });
+
+  it("状态查询尚未完成：不允许误操作（检查中即禁用）", async () => {
+    // 永不落定的查询：模拟慢盘/网络盘上的 stat
+    bridge.clipboardPathStatus.mockReturnValue(new Promise(() => {}));
+    await renderSingleFile();
+    expect(topOpen().disabled).toBe(true);
+    expect(topReveal().disabled).toBe(true);
+    expect(topOpen().getAttribute("data-tip")).toContain("检查中");
+    expect(document.querySelector(".clip-path-state")!.textContent).toContain("检查中");
+  });
+
+  it("状态查询失败：不得误判为存在，顶部与行内都禁用并给出明确反馈", async () => {
+    bridge.clipboardPathStatus.mockRejectedValue(new Error("stat 失败"));
+    await renderSingleFile();
+    await waitFor(() => expect(topOpen().disabled).toBe(true));
+    expect(topReveal().disabled).toBe(true);
+    expect(screen.getByText(/文件状态查询失败/)).toBeTruthy();
+    expect(document.querySelector(".clip-path-state")!.textContent).toContain("无法确认");
+    // 行内按钮同样禁用（同一判定，不是两套口径）
+    const rowOpen = document.querySelector<HTMLButtonElement>('button[aria-label^="打开"]')!;
+    expect(rowOpen.disabled).toBe(true);
+    expect(bridge.clipboardOpenLocalPath).not.toHaveBeenCalled();
+  });
+
+  it("后端返回非预期状态值：按「无法确认」处理，不放行", async () => {
+    bridge.clipboardPathStatus.mockResolvedValue(["something-else"]);
+    await renderSingleFile();
+    await waitFor(() => expect(topOpen().disabled).toBe(true));
+    expect(document.querySelector(".clip-path-state")!.textContent).toContain("无法确认");
+  });
+
+  it("多文件：不出现顶部单文件入口，行内按钮各自按状态启用/禁用", async () => {
+    bridge.clipboardPathStatus.mockResolvedValue(["ok", "missing"]);
+    await renderSingleFile(["C:\\a.txt", "C:\\b.txt"]);
+    expect(screen.queryByRole("button", { name: /打开文件/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /资源管理器定位/ })).toBeNull();
+    // 等状态落地：行内按钮的启用与否就是判定结果本身
+    await waitFor(() =>
+      expect(document.querySelector(".clip-path-row.is-ok")).not.toBeNull(),
+    );
+    const rows = document.querySelectorAll(".clip-path-row");
+    const openA = rows[0].querySelector<HTMLButtonElement>('button[aria-label^="打开"]')!;
+    const openB = rows[1].querySelector<HTMLButtonElement>('button[aria-label^="打开"]')!;
+    expect(openA.disabled).toBe(false);
+    expect(openB.disabled).toBe(true);
   });
 });
 
@@ -201,5 +285,45 @@ describe("文字代码阅读", () => {
     await waitFor(() => expect(screen.getByRole("tab", { name: /普通文本/ })).toBeTruthy());
     expect(screen.getByRole("tab", { name: /普通文本/ }).getAttribute("aria-selected")).toBe("true");
     expect(document.querySelector("pre.clip-full-text")!.classList.contains("as-code")).toBe(false);
+  });
+});
+
+describe("采集环境", () => {
+  it("显示应用、窗口与系统记录语义，并声明不一定是实际复制程序", async () => {
+    await renderDetail(
+      makeItem({
+        source_app: "chrome.exe",
+        source_title: "Go | OpenCode Console - Google Chrome",
+        source_kind: "owner",
+      }),
+    );
+    const block = await screen.findByRole("region", { name: "采集环境" });
+    expect(block.textContent).toContain("Google Chrome");
+    expect(block.textContent).toContain("窗口");
+    expect(block.textContent).toContain("剪贴板所有者窗口（系统记录）");
+    expect(block.textContent).not.toContain("可确认");
+    expect(block.textContent).toContain("不一定是实际执行复制操作的程序");
+    expect(block.textContent).toContain("来源进程 chrome.exe");
+  });
+
+  it("未知来源不冒充已识别应用/窗口", async () => {
+    await renderDetail(
+      makeItem({ source_app: "unknown", source_title: "", source_kind: "unknown" }),
+    );
+    const block = await screen.findByRole("region", { name: "采集环境" });
+    expect(block.textContent).toContain("未知应用");
+    expect(block.textContent).toContain("未能识别来源");
+    expect(block.textContent).not.toContain("chrome.exe");
+    expect(block.textContent).not.toContain("可确认");
+  });
+
+  it("旧记录空 source_kind 显示「旧记录未记录识别方式」，不假装已确认", async () => {
+    await renderDetail(
+      makeItem({ source_app: "notepad.exe", source_title: "记事本", source_kind: "" }),
+    );
+    const block = await screen.findByRole("region", { name: "采集环境" });
+    expect(block.textContent).toContain("旧记录未记录识别方式");
+    expect(block.textContent).not.toContain("可确认");
+    expect(block.textContent).not.toContain("系统记录）");
   });
 });

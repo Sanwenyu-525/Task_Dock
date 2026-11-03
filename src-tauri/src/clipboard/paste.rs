@@ -1893,6 +1893,7 @@ mod tests {
             }),
             source_app: "snippingtool.exe".into(),
             source_title: "截图工具".into(),
+            source_kind: "owner".into(),
             byte_size: 0,
         }
     }
@@ -1915,6 +1916,7 @@ mod tests {
             // 与截图同一应用会话中的文字说明：「截图 A→文字→截图 B」必须保留顺序
             source_app: "snippingtool.exe".into(),
             source_title: "截图工具".into(),
+            source_kind: "owner".into(),
             byte_size: 0,
         };
         let colors = [

@@ -42,8 +42,8 @@
 │ commands/clipboard.rs：参数校验、DTO 压实、运行时取用                 │
 ├────────────────────────────────────────────────────────────────────┤
 │ clipboard/                                                          │
-│  engine.rs      纯逻辑：类型判定/哈希/预览/自动标题/敏感特征/HTML 清洗/ │
-│                  CF_HTML/整组富文本/自动分组与恢复决策（可单测）       │
+│  engine.rs      纯逻辑：类型判定/哈希/预览/自动标题/敏感特征/HTML 净化（仅用于    │
+│                  预览摘要与拼接文档，非安全边界）/ CF_HTML/整组富文本/分组决策  │
 │  image.rs       PNG 编解码、缩略图、DIB ↔ RGBA（不接触剪贴板）         │
 │  store.rs       SQLite 持久化、资产文件引用、去重、分组、清理、分页     │
 │  platform.rs    唯一 Win32 层：监听、读取、快照、写入、SendInput、      │
@@ -77,7 +77,7 @@
 | `clipboard-monitor` | 消息专用窗口 + `GetMessage` 循环；收到 `WM_CLIPBOARDUPDATE` 只把序列号与时间戳放入有界事件队列，不读剪贴板、不编码图片、不写库 | `WM_CLOSE` / `stop()` |
 | `clipboard-capture` | 合并事件（只保留最新序列号）→ 在后台读取剪贴板、系统标记/来源/敏感过滤、图片 PNG 编码 → 放入有界内容队列 | 队列关闭 / 进程退出 |
 | `clipboard-worker` | 从内容队列取内容 → `store::record_capture` 入库 → `emit clipboard-changed` | 队列关闭 / 进程退出 |
-| `clipboard-maintenance` | 启动 8 秒后首次清理，此后每 300 秒：结束过期收集组、清理过期/超额条目与孤儿文件、标记中断的粘贴任务 | 进程退出 |
+| `clipboard-maintenance` | 启动 8 秒后首次清理，此后每 300 秒：结束过期收集组、清理过期/超额条目与孤儿文件、标记中断的粘贴任务；同时每 30 秒检查一次监听健康状态，监听/采集/入库线程任一退出时自动重启监听（`monitor_restarts` 计数） | 进程退出 |
 | `clipboard-paste` | 单次逐项粘贴任务（同一时刻最多一个） | 完成/取消/失败 |
 
 有界队列与背压：
@@ -90,9 +90,9 @@
 Windows 剪贴板内容**不可重放**：事件被丢弃后无法补读当时的内容；这是有界内存换来的
 明确取舍，通过计数暴露而不是伪装“零丢失”。队列与合并计数经 `clipboard_status.monitor`
 返回（只含计数与延迟，不含正文）：`observed_events`、`merged_events`、`captured`、
-`recorded`、`duplicates`、`skipped`、`dropped_events`、`dropped_contents`、`failed`、
-`peak_event_queue`、`peak_content_queue`、`max_capture_latency_ms`、
-`max_process_latency_ms` 及三个容量常量。
+`recorded`、`duplicates`、`skipped`、`read_failed`、`monitor_restarts`、`dropped_events`、
+`dropped_contents`、`failed`、`peak_event_queue`、`peak_content_queue`、
+`max_capture_latency_ms`、`max_process_latency_ms` 及三个容量常量。
 
 **采集事件的处置与去重水位**（第四轮整改）：
 
@@ -116,7 +116,12 @@ Windows 剪贴板内容**不可重放**：事件被丢弃后无法补读当时�
 不再像早期实现那样**既不计数也不留痕**——这条静默路径正是第四轮一次真实验收失败
 （`observed=6` 而 `captured=4`）无法定位的直接原因。
 现在 `observed_events` 的每一次去向都有归属：
-`observed = captured + self_write_events + superseded_events + empty_events + dropped_events`。
+`observed = captured + self_write_events + superseded_events + empty_events + dropped_events
++ skipped + read_failed + cleared_stale_events`。
+
+其中 `skipped` 只统计策略性跳过（配置 fail-closed、敏感/超限过滤等），
+`read_failed` 单独统计「已完成 10×12 ms 重试仍打不开剪贴板」；两者分开后，
+诊断时不会再把“配置不让记”误读成“读取失败”。
 
 
 并发约定：
@@ -133,7 +138,7 @@ Windows 剪贴板内容**不可重放**：事件被丢弃后无法补读当时�
   `store::cleanup` 都不执行）；手动 `clipboard_cleanup` 在粘贴进行中直接返回校验错误。
   清理会删除条目与资产，而粘贴队列按 id 逐项读取，删除会让后续条目凭空丢失。
 - 采集线程只读取一次剪贴板；读取使用 10 次、每次 12 ms 的 `OpenClipboard` 重试，
-  失败计入 `skipped`（原因“剪贴板被其他程序占用”），不记录、不崩溃。
+  仍失败时计入 `read_failed`（原因“剪贴板被其他程序占用”），不记录、不崩溃。
 - 单个内容处理被 `catch_unwind` 隔离：解析/入库 panic 只记 `failed`，不杀死采集线程。
 - 所有日志只记录类型/大小/计数/原因，不记录正文、文件路径或完整图片。
 
@@ -195,7 +200,7 @@ ACCESS_LOCK
 |---|---|
 | 查询 | `clipboard_view`、`clipboard_item`、`clipboard_group`、`clipboard_stats`、`clipboard_thumb`、`clipboard_image` |
 | 复制 | `clipboard_copy_item`、`clipboard_copy_text`、`clipboard_copy_group_rich`、`clipboard_copy_group_files`、`clipboard_copy_items_rich`、`clipboard_copy_items_files` |
-| 多类型专属操作（v0.7，2026-11-03） | `clipboard_save_image`（另存落盘 PNG，路径校验仅 .png）、`clipboard_open_url`（复用导航 URL 校验仅 http/https，系统默认浏览器委托）、`clipboard_open_local_path`（导航本地路径校验 + 系统关联程序）、`clipboard_reveal_local_path`（explorer /select）、`clipboard_path_status`（批量文件存在性：ok/missing/inaccessible，≤200 条） |
+| 多类型专属操作（v0.7，2026-11-03） | `clipboard_save_image`（另存落盘 PNG；显式 `overwrite` 覆盖授权，无授权原子排他创建、授权时临时文件 + rename 安全替换，见「另存为写入安全」）、`clipboard_open_url`（复用导航 URL 校验仅 http/https，系统默认浏览器委托）、`clipboard_open_local_path`（导航本地路径校验 + 系统关联程序）、`clipboard_reveal_local_path`（explorer /select）、`clipboard_path_status`（批量文件存在性：ok/missing/inaccessible，≤200 条） |
 | 整理 | `clipboard_toggle_item`、`clipboard_toggle_group`、`clipboard_close_group`、`clipboard_delete_items`、`clipboard_delete_group`、`clipboard_create_group`、`clipboard_rename_group`、`clipboard_rename_item`、`clipboard_add_to_group`、`clipboard_remove_group_item`、`clipboard_move_group_item`、`clipboard_split_group`、`clipboard_merge_groups` |
 | 任务关联 | `clipboard_link_task`、`clipboard_unlink_task`、`clipboard_task_links` |
 | 快照关联（v0.5 并行模块） | `clipboard_link_snapshot`、`clipboard_unlink_snapshot`、`clipboard_snapshot_links` |
@@ -215,6 +220,38 @@ ACCESS_LOCK
   `pending`、`message`、`restored`）。
 - 复制命令（单项/整组/通用文本）**不广播 `clipboard-changed`**：复制只增加使用次数、
   不改变列表排序，前端就地更新该条目的 `copy_count`；整表刷新会缩水分页并让滚动位置跳变。
+
+### 另存为写入安全（2026-11-03 修订）
+
+图片另存为分两层职责，安全边界固定在 Rust 执行层：
+
+- **前端只做决策与反馈，不落盘**（`ImageLightbox.tsx` → `bridge.clipboardSaveImage`）：
+  系统保存对话框返回路径后先查 `clipboard_path_status`，按状态分派——`missing` 以
+  `overwrite=false` 调用；`ok` 先弹应用内覆盖确认框（`AskConfirm` → `ConfirmDialog`），
+  用户点「覆盖」才以 `overwrite=true` 调用，点取消/ESC 或拒绝则完全不写盘；
+  `inaccessible`、未知值、空结果、IPC 异常一律拒绝写入并提示原因（fail-closed，绝不以
+  覆盖兜底）。同步 in-flight 守卫使连点只触发一次。
+- **后端是最终执行边界**（`clipboard_save_image` → `clipboard::export::save_png_bytes`）：
+  先校验路径为绝对路径且扩展名为 `.png`（忽略大小写），再按授权分支写入：
+  - `overwrite=false`：`OpenOptions::create_new(true)` 原子排他创建。目标已存在返回
+    `Conflict`“目标文件已存在，未覆盖”，既有文件一个字节都不改动；写入中途失败只删除
+    本次新建的文件，绝不删除既有文件。
+  - `overwrite=true`：在同目录创建唯一临时文件 `.{filename}.{uuid}.tmp`，完整写入后
+    `flush`+`sync_all` 并校验落盘长度，成功再 `std::fs::rename` 原子替换目标
+    （Windows 即 `MoveFileExW(REPLACE_EXISTING)`）。替换失败（目标被占用、只读、无权限）
+    时原文件保持完整、临时文件被清理，错误如实返回。禁止 `fs::write` 截断原文件，也禁止
+    `exists()` + `write()` 的检查-写入组合。
+- **覆盖授权**：一次调用一次授权，绑定本次目标路径；后端不缓存、不复用授权，也不存在
+  默认开启覆盖的调用点。授权由应用内确认框显式取得：系统保存对话框只负责选路径，返回
+  成功并不构成可验证的覆盖授权——当前依赖链（`tauri-plugin-dialog` 2.8.3 → `rfd` 0.16.1
+  的 `win_cid` 后端）创建 `IFileSaveDialog` 时不设置 `FOS_OVERWRITEPROMPT`，Windows 原生
+  「替换已有文件」提示不保证出现（真机实测输入绝对路径保存时未出现）。因此不把原生提示
+  当作安全边界：应用内确认是唯一可靠授权来源，若系统层某路径仍弹出替换提示，视为额外
+  保护而非授权依据。不绕过、不模拟系统安全确认。
+- **失败处理**：所有失败（冲突、目录不存在、权限、占用、长度校验失败）均返回可读错误，
+  前端只提示、不重试覆盖；用户取消保存对话框不查状态、不写盘、不产生文件。
+- **原始图片保真**：写入的是采集时落盘的原始 PNG 字节（`store::image_abs_path` 读取），
+  不重新编码，像素与透明通道保持不变；返回值为写入字节数，成功后前端按“新建/覆盖”给出反馈。
 
 ## 五、关键流程
 
@@ -241,12 +278,32 @@ worker 线程
     「前台推断来源 == 本进程」跳过——该推断会误丢截图工具复制后前台切回 Task Dock
     的外部图片，自身写入已由上方 SelfWrite 水位完整识别）
   → store::record_capture
-       → 归一化 + HTML 清洗 + SHA-256
+       → 归一化（只做长度截断，**不改写 HTML 原文**）+ SHA-256
        → 命中哈希：copy_count+1、last_seen_at、来源更新，结束（不覆盖已有标题）
        → 未命中：图片落盘 → engine::make_title 生成自动标题（≤30 字符，纯本地规则，
          不在 Win32 回调/UI 路径执行）→ 事务插入条目/资产 → 自动分组决策
   → emit clipboard-changed
 ```
+
+### HTML 安全边界（2026-11-03 修订）
+
+采集侧与渲染侧职责分开，不再共用「一次正则清洗」：
+
+| 层 | 职责 | 实现 |
+|---|---|---|
+| 采集/存储 | 保真：只做长度截断（`MAX_HTML_BYTES`），原文入库 | `store::normalize` |
+| 摘要/标题 | 只要可读文本：对原文取**净化副本**再提取，script/style 正文不参与命名 | `engine::sanitize_html` → `make_preview` / `make_title` |
+| 去重键 | 对 HTML 取净化视图后哈希，保证升级前后同一条内容仍是同一个键 | `engine::hash_of` |
+| 预览渲染 | **真正的安全边界**：白名单 React 渲染器，不渲染主动内容、不发起任何资源请求 | `HtmlReader.tsx` |
+| 复制 | 单条复制原样还原用户当时复制到的 HTML；多选/整组拼接属于新建文档，仍走净化 | `paste::payload_for_item` / `group_rich_html` |
+
+正则清洗**不再**被当作 HTML 安全边界（它挡不住变形标签，且会删掉 Word/浏览器富文本
+的 `<style>` 块，破坏「复制富文本」的保真度）。预览安全由渲染层白名单保证：
+`DOMParser` 只解析成惰性文档（无浏览上下文，不触发资源加载），渲染器按白名单重建
+React 元素，`<a>` 降级为带 `title` 的文本，因此剪贴板 HTML 中的图片、iframe、SVG
+外部引用、CSS `url()`/`@import`、音视频、`<link>`、`<base>`、`meta refresh` 与事件
+属性都不会产生加载面或可执行面。真机零请求证据见
+`tmp/acceptance/clipboard-multitype/screenshots/*-html-network.json`。
 
 多选命令（2026-11-02 新增）复用整组实现，不依赖永久分组：
 

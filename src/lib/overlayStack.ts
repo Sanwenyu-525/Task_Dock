@@ -2,10 +2,15 @@
 //!
 //! 一次 Escape 只做**当前最高优先级**的一次关闭动作，优先级与真实 z 序一致：
 //!
-//!   确认框(dialog) → 下拉菜单(menu) → 子弹层(sublayer) → 模态(modal) → 临时抽屉(drawer) → 主窗口
+//!   确认框(dialog) → 下拉菜单(menu) → 顶层模态(modalTop) → 子弹层(sublayer)
+//!     → 模态(modal) → 临时抽屉(drawer) → 主窗口
 //!
 //! 弹层(menu) 的 z 是 --z-menu(900)，高于普通模态的 --z-modal(70)：
 //! 任务编辑器里展开日期选择器时，Escape 必须先关日期选择器而不是编辑器。
+//!
+//! modalTop 对应 --z-modal-top(80)：图片灯箱这类盖在抽屉子视图之上的全屏查看层。
+//! 它的 z 高于子弹层所在的抽屉(--z-drawer 60)，所以 Escape 必须先关它；
+//! 若按 modal(1) 注册，「详情子视图 + 灯箱」同时在场时一次按键会把两层一起关掉。
 //!
 //! 只要栈里还有任何一层，主窗口就不会收到 Escape（不会被顺手藏进托盘）。
 //! 关键点：Escape 分发只有一个入口（capture 阶段），不依赖各组件监听器的注册顺序，
@@ -14,7 +19,7 @@
 //! 同种类的嵌套弹层（例如「任务编辑器」里再开「关联目标」）按 DOM 嵌套深度判定，
 //! 内层优先——不能只看注册顺序，React 的 effect 是子先于父执行的。
 
-export type OverlayKind = "dialog" | "menu" | "sublayer" | "modal" | "drawer";
+export type OverlayKind = "dialog" | "menu" | "modalTop" | "sublayer" | "modal" | "drawer";
 
 export interface OverlayEntry {
   kind: OverlayKind;
@@ -35,18 +40,20 @@ export interface OverlayEntry {
 const stack: OverlayEntry[] = [];
 
 /**
- * 层级优先级：确认框 > 下拉菜单 > 子弹层 > 模态 > 临时抽屉。
+ * 层级优先级：确认框 > 下拉菜单 > 顶层模态 > 子弹层 > 模态 > 临时抽屉。
  *
  * 优先级**按种类**判定而不是纯 LIFO，否则 React 的 effect 执行顺序
  * （子先于父）会让抽屉反超它内部的确认框，Escape 就会关错层。
  *
  * 数字与 CSS 的 z 序对齐：dialog(--z-dialog 940) 在最上，
- * menu(--z-menu 900) 高于普通模态(--z-modal 70)，
- * 模态高于抽屉(--z-drawer 60)，子弹层是抽屉内部的子视图。
+ * menu(--z-menu 900) 高于顶层模态(--z-modal-top 80)，
+ * 顶层模态高于普通模态(--z-modal 70)，模态高于抽屉(--z-drawer 60)，
+ * 子弹层是抽屉内部的子视图（必须先于外层模态关闭）。
  */
 const KIND_PRIORITY: Record<OverlayKind, number> = {
-  dialog: 4,
-  menu: 3,
+  dialog: 5,
+  menu: 4,
+  modalTop: 3,
   sublayer: 2,
   modal: 1,
   drawer: 0,

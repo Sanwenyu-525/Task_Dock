@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::clipboard::agent_bridge::{self, AgentClipboardTarget, ExportPackage};
+use crate::clipboard::export;
 use crate::clipboard::paste::{self, PasteStartReport};
 use crate::clipboard::platform::{self, ClipboardPayload, TargetWindow};
 use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteJob};
@@ -166,26 +167,26 @@ pub fn clipboard_copy_text(state: State<'_, Arc<ClipboardRuntime>>, text: String
 
 /// 图片另存为：把落盘的原始 PNG 写入用户经系统保存对话框选择的路径。
 ///
-/// 覆盖确认由系统保存对话框完成（用户在对话框里确认覆盖即非静默）；
-/// 这里只校验路径形态并如实写入，失败（权限/占用/盘满）原样上报。
+/// 覆盖授权由系统保存对话框完成（用户在对话框里确认替换即显式授权），前端以
+/// `overwrite` 参数显式传入；这里只校验路径形态，具体写入交给
+/// [`export::save_png_bytes`] 的原子执行边界：
+/// - `overwrite=false` 时目标已存在返回「目标文件已存在，未覆盖」，绝不静默覆盖；
+/// - `overwrite=true` 时用同目录临时文件 + rename 替换，失败不破坏原文件。
+///
+/// 返回值仍是写入的字节数。
 #[tauri::command]
 pub fn clipboard_save_image(
     state: State<'_, Arc<ClipboardRuntime>>,
     item_id: String,
     path: String,
+    overwrite: bool,
 ) -> AppResult<u64> {
     let rt = runtime(&state);
     let abs = store::image_abs_path(&rt.db, &rt.root, &item_id)
         .ok_or_else(|| AppError::NotFound("图片缓存不存在或已被清理，无法保存".into()))?;
     let bytes = std::fs::read(&abs)?;
     let target = validate_save_path(&path)?;
-    std::fs::write(&target, &bytes).map_err(|e| {
-        AppError::Io(std::io::Error::new(
-            e.kind(),
-            format!("写入失败（{}）：{}", target.display(), e),
-        ))
-    })?;
-    Ok(bytes.len() as u64)
+    export::save_png_bytes(&target, &bytes, overwrite)
 }
 
 /// 另存路径校验：绝对路径 + .png 扩展名（存储格式是 PNG，防止写出打不开的文件）。

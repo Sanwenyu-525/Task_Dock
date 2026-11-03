@@ -163,11 +163,17 @@ pub fn content_hash(
     out
 }
 
+/// 去重哈希。
+///
+/// HTML 参与哈希前先取「净化视图」：采集侧已改为保留原文（复制要还原原始格式），
+/// 但历史库中存的是净化后的 HTML。若直接拿原文哈希，同一条富文本在升级后会被判成
+/// 新内容而重复入库。以净化视图作为规范化形式，保证升级前后去重键一致。
 pub fn hash_of(payload: &CapturedContent) -> String {
+    let canonical_html = sanitize_html(&payload.html);
     content_hash(
         &payload.kind,
         &payload.text,
-        &payload.html,
+        &canonical_html,
         &payload.file_paths,
         payload.image.as_ref().map(|i| i.png.as_slice()),
     )
@@ -543,10 +549,16 @@ pub fn decide_group(
     let window = Duration::seconds(window_secs.max(1));
     if let Some(last) = open_last_image_at {
         if now - last <= window && open_item_count < MAX_AUTO_GROUP_ITEMS {
-            if kind != KIND_IMAGE {
+            // 文字/HTML/图片之间的交错内容始终留在当前截图流里：
+            // 「截图 A → 文字 → 截图 B」是用户真实工作顺序，不能因为文字来自
+            // 记事本、截图来自截图工具就把它拆出去。
+            //
+            // 只有「另一张图片且来源应用明确不同」才视为新会话：同一窗口内
+            // 从浏览器复制图片后紧接着截图，若仍并入会把两种来源混成一组。
+            if kind == KIND_IMAGE {
                 if let Some(group_src) = group_image_source_app.filter(|s| !s.is_empty()) {
                     if !item_source_app.is_empty() && item_source_app != group_src {
-                        return GroupAction::None;
+                        return GroupAction::Create;
                     }
                 }
             }
@@ -596,6 +608,7 @@ mod tests {
             byte_size: text.len() as i64,
             source_app: "test.exe".into(),
             source_title: "测试".into(),
+            source_kind: "owner".into(),
             image_width: None,
             image_height: None,
             file_paths: vec![],
@@ -721,6 +734,34 @@ mod tests {
     }
 
     #[test]
+    fn hash_is_stable_between_raw_and_sanitized_html() {
+        // 采集侧保留原文后，同一条富文本的去重键必须与升级前（存的是净化 HTML）一致，
+        // 否则用户升级后再复制一次同样的内容就会多出一条历史记录。
+        let make = |html: &str| CapturedContent {
+            kind: KIND_HTML.into(),
+            text: String::new(),
+            html: html.into(),
+            preview: String::new(),
+            file_paths: Vec::new(),
+            image: None,
+            source_app: "chrome.exe".into(),
+            source_title: "页面".into(),
+            source_kind: "owner".into(),
+            byte_size: 0,
+        };
+        let raw = "<p onclick=\"x()\">正文<script>alert(1)</script></p>";
+        let cleaned = sanitize_html(raw);
+        assert_ne!(raw, cleaned, "净化结果必须与原文不同，否则本测试无意义");
+        assert_eq!(
+            hash_of(&make(raw)),
+            hash_of(&make(&cleaned)),
+            "原文与净化视图必须映射到同一个去重键"
+        );
+        // 内容不同则哈希必须不同（去重不能过度合并）
+        assert_ne!(hash_of(&make(raw)), hash_of(&make("<p>另一段</p>")));
+    }
+
+    #[test]
     fn cf_html_offsets_point_into_payload() {
         let frag = "<p>中文 <b>hello</b></p>";
         let doc = cf_html(frag);
@@ -784,8 +825,22 @@ mod tests {
                 "word.exe",
                 Some("snip.exe")
             ),
-            GroupAction::None,
-            "与截图来源不同的文本不并入截图组（降低误分组）"
+            GroupAction::Append,
+            "文本来源不同也必须留在截图流中：「截图 A → 文字 → 截图 B」不拆组"
+        );
+        assert_eq!(
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                45,
+                Some(t0),
+                3,
+                "chrome.exe",
+                Some("snip.exe")
+            ),
+            GroupAction::Create,
+            "另一张图片来自不同应用时另起截图会话，避免把浏览器图片混入截图组"
         );
         assert_eq!(
             decide_group(KIND_TEXT, true, now, 45, Some(t0), 3, "", Some("snip.exe")),

@@ -59,6 +59,25 @@ describe("HtmlReader 安全边界", () => {
     expect(doc.innerHTML).not.toContain("pwn");
   });
 
+  it("CSS url()/@import、SVG 外部引用、base 与 meta refresh 都不留加载面", () => {
+    const doc = renderDoc(
+      `<style>@import url("http://127.0.0.1:8899/a.css");
+         .x { background: url("http://127.0.0.1:8899/b.png") }</style>
+       <p style="background:url(http://127.0.0.1:8899/c.png)">正文</p>
+       <svg><image xlink:href="http://127.0.0.1:8899/d.png"/>
+            <use href="http://127.0.0.1:8899/e.svg#x"/></svg>
+       <base href="http://127.0.0.1:8899/">
+       <meta http-equiv="refresh" content="0;url=http://127.0.0.1:8899/f">
+       <link rel="stylesheet" href="http://127.0.0.1:8899/g.css">`,
+    );
+    for (const tag of ["style", "svg", "image", "use", "base", "meta", "link"]) {
+      expect(doc.querySelector(tag), `${tag} 不应渲染`).toBeNull();
+    }
+    // 外链地址一处都不留在 DOM 里：既没有 src/href，也没有 CSS 文本
+    expect(doc.innerHTML).not.toContain("127.0.0.1:8899");
+    expect(doc.textContent).toContain("正文");
+  });
+
   it("事件属性与 style 属性绝不出现（渲染器不携带任何源属性）", () => {
     const doc = renderDoc(
       `<p onclick="pwn()" onmouseover="pwn()" style="position:fixed" data-x="y">带毒属性</p>`,

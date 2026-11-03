@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import {
   ArrowLeft, Check, CircleCheck, Code2, Copy, ExternalLink, Eye, FileText,
-  FolderOpen, Link2, Pencil, Pin, Search, Star, Trash2, X,
+  FolderOpen, Link2, Pencil, Pin, Search, Star, Trash2, X, AppWindow, Info,
 } from "lucide-react";
 import {
   clipboardCopyItem,
@@ -24,8 +24,8 @@ import {
 } from "../../lib/bridge";
 import { copyText } from "../../lib/clipboard";
 import {
-  clipboardTime, fileBaseName, formatBytes, kindLabel, looksLikeCode, objectHint,
-  sourceLabel, urlDomain,
+  clipSource, clipboardTime, fileBaseName, formatBytes, kindLabel, looksLikeCode, objectHint,
+  urlDomain,
 } from "../../lib/clipboardUi";
 import { useUiStore } from "../../store/useUiStore";
 import { useClipboardStore } from "../../store/useClipboardStore";
@@ -37,8 +37,13 @@ import TaskLinkBar from "./TaskLinkBar";
 import WorkspaceLinkBar from "./WorkspaceLinkBar";
 import type { AskConfirm, LinkTask } from "./types";
 
-/** 文件路径状态：ok / missing / inaccessible / checking。 */
-type PathState = "ok" | "missing" | "inaccessible" | "checking";
+/** 文件路径状态：ok / missing / inaccessible / checking / unknown（查询失败，不可确认）。 */
+type PathState = "ok" | "missing" | "inaccessible" | "checking" | "unknown";
+
+/** 后端返回的是字符串：非预期的取值一律按「无法确认」处理，不默认成存在。 */
+function normalizePathState(v: unknown): PathState {
+  return v === "ok" || v === "missing" || v === "inaccessible" ? v : "unknown";
+}
 
 export default function ClipboardItemDetail({
   itemId,
@@ -64,6 +69,8 @@ export default function ClipboardItemDetail({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [pathStates, setPathStates] = useState<Record<string, PathState>>({});
+  /** 批量状态查询是否失败：失败时所有路径按「未知」处理，绝不按「存在」放行。 */
+  const [pathCheckFailed, setPathCheckFailed] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -90,16 +97,24 @@ export default function ClipboardItemDetail({
     if (!item || pathsKey === "") return;
     let alive = true;
     const paths = pathsKey.split("\n").slice(0, 200);
-    setPathStates(Object.fromEntries(paths.map((p) => [p, "checking"])));
+    setPathCheckFailed(false);
+    setPathStates(Object.fromEntries(paths.map((p) => [p, "checking" as PathState])));
     clipboardPathStatus(paths)
       .then((states) => {
         if (alive) {
-          setPathStates(Object.fromEntries(paths.map((p, i) => [p, states[i] as PathState])));
+          setPathStates(
+            Object.fromEntries(
+              paths.map((p, i) => [p, normalizePathState(states[i])]),
+            ),
+          );
         }
       })
       .catch(() => {
-        // 查询失败不阻塞详情：保持未知态，不虚报状态
-        if (alive) setPathStates({});
+        // 查询失败不阻塞详情，但也不能虚报：统一落到「未知」，操作按钮一律禁用
+        if (alive) {
+          setPathStates({});
+          setPathCheckFailed(true);
+        }
       });
     return () => {
       alive = false;
@@ -249,6 +264,8 @@ export default function ClipboardItemDetail({
 
   const isUrl = item.kind === "url";
   const domain = isUrl ? urlDomain(item.text) : "";
+  // 来源是三个展示位置共用的结构（应用名 / 窗口标题 / 识别方式），不在这里另写一套格式化
+  const src = clipSource(item);
   const files = item.file_paths;
   const isCode = codeView ?? (item.kind === "text" && looksLikeCode(item.text));
 
@@ -257,7 +274,12 @@ export default function ClipboardItemDetail({
     missing: { label: "已不存在", cls: "missing" },
     inaccessible: { label: "无权限", cls: "inaccessible" },
     checking: { label: "检查中", cls: "checking" },
+    unknown: { label: "无法确认", cls: "unknown" },
   };
+
+  /** 行内按钮、顶部按钮、状态徽标共用同一判定，不允许两套口径。 */
+  const pathStateOf = (p: string): PathState =>
+    pathCheckFailed ? "unknown" : (pathStates[p] ?? "checking");
 
   return (
     <div className="clip-detail">
@@ -357,7 +379,7 @@ export default function ClipboardItemDetail({
           )}
         </div>
         <div className="clip-detail-meta">
-          <span title={item.source_title || item.source_app}>{sourceLabel(item.source_app, item.source_title)}</span>
+          <span className="clip-detail-app" title={src.appRaw || undefined}>{src.app}</span>
           <span>创建 {clipboardTime(item.created_at)}</span>
           <span>最近 {clipboardTime(item.last_seen_at)}</span>
           {item.copy_count > 0 && <span>已使用 {item.copy_count} 次</span>}
@@ -365,6 +387,45 @@ export default function ClipboardItemDetail({
             <span>{item.image_width}×{item.image_height}</span>
           )}
         </div>
+
+        {/* 采集环境：讲清楚「这条内容是在什么应用、什么窗口下被采集的」。
+            来源是辅助元数据，不等于内容本身，也不等于用户按下 Ctrl+C 的那个程序。 */}
+        <section className="clip-source-block" aria-label="采集环境">
+          <div className="clip-source-title">
+            <AppWindow size={12} /> 采集环境
+          </div>
+          <div className="clip-source-rows">
+            <div className="clip-source-row">
+              <span className="clip-source-key">应用</span>
+              <span className="clip-source-val" title={src.appRaw || undefined}>
+                {src.app}
+              </span>
+            </div>
+            <div className="clip-source-row">
+              <span className="clip-source-key">窗口</span>
+              <span
+                className="clip-source-val"
+                tabIndex={src.window ? 0 : undefined}
+                data-tip={src.window ? `窗口：${src.windowRaw}` : undefined}
+              >
+                {src.window || "（未记录窗口标题）"}
+              </span>
+            </div>
+            <div className="clip-source-row">
+              <span className="clip-source-key">识别方式</span>
+              <span className="clip-source-val">
+                {src.trust}
+                {src.appRaw && (
+                  <span className="clip-source-raw">· 来源进程 {src.appRaw}</span>
+                )}
+              </span>
+            </div>
+          </div>
+          <p className="clip-source-note">
+            <Info size={11} />
+            这里记录的是采集时识别到的应用与窗口环境，不一定是实际执行复制操作的程序。
+          </p>
+        </section>
 
         {/* ── 类型专属预览区 ── */}
 
@@ -421,21 +482,37 @@ export default function ClipboardItemDetail({
                 >
                   <Copy size={11} /> 复制路径
                 </button>
-                {files.length === 1 && (
-                  <>
-                    <button className="btn sm" onClick={() => void onOpenFile(files[0])}>
-                      <FolderOpen size={11} /> 打开文件
-                    </button>
-                    <button className="btn sm" onClick={() => void onRevealFile(files[0])}>
-                      <Search size={11} /> 资源管理器定位
-                    </button>
-                  </>
-                )}
+                {files.length === 1 && (() => {
+                  // 与行内按钮同一判定：只有确认存在才放行，未确认/失败一律禁用
+                  const st = pathStateOf(files[0]);
+                  const canOpen = st === "ok";
+                  const why = PATH_STATE_META[st].label;
+                  return (
+                    <>
+                      <button
+                        className="btn sm"
+                        onClick={() => void onOpenFile(files[0])}
+                        disabled={!canOpen}
+                        data-tip={canOpen ? undefined : `文件状态：${why}，暂不可打开`}
+                      >
+                        <FolderOpen size={11} /> 打开文件
+                      </button>
+                      <button
+                        className="btn sm"
+                        onClick={() => void onRevealFile(files[0])}
+                        disabled={!canOpen}
+                        data-tip={canOpen ? undefined : `文件状态：${why}，暂不可定位`}
+                      >
+                        <Search size={11} /> 资源管理器定位
+                      </button>
+                    </>
+                  );
+                })()}
               </div>
             </div>
             <ul className="clip-path-list">
               {files.slice(0, 200).map((p) => {
-                const st = pathStates[p] ?? "checking";
+                const st = pathStateOf(p);
                 const meta = PATH_STATE_META[st];
                 return (
                   <li key={p} className={`clip-path-row is-${meta.cls}`} title={p}>
@@ -481,6 +558,11 @@ export default function ClipboardItemDetail({
                 );
               })}
             </ul>
+            {pathCheckFailed && (
+              <div className="clip-hint">
+                文件状态查询失败，无法确认路径是否仍存在；打开与定位已暂时禁用，返回后重新进入可再试一次。
+              </div>
+            )}
             <div className="clip-hint">
               打开使用系统文件关联程序；文件被移动或删除后将无法打开，粘贴也可能缺失。
             </div>
@@ -601,7 +683,11 @@ export default function ClipboardItemDetail({
         <AgentExportPanel targetType="item" targetId={item.id} taskId={linkTask?.id ?? null} />
       </div>
 
-      {lightbox && <ImageLightbox item={item} onClose={() => setLightbox(false)} />}
+      {lightbox && <ImageLightbox
+          item={item}
+          askConfirm={askConfirm}
+          onClose={() => setLightbox(false)}
+        />}
     </div>
   );
 }

@@ -131,24 +131,23 @@ export function useLargeImage(
   return { state, url, error };
 }
 
+/**
+ * 缩略图；提供 onOpen 时整块成为「直接打开大图」的按钮（不必先进详情）。
+ * 无缩略图也要可点：灯箱会如实报出缺失/读取失败，而不是给一个死图标。
+ */
 export function ClipboardThumb({
   itemId,
   hasThumb,
   size = 40,
+  onOpen,
 }: {
   itemId: string;
   hasThumb: boolean;
   size?: number;
+  onOpen?: () => void;
 }) {
   const url = useThumbnail(itemId, hasThumb);
-  if (!url) {
-    return (
-      <span className="clip-thumb-placeholder" style={{ width: size, height: size }}>
-        <ImageIcon size={16} />
-      </span>
-    );
-  }
-  return (
+  const body = url ? (
     <img
       className="clip-thumb"
       src={url}
@@ -158,6 +157,28 @@ export function ClipboardThumb({
       loading="lazy"
       draggable={false}
     />
+  ) : (
+    <span className="clip-thumb-placeholder" style={{ width: size, height: size }}>
+      <ImageIcon size={16} />
+    </span>
+  );
+  if (!onOpen) return body;
+  return (
+    <button
+      type="button"
+      className="clip-thumb-open"
+      onClick={(e) => {
+        // 卡片本身是 role=button：不拦住就会同时打开详情
+        e.stopPropagation();
+        onOpen();
+      }}
+      // Enter 冒泡到卡片会再触发一次「打开详情」；Space 同理，按键不外传
+      onKeyDown={(e) => e.stopPropagation()}
+      data-tip="点击查看大图"
+      aria-label="查看大图"
+    >
+      {body}
+    </button>
   );
 }
 

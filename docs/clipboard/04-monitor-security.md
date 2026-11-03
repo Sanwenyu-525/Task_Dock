@@ -21,9 +21,13 @@
   通过计数暴露，不宣称零丢失。
 - 每次事件重新读取设置，暂停/停用立即生效。
 - 读取失败（剪贴板被占用）使用 10 次 × 12 ms 的 `OpenClipboard` 重试；
-  仍失败计入 `skipped`（原因“剪贴板被其他程序占用”），不记录、不崩溃。
+  仍失败计入 `read_failed`（原因“剪贴板被其他程序占用”），不记录、不崩溃。
+  策略性跳过硬性计入 `skipped`，两者不再混用。
 - 单条内容处理用 `catch_unwind` 隔离；解析/入库 panic 只计入 `failed`，不终止线程。
 - 监听启动失败只记录警告并降级（`monitoring=false`），不阻塞应用启动。
+- 维护线程每 30 秒检查监听/采集/入库三个线程是否都存活；任一退出且用户未主动关闭模块时，
+  关闭旧实例并重新拉起监听（`monitor_restarts` 计数）。`monitoring` 以线程存活为准，
+  不仅看句柄是否存在。用户主动停用时 `monitor` 为 `None`，看门狗不会擅自恢复。
 - **配置 fail-closed**：每次采集前重新调用 `Settings::load_clipboard`。键缺失沿用默认
   （兼容旧库）；JSON 损坏、类型错误、数值越界或数据库读取失败返回 `ClipboardConfigError`，
   本次事件不读取剪贴板、不入库，日志按 60 秒限频记录（只含键名与错误类别，不含值）。
@@ -56,7 +60,8 @@
   「被丢弃」还是「被记录」。
 
 诊断：`clipboard_status.monitor` 返回 `observed_events`、`merged_events`、`captured`、
-`recorded`、`duplicates`、`skipped`、`dropped_events`、`dropped_contents`、`failed`、
+`recorded`、`duplicates`、`skipped`、`read_failed`、`monitor_restarts`、`dropped_events`、
+`dropped_contents`、`failed`、
 `self_write_events`、`superseded_events`、`empty_events`、`cleared_stale_events`、
 `cleared_stale_contents`、`peak_event_queue`、`peak_content_queue`、
 `max_capture_latency_ms`、`max_process_latency_ms` 与队列容量；只含计数，
@@ -67,7 +72,7 @@
 ```
 observed_events = dropped_events + merged_events + superseded_events
                 + self_write_events + captured + empty_events + skipped
-                + cleared_stale_events
+                + read_failed + cleared_stale_events
 ```
 
 `cleared_stale_contents` 属于入库阶段：清空前已入队、清空后才轮到处理的内容，
@@ -76,7 +81,9 @@ observed_events = dropped_events + merged_events + superseded_events
 - `observed_events`：监听线程收到的 `WM_CLIPBOARDUPDATE` 通知数。
 - `dropped_events`：事件队列溢出被丢弃的最旧事件数。
 - `merged_events`：队列合并时被丢弃的中间事件数（只保留最新序列号）。
-- `skipped`：判定为需要读取、但因配置 fail-closed 或剪贴板被占用而未读取的事件数。
+- `skipped`：判定为需要读取、但因配置 fail-closed 或敏感/超限策略而跳过的事件数。
+- `read_failed`：`OpenClipboard` 重试 10×12 ms 后仍被占用的事件数（与策略跳过分开）。
+- `monitor_restarts`：维护线程看门狗检测到监听线程退出后重新拉起的次数。
 - `captured`：成功读取到内容的事件数（`recorded`/`duplicates` 是入库阶段的另一层计数）。
 
 第四轮真机验收实测：`observed_events 10 = captured 5 + self_write_events 5`，
@@ -178,9 +185,22 @@ URL 判定：`http://` / `https://`、无空白、≤4096 字符、不含引号/
 
 ### 来源推断与未知来源
 
-- 来源应用是**推断值**：采集时读取前台窗口的进程 exe，不保证等于实际复制该内容的程序
-  （复制动作可能来自后台程序、脚本、远程会话，或前台窗口已切换）。
+- **识别顺序（2026-11-03 起）**：先取 `GetClipboardOwner()` → PID → `exe_path_of` → exe 名 + 窗口标题，
+  记 `source_kind='owner'`；所有者为空、已销毁或取不到 exe 时，才回退 `GetForegroundWindow()`，
+  记 `source_kind='foreground'`（界面明确标为推断）；两者都失败记 `'unknown'`。
+  所有者读取发生在 `OpenClipboard` 成功、持有进程内 `ACCESS_LOCK` 的同一段里，
+  不新增额外系统调用或轮询。
+- 即使拿到所有者窗口，来源仍是**采集环境**而不是作者：内容可能由后台程序、脚本、远程会话写入，
+  也可能是历史重放。`owner` 仅表示“系统记录的所有者窗口”，界面文案固定为
+  “剪贴板所有者窗口（系统记录）”“前台窗口（推断来源）”“未能识别来源”“旧记录未记录识别方式”，
+  不使用“确认写入方”“真实写入方”等绝对表述。
+- 来源应用不保证等于实际复制该内容的程序（复制动作可能来自后台程序、脚本、远程会话，
+  或前台窗口已切换）；它只用于展示、排除名单与审计，不作为安全边界。
+- 回退前台窗口时若该窗口属于本进程，按 `unknown` 处理：把外部写入记成 task_dock.exe
+  只会制造虚假来源；识别失败不阻断采集，也不追加轮询。
 - 读取不到或为空时记为 `unknown`，界面显示“未知来源”，不猜测、不冒充。
+- 重复内容的来源更新按整体快照替换（`store::reconcile_source_snapshot`）：
+  新来源可识别时应用/标题/识别方式全部取自同一次采集；不可识别时整体保留旧快照。
 - 来源未知且敏感过滤开启时，额外启用保守凭据模式（`password=…`、`Authorization: Bearer/Basic`、
   JSON 凭据字段），命中整条跳过；来源已知时不启用该保守模式，避免误伤普通文本。
 - 高置信模式（私钥/AWS/GitHub/Slack Token）与来源无关，始终过滤。
@@ -192,7 +212,8 @@ URL 判定：`http://` / `https://`、无空白、≤4096 字符、不含引号/
 - 设置项 `clipboard_exclude_apps`：逗号/分号/换行分隔的 exe 名，可写完整路径；
   比较时统一取 basename（大小写不敏感），因此 `C:\Tools\KeePass.exe` 与 `keepass.exe` 等价。
 - 读取后按来源 exe 文件名精确匹配；命中跳过。
-- 来源应用来自前台窗口的进程 exe（`navigation::window_manager::exe_path_of`）。
+- 来源应用来自所有者窗口（无效时回退前台窗口）的进程 exe
+  （`navigation::window_manager::exe_path_of`）；识别不到时排除名单无法覆盖。
 - 排除名单不是安全边界：只覆盖能推断出来源的应用；无法识别来源的复制不受其保护，
   此时应使用全局暂停/停用。
 

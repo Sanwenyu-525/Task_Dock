@@ -203,9 +203,14 @@ describe("分组详情的离场与顺序反馈", () => {
     await user.click(screen.getByRole("button", { name: "从分组移除第 2 项" }));
 
     await waitFor(() => expect(bridge.clipboardRemoveGroupItem).toHaveBeenCalledWith("g1", "ci1"));
-    const leaving = document.querySelector<HTMLElement>('[data-clip-row="ci1"]');
-    expect(leaving?.classList.contains("removing")).toBe(true);
-    expect(leaving?.getAttribute("aria-hidden")).toBe("true");
+    // mock 已调用 ≠ React 已把离场行提交到 DOM：setGroup(next) 与 scheduleRowExit
+    // 是两次提交，全量并发渲染变慢时会先看到「ci1 已不在列表」的中间态。
+    // 等离场行真正带着 removing 出现，再断言顺序，避免把提交时序当成回归。
+    await waitFor(() => {
+      const row = document.querySelector<HTMLElement>('[data-clip-row="ci1"]');
+      expect(row?.classList.contains("removing")).toBe(true);
+      expect(row?.getAttribute("aria-hidden")).toBe("true");
+    });
     // 离场行按原位补位，其余行不被打乱
     expect(rowIds()).toEqual(["ci0", "ci1", "ci2"]);
 

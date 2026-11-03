@@ -171,6 +171,11 @@ struct MonitorCounters {
     recorded: AtomicU64,
     duplicates: AtomicU64,
     skipped: AtomicU64,
+    /// 打开剪贴板重试后仍失败（被其他程序独占）的事件数。
+    /// 与 `skipped`（配置拒绝/超限/自写等策略性跳过）分开，便于定位「读过但读不到」。
+    read_failed: AtomicU64,
+    /// 监听线程被看门狗检测到已退出并重新拉起的次数。
+    monitor_restarts: AtomicU64,
     /// 序列号不晚于已采集水位：同一份剪贴板状态已经记过，不再重复入库。
     superseded_events: AtomicU64,
     /// 本进程自己的写入（复制/粘贴/恢复）产生的事件。
@@ -199,6 +204,8 @@ impl MonitorCounters {
             recorded: AtomicU64::new(0),
             duplicates: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
+            read_failed: AtomicU64::new(0),
+            monitor_restarts: AtomicU64::new(0),
             superseded_events: AtomicU64::new(0),
             self_write_events: AtomicU64::new(0),
             empty_events: AtomicU64::new(0),
@@ -229,6 +236,8 @@ pub struct MonitorStats {
     pub recorded: u64,
     pub duplicates: u64,
     pub skipped: u64,
+    pub read_failed: u64,
+    pub monitor_restarts: u64,
     pub superseded_events: u64,
     pub self_write_events: u64,
     pub empty_events: u64,
@@ -256,6 +265,8 @@ pub fn monitor_stats() -> MonitorStats {
         recorded: c.recorded.load(Ordering::Relaxed),
         duplicates: c.duplicates.load(Ordering::Relaxed),
         skipped: c.skipped.load(Ordering::Relaxed),
+        read_failed: c.read_failed.load(Ordering::Relaxed),
+        monitor_restarts: c.monitor_restarts.load(Ordering::Relaxed),
         superseded_events: c.superseded_events.load(Ordering::Relaxed),
         self_write_events: c.self_write_events.load(Ordering::Relaxed),
         empty_events: c.empty_events.load(Ordering::Relaxed),
@@ -272,6 +283,13 @@ pub fn monitor_stats() -> MonitorStats {
         content_queue_capacity: CONTENT_QUEUE_CAPACITY as u64,
         content_queue_max_bytes: CONTENT_QUEUE_MAX_BYTES as u64,
     }
+}
+
+/// 记录一次看门狗重启，供诊断核对（只在真正重新拉起监听时调用）。
+pub fn note_monitor_restart() {
+    MONITOR_COUNTERS
+        .monitor_restarts
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 fn estimate_content_bytes(c: &CapturedContent) -> usize {
@@ -933,7 +951,7 @@ mod imp {
     };
     use windows_sys::Win32::System::DataExchange::{
         AddClipboardFormatListener, CloseClipboard, EmptyClipboard, GetClipboardData,
-        GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
+        GetClipboardOwner, GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
         RegisterClipboardFormatW, RemoveClipboardFormatListener, SetClipboardData,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -967,6 +985,9 @@ mod imp {
     pub fn current_sequence() -> u32 {
         unsafe { GetClipboardSequenceNumber() }
     }
+
+    /// 打开剪贴板失败的原因串：采集侧据此把「读过但读不到」与策略性跳过分开计数。
+    const READ_BUSY_REASON: &str = "剪贴板被其他程序占用";
 
     fn open_clipboard() -> bool {
         for _ in 0..10 {
@@ -1182,27 +1203,65 @@ mod imp {
         None
     }
 
-    fn foreground_source() -> (String, String) {
+    /// 一个窗口能给出的来源信息：应用（exe 文件名，小写）、窗口标题。
+    ///
+    /// 过滤器很保守：句柄无效、PID 取不到、exe 路径取不到都算「认不出」，
+    /// 返回 None 交给上层回退，绝不用空壳数据冒充来源。
+    fn source_of_window(hwnd: HWND) -> Option<(String, String)> {
         unsafe {
-            let hwnd = GetForegroundWindow();
-            if hwnd.is_null() {
-                return ("unknown".into(), String::new());
+            if hwnd.is_null() || IsWindow(hwnd) == 0 {
+                return None;
             }
             let mut pid: u32 = 0;
             GetWindowThreadProcessId(hwnd, &mut pid);
-            let title = window_title(hwnd);
+            if pid == 0 {
+                return None;
+            }
             let exe = crate::navigation::window_manager::exe_path_of(pid).unwrap_or_default();
             let app = Path::new(&exe)
                 .file_name()
                 .map(|n| n.to_string_lossy().to_ascii_lowercase())
                 .unwrap_or_default();
             if app.is_empty() {
-                // 无法确认来源时显式标记 unknown，后续采用保守敏感策略。
-                ("unknown".into(), title)
-            } else {
-                (app, title)
+                return None;
+            }
+            Some((app, window_title(hwnd)))
+        }
+    }
+
+    /// 采集环境来源：（应用, 窗口标题, 识别方式）。
+    ///
+    /// 先问剪贴板所有者。`WM_CLIPBOARDUPDATE` 只说明「有人写过剪贴板」，监听线程
+    /// 真正处理时前台窗口可能早已切走（截图工具写完就收起、用户随手点了浏览器）；
+    /// `GetClipboardOwner()` 指向系统登记的所有者窗口，相对更接近「内容从哪来」，
+    /// 但它仍只是系统记录，不保证等于实际执行复制的程序。
+    /// 所有者也可能为空、已销毁、或只是个消息窗口，那就退回前台窗口，并把
+    /// 「这是推断」记进 `source_kind`，不许把回退值伪装成准确来源。
+    /// 前台窗口若属于本进程，说明这次外部写入发生时用户正看着 Task Dock；
+    /// 把它记成 task_dock.exe 只会制造虚假来源，按 unknown 处理。
+    ///
+    /// 必须在剪贴板已打开、且持有进程内访问锁时调用：`OpenClipboard` 期间其他进程
+    /// 无法写入，读到内容与来源窗口来自同一份剪贴板状态；锁在 `read_open` 返回前
+    /// 一直持有，不存在“读完内容再猜来源”的窗口期。
+    fn clipboard_source() -> (String, String, &'static str) {
+        if let Some((app, title)) = source_of_window(unsafe { GetClipboardOwner() }) {
+            return (app, title, super::super::SOURCE_OWNER);
+        }
+        let foreground = unsafe { GetForegroundWindow() };
+        if !foreground.is_null() && unsafe { IsWindow(foreground) } != 0 {
+            let mut pid: u32 = 0;
+            unsafe { GetWindowThreadProcessId(foreground, &mut pid) };
+            if pid != 0 && pid != std::process::id() {
+                if let Some((app, title)) = source_of_window(foreground) {
+                    return (app, title, super::super::SOURCE_FOREGROUND);
+                }
             }
         }
+        (
+            "unknown".into(),
+            String::new(),
+            super::super::SOURCE_UNKNOWN,
+        )
     }
 
     pub fn read_clipboard(ignore_markers: bool) -> ClipboardRead {
@@ -1212,7 +1271,7 @@ mod imp {
 
     fn read_locked(ignore_markers: bool) -> ClipboardRead {
         if !open_clipboard() {
-            return ClipboardRead::Skip("剪贴板被其他程序占用");
+            return ClipboardRead::Skip(READ_BUSY_REASON);
         }
         let result = unsafe { read_open(ignore_markers) };
         unsafe { close() };
@@ -1264,7 +1323,7 @@ mod imp {
         {
             return ClipboardRead::Skip("文本超过采集上限");
         }
-        let (source_app, source_title) = foreground_source();
+        let (source_app, source_title, source_kind) = clipboard_source();
         let preview = super::super::engine::make_preview(
             kind,
             &text,
@@ -1284,6 +1343,7 @@ mod imp {
                 image,
                 source_app,
                 source_title,
+                source_kind: source_kind.into(),
                 byte_size: 0,
             }),
         }
@@ -1994,6 +2054,14 @@ mod imp {
             })
         }
 
+        /// 三个线程是否都还活着。监听线程可能因窗口/消息循环异常退出，
+        /// 看门狗据此重新拉起；不能只看 `monitor.is_some()`。
+        pub fn is_alive(&self) -> bool {
+            self.thread.as_ref().is_some_and(|t| !t.is_finished())
+                && self.capture.as_ref().is_some_and(|t| !t.is_finished())
+                && self.worker.as_ref().is_some_and(|t| !t.is_finished())
+        }
+
         pub fn stop(mut self) {
             self.event_q.close();
             reset_queue();
@@ -2119,7 +2187,13 @@ mod imp {
                             }
                         }
                         ClipboardRead::Skip(reason) => {
-                            MONITOR_COUNTERS.skipped.fetch_add(1, Ordering::Relaxed);
+                            // 「读过但剪贴板被占用」不是策略性跳过，单独计数，
+                            // 否则诊断里无法区分「配置不让记」和「想记但读不到」。
+                            if reason == READ_BUSY_REASON {
+                                MONITOR_COUNTERS.read_failed.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                MONITOR_COUNTERS.skipped.fetch_add(1, Ordering::Relaxed);
+                            }
                             tracing::debug!("剪贴板跳过：{}", reason);
                         }
                         ClipboardRead::Empty(reason) => {
@@ -2319,6 +2393,9 @@ mod imp {
     impl ClipboardMonitor {
         pub fn start(_sink: Arc<CaptureSink>) -> AppResult<Self> {
             Err(AppError::Validation("当前平台不支持剪贴板监听".into()))
+        }
+        pub fn is_alive(&self) -> bool {
+            false
         }
         pub fn stop(self) {}
     }
@@ -2884,6 +2961,7 @@ mod tests {
             image: None,
             source_app: "unknown".into(),
             source_title: String::new(),
+            source_kind: "owner".into(),
             byte_size: 0,
         };
         assert_eq!(estimate_content_bytes(&c), 3 + 4 + 4 + 7);
@@ -2924,6 +3002,7 @@ mod tests {
             }),
             source_app: "snippingtool.exe".into(),
             source_title: String::new(),
+            source_kind: "owner".into(),
             byte_size: 0,
         }
     }
@@ -3064,6 +3143,7 @@ mod tests {
             image: None,
             source_app: source.into(),
             source_title: String::new(),
+            source_kind: "owner".into(),
             byte_size: 0,
         }
     }

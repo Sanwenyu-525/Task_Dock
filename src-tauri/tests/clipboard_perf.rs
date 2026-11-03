@@ -100,6 +100,7 @@ fn text_payload(i: usize) -> CapturedContent {
         image: None,
         source_app: "perf.exe".into(),
         source_title: "性能采样".into(),
+        source_kind: "owner".into(),
         byte_size: 0,
     }
 }

@@ -12,6 +12,7 @@ const bridge = vi.hoisted(() => ({
   clipboardImage: vi.fn(),
   clipboardCopyItem: vi.fn(),
   clipboardSaveImage: vi.fn(),
+  clipboardPathStatus: vi.fn(),
 }));
 vi.mock("../../lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/bridge")>();
@@ -79,7 +80,14 @@ function settleImage(natural = { w: 1440, h: 900 }) {
 beforeEach(() => {
   vi.clearAllMocks();
   resetOverlayStack();
+  // jsdom 未实现指针捕获：补齐为无害空实现，避免拖拽用例刷错误日志
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  proto.setPointerCapture ??= () => {};
+  proto.releasePointerCapture ??= () => {};
+  proto.hasPointerCapture ??= () => false;
   bridge.clipboardImage.mockResolvedValue("data:image/png;base64,QUJD");
+  // 另存为写盘前会先查目标状态；缺省按「不存在」放行，具体覆盖授权见 save.test.tsx
+  bridge.clipboardPathStatus.mockResolvedValue(["missing"]);
   bridge.clipboardCopyItem.mockResolvedValue({
     mode: "image",
     bytes: 123456,
@@ -99,7 +107,9 @@ describe("ImageLightbox 状态机", () => {
     expect(info.textContent).toContain("1440×900");
     expect(info.textContent).toContain("PNG（存储格式）");
     expect(info.textContent).toContain("120.6 KB");
-    expect(info.textContent).toContain("chrome.exe");
+    expect(info.textContent).toContain("Google Chrome");
+    // 放大预览必须与人名化后的展示规则一致：不再露出原始 exe
+    expect(info.textContent).not.toContain("chrome.exe");
   });
 
   it("缓存缺失显示缺失态，复制/另存不可用", async () => {
@@ -136,11 +146,60 @@ describe("ImageLightbox 关闭路径", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("点击遮罩空白关闭，点击图片/工具条不关闭", async () => {
+  it("点击遮罩空白关闭（真正落在舞台空白处）", async () => {
     const onClose = renderBox();
     await waitFor(() => expect(document.querySelector(".clip-lightbox-img")).not.toBeNull());
+    fireEvent.click(document.querySelector(".clip-lightbox-stage")!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("点击图片本体不关闭", async () => {
+    const onClose = renderBox();
+    await waitFor(() => expect(document.querySelector(".clip-lightbox-img")).not.toBeNull());
+    fireEvent.click(document.querySelector(".clip-lightbox-img")!);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("点击工具条、缩放读数与缩放按钮都不关闭", async () => {
+    const onClose = renderBox();
+    await waitFor(() => expect(document.querySelector(".clip-lightbox-img")).not.toBeNull());
+    fireEvent.click(document.querySelector(".clip-lightbox-tools")!);
+    fireEvent.click(document.querySelector(".clip-lightbox-zoom")!);
+    fireEvent.click(screen.getByLabelText("放大"));
+    fireEvent.click(screen.getByLabelText("适应窗口"));
+    fireEvent.click(screen.getByLabelText("实际尺寸"));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("指针捕获把 click 的 target 改成舞台时，点图片仍不关闭", async () => {
+    // 真机回归：拖拽用 setPointerCapture，浏览器会把后续 click 的 target 重定向到
+    // 捕获元素（舞台）。只看 e.target 会把「点图片」误判成「点遮罩」，灯箱被误关。
+    const onClose = renderBox();
+    await waitFor(() => expect(document.querySelector(".clip-lightbox-img")).not.toBeNull());
+    settleImage();
     const stage = document.querySelector(".clip-lightbox-stage")!;
-    fireEvent.click(screen.getByLabelText("复制原图"));
+    const img = document.querySelector(".clip-lightbox-img")!;
+    const pointerDown = new Event("pointerdown", { bubbles: true });
+    Object.assign(pointerDown, { clientX: 200, clientY: 200, button: 0, pointerId: 1 });
+    img.dispatchEvent(pointerDown); // 起手在图片上
+    fireEvent.click(stage); // 捕获后 click 的 target 是舞台
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("拖拽平移后浏览器补发的那一次 click 不算点击遮罩", async () => {
+    const onClose = renderBox();
+    await waitFor(() => expect(document.querySelector(".clip-lightbox-img")).not.toBeNull());
+    settleImage(); // 拖拽/滚轮监听要等原图解码完成才挂载
+    const stage = document.querySelector(".clip-lightbox-stage")!;
+    // jsdom 没有 PointerEvent：按类型构造事件再补指针字段，走的仍是组件挂的原生监听
+    const pointer = (type: string, x: number, y: number) => {
+      const ev = new Event(type, { bubbles: true });
+      Object.assign(ev, { clientX: x, clientY: y, button: 0, pointerId: 1 });
+      stage.dispatchEvent(ev);
+    };
+    pointer("pointerdown", 100, 100);
+    pointer("pointermove", 220, 240);
+    pointer("pointerup", 220, 240);
     fireEvent.click(stage);
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -166,7 +225,7 @@ describe("ImageLightbox 工具动作", () => {
     expect(bridge.clipboardSaveImage).not.toHaveBeenCalled();
   });
 
-  it("另存为：选择路径后调用后端写入", async () => {
+  it("另存为：选择路径后以显式 overwrite=false 调用后端写入", async () => {
     dialogPlugin.save.mockResolvedValue("D:\\out\\clip.png");
     bridge.clipboardSaveImage.mockResolvedValue(123456);
     const item = makeItem();
@@ -174,7 +233,11 @@ describe("ImageLightbox 工具动作", () => {
     await waitFor(() => expect(document.querySelector(".clip-lightbox-img")).not.toBeNull());
     fireEvent.click(screen.getByLabelText("另存为"));
     await waitFor(() =>
-      expect(bridge.clipboardSaveImage).toHaveBeenCalledWith(item.id, "D:\\out\\clip.png"),
+      expect(bridge.clipboardSaveImage).toHaveBeenCalledWith(
+        item.id,
+        "D:\\out\\clip.png",
+        false,
+      ),
     );
   });
 

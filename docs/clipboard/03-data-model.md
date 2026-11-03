@@ -20,6 +20,7 @@
 | `byte_size` | INTEGER | 文字/HTML 为字节数；图片为 PNG 字节数；文件为现存文件大小合计 |
 | `source_app` | TEXT | 来源 exe 文件名（小写） |
 | `source_title` | TEXT | 来源窗口标题 |
+| `source_kind` | TEXT | 来源识别方式（迁移 16）：`owner` = `GetClipboardOwner()` 记录的系统所有者窗口（**不代表实际复制者**）/ `foreground` = 前台窗口推断（所有者无效时的回退）/ `unknown` = 未能识别 / `''` = 旧记录未记录；旧数据一律为 `''`，不做回填、不猜 |
 | `image_width` / `image_height` | INTEGER | 图片尺寸（可空） |
 | `file_paths` | TEXT | 文件路径 JSON 数组（≤200 条） |
 | `favorite` / `pinned` | INTEGER | 0/1；自动清理不触碰 |
@@ -131,9 +132,17 @@
 1. `normalize`：HTML 清洗（去脚本/样式/iframe/表单等主动内容、`on*` 属性、
    `javascript:`）、正文按 UTF-8 边界截断、重新生成预览、计算 `byte_size`。
 2. `engine::hash_of`：类型 + 文本 + HTML + 文件路径 + 图片字节 → SHA-256。
-3. 命中 `content_hash`：只更新 `copy_count + 1`、`last_seen_at`、来源应用/标题，
+3. 命中 `content_hash`：只更新 `copy_count + 1`、`last_seen_at` 与来源快照，
    返回 `created=false`；不新建行、不重新落盘、不参与分组、**不覆盖已有标题**
    （手动标题在重复采集中保持不变）。
+   来源三字段（`source_app` / `source_title` / `source_kind`）由
+   `store::reconcile_source_snapshot` 作为一个整体决策，不再按列分别 `CASE WHEN`：
+   - 新采集可识别（应用非空且非 `unknown`，识别方式为 `owner`/`foreground`）→
+     三字段**全部取新值**；新标题为空时写空串，不保留与新应用无关的旧标题；
+   - 新采集不可识别（空串/`unknown`/识别方式缺失的半快照）→ **整体保留旧快照**，
+     不用 `unknown` 覆盖已识别应用，也不拼出“新应用 + 旧标题”的混合来源；
+   - 旧记录 `source_kind=''` 再次被可信采集命中时，三字段一次性补齐。
+   单条 `UPDATE` 原子完成，`content_hash` 与 `copy_count`/`last_seen_at` 语义不变。
 4. 未命中：图片先写原图 + 缩略图（临时文件 + 原子 rename），再在单事务中插入
    条目与资产；插入前在 worker 线程用 `engine::make_title` 生成自动标题
    （`title_source='auto'`，≤30 字符）；事务失败删除已写文件；唯一约束冲突按重复处理。
@@ -162,7 +171,8 @@ URL 取域名 + 首段路径；HTML 优先 `<h1>`/`<title>`；图片为尺寸描
 
 ## 五、清理策略
 
-`store::cleanup` 在后台线程启动 8 秒后执行，此后每 300 秒一次；也可由设置页手动触发：
+`store::cleanup` 在后台线程启动 8 秒后执行，此后每 300 秒一次（同一维护线程每 30 秒
+另做一次监听健康检查，不影响清理周期）；也可由设置页手动触发：
 
 1. 关闭最后一张截图早于分组窗口的 `collecting` 组。
 2. 非收藏/非置顶条目：

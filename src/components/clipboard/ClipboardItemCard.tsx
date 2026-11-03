@@ -6,7 +6,7 @@ import {
   Pin, Square, Star, Trash2, Type,
 } from "lucide-react";
 import type { ClipboardItem } from "../../lib/bridge";
-import { clipboardTime, fileBaseName, formatBytes, kindLabel, sourceLabel } from "../../lib/clipboardUi";
+import { clipSource, clipboardTime, fileBaseName, formatBytes, kindLabel } from "../../lib/clipboardUi";
 import { ClipboardThumb } from "./Media";
 
 const KIND_ICONS: Record<string, typeof Type> = {
@@ -29,6 +29,7 @@ export default function ClipboardItemCard({
   onDetail,
   onDelete,
   onLink,
+  onOpenImage,
 }: {
   item: ClipboardItem;
   selected: boolean;
@@ -43,9 +44,11 @@ export default function ClipboardItemCard({
   onDetail: () => void;
   onDelete: () => void;
   onLink: () => void;
+  /** 图片条目：点缩略图直接看大图（不传则缩略图只是展示） */
+  onOpenImage?: () => void;
 }) {
   const Icon = KIND_ICONS[item.kind] ?? Type;
-  const meta = sourceLabel(item.source_app, item.source_title);
+  const src = clipSource(item);
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   // 在途或正在离场：整卡冻结，任何再次操作都只会制造第二次删除或打开已消失的详情
   const locked = removing || pending;
@@ -104,11 +107,23 @@ export default function ClipboardItemCard({
 
         <div className={`clip-preview ${item.kind === "image" ? "with-thumb" : ""}`}>
           {item.kind === "image" && (
-            <ClipboardThumb itemId={item.id} hasThumb={item.has_thumb} size={44} />
+            <ClipboardThumb
+              itemId={item.id}
+              hasThumb={item.has_thumb}
+              size={44}
+              onOpen={locked ? undefined : onOpenImage}
+            />
           )}
           <div className="clip-preview-body">
             {headline && (
-              <span className="clip-title" title={headline}>{headline}</span>
+              <span
+                className="clip-title"
+                tabIndex={0}
+                data-tip={`标题：${headline}`}
+                aria-label={`标题：${headline}`}
+              >
+                {headline}
+              </span>
             )}
             {showPreview && (
               <span
@@ -122,8 +137,24 @@ export default function ClipboardItemCard({
           </div>
         </div>
 
+        {/* 来源只是辅助元数据：应用名 + 「窗口」标题，不抢标题与预览的层级。
+            窗口标题会被截断，完整内容与原始 exe 放进提示条；
+            `data-tip` 同时覆盖鼠标悬停与键盘焦点（TooltipLayer 监听 focusin）。 */}
         <div className="clip-meta">
-          <span title={item.source_title || item.source_app}>{meta}</span>
+          <span className="clip-meta-app" title={src.appRaw || undefined}>
+            {src.app}
+          </span>
+          {src.window && (
+            <span
+              className="clip-meta-window"
+              tabIndex={0}
+              data-tip={`窗口：${src.window}${src.appRaw ? `（来源进程 ${src.appRaw}）` : ""}`}
+              aria-label={`窗口：${src.window}`}
+            >
+              <span className="clip-meta-window-tag">窗口</span>
+              {src.window}
+            </span>
+          )}
           <span>{formatBytes(item.byte_size)}</span>
           {item.copy_count > 0 && <span>使用 {item.copy_count} 次</span>}
         </div>
@@ -140,7 +171,7 @@ export default function ClipboardItemCard({
 
       <div className="clip-actions" onClick={stop}>
         {linkMode && (
-          <button className="btn sm primary" onClick={onLink} disabled={locked} title="关联到当前任务">
+          <button className="btn sm primary" onClick={onLink} disabled={locked} data-tip="关联到当前任务">
             <Link2 size={11} /> 关联
           </button>
         )}

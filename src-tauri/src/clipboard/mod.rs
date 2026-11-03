@@ -2,6 +2,7 @@
 //!
 //! 分层：
 //! - `engine`：纯逻辑（类型判定、去重哈希、敏感过滤、自动分组决策）；
+//! - `export`：图片另存为的原子写入（排他创建 / 临时文件安全替换）；
 //! - `image`：PNG 编解码 / 缩略图 / DIB 转换（不触碰剪贴板）；
 //! - `store`：SQLite 持久化与文件资产引用（文字入库、图片落文件）；
 //! - `platform`：Windows 剪贴板读写与监听（唯一触碰 Win32 剪贴板的模块）；
@@ -12,6 +13,7 @@
 
 pub mod agent_bridge;
 pub mod engine;
+pub mod export;
 pub mod image;
 pub mod paste;
 pub mod platform;
@@ -32,6 +34,16 @@ pub const KIND_URL: &str = "url";
 pub const KIND_HTML: &str = "html";
 pub const KIND_IMAGE: &str = "image";
 pub const KIND_FILES: &str = "files";
+
+/// 来源识别方式（`source_kind`）。
+///
+/// `owner` 只是 `GetClipboardOwner()` 记录的系统所有者窗口（谁登记了这份剪贴板），
+/// 不保证就是用户实际执行复制的程序：后台脚本、进程间转发、历史重放都可能写入。
+/// 拿不到所有者才回退前台窗口并记为 `foreground`（推断）。两者都不是“真实写入方”，
+/// 必须分开记录并如实展示，不能把推断值说成准确来源。
+pub const SOURCE_OWNER: &str = "owner";
+pub const SOURCE_FOREGROUND: &str = "foreground";
+pub const SOURCE_UNKNOWN: &str = "unknown";
 
 /// 单条正文上限：超过不记录（避免把超大网页/日志拖垮内存与数据库）。
 pub const MAX_TEXT_BYTES: usize = 512 * 1024;
@@ -61,6 +73,8 @@ pub struct CapturedContent {
     pub image: Option<CapturedImage>,
     pub source_app: String,
     pub source_title: String,
+    /// 来源识别方式：owner / foreground / unknown（见 SOURCE_* 常量）。
+    pub source_kind: String,
     pub byte_size: i64,
 }
 
@@ -89,6 +103,9 @@ pub struct ClipboardItem {
     pub byte_size: i64,
     pub source_app: String,
     pub source_title: String,
+    /// 来源识别方式：owner / foreground / unknown；旧记录为 ""（未记录）。
+    #[serde(default)]
+    pub source_kind: String,
     pub image_width: Option<u32>,
     pub image_height: Option<u32>,
     pub file_paths: Vec<String>,
@@ -242,10 +259,26 @@ impl ClipboardRuntime {
         self.start_maintenance();
     }
 
+    /// 显式启动（应用启动 / 模块重新开启）。顺带清掉已退出的旧实例，
+    /// 否则 `EVENT_QUEUE` 仍被占着，重启只会得到「监听已在运行」。
     fn start_monitor(&self) {
-        if self.monitoring() {
-            return;
+        let dead = {
+            let mut guard = self.monitor.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(m) if m.is_alive() => return,
+                Some(_) => guard.take(),
+                None => None,
+            }
+        };
+        if let Some(m) = dead {
+            tracing::warn!("剪贴板监听线程已退出，正在重新启动");
+            m.stop();
         }
+        self.spawn_monitor();
+    }
+
+    /// 实际创建监听实例；不处理旧实例，也不做重复检查。
+    fn spawn_monitor(&self) -> bool {
         let sink = Arc::new(platform::CaptureSink {
             db: self.db.clone(),
             root: self.root.clone(),
@@ -258,10 +291,38 @@ impl ClipboardRuntime {
             Ok(m) => {
                 tracing::info!("剪贴板监听已启动");
                 *self.monitor.lock().unwrap_or_else(|e| e.into_inner()) = Some(m);
+                true
             }
             Err(e) => {
                 tracing::warn!("剪贴板监听启动失败（自动记录不可用）: {}", e);
+                false
             }
+        }
+    }
+
+    /// 看门狗：只在「监听实例还在、但线程已退出」时重启。
+    /// 用户主动关闭时 `monitor` 为 None，这里不会擅自拉起。
+    fn ensure_monitor(&self, generation: u64) {
+        let dead = {
+            let mut guard = self.monitor.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(m) if m.is_alive() => return,
+                Some(_) => {
+                    // 与 stop()/set_enabled() 竞争：世代已变说明用户已关闭模块，
+                    // 不能再把监听拉起来。
+                    if self.maintenance_gen.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    guard.take()
+                }
+                None => return,
+            }
+        };
+        let Some(dead) = dead else { return };
+        tracing::warn!("检测到剪贴板监听线程已退出，正在重启");
+        dead.stop();
+        if self.spawn_monitor() {
+            platform::note_monitor_restart();
         }
     }
 
@@ -280,14 +341,24 @@ impl ClipboardRuntime {
                 if wait_or_stop(&stop, Duration::from_secs(8)) {
                     return;
                 }
+                // 首轮立即巡检一次（与原 8s 后清理的行为一致），之后每 5 分钟清理、
+                // 每 30 秒做一次监听健康检查。健康检查必须比清理更频繁，
+                // 否则监听线程异常退出后要等数分钟才恢复。
+                let mut next_cleanup = std::time::Instant::now();
                 loop {
                     if runtime.maintenance_gen.load(Ordering::SeqCst) != generation {
                         return;
                     }
+                    runtime.ensure_monitor(generation);
                     // 模块关闭期间不再执行清理/巡检；配置不可靠时也必须停手，
                     // 避免按错误的容量/保留参数删除历史数据。
                     let config = crate::db::Settings::load_clipboard(&runtime.db);
-                    if config.error.is_none() && config.settings.clipboard_enabled {
+                    if config.error.is_none()
+                        && config.settings.clipboard_enabled
+                        && std::time::Instant::now() >= next_cleanup
+                    {
+                        next_cleanup =
+                            std::time::Instant::now() + Duration::from_secs(300);
                         // 粘贴进行中不做清理：删除条目/资产会让正在发送的素材
                         // 在下一项读取时消失，宁可推迟到下一轮。
                         if !runtime.paste.is_active() {
@@ -321,7 +392,7 @@ impl ClipboardRuntime {
                             }
                         }
                     }
-                    if wait_or_stop(&stop, Duration::from_secs(300)) {
+                    if wait_or_stop(&stop, Duration::from_secs(30)) {
                         return;
                     }
                 }
@@ -366,12 +437,13 @@ impl ClipboardRuntime {
         self.paste.stop(timeout)
     }
 
-    /// 监听线程是否在运行（启动失败时降级为 false）。
+    /// 监听线程是否在运行（启动失败、线程退出但尚未被看门狗重启时均为 false）。
     pub fn monitoring(&self) -> bool {
         self.monitor
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_some()
+            .as_ref()
+            .is_some_and(|m| m.is_alive())
     }
 
     /// 记录一次自写序列号（仅供无法使用 `write_payload_notifying` 的调用方；

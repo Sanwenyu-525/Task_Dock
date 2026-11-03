@@ -1,7 +1,8 @@
 //! 剪贴板 → Agent 本地导入包：只写本地文件，不自动上传/发送。
 
 import { useState } from "react";
-import { Bot, Copy, FolderOutput, RefreshCw } from "lucide-react";
+import { Copy, FolderOutput, RefreshCw } from "lucide-react";
+import AgentIcon from "../ui/AgentIcon";
 import {
   clipboardAgentTargets,
   clipboardExportForAgent,
@@ -60,7 +61,7 @@ export default function AgentExportPanel({
   return (
     <div className="clip-agent-export">
       <button className="btn sm" onClick={toggle} aria-expanded={open}>
-        <Bot size={12} /> 导出给 Agent…
+        <AgentIcon size={12} /> 导出给 Agent…
       </button>
       {open && (
         <div className="clip-agent-body">

@@ -87,6 +87,7 @@ fn solid_image(rgba_color: [u8; 4], w: u32, h: u32) -> CapturedContent {
         }),
         source_app: "snippingtool.exe".into(),
         source_title: "截图工具".into(),
+        source_kind: "owner".into(),
         byte_size: 0,
     }
 }
@@ -101,6 +102,7 @@ fn text_content(text: &str) -> CapturedContent {
         image: None,
         source_app: "notepad.exe".into(),
         source_title: "记事本".into(),
+        source_kind: "owner".into(),
         byte_size: 0,
     }
 }
