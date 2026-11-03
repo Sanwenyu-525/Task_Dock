@@ -222,6 +222,25 @@ CSS `box-shadow` 的外部部分也被裁掉。这是「真圆角」的代价。
 
 Win11 上 `DWMWCP_ROUND` 会额外提供系统级阴影与抗锯齿圆角（若系统主题允许）。
 
+### 4.1 2026-11-03：玻璃外壳 Token（`--shell-wall`）
+
+主窗最外 1–6px 增加一层语义化壳体，不改变内容区、不新增 DOM、不新增层叠上下文：
+
+- `--window-edge` 统一为 6 层 inset：1px 轮廓环、顶部 1px 高光、窄幅顶部泛光、
+  左侧环境反射、右侧弱边光、内侧柔和环境遮蔽（AO）。浅色主题轮廓取中性蓝紫
+  （dream `rgba(74,78,148,.30)` / glass `rgba(80,104,146,.30)`），深色主题取低亮度冷光
+  （`.18` / `.20`），保证白桌面上仍有可辨识边界。
+- `--shell-wall` 描述 1–6px 的玻璃侧壁（上/左/右/下四段 + 左上、右下角部径向光），
+  由 `.dock-window::before` 以 `background-image: var(--shell-wall), var(--decor)` 绘制。
+- `::before` 自 `inset: 1px`、`border-radius: calc(var(--radius-window) - 1px)` 起绘制，
+  让最外 1px 轮廓不被伪元素背景覆盖（这是白桌面上边缘发灰的根因）。
+- 胶囊停靠态继续由 `.dock-window.is-capsule::before { content: none }` 与
+  根规则 `box-shadow: none` 整体关闭，不会在整窗矩形上出现外壳。
+
+**限制（如实表述）**：主窗区域由 `SetWindowRgn` 裁剪，DWM 不绘制外部阴影，CSS 外部
+`box-shadow` 也被裁掉。上述全部是**窗口内**的立体表达，**不是**桌面上的真实外投影；
+真实外投影需要改窗口区域/原生阴影方案（会影响圆角、命中与贴边），不在本次范围。
+
 ---
 
 ## 5. 材质（Mica / Acrylic）

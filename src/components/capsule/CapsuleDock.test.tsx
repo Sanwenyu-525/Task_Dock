@@ -15,6 +15,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 
 vi.mock("../../lib/bridge", () => ({
+  onClipboardChanged: async () => () => {},
   listTasks: async () => [],
   openAgentSession: async () => undefined,
   clipboardView: async () => ({ items: [], groups: [], stats: {}, total_items: 0 }),

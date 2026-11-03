@@ -1,8 +1,9 @@
 //! 任务面板（胶囊内，对照 `docs/design-refs/v07/停靠效果图/01-tasks.png`）。
 //!
-//! 数据：直接调用既有 `list_tasks`（view=all, status=pending, sort=due）——
-//! **不是**第二套状态源，只是同一后端命令的按需读取；完成经
-//! `useTasksStore.toggle` 落库（该动作自带 refresh，统计与主窗口同步刷新）。
+//! 数据：**不再自持列表**。列表来自 `useTasksStore.lite`（挂载时 loadLite()
+//! 取一次 list_tasks：view=all, status=all, sort=due），完成/新增走 store 的
+//! 动作落库，store.refresh() 在面板打开时顺带刷新这份轻量列表——
+//! 主窗口与胶囊因此只有一个状态源。
 //!
 //! 分段筛选全部是对**已取回的同一份真实列表**做本地过滤，不新增 IPC，
 //! 也不伪造「已完成」视图：已完成的量来自 `stats.completed_today`。
@@ -13,7 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
-import { listTasks, type Task } from "../../lib/bridge";
+import type { Task } from "../../lib/bridge";
 import { useTasksStore } from "../../store/useTasksStore";
 import { openFullApp } from "./actions";
 import { dueLabel, sortPending } from "./format";
@@ -42,34 +43,25 @@ const sameDay = (a: number, b: number): boolean => {
 };
 
 export default function TasksLite() {
-  const [items, setItems] = useState<Task[] | null>(null);
+  const items = useTasksStore((s) => s.lite);
+  const loadLite = useTasksStore((s) => s.loadLite);
+  const releaseLite = useTasksStore((s) => s.releaseLite);
   const [filter, setFilter] = useState<Filter>("all");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [completing, setCompleting] = useState<ReadonlySet<string>>(new Set());
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const timers = useRef<number[]>([]);
   const stats = useTasksStore((s) => s.stats);
 
-  // 一次取回 pending + completed（status=all），五个分段全部在本地切分：
-  // 切分段不产生新 IPC，也不会出现「同一屏两次快照不一致」。
-  const load = useCallback(async () => {
-    try {
-      const list = await listTasks({ view: "all", status: "all", sort: "due" });
-      const pending = sortPending(list.filter((t) => t.status !== "completed"));
-      const done = list
-        .filter((t) => t.status === "completed")
-        .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
-      setItems([...pending, ...done]);
-    } catch {
-      setItems([]); // 失败按空处理，但不显示假数据
-    }
-  }, []);
-
+  // 面板打开 → 取一次轻量列表；关闭 → 释放并作废在途响应。
+  // 五个分段全部在本地切分：切分段不产生新 IPC，也不会出现两次快照不一致。
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadLite();
+    return () => releaseLite();
+  }, [loadLite, releaseLite]);
 
   // 所有延时都必须可回收：面板卸载时清空，避免对已卸载组件 setState
   useEffect(() => {
@@ -97,9 +89,9 @@ export default function TasksLite() {
     if (!v || busy) return;
     setBusy(true);
     try {
+      // store 的 quickCreate 内部 refresh()：面板打开时已含轻量列表刷新
       await useTasksStore.getState().quickCreate(v, null, null, null);
       setText("");
-      await load();
     } catch {
       flash("添加失败，请重试"); // 失败保留输入，用户可重试
     } finally {
@@ -112,7 +104,7 @@ export default function TasksLite() {
     try {
       await useTasksStore.getState().toggle(id);
       // 视觉反馈先行：留 320ms 让勾选动画可见，再移出列表
-      later(() => setItems((prev) => prev?.filter((t) => t.id !== id) ?? prev), 320);
+      later(() => setHidden((prev) => new Set(prev).add(id)), 320);
     } catch {
       setCompleting((prev) => {
         const next = new Set(prev);
@@ -120,15 +112,21 @@ export default function TasksLite() {
         return next;
       });
       flash("完成失败，已回滚");
-      void load(); // 重新拉真实状态
+      void loadLite(); // 重新拉真实状态，不靠本地猜测
     }
   };
 
   const now = Date.now();
   const visible = useMemo(() => {
     if (!items) return null;
+    // 展示顺序在面板里定：过期优先 → 截止升序 → 无期限最后，已完成按完成时间倒序
+    const pendingList = sortPending(items.filter((t) => t.status !== "completed"));
+    const doneList = items
+      .filter((t) => t.status === "completed")
+      .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
+    const ordered = [...pendingList, ...doneList].filter((t) => !hidden.has(t.id));
     const isDone = (t: Task) => t.status === "completed";
-    const list = items.filter((t) => {
+    const list = ordered.filter((t) => {
       if (filter === "done") return isDone(t);
       if (isDone(t)) return filter === "all";
       if (filter === "pending") return true;
@@ -137,7 +135,7 @@ export default function TasksLite() {
       return true;
     });
     return list.slice(0, 12);
-  }, [items, filter, now]);
+  }, [items, filter, now, hidden]);
 
   const localDone = items?.filter((t) => t.status === "completed").length ?? 0;
   const pending = stats?.pending ?? items?.filter((t) => t.status !== "completed").length ?? 0;

@@ -61,13 +61,17 @@
     radial-gradient(112% 90% at 92% 110%, rgba(255, 178, 220, 0.50), transparent 62%),
     radial-gradient(84% 70% at -8% 96%, rgba(168, 204, 255, 0.40), transparent 64%),
     linear-gradient(158deg, #fbfcff 0%, #efeaff 34%, #fdf0f9 68%, #f5faff 100%);
-  /* 四层边光：顶部受光 / 四周 1px 内描边 / 底部内侧厚度 / 顶部柔光 */
+  /* 外壳边光（v0.7 外壳 3D 层，2026-11-03）：
+     只有一层发丝环定义轮廓，其余全是方向性内光/内阴影，避免同心双边框。
+     从上到下：外沿单环 → 顶部受光 → 顶部柔光 → 左侧冷反射 →
+     右侧渐弱 → 内侧环境遮蔽。浅色桌面上轮廓环需要略深，否则整窗失去边界。 */
   --window-edge:
+    inset 0 0 0 1px rgba(74, 78, 148, 0.30),
     inset 0 1px 0 rgba(255, 255, 255, 0.98),
-    inset 0 0 0 1px rgba(86, 90, 160, 0.14),
-    inset 0 -1px 0 rgba(82, 86, 160, 0.10),
-    inset 0 -34px 54px -40px rgba(72, 74, 150, 0.45),
-    inset 0 2px 18px -12px rgba(255, 255, 255, 0.92);
+    inset 0 3px 7px -4px rgba(255, 255, 255, 0.90),
+    inset 2px 0 4px -3px rgba(176, 202, 255, 0.80),
+    inset -1px 0 0 rgba(112, 110, 180, 0.12),
+    inset 0 0 14px -11px rgba(72, 74, 140, 0.35);
   --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 82%);
   --decor:
     linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 26%),
@@ -76,6 +80,16 @@
     radial-gradient(230px 180px at 94% 100%, rgba(255, 190, 225, 0.66), transparent 74%),
     radial-gradient(170px 140px at 4% 94%, rgba(186, 214, 255, 0.52), transparent 74%);
   --decor-opacity: 1;
+  /* 玻璃侧壁（v0.7 外壳 3D 层，2026-11-03）：铺在装饰伪元素最上层，
+     只在窗口四周 2–8px 内形成壳体厚度；中心区域快速透明，不压缩内容。
+     顶部白边受光、左侧低饱和蓝环境反射、右侧渐弱、底部紫灰暗部。 */
+  --shell-wall:
+    linear-gradient(180deg, transparent 0, rgba(255, 255, 255, 0.55) 1px, rgba(255, 255, 255, 0.18) 2.5px, transparent 5px),
+    linear-gradient(90deg, transparent 0, rgba(188, 210, 255, 0.42) 1px, rgba(188, 210, 255, 0.12) 3px, transparent 6px),
+    linear-gradient(270deg, transparent 0, rgba(124, 120, 192, 0.14) 1px, transparent 6px),
+    linear-gradient(0deg, transparent 0, rgba(100, 92, 164, 0.10) 2px, rgba(100, 92, 164, 0.06) 6px, transparent 13px),
+    radial-gradient(72px 72px at 0 0, transparent 0, rgba(255, 255, 255, 0.34) 4px, transparent 72%),
+    radial-gradient(90px 76px at 100% 100%, transparent 0, rgba(150, 132, 212, 0.10) 4px, transparent 76%);
 
   /* 表面层级：卡片 > 控件 > 背景。
      卡片顶部有内高光、底部轻沉降，悬停再抬一档（v0.7 立体层）。 */
@@ -89,11 +103,15 @@
   /* 胶囊卡片的不透明底（窗口底色）：停靠期根窗口透明，卡片必须自带表面。
      必须是不含 alpha 的实色——半透明会让胶囊在深色桌面上「消失」。 */
   --capsule-face: #f9faff;
-  /* 翼片跨厚度渐变（近屏幕边缘 → 屏幕内部）与面板底色：两套预设必须同名 */
-  --wing-near: #d7e2f8;
-  --wing-mid: #eaf1fe;
-  --wing-far: #fcfdff;
-  --wing-panel-base: #e9f1fd;
+  /* 翼片跨厚度渐变（近屏幕边缘 → 屏幕内部）与面板底色：两套预设必须同名。
+     浅色 preset 的 far 不能贴近纯白：白桌面下会把翼片内侧高光“吃掉”。 */
+  --wing-near: #c3d3ef;
+  --wing-mid: #d8e5fb;
+  --wing-far: #e9f2fe;
+  --wing-spec: 0.40;
+  --wing-rim-b: 0.34;
+  --wing-panel-base: #e5effb;
+  --wing-panel-edge: rgba(92, 112, 156, 0.16);
   --card-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.98),
     inset 0 -1px 0 rgba(80, 84, 150, 0.10),
@@ -107,6 +125,48 @@
     0 0 0 1px rgba(99, 102, 241, 0.18),
     0 4px 10px -5px rgba(42, 46, 96, 0.12),
     0 16px 32px -16px rgba(76, 72, 160, 0.54);
+
+  /* 剪贴板卡片：方向性反射 + 轻量阴影（光源左上，四套主题同构） */
+  --clip-card-face: var(--card-face);
+  --clip-card-sheen:
+    radial-gradient(125% 92% at 8% -12%, rgba(255, 255, 255, 0.68), transparent 62%),
+    linear-gradient(
+      152deg,
+      rgba(255, 255, 255, 0.30) 0%,
+      rgba(255, 255, 255, 0.06) 38%,
+      rgba(88, 92, 170, 0.035) 72%,
+      rgba(72, 76, 150, 0.06) 100%
+    );
+  --clip-card-edge: color-mix(in srgb, var(--c-ink) 5%, transparent);
+  --clip-card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 1px 0 0 rgba(255, 255, 255, 0.50),
+    inset 0 -1px 0 rgba(84, 88, 158, 0.10),
+    inset -1px 0 0 rgba(255, 255, 255, 0.14),
+    0 1px 2px -1px rgba(42, 46, 96, 0.10),
+    0 6px 14px -9px rgba(76, 72, 160, 0.24),
+    0 14px 26px -22px rgba(76, 72, 160, 0.20);
+  --clip-card-shadow-hover:
+    inset 0 1px 0 #ffffff,
+    inset 1px 0 0 rgba(255, 255, 255, 0.62),
+    inset 0 -1px 0 rgba(84, 88, 158, 0.12),
+    inset -1px 0 0 rgba(255, 255, 255, 0.18),
+    0 2px 4px -2px rgba(42, 46, 96, 0.12),
+    0 10px 20px -12px rgba(76, 72, 160, 0.30),
+    0 18px 32px -26px rgba(76, 72, 160, 0.22);
+  --clip-card-shadow-press:
+    inset 0 1px 2px rgba(42, 46, 96, 0.16),
+    inset 1px 0 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.55),
+    0 1px 2px -1px rgba(42, 46, 96, 0.08);
+  --clip-thumb-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
+    0 1px 2px -1px rgba(42, 46, 96, 0.14),
+    0 3px 6px -4px rgba(42, 46, 96, 0.12);
+  --clip-thumb-edge: rgba(255, 255, 255, 0.60);
+  --clip-chip-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0));
+  --clip-chip-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.70);
+  --clip-icon-shadow-hover: 0 1px 2px rgba(42, 46, 96, 0.16);
   --control-face: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(250, 250, 255, 0.66));
   --control-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.96),
@@ -235,12 +295,15 @@
     radial-gradient(106% 86% at 92% 108%, rgba(186, 82, 158, 0.24), transparent 62%),
     radial-gradient(82% 66% at -8% 96%, rgba(70, 104, 190, 0.20), transparent 64%),
     linear-gradient(158deg, #14172a 0%, #191630 36%, #211827 68%, #121626 100%);
+  /* 深色外壳：单层发丝环 + 低亮度紫蓝顶光，底部暗部保持柔和，
+     不靠加粗黑边表达厚度（会变成脏边）。 */
   --window-edge:
-    inset 0 1px 0 rgba(255, 255, 255, 0.17),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.07),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.38),
-    inset 0 -36px 58px -40px rgba(0, 0, 0, 0.72),
-    inset 0 2px 16px -10px rgba(255, 255, 255, 0.12);
+    inset 0 0 0 1px rgba(205, 208, 255, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 3px 7px -4px rgba(198, 196, 255, 0.22),
+    inset 2px 0 4px -3px rgba(120, 160, 230, 0.28),
+    inset -1px 0 0 rgba(0, 0, 0, 0.22),
+    inset 0 0 16px -12px rgba(0, 0, 0, 0.55);
   --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 82%);
   --decor:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 26%),
@@ -248,6 +311,13 @@
     radial-gradient(170px 150px at 97% 8%, rgba(120, 100, 190, 0.34), transparent 74%),
     radial-gradient(200px 170px at 88% 96%, rgba(180, 100, 160, 0.28), transparent 76%),
     radial-gradient(160px 140px at 2% 88%, rgba(80, 110, 180, 0.24), transparent 76%);
+  --shell-wall:
+    linear-gradient(180deg, transparent 0, rgba(214, 208, 255, 0.24) 1px, rgba(214, 208, 255, 0.07) 2.5px, transparent 5px),
+    linear-gradient(90deg, transparent 0, rgba(110, 160, 230, 0.18) 1px, rgba(110, 160, 230, 0.05) 3px, transparent 6px),
+    linear-gradient(270deg, transparent 0, rgba(0, 0, 0, 0.16) 1px, transparent 6px),
+    linear-gradient(0deg, transparent 0, rgba(0, 0, 0, 0.12) 2px, rgba(0, 0, 0, 0.07) 6px, transparent 13px),
+    radial-gradient(70px 70px at 0 0, transparent 0, rgba(186, 188, 255, 0.16) 4px, transparent 72%),
+    radial-gradient(90px 76px at 100% 100%, transparent 0, rgba(0, 0, 0, 0.10) 4px, transparent 76%);
 
   --card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.095) 0%, rgba(255, 255, 255, 0.052) 48%, rgba(255, 255, 255, 0.035) 100%);
   /* 任务卡流线高光（方案 D）：深色下降低 alpha，只留光带方向感 */
@@ -277,6 +347,48 @@
     0 0 0 1px rgba(139, 124, 246, 0.22),
     0 4px 10px -5px rgba(0, 0, 0, 0.55),
     0 18px 34px -18px rgba(0, 0, 0, 0.95);
+
+  /* 剪贴板卡片：方向性反射 + 轻量阴影（光源左上，四套主题同构） */
+  --clip-card-face: var(--card-face);
+  --clip-card-sheen:
+    radial-gradient(125% 92% at 10% -14%, rgba(139, 124, 246, 0.16), transparent 62%),
+    linear-gradient(
+      152deg,
+      rgba(255, 255, 255, 0.085) 0%,
+      rgba(255, 255, 255, 0.025) 40%,
+      rgba(6, 8, 18, 0.06) 74%,
+      rgba(4, 6, 16, 0.12) 100%
+    );
+  --clip-card-edge: color-mix(in srgb, var(--c-paper) 6%, transparent);
+  --clip-card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    inset 1px 0 0 rgba(255, 255, 255, 0.05),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.22),
+    inset -1px 0 0 rgba(255, 255, 255, 0.02),
+    0 1px 2px -1px rgba(0, 0, 0, 0.28),
+    0 7px 16px -11px rgba(0, 0, 0, 0.42),
+    0 14px 26px -22px rgba(92, 120, 200, 0.16);
+  --clip-card-shadow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 1px 0 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.22),
+    inset -1px 0 0 rgba(255, 255, 255, 0.03),
+    0 2px 4px -2px rgba(0, 0, 0, 0.30),
+    0 11px 22px -13px rgba(0, 0, 0, 0.46),
+    0 18px 32px -26px rgba(120, 108, 246, 0.18);
+  --clip-card-shadow-press:
+    inset 0 1px 2px rgba(0, 0, 0, 0.42),
+    inset 1px 0 0 rgba(255, 255, 255, 0.03),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 2px -1px rgba(0, 0, 0, 0.24);
+  --clip-thumb-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
+    0 1px 2px -1px rgba(0, 0, 0, 0.35),
+    0 3px 7px -5px rgba(0, 0, 0, 0.40);
+  --clip-thumb-edge: rgba(255, 255, 255, 0.10);
+  --clip-chip-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0));
+  --clip-chip-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --clip-icon-shadow-hover: 0 1px 3px rgba(0, 0, 0, 0.45);
   --control-face: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.045));
   --control-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.12),
@@ -400,12 +512,15 @@
       rgba(235, 245, 252, 0.88) 72%,
       rgba(246, 251, 255, 0.92) 100%
     );
+  /* 冷玻璃外壳：冷灰发丝环 + 冰蓝侧壁折射，白桌面下仍有一条可辨边界；
+     顶部高光收敛到 0.92，避免近白表面过曝成一片。 */
   --window-edge:
-    inset 0 1px 0 rgba(255, 255, 255, 1),
-    inset 0 0 0 1px rgba(96, 120, 160, 0.18),
-    inset 0 -1px 0 rgba(96, 120, 160, 0.16),
-    inset 0 -34px 60px -42px rgba(64, 82, 116, 0.42),
-    inset 0 2px 16px -10px rgba(255, 255, 255, 0.95);
+    inset 0 0 0 1px rgba(80, 104, 146, 0.30),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 3px 7px -3px rgba(255, 255, 255, 0.72),
+    inset 2px 0 4px -2px rgba(196, 224, 255, 0.85),
+    inset -1px 0 0 rgba(112, 136, 174, 0.20),
+    inset 0 0 16px -12px rgba(60, 80, 120, 0.40);
   --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 82%);
   --decor:
     linear-gradient(122deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.06) 26%, transparent 48%, rgba(255, 255, 255, 0.16) 78%, rgba(255, 255, 255, 0.30) 100%),
@@ -414,6 +529,15 @@
     radial-gradient(220px 180px at 92% 98%, rgba(203, 226, 244, 0.45), transparent 74%),
     radial-gradient(180px 150px at 0% 92%, rgba(190, 214, 244, 0.42), transparent 74%);
   --decor-opacity: 1;
+  /* 冷玻璃侧壁：顶部冰白高光、左侧冰蓝反射、底部板岩蓝暗部；
+     所有色相都收在冷白/冰蓝范围，不引入第二个主题色。 */
+  --shell-wall:
+    linear-gradient(180deg, transparent 0, rgba(255, 255, 255, 0.60) 1px, rgba(255, 255, 255, 0.20) 2.5px, transparent 5px),
+    linear-gradient(90deg, transparent 0, rgba(188, 218, 248, 0.58) 1px, rgba(212, 234, 255, 0.16) 3.5px, transparent 7px),
+    linear-gradient(270deg, transparent 0, rgba(120, 146, 184, 0.16) 1px, transparent 6px),
+    linear-gradient(0deg, transparent 0, rgba(96, 122, 160, 0.12) 2px, rgba(96, 122, 160, 0.07) 6px, transparent 14px),
+    radial-gradient(76px 72px at 0 0, transparent 0, rgba(255, 255, 255, 0.36) 4px, transparent 72%),
+    radial-gradient(100px 80px at 100% 100%, transparent 0, rgba(140, 168, 205, 0.12) 4px, transparent 76%);
 
   --card-face: linear-gradient(
     158deg,
@@ -427,11 +551,15 @@
     linear-gradient(98deg, transparent 42%, rgba(148, 190, 240, 0.06) 68%, rgba(118, 162, 232, 0.11) 100%);
   /* 胶囊不透明底：玻璃预设的卡片面本身带 alpha，必须另给实色底 */
   --capsule-face: #f5f9fd;
-  /* 冷玻璃预设：翼片跨厚度渐变偏灰蓝（梦境预设偏紫白，见 styles.css 兜底） */
-  --wing-near: #cfdcee;
-  --wing-mid: #e1ecfa;
-  --wing-far: #f8fcff;
-  --wing-panel-base: #eef4fc;
+  /* 冷玻璃预设：翼片跨厚度渐变偏灰蓝（梦境预设偏紫白，见 styles.css 兜底）。
+     far 侧同样保持冷蓝而不是近白，保证白桌面上仍有翼片边界。 */
+  --wing-near: #becfe4;
+  --wing-mid: #d3e2f5;
+  --wing-far: #e6f1fb;
+  --wing-spec: 0.38;
+  --wing-rim-b: 0.32;
+  --wing-panel-base: #e7f0fb;
+  --wing-panel-edge: rgba(80, 104, 144, 0.18);
   --card-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.98),
     inset 0 -1px 0 rgba(96, 120, 160, 0.14),
@@ -444,6 +572,53 @@
     0 0 0 1px rgba(99, 102, 241, 0.18),
     0 4px 10px -5px rgba(70, 90, 130, 0.12),
     0 16px 32px -16px rgba(72, 82, 160, 0.62);
+
+  /* 剪贴板卡片：方向性反射 + 轻量阴影（光源左上，四套主题同构） */
+  --clip-card-face: linear-gradient(
+    158deg,
+    rgba(255, 255, 255, 0.96) 0%,
+    rgba(252, 254, 255, 0.92) 54%,
+    rgba(246, 251, 255, 0.90) 100%
+  );
+  --clip-card-sheen:
+    radial-gradient(125% 92% at 8% -12%, rgba(255, 255, 255, 0.52), transparent 62%),
+    linear-gradient(
+      152deg,
+      rgba(255, 255, 255, 0.20) 0%,
+      rgba(255, 255, 255, 0.03) 40%,
+      rgba(96, 120, 160, 0.03) 74%,
+      rgba(88, 112, 160, 0.05) 100%
+    );
+  --clip-card-edge: color-mix(in srgb, var(--c-ink) 5%, transparent);
+  --clip-card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 1px 0 0 rgba(255, 255, 255, 0.52),
+    inset 0 -1px 0 rgba(96, 120, 160, 0.12),
+    inset -1px 0 0 rgba(255, 255, 255, 0.16),
+    0 1px 2px -1px rgba(70, 90, 130, 0.10),
+    0 6px 14px -9px rgba(72, 82, 160, 0.26),
+    0 14px 26px -22px rgba(64, 82, 140, 0.20);
+  --clip-card-shadow-hover:
+    inset 0 1px 0 #ffffff,
+    inset 1px 0 0 rgba(255, 255, 255, 0.64),
+    inset 0 -1px 0 rgba(96, 120, 160, 0.14),
+    inset -1px 0 0 rgba(255, 255, 255, 0.20),
+    0 2px 4px -2px rgba(70, 90, 130, 0.12),
+    0 10px 20px -12px rgba(72, 82, 160, 0.32),
+    0 18px 32px -26px rgba(64, 82, 140, 0.22);
+  --clip-card-shadow-press:
+    inset 0 1px 2px rgba(64, 82, 140, 0.16),
+    inset 1px 0 0 rgba(255, 255, 255, 0.36),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.58),
+    0 1px 2px -1px rgba(70, 90, 130, 0.08);
+  --clip-thumb-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.58),
+    0 1px 2px -1px rgba(70, 90, 130, 0.14),
+    0 3px 6px -4px rgba(70, 90, 130, 0.12);
+  --clip-thumb-edge: rgba(255, 255, 255, 0.62);
+  --clip-chip-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0));
+  --clip-chip-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.66);
+  --clip-icon-shadow-hover: 0 1px 2px rgba(70, 90, 130, 0.16);
   --control-face: linear-gradient(
     160deg,
     rgba(255, 255, 255, 0.88),
@@ -588,12 +763,15 @@
       rgba(17, 25, 41, 0.90) 72%,
       rgba(15, 23, 39, 0.93) 100%
     );
+  /* 深板岩蓝外壳：顶部冷色反光略高于 Dream 深色，右侧/底部自然收深；
+     单层环 + 窄内阴影，不叠第二圈灰边、不做霓虹描边。 */
   --window-edge:
-    inset 0 1px 0 rgba(255, 255, 255, 0.26),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.46),
-    inset 0 -36px 60px -40px rgba(0, 0, 0, 0.72),
-    inset 0 2px 16px -10px rgba(255, 255, 255, 0.14);
+    inset 0 0 0 1px rgba(196, 214, 255, 0.20),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    inset 0 3px 7px -4px rgba(196, 220, 255, 0.22),
+    inset 2px 0 4px -3px rgba(110, 160, 230, 0.24),
+    inset -1px 0 0 rgba(0, 0, 0, 0.28),
+    inset 0 0 16px -12px rgba(0, 0, 0, 0.60);
   --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.09), transparent 82%);
   --decor:
     linear-gradient(122deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.02) 26%, transparent 48%, rgba(148, 162, 255, 0.06) 78%, rgba(255, 255, 255, 0.08) 100%),
@@ -601,6 +779,13 @@
     radial-gradient(190px 160px at 98% 6%, rgba(120, 132, 210, 0.26), transparent 72%),
     radial-gradient(220px 180px at 92% 98%, rgba(80, 130, 190, 0.20), transparent 74%),
     radial-gradient(180px 150px at 0% 92%, rgba(90, 120, 200, 0.18), transparent 74%);
+  --shell-wall:
+    linear-gradient(180deg, transparent 0, rgba(186, 214, 255, 0.20) 1px, rgba(186, 214, 255, 0.06) 2.5px, transparent 5px),
+    linear-gradient(90deg, transparent 0, rgba(90, 140, 210, 0.16) 1px, rgba(90, 140, 210, 0.04) 3px, transparent 6px),
+    linear-gradient(270deg, transparent 0, rgba(0, 0, 0, 0.18) 1px, transparent 6px),
+    linear-gradient(0deg, transparent 0, rgba(0, 0, 0, 0.14) 2px, rgba(0, 0, 0, 0.08) 6px, transparent 14px),
+    radial-gradient(70px 70px at 0 0, transparent 0, rgba(158, 196, 255, 0.16) 4px, transparent 72%),
+    radial-gradient(90px 76px at 100% 100%, transparent 0, rgba(0, 0, 0, 0.12) 4px, transparent 76%);
 
   /* 单层冷玻璃：颜色直接调进面里，不再用白色渐变叠加提灰 */
   --card-face: linear-gradient(158deg, rgba(72, 88, 118, 0.60) 0%, rgba(38, 50, 72, 0.55) 55%, rgba(27, 37, 55, 0.52) 100%);
@@ -626,6 +811,48 @@
     0 0 0 1px rgba(148, 162, 255, 0.22),
     0 4px 10px -4px rgba(0, 0, 0, 0.45),
     0 18px 36px -18px rgba(0, 0, 0, 1);
+
+  /* 剪贴板卡片：方向性反射 + 轻量阴影（光源左上，四套主题同构） */
+  --clip-card-face: var(--card-face);
+  --clip-card-sheen:
+    radial-gradient(125% 92% at 10% -14%, rgba(96, 140, 210, 0.18), transparent 62%),
+    linear-gradient(
+      152deg,
+      rgba(255, 255, 255, 0.09) 0%,
+      rgba(255, 255, 255, 0.02) 42%,
+      rgba(2, 6, 14, 0.08) 76%,
+      rgba(2, 6, 14, 0.14) 100%
+    );
+  --clip-card-edge: color-mix(in srgb, var(--c-paper) 7%, transparent);
+  --clip-card-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    inset 1px 0 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.26),
+    inset -1px 0 0 rgba(255, 255, 255, 0.03),
+    0 1px 2px -1px rgba(0, 0, 0, 0.30),
+    0 7px 16px -11px rgba(0, 0, 0, 0.44),
+    0 14px 28px -22px rgba(80, 130, 190, 0.20);
+  --clip-card-shadow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 1px 0 0 rgba(255, 255, 255, 0.09),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.26),
+    inset -1px 0 0 rgba(255, 255, 255, 0.04),
+    0 2px 4px -2px rgba(0, 0, 0, 0.32),
+    0 11px 22px -13px rgba(0, 0, 0, 0.48),
+    0 18px 34px -26px rgba(96, 140, 210, 0.22);
+  --clip-card-shadow-press:
+    inset 0 1px 2px rgba(0, 0, 0, 0.44),
+    inset 1px 0 0 rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.07),
+    0 1px 2px -1px rgba(0, 0, 0, 0.26);
+  --clip-thumb-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 1px 2px -1px rgba(0, 0, 0, 0.36),
+    0 3px 7px -5px rgba(0, 0, 0, 0.40);
+  --clip-thumb-edge: rgba(255, 255, 255, 0.12);
+  --clip-chip-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0));
+  --clip-chip-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --clip-icon-shadow-hover: 0 1px 3px rgba(0, 0, 0, 0.50);
   --control-face: linear-gradient(160deg, rgba(74, 88, 116, 0.52), rgba(36, 46, 64, 0.48));
   --control-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.15),
@@ -1031,10 +1258,16 @@
 .dock-window::before {
   content: "";
   position: absolute;
-  inset: 0;
+  /* 内缩 1px：把最外沿发丝环让给 --window-edge，避免装饰伪元素的背景
+     盖住轮廓环（曾导致浅色桌面上外壳边缘发白、失去分离感）。 */
+  inset: 1px;
   z-index: 0;
-  border-radius: inherit;
-  background-image: var(--decor);
+  border-radius: calc(var(--radius-window) - 1px);
+  /* 壳体侧壁在最上层：四周 2–8px 的厚度渐变，中心快速透明；
+     环境光仍由 --decor 提供，保持既有氛围不被替换。
+     两层都画在内容之下（::before 在树序上先于 titlebar/body），
+     不新增 DOM、不建立新的层叠上下文。 */
+  background-image: var(--shell-wall), var(--decor);
   opacity: var(--decor-opacity);
   pointer-events: none;
 }
@@ -1181,15 +1414,21 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* 六个入口在矮窗口里放不下时滚动，顶部新建入口始终可见 */
+  /* 八个入口在矮窗口里放不下时滚动，顶部新建入口始终可见。
+     **滚动条一律隐藏**：原生滚动条在 62px 宽的轨道里会带箭头并吃掉 15px，
+     视觉上像第二条导航；但保留 overflow-y:auto（滚轮/触控板/键盘聚焦仍能
+     到达溢出入口），不用 overflow:hidden 硬裁。隐藏后不再预留滚动条槽位。 */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
-  /* 矮窗口下滚动区底部渐隐，避免最后一个入口被硬切成半截 */
-  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 14px), transparent 100%);
-  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 14px), transparent 100%);
+  scrollbar-width: none;
+}
+
+.rail-items::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .rail-item {
@@ -1280,8 +1519,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
-  /* 正方形圆角：高度跟随宽度（轨内宽 50px、窄窗 34px），图标居中 */
+  /* 正方形圆角：高度跟随宽度。原先撑满轨内宽（50px）视觉上比图标大一圈，
+     这里收窄到 36px 并居中；窄窗由 max-width 兜回轨内宽 */
+  width: 36px;
+  max-width: 100%;
+  margin-inline: auto;
   aspect-ratio: 1;
   color: var(--accent);
   background: var(--rail-add-face);
@@ -1917,8 +2159,8 @@ textarea:focus {
     padding: 10px 4px 8px;
   }
 
-  /* 窄窗 + 全屏最小高度（340px）时，6 个入口 + 3px 间距的内容比视口高 2px，
-     会产生只滚 2px 的幽灵滚动条；间距收 1px 留出余量（更矮时仍正常滚动）。 */
+  /* 窄窗 + 全屏最小高度（340px）时，7 个入口在视口内放不下；
+     间距收 1px 减小滚动幅度（更矮时仍正常滚动）。 */
   .rail-items {
     gap: 2px;
   }
@@ -2253,6 +2495,7 @@ textarea:focus {
 .capsule-panel {
   border-color: var(--wing-panel-border);
   box-shadow:
+    0 0 0 1px var(--wing-panel-edge),
     inset 0 1px 0 var(--wing-panel-inner),
     inset 0 -2px 6px -6px color-mix(in srgb, var(--c-night) 45%, transparent),
     var(--wing-panel-shadow);
@@ -2306,4 +2549,81 @@ textarea:focus {
     background-image: none;
     opacity: 0;
   }
+}
+/* ════════════════════════════════════════════════════════════════
+   16. 剪贴板卡片材质精修（v0.7 第二轮：方向性反射 + 轻量阴影）
+   ────────────────────────────────────────────────────────────────
+   只重排剪贴板卡片自己的材质，不新增第二套阴影系统，也不动任务卡 /
+   Agent 卡 / 历史卡：.clip-item 在 §15 已接入统一材质层，这里替换的是
+   同一层在剪贴板语境下的取值。
+
+   为什么改：
+   - 原 --card-shadow 里有一条 `0 0 0 1px` 整圈白环，叠在卡片自身的
+     1px 边框上，浅色下就成了一圈均匀的「双层描边」；
+   - 原高光是 `inset 0 1px 0`（整条顶边）+ 整圈白环，四周亮度一样，
+     没有方向性，看起来像描边而不是受光；
+   - 深色下 `0 24px 42px -28px rgba(0, 0, 0, 0.82)` 这类大扩散黑影子
+     落在深色玻璃上，就是卡片下方一圈发黑的沉底光晕。
+
+   现在：光源固定左上——顶部一条细内高光、左侧保留弱反射、右侧几乎无
+   光、底部由冷色 / 主题色环境遮蔽收口；整圈白环去掉，边缘只留 1px
+   发丝边（--clip-card-edge）+ 四向不等强度的内反射。
+   全部为静态渐变与 box-shadow：无动画、无 backdrop-filter、无新增 DOM。
+   ════════════════════════════════════════════════════════════════ */
+
+:is(.clipboard-page, .clipboard-drawer) .clip-item,
+:is(.clipboard-page, .clipboard-drawer) .clip-group-card {
+  background-color: transparent;
+  background-image: var(--clip-card-face), var(--clip-card-sheen);
+  border-color: var(--clip-card-edge);
+  box-shadow: var(--clip-card-shadow);
+}
+
+:is(.clipboard-page, .clipboard-drawer) .clip-item:hover,
+:is(.clipboard-page, .clipboard-drawer) .clip-group-card:hover {
+  border-color: var(--clip-card-edge);
+  box-shadow: var(--clip-card-shadow-hover);
+}
+
+/* 按下：轻微压入，不改几何高度，松手直接回到 hover 态 */
+:is(.clipboard-page, .clipboard-drawer) .clip-item:active,
+:is(.clipboard-page, .clipboard-drawer) .clip-group-card:active {
+  transform: translateY(0.5px);
+  box-shadow: var(--clip-card-shadow-press);
+}
+
+/* 选中：保留主题色识别环，正文底色仍走 accent-soft（不再叠卡面渐变，
+   免得把选中色洗淡）；表面只加一层方向光 */
+:is(.clipboard-page, .clipboard-drawer) .clip-item.selected,
+:is(.clipboard-page, .clipboard-drawer) .clip-group-card.selected {
+  background-color: var(--accent-soft);
+  background-image: var(--clip-card-sheen);
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    var(--clip-card-shadow-hover);
+}
+
+/* 缩略图：内外各一层极淡层次，图片不与卡片背景糊在一起 */
+:is(.clipboard-page, .clipboard-drawer) .clip-thumb,
+:is(.clipboard-page, .clipboard-drawer) .clip-thumb-placeholder {
+  border-color: var(--clip-thumb-edge);
+  box-shadow: var(--clip-thumb-shadow);
+}
+
+/* 类型标签 / 计数徽标：靠一条内高光立起来，不加外投影 */
+:is(.clipboard-page, .clipboard-drawer) .clip-kind,
+:is(.clipboard-page, .clipboard-drawer) .clip-badge {
+  background-image: var(--clip-chip-sheen);
+  box-shadow: var(--clip-chip-shadow);
+}
+
+/* 操作图标：默认轻量，hover 只加一层接触阴影，active 压入 */
+:is(.clipboard-page, .clipboard-drawer) .clip-actions .icon-btn:hover {
+  box-shadow: var(--clip-icon-shadow-hover);
+}
+
+:is(.clipboard-page, .clipboard-drawer) .clip-actions .icon-btn:active {
+  transform: translateY(0.5px);
+  box-shadow: none;
 }

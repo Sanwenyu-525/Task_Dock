@@ -26,6 +26,7 @@ const openAgentSession = vi.fn();
 const navNavigate = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
+  onClipboardChanged: async () => () => {},
   listTasks: (...a: unknown[]) => listTasks(...a),
   toggleTask: (...a: unknown[]) => toggleTask(...a),
   taskStats: (...a: unknown[]) => taskStats(...a),
@@ -98,7 +99,7 @@ beforeEach(() => {
     completed_today: 0,
     next_due_at: null,
   });
-  useTasksStore.setState({ stats: null });
+  useTasksStore.setState({ stats: null, lite: null, liteLoading: false });
   useAgentsStore.setState({ snapshot: null });
 });
 

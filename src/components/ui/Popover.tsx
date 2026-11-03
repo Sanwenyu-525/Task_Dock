@@ -49,6 +49,10 @@ export interface PopoverProps {
   restoreFocus?: boolean;
   /** 点击浮层外部是否关闭（提示条必须为 false：它不接收指针事件） */
   dismissOnOutsidePress?: boolean;
+  /** 主方向放不下时是否允许翻到垂直侧边（默认 true）。
+   *  提示条必须为 false：翻到侧边会把气泡放到锚点左侧/右侧之外，
+   *  在胶囊这种 Win32 区域裁剪窗口里会被裁成一条白色碎片。 */
+  flipToSide?: boolean;
 }
 
 export default function Popover({
@@ -68,6 +72,7 @@ export default function Popover({
   onKeyDown,
   restoreFocus = true,
   dismissOnOutsidePress = true,
+  flipToSide = true,
 }: PopoverProps) {
   const generatedId = useId();
 
@@ -85,7 +90,7 @@ export default function Popover({
     },
     middleware: [
       offset(offsetPx),
-      flip({ padding: 8, fallbackAxisSideDirection: "start" }),
+      flip({ padding: 8, fallbackAxisSideDirection: flipToSide ? "start" : "none" }),
       shift({ padding: 8, crossAxis: true }),
       size({
         padding: 8,

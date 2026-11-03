@@ -118,7 +118,7 @@ pub const CAPSULE_PANEL_WIDTH_CSS: u32 = 340;
 /// 功能面板高。
 pub const CAPSULE_PANEL_HEIGHT_CSS: u32 = 440;
 /// 轨道与面板之间的间隙（视觉分隔，区域上不连通）。
-pub const CAPSULE_GAP_CSS: u32 = 12;
+pub const CAPSULE_GAP_CSS: u32 = 8;
 /// 面板圆角（轨道为全圆角 = 厚度/2）。
 pub const CAPSULE_PANEL_RADIUS_CSS: u32 = 24;
 
@@ -1532,11 +1532,11 @@ mod tests {
         length_css: 224,
         expanded: false,
     };
-    /// 胶囊容器（前端在停靠时把窗口撑到该尺寸）：垂直停靠 408×440。
-    const CONTAINER_W: i32 = 408;
+    /// 胶囊容器（前端在停靠时把窗口撑到该尺寸）：垂直停靠 404×440。
+    const CONTAINER_W: i32 = 404;
     const CONTAINER_H: i32 = 440;
-    /// 水平停靠容器：宽 408（面板宽 340 与轨道长 400 都放得下），高 56+12+440。
-    const CONTAINER_H_HORIZ: i32 = 508;
+    /// 水平停靠容器：宽 404（面板宽 340 与轨道长 400 都放得下），高 56+8+440。
+    const CONTAINER_H_HORIZ: i32 = 504;
 
     #[test]
     fn capsule_contract_matches_frontend_constants() {
@@ -1547,7 +1547,7 @@ mod tests {
         assert_eq!(WING_SAMPLES, 18);
         assert_eq!(CAPSULE_PANEL_WIDTH_CSS, 340);
         assert_eq!(CAPSULE_PANEL_HEIGHT_CSS, 440);
-        assert_eq!(CAPSULE_GAP_CSS, 12);
+        assert_eq!(CAPSULE_GAP_CSS, 8);
         assert_eq!(CAPSULE_PANEL_RADIUS_CSS, 24);
     }
 
@@ -1636,7 +1636,7 @@ mod tests {
             &CapsuleParams { edge: 1, ..CAP },
         )
         .unwrap();
-        assert_eq!((s.rail.x, s.rail.y), (408 - 56, 20));
+        assert_eq!((s.rail.x, s.rail.y), (404 - 56, 20));
         // top → 贴窗口上缘的横向轨道 400×56（x 由容器宽度居中）
         let s = capsule_regions(
             CONTAINER_W,
@@ -1647,7 +1647,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            ((408 - 400) / 2, 0, 400, 56)
+            ((404 - 400) / 2, 0, 400, 56)
         );
         // bottom → 贴窗口下缘
         let s = capsule_regions(
@@ -1659,14 +1659,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            ((408 - 400) / 2, 508 - 56, 400, 56)
+            ((404 - 400) / 2, 504 - 56, 400, 56)
         );
     }
 
     #[test]
     fn wing_mirrors_across_four_edges() {
         // 四边同一套形状：外框沿边尺寸相同、贴边侧坐标一致，只是朝向不同。
-        for (edge, expect_flush) in [(0u8, (0, 20)), (1, (408 - 56, 20))] {
+        for (edge, expect_flush) in [(0u8, (0, 20)), (1, (404 - 56, 20))] {
             let s = capsule_regions(
                 CONTAINER_W,
                 CONTAINER_H,
@@ -1682,7 +1682,7 @@ mod tests {
                 "edge={edge} 缺角在外"
             );
         }
-        for (edge, expect_flush) in [(2u8, (4, 0)), (3, (4, 508 - 56))] {
+        for (edge, expect_flush) in [(2u8, (2, 0)), (3, (2, 504 - 56))] {
             let s = capsule_regions(
                 CONTAINER_W,
                 CONTAINER_H_HORIZ,
@@ -1702,7 +1702,7 @@ mod tests {
 
     #[test]
     fn capsule_expanded_region_is_rail_or_panel_with_gap() {
-        // left 展开：面板在轨道内侧（右），同轴居中，间隙 12px
+        // left 展开：面板在轨道内侧（右），同轴居中，间隙 8px
         let s = capsule_regions(
             CONTAINER_W,
             CONTAINER_H,
@@ -1714,10 +1714,10 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.expect("展开态必须有面板区域");
-        assert_eq!((p.x, p.y, p.width, p.height), (56 + 12, 0, 340, 440));
+        assert_eq!((p.x, p.y, p.width, p.height), (56 + 8, 0, 340, 440));
         assert_eq!(p.radius, 22, "面板区域半径比 CSS 24px 内收 2px");
         // 联合包围盒 = 整块容器
-        assert_eq!(s.bounds(), (0, 0, 408, 440));
+        assert_eq!(s.bounds(), (0, 0, 404, 440));
         // 间隙中点必须落在区域之外（两块区域不连通）
         let (gx, gy) = s.gap_probe.expect("展开态应有间隙探针");
         assert!(!poly_contains(&s.rail_polygon, gx, gy));
@@ -1737,7 +1737,7 @@ mod tests {
         .unwrap();
         let p = s.panel.unwrap();
         assert_eq!((p.x, p.width), (0, 340));
-        assert_eq!(s.rail.x, 408 - 56);
+        assert_eq!(s.rail.x, 404 - 56);
 
         // top 展开：面板在轨道下方
         let s = capsule_regions(
@@ -1752,7 +1752,7 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.unwrap();
-        assert_eq!((p.x, p.y, p.width, p.height), (34, 56 + 12, 340, 440));
+        assert_eq!((p.x, p.y, p.width, p.height), (32, 56 + 8, 340, 440));
 
         // bottom 展开：面板在轨道上方
         let s = capsule_regions(
@@ -1767,7 +1767,7 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.unwrap();
-        assert_eq!((p.x, p.y), (34, 508 - 56 - 12 - 440));
+        assert_eq!((p.x, p.y), (32, 504 - 56 - 8 - 440));
     }
 
     #[test]
@@ -1882,13 +1882,13 @@ mod tests {
             let apply_region = |edge: u8, expanded: bool| -> CapsuleRegionSet {
                 use windows_sys::Win32::Foundation::POINT;
                 use windows_sys::Win32::Graphics::Gdi::{CreatePolygonRgn, WINDING};
-                // 容器取 408×508（水平停靠所需高度），四边都能放下轨道与面板
+                // 容器取 404×504（水平停靠所需高度），四边都能放下轨道与面板
                 let cap = CapsuleParams {
                     edge,
                     expanded,
                     ..CAP
                 };
-                let set = capsule_regions(408, 508, 1.0, &cap).unwrap();
+                let set = capsule_regions(404, 504, 1.0, &cap).unwrap();
                 let pts: Vec<POINT> = set
                     .rail_polygon
                     .iter()

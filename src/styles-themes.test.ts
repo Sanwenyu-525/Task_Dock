@@ -298,13 +298,27 @@ describe("层叠上下文", () => {
     );
     const map = new Map<string, number>(zTokens);
     expect(map.size).toBeGreaterThanOrEqual(5);
-    // 层级必须严格递增：内容 < 抽屉 < 模态 < 模态顶层 < 菜单 < 对话框 < 提示条
-    const order = ["--z-content", "--z-sticky", "--z-drawer", "--z-modal", "--z-modal-top", "--z-menu", "--z-dialog", "--z-toast"];
+    // 层级意图（v0.7 通知整改后的语义）：对话框 > 菜单 > 提示条 > 模态/抽屉/吸顶/普通内容。
+    // Toast 只作反馈：必须盖住普通内容层（--z-content）与模态内容，否则会被面板/遮罩挡住；
+    // 但不得压住菜单或对话框，否则底部居中的气泡会挡住确认框的「取消/继续」按钮。
+    // 顺序取 Token 实际值比较，不写死像素数字。
+    const order = [
+      "--z-content",
+      "--z-sticky",
+      "--z-drawer",
+      "--z-modal",
+      "--z-modal-top",
+      "--z-toast",
+      "--z-menu",
+      "--z-dialog",
+    ];
     const values = order.map((t) => map.get(t) ?? -1);
     expect(values.every((v) => v >= 0)).toBe(true);
     for (let i = 1; i < values.length; i++) {
       expect(values[i], `${order[i]} 必须大于 ${order[i - 1]}`).toBeGreaterThan(values[i - 1]);
     }
+    // 单独点名「提示条高于普通内容层」：这是把 toast 从最高层降下来后仍须保持的底线。
+    expect(map.get("--z-toast")!).toBeGreaterThan(map.get("--z-content")!);
   });
 
   it("关联模式抽屉脱离内容区的定位盒，叠在任务编辑器之上", () => {
@@ -333,5 +347,140 @@ describe("组件库样式", () => {
     expect(uiCss).toContain(".ui-select-trigger");
     expect(uiCss).toContain(".ui-listbox");
     expect(uiCss).toContain(".ui-menu-item");
+  });
+});
+
+/* ── 工具栏 / 吸顶表面专项（2026-11-02）──────────────────────────
+   这三条守住本次修掉的根因，避免以后改样式时又悄悄退回去。 */
+
+// 注释里可以写反例说明，但不能被当成真实声明扫到。
+const appCssCode = appCss.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** 渐变型令牌（预设下解析成 <image>）：它们不能进 color-mix()，但可以正常当背景层。 */
+const IMAGE_TOKENS = new Set([
+  "--surface-base",
+  "--surface-raised",
+  "--card-face",
+  "--control-face",
+  "--window-fill",
+]);
+
+/**
+ * 收集所有把渐变令牌当颜色用的 color-mix() 调用。
+ * 按括号深度取参数串，避免把 `linear-gradient(color-mix(...), var(--window-fill))`
+ * 这种合法的多层背景误判成越界引用。
+ */
+function imageTokenInColorMix(css: string): string[] {
+  const offenders: string[] = [];
+  for (let i = css.indexOf("color-mix("); i >= 0; i = css.indexOf("color-mix(", i + 1)) {
+    let depth = 0;
+    let j = i + "color-mix".length;
+    for (; j < css.length; j++) {
+      if (css[j] === "(") depth++;
+      else if (css[j] === ")") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    const args = css.slice(i + "color-mix(".length, j);
+    for (const tok of args.matchAll(/var\((--[\w-]+)\)/g)) {
+      if (IMAGE_TOKENS.has(tok[1])) offenders.push(`color-mix(… var(${tok[1]}) …)`);
+    }
+  }
+  return offenders;
+}
+
+/* ── 主窗口玻璃外壳专项（2026-11-03）──────────────────────────
+   外壳只允许用「内阴影 + 壳体侧壁渐变」表达厚度：
+   窗口区域裁剪会裁掉盒子外投影，写外阴影不会报错、也不会显示，
+   只会让后来的维护者误以为悬浮感来自真实投影。 */
+describe("主窗口玻璃外壳", () => {
+  /** 按括号深度拆分阴影列表（rgba 内部的逗号不能当分隔符）。 */
+  function splitShadowLayers(value: string): string[] {
+    const layers: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < value.length; i += 1) {
+      if (value[i] === "(") depth += 1;
+      else if (value[i] === ")") depth -= 1;
+      else if (value[i] === "," && depth === 0) {
+        layers.push(value.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    layers.push(value.slice(start).trim());
+    return layers.filter(Boolean);
+  }
+
+  it("四个上下文都有壳体侧壁层，并铺在环境光之上", () => {
+    for (const preset of PRESETS) {
+      for (const dark of [false, true]) {
+        const tag = `${preset}/${dark ? "dark" : "light"}`;
+        const wall = effectiveDecls(preset, dark)["--shell-wall"];
+        expect(wall, `${tag} 未定义 --shell-wall`).toBeTruthy();
+        // 侧壁必须是渐变图像，不能误写成颜色或纯色
+        expect(wall, `${tag} 的 --shell-wall 不是渐变层`).toMatch(/linear-gradient|radial-gradient/);
+      }
+    }
+    const bodies = ruleBodies(themesCss, "theme", ".dock-window::before");
+    const body = bodies[bodies.length - 1];
+    expect(body).toBeTruthy();
+    expect(body).toMatch(
+      /background-image:\s*var\(--shell-wall\),\s*var\(--decor\)/,
+    );
+  });
+
+  it("外壳边光全部是 inset：窗口区域会把外投影裁掉", () => {
+    for (const preset of PRESETS) {
+      for (const dark of [false, true]) {
+        const tag = `${preset}/${dark ? "dark" : "light"}`;
+        const edge = effectiveDecls(preset, dark)["--window-edge"];
+        expect(edge, `${tag} 未定义 --window-edge`).toBeTruthy();
+        const layers = splitShadowLayers(edge);
+        // 轮廓环 + 顶光 + 顶柔光 + 左反射 + 右渐弱 + 底厚度 + 底沉降 + 内侧遮蔽
+        expect(layers.length, `${tag} 的外壳边光层数不足`).toBeGreaterThanOrEqual(6);
+        for (const layer of layers) {
+          expect(layer.startsWith("inset"), `${tag} 出现了非内阴影：${layer}`).toBe(true);
+        }
+      }
+    }
+  });
+});
+
+describe("吸顶与工具栏表面", () => {
+  it("渐变令牌不喂给 color-mix()，否则整条声明被静默丢弃", () => {
+    // --surface-base / --surface-raised 在两套预设下解析成 --window-fill / --card-face，
+    // 都是 <image>；color-mix() 只接受 <color>，写进去不会报错，只会让声明失效，
+    // 表现为「背景根本没画上」（历史吸顶标签与 .history-new-banner 原来的症状）。
+    expect(imageTokenInColorMix(appCssCode)).toEqual([]);
+    expect(imageTokenInColorMix(uiCss.replace(/\/\*[\s\S]*?\*\//g, ""))).toEqual([]);
+    expect(imageTokenInColorMix(themesCss.replace(/\/\*[\s\S]*?\*\//g, ""))).toEqual([]);
+  });
+
+  it("历史吸顶日期标签自带不透明底，不靠 backdrop-filter 遮", () => {
+    // 卡片会从标签底下穿过：没有自身不透明底就只能靠 GPU 模糊糊过去；
+    // --surface-overlay 在浅色预设下仍有 4%–8% alpha，故改用全不透明的 --clip-detail-face。
+    expect(appCssCode).toMatch(/\.history-day-label\s*\{[^}]*background:\s*var\(--clip-detail-face\)/);
+    expect(/\.history-day-label\s*\{[^}]*backdrop-filter/.test(appCssCode)).toBe(false);
+    // --clip-detail-face 在六个预设×明暗组合里都必须是不透明纯色
+    expect(themesCss).toMatch(/--clip-detail-face:\s*var\(--c-paper\)/);
+    const faceDecls = themesCss.match(/--clip-detail-face:\s*[^;]+;/g) ?? [];
+    expect(faceDecls.length).toBeGreaterThanOrEqual(4);
+    expect(faceDecls.some((d) => /transparent|rgba\(|color-mix/.test(d))).toBe(false);
+    // 同一个块里不得再出现两次 padding（后写的会静默覆盖前一个）
+    const body = appCssCode.match(/\.history-day-label\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(body.match(/padding\s*:/g)?.length).toBe(1);
+  });
+
+  it("工具栏与操作条走圆角令牌，不各自写死像素", () => {
+    expect(appCssCode).toMatch(/\.clip-selectbar\s*\{[^}]*border-radius:\s*var\(--radius-card\)/);
+    expect(appCssCode).toMatch(/\.clip-detail-head\s*\{[^}]*border-radius:\s*var\(--radius-card\)/);
+    expect(appCssCode).toMatch(/\.clip-splitbar\s*\{[^}]*border-radius:\s*var\(--radius-control\)/);
+    // 完整页的提示条已经左右留白，不能再是悬在留白里的直角矩形
+    expect(appCssCode).toMatch(
+      /\.clipboard-page \.clip-link-banner\s*\{[^}]*border-radius:\s*var\(--radius-control\)/,
+    );
+    // 行内标题编辑框交回全局 input 规则，不再自己用窗口渐变当底色
+    expect(appCssCode).not.toMatch(/\.clip-title-input\s*\{[^}]*--surface-base/);
   });
 });

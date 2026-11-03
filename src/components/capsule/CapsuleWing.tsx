@@ -17,6 +17,7 @@
 //!
 //! 另有一条 `cap-wing-rim` 描边：**沿边方向渐变**（两端 0.05 → 中段 0.62），
 //! 贴边那一段由 `wingRimPath` 直接不画。它是一道细的轮廓高光，不是整圈边框。
+//! 描边用 `clip-path` 裁进可见轮廓：0.75px 描边沿轮廓线内外各分一半，外侧那一半叠在黑桌面上就是一条碎白边。
 //!
 //! 渐变方向按停靠边换算：`near→far` 永远是「屏幕边缘 → 屏幕内部」，因此四边
 //! 共用一套语义 Token，换方向不换材质。
@@ -92,6 +93,9 @@ export default function CapsuleWing({ edge }: { edge: SnapEdge }) {
           <stop offset="0.86" className="cap-stop-rim-mid" />
           <stop offset="1" className="cap-stop-rim-ends" />
         </linearGradient>
+        <clipPath id={`${uid}-rim-clip`}>
+          <path d={face} />
+        </clipPath>
       </defs>
       <path className="cap-wing-face" d={face} fill={`url(#${uid}-face)`} />
       <path className="cap-wing-shade" d={face} fill={`url(#${uid}-shade)`} />
@@ -102,8 +106,9 @@ export default function CapsuleWing({ edge }: { edge: SnapEdge }) {
         d={rim}
         fill="none"
         stroke={`url(#${uid}-rim)`}
+        strokeLinecap="butt"
         strokeWidth={0.75}
-        strokeLinecap="round"
+        clipPath={`url(#${uid}-rim-clip)`}
       />
     </svg>
   );

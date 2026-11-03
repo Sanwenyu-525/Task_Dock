@@ -365,17 +365,17 @@ describe("停靠：窗口贴边 + 区域切轨道", () => {
     expect(saved.center).toBe(580);
   });
 
-  it("窗口小于胶囊容器时先撑到 408×440（否则面板放不下）", async () => {
+  it("窗口小于胶囊容器时先撑到 404×440（否则面板放不下）", async () => {
     world.size = { width: 280, height: 140 }; // minimal 模式
     mount();
     await advance(50);
     await dockLeft();
 
-    expect(world.sizeCalls.at(-1)).toEqual({ w: 408, h: 440 });
+    expect(world.sizeCalls.at(-1)).toEqual({ w: 404, h: 440 });
     expect(phase()).toBe("docked-visible");
   });
 
-  it("Aero Snap 半屏尺寸（1280×690）在停靠时归一为容器 408×440", async () => {
+  it("Aero Snap 半屏尺寸（1280×690）在停靠时归一为容器 404×440", async () => {
     world.pos = { x: 20, y: 300 };
     world.size = { width: 1280, height: 690 }; // Windows 先把窗口吸成左半屏
     mount();
@@ -385,7 +385,7 @@ describe("停靠：窗口贴边 + 区域切轨道", () => {
     await advance(400);
 
     expect(phase()).toBe("docked-visible");
-    expect(world.size).toEqual({ width: 408, height: 440 });
+    expect(world.size).toEqual({ width: 404, height: 440 });
     expect(world.pos.x).toBe(0);
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
@@ -517,7 +517,7 @@ describe("重启恢复与唤回", () => {
     expect(world.pos.x).toBe(0);
     // 停靠时窗口归一为容器高 440，中心 516 → y = 516 - 220 = 296
     expect(world.pos.y).toBe(296);
-    expect(world.size).toEqual({ width: 408, height: 440 });
+    expect(world.size).toEqual({ width: 404, height: 440 });
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
 
@@ -682,7 +682,7 @@ describe("解除吸附", () => {
     mount();
     await advance(50);
     await dockLeft();
-    expect(world.size).toEqual({ width: 408, height: 440 }); // 停靠容器
+    expect(world.size).toEqual({ width: 404, height: 440 }); // 停靠容器
 
     world.swallowModeSizeCalls = 1; // 第一次 applyMode 返回成功但尺寸未变
     await dragTo(120, 300);
@@ -692,7 +692,7 @@ describe("解除吸附", () => {
     expect(world.modeCalls.filter((m) => m === "full").length).toBeGreaterThanOrEqual(2);
     expect(world.size).toEqual({ width: 400, height: 560 }); // full 模式已真正恢复
     // 任何写入都不得是胶囊容器尺寸
-    expect(world.rectWrites.some((r) => r.w === 408 && r.h === 440)).toBe(false);
+    expect(world.rectWrites.some((r) => r.w === 404 && r.h === 440)).toBe(false);
   });
 
   it("重试用尽仍被吞掉：有界停止并把容器尺寸挡在 window_rect 之外", async () => {
@@ -706,7 +706,7 @@ describe("解除吸附", () => {
 
     expect(phase()).toBe("free");
     expect(world.modeCalls.filter((m) => m === "full")).toHaveLength(4);
-    expect(world.size).toEqual({ width: 408, height: 440 });
+    expect(world.size).toEqual({ width: 404, height: 440 });
     expect(world.rectWrites).toHaveLength(0);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
@@ -934,7 +934,7 @@ describe("停靠失败后的窗口几何回滚", () => {
     await advance(600);
 
     expect(phase()).toBe("candidate");
-    expect(world.sizeCalls.at(-1)).toEqual({ w: 280, h: 140 }); // 不遗留 408×440
+    expect(world.sizeCalls.at(-1)).toEqual({ w: 280, h: 140 }); // 不遗留 404×440
     expect(world.setPositionCalls).toHaveLength(0);
     expect(world.regionCalls).toHaveLength(0);
     expect(world.snapWrites).toHaveLength(0);
@@ -951,7 +951,7 @@ describe("停靠失败后的窗口几何回滚", () => {
 
     // §5.1：setSize 失败后不得继续 move/region
     expect(phase()).toBe("candidate");
-    expect(world.sizeCalls.every((c) => c.w === 408 && c.h === 440)).toBe(true);
+    expect(world.sizeCalls.every((c) => c.w === 404 && c.h === 440)).toBe(true);
     expect(world.setPositionCalls).toHaveLength(0);
     expect(world.regionCalls).toHaveLength(0);
     expect(world.snapWrites).toHaveLength(0);
@@ -1035,7 +1035,7 @@ describe("候选与兜底", () => {
     await advance(400);
 
     expect(phase()).toBe("docked-visible");
-    expect(world.pos.x).toBe(1920 - 408);
+    expect(world.pos.x).toBe(1920 - 404);
     expect(lastRegion()).toEqual({ mode: "rail", edge: "right" });
   });
 });

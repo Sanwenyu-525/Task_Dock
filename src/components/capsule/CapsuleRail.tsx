@@ -6,11 +6,13 @@
 //! 交互约定：
 //! - 点击分类 = 展开该分类面板；再次点击当前分类 = 收起（由 CapsuleDock 处理）；
 //! - 轨道空白处可拖动窗口（`data-tauri-drag-region`），按钮区域不触发拖动；
-//! - 不使用 `data-tip`：胶囊是 Win32 区域裁剪窗口，提示气泡会画在区域之外而不可见，
-//!   无障碍信息一律走 `aria-label`。
+//! - 使用 `data-tip` 提供悬停提示（文案就是图标名，复用全局 `TooltipLayer`）；
+//!   但胶囊是 Win32 区域裁剪窗口（`SetWindowRgn`），气泡必须落在可见区域内：
+//!   展开态指向**屏幕内侧（面板侧）**，四个停靠边做镜像（见 `railTipPlacement`）；
+//!   折叠态只有翼片可画，退回沿轨道朝中心的方向。
+//! - 无障碍信息仍以 `aria-label` 为准（它比提示文案更完整，例如带待办数）。
 
 import {
-  Bot,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -18,15 +20,16 @@ import {
   Clipboard,
   LayoutGrid,
   ListTodo,
-  Sparkles,
 } from "lucide-react";
+import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
 import CapsuleWing from "./CapsuleWing";
 import { RAIL_CATEGORIES, type RailCategory, type RailStatus } from "../../lib/capsuleModel";
+import { CAPSULE_GAP_CSS, RAIL_THICKNESS_CSS } from "../../lib/capsuleLayout";
 import type { SnapEdge } from "../../lib/edgeSnap";
 
-const ICONS: Record<RailCategory, typeof ListTodo> = {
+const ICONS: Record<RailCategory, IconComponent> = {
   tasks: ListTodo,
-  agents: Bot,
+  agents: AgentIcon,
   clipboard: Clipboard,
   apps: LayoutGrid,
 };
@@ -45,6 +48,38 @@ const TONE_TEXT: Record<RailStatus["agentTone"], string> = {
   failed: "Agent 执行失败",
   disconnected: "Agent 连接中断",
 };
+
+/** 展开态气泡一律朝**屏幕内侧（面板侧）**弹出，四个停靠边做镜像：
+ *  左停靠 → right · 右停靠 → left · 上停靠 → bottom · 下停靠 → top。
+ *
+ *  为什么必须朝内而不是「沿轨道向上/向下」：胶囊窗口由 Win32 `SetWindowRgn`
+ *  裁剪，气泡画在区域外不会被绘制。展开态可见区域 = 翼片 ∪ 面板，只有内侧有
+ *  空间；折叠态可见区域只剩 56px 厚的翼片，内侧没有像素，此时退回沿轨道朝中心
+ *  （垂直停靠向上、水平停靠向左），否则气泡会被区域裁成边缘碎片。
+ *  `lead` 只影响折叠态：端头状态球贴着翼片肩部收窄段，朝上会越过可见轮廓。
+ */
+type TipPlacement = "top" | "left" | "bottom" | "right";
+const INWARD: Record<SnapEdge, TipPlacement> = {
+  left: "right",
+  right: "left",
+  top: "bottom",
+  bottom: "top",
+};
+
+export function railTipPlacement(edge: SnapEdge, expanded: boolean, lead = false): TipPlacement {
+  if (expanded) return INWARD[edge];
+  const vertical = edge === "left" || edge === "right";
+  if (vertical) return lead ? "bottom" : "top";
+  return lead ? "right" : "left";
+}
+
+/** 分类项图标按钮边长（与 `.cap-btn` 一致）。 */
+const CAP_ITEM_CSS = 36;
+/** 展开态气泡外扩距离：越过翼片侧边余量 `(56-36)/2` + 轨道/面板 gap 8 + 区域
+ *  AA 内收 2，让气泡起点落在**面板可见矩形**内，而不是落在「不属于区域、
+ *  也不拦截鼠标」的间隙上（落进间隙会被裁出一条缺边）。 */
+export const CAPSULE_TIP_INWARD_OFFSET =
+  (RAIL_THICKNESS_CSS - CAP_ITEM_CSS) / 2 + CAPSULE_GAP_CSS + 2;
 
 export default function CapsuleRail({
   edge,
@@ -86,11 +121,14 @@ export default function CapsuleRail({
         type="button"
         className="cap-orb"
         data-tone={status.agentsLoaded ? status.agentTone : "unknown"}
+        data-tip="Agent"
+        data-tip-placement={railTipPlacement(edge, expanded, true)}
+        data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
         aria-label={`${toneLabel}，打开 Agent 面板`}
         aria-pressed={expanded && active === "agents"}
         onClick={() => onSelect("agents")}
       >
-        <Sparkles size={18} strokeWidth={1.8} aria-hidden="true" />
+        <AgentIcon size={18} strokeWidth={1.8} aria-hidden="true" />
         {status.agentAttention > 0 && (
           <span className="cap-orb-badge" aria-hidden="true">
             {status.agentAttention > 9 ? "9+" : status.agentAttention}
@@ -114,6 +152,9 @@ export default function CapsuleRail({
               key={c}
               type="button"
               className={`cap-btn${isActive ? " is-active" : ""}`}
+              data-tip={CATEGORY_LABELS[c]}
+              data-tip-placement={railTipPlacement(edge, expanded)}
+              data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
               aria-label={
                 c === "tasks" && status.tasksLoaded
                   ? `任务，${status.pending ?? 0} 个待办${status.overdue > 0 ? `，${status.overdue} 个逾期` : ""}`
@@ -131,6 +172,8 @@ export default function CapsuleRail({
                 </span>
               )}
             </span>
+              {/* 悬停/选中指示块：只属于四个分类按钮，Agent 端头球不渲染 */}
+              <span className="cap-edge-tab" aria-hidden="true" />
             </button>
           );
         })}
@@ -145,6 +188,9 @@ export default function CapsuleRail({
         type="button"
         className="cap-collapse"
         data-inert={expanded ? "false" : "true"}
+        data-tip="收起"
+        data-tip-placement={railTipPlacement(edge, expanded)}
+        data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
         aria-label={expanded ? "收起功能面板" : "功能面板已收起"}
         aria-disabled={!expanded}
         tabIndex={expanded ? 0 : -1}

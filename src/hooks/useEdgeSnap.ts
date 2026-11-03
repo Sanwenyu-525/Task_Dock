@@ -354,7 +354,9 @@ export function useEdgeSnap(enabled: boolean) {
 
     // ── 胶囊区域（唯一的视觉状态开关）───────────────────────
 
-    let regionSeq = 0;
+    // 序号以页面加载时刻为基数：WebView 重载后仍大于上一次会话的序号，
+    // 避免原生侧「已见最大序号」把重载后的新请求误判为旧请求。
+    let regionSeq = Math.floor(performance.timeOrigin * 1000);
     let desiredRegion: { mode: CapsuleRegionMode; edge: SnapEdge } = { mode: "off", edge: "left" };
     /**
      * 原生区域是否与 UI 相位失准（写入/回读失败且校准也失败）。
@@ -386,13 +388,18 @@ export function useEdgeSnap(enabled: boolean) {
     /**
      * 单次区域应用（带 IPC 超时）。
      * 超时/异常一律返回 false：调用方不得把「发出了请求」当成「原生已生效」；
-     * 迟到的 invoke 结果由 `regionSeq` 作废，不会覆盖后续状态。
+     * 迟到的 invoke 结果由 `regionSeq` 作废，且 `seq` 随请求下发到原生侧，
+     * 由原生单调序号再拦截一次真正落地的旧写入。
      */
-    async function applyRegionWithTimeout(mode: CapsuleRegionMode, edge: SnapEdge): Promise<boolean> {
+    async function applyRegionWithTimeout(
+      mode: CapsuleRegionMode,
+      edge: SnapEdge,
+      seq: number,
+    ): Promise<boolean> {
       let timer: number | undefined;
       try {
         const result = await Promise.race([
-          applyWindowCapsule(mode, edge),
+          applyWindowCapsule(mode, edge, seq),
           new Promise<boolean>((resolve) => {
             timer = window.setTimeout(() => resolve(false), REGION_IPC_TIMEOUT_MS);
           }),
@@ -407,7 +414,8 @@ export function useEdgeSnap(enabled: boolean) {
 
     /**
      * 切换胶囊区域（**await + 结果检查 + 序号防护 + 超时**）。
-     * 返回 false = 后端报告未应用（含 GetWindowRgn 回读验证失败）、IPC 异常/超时；
+     * 返回 false = 后端报告未应用（含 GetWindowRgn 回读验证失败）、IPC 异常/超时、
+     * 或被原生乱序保护丢弃；
      * 响应迟到且期间有更新命令：结果作废并按最新期望**重同步**一次。
      * 成功时同步清除「区域失准」标记；失败时标记失准并交给有界恢复。
      */
@@ -415,10 +423,10 @@ export function useEdgeSnap(enabled: boolean) {
       const edge = machine.edge ?? "left";
       const seq = ++regionSeq;
       desiredRegion = { mode, edge };
-      const ok = await applyRegionWithTimeout(mode, edge);
+      const ok = await applyRegionWithTimeout(mode, edge, seq);
       if (disposed) return false;
       if (seq !== regionSeq) {
-        void applyWindowCapsule(desiredRegion.mode, desiredRegion.edge).catch(() => {});
+        void applyRegionWithTimeout(desiredRegion.mode, desiredRegion.edge, regionSeq);
         return false;
       }
       setRegionUnknown(!ok);

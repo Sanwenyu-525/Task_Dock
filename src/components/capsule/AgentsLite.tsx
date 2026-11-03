@@ -10,7 +10,8 @@
 //! 每个 Agent 能做的只有两件真实存在的事：打开它的会话，或进入完整 Agent 页。
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { Activity, ArrowUpRight, Bot, ChevronRight, RefreshCw } from "lucide-react";
+import { Activity, ArrowUpRight, ChevronRight, RefreshCw } from "lucide-react";
+import AgentIcon from "../ui/AgentIcon";
 import { openAgentSession } from "../../lib/bridge";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { liveRuns, liveSummary } from "../../lib/agentTree";
@@ -140,7 +141,7 @@ export default function AgentsLite() {
       <div className="cap-list">
         {snapshot !== null && runs.length === 0 && (
           <EmptyState
-            icon={<Bot size={22} strokeWidth={1.6} aria-hidden="true" />}
+            icon={<AgentIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
             text="未检测到运行中的 Agent"
             actionLabel="查看接入配置"
             onAction={() => openFullApp("agents")}

@@ -1,7 +1,9 @@
 //! 剪贴板面板（胶囊内，对照 `docs/design-refs/v07/停靠效果图/03-clipboard.png`）。
 //!
-//! 数据：按需调用既有 `clipboard_view`（limit 20），**不新建采集服务**、
-//! 不订阅第二份实时流；缩略图走既有 `ClipboardThumb`（进程内缓存、上限 240）。
+//! 数据：**不再自持列表**。视图来自 `useClipboardStore.lite`（挂载时
+//! loadLite() 取一次 clipboard_view(limit 20)），实时更新复用 store 里
+//! 全局唯一的 clipboard-changed 监听（引用计数，不会重复注册）；
+//! 缩略图走既有 `ClipboardThumb`（进程内缓存、上限 240）。
 //! 敏感内容只在展开面板内出现，轨道上永远不显示正文。
 //!
 //! 安全约束（与完整剪贴板工作区一致）：
@@ -12,16 +14,15 @@
 //!
 //! 分段筛选（全部 / 文本 / 图片 / 文件）是对同一份真实列表的本地过滤。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, Check, Clipboard, Copy, FileText, Images, Layers } from "lucide-react";
 import {
   clipboardCopyGroupRich,
   clipboardCopyItem,
   clipboardGroup,
-  clipboardView,
-  type ClipboardGroup,
   type ClipboardItem,
 } from "../../lib/bridge";
+import { useClipboardStore } from "../../store/useClipboardStore";
 import { ClipboardThumb } from "../clipboard/Media";
 import { openFullApp } from "./actions";
 import { EmptyState, PanelHead, Segmented, sizeLabel, type SegOption } from "./PanelKit";
@@ -65,27 +66,31 @@ function toneOf(item: ClipboardItem): { cls: string; icon: typeof FileText } {
 }
 
 export default function ClipboardLite() {
-  const [items, setItems] = useState<ClipboardItem[] | null>(null);
-  const [groups, setGroups] = useState<ClipboardGroup[]>([]);
+  const lite = useClipboardStore((s) => s.lite);
+  const loadLite = useClipboardStore((s) => s.loadLite);
+  const releaseLite = useClipboardStore((s) => s.releaseLite);
+  const setLive = useClipboardStore((s) => s.setLive);
+  const items = lite?.items ?? null;
+  // 只给「有图的分组」取封面，最多 2 组，顺序按后端返回
+  const groups = useMemo(
+    () => (lite?.groups ?? []).filter((g) => g.image_count > 0).slice(0, 2),
+    [lite],
+  );
   const [filter, setFilter] = useState<Filter>("all");
   /** 截图组 → 可作封面的条目 id（按需读详情，最多 2 组） */
   const [covers, setCovers] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const view = await clipboardView({ limit: 20 });
-      setItems(view.items);
-      setGroups(view.groups.filter((g) => g.image_count > 0).slice(0, 2));
-    } catch {
-      setItems([]);
-      setGroups([]);
-    }
-  }, []);
-
+  // 面板打开 → 取一次轻量视图，并接入全局唯一的 clipboard-changed 监听
+  // （store 内部引用计数：完整页面与胶囊面板共用同一个监听，不会重复注册）。
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadLite();
+    setLive(true);
+    return () => {
+      setLive(false);
+      releaseLite();
+    };
+  }, [loadLite, releaseLite, setLive]);
 
   // 封面：只为「有图的分组」读详情，且最多 2 组（有界、失败静默）
   useEffect(() => {

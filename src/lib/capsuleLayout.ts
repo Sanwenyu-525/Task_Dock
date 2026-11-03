@@ -8,11 +8,11 @@
 //!
 //! 尺寸与 `src-tauri/src/window_shape.rs` 的 `CAPSULE_*` 常量是跨端契约
 //! （两端各有单测锁定同一组数字）：厚 56、平直主体 224、单侧液态肩部 88
-//! （外框 400×56）、面板 340×440、间隙 12。外形本身由 `lib/capsuleShape.ts`
+//! （外框 400×56）、面板 340×440、间隙 8。外形本身由 `lib/capsuleShape.ts`
 //! 唯一定义，本文件只负责**摆放**（容器、贴边位置、区域矩形与轮廓）。
 //!
 //! 面板尺寸与间隙在 v0.7 方案 B（液态融合翼片）里按参考图重新标定：
-//! 参考图中面板宽高比 ≈ 0.72、面板/翼片厚度比 ≈ 4.0、间隙 ≈ 面板宽的 2%。
+//! 参考图中面板宽高比 ≈ 0.72、面板/翼片厚度比 ≈ 4.0、间隙 ≈ 面板宽的 2%（340 × 2.4% ≈ 8）。
 //! 336×420 → 340×440 是「按真实桌面尺寸还原布局关系」的结果，不是逐像素抄图。
 //!
 //! 坐标口径：本文件同时提供 CSS 尺寸常量（供样式与布局引用）与**物理像素**
@@ -47,13 +47,18 @@ export const PANEL_HEIGHT_CSS = 440;
  * 而用一条竖高光掩盖缝隙又正是本次明令禁止的做法。因此这里保留间隙，
  * 由「翼片肩部曲线 + 面板大圆角 + 双向柔和阴影」共同表达连接；
  * 间隙本身由 `pointInCapsule` 的 slop 纳入命中区，鼠标跨越不会触发收起。
+ *
+ * v0.7 间距收敛（12 → 8）：参考图的间隙约为面板宽的 2%~2.4%（340 × 0.024 ≈ 8），
+ * 12 是早期标定的残留，视觉上面板会像一块独立浮卡。取 8 而非 7，是为了让
+ * 容器宽 404 与水平容器高 504 都是偶数——面板在窗口内居中用 `(W - 面板宽) / 2`，
+ * 前端 `Math.round` 与 Rust 整除因此得到同一个整数，不会出现跨端 1px 偏差。
  */
-export const CAPSULE_GAP_CSS = 12;
+export const CAPSULE_GAP_CSS = 8;
 /** 面板圆角（CSS px）；轨道为全圆角（厚度/2）。 */
 export const PANEL_RADIUS_CSS = 24;
 
 /** 胶囊容器：停靠时窗口至少要这么大，才能同时容纳轨道与面板。 */
-export const CAPSULE_CONTAINER_W_CSS = RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_WIDTH_CSS; // 408
+export const CAPSULE_CONTAINER_W_CSS = RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_WIDTH_CSS; // 404
 export const CAPSULE_CONTAINER_H_CSS = PANEL_HEIGHT_CSS; // 440
 
 export interface Size {
@@ -65,8 +70,8 @@ export const isVerticalEdge = (edge: SnapEdge): boolean => edge === "left" || ed
 
 /**
  * 胶囊容器尺寸（CSS px）。垂直停靠：宽 = 轨道 + 间隙 + 面板，高 = 面板高；
- * 水平停靠：宽 = 容器宽（面板宽 340 与轨道长 400 都要放下，取 408 与竖直一致），
- * 高 = 轨道 + 间隙 + 面板（56 + 12 + 440 = 508）。
+ * 水平停靠：宽 = 容器宽（面板宽 340 与轨道长 400 都要放下，取 404 与竖直一致），
+ * 高 = 轨道 + 间隙 + 面板（56 + 8 + 440 = 504）。
  */
 export function capsuleContainerSize(edge: SnapEdge): Size {
   return isVerticalEdge(edge)

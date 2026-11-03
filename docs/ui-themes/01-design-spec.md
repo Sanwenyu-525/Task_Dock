@@ -413,3 +413,56 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
   `tmp/acceptance/task-card-scheme-d/`。紧凑模式（380px）与 14 卡密度走查同轮覆盖。
   原生 Tauri 窗口截图未在本轮执行（预览 harness 与原生窗口的窗面合成差异已知，
   任务卡为内容层组件，不受窗口材质影响）。
+
+---
+
+## 13. 表面 Token 类型与矩形圆角（2026-11-02 追加）
+
+### 13.1 Token 有两类，混用会静默失效
+
+| 类型 | Token | 允许用法 |
+| --- | --- | --- |
+| `<image>` | `--surface-base`（= `--window-fill`）、`--surface-raised`（= `--card-face`）、`--control-face` | 只做整面 `background` / `background-image` |
+| `<color>` | `--surface-overlay`、`--accent-soft`、`--border-*`、`--text-*`、`--status-*` | 可进 `color-mix()`、可作 `border-color` / `background-color` |
+
+两套预设下 `--surface-base` / `--surface-raised` 解析成多层径向渐变，**不是颜色**。把它们
+写进 `color-mix(…, var(--surface-base))` 会在 computed-value time 变非法值，CSS 直接丢弃
+**整条声明**——没有报错、没有回退，元素实际「没有底色」。`color-mix` 的第一个参数和后续
+参数一样受限，`color-mix(in srgb, var(--accent) 10%, var(--surface-raised))` 同样失效。
+半透明底一律从 `<color>` token 出发（`--surface-overlay` / `--accent-soft` /
+`color-mix(… var(--accent) N%, transparent)`）。
+
+- 状态变体（`.warn` / `.danger` 等）只补 `background-color`，让基类的 `--surface-raised`
+  高光层继续存在；写成 `background:` 简写会连带抹掉高光层。
+- 回归守卫：`src/styles-themes.test.ts` 的 `imageTokenInColorMix()`（按括号深度精确取
+  `color-mix()` 实参，不用跨声明的正则，避免误判 `linear-gradient(color-mix(…)…, var(--window-fill))`
+  这类合法的「渐变里嵌透明混色」写法）扫描三个样式文件，禁止 `<image>` token 入 `color-mix()`。
+
+### 13.2 小控件不用窗口渐变当局部底
+
+`--surface-base` 是**窗口级**四层氛围光渐变。把它设给一个 24px 高的输入框或小卡片，等于
+把整窗渐变压缩进该盒，色块与窗口任意局部都不一致。局部表面按层级选：
+窗口面 `--surface-base` → 卡片/区块面 `--surface-raised` → 控件面 `--control-face` /
+`--accent-soft` → 浮层 `--surface-overlay`。已有全局 `input` 规则
+（`src/styles.css:183-195`）负责背景/描边/圆角并在 hover/focus 升级到 `--border-strong`，
+行内特化只改字号与内距，不重抄这四条。
+
+### 13.3 圆角跟「表面边界」走，不跟「元素类型」走
+
+- **左右留白 ⇒ 它是独立表面** ⇒ 四角必须切：区块级用 `--radius-card`，条/控件级用
+  `--radius-control`（吸顶日标签、批量条、详情头、拆分条、完整页提示条同族）。
+- **通栏贴到容器边缘 ⇒ 它是连续容器的一部分** ⇒ 保持直角（抽屉内提示条、贴边标题栏）。
+- 加了 `margin-left/right` 就必须同时加 `border-radius`；只留白不切角会在留白里悬一块
+  直角矩形，比全直角更突兀。
+- 不是所有矩形都是问题：胶囊（`--radius-pill` / 999px）、状态微标签、原生裁切的 SVG 轨道
+  按自身功能规范处理，不并入上述族；也不给所有组件统一加 `border-radius` 或
+  `overflow: hidden` 掩盖根因。
+- `.clip-tabs` 的下划线式选中态与紧邻其下的分段药丸筛选行**刻意不同形**：都改成药丸会让
+  两行外观几乎重复、层级反而更难读。视图切换用下划线、筛选器用分段药丸是现状规范。
+
+### 13.4 吸顶行自带不透明底
+
+滚动容器内 `position: sticky` 的行必须有高不透明度底色（`--surface-overlay`，四套预设×明暗
+均 ≥92%）才能挡住穿过它滚动的卡片。不要用 `backdrop-filter` 代替遮挡：它让每个常驻吸顶行
+多一层 GPU 模糊，且在 `material-solid` 下语义错误。吸顶行需要全出血时用负 `margin` +
+等值负 `top`，并只写一次 `padding`。

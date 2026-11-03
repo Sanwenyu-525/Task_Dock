@@ -2,7 +2,9 @@
  * @vitest-environment jsdom
  */
 //! 全局提示条层（TooltipLayer）：
-//! - 悬停 / 聚焦带 `data-tip` 的控件时出现统一样式的提示；
+//! - 悬停 / **键盘（Tab）聚焦**带 `data-tip` 的控件时出现统一样式的提示；
+//! - 鼠标点击后的聚焦、窗口重新激活补发的 focusin 不算键盘聚焦，不得弹提示
+//!   （回归：点标题栏空白拖拽区会弹出「最小化」）；
 //! - 提示条**不抢焦点**（关闭时不得把焦点拽回原控件）；
 //! - 提示条**不消费 Escape**（瞬时提示不该挡住「Esc 隐藏窗口」）。
 
@@ -44,7 +46,7 @@ describe("全局提示条层", () => {
     expect(screen.getByRole("tooltip").textContent).toBe("复制内容");
   });
 
-  it("键盘聚焦同样会给出提示", async () => {
+  it("键盘（Tab）聚焦同样会给出提示", async () => {
     render(
       <>
         <Harness />
@@ -52,9 +54,43 @@ describe("全局提示条层", () => {
       </>,
     );
     const btn = screen.getByRole("button", { name: "删除" });
+    // 真实键盘路径：先 Tab（记录键盘意图）再移动焦点
+    fireEvent.keyDown(window, { key: "Tab" });
     fireEvent.focusIn(btn);
 
     await waitFor(() => expect(screen.getByRole("tooltip").textContent).toBe("删除条目"));
+  });
+
+  it("点击标题栏空白拖拽区不弹按钮提示（窗口激活补发的 focusin 不算键盘聚焦）", async () => {
+    render(
+      <>
+        <div data-testid="titlebar" data-tauri-drag-region>
+          <span>Task Dock</span>
+          <button type="button" data-tip="最小化" aria-label="最小化">
+            —
+          </button>
+        </div>
+        <TooltipLayer />
+      </>,
+    );
+    const bar = screen.getByTestId("titlebar");
+    const min = screen.getByRole("button", { name: "最小化" });
+
+    // 上一次鼠标点击让最小化按钮持有焦点（指针模态）
+    fireEvent.pointerDown(min);
+    min.focus();
+    fireEvent.focusIn(min);
+
+    // 点空白拖拽区：drag.js 会 preventDefault + startDragging，焦点不离开按钮
+    fireEvent.pointerDown(bar);
+    fireEvent.mouseDown(bar);
+    fireEvent.click(bar);
+    // 原生 startDragging 激活窗口后，Chromium 对上次聚焦元素补发 focusin
+    fireEvent.focusIn(min);
+
+    // 同时越过 350ms 悬停延迟，确认没有任何路径把提示弹出来
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
   it("提示条关闭时不抢走焦点", async () => {
@@ -67,11 +103,14 @@ describe("全局提示条层", () => {
     const copy = screen.getByRole("button", { name: "复制" });
     const del = screen.getByRole("button", { name: "删除" });
 
+    // 键盘 Tab 切到第一个控件
+    fireEvent.keyDown(window, { key: "Tab" });
     copy.focus();
     fireEvent.focusIn(copy);
     await waitFor(() => expect(screen.getByRole("tooltip")).toBeTruthy());
 
-    // 焦点移到下一个控件：提示条要跟着换，但焦点必须留在新控件上
+    // 再 Tab 到下一个控件：提示条要跟着换，但焦点必须留在新控件上
+    fireEvent.keyDown(window, { key: "Tab" });
     del.focus();
     fireEvent.focusOut(copy);
     fireEvent.focusIn(del);
@@ -89,6 +128,7 @@ describe("全局提示条层", () => {
       </>,
     );
     const btn = screen.getByRole("button", { name: "复制" });
+    fireEvent.keyDown(window, { key: "Tab" });
     fireEvent.focusIn(btn);
     await waitFor(() => expect(screen.getByRole("tooltip")).toBeTruthy());
 
