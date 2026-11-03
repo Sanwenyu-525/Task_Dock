@@ -20,6 +20,7 @@ import { EmptyState, PanelHead } from "./PanelKit";
 export default function AppsLite() {
   const targets = useNavigationStore((s) => s.targets);
   const targetsLoaded = useNavigationStore((s) => s.targetsLoaded);
+  const targetsError = useNavigationStore((s) => s.targetsError);
   const loadTargets = useNavigationStore((s) => s.loadTargets);
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
@@ -93,7 +94,13 @@ export default function AppsLite() {
     }
   };
 
-  const empty = targetsLoaded && ranked.length === 0;
+  // 「没有配置」与「读取失败」必须分开：targetsError 存在时绝不把旧清单/空清单
+  // 伪装成「尚未配置快捷应用」。读取失败且从未成功 → 错误空态（可重试）；
+  // 失败但已有旧清单 → 旧清单保留 + 错误提示条。
+  const loadError = targetsError !== null;
+  const empty = targetsLoaded && !loadError && ranked.length === 0;
+  const loadFailedFresh = loadError && !targetsLoaded;
+  const loadFailedStale = loadError && targetsLoaded;
 
   return (
     <>
@@ -124,6 +131,24 @@ export default function AppsLite() {
       </div>
 
       <div className="cap-list">
+        {loadFailedFresh && (
+          <EmptyState
+            icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
+            text="快捷应用读取失败"
+            actionLabel="重试"
+            onAction={() => void loadTargets()}
+          />
+        )}
+
+        {loadFailedStale && (
+          <div className="cap-item cap-error-row" role="alert">
+            <span className="cap-error-text">刷新失败，显示的是上次结果</span>
+            <button type="button" className="cap-mini" aria-label="重试读取快捷应用" onClick={() => void loadTargets()}>
+              重试
+            </button>
+          </div>
+        )}
+
         {empty && (
           <EmptyState
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
@@ -133,7 +158,7 @@ export default function AppsLite() {
           />
         )}
 
-        {!empty && (
+        {!empty && !loadFailedFresh && (
           <div className="cap-app-grid">
             {grid.map((t) => (
               <button
@@ -172,14 +197,14 @@ export default function AppsLite() {
           </div>
         )}
 
-        {grid.length === 0 && !empty && (
+        {grid.length === 0 && !empty && !loadFailedFresh && (
           <EmptyState
             icon={<Search size={20} strokeWidth={1.6} aria-hidden="true" />}
             text="没有匹配的应用"
           />
         )}
 
-        {recent.length > 0 && (
+        {recent.length > 0 && !loadFailedFresh && (
           <div className="cap-recent">
             <span className="cap-recent-title">最近使用</span>
             <span className="cap-recent-list">

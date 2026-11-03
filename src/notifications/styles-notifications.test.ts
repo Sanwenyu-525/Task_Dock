@@ -116,9 +116,13 @@ describe("交互与可读性", () => {
   });
 
   it("堆叠压缩：非最新卡隐藏操作与元信息区块", () => {
-    const compressed = rule(".ntf-stack.stacked .ntf-card:not(:last-child) .ntf-actions");
+    const compressed = rule(
+      ".ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-actions",
+    );
     expect(compressed).toBeDefined();
     expect(compressed!.body).toContain("display: none");
+    // 离场槽位负责自然填补（高度收缩），避免其余卡片瞬跳
+    expect(rule(".ntf-slot.leaving")!.body).toContain("grid-template-rows: 0fr");
   });
 
   it("容器空白区不拦截点击（卡片自身恢复 pointer-events）", () => {

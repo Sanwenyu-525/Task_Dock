@@ -314,6 +314,8 @@ describe("采集环境", () => {
     expect(block.textContent).toContain("未知应用");
     expect(block.textContent).toContain("未能识别来源");
     expect(block.textContent).not.toContain("chrome.exe");
+    // 不得把后端哨兵值 `unknown` 当成进程名展示。
+    expect(block.textContent).not.toContain("来源进程");
     expect(block.textContent).not.toContain("可确认");
   });
 

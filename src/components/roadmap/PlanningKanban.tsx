@@ -62,7 +62,7 @@ function KanbanCard({
   onStatusChange: (status: PlanningFeatureStatus) => void;
 }) {
   return (
-    <article className="planning-kanban-card">
+    <article className="task-card planning-kanban-card">
       <button
         type="button"
         className="planning-kanban-card-head"
@@ -71,7 +71,7 @@ function KanbanCard({
       >
         <span className="planning-kanban-card-title">{feature.title}</span>
         <span className="planning-kanban-card-flags">
-          <span className={`chip pri-${feature.priority.toLowerCase()}`}>{feature.priority}</span>
+          <span className={`priority-tag ${feature.priority.toLowerCase()}`}>{feature.priority}</span>
           <PlanningFeatureStatusBadge status={feature.status} />
         </span>
       </button>

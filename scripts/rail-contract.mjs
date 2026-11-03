@@ -6,7 +6,7 @@
 //! 本文件与 `TAB_ORDER`、`FullView` 实际渲染结果一致，导航增删/改名/换序时契约测试失败，
 //! 避免脚本侧清单与真实导航漂移。
 //!
-//! 数组顺序即 Ctrl+1…8 的顺序（任务 / Agent / 行动 / 剪贴板 / 收集箱 / 历史 / 规划中心 / 设置）。
+//! 数组顺序即 Ctrl+1…9 的顺序（任务 / Agent / 行动 / 剪贴板 / 收集箱 / 暂存架 / 历史 / 规划中心 / 设置）。
 
 export const RAIL_ENTRIES = Object.freeze([
   { id: "tasks", label: "任务", shortcut: "Ctrl+1" },
@@ -14,9 +14,10 @@ export const RAIL_ENTRIES = Object.freeze([
   { id: "actions", label: "行动", shortcut: "Ctrl+3" },
   { id: "clipboard", label: "剪贴板", shortcut: "Ctrl+4" },
   { id: "inbox", label: "收集箱", shortcut: "Ctrl+5" },
-  { id: "history", label: "历史", shortcut: "Ctrl+6" },
-  { id: "roadmap", label: "规划中心", shortcut: "Ctrl+7" },
-  { id: "settings", label: "设置", shortcut: "Ctrl+8" },
+  { id: "shelf", label: "暂存架", shortcut: "Ctrl+6" },
+  { id: "history", label: "历史", shortcut: "Ctrl+7" },
+  { id: "roadmap", label: "规划中心", shortcut: "Ctrl+8" },
+  { id: "settings", label: "设置", shortcut: "Ctrl+9" },
 ]);
 
 export const RAIL_ITEM_COUNT = RAIL_ENTRIES.length;

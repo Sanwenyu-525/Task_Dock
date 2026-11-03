@@ -145,11 +145,15 @@ describe("四类状态卡片交互", () => {
 });
 
 describe("筛选与搜索", () => {
-  it("状态筛选：只显示对应状态的卡片", () => {
+  it("状态筛选：只显示对应状态的卡片（v0.8 起暂存架为部分实现）", () => {
     fireEvent.click(screen.getByRole("button", { name: "待开发" }));
-    expect(cardOf("文件暂存架")).toBeTruthy();
+    expect(cardOf("一键工作流")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Agent 行动中心（/ })).toBeNull();
     expect(screen.getByRole("status").textContent).toContain("筛选结果");
+
+    fireEvent.click(screen.getByRole("button", { name: "部分实现" }));
+    expect(cardOf("文件暂存架")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^一键工作流（/ })).toBeNull();
   });
 
   it("状态筛选 planned：能找到 Gemini CLI，且不再显示受阻说明", () => {

@@ -277,6 +277,8 @@ describe("ClipboardItemCard 来源信息", () => {
   it("未知来源渲染为「未知应用」，不崩也不猜", () => {
     const card = renderCard({ source_app: "unknown", source_title: "" });
     expect(card.querySelector(".clip-meta-app")!.textContent).toBe("未知应用");
+    // 不把后端哨兵值 `unknown` 放进 Tooltip 冒充进程名。
+    expect(card.querySelector(".clip-meta-app")!.getAttribute("title")).toBeNull();
     expect(card.querySelector(".clip-meta-window")).toBeNull();
     // 元信息行仍完整（大小还在），不因来源未知而丢结构
     expect(card.querySelector(".clip-meta")!.textContent).toContain("20 B");

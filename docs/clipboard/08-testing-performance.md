@@ -652,3 +652,110 @@ release 编译 4m03s，`TAURI_BUILD_EXIT=0`，日志 `evidence/bundle-build-2026
   在并行会话补齐 `confirmAnchor` 后一并通过。
 - 夹具修正：`clipboard_view` 改为每次返回快照。原先直接回传夹具数组引用，
   删除类 mock 就地 `splice` 会改写 store 里的 view，使「离场原位钉住」在走查前失效（假阴性）。
+
+### 11.4 真机写入型测试的恢复守卫（2026-11-03）
+
+`src-tauri/tests/real_clipboard.rs` 的写入型用例此前只在正常结束路径显式恢复剪贴板，
+中途 `panic!` 会把测试内容留在用户剪贴板。现已引入 `ClipboardRestoreGuard`（RAII）：
+
+- **启动门槛**：仍先调用 `restorable_snapshot()`；读不出可写回载荷（超大图、私有格式）
+  一律拒绝启动。**原剪贴板为空**时也拒绝启动——平台层没有「恢复为空」的写回能力，
+  写入后无法还原成空，只能避免留下测试内容。
+- **恢复依据**：每次成功写入后登记 `last_written`；正常结束走 `finish`，panic 栈展开时
+  `Drop` 再尽力恢复一次。恢复仍调用平台层 `restore_if_own_content`（同一把剪贴板访问锁内
+  **先比较内容再写回**），没有新建第二套写入保护体系。
+- **用户接管**：测试期间用户/其他程序改写剪贴板时，内容不等于 `last_written`，恢复返回
+  `KeepUserCopy`，保留用户新内容，不覆盖。
+- **不重复恢复**：守卫在进入恢复前先置 `restored = true`，正常结束与 `Drop` 合计最多一次；
+  恢复失败只记录诊断，不重试、不启后台线程。
+- **不二次 panic**：`Drop` 内对恢复后端调用 `catch_unwind`；日志只输出结果/字节数/错误，
+  **不输出剪贴板正文、图片或文件路径**。
+- **能力边界（不宣称 100% 可靠）**：进程被强杀、`panic=abort`、系统崩溃或断电时 `Drop`
+  不会执行，剪贴板可能保留测试内容。写入型真机测试只允许在**明确授权、可接受短暂占用
+  剪贴板**的隔离验收环境运行；不得在用户正在使用的桌面上无授权执行。
+- **验证方式**：panic/失败注入无法在不污染真实剪贴板的前提下复现，因此新增 6 个
+  **模拟剪贴板 + 可控失败注入**的用例（正常恢复、栈展开恢复、用户接管、恢复失败、
+  恢复后端自身 panic、空快照），不触碰真实剪贴板；真实写入型用例本轮**未执行**。
+
+### 11.5 保存/路径检查异步化与失败清理竞态（2026-11-03 晚间收尾）
+
+范围：`clipboard_save_image` / `clipboard_path_status` 异步化、写入失败清理的文件身份竞态、
+`ImageLightbox.onSaveAs` 异常边界、覆盖授权注释对齐。**未新增剪贴板功能、未重设计 UI、
+未改图片复制与监听逻辑。** 本轮结论为**部分通过**：自动化全部通过，真机 UI 与慢路径未执行。
+
+#### 11.5.1 线程模型变更
+
+| 命令 | 变更 | 保留的契约 |
+|---|---|---|
+| `clipboard_save_image` | `async`；缓存 PNG 读取 + 写盘整体进入 `tauri::async_runtime::spawn_blocking`；`JoinError` 转为明确 `Io` 错误；进程级 `SaveSlot` 上限 2，超出返回可重试 `Overloaded` | `overwrite=false` 仍 `create_new` 排他创建；`overwrite=true` 仍临时文件 + `rename` 安全替换；PNG 字节保真；路径校验与权限错误映射不变 |
+| `clipboard_path_status` | `async`；整批 `metadata` 放进**一个** `spawn_blocking` 任务（不按路径开线程） | 命令名不变；成功返回结构仍为 `Vec<String>`（`ok/missing/inaccessible`）；仍截断到 200 条；后台任务异常结束以 Promise 拒绝传播，前端 fail-closed（不得把路径当成存在） |
+
+等待 I/O 期间不持有 DB 锁或长生命周期 Mutex；保存并发有上限且不排队。`ClipboardItemDetail`
+既有的 `alive` 清理与 `[item, pathsKey]` 依赖未改动，旧请求结果不会覆盖新条目状态。
+
+#### 11.5.2 失败清理：句柄级删除
+
+`src-tauri/src/clipboard/export.rs` 的 `create_new(true)` 设计保持不变。Windows 创建文件时
+额外申请 `DELETE` 权限；失败清理调用 `SetFileInformationByHandle(FileDispositionInfo)`
+做**句柄级 delete-on-close**，删除对象由文件对象而非路径标识，避免「句柄释放 → 按路径删除」
+之间路径被其他进程替换时误删对方新文件。句柄级标记失败时**不回退按路径删除**，只记录告警，
+原始写入错误照常返回。`write_replace` 的临时文件长度校验移到句柄关闭前，失败同样走句柄级清理。
+不新增文件锁系统。
+
+新增真实文件系统用例（Windows 上实际运行）：
+
+| 用例 | 覆盖点 |
+|---|---|
+| `failure_cleanup_removes_file_created_by_this_call` | 失败后清理本次创建的文件 |
+| `failure_cleanup_deletes_by_handle_not_by_path`（`#[cfg(windows)]`） | 句柄打开期间路径被替换：只删本次文件，替换文件字节不变 |
+| `failure_cleanup_without_delete_access_keeps_file_intact`（`#[cfg(windows)]`） | 无 `DELETE` 权限时清理失败不误删，文件哈希不变 |
+| 既有用例 | 新建成功、已存在拒绝覆盖、并发创建、原文件字节/哈希不变、无 `.tmp` 残留 |
+
+#### 11.5.3 自动化结果（实际执行）
+
+| 命令 | 工作目录 | 结果 | 证据 |
+|---|---|---|---|
+| `cargo test --lib clipboard::export` | `src-tauri/` | exit 0；**15 passed / 0 failed** | `tmp/acceptance/clipboard-multitype/cargo-test-lib-full-20261103.log` |
+| `cargo test --lib clipboard::` | `src-tauri/` | exit 0；**134 passed / 0 failed** | 同上 |
+| `cargo test --lib`（全量） | `src-tauri/` | exit 101；673 passed / **8 failed（均非剪贴板模块，见验收报告 §15.6）** / 3 ignored | 同上 |
+| `cargo check --lib` | `src-tauri/` | exit 0 | 终端输出 |
+| `npx vitest run`（灯箱保存/灯箱/详情 3 文件） | 仓库根 | exit 0；**49 passed**（另存为 18 条，含新增对话框 rejection 与卸载用例） | 终端输出 |
+| `npx vitest run src/components/clipboard/` | 仓库根 | **141 passed**（首次 3 个动画/面板用例在并行负载下超时，原样复跑通过） | 终端输出 |
+| `npm run build`（`tsc --noEmit && vite build`） | 仓库根 | exit 0 | 终端输出 |
+
+`ImageLightbox.tsx` 新增：`save()` 独立 try/catch（对话框创建/调用失败 → 错误 Toast、
+不查状态、不写盘、`finally` 恢复 `busy`/`savingRef`）；`mountedRef` 防止卸载后更新状态。
+新增 2 条前端用例：对话框 Promise rejection（断言不查状态、不写盘、按钮恢复可再次点击）、
+保存中途卸载（无未处理 rejection，结果仍以 Toast 反馈）。
+
+#### 11.5.4 性能数据（Rust 层探针，非 WebView2）
+
+条件：Windows 11、debug 构建、共享 `src-tauri/target` 增量缓存、本机磁盘、机器同时有并行会话
+构建与运行实例（非空闲）；样本为真实截图 PNG 488,434 B 与追加随机尾部构造的 62,914,560 B
+（约 60MB，接近 `MAX_IMAGE_BYTES`）；每组 3 次；证据
+`tmp/acceptance/clipboard-multitype/perf-probe-20261103.txt`。
+
+| 指标 | 结果 |
+|---|---|
+| 同步基线（读 + write_all + flush + sync_all）正常 PNG | min 1.4 / median 1.5 / max 1.8 ms |
+| 同步基线 60MB PNG | min 58.5 / median 60.6 / max 61.4 ms |
+| 同一工作放入 `spawn_blocking` | 阻塞 60.3 ms；异步 wall 60.4 ms |
+| 5ms ticker 最大间隔（空载 / 保存中） | 16.4 ms / **15.9 ms，未因 60ms 阻塞任务停摆** |
+| 两个 60MB 保存并发（独立目标） | wall 73.3 ms，两者均成功 |
+| 运行时关闭回收 | 0.2 ms |
+
+**解释限制**：该数据只证明阻塞 I/O 已移出异步运行时且并发/回收有界，**不能等同于主窗口
+UI 线程可交互**；后者本轮未真机测量。
+
+#### 11.5.5 未验证与环境阻塞
+
+1. **真机 UI 性能与完整保存链路**：本机存在运行中的 `task-dock.exe`（占用 debug 二进制），
+   无法原地重建；Tauri 单实例插件会拦截同标识隔离实例。未终止该进程，因此保存期间主窗口
+   可交互、原生保存对话框异常、覆盖/拒绝覆盖真机路径均**未执行**（ENVIRONMENT BLOCKED）。
+2. **只读/占用/权限异常真机用例**：未执行；由 Rust 用例
+   `save_overwrite_readonly_target_fails_without_damage`、
+   `failure_cleanup_without_delete_access_keeps_file_intact` 与前端“保存失败展示后端错误”覆盖。
+3. **慢路径 / 网络共享 / 断连盘**：未测（环境不具备，不制造系统级长期阻塞）。异步结构保证
+   整批路径检查只占一个后台任务。
+4. **构建排队**：每次构建前统计 `cargo/rustc/link.exe` 与 node 构建进程，≥3 时轮询；实际遇到
+   并行会话构建占用与一次探针执行时短暂达到 5 个进程，未终止任何非本任务进程。

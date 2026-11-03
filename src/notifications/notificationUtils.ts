@@ -17,8 +17,21 @@ import type {
   QueuedCard,
 } from "./notificationTypes";
 
+/** 默认按钮文案；view 的准确文案由 actionLabel 按可定位性动态给出。 */
+export const ACTION_LABELS: Record<ActionId, string> = {
+  view: "查看详情",
+  handle: "立即处理",
+  snooze: "稍后提醒",
+  done: "完成任务",
+  center: "通知中心",
+  expand: "展开详情",
+};
+
 /** 同时独立展示的卡片上限（摘要卡不占新位，替换既有摘要时也不超限）。 */
 export const MAX_VISIBLE = 3;
+
+/** 卡片正文区可见的摘要最大字符数：超出后由展开详情承载完整内容（与 CSS 两行截断对齐）。 */
+export const SUMMARY_CLAMP_CHARS = 80;
 
 /** 各状态自动消失时长（ms，原型规格值）。 */
 export const AUTO_DISMISS_MS: Record<NotificationKind, number> = {
@@ -224,12 +237,19 @@ export function waitingDuration(iso: string, now: number): string {
   return `${Math.floor(diff / 3_600_000)} 小时 ${Math.floor((diff % 3_600_000) / 60_000)} 分`;
 }
 
-/** 展开详情行：只用真实携带的数据，不伪造。 */
+/** 展开详情行：只用真实携带的数据，不伪造；与顶部时间/正文重复的信息不再重复展示。 */
 export function detailRows(card: QueuedCard, now: number): DetailRow[] {
   const rows: DetailRow[] = [];
   const kind = normalizeKind(card.kind);
-  if (card.sourceId) rows.push({ label: "来源 Agent", value: card.sourceId });
+  // 正文已带来源时不重复（如 "codex · ..."）；正文没提才作为补充信息。
+  if (card.sourceId && !card.body.includes(card.sourceId)) {
+    rows.push({ label: "来源 Agent", value: card.sourceId });
+  }
   if (kind === "agent_waiting") {
+    // 短原因已在卡片正文区可见；只有被限行截断的完整原因才进展开详情。
+    if (card.detail?.trim() && card.detail.trim().length > SUMMARY_CLAMP_CHARS) {
+      rows.push({ label: "等待原因", value: card.detail.trim(), warning: true });
+    }
     rows.push({ label: "已等待", value: waitingDuration(card.createdAt, now) });
     rows.push({ label: "建议操作", value: "进入 Agent 会话处理" });
   }
@@ -246,17 +266,95 @@ export function detailRows(card: QueuedCard, now: number): DetailRow[] {
     });
   }
   if (kind === "agent_failed") {
-    rows.push({ label: "说明", value: "详细原因以 Agent 事件流水为准" });
+    // 短原因已在卡片正文区可见（见 visibleSummary），这里只在被限行截断时才展开完整原因。
+    if (card.detail?.trim() && card.detail.trim().length > SUMMARY_CLAMP_CHARS) {
+      rows.push({ label: "错误原因", value: card.detail.trim() });
+    }
+    // 正文限行：只有被截断/多行时才需要就地看完整错误，避免和正文重复。
+    const body = card.body.trim();
+    if (body.length > 60 || body.includes("\n")) {
+      rows.push({ label: "错误详情", value: body });
+    }
   }
   if (kind === "digest" && card.folded?.length) {
     for (const f of card.folded) rows.push({ label: "已合并", value: f.title });
   }
-  const at = relativeTime(card.createdAt, now);
-  if (at) rows.push({ label: "时间", value: at });
   return rows;
 }
 
-/** 各状态动作配置；「重试/重新连接」无真实能力不提供（规格禁止伪造入口）。 */
+/** 是否值得提供「展开详情」：无补充信息时不显示无意义入口。 */
+export function hasUsefulDetails(card: QueuedCard, now: number): boolean {
+  return detailRows(card, now).length > 0;
+}
+
+/**
+ * 卡片正文区可直接展示的摘要（结果摘要 / 错误原因 / 等待原因）。
+ * 只取事件回执里的真实原因，没有就返回 null，不用占位文案凑数。
+ */
+export function visibleSummary(card: NotificationCardData): string | null {
+  const kind = normalizeKind(card.kind);
+  if (kind !== "agent_done" && kind !== "agent_failed" && kind !== "agent_waiting") {
+    return null;
+  }
+  const detail = card.detail?.trim();
+  return detail ? detail : null;
+}
+
+/** 通知是否携带可定位的 Agent 对象（内部会话行 id 由后端解析，前端不推断）。 */
+export function agentLocatable(card: NotificationCardData): boolean {
+  return Boolean(card.sourceId && card.sessionId);
+}
+
+function isAgentKind(kind: NotificationKind): boolean {
+  return (
+    kind === "agent_running" ||
+    kind === "agent_waiting" ||
+    kind === "agent_done" ||
+    kind === "agent_failed" ||
+    kind === "agent_disconnected"
+  );
+}
+
+/** 按钮文案必须准确：能定位说定位，只能开页面就说打开页面，提醒说打开任务。 */
+export function actionLabel(card: NotificationCardData, id: ActionId): string {
+  const kind = normalizeKind(card.kind);
+  if (id === "view") {
+    if (kind === "reminder") return "打开任务";
+    if (isAgentKind(kind)) {
+      if (!agentLocatable(card)) return "打开 Agent 面板";
+      if (kind === "agent_failed") return "查看失败详情";
+      if (kind === "agent_disconnected") return "查看连接详情";
+      return "定位本轮";
+    }
+    return "查看详情";
+  }
+  return ACTION_LABELS[id];
+}
+
+/** 醒目主按钮只在需要立即行动的状态出现；完成/执行中用轻量文字操作。 */
+export function primaryActionFor(card: QueuedCard): ActionId | null {
+  switch (normalizeKind(card.kind)) {
+    case "agent_waiting":
+      return agentLocatable(card) ? "handle" : "view";
+    case "agent_failed":
+    case "agent_disconnected":
+      return "view";
+    case "reminder":
+      return "view";
+    default:
+      return null;
+  }
+}
+
+/** 轻量文字操作：完成/执行中不占整行主按钮，避免无意义的强强调。 */
+export function isLightweightActionCard(card: QueuedCard): boolean {
+  const kind = normalizeKind(card.kind);
+  return kind === "agent_running" || kind === "agent_done" || kind === "generic";
+}
+
+/** 各状态动作配置；「重试/重新连接」无真实能力不提供（规格禁止伪造入口）。
+ * 提醒卡：携带 refId（任务 id）才提供 稍后提醒/完成任务（真实后端操作）；
+ * 合并摘要卡只保留「通知中心」外部入口，就地展开由底部详情入口承担，避免重复。 */
 export function actionsFor(card: QueuedCard): ActionId[] {
   switch (normalizeKind(card.kind)) {
     case "agent_running":
@@ -265,12 +363,13 @@ export function actionsFor(card: QueuedCard): ActionId[] {
     case "agent_disconnected":
       return ["view"];
     case "agent_waiting":
-      return ["handle", "snooze"];
+      return agentLocatable(card) ? ["handle", "snooze"] : ["view", "snooze"];
     case "digest":
-      return ["expand", "center"];
+      return ["center"];
     case "reminder":
-      return ["view"];
+      return card.refId ? ["view", "snooze", "done"] : ["view"];
     default:
       return ["view"];
   }
 }
+

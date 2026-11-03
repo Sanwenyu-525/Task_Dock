@@ -165,6 +165,15 @@ fn capsule_for(hwnd: isize) -> Option<CapsuleParams> {
     }
 }
 
+/// 该窗口当前是否处于胶囊（停靠）区域模式。
+///
+/// 停靠态窗口形状是轨道/面板而非整窗矩形，前端也不渲染四角缩放热区；
+/// 角热区光标维护（`window_cursor`）据此跳过，避免在胶囊角上错误改写光标。
+#[cfg(windows)]
+pub fn is_capsule_mode(hwnd: isize) -> bool {
+    capsule_for(hwnd).is_some()
+}
+
 // ── 启动空白区域 ─────────────────────────────────────────────
 //
 // 停靠恢复启动时窗口必须**立刻**显示（隐藏窗口的定时器会被浏览器后台节流，

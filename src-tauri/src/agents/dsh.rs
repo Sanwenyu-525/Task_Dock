@@ -379,6 +379,9 @@ impl ManagedAdapter for DshAdapter {
     fn id(&self) -> &'static str {
         "dsh"
     }
+    fn source_id(&self) -> &'static str {
+        "deepseek-harness"
+    }
     fn display_name(&self) -> &'static str {
         "DeepSeek Harness"
     }
@@ -554,7 +557,7 @@ impl ManagedAdapter for DshAdapter {
         }
     }
 
-    fn uninstall(&self, _app_data: &std::path::Path) -> AppResult<Value> {
+    fn uninstall(&self, _app_data: &std::path::Path, db: &Db) -> AppResult<Value> {
         let dir = plugin_dir();
         if dir.exists() {
             let existing =
@@ -579,10 +582,13 @@ impl ManagedAdapter for DshAdapter {
                 Err(e) => tracing::warn!("从 profile {} 摘除插件失败: {}", profile.display(), e),
             }
         }
+        // 卸载成功同步来源配置状态；历史事件与 verified 证据保留。
+        super::managed::sync_uninstall_state(db, "deepseek-harness", true, &[])?;
         Ok(json!({
             "adapter": "dsh",
             "removed": dir.to_string_lossy(),
             "profiles_cleaned": cleaned,
+            "complete": true,
         }))
     }
 

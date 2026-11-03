@@ -14,9 +14,16 @@
 import type { AgentSnapshot, TaskStats } from "./bridge";
 import { liveSummary, type LiveState } from "./agentTree";
 
-export type RailCategory = "tasks" | "agents" | "clipboard" | "apps";
+/**
+ * 轨道分类按钮（四个）：任务 → 收集箱 → 剪贴板 → 应用。
+ * Agent 不在轨道按钮里：它由顶部状态球直达（见 `CapsuleCategory`）。
+ */
+export type RailCategory = "tasks" | "inbox" | "clipboard" | "apps";
 
-export const RAIL_CATEGORIES: readonly RailCategory[] = ["tasks", "agents", "clipboard", "apps"];
+/** 胶囊可选的分类全集：轨道四类 + Agent（仅顶部状态球入口）。 */
+export type CapsuleCategory = RailCategory | "agents";
+
+export const RAIL_CATEGORIES: readonly RailCategory[] = ["tasks", "inbox", "clipboard", "apps"];
 
 /** 轨道状态色调：中性 / 运行 / 等待 / 失败 / 失联。 */
 export type RailTone = "idle" | "running" | "waiting" | "failed" | "disconnected";
@@ -36,6 +43,10 @@ export interface RailStatus {
   overdue: number;
   /** 任务统计是否已加载 */
   tasksLoaded: boolean;
+  /** 收集箱徽标文本；0 或未加载时为 null */
+  inboxBadge: string | null;
+  /** 收集箱未处理数；null = 尚未从后端读到（不伪装成 0） */
+  inboxCount: number | null;
 }
 
 /** 紧凑数量：≤99 原样，>99 显示 99+；非法值按 0。 */
@@ -53,11 +64,12 @@ export function formatCapsuleCount(n: number | null): string {
   return v > 99 ? "99+" : String(v).padStart(2, "0");
 }
 
-/** 轨道状态聚合。`stats`/`snapshot` 为 null 表示尚未加载（显示中性态）。 */
+/** 轨道状态聚合。`stats`/`snapshot`/`inbox` 为 null 表示尚未加载（显示中性态）。 */
 export function railStatus(
   stats: TaskStats | null,
   snapshot: AgentSnapshot | null,
   now: number = Date.now(),
+  inbox: number | null = null,
 ): RailStatus {
   const s = liveSummary(snapshot, now);
   const tone: RailTone =
@@ -73,6 +85,8 @@ export function railStatus(
     pending: typeof stats?.pending === "number" ? stats.pending : null,
     overdue: stats?.overdue ?? 0,
     tasksLoaded: stats !== null,
+    inboxBadge: compactCount(inbox),
+    inboxCount: typeof inbox === "number" && Number.isFinite(inbox) ? Math.max(0, Math.floor(inbox)) : null,
   };
 }
 

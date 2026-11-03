@@ -195,17 +195,19 @@ export function clipSource(item: {
   source_title?: string;
   source_kind?: string;
 }): ClipSourceInfo {
-  const appRaw = sourceAppRaw(item.source_app ?? "");
+  const raw = sourceAppRaw(item.source_app ?? "");
+  // 未识别来源时不把 `unknown` 这个哨兵值暴露给详情/Tooltip，避免看起来像真实进程名。
+  const identified = raw !== "" && raw.toLowerCase() !== "unknown";
   const windowRaw = (item.source_title ?? "").trim();
   const kind = (item.source_kind ?? "").trim();
   return {
     app: sourceAppName(item.source_app ?? ""),
-    appRaw,
+    appRaw: identified ? raw : "",
     window: sourceWindowTitle(item.source_app ?? "", windowRaw),
     windowRaw,
     kind,
     trust: sourceTrustLabel(kind),
-    identified: appRaw !== "" && appRaw.toLowerCase() !== "unknown",
+    identified,
   };
 }
 

@@ -144,26 +144,52 @@ describe("重复事件与队列", () => {
 });
 
 describe("动作分发", () => {
-  it("查看详情：调用导航命令并关闭卡片", async () => {
+  it("查看详情：携带可靠对象 ID 调用导航命令并关闭卡片", async () => {
     render(<NotificationWindow />);
     emitShow([cardData({ kind: "agent_failed" })]);
-    await waitFor(() => expect(screen.getByText("查看详情")).toBeTruthy());
-    fireEvent.click(screen.getByText("查看详情"));
+    await waitFor(() => expect(screen.getByText("查看失败详情")).toBeTruthy());
+    fireEvent.click(screen.getByText("查看失败详情"));
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("notification_navigate", { target: "agents" });
+      expect(invokeMock).toHaveBeenCalledWith(
+        "notification_navigate",
+        expect.objectContaining({
+          target: "agents",
+          sourceId: "codex",
+          sessionId: "s1",
+          refId: "run-1",
+        }),
+      );
     });
   });
 
-  it("等待卡「立即处理」携带来源与会话跳转 Agent 会话", async () => {
+  it("缺少会话信息时退化为打开 Agent 页面，按钮文案准确", async () => {
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "agent_done", sourceId: undefined, sessionId: undefined })]);
+    await waitFor(() => expect(screen.getByText("打开 Agent 面板")).toBeTruthy());
+    fireEvent.click(screen.getByText("打开 Agent 面板"));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "notification_navigate",
+        expect.objectContaining({ target: "agents", sourceId: null, sessionId: null }),
+      );
+    });
+  });
+
+  it("等待卡「立即处理」携带来源与会话定位 Agent 轮次", async () => {
     render(<NotificationWindow />);
     emitShow([cardData({ kind: "agent_waiting", title: "等待确认" })]);
     await waitFor(() => expect(screen.getByText("立即处理")).toBeTruthy());
     fireEvent.click(screen.getByText("立即处理"));
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith("open_agent_session", {
-        sourceId: "codex",
-        sessionId: "s1",
-      });
+      expect(invokeMock).toHaveBeenCalledWith(
+        "notification_navigate",
+        expect.objectContaining({
+          target: "agents",
+          sourceId: "codex",
+          sessionId: "s1",
+          refId: "run-1",
+        }),
+      );
     });
   });
 
@@ -181,12 +207,12 @@ describe("动作分发", () => {
     });
   });
 
-  it("跳转失败给卡内 role=alert 反馈，不静默失败", async () => {
+  it("跳转失败给卡内 role=alert 反馈，不静默失败且保留卡片", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_settings" || cmd === "fit_notification_window") {
         return Promise.resolve(cmd === "get_settings" ? { theme: "dark", visual_preset: "" } : null);
       }
-      if (cmd === "open_agent_session") return Promise.reject(new Error("会话已结束"));
+      if (cmd === "notification_navigate") return Promise.reject(new Error("会话已结束"));
       return Promise.resolve(null);
     });
     render(<NotificationWindow />);
@@ -197,10 +223,51 @@ describe("动作分发", () => {
       const alert = screen.getByRole("alert");
       expect(alert.textContent).toContain("跳转失败");
     });
+    // 导航失败不关闭卡片
+    expect(document.querySelector(".ntf-card")).toBeTruthy();
+  });
+
+  it("导航结果 located=false 时保留通知并展示原因", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_settings") return Promise.resolve({ theme: "dark", visual_preset: "" });
+      if (cmd === "notification_navigate") {
+        return Promise.resolve({ tab: "agents", located: false, reason: "本地无此会话记录" });
+      }
+      return Promise.resolve(null);
+    });
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "agent_failed" })]);
+    await waitFor(() => expect(screen.getByText("查看失败详情")).toBeTruthy());
+    fireEvent.click(screen.getByText("查看失败详情"));
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("本地无此会话记录");
+    });
+    expect(document.querySelector(".ntf-card")).toBeTruthy();
   });
 });
 
 describe("窗口生命周期", () => {
+  it("订阅建立后声明 UI 就绪，避免窗口显示了却没人消费事件", async () => {
+    render(<NotificationWindow />);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("notification_ui_ready", undefined);
+    });
+  });
+
+  it("完成卡无补充信息时不显示无意义的「展开详情」", async () => {
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "agent_done", body: "codex · 已生成报告" })]);
+    await waitFor(() => expect(document.querySelector(".ntf-card")).toBeTruthy());
+    expect(screen.queryByText("展开详情")).toBeNull();
+  });
+
+  it("失败卡正文较长时提供就地展开，完整错误走详情", async () => {
+    render(<NotificationWindow />);
+    const body = "codex · 编译失败：\n" + "详细日志".repeat(20);
+    emitShow([cardData({ kind: "agent_failed", body })]);
+    await waitFor(() => expect(screen.getByText("展开详情")).toBeTruthy());
+  });
+
   it("队列为空时请求隐藏窗口；主题快照落到 data-theme", async () => {
     render(<NotificationWindow />);
     emitShow([cardData({ kind: "agent_done" })]);
@@ -212,5 +279,74 @@ describe("窗口生命周期", () => {
     });
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(document.documentElement.dataset.preset).toBe("liquid-glass");
+  });
+});
+
+describe("窗口高度上报（裁切回归）", () => {
+  const fitCalls = () =>
+    invokeMock.mock.calls
+      .filter(([cmd]) => cmd === "fit_notification_window")
+      .map(([, args]) => args as { height: number });
+
+  const realGcs = window.getComputedStyle.bind(window);
+
+  beforeEach(() => {
+    // jsdom 没有布局：固定栈内容高度（含栈自身 padding 的 scrollHeight），
+    // 并把根容器计算样式归零，模拟真实测量链路 scrollHeight + rootPadding + 2。
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => 203,
+    });
+    vi.spyOn(window, "getComputedStyle").mockImplementation((el: Element) => {
+      if ((el as HTMLElement).classList?.contains("ntf-root")) {
+        return { paddingTop: "0px", paddingBottom: "0px" } as unknown as CSSStyleDeclaration;
+      }
+      return realGcs(el);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+  });
+
+  it("首帧同步上报完整内容高度，窗口不需要等异步动画回调才长高", async () => {
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "agent_failed", title: "Agent 执行失败" })]);
+    await waitFor(() => expect(document.querySelector(".ntf-card")).toBeTruthy());
+    await waitFor(() => expect(fitCalls().length).toBeGreaterThan(0));
+    // 203（含 padding）+ 0（根容器）+ 2（分数 DPI 容差）
+    expect(fitCalls()[0]).toEqual({ height: 205 });
+  });
+
+  it("同一轮展示内高度未变化时不重复上报（展开/收起、RO 与字体回调共用去重）", async () => {
+    render(<NotificationWindow />);
+    const body = "codex · 编译失败：\n" + "详细日志".repeat(20);
+    emitShow([cardData({ kind: "agent_failed", title: "Agent 执行失败", body })]);
+    await waitFor(() => expect(fitCalls().length).toBe(1));
+    fireEvent.click(screen.getByText("展开详情"));
+    await waitFor(() => expect(screen.getByText("收起详情")).toBeTruthy());
+    // 本轮内测量高度未变：不得因为重渲染/观察器回调再报一次
+    expect(fitCalls()).toEqual([{ height: 205 }]);
+  });
+
+  it("新的一轮展示必须重新上报（后端不可见时已重置高度缓存）", async () => {
+    render(<NotificationWindow />);
+    const card = cardData({ kind: "agent_failed", title: "Agent 执行失败" });
+    emitShow([card]);
+    await waitFor(() => expect(fitCalls().length).toBe(1));
+    emitShow([{ ...card, id: "n2", refId: "run-2" }]);
+    await waitFor(() => expect(fitCalls().length).toBe(2));
+    expect(fitCalls()[1]).toEqual({ height: 205 });
+  });
+
+  it("卡片离场期间不上报塌缩高度，窗口不会先缩到最小再隐藏", async () => {
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "agent_failed", title: "Agent 执行失败" })]);
+    await waitFor(() => expect(fitCalls().length).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "关闭通知" }));
+    await waitFor(() => expect(document.querySelector(".ntf-slot.leaving")).toBeTruthy());
+    // 离场 150ms 内槽位从 1fr 收到 0fr：此时测量会得到塌缩高度，必须跳过
+    expect(fitCalls()).toEqual([{ height: 205 }]);
   });
 });

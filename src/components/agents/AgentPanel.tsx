@@ -6,7 +6,7 @@
 //! - 会话未携带实例信息时直接挂在 Agent 下，不伪造实例
 //! - Agent 结束一轮执行 ≠ 普通任务完成；失联 ≠ 失败
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   RefreshCw, Power, PowerOff, ExternalLink, Copy, CheckCircle2, AlertTriangle,
   ShieldQuestion, ListChecks, Radar, PlugZap, Trash2, Plus, ChevronRight, ChevronDown,
@@ -30,9 +30,14 @@ import { copyText } from "../../lib/clipboard";
 
 const HEALTH_LABELS: Record<string, string> = {
   live: "已连接 · 事件实时",
+  "recent-event": "已验证 · 最近有真实事件",
+  "recent-unconfigured": "曾有真实事件 · 当前未配置",
   stale: "状态已过期",
+  "transport-verified": "通道已验证 · 待真实事件",
   "awaiting-first-event": "已配置 · 待事件验证",
+  "history-only": "历史接入记录",
   "no-events": "未收到事件",
+  disabled: "已禁用",
   unregistered: "未注册",
 };
 
@@ -100,14 +105,26 @@ export default function AgentPanel() {
   // 定位目标由 App 在收到 notification-navigate 后写入，处理完立即消费清除。
   const agentFocus = useUiStore((s) => s.agentFocus);
   const clearAgentFocus = useUiStore((s) => s.clearAgentFocus);
+  /** 定位未命中次数：通知可能先于快照刷新到达，短暂等待树更新后再放弃 */
+  const focusMissRef = useRef(0);
 
   useEffect(() => {
-    if (!agentFocus || tree.length === 0) return; // 快照未就绪时保留目标，等下一次树更新
-    const found = findSessionInTree(tree, agentFocus.sessionId);
-    if (!found) {
-      clearAgentFocus(); // 会话可能已清理：不伪造定位
+    if (!agentFocus) {
+      focusMissRef.current = 0;
       return;
     }
+    if (tree.length === 0) return; // 快照未就绪时保留目标，等下一次树更新
+    const found = findSessionInTree(tree, agentFocus.sessionId);
+    if (!found) {
+      // 新会话刚入库时快照还没刷新：给几次树更新机会，避免静默丢失定位。
+      focusMissRef.current += 1;
+      if (focusMissRef.current >= 6) {
+        focusMissRef.current = 0;
+        clearAgentFocus(); // 约 6 次快照刷新后仍无此会话：视为已清理，不伪造定位
+      }
+      return;
+    }
+    focusMissRef.current = 0;
     setSection("monitor");
     setMonitorFilter("all");
     setExpanded((e) => {
@@ -352,46 +369,67 @@ export default function AgentPanel() {
                         {HEALTH_LABELS[a.health_state] ?? a.health_state}
                       </span>
                     </div>
-                    <div className="discovery-facts">
-                      <span>{a.installed ? `已安装${a.version ? ` · ${a.version.slice(0, 24)}` : ""}` : "未安装"}</span>
-                      <span>运行实例 {a.running_instances.length}</span>
-                      <span>{KIND_LABELS[a.transport_kind] ?? a.transport_kind}</span>
-                    </div>
-                    <div className="discovery-events">
-                      {a.supported_events.length > 0
-                        ? `事件：${a.supported_events.slice(0, 5).join(" / ")}${a.supported_events.length > 5 ? " …" : ""}`
-                        : a.transport_kind === "discovery" ? "无自动事件通道（进程识别）" : "通用 HTTP / 文件"}
-                    </div>
-                    <div className="discovery-last">
-                      {a.last_event_at ? `最近事件 ${formatRelative(a.last_event_at)}` : "尚无事件证据（状态未知，不推断）"}
+                    {/* 描述区固定高度：文案长短不再影响动作区位置；超出时内部滚动（滚动条隐藏） */}
+                    <div
+                      className="discovery-body"
+                      tabIndex={0}
+                      role="region"
+                      aria-label={`${a.display_name} 来源描述（可滚动）`}
+                    >
+                      <div className="discovery-facts">
+                        <span>{a.installed ? `已安装${a.version ? ` · ${a.version.slice(0, 24)}` : ""}` : "未安装"}</span>
+                        <span>运行实例 {a.running_instances.length}</span>
+                        <span>{KIND_LABELS[a.transport_kind] ?? a.transport_kind}</span>
+                      </div>
+                      <div className="discovery-events">
+                        {a.supported_events.length > 0
+                          ? `事件：${a.supported_events.slice(0, 5).join(" / ")}${a.supported_events.length > 5 ? " …" : ""}`
+                          : a.transport_kind === "discovery" ? "无自动事件通道（进程识别）" : "通用 HTTP / 文件"}
+                      </div>
+                      <div className="discovery-last">
+                        {a.last_event_at ? `最近事件 ${formatRelative(a.last_event_at)}` : "尚无事件证据（状态未知，不推断）"}
+                      </div>
                     </div>
                     <div className="source-actions">
-                      {a.transport_kind !== "manual" && a.transport_kind !== "discovery" && (
-                        <button className="btn sm primary" onClick={() => openWizard(a)} disabled={!a.installed}>
-                          <PlugZap size={12} /> {a.configured ? "重新接入" : "接入"}
-                        </button>
-                      )}
+                      {/* 接入/禁用为核心操作：同一行不换行；宽卡片下均为「图标 + 文字」，
+                          窄卡片下统一收成纯图标，避免两者形态不对称 */}
+                      <div className="source-actions-core">
+                        {a.transport_kind !== "manual" && a.transport_kind !== "discovery" && (
+                          <button
+                            className="btn sm primary"
+                            aria-label={`${a.configured ? "重新接入" : "接入"} ${a.display_name}`}
+                            data-tip={a.configured ? "重新接入该来源" : "接入该来源"}
+                            onClick={() => openWizard(a)}
+                            disabled={!a.installed}
+                          >
+                            <PlugZap size={12} />
+                            <span className="source-action-label">{a.configured ? "重新接入" : "接入"}</span>
+                          </button>
+                        )}
+                        {a.registered && (
+                          <button
+                            className={`btn sm source-action-toggle ${a.enabled ? "" : "primary"}`}
+                            aria-label={`${a.enabled ? "禁用" : "启用"} ${a.display_name}`}
+                            data-tip={a.enabled ? "禁用该来源" : "启用该来源"}
+                            onClick={async () => {
+                              try {
+                                await setSourceEnabled(a.source_id, !a.enabled);
+                                await Promise.all([runScan(), load()]);
+                              } catch (e) {
+                                showToast(String(e), { kind: "error" });
+                              }
+                            }}
+                          >
+                            {a.enabled ? <PowerOff size={12} /> : <Power size={12} />}
+                            <span className="source-action-label">{a.enabled ? "禁用" : "启用"}</span>
+                          </button>
+                        )}
+                      </div>
                       {a.configured && a.transport_kind !== "manual" && (
-                        <>
+                        <div className="source-actions-aux">
                           <button className="btn sm" onClick={() => reVerify(a.source_id)}>验证</button>
                           <button className="btn sm" onClick={() => wizardUninstall(a.source_id)}>卸载钩子</button>
-                        </>
-                      )}
-                      {a.registered && (
-                        <button
-                          className={`btn sm ${a.enabled ? "" : "primary"}`}
-                          onClick={async () => {
-                            try {
-                              await setSourceEnabled(a.source_id, !a.enabled);
-                              await Promise.all([runScan(), load()]);
-                            } catch (e) {
-                              showToast(String(e), { kind: "error" });
-                            }
-                          }}
-                        >
-                          {a.enabled ? <PowerOff size={12} /> : <Power size={12} />}
-                          {a.enabled ? "禁用" : "启用"}
-                        </button>
+                        </div>
                       )}
                     </div>
                     {a.limitations.length > 0 && (
@@ -750,7 +788,11 @@ function SessionNode({
       {open && (
         <div className="tree-children">
           {session.runs.map((run) => (
-            <div key={run.id} className={`run-item state-${run.status}`} data-agent-run-id={run.id}>
+            <div
+              key={run.id}
+              className={`task-card run-item state-${run.status}`}
+              data-agent-run-id={run.id}
+            >
               <span className={`agent-dot state-${run.status}`} />
               <div className="run-main">
                 <div className="run-title">

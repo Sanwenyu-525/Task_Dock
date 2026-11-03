@@ -24,6 +24,7 @@ import Toast from "./components/Toast";
 import TooltipLayer from "./components/ui/TooltipLayer";
 import SnapOverlay from "./components/SnapOverlay";
 import CapsuleDock from "./components/capsule/CapsuleDock";
+import WindowResizeGrips from "./components/WindowResizeGrips";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
 import { isCapsuleMode, measureTitlebarHeight } from "./lib/edgeSnap";
 import { createSubscriptionScope } from "./lib/subscriptions";
@@ -277,6 +278,8 @@ export default function App() {
         <WorkspaceLauncher />
       </div>
       {capsuleMode && <CapsuleDock />}
+      {/* 四角缩放：圆角区域裁掉了原生角热区，由区域内热区接住（停靠胶囊期不需要） */}
+      {!capsuleMode && <WindowResizeGrips />}
       <SnapOverlay />
       <Toast />
       <TooltipLayer />

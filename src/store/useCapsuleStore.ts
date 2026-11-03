@@ -10,15 +10,15 @@
 //! `expanded` 仍为真、`active` 已为空，渲染兜底就会把面板闪成另一个分类。
 
 import { create } from "zustand";
-import type { RailCategory } from "../lib/capsuleModel";
+import type { CapsuleCategory } from "../lib/capsuleModel";
 
 /** 从未选择过分类时，展开所用的默认入口（方案 D：任务）。 */
-export const DEFAULT_CAPSULE_CATEGORY: RailCategory = "tasks";
+export const DEFAULT_CAPSULE_CATEGORY: CapsuleCategory = "tasks";
 
 export const useCapsuleStore = create<{
   /** 当前（收起后即「最近一次」）展开的分类；是否显示面板由相位决定，与此无关 */
-  active: RailCategory;
-  setActive: (c: RailCategory) => void;
+  active: CapsuleCategory;
+  setActive: (c: CapsuleCategory) => void;
 }>((set) => ({
   active: DEFAULT_CAPSULE_CATEGORY,
   setActive: (c) => set({ active: c }),

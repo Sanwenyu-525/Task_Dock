@@ -68,7 +68,7 @@ export function FeatureCard({
 }) {
   const meta = STATUS_META[feature.status];
   return (
-    <div className="roadmap-card">
+    <div className="task-card roadmap-card">
       <button
         className="roadmap-card-head"
         onClick={onToggle}
@@ -78,7 +78,7 @@ export function FeatureCard({
         <span className="roadmap-card-title-row">
           <span className="roadmap-card-title">{feature.title}</span>
           <StatusBadge status={feature.status} />
-          <span className="chip">{feature.priority}</span>
+          <span className={`priority-tag ${feature.priority.toLowerCase()}`}>{feature.priority}</span>
           <ChevronDown
             size={15}
             strokeWidth={1.75}

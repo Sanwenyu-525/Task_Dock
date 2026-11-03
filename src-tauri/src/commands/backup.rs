@@ -79,6 +79,10 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "planning_features",
     "planning_feature_steps",
     "planning_activity",
+    // 文件暂存架（v0.8）：分组 → 条目 → 任务关联（外键依赖序）。
+    "shelf_groups",
+    "shelf_items",
+    "shelf_task_links",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -265,6 +269,20 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["planning_projects", "planning_features"],
         true
     ),
+    // 文件暂存架（v0.8）：用户主动收纳的条目不截断（快速备份也全量保存元数据）；
+    // 托管副本全部打包（见 write_bundle 的 shelf 资产段），避免恢复出「有记录无文件」
+    // 的失效条目；占用受 shelf_max_storage_mb 配额约束。
+    // 依赖序：分组 → 条目 → 任务关联。
+    rule!("shelf_groups", "shelf", "all", 290, &[], true),
+    rule!("shelf_items", "shelf", "all", 300, &["shelf_groups"], true),
+    rule!(
+        "shelf_task_links",
+        "shelf",
+        "all",
+        310,
+        &["tasks", "shelf_items"],
+        true
+    ),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -275,11 +293,13 @@ pub fn is_extended_table(table: &str) -> bool {
     EXTENDED_TABLES.contains(&table)
 }
 
-/// 备份来源目录：归档与剪贴板资产。
+/// 备份来源目录：归档、剪贴板资产与暂存架托管文件。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BackupSources<'a> {
     pub archive_dir: Option<&'a Path>,
     pub clipboard_dir: Option<&'a Path>,
+    /// 文件暂存架托管根目录（data_dir/shelf）；None = 不打包托管副本
+    pub shelf_dir: Option<&'a Path>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -513,7 +533,11 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "planning_milestones"
         | "planning_features"
         | "planning_feature_steps"
-        | "planning_activity" => format!("SELECT * FROM {} ORDER BY rowid", table),
+        | "planning_activity"
+        // 文件暂存架：条目与托管副本全量保存（占用受 shelf_max_storage_mb 配额约束）
+        | "shelf_groups"
+        | "shelf_items"
+        | "shelf_task_links" => format!("SELECT * FROM {} ORDER BY rowid", table),
         "clipboard_snapshot_links" => format!(
             "SELECT * FROM clipboard_snapshot_links WHERE (target_type = 'group' AND target_id IN (SELECT id FROM clipboard_groups)) OR (target_type = 'item' AND target_id IN ({})) ORDER BY rowid",
             items
@@ -1144,7 +1168,8 @@ fn write_archive(writer: &mut BundleWriter, path: &Path, name: &str) -> AppResul
     Ok(size)
 }
 
-/// 剪贴板资产相对路径校验：仅允许 `images/<name>.png` 与 `thumbs/<name>.png`。
+/// 剪贴板资产相对路径校验：仅允许 `images/<name>.png` 与 `thumbs/<name>.png`；
+/// 暂存架托管文件（v0.8）额外允许 `shelf/<files|images|thumbs>/<name>` 命名空间。
 pub(crate) fn safe_asset_rel(rel: &str) -> AppResult<&Path> {
     if rel.is_empty() || rel.contains(['\\', '\0']) {
         return Err(AppError::Validation("资产路径为空或包含非法字符".into()));
@@ -1154,7 +1179,20 @@ pub(crate) fn safe_asset_rel(rel: &str) -> AppResult<&Path> {
         return Err(AppError::Validation("资产路径不得为绝对路径".into()));
     }
     let comps: Vec<Component<'_>> = path.components().collect();
-    if comps.len() != 2 || !comps.iter().all(|c| matches!(c, Component::Normal(_))) {
+    let all_normal = comps.iter().all(|c| matches!(c, Component::Normal(_)));
+    if all_normal && comps.len() == 3 && comps[0].as_os_str() == "shelf" {
+        // 暂存架托管文件：shelf/<files|images|thumbs>/<name>
+        let dir = comps[1].as_os_str().to_string_lossy();
+        if dir != "files" && dir != "images" && dir != "thumbs" {
+            return Err(AppError::Validation(format!("托管路径目录非法: {}", rel)));
+        }
+        let name = comps[2].as_os_str().to_string_lossy();
+        if name.is_empty() || name == "." || name == ".." || name.len() > 128 {
+            return Err(AppError::Validation(format!("托管文件名非法: {}", rel)));
+        }
+        return Ok(path);
+    }
+    if comps.len() != 2 || !all_normal {
         return Err(AppError::Validation(format!("资产路径结构非法: {}", rel)));
     }
     let dir = comps[0].as_os_str().to_string_lossy();
@@ -1165,6 +1203,31 @@ pub(crate) fn safe_asset_rel(rel: &str) -> AppResult<&Path> {
         return Err(AppError::Validation(format!("资产不是 PNG: {}", rel)));
     }
     Ok(path)
+}
+
+/// 暂存架托管相对路径校验（不含 shelf/ 前缀的裸形式，写侧使用）：
+/// `files/<name>` / `images/<name>` / `thumbs/<name>`。
+pub(crate) fn safe_shelf_rel(rel: &str) -> AppResult<PathBuf> {
+    if rel.is_empty() || rel.contains(['\\', '\0']) {
+        return Err(AppError::Validation("托管路径为空或包含非法字符".into()));
+    }
+    let path = Path::new(rel);
+    if path.is_absolute() {
+        return Err(AppError::Validation("托管路径不得为绝对路径".into()));
+    }
+    let comps: Vec<Component<'_>> = path.components().collect();
+    if comps.len() != 2 || !comps.iter().all(|c| matches!(c, Component::Normal(_))) {
+        return Err(AppError::Validation(format!("托管路径结构非法: {}", rel)));
+    }
+    let dir = comps[0].as_os_str().to_string_lossy();
+    if dir != "files" && dir != "images" && dir != "thumbs" {
+        return Err(AppError::Validation(format!("托管路径目录非法: {}", rel)));
+    }
+    let name = comps[1].as_os_str().to_string_lossy();
+    if name.is_empty() || name == "." || name == ".." || name.len() > 128 {
+        return Err(AppError::Validation(format!("托管文件名非法: {}", rel)));
+    }
+    Ok(path.to_path_buf())
 }
 
 #[derive(Serialize)]
@@ -1180,6 +1243,17 @@ struct AssetChunk<'a> {
 /// 把单个资产文件分块（Base64）写入 bundle；返回字节数。
 fn write_asset(writer: &mut BundleWriter, root: &Path, rel: &str) -> AppResult<u64> {
     safe_asset_rel(rel)?;
+    write_asset_unchecked(writer, root, rel, rel)
+}
+
+/// 同 write_asset，但路径校验由调用方完成：`rel` 是相对 `root` 的裸路径，
+/// `record_path` 是 bundle 内的记录路径（暂存架文件带 `shelf/` 前缀命名空间）。
+fn write_asset_unchecked(
+    writer: &mut BundleWriter,
+    root: &Path,
+    rel: &str,
+    record_path: &str,
+) -> AppResult<u64> {
     let abs = root.join(rel);
     let (size, sha) = hash_file(&abs)?;
     let mut file = File::open(&abs)?;
@@ -1195,7 +1269,7 @@ fn write_asset(writer: &mut BundleWriter, root: &Path, rel: &str) -> AppResult<u
         let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
         writer.line(&AssetChunk {
             record: "asset",
-            path: rel,
+            path: record_path,
             size,
             sha256: &sha,
             chunk,
@@ -1207,7 +1281,7 @@ fn write_asset(writer: &mut BundleWriter, root: &Path, rel: &str) -> AppResult<u
     if !emitted {
         writer.line(&AssetChunk {
             record: "asset",
-            path: rel,
+            path: record_path,
             size,
             sha256: &sha,
             chunk: 0,
@@ -1273,7 +1347,7 @@ pub fn write_bundle(
             let partial = kind == BackupKind::Quick;
             if partial {
                 partial_reasons.push(
-                    "快速备份：事件/通知/导航流水与剪贴板历史按上限截断（running/waiting 事件全量保留），且不包含事件归档".into(),
+                    "快速备份：事件/通知/导航流水与剪贴板历史按上限截断（running/waiting 事件全量保留），且不包含事件归档；文件暂存架条目与托管副本全量包含".into(),
                 );
                 for (table, limit) in [
                     ("agent_events", QUICK_EVENT_LIMIT),
@@ -1380,6 +1454,72 @@ pub fn write_bundle(
             }
             counts.insert("assets".into(), assets as i64);
             counts.insert("asset_bytes".into(), asset_bytes as i64);
+
+            // 文件暂存架托管副本（v0.8）：元数据快速/完整备份都全量；
+            // 托管文件与缩略图同样全量打包，绝不恢复出「有记录无文件」的失效托管条目。
+            // 占用受 shelf_max_storage_mb 配额约束，不会无限膨胀。
+            let mut shelf_count = 0usize;
+            let mut shelf_bytes_total = 0u64;
+            let mut shelf_managed_rels: Vec<String> = Vec::new();
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT managed_path FROM shelf_items \
+                     WHERE storage_mode = 'managed' AND managed_path IS NOT NULL \
+                     ORDER BY managed_path",
+                )?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                for row in rows {
+                    shelf_managed_rels.push(row?);
+                }
+            }
+            let mut shelf_thumb_rels: Vec<String> = Vec::new();
+            {
+                let mut stmt =
+                    tx.prepare("SELECT id FROM shelf_items WHERE kind = 'image' ORDER BY id")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                for row in rows {
+                    shelf_thumb_rels.push(format!("thumbs/{}.png", row?));
+                }
+            }
+            if let Some(root) = sources.shelf_dir {
+                for rel in &shelf_managed_rels {
+                    safe_shelf_rel(rel)?;
+                    let record = format!("shelf/{rel}");
+                    match write_asset_unchecked(&mut writer, root, rel, &record) {
+                        Ok(size) => {
+                            shelf_count += 1;
+                            shelf_bytes_total += size;
+                        }
+                        Err(e) => {
+                            return Err(AppError::Validation(format!(
+                                "暂存架托管文件缺失或不可读（{}）：{}",
+                                rel, e
+                            )));
+                        }
+                    }
+                }
+                // 缩略图是可再生装饰：存在才打包，缺失不阻断备份
+                for rel in &shelf_thumb_rels {
+                    if !root.join(rel).exists() {
+                        continue;
+                    }
+                    safe_shelf_rel(rel)?;
+                    let record = format!("shelf/{rel}");
+                    let size = write_asset_unchecked(&mut writer, root, rel, &record)?;
+                    shelf_count += 1;
+                    shelf_bytes_total += size;
+                }
+            } else if !shelf_managed_rels.is_empty() {
+                return Err(AppError::Validation(format!(
+                    "备份缺少暂存架托管目录，无法打包 {} 个托管文件",
+                    shelf_managed_rels.len()
+                )));
+            }
+            counts.insert("shelf_assets".into(), shelf_count as i64);
+            counts.insert("shelf_asset_bytes".into(), shelf_bytes_total as i64);
+            // 资产总量 = 剪贴板资产 + 暂存架托管文件（读取端按 staged 全量核对）
+            counts.insert("assets".into(), (assets + shelf_count) as i64);
+            counts.insert("asset_bytes".into(), (asset_bytes + shelf_bytes_total) as i64);
 
             let mut archives = 0usize;
             let mut archive_bytes = 0u64;
@@ -1698,7 +1838,6 @@ fn read_bundle_impl(
     let mut staged: Vec<StagedArchive> = Vec::new();
     let mut asset_sinks: HashMap<String, AssetSink> = HashMap::new();
     let mut staged_assets: Vec<StagedAsset> = Vec::new();
-    let mut asset_records = 0usize;
     let mut integrity: Option<serde_json::Value> = None;
     let mut line_no = 0usize;
     let mut line_buf: Vec<u8> = Vec::new();
@@ -2007,7 +2146,6 @@ fn read_bundle_impl(
                 if sink.written == sink.expected_size {
                     let sink = asset_sinks.remove(rel).expect("存在");
                     sink.finish(&mut staged_assets)?;
-                    asset_records += 1;
                 }
             }
             other => return Err(AppError::Validation(format!("未知备份记录类型: {}", other))),
@@ -2089,8 +2227,12 @@ fn read_bundle_impl(
     }
 
     // 资产校验：每个数据库引用必须有同名文件且大小/哈希一致；也不接受未引用的多余文件。
+    // 暂存架托管文件带 `shelf/` 命名空间前缀，与剪贴板资产分开校验。
+    let (clip_assets, shelf_staged): (Vec<&StagedAsset>, Vec<&StagedAsset>) = staged_assets
+        .iter()
+        .partition(|a| !a.rel.starts_with("shelf/"));
     let mut asset_by_rel: HashMap<&str, &StagedAsset> = HashMap::new();
-    for asset in &staged_assets {
+    for asset in &clip_assets {
         asset_by_rel.insert(asset.rel.as_str(), asset);
     }
     let mut referenced: HashSet<String> = HashSet::new();
@@ -2114,7 +2256,7 @@ fn read_bundle_impl(
             referenced.insert(raw.to_string());
             Ok(())
         })?;
-        for asset in &staged_assets {
+        for asset in &clip_assets {
             if !referenced.contains(&asset.rel) {
                 return Err(AppError::Validation(format!(
                     "备份包含未被数据库引用的剪贴板资产: {}",
@@ -2122,11 +2264,49 @@ fn read_bundle_impl(
                 )));
             }
         }
+        // 暂存架托管文件：引用集合 = 全部 managed_path + 图片条目的确定性缩略图。
+        let mut shelf_expected: HashMap<String, i64> = HashMap::new();
+        for_each_spilled_row(rows_dir, "shelf_items", |index, row| {
+            let id = row
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    AppError::Validation(format!("shelf_items 第 {} 行缺少 id", index + 1))
+                })?
+                .to_string();
+            if let Some(mp) = row.get("managed_path").and_then(|v| v.as_str()) {
+                if !mp.is_empty() {
+                    safe_shelf_rel(mp)?;
+                    let size = row.get("byte_size").and_then(|v| v.as_i64()).unwrap_or(0);
+                    shelf_expected.insert(format!("shelf/{}", mp), size);
+                }
+            }
+            let kind = row.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if kind == "image" {
+                shelf_expected.insert(format!("shelf/thumbs/{}.png", id), 0);
+            }
+            Ok(())
+        })?;
+        for asset in &shelf_staged {
+            let expected = *shelf_expected.get(asset.rel.as_str()).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "备份包含未被数据库引用的暂存架托管文件: {}",
+                    asset.rel
+                ))
+            })?;
+            if expected > 0 && expected as u64 != asset.size {
+                return Err(AppError::Validation(format!(
+                    "暂存架托管文件 {} 大小与数据库记录不一致：记录 {}，实际 {}",
+                    asset.rel, expected, asset.size
+                )));
+            }
+        }
         let advertised = counts.get("assets").and_then(|v| v.as_i64()).unwrap_or(-1);
-        if advertised >= 0 && advertised != asset_records as i64 {
+        if advertised >= 0 && advertised != staged_assets.len() as i64 {
             return Err(AppError::Validation(format!(
-                "剪贴板资产数量与完整性记录不一致：期望 {}，实际 {}",
-                advertised, asset_records
+                "资产数量与完整性记录不一致：期望 {}，实际 {}",
+                advertised,
+                staged_assets.len()
             )));
         }
         let advertised_bytes = counts
@@ -2136,7 +2316,7 @@ fn read_bundle_impl(
         let actual_bytes: u64 = staged_assets.iter().map(|a| a.size).sum();
         if advertised_bytes != u64::MAX && advertised_bytes != actual_bytes {
             return Err(AppError::Validation(format!(
-                "剪贴板资产总字节与完整性记录不一致：期望 {}，实际 {}",
+                "资产总字节与完整性记录不一致：期望 {}，实际 {}",
                 advertised_bytes, actual_bytes
             )));
         }
@@ -2632,6 +2812,7 @@ mod tests {
             BackupSources {
                 archive_dir: Some(&archive),
                 clipboard_dir: None,
+                shelf_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -2670,6 +2851,7 @@ mod tests {
             BackupSources {
                 archive_dir: Some(&archive),
                 clipboard_dir: None,
+                shelf_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -3063,6 +3245,7 @@ mod tests {
             BackupSources {
                 archive_dir: None,
                 clipboard_dir: Some(&root),
+                shelf_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -3121,6 +3304,7 @@ mod tests {
             BackupSources {
                 archive_dir: None,
                 clipboard_dir: Some(&root),
+                shelf_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -3147,6 +3331,7 @@ mod tests {
             BackupSources {
                 archive_dir: None,
                 clipboard_dir: Some(&root),
+                shelf_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -4017,6 +4202,7 @@ mod tests {
             BackupSources {
                 archive_dir: Some(&src_archive),
                 clipboard_dir: Some(&src_clip),
+                shelf_dir: None,
             },
             &bundle,
             BackupKind::Full,

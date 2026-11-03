@@ -31,13 +31,22 @@ pub struct CaptureSink {
     pub self_write: Arc<AtomicU32>,
     /// 历史清空代数：事件在产生时记录代数，旧代数的内容不得在清空后回写。
     pub capture_epoch: Arc<AtomicU64>,
+    /// 清空历史时刻的剪贴板序列号（0 = 从未清空）：事件序列号不晚于它，
+    /// 说明内容来自清空之前；即使事件在清空后才派发、盖的是新代数，
+    /// 也必须在采集侧丢弃，否则旧内容会复活。
+    pub clear_seq: Arc<AtomicU32>,
     /// 清空与入库的临界区：清空期间不允许入库线程写资产。
     pub capture_gate: Arc<Mutex<()>>,
 }
 
-/// 内容队列条目：带上采集代数，工作线程在清空后据此丢弃旧内容。
+/// 内容队列条目：带上采集代数与**读取时刻**的序列号，工作线程在清空后据此丢弃旧内容。
+///
+/// 序列号是内容先后的权威证据（读取发生在清空之前则必然不晚于清空水位）；
+/// 代数只用于序列号不可用时的兜底，单独使用会误杀「清空指令推进水位的极小
+/// 窗口内盖章派发的清空后新复制」。
 pub(crate) struct QueuedCapture {
     pub epoch: u64,
+    pub sequence: u32,
     pub content: CapturedContent,
 }
 
@@ -95,16 +104,26 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    /// 非阻塞入队：满时丢弃最旧的一条，保证最新事件一定能进入队列。
+    /// 非阻塞入队：满时丢弃最旧的若干条，保证最新事件一定能进入队列。
+    /// 生产路径统一用 [`Self::push_counting`] 以便统计淘汰条数；这里保留给测试。
+    #[cfg(test)]
     pub(crate) fn push(&self, item: T, weight: usize) -> PushOutcome {
+        self.push_counting(item, weight).0
+    }
+
+    /// 与 [`Self::push`] 相同，但返回本次为腾空间淘汰的条数。
+    ///
+    /// 字节预算紧张时一次 push 可能连丢多条，诊断计数必须按实际条数累加，
+    /// 否则 `dropped_contents`/`dropped_events` 会低报丢失量。
+    pub(crate) fn push_counting(&self, item: T, weight: usize) -> (PushOutcome, usize) {
         if self.closed.load(Ordering::SeqCst) {
-            return PushOutcome::Closed;
+            return (PushOutcome::Closed, 0);
         }
         if weight > self.max_bytes {
-            return PushOutcome::RejectedTooLarge;
+            return (PushOutcome::RejectedTooLarge, 0);
         }
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let mut dropped = false;
+        let mut dropped = 0usize;
         while st.items.len() >= self.capacity
             || (st.bytes.saturating_add(weight) > self.max_bytes && !st.items.is_empty())
         {
@@ -112,16 +131,17 @@ impl<T> BoundedQueue<T> {
                 break;
             };
             st.bytes = st.bytes.saturating_sub(w);
-            dropped = true;
+            dropped += 1;
         }
         st.items.push_back((item, weight));
         st.bytes = st.bytes.saturating_add(weight);
         self.cv.notify_one();
-        if dropped {
+        let outcome = if dropped > 0 {
             PushOutcome::DroppedOldest
         } else {
             PushOutcome::Pushed
-        }
+        };
+        (outcome, dropped)
     }
 
     pub(crate) fn pop(&self) -> Option<T> {
@@ -163,9 +183,16 @@ pub(crate) const EVENT_QUEUE_CAPACITY: usize = 64;
 pub(crate) const CONTENT_QUEUE_CAPACITY: usize = 8;
 /// 采集队列（未入库内容）的字节上限：8 条大图也不至于无限占用内存。
 pub(crate) const CONTENT_QUEUE_MAX_BYTES: usize = 128 * 1024 * 1024;
+/// 剪贴板被其他程序占用时事件重排的上限（每次重排 open_clipboard 内部还会
+/// 重试约 120ms）：总等待有界，超限才放弃并计入 read_failed。
+pub(crate) const MAX_READ_BUSY_RETRIES: u32 = 3;
 
 struct MonitorCounters {
     observed_events: AtomicU64,
+    /// WM_CLIPBOARDUPDATE 到达但监听实例尚未就绪（启动/看门狗重启间隙），
+    /// 事件无法路由：这段盲区里的复制无法补偿，只能计数供诊断对账。
+    unobserved_events: AtomicU64,
+    /// 积压事件被合并进最新事件的条数：含被更新事件覆盖的、以及乱序丢弃的旧事件。
     merged_events: AtomicU64,
     captured: AtomicU64,
     recorded: AtomicU64,
@@ -199,6 +226,7 @@ impl MonitorCounters {
     const fn new() -> Self {
         Self {
             observed_events: AtomicU64::new(0),
+            unobserved_events: AtomicU64::new(0),
             merged_events: AtomicU64::new(0),
             captured: AtomicU64::new(0),
             recorded: AtomicU64::new(0),
@@ -231,6 +259,7 @@ static MONITOR_COUNTERS: MonitorCounters = MonitorCounters::new();
 #[derive(Debug, Clone, Serialize)]
 pub struct MonitorStats {
     pub observed_events: u64,
+    pub unobserved_events: u64,
     pub merged_events: u64,
     pub captured: u64,
     pub recorded: u64,
@@ -260,6 +289,7 @@ pub fn monitor_stats() -> MonitorStats {
     let c = &MONITOR_COUNTERS;
     MonitorStats {
         observed_events: c.observed_events.load(Ordering::Relaxed),
+        unobserved_events: c.unobserved_events.load(Ordering::Relaxed),
         merged_events: c.merged_events.load(Ordering::Relaxed),
         captured: c.captured.load(Ordering::Relaxed),
         recorded: c.recorded.load(Ordering::Relaxed),
@@ -637,6 +667,40 @@ pub(crate) fn epoch_is_stale(event_epoch: u64, current_epoch: u64) -> bool {
     event_epoch != current_epoch
 }
 
+/// 清空水位判定：事件序列号不晚于清空时刻的序列号，即来自清空前的旧内容。
+///
+/// 代数只在消息派发时盖章，清空前入队、清空后才处理的事件会拿到新代数；
+/// 序列号才是内容先后的证据。`clear_sequence == 0` 表示从未清空过历史，
+/// 此时任何事件都不因此丢弃（序列号 0 只在剪贴板从未被写过时出现）。
+pub(crate) fn clear_supersedes(event_sequence: u32, clear_sequence: u32) -> bool {
+    clear_sequence != 0 && !sequence_after(event_sequence, clear_sequence)
+}
+
+/// 采集代数门与清空水位的合并判定（纯函数，供事件层与内容层共用）。
+///
+/// 仅当「属于旧代数 **且** 序列号不晚于清空水位」时才丢弃。清空指令先记
+/// 序列号水位、再推进代数，两步之间盖章派发的清空后新复制带着旧代数，
+/// 但其序列号必然严格晚于清空水位——序列号是内容先后的权威证据，必须放行。
+/// 若只看代数，用户「清空后立即复制」的那一次会偶发丢失（复现「复制了却
+/// 没出现」）。
+///
+/// `clear_sequence == 0` 表示从未清空过历史：正常情况下与「旧代数」不会同时
+/// 出现（水位与代数在同一点位设置），为保守起见维持旧语义，旧代数一律丢弃。
+pub(crate) fn cleared_stale_gate(
+    event_epoch: u64,
+    current_epoch: u64,
+    event_sequence: u32,
+    clear_sequence: u32,
+) -> bool {
+    if !epoch_is_stale(event_epoch, current_epoch) {
+        return false;
+    }
+    if clear_sequence == 0 {
+        return true;
+    }
+    clear_supersedes(event_sequence, clear_sequence)
+}
+
 /// 登记自写水位：正常前进；序列号回绕时回退到新水位。
 ///
 /// 只前进会把水位永久钉在回绕前的最大值，导致之后所有用户复制都被误判为
@@ -661,22 +725,14 @@ pub(crate) fn note_self_write_watermark(self_write: &AtomicU32, sequence: u32) {
     }
 }
 
-/// 恢复写入结束后的统一收尾：只有写入成功才登记自写序列号。
+/// 恢复写入结束后的统一收尾：成功也只返回结果，**不登记自写水位**。
 ///
-/// 失败时不得登记（否则监听侧会把用户内容当成本进程写入而丢弃），
-/// 成功时只前进不回退，避免并发写入把水位拉回去。
-fn finish_restore(
-    written: AppResult<()>,
-    final_seq: u32,
-    self_write: &AtomicU32,
-) -> AppResult<RestoreOutcome> {
-    match written {
-        Ok(()) => {
-            note_self_write_watermark(self_write, final_seq);
-            Ok(RestoreOutcome::Restored)
-        }
-        Err(e) => Err(e),
-    }
+/// 恢复写回的是粘贴开始时的用户剪贴板内容，不是本进程的新内容。若把
+/// `final_seq` 记成自写水位，恢复通知本身（以及队列合并后仅剩的最新事件）
+/// 会被判成 SelfWrite 跳过；用户那次复制一旦还没被采集，内容就永久丢失。
+/// 放行后的同内容记录会走 store 的重复路径，只抬计数、不新建行。
+fn finish_restore(written: AppResult<()>) -> AppResult<RestoreOutcome> {
+    written.map(|_| RestoreOutcome::Restored)
 }
 
 /// 当前剪贴板内容是否仍等于本进程写入的载荷。
@@ -944,7 +1000,7 @@ mod imp {
     use std::sync::Mutex;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM,
+        CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WAIT_OBJECT_0, WPARAM,
     };
     use windows_sys::Win32::Security::{
         GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
@@ -960,7 +1016,8 @@ mod imp {
     };
     use windows_sys::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+        CreateEventW, GetCurrentProcessId, OpenProcess, OpenProcessToken, SetEvent, INFINITE,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
@@ -968,12 +1025,13 @@ mod imp {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
         GetMessageW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
-        PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG,
-        WM_CLIPBOARDUPDATE, WM_CLOSE, WM_DESTROY, WNDCLASSW,
+        MsgWaitForMultipleObjectsEx, PostMessageW, PostQuitMessage, RegisterClassW,
+        TranslateMessage, HWND_MESSAGE, MSG, MWMO_INPUTAVAILABLE, QS_ALLINPUT, WM_CLIPBOARDUPDATE,
+        WM_CLOSE, WM_DESTROY, WNDCLASSW,
     };
 
     /// HTML / PNG 是注册格式，必须运行时获取 ID。
-    fn format_id(name: &str) -> u32 {
+    pub(super) fn format_id(name: &str) -> u32 {
         let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe { RegisterClipboardFormatW(wide.as_ptr()) }
     }
@@ -1404,6 +1462,90 @@ mod imp {
         }
     }
 
+    /// 写入前的兜底内容。只保留原始格式字节：恢复失败的写入不需要 RGBA、
+    /// 预览或来源信息，现场解码 4K 图（约 33MB RGBA）纯属浪费。
+    enum Preserved<'a> {
+        Payload(&'a ClipboardPayload),
+        Raw(FallbackFormats),
+    }
+
+    pub(super) struct FallbackFormats {
+        pub(super) text: Option<String>,
+        pub(super) html: Option<String>,
+        pub(super) png: Option<Vec<u8>>,
+        pub(super) dib: Option<Vec<u8>>,
+        pub(super) files: Vec<String>,
+    }
+
+    impl FallbackFormats {
+        pub(super) fn is_empty(&self) -> bool {
+            self.text.as_deref().is_none_or(str::is_empty)
+                && self.html.as_deref().is_none_or(str::is_empty)
+                && self.png.is_none()
+                && self.dib.is_none()
+                && self.files.is_empty()
+        }
+
+        /// 调用方必须已持有剪贴板锁且已清空剪贴板；返回是否至少写回一种格式。
+        unsafe fn restore(&self) -> bool {
+            self.restore_with(|fmt, bytes| set_bytes(fmt, bytes))
+        }
+
+        pub(super) fn restore_with<F>(&self, mut set: F) -> bool
+        where
+            F: FnMut(u32, &[u8]) -> bool,
+        {
+            let mut wrote = false;
+            if let Some(text) = self.text.as_deref().filter(|t| !t.is_empty()) {
+                wrote |= set(CF_UNICODETEXT as u32, &text_utf16_bytes(text));
+            }
+            if let Some(html) = self.html.as_deref().filter(|h| !h.is_empty()) {
+                let fmt = format_id("HTML Format");
+                if fmt != 0 {
+                    wrote |= set(fmt, engine::cf_html(html).as_bytes());
+                }
+            }
+            if let Some(png) = self.png.as_deref() {
+                let fmt = format_id("PNG");
+                if fmt != 0 {
+                    wrote |= set(fmt, png);
+                }
+            }
+            if let Some(dib) = self.dib.as_deref() {
+                wrote |= set(CF_DIB as u32, dib);
+            }
+            if !self.files.is_empty() {
+                let valid: Vec<String> = self
+                    .files
+                    .iter()
+                    .filter(|p| Path::new(p).exists())
+                    .cloned()
+                    .collect();
+                if !valid.is_empty() {
+                    wrote |= set(CF_HDROP as u32, &hdrop_bytes(&valid));
+                }
+            }
+            wrote
+        }
+    }
+
+    /// 调用方必须已持有剪贴板锁；只抓原始格式，不做解码/分类/预览。
+    /// 超过采集上限的内容与旧路径保持一致：不可恢复（宁可留空也不写残缺内容）。
+    unsafe fn capture_fallback() -> Option<FallbackFormats> {
+        let raw = FallbackFormats {
+            text: read_text().filter(|t| t.len() <= MAX_TEXT_BYTES),
+            html: read_html(),
+            png: read_png_bytes().filter(|b| b.len() <= MAX_IMAGE_BYTES),
+            dib: read_dib_bytes(),
+            files: read_files(),
+        };
+        if raw.is_empty() {
+            None
+        } else {
+            Some(raw)
+        }
+    }
+
     unsafe fn set_bytes(fmt: u32, bytes: &[u8]) -> bool {
         let size = bytes.len().max(1);
         let handle = GlobalAlloc(GMEM_MOVEABLE, size);
@@ -1666,14 +1808,11 @@ mod imp {
         }
         // EmptyClipboard 是不可逆动作：一旦清空成功、后续主格式写入失败，用户
         // 原来的剪贴板就直接丢了。所以清空前先准备好「万一失败要放回什么」——
-        // Content 守卫自带这份内容，序列号守卫与无条件覆盖必须在锁内现场读取。
-        let fallback = match &guard {
-            WriteGuard::Content(_) => None,
-            _ => unsafe { payload_from_read(read_open(true)) },
-        };
-        let preserve: Option<&ClipboardPayload> = match (&guard, fallback.as_ref()) {
-            (WriteGuard::Content(expected), _) => Some(*expected),
-            (_, other) => other,
+        // Content 守卫自带这份内容；序列号守卫与无条件覆盖在锁内现场抓取原始
+        // 格式即可，不需要为了「可能用不到」的恢复去解码图片、生成预览。
+        let preserve = match &guard {
+            WriteGuard::Content(expected) => Some(Preserved::Payload(*expected)),
+            _ => unsafe { capture_fallback() }.map(Preserved::Raw),
         };
         let emptied = unsafe { EmptyClipboard() != 0 };
         let written = if emptied {
@@ -1683,8 +1822,8 @@ mod imp {
         };
         if written.is_err() && emptied {
             // 写入失败已经发生在清空之后：尽力回写清空前的内容并如实记录。
-            match preserve {
-                Some(expected) => {
+            match &preserve {
+                Some(Preserved::Payload(expected)) => {
                     let recovered =
                         unsafe { EmptyClipboard() != 0 && write_formats(expected).is_ok() };
                     if recovered {
@@ -1692,6 +1831,13 @@ mod imp {
                         // 登记自写水位：否则会把用户此前复制、尚未采集的外部内容
                         // 当成“本进程写入”丢弃。失败的命令不应声称拥有剪贴板。
                         tracing::warn!("剪贴板写入失败，已恢复写入前内容");
+                    } else {
+                        tracing::warn!("剪贴板写入失败，且未能恢复写入前内容");
+                    }
+                }
+                Some(Preserved::Raw(raw)) => {
+                    if unsafe { raw.restore() } {
+                        tracing::warn!("剪贴板写入失败，已按原始格式恢复写入前内容");
                     } else {
                         tracing::warn!("剪贴板写入失败，且未能恢复写入前内容");
                     }
@@ -1759,8 +1905,9 @@ mod imp {
             }
         };
         unsafe { CloseClipboard() };
-        let final_seq = unsafe { GetClipboardSequenceNumber() };
-        finish_restore(restored.map(|_| ()), final_seq, self_write)
+        // 不读 final_seq、也不登记水位：恢复写回的是用户内容，登记会把它的
+        // 通知判成自写而跳过（见 finish_restore 的说明）。
+        finish_restore(restored.map(|_| ()))
     }
 
     pub fn clipboard_match(expected: &ClipboardPayload) -> ClipboardMatch {
@@ -1910,6 +2057,8 @@ mod imp {
         /// 事件产生时的历史清空代数：清空之前的事件不得在清空之后入库。
         epoch: u64,
         seen: Instant,
+        /// 剪贴板被其他程序短暂独占导致读取失败后的重排次数（有界，防热循环）。
+        retries: u32,
     }
 
     struct EventHub {
@@ -1936,14 +2085,16 @@ mod imp {
                         MONITOR_COUNTERS
                             .observed_events
                             .fetch_add(1, Ordering::Relaxed);
-                        match hub.queue.push(
+                        let (outcome, dropped) = hub.queue.push_counting(
                             RawEvent {
                                 sequence: seq,
                                 epoch,
                                 seen: Instant::now(),
+                                retries: 0,
                             },
                             1,
-                        ) {
+                        );
+                        match outcome {
                             PushOutcome::Pushed => MonitorCounters::bump_peak(
                                 &MONITOR_COUNTERS.peak_event_queue,
                                 hub.queue.len(),
@@ -1951,7 +2102,7 @@ mod imp {
                             PushOutcome::DroppedOldest => {
                                 MONITOR_COUNTERS
                                     .dropped_events
-                                    .fetch_add(1, Ordering::Relaxed);
+                                    .fetch_add(dropped as u64, Ordering::Relaxed);
                                 MonitorCounters::bump_peak(
                                     &MONITOR_COUNTERS.peak_event_queue,
                                     hub.queue.len(),
@@ -1960,6 +2111,13 @@ mod imp {
                             _ => {}
                         }
                     }
+                } else {
+                    // 监听实例尚未就绪（应用启动 / 看门狗重启间隙）：事件无法路由，
+                    // 如实计数供诊断。这段窗口内用户复制的内容无法补偿——监听线程
+                    // 死亡到重启之间没有事件会产生，此处计数是「盲区丢失」的唯一证据。
+                    MONITOR_COUNTERS
+                        .unobserved_events
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 0
             }
@@ -1980,6 +2138,10 @@ mod imp {
         hwnd: isize,
         event_q: Arc<BoundedQueue<RawEvent>>,
         content_q: Arc<BoundedQueue<QueuedCapture>>,
+        /// 监听线程的取消事件（manual-reset）：启动超时时置位，线程从可等待的
+        /// 消息循环退出并自行摘掉监听，避免 JoinHandle 被丢弃后线程继续挂着。
+        /// 存 isize 而不是 HANDLE，保持 ClipboardMonitor 可 Send。
+        cancel: isize,
         thread: Option<std::thread::JoinHandle<()>>,
         capture: Option<std::thread::JoinHandle<()>>,
         worker: Option<std::thread::JoinHandle<()>>,
@@ -1999,18 +2161,46 @@ mod imp {
                 });
             }
             let (ready_tx, ready_rx) = mpsc::channel::<Result<isize, String>>();
-            let thread = std::thread::Builder::new()
+            // manual-reset 取消事件：启动超时时调用方置位即可让线程退出，
+            // 不依赖调用方知道 HWND，也不会把仍在监听的线程留成孤儿。
+            let cancel = unsafe { CreateEventW(null(), 1, 0, null()) };
+            if cancel.is_null() {
+                reset_queue();
+                return Err(AppError::Validation("创建剪贴板监听取消事件失败".into()));
+            }
+            // 句柄本身不是 Send，按整数传给线程，避免 `*mut c_void` 进闭包。
+            let cancel_thread = cancel as isize;
+            let thread = match std::thread::Builder::new()
                 .name("clipboard-monitor".into())
-                .spawn(move || unsafe { run_message_loop(ready_tx) })
-                .map_err(AppError::Io)?;
+                .spawn(move || unsafe { run_message_loop(ready_tx, cancel_thread as HANDLE) })
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    unsafe {
+                        CloseHandle(cancel);
+                    }
+                    reset_queue();
+                    return Err(AppError::Io(e));
+                }
+            };
             let hwnd = match ready_rx.recv_timeout(Duration::from_secs(5)) {
                 Ok(Ok(h)) => h,
                 Ok(Err(e)) => {
                     let _ = thread.join();
+                    unsafe {
+                        CloseHandle(cancel);
+                    }
                     reset_queue();
                     return Err(AppError::Validation(format!("剪贴板监听启动失败: {e}")));
                 }
                 Err(_) => {
+                    unsafe {
+                        SetEvent(cancel);
+                    }
+                    let _ = thread.join();
+                    unsafe {
+                        CloseHandle(cancel);
+                    }
                     reset_queue();
                     return Err(AppError::Validation("剪贴板监听启动超时".into()));
                 }
@@ -2028,6 +2218,9 @@ mod imp {
                             PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
                         }
                         let _ = thread.join();
+                        unsafe {
+                            CloseHandle(cancel);
+                        }
                         return Err(AppError::Io(e));
                     }
                 };
@@ -2041,6 +2234,9 @@ mod imp {
                     }
                     let _ = thread.join();
                     let _ = capture.join();
+                    unsafe {
+                        CloseHandle(cancel);
+                    }
                     return Err(AppError::Io(e));
                 }
             };
@@ -2048,6 +2244,7 @@ mod imp {
                 hwnd,
                 event_q,
                 content_q,
+                cancel: cancel as isize,
                 thread: Some(thread),
                 capture: Some(capture),
                 worker: Some(worker),
@@ -2070,6 +2267,9 @@ mod imp {
             }
             if let Some(t) = self.thread.take() {
                 let _ = t.join();
+            }
+            unsafe {
+                CloseHandle(self.cancel as HANDLE);
             }
             if let Some(c) = self.capture.take() {
                 let _ = c.join();
@@ -2099,20 +2299,38 @@ mod imp {
                     // 队列中积压的旧事件直接合并：Windows 剪贴板不是可回放的历史，
                     // 只保证读取最新状态，绝不伪造中间版本。
                     while let Some(next) = event_q.try_pop() {
+                        // 积压事件不逐条回放：被更新的覆盖，乱序的旧事件直接丢弃。
+                        // 两者都算「合并」并统一计数，避免整批静默丢失。
+                        MONITOR_COUNTERS
+                            .merged_events
+                            .fetch_add(1, Ordering::Relaxed);
                         if sequence_after(next.sequence, ev.sequence) {
                             ev = next;
-                            MONITOR_COUNTERS
-                                .merged_events
-                                .fetch_add(1, Ordering::Relaxed);
                         }
                     }
                     // 事件发生在历史清空之前：剪贴板内容本身没变，但用户已经
                     // 明确清空历史，旧事件不得在清空之后把内容重新写回。
-                    if epoch_is_stale(ev.epoch, sink.capture_epoch.load(Ordering::SeqCst)) {
+                    // 序列号晚于清空水位的事件是清空后的新复制（清空先记水位、
+                    // 再推进代数，两步之间派发的事件带旧代数），不能因旧代数误杀。
+                    if cleared_stale_gate(
+                        ev.epoch,
+                        sink.capture_epoch.load(Ordering::SeqCst),
+                        ev.sequence,
+                        sink.clear_seq.load(Ordering::SeqCst),
+                    ) {
                         MONITOR_COUNTERS
                             .cleared_stale_events
                             .fetch_add(1, Ordering::Relaxed);
                         tracing::debug!("剪贴板事件属于清空前的采集代数，已丢弃");
+                        continue;
+                    }
+                    // 代数门只认「派发时刻」：清空前入队、清空后才派发的事件会拿到
+                    // 新代数。序列号不晚于清空水位，说明内容仍是清空前的，必须拦下。
+                    if clear_supersedes(ev.sequence, sink.clear_seq.load(Ordering::SeqCst)) {
+                        MONITOR_COUNTERS
+                            .cleared_stale_events
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!("剪贴板事件早于清空水位，已丢弃");
                         continue;
                     }
                     match classify_event(ev.sequence, last, sink.self_write.load(Ordering::SeqCst))
@@ -2136,8 +2354,9 @@ mod imp {
                         }
                         EventDisposition::Read => {}
                     }
-                    // fail-closed：配置缺失键走默认（兼容旧库），任一剪贴板键
-                    // 损坏/类型错误/越界或数据库读取失败都停止本次采集。
+                    // fail-closed：缺失键只在初始化阶段处理（全新库写默认值、
+                    // 旧库升级写默认但强制暂停），已初始化库的缺失键视为异常；
+                    // 任一剪贴板键损坏/类型错误/越界或数据库读取失败都停止本次采集。
                     let config = Settings::load_clipboard(&sink.db);
                     if !config.capture_allowed() {
                         if let Some(error) = config.error.as_ref() {
@@ -2158,13 +2377,15 @@ mod imp {
                                 .fetch_max(latency, Ordering::Relaxed);
                             let mut content = *content;
                             let weight = queue_weight_for(&mut content);
-                            match content_q.push(
+                            let (outcome, dropped) = content_q.push_counting(
                                 QueuedCapture {
                                     epoch: ev.epoch,
+                                    sequence,
                                     content,
                                 },
                                 weight,
-                            ) {
+                            );
+                            match outcome {
                                 PushOutcome::Pushed => MonitorCounters::bump_peak(
                                     &MONITOR_COUNTERS.peak_content_queue,
                                     content_q.len(),
@@ -2172,7 +2393,7 @@ mod imp {
                                 PushOutcome::DroppedOldest => {
                                     MONITOR_COUNTERS
                                         .dropped_contents
-                                        .fetch_add(1, Ordering::Relaxed);
+                                        .fetch_add(dropped as u64, Ordering::Relaxed);
                                     MonitorCounters::bump_peak(
                                         &MONITOR_COUNTERS.peak_content_queue,
                                         content_q.len(),
@@ -2190,6 +2411,25 @@ mod imp {
                             // 「读过但剪贴板被占用」不是策略性跳过，单独计数，
                             // 否则诊断里无法区分「配置不让记」和「想记但读不到」。
                             if reason == READ_BUSY_REASON {
+                                // open_clipboard 内部已重试约 120ms 仍占用：有界重排
+                                // （默认再试 3 次）等对方松开，避免 Office 延迟渲染、
+                                // 剪贴板管理器等短暂独占让这一次复制永久丢失。
+                                // 重排事件与新事件共用合并逻辑：期间来了新复制会
+                                // 合并成最新一条，保最新语义不变；队列已关则退出。
+                                if ev.retries < MAX_READ_BUSY_RETRIES {
+                                    let mut retried = ev;
+                                    retried.retries += 1;
+                                    let attempt = retried.retries;
+                                    let (outcome, _) = event_q.push_counting(retried, 1);
+                                    if outcome == PushOutcome::Closed {
+                                        break;
+                                    }
+                                    tracing::debug!(
+                                        "剪贴板读取被占用，事件已重排（第 {} 次）",
+                                        attempt
+                                    );
+                                    continue;
+                                }
                                 MONITOR_COUNTERS.read_failed.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 MONITOR_COUNTERS.skipped.fetch_add(1, Ordering::Relaxed);
@@ -2217,8 +2457,16 @@ mod imp {
                 while let Some(queued) = content_q.pop() {
                     // 清空与入库必须互斥：拿到临界区后重新核对代数，
                     // 避免「核对了旧代数 → 清空删库 → 才写入」把旧内容复活。
+                    // 与事件层同一合并判定：读取发生在清空之前的内容，其序列号
+                    // 必然不晚于清空水位；清空后新复制（旧代数极小窗口内盖章）
+                    // 靠序列号放行，不再被旧代数误杀。
                     let _gate = sink.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
-                    if epoch_is_stale(queued.epoch, sink.capture_epoch.load(Ordering::SeqCst)) {
+                    if cleared_stale_gate(
+                        queued.epoch,
+                        sink.capture_epoch.load(Ordering::SeqCst),
+                        queued.sequence,
+                        sink.clear_seq.load(Ordering::SeqCst),
+                    ) {
                         MONITOR_COUNTERS
                             .cleared_stale_contents
                             .fetch_add(1, Ordering::Relaxed);
@@ -2248,7 +2496,7 @@ mod imp {
             })
     }
 
-    unsafe fn run_message_loop(ready: mpsc::Sender<Result<isize, String>>) {
+    unsafe fn run_message_loop(ready: mpsc::Sender<Result<isize, String>>, cancel: HANDLE) {
         let hinstance = GetModuleHandleW(null());
         if hinstance.is_null() {
             let _ = ready.send(Err("GetModuleHandleW 失败".into()));
@@ -2294,6 +2542,18 @@ mod imp {
         let _ = ready.send(Ok(hwnd as isize));
         let mut msg: MSG = zeroed();
         loop {
+            // 可等待的消息循环：取消事件一置位就能退出并摘掉监听。
+            // 不用裸 GetMessageW，否则启动超时后线程会永远挂在这里。
+            let wait =
+                MsgWaitForMultipleObjectsEx(1, &cancel, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if wait == WAIT_OBJECT_0 {
+                RemoveClipboardFormatListener(hwnd);
+                DestroyWindow(hwnd);
+                break;
+            }
+            if wait != WAIT_OBJECT_0 + 1 {
+                break;
+            }
             let r = GetMessageW(&mut msg, null_mut(), 0, 0);
             if r <= 0 {
                 break;
@@ -2666,15 +2926,20 @@ mod tests {
         note_self_write_watermark(&sw, u32::MAX - 10);
         assert_eq!(sw.load(Ordering::SeqCst), 3, "回绕前的旧通知不得把水位拉回");
 
-        let sw2 = AtomicU32::new(u32::MAX - 3);
-        finish_restore(Ok(()), 2, &sw2).unwrap();
-        assert_eq!(sw2.load(Ordering::SeqCst), 2);
+        // 恢复写入不推进水位：内容相同，重复记录交给 store 去重。
+        let before = sw.load(Ordering::SeqCst);
+        finish_restore(Ok(())).unwrap();
+        assert_eq!(
+            sw.load(Ordering::SeqCst),
+            before,
+            "恢复写入不得推进自写水位"
+        );
     }
 
     #[test]
-    fn restore_registers_self_write_only_on_success() {
+    fn restore_does_not_advance_self_write_watermark() {
         let sw = AtomicU32::new(100);
-        let failed = finish_restore(Err(AppError::Validation("写入失败".into())), 120, &sw);
+        let failed = finish_restore(Err(AppError::Validation("写入失败".into())));
         assert!(failed.is_err());
         assert_eq!(
             sw.load(Ordering::SeqCst),
@@ -2682,17 +2947,13 @@ mod tests {
             "写入失败不得登记自写（否则会丢弃用户内容）"
         );
 
-        let ok = finish_restore(Ok(()), 120, &sw).unwrap();
+        let ok = finish_restore(Ok(())).unwrap();
         assert_eq!(ok, RestoreOutcome::Restored);
         assert_eq!(
             sw.load(Ordering::SeqCst),
-            120,
-            "恢复成功必须在锁内登记序列号"
+            100,
+            "恢复写入不得推进水位：恢复的是用户内容，不是本进程的新内容"
         );
-
-        // 并发场景下只前进不回退
-        finish_restore(Ok(()), 90, &sw).unwrap();
-        assert_eq!(sw.load(Ordering::SeqCst), 120);
     }
 
     #[test]
@@ -2948,6 +3209,22 @@ mod tests {
         assert_eq!(q.push("huge", 101), PushOutcome::RejectedTooLarge);
         q.close();
         assert_eq!(q.pop(), None);
+    }
+
+    #[test]
+    fn bounded_queue_push_counting_reports_every_evicted_item() {
+        let q = BoundedQueue::new(8, 100);
+        assert_eq!(q.push_counting("a", 30), (PushOutcome::Pushed, 0));
+        assert_eq!(q.push_counting("b", 30), (PushOutcome::Pushed, 0));
+        assert_eq!(q.push_counting("c", 30), (PushOutcome::Pushed, 0));
+        // 90 + 50 超预算：只丢一条不够，必须连丢两条才放得下。
+        assert_eq!(q.push_counting("d", 50), (PushOutcome::DroppedOldest, 2));
+        assert_eq!(
+            q.push_counting("huge", 101),
+            (PushOutcome::RejectedTooLarge, 0)
+        );
+        q.close();
+        assert_eq!(q.push_counting("e", 1), (PushOutcome::Closed, 0));
     }
 
     #[test]
@@ -3354,5 +3631,199 @@ mod tests {
 
         assert_eq!(payload_from_read(ClipboardRead::Empty("剪贴板为空")), None);
         assert_eq!(payload_from_read(ClipboardRead::Skip("格式不支持")), None);
+    }
+
+    /// 复现 P2-1（2026-11-03 评审）：恢复写入不得吞掉恢复出来的用户内容。
+    ///
+    /// 时序：用户复制 X（seq 1000，事件可能还在队列）→ 逐项粘贴写入 P
+    /// （seq 1001，自写水位 1001）→ 粘贴结束恢复 X（seq 1002）。采集线程会把
+    /// 积压事件合并成最新一条（seq 1002）；若恢复也把水位推到 1002，这条事件
+    /// 会被判成 SelfWrite 跳过，X 就再没有入库机会。
+    ///
+    /// 期望：恢复不推进水位（仍为 1001）、恢复事件 1002 必须放行；当前实现会失败。
+    #[test]
+    fn restore_must_not_swallow_restored_content_event() {
+        let self_write = AtomicU32::new(0);
+        note_self_write_watermark(&self_write, 1001);
+        assert!(finish_restore(Ok(())).is_ok(), "恢复收尾不应失败");
+
+        let watermark = self_write.load(Ordering::SeqCst);
+        assert_eq!(
+            watermark, 1001,
+            "恢复写入不得推进自写水位（推进后恢复事件会被当成自写）"
+        );
+        assert_eq!(
+            classify_event(1002, 999, watermark),
+            EventDisposition::Read,
+            "恢复后的内容事件被判成自写：用户这次复制的唯一补偿事件被丢弃"
+        );
+    }
+
+    /// 复现 P2-2（2026-11-03 评审）：清空后，清空前的内容不得凭新代数复活。
+    ///
+    /// 代数只在消息派发时盖章：清空前入队的事件会拿到清空后的新代数，
+    /// 只靠代数门拦不住。序列号不晚于清空水位才是「清空前内容」的证据。
+    #[test]
+    fn clear_watermark_drops_events_from_before_the_clear() {
+        let clear_sequence = 500u32;
+        assert!(
+            clear_supersedes(clear_sequence, clear_sequence),
+            "清空前的最后一份内容必须丢弃"
+        );
+        assert!(clear_supersedes(499, clear_sequence));
+        assert!(
+            !clear_supersedes(501, clear_sequence),
+            "清空后的新复制必须放行"
+        );
+        assert!(!clear_supersedes(500, 0), "从未清空历史时不得丢弃任何事件");
+    }
+
+    /// P2-7（2026-11-03 评审）：写入失败兜底只搬运原始格式字节，
+    /// 不再为了「可能用不到」的恢复现场解码 PNG（4K 图 RGBA 约 33MB）。
+    #[cfg(windows)]
+    #[test]
+    fn fallback_restore_passes_original_format_bytes() {
+        use super::imp::{format_id, FallbackFormats};
+        use windows_sys::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT};
+
+        let raw = FallbackFormats {
+            text: Some("hello".into()),
+            html: Some("<b>hi</b>".into()),
+            png: Some(vec![0x89, b'P', b'N', b'G']),
+            dib: Some(vec![1, 2, 3, 4]),
+            files: Vec::new(),
+        };
+        let mut seen: Vec<(u32, Vec<u8>)> = Vec::new();
+        assert!(raw.restore_with(|fmt, bytes| {
+            seen.push((fmt, bytes.to_vec()));
+            true
+        }));
+        assert!(seen
+            .iter()
+            .any(|(fmt, bytes)| *fmt == CF_UNICODETEXT as u32 && !bytes.is_empty()));
+        assert!(seen.iter().any(|(fmt, _)| *fmt == format_id("PNG")));
+        assert!(seen
+            .iter()
+            .any(|(fmt, bytes)| *fmt == CF_DIB as u32 && bytes.as_slice() == [1u8, 2, 3, 4]));
+        assert!(
+            !seen.iter().any(|(fmt, _)| *fmt == CF_HDROP as u32),
+            "没有文件时不得写 CF_HDROP"
+        );
+
+        let blank = FallbackFormats {
+            text: Some(String::new()),
+            html: None,
+            png: None,
+            dib: None,
+            files: Vec::new(),
+        };
+        assert!(blank.is_empty(), "空文本不算可恢复内容");
+        assert!(!blank.restore_with(|_, _| true));
+    }
+
+    /// 修复回归（2026-11-03，采集丢失定位）：清空指令「记水位 → 推进代数」两步
+    /// 之间盖章派发的清空后新复制带旧代数，不能因旧代数丢弃——否则用户
+    /// 「清空历史后立即复制」会偶发丢失（症状：复制了却没出现）。
+    #[test]
+    fn post_clear_copy_stamped_with_old_epoch_survives_the_gate() {
+        // 清空已发生：水位 100、当前代数 1；事件在两步窗口内盖章（代数 0），
+        // 但复制发生在清空之后（序列号 105 > 100）：必须放行。
+        assert!(
+            !cleared_stale_gate(0, 1, 105, 100),
+            "清空后的新复制不得被旧代数误杀"
+        );
+        // 内容层同样放行（读取发生在清空后，序列号是权威证据）。
+        assert!(!cleared_stale_gate(0, 1, 101, 100));
+        // 清空前的旧事件照旧丢弃：序列号不晚于水位。
+        assert!(cleared_stale_gate(0, 1, 100, 100));
+        assert!(cleared_stale_gate(0, 1, 99, 100));
+        // 代数相同（正常路径）不因序列号丢弃。
+        assert!(!cleared_stale_gate(1, 1, 99, 100));
+        // 从未清空（水位 0）且代数变旧：保守维持旧语义丢弃。
+        assert!(cleared_stale_gate(0, 1, 105, 0));
+        // 未清空且代数相同：不丢。
+        assert!(!cleared_stale_gate(0, 0, 105, 0));
+    }
+
+    /// 清空水位与代数的回绕安全：序列号回绕后复制的内容按回绕差仍晚于水位。
+    #[test]
+    fn clear_gate_is_wraparound_safe() {
+        // 水位接近 u32::MAX，复制发生在回绕后（序列号很小但严格更晚）。
+        let clear_sequence = u32::MAX - 2;
+        assert!(!cleared_stale_gate(0, 1, 3, clear_sequence));
+        // 回绕前的事件仍被丢弃。
+        assert!(cleared_stale_gate(0, 1, clear_sequence, clear_sequence));
+        assert!(cleared_stale_gate(0, 1, clear_sequence - 1, clear_sequence));
+    }
+
+    /// 队列淘汰必须保最新：容量淘汰丢最旧，字节预算淘汰也丢最旧，
+    /// 且多连丢时淘汰计数按实际条数累加。
+    #[test]
+    fn bounded_queue_evicts_oldest_and_keeps_newest() {
+        let q: BoundedQueue<u32> = BoundedQueue::new(3, usize::MAX);
+        for v in 1..=5u32 {
+            let (outcome, dropped) = q.push_counting(v, 1);
+            if v <= 3 {
+                assert_eq!(outcome, PushOutcome::Pushed);
+                assert_eq!(dropped, 0);
+            } else {
+                assert_eq!(outcome, PushOutcome::DroppedOldest);
+                assert_eq!(dropped, 1, "容量淘汰一次只丢一条");
+            }
+        }
+        let mut kept = Vec::new();
+        while let Some(v) = q.try_pop() {
+            kept.push(v);
+        }
+        assert_eq!(kept, vec![3, 4, 5], "必须保最新，丢最旧");
+
+        // 字节预算：预算 10，权重 4 的条目 → 每次腾到装得下为止，计数按实际条数。
+        let q: BoundedQueue<u32> = BoundedQueue::new(usize::MAX, 10);
+        let (outcome, dropped) = q.push_counting(1, 4);
+        assert_eq!((outcome, dropped), (PushOutcome::Pushed, 0));
+        let (outcome, dropped) = q.push_counting(2, 4);
+        assert_eq!((outcome, dropped), (PushOutcome::Pushed, 0));
+        // 8+4 > 10 → 丢掉 1（4 字节，剩 4），3 入队。
+        let (outcome, dropped) = q.push_counting(3, 4);
+        assert_eq!(outcome, PushOutcome::DroppedOldest);
+        assert_eq!(dropped, 1);
+        // 8+4 > 10 → 再丢 1（剩 4），4 入队。
+        let (outcome, dropped) = q.push_counting(4, 4);
+        assert_eq!(outcome, PushOutcome::DroppedOldest);
+        assert_eq!(dropped, 1);
+        let mut kept = Vec::new();
+        while let Some(v) = q.try_pop() {
+            kept.push(v);
+        }
+        assert_eq!(kept, vec![3, 4], "字节预算下仍保最新，丢最旧");
+        // 预算极紧时一次 push 连丢多条：计数必须按实际条数累加（不能低报）。
+        let q: BoundedQueue<u32> = BoundedQueue::new(usize::MAX, 10);
+        let _ = q.push_counting(1, 4);
+        let _ = q.push_counting(2, 4);
+        // 8+8 > 10 → 连丢 2 条后才装得下。
+        let (outcome, dropped) = q.push_counting(3, 8);
+        assert_eq!(outcome, PushOutcome::DroppedOldest);
+        assert_eq!(dropped, 2, "一次 push 连丢多条时淘汰计数按实际条数累加");
+    }
+
+    /// 单条超过队列字节预算：拒绝入队而不是无限膨胀，也不得误伤队列内已有条目。
+    #[test]
+    fn bounded_queue_rejects_items_larger_than_budget() {
+        let q: BoundedQueue<u32> = BoundedQueue::new(8, 10);
+        let (outcome, dropped) = q.push_counting(1, 11);
+        assert_eq!((outcome, dropped), (PushOutcome::RejectedTooLarge, 0));
+        assert_eq!(q.len(), 0);
+        // 预算内条目仍可正常入队。
+        let (outcome, dropped) = q.push_counting(2, 10);
+        assert_eq!((outcome, dropped), (PushOutcome::Pushed, 0));
+    }
+
+    /// 读取占用的有界重排常量：总等待必须收敛（每次重排内部还有约 120ms 重试）。
+    #[test]
+    fn read_busy_retry_bound_is_small() {
+        assert!(
+            MAX_READ_BUSY_RETRIES <= 5,
+            "占用重试必须有界，不得用无限重试换成功率"
+        );
     }
 }

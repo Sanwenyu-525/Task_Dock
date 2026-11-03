@@ -27,6 +27,17 @@ import { ClipboardThumb } from "../clipboard/Media";
 import { openFullApp } from "./actions";
 import { EmptyState, PanelHead, Segmented, sizeLabel, type SegOption } from "./PanelKit";
 
+/** 监听状态的展示文案与状态点色调（与列表数据状态分开显示）。 */
+const MONITOR_TEXT: Record<string, { text: string; tone: "none" | "ok" | "warn" | "bad" }> = {
+  checking: { text: "检查中…", tone: "none" },
+  ok: { text: "监听中", tone: "ok" },
+  paused: { text: "已暂停", tone: "warn" },
+  disabled: { text: "剪贴板模块已关闭", tone: "warn" },
+  configError: { text: "配置异常，采集被拒绝", tone: "bad" },
+  notRunning: { text: "监听线程未运行", tone: "warn" },
+  unknown: { text: "状态未知", tone: "warn" },
+};
+
 type Filter = "all" | "text" | "image" | "file";
 
 const FILTERS: readonly SegOption<Filter>[] = [
@@ -67,7 +78,10 @@ function toneOf(item: ClipboardItem): { cls: string; icon: typeof FileText } {
 
 export default function ClipboardLite() {
   const lite = useClipboardStore((s) => s.lite);
+  const liteStatus = useClipboardStore((s) => s.liteStatus);
+  const monitor = useClipboardStore((s) => s.monitor);
   const loadLite = useClipboardStore((s) => s.loadLite);
+  const loadMonitor = useClipboardStore((s) => s.loadMonitor);
   const releaseLite = useClipboardStore((s) => s.releaseLite);
   const setLive = useClipboardStore((s) => s.setLive);
   const items = lite?.items ?? null;
@@ -81,16 +95,17 @@ export default function ClipboardLite() {
   const [covers, setCovers] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState<string | null>(null);
 
-  // 面板打开 → 取一次轻量视图，并接入全局唯一的 clipboard-changed 监听
-  // （store 内部引用计数：完整页面与胶囊面板共用同一个监听，不会重复注册）。
+  // 面板打开 → 取一次轻量视图 + 监听状态，并接入全局唯一的 clipboard-changed
+  // 监听（store 内部引用计数：完整页面与胶囊面板共用同一个监听，不会重复注册）。
   useEffect(() => {
     void loadLite();
+    void loadMonitor();
     setLive(true);
     return () => {
       setLive(false);
       releaseLite();
     };
-  }, [loadLite, releaseLite, setLive]);
+  }, [loadLite, loadMonitor, releaseLite, setLive]);
 
   // 封面：只为「有图的分组」读详情，且最多 2 组（有界、失败静默）
   useEffect(() => {
@@ -150,13 +165,25 @@ export default function ClipboardLite() {
 
   const showGroups = groups.length > 0 && (filter === "all" || filter === "image");
   const total = items?.length ?? 0;
-  const empty = list !== null && list.length === 0 && !showGroups;
+  // 数据错误与监听状态分开：error 时有旧数据 → 旧列表 + 错误条；无数据 → 错误空态
+  const dataError = liteStatus === "error";
+  const loadingData = liteStatus === "loading" && lite === null;
+  // 成功且整表确无记录（items 与 groups 都空）才是真空态；否则按筛选显示局部空态
+  const trulyEmpty = liteStatus === "empty";
+  const empty = !dataError && list !== null && list.length === 0 && !showGroups;
+  const monitorInfo = MONITOR_TEXT[monitor] ?? MONITOR_TEXT.unknown;
 
   return (
     <>
       <PanelHead
         title="剪贴板"
-        sub={items === null ? "读取中" : `最近 ${total} 条 · 含 ${groups.length} 个截图组`}
+        sub={
+          loadingData
+            ? "读取中"
+            : dataError && items === null
+              ? "读取失败"
+              : `最近 ${total} 条 · 含 ${groups.length} 个截图组`
+        }
         actions={
           <button
             type="button"
@@ -169,15 +196,55 @@ export default function ClipboardLite() {
         }
       />
 
+      {/* 监听运行状态（clipboardStatus 派生，独立于列表错误；unknown 可重查） */}
+      <div className="cap-summary" role="status">
+        <span
+          className={`cap-state-dot${monitorInfo.tone === "none" ? "" : ` tone-${monitorInfo.tone}`}`}
+          aria-hidden="true"
+        />
+        <span>监听状态：{monitorInfo.text}</span>
+        {monitor === "unknown" && (
+          <button type="button" className="cap-link" aria-label="重新检查监听状态" onClick={() => void loadMonitor()}>
+            重查
+          </button>
+        )}
+      </div>
+
       <Segmented label="剪贴板类型筛选" options={FILTERS} value={filter} onChange={setFilter} />
 
       <div className="cap-list">
-        {empty && (
+        {/* 错误优先于空态：有旧数据 → 旧列表 + 可重试错误条；无数据 → 错误空态 */}
+        {dataError && items !== null && (
+          <div className="cap-item cap-error-row" role="alert">
+            <span className="cap-error-text">刷新失败，显示的是上次结果</span>
+            <button type="button" className="cap-mini" aria-label="重试读取剪贴板记录" onClick={() => void loadLite()}>
+              重试
+            </button>
+          </div>
+        )}
+
+        {dataError && items === null && (
           <EmptyState
             icon={<Clipboard size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text={total === 0 ? "剪贴板暂无记录" : "该筛选下没有记录"}
+            text="剪贴板记录读取失败"
+            actionLabel="重试"
+            onAction={() => void loadLite()}
+          />
+        )}
+
+        {empty && trulyEmpty && (
+          <EmptyState
+            icon={<Clipboard size={22} strokeWidth={1.6} aria-hidden="true" />}
+            text="剪贴板暂无记录"
             actionLabel="打开剪贴板页"
             onAction={() => openFullApp("clipboard")}
+          />
+        )}
+
+        {empty && !trulyEmpty && (
+          <EmptyState
+            icon={<Clipboard size={22} strokeWidth={1.6} aria-hidden="true" />}
+            text="该筛选下没有记录"
           />
         )}
 

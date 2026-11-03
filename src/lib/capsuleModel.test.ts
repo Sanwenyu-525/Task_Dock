@@ -8,7 +8,13 @@
 
 import { describe, expect, it } from "vitest";
 import type { AgentRun, AgentSnapshot } from "./bridge";
-import { capsuleAriaLabel, capsuleModel, formatCapsuleCount } from "./capsuleModel";
+import {
+  capsuleAriaLabel,
+  capsuleModel,
+  formatCapsuleCount,
+  RAIL_CATEGORIES,
+  railStatus,
+} from "./capsuleModel";
 
 function run(status: string, updatedMinutesAgo = 0): AgentRun {
   const t = new Date(Date.now() - updatedMinutesAgo * 60_000).toISOString();
@@ -110,6 +116,25 @@ describe("capsuleModel 信息聚合与异常优先级", () => {
 
   it("超过 99 项显示 99+", () => {
     expect(capsuleModel(120, snapshotWith()).pendingLabel).toBe("99+");
+  });
+});
+
+describe("轨道分类与收集箱徽标（B4）", () => {
+  it("RAIL_CATEGORIES 顺序固定：任务 → 收集箱 → 剪贴板 → 应用（Agent 只在状态球）", () => {
+    expect(RAIL_CATEGORIES).toEqual(["tasks", "inbox", "clipboard", "apps"]);
+  });
+
+  it("railStatus：收集箱未处理数生成徽标，0 与未加载不显示", () => {
+    expect(railStatus(null, null, Date.now(), 3).inboxBadge).toBe("3");
+    expect(railStatus(null, null, Date.now(), 3).inboxCount).toBe(3);
+    expect(railStatus(null, null, Date.now(), 0).inboxBadge).toBeNull();
+    expect(railStatus(null, null, Date.now(), null).inboxCount).toBeNull();
+    // 缺省参数（未传收集箱计数）= 未加载，徽标为空
+    expect(railStatus(null, null).inboxBadge).toBeNull();
+    // 非法输入按 0 处理，徽标不显示
+    expect(railStatus(null, null, Date.now(), Number.NaN).inboxBadge).toBeNull();
+    // >99 封顶
+    expect(railStatus(null, null, Date.now(), 120).inboxBadge).toBe("99+");
   });
 });
 

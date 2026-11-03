@@ -54,7 +54,8 @@
     非法地址不提供打开按钮并明确提示；不做 favicon 联网获取（无可靠离线来源
     时不展示图标装饰）；
   - **文件**：文件列表带存在性状态（`clipboard_path_status` 批量查询，单次
-    ≤200 条：ok / missing / inaccessible），失效文件名划线并禁用打开与定位；
+    ≤200 条：ok / missing / inaccessible；后端在阻塞线程池整批执行，慢盘/断连盘
+    不阻塞 UI，异常时按「未知」fail-closed），失效文件名划线并禁用打开与定位；
     单文件块级提供“打开文件 / 资源管理器定位”，多文件逐行提供打开/定位/复制
     路径；“打开”走 `clipboard_open_local_path`（系统关联程序），“定位”走
     `clipboard_reveal_local_path`（explorer /select），两者均复用导航模块
@@ -121,7 +122,9 @@ portal 到 body，注册弹层栈 modal 层：Escape 只关灯箱，z 序在抽�
     「覆盖已存在的文件？」确认框，用户确认才以覆盖授权落盘、取消/拒绝则完全不写盘；
     `inaccessible`/未知值/空结果/IPC 异常一律拒绝并提示（fail-closed，不以覆盖兜底）→
     `clipboard_save_image(itemId, path, overwrite)` 由 Rust 原子写入（仅 .png；可关闭；
-    失败时原文件保持不变，错误如实展示；成功反馈区分新建/覆盖）
+    失败时原文件保持不变，错误如实展示；成功反馈区分新建/覆盖）。写盘与读图在后台
+    阻塞线程池执行，保存期间灯箱与主窗口保持可交互；对话框创建失败只提示错误，
+    不查状态、不写盘，并恢复按钮可用
 - 信息栏：像素尺寸（解码后 natural size）、`PNG（存储格式）`（采集统一规范化为 PNG，
   不冒充用户复制的原始格式）、字节大小、来源；
 - 性能：原图 data URL 由 `Media.tsx` 共享缓存提供——加载 promise 全局去重

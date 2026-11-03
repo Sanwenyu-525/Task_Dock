@@ -16,12 +16,32 @@ import { act } from "react";
 
 vi.mock("../../lib/bridge", () => ({
   onClipboardChanged: async () => () => {},
+  onQuickCaptureCreated: async () => () => {},
   listTasks: async () => [],
   openAgentSession: async () => undefined,
   clipboardView: async () => ({ items: [], groups: [], stats: {}, total_items: 0 }),
   clipboardGroup: async () => ({ items: [] }),
   clipboardCopyItem: async () => ({ mode: "text", bytes: 0, warnings: [], sequence: 1 }),
   clipboardCopyGroupRich: async () => ({ mode: "text", bytes: 0, warnings: [], sequence: 1 }),
+  clipboardStatus: async () => ({
+    enabled: true,
+    paused: false,
+    monitoring: true,
+    activeJob: null,
+    platform: "windows",
+    configError: null,
+    configOrigin: null,
+    captureAllowed: true,
+  }),
+  quickCaptureList: async () => [],
+  quickCaptureState: async () => ({ draft: null, last_type: "task", inbox_count: 0 }),
+  quickCaptureMarkHandled: async () => {
+    throw new Error("not used");
+  },
+  quickCaptureDelete: async () => undefined,
+  quickCaptureConvertToTask: async () => {
+    throw new Error("not used");
+  },
   clipboardThumb: async () => null,
   clipboardImage: async () => null,
   applyMode: async () => undefined,
@@ -36,6 +56,7 @@ vi.mock("../../lib/navigation", () => ({
     target_id: "t1",
     verification_level: "launch",
   }),
+  navListTargets: async () => [],
   avatarHue: () => 250,
 }));
 

@@ -89,10 +89,13 @@ pub fn map_event_state(event: &str) -> Option<&'static str> {
         return None;
     }
     let state = match event {
-        "PermissionRequest" | "Notification" => "waiting",
-        "Stop" | "SessionEnd" => "completed",
-        "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact"
-        | "PostCompact" => "running",
+        // Claude/Gemini/Cursor 的权限等待与通知
+        "PermissionRequest" | "PermissionDenied" | "Notification" | "notification" => "waiting",
+        // 会话/回合结束：Claude/Codex `Stop`、Gemini `AfterAgent`、Cursor `stop`
+        "Stop" | "SessionEnd" | "AfterAgent" | "stop" | "sessionEnd" | "agentTurnComplete" => {
+            "completed"
+        }
+        // 其余已知事件都表示会话/工具执行仍在进行
         _ => "running",
     };
     Some(state)

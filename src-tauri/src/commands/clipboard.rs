@@ -3,7 +3,7 @@
 //! 列表接口只返回预览（正文与 HTML 清空），完整内容通过 `clipboard_item` 单条获取，
 //! 避免一次把数百条大文本/网页塞进前端内存。
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
@@ -165,17 +165,47 @@ pub fn clipboard_copy_text(state: State<'_, Arc<ClipboardRuntime>>, text: String
 
 // ── 多类型内容专属操作（v0.7）：图片另存 / 链接打开 / 文件打开与定位 ──
 
-/// 图片另存为：把落盘的原始 PNG 写入用户经系统保存对话框选择的路径。
+/// 图片另存为的后台并发闸门。
 ///
-/// 覆盖授权由系统保存对话框完成（用户在对话框里确认替换即显式授权），前端以
-/// `overwrite` 参数显式传入；这里只校验路径形态，具体写入交给
-/// [`export::save_png_bytes`] 的原子执行边界：
+/// 前端已有同步 in-flight 守卫，这里再加一道上限：即使绕过 UI 直接连发 IPC，
+/// 也不会把阻塞线程池堆成无界的写盘队列。达到上限直接返回可重试的 `Overloaded`，
+/// 不排队、不新开线程。
+const MAX_CONCURRENT_SAVES: usize = 2;
+static ACTIVE_SAVES: AtomicUsize = AtomicUsize::new(0);
+
+/// 持有一个保存配额；随后台闭包一起结束（成功、失败或 panic 展开）时归还。
+struct SaveSlot;
+
+impl SaveSlot {
+    fn acquire() -> AppResult<Self> {
+        ACTIVE_SAVES
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < MAX_CONCURRENT_SAVES).then_some(n + 1)
+            })
+            .map(|_| SaveSlot)
+            .map_err(|_| AppError::Overloaded("图片保存任务过多，请稍后重试".into()))
+    }
+}
+
+impl Drop for SaveSlot {
+    fn drop(&mut self) {
+        ACTIVE_SAVES.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// 图片另存为：把落盘的原始 PNG 写入用户选择的路径，返回写入的字节数。
+///
+/// **覆盖授权**：系统保存对话框只负责选路径，不构成可验证的覆盖授权。前端在目标
+/// 已存在时先经应用内确认框取得授权，再把 `overwrite=true` 显式传入；后端不缓存、
+/// 不复用授权，也绝不因冲突自行改走覆盖分支。
+///
+/// **执行**：资源定位（短小的本地查询）在命令线程完成；读取缓存 PNG 与写盘是阻塞
+/// I/O，整体移入 Tauri 阻塞线程池，不在主线程/异步运行时等待。失败清理、排他创建
+/// 与安全替换的边界都在 [`export::save_png_bytes`]：
 /// - `overwrite=false` 时目标已存在返回「目标文件已存在，未覆盖」，绝不静默覆盖；
 /// - `overwrite=true` 时用同目录临时文件 + rename 替换，失败不破坏原文件。
-///
-/// 返回值仍是写入的字节数。
 #[tauri::command]
-pub fn clipboard_save_image(
+pub async fn clipboard_save_image(
     state: State<'_, Arc<ClipboardRuntime>>,
     item_id: String,
     path: String,
@@ -184,9 +214,21 @@ pub fn clipboard_save_image(
     let rt = runtime(&state);
     let abs = store::image_abs_path(&rt.db, &rt.root, &item_id)
         .ok_or_else(|| AppError::NotFound("图片缓存不存在或已被清理，无法保存".into()))?;
-    let bytes = std::fs::read(&abs)?;
     let target = validate_save_path(&path)?;
-    export::save_png_bytes(&target, &bytes, overwrite)
+    let slot = SaveSlot::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<u64> {
+        // 配额随闭包存活到后台任务真正结束（含 panic 展开），不会提前归还。
+        let _slot = slot;
+        let bytes = std::fs::read(&abs)?;
+        export::save_png_bytes(&target, &bytes, overwrite)
+    })
+    .await
+    .map_err(|e| {
+        // JoinError 只说明后台任务异常结束（panic 或被取消）；如实上报，不伪装成功。
+        AppError::Io(std::io::Error::other(format!(
+            "图片保存后台任务异常结束：{e}"
+        )))
+    })?
 }
 
 /// 另存路径校验：绝对路径 + .png 扩展名（存储格式是 PNG，防止写出打不开的文件）。
@@ -254,17 +296,29 @@ pub fn clipboard_reveal_local_path(path: String) -> AppResult<()> {
 /// 批量查询文件路径状态：ok / missing / inaccessible。
 ///
 /// 供详情页区分「已移动/删除」与「无权限」，上限 200 条防止滥用。
+///
+/// `metadata` 在机械盘、网络共享或断连盘上可能长时间阻塞；这里把整批查询放进
+/// **一个**阻塞线程池任务（不按路径开线程），避免卡住 UI 线程。成功返回值与字段
+/// 不变；后台任务异常结束时以错误拒绝，前端按「未知」处理，绝不把所有路径当成存在。
 #[tauri::command]
-pub fn clipboard_path_status(paths: Vec<String>) -> Vec<String> {
-    paths
-        .into_iter()
-        .take(200)
-        .map(|p| match std::fs::metadata(p.trim()) {
-            Ok(_) => "ok".into(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing".into(),
-            Err(_) => "inaccessible".into(),
-        })
-        .collect()
+pub async fn clipboard_path_status(paths: Vec<String>) -> AppResult<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<Vec<String>> {
+        Ok(paths
+            .into_iter()
+            .take(200)
+            .map(|p| match std::fs::metadata(p.trim()) {
+                Ok(_) => "ok".into(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing".into(),
+                Err(_) => "inaccessible".into(),
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| {
+        AppError::Io(std::io::Error::other(format!(
+            "路径状态检查后台任务异常结束：{e}"
+        )))
+    })?
 }
 
 fn load_group_items(rt: &ClipboardRuntime, group_id: &str) -> AppResult<ClipboardGroup> {
@@ -486,6 +540,10 @@ pub fn clipboard_clear_history(state: State<'_, Arc<ClipboardRuntime>>) -> AppRe
     // 与入库线程互斥：先推进采集代数再删库，清空前产生的事件/排队内容
     // 不会在清空完成后把旧内容重新写回历史；清空期间新的外部复制仍会被记录。
     let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
+    // 记录清空时刻的剪贴板序列号：清空前入队、清空后才派发的旧事件
+    // 即使拿到新代数，采集侧也会因「不晚于清空水位」把它丢弃。
+    rt.clear_seq
+        .store(crate::clipboard::platform::current_sequence(), Ordering::SeqCst);
     rt.capture_epoch.fetch_add(1, Ordering::SeqCst);
     let report = store::clear_history(&rt.db, &rt.root)?;
     rt.emit_changed("clear-history");
@@ -849,5 +907,20 @@ mod tests {
         assert!(validate_save_path("clip.png").is_err());
         assert!(validate_save_path(r"D:\out\clip.jpg").is_err());
         assert!(validate_save_path(r"D:\out\clip").is_err());
+    }
+
+    #[test]
+    fn save_slots_are_bounded_and_released() {
+        let first = SaveSlot::acquire().expect("第 1 个配额应可用");
+        let second = SaveSlot::acquire().expect("第 2 个配额应可用");
+        assert!(
+            matches!(SaveSlot::acquire(), Err(AppError::Overloaded(_))),
+            "超过上限必须返回可重试的 Overloaded，而不是排队或无界写入"
+        );
+        drop(first);
+        let third = SaveSlot::acquire().expect("配额归还应允许再次获取");
+        drop(second);
+        drop(third);
+        assert!(SaveSlot::acquire().is_ok(), "全部归还后必须恢复可获取");
     }
 }

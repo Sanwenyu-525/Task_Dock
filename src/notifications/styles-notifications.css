@@ -42,12 +42,15 @@ body {
   --ntf-purple: #a855f7;
 }
 
-/* ── 根容器：窗口 400px 宽，卡片 360px 居中，四周留阴影余量 ── */
+/* ── 根容器：窗口 400px 宽，卡片 360px 居中 ──────────────────
+   阴影余量统一由下方栈容器的 padding 承担：overflow 的裁剪发生在
+   padding box，只有把余量放进栈自身 padding，卡片外阴影才画得出来。
+   这里不再加 padding，避免同一段留白被计算两遍（窗口高度会多出一截）。 */
 .ntf-root {
   box-sizing: border-box;
   width: 100vw;
   min-height: 100vh;
-  padding: 18px 20px 20px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -62,6 +65,42 @@ body {
   gap: 8px;
   width: 360px;
   max-width: 100%;
+  /* 小屏/超高堆叠：内容区有界并在窗口内部滚动（含键盘/滚轮），
+     不依赖后端窗口超出工作区；滚动条隐藏但保留可滚动语义。 */
+  max-height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  /* 阴影余量（对应卡片 0 9px 22px）：上 14 / 下 32 / 左右 20。
+     内容盒仍是 360px（卡片宽度不变），左右 padding 让栈的总宽等于窗口宽 400px，
+     侧面阴影也能画进 padding 区而不是被裁在卡片边缘。 */
+  padding: 14px 20px 32px;
+}
+.ntf-stack::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* 槽位：离场卡片高度 150ms 收缩（120–160ms），其余卡片自然上移不瞬时跳动。
+   只有离场中才裁剪（此时卡片本来就在淡出并收缩高度）；常态不裁剪，
+   否则卡片外阴影会被槽位切在卡片边缘。 */
+.ntf-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-height: 0;
+  overflow: visible;
+  /* 不参与 flex 收缩：否则窗口尚未长到内容高度时，卡片会被压扁，
+     scrollHeight 随之变小，形成“永远长不高”的反馈回路。 */
+  flex: 0 0 auto;
+  transition: grid-template-rows 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.ntf-slot.leaving {
+  grid-template-rows: 0fr;
+  overflow: hidden;
+}
+.ntf-slot > * {
+  min-height: 0;
 }
 
 /* ── 卡片骨架 ─────────────────────────────────────────────── */
@@ -73,21 +112,34 @@ body {
   border-radius: 16px;
   padding: 14px 15px 13px;
   --tone: var(--ntf-blue);
+  /* 通透层次：底色不再接近不透明，桌面色彩可透出；靠顶部高光/边缘描边/阴影保可读。
+     radial 状态色只做极轻的角部染色，语义色集中在图标与关键操作，不整卡染色。 */
   background:
     radial-gradient(
       170px 130px at 83% -16%,
-      color-mix(in srgb, var(--tone) 10%, transparent),
+      color-mix(in srgb, var(--tone) 7%, transparent),
       transparent 86%
     ),
-    linear-gradient(145deg, rgba(31, 51, 86, 0.95), rgba(17, 29, 52, 0.96) 55%, rgba(22, 36, 61, 0.96));
-  border: 1px solid rgba(177, 209, 255, 0.26);
+    linear-gradient(145deg, rgba(31, 51, 86, 0.86), rgba(17, 29, 52, 0.88) 55%, rgba(22, 36, 61, 0.87));
+  border: 1px solid rgba(177, 209, 255, 0.24);
   color: #f0f5ff;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
     inset 0 -1px 0 rgba(3, 18, 43, 0.51),
-    0 12px 32px rgba(0, 0, 0, 0.47),
-    0 4px 15px color-mix(in srgb, var(--tone) 8%, transparent);
+    /* 投影收敛到 22px：窗口只有 400px 宽、卡片四周余量有限，
+       过大的 blur 会在窗口/滚动容器边缘被硬切掉一截（见 .ntf-stack padding） */
+    0 9px 22px rgba(0, 0, 0, 0.45),
+    0 4px 15px color-mix(in srgb, var(--tone) 7%, transparent);
   animation: ntfEnter 0.26s cubic-bezier(0.21, 0.81, 0.26, 1.04) both;
+}
+
+/* 窗口已可见时新增的卡片：先占位、等窗口长高（fit 完成）再播入场动画。
+   否则 DOM 先提交、窗口后长高的那 1~2 帧里，卡片底部会伸到窗口外被裁掉。
+   仍占布局高度（窗口测量需要它），但不绘制、不接收点击。 */
+.ntf-card.ntf-held {
+  opacity: 0;
+  animation: none;
+  pointer-events: none;
 }
 
 /* 顶部柔和高光 */
@@ -96,7 +148,7 @@ body {
   position: absolute;
   inset: 0 0 auto;
   height: 55px;
-  background: linear-gradient(180deg, rgba(195, 221, 255, 0.05), transparent);
+  background: linear-gradient(180deg, rgba(195, 221, 255, 0.1), transparent);
   pointer-events: none;
 }
 
@@ -108,6 +160,19 @@ body {
 }
 .ntf-card[data-state="agent_done"] {
   --tone: var(--ntf-green);
+  /* 成功通知轻量化：压缩垂直空间，保留绿色图标与结果摘要即可 */
+  padding: 12px 15px 11px;
+}
+.ntf-card[data-state="agent_done"] .ntf-main {
+  margin: 11px 0 7px;
+}
+.ntf-card[data-state="agent_done"] .ntf-status-icon {
+  width: 42px;
+  height: 42px;
+}
+.ntf-card[data-state="agent_done"] .ntf-status-icon svg {
+  width: 24px;
+  height: 24px;
 }
 .ntf-card[data-state="agent_failed"] {
   --tone: var(--ntf-red);
@@ -181,13 +246,13 @@ body {
 .ntf-main {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  margin: 14px 0 12px;
+  gap: 11px;
+  margin: 12px 0 10px;
   position: relative;
 }
 .ntf-status-icon {
-  width: 47px;
-  height: 47px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   flex: none;
   display: grid;
@@ -225,6 +290,18 @@ body {
   font-size: 13px;
   line-height: 1.55;
   color: #b9cae6;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 结果摘要 / 错误原因 / 等待原因：两行内可读，超出部分进展开详情 */
+.ntf-summary {
+  margin: 5px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #d3e3fb;
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -310,8 +387,11 @@ body {
   position: relative;
   z-index: 1;
 }
+.ntf-actions.lightweight {
+  justify-content: flex-end;
+}
 .ntf-cta {
-  height: 34px;
+  height: 32px;
   border: 1px solid rgba(186, 208, 246, 0.13);
   color: #dbe8ff;
   background: rgba(187, 204, 236, 0.09);
@@ -340,6 +420,20 @@ body {
 }
 .ntf-cta.strong:hover {
   filter: brightness(1.12);
+}
+/* 完成/执行中：单个跳转用轻量文字操作，不占整行强主按钮 */
+.ntf-cta.text {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 2px 6px;
+  border-color: transparent;
+  background: transparent;
+  color: #9fc3ff;
+  font-weight: 550;
+}
+.ntf-cta.text:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #cfe2ff;
 }
 .ntf-cta:focus-visible,
 .ntf-icon-btn:focus-visible,
@@ -375,6 +469,15 @@ body {
 .ntf-extra-line strong.warning {
   color: #ffcca4;
 }
+/* 长文本（错误原因、长路径、长 Agent 名）整行展示：左对齐、可换行，不撑破布局 */
+.ntf-extra-line.long {
+  display: grid;
+  gap: 2px;
+}
+.ntf-extra-line.long strong {
+  max-width: none;
+  text-align: left;
+}
 
 .ntf-feedback {
   margin: 8px 0 0;
@@ -409,26 +512,26 @@ body {
 }
 
 /* ── 堆叠压缩：仅最新一张保留完整信息密度 ─────────────────── */
-.ntf-stack.stacked .ntf-card:not(:last-child) {
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-card {
   padding-top: 10px;
   padding-bottom: 7px;
 }
-.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-main {
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-main {
   margin: 8px 0 4px;
 }
-.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-status-icon {
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-status-icon {
   width: 37px;
   height: 37px;
 }
-.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-status-icon svg {
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-status-icon svg {
   width: 21px;
   height: 21px;
 }
-.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-actions,
-.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-inline-meta,
-.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-progress-row,
-.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-count-line,
-.ntf-stack.stacked .ntf-card:not(:last-child) .ntf-feedback {
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-actions,
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-inline-meta,
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-progress-row,
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-count-line,
+.ntf-stack.stacked .ntf-slot:not(:last-child) .ntf-feedback {
   display: none;
 }
 
@@ -440,14 +543,14 @@ html[data-theme="light"] .ntf-card {
   background:
     radial-gradient(
       170px 130px at 85% -14%,
-      color-mix(in srgb, var(--tone) 8%, transparent),
+      color-mix(in srgb, var(--tone) 6%, transparent),
       transparent 85%
     ),
-    linear-gradient(145deg, rgba(246, 250, 255, 0.97), rgba(226, 238, 255, 0.95));
-  border-color: rgba(255, 255, 255, 0.93);
+    linear-gradient(145deg, rgba(246, 250, 255, 0.93), rgba(226, 238, 255, 0.9));
+  border-color: rgba(255, 255, 255, 0.88);
   box-shadow:
     inset 0 1px #ffffff,
-    0 12px 30px rgba(43, 94, 172, 0.25),
+    0 9px 22px rgba(43, 94, 172, 0.24),
     0 4px 9px rgba(93, 133, 194, 0.11);
 }
 html[data-theme="light"] .ntf-title {
@@ -455,6 +558,9 @@ html[data-theme="light"] .ntf-title {
 }
 html[data-theme="light"] .ntf-body {
   color: #536d96;
+}
+html[data-theme="light"] .ntf-summary {
+  color: #33507b;
 }
 html[data-theme="light"] .ntf-timestamp {
   color: #57739e;
@@ -476,6 +582,17 @@ html[data-theme="light"] .ntf-cta:not(.strong) {
 }
 html[data-theme="light"] .ntf-cta:not(.strong):hover {
   background: rgba(171, 200, 245, 0.4);
+}
+html[data-theme="light"] .ntf-cta.strong {
+  border-color: rgba(126, 159, 210, 0.2);
+  color: #fff;
+}
+html[data-theme="light"] .ntf-cta.text {
+  color: #2c5f9e;
+}
+html[data-theme="light"] .ntf-cta.text:hover {
+  background: rgba(21, 45, 79, 0.07);
+  color: #163f70;
 }
 html[data-theme="light"] .ntf-inline-meta {
   color: #3d5d84;
@@ -558,6 +675,7 @@ html[data-theme="light"] .ntf-inline-expand:hover {
 @media (prefers-reduced-motion: reduce) {
   .ntf-card,
   .ntf-card.leaving,
+  .ntf-slot,
   .ntf-extra,
   .ntf-status-glyph.ntf-spin,
   .ntf-progress-fill.indeterminate {

@@ -33,7 +33,13 @@ pub fn actions_open_session(
     session_id: String,
 ) -> AppResult<NavigationResult> {
     crate::agents::validate_session_id(&session_id)?;
-    let r = crate::navigation::agent_navigation::resume_session(&db, &source_id, &session_id);
+    let settings = crate::db::Settings::load(&db).unwrap_or_default();
+    let r = crate::navigation::agent_navigation::resume_session(
+        &db,
+        &source_id,
+        &session_id,
+        &settings,
+    );
     crate::navigation::target_resolver::write_log(
         &db,
         &r,

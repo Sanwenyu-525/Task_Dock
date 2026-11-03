@@ -44,6 +44,7 @@ const sameDay = (a: number, b: number): boolean => {
 
 export default function TasksLite() {
   const items = useTasksStore((s) => s.lite);
+  const liteError = useTasksStore((s) => s.liteError);
   const loadLite = useTasksStore((s) => s.loadLite);
   const releaseLite = useTasksStore((s) => s.releaseLite);
   const [filter, setFilter] = useState<Filter>("all");
@@ -143,6 +144,9 @@ export default function TasksLite() {
   const doneToday = stats?.completed_today ?? localDone;
   const total = doneToday + pending;
   const pct = total > 0 ? Math.round((doneToday / total) * 100) : 0;
+  // 数据错误与空态分开：失败时旧列表保留展示 + 可重试错误条；没成功过则错误空态
+  const dataError = liteError !== null;
+  const noTasksAtAll = items !== null && items.length === 0;
 
   return (
     <>
@@ -164,17 +168,36 @@ export default function TasksLite() {
       <Segmented label="任务筛选" options={FILTERS} value={filter} onChange={setFilter} />
 
       <div className="cap-list">
-        {visible !== null && visible.length === 0 && (
+        {/* 错误优先于空态：读取失败绝不伪装成「暂无待办」 */}
+        {dataError && items === null && (
+          <EmptyState
+            icon={<ListTodo size={22} strokeWidth={1.6} aria-hidden="true" />}
+            text="任务列表读取失败"
+            actionLabel="重试"
+            onAction={() => void loadLite()}
+          />
+        )}
+
+        {dataError && items !== null && (
+          <div className="cap-item cap-error-row" role="alert">
+            <span className="cap-error-text">刷新失败，显示的是上次结果</span>
+            <button type="button" className="cap-mini" aria-label="重试读取任务列表" onClick={() => void loadLite()}>
+              重试
+            </button>
+          </div>
+        )}
+
+        {!dataError && visible !== null && visible.length === 0 && (
           <EmptyState
             icon={<ListTodo size={22} strokeWidth={1.6} aria-hidden="true" />}
             text={
-              items && items.length === 0
+              noTasksAtAll
                 ? "暂无待办"
                 : filter === "done"
                   ? "还没有已完成的任务"
                   : "该筛选下没有任务"
             }
-            actionLabel={items && items.length === 0 ? "新建任务" : undefined}
+            actionLabel={noTasksAtAll ? "新建任务" : undefined}
             onAction={() => inputRef.current?.focus()}
           />
         )}
@@ -231,9 +254,12 @@ export default function TasksLite() {
           <CheckCircle2 size={12} strokeWidth={1.8} aria-hidden="true" />
           {notice ?? `已完成 ${doneToday} 项`}
         </span>
-        <span className="cap-progress" aria-hidden="true">
-          <i style={{ width: `${pct}%` }} />
-        </span>
+        {/* 零任务时没有「今天的完成进度」可言，不渲染无意义的 0% 进度条 */}
+        {!noTasksAtAll && (
+          <span className="cap-progress" aria-hidden="true">
+            <i style={{ width: `${pct}%` }} />
+          </span>
+        )}
         <button type="button" className="cap-link" onClick={() => openFullApp("tasks")}>
           全部任务
           <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />

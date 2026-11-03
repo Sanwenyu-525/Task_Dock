@@ -186,9 +186,99 @@ const shim = `
     counts: { failed: 1, authorization: 1, waiting_input: 1, running: 1, completed: 0, disconnected: 0, reminder: 1 },
     coverage: actionCoverage,
     generated_at: iso(0),
+    category: "intervention",
+    db_total: actionItems.length,
+    filtered_total: actionItems.length,
+    loaded: actionItems.length,
+    has_more: false,
+    next_cursor: null,
+    enabled: true,
     truncated: false,
     scanned_events: 42,
   };
+
+  // ── 规划中心夹具（任务卡样式统一走查：功能列表 / 看板 / 项目 / 里程碑）──
+  const planningProjects = [
+    {
+      id: "pp1", name: "任务卡样式统一", description: "跨页面统一卡面、圆角、阴影与字号层级",
+      status: "in_progress", archived: false, target_date: "2026-11-20", sort_order: 0,
+      created_at: iso(600), updated_at: iso(12),
+      stats: { feature_total: 4, feature_completed: 1, feature_in_progress: 1, feature_blocked: 0, feature_planned: 1, feature_review: 1, feature_paused: 0, has_features: true, progress_percent: 25 },
+    },
+    {
+      id: "pp2", name: "剪贴板隐私策略", description: "敏感内容识别与静默采集边界",
+      status: "paused", archived: false, target_date: null, sort_order: 1,
+      created_at: iso(720), updated_at: iso(30),
+      stats: { feature_total: 2, feature_completed: 0, feature_in_progress: 0, feature_blocked: 1, feature_planned: 1, feature_review: 0, feature_paused: 0, has_features: true, progress_percent: 0 },
+    },
+    {
+      id: "pp3", name: "旧版启动器维护", description: "归档项目，仅保留历史记录",
+      status: "completed", archived: true, target_date: "2026-06-30", sort_order: 2,
+      created_at: iso(900), updated_at: iso(120),
+      stats: { feature_total: 3, feature_completed: 3, feature_in_progress: 0, feature_blocked: 0, feature_planned: 0, feature_review: 0, feature_paused: 0, has_features: true, progress_percent: 100 },
+    },
+  ];
+  const planningMilestones = [
+    {
+      id: "pm1", project_id: "pp1", name: "样张冻结", description: "完成全部页面卡片视觉对齐",
+      target_date: "2026-10-20", sort_order: 0, created_at: iso(500), updated_at: iso(60),
+      feature_total: 3, feature_completed: 1,
+    },
+    {
+      id: "pm2", project_id: "pp1", name: "窄窗与主题回归", description: "320/400 窄窗、深浅主题与两套预设",
+      target_date: "2026-12-15", sort_order: 1, created_at: iso(480), updated_at: iso(80),
+      feature_total: 1, feature_completed: 0,
+    },
+    {
+      id: "pm3", project_id: "pp1", name: "未排期", description: "尚未关联功能的里程碑",
+      target_date: null, sort_order: 2, created_at: iso(460), updated_at: iso(90),
+      feature_total: 0, feature_completed: 0,
+    },
+  ];
+  const planningSteps = (featureId, done, total) =>
+    Array.from({ length: total }, (_, i) => ({
+      id: featureId + "-s" + i, feature_id: featureId, title: "步骤 " + (i + 1), done: i < done,
+      sort_order: i, created_at: iso(300), updated_at: iso(200), completed_at: i < done ? iso(80) : null,
+    }));
+  const planningFeatures = [
+    {
+      id: "pf1", project_id: "pp1", title: "任务列表页卡片壳抽取为 .task-card",
+      description: "把圆角、卡面、阴影与内边距收敛到同一套语义 Token，其余页面复用样式壳。",
+      acceptance_criteria: "任务/行动/Agent/规划页面卡片视觉一致，无旧边框与左色条残留。",
+      status: "in_progress", priority: "P0", milestone_id: "pm1", milestone_name: "样张冻结",
+      target_date: "2026-11-10", sort_order: 0, created_at: iso(400), updated_at: iso(15),
+      completed_at: null, steps: planningSteps("pf1", 2, 4), step_total: 4, step_done: 2,
+    },
+    {
+      id: "pf2", project_id: "pp1", title: "规划中心四视图接入统一卡片",
+      description: "功能列表、看板、项目侧栏与里程碑时间轴改用同一卡片壳，保留各自信息槽位。",
+      acceptance_criteria: "拖拽、展开、选中与键盘可达不退化。",
+      status: "review", priority: "P1", milestone_id: "pm1", milestone_name: "样张冻结",
+      target_date: "2026-11-14", sort_order: 1, created_at: iso(380), updated_at: iso(40),
+      completed_at: null, steps: planningSteps("pf2", 3, 3), step_total: 3, step_done: 3,
+    },
+    {
+      id: "pf3", project_id: "pp1", title: "行动中心与 Agent 轮次卡片对齐",
+      description: "优先级与状态徽标统一为软底语义色，移除状态描边与常驻左色条。",
+      acceptance_criteria: "失败/等待状态仍清晰可见，hover 与焦点态一致。",
+      status: "planned", priority: "P2", milestone_id: "pm2", milestone_name: "窄窗与主题回归",
+      target_date: "2026-11-18", sort_order: 2, created_at: iso(360), updated_at: iso(60),
+      completed_at: null, steps: [], step_total: 0, step_done: 0,
+    },
+    {
+      id: "pf4", project_id: "pp1", title: "深浅主题与窄窗回归",
+      description: "两套视觉预设、深浅主题、320/400 窄窗下检查截断与换行。",
+      acceptance_criteria: "无溢出、无遮挡，长标题按卡片规则截断。",
+      status: "completed", priority: "P0", milestone_id: "pm2", milestone_name: "窄窗与主题回归",
+      target_date: "2026-10-28", sort_order: 3, created_at: iso(340), updated_at: iso(100),
+      completed_at: iso(100), steps: planningSteps("pf4", 2, 2), step_total: 2, step_done: 2,
+    },
+  ];
+  const planningActivity = [
+    { id: "pa1", project_id: "pp1", feature_id: "pf1", feature_title: planningFeatures[0].title, kind: "status_change", old_status: "planned", new_status: "in_progress", message: "状态从 待开始 改为 进行中", created_at: iso(15) },
+    { id: "pa2", project_id: "pp1", feature_id: "pf2", feature_title: planningFeatures[1].title, kind: "step_done", old_status: null, new_status: null, message: "完成步骤：窄窗截图核对", created_at: iso(40) },
+    { id: "pa3", project_id: "pp1", feature_id: "pf1", feature_title: planningFeatures[0].title, kind: "note", old_status: null, new_status: null, message: "统一壳先落在 theme 层，base 只保留布局。", created_at: iso(70) },
+  ];
 
   const snapBase = (o) => ({
     id: o.id, task_id: o.taskId ?? null, task_title: o.taskTitle ?? null, name: o.name,
@@ -293,6 +383,18 @@ const shim = `
       case "notification_inbox_stats": return { unread: notifications.filter((n) => !n.is_read).length, total: notifications.length };
       case "list_agent_events": return { items: events, has_more: false, filtered_total: events.length };
       case "actions_feed": return actionFeed;
+      case "planning_list_projects":
+        return planningProjects.filter((p) => args?.includeArchived || !p.archived);
+      case "planning_list_features":
+        return planningFeatures.filter((f) => f.project_id === args?.projectId);
+      case "planning_list_milestones":
+        return planningMilestones.filter((m) => m.project_id === args?.projectId);
+      case "planning_activity_page": {
+        const items = planningActivity.filter(
+          (a) => a.project_id === args?.projectId && (!args?.featureId || a.feature_id === args.featureId),
+        );
+        return { items, has_more: false };
+      }
       case "actions_ack":
       case "actions_unack": return 1;
       case "actions_open_session": return { success: true, requested_action: "resume_session", actual_action: "resume_session", fallback_used: false, target_id: args?.sessionId ?? "", reason: null, verification_level: "window-confirmed" };

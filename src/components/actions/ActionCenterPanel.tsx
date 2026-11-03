@@ -406,7 +406,7 @@ export default function ActionCenterPanel() {
                     if (el) rowRefs.current.set(item.id, el);
                     else rowRefs.current.delete(item.id);
                   }}
-                  className={`action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""} ${
+                  className={`task-card action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""} ${
                     leavingId === item.id ? "leaving" : ""
                   }`}
                 >
@@ -416,7 +416,7 @@ export default function ActionCenterPanel() {
                     title={item.kind === "reminder" ? "查看任务" : "跳转到该 Agent 会话"}
                   >
                     <div className="action-head">
-                      <span className={`action-prio p${item.priority}`}>
+                      <span className={`priority-tag p${item.priority}`}>
                         {PRIORITY_LABELS[item.priority] ?? "P3"}
                       </span>
                       <span className={`action-kind k-${item.kind}`}>

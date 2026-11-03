@@ -200,7 +200,7 @@ export function PlanningFeatureCard({
 
   return (
     <div
-      className={`planning-card ${leaving ? "is-leaving" : ""}`}
+      className={`task-card planning-card ${leaving ? "is-leaving" : ""}`}
       data-feature-id={feature.id}
     >
       <button
@@ -214,7 +214,7 @@ export function PlanningFeatureCard({
           <em className={`planning-status ${statusBadgeClass(feature.status)}`}>
             {PLANNING_FEATURE_STATUS_LABELS[feature.status]}
           </em>
-          <span className="chip">{feature.priority}</span>
+          <span className={`priority-tag ${feature.priority.toLowerCase()}`}>{feature.priority}</span>
           <span className={`planning-progress ${feature.step_total === 0 ? "none" : ""}`}>
             {stepProgressText(feature)}
           </span>

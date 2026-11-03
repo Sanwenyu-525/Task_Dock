@@ -5,13 +5,17 @@ import { describe, expect, it } from "vitest";
 import {
   AUTO_DISMISS_MS,
   MAX_VISIBLE,
+  actionLabel,
   actionsFor,
   applyIncoming,
   detailRows,
+  visibleSummary,
   findEvictionIndex,
+  hasUsefulDetails,
   isCriticalKind,
   mergeKeyOf,
   normalizeKind,
+  primaryActionFor,
   relativeTime,
   remainingMs,
   resumeDeadline,
@@ -220,12 +224,88 @@ describe("动作配置的诚实性", () => {
     expect(disconnected).toEqual(["view"]);
   });
 
-  it("等待卡提供 立即处理 + 稍后提醒；摘要卡提供 展开 + 通知中心", () => {
-    expect(actionsFor(queued({ kind: "agent_waiting" }))).toEqual(["handle", "snooze"]);
-    expect(actionsFor(queued({ kind: "digest", mergeKey: "digest" }))).toEqual([
-      "expand",
-      "center",
-    ]);
+  it("等待卡提供 立即处理 + 稍后提醒；摘要卡只保留通知中心外部入口", () => {
+    const waiting = queued({ kind: "agent_waiting" });
+    waiting.sourceId = "codex";
+    waiting.sessionId = "s1";
+    expect(actionsFor(waiting)).toEqual(["handle", "snooze"]);
+    // 摘要卡的就地展开由底部详情入口承担，避免同一语义出现两个按钮
+    expect(actionsFor(queued({ kind: "digest", mergeKey: "digest" }))).toEqual(["center"]);
+  });
+
+  it("缺少可靠会话信息时等待卡退化为打开 Agent 页面并如实改文案", () => {
+    const waiting = queued({ kind: "agent_waiting" });
+    delete waiting.sourceId;
+    delete waiting.sessionId;
+    expect(actionsFor(waiting)).toEqual(["view", "snooze"]);
+    expect(actionLabel(waiting, "view")).toBe("打开 Agent 面板");
+  });
+
+  it("可定位时按钮文案准确区分定位与打开页面", () => {
+    const failed = queued({ kind: "agent_failed" });
+    expect(actionLabel(failed, "view")).toBe("打开 Agent 面板");
+    expect(
+      actionLabel({ ...failed, sourceId: "codex", sessionId: "s1" }, "view"),
+    ).toBe("查看失败详情");
+    expect(
+      actionLabel({ ...failed, kind: "agent_done", sourceId: "codex", sessionId: "s1" }, "view"),
+    ).toBe("定位本轮");
+  });
+
+  it("完成/执行中不显示全宽强主按钮，失败/等待保留醒目操作", () => {
+    expect(primaryActionFor(queued({ kind: "agent_done" }))).toBeNull();
+    expect(primaryActionFor(queued({ kind: "agent_running" }))).toBeNull();
+    expect(primaryActionFor(queued({ kind: "agent_failed" }))).toBe("view");
+    const waiting = queued({ kind: "agent_waiting" });
+    waiting.sourceId = "codex";
+    waiting.sessionId = "s1";
+    expect(primaryActionFor(waiting)).toBe("handle");
+  });
+
+  it("详情不重复展示顶部已有时间；无补充信息不出展开入口", () => {
+    const running = queued({ kind: "agent_running" });
+    // 正文已含 sourceId，且无其他补充 → 无展开
+    expect(detailRows(running, NOW)).toEqual([]);
+    expect(hasUsefulDetails(running, NOW)).toBe(false);
+    // 失败正文被截断/多行时才提供完整错误详情
+    const failed = queued({
+      kind: "agent_failed",
+      body: "codex · 编译失败：\n" + "x".repeat(70),
+    });
+    expect(detailRows(failed, NOW).some((r) => r.label === "错误详情")).toBe(true);
+  });
+
+  it("完成/失败/等待在正文区展示真实摘要，长原因才进展开详情", () => {
+    // 短原因直接可见（正文区两行内），不重复占展开详情
+    const failed = queued({
+      kind: "agent_failed",
+      detail: "工具执行权限不足：未获得 shell 授权",
+    });
+    expect(visibleSummary(failed)).toBe("工具执行权限不足：未获得 shell 授权");
+    expect(
+      detailRows(failed, NOW).some((r) => r.label === "错误原因"),
+    ).toBe(false);
+
+    const waiting = queued({ kind: "agent_waiting", detail: "需要确认发布环境" });
+    expect(visibleSummary(waiting)).toBe("需要确认发布环境");
+    expect(
+      detailRows(waiting, NOW).some((r) => r.label === "等待原因"),
+    ).toBe(false);
+
+    // 超过正文两行的长原因：正文区仍展示（截断），展开详情给出完整文本
+    const long = "工具执行失败：" + "详情".repeat(60);
+    const longFailed = queued({ kind: "agent_failed", detail: long });
+    expect(
+      detailRows(longFailed, NOW).find((r) => r.label === "错误原因")?.value,
+    ).toBe(long);
+
+    // 完成卡展示事件回执里的结果摘要；没有真实结果时不显示
+    expect(
+      visibleSummary(queued({ kind: "agent_done", detail: "已生成周报摘要" })),
+    ).toBe("已生成周报摘要");
+    expect(visibleSummary(queued({ kind: "agent_done" }))).toBeNull();
+    // 没有原因时不编造等待原因（避免假信息）
+    expect(visibleSummary(queued({ kind: "agent_waiting" }))).toBeNull();
   });
 
   it("执行中/完成提供查看详情", () => {

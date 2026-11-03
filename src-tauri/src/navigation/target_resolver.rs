@@ -75,6 +75,11 @@ pub struct TargetInput {
     /// 允许显示名覆盖（编辑模式）；false = 沿用已存名称
     #[serde(default)]
     pub overwrite_name: bool,
+    /// 允许覆盖已有目标的自定义配置（启动参数/工作目录/标题提示/图标/分类）。
+    /// 默认 false：重复扫描或再次关联同一软件时只复用现有目标，不静默覆盖用户配置；
+    /// 真正修改配置必须走 `update_target` 的显式补丁。
+    #[serde(default)]
+    pub overwrite_config: bool,
 }
 
 /// 任务 ↔ 目标关联（带目标明细与实时运行状态）。
@@ -259,8 +264,14 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
             conn.execute(
                 "UPDATE navigation_targets SET
                    display_name = CASE WHEN ?3 THEN ?4 ELSE display_name END,
-                   exe_path = ?5, launch_args = ?6, working_dir = ?7, app_user_model_id = ?8,
-                   url = ?9, path = ?10, window_title_hint = ?11, icon = ?12, category = ?13,
+                   exe_path = ?5,
+                   launch_args = CASE WHEN ?16 THEN ?6 ELSE launch_args END,
+                   working_dir = CASE WHEN ?16 THEN ?7 ELSE working_dir END,
+                   app_user_model_id = ?8,
+                   url = ?9, path = ?10,
+                   window_title_hint = CASE WHEN ?16 THEN ?11 ELSE window_title_hint END,
+                   icon = CASE WHEN ?16 THEN ?12 ELSE icon END,
+                   category = CASE WHEN ?16 THEN ?13 ELSE category END,
                    agent_source_id = ?14, agent_session_id = ?15,
                    updated_at = ?1
                  WHERE id = ?2",
@@ -280,6 +291,7 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
                     input.category.trim(),
                     input.agent_source_id.trim(),
                     input.agent_session_id.trim(),
+                    input.overwrite_config,
                 ],
             )?;
         } else {
@@ -353,6 +365,10 @@ pub struct TargetPatch {
     pub hidden: Option<bool>,
     pub window_title_hint: Option<String>,
     pub category: Option<String>,
+    /// 显式修改启动参数（唯一的覆盖入口；空字符串表示清空）
+    pub launch_args: Option<String>,
+    /// 显式修改工作目录（空字符串表示清空）
+    pub working_dir: Option<String>,
 }
 
 pub fn update_target(db: &Db, id: &str, patch: &TargetPatch) -> AppResult<()> {
@@ -367,6 +383,14 @@ pub fn update_target(db: &Db, id: &str, patch: &TargetPatch) -> AppResult<()> {
             return Err(AppError::Validation("窗口标题提示超过 64 字符".into()));
         }
     }
+    if let Some(a) = &patch.launch_args {
+        validate_launch_args(a)?;
+    }
+    if let Some(d) = &patch.working_dir {
+        if !d.trim().is_empty() && !std::path::Path::new(d).is_dir() {
+            return Err(AppError::Validation(format!("工作目录不存在: {}", d)));
+        }
+    }
     db.with_conn(|conn| {
         let n = conn.execute(
             "UPDATE navigation_targets SET
@@ -376,6 +400,8 @@ pub fn update_target(db: &Db, id: &str, patch: &TargetPatch) -> AppResult<()> {
                hidden = COALESCE(?4, hidden),
                window_title_hint = COALESCE(?5, window_title_hint),
                category = COALESCE(?6, category),
+               launch_args = COALESCE(?9, launch_args),
+               working_dir = COALESCE(?10, working_dir),
                updated_at = ?7
              WHERE id = ?8",
             rusqlite::params![
@@ -391,6 +417,8 @@ pub fn update_target(db: &Db, id: &str, patch: &TargetPatch) -> AppResult<()> {
                 patch.category.as_deref().map(str::trim),
                 now,
                 id,
+                patch.launch_args.as_deref().map(str::trim),
+                patch.working_dir.as_deref().map(str::trim),
             ],
         )?;
         if n == 0 {
@@ -650,8 +678,10 @@ pub fn set_task_window(db: &Db, link_id: &str, window: Option<&WindowInfo>) -> A
         let (kind, exe) = target.ok_or_else(|| AppError::NotFound("任务关联不存在".into()))?;
         if kind != "application" { return Err(AppError::Validation("只有应用目标可以选择窗口".into())); }
         let identity = if let Some(w) = window {
-            if w.class_name.is_empty() || w.title.is_empty() || exe.is_empty()
-                || !w.exe_path.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&exe)) {
+            if w.class_name.is_empty()
+                || w.title.is_empty()
+                || !super::window_manager::window_belongs_to_target(w, &exe)
+            {
                 return Err(AppError::Validation("窗口所属程序与任务关联的应用不一致".into()));
             }
             Some(serde_json::to_string(&WindowMemory::from_window_with_origin(w, MemoryOrigin::User))?)
@@ -675,8 +705,11 @@ pub fn link_task_window(
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).optional()?;
         let (kind, exe) = target.ok_or_else(|| AppError::NotFound("目标不存在".into()))?;
-        if kind != "application" || exe.is_empty() || w.title.is_empty() || w.class_name.is_empty()
-            || !w.exe_path.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&exe)) {
+        if kind != "application"
+            || w.title.is_empty()
+            || w.class_name.is_empty()
+            || !super::window_manager::window_belongs_to_target(w, &exe)
+        {
             return Err(AppError::Validation("窗口所属程序与任务关联的应用不一致".into()));
         }
         let id = uuid::Uuid::new_v4().to_string();
@@ -931,6 +964,58 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.display_name, "新名字", "覆盖模式改名");
+    }
+
+    #[test]
+    fn rescan_does_not_overwrite_user_config() {
+        let db = Db::open_in_memory().unwrap();
+        let tmp = std::env::temp_dir();
+        let mut first = app_input("C:\\Windows\\notepad.exe", "记事本");
+        first.launch_args = "C:\\work\\note.txt".into();
+        first.working_dir = tmp.to_string_lossy().into_owned();
+        first.window_title_hint = "记事本".into();
+        let a = save_target(&db, &first).unwrap();
+
+        // 再次扫描并关联：扫描给出另一套「建议」，未声明显式覆盖
+        let mut scanned = app_input("C:\\Windows\\notepad.exe", "Notepad");
+        scanned.launch_args = "\"D:\\other.txt\"".into();
+        scanned.working_dir = tmp.to_string_lossy().into_owned();
+        scanned.window_title_hint = "Notepad".into();
+        scanned.icon = "scan-icon".into();
+        let b = save_target(&db, &scanned).unwrap();
+
+        assert_eq!(a.id, b.id, "同软件应复用已有目标");
+        assert_eq!(b.display_name, "记事本", "非覆盖模式沿用旧名");
+        assert_eq!(b.launch_args, first.launch_args, "不得静默覆盖启动参数");
+        assert_eq!(b.working_dir, first.working_dir, "不得静默覆盖工作目录");
+        assert_eq!(b.window_title_hint, "记事本", "不得静默覆盖标题提示");
+        assert_eq!(b.icon, "", "不得静默覆盖图标");
+
+        // 显式覆盖（用户确认）才允许更新配置
+        let c = save_target(
+            &db,
+            &TargetInput {
+                overwrite_config: true,
+                ..scanned.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(c.launch_args, scanned.launch_args);
+        assert_eq!(c.icon, "scan-icon");
+
+        // 只有 explicit update 才是修改配置的唯一入口
+        update_target(
+            &db,
+            &a.id,
+            &TargetPatch {
+                launch_args: Some("--new-args".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let row = get_target(&db, &a.id).unwrap().unwrap();
+        assert_eq!(row.launch_args, "--new-args");
+        assert_eq!(row.working_dir, first.working_dir, "未补丁的字段保持不变");
     }
 
     #[test]

@@ -485,6 +485,9 @@ pub struct MaterialResult {
     /// 是否应用了玻璃效果（原生材质或 CSS 半透明均计为 true；
     /// CSS 模式下桌面仍可透出，只是不做原生模糊）
     pub applied: bool,
+    /// 原生模糊是否真正生效（仅 mica / acrylic / blur 为 true）。
+    /// 前端必须用它与 CSS 玻璃区分，不能把 applied 当原生。
+    pub native: bool,
     /// 实际命中的效果名（mica / acrylic / blur / css / none）
     pub effect: String,
     /// Windows 版本（含 build 号），供 UI 展示降级原因
@@ -614,6 +617,7 @@ fn capsule_glass<R: tauri::Runtime>(
     MaterialResult {
         material: "glass".into(),
         applied: true,
+        native: false,
         effect: "css".into(),
         os_version,
     }
@@ -713,7 +717,7 @@ fn region_clipping_enabled() -> bool {
 /// `ACCENT_ENABLE_BLURBEHIND` 由 DWM 按**整个窗口矩形**合成，`SetWindowRgn`
 /// 裁不到它；圆角外会留下暗/亮楔形（真机像素：blur 角部 [1,11,1]、
 /// acrylic [84,84,84]，无原生材质时同位置干净）。CSS 半透明玻璃没有原生层，
-/// 圆角外直接透出桌面，且 liquid 的 `--window-fill` 本就 76–86% 不透明，
+/// 圆角外直接透出桌面；CSS 玻璃用高不透明度霜面保证可读性，
 /// 视觉损失仅限于「原生模糊」这一层。显式指定的后端原样保留，供矩阵对照。
 fn effective_backend(requested: &str, build: u32, region_enabled: bool) -> String {
     match requested {
@@ -726,15 +730,25 @@ fn effective_backend(requested: &str, build: u32, region_enabled: bool) -> Strin
 /// 对**任意**应用窗口应用/清除原生材质（主窗与右键菜单弹窗共用）。
 /// 后端选择走同一套 `effective_backend`：Win11 + 区域裁剪 → css（CSS 玻璃，
 /// 无原生层），Win10 → Acrylic，显式后端原样保留供矩阵对照。
-/// material: "solid" | "glass"；持久化由调用方负责，这里只动窗口。
+/// material: "solid" | "glass"；preset 为当前视觉预设（v0.9 起用于隔离清透玻璃）。
+/// 持久化由调用方负责，这里只动窗口。
 pub fn apply_material_to_window<R: tauri::Runtime>(
     app: &AppHandle<R>,
     win: &tauri::WebviewWindow<R>,
     material: &str,
+    preset: &str,
 ) -> MaterialResult {
     let build = windows_build();
     let os_version = format!("10.0.{}", build);
-    let backend = effective_backend(&glass_backend(), build, region_clipping_enabled());
+    let requested = glass_backend();
+    // 清透玻璃的契约是「桌面/其他应用原样透过」：Mica、Acrylic、legacy blur
+    // 都会由 DWM 把窗口后的内容糊掉，正好违背目标，因此在 auto 下强制走
+    // CSS（无原生层）通道；显式 TASK_DOCK_GLASS_BACKEND 仍保留给矩阵对照。
+    let backend = if preset == "clear" && requested == "auto" {
+        "css".to_string()
+    } else {
+        effective_backend(&requested, build, region_clipping_enabled())
+    };
     // 胶囊停靠态：原生背景（Mica/Acrylic/blur）一律不挂到窗口——DWM 按整个窗口
     // 矩形绘制它，SetWindowRgn 裁不到（真机证据见文件上方「胶囊停靠态」小节）。
     // 只记录「未停靠时应生效」的效果，解除吸附后恢复；玻璃由 CSS 承担。
@@ -750,6 +764,7 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
         return MaterialResult {
             material: "solid".into(),
             applied: false,
+            native: false,
             effect: "none".into(),
             os_version,
         };
@@ -757,8 +772,8 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
 
     // CSS 玻璃（Win11 + 区域裁剪的默认路径）：不挂任何原生材质。
     // 原生 blur/acr 层会越过区域圆角（暗楔），而 CSS 半透明没有原生层，
-    // 圆角外直接透出桌面；liquid 的 window-fill 本就 76–86% 不透明，
-    // 停用原生模糊的视觉损失有限，且彻底消除暗楔。
+    // 圆角外直接透出桌面；CSS 玻璃用高不透明度霜面保证可读性
+    // （见 styles-themes.css 的 `data-glass-render="css"`），视觉损失仅限「原生模糊」。
     if backend == "css" {
         if let Some(h) = hwnd {
             note_native_desire(h, NativeBackdrop::None);
@@ -768,6 +783,7 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
         return MaterialResult {
             material: "glass".into(),
             applied: true,
+            native: false,
             effect: "css".into(),
             os_version,
         };
@@ -799,6 +815,7 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
         return MaterialResult {
             material: "glass".into(),
             applied: want_blur && ok,
+            native: want_blur && ok,
             effect: if want_blur { "blur" } else { "none" }.into(),
             os_version,
         };
@@ -819,6 +836,7 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
             return MaterialResult {
                 material: "glass".into(),
                 applied: true,
+                native: true,
                 effect: "acrylic".into(),
                 os_version,
             };
@@ -838,6 +856,7 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
             return MaterialResult {
                 material: "glass".into(),
                 applied: true,
+                native: true,
                 effect: "mica".into(),
                 os_version,
             };
@@ -858,6 +877,7 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
             return MaterialResult {
                 material: "glass".into(),
                 applied: true,
+                native: true,
                 effect: "acrylic".into(),
                 os_version,
             };
@@ -872,19 +892,26 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
     MaterialResult {
         material: "glass".into(),
         applied: false,
+        native: false,
         effect: "none".into(),
         os_version,
     }
 }
 
 /// 应用/清除窗口原生材质效果。material: "solid" | "glass"。
+/// preset 用于隔离清透玻璃（该预设强制无原生模糊）；缺省按液态玻璃处理。
 /// 持久化由前端 update_settings 完成；这里只动窗口。
 #[tauri::command]
-pub fn apply_window_material(app: AppHandle, material: String) -> AppResult<MaterialResult> {
+pub fn apply_window_material(
+    app: AppHandle,
+    material: String,
+    preset: Option<String>,
+) -> AppResult<MaterialResult> {
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
-    Ok(apply_material_to_window(&app, &win, &material))
+    let preset = preset.unwrap_or_else(|| "liquid-glass".into());
+    Ok(apply_material_to_window(&app, &win, &material, &preset))
 }
 
 /// 右键菜单弹窗的材质策略（真机矩阵结论，visual-remediation/native-composition）：
@@ -901,13 +928,15 @@ pub fn apply_menu_material<R: tauri::Runtime>(
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
     if forced {
-        return apply_material_to_window(app, win, "glass");
+        // 弹窗始终按液态玻璃语义处理：清透的全透明策略只属于主窗。
+        return apply_material_to_window(app, win, "glass", "liquid-glass");
     }
     let w = win.clone();
     let _ = run_material(app, move || clear_native_materials(&w));
     MaterialResult {
         material: "glass".into(),
         applied: false,
+        native: false,
         effect: "none".into(),
         os_version: format!("10.0.{}", windows_build()),
     }

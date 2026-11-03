@@ -54,6 +54,8 @@ pub struct NotifyItem {
     pub source_id: Option<String>,
     /// 所属会话（agent_sessions.id）。
     pub session_id: Option<String>,
+    /// 事件附带的原因/错误摘要（失败/等待卡展开详情用；不写入通知历史正文）。
+    pub detail: Option<String>,
 }
 
 impl NotifyItem {
@@ -64,6 +66,12 @@ impl NotifyItem {
             body: body.into(),
             ..Default::default()
         }
+    }
+
+    /// 附带回执原因（失败错误、等待原因），只供通知窗口模板展示。
+    pub fn with_detail(mut self, detail: Option<String>) -> Self {
+        self.detail = detail;
+        self
     }
 
     /// 携带跳转元数据的完整构造（ingest / 断连清理使用）。
@@ -104,6 +112,8 @@ pub struct Popup {
     pub ref_id: Option<String>,
     pub source_id: Option<String>,
     pub session_id: Option<String>,
+    /// 事件原因/错误摘要（仅通知窗口模板使用，不进入 OS toast）。
+    pub detail: Option<String>,
     /// 受理时间（RFC3339，本地展示「刚刚 / N 分钟前」）。
     pub created_at: String,
 }
@@ -117,6 +127,7 @@ impl Popup {
             ref_id: item.ref_id.clone(),
             source_id: item.source_id.clone(),
             session_id: item.session_id.clone(),
+            detail: item.detail.clone(),
             created_at,
         }
     }
@@ -129,6 +140,7 @@ impl Popup {
             ref_id: None,
             source_id: None,
             session_id: None,
+            detail: None,
             created_at,
         }
     }

@@ -7,17 +7,19 @@ export type Tab =
   | "actions"
   | "clipboard"
   | "inbox"
+  | "shelf"
   | "history"
   | "roadmap"
   | "settings";
 
-/** 完整模式侧边栏顺序：导航渲染、Ctrl+1…8、快捷键说明共用这一处定义。 */
+/** 完整模式侧边栏顺序：导航渲染、Ctrl+1…9、快捷键说明共用这一处定义。 */
 export const TAB_ORDER: readonly Tab[] = [
   "tasks",
   "agents",
   "actions",
   "clipboard",
   "inbox",
+  "shelf",
   "history",
   "roadmap",
   "settings",

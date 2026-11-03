@@ -12,7 +12,9 @@ import {
   countByKind,
   detailRows,
   normalizeKind,
+  primaryActionFor,
   relativeTime,
+  visibleSummary,
   waitingDuration,
 } from "./notificationUtils";
 import NotificationIcon, { kindAriaLabel } from "./NotificationIcon";
@@ -37,6 +39,7 @@ function chipClass(kind: string): string {
 
 export default function NotificationCard({
   card,
+  held = false,
   leaving,
   expanded,
   busy,
@@ -46,6 +49,8 @@ export default function NotificationCard({
   onAction,
 }: {
   card: QueuedCard;
+  /** 窗口已可见时新增：先占位不绘制，等窗口按新高度显示后再播入场动画。 */
+  held?: boolean;
   leaving: boolean;
   expanded: boolean;
   busy: ActionId | null;
@@ -106,6 +111,8 @@ export default function NotificationCard({
   const kind = normalizeKind(card.kind);
   const now = Date.now();
   const rows = detailRows(card, now);
+  // 完成=结果摘要、失败=错误原因、等待=等待原因；只用事件回执里的真实内容。
+  const summary = visibleSummary(card);
 
   const toggleExpand = () => onAction(card, "expand");
 
@@ -149,7 +156,7 @@ export default function NotificationCard({
 
   return (
     <article
-      className={`ntf-card${leaving ? " leaving" : ""}${expanded ? " expanded" : ""}`}
+      className={`ntf-card${held ? " ntf-held" : ""}${leaving ? " leaving" : ""}${expanded ? " expanded" : ""}`}
       data-state={kind}
       role="group"
       aria-label={kindAriaLabel(card.kind)}
@@ -161,13 +168,19 @@ export default function NotificationCard({
         hoverRef.current = false;
         syncHold();
       }}
-      onFocus={() => {
-        focusRef.current = true;
-        syncHold();
+      onFocus={(e) => {
+        if (e.currentTarget.contains(e.target as Node)) {
+          focusRef.current = true;
+          syncHold();
+        }
       }}
-      onBlur={() => {
-        focusRef.current = false;
-        syncHold();
+      onBlur={(e) => {
+        // 焦点在卡片内按钮间移动时不释放暂停；只有真正离开卡片才恢复倒计时。
+        const next = e.relatedTarget as Node | null;
+        if (!next || !e.currentTarget.contains(next)) {
+          focusRef.current = false;
+          syncHold();
+        }
       }}
     >
       <header className="ntf-head">
@@ -192,6 +205,10 @@ export default function NotificationCard({
         <div className="ntf-title-zone">
           <h3 className="ntf-title">{card.title}</h3>
           <p className="ntf-body">{card.body}</p>
+          {summary && (
+            // 两行截断：完整内容仍走展开详情，避免长错误/长路径撑破卡片
+            <p className="ntf-summary">{summary}</p>
+          )}
           {special}
         </div>
       </div>
@@ -203,8 +220,9 @@ export default function NotificationCard({
       )}
 
       <NotificationActions
+        card={card}
         actions={actionsFor(card)}
-        primaryId={kind === "agent_waiting" ? "handle" : kind === "digest" ? "expand" : "view"}
+        primaryId={primaryActionFor(card)}
         busy={busy}
         expanded={expanded}
         onAction={(id) => onAction(card, id)}
@@ -213,7 +231,11 @@ export default function NotificationCard({
       {expanded && rows.length > 0 && (
         <div className="ntf-extra">
           {rows.map((r, i) => (
-            <div key={`${r.label}-${i}`} className="ntf-extra-line">
+            <div
+              key={`${r.label}-${i}`}
+              // 长原因/长路径改为整行左对齐，避免被 max-width 挤成右对齐的多行碎块
+              className={`ntf-extra-line${r.value.length > 36 ? " long" : ""}`}
+            >
               <span>{r.label}</span>
               <strong className={r.warning ? "warning" : undefined}>{r.value}</strong>
             </div>
@@ -221,10 +243,19 @@ export default function NotificationCard({
         </div>
       )}
 
-      <button type="button" className="ntf-inline-expand" onClick={toggleExpand}>
-        <span>{expanded ? "收起详情" : "展开详情"}</span>
-        <ChevronDown size={13} className={expanded ? "flip" : undefined} aria-hidden="true" />
-      </button>
+      {/* 只有存在补充信息时才提供就地展开；纯重复信息不再显示无意义入口。 */}
+      {rows.length > 0 && (
+        <button
+          type="button"
+          className="ntf-inline-expand"
+          aria-expanded={expanded}
+          aria-label={expanded ? "收起详情" : "展开详情"}
+          onClick={toggleExpand}
+        >
+          <span>{expanded ? "收起详情" : "展开详情"}</span>
+          <ChevronDown size={13} className={expanded ? "flip" : undefined} aria-hidden="true" />
+        </button>
+      )}
     </article>
   );
 }

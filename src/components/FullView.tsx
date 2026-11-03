@@ -1,4 +1,4 @@
-//! 完整模式：左侧垂直导航 + 任务 / Agent / 行动 / 剪贴板 / 收集箱 / 历史 / 规划中心 / 设置 八个面板。
+//! 完整模式：左侧垂直导航 + 任务 / Agent / 行动 / 剪贴板 / 收集箱 / 暂存架 / 历史 / 规划中心 / 设置 九个面板。
 //!
 //! v0.6：由顶部横向标签改为**左侧垂直导航**（两套视觉预设共用同一结构）。
 //! - 图标 + 文字，选中态由预设决定（梦幻渐变=淡色药丸，液态玻璃=玻璃胶囊）
@@ -7,6 +7,7 @@
 //! - 窄窗（< 380px）时只留图标，避免挤压右侧统计卡与筛选行
 //! - v0.6：剪贴板正式成为第 4 个入口（不再是覆盖整屏的抽屉）
 //! - v0.7：新增「收集箱」（剪贴板之后、历史之前）与「规划中→规划中心」（历史之后、设置之前）入口
+//! - v0.8：新增「暂存架」（收集箱之后、历史之前）入口
 //!
 //! 徽标口径：收集箱徽标 = 未处理捕获条数（useCaptureStore.inboxCount），
 //! 进入完整模式时拉取一次，捕获产生/面板处理后由 store 自身刷新，不做轮询。
@@ -21,11 +22,14 @@ import AgentPanel from "./agents/AgentPanel";
 import ActionCenterPanel from "./actions/ActionCenterPanel";
 import ClipboardPanel from "./clipboard/ClipboardPanel";
 import CaptureInboxPanel from "./inbox/CaptureInboxPanel";
+import ShelfPanel from "./shelf/ShelfPanel";
 import HistoryPanel from "./history/HistoryPanel";
 import PlanningCenterPanel from "./roadmap/PlanningCenterPanel";
 import SettingsPanel from "./settings/SettingsPanel";
-import { Inbox, ListTodo, Zap, Clipboard, History, Map, Settings as SettingsIcon, Plus } from "lucide-react";
+import { Inbox, ListTodo, Clipboard, History, Map, Settings as SettingsIcon, Plus, Archive } from "lucide-react";
 import AgentIcon, { type IconComponent } from "./ui/AgentIcon";
+import PointerClickIcon from "./ui/PointerClickIcon";
+import { railTipPlacement } from "./capsule/CapsuleRail";
 
 const TAB_META: Record<
   Tab,
@@ -33,9 +37,11 @@ const TAB_META: Record<
 > = {
   tasks: { label: "任务", icon: ListTodo, badge: "pending" },
   agents: { label: "Agent", icon: AgentIcon, badge: "intervention" },
-  actions: { label: "行动", icon: Zap, badge: "attention" },
+  actions: { label: "行动", icon: PointerClickIcon, badge: "attention" },
   clipboard: { label: "剪贴板", icon: Clipboard },
   inbox: { label: "收集箱", icon: Inbox, badge: "inbox" },
+  // v0.8：文件暂存架（收集箱之后、历史之前）
+  shelf: { label: "暂存架", icon: Archive },
   history: { label: "历史", icon: History },
   // v0.7：规划中心（Tab 身份仍为 roadmap，内置路线图保留为其中一个数据源）
   roadmap: { label: "规划中心", icon: Map },
@@ -44,6 +50,9 @@ const TAB_META: Record<
 
 // 顺序取自 TAB_ORDER：导航渲染与 Ctrl+1…8 共用同一份定义，不会各自漂移
 const TABS = TAB_ORDER.map((id) => ({ id, ...TAB_META[id] }));
+// 完整悬浮栏（自由位置、未贴边停靠）：提示方向保持原有语义「图标右侧」，
+// 不套用停靠四边朝内映射；形态显式传给纯函数，避免靠 edge 值推断。
+const FLOATING_TIP_PLACEMENT = railTipPlacement("floating", null, false);
 
 export default function FullView() {
   const tab = useUiStore((s) => s.tab);
@@ -77,6 +86,7 @@ export default function FullView() {
           <button
             className="rail-new-task"
             data-tip="新建任务 (Ctrl+K)"
+            data-tip-placement={FLOATING_TIP_PLACEMENT}
             aria-label="新建任务"
             onClick={() => {
               setTab("tasks");
@@ -99,6 +109,7 @@ export default function FullView() {
                 // 提示条走统一的 data-tip（原生 title 会弹出系统样式提示）。
                 aria-label={count > 0 ? `${t.label}（${count}）` : t.label}
                 data-tip={t.label}
+                data-tip-placement={FLOATING_TIP_PLACEMENT}
               >
                 <span className="rail-icon">
                   <t.icon size={18} strokeWidth={1.75} />
@@ -120,6 +131,7 @@ export default function FullView() {
         {tab === "actions" && <ActionCenterPanel />}
         {tab === "clipboard" && <ClipboardPanel />}
         {tab === "inbox" && <CaptureInboxPanel />}
+        {tab === "shelf" && <ShelfPanel />}
         {tab === "history" && <HistoryPanel />}
         {tab === "roadmap" && <PlanningCenterPanel />}
         {tab === "settings" && <SettingsPanel />}

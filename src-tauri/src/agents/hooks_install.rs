@@ -127,50 +127,188 @@ fn backup(path: &Path) -> AppResult<Option<PathBuf>> {
     Ok(Some(bak))
 }
 
-/// 原子写入：先写临时文件再替换；失败时用备份回滚。
-fn atomic_write(path: &Path, content: &str, backup_path: Option<&Path>) -> AppResult<()> {
-    let tmp = path.with_extension("taskdock-tmp");
-    std::fs::write(&tmp, content)?;
-    let replaced = std::fs::rename(&tmp, path);
-    if replaced.is_err() && path.exists() {
-        // Windows 上 rename 不覆盖既有文件：删除原文件后重试（此前已有备份）
-        if std::fs::remove_file(path).is_ok() && std::fs::rename(&tmp, path).is_ok() {
-            return Ok(());
-        }
-        // 重试仍失败 → 回滚
-        if let Some(bak) = backup_path {
-            let _ = std::fs::copy(bak, path);
-        }
-        let _ = std::fs::remove_file(&tmp);
-        return Err(AppError::Agent(format!(
-            "写入 {} 失败（已从备份回滚）",
-            path.display()
-        )));
-    } else if replaced.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(AppError::Agent(format!("写入 {} 失败", path.display())));
+fn tmp_path_for(path: &Path, tag: &str) -> PathBuf {
+    let name = format!(
+        "taskdock-{}-{}.tmp",
+        tag,
+        &uuid::Uuid::new_v4().to_string()[..8]
+    );
+    path.with_file_name(name)
+}
+
+/// 原子替换目标文件。
+///
+/// Windows 上 `std::fs::rename` 不能覆盖既有文件，旧实现「删除原文件再 rename」
+/// 存在原文件已删、新文件未就位的窗口期（进程中断/杀毒占用时配置直接丢失）。
+/// 改用 `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`：
+/// 单次 API 完成替换，且写穿透到磁盘后才返回。
+#[cfg(windows)]
+fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    #[cfg(test)]
+    if fail_replace_injected(tmp) {
+        return Err(std::io::Error::other("fault-injection: replace failed"));
+    }
+
+    let wide = |p: &Path| -> Vec<u16> {
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let src = wide(tmp);
+    let dst = wide(path);
+    let ok = unsafe {
+        MoveFileExW(
+            src.as_ptr(),
+            dst.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
 
-/// 安装（或幂等更新）Task Dock hooks，保留全部第三方配置。
-pub fn install_hooks(path: &Path, specs: &[HookSpec]) -> AppResult<HooksFileReport> {
+#[cfg(not(windows))]
+fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if fail_replace_injected(tmp) {
+        return Err(std::io::Error::other("fault-injection: replace failed"));
+    }
+    std::fs::rename(tmp, path)
+}
+
+#[cfg(test)]
+thread_local! {
+    // 每个测试在独立线程运行，thread_local 保证故障注入不会影响并行测试。
+    static FAIL_REPLACE_AFTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// 故障注入：让第 N 次替换失败（0 表示不注入）。用于验证回滚与多文件一致性。
+#[cfg(test)]
+fn fail_replace_injected(_tmp: &Path) -> bool {
+    FAIL_REPLACE_AFTER.with(|c| {
+        let remaining = c.get();
+        if remaining == 0 {
+            return false;
+        }
+        c.set(remaining - 1);
+        remaining == 1
+    })
+}
+
+#[cfg(test)]
+fn inject_replace_failure_after(n: usize) {
+    FAIL_REPLACE_AFTER.with(|c| c.set(n));
+}
+
+/// 从备份恢复并做内容校验：返回 Err 时调用方必须如实报告「回滚失败」。
+fn restore_from_backup(path: &Path, backup: &Path) -> std::io::Result<()> {
+    let data = std::fs::read(backup)?;
+    let tmp = tmp_path_for(path, "restore");
+    std::fs::write(&tmp, &data)?;
+    let replaced = replace_file(&tmp, path);
+    let _ = std::fs::remove_file(&tmp);
+    replaced?;
+    let after = std::fs::read(path)?;
+    if after != data {
+        return Err(std::io::Error::other("恢复后内容校验不一致"));
+    }
+    Ok(())
+}
+
+/// 原子写入：临时文件 + 同步落盘 + 单次原子替换；任何失败都尝试备份回滚，
+/// 并如实区分「回滚成功」与「回滚失败（备份保留，需人工恢复）」。
+fn atomic_write(path: &Path, content: &str, backup_path: Option<&Path>) -> AppResult<()> {
+    let Some(parent) = path.parent() else {
+        return Err(AppError::Agent(format!(
+            "写入 {} 失败：无法确定配置目录",
+            path.display()
+        )));
+    };
+    if !parent.exists() {
+        return Err(AppError::Agent(format!(
+            "写入 {} 失败：配置目录 {} 不存在",
+            path.display(),
+            parent.display()
+        )));
+    }
+    let tmp = tmp_path_for(path, "tmp");
+    let write_res = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(content.as_bytes())?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(AppError::Agent(format!(
+            "写入 {} 的临时文件失败：{}（原文件未改动）",
+            path.display(),
+            e
+        )));
+    }
+    if let Err(e) = replace_file(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(match backup_path {
+            Some(bak) => match restore_from_backup(path, bak) {
+                Ok(()) => AppError::Agent(format!(
+                    "写入 {} 失败：{}；已从备份 {} 回滚并通过内容校验",
+                    path.display(),
+                    e,
+                    bak.display()
+                )),
+                Err(restore_err) => AppError::Agent(format!(
+                    "写入 {} 失败：{}；回滚失败（{}），备份保留在 {}，请人工恢复",
+                    path.display(),
+                    e,
+                    restore_err,
+                    bak.display()
+                )),
+            },
+            None => AppError::Agent(format!(
+                "写入 {} 失败：{}；原文件不存在，未产生可回滚状态",
+                path.display(),
+                e
+            )),
+        });
+    }
+    Ok(())
+}
+
+/// 校验所有 spec 都带 Task Dock 标记，避免写入无法识别的条目。
+fn validate_specs(specs: &[HookSpec]) -> AppResult<()> {
     for s in specs {
         if !s.command.contains(MARKER) {
             return Err(AppError::Validation("hook 命令缺少 Task Dock 标记".into()));
         }
     }
-    let existed = path.exists();
-    let mut root = read_json(path)?.unwrap_or_else(|| Value::Object(Default::default()));
-    if !root.is_object() {
-        return Err(AppError::Agent(format!(
-            "{} 顶层不是 JSON 对象，拒绝修改（请人工检查）",
-            path.display()
-        )));
+    Ok(())
+}
+
+/// 读取并校验目标文件可作为 hooks 配置修改（损坏/非对象一律拒绝，不做任何写入）。
+fn validated_root(path: &Path) -> AppResult<Option<Value>> {
+    let root = read_json(path)?;
+    if let Some(v) = &root {
+        if !v.is_object() {
+            return Err(AppError::Agent(format!(
+                "{} 顶层不是 JSON 对象，拒绝修改（请人工检查）",
+                path.display()
+            )));
+        }
     }
+    Ok(root)
+}
 
-    let bak = backup(path)?;
-
+/// 只增删 Task Dock 自己的条目，返回（第三方条目数，Task Dock 事件列表）。
+fn apply_specs(root: &mut Value, specs: &[HookSpec]) -> (usize, Vec<String>) {
     let obj = root.as_object_mut().unwrap();
     let hooks = obj
         .entry("hooks".to_string())
@@ -208,21 +346,142 @@ pub fn install_hooks(path: &Path, specs: &[HookSpec]) -> AppResult<HooksFileRepo
         arr.push(Value::Object(group));
         installed.push(spec.event.clone());
     }
+    (third_party, installed)
+}
 
+/// 写后语义校验：文件可解析，且每个 spec 事件下确实存在 Task Dock 条目。
+fn verify_applied(path: &Path, specs: &[HookSpec]) -> bool {
+    let Ok(Some(root)) = read_json(path) else {
+        return false;
+    };
+    let Some(hooks) = root.get("hooks").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    specs.iter().all(|s| {
+        hooks
+            .get(&s.event)
+            .and_then(|l| l.as_array())
+            .map(|arr| arr.iter().any(is_our_hook))
+            .unwrap_or(false)
+    })
+}
+
+/// 单文件安装（自动备份 + 写后校验 + 失败回滚）。
+fn install_one(
+    path: &Path,
+    specs: &[HookSpec],
+    existed: bool,
+    bak: Option<&Path>,
+) -> AppResult<HooksFileReport> {
+    let mut root = validated_root(path)?.unwrap_or_else(|| Value::Object(Default::default()));
+    let (third_party, installed) = apply_specs(&mut root, specs);
     let pretty = serde_json::to_string_pretty(&root)?;
-    atomic_write(path, &pretty, bak.as_deref())?;
+    atomic_write(path, &pretty, bak)?;
 
-    // 写后校验：重新读取必须可解析
-    let valid = read_json(path)?.is_some();
+    if !verify_applied(path, specs) {
+        let rollback = match bak {
+            Some(b) => restore_from_backup(path, b)
+                .map(|_| "，已从备份回滚".to_string())
+                .unwrap_or_else(|e| format!("，回滚失败（{}），需人工恢复", e)),
+            None => {
+                let _ = std::fs::remove_file(path);
+                "，已移除本次新建文件".to_string()
+            }
+        };
+        return Err(AppError::Agent(format!(
+            "{} 写入后校验失败{}",
+            path.display(),
+            rollback
+        )));
+    }
 
     Ok(HooksFileReport {
         path: path.to_string_lossy().to_string(),
         existed_before: existed,
         third_party_entries: third_party,
         installed_events: installed,
-        backup: bak.as_ref().map(|b| b.to_string_lossy().to_string()),
-        valid_json_after_write: valid,
+        backup: bak.map(|b| b.to_string_lossy().to_string()),
+        valid_json_after_write: true,
     })
+}
+
+/// 安装（或幂等更新）Task Dock hooks，保留全部第三方配置。
+pub fn install_hooks(path: &Path, specs: &[HookSpec]) -> AppResult<HooksFileReport> {
+    validate_specs(specs)?;
+    let existed = path.exists();
+    let _ = validated_root(path)?;
+    let bak = backup(path)?;
+    install_one(path, specs, existed, bak.as_deref())
+}
+
+/// 多配置文件事务化安装（Trae 国际/CN、WorkBuddy 多配置根）。
+///
+/// 任一步失败时按快照恢复**全部**目标文件；恢复失败逐项如实报告，
+/// 不会把「部分写入」伪装成成功，也不会删除第三方 hooks。
+pub fn install_hooks_set(paths: &[PathBuf], specs: &[HookSpec]) -> AppResult<Vec<HooksFileReport>> {
+    validate_specs(specs)?;
+    if paths.is_empty() {
+        return Err(AppError::Agent("没有可写入的 hooks 配置文件".into()));
+    }
+    // 预校验所有目标：任一文件损坏或顶层非对象，整体拒绝，绝不先写一半。
+    for p in paths {
+        validated_root(p)
+            .map_err(|e| AppError::Agent(format!("预检查失败，未写入任何文件：{}", e)))?;
+    }
+
+    // 统一快照（备份文件独立于事务；失败后仍可用于人工恢复）。
+    let mut snapshots: Vec<(PathBuf, bool, Option<PathBuf>)> = Vec::new();
+    for p in paths {
+        let existed = p.exists();
+        let bak = backup(p)?;
+        snapshots.push((p.clone(), existed, bak));
+    }
+
+    let mut reports = Vec::new();
+    for (idx, p) in paths.iter().enumerate() {
+        let (_, existed, bak) = &snapshots[idx];
+        match install_one(p, specs, *existed, bak.as_deref()) {
+            Ok(r) => reports.push(r),
+            Err(e) => {
+                let mut restored = 0usize;
+                let mut failed: Vec<String> = Vec::new();
+                for (sp, sp_existed, sp_bak) in &snapshots {
+                    let outcome = match sp_bak {
+                        Some(b) => restore_from_backup(sp, b),
+                        None if !*sp_existed => {
+                            if sp.exists() {
+                                std::fs::remove_file(sp)
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        None => Ok(()),
+                    };
+                    match outcome {
+                        Ok(()) => restored += 1,
+                        Err(x) => failed.push(format!("{}（{}）", sp.display(), x)),
+                    }
+                }
+                let detail = if failed.is_empty() {
+                    format!("已按快照恢复全部 {} 个配置文件", restored)
+                } else {
+                    format!(
+                        "已恢复 {} 个文件；{} 个恢复失败：{}",
+                        restored,
+                        failed.len(),
+                        failed.join("；")
+                    )
+                };
+                return Err(AppError::Agent(format!(
+                    "{} 安装失败：{}；{}",
+                    p.display(),
+                    e,
+                    detail
+                )));
+            }
+        }
+    }
+    Ok(reports)
 }
 
 /// 卸载 Task Dock hooks：只删自己的条目，保留第三方；清理空组。
@@ -279,7 +538,34 @@ pub fn uninstall_hooks(path: &Path) -> AppResult<HooksFileReport> {
 
     let pretty = serde_json::to_string_pretty(&root)?;
     atomic_write(path, &pretty, bak.as_deref())?;
-    let valid = read_json(path)?.is_some();
+
+    // 写后校验：必须可解析，且确实不再包含任何 Task Dock 条目。
+    let mut valid = read_json(path)?.is_some();
+    if valid {
+        if let Some(v) = read_json(path)? {
+            if let Some(hooks) = v.get("hooks").and_then(|h| h.as_object()) {
+                if hooks
+                    .values()
+                    .filter_map(|l| l.as_array())
+                    .any(|arr| arr.iter().any(is_our_hook))
+                {
+                    valid = false;
+                }
+            }
+        }
+    }
+    if !valid {
+        if let Some(b) = bak.as_deref() {
+            let restored = restore_from_backup(path, b)
+                .map(|_| "已从备份回滚".to_string())
+                .unwrap_or_else(|e| format!("回滚失败（{}），需人工恢复", e));
+            return Err(AppError::Agent(format!(
+                "{} 卸载后校验失败；{}",
+                path.display(),
+                restored
+            )));
+        }
+    }
 
     Ok(HooksFileReport {
         path: path.to_string_lossy().to_string(),
@@ -468,6 +754,76 @@ mod tests {
         let err = install_hooks(&path, &[spec("Stop")]).unwrap_err();
         assert!(err.to_string().contains("不是合法 JSON"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json !!!");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn replace_failure_rolls_back_original_and_reports_rollback() {
+        let dir = tmpdir();
+        let path = dir.join("hooks.json");
+        let original = r#"{"hooks":{"Stop":[{"hooks":[{"command":"third-party"}]}]}}"#;
+        std::fs::write(&path, original).unwrap();
+
+        inject_replace_failure_after(1);
+        let err = install_hooks(&path, &[spec("Stop")]).unwrap_err();
+        inject_replace_failure_after(0);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "替换失败后必须恢复原始内容"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("回滚"), "错误必须如实说明回滚结果: {msg}");
+        assert!(!msg.contains("回滚失败"), "本次注入的回滚应成功: {msg}");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "不得遗留临时文件");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn multi_file_prevalidation_prevents_partial_write() {
+        let dir = tmpdir();
+        let good = dir.join("a.json");
+        let bad = dir.join("b.json");
+        std::fs::write(&good, r#"{"hooks":{}}"#).unwrap();
+        std::fs::write(&bad, "{ not json !!!").unwrap();
+
+        let err = install_hooks_set(&[good.clone(), bad.clone()], &[spec("Stop")]).unwrap_err();
+        assert!(err.to_string().contains("预检查"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&good).unwrap(),
+            r#"{"hooks":{}}"#,
+            "预检查失败时不得写入第一个文件"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn multi_file_failure_restores_every_target() {
+        let dir = tmpdir();
+        let a = dir.join("a.json");
+        let b = dir.join("b.json");
+        let a_original = r#"{"hooks":{"Stop":[{"hooks":[{"command":"a-third"}]}]}}"#;
+        let b_original = r#"{"hooks":{"Stop":[{"hooks":[{"command":"b-third"}]}]}}"#;
+        std::fs::write(&a, a_original).unwrap();
+        std::fs::write(&b, b_original).unwrap();
+
+        // 第 1 次替换成功（a），第 2 次失败（b）→ 必须把 a、b 都恢复到快照。
+        inject_replace_failure_after(2);
+        let err = install_hooks_set(&[a.clone(), b.clone()], &[spec("Stop")]).unwrap_err();
+        inject_replace_failure_after(0);
+
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), a_original);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), b_original);
+        assert!(
+            err.to_string().contains("恢复"),
+            "错误必须说明一致性恢复结果: {err}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

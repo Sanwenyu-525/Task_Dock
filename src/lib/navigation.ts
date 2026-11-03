@@ -61,6 +61,11 @@ export interface TargetInput {
   icon?: string;
   category?: string;
   overwrite_name?: boolean;
+  /**
+   * 显式覆盖已有目标的自定义配置（启动参数/工作目录/标题/图标/分类）。
+   * 扫描建议默认 false：重复关联同一软件时只复用现有目标，不静默覆盖。
+   */
+  overwrite_config?: boolean;
 }
 
 export interface TargetPatch {
@@ -70,6 +75,10 @@ export interface TargetPatch {
   hidden?: boolean;
   window_title_hint?: string;
   category?: string;
+  /** 显式修改启动参数（唯一覆盖入口；空字符串清空） */
+  launch_args?: string;
+  /** 显式修改工作目录（空字符串清空） */
+  working_dir?: string;
 }
 
 /** 任务关联行（含目标明细 + 实时运行状态）。 */
@@ -161,6 +170,9 @@ export interface NavigateOptions {
 export const navScanApps = (force = false) =>
   invoke<AppScanResult>("nav_scan_apps", { force });
 export const navListWindows = () => invoke<WindowInfo[]>("nav_list_windows");
+/** 某应用目标的候选窗口（后端按进程身份过滤，含微信/QQ 等多进程宿主的子窗口） */
+export const navListTargetWindows = (targetId: string) =>
+  invoke<WindowInfo[]>("nav_list_target_windows", { targetId });
 export const navListTargets = (includeHidden = false) =>
   invoke<NavTarget[]>("nav_list_targets", { includeHidden });
 export const navSaveTarget = (input: TargetInput) =>

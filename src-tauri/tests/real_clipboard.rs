@@ -17,8 +17,11 @@
 //! 因此可以直接 `-- --ignored` 并行运行，无需 `--test-threads=1`。
 //!
 //! 边界与诚实性：
-//! - 开始前先快照真实剪贴板；**若快照无法恢复（有内容但读不出可写回载荷）直接中止**，
-//!   绝不冒丢失用户内容的风险；
+//! - 开始前先快照真实剪贴板；**若快照无法恢复（有内容但读不出可写回载荷，或原剪贴板为空、
+//!   无法恢复成空）直接中止**，绝不冒丢失用户内容的风险；
+//! - 写入型用例使用 RAII `ClipboardRestoreGuard`：正常结束与 panic 栈展开合计最多恢复一次，
+//!   恢复仍走 `restore_if_own_content` 的内容归属比较；用户中途复制返回 `KeepUserCopy`
+//!   并保留新内容。**强杀、`panic=abort`、系统崩溃/断电不执行 `Drop`，不宣称 100% 可靠**；
 //! - 全程只打印类型/尺寸/字节数/计数，绝不打印正文、路径或像素内容；
 //! - 「用户中途复制」由本工具在平台边界写入一段模拟内容触发——写入守卫只比较内容归属，
 //!   与第三方程序写入等价，但本次写入仍来自本进程，故结论标注为「平台级等价验证」；
@@ -27,8 +30,11 @@
 //!   第二个用例只做真机窗口层只读校验（可见目标不含本进程、目标身份可复核、
 //!   提权目标按规则拒绝），不向任何窗口发送输入。
 
+use std::cell::{Cell, RefCell};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use task_dock_lib::clipboard::image;
@@ -39,6 +45,7 @@ use task_dock_lib::clipboard::platform::{
 };
 use task_dock_lib::clipboard::{store, CapturedContent, CapturedImage};
 use task_dock_lib::db::{Db, Settings};
+use task_dock_lib::error::{AppError, AppResult};
 
 /// 真实剪贴板是**全局单例**：三个用例必须串行，否则互相覆盖内容，
 /// 断言会看到对方刚写入的东西（这不是缺陷，是用例并发问题）。
@@ -120,6 +127,115 @@ fn describe(payload: &ClipboardPayload) -> String {
     }
 }
 
+/// 恢复后端：真实实现复用平台层的 `restore_if_own_content`（同一把访问锁内
+/// 先比较内容再写回）；模拟实现用于验证守卫语义，绝不触碰真实剪贴板。
+trait RestoreBackend {
+    fn restore(
+        &self,
+        snapshot: &Snapshot,
+        last_written: &ClipboardPayload,
+    ) -> AppResult<RestoreOutcome>;
+}
+
+struct PlatformRestorer<'a> {
+    self_write: &'a AtomicU32,
+}
+
+impl RestoreBackend for PlatformRestorer<'_> {
+    fn restore(
+        &self,
+        snapshot: &Snapshot,
+        last_written: &ClipboardPayload,
+    ) -> AppResult<RestoreOutcome> {
+        platform::restore_if_own_content(snapshot, last_written, self.self_write)
+    }
+}
+
+/// 真机写入型测试的 RAII 恢复守卫。
+///
+/// - 只在调用方**已经取得可恢复快照**后才构造；快照不可安全恢复时调用方必须拒绝启动写入；
+/// - 每次成功写入都通过 `note_written` 记录「本进程最后一次写入」，恢复只针对这条内容；
+/// - 正常结束走 `finish`；panic 栈展开时 `Drop` 尽力恢复，且同一守卫最多执行一次恢复；
+/// - 恢复前的内容归属判断完全交给 `restore_if_own_content`：剪贴板已被用户/其他程序
+///   改写时返回 `KeepUserCopy`，绝不覆盖用户新内容；
+/// - `Drop` 内不做任何可能再次 panic 的操作，日志只输出类型/字节数与结果，不含正文。
+///
+/// **能力边界（不宣称 100% 可靠）**：进程被强杀、`panic=abort`、系统崩溃或断电时
+/// `Drop` 不会执行，用户剪贴板可能保留测试内容；因此写入型真机测试只允许在
+/// 明确授权、可接受短暂占用剪贴板的隔离验收环境运行。
+struct ClipboardRestoreGuard<'a> {
+    snapshot: Snapshot,
+    backend: Box<dyn RestoreBackend + 'a>,
+    last_written: Option<ClipboardPayload>,
+    restored: bool,
+}
+
+impl<'a> ClipboardRestoreGuard<'a> {
+    fn new(snapshot: Snapshot, backend: Box<dyn RestoreBackend + 'a>) -> Self {
+        Self {
+            snapshot,
+            backend,
+            last_written: None,
+            restored: false,
+        }
+    }
+
+    /// 记录本进程最后一次成功写入；未记录时 `Drop` 不会写回任何内容。
+    fn note_written(&mut self, payload: &ClipboardPayload) {
+        self.last_written = Some(payload.clone());
+    }
+
+    /// 正常结束路径：显式恢复一次；之后 `Drop` 不再重复恢复。
+    fn finish(&mut self, label: &str) -> AppResult<RestoreOutcome> {
+        if self.restored {
+            println!("  {label}：恢复守卫已执行过，跳过重复恢复");
+            return Ok(RestoreOutcome::NoSnapshot);
+        }
+        self.restored = true; // 先标记：即使写回失败也不允许 Drop 再试一次
+        let Some(last) = self.last_written.clone() else {
+            println!("  {label}：本进程没有成功写入，无需恢复");
+            return Ok(RestoreOutcome::NoSnapshot);
+        };
+        self.backend.restore(&self.snapshot, &last)
+    }
+}
+
+impl Drop for ClipboardRestoreGuard<'_> {
+    fn drop(&mut self) {
+        if self.restored {
+            return;
+        }
+        self.restored = true;
+        let Some(last) = self.last_written.clone() else {
+            // 没有任何成功写入：剪贴板仍是用户原内容，不执行写回。
+            return;
+        };
+        let backend = &self.backend;
+        let snapshot = &self.snapshot;
+        // 恢复后端理论上不应 panic，但 Drop 处于栈展开中，必须兜住二次 panic。
+        let result = catch_unwind(AssertUnwindSafe(|| backend.restore(snapshot, &last)));
+        match result {
+            Ok(Ok(RestoreOutcome::Restored)) => {
+                eprintln!("[恢复守卫] 测试异常退出：已尽力恢复用户原剪贴板");
+            }
+            Ok(Ok(RestoreOutcome::KeepUserCopy)) => {
+                eprintln!(
+                    "[恢复守卫] 测试异常退出：剪贴板已被更晚的复制接管，保留当前内容（用户接管，未覆盖）"
+                );
+            }
+            Ok(Ok(RestoreOutcome::NoSnapshot)) => {
+                eprintln!("[恢复守卫] 测试异常退出：用户原剪贴板为空，无可恢复快照");
+            }
+            Ok(Err(e)) => {
+                eprintln!("[恢复守卫] 测试异常退出：恢复失败，剪贴板可能仍含测试内容：{e}");
+            }
+            Err(_) => {
+                eprintln!("[恢复守卫] 测试异常退出：恢复过程自身 panic，已吞掉；请人工确认剪贴板");
+            }
+        }
+    }
+}
+
 fn read_content(label: &str) -> CapturedContent {
     match platform::read_clipboard(true) {
         ClipboardRead::Content { content: c, .. } => *c,
@@ -130,12 +246,19 @@ fn read_content(label: &str) -> CapturedContent {
     }
 }
 
-fn write_and_verify(payload: &ClipboardPayload, watermark: &AtomicU32, label: &str) -> u32 {
+fn write_and_verify(
+    payload: &ClipboardPayload,
+    watermark: &AtomicU32,
+    guard: &mut ClipboardRestoreGuard<'_>,
+    label: &str,
+) -> u32 {
     let outcome = platform::write_guarded_notifying(payload, WriteGuard::Unconditional, watermark)
         .unwrap_or_else(|e| panic!("{label}：真实剪贴板写入失败：{e}"));
     let WriteOutcome::Written { seq, .. } = outcome else {
         panic!("{label}：无条件写入必须成功，实际 {outcome:?}");
     };
+    // 写入成功后立刻登记：后续任何断言 panic 时，Drop 都知道要恢复哪一次内容。
+    guard.note_written(payload);
     // 立即比较一次；若真机存在「写入已关闭、格式尚未发布完」的瞬态窗口，
     // 记录下来并再复核，绝不静默放宽成「只要最终一致就算通过」。
     if platform::clipboard_match(payload) != ClipboardMatch::Same {
@@ -250,8 +373,10 @@ fn restorable_snapshot() -> Option<Snapshot> {
     match snapshot.payload.as_ref() {
         None => match platform::read_clipboard(true) {
             ClipboardRead::Empty(_) => {
-                println!("本机剪贴板为空：结束后无需恢复");
-                Some(snapshot)
+                eprintln!(
+                    "中止：本机剪贴板为空，平台层没有「恢复为空」的写回能力；为避免测试内容留在剪贴板，拒绝开始写入型真机测试。请先复制一段测试专用内容再运行"
+                );
+                None
             }
             ClipboardRead::Content { content: c, .. } => {
                 eprintln!(
@@ -373,11 +498,8 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
     let Some(snapshot) = restorable_snapshot() else {
         return;
     };
-    let original_desc = snapshot
-        .payload
-        .as_ref()
-        .map(describe)
-        .unwrap_or_else(|| "空".into());
+    let original = snapshot.payload.clone();
+    let original_desc = original.as_ref().map(describe).unwrap_or_else(|| "空".into());
     println!("开始真机验收；用户原剪贴板={original_desc}");
 
     let tmp = TempRoot::new("roundtrip");
@@ -426,11 +548,14 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
 
     // ── 2. 逐条写入真实剪贴板并回读校验像素/文本 ───────────────────
     let watermark = AtomicU32::new(0);
+    // 快照已确认可恢复；守卫从这里接管生命周期，panic 时由 Drop 尽力恢复。
+    let mut restore_guard =
+        ClipboardRestoreGuard::new(snapshot, Box::new(PlatformRestorer { self_write: &watermark }));
     for (idx, item) in group.items.iter().enumerate() {
         let label = format!("第 {} 项({})", idx + 1, item.kind);
         let payload = payload_for_item(&db, &root, item)
             .unwrap_or_else(|e| panic!("{}：载荷构造失败：{e}", label));
-        write_and_verify(&payload, &watermark, &label);
+        write_and_verify(&payload, &watermark, &mut restore_guard, &label);
 
         let back = read_content_within(&label, &payload).unwrap_or_else(|| {
             panic!(
@@ -481,7 +606,7 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         width: ghost_img.width,
         height: ghost_img.height,
     };
-    write_and_verify(&ghost_payload, &watermark, "全透明图");
+    write_and_verify(&ghost_payload, &watermark, &mut restore_guard, "全透明图");
     let ghost_back = read_content_within("全透明图", &ghost_payload)
         .unwrap_or_else(|| panic!("环境阻塞：全透明图写入后被第三方改写，本机不可判定"));
     let ghost_read = ghost_back
@@ -506,7 +631,7 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
     let files_payload = ClipboardPayload::Files {
         paths: files.clone(),
     };
-    write_and_verify(&files_payload, &watermark, "文件");
+    write_and_verify(&files_payload, &watermark, &mut restore_guard, "文件");
     println!("  {}", sample_line("文件写入后即时采样"));
     let files_back = read_content_within("文件", &files_payload)
         .unwrap_or_else(|| panic!("环境阻塞：CF_HDROP 在写入后被第三方剥离，本机不可判定"));
@@ -522,9 +647,8 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         text: "真机富文本 TD-REAL-HTML-MARKER".into(),
         html: Some("<b>真机富文本</b> TD-REAL-HTML-MARKER".into()),
     };
-    write_and_verify(&rich, &watermark, "富文本");
-    // 恢复阶段需要「本进程最后一次写入」的载荷，富文本是接管前的最后一写。
-    let mut last_written = rich.clone();
+    write_and_verify(&rich, &watermark, &mut restore_guard, "富文本");
+    // 富文本是模拟接管前本进程的最后一次写入；守卫已记录，用于内容守卫与最终恢复。
     let rich_back = read_content_within("富文本", &rich)
         .unwrap_or_else(|| panic!("环境阻塞：CF_HTML 写入后被第三方改写，本机不可判定"));
     assert!(
@@ -547,7 +671,7 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         text: "队列里的下一项 TD-REAL-SHOULD-NOT-LAND".into(),
         html: None,
     };
-    let blocked = platform::write_guarded(&guarded_next, WriteGuard::Content(&last_written))
+    let blocked = platform::write_guarded(&guarded_next, WriteGuard::Content(&rich))
         .expect("守卫写入调用本身不得报错");
     assert_eq!(
         blocked,
@@ -565,12 +689,15 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         ClipboardMatch::Same,
         "被拒绝的写入不得落到真实剪贴板"
     );
-    last_written = takeover;
+    // 这段「模拟用户内容」是测试自己写入的，登记为最后一次写入以便结束时清理；
+    // 真实用户中途复制不会经过本进程，内容归属比较会返回 KeepUserCopy 并保留用户内容。
+    restore_guard.note_written(&takeover);
 
     // ── 6. 恢复用户原内容 ─────────────────────────────────────────
-    let restored = platform::restore_if_own_content(&snapshot, &last_written, &watermark)
+    let restored = restore_guard
+        .finish("恢复用户原内容")
         .expect("恢复调用本身不得报错");
-    match (snapshot.payload.as_ref(), restored) {
+    match (original.as_ref(), restored) {
         (None, RestoreOutcome::NoSnapshot) => println!("用户原剪贴板为空：无需恢复"),
         (Some(p), RestoreOutcome::Restored) => {
             assert_eq!(
@@ -693,6 +820,10 @@ fn real_failed_write_restores_previous_content() {
         return;
     };
     println!("开始写入失败恢复验证；用户剪贴板={}", describe(&previous));
+    // 快照可恢复；若「无效文件载荷」意外写入成功并触发断言 panic，由守卫恢复用户内容。
+    let watermark = AtomicU32::new(0);
+    let mut restore_guard =
+        ClipboardRestoreGuard::new(snapshot, Box::new(PlatformRestorer { self_write: &watermark }));
 
     // 全部路径都无效的文件载荷：守卫放行后 EmptyClipboard 已执行，
     // write_formats 必然失败——这正是「清空成功、写入失败」的真实窗口。
@@ -710,6 +841,8 @@ fn real_failed_write_restores_previous_content() {
             return;
         }
         Ok(WriteOutcome::Written { .. }) => {
+            // 意外写入成功：先登记，保证随后 panic 时 Drop 能按内容归属恢复。
+            restore_guard.note_written(&broken);
             panic!("无效文件载荷绝不能报告写入成功");
         }
     };
@@ -726,3 +859,222 @@ fn real_failed_write_restores_previous_content() {
     );
     println!("写入失败恢复验证通过：用户内容仍在剪贴板中");
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 恢复守卫语义（模拟剪贴板状态 + 可控失败注入；**不触碰真实剪贴板**）
+//
+// 真机 panic 无法在不污染用户剪贴板的前提下复现，因此这里用 FakeRestorer
+// 模拟平台层的「内容比较 → 写回 / KeepUserCopy」语义，验证守卫在正常结束、
+// 栈展开、用户接管、恢复失败与恢复过程自身 panic 时的行为。
+// ─────────────────────────────────────────────────────────────────────────
+
+fn fake_text(text: &str) -> ClipboardPayload {
+    ClipboardPayload::Text {
+        text: text.into(),
+        html: None,
+    }
+}
+
+struct FakeClipboard {
+    current: RefCell<Option<ClipboardPayload>>,
+    restore_calls: Cell<u32>,
+    fail_next: Cell<u32>,
+    panic_on_restore: Cell<bool>,
+    last_outcome: Cell<Option<RestoreOutcome>>,
+}
+
+impl FakeClipboard {
+    fn new(current: Option<ClipboardPayload>) -> Self {
+        Self {
+            current: RefCell::new(current),
+            restore_calls: Cell::new(0),
+            fail_next: Cell::new(0),
+            panic_on_restore: Cell::new(false),
+            last_outcome: Cell::new(None),
+        }
+    }
+}
+
+struct FakeRestorer {
+    clip: Rc<FakeClipboard>,
+}
+
+impl RestoreBackend for FakeRestorer {
+    fn restore(
+        &self,
+        snapshot: &Snapshot,
+        last_written: &ClipboardPayload,
+    ) -> AppResult<RestoreOutcome> {
+        self.clip.restore_calls.set(self.clip.restore_calls.get() + 1);
+        if self.clip.panic_on_restore.get() {
+            panic!("模拟恢复过程 panic（必须由 Drop 吞掉）");
+        }
+        if self.clip.fail_next.get() > 0 {
+            self.clip.fail_next.set(self.clip.fail_next.get() - 1);
+            return Err(AppError::Validation("模拟恢复失败".into()));
+        }
+        let Some(target) = snapshot.payload.as_ref() else {
+            self.clip.last_outcome.set(Some(RestoreOutcome::NoSnapshot));
+            return Ok(RestoreOutcome::NoSnapshot);
+        };
+        let current = self.clip.current.borrow();
+        if current.as_ref() != Some(last_written) {
+            self.clip
+                .last_outcome
+                .set(Some(RestoreOutcome::KeepUserCopy));
+            return Ok(RestoreOutcome::KeepUserCopy);
+        }
+        drop(current);
+        *self.clip.current.borrow_mut() = Some(target.clone());
+        self.clip.last_outcome.set(Some(RestoreOutcome::Restored));
+        Ok(RestoreOutcome::Restored)
+    }
+}
+
+fn guard_for(
+    original: Option<ClipboardPayload>,
+    clip: &Rc<FakeClipboard>,
+) -> ClipboardRestoreGuard<'static> {
+    ClipboardRestoreGuard::new(
+        Snapshot {
+            sequence: 0,
+            payload: original,
+        },
+        Box::new(FakeRestorer { clip: clip.clone() }),
+    )
+}
+
+#[test]
+fn restore_guard_restores_original_once_after_normal_finish() {
+    let original = fake_text("原内容");
+    let written = fake_text("测试写入");
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+    let mut guard = guard_for(Some(original.clone()), &clip);
+    guard.note_written(&written);
+    // 模拟平台层写入成功：真实剪贴板此时已是测试内容。
+    *clip.current.borrow_mut() = Some(written.clone());
+
+    let outcome = guard.finish("模拟正常结束").expect("模拟恢复不得报错");
+    assert_eq!(outcome, RestoreOutcome::Restored);
+    assert_eq!(clip.restore_calls.get(), 1, "正常结束必须只恢复一次");
+    assert_eq!(*clip.current.borrow(), Some(original), "必须写回原内容");
+
+    drop(guard);
+    assert_eq!(
+        clip.restore_calls.get(),
+        1,
+        "同一快照不得在 Drop 中重复恢复"
+    );
+}
+
+#[test]
+fn restore_guard_restores_during_panic_unwind() {
+    let original = fake_text("原内容");
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+
+    let written = fake_text("测试写入");
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let mut guard = guard_for(Some(original.clone()), &clip);
+        guard.note_written(&written);
+        // 模拟平台层写入成功后再触发断言 panic。
+        *clip.current.borrow_mut() = Some(written.clone());
+        panic!("模拟断言失败，触发栈展开");
+    }));
+
+    assert!(result.is_err(), "闭包必须真的 panic");
+    assert_eq!(clip.restore_calls.get(), 1, "Drop 必须尝试恢复一次");
+    assert_eq!(
+        clip.last_outcome.get(),
+        Some(RestoreOutcome::Restored),
+        "栈展开路径必须尽力恢复原内容"
+    );
+    assert_eq!(
+        *clip.current.borrow(),
+        Some(original),
+        "panic 后剪贴板必须回到原内容"
+    );
+}
+
+#[test]
+fn restore_guard_keeps_user_takeover_copy() {
+    let original = fake_text("原内容");
+    let takeover = fake_text("用户接管的新内容");
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+    let mut guard = guard_for(Some(original.clone()), &clip);
+    guard.note_written(&fake_text("测试写入"));
+
+    // 模拟用户/其他程序在测试期间改写剪贴板：不属于本进程最后一次写入。
+    *clip.current.borrow_mut() = Some(takeover.clone());
+    drop(guard);
+
+    assert_eq!(clip.restore_calls.get(), 1);
+    assert_eq!(
+        clip.last_outcome.get(),
+        Some(RestoreOutcome::KeepUserCopy),
+        "内容归属不匹配时必须保留用户新内容"
+    );
+    assert_eq!(
+        *clip.current.borrow(),
+        Some(takeover),
+        "用户接管的内容绝不被恢复覆盖"
+    );
+}
+
+#[test]
+fn restore_guard_reports_failure_without_panicking() {
+    let original = fake_text("原内容");
+    let written = fake_text("测试写入");
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+    clip.fail_next.set(1);
+    let mut guard = guard_for(Some(original), &clip);
+    guard.note_written(&written);
+    *clip.current.borrow_mut() = Some(written.clone());
+
+    drop(guard);
+
+    assert_eq!(clip.restore_calls.get(), 1);
+    assert_eq!(clip.last_outcome.get(), None, "失败结果不得伪报成功");
+    assert_eq!(
+        *clip.current.borrow(),
+        Some(written),
+        "恢复失败时如实保留当前内容，不假装已还原"
+    );
+}
+
+#[test]
+fn restore_guard_swallows_backend_panic_in_drop() {
+    let original = fake_text("原内容");
+    let written = fake_text("测试写入");
+    let clip = Rc::new(FakeClipboard::new(Some(original)));
+    clip.panic_on_restore.set(true);
+    let mut guard = guard_for(Some(fake_text("原内容")), &clip);
+    guard.note_written(&written);
+    *clip.current.borrow_mut() = Some(written.clone());
+
+    // Drop 内 catch_unwind 必须吞掉后端 panic；测试线程不能再次 panic。
+    drop(guard);
+
+    assert_eq!(clip.restore_calls.get(), 1);
+    assert_eq!(*clip.current.borrow(), Some(written));
+}
+
+#[test]
+fn restore_guard_handles_empty_snapshot_without_panic() {
+    let written = fake_text("测试写入");
+    let clip = Rc::new(FakeClipboard::new(Some(written.clone())));
+    let mut guard = guard_for(None, &clip);
+    guard.note_written(&written);
+
+    drop(guard);
+
+    assert_eq!(clip.restore_calls.get(), 1);
+    assert_eq!(
+        clip.last_outcome.get(),
+        Some(RestoreOutcome::NoSnapshot),
+        "原剪贴板为空时平台返回 NoSnapshot"
+    );
+    // 平台层没有「恢复为空」的写回能力；真实写入型测试在快照为空时直接拒绝启动，
+    // 这里只验证守卫不 panic、不伪报恢复成功。
+    assert_eq!(*clip.current.borrow(), Some(written));
+}
+

@@ -65,6 +65,32 @@
       "spec": "docs/ui-themes/13-capsule-redesign.md",
       "uncovered": "最终实现与方案板的逐项差异、真机吸附、四边停靠、展开收起过渡",
       "status": "candidate"
+    },
+    {
+      "id": "liquid-glass-main-panel-v07",
+      "source": "docs/design-refs/v07/液态玻璃效果图-v07.png",
+      "module": "panels",
+      "component": "main-panel",
+      "state": "empty-light-glass-photo-background",
+      "theme": "light",
+      "sha256": "41525a11323b2ab09266f7af6a68661a45cfe502322e52f79897c9934e42d22c",
+      "note": "主面板/主窗口液态玻璃效果图：左侧图标栏、三张统计卡、快速添加/提醒、筛选 tabs 与空状态玻璃气泡，蓝白摄影雾化背景。用户仅要求保存为设计参考，未批准为视觉基准，故登记候选。",
+      "spec": "docs/ui-themes/01-design-spec.md",
+      "uncovered": "深色主题、真实数据密度与长文本、交互与动画、原生 DWM 合成、DPI 125/150、320/400 窄窗",
+      "status": "candidate"
+    },
+    {
+      "id": "liquid-glass-main-panel-fully-transparent-v07",
+      "source": "docs/design-refs/v07/液态玻璃效果图-绝对透明版-v07.png",
+      "module": "panels",
+      "component": "main-panel",
+      "state": "empty-light-glass-fully-transparent",
+      "theme": "light",
+      "sha256": "ffcdc4c6e05df498c1c70c17e50df752618250b2936935a579e01f4304cb4453",
+      "note": "与 liquid-glass-main-panel-v07 同布局的绝对透明版：玻璃更通透，背景蓝色渐变/波纹可见度更高，差异在透明度与背景通透度而非结构。用户仅要求保存为设计参考，未批准为视觉基准，故登记候选。",
+      "spec": "docs/ui-themes/01-design-spec.md",
+      "uncovered": "深色主题、真实数据密度与长文本、交互与动画、原生 DWM 合成、DPI 125/150、320/400 窄窗、两版透明度的量化阈值",
+      "status": "candidate"
     }
   ]
 }

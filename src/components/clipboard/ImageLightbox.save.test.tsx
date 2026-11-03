@@ -13,6 +13,8 @@
 //! - 取消对话框（save 返回 null/空）→ 不查状态、不写盘
 //! - 无确认通道（askConfirm 缺省）且目标已存在 → 按拒绝处理，绝不静默覆盖
 //! - 后端失败（含目标已存在的竞争冲突）→ 展示错误，绝不改 overwrite=true 静默重试
+//! - 对话框创建/调用抛异常 → 错误提示、不查状态、不写盘，并恢复可再次点击
+//! - 保存流程中途卸载 → 不抛未处理 rejection，Toast 仍反馈最终结果
 //! - 连点 → ref 同步守卫，只产生一次危险写入
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -335,6 +337,50 @@ describe("ImageLightbox 另存为：目标状态决定覆盖授权", () => {
     // 只按初始授权写了一次，没有第二次 overwrite=true 调用
     expect(bridge.clipboardSaveImage).toHaveBeenCalledTimes(1);
     expect(bridge.clipboardSaveImage.mock.calls.map((c) => c[2])).toEqual([false]);
+  });
+
+  it("保存对话框创建/调用抛异常：错误提示、不查状态、不写盘，并恢复可再次点击", async () => {
+    const item = makeItem();
+    dialogPlugin.save.mockRejectedValue(new Error("dialog unavailable"));
+    render(<ImageLightbox item={item} askConfirm={agreeConfirm()} onClose={vi.fn()} />);
+
+    await clickSave();
+
+    await waitFor(() => expect(toastKind()).toBe("error"));
+    expect(toastMessage()).toContain("打开保存对话框失败，未保存");
+    expect(toastMessage()).toContain("dialog unavailable");
+    expect(bridge.clipboardPathStatus).not.toHaveBeenCalled();
+    expect(bridge.clipboardSaveImage).not.toHaveBeenCalled();
+    // finally 必须复位 busy 与同步 in-flight 守卫：按钮重新可用，再点会重新打开对话框
+    await waitFor(() => {
+      const btn = document.querySelector<HTMLButtonElement>('button[aria-label="另存为"]');
+      expect(btn).not.toBeNull();
+      expect(btn!.disabled).toBe(false);
+    });
+    fireEvent.click(document.querySelector<HTMLElement>('button[aria-label="另存为"]')!);
+    await waitFor(() => expect(dialogPlugin.save).toHaveBeenCalledTimes(2));
+  });
+
+  it("保存流程中途卸载灯箱：不抛未处理 rejection，完成结果仍以 Toast 反馈", async () => {
+    const item = makeItem();
+    let resolveDialog!: (value: string | null) => void;
+    dialogPlugin.save.mockReturnValue(
+      new Promise<string | null>((resolve) => {
+        resolveDialog = resolve;
+      }),
+    );
+    bridge.clipboardPathStatus.mockResolvedValue(["missing"]);
+    const view = render(<ImageLightbox item={item} askConfirm={agreeConfirm()} onClose={vi.fn()} />);
+
+    fireEvent.click(await openToolbar());
+    await waitFor(() => expect(dialogPlugin.save).toHaveBeenCalledTimes(1));
+    // 对话框尚未返回时用户关闭灯箱
+    view.unmount();
+
+    resolveDialog(TARGET);
+    await waitFor(() => expect(bridge.clipboardSaveImage).toHaveBeenCalledWith(item.id, TARGET, false));
+    expect(toastKind()).toBe("success");
+    expect(toastMessage()).toContain("已保存");
   });
 
   it("保存失败（如磁盘错误）：展示后端错误，不显示成功提示", async () => {

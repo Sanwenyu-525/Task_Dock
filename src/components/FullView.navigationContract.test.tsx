@@ -16,6 +16,7 @@ vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }
 vi.mock("./actions/ActionCenterPanel", () => ({ default: () => <div>actions-panel</div> }));
 vi.mock("./clipboard/ClipboardPanel", () => ({ default: () => <div>clipboard-panel</div> }));
 vi.mock("./inbox/CaptureInboxPanel", () => ({ default: () => <div>inbox-panel</div> }));
+vi.mock("./shelf/ShelfPanel", () => ({ default: () => <div>shelf-panel</div> }));
 vi.mock("./history/HistoryPanel", () => ({ default: () => <div>history-panel</div> }));
 vi.mock("./roadmap/FeatureRoadmapPanel", () => ({ default: () => <div>roadmap-panel</div> }));
 vi.mock("./settings/SettingsPanel", () => ({ default: () => <div>settings-panel</div> }));
@@ -32,12 +33,12 @@ import {
 afterEach(cleanup);
 
 describe("脚本侧导航契约与真实导航一致", () => {
-  it("八入口 id 顺序与 TAB_ORDER 完全一致", () => {
-    expect(RAIL_ITEM_COUNT).toBe(8);
+  it("九入口 id 顺序与 TAB_ORDER 完全一致", () => {
+    expect(RAIL_ITEM_COUNT).toBe(9);
     expect(RAIL_ENTRIES.map((e) => e.id)).toEqual([...TAB_ORDER]);
   });
 
-  it("快捷键按顺序对应 Ctrl+1…8", () => {
+  it("快捷键按顺序对应 Ctrl+1…9", () => {
     expect(RAIL_ENTRIES.map((e) => e.shortcut)).toEqual([
       "Ctrl+1",
       "Ctrl+2",
@@ -47,6 +48,7 @@ describe("脚本侧导航契约与真实导航一致", () => {
       "Ctrl+6",
       "Ctrl+7",
       "Ctrl+8",
+      "Ctrl+9",
     ]);
   });
 

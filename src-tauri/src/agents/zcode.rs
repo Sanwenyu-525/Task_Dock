@@ -110,7 +110,7 @@ impl ManagedAdapter for ZcodeAdapter {
         }))
     }
 
-    fn uninstall(&self, _app_data: &std::path::Path) -> AppResult<Value> {
+    fn uninstall(&self, _app_data: &std::path::Path, _db: &Db) -> AppResult<Value> {
         Ok(json!({ "adapter": "zcode", "noop": true }))
     }
 

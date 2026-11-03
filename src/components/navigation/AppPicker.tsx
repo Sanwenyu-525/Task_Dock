@@ -15,7 +15,7 @@ import { useTasksStore } from "../../store/useTasksStore";
 import type { AgentSession } from "../../lib/bridge";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 import {
-  navLinkTask, navListWindows, navListTargets, navLinkTaskWindow, navPickTaskWindow, navPickWindowIdentity, navSaveTarget, navSaveAgentSessionTarget,
+  navLinkTask, navListWindows, navListTargetWindows, navListTargets, navLinkTaskWindow, navPickTaskWindow, navPickWindowIdentity, navSaveTarget, navSaveAgentSessionTarget,
   CATEGORY_LABELS, avatarHue,
   type DiscoveredApp, type NavTarget, type TargetInput, type WindowInfo, type TaskNavLink,
 } from "../../lib/navigation";
@@ -61,7 +61,11 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
   }, []);
 
   useEffect(() => {
-    if (windowLink) navListWindows().then(setWindows).catch(() => setWindows([]));
+    if (windowLink) {
+      setWindows(null);
+      // 按目标身份取窗口：进程树匹配可覆盖微信/QQ/酷狗等宿主子进程窗口
+      navListTargetWindows(windowLink.target.id).then(setWindows).catch(() => setWindows([]));
+    }
   }, [windowLink]);
 
   // 已保存目标 → 已关联去重（同任务已关联的标记，不重复加）。
@@ -203,7 +207,8 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
   }
 
   if (windowLink) {
-    const matches = windows?.filter((w) => w.exe_path?.toLowerCase() === windowLink.target.exe_path.toLowerCase());
+    // 后端已按进程身份过滤；这里不再用 exe 路径相等二次裁掉子进程窗口
+    const matches = windows;
     return (
       <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
         <div className="modal app-picker" ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true"
@@ -215,7 +220,7 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
             {!windows && <div className="empty-hint">正在读取窗口…</div>}
             {matches?.length === 0 && <div className="empty-hint">没有可选择的窗口</div>}
             {matches?.map((w) => <button key={w.hwnd} className="picker-window-item" disabled={!!busyKey} onClick={() => pickWindow(w)}>{w.title}</button>)}
-            <button className="btn sm" onClick={async () => setWindows(await navListWindows().catch(() => []))}>刷新窗口</button>
+            <button className="btn sm" onClick={async () => setWindows(await navListTargetWindows(windowLink.target.id).catch(() => []))}>刷新窗口</button>
           </div>
         </div>
       </div>

@@ -1067,3 +1067,9 @@
   }
 }
 }
+
+/* 任务卡直列目标：默认目标需要有可感知的视觉入口（与 Hover 强度区分） */
+.task-nav-btn[data-default="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}

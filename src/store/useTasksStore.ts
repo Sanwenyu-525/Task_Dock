@@ -33,7 +33,9 @@ export const useTasksStore = create<{
    */
   lite: Task[] | null;
   liteLoading: boolean;
-  /** 读一次轻量列表（胶囊面板挂载时调用） */
+  /** 轻量列表最近一次查询的错误；null = 无错误。失败时旧 lite 原样保留 */
+  liteError: string | null;
+  /** 读一次轻量列表（胶囊面板挂载时调用；失败不清除已成功数据） */
   loadLite: () => Promise<void>;
   /** 面板卸载：作废在途请求并释放轻量列表 */
   releaseLite: () => void;
@@ -56,6 +58,7 @@ export const useTasksStore = create<{
   loading: false,
   lite: null,
   liteLoading: false,
+  liteError: null,
   setFilter: (f) => {
     set({ filter: { ...get().filter, ...f } });
     get().load();
@@ -83,18 +86,21 @@ export const useTasksStore = create<{
     const seq = ++liteSeq;
     set({ liteLoading: true });
     try {
-      const lite = await listTasks({ view: "all", status: "all", sort: "due" });
+      // limit:12 与面板实际展示量一致（后端 clamp 1..=200），压缩轻量列表 payload
+      const lite = await listTasks({ view: "all", status: "all", sort: "due", limit: 12 });
       if (seq !== liteSeq) return; // 已有更新的请求，丢弃这次响应
-      set({ lite, liteLoading: false });
-    } catch {
+      set({ lite, liteLoading: false, liteError: null });
+    } catch (e) {
       if (seq !== liteSeq) return;
-      // 失败按空列表处理：显示空态，不拿旧数据冒充当前状态
-      set({ lite: [], liteLoading: false });
+      // 失败不清除已成功数据：有旧列表则保留展示并由面板叠加错误提示，
+      // 没有旧列表（lite === null）时面板显示错误空态。两者都可重试，
+      // 绝不把失败伪装成「暂无待办」。
+      set({ liteLoading: false, liteError: String(e) });
     }
   },
   releaseLite: () => {
     liteSeq += 1; // 卸载后回来的响应一律作废
-    set({ lite: null, liteLoading: false });
+    set({ lite: null, liteLoading: false, liteError: null });
   },
   refresh: async () => {
     const jobs: Promise<unknown>[] = [get().load(), get().loadStats()];

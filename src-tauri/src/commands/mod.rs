@@ -6,6 +6,7 @@ pub mod audit;
 pub mod backup;
 pub mod clipboard;
 pub mod context;
+pub mod shelf;
 pub mod data;
 pub mod navigation;
 pub mod planning;

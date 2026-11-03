@@ -15,7 +15,7 @@
 //! - 与原生 `title` 互斥：需要主题化提示的控件用 `data-tip`，
 //!   纯文本截断提示（非交互元素）仍然保留原生 `title`。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Placement } from "@floating-ui/react";
 import Popover from "./Popover";
 
@@ -39,6 +39,78 @@ function readOffset(el: HTMLElement): number {
   if (!raw) return DEFAULT_OFFSET;
   const n = Number(raw);
   return Number.isFinite(n) ? Math.min(MAX_OFFSET, Math.max(0, Math.round(n))) : DEFAULT_OFFSET;
+}
+
+/** 气泡与窗口边缘的最小留白。 */
+const VIEWPORT_PADDING = 8;
+
+export interface TipRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface TipViewport {
+  width: number;
+  height: number;
+}
+
+/**
+ * 提示条定位（纯函数）：
+ * 1. **先居中**：top/bottom 以锚点水平中心对齐（`left + width/2 - tipWidth/2`），
+ *    left/right 以锚点垂直中心对齐（`top + height/2 - tipHeight/2`）；
+ *    与图标左/上对齐是错误做法，会表现为整条气泡明显偏右/偏下。
+ * 2. `offset` 只改「气泡与锚点的主方向距离」，不参与居中。
+ * 3. **居中后再做边缘收敛**：只沿横跨轴 clamp（被夹住时允许相对图标轻微不对称），
+ *    主方向放不下则返回 null，交给 Popover 的 flip 兜底，避免 clamp 后压住图标。
+ * 4. 锚点/气泡尺寸为 0 或非有限值时返回 null，回退到 Popover 默认定位，不产生 NaN。
+ */
+export function computeTooltipPosition(
+  anchor: TipRect,
+  tip: TipRect,
+  placement: Placement,
+  offset: number,
+  viewport: TipViewport,
+  padding = VIEWPORT_PADDING,
+): { left: number; top: number } | null {
+  const finite = [
+    anchor.left,
+    anchor.top,
+    anchor.width,
+    anchor.height,
+    tip.width,
+    tip.height,
+    viewport.width,
+    viewport.height,
+  ].every((n) => Number.isFinite(n));
+  if (!finite || anchor.width <= 0 || anchor.height <= 0 || tip.width <= 0 || tip.height <= 0) {
+    return null;
+  }
+  const dist = Number.isFinite(offset) ? Math.min(MAX_OFFSET, Math.max(0, offset)) : DEFAULT_OFFSET;
+  const centerX = anchor.left + anchor.width / 2 - tip.width / 2;
+  const centerY = anchor.top + anchor.height / 2 - tip.height / 2;
+
+  let left = centerX;
+  let top = centerY;
+  if (placement === "top" || placement === "bottom") {
+    left = centerX;
+    top = placement === "top" ? anchor.top - dist - tip.height : anchor.top + anchor.height + dist;
+    // 主方向放不下不 clamp（clamp 会压住图标），交给 flip 换边
+    if (top < padding || top + tip.height > viewport.height - padding) return null;
+  } else {
+    top = centerY;
+    left = placement === "left" ? anchor.left - dist - tip.width : anchor.left + anchor.width + dist;
+    if (left < padding || left + tip.width > viewport.width - padding) return null;
+  }
+
+  // 居中后的横跨轴收敛：顺序不能反，否则先 clamp 再居中会再次偏移
+  const maxLeft = Math.max(padding, viewport.width - tip.width - padding);
+  const maxTop = Math.max(padding, viewport.height - tip.height - padding);
+  return {
+    left: Math.round(Math.min(maxLeft, Math.max(padding, left))),
+    top: Math.round(Math.min(maxTop, Math.max(padding, top))),
+  };
 }
 
 interface TipState {
@@ -150,6 +222,51 @@ export default function TooltipLayer() {
     };
   }, []);
 
+  // 显式居中定位：先把浮动层交回 Popover（floating-ui 负责首次渲染与尺寸变量），
+  // 再按锚点/气泡实际矩形计算中心对齐 + 边界收敛；尺寸测不出时保持 null 回退。
+  const floatingRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!tip) {
+      setPosition(null);
+      return;
+    }
+    let raf = 0;
+    let alive = true;
+    const measure = () => {
+      if (!alive) return;
+      const host = floatingRef.current;
+      if (!host) return;
+      const anchor = tip.el.getBoundingClientRect();
+      // 用 offsetWidth/Height（布局尺寸）而不是 getBoundingClientRect：
+      // 入场动画对浮层做了 scale，首帧 rect 会偏小，按它居中会让最终位置偏移半条差值。
+      const next = computeTooltipPosition(
+        { left: anchor.left, top: anchor.top, width: anchor.width, height: anchor.height },
+        { left: 0, top: 0, width: host.offsetWidth, height: host.offsetHeight },
+        tip.placement,
+        tip.offset,
+        { width: window.innerWidth, height: window.innerHeight },
+      );
+      setPosition((prev) =>
+        prev && next && prev.left === next.left && prev.top === next.top ? prev : next
+      );
+    };
+    measure();
+    // 尺寸变量（--popover-max-w）在首帧后才生效，下一帧复测一次，避免按旧宽度居中
+    raf = window.requestAnimationFrame(measure);
+    window.addEventListener("resize", measure);
+    // 显式定位时 Popover 的 autoUpdate 已关闭：滚动（捕获阶段）后复测，
+    // 避免锚点随容器滚动而气泡停在旧位置。
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      alive = false;
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [tip]);
+
   return (
     <Popover
       open={tip !== null}
@@ -157,6 +274,8 @@ export default function TooltipLayer() {
         if (!next) setTip(null);
       }}
       anchorRef={anchorRef}
+      floatingRef={floatingRef}
+      positionOverride={position}
       placement={tip?.placement ?? "top"}
       layer={null}
       offsetPx={tip?.offset ?? DEFAULT_OFFSET}

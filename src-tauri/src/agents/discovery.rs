@@ -38,37 +38,53 @@ pub struct DiscoveredAgent {
     pub enabled: bool,
     pub configured: bool,
     pub verified: bool,
+    pub transport_verified: bool,
+    pub real_event_seen: bool,
     pub last_event_at: Option<String>,
-    /// live | stale | awaiting-first-event | no-events | unregistered
+    /// disabled | recent-event | recent-unconfigured | stale | transport-verified |
+    /// awaiting-first-event | history-only | no-events | unregistered
     pub health_state: String,
+    /// disabled | recent-event | channel-verified | unknown（不断言实时在线）
+    pub connection_state: String,
 }
 
-/// 注册表卸载键枚举（OnceLock 进程级缓存：单次扫描内多个适配器共享，避免重复枚举）。
-fn uninstall_key_lines() -> &'static Vec<String> {
-    use std::sync::OnceLock;
-    static LINES: OnceLock<Vec<String>> = OnceLock::new();
-    LINES.get_or_init(|| {
-        let mut lines = Vec::new();
-        let keys = [
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall",
-            r"HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall",
-            r"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
-        ];
-        for key in keys {
-            if let Ok(out) = crate::winproc::hidden("reg").args(["query", key]).output() {
-                for line in String::from_utf8_lossy(&out.stdout).lines() {
-                    lines.push(line.to_string());
-                }
+/// 注册表卸载键枚举：30s TTL 缓存（软件新增/升级/卸载后重扫即更新，重启非必需）。
+fn uninstall_key_lines() -> Vec<String> {
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+    static CACHE: LazyLock<Mutex<(Instant, Vec<String>)>> =
+        LazyLock::new(|| Mutex::new((Instant::now() - Duration::from_secs(600), Vec::new())));
+    if let Ok(g) = CACHE.lock() {
+        if g.0.elapsed() < Duration::from_secs(30) {
+            return g.1.clone();
+        }
+    }
+    let mut lines = Vec::new();
+    let keys = [
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        r"HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        r"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+    ];
+    for key in keys {
+        if let Some(out) =
+            crate::winproc::run_with_timeout("reg", ["query", key], Duration::from_secs(8))
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                lines.push(line.to_string());
             }
         }
-        lines
-    })
+    }
+    if let Ok(mut g) = CACHE.lock() {
+        *g = (Instant::now(), lines.clone());
+    }
+    lines
 }
 
-/// 注册表卸载信息（HKCU + HKLM，仅查询预定义键，只读；枚举结果进程内共享）。
+/// 注册表卸载信息（HKCU + HKLM，仅查询预定义键，只读）。
 fn registry_uninstall_mentions(names: &[&str]) -> Vec<String> {
+    let lines = uninstall_key_lines();
     let mut found = Vec::new();
-    for line in uninstall_key_lines() {
+    for line in lines.iter() {
         for n in names {
             if line.to_ascii_lowercase().contains(&n.to_ascii_lowercase()) {
                 let path = line.split("    ").last().unwrap_or(line).trim().to_string();
@@ -130,6 +146,14 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
                 .get("verified")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
+            transport_verified: health
+                .get("transport_verified")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            real_event_seen: health
+                .get("real_event_seen")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             last_event_at: health
                 .get("last_event_at")
                 .and_then(|v| v.as_str())
@@ -138,6 +162,11 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
                 .get("state")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unregistered")
+                .to_string(),
+            connection_state: health
+                .get("connection_state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
                 .to_string(),
         });
     }
@@ -167,6 +196,14 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
             .get("verified")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        transport_verified: health
+            .get("transport_verified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        real_event_seen: health
+            .get("real_event_seen")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         last_event_at: health
             .get("last_event_at")
             .and_then(|v| v.as_str())
@@ -175,6 +212,11 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
             .get("state")
             .and_then(|v| v.as_str())
             .unwrap_or("unregistered")
+            .to_string(),
+        connection_state: health
+            .get("connection_state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
             .to_string(),
     });
     out

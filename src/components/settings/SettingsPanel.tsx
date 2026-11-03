@@ -414,6 +414,24 @@ export default function SettingsPanel() {
             onChange={(v) => update({ theme: v as never })}
           />
         </div>
+        {/* 清透玻璃把「材质」与「前景配色」分开：玻璃始终透明，文字/图标可
+            按桌面明暗强制深/浅。auto 与既有明暗主题保持一致。 */}
+        {resolveVisualPreset(settings.visual_preset) === "clear" && (
+          <div className="setting-row">
+            <span>清透前景</span>
+            <Select
+              ariaLabel="清透前景"
+              size="sm"
+              value={settings.clear_foreground ?? "auto"}
+              options={[
+                { value: "auto", label: "跟随主题" },
+                { value: "dark", label: "深色文字" },
+                { value: "light", label: "浅色文字" },
+              ]}
+              onChange={(v) => update({ clear_foreground: v as never })}
+            />
+          </div>
+        )}
         <div className="setting-row">
           <span>窗口材质</span>
           <Select
@@ -421,7 +439,7 @@ export default function SettingsPanel() {
             size="sm"
             value={settings.material}
             options={[
-              { value: "glass", label: "毛玻璃（Mica）" },
+              { value: "glass", label: "玻璃（半透明）" },
               { value: "solid", label: "不透明" },
             ]}
             onChange={(v) => update({ material: v as never })}
@@ -434,9 +452,9 @@ export default function SettingsPanel() {
                 或开启了高对比度 / 减少透明效果</>
             ) : materialInfo?.applied ? (
               materialInfo.effect === "css" ? (
-                <>CSS 半透明玻璃已生效（原生模糊已停用，圆角无暗楔），桌面背景按主题透明度透出</>
+                <>CSS 半透明玻璃已生效（原生模糊不可用，已启用可读性增强）：桌面仅轻微透出，背景文字不会干扰正文</>
               ) : (
-                <>原生效果已生效（{materialInfo.effect}），桌面背景将透出窗口</>
+                <>原生模糊已生效（{materialInfo.effect}），桌面背景自然透出窗口</>
               )
             ) : (
               <>正在探测系统材质支持…</>

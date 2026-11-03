@@ -12,3 +12,4 @@ export { Dialog, ConfirmDialog, type DialogProps, type ConfirmDialogProps } from
 export { Checkbox, Switch, type CheckboxProps, type SwitchProps } from "./Toggle";
 export { useOverlayLayer, useFocusTrap, useFocusRestore } from "./overlay";
 export { default as AgentIcon, type AgentIconProps, type IconComponent } from "./AgentIcon";
+export { default as PointerClickIcon, type PointerClickIconProps } from "./PointerClickIcon";

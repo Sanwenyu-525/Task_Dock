@@ -241,6 +241,49 @@ Win11 上 `DWMWCP_ROUND` 会额外提供系统级阴影与抗锯齿圆角（若�
 `box-shadow` 也被裁掉。上述全部是**窗口内**的立体表达，**不是**桌面上的真实外投影；
 真实外投影需要改窗口区域/原生阴影方案（会影响圆角、命中与贴边），不在本次范围。
 
+### 4.2 2026-11-03：材质三态（Native Glass / CSS Glass / Solid）
+
+`applied` 只回答「玻璃渲染有没有起来」，`material=glass` 在 CSS 路径下同样会返回
+`applied=true`；**不能用 `applied` 推断原生模糊是否生效**。后端因此新增 `native` 字段
+（`src-tauri/src/commands/system.rs::MaterialResult`），与 `effect` 一起构成三段语义：
+
+| 字段组合 | 渲染态 | 含义 |
+| --- | --- | --- |
+| `applied=true, native=true, effect=mica/acrylic/blur` | Native Glass | DWM/系统模糊真正生效，窗口可以更低不透明度让桌面透出 |
+| `applied=true, native=false, effect=css` | CSS Glass | 只有 CSS 半透明/高光，**没有原生模糊**，必须用高不透明度霜面保证可读性 |
+| `applied=false` 或 `material=solid` | Solid | 完全不透明兜底 |
+
+前端（`src/lib/theme.ts`、`src/store/useSettingsStore.ts`）把三态显式落到
+`html[data-material]`、`html[data-glass-render]`、`html[data-native-glass]`；
+`data-glass-render` 是 CSS 选择参数集的唯一依据，`data-native-glass` 只表达
+「是否原生模糊」，二者不再混用。
+
+- **CSS Glass（`[data-glass-render="css"]`）**：Win11 + 区域裁剪的默认路径。填充不透明度
+  保持 97% 左右（`--window-fill` 的 `rgba(...,.973–.982)`），冰蓝霜面由顶部冰白高光、
+  中部浅冰蓝、底部偏冷三段落差表达；桌面只贡献极轻色温，背景文字/图标不可辨认
+  （v0.7 真机截图曾因 0.88–0.95 不透明度出现「桌面文字穿过窗口」，已复现并修正）。
+  外壳在该态额外强化 `--window-edge`：冷灰发丝环 + 左冰蓝反射 + 顶部冰白高光 +
+  很轻的底部内暗部，仍为单环，不叠加第二圈边框。
+  2026-11-03 追加：`--window-fill` 增加 112° 斜向霜带（36% 处约 0.34 白、44% 回落到
+  0.06）与略深的底部冷色，用静态渐变表达磨砂玻璃的侧光散射；不改变 97% 级不透明度，
+  桌面文字仍不可辨认。深色卡片的 `--card-shadow` / `--rail-active-shadow` 改用
+  `rgba(2, 6, 18, …)` 低不透明度扩散，替换纯黑 0.9–1.0，避免深色主题出现厚重黑边。
+- **Native Glass**：沿用基础 `--window-fill`（0.88–0.95）与默认外壳，让系统模糊自然透出；
+  只在 `native=true` 时生效。
+- **Solid（`[data-material="solid"]`）**：完全不透明渐变（浅色 `#fbfdff…#f1f8ff`、
+  深色 `#1a1d2c…#181c2a`），菜单/弹窗同样走不透明面，保证任何桌面下都可读。
+- **异步一致性**：`applyMaterial()` 带自增 `materialEpoch`，每次 await 后校验；
+  旧的原生探测响应不会覆盖之后用户新选的材质/主题。
+- **胶囊态**：`.dock-window.is-capsule` 继续整体关闭主窗背景、外壳与装饰；材质三态
+  不影响胶囊的 `SetWindowRgn` 外形。注意覆盖规则必须写成
+  `:root[data-theme] .dock-window.is-capsule(.material-glass)`：深色主题下
+  `:root[data-theme="dark"] .dock-window.material-glass` 的 `box-shadow: var(--window-edge)`
+  与旧覆盖同权重且更早出现，曾导致胶囊整窗仍带内阴影（2026-11-03 真机检查发现并修复）。
+
+单测：`src/lib/theme.test.ts`（`resolveGlassRender` / `hasNativeGlass` 的 native/css/solid
+矩阵）、`src/store/useSettingsStore.test.ts`（CSS 玻璃不得标记 native、旧后端缺 `native`
+字段按 css 处理、减少透明降级、过期响应丢弃）。
+
 ---
 
 ## 5. 材质（Mica / Acrylic）
@@ -253,6 +296,10 @@ Win11 上 `DWMWCP_ROUND` 会额外提供系统级阴影与抗锯齿圆角（若�
 | Windows 11 关闭区域裁剪（矩阵对照） | ≥ 22000 | `apply_mica` |
 | Windows 10 | ≥ 17134 | `apply_acrylic` |
 | 更早 / 失败 | — | `applied=false`，前端回退 solid |
+
+> 2026-11-03：`css` 分支返回 `applied=true / native=false / effect="css"`；只有
+> `mica/acrylic/blur` 分支返回 `native=true`。前端据此选择 CSS 霜面或原生半透明参数，
+> 详见 §4.2。
 
 > **2026-10-31 更正**：Win11 22631 的 legacy `ACCENT_ENABLE_BLURBEHIND` 也被真机像素
 > 证明会在区域圆角外留下暗楔（角部 `[1,11,1]`，solid 同位置为背景色），

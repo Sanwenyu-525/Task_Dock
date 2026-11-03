@@ -19,7 +19,7 @@ import {
   type CaptureKind,
 } from "../lib/bridge";
 import { createSubscriptionScope } from "../lib/subscriptions";
-import { resolveTheme, resolveVisualPreset } from "../lib/theme";
+import { resolveSecondaryPreset, resolveTheme, resolveVisualPreset } from "../lib/theme";
 import {
   CAPTURE_KIND_META,
   CAPTURE_KIND_ORDER,
@@ -376,7 +376,8 @@ export default function CaptureApp() {
   useEffect(() => {
     const root = document.documentElement;
     if (snapshot?.visualPreset) {
-      root.dataset.preset = resolveVisualPreset(snapshot.visualPreset);
+      // 截图浮窗需要稳定的不透明底，不套用清透玻璃的全透明窗口策略。
+      root.dataset.preset = resolveSecondaryPreset(resolveVisualPreset(snapshot.visualPreset));
     }
     root.dataset.theme = resolveTheme(snapshot?.theme ?? "system", { prefersDark });
   }, [snapshot, prefersDark]);

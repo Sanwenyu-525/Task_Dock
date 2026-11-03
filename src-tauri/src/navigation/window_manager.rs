@@ -8,6 +8,7 @@
 //!
 //! 非 Windows 平台提供空实现（编译不炸，导航如实报不支持）。
 
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -269,7 +270,9 @@ pub fn windows_for_exe(exe: &str) -> Vec<WindowInfo> {
         .collect()
 }
 
-/// 按标题子串（大小写不敏感）找窗口：用于 exe 身份不可判定的应用（微信/QQ 等多进程形态）。
+/// 按标题子串（大小写不敏感）找窗口。
+///
+/// 仅用于诊断/调试；导航**不得**直接用标题决定唤醒对象（见 `windows_for_identity`）。
 pub fn windows_for_title(hint: &str) -> Vec<WindowInfo> {
     let h = hint.trim().to_ascii_lowercase();
     if h.is_empty() {
@@ -281,17 +284,117 @@ pub fn windows_for_title(hint: &str) -> Vec<WindowInfo> {
         .collect()
 }
 
-/// 等待某个 exe 的可交互窗口出现（启动后确认用）。
+/// 纯函数：从窗口快照中筛出「属于目标软件身份」的窗口。
+///
+/// 判定顺序：进程可执行路径直接命中 → 窗口 PID 属于目标进程树（`related`）。
+/// `title_hint` 只在这款软件存在多个可交互窗口时做二次收窄；它绝不能把
+/// 其他应用的窗口拉进候选集（跨应用同名标题的根因就在这里）。
+pub(crate) fn select_identity_windows(
+    windows: &[WindowInfo],
+    target_exe: &str,
+    related: &HashSet<u32>,
+    title_hint: Option<&str>,
+) -> Vec<WindowInfo> {
+    let want = target_exe.trim().to_ascii_lowercase();
+    if want.is_empty() {
+        return Vec::new();
+    }
+    let matched: Vec<WindowInfo> = windows
+        .iter()
+        .filter(|w| {
+            w.exe_path
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(&want))
+                || related.contains(&w.pid)
+        })
+        .cloned()
+        .collect();
+    let hint = title_hint.unwrap_or("").trim().to_ascii_lowercase();
+    if hint.is_empty() || matched.len() <= 1 {
+        return matched;
+    }
+    let narrowed: Vec<WindowInfo> = matched
+        .iter()
+        .filter(|w| w.title.to_ascii_lowercase().contains(&hint))
+        .cloned()
+        .collect();
+    if narrowed.is_empty() {
+        matched
+    } else {
+        narrowed
+    }
+}
+
+/// 按「进程身份优先、标题二次过滤」找目标软件的窗口。
+///
+/// 多进程宿主（微信/QQ/酷狗等）的窗口可能由子进程持有，因此除 exe 路径
+/// 直接命中外，还接受目标进程树中的窗口；跨应用的同名窗口会被排除。
+pub fn windows_for_identity(exe: &str, title_hint: Option<&str>) -> Vec<WindowInfo> {
+    let want = exe.trim().to_ascii_lowercase();
+    if want.is_empty() {
+        return Vec::new();
+    }
+    let related = identity_pids(&want);
+    select_identity_windows(&top_windows(), &want, &related, title_hint)
+}
+
+/// 对已按 exe 路径确认身份的窗口，再用标题提示做二次收窄（无命中则保持原集合）。
+pub fn prefer_title_hint(windows: Vec<WindowInfo>, title_hint: &str) -> Vec<WindowInfo> {
+    let hint = title_hint.trim().to_ascii_lowercase();
+    if hint.is_empty() || windows.len() <= 1 {
+        return windows;
+    }
+    let narrowed: Vec<WindowInfo> = windows
+        .iter()
+        .filter(|w| w.title.to_ascii_lowercase().contains(&hint))
+        .cloned()
+        .collect();
+    if narrowed.is_empty() {
+        windows
+    } else {
+        narrowed
+    }
+}
+
+/// 校验某个窗口是否确实属于目标软件（用户选窗口/任务关联窗口时使用）。
+pub fn window_belongs_to_target(w: &WindowInfo, target_exe: &str) -> bool {
+    let want = target_exe.trim().to_ascii_lowercase();
+    if want.is_empty() {
+        return false;
+    }
+    if w.exe_path
+        .as_deref()
+        .is_some_and(|p| p.eq_ignore_ascii_case(&want))
+    {
+        return true;
+    }
+    identity_pids(&want).contains(&w.pid)
+}
+
+/// 等待某个 exe（含其子进程）的可交互窗口出现（启动后确认用）。
 pub fn wait_for_window_by_exe(exe: &str, timeout: Duration) -> Option<WindowInfo> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        let wins = windows_for_exe(exe);
+        let wins = windows_for_identity(exe, None);
         if let Some(w) = wins.into_iter().max_by_key(|w| w.title.chars().count()) {
             return Some(w);
         }
         std::thread::sleep(Duration::from_millis(250));
     }
     None
+}
+
+/// 当前属于某个进程树（含 root 自身）的可交互窗口。
+/// 用于确认「新启动的交互式 CLI 是否真的拿到了终端窗口」。
+pub fn windows_for_pid_tree(root_pid: u32) -> Vec<WindowInfo> {
+    if root_pid == 0 {
+        return Vec::new();
+    }
+    let related = descendant_pids(root_pid);
+    top_windows_force()
+        .into_iter()
+        .filter(|w| related.contains(&w.pid))
+        .collect()
 }
 
 /// 把窗口带到前台：校验句柄有效 → 恢复最小化 → 置前 → 核实前台句柄。
@@ -435,15 +538,19 @@ mod imp {
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM};
     use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
     };
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_MENU};
+    use windows_sys::Win32::System::Threading::{
+        AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
+        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowTextLengthW,
-        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-        SetForegroundWindow, ShowWindowAsync, GWL_EXSTYLE, SW_RESTORE, WS_EX_TOOLWINDOW,
+        BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongW,
+        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
+        IsWindowVisible, SetForegroundWindow, ShowWindowAsync, GWL_EXSTYLE, SW_RESTORE,
+        WS_EX_TOOLWINDOW,
     };
 
     pub(super) fn enumerate_now() -> Vec<WindowInfo> {
@@ -529,6 +636,83 @@ mod imp {
         }
     }
 
+    /// 一次性进程快照：pid → parent_pid。
+    fn process_parent_map() -> std::collections::HashMap<u32, u32> {
+        let mut parents: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap as usize == usize::MAX {
+                return parents;
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            if Process32FirstW(snap, &mut entry) != 0 {
+                loop {
+                    parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+                    if Process32NextW(snap, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snap);
+        }
+        parents
+    }
+
+    /// 目标进程树（含 root 自身）的 PID 集合：用于确认新启动的终端窗口。
+    pub(super) fn descendant_pids(root: u32) -> HashSet<u32> {
+        let parents = process_parent_map();
+        let mut out: HashSet<u32> = HashSet::new();
+        out.insert(root);
+        for &pid in parents.keys() {
+            let mut cur = pid;
+            let mut depth = 0;
+            while cur != 0 && depth < 12 {
+                if cur == root {
+                    out.insert(pid);
+                    break;
+                }
+                cur = *parents.get(&cur).unwrap_or(&0);
+                depth += 1;
+            }
+        }
+        out
+    }
+
+    /// 目标进程树：返回所有「自身或任意祖先进程的 exe 路径 == target」的 PID。
+    ///
+    /// 微信/QQ/酷狗等宿主把窗口交给子进程持有，单看窗口 PID 的 exe 会漏掉；
+    /// 这里用 Toolhelp 快照一次性拿到父子关系，再逐个核对可执行路径。
+    /// 仅在 exe 身份直接匹配不到窗口时调用（标题提示路径），正常导航不付这笔开销。
+    pub(super) fn identity_pids(target_exe: &str) -> HashSet<u32> {
+        use std::collections::{HashMap, HashSet as LocalSet};
+        let parents = process_parent_map();
+        let want = target_exe.trim().to_ascii_lowercase();
+        let mut cache: HashMap<u32, bool> = HashMap::new();
+        let mut related: LocalSet<u32> = LocalSet::new();
+        for &pid in parents.keys() {
+            let mut cur = pid;
+            let mut depth = 0;
+            while cur != 0 && depth < 12 {
+                if let Some(&hit) = cache.get(&cur) {
+                    if hit {
+                        related.insert(pid);
+                    }
+                    break;
+                }
+                let is_target = exe_path_of_pid(cur).is_some_and(|p| p.eq_ignore_ascii_case(&want));
+                cache.insert(cur, is_target);
+                if is_target {
+                    related.insert(pid);
+                    break;
+                }
+                cur = *parents.get(&cur).unwrap_or(&0);
+                depth += 1;
+            }
+        }
+        related
+    }
+
     pub(super) fn focus_window_impl(hwnd: isize) -> Result<FocusOutcome, FocusError> {
         let h = hwnd as HWND;
         unsafe {
@@ -547,12 +731,43 @@ mod imp {
                 }
             }
             if SetForegroundWindow(h) == 0 {
-                // Windows 前台锁定：按一次 ALT 让本进程取得设置前台的资格后重试
-                //（系统惯用法，不涉及坐标点击/键序列注入）
-                keybd_event(VK_MENU as u8, 0, 0, 0);
-                keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
-                std::thread::sleep(Duration::from_millis(60));
-                if SetForegroundWindow(h) == 0 {
+                // 前台锁定：把**本线程**的输入队列临时挂到当前前台线程，再
+                // BringWindowToTop + SetForegroundWindow 重试。旧实现按下 ALT
+                // 键（keybd_event）骗取资格，可能打开菜单并干扰用户正在输入；
+                // AttachThreadInput 不注入任何按键，属于系统正规激活路径。
+                let fg = GetForegroundWindow();
+                let mut fg_pid: u32 = 0;
+                let fg_thread = if fg != std::ptr::null_mut() {
+                    GetWindowThreadProcessId(fg, &mut fg_pid)
+                } else {
+                    0
+                };
+                let cur_thread = GetCurrentThreadId();
+                // 目标窗口可能属于另一个线程（创建在消息循环线程）：只挂调用线程
+                // 到前台线程并不能把前台资格传给目标线程，必须同时把目标线程也挂过去。
+                let mut target_pid: u32 = 0;
+                let target_thread = GetWindowThreadProcessId(h, &mut target_pid);
+                let mut attached_cur = false;
+                let mut attached_target = false;
+                if fg_thread != 0 && fg_thread != cur_thread {
+                    attached_cur = AttachThreadInput(cur_thread, fg_thread, 1) != 0;
+                }
+                if fg_thread != 0
+                    && target_thread != 0
+                    && target_thread != fg_thread
+                    && target_thread != cur_thread
+                {
+                    attached_target = AttachThreadInput(target_thread, fg_thread, 1) != 0;
+                }
+                BringWindowToTop(h);
+                let ok = SetForegroundWindow(h);
+                if attached_target {
+                    AttachThreadInput(target_thread, fg_thread, 0);
+                }
+                if attached_cur {
+                    AttachThreadInput(cur_thread, fg_thread, 0);
+                }
+                if ok == 0 {
                     return Err(FocusError::ForegroundDenied);
                 }
             }
@@ -581,12 +796,20 @@ mod imp {
     pub(super) fn exe_path_of_pid(_pid: u32) -> Option<String> {
         None
     }
+    pub(super) fn identity_pids(_target_exe: &str) -> HashSet<u32> {
+        HashSet::new()
+    }
+    pub(super) fn descendant_pids(root: u32) -> HashSet<u32> {
+        let mut s = HashSet::new();
+        s.insert(root);
+        s
+    }
     pub(super) fn focus_window_impl(_hwnd: isize) -> Result<FocusOutcome, FocusError> {
         Err(FocusError::ForegroundDenied)
     }
 }
 
-use imp::{enumerate_now, exe_path_of_pid, focus_window_impl};
+use imp::{descendant_pids, enumerate_now, exe_path_of_pid, focus_window_impl, identity_pids};
 
 #[cfg(test)]
 mod tests {
@@ -638,6 +861,92 @@ mod tests {
     fn matchers_reject_empty_input() {
         assert!(windows_for_exe("").is_empty());
         assert!(windows_for_title("   ").is_empty());
+    }
+
+    // ── 问题 1：窗口身份误匹配（跨应用同名 / 多实例 / 路径变化）─────
+
+    fn win_at(hwnd: isize, pid: u32, title: &str, exe: Option<&str>) -> WindowInfo {
+        WindowInfo {
+            hwnd,
+            pid,
+            title: title.into(),
+            class_name: "C".into(),
+            is_minimized: false,
+            exe_path: exe.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn identity_windows_exclude_cross_app_same_title() {
+        let target = "C:\\Program Files\\WeChat\\WeChat.exe";
+        let mut related = HashSet::new();
+        related.insert(9002u32);
+        let windows = vec![
+            // 其他应用恰好也叫「微信」（记事本窗口标题）
+            win_at(1, 9001, "微信", Some("C:\\Windows\\notepad.exe")),
+            win_at(2, 9002, "微信", Some(target)),
+        ];
+        let got = select_identity_windows(&windows, target, &related, Some("微信"));
+        assert_eq!(got.len(), 1, "跨应用同名标题不得进入候选集");
+        assert_eq!(got[0].hwnd, 2);
+    }
+
+    #[test]
+    fn identity_windows_keep_multi_instance_and_child_process_windows() {
+        let target = "C:\\Program Files\\Tencent\\QQNT\\QQ.exe";
+        let mut related = HashSet::new();
+        related.insert(9103u32); // 子进程（宿主把窗口交给 helper）
+        let windows = vec![
+            win_at(1, 9101, "QQ", Some(target)),
+            win_at(2, 9102, "QQ - 主面板", Some(target)),
+            win_at(
+                3,
+                9103,
+                "QQ - 聊天窗口",
+                Some("C:\\Program Files\\Tencent\\QQNT\\QQHelper.exe"),
+            ),
+        ];
+        // 多实例全部保留；标题提示只在同款多窗口时再收窄
+        let all = select_identity_windows(&windows, target, &related, None);
+        assert_eq!(all.len(), 3);
+        let narrowed = select_identity_windows(&windows, target, &related, Some("聊天窗口"));
+        assert_eq!(narrowed.len(), 1);
+        assert_eq!(narrowed[0].hwnd, 3, "子进程持有的窗口应按进程树身份保留");
+    }
+
+    #[test]
+    fn title_hint_cannot_pull_in_foreign_window() {
+        let target = "C:\\Program Files\\WeChat\\WeChat.exe";
+        let related = HashSet::new();
+        let windows = vec![
+            win_at(1, 9201, "微信", Some(target)),
+            win_at(
+                2,
+                9202,
+                "微信开发文档 - 浏览器",
+                Some("C:\\Program Files\\Chrome\\chrome.exe"),
+            ),
+        ];
+        let got = select_identity_windows(&windows, target, &related, Some("微信开发文档"));
+        assert_eq!(got.len(), 1, "标题命中也不得越过进程身份");
+        assert_eq!(got[0].hwnd, 1);
+    }
+
+    #[test]
+    fn identity_windows_follow_exe_path_change() {
+        let target = "C:\\Program Files\\WeChat\\WeChat.exe";
+        let related = HashSet::new();
+        let windows = vec![
+            // 旧路径（软件升级/迁移后不再属于目标身份）
+            win_at(1, 9301, "微信", Some("D:\\OldWeChat\\WeChat.exe")),
+        ];
+        assert!(select_identity_windows(&windows, target, &related, None).is_empty());
+        // 新路径下的窗口可被识别
+        let windows_new = vec![win_at(2, 9302, "微信", Some(target))];
+        assert_eq!(
+            select_identity_windows(&windows_new, target, &related, None).len(),
+            1
+        );
     }
 
     // ── 问题 10：多窗口选择与记忆 ─────────────────────────────

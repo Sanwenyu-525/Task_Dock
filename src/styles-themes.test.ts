@@ -21,13 +21,15 @@ interface Rule {
   body: string;
 }
 
-/** 扁平规则表（文件里没有嵌套选择器，@media 只有一层）。 */
-const RULES: Rule[] = [...themesCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** 扁平规则表（文件里没有嵌套选择器，@media 只有一层）。
+ * 先剥掉注释：注释里会出现 `:root[data-preset=…]` 的示例，若被当成选择器，
+ * 会把 `:root` 结构令牌误算进某套预设的令牌集合。 */
+const RULES: Rule[] = [...stripComments(themesCss).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
   selector: m[1].trim().replace(/\s+/g, " "),
   body: m[2],
 }));
-
-const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, "");
 
 /** 取样式表里的 `@layer <name> { … }` 块（含同名的多个块，保持文件顺序）。 */
 function layerBlocks(css: string): { name: string; body: string }[] {
@@ -58,7 +60,7 @@ function capsuleRootBodies(css: string, layer: string): string[] {
     if (block.name !== layer) continue;
     for (const rule of [...block.body.matchAll(/([^{}]+)\{([^{}]*)\}/g)]) {
       const selectors = selectorsOf({ selector: rule[1].trim(), body: rule[2] });
-      if (selectors.includes(".dock-window.is-capsule")) bodies.push(rule[2]);
+      if (selectors.some((s) => s.endsWith(".dock-window.is-capsule"))) bodies.push(rule[2]);
     }
   }
   return bodies;
@@ -71,17 +73,21 @@ function ruleBodies(css: string, layer: string, selector: string): string[] {
     if (block.name !== layer) continue;
     for (const rule of [...block.body.matchAll(/([^{}]+)\{([^{}]*)\}/g)]) {
       const selectors = selectorsOf({ selector: rule[1].trim(), body: rule[2] });
-      if (selectors.includes(selector)) bodies.push(rule[2]);
+      if (selectors.some((s) => s.endsWith(selector))) bodies.push(rule[2]);
     }
   }
   return bodies;
 }
 
-const PRESETS = ["dream-gradient", "liquid-glass"] as const;
+const PRESETS = ["dream-gradient", "liquid-glass", "frosted", "clear"] as const;
 
 function rulesOf(preset: string, dark: boolean): Rule[] {
   return RULES.filter((r) => {
     if (!r.selector.includes(`data-preset="${preset}"`)) return false;
+    // 预设级断言只描述「默认」状态（材质=玻璃、前景=auto）。
+    // data-clear-fg 是独立的前景色板维度，不属于 preset/theme 组合，
+    // 否则强制浅色文字会被误当成浅色主题的默认值。
+    if (r.selector.includes("data-clear-fg=")) return false;
     const isDark = r.selector.includes('[data-theme="dark"]');
     return isDark === dark;
   });
@@ -114,12 +120,20 @@ function hasAlpha(value: string): boolean {
 }
 
 describe("主题令牌结构", () => {
-  it("两套预设的浅色主题提供同一套令牌名", () => {
-    expect(tokenNames("liquid-glass", false)).toEqual(tokenNames("dream-gradient", false));
+  it("所有预设的浅色主题提供同一套令牌名", () => {
+    for (const preset of PRESETS) {
+      expect(tokenNames(preset, false), `${preset} 浅色令牌名不一致`).toEqual(
+        tokenNames("dream-gradient", false),
+      );
+    }
   });
 
-  it("两套预设的深色主题提供同一套令牌名", () => {
-    expect(tokenNames("liquid-glass", true)).toEqual(tokenNames("dream-gradient", true));
+  it("所有预设的深色主题提供同一套令牌名", () => {
+    for (const preset of PRESETS) {
+      expect(tokenNames(preset, true), `${preset} 深色令牌名不一致`).toEqual(
+        tokenNames("dream-gradient", true),
+      );
+    }
   });
 
   it("四个上下文都定义了弹层表面与窗口底色", () => {
@@ -164,6 +178,39 @@ describe("主题令牌结构", () => {
         effectiveDecls(preset, false)["--window-fill"],
       );
     }
+  });
+});
+
+/* ── 清透玻璃（v0.9）──────────────────────────────────────────
+   清透模式的硬约束：窗口底色近乎无色、不启用任何整窗模糊；
+   前景色板可以强制深/浅，但不得顺手改掉玻璃材质。 */
+describe("清透玻璃材质约束", () => {
+  it("窗口底色近乎透明，且主题层不出现 backdrop-filter", () => {
+    for (const theme of ["light", "dark"] as const) {
+      for (const render of ["native", "css"] as const) {
+        const tokens = computedTokens({ preset: "clear", theme, render });
+        const stops = gradientStops(tokens["--window-fill"]);
+        expect(stops.length, `clear/${theme}/${render} 底色不可解析`).toBeGreaterThan(0);
+        const maxAlpha = Math.max(...stops.map((s) => s[3]));
+        expect(maxAlpha, `clear/${theme}/${render} 底色蒙层过重`).toBeLessThanOrEqual(0.2);
+      }
+    }
+    // backdrop-filter 无法模糊原生窗口之后的桌面，只会增加 GPU 开销。
+    // 只匹配实际声明（注释里会说明「不使用 backdrop-filter」）。
+    expect(stripComments(themesCss)).not.toMatch(/backdrop-filter\s*:/);
+  });
+
+  it("清透前景覆盖只改前景与可读面，不改变玻璃材质", () => {
+    const rules = TOKEN_RULES.filter((r) => r.selector.includes("data-clear-fg="));
+    expect(rules.length, "缺少清透前景的强制色板规则").toBe(2);
+    for (const rule of rules) {
+      expect(rule.body).not.toMatch(/--window-fill|--window-edge|--card-face|--decor-opacity/);
+    }
+  });
+
+  it("关闭玻璃材质时清透预设回退到不透明窗口", () => {
+    const solid = computedTokens({ preset: "clear", theme: "light", render: "solid" });
+    expect(hasAlpha(solid["--window-fill"]), "清透/solid 仍残留透明窗口").toBe(false);
   });
 });
 
@@ -484,3 +531,277 @@ describe("吸顶与工具栏表面", () => {
     expect(appCssCode).not.toMatch(/\.clip-title-input\s*\{[^}]*--surface-base/);
   });
 });
+
+/* ── 深色液态玻璃选中态层叠回归（2026-11-03）────────────────────
+   本次根因不是某个控件写错颜色，而是 CSS 层叠：一节「浅色 CSS 玻璃」
+   的多属性选择器（:root[data-preset][data-glass-render]）漏了明暗条件，
+   与深色基础规则同为 (0,3,0)，但位于文件更后面，于是深色也被套上了
+   #ffffff..#f2f6fc 的导航选中底与浅色白边卡片阴影。
+
+   下面用「选择器匹配 + 权重 + 文件顺序」还原最终生效值（与浏览器层叠
+   规则一致；已用 jsdom 载入真实样式表交叉核对过同一组取值）。只做字符串
+   包含判断无法发现这类「规则都写了、但被别的规则压过」的问题。 */
+
+type ThemeState = {
+  preset: "dream-gradient" | "liquid-glass" | "frosted" | "clear";
+  theme: "light" | "dark";
+  render: "native" | "css" | "solid";
+};
+
+const stateAttrs = (s: ThemeState): Record<string, string> => ({
+  "data-preset": s.preset,
+  "data-theme": s.theme,
+  "data-material": s.render === "solid" ? "solid" : "glass",
+  "data-glass-render": s.render,
+});
+
+/** 去掉 @media 块：对比度/宽度查询不参与默认 Token 层叠。 */
+function withoutMediaBlocks(css: string): string {
+  let out = "";
+  let last = 0;
+  const re = /@media[^{]*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(css)) !== null) {
+    let depth = 1;
+    let i = re.lastIndex;
+    for (; i < css.length && depth > 0; i += 1) {
+      if (css[i] === "{") depth += 1;
+      else if (css[i] === "}") depth -= 1;
+    }
+    out += css.slice(last, m.index);
+    last = i;
+    re.lastIndex = i;
+  }
+  return out + css.slice(last);
+}
+
+/** 根容器 Token 规则（选择器全部是 `:root` / `:root[...]`），保持文件顺序。 */
+const TOKEN_RULES: Rule[] = [
+  ...withoutMediaBlocks(stripComments(themesCss)).matchAll(/([^{}]+)\{([^{}]*)\}/g),
+]
+  .map((m) => ({
+    selector: m[1].trim().replace(/\s+/g, " "),
+    body: m[2],
+  }))
+  .filter((rule) => selectorsOf(rule).every((s) => /^(:root|html)[[\]:]?/.test(s)));
+
+/** 单条根选择器是否命中当前属性组合；返回 CSS 权重（身份+属性数）。 */
+function selectorSpecificity(selector: string, state: ThemeState): number {
+  const compact = selector.trim().replace(/\s+/g, " ");
+  const m = /^(:root|html)((?:\[data-[\w-]+="[^"]+"\])*)$/.exec(compact);
+  if (!m) return -1;
+  const attrs = stateAttrs(state);
+  for (const cond of m[2].matchAll(/\[data-([\w-]+)="([^"]+)"\]/g)) {
+    if (attrs[`data-${cond[1]}`] !== cond[2]) return -1;
+  }
+  const count = [...m[2].matchAll(/\[data-[\w-]+="[^"]+"\]/g)].length;
+  return 1 + count; // :root 身份(0,1,0) + 每个属性选择器(0,1,0)
+}
+
+/** 某属性组合下最终生效的 Token（权重升序 + 同权重按文件顺序）。 */
+function computedTokens(state: ThemeState): Record<string, string> {
+  const matched: { spec: number; index: number; body: string }[] = [];
+  TOKEN_RULES.forEach((rule, index) => {
+    const spec = Math.max(-1, ...selectorsOf(rule).map((s) => selectorSpecificity(s, state)));
+    if (spec >= 0) matched.push({ spec, index, body: rule.body });
+  });
+  matched.sort((a, b) => a.spec - b.spec || a.index - b.index);
+  const out: Record<string, string> = {};
+  for (const { body } of matched) {
+    for (const decl of body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) out[decl[1]] = decl[2].trim();
+  }
+  return out;
+}
+
+const LIQUID = {
+  lightNative: { preset: "liquid-glass", theme: "light", render: "native" },
+  lightCss: { preset: "liquid-glass", theme: "light", render: "css" },
+  lightSolid: { preset: "liquid-glass", theme: "light", render: "solid" },
+  darkNative: { preset: "liquid-glass", theme: "dark", render: "native" },
+  darkCss: { preset: "liquid-glass", theme: "dark", render: "css" },
+  darkSolid: { preset: "liquid-glass", theme: "dark", render: "solid" },
+} as const satisfies Record<string, ThemeState>;
+
+type Rgba = [number, number, number, number];
+
+function colorOf(text: string): Rgba | null {
+  const rgba = /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)/i.exec(text);
+  if (rgba) {
+    return [Number(rgba[1]), Number(rgba[2]), Number(rgba[3]), rgba[4] === undefined ? 1 : Number(rgba[4])];
+  }
+  const hex = /#([0-9a-f]{6})([0-9a-f]{2})?\b/i.exec(text);
+  if (!hex) return null;
+  const raw = hex[1];
+  return [
+    parseInt(raw.slice(0, 2), 16),
+    parseInt(raw.slice(2, 4), 16),
+    parseInt(raw.slice(4, 6), 16),
+    hex[2] === undefined ? 1 : parseInt(hex[2], 16) / 255,
+  ];
+}
+
+/** 渐变里按出现顺序的所有颜色停靠点。 */
+function gradientStops(value: string): Rgba[] {
+  const out: Rgba[] = [];
+  for (const m of value.matchAll(/(?:rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+(?:\s*,\s*[\d.]+)?\s*\)|#[0-9a-f]{3,8}\b)/gi)) {
+    const c = colorOf(m[0]);
+    if (c) out.push(c);
+  }
+  return out;
+}
+
+function compositeOver(top: Rgba, bottom: Rgba): Rgba {
+  const a = top[3] + bottom[3] * (1 - top[3]);
+  if (a === 0) return [0, 0, 0, 0];
+  const mix = (i: 0 | 1 | 2) => (top[i] * top[3] + bottom[i] * bottom[3] * (1 - top[3])) / a;
+  return [mix(0), mix(1), mix(2), a];
+}
+
+function relativeLuminance([r, g, b]: Rgba): number {
+  const lin = (v: number) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function contrastRatio(a: Rgba, b: Rgba): number {
+  const [l1, l2] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (l1 + 0.05) / (l2 + 0.05);
+}
+
+/** 窗口底色最深的一个停靠点，作为选中面合成时的底。 */
+function deepestWindowStop(fill: string): Rgba {
+  const stops = gradientStops(fill);
+  const solid = stops.filter((c) => c[3] >= 0.9);
+  const pool = solid.length > 0 ? solid : stops;
+  return pool.reduce((acc, c) => (acc[0] + acc[1] + acc[2] <= c[0] + c[1] + c[2] ? acc : c), pool[0]);
+}
+
+/** 选中面在真实底面上的合成亮度（取最亮停靠点 = 可读性最差位置）。 */
+function faceMaxLuminance(face: string, windowFill: string): number {
+  const bg = deepestWindowStop(windowFill);
+  return Math.max(...gradientStops(face).map((stop) => relativeLuminance(compositeOver(stop, bg))));
+}
+
+describe("深色液态玻璃选中态（层叠回归）", () => {
+  it("深色 CSS 玻璃的导航选中面是深色玻璃，不是 #ffffff 浅色面", () => {
+    const light = computedTokens(LIQUID.lightCss);
+    const dark = computedTokens(LIQUID.darkCss);
+    expect(light["--rail-active-face"], "浅色 CSS 玻璃选中面丢失").toBeTruthy();
+    expect(dark["--rail-active-face"], "深色 CSS 玻璃缺少专有选中面").toBeTruthy();
+    // 同一个属性选择器规则的取值必须真正不同，不能再被浅色规则压过
+    expect(dark["--rail-active-face"]).not.toBe(light["--rail-active-face"]);
+    expect(dark["--rail-active-face"]).not.toMatch(/#ffffff|#fff\b/);
+    const lum = faceMaxLuminance(dark["--rail-active-face"], dark["--window-fill"]);
+    expect(lum, `深色选中面合成后仍偏亮（L=${lum.toFixed(3)}）`).toBeLessThan(0.12);
+    // 浅色选中面必须保持明亮：修复不能把浅色一起压暗
+    const lightLum = faceMaxLuminance(light["--rail-active-face"], light["--window-fill"]);
+    expect(lightLum, `浅色选中面被压暗（L=${lightLum.toFixed(3)}）`).toBeGreaterThan(0.85);
+  });
+
+  it("深色 CSS 玻璃不继承浅色霜面专属的白边卡片阴影", () => {
+    const light = computedTokens(LIQUID.lightCss)["--card-shadow"];
+    const dark = computedTokens(LIQUID.darkCss)["--card-shadow"];
+    expect(dark).toBeTruthy();
+    expect(dark).not.toBe(light);
+    expect(dark).not.toMatch(/#ffffff/i);
+    // 不允许出现「白色 + 高不透明度」的浅色高光层（那是浅色霜面的做法）
+    for (const stop of gradientStops(dark)) {
+      const [r, g, b, a] = stop;
+      expect(r + g + b === 765 && a > 0.5, `深色卡片阴影出现白色高光层：${stop.join(",")}`).toBe(false);
+    }
+    expect(computedTokens(LIQUID.darkCss)["--card-shadow-hover"]).not.toBe(
+      computedTokens(LIQUID.lightCss)["--card-shadow-hover"],
+    );
+  });
+
+  it("选中面令牌确实被导航与停靠胶囊选中态消费", () => {
+    const rail = /\.rail-item\.active\s*\{([\s\S]*?)\}/.exec(themesCss);
+    expect(rail?.[1]).toMatch(/background:\s*var\(--rail-active-face\)/);
+    const cap = /\.cap-btn\.is-active\s*\{([\s\S]*?)\}/.exec(themesCss);
+    expect(cap?.[1], "themes 层缺少 .cap-btn.is-active 覆盖").toBeTruthy();
+    expect(cap?.[1]).toMatch(/background:\s*var\(--rail-active-face\)/);
+    expect(cap?.[1]).toMatch(/color:\s*var\(--rail-active-text\)/);
+  });
+
+  it("六种液态玻璃渲染组合都定义选中态与卡片层级令牌", () => {
+    for (const state of Object.values(LIQUID)) {
+      const tokens = computedTokens(state);
+      const tag = `${state.theme}/${state.render}`;
+      for (const key of [
+        "--rail-active-face",
+        "--rail-active-text",
+        "--rail-active-shadow",
+        "--card-face",
+        "--card-shadow",
+        "--card-shadow-hover",
+        "--window-edge",
+        "--control-face",
+        "--pill-active-face",
+      ]) {
+        expect(tokens[key], `${tag} 未解析出 ${key}`).toBeTruthy();
+      }
+    }
+  });
+
+  it("明暗与材质切换会更新选中面和卡片阴影，而不是沿用上一态", () => {
+    const pairs: [ThemeState, ThemeState][] = [
+      [LIQUID.lightNative, LIQUID.darkNative],
+      [LIQUID.lightCss, LIQUID.darkCss],
+      [LIQUID.lightSolid, LIQUID.darkSolid],
+    ];
+    for (const [light, dark] of pairs) {
+      const l = computedTokens(light);
+      const d = computedTokens(dark);
+      for (const key of ["--rail-active-face", "--card-face", "--window-fill", "--text-tertiary"]) {
+        expect(d[key], `${light.render} 的 ${key} 明暗切换后未变化`).not.toBe(l[key]);
+      }
+    }
+    const css = computedTokens(LIQUID.darkCss);
+    const solid = computedTokens(LIQUID.darkSolid);
+    expect(css["--window-fill"]).not.toBe(solid["--window-fill"]);
+    expect(css["--rail-active-face"]).not.toBe(solid["--rail-active-face"]);
+  });
+
+  it("CSS 玻璃的根 Token 规则都限定了明暗，不再有无条件覆盖", () => {
+    const offenders: string[] = [];
+    for (const rule of TOKEN_RULES) {
+      if (!rule.selector.includes('data-glass-render="css"')) continue;
+      for (const selector of selectorsOf(rule)) {
+        if (!/data-theme="(light|dark)"/.test(selector) && !/:not\(/.test(selector)) offenders.push(selector);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("说明文字的第三级颜色在两套预设的明暗下都达到 WCAG AA 4.5:1", () => {
+    const bg: Record<"light" | "dark", Rgba> = { light: [251, 253, 255, 1], dark: [27, 34, 52, 1] };
+    for (const preset of PRESETS) {
+      for (const theme of ["light", "dark"] as const) {
+        const token = computedTokens({ preset, theme, render: "native" })["--text-tertiary"];
+        const color = colorOf(token);
+        expect(color, `${preset}/${theme} 的 --text-tertiary 不是可解析颜色：${token}`).toBeTruthy();
+        const ratio = contrastRatio(color!, bg[theme]);
+        expect(ratio, `${preset}/${theme} 的 --text-tertiary 对比度 ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  it("深色主题卡未选中圆点不再用 85% 白，选中态仍由 accent 表达", () => {
+    const darkRadio = /:root\[data-theme="dark"\]\s*\.preset-card:not\(\.active\)\s*\.preset-radio\s*\{([\s\S]*?)\}/.exec(
+      themesCss,
+    );
+    expect(darkRadio?.[1], "缺少深色未选中圆点规则").toBeTruthy();
+    expect(darkRadio![1]).not.toMatch(/var\(--c-paper\)\s*85%/);
+    expect(themesCss).toMatch(/\.preset-card\.active \.preset-radio\s*\{[^}]*background:\s*var\(--accent\)/);
+  });
+
+  it("导航项有键盘焦点环，且焦点环收在窄轨内不被裁掉", () => {
+    const focus = /\.rail-item:focus-visible\s*\{([\s\S]*?)\}/.exec(themesCss);
+    expect(focus?.[1], "缺少 .rail-item:focus-visible").toBeTruthy();
+    expect(focus![1]).toMatch(/outline:\s*2px solid var\(--accent\)/);
+    expect(focus![1]).toMatch(/outline-offset:\s*-2px/);
+  });
+});
+

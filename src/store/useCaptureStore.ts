@@ -25,6 +25,16 @@ interface CaptureStore {
   error: string | null;
   /** 未处理条数：侧边栏徽标与筛选共用同一口径（以后端 inbox_count 为准） */
   inboxCount: number;
+  /** 是否从后端读到过未处理数（false 时徽标显示中性，不伪装成 0） */
+  inboxCountLoaded: boolean;
+  /**
+   * 收集箱胶囊面板的轻量切片：未处理前 8 条。
+   * null = 面板未打开。与完整页的 items/filter/loading 互不读写。
+   */
+  lite: CaptureItem[] | null;
+  liteLoading: boolean;
+  /** 轻量切片最近一次查询的错误；失败时旧 lite 原样保留 */
+  liteError: string | null;
   setFilter: (filter: CaptureFilter) => void;
   /** 按当前筛选拉取列表 + 刷新未处理计数 */
   load: () => Promise<void>;
@@ -32,6 +42,10 @@ interface CaptureStore {
   refresh: () => Promise<void>;
   /** 只刷新未处理计数（App 收到 quick-capture-created 时调用） */
   refreshInboxCount: () => Promise<void>;
+  /** 读一次轻量切片（收集箱胶囊面板挂载时调用；失败不清除已成功数据） */
+  loadInboxLite: () => Promise<void>;
+  /** 面板卸载：作废在途请求并释放轻量切片 */
+  releaseLite: () => void;
   markHandled: (id: string) => Promise<CaptureItem>;
   convertToTask: (id: string) => Promise<CaptureItem>;
   remove: (id: string) => Promise<void>;
@@ -39,6 +53,8 @@ interface CaptureStore {
 
 /** 列表请求序号：筛选快速切换时丢弃过期响应。 */
 let loadSeq = 0;
+/** 轻量切片请求序号：与完整页 loadSeq 互不干扰，旧响应不覆盖新切片。 */
+let liteSeq = 0;
 
 function isInbox(item: CaptureItem): boolean {
   return item.status === "inbox";
@@ -50,6 +66,10 @@ export const useCaptureStore = create<CaptureStore>((set, get) => ({
   loading: false,
   error: null,
   inboxCount: 0,
+  inboxCountLoaded: false,
+  lite: null,
+  liteLoading: false,
+  liteError: null,
 
   setFilter: (filter) => {
     if (get().filter === filter) return;
@@ -73,7 +93,11 @@ export const useCaptureStore = create<CaptureStore>((set, get) => ({
         items,
         loading: false,
         inboxCount: state ? state.inbox_count : fallbackCount,
+        inboxCountLoaded: true,
       });
+      // 收集箱胶囊面板开着就顺带刷新轻量切片：全应用只有 App.tsx 的一条
+      // quick-capture-created 监听驱动这里，lite 不自建第二条监听。
+      if (get().lite !== null) void get().loadInboxLite();
     } catch (error) {
       if (seq !== loadSeq) return;
       set({ loading: false, error: formatError(error) });
@@ -85,10 +109,39 @@ export const useCaptureStore = create<CaptureStore>((set, get) => ({
   refreshInboxCount: async () => {
     try {
       const state = await quickCaptureState();
-      set({ inboxCount: state.inbox_count });
+      set({ inboxCount: state.inbox_count, inboxCountLoaded: true });
     } catch {
       // 计数刷新失败不影响列表；徽标保留上一次的已知值
     }
+  },
+
+  loadInboxLite: async () => {
+    const seq = ++liteSeq;
+    set({ liteLoading: true });
+    try {
+      const [items, state] = await Promise.all([
+        quickCaptureList("inbox", 8, 0),
+        quickCaptureState().catch(() => null),
+      ]);
+      if (seq !== liteSeq) return; // 已有更新的请求，丢弃这次响应
+      set((s) => ({
+        lite: items,
+        liteLoading: false,
+        liteError: null,
+        inboxCount: state ? state.inbox_count : s.inboxCount,
+        inboxCountLoaded: state ? true : s.inboxCountLoaded,
+      }));
+    } catch (e) {
+      if (seq !== liteSeq) return;
+      // 失败不清除已成功数据：旧切片保留展示并由面板叠加错误提示；
+      // 从未成功过（lite === null）时面板显示错误空态。两者都可重试。
+      set({ liteLoading: false, liteError: String(e) });
+    }
+  },
+
+  releaseLite: () => {
+    liteSeq += 1; // 卸载后回来的响应一律作废
+    set({ lite: null, liteLoading: false, liteError: null });
   },
 
   markHandled: async (id) => {

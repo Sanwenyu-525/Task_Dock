@@ -56,9 +56,9 @@
 | 功能 | 状态 | 摘要 |
 |---|---|---|
 | Codex App Server 深度接入 `agent.codex-app-server` | partial | 已有：hooks 接入（7 事件、真实联调）+ codex resume。缺口：app-server stdio JSON-RPC 通道（线程恢复、中断回合、完整对话事件） |
-| Claude Code 专用适配器 `agent.claude-code-adapter` | planned | ~/.claude/settings.json Hooks 格式已勘明（v2.1.186），待实现与联调 |
-| Cursor 专用适配器 `agent.cursor-adapter` | planned | ~/.cursor/hooks.json 格式已勘明（version:1 + camelCase），待实现与联调 |
-| Gemini CLI 接入 `agent.gemini-cli` | planned | 官方 Hooks 已存在（11 个生命周期事件：SessionStart / SessionEnd / BeforeAgent / AfterAgent / BeforeModel / AfterModel / BeforeToolSelection / BeforeTool / AfterTool / PreCompress / Notification；settings.json 配置，handler 仅 command，默认超时 60000ms）。待开发：配置发现、事件解析、状态映射、真实联调；SessionEnd 为 best-effort，结束 / 失败状态需进程兜底 |
+| Claude Code 专用适配器 `agent.claude-code-adapter` | implemented（待本轮真实验证） | 已实现：~/.claude/settings.json 官方 Hooks 安装/卸载、多文件事务、二进制能力线索检查。缺口：本轮未在真实 Claude 会话触发事件，真实验证标 UNVERIFIED |
+| Cursor 专用适配器 `agent.cursor-adapter` | implemented（待本轮真实验证） | 已实现：用户级 ~/.cursor/hooks.json（保留 version 等字段）、camelCase 事件映射。缺口：本轮未在真实 Cursor 会话触发事件 |
+| Gemini CLI 接入 `agent.gemini-cli` | implemented（待本轮真实验证） | 已实现：~/.gemini/settings.json、11 个生命周期事件基线、AfterAgent/SessionEnd 映射完成态。缺口：本轮未在真实 Gemini CLI 会话触发事件；SessionEnd 为 best-effort，结束/失败仍以事件为准 |
 | ZCode 自动接入完善 `agent.zcode-integration` | partial | 已有：发现 + 通用桥接（HTTP/文件）。缺口：插件自动注册验证、真实执行状态读取（当前如实显示「未知」） |
 | Agent 工作时间统计 `agent.work-time-stats` | planned | 按来源/会话统计运行时长、等待时长、失败率 |
 | Agent 执行时间轴 `agent.execution-timeline` | partial | 已有：历史页统一事件时间轴（按日分组、重复聚合）。缺口：按 run 可视化、时长统计 |

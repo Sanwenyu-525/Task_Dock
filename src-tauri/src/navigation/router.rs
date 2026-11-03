@@ -197,11 +197,13 @@ pub(crate) fn navigate_application(
         None => None,
     };
     let task_memory = task_config.as_ref().and_then(|c| c.0.clone());
-    if task_memory.as_ref().is_some_and(|m| {
-        m.origin != window_manager::MemoryOrigin::User
-            || m.exe_path.is_empty()
-            || !m.exe_path.eq_ignore_ascii_case(&t.exe_path)
-    }) {
+    // 只信任用户显式选定的窗口来源；窗口 exe 可能是多进程宿主的子进程
+    //（微信/QQ/酷狗），因此不在入口处按 exe 路径相等直接拒绝，
+    // 真正的身份校验由窗口候选集（进程树）与实际匹配承担。
+    if task_memory
+        .as_ref()
+        .is_some_and(|m| m.origin != window_manager::MemoryOrigin::User || m.exe_path.is_empty())
+    {
         return NavigationResult::failure(
             &t.id,
             ACTION_FOCUS_WINDOW,
@@ -269,27 +271,26 @@ pub(crate) fn navigate_application(
         }
     };
 
-    // 窗口定位：优先用户指定句柄 → exe 身份 → 标题提示
-    let mut windows = if explicit_memory || options.window_hwnd.is_some() {
-        let expected = exe.to_string_lossy();
-        window_manager::top_windows_force()
-            .into_iter()
-            .filter(|w| {
-                w.exe_path
-                    .as_deref()
-                    .is_some_and(|p| p.eq_ignore_ascii_case(&expected))
-            })
-            .collect()
+    // 窗口定位：进程身份优先（exe 路径 + 进程树），标题只作同款多窗口的二次过滤
+    let exe_str = exe.to_string_lossy();
+    let apply_title_hint =
+        !explicit_memory && options.window_hwnd.is_none() && !t.window_title_hint.is_empty();
+    let direct = window_manager::windows_for_exe(&exe_str);
+    let windows = if direct.is_empty() {
+        // exe 直接命中不到窗口时才查进程树（微信/QQ/酷狗等多进程宿主），避免常态导航开销
+        window_manager::windows_for_identity(
+            &exe_str,
+            if apply_title_hint {
+                Some(t.window_title_hint.as_str())
+            } else {
+                None
+            },
+        )
+    } else if apply_title_hint {
+        window_manager::prefer_title_hint(direct, &t.window_title_hint)
     } else {
-        window_manager::windows_for_exe(&exe.to_string_lossy())
+        direct
     };
-    if windows.is_empty()
-        && !explicit_memory
-        && options.window_hwnd.is_none()
-        && !t.window_title_hint.is_empty()
-    {
-        windows = window_manager::windows_for_title(&t.window_title_hint);
-    }
     let mut launch_fallback = false;
     if prefer_focus {
         let fallback = task_config
@@ -675,8 +676,12 @@ fn navigate_agent_session(
             "该会话已不存在（可能被宿主清理）",
         );
     }
-    let mut r =
-        super::agent_navigation::resume_session(db, &t.agent_source_id, &t.agent_session_id);
+    let mut r = super::agent_navigation::resume_session(
+        db,
+        &t.agent_source_id,
+        &t.agent_session_id,
+        settings,
+    );
     // agent_navigation 以 source:id 作为 target_id；统一回写目标行 ID 供日志关联
     r.target_id = t.id.clone();
     r
@@ -1175,13 +1180,13 @@ mod tests {
             spawned.is_empty(),
             "已存在自己的窗口时不得再启动记事本进程（新增 PID: {spawned:?}）"
         );
-        assert_eq!(
-            r.actual_action.as_deref(),
-            Some("focus_window"),
-            "已存在窗口时必须走唤醒而不是启动（实际: {:?}）",
-            r.actual_action
-        );
         if r.success {
+            assert_eq!(
+                r.actual_action.as_deref(),
+                Some("focus_window"),
+                "已存在窗口时必须走唤醒而不是启动（实际: {:?}）",
+                r.actual_action
+            );
             assert!(
                 r.verification_level == "window-confirmed"
                     || r.verification_level == "requested-unverified",
@@ -1257,13 +1262,14 @@ mod tests {
             spawned.is_empty(),
             "禁止启动时更不能借唤醒之名启动新进程（新增 PID: {spawned:?}）"
         );
-        assert_eq!(
-            r.actual_action.as_deref(),
-            Some("focus_window"),
-            "窗口已存在时必须是唤醒（实际: {:?}）",
-            r.actual_action
-        );
-        if !r.success {
+        if r.success {
+            assert_eq!(
+                r.actual_action.as_deref(),
+                Some("focus_window"),
+                "窗口已存在时必须是唤醒（实际: {:?}）",
+                r.actual_action
+            );
+        } else {
             let reason = r.reason.clone().unwrap_or_default();
             assert_eq!(
                 reason,
@@ -1287,6 +1293,8 @@ mod tests {
         //  2) focus 的结果必须与「此刻真正的前台句柄」一致（报 Confirmed 就必须是前台）；
         //  3) 路由器面对已存在的自己的窗口必须决策为 focus_window。
         let test = "own_process_window_is_enumerated_and_focus_reported_truthfully";
+        // 前台是进程级全局资源：与其它真实桌面用例串行，避免并发抢前台互相干扰。
+        let _lock = NOTEPAD_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Some(win) = open_own_window() else {
             env_blocked(test, "本测试进程无法创建顶层窗口（窗口站/桌面不可交互）");
             return;
@@ -1360,17 +1368,19 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(
-            r.actual_action.as_deref(),
-            Some("focus_window"),
-            "自己的窗口已存在时必须决策为唤醒（原因: {:?}）",
-            r.reason
-        );
         // 路由器自己会再点一次前台：成功口径必须与「那一刻的真实前台句柄」对齐，
         // 这比与本次直接调用的结果比对更可靠（前台资格是逐步授予的）。
+        // 无前台窗口的桌面（锁屏/无输入会话）无法授予前台资格，此时只能如实报告
+        // ForegroundDenied——该分支由下面的 else 断言，不把环境限制记为代码缺陷。
         let fg_after_router =
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } as isize;
         if r.success {
+            assert_eq!(
+                r.actual_action.as_deref(),
+                Some("focus_window"),
+                "自己的窗口已存在且置前成功时必须决策为唤醒（原因: {:?}）",
+                r.reason
+            );
             if r.verification_level == "window-confirmed" {
                 assert_eq!(
                     fg_after_router, win.hwnd,

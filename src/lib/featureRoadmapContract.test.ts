@@ -71,7 +71,7 @@ const EXPECTED_CORE_BY_PRIORITY: Record<FeaturePriority, readonly string[]> = {
   P2: ["core.quick-notes", "core.life-routines"],
 };
 
-/** 核心项状态精确集合（快速捕获已由 partial 提升为 implemented） */
+/** 核心项状态精确集合（v0.8：文件暂存架由 planned 提升为 partial） */
 const EXPECTED_CORE_BY_STATUS: Record<"implemented" | "partial" | "planned", readonly string[]> = {
   implemented: ["core.quick-capture", "core.agent-action-center"],
   partial: [
@@ -80,9 +80,9 @@ const EXPECTED_CORE_BY_STATUS: Record<"implemented" | "partial" | "planned", rea
     "core.smart-reminders",
     "core.notification-aggregation",
     "core.life-routines",
+    "core.file-shelf",
   ],
   planned: [
-    "core.file-shelf",
     "core.one-click-workflow",
     "core.focus-timer",
     "core.global-search",
@@ -118,7 +118,7 @@ describe("12 项核心功能精确契约", () => {
     }
   });
 
-  it("核心项状态精确集合：implemented 2 / partial 5 / planned 5", () => {
+  it("核心项状态精确集合：implemented 2 / partial 6 / planned 4", () => {
     for (const status of ["implemented", "partial", "planned"] as const) {
       const actual = featuresOf(EXPECTED_CORE_IDS)
         .filter((f) => f.status === status)
@@ -138,7 +138,7 @@ describe("12 项核心功能精确契约", () => {
 });
 
 describe("全目录统计契约", () => {
-  it("目录总数 28，状态计数 implemented=4 / partial=8 / planned=16 / blocked=0", () => {
+  it("目录总数 28，状态计数 implemented=4 / partial=9 / planned=15 / blocked=0", () => {
     expect(FEATURE_CATALOG).toHaveLength(28);
     const counts: Record<FeatureStatus, number> = {
       implemented: 0,
@@ -147,7 +147,7 @@ describe("全目录统计契约", () => {
       blocked: 0,
     };
     for (const f of FEATURE_CATALOG) counts[f.status] += 1;
-    expect(counts).toEqual({ implemented: 4, partial: 8, planned: 16, blocked: 0 });
+    expect(counts).toEqual({ implemented: 4, partial: 9, planned: 15, blocked: 0 });
   });
 
   it("摘要函数与目录实际计数一致（total / coreTotal / 状态 / 验证）", () => {

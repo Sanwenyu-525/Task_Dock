@@ -73,9 +73,6 @@ export default function AgentsLite() {
         .slice(0, 8),
     [snapshot],
   );
-  const monitored = summary.running + summary.waiting + summary.failed + summary.disconnected;
-  const attention = summary.waiting + summary.failed;
-
   const refresh = async () => {
     if (busy) return;
     setBusy(true);
@@ -132,8 +129,17 @@ export default function AgentsLite() {
         {snapshot === null ? (
           <span>读取中…</span>
         ) : (
+          // 数量口径全部来自 snapshot 的实时轮次（liveRuns），按状态分列、不合并：
+          // 绝不把实例/会话总数算成「运行中」，失联只在真实存在时出现。
           <span>
-            监控中 <b>{monitored}</b> · 运行中 <b>{summary.running}</b> · 待处理 <b>{attention}</b>
+            运行中 <b>{summary.running}</b> · 等待 <b>{summary.waiting}</b> · 失败{" "}
+            <b>{summary.failed}</b>
+            {summary.disconnected > 0 ? (
+              <>
+                {" "}
+                · 失联 <b>{summary.disconnected}</b>
+              </>
+            ) : null}
           </span>
         )}
       </div>

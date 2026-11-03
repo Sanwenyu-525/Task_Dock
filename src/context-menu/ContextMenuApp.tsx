@@ -18,7 +18,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Check } from "lucide-react";
 import { getSettings } from "../lib/bridge";
 import { createSubscriptionScope } from "../lib/subscriptions";
-import { resolveTheme, resolveVisualPreset } from "../lib/theme";
+import { resolveSecondaryPreset, resolveTheme, resolveVisualPreset } from "../lib/theme";
 import {
   FLAT_ITEMS,
   MENU_GROUPS,
@@ -160,7 +160,10 @@ export default function ContextMenuApp() {
   // 主题落到 DOM：与主窗同一套解析，保证两边永远一致
   useEffect(() => {
     const root = document.documentElement;
-    if (snap) root.dataset.preset = resolveVisualPreset(snap.visual_preset);
+    if (snap) {
+      // 清透玻璃只属于主窗：菜单窗口需要可读的不透明表面，沿用液态玻璃材质。
+      root.dataset.preset = resolveSecondaryPreset(resolveVisualPreset(snap.visual_preset));
+    }
     root.dataset.theme = resolveTheme(snap?.theme ?? "system", { prefersDark });
   }, [snap, prefersDark]);
 

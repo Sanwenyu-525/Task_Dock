@@ -15,7 +15,7 @@
 
 这 5 张均来自 `docs/design-refs/v07/`，源文件保留在原位置；导入副本仅用于 Skill 内快速查图，`manifest.json` 的 `source` + `sha256` 是可追溯出处。**不得把源文件与副本同时当作并行维护的权威基准。**
 
-## 候选图（5 张，仅供方向参考）
+## 候选图（7 张，仅供方向参考）
 
 | ID | 组件 | 主题 | 状态 | 来源 | 为什么不是正式基准 |
 |---|---|---|---|---|---|
@@ -24,6 +24,8 @@
 | `planning-center-views-v07` | `planning-center` | light | `multi-view-overview` | `docs/design-refs/v07/规划中心效果图.png` | 规划文档未指定为最终效果图，README 仅称设计输入稿 |
 | `theme-system-exploration-v07` | `theme-system` | both | `theme-material-3d-exploration` | `docs/design-refs/v07/3D效果图/3D效果图.png` | 多方案探索板，未见最终批准 |
 | `capsule-options-a-g-v07` | `capsule` | both | `design-options-a-g` | `docs/design-refs/v07/capsule-design-options-20261101.png` | 方案 A–G 对比板，未指定单一最终方案 |
+| `liquid-glass-main-panel-v07` | `main-panel` | light | `empty-light-glass-photo-background` | `docs/design-refs/v07/液态玻璃效果图-v07.png` | 用户仅要求保存为参考，未批准为视觉基准 |
+| `liquid-glass-main-panel-fully-transparent-v07` | `main-panel` | light | `empty-light-glass-fully-transparent` | `docs/design-refs/v07/液态玻璃效果图-绝对透明版-v07.png` | 同布局“绝对透明版”，与上一张并列保留，未批准 |
 
 候选图不复制进 Skill；`candidates.json` 只记录来源路径与哈希。验收时可以参考其方向，但**不得据此判 Pass/Fail**。
 

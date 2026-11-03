@@ -145,7 +145,7 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
             {activeProjects.map((p) => (
               <button
                 key={p.id}
-                className={`planning-project-item ${p.id === activeProjectId ? "is-active" : ""}`}
+                className={`task-card planning-project-item ${p.id === activeProjectId ? "is-active" : ""}`}
                 onClick={() => {
                   activityRequestedFor.current = null;
                   void selectProject(p.id);
@@ -168,7 +168,7 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                 {archivedProjects.map((p) => (
                   <button
                     key={p.id}
-                    className={`planning-project-item is-archived ${
+                    className={`task-card planning-project-item is-archived ${
                       p.id === activeProjectId ? "is-active" : ""
                     }`}
                     onClick={() => {

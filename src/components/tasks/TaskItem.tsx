@@ -129,7 +129,15 @@ export default function TaskItem({ task, compact }: Props) {
     }
   }
 
-  const inline = links.slice(0, compact ? MAX_INLINE_TARGETS_COMPACT : MAX_INLINE_TARGETS);
+  // 默认目标排在最前：让「一键打开默认入口」在窄窗/紧凑模式下也可见，
+  // 而不是被前几个非默认目标挤出直列区（默认值仍由 TaskEditor 显式设置）。
+  const orderedLinks = [...links].sort(
+    (a, b) => Number(b.is_default) - Number(a.is_default),
+  );
+  const inline = orderedLinks.slice(
+    0,
+    compact ? MAX_INLINE_TARGETS_COMPACT : MAX_INLINE_TARGETS,
+  );
   const overflow = links.length - inline.length;
   // 工作区入口在两种模式下都必须可达：
   // 旧实现把它挂在 `!compact` 上，而「+N」入口只在 >3 个目标时出现，
@@ -139,7 +147,7 @@ export default function TaskItem({ task, compact }: Props) {
   return (
     <div
       ref={rowRef}
-      className={`task-item priority-${task.priority} ${task.status} ${leaving ? "leaving" : ""}`}
+      className={`task-card task-item priority-${task.priority} ${task.status} ${leaving ? "leaving" : ""}`}
     >
       <button
         className={`task-check ${task.status === "completed" ? "done" : ""}`}
@@ -194,8 +202,9 @@ export default function TaskItem({ task, compact }: Props) {
               <button
                 key={l.id}
                 className="task-nav-btn"
-                title={`打开：${l.target.display_name}`}
-                aria-label={`打开 ${l.target.display_name}`}
+                data-default={l.is_default ? "true" : undefined}
+                title={`打开：${l.target.display_name}${l.is_default ? "（默认目标）" : ""}`}
+                aria-label={`打开${l.is_default ? "默认目标 " : " "}${l.target.display_name}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   navigateTarget(l.target_id, l.target.display_name, l.launch_behavior, l.id);

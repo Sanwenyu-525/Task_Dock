@@ -425,7 +425,7 @@ Start-Sleep -Milliseconds 900
 $reShowPath = $full -replace '\.png$', '-reshow.png'
 Save-Capture $reShowPath
 
-$radiusLogical = if ($Preset -eq "liquid-glass") { 20 } else { 18 }
+$radiusLogical = if ($Preset -in @("liquid-glass", "frosted", "clear")) { 20 } else { 18 }
 $scale = [Math]::Round($dpi / 96.0, 4)
 $meta = [ordered]@{
   out = $full

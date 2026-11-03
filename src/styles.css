@@ -971,20 +971,12 @@ code {
 }
 
 /* 任务卡（方案 D）：优先级由 .priority-tag 表达，卡片本体不再画常驻左色条；
-   玻璃材质（流线高光 / 卡面渐变 / 阴影层级）由 theme 层按预设下发。 */
+   卡面、圆角、阴影与内边距统一由 .task-card 壳在 theme 层下发（任务列表页为基准），
+   行动中心 / Agent 轮次 / 规划中心 / 内置路线图卡片共用同一套卡面 Token。 */
 .task-item {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 7px 9px;
-  border-radius: var(--radius-card);
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
-  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
-}
-
-.task-item:hover {
-  border-color: var(--border-strong);
 }
 
 .task-item.completed {
@@ -1049,6 +1041,29 @@ code {
 .priority-tag.p1 { color: var(--p1); background: color-mix(in srgb, var(--p1) 14%, transparent); }
 .priority-tag.p2 { color: var(--p2); background: color-mix(in srgb, var(--p2) 14%, transparent); }
 .priority-tag.p3 { color: var(--p3); background: color-mix(in srgb, var(--p3) 14%, transparent); }
+
+/* 状态徽标统一：所有卡片的优先级/状态徽标共用「软底 + 语义色文字」，
+   状态差异只改 color，不再各自维护描边胶囊或实心色块。 */
+.roadmap-status,
+.planning-status,
+.planning-status-badge,
+.planning-stage-badge,
+.planning-project-state,
+.action-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: none;
+  border-radius: 999px;
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
 
 .task-title {
   font-size: 12.5px;
@@ -1435,6 +1450,9 @@ code {
   flex-direction: column;
   gap: 5px;
   min-width: 0;
+  /* 作为容器查询参照：窄卡片下核心操作按钮收成图标，避免换行/截断 */
+  container-type: inline-size;
+  container-name: discovery-card;
 }
 
 .discovery-card.not-installed {
@@ -1458,6 +1476,29 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 描述区固定高度：文案短时下方留白，文案长时内部滚动，保证动作区纵向位置稳定。
+   100px 依据：400px 双列卡片实测常规内容最大 98px（facts 2 行 + events 2 行 + last 1 行 + 间距），
+   留 2px 余量；与卡片既有 11px 字号 / 1.45 行高 / 5px 间距一致。 */
+.discovery-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  height: 100px;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  overscroll-behavior: contain;
+}
+
+.discovery-body > * {
+  flex-shrink: 0;
+}
+
+.discovery-body::-webkit-scrollbar {
+  display: none;
 }
 
 .discovery-facts {
@@ -1522,8 +1563,40 @@ code {
 
 .source-actions {
   display: flex;
+  align-items: center;
   gap: 5px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* 核心操作（接入 + 禁用/启用）始终同一行；辅助操作（验证/卸载钩子）空间不足时另起一行 */
+.source-actions-core,
+.source-actions-aux {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.source-actions-core {
+  flex-wrap: nowrap;
+}
+
+.source-actions-aux {
+  flex-wrap: wrap;
+}
+
+/* 卡片可用宽度不足时（如 400px 双列卡片），核心操作统一收成纯图标按钮：
+   aria-label 与 data-tip 保留完整语义，两个按钮形态一致，宽度不再随文案变化；
+   纯图标按钮高度仍为 24px：图标 12 + 上下内边距 10 + 边框 2 */
+@container discovery-card (max-width: 160px) {
+  .source-actions-core .source-action-label {
+    display: none;
+  }
+
+  .source-actions-core .btn {
+    padding: 5px 6px;
+  }
 }
 
 .bridge-note {
@@ -1694,23 +1767,12 @@ code {
   background: color-mix(in srgb, var(--status-error) 6%, transparent);
 }
 
+/* 卡面/圆角/阴影/内边距由统一壳 .task-card 下发；轮次状态只由状态点与文案表达。 */
 .run-item {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 7px 9px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-raised);
   min-width: 0;
-}
-
-.run-item.state-waiting {
-  border-color: color-mix(in srgb, var(--status-waiting) 35%, transparent);
-}
-
-.run-item.state-failed {
-  border-color: color-mix(in srgb, var(--status-error) 35%, transparent);
 }
 
 .run-main {
@@ -1719,7 +1781,8 @@ code {
 }
 
 .run-title {
-  font-size: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
   display: flex;
   gap: 6px;
   align-items: center;
@@ -5435,21 +5498,13 @@ code {
   color: var(--p1);
 }
 
+/* 卡面/圆角/阴影/内边距由统一壳 .task-card 下发；优先级只由 .priority-tag 表达。 */
 .action-item {
   display: flex;
   align-items: stretch;
   gap: 2px;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
-  border-left: 3px solid var(--p3);
-  border-radius: var(--radius-card);
   overflow: hidden;
 }
-
-.action-item.p0 { border-left-color: var(--p0); }
-.action-item.p1 { border-left-color: var(--p1); }
-.action-item.p2 { border-left-color: var(--p2); }
-.action-item.p3 { border-left-color: var(--p3); }
 
 .action-item.acked {
   opacity: 0.55;
@@ -5461,7 +5516,6 @@ code {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 6px 4px 6px 8px;
   background: none;
   border: none;
   color: inherit;
@@ -5469,84 +5523,51 @@ code {
   cursor: pointer;
 }
 
-.action-main:hover {
-  background: var(--surface-hover);
-}
-
 .action-head {
   display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--text-tertiary);
 }
 
-.action-prio {
-  flex-shrink: 0;
-  font-size: 8.5px;
-  font-weight: 700;
-  line-height: 1.5;
-  padding: 0 3px;
-  border-radius: 3px;
-  color: #fff;
-  background: var(--p2);
-}
-
-.action-prio.p0 { background: var(--p0); }
-.action-prio.p1 { background: var(--p1); }
-.action-prio.p2 { background: var(--p2); }
-.action-prio.p3 { background: var(--p3); }
-
 .action-kind {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 9px;
-  line-height: 1.6;
-  background: var(--accent-soft);
   color: var(--accent);
 }
 
 .action-kind.k-failed {
-  background: color-mix(in srgb, var(--status-error) 14%, transparent);
   color: var(--status-error);
 }
 
 .action-kind.k-authorization,
 .action-kind.k-waiting_input {
-  background: color-mix(in srgb, var(--status-waiting) 14%, transparent);
   color: var(--status-waiting);
 }
 
 .action-kind.k-running {
-  background: color-mix(in srgb, var(--status-running) 14%, transparent);
   color: var(--status-running);
 }
 
 .action-kind.k-completed {
-  background: color-mix(in srgb, var(--status-success) 14%, transparent);
   color: var(--status-success);
 }
 
 .action-count {
   flex-shrink: 0;
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-tertiary);
 }
 
 .action-time {
   flex-shrink: 0;
-  font-size: 9px;
+  font-size: 10px;
   color: var(--text-tertiary);
   white-space: nowrap;
 }
 
 .action-title {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
@@ -5569,7 +5590,7 @@ code {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--text-tertiary);
 }
 
@@ -5593,8 +5614,8 @@ code {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 3px;
-  padding: 5px 4px;
 }
 
 .action-ack.acked {
@@ -7078,6 +7099,37 @@ code {
 }
 .cap-summary b { color: var(--cap-text-1); font-weight: 650; }
 
+/* 面板内错误提示条（读取失败但仍有旧数据时叠加显示，可重试）：
+   只复用既有行卡片与语义色 Token，不引入新颜色。 */
+.cap-error-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+}
+.cap-error-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--status-error);
+}
+
+/* 监听/模块状态点（剪贴板面板摘要行）：静态圆点，颜色随派生状态。
+   ok=监听中（运行蓝）、warn=暂停/未运行/未知（等待橙）、bad=配置异常（错误红）。 */
+.cap-state-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--cap-text-3);
+}
+.cap-state-dot.tone-ok { background: var(--status-running); }
+.cap-state-dot.tone-warn { background: var(--status-waiting); }
+.cap-state-dot.tone-bad { background: var(--status-error); }
+
 /* 底栏：左侧摘要、右侧入口，一条极淡分隔线 */
 .cap-foot {
   flex: 0 0 auto;
@@ -7513,16 +7565,9 @@ code {
   gap: 8px;
 }
 
+/* 卡面/圆角/阴影/内边距由统一壳 .task-card 下发，这里只保留展开裁剪。 */
 .roadmap-card {
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: var(--surface-raised);
   overflow: hidden;
-  transition: border-color 120ms ease;
-}
-
-.roadmap-card:hover {
-  border-color: var(--border-strong);
 }
 
 .roadmap-card-head {
@@ -7530,7 +7575,7 @@ code {
   flex-direction: column;
   gap: 4px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 0;
   background: none;
   border: none;
   text-align: left;
@@ -7552,8 +7597,8 @@ code {
 }
 
 .roadmap-card-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7584,11 +7629,6 @@ code {
 .roadmap-status {
   flex-shrink: 0;
   font-style: normal;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
 }
 
 .roadmap-status.s-implemented { color: var(--status-success); }
@@ -7600,8 +7640,8 @@ code {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin: 0 12px 12px;
-  padding-top: 10px;
+  margin: 8px 0 0;
+  padding-top: 8px;
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -7848,16 +7888,9 @@ code {
   gap: 8px;
 }
 
+/* 卡面/圆角/阴影/内边距由统一壳 .task-card 下发；离场时只做淡出与横向位移。 */
 .planning-card {
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: var(--surface-raised);
   overflow: hidden;
-  transition: border-color 120ms ease, opacity 200ms ease, transform 200ms ease;
-}
-
-.planning-card:hover {
-  border-color: var(--border-strong);
 }
 
 .planning-card.is-leaving {
@@ -7870,7 +7903,7 @@ code {
   flex-direction: column;
   gap: 4px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 0;
   background: none;
   border: none;
   text-align: left;
@@ -7893,8 +7926,8 @@ code {
 }
 
 .planning-card-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7915,11 +7948,6 @@ code {
 .planning-status {
   flex-shrink: 0;
   font-style: normal;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
 }
 
 .planning-status.p-completed { color: var(--status-success); }
@@ -7931,7 +7959,7 @@ code {
 
 .planning-progress {
   flex-shrink: 0;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -7959,8 +7987,8 @@ code {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin: 0 12px 12px;
-  padding-top: 10px;
+  margin: 8px 0 0;
+  padding-top: 8px;
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -8614,39 +8642,16 @@ code {
   text-align: center;
 }
 
+/* 卡面/圆角/阴影/内边距与选中 ring 由 .task-card 统一提供。 */
 .planning-project-item {
   display: flex;
   flex-direction: column;
   gap: 4px;
   width: 100%;
-  padding: 7px 8px;
-  border: 1px solid transparent;
-  border-radius: calc(var(--radius-control) + 1px);
-  background: var(--surface-raised);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
-}
-
-.planning-project-item:hover {
-  border-color: var(--border-strong);
-}
-
-.planning-project-item.is-active {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--accent) 12%, transparent),
-    transparent 70%
-  ), var(--surface-raised);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-.planning-project-item:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
 }
 
 .planning-project-item.is-archived {
@@ -8666,13 +8671,13 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--text-primary);
 }
 
 .planning-project-item-progress {
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -8683,21 +8688,15 @@ code {
 .planning-project-state {
   flex-shrink: 0;
   font-style: normal;
-  font-size: 9px;
-  padding: 0 5px;
-  border-radius: 999px;
-  border: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
 }
 
 .planning-project-state.s-in_progress {
   color: var(--status-waiting);
-  border-color: color-mix(in srgb, var(--status-waiting) 35%, transparent);
 }
 
 .planning-project-state.s-completed {
   color: var(--status-success);
-  border-color: color-mix(in srgb, var(--status-success) 35%, transparent);
 }
 
 .planning-project-state.s-paused {
@@ -9114,15 +9113,6 @@ code {
 
 .planning-status-badge {
   flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
-  font-size: 9.5px;
-  font-weight: 600;
-  line-height: 1.5;
-  white-space: nowrap;
   color: var(--text-tertiary);
 }
 
@@ -9240,22 +9230,12 @@ code {
   min-width: 0;
 }
 
+/* 卡面/圆角/阴影/内边距由统一壳 .task-card 下发。 */
 .planning-kanban-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 9px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-  background: var(--card-face);
-  box-shadow: var(--card-shadow);
   min-width: 0;
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.planning-kanban-card:hover {
-  border-color: var(--border-strong);
-  box-shadow: var(--card-shadow-hover);
 }
 
 .planning-kanban-card-head {
@@ -9279,8 +9259,8 @@ code {
 }
 
 .planning-kanban-card-title {
-  font-size: 11.5px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
   line-height: 1.4;
   color: var(--text-primary);
   overflow-wrap: anywhere;
@@ -9299,7 +9279,7 @@ code {
   gap: 6px;
   flex-wrap: wrap;
   min-width: 0;
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--text-tertiary);
 }
 
@@ -9338,15 +9318,6 @@ code {
 
 .planning-kanban-more {
   align-self: flex-start;
-}
-
-.chip.pri-p0 {
-  color: var(--status-disconnected);
-  border-color: color-mix(in srgb, var(--status-disconnected) 35%, transparent);
-}
-
-.chip.pri-p1 {
-  color: var(--status-waiting);
 }
 
 /* 里程碑：宽容器水平时间轴，窄窗纵向 */
@@ -9446,20 +9417,12 @@ code {
   background: color-mix(in srgb, var(--status-disconnected) 14%, transparent);
 }
 
+/* 卡面/圆角/阴影/内边距由统一壳 .task-card 下发；逾期状态只由徽标表达。 */
 .planning-timeline-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 10px 11px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--card-face);
-  box-shadow: var(--card-shadow);
   min-width: 0;
-}
-
-.planning-timeline-node.stage-overdue .planning-timeline-card {
-  border-color: color-mix(in srgb, var(--status-disconnected) 28%, transparent);
 }
 
 .planning-timeline-card-head {
@@ -9472,19 +9435,14 @@ code {
 
 .planning-timeline-card-head h4 {
   margin: 0;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 
 .planning-stage-badge {
   flex-shrink: 0;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
-  font-size: 9px;
-  font-weight: 600;
   white-space: nowrap;
   color: var(--text-tertiary);
 }
@@ -9508,7 +9466,7 @@ code {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
@@ -9520,7 +9478,7 @@ code {
 }
 
 .planning-timeline-progress-text {
-  font-size: 9.5px;
+  font-size: 10px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -9663,6 +9621,771 @@ code {
   .planning-view-tab,
   .planning-project-item,
   .planning-kanban-card {
+    transition: none;
+  }
+}
+
+
+/* ═══ 文件暂存架（v0.8）═══
+   前缀 shelf-*；颜色/圆角/阴影一律走语义 Token，不写裸值。
+   列表滚动交给原生 overflow，不做虚拟滚动动画（与剪贴板面板一致）。 */
+
+.shelf-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 100%;
+  position: relative;
+}
+
+.shelf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shelf-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  min-width: 160px;
+  flex: 1 1 180px;
+  max-width: 320px;
+}
+
+.shelf-search .input-embedded {
+  width: 100%;
+}
+
+.shelf-copy-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.shelf-copy-toggle input {
+  accent-color: var(--accent);
+}
+
+.shelf-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.shelf-inline-form .input-embedded {
+  flex: 1;
+}
+
+.shelf-inline-form.column {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.shelf-inline-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.shelf-text-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.shelf-clip-picker {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  padding: 8px 10px;
+  max-width: 560px;
+}
+
+.shelf-clip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.shelf-clip-head .icon-btn {
+  margin-left: auto;
+}
+
+.shelf-clip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.shelf-clip-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.shelf-clip-list li:hover {
+  background: var(--surface-hover);
+}
+
+.shelf-clip-kind {
+  flex: none;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-inset);
+  color: var(--text-tertiary);
+}
+
+.shelf-clip-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.shelf-clip-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 4px 0;
+}
+
+.shelf-spacebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.shelf-spacebar-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-inset);
+  overflow: hidden;
+}
+
+.shelf-spacebar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.shelf-spacebar-fill.hot {
+  background: var(--tone-bad);
+}
+
+.shelf-error {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  color: var(--tone-bad);
+  font-size: 12px;
+}
+
+.shelf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  flex: 1;
+  min-height: 120px;
+}
+
+.shelf-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-card, var(--surface-raised));
+  position: relative;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.shelf-item:hover {
+  background: var(--surface-hover);
+}
+
+.shelf-item.selected {
+  border-color: var(--accent);
+}
+
+.shelf-item.missing {
+  opacity: 0.6;
+}
+
+.shelf-check {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong, var(--border-subtle));
+  background: transparent;
+  color: transparent;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shelf-check.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+.shelf-thumb {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-inset);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  overflow: hidden;
+  position: relative;
+}
+
+.shelf-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.shelf-thumb-badge {
+  position: absolute;
+  inset-inline-end: 2px;
+  inset-block-end: 2px;
+  display: inline-flex;
+  color: var(--tone-bad);
+}
+
+.shelf-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shelf-item-name {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: start;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-item-name:hover {
+  text-decoration: underline;
+}
+
+.shelf-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+
+.shelf-item-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.shelf-tag.mode {
+  flex: none;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-inset);
+  color: var(--text-secondary);
+}
+
+.shelf-item-flags {
+  flex: none;
+  display: inline-flex;
+  gap: 4px;
+  color: var(--accent);
+}
+
+.shelf-item-flags .flag-pin {
+  color: var(--tone-warn, var(--accent));
+}
+
+.shelf-more {
+  flex: none;
+}
+
+.shelf-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 16px;
+  color: var(--text-tertiary);
+  text-align: center;
+  font-size: 13px;
+}
+
+.shelf-empty-sub {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.shelf-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.shelf-more-btn {
+  align-self: center;
+}
+
+.shelf-selectbar {
+  position: sticky;
+  inset-block-end: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-pop);
+}
+
+.shelf-selectbar-count {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.shelf-detail {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shelf-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shelf-detail-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-detail-warning {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--tone-bad) 12%, transparent);
+  color: var(--tone-bad);
+  font-size: 12px;
+}
+
+.shelf-detail-image {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: zoom-in;
+  background: var(--surface-inset);
+  padding: 0;
+  max-height: 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shelf-detail-image img {
+  max-width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+}
+
+.shelf-detail-thumb-empty {
+  padding: 24px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.shelf-detail-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.shelf-detail-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+}
+
+.shelf-detail-text {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.shelf-text-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.shelf-text-note,
+.shelf-text-loading {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.shelf-text-error {
+  font-size: 12px;
+  color: var(--tone-bad);
+}
+
+.shelf-detail-meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shelf-meta-row {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.shelf-meta-row dt {
+  flex: none;
+  width: 64px;
+  color: var(--text-tertiary);
+}
+
+.shelf-meta-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.shelf-detail-actions,
+.shelf-cleanup-actions,
+.shelf-detail-danger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shelf-detail h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.shelf-links-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.shelf-links-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shelf-links-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shelf-links-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-links-add {
+  display: flex;
+  gap: 8px;
+}
+
+.shelf-task-select {
+  flex: 1;
+  min-width: 0;
+  max-width: 260px;
+}
+
+.shelf-note-input {
+  width: 100%;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.shelf-note-save {
+  align-self: flex-end;
+}
+
+.shelf-cleanup-panel {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 640px;
+}
+
+.shelf-cleanup-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.shelf-cleanup-head .icon-btn {
+  margin-left: auto;
+}
+
+.shelf-cleanup-stats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.shelf-cleanup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.shelf-cleanup-row input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.shelf-days-input {
+  width: 72px;
+}
+
+.shelf-cleanup-preview {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.shelf-dropzone {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-drawer);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  pointer-events: none;
+}
+
+.shelf-dropzone-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.shelf-dropzone-inner p {
+  margin: 0;
+}
+
+.shelf-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal-top);
+  background: color-mix(in srgb, #000 55%, transparent);
+  display: flex;
+  flex-direction: column;
+}
+
+.shelf-lightbox-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.shelf-lightbox-stage img {
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  transform-origin: center;
+  user-select: none;
+  cursor: grab;
+}
+
+.shelf-lightbox-hint {
+  color: #fff;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.85;
+}
+
+.shelf-lightbox-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  color: #fff;
+}
+
+.shelf-lightbox-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.shelf-lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shelf-lightbox-zoom {
+  font-size: 12px;
+  min-width: 44px;
+  text-align: center;
+  opacity: 0.85;
+}
+
+.shelf-lightbox .icon-btn {
+  color: #fff;
+}
+
+/* 窄窗：搜索占满整行 */
+@media (max-width: 480px) {
+  .shelf-search {
+    flex-basis: 100%;
+    max-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shelf-spacebar-fill,
+  .shelf-item,
+  .shelf-dropzone {
     transition: none;
   }
 }

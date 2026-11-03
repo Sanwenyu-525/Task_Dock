@@ -20,6 +20,8 @@ export const useNavigationStore = create<{
   /** 全部导航目标 */
   targets: NavTarget[];
   targetsLoaded: boolean;
+  /** 目标清单最近一次读取的错误；null = 无错误。失败时旧 targets 原样保留 */
+  targetsError: string | null;
   /** taskId → 关联目标（含实时运行状态） */
   linksByTask: Record<string, TaskNavLink[]>;
   /** 选择器等 UI 打开状态（AppPicker 挂载用） */
@@ -34,6 +36,7 @@ export const useNavigationStore = create<{
   scanning: false,
   targets: [],
   targetsLoaded: false,
+  targetsError: null,
   linksByTask: {},
   picker: { open: false, taskId: null },
   openPicker: (taskId) => set({ picker: { open: true, taskId } }),
@@ -55,9 +58,11 @@ export const useNavigationStore = create<{
   loadTargets: async (_force = false) => {
     try {
       const targets = await navListTargets(true);
-      set({ targets, targetsLoaded: true });
-    } catch {
-      // 保持旧清单
+      set({ targets, targetsLoaded: true, targetsError: null });
+    } catch (e) {
+      // 读取失败必须可见：面板据此显示错误态 + 重试，
+      // 不能静默保旧值（或空数组）伪装成「尚未配置应用」。
+      set({ targetsError: String(e) });
     }
   },
 

@@ -166,12 +166,29 @@ pub(crate) fn delete_source_inner(db: &Db, id: &str, also_delete_data: bool) -> 
 /// 在 Tauri v2 里**同步命令跑在主线程**——点击 Agent 页挂载时触发扫描会把
 /// 整个 UI 冻结到扫描结束（真机复现的「点 Agent 页卡死」）。
 /// 因此必须 spawn_blocking 移出主线程；前端本来就是 promise 调用，签名不变。
+/// 扫描去重：并发点击「重新扫描」共享同一份 5s 结果，避免重复执行 tasklist/reg/where。
+type ScanSnapshot = (std::time::Instant, Vec<discovery::DiscoveredAgent>);
+static SCAN_CACHE: std::sync::LazyLock<std::sync::Mutex<Option<ScanSnapshot>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
 #[tauri::command]
 pub async fn discovery_scan(db: State<'_, Arc<Db>>) -> AppResult<Vec<discovery::DiscoveredAgent>> {
     let db = db.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || discovery::scan_all(&db))
-        .await
-        .map_err(|e| AppError::Agent(format!("发现扫描任务失败: {e}")))
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = SCAN_CACHE
+            .lock()
+            .map_err(|_| AppError::Agent("发现扫描缓存不可用".into()))?;
+        if let Some((at, cached)) = guard.as_ref() {
+            if at.elapsed() < std::time::Duration::from_secs(5) {
+                return Ok(cached.clone());
+            }
+        }
+        let result = discovery::scan_all(&db);
+        *guard = Some((std::time::Instant::now(), result.clone()));
+        Ok::<_, AppError>(result)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("发现扫描任务失败: {e}")))?
 }
 
 // ── 接入向导（一键接入：预览 → 确认 → 安装 → 验证）────────
@@ -225,11 +242,13 @@ pub async fn adapter_verify(
 pub async fn adapter_uninstall(
     adapter_id: String,
     app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
 ) -> AppResult<serde_json::Value> {
     let a = managed::find_adapter(&adapter_id)
         .ok_or_else(|| AppError::Agent(format!("未知适配器: {}", adapter_id)))?;
     let app_data = crate::app_data_dir(&app);
-    tauri::async_runtime::spawn_blocking(move || a.uninstall(&app_data))
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || a.uninstall(&app_data, &db))
         .await
         .map_err(|e| AppError::Agent(format!("适配器卸载任务失败: {e}")))?
 }
@@ -247,7 +266,7 @@ pub async fn adapter_status(
     tauri::async_runtime::spawn_blocking(move || {
         let mut status = a.config_status(&app_data)?;
         if let Some(obj) = status.as_object_mut() {
-            obj.insert("health".into(), managed::source_health(&db, a.id()));
+            obj.insert("health".into(), managed::source_health(&db, a.source_id()));
         }
         Ok::<_, AppError>(status)
     })
@@ -311,11 +330,15 @@ pub async fn codex_hooks_install(
 }
 
 #[tauri::command]
-pub async fn codex_hooks_uninstall(app: tauri::AppHandle) -> AppResult<serde_json::Value> {
+pub async fn codex_hooks_uninstall(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+) -> AppResult<serde_json::Value> {
     let a =
         managed::find_adapter("codex").ok_or_else(|| AppError::Agent("codex 适配器缺失".into()))?;
     let app_data = crate::app_data_dir(&app);
-    tauri::async_runtime::spawn_blocking(move || a.uninstall(&app_data))
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || a.uninstall(&app_data, &db))
         .await
         .map_err(|e| AppError::Agent(format!("钩子卸载任务失败: {e}")))?
 }
@@ -331,7 +354,13 @@ pub async fn open_agent_session(
 ) -> AppResult<crate::navigation::NavigationResult> {
     let db = db.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let r = crate::navigation::agent_navigation::resume_session(&db, &source_id, &session_id);
+        let settings = crate::db::Settings::load(&db).unwrap_or_default();
+        let r = crate::navigation::agent_navigation::resume_session(
+            &db,
+            &source_id,
+            &session_id,
+            &settings,
+        );
         crate::navigation::target_resolver::write_log(
             &db,
             &r,

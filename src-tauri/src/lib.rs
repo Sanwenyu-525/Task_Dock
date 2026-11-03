@@ -17,7 +17,9 @@ pub mod notification_window;
 pub mod quick_capture;
 pub mod recurrence;
 pub mod scheduler;
+pub mod shelf;
 mod window_shape;
+mod window_cursor;
 mod winproc;
 pub mod workspace;
 
@@ -441,6 +443,16 @@ pub fn run() {
             }
             handle.manage(clipboard_rt);
 
+            // 文件暂存架（v0.8）：独立托管目录 data_dir/shelf，与剪贴板资产互不影响
+            let shelf_state = shelf::ShelfState::new(
+                db.clone(),
+                data_dir.join("shelf"),
+                handle.clone(),
+            )
+            .expect("暂存架目录初始化失败");
+            shelf::start_auto_cleanup(db.clone(), shelf_state.root.clone());
+            handle.manage(Arc::new(shelf_state));
+
             let hub = Arc::new(AgentHub::new(handle.clone(), db.clone()));
             handle.manage(hub.clone());
 
@@ -499,9 +511,12 @@ pub fn run() {
             pipeline.start();
             handle.manage(pipeline.clone());
             if settings.material == "glass" {
-                if let Ok(r) =
-                    commands::system::apply_window_material(handle.clone(), "glass".into())
-                {
+                // 预设一并传入：清透玻璃在启动时就必须走无原生模糊通道。
+                if let Ok(r) = commands::system::apply_window_material(
+                    handle.clone(),
+                    "glass".into(),
+                    Some(settings.visual_preset.clone()),
+                ) {
                     if !r.applied {
                         tracing::info!("系统不支持毛玻璃材质，已回退 solid（{}）", r.os_version);
                     }
@@ -749,6 +764,7 @@ pub fn run() {
             // 统一导航（v0.4）
             commands::navigation::nav_scan_apps,
             commands::navigation::nav_list_windows,
+            commands::navigation::nav_list_target_windows,
             commands::navigation::nav_list_targets,
             commands::navigation::nav_save_target,
             commands::navigation::nav_update_target,
@@ -878,6 +894,31 @@ pub fn run() {
             quick_capture::quick_capture_hide,
             // 统一任务上下文（v0.5）
             commands::context::task_context,
+            // 文件暂存架（v0.8）
+            commands::shelf::shelf_list,
+            commands::shelf::shelf_stats,
+            commands::shelf::shelf_groups,
+            commands::shelf::shelf_group_create,
+            commands::shelf::shelf_group_rename,
+            commands::shelf::shelf_group_delete,
+            commands::shelf::shelf_add_paths,
+            commands::shelf::shelf_add_link,
+            commands::shelf::shelf_add_text,
+            commands::shelf::shelf_add_from_clipboard,
+            commands::shelf::shelf_update,
+            commands::shelf::shelf_delete,
+            commands::shelf::shelf_clear,
+            commands::shelf::shelf_cleanup,
+            commands::shelf::shelf_check_exists,
+            commands::shelf::shelf_open_item,
+            commands::shelf::shelf_reveal_item,
+            commands::shelf::shelf_read_text,
+            commands::shelf::shelf_read_image,
+            commands::shelf::shelf_copy_paths,
+            commands::shelf::shelf_copy_files,
+            commands::shelf::shelf_task_links,
+            commands::shelf::shelf_link_task,
+            commands::shelf::shelf_unlink_task,
         ])
         .build(context)
         .expect("启动 Task Dock 失败")
@@ -1131,14 +1172,17 @@ pub fn agentctl(args: &[String]) -> i32 {
             let r = match op {
                 "install" => a.install(&data_dir, &db),
                 "verify" => a.verify(&data_dir, &db),
-                "uninstall" => a.uninstall(&data_dir),
+                "uninstall" => a.uninstall(&data_dir, &db),
                 _ => a.config_status(&data_dir),
             };
             match r {
                 Ok(v) => {
                     let mut obj = v;
                     if let Some(o) = obj.as_object_mut() {
-                        o.insert("health".into(), agents::managed::source_health(&db, a.id()));
+                        o.insert(
+                            "health".into(),
+                            agents::managed::source_health(&db, a.source_id()),
+                        );
                     }
                     serde_json::to_string_pretty(&obj).unwrap_or_default()
                 }
@@ -1220,6 +1264,7 @@ pub fn agentctl(args: &[String]) -> i32 {
                 });
             let archive = agents::retention::archive_dir(&data_dir);
             let clipboard = data_dir.join("clipboard");
+            let shelf = data_dir.join("shelf");
             let sources = commands::backup::BackupSources {
                 archive_dir: if kind.is_full() {
                     Some(archive.as_path())
@@ -1227,6 +1272,7 @@ pub fn agentctl(args: &[String]) -> i32 {
                     None
                 },
                 clipboard_dir: Some(clipboard.as_path()),
+                shelf_dir: Some(shelf.as_path()),
             };
             match commands::backup::write_bundle(&db, sources, &target, kind) {
                 Ok(r) => serde_json::to_string_pretty(&serde_json::json!({

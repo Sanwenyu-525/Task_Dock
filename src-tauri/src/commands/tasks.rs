@@ -69,6 +69,16 @@ pub struct TaskFilter {
     pub priority: Option<u8>,
     pub search: Option<String>,
     pub sort: Option<String>, // due | priority | created
+    /// 返回条数上限（可选）。None 行为与旧版完全一致（不限制）；
+    /// Some(n) 收敛到 1..=200，在筛选与排序之后应用 SQL LIMIT。
+    /// 供面板/收集箱分页或首屏拉取，避免一次拉全量任务。
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// limit 收敛规则（纯函数，便于测试）：None 不限制；Some 收敛到 1..=200。
+fn effective_task_limit(limit: Option<u32>) -> Option<i64> {
+    limit.map(|n| n.clamp(1, 200) as i64)
 }
 
 fn check_title(t: &str) -> AppResult<()> {
@@ -282,6 +292,10 @@ pub(crate) fn get_task(db: &Db, id: &str) -> AppResult<Task> {
 
 #[tauri::command]
 pub fn list_tasks(db: State<'_, Arc<Db>>, filter: TaskFilter) -> AppResult<Vec<Task>> {
+    list_tasks_inner(&db, filter)
+}
+
+fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
     let mut sql = format!("{} WHERE 1=1", TASK_SELECT);
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let mut idx = 1;
@@ -357,6 +371,12 @@ pub fn list_tasks(db: State<'_, Arc<Db>>, filter: TaskFilter) -> AppResult<Vec<T
         _ => " ORDER BY t.due_at IS NULL, t.due_at ASC, t.priority ASC, t.created_at DESC",
     };
     sql += order;
+    // LIMIT 在筛选与排序之后应用；None 保持旧行为（不限制）。
+    if let Some(limit) = effective_task_limit(filter.limit) {
+        sql += &format!(" LIMIT ?{}", idx);
+        params.push(Box::new(limit));
+        idx += 1;
+    }
     let _ = idx;
 
     db.with_conn(|conn| {
@@ -2110,5 +2130,92 @@ mod tests {
             })
             .unwrap();
         assert_eq!(recurring, 1);
+    }
+
+    #[test]
+    fn task_limit_none_keeps_unbounded_behavior() {
+        assert_eq!(effective_task_limit(None), None, "None 必须保持旧行为：不限制");
+    }
+
+    #[test]
+    fn task_limit_clamps_into_1_to_200() {
+        assert_eq!(effective_task_limit(Some(0)), Some(1), "下限收敛到 1");
+        assert_eq!(effective_task_limit(Some(1)), Some(1));
+        assert_eq!(effective_task_limit(Some(50)), Some(50));
+        assert_eq!(effective_task_limit(Some(200)), Some(200));
+        assert_eq!(effective_task_limit(Some(201)), Some(200), "上限收敛到 200");
+        assert_eq!(effective_task_limit(Some(u32::MAX)), Some(200));
+    }
+
+    /// limit 契约（2026-11-03，面板复用验收）：None 行为完全不变；
+    /// Some(n) 收敛到 1..=200，在筛选与排序之后应用。
+    #[test]
+    fn list_tasks_applies_limit_after_filter_and_sort() {
+        let db = db();
+        for i in 1..=5 {
+            create(
+                &db,
+                &format!("限长任务{i}"),
+                Some((Utc::now() + chrono::Duration::minutes(i)).to_rfc3339()),
+                None,
+            );
+        }
+        // None：旧行为，全量返回。
+        let all = list_tasks_inner(&db, TaskFilter::default()).unwrap();
+        assert_eq!(all.len(), 5);
+        // Some(2)：LIMIT 生效，按排序取前 2 条。
+        let limited = list_tasks_inner(
+            &db,
+            TaskFilter {
+                limit: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(limited.len(), 2);
+        // 排序后 LIMIT：默认排序按 due_at 升序，前 2 条应是最早截止的两条。
+        assert_eq!(limited[0].title, "限长任务1");
+        assert_eq!(limited[1].title, "限长任务2");
+        // clamp：Some(0) 收敛为 1 条。
+        let clamped_low = list_tasks_inner(
+            &db,
+            TaskFilter {
+                limit: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(clamped_low.len(), 1);
+        // clamp：Some(500) 收敛为 200，但库里只有 5 条，应全量返回。
+        let clamped_high = list_tasks_inner(
+            &db,
+            TaskFilter {
+                limit: Some(500),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(clamped_high.len(), 5);
+        // 与筛选叠加：status 过滤后 LIMIT 仍生效。
+        create(&db, "已完成任务", None, None);
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE tasks SET status='completed' WHERE title='已完成任务'",
+                [],
+            )
+            .map_err(AppError::from)
+        })
+        .unwrap();
+        let filtered = list_tasks_inner(
+            &db,
+            TaskFilter {
+                status: Some("completed".into()),
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].title, "已完成任务");
     }
 }

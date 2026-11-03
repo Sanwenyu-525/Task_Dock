@@ -90,6 +90,22 @@ export default function ImageLightbox({
    * 重渲染禁用按钮之前进入事件处理，只有 ref 能同步拦住重复写盘。
    */
   const savingRef = useRef(false);
+  /**
+   * 卸载标记：保存流程跨越原生对话框与后台 IPC，用户可能中途关闭灯箱。
+   * 卸载后不再更新组件内的 busy 状态（React 会忽略，但保留旧状态是无意义的）；
+   * 全局 Toast 仍展示，保存结果对用户依然可见。
+   */
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  /** 只在挂载期更新本地状态。 */
+  const setBusyIfMounted = (next: boolean) => {
+    if (mountedRef.current) setBusy(next);
+  };
   const viewRef = useRef(view);
   viewRef.current = view;
   /** 本次指针按下是否发生过真实位移：拖拽结束浏览器仍会补一次 click，不能当成「点遮罩关闭」。 */
@@ -322,17 +338,26 @@ export default function ImageLightbox({
     setBusy(true);
     try {
       const id8 = item.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "image";
-      const path = await save({
-        defaultPath: `task-dock-clipboard-${id8}.png`,
-        filters: [{ name: "PNG 图片", extensions: ["png"] }],
-      });
+      let chosen: string | null = null;
+      try {
+        chosen = await save({
+          defaultPath: `task-dock-clipboard-${id8}.png`,
+          filters: [{ name: "PNG 图片", extensions: ["png"] }],
+        });
+      } catch (e) {
+        // 对话框创建/调用异常（插件不可用、宿主拒绝等）：明确报错，不查状态也不写盘。
+        // 这里必须自行捕获：onSaveAs 直接挂在 onClick 上，抛出的 Promise rejection 无人处理。
+        showToast(`打开保存对话框失败，未保存：${String(e)}`, { kind: "error" });
+        return;
+      }
       // 用户取消（原生返回 null/空）：不查状态、不写盘，也不视为错误。
-      if (!path) return;
+      if (!chosen) return;
+      const targetPath = chosen;
       // 目标状态是覆盖授权的唯一依据，必须严格校验：非数组、空数组、首元素非字符串、
       // 未知值、IPC 异常一律按 unknown 处理（fail-closed，不写盘）。
       let targetState: "ok" | "missing" | "inaccessible" | "unknown" = "unknown";
       try {
-        const status = await clipboardPathStatus([path]);
+        const status = await clipboardPathStatus([targetPath]);
         if (Array.isArray(status) && typeof status[0] === "string") {
           const st: string = status[0];
           if (st === "ok" || st === "missing" || st === "inaccessible") targetState = st;
@@ -341,30 +366,30 @@ export default function ImageLightbox({
         // 查询失败不猜测目标状态；下方统一按 unknown 提示并拒绝写盘
       }
       if (targetState === "inaccessible") {
-        showToast(`目标文件无访问权限，未保存：${path}`, { kind: "error" });
+        showToast(`目标文件无访问权限，未保存：${targetPath}`, { kind: "error" });
         return;
       }
       if (targetState !== "ok" && targetState !== "missing") {
-        showToast(`无法确认目标文件状态，未保存：${path}`, { kind: "error" });
+        showToast(`无法确认目标文件状态，未保存：${targetPath}`, { kind: "error" });
         return;
       }
       /** 真正写盘：错误原样展示，绝不因「目标文件已存在」冲突改用 overwrite=true 静默重试。 */
       const write = async (overwrite: boolean) => {
         savingRef.current = true;
-        setBusy(true);
+        setBusyIfMounted(true);
         try {
-          const bytes = await clipboardSaveImage(item.id, path, overwrite);
+          const bytes = await clipboardSaveImage(item.id, targetPath, overwrite);
           showToast(
             overwrite
-              ? `已覆盖保存（${formatBytes(bytes)}）：${path}`
-              : `已保存（${formatBytes(bytes)}）：${path}`,
+              ? `已覆盖保存（${formatBytes(bytes)}）：${targetPath}`
+              : `已保存（${formatBytes(bytes)}）：${targetPath}`,
             { kind: "success" },
           );
         } catch (e) {
           showToast(`保存失败：${String(e)}`, { kind: "error" });
         } finally {
           savingRef.current = false;
-          setBusy(false);
+          setBusyIfMounted(false);
         }
       };
       if (targetState === "missing") {
@@ -374,19 +399,19 @@ export default function ImageLightbox({
       }
       // 目标已存在：覆盖写入必须由用户显式授权；没有确认通道时按拒绝处理，绝不静默覆盖。
       if (!askConfirm) {
-        showToast(`目标文件已存在，未覆盖：${path}`, { kind: "info" });
+        showToast(`目标文件已存在，未覆盖：${targetPath}`, { kind: "info" });
         return;
       }
       askConfirm({
         title: "覆盖已存在的文件？",
-        detail: `${path} 已存在，覆盖后原文件内容将被替换。`,
+        detail: `${targetPath} 已存在，覆盖后原文件内容将被替换。`,
         confirmLabel: "覆盖",
         danger: true,
         run: () => write(true),
       });
     } finally {
       savingRef.current = false;
-      setBusy(false);
+      setBusyIfMounted(false);
     }
   };
 

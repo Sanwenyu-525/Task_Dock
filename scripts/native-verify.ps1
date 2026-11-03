@@ -22,7 +22,7 @@ param(
   [Parameter(Mandatory = $true)][string]$Out,
   [string]$Exe = "src-tauri\target\release\task-dock.exe",
   [string]$DataDir = "",
-  [ValidateSet("dream-gradient", "liquid-glass")][string]$Preset = "dream-gradient",
+  [ValidateSet("dream-gradient", "liquid-glass", "frosted", "clear")][string]$Preset = "dream-gradient",
   [ValidateSet("light", "dark")][string]$Theme = "light",
   [ValidateSet("solid", "glass")][string]$Material = "glass",
   [ValidateSet("", "auto", "mica", "acrylic", "blur", "none")][string]$Backend = "",

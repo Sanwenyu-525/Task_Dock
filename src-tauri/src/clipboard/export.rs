@@ -1,7 +1,8 @@
 //! 图片另存为的原子写入（导出执行边界）。
 //!
-//! 覆盖授权来自调用方的显式布尔参数：用户在 Windows 原生保存对话框中确认替换后，
-//! 前端才传 `overwrite=true`。本模块只负责“拿到授权后如何安全地写”：
+//! 覆盖授权来自调用方的显式布尔参数，但授权不是系统保存对话框给的：系统对话框只负责
+//! 选路径，前端在目标已存在时先经应用内确认框取得授权，才传 `overwrite=true`。
+//! 本模块只负责“拿到授权后如何安全地写”：
 //!
 //! - 未授权：`create_new` 原子排他创建，目标已存在即冲突，绝不截断既有文件；
 //! - 授权：同目录临时文件写满、校验长度后再 `rename` 替换（Windows 走
@@ -9,6 +10,10 @@
 //!   临时文件清理干净。
 //!
 //! 不做「先 exists() 再 write()」：检查与写入之间的竞态会静默覆盖用户文件。
+//!
+//! 失败清理只作用于本次 `create_new` 创建的文件对象：Windows 上通过句柄设置
+//! delete-on-close，而不是「关闭句柄后按路径 remove_file」——后者在句柄释放到删除之间
+//! 若路径被其他进程替换，会误删对方的新文件。设置失败时宁可不清理，也不回退成按路径删除。
 
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -69,20 +74,79 @@ fn validate_target(target: &Path) -> AppResult<()> {
     }
 }
 
-/// 未授权分支：`create_new` 保证“不存在才创建”由文件系统原子裁定。
-fn write_new(target: &Path, bytes: &[u8]) -> AppResult<u64> {
-    let mut file = match OpenOptions::new()
+/// 排他创建文件。
+///
+/// Windows 上额外申请 `DELETE` 权限，仅用于失败时做句柄级删除；创建语义
+/// （`create_new` 原子裁定“不存在才创建”）不变。
+#[cfg(windows)]
+fn create_new_file(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_WRITE};
+
+    // `write(true)` 是 std 的前置校验（create_new 必须伴随写/追加语义），实际访问权限
+    // 由 access_mode 覆盖为 FILE_GENERIC_WRITE | DELETE。
+    OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(target)
-    {
+        .access_mode(FILE_GENERIC_WRITE | DELETE)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn create_new_file(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+/// 失败清理：只删除本次调用通过 `create_new` 创建的那个文件对象。
+///
+/// Windows 用 `SetFileInformationByHandle(FileDispositionInfo)` 在**句柄上**标记
+/// delete-on-close，删除对象由文件对象而非路径标识：即使失败后路径已被其他进程
+/// 替换，也不会误删对方的新文件。标记失败时不回退到按路径删除（`path` 只用于日志），
+/// 宁可留下一个半成品，也不承担删除用户/他人文件的风险。
+#[cfg(windows)]
+fn cleanup_created_file(file: File, path: &Path) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        SetFileInformationByHandle, FileDispositionInfo, FILE_DISPOSITION_INFO,
+    };
+
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: 句柄来自本函数独占持有的 `file`，在 `SetFileInformationByHandle` 返回前
+    // 保持有效；`FILE_DISPOSITION_INFO` 的布局与 Win32 定义一致（单字节布尔），
+    // 缓冲区大小按该结构体自身大小传入，指针在调用期间有效。
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+            FileDispositionInfo,
+            &info as *const FILE_DISPOSITION_INFO as *const core::ffi::c_void,
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        tracing::warn!(
+            "图片保存失败后的句柄级清理未生效，保留文件不动：{}（{}）",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    drop(file);
+}
+
+#[cfg(not(windows))]
+fn cleanup_created_file(file: File, path: &Path) {
+    drop(file);
+    let _ = std::fs::remove_file(path);
+}
+
+/// 未授权分支：`create_new` 保证“不存在才创建”由文件系统原子裁定。
+fn write_new(target: &Path, bytes: &[u8]) -> AppResult<u64> {
+    let mut file = match create_new_file(target) {
         Ok(f) => f,
         Err(e) => return Err(map_create_error(target, e)),
     };
-    // 从这里开始目标文件由本次调用独占创建：失败时只清理这个文件。
+    // 从这里开始目标文件由本次调用独占创建：失败时只清理这个文件对象。
     if let Err(e) = write_all_sync(&mut file, bytes) {
-        drop(file);
-        let _ = std::fs::remove_file(target);
+        cleanup_created_file(file, target);
         return Err(map_write_error(target, e));
     }
     Ok(bytes.len() as u64)
@@ -91,41 +155,40 @@ fn write_new(target: &Path, bytes: &[u8]) -> AppResult<u64> {
 /// 授权分支：同目录临时文件写满 + 长度校验后 rename 替换。
 fn write_replace(target: &Path, parent: &Path, bytes: &[u8]) -> AppResult<u64> {
     let tmp = temp_path(parent, target)?;
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+    let mut file = match create_new_file(&tmp) {
         Ok(f) => f,
         Err(e) => return Err(map_write_error(&tmp, e)),
     };
     if let Err(e) = write_all_sync(&mut file, bytes) {
-        drop(file);
-        let _ = std::fs::remove_file(&tmp);
+        cleanup_created_file(file, &tmp);
         return Err(map_write_error(&tmp, e));
     }
-    drop(file);
     // 落盘长度必须与请求一致；不一致说明写入被截断，宁可不替换。
-    match std::fs::metadata(&tmp) {
+    // 在句柄关闭前校验，失败时才能做句柄级清理而不是按路径删除。
+    match file.metadata() {
         Ok(meta) if meta.len() == bytes.len() as u64 => {}
         Ok(meta) => {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(AppError::Io(std::io::Error::new(
-                ErrorKind::InvalidData,
-                format!(
-                    "临时文件长度校验失败（写入 {} 字节，期望 {} 字节）：{}",
-                    meta.len(),
-                    bytes.len(),
-                    tmp.display()
-                ),
-            )));
+            let message = format!(
+                "临时文件长度校验失败（写入 {} 字节，期望 {} 字节）：{}",
+                meta.len(),
+                bytes.len(),
+                tmp.display()
+            );
+            cleanup_created_file(file, &tmp);
+            return Err(AppError::Io(std::io::Error::new(ErrorKind::InvalidData, message)));
         }
         Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
+            cleanup_created_file(file, &tmp);
             return Err(map_write_error(&tmp, e));
         }
     }
+    drop(file);
     match std::fs::rename(&tmp, target) {
         Ok(()) => Ok(bytes.len() as u64),
         Err(e) => {
             // Windows MoveFileExW(REPLACE_EXISTING)：目标被占用/只读/权限不足会失败，
-            // 此时原文件没有被截断，只需清掉临时文件。
+            // 此时原文件没有被截断，只需清掉临时文件。临时名含随机 UUID 且由本次
+            // create_new 独占创建，句柄已关闭后按路径清理不会被外部替换利用。
             let _ = std::fs::remove_file(&tmp);
             Err(AppError::Io(std::io::Error::new(
                 e.kind(),
@@ -493,6 +556,69 @@ mod tests {
             "最终文件应是完整的一份写入"
         );
         assert!(tmp_leftovers(dir.path()).is_empty());
+    }
+
+    /// 失败清理动作本身：删除的是本次 create_new 创建的文件对象。
+    ///
+    /// 触发真实的 write_all/flush/sync_all 失败需要制造磁盘级错误（本机不可控），
+    /// 因此这里直接覆盖写失败时执行的清理函数；生产路径与测试共用同一个函数。
+    #[test]
+    fn failure_cleanup_removes_file_created_by_this_call() {
+        let dir = TempDir::new("cleanup-own");
+        let target = dir.join("clip.png");
+        let mut file = create_new_file(&target).expect("排他创建");
+        file.write_all(b"partial").expect("写入半成品");
+        cleanup_created_file(file, &target);
+        assert!(!target.exists(), "失败清理后本次创建的目标文件不得残留");
+        assert!(tmp_leftovers(dir.path()).is_empty());
+    }
+
+    /// 句柄释放与删除之间路径被替换时，清理不得误删替换者的新文件。
+    #[test]
+    #[cfg(windows)]
+    fn failure_cleanup_deletes_by_handle_not_by_path() {
+        let dir = TempDir::new("cleanup-race");
+        let target = dir.join("clip.png");
+        let moved = dir.join("created-by-us.png");
+        let mut file = create_new_file(&target).expect("排他创建");
+        file.write_all(b"partial").expect("写入半成品");
+
+        // 模拟：清理前其他进程把本次创建的文件移走，并在同一路径放入自己的新文件。
+        std::fs::rename(&target, &moved).expect("移动仍打开的本次文件");
+        let replacement = png_bytes(0xfe, 96);
+        std::fs::write(&target, &replacement).expect("替换者写入新文件");
+        let before = digest(&target);
+
+        cleanup_created_file(file, &target);
+
+        assert!(
+            target.exists(),
+            "路径上的新文件不属于本次调用，清理不得删除它"
+        );
+        assert_eq!(digest(&target), before, "替换者文件必须字节级不变");
+        assert_eq!(std::fs::read(&target).unwrap(), replacement);
+        assert!(!moved.exists(), "本次创建的文件对象应被句柄级删除");
+    }
+
+    /// 句柄缺少 DELETE 权限导致句柄级清理失败时，不得回退成按路径删除。
+    #[test]
+    #[cfg(windows)]
+    fn failure_cleanup_without_delete_access_keeps_file_intact() {
+        let dir = TempDir::new("cleanup-denied");
+        let target = dir.join("clip.png");
+        let original = png_bytes(0xfd, 64);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .expect("不带 DELETE 权限创建");
+        file.write_all(&original).expect("写入半成品");
+        let before = digest(&target);
+
+        cleanup_created_file(file, &target);
+
+        assert!(target.exists(), "清理失败时不得按路径删除文件");
+        assert_eq!(digest(&target), before, "清理失败不得改动文件内容");
     }
 
     #[test]

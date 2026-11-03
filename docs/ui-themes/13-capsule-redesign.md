@@ -591,9 +591,24 @@ Agent 状态球与四个分类共用同一张方向表，不再有「端头一�
 **不被裁切的两个约束**：
 
 1. 方向必须镜像：右侧停靠时右侧是屏幕外，朝右的气泡会整块落在区域外；
-2. 距离必须越过间隙：气泡起点 = 图标内侧边 18px + `CAPSULE_TIP_INWARD_OFFSET`
-   （`(56-36)/2 + gap 8 + 区域 AA 内收 2 = 20`），落到面板矩形内。轨道与面板之间的
-   `gap` 既不属于区域也不拦截鼠标，气泡若从 6px 默认距离起画会被裁出一条缺边。
+2. 距离必须越过间隙：气泡起点 = 锚点内侧边 + `capsuleTipInwardOffset(锚点边长)`
+   （基准 = 半轨道厚 28 + gap 8 + 区域 AA 内收 2 = 38，再减去锚点半边长），
+   落到面板矩形内。36px 图标/状态球是 `38-18=20`；26px 收起按钮是 `38-13=25`
+   （2026-11-03 修正：此前收起按钮也套用 20，气泡起点会落在 gap 内 3px，被裁出一条缺边）。
+   轨道与面板之间的 `gap` 既不属于区域也不拦截鼠标，气泡若从 6px 默认距离起画会被裁出缺边。
 
 回归测试：`src/components/capsule/CapsuleRail.tooltip.test.tsx` 按四个边分别断言
 展开态方向、折叠态方向，以及气泡矩形是否完整落在面板矩形 / 翼片多边形内。
+
+**补充（2026-11-03）：区分停靠坞与完整悬浮栏，并对齐图标中心**
+
+- 形态是显式输入：`railTipPlacement(form, edge, expanded, lead)`。只有 `form="docked"` 才套
+  四边镜像；完整悬浮栏（未贴边停靠 / 自由位置，如主窗口左导航 `FullView`）固定为 `right`，
+  与 Agent 面板提示一致，不因 `edge` 取值被误判。
+- 展开态气泡以图标**中心**对齐：`TooltipLayer.computeTooltipPosition` 对 top/bottom 用
+  `anchorLeft + anchorWidth/2 - tipWidth/2`，对 left/right 用
+  `anchorTop + anchorHeight/2 - tipHeight/2`；`data-tip-offset` 只调主方向距离，不参与居中。
+- 边界收敛在居中之后：主方向放不下返回 `null` 交回 `flip`；横跨轴只在屏幕边缘内 clamp
+  （被夹住时允许相对图标轻微不对称，但不压图标、不出界）。
+- 气泡尺寸取 `offsetWidth/offsetHeight`（布局尺寸）。入场动画对浮层做了 scale，若按首帧
+  `getBoundingClientRect` 计算，动画结束后会残留半条尺寸差造成的偏移。

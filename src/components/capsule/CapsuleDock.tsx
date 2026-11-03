@@ -15,18 +15,22 @@ import CapsuleRail, { CATEGORY_LABELS } from "./CapsuleRail";
 import TasksLite from "./TasksLite";
 import AgentsLite from "./AgentsLite";
 import ClipboardLite from "./ClipboardLite";
+import InboxLite from "./InboxLite";
 import AppsLite from "./AppsLite";
 import { railStatus, railAriaLabel } from "../../lib/capsuleModel";
-import type { RailCategory } from "../../lib/capsuleModel";
+import type { CapsuleCategory } from "../../lib/capsuleModel";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useCapsuleStore } from "../../store/useCapsuleStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { useCaptureStore } from "../../store/useCaptureStore";
 import { registerOverlay } from "../../lib/overlayStack";
 import { playAgentAlert } from "../../lib/agentAlert";
 
-const PANELS: Record<RailCategory, ComponentType> = {
+/** 面板映射：轨道四类 + Agent（仅顶部状态球入口，仍打开 AgentsLite）。 */
+const PANELS: Record<CapsuleCategory, ComponentType> = {
   tasks: TasksLite,
+  inbox: InboxLite,
   agents: AgentsLite,
   clipboard: ClipboardLite,
   apps: AppsLite,
@@ -42,9 +46,12 @@ export default function CapsuleDock() {
   const setActive = useCapsuleStore((s) => s.setActive);
   const stats = useTasksStore((s) => s.stats);
   const snapshot = useAgentsStore((s) => s.snapshot);
+  const inboxCount = useCaptureStore((s) => s.inboxCount);
+  const inboxCountLoaded = useCaptureStore((s) => s.inboxCountLoaded);
 
   const expanded = phase === "docked-revealed";
-  const status = railStatus(stats, snapshot);
+  // 未加载（false）传 null：徽标显示中性，不把未知伪装成 0
+  const status = railStatus(stats, snapshot, Date.now(), inboxCountLoaded ? inboxCount : null);
   const [pulse, setPulse] = useState(0);
 
   // 异常变响：进入 waiting/failed 时响一次（同状态 60s 冷却、设置可关）。
@@ -78,7 +85,7 @@ export default function CapsuleDock() {
     return registerOverlay({ kind: "drawer", onEscape: closePanel, blocksAutoHide: false });
   }, [expanded, closePanel]);
 
-  const onSelect = (c: RailCategory) => {
+  const onSelect = (c: CapsuleCategory) => {
     if (expanded) {
       // 再次点击当前分类 = 收起面板；点其他分类只换内容，不重新展开
       if (active === c) closePanel();
@@ -93,7 +100,7 @@ export default function CapsuleDock() {
   if (!edge) return null;
   const vertical = edge === "left" || edge === "right";
   // 面板可见性只看相位：分类恒有值，展开态不存在「没有面板内容」的空白态
-  const activeCategory: RailCategory | null = expanded ? active : null;
+  const activeCategory: CapsuleCategory | null = expanded ? active : null;
   const Panel = activeCategory ? PANELS[activeCategory] : null;
 
   return (

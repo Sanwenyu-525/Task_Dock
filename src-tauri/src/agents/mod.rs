@@ -11,10 +11,14 @@
 //! - Adapter（mock / file_drop / http_ingest / hooks / 插件桥接）只负责产生事件；
 //! - 任何来源未注册或被禁用的事件一律拒绝，禁止伪造状态。
 
+pub mod claude;
 pub mod codex;
+pub mod cursor;
 pub mod discovery;
+pub mod discovery_only;
 pub mod dsh;
 pub mod file_drop;
+pub mod gemini;
 pub mod hook_cli;
 pub mod hooks_install;
 pub mod http_ingest;
@@ -419,6 +423,8 @@ pub struct NotificationOut {
     pub session_id: Option<String>,
     /// 来源显示名（卡片展开详情用）。
     pub source_name: String,
+    /// 事件原因/错误摘要（失败卡的错误原因、等待卡的等待原因；不写历史正文）。
+    pub detail: Option<String>,
 }
 
 /// 事件幂等键：Adapter 提供事件 ID 时按 ID；否则按内容签名。
@@ -966,6 +972,12 @@ pub fn ingest_core(
                 source_id: Some(ev.source_id.clone()),
                 session_id: Some(session_row_id.clone()),
                 source_name,
+                detail: ev
+                    .message
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_string),
             });
         }
     }
@@ -1224,11 +1236,13 @@ impl AgentHub {
                 .iter()
                 .filter_map(|o| o.notification.as_ref())
                 .map(|n| {
-                    NotifyItem::new(&n.kind, &n.title, &n.body).with_ref(
-                        n.run_id.clone(),
-                        n.source_id.clone(),
-                        n.session_id.clone(),
-                    )
+                    NotifyItem::new(&n.kind, &n.title, &n.body)
+                        .with_ref(
+                            n.run_id.clone(),
+                            n.source_id.clone(),
+                            n.session_id.clone(),
+                        )
+                        .with_detail(n.detail.clone())
                 })
                 .collect();
             self.notify_agent_popups(&items);
@@ -2605,6 +2619,33 @@ mod tests {
             ),
             3
         );
+    }
+
+    #[test]
+    fn all_adapters_have_unique_registered_sources() {
+        // 每个适配器都必须有唯一 id，且在迁移后的 agent_sources 中已注册，
+        // 否则事件会被「来源未注册」规则拒绝，导致 UI 显示接入但事件永远进不来。
+        let db = memdb();
+        let ids: Vec<String> = crate::agents::managed::all_adapters()
+            .iter()
+            .map(|a| a.id().to_string())
+            .collect();
+        let source_ids: Vec<String> = crate::agents::managed::all_adapters()
+            .iter()
+            .map(|a| a.source_id().to_string())
+            .collect();
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "适配器 id 不得重复");
+        for id in &source_ids {
+            assert_eq!(
+                count(
+                    &db,
+                    &format!("SELECT COUNT(*) FROM agent_sources WHERE id = '{id}'")
+                ),
+                1,
+                "适配器来源 {id} 未在 agent_sources 注册"
+            );
+        }
     }
 
     #[test]

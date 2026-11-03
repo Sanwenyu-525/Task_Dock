@@ -53,6 +53,11 @@ export interface PopoverProps {
    *  提示条必须为 false：翻到侧边会把气泡放到锚点左侧/右侧之外，
    *  在胶囊这种 Win32 区域裁剪窗口里会被裁成一条白色碎片。 */
   flipToSide?: boolean;
+  /** 显式定位覆盖（提示条用）：给出 left/top 时覆盖 floating-ui 写位，仍保留其
+   *  初始定位作为「尺寸未测出」时的安全回退；居中与边界收敛由调用方纯函数计算。 */
+  positionOverride?: { left: number; top: number } | null;
+  /** 暴露定位外壳元素，供调用方测量气泡实际尺寸（避免把尺寸写死成魔法数）。 */
+  floatingRef?: RefObject<HTMLDivElement | null>;
 }
 
 export default function Popover({
@@ -73,6 +78,8 @@ export default function Popover({
   restoreFocus = true,
   dismissOnOutsidePress = true,
   flipToSide = true,
+  positionOverride = null,
+  floatingRef,
 }: PopoverProps) {
   const generatedId = useId();
 
@@ -82,6 +89,9 @@ export default function Popover({
     placement,
     strategy: "fixed",
     whileElementsMounted(reference, floating, update) {
+      // 显式定位（提示条）由调用方计算并随滚动/窗口尺寸复测；此时关掉
+      // autoUpdate，避免它把 floating-ui 的坐标写回并覆盖 override。
+      if (positionOverride) return () => {};
       return autoUpdate(reference, floating, update, {
         ancestorScroll: true,
         ancestorResize: true,
@@ -130,13 +140,27 @@ export default function Popover({
 
   if (!open) return null;
 
+  // 显式定位优先：transform 归零，left/top 直接写最终坐标，避免与 floating-ui
+  // 的 translate 叠加产生二次偏移。
+  const hostStyle: CSSProperties = positionOverride
+    ? {
+        ...floatingStyles,
+        left: `${positionOverride.left}px`,
+        top: `${positionOverride.top}px`,
+        transform: "none",
+      }
+    : floatingStyles;
+
   const content = (
     // 外壳只负责定位（floating-ui 会写 transform），内层负责动效，
     // 两者分开才不会让入场动画覆盖掉定位变换。
     <div
-      ref={refs.setFloating}
+      ref={(el) => {
+        refs.setFloating(el);
+        if (floatingRef) floatingRef.current = el;
+      }}
       className="ui-popover-host"
-      style={floatingStyles}
+      style={hostStyle}
       {...getFloatingProps()}
     >
       <div
@@ -145,7 +169,7 @@ export default function Popover({
         id={id ?? generatedId}
         role={role}
         aria-label={ariaLabel}
-        data-placement={context?.placement}
+        data-placement={positionOverride ? placement : context?.placement}
         onKeyDown={onKeyDown}
       >
         {children}

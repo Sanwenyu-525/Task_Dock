@@ -23,6 +23,8 @@ export interface NotificationCardData {
   sourceId?: string | null;
   sessionId?: string | null;
   refId?: string | null;
+  /** 事件原因/错误摘要（失败卡的错误原因、等待卡的等待原因） */
+  detail?: string | null;
 }
 
 /** 展示态卡片：合并键 + 自动消失期限（悬停/展开暂停时由栈重算）。 */
@@ -44,4 +46,4 @@ export interface DetailRow {
 }
 
 /** 动作标识：与 NotificationActions 的处理分支一一对应。 */
-export type ActionId = "view" | "handle" | "snooze" | "center" | "expand";
+export type ActionId = "view" | "handle" | "snooze" | "done" | "center" | "expand";

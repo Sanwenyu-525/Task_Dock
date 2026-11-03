@@ -319,7 +319,7 @@ impl ManagedAdapter for OpencodeAdapter {
         }
     }
 
-    fn uninstall(&self, _app_data: &std::path::Path) -> AppResult<Value> {
+    fn uninstall(&self, _app_data: &std::path::Path, db: &Db) -> AppResult<Value> {
         let file = plugin_file();
         if file.exists() {
             let existing = std::fs::read_to_string(&file).unwrap_or_default();
@@ -330,7 +330,8 @@ impl ManagedAdapter for OpencodeAdapter {
             }
             std::fs::remove_file(&file)?;
         }
-        Ok(json!({ "adapter": "opencode", "removed": file.to_string_lossy() }))
+        super::managed::sync_uninstall_state(db, "opencode", true, &[])?;
+        Ok(json!({ "adapter": "opencode", "removed": file.to_string_lossy(), "complete": true }))
     }
 
     fn config_status(&self, _app_data: &std::path::Path) -> AppResult<Value> {

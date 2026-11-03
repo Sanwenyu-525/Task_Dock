@@ -145,6 +145,8 @@ describe("App · 停靠态外壳", () => {
     expect(app).toBeTruthy();
     expect(app.hasAttribute("inert")).toBe(false);
     expect(container.querySelector(".capsule-dock")).toBeNull();
+    // 圆角区域裁掉了原生角热区：非停靠态需要四角缩放命中层
+    expect(container.querySelectorAll(".resize-grip")).toHaveLength(4);
   });
 
   it("停靠折叠：根节点 is-capsule、主界面 inert、胶囊挂载", () => {
@@ -156,6 +158,8 @@ describe("App · 停靠态外壳", () => {
     expect(app.hasAttribute("inert")).toBe(true);
     expect(container.querySelector(".capsule-dock")).toBeTruthy();
     expect(container.querySelector(".capsule-panel")).toBeNull();
+    // 胶囊期窗口区域只剩轨道，四角热区必须不参与命中
+    expect(container.querySelector(".resize-grip")).toBeNull();
   });
 
   it("停靠展开：胶囊 + 面板同时存在", () => {

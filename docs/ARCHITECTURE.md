@@ -187,9 +187,14 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `verification_level`（window-confirmed / process-spawned / launch-requested / delegated /
   requested-unverified）与 `fallback_used`，不允许把「进程已启动」报告成「窗口已确认」。
 - `window_manager.rs`：EnumWindows 枚举可见顶层窗口（排除工具窗口与 UWP cloaked），
-  `QueryFullProcessImageNameW` 关联进程身份；焦点控制「IsWindow 核验 → SW_RESTORE →
-  SetForegroundWindow（被拒时 ALT 解锁重试一次）→ 前台句柄轮询核实」；被系统拒绝时
-  返回准确原因。HWND/PID 只作运行时身份，绝不落库。枚举带 1.2s TTL 缓存。
+  `QueryFullProcessImageNameW` 关联进程身份；**进程身份优先、标题仅作同款多窗口二次过滤**
+  （`windows_for_identity`：exe 路径直接命中 + Toolhelp 进程树覆盖微信/QQ/酷狗等
+  多进程宿主；跨应用同名标题不会进入候选集，HWND 失效/路径变化不会唤醒旧软件）。
+  焦点控制「IsWindow 核验 → SW_RESTORE → SetForegroundWindow →（被拒时把**调用线程与目标
+  窗口线程**都 AttachThreadInput 到当前前台线程 + BringWindowToTop 后重试，不注入 ALT 按键）→
+  前台句柄轮询核实」。桌面没有前台窗口（锁屏/无输入会话）时系统无法授予前台资格，此时如实返回
+  `foreground-denied`，不把 API 调用成功当作已置前。HWND/PID 只作运行时身份，绝不落库。
+  枚举带 1.2s TTL 缓存；进程树查询只在直接命中不到窗口时发生。
 - `app_discovery.rs`：开始菜单 .lnk（lnk crate 解析，catch_unwind 隔离畸形文件）+
   卸载注册表（winreg）+ UWP（Get-StartApps 单次调用、8s 超时）+ 常用软件路径探测。
   扫描带 5 分钟缓存；只扫明确位置，绝不全盘搜索；浏览器渲染进程等子进程不构成独立应用
@@ -201,9 +206,17 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   app_key+target_type 幂等去重）、`task_navigation_targets`（任务关联：display_order /
   is_default / launch_behavior，UNIQUE(task_id, target_id)）、`navigation_log`（执行流水）。
   与既有 `task_agent_links` 并存互补，旧表与历史数据不动。
+  **配置保护（2026-11-03）**：再次扫描/重复关联同一 app_key 只复用现有目标，
+  `save_target` 默认不覆盖 launch_args / working_dir / window_title_hint / icon / category；
+  只有 `overwrite_config=true`（用户确认）或 `update_target` 显式补丁（新增
+  launch_args/working_dir）才能改配置。
 - `agent_navigation.rs`：每个 Agent 的启动/唤醒/工作区/会话恢复能力全部**证据化**
   （exe-found / cli-help-probed / baseline-verified / unsupported-interface / not-installed）；
   无官方接口的 Agent 诚实降级为启动/唤醒并标注 fallback，不臆造 Deep Link。
+  Codex/OpenCode 属交互式 CLI：必须在 `CREATE_NEW_CONSOLE` 的**新控制台窗口**中启动，
+  并用新进程树的窗口核实；没有可交互窗口的后台子进程不计为成功。OpenCode 仅按
+  `--help` 实测支持时使用 `opencode --session <id>`（官方文档核验），不再依赖未验证的
+  `resume <id>`；CLI 帮助探测 5s 超时、并发消费 stdout/stderr、1h 缓存。
 
 ### 6. 前端（src/）
 - 三种显示模式对应三套视图；完整模式六标签页（任务/Agent/行动/剪贴板/历史/设置）。
@@ -314,7 +327,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 任务上下文抽屉（v0.5）：`TaskContextDrawer` 复用次级抽屉视觉，按需加载
   `task_context`；现场恢复进度订阅 `workspace-restore-progress`，与剪贴板抽屉互斥。
 - 应用内快捷键：Ctrl+1…8 切换标签（顺序与侧边栏一致，取自 `useUiStore` 的
-  `TAB_ORDER` 单一事实源，v0.7 起含「收集箱」「规划中」）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
+  `TAB_ORDER` 单一事实源，v0.7 起含「收集箱」「规划中心」）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
   （完整模式切到剪贴板页，紧凑/最小模式开关临时抽屉）；
   输入框内不拦截，窗口聚焦时生效。实现见 `src/hooks/useGlobalShortcuts.ts`。
 - 视觉系统（v0.6）：三个正交维度——视觉预设 `visual_preset`
@@ -340,6 +353,19 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   CSS 抗锯齿支撑形状、不覆盖透明像素，定义真实原生圆角，CSS 只负责抗锯齿边缘；删除
   `WM_NCHITTEST` 子类化（圆角区域即命中区）。DWM 原生圆角固定 8 DIP，无法满足 18/20px
   设计半径，故不使用。证据见 `tmp/acceptance/window-corner-unification/report.md` 二轮章节。
+  **2026-11-03 更正（四角缩放 + 角热区光标）**：真机反馈四条边可缩放、四角不可拖。根因是
+  圆角像素支撑区域把 tauri-runtime-wry `TAURI_DRAG_RESIZE_BORDERS` 的角方块（物理 4×4px）
+  裁在区域外，Windows 按区域路由命中，角点消息根本不派发（tao 的四角 HT 分支本身完整）。
+  修复：前端 `WindowResizeGrips` 在**区域内的最靠角像素**上接住缩放意图并调用
+  `startResizeDragging(NorthWest/NorthEast/SouthWest/SouthEast)`（12 CSS px，跨端契约见下），
+  停靠胶囊期不渲染；不给窗口加命中区域、不改几何/吸附/裁剪。
+  同一处的后续真机反馈（松手后光标回退成普通箭头）根因在**光标层**：系统模态缩放循环退出后
+  Windows 重设默认光标，指针静止时不再派发 `WM_SETCURSOR`，WebView2 的 CSS `cursor` 没有机会重新
+  生效。修复：`window_cursor.rs` 在 `WM_EXITSIZEMOVE` 后延后一拍（`PostMessageW`）按
+  `GetDpiForWindow` 折算的 12 CSS px 热区补 `SetCursor(IDC_SIZENWSE/IDC_SIZENESW)`，并在
+  `WM_SETCURSOR(HTCLIENT)` 兜底；改写前用 `WindowFromPoint` 校验像素归属（圆角区域外的角点属于
+  下层窗口，不越权改写）。热区边长 12 CSS px 是前端 `.resize-grip` 与 `window_cursor::GRIP_CSS`
+  的跨端契约，两端单测锁定。证据见 `tmp/acceptance/window-corner-resize/report.md`。
   详见 [ui-themes/](ui-themes/) 目录。
 
 ### 7. 智能剪贴板（clipboard/，v0.5）
@@ -589,6 +615,18 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   无 registry 头的极老文件按 `PRE_PLANNING_EXTENDED_TABLES` 兜底校验。
 - 恢复语义不变：整体替换用户数据。旧备份（无规划数据）恢复会清空当前规划数据
   （与其余业务表行为一致）；规划中心导入按 `EXTENDED_TABLES` 顺序插入满足外键依赖。
+
+### 通用 Agent 覆盖扩展迁移 v21（2026-11-03）
+
+- 迁移 v21 仅追加 `agent_sources` 初始来源行（`INSERT OR IGNORE`），不改表结构、
+  不覆盖用户已有启用/验证/配置状态；新增 Claude Code、Cursor、Gemini CLI（官方 Hooks）
+  与一批仅安装/运行发现的来源（Windsurf、Cline、Roo Code、Copilot、Antigravity、Kiro、
+  Continue、Aider、Augment、OpenHands、OpenClaw）。
+- `agents/` 新增 `claude.rs`、`cursor.rs`、`gemini.rs`、`discovery_only.rs`；仍复用
+  `ManagedAdapter` + `AgentHub` + 有界事件管线，不新增监控架构。
+- Hooks 多文件安装改为事务化：全部预检查 → 统一快照 → 写入 → 语义校验 →
+  任一失败按快照恢复全部文件；Windows 使用 `MoveFileExW(MOVEFILE_REPLACE_EXISTING |
+  MOVEFILE_WRITE_THROUGH)` 原子替换，消除「先删后改名」窗口期。
 
 ### v0.7 智能日程提醒 2.0 迁移 v20（2026-11-03）
 

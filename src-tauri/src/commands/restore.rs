@@ -353,6 +353,7 @@ fn rollback_file(file: &PlannedFile) -> AppResult<()> {
 fn build_plan(
     read: &ReadBackup,
     clipboard_dir: &Path,
+    shelf_dir: &Path,
     archive_dir: &Path,
     vault_root: &Path,
 ) -> AppResult<Vec<PlannedFile>> {
@@ -361,15 +362,29 @@ fn build_plan(
     for asset in &read.assets {
         let rel = asset.rel.clone();
         backup::safe_asset_rel(&rel)?;
-        push_planned(
-            &mut plan,
-            &mut seen,
-            "asset",
-            &rel,
-            asset,
-            clipboard_dir.join(&rel),
-            vault_root.join("assets").join(&rel),
-        )?;
+        // 暂存架托管文件带 `shelf/` 前缀，落盘时剥离为相对 shelf 根目录的路径
+        if let Some(sub) = rel.strip_prefix("shelf/") {
+            let sub = backup::safe_shelf_rel(sub)?;
+            push_planned(
+                &mut plan,
+                &mut seen,
+                "asset",
+                &rel,
+                asset,
+                shelf_dir.join(sub),
+                vault_root.join("assets").join(&rel),
+            )?;
+        } else {
+            push_planned(
+                &mut plan,
+                &mut seen,
+                "asset",
+                &rel,
+                asset,
+                clipboard_dir.join(&rel),
+                vault_root.join("assets").join(&rel),
+            )?;
+        }
     }
     for archive in &read.archives {
         let name = archive.name.clone();
@@ -563,9 +578,11 @@ fn write_pre_backup(
     let path = pre_backup_path(data_dir, session_id);
     let archive = crate::agents::retention::archive_dir(data_dir);
     let clipboard = data_dir.join("clipboard");
+    let shelf = data_dir.join("shelf");
     let sources = BackupSources {
         archive_dir: Some(archive.as_path()),
         clipboard_dir: Some(clipboard.as_path()),
+        shelf_dir: Some(shelf.as_path()),
     };
     backup::write_bundle(db, sources, &path, BackupKind::Full)?;
     Ok(path)
@@ -695,8 +712,15 @@ pub fn restore_bundle(
 
     // 3. 计划 + 原文件留底。
     let clipboard_dir = data_dir.join("clipboard");
+    let shelf_dir = data_dir.join("shelf");
     let archive_dir = crate::agents::retention::archive_dir(data_dir);
-    let plan = match build_plan(&read, &clipboard_dir, &archive_dir, &vault_root) {
+    let plan = match build_plan(
+        &read,
+        &clipboard_dir,
+        &shelf_dir,
+        &archive_dir,
+        &vault_root,
+    ) {
         Ok(plan) => plan,
         Err(e) => return abort(data_dir, journal, e),
     };
@@ -1171,6 +1195,7 @@ mod tests {
         let sources = BackupSources {
             archive_dir: Some(&archive_dir),
             clipboard_dir: Some(&clipboard_dir),
+            shelf_dir: None,
         };
         backup::write_bundle(
             &db,

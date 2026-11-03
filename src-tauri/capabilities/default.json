@@ -19,6 +19,7 @@
     "core:window:allow-set-always-on-top",
     "core:window:allow-is-visible",
     "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
     "core:window:allow-set-skip-taskbar",
     "core:window:allow-cursor-position",
     "core:window:allow-current-monitor",

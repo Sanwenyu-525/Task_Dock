@@ -137,7 +137,7 @@ export default function MilestonesView({ onOpenFeatures }: MilestonesViewProps) 
                 <div className="planning-timeline-marker" aria-hidden="true">
                   <span>{index + 1}</span>
                 </div>
-                <article className="planning-timeline-card">
+                <article className="task-card planning-timeline-card">
                   <div className="planning-timeline-card-head">
                     <h4>{m.name}</h4>
                     <span className={`planning-stage-badge stage-${stage.key}`}>

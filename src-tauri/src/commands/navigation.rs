@@ -31,6 +31,24 @@ pub fn nav_list_windows() -> Vec<navigation::window_manager::WindowInfo> {
     navigation::window_manager::top_windows_force()
 }
 
+/// 某应用目标的候选窗口：按进程身份过滤（含多进程宿主的子进程窗口），
+/// 前端窗口选择器不再用「exe 路径相等」把微信/QQ 的子窗口过滤掉。
+#[tauri::command]
+pub fn nav_list_target_windows(
+    db: State<'_, Arc<Db>>,
+    target_id: String,
+) -> AppResult<Vec<navigation::window_manager::WindowInfo>> {
+    let t = navigation::target_resolver::get_target(&db, &target_id)?
+        .ok_or_else(|| AppError::NotFound("目标不存在".into()))?;
+    if t.target_type != "application" || t.exe_path.is_empty() {
+        return Err(AppError::Validation("只有应用目标可以选择窗口".into()));
+    }
+    Ok(navigation::window_manager::windows_for_identity(
+        &t.exe_path,
+        (!t.window_title_hint.is_empty()).then_some(t.window_title_hint.as_str()),
+    ))
+}
+
 // ── 目标管理 ────────────────────────────────────────────────
 
 #[tauri::command]
@@ -104,11 +122,7 @@ pub fn nav_pick_window_identity(
     let target = navigation::target_resolver::get_target(&db, &target_id)?
         .ok_or_else(|| AppError::NotFound("目标不存在".into()))?;
     if target.target_type != "application"
-        || target.exe_path.is_empty()
-        || !w
-            .exe_path
-            .as_deref()
-            .is_some_and(|p| p.eq_ignore_ascii_case(&target.exe_path))
+        || !navigation::window_manager::window_belongs_to_target(&w, &target.exe_path)
     {
         return Err(AppError::Validation("窗口所属程序与目标不一致".into()));
     }
@@ -273,11 +287,17 @@ pub async fn nav_navigate(
 
 // ── Agent 导航 ──────────────────────────────────────────────
 
+/// 能力检测会做 PATH 搜索、窗口枚举与 CLI 帮助探测（可能秒级），
+/// 必须移出 IPC 主线程，避免 UI 卡顿。
 #[tauri::command]
-pub fn nav_agent_capabilities(
+pub async fn nav_agent_capabilities(
     source_id: String,
-) -> navigation::agent_navigation::AgentNavCapabilities {
-    navigation::agent_navigation::capabilities(&source_id)
+) -> AppResult<navigation::agent_navigation::AgentNavCapabilities> {
+    tauri::async_runtime::spawn_blocking(move || {
+        navigation::agent_navigation::capabilities(&source_id)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Agent(format!("能力检测失败: {}", e)))
 }
 
 /// Agent 树按钮动作：open_app | focus_window。

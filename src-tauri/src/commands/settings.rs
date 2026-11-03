@@ -17,6 +17,7 @@ const ALLOWED_KEYS: &[&str] = &[
     "mode",
     "material",
     "visual_preset",
+    "clear_foreground",
     "snap_enabled",
     "autostart",
     "hotkey_enabled",
@@ -66,6 +67,10 @@ const ALLOWED_KEYS: &[&str] = &[
     "clipboard_sensitive_filter",
     // 全局快速捕获（v0.7）：上次选择的捕获类型
     "quick_capture_last_type",
+    // 文件暂存架（v0.8）：过期清理与配额
+    "shelf_auto_cleanup_enabled",
+    "shelf_retention_days",
+    "shelf_max_storage_mb",
 ];
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
@@ -109,7 +114,9 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "theme" => enum_of(v, key, &["system", "light", "dark"]),
         "mode" => enum_of(v, key, &["minimal", "compact", "full"]),
         "material" => enum_of(v, key, &["solid", "glass"]),
-        "visual_preset" => enum_of(v, key, &["dream-gradient", "liquid-glass"]),
+        "visual_preset" => enum_of(v, key, &["dream-gradient", "liquid-glass", "frosted", "clear"]),
+        // 清透玻璃的独立前景色板（v0.9）：玻璃材质不随主题变化，文字配色可强制
+        "clear_foreground" => enum_of(v, key, &["auto", "dark", "light"]),
         "snap_enabled"
         | "autostart"
         | "hotkey_enabled"
@@ -151,6 +158,10 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "clipboard_paste_interval_files_ms" => int_in_range(v, key, 100, 5_000),
         // 快速捕获上次选择的类型（与 store::KINDS 保持一致）
         "quick_capture_last_type" => enum_of(v, key, &["task", "idea", "text", "todo", "link"]),
+        // 文件暂存架（v0.8）
+        "shelf_auto_cleanup_enabled" => bool_of(v, key),
+        "shelf_retention_days" => int_in_range(v, key, 1, 3650),
+        "shelf_max_storage_mb" => int_in_range(v, key, 64, 102_400),
         // 排除名单：逗号/换行分隔的 exe 名或路径（长度受限、无控制字符注入）
         "clipboard_exclude_apps" => {
             let s = v.as_str().ok_or_else(|| {
@@ -373,10 +384,16 @@ mod tests {
         assert!(validate_setting("mode", &serde_json::json!("compact")).is_ok());
         assert!(validate_setting("material", &serde_json::json!("glass")).is_ok());
         assert!(validate_setting("material", &serde_json::json!(3)).is_err());
-        // v0.6 视觉预设：只接受两个已知值，其他一律拒绝（旧库缺失键走默认值）
+        // v0.6/v0.9 视觉预设：只接受四个已知值，其他一律拒绝（旧库缺失键走默认值）
         assert!(validate_setting("visual_preset", &serde_json::json!("dream-gradient")).is_ok());
         assert!(validate_setting("visual_preset", &serde_json::json!("liquid-glass")).is_ok());
+        assert!(validate_setting("visual_preset", &serde_json::json!("frosted")).is_ok());
+        assert!(validate_setting("visual_preset", &serde_json::json!("clear")).is_ok());
         assert!(validate_setting("visual_preset", &serde_json::json!("neon")).is_err());
+        assert!(validate_setting("clear_foreground", &serde_json::json!("auto")).is_ok());
+        assert!(validate_setting("clear_foreground", &serde_json::json!("dark")).is_ok());
+        assert!(validate_setting("clear_foreground", &serde_json::json!("light")).is_ok());
+        assert!(validate_setting("clear_foreground", &serde_json::json!("system")).is_err());
         assert!(validate_setting("visual_preset", &serde_json::json!(null)).is_err());
     }
 

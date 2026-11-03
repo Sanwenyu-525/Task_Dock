@@ -100,7 +100,10 @@ describe("clipSource", () => {
     const s = clipSource({ source_app: "unknown", source_title: "", source_kind: "unknown" });
     expect(s.identified).toBe(false);
     expect(s.app).toBe("未知应用");
+    // `unknown` 是后端哨兵值，不能出现在卡片 Tooltip 或详情「来源进程」里。
+    expect(s.appRaw).toBe("");
     expect(s.window).toBe("");
+    expect(s.windowRaw).toBe("");
     expect(s.trust).toBe("未能识别来源");
   });
 });

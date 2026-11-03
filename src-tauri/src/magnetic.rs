@@ -791,9 +791,10 @@ mod win {
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallWindowProcW, GetCursorPos, GetWindowLongW, GetWindowRect, PostMessageW,
-        SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GWLP_WNDPROC, GWL_STYLE, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_APP, WM_DPICHANGED,
-        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVING, WNDPROC, WS_MAXIMIZEBOX,
+        SetWindowLongPtrW, SetWindowLongW, SetWindowPos, GWLP_WNDPROC, GWL_STYLE, HTCLIENT,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_APP,
+        WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVING, WM_SETCURSOR, WNDPROC,
+        WS_MAXIMIZEBOX,
     };
 
     /// 我们接管的主窗（只作用于 task_dock 主窗口）。
@@ -805,6 +806,9 @@ mod win {
     /// Snap 抑制重估消息（自定义）：`set_dock`/`set_config`（IPC 线程）发起，
     /// 由窗口线程在 wndproc 里实际读写样式（Win32 样式操作应在窗口所属线程执行）。
     const WM_MAGNET_STYLE_SYNC: u32 = WM_APP + 0x52;
+    /// 角热区光标恢复消息（自定义）：缩放/移动循环退出后延后一拍补 `SetCursor`。
+    /// 见 `window_cursor` 模块文档。
+    const WM_CURSOR_CORNER: u32 = WM_APP + 0x53;
 
     /// 子类化时窗口是否本就带 `WS_MAXIMIZEBOX`（1=有 2=没有 0=未记录）。
     /// 恢复时只还原原本存在的样式，不把"不可最大化"改成"可最大化"。
@@ -978,6 +982,32 @@ mod win {
         if target == 0 || hwnd as isize != target {
             return call_old(hwnd, msg, wparam, lparam);
         }
+
+        // ── 角热区光标（与磁力开关无关，必须在下面的旁路之前处理）──────────
+        // 缩放循环内部发出 WM_EXITSIZEMOVE；循环返回后 Windows 还会重设光标，
+        // 所以延后一拍（与 WM_MAGNET_SNAP 同样的理由：不在模态循环内做事）。
+        // 指针静止时系统不再派发 WM_SETCURSOR，前端 CSS cursor 无法重新生效，
+        // 由窗口过程补一次 SetCursor（根因见 `window_cursor` 模块文档）。
+        if msg == WM_EXITSIZEMOVE {
+            unsafe {
+                PostMessageW(hwnd, WM_CURSOR_CORNER, 0, 0);
+            }
+        }
+        match msg {
+            WM_CURSOR_CORNER => {
+                crate::window_cursor::restore_at_corner(hwnd as isize);
+                return 0;
+            }
+            WM_SETCURSOR if wparam == HTCLIENT as WPARAM => {
+                // 客户端区的光标通常由 WebView2 子窗按 CSS 设置；这里兜底
+                // 「子窗没有设置光标」的情况，命中角热区时保持双向箭头。
+                if crate::window_cursor::restore_at_corner(hwnd as isize) {
+                    return 1;
+                }
+            }
+            _ => {}
+        }
+
         let (enabled, _, _, _) = config();
         if !enabled && msg != WM_MAGNET_SNAP && msg != WM_MAGNET_STYLE_SYNC {
             // 关闭时彻底旁路：不读状态、不改矩形（样式同步仍需放行，

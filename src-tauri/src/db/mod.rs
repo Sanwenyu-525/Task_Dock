@@ -778,6 +778,104 @@ ALTER TABLE planning_features ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAU
 ALTER TABLE recurrence_rules ADD COLUMN by_setpos INTEGER;
 "#,
     ),
+    (
+        21,
+        r#"
+-- v21：通用 Agent 覆盖扩展。
+-- 新增来源只登记「已核实形态」：Claude Code / Cursor / Gemini CLI 使用官方 Hooks；
+-- 其余产品当前只有安装/运行发现，kind='discovery'，不写配置、不共用其他产品事件表。
+-- 使用 INSERT OR IGNORE：不覆盖用户已启用/已验证/已配置的来源状态。
+INSERT OR IGNORE INTO agent_sources
+  (id, display_name, kind, enabled, verified, homepage, note, config, adapter, created_at, updated_at)
+VALUES
+  ('claude-code', 'Claude Code', 'transport', 1, 0, 'https://code.claude.com/docs/en/hooks', 'Claude Code CLI：~/.claude/settings.json 官方 Hooks', '{}', 'claude-code', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('cursor', 'Cursor', 'transport', 1, 0, 'https://cursor.com/docs/hooks', 'Cursor：用户级 ~/.cursor/hooks.json 官方 Hooks', '{}', 'cursor', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('gemini-cli', 'Gemini CLI', 'transport', 1, 0, 'https://geminicli.com/docs/hooks', 'Gemini CLI：~/.gemini/settings.json 官方 Hooks', '{}', 'gemini-cli', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('windsurf', 'Windsurf / Cascade', 'discovery', 1, 0, 'https://docs.windsurf.com/windsurf/cascade/cascade', '仅安装/运行发现；官方事件接口未核实', '{}', 'windsurf', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('cline', 'Cline', 'discovery', 1, 0, 'https://cline.bot', 'VS Code 扩展安装发现；事件走 bridge 通用通道', '{}', 'cline', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('roo-code', 'Roo Code', 'discovery', 1, 0, 'https://roocode.com', 'VS Code 扩展安装发现；事件走 bridge 通用通道', '{}', 'roo-code', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('copilot', 'GitHub Copilot', 'discovery', 1, 0, 'https://github.com/github/copilot-cli', 'Copilot CLI / IDE 安装与运行发现；事件走 bridge 通用通道', '{}', 'copilot', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('antigravity', 'Google Antigravity', 'discovery', 1, 0, 'https://antigravity.google', '安装/运行发现；官方事件接口未核实', '{}', 'antigravity', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('kiro', 'Kiro', 'discovery', 1, 0, 'https://kiro.dev', '安装/运行发现；事件走 bridge 通用通道', '{}', 'kiro', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('continue', 'Continue', 'discovery', 1, 0, 'https://docs.continue.dev', 'VS Code 扩展安装发现；事件走 bridge 通用通道', '{}', 'continue', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('aider', 'Aider', 'discovery', 1, 0, 'https://aider.chat/docs/', 'CLI 安装/运行发现；事件走 bridge 通用通道', '{}', 'aider', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('augment', 'Augment', 'discovery', 1, 0, 'https://www.augmentcode.com', '扩展/CLI 安装发现；事件走 bridge 通用通道', '{}', 'augment', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('openhands', 'OpenHands', 'discovery', 1, 0, 'https://docs.all-hands.dev', '安装/运行发现；事件走 bridge 通用通道', '{}', 'openhands', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('openclaw', 'OpenClaw', 'discovery', 1, 0, '', '安装/运行发现；官方事件接口未核实', '{}', 'openclaw', strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+"#,
+    ),
+    (
+        22,
+        r#"
+-- v22（Task Dock 0.8）：文件暂存架 —— 用户主动收纳的临时资料区。
+-- 与剪贴板的边界：剪贴板被动记录复制历史；暂存架由用户主动添加/整理/清理。
+-- 资产策略：不共享 clipboard_assets（其删除按路径反查、无跨模块引用计数，
+-- 直接共享必须改动剪贴板清理策略，风险不可接受）。暂存架托管副本写入
+-- 独立目录 data_dir/shelf/（files|images|thumbs），两边删除与备份互不影响；
+-- 「从剪贴板添加」复制字节生成独立副本，剪贴板历史清空不影响暂存架。
+
+-- 分组：三个内置分组随迁移种子化；用户自定义分组运行时创建。
+-- 删除分组不删条目（外键 SET NULL 后由命令层归位到默认分组）。
+CREATE TABLE shelf_groups (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  builtin INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+INSERT INTO shelf_groups (id, name, builtin, sort_order, created_at) VALUES
+  ('shelf-default', '默认暂存', 1, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('shelf-work', '工作资料', 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  ('shelf-images', '图片截图', 1, 2, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+-- 条目主表。
+-- kind：内容类型（image 一定可出缩略图；folder 只支持引用模式；link/text 无文件）。
+-- storage_mode：reference=只存原始路径引用（不复制、删除记录不删原文件）；
+--               managed=托管副本（Task Dock 拥有，位于 shelf 目录内）；
+--               link=网页链接（无文件语义）。
+-- original_path：引用模式的原文件路径（已规范化）；托管模式记录来源路径（可空）。
+-- managed_path：托管文件相对 shelf 根目录的路径（仅 files|images|thumbs 前缀，
+--               文件名由后端生成 uuid，绝不接受前端传入的路径成分）。
+-- content：link=URL（≤2048）；text=正文片段（≤512KB）；其余 NULL。
+-- exists_state：最近一次存在性检查结果（ok/missing/unknown），列表不实时探测。
+-- scene_id：为场景工作区预留的软关联（无外键），接口稳定前恒为 NULL。
+CREATE TABLE shelf_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('file','folder','image','link','text')),
+  display_name TEXT NOT NULL,
+  source_kind TEXT NOT NULL DEFAULT 'manual' CHECK (source_kind IN ('manual','picker','drag','clipboard','url')),
+  storage_mode TEXT NOT NULL CHECK (storage_mode IN ('reference','managed','link')),
+  original_path TEXT,
+  managed_path TEXT,
+  content TEXT,
+  byte_size INTEGER NOT NULL DEFAULT 0,
+  file_ext TEXT,
+  favorite INTEGER NOT NULL DEFAULT 0,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  exists_state TEXT NOT NULL DEFAULT 'ok' CHECK (exists_state IN ('ok','missing','unknown')),
+  group_id TEXT REFERENCES shelf_groups(id) ON DELETE SET NULL,
+  scene_id TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  expire_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_shelf_items_created ON shelf_items(created_at DESC);
+CREATE INDEX idx_shelf_items_group ON shelf_items(group_id);
+CREATE INDEX idx_shelf_items_kind ON shelf_items(kind);
+CREATE INDEX idx_shelf_items_expire ON shelf_items(expire_at) WHERE expire_at IS NOT NULL;
+
+-- 任务关联：复用 tasks 主键；任务删除只级联删关联行，暂存条目保留。
+-- 主键 (task_id, item_id) 天然防重复关联。
+CREATE TABLE shelf_task_links (
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL REFERENCES shelf_items(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, item_id)
+);
+CREATE INDEX idx_shelf_task_links_item ON shelf_task_links(item_id);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1355,10 +1453,14 @@ pub struct Settings {
     /// 窗口材质：solid（不透明）| glass（毛玻璃，不支持时自动回退 solid）
     #[serde(default = "default_material")]
     pub material: String,
-    /// 视觉预设（v0.6）：dream-gradient | liquid-glass。
+    /// 视觉预设（v0.6/v0.9）：dream-gradient | liquid-glass | frosted | clear。
     /// 与 theme（明暗）/ material（材质）正交；未知值由前端回退到默认预设。
     #[serde(default = "default_visual_preset")]
     pub visual_preset: String,
+    /// 清透玻璃前景配色（v0.9）：auto | dark | light。
+    /// 只影响文字/图标色板，不改变玻璃材质；auto 表示跟随 theme。
+    #[serde(default = "default_clear_foreground")]
+    pub clear_foreground: String,
     #[serde(default = "default_true")]
     pub snap_enabled: bool,
     #[serde(default)]
@@ -1502,6 +1604,16 @@ pub struct Settings {
     /// 全局快速捕获上次选择的类型（task/idea/text/todo/link）
     #[serde(default = "default_capture_last_type")]
     pub quick_capture_last_type: String,
+    // ── 文件暂存架（v0.8；全部带默认值，旧库无键也能反序列化）──
+    /// 过期自动清理开关（默认关闭：只有用户主动启用才生效）
+    #[serde(default)]
+    pub shelf_auto_cleanup_enabled: bool,
+    /// 无显式过期时间的条目按 created_at + 此天数参与自动清理
+    #[serde(default = "default_shelf_retention")]
+    pub shelf_retention_days: u32,
+    /// 托管副本总配额（MB）；引用模式不计入配额
+    #[serde(default = "default_shelf_max_storage")]
+    pub shelf_max_storage_mb: u32,
 }
 
 fn default_theme() -> String {
@@ -1515,6 +1627,9 @@ fn default_material() -> String {
 }
 fn default_visual_preset() -> String {
     "dream-gradient".into()
+}
+fn default_clear_foreground() -> String {
+    "auto".into()
 }
 fn default_true() -> bool {
     true
@@ -1591,6 +1706,12 @@ fn default_clip_paste_files_interval() -> u32 {
 }
 fn default_capture_last_type() -> String {
     "task".into()
+}
+fn default_shelf_retention() -> u32 {
+    30
+}
+fn default_shelf_max_storage() -> u32 {
+    2048
 }
 
 impl Default for Settings {
@@ -2921,6 +3042,10 @@ mod tests {
                      DROP TABLE planning_projects;
                      -- v20（重复规则 by_setpos）同样属于降级后不存在的列
                      ALTER TABLE recurrence_rules DROP COLUMN by_setpos;
+                     -- v22（文件暂存架）同样属于降级后不存在的表
+                     DROP TABLE IF EXISTS shelf_task_links;
+                     DROP TABLE IF EXISTS shelf_items;
+                     DROP TABLE IF EXISTS shelf_groups;
                      PRAGMA user_version = 4;",
                 )?;
                 Ok::<_, AppError>(())

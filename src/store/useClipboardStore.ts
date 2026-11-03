@@ -9,13 +9,68 @@
 //! - 离场中的条目（`exiting`）由本 store 钉在原位，任何一次刷新都不能把它提前卸载。
 
 import { create } from "zustand";
-import { clipboardView, onClipboardChanged, type ClipboardGroup, type ClipboardItem, type ClipboardView } from "../lib/bridge";
+import {
+  clipboardStatus,
+  clipboardView,
+  onClipboardChanged,
+  type ClipboardGroup,
+  type ClipboardItem,
+  type ClipboardStatus,
+  type ClipboardView,
+} from "../lib/bridge";
 import { EXIT_MS, prefersReducedMotion } from "../lib/motion";
 import { createSubscriptionScope } from "../lib/subscriptions";
 
 const PAGE_SIZE = 80;
 /** 后端 `clipboard_view` 的 limit 上限；静默刷新按这个块大小补齐已加载条目。 */
 const MAX_PAGE_SIZE = 200;
+
+/**
+ * 轻量视图的数据状态（与监听运行状态分开）：
+ * - loading：查询中（首次为「读取中」，已有数据时静默保留旧列表）；
+ * - ready：成功且确有记录；empty：成功但确实一条都没有；
+ * - error：本次查询失败——已成功过的旧数据原样保留（绝不置空伪装成
+ *   「暂无记录」），由面板区分「旧数据 + 错误条」与「错误空态」，均可重试。
+ */
+export type ClipboardLiteStatus = "loading" | "ready" | "empty" | "error";
+
+/**
+ * 剪贴板监听运行状态（从 `clipboardStatus()` 派生，与列表错误互不混淆）。
+ * 派生优先级见 `clipboardMonitorState`：根因态（配置异常/关闭/暂停）先于运行态，
+ * 调用失败是 unknown，初始未确定是 checking——绝不默认显示「监听中」。
+ */
+export type ClipboardMonitorState =
+  | "checking"
+  | "ok"
+  | "paused"
+  | "disabled"
+  | "configError"
+  | "notRunning"
+  | "unknown";
+
+/**
+ * 从 `clipboardStatus()` 派生监听状态。
+ *
+ * 优先级（后端语义：configError 时采集 fail-closed，monitoring 不可信；
+ * 关闭/暂停是用户意图，优先于线程实际是否在跑）：
+ * 1. 调用失败 / 无数据 → unknown（状态未知）；
+ * 2. configError → 配置异常；
+ * 3. enabled=false → 模块关闭；
+ * 4. paused=true → 用户暂停；
+ * 5. monitoring=true → 监听正常；
+ * 6. 其余（enabled 且未暂停但线程没在跑）→ 监听线程未运行。
+ */
+export function clipboardMonitorState(
+  status: ClipboardStatus | null | undefined,
+  failed: boolean,
+): ClipboardMonitorState {
+  if (failed || !status) return "unknown";
+  if (status.configError) return "configError";
+  if (!status.enabled) return "disabled";
+  if (status.paused) return "paused";
+  if (status.monitoring) return "ok";
+  return "notRunning";
+}
 
 export interface ClipboardFilters {
   kind: string;
@@ -43,6 +98,8 @@ let filterGen = 0;
 let reqSeq = 0;
 /** 轻量视图（胶囊面板）的在途请求代际，与完整页的 reqSeq 互不干扰 */
 let liteSeq = 0;
+/** 监听状态查询代际：releaseLite 后回来的旧响应不得覆盖新会话 */
+let monitorSeq = 0;
 /**
  * 离场收尾定时器（id → timer），归 **store** 所有而非组件。
  *
@@ -166,8 +223,15 @@ export const useClipboardStore = create<{
    */
   lite: { items: ClipboardItem[]; groups: ClipboardGroup[] } | null;
   liteLoading: boolean;
-  /** 读一次轻量视图（胶囊面板挂载时调用） */
+  /** 轻量视图的数据状态：失败时保留旧 lite，由面板叠加错误提示 */
+  liteStatus: ClipboardLiteStatus;
+  liteError: string | null;
+  /** 监听运行状态（clipboardStatus 派生；与列表错误分开显示） */
+  monitor: ClipboardMonitorState;
+  /** 读一次轻量视图（胶囊面板挂载时调用；失败不清除已成功数据） */
   loadLite: () => Promise<void>;
+  /** 读一次监听状态（面板打开与手动重试时调用，不轮询） */
+  loadMonitor: () => Promise<void>;
   /** 面板卸载：作废在途请求并释放轻量视图 */
   releaseLite: () => void;
   setLive: (active: boolean) => void;
@@ -377,21 +441,50 @@ export const useClipboardStore = create<{
 
   lite: null,
   liteLoading: false,
+  liteStatus: "loading",
+  liteError: null,
+  monitor: "checking",
   loadLite: async () => {
     const seq = ++liteSeq;
-    set({ liteLoading: true });
+    set({ liteLoading: true, liteStatus: "loading" });
     try {
       const view = await clipboardView({ limit: 20 });
       if (seq !== liteSeq) return; // 已有更新的请求，丢弃这次响应
-      set({ lite: { items: view.items, groups: view.groups }, liteLoading: false });
-    } catch {
+      const hasData = view.items.length > 0 || view.groups.length > 0;
+      set({
+        lite: { items: view.items, groups: view.groups },
+        liteLoading: false,
+        liteStatus: hasData ? "ready" : "empty",
+        liteError: null,
+      });
+    } catch (e) {
       if (seq !== liteSeq) return;
-      set({ lite: { items: [], groups: [] }, liteLoading: false });
+      // 失败不清除已成功的数据：lite 原样保留（面板显示旧数据 + 错误条）；
+      // 从未成功过（lite === null）时面板显示错误空态。两条路都可重试。
+      set({ liteLoading: false, liteStatus: "error", liteError: String(e) });
+    }
+  },
+  loadMonitor: async () => {
+    const seq = ++monitorSeq;
+    try {
+      const status = await clipboardStatus();
+      if (seq !== monitorSeq) return;
+      useClipboardStore.setState({ monitor: clipboardMonitorState(status, false) });
+    } catch {
+      if (seq !== monitorSeq) return;
+      useClipboardStore.setState({ monitor: "unknown" });
     }
   },
   releaseLite: () => {
     liteSeq += 1; // 卸载后回来的响应一律作废
-    set({ lite: null, liteLoading: false });
+    monitorSeq += 1;
+    set({
+      lite: null,
+      liteLoading: false,
+      liteStatus: "loading",
+      liteError: null,
+      monitor: "checking", // 下次打开重新确认，绝不带着旧结论伪装新鲜
+    });
   },
 
   setLive: (active) => {

@@ -22,7 +22,11 @@ const clipboardView = vi.fn();
 const clipboardGroup = vi.fn();
 const clipboardCopyItem = vi.fn();
 const clipboardCopyGroupRich = vi.fn();
+const clipboardStatus = vi.fn();
+const quickCaptureList = vi.fn();
+const quickCaptureState = vi.fn();
 const openAgentSession = vi.fn();
+const navListTargets = vi.fn();
 const navNavigate = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
@@ -38,6 +42,12 @@ vi.mock("../../lib/bridge", () => ({
   clipboardGroup: (...a: unknown[]) => clipboardGroup(...a),
   clipboardCopyItem: (...a: unknown[]) => clipboardCopyItem(...a),
   clipboardCopyGroupRich: (...a: unknown[]) => clipboardCopyGroupRich(...a),
+  clipboardStatus: (...a: unknown[]) => clipboardStatus(...a),
+  quickCaptureList: (...a: unknown[]) => quickCaptureList(...a),
+  quickCaptureState: (...a: unknown[]) => quickCaptureState(...a),
+  quickCaptureMarkHandled: vi.fn(),
+  quickCaptureDelete: vi.fn(),
+  quickCaptureConvertToTask: vi.fn(),
   clipboardThumb: async () => null,
   clipboardImage: async () => null,
   openAgentSession: (...a: unknown[]) => openAgentSession(...a),
@@ -46,6 +56,7 @@ vi.mock("../../lib/bridge", () => ({
 
 vi.mock("../../lib/navigation", () => ({
   navNavigate: (...a: unknown[]) => navNavigate(...a),
+  navListTargets: (...a: unknown[]) => navListTargets(...a),
   avatarHue: () => 250,
 }));
 
@@ -55,6 +66,8 @@ import ClipboardLite from "./ClipboardLite";
 import AppsLite from "./AppsLite";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { useClipboardStore } from "../../store/useClipboardStore";
+import { useCaptureStore } from "../../store/useCaptureStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import type { AgentSnapshot, Task } from "../../lib/bridge";
 
@@ -90,7 +103,11 @@ beforeEach(() => {
   clipboardGroup.mockReset();
   clipboardCopyItem.mockReset();
   clipboardCopyGroupRich.mockReset();
+  clipboardStatus.mockReset();
+  quickCaptureList.mockReset();
+  quickCaptureState.mockReset();
   openAgentSession.mockReset();
+  navListTargets.mockReset();
   navNavigate.mockReset();
   taskStats.mockResolvedValue({
     pending: 0,
@@ -99,8 +116,37 @@ beforeEach(() => {
     completed_today: 0,
     next_due_at: null,
   });
-  useTasksStore.setState({ stats: null, lite: null, liteLoading: false });
+  clipboardStatus.mockResolvedValue({
+    enabled: true,
+    paused: false,
+    monitoring: true,
+    activeJob: null,
+    platform: "windows",
+    configError: null,
+    configOrigin: null,
+    captureAllowed: true,
+  });
+  useTasksStore.setState({ stats: null, lite: null, liteLoading: false, liteError: null });
   useAgentsStore.setState({ snapshot: null });
+  useClipboardStore.setState({
+    lite: null,
+    liteLoading: false,
+    liteStatus: "loading",
+    liteError: null,
+    monitor: "checking",
+  });
+  useCaptureStore.setState({
+    items: [],
+    filter: "inbox",
+    loading: false,
+    error: null,
+    inboxCount: 0,
+    inboxCountLoaded: false,
+    lite: null,
+    liteLoading: false,
+    liteError: null,
+  });
+  useNavigationStore.setState({ targets: [], targetsLoaded: false, targetsError: null });
 });
 
 afterEach(() => {
@@ -154,8 +200,9 @@ describe("任务面板", () => {
     render(<TasksLite />);
     await screen.findByText("整理产品周报");
 
-    // 一次取回 pending + completed：status=all，而不是两次快照拼接
-    expect(listTasks).toHaveBeenCalledWith({ view: "all", status: "all", sort: "due" });
+    // 一次取回 pending + completed：status=all，而不是两次快照拼接；
+    // limit:12 与面板实际展示量一致（轻量列表 payload 压缩）
+    expect(listTasks).toHaveBeenCalledWith({ view: "all", status: "all", sort: "due", limit: 12 });
 
     const tabs = screen.getAllByRole("tab").map((el) => el.textContent);
     expect(tabs).toEqual(["全部", "待办", "今日", "日程", "已完成"]);
@@ -238,13 +285,17 @@ describe("Agent 面板", () => {
 
   it("状态标签带文字，会话数/运行数来自快照", async () => {
     useAgentsStore.setState({ snapshot });
-    render(<AgentsLite />);
+    const { container } = render(<AgentsLite />);
     await screen.findByText("重构登录");
     // 等待确认不是「只有颜色」：必须有可读文字
     expect(screen.getByText("等待处理")).toBeTruthy();
     expect(screen.getByText(/会话\s*2/)).toBeTruthy();
     expect(screen.getByText(/待确认 1 项/)).toBeTruthy();
-    expect(screen.getByText(/监控中/)).toBeTruthy();
+    // 摘要行按真实状态分列（不把实例/会话总数算成「运行中」）
+    const summary = container.querySelector(".cap-summary")?.textContent ?? "";
+    expect(summary).toContain("运行中");
+    expect(summary).toContain("等待");
+    expect(summary).toContain("失败");
   });
 
   it("打开会话调用真实命令；失败时如实提示", async () => {
@@ -389,5 +440,73 @@ describe("应用面板", () => {
     await screen.findByText("Obsidian");
     act(() => screen.getByRole("button", { name: "启动 Obsidian" }).click());
     await screen.findByText("Obsidian：找不到可执行文件");
+  });
+
+  it("读取失败且从未成功 → 错误空态 + 重试，不伪装成「尚未配置快捷应用」", async () => {
+    useNavigationStore.setState({ targets: [], targetsLoaded: false, targetsError: "ipc broken" });
+    navListTargets.mockRejectedValueOnce(new Error("ipc broken"));
+    render(<AppsLite />);
+    await screen.findByText("快捷应用读取失败");
+    expect(screen.queryByText("尚未配置快捷应用")).toBeNull();
+    // 重试成功后回到正常列表（空清单 → 真正的「尚未配置」空态）
+    navListTargets.mockResolvedValueOnce([target("a", "Obsidian")]);
+    act(() => screen.getByRole("button", { name: "重试" }).click());
+    await screen.findByText("Obsidian");
+    expect(screen.queryByText("快捷应用读取失败")).toBeNull();
+  });
+
+  it("读取失败但有旧清单 → 旧清单保留 + 错误提示条（可重试）", async () => {
+    useNavigationStore.setState({
+      targets: [target("a", "Obsidian")],
+      targetsLoaded: true,
+      targetsError: "refresh failed",
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    await screen.findByText("刷新失败，显示的是上次结果");
+    expect(screen.queryByText("尚未配置快捷应用")).toBeNull();
+  });
+});
+
+describe("错误状态（读取失败绝不伪装成空态）", () => {
+  it("任务列表读取失败且无旧数据 → 错误空态 + 重试（不是「暂无待办」）", async () => {
+    listTasks.mockRejectedValue(new Error("db locked"));
+    render(<TasksLite />);
+    await screen.findByText("任务列表读取失败");
+    expect(screen.queryByText("暂无待办")).toBeNull();
+
+    listTasks.mockResolvedValueOnce([task("t1", "重试后拿到的任务", null)]);
+    act(() => screen.getByRole("button", { name: "重试" }).click());
+    await screen.findByText("重试后拿到的任务");
+  });
+
+  it("任务列表读取失败但有旧数据 → 旧列表保留 + 错误条", async () => {
+    listTasks.mockResolvedValueOnce([task("t1", "先拿到的任务", null)]);
+    render(<TasksLite />);
+    await screen.findByText("先拿到的任务");
+    // 模拟一次失败的实时刷新（store.refresh 顺带刷 lite）
+    listTasks.mockRejectedValueOnce(new Error("boom"));
+    await act(async () => {
+      await useTasksStore.getState().loadLite();
+    });
+    await screen.findByText("刷新失败，显示的是上次结果");
+    expect(screen.getByText("先拿到的任务")).toBeTruthy();
+    // 错误条上的重试可再次拉取
+    listTasks.mockResolvedValueOnce([task("t1", "重试拿到的任务", null)]);
+    act(() => screen.getByRole("button", { name: "重试读取任务列表" }).click());
+    await screen.findByText("重试拿到的任务");
+  });
+
+  it("零任务不渲染完成进度条（无意义的 0% 不出现）", async () => {
+    listTasks.mockResolvedValue([]);
+    const { container } = render(<TasksLite />);
+    await screen.findByText("暂无待办");
+    expect(container.querySelector(".cap-progress")).toBeNull();
+    // 有任务时进度条存在
+    cleanup();
+    listTasks.mockResolvedValue([task("t1", "有任务", null)]);
+    const second = render(<TasksLite />);
+    await screen.findByText("有任务");
+    expect(second.container.querySelector(".cap-progress")).toBeTruthy();
   });
 });

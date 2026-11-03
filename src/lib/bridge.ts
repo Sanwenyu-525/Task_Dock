@@ -93,6 +93,11 @@ export interface TaskFilter {
   priority?: number;
   search?: string;
   sort?: string;
+  /**
+   * 返回条数上限（后端 clamp 1..=200，缺省 = 原行为不变）。
+   * 胶囊轻量列表用它把 payload 压到面板实际展示的量；完整页不传。
+   */
+  limit?: number;
 }
 
 export interface ParsedInput {
@@ -179,8 +184,14 @@ export interface DiscoveredAgent {
   enabled: boolean;
   configured: boolean;
   verified: boolean;
+  /** 传输通道自测通过（不代表第三方 Agent 真实接入） */
+  transport_verified: boolean;
+  /** 是否收到过真实（非自测）事件 */
+  real_event_seen: boolean;
   last_event_at: string | null;
   health_state: string;
+  /** disabled | recent-event | channel-verified | unknown */
+  connection_state: string;
 }
 
 export interface NotificationRow {
@@ -215,10 +226,13 @@ export interface Settings {
   /** 窗口材质：solid 不透明 | glass 毛玻璃（系统不支持时自动回退 solid） */
   material: "solid" | "glass";
   /**
-   * 视觉预设（v0.6）：dream-gradient 梦幻渐变 | liquid-glass 液态玻璃。
+   * 视觉预设（v0.6/v0.9）：dream-gradient 梦幻渐变 | liquid-glass 液态玻璃
+   * | frosted 柔光玻璃 | clear 清透玻璃。
    * 与 theme / material 正交；旧库缺失该键时后端返回默认值，前端对未知值也做回退。
    */
-  visual_preset: "dream-gradient" | "liquid-glass";
+  visual_preset: "dream-gradient" | "liquid-glass" | "frosted" | "clear";
+  /** 清透模式前景配色：auto 跟随明暗主题 | dark 深色文字 | light 浅色文字。 */
+  clear_foreground: "auto" | "dark" | "light";
   snap_enabled: boolean;
   autostart: boolean;
   hotkey_enabled: boolean;
@@ -283,6 +297,10 @@ export interface Settings {
    * 旧库缺省该键时后端补默认 "task"；前端再做一次归一兜底。
    */
   quick_capture_last_type?: string;
+  // 文件暂存架（v0.8）：自动过期清理默认关闭；旧库缺省走后端默认值
+  shelf_auto_cleanup_enabled?: boolean;
+  shelf_retention_days?: number;
+  shelf_max_storage_mb?: number;
 }
 
 /** 全局任务统计（跨所有筛选视图）。 */
@@ -297,7 +315,11 @@ export interface TaskStats {
 /** apply_window_material 的返回。 */
 export interface MaterialResult {
   material: string;
+  /** 玻璃渲染已生效（CSS 或原生都算） */
   applied: boolean;
+  /** 原生模糊真正生效（仅 mica/acrylic/blur）；旧后端可能缺省 */
+  native?: boolean;
+  /** 实际命中的效果名：mica / acrylic / blur / css / none */
   effect: string;
   os_version: string;
 }
@@ -494,6 +516,8 @@ export interface ClipboardMonitorStats {
   empty_events: number;
   cleared_stale_events: number;
   cleared_stale_contents: number;
+  /** WM_CLIPBOARDUPDATE 到达但监听未就绪（启动/看门狗重启盲区）——诊断计数 */
+  unobserved_events: number;
   dropped_events: number;
   dropped_contents: number;
   failed: number;
@@ -802,8 +826,12 @@ export const applyMode = (mode: string) => invoke<void>("apply_mode", { mode });
 
 // ── 液态玻璃右键菜单（v0.6）──
 export const hideContextMenu = () => invoke<void>("hide_context_menu");
-export const applyWindowMaterial = (material: string) =>
-  invoke<MaterialResult>("apply_window_material", { material });
+/**
+ * 下发窗口材质。`preset` 用于隔离清透玻璃：该预设必须保持「无原生模糊」，
+ * 后端据此强制 CSS 通道，避免 Win10 Acrylic 把窗口后的桌面糊掉。
+ */
+export const applyWindowMaterial = (material: string, preset?: string) =>
+  invoke<MaterialResult>("apply_window_material", { material, preset });
 
 /**
  * 下发窗口圆角半径（逻辑像素）给 Win32 区域裁剪。
@@ -959,10 +987,11 @@ export const clipboardCopyItem = (itemId: string) =>
 export const clipboardCopyText = (text: string) =>
   invoke<void>("clipboard_copy_text", { text });
 /**
- * 图片另存为：把落盘 PNG 写入系统保存对话框返回的路径，返回写入字节数。
+ * 图片另存为：把落盘 PNG 写入用户选择的路径，返回写入字节数。
  *
- * `overwrite` 是覆盖授权：Windows 原生保存对话框（FOS_OVERWRITEPROMPT）已经就
- * 「替换已有文件」征求过用户确认，前端不再二次确认，把该授权显式传给后端做执行边界。
+ * 系统保存对话框只负责选路径（当前 rfd 不设置 `FOS_OVERWRITEPROMPT`），不构成可验证的
+ * 覆盖授权。目标已存在时，前端必须先经应用内确认框取得授权，才把 `overwrite=true`
+ * 显式传给后端；该值只对本次调用有效，后端不会缓存或复用。
  */
 export const clipboardSaveImage = (itemId: string, path: string, overwrite: boolean) =>
   invoke<number>("clipboard_save_image", { itemId, path, overwrite });
@@ -975,7 +1004,12 @@ export const clipboardOpenLocalPath = (path: string) =>
 /** 在资源管理器中定位文件（explorer /select）。 */
 export const clipboardRevealLocalPath = (path: string) =>
   invoke<void>("clipboard_reveal_local_path", { path });
-/** 批量查询文件路径状态：ok / missing / inaccessible。 */
+/**
+ * 批量查询文件路径状态：ok / missing / inaccessible。
+ *
+ * 后端在阻塞线程池中批量执行（最多 200 条）；后台任务异常结束时 Promise 以错误拒绝，
+ * 调用方必须按「未知」处理，不得把所有路径视为存在。
+ */
 export const clipboardPathStatus = (paths: string[]) =>
   invoke<string[]>("clipboard_path_status", { paths });
 export const clipboardCopyGroupRich = (groupId: string) =>
@@ -1772,4 +1806,222 @@ export const PLANNING_PROJECT_STATUS_LABELS: Record<PlanningProjectStatus, strin
   in_progress: "进行中",
   paused: "已暂停",
   completed: "已完成",
+};
+
+// ── 文件暂存架（v0.8）──
+
+/** 条目内容类型：file=普通文件 / folder=文件夹 / image=图片 / link=网页链接 / text=文本片段。 */
+export type ShelfKind = "file" | "folder" | "image" | "link" | "text";
+/** 存储模式：reference=路径引用（不复制）/ managed=托管副本 / link=链接。 */
+export type ShelfStorageMode = "reference" | "managed" | "link";
+/** 来源：picker=文件选择器 / drag=拖入 / clipboard=从剪贴板添加 / url=手动输入链接 / manual=手动文本。 */
+export type ShelfSourceKind = "picker" | "drag" | "clipboard" | "url" | "manual";
+
+export interface ShelfItem {
+  id: string;
+  kind: ShelfKind;
+  display_name: string;
+  source_kind: ShelfSourceKind;
+  storage_mode: ShelfStorageMode;
+  /** 引用模式：原文件路径；托管模式：来源路径（可空） */
+  original_path: string | null;
+  /** 托管文件相对 shelf 目录的路径（files|images/thumbs 前缀） */
+  managed_path: string | null;
+  /** link=URL；text=正文。列表载荷不含（shelf_read_text 单独拉取） */
+  content: string | null;
+  byte_size: number;
+  file_ext: string | null;
+  favorite: boolean;
+  pinned: boolean;
+  /** 最近一次存在性检查：ok / missing / unknown */
+  exists_state: "ok" | "missing" | "unknown";
+  group_id: string | null;
+  /** 场景工作区软关联预留（接口稳定前恒为 null） */
+  scene_id: string | null;
+  note: string;
+  expire_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ShelfGroup {
+  id: string;
+  name: string;
+  builtin: boolean;
+  sort_order: number;
+  item_count: number;
+}
+
+export interface ShelfPage {
+  items: ShelfItem[];
+  total: number;
+}
+
+export interface ShelfStats {
+  total: number;
+  file_count: number;
+  image_count: number;
+  folder_count: number;
+  link_count: number;
+  text_count: number;
+  managed_bytes: number;
+  disk_bytes: number;
+  quota_mb: number;
+}
+
+export interface ShelfFailedEntry {
+  path: string;
+  reason: string;
+}
+
+export interface ShelfAddReport {
+  added: ShelfItem[];
+  failed: ShelfFailedEntry[];
+}
+
+export interface ShelfDeleteReport {
+  deleted: number;
+  skipped: number;
+  freed_bytes: number;
+  failed_files: number;
+}
+
+export interface ShelfCleanupReport {
+  dry_run: boolean;
+  candidates: number;
+  skipped_protected: number;
+  freed_bytes: number;
+  failed_files: number;
+  orphan_files_removed: number;
+}
+
+export interface ShelfTaskLink {
+  task_id: string;
+  item_id: string;
+  task_title: string;
+  created_at: string;
+}
+
+export interface ShelfUpdatePatch {
+  display_name?: string;
+  favorite?: boolean;
+  pinned?: boolean;
+  /** 具体分组 id 或 "none"（未分组）；缺省不修改 */
+  group_id?: string;
+  note?: string;
+  expire_at?: string | null;
+}
+
+export const shelfList = (opts?: {
+  search?: string;
+  kind?: ShelfKind | "all";
+  group_id?: string;
+  favorite_only?: boolean;
+  limit?: number;
+  offset?: number;
+}) =>
+  invoke<ShelfPage>("shelf_list", {
+    search: opts?.search ?? null,
+    kind: opts?.kind ?? "all",
+    groupId: opts?.group_id ?? "all",
+    favoriteOnly: opts?.favorite_only ?? false,
+    limit: opts?.limit ?? 100,
+    offset: opts?.offset ?? 0,
+  });
+
+export const shelfStats = () => invoke<ShelfStats>("shelf_stats");
+
+export const shelfGroups = () => invoke<ShelfGroup[]>("shelf_groups");
+
+export const shelfGroupCreate = (name: string) =>
+  invoke<ShelfGroup>("shelf_group_create", { name });
+
+export const shelfGroupRename = (id: string, name: string) =>
+  invoke<void>("shelf_group_rename", { id, name });
+
+export const shelfGroupDelete = (id: string) => invoke<void>("shelf_group_delete", { id });
+
+/**
+ * 批量添加文件/文件夹（拖入与文件选择器共用）。
+ * reference 不复制原文件；managed 复制到 Task Dock 托管目录（受配额约束）。
+ */
+export const shelfAddPaths = (
+  paths: string[],
+  storageMode: ShelfStorageMode,
+  sourceKind: "picker" | "drag" | "manual",
+  groupId?: string | null,
+) =>
+  invoke<ShelfAddReport>("shelf_add_paths", {
+    paths,
+    storageMode,
+    sourceKind,
+    groupId: groupId ?? null,
+  });
+
+export const shelfAddLink = (url: string, groupId?: string | null) =>
+  invoke<ShelfItem>("shelf_add_link", { url, groupId: groupId ?? null });
+
+export const shelfAddText = (text: string, groupId?: string | null) =>
+  invoke<ShelfItem>("shelf_add_text", { text, groupId: groupId ?? null });
+
+/** 从剪贴板条目添加：生成独立副本，与剪贴板历史生命周期解耦。 */
+export const shelfAddFromClipboard = (
+  itemIds: string[],
+  storageMode: ShelfStorageMode,
+  groupId?: string | null,
+) =>
+  invoke<ShelfAddReport>("shelf_add_from_clipboard", {
+    itemIds,
+    storageMode,
+    groupId: groupId ?? null,
+  });
+
+export const shelfUpdate = (id: string, patch: ShelfUpdatePatch) =>
+  invoke<ShelfItem>("shelf_update", { id, patch });
+
+/** 删除条目：托管副本一并删除；引用模式绝不触碰原文件。收藏/置顶需显式确认。 */
+export const shelfDelete = (ids: string[], includeProtected: boolean) =>
+  invoke<ShelfDeleteReport>("shelf_delete", { ids, includeProtected });
+
+export const shelfClear = (includeProtected: boolean) =>
+  invoke<ShelfDeleteReport>("shelf_clear", { includeProtected });
+
+/** 过期清理：dryRun=true 只返回预览（候选数/释放字节/受保护跳过）。 */
+export const shelfCleanup = (dryRun: boolean, includeProtected: boolean) =>
+  invoke<ShelfCleanupReport>("shelf_cleanup", { dryRun, includeProtected });
+
+export const shelfCheckExists = (ids: string[]) =>
+  invoke<{ id: string; exists_state: string }[]>("shelf_check_exists", { ids });
+
+export const shelfOpenItem = (id: string) => invoke<void>("shelf_open_item", { id });
+
+export const shelfRevealItem = (id: string) => invoke<void>("shelf_reveal_item", { id });
+
+export const shelfReadText = (id: string) =>
+  invoke<{ content: string; truncated: boolean }>("shelf_read_text", { id });
+
+/** full=false 读缩略图；full=true 读原图（≤40MB）。引用失效返回 null。 */
+export const shelfReadImage = (id: string, full: boolean) =>
+  invoke<string | null>("shelf_read_image", { id, full });
+
+/** 复制路径（文本）/ 复制文件（CF_HDROP，资源管理器可直接粘贴）——系统级拖出未实现前的替代。 */
+export const shelfCopyPaths = (ids: string[]) => invoke<number>("shelf_copy_paths", { ids });
+export const shelfCopyFiles = (ids: string[]) => invoke<number>("shelf_copy_files", { ids });
+
+export const shelfTaskLinks = (itemId: string) =>
+  invoke<ShelfTaskLink[]>("shelf_task_links", { itemId });
+
+export const shelfLinkTask = (itemId: string, taskId: string) =>
+  invoke<void>("shelf_link_task", { itemId, taskId });
+
+export const shelfUnlinkTask = (itemId: string, taskId: string) =>
+  invoke<void>("shelf_unlink_task", { itemId, taskId });
+
+/** 暂存架条目类型 → 中文名。 */
+export const SHELF_KIND_LABELS: Record<ShelfKind, string> = {
+  file: "文件",
+  folder: "文件夹",
+  image: "图片",
+  link: "链接",
+  text: "文本",
 };

@@ -533,25 +533,37 @@ fn run_powershell_with_timeout(args: &[&str], timeout: Duration) -> Option<Strin
         .stdin(Stdio::null())
         .spawn()
         .ok()?;
+    // 必须并发消费 stdout：等进程退出后才读管道，大输出会把管道写满并死锁，
+    // 直到超时才被杀死。这里先起读线程，再轮询退出状态。
+    let stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        let mut s = stdout;
+        let _ = s.read_to_string(&mut buf);
+        buf
+    });
     let deadline = Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break Some(status),
             Ok(None) => {
                 if Instant::now() > deadline {
                     let _ = child.kill();
-                    return None;
+                    let _ = child.wait();
+                    break None;
                 }
                 std::thread::sleep(Duration::from_millis(120));
             }
-            Err(_) => return None,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
         }
-    }
-    let mut buf = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_string(&mut buf);
-    }
-    Some(buf)
+    };
+    let buf = reader.join().unwrap_or_default();
+    // 超时或非零退出都视为「本次扫描不可用」，不得把半截/错误输出当结果。
+    status.filter(|s| s.success()).map(|_| buf)
 }
 
 // ── 运行状态判定 ────────────────────────────────────────────

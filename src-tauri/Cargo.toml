@@ -70,6 +70,8 @@ windows-sys = { version = "0.60", features = [
   "Win32_System_LibraryLoader",
   "Win32_Security",
   "Win32_Graphics_Gdi",
+  # Agent Hooks 配置写入：MoveFileExW 原子替换（MOVEFILE_REPLACE_EXISTING | WRITE_THROUGH）
+  "Win32_Storage_FileSystem",
 ] }
 # 注册表读取（卸载信息 / UWP 包注册）
 winreg = "0.55"

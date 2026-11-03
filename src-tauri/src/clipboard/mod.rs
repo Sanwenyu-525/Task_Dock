@@ -54,6 +54,12 @@ pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_IMAGE_EDGE: u32 = 20_000;
 /// 像素总数上限（≈400MB RGBA）。PNG 容器能压缩到几十 KB，
 /// 只按压缩前字节判断会让一张超大纯色图吃掉整块内存。
+///
+/// 注意与 `CONTENT_QUEUE_MAX_BYTES`（128MB）的口径差异：队列预算是**驻留**
+/// 上限，超过时 `queue_weight_for` 会先丢掉解码后的 RGBA 再入队；这里是
+/// **单次解码**上限，覆盖 8K/多屏拼接截图（7680×4320≈33.2M 像素，用例
+/// `png_decode_refuses_dimensions_beyond_the_cap` 明确要求放行）。两者不叠加，
+/// 峰值由本上限约束。
 pub const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 /// 单次复制的文件数上限。
 pub const MAX_FILE_COUNT: usize = 200;
@@ -222,6 +228,9 @@ pub struct ClipboardRuntime {
     /// 历史清空代数：采集事件在产生时记录代数，清空之前的事件/排队内容
     /// 不允许在清空之后回写历史。
     pub capture_epoch: Arc<AtomicU64>,
+    /// 清空历史时刻的剪贴板序列号（0 = 从未清空）。代数在消息派发时盖章，
+    /// 清空前入队的事件会拿到新代数；采集侧用该水位拦住清空前的旧内容。
+    pub clear_seq: Arc<AtomicU32>,
     /// 清空与入库的文件/事务临界区：清空期间禁止入库线程写资产。
     pub capture_gate: Arc<Mutex<()>>,
     pub paste: paste::PasteManager,
@@ -245,6 +254,7 @@ impl ClipboardRuntime {
             app,
             self_write,
             capture_epoch: Arc::new(AtomicU64::new(0)),
+            clear_seq: Arc::new(AtomicU32::new(0)),
             capture_gate: Arc::new(Mutex::new(())),
             paste,
             monitor: Mutex::new(None),
@@ -279,18 +289,29 @@ impl ClipboardRuntime {
 
     /// 实际创建监听实例；不处理旧实例，也不做重复检查。
     fn spawn_monitor(&self) -> bool {
+        // 启动持续到「存进 monitor」为止，期间用户可能关闭模块（stop/set_enabled）；
+        // 存实例前必须在同一把锁下复核世代，否则会留下已关闭却仍在监听的线程。
+        let generation = self.maintenance_gen.load(Ordering::SeqCst);
         let sink = Arc::new(platform::CaptureSink {
             db: self.db.clone(),
             root: self.root.clone(),
             app: self.app.clone(),
             self_write: self.self_write.clone(),
             capture_epoch: self.capture_epoch.clone(),
+            clear_seq: self.clear_seq.clone(),
             capture_gate: self.capture_gate.clone(),
         });
         match platform::ClipboardMonitor::start(sink) {
             Ok(m) => {
+                let mut guard = self.monitor.lock().unwrap_or_else(|e| e.into_inner());
+                if self.maintenance_gen.load(Ordering::SeqCst) != generation {
+                    drop(guard);
+                    m.stop();
+                    tracing::info!("剪贴板监听启动期间模块已关闭，已回收新实例");
+                    return false;
+                }
+                *guard = Some(m);
                 tracing::info!("剪贴板监听已启动");
-                *self.monitor.lock().unwrap_or_else(|e| e.into_inner()) = Some(m);
                 true
             }
             Err(e) => {
@@ -300,10 +321,10 @@ impl ClipboardRuntime {
         }
     }
 
-    /// 看门狗：只在「监听实例还在、但线程已退出」时重启。
-    /// 用户主动关闭时 `monitor` 为 None，这里不会擅自拉起。
+    /// 看门狗：实例还在但线程已退出时重启；实例不存在时重试启动
+    /// （首次启动失败或重启失败后不再永久放弃）。
     fn ensure_monitor(&self, generation: u64) {
-        let dead = {
+        let (dead, had_instance) = {
             let mut guard = self.monitor.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_ref() {
                 Some(m) if m.is_alive() => return,
@@ -313,15 +334,23 @@ impl ClipboardRuntime {
                     if self.maintenance_gen.load(Ordering::SeqCst) != generation {
                         return;
                     }
-                    guard.take()
+                    (guard.take(), true)
                 }
-                None => return,
+                // 没有实例：可能是首次启动就失败，也可能是重启失败；
+                // 维护线程只在模块开启时存在，因此这里可以安全重试。
+                None => {
+                    if self.maintenance_gen.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
+                    (None, false)
+                }
             }
         };
-        let Some(dead) = dead else { return };
-        tracing::warn!("检测到剪贴板监听线程已退出，正在重启");
-        dead.stop();
-        if self.spawn_monitor() {
+        if let Some(dead) = dead {
+            tracing::warn!("检测到剪贴板监听线程已退出，正在重启");
+            dead.stop();
+        }
+        if self.spawn_monitor() && had_instance {
             platform::note_monitor_restart();
         }
     }
@@ -412,16 +441,18 @@ impl ClipboardRuntime {
 
     /// 停止监听（应用退出、模块关闭或测试用）。
     pub fn stop(&self) {
-        if let Some(m) = self
-            .monitor
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
+        // 世代递增必须在 monitor 锁内：否则「取空实例 → 释放锁 → 递增世代」之间，
+        // 正在启动的 spawn_monitor 会复核到旧世代并把新实例存进来，留下已关闭
+        // 却仍在监听的线程。
+        let taken = {
+            let mut guard = self.monitor.lock().unwrap_or_else(|e| e.into_inner());
+            self.maintenance_gen.fetch_add(1, Ordering::SeqCst);
+            guard.take()
+        };
+        if let Some(m) = taken {
             m.stop();
         }
         self.paste.cancel_all();
-        self.maintenance_gen.fetch_add(1, Ordering::SeqCst);
         let (lock, cv) = &*self.maintenance_stop;
         *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
         cv.notify_all();

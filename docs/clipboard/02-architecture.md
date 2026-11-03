@@ -234,8 +234,10 @@ ACCESS_LOCK
 - **后端是最终执行边界**（`clipboard_save_image` → `clipboard::export::save_png_bytes`）：
   先校验路径为绝对路径且扩展名为 `.png`（忽略大小写），再按授权分支写入：
   - `overwrite=false`：`OpenOptions::create_new(true)` 原子排他创建。目标已存在返回
-    `Conflict`“目标文件已存在，未覆盖”，既有文件一个字节都不改动；写入中途失败只删除
-    本次新建的文件，绝不删除既有文件。
+    `Conflict`“目标文件已存在，未覆盖”，既有文件一个字节都不改动；写入中途失败只清理
+    本次新建的那个文件对象——Windows 通过句柄 `SetFileInformationByHandle(FileDispositionInfo)`
+    标记 delete-on-close，删除对象由句柄而非路径标识，句柄释放后路径被其他进程替换也不会
+    误删；句柄级标记失败时保留文件不动，不回退成按路径 `remove_file`。绝不删除既有文件。
   - `overwrite=true`：在同目录创建唯一临时文件 `.{filename}.{uuid}.tmp`，完整写入后
     `flush`+`sync_all` 并校验落盘长度，成功再 `std::fs::rename` 原子替换目标
     （Windows 即 `MoveFileExW(REPLACE_EXISTING)`）。替换失败（目标被占用、只读、无权限）
@@ -250,6 +252,13 @@ ACCESS_LOCK
   保护而非授权依据。不绕过、不模拟系统安全确认。
 - **失败处理**：所有失败（冲突、目录不存在、权限、占用、长度校验失败）均返回可读错误，
   前端只提示、不重试覆盖；用户取消保存对话框不查状态、不写盘、不产生文件。
+- **线程模型（2026-11-03 收尾）**：`clipboard_save_image` 与 `clipboard_path_status` 均为
+  `async` 命令。资源定位/参数校验完成后，读缓存 PNG、写盘、逐路径 `metadata` 全部交给
+  Tauri 的 `spawn_blocking` 线程池：主线程与异步运行时不等待磁盘 I/O，等待期间不持有 DB 锁。
+  路径状态整批只占一个后台任务（不按路径开线程，仍保留 200 条上限）。保存命令带进程级并发
+  闸门（上限 2），超出直接返回可重试的 `Overloaded`，不排队、不形成无界写盘队列；后台任务
+  异常结束（panic/取消）以错误拒绝，不伪装成功。`clipboard_path_status` 成功时返回结构不变
+  （`Vec<String>`），后台异常时 Promise 拒绝，前端按「未知」fail-closed。
 - **原始图片保真**：写入的是采集时落盘的原始 PNG 字节（`store::image_abs_path` 读取），
   不重新编码，像素与透明通道保持不变；返回值为写入字节数，成功后前端按“新建/覆盖”给出反馈。
 

@@ -714,6 +714,7 @@ fn backup_to_dir(
     let path = backup_file_path(dir, kind);
     let archive = crate::agents::retention::archive_dir(data_dir);
     let clipboard = data_dir.join("clipboard");
+    let shelf = data_dir.join("shelf");
     let sources = BackupSources {
         archive_dir: if kind.is_full() {
             Some(archive.as_path())
@@ -721,6 +722,7 @@ fn backup_to_dir(
             None
         },
         clipboard_dir: Some(clipboard.as_path()),
+        shelf_dir: Some(shelf.as_path()),
     };
     let result = crate::commands::backup::write_bundle(db, sources, &path, kind)?;
     Ok((path.to_string_lossy().to_string(), result))
@@ -3103,6 +3105,7 @@ mod tests {
             crate::commands::backup::BackupSources {
                 archive_dir: Some(&archive),
                 clipboard_dir: Some(&data_dir.join("clipboard")),
+                shelf_dir: Some(&data_dir.join("shelf")),
             },
             &bundle,
             BackupKind::Full,

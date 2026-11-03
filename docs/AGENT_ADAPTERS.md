@@ -129,13 +129,38 @@ Codex 支持生命周期 Hooks（`~/.codex/hooks.json`）。Task Dock 内置安�
 > 版本维护完整协议客户端；本机无 Codex 安装可供联调，为避免「未验证即宣称可用」，
 > 第一版采用 Hooks 路线，App Server 列入后续扩展（见 ROADMAP.md）。
 
-## 四、Qoder / WorkBuddy（未验证接口，诚实标注）
+## 四、Qoder / WorkBuddy（历史调研已被实现取代）
 
-- 调研结论：两者均**未找到公开、稳定的官方状态接口或生命周期钩子文档**。
-  按需求「禁止通过猜测伪造状态」，这两个来源在 UI 中标注为「未验证」stub。
-- 可用路径：通过上述任一通用通道上报（`source_id` 分别为 `qoder` / `workbuddy`），
-  例如 Qoder 的终端插件、外部脚本、CI 回调都可以 POST 状态。
-- 待办：向 Qoder / WorkBuddy 官方确认 hooks / 本地 API 支持后，再实现专用 Adapter。
+> **更正（2026-11-03）**：以下「未找到官方接口」的结论已过时。当前代码中
+> `agents/qoder.rs`、`agents/workbuddy.rs`、`agents/trae.rs` 均已按官方 Hooks 文档实现
+> 多配置目录安装（国际版/CN、WorkBuddy 多根），安装前统一快照、失败一致性恢复。
+> 保留原文仅用于记录历史结论；以代码为准。
+
+- 旧结论：两者均**未找到公开、稳定的官方状态接口或生命周期钩子文档**。
+- 旧可用路径：通过通用通道上报（`source_id` 分别为 `qoder` / `workbuddy`）。
+- 现状：官方 Hooks 配置写入 + 真实事件验证；未收到真实事件的来源不得显示为「已接入」。
+
+## 四点五、通用 Agent 覆盖矩阵（2026-11-03）
+
+| 来源 ID | 产品形态 | 接入方式 | 说明 |
+|---|---|---|---|
+| `codex` | Codex CLI / App | 官方 Hooks（`~/.codex/hooks.json`） | 本轮未重跑真机事件，历史联调证据不当作本轮结果 |
+| `opencode` | OpenCode CLI | 官方插件桥接 | 事件走本地 HTTP / 文件投递 |
+| `deepseek-harness` | DSH | 官方插件桥接 | 插件目录可逆卸载 |
+| `qoder` | Qoder IDE / CLI / QoderWork | 官方 Hooks（多配置根） | 未验证形态不共用事件表 |
+| `workbuddy` | WorkBuddy / CodeBuddy | 官方 Hooks（多配置根） | 安装前统一快照 |
+| `trae` | Trae 国际版 / CN | 官方 Hooks（按版本独立配置路径） | 多目录事务化安装 |
+| `zcode` | ZCode | 仅安装/运行发现 | 无可靠官方事件接口，走 bridge |
+| `claude-code` | Claude Code CLI | 官方 Hooks（`~/.claude/settings.json`） | 新增；信任确认由 Claude 自身完成 |
+| `cursor` | Cursor IDE | 官方 Hooks（用户级 `~/.cursor/hooks.json`） | 新增；不改项目级配置 |
+| `gemini-cli` | Gemini CLI | 官方 Hooks（`~/.gemini/settings.json`） | 新增；不覆盖 IDE 插件形态 |
+| `windsurf` | Windsurf / Cascade | 仅安装/运行发现 | 走 bridge |
+| `cline` / `roo-code` / `continue` / `augment` | VS Code 扩展 | 扩展安装发现 | 不写配置 |
+| `copilot` | Copilot CLI / IDE | CLI 运行 + 扩展安装发现 | 不写配置 |
+| `antigravity` / `kiro` / `aider` / `openhands` / `openclaw` | CLI / 桌面 | 安装/运行发现 | 官方事件接口未核实，走 bridge |
+
+**能力判定规则**：只有官方文档明确的事件接口才写配置；二进制中出现事件名只是能力线索，
+不代表官方支持或真实执行成功。所有新增来源均已登记 `agent_sources`，未登记来源的事件会被拒绝。
 
 ## 五、新增一个 Adapter 的步骤
 
