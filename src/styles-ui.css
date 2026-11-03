@@ -26,7 +26,9 @@
   --z-modal-top: 80;
   --z-menu: 900;
   --z-dialog: 940;
-  --z-toast: 980;
+  /* Toast 只作反馈，不能压住菜单/对话框：低于 --z-menu(900) 与 --z-dialog(940)，
+     高于抽屉/模态内容。否则确认框底部按钮会被提示气泡挡住（v0.7 通知整改）。 */
+  --z-toast: 890;
   --focus-ring: 0 0 0 2px var(--surface-base), 0 0 0 3.5px var(--accent);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -38,6 +40,12 @@
   z-index: var(--z-menu);
   width: max-content;
   max-width: calc(100vw - 16px);
+}
+
+/* 提示条外壳必须让指针穿透：气泡只是视觉层，不能挡住相邻控件的 hover/click。
+   `.ui-tooltip` 自身已是 pointer-events:none，但外层 host 仍会拦截。 */
+.ui-popover-host:has(> .ui-tooltip) {
+  pointer-events: none;
 }
 
 .ui-popover {

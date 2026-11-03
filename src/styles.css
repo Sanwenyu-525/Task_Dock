@@ -63,23 +63,26 @@
      方向由 `CapsuleWing` 按停靠边换算成 SVG 渐变坐标，四边共用一套语义。
      透明感靠「稳定实色 + 分层高光」制造，不靠降低 alpha——历史上把 alpha
      调低会让胶囊在深色桌面上直接消失。 */
-  --wing-near: #ccdaf6;
-  --wing-mid: #e0eafd;
-  --wing-far: #f6faff;
-  /* 内侧高光带 / 环境色反射 / 贴边暗部的不透明度 */
-  --wing-spec: 0.55;
+  --wing-near: #bfd0ef;
+  --wing-mid: #d5e4fa;
+  --wing-far: #e9f2ff;
+  /* 内侧高光带 / 环境色反射 / 贴边暗部的不透明度。
+     浅色下压低高光带：far 侧的高光与白桌面几乎同色，过强会让翼片左缘“融进”白底。 */
+  --wing-spec: 0.42;
   --wing-haze: rgba(108, 124, 240, 0.10);
   --wing-shade: 0.10;
   /* 轮廓高光：只在内侧边缘可见，靠屏幕边缘完全淡出（不是一圈 border） */
   --wing-rim-a: 0.03;
-  --wing-rim-b: 0.45;
+  --wing-rim-b: 0.36;
   /* 轨道内部元素 */
-  --wing-divider: color-mix(in srgb, var(--c-night) 12%, transparent);
-  --wing-hover: color-mix(in srgb, var(--c-accent) 9%, transparent);
+  --wing-divider: color-mix(in srgb, var(--c-night) 15%, transparent);
+  /* 悬停面：9% 在浅色翼片上几乎不可见，四个分类会表现为「只有选中/常亮项有反馈」；
+     与深色同取 16%，悬停与选中共用「淡色面 + 顶部内高光」的构造，只差强度。 */
+  --wing-hover: color-mix(in srgb, var(--c-accent) 16%, transparent);
   --wing-active: color-mix(in srgb, var(--c-accent) 13%, transparent);
   --wing-active-inner: color-mix(in srgb, var(--c-paper) 85%, transparent);
   --wing-icon: color-mix(in srgb, var(--text-secondary) 55%, var(--c-night));
-  --wing-collapse: color-mix(in srgb, var(--text-secondary) 72%, transparent);
+  --wing-collapse: color-mix(in srgb, var(--text-secondary) 92%, transparent);
   --wing-badge: color-mix(in srgb, var(--c-accent) 88%, #4f46e5);
   --wing-badge-ring: color-mix(in srgb, var(--capsule-face) 92%, transparent);
   /* Agent 总状态节点：浅色下是**翼片上的玻璃片**（浅底 + 紫罗兰字形），
@@ -95,9 +98,11 @@
   --wing-panel-face:
     radial-gradient(120% 78% at 6% -8%, rgba(255, 255, 255, 0.92), transparent 62%),
     linear-gradient(168deg, rgba(255, 255, 255, 0.66) 0%, rgba(238, 244, 255, 0.34) 46%, rgba(226, 234, 252, 0.22) 100%);
-  --wing-panel-base: #e9f1fd;
+  --wing-panel-base: #e4eefb;
   --wing-panel-border: color-mix(in srgb, #ffffff 60%, transparent);
   --wing-panel-inner: rgba(255, 255, 255, 0.92);
+  /* 面板与白桌面之间的冷色描边：白内高光在白底上不可见，需要一条低对比冷线定位边界 */
+  --wing-panel-edge: rgba(92, 112, 156, 0.16);
   --wing-panel-shadow:
     0 1px 2px rgba(52, 62, 110, 0.05),
     0 12px 28px -18px rgba(52, 62, 110, 0.45);
@@ -173,6 +178,7 @@
     linear-gradient(168deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.028) 46%, rgba(0, 0, 0, 0.10) 100%);
   --wing-panel-border: rgba(255, 255, 255, 0.09);
   --wing-panel-inner: rgba(255, 255, 255, 0.10);
+  --wing-panel-edge: rgba(255, 255, 255, 0.06);
   --wing-panel-shadow:
     0 1px 2px rgba(0, 0, 0, 0.35),
     0 14px 30px -18px rgba(0, 0, 0, 0.85);
@@ -1201,6 +1207,100 @@ code {
   color: var(--text-tertiary);
 }
 
+/* ══ 快速提醒与倒计时（智能日程提醒 2.0）══════════════════════ */
+
+.quick-reminder {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quick-reminder-presets {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.quick-reminder-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.active-reminders {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 8px;
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.active-reminders-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.active-reminder-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reminder-countdown {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 44px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.active-reminder-card.expired .reminder-countdown {
+  color: var(--status-waiting);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.reminder-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.reminder-title {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reminder-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.reminder-snoozed-chip {
+  font-size: 9px;
+  padding: 0 6px;
+}
+
 /* ══ 空状态 ═══════════════════════════════════════════════════ */
 
 .empty-state {
@@ -1732,18 +1832,19 @@ code {
   font-size: 10.5px;
   font-weight: 600;
   color: var(--text-tertiary);
-  padding: 2px 2px 0;
   position: sticky;
   top: -10px;
   margin: -10px -10px 0;
   padding: 8px 12px 4px;
-  background: color-mix(in srgb, var(--surface-base) 82%, transparent);
-  backdrop-filter: blur(8px);
+  /* 吸顶时列表卡片会从标签底下穿过，所以它必须自带不透明底。
+     注意 --surface-base 在两套预设下解析成渐变（<image>），而 color-mix() 只接受 <color>：
+     旧写法 `color-mix(in srgb, var(--surface-base) 82%, transparent)` 整条声明失效，
+     四套预设×明暗下 computed background 均为 none，遮挡全靠 backdrop-filter，
+     等于让每个吸顶行常驻一层 GPU 模糊。
+     --surface-overlay 在浅色预设下仍是 92%–96% 的 alpha（4%–8% 透底），吸顶滚字会透出；
+     这里与 .clip-detail-head 同源改用 --clip-detail-face：四套预设×明暗下均为不透明纯色。 */
+  background: var(--clip-detail-face);
   z-index: var(--z-sticky);
-}
-
-.dock-window.material-solid .history-day-label {
-  background: var(--surface-base);
 }
 
 .history-list {
@@ -1767,7 +1868,10 @@ code {
   padding: 6px 10px;
   border-radius: var(--radius-card);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+  /* --surface-raised 是 <image>（预设下 = --card-face 渐变），不能进 color-mix()：
+     旧写法整条声明静默失效，这个提示条实际一直没有底色。
+     与同类提示条（.clip-link-banner / .clip-item.selected）统一用 --accent-soft。 */
+  background: var(--accent-soft);
   font-size: 11px;
   color: var(--text-secondary);
 }
@@ -2349,6 +2453,30 @@ code {
   opacity: 1;
   outline: 1px solid currentColor;
   outline-offset: 1px;
+}
+
+/* 胶囊停靠期：窗口被 Win32 区域裁成「轨道 +（展开时）面板」，默认的窗口底部居中
+   会被裁掉半截文字。这里把 Toast 收进面板可见区（不扩大窗口、不改区域）：
+   垂直停靠面板 340×440 贴窗口内边，水平停靠面板贴在轨道内侧。
+   收起态可见区域只有 56px 宽的轨道，容不下文案；且收起态没有触发 Toast 的操作
+   入口（复制/删除/保存都在面板内），因此收起时不绘制，展开后仍在队列中的提示会继续显示。 */
+.dock-window.is-capsule .toast-stack {
+  max-width: 316px;
+  bottom: 18px;
+}
+/* 左停靠：面板 x=64…404，中心 234；右停靠：面板 x=0…340，中心 170 */
+.dock-window.is-capsule .capsule-dock.edge-left ~ .toast-stack {
+  left: calc(64px + (100% - 64px) / 2);
+}
+.dock-window.is-capsule .capsule-dock.edge-right ~ .toast-stack {
+  left: calc((100% - 64px) / 2);
+}
+/* 底部停靠：窗口高 504 = 面板 440 + 间隙 8 + 轨道 56，Toast 落在面板底边内 */
+.dock-window.is-capsule .capsule-dock.edge-bottom ~ .toast-stack {
+  bottom: 82px;
+}
+.dock-window.is-capsule .capsule-dock.is-collapsed ~ .toast-stack {
+  display: none;
 }
 
 /* ══ 通用提示 ═════════════════════════════════════════════════ */
@@ -3167,10 +3295,17 @@ code {
 }
 
 /* 完整页水平内边距是 14px（抽屉是 12px）：浮动卡片与提示条在本页与内容对齐 */
-.clipboard-page .clip-selectbar,
-.clipboard-page .clip-link-banner {
+.clipboard-page .clip-selectbar {
   margin-left: 14px;
   margin-right: 14px;
+}
+
+/* 提示条在完整页是独立表面（左右留白、上下都有间隙），所以跟着切圆角，
+   不再是在留白里悬着的一块直角矩形；抽屉里它紧贴标题栏、属于连续容器的一部分，
+   保持通栏不切圆角。 */
+.clipboard-page .clip-link-banner {
+  margin: 2px 14px 4px;
+  border-radius: var(--radius-control);
 }
 
 .clipboard-page .clip-foot {
@@ -3725,6 +3860,22 @@ code {
   flex-shrink: 0;
 }
 
+/* 缩略图直接开灯箱：按钮只是外壳，尺寸/圆角仍由缩略图本身决定，不吃按钮默认内边距 */
+.clip-thumb-open {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.clip-thumb-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .clip-meta {
   display: flex;
   align-items: center;
@@ -3740,6 +3891,120 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 来源展示：应用名为主信息，窗口标题为次级信息。
+   两者都必须能省略，否则长窗口标题会把「大小 / 使用次数」挤出卡片；
+   窗口标题那格可聚焦，提示条同时覆盖悬停与键盘焦点。 */
+.clip-meta-app {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.clip-meta-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+
+.clip-meta-window:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+.clip-meta-window-tag {
+  flex: none;
+  padding: 0 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  font-size: 9px;
+  line-height: 1.35;
+  color: var(--text-tertiary);
+}
+
+/* 详情页的「采集环境」：升格为可解释的区块，但仍然弱于标题与正文 */
+.clip-source-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-base);
+}
+
+.clip-source-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.clip-source-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.clip-source-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.clip-source-key {
+  flex: none;
+  width: 4.5em;
+  color: var(--text-tertiary);
+}
+
+.clip-source-val {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.clip-source-val:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+.clip-source-raw {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.clip-source-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.clip-detail-app {
+  color: var(--text-secondary);
 }
 
 .clip-file-list {
@@ -4020,14 +4285,14 @@ code {
   background: var(--accent-soft);
 }
 
+/* 行内标题编辑框：背景/描边/圆角交给全局 input 规则
+   （--surface-raised + --border-subtle + --radius-control，hover/focus 自行升级到 --border-strong）。
+   原先这里写的是 --surface-base，而它在两套预设下等于 --window-fill——
+   四层窗口径向渐变被压进一个 24px 高的输入框，色块与窗口任意局部都不一致。 */
 .clip-title-input {
   flex: 1 1 auto;
   min-width: 0;
   font-size: 12.5px;
-  color: var(--text-primary);
-  background: var(--surface-base);
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
   padding: 4px 8px;
 }
 
@@ -4639,9 +4904,10 @@ code {
   text-align: left;
 }
 
-/* 截图条目的缩略图主导识别，正文与元信息保持上下两行 */
-.clip-group-item-main .clip-thumb,
-.clip-group-item-main .clip-thumb-placeholder {
+/* 截图条目的缩略图主导识别，正文与元信息保持上下两行。
+   缩略图现在可能是独立按钮（.clip-thumb-open）的直接子节点，选择器按行覆盖两侧。 */
+.clip-group-items .clip-thumb,
+.clip-group-items .clip-thumb-placeholder {
   flex-shrink: 0;
   border-radius: 4px;
 }
@@ -4680,7 +4946,7 @@ code {
   gap: 6px;
   flex-wrap: wrap;
   padding: 6px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--accent-soft);
   font-size: 10.5px;
   color: var(--text-secondary);
@@ -5345,7 +5611,10 @@ code {
 
 .coverage-strip.warn {
   border-color: color-mix(in srgb, var(--status-waiting) 45%, transparent);
-  background: color-mix(in srgb, var(--status-waiting) 7%, var(--surface-raised));
+  /* 同上：color-mix() 里塞 --surface-raised（<image>）会让整条 background 失效，
+     warn 状态直接变成没有底色。只补一层半透明状态色，
+     保留 .coverage-strip 原有 --surface-raised 提供的高光面。 */
+  background-color: color-mix(in srgb, var(--status-waiting) 7%, transparent);
 }
 
 .coverage-head {
@@ -6068,7 +6337,7 @@ code {
 }
 
 /* ══ 分类胶囊（v0.7 方案 B：液态融合翼片）══════════════════════════
-   结构：轨道（56×400，贴屏翼片）+ 间隙 12 + 功能面板（340×440）。
+   结构：轨道（56×400，贴屏翼片）+ 间隙 8 + 功能面板（340×440）。
    窗口在停靠期间不移动、不缩放，展开/收起只切 Win32 区域
    （见 src-tauri/src/window_shape.rs 的 capsule_regions）。
    因此这里的尺寸必须与 lib/capsuleLayout.ts 常量一致：改动要三端同步。
@@ -6170,7 +6439,7 @@ code {
   /* 主轴必须从停靠边开始排：折叠态只有一个子元素，居中会让轨道离开
      区域所在的边缘（Win32 区域按 x=0 裁，轨道跑到窗口中间就看不见了） */
   justify-content: flex-start;
-  gap: 12px;
+  gap: 8px;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -6222,8 +6491,10 @@ code {
 .cap-wing-spec { opacity: 1; transition: opacity 0.18s var(--ease-out, ease-out); }
 .cap-wing-haze { opacity: 1; }
 .cap-wing-shade { opacity: 1; }
-/* 悬停：只提亮高光带（合成层不透明度，不触发重排/重绘滤镜） */
-.capsule-dock:hover .cap-wing-spec { opacity: 0.82; }
+/* 悬停反馈**只挂在四个分类按钮自身**（见 `.cap-edge-tab`）。
+   这里曾经是 `.capsule-dock:hover .cap-wing-spec`：整块轨道（含 Agent 端头球、
+   间隙、面板）只要被指到就一起变亮，端头球因此也"出现了白色梯形"，
+   属于外层容器重复触发，已移除。 */
 
 /* 渐变停靠点：颜色/透明度全部来自语义 Token，四边共用同一组。 */
 .cap-stop-near { stop-color: var(--wing-near); }
@@ -6360,9 +6631,13 @@ code {
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
 }
+/* 悬停与选中共用同一构造（淡色面 + 顶部内高光），只差强度：
+   此前悬停只有 9% 填充、没有任何内高光，浅色翼片上几乎看不见，
+   看起来就像「只有 Agent（常亮球）与当前选中项有激活反馈」。 */
 .cap-btn:hover {
   background: var(--wing-hover);
   color: var(--text-primary);
+  box-shadow: inset 0 1px 0 var(--wing-active-inner);
 }
 .cap-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 /* 选中态：柔和玻璃光斑 + 图标提色，不是一整块圆角底色 */
@@ -6370,6 +6645,40 @@ code {
   background: var(--wing-active);
   color: var(--rail-active-text, var(--accent));
   box-shadow: inset 0 1px 0 var(--wing-active-inner);
+}
+/* 分类项悬停指示块（用户口中的「白色梯形 / 翼片」）：
+   贴屏幕**内侧**的翼片边缘，与按钮同排、高度小于命中区，只由分类按钮自身
+   `:hover`（或选中）触发；Agent 端头球与轨道容器不参与，避免重复触发。
+   位置/圆角按停靠边镜像：内侧永远是朝屏幕内部的一侧。 */
+.cap-edge-tab {
+  position: absolute;
+  width: 6px;
+  height: 26px;
+  border-radius: 0 3px 3px 0;
+  background: var(--wing-active-inner);
+  opacity: 0;
+  transition: opacity 0.14s ease;
+  pointer-events: none;
+}
+.cap-btn:hover .cap-edge-tab,
+.cap-btn.is-active .cap-edge-tab { opacity: 1; }
+.cap-v.edge-right .cap-edge-tab { left: -8px; top: 50%; translate: 0 -50%; }
+.cap-v.edge-left .cap-edge-tab { right: -8px; top: 50%; translate: 0 -50%; border-radius: 3px 0 0 3px; }
+.cap-h.edge-top .cap-edge-tab {
+  bottom: -8px;
+  left: 50%;
+  translate: -50% 0;
+  width: 26px;
+  height: 6px;
+  border-radius: 3px 3px 0 0;
+}
+.cap-h.edge-bottom .cap-edge-tab {
+  top: -8px;
+  left: 50%;
+  translate: -50% 0;
+  width: 26px;
+  height: 6px;
+  border-radius: 0 0 3px 3px;
 }
 .cap-icon { position: relative; display: grid; place-items: center; }
 .cap-dot {
@@ -7363,5 +7672,1997 @@ code {
   }
   .roadmap-section-desc {
     white-space: normal;
+  }
+}
+
+/* ═══ 规划中心（PlanningCenterPanel，v0.7）═══
+   「我的项目」多项目功能规划：项目工具行 / 概览统计 / 里程碑分组卡片 /
+   步骤清单 / 进度历史。全部使用语义 Token（--surface-* / --border-* /
+   --text-* / --status-*），结构与内置路线图共用 roadmap-section 基类；
+   离开动画轻量且尊重 prefers-reduced-motion；320/400 窄窗不溢出。 */
+
+.planning-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 100%;
+}
+
+.planning-source-switch {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.planning-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 100%;
+}
+
+.planning-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.planning-project-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+
+.planning-project-status {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.planning-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.planning-overview {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.planning-stat {
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-stat.ok { color: var(--status-success); }
+.planning-stat.wip { color: var(--status-waiting); }
+.planning-stat.bad { color: var(--status-disconnected); }
+
+.planning-stat.progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.planning-progress-bar {
+  display: inline-block;
+  width: 90px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-base);
+  overflow: hidden;
+}
+
+.planning-progress-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 240ms ease;
+}
+
+.planning-search {
+  flex: 0 1 200px;
+  min-width: 140px;
+}
+
+.planning-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--status-disconnected);
+  border-radius: 10px;
+  font-size: 11.5px;
+  color: var(--status-disconnected);
+  background: var(--surface-raised);
+}
+
+.planning-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.planning-empty-hero,
+.planning-empty-features {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 36px 12px;
+  text-align: center;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 12px;
+}
+
+.planning-empty-hero h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.planning-empty-hero p,
+.planning-empty-features p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.planning-empty-sub {
+  font-size: 11px !important;
+  color: var(--text-tertiary) !important;
+}
+
+/* ── 功能卡片（与 roadmap-card 同构，徽标/进度/里程碑信息更丰富）── */
+
+.planning-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.planning-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.planning-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  overflow: hidden;
+  transition: border-color 120ms ease, opacity 200ms ease, transform 200ms ease;
+}
+
+.planning-card:hover {
+  border-color: var(--border-strong);
+}
+
+.planning-card.is-leaving {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+.planning-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.planning-card-head:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.planning-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.planning-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.planning-card-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.planning-status {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.planning-status.p-completed { color: var(--status-success); }
+.planning-status.p-in_progress { color: var(--status-waiting); }
+.planning-status.p-review { color: var(--status-running); }
+.planning-status.p-planned { color: var(--text-tertiary); }
+.planning-status.p-blocked { color: var(--status-disconnected); }
+.planning-status.p-paused { color: var(--text-tertiary); }
+
+.planning-progress {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.planning-progress.none {
+  color: var(--text-tertiary);
+  border-bottom: 1px dotted var(--border-strong);
+}
+
+.planning-milestone-chip {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-tertiary);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planning-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 12px 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.planning-detail-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-detail-summary strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.planning-detail-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.planning-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.planning-control-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* ── 步骤清单 ── */
+
+.planning-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.planning-steps-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.planning-steps-head h4,
+.planning-history-head h4 {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.planning-steps-empty,
+.planning-history-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.planning-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.planning-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 2px;
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.planning-step:last-child {
+  border-bottom: none;
+}
+
+.planning-step-title {
+  flex: 1 1 auto;
+  font-size: 11.5px;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.planning-step.is-done .planning-step-title {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+
+.planning-step-ops {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.planning-step:hover .planning-step-ops,
+.planning-step:focus-within .planning-step-ops {
+  opacity: 1;
+}
+
+/* 键盘用户与触屏没有 hover：操作按钮保留可见下限 */
+.planning-step-ops .icon-btn {
+  opacity: 0.45;
+}
+
+.planning-step:hover .planning-step-ops .icon-btn,
+.planning-step:focus-within .planning-step-ops .icon-btn {
+  opacity: 1;
+}
+
+.planning-step-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.planning-step-add .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ── 进度历史 ── */
+
+.planning-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.planning-history-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.planning-history-hint {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.planning-history-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--status-disconnected);
+}
+
+.planning-act-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.planning-act {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 11px;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border-subtle);
+}
+
+.planning-act:last-child {
+  border-bottom: none;
+}
+
+.planning-act-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  min-width: 44px;
+}
+
+.planning-act-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.planning-act.k-note .planning-act-body {
+  color: var(--text-primary);
+}
+
+.planning-act-time {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.planning-note-add {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.planning-note-add .input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: vertical;
+}
+
+.planning-detail-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.planning-updated {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+/* ── 里程碑管理对话框 ── */
+
+.milestone-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.milestone-create {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.milestone-create .input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.milestone-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.milestone-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 2px;
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.milestone-row:last-child {
+  border-bottom: none;
+}
+
+.milestone-name {
+  flex: 0 1 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.milestone-date {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.milestone-count {
+  flex: 1 1 auto;
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.milestone-empty {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.milestone-hint {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+/* 项目编辑表单（Dialog 内） */
+.form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.form-label {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+/* 离开动画：轻量位移淡出；reduced-motion 直接跳变（无过渡） */
+@media (prefers-reduced-motion: reduce) {
+  .planning-card,
+  .planning-progress-bar i {
+    transition: none;
+  }
+}
+
+/* 窄窗：320/400px 下工具行换行、操作按钮跟随换行，概览统计不撑破 */
+@media (max-width: 400px) {
+  .planning-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .planning-detail-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .planning-progress-bar {
+    width: 64px;
+  }
+}
+
+/* ═══ 收集箱（CaptureInboxPanel，v0.7）═══
+   快速捕获的落地列表：只使用语义 Token，复用 filter-bar / seg-group / btn /
+   icon-btn / empty-state 等既有基类；正文按 3 行截断，长文本不撑破 400px 窄窗；
+   无循环动画，交互反馈交给既有 Toast。 */
+
+.inbox-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100%;
+}
+
+.inbox-count-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.inbox-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid color-mix(in srgb, var(--c-danger) 35%, transparent);
+  background: color-mix(in srgb, var(--c-danger) 8%, transparent);
+}
+
+.inbox-error-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--c-danger);
+  overflow-wrap: anywhere;
+}
+
+.inbox-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inbox-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.inbox-item.is-done {
+  opacity: 0.68;
+}
+
+.inbox-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.inbox-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--accent-soft);
+  white-space: nowrap;
+}
+
+.inbox-status {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.inbox-status-converted {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.inbox-time {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.inbox-content {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.inbox-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+.inbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 22px;
+}
+
+/* 窄窗：先保证正文与操作按钮不被挤压，类型/状态标签允许换行 */
+@media (max-width: 400px) {
+  .inbox-head {
+    flex-wrap: wrap;
+  }
+}
+
+/* ═══ 规划中心四视图（PlanningWorkspace，v0.7）═══
+   归属：规划中心。新增类名统一加 planning- 前缀，只做增量追加，
+   不覆盖既有规划中心/路线图/收集箱规则。布局使用容器查询
+   （.planning-workspace 为容器）：默认按 320/400 窄窗单列，宽容器才分栏、
+   多列看板与水平时间轴。全部颜色来自语义 Token，深浅主题/两套预设自动适配。 */
+
+.planning-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  container-type: inline-size;
+  container-name: planning;
+}
+
+.planning-view-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.planning-view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  min-width: 0;
+}
+
+.planning-view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.planning-view-tab:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.planning-view-tab.is-active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
+  font-weight: 600;
+}
+
+.planning-view-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.planning-view-project {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 1 220px;
+}
+
+.planning-view-project-label {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.planning-view-project .planning-project-picker {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 项目总览：默认窄窗单列，宽容器左右分栏 */
+.planning-overview-page {
+  gap: 10px;
+}
+
+.planning-overview-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.planning-project-list {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.planning-wide-hidden {
+  display: block;
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+}
+
+.planning-project-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 6px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.planning-project-list-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.planning-project-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius-control) + 1px);
+  background: var(--surface-raised);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.planning-project-item:hover {
+  border-color: var(--border-strong);
+}
+
+.planning-project-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 12%, transparent),
+    transparent 70%
+  ), var(--surface-raised);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.planning-project-item:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.planning-project-item.is-archived {
+  opacity: 0.78;
+}
+
+.planning-project-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.planning-project-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.planning-project-item-progress {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planning-project-state {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: 9px;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+}
+
+.planning-project-state.s-in_progress {
+  color: var(--status-waiting);
+  border-color: color-mix(in srgb, var(--status-waiting) 35%, transparent);
+}
+
+.planning-project-state.s-completed {
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 35%, transparent);
+}
+
+.planning-project-state.s-paused {
+  color: var(--text-tertiary);
+}
+
+.planning-project-archived {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.planning-project-list-sub {
+  padding: 0 4px;
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+
+.planning-project-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 2px;
+  padding: 6px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.planning-project-add:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.planning-project-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.planning-overview-toolbar {
+  margin: 0;
+}
+
+.planning-project-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent) 13%, transparent) 0%,
+      transparent 55%
+    ),
+    var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.planning-project-hero-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.planning-project-hero-title h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.35;
+  font-weight: 680;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.planning-project-desc {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.planning-project-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.planning-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+  min-width: 0;
+}
+
+.planning-stat-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.planning-stat-value {
+  font-size: 20px;
+  line-height: 1.15;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.planning-stat-card.tone-success .planning-stat-value {
+  color: var(--status-success);
+}
+
+.planning-stat-card.tone-running .planning-stat-value {
+  color: var(--status-waiting);
+}
+
+.planning-stat-card.tone-review .planning-stat-value {
+  color: var(--status-running);
+}
+
+.planning-stat-card.tone-danger {
+  border-color: color-mix(in srgb, var(--status-disconnected) 30%, transparent);
+}
+
+.planning-stat-card.tone-danger .planning-stat-value {
+  color: var(--status-disconnected);
+}
+
+.planning-overall {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.planning-overall-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.planning-overall-head strong {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-overall-empty {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.planning-section-empty {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.planning-meter {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-base);
+  overflow: hidden;
+}
+
+.planning-meter.is-large {
+  height: 9px;
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.planning-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-gradient);
+  transition: width 200ms ease;
+}
+
+.planning-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.planning-recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.planning-recent-head h4 {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.planning-recent-list {
+  max-height: 260px;
+}
+
+.planning-recent-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* 功能列表：工具行 / 分组 / 详情补充块 */
+.planning-feature-toolbar {
+  align-items: center;
+}
+
+.planning-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+
+.planning-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: var(--focus-ring);
+}
+
+.planning-search .input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.planning-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.planning-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.planning-add-feature {
+  margin-left: auto;
+}
+
+.planning-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.planning-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.planning-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.planning-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 0 2px;
+}
+
+.planning-group-head h4 {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.planning-group-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-group-date {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-list-summary {
+  padding: 2px 2px 6px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-detail-sections {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.planning-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  min-width: 0;
+}
+
+.planning-detail-block h4 {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.planning-detail-block p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.planning-acceptance-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.planning-detail-foot-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.planning-status-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+
+.planning-status-badge.st-completed { color: var(--status-success); }
+.planning-status-badge.st-in_progress { color: var(--status-waiting); }
+.planning-status-badge.st-review { color: var(--status-running); }
+.planning-status-badge.st-blocked { color: var(--status-disconnected); }
+.planning-status-badge.st-paused { color: var(--text-tertiary); }
+.planning-status-badge.st-planned { color: var(--text-secondary); }
+
+.planning-form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.form-hint {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+/* 功能看板：宽容器四列，中等容器横向滚动，窄窗按状态纵向分组 */
+.planning-kanban-page {
+  gap: 10px;
+}
+
+.planning-kanban-toolbar {
+  align-items: flex-start;
+}
+
+.planning-kanban-extra {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.planning-kanban-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.planning-kanban-alert:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.planning-kanban-alert.is-active {
+  color: var(--status-disconnected);
+  border-color: color-mix(in srgb, var(--status-disconnected) 40%, transparent);
+  background: color-mix(in srgb, var(--status-disconnected) 8%, transparent);
+}
+
+.planning-kanban {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+}
+
+.planning-kanban-column {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-base);
+}
+
+.planning-kanban-column.is-wide {
+  max-width: 520px;
+}
+
+.planning-kanban-column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 2px 4px;
+  border-bottom: 1px dashed var(--border-subtle);
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.planning-kanban-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-kanban-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.planning-kanban-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+  min-width: 0;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.planning-kanban-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--card-shadow-hover);
+}
+
+.planning-kanban-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.planning-kanban-card-head:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.planning-kanban-card-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.planning-kanban-card-flags {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.planning-kanban-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+}
+
+.planning-card-meta-muted {
+  color: var(--text-tertiary);
+}
+
+.planning-kanban-step {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.planning-kanban-step.is-empty {
+  color: var(--text-tertiary);
+  border-bottom: 1px dotted var(--border-strong);
+}
+
+.planning-kanban-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.planning-kanban-card-foot .ui-select-trigger {
+  max-width: 130px;
+}
+
+.planning-kanban-empty {
+  margin: 0;
+  padding: 8px 4px;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.planning-kanban-more {
+  align-self: flex-start;
+}
+
+.chip.pri-p0 {
+  color: var(--status-disconnected);
+  border-color: color-mix(in srgb, var(--status-disconnected) 35%, transparent);
+}
+
+.chip.pri-p1 {
+  color: var(--status-waiting);
+}
+
+/* 里程碑：宽容器水平时间轴，窄窗纵向 */
+.planning-milestones-page {
+  gap: 10px;
+}
+
+.planning-milestones-toolbar {
+  align-items: center;
+}
+
+.planning-milestones-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.planning-milestones-summary > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.planning-muted {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.planning-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 4px 2px 8px;
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.planning-timeline-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 0 220px;
+  padding-top: 30px;
+  min-width: 0;
+}
+
+.planning-timeline-node:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: 34px;
+  right: -14px;
+  height: 1px;
+  background: var(--border-strong);
+}
+
+.planning-timeline-marker {
+  position: absolute;
+  top: 0;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-timeline-node.stage-done .planning-timeline-marker {
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 45%, transparent);
+  background: color-mix(in srgb, var(--status-success) 14%, transparent);
+}
+
+.planning-timeline-node.stage-ongoing .planning-timeline-marker {
+  color: var(--status-waiting);
+  border-color: color-mix(in srgb, var(--status-waiting) 45%, transparent);
+  background: color-mix(in srgb, var(--status-waiting) 14%, transparent);
+}
+
+.planning-timeline-node.stage-overdue .planning-timeline-marker {
+  color: var(--status-disconnected);
+  border-color: color-mix(in srgb, var(--status-disconnected) 45%, transparent);
+  background: color-mix(in srgb, var(--status-disconnected) 14%, transparent);
+}
+
+.planning-timeline-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+  min-width: 0;
+}
+
+.planning-timeline-node.stage-overdue .planning-timeline-card {
+  border-color: color-mix(in srgb, var(--status-disconnected) 28%, transparent);
+}
+
+.planning-timeline-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.planning-timeline-card-head h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.planning-stage-badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+
+.planning-stage-badge.stage-done { color: var(--status-success); }
+.planning-stage-badge.stage-ongoing { color: var(--status-waiting); }
+.planning-stage-badge.stage-overdue { color: var(--status-disconnected); }
+.planning-stage-badge.stage-not_started { color: var(--text-secondary); }
+.planning-stage-badge.stage-empty { color: var(--text-tertiary); }
+
+.planning-timeline-desc {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.planning-timeline-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-timeline-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.planning-timeline-progress-text {
+  font-size: 9.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-timeline-progress-text.is-empty {
+  color: var(--text-tertiary);
+}
+
+.planning-timeline-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.planning-timeline-actions .btn {
+  margin-right: auto;
+}
+
+/* ── 宽容器：分栏 / 四列 / 水平时间轴 ── */
+@container planning (min-width: 640px) {
+  .planning-overview-layout {
+    grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+  }
+
+  .planning-project-list {
+    display: flex;
+    position: sticky;
+    top: 8px;
+    max-height: calc(100vh - 190px);
+    overflow-y: auto;
+  }
+
+  .planning-wide-hidden {
+    display: none;
+  }
+
+  .planning-detail-sections {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 中等宽容器：看板四列保留，但允许横向滚动而不撑破整窗 */
+@container planning (max-width: 860px) {
+  .planning-kanban {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(230px, 1fr);
+    grid-template-columns: none;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+}
+
+/* 窄窗（320/400）：全部单列；看板按状态纵向分组；时间轴纵向 */
+@container planning (max-width: 460px) {
+  .planning-view-bar {
+    align-items: stretch;
+  }
+
+  .planning-view-tabs {
+    width: 100%;
+  }
+
+  .planning-view-tab {
+    flex: 1 1 auto;
+    justify-content: center;
+    padding: 5px 6px;
+    font-size: 10.5px;
+  }
+
+  .planning-view-project {
+    flex: 1 1 100%;
+  }
+
+  .planning-kanban {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    grid-template-columns: minmax(0, 1fr);
+    overflow-x: visible;
+    padding-bottom: 0;
+  }
+
+  .planning-kanban-column.is-wide {
+    max-width: none;
+  }
+
+  .planning-timeline {
+    flex-direction: column;
+    gap: 4px;
+    overflow-x: visible;
+    padding: 2px 0 4px;
+  }
+
+  .planning-timeline-node {
+    flex: none;
+    padding-top: 0;
+    padding-left: 34px;
+  }
+
+  .planning-timeline-node:not(:last-child)::after {
+    top: 34px;
+    bottom: -4px;
+    left: 10px;
+    right: auto;
+    width: 1px;
+    height: auto;
+  }
+
+  .planning-timeline-marker {
+    top: 12px;
+    left: 0;
+  }
+
+  .planning-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .planning-stat-value {
+    font-size: 18px;
+  }
+
+  .planning-add-feature {
+    margin-left: 0;
+  }
+
+  .planning-search {
+    flex: 1 1 100%;
+  }
+
+  .planning-kanban-toolbar,
+  .planning-milestones-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* 动效尊重 reduced-motion：进度条与卡片不做过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .planning-meter-fill,
+  .planning-view-tab,
+  .planning-project-item,
+  .planning-kanban-card {
+    transition: none;
   }
 }
