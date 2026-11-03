@@ -38,14 +38,19 @@ function ToastItem({ toast }: { toast: ToastData }) {
   return (
     <div
       className={`toast kind-${toast.kind}`}
-      role="status"
+      // 错误用 alert（立即播报），其余用 status；Toast 不是导航目标，不抢焦点
+      role={toast.kind === "error" ? "alert" : "status"}
+      aria-atomic="true"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
       onFocus={() => setPaused(true)}
       onBlur={() => setPaused(false)}
     >
       <Icon size={13} className="toast-icon" aria-hidden="true" />
-      <span className="toast-message">{toast.message}</span>
+      {/* 单行省略避免撑破布局；错误文案可能很长，hover 时用 data-tip 给出完整内容以便诊断 */}
+      <span className="toast-message" data-tip={toast.kind === "error" ? toast.message : undefined}>
+        {toast.message}
+      </span>
       {toast.action && (
         <button
           type="button"
