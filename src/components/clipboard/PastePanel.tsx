@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Play, RefreshCw, StopCircle, TriangleAlert } from "lucide-react";
 import {
+  clipboardGroup,
   clipboardPasteActive,
   clipboardPasteCancel,
   clipboardPasteGroup,
@@ -34,6 +35,8 @@ interface JobState {
   itemState?: string;
   confirmed?: number;
   unverified?: number;
+  /** 会话内累计的逐项状态（itemId → 状态）；后端不持久化，恢复任务后重新累计 */
+  itemStates: Record<string, string>;
 }
 
 function fromJob(j: PasteJob): JobState {
@@ -47,6 +50,7 @@ function fromJob(j: PasteJob): JobState {
     message: j.message,
     restored: j.restored,
     targetTitle: j.target_title,
+    itemStates: {},
   };
 }
 
@@ -65,6 +69,19 @@ const ITEM_STATE_LABELS: Record<string, string> = {
   settling: "等待目标处理",
   confirmed: "已确认接收",
   unverified: "未确认（无接收信号）",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+/** 逐项状态 chip 的紧凑标签：语义同上，chip 内需要更短 */
+const ITEM_CHIP_LABELS: Record<string, string> = {
+  pending: "待处理",
+  preparing: "准备中",
+  clipboard_written: "已写入",
+  input_sent: "已发送",
+  settling: "等待中",
+  confirmed: "已确认",
+  unverified: "未确认",
   failed: "失败",
   cancelled: "已取消",
 };
@@ -89,6 +106,8 @@ export default function PastePanel({
   const [job, setJob] = useState<JobState | null>(null);
   const [otherJob, setOtherJob] = useState<JobState | null>(null);
   const [busy, setBusy] = useState<"start" | "cancel" | "resume" | "refresh" | null>(null);
+  /** 逐项状态的展示顺序：多选用传入顺序，分组用组内顺序；固定不变，状态更新不重排 */
+  const [orderIds, setOrderIds] = useState<string[]>([]);
   const groupMode = !!groupId;
 
   async function loadTargets() {
@@ -108,6 +127,16 @@ export default function PastePanel({
   useEffect(() => {
     let alive = true;
     void loadTargets();
+    if (groupMode) {
+      // 分组模式的逐项顺序来自组内条目；失败不阻塞粘贴，只降级为不展示逐项列表
+      clipboardGroup(groupId!)
+        .then((g) => {
+          if (alive) setOrderIds(g.items.map((i) => i.id));
+        })
+        .catch(() => {});
+    } else {
+      setOrderIds(itemIds ?? []);
+    }
     clipboardPasteActive()
       .then(async (id) => {
         if (!alive || !id) return;
@@ -141,6 +170,10 @@ export default function PastePanel({
               itemState: e.itemState ?? prev.itemState,
               confirmed: e.confirmed ?? prev.confirmed,
               unverified: e.unverified ?? prev.unverified,
+              itemStates:
+                e.itemId && e.itemState
+                  ? { ...prev.itemStates, [e.itemId]: e.itemState }
+                  : prev.itemStates,
             }
           : prev,
       );
@@ -170,6 +203,7 @@ export default function PastePanel({
         total: r.total,
         pending: r.total,
         targetTitle: target.title,
+        itemStates: {},
       });
       showToast(`开始逐项粘贴到「${target.title}」（间隔 ${r.interval_ms} ms）`, { kind: "info" });
     } catch (e) {
@@ -311,6 +345,19 @@ export default function PastePanel({
               <div style={{ width: `${progress}%` }} />
             </div>
             {job.message && <div className="clip-paste-message">{job.message}</div>}
+            {orderIds.length > 0 && (
+              <div className="clip-paste-items" role="list" aria-label="逐项粘贴状态">
+                {orderIds.map((id, i) => {
+                  const st = job.itemStates[id] ?? "pending";
+                  return (
+                    <span key={id} role="listitem" className={`clip-paste-item st-${st}`}>
+                      <span className="clip-paste-item-idx">{i + 1}</span>
+                      {ITEM_CHIP_LABELS[st] ?? st}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
             {running && (
               <button className="btn sm danger" onClick={() => onCancel(job)} disabled={busy === "cancel"}>
                 <StopCircle size={11} /> 取消粘贴

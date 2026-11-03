@@ -14,7 +14,7 @@ use crate::clipboard::platform::{self, ClipboardPayload, TargetWindow};
 use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteJob};
 use crate::clipboard::{
     engine, CleanupReport, ClearReport, ClipboardGroup, ClipboardItem, ClipboardRuntime,
-    ClipboardStats, ClipboardView, CopyReport, DeleteReport, KIND_FILES, KIND_IMAGE,
+    ClipboardStats, ClipboardView, CopyReport, DeleteReport, KIND_FILES, KIND_IMAGE, KIND_URL,
 };
 use crate::db::Settings;
 use crate::error::{AppError, AppResult};
@@ -160,6 +160,110 @@ pub fn clipboard_copy_text(state: State<'_, Arc<ClipboardRuntime>>, text: String
     let payload = ClipboardPayload::Text { text, html: None };
     platform::write_payload_notifying(&payload, &rt.self_write)?;
     Ok(())
+}
+
+// ── 多类型内容专属操作（v0.7）：图片另存 / 链接打开 / 文件打开与定位 ──
+
+/// 图片另存为：把落盘的原始 PNG 写入用户经系统保存对话框选择的路径。
+///
+/// 覆盖确认由系统保存对话框完成（用户在对话框里确认覆盖即非静默）；
+/// 这里只校验路径形态并如实写入，失败（权限/占用/盘满）原样上报。
+#[tauri::command]
+pub fn clipboard_save_image(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    item_id: String,
+    path: String,
+) -> AppResult<u64> {
+    let rt = runtime(&state);
+    let abs = store::image_abs_path(&rt.db, &rt.root, &item_id)
+        .ok_or_else(|| AppError::NotFound("图片缓存不存在或已被清理，无法保存".into()))?;
+    let bytes = std::fs::read(&abs)?;
+    let target = validate_save_path(&path)?;
+    std::fs::write(&target, &bytes).map_err(|e| {
+        AppError::Io(std::io::Error::new(
+            e.kind(),
+            format!("写入失败（{}）：{}", target.display(), e),
+        ))
+    })?;
+    Ok(bytes.len() as u64)
+}
+
+/// 另存路径校验：绝对路径 + .png 扩展名（存储格式是 PNG，防止写出打不开的文件）。
+fn validate_save_path(path: &str) -> AppResult<std::path::PathBuf> {
+    let target = std::path::PathBuf::from(path.trim());
+    if target.as_os_str().is_empty() {
+        return Err(AppError::Validation("保存路径为空".into()));
+    }
+    if !target.is_absolute() {
+        return Err(AppError::Validation("保存路径必须是绝对路径".into()));
+    }
+    match target.extension().and_then(|e| e.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("png") => Ok(target),
+        _ => Err(AppError::Validation(
+            "保存路径必须以 .png 结尾（存储格式为 PNG）".into(),
+        )),
+    }
+}
+
+/// 用系统默认浏览器打开链接条目。
+///
+/// URL 取自库内条目正文（不信任前端回传），复用导航模块的 URL 校验
+/// （仅允许 http/https、长度与非法字符限制），打开委托给 opener 插件，
+/// 结果是委派性质——不宣称浏览器已成功加载。
+#[tauri::command]
+pub fn clipboard_open_url(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    item_id: String,
+) -> AppResult<()> {
+    let rt = runtime(&state);
+    let item = store::get_item(&rt.db, &item_id)?;
+    if item.kind != KIND_URL {
+        return Err(AppError::Validation("该条目不是链接类型".into()));
+    }
+    crate::navigation::validate_url(&item.text)?;
+    use tauri_plugin_opener::OpenerExt;
+    rt.app
+        .opener()
+        .open_url(item.text.trim(), None::<&str>)
+        .map_err(|e| AppError::Validation(format!("打开链接失败：{}", e)))
+}
+
+/// 用系统关联程序打开本地文件/目录：路径复用导航模块校验（绝对路径 + 必须存在）。
+#[tauri::command]
+pub fn clipboard_open_local_path(path: String, app: AppHandle) -> AppResult<()> {
+    let p = crate::navigation::validate_local_path(&path)?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(p.to_string_lossy().as_ref(), None::<&str>)
+        .map_err(|e| AppError::Validation(format!("打开失败：{}", e)))
+}
+
+/// 在资源管理器中定位文件（/select）。与导航 router 的 reveal 行为一致。
+#[tauri::command]
+pub fn clipboard_reveal_local_path(path: String) -> AppResult<()> {
+    let p = crate::navigation::validate_local_path(&path)?;
+    let arg = format!("/select,{}", p.display());
+    std::process::Command::new("explorer.exe")
+        .arg(&arg)
+        .spawn()
+        .map_err(|e| AppError::Validation(format!("资源管理器启动失败：{}", e)))?;
+    Ok(())
+}
+
+/// 批量查询文件路径状态：ok / missing / inaccessible。
+///
+/// 供详情页区分「已移动/删除」与「无权限」，上限 200 条防止滥用。
+#[tauri::command]
+pub fn clipboard_path_status(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .take(200)
+        .map(|p| match std::fs::metadata(p.trim()) {
+            Ok(_) => "ok".into(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing".into(),
+            Err(_) => "inaccessible".into(),
+        })
+        .collect()
 }
 
 fn load_group_items(rt: &ClipboardRuntime, group_id: &str) -> AppResult<ClipboardGroup> {
@@ -724,5 +828,25 @@ pub fn clipboard_probe() -> serde_json::Value {
         platform::ClipboardRead::Empty(reason) => {
             serde_json::json!({ "readable": false, "reason": reason })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_path_accepts_absolute_png() {
+        assert!(validate_save_path(r"D:\out\clip.png").is_ok());
+        assert!(validate_save_path(r"  D:\out\CLIP.PNG  ").is_ok());
+    }
+
+    #[test]
+    fn save_path_rejects_empty_relative_and_wrong_ext() {
+        assert!(validate_save_path("").is_err());
+        assert!(validate_save_path("   ").is_err());
+        assert!(validate_save_path("clip.png").is_err());
+        assert!(validate_save_path(r"D:\out\clip.jpg").is_err());
+        assert!(validate_save_path(r"D:\out\clip").is_err());
     }
 }

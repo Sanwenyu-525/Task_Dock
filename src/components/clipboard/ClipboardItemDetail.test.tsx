@@ -1,0 +1,205 @@
+/**
+ * @vitest-environment jsdom
+ */
+//! 条目详情的类型专属区域契约：
+//! - URL：域名 + 打开/复制，无效 http(s) 地址不给打开按钮；
+//! - 文件：状态徽标区分存在/已不存在/无权限，失效文件禁用打开与定位；
+//! - HTML：阅读视图不渲染主动内容，源码视图可见原文；
+//! - 文字：代码置信识别默认进入代码阅读（as-code）。
+//! 通用操作（复制/收藏/置顶/删除/关联/导出）结构保持不变。
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+const bridge = vi.hoisted(() => ({
+  clipboardItem: vi.fn(),
+  clipboardPathStatus: vi.fn(),
+  clipboardOpenUrl: vi.fn(),
+  clipboardOpenLocalPath: vi.fn(),
+  clipboardRevealLocalPath: vi.fn(),
+  clipboardCopyItem: vi.fn(),
+  clipboardCopyText: vi.fn(),
+  clipboardDeleteItems: vi.fn(),
+  clipboardToggleItem: vi.fn(),
+  clipboardRenameItem: vi.fn(),
+  clipboardLinkTask: vi.fn(),
+  workspaceList: vi.fn(),
+  clipboardAgentTargets: vi.fn(),
+  clipboardExportForAgent: vi.fn(),
+}));
+vi.mock("../../lib/bridge", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/bridge")>();
+  return { ...actual, ...bridge };
+});
+
+import ClipboardItemDetail from "./ClipboardItemDetail";
+import type { ClipboardItem } from "../../lib/bridge";
+import { resetOverlayStack } from "../../lib/overlayStack";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  resetOverlayStack();
+  bridge.clipboardCopyItem.mockResolvedValue({
+    mode: "text",
+    bytes: 10,
+    warnings: [],
+    sequence: 1,
+    item_count: 1,
+  });
+  bridge.clipboardCopyText.mockResolvedValue(undefined);
+  bridge.clipboardOpenUrl.mockResolvedValue(undefined);
+  bridge.clipboardOpenLocalPath.mockResolvedValue(undefined);
+  bridge.clipboardRevealLocalPath.mockResolvedValue(undefined);
+  bridge.clipboardPathStatus.mockResolvedValue([]);
+  bridge.workspaceList.mockResolvedValue([]);
+  bridge.clipboardAgentTargets.mockResolvedValue([]);
+});
+
+afterEach(cleanup);
+
+function makeItem(over: Partial<ClipboardItem> = {}): ClipboardItem {
+  return {
+    id: "ci1",
+    kind: "text",
+    text: "",
+    html: "",
+    preview: "预览",
+    title: "",
+    title_source: "none",
+    byte_size: 20,
+    source_app: "notepad.exe",
+    source_title: "记事本",
+    image_width: null,
+    image_height: null,
+    file_paths: [],
+    favorite: false,
+    pinned: false,
+    copy_count: 0,
+    created_at: "2026-11-02T10:00:00Z",
+    last_seen_at: "2026-11-02T10:00:00Z",
+    has_image: false,
+    has_thumb: false,
+    ...over,
+  };
+}
+
+async function renderDetail(item: ClipboardItem) {
+  bridge.clipboardItem.mockResolvedValue(item);
+  render(
+    <ClipboardItemDetail
+      itemId={item.id}
+      linkTask={null}
+      askConfirm={({ run }) => void run()}
+      onBack={vi.fn()}
+      onChanged={vi.fn()}
+    />,
+  );
+  await waitFor(() => expect(bridge.clipboardItem).toHaveBeenCalled());
+}
+
+describe("URL 专属操作", () => {
+  it("展示域名与完整链接，打开走后端校验命令", async () => {
+    await renderDetail(makeItem({ kind: "url", text: "https://example.com/page?x=1" }));
+    await waitFor(() => expect(screen.getByText("example.com")).toBeTruthy());
+    expect(screen.getByText("https://example.com/page?x=1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /打开链接/ }));
+    await waitFor(() =>
+      expect(bridge.clipboardOpenUrl).toHaveBeenCalledWith("ci1"),
+    );
+  });
+
+  it("非 http/https 正文不提供打开按钮并明确提示", async () => {
+    await renderDetail(makeItem({ kind: "url", text: "javascript:alert(1)" }));
+    await waitFor(() => expect(screen.getByText(/域名不可用/)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /打开链接/ })).toBeNull();
+    expect(screen.getByText(/打开已被禁止/)).toBeTruthy();
+  });
+});
+
+describe("文件专属操作", () => {
+  it("状态徽标区分存在与已不存在，失效文件禁用打开/定位", async () => {
+    bridge.clipboardPathStatus.mockResolvedValue(["ok", "missing"]);
+    await renderDetail(
+      makeItem({
+        kind: "files",
+        text: "C:\\a.txt\nC:\\b.txt",
+        file_paths: ["C:\\a.txt", "C:\\b.txt"],
+      }),
+    );
+    await waitFor(() => expect(bridge.clipboardPathStatus).toHaveBeenCalled());
+    const rows = await waitFor(() => {
+      const rows = document.querySelectorAll(".clip-path-row");
+      expect(rows.length).toBe(2);
+      return rows;
+    });
+    expect(rows[0].classList.contains("is-ok")).toBe(true);
+    expect(rows[1].classList.contains("is-missing")).toBe(true);
+    expect(rows[1].textContent).toContain("已不存在");
+    const openB = rows[1].querySelector('button[aria-label^="打开"]');
+    const revealB = rows[1].querySelector('button[aria-label^="定位"]');
+    expect((openB as HTMLButtonElement).disabled).toBe(true);
+    expect((revealB as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("单文件块级操作与行内操作分别调用打开/定位命令", async () => {
+    bridge.clipboardPathStatus.mockResolvedValue(["ok"]);
+    await renderDetail(
+      makeItem({ kind: "files", text: "C:\\a.txt", file_paths: ["C:\\a.txt"] }),
+    );
+    await waitFor(() => expect(document.querySelectorAll(".clip-path-row").length).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: /打开文件/ }));
+    await waitFor(() =>
+      expect(bridge.clipboardOpenLocalPath).toHaveBeenCalledWith("C:\\a.txt"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /资源管理器定位/ }));
+    await waitFor(() =>
+      expect(bridge.clipboardRevealLocalPath).toHaveBeenCalledWith("C:\\a.txt"),
+    );
+  });
+});
+
+describe("HTML 阅读视图", () => {
+  it("阅读视图渲染白名单内容且不出现脚本元素，源码视图可见原始 HTML", async () => {
+    const html = `<p>安全<b>加粗</b></p><script>alert(1)</script>`;
+    await renderDetail(makeItem({ kind: "html", text: "安全加粗", html }));
+    await waitFor(() => expect(document.querySelector(".clip-doc")).not.toBeNull());
+    expect(document.querySelector(".clip-doc")!.textContent).toContain("安全");
+    expect(document.querySelector("script")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: /源码/ }));
+    const pre = document.querySelector(".clip-html")!;
+    expect(pre.textContent).toBe(html);
+  });
+
+  it("复制富文本走单项复制链路（保留 HTML 格式）", async () => {
+    await renderDetail(makeItem({ kind: "html", text: "正文", html: "<p>正文</p>" }));
+    await waitFor(() => expect(document.querySelector(".clip-doc")).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /复制富文本/ }));
+    await waitFor(() => expect(bridge.clipboardCopyItem).toHaveBeenCalledWith("ci1"));
+  });
+});
+
+describe("文字代码阅读", () => {
+  it("代码置信内容默认代码阅读（等宽不换行），可切回普通文本", async () => {
+    const code = ["function add(a, b) {", "  return a + b;", "}"].join("\n");
+    await renderDetail(makeItem({ kind: "text", text: code, preview: "add()" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: /代码阅读/ })).toBeTruthy());
+    expect(screen.getByRole("tab", { name: /代码阅读/ }).getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector("pre.clip-full-text")!.classList.contains("as-code")).toBe(true);
+
+    fireEvent.click(screen.getByRole("tab", { name: /普通文本/ }));
+    expect(document.querySelector("pre.clip-full-text")!.classList.contains("as-code")).toBe(false);
+  });
+
+  it("普通段落默认普通文本视图", async () => {
+    const prose = [
+      "task_dock 是一个 Windows 桌面任务启动器。",
+      "这次升级把剪贴板变成轻量的多类型内容管理器。",
+      "不同类型的内容提供专属的详情和操作。",
+    ].join("\n");
+    await renderDetail(makeItem({ kind: "text", text: prose, preview: "段落" }));
+    await waitFor(() => expect(screen.getByRole("tab", { name: /普通文本/ })).toBeTruthy());
+    expect(screen.getByRole("tab", { name: /普通文本/ }).getAttribute("aria-selected")).toBe("true");
+    expect(document.querySelector("pre.clip-full-text")!.classList.contains("as-code")).toBe(false);
+  });
+});

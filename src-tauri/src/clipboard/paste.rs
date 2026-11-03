@@ -558,7 +558,9 @@ pub(crate) fn run_plan(
             &remaining,
             None,
         );
-        io.sleep_ms(plan.timing.settle_for(&kind));
+        // 观察窗口分段可取消：取消请求最坏 100ms 内生效（此前整段睡满最多 900ms）。
+        // 按键已发出，取消后仍走下方统一分支如实标记 Unverified，不改变语义。
+        sleep_cancelable(io, plan.timing.settle_for(&kind), cancel);
         last_kind = Some(kind.clone());
         if canceled(cancel) {
             status = "cancelled";
@@ -1558,8 +1560,32 @@ mod tests {
             3
         );
         assert!(outcome.restored);
-        // 图片的观察窗口比文本长，且最后一项有独立收尾睡眠
-        assert!(io.sleeps.borrow().contains(&600));
+        // 观察窗口已分段可取消：按时间线窗口求和验证「图片的观察窗口比文本长」。
+        // 窗口 = settle（等目标消费）+ interval（距下一次写入），与分段方式无关。
+        let window_ms = |timeline: &Vec<String>, from: &str, to: &str| -> u64 {
+            let start = timeline
+                .iter()
+                .position(|e| e == from)
+                .expect("起始写入事件");
+            let end = timeline
+                .iter()
+                .position(|e| e == to)
+                .expect("下一次写入事件");
+            timeline[start..end]
+                .iter()
+                .filter_map(|e| e.strip_prefix("sleep:"))
+                .filter_map(|v| v.parse::<u64>().ok())
+                .sum()
+        };
+        let timeline = io.timeline.borrow();
+        let text_window = window_ms(&timeline, "write:a", "write:b");
+        let image_window = window_ms(&timeline, "write:b", "write:c");
+        drop(timeline);
+        assert!(
+            image_window > text_window,
+            "图片的观察窗口应比文本长：image={image_window}ms text={text_window}ms"
+        );
+        assert_eq!(image_window, 600 + 1200, "图片 settle+interval 总和不变");
         let timeline = io.timeline.borrow();
         let last_write = timeline
             .iter()

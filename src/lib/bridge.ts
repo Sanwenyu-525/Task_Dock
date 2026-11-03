@@ -898,6 +898,21 @@ export const clipboardCopyItem = (itemId: string) =>
 /** 通用文本写入：与单项复制共用后端受控写入与自写登记。 */
 export const clipboardCopyText = (text: string) =>
   invoke<void>("clipboard_copy_text", { text });
+/** 图片另存为：把落盘 PNG 写入系统保存对话框返回的路径，返回写入字节数。 */
+export const clipboardSaveImage = (itemId: string, path: string) =>
+  invoke<number>("clipboard_save_image", { itemId, path });
+/** 用系统默认浏览器打开链接条目（后端校验仅 http/https）。 */
+export const clipboardOpenUrl = (itemId: string) =>
+  invoke<void>("clipboard_open_url", { itemId });
+/** 用系统关联程序打开本地文件/目录（后端校验绝对路径且必须存在）。 */
+export const clipboardOpenLocalPath = (path: string) =>
+  invoke<void>("clipboard_open_local_path", { path });
+/** 在资源管理器中定位文件（explorer /select）。 */
+export const clipboardRevealLocalPath = (path: string) =>
+  invoke<void>("clipboard_reveal_local_path", { path });
+/** 批量查询文件路径状态：ok / missing / inaccessible。 */
+export const clipboardPathStatus = (paths: string[]) =>
+  invoke<string[]>("clipboard_path_status", { paths });
 export const clipboardCopyGroupRich = (groupId: string) =>
   invoke<CopyReport>("clipboard_copy_group_rich", { groupId });
 export const clipboardCopyGroupFiles = (groupId: string) =>

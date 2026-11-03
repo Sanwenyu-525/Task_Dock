@@ -1,29 +1,44 @@
-//! 剪贴板条目详情：完整正文/图片/文件、复制、收藏、置顶、任务关联与 Agent 导出。
+//! 剪贴板条目详情：完整正文/图片/文件、类型专属预览与操作、收藏、置顶、
+//! 任务关联与 Agent 导出。
+//!
+//! 统一详情结构：标题 → 元信息 → 类型专属预览区 → 类型专属操作 → 通用操作。
+//! 类型专属部分只换预览与就近操作，不另起一套页面骨架。
 
 import { useEffect, useState } from "react";
 import {
-  ArrowLeft, Check, Code2, Copy, FileText, Link2, Pencil, Pin, Star, Trash2, X,
+  ArrowLeft, Check, CircleCheck, Code2, Copy, ExternalLink, Eye, FileText,
+  FolderOpen, Link2, Pencil, Pin, Search, Star, Trash2, X,
 } from "lucide-react";
 import {
   clipboardCopyItem,
   clipboardDeleteItems,
   clipboardItem,
   clipboardLinkTask,
+  clipboardOpenLocalPath,
+  clipboardOpenUrl,
+  clipboardPathStatus,
   clipboardRenameItem,
+  clipboardRevealLocalPath,
   clipboardToggleItem,
   type ClipboardItem,
 } from "../../lib/bridge";
 import { copyText } from "../../lib/clipboard";
 import {
-  clipboardTime, fileBaseName, formatBytes, kindLabel, objectHint, sourceLabel,
+  clipboardTime, fileBaseName, formatBytes, kindLabel, looksLikeCode, objectHint,
+  sourceLabel, urlDomain,
 } from "../../lib/clipboardUi";
 import { useUiStore } from "../../store/useUiStore";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import AgentExportPanel from "./AgentExportPanel";
+import HtmlReader from "./HtmlReader";
+import ImageLightbox from "./ImageLightbox";
 import { ClipboardLargeImage } from "./Media";
 import TaskLinkBar from "./TaskLinkBar";
 import WorkspaceLinkBar from "./WorkspaceLinkBar";
 import type { AskConfirm, LinkTask } from "./types";
+
+/** 文件路径状态：ok / missing / inaccessible / checking。 */
+type PathState = "ok" | "missing" | "inaccessible" | "checking";
 
 export default function ClipboardItemDetail({
   itemId,
@@ -42,14 +57,18 @@ export default function ClipboardItemDetail({
   const bumpLink = useUiStore((s) => s.bumpClipboardLink);
   const closeDrawer = useUiStore((s) => s.closeClipboard);
   const [item, setItem] = useState<ClipboardItem | null>(null);
-  const [showHtml, setShowHtml] = useState(false);
+  const [htmlView, setHtmlView] = useState<"read" | "source">("read");
+  const [codeView, setCodeView] = useState<boolean | null>(null); // null = 未决定，用自动识别
+  const [lightbox, setLightbox] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [pathStates, setPathStates] = useState<Record<string, PathState>>({});
 
   useEffect(() => {
     let alive = true;
     setItem(null);
+    setLightbox(false);
     clipboardItem(itemId)
       .then((i) => {
         if (alive) setItem(i);
@@ -64,6 +83,29 @@ export default function ClipboardItemDetail({
       alive = false;
     };
   }, [itemId]);
+
+  // 文件存在性一次性批量查询（≤200 条），用于区分「已移动/删除」与「无权限」
+  const pathsKey = (item?.file_paths ?? []).join("\n");
+  useEffect(() => {
+    if (!item || pathsKey === "") return;
+    let alive = true;
+    const paths = pathsKey.split("\n").slice(0, 200);
+    setPathStates(Object.fromEntries(paths.map((p) => [p, "checking"])));
+    clipboardPathStatus(paths)
+      .then((states) => {
+        if (alive) {
+          setPathStates(Object.fromEntries(paths.map((p, i) => [p, states[i] as PathState])));
+        }
+      })
+      .catch(() => {
+        // 查询失败不阻塞详情：保持未知态，不虚报状态
+        if (alive) setPathStates({});
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemId, pathsKey]);
 
   async function reload() {
     try {
@@ -163,6 +205,34 @@ export default function ClipboardItemDetail({
     });
   }
 
+  async function onOpenUrl() {
+    if (!item) return;
+    try {
+      await clipboardOpenUrl(item.id);
+      showToast("已交给系统默认浏览器打开", { kind: "success" });
+    } catch (e) {
+      showToast(`打开失败：${String(e)}`, { kind: "error" });
+    }
+  }
+
+  async function onOpenFile(path: string) {
+    try {
+      await clipboardOpenLocalPath(path);
+      showToast("已交给系统关联程序打开", { kind: "success" });
+    } catch (e) {
+      showToast(`打开失败：${String(e)}`, { kind: "error" });
+    }
+  }
+
+  async function onRevealFile(path: string) {
+    try {
+      await clipboardRevealLocalPath(path);
+      showToast("已在资源管理器中定位", { kind: "success" });
+    } catch (e) {
+      showToast(`定位失败：${String(e)}`, { kind: "error" });
+    }
+  }
+
   if (!item) {
     return (
       <div className="clip-detail">
@@ -176,6 +246,18 @@ export default function ClipboardItemDetail({
       </div>
     );
   }
+
+  const isUrl = item.kind === "url";
+  const domain = isUrl ? urlDomain(item.text) : "";
+  const files = item.file_paths;
+  const isCode = codeView ?? (item.kind === "text" && looksLikeCode(item.text));
+
+  const PATH_STATE_META: Record<PathState, { label: string; cls: string }> = {
+    ok: { label: "存在", cls: "ok" },
+    missing: { label: "已不存在", cls: "missing" },
+    inaccessible: { label: "无权限", cls: "inaccessible" },
+    checking: { label: "检查中", cls: "checking" },
+  };
 
   return (
     <div className="clip-detail">
@@ -284,52 +366,229 @@ export default function ClipboardItemDetail({
           )}
         </div>
 
+        {/* ── 类型专属预览区 ── */}
+
         {item.kind === "image" && (
           <div className="clip-image-wrap">
-            <ClipboardLargeImage itemId={item.id} />
+            <ClipboardLargeImage itemId={item.id} onOpen={() => setLightbox(true)} />
+            <div className="clip-hint">点击图片进入大图预览，支持缩放与拖拽。</div>
           </div>
         )}
 
-        {item.file_paths.length > 0 && (
-          <div className="clip-path-block">
-            <div className="clip-block-head">
-              <span>文件路径（{item.file_paths.length}）</span>
+        {isUrl && (
+          <div className="clip-url-block">
+            <div className="clip-url-line">
+              <span className="clip-url-domain" title={domain || undefined}>
+                {domain || "（域名不可用）"}
+              </span>
+              {domain && (
+                <button
+                  className="btn sm primary"
+                  onClick={onOpenUrl}
+                  data-tip="使用系统默认浏览器打开"
+                >
+                  <ExternalLink size={11} /> 打开链接
+                </button>
+              )}
+            </div>
+            <div className="clip-url-full" title={item.text}>{item.text}</div>
+            <div className="clip-url-actions">
               <button
                 className="btn sm"
                 onClick={async () => {
-                  const ok = await copyText(item.file_paths.join("\n"));
-                  showToast(ok ? "路径已复制" : "复制失败", { kind: ok ? "success" : "error" });
+                  const ok = await copyText(item.text);
+                  showToast(ok ? "链接已复制" : "复制失败", { kind: ok ? "success" : "error" });
                 }}
               >
-                <Copy size={11} /> 复制路径
+                <Copy size={11} /> 复制链接
               </button>
             </div>
-            <ul className="clip-path-list">
-              {item.file_paths.map((p) => (
-                <li key={p} title={p}>
-                  <FileText size={11} />
-                  <span className="clip-path-name">{fileBaseName(p)}</span>
-                  <span className="clip-path-full">{p}</span>
-                </li>
-              ))}
-            </ul>
-            <div className="clip-hint">复制文件使用原始路径；文件被移动或删除后粘贴会缺失。</div>
+            {!domain && <div className="clip-hint">这不是有效的 http/https 链接，打开已被禁止。</div>}
           </div>
         )}
 
-        {item.text && (
-          <pre className="clip-full-text" tabIndex={0}>
-            {item.text}
-          </pre>
+        {files.length > 0 && (
+          <div className="clip-path-block">
+            <div className="clip-block-head">
+              <span>文件路径（{files.length}）</span>
+              <div className="clip-block-head-actions">
+                <button
+                  className="btn sm"
+                  onClick={async () => {
+                    const ok = await copyText(files.join("\n"));
+                    showToast(ok ? "路径已复制" : "复制失败", { kind: ok ? "success" : "error" });
+                  }}
+                >
+                  <Copy size={11} /> 复制路径
+                </button>
+                {files.length === 1 && (
+                  <>
+                    <button className="btn sm" onClick={() => void onOpenFile(files[0])}>
+                      <FolderOpen size={11} /> 打开文件
+                    </button>
+                    <button className="btn sm" onClick={() => void onRevealFile(files[0])}>
+                      <Search size={11} /> 资源管理器定位
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            <ul className="clip-path-list">
+              {files.slice(0, 200).map((p) => {
+                const st = pathStates[p] ?? "checking";
+                const meta = PATH_STATE_META[st];
+                return (
+                  <li key={p} className={`clip-path-row is-${meta.cls}`} title={p}>
+                    <FileText size={11} />
+                    <span className="clip-path-name">{fileBaseName(p)}</span>
+                    <span className="clip-path-full">{p}</span>
+                    <span className={`clip-path-state ${meta.cls}`} title={meta.label}>
+                      <CircleCheck size={11} aria-hidden="true" />
+                      {meta.label}
+                    </span>
+                    <span className="clip-path-actions">
+                      <button
+                        className="icon-btn sm"
+                        data-tip="打开文件"
+                        aria-label={`打开 ${fileBaseName(p)}`}
+                        disabled={st !== "ok"}
+                        onClick={() => void onOpenFile(p)}
+                      >
+                        <FolderOpen size={11} />
+                      </button>
+                      <button
+                        className="icon-btn sm"
+                        data-tip="资源管理器定位"
+                        aria-label={`定位 ${fileBaseName(p)}`}
+                        disabled={st !== "ok"}
+                        onClick={() => void onRevealFile(p)}
+                      >
+                        <Search size={11} />
+                      </button>
+                      <button
+                        className="icon-btn sm"
+                        data-tip="复制路径"
+                        aria-label={`复制路径 ${fileBaseName(p)}`}
+                        onClick={async () => {
+                          const ok = await copyText(p);
+                          showToast(ok ? "路径已复制" : "复制失败", { kind: ok ? "success" : "error" });
+                        }}
+                      >
+                        <Copy size={11} />
+                      </button>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="clip-hint">
+              打开使用系统文件关联程序；文件被移动或删除后将无法打开，粘贴也可能缺失。
+            </div>
+          </div>
         )}
 
         {item.html && (
           <div className="clip-html-block">
-            <button className="link-btn" onClick={() => setShowHtml((v) => !v)}>
-              <Code2 size={11} /> {showHtml ? "隐藏原始 HTML" : "查看原始 HTML"}
-            </button>
-            {showHtml && <pre className="clip-html">{item.html}</pre>}
-            <div className="clip-hint">复制时保留 HTML 格式；目标应用不支持时会退回纯文本。</div>
+            <div className="clip-block-head">
+              <div className="clip-view-tabs" role="tablist" aria-label="富文本视图">
+                <button
+                  className={`clip-view-tab ${htmlView === "read" ? "active" : ""}`}
+                  role="tab"
+                  aria-selected={htmlView === "read"}
+                  onClick={() => setHtmlView("read")}
+                >
+                  <Eye size={11} /> 阅读视图
+                </button>
+                <button
+                  className={`clip-view-tab ${htmlView === "source" ? "active" : ""}`}
+                  role="tab"
+                  aria-selected={htmlView === "source"}
+                  onClick={() => setHtmlView("source")}
+                >
+                  <Code2 size={11} /> 源码
+                </button>
+              </div>
+              <div className="clip-block-head-actions">
+                <button
+                  className="btn sm"
+                  onClick={async () => {
+                    const ok = await copyText(item.text || item.html);
+                    showToast(ok ? "纯文本已复制" : "复制失败", { kind: ok ? "success" : "error" });
+                  }}
+                >
+                  <Copy size={11} /> 复制纯文本
+                </button>
+                <button
+                  className="btn sm"
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      const r = await clipboardCopyItem(item.id);
+                      showToast(`已复制富文本（${formatBytes(r.bytes)}）`, { kind: "success" });
+                      useClipboardStore.getState().bumpItemCopy(item.id);
+                    } catch (e) {
+                      showToast(`复制失败：${String(e)}`, { kind: "error" });
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                  disabled={busy}
+                >
+                  <Copy size={11} /> 复制富文本
+                </button>
+              </div>
+            </div>
+            {htmlView === "read" ? (
+              <HtmlReader html={item.html} />
+            ) : (
+              <pre className="clip-html" tabIndex={0}>{item.html}</pre>
+            )}
+            <div className="clip-hint">
+              阅读视图为安全白名单渲染：脚本、外链图片与表单不会加载；复制时保留原始 HTML 格式。
+            </div>
+          </div>
+        )}
+
+        {item.text && !isUrl && (
+          <div className="clip-text-block">
+            {item.kind === "text" && (
+              <div className="clip-block-head">
+                <div className="clip-view-tabs" role="tablist" aria-label="文本视图">
+                  <button
+                    className={`clip-view-tab ${!isCode ? "active" : ""}`}
+                    role="tab"
+                    aria-selected={!isCode}
+                    onClick={() => setCodeView(false)}
+                  >
+                    <FileText size={11} /> 普通文本
+                  </button>
+                  <button
+                    className={`clip-view-tab ${isCode ? "active" : ""}`}
+                    role="tab"
+                    aria-selected={isCode}
+                    onClick={() => setCodeView(true)}
+                  >
+                    <Code2 size={11} /> 代码阅读
+                  </button>
+                </div>
+                {isCode && (
+                  <div className="clip-block-head-actions">
+                    <button
+                      className="btn sm"
+                      onClick={async () => {
+                        const ok = await copyText(item.text);
+                        showToast(ok ? "代码已复制" : "复制失败", { kind: ok ? "success" : "error" });
+                      }}
+                    >
+                      <Copy size={11} /> 复制代码
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            <pre className={`clip-full-text ${isCode ? "as-code" : ""}`} tabIndex={0}>
+              {item.text}
+            </pre>
           </div>
         )}
 
@@ -341,6 +600,8 @@ export default function ClipboardItemDetail({
         <WorkspaceLinkBar targetType="item" targetId={item.id} />
         <AgentExportPanel targetType="item" targetId={item.id} taskId={linkTask?.id ?? null} />
       </div>
+
+      {lightbox && <ImageLightbox item={item} onClose={() => setLightbox(false)} />}
     </div>
   );
 }

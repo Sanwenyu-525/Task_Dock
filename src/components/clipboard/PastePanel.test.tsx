@@ -9,6 +9,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 const bridge = vi.hoisted(() => ({
   clipboardVisibleTargets: vi.fn(),
+  clipboardGroup: vi.fn(),
   clipboardPasteActive: vi.fn(),
   clipboardPasteJob: vi.fn(),
   clipboardPastePrecheck: vi.fn(),
@@ -47,6 +48,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   pasteHandler = null;
   bridge.clipboardVisibleTargets.mockResolvedValue(TARGETS);
+  bridge.clipboardGroup.mockResolvedValue({
+    id: "group-1",
+    name: "测试分组",
+    items: [{ id: "g1" }, { id: "g2" }, { id: "g3" }],
+  });
   bridge.clipboardPasteActive.mockResolvedValue(null);
   bridge.clipboardPastePrecheck.mockResolvedValue(TARGETS[0]);
   bridge.clipboardPasteGroup.mockResolvedValue(START);
@@ -164,5 +170,61 @@ describe("PastePanel", () => {
     );
     expect(bridge.clipboardPasteGroup).not.toHaveBeenCalled();
     expect(await screen.findByText(/已发送 0\/3 项/)).toBeTruthy();
+  });
+
+  it("逐项状态 chip 按固定顺序累计更新，事件乱序不重排、其他任务不影响", async () => {
+    await renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: /开始逐项粘贴/ }));
+    await waitFor(() => expect(bridge.clipboardPasteGroup).toHaveBeenCalled());
+
+    // 初始全部待处理，顺序为组内条目顺序
+    expect(screen.getAllByRole("listitem").map((c) => c.textContent)).toEqual([
+      "1待处理",
+      "2待处理",
+      "3待处理",
+    ]);
+
+    const ev = (itemId: string, itemState: string, jobId = "job-1") =>
+      pasteHandler?.({
+        jobId,
+        status: "running",
+        sent: 1,
+        total: 3,
+        pending: 2,
+        itemId,
+        itemState,
+      });
+
+    ev("g2", "failed");
+    ev("g1", "unverified");
+    // 其他任务的事件不得影响本任务的状态
+    ev("g3", "failed", "job-other");
+
+    await waitFor(() => expect(screen.getAllByRole("listitem")[1].textContent).toBe("2失败"));
+    expect(screen.getAllByRole("listitem").map((c) => c.textContent)).toEqual([
+      "1未确认",
+      "2失败",
+      "3待处理",
+    ]);
+
+    ev("g3", "input_sent");
+    await waitFor(() => expect(screen.getAllByRole("listitem")[2].textContent).toBe("3已发送"));
+    expect(screen.getAllByRole("listitem").map((c) => c.textContent)).toEqual([
+      "1未确认",
+      "2失败",
+      "3已发送",
+    ]);
+  });
+
+  it("多选模式的逐项 chip 遵循传入顺序", async () => {
+    render(<PastePanel itemIds={["ci2", "ci0", "ci1"]} onBack={vi.fn()} />);
+    await screen.findByText("记事本");
+    fireEvent.click(screen.getByRole("button", { name: /开始逐项粘贴/ }));
+    expect(await screen.findByText(/已发送 0\/3 项/)).toBeTruthy();
+    expect(screen.getAllByRole("listitem").map((c) => c.textContent)).toEqual([
+      "1待处理",
+      "2待处理",
+      "3待处理",
+    ]);
   });
 });

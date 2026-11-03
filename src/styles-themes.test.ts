@@ -186,6 +186,22 @@ describe("弹层表面可读性", () => {
     expect(effectiveDecls("liquid-glass", true)["--card-face"]).toBeTruthy();
   });
 
+  it("剪贴板详情 sticky 顶栏表面在四个上下文里都不透明", () => {
+    // 顶栏钉扎时条目/分组/逐项粘贴的图片与文字从它下方滚过：
+    // 浅色玻璃的 --surface-overlay 只有 92%（梦幻浅色 96%），历史回归点——透色。
+    for (const preset of PRESETS) {
+      for (const dark of [false, true]) {
+        const decls = effectiveDecls(preset, dark);
+        const face = decls["--clip-detail-face"];
+        expect(face, `${preset}/${dark ? "dark" : "light"} 未定义 --clip-detail-face`).toBeTruthy();
+        expect(
+          hasAlpha(face),
+          `${preset}/${dark ? "dark" : "light"} 的 --clip-detail-face 是半透明的：${face}`,
+        ).toBe(false);
+      }
+    }
+  });
+
   it("胶囊表面令牌在四个上下文里都不透明（根窗口透明时胶囊不能跟着透明）", () => {
     for (const preset of PRESETS) {
       for (const dark of [false, true]) {
@@ -294,6 +310,19 @@ describe("层叠上下文", () => {
   it("关联模式抽屉脱离内容区的定位盒，叠在任务编辑器之上", () => {
     expect(appCss).toMatch(/\.clipboard-layer\.link-mode\s*\{[^}]*position:\s*fixed/);
     expect(appCss).toMatch(/\.clipboard-layer\.link-mode\s*\{[^}]*z-index:\s*var\(--z-modal-top\)/);
+  });
+
+  it("剪贴板详情顶栏钉在滚动区可视顶端并使用专用不透明表面", () => {
+    const block = /\.clip-detail-head\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(block, "styles.css 缺少 .clip-detail-head").toBeTruthy();
+    expect(block![1]).toMatch(/position:\s*sticky/);
+    // 滚动容器自身的 padding 会内缩 sticky 约束矩形（WebView2 实测）：
+    // top 必须为负值抵消 .clip-body 的 padding-top，否则顶栏上方露出 8px 内容带。
+    expect(block![1]).toMatch(/top:\s*-\d+px/);
+    // 裸 z-index 违反 UI 红线，层级刻度必须走 Token
+    expect(block![1]).toMatch(/z-index:\s*var\(--z-sticky\)/);
+    // 表面走专用 Token，不允许退回带 alpha 的 --surface-overlay
+    expect(block![1]).toMatch(/background:\s*var\(--clip-detail-face\)/);
   });
 });
 

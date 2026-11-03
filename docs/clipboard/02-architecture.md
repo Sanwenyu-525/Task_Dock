@@ -187,7 +187,7 @@ ACCESS_LOCK
   `SendInput` 均在锁外，目标应用无响应不会阻塞用户复制，也不会持锁等待目标。
 - 无法打开剪贴板时返回“剪贴板被其他程序占用，请稍后重试”，不进入半写入状态。
 
-## 四、IPC 命令（47 个）
+## 四、IPC 命令（51 个）
 
 注册位置：`src-tauri/src/lib.rs` 的 `invoke_handler`；前端封装：`src/lib/bridge.ts`。
 
@@ -195,6 +195,7 @@ ACCESS_LOCK
 |---|---|
 | 查询 | `clipboard_view`、`clipboard_item`、`clipboard_group`、`clipboard_stats`、`clipboard_thumb`、`clipboard_image` |
 | 复制 | `clipboard_copy_item`、`clipboard_copy_text`、`clipboard_copy_group_rich`、`clipboard_copy_group_files`、`clipboard_copy_items_rich`、`clipboard_copy_items_files` |
+| 多类型专属操作（v0.7，2026-11-03） | `clipboard_save_image`（另存落盘 PNG，路径校验仅 .png）、`clipboard_open_url`（复用导航 URL 校验仅 http/https，系统默认浏览器委托）、`clipboard_open_local_path`（导航本地路径校验 + 系统关联程序）、`clipboard_reveal_local_path`（explorer /select）、`clipboard_path_status`（批量文件存在性：ok/missing/inaccessible，≤200 条） |
 | 整理 | `clipboard_toggle_item`、`clipboard_toggle_group`、`clipboard_close_group`、`clipboard_delete_items`、`clipboard_delete_group`、`clipboard_create_group`、`clipboard_rename_group`、`clipboard_rename_item`、`clipboard_add_to_group`、`clipboard_remove_group_item`、`clipboard_move_group_item`、`clipboard_split_group`、`clipboard_merge_groups` |
 | 任务关联 | `clipboard_link_task`、`clipboard_unlink_task`、`clipboard_task_links` |
 | 快照关联（v0.5 并行模块） | `clipboard_link_snapshot`、`clipboard_unlink_snapshot`、`clipboard_snapshot_links` |
@@ -277,6 +278,8 @@ UI 选择目标窗口 → clipboard_paste_precheck（存在/非自身/UIPI）
         → input_sent → settling → unverified
         （没有可靠接收信号，永不标记 confirmed，也不自动重发）
         → 更新 job / emit 进度 → 按类型间隔等待（可取消）
+        （2026-11-03：settling 观察窗口同样改为分段可取消，取消最坏 100ms 内生效；
+          独立收尾等待保持不可取消，取消时压缩到 ≤300ms 以保护最后一张图片）
   → 收尾阶段：wrote_any 且用户未接管时，按最后类型再等待 → restore_if_own_content
       内容已变 → KeepUserCopy（保留用户内容）；剪贴板占用 → 报错不猜测
   → 写入最终状态与诚实文案，emit clipboard-paste

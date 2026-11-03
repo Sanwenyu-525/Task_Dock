@@ -15,6 +15,8 @@
   --surface-base: #f7f8fc;
   --surface-raised: #ffffff;
   --surface-overlay: #ffffff;
+  /* 剪贴板详情 sticky 顶栏专用表面（兜底）：内容从它下方滚过，必须完全不透明 */
+  --clip-detail-face: #ffffff;
   --surface-hover: rgba(99, 102, 241, 0.08);
   /* 玻璃 tint（glass 模式下作为 surface 的半透明替代来源） */
   --glass-tint: rgba(248, 250, 255, 0.70);
@@ -121,6 +123,7 @@
   --surface-base: #171b24;
   --surface-raised: #1f2532;
   --surface-overlay: #262d3d;
+  --clip-detail-face: #262d3d;
   --surface-hover: rgba(129, 140, 248, 0.14);
   --glass-tint: rgba(18, 23, 34, 0.66);
   --border-subtle: rgba(255, 255, 255, 0.08);
@@ -3943,11 +3946,15 @@ code {
 
 /* 详情工具栏：sticky 的圆角卡片，与列表内容同宽对齐（不再负 margin 全出血）。
    背景必须足够不透明——条目/分组/逐项粘贴三页共用，滚动时内容从它下方划过，
-   `--surface-overlay` 在四套预设×明暗下均 ≥92% 不透明度，避免透出底层文字。 */
+   玻璃/梦幻浅色的 `--surface-overlay` 带 alpha（0.92/0.96），图片与文字会透色，
+   因此使用专用的不透明表面 `--clip-detail-face`（四套上下文契约见 styles-themes.test.ts）。
+   top 取负值：滚动容器自身的 padding 会内缩 sticky 约束矩形，top:0 会钉在
+   .clip-body 可视区顶下方 8px，露出一条内容带（WebView2 实测）；-8px 抵消其
+   padding-top，与 .history-day-label 抵消 .tab-content padding 是同一手法。 */
 .clip-detail-head {
   position: sticky;
-  top: 0;
-  z-index: 3;
+  top: -8px;
+  z-index: var(--z-sticky);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3955,7 +3962,7 @@ code {
   padding: 5px 8px 5px 5px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
-  background: var(--surface-overlay);
+  background: var(--clip-detail-face);
   box-shadow: var(--card-shadow);
   font-size: 11.5px;
   color: var(--text-secondary);
@@ -4040,13 +4047,30 @@ code {
 
 .clip-image-wrap {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   padding: 6px;
-  max-height: 320px;
-  overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
   background: var(--surface-base);
+}
+
+/* 详情大图可点击进入灯箱：按钮外观归零，保留图片自身圆角 */
+.clip-image-open {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: zoom-in;
+}
+
+.clip-image-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .clip-image-large {
@@ -4165,6 +4189,374 @@ code {
   white-space: pre-wrap;
   word-break: break-all;
   user-select: text;
+}
+
+/* ── 剪贴板多类型详情（v0.7）：URL 块 / 文件状态 / 视图切换 / 阅读视图 ── */
+
+.clip-block-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* 视图切换（阅读/源码、普通文本/代码）：轻量分段控件 */
+.clip-view-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+
+.clip-view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.clip-view-tab:hover {
+  color: var(--text-primary);
+}
+
+.clip-view-tab.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.clip-view-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* URL 链接专属块 */
+.clip-url-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-base);
+}
+
+.clip-url-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.clip-url-domain {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-url-full {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  user-select: text;
+  overflow-wrap: anywhere;
+  max-height: 60px;
+  overflow-y: auto;
+}
+
+.clip-url-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* 文件行状态徽标：失效文件必须一眼可辨 */
+.clip-path-row.is-missing .clip-path-name,
+.clip-path-row.is-missing .clip-path-full,
+.clip-path-row.is-inaccessible .clip-path-name,
+.clip-path-row.is-inaccessible .clip-path-full {
+  text-decoration: line-through;
+  opacity: 0.72;
+}
+
+.clip-path-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+}
+
+.clip-path-state.ok {
+  color: var(--text-tertiary);
+}
+
+.clip-path-state.missing {
+  color: var(--c-danger, #dc2626);
+  background: color-mix(in srgb, var(--c-danger, #dc2626) 10%, transparent);
+}
+
+.clip-path-state.inaccessible {
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+}
+
+.clip-path-state.checking {
+  color: var(--text-tertiary);
+  background: transparent;
+}
+
+.clip-path-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+/* 代码阅读模式：保留缩进与换行，横向滚动，不重排原始内容 */
+.clip-full-text.as-code {
+  white-space: pre;
+  word-break: normal;
+  overflow-x: auto;
+  tab-size: 4;
+}
+
+/* HTML 阅读视图：白名单渲染结果的基础排版 */
+.clip-doc {
+  margin: 0;
+  padding: 10px 12px;
+  width: 100%;
+  max-height: 280px;
+  overflow: auto;
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-primary);
+  user-select: text;
+  overflow-wrap: break-word;
+}
+
+.clip-doc h1, .clip-doc h2, .clip-doc h3,
+.clip-doc h4, .clip-doc h5, .clip-doc h6 {
+  margin: 0.6em 0 0.35em;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.clip-doc h1 { font-size: 1.25em; }
+.clip-doc h2 { font-size: 1.15em; }
+.clip-doc h3 { font-size: 1.08em; }
+.clip-doc h4, .clip-doc h5, .clip-doc h6 { font-size: 1em; }
+
+.clip-doc p {
+  margin: 0.4em 0;
+}
+
+.clip-doc ul, .clip-doc ol {
+  margin: 0.4em 0;
+  padding-left: 1.5em;
+}
+
+.clip-doc li {
+  margin: 0.15em 0;
+}
+
+.clip-doc blockquote {
+  margin: 0.5em 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.clip-doc pre {
+  margin: 0.5em 0;
+  padding: 8px 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.clip-doc code {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.95em;
+}
+
+.clip-doc table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  max-width: 100%;
+}
+
+.clip-doc th, .clip-doc td {
+  border: 1px solid var(--border-strong);
+  padding: 3px 8px;
+  text-align: left;
+}
+
+.clip-doc th {
+  background: var(--surface-raised);
+  font-weight: 600;
+}
+
+/* 链接在阅读视图中不可点击（不产生主窗口导航面），仅样式提示 */
+.clip-doc-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+/* ── 图片大图预览层（灯箱）── */
+
+.clip-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal-top);
+  display: flex;
+  flex-direction: column;
+  background: var(--clip-lightbox-scrim, rgba(8, 10, 22, 0.78));
+  overscroll-behavior: contain;
+  animation: clip-lightbox-in 0.14s ease-out;
+}
+
+@keyframes clip-lightbox-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.clip-lightbox-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+
+.clip-lightbox-stage.dragging {
+  cursor: grabbing;
+}
+
+.clip-lightbox-stage:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* 缩放完全由 transform 承担：img 不设 max-* 约束，保证几何计算精确 */
+.clip-lightbox-img {
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 14px 56px rgba(0, 0, 0, 0.5);
+  user-select: none;
+  will-change: transform;
+  transform-origin: center center;
+}
+
+.clip-lightbox-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #eef0fb;
+  user-select: none;
+}
+
+/* 底部信息 + 工具条：紧凑单条，浮动于图片下方，不遮挡主体 */
+.clip-lightbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 12px 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-overlay);
+  box-shadow: var(--card-shadow);
+}
+
+.clip-lightbox-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.clip-lightbox-source {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-lightbox-zoom {
+  min-width: 44px;
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.clip-lightbox-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* 窄窗口：详情文件行收起完整路径、灯箱信息栏只留关键项 */
+@media (max-width: 480px) {
+  .clip-path-full {
+    display: none;
+  }
+
+  .clip-lightbox-source,
+  .clip-lightbox-info span:nth-child(2) {
+    display: none;
+  }
+
+  .clip-lightbox-bar {
+    margin: 0 8px 8px;
+  }
 }
 
 .clip-group-title {
@@ -4584,6 +4976,58 @@ code {
   font-size: 10px;
   line-height: 1.55;
   color: var(--text-tertiary);
+}
+
+.clip-paste-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.clip-paste-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--text-tertiary) 10%, transparent);
+}
+
+.clip-paste-item-idx {
+  font-size: 9px;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+.clip-paste-item.st-preparing,
+.clip-paste-item.st-clipboard_written,
+.clip-paste-item.st-input_sent,
+.clip-paste-item.st-settling {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.clip-paste-item.st-confirmed {
+  color: var(--status-success);
+  background: color-mix(in srgb, var(--status-success) 14%, transparent);
+}
+
+.clip-paste-item.st-unverified {
+  color: var(--status-waiting);
+  background: color-mix(in srgb, var(--status-waiting) 14%, transparent);
+}
+
+.clip-paste-item.st-failed {
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
+}
+
+.clip-paste-item.st-cancelled {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
 }
 
 .clip-paste-actions {
@@ -6636,4 +7080,288 @@ code {
   .capsule-panel { width: calc(100vw - 68px); }
 }
 
+}
+
+/* ═══ 规划中（FeatureRoadmapPanel，v0.7）═══
+   统一功能规划目录的展示层：只使用语义 Token，不做硬编码颜色；
+   就地展开详情（无弹层），不新增常驻动画。 */
+
+.roadmap-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 100%;
+}
+
+.roadmap-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.roadmap-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.roadmap-head-desc {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.roadmap-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.roadmap-sum {
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.roadmap-sum.muted {
+  color: var(--text-tertiary);
+  border-style: dashed;
+}
+
+/* 状态点色只用于徽标文字，不用大面积底色，深浅主题下都可读 */
+.roadmap-sum.s-implemented { color: var(--status-success); }
+.roadmap-sum.s-partial { color: var(--status-waiting); }
+.roadmap-sum.s-planned { color: var(--text-secondary); }
+.roadmap-sum.s-blocked { color: var(--status-disconnected); }
+
+.roadmap-search {
+  flex: 0 1 200px;
+  min-width: 140px;
+}
+
+.roadmap-filter-hint {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.roadmap-empty {
+  padding: 28px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 10px;
+}
+
+.roadmap-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.roadmap-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.roadmap-section-head h4 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.roadmap-section-desc {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roadmap-section-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.roadmap-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.roadmap-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  overflow: hidden;
+  transition: border-color 120ms ease;
+}
+
+.roadmap-card:hover {
+  border-color: var(--border-strong);
+}
+
+.roadmap-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.roadmap-card-head:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.roadmap-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.roadmap-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roadmap-card-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.roadmap-chevron {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform 140ms ease;
+}
+
+.roadmap-chevron.open {
+  transform: rotate(180deg);
+}
+
+.roadmap-status {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.roadmap-status.s-implemented { color: var(--status-success); }
+.roadmap-status.s-partial { color: var(--status-waiting); }
+.roadmap-status.s-planned { color: var(--text-tertiary); }
+.roadmap-status.s-blocked { color: var(--status-disconnected); }
+
+.roadmap-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 12px 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.roadmap-cta {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.roadmap-cta.c-implemented { color: var(--status-success); }
+.roadmap-cta.c-partial { color: var(--status-waiting); }
+.roadmap-cta.c-planned { color: var(--text-secondary); }
+.roadmap-cta.c-blocked { color: var(--status-disconnected); }
+
+.roadmap-detail-text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.roadmap-field h4 {
+  margin: 0 0 4px;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+}
+
+.roadmap-field ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.roadmap-field li {
+  position: relative;
+  padding-left: 12px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.roadmap-field li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0.62em;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+}
+
+.roadmap-verify {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+/* 窄窗：400px 下区块头允许换行，摘要行不撑破 */
+@media (max-width: 400px) {
+  .roadmap-section-head {
+    flex-wrap: wrap;
+  }
+  .roadmap-section-desc {
+    white-space: normal;
+  }
 }

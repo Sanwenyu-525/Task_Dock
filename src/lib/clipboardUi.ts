@@ -53,6 +53,54 @@ export function sourceLabel(sourceApp: string, sourceTitle: string): string {
   return sourceTitle && sourceTitle !== sourceApp ? `${app} · ${sourceTitle}` : app;
 }
 
+/** 从 URL 提取域名；非 http/https 或解析失败返回空串（调用方不展示假域名）。 */
+export function urlDomain(url: string): string {
+  try {
+    const u = new URL(url.trim());
+    return u.protocol === "http:" || u.protocol === "https:" ? u.hostname : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 判断纯文本是否「像代码」——只影响详情页默认视图，不影响数据。
+ *
+ * 信号（加权）：缩进行占比、代码关键字/惯用符号行占比、含语法符号行占比；
+ * 反信号：成句的自然语言（以句末标点结尾且词数较多、无语法符号）。
+ * 阈值取「缩进+关键字共现」才判 true，避免把 Markdown、长 URL、普通段落误判。
+ */
+export function looksLikeCode(text: string): boolean {
+  if (!text) return false;
+  const lines = text.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length < 3) return false;
+  const KW =
+    /\b(function|def|class|import|export|from|const|let|var|return|if|else|for|while|switch|case|break|package|public|private|static|void|struct|impl|fn|use|mod|namespace|using|enum|interface|type|async|await|yield|try|catch|finally|throw|SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|JOIN)\b|=>|::|->|&&|\|\||#include|<\/(?:div|span|p|li|td|tr|a|h[1-6])>|^\s*<[a-z!][a-z-]*[^>]*>/i;
+  let indented = 0;
+  let keyword = 0;
+  let symbol = 0;
+  let prose = 0;
+  for (const raw of lines) {
+    const l = raw.trimEnd();
+    if (/^(\s{2,}|\t)/.test(l)) indented += 1;
+    if (KW.test(l)) keyword += 1;
+    if (/[{};=<>[\]()]|^\s*[/*#<]/.test(l)) symbol += 1;
+    // 自然语言行：句末标点收尾、足够长、且没有语法符号
+    if (/[。．.!?！？]["'」』）)]?$/.test(l.trim()) && l.trim().split(/\s+/).length >= 6 && !/[{};=<>[\]()]/.test(l)) {
+      prose += 1;
+    }
+  }
+  const n = lines.length;
+  let score = 0;
+  if (indented / n >= 0.25) score += 2;
+  else if (indented / n >= 0.1) score += 1;
+  if (keyword / n >= 0.4) score += 2;
+  else if (keyword / n >= 0.15) score += 1;
+  if (symbol / n >= 0.5) score += 1;
+  if (prose / n >= 0.5) score -= 3;
+  return score >= 3;
+}
+
 /**
  * 操作提示里带的对象信息：优先标题，其次截断预览，最后退回来源。
  * 只用来让用户认出「刚才动的是哪一条」，不展开完整正文。

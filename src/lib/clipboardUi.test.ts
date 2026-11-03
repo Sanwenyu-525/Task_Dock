@@ -4,7 +4,9 @@ import {
   RICH_HTML_ITEM_LIMIT,
   copyPreflight,
   formatBytes,
+  looksLikeCode,
   sourceLabel,
+  urlDomain,
 } from "./clipboardUi";
 
 describe("sourceLabel", () => {
@@ -75,5 +77,82 @@ describe("copyPreflight", () => {
     const p = copyPreflight([{ kind: "text", byte_size: Number.NaN }]);
     expect(p.totalBytes).toBe(0);
     expect(Number.isNaN(p.estimatedEmbedBytes)).toBe(false);
+  });
+});
+
+describe("urlDomain", () => {
+  it("http/https 提取域名", () => {
+    expect(urlDomain("https://example.com/a/b?x=1")).toBe("example.com");
+    expect(urlDomain("http://127.0.0.1:8080/x")).toBe("127.0.0.1");
+    // URL API 对国际化域名返回 punycode 形式（标准行为，且能防同形异义字符伪装）
+    expect(urlDomain("  https://文档.example.cn/  ")).toBe("xn--7dvp7d.example.cn");
+  });
+
+  it("非 http/https 与解析失败返回空串，不产出假域名", () => {
+    expect(urlDomain("javascript:alert(1)")).toBe("");
+    expect(urlDomain("file:///C:/Windows")).toBe("");
+    expect(urlDomain("not a url")).toBe("");
+    expect(urlDomain("")).toBe("");
+  });
+});
+
+describe("looksLikeCode", () => {
+  it("缩进 + 关键字共现的代码判为 true", () => {
+    const js = [
+      "function add(a, b) {",
+      "  const sum = a + b;",
+      "  return sum;",
+      "}",
+    ].join("\n");
+    expect(looksLikeCode(js)).toBe(true);
+
+    const rust = [
+      "fn main() {",
+      "    let x = vec![1, 2, 3];",
+      "    for v in &x {",
+      "        println!(\"{}\", v);",
+      "    }",
+      "}",
+    ].join("\n");
+    expect(looksLikeCode(rust)).toBe(true);
+  });
+
+  it("普通中文/英文段落判为 false（自然语言反信号）", () => {
+    const zh = [
+      "task_dock 是一个 Windows 桌面任务启动器。",
+      "这次升级把剪贴板变成轻量的多类型内容管理器。",
+      "不同类型的内容提供专属的详情和操作，交互保持统一。",
+    ].join("\n");
+    expect(looksLikeCode(zh)).toBe(false);
+
+    const en = [
+      "The quick brown fox jumps over the lazy dog near the river bank.",
+      "Then it ran across the field and disappeared into the woods.",
+      "Nobody saw where it went, and the story ends there.",
+    ].join("\n");
+    expect(looksLikeCode(en)).toBe(false);
+  });
+
+  it("Markdown 列表与短文本不误判", () => {
+    expect(looksLikeCode("- 第一项\n- 第二项\n- 第三项")).toBe(false);
+    expect(looksLikeCode("单行内容")).toBe(false);
+    expect(looksLikeCode("")).toBe(false);
+  });
+
+  it("两行以内不足置信度，按普通文本处理", () => {
+    expect(looksLikeCode("npm install -g pnpm\nnpx tsc --noEmit")).toBe(false);
+  });
+
+  it("JSON 带缩进与符号判为 true（等宽阅读更合适）", () => {
+    const json = [
+      "{",
+      '  "name": "task-dock",',
+      '  "version": "0.7.0",',
+      '  "deps": {',
+      '    "react": "18.0.0"',
+      "  }",
+      "}",
+    ].join("\n");
+    expect(looksLikeCode(json)).toBe(true);
   });
 });
