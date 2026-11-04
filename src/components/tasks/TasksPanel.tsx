@@ -2,12 +2,14 @@
 //! 筛选器视觉权重低于任务本身；搜索可展开收起，不占常驻高度。
 //! v0.6：卡片层级与空状态插画按视觉预设重绘（结构不变，两套皮肤共用）。
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import QuickAdd from "./QuickAdd";
 import QuickReminder from "./QuickReminder";
 import ActiveReminders from "./ActiveReminders";
 import TaskItem from "./TaskItem";
 import { useTasksStore } from "../../store/useTasksStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { locateElement } from "../global-search/locate";
 import { Select } from "../ui";
 import { Search, X, ListChecks, CalendarClock, AlertTriangle, Inbox, Sparkles } from "lucide-react";
 
@@ -36,11 +38,31 @@ export default function TasksPanel() {
   const setFilter = useTasksStore((s) => s.setFilter);
   const tasks = useTasksStore((s) => s.tasks);
   const loading = useTasksStore((s) => s.loading);
+  const error = useTasksStore((s) => s.error);
+  const refresh = useTasksStore((s) => s.refresh);
   const stats = useTasksStore((s) => s.stats);
   const [searchOpen, setSearchOpen] = useState(false);
 
   const hasSearch = !!filter.search?.trim();
   const searchVisible = searchOpen || hasSearch;
+
+  // 全局搜索定位：消费一次性意图（只处理任务类；workspace 意图由 TaskContextDrawer 消费）。
+  // 用关键词过滤确保目标可见，数据渲染后滚动高亮。
+  const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
+  const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
+  useEffect(() => {
+    if (!pendingLocate || pendingLocate.category !== "tasks") return;
+    const intent = pendingLocate;
+    consumeLocate();
+    if (filter.view !== "all" || filter.status !== "all" || filter.search !== intent.keyword) {
+      setFilter({ view: "all", status: "all", search: intent.keyword });
+    }
+    locateElement({
+      find: () => document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(intent.id)}"]`),
+    });
+    // 仅响应定位意图变化；filter 等依赖刻意不列入，避免重复消费。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLocate]);
 
   return (
     <div className="tasks-panel">
@@ -163,13 +185,33 @@ export default function TasksPanel() {
       )}
 
       <div className="task-list">
-        {loading && tasks.length === 0 && (
+        {error && tasks.length > 0 && (
+          // 列表刷新失败：保留上次结果并明确标记「可能不是最新」，不伪装成已刷新
+          <div className="empty-hint error-text task-list-error" role="status">
+            列表刷新失败：{error}（当前显示上次结果）
+            <button className="btn sm" onClick={() => void refresh()}>
+              重试
+            </button>
+          </div>
+        )}
+        {loading && tasks.length === 0 && !error && (
           <div className="empty-state">
             <div className="empty-icon"><ListChecks size={22} /></div>
             <div className="empty-title">加载中…</div>
           </div>
         )}
-        {!loading && tasks.length === 0 && (
+        {!loading && error && tasks.length === 0 && (
+          // 读取失败 ≠ 没有任务：给出真实错误与重试入口
+          <div className="empty-state" role="alert">
+            <div className="empty-icon"><AlertTriangle size={22} /></div>
+            <div className="empty-title">任务读取失败</div>
+            <div className="empty-hint error-text">{error}</div>
+            <button className="btn sm primary" onClick={() => void refresh()}>
+              重试
+            </button>
+          </div>
+        )}
+        {!loading && !error && tasks.length === 0 && (
           <div className="empty-state">
             {/* 轻量插画：纯 CSS 渐变气泡 + 一个 SVG 图标，无位图资源 */}
             <div className="empty-art" aria-hidden="true">

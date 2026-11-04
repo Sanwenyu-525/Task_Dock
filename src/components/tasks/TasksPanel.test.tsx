@@ -134,4 +134,36 @@ describe("TasksPanel 筛选交互", () => {
     expect(screen.getByText("旧任务")).toBeTruthy();
     expect(useTasksStore.getState().filter.status).toBe("completed");
   });
+
+  it("读取失败显示真实错误与重试，不伪装成「暂无任务」", () => {
+    useTasksStore.setState({
+      tasks: [],
+      loading: false,
+      error: "数据库操作失败",
+      stats: null,
+      filter: { view: "all", status: "all", sort: "due" },
+    });
+    render(<TasksPanel />);
+
+    expect(screen.getByText("任务读取失败")).toBeTruthy();
+    expect(screen.getByText(/数据库操作失败/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+    // 空状态文案不能被当成正常无任务展示
+    expect(screen.queryByText("这里还很清爽")).toBeNull();
+  });
+
+  it("列表刷新失败但仍有旧数据时：保留任务并标记数据可能过期", () => {
+    useTasksStore.setState({
+      tasks: ALL_TASKS,
+      loading: false,
+      error: "网络超时",
+      stats: null,
+      filter: { view: "all", status: "all", sort: "due" },
+    });
+    render(<TasksPanel />);
+
+    expect(screen.getByText("买牛奶")).toBeTruthy();
+    expect(screen.getByText(/列表刷新失败/)).toBeTruthy();
+    expect(screen.queryByText("任务读取失败")).toBeNull();
+  });
 });

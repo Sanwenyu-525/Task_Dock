@@ -1,0 +1,414 @@
+@layer base, theme, ui, menu;
+
+@layer ui {
+  /* ── 全局搜索弹窗（v0.9）────────────────────────────────
+     仅使用语义 Token（--dialog-face/--dialog-shadow/--dialog-scrim 等），
+     不自造颜色/圆角/阴影；弹层为 overlayStack "dialog" 层（--z-dialog）。 */
+
+  .gs-mask {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 8vh 16px 16px;
+  }
+
+  .gs-panel {
+    width: min(560px, 100%);
+    max-height: min(70vh, 560px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+    gap: 0;
+  }
+
+  /* 输入行 */
+  .gs-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--divider);
+    flex: none;
+  }
+
+  .gs-input-icon {
+    color: var(--text-secondary);
+    flex: none;
+  }
+
+  .gs-input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
+  .gs-input::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .gs-iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    flex: none;
+    border-radius: var(--radius-sm, 8px);
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+  }
+
+  .gs-iconbtn:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+  }
+
+  .gs-iconbtn:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--accent));
+    outline-offset: 1px;
+  }
+
+  .gs-loading {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-secondary);
+    flex: none;
+  }
+
+  .gs-spin {
+    animation: gs-rotate 0.9s linear infinite;
+  }
+
+  @keyframes gs-rotate {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* 分类筛选行 */
+  .gs-cats {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    flex: none;
+  }
+
+  .gs-cats::-webkit-scrollbar {
+    display: none;
+  }
+
+  .gs-cat {
+    flex: none;
+    padding: 3px 10px;
+    font-size: 12px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .gs-cat:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+  }
+
+  .gs-cat.active {
+    background: var(--accent-soft-bg, var(--hover-bg));
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
+
+  .gs-cat:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--accent));
+    outline-offset: 1px;
+  }
+
+  /* 结果区 */
+  .gs-body {
+    flex: 1;
+    min-height: 120px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 6px 8px;
+  }
+
+  .gs-results {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .gs-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 8px 3px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    position: sticky;
+    top: 0;
+    background: var(--dialog-face);
+    z-index: 1;
+  }
+
+  .gs-group-more {
+    font-weight: 400;
+    font-size: 10px;
+  }
+
+  .gs-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: var(--radius-sm, 8px);
+    background: transparent;
+    color: var(--text-primary);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .gs-item:hover,
+  .gs-item.active {
+    background: var(--hover-bg);
+  }
+
+  .gs-item:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--accent));
+    outline-offset: -2px;
+  }
+
+  .gs-item-icon {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    border-radius: var(--radius-sm, 8px);
+    background: var(--hover-bg);
+    color: var(--text-secondary);
+    overflow: hidden;
+  }
+
+  .gs-item-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .gs-item-title {
+    font-size: 13px;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gs-item-sub {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  .gs-item-from {
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gs-item-snippet {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gs-item-side {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
+    font-size: 10px;
+    color: var(--text-tertiary);
+  }
+
+  .gs-item-status {
+    max-width: 88px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gs-hit {
+    background: var(--accent-soft-bg, var(--hover-bg));
+    color: var(--text-primary);
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+
+  /* 最近搜索 */
+  .gs-recent {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px 4px;
+  }
+
+  .gs-recent-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 3px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  .gs-recent-clear {
+    margin-inline-start: auto;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm, 8px);
+  }
+
+  .gs-recent-clear:hover {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+  }
+
+  .gs-recent-item {
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: start;
+    font-size: 13px;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm, 8px);
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gs-recent-item:hover {
+    background: var(--hover-bg);
+  }
+
+  .gs-recent-item:focus-visible {
+    outline: 2px solid var(--focus-ring, var(--accent));
+    outline-offset: -2px;
+  }
+
+  /* 状态 */
+  .gs-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 28px 12px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+  }
+
+  .gs-state.gs-error {
+    color: var(--status-error, #d64545);
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .gs-retry {
+    border: 1px solid var(--divider);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 12px;
+    padding: 4px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  .gs-retry:hover {
+    background: var(--hover-bg);
+  }
+
+  /* 提示条（跳转失败等） */
+  .gs-notice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 12px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm, 8px);
+    background: var(--hover-bg);
+    color: var(--text-primary);
+    font-size: 12px;
+    flex: none;
+  }
+
+  .gs-notice span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 底部键位说明 */
+  .gs-foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 12px 8px;
+    border-top: 1px solid var(--divider);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    flex: none;
+  }
+
+  .gs-foot-hint {
+    margin-inline-start: auto;
+  }
+
+  /* reduced-motion：关闭旋转动画以外的持续动画（旋转本身尊重用户偏好则停用） */
+  @media (prefers-reduced-motion: reduce) {
+    .gs-spin {
+      animation: none;
+    }
+  }
+
+  /* 窄窗：320/400 全宽贴合 */
+  @media (max-width: 400px) {
+    .gs-mask {
+      padding: 5vh 8px 8px;
+    }
+  }
+}
