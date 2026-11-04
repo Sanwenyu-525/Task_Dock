@@ -200,13 +200,97 @@ describe("清透玻璃材质约束", () => {
     expect(stripComments(themesCss)).not.toMatch(/backdrop-filter\s*:/);
   });
 
-  it("清透前景覆盖只改前景与可读面，不改变玻璃材质", () => {
+  it("清透前景覆盖只改前景与可读面，不改变窗口整体玻璃材质", () => {
     const rules = TOKEN_RULES.filter((r) => r.selector.includes("data-clear-fg="));
-    expect(rules.length, "缺少清透前景的强制色板规则").toBe(2);
+    // 5d.5：只改文字/菜单前景；5d.7：追加「前景↔表面」配对色板
+    // （深色文字配浅色玻璃面、浅色文字配深色玻璃面，避免文字与背景一起变淡）。
+    expect(rules.length, "缺少清透前景的强制色板规则").toBe(4);
     for (const rule of rules) {
-      expect(rule.body).not.toMatch(/--window-fill|--window-edge|--card-face|--decor-opacity/);
+      // 窗口外壳透明度与边光属于窗口材质，不属于前景色板：
+      // 只改前景色板、不改窗口整体透明度，因此任何前景覆盖都不得改动这些令牌。
+      expect(rule.body).not.toMatch(/--window-fill|--window-edge|--decor-opacity|--glass-tint/);
     }
   });
+
+  it("清透前景在纯白/纯黑桌面最坏情况下仍达到 AA 4.5:1", () => {
+    const rgbaOf = (v: string): [number, number, number, number] | null => {
+      const hex = /#([0-9a-f]{6})\b/i.exec(v);
+      if (hex) {
+        const n = parseInt(hex[1], 16);
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255, 1];
+      }
+      const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(v);
+      return m ? [+m[1], +m[2], +m[3], m[4] ? +m[4] : 1] : null;
+    };
+    const lum = ([r, g, b]: number[]): number => {
+      const f = (c: number) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+    };
+    const contrast = (a: number[], b: number[]): number => {
+      const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const surfaceOver = (face: string, base: number[]): number[] => {
+      const stops = [...face.matchAll(/rgba?\([^)]*\)/g)]
+        .map((m) => rgbaOf(m[0]))
+        .filter((x): x is [number, number, number, number] => !!x);
+      const last = stops[stops.length - 1] ?? [255, 255, 255, 0];
+      if (stops.length === 0) return last.slice(0, 3);
+      return [0, 1, 2].map((i) => last[i] * last[3] + base[i] * (1 - last[3]));
+    };
+    const foreground = (fg: "dark" | "light"): string => {
+      const rule = TOKEN_RULES.find(
+        (r) => r.selector.includes(`data-clear-fg="${fg}"`) && !r.selector.includes("data-material"),
+      );
+      const m = rule?.body.match(/--text-primary:\s*([^;]+);/);
+      return m ? m[1].trim() : "";
+    };
+    const faceOf = (fg: "dark" | "light", token: string): string => {
+      const rule = TOKEN_RULES.find(
+        (r) =>
+          r.selector.includes(`data-clear-fg="${fg}"`) && r.selector.includes('data-material="glass"'),
+      );
+      return rule?.body.match(new RegExp(`${token}:\\s*([^;]+);`))?.[1] ?? "";
+    };
+
+    for (const fg of ["dark", "light"] as const) {
+      const text = rgbaOf(foreground(fg));
+      expect(text, `${fg} 前景色不可解析`).toBeTruthy();
+      // 深色文字最怕纯黑桌面、浅色文字最怕纯白桌面：按最坏底色合成本地表面。
+      const base = fg === "dark" ? [0, 0, 0] : [255, 255, 255];
+      for (const token of ["--card-face", "--control-face"]) {
+        const ratio = contrast(text!.slice(0, 3), surfaceOver(faceOf(fg, token), base));
+        expect(ratio, `${fg} 前景在 ${token} 最坏底色下对比度不足`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
+  it("清透前景与表面配对：深字配浅面、浅字配深面", () => {
+    const paired = TOKEN_RULES.filter(
+      (r) => r.selector.includes("data-clear-fg=") && r.selector.includes('data-material="glass"'),
+    );
+    expect(paired.length, "缺少清透前景的配对表面规则").toBe(2);
+    const dark = paired.find((r) => r.selector.includes('data-clear-fg="dark"'));
+    const light = paired.find((r) => r.selector.includes('data-clear-fg="light"'));
+    expect(dark, "缺少深色文字配对规则").toBeTruthy();
+    expect(light, "缺少浅色文字配对规则").toBeTruthy();
+    // 深字必须落在浅色玻璃面上（白系渐变），否则深色桌面上会「字面同色」不可读。
+    for (const surface of ["--card-face", "--control-face", "--inset-face"]) {
+      expect(dark!.body, `深字配浅面缺少 ${surface}`).toMatch(
+        new RegExp(`${surface}:\\s*[^;]*rgba\\(255, 255, 255`),
+      );
+      expect(light!.body, `浅字配深面缺少 ${surface}`).toMatch(
+        new RegExp(`${surface}:\\s*[^;]*rgba\\((6|14|16),`),
+      );
+    }
+    // 导航轨与悬停面同属可读面，必须一起配对，否则图标/选中项跟着背景变淡。
+    expect(dark!.body).toMatch(/--rail-bg|--rail-active-face/);
+    expect(light!.body).toMatch(/--rail-bg|--rail-active-face/);
+  });
+
 
   it("关闭玻璃材质时清透预设回退到不透明窗口", () => {
     const solid = computedTokens({ preset: "clear", theme: "light", render: "solid" });

@@ -970,6 +970,18 @@ code {
   gap: 5px;
 }
 
+/* 列表刷新失败横幅：保留旧数据 + 明确标记过期 + 重试，不伪装成已刷新 */
+.task-list-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-base, 12px);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+  font-size: 12px;
+}
+
 /* 任务卡（方案 D）：优先级由 .priority-tag 表达，卡片本体不再画常驻左色条；
    卡面、圆角、阴影与内边距统一由 .task-card 壳在 theme 层下发（任务列表页为基准），
    行动中心 / Agent 轮次 / 规划中心 / 内置路线图卡片共用同一套卡面 Token。 */
@@ -3017,6 +3029,189 @@ code {
   flex-shrink: 0;
 }
 
+.picker-count {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 2px 2px 0;
+}
+
+.picker-more {
+  align-self: center;
+  margin: 4px 0 2px;
+}
+
+.picker-scan-warn {
+  color: var(--text-secondary);
+  border-style: dashed;
+}
+
+/* 添加应用子页面（v0.11）：内容区内的独立页面，不遮罩主界面。
+   头/底常驻，列表在中间独立滚动；高度由父级 tab-content 约束，不写死像素。 */
+.app-picker-page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+}
+
+.app-picker-page-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.app-picker-page-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.app-picker-page-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.picker-selected-count {
+  font-size: 11.5px;
+  color: var(--accent);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+}
+
+.picker-cats-scroll {
+  flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+
+.picker-cats-scroll .picker-cats {
+  flex-wrap: nowrap;
+  width: max-content;
+}
+
+.app-picker-page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px;
+}
+
+.app-picker-page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px;
+}
+
+.app-picker-page-grid .picker-app {
+  width: 100%;
+}
+
+.picker-app.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.picker-app.selected .picker-app-meta {
+  font-weight: 600;
+}
+
+.picker-app.is-saved {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.picker-app:disabled {
+  cursor: default;
+}
+
+.picker-advanced {
+  margin-left: 8px;
+  font-size: 10px;
+}
+
+.app-picker-page-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* 运行窗口列表：标题/来源与操作按钮分两行，窄窗不挤压 */
+.picker-window-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+}
+
+.picker-window-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.picker-window-info .picker-window-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-window-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+
+/* 统一应用图标：真实图标保留透明背景与宽高比，加载/失败时回退字母，不套彩色底 */
+.app-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  line-height: 1;
+}
+
+.app-icon-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: transparent;
+}
+
+.app-icon-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  color: #fff;
+  font-weight: 600;
+}
+
 .manual-add-form {
   display: flex;
   flex-direction: column;
@@ -3119,6 +3314,242 @@ code {
 .workspace-summary.tone-bad {
   color: var(--status-error);
   background: color-mix(in srgb, var(--status-error) 8%, transparent);
+}
+
+/* 应用中心（完整模式左侧「应用」，v0.10）：普通应用网格 + 网址/文件夹分区 */
+.apps-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.apps-head {
+  flex-wrap: wrap;
+}
+
+.apps-filter-bar {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.apps-search {
+  min-width: 150px;
+  max-width: 240px;
+}
+
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  align-content: start;
+}
+
+.apps-tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.apps-tile-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 10px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.apps-tile-main:hover {
+  background: var(--accent-soft);
+}
+
+.apps-tile-main:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+.apps-tile-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.apps-tile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.apps-tile-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-tile-state {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.apps-tile-state.is-ok {
+  color: var(--status-success);
+}
+
+.apps-tile-state.is-idle {
+  color: var(--status-waiting);
+}
+
+.apps-tile-state.is-bad {
+  color: var(--status-error);
+}
+
+.apps-tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px 5px;
+}
+
+.apps-tile-add {
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 78px;
+  padding: 14px 8px;
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.apps-tile-add:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.apps-extras {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.apps-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.apps-extra-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.apps-extra-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px dashed var(--border-subtle);
+}
+
+.apps-extra-row:last-child {
+  border-bottom: none;
+}
+
+.apps-extra-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.apps-extra-main:hover {
+  background: var(--surface-hover);
+}
+
+.apps-extra-main:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+.apps-extra-icon {
+  display: inline-flex;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.apps-extra-type {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* 选择器扫描失败提示与已隐藏目标恢复条 */
+.picker-scan-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.app-picker-restore {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--status-waiting) 40%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--status-waiting) 10%, transparent);
+  font-size: 12px;
+}
+
+.app-picker-restore-text {
+  color: var(--text-primary);
+}
+
+.app-picker-restore-actions {
+  display: flex;
+  gap: 6px;
+}
+
+@media (max-width: 720px) {
+  .apps-search {
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
 }
 
 /* 应用管理（设置） */
@@ -6776,6 +7207,39 @@ code {
   pointer-events: none;
   cursor: default;
 }
+
+/* 形态切换按钮（胶囊 → 完整面板）：复用收起按钮 26px 尺寸与材质，
+   只多一个沿轨道的间距，不重排既有按钮。 */
+.cap-form { margin-top: 4px; }
+.cap-h .cap-form { margin-top: 0; margin-left: 4px; }
+
+/* 完整面板停靠态的轻量「收缩为胶囊」入口：贴着停靠边居中悬浮，
+   不占内容布局；宽度/圆角/色板沿用胶囊按钮 Token，深浅主题自动跟随。 */
+.cap-form-toggle {
+  position: absolute;
+  z-index: 20;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: var(--wing-panel-base);
+  box-shadow: var(--cap-panel-ring), 0 2px 10px -6px var(--c-night);
+  color: var(--wing-collapse);
+  opacity: 0.72;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.cap-form-toggle:hover { opacity: 1; background: var(--wing-hover); color: var(--text-primary); }
+.cap-form-toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-form-toggle:disabled { opacity: 0.35; cursor: default; }
+.cap-form-toggle[data-edge="left"] { left: 6px; top: 50%; transform: translateY(-50%); }
+.cap-form-toggle[data-edge="right"] { right: 6px; top: 50%; transform: translateY(-50%); }
+.cap-form-toggle[data-edge="top"] { top: 6px; left: 50%; transform: translateX(-50%); }
+.cap-form-toggle[data-edge="bottom"] { bottom: 6px; left: 50%; transform: translateX(-50%); }
 
 /* ── 功能面板外壳 ─────────────────────────────────────────────
    参考图的面板是一块**单层**玻璃卡：一个 24px 圆角、一圈 1px 白内描边、
