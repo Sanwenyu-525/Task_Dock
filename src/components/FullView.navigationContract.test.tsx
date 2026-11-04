@@ -19,6 +19,7 @@ import { cleanup, render } from "@testing-library/react";
 vi.mock("./tasks/TasksPanel", () => ({ default: () => <div>tasks-panel</div> }));
 vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }));
 vi.mock("./apps/AppsPanel", () => ({ default: () => <div>apps-panel</div> }));
+vi.mock("./widgets/WidgetsPanel", () => ({ default: () => <div>widgets-panel</div> }));
 vi.mock("./actions/ActionCenterPanel", () => ({ default: () => <div>actions-panel</div> }));
 vi.mock("./clipboard/ClipboardPanel", () => ({ default: () => <div>clipboard-panel</div> }));
 vi.mock("./collection/CollectionPanel", () => ({ default: () => <div>collection-panel</div> }));
@@ -45,17 +46,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("脚本侧导航契约与真实导航一致", () => {
-  it("视觉入口 10 项；逻辑 Tab 10 项且与 TAB_ORDER 完全一致", () => {
-    expect(RAIL_ITEM_COUNT).toBe(10);
+  it("视觉入口 11 项；逻辑 Tab 10 项且与 TAB_ORDER 完全一致", () => {
+    expect(RAIL_ITEM_COUNT).toBe(11);
     expect([...LOGICAL_TABS]).toEqual([...TAB_ORDER]);
-    // 合并入口覆盖 inbox+shelf，其余 1:1；「应用」是仅视觉入口
+    // 合并入口覆盖 inbox+shelf，其余 1:1；「应用」「微件」是仅视觉入口
     const covered = RAIL_ENTRIES.flatMap((e) => (e.tabs ?? [e.id]));
     expect([...covered].sort()).toEqual([...TAB_ORDER, ...RAIL_ONLY_TABS].sort());
     expect(RAIL_ENTRIES.find((e) => e.id === "collection")?.tabs).toEqual(["inbox", "shelf"]);
-    // 视觉顺序：应用位于 Agent 之后、行动之前
+    // 视觉顺序：应用位于 Agent 之后、行动之前；微件紧随应用之后
     const visual = RAIL_ENTRIES.map((e) => e.id);
     expect(visual.indexOf("apps")).toBe(visual.indexOf("agents") + 1);
-    expect(visual.indexOf("apps")).toBe(visual.indexOf("actions") - 1);
+    expect(visual.indexOf("actions")).toBe(visual.indexOf("apps") + 2);
     expect([...RAIL_ORDER]).toEqual([...RAIL_ENTRIES.flatMap((e) => e.tabs ?? [e.id])]);
   });
 

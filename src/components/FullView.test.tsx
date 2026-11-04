@@ -17,6 +17,7 @@ import userEvent from "@testing-library/user-event";
 vi.mock("./tasks/TasksPanel", () => ({ default: () => <div>tasks-panel</div> }));
 vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }));
 vi.mock("./apps/AppsPanel", () => ({ default: () => <div>apps-panel</div> }));
+vi.mock("./widgets/WidgetsPanel", () => ({ default: () => <div>widgets-panel</div> }));
 vi.mock("./actions/ActionCenterPanel", () => ({ default: () => <div>actions-panel</div> }));
 vi.mock("./clipboard/ClipboardPanel", () => ({ default: () => <div>clipboard-panel</div> }));
 vi.mock("./inbox/CaptureInboxPanel", () => ({ default: () => <div>inbox-panel</div> }));
@@ -55,11 +56,11 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("渲染十个视觉导航入口与顶部新建按钮（收集箱+暂存架合并）", () => {
+  it("渲染十一个视觉导航入口与顶部新建按钮（收集箱+暂存架合并）", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["任务", "Agent", "应用", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
+    for (const label of ["任务", "Agent", "应用", "微件", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
     expect(screen.queryByRole("button", { name: /^暂存架/ })).toBeNull();
@@ -80,6 +81,7 @@ describe("完整模式左侧导航", () => {
       "任务",
       "Agent",
       "应用",
+      "微件",
       "行动",
       "剪贴板",
       "收集与暂存",
@@ -93,6 +95,11 @@ describe("完整模式左侧导航", () => {
     expect(screen.getByText("apps-panel")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("apps");
     expect(navItem("应用").getAttribute("aria-current")).toBe("page");
+
+    await user.click(navItem("微件"));
+    expect(screen.getByText("widgets-panel")).toBeTruthy();
+    expect(useUiStore.getState().tab).toBe("widgets");
+    expect(navItem("微件").getAttribute("aria-current")).toBe("page");
   });
 
   it("点击导航切换面板，并保留 aria-current 语义", async () => {

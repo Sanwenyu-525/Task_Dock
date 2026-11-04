@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { translate } from "../../i18n";
 import {
   defaultWidgetItems,
   enabledWidgets,
@@ -28,9 +29,13 @@ describe("widget model defaults", () => {
     expect(enabled.has("efficiency")).toBe(false);
   });
 
-  it("每个类型都能取到定义", () => {
+  it("每个类型都有标题/描述键，且中英文文案均非空", () => {
     for (const type of WIDGET_TYPES) {
-      expect(widgetDefinition(type).title.length).toBeGreaterThan(0);
+      const def = widgetDefinition(type);
+      expect(translate("zh-CN", def.titleKey).length).toBeGreaterThan(0);
+      expect(translate("en-US", def.titleKey).length).toBeGreaterThan(0);
+      expect(translate("zh-CN", def.descriptionKey).length).toBeGreaterThan(0);
+      expect(translate("en-US", def.descriptionKey).length).toBeGreaterThan(0);
     }
   });
 });

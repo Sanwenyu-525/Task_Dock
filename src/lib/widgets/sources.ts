@@ -10,6 +10,45 @@ export interface WidgetSource<T> {
   subscribe: (onChange: () => void) => () => void;
 }
 
+/**
+ * 把「原始快照 + 派生映射」包装成契约数据源。
+ *
+ * `getSnapshot` 只在原始引用变化时重新执行 `map` 并缓存结果，因此映射函数里
+ * **可以**创建新对象而不会触发 useSyncExternalStore 的无限重渲染；前提是
+ * `getRaw` 在数据未变时返回稳定引用（zustand store 的快照字段天然满足）。
+ *
+ * 典型用法（专注计时）：
+ * ```ts
+ * const focusSource = createMappedWidgetSource(
+ *   () => useFocusStore.getState().snapshot,
+ *   (onChange) => useFocusStore.subscribe(onChange),
+ *   (raw) => mapFocusSnapshot(raw, useFocusStore.getState().snapshotAt),
+ * );
+ * ```
+ */
+export function createMappedWidgetSource<Raw, T>(
+  getRaw: () => Raw | null,
+  subscribe: (onChange: () => void) => () => void,
+  map: (raw: Raw | null) => T | null,
+): WidgetSource<T> {
+  let seeded = false;
+  let lastRaw: Raw | null = null;
+  let lastValue: T | null = null;
+
+  return {
+    subscribe,
+    getSnapshot() {
+      const raw = getRaw();
+      if (!seeded || raw !== lastRaw) {
+        seeded = true;
+        lastRaw = raw;
+        lastValue = map(raw);
+      }
+      return lastValue;
+    },
+  };
+}
+
 export type FocusPhase = "idle" | "focus" | "break" | "paused";
 
 export interface FocusSnapshot {

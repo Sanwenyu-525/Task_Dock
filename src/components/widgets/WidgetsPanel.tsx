@@ -5,11 +5,12 @@
 //! - 本组件同时是未来独立桌面窗口的复用入口：传入 sources 即可获得 A/C 数据。
 //! - 独立窗口的多窗口透明/置顶/点击穿透/DPI 支持尚未验证，因此第一版不创建。
 
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { Blocks, LayoutGrid, RotateCcw, SlidersHorizontal } from "lucide-react";
 
 import { enabledWidgets, type WidgetConfig, type WidgetSize } from "../../lib/widgets/model";
 import type { WidgetSources } from "../../lib/widgets/sources";
+import { useLocale } from "../../hooks/useLocale";
 import { useWidgetsStore } from "../../store/useWidgetsStore";
 import { useUiStore } from "../../store/useUiStore";
 import WidgetCard from "./WidgetCard";
@@ -22,6 +23,7 @@ export interface WidgetsPanelProps {
 }
 
 export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
+  const { t } = useLocale();
   const widgets = useWidgetsStore((s) => s.widgets);
   const hydrate = useWidgetsStore((s) => s.hydrate);
   const toggle = useWidgetsStore((s) => s.toggle);
@@ -34,7 +36,8 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
-  useEffect(() => {
+  // 用 layout effect 在首帧绘制前完成布局读取，避免「先闪默认布局再跳变」。
+  useLayoutEffect(() => {
     hydrate();
   }, [hydrate]);
 
@@ -69,7 +72,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
   function onReset() {
     reset();
     setDraggingId(null);
-    showToast("已恢复默认微件布局", { kind: "info" });
+    showToast(t("widgets.resetToast"), { kind: "info" });
   }
 
   return (
@@ -78,13 +81,13 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
         <div className="widgets-head-title">
           <Blocks size={18} aria-hidden="true" />
           <div>
-            <h2>微件</h2>
-            <p>持续展示少量信息；高频操作与当前状态仍由悬浮胶囊承担。</p>
+            <h2>{t("widgets.title")}</h2>
+            <p>{t("widgets.subtitle")}</p>
           </div>
         </div>
         <div className="widgets-head-actions">
           <span className="widgets-count">
-            已启用 {visible.length} / {widgets.length}
+            {t("widgets.enabledCount", { enabled: visible.length, total: widgets.length })}
           </span>
           <button
             className={`btn sm ${libraryOpen ? "primary" : ""}`}
@@ -92,10 +95,14 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
             aria-controls="widget-library-panel"
             onClick={() => setLibraryOpen((open) => !open)}
           >
-            <SlidersHorizontal size={13} aria-hidden="true" /> 微件库
+            <SlidersHorizontal size={13} aria-hidden="true" /> {t("widgets.library")}
           </button>
-          <button className="btn sm" onClick={onReset} aria-label="恢复默认微件布局">
-            <RotateCcw size={13} aria-hidden="true" /> 恢复默认
+          <button
+            className="btn sm"
+            onClick={onReset}
+            aria-label={t("widgets.resetLayoutAria")}
+          >
+            <RotateCcw size={13} aria-hidden="true" /> {t("widgets.resetLayout")}
           </button>
         </div>
       </header>
@@ -104,6 +111,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
         <div id="widget-library-panel">
           <WidgetLibrary
             widgets={widgets}
+            sources={sources}
             onChange={onToggle}
             onSize={onSize}
             onConfig={onConfig}
@@ -112,7 +120,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
       )}
 
       {visible.length > 0 ? (
-        <div className="widgets-grid" aria-label="已启用的微件">
+        <div className="widgets-grid" aria-label={t("widgets.gridAria")}>
           {visible.map((item, index) => (
             <WidgetCard
               key={item.widget_id}
@@ -133,10 +141,10 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
       ) : (
         <div className="widgets-empty">
           <LayoutGrid size={26} aria-hidden="true" />
-          <strong>还没有启用任何微件</strong>
-          <span>在微件库中打开需要的卡片；停用的微件不会挂载，也不会产生刷新。</span>
+          <strong>{t("widgets.emptyTitle")}</strong>
+          <span>{t("widgets.emptyDesc")}</span>
           <button className="btn sm primary" onClick={() => setLibraryOpen(true)}>
-            打开微件库
+            {t("widgets.openLibrary")}
           </button>
         </div>
       )}

@@ -27,12 +27,13 @@ export const LOGICAL_TABS = Object.freeze([
 ]);
 
 /** 仅视觉入口、不分配 Ctrl+数字的 Tab（避免既有快捷键语义漂移）。 */
-export const RAIL_ONLY_TABS = Object.freeze(["apps"]);
+export const RAIL_ONLY_TABS = Object.freeze(["apps", "widgets"]);
 
 export const RAIL_ENTRIES = Object.freeze([
   { id: "tasks", label: "任务", shortcut: "Ctrl+1" },
   { id: "agents", label: "Agent", shortcut: "Ctrl+2" },
   { id: "apps", label: "应用", shortcut: "" },
+  { id: "widgets", label: "微件", shortcut: "" },
   { id: "actions", label: "行动", shortcut: "Ctrl+3" },
   { id: "clipboard", label: "剪贴板", shortcut: "Ctrl+4" },
   {

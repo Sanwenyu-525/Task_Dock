@@ -5,6 +5,7 @@ import { ChevronDown, ChevronUp, EyeOff, GripVertical } from "lucide-react";
 
 import { widgetDefinition, type WidgetItem } from "../../lib/widgets/model";
 import type { WidgetSources } from "../../lib/widgets/sources";
+import { useLocale } from "../../hooks/useLocale";
 import WidgetBody from "./WidgetBody";
 
 export interface WidgetCardProps {
@@ -34,13 +35,15 @@ export default function WidgetCard({
   onDragEnd,
   onDropOn,
 }: WidgetCardProps) {
+  const { t } = useLocale();
   const def = widgetDefinition(item.type);
+  const title = t(def.titleKey);
 
   return (
     <section
       className={`widget-card widget-size-${item.size} ${dragging ? "dragging" : ""}`}
       data-widget-id={item.widget_id}
-      aria-label={`微件：${def.title}`}
+      aria-label={t("widgets.cardAria", { title })}
       draggable={total > 1}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "move";
@@ -62,15 +65,15 @@ export default function WidgetCard({
       }}
     >
       <header className="widget-card-head">
-        <span className="widget-grip" data-tip="拖动排序，或用右侧按钮上移/下移" aria-hidden="true">
+        <span className="widget-grip" data-tip={t("widgets.dragTip")} aria-hidden="true">
           <GripVertical size={13} />
         </span>
-        <h3>{def.title}</h3>
+        <h3>{title}</h3>
         <div className="widget-card-tools">
           <button
             className="widget-icon-btn"
-            aria-label={`上移「${def.title}」`}
-            data-tip="上移"
+            aria-label={t("widgets.moveUpAria", { title })}
+            data-tip={t("widgets.moveUp")}
             disabled={index === 0}
             onClick={() => onMoveBy(item.widget_id, -1)}
           >
@@ -78,8 +81,8 @@ export default function WidgetCard({
           </button>
           <button
             className="widget-icon-btn"
-            aria-label={`下移「${def.title}」`}
-            data-tip="下移"
+            aria-label={t("widgets.moveDownAria", { title })}
+            data-tip={t("widgets.moveDown")}
             disabled={index === total - 1}
             onClick={() => onMoveBy(item.widget_id, 1)}
           >
@@ -87,8 +90,8 @@ export default function WidgetCard({
           </button>
           <button
             className="widget-icon-btn"
-            aria-label={`停用「${def.title}」`}
-            data-tip="停用（可在微件库重新启用）"
+            aria-label={t("widgets.disableAria", { title })}
+            data-tip={t("widgets.disableTip")}
             onClick={() => onDisable(item.widget_id)}
           >
             <EyeOff size={13} aria-hidden="true" />

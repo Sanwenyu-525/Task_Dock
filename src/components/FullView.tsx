@@ -34,7 +34,9 @@ import WorkflowsPanel from "./workflows/WorkflowsPanel";
 import HistoryPanel from "./history/HistoryPanel";
 import PlanningCenterPanel from "./roadmap/PlanningCenterPanel";
 import SettingsPanel from "./settings/SettingsPanel";
-import { Inbox, ListTodo, Clipboard, History, Map, Settings as SettingsIcon, Plus, Workflow, LayoutGrid } from "lucide-react";
+import WidgetsPanel from "./widgets/WidgetsPanel";
+import { WIDGET_SOURCES } from "./widgets/liveSources";
+import { Inbox, ListTodo, Clipboard, History, Map, Settings as SettingsIcon, Plus, Workflow, LayoutGrid, Blocks } from "lucide-react";
 import AgentIcon, { type IconComponent } from "./ui/AgentIcon";
 import PointerClickIcon from "./ui/PointerClickIcon";
 import { railTipPlacement } from "./capsule/CapsuleRail";
@@ -47,6 +49,8 @@ const TAB_META: Record<
   agents: { label: "Agent", icon: AgentIcon, badge: "intervention" },
   // v0.10：应用中心（Agent 之后、行动之前）；仅视觉入口，不占快捷键
   apps: { label: "应用", icon: LayoutGrid },
+  // v0.11：桌面微件（应用之后、行动之前）；仅视觉入口，不占快捷键
+  widgets: { label: "微件", icon: Blocks },
   actions: { label: "行动", icon: PointerClickIcon, badge: "attention" },
   clipboard: { label: "剪贴板", icon: Clipboard },
   inbox: { label: "收集箱", icon: Inbox, badge: "inbox" },
@@ -89,6 +93,7 @@ export default function FullView() {
   const tab = useUiStore((s) => s.tab);
   const setTab = useUiStore((s) => s.setTab);
   const collectionSub = useUiStore((s) => s.collectionSub);
+  const setCollectionSub = useUiStore((s) => s.setCollectionSub);
   const bumpQuickAdd = useUiStore((s) => s.bumpQuickAdd);
   const stats = useTasksStore((s) => s.stats);
   const actionFeed = useActionsStore((s) => s.feed);
@@ -131,8 +136,14 @@ export default function FullView() {
           {RAIL_ENTRIES.map((entry) => {
             const count = entry.badge ? counts[entry.badge] : 0;
             const active = entry.tabs.includes(tab);
-            // 合并入口点击打开「上一次的子页」（无历史时由 collectionSub 默认 inbox）
-            const target = entry.tabs.length > 1 ? collectionSub : entry.tabs[0];
+            // 合并入口点击打开「上一次的子页」（无历史时由 collectionSub 默认 inbox）；
+            // 笔记子页没有对应逻辑 Tab，回到入口时先落到 inbox/shelf 再恢复 notes 子页。
+            const target =
+              entry.tabs.length > 1
+                ? collectionSub === "notes"
+                  ? entry.tabs[0]
+                  : collectionSub
+                : entry.tabs[0];
             // 徽标语义在提示条中如实说明：数字只代表待处理收集内容
             const tip =
               entry.key === "collection" && count > 0
@@ -142,7 +153,14 @@ export default function FullView() {
               <button
                 key={entry.key}
                 className={`rail-item ${active ? "active" : ""}`}
-                onClick={() => setTab(target)}
+                onClick={() => {
+                  if (entry.key === "collection" && collectionSub === "notes") {
+                    setTab(entry.tabs[0]);
+                    setCollectionSub("notes");
+                    return;
+                  }
+                  setTab(target);
+                }}
                 aria-current={active ? "page" : undefined}
                 // 窄窗下文字标签被隐藏，可访问名必须由 aria-label 兜底；
                 // 提示条走统一的 data-tip（原生 title 会弹出系统样式提示）。
@@ -168,6 +186,7 @@ export default function FullView() {
         {tab === "tasks" && <TasksPanel />}
         {tab === "agents" && <AgentPanel />}
         {tab === "apps" && <AppsPanel />}
+        {tab === "widgets" && <WidgetsPanel sources={WIDGET_SOURCES} />}
         {tab === "actions" && <ActionCenterPanel />}
         {tab === "clipboard" && <ClipboardPanel />}
         {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}

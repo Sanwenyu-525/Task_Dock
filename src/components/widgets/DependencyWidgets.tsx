@@ -9,6 +9,7 @@ import type { EfficiencySource, FocusSource } from "../../lib/widgets/sources";
 import { formatCountdown } from "../../lib/format";
 import { useSharedClock } from "../../lib/sharedClock";
 import { remainingMs } from "../../lib/widgets/selectors";
+import { useLocale } from "../../hooks/useLocale";
 import { useWidgetSource } from "./useWidgetSource";
 
 function Unavailable({ title, hint }: { title: string; hint: string }) {
@@ -22,21 +23,25 @@ function Unavailable({ title, hint }: { title: string; hint: string }) {
 }
 
 function FocusCountdown({ endsAt }: { endsAt: string }) {
+  const { t } = useLocale();
   const now = useSharedClock();
   const remaining = remainingMs(endsAt, now);
-  if (remaining === null) return <span className="widget-countdown">进行中</span>;
-  if (remaining <= 0) return <span className="widget-countdown expired">即将结束</span>;
+  if (remaining === null) return <span className="widget-countdown">{t("widgets.focusTimer.running")}</span>;
+  if (remaining <= 0) {
+    return <span className="widget-countdown expired">{t("widgets.focusTimer.ending")}</span>;
+  }
   return <span className="widget-countdown">{formatCountdown(remaining)}</span>;
 }
 
 export function FocusTimerWidget({ source }: { source?: FocusSource }) {
+  const { t } = useLocale();
   const snapshot = useWidgetSource(source);
 
   if (!source) {
     return (
       <Unavailable
-        title="专注倒计时未接入"
-        hint="等待专注计时模块提供快照后自动显示，不伪造倒计时。"
+        title={t("widgets.focusTimer.connectingTitle")}
+        hint={t("widgets.focusTimer.connectingHint")}
       />
     );
   }
@@ -45,7 +50,7 @@ export function FocusTimerWidget({ source }: { source?: FocusSource }) {
     return (
       <div className="widget-empty">
         <Hourglass size={20} aria-hidden="true" />
-        <span>等待专注模块数据…</span>
+        <span>{t("widgets.focusTimer.waiting")}</span>
       </div>
     );
   }
@@ -56,17 +61,26 @@ export function FocusTimerWidget({ source }: { source?: FocusSource }) {
     <div className="widget-focus">
       <div className="widget-focus-phase">
         <span className={`widget-state-dot state-${snapshot.phase}`} aria-hidden="true" />
-        <span>{snapshot.label || (running ? "专注中" : "未开始专注")}</span>
+        <span>
+          {snapshot.label ||
+            (running ? t("widgets.focusTimer.focusing") : t("widgets.focusTimer.idleLabel"))}
+        </span>
       </div>
 
-      {running && snapshot.endsAt ? (
-        <FocusCountdown endsAt={snapshot.endsAt} />
+      {running ? (
+        // 契约要求进行中提供 endsAt；万一缺失也只显示「进行中」，不退化成
+        // 「未开始专注」这种错误状态。
+        snapshot.endsAt ? (
+          <FocusCountdown endsAt={snapshot.endsAt} />
+        ) : (
+          <span className="widget-countdown">{t("widgets.focusTimer.running")}</span>
+        )
       ) : (
         <div className="widget-empty compact">
           <span>
             {snapshot.phase === "paused"
-              ? "已暂停，等待专注模块恢复"
-              : "未开始专注，请在专注模块启动"}
+              ? t("widgets.focusTimer.paused")
+              : t("widgets.focusTimer.idle")}
           </span>
         </div>
       )}
@@ -74,7 +88,10 @@ export function FocusTimerWidget({ source }: { source?: FocusSource }) {
       {snapshot.cycle && (
         <div className="widget-status-line">
           <span className="widget-task-meta">
-            第 {snapshot.cycle.index} / {snapshot.cycle.total} 轮
+            {t("widgets.focusTimer.cycle", {
+              index: snapshot.cycle.index,
+              total: snapshot.cycle.total,
+            })}
           </span>
         </div>
       )}
@@ -83,13 +100,14 @@ export function FocusTimerWidget({ source }: { source?: FocusSource }) {
 }
 
 export function EfficiencyWidget({ source }: { source?: EfficiencySource }) {
+  const { t } = useLocale();
   const snapshot = useWidgetSource(source);
 
   if (!source) {
     return (
       <Unavailable
-        title="今日效率统计未接入"
-        hint="等待统计模块提供聚合结果后自动显示，不显示假统计。"
+        title={t("widgets.efficiency.connectingTitle")}
+        hint={t("widgets.efficiency.connectingHint")}
       />
     );
   }
@@ -98,39 +116,45 @@ export function EfficiencyWidget({ source }: { source?: EfficiencySource }) {
     return (
       <div className="widget-empty">
         <BarChart3 size={20} aria-hidden="true" />
-        <span>等待统计模块数据…</span>
+        <span>{t("widgets.efficiency.waiting")}</span>
       </div>
     );
   }
 
   const rate = snapshot.completionRate;
+  const rounded = typeof rate === "number" ? Math.round(rate) : null;
   return (
     <div className="widget-efficiency">
-      {typeof rate === "number" && (
+      {rounded !== null && (
         <div className="widget-rate">
-          <span className="widget-rate-value">{Math.round(rate)}%</span>
-          <span className="widget-task-meta">今日完成率</span>
-          <div className="widget-bar" role="img" aria-label={`今日完成率 ${Math.round(rate)}%`}>
-            <span style={{ width: `${Math.min(100, Math.max(0, rate))}%` }} />
+          <span className="widget-rate-value">{rounded}%</span>
+          <span className="widget-task-meta">{t("widgets.efficiency.completionRate")}</span>
+          <div
+            className="widget-bar"
+            role="img"
+            aria-label={t("widgets.efficiency.completionRateAria", { percent: rounded })}
+          >
+            <span style={{ width: `${Math.min(100, Math.max(0, rate ?? 0))}%` }} />
           </div>
         </div>
       )}
       <ul className="widget-stat-grid">
         <li>
           <strong>{snapshot.completedToday}</strong>
-          <span>今日完成</span>
+          <span>{t("widgets.efficiency.completed")}</span>
         </li>
         <li>
           <strong>{snapshot.dueToday}</strong>
-          <span>今日到期</span>
+          <span>{t("widgets.efficiency.due")}</span>
         </li>
         <li>
           <strong>{snapshot.overdue}</strong>
-          <span>已逾期</span>
+          <span>{t("widgets.efficiency.overdue")}</span>
         </li>
         <li>
           <strong>{snapshot.pending}</strong>
-          <span>待办</span>
+          {/* 缺 widgets.efficiency.pending；暂复用极简模式的「待办」。 */}
+          <span>{t("minimal.pending")}</span>
         </li>
       </ul>
     </div>

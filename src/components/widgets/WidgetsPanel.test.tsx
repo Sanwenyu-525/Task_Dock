@@ -24,6 +24,7 @@ import {
 } from "../../lib/bridge";
 import { defaultWidgetItems, type WidgetItem } from "../../lib/widgets/model";
 import type { EfficiencySnapshot, FocusSnapshot, WidgetSource } from "../../lib/widgets/sources";
+import { __resetLocaleForTests, setLocalePreference } from "../../i18n";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useWidgetsStore } from "../../store/useWidgetsStore";
@@ -144,9 +145,10 @@ afterEach(cleanup);
 
 beforeEach(() => {
   localStorage.clear();
+  __resetLocaleForTests();
   useWidgetsStore.setState({ widgets: defaultWidgetItems(), hydrated: false });
   useAgentsStore.setState({ snapshot: EMPTY_SNAPSHOT, snapshotError: null });
-  useTasksStore.setState({ tasks: [], stats: null, statsError: null, loading: false });
+  useTasksStore.setState({ tasks: [], stats: null, error: null, statsError: null, loading: false });
   vi.mocked(activeReminders).mockResolvedValue([]);
   vi.mocked(onReminderFired).mockResolvedValue(() => {});
   vi.mocked(onReminderSnoozed).mockResolvedValue(() => {});
@@ -233,6 +235,46 @@ describe("微件面板", () => {
     });
   });
 
+  it("提醒并发读取时以最后一次请求为准", async () => {
+    let fireCb: (() => void) | null = null;
+    vi.mocked(onReminderFired).mockImplementation(async (cb) => {
+      fireCb = cb;
+      return () => {};
+    });
+    const resolvers: Array<(next: ActiveReminder[]) => void> = [];
+    vi.mocked(activeReminders).mockImplementation(
+      () => new Promise<ActiveReminder[]>((resolve) => resolvers.push(resolve)),
+    );
+
+    render(<WidgetsPanel />);
+    await waitFor(() => expect(resolvers).toHaveLength(1));
+    await waitFor(() => expect(fireCb).not.toBeNull());
+
+    act(() => fireCb!());
+    await waitFor(() => expect(resolvers).toHaveLength(2));
+
+    const base: ActiveReminder = {
+      reminderId: "rem-new",
+      taskId: "t-new",
+      taskTitle: "新的提醒",
+      remindAt: new Date(NOW + 120_000).toISOString(),
+      occurrence: new Date(NOW).toISOString(),
+      kind: "deadline",
+      snoozed: false,
+      taskStatus: "pending",
+      hasRecurrence: false,
+    };
+    const older: ActiveReminder = { ...base, reminderId: "rem-old", taskTitle: "旧的提醒" };
+
+    await act(async () => {
+      resolvers[1]([base]);
+      resolvers[0]([older]);
+    });
+
+    expect(screen.getByText("新的提醒")).toBeTruthy();
+    expect(screen.queryByText("旧的提醒")).toBeNull();
+  });
+
   it("微件库可停用微件并立即卸载卡片", () => {
     seedTasks();
     const { container } = render(<WidgetsPanel />);
@@ -246,6 +288,82 @@ describe("微件面板", () => {
     fireEvent.click(screen.getByRole("switch", { name: "启用「专注倒计时」" }));
     expect(container.querySelector('[data-widget-id="focus-timer"]')).toBeTruthy();
     expect(screen.getByText("专注倒计时未接入")).toBeTruthy();
+  });
+
+  it("停用微件会卸载组件并释放数据源订阅", () => {
+    enable("focus-timer");
+    const unsubscribe = vi.fn();
+    const subscribe = vi.fn(() => unsubscribe);
+    const source: WidgetSource<FocusSnapshot> = {
+      getSnapshot: () => FOCUS_SNAPSHOT,
+      subscribe,
+    };
+    const { container } = render(<WidgetsPanel sources={{ focus: source }} />);
+
+    expect(container.querySelector('[data-widget-id="focus-timer"]')).toBeTruthy();
+    expect(subscribe).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "停用「专注倒计时」" }));
+
+    expect(container.querySelector('[data-widget-id="focus-timer"]')).toBeNull();
+    expect(unsubscribe).toHaveBeenCalled();
+  });
+
+  it("微件库只在数据源未注入时标记「等待模块接入」", () => {
+    const { unmount } = render(<WidgetsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "微件库" }));
+    expect(screen.getAllByText("等待模块接入")).toHaveLength(2);
+    unmount();
+
+    render(<WidgetsPanel sources={{ focus: FOCUS_SOURCE, efficiency: EFFICIENCY_SOURCE }} />);
+    fireEvent.click(screen.getByRole("button", { name: "微件库" }));
+    expect(screen.queryByText("等待模块接入")).toBeNull();
+  });
+
+  it("任务列表读取失败时不把失败显示成「今天没有到期任务」", () => {
+    useTasksStore.setState({
+      tasks: [],
+      stats: null,
+      error: "任务列表读取失败",
+      statsError: null,
+      loading: false,
+    });
+    render(<WidgetsPanel />);
+
+    expect(screen.getByText("操作失败")).toBeTruthy();
+    expect(screen.queryByText("今天没有到期任务")).toBeNull();
+  });
+
+  it("运行中切换语言会立即更新文案，失败态仍保持失败语义", () => {
+    enable();
+    render(<WidgetsPanel />);
+    expect(screen.getByRole("heading", { name: "微件" })).toBeTruthy();
+    expect(screen.getByText("还没有启用任何微件")).toBeTruthy();
+
+    act(() => setLocalePreference("en-US"));
+
+    expect(screen.getByRole("heading", { name: "Widgets" })).toBeTruthy();
+    expect(screen.getByText("No widgets enabled")).toBeTruthy();
+    expect(screen.queryByText("还没有启用任何微件")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Widget library" }));
+    expect(screen.getByText("Today's tasks")).toBeTruthy();
+    expect(screen.getAllByText("Waiting for module")).toHaveLength(2);
+  });
+
+  it("en-US 下列表读取失败仍显示失败文案而不是空态", () => {
+    act(() => setLocalePreference("en-US"));
+    useTasksStore.setState({
+      tasks: [],
+      stats: null,
+      error: "boom",
+      statsError: null,
+      loading: false,
+    });
+    render(<WidgetsPanel />);
+
+    expect(screen.getByText("Something went wrong")).toBeTruthy();
+    expect(screen.queryByText("Nothing due today")).toBeNull();
   });
 
   it("上移/下移按钮与拖动都会改变卡片顺序", () => {

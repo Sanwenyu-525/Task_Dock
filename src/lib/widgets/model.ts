@@ -5,6 +5,8 @@
 //! - 第一版每个类型最多一个实例，不支持网格自由摆放与插件脚本；
 //! - config 只保存展示层参数（条目数量），业务数据一律来自现有 Store / 查询。
 
+import type { MessageKey } from "../../i18n";
+
 export const WIDGET_TYPES = [
   "today-tasks",
   "next-reminder",
@@ -41,8 +43,9 @@ export interface WidgetItem {
 
 export interface WidgetDefinition {
   type: WidgetType;
-  title: string;
-  description: string;
+  /** 标题/描述的 i18n 键；由组件层 useLocale().t 翻译，模型本身不依赖语言状态。 */
+  titleKey: MessageKey;
+  descriptionKey: MessageKey;
   defaultSize: WidgetSize;
   defaultEnabled: boolean;
   /**
@@ -55,48 +58,48 @@ export interface WidgetDefinition {
 export const WIDGET_DEFINITIONS: readonly WidgetDefinition[] = [
   {
     type: "today-tasks",
-    title: "今日任务",
-    description: "今天到期与已逾期的待办，点击直接打开任务详情。",
+    titleKey: "widgets.def.todayTasks.title",
+    descriptionKey: "widgets.def.todayTasks.description",
     defaultSize: "md",
     defaultEnabled: true,
     dependency: null,
   },
   {
     type: "next-reminder",
-    title: "下一条提醒",
-    description: "复用任务提醒调度，显示最近一条尚未触发的提醒与倒计时。",
+    titleKey: "widgets.def.nextReminder.title",
+    descriptionKey: "widgets.def.nextReminder.description",
     defaultSize: "md",
     defaultEnabled: true,
     dependency: null,
   },
   {
     type: "agent-status",
-    title: "Agent 状态",
-    description: "复用现有 Agent 快照与事件刷新，只读展示运行中、等待与失败数量。",
+    titleKey: "widgets.def.agentStatus.title",
+    descriptionKey: "widgets.def.agentStatus.description",
     defaultSize: "md",
     defaultEnabled: true,
     dependency: null,
   },
   {
     type: "quick-actions",
-    title: "快捷操作",
-    description: "打开现有功能页的轻量入口，不复制任务或剪贴板逻辑。",
+    titleKey: "widgets.def.quickActions.title",
+    descriptionKey: "widgets.def.quickActions.description",
     defaultSize: "md",
     defaultEnabled: true,
     dependency: null,
   },
   {
     type: "focus-timer",
-    title: "专注倒计时",
-    description: "显示专注模块的当前阶段与剩余时间；未接入时不显示假倒计时。",
+    titleKey: "widgets.def.focusTimer.title",
+    descriptionKey: "widgets.def.focusTimer.description",
     defaultSize: "sm",
     defaultEnabled: false,
     dependency: "focus",
   },
   {
     type: "efficiency",
-    title: "今日效率统计",
-    description: "显示统计模块的今日完成率与任务分布；未接入时不显示假统计。",
+    titleKey: "widgets.def.efficiency.title",
+    descriptionKey: "widgets.def.efficiency.description",
     defaultSize: "sm",
     defaultEnabled: false,
     dependency: "efficiency",

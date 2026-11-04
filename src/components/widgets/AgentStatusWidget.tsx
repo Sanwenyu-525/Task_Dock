@@ -7,10 +7,12 @@ import { Activity, AlertTriangle, ChevronRight } from "lucide-react";
 import { AGENT_STATE_LABELS } from "../../lib/format";
 import { liveSummary } from "../../lib/agentTree";
 import { attentionRuns } from "../../lib/widgets/selectors";
+import { useLocale } from "../../hooks/useLocale";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { openFullApp } from "../capsule/actions";
 
 export default function AgentStatusWidget() {
+  const { t } = useLocale();
   const snapshot = useAgentsStore((s) => s.snapshot);
   const snapshotError = useAgentsStore((s) => s.snapshotError);
   const load = useAgentsStore((s) => s.load);
@@ -27,56 +29,71 @@ export default function AgentStatusWidget() {
   return (
     <div className="widget-agents">
       <div className="widget-chips">
-        <span className="widget-chip running">运行中 {summary.running}</span>
+        <span className="widget-chip running">
+          {t("widgets.agentStatus.running", { n: summary.running })}
+        </span>
         <span className={`widget-chip waiting ${summary.waiting > 0 ? "" : "muted"}`}>
-          等待 {summary.waiting}
+          {t("widgets.agentStatus.waiting", { n: summary.waiting })}
         </span>
         <span className={`widget-chip failed ${summary.failed > 0 ? "" : "muted"}`}>
-          失败 {summary.failed}
+          {t("widgets.agentStatus.failed", { n: summary.failed })}
         </span>
       </div>
 
       {snapshotError && (
         <div className="widget-status-line">
           <span className="widget-warn">
-            <AlertTriangle size={12} aria-hidden="true" /> 状态可能不是最新
+            <AlertTriangle size={12} aria-hidden="true" /> {t("widgets.agentStatus.stale")}
           </span>
         </div>
       )}
 
       {runs.length > 0 ? (
-        <ul className="widget-list" aria-label="需要关注的 Agent 轮次">
-          {runs.map((run) => (
-            <li key={run.id}>
-              <button
-                className="widget-row"
-                aria-label={`在 Agent 页查看「${run.task_title}」`}
-                onClick={() => openFullApp("agents")}
-              >
-                <span className={`widget-state-dot state-${run.status}`} aria-hidden="true" />
-                <span className="widget-task-title">{run.task_title || "未命名轮次"}</span>
-                <span className="widget-task-meta">{AGENT_STATE_LABELS[run.status] ?? run.status}</span>
-                <ChevronRight size={12} className="widget-row-chevron" aria-hidden="true" />
-              </button>
-            </li>
-          ))}
+        <ul className="widget-list" aria-label={t("widgets.agentStatus.listAria")}>
+          {runs.map((run) => {
+            const runTitle = run.task_title || t("widgets.agentStatus.unnamedRun");
+            return (
+              <li key={run.id}>
+                <button
+                  className="widget-row"
+                  aria-label={t("widgets.agentStatus.openRunAria", { title: runTitle })}
+                  onClick={() => openFullApp("agents")}
+                >
+                  <span className={`widget-state-dot state-${run.status}`} aria-hidden="true" />
+                  <span className="widget-task-title">{runTitle}</span>
+                  <span className="widget-task-meta">
+                    {AGENT_STATE_LABELS[run.status] ?? run.status}
+                  </span>
+                  <ChevronRight size={12} className="widget-row-chevron" aria-hidden="true" />
+                </button>
+              </li>
+            );
+          })}
         </ul>
       ) : (
         <div className="widget-empty">
           <Activity size={20} aria-hidden="true" />
-          <span>{snapshot ? "当前没有活跃轮次" : "读取中…"}</span>
+          <span>
+            {snapshot
+              ? t("widgets.agentStatus.noRuns")
+              : snapshotError
+                ? t("common.failed")
+                : t("widgets.agentStatus.loading")}
+          </span>
         </div>
       )}
 
       {hasLive && summary.disconnected > 0 && (
         <div className="widget-status-line">
-          <span className="widget-task-meta">另有 {summary.disconnected} 条失联轮次</span>
+          <span className="widget-task-meta">
+            {t("widgets.agentStatus.disconnected", { n: summary.disconnected })}
+          </span>
         </div>
       )}
 
       <div className="widget-foot">
         <button className="widget-link" onClick={() => openFullApp("agents")}>
-          打开 Agent 页
+          {t("widgets.agentStatus.openPanel")}
         </button>
       </div>
     </div>

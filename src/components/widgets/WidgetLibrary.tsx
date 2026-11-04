@@ -9,74 +9,97 @@ import {
   type WidgetItem,
   type WidgetSize,
 } from "../../lib/widgets/model";
+import type { WidgetSources } from "../../lib/widgets/sources";
+import { useLocale } from "../../hooks/useLocale";
+import type { MessageKey } from "../../i18n";
 import { Select, Switch } from "../ui";
 
-const SIZE_OPTIONS: { value: WidgetSize; label: string }[] = [
-  { value: "sm", label: "窄" },
-  { value: "md", label: "标准" },
-  { value: "lg", label: "宽" },
+const SIZE_OPTIONS: { value: WidgetSize; labelKey: MessageKey }[] = [
+  { value: "sm", labelKey: "widgets.size.sm" },
+  { value: "md", labelKey: "widgets.size.md" },
+  { value: "lg", labelKey: "widgets.size.lg" },
 ];
 
 export interface WidgetLibraryProps {
   widgets: WidgetItem[];
+  /** 已注入的 A/C 数据源；用于区分「依赖模块已接入」与「等待模块接入」。 */
+  sources?: WidgetSources;
   onChange: (id: string, enabled: boolean) => void;
   onSize: (id: string, size: WidgetSize) => void;
   onConfig: (id: string, patch: WidgetConfig) => void;
 }
 
-export default function WidgetLibrary({ widgets, onChange, onSize, onConfig }: WidgetLibraryProps) {
+export default function WidgetLibrary({
+  widgets,
+  sources,
+  onChange,
+  onSize,
+  onConfig,
+}: WidgetLibraryProps) {
+  const { t } = useLocale();
   const ordered = [...widgets].sort((a, b) => a.sort_order - b.sort_order);
+  const sizeOptions = SIZE_OPTIONS.map((option) => ({
+    value: option.value,
+    label: t(option.labelKey),
+  }));
+  const maxItemsOptions = MAX_ITEMS_OPTIONS.map((n) => ({
+    value: String(n),
+    label: t("widgets.maxItems", { n }),
+  }));
 
   return (
-    <section className="widget-library" aria-label="微件库">
+    <section className="widget-library" aria-label={t("widgets.library")}>
       <header className="widget-library-head">
         <Layers size={14} aria-hidden="true" />
         <div>
-          <h3>微件库</h3>
-          <p>微件只做持续展示；高频操作、磁吸停靠与当前状态入口仍由悬浮胶囊承担。</p>
+          <h3>{t("widgets.library")}</h3>
+          <p>{t("widgets.libraryDesc")}</p>
         </div>
       </header>
 
       <ul className="widget-library-list">
         {ordered.map((item) => {
           const def = widgetDefinition(item.type);
+          const title = t(def.titleKey);
+          const dependency = def.dependency;
+          const waiting = dependency !== null && !sources?.[dependency];
           return (
             <li key={item.widget_id} className={`widget-library-row ${item.enabled ? "" : "disabled"}`}>
               <div className="widget-library-info">
                 <div className="widget-library-title">
-                  <strong>{def.title}</strong>
-                  {def.dependency && (
+                  <strong>{title}</strong>
+                  {waiting && (
                     <span className="widget-chip muted">
-                      <Lock size={10} aria-hidden="true" /> 等待模块接入
+                      <Lock size={10} aria-hidden="true" /> {t("widgets.waitingModule")}
                     </span>
                   )}
                 </div>
-                <span className="widget-library-desc">{def.description}</span>
+                <span className="widget-library-desc">{t(def.descriptionKey)}</span>
               </div>
 
               <div className="widget-library-controls">
                 {item.type === "today-tasks" && (
                   <Select
                     value={String(item.config.maxItems ?? 5)}
-                    options={MAX_ITEMS_OPTIONS.map((n) => ({ value: String(n), label: `${n} 条` }))}
+                    options={maxItemsOptions}
                     onChange={(value) => onConfig(item.widget_id, { maxItems: Number(value) })}
-                    ariaLabel={`「${def.title}」条目数量`}
+                    ariaLabel={t("widgets.maxItemsAria", { title })}
                     size="sm"
                     placement="bottom-end"
                   />
                 )}
                 <Select
                   value={item.size}
-                  options={SIZE_OPTIONS}
+                  options={sizeOptions}
                   onChange={(value) => onSize(item.widget_id, value)}
-                  ariaLabel={`「${def.title}」尺寸`}
+                  ariaLabel={t("widgets.sizeAria", { title })}
                   size="sm"
                   placement="bottom-end"
                 />
                 <Switch
                   checked={item.enabled}
                   onChange={(checked) => onChange(item.widget_id, checked)}
-                  ariaLabel={`启用「${def.title}」`}
+                  ariaLabel={t("widgets.enableAria", { title })}
                 />
               </div>
             </li>
