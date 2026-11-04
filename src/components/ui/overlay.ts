@@ -4,6 +4,21 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { registerOverlay, type OverlayEntry, type OverlayKind } from "../../lib/overlayStack";
 
 /**
+ * 弹层 Portal 宿主：锚点位于对话框内部时，弹层必须挂进该对话框的遮罩层。
+ *
+ * 遮罩是 `position: fixed; z-index: var(--z-dialog 940)` 的层叠上下文，而弹层外壳的
+ * `--z-menu` 只有 900；若仍 portal 到 body，弹层会整块落在遮罩之下（被对话框面板挡住，
+ * 只在面板边缘露出）。挂进遮罩后，弹层在遮罩内部参与层叠，z 900 足以压过 z 为 auto 的
+ * 面板，同时之后打开的确认框（同 z、DOM 更靠后）仍然盖在它上面，不会穿透。
+ *
+ * 遮罩没有 transform/filter（只有 opacity 入场动画），不会改变 fixed 的包含块，
+ * 因此 floating-ui 的 viewport 坐标无需换算；遮罩 overflow 也是 visible，不会裁剪。
+ */
+export function findOverlayPortal(node: Element | null | undefined): HTMLElement | null {
+  return node?.closest<HTMLElement>(".ui-dialog-mask") ?? null;
+}
+
+/**
  * 把当前组件注册为弹层栈的一层。
  *
  * Escape 只会命中栈顶（最高优先级、同类中最内层的那层），因此嵌套弹层天然按

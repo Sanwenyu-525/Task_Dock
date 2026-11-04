@@ -16,8 +16,10 @@
 //! 关键点：Escape 分发只有一个入口（capture 阶段），不依赖各组件监听器的注册顺序，
 //! 因此不会出现「菜单关掉了，窗口也跟着隐藏了」的双重消费。
 //!
-//! 同种类的嵌套弹层（例如「任务编辑器」里再开「关联目标」）按 DOM 嵌套深度判定，
-//! 内层优先——不能只看注册顺序，React 的 effect 是子先于父执行的。
+//! 嵌套弹层按 DOM 包含关系判定，内层优先——不能只看注册顺序，React 的 effect 是
+//! 子先于父执行的。该规则跨种类生效：对话框内的下拉菜单会被 portal 进对话框遮罩，
+//! 虽然种类优先级 dialog(5) > menu(4)，但它是对话框的子层，Escape 必须先关菜单；
+//! 反过来，确认框是独立的 body 级遮罩，不会被这里的包含关系降级，仍高于菜单。
 
 export type OverlayKind = "dialog" | "menu" | "modalTop" | "sublayer" | "modal" | "drawer";
 
@@ -92,14 +94,24 @@ function nestingDepth(entry: OverlayEntry, all: readonly OverlayEntry[]): number
   return depth;
 }
 
+/** entry 的 DOM 根是否位于 other 的根内部（即 entry 是 other 的子层）。 */
+function isNestedIn(entry: OverlayEntry, other: OverlayEntry): boolean {
+  return Boolean(
+    entry.root && other.root && other.root !== entry.root && other.root.contains(entry.root),
+  );
+}
+
 /** 最高优先级的层；同种类时取嵌套更深的（同深度取最后注册的那个）。 */
 export function topOverlay(): OverlayEntry | undefined {
+  // 先按 DOM 包含关系收敛出最内层：内层弹层总是先于外层关闭，即使种类优先级不同
+  // （对话框内的菜单 kind=menu 低于 kind=dialog，但它是对话框遮罩的子节点）。
+  const innermost = stack.filter((e) => !stack.some((o) => o !== e && isNestedIn(o, e)));
   let best: OverlayEntry | undefined;
   let bestPriority = -1;
   let bestDepth = -1;
-  for (const e of stack) {
+  for (const e of innermost) {
     const p = KIND_PRIORITY[e.kind];
-    const d = nestingDepth(e, stack);
+    const d = nestingDepth(e, innermost);
     if (p > bestPriority || (p === bestPriority && d >= bestDepth)) {
       best = e;
       bestPriority = p;

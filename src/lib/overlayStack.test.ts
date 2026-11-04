@@ -113,6 +113,38 @@ describe("弹层栈 Escape 优先级", () => {
     expect(calls).toEqual(["inner"]);
   });
 
+  it("对话框内的菜单是子层：种类优先级低于 dialog，Escape 仍先关菜单", () => {
+    const mask = document.createElement("div");
+    const host = document.createElement("div");
+    mask.appendChild(host);
+    document.body.appendChild(mask);
+
+    const calls: string[] = [];
+    registerOverlay({ kind: "dialog", onEscape: () => calls.push("dialog"), root: mask });
+    registerOverlay({ kind: "menu", onEscape: () => calls.push("menu"), root: host });
+
+    expect(topOverlay()?.kind).toBe("menu");
+    pressEscape();
+    expect(calls).toEqual(["menu"]);
+  });
+
+  it("对话框内的菜单不会穿透独立确认框：Escape 仍先关确认框", () => {
+    const mask = document.createElement("div");
+    const host = document.createElement("div");
+    const confirmMask = document.createElement("div");
+    mask.appendChild(host);
+    document.body.append(mask, confirmMask);
+
+    const calls: string[] = [];
+    registerOverlay({ kind: "menu", onEscape: () => calls.push("menu"), root: host });
+    registerOverlay({ kind: "dialog", onEscape: () => calls.push("dialog"), root: mask });
+    registerOverlay({ kind: "dialog", onEscape: () => calls.push("confirm"), root: confirmMask });
+
+    expect(topOverlay()?.root).toBe(confirmMask);
+    pressEscape();
+    expect(calls).toEqual(["confirm"]);
+  });
+
   it("模态里的下拉弹层在模态之上：Escape 先关弹层，不关模态", () => {
     const calls: string[] = [];
     // 任务编辑器（modal）先注册，日期选择器（menu）后展开

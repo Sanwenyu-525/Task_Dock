@@ -19,6 +19,7 @@ import {
 import {
   useId,
   useLayoutEffect,
+  useRef,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
@@ -26,7 +27,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { OverlayKind } from "../../lib/overlayStack";
-import { useFocusRestore, useOverlayLayer } from "./overlay";
+import { findOverlayPortal, useFocusRestore, useOverlayLayer } from "./overlay";
 
 export interface PopoverProps {
   open: boolean;
@@ -82,6 +83,9 @@ export default function Popover({
   floatingRef,
 }: PopoverProps) {
   const generatedId = useId();
+  // 外壳节点同时作为弹层栈的 DOM 根：锚点在对话框内时它会被挂进遮罩，
+  // 由此可判定「菜单在对话框内部」，Escape 才能先关菜单再关对话框。
+  const hostRef = useRef<HTMLDivElement | null>(null);
 
   const { refs, floatingStyles, context } = useFloating({
     open,
@@ -136,7 +140,7 @@ export default function Popover({
   useFocusRestore(open && restoreFocus);
 
   // Escape 只关闭本层；栈顶还有更上层时本层不会被命中
-  useOverlayLayer(layer ?? "menu", layer !== null && open, () => onOpenChange(false));
+  useOverlayLayer(layer ?? "menu", layer !== null && open, () => onOpenChange(false), hostRef);
 
   if (!open) return null;
 
@@ -156,6 +160,7 @@ export default function Popover({
     // 两者分开才不会让入场动画覆盖掉定位变换。
     <div
       ref={(el) => {
+        hostRef.current = el;
         refs.setFloating(el);
         if (floatingRef) floatingRef.current = el;
       }}
@@ -177,5 +182,7 @@ export default function Popover({
     </div>
   );
 
-  return createPortal(content, document.body);
+  // 锚点在对话框内时挂进该对话框的遮罩层（与该对话框同一层叠上下文），
+  // 否则弹层外壳的 --z-menu(900) 会整块压在 --z-dialog(940) 的遮罩之下。
+  return createPortal(content, findOverlayPortal(anchorRef.current) ?? document.body);
 }

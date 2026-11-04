@@ -38,14 +38,18 @@ export function Dialog({
   panelClassName,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // 遮罩同时是对话框内弹层（Select/Combobox/DateTimePicker）的 Portal 宿主，
+  // 注册为弹层栈根节点后，栈可据 DOM 包含关系判定「菜单在对话框内部」。
+  const maskRef = useRef<HTMLDivElement>(null);
 
   useFocusTrap(open, panelRef);
-  useOverlayLayer("dialog", open, onClose);
+  useOverlayLayer("dialog", open, onClose, maskRef);
 
   if (!open) return null;
 
   return createPortal(
     <div
+      ref={maskRef}
       className={`ui-dialog-mask ${className ?? ""}`}
       onMouseDown={(e) => {
         if (dismissOnScrim && e.target === e.currentTarget) onClose();
