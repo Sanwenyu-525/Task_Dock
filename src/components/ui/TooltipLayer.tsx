@@ -177,6 +177,12 @@ export default function TooltipLayer() {
     let keyboardNav = false;
     const onPointerIntent = () => {
       keyboardNav = false;
+      // 任何按下（点击控件、切页、刷新）立即移除提示，并取消尚未到点的悬停计时
+      clear();
+      if (currentRef.current) {
+        currentRef.current = null;
+        setTip(null);
+      }
     };
     const onFocusIn = (e: FocusEvent) => {
       const el = find(e.target);
@@ -256,16 +262,24 @@ export default function TooltipLayer() {
     // 尺寸变量（--popover-max-w）在首帧后才生效，下一帧复测一次，避免按旧宽度居中
     raf = window.requestAnimationFrame(measure);
     window.addEventListener("resize", measure);
-    // 显式定位时 Popover 的 autoUpdate 已关闭：滚动（捕获阶段）后复测，
-    // 避免锚点随容器滚动而气泡停在旧位置。
-    window.addEventListener("scroll", measure, true);
     return () => {
       alive = false;
       window.cancelAnimationFrame(raf);
       window.removeEventListener("resize", measure);
-      window.removeEventListener("scroll", measure, true);
     };
   }, [tip]);
+
+  // 滚动时立即收起：提示跟随滚动会短暂压住新位置的卡片文字，直接移除更干净
+  useEffect(() => {
+    const onScroll = () => {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = undefined;
+      currentRef.current = null;
+      setTip(null);
+    };
+    window.addEventListener("scroll", onScroll, true);
+    return () => window.removeEventListener("scroll", onScroll, true);
+  }, []);
 
   return (
     <Popover

@@ -5,7 +5,6 @@ import {
   hasNativeGlass,
   presetRadius,
   readSystemFlags,
-  resolveClearForeground,
   resolveGlassRender,
   resolveMaterial,
   resolveSecondaryPreset,
@@ -89,39 +88,32 @@ describe("readSystemFlags", () => {
 });
 
 describe("视觉预设解析", () => {
-  it("已知值原样返回", () => {
+  it("现行两套预设原样返回", () => {
     expect(resolveVisualPreset("dream-gradient")).toBe("dream-gradient");
-    expect(resolveVisualPreset("liquid-glass")).toBe("liquid-glass");
     expect(resolveVisualPreset("frosted")).toBe("frosted");
-    expect(resolveVisualPreset("clear")).toBe("clear");
   });
 
-  it("清透只属于主窗：独立弹窗回退到液态玻璃材质", () => {
-    expect(resolveSecondaryPreset("clear")).toBe("liquid-glass");
+  it("历史值 liquid-glass / clear 归一为 frosted", () => {
+    expect(resolveVisualPreset("liquid-glass")).toBe("frosted");
+    expect(resolveVisualPreset("clear")).toBe("frosted");
+  });
+
+  it("两套预设的弹窗映射不再降级", () => {
     expect(resolveSecondaryPreset("frosted")).toBe("frosted");
     expect(resolveSecondaryPreset("dream-gradient")).toBe("dream-gradient");
-  });
-
-  it("清透前景：非法值回退 auto，不把 undefined 写进 DOM", () => {
-    expect(resolveClearForeground("dark")).toBe("dark");
-    expect(resolveClearForeground("light")).toBe("light");
-    for (const v of [undefined, null, "", "system", "DARK"]) {
-      expect(resolveClearForeground(v as string | null | undefined)).toBe("auto");
-    }
   });
 
   it("旧库缺失键 / 空值 / 未知值都回退默认，不会把 undefined 写进 DOM", () => {
     for (const v of [undefined, null, "", "neon", "DREAM-GRADIENT", "0"]) {
       expect(resolveVisualPreset(v as string | null | undefined)).toBe(DEFAULT_VISUAL_PRESET);
     }
-    expect(DEFAULT_VISUAL_PRESET).toBe("dream-gradient");
+    expect(DEFAULT_VISUAL_PRESET).toBe("frosted");
   });
 
   it("圆角半径与预设一一对应，且与 Rust 端下发值一致", () => {
     expect(presetRadius("dream-gradient")).toBe(18);
-    expect(presetRadius("liquid-glass")).toBe(20);
     expect(presetRadius("frosted")).toBe(20);
-    expect(presetRadius("clear")).toBe(20);
-    expect(PRESET_WINDOW_RADIUS["liquid-glass"]).toBeGreaterThan(PRESET_WINDOW_RADIUS["dream-gradient"]);
+    expect(Object.keys(PRESET_WINDOW_RADIUS).sort()).toEqual(["dream-gradient", "frosted"]);
+    expect(PRESET_WINDOW_RADIUS.frosted).toBeGreaterThan(PRESET_WINDOW_RADIUS["dream-gradient"]);
   });
 });

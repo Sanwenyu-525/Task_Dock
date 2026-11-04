@@ -131,6 +131,36 @@ describe("buildTree 实例层级", () => {
     expect(agent.instances[0].sessions[0].liveState).toBe("waiting");
   });
 
+  it("运行中但未接入的 Agent 仍出现在树中，且不计为运行状态", () => {
+    const s = snap({
+      sources: [source("trae"), source("codex")],
+      instances: [],
+      sessions: [session("s1", "codex", "c1")],
+      runs: [run("r1", "s1", "codex", "running")],
+    });
+    const tree = buildTree(s, NOW);
+    const trae = tree.find((a) => a.id === "trae");
+    expect(trae).toBeDefined();
+    expect(trae!.connected).toBe(false);
+    expect(trae!.sessionCount).toBe(0);
+    expect(trae!.liveState).toBe("idle");
+    expect(trae!.activeCount).toBe(0);
+    // 「软件在运行」不能把整体状态带成 running
+    expect(liveSummary(s, NOW).running).toBe(1);
+    expect(tree[0].id).toBe("codex");
+  });
+
+  it("有历史会话但当前空闲的 Agent connected=true、liveState=idle", () => {
+    const s = snap({
+      sources: [source("codex")],
+      sessions: [session("s1", "codex", "c1")],
+      runs: [run("r1", "s1", "codex", "completed")],
+    });
+    const agent = buildTree(s, NOW)[0];
+    expect(agent.connected).toBe(true);
+    expect(agent.liveState).toBe("idle");
+  });
+
   it("Agent 层级按关注优先级排序并聚合 worst", () => {
     const s = snap({
       sources: [source("idle-agent"), source("busy-agent")],

@@ -22,6 +22,8 @@ import {
 import { useLocale } from "../../hooks/useLocale";
 import { formatLocalizedNumber, formatLocalizedRelative } from "../../i18n/format";
 import { Select, type SelectOption } from "../ui";
+import { useUiStore } from "../../store/useUiStore";
+import { errorMessage } from "../../lib/errors";
 import {
   useNotesStore,
   type SaveState,
@@ -72,8 +74,13 @@ export default function NoteEditor() {
   const linkWorkspace = useNotesStore((s) => s.linkWorkspace);
   const applyTemplate = useNotesStore((s) => s.applyTemplate);
   const remove = useNotesStore((s) => s.remove);
+  const showToast = useUiStore((s) => s.showToast);
 
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  /** 标记/关联类写入失败必须反馈，不能被空 catch 吞掉。 */
+  const reportActionFailure = (label: string) => (e: unknown) =>
+    showToast(`${label}：${errorMessage(e)}`, { kind: "error" });
 
   useEffect(() => {
     setConfirmDelete(false);
@@ -163,7 +170,9 @@ export default function NoteEditor() {
             data-tip={active.pinned ? t("notes.editor.unpin") : t("notes.editor.pin")}
             aria-label={active.pinned ? t("notes.editor.unpin") : t("notes.editor.pin")}
             aria-pressed={active.pinned}
-            onClick={() => void togglePin().catch(() => undefined)}
+            onClick={() =>
+              void togglePin().catch(reportActionFailure(t("notes.editor.pin")))
+            }
           >
             <Pin size={14} />
           </button>
@@ -177,7 +186,9 @@ export default function NoteEditor() {
               active.favorite ? t("notes.editor.unfavorite") : t("notes.editor.favorite")
             }
             aria-pressed={active.favorite}
-            onClick={() => void toggleFavorite().catch(() => undefined)}
+            onClick={() =>
+              void toggleFavorite().catch(reportActionFailure(t("notes.editor.favorite")))
+            }
           >
             <Star size={14} />
           </button>
@@ -268,7 +279,9 @@ export default function NoteEditor() {
           <Select
             value={active.task_id ?? ""}
             options={taskOptions}
-            onChange={(id) => void linkTask(id || null).catch(() => undefined)}
+            onChange={(id) =>
+              void linkTask(id || null).catch(reportActionFailure(t("notes.link.task")))
+            }
             placeholder={
               linkOptionsLoading ? t("notes.loading") : t("notes.link.noneTask")
             }
@@ -285,7 +298,11 @@ export default function NoteEditor() {
           <Select
             value={active.workspace_id ?? ""}
             options={workspaceOptions}
-            onChange={(id) => void linkWorkspace(id || null).catch(() => undefined)}
+            onChange={(id) =>
+              void linkWorkspace(id || null).catch(
+                reportActionFailure(t("notes.link.workspaceAria")),
+              )
+            }
             placeholder={
               linkOptionsLoading ? t("notes.loading") : t("notes.link.noneWorkspace")
             }

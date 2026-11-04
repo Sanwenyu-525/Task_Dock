@@ -76,6 +76,7 @@ pub fn adapter() -> HooksAdapter {
         events: supported_events,
         detect_impl,
         hook_command: super::hooks_install::hook_command,
+        layout: super::hooks_install::HooksLayout::Flat,
         limitations: vec![
             "Claude Code 的 Hook 信任/权限确认由产品自身弹出，Task Dock 不代为确认".into(),
             "配置写入成功 ≠ 事件已到达；真实会话接入以非自测事件为准".into(),

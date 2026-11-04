@@ -145,3 +145,36 @@ export function shiftMonth(ym: string, delta: number): string {
   const d = new Date(Number(m[1]), Number(m[2]) - 1 + delta, 1);
   return `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}`;
 }
+
+// ── 纯日期（`YYYY-MM-DD`，不含时间，不与 UTC 互转） ─────────────
+
+const DATE_ONLY_RE = /^(\d{4})-(\d{1,2})-(\d{1,2})$/;
+
+/** 本地「今天」的 `YYYY-MM-DD`（按本地时区取年月日，不转 UTC）。 */
+export function todayIsoDate(now = new Date()): string {
+  return `${pad(now.getFullYear(), 4)}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/**
+ * 宽松纯日期解析：接受 `2026-11-04`、`2026/11/4`，返回规范化的 `YYYY-MM-DD`。
+ * 非法（格式不符、月份越界、闰年/月天数不符）返回 null——
+ * 只做字符串年月日校验，不经 Date/UTC，避免时区偏移。
+ */
+export function parseDateInput(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const m = DATE_ONLY_RE.exec(text.trim().replace(/\//g, "-"));
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (year < 1 || year > 9999) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  return `${pad(year, 4)}-${pad(month)}-${pad(day)}`;
+}
+
+/** 严格校验 `YYYY-MM-DD`（零填充且日期真实存在）。 */
+export function isValidIsoDate(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && parseDateInput(value) === value;
+}

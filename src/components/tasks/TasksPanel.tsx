@@ -1,19 +1,35 @@
 //! 任务面板：统计概览 → 快速添加 → 日期筛选（主）→ 状态/排序（次级）→ 列表。
 //! 筛选器视觉权重低于任务本身；搜索可展开收起，不占常驻高度。
 //! v0.6：卡片层级与空状态插画按视觉预设重绘（结构不变，两套皮肤共用）。
+//! v0.9：编辑任务改为页面内编辑态（列表 ↔ 编辑切换），退出后恢复列表滚动位置；
+//! 筛选状态本就在 `useTasksStore`，切换不丢失。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import QuickAdd from "./QuickAdd";
 import QuickReminder from "./QuickReminder";
 import ActiveReminders from "./ActiveReminders";
 import TaskItem from "./TaskItem";
+import TaskEditorView from "./TaskEditorView";
 import { useTasksStore } from "../../store/useTasksStore";
+import { useNavigationStore } from "../../store/useNavigationStore";
+import { useUiStore } from "../../store/useUiStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { locateElement } from "../global-search/locate";
 import { Select } from "../ui";
 import { BarChart3, Search, X, ListChecks, CalendarClock, AlertTriangle, Inbox, Sparkles, Timer } from "lucide-react";
 import TaskAnalyticsPanel from "./analytics/TaskAnalyticsPanel";
 import FocusWorkspace from "../focus/FocusWorkspace";
+
+/** 内容区滚动容器（`.tab-content`）：编辑态切换时用它记录/恢复列表位置。 */
+function findScrollParent(el: HTMLElement | null): HTMLElement | null {
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+    node = node.parentElement;
+  }
+  return null;
+}
 
 const VIEWS = [
   { id: "today", label: "今日" },
@@ -43,11 +59,48 @@ export default function TasksPanel() {
   const error = useTasksStore((s) => s.error);
   const refresh = useTasksStore((s) => s.refresh);
   const stats = useTasksStore((s) => s.stats);
+  const linksError = useNavigationStore((s) => s.linksError);
+  const loadTaskLinks = useNavigationStore((s) => s.loadTaskLinks);
+  const editor = useUiStore((s) => s.editor);
+  const closeEditor = useUiStore((s) => s.closeEditor);
   const [searchOpen, setSearchOpen] = useState(false);
   // 任务统计子视图（默认日范围，打开才请求；关闭后面板卸载即取消请求）。
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   // 专注与休息子视图：与列表/统计互斥，按需挂载（关闭即卸载，停止订阅与共享时钟引用）。
   const [focusOpen, setFocusOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const listScrollTop = useRef(0);
+  const wasEditing = useRef(false);
+
+  // 列表可见时持续记录内容区滚动位置。
+  // 不能在进入编辑态后再读：列表 DOM 已被替换，scrollTop 会被浏览器夹取。
+  useEffect(() => {
+    if (editor.open) return;
+    const scroller = findScrollParent(rootRef.current);
+    if (!scroller) return;
+    const onScroll = () => {
+      listScrollTop.current = scroller.scrollTop;
+    };
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => scroller.removeEventListener("scroll", onScroll);
+  }, [editor.open]);
+
+  // 退出编辑态后恢复列表滚动位置（筛选状态由 store 保存，不需要额外恢复）。
+  useEffect(() => {
+    if (editor.open) {
+      wasEditing.current = true;
+      return;
+    }
+    if (!wasEditing.current) return;
+    wasEditing.current = false;
+    const scroller = findScrollParent(rootRef.current);
+    if (!scroller) return;
+    const top = listScrollTop.current;
+    const raf = requestAnimationFrame(() => {
+      scroller.scrollTop = top;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [editor.open]);
 
   // Escape 关闭子视图：捕获阶段优先处理，避免冒泡到窗口级「隐藏到托盘」。
   useEffect(() => {
@@ -86,8 +139,17 @@ export default function TasksPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingLocate]);
 
+  // 编辑态：主内容区切换（不新开窗口、不铺遮罩）。列表 DOM 卸载，筛选与滚动由上方逻辑恢复。
+  if (editor.open) {
+    return (
+      <div className="tasks-panel task-editor-page" ref={rootRef}>
+        <TaskEditorView task={editor.task} onClose={closeEditor} />
+      </div>
+    );
+  }
+
   return (
-    <div className="tasks-panel">
+    <div className="tasks-panel" ref={rootRef}>
       {/* 全局概览（跨筛选视图） */}
       <div className="tasks-overview">
         <div className="overview-card tone-accent" data-tip="全部未完成任务">
@@ -236,6 +298,15 @@ export default function TasksPanel() {
         <FocusWorkspace />
       ) : (
         <div className="task-list">
+        {linksError && (
+          // 关联读取失败 ≠ 没有关联：保留旧图标但明确标注可能过期，并提供重试
+          <div className="empty-hint error-text task-list-error" role="status">
+            关联信息读取失败：{linksError}（卡片上的关联目标可能不是最新）
+            <button className="btn sm" onClick={() => void loadTaskLinks()}>
+              重试
+            </button>
+          </div>
+        )}
         {error && tasks.length > 0 && (
           // 列表刷新失败：保留上次结果并明确标记「可能不是最新」，不伪装成已刷新
           <div className="empty-hint error-text task-list-error" role="status">

@@ -1,8 +1,8 @@
 //! 规划中心「功能列表/功能详情」视图。
 //!
 //! - 功能详情就地展开，复用 PlanningFeatureCard（步骤、历史、状态）；
-//! - 补齐新增/编辑功能入口：FeatureDialog 负责名称、描述、验收标准、状态、
-//!   优先级、里程碑、目标日期；保存失败保留输入；
+//! - 补齐新增/编辑功能入口：FeatureEditorView（页面内编辑态）负责名称、描述、
+//!   验收标准、状态、优先级、里程碑、目标日期；保存失败保留输入；
 //! - 列表按里程碑分组；搜索与状态/里程碑筛选可组合；
 //! - 无功能时显示「尚未添加功能」，筛选无结果时给出清除筛选入口；
 //! - 看板点击卡片后通过 focusFeatureId 定位并展开同一张卡片。
@@ -24,7 +24,8 @@ import {
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { useUiStore } from "../../store/useUiStore";
 import { PlanningFeatureCard } from "./PlanningFeatureCard";
-import { FeatureDialog } from "./PlanningDialogs";
+import { FeatureEditorView } from "./PlanningEditors";
+import { findScrollParent } from "./PlanningBits";
 
 export interface FeatureListViewProps {
   /** 从看板/里程碑跳转过来时要展开的功能 */
@@ -73,9 +74,11 @@ export default function FeatureListView({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [leavingId, setLeavingId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<PlanningFeature | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<PlanningFeature | null>(null);
+  /** null = 列表态；非空 = 页面内编辑态（feature 为 null 表示新建）。 */
+  const [editor, setEditor] = useState<{ feature: PlanningFeature | null } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  /** 进入编辑前列表的滚动位置：返回时恢复，筛选条件由本组件 state 自然保留。 */
+  const listScrollTop = useRef(0);
 
   // 切换项目：清空就地展开与筛选，避免展示上一个项目的详情
   useEffect(() => {
@@ -179,10 +182,26 @@ export default function FeatureListView({
     onClearMilestoneFilter?.();
   };
 
-  const openCreate = () => {
-    setEditing(null);
-    setDialogOpen(true);
+  /** 进入编辑态前记住列表滚动位置；返回时一次性恢复（页面级单一滚动容器）。 */
+  const openEditor = (feature: PlanningFeature | null) => {
+    const sc = findScrollParent(listRef.current);
+    if (sc) listScrollTop.current = sc.scrollTop;
+    setEditor({ feature });
+    window.requestAnimationFrame(() => {
+      const container = findScrollParent(listRef.current);
+      if (container) container.scrollTop = 0;
+    });
   };
+
+  const closeEditor = () => {
+    setEditor(null);
+    window.requestAnimationFrame(() => {
+      const container = findScrollParent(listRef.current);
+      if (container) container.scrollTop = listScrollTop.current;
+    });
+  };
+
+  const openCreate = () => openEditor(null);
 
   const requestDelete = (f: PlanningFeature) => setDeleting(f);
   const confirmDelete = () => {
@@ -204,6 +223,29 @@ export default function FeatureListView({
         <div className="planning-empty-features">
           <p>请先在项目总览中创建或选择一个项目。</p>
         </div>
+      </div>
+    );
+  }
+
+  // ── 页面内编辑态：整块内容区切换为表单，不叠遮罩 ──
+  if (editor) {
+    return (
+      <div className="planning-projects planning-feature-page planning-editor-page" ref={listRef}>
+        <FeatureEditorView
+          feature={editor.feature}
+          initialMilestoneId={
+            milestoneFilter !== "all" && milestoneFilter !== "none" ? milestoneFilter : null
+          }
+          onClose={closeEditor}
+          onSaved={(f) => {
+            setExpandedId(f.id);
+            setSearch("");
+            setStatusFilter("all");
+            setPriorityFilter("all");
+            setMilestoneFilter("all");
+            onClearMilestoneFilter?.();
+          }}
+        />
       </div>
     );
   }
@@ -318,10 +360,7 @@ export default function FeatureListView({
                     expanded={expandedId === f.id}
                     leaving={leavingId === f.id}
                     onToggle={() => setExpandedId((id) => (id === f.id ? null : f.id))}
-                    onEdit={() => {
-                      setEditing(f);
-                      setDialogOpen(true);
-                    }}
+                    onEdit={() => openEditor(f)}
                     onDelete={() => requestDelete(f)}
                   />
                 ))}
@@ -333,24 +372,6 @@ export default function FeatureListView({
             </div>
           </div>
         ))}
-
-      <FeatureDialog
-        open={dialogOpen}
-        feature={editing}
-        initialMilestoneId={milestoneFilter !== "all" && milestoneFilter !== "none" ? milestoneFilter : null}
-        onClose={() => {
-          setDialogOpen(false);
-          setEditing(null);
-        }}
-        onSaved={(f) => {
-          setExpandedId(f.id);
-          setSearch("");
-          setStatusFilter("all");
-          setPriorityFilter("all");
-          setMilestoneFilter("all");
-          onClearMilestoneFilter?.();
-        }}
-      />
 
       <ConfirmDialog
         open={deleting !== null}

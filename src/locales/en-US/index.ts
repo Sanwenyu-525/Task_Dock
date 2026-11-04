@@ -102,6 +102,10 @@ export const enUS: Record<MessageKey, string> = {
   "quickReminder.errorMin": "Reminder must be at least 1 minute away",
   "quickReminder.created": "Reminder \"{title}\" created, expected at {time}",
   "quickReminder.failed": "Could not create: {error}",
+  "quickReminder.collapsed": "Quick reminder",
+  "quickReminder.hint": "5 min – 24 h",
+  "quickReminder.expand": "Expand quick reminder",
+  "quickReminder.collapse": "Collapse quick reminder",
   "quickReminder.customHoursAria": "Custom hours",
   "quickReminder.customMinutesAria": "Custom minutes",
 
@@ -177,6 +181,11 @@ export const enUS: Record<MessageKey, string> = {
   "dateTime.minute": "min",
   "dateTime.hourAria": "Hours",
   "dateTime.minuteAria": "Minutes",
+
+  "datePicker.invalidFormat": "Invalid format. Use 2026-11-04",
+  "datePicker.pickerAria": "Pick a date",
+  "datePicker.clear": "Clear",
+  "datePicker.today": "Today",
 
   "settings.language": "Language",
   "settings.language.system": "Follow system",

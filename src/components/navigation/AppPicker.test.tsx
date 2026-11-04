@@ -135,10 +135,13 @@ function seedStores(opts?: { apps?: DiscoveredApp[]; targets?: NavTarget[]; link
     scanning: false,
     targets: opts?.targets ?? [],
     targetsLoaded: true,
+    targetsError: null,
+    scanError: null,
+    linksError: null,
     linksByTask: opts?.links ? { "task-1": opts.links } : {},
-    loadApps: vi.fn(async () => {}),
-    loadTargets: vi.fn(async () => {}),
-    loadTaskLinks: vi.fn(async () => {}),
+    loadApps: vi.fn(async () => "ok" as const),
+    loadTargets: vi.fn(async () => "ok" as const),
+    loadTaskLinks: vi.fn(async () => "ok" as const),
   });
   useAgentsStore.setState({ snapshot: { sources: [], instances: [], sessions: [], runs: [] } });
   useUiStore.setState({ toast: null });
@@ -225,6 +228,30 @@ describe("AppPicker", () => {
       }),
     );
     expect(vi.mocked(navLinkTask)).toHaveBeenCalledWith("task-1", "target-vsc", false, "default");
+  });
+
+  it("关联成功但关联列表刷新失败：保留成功事实，提示刷新失败且不重复创建", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    useNavigationStore.setState({
+      loadTaskLinks: vi.fn(async () => "error" as const),
+      linksError: "读取超时",
+    });
+    const t = targetFix("target-vsc", "VS Code", "vscode");
+    vi.mocked(navSaveTarget).mockResolvedValue(t);
+    const { onClose } = renderPicker({ taskId: "task-1" });
+
+    await user.click(await screen.findByRole("option", { name: /VS Code/ }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    const toast = screen.getByTestId("toast");
+    // 保存/关联已成功，但刷新失败必须单独说明，不能当成整体成功
+    expect(toast.textContent).toContain("已关联");
+    expect(toast.textContent).toContain("列表刷新失败");
+    expect(toast.dataset.kind).toBe("warning");
+    // 数据只写入一次：刷新失败不会触发重复创建
+    expect(navSaveTarget).toHaveBeenCalledTimes(1);
+    expect(navLinkTask).toHaveBeenCalledTimes(1);
   });
 
   it("点击已关联（linkedKeys 命中）的应用：提示已关联，不重复 navLinkTask", async () => {
@@ -370,6 +397,26 @@ describe("AppPicker", () => {
     const toast = screen.getByTestId("toast");
     expect(toast.textContent).toContain("已添加「VS Code」");
     expect(toast.dataset.kind).toBe("success");
+  });
+
+  it("独立配置保存成功但目标列表刷新失败：不伪装成纯成功", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    useNavigationStore.setState({
+      loadTargets: vi.fn(async () => "error" as const),
+      targetsError: "读取超时",
+    });
+    const t = targetFix("target-vsc", "VS Code", "vscode");
+    vi.mocked(navSaveTarget).mockResolvedValue(t);
+    const { onClose } = renderPicker({ standalone: true });
+
+    await user.click(await screen.findByRole("option", { name: /VS Code/ }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    const toast = screen.getByTestId("toast");
+    expect(toast.textContent).toContain("已添加「VS Code」");
+    expect(toast.textContent).toContain("列表刷新失败");
+    expect(toast.dataset.kind).toBe("warning");
   });
 
   it("独立配置模式重复添加：复用现有目标并提示「已在快捷列表中」，不关联任务", async () => {
@@ -548,6 +595,30 @@ describe("AppPicker 子页面（variant=page）", () => {
     await waitFor(() => expect(navSaveTarget).toHaveBeenCalledTimes(2));
     expect(useNavigationStore.getState().loadTargets).toHaveBeenCalledWith(true);
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it("批量部分失败：成功项不回滚、失败项保留可重试，不误报整体成功", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navSaveTarget).mockImplementation(async (input) => {
+      if (input.display_name === "微信") throw new Error("数据库正忙");
+      return targetFix("t-" + input.display_name, input.display_name, input.exe_path ?? "");
+    });
+    const { onClose } = renderPage();
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+
+    await user.click(within(list).getByRole("option", { name: /VS Code/ }));
+    await user.click(within(list).getByRole("option", { name: /微信/ }));
+    await user.click(screen.getByRole("button", { name: "添加已选应用（2）" }));
+
+    await waitFor(() => expect(navSaveTarget).toHaveBeenCalledTimes(2));
+    // 失败项不会被自动重试重复创建，成功项也不回滚
+    expect(navSaveTarget).toHaveBeenCalledTimes(2);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(await screen.findByText(/1 个失败/)).toBeTruthy();
+    // 只剩失败项保持选中，用户可直接重试而不必重新勾选成功项
+    expect(screen.getByText("已选 1")).toBeTruthy();
+    expect(screen.getByTestId("toast").textContent).toContain("部分应用添加失败");
   });
 
   it("已添加应用显示明确状态且不可重复选择", async () => {

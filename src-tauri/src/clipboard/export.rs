@@ -132,10 +132,54 @@ fn cleanup_created_file(file: File, path: &Path) {
     drop(file);
 }
 
-#[cfg(not(windows))]
+/// Unix 上的失败清理：先比对句柄身份（dev + inode）与路径当前身份，一致才删除。
+///
+/// 这是「检查后删除」的尽力保护，检查与 unlink 之间仍存在理论窗口，因此**不得**
+/// 宣称严格原子安全；身份不一致或无法确认时一律保留文件（宁可留下半成品，也不
+/// 删除其他进程后来放入同一路径的文件）。清理失败只记日志，不覆盖原始保存错误。
+#[cfg(unix)]
 fn cleanup_created_file(file: File, path: &Path) {
+    use std::os::unix::fs::MetadataExt;
+
+    // 句柄仍打开时取本次创建文件的身份，关闭后路径若被替换，身份必然不同。
+    let created = file.metadata().map(|m| (m.dev(), m.ino()));
+    let current = std::fs::symlink_metadata(path).map(|m| (m.dev(), m.ino()));
+    match (created, current) {
+        (Ok((dev, ino)), Ok((cur_dev, cur_ino))) if dev == cur_dev && ino == cur_ino => {
+            if let Err(e) = std::fs::remove_file(path) {
+                tracing::warn!(
+                    "图片保存失败后的清理未生效，保留文件不动：{}（{}）",
+                    path.display(),
+                    e
+                );
+            }
+        }
+        (Ok(_), Ok(_)) => tracing::warn!(
+            "图片保存失败后路径已被其他文件替换，保留文件不动：{}",
+            path.display()
+        ),
+        (Err(e), _) => tracing::warn!(
+            "图片保存失败后无法读取本次创建文件的身份，保留文件不动：{}（{}）",
+            path.display(),
+            e
+        ),
+        (_, Err(e)) => tracing::warn!(
+            "图片保存失败后无法确认路径当前身份，保留文件不动：{}（{}）",
+            path.display(),
+            e
+        ),
+    }
     drop(file);
-    let _ = std::fs::remove_file(path);
+}
+
+/// 其余平台没有可用的文件身份校验：宁可留下半成品，也不按路径删除未知归属的文件。
+#[cfg(not(any(windows, unix)))]
+fn cleanup_created_file(file: File, path: &Path) {
+    tracing::warn!(
+        "当前平台无法安全确认文件归属，保留失败产生的文件：{}",
+        path.display()
+    );
+    drop(file);
 }
 
 /// 未授权分支：`create_new` 保证“不存在才创建”由文件系统原子裁定。
@@ -182,14 +226,17 @@ fn write_replace(target: &Path, parent: &Path, bytes: &[u8]) -> AppResult<u64> {
             return Err(map_write_error(&tmp, e));
         }
     }
-    drop(file);
+    // 句柄保持到替换结束：rename 失败时仍能以同一个文件对象做清理，
+    // 而不是「关闭句柄后按路径删除」（句柄释放到删除之间路径可能被替换）。
     match std::fs::rename(&tmp, target) {
-        Ok(()) => Ok(bytes.len() as u64),
+        Ok(()) => {
+            drop(file);
+            Ok(bytes.len() as u64)
+        }
         Err(e) => {
             // Windows MoveFileExW(REPLACE_EXISTING)：目标被占用/只读/权限不足会失败，
-            // 此时原文件没有被截断，只需清掉临时文件。临时名含随机 UUID 且由本次
-            // create_new 独占创建，句柄已关闭后按路径清理不会被外部替换利用。
-            let _ = std::fs::remove_file(&tmp);
+            // 此时原文件没有被截断，只需清掉本次创建的临时文件；清理失败不掩盖原始错误。
+            cleanup_created_file(file, &tmp);
             Err(AppError::Io(std::io::Error::new(
                 e.kind(),
                 format!(
@@ -598,6 +645,51 @@ mod tests {
         assert_eq!(digest(&target), before, "替换者文件必须字节级不变");
         assert_eq!(std::fs::read(&target).unwrap(), replacement);
         assert!(!moved.exists(), "本次创建的文件对象应被句柄级删除");
+    }
+
+    /// Unix 上路径被其他进程替换成新文件时，身份校验不一致，清理不得删除新文件；
+    /// 本次创建的文件（已移到别处）保留，不被误删。
+    #[test]
+    #[cfg(unix)]
+    fn failure_cleanup_skips_path_replaced_by_other_file() {
+        let dir = TempDir::new("cleanup-race-unix");
+        let target = dir.join("clip.png");
+        let moved = dir.join("created-by-us.png");
+        let mut file = create_new_file(&target).expect("排他创建");
+        file.write_all(b"partial").expect("写入半成品");
+
+        std::fs::rename(&target, &moved).expect("移动仍打开的本次文件");
+        let replacement = png_bytes(0xfe, 96);
+        std::fs::write(&target, &replacement).expect("替换者写入新文件");
+        let before = digest(&target);
+
+        cleanup_created_file(file, &target);
+
+        assert!(target.exists(), "替换者的文件不属于本次调用，不得删除");
+        assert_eq!(digest(&target), before, "替换者文件必须字节级不变");
+        assert!(
+            moved.exists(),
+            "无法确认归属时宁可保留本次创建的文件，也不冒险按路径删除"
+        );
+    }
+
+    /// rename 失败后清掉的是本次创建的临时文件；目标（目录）不被改动、无临时残留。
+    #[test]
+    fn rename_failure_cleans_temp_and_keeps_target() {
+        let dir = TempDir::new("rename-failure");
+        let target = dir.join("occupied.png");
+        std::fs::create_dir(&target).expect("用目录制造 rename 失败");
+        let bytes = png_bytes(0xfc, 128);
+
+        let err = write_replace(&target, dir.path(), &bytes)
+            .expect_err("把临时文件 rename 到目录上必须失败");
+        assert!(matches!(err, AppError::Io(_)), "实际: {err:?}");
+        assert!(target.is_dir(), "失败时不得删除/替换目标目录");
+        assert!(
+            tmp_leftovers(dir.path()).is_empty(),
+            "rename 失败后不得残留临时文件: {:?}",
+            tmp_leftovers(dir.path())
+        );
     }
 
     /// 句柄缺少 DELETE 权限导致句柄级清理失败时，不得回退成按路径删除。

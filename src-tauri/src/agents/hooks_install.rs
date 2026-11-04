@@ -29,6 +29,19 @@ pub const LEGACY_MARKER: &str = "task-dock-agent-hook";
 /// 备份保留份数。
 const KEEP_BACKUPS: usize = 5;
 
+/// Hooks 配置布局。
+///
+/// - `Flat`：Claude 兼容格式 `{ "hooks": { "<Event>": [ ... ] } }`
+///   （Codex / Trae / WorkBuddy / Qoder / Claude / Cursor / Gemini）；
+/// - `NestedEvents`：ZCode 用户配置格式
+///   `{ "hooks": { "enabled": true, "events": { "<Event>": [ ... ] } } }`。
+///   ZCode 的配置式 hooks 默认关闭，安装时必须同时写 `enabled: true`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HooksLayout {
+    Flat,
+    NestedEvents,
+}
+
 #[derive(Debug, Clone)]
 pub struct HookSpec {
     /// 事件名（如 SessionStart / Stop / PermissionRequest）
@@ -307,8 +320,9 @@ fn validated_root(path: &Path) -> AppResult<Option<Value>> {
     Ok(root)
 }
 
-/// 只增删 Task Dock 自己的条目，返回（第三方条目数，Task Dock 事件列表）。
-fn apply_specs(root: &mut Value, specs: &[HookSpec]) -> (usize, Vec<String>) {
+/// 取出「事件表」对象：Flat 是 `hooks` 自身，NestedEvents 是 `hooks.events`。
+/// NestedEvents 同时保证 `hooks.enabled = true`（ZCode 默认关闭配置式 hooks）。
+fn events_object_mut(root: &mut Value, layout: HooksLayout) -> &mut serde_json::Map<String, Value> {
     let obj = root.as_object_mut().unwrap();
     let hooks = obj
         .entry("hooks".to_string())
@@ -317,6 +331,33 @@ fn apply_specs(root: &mut Value, specs: &[HookSpec]) -> (usize, Vec<String>) {
         *hooks = Value::Object(Default::default());
     }
     let hooks_obj = hooks.as_object_mut().unwrap();
+    match layout {
+        HooksLayout::Flat => hooks_obj,
+        HooksLayout::NestedEvents => {
+            hooks_obj.insert("enabled".into(), Value::Bool(true));
+            let events = hooks_obj
+                .entry("events".to_string())
+                .or_insert_with(|| Value::Object(Default::default()));
+            if !events.is_object() {
+                *events = Value::Object(Default::default());
+            }
+            events.as_object_mut().unwrap()
+        }
+    }
+}
+
+/// 只读取「事件表」对象（不改变结构）。
+fn events_object(root: &Value, layout: HooksLayout) -> Option<&serde_json::Map<String, Value>> {
+    let hooks = root.get("hooks")?.as_object()?;
+    match layout {
+        HooksLayout::Flat => Some(hooks),
+        HooksLayout::NestedEvents => hooks.get("events")?.as_object(),
+    }
+}
+
+/// 只增删 Task Dock 自己的条目，返回（第三方条目数，Task Dock 事件列表）。
+fn apply_specs(root: &mut Value, specs: &[HookSpec], layout: HooksLayout) -> (usize, Vec<String>) {
+    let hooks_obj = events_object_mut(root, layout);
 
     let mut third_party = 0usize;
     let mut installed = Vec::new();
@@ -350,11 +391,11 @@ fn apply_specs(root: &mut Value, specs: &[HookSpec]) -> (usize, Vec<String>) {
 }
 
 /// 写后语义校验：文件可解析，且每个 spec 事件下确实存在 Task Dock 条目。
-fn verify_applied(path: &Path, specs: &[HookSpec]) -> bool {
+fn verify_applied(path: &Path, specs: &[HookSpec], layout: HooksLayout) -> bool {
     let Ok(Some(root)) = read_json(path) else {
         return false;
     };
-    let Some(hooks) = root.get("hooks").and_then(|v| v.as_object()) else {
+    let Some(hooks) = events_object(&root, layout) else {
         return false;
     };
     specs.iter().all(|s| {
@@ -372,13 +413,14 @@ fn install_one(
     specs: &[HookSpec],
     existed: bool,
     bak: Option<&Path>,
+    layout: HooksLayout,
 ) -> AppResult<HooksFileReport> {
     let mut root = validated_root(path)?.unwrap_or_else(|| Value::Object(Default::default()));
-    let (third_party, installed) = apply_specs(&mut root, specs);
+    let (third_party, installed) = apply_specs(&mut root, specs, layout);
     let pretty = serde_json::to_string_pretty(&root)?;
     atomic_write(path, &pretty, bak)?;
 
-    if !verify_applied(path, specs) {
+    if !verify_applied(path, specs, layout) {
         let rollback = match bak {
             Some(b) => restore_from_backup(path, b)
                 .map(|_| "，已从备份回滚".to_string())
@@ -407,11 +449,20 @@ fn install_one(
 
 /// 安装（或幂等更新）Task Dock hooks，保留全部第三方配置。
 pub fn install_hooks(path: &Path, specs: &[HookSpec]) -> AppResult<HooksFileReport> {
+    install_hooks_with(path, specs, HooksLayout::Flat)
+}
+
+/// 按指定布局安装 hooks。
+pub fn install_hooks_with(
+    path: &Path,
+    specs: &[HookSpec],
+    layout: HooksLayout,
+) -> AppResult<HooksFileReport> {
     validate_specs(specs)?;
     let existed = path.exists();
     let _ = validated_root(path)?;
     let bak = backup(path)?;
-    install_one(path, specs, existed, bak.as_deref())
+    install_one(path, specs, existed, bak.as_deref(), layout)
 }
 
 /// 多配置文件事务化安装（Trae 国际/CN、WorkBuddy 多配置根）。
@@ -419,6 +470,15 @@ pub fn install_hooks(path: &Path, specs: &[HookSpec]) -> AppResult<HooksFileRepo
 /// 任一步失败时按快照恢复**全部**目标文件；恢复失败逐项如实报告，
 /// 不会把「部分写入」伪装成成功，也不会删除第三方 hooks。
 pub fn install_hooks_set(paths: &[PathBuf], specs: &[HookSpec]) -> AppResult<Vec<HooksFileReport>> {
+    install_hooks_set_with(paths, specs, HooksLayout::Flat)
+}
+
+/// 按指定布局执行多配置文件事务化安装。
+pub fn install_hooks_set_with(
+    paths: &[PathBuf],
+    specs: &[HookSpec],
+    layout: HooksLayout,
+) -> AppResult<Vec<HooksFileReport>> {
     validate_specs(specs)?;
     if paths.is_empty() {
         return Err(AppError::Agent("没有可写入的 hooks 配置文件".into()));
@@ -440,7 +500,7 @@ pub fn install_hooks_set(paths: &[PathBuf], specs: &[HookSpec]) -> AppResult<Vec
     let mut reports = Vec::new();
     for (idx, p) in paths.iter().enumerate() {
         let (_, existed, bak) = &snapshots[idx];
-        match install_one(p, specs, *existed, bak.as_deref()) {
+        match install_one(p, specs, *existed, bak.as_deref(), layout) {
             Ok(r) => reports.push(r),
             Err(e) => {
                 let mut restored = 0usize;
@@ -484,8 +544,41 @@ pub fn install_hooks_set(paths: &[PathBuf], specs: &[HookSpec]) -> AppResult<Vec
     Ok(reports)
 }
 
+/// 移除事件表中的 Task Dock 条目并清理空事件键，返回移除的事件与第三方条目数。
+fn strip_our_hooks(
+    events: &mut serde_json::Map<String, Value>,
+    removed_events: &mut Vec<String>,
+    third_party: &mut usize,
+) {
+    let mut empty_events = Vec::new();
+    for (event, list) in events.iter_mut() {
+        if let Some(arr) = list.as_array_mut() {
+            let before = arr.len();
+            arr.retain(|g| !is_our_hook(g));
+            if arr.len() < before {
+                removed_events.push(event.clone());
+            }
+            *third_party += arr.len();
+            if arr.is_empty() {
+                empty_events.push(event.clone());
+            }
+        }
+    }
+    for e in empty_events {
+        events.remove(&e);
+    }
+}
+
 /// 卸载 Task Dock hooks：只删自己的条目，保留第三方；清理空组。
 pub fn uninstall_hooks(path: &Path) -> AppResult<HooksFileReport> {
+    uninstall_hooks_with(path, HooksLayout::Flat)
+}
+
+/// 按指定布局卸载 Task Dock hooks。
+///
+/// NestedEvents 下只清理 `hooks.events` 中的自身条目与空事件键；
+/// `hooks.enabled` 及 `timeoutMs` / `maxOutputBytes` 等用户级设置原样保留。
+pub fn uninstall_hooks_with(path: &Path, layout: HooksLayout) -> AppResult<HooksFileReport> {
     let existed = path.exists();
     let mut root = match read_json(path)? {
         Some(v) => v,
@@ -512,22 +605,23 @@ pub fn uninstall_hooks(path: &Path) -> AppResult<HooksFileReport> {
     let mut third_party = 0usize;
 
     if let Some(hooks) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        let mut empty_events = Vec::new();
-        for (event, list) in hooks.iter_mut() {
-            if let Some(arr) = list.as_array_mut() {
-                let before = arr.len();
-                arr.retain(|g| !is_our_hook(g));
-                if arr.len() < before {
-                    removed_events.push(event.clone());
+        match layout {
+            HooksLayout::Flat => {
+                strip_our_hooks(hooks, &mut removed_events, &mut third_party);
+            }
+            HooksLayout::NestedEvents => {
+                if let Some(events) = hooks.get_mut("events").and_then(|v| v.as_object_mut()) {
+                    strip_our_hooks(events, &mut removed_events, &mut third_party);
                 }
-                third_party += arr.len();
-                if arr.is_empty() {
-                    empty_events.push(event.clone());
+                // 事件表清空后移除空对象，保留用户自己的 enabled / 其他字段。
+                if hooks
+                    .get("events")
+                    .and_then(|v| v.as_object())
+                    .is_some_and(|m| m.is_empty())
+                {
+                    hooks.remove("events");
                 }
             }
-        }
-        for e in empty_events {
-            hooks.remove(&e);
         }
         if hooks.is_empty() {
             if let Some(obj) = root.as_object_mut() {
@@ -543,8 +637,8 @@ pub fn uninstall_hooks(path: &Path) -> AppResult<HooksFileReport> {
     let mut valid = read_json(path)?.is_some();
     if valid {
         if let Some(v) = read_json(path)? {
-            if let Some(hooks) = v.get("hooks").and_then(|h| h.as_object()) {
-                if hooks
+            if let Some(events) = events_object(&v, layout) {
+                if events
                     .values()
                     .filter_map(|l| l.as_array())
                     .any(|arr| arr.iter().any(is_our_hook))
@@ -579,15 +673,21 @@ pub fn uninstall_hooks(path: &Path) -> AppResult<HooksFileReport> {
 
 /// 检查状态：文件是否存在、JSON 是否合法、我们的事件哪些已注册、第三方条目数。
 pub fn status_hooks(path: &Path, events: &[&str]) -> AppResult<Value> {
+    status_hooks_with(path, events, HooksLayout::Flat)
+}
+
+/// 按指定布局检查 hooks 状态。
+pub fn status_hooks_with(path: &Path, events: &[&str], layout: HooksLayout) -> AppResult<Value> {
     let mut registered: Vec<String> = Vec::new();
     let mut third_party = 0usize;
     let mut valid_json = true;
     let mut existed = false;
+    let mut hooks_enabled: Option<bool> = None;
     if let Some(root) = read_json(path)? {
         existed = true;
-        if let Some(hooks) = root.get("hooks").and_then(|h| h.as_object()) {
+        if let Some(events_map) = events_object(&root, layout) {
             for ev in events {
-                if let Some(arr) = hooks.get(*ev).and_then(|l| l.as_array()) {
+                if let Some(arr) = events_map.get(*ev).and_then(|l| l.as_array()) {
                     let ours = arr.iter().any(is_our_hook);
                     third_party += arr.iter().filter(|g| !is_our_hook(g)).count();
                     if ours {
@@ -596,17 +696,28 @@ pub fn status_hooks(path: &Path, events: &[&str]) -> AppResult<Value> {
                 }
             }
         }
+        if layout == HooksLayout::NestedEvents {
+            hooks_enabled = root
+                .get("hooks")
+                .and_then(|h| h.get("enabled"))
+                .and_then(|v| v.as_bool());
+        }
     } else {
         valid_json = false;
     }
-    Ok(serde_json::json!({
+    let mut out = serde_json::json!({
         "path": path.to_string_lossy(),
         "exists": existed,
         "valid_json": valid_json,
         "registered_events": registered,
         "expected_events": events,
         "third_party_entries": third_party,
-    }))
+    });
+    if layout == HooksLayout::NestedEvents {
+        out["hooks_enabled"] = serde_json::json!(hooks_enabled);
+        out["enabled_required"] = serde_json::json!(true);
+    }
+    Ok(out)
 }
 
 /// 用户主目录。
@@ -647,6 +758,32 @@ pub fn codex_hook_command(exe: &Path, source_id: &str, event: &str) -> String {
     )
 }
 
+/// Trae 专用 hook 命令行。
+///
+/// Trae 宿主如何执行 `command` 无法从客户端包内确认（本机 Trae CN 1.107.1 包内
+/// 未发现本地 hook 执行器），因此命令必须同时满足三种可能的解析方式：
+/// - **cmd / Node `child_process`**：以 `"` 开头的命令会被 cmd 当作路径的一部分；
+/// - **PowerShell**：`"<exe>" --agent-hook` 不是函数式调用，实测报
+///   `Unexpected token '--agent-hook'` / `'--' 运算符仅适用于变量或属性`；
+/// - **直接 CreateProcess（lpApplicationName = NULL）**：首 token 必须可解析。
+///
+/// `C:\Windows\System32\cmd.exe /c call "<exe>" ...` 三者都成立：cmd 二次解析参数、
+/// PowerShell 把无空格的绝对 cmd.exe 当命令、CreateProcess 也能解析首 token。
+/// 每个事件只多一层 cmd.exe（约 5ms），不引入 PowerShell 包装。
+pub fn trae_hook_command(exe: &Path, source_id: &str, event: &str) -> String {
+    let shell = std::env::var("SystemRoot")
+        .map(|r| format!("{}\\System32\\cmd.exe", r))
+        .unwrap_or_else(|_| "cmd.exe".to_string());
+    format!(
+        "{} /c call \"{}\" {} --source {} --event {}",
+        shell,
+        exe.to_string_lossy(),
+        MARKER,
+        source_id,
+        event
+    )
+}
+
 /// 旧版 PowerShell 脚本路径（仅用于卸载清理与兼容检测）。
 pub fn legacy_script_path(app_data: &Path, source_id: &str) -> PathBuf {
     app_data
@@ -657,6 +794,7 @@ pub fn legacy_script_path(app_data: &Path, source_id: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn tmpdir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("td-hook-test-{}", uuid::Uuid::new_v4()));
@@ -692,6 +830,120 @@ mod tests {
             cmd,
             r#""C:\Program Files\Task Dock\task-dock.exe" --agent-hook --source workbuddy --event Stop"#
         );
+    }
+
+    #[test]
+    fn nested_install_enables_hooks_and_preserves_user_config() {
+        let dir = tmpdir();
+        let path = dir.join("config.json");
+        // 模拟 ZCode 用户配置：mcp / 其他 hooks 设置 / 第三方 Stop 组
+        std::fs::write(
+            &path,
+            r#"{
+  "mcp": { "servers": {} },
+  "hooks": {
+    "enabled": false,
+    "timeoutMs": 5000,
+    "events": {
+      "Stop": [ { "hooks": [ { "type": "command", "command": "C:\\third-party.cmd" } ] } ]
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let r = install_hooks_with(
+            &path,
+            &[spec("Stop"), spec("SessionStart")],
+            HooksLayout::NestedEvents,
+        )
+        .unwrap();
+        assert_eq!(r.third_party_entries, 1, "第三方 Stop 组必须保留");
+        assert_eq!(r.installed_events, vec!["Stop", "SessionStart"]);
+
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(root["hooks"]["enabled"], json!(true), "配置式 hooks 必须启用");
+        assert_eq!(root["hooks"]["timeoutMs"], json!(5000), "用户级设置保留");
+        assert_eq!(root["mcp"]["servers"], json!({}), "其他配置保留");
+        assert_eq!(root["hooks"]["events"]["Stop"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            root["hooks"]["events"]["SessionStart"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // 嵌套布局不得把事件写到 hooks 顶层（ZCode schema 只认 hooks.events）
+        assert!(root["hooks"].get("SessionStart").is_none());
+
+        // 幂等
+        install_hooks_with(
+            &path,
+            &[spec("Stop"), spec("SessionStart")],
+            HooksLayout::NestedEvents,
+        )
+        .unwrap();
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(root["hooks"]["events"]["Stop"].as_array().unwrap().len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn nested_uninstall_removes_only_ours_and_keeps_enabled() {
+        let dir = tmpdir();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"enabled":true,"timeoutMs":5000,"events":{"Stop":[{"hooks":[{"type":"command","command":"C:\\third-party.cmd"}]}]}}}"#,
+        )
+        .unwrap();
+        install_hooks_with(
+            &path,
+            &[spec("Stop"), spec("SessionStart")],
+            HooksLayout::NestedEvents,
+        )
+        .unwrap();
+
+        let r = uninstall_hooks_with(&path, HooksLayout::NestedEvents).unwrap();
+        let mut removed = r.installed_events.clone();
+        removed.sort();
+        assert_eq!(removed, vec!["SessionStart", "Stop"]);
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // 第三方组保留；Task Dock 的 SessionStart 事件被清理
+        assert_eq!(root["hooks"]["events"]["Stop"].as_array().unwrap().len(), 1);
+        assert!(root["hooks"]["events"].get("SessionStart").is_none());
+        // enabled / timeoutMs 属于用户配置，不因卸载被删除
+        assert_eq!(root["hooks"]["enabled"], json!(true));
+        assert_eq!(root["hooks"]["timeoutMs"], json!(5000));
+
+        // 只有 Task Dock 条目时，卸载后移除空 events 对象
+        let only_ours = dir.join("only-ours.json");
+        std::fs::write(
+            &only_ours,
+            r#"{"hooks":{"enabled":true,"events":{}}}"#,
+        )
+        .unwrap();
+        install_hooks_with(&only_ours, &[spec("Stop")], HooksLayout::NestedEvents).unwrap();
+        uninstall_hooks_with(&only_ours, HooksLayout::NestedEvents).unwrap();
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&only_ours).unwrap()).unwrap();
+        assert!(root["hooks"].get("events").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn nested_status_reports_enabled_state() {
+        let dir = tmpdir();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"hooks":{"enabled":false,"events":{}}}"#).unwrap();
+        let status = status_hooks_with(&path, &["Stop"], HooksLayout::NestedEvents).unwrap();
+        assert_eq!(status["hooks_enabled"], json!(false));
+        assert_eq!(status["enabled_required"], json!(true));
+        install_hooks_with(&path, &[spec("Stop")], HooksLayout::NestedEvents).unwrap();
+        let status = status_hooks_with(&path, &["Stop"], HooksLayout::NestedEvents).unwrap();
+        assert_eq!(status["hooks_enabled"], json!(true));
+        assert_eq!(status["registered_events"], json!(["Stop"]));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -836,5 +1088,66 @@ mod tests {
         assert_eq!(s["registered_events"], serde_json::json!(["Stop"]));
         assert_eq!(s["third_party_entries"], 0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 编译产物中的主程序（target/{debug,release}/task-dock.exe）。
+    #[cfg(windows)]
+    fn built_app_binary() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let base = exe.parent()?.parent()?;
+        ["task-dock.exe", "task_dock.exe"]
+            .iter()
+            .map(|n| base.join(n))
+            .find(|p| p.exists())
+    }
+
+    /// 真实执行：命令必须能被 PowerShell 解析并真正拉起 hook 进程（不是字符串比较）。
+    /// 覆盖带空格 + 中文的安装路径，与本机 Trae CN 实际目录形态一致。
+    #[cfg(windows)]
+    #[test]
+    fn trae_hook_command_really_executes_from_powershell() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let Some(bin) = built_app_binary() else {
+            eprintln!("跳过：未找到 task-dock.exe（cargo test 应已构建 bin）");
+            return;
+        };
+        let dir = tmpdir().join("Trae CN 工作 目录");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("task-dock.exe");
+        std::fs::copy(&bin, &target).unwrap();
+
+        let cmd = trae_hook_command(&target, "trae", "SessionStart");
+        assert!(cmd.contains("/c call \""), "{}", cmd);
+        assert!(!cmd.trim_start().starts_with('"'), "不得以引号开头");
+
+        let data = tmpdir();
+        let payload =
+            r#"{"hook_event_name":"SessionStart","session_id":"win-exec-test","cwd":"C:\\"}"#;
+        let mut child = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &cmd])
+            .env("TASK_DOCK_DATA_DIR", &data)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("powershell 应可启动");
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "PowerShell 执行失败: status={:?} stderr={}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&data).ok();
     }
 }

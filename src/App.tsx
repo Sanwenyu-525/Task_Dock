@@ -16,7 +16,7 @@ import TitleBar from "./components/TitleBar";
 import MinimalView from "./components/MinimalView";
 import CompactView from "./components/CompactView";
 import FullView from "./components/FullView";
-import TaskEditor from "./components/tasks/TaskEditor";
+import DeferredView from "./components/DeferredView";
 import WorkspaceLauncher from "./components/navigation/WorkspaceLauncher";
 import { GlobalSearchDialog } from "./components/global-search/GlobalSearchDialog";
 import ClipboardDrawer from "./components/clipboard/ClipboardDrawer";
@@ -55,7 +55,6 @@ export default function App() {
   const loadSettings = useSettingsStore((s) => s.load);
   const syncExternal = useSettingsStore((s) => s.syncExternal);
   const refreshTasks = useTasksStore((s) => s.refresh);
-  const loadStats = useTasksStore((s) => s.loadStats);
   const loadAgents = useAgentsStore((s) => s.load);
   const bumpQuickAdd = useUiStore((s) => s.bumpQuickAdd);
   const loadNavLinks = useNavigationStore((s) => s.loadTaskLinks);
@@ -237,9 +236,9 @@ export default function App() {
       syncExternal({ snap_display_mode: form === "full" ? "full" : "capsule" });
     }));
     scope.add(onAppReady(() => {
+      // refreshTasks 已包含 loadStats（useTasksStore.refresh），不再重复发一次统计 IPC
       refreshTasks();
       loadAgents();
-      loadStats();
       loadNavLinks();
     }));
     // 卸载/热更新时释放全部监听（Promise 未兑现的会在兑现后立即反订阅）
@@ -247,7 +246,7 @@ export default function App() {
       if (taskRefreshTimer !== null) window.clearTimeout(taskRefreshTimer);
       scope.dispose();
     };
-  }, [loadAgents, refreshTasks, loadStats, bumpQuickAdd, syncExternal, loadNavLinks]);
+  }, [loadAgents, refreshTasks, bumpQuickAdd, syncExternal, loadNavLinks]);
 
   // 卸载（或热更新）时清掉未执行的行动中心刷新调度，避免遗留定时器
   useEffect(() => () => cancelActionsRefresh(), []);
@@ -274,20 +273,26 @@ export default function App() {
       <div className="dock-app" inert={capsuleMode}>
         <TitleBar />
         <div className="dock-body">
-          {/* 三个模式视图常驻挂载（CSS 隐藏非当前项），切换保留内容状态与滚动位置 */}
+          {/* CSS 隐藏非当前项；DeferredView 让非当前模式在**首次激活前**不挂载，
+             首次激活后永久保留（切换保留内容状态与滚动位置，与常驻方案一致） */}
           <div className={`view-slot ${mode === "minimal" ? "active" : ""}`}>
-            <MinimalView />
+            <DeferredView active={mode === "minimal"}>
+              <MinimalView />
+            </DeferredView>
           </div>
           <div className={`view-slot ${mode === "compact" ? "active" : ""}`}>
-            <CompactView />
+            <DeferredView active={mode === "compact"}>
+              <CompactView />
+            </DeferredView>
           </div>
           <div className={`view-slot ${mode === "full" ? "active" : ""}`}>
-            <FullView />
+            <DeferredView active={mode === "full"}>
+              <FullView />
+            </DeferredView>
           </div>
           <ClipboardDrawer />
           <TaskContextDrawer />
         </div>
-        <TaskEditor />
         <WorkspaceLauncher />
         <GlobalSearchDialog />
       </div>

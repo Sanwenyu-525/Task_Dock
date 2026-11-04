@@ -114,6 +114,10 @@ export const zhCN = {
   "quickReminder.errorMin": "至少 1 分钟后提醒",
   "quickReminder.created": "已创建提醒「{title}」，预计 {time} 提醒",
   "quickReminder.failed": "创建失败：{error}",
+  "quickReminder.collapsed": "快捷提醒",
+  "quickReminder.hint": "5 分钟 ~ 24 小时",
+  "quickReminder.expand": "展开快捷提醒",
+  "quickReminder.collapse": "收起快捷提醒",
   "quickReminder.customHoursAria": "自定义小时",
   "quickReminder.customMinutesAria": "自定义分钟",
 
@@ -193,6 +197,11 @@ export const zhCN = {
   "dateTime.minute": "分",
   "dateTime.hourAria": "小时",
   "dateTime.minuteAria": "分钟",
+
+  "datePicker.invalidFormat": "格式不正确，请按 2026-11-04 输入",
+  "datePicker.pickerAria": "选择日期",
+  "datePicker.clear": "清除",
+  "datePicker.today": "今天",
 
   // ── 设置：语言 ──
   "settings.language": "语言",

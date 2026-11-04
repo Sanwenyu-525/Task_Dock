@@ -69,8 +69,46 @@ describe("normalizeError · 旧格式兼容", () => {
   });
 
   it("未知对象不会抛出，返回可读兜底文案", () => {
-    expect(errorMessage({ foo: 1 })).toBe('{"foo":1}');
+    // 不可信对象绝不序列化展示（可能含内部字段/敏感信息）
+    expect(errorMessage({ foo: 1 })).toBe("未知错误");
     expect(errorMessage(undefined)).toBe("未知错误");
+    expect(errorMessage(42)).toBe("未知错误");
+  });
+
+  it("后端新增未知错误码时使用稳定回退，不展示原始 message", () => {
+    const err = normalizeError({
+      code: "FUTURE_ERROR_CODE",
+      message: "SELECT password FROM users WHERE id = 1",
+      detail: "SELECT * FROM secrets",
+    });
+    expect(err.code).toBe("UNKNOWN_ERROR");
+    expect(err.message).toBe("未知错误");
+    expect(err.message).not.toContain("SELECT");
+    expect(err.detail ?? "").not.toContain("SELECT");
+  });
+
+  it("脱敏：路径、令牌、SQL 与堆栈不进入用户文案，业务原因保留", () => {
+    const err = normalizeError(
+      "读取 C:\\Users\\alice\\secret.txt 失败；token=abcdef123456；\n" +
+        "SELECT * FROM tasks WHERE token = 'abc'\n" +
+        "at src/main.rs:10\n" +
+        "/Users/bob/Library/logs 与 /home/carol/.config 不可用",
+    );
+    expect(err.message).toContain("读取");
+    expect(err.message).toContain("失败");
+    expect(err.message).not.toMatch(/alice|bob|carol/);
+    expect(err.message).not.toContain("abcdef123456");
+    expect(err.message).not.toContain("SELECT");
+    expect(err.message).not.toContain("src/main.rs");
+  });
+
+  it("AppError 构造即脱敏，detail 不保留明文敏感值", () => {
+    const err = new AppError("保存失败：authorization: Bearer abcdef123456", {
+      code: "IO_ERROR",
+      detail: "C:\\Users\\alice\\AppData\\Local\\taskdock\\db.sqlite",
+    });
+    expect(err.message).not.toContain("abcdef123456");
+    expect(err.detail).not.toContain("alice");
   });
 });
 

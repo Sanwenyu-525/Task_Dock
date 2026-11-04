@@ -29,6 +29,7 @@ import {
   type ShelfKind,
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
+import { errorMessage } from "../../lib/errors";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -171,7 +172,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             if (paths.length === 0) return;
             addPaths(paths, copyOnAdd ? "managed" : "reference", "drag")
               .then((r) => reportAdd(r, "已暂存"))
-              .catch((e) => showToast(String(e), { kind: "error" }));
+              .catch((e) => showToast(`暂存拖入文件失败：${errorMessage(e)}`, { kind: "error" }));
           } else {
             setDragOver(false);
           }
@@ -195,7 +196,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       const r = await addPaths(paths, copyOnAdd ? "managed" : "reference", "picker");
       reportAdd(r, "已暂存");
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`暂存文件失败：${errorMessage(e)}`, { kind: "error" });
     }
   };
 
@@ -207,7 +208,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       setLinkOpen(false);
       showToast("链接已暂存", { kind: "success" });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`暂存链接失败：${errorMessage(e)}`, { kind: "error" });
     }
   };
 
@@ -219,7 +220,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       setTextDraft(false);
       showToast("文本已暂存", { kind: "success" });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`暂存文本失败：${errorMessage(e)}`, { kind: "error" });
     }
   };
 
@@ -243,7 +244,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           })),
         );
       } catch (e) {
-        showToast(String(e), { kind: "error" });
+        showToast(`读取剪贴板列表失败：${errorMessage(e)}`, { kind: "error" });
       }
     }
   };
@@ -254,7 +255,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       reportAdd(r, "已从剪贴板添加");
       if (r.added > 0) setClipOpen(false);
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`从剪贴板添加失败：${errorMessage(e)}`, { kind: "error" });
     }
   };
 
@@ -265,7 +266,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         key: "open",
         label: item.kind === "link" ? "在浏览器打开" : "打开",
         onSelect: () => {
-          shelfOpenItem(item.id).catch((e) => showToast(String(e), { kind: "error" }));
+          shelfOpenItem(item.id).catch((e) => showToast(`打开暂存项失败：${errorMessage(e)}`, { kind: "error" }));
         },
       },
       ...(item.kind === "file" || item.kind === "image" || item.kind === "folder"
@@ -275,7 +276,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
               label: "所在文件夹",
               onSelect: () => {
                 shelfRevealItem(item.id).catch((e) =>
-                  showToast(String(e), { kind: "error" }),
+                  showToast(`打开所在文件夹失败：${errorMessage(e)}`, { kind: "error" }),
                 );
               },
             },
@@ -287,7 +288,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         onSelect: () => {
           shelfCopyPaths([item.id])
             .then(() => showToast("路径已复制", { kind: "success" }))
-            .catch((e) => showToast(String(e), { kind: "error" }));
+            .catch((e) => showToast(`复制路径失败：${errorMessage(e)}`, { kind: "error" }));
         },
       },
       ...(item.kind === "file" || item.kind === "image"
@@ -298,7 +299,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
               onSelect: () => {
                 shelfCopyFiles([item.id])
                   .then(() => showToast("文件已复制到剪贴板", { kind: "success" }))
-                  .catch((e) => showToast(String(e), { kind: "error" }));
+                  .catch((e) => showToast(`复制文件失败：${errorMessage(e)}`, { kind: "error" }));
               },
             },
           ]
@@ -333,7 +334,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
                       }),
                     );
                   })
-                  .catch((e) => showToast(String(e), { kind: "error" }))
+                  .catch((e) => showToast(`添加到收集箱失败：${errorMessage(e)}`, { kind: "error" }))
                   .finally(() => setToInboxBusy(false));
               },
             },
@@ -344,7 +345,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         label: item.favorite ? "取消收藏" : "收藏",
         onSelect: () => {
           updateItem(item.id, { favorite: !item.favorite }).catch((e) =>
-            showToast(String(e), { kind: "error" }),
+            showToast(`更新收藏失败：${errorMessage(e)}`, { kind: "error" }),
           );
         },
       },
@@ -353,7 +354,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         label: item.pinned ? "取消置顶" : "置顶",
         onSelect: () => {
           updateItem(item.id, { pinned: !item.pinned }).catch((e) =>
-            showToast(String(e), { kind: "error" }),
+            showToast(`更新置顶失败：${errorMessage(e)}`, { kind: "error" }),
           );
         },
       },
@@ -361,7 +362,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         key: `group-${g.id}`,
         label: `${item.group_id === g.id ? "✓ " : ""}移动到：${g.name}`,
         onSelect: () => {
-          moveToGroup([item.id], g.id).catch((e) => showToast(String(e), { kind: "error" }));
+          moveToGroup([item.id], g.id).catch((e) => showToast(`移动分组失败：${errorMessage(e)}`, { kind: "error" }));
         },
       })),
       {
@@ -387,7 +388,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const copySelectedFiles = () => {
     shelfCopyFiles(selectedIds)
       .then(() => showToast("文件已复制，可在资源管理器粘贴", { kind: "success" }))
-      .catch((e) => showToast(String(e), { kind: "error" }));
+      .catch((e) => showToast(`复制所选文件失败：${errorMessage(e)}`, { kind: "error" }));
   };
 
   const runCleanupPreview = async () => {
@@ -400,7 +401,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         freed_bytes: r.freed_bytes,
       });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`清理预览失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setCleanupBusy(false);
     }
@@ -416,7 +417,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       setCleanupPreview(null);
       setCleanupOpen(false);
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`清理失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setCleanupBusy(false);
     }
@@ -746,7 +747,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
                 onSelect: () => {
                   moveToGroup(selectedIds, g.id)
                     .then(() => showToast("已移动", { kind: "success" }))
-                    .catch((e) => showToast(String(e), { kind: "error" }));
+                    .catch((e) => showToast(`移动分组失败：${errorMessage(e)}`, { kind: "error" }));
                 },
               })),
               {
@@ -755,7 +756,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
                 onSelect: () => {
                   moveToGroup(selectedIds, "none")
                     .then(() => showToast("已移动", { kind: "success" }))
-                    .catch((e) => showToast(String(e), { kind: "error" }));
+                    .catch((e) => showToast(`移动分组失败：${errorMessage(e)}`, { kind: "error" }));
                 },
               },
             ]}
@@ -767,9 +768,22 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             className="btn sm"
             onClick={() => {
               const ids = selectedIds;
-              Promise.all(ids.map((id) => updateItem(id, { favorite: true }).catch(() => null)))
-                .then(() => showToast("已收藏所选", { kind: "success" }))
-                .catch(() => {});
+              void (async () => {
+                // 逐项结果单独收集：批量部分失败不能整体丢弃或一律报成功。
+                const results = await Promise.all(
+                  ids.map((id) =>
+                    updateItem(id, { favorite: true }).then(
+                      () => true,
+                      () => false,
+                    ),
+                  ),
+                );
+                const failed = results.filter((ok) => !ok).length;
+                const done = ids.length - failed;
+                if (failed === 0) showToast("已收藏所选", { kind: "success" });
+                else if (done === 0) showToast("收藏所选失败，请稍后重试", { kind: "error" });
+                else showToast(`已收藏 ${done} 项，${failed} 项失败`, { kind: "warning" });
+              })();
             }}
           >
             <Star size={13} aria-hidden="true" /> 收藏
@@ -828,7 +842,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           if (!target) return;
           deleteItems(target.ids, target.includeProtected)
             .then(() => showToast("已删除", { kind: "success" }))
-            .catch((e) => showToast(String(e), { kind: "error" }));
+            .catch((e) => showToast(`删除暂存项失败：${errorMessage(e)}`, { kind: "error" }));
         }}
         onCancel={() => {
           setConfirmDelete(false);
@@ -849,7 +863,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             .getState()
             .clearShelf(false)
             .then(() => showToast("已清空", { kind: "success" }))
-            .catch((e) => showToast(String(e), { kind: "error" }));
+            .catch((e) => showToast(`清空暂存架失败：${errorMessage(e)}`, { kind: "error" }));
         }}
         onCancel={() => setConfirmClear(false)}
       />
@@ -897,7 +911,7 @@ function CleanupPanel({
       await updateSettings({ shelf_auto_cleanup_enabled: enabled });
     } catch (e) {
       setAuto(!enabled);
-      showToast(String(e), { kind: "error" });
+      showToast(`保存自动清理设置失败：${errorMessage(e)}`, { kind: "error" });
     }
   };
 
@@ -908,7 +922,7 @@ function CleanupPanel({
       await updateSettings({ shelf_retention_days: d });
     } catch (e) {
       setDays(prev);
-      showToast(String(e), { kind: "error" });
+      showToast(`保存保留天数失败：${errorMessage(e)}`, { kind: "error" });
     }
   };
 

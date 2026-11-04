@@ -23,6 +23,7 @@ export default function LanguageSetting() {
         <Select<LocalePreference>
           ariaLabel={t("settings.language")}
           size="sm"
+          triggerClassName="settings-select-trigger"
           value={preference}
           options={options}
           onChange={(value) => setPreference(value)}

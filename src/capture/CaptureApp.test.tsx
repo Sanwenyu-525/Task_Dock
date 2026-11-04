@@ -121,7 +121,7 @@ beforeEach(() => {
   bridge.hidden.length = 0;
   bridge.flushDraft.length = 0;
   vi.clearAllMocks();
-  bridge.getSettings.mockResolvedValue({ theme: "dark", visual_preset: "liquid-glass" });
+  bridge.getSettings.mockResolvedValue({ theme: "dark", visual_preset: "dream-gradient" });
   bridge.quickCaptureState.mockResolvedValue({ ...DEFAULT_STATE });
   bridge.quickCaptureSaveDraft.mockResolvedValue({ saved_at: "2026-11-03T04:05:00" });
   bridge.quickCaptureSetLastType.mockResolvedValue(undefined);
@@ -162,7 +162,7 @@ describe("CaptureApp / 初始状态", () => {
   it("主题快照落地到 data-theme / data-preset", async () => {
     await renderCapture();
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
-    expect(document.documentElement.dataset.preset).toBe("liquid-glass");
+    expect(document.documentElement.dataset.preset).toBe("dream-gradient");
   });
 });
 

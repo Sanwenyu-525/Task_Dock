@@ -4,7 +4,7 @@
 //! createSubscriptionScope 模式，卸载即释放）；面板隐藏时运行照常进行，
 //! 重新挂载用 refreshActive() 按需查询，不做轮询。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Copy,
   History,
@@ -24,12 +24,24 @@ import {
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { onWorkflowRunProgress } from "../../lib/bridge";
 import { useWorkflowsStore } from "../../store/useWorkflowsStore";
+import { errorMessage } from "../../lib/errors";
 import { ConfirmDialog } from "../ui";
 import { runStatusKind } from "./display";
 import { WORKFLOW_TEMPLATES } from "./templates";
-import WorkflowEditorDialog from "./WorkflowEditorDialog";
+import WorkflowEditorView from "./WorkflowEditorView";
 import WorkflowRunDialog from "./WorkflowRunDialog";
 import WorkflowHistoryDialog from "./WorkflowHistoryDialog";
+
+/** 内容区的滚动容器（页面级单一滚动）：向上找第一个 overflow-y 可滚动的祖先。 */
+function findScrollParent(el: HTMLElement | null): HTMLElement | null {
+  let p = el?.parentElement ?? null;
+  while (p) {
+    const oy = getComputedStyle(p).overflowY;
+    if (oy === "auto" || oy === "scroll") return p;
+    p = p.parentElement;
+  }
+  return null;
+}
 
 export default function WorkflowsPanel() {
   const workflows = useWorkflowsStore((s) => s.workflows);
@@ -48,11 +60,14 @@ export default function WorkflowsPanel() {
   const updateWorkflow = useWorkflowsStore((s) => s.updateWorkflow);
   const reorderWorkflows = useWorkflowsStore((s) => s.reorderWorkflows);
 
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editing, setEditing] = useState<{ workflow: WorkflowDetail | null; template: (typeof WORKFLOW_TEMPLATES)[number] | null }>({
-    workflow: null,
-    template: null,
-  });
+  /** null = 列表态；非空 = 页面内编辑态（不再使用 Dialog）。 */
+  const [editing, setEditing] = useState<{
+    workflow: WorkflowDetail | null;
+    template: (typeof WORKFLOW_TEMPLATES)[number] | null;
+  } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** 进入编辑前列表的滚动位置：返回时恢复，避免用户回到列表顶部。 */
+  const listScrollTop = useRef(0);
   const [runTarget, setRunTarget] = useState<WorkflowDetail | null>(null);
   const [historyTarget, setHistoryTarget] = useState<Workflow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Workflow | null>(null);
@@ -79,23 +94,43 @@ export default function WorkflowsPanel() {
     workflows.forEach((w) => void loadLastRun(w.id));
   }, [workflows, loadLastRun]);
 
+  /** 进入编辑态前记住列表滚动位置；返回时一次性恢复（页面级单一滚动容器）。 */
+  const rememberListScroll = () => {
+    const sc = findScrollParent(rootRef.current);
+    if (sc) listScrollTop.current = sc.scrollTop;
+  };
+
+  const closeEditor = () => {
+    setEditing(null);
+    requestAnimationFrame(() => {
+      const sc = findScrollParent(rootRef.current);
+      if (sc) sc.scrollTop = listScrollTop.current;
+    });
+  };
+
   const openEditor = async (wf: Workflow | null, template: (typeof WORKFLOW_TEMPLATES)[number] | null) => {
     setActionError(null);
     if (!wf) {
+      rememberListScroll();
       setEditing({ workflow: null, template });
-      setEditorOpen(true);
       return;
     }
     setBusyId(wf.id);
     try {
       const detail = await workflowGet(wf.id);
+      rememberListScroll();
       setEditing({ workflow: detail, template: null });
-      setEditorOpen(true);
     } catch (e) {
-      setActionError(String(e));
+      setActionError(errorMessage(e));
     } finally {
       setBusyId(null);
     }
+  };
+
+  /** 保存成功：刷新列表并回到列表态（列表滚动位置由 closeEditor 恢复）。 */
+  const handleSaved = () => {
+    void loadWorkflows();
+    closeEditor();
   };
 
   const openRun = async (wf: Workflow) => {
@@ -104,7 +139,7 @@ export default function WorkflowsPanel() {
     try {
       setRunTarget(await workflowGet(wf.id));
     } catch (e) {
-      setActionError(String(e));
+      setActionError(errorMessage(e));
     } finally {
       setBusyId(null);
     }
@@ -116,7 +151,7 @@ export default function WorkflowsPanel() {
     try {
       await fn();
     } catch (e) {
-      setActionError(String(e));
+      setActionError(errorMessage(e));
     } finally {
       setBusyId(null);
     }
@@ -139,7 +174,16 @@ export default function WorkflowsPanel() {
     : null;
 
   return (
-    <div className="workflows-panel">
+    <div ref={rootRef} className={`workflows-panel${editing ? " wf-editor-page" : ""}`}>
+      {editing ? (
+        <WorkflowEditorView
+          workflow={editing.workflow}
+          template={editing.template}
+          onCancel={closeEditor}
+          onSaved={handleSaved}
+        />
+      ) : (
+        <>
       <header className="wf-head-row">
         <div>
           <h2 className="wf-title">工作流</h2>
@@ -343,13 +387,8 @@ export default function WorkflowsPanel() {
         </div>
       ) : null}
 
-      <WorkflowEditorDialog
-        open={editorOpen}
-        onClose={() => setEditorOpen(false)}
-        workflow={editing.workflow}
-        template={editing.template}
-        onSaved={() => void loadWorkflows()}
-      />
+        </>
+      )}
       <WorkflowRunDialog
         open={runTarget !== null}
         onClose={() => setRunTarget(null)}

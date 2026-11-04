@@ -290,6 +290,32 @@ describe("HotkeysSection 重置", () => {
   });
 });
 
+describe("HotkeysSection 三行结构", () => {
+  it("名称/状态、组合/操作、说明分层，操作区成组右对齐", () => {
+    render(<HotkeysSection />);
+    const row = document.querySelector(
+      '[data-hotkey-action="toggle_main_window"]',
+    ) as HTMLElement;
+    expect(row).toBeTruthy();
+
+    const head = row.querySelector(".hotkey-row-head") as HTMLElement;
+    expect(head.querySelector(".hotkey-name")?.textContent).toBe("显示 / 隐藏主窗口");
+    const meta = head.querySelector(".hotkey-meta") as HTMLElement;
+    expect(meta.querySelectorAll(".chip")).toHaveLength(2);
+    expect(meta.textContent).toContain("系统级");
+    expect(meta.textContent).toContain("已生效");
+
+    const actionRow = row.querySelector(".hotkey-row-action") as HTMLElement;
+    expect(actionRow.querySelector(".hotkey-combo")?.textContent).toBe("Ctrl+Alt+T");
+    const actions = actionRow.querySelector(".hotkey-actions") as HTMLElement;
+    expect(actions.querySelectorAll("button")).toHaveLength(2);
+    expect(actions.textContent).toContain("编辑");
+    expect(actions.textContent).toContain("重置");
+
+    expect(row.querySelector(".hotkey-note")?.textContent).toContain("系统级");
+  });
+});
+
 describe("HotkeysSection i18n", () => {
   it("切换语言后固定文案与动作名称按 action 映射到英文目录", () => {
     render(<HotkeysSection />);

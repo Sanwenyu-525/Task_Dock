@@ -10,7 +10,7 @@ import {
 import AgentIcon from "../ui/AgentIcon";
 import AppIcon from "../ui/AppIcon";
 import { searchApps, APP_PAGE_SIZE } from "../../lib/appSearch";
-import { useNavigationStore } from "../../store/useNavigationStore";
+import { useNavigationStore, type RefreshOutcome } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useTasksStore } from "../../store/useTasksStore";
@@ -83,8 +83,10 @@ export default function AppPicker({
   onClose,
 }: Props) {
   const showToast = useUiStore((s) => s.showToast);
-  const { scan, scanning, scanError, loadApps, targets, targetsError, loadTargets } =
-    useNavigationStore();
+  const {
+    scan, scanning, scanError, loadApps, targets, targetsError, loadTargets,
+    linksError, loadTaskLinks,
+  } = useNavigationStore();
   const taskMode = !!taskId;
   const standaloneMode = !taskMode && !!standalone;
   const isPage = variant === "page";
@@ -116,6 +118,40 @@ export default function AppPicker({
   // 子页面不是弹层：不能注册遮罩/焦点陷阱，否则会拦截页面内正常操作。
   useOverlayLayer("dialog", !isPage, onClose, modalRef);
   useFocusTrap(!isPage, modalRef);
+
+  /**
+   * 目标/关联已保存成功，但界面刷新失败时的统一反馈：不能把刷新失败当成整体成功。
+   * - ok：正常提示成功；
+   * - stale：已有更新的刷新在途/已落地，本次结果被取代，不重复提示；
+   * - error：保留成功事实 + 明确「列表刷新失败」，并提供只读的重试刷新（不会重复写入）。
+   */
+  function finishWithRefresh(
+    successMessage: string,
+    outcome: RefreshOutcome,
+    retry: () => Promise<RefreshOutcome>,
+    kind: "success" | "info" = "success",
+  ) {
+    if (outcome === "ok") {
+      showToast(successMessage, { kind });
+      return;
+    }
+    if (outcome === "stale") return;
+    showToast(`${successMessage}，但列表刷新失败`, {
+      kind: "warning",
+      action: {
+        label: "重试刷新",
+        run: () => {
+          void retry().then(
+            (next) => {
+              if (next === "ok") showToast("列表已刷新", { kind: "success" });
+              else if (next === "error") showToast("刷新仍未成功，请稍后再试", { kind: "error" });
+            },
+            (e) => showToast(`刷新失败：${errorMessage(e)}`, { kind: "error" }),
+          );
+        },
+      },
+    });
+  }
 
   useEffect(() => {
     if (!scan) loadApps(false);
@@ -256,8 +292,8 @@ export default function AppPicker({
     try {
       // 只取消隐藏，不提交名称/收藏/启动参数，避免覆盖用户自定义配置
       await navUpdateTarget(restoreTarget.id, { hidden: false });
-      await loadTargets(true);
-      showToast("已恢复显示", { kind: "success" });
+      const outcome = await loadTargets(true);
+      finishWithRefresh("已恢复显示", outcome, () => loadTargets(true));
       onClose();
     } catch (e) {
       showToast(`恢复显示失败：${errorMessage(e)}`, { kind: "error" });
@@ -310,29 +346,43 @@ export default function AppPicker({
         failed.push({ key: a.app_key, reason: `${a.display_name}：${errorMessage(e)}` });
       }
     }
-    try {
-      await loadTargets(true);
-    } catch (e) {
-      failed.push({ key: "", reason: `刷新应用列表失败：${errorMessage(e)}` });
-    }
+    // 批量写入已结束，最后统一刷新一次：刷新失败是独立结果，不能算作某个应用添加失败，
+    // 也不能用「全部成功」掩盖；已保存的数据不受影响，重试只刷新、不会重复创建。
+    const refreshOutcome = await loadTargets(true);
     setBatchBusy(false);
+    const summaryText =
+      `已添加 ${added.length} 个应用` +
+      `${restored.length ? `，恢复显示 ${restored.length} 个` : ""}` +
+      `${duplicates.length ? `，${duplicates.length} 个已在列表中` : ""}`;
+    const refreshFailure = refreshOutcome === "error" ? "列表刷新失败，当前显示可能不是最新" : "";
+
     if (failed.length > 0) {
       // 部分成功：保留失败项继续可重试，已成功的从选中集合移除
       setSelectedKeys(new Set(failed.map((f) => f.key).filter((k) => k)));
       setBatchError(
-        `已添加 ${added.length} 个${restored.length ? `，恢复显示 ${restored.length} 个` : ""}` +
-          `${duplicates.length ? `，${duplicates.length} 个已在列表中` : ""}；` +
-          `${failed.length} 个失败：${failed.map((f) => f.reason).join("；")}`,
+        `${summaryText}；${failed.length} 个失败：${failed.map((f) => f.reason).join("；")}` +
+          (refreshFailure ? `；${refreshFailure}` : ""),
       );
-      showToast(`部分应用添加失败（${failed.length} 个），详见页面提示`, { kind: "error" });
+      showToast(
+        `部分应用添加失败（${failed.length} 个），详见页面提示`,
+        { kind: "error" },
+      );
       return;
     }
-    showToast(
-      `已添加 ${added.length} 个应用` +
-        `${restored.length ? `，恢复显示 ${restored.length} 个` : ""}` +
-        `${duplicates.length ? `，${duplicates.length} 个已在列表中` : ""}`,
-      { kind: "success" },
-    );
+
+    if (refreshOutcome === "error") {
+      finishWithRefresh(summaryText, refreshOutcome, () => loadTargets(true), "success");
+      setSelectedKeys(new Set());
+      onClose();
+      return;
+    }
+    if (refreshOutcome === "stale") {
+      // 刷新被更新的请求取代：写入已完成，让最新一次的刷新结果落地即可。
+      setSelectedKeys(new Set());
+      onClose();
+      return;
+    }
+    showToast(summaryText, { kind: "success" });
     setSelectedKeys(new Set());
     onClose();
   }
@@ -360,10 +410,11 @@ export default function AppPicker({
         overwrite_name: false,
       });
       if (mode === "focus") await navPickWindowIdentity(t.id, w.hwnd);
-      await loadTargets(true);
-      showToast(
+      const outcome = await loadTargets(true);
+      finishWithRefresh(
         mode === "focus" ? `已添加「${name}」并记录当前窗口` : `已添加「${name}」（启动时新开）`,
-        { kind: "success" },
+        outcome,
+        () => loadTargets(true),
       );
       setPageView("discover");
       setQuery("");
@@ -375,39 +426,44 @@ export default function AppPicker({
   }
 
   async function afterPick(t: NavTarget, msg: string, kind: "success" | "info" = "success") {
-    try {
-      if (taskId) {
-        // 已关联过则提示而非重复关联
-        if (linkedKeys.has(t.app_key)) {
-          showToast(`「${t.display_name}」已关联该任务`, { kind: "info" });
-          onClose();
-          return;
-        }
-        await navLinkTask(taskId, t.id, false, "default");
-        await useNavigationStore.getState().loadTaskLinks();
-        await useTasksStore.getState().refresh();
-        showToast(msg, { kind });
+    if (taskId) {
+      // 已关联过则提示而非重复关联
+      if (linkedKeys.has(t.app_key)) {
+        showToast(`「${t.display_name}」已关联该任务`, { kind: "info" });
         onClose();
-      } else if (onSelect) {
-        onSelect(t);
-        onClose();
-      } else if (standaloneMode) {
-        // 独立配置：保存后共享目标列表立即更新（工具面板下一帧就能看到）
-        await loadTargets(true);
-        showToast(msg, { kind });
-        onClose();
-      } else {
-        onClose();
+        return;
       }
-    } catch (e) {
-      // 关联失败必须可见：目标已保存，两阶段结果分别说明（避免误报为保存失败）
-      showToast(
-        taskId
-          ? `已保存目标，但关联失败：${errorMessage(e)}`
-          : `已保存目标，但列表刷新失败：${errorMessage(e)}`,
-        { kind: "error" },
-      );
+      // 第一阶段：关联。失败时目标已保存，必须分别说明，不能误报为保存失败。
+      try {
+        await navLinkTask(taskId, t.id, false, "default");
+      } catch (e) {
+        showToast(`已保存「${t.display_name}」，但关联任务失败：${errorMessage(e)}`, {
+          kind: "error",
+        });
+        onClose();
+        return;
+      }
+      // 第二阶段：界面刷新。刷新失败不得抹掉第一阶段的成功事实。
+      const linksOutcome = await loadTaskLinks();
+      await useTasksStore.getState().refresh();
+      finishWithRefresh(msg, linksOutcome, loadTaskLinks, kind);
+      onClose();
+      return;
     }
+
+    if (onSelect) {
+      onSelect(t);
+      onClose();
+      return;
+    }
+    if (standaloneMode) {
+      // 独立配置：保存后共享目标列表立即更新（工具面板下一帧就能看到）
+      const outcome = await loadTargets(true);
+      finishWithRefresh(msg, outcome, () => loadTargets(true), kind);
+      onClose();
+      return;
+    }
+    onClose();
   }
 
   /**
@@ -439,8 +495,8 @@ export default function AppPicker({
     try {
       if (windowLink) {
         await navPickTaskWindow(windowLink.id, w.hwnd);
-        await useNavigationStore.getState().loadTaskLinks();
-        showToast("已更新任务窗口选择", { kind: "success" });
+        const outcome = await loadTaskLinks();
+        finishWithRefresh("已更新任务窗口选择", outcome, loadTaskLinks);
         onClose();
         return;
       }
@@ -456,8 +512,8 @@ export default function AppPicker({
       });
       if (taskId) {
         await navLinkTaskWindow(taskId, t.id, w.hwnd);
-        await useNavigationStore.getState().loadTaskLinks();
-        showToast(`已为任务选择「${w.title}」`, { kind: "success" });
+        const outcome = await loadTaskLinks();
+        finishWithRefresh(`已为任务选择「${w.title}」`, outcome, loadTaskLinks);
         onClose();
       } else {
         await navPickWindowIdentity(t.id, w.hwnd);
@@ -576,14 +632,14 @@ export default function AppPicker({
                 const existed = targets.some(
                   (x) => x.target_type === t.target_type && x.app_key === t.app_key,
                 );
-                try {
-                  await loadTargets(true);
-                } catch {
-                  // 保存已成功，列表刷新失败由 store 的错误态提示，不在这里吞成成功
-                }
-                showToast(existed ? `「${t.display_name}」已在快捷列表中` : msg, {
-                  kind: existed ? "info" : "success",
-                });
+                // 保存已成功；刷新失败必须单独说明，不能静默当成整体成功。
+                const outcome = await loadTargets(true);
+                finishWithRefresh(
+                  existed ? `「${t.display_name}」已在快捷列表中` : msg,
+                  outcome,
+                  () => loadTargets(true),
+                  existed ? "info" : "success",
+                );
                 setPageView("discover");
               }}
             />
@@ -639,6 +695,12 @@ export default function AppPicker({
                 <div className="empty-hint error-text" role="alert">
                   已保存目标读取失败：{targetsError}
                   <button className="btn sm" onClick={() => void loadTargets(true)}>重试</button>
+                </div>
+              )}
+              {taskMode && linksError && (
+                <div className="empty-hint error-text" role="status">
+                  关联信息读取失败：{linksError}；当前显示上次结果，可能不是最新
+                  <button className="btn sm" onClick={() => void loadTaskLinks()}>重试</button>
                 </div>
               )}
               {scanError && scan === null ? (
@@ -909,6 +971,16 @@ export default function AppPicker({
             <div className="empty-hint error-text" role="alert">
               已保存目标读取失败：{targetsError}
               <button className="btn sm" onClick={() => void loadTargets(true)}>
+                重试
+              </button>
+            </div>
+          )}
+
+          {taskMode && linksError && (
+            // 关联读取失败：不能等同「没有关联」；旧映射可能过期，标明并提供重试
+            <div className="empty-hint error-text" role="status">
+              关联信息读取失败：{linksError}；当前显示上次结果，可能不是最新
+              <button className="btn sm" onClick={() => void loadTaskLinks()}>
                 重试
               </button>
             </div>

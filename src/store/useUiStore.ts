@@ -149,7 +149,9 @@ export const useUiStore = create<{
   collectionSub: "inbox",
   setCollectionSub: (sub) => set({ collectionSub: sub }),
   editor: { open: false, task: null },
-  openEditor: (task) => set({ editor: { open: true, task: task ?? null } }),
+  // 编辑态由任务面板（TasksPanel）在页面内承载：从其他页（如小组件）打开时切回任务页，
+  // 否则编辑表单没有宿主。
+  openEditor: (task) => set({ editor: { open: true, task: task ?? null }, tab: "tasks" }),
   closeEditor: () => set({ editor: { open: false, task: null } }),
   workspace: { open: false, task: null },
   openWorkspace: (task) => set({ workspace: { open: true, task } }),

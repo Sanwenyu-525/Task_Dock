@@ -52,7 +52,6 @@ vi.mock("./components/TitleBar", () => ({ default: () => <div data-testid="title
 vi.mock("./components/MinimalView", () => ({ default: () => <div /> }));
 vi.mock("./components/CompactView", () => ({ default: () => <div /> }));
 vi.mock("./components/FullView", () => ({ default: () => <div /> }));
-vi.mock("./components/tasks/TaskEditor", () => ({ default: () => null }));
 vi.mock("./components/navigation/WorkspaceLauncher", () => ({ default: () => null }));
 vi.mock("./components/clipboard/ClipboardDrawer", () => ({ default: () => null }));
 vi.mock("./components/context/TaskContextDrawer", () => ({ default: () => null }));
@@ -111,6 +110,7 @@ vi.mock("./store/useNavigationStore", () => ({
 }));
 
 import App from "./App";
+import DeferredView from "./components/DeferredView";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
 
 function setSnap(p: {
@@ -177,5 +177,36 @@ describe("App · 停靠态外壳", () => {
     expect(root.className).not.toContain("is-capsule");
     expect(container.querySelector(".capsule-dock")).toBeNull();
     expect((container.querySelector(".dock-app") as HTMLElement).hasAttribute("inert")).toBe(false);
+  });
+});
+
+describe("DeferredView · 延迟首次挂载", () => {
+  it("非激活视图在首次激活前不挂载子节点", () => {
+    const { container, rerender } = render(
+      <DeferredView active={false}>
+        <div data-testid="deferred-child" />
+      </DeferredView>,
+    );
+    expect(container.querySelector('[data-testid="deferred-child"]')).toBeNull();
+    rerender(
+      <DeferredView active>
+        <div data-testid="deferred-child" />
+      </DeferredView>,
+    );
+    expect(container.querySelector('[data-testid="deferred-child"]')).not.toBeNull();
+  });
+
+  it("首次激活后切回非激活：子树保持挂载（内容状态不丢）", () => {
+    const view = (active: boolean) => (
+      <DeferredView active={active}>
+        <div data-testid="deferred-child" />
+      </DeferredView>
+    );
+    const { container, rerender } = render(view(false));
+    expect(container.querySelector('[data-testid="deferred-child"]')).toBeNull();
+    rerender(view(true));
+    expect(container.querySelector('[data-testid="deferred-child"]')).not.toBeNull();
+    rerender(view(false));
+    expect(container.querySelector('[data-testid="deferred-child"]')).not.toBeNull();
   });
 });

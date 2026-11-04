@@ -420,6 +420,46 @@ const shim = `
       case "workspace_delete":
       case "workspace_rename":
       case "workspace_detach_task": return null;
+      // ── 收集箱 / 文件暂存（视觉走查夹具）──
+      // 缺这些命令时 store 会拿到 null 并在 .filter 处抛错，整页变成「加载失败」。
+      case "quick_capture_list": {
+        const all = [
+          { id: "cap1", client_id: "cc1", kind: "idea", content: "把历史页未读改成小圆点，保留 Agent 事件与通知类型", url: null, note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(18), updated_at: iso(18) },
+          { id: "cap2", client_id: "cc2", kind: "todo", content: "核对暂存架选中态与 hover 是否混淆", url: null, note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(42), updated_at: iso(42) },
+          { id: "cap3", client_id: "cc3", kind: "link", content: "CSS @layer 优先级说明", url: "https://developer.mozilla.org/docs/Web/CSS/@layer", note: null, status: "inbox", task_id: null, source: "capture", created_at: iso(96), updated_at: iso(96) },
+          { id: "cap4", client_id: "cc4", kind: "text", content: "长文本条目：这里放一段足够长的内容，用来检查收集箱卡片在窄窗口下是否换行而不是撑破布局，同时确认已处理条目的弱化样式仍然可读。", url: null, note: null, status: "handled", task_id: null, source: "capture", created_at: iso(150), updated_at: iso(140) },
+        ];
+        const status = args?.status;
+        const list = status === "inbox" ? all.filter((i) => i.status === "inbox") : all;
+        return list.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100));
+      }
+      case "quick_capture_state": return { draft: null, last_type: "task", inbox_count: 3 };
+      case "shelf_list": return {
+        items: [
+          { id: "sh1", kind: "file", display_name: "global-card-spec.md", source_kind: "picker", storage_mode: "reference", original_path: "D:\\\\Develop\\\\task_dock\\\\docs\\\\ui-themes\\\\01-design-spec.md", managed_path: null, content: null, byte_size: 18432, file_ext: "md", favorite: false, pinned: true, exists_state: "ok", group_id: "sg1", scene_id: null, note: "", expire_at: null, created_at: iso(30), updated_at: iso(20) },
+          { id: "sh2", kind: "image", display_name: "history-sticky.png", source_kind: "drag", storage_mode: "managed", original_path: "C:\\\\Users\\\\demo\\\\Desktop\\\\history-sticky.png", managed_path: "images/sh2.png", content: null, byte_size: 24680, file_ext: "png", favorite: true, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "", expire_at: null, created_at: iso(120), updated_at: iso(110) },
+          { id: "sh3", kind: "link", display_name: "CSS Color Mix 说明", source_kind: "url", storage_mode: "link", original_path: null, managed_path: null, content: "https://developer.mozilla.org/docs/Web/CSS/color_value/color-mix", byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "材质淡染参考", expire_at: null, created_at: iso(200), updated_at: iso(190) },
+          { id: "sh4", kind: "folder", display_name: "旧版验收截图（已移动）", source_kind: "picker", storage_mode: "reference", original_path: "D:\\\\Archive\\\\old-shots", managed_path: null, content: null, byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "missing", group_id: "sg1", scene_id: null, note: "", expire_at: null, created_at: iso(300), updated_at: iso(290) },
+          { id: "sh5", kind: "text", display_name: "卡片分层职责草稿", source_kind: "manual", storage_mode: "reference", original_path: null, managed_path: null, content: "基础材质 / 方案 D 变体 / 交互变体", byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "", expire_at: null, created_at: iso(420), updated_at: iso(400) },
+        ],
+        total: 5,
+      };
+      case "shelf_stats": return { total: 5, file_count: 1, image_count: 1, folder_count: 1, link_count: 1, text_count: 1, managed_bytes: 24680, disk_bytes: 43112, quota_mb: 2048 };
+      case "shelf_groups": return [
+        { id: "sg1", name: "设计规范", builtin: false, sort_order: 0, item_count: 2 },
+        { id: "sg2", name: "截图", builtin: false, sort_order: 1, item_count: 1 },
+      ];
+      case "shelf_check_exists": return (args?.ids ?? []).map((id) => ({ id, exists_state: id === "sh4" ? "missing" : "ok" }));
+      case "shelf_task_links": return [];
+      // 快速笔记列表：缺失时笔记页会拿到 null 并触发 ErrorBoundary。
+      case "notes_list": return [
+        { id: "n1", title: "全局卡片分层职责", excerpt: "基础材质 / 方案 D 变体 / 交互变体三段拆分", pinned: true, favorite: false, task_id: "t1", workspace_id: null, source_capture_id: null, revision: 3, created_at: iso(600), updated_at: iso(40), content_chars: 128 },
+        { id: "n2", title: "历史页未读语义", excerpt: "紫色左边条原本被误读为优先级，改为标题行小圆点", pinned: false, favorite: true, task_id: null, workspace_id: null, source_capture_id: null, revision: 2, created_at: iso(900), updated_at: iso(120), content_chars: 96 },
+        { id: "n3", title: "sticky 日期标签", excerpt: "不透明淡染底 + hairline，不用 backdrop-filter", pinned: false, favorite: false, task_id: null, workspace_id: null, source_capture_id: null, revision: 1, created_at: iso(1200), updated_at: iso(300), content_chars: 64 },
+        { id: "n4", title: "长标题多行检查用笔记", excerpt: "这一段用来观察窄窗口下标题与摘要的换行与截断是否仍然稳定，不会把卡片撑破。", pinned: false, favorite: false, task_id: null, workspace_id: null, source_capture_id: null, revision: 1, created_at: iso(1500), updated_at: iso(420), content_chars: 80 },
+      ];
+      case "notes_get": return { id: args?.id ?? "n1", title: "全局卡片分层职责", content: "基础材质：卡面 / 圆角 / 边缘反射 / 阴影；方案 D 变体：柔和流线高光；交互变体：hover / focus / selected", pinned: true, favorite: false, task_id: "t1", workspace_id: null, source_capture_id: null, revision: 3, created_at: iso(600), updated_at: iso(40) };
+      case "notes_templates": return [];
       case "clipboard_snapshot_links":
         return clipboardSnapLinks.filter((l) => l.snapshot_id === args?.snapshotId);
       // 真机 IPC 每次返回新反序列化的对象；夹具必须同样返回快照，
@@ -515,6 +555,15 @@ const shim = `
       case "nav_task_targets": return navLinks.filter((l) => l.task_id === args?.task_id);
       case "nav_list_targets": return navTargets;
       case "nav_scan_apps": return { apps: scanApps, scanned_at: iso(1), duration_ms: 420, counts: { startmenu: 3, registry: 0, uwp: 1, known: 1 } };
+      case "nav_target_running_states": {
+        const states = {};
+        for (const id of args?.ids ?? []) {
+          states[id] = id === "nt1" ? "has_window" : id === "nt4" ? "process_only" : "not_running";
+        }
+        return states;
+      }
+      // 预览环境没有真实图标提取，返回 null 让 AppIcon 显示字母回退（真实图标走真机验收）
+      case "nav_app_icon": return null;
       case "nav_recent_logs": return navLogs;
       case "nav_agent_capabilities": {
         const src = args?.source_id;

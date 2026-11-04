@@ -129,9 +129,9 @@ export default function Combobox<T extends string = string>({
           if (!open) openMenu();
         }}
       >
-        {open ? (
-          <Search size={12} className="ui-combobox-icon" aria-hidden="true" />
-        ) : null}
+        {/* 放大镜常显：展开/收起时输入文字起始位置与右侧箭头位置都固定，
+            避免占位文案在聚焦瞬间左右跳动。 */}
+        <Search size={12} className="ui-combobox-icon" aria-hidden="true" />
         <input
           ref={inputRef}
           id={id}

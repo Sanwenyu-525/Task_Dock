@@ -223,7 +223,8 @@ DSH 的宿主插件**不能**靠把包放进 `~/.dsh/plugins/` 生效——那�
 
 ### 5.4 导出/备份
 
-- **统一注册表**：`BACKUP_TABLES` 声明 25 张用户业务表及恢复顺序/外键依赖；
+- **统一注册表**：`BACKUP_TABLES` 声明 43 张用户业务表（2026-11-04 复核；含 v0.7 规划、
+  v0.8 货架/工作流、v0.9 笔记/专注/任务完成事件）及恢复顺序/外键依赖；
   `EXTENDED_TABLES` 标记剪贴板、工作现场与行动中心表。schema 新增表未登记时
   `backup_registry_covers_every_schema_table` 失败，避免漏备新模块。
 - **完整备份（full）**：流式 JSONL bundle（header/section/archive/asset/integrity），
@@ -248,10 +249,12 @@ DSH 的宿主插件**不能**靠把包放进 `~/.dsh/plugins/` 生效——那�
 - 备份/恢复/导出均放入 `spawn_blocking`，不阻塞 UI 事件循环；备份使用只读快照连接，
   `Db::with_read` 的 try-lock 会跳过该长快照连接，普通查询不再等待整个备份结束。
 - **内存边界（诚实记录）**：备份是流式写入，100k 事件 + 10k 通知 + 5k 剪贴板条目 +
-  500 张真实 PNG 的 bundle 为 61.9 MB，最终源码复跑备份峰值约 27.4 MB WS；
-  但恢复端 `read_bundle` 仍会把表行 materialize 为 JSON 与强类型行，
-  同一夹具恢复观测峰值 **619.0 MB WS**，不是常量内存流式恢复，详见
-  [PERFORMANCE_FINAL_ACCEPTANCE.md](PERFORMANCE_FINAL_ACCEPTANCE.md) §7 与 §13。
+  500 张真实 PNG 的 bundle 约 62–64 MB；2026-10-30 首次实测备份峰值约 27.4 MB WS，
+  恢复峰值为 **619.0 MB WS**（`read_bundle` 把表行 materialize 为 JSON）。
+  **2026-11-04 更正**：读取端已改为表行按表落盘到会话 `rows_dir`，仅元信息与设置常驻内存，
+  同一夹具恢复峰值降至 **54.9 MB WS**（bundle 63.96 MB），不再是非流式恢复；
+  旧数据保留在 [PERFORMANCE_FINAL_ACCEPTANCE.md](PERFORMANCE_FINAL_ACCEPTANCE.md) §7 与
+  §14 的日期记录中。
 
 ## 6. 托盘与通知聚合
 

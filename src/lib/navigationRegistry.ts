@@ -1,0 +1,309 @@
+//! 导航注册中心（统一导航架构）：左侧导航与停靠胶囊入口的**唯一元数据源**。
+//!
+//! 职责边界：
+//! - 只定义入口身份与元数据（稳定 ID、展示名、图标、所属界面、覆盖页面、分组、
+//!   默认顺序、默认可见、快捷键说明、入口类型）；**不持有业务 Store、不做路由**。
+//! - 用户的显隐与排序属于「配置」，由 `navVisibility.ts` 负责版本化、迁移与合并；
+//!   注册中心只提供默认值，不能反过来从配置推导入口清单。
+//! - 左侧导航（`FullView`）与停靠胶囊轨道（`CapsuleRail`）都从这里取入口，
+//!   禁止在组件里再声明第二份入口数组。
+//!
+//! 新增功能入口的步骤：
+//! 1. 在 `NAV_ENTRIES` 中追加一项（稳定英文 ID，绝不使用中文标题作身份）；
+//! 2. 若覆盖逻辑 Tab，必须在 `tabs` 中列出（左侧每个 Tab 必须至少有一个入口）；
+//! 3. 指定 `surfaces` 与各面的默认顺序/默认可见；
+//! 4. 若是胶囊入口，补 `capsuleCategory`；若占用 Ctrl+数字，补 `shortcut` 并加契约断言。
+//!
+//! 快捷键：`shortcut` 只是展示元数据；真实语义仍由 `useUiStore.TAB_ORDER` 与
+//! `useGlobalShortcuts` 决定。新增视觉入口默认**不分配数字键**，避免已有语义漂移。
+
+import {
+  Blocks,
+  Clipboard,
+  History,
+  Inbox,
+  LayoutGrid,
+  ListTodo,
+  Map as MapIcon,
+  Settings as SettingsIcon,
+  Workflow,
+} from "lucide-react";
+import AgentIcon, { type IconComponent } from "../components/ui/AgentIcon";
+import PointerClickIcon from "../components/ui/PointerClickIcon";
+import type { Tab } from "../store/useUiStore";
+import type { CapsuleCategory } from "./capsuleModel";
+
+/** 入口出现的界面：完整面板左侧导航 / 停靠胶囊轨道。 */
+export type NavSurface = "left" | "capsule";
+
+/**
+ * 入口类型：
+ * - `page`：普通页面入口（1:1 对应一个逻辑 Tab）；
+ * - `merged`：合并入口（如「收集与暂存」覆盖 inbox + shelf 两个逻辑 Tab）；
+ * - `agent-status`：Agent 状态入口（胶囊顶部状态球，同时监控状态与入口）；
+ * - `visual`：仅视觉入口（应用 / 微件，不占快捷键，页面仍可被深链打开）。
+ */
+export type NavEntryKind = "page" | "merged" | "agent-status" | "visual";
+
+/** 导航分组：设置页按组展示，顺序与分组内顺序都由入口定义驱动。 */
+export type NavGroup = "core" | "capture" | "planning" | "system";
+
+export type NavEntryId =
+  | "tasks"
+  | "agents"
+  | "apps"
+  | "widgets"
+  | "actions"
+  | "clipboard"
+  | "collection"
+  | "workflows"
+  | "history"
+  | "roadmap"
+  | "settings"
+  | "inbox";
+
+/** 左侧徽标口径：复用既有统计，不在注册中心里计算。 */
+export type NavBadge = "intervention" | "attention" | "pending" | "inbox";
+
+export interface NavEntry {
+  /** 稳定身份：持久化只存它，显示名可随时改。 */
+  id: NavEntryId;
+  kind: NavEntryKind;
+  surfaces: readonly NavSurface[];
+  /** 左侧导航展示名（胶囊文案沿用既有 i18n 词典，见 CapsuleRail）。 */
+  label: string;
+  icon: IconComponent;
+  /** 该入口覆盖的逻辑 Tab（合并入口可覆盖多个；胶囊入口对应其面板）。 */
+  tabs: readonly Tab[];
+  group: NavGroup;
+  /** 展示用快捷键说明；为空表示不占 Ctrl+数字。 */
+  shortcut?: string;
+  badge?: NavBadge;
+  /** 胶囊分类身份（仅胶囊入口）：决定该入口打开哪个轻量面板。 */
+  capsuleCategory?: CapsuleCategory;
+  /** 各界面的默认值：顺序用于首次安装与「恢复默认」，可见用于新入口合并。 */
+  defaults: Readonly<Record<NavSurface, { order: number; visible: boolean }>>;
+  /**
+   * 系统入口保护：不可隐藏、不可排序，归一化时固定补回本面末尾。
+   * 用于「设置」这类必须始终可达的稳定入口，避免用户把自己锁在门外。
+   */
+  locked?: boolean;
+}
+
+/** 声明顺序无关于展示顺序；展示顺序一律按 `defaults[surface].order`。 */
+export const NAV_ENTRIES: readonly NavEntry[] = [
+  {
+    id: "tasks",
+    kind: "page",
+    surfaces: ["left", "capsule"],
+    label: "任务",
+    icon: ListTodo,
+    tabs: ["tasks"],
+    group: "core",
+    shortcut: "Ctrl+1",
+    badge: "pending",
+    capsuleCategory: "tasks",
+    defaults: {
+      left: { order: 1, visible: true },
+      capsule: { order: 2, visible: true },
+    },
+  },
+  {
+    id: "agents",
+    kind: "agent-status",
+    surfaces: ["left", "capsule"],
+    label: "Agent",
+    icon: AgentIcon,
+    tabs: ["agents"],
+    group: "core",
+    shortcut: "Ctrl+2",
+    badge: "intervention",
+    capsuleCategory: "agents",
+    defaults: {
+      left: { order: 2, visible: true },
+      // 胶囊顶部状态球：隐藏只影响图标，不停止后台监控与事件接收。
+      capsule: { order: 1, visible: true },
+    },
+  },
+  {
+    id: "apps",
+    kind: "visual",
+    surfaces: ["left", "capsule"],
+    label: "应用",
+    icon: LayoutGrid,
+    tabs: ["apps"],
+    group: "core",
+    capsuleCategory: "apps",
+    defaults: {
+      left: { order: 3, visible: true },
+      capsule: { order: 5, visible: true },
+    },
+  },
+  {
+    id: "widgets",
+    kind: "visual",
+    surfaces: ["left"],
+    label: "微件",
+    icon: Blocks,
+    tabs: ["widgets"],
+    group: "core",
+    defaults: {
+      left: { order: 4, visible: true },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    id: "actions",
+    kind: "page",
+    surfaces: ["left"],
+    label: "行动",
+    icon: PointerClickIcon,
+    tabs: ["actions"],
+    group: "core",
+    shortcut: "Ctrl+3",
+    badge: "attention",
+    defaults: {
+      left: { order: 5, visible: true },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    id: "clipboard",
+    kind: "page",
+    surfaces: ["left", "capsule"],
+    label: "剪贴板",
+    icon: Clipboard,
+    tabs: ["clipboard"],
+    group: "core",
+    shortcut: "Ctrl+4",
+    capsuleCategory: "clipboard",
+    defaults: {
+      left: { order: 6, visible: true },
+      capsule: { order: 4, visible: true },
+    },
+  },
+  {
+    id: "collection",
+    kind: "merged",
+    surfaces: ["left"],
+    label: "收集与暂存",
+    icon: Inbox,
+    tabs: ["inbox", "shelf"],
+    group: "capture",
+    shortcut: "Ctrl+5 / Ctrl+6",
+    badge: "inbox",
+    defaults: {
+      left: { order: 7, visible: true },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    id: "inbox",
+    kind: "page",
+    surfaces: ["capsule"],
+    label: "收集箱",
+    icon: Inbox,
+    tabs: ["inbox"],
+    group: "capture",
+    capsuleCategory: "inbox",
+    defaults: {
+      left: { order: 0, visible: false },
+      capsule: { order: 3, visible: true },
+    },
+  },
+  {
+    id: "workflows",
+    kind: "page",
+    surfaces: ["left"],
+    label: "工作流",
+    icon: Workflow,
+    tabs: ["workflows"],
+    group: "planning",
+    shortcut: "Ctrl+7",
+    defaults: {
+      left: { order: 8, visible: true },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    id: "history",
+    kind: "page",
+    surfaces: ["left"],
+    label: "历史",
+    icon: History,
+    tabs: ["history"],
+    group: "planning",
+    shortcut: "Ctrl+8",
+    defaults: {
+      left: { order: 9, visible: true },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    id: "roadmap",
+    kind: "page",
+    surfaces: ["left"],
+    label: "规划中心",
+    icon: MapIcon,
+    tabs: ["roadmap"],
+    group: "planning",
+    shortcut: "Ctrl+9",
+    defaults: {
+      left: { order: 10, visible: true },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    id: "settings",
+    kind: "page",
+    surfaces: ["left"],
+    label: "设置",
+    icon: SettingsIcon,
+    tabs: ["settings"],
+    group: "system",
+    shortcut: "Ctrl+0",
+    // 固定入口：设置页是「导航自定义」的兜底，必须始终可达，不可隐藏/排序。
+    locked: true,
+    defaults: {
+      left: { order: 11, visible: true },
+      capsule: { order: 0, visible: false },
+    },
+  },
+];
+
+const ENTRY_BY_ID = new Map<string, NavEntry>(NAV_ENTRIES.map((entry) => [entry.id, entry]));
+
+export function navEntry(id: string): NavEntry | undefined {
+  return ENTRY_BY_ID.get(id);
+}
+
+/** 某界面的入口，按默认顺序升序（默认顺序相同的不会出现，契约测试保证唯一）。 */
+export function entriesForSurface(surface: NavSurface): NavEntry[] {
+  return NAV_ENTRIES.filter((entry) => entry.surfaces.includes(surface)).sort(
+    (a, b) => a.defaults[surface].order - b.defaults[surface].order,
+  );
+}
+
+/** 某界面的全部入口 ID（默认顺序）。 */
+export function allEntryIds(surface: NavSurface): string[] {
+  return entriesForSurface(surface).map((entry) => entry.id);
+}
+
+/** 某界面默认可见的入口 ID（默认顺序）。 */
+export function defaultVisibleIds(surface: NavSurface): string[] {
+  return entriesForSurface(surface)
+    .filter((entry) => entry.defaults[surface].visible)
+    .map((entry) => entry.id);
+}
+
+/** 逻辑 Tab 在左侧导航中的归属入口（inbox/shelf 合并为 collection）。 */
+export function leftEntryForTab(tab: Tab): NavEntry | undefined {
+  return NAV_ENTRIES.find(
+    (entry) => entry.surfaces.includes("left") && entry.tabs.includes(tab),
+  );
+}
+
+/** 胶囊入口对应的分类身份；非胶囊入口返回 undefined。 */
+export function capsuleCategoryFor(id: string): CapsuleCategory | undefined {
+  return ENTRY_BY_ID.get(id)?.capsuleCategory;
+}

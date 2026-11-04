@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 
-use crate::db::{Db, Settings};
+use crate::db::{normalized_visual_preset, Db, Settings};
 use crate::error::{AppError, AppResult};
 
 /// 允许前端修改的设置键（白名单，防注入任意键）。
@@ -17,6 +17,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "mode",
     "material",
     "visual_preset",
+    // 已废弃（2026-11）：清透预设下线后不再读取；保留键以兼容旧前端/旧备份，
+    // 不做破坏性删除。
     "clear_foreground",
     "snap_enabled",
     "snap_display_mode",
@@ -66,12 +68,15 @@ const ALLOWED_KEYS: &[&str] = &[
     "clipboard_paste_interval_html_ms",
     "clipboard_paste_interval_files_ms",
     "clipboard_sensitive_filter",
+    "clipboard_ocr_auto",
     // 全局快速捕获（v0.7）：上次选择的捕获类型
     "quick_capture_last_type",
     // 文件暂存架（v0.8）：过期清理与配额
     "shelf_auto_cleanup_enabled",
     "shelf_retention_days",
     "shelf_max_storage_mb",
+    // 导航入口布局（v0.12）：完整面板 / 停靠胶囊各自的显隐与排序（版本化 JSON）
+    "navigation_layout",
 ];
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
@@ -115,8 +120,10 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "theme" => enum_of(v, key, &["system", "light", "dark"]),
         "mode" => enum_of(v, key, &["minimal", "compact", "full"]),
         "material" => enum_of(v, key, &["solid", "glass"]),
-        "visual_preset" => enum_of(v, key, &["dream-gradient", "liquid-glass", "frosted", "clear"]),
-        // 清透玻璃的独立前景色板（v0.9）：玻璃材质不随主题变化，文字配色可强制
+        // 2026-11 收口：只接受 frosted | dream-gradient；历史值在写入前由
+        // `normalize_patch` 映射为 frosted，未知值仍直接报校验错误。
+        "visual_preset" => enum_of(v, key, &["frosted", "dream-gradient"]),
+        // 已废弃键：仍接受合法枚举，但前端不再读取/写入该值。
         "clear_foreground" => enum_of(v, key, &["auto", "dark", "light"]),
         // 边缘吸附展示形态：胶囊隐藏（默认）| 完整面板
         "snap_display_mode" => enum_of(v, key, &["capsule", "full"]),
@@ -143,7 +150,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "clipboard_capture_files"
         | "clipboard_capture_html"
         | "clipboard_auto_group"
-        | "clipboard_sensitive_filter" => bool_of(v, key),
+        | "clipboard_sensitive_filter"
+        | "clipboard_ocr_auto" => bool_of(v, key),
         "http_port" => int_in_range(v, key, 1, 65535),
         "overdue_grace_hours" => int_in_range(v, key, 0, 24 * 60),
         "stale_run_minutes" => int_in_range(v, key, 1, 24 * 60),
@@ -199,6 +207,47 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
             .as_object()
             .map(|_| ())
             .ok_or_else(|| AppError::Validation(format!("{} 必须是 JSON 对象", key))),
+        // 导航入口布局：结构边界校验（语义归一化/合并由前端注册中心负责）。
+        // 拒绝超长列表与超长 ID，避免任意 JSON 灌入设置表。
+        "navigation_layout" => {
+            let obj = v
+                .as_object()
+                .ok_or_else(|| AppError::Validation("navigation_layout 必须是 JSON 对象".into()))?;
+            if obj.get("version").and_then(|value| value.as_u64()).is_none() {
+                return Err(AppError::Validation(
+                    "navigation_layout.version 必须是正整数".into(),
+                ));
+            }
+            for surface in ["left", "capsule"] {
+                let list = obj
+                    .get(surface)
+                    .and_then(|value| value.as_array())
+                    .ok_or_else(|| {
+                        AppError::Validation(format!("navigation_layout.{} 必须是数组", surface))
+                    })?;
+                if list.len() > 64 {
+                    return Err(AppError::Validation(format!(
+                        "navigation_layout.{} 条目过多",
+                        surface
+                    )));
+                }
+                for id in list {
+                    let text = id.as_str().ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "navigation_layout.{} 只允许字符串 ID",
+                            surface
+                        ))
+                    })?;
+                    if text.chars().count() > 64 {
+                        return Err(AppError::Validation(format!(
+                            "navigation_layout.{} 存在超长 ID",
+                            surface
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        }
         _ => Err(AppError::Validation(format!(
             "未知设置键: {}（允许: {}）",
             key,
@@ -213,12 +262,28 @@ pub fn get_settings(db: State<'_, Arc<Db>>) -> AppResult<Settings> {
     Settings::load_display(&db)
 }
 
+/// 写侧兼容映射：历史预设值（liquid-glass / clear）在入库前统一归一为 frosted。
+/// 未知值保持原样，交给 `validate_setting` 报错，避免静默吞掉真正的非法输入。
+fn normalize_patch(patch: &mut serde_json::Value) {
+    let Some(obj) = patch.as_object_mut() else {
+        return;
+    };
+    if let Some(v) = obj.get_mut("visual_preset") {
+        if let Some(s) = v.as_str() {
+            if s == "liquid-glass" || s == "clear" {
+                *v = serde_json::Value::String(normalized_visual_preset(s).into());
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub fn update_settings(
     app: tauri::AppHandle,
     db: State<'_, Arc<Db>>,
-    patch: serde_json::Value,
+    mut patch: serde_json::Value,
 ) -> AppResult<Settings> {
+    normalize_patch(&mut patch);
     let obj = patch
         .as_object()
         .ok_or_else(|| AppError::Validation("设置必须是 JSON 对象".into()))?;
@@ -387,17 +452,43 @@ mod tests {
         assert!(validate_setting("mode", &serde_json::json!("compact")).is_ok());
         assert!(validate_setting("material", &serde_json::json!("glass")).is_ok());
         assert!(validate_setting("material", &serde_json::json!(3)).is_err());
-        // v0.6/v0.9 视觉预设：只接受四个已知值，其他一律拒绝（旧库缺失键走默认值）
+        // 2026-11 视觉预设收口：只接受 frosted | dream-gradient
         assert!(validate_setting("visual_preset", &serde_json::json!("dream-gradient")).is_ok());
-        assert!(validate_setting("visual_preset", &serde_json::json!("liquid-glass")).is_ok());
         assert!(validate_setting("visual_preset", &serde_json::json!("frosted")).is_ok());
-        assert!(validate_setting("visual_preset", &serde_json::json!("clear")).is_ok());
+        assert!(validate_setting("visual_preset", &serde_json::json!("liquid-glass")).is_err());
+        assert!(validate_setting("visual_preset", &serde_json::json!("clear")).is_err());
         assert!(validate_setting("visual_preset", &serde_json::json!("neon")).is_err());
+        // 已废弃键仍接受历史合法枚举（兼容旧前端），但前端不再读取
         assert!(validate_setting("clear_foreground", &serde_json::json!("auto")).is_ok());
         assert!(validate_setting("clear_foreground", &serde_json::json!("dark")).is_ok());
         assert!(validate_setting("clear_foreground", &serde_json::json!("light")).is_ok());
         assert!(validate_setting("clear_foreground", &serde_json::json!("system")).is_err());
         assert!(validate_setting("visual_preset", &serde_json::json!(null)).is_err());
+    }
+
+    #[test]
+    fn legacy_preset_is_mapped_before_write() {
+        // 写侧映射：历史值归一为 frosted；未知值保持原样交由校验拒绝。
+        for (input, expected) in [
+            ("liquid-glass", "frosted"),
+            ("clear", "frosted"),
+            ("frosted", "frosted"),
+            ("dream-gradient", "dream-gradient"),
+        ] {
+            let mut patch = serde_json::json!({ "visual_preset": input });
+            normalize_patch(&mut patch);
+            assert_eq!(patch["visual_preset"], expected);
+            assert!(validate_setting("visual_preset", &patch["visual_preset"]).is_ok());
+        }
+
+        let mut patch = serde_json::json!({ "visual_preset": "neon" });
+        normalize_patch(&mut patch);
+        assert!(validate_setting("visual_preset", &patch["visual_preset"]).is_err());
+        // 其他键不受影响
+        let mut patch = serde_json::json!({ "theme": "dark", "visual_preset": "clear" });
+        normalize_patch(&mut patch);
+        assert_eq!(patch["theme"], "dark");
+        assert_eq!(patch["visual_preset"], "frosted");
     }
 
     #[test]

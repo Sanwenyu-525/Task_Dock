@@ -140,6 +140,25 @@ Codex 支持生命周期 Hooks（`~/.codex/hooks.json`）。Task Dock 内置安�
 - 旧可用路径：通过通用通道上报（`source_id` 分别为 `qoder` / `workbuddy`）。
 - 现状：官方 Hooks 配置写入 + 真实事件验证；未收到真实事件的来源不得显示为「已接入」。
 
+## 四点四、Trae Hooks 实测更正（2026-11-04）
+
+历史记录称 Trae「hook 链路已验证」，本机复核推翻该结论：
+
+- **真实事件为 0**：`agent_events` 中 `source_id='trae'` 的记录只有 `taskdock-selftest-trae`（自测），
+  `origin='real'` 的事件从未出现；`agent_sources.verified` 由旧版本自测写入，属假阳性。
+  健康状态改为按 `origin='real'` 取最近真实事件，只有 `verified` 位而没有真实事件时显示
+  `self-test-only`（仅自测通过 · 待真实事件）。
+- **CN 版进程名**：本机实际产品是 `Trae CN.exe`（`%LOCALAPPDATA%\Programs\Trae CN`，product.json
+  v1.107.1，dataFolderName `.trae-cn`），进程匹配只写 `Trae` 会始终得到 0 个运行实例。
+- **全局 Hooks 需开启**：`@byted-icube/ai-modules-chat` 的 Context Asset 逻辑以
+  `config.global_hooks_enabled ?? false` 判断，全局 hook 文件为
+  `<userHome>/<dataFolderName>/hooks.json`，默认关闭且需用户在 Trae 内开启；
+  只写文件不会产生事件。接入向导弹窗会明确提示这一点，不再宣称「已接入」。
+- **命令解析**：`"<exe>" --agent-hook` 在 PowerShell 直接执行会报
+  `Unexpected token '--agent-hook'`（本机实测），直接 CreateProcess 可执行；Trae 因此使用
+  专用构造器 `cmd.exe /c call "<exe>" ...`，不改为每个事件加 PowerShell 包装，也不影响
+  Codex/Qoder/WorkBuddy 的命令。
+
 ## 四点五、通用 Agent 覆盖矩阵（2026-11-03）
 
 | 来源 ID | 产品形态 | 接入方式 | 说明 |
@@ -149,8 +168,8 @@ Codex 支持生命周期 Hooks（`~/.codex/hooks.json`）。Task Dock 内置安�
 | `deepseek-harness` | DSH | 官方插件桥接 | 插件目录可逆卸载 |
 | `qoder` | Qoder IDE / CLI / QoderWork | 官方 Hooks（多配置根） | 未验证形态不共用事件表 |
 | `workbuddy` | WorkBuddy / CodeBuddy | 官方 Hooks（多配置根） | 安装前统一快照 |
-| `trae` | Trae 国际版 / CN | 官方 Hooks（按版本独立配置路径） | 多目录事务化安装 |
-| `zcode` | ZCode | 仅安装/运行发现 | 无可靠官方事件接口，走 bridge |
+| `trae` | Trae 国际版 / CN | 官方 Hooks（按版本独立配置路径） | 多目录事务化安装；2026-11-04 复核：真实事件未验证，全局 Hooks 需在 Trae 内开启 |
+| `zcode` | ZCode 桌面端 / CLI | 官方配置式 Hooks（`~/.zcode/cli/config.json` → `hooks.events`） | 2026-11-04 升级：安装时自动 `hooks.enabled=true`；保留 mcp/plugins/第三方 hooks |
 | `claude-code` | Claude Code CLI | 官方 Hooks（`~/.claude/settings.json`） | 新增；信任确认由 Claude 自身完成 |
 | `cursor` | Cursor IDE | 官方 Hooks（用户级 `~/.cursor/hooks.json`） | 新增；不改项目级配置 |
 | `gemini-cli` | Gemini CLI | 官方 Hooks（`~/.gemini/settings.json`） | 新增；不覆盖 IDE 插件形态 |
@@ -161,6 +180,54 @@ Codex 支持生命周期 Hooks（`~/.codex/hooks.json`）。Task Dock 内置安�
 
 **能力判定规则**：只有官方文档明确的事件接口才写配置；二进制中出现事件名只是能力线索，
 不代表官方支持或真实执行成功。所有新增来源均已登记 `agent_sources`，未登记来源的事件会被拒绝。
+
+## 四点六、ZCode 配置式 Hooks（2026-11-04）
+
+ZCode 的用户配置 `~/.zcode/cli/config.json` 支持配置式 hooks，Task Dock 已从「仅发现」
+升级为官方 Hooks 接入：
+
+```json
+{
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "SessionStart": [
+        { "hooks": [ { "type": "command", "command": "cmd.exe /c call \"<task-dock.exe>\" --agent-hook --source zcode --event SessionStart", "timeout": 10 } ] }
+      ]
+    }
+  }
+}
+```
+
+- **事件全集**：SessionStart / UserPromptSubmit / PreToolUse / PermissionRequest /
+  PostToolUse / PostToolUseFailure / Stop（与 `zcode.cjs` 和官方 `diagnosing-hooks` 指南一致）。
+- **默认关闭**：配置式 hooks 必须 `hooks.enabled = true` 才执行；安装器会写入该字段，
+  并在 `config_status` 中回报 `hooks_enabled`。
+- **嵌套布局**：事件写在 `hooks.events.<Event>`，不是 `hooks.<Event>`；Task Dock 使用
+  `HooksLayout::NestedEvents`，与 Claude 兼容产品（扁平 `hooks.<Event>`）区分。
+- **保留用户配置**：写入前备份（最近 5 份）、原子替换、失败回滚；保留 `mcp` / `plugins` /
+  `timeoutMs` / 第三方 hooks。卸载只移除 Task Dock 条目与空事件键，**不删除**
+  `hooks.enabled` / `timeoutMs` 等用户级设置。
+- **生效时机**：配置仅在 ZCode 新会话启动时加载；已打开的会话不会热更新。
+  安装后需新开一个 ZCode 会话，事件才会进入 Task Dock。
+- **命令构造**：ZCode 在 Windows 上经 ComSpec（cmd.exe）执行 command hooks；使用
+  `cmd.exe /c call "<exe>" ...` 避免引号被 cmd 当作路径的一部分（与 Codex 相同）。
+- **状态映射**：SessionStart → idle；UserPromptSubmit / PreToolUse / PostToolUse /
+  PostToolUseFailure → running；PermissionRequest → waiting；Stop → completed。
+
+> 当前验证边界：配置写入/备份/回滚/幂等有自动化测试；尚未在新开的真实 ZCode 会话中
+> 观察到宿主事件，因此不宣称「已真实联调」。
+
+## 四点七、发现与监控页搜索约定（2026-11-04）
+
+- 搜索字段固定为**显示名称 + `source_id`**，大小写不敏感、忽略首尾空格、中文按连续子串匹配；
+  不提供「Code → Codex」之类隐性别名。
+- 「运行监控」与「接入管理」各一个搜索框，状态相互独立、互不清空；均与既有状态筛选
+  （需关注/全部）取交集。
+- 搜索只派生自已加载数据（扫描结果 / 快照），**不得**因输入触发后端扫描；扫描按钮仍是
+  「接入管理」唯一的数据更新入口。
+- 无结果文案必须区分「搜索无匹配」与「没有安装 Agent」；通知定位优先于筛选：定位时清除
+  会遮挡目标的搜索条件，保证目标会话可见。
 
 ## 五、新增一个 Adapter 的步骤
 

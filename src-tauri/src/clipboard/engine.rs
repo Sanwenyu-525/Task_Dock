@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
@@ -419,6 +419,33 @@ fn title_from_text(text: &str, fallback: &str) -> String {
     fallback.into()
 }
 
+/// OCR 结果标题：跳过空行与无意义短片段（纯符号行、单字符行），
+/// 在有信息量的行里取字符数最多的一行（并列取最靠前），截断到标题上限。
+/// 纯确定性规则，不调用 LLM；用户未点「设为标题」时绝不写入。
+pub fn title_from_ocr(text: &str) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for line in text.lines() {
+        let line = collapse_ws(line);
+        if line.is_empty() {
+            continue;
+        }
+        let meaningful = line.chars().filter(|c| c.is_alphanumeric()).count();
+        let total = line.chars().filter(|c| !c.is_whitespace()).count();
+        if meaningful < 2 || total == 0 || meaningful * 2 < total {
+            continue;
+        }
+        let score = meaningful.min(MAX_AUTO_TITLE_CHARS);
+        let better = match &best {
+            Some((current, _)) => score > *current,
+            None => true,
+        };
+        if better {
+            best = Some((score, truncate_chars(&line, MAX_AUTO_TITLE_CHARS)));
+        }
+    }
+    best.map(|(_, title)| title)
+}
+
 /// HTML 标题：优先 `<h1>` / `<title>` 的文本内容（清理标签后）。
 fn html_heading_title(html: &str) -> Option<String> {
     static H1: OnceLock<Regex> = OnceLock::new();
@@ -590,6 +617,54 @@ pub fn decide_restore(has_snapshot: bool, user_changed: bool) -> RestoreDecision
     } else {
         RestoreDecision::Restore
     }
+}
+
+/// 截图组自动命名的主题长度上限（字符数）。
+pub const MAX_GROUP_TOPIC_CHARS: usize = 24;
+
+/// 从来源标题/关联文本中提取可用于组名的主题：
+/// 取首个非空行并折叠空白；`unknown`/`未知`/`无标题` 不是可靠信息，返回 None。
+pub fn group_topic(raw: &str) -> Option<String> {
+    for line in raw.lines() {
+        let text = collapse_ws(line.trim());
+        if text.is_empty() {
+            continue;
+        }
+        let lower = text.to_ascii_lowercase();
+        if matches!(lower.as_str(), "unknown" | "未知" | "无标题" | "未命名") {
+            continue;
+        }
+        return Some(text);
+    }
+    None
+}
+
+/// 截图组名称：优先可靠来源信息/关联文本主题，信息不足时用时间兜底。
+///
+/// 返回 `(name, name_source)`，`name_source` 直接写入数据库：
+/// `auto_source`（有主题）或 `auto_time`（时间兜底，关闭收集时可再补数量）。
+/// 不引入 OCR / AI / 网络调用；`time_label` 由调用方按本地时间格式化。
+pub fn screenshot_group_name(topic: Option<&str>, time_label: &str) -> (String, &'static str) {
+    match topic.and_then(group_topic) {
+        Some(text) => (
+            format!("截图 · {}", truncate_chars(&text, MAX_GROUP_TOPIC_CHARS)),
+            "auto_source",
+        ),
+        None => (format!("截图 · {time_label}"), "auto_time"),
+    }
+}
+
+/// 时间兜底组关闭收集时补上图片数量（只对 `auto_time` 组调用，不会覆盖用户改名）。
+pub fn finalize_time_group_name(name: &str, image_count: usize) -> String {
+    if image_count == 0 {
+        return name.to_string();
+    }
+    truncate_chars(&format!("{name} · {image_count} 张"), 80)
+}
+
+/// 本地时间戳（用于截图组时间兜底命名）。
+pub fn local_time_label() -> String {
+    Local::now().format("%m-%d %H:%M").to_string()
 }
 
 #[cfg(test)]
@@ -1034,5 +1109,33 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         let ordered = html.find("第一段").unwrap() < html.find("图片").unwrap();
         assert!(ordered, "必须保留组内实际顺序");
+    }
+
+    #[test]
+    fn screenshot_group_name_prefers_reliable_topic_then_time() {
+        let (name, source) = screenshot_group_name(Some("季度报表 - Excel"), "11-04 14:32");
+        assert_eq!(name, "截图 · 季度报表 - Excel");
+        assert_eq!(source, "auto_source");
+
+        // 占位词/空串不是可靠信息，回退时间
+        let (name, source) = screenshot_group_name(Some("未知"), "11-04 14:32");
+        assert_eq!(name, "截图 · 11-04 14:32");
+        assert_eq!(source, "auto_time");
+        let (name, source) = screenshot_group_name(None, "11-04 14:32");
+        assert_eq!(name, "截图 · 11-04 14:32");
+        assert_eq!(source, "auto_time");
+
+        // 主题取首个非空行并折叠空白，超长截断
+        assert_eq!(group_topic("\n\n  项目   评审  \n第二行"), Some("项目 评审".into()));
+        let long = "很长的标题".repeat(10);
+        let (name, source) = screenshot_group_name(Some(&long), "11-04 14:32");
+        assert_eq!(source, "auto_source");
+        assert!(name.chars().count() <= "截图 · ".chars().count() + MAX_GROUP_TOPIC_CHARS);
+    }
+
+    #[test]
+    fn time_fallback_group_gets_image_count_on_close() {
+        assert_eq!(finalize_time_group_name("截图 · 11-04 14:32", 3), "截图 · 11-04 14:32 · 3 张");
+        assert_eq!(finalize_time_group_name("截图 · 11-04 14:32", 0), "截图 · 11-04 14:32");
     }
 }

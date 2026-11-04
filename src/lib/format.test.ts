@@ -5,6 +5,7 @@ import {
   formatDayLabel,
   formatDue,
   formatDuration,
+  formatLocalStamp,
   formatRelative,
   fromLocalInputValue,
   isOverdue,
@@ -98,6 +99,21 @@ describe("describeRecurrence（智能日程提醒 2.0 扩展）", () => {
     expect(describeRecurrence({ freq: "monthly", interval: 1, by_weekday: [5], by_monthday: null, by_setpos: -1 })).toBe("每月最后一个周五");
     expect(describeRecurrence({ freq: "monthly", interval: 1, by_weekday: [1, 2, 3, 4, 5], by_monthday: null, by_setpos: -1 })).toBe("每月最后一个工作日");
     expect(describeRecurrence({ freq: "monthly", interval: 2, by_weekday: [1], by_monthday: null, by_setpos: 2 })).toBe("每 2 个月第二个周一");
+  });
+});
+
+describe("formatLocalStamp（真实文件时间展示）", () => {
+  it("输出本地日期时间与明确时区偏移", () => {
+    const iso = new Date(2026, 10, 4, 10, 20).toISOString();
+    const stamp = formatLocalStamp(iso)!;
+    expect(stamp.date).toBe("2026-11-04");
+    expect(stamp.time).toBe("10:20");
+    expect(stamp.zone).toMatch(/^UTC[+-]\d{2}:\d{2}$/);
+  });
+
+  it("无效与空时间返回 null，不伪造时间", () => {
+    expect(formatLocalStamp(null)).toBeNull();
+    expect(formatLocalStamp("not-a-date")).toBeNull();
   });
 });
 

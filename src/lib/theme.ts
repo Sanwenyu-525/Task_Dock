@@ -1,8 +1,9 @@
 //! 主题/材质/视觉预设解析（纯函数，可测试）。
 //!
 //! 三个维度正交，不要互相覆盖：
-//! - **视觉预设**（visualPreset）：dream-gradient | liquid-glass —— 决定设计语言
-//!   （表面层级、边光、发光、圆角、阴影），是 v0.6 新增的一层。
+//! - **视觉预设**（visualPreset）：frosted | dream-gradient —— 决定设计语言
+//!   （表面层级、边光、发光、圆角、阴影）。2026-11 收口为两套；
+//!   历史值 `liquid-glass` / `clear` 在读、写两侧都归一为 `frosted`。
 //! - **明暗模式**（theme）：light | dark | system —— 只决定色板明暗。
 //! - **材质**（material）：solid | glass —— 决定窗口是否透出桌面。
 //!
@@ -18,39 +19,28 @@
 
 export type MaterialSetting = "solid" | "glass";
 export type ResolvedTheme = "light" | "dark";
-export type VisualPreset = "dream-gradient" | "liquid-glass" | "frosted" | "clear";
-/** 清透模式的前景配色：auto 跟随明暗主题，dark/light 强制深/浅色文字。 */
-export type ClearForeground = "auto" | "dark" | "light";
+export type VisualPreset = "frosted" | "dream-gradient";
 /** 实际渲染状态：原生模糊玻璃 / 纯 CSS 玻璃 / 不透明 */
 export type GlassRender = "native" | "css" | "solid";
 
 /** 预设顺序即设置页展示顺序；第一个为缺省值。 */
-export const VISUAL_PRESETS: readonly VisualPreset[] = [
-  "dream-gradient",
-  "liquid-glass",
-  "frosted",
-  "clear",
-];
+export const VISUAL_PRESETS: readonly VisualPreset[] = ["frosted", "dream-gradient"];
 
 /**
- * 安全默认预设：设置缺失（旧库升级）、值损坏、类型错误都落到这里。
- * 与 Rust 端 `default_visual_preset()` 必须保持一致。
+ * 安全默认预设：设置缺失（旧库升级）、值损坏、类型错误、历史值都落到这里。
+ * 与 Rust 端 `default_visual_preset()` / `normalized_visual_preset()` 必须保持一致。
  */
-export const DEFAULT_VISUAL_PRESET: VisualPreset = "dream-gradient";
+export const DEFAULT_VISUAL_PRESET: VisualPreset = "frosted";
 
 /** 预设对应的窗口圆角（逻辑像素），同时下发给 Win32 区域裁剪。 */
 export const PRESET_WINDOW_RADIUS: Record<VisualPreset, number> = {
-  "dream-gradient": 18,
-  "liquid-glass": 20,
   frosted: 20,
-  clear: 20,
+  "dream-gradient": 18,
 };
 
 export const PRESET_LABELS: Record<VisualPreset, { name: string; tagline: string }> = {
-  "dream-gradient": { name: "梦幻渐变", tagline: "柔和蓝紫粉 · 轻毛玻璃" },
-  "liquid-glass": { name: "液态玻璃", tagline: "通透折射 · 玻璃胶囊" },
   frosted: { name: "柔光玻璃", tagline: "淡蓝白磨砂 · 精细边光" },
-  clear: { name: "清透玻璃", tagline: "真实桌面透出 · 极简边缘" },
+  "dream-gradient": { name: "梦幻渐变", tagline: "柔和蓝紫粉 · 轻毛玻璃" },
 };
 
 /** Rust `MaterialResult.effect` 中真正代表原生模糊的取值。 */
@@ -73,26 +63,24 @@ export function resolveTheme(setting: string, flags: Pick<SystemFlags, "prefersD
  * 预设解析：未知/缺失一律回退默认。
  * 旧数据库没有 visual_preset 键时前端拿到 undefined，这里必须给出安全值，
  * 不能把 `undefined` 直接写进 data-preset（会导致所有预设样式失效）。
+ * 历史值 `liquid-glass` / `clear` 已下线，映射到默认 `frosted`（只读兜底，
+ * 数据库回写由 Rust v29 迁移负责）。
  */
 export function resolveVisualPreset(setting: string | null | undefined): VisualPreset {
-  return setting === "liquid-glass" || setting === "frosted" || setting === "clear"
-    ? setting
-    : DEFAULT_VISUAL_PRESET;
+  if (setting === "dream-gradient") return "dream-gradient";
+  if (setting === "frosted") return "frosted";
+  if (setting === "liquid-glass" || setting === "clear") return "frosted";
+  return DEFAULT_VISUAL_PRESET;
 }
 
 /**
  * 独立原生窗口（右键菜单 / 通知 / 截图）的预设映射。
  *
- * 清透玻璃依赖「主窗口近乎全透明」这一整窗级别的合成策略；直接套到弹窗、
- * 通知或截图遮罩会牺牲可读性/命中区域，因此这些窗口回退到液态玻璃材质，
- * 只共享同一套前景色板。主窗口不受影响。
+ * 两套预设收口后，弹窗与主窗共用同一预设，无需再为「清透」做降级；
+ * 保留该函数以维持既有调用方契约。
  */
 export function resolveSecondaryPreset(preset: VisualPreset): VisualPreset {
-  return preset === "clear" ? "liquid-glass" : preset;
-}
-
-export function resolveClearForeground(setting: string | null | undefined): ClearForeground {
-  return setting === "dark" || setting === "light" ? setting : "auto";
+  return preset;
 }
 
 export function presetRadius(preset: VisualPreset): number {

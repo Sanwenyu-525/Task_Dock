@@ -1903,38 +1903,46 @@
 /* 品牌球呼吸光晕：独立的固定层，只做 opacity 动画。
    球体本身不缩放、不改变布局尺寸、不参与命中（pointer-events: none），
    标题栏也不加整窗 filter——避免长驻应用每帧重绘大面积模糊。
-   峰值由 --orb-glow-peak 控制：浅色更克制，深色稍亮，但都在 0.35 以内。 */
+   径向渐变中心留空（球体所在区域透明），只在球体外围形成光环，
+   避免增强光晕时把圆圈本体一起洗亮；峰值/静息由主题 Token 控制。 */
 .brand-orb::after {
-  --orb-glow-peak: 0.28;
+  --orb-glow-color: var(--accent);
+  --orb-glow-min: 0.18;
+  --orb-glow-peak: 0.64;
   content: "";
   position: absolute;
-  inset: -6px;
+  inset: -8px;
   border-radius: 50%;
   pointer-events: none;
   background: radial-gradient(
     circle,
-    color-mix(in srgb, var(--accent) 55%, transparent) 0%,
-    color-mix(in srgb, var(--accent) 22%, transparent) 46%,
-    transparent 72%
+    transparent 0%,
+    transparent 30%,
+    color-mix(in srgb, var(--orb-glow-color) 36%, transparent) 46%,
+    color-mix(in srgb, var(--orb-glow-color) 20%, transparent) 62%,
+    color-mix(in srgb, var(--orb-glow-color) 8%, transparent) 80%,
+    transparent 100%
   );
-  opacity: 0.15;
+  opacity: var(--orb-glow-min);
   animation: brand-orb-breathe 3.6s ease-in-out infinite;
 }
 
+/* 深色背景上光晕更显眼，峰值收低，避免霓虹感；两套预设共用同一组 Token。 */
 :root[data-theme="dark"] .brand-orb::after {
-  --orb-glow-peak: 0.34;
+  --orb-glow-min: 0.16;
+  --orb-glow-peak: 0.44;
 }
 
 @keyframes brand-orb-breathe {
-  0%, 100% { opacity: 0.15; }
+  0%, 100% { opacity: var(--orb-glow-min); }
   50% { opacity: var(--orb-glow-peak); }
 }
 
-/* 减少动态：关闭呼吸，保留一层静态柔光，仍能看出品牌球的蓝紫气质。 */
+/* 减少动态：关闭呼吸，保留一层可见的静态柔光，仍能看出品牌球的蓝紫气质。 */
 @media (prefers-reduced-motion: reduce) {
   .brand-orb::after {
     animation: none;
-    opacity: 0.2;
+    opacity: 0.24;
   }
 }
 
@@ -2436,25 +2444,77 @@ textarea:focus {
   box-shadow: none;
 }
 
+/* 应用中心搜索框：焦点只由外层 .apps-search:focus-within 的浅色边框表达，
+   内部 input 去掉紫色粗环（2026-11-04，避免焦点视觉比输入框本身还重）。 */
+.apps-search input:focus {
+  box-shadow: none;
+}
+
 /* 任务卡 */
 
-/* 任务卡统一壳（2026-11-03）：
-   - 以任务列表页为基准，行动中心 / Agent 轮次 / 规划中心（功能·看板·项目·里程碑）
-     / 内置路线图卡片共用同一套圆角、卡面、阴影、内边距与 hover；
-   - 卡面 = 流线高光(--task-flow) + 玻璃渐变(--card-face)，
-     顶部内高光 / 底部沉降 / 1px 边缘反射由 --card-shadow 承担；
-   - 页面特有信息（里程碑、优先级、期限、标签等）保留在各卡槽位；
-   - 完成态弱化、逾期强调等语义状态只在 base 层由徽标/文案表达。 */
+/* 全局卡片基础表面（方案 D，2026-11-04）：
+   只负责材质——圆角 / 卡面 / 边缘反射 / 静态高光 / 阴影 / 主题透明度与默认过渡；
+   不规定高度、内边距、布局、字符间距，也不假定整卡可点击。
+   页面只保留自己的信息结构与状态色，不再重复写 radius / background / box-shadow。
+
+   .task-card 作为旧选择器兼容别名并入基础规则：10 个既有使用点（任务列表 /
+   行动中心 / Agent 轮次 / 规划中心 / 内置路线图 / 工作流）视觉保持原样，不批量改引用。
+   方案 D 的流线高光是**可选变体**（--task），不默认下发给所有卡片。 */
+.surface-card,
 .task-card {
   border: none;
   border-radius: var(--radius-card);
-  background: var(--task-flow), var(--card-face);
+  background: var(--card-face);
   box-shadow: var(--card-shadow);
-  padding: 8px 9px;
   transition: box-shadow 0.16s ease, transform 0.16s ease, background-color 0.16s ease,
     opacity 0.2s ease;
 }
 
+/* 变体 1 · 流线玻璃：任务 / 规划族共用，柔光高光叠在玻璃卡面之上（纯静态渐变） */
+.surface-card--task,
+.task-card {
+  background: var(--task-flow), var(--card-face);
+}
+
+/* 旧任务卡的内边距属于布局，继续留在兼容选择器上，不进基础类 */
+.task-card {
+  padding: 8px 9px;
+}
+
+/* 变体 2 · 真整卡可点击：hover 只抬升阴影与 1px 位移，键盘焦点走统一焦点环。
+   离开动画（.leaving / .is-leaving）期间不叠加位移动画，避免覆盖原生离场轨迹。 */
+.surface-card--interactive {
+  cursor: pointer;
+}
+
+.surface-card--interactive:hover {
+  box-shadow: var(--card-shadow-hover);
+}
+
+.surface-card--interactive:not(.leaving):not(.is-leaving):hover {
+  transform: translateY(-1px);
+}
+
+/* 键盘焦点用 outline 而不是单靠 --focus-ring：--focus-ring 里引用了
+   --surface-base，而后者在预设下解析为渐变（<image>），放进 box-shadow 会使
+   整条声明在计算值阶段失效。outline 只接受颜色，跨预设稳定可见。 */
+.surface-card--interactive:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 变体 3 · 真选中：只提供识别环与 accent 衬底，不吞并业务状态色。
+   深度保持与默认卡一致，只加环与淡色底——hover 走的是“更深阴影 + 抬升”，
+   两套反馈在视觉上互不冒充。 */
+.surface-card--selected,
+.surface-card--selected:hover {
+  background: var(--accent-soft);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    var(--card-shadow);
+}
+
+/* 兼容：旧 .task-card 的 hover / focus 行为原样保留（含离开动画豁免） */
 .task-card:hover {
   box-shadow: var(--card-shadow-hover);
 }
@@ -2692,18 +2752,11 @@ textarea:focus {
   background: var(--control-face);
   box-shadow: var(--control-shadow);
   text-align: left;
-  transition: box-shadow 0.16s ease, transform 0.16s ease;
+  transition: box-shadow 0.16s ease, background-color 0.16s ease;
 }
 
-.preset-card:hover {
-  transform: translateY(-1px);
-}
-
-.preset-card.active {
-  box-shadow:
-    0 0 0 1.5px var(--accent),
-    var(--control-shadow);
-}
+/* hover / 选中 / 按下 / 键盘焦点四态统一在 §15 定义，此处不再重复，
+   避免同一状态被两套规则叠优先级覆盖。 */
 
 .preset-preview {
   position: relative;
@@ -2970,13 +3023,13 @@ textarea:focus {
 @media (prefers-reduced-motion: reduce) {
   .rail-item,
   .overview-card,
+  .surface-card,
   .task-card,
   .task-item,
   .quick-add-row,
   .preset-card,
   .clip-item,
   .clip-group-card,
-  .history-item,
   .btn,
   .icon-btn {
     transition: none;
@@ -2988,7 +3041,8 @@ textarea:focus {
   .rail-item.active:active,
   .clip-item:hover,
   .clip-group-card:hover,
-  .history-item:hover,
+  .surface-card--interactive:hover,
+  .surface-card--selected:hover,
   .task-card:hover,
   .task-item:hover,
   .task-check:active,
@@ -3010,7 +3064,8 @@ textarea:focus {
    方向性约定（所有预设共用）：
    - 光源在左上：顶部/左侧高光，底部/右侧沉降；
    - 卡片凸起：内高光 + 外投影；输入容器内凹：顶部沉降 + 底部反光；
-   - 选中/按下：选中向上浮 1px，按下回落并换成内凹阴影，形成实体反馈。
+   - 选中/按下：不做位移；选中用固定底 + 强调色，按下只换成内凹阴影
+     形成表面反馈，图标/文字/选中背景的位置保持恒定。
    ════════════════════════════════════════════════════════════════ */
 
 /* 窗口与标题栏：顶部受光带（静态渐变，一次绘制） */
@@ -3022,22 +3077,9 @@ textarea:focus {
   background-image: var(--header-wash);
 }
 
-/* 左侧导航：选中胶囊轻微浮起，按下回落到表面 */
-.rail-item {
-  transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease,
-    transform 0.16s ease;
-}
-
-.rail-item:hover {
-  transform: translateY(-0.5px);
-}
-
-.rail-item.active {
-  transform: translateY(-1px);
-}
-
+/* 左侧导航：只换背景 / 文字色 / 阴影，hover、选中、按下都不产生位移；
+   过渡声明保留在 §9 基类（位于 reduced-motion 之前），此处不再重复覆盖。 */
 .rail-item.active:active {
-  transform: translateY(0.5px);
   box-shadow: var(--inset-shadow-sm);
 }
 
@@ -3045,20 +3087,20 @@ textarea:focus {
   box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--c-accent) 55%, transparent);
 }
 
-/* 一级表面：列表卡 / 统计卡 / 设置分组 / Agent 区块统一凸起 */
+/* 一级表面：列表卡 / 统计卡 / 设置分组 / Agent 区块统一凸起。
+   历史条目已接入 .surface-card（材质与 hover 由基础类 + 交互变体承担），
+   不再在这里重复声明，避免两套规则互相覆盖。 */
 .summary-card,
 .panel-block,
 .clip-item,
-.clip-group-card,
-.history-item {
+.clip-group-card {
   box-shadow: var(--card-shadow);
   transition: box-shadow 0.16s ease, transform 0.16s ease, border-color 0.16s ease,
     background-color 0.16s ease;
 }
 
 .clip-item:hover,
-.clip-group-card:hover,
-.history-item:hover {
+.clip-group-card:hover {
   box-shadow: var(--card-shadow-hover);
   transform: translateY(-1px);
 }
@@ -3175,14 +3217,24 @@ textarea:focus {
   box-shadow: var(--inset-shadow-sm);
 }
 
-/* 预设选择卡：悬停抬升 + 选中环，预览本身也有厚度 */
-.preset-card {
-  transition: box-shadow 0.16s ease, transform 0.16s ease;
+/* 预设选择卡四态（不位移、不缩放）：
+   Default = 中性表面；Hover = 轻微背景淡染 + 内描边；
+   Selected = 固定强调色环 + 选中圆点；Focus-visible = 独立键盘焦点环。
+   hover 只作用于未选中卡，选中态的强调色环不会被 hover 削弱。 */
+.preset-card:not(.active):hover {
+  background-color: color-mix(in srgb, var(--c-accent) 6%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--c-accent) 22%, transparent),
+    var(--control-shadow);
 }
 
-.preset-card:hover {
-  box-shadow: var(--control-shadow-hover);
-  transform: translateY(-1px);
+.preset-card:not(.active):active {
+  box-shadow: var(--control-shadow-press);
+}
+
+.preset-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .preset-card.active {
@@ -3529,3 +3581,504 @@ textarea:focus {
   }
 }
 
+@layer theme {
+  /* 工作流页面内编辑态（2026-11-04）
+     编辑不再使用 Dialog：列表与编辑器共用内容区的单一滚动容器，
+     不铺全局遮罩、不新开窗口、不用固定底栏遮挡内容。 */
+  .wf-editor-page {
+    /* 滚动交给外层 .tab-content；避免面板自己再形成一层嵌套滚动 */
+    overflow: visible;
+  }
+
+  .wf-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .wf-editor-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .wf-editor-head > .icon-btn {
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+
+  .wf-editor-head-main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .wf-editor-head-main .wf-title {
+    margin: 0;
+    font-size: 14px;
+  }
+
+  .wf-editor-head-main .wf-subtitle {
+    margin: 2px 0 0;
+    overflow-wrap: anywhere;
+  }
+
+  .wf-unsaved-badge {
+    flex: 0 0 auto;
+    align-self: center;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--status-waiting) 45%, transparent);
+    background: color-mix(in srgb, var(--status-waiting) 12%, transparent);
+    color: var(--status-waiting);
+    font-size: 10.5px;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+
+  .wf-leave-guard {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  .wf-leave-guard-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .wf-editor .wf-steps-head {
+    margin-top: 2px;
+    flex-wrap: wrap;
+  }
+
+  .wf-editor .wf-steps-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .wf-editor .wf-step-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 5px;
+  }
+
+  .wf-editor .wf-step-form-row .form-field {
+    min-width: 0;
+  }
+
+  .wf-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 2px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  /* 320/400 窄窗：标题区可换行，操作区保持右对齐且不溢出 */
+  @media (max-width: 420px) {
+    .wf-editor-head {
+      flex-wrap: wrap;
+    }
+
+    .wf-editor-head-main {
+      flex: 1 1 160px;
+    }
+
+    .wf-editor .wf-step-row {
+      flex-wrap: wrap;
+    }
+
+    .wf-editor .wf-step-tools {
+      margin-left: auto;
+    }
+
+    .wf-editor-actions .btn {
+      flex: 1 1 auto;
+    }
+  }
+}
+
+/* 任务页面内编辑态（2026-11-04）
+   与工作流编辑同一套交互语言：列表 ↔ 编辑在主内容区切换，共用 .tab-content 单一滚动容器；
+   不铺遮罩、不新开窗口、不用固定底栏。表单继续复用 .field / .field-row / .link-row 与 ui 基元。 */
+@layer theme {
+  .task-editor-page {
+    /* 滚动交给外层 .tab-content；面板自身不形成第二层滚动 */
+    overflow: visible;
+  }
+
+  .task-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .task-editor-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .task-editor-head > .icon-btn {
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+
+  .task-editor-head-main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .task-editor-title {
+    margin: 0;
+    font-size: 14px;
+  }
+
+  .task-editor-subtitle {
+    margin: 2px 0 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  .task-editor-unsaved {
+    flex: 0 0 auto;
+    align-self: center;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--status-waiting) 45%, transparent);
+    background: color-mix(in srgb, var(--status-waiting) 12%, transparent);
+    color: var(--status-waiting);
+    font-size: 10.5px;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+
+  .task-editor-leave-guard {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  .task-editor-leave-guard-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .task-editor-body {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    min-width: 0;
+  }
+
+  .task-editor-body .field,
+  .task-editor-body .field-row {
+    min-width: 0;
+  }
+
+  /* 关联目标/会话行在窄窗可能挤爆：允许换行，按钮与选择器不超出内容区 */
+  .task-editor-body .link-row {
+    flex-wrap: wrap;
+  }
+
+  .task-editor-error {
+    margin: 0;
+    padding: 7px 9px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--status-error) 40%, transparent);
+    background: color-mix(in srgb, var(--status-error) 10%, transparent);
+    color: var(--status-error);
+    font-size: 11.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .task-editor-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  /* 窄窗：标题区可换行，操作按钮均分宽度且不被遮挡（无固定底栏） */
+  @media (max-width: 420px) {
+    .task-editor-head {
+      flex-wrap: wrap;
+    }
+
+    .task-editor-head-main {
+      flex: 1 1 160px;
+    }
+
+    .task-editor-actions .btn {
+      flex: 1 1 auto;
+    }
+  }
+}
+
+/* ── 逐项粘贴：目标卡片选中 / 跳转 / 说明折叠（主题级覆盖） ── */
+@layer theme {
+  .clip-target-list {
+    max-height: 210px;
+  }
+
+  .clip-target-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px 4px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--surface-raised);
+    min-width: 0;
+  }
+
+  .clip-target-row:hover {
+    border-color: var(--border-strong);
+  }
+
+  .clip-target-row.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .clip-target-row .clip-target {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .clip-target-row .clip-target:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .clip-target-row .clip-target:disabled {
+    opacity: 0.6;
+  }
+
+  .clip-target-state {
+    flex: none;
+    min-width: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    font-size: 9.5px;
+    color: var(--accent);
+  }
+
+  .clip-target-jump {
+    flex: none;
+  }
+
+  .clip-target-jump:hover:not(:disabled) {
+    color: var(--accent);
+  }
+
+  .clip-target-jump:active:not(:disabled) {
+    color: var(--accent);
+    transform: scale(0.94);
+  }
+
+  .clip-paste-intro {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .clip-hint-toggle {
+    flex: none;
+    padding: 2px 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    cursor: pointer;
+  }
+
+  .clip-hint-toggle:hover {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .clip-hint-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .clip-paste-help {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .clip-paste-help p {
+    margin: 0;
+  }
+}
+
+
+/* 规划中心页面内编辑态（2026-11-04）
+   与工作流/任务编辑同一套交互语言：列表 ↔ 编辑在主内容区切换，共用 .tab-content 单一滚动容器；
+   不铺遮罩、不新开窗口、不用固定底栏。表单继续复用 .form-grid / .form-field / .input 与 ui 基元。 */
+@layer theme {
+  .planning-editor-page {
+    /* 滚动交给外层 .tab-content；避免面板自己再形成一层嵌套滚动 */
+    overflow: visible;
+  }
+
+  .planning-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .planning-editor-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .planning-editor-head > .icon-btn {
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+
+  .planning-editor-head-main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .planning-editor-title {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
+  .planning-editor-subtitle {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    overflow-wrap: anywhere;
+  }
+
+  .planning-unsaved-badge {
+    flex: 0 0 auto;
+    align-self: center;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--status-waiting) 45%, transparent);
+    background: color-mix(in srgb, var(--status-waiting) 12%, transparent);
+    color: var(--status-waiting);
+    font-size: 10.5px;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+
+  .planning-leave-guard {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  .planning-leave-guard-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .planning-form-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .planning-form-row .form-field {
+    min-width: 0;
+  }
+
+  .planning-editor-error {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--status-error);
+    overflow-wrap: anywhere;
+  }
+
+  .planning-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 2px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  /* 320/400 窄窗：标题区可换行，双列字段退回单列，操作区按钮均分且不溢出 */
+  @media (max-width: 420px) {
+    .planning-editor-head {
+      flex-wrap: wrap;
+    }
+
+    .planning-editor-head-main {
+      flex: 1 1 160px;
+    }
+
+    .planning-form-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .planning-editor-actions .btn {
+      flex: 1 1 auto;
+    }
+  }
+}

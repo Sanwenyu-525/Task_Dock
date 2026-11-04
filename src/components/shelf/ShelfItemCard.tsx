@@ -81,7 +81,7 @@ export default function ShelfItemCard({
 
   return (
     <div
-      className={`shelf-item ${selected ? "selected" : ""} ${missing ? "missing" : ""}`}
+      className={`shelf-item surface-card ${selected ? "selected surface-card--selected" : ""} ${missing ? "missing" : ""}`}
       role="listitem"
       aria-selected={selected}
       data-kind={item.kind}

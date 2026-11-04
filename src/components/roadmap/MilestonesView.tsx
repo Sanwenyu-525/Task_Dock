@@ -6,7 +6,7 @@
 //! - 目标日期过期只显示「已逾期」，绝不自动把里程碑标记为完成；
 //! - 操作：新建/编辑/删除、查看关联功能（跳转功能视图并预选该里程碑）。
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   CalendarDays,
   Flag,
@@ -21,8 +21,8 @@ import {
 } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { useUiStore } from "../../store/useUiStore";
-import { MilestoneDialog } from "./PlanningDialogs";
-import { PlanningProgressBar } from "./PlanningBits";
+import { MilestoneEditorView } from "./PlanningEditors";
+import { PlanningProgressBar, findScrollParent } from "./PlanningBits";
 
 export interface MilestonesViewProps {
   onOpenFeatures: (milestoneId: string) => void;
@@ -65,9 +65,31 @@ export default function MilestonesView({ onOpenFeatures }: MilestonesViewProps) 
   const deleteMilestone = usePlanningStore((s) => s.deleteMilestone);
   const showToast = useUiStore((s) => s.showToast);
 
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<PlanningMilestone | null>(null);
+  /** null = 列表态；非空 = 页面内编辑态（milestone 为 null 表示新建）。 */
+  const [editor, setEditor] = useState<{ milestone: PlanningMilestone | null } | null>(null);
   const [deleting, setDeleting] = useState<PlanningMilestone | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** 进入编辑前列表的滚动位置：返回时恢复，避免用户回到列表顶部。 */
+  const listScrollTop = useRef(0);
+
+  /** 进入编辑态前记住列表滚动位置；返回时一次性恢复（页面级单一滚动容器）。 */
+  const openEditor = (milestone: PlanningMilestone | null) => {
+    const sc = findScrollParent(rootRef.current);
+    if (sc) listScrollTop.current = sc.scrollTop;
+    setEditor({ milestone });
+    window.requestAnimationFrame(() => {
+      const container = findScrollParent(rootRef.current);
+      if (container) container.scrollTop = 0;
+    });
+  };
+
+  const closeEditor = () => {
+    setEditor(null);
+    window.requestAnimationFrame(() => {
+      const container = findScrollParent(rootRef.current);
+      if (container) container.scrollTop = listScrollTop.current;
+    });
+  };
 
   if (!activeProjectId) {
     return (
@@ -79,8 +101,17 @@ export default function MilestonesView({ onOpenFeatures }: MilestonesViewProps) 
     );
   }
 
+  // ── 页面内编辑态：整块内容区切换为表单，不叠遮罩 ──
+  if (editor) {
+    return (
+      <div className="planning-projects planning-milestones-page planning-editor-page" ref={rootRef}>
+        <MilestoneEditorView milestone={editor.milestone} onClose={closeEditor} />
+      </div>
+    );
+  }
+
   return (
-    <div className="planning-projects planning-milestones-page">
+    <div className="planning-projects planning-milestones-page" ref={rootRef}>
       {(milestonesError) && (
         <div className="planning-error" role="alert">
           <span>里程碑加载失败：{milestonesError}</span>
@@ -99,13 +130,7 @@ export default function MilestonesView({ onOpenFeatures }: MilestonesViewProps) 
             完成率按关联功能的完成状态计算；目标日期过期不会自动完成。
           </span>
         </div>
-        <button
-          className="btn sm primary"
-          onClick={() => {
-            setEditing(null);
-            setDialogOpen(true);
-          }}
-        >
+        <button className="btn sm primary" onClick={() => openEditor(null)}>
           <Plus size={13} aria-hidden="true" /> 新建里程碑
         </button>
       </div>
@@ -118,13 +143,7 @@ export default function MilestonesView({ onOpenFeatures }: MilestonesViewProps) 
         <div className="planning-empty-features">
           <h3>还没有里程碑</h3>
           <p>用里程碑把功能按阶段组织起来，查看每个阶段的目标日期与完成率。</p>
-          <button
-            className="btn primary"
-            onClick={() => {
-              setEditing(null);
-              setDialogOpen(true);
-            }}
-          >
+          <button className="btn primary" onClick={() => openEditor(null)}>
             <Plus size={14} aria-hidden="true" /> 新建里程碑
           </button>
         </div>
@@ -175,10 +194,7 @@ export default function MilestonesView({ onOpenFeatures }: MilestonesViewProps) 
                       className="icon-btn sm"
                       data-tip="编辑里程碑"
                       aria-label={`编辑里程碑 ${m.name}`}
-                      onClick={() => {
-                        setEditing(m);
-                        setDialogOpen(true);
-                      }}
+                      onClick={() => openEditor(m)}
                     >
                       <Pencil size={12} />
                     </button>
@@ -197,15 +213,6 @@ export default function MilestonesView({ onOpenFeatures }: MilestonesViewProps) 
           })}
         </ol>
       ))}
-
-      <MilestoneDialog
-        open={dialogOpen}
-        milestone={editing}
-        onClose={() => {
-          setDialogOpen(false);
-          setEditing(null);
-        }}
-      />
 
       <ConfirmDialog
         open={deleting !== null}

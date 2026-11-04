@@ -187,7 +187,7 @@ export default function NotesPanel() {
               <li key={item.id}>
                 <button
                   type="button"
-                  className={`notes-item ${activeId === item.id ? "is-active" : ""}`}
+                  className={`notes-item surface-card surface-card--interactive ${activeId === item.id ? "is-active surface-card--selected" : ""}`}
                   aria-current={activeId === item.id ? "true" : undefined}
                   data-note-id={item.id}
                   onClick={() => void select(item.id)}

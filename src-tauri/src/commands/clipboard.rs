@@ -14,8 +14,9 @@ use crate::clipboard::paste::{self, PasteStartReport};
 use crate::clipboard::platform::{self, ClipboardPayload, TargetWindow};
 use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteJob};
 use crate::clipboard::{
-    engine, CleanupReport, ClearReport, ClipboardGroup, ClipboardItem, ClipboardRuntime,
-    ClipboardStats, ClipboardView, CopyReport, DeleteReport, KIND_FILES, KIND_IMAGE, KIND_URL,
+    engine, ocr::OcrReport, CleanupReport, ClearReport, ClipboardGroup, ClipboardItem,
+    ClipboardRuntime, ClipboardStats, ClipboardView, CopyReport, DeleteReport, KIND_FILES,
+    KIND_IMAGE, KIND_URL,
 };
 use crate::db::Settings;
 use crate::error::{AppError, AppResult};
@@ -165,33 +166,69 @@ pub fn clipboard_copy_text(state: State<'_, Arc<ClipboardRuntime>>, text: String
 
 // ── 多类型内容专属操作（v0.7）：图片另存 / 链接打开 / 文件打开与定位 ──
 
-/// 图片另存为的后台并发闸门。
+/// 有界并发闸门（图片保存与路径状态检查共用）。
 ///
-/// 前端已有同步 in-flight 守卫，这里再加一道上限：即使绕过 UI 直接连发 IPC，
-/// 也不会把阻塞线程池堆成无界的写盘队列。达到上限直接返回可重试的 `Overloaded`，
-/// 不排队、不新开线程。
+/// 满额直接返回可重试的 `Overloaded`，不排队、不新开线程；配额由 [`QuotaGuard`]
+/// 在后台任务真正结束（成功、失败或 panic 展开）时归还，进程内后台任务数有上界。
+struct Quota {
+    active: &'static AtomicUsize,
+    limit: usize,
+    busy: &'static str,
+}
+
+impl Quota {
+    fn acquire(&'static self) -> AppResult<QuotaGuard> {
+        self.active
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < self.limit).then_some(n + 1)
+            })
+            .map(|_| QuotaGuard {
+                active: self.active,
+            })
+            .map_err(|_| AppError::Overloaded(self.busy.into()))
+    }
+}
+
+/// 一个已占用的配额；移入后台闭包后随闭包结束归还，`Drop` 在 panic 展开时同样执行。
+struct QuotaGuard {
+    active: &'static AtomicUsize,
+}
+
+impl Drop for QuotaGuard {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// 图片另存为：前端已有同步 in-flight 守卫，这里再加一道上限，即使绕过 UI 直接
+/// 连发 IPC，也不会把阻塞线程池堆成无界的写盘队列。
 const MAX_CONCURRENT_SAVES: usize = 2;
 static ACTIVE_SAVES: AtomicUsize = AtomicUsize::new(0);
+static SAVE_QUOTA: Quota = Quota {
+    active: &ACTIVE_SAVES,
+    limit: MAX_CONCURRENT_SAVES,
+    busy: "图片保存任务过多，请稍后重试",
+};
 
-/// 持有一个保存配额；随后台闭包一起结束（成功、失败或 panic 展开）时归还。
-struct SaveSlot;
+/// 文件路径状态检查：网络盘/断连盘上的 `metadata` 可能长时间阻塞，限制同时存在的
+/// 批量任务数，避免连发请求把阻塞线程池排满；超限同样直接拒绝。
+const MAX_CONCURRENT_PATH_CHECKS: usize = 3;
+static ACTIVE_PATH_CHECKS: AtomicUsize = AtomicUsize::new(0);
+static PATH_STATUS_QUOTA: Quota = Quota {
+    active: &ACTIVE_PATH_CHECKS,
+    limit: MAX_CONCURRENT_PATH_CHECKS,
+    busy: "文件状态检查任务过多，请稍后重试",
+};
 
-impl SaveSlot {
-    fn acquire() -> AppResult<Self> {
-        ACTIVE_SAVES
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < MAX_CONCURRENT_SAVES).then_some(n + 1)
-            })
-            .map(|_| SaveSlot)
-            .map_err(|_| AppError::Overloaded("图片保存任务过多，请稍后重试".into()))
-    }
-}
-
-impl Drop for SaveSlot {
-    fn drop(&mut self) {
-        ACTIVE_SAVES.fetch_sub(1, Ordering::SeqCst);
-    }
-}
+/// 本地 OCR：同一时刻只允许 1 个识别任务。第二张图直接得到 busy 反馈，
+/// 不排队、不新开线程；前端加载态同时禁用按钮，重复点击不会重复启动。
+const MAX_CONCURRENT_OCR: usize = 1;
+static ACTIVE_OCR: AtomicUsize = AtomicUsize::new(0);
+static OCR_QUOTA: Quota = Quota {
+    active: &ACTIVE_OCR,
+    limit: MAX_CONCURRENT_OCR,
+    busy: "另一张图片正在识别，请稍后重试",
+};
 
 /// 图片另存为：把落盘的原始 PNG 写入用户选择的路径，返回写入的字节数。
 ///
@@ -215,7 +252,7 @@ pub async fn clipboard_save_image(
     let abs = store::image_abs_path(&rt.db, &rt.root, &item_id)
         .ok_or_else(|| AppError::NotFound("图片缓存不存在或已被清理，无法保存".into()))?;
     let target = validate_save_path(&path)?;
-    let slot = SaveSlot::acquire()?;
+    let slot = SAVE_QUOTA.acquire()?;
     tauri::async_runtime::spawn_blocking(move || -> AppResult<u64> {
         // 配额随闭包存活到后台任务真正结束（含 panic 展开），不会提前归还。
         let _slot = slot;
@@ -246,6 +283,50 @@ fn validate_save_path(path: &str) -> AppResult<std::path::PathBuf> {
             "保存路径必须以 .png 结尾（存储格式为 PNG）".into(),
         )),
     }
+}
+
+/// 图片文字识别（本地 Windows OCR）：入参只有已有条目 id，Rust 侧直接读图片缓存，
+/// 不通过 IPC 传整张 PNG。识别在阻塞线程池执行，同一时刻最多 1 个任务。
+///
+/// 返回结构化状态而不是抛错：busy / unavailable / empty / cancelled 都是正常结果，
+/// 前端据此恢复按钮并给出明确提示。`request_id` 由前端生成，用于精准取消当前任务。
+#[tauri::command]
+pub async fn clipboard_ocr(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    item_id: String,
+    request_id: String,
+) -> AppResult<OcrReport> {
+    let request_id = request_id.trim().to_string();
+    if request_id.is_empty() || request_id.len() > 64 {
+        return Err(AppError::Validation("识别请求标识无效".into()));
+    }
+    let rt = runtime(&state).clone();
+    let slot = match OCR_QUOTA.acquire() {
+        Ok(slot) => slot,
+        // 并发上限：不排队、不报错，回结构化忙碌状态让前端恢复按钮。
+        Err(_) => return Ok(OcrReport::busy("另一张图片正在识别，请稍后重试")),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let _slot = slot;
+        rt.ocr
+            .recognize(&rt.db, &rt.root, &item_id, &request_id)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Io(std::io::Error::other(format!(
+            "识别后台任务异常结束：{e}"
+        )))
+    })
+}
+
+/// 取消进行中的识别（只匹配同一个 `request_id`，切换条目后的旧取消不会误伤新请求）。
+/// 返回是否真的命中当前任务；未命中不算错误。
+#[tauri::command]
+pub fn clipboard_ocr_cancel(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    request_id: String,
+) -> AppResult<bool> {
+    Ok(runtime(&state).ocr.cancel(request_id.trim()))
 }
 
 /// 用系统默认浏览器打开链接条目。
@@ -293,25 +374,36 @@ pub fn clipboard_reveal_local_path(path: String) -> AppResult<()> {
     Ok(())
 }
 
+/// 批量路径状态的执行体（纯函数，便于单测）：最多处理 200 条，保留输入顺序。
+fn path_states(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .take(200)
+        .map(|p| match std::fs::metadata(p.trim()) {
+            Ok(_) => "ok".into(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing".into(),
+            Err(_) => "inaccessible".into(),
+        })
+        .collect()
+}
+
 /// 批量查询文件路径状态：ok / missing / inaccessible。
 ///
 /// 供详情页区分「已移动/删除」与「无权限」，上限 200 条防止滥用。
 ///
 /// `metadata` 在机械盘、网络共享或断连盘上可能长时间阻塞；这里把整批查询放进
-/// **一个**阻塞线程池任务（不按路径开线程），避免卡住 UI 线程。成功返回值与字段
-/// 不变；后台任务异常结束时以错误拒绝，前端按「未知」处理，绝不把所有路径当成存在。
+/// **一个**阻塞线程池任务（不按路径开线程），避免卡住 UI 线程。同时最多允许
+/// [`MAX_CONCURRENT_PATH_CHECKS`] 个批量任务并行：超出立即以可重试的 `Overloaded`
+/// 拒绝，不排无界队列。成功返回值与字段不变；后台任务异常结束时以错误拒绝，
+/// 前端按「未知」处理，绝不把所有路径当成存在，也不把「繁忙」误当成文件丢失。
 #[tauri::command]
 pub async fn clipboard_path_status(paths: Vec<String>) -> AppResult<Vec<String>> {
+    // 配额在进入线程池前获取：超限时立即拒绝，不形成等待队列。
+    let slot = PATH_STATUS_QUOTA.acquire()?;
     tauri::async_runtime::spawn_blocking(move || -> AppResult<Vec<String>> {
-        Ok(paths
-            .into_iter()
-            .take(200)
-            .map(|p| match std::fs::metadata(p.trim()) {
-                Ok(_) => "ok".into(),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing".into(),
-                Err(_) => "inaccessible".into(),
-            })
-            .collect())
+        // 配额随闭包存活到批量查询真正结束（含 panic 展开），不会提前归还。
+        let _slot = slot;
+        Ok(path_states(paths))
     })
     .await
     .map_err(|e| {
@@ -705,14 +797,93 @@ pub fn clipboard_visible_targets() -> Vec<TargetWindow> {
     platform::visible_targets()
 }
 
+/// 目标窗口图标提取：轻量但会读盘，限制同时解码的数量，避免多窗口刷新时堆积。
+const MAX_CONCURRENT_ICON_EXTRACTS: usize = 2;
+static ACTIVE_ICON_EXTRACTS: AtomicUsize = AtomicUsize::new(0);
+static ICON_QUOTA: Quota = Quota {
+    active: &ACTIVE_ICON_EXTRACTS,
+    limit: MAX_CONCURRENT_ICON_EXTRACTS,
+    busy: "图标提取任务过多，请稍后重试",
+};
+
+/// 目标窗口的真实应用图标：按当前窗口身份重新解析可执行路径（PID 必须与选中时
+/// 一致，防止 HWND/PID 复用后显示成别的应用），在阻塞线程池中按 exe 路径提取。
+/// 返回 `None` 表示无图标或任务被限流，前端统一回退到通用窗口图标。
+#[tauri::command]
+pub async fn clipboard_target_icon(hwnd: isize, expected_pid: Option<u32>) -> Option<String> {
+    let slot = ICON_QUOTA.acquire().ok()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _slot = slot;
+        let target = platform::window_target(hwnd)?;
+        if let Some(pid) = expected_pid {
+            if pid != target.pid {
+                return None;
+            }
+        }
+        if target.pid == std::process::id() {
+            return None;
+        }
+        crate::navigation::app_icons::extract_icon_for_exe(&target.exe_path)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 #[tauri::command]
 pub fn clipboard_foreground_target() -> Option<TargetWindow> {
     platform::foreground_target()
 }
 
 #[tauri::command]
-pub fn clipboard_paste_precheck(hwnd: isize) -> AppResult<TargetWindow> {
-    paste::precheck_target(hwnd)
+pub fn clipboard_paste_precheck(
+    hwnd: isize,
+    expected_pid: Option<u32>,
+) -> AppResult<TargetWindow> {
+    paste::precheck_target(hwnd, expected_pid)
+}
+
+/// 跳转到目标窗口：只激活并核实前台，不写入剪贴板、不发送按键。
+///
+/// 校验顺序：窗口存在 → PID 与选中时一致（防 HWND 复用）→ 非本应用 → 权限 →
+/// `focus_window` 激活 → 再次核实身份与前台。任何一步失败都返回具体原因，
+/// 绝不把「已请求切换」当成成功。
+#[tauri::command]
+pub fn clipboard_focus_target(
+    hwnd: isize,
+    expected_pid: Option<u32>,
+) -> AppResult<TargetWindow> {
+    use crate::navigation::window_manager::{focus_window, FocusError};
+
+    let target = paste::precheck_target(hwnd, expected_pid)?;
+    match focus_window(hwnd) {
+        Ok(_) => {}
+        Err(FocusError::WindowVanished) => {
+            return Err(AppError::Validation(
+                "目标窗口已关闭（句柄失效），请刷新后重新选择".into(),
+            ))
+        }
+        Err(e) => {
+            return Err(AppError::Validation(format!(
+                "未能切换到目标窗口：{}",
+                e.reason_cn()
+            )))
+        }
+    }
+    // 切换动画期间窗口可能关闭或句柄被复用：以最终身份与前台状态为准。
+    let after = platform::window_target(hwnd)
+        .ok_or_else(|| AppError::Validation("目标窗口已关闭".into()))?;
+    if after.pid != target.pid {
+        return Err(AppError::Validation(
+            "目标窗口已被其他窗口复用，请刷新后重新选择".into(),
+        ));
+    }
+    if !platform::is_foreground(hwnd) {
+        return Err(AppError::Validation(
+            "已请求切换，但目标窗口未确认位于前台".into(),
+        ));
+    }
+    Ok(after)
 }
 
 #[tauri::command]
@@ -720,6 +891,7 @@ pub fn clipboard_paste_group(
     state: State<'_, Arc<ClipboardRuntime>>,
     group_id: String,
     target_hwnd: isize,
+    expected_pid: Option<u32>,
     item_ids: Option<Vec<String>>,
 ) -> AppResult<PasteStartReport> {
     let rt = runtime(&state);
@@ -734,7 +906,7 @@ pub fn clipboard_paste_group(
     if ids.is_empty() {
         return Err(AppError::Validation("分组为空，无法逐项粘贴".into()));
     }
-    rt.paste.start(&group_id, target_hwnd, &ids)
+    rt.paste.start(&group_id, target_hwnd, expected_pid, &ids)
 }
 
 /// 任意多选逐项粘贴：不依赖永久分组，按传入顺序逐条写入并发送按键。
@@ -744,6 +916,7 @@ pub fn clipboard_paste_group(
 pub fn clipboard_paste_items(
     state: State<'_, Arc<ClipboardRuntime>>,
     target_hwnd: isize,
+    expected_pid: Option<u32>,
     item_ids: Vec<String>,
 ) -> AppResult<PasteStartReport> {
     let rt = runtime(&state);
@@ -752,7 +925,7 @@ pub fn clipboard_paste_items(
         return Err(AppError::Validation("所选条目不存在或已删除".into()));
     }
     let ids: Vec<String> = items.into_iter().map(|i| i.id).collect();
-    rt.paste.start("", target_hwnd, &ids)
+    rt.paste.start("", target_hwnd, expected_pid, &ids)
 }
 
 #[tauri::command]
@@ -768,8 +941,11 @@ pub fn clipboard_paste_resume(
     state: State<'_, Arc<ClipboardRuntime>>,
     job_id: String,
     target_hwnd: isize,
+    expected_pid: Option<u32>,
 ) -> AppResult<PasteStartReport> {
-    runtime(&state).paste.resume(&job_id, target_hwnd)
+    runtime(&state)
+        .paste
+        .resume(&job_id, target_hwnd, expected_pid)
 }
 
 #[tauri::command]
@@ -892,7 +1068,47 @@ pub fn clipboard_probe() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Barrier;
+
     use super::*;
+
+    /// 独立临时目录：只清理本测试创建的这一份。
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "task-dock-cmd-{}-{}-{}",
+                tag,
+                std::process::id(),
+                uuid::Uuid::new_v4().simple()
+            ));
+            std::fs::create_dir_all(&path).expect("创建测试临时目录");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn save_slots_are_bounded_and_released_impl() {
+        let first = SAVE_QUOTA.acquire().expect("第 1 个配额应可用");
+        let second = SAVE_QUOTA.acquire().expect("第 2 个配额应可用");
+        assert!(
+            matches!(SAVE_QUOTA.acquire(), Err(AppError::Overloaded(_))),
+            "超过上限必须返回可重试的 Overloaded，而不是排队或无界写入"
+        );
+        drop(first);
+        let third = SAVE_QUOTA.acquire().expect("配额归还应允许再次获取");
+        drop(second);
+        drop(third);
+        assert!(SAVE_QUOTA.acquire().is_ok(), "全部归还后必须恢复可获取");
+    }
 
     #[test]
     fn save_path_accepts_absolute_png() {
@@ -911,16 +1127,88 @@ mod tests {
 
     #[test]
     fn save_slots_are_bounded_and_released() {
-        let first = SaveSlot::acquire().expect("第 1 个配额应可用");
-        let second = SaveSlot::acquire().expect("第 2 个配额应可用");
-        assert!(
-            matches!(SaveSlot::acquire(), Err(AppError::Overloaded(_))),
-            "超过上限必须返回可重试的 Overloaded，而不是排队或无界写入"
-        );
-        drop(first);
-        let third = SaveSlot::acquire().expect("配额归还应允许再次获取");
-        drop(second);
-        drop(third);
-        assert!(SaveSlot::acquire().is_ok(), "全部归还后必须恢复可获取");
+        save_slots_are_bounded_and_released_impl();
+    }
+
+    /// 并发抢占：配额上限是硬上界，超额请求全部收到 Overloaded，不会排队等待。
+    #[test]
+    fn quota_is_bounded_under_concurrent_acquire() {
+        // 函数级 static：测试并行执行时也不会与其他用例共享计数器。
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        static QUOTA: Quota = Quota {
+            active: &ACTIVE,
+            limit: 3,
+            busy: "测试任务过多",
+        };
+
+        let held: Vec<QuotaGuard> = (0..3).map(|_| QUOTA.acquire().expect("配额内应可用")).collect();
+        let barrier = Arc::new(Barrier::new(9)); // 8 个竞争线程 + 主线程
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    QUOTA.acquire().map(|_| ())
+                })
+            })
+            .collect();
+        barrier.wait();
+        for handle in handles {
+            let result = handle.join().expect("竞争线程不应 panic");
+            assert!(
+                matches!(result, Err(AppError::Overloaded(_))),
+                "满额后并发请求必须被明确拒绝，实际: {result:?}"
+            );
+        }
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), 3, "拒绝不得改变已占用配额");
+
+        drop(held);
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0, "全部归还后计数必须归零");
+        assert!(QUOTA.acquire().is_ok(), "配额归还后必须恢复可获取");
+    }
+
+    /// 后台任务 panic 展开时，配额仍必须归还，不能永久占死。
+    #[test]
+    fn quota_is_released_when_holder_panics() {
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        static QUOTA: Quota = Quota {
+            active: &ACTIVE,
+            limit: 1,
+            busy: "测试任务过多",
+        };
+
+        let result = std::thread::spawn(|| {
+            let _slot = QUOTA.acquire().expect("唯一配额应可用");
+            panic!("模拟后台任务 panic");
+        })
+        .join();
+        assert!(result.is_err(), "线程应因 panic 结束");
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0, "panic 展开后配额必须归还");
+        assert!(QUOTA.acquire().is_ok(), "panic 后必须能重新获取配额");
+    }
+
+    /// 批量状态语义与 200 条上限：保留输入顺序，存在的报 ok、缺失的报 missing。
+    #[test]
+    fn path_states_keeps_order_and_truncates_to_200() {
+        let dir = TempDir::new("path-status");
+        let existing = dir.path.join("exists.png");
+        std::fs::write(&existing, b"x").expect("写入测试文件");
+        let existing = existing.display().to_string();
+        let missing = dir.path.join("missing.png").display().to_string();
+
+        let states = path_states(vec![
+            format!("  {existing}  "), // 前后空白应被裁剪
+            missing.clone(),
+        ]);
+        assert_eq!(states, vec!["ok".to_string(), "missing".to_string()]);
+
+        // 超过 200 条只处理前 200 条（防止滥用），且前两条语义不变。
+        let mut paths = vec![existing, missing];
+        paths.extend((0..204).map(|i| format!(r"C:\definitely-missing-{i}.png")));
+        assert_eq!(paths.len(), 206);
+        let states = path_states(paths);
+        assert_eq!(states.len(), 200, "超过上限必须截断到 200 条");
+        assert_eq!(states[0], "ok");
+        assert_eq!(states[1], "missing");
     }
 }

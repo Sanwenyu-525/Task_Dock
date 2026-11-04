@@ -41,8 +41,10 @@ pub struct DiscoveredAgent {
     pub transport_verified: bool,
     pub real_event_seen: bool,
     pub last_event_at: Option<String>,
+    /// 宿主真实触发（origin='real'）的最近事件；自测/手动 POST 不计入
+    pub last_real_event_at: Option<String>,
     /// disabled | recent-event | recent-unconfigured | stale | transport-verified |
-    /// awaiting-first-event | history-only | no-events | unregistered
+    /// self-test-only | awaiting-first-event | no-events | unregistered
     pub health_state: String,
     /// disabled | recent-event | channel-verified | unknown（不断言实时在线）
     pub connection_state: String,
@@ -158,6 +160,10 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
                 .get("last_event_at")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            last_real_event_at: health
+                .get("last_real_event_at")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
             health_state: health
                 .get("state")
                 .and_then(|v| v.as_str())
@@ -206,6 +212,10 @@ pub fn scan_all(db: &Db) -> Vec<DiscoveredAgent> {
             .unwrap_or(false),
         last_event_at: health
             .get("last_event_at")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        last_real_event_at: health
+            .get("last_real_event_at")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         health_state: health

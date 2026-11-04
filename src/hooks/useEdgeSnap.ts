@@ -1247,12 +1247,20 @@ export function useEdgeSnap(enabled: boolean) {
           } else if (leftSince === null) {
             leftSince = now;
           }
-          // 菜单/对话框交互中不收起。注意胶囊面板自己也会注册一层（Esc 只收面板），
-          // 那不属于「用户正在弹层里交互」——用 hasAutoHideBlockingOverlay 排除它，
-          // 否则自动收起永远不触发，面板会一直悬在轨道上方。
+          // 展开态（docked-revealed）改为**用户主动关闭**：面板承载任务、Agent 状态、
+          // 剪贴板这类需要持续查看的内容，鼠标移出、焦点切到别的应用或长时间无操作
+          // 都不得自动收起；关闭只经由重复点当前分类 / 收起按钮 / Escape。
+          // 折叠态轨道（docked-visible）保留原有「空闲收成触发条」行为，避免窗口
+          // 一直露在屏幕上（用户主动收起后仍保持折叠）。
+          // 菜单/对话框交互中同样不收起（hasAutoHideBlockingOverlay 只对折叠态生效）。
           const overlayOpen = hasAutoHideBlockingOverlay();
-          if (!inZone && !overlayOpen && shouldHideAfterLeave(leftSince, now)) {
-            await collapseToRail(true); // 收起面板，回到轨道常驻
+          if (
+            machine.phase === "docked-visible" &&
+            !inZone &&
+            !overlayOpen &&
+            shouldHideAfterLeave(leftSince, now)
+          ) {
+            await collapseToRail(true); // 折叠态空闲：收成触发条
             return;
           }
           // 沿边重定位：停靠期窗口可沿边滑动，松手后把沿边位置写回基准。

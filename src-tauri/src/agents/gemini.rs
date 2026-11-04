@@ -72,6 +72,7 @@ pub fn adapter() -> HooksAdapter {
         events: supported_events,
         detect_impl,
         hook_command: super::hooks_install::hook_command,
+        layout: super::hooks_install::HooksLayout::Flat,
         limitations: vec![
             "Gemini CLI 与 Gemini IDE 插件形态不同，本适配器只覆盖 CLI 配置".into(),
             "配置写入成功 ≠ 事件已到达；真实会话接入以非自测事件为准".into(),

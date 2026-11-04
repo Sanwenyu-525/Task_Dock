@@ -586,22 +586,27 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
   {
     id: "agent.zcode-integration",
     category: "agent",
-    title: "ZCode 自动接入完善",
-    description: "完善 ZCode 的发现、桥接与插件自动注册验证。",
+    title: "ZCode 官方 Hooks 接入",
+    description: "通过 ZCode 用户级配置式 Hooks 读取真实执行状态。",
     detail:
-      "ZCode 当前支持发现（~/.zcode + Programs + 进程检测）与通用桥接（HTTP / 文件投递，source_id=zcode）。因无公开 hooks 文档且第三方本地注册插件风险高，采取不自动安装策略；真实执行状态无法读取时如实显示「未知」。",
+      "ZCode 支持用户级配置式 hooks（~/.zcode/cli/config.json → hooks.events，需 hooks.enabled=true）。Task Dock 在 Agent 页安装时写入 7 个生命周期事件（SessionStart / UserPromptSubmit / PreToolUse / PermissionRequest / PostToolUse / PostToolUseFailure / Stop），并保留用户已有的 mcp / plugins / 第三方 hooks；卸载只移除自身条目。首次安装后需新开 ZCode 会话，已打开的会话不会热加载。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
-      "发现：配置根 + Programs 目录 + 进程检测",
-      "通用桥接：HTTP / 文件投递（source_id=zcode）",
+      "发现：配置根 ~/.zcode/cli + Programs(ZCode) + 进程检测",
+      "官方配置式 Hooks：7 个事件自动安装/卸载，安装时自动启用 hooks.enabled",
+      "嵌套 hooks.events 写入、备份、失败回滚与第三方条目保留",
     ],
     missingFeatures: [
-      "插件市场自动注册的验证链路",
-      "真实执行状态读取（当前显示「未知」）",
+      "真实 ZCode 会话事件的端到端真机验证（需安装后新开会话，当前尚未执行）",
     ],
-    dependencies: ["ZCode 插件机制公开文档或稳定接口"],
-    acceptanceCriteria: ["真实事件经桥接进入管线并验证", "不自动写入第三方配置"],
+    dependencies: ["ZCode 用户级 config.json hooks 机制"],
+    acceptanceCriteria: [
+      "安装后新开 ZCode 会话，SessionStart / UserPromptSubmit / Stop 等真实事件进入有界管线",
+      "Agent 页显示真实执行状态，无事件时如实显示「未知」",
+      "卸载后仅移除 Task Dock 条目，用户 hooks 与 mcp/plugins 配置保持原样",
+    ],
+    entryPoints: ["Agent → ZCode 卡片 → 接入 / 验证 / 卸载"],
     verification: "unverified",
   },
   {

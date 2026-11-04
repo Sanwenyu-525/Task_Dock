@@ -219,3 +219,57 @@ v0.7 在原有三维（预设 / 明暗 / 材质）之上只新增**高度维度*
 
 验收边界：浏览器 harness 与真实 Tauri 窗口截图只能证明各自层级；
 受控背景像素分析与胶囊状态机回归须在无并发实例、无其他置顶窗口的会话中单独执行。
+
+## 8. 2026-11-04 视觉预设收口（配置层）
+
+> 本节只描述枚举、默认值、兼容与迁移；对应 CSS/视觉重做由后续任务承担，
+> 第 7 章关于 `liquid-glass` / `clear` 的样式描述作为历史记录保留。
+
+### 8.1 最终模型
+
+- 视觉预设只保留 **`frosted`（默认）** 与 **`dream-gradient`（可选）**；
+  `liquid-glass`、`clear` 不再出现在设置入口，也不接受新写入。
+- 三轴仍然正交，**不合并成一个枚举**：
+  - 视觉预设 `visual_preset`：`frosted | dream-gradient`；
+  - 明暗 `theme`：`light | dark | system`；
+  - 窗口材质 `material`：`glass | solid`（降级/回退逻辑不变）。
+- 前后端同一清单：`src/lib/theme.ts` 的 `VISUAL_PRESETS` / `DEFAULT_VISUAL_PRESET`
+  与 Rust `db::default_visual_preset()` / `db::normalized_visual_preset()` 保持一致。
+
+### 8.2 兼容映射（读写两侧）
+
+| 输入/存量值 | 结果 |
+|---|---|
+| `frosted` | `frosted` |
+| `dream-gradient` | `dream-gradient` |
+| `liquid-glass` | `frosted` |
+| `clear` | `frosted` |
+| 缺失 / 损坏 / 非法 | `frosted` |
+
+- 读侧：`Settings::load` 在反序列化后归一化 `visual_preset`（只改内存，不写库），
+  覆盖旧库、旧备份恢复、损坏 JSON 等路径；前端 `resolveVisualPreset()` 做同样的 DOM 兜底。
+- 写侧：`update_settings` 入库前把历史值映射为 `frosted`；前端 `update()` 同样先归一，
+  因此旧调用方传 `liquid-glass` / `clear` 不会写入非法值；真正的未知值仍由校验拒绝。
+
+### 8.3 迁移
+
+- 新增 SQLite 迁移 **v29**（`MIGRATIONS` 末尾追加，未改动已发布迁移）：
+  `UPDATE application_settings SET value = '"frosted"'
+   WHERE key = 'visual_preset' AND value IN ('"liquid-glass"', '"clear"')`。
+- 幂等：只命中两个历史值，重复执行无新增写入；只改该键的 `value`，不重置
+  `theme` / `material` 等其他设置，不触碰任务 / Agent / 剪贴板数据。
+- 圆角：`frosted` 20 / `dream-gradient` 18（与 `PRESET_WINDOW_RADIUS`、Rust 下发值一致）。
+
+### 8.4 `clear_foreground` 废弃
+
+- 清透预设下线后 `clear_foreground` 不再是可读维度：前端不再读取、也不再写
+  `html[data-clear-fg]`；`SettingsPanel` 移除「清透前景」入口。
+- 键仍保留在 `Settings` 与 `ALLOWED_KEYS` 中（兼容旧前端/旧备份），**不做破坏性迁移**；
+  旧值原样保留，不影响当前渲染。
+
+### 8.5 原生层
+
+- `apply_material_to_window` 不再按预设名分支：两套预设共用 `effective_backend`
+  （Win11 + 区域裁剪 → CSS 玻璃，Win10 → Acrylic）。
+  窗口透明、`SetWindowRgn` 圆角、贴边吸附与胶囊停靠恢复行为均未改变。
+- `liquid-glass` / `clear` 的旧分支（只存在于预设判断处）删除；`preset` 参数保留以维持调用契约。

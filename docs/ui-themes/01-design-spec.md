@@ -466,3 +466,90 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 均 ≥92%）才能挡住穿过它滚动的卡片。不要用 `backdrop-filter` 代替遮挡：它让每个常驻吸顶行
 多一层 GPU 模糊，且在 `material-solid` 下语义错误。吸顶行需要全出血时用负 `margin` +
 等值负 `top`，并只写一次 `padding`。
+
+---
+
+## 14. 全局卡片基础表面 · surface-card（2026-11-04 追加）
+
+把「一套卡面」从各页面收回到 theme 层：页面只保留信息结构、尺寸与状态色。
+`.task-card` 不删除、不批量改引用，作为兼容别名并入基础规则。
+
+### 14.1 三层职责
+
+| 层 | 类 / Token | 负责 | 不负责 |
+| --- | --- | --- | --- |
+| 基础 | `.surface-card` | `--radius-card`、`--card-face`、`--card-shadow`（顶部内高光 / 底部沉降 / 1px 边缘反射）、默认过渡 | 高度、内边距、布局、是否可点击 |
+| 方案 D 变体 | `.surface-card--task` | 在卡面上叠加静态流线高光 `--task-flow`，只给任务 / 规划族 | 不默认下发给其它卡片 |
+| 交互变体 | `.surface-card--interactive` | 真·整卡可点击：`cursor`、hover 阴影 + 1px 抬升、键盘焦点 outline；离开动画（`.leaving` / `.is-leaving`）期间不位移 | 不改变选中态 |
+| 交互变体 | `.surface-card--selected` | 真选中：`--accent-soft` 衬底 + `0 0 0 1px var(--accent)` 识别环，深度保持默认值 | 不覆盖业务状态色 |
+
+基础类不写 `height / padding / overflow / display`，所以同一材质可以服务应用瓦片，也可以
+服务多行历史卡：**统一材质 ≠ 统一尺寸**，卡片间距、列数与按钮布局仍按各自页面。
+
+### 14.2 新页面接入方式
+
+1. 卡根节点追加 `.surface-card`，删掉自己的 `border-radius / background / border / box-shadow`；
+2. 整卡可点击 → 再加 `--interactive`；整卡不可点（按钮都在卡内）→ 只留基础类，不伪造 hover 抬升；
+3. 可选中 → 选中时追加 `--selected`，与 hover 分开表达；原 `selected` 业务类可保留作状态钩子；
+4. 只有任务 / 规划族用 `--task`，其它卡片保持纯玻璃卡面；
+5. 卡自身的 `padding / gap / flex / 状态色 / 动画生命周期` 继续留在业务选择器里。
+
+### 14.3 历史日期分组（吸顶标签）
+
+日期分组统一为**居中文字 + 两侧 1px 细线**的分隔形态（今天 / 近 3 天 / 近 7 天 / 具体日期同一套）：
+
+- `.history-day-label` 是 `sticky; top: 0` 的 flex 行，`::before` / `::after` 各为一条
+  `flex: 1 1 0`、`height: 1px`、`background: var(--border-subtle)` 的细线，等长延展到容器左右边缘，
+  与文字垂直居中对齐（`align-items: center`）；文字左右各留 10px 间距。
+- 标签容器**不铺整行底色**；只有文字块 `.history-day-label-text` 带局部淡染底
+  （`--clip-detail-face` 掺 10% `--accent`，两端均不透明，结果仍不透明）与 5px 圆角。
+  吸顶时卡片从细线区与文字块旁穿行，只有文字那一小块遮住内容，仍清晰可读。
+- 不引入 `backdrop-filter`；`--surface-base` / `--surface-overlay` 分别是 `<image>` 与带 alpha 的
+  颜色，不能拿来当吸顶底。
+- 标签容器 `pointer-events: none`、文字块 `pointer-events: auto`：细线所在的透明带不拦截指针，
+  卡片从标签下方滚过时 hover / 点击 / 焦点反馈不被吸顶遮挡挡掉。
+- 320 窄窗下文字块允许收缩换行（`flex: 0 1 auto; min-width: 0`），细线保留 `min-width: 12px`，
+  不会被长日期文案挤没。
+
+### 14.4 状态语义边界（不合并成 `.active`）
+
+| 语义 | 载体 |
+| --- | --- |
+| 优先级 / 逾期 | `.priority-tag`、`.task-due`（P0–P3 标签与文字色） |
+| 历史未读 | `.history-unread-dot` 标题行首小圆点；不再用左侧色条（那是优先级语义） |
+| 历史 hover | `.history-item:hover` 只做轻阴影 + 1px 低对比内描边，`transform: none`；列表阅读锚点不随悬停位移 |
+| 暂存架勾选 / 笔记当前项 | `.surface-card--selected` 识别环 |
+| 剪贴板选中 / 按下 / 删除 | 专用 `--clip-*` 材质，不走通用 `--selected` |
+| 项目识别 / Agent 运行状态 / 工作流禁用 | 各自专用 class，保持原语义 |
+
+### 14.5 保留专用材质（不迁移）
+
+- **剪贴板** `.clip-item / .clip-group-card`：方向性高光、按下、选中、离场动画是一套专用设计，
+  只共享圆角 / 阴影 Token，不接通用交互变体。
+- **工具面板** `.clip-selectbar`、`.shelf-selectbar`、`.shelf-detail`、`.clip-detail-head`、
+  `.picker-*`：工具 / 浮层表面，不是内容卡。
+- **容器与装饰**：`.planning-project-list`（滚动容器）、`.planning-project-hero`（项目色叠层）、
+  `.planning-project-item.is-active`（accent 渐变识别）。
+- **控件**：`.preset-card`、`.manual-add-form`、`.app-*` 设置控件按控件规范。
+- **应用瓦片** `.apps-tile`：归属应用卡片会话的独立瓦片，本轮不改。
+
+### 14.6 已知限制
+
+`--focus-ring` 内引用 `--surface-base`，而后者在预设下是渐变（`<image>`），
+`box-shadow: var(--focus-ring)` 会在计算值阶段整条失效。新增的 `.surface-card--interactive`
+改用 `outline: 2px solid var(--accent)` 保证键盘焦点可见；旧 `.task-card:focus-visible`
+未改，后续统一焦点环时应改用 `<color>` 版本 Token。
+
+### 14.7 本轮接入清单（2026-11-04）
+
+| 模块 | 接入方式 | 保留的独立部分 |
+| --- | --- | --- |
+| 历史卡 `.history-item` | `surface-card` + `surface-card--interactive` | 事件类型 / 通知类型 / 时间 / 未读圆点 / 展开详情 |
+| 收集箱 `.inbox-item` | `surface-card` | `.is-done` 弱化状态与信息结构 |
+| 文件暂存 `.shelf-item` | `surface-card`；选中时 `surface-card--selected` | `.missing`、固定 / 收藏 / 来源徽标；拖拽与详情面板 |
+| 笔记 `.notes-item` | `surface-card` + `surface-card--interactive`；当前项 `--selected` | 列表宽度、标题截断、摘要行 |
+| 微件 `.widget-card` | `surface-card`（不接 `--interactive`） | 拖拽 / 尺寸网格 / 卡内控件 |
+| Agent 来源 `.discovery-card` | `surface-card` | `.not-installed` 状态与来源说明布局 |
+
+未接入：`.apps-tile`（应用卡片会话归属）、`.overview-card`（统计卡尺寸与布局差异大）、
+`.planning-project-*`（容器 / 色叠层 / accent 渐变识别）、`.preset-card` 与表单控件（控件层）。

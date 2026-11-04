@@ -6,7 +6,8 @@
 //! 列表，主窗口与胶囊因此只有一个状态源。
 //!
 //! 分段查询对应关系：待办=status=pending；今日=后端 view=due_today（本地今天
-//! 到期且未完成）；日程=后端 view=scheduled（due_at 非空且未完成）；已完成=
+//! 到期且未完成）；日程=后端 view=scheduled（due_at 非空且未完成）并按
+//! sort=scheduled 把未逾期/未来任务排在逾期之前（成员不变，仅顺序）；已完成=
 //! status=completed 按完成时间倒序；全部=最近创建的真实任务。**后端先按真实
 //! 条件过滤、排序，最后 LIMIT 12**，前端不做「前 12 条再筛」的二次截断——
 //! 否则 20 条逾期任务会把今天到期的任务挤出结果，面板误显示为空。
@@ -144,7 +145,13 @@ export default function TasksLite() {
     // 分段范围与已取回数据不一致时视为读取中：不拿旧范围的列表冒充新分段
     if (!items || liteScope !== scopeOf(filter)) return null;
     // 范围已由后端查询表达（过滤 + 排序 + LIMIT），面板只负责展示排序与移出动画。
-    const pendingList = sortPending(items.filter((t) => t.status !== "completed"));
+    // 「日程」保留后端 sort=scheduled 的「未来优先、逾期置后」顺序；其余分段
+    // 仍用本地 sortPending（逾期优先）。本地再按逾期优先排会把后端已排好的
+    // 未来计划重新压回逾期后面，等于抵消查询修复。
+    const pendingList =
+      filter === "scheduled"
+        ? items.filter((t) => t.status !== "completed")
+        : sortPending(items.filter((t) => t.status !== "completed"));
     const doneList = items
       .filter((t) => t.status === "completed")
       .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));

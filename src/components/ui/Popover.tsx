@@ -18,6 +18,7 @@ import {
 } from "@floating-ui/react";
 import {
   useId,
+  useEffect,
   useLayoutEffect,
   useRef,
   type CSSProperties,
@@ -104,7 +105,13 @@ export default function Popover({
     },
     middleware: [
       offset(offsetPx),
-      flip({ padding: 8, fallbackAxisSideDirection: flipToSide ? "start" : "none" }),
+      flip({
+        padding: 8,
+        // 保持调用方指定的左右对齐（默认右对齐），横向越界交给 shift 内收，
+        // 避免 flip 把右对齐改成左对齐、引起浮层横向跳动。
+        flipAlignment: false,
+        fallbackAxisSideDirection: flipToSide ? "start" : "none",
+      }),
       shift({ padding: 8, crossAxis: true }),
       size({
         padding: 8,
@@ -131,10 +138,39 @@ export default function Popover({
       // Escape 由全局弹层栈统一分发（见 lib/overlayStack），这里关掉避免双重消费
       escapeKey: false,
       referencePress: false,
-      outsidePress: (event) =>
-        dismissOnOutsidePress && !anchorRef.current?.contains(event.target as Node),
+      // 外部点击关闭改由下方原生监听统一处理：floating-ui 的 outsidePress 在
+      // React 事件代理与 WebView2 下可能被吞掉，导致「只能再点按钮才收起」。
+      outsidePress: false,
     }),
   ]);
+
+  // 外部点击 / 外部滚动 / 窗口失焦统一关闭本层。
+  // 用捕获阶段监听，避免设置行、折叠头等 React 处理器调用 stopPropagation 后
+  // 文档级监听收不到事件；浮层本身与触发按钮内的交互不关闭。
+  useEffect(() => {
+    if (!open || !dismissOnOutsidePress) return;
+    const isInside = (target: EventTarget | null) =>
+      !!target &&
+      ((hostRef.current?.contains(target as Node) ?? false) ||
+        (anchorRef.current?.contains(target as Node) ?? false));
+    const onPointerDown = (event: PointerEvent) => {
+      if (!isInside(event.target)) onOpenChange(false);
+    };
+    // 捕获阶段能拿到不冒泡的滚动事件；浮层内部列表滚动不关闭。
+    const onScroll = (event: Event) => {
+      if (!isInside(event.target)) onOpenChange(false);
+    };
+    // 点击落在 WebView 之外时页面收不到指针事件，只能靠窗口失焦兜底。
+    const onBlur = () => onOpenChange(false);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("scroll", onScroll, true);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [open, dismissOnOutsidePress, onOpenChange, anchorRef]);
 
   // 关闭后焦点回到触发它的元素
   useFocusRestore(open && restoreFocus);

@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   RefreshCw, Power, PowerOff, ExternalLink, Copy, CheckCircle2, AlertTriangle,
   ShieldQuestion, ListChecks, Radar, PlugZap, Trash2, Plus, ChevronRight, ChevronDown,
-  Activity, X, Eye, EyeOff, CircleSlash, MonitorUp, BarChart3,
+  Activity, X, Eye, EyeOff, CircleSlash, MonitorUp, BarChart3, Search,
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import {
@@ -21,30 +21,58 @@ import {
 } from "../../lib/bridge";
 import { navAgentAction, navAgentCapabilities, type AgentNavCapabilities } from "../../lib/navigation";
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { errorMessage } from "../../lib/errors";
 import { useUiStore } from "../../store/useUiStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useTasksStore } from "../../store/useTasksStore";
-import { AGENT_STATE_LABELS, formatBetween, formatRelative } from "../../lib/format";
+import { AGENT_STATE_LABELS, formatBetween, formatDue, formatRelative } from "../../lib/format";
 import { buildTree, liveSummary, type TreeAgent, type TreeSession } from "../../lib/agentTree";
 import { copyText } from "../../lib/clipboard";
 import { reportError } from "../../lib/errorReport";
 import AgentStatsView from "./stats/AgentStatsView";
 
+// 徽标只描述「接入证据强度」，不把已安装 / 已配置 / 验证通过 / 已连接混为一谈。
+// 文案尽量短，窄卡片下优先让徽标换行，而不是挤压 Agent 名称。
 const HEALTH_LABELS: Record<string, string> = {
-  live: "已连接 · 事件实时",
-  "recent-event": "已验证 · 最近有真实事件",
-  "recent-unconfigured": "曾有真实事件 · 当前未配置",
+  live: "已连接 · 实时",
+  "recent-event": "最近有真实事件",
+  "recent-unconfigured": "曾有真实事件 · 未配置",
   stale: "状态已过期",
   "transport-verified": "通道已验证 · 待真实事件",
-  "awaiting-first-event": "已配置 · 待事件验证",
+  "awaiting-first-event": "已配置 · 待真实事件",
+  // 只有自测/旧版本写入的 verified 位，没有任何 origin=real 事件
+  "self-test-only": "仅自测通过 · 待真实事件",
   "history-only": "历史接入记录",
   "no-events": "未收到事件",
   disabled: "已禁用",
   unregistered: "未注册",
 };
 
+/** 展开区的完整状态解释：只说证据，不推断在线。 */
+const HEALTH_DETAILS: Record<string, string> = {
+  live: "已连接并在时效窗口内持续收到宿主真实事件",
+  "recent-event": "在时效窗口内收到过宿主真实事件",
+  "recent-unconfigured": "在时效窗口内收到过真实事件，但当前未写入 Task Dock 配置",
+  stale: "曾收到真实事件，但已超出时效窗口，不代表当前仍连接",
+  "transport-verified": "自测事件已写入数据库，尚未收到宿主真实事件",
+  "awaiting-first-event": "接入配置已写入，但尚未收到任何事件",
+  "self-test-only": "仅有自测或旧版验证记录，没有宿主真实事件",
+  "history-only": "仅有历史接入记录，当前无可用证据",
+  "no-events": "未收到任何事件，接入状态未知",
+  disabled: "来源已禁用，不再接收事件",
+  unregistered: "尚未注册到 Task Dock",
+};
+
+/** 名称 / source_id 子串匹配：大小写不敏感、中文按连续子串、忽略首尾空格。 */
+function matchesSource(query: string, name: string, id: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return `${name} ${id}`.toLowerCase().includes(q);
+}
+
 const KIND_LABELS: Record<string, string> = {
   transport: "官方 Hooks",
+  hooks: "官方 Hooks",
   plugin: "插件桥接",
   discovery: "安装发现",
   manual: "手动",
@@ -84,6 +112,9 @@ export default function AgentPanel() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [section, setSection] = useState<Section>("monitor");
   const [monitorFilter, setMonitorFilter] = useState<(typeof MONITOR_FILTERS)[number]["id"]>("attention");
+  // 两处搜索状态相互独立；只在本已加载的数据上派生，不触发后端扫描。
+  const [monitorQuery, setMonitorQuery] = useState("");
+  const [discoverQuery, setDiscoverQuery] = useState("");
 
   const runScan = useCallback(async () => {
     setScanning(true);
@@ -130,6 +161,8 @@ export default function AgentPanel() {
     focusMissRef.current = 0;
     setSection("monitor");
     setMonitorFilter("all");
+    // 通知定位优先于任何筛选：清空搜索，确保即使当前条件把目标 Agent 过滤掉也能显示。
+    setMonitorQuery("");
     setExpanded((e) => {
       const next: Record<string, boolean> = {
         ...e,
@@ -182,9 +215,28 @@ export default function AgentPanel() {
   );
 
   const visibleAgents = useMemo(() => {
-    if (monitorFilter === "all") return tree;
-    return tree.filter((a) => a.liveState !== "idle");
-  }, [tree, monitorFilter]);
+    return tree.filter((a) => {
+      // 「需关注」只看真实执行状态：软件在运行但未接入不算需要关注
+      if (monitorFilter !== "all" && a.liveState === "idle") return false;
+      return matchesSource(monitorQuery, a.name, a.id);
+    });
+  }, [tree, monitorFilter, monitorQuery]);
+
+  const monitorSearching = monitorQuery.trim().length > 0;
+
+  // 运行监控与「接入管理」共用同一次扫描结果，不额外起第二套发现逻辑
+  const discoveryBySource = useMemo(() => {
+    const m = new Map<string, DiscoveredAgent>();
+    for (const d of scan ?? []) m.set(d.source_id, d);
+    return m;
+  }, [scan]);
+
+  // 接入管理搜索：同样只在本已加载的扫描结果上派生，扫描按钮才是唯一的数据更新入口。
+  const visibleSources = useMemo(
+    () => (scan ?? []).filter((d) => matchesSource(discoverQuery, d.display_name, d.source_id)),
+    [scan, discoverQuery],
+  );
+  const discoverSearching = discoverQuery.trim().length > 0;
 
   // ── 向导动作 ──
   async function openWizard(agent: DiscoveredAgent) {
@@ -193,7 +245,7 @@ export default function AgentPanel() {
       const preview = await adapterPreview(agent.source_id);
       setWizard((w) => (w ? { ...w, preview } : w));
     } catch (e) {
-      setWizard((w) => (w ? { ...w, error: String(e) } : w));
+      setWizard((w) => (w ? { ...w, error: errorMessage(e) } : w));
     }
   }
   async function wizardInstall() {
@@ -206,7 +258,7 @@ export default function AgentPanel() {
       setWizard((w) => (w ? { ...w, step: "result", result: { install: result, verify } } : w));
       await Promise.all([runScan(), load()]);
     } catch (e) {
-      setWizard((w) => (w ? { ...w, step: "result", error: String(e) } : w));
+      setWizard((w) => (w ? { ...w, step: "result", error: errorMessage(e) } : w));
     }
   }
   async function wizardUninstall(agentId: string) {
@@ -215,20 +267,23 @@ export default function AgentPanel() {
       showToast("已卸载 Task Dock 写入的配置（第三方配置保留）", { kind: "success" });
       await Promise.all([runScan(), load()]);
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`卸载 Agent 配置失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
   async function reVerify(agentId: string) {
     try {
       const r = await adapterVerify(agentId);
       const ok = (r as { ok?: boolean }).ok;
+      // 自测事件 ≠ 宿主真实事件：文案必须区分，不能显示成「接入成功」
       showToast(
-        ok ? "链路验证通过：测试事件已抵达数据库" : `验证未通过：${(r as { reason?: string }).reason ?? "未知原因"}`,
+        ok
+          ? "自测链路通过：测试事件已写入数据库（不代表宿主已产生真实事件）"
+          : `验证未通过：${(r as { reason?: string }).reason ?? "未知原因"}`,
         { kind: ok ? "success" : "error" },
       );
       await Promise.all([runScan(), load()]);
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`重新验证 Agent 失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -341,6 +396,33 @@ export default function AgentPanel() {
                 </button>
               ))}
             </div>
+            <div className="search-box agents-search">
+              <Search size={12} aria-hidden="true" />
+              <input
+                className="input-embedded"
+                aria-label="搜索 Agent 名称或来源 ID"
+                placeholder="搜索名称 / ID"
+                value={monitorQuery}
+                onChange={(e) => setMonitorQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    // stopPropagation：别让 Escape 冒泡到窗口级「隐藏到托盘」
+                    e.stopPropagation();
+                    setMonitorQuery("");
+                  }
+                }}
+              />
+              {monitorSearching && (
+                <button
+                  className="icon-btn sm"
+                  data-tip="清空搜索"
+                  aria-label="清空搜索"
+                  onClick={() => setMonitorQuery("")}
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
             <span className="flex-spacer" />
             <button className="btn sm" onClick={load} title="重新加载快照">
               <RefreshCw size={12} /> 刷新
@@ -351,11 +433,15 @@ export default function AgentPanel() {
           {visibleAgents.length === 0 && (
             <div className="empty-state">
               <div className="empty-icon"><AgentIcon size={22} /></div>
-              <div className="empty-title">没有需要关注的 Agent</div>
+              <div className="empty-title">
+                {monitorSearching ? "没有匹配的 Agent" : "没有需要关注的 Agent"}
+              </div>
               <div className="empty-hint">
-                {monitorFilter === "attention"
-                  ? "各 Agent 空闲中；接入后真实事件到达会自动出现在这里"
-                  : "尚无 Agent 会话；到「接入管理」接入第一个 Agent"}
+                {monitorSearching
+                  ? `没有名称或来源 ID 匹配「${monitorQuery.trim()}」；清空搜索可恢复${monitorFilter === "attention" ? "「需关注」" : "「全部」"}范围内的结果`
+                  : monitorFilter === "attention"
+                    ? "各 Agent 空闲中；接入后真实事件到达会自动出现在这里"
+                    : "尚无 Agent 会话；到「接入管理」接入第一个 Agent"}
               </div>
             </div>
           )}
@@ -368,6 +454,16 @@ export default function AgentPanel() {
                 setExpanded={setExpanded}
                 onPendingToTasks={onPendingToTasks}
                 showToast={showToast}
+                discovery={discoveryBySource.get(agent.id)}
+                onConnect={
+                  discoveryBySource.has(agent.id)
+                    ? () => {
+                        const d = discoveryBySource.get(agent.id)!;
+                        setSection("onboard");
+                        void openWizard(d);
+                      }
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -382,94 +478,63 @@ export default function AgentPanel() {
           <div className="panel-block">
             <div className="panel-block-head">
               <span><Radar size={12} /> Agent 自动发现</span>
+            </div>
+            {/* 工具栏：宽时并排，窄时搜索框占满一行、扫描按钮换行，不互相挤压 */}
+            <div className="agents-toolbar">
+              <div className="search-box agents-search">
+                <Search size={12} aria-hidden="true" />
+                <input
+                  className="input-embedded"
+                  aria-label="搜索 Agent 名称或来源 ID"
+                  placeholder="搜索名称 / source_id"
+                  value={discoverQuery}
+                  onChange={(e) => setDiscoverQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      setDiscoverQuery("");
+                    }
+                  }}
+                />
+                {discoverSearching && (
+                  <button
+                    className="icon-btn sm"
+                    data-tip="清空搜索"
+                    aria-label="清空搜索"
+                    onClick={() => setDiscoverQuery("")}
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
               <button className="btn sm" onClick={runScan} disabled={scanning}>
-                <RefreshCw size={12} className={scanning ? "spin" : ""} /> {scanning ? "扫描中…" : "扫描"}
+                <RefreshCw size={12} className={scanning ? "spin" : ""} />{" "}
+                {scanning ? "扫描中…" : "扫描"}
               </button>
             </div>
             {scan === null && <div className="empty-hint">扫描中…</div>}
             {scan !== null && scan.length === 0 && (
               <div className="empty-hint">未发现已安装的 Agent；可先安装 Codex / Trae 等后重新扫描</div>
             )}
-            {scan !== null && (
+            {scan !== null && scan.length > 0 && visibleSources.length === 0 && (
+              <div className="empty-hint">
+                没有名称或 source_id 匹配「{discoverQuery.trim()}」；清空搜索可显示全部 {scan.length} 个来源
+              </div>
+            )}
+            {visibleSources.length > 0 && (
               <div className="discovery-grid">
-                {scan.map((a) => (
-                  <div key={a.source_id} className={`discovery-card ${a.installed ? "" : "not-installed"}`}>
-                    <div className="source-head">
-                      <span className="source-name"><AgentIcon size={13} /> {a.display_name}</span>
-                      <span className={`health-badge h-${a.health_state}`}>
-                        {a.verified ? <CheckCircle2 size={11} /> : a.health_state === "no-events" ? <ShieldQuestion size={11} /> : <Activity size={11} />}
-                        {HEALTH_LABELS[a.health_state] ?? a.health_state}
-                      </span>
-                    </div>
-                    {/* 描述区固定高度：文案长短不再影响动作区位置；超出时内部滚动（滚动条隐藏） */}
-                    <div
-                      className="discovery-body"
-                      tabIndex={0}
-                      role="region"
-                      aria-label={`${a.display_name} 来源描述（可滚动）`}
-                    >
-                      <div className="discovery-facts">
-                        <span>{a.installed ? `已安装${a.version ? ` · ${a.version.slice(0, 24)}` : ""}` : "未安装"}</span>
-                        <span>运行实例 {a.running_instances.length}</span>
-                        <span>{KIND_LABELS[a.transport_kind] ?? a.transport_kind}</span>
-                      </div>
-                      <div className="discovery-events">
-                        {a.supported_events.length > 0
-                          ? `事件：${a.supported_events.slice(0, 5).join(" / ")}${a.supported_events.length > 5 ? " …" : ""}`
-                          : a.transport_kind === "discovery" ? "无自动事件通道（进程识别）" : "通用 HTTP / 文件"}
-                      </div>
-                      <div className="discovery-last">
-                        {a.last_event_at ? `最近事件 ${formatRelative(a.last_event_at)}` : "尚无事件证据（状态未知，不推断）"}
-                      </div>
-                    </div>
-                    <div className="source-actions">
-                      {/* 接入/禁用为核心操作：同一行不换行；宽卡片下均为「图标 + 文字」，
-                          窄卡片下统一收成纯图标，避免两者形态不对称 */}
-                      <div className="source-actions-core">
-                        {a.transport_kind !== "manual" && a.transport_kind !== "discovery" && (
-                          <button
-                            className="btn sm primary"
-                            aria-label={`${a.configured ? "重新接入" : "接入"} ${a.display_name}`}
-                            data-tip={a.configured ? "重新接入该来源" : "接入该来源"}
-                            onClick={() => openWizard(a)}
-                            disabled={!a.installed}
-                          >
-                            <PlugZap size={12} />
-                            <span className="source-action-label">{a.configured ? "重新接入" : "接入"}</span>
-                          </button>
-                        )}
-                        {a.registered && (
-                          <button
-                            className={`btn sm source-action-toggle ${a.enabled ? "" : "primary"}`}
-                            aria-label={`${a.enabled ? "禁用" : "启用"} ${a.display_name}`}
-                            data-tip={a.enabled ? "禁用该来源" : "启用该来源"}
-                            onClick={async () => {
-                              try {
-                                await setSourceEnabled(a.source_id, !a.enabled);
-                                await Promise.all([runScan(), load()]);
-                              } catch (e) {
-                                showToast(String(e), { kind: "error" });
-                              }
-                            }}
-                          >
-                            {a.enabled ? <PowerOff size={12} /> : <Power size={12} />}
-                            <span className="source-action-label">{a.enabled ? "禁用" : "启用"}</span>
-                          </button>
-                        )}
-                      </div>
-                      {a.configured && a.transport_kind !== "manual" && (
-                        <div className="source-actions-aux">
-                          <button className="btn sm" onClick={() => reVerify(a.source_id)}>验证</button>
-                          <button className="btn sm" onClick={() => wizardUninstall(a.source_id)}>卸载钩子</button>
-                        </div>
-                      )}
-                    </div>
-                    {a.limitations.length > 0 && (
-                      <div className="discovery-limits" title={a.limitations.join("\n")}>
-                        <AlertTriangle size={10} /> {a.limitations[0]}
-                      </div>
-                    )}
-                  </div>
+                {visibleSources.map((a) => (
+                  <SourceCard
+                    key={a.source_id}
+                    agent={a}
+                    onConnect={() => openWizard(a)}
+                    onVerify={() => reVerify(a.source_id)}
+                    onUninstall={() => wizardUninstall(a.source_id)}
+                    onChanged={async () => {
+                      await Promise.all([runScan(), load()]);
+                    }}
+                    showToast={showToast}
+                  />
                 ))}
               </div>
             )}
@@ -516,7 +581,7 @@ export default function AgentPanel() {
               setWizard((w) => (w ? { ...w, step: "result", result: { verify } } : w));
               await Promise.all([runScan(), load()]);
             } catch (e) {
-              setWizard((w) => (w ? { ...w, error: String(e) } : w));
+              setWizard((w) => (w ? { ...w, error: errorMessage(e) } : w));
             }
           }}
           onCancel={async () => {
@@ -524,6 +589,224 @@ export default function AgentPanel() {
             setWizard(null);
           }}
         />
+      )}
+    </div>
+  );
+}
+
+// ── Agent 来源卡 ──
+// 信息三层：默认 = 名称/健康/安装/实例/最近真实事件；动作层 = 接入·验证·启用禁用·详情；
+// 展开层 = 版本/接入方式/Hooks/事件类型/自测证据/限制/卸载。技术细节不铺在默认视图。
+
+function SourceCard({
+  agent,
+  onConnect,
+  onVerify,
+  onUninstall,
+  onChanged,
+  showToast,
+}: {
+  agent: DiscoveredAgent;
+  onConnect: () => void;
+  onVerify: () => Promise<void>;
+  onUninstall: () => Promise<void>;
+  onChanged: () => Promise<void>;
+  showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
+}) {
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [busy, setBusy] = useState<"verify" | "toggle" | "uninstall" | null>(null);
+  const detailId = `agent-source-detail-${agent.source_id}`;
+  const canInstall = agent.transport_kind !== "manual" && agent.transport_kind !== "discovery";
+  const healthLabel = HEALTH_LABELS[agent.health_state] ?? agent.health_state;
+  const healthDetail = HEALTH_DETAILS[agent.health_state] ?? "无额外状态说明";
+  const eventsText =
+    agent.supported_events.length > 0
+      ? agent.supported_events.join(" · ")
+      : agent.transport_kind === "discovery"
+        ? "无自动事件通道（仅进程识别）"
+        : "通用 HTTP / 文件投递";
+  const badgeIcon =
+    agent.health_state === "live" || agent.health_state === "recent-event" ? (
+      <CheckCircle2 size={11} />
+    ) : agent.health_state === "stale" ? (
+      <AlertTriangle size={11} />
+    ) : agent.health_state === "disabled" ? (
+      <CircleSlash size={11} />
+    ) : agent.health_state === "no-events" ||
+      agent.health_state === "unregistered" ||
+      agent.health_state === "history-only" ? (
+      <ShieldQuestion size={11} />
+    ) : (
+      <Activity size={11} />
+    );
+
+  async function toggleEnabled() {
+    setBusy("toggle");
+    try {
+      await setSourceEnabled(agent.source_id, !agent.enabled);
+      await onChanged();
+    } catch (e) {
+      showToast(`更新接入开关失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function verify() {
+    setBusy("verify");
+    try {
+      await onVerify();
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function uninstall() {
+    setBusy("uninstall");
+    try {
+      await onUninstall();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className={`discovery-card surface-card ${agent.installed ? "" : "not-installed"}`}>
+      {/* 名称与徽标都可换行：空间不足时徽标整体换行，不截断名称 */}
+      <div className="source-head">
+        <span className="source-name" data-tip={agent.display_name}>
+          <AgentIcon size={13} /> {agent.display_name}
+        </span>
+        <span className={`health-badge h-${agent.health_state}`} data-tip={healthDetail}>
+          {badgeIcon}
+          {healthLabel}
+        </span>
+      </div>
+
+      {/* 第一层：安装状态 / 运行实例 / 最近真实事件（自然高度，不内部滚动） */}
+      <div className="discovery-body">
+        <div className="discovery-facts">
+          <span>{agent.installed ? "已安装" : "未安装"}</span>
+          <span>运行实例 {agent.running_instances.length}</span>
+          <span className={agent.last_real_event_at ? "fact-strong" : "fact-muted"}>
+            {agent.last_real_event_at
+              ? `最近真实事件 ${formatRelative(agent.last_real_event_at)}`
+              : "尚无真实事件"}
+          </span>
+        </div>
+      </div>
+
+      {/* 第二层：主操作（接入）· 次要（验证）· 启用禁用 · 详情；两两成组，换行时整组下移 */}
+      <div className="source-actions">
+        <div className="source-action-group">
+          {canInstall && (
+            <button
+              className="btn sm primary"
+              aria-label={`${agent.configured ? "重新接入" : "接入"} ${agent.display_name}`}
+              onClick={onConnect}
+              disabled={!agent.installed || busy !== null}
+            >
+              <PlugZap size={12} />
+              {agent.configured ? "重新接入" : "接入"}
+            </button>
+          )}
+          {agent.configured && agent.transport_kind !== "manual" && (
+            <button
+              className="btn sm"
+              aria-label={`验证 ${agent.display_name} 的自测链路`}
+              onClick={verify}
+              disabled={busy !== null}
+            >
+              {busy === "verify" ? <RefreshCw size={12} className="spin" /> : null}
+              {busy === "verify" ? "验证中…" : "验证"}
+            </button>
+          )}
+        </div>
+        <div className="source-action-group">
+          {agent.registered && (
+            <button
+              className="btn sm source-action-toggle"
+              aria-label={`${agent.enabled ? "禁用" : "启用"} ${agent.display_name}`}
+              onClick={toggleEnabled}
+              disabled={busy !== null}
+            >
+              {busy === "toggle" ? (
+                <RefreshCw size={12} className="spin" />
+              ) : agent.enabled ? (
+                <PowerOff size={12} />
+              ) : (
+                <Power size={12} />
+              )}
+              {agent.enabled ? "禁用" : "启用"}
+            </button>
+          )}
+          <button
+            className="btn sm source-detail-toggle"
+            aria-expanded={detailOpen}
+            aria-controls={detailId}
+            onClick={() => setDetailOpen((v) => !v)}
+          >
+            {detailOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />} 详情
+          </button>
+        </div>
+      </div>
+
+      {/* 第三层：展开后的完整证据 */}
+      {detailOpen && (
+        <div className="discovery-detail" id={detailId}>
+          <div className="discovery-detail-row">
+            <span className="discovery-detail-label">健康状态</span>
+            <span className="discovery-detail-value">{healthDetail}</span>
+          </div>
+          <div className="discovery-detail-row">
+            <span className="discovery-detail-label">版本</span>
+            <span className="discovery-detail-value">{agent.version ?? "未识别"}</span>
+          </div>
+          <div className="discovery-detail-row">
+            <span className="discovery-detail-label">接入方式</span>
+            <span className="discovery-detail-value">
+              {KIND_LABELS[agent.transport_kind] ?? agent.transport_kind}
+            </span>
+          </div>
+          <div className="discovery-detail-row">
+            <span className="discovery-detail-label">Hooks 配置</span>
+            <span className="discovery-detail-value">
+              {agent.configured ? "已写入（Task Dock 管理）" : "未写入"}
+              {agent.transport_verified ? " · 自测通道通过" : ""}
+            </span>
+          </div>
+          {agent.config_homes.length > 0 && (
+            <div className="discovery-detail-row">
+              <span className="discovery-detail-label">配置目录</span>
+              <span className="discovery-detail-value"><code>{agent.config_homes[0]}</code></span>
+            </div>
+          )}
+          <div className="discovery-detail-row">
+            <span className="discovery-detail-label">事件类型</span>
+            <span className="discovery-detail-value">{eventsText}</span>
+          </div>
+          <div className="discovery-detail-row">
+            <span className="discovery-detail-label">最近事件</span>
+            <span className="discovery-detail-value">
+              {agent.last_event_at
+                ? `含自测/手动：${formatRelative(agent.last_event_at)}（${formatDue(agent.last_event_at)}）`
+                : "尚未收到任何事件"}
+              {agent.last_real_event_at
+                ? ` · 真实：${formatRelative(agent.last_real_event_at)}（${formatDue(agent.last_real_event_at)}）`
+                : ""}
+            </span>
+          </div>
+          {agent.limitations.length > 0 && (
+            <div className="discovery-limits">
+              <AlertTriangle size={11} />
+              <span>{agent.limitations.join("；")}</span>
+            </div>
+          )}
+          {agent.configured && canInstall && (
+            <button className="btn sm danger" onClick={uninstall} disabled={busy !== null}>
+              {busy === "uninstall" ? <RefreshCw size={12} className="spin" /> : <Trash2 size={12} />}
+              {busy === "uninstall" ? "卸载中…" : "卸载钩子"}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -623,15 +906,35 @@ function AgentNode({
   setExpanded,
   onPendingToTasks,
   showToast,
+  discovery,
+  onConnect,
 }: {
   agent: TreeAgent;
   expanded: Record<string, boolean>;
   setExpanded: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   onPendingToTasks: (items: string[]) => Promise<void>;
   showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
+  discovery?: DiscoveredAgent;
+  onConnect?: () => void;
 }) {
   const open = !!expanded[agent.id];
   const [caps, setCaps] = useState<AgentNavCapabilities | null>(null);
+
+  // 三个正交维度：软件是否安装/运行（discovery）、监控是否接入（connected/health）、
+  // 当前是否在执行（liveState）。进程存在绝不推导为「正在执行」。
+  const softwareStatus = useMemo(() => {
+    const running = discovery?.running_instances?.length ?? 0;
+    if (!discovery) return agent.connected ? null : "未发现安装信息";
+    if (running > 0 && !agent.connected) return "运行中 · 监控未连接";
+    if (!discovery.installed) return "未安装";
+    if (running === 0 && !agent.connected) return "已安装 · 未运行";
+    if (!agent.connected) return "未接入监控";
+    if (discovery.health_state === "stale") return "已接入 · 事件过期";
+    if (discovery.health_state === "disabled") return "接入已停用";
+    if (!discovery.real_event_seen) return "已配置 · 待真实事件";
+    if (discovery.health_state === "self-test-only") return "仅自测通过 · 待真实事件";
+    return null;
+  }, [agent.connected, discovery]);
 
   // 展开时才探测跳转能力（证据化：探测结果随本机安装状态变化）
   useEffect(() => {
@@ -653,7 +956,9 @@ function AgentNode({
           <span className={`agent-dot state-${agent.liveState}`} />
           <strong>{agent.name}</strong>
           <span className="tree-meta">
-            {agent.activeCount > 0 ? `${agent.activeCount} 活跃` : AGENT_STATE_LABELS[agent.liveState] ?? "空闲"}
+            {agent.activeCount > 0
+              ? `${agent.activeCount} 活跃`
+              : softwareStatus ?? AGENT_STATE_LABELS[agent.liveState] ?? "空闲"}
           </span>
         </button>
         <button
@@ -666,14 +971,33 @@ function AgentNode({
               const r = await navAgentAction(agent.id, "open_app");
               toastNavResult(showToast, r, agent.name);
             } catch (e) {
-              showToast(String(e), { kind: "error" });
+              showToast(`打开 Agent 失败：${errorMessage(e)}`, { kind: "error" });
             }
           }}
         >
           <ExternalLink size={12} />
         </button>
       </div>
-      {open && (
+      {open && !agent.connected && (
+        <div className="tree-children">
+          <div className="tree-row">
+            <span className="tree-inst-key">
+              {softwareStatus ?? "暂无接入证据"}
+              {discovery?.health_state === "self-test-only" ? "（历史自测事件不计为真实接入）" : ""}
+            </span>
+            <span className="flex-spacer" />
+            {onConnect && (
+              <button className="btn sm" onClick={onConnect} data-tip="到接入管理配置 Hook">
+                <PlugZap size={12} /> 接入
+              </button>
+            )}
+          </div>
+          {discovery?.limitations?.length ? (
+            <div className="empty-hint">{discovery.limitations[0]}</div>
+          ) : null}
+        </div>
+      )}
+      {open && agent.connected && (
         <div className="tree-children">
           {agent.instances.map((inst) => (
             <div key={inst.id} className="tree-instance">
@@ -697,7 +1021,7 @@ function AgentNode({
                       const r = await navAgentAction(agent.id, "focus_window");
                       toastNavResult(showToast, r, `${agent.name} 实例`);
                     } catch (e) {
-                      showToast(String(e), { kind: "error" });
+                      showToast(`聚焦 Agent 窗口失败：${errorMessage(e)}`, { kind: "error" });
                     }
                   }}
                 >
@@ -898,7 +1222,7 @@ function CustomSourceForm({ onCreated, showToast }: { onCreated: () => Promise<v
                 setName("");
                 await onCreated();
               } catch (e) {
-                showToast(String(e), { kind: "error" });
+                showToast(`注册 Agent 来源失败：${errorMessage(e)}`, { kind: "error" });
               } finally {
                 setBusy(false);
               }
@@ -923,7 +1247,7 @@ function CustomSourceForm({ onCreated, showToast }: { onCreated: () => Promise<v
                     showToast(`已删除来源 ${s.id}（普通任务不受影响）`, { kind: "success" });
                     await onCreated();
                   } catch (e) {
-                    showToast(String(e), { kind: "error" });
+                    showToast(`删除 Agent 来源失败：${errorMessage(e)}`, { kind: "error" });
                   }
                 }}
               >

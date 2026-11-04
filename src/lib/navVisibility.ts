@@ -1,0 +1,282 @@
+//! 导航布局配置层：完整面板（left）与停靠胶囊（capsule）各自的显隐 + 排序。
+//!
+//! 三层分工：
+//! 1. `navigationRegistry.ts`：入口元数据与默认值（唯一事实源）；
+//! 2. 本文件：把外部存储的原始 JSON 归一化为可用的布局配置（版本迁移、ID 对齐、
+//!    新入口合并、损坏回退），全部为纯函数，便于单测；
+//! 3. `navigationLayout.ts`：把纯函数接到 SQLite 设置存储（读-改-写串行化）。
+//!
+//! 存储结构（`application_settings.navigation_layout`，版本化 JSON 对象）：
+//!
+//! ```json
+//! {
+//!   "version": 1,
+//!   "left": ["tasks", "agents", "..."],   // 左侧可见入口，数组顺序即排序
+//!   "capsule": ["agents", "tasks", "..."] // 胶囊可见入口，数组顺序即排序
+//!   "known": { "left": [...], "capsule": [...] } // 写入时注册中心已有的入口
+//! }
+//! ```
+//!
+//! `known` 用于区分「用户隐藏」与「后续版本新增」：老配置里不存在的 ID 视为新入口，
+//! 按注册中心默认值合并（默认可见）；存在于 `known` 但不在可见数组里的视为用户隐藏，
+//! 绝不擅自恢复。这样既满足「新入口默认可见」，也不会覆盖用户已有自定义。
+//!
+//! 兼容与回退：
+//! - `version` 不符 → 按 ID 对齐迁移：能识别的 ID 保留选择与顺序，无法识别的丢弃并计数，
+//!   再按注册中心补齐新入口；不整体丢弃用户配置；
+//! - 缺失 / 非对象 / 数组损坏 → 回退到注册中心默认（全部默认可见）；
+//! - 空数组是合法状态（用户主动隐藏全部），不会被默认值重新填满。
+
+import {
+  allEntryIds,
+  defaultVisibleIds,
+  entriesForSurface,
+  leftEntryForTab,
+  navEntry,
+  type NavSurface,
+} from "./navigationRegistry";
+import type { Tab } from "../store/useUiStore";
+
+/** SQLite 设置键：配置不进备份白名单之外的独立表，也不新增 IPC。 */
+export const NAV_LAYOUT_SETTING_KEY = "navigation_layout";
+
+/** 配置结构版本：结构或合并语义发生破坏性变化时才递增。 */
+export const NAV_LAYOUT_VERSION = 1;
+
+export interface NavLayoutConfig {
+  version: number;
+  /** 左侧可见入口 ID，顺序即排序。 */
+  left: string[];
+  /** 胶囊可见入口 ID，顺序即排序。 */
+  capsule: string[];
+  /** 写入时注册中心已有的入口快照（区分用户隐藏与新增入口）。 */
+  known: { left: string[]; capsule: string[] };
+}
+
+export interface NavLayoutNormalization {
+  config: NavLayoutConfig;
+  /** 输入版本与当前版本不一致（已按 ID 对齐迁移）。 */
+  migrated: boolean;
+  /** 被丢弃的无法识别 / 非字符串 / 重复项数量。 */
+  dropped: number;
+  /** 数据源：`settings` 为有效对象；`default` 为缺失或损坏回退。 */
+  source: "settings" | "default";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 注册中心默认：默认可见入口按默认顺序，known 为当前全部入口。 */
+export function defaultNavigationLayout(): NavLayoutConfig {
+  return {
+    version: NAV_LAYOUT_VERSION,
+    left: defaultVisibleIds("left"),
+    capsule: defaultVisibleIds("capsule"),
+    known: { left: allEntryIds("left"), capsule: allEntryIds("capsule") },
+  };
+}
+
+/**
+ * 按默认顺序把入口插入可见列表：用于「显示一个已隐藏入口」。
+ * 用户自定义顺序优先——只在默认顺序的相邻位置插入，不重排既有项目。
+ */
+export function insertEntryByDefaultOrder(
+  ids: readonly string[],
+  id: string,
+  surface: NavSurface,
+): string[] {
+  if (ids.includes(id)) return [...ids];
+  const order = navEntry(id)?.defaults[surface].order;
+  if (order === undefined) return [...ids];
+  const index = ids.findIndex((existing) => {
+    const existingOrder = navEntry(existing)?.defaults[surface].order;
+    return existingOrder !== undefined && existingOrder > order;
+  });
+  const next = [...ids];
+  next.splice(index === -1 ? next.length : index, 0, id);
+  return next;
+}
+
+/** 键盘可用的排序操作（上移 / 下移），不引入拖拽依赖。 */
+export function moveEntryInList(
+  ids: readonly string[],
+  id: string,
+  delta: -1 | 1,
+): string[] {
+  const index = ids.indexOf(id);
+  const target = index + delta;
+  if (index < 0 || target < 0 || target >= ids.length) return [...ids];
+  const next = [...ids];
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+}
+
+function sanitizeSurfaceList(
+  value: unknown,
+  surface: NavSurface,
+): { ids: string[]; dropped: number } {
+  const allowed = new Set<string>(entriesForSurface(surface).map((entry) => entry.id));
+  const seen = new Set<string>();
+  let dropped = 0;
+  if (!Array.isArray(value)) return { ids: [], dropped: 0 };
+  for (const item of value) {
+    if (typeof item !== "string" || !allowed.has(item) || seen.has(item)) {
+      dropped += 1;
+      continue;
+    }
+    seen.add(item);
+  }
+  return { ids: [...seen], dropped };
+}
+
+function knownIds(value: unknown, surface: NavSurface): Set<string> {
+  const allowed = new Set<string>(entriesForSurface(surface).map((entry) => entry.id));
+  if (!Array.isArray(value)) return new Set(allEntryIds(surface));
+  const set = new Set<string>();
+  for (const item of value) {
+    if (typeof item === "string" && allowed.has(item)) set.add(item);
+  }
+  return set;
+}
+
+/**
+ * 归一化任意来源的布局配置。
+ *
+ * 合并规则（每个界面独立执行）：
+ * - 输入中能识别的 ID 保留原有顺序与显隐；
+ * - 输入数组里出现但不在 `known` 快照中的 ID，同样视为已知（避免误当新入口恢复）；
+ * - 不存在于输入、且不在 `known` 快照中的 ID = 新入口：按默认可见决定是否补齐，
+ *   补齐位置按注册中心默认顺序；
+ * - 输出 `known` 更新为当前注册中心全部入口，供下一次写入使用。
+ */
+export function normalizeNavigationLayout(raw: unknown): NavLayoutNormalization {
+  const fallback = defaultNavigationLayout();
+  if (!isRecord(raw) || !Array.isArray(raw.left) || !Array.isArray(raw.capsule)) {
+    return { config: fallback, migrated: false, dropped: 0, source: "default" };
+  }
+
+  const declared = typeof raw.version === "number" ? raw.version : 0;
+  const migrated = declared !== NAV_LAYOUT_VERSION;
+  const known = isRecord(raw.known) ? raw.known : null;
+
+  let dropped = 0;
+  const surfaces: NavSurface[] = ["left", "capsule"];
+  const visible: Record<NavSurface, string[]> = { left: [], capsule: [] };
+
+  for (const surface of surfaces) {
+    const sanitized = sanitizeSurfaceList(raw[surface], surface);
+    dropped += sanitized.dropped;
+    const persistedKnown = knownIds(known?.[surface], surface);
+    // 输入里实际出现的 ID 一律视为已知：即使 known 快照不完整，也不能把用户
+    // 明确保留的入口当作「新增」重新排序或重新显示。
+    for (const id of sanitized.ids) persistedKnown.add(id);
+
+    let merged = [...sanitized.ids];
+    for (const entry of entriesForSurface(surface)) {
+      // 系统锁定入口必须始终可达：旧配置缺失、损坏或人为删除都补回默认位置。
+      if (entry.locked) {
+        merged = insertEntryByDefaultOrder(merged, entry.id, surface);
+        continue;
+      }
+      if (persistedKnown.has(entry.id)) continue; // 老入口：缺失 = 用户隐藏
+      if (!entry.defaults[surface].visible) continue; // 新入口默认隐藏
+      merged = insertEntryByDefaultOrder(merged, entry.id, surface);
+    }
+    visible[surface] = merged;
+  }
+
+  return {
+    config: {
+      version: NAV_LAYOUT_VERSION,
+      left: visible.left,
+      capsule: visible.capsule,
+      known: { left: allEntryIds("left"), capsule: allEntryIds("capsule") },
+    },
+    migrated,
+    dropped,
+    source: "settings",
+  };
+}
+
+/** 某界面的可见入口 ID（数组顺序即排序）。 */
+export function visibleEntryIds(config: NavLayoutConfig, surface: NavSurface): string[] {
+  return config[surface];
+}
+
+/** 入口在某界面是否可见。 */
+export function isEntryVisible(
+  config: NavLayoutConfig,
+  surface: NavSurface,
+  id: string,
+): boolean {
+  return config[surface].includes(id);
+}
+
+/** 逻辑 Tab 的左侧入口是否被隐藏（通知 / 快捷键跳转时用于判断回显需求）。 */
+export function isTabHidden(config: NavLayoutConfig, tab: Tab): boolean {
+  const entry = leftEntryForTab(tab);
+  return entry ? !config.left.includes(entry.id) : false;
+}
+
+/**
+ * 隐藏当前入口时自动切换的「安全页」：
+ * 优先任务页（最高频）；否则取左侧第一个仍可见入口覆盖的页面；
+ * 左侧全部隐藏时回退设置页（页面本身仍可被深链打开，不产生导航死路）。
+ */
+export function safeTabForHiddenEntry(config: NavLayoutConfig): Tab {
+  if (config.left.includes("tasks")) return "tasks";
+  const first = config.left[0] ? navEntry(config.left[0]) : undefined;
+  return first?.tabs[0] ?? "settings";
+}
+
+// ── 旧版 localStorage 配置迁移（只读；新配置一律写 SQLite）───────────────
+//
+// v1 之前导航显隐存在 `localStorage["taskdock.nav.visibility.v1"]`，只记录
+// 「左侧隐藏了哪些入口」。迁移策略：
+// - 只在 `navigation_layout` 尚未写入时执行一次；
+// - 迁移成功前不删除旧键，失败时保留原配置并允许下次启动重试；
+// - 旧版没有胶囊配置，胶囊一律沿用注册中心默认值，不把左侧隐藏误套到胶囊。
+
+/** 旧版 localStorage 键：仅用于迁移读取，不再写入。 */
+export const LEGACY_NAV_VISIBILITY_STORAGE_KEY = "taskdock.nav.visibility.v1";
+
+/** 读取旧版隐藏入口 ID；损坏 / 不可用时返回空数组，绝不抛错。 */
+export function readLegacyHiddenEntryIds(): string[] {
+  try {
+    if (typeof localStorage === "undefined") return [];
+    const raw = localStorage.getItem(LEGACY_NAV_VISIBILITY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    const hidden = isRecord(parsed) ? parsed.hidden : undefined;
+    if (!Array.isArray(hidden)) return [];
+    const allowed = new Set<string>(allEntryIds("left"));
+    const seen = new Set<string>();
+    for (const item of hidden) {
+      if (typeof item === "string" && allowed.has(item) && !seen.has(item)) seen.add(item);
+    }
+    return [...seen];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 把旧版隐藏列表套到新布局上（纯函数，便于单测）：
+ * 只影响完整面板；胶囊保持默认。迁移后用户仍可在设置页重新开启或隐藏。
+ */
+export function applyLegacyHiddenEntries(
+  layout: NavLayoutConfig,
+  hidden: readonly string[],
+): NavLayoutConfig {
+  const locked = new Set<string>(
+    entriesForSurface("left")
+      .filter((entry) => entry.locked)
+      .map((entry) => entry.id),
+  );
+  return {
+    ...layout,
+    // 旧数据试图隐藏锁定入口（设置）时不生效，保证总有配置入口。
+    left: layout.left.filter((id) => !hidden.includes(id) || locked.has(id)),
+  };
+}

@@ -35,7 +35,10 @@
 
 /* ── 通用浮层容器 ───────────────────────────────────────────── */
 
-/* 外壳只做定位：floating-ui 的 transform 写在这里，内层做动效 */
+/* 外壳只做定位：floating-ui 的 transform 写在这里，内层做动效。
+   锚点在对话框内时，Popover 会把外壳 portal 进 .ui-dialog-mask：
+   --z-menu(900) 在遮罩的层叠上下文内压过 z:auto 的面板，而在 body 上
+   保持低于 --z-dialog(940)，不会盖住确认框。 */
 .ui-popover-host {
   z-index: var(--z-menu);
   width: max-content;
@@ -442,7 +445,7 @@
 /* ── 工具提示 ───────────────────────────────────────────────── */
 
 .ui-tooltip {
-  max-width: 260px;
+  max-width: 240px;
   padding: 5px 8px;
   font-size: 11px;
   line-height: 1.45;
@@ -452,6 +455,12 @@
   box-shadow: var(--menu-shadow);
   border: 1px solid var(--menu-border);
   pointer-events: none;
+  /* 最多两行，超出省略：长路径/长名称不再把浮层撑成大字块遮住相邻内容 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   animation: ui-pop-in 0.1s var(--ease-out);
 }
 
@@ -969,6 +978,186 @@
   justify-content: flex-end;
 }
 
+/* ── 纯日期选择器（DatePicker） ────────────────────────────────
+   与 DateTimePicker 共用 .ui-cal-* 网格；这里只补触发区、底部操作与
+   错误提示。颜色全部走 Token，四套主题自动适配。 */
+
+.ui-dp {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 5px 0 8px;
+  background: var(--control-face);
+  box-shadow: var(--control-shadow);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  transition: box-shadow 0.14s var(--ease-out), border-color 0.14s var(--ease-out);
+}
+
+.ui-dp.size-sm {
+  min-height: 26px;
+  padding: 0 3px 0 6px;
+}
+
+.ui-dp:hover:not(.is-disabled) {
+  box-shadow: var(--control-shadow-hover, var(--control-shadow));
+}
+
+.ui-dp.is-open,
+.ui-dp:focus-within {
+  box-shadow: var(--control-shadow-focus);
+  border-color: var(--accent);
+}
+
+.ui-dp.is-disabled {
+  opacity: 0.55;
+}
+
+.ui-dp-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.ui-dp.size-sm .ui-dp-input {
+  padding: 3px 0;
+  font-size: 11px;
+}
+
+.ui-dp-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.ui-dp-input.is-error {
+  color: var(--menu-danger);
+}
+
+.ui-dp-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--menu-text-dim);
+  background: transparent;
+  cursor: pointer;
+}
+
+.ui-dp-toggle:hover:not(:disabled) {
+  background: var(--menu-hover);
+  color: var(--menu-text);
+}
+
+.ui-dp-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.ui-dp-toggle:disabled {
+  cursor: not-allowed;
+}
+
+/* 错误提示绝对定位，不推动表单布局、不遮挡输入框 */
+.ui-dp-error {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 3px);
+  z-index: var(--z-sticky);
+  max-width: 100%;
+  padding: 2px 6px;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--menu-danger);
+  background: var(--menu-face);
+  border-radius: 6px;
+  box-shadow: var(--menu-shadow);
+  pointer-events: none;
+}
+
+.ui-dp-popover {
+  min-width: 0;
+}
+
+.ui-dp-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 272px;
+  max-width: 100%;
+  min-width: 0;
+  /* 上下都放不下时允许日历区内部滚动；footer 固定可见 */
+  max-height: calc(var(--popover-max-h, 440px) - 8px);
+  padding: 4px;
+  color: var(--menu-text);
+}
+
+.ui-dp-main {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.ui-dp-main::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ui-dp-main::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* 格子等高：比 DateTimePicker 稍大，仍保持七列等宽 */
+.ui-dp-panel .ui-cal-day {
+  height: 28px;
+  font-size: 11.5px;
+}
+
+.ui-dp-foot {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 0;
+}
+
+.ui-dp-link {
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--menu-text-dim);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ui-dp-link:hover {
+  color: var(--menu-text);
+  background: var(--menu-hover);
+}
+
+.ui-dp-link.is-accent {
+  color: var(--accent);
+}
+
 /* ── 与既有样式类对接（保持旧布局尺寸） ─────────────────────── */
 
 .ui-select-trigger.sort-select {
@@ -1001,7 +1190,8 @@
   .ui-select-caret,
   .ui-switch-thumb,
   .ui-option,
-  .ui-cal-day {
+  .ui-cal-day,
+  .ui-dp {
     transition: none;
   }
   .ui-select-trigger:active:not(:disabled),
@@ -1048,6 +1238,11 @@
   .ui-menu-item.is-active {
     outline: 1px dashed Highlight;
     outline-offset: -2px;
+  }
+
+  .ui-dp-error {
+    color: CanvasText;
+    border: 1px solid CanvasText;
   }
 
   .ui-option.is-disabled,

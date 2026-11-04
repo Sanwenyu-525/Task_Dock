@@ -78,8 +78,8 @@ function seed(targets: NavTarget[]) {
     targetsError: null,
     scan: null,
     scanning: false,
-    loadApps: vi.fn(async () => {}),
-    loadTaskLinks: vi.fn(async () => {}),
+    loadApps: vi.fn(async () => "ok" as const),
+    loadTaskLinks: vi.fn(async () => "ok" as const),
   });
   // 仅注入组件读取的偏好字段；类型上仍是完整 Settings。
   useSettingsStore.setState({
@@ -131,25 +131,27 @@ describe("AppManagement", () => {
     await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
   });
 
-  it("编辑配置：只提交后端白名单字段，身份路径保持只读", async () => {
+  it("编辑配置：页内表单（无弹窗），只提交后端白名单字段，身份路径保持只读", async () => {
     seed([targetFix()]);
     render(<AppManagement />);
     fireEvent.click(screen.getByRole("button", { name: "编辑 Obsidian" }));
 
-    const dialog = await screen.findByRole("dialog", { name: "编辑应用配置" });
-    expect(within(dialog).getByText(/程序路径|目标身份/)).toBeTruthy();
-    expect(within(dialog).queryByLabelText("程序路径")).toBeNull();
+    const form = await screen.findByRole("region", { name: "编辑应用配置" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(form).getByText(/目标身份/)).toBeTruthy();
+    expect(within(form).getByText(targetFix().exe_path)).toBeTruthy();
+    expect(within(form).queryByLabelText("程序路径")).toBeNull();
 
-    fireEvent.change(within(dialog).getByLabelText("显示名称"), {
+    fireEvent.change(within(form).getByLabelText("显示名称"), {
       target: { value: "Obsidian 笔记" },
     });
-    fireEvent.change(within(dialog).getByLabelText("启动参数"), {
+    fireEvent.change(within(form).getByLabelText("启动参数"), {
       target: { value: "--safe-mode" },
     });
-    fireEvent.change(within(dialog).getByLabelText("窗口标题匹配提示"), {
+    fireEvent.change(within(form).getByLabelText("窗口标题匹配提示"), {
       target: { value: "Obsidian" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    fireEvent.click(within(form).getByRole("button", { name: "保存" }));
 
     await waitFor(() =>
       expect(navUpdateTarget).toHaveBeenCalledWith(
@@ -168,7 +170,32 @@ describe("AppManagement", () => {
     expect(patch).not.toHaveProperty("exe_path");
     expect(patch).not.toHaveProperty("url");
     expect(patch).not.toHaveProperty("app_key");
+    // 保存后刷新共享清单：应用中心/胶囊/设置三处读同一份 store
     await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
+    expect(screen.queryByRole("region", { name: "编辑应用配置" })).toBeNull();
+  });
+
+  it("有未保存更改时切换目标或添加应用需先确认，不静默丢弃输入", async () => {
+    seed([
+      targetFix(),
+      targetFix({ id: "target-code", app_key: "code", display_name: "VS Code" }),
+    ]);
+    render(<AppManagement />);
+    fireEvent.click(screen.getByRole("button", { name: "编辑 Obsidian" }));
+    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "改名后" } });
+
+    // 切换到另一个目标：先弹放弃确认，未确认前仍是当前表单
+    fireEvent.click(screen.getByRole("button", { name: "编辑 VS Code" }));
+    const dialog = await screen.findByRole("dialog", { name: /放弃未保存的更改/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.getByLabelText("显示名称")).toBeTruthy();
+    expect((screen.getByLabelText("显示名称") as HTMLInputElement).value).toBe("改名后");
+
+    // 进入添加页同样被拦下，直到明确放弃
+    fireEvent.click(screen.getByRole("button", { name: /添加应用/ }));
+    const addDialog = await screen.findByRole("dialog", { name: /放弃未保存的更改/ });
+    fireEvent.click(within(addDialog).getByRole("button", { name: "放弃更改" }));
+    expect(await screen.findByRole("dialog", { name: "添加应用与快捷方式" })).toBeTruthy();
   });
 
   it("删除必须先确认；确认后才删除并同步任务关联", async () => {
@@ -183,6 +210,44 @@ describe("AppManagement", () => {
     await waitFor(() => expect(navDeleteTarget).toHaveBeenCalledWith("target-obs"));
     await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
     expect(useNavigationStore.getState().loadTaskLinks).toHaveBeenCalled();
+  });
+
+  it("最近导航记录将技术动作转为中文，原始标识保留在诊断属性中", async () => {
+    seed([targetFix()]);
+    vi.mocked(navRecentLogs).mockResolvedValue([
+      {
+        id: "log-focus",
+        target_id: "target-obs",
+        target_name: "Obsidian",
+        requested_action: "focus",
+        actual_action: "focus_window",
+        success: true,
+        fallback_used: false,
+        reason: "",
+        verification_level: "window",
+        created_at: "2026-11-04T10:20:00Z",
+      },
+      {
+        id: "log-open",
+        target_id: "target-obs",
+        target_name: "Obsidian",
+        requested_action: "open",
+        actual_action: "open_app",
+        success: true,
+        fallback_used: false,
+        reason: "",
+        verification_level: "process",
+        created_at: "2026-11-04T10:21:00Z",
+      },
+    ]);
+
+    render(<AppManagement />);
+    const focusAction = await screen.findByText("聚焦窗口");
+    expect(focusAction.getAttribute("data-action")).toBe("focus_window");
+    expect(focusAction.getAttribute("title")).toBe("focus_window");
+
+    const openAction = screen.getByText("启动应用");
+    expect(openAction.getAttribute("data-action")).toBe("open_app");
   });
 
   it("启动成功后刷新最近使用；启动失败不刷新", async () => {

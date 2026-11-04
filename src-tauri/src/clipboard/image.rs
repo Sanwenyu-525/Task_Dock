@@ -82,7 +82,13 @@ pub fn decode_png_rgba(bytes: &[u8]) -> AppResult<(Vec<u8>, u32, u32)> {
     }
     let data = &buf[..info.buffer_size()];
     let rgba = match info.color_type {
-        png::ColorType::Rgba => data.to_vec(),
+        png::ColorType::Rgba => {
+            // 解码缓冲区本身就是 RGBA：直接移交所有权，不再复制一份像素
+            // （像素上限 1 亿时，一次全量复制就是额外的 400MB 峰值）。
+            let len = data.len();
+            buf.truncate(len);
+            buf
+        }
         png::ColorType::Rgb => {
             let mut out = Vec::with_capacity(w as usize * h as usize * 4);
             for px in data.chunks_exact(3) {

@@ -26,6 +26,7 @@ import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useNotesStore } from "../../store/useNotesStore";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
+import { errorMessage } from "../../lib/errors";
 import { locateElement } from "../global-search/locate";
 import { copyText } from "../../lib/clipboard";
 import { formatRelative } from "../../lib/format";
@@ -127,7 +128,7 @@ export default function CaptureInboxPanel() {
         await convertToTask(item.id);
         showToast("已转为任务", { kind: "success" });
       } catch (e) {
-        showToast(String(e), { kind: "error" });
+        showToast(`转为任务失败：${errorMessage(e)}`, { kind: "error" });
       } finally {
         setBusyId(null);
       }
@@ -142,7 +143,7 @@ export default function CaptureInboxPanel() {
         await markHandled(item.id);
         showToast("已标记为已处理", { kind: "success" });
       } catch (e) {
-        showToast(String(e), { kind: "error" });
+        showToast(`标记已处理失败：${errorMessage(e)}`, { kind: "error" });
       } finally {
         setBusyId(null);
       }
@@ -169,7 +170,7 @@ export default function CaptureInboxPanel() {
           action: { label: "查看", run: () => setTab("shelf") },
         });
       } catch (e) {
-        showToast(String(e), { kind: "error" });
+        showToast(`发送到暂存架失败：${errorMessage(e)}`, { kind: "error" });
       } finally {
         setBusyId(null);
       }
@@ -198,7 +199,7 @@ export default function CaptureInboxPanel() {
           },
         });
       } catch (e) {
-        showToast(String(e), { kind: "error" });
+        showToast(`转为笔记失败：${errorMessage(e)}`, { kind: "error" });
       } finally {
         setBusyId(null);
       }
@@ -214,7 +215,7 @@ export default function CaptureInboxPanel() {
         await remove(item.id);
         showToast("已删除捕获记录", { kind: "success" });
       } catch (e) {
-        showToast(String(e), { kind: "error" });
+        showToast(`删除捕获记录失败：${errorMessage(e)}`, { kind: "error" });
       } finally {
         setBusyId(null);
       }
@@ -307,7 +308,7 @@ export default function CaptureInboxPanel() {
               <li
                 key={item.id}
                 data-capture-id={item.id}
-                className={`inbox-item${item.status === "inbox" ? "" : " is-done"}${locateId === item.id ? " gs-locate-flash" : ""}`}
+                className={`inbox-item surface-card${item.status === "inbox" ? "" : " is-done"}${locateId === item.id ? " gs-locate-flash" : ""}`}
                 aria-label={itemLabel(item)}
               >
                 <div className="inbox-head">

@@ -23,6 +23,7 @@ import {
   type ClipboardItem,
 } from "../../lib/bridge";
 import { copyText } from "../../lib/clipboard";
+import { errorMessage, normalizeError } from "../../lib/errors";
 import {
   clipSource, clipboardTime, fileBaseName, formatBytes, kindLabel, looksLikeCode, objectHint,
   urlDomain,
@@ -71,6 +72,12 @@ export default function ClipboardItemDetail({
   const [pathStates, setPathStates] = useState<Record<string, PathState>>({});
   /** 批量状态查询是否失败：失败时所有路径按「未知」处理，绝不按「存在」放行。 */
   const [pathCheckFailed, setPathCheckFailed] = useState(false);
+  /**
+   * 失败是否属于「后台繁忙」（并发配额已满）：与「无法确认状态」共用 unknown 语义，
+   * 但提示文案要区分，避免把繁忙误说成文件丢失。查询失败不做自动重试，
+   * 只在用户重新进入详情时再试一次。
+   */
+  const [pathCheckBusy, setPathCheckBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -82,7 +89,7 @@ export default function ClipboardItemDetail({
       })
       .catch((e) => {
         if (alive) {
-          showToast(`读取条目失败：${String(e)}`, { kind: "error" });
+          showToast(`读取条目失败：${errorMessage(e)}`, { kind: "error" });
           onBack();
         }
       });
@@ -98,6 +105,7 @@ export default function ClipboardItemDetail({
     let alive = true;
     const paths = pathsKey.split("\n").slice(0, 200);
     setPathCheckFailed(false);
+    setPathCheckBusy(false);
     setPathStates(Object.fromEntries(paths.map((p) => [p, "checking" as PathState])));
     clipboardPathStatus(paths)
       .then((states) => {
@@ -109,11 +117,13 @@ export default function ClipboardItemDetail({
           );
         }
       })
-      .catch(() => {
-        // 查询失败不阻塞详情，但也不能虚报：统一落到「未知」，操作按钮一律禁用
+      .catch((e) => {
+        // 查询失败不阻塞详情，但也不能虚报：统一落到「未知」，操作按钮一律禁用。
+        // 仅在文案上区分「后台繁忙」（配额已满），绝不把繁忙显示成文件丢失。
         if (alive) {
           setPathStates({});
           setPathCheckFailed(true);
+          setPathCheckBusy(normalizeError(e).code === "SERVICE_OVERLOADED");
         }
       });
     return () => {
@@ -143,7 +153,7 @@ export default function ClipboardItemDetail({
       // 复制只增加使用次数；列表就地更新，避免整表刷新导致分页与滚动位置变化。
       useClipboardStore.getState().bumpItemCopy(itemId);
     } catch (e) {
-      showToast(`复制失败：${String(e)}`, { kind: "error" });
+      showToast(`复制失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(false);
     }
@@ -163,7 +173,7 @@ export default function ClipboardItemDetail({
       );
       onChanged();
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`更新收藏/置顶失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -179,7 +189,7 @@ export default function ClipboardItemDetail({
       );
       setEditingTitle(false);
     } catch (e) {
-      showToast(`标题保存失败：${String(e)}`, { kind: "error" });
+      showToast(`标题保存失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -191,7 +201,7 @@ export default function ClipboardItemDetail({
       showToast(`已关联到任务「${linkTask.title}」`, { kind: "success" });
       closeDrawer();
     } catch (e) {
-      showToast(`关联失败：${String(e)}`, { kind: "error" });
+      showToast(`关联失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -226,7 +236,7 @@ export default function ClipboardItemDetail({
       await clipboardOpenUrl(item.id);
       showToast("已交给系统默认浏览器打开", { kind: "success" });
     } catch (e) {
-      showToast(`打开失败：${String(e)}`, { kind: "error" });
+      showToast(`打开失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -235,7 +245,7 @@ export default function ClipboardItemDetail({
       await clipboardOpenLocalPath(path);
       showToast("已交给系统关联程序打开", { kind: "success" });
     } catch (e) {
-      showToast(`打开失败：${String(e)}`, { kind: "error" });
+      showToast(`打开失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -244,7 +254,7 @@ export default function ClipboardItemDetail({
       await clipboardRevealLocalPath(path);
       showToast("已在资源管理器中定位", { kind: "success" });
     } catch (e) {
-      showToast(`定位失败：${String(e)}`, { kind: "error" });
+      showToast(`定位失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -560,7 +570,9 @@ export default function ClipboardItemDetail({
             </ul>
             {pathCheckFailed && (
               <div className="clip-hint">
-                文件状态查询失败，无法确认路径是否仍存在；打开与定位已暂时禁用，返回后重新进入可再试一次。
+                {pathCheckBusy
+                  ? "文件状态查询任务较多（后台繁忙），无法确认路径是否仍存在；打开与定位已暂时禁用，稍后返回重新进入可再试一次。"
+                  : "文件状态查询失败，无法确认路径是否仍存在；打开与定位已暂时禁用，返回后重新进入可再试一次。"}
               </div>
             )}
             <div className="clip-hint">
@@ -609,7 +621,7 @@ export default function ClipboardItemDetail({
                       showToast(`已复制富文本（${formatBytes(r.bytes)}）`, { kind: "success" });
                       useClipboardStore.getState().bumpItemCopy(item.id);
                     } catch (e) {
-                      showToast(`复制失败：${String(e)}`, { kind: "error" });
+                      showToast(`复制失败：${errorMessage(e)}`, { kind: "error" });
                     } finally {
                       setBusy(false);
                     }

@@ -130,8 +130,65 @@ fn title_of(payload: &Value) -> String {
     String::new()
 }
 
+/// Notification 是否属于「需要用户授权的权限请求」。
+/// Trae 的 Notification 也会用于普通提示，不能一律当作等待用户处理。
+fn notification_is_permission(payload: &Value) -> bool {
+    let joined = [
+        "notification_type",
+        "notificationType",
+        "type",
+        "title",
+        "message",
+    ]
+    .iter()
+    .filter_map(|k| payload.get(k).and_then(|v| v.as_str()))
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_lowercase();
+    [
+        "permission",
+        "approval",
+        "confirm",
+        "权限",
+        "授权",
+        "确认",
+        "审批",
+    ]
+    .iter()
+    .any(|k| joined.contains(k))
+}
+
+/// 事件 → 统一状态（Trae / ZCode 语义修正）。
+pub fn state_for(source: &str, event: &str, payload: &Value) -> Option<&'static str> {
+    if source == "zcode" {
+        // ZCode 的 SessionStart 同样只表示会话已建立，不代表正在执行任务。
+        return match event {
+            "SessionStart" => Some("idle"),
+            _ => map_event_state(event),
+        };
+    }
+    if source != "trae" {
+        return map_event_state(event);
+    }
+    match event {
+        // SessionStart 只表示会话已建立，不等于正在执行任务
+        "SessionStart" => Some("idle"),
+        // 普通通知是旁路信息，不改变执行状态；权限/确认类才进入等待
+        "Notification" | "notification" => {
+            if notification_is_permission(payload) {
+                Some("waiting")
+            } else {
+                None
+            }
+        }
+        // Stop 只结束当前轮次（统一模型中 completed = 本轮完成，不等于整个任务完成）
+        "Stop" => Some("completed"),
+        _ => map_event_state(event),
+    }
+}
+
 fn build_event(source: &str, event: &str, payload: &Value, occurred_at: &str) -> Option<Value> {
-    let state = map_event_state(event)?;
+    let state = state_for(source, event, payload)?;
     let session = session_id_of(payload, source);
     let mut hasher = sha2::Sha256::new();
     hasher.update(format!("{}|{}|{}|{}", source, event, session, occurred_at).as_bytes());
@@ -249,7 +306,7 @@ pub fn run(args: &[String]) -> i32 {
             return 0;
         }
     }
-    let critical = map_event_state(&event) != Some("running");
+    let critical = state_for(&source, &event, &payload) != Some("running");
     write_fallback_in(&app_data_dir().join("agent-inbox"), &text, critical);
     0
 }
@@ -266,6 +323,51 @@ mod tests {
         assert_eq!(map_event_state("PreToolUse"), Some("running"));
         assert_eq!(map_event_state("UnknownThing"), Some("running"));
         assert_eq!(map_event_state("SubagentStop"), None);
+    }
+
+    #[test]
+    fn trae_session_start_is_not_executing() {
+        let payload = json!({"session_id": "s1"});
+        assert_eq!(state_for("trae", "SessionStart", &payload), Some("idle"));
+        // 其他 Agent 保持原语义，避免回归
+        assert_eq!(state_for("codex", "SessionStart", &payload), Some("running"));
+    }
+
+    #[test]
+    fn zcode_session_start_is_idle_and_stop_completes() {
+        let payload = json!({"session_id": "s1"});
+        assert_eq!(state_for("zcode", "SessionStart", &payload), Some("idle"));
+        assert_eq!(
+            state_for("zcode", "UserPromptSubmit", &payload),
+            Some("running")
+        );
+        assert_eq!(
+            state_for("zcode", "PermissionRequest", &payload),
+            Some("waiting")
+        );
+        assert_eq!(state_for("zcode", "Stop", &payload), Some("completed"));
+    }
+
+    #[test]
+    fn trae_notification_only_waits_for_permission() {
+        let plain = json!({"message": "任务已更新"});
+        assert_eq!(state_for("trae", "Notification", &plain), None);
+
+        let permission = json!({"notification_type": "permission_request"});
+        assert_eq!(state_for("trae", "Notification", &permission), Some("waiting"));
+
+        let cn = json!({"message": "需要确认是否继续"});
+        assert_eq!(state_for("trae", "Notification", &cn), Some("waiting"));
+    }
+
+    #[test]
+    fn trae_stop_completes_current_turn_and_tools_are_running() {
+        let payload = json!({"session_id": "s1"});
+        assert_eq!(state_for("trae", "Stop", &payload), Some("completed"));
+        assert_eq!(state_for("trae", "UserPromptSubmit", &payload), Some("running"));
+        assert_eq!(state_for("trae", "PreToolUse", &payload), Some("running"));
+        assert_eq!(state_for("trae", "PostToolUse", &payload), Some("running"));
+        assert_eq!(state_for("trae", "SessionEnd", &payload), Some("completed"));
     }
 
     #[test]

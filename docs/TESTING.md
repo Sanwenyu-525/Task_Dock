@@ -352,7 +352,7 @@ Geek Uninstaller 窗口，Windows 前台锁不允许后台进程抢占）→ **E
 | `npx vitest run` | 21 文件 / 133 测试通过（55.44 s） |
 | `npm run build` | 通过（467.06 kB JS / 68.51 kB CSS；gzip 139.65 / 10.96 kB） |
 | `npm run tauri build`（release） | 通过，release 编译 5m19s（首次）/ 4m53s（控制台闪窗修复后重建，10:10）；NSIS 4.17 MiB / MSI 6.37 MiB |
-| 100k 规模备份/恢复 | 通过：最终源码 backup 571ms / 61,877,483 B；restore 5,019ms；25 表逐行一致、500 资产/2 归档 SHA 一致；恢复峰值 WS 619.0MB（非流式，见 §4） |
+| 100k 规模备份/恢复 | 通过：最终源码 backup 571ms / 61,877,483 B；restore 5,019ms；25 表逐行一致、500 资产/2 归档 SHA 一致；恢复峰值 WS 619.0MB（非流式，见 §4）**（2026-11-04 更正：注册表已扩到 43 表，恢复改为行落盘流式，峰值 54.9MB，见 §0.1）** |
 | 恢复原子性故障矩阵 | 21 个恢复测试全部通过（含数据库已提交但归档失败回滚、崩溃续跑、权限/磁盘满/文件锁、旧备份保留扩展模块） |
 | 退出超时事件恢复 | 17 个 pipeline 退出/暂存测试 + 6 个 spool 测试通过（3000 条跨队列与合并缓冲、500 条排空、HTTP 在途、暂存失败如实报告、重启幂等重放） |
 | 控制台闪窗修复 | `winproc::hidden()` + `CREATE_NO_WINDOW`；新增单元测试通过；隔离实例 `--agentctl scan` 采样 201 次控制台工具进程，0 个可见窗口句柄 |
@@ -621,9 +621,10 @@ release exe 直接运行验证：进程稳定、全部适配器启动、`GET /ap
 npm test                              # 前端 133 例（21 文件）
 cd src-tauri && cargo test            # lib 380 通过 + 2 前台锁环境失败 + 3 ignored；集成 1 通过 + 10 ignored
 cargo test --lib commands::restore::tests -- --nocapture   # 恢复原子性 21 例
+$env:TASK_DOCK_SCALE_TEST="1"
 cargo test --release --lib \
   commands::backup::tests::full_backup_100k_events_10k_notifications_roundtrip \
-  -- --ignored --nocapture            # 100k 规模备份/恢复（约 11s 测试体，构建另计）
+  -- --nocapture            # 100k 规模备份/恢复（约 11s 测试体，构建另计；未设置开关时快速跳过）
 npm run build                         # tsc + vite
 npm run tauri build                   # 安装包
 ```

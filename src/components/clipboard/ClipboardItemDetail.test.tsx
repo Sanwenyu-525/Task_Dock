@@ -141,6 +141,43 @@ describe("文件专属操作", () => {
     expect((revealB as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("切换条目后，旧路径查询的迟到结果不得覆盖新条目状态", async () => {
+    let resolveOld: (v: string[]) => void = () => {};
+    const oldQuery = new Promise<string[]>((r) => {
+      resolveOld = r;
+    });
+    bridge.clipboardPathStatus.mockImplementation((paths: string[]) =>
+      paths[0] === "C:\\old.txt" ? oldQuery : Promise.resolve(["ok"]),
+    );
+    bridge.clipboardItem.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "old"
+          ? makeItem({ id: "old", kind: "files", text: "C:\\old.txt", file_paths: ["C:\\old.txt"] })
+          : makeItem({ id: "new", kind: "files", text: "C:\\new.txt", file_paths: ["C:\\new.txt"] }),
+      ),
+    );
+    const props = {
+      linkTask: null,
+      askConfirm: ({ run }: { run: () => void }) => void run(),
+      onBack: vi.fn(),
+      onChanged: vi.fn(),
+    };
+    const view = render(<ClipboardItemDetail itemId="old" {...props} />);
+    await waitFor(() => expect(bridge.clipboardPathStatus).toHaveBeenCalledTimes(1));
+
+    view.rerender(<ClipboardItemDetail itemId="new" {...props} />);
+    await waitFor(() => expect(bridge.clipboardPathStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(document.querySelector(".clip-path-state")!.textContent).toContain("存在"),
+    );
+
+    // 旧查询此时才返回「已不存在」：已卸载的 effect 不得把新条目的状态改回去
+    resolveOld(["missing"]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector(".clip-path-state")!.textContent).toContain("存在");
+    expect(document.querySelector(".clip-path-state")!.textContent).not.toContain("已不存在");
+  });
+
   it("单文件块级操作与行内操作分别调用打开/定位命令", async () => {
     bridge.clipboardPathStatus.mockResolvedValue(["ok"]);
     await renderDetail(
@@ -215,6 +252,25 @@ describe("单文件顶部操作与文件状态同源", () => {
     // 行内按钮同样禁用（同一判定，不是两套口径）
     const rowOpen = document.querySelector<HTMLButtonElement>('button[aria-label^="打开"]')!;
     expect(rowOpen.disabled).toBe(true);
+    expect(bridge.clipboardOpenLocalPath).not.toHaveBeenCalled();
+  });
+
+  it("后台繁忙（并发配额已满）：提示区分繁忙，状态仍是无法确认，且不自动重试", async () => {
+    bridge.clipboardPathStatus.mockRejectedValue({
+      code: "SERVICE_OVERLOADED",
+      category: "service",
+      severity: "warning",
+      retryable: true,
+      message: "服务繁忙，请稍后重试：文件状态检查任务过多",
+    });
+    await renderSingleFile();
+    await waitFor(() => expect(topOpen().disabled).toBe(true));
+    expect(topReveal().disabled).toBe(true);
+    expect(screen.getByText(/后台繁忙/)).toBeTruthy();
+    const badge = document.querySelector(".clip-path-state")!;
+    expect(badge.textContent).toContain("无法确认");
+    expect(badge.textContent).not.toContain("已不存在");
+    expect(bridge.clipboardPathStatus).toHaveBeenCalledTimes(1);
     expect(bridge.clipboardOpenLocalPath).not.toHaveBeenCalled();
   });
 

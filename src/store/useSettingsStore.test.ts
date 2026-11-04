@@ -71,7 +71,7 @@ beforeEach(() => {
 });
 
 describe("设置加载与预设回退", () => {
-  it("旧库缺 visual_preset：安全回退 dream-gradient，并写入 DOM 标记", async () => {
+  it("旧库缺 visual_preset：安全回退 frosted，并写入 DOM 标记", async () => {
     api.getSettings.mockResolvedValue({ ...baseSettings });
     api.applyWindowMaterial.mockResolvedValue({
       material: "glass",
@@ -82,10 +82,12 @@ describe("设置加载与预设回退", () => {
 
     await useSettingsStore.getState().load();
 
-    expect(document.documentElement.dataset.preset).toBe("dream-gradient");
+    expect(document.documentElement.dataset.preset).toBe("frosted");
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(document.documentElement.dataset.material).toBe("glass");
     expect(document.documentElement.dataset.nativeGlass).toBe("true");
+    // clear_foreground 已废弃：即使库里是 dark，也不再写 data-clear-fg
+    expect(document.documentElement.dataset.clearFg).toBeUndefined();
   });
 
   it("未知预设值同样回退，不会出现空 data-preset", async () => {
@@ -98,7 +100,30 @@ describe("设置加载与预设回退", () => {
     });
 
     await useSettingsStore.getState().load();
-    expect(document.documentElement.dataset.preset).toBe("dream-gradient");
+    expect(document.documentElement.dataset.preset).toBe("frosted");
+  });
+
+  it("历史值 liquid-glass / clear 读到即归一为 frosted，且不再读取 clear_foreground", async () => {
+    for (const legacy of ["liquid-glass", "clear"]) {
+      document.documentElement.removeAttribute("data-preset");
+      api.getSettings.mockResolvedValue({
+        ...baseSettings,
+        visual_preset: legacy,
+        clear_foreground: "dark",
+      });
+      api.applyWindowMaterial.mockResolvedValue({
+        material: "glass",
+        applied: true,
+        effect: "mica",
+        os_version: "10.0.26100",
+      });
+
+      await useSettingsStore.getState().load();
+
+      expect(document.documentElement.dataset.preset).toBe("frosted");
+      expect(document.documentElement.dataset.clearFg).toBeUndefined();
+      expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "frosted");
+    }
   });
 });
 
@@ -161,7 +186,7 @@ describe("材质以实际生效值驱动", () => {
 
     expect(useSettingsStore.getState().materialInfo?.resolved).toBe("solid");
     expect(document.documentElement.dataset.material).toBe("solid");
-    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("solid", "dream-gradient");
+    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("solid", "frosted");
   });
 
   it("原生 Mica：渲染通道为 native，才允许原生半透明语言", async () => {
@@ -209,7 +234,7 @@ describe("材质以实际生效值驱动", () => {
     flags.transparency = true;
     await useSettingsStore.getState().load();
     expect(useSettingsStore.getState().materialInfo?.resolved).toBe("solid");
-    expect(api.applyWindowMaterial).toHaveBeenCalledWith("solid", "dream-gradient");
+    expect(api.applyWindowMaterial).toHaveBeenCalledWith("solid", "frosted");
 
     // 2) 用户关闭该偏好 → 必须重新应用 glass（而不是只恢复 CSS 半透明）
     api.applyWindowMaterial.mockClear();
@@ -219,7 +244,7 @@ describe("材质以实际生效值驱动", () => {
       expect(useSettingsStore.getState().materialInfo?.resolved).toBe("glass");
     });
 
-    expect(api.applyWindowMaterial).toHaveBeenCalledWith("glass", "dream-gradient");
+    expect(api.applyWindowMaterial).toHaveBeenCalledWith("glass", "frosted");
     expect(document.documentElement.dataset.material).toBe("glass");
     expect(document.documentElement.dataset.nativeGlass).toBe("true");
   });
@@ -256,7 +281,7 @@ describe("异步材质结果", () => {
     // 否则两条 IPC 可能乱序落到主线程，窗口留下旧材质而界面已是新设置。
     await new Promise((r) => setTimeout(r, 20));
     expect(api.applyWindowMaterial).toHaveBeenCalledTimes(1);
-    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "dream-gradient");
+    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "frosted");
 
     // 旧探测后返回：序号已过期，结果必须被丢弃
     resolveGlass({
@@ -270,7 +295,7 @@ describe("异步材质结果", () => {
     await secondP;
 
     // 排队的 solid 随后执行并最终落地
-    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("solid", "dream-gradient");
+    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("solid", "frosted");
     expect(document.documentElement.dataset.material).toBe("solid");
     expect(document.documentElement.dataset.nativeGlass).toBe("false");
     expect(useSettingsStore.getState().materialInfo?.resolved).toBe("solid");
@@ -287,29 +312,29 @@ describe("预设切换", () => {
       os_version: "10.0.26100",
     });
     await useSettingsStore.getState().load();
-    expect(document.documentElement.dataset.preset).toBe("dream-gradient");
+    expect(document.documentElement.dataset.preset).toBe("frosted");
 
     api.updateSettings.mockImplementation(async (patch: Record<string, unknown>) => ({
       ...baseSettings,
       ...patch,
     }));
 
-    await useSettingsStore.getState().update({ visual_preset: "liquid-glass" } as never);
+    await useSettingsStore.getState().update({ visual_preset: "dream-gradient" } as never);
 
-    expect(document.documentElement.dataset.preset).toBe("liquid-glass");
-    expect(api.applyWindowRadius).toHaveBeenCalledWith(20);
-    // 预设会改变原生层取舍（清透必须强制无原生模糊），因此要重放一次材质，
-    // 但只此一次，不重建窗口。
+    expect(api.updateSettings).toHaveBeenCalledWith({ visual_preset: "dream-gradient" });
+    expect(document.documentElement.dataset.preset).toBe("dream-gradient");
+    expect(api.applyWindowRadius).toHaveBeenCalledWith(18);
+    // 预设切换会重放一次材质，但只此一次，不重建窗口。
     expect(api.applyWindowMaterial).toHaveBeenCalledTimes(2);
-    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "liquid-glass");
+    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "dream-gradient");
   });
 
-  it("切到清透：写前景属性并让后端按 clear 强制 CSS 通道", async () => {
-    api.getSettings.mockResolvedValue({ ...baseSettings });
+  it("写侧兼容：历史值 liquid-glass / clear 入库前归一为 frosted", async () => {
+    api.getSettings.mockResolvedValue({ ...baseSettings, visual_preset: "frosted" });
     api.applyWindowMaterial.mockResolvedValue({
       material: "glass",
       applied: true,
-      effect: "css",
+      effect: "mica",
       os_version: "10.0.26100",
     });
     await useSettingsStore.getState().load();
@@ -318,10 +343,14 @@ describe("预设切换", () => {
       ...baseSettings,
       ...patch,
     }));
-    await useSettingsStore.getState().update({ visual_preset: "clear" } as never);
+    for (const legacy of ["liquid-glass", "clear"]) {
+      await useSettingsStore.getState().update({ visual_preset: legacy } as never);
 
-    expect(document.documentElement.dataset.preset).toBe("clear");
-    expect(document.documentElement.dataset.clearFg).toBe("auto");
-    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "clear");
+      expect(api.updateSettings).toHaveBeenLastCalledWith({ visual_preset: "frosted" });
+      expect(document.documentElement.dataset.preset).toBe("frosted");
+      expect(api.applyWindowRadius).toHaveBeenLastCalledWith(20);
+      expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "frosted");
+      expect(document.documentElement.dataset.clearFg).toBeUndefined();
+    }
   });
 });

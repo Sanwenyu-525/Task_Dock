@@ -32,6 +32,23 @@ import { useUiStore } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
+import { useSettingsStore } from "../store/useSettingsStore";
+import { allEntryIds } from "../lib/navigationRegistry";
+
+/** 写入一份指定左侧可见入口的导航配置（known 覆盖当前全部入口，确保其余为「用户隐藏」）。 */
+function seedLeftLayout(left: string[]) {
+  useSettingsStore.setState({
+    settings: {
+      ...(useSettingsStore.getState().settings ?? {}),
+      navigation_layout: {
+        version: 1,
+        left,
+        capsule: [],
+        known: { left: allEntryIds("left"), capsule: allEntryIds("capsule") },
+      },
+    } as never,
+  });
+}
 
 function seedCounts() {
   useUiStore.setState({ tab: "tasks", quickAddToken: 0 });
@@ -92,12 +109,12 @@ describe("完整模式左侧导航", () => {
     ]);
 
     await user.click(navItem("应用"));
-    expect(screen.getByText("apps-panel")).toBeTruthy();
+    expect(await screen.findByText("apps-panel")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("apps");
     expect(navItem("应用").getAttribute("aria-current")).toBe("page");
 
     await user.click(navItem("微件"));
-    expect(screen.getByText("widgets-panel")).toBeTruthy();
+    expect(await screen.findByText("widgets-panel")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("widgets");
     expect(navItem("微件").getAttribute("aria-current")).toBe("page");
   });
@@ -107,13 +124,13 @@ describe("完整模式左侧导航", () => {
     render(<FullView />);
 
     await user.click(navItem("历史"));
-    expect(screen.getByText("history-panel")).toBeTruthy();
+    expect(await screen.findByText("history-panel")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("history");
     expect(navItem("历史").getAttribute("aria-current")).toBe("page");
     expect(navItem("任务").getAttribute("aria-current")).toBeNull();
 
     await user.click(navItem("设置"));
-    expect(screen.getByText("settings-panel")).toBeTruthy();
+    expect(await screen.findByText("settings-panel")).toBeTruthy();
   });
 
   it("剪贴板是第 4 个入口，点击后进入剪贴板页面", async () => {
@@ -155,7 +172,7 @@ describe("完整模式左侧导航", () => {
     render(<FullView />);
 
     await user.click(navItem("规划中心"));
-    expect(screen.getByText("roadmap-panel")).toBeTruthy();
+    expect(await screen.findByText("roadmap-panel")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("roadmap");
     expect(navItem("规划中心").getAttribute("aria-current")).toBe("page");
     expect(navItem("历史").getAttribute("aria-current")).toBeNull();
@@ -198,3 +215,83 @@ describe("完整模式左侧导航", () => {
     expect(badges).toEqual(["3", "2"]);
   });
 });
+
+// 导航显隐与排序（统一导航架构）：隐藏入口从侧栏移除，但仍可从「更多」重新打开；
+// 当前页即使被隐藏也不插回侧栏，选中态由「更多」承担，避免布局跳动。
+describe("导航显隐", () => {
+  afterEach(() => {
+    useSettingsStore.setState({ settings: null });
+    sessionStorage.clear();
+  });
+
+  it("隐藏入口从侧栏移除，可从「更多」重新打开且不插回侧栏", async () => {
+    const user = userEvent.setup();
+    seedLeftLayout(allEntryIds("left").filter((id) => id !== "apps"));
+    render(<FullView />);
+
+    // 侧栏不再有「应用」入口，但出现「更多」再入口
+    expect(screen.queryByRole("button", { name: "应用" })).toBeNull();
+    const more = screen.getByRole("button", { name: "更多导航入口" });
+    await user.click(more);
+    // 当前页未打开时菜单项不勾选
+    expect(screen.getByRole("menuitemradio", { name: "应用" }).getAttribute("aria-checked")).toBe(
+      "false",
+    );
+    await user.click(screen.getByRole("menuitemradio", { name: "应用" }));
+
+    // 隐藏只影响侧栏：页面照常渲染，但**图标绝不临时插回**，其余图标位置不动
+    expect(useUiStore.getState().tab).toBe("apps");
+    expect(await screen.findByText("apps-panel")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "应用" })).toBeNull();
+    // 选中态改由「更多」承担：按钮标记为当前页，菜单内该项处于勾选状态
+    expect(more.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("当前页被隐藏时「更多」保持持久选中态，菜单项显示当前状态", async () => {
+    const user = userEvent.setup();
+    seedLeftLayout(allEntryIds("left").filter((id) => id !== "apps"));
+    useUiStore.setState({ tab: "apps" });
+    render(<FullView />);
+
+    const more = screen.getByRole("button", { name: "更多导航入口" });
+    expect(more.getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("button", { name: "应用" })).toBeNull();
+
+    await user.click(more);
+    expect(
+      screen.getByRole("menuitemradio", { name: "应用" }).getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("按配置顺序渲染；「设置」锁定入口即使缺失也补回底部", () => {
+    // 把剪贴板排到最前，并从配置中删掉「设置」模拟旧数据/损坏数据。
+    const ids = allEntryIds("left").filter((id) => id !== "settings" && id !== "clipboard");
+    seedLeftLayout(["clipboard", ...ids]);
+    render(<FullView />);
+
+    const labels = [...document.querySelectorAll(".rail-items .rail-label")].map(
+      (node) => node.textContent,
+    );
+    expect(labels[0]).toBe("剪贴板");
+    // 锁定入口不可隐藏：归一化后自动补回，且固定末尾
+    const settingsButton = screen.getByRole("button", { name: "设置" });
+    expect(settingsButton).toBeTruthy();
+    expect(labels[labels.length - 1]).toBe("设置");
+    // 未隐藏项不会出现在「更多」
+    expect(screen.queryByRole("button", { name: "更多导航入口" })).toBeNull();
+  });
+
+  it("「更多」底部「自定义导航」跳设置页并请求展开导航分区", async () => {
+    const user = userEvent.setup();
+    seedLeftLayout(allEntryIds("left").filter((id) => id !== "apps"));
+    render(<FullView />);
+
+    await user.click(screen.getByRole("button", { name: "更多导航入口" }));
+    await user.click(screen.getByRole("menuitem", { name: "自定义导航" }));
+
+    expect(useUiStore.getState().tab).toBe("settings");
+    expect(await screen.findByText("settings-panel")).toBeTruthy();
+    expect(sessionStorage.getItem("taskdock.settings.reveal.v1")).toBe("navigation");
+  });
+});
+

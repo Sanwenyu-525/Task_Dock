@@ -102,21 +102,15 @@
 
 /* ── 卡片 ─────────────────────────────────────────────────── */
 
+/* 微件卡：只读信息卡（可拖拽换序，但整卡没有点击行为），
+   卡面 / 圆角 / 阴影由 .surface-card 提供；不再做整卡 hover 抬升，
+   避免暗示一个不存在的点击。操作反馈只来自卡内图标按钮。 */
 .widget-card {
   display: flex;
   flex-direction: column;
   gap: 9px;
   min-width: 0;
   padding: 10px 12px 9px;
-  border-radius: var(--radius-card);
-  background: var(--card-face);
-  box-shadow: var(--card-shadow);
-  transition: box-shadow 0.16s ease, transform 0.16s ease;
-}
-
-.widget-card:hover {
-  box-shadow: var(--card-shadow-hover);
-  transform: translateY(-1px);
 }
 
 .widget-card.dragging {
@@ -697,9 +691,5 @@
   .widget-row,
   .widget-action-btn {
     transition: none;
-  }
-
-  .widget-card:hover {
-    transform: none;
   }
 }

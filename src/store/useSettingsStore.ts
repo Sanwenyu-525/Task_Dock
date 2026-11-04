@@ -5,7 +5,7 @@
 //!
 //!   settings（持久化偏好）
 //!     ├─ theme          → html[data-theme]            （light | dark）
-//!     ├─ visual_preset  → html[data-preset]           （含 frosted | clear 两种玻璃外观）
+//!     ├─ visual_preset  → html[data-preset]           （frosted | dream-gradient）
 //!     └─ material       → html[data-material]         （**实际生效值**，可能已降级）
 //!
 //! 三条硬约束：
@@ -29,7 +29,6 @@ import {
   hasNativeGlass,
   presetRadius,
   readSystemFlags,
-  resolveClearForeground,
   resolveGlassRender,
   resolveMaterial,
   resolveTheme,
@@ -103,11 +102,7 @@ export const useSettingsStore = create<{
     const preset = currentPreset();
     const root = document.documentElement;
     root.dataset.preset = preset;
-    // 清透模式把「玻璃材质」与「前景配色」拆成两个维度：材质始终透明，
-    // 前景可强制深/浅（浅桌面用深字、深桌面用浅字）。auto 跟随 data-theme。
-    root.dataset.clearFg = resolveClearForeground(
-      useSettingsStore.getState().settings?.clear_foreground,
-    );
+    // clear_foreground 已废弃（清透预设下线）：不再读取，也不写 data-clear-fg。
     const radius = presetRadius(preset);
     if (radius !== lastRadius) {
       lastRadius = radius;
@@ -235,20 +230,33 @@ export const useSettingsStore = create<{
     },
 
     update: async (patch) => {
-      const s = await updateSettings(patch);
+      // 写侧兼容：历史调用方可能仍传 liquid-glass / clear，先归一为 frosted 再入库。
+      const next: Partial<Settings> = patch.visual_preset
+        ? { ...patch, visual_preset: resolveVisualPreset(patch.visual_preset) }
+        : patch;
+      const s = await updateSettings(next);
       set({ settings: s });
-      if (patch.visual_preset || patch.clear_foreground) applyPresetToDom();
+      if (next.visual_preset) applyPresetToDom();
       if (patch.theme) applyThemeToDom();
-      // 预设会改变原生层的取舍（清透 = 无原生模糊，柔光 = 恢复原生/回退），
-      // 因此预设切换必须重走一次材质应用，无需重启窗口。
-      if (patch.material || patch.visual_preset) await applyMaterial();
+      // 预设切换后重放一次材质/圆角应用，保证窗口状态与最新设置一致；
+      // 原生后端已不再按预设名分支，这里保留重放以覆盖并行修改。
+      if (patch.material || next.visual_preset) await applyMaterial();
     },
 
     syncExternal: (patch) => {
       const s = get().settings;
       if (!s) return;
-      set({ settings: { ...s, ...patch } as Settings });
-      if (patch.visual_preset) {
+      const preset = patch.visual_preset
+        ? resolveVisualPreset(patch.visual_preset)
+        : undefined;
+      set({
+        settings: {
+          ...s,
+          ...patch,
+          ...(preset ? { visual_preset: preset } : {}),
+        } as Settings,
+      });
+      if (preset) {
         applyPresetToDom();
         void applyMaterial();
       }

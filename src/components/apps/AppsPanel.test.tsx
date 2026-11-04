@@ -31,6 +31,7 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
     navDeleteTarget: vi.fn(async () => {}),
     navScanApps: vi.fn(async () => ({ apps: [], scanned_at: "", duration_ms: 0, counts: {} })),
     navAllTaskLinks: vi.fn(async () => []),
+    navAppIcon: vi.fn(async () => null),
   };
 });
 
@@ -77,7 +78,7 @@ function seed(targets: NavTarget[]) {
     scan: null,
     scanning: false,
     scanError: null,
-    loadTaskLinks: vi.fn(async () => {}),
+    loadTaskLinks: vi.fn(async () => "ok" as const),
   });
   useUiStore.setState({ toast: null, tab: "apps" });
 }
@@ -99,16 +100,28 @@ describe("AppsPanel 应用中心", () => {
     expect(await screen.findByRole("dialog", { name: "添加应用与快捷方式" })).toBeTruthy();
   });
 
-  it("展示全部已配置应用（不受胶囊 6–7 个容量限制），末尾常驻添加入口", () => {
+  it("展示全部已配置应用（不受胶囊 6–7 个容量限制），添加入口只在顶部保留一处", () => {
     seed(
       Array.from({ length: 9 }, (_, i) =>
         targetFix({ id: `t-${i}`, app_key: `app-${i}`, display_name: `应用 ${i}` }),
       ),
     );
     render(<AppsPanel />);
-    expect(document.querySelectorAll(".apps-tile:not(.apps-tile-add)")).toHaveLength(9);
-    expect(document.querySelector(".apps-tile-add")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "添加应用" }).length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".apps-tile")).toHaveLength(9);
+    // 网格末尾不再有重复的添加卡片，只保留顶部主操作
+    expect(document.querySelector(".apps-tile-add")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "添加应用" })).toHaveLength(1);
+  });
+
+  it("无任何应用时保留空态添加引导，不渲染空网格", async () => {
+    seed([]);
+    render(<AppsPanel />);
+    expect(document.querySelector(".apps-grid")).toBeNull();
+    expect(screen.getByText(/还没有配置应用/)).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "添加应用" })).toHaveLength(2);
+
+    fireEvent.click(screen.getByText(/还没有配置应用/).parentElement!.querySelector("button")!);
+    expect(await screen.findByRole("dialog", { name: "添加应用与快捷方式" })).toBeTruthy();
   });
 
   it("搜索按名称即时过滤、可清除，无结果给出明确空状态（不触发扫描）", () => {
@@ -216,6 +229,42 @@ describe("AppsPanel 应用中心", () => {
     expect(screen.queryByText("会话 A")).toBeNull();
   });
 
+  it("编辑配置在页内展开（无弹窗），保存后刷新共享清单", async () => {
+    seed([targetFix()]);
+    render(<AppsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Obsidian" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /编辑配置/ }));
+
+    const form = await screen.findByRole("region", { name: "编辑应用配置" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(form.textContent).toContain(targetFix().exe_path);
+
+    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "Obsidian 笔记" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(navUpdateTarget).toHaveBeenCalledWith(
+        "target-obs",
+        expect.objectContaining({ display_name: "Obsidian 笔记" }),
+      ),
+    );
+    await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
+    expect(screen.queryByRole("region", { name: "编辑应用配置" })).toBeNull();
+  });
+
+  it("有未保存更改时点「添加应用」先确认，不静默丢弃输入", async () => {
+    seed([targetFix()]);
+    render(<AppsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Obsidian" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /编辑配置/ }));
+    fireEvent.change(screen.getByLabelText("显示名称"), { target: { value: "改名后" } });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "添加应用" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: /放弃未保存的更改/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect((screen.getByLabelText("显示名称") as HTMLInputElement).value).toBe("改名后");
+  });
+
   it("隐藏目标不出现在应用中心；删除需确认并同步共享清单", async () => {
     seed([
       targetFix({ id: "a", app_key: "obsidian", display_name: "Obsidian" }),
@@ -232,6 +281,124 @@ describe("AppsPanel 应用中心", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
     await waitFor(() => expect(navDeleteTarget).toHaveBeenCalledWith("a"));
     await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
+  });
+
+  it("单行卡片：真实图标、收藏与更多并列，均不触发启动；菜单保留三项操作", async () => {
+    seed([targetFix()]);
+    render(<AppsPanel />);
+
+    const main = screen.getByRole("button", { name: "启动 Obsidian" });
+    expect(screen.getAllByRole("button", { name: "启动 Obsidian" })).toHaveLength(1);
+    expect(main.querySelector(".app-icon")).toBeTruthy();
+    // 独立的火箭启动按钮已删除：卡片内只剩「主区域 / 收藏 / 更多」三个按钮
+    expect(document.querySelector(".apps-tile")?.querySelectorAll("button")).toHaveLength(3);
+    expect(screen.queryByLabelText("启动 / 聚焦窗口")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "收藏 Obsidian" }));
+    expect(navNavigate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Obsidian" }));
+    expect(await screen.findByRole("menuitem", { name: /编辑配置/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /隐藏/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /从快捷列表删除/ })).toBeTruthy();
+    expect(navNavigate).not.toHaveBeenCalled();
+  });
+
+  it("菜单展开时卡片保持 menu-open 状态，关闭后恢复", async () => {
+    seed([targetFix()]);
+    render(<AppsPanel />);
+    const more = screen.getByRole("button", { name: "更多操作：Obsidian" });
+    fireEvent.click(more);
+    await waitFor(() => expect(more.getAttribute("aria-expanded")).toBe("true"));
+    expect(document.querySelector(".apps-tile.is-menu-open")).toBeTruthy();
+
+    // 选中菜单项后菜单关闭，卡片状态复位（不触发启动）
+    fireEvent.click(await screen.findByRole("menuitem", { name: /编辑配置/ }));
+    await waitFor(() => expect(document.querySelector(".apps-tile.is-menu-open")).toBeNull());
+    expect(navNavigate).not.toHaveBeenCalled();
+  });
+
+  it("启动进行中主按钮禁用，重复点击不会重复提交", async () => {
+    const t = targetFix();
+    seed([t]);
+    let resolveNavigate!: (value: {
+      success: boolean;
+      requested_action: string;
+      actual_action: string | null;
+      fallback_used: boolean;
+      target_id: string;
+      verification_level: string;
+    }) => void;
+    vi.mocked(navNavigate).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveNavigate = resolve;
+      }) as ReturnType<typeof navNavigate>,
+    );
+    render(<AppsPanel />);
+
+    const main = screen.getByRole("button", { name: "启动 Obsidian" }) as HTMLButtonElement;
+    fireEvent.click(main);
+    await waitFor(() => expect(main.disabled).toBe(true));
+    fireEvent.click(main);
+    expect(navNavigate).toHaveBeenCalledTimes(1);
+    expect(navNavigate).toHaveBeenCalledWith(t.id);
+
+    resolveNavigate({
+      success: true,
+      requested_action: "focus",
+      actual_action: "focus_window",
+      fallback_used: false,
+      target_id: t.id,
+      verification_level: "window-confirmed",
+    });
+    await waitFor(() => expect(main.disabled).toBe(false));
+    expect(navNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("超长名称保留在同一张单行卡片内，不破坏结构", () => {
+    const longName = "这是一个非常非常非常长的应用名称用于验证省略与不换行";
+    seed([targetFix({ display_name: longName })]);
+    render(<AppsPanel />);
+    const tile = document.querySelector(".apps-tile") as HTMLElement;
+    expect(tile.querySelector(".apps-tile-name")?.textContent).toBe(longName);
+    expect(tile.querySelectorAll("button")).toHaveLength(3);
+  });
+
+  it("hover 未截断的名称不挂 data-tip，不会把 exe 路径弹成浮层", () => {
+    seed([targetFix()]);
+    render(<AppsPanel />);
+    const main = screen.getByRole("button", { name: "启动 Obsidian" });
+    expect(main.dataset.tip).toBeUndefined();
+
+    fireEvent.mouseEnter(main);
+    // 名称完整可见时完全不弹提示；即使弹出也绝不能是 exe 路径
+    expect(main.dataset.tip).toBeUndefined();
+    expect(main.getAttribute("data-tip") ?? "").not.toContain(".exe");
+
+    fireEvent.mouseLeave(main);
+    expect(main.dataset.tip).toBeUndefined();
+  });
+
+  it("名称被省略号截断时，hover/focus 只提示应用名而不是 exe 路径", () => {
+    seed([targetFix({ display_name: "超长应用名称用于验证省略" })]);
+    render(<AppsPanel />);
+    const main = screen.getByRole("button", { name: "启动 超长应用名称用于验证省略" });
+    const name = main.querySelector(".apps-tile-name") as HTMLElement;
+    // jsdom 不做真实排版，直接注入「已截断」的滚动宽/可见宽
+    Object.defineProperty(name, "scrollWidth", { configurable: true, value: 220 });
+    Object.defineProperty(name, "clientWidth", { configurable: true, value: 80 });
+
+    fireEvent.mouseEnter(main);
+    expect(main.dataset.tip).toBe("超长应用名称用于验证省略");
+    expect(main.dataset.tip).not.toContain("Obsidian.exe");
+
+    fireEvent.mouseLeave(main);
+    expect(main.dataset.tip).toBeUndefined();
+
+    main.focus();
+    expect(main.dataset.tip).toBe("超长应用名称用于验证省略");
+    main.blur();
+    expect(main.dataset.tip).toBeUndefined();
   });
 
   it("清单加载失败显示错误与重试，不伪装成空列表", async () => {

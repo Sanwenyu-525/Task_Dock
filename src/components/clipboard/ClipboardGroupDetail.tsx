@@ -23,6 +23,7 @@ import {
   type CopyReport,
 } from "../../lib/bridge";
 import { copyPreflight, formatBytes, groupModeLabel, groupStatusLabel, kindLabel, objectHint } from "../../lib/clipboardUi";
+import { errorMessage } from "../../lib/errors";
 import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -180,7 +181,7 @@ export default function ClipboardGroupDetail({
       setNameInput(g.name);
       return g;
     } catch (e) {
-      showToast(`读取分组失败：${String(e)}`, { kind: "error" });
+      showToast(`读取分组失败：${errorMessage(e)}`, { kind: "error" });
       return null;
     }
   }
@@ -200,7 +201,7 @@ export default function ClipboardGroupDetail({
       })
       .catch((e) => {
         if (alive) {
-          showToast(`读取分组失败：${String(e)}`, { kind: "error" });
+          showToast(`读取分组失败：${errorMessage(e)}`, { kind: "error" });
           onBack();
         }
       });
@@ -223,7 +224,7 @@ export default function ClipboardGroupDetail({
     try {
       reportCopy(await clipboardCopyGroupRich(groupId));
     } catch (e) {
-      showToast(`复制富文本失败：${String(e)}`, { kind: "error" });
+      showToast(`复制富文本失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -234,7 +235,7 @@ export default function ClipboardGroupDetail({
     try {
       reportCopy(await clipboardCopyGroupFiles(groupId));
     } catch (e) {
-      showToast(`复制文件失败：${String(e)}`, { kind: "error" });
+      showToast(`复制文件失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -253,7 +254,7 @@ export default function ClipboardGroupDetail({
       );
       onChanged();
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`更新分组置顶失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -264,7 +265,7 @@ export default function ClipboardGroupDetail({
       showToast("分组已结束收集；之后的新截图会开启新分组", { kind: "success" });
       onChanged();
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`结束分组失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -278,7 +279,7 @@ export default function ClipboardGroupDetail({
       setRenaming(false);
       onChanged();
     } catch (e) {
-      showToast(`重命名失败：${String(e)}`, { kind: "error" });
+      showToast(`重命名失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -293,7 +294,7 @@ export default function ClipboardGroupDetail({
       setGroup(await clipboardMoveGroupItem(groupId, itemId, idx + delta));
       onChanged();
     } catch (e) {
-      showToast(`排序失败：${String(e)}`, { kind: "error" });
+      showToast(`排序失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -325,7 +326,7 @@ export default function ClipboardGroupDetail({
         scheduleRowExit(row, displayIndex, height, anchorId);
       }
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`从分组移除失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -360,7 +361,7 @@ export default function ClipboardGroupDetail({
       );
       onChanged();
     } catch (e) {
-      showToast(`拆分失败：${String(e)}`, { kind: "error" });
+      showToast(`拆分失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -374,7 +375,7 @@ export default function ClipboardGroupDetail({
       showToast(`已关联到任务「${linkTask.title}」`, { kind: "success" });
       closeDrawer();
     } catch (e) {
-      showToast(`关联失败：${String(e)}`, { kind: "error" });
+      showToast(`关联失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -704,11 +705,14 @@ export default function ClipboardGroupDetail({
         <WorkspaceLinkBar targetType="group" targetId={group.id} />
         <AgentExportPanel targetType="group" targetId={group.id} taskId={linkTask?.id ?? null} />
 
+        {/* 危险操作紧跟在「导出给 Agent」之后，与说明同一行；不单独占满整行。 */}
         <div className="clip-danger-zone">
-          <span>删除策略：删除分组默认保留历史内容；只有「删除分组及内容」会一并删除未被引用的条目。</span>
           <button className="btn sm danger" onClick={() => onDelete(true)}>
             <Trash2 size={11} /> 删除分组及内容
           </button>
+          <span className="clip-danger-note">
+            删除分组默认保留历史；「删除分组及内容」只删未被引用的条目。
+          </span>
         </div>
       </div>
 

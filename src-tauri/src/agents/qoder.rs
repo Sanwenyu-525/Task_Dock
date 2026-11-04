@@ -75,6 +75,7 @@ pub fn adapter() -> HooksAdapter {
         events: supported_events,
         detect_impl,
         hook_command: super::hooks_install::hook_command,
+        layout: super::hooks_install::HooksLayout::Flat,
         limitations: vec![
             "Qoder CN 与国际版配置根相同（~/.qoder），事件以官方 CN 文档为准；国际版未在本机联调前标记「待验证」".into(),
             "官方文档明示：配置可见 ≠ Hook 已被 Runtime 加载执行，需以实际任务验证".into(),

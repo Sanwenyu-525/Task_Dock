@@ -8,6 +8,17 @@ import {
   type PlanningProject,
 } from "../../lib/bridge";
 
+/** 内容区的滚动容器（页面级单一滚动）：向上找第一个 overflow-y 可滚动的祖先。 */
+export function findScrollParent(el: HTMLElement | null): HTMLElement | null {
+  let p = el?.parentElement ?? null;
+  while (p) {
+    const oy = getComputedStyle(p).overflowY;
+    if (oy === "auto" || oy === "scroll") return p;
+    p = p.parentElement;
+  }
+  return null;
+}
+
 export function PlanningProgressBar({
   value,
   large = false,

@@ -281,7 +281,9 @@ docked-revealed → docked-hidden | docked-visible | free
   （2026-11-04 更正：分段已改为各自的真实查询——全部 `status=all, sort=created`、
   待办 `status=pending, sort=due`、今日 `view=due_today, status=pending`、
   日程 `view=scheduled, status=pending`、已完成 `status=completed, sort=completed`；
-  后端先过滤/排序再 `LIMIT 12`，本地不再二次截断，避免逾期任务挤掉今天到期项。）
+  后端先过滤/排序再 `LIMIT 12`，本地不再二次截断，避免逾期任务挤掉今天到期项。
+  2026-11-04 再更正：日程改用 `sort=scheduled`（未来/未逾期在前、逾期在后），
+  成员不变（逾期仍属日程），面板保留后端顺序、不再本地按逾期优先重排。）
 - **Agent** `AgentsLite`：`useAgentsStore.snapshot` 派生 `liveRuns` / `liveSummary`，
   按 failed → waiting → running → disconnected 排序；会话数/运行数/时间全部来自快照，
   不写死名称、不伪造进度；每个 Agent 只有「打开会话」「查看」两个真实动作。
@@ -616,3 +618,13 @@ Agent 状态球与四个分类共用同一张方向表，不再有「端头一�
   （被夹住时允许相对图标轻微不对称，但不压图标、不出界）。
 - 气泡尺寸取 `offsetWidth/offsetHeight`（布局尺寸）。入场动画对浮层做了 scale，若按首帧
   `getBoundingClientRect` 计算，动画结束后会残留半条尺寸差造成的偏移。
+
+**补充（2026-11-04）：胶囊导航独立配置**
+
+- 胶囊轨道的图标可见性与排序来自 `navigationRegistry` 的 capsule 面，与完整面板的左侧导航
+  完全独立（隐藏完整面板的剪贴板不影响胶囊）。
+- 配置只改变 `CapsuleRail` 内部按钮的渲染集合与顺序；原生窗口尺寸、四边停靠、区域裁剪、
+  点击命中区与几何契约不变，不随可见图标数量变化。
+- 当前激活分类被隐藏时切到仍可见分类（优先 Agent 状态球），全部隐藏时收起面板；
+  设置页提供单面恢复默认，胶囊轨道始终保留「回到完整面板 / 收起」控件作为恢复路径。
+- 回归：`CapsuleDock.test.tsx`、`CapsulePanels.test.tsx`、`CapsuleRail.tooltip.test.tsx`。

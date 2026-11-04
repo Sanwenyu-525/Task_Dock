@@ -6,6 +6,7 @@ export { default as Combobox, type ComboboxProps } from "./Combobox";
 export { default as DropdownMenu, type DropdownMenuItem, type DropdownMenuProps } from "./DropdownMenu";
 export { default as Popover, type PopoverProps } from "./Popover";
 export { default as DateTimePicker, type DateTimePickerProps } from "./DateTimePicker";
+export { default as DatePicker, type DatePickerProps } from "./DatePicker";
 export { default as NumberInput, type NumberInputProps } from "./NumberInput";
 export { default as Tooltip, type TooltipProps } from "./Tooltip";
 export { Dialog, ConfirmDialog, type DialogProps, type ConfirmDialogProps } from "./Dialog";

@@ -81,8 +81,9 @@ const AGENTS: &[AgentAppDef] = &[
     },
     AgentAppDef {
         source_id: "trae",
-        exe_stems: &["trae"],
-        local_hints: &[("Trae", "Trae.exe")],
+        // 国际版 Trae.exe 与 CN 版 "Trae CN.exe" 是独立产品，两个都要匹配
+        exe_stems: &["trae", "trae cn"],
+        local_hints: &[("Trae", "Trae.exe"), ("Trae CN", "Trae CN.exe")],
         title_hint: "Trae",
         // Trae/Qoder 为 VS Code 系 IDE；打开目录属 CLI 惯例，帮助文本可核验
         workspace_cli: Some(("trae", "cli-convention")),

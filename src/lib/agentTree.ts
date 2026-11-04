@@ -121,6 +121,13 @@ export interface TreeAgent {
   instances: TreeInstance[];
   /** 未关联实例的会话（保持真实关系，不伪造 default 实例） */
   unassignedSessions: TreeSession[];
+  /**
+   * 是否有真实接入证据（事件产生的会话或实例）。
+   * 与 liveState 正交：运行中的软件可以 connected=false（监控未接入），
+   * 未运行的软件也可能有历史会话（connected=true, liveState=idle）。
+   */
+  connected: boolean;
+  sessionCount: number;
 }
 
 /** 会话/Agent 关注优先级：等待介入 > 失败 > 运行中 > 失联 > 空闲。 */
@@ -173,6 +180,11 @@ export function buildTree(snapshot: AgentSnapshot, now = Date.now()): TreeAgent[
     runsBySession.set(r.session_id, list);
   }
 
+  const instanceCountBySource = new Map<string, number>();
+  for (const i of snapshot.instances) {
+    instanceCountBySource.set(i.source_id, (instanceCountBySource.get(i.source_id) ?? 0) + 1);
+  }
+
   const sessionsBySource = new Map<string, AgentSession[]>();
   for (const s of snapshot.sessions) {
     const list = sessionsBySource.get(s.source_id) ?? [];
@@ -182,8 +194,10 @@ export function buildTree(snapshot: AgentSnapshot, now = Date.now()): TreeAgent[
 
   const agents: TreeAgent[] = [];
   for (const src of snapshot.sources) {
+    // 不再跳过无会话的 Agent：进程存在但未接入时也必须可见（展示为「监控未接入」），
+    // 但 liveState 保持 idle，绝不把「软件在运行」当成「正在执行任务」。
     const sessions = sessionsBySource.get(src.id) ?? [];
-    if (sessions.length === 0) continue;
+    const connected = sessions.length > 0 || (instanceCountBySource.get(src.id) ?? 0) > 0;
 
     const groups = new Map<string, TreeSession[]>();
     const unassigned: TreeSession[] = [];
@@ -239,6 +253,8 @@ export function buildTree(snapshot: AgentSnapshot, now = Date.now()): TreeAgent[
       activeCount,
       instances,
       unassignedSessions: unassigned,
+      connected,
+      sessionCount: sessions.length,
     });
   }
 

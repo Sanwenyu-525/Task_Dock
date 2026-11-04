@@ -83,6 +83,7 @@ pub fn adapter() -> HooksAdapter {
         events: supported_events,
         detect_impl,
         hook_command: super::hooks_install::hook_command,
+        layout: super::hooks_install::HooksLayout::Flat,
         limitations: vec![
             "只接入用户级 ~/.cursor/hooks.json；项目级 hooks 不由 Task Dock 修改".into(),
             "Cursor 版本的 Hook 事件集合可能变化，安装前以二进制实扫结果为准".into(),

@@ -58,6 +58,18 @@ struct RegionStamp {
     scale_milli: u32,
 }
 
+/// 一次成功应用的**胶囊**区域参数。胶囊区域不是圆角矩形，半径档位对它是无意义的；
+/// 真正决定区域内容的是胶囊参数、物理尺寸与 DPI。与 `RegionStamp` 分开记录，
+/// 避免整窗/胶囊两种形态在同一次尺寸下互相误命中。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CapsuleStamp {
+    hwnd: isize,
+    width: u32,
+    height: u32,
+    scale_milli: u32,
+    params: CapsuleParams,
+}
+
 /// 应用对象：完整主窗与独立弹窗（右键菜单）。两者都用圆角区域，
 /// 但主窗的区域半径额外内收 `REGION_AA_INSET`，把硬边藏进 CSS 抗锯齿弧外侧。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +83,8 @@ enum ShapeTarget {
 #[derive(Default)]
 struct RegionCache {
     stamps: HashMap<isize, RegionStamp>,
+    /// 胶囊区域最近一次成功应用的参数（按 hwnd）。命中也必须回读校验后才跳过重设。
+    capsule_stamps: HashMap<isize, CapsuleStamp>,
     /// 每窗口最近一次 pass 的物理尺寸（仅用于判断稳定性，不参与缓存命中）。
     last_pass_size: HashMap<isize, (i32, i32)>,
 }
@@ -89,6 +103,14 @@ impl RegionCache {
         self.stamps.insert(stamp.hwnd, stamp);
     }
 
+    fn capsule_is_current(&self, stamp: &CapsuleStamp) -> bool {
+        self.capsule_stamps.get(&stamp.hwnd) == Some(stamp)
+    }
+
+    fn update_capsule(&mut self, stamp: CapsuleStamp) {
+        self.capsule_stamps.insert(stamp.hwnd, stamp);
+    }
+
     fn last_pass_size(&self, hwnd: isize) -> Option<(i32, i32)> {
         self.last_pass_size.get(&hwnd).copied()
     }
@@ -100,6 +122,7 @@ impl RegionCache {
     /// 窗口销毁时清理对应记录，防止句柄复用后误判「已应用」。
     fn forget(&mut self, hwnd: isize) {
         self.stamps.remove(&hwnd);
+        self.capsule_stamps.remove(&hwnd);
         self.last_pass_size.remove(&hwnd);
     }
 }
@@ -1054,6 +1077,25 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
         );
         return false;
     };
+    let stamp = CapsuleStamp {
+        hwnd,
+        width: w as u32,
+        height: h as u32,
+        scale_milli: (scale * 1000.0).round() as u32,
+        params: cap,
+    };
+    // 缓存命中 + 回读校验：Moved / Focused(true) 等不改尺寸的事件也会走到这里，
+    // 尺寸、DPI 与胶囊参数都没变时区域内容必然一致，不必重复 CreatePolygonRgn +
+    // SetWindowRgn（重设同一区域会触发整窗失效并被系统重新裁剪）。系统重置区域
+    // 或形态被外部改写时回读校验会失败，仍按原路径重建（保留失败恢复）。
+    let cached = {
+        let cache = REGIONS.lock().unwrap_or_else(|e| e.into_inner());
+        cache.capsule_is_current(&stamp)
+    } && capsule_region_matches(hwnd, &set);
+    if cached {
+        apply_dwm(hwnd, dwm_rounded_for(MainRegionShape::Capsule));
+        return true;
+    }
     let round =
         |r: &CapsuleRegionRect| support_rect_rgn(r.x, r.y, r.width, r.height, r.radius as f64);
     let applied = unsafe {
@@ -1105,6 +1147,13 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
         verified,
         "胶囊区域应用"
     );
+    if verified {
+        // 只有回读校验通过才记缓存：写入失败/被系统改写后下一次仍会完整重建。
+        REGIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .update_capsule(stamp);
+    }
     // 胶囊态的可见外形只由 SetWindowRgn 定义，**绝不设置 DWMWCP_ROUND**（2026-11-02
     // 真机根因）：区域回读成功 ≠ DWM 合成层被裁。该窗口带 WS_CAPTION|WS_THICKFRAME
     // （tao 行为），ROUND 会让 DWM 在整个窗口矩形上绘制圆角系统边框 + 外部投影；
@@ -1356,6 +1405,106 @@ mod tests {
             "非法半径按 18 收敛"
         );
         assert_eq!(rounded_region_radius(18.0, 0.0), 18, "非法 DPI 回退 1");
+    }
+
+    /// 胶囊区域缓存按「尺寸 / DPI / 参数 / hwnd」判定：任一变化都必须重做。
+    #[test]
+    fn capsule_stamp_invalidates_on_size_dpi_and_params() {
+        let base = CapsuleStamp {
+            hwnd: 7,
+            width: 72,
+            height: 500,
+            scale_milli: 1000,
+            params: CapsuleParams {
+                edge: 0,
+                thickness_css: 56,
+                length_css: 224,
+                expanded: false,
+            },
+        };
+        let mut cache = RegionCache::new();
+        assert!(!cache.capsule_is_current(&base), "未应用过不得命中");
+        cache.update_capsule(base);
+        assert!(cache.capsule_is_current(&base), "同参数必须命中");
+
+        let variants = [
+            CapsuleStamp {
+                params: CapsuleParams {
+                    expanded: true,
+                    ..base.params
+                },
+                ..base
+            },
+            CapsuleStamp {
+                params: CapsuleParams {
+                    edge: 1,
+                    ..base.params
+                },
+                ..base
+            },
+            CapsuleStamp {
+                params: CapsuleParams {
+                    thickness_css: 60,
+                    ..base.params
+                },
+                ..base
+            },
+            CapsuleStamp {
+                params: CapsuleParams {
+                    length_css: 240,
+                    ..base.params
+                },
+                ..base
+            },
+            CapsuleStamp {
+                height: 501,
+                ..base
+            },
+            CapsuleStamp {
+                scale_milli: 1250,
+                ..base
+            },
+            CapsuleStamp { hwnd: 9, ..base },
+        ];
+        for variant in variants {
+            assert!(
+                !cache.capsule_is_current(&variant),
+                "变化 {variant:?} 必须让缓存失效"
+            );
+        }
+
+        // 重建成功后重新记录，命中恢复；窗口销毁后整条记录清除。
+        cache.update_capsule(variants[0]);
+        assert!(cache.capsule_is_current(&variants[0]));
+        cache.forget(base.hwnd);
+        assert!(!cache.capsule_is_current(&base));
+        assert!(!cache.capsule_is_current(&variants[0]));
+    }
+
+    /// 整窗圆角缓存与胶囊缓存互不冒充：同尺寸下两种形态必须各自重建。
+    #[test]
+    fn full_and_capsule_stamps_do_not_cross_hit() {
+        let mut cache = RegionCache::new();
+        cache.update(RegionStamp {
+            hwnd: 7,
+            width: 500,
+            height: 72,
+            radius: 20,
+            scale_milli: 1000,
+        });
+        let capsule = CapsuleStamp {
+            hwnd: 7,
+            width: 500,
+            height: 72,
+            scale_milli: 1000,
+            params: CapsuleParams {
+                edge: 2,
+                thickness_css: 56,
+                length_css: 224,
+                expanded: false,
+            },
+        };
+        assert!(!cache.capsule_is_current(&capsule));
     }
 
     /// 圆角区域必须逐行覆盖 CSS 实际着色像素（含极低 alpha 外沿），
@@ -1946,6 +2095,19 @@ mod tests {
                 let (gx, gy) = set.gap_probe.unwrap();
                 assert!(gx >= 0 && gy >= 0);
             }
+
+            // 生产路径的重复 apply（Moved/Focused 高频事件会走到这里）：
+            // 第一次重建并写缓存，第二次命中缓存但必须仍通过 GetWindowRgn 回读校验。
+            let cap = CapsuleParams {
+                edge: 3,
+                expanded: true,
+                ..CAP
+            };
+            assert!(apply_capsule_pass(hwnd as isize, 404, 504, 1.0, cap));
+            assert!(
+                apply_capsule_pass(hwnd as isize, 404, 504, 1.0, cap),
+                "缓存命中后回读校验必须仍然成立"
+            );
 
             // 清理：恢复无区域并销毁窗口
             let full = CreateRoundRectRgn(0, 0, 401, 485, 36, 36);

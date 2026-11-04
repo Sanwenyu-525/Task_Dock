@@ -519,16 +519,6 @@ pub(crate) fn run_plan(
             }
         }
 
-        set_state(
-            &mut states,
-            progress,
-            id,
-            idx,
-            ItemState::InputSent,
-            sent,
-            &remaining,
-            None,
-        );
         if let Err(e) = io.send_paste(plan.target.hwnd, plan.target.pid) {
             status = "failed";
             notes.push(format!(
@@ -547,6 +537,18 @@ pub(crate) fn run_plan(
             );
             break;
         }
+        // 只有 send_paste 真实返回成功后才标记「按键已发送」：
+        // 发送 API 失败时不得让前端看到 InputSent。
+        set_state(
+            &mut states,
+            progress,
+            id,
+            idx,
+            ItemState::InputSent,
+            sent,
+            &remaining,
+            None,
+        );
         sent += 1;
         set_state(
             &mut states,
@@ -732,10 +734,20 @@ pub struct PasteStartReport {
     pub intervals: PasteTiming,
 }
 
-/// 校验目标窗口（存在、非本应用、权限允许），供 UI 预检与启动共用。
-pub fn precheck_target(target_hwnd: isize) -> AppResult<TargetWindow> {
+/// 校验目标窗口（存在、PID 身份、非本应用、权限允许），供 UI 预检、跳转与启动共用。
+///
+/// `expected_pid` 是用户选中窗口时记录的进程号。HWND 会被系统复用，只比对句柄
+/// 可能把按键发到另一个进程；传入时必须与当前句柄的真实 PID 完全一致。
+pub fn precheck_target(target_hwnd: isize, expected_pid: Option<u32>) -> AppResult<TargetWindow> {
     let target = platform::window_target(target_hwnd)
         .ok_or_else(|| AppError::Validation("目标窗口不存在或已关闭".into()))?;
+    if let Some(pid) = expected_pid {
+        if pid != target.pid {
+            return Err(AppError::Validation(
+                "目标窗口已关闭或句柄被其他窗口复用，请刷新窗口列表后重新选择".into(),
+            ));
+        }
+    }
     if target.pid == std::process::id() {
         return Err(AppError::Validation("不能把本应用作为粘贴目标".into()));
     }
@@ -775,8 +787,12 @@ impl PasteManager {
             .is_some()
     }
 
-    pub fn precheck(&self, target_hwnd: isize) -> AppResult<TargetWindow> {
-        precheck_target(target_hwnd)
+    pub fn precheck(
+        &self,
+        target_hwnd: isize,
+        expected_pid: Option<u32>,
+    ) -> AppResult<TargetWindow> {
+        precheck_target(target_hwnd, expected_pid)
     }
 
     /// 启动整组粘贴。`item_ids` 必须按分组展示顺序传入。
@@ -784,22 +800,28 @@ impl PasteManager {
         &self,
         group_id: &str,
         target_hwnd: isize,
+        expected_pid: Option<u32>,
         item_ids: &[String],
     ) -> AppResult<PasteStartReport> {
         if item_ids.is_empty() {
             return Err(AppError::Validation("没有可粘贴的内容".into()));
         }
-        let target = self.precheck(target_hwnd)?;
+        let target = self.precheck(target_hwnd, expected_pid)?;
         self.begin(group_id, target, item_ids.to_vec(), None)
     }
 
     /// 继续未完成的粘贴任务：只重发 `remaining_items`，累计 sent/total 保持不变。
-    pub fn resume(&self, job_id: &str, target_hwnd: isize) -> AppResult<PasteStartReport> {
+    pub fn resume(
+        &self,
+        job_id: &str,
+        target_hwnd: isize,
+        expected_pid: Option<u32>,
+    ) -> AppResult<PasteStartReport> {
         let job = store::get_paste_job(&self.db, job_id)?;
         if job.remaining_items.is_empty() {
             return Err(AppError::Validation("该任务没有剩余项目".into()));
         }
-        let target = self.precheck(target_hwnd)?;
+        let target = self.precheck(target_hwnd, expected_pid)?;
         self.begin(
             &job.group_id,
             target,
@@ -1081,11 +1103,17 @@ fn ensure_send_target(
 
 fn focus_target(hwnd: isize, pid: u32, cancel: &AtomicBool) -> AppResult<()> {
     ensure_target_pid(platform::window_pid(hwnd), pid)?;
+    let mut last_reason: Option<String> = None;
     for attempt in 0..3 {
         if canceled(cancel) {
             return Err(AppError::Validation("已取消".into()));
         }
-        let _ = crate::navigation::window_manager::focus_window(hwnd);
+        // 复用导航的聚焦实现：内部已校验句柄有效、恢复最小化、置前并核实前台。
+        // 失败原因必须保留，不能统一吞成「切换失败」。
+        match crate::navigation::window_manager::focus_window(hwnd) {
+            Ok(_) => {}
+            Err(e) => last_reason = Some(e.reason_cn().to_string()),
+        }
         for _ in 0..10 {
             ensure_target_pid(platform::window_pid(hwnd), pid)?;
             if platform::is_foreground(hwnd) {
@@ -1100,9 +1128,10 @@ fn focus_target(hwnd: isize, pid: u32, cancel: &AtomicBool) -> AppResult<()> {
             std::thread::sleep(Duration::from_millis(150));
         }
     }
-    Err(AppError::Validation(
-        "无法将目标窗口切换到前台（可能被系统焦点保护拦截）".into(),
-    ))
+    Err(AppError::Validation(match last_reason {
+        Some(reason) => format!("无法将目标窗口切换到前台：{reason}"),
+        None => "无法将目标窗口切换到前台（可能被系统焦点保护拦截）".into(),
+    }))
 }
 
 struct PlatformIo {

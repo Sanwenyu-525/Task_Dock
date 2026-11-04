@@ -1,11 +1,11 @@
 //! 设置面板：外观与主题 / 窗口与快捷键 / 通知 / Agent 接入 / 数据与备份 / 开发者选项。
 //! 统一控件风格；高级选项（Agent 接入细节、开发者工具）默认折叠。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
-  RefreshCw, ChevronDown, ChevronRight, Navigation, Clipboard, Trash2, Gauge, Layers,
+  RefreshCw, ChevronRight, Navigation, Clipboard, Trash2, Gauge, Layers, Compass,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
 import {
@@ -35,6 +35,7 @@ import {
 } from "../../lib/bridge";
 import { getAgentRefreshMetrics } from "../../store/useAgentsStore";
 import { formatBytes, kindLabel } from "../../lib/clipboardUi";
+import { formatLocalStamp } from "../../lib/format";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import {
   PRESET_LABELS,
@@ -52,35 +53,68 @@ import AppPicker from "../navigation/AppPicker";
 import { NumberInput, Select, Switch } from "../ui";
 import { ConfirmDialog } from "../ui/Dialog";
 import HotkeysSection from "./hotkeys/HotkeysSection";
+import NavigationVisibilitySection from "./NavigationVisibilitySection";
 import LanguageSetting from "../../i18n/LanguageSetting";
+import {
+  SETTINGS_SECTION_REVEAL_EVENT,
+  consumeSettingsSectionReveal,
+  isSettingsSectionId,
+  persistSettingsSectionOpenState,
+  readSettingsSectionOpenState,
+  type SettingsSectionId,
+  type SettingsSectionOpenState,
+} from "../../lib/settingsSections";
 
 function sumAuditCounts(c: AuditTableCounts): number {
   return c.events + c.sessions + c.runs + c.instances + c.notifications;
 }
 
-/** 可折叠设置分组。 */
+/** 备份类型只按后端元数据判断；未知值明确标未知，绝不猜测为完整。 */
+function backupKindLabel(kind: string | null | undefined): string {
+  if (kind === "quick") return "快速备份";
+  if (kind === "full") return "完整备份";
+  if (!kind) return "旧版备份";
+  return "类型未知";
+}
+
+/** 可折叠设置分组；展开状态由外层统一持有并持久化，禁止用中文标题作键。 */
 function Section({
+  sectionId,
   icon: Icon,
   title,
   description,
-  defaultOpen = true,
+  open,
+  onToggle,
   children,
 }: {
+  sectionId: SettingsSectionId;
   icon: IconComponent;
   title: string;
   description?: string;
-  defaultOpen?: boolean;
+  open: boolean;
+  onToggle: () => void;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="settings-section">
-      <button className="settings-section-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className="settings-section-title">
-          <Icon size={13} /> {title}
-          {open ? <ChevronDown size={12} className="settings-chevron" /> : <ChevronRight size={12} className="settings-chevron" />}
+    <section className="settings-section" data-settings-section={sectionId}>
+      <button
+        type="button"
+        className="settings-section-head"
+        onClick={onToggle}
+        aria-expanded={open}
+      >
+        <span className="settings-section-text">
+          <span className="settings-section-title">
+            <Icon size={13} />
+            <span className="settings-section-title-text">{title}</span>
+          </span>
+          {description && <span className="settings-section-desc">{description}</span>}
         </span>
-        {description && <span className="settings-section-desc">{description}</span>}
+        <ChevronRight
+          size={12}
+          className={`settings-chevron${open ? " is-open" : ""}`}
+          aria-hidden="true"
+        />
       </button>
       {open && <div className="settings-section-body">{children}</div>}
     </section>
@@ -116,6 +150,39 @@ export default function SettingsPanel() {
   const [dataLoadError, setDataLoadError] = useState<string | null>(null);
   const snapPhase = useEdgeSnapStore((s) => s.phase);
 
+  // 首次无有效记录时全部折叠；切换立即写入本地偏好（不进业务配置/备份/IPC）。
+  const [openSections, setOpenSections] = useState<SettingsSectionOpenState>(() =>
+    readSettingsSectionOpenState(),
+  );
+  const setSectionOpen = useCallback((sectionId: SettingsSectionId, open: boolean) => {
+    setOpenSections((prev) => {
+      if (prev[sectionId] === open) return prev;
+      const next = { ...prev, [sectionId]: open };
+      persistSettingsSectionOpenState(next);
+      return next;
+    });
+  }, []);
+  const toggleSection = useCallback(
+    (sectionId: SettingsSectionId) => {
+      setOpenSections((prev) => {
+        const next = { ...prev, [sectionId]: !prev[sectionId] };
+        persistSettingsSectionOpenState(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  // 跨模块定位的 rAF 只在短生命周期内存在；卸载时统一取消，避免操作已卸载页面。
+  const scrollRafs = useRef<number[]>([]);
+  useEffect(
+    () => () => {
+      for (const id of scrollRafs.current) cancelAnimationFrame(id);
+      scrollRafs.current = [];
+    },
+    [],
+  );
+
   // 工具面板「应用」页的一次性配置意图（消费后立即清除，避免反复自动弹出）。
   const appConfig = useUiStore((s) => s.appConfig);
   const clearAppConfig = useUiStore((s) => s.clearAppConfig);
@@ -127,19 +194,56 @@ export default function SettingsPanel() {
       // 胶囊仍处于 Win32 区域裁剪态时先挂起，等解除停靠进入 free 再挂载选择器，
       // 避免大型模态被裁掉。
       setPendingPicker(true);
-    } else {
-      // 管理意图：滚动到应用管理区（设置页可能刚由胶囊切换出来）
-      requestAnimationFrame(() => {
-        document.querySelector(".app-management")?.scrollIntoView({ block: "start" });
-      });
+      return;
     }
-  }, [appConfig, clearAppConfig]);
+    // 管理意图：目标分组原为折叠时先展开，等展开后的 DOM 提交再滚动定位；
+    // 否则折叠状态下 `.app-management` 未渲染，scrollIntoView 会静默失效。
+    setSectionOpen("apps", true);
+    const first = requestAnimationFrame(() => {
+      const second = requestAnimationFrame(() => {
+        document
+          .querySelector('[data-settings-section="apps"]')
+          ?.scrollIntoView({ block: "start" });
+      });
+      scrollRafs.current.push(second);
+    });
+    scrollRafs.current.push(first);
+  }, [appConfig, clearAppConfig, setSectionOpen]);
 
   useEffect(() => {
     if (!pendingPicker || snapPhase !== "free") return;
     setPendingPicker(false);
     setAppPickerOpen(true);
   }, [pendingPicker, snapPhase]);
+
+  // 「更多」菜单里的「自定义导航」：展开目标分区并在 DOM 提交后滚动定位。
+  // 设置页尚未挂载时由 sessionStorage 意图兜底；已挂载时直接走事件。
+  useEffect(() => {
+    const revealSection = (sectionId: SettingsSectionId) => {
+      setSectionOpen(sectionId, true);
+      const first = requestAnimationFrame(() => {
+        const second = requestAnimationFrame(() => {
+          const target = document.querySelector(`[data-settings-section="${sectionId}"]`);
+          // jsdom / 老 WebView 可能没有 scrollIntoView，缺失时只展开不滚动。
+          if (target && typeof target.scrollIntoView === "function") {
+            target.scrollIntoView({ block: "start" });
+          }
+        });
+        scrollRafs.current.push(second);
+      });
+      scrollRafs.current.push(first);
+    };
+    const pending = consumeSettingsSectionReveal();
+    if (pending) revealSection(pending);
+    const onReveal = (event: Event) => {
+      // 事件路径也消费一次性意图，避免下次重新挂载时重复滚动。
+      consumeSettingsSectionReveal();
+      const id = (event as CustomEvent<unknown>).detail;
+      if (typeof id === "string" && isSettingsSectionId(id)) revealSection(id);
+    };
+    window.addEventListener(SETTINGS_SECTION_REVEAL_EVENT, onReveal);
+    return () => window.removeEventListener(SETTINGS_SECTION_REVEAL_EVENT, onReveal);
+  }, [setSectionOpen]);
 
   const loadPanelData = useCallback(async () => {
     setDataLoadError(null);
@@ -408,7 +512,6 @@ export default function SettingsPanel() {
 
   const glassDowngraded =
     settings.material === "glass" && materialInfo?.resolved === "solid";
-  const activePreset = resolveVisualPreset(settings.visual_preset);
   const pipe = diag?.pipeline;
   const inboxStats = diag?.file_drop;
   const retention = diag?.retention;
@@ -430,7 +533,13 @@ export default function SettingsPanel() {
           </button>
         </div>
       )}
-      <Section icon={Palette} title="外观与主题">
+      <Section
+        sectionId="appearance"
+        icon={Palette}
+        title="外观与主题"
+        open={openSections.appearance}
+        onToggle={() => toggleSection("appearance")}
+      >
         {/* v0.6：视觉预设（设计语言）与明暗/材质正交，切换即时生效且不影响业务状态 */}
         <div className="setting-row column">
           <span>视觉主题</span>
@@ -470,6 +579,7 @@ export default function SettingsPanel() {
           <Select
             ariaLabel="配色"
             size="sm"
+            triggerClassName="settings-select-trigger"
             value={settings.theme}
             options={[
               { value: "system", label: "跟随系统" },
@@ -479,29 +589,13 @@ export default function SettingsPanel() {
             onChange={(v) => update({ theme: v as never })}
           />
         </div>
-        {/* 清透玻璃把「材质」与「前景配色」分开：玻璃始终透明，文字/图标可
-            按桌面明暗强制深/浅。auto 与既有明暗主题保持一致。 */}
-        {resolveVisualPreset(settings.visual_preset) === "clear" && (
-          <div className="setting-row">
-            <span>清透前景</span>
-            <Select
-              ariaLabel="清透前景"
-              size="sm"
-              value={settings.clear_foreground ?? "auto"}
-              options={[
-                { value: "auto", label: "跟随主题" },
-                { value: "dark", label: "深色文字" },
-                { value: "light", label: "浅色文字" },
-              ]}
-              onChange={(v) => update({ clear_foreground: v as never })}
-            />
-          </div>
-        )}
+        {/* 清透预设已下线，clear_foreground 仅保留键兼容、不再读取。 */}
         <div className="setting-row">
           <span>窗口材质</span>
           <Select
             ariaLabel="窗口材质"
             size="sm"
+            triggerClassName="settings-select-trigger"
             value={settings.material}
             options={[
               { value: "glass", label: "玻璃（半透明）" },
@@ -525,11 +619,7 @@ export default function SettingsPanel() {
                 或开启了高对比度 / 减少透明效果</>
             ) : materialInfo?.applied ? (
               materialInfo.effect === "css" ? (
-                activePreset === "clear" ? (
-                  <>清透玻璃已生效：桌面与其他应用窗口原样透出（不启用原生模糊，可用“清透前景”调整文字明暗）</>
-                ) : (
-                  <>CSS 柔光玻璃已生效（原生模糊不可用，已启用可读性增强）：桌面仅轻微透出，背景文字不会干扰正文</>
-                )
+                <>CSS 柔光玻璃已生效（原生模糊不可用，已启用可读性增强）：桌面仅轻微透出，背景文字不会干扰正文</>
               ) : (
                 <>原生模糊已生效（{materialInfo.effect}），桌面背景自然透出窗口</>
               )
@@ -542,7 +632,24 @@ export default function SettingsPanel() {
         </div>
       </Section>
 
-      <Section icon={AppWindow} title="窗口与快捷键">
+      <Section
+        sectionId="navigation"
+        icon={Compass}
+        title="导航自定义"
+        description="选择常驻功能，其余通过「更多」访问；隐藏不删除数据。"
+        open={openSections.navigation}
+        onToggle={() => toggleSection("navigation")}
+      >
+        <NavigationVisibilitySection />
+      </Section>
+
+      <Section
+        sectionId="window-hotkeys"
+        icon={AppWindow}
+        title="窗口与快捷键"
+        open={openSections["window-hotkeys"]}
+        onToggle={() => toggleSection("window-hotkeys")}
+      >
         <div className="setting-row">
           <span>贴边吸附 / 自动隐藏</span>
           <Switch
@@ -556,6 +663,7 @@ export default function SettingsPanel() {
           <Select
             ariaLabel="边缘吸附方式"
             size="sm"
+            triggerClassName="settings-select-trigger"
             disabled={!settings.snap_enabled}
             value={settings.snap_display_mode === "full" ? "full" : "capsule"}
             options={[
@@ -599,9 +707,12 @@ export default function SettingsPanel() {
       </Section>
 
       <Section
+        sectionId="features"
         icon={Layers}
         title="功能模块"
         description="独立启停；关闭不会删除已有数据，Agent 核心接入始终保留"
+        open={openSections.features}
+        onToggle={() => toggleSection("features")}
       >
         <div className="setting-row">
           <span>工作现场（捕获窗口组合并恢复）</span>
@@ -630,15 +741,24 @@ export default function SettingsPanel() {
         </div>
       </Section>
 
-      <Section icon={Navigation} title="应用与快捷方式" description="软件发现、导航偏好与跳转记录">
+      <Section
+        sectionId="apps"
+        icon={Navigation}
+        title="应用与快捷方式"
+        description="软件发现、导航偏好与跳转记录"
+        open={openSections.apps}
+        onToggle={() => toggleSection("apps")}
+      >
         <AppManagement onRequestAdd={() => setAppPickerOpen(true)} />
       </Section>
 
       <Section
+        sectionId="clipboard"
         icon={Clipboard}
         title="智能剪贴板"
-        defaultOpen={false}
         description="监听、自动分组、容量与隐私（标题栏剪贴板图标打开历史抽屉）"
+        open={openSections.clipboard}
+        onToggle={() => toggleSection("clipboard")}
       >
         {clipConfigError && (
           <div className="setting-row setting-row-block clip-config-error" role="alert">
@@ -864,7 +984,13 @@ export default function SettingsPanel() {
         </div>
       </Section>
 
-      <Section icon={Bell} title="通知">
+      <Section
+        sectionId="notifications"
+        icon={Bell}
+        title="通知"
+        open={openSections.notifications}
+        onToggle={() => toggleSection("notifications")}
+      >
         <div className="setting-row">
           <span>任务提醒通知</span>
           <Switch
@@ -941,7 +1067,14 @@ export default function SettingsPanel() {
         </div>
       </Section>
 
-      <Section icon={AgentIcon} title="Agent 接入" defaultOpen={false} description="HTTP 端口、令牌与健康判定">
+      <Section
+        sectionId="agent"
+        icon={AgentIcon}
+        title="Agent 接入"
+        description="HTTP 端口、令牌与健康判定"
+        open={openSections.agent}
+        onToggle={() => toggleSection("agent")}
+      >
         <div className="setting-row">
           <span>本地 HTTP 接入（仅回环）</span>
           <Switch
@@ -1000,7 +1133,13 @@ export default function SettingsPanel() {
         </div>
       </Section>
 
-      <Section icon={Database} title="数据与备份">
+      <Section
+        sectionId="data"
+        icon={Database}
+        title="数据与备份"
+        open={openSections.data}
+        onToggle={() => toggleSection("data")}
+      >
         <div className="setting-row">
           <span>每日自动备份</span>
           <Switch
@@ -1049,22 +1188,39 @@ export default function SettingsPanel() {
           </div>
         </div>
         {backups.length > 0 && (
-          <div className="backup-list">
-            {backups.slice(0, 8).map((b) => (
-              <div key={b.name} className="backup-item">
-                <span title={b.truncated_tables?.length ? `截断：${b.truncated_tables.join("、")}` : undefined}>
-                  {b.name}
-                  {b.partial ? "（部分）" : b.kind === "full" ? "（完整）" : ""}
-                  {b.partial && b.truncated_tables?.length
-                    ? ` · 截断 ${b.truncated_tables.length} 表`
-                    : ""}
-                </span>
-                <span>
-                  {b.extended_modules ? "含资产 " : ""}
-                  {(b.size / 1024).toFixed(1)} KB
-                </span>
-              </div>
-            ))}
+          <div className="backup-list backup-record-list">
+            {backups.slice(0, 8).map((b) => {
+              // 只展示真实 modified 元数据（含本地时区）；不从文件名推断时间。
+              const stamp = formatLocalStamp(b.modified);
+              const truncatedTables = b.truncated_tables ?? [];
+              return (
+                <div key={b.name} className="backup-item backup-record">
+                  <div className="backup-record-head">
+                    <span className="backup-record-kind">{backupKindLabel(b.kind)}</span>
+                    <span className="backup-record-flags">
+                      {b.partial && <span className="chip">部分数据</span>}
+                      {truncatedTables.length > 0 && (
+                        <span className="chip" title={`截断的表：${truncatedTables.join("、")}`}>
+                          截断 {truncatedTables.length} 表
+                        </span>
+                      )}
+                      {b.extended_modules && <span className="chip">含扩展模块</span>}
+                    </span>
+                    <span className="backup-record-size">{formatBytes(b.size)}</span>
+                  </div>
+                  <div className="backup-record-sub">
+                    <span className="backup-record-time">
+                      {stamp
+                        ? `${stamp.date} ${stamp.time}（${stamp.zone}）`
+                        : "修改时间未知"}
+                    </span>
+                    <span className="backup-record-name" title={b.name}>
+                      {b.name}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -1130,10 +1286,12 @@ export default function SettingsPanel() {
       </Section>
 
       <Section
+        sectionId="diagnostics"
         icon={Gauge}
         title="性能诊断"
-        defaultOpen={false}
         description="接入队列、延迟分位、SQLite 与事件保留（只读）"
+        open={openSections.diagnostics}
+        onToggle={() => toggleSection("diagnostics")}
       >
         <div className="setting-row">
           <span>采集性能诊断（关闭后仅保留最小计数）</span>
@@ -1255,10 +1413,12 @@ export default function SettingsPanel() {
       </Section>
 
       <Section
+        sectionId="developer"
         icon={FlaskConical}
         title="开发者选项"
-        defaultOpen={false}
         description="Mock 模拟适配器与调试工具（普通用户无需展开）"
+        open={openSections.developer}
+        onToggle={() => toggleSection("developer")}
       >
         <div className="setting-row">
           <span>启用 Mock 模拟适配器（重启应用后完全生效）</span>

@@ -69,7 +69,7 @@ pub struct TaskFilter {
     pub tag: Option<String>,
     pub priority: Option<u8>,
     pub search: Option<String>,
-    pub sort: Option<String>, // due | priority | created | completed
+    pub sort: Option<String>, // due | priority | created | completed | scheduled
     /// 返回条数上限（可选）。None 行为与旧版完全一致（不限制）；
     /// Some(n) 收敛到 1..=200，在筛选与排序之后应用 SQL LIMIT。
     /// 供面板/收集箱分页或首屏拉取，避免一次拉全量任务。
@@ -384,15 +384,28 @@ fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
     let order = match filter.sort.as_deref() {
         Some("priority") => {
             " ORDER BY t.priority ASC, t.due_at IS NULL, t.due_at ASC, t.created_at DESC"
+                .to_string()
         }
-        Some("created") => " ORDER BY t.created_at DESC",
+        Some("created") => " ORDER BY t.created_at DESC".to_string(),
         // 已完成分段按完成时间倒序（NULL 殿后）；只新增分支，不改既有排序。
         Some("completed") => {
-            " ORDER BY t.completed_at IS NULL, t.completed_at DESC, t.created_at DESC"
+            " ORDER BY t.completed_at IS NULL, t.completed_at DESC, t.created_at DESC".to_string()
         }
-        _ => " ORDER BY t.due_at IS NULL, t.due_at ASC, t.priority ASC, t.created_at DESC",
+        // 胶囊「日程」排序（2026-11-04）：先按「未逾期/未来」再按「已逾期」。
+        // 只调整顺序，不改变 scheduled 的成员（逾期任务仍属日程，规格不排除）；
+        // 否则 20 条逾期占满 LIMIT 12，今天到期与未来计划都排在后面不可见。
+        Some("scheduled") => {
+            let now_param = format!("?{}", idx);
+            params.push(Box::new(now_iso()));
+            idx += 1;
+            format!(
+                " ORDER BY (t.due_at < {now_param}) ASC, t.due_at ASC, t.priority ASC, t.created_at DESC"
+            )
+        }
+        _ => " ORDER BY t.due_at IS NULL, t.due_at ASC, t.priority ASC, t.created_at DESC"
+            .to_string(),
     };
-    sql += order;
+    sql += &order;
     // LIMIT 在筛选与排序之后应用；None 保持旧行为（不限制）。
     if let Some(limit) = effective_task_limit(filter.limit) {
         sql += &format!(" LIMIT ?{}", idx);
@@ -2383,6 +2396,52 @@ mod tests {
                 "缺少有计划任务: {due}"
             );
         }
+    }
+
+    /// 胶囊「日程」排序契约（2026-11-04）：未来/未逾期任务排在逾期之前。
+    /// 20 条逾期不得占满 LIMIT 把今天与未来计划挤出可视范围；逾期仍属日程，
+    /// 只顺延到后面（成员不变）。
+    #[test]
+    fn scheduled_sort_puts_future_before_overdue_with_limit() {
+        let db = db();
+        for i in 0..20 {
+            let due = (Utc::now() - Duration::hours(1) - Duration::minutes(i)).to_rfc3339();
+            create(&db, &format!("逾期{i}"), Some(due), None);
+        }
+        create(
+            &db,
+            "今天稍后到期",
+            Some((Utc::now() + Duration::minutes(30)).to_rfc3339()),
+            None,
+        );
+        for i in 1..=3 {
+            create(
+                &db,
+                &format!("未来{i}"),
+                Some((Utc::now() + Duration::days(i)).to_rfc3339()),
+                None,
+            );
+        }
+
+        let got = list_tasks_inner(
+            &db,
+            TaskFilter {
+                view: Some("scheduled".into()),
+                status: Some("pending".into()),
+                sort: Some("scheduled".into()),
+                limit: Some(12),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(got.len(), 12);
+        // 未来 4 条（今天稍后 + 3 天）按 due 升序占据首屏，其余名额给逾期。
+        assert_eq!(got[0].title, "今天稍后到期");
+        for (i, title) in ["未来1", "未来2", "未来3"].iter().enumerate() {
+            assert_eq!(got[i + 1].title, *title);
+        }
+        assert!(got[4..].iter().all(|t| t.title.starts_with("逾期")));
     }
 
     /// 胶囊「已完成」契约（2026-11-04）：大量待办不能把已完成挤出 LIMIT，

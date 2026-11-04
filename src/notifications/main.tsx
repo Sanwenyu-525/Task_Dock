@@ -5,14 +5,20 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import NotificationWindow from "./NotificationWindow";
+import ErrorBoundary from "../components/ErrorBoundary";
+import { installGlobalErrorHandlers } from "../lib/globalErrors";
 import { initLocale } from "../i18n";
 import "../styles-themes.css";
 import "./styles-notifications.css";
 
 initLocale();
+// 通知窗口渲染异常时只轻量兜底：不标记通知为已完成，也不向不可见窗口发 Toast。
+installGlobalErrorHandlers({ toast: false });
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <NotificationWindow />
+    <ErrorBoundary scope="通知窗口" variant="compact">
+      <NotificationWindow />
+    </ErrorBoundary>
   </React.StrictMode>,
 );

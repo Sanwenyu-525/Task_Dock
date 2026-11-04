@@ -195,6 +195,7 @@ pub fn adapter() -> HooksAdapter {
         events: supported_events,
         detect_impl,
         hook_command: super::hooks_install::codex_hook_command,
+        layout: super::hooks_install::HooksLayout::Flat,
         limitations: vec![
             "Codex App（桌面版）与 CLI 共用 ~/.codex；App Server（JSON-RPC）可观测能力未在本轮验证"
                 .into(),

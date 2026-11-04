@@ -88,30 +88,6 @@ const STATE_COLOR: Record<HotkeyState, string> = {
   unavailable: "var(--status-waiting)",
 };
 
-const CODE_STYLE = {
-  fontFamily: "var(--font-mono, ui-monospace, monospace)",
-  fontSize: "11px",
-  padding: "2px 6px",
-  borderRadius: "var(--radius-control)",
-  border: "1px solid var(--border-subtle, var(--text-tertiary))",
-  color: "var(--text-secondary)",
-  whiteSpace: "nowrap" as const,
-};
-
-const HEAD_ROW_STYLE = {
-  display: "flex",
-  alignItems: "center",
-  gap: "8px",
-  flexWrap: "wrap" as const,
-};
-
-const ACTION_ROW_STYLE = {
-  display: "flex",
-  alignItems: "center",
-  gap: "8px",
-  flexWrap: "wrap" as const,
-};
-
 export default function HotkeysSection() {
   const { t } = useLocale();
   const bindings = useHotkeysStore((state) => state.bindings);
@@ -378,74 +354,82 @@ export default function HotkeysSection() {
         return (
           <div
             key={binding.action}
-            className="setting-row setting-row-block"
+            className="setting-row setting-row-block hotkey-row"
             data-hotkey-action={binding.action}
           >
-            <div style={HEAD_ROW_STYLE}>
-              <span>{label}</span>
-              <span className="chip">{scopeLabel(binding.scope)}</span>
-              <span className="chip" style={{ color: STATE_COLOR[binding.state] }}>
-                {stateLabel(binding.state)}
+            <div className="hotkey-row-head">
+              <span className="hotkey-name">{label}</span>
+              <span className="hotkey-meta">
+                <span className="chip">{scopeLabel(binding.scope)}</span>
+                <span
+                  className="chip hotkey-state"
+                  data-state={binding.state}
+                  style={{ color: STATE_COLOR[binding.state] }}
+                >
+                  {stateLabel(binding.state)}
+                </span>
               </span>
             </div>
-            <div style={ACTION_ROW_STYLE}>
-              <code style={CODE_STYLE}>
+            <div className="hotkey-row-action">
+              <code className="hotkey-combo">
                 {recording ? t("hotkeys.recording") : binding.accelerator}
               </code>
-              {recording ? (
+              <div className="hotkey-actions">
+                {recording ? (
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => cancelRecording()}
+                    aria-label={t("hotkeys.cancelRecordAria", { label })}
+                  >
+                    {t("common.cancel")}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={!editable}
+                    aria-label={t("hotkeys.editAria", { label })}
+                    data-tip={t("hotkeys.editTip")}
+                    onClick={() => startRecording(binding.action)}
+                  >
+                    {t("hotkeys.edit")}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn sm"
-                  onClick={() => cancelRecording()}
-                  aria-label={t("hotkeys.cancelRecordAria", { label })}
+                  disabled={busy || recording || resetNoop}
+                  aria-label={t("hotkeys.resetAria", { label })}
+                  data-tip={t("hotkeys.resetTip", {
+                    accelerator: binding.default_accelerator,
+                  })}
+                  onClick={() => void applyReset(binding.action)}
                 >
-                  {t("common.cancel")}
+                  {t("hotkeys.reset")}
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn sm"
-                  disabled={!editable}
-                  aria-label={t("hotkeys.editAria", { label })}
-                  data-tip={t("hotkeys.editTip")}
-                  onClick={() => startRecording(binding.action)}
-                >
-                  {t("hotkeys.edit")}
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn sm"
-                disabled={busy || recording || resetNoop}
-                aria-label={t("hotkeys.resetAria", { label })}
-                data-tip={t("hotkeys.resetTip", {
-                  accelerator: binding.default_accelerator,
-                })}
-                onClick={() => void applyReset(binding.action)}
-              >
-                {t("hotkeys.reset")}
-              </button>
-              <Switch
-                checked={binding.enabled}
-                disabled={busy || recording}
-                ariaLabel={t("hotkeys.enableAria", { label })}
-                onChange={(next) => void commit(binding.action, { enabled: next })}
-              />
+                <Switch
+                  checked={binding.enabled}
+                  disabled={busy || recording}
+                  ariaLabel={t("hotkeys.enableAria", { label })}
+                  onChange={(next) => void commit(binding.action, { enabled: next })}
+                />
+              </div>
             </div>
-            <div className="setting-note">{description}</div>
+            <div className="setting-note hotkey-note">{description}</div>
             {recording && (
-              <div className="setting-note" style={{ color: "var(--status-running)" }}>
+              <div className="setting-note hotkey-note" style={{ color: "var(--status-running)" }}>
                 {hint ?? t("hotkeys.recordingHint")}
               </div>
             )}
             {binding.message && (
-              <div className="setting-note" style={{ color: "var(--status-error)" }}>
+              <div className="setting-note hotkey-note" style={{ color: "var(--status-error)" }}>
                 {/* 后端注册失败原因无法本地化：保留原文并标注为配置提示。 */}
                 {t("hotkeys.loadError", { error: binding.message })}
               </div>
             )}
             {rowError && rowError !== binding.message && (
-              <div className="setting-note" style={{ color: "var(--status-error)" }}>
+              <div className="setting-note hotkey-note" style={{ color: "var(--status-error)" }}>
                 {t("hotkeys.loadError", { error: rowError })}
               </div>
             )}

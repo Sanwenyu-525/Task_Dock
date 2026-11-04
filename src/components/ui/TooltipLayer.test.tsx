@@ -136,4 +136,34 @@ describe("全局提示条层", () => {
     await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
     expect(hideWindow).toHaveBeenCalledTimes(1);
   });
+
+  it("页面滚动立即收起提示，不跟随锚点残留", async () => {
+    render(
+      <>
+        <Harness />
+        <TooltipLayer />
+      </>,
+    );
+    const btn = screen.getByRole("button", { name: "复制" });
+    fireEvent.mouseOver(btn);
+    await waitFor(() => expect(screen.getByRole("tooltip")).toBeTruthy());
+
+    fireEvent.scroll(document);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+  });
+
+  it("任意按下（切页 / 刷新 / 点击）立即收起提示", async () => {
+    render(
+      <>
+        <Harness />
+        <TooltipLayer />
+      </>,
+    );
+    const btn = screen.getByRole("button", { name: "复制" });
+    fireEvent.mouseOver(btn);
+    await waitFor(() => expect(screen.getByRole("tooltip")).toBeTruthy());
+
+    fireEvent.pointerDown(btn);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+  });
 });

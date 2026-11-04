@@ -5,14 +5,20 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import ContextMenuApp from "./ContextMenuApp";
+import ErrorBoundary from "../components/ErrorBoundary";
+import { installGlobalErrorHandlers } from "../lib/globalErrors";
 import { initLocale } from "../i18n";
 import "../styles-themes.css";
 import "./styles-context-menu.css";
 
 initLocale();
+// 菜单异常只在本窗口轻量兜底，不写全局持久状态，也不影响主窗口焦点。
+installGlobalErrorHandlers({ toast: false });
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <ContextMenuApp />
+    <ErrorBoundary scope="右键菜单" variant="compact">
+      <ContextMenuApp />
+    </ErrorBoundary>
   </React.StrictMode>,
 );

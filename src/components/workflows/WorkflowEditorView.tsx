@@ -1,11 +1,15 @@
-//! 工作流编辑器：名称 / 描述 + 步骤编排（增删改、上下移、单步启停、失败策略）。
+//! 工作流编辑器（页面内编辑态）：名称 / 描述 + 步骤编排（增删改、上下移、单步启停、失败策略）。
+//!
+//! 由工作流列表页切换进入，不再使用 Dialog：不新开窗口、不铺全局遮罩，
+//! 列表与编辑器共用内容区的单一滚动容器。保存成功后由调用方回到列表。
 //!
 //! 保存走两条命令：编辑 = replace_steps（原子）→ update（元信息）；
 //! 新建 = workflow_create（元信息 + 步骤一次写入）。
 //! 目标与快照选项由后端列表提供（导航目标 / 工作现场快照），前端不拼路径。
+//! 「添加步骤」复用统一 `Select`（内部 Popover：锚定、翻转、边界收敛与层级由基础组件负责）。
 
-import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Loader2, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowLeft, ArrowUp, Loader2, Trash2 } from "lucide-react";
 import {
   WORKFLOW_STEP_TYPE_LABELS,
   workflowCreate,
@@ -19,7 +23,7 @@ import {
 } from "../../lib/bridge";
 import { navListTargets, type NavTarget } from "../../lib/navigation";
 import { workspaceList, type SnapshotSummary } from "../../lib/bridge";
-import { Combobox, DateTimePicker, Dialog, Select } from "../ui";
+import { Combobox, DateTimePicker, Select } from "../ui";
 import { errText } from "../../store/useWorkflowsStore";
 import type { WorkflowTemplate } from "./templates";
 
@@ -30,6 +34,12 @@ interface EditorStep {
   params: WorkflowStepParams;
   enabled: boolean;
   on_error: WorkflowOnError;
+}
+
+interface EditorForm {
+  name: string;
+  description: string;
+  steps: EditorStep[];
 }
 
 const STEP_TYPE_OPTIONS: { value: WorkflowStepType; label: string; disabled?: boolean }[] = (
@@ -55,6 +65,30 @@ const PRIORITY_OPTIONS = [
 
 function newStep(step_type: WorkflowStepType): EditorStep {
   return { id: crypto.randomUUID(), step_type, params: {}, enabled: true, on_error: "stop" };
+}
+
+function buildForm(workflow: WorkflowDetail | null, template: WorkflowTemplate | null | undefined): EditorForm {
+  if (workflow) {
+    return {
+      name: workflow.name,
+      description: workflow.description,
+      steps: workflow.steps.map((s) => ({
+        id: s.id,
+        step_type: s.step_type,
+        params: { ...s.params },
+        enabled: s.enabled,
+        on_error: s.on_error,
+      })),
+    };
+  }
+  if (template) {
+    return {
+      name: template.name,
+      description: template.description,
+      steps: template.steps.map((s) => ({ ...s, params: { ...s.params } })),
+    };
+  }
+  return { name: "", description: "", steps: [] };
 }
 
 /** 步骤是否满足本地必填项（保存前校验；后端仍会复核引用存在性）。 */
@@ -111,78 +145,87 @@ function localInputToIso(v: string): string | null {
   return d.toISOString();
 }
 
-export interface WorkflowEditorDialogProps {
-  open: boolean;
-  onClose: () => void;
+export interface WorkflowEditorViewProps {
   /** 编辑的既有工作流；null = 新建。 */
   workflow: WorkflowDetail | null;
   /** 新建时套用的模板（可空）。 */
   template?: WorkflowTemplate | null;
+  /** 返回列表（无未保存修改，或用户确认放弃）。 */
+  onCancel: () => void;
   /** 保存成功回调（返回保存后的详情）。 */
   onSaved: (detail: WorkflowDetail) => void;
 }
 
-export default function WorkflowEditorDialog({
-  open,
-  onClose,
+export default function WorkflowEditorView({
   workflow,
   template,
+  onCancel,
   onSaved,
-}: WorkflowEditorDialogProps) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [steps, setSteps] = useState<EditorStep[]>([]);
+}: WorkflowEditorViewProps) {
+  const [form, setForm] = useState<EditorForm>(() => buildForm(workflow, template));
   const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 正在编辑参数的步骤 id（null = 列表态）。 */
   const [editingId, setEditingId] = useState<string | null>(null);
+  /** 有未保存修改时，返回入口先给出页内确认条，而不是再叠一层大弹窗。 */
+  const [leaveGuard, setLeaveGuard] = useState(false);
 
   const [targets, setTargets] = useState<NavTarget[] | null>(null);
   const [snapshots, setSnapshots] = useState<SnapshotSummary[] | null>(null);
   const [refError, setRefError] = useState<string | null>(null);
 
   const isCreate = workflow === null;
+  const { name, description, steps } = form;
+
+  // 同步防重入：状态更新到下一次渲染之间，连点保存不能触发第二次请求。
+  const busyRef = useRef(false);
+  const aliveRef = useRef(true);
 
   useEffect(() => {
-    if (!open) return;
-    setError(null);
-    setEditingId(null);
-    if (workflow) {
-      setName(workflow.name);
-      setDescription(workflow.description);
-      setSteps(
-        workflow.steps.map((s) => ({
-          id: s.id,
-          step_type: s.step_type,
-          params: { ...s.params },
-          enabled: s.enabled,
-          on_error: s.on_error,
-        })),
-      );
-    } else if (template) {
-      setName(template.name);
-      setDescription(template.description);
-      setSteps(template.steps.map((s) => ({ ...s, params: { ...s.params } })));
-    } else {
-      setName("");
-      setDescription("");
-      setSteps([]);
-    }
-    // 目标 / 快照选项：打开时拉取一次（写操作不高频，无需缓存失效策略）
-    setRefError(null);
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  // 目标 / 快照选项：挂载时拉取一次；卸载后到达的响应直接丢弃。
+  useEffect(() => {
+    let alive = true;
+    const failRef = (msg: string) => {
+      if (!alive) return;
+      setRefError((prev) => (prev ? `${prev}；${msg}` : msg));
+    };
     navListTargets()
-      .then(setTargets)
-      .catch((e) => setRefError(`导航目标加载失败: ${errText(e)}`));
+      .then((next) => {
+        if (alive) setTargets(next);
+      })
+      .catch((e) => failRef(`导航目标加载失败: ${errText(e)}`));
     workspaceList()
-      .then(setSnapshots)
-      .catch((e) => setRefError(`工作现场快照加载失败: ${errText(e)}`));
-  }, [open, workflow, template]);
+      .then((next) => {
+        if (alive) setSnapshots(next);
+      })
+      .catch((e) => failRef(`工作现场快照加载失败: ${errText(e)}`));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const patchForm = (patch: Partial<EditorForm>) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, ...patch }));
+  };
+
+  const updateSteps = (updater: (prev: EditorStep[]) => EditorStep[]) => {
+    setDirty(true);
+    setForm((prev) => ({ ...prev, steps: updater(prev.steps) }));
+  };
 
   const updateStep = (id: string, patch: Partial<EditorStep>) =>
-    setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+    updateSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
 
   const move = (idx: number, dir: -1 | 1) =>
-    setSteps((prev) => {
+    updateSteps((prev) => {
       const next = [...prev];
       const j = idx + dir;
       if (j < 0 || j >= next.length) return prev;
@@ -190,9 +233,29 @@ export default function WorkflowEditorDialog({
       return next;
     });
 
+  const addStep = (step_type: WorkflowStepType) => {
+    const step = newStep(step_type);
+    updateSteps((prev) => [...prev, step]);
+    // 选完类型直接展开该步的参数配置，并把新卡片滚进可视区
+    setEditingId(step.id);
+    setLeaveGuard(false);
+    const nextFrame =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame
+        : (cb: FrameRequestCallback) => setTimeout(() => cb(0), 0);
+    nextFrame(() => {
+      // jsdom 没有 scrollIntoView：可选调用，仅用于真实 WebView 中把新卡片带入视区
+      document.getElementById(`wf-step-${step.id}`)?.scrollIntoView?.({ block: "nearest" });
+    });
+  };
+
+  const removeStep = (id: string) => {
+    updateSteps((prev) => prev.filter((x) => x.id !== id));
+    setEditingId((prev) => (prev === id ? null : prev));
+  };
+
   const targetOptions = useMemo(() => {
-    const want = (t: NavTarget["target_type"][]) => t;
-    return (types: ReturnType<typeof want>) =>
+    return (types: NavTarget["target_type"][]) =>
       (targets ?? [])
         .filter((t) => types.includes(t.target_type))
         .map((t) => ({ value: t.id, label: t.display_name || t.id }));
@@ -207,8 +270,24 @@ export default function WorkflowEditorDialog({
     [snapshots],
   );
 
+  /** 返回列表：有未保存修改时先在页内确认，不弹大窗。 */
+  const requestLeave = () => {
+    if (busyRef.current) return;
+    if (dirty) {
+      setLeaveGuard(true);
+      return;
+    }
+    onCancel();
+  };
+
+  const discardAndLeave = () => {
+    if (busyRef.current) return;
+    setLeaveGuard(false);
+    onCancel();
+  };
+
   const save = async () => {
-    if (busy) return;
+    if (busyRef.current) return;
     const trimmed = name.trim();
     if (!trimmed) {
       setError("工作流名称不能为空");
@@ -222,6 +301,7 @@ export default function WorkflowEditorDialog({
         return;
       }
     }
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     const stepInputs = steps.map(editorStepToInput);
@@ -236,34 +316,56 @@ export default function WorkflowEditorDialog({
           detail = await workflowUpdate(workflow.id, { name: trimmed, description: description.trim() });
         }
       }
-      onSaved(detail);
-      onClose();
+      // 卸载（如切换页面）后到达的响应不再回调，避免无效更新
+      if (aliveRef.current) onSaved(detail);
     } catch (e) {
-      setError(errText(e));
+      if (aliveRef.current) setError(errText(e));
     } finally {
-      setBusy(false);
+      busyRef.current = false;
+      if (aliveRef.current) setBusy(false);
     }
   };
 
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      size="lg"
-      title={isCreate ? "新建工作流" : "编辑工作流"}
-      ariaLabel={isCreate ? "新建工作流" : "编辑工作流"}
-      footer={
-        <>
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>
-            取消
-          </button>
-          <button type="button" className="btn primary" onClick={save} disabled={busy}>
-            {busy ? <Loader2 size={13} className="spin" aria-hidden="true" /> : null}
-            保存
-          </button>
-        </>
-      }
-    >
+    <div className="wf-editor">
+      <header className="wf-editor-head">
+        <button
+          type="button"
+          className="icon-btn sm"
+          aria-label="返回工作流列表"
+          data-tip="返回列表"
+          onClick={requestLeave}
+          disabled={busy}
+        >
+          <ArrowLeft size={14} aria-hidden="true" />
+        </button>
+        <div className="wf-editor-head-main">
+          <h2 className="wf-title">{isCreate ? "新建工作流" : "编辑工作流"}</h2>
+          <p className="wf-subtitle">
+            {isCreate ? "填写名称并添加步骤，保存后回到列表。" : "修改名称、描述与步骤，保存后回到列表。"}
+          </p>
+        </div>
+        {dirty ? (
+          <span className="wf-unsaved-badge" role="status">
+            未保存
+          </span>
+        ) : null}
+      </header>
+
+      {leaveGuard ? (
+        <div className="wf-leave-guard" role="alert">
+          <span>有未保存的修改，返回列表会丢失这些修改。</span>
+          <div className="wf-leave-guard-actions">
+            <button type="button" className="btn sm" onClick={() => setLeaveGuard(false)}>
+              继续编辑
+            </button>
+            <button type="button" className="btn sm danger" onClick={discardAndLeave}>
+              放弃修改
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="form-grid">
         <div className="form-field">
           <label className="form-label" htmlFor="wf-name">
@@ -274,7 +376,8 @@ export default function WorkflowEditorDialog({
             className="input"
             value={name}
             maxLength={60}
-            onChange={(e) => setName(e.target.value)}
+            autoFocus={isCreate}
+            onChange={(e) => patchForm({ name: e.target.value })}
             placeholder="例如：进入开发状态"
           />
         </div>
@@ -287,7 +390,7 @@ export default function WorkflowEditorDialog({
             className="input"
             value={description}
             maxLength={300}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => patchForm({ description: e.target.value })}
             placeholder="一句话说明这个工作流做什么（可选）"
           />
         </div>
@@ -302,22 +405,20 @@ export default function WorkflowEditorDialog({
             placeholder="＋ 添加步骤"
             ariaLabel="添加步骤"
             size="sm"
-            onChange={(t) => {
-              setSteps((prev) => [...prev, newStep(t)]);
-            }}
+            onChange={addStep}
           />
         </div>
       </div>
       {refError ? <p className="wf-error-text">{refError}</p> : null}
 
       {steps.length === 0 ? (
-        <p className="wf-empty-steps">还没有步骤。可从上方选择动作类型添加，或从面板的示例模板开始。</p>
+        <p className="wf-empty-steps">还没有步骤。可从上方选择动作类型添加，或从列表页的示例模板开始。</p>
       ) : (
         <ol className="wf-steps" aria-label="步骤列表">
           {steps.map((s, idx) => {
             const label = WORKFLOW_STEP_TYPE_LABELS[s.step_type];
             return (
-              <li key={s.id} className={`wf-step ${s.enabled ? "" : "is-disabled"}`}>
+              <li key={s.id} id={`wf-step-${s.id}`} className={`wf-step ${s.enabled ? "" : "is-disabled"}`}>
                 <div className="wf-step-row">
                   <span className="wf-step-index">{idx + 1}</span>
                   <button
@@ -330,21 +431,6 @@ export default function WorkflowEditorDialog({
                     <span className="wf-step-type">{label}</span>
                     <span className="wf-step-summary">{stepSummary(s, targets, snapshots)}</span>
                   </button>
-                  <label className="wf-step-toggle" aria-label={`启用第 ${idx + 1} 步`}>
-                    <input
-                      type="checkbox"
-                      checked={s.enabled}
-                      onChange={(e) => updateStep(s.id, { enabled: e.target.checked })}
-                    />
-                    <span aria-hidden="true">启用</span>
-                  </label>
-                  <Select
-                    options={ON_ERROR_OPTIONS}
-                    value={s.on_error}
-                    onChange={(v) => updateStep(s.id, { on_error: v })}
-                    ariaLabel={`第 ${idx + 1} 步失败策略`}
-                    size="sm"
-                  />
                   <div className="wf-step-tools">
                     <button
                       type="button"
@@ -368,11 +454,28 @@ export default function WorkflowEditorDialog({
                       type="button"
                       className="icon-btn sm"
                       aria-label={`删除第 ${idx + 1} 步`}
-                      onClick={() => setSteps((prev) => prev.filter((x) => x.id !== s.id))}
+                      onClick={() => removeStep(s.id)}
                     >
                       <Trash2 size={13} aria-hidden="true" />
                     </button>
                   </div>
+                </div>
+                <div className="wf-step-meta">
+                  <label className="wf-step-toggle" aria-label={`启用第 ${idx + 1} 步`}>
+                    <input
+                      type="checkbox"
+                      checked={s.enabled}
+                      onChange={(e) => updateStep(s.id, { enabled: e.target.checked })}
+                    />
+                    <span aria-hidden="true">启用</span>
+                  </label>
+                  <Select
+                    options={ON_ERROR_OPTIONS}
+                    value={s.on_error}
+                    onChange={(v) => updateStep(s.id, { on_error: v })}
+                    ariaLabel={`第 ${idx + 1} 步失败策略`}
+                    size="sm"
+                  />
                 </div>
                 {editingId === s.id ? (
                   <StepParamsForm
@@ -395,7 +498,17 @@ export default function WorkflowEditorDialog({
           {error}
         </p>
       ) : null}
-    </Dialog>
+
+      <div className="wf-editor-actions">
+        <button type="button" className="btn" onClick={requestLeave} disabled={busy}>
+          取消
+        </button>
+        <button type="button" className="btn primary" onClick={() => void save()} disabled={busy}>
+          {busy ? <Loader2 size={13} className="spin" aria-hidden="true" /> : null}
+          保存
+        </button>
+      </div>
+    </div>
   );
 }
 

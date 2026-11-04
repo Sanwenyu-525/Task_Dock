@@ -135,6 +135,9 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   今日 = view=due_today + status=pending、日程 = view=scheduled + status=pending、
   已完成 = status=completed + sort=completed；后端先过滤/排序再 LIMIT 12，
   修掉「20 条逾期占满前 12 条、今天到期项被截断」的误判。
+  （2026-11-04 补充：`sort` 再新增 `scheduled`（未逾期/未来在前、逾期在后，组内仍按
+  due 升序）；胶囊「日程」改用该排序，成员定义不变——逾期仍属日程，只调整顺序，
+  避免逾期积压把今天与未来计划挤出 LIMIT 12。）
 - 胶囊分类栏小 Agent 入口由「收集箱」取代：`RAIL_CATEGORIES =
   ["tasks","inbox","clipboard","apps"]`，顶部状态球仍打开 Agent 面板
   （`CapsuleCategory = RailCategory | "agents"`）；收集箱 Lite 复用
@@ -293,6 +296,13 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     正常取消、用户暂停、明确不支持的可选效果不算错误。
   - 渲染异常由 `src/components/ErrorBoundary.tsx` 兜底（不白屏、用户点击才重试）；
     未处理 Promise rejection 由 `src/lib/globalErrors.ts` 兜底，同一根因 30s 内只提示一次。
+  - 用户提示与内部诊断分层（2026-11-04 第二轮）：界面只使用后端白名单 `message`/`detail`
+    经前端再脱敏后的文本；SQL 行、堆栈、凭证（`token`/`bearer`/`password`）、
+    Windows/macOS/Linux 用户目录在前后端各脱敏一次，`detail` 仅进 Toast 的 `data-tip`
+    与 `console`，不进入提示正文。未知 `code`/未知对象稳定回退通用文案，绝不展示未审查原文。
+  - 独立悬浮窗口（快速捕获/通知/右键菜单）使用 `ErrorBoundary variant="compact"` 与
+    `installGlobalErrorHandlers({ toast:false })`：按窗口尺寸内联轻量兜底，不安装主窗口
+    完整错误页，异常只进诊断日志，不把提示发到用户看不见的窗口，也不改变业务数据。
 
   错误码与分类对照（`category` 用于展示策略，不用于文案匹配）：
 
@@ -320,13 +330,26 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     `store/usePlanningStore.ts` 统一管理（每类列表带请求代际防乱序，变更命令返回
     后端权威实体就地替换，无轮询）；视图层 `ProjectsView`（项目切换/概览统计/
     里程碑分组卡片）+ `PlanningFeatureCard`（步骤清单/状态修改/进度历史）+
-    `PlanningDialogs`（项目表单/里程碑管理，走既有 Dialog 与 overlay 栈）。
+    `PlanningEditors`（项目/功能/里程碑表单，页面内编辑态：在主内容区切换、不铺遮罩，
+    与工作流/任务编辑同一交互语言；删除等破坏性操作仍走 `ConfirmDialog`）。
   - 进度口径：功能进度 = 已完成步骤/总步骤（无步骤显示「未拆分步骤」，不产出
     百分比）；项目进度 = 已完成功能/总功能（无功能显示空态，不显示 0%）；功能状态
     与进度相互独立，不由完成率推断。功能状态变化与步骤勾选在后端同一事务写入
     `planning_activity`（status_change / step_done / note 三类显式区分）。
   - 「内置路线图」：Task Dock 自身 28 项功能规划（`lib/featureCatalog.ts` 静态目录）
     经 `FeatureRoadmapPanel` 原样只读展示，不入库、不被用户项目编辑覆盖。
+- 任务编辑交互（2026-11-04，模态清理第二批）：原 `TaskEditor.tsx`（`modal-mask` + Dialog）
+  删除，改为 `src/components/tasks/TaskEditorView.tsx` 的**页面内编辑态**；`TasksPanel.tsx`
+  在主内容区做列表 ↔ 编辑切换，与工作流/规划中心共用同一交互语言：
+  - 不新开窗口、不铺全局遮罩、无固定底栏；滚动沿用 `.tab-content` 单一容器（面板解除自身
+    `overflow`），操作区随内容流式排布。
+  - 返回列表恢复列表滚动位置（列表可见时记录 `scrollTop`，退出编辑后 `requestAnimationFrame`
+    回写）；筛选状态本就在 `useTasksStore.filter`，切换不丢失。
+  - 有未保存修改时返回先出页内确认条（继续编辑 / 放弃修改）；保存失败保留表单内容并就地
+    显示错误；同步防重入保证连点保存只提交一次；组件卸载后丢弃迟到响应，不再回调。
+  - 打开入口统一经 `useUiStore.openEditor`（会切到任务页），微件等页面因此有编辑态宿主。
+  - 任务数据结构、SQLite、提醒调度与 Rust 命令不变；关联目标选择器 `AppPicker` 保持既有
+    模态行为。未保存草稿不跨主 Tab 持久化（切换 Tab 卸载面板，与工作流页面内编辑一致）。
 - 贴边吸附（v0.6 重写为 Smart Dock Capsule）：判定在 `lib/edgeSnap.ts`（纯函数），
   副作用在 `hooks/useEdgeSnap.ts`。五相状态机 free/candidate/docked-visible/docked-hidden/
   docked-revealed；磁吸滞回（进入 28px / 退出 42px）；隐藏时留 32 CSS px 状态胶囊
@@ -391,6 +414,19 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   工具面板「应用」页的添加/管理入口经 `useUiStore` 的一次性 `appConfig` 意图进入完整窗口
   设置页（胶囊的 Win32 区域裁剪内不挂载大型弹层），意图消费后清除。
   系统级窗口控制全部在 Rust 后端，React 不触碰 Win32。
+- 导航自定义（2026-11-04）：新增 `lib/navigationRegistry.ts` 作为入口元数据唯一来源
+  （稳定 ID、名称、图标、默认顺序/可见性、支持的界面、覆盖的 Tab、快捷键、系统锁定标记），
+  `RAIL_ENTRIES` / 胶囊轨道均由 registry 派生，页面组件保持 `React.lazy` + `DeferredView`
+  首次激活挂载，不因导航动态渲染退回静态导入。用户偏好收敛为 SQLite 设置
+  `navigation_layout`（`lib/navVisibility.ts` 归一化：未知/重复/缺失 ID 丢弃计数、新入口按默认
+  合并、损坏回退默认、版本不符按 ID 迁移而不清空偏好）；完整面板与停靠胶囊各自独立的
+  可见性与排序。`lib/navigationLayout.ts` 串行化写入并做一次旧
+  `localStorage["taskdock.nav.visibility.v1"]` 迁移：新配置有效前不删旧键，失败保留旧键重试，
+  胶囊不继承左侧旧隐藏项。「设置」为 `locked` 系统入口：不可隐藏/排序，归一化时补回底部。
+  完整面板隐藏入口收进底部「更多」：仅在存在隐藏项时出现，当前页被隐藏时**不插回侧栏**，
+  选中态由「更多」按钮（`aria-current="page"`）承担，菜单项以单选勾选显示当前页；菜单复用
+  `Popover`/`DropdownMenu` 的视口翻转与外部关闭，不自算坐标；底部「自定义导航」经
+  `settingsSections.requestSettingsSectionReveal` 展开并滚动到设置页「导航自定义」分区。
 - 智能剪贴板（v0.6 起进入侧边栏）：完整模式为**第 4 个导航入口**（任务 / Agent /
   行动 / 剪贴板 / 历史 / 设置），**完整模式标题栏不再保留剪贴板入口按钮**；
   任务关联场景仍以
@@ -425,6 +461,14 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
   （完整模式切到剪贴板页，紧凑/最小模式开关临时抽屉）；
   输入框内不拦截，窗口聚焦时生效。实现见 `src/hooks/useGlobalShortcuts.ts`。
+- 导航显示配置与低频页懒加载（2026-11-04，轻量化专项）：左侧导航支持按入口显示/隐藏
+  （`src/lib/navVisibility.ts` + `useNavVisibilityStore` + 设置页「导航显示」区块，
+  持久化在 localStorage `taskdock.nav.visibility.v1`，不进备份与 SQLite）。隐藏只影响
+  侧栏渲染：页面仍按 tab 渲染，Ctrl+数字语义不变，「设置」始终可见，隐藏项可从导航底部
+  「更多」菜单重新打开；隐藏当前入口时自动切到安全页；配置损坏/版本不兼容回退为全部可见。
+  完整模式低频页（应用/微件/工作流/历史/规划中心/设置）改为 `React.lazy` 按需加载，
+  任务/Agent/行动/剪贴板/收集仍同步加载；新增面板若为低频页应加入 `FullView.tsx` 的
+  lazy 列表，并在测试里使用 `findBy*` 等待异步渲染。
 - 视觉系统（v0.6）：三个正交维度——视觉预设 `visual_preset`
   （dream-gradient / liquid-glass）、明暗 `theme`、材质 `material`；
   统一在 `useSettingsStore` 一条管道里落到 `html[data-preset|data-theme|data-material]`，
@@ -735,7 +779,8 @@ task_categories · notification_history (UNIQUE(kind, ref_id, occurrence)) · ap
 ### v0.5 备份与恢复架构（2026-10-30）
 
 **统一注册表**：`src-tauri/src/commands/backup.rs` 的 `BACKUP_TABLES` 声明全部用户业务表
-（当前 25 张）、恢复顺序与外键依赖；`EXTENDED_TABLES` 标记剪贴板、工作现场与行动中心等
+（当前 43 张；v0.7 规划、v0.8 货架/工作流、v0.9 笔记/专注/任务完成事件均在同一注册表中
+登记）、恢复顺序与外键依赖；`EXTENDED_TABLES` 标记剪贴板、工作现场与行动中心等
 v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_schema_table` 会直接失败，
 防止“新模块数据从未进入备份却无人发现”。
 
@@ -863,3 +908,8 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   （`prune_runs` 只删运行记录，不碰定义）。
 - 新命令 16 个（`commands/workflows.rs`，`workflow_*` 前缀），参数 camelCase；
   详细数据模型、状态机与接口边界见 [docs/workflows/README.md](workflows/README.md)。
+- 前端编辑交互（2026-11-04）：工作流「新建/编辑」由 `Dialog lg` 改为**页面内编辑态**
+  （`src/components/workflows/WorkflowEditorView.tsx`，列表在 `WorkflowsPanel.tsx` 内切换）。
+  不新开窗口、不铺全局遮罩；滚动沿用 `.tab-content` 单一容器（编辑态解除列表面板自身
+  `overflow`），操作按钮随内容流式排布、不使用固定底栏。「添加步骤」复用
+  `Select/Popover` 锚定菜单；未保存返回为页内确认条。执行链路、数据模型与命令不变。

@@ -114,34 +114,17 @@
   min-height: 0;
 }
 
+/* 笔记卡：整条可点 → surface-card--interactive；当前选中 → surface-card--selected。
+   卡面 / 圆角 / 阴影 / hover / 键盘焦点由共享卡片基础类提供，
+   这里只保留笔记列表自己的布局、内边距与文字样式。 */
 .notes-item {
   display: flex;
   flex-direction: column;
   gap: 4px;
   width: 100%;
   padding: 8px 10px;
-  border-radius: var(--radius-card);
-  border: 1px solid var(--border-subtle);
-  background: var(--card-face);
-  box-shadow: var(--card-shadow);
   color: inherit;
   text-align: left;
-  cursor: pointer;
-  transition: border-color 0.16s ease, background-color 0.16s ease;
-}
-
-.notes-item:hover {
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
-}
-
-.notes-item:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
-  outline-offset: 1px;
-}
-
-.notes-item.is-active {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: var(--accent-soft);
 }
 
 .notes-item-head {

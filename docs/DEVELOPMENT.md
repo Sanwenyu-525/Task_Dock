@@ -271,6 +271,21 @@ npm run build && node scripts/make-preview.mjs && node scripts/render-perf.mjs
 - 新增错误提示的验收至少覆盖：分类正确、提示出现在正确窗口、重试真实执行、重试成功
   后状态消除、失败后用户数据安全、无重复弹窗/重复订阅。
 
+#### 刷新结果契约（2026-11-04 第二轮）
+
+- `useNavigationStore` 的 `loadApps` / `loadTargets` / `loadTaskLinks` 返回
+  `RefreshOutcome = "ok" | "stale" | "error"`，**禁止** `await` 后读 store 旧字段推断本次
+  是否成功。`stale` 表示本次结果已被更新的请求（代际 token 更大）取代，调用方不得报错、
+  也不得重复提示成功。
+- 用户主动保存/删除后必须分阶段说明：持久化成功、关联成功、界面刷新成功三段独立；
+  刷新失败保留旧数据、给板块内重试，且不得因刷新失败重复创建已保存数据。
+- 后台自动刷新（挂载、窗口打开、面板切换）失败只写对应 `*Error` 字段供内联展示，
+  不逐次 Toast；成功一次即清除错误。
+- 用户主动操作失败统一先 `normalizeError`/`errorMessage`，按「操作名 + 具体原因」展示；
+  只有可安全重试的读操作才给重试，写入/删除/粘贴不提供盲目自动重试。
+- 读取失败 ≠ 空数据：列表为空且存在读取错误时必须区分「确实没有」与「读取失败」，
+  保留旧数据时标注「可能不是最新」。
+
 ### UI 组件（v0.6）
 
 - **不要写原生 `<select>`**：用 `src/components/ui/` 的 `Select` / `Combobox`。

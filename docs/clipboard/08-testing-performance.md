@@ -818,3 +818,89 @@ UI 线程可交互**；后者本轮未真机测量。
 一度被阻塞；先用「HEAD + 本轮两个文件」的隔离导出树验证通过，待该会话恢复后已在
 真实工作树复跑同一组命令并通过。该文件不属于本任务，未修改。
 真实写入型 `#[ignore]` 用例与 Windows 真实应用来源识别仍未执行。
+
+#### 11.6.5 验证（2026-11-04 逐项粘贴/跳转/截图命名）
+
+工作目录与结果：
+
+| 命令 | 结果 |
+|---|---|
+| `npx vitest run src/components/clipboard/PastePanel.test.tsx`（仓库根） | 12 passed / 0 failed / EXIT 0 |
+| `cargo test --lib clipboard`（`src-tauri/`） | 161 passed / 0 failed / EXIT 0 |
+| `cargo check --lib`（`src-tauri/`） | EXIT 0 |
+| `npx vite build`（仓库根） | EXIT 0 |
+| `npx tsc --noEmit`（仓库根） | EXIT 2，仅 `src/components/roadmap/PlanningCenterPanel.test.tsx` 未使用导入（并行会话改动，不属于本任务） |
+
+新增用例覆盖：不自动选第一个窗口、点卡片只选中、跳转不粘贴、跳转失败不启动粘贴、
+启动竞态主动拉取完成态、旧任务事件不覆盖、刷新后目标消失清空选择；Rust 覆盖截图组命名
+优先级与手动改名保护。Windows 真机（记事本/VS Code/浏览器/图片/文件列表/最小化/关闭/
+执行中用户复制/取消后续传）**未执行**，单测不代表真机结论。
+
+### 11.7 并发配额、跨平台失败清理与临时文件生命周期（2026-11-04 收尾）
+
+范围：`clipboard_path_status` 请求级并发、非 Windows 失败清理、`write_replace` 临时文件
+生命周期。**未新增功能、未重设计 UI、未改来源快照/粘贴链路。** 结论**部分通过**：
+自动化全部通过（1 个非剪贴板用例失败），Windows 真机 UI 仍为 ENVIRONMENT BLOCKED。
+
+#### 11.7.1 并发配额
+
+`src-tauri/src/commands/clipboard.rs` 把原 `SaveSlot` 抽象为小型 `Quota`/`QuotaGuard`
+（`fetch_update` 抢占、`Drop` 归还，panic 展开同样归还），保存与路径检查共用：
+
+| 命令 | 上限 | 超限行为 | 任务形态 |
+|---|---|---|---|
+| `clipboard_save_image` | 2 | `Overloaded`（可重试） | 一个 `spawn_blocking` 任务 |
+| `clipboard_path_status` | 3 | `Overloaded`（可重试） | 一个批量 `spawn_blocking` 任务；不按路径开线程；仍截断 200 条 |
+
+不排队、不建等待队列。前端 `ClipboardItemDetail` 把 `Overloaded` 与普通查询失败都落到
+「未知」并禁用打开/定位，文案单独区分「后台繁忙」；查询只在进入详情时发起一次，失败后
+不自动重试。`export` 与 `commands` 的新增用例：
+
+| 用例 | 覆盖点 |
+|---|---|
+| `quota_is_bounded_under_concurrent_acquire` | 8 线程并发抢占，满额全部收到 Overloaded，已占用计数不变 |
+| `quota_is_released_when_holder_panics` | 持有者 panic 展开后计数归零、可再次获取 |
+| `save_slots_are_bounded_and_released` | 保存配额上限 2、归还后恢复 |
+| `path_states_keeps_order_and_truncates_to_200` | 顺序保持、存在/缺失语义、206 条输入截断为 200 |
+| 前端「后台繁忙（并发配额已满）」 | 拒绝后仅调用 1 次、状态为「无法确认」而非「已不存在」、不动打开命令 |
+| 前端「切换条目后旧查询迟到」 | 旧 effect 已清理，迟到的 `missing` 不覆盖新条目的「存在」状态 |
+
+#### 11.7.2 非 Windows 失败清理与临时文件生命周期
+
+- Unix（`#[cfg(unix)]`）：清理前取本次创建文件句柄的 `dev + ino`，与路径当前
+  `symlink_metadata` 比对，一致才删除；不一致或无法确认时保留文件。检查与 unlink 之间
+  仍有理论窗口，**不宣称严格原子**；原则是宁可留下半成品，也不误删其他进程的新文件。
+- 其他平台：无法确认归属时一律保留文件。
+- Windows 句柄级 `delete-on-close` 保持不变；`write_replace` 的临时文件句柄保持到
+  `rename` 结束，失败时复用同一文件对象清理（Windows 句柄级、Unix 身份校验），不再
+  “关闭后按路径删除”。清理失败只记日志，不覆盖原始保存错误；`create_new(true)` 语义未变。
+- 新增用例：`rename_failure_cleans_temp_and_keeps_target`（Windows 实际运行：目标为目录
+  制造 rename 失败，目标不变、无 `.tmp` 残留）；Unix 专项
+  `failure_cleanup_skips_path_replaced_by_other_file` 只在 Unix 编译，**本机未运行**。
+
+#### 11.7.3 自动化结果（实际执行，2026-11-04）
+
+工作目录 `src-tauri/`（Rust）与仓库根（前端）：
+
+| 命令 | 结果 | 证据 |
+|---|---|---|
+| `cargo test --lib clipboard::export` | EXIT 0；**16 passed / 0 failed** | `cargo-test-clipboard-20261104.log` |
+| `cargo test --lib clipboard` | EXIT 0；**166 passed / 0 failed**（725 filtered） | 同上 |
+| `cargo check --lib` | EXIT 0（2 条既有 warning，均在其他模块） | `rust-check-20261104.log` |
+| `cargo test --lib`（全量） | EXIT 101；891 运行：**887 passed / 1 failed / 3 ignored** | `cargo-test-lib-20261104.log` |
+| `npx vitest run src/components/clipboard/` | EXIT 0；**149 passed / 0 failed** | `vitest-clipboard-20261104.log` |
+| `npx tsc --noEmit` | EXIT 2；错误均在其他会话改动的界面/测试文件，**剪贴板无类型错误** | `npm-build-20261104.log` |
+| `npm run build` | EXIT 2（`tsc` 阶段被上述并行改动阻断，未进入 vite build） | `npm-build-20261104.log` |
+
+唯一失败：`navigation::router::tests::notepad_launch_focuses_existing_window_of_owned_process`
+（断言实际返回“窗口身份已变化，请重新选择”，期望前台锁拒绝文案），不在剪贴板范围，
+未修改、未降断言。历史 8 个失败在本轮只剩这 1 个；其余由并行会话修复或已通过。
+
+#### 11.7.4 性能与真机
+
+本轮**未取得新的真机 UI 性能数据**：本机仍有其他会话运行的 `task-dock.exe`（debug 构建，
+`target/debug/task-dock.exe`），Tauri 单实例插件会拦截同标识隔离实例，未终止该进程
+（ENVIRONMENT BLOCKED）。因此保存期间主窗口响应、路径检查 1/200 条真机耗时、
+并发达上限时的 UI 行为均**未执行**。既有 Rust 层保存耗时数据见 §11.5.4；路径批量查询
+仅有语义/上限单测，没有耗时样本，不能据此推断慢盘表现。Windows 真实文件系统行为
+（排他创建、替换、句柄级清理、rename 失败清理）由 §11.7.3 的 Rust 用例在 NTFS 上实际覆盖。

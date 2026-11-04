@@ -9,33 +9,19 @@
 //! - 截止时间与提醒时间互相独立（各自一个实例）；
 //! - 支持清空与直接键入，非法输入只提示不提交。
 
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { CalendarDays, Clock, X } from "lucide-react";
 import Popover from "./Popover";
+import CalendarGrid from "./CalendarGrid";
 import {
   formatLocalDisplay,
   formatLocalInput,
-  monthGrid,
   nowLocal,
   parseLocalInput,
   parseLooseInput,
-  shiftDay,
-  shiftMonth,
   todayLocal,
 } from "../../lib/datetime";
 import { useLocale } from "../../hooks/useLocale";
-import type { LocaleCode } from "../../i18n";
-
-const WEEK_START = new Date(2024, 0, 1); // 2024-01-01 是周一，仅用于取周几文案
-
-/** 周标题由 Intl 生成（zh-CN 得到「一…日」，en-US 得到「M…S」），不硬编码。 */
-function weekHeads(locale: LocaleCode): string[] {
-  return Array.from({ length: 7 }, (_, i) =>
-    new Intl.DateTimeFormat(locale, { weekday: "narrow" }).format(
-      new Date(WEEK_START.getFullYear(), WEEK_START.getMonth(), WEEK_START.getDate() + i),
-    ),
-  );
-}
 
 export interface DateTimePickerProps {
   value: string;
@@ -65,16 +51,14 @@ export default function DateTimePicker({
   clearable = true,
   minuteStep = 1,
 }: DateTimePickerProps) {
-  const { locale, t } = useLocale();
+  const { t } = useLocale();
   const resolvedPlaceholder = placeholder ?? t("dateTime.placeholder");
-  const heads = weekHeads(locale);
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(() => formatLocalDisplay(value));
   const [error, setError] = useState<string | null>(null);
   const [viewYM, setViewYM] = useState(() => (parseLocalInput(value) ? value.slice(0, 7) : todayLocal().year + "-" + String(todayLocal().month).padStart(2, "0")));
   const [focusIso, setFocusIso] = useState(() => (parseLocalInput(value) ? value.slice(0, 10) : todayLocal().year + "-" + String(todayLocal().month).padStart(2, "0") + "-" + String(todayLocal().day).padStart(2, "0")));
   const anchorRef = useRef<HTMLButtonElement>(null);
-  const gridRef = useRef<HTMLTableSectionElement>(null);
 
   // 值变化时同步输入框文本（展开中不打断用户输入）
   useEffect(() => {
@@ -130,47 +114,7 @@ export default function DateTimePicker({
     commit(parsed);
   }
 
-  function onGridKeyDown(e: ReactKeyboardEvent<HTMLElement>) {
-    const steps: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
-    if (e.key in steps) {
-      e.preventDefault();
-      moveFocusTo(shiftDay(focusIso, steps[e.key]));
-      return;
-    }
-    if (e.key === "PageUp") {
-      e.preventDefault();
-      setViewYM((ym) => shiftMonth(ym, -1));
-      return;
-    }
-    if (e.key === "PageDown") {
-      e.preventDefault();
-      setViewYM((ym) => shiftMonth(ym, 1));
-      return;
-    }
-    if (e.key === "Home" || e.key === "End") {
-      e.preventDefault();
-      const d = new Date(Number(focusIso.slice(0, 4)), Number(focusIso.slice(5, 7)) - 1, Number(focusIso.slice(8, 10)));
-      const idx = (d.getDay() + 6) % 7; // 周一 = 0
-      moveFocusTo(shiftDay(focusIso, e.key === "Home" ? -idx : 6 - idx));
-      return;
-    }
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      pickDay(focusIso);
-    }
-  }
-
-  function moveFocusTo(iso: string) {
-    setFocusIso(iso);
-    setViewYM(iso.slice(0, 7));
-    requestAnimationFrame(() => {
-      gridRef.current?.querySelector<HTMLElement>(`[data-iso="${iso}"]`)?.focus();
-    });
-  }
-
   const parts = parseLocalInput(value);
-  const [vy, vm] = viewYM.split("-").map(Number) as [number, number];
-  const weeks = monthGrid(vy, vm);
 
   return (
     <>
@@ -244,65 +188,15 @@ export default function DateTimePicker({
             {error ? <span className="ui-dtp-error">{error}</span> : null}
           </div>
 
-          <div className="ui-cal-head">
-            <button
-              type="button"
-              className="icon-btn sm"
-              aria-label={t("dateTime.prevMonth")}
-              onClick={() => setViewYM((ym) => shiftMonth(ym, -1))}
-            >
-              <ChevronLeft size={13} />
-            </button>
-            <span className="ui-cal-title" aria-live="polite">
-              {t("dateTime.yearMonth", { year: vy, month: vm })}
-            </span>
-            <button
-              type="button"
-              className="icon-btn sm"
-              aria-label={t("dateTime.nextMonth")}
-              onClick={() => setViewYM((ym) => shiftMonth(ym, 1))}
-            >
-              <ChevronRight size={13} />
-            </button>
-          </div>
-
-          <table className="ui-cal" aria-label={t("dateTime.tableAria")}>
-            <thead>
-              <tr>
-                {heads.map((w) => (
-                  <th key={w} scope="col" abbr={w}>
-                    {w}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody ref={gridRef} onKeyDown={onGridKeyDown}>
-              {weeks.map((week) => (
-                <tr key={week[0].iso}>
-                  {week.map((cell) => {
-                    const selected = value.slice(0, 10) === cell.iso;
-                    return (
-                      <td key={cell.iso} className={cell.inMonth ? "" : "is-outside"}>
-                        <button
-                          type="button"
-                          data-iso={cell.iso}
-                          tabIndex={cell.iso === focusIso ? 0 : -1}
-                          className={`ui-cal-day ${selected ? "is-selected" : ""} ${cell.isToday ? "is-today" : ""}`}
-                          aria-label={cell.iso}
-                          aria-current={cell.isToday ? "date" : undefined}
-                          aria-pressed={selected}
-                          onClick={() => pickDay(cell.iso)}
-                          onFocus={() => setFocusIso(cell.iso)}
-                        >
-                          {cell.day}
-                        </button>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <CalendarGrid
+            viewYM={viewYM}
+            onViewYMChange={setViewYM}
+            focusIso={focusIso}
+            onFocusIsoChange={setFocusIso}
+            selectedIso={value.slice(0, 10)}
+            onSelect={pickDay}
+            ariaLabel={t("dateTime.tableAria")}
+          />
 
           <div className="ui-dtp-time">
             <Clock size={12} aria-hidden="true" />

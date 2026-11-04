@@ -53,6 +53,7 @@ import { useActionsStore, kindLabel as actionKindLabel } from "../../store/useAc
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { kindLabel as clipKindLabel } from "../../lib/clipboardUi";
+import { errorMessage } from "../../lib/errors";
 import { AGENT_STATE_LABELS, formatRelative } from "../../lib/format";
 import {
   navNavigate,
@@ -132,7 +133,7 @@ export default function TaskContextDrawer() {
       const c = await taskContext(taskId);
       setCtx(c);
     } catch (e) {
-      showToast(`加载任务上下文失败：${String(e)}`, { kind: "error" });
+      showToast(`加载任务上下文失败：${errorMessage(e)}`, { kind: "error" });
     }
   }, [taskId, showToast]);
 
@@ -152,7 +153,10 @@ export default function TaskContextDrawer() {
         .then((s) => {
           if (s.running && s.snapshot_id) setRestoringId(s.snapshot_id);
         })
-        .catch(() => {});
+        .catch((e) => {
+          // 状态探测失败只影响「恢复中」指示，但静默会让人误以为没有进行中的恢复
+          showToast(`读取现场恢复状态失败：${errorMessage(e)}`, { kind: "warning" });
+        });
     }
     const raf = requestAnimationFrame(() => drawerRef.current?.focus());
     return () => cancelAnimationFrame(raf);
@@ -298,7 +302,7 @@ export default function TaskContextDrawer() {
       showToast(`已保存现场「${snap.name}」（${snap.item_count} 项）`, { kind: "success" });
       await refresh();
     } catch (e) {
-      showToast(`保存现场失败：${String(e)}`, { kind: "error" });
+      showToast(`保存现场失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -325,7 +329,7 @@ export default function TaskContextDrawer() {
       // 无法识别进程的窗口后端会跳过，默认不勾选，避免制造「已捕获」的错觉
       setCaptureSelected(new Set(ws.filter((w) => w.exe_path).map((w) => w.hwnd)));
     } catch (e) {
-      showToast(`枚举窗口失败：${String(e)}`, { kind: "error" });
+      showToast(`枚举窗口失败：${errorMessage(e)}`, { kind: "error" });
       setCaptureWindows([]);
     } finally {
       setCaptureLoading(false);
@@ -359,7 +363,7 @@ export default function TaskContextDrawer() {
       showToast(`已保存现场「${snap.name}」（${snap.item_count} 项）`, { kind: "success" });
       await refresh();
     } catch (e) {
-      showToast(`保存现场失败：${String(e)}`, { kind: "error" });
+      showToast(`保存现场失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -381,7 +385,7 @@ export default function TaskContextDrawer() {
       setLiveResults([]);
       setProgress(null);
     } catch (e) {
-      showToast(`恢复失败：${String(e)}`, { kind: "error" });
+      showToast(`恢复失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -392,7 +396,7 @@ export default function TaskContextDrawer() {
       await workspaceRestoreCancel();
       showToast("已请求取消；已发出的启动请求无法撤回", { kind: "info" });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`取消恢复失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -409,7 +413,7 @@ export default function TaskContextDrawer() {
       showToast("现场已删除（不影响任务与窗口）", { kind: "success" });
       await refresh();
     } catch (e) {
-      showToast(`删除失败：${String(e)}`, { kind: "error" });
+      showToast(`删除失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -427,7 +431,7 @@ export default function TaskContextDrawer() {
       setDetails((m) => ({ ...m, [id]: d }));
       setSnapshotLinks((m) => ({ ...m, [id]: links }));
     } catch (e) {
-      showToast(`加载现场明细失败：${String(e)}`, { kind: "error" });
+      showToast(`加载现场明细失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -440,7 +444,7 @@ export default function TaskContextDrawer() {
       }));
       showToast("已解除素材关联（剪贴板内容保留）", { kind: "success" });
     } catch (e) {
-      showToast(`解除关联失败：${String(e)}`, { kind: "error" });
+      showToast(`解除关联失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -453,7 +457,7 @@ export default function TaskContextDrawer() {
       );
       if (r.success) void loadAgents();
     } catch (e) {
-      showToast(`跳转失败：${String(e)}`, { kind: "error" });
+      showToast(`跳转失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -470,7 +474,7 @@ export default function TaskContextDrawer() {
       const r = await navNavigate(l.target_id, { action, task_link_id: l.id });
       showToast(resultMessage(r, l.target.display_name), { kind: r.success ? "success" : "error" });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`打开目标失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -492,7 +496,7 @@ export default function TaskContextDrawer() {
         void reloadActions();
       }
     } catch (e) {
-      showToast(`跳转失败：${String(e)}`, { kind: "error" });
+      showToast(`跳转失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 

@@ -6,7 +6,7 @@
 //! - 与自然语言快速录入（QuickAdd）并存，互不替代。
 
 import { useState } from "react";
-import { BellRing, Loader2 } from "lucide-react";
+import { BellRing, ChevronDown, Loader2 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { formatDue } from "../../lib/format";
@@ -22,6 +22,9 @@ const MAX_MINUTES = 24 * 60;
 
 export default function QuickReminder() {
   const { t } = useLocale();
+  // 默认收起：快捷提醒不是每次打开任务页都需要的操作，收起后把高度还给任务列表；
+  // 展开后所有预设/自定义能力与语义保持不变（仅视觉收纳，不改创建逻辑）。
+  const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [customOpen, setCustomOpen] = useState(false);
   const [hours, setHours] = useState(0);
@@ -77,7 +80,21 @@ export default function QuickReminder() {
   }
 
   return (
-    <div className="quick-reminder">
+    <div className={`quick-reminder ${open ? "is-open" : "is-collapsed"}`}>
+      <button
+        type="button"
+        className="quick-reminder-toggle"
+        aria-expanded={open}
+        aria-label={open ? t("quickReminder.collapse") : t("quickReminder.expand")}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <BellRing size={13} />
+        <span>{t("quickReminder.collapsed")}</span>
+        <span className="quick-reminder-hint">{t("quickReminder.hint")}</span>
+        <ChevronDown size={12} className="quick-reminder-chevron" />
+      </button>
+      {open && (
+        <div className="quick-reminder-body">
       <div className="quick-add-row">
         <BellRing size={14} className="quick-add-icon" />
         <input
@@ -147,6 +164,8 @@ export default function QuickReminder() {
         </div>
       )}
       {error && <div className="preview-hint error">{error}</div>}
+        </div>
+      )}
     </div>
   );
 }

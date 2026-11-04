@@ -252,7 +252,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       report(deleted);
       scheduleExitEnd(ids, anchorId, after);
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`删除剪贴板项失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setPendingIds((prev) => prev.filter((x) => !ids.includes(x)));
     }
@@ -379,7 +379,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       // 复制不改变排序：只就地更新使用次数，避免整表刷新导致分页丢失或滚动跳顶。
       useClipboardStore.getState().bumpItemCopy(item.id);
     } catch (e) {
-      showToast(`复制失败：${String(e)}`, { kind: "error" });
+      showToast(`复制失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -410,7 +410,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       // 置顶会改变排序，仍需静默刷新拿到新的顺序
       void load({ silent: true });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`更新剪贴板项收藏/置顶失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -442,7 +442,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         : await clipboardCopyGroupFiles(group.id);
       reportCopy(r);
     } catch (e) {
-      showToast(`复制失败：${String(e)}`, { kind: "error" });
+      showToast(`复制失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -458,7 +458,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       showToast(`${action}分组「${group.name}」`, { kind: "success" });
       void load({ silent: true });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`更新分组收藏/置顶失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -505,7 +505,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           );
           await load();
         } catch (e) {
-          showToast(`清空失败：${String(e)}`, { kind: "error" });
+          showToast(`清空失败：${errorMessage(e)}`, { kind: "error" });
         } finally {
           setBusy(null);
         }
@@ -524,7 +524,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       showToast(`已创建分组「${g.name}」，共 ${g.item_count} 项`, { kind: "success" });
       void load({ silent: true });
     } catch (e) {
-      showToast(`创建分组失败：${String(e)}`, { kind: "error" });
+      showToast(`创建分组失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -540,7 +540,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         : await clipboardCopyItemsFiles(selectedItems);
       reportCopy(r);
     } catch (e) {
-      showToast(`批量复制失败：${String(e)}`, { kind: "error" });
+      showToast(`批量复制失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -561,7 +561,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       // 离场结束时 scheduleExitEnd 已带一次静默刷新，这里不再重复请求
       scheduleExitEnd(ids, null);
     } catch (e) {
-      showToast(`合并失败：${String(e)}`, { kind: "error" });
+      showToast(`合并失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -596,7 +596,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       showToast(`已关联到任务「${linkTask.title}」`, { kind: "success" });
       closeDrawer();
     } catch (e) {
-      showToast(`关联失败：${String(e)}`, { kind: "error" });
+      showToast(`关联失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -605,7 +605,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       await updateSettings({ clipboard_paused: !paused });
       showToast(!paused ? "已暂停记录新的剪贴板内容" : "已恢复监听", { kind: "success" });
     } catch (e) {
-      showToast(`切换失败：${String(e)}`, { kind: "error" });
+      showToast(`切换失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -1038,7 +1038,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         onConfirm={() => {
           const run = confirm?.run;
           setConfirm(null);
-          if (run) Promise.resolve(run()).catch((e) => showToast(String(e), { kind: "error" }));
+          if (run) Promise.resolve(run()).catch((e) => showToast(`操作失败：${errorMessage(e)}`, { kind: "error" }));
         }}
       />
 

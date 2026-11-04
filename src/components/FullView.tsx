@@ -13,77 +13,51 @@
 //! - v0.10：新增「应用」视觉入口（Agent 之后、行动之前）
 //!
 //! 逻辑 Tab 与快捷键：`TAB_ORDER` 仍是 10 个逻辑 Tab（快捷键 Ctrl+1…9 与 Ctrl+0 的
-//! 事实源，Ctrl+5=快速收集、Ctrl+6=文件暂存）；「应用」只存在于视觉顺序 `RAIL_ORDER`，
-//! **不占用 Ctrl+数字**，已有快捷键语义不漂移。视觉合并只发生在 RAIL 导航渲染层。
+//! 事实源，Ctrl+5=快速收集、Ctrl+6=文件暂存）；「应用 / 微件」只是视觉入口，
+//! **不占用 Ctrl+数字**，已有快捷键语义不漂移。视觉合并只发生在导航渲染层。
+//!
+//! 入口元数据统一来自 `src/lib/navigationRegistry.ts`，用户显隐/排序来自 SQLite
+//! 设置 `navigation_layout`（见 `src/lib/navVisibility.ts`）；本文件不保留第二份入口清单。
 //!
 //! 徽标口径：合并入口徽标 = 未处理捕获条数（useCaptureStore.inboxCount），
 //! 即「待处理收集内容」；暂存条目总数**不计入**未处理徽标。
 
-import { useEffect } from "react";
-import { useUiStore, RAIL_ORDER, type Tab } from "../store/useUiStore";
+import { lazy, Suspense, useEffect } from "react";
+import { useUiStore } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
+// 高频页（任务 / Agent / 行动 / 剪贴板 / 收集与暂存）保持同步加载，避免切页白屏；
+// 低频页按需加载，降低首屏主包体积（轻量化专项 B）。打包后仍是本地资源，离线可用。
 import TasksPanel from "./tasks/TasksPanel";
 import AgentPanel from "./agents/AgentPanel";
-import AppsPanel from "./apps/AppsPanel";
 import ActionCenterPanel from "./actions/ActionCenterPanel";
 import ClipboardPanel from "./clipboard/ClipboardPanel";
 import CollectionPanel from "./collection/CollectionPanel";
-import WorkflowsPanel from "./workflows/WorkflowsPanel";
-import HistoryPanel from "./history/HistoryPanel";
-import PlanningCenterPanel from "./roadmap/PlanningCenterPanel";
-import SettingsPanel from "./settings/SettingsPanel";
-import WidgetsPanel from "./widgets/WidgetsPanel";
 import { WIDGET_SOURCES } from "./widgets/liveSources";
-import { Inbox, ListTodo, Clipboard, History, Map, Settings as SettingsIcon, Plus, Workflow, LayoutGrid, Blocks } from "lucide-react";
-import AgentIcon, { type IconComponent } from "./ui/AgentIcon";
-import PointerClickIcon from "./ui/PointerClickIcon";
+
+import { Plus, MoreHorizontal, Settings2 } from "lucide-react";
+import { DropdownMenu } from "./ui";
 import { railTipPlacement } from "./capsule/CapsuleRail";
+import {
+  entriesForSurface,
+  leftEntryForTab,
+  navEntry,
+  type NavEntry,
+} from "../lib/navigationRegistry";
+import { useNavigationLayout } from "../lib/navigationLayout";
 
-const TAB_META: Record<
-  Tab,
-  { label: string; icon: IconComponent; badge?: "intervention" | "attention" | "pending" | "inbox" }
-> = {
-  tasks: { label: "任务", icon: ListTodo, badge: "pending" },
-  agents: { label: "Agent", icon: AgentIcon, badge: "intervention" },
-  // v0.10：应用中心（Agent 之后、行动之前）；仅视觉入口，不占快捷键
-  apps: { label: "应用", icon: LayoutGrid },
-  // v0.11：桌面微件（应用之后、行动之前）；仅视觉入口，不占快捷键
-  widgets: { label: "微件", icon: Blocks },
-  actions: { label: "行动", icon: PointerClickIcon, badge: "attention" },
-  clipboard: { label: "剪贴板", icon: Clipboard },
-  inbox: { label: "收集箱", icon: Inbox, badge: "inbox" },
-  shelf: { label: "暂存架", icon: Inbox },
-  // v0.9：一键工作流（暂存架之后、历史之前）
-  workflows: { label: "工作流", icon: Workflow },
-  history: { label: "历史", icon: History },
-  // v0.7：规划中心（Tab 身份仍为 roadmap，内置路线图保留为其中一个数据源）
-  roadmap: { label: "规划中心", icon: Map },
-  settings: { label: "设置", icon: SettingsIcon },
-};
+import { requestSettingsSectionReveal } from "../lib/settingsSections";
 
-/** 侧边栏视觉入口：inbox 与 shelf 合并为一个入口（tabs 列出其覆盖的逻辑 Tab）。 */
-interface RailEntry {
-  key: string;
-  label: string;
-  icon: IconComponent;
-  badge?: "intervention" | "attention" | "pending" | "inbox";
-  tabs: readonly Tab[];
-}
+const AppsPanel = lazy(() => import("./apps/AppsPanel"));
+const WidgetsPanel = lazy(() => import("./widgets/WidgetsPanel"));
+const WorkflowsPanel = lazy(() => import("./workflows/WorkflowsPanel"));
+const HistoryPanel = lazy(() => import("./history/HistoryPanel"));
+const PlanningCenterPanel = lazy(() => import("./roadmap/PlanningCenterPanel"));
+const SettingsPanel = lazy(() => import("./settings/SettingsPanel"));
 
-/**
- * 视觉导航（按 RAIL_ORDER 折叠）：shelf 折入 inbox 的「收集与暂存」入口，
- * 其余 1:1。快捷键仍按 TAB_ORDER 逐个映射（Ctrl+5=inbox、Ctrl+6=shelf），不偏移；
- * 仅视觉入口「应用」不占用数字键。
- */
-const RAIL_ENTRIES: RailEntry[] = RAIL_ORDER.flatMap((id): RailEntry[] => {
-  if (id === "shelf") return []; // 折入收集与暂存
-  if (id === "inbox") {
-    return [{ key: "collection", label: "收集与暂存", icon: Inbox, badge: "inbox", tabs: ["inbox", "shelf"] }];
-  }
-  return [{ key: id, label: TAB_META[id].label, icon: TAB_META[id].icon, badge: TAB_META[id].badge, tabs: [id] }];
-});
+// 注册中心声明顺序不是展示顺序：左侧入口统一按默认顺序读取，用户排序在渲染时覆盖。
+const LEFT_ENTRIES = entriesForSurface("left");
 
 // 完整悬浮栏（自由位置、未贴边停靠）：提示方向保持原有语义「图标右侧」，
 // 不套用停靠四边朝内映射；形态显式传给纯函数，避免靠 edge 值推断。
@@ -115,6 +89,34 @@ export default function FullView() {
 
   const counts = { intervention, attention: actions, pending, inbox: inboxCount };
 
+  // ── 导航显隐与排序（统一导航架构）──────────────────────────────────
+  // 只影响左侧导航的渲染：被隐藏的页面仍按 tab 渲染，快捷键/通知跳转照常可用。
+  // 当前页入口若被隐藏，**绝不临时插回侧栏**：其余图标位置保持稳定，避免布局
+  // 跳动；当前页选中态由「更多」触发按钮承担，菜单内该项以单选勾选显示。
+  // 排序来自配置数组顺序；过滤用数组过滤，禁止用 CSS 隐藏代替。
+  const layout = useNavigationLayout();
+  const currentEntry = leftEntryForTab(tab);
+  const currentHidden = !!currentEntry && !layout.left.includes(currentEntry.id);
+  const entriesToRender = layout.left
+    .map((id) => navEntry(id))
+    .filter((entry): entry is NavEntry => entry !== undefined);
+  // 「更多」列出全部被隐藏入口（含当前页），否则当前页隐藏时菜单会凭空消失。
+  const hiddenEntries = LEFT_ENTRIES.filter((entry) => !layout.left.includes(entry.id));
+
+  /** 打开视觉入口（合并入口回到上一次子页；笔记子页无逻辑 Tab，先落 inbox/shelf 再恢复）。 */
+  function openEntry(entry: NavEntry) {
+    if (entry.tabs.length > 1) {
+      if (collectionSub === "notes") {
+        setTab(entry.tabs[0]);
+        setCollectionSub("notes");
+        return;
+      }
+      setTab(collectionSub);
+      return;
+    }
+    setTab(entry.tabs[0]);
+  }
+
   return (
     <div className="full-view">
       <nav className="rail" aria-label="主导航">
@@ -133,34 +135,19 @@ export default function FullView() {
           </button>
         </div>
         <div className="rail-items">
-          {RAIL_ENTRIES.map((entry) => {
+          {entriesToRender.map((entry) => {
             const count = entry.badge ? counts[entry.badge] : 0;
             const active = entry.tabs.includes(tab);
-            // 合并入口点击打开「上一次的子页」（无历史时由 collectionSub 默认 inbox）；
-            // 笔记子页没有对应逻辑 Tab，回到入口时先落到 inbox/shelf 再恢复 notes 子页。
-            const target =
-              entry.tabs.length > 1
-                ? collectionSub === "notes"
-                  ? entry.tabs[0]
-                  : collectionSub
-                : entry.tabs[0];
             // 徽标语义在提示条中如实说明：数字只代表待处理收集内容
             const tip =
-              entry.key === "collection" && count > 0
+              entry.id === "collection" && count > 0
                 ? `${entry.label}（${count} 条待处理收集）`
                 : entry.label;
             return (
               <button
-                key={entry.key}
+                key={entry.id}
                 className={`rail-item ${active ? "active" : ""}`}
-                onClick={() => {
-                  if (entry.key === "collection" && collectionSub === "notes") {
-                    setTab(entry.tabs[0]);
-                    setCollectionSub("notes");
-                    return;
-                  }
-                  setTab(target);
-                }}
+                onClick={() => openEntry(entry)}
                 aria-current={active ? "page" : undefined}
                 // 窄窗下文字标签被隐藏，可访问名必须由 aria-label 兜底；
                 // 提示条走统一的 data-tip（原生 title 会弹出系统样式提示）。
@@ -181,20 +168,74 @@ export default function FullView() {
             );
           })}
         </div>
+        {/* 隐藏入口的再入口：列出全部隐藏项（含当前页），不复制页面/数据。
+            当前页是否隐藏由触发按钮的选中态表示；菜单内用单选勾选当前项。 */}
+        {hiddenEntries.length > 0 && (
+          <div className="rail-items rail-more">
+            <DropdownMenu
+              menuLabel="隐藏的导航入口"
+              placement="bottom-start"
+              menuMinWidth={168}
+              trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                <button
+                  ref={ref}
+                  type="button"
+                  className={`rail-item${currentHidden ? " active" : ""}`}
+                  aria-current={currentHidden ? "page" : undefined}
+                  aria-haspopup="menu"
+                  aria-expanded={expanded}
+                  aria-label="更多导航入口"
+                  data-tip="更多"
+                  data-tip-placement={FLOATING_TIP_PLACEMENT}
+                  onClick={onClick}
+                  onKeyDown={onKeyDown}
+                >
+                  <span className="rail-icon">
+                    <MoreHorizontal size={18} strokeWidth={1.75} />
+                  </span>
+                  <span className="rail-label">更多</span>
+                </button>
+              )}
+              items={[
+                ...hiddenEntries.map((entry) => ({
+                  key: entry.id,
+                  label: entry.label,
+                  icon: <entry.icon size={14} strokeWidth={1.6} />,
+                  radio: true,
+                  checked: entry.tabs.includes(tab),
+                  onSelect: () => openEntry(entry),
+                })),
+                {
+                  key: "__customize-navigation",
+                  label: "自定义导航",
+                  icon: <Settings2 size={14} />,
+                  onSelect: () => {
+                    setTab("settings");
+                    // 跨模块定位：展开并滚动到「导航自定义」分区（不另建配置入口）。
+                    requestSettingsSectionReveal("navigation");
+                  },
+                },
+              ]}
+            />
+          </div>
+        )}
       </nav>
       <div className={`tab-content tab-content-${tab}`}>
-        {tab === "tasks" && <TasksPanel />}
-        {tab === "agents" && <AgentPanel />}
-        {tab === "apps" && <AppsPanel />}
-        {tab === "widgets" && <WidgetsPanel sources={WIDGET_SOURCES} />}
-        {tab === "actions" && <ActionCenterPanel />}
-        {tab === "clipboard" && <ClipboardPanel />}
-        {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}
-        {(tab === "inbox" || tab === "shelf") && <CollectionPanel />}
-        {tab === "workflows" && <WorkflowsPanel />}
-        {tab === "history" && <HistoryPanel />}
-        {tab === "roadmap" && <PlanningCenterPanel />}
-        {tab === "settings" && <SettingsPanel />}
+        {/* 低频页首次进入时异步加载；fallback 只占位、不做持续动画，避免闪烁。 */}
+        <Suspense fallback={<div className="panel-loading" role="status" aria-label="正在加载页面" />}>
+          {tab === "tasks" && <TasksPanel />}
+          {tab === "agents" && <AgentPanel />}
+          {tab === "apps" && <AppsPanel />}
+          {tab === "widgets" && <WidgetsPanel sources={WIDGET_SOURCES} />}
+          {tab === "actions" && <ActionCenterPanel />}
+          {tab === "clipboard" && <ClipboardPanel />}
+          {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}
+          {(tab === "inbox" || tab === "shelf") && <CollectionPanel />}
+          {tab === "workflows" && <WorkflowsPanel />}
+          {tab === "history" && <HistoryPanel />}
+          {tab === "roadmap" && <PlanningCenterPanel />}
+          {tab === "settings" && <SettingsPanel />}
+        </Suspense>
       </div>
     </div>
   );

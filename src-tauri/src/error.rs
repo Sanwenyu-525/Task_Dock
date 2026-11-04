@@ -275,9 +275,15 @@ impl AppError {
                 }
                 _ => "sqlite error".to_string(),
             }),
-            AppError::Io(e) => Some(sanitize(&e.to_string())),
-            AppError::Json(e) => Some(sanitize(&e.to_string())),
-            AppError::Tauri(e) => Some(sanitize(&e.to_string())),
+            AppError::Io(e) => Some(format!(
+                "io kind={:?} os={}",
+                e.kind(),
+                e.raw_os_error()
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            )),
+            AppError::Json(e) => Some(format!("json line={} column={}", e.line(), e.column())),
+            AppError::Tauri(_) => Some("tauri ipc error".to_string()),
             _ => None,
         }
     }
@@ -296,34 +302,127 @@ impl AppError {
     }
 }
 
-/// 单行化 + 截断 + 脱敏用户目录名：不把系统隐私路径原样抛给前端。
+/// 单行化 + 过滤调试/ SQL 行 + 脱敏用户目录与凭证 + 截断。
+///
+/// 说明：detail 字段已按白名单生成（Io 只留 kind/os、Json 只留行列），这里主要保护
+/// `user_message` 里的业务文案；两层都不能单独作为“已脱敏”的证明。
 fn sanitize(raw: &str) -> String {
-    let mut s = raw
+    let filtered: Vec<&str> = raw
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    // C:\Users\<name>\... → C:\Users\<用户>\...（保留结构，隐藏账户名）
-    for prefix in ["C:\\Users\\", "c:\\Users\\", "C:\\users\\", "c:\\users\\"] {
-        while let Some(pos) = s.find(prefix) {
-            let rest = &s[pos + prefix.len()..];
-            match rest.find('\\') {
-                Some(end) => {
-                    let name = &rest[..end];
-                    if name.is_empty() || name == "<用户>" {
-                        break;
-                    }
-                    let start = pos + prefix.len();
-                    s.replace_range(start..start + end, "<用户>");
-                }
-                None => break,
+        .filter(|line| {
+            if line.is_empty() {
+                return false;
             }
-        }
-    }
-    let mut out: String = s.chars().take(240).collect();
-    if s.chars().count() > 240 {
+            if line.starts_with("at ") || line.contains("stack backtrace") {
+                return false;
+            }
+            let lower = line.to_lowercase();
+            !["select ", "insert into ", "update ", "delete from ", "create table",
+              "alter table ", "drop table ", "pragma "]
+                .iter()
+                .any(|kw| lower.contains(kw))
+        })
+        .collect();
+
+    let joined = filtered.join(" ");
+    let joined = redact_home_dirs(&joined);
+    let joined = redact_secrets(&joined);
+    let mut out: String = joined.chars().take(240).collect();
+    if joined.chars().count() > 240 {
         out.push('…');
+    }
+    out
+}
+
+/// 跨平台用户目录脱敏：`C:\Users\alice`、`/Users/alice`、`/home/alice` → `<用户>`。
+fn redact_home_dirs(raw: &str) -> String {
+    const WIN_MARKERS: [&str; 2] = ["\\users\\", "\\documents and settings\\"];
+    const NIX_MARKERS: [&str; 2] = ["/users/", "/home/"];
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let rest = &raw[i..];
+        if let Some(marker) = WIN_MARKERS
+            .iter()
+            .find(|m| rest.get(..m.len()).map(|p| p.eq_ignore_ascii_case(m)).unwrap_or(false))
+        {
+            out.push_str(&rest[..marker.len()]);
+            let name_rest = &rest[marker.len()..];
+            let end = name_rest
+                .find(|c: char| c == '\\' || c == '/')
+                .unwrap_or(name_rest.len());
+            if end > 0 {
+                out.push_str("<用户>");
+            }
+            i += marker.len() + end;
+            continue;
+        }
+        if let Some(marker) = NIX_MARKERS
+            .iter()
+            .find(|m| rest.get(..m.len()).map(|p| p.eq_ignore_ascii_case(m)).unwrap_or(false))
+        {
+            out.push_str(&rest[..marker.len()]);
+            let name_rest = &rest[marker.len()..];
+            let end = name_rest
+                .find(|c: char| c == '/' || c.is_whitespace())
+                .unwrap_or(name_rest.len());
+            if end > 0 {
+                out.push_str("<用户>");
+            }
+            i += marker.len() + end;
+            continue;
+        }
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// 显式凭证脱敏：`Authorization: xxx`、`token=xxx`、`password=xxx` 等。
+fn redact_secrets(raw: &str) -> String {
+    const MARKERS: [&str; 10] = [
+        "authorization:",
+        "authorization=",
+        "bearer ",
+        "token=",
+        "token:",
+        "access_token=",
+        "api_key=",
+        "api-key=",
+        "password=",
+        "secret=",
+    ];
+    let mut out = raw.to_string();
+    for marker in MARKERS {
+        let mut from = 0usize;
+        loop {
+            let lower = out.to_lowercase();
+            let Some(rel) = lower.get(from..).and_then(|tail| tail.find(marker)) else {
+                break;
+            };
+            let pos = from + rel;
+            let value_start = pos + marker.len();
+            let value_rest = &out[value_start..];
+            let skip = value_rest.len() - value_rest.trim_start().len();
+            let value_start = value_start + skip;
+            let value_rest = &out[value_start..];
+            if value_rest.starts_with("<已隐藏>") {
+                from = value_start + "<已隐藏>".len();
+                continue;
+            }
+            let end = value_rest
+                .find(|c: char| c.is_whitespace() || c == ',' || c == '"' || c == '\'')
+                .unwrap_or(value_rest.len());
+            if end < 6 {
+                // 没有可识别的凭证值：跳过该标记，继续找后面的出现位置
+                from = pos + marker.len();
+                continue;
+            }
+            out.replace_range(value_start..value_start + end, "<已隐藏>");
+            from = value_start + "<已隐藏>".len();
+        }
     }
     out
 }
@@ -375,10 +474,36 @@ mod tests {
         let e = AppError::Io(std::io::Error::new(ErrorKind::NotFound, "C:\\Users\\alice\\a.txt"));
         assert_eq!(e.code(), "NOT_FOUND");
         assert_eq!(e.user_message(), "文件或路径不存在");
-        // 细节里保留路径结构，但隐藏账户名
+        // detail 只暴露白名单化的 kind/os，不包含原始路径或账户名
         let detail = e.detail().unwrap();
         assert!(!detail.contains("alice"));
-        assert!(detail.contains("<用户>"));
+        assert!(!detail.contains("a.txt"));
+        assert!(detail.contains("kind=NotFound"));
+    }
+
+    #[test]
+    fn sanitize_redacts_cross_platform_home_dirs() {
+        let e = AppError::Validation(
+            "无法读取 C:\\Users\\alice\\secret.txt、/Users/bob/x 和 /home/carol/y".into(),
+        );
+        let msg = e.user_message();
+        assert!(!msg.contains("alice"));
+        assert!(!msg.contains("bob"));
+        assert!(!msg.contains("carol"));
+        assert!(msg.contains("<用户>"));
+    }
+
+    #[test]
+    fn sanitize_redacts_tokens_and_drops_sql_and_stack() {
+        let e = AppError::Validation(
+            "token=abcdef123456 Bearer eyJhbGciOiJIUzI1  Password=Hunter2\nSELECT * FROM tasks\n at src/main.rs:10".into(),
+        );
+        let msg = e.user_message();
+        assert!(!msg.contains("abcdef123456"));
+        assert!(!msg.contains("Hunter2"));
+        assert!(!msg.contains("SELECT"));
+        assert!(!msg.contains("main.rs"));
+        assert!(msg.contains("<已隐藏>"));
     }
 
     #[test]

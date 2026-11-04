@@ -460,7 +460,7 @@ describe("展开 / 收起：只切区域", () => {
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
 
-  it("展开态光标离开 → 自动收起为轨道（不退出应用、不移动窗口）", async () => {
+  it("展开态光标离开 → 保持展开（面板不再自动收起，不移动窗口）", async () => {
     mount();
     await advance(50);
     await dockLeft();
@@ -474,14 +474,14 @@ describe("展开 / 收起：只切区域", () => {
     await act(async () => {
       world.cursor = { x: 1200, y: 200 };
     });
-    await advance(900);
+    await advance(5000);
 
-    expect(phase()).toBe("docked-hidden");
-    expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+    expect(phase()).toBe("docked-revealed");
+    expect(lastRegion()).toEqual({ mode: "panel", edge: "left" });
     expect(world.setPositionCalls.length).toBe(moves);
   });
 
-  it("菜单/对话框在场时暂停自动收起，弹层关闭后恢复自动收起", async () => {
+  it("展开态无人操作（含弹层开关）保持展开，只有主动收起才回到轨道", async () => {
     mount();
     await advance(50);
     await dockLeft();
@@ -496,13 +496,19 @@ describe("展开 / 收起：只切区域", () => {
     await act(async () => {
       world.cursor = { x: 1200, y: 200 };
     });
-    await advance(900);
-    // 弹层在场时不得自动收起
+    await advance(9000);
     expect(phase()).toBe("docked-revealed");
 
-    overlayMock.blocking = false; // 弹层关闭
-    await advance(900);
-    expect(phase()).toBe("docked-hidden");
+    overlayMock.blocking = false; // 弹层关闭后同样不自动收起
+    await advance(9000);
+    expect(phase()).toBe("docked-revealed");
+
+    await act(async () => {
+      useEdgeSnapStore.getState().collapse?.();
+      await Promise.resolve();
+    });
+    await advance(20);
+    expect(phase()).toBe("docked-visible");
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
 });

@@ -164,7 +164,7 @@ pub fn show_main_window(app: tauri::AppHandle) -> AppResult<()> {
 
 /// 设置窗口圆角半径（逻辑像素）并立即应用到 Win32 窗口区域。
 ///
-/// 前端按视觉预设下发：dream-gradient 18px / liquid-glass 20px。
+/// 前端按视觉预设下发：dream-gradient 18px / frosted 20px。
 /// 返回值表示 Win32 区域是否真正应用成功（失败时 CSS 圆角仍在，
 /// 只是原生背景可能在四角露出直角，由前端记录到验收日志）。
 #[tauri::command]
@@ -732,25 +732,21 @@ fn effective_backend(requested: &str, build: u32, region_enabled: bool) -> Strin
 /// 对**任意**应用窗口应用/清除原生材质（主窗与右键菜单弹窗共用）。
 /// 后端选择走同一套 `effective_backend`：Win11 + 区域裁剪 → css（CSS 玻璃，
 /// 无原生层），Win10 → Acrylic，显式后端原样保留供矩阵对照。
-/// material: "solid" | "glass"；preset 为当前视觉预设（v0.9 起用于隔离清透玻璃）。
+/// material: "solid" | "glass"；`preset` 仅为调用契约保留：两套预设
+/// （frosted / dream-gradient）共用同一原生材质策略，不再按预设名分支。
 /// 持久化由调用方负责，这里只动窗口。
 pub fn apply_material_to_window<R: tauri::Runtime>(
     app: &AppHandle<R>,
     win: &tauri::WebviewWindow<R>,
     material: &str,
-    preset: &str,
+    _preset: &str,
 ) -> MaterialResult {
     let build = windows_build();
     let os_version = format!("10.0.{}", build);
     let requested = glass_backend();
-    // 清透玻璃的契约是「桌面/其他应用原样透过」：Mica、Acrylic、legacy blur
-    // 都会由 DWM 把窗口后的内容糊掉，正好违背目标，因此在 auto 下强制走
-    // CSS（无原生层）通道；显式 TASK_DOCK_GLASS_BACKEND 仍保留给矩阵对照。
-    let backend = if preset == "clear" && requested == "auto" {
-        "css".to_string()
-    } else {
-        effective_backend(&requested, build, region_clipping_enabled())
-    };
+    // 预设不再影响原生后端：清透玻璃（2026-11 下线）曾在此强制 CSS 无原生层，
+    // 现由两套预设共用默认策略（Win11+区域裁剪走 CSS，其余走 Acrylic 等）。
+    let backend = effective_backend(&requested, build, region_clipping_enabled());
     // 胶囊停靠态：原生背景（Mica/Acrylic/blur）一律不挂到窗口——DWM 按整个窗口
     // 矩形绘制它，SetWindowRgn 裁不到（真机证据见文件上方「胶囊停靠态」小节）。
     // 只记录「未停靠时应生效」的效果，解除吸附后恢复；玻璃由 CSS 承担。
@@ -901,7 +897,7 @@ pub fn apply_material_to_window<R: tauri::Runtime>(
 }
 
 /// 应用/清除窗口原生材质效果。material: "solid" | "glass"。
-/// preset 用于隔离清透玻璃（该预设强制无原生模糊）；缺省按液态玻璃处理。
+/// preset 仅为调用契约保留（缺省按当前默认预设 frosted）。
 /// 持久化由前端 update_settings 完成；这里只动窗口。
 #[tauri::command]
 pub fn apply_window_material(
@@ -912,7 +908,7 @@ pub fn apply_window_material(
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
-    let preset = preset.unwrap_or_else(|| "liquid-glass".into());
+    let preset = preset.unwrap_or_else(|| "frosted".into());
     Ok(apply_material_to_window(&app, &win, &material, &preset))
 }
 
@@ -930,8 +926,8 @@ pub fn apply_menu_material<R: tauri::Runtime>(
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
     if forced {
-        // 弹窗始终按液态玻璃语义处理：清透的全透明策略只属于主窗。
-        return apply_material_to_window(app, win, "glass", "liquid-glass");
+        // 弹窗始终按统一玻璃语义处理；preset 参数仅用于调用契约对齐。
+        return apply_material_to_window(app, win, "glass", "frosted");
     }
     let w = win.clone();
     let _ = run_material(app, move || clear_native_materials(&w));

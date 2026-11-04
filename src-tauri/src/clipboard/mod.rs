@@ -15,6 +15,7 @@ pub mod agent_bridge;
 pub mod engine;
 pub mod export;
 pub mod image;
+pub mod ocr;
 pub mod paste;
 pub mod platform;
 pub mod store;
@@ -234,6 +235,8 @@ pub struct ClipboardRuntime {
     /// 清空与入库的文件/事务临界区：清空期间禁止入库线程写资产。
     pub capture_gate: Arc<Mutex<()>>,
     pub paste: paste::PasteManager,
+    /// 图片文字识别：按需创建引擎、单任务闸门、会话内结果缓存（不常驻、不预热）。
+    pub ocr: ocr::OcrService,
     monitor: Mutex<Option<platform::ClipboardMonitor>>,
     /// 维护线程代数：停止/重启时递增，旧线程看到代数变化即退出
     maintenance_gen: AtomicU64,
@@ -257,6 +260,7 @@ impl ClipboardRuntime {
             clear_seq: Arc::new(AtomicU32::new(0)),
             capture_gate: Arc::new(Mutex::new(())),
             paste,
+            ocr: ocr::OcrService::new(),
             monitor: Mutex::new(None),
             maintenance_gen: AtomicU64::new(0),
             maintenance_stop: Arc::new((Mutex::new(false), Condvar::new())),

@@ -14,6 +14,7 @@ import { useUiStore } from "../../store/useUiStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { formatDue, isOverdue, priorityLabel, describeRecurrence } from "../../lib/format";
 import { navNavigate, resultMessage } from "../../lib/navigation";
+import { errorMessage } from "../../lib/errors";
 import TargetMenu, { TargetAvatar } from "../navigation/TargetMenu";
 import { DropdownMenu } from "../ui";
 
@@ -76,7 +77,7 @@ export default function TaskItem({ task, compact }: Props) {
             action: {
               label: "撤销",
               run: () => {
-                toggle(updated.id).catch((e) => showToast(`撤销失败：${String(e)}`, { kind: "error" }));
+                toggle(updated.id).catch((e) => showToast(`撤销失败：${errorMessage(e)}`, { kind: "error" }));
               },
             },
           },
@@ -88,7 +89,7 @@ export default function TaskItem({ task, compact }: Props) {
     } catch (e) {
       // 后端没成功：撤掉离场状态，任务原位保持正常
       setLeaving(false);
-      showToast(`操作失败：${String(e)}`, { kind: "error" });
+      showToast(`更新任务状态失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(false);
     }
@@ -108,7 +109,7 @@ export default function TaskItem({ task, compact }: Props) {
       const r = await navNavigate(targetId, { action, task_link_id: linkId });
       showToast(resultMessage(r, name), { kind: r.success ? "success" : "error" });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      showToast(`打开「${name}」失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -123,7 +124,7 @@ export default function TaskItem({ task, compact }: Props) {
       await snoozeReminder(task.id, minutes);
       await refreshTasks();
     } catch (e) {
-      showToast(`延后失败：${String(e)}`, { kind: "error" });
+      showToast(`延后提醒失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setSnoozeBusy(false);
     }

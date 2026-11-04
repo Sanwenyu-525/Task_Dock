@@ -387,20 +387,31 @@ export default function HistoryPanel() {
       )}
       {groups.map((g) => (
         <div key={g.label} className="history-day">
-          <div className="history-day-label">{g.label}</div>
+          <div className="history-day-label">
+            <span className="history-day-label-mask" aria-hidden="true" />
+            <span className="history-day-label-text">{g.label}</span>
+          </div>
           <div className="history-list">
             {g.entries.map((e) => {
               const open = detailKey === e.key;
               return (
                 <div
                   key={e.key}
-                  className={`history-item kind-${e.kind === "event" ? `event-${e.event?.state}` : e.source} ${e.unread ? "unread" : ""}`}
+                  className={`history-item surface-card surface-card--interactive kind-${e.kind === "event" ? `event-${e.event?.state}` : e.source} ${e.unread ? "unread" : ""}`}
                   onClick={() => onEntryClick(e.key, e.notification)}
                   role="button"
                   tabIndex={0}
-                  onKeyDown={(ev) => ev.key === "Enter" && onEntryClick(e.key, e.notification)}
+                  aria-expanded={open}
+                  onKeyDown={(ev) => {
+                    // role=button 的键盘契约：Enter 与 Space 都要能展开/收起
+                    if (ev.key === "Enter" || ev.key === " ") {
+                      ev.preventDefault();
+                      onEntryClick(e.key, e.notification);
+                    }
+                  }}
                 >
                   <div className="history-head">
+                    {e.unread && <span className="history-unread-dot" aria-hidden="true" />}
                     {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                     <span className={`history-kind ${e.kind === "event" ? `ev-${e.event?.state}` : `nk-${e.source}`}`}>
                       {e.kind === "event" ? <AgentIcon size={10} /> : <Bell size={10} />}

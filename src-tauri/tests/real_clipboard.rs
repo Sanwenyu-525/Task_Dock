@@ -883,7 +883,8 @@ fn real_visible_targets_exclude_self_and_pass_precheck() {
         if platform::window_target(t.hwnd).is_none() {
             continue;
         }
-        match paste::precheck_target(t.hwnd) {
+        // 传入枚举时的 pid：预检必须核对窗口身份，HWND 被复用时拒绝。
+        match paste::precheck_target(t.hwnd, Some(t.pid)) {
             Ok(target) => {
                 assert_eq!(target.pid, t.pid, "预检必须回到同一个进程身份");
                 assert_eq!(target.hwnd, t.hwnd, "预检必须回到同一个窗口句柄");

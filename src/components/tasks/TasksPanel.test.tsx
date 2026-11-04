@@ -9,11 +9,12 @@
 //! 因为 vi.mock 工厂会被提升到模块顶部执行。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { useTasksStore } from "../../store/useTasksStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
+import { useUiStore } from "../../store/useUiStore";
 import TasksPanel from "./TasksPanel";
 import type { Task, TaskFilter } from "../../lib/bridge";
 
@@ -65,8 +66,15 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     })),
     parseQuickAdd: vi.fn(),
     createFromQuickAdd: vi.fn(),
+    listTaskLinks: vi.fn(async () => []),
+    clipboardTaskLinks: vi.fn(async () => []),
   };
 });
+
+vi.mock("../../lib/navigation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../lib/navigation")>(),
+  navTaskTargets: vi.fn(async () => []),
+}));
 
 vi.mock("./analytics/TaskAnalyticsPanel", () => ({
   default: () => <div>analytics-panel</div>,
@@ -84,6 +92,7 @@ function seedTasks() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useUiStore.setState({ editor: { open: false, task: null } });
   // jsdom 的 requestAnimationFrame 兜底（搜索按钮展开后用 rAF 聚焦输入框）
   vi.stubGlobal(
     "requestAnimationFrame",
@@ -190,5 +199,41 @@ describe("TasksPanel 筛选交互", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByText("analytics-panel")).toBeNull());
     expect(screen.getByText("买牛奶")).toBeTruthy();
+  });
+
+  it("任务编辑态在主内容区切换：返回列表恢复筛选与滚动位置，不新开窗口", async () => {
+    const user = userEvent.setup();
+    seedTasks();
+    render(
+      <div style={{ overflowY: "auto" }} data-testid="scroller">
+        <TasksPanel />
+      </div>,
+    );
+    const scroller = screen.getByTestId("scroller");
+
+    // 先进入一个筛选状态，作为"返回后必须保留"的前置条件
+    await user.click(screen.getByRole("button", { name: "搜索任务" }));
+    await user.type(await screen.findByPlaceholderText(/搜索标题/), "牛奶");
+    await waitFor(() => expect(screen.queryByText("写代码")).toBeNull());
+
+    scroller.scrollTop = 120;
+    fireEvent.scroll(scroller);
+
+    act(() => {
+      useUiStore.setState({ editor: { open: true, task: ALL_TASKS[0] } });
+    });
+
+    // 主内容区切换：列表让位给编辑态，没有模态遮罩
+    expect(screen.getByText("编辑任务")).toBeTruthy();
+    expect(screen.queryByText("买牛奶")).toBeNull();
+    expect(document.querySelector(".modal-mask")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "取消" }));
+
+    await waitFor(() => expect(screen.queryByText("编辑任务")).toBeNull());
+    expect(screen.getByText("买牛奶")).toBeTruthy();
+    expect(screen.queryByText("写代码")).toBeNull();
+    expect(useTasksStore.getState().filter.search).toBe("牛奶");
+    await waitFor(() => expect(scroller.scrollTop).toBe(120));
   });
 });

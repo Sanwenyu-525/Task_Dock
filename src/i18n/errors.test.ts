@@ -35,6 +35,28 @@ describe("错误码映射", () => {
     expect(localizedErrorMessage(legacy)).toBe("磁盘写入失败：磁盘已满");
   });
 
+  it("中文模式保留后端给出的具体业务原因，不抹成通用文案", () => {
+    expect(
+      localizedErrorMessage(new AppError("标题不能为空", { code: "VALIDATION_ERROR" })),
+    ).toBe("标题不能为空");
+    expect(
+      localizedErrorMessage(new AppError("程序路径不存在", { code: "NOT_FOUND" })),
+    ).toBe("程序路径不存在");
+  });
+
+  it("英文模式不混入中文技术错误，回退本地化通用文案", () => {
+    setLocalePreference("en-US");
+    const error = new AppError("数据库正忙", { code: "DATABASE_BUSY" });
+    expect(localizedErrorMessage(error)).not.toContain("数据库");
+    expect(localizedErrorMessage(error)).toMatch(/busy|try again/i);
+  });
+
+  it("未知 payload 有稳定本地化回退", () => {
+    expect(localizedErrorMessage({ foo: 1 })).toBe("发生未知错误");
+    setLocalePreference("en-US");
+    expect(localizedErrorMessage({ foo: 1 })).toBe("An unexpected error occurred.");
+  });
+
   it("后端新增未知错误码时回退通用文案，不返回 undefined", () => {
     const future = normalizeError({ code: "FUTURE_ERROR_CODE", message: "raw message" });
     expect(future.legacy).toBe(false);

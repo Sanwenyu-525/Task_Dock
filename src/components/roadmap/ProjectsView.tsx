@@ -26,9 +26,9 @@ import {
 } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { useUiStore } from "../../store/useUiStore";
-import { ProjectDialog } from "./PlanningDialogs";
+import { ProjectEditorView } from "./PlanningEditors";
 import { PlanningActivityRow } from "./PlanningFeatureCard";
-import { PlanningProgressBar } from "./PlanningBits";
+import { PlanningProgressBar, findScrollParent } from "./PlanningBits";
 
 export interface ProjectsViewProps {
   onOpenFeatures: () => void;
@@ -58,9 +58,12 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
   const loadMoreActivity = usePlanningStore((s) => s.loadMoreActivity);
   const showToast = useUiStore((s) => s.showToast);
 
-  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
-  const [editingProject, setEditingProject] = useState<PlanningProject | null>(null);
+  /** null = 列表态；非空 = 页面内编辑态（project 为 null 表示新建）。 */
+  const [editor, setEditor] = useState<{ project: PlanningProject | null } | null>(null);
   const [deletingProject, setDeletingProject] = useState<PlanningProject | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** 进入编辑前列表的滚动位置：返回时恢复，避免用户回到列表顶部。 */
+  const listScrollTop = useRef(0);
   // 项目级 recent activity 只在本项目数据就绪后请求一次；Store 内按作用域防护乱序
   const activityRequestedFor = useRef<string | null>(null);
 
@@ -80,6 +83,25 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
 
   const stats = activeProject?.stats;
 
+  /** 进入编辑态前记住列表滚动位置；返回时一次性恢复（页面级单一滚动容器）。 */
+  const openEditor = (project: PlanningProject | null) => {
+    const sc = findScrollParent(rootRef.current);
+    if (sc) listScrollTop.current = sc.scrollTop;
+    setEditor({ project });
+    window.requestAnimationFrame(() => {
+      const container = findScrollParent(rootRef.current);
+      if (container) container.scrollTop = 0;
+    });
+  };
+
+  const closeEditor = () => {
+    setEditor(null);
+    window.requestAnimationFrame(() => {
+      const container = findScrollParent(rootRef.current);
+      if (container) container.scrollTop = listScrollTop.current;
+    });
+  };
+
   const handleArchive = () => {
     if (!activeProject) return;
     const next = !activeProject.archived;
@@ -90,37 +112,35 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
       .catch((e) => showToast(`操作失败：${String(e)}`, { kind: "error" }));
   };
 
+  // ── 页面内编辑态：整块内容区切换为表单，不叠遮罩 ──
+  if (editor) {
+    return (
+      <div className="planning-projects planning-editor-page" ref={rootRef}>
+        <ProjectEditorView project={editor.project} onClose={closeEditor} />
+      </div>
+    );
+  }
+
   // ── 无项目：引导创建 ──
   if (!projectsLoading && projects.length === 0 && !projectsError) {
     return (
-      <div className="planning-projects">
+      <div className="planning-projects" ref={rootRef}>
         <div className="planning-empty-hero">
           <h3>规划中心</h3>
           <p>创建你的第一个项目：规划功能、拆分开发步骤、记录进度。</p>
           <p className="planning-empty-sub">
             Task Dock 自身的路线图在上方「内置路线图」中查看，两者互不影响。
           </p>
-          <button
-            className="btn primary"
-            onClick={() => {
-              setEditingProject(null);
-              setProjectDialogOpen(true);
-            }}
-          >
+          <button className="btn primary" onClick={() => openEditor(null)}>
             <FolderPlus size={14} aria-hidden="true" /> 新建项目
           </button>
         </div>
-        <ProjectDialog
-          open={projectDialogOpen}
-          project={null}
-          onClose={() => setProjectDialogOpen(false)}
-        />
       </div>
     );
   }
 
   return (
-    <div className="planning-projects planning-overview-page">
+    <div className="planning-projects planning-overview-page" ref={rootRef}>
       {projectsError && (
         <div className="planning-error" role="alert">
           <span>项目列表加载失败：{projectsError}</span>
@@ -185,13 +205,7 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                 ))}
               </div>
             )}
-            <button
-              className="planning-project-add"
-              onClick={() => {
-                setEditingProject(null);
-                setProjectDialogOpen(true);
-              }}
-            >
+            <button className="planning-project-add" onClick={() => openEditor(null)}>
               <Plus size={13} aria-hidden="true" /> 新建项目
             </button>
           </aside>
@@ -227,10 +241,7 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                   data-tip="编辑项目"
                   aria-label="编辑项目"
                   disabled={!activeProject}
-                  onClick={() => {
-                    setEditingProject(activeProject);
-                    setProjectDialogOpen(true);
-                  }}
+                  onClick={() => openEditor(activeProject)}
                 >
                   <Pencil size={13} />
                 </button>
@@ -391,11 +402,6 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
         </div>
       )}
 
-      <ProjectDialog
-        open={projectDialogOpen}
-        project={editingProject}
-        onClose={() => setProjectDialogOpen(false)}
-      />
       <ConfirmDialog
         open={deletingProject !== null}
         title="删除项目"

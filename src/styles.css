@@ -847,18 +847,22 @@ code {
   min-height: 100%;
 }
 
+/* 统计概览：横向单行（图标 + 数值 + 文案），高度约 28px；
+   旧版三行卡片约 64px，压缩后把首屏高度还给任务列表。 */
 .tasks-overview {
   display: flex;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .overview-card {
   flex: 1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 0;
-  padding: 8px 4px 7px;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 6px;
   border-radius: var(--radius-card);
   background: var(--surface-raised);
   border: 1px solid var(--border-subtle);
@@ -876,7 +880,7 @@ code {
 
 .overview-icon {
   color: var(--text-tertiary);
-  margin-bottom: 2px;
+  flex-shrink: 0;
 }
 
 .overview-card.warn .overview-icon {
@@ -884,9 +888,10 @@ code {
 }
 
 .overview-value {
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 
 .overview-card.warn .overview-value {
@@ -897,6 +902,8 @@ code {
   font-size: 10px;
   color: var(--text-tertiary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 筛选工具栏（任务 / 历史 / 各页共用）：
@@ -1240,6 +1247,53 @@ code {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
+}
+
+/* 收起态只占一行（约 24px）；展开态保持原有输入 + 预设 + 自定义结构 */
+.quick-reminder-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-radius: var(--radius-control);
+  background: none;
+  border: none;
+  text-align: left;
+}
+
+.quick-reminder-toggle:hover,
+.quick-reminder-toggle:focus-visible {
+  color: var(--text-primary);
+  background: var(--surface-raised);
+}
+
+.quick-reminder-hint {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.quick-reminder-chevron {
+  margin-left: auto;
+  transition: transform 0.12s;
+}
+
+.quick-reminder.is-open .quick-reminder-chevron {
+  transform: rotate(180deg);
+}
+
+.quick-reminder-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quick-reminder-chevron {
+    transition: none;
+  }
 }
 
 .quick-reminder-presets {
@@ -1371,19 +1425,28 @@ code {
   flex-direction: column;
   gap: 10px;
   min-height: 100%;
+  /* 作为列数判定的容器参照：按内容区实际宽度决定发现卡列数，
+     左侧导航占宽后不会被误判为宽屏。 */
+  container-type: inline-size;
+  container-name: agents-panel;
 }
 
 .agents-section-switch {
   align-self: flex-start;
+  max-width: 100%;
+  /* 极窄窗下 3 个分区按钮可整体换行，而不是被裁掉另一半 */
+  flex-wrap: wrap;
+  overflow: visible;
 }
 
 .agent-summary {
-  display: flex;
+  display: grid;
+  /* 窄窗 2×2、宽窗一行 4 个；不出现「3+1」孤立拉伸 */
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 8px;
 }
 
 .summary-card {
-  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1446,36 +1509,60 @@ code {
   white-space: nowrap;
 }
 
-/* 发现网格 */
+/* 设置页应用管理：标题完整显示，操作区成组右对齐，窄窗整体换行到标题下方 */
+.app-management .panel-block-head {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
+  row-gap: 6px;
+}
+
+.app-management .panel-block-head > span {
+  flex: 1 1 auto;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 发现网格：默认单列；仅当内容区实际宽度足够（已扣除左侧导航）才双列，
+   不按窗口宽度强制双列，窄窗与侧栏占宽时保持单列可读。 */
 .discovery-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
   gap: 8px;
 }
 
+@container agents-panel (min-width: 620px) {
+  .discovery-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Agent 来源卡：纯信息卡（整卡不可点，操作都是卡内按钮）。
+   卡面 / 圆角 / 阴影由 .surface-card 统一提供；信息分三层（默认 / 动作 / 展开）。 */
 .discovery-card {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  padding: 9px 10px;
-  background: var(--surface-base);
+  padding: 10px 11px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 7px;
   min-width: 0;
-  /* 作为容器查询参照：窄卡片下核心操作按钮收成图标，避免换行/截断 */
+  /* 作为容器查询参照：极窄卡片下徽标文案允许折行，避免横向溢出 */
   container-type: inline-size;
   container-name: discovery-card;
 }
 
 .discovery-card.not-installed {
-  opacity: 0.62;
+  opacity: 0.8;
 }
 
+/* 名称与徽标都有空间：名称可换行，空间不足时徽标整体换到下一行，不被截断 */
 .source-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  gap: 4px 8px;
   min-width: 0;
 }
 
@@ -1483,66 +1570,38 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  flex: 1 1 140px;
+  min-width: 0;
   font-weight: 600;
   font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
-/* 描述区固定高度：文案短时下方留白，文案长时内部滚动，保证动作区纵向位置稳定。
-   100px 依据：400px 双列卡片实测常规内容最大 98px（facts 2 行 + events 2 行 + last 1 行 + 间距），
-   留 2px 余量；与卡片既有 11px 字号 / 1.45 行高 / 5px 间距一致。 */
+/* 描述区自然高度：取消固定 100px 与内部滚动，非核心信息进展开区，
+   避免卡片内多层滚动和等高大片留白 */
 .discovery-body {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  height: 100px;
   min-width: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-width: none;
-  overscroll-behavior: contain;
-}
-
-.discovery-body > * {
-  flex-shrink: 0;
-}
-
-.discovery-body::-webkit-scrollbar {
-  display: none;
 }
 
 .discovery-facts {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 3px 10px;
   font-size: 11px;
-  color: var(--text-tertiary);
+  line-height: 1.5;
+  color: var(--text-secondary);
 }
 
-.discovery-events {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.discovery-facts .fact-strong {
+  color: var(--text-primary);
 }
 
-.discovery-last {
-  font-size: 11px;
+.discovery-facts .fact-muted {
   color: var(--text-tertiary);
-}
-
-.discovery-limits {
-  font-size: 10.5px;
-  color: var(--status-waiting);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .health-badge {
@@ -1555,60 +1614,147 @@ code {
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   white-space: nowrap;
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-width: 100%;
 }
 
-.health-badge.h-live {
+.health-badge.h-live,
+.health-badge.h-recent-event {
   color: var(--status-success);
   border-color: color-mix(in srgb, var(--status-success) 35%, transparent);
 }
 
-.health-badge.h-stale {
+.health-badge.h-stale,
+.health-badge.h-recent-unconfigured {
   color: var(--status-waiting);
   border-color: color-mix(in srgb, var(--status-waiting) 35%, transparent);
 }
 
-.health-badge.h-awaiting-first-event {
+.health-badge.h-awaiting-first-event,
+.health-badge.h-transport-verified,
+.health-badge.h-self-test-only {
   color: var(--status-running);
   border-color: color-mix(in srgb, var(--status-running) 35%, transparent);
 }
 
+.health-badge.h-disabled,
+.health-badge.h-unregistered {
+  color: var(--text-tertiary);
+}
+
+/* 极窄卡片：徽标文案允许折行，保证不横向溢出 */
+@container discovery-card (max-width: 220px) {
+  .health-badge {
+    white-space: normal;
+    align-items: flex-start;
+  }
+}
+
+/* 动作区：两两成组；换行以「组」为单位，避免把单个按钮孤立挤到下一行 */
 .source-actions {
   display: flex;
   align-items: center;
-  gap: 5px;
   flex-wrap: wrap;
+  gap: 5px;
   min-width: 0;
 }
 
-/* 核心操作（接入 + 禁用/启用）始终同一行；辅助操作（验证/卸载钩子）空间不足时另起一行 */
-.source-actions-core,
-.source-actions-aux {
+.source-action-group {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  flex-wrap: nowrap;
   min-width: 0;
 }
 
-.source-actions-core {
-  flex-wrap: nowrap;
+/* 详情是展开入口，不是主操作：默认无边框，hover 才出现边界 */
+.source-detail-toggle {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary);
 }
 
-.source-actions-aux {
+.source-detail-toggle:hover {
+  border-color: var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+/* 展开层：版本 / 接入方式 / Hooks / 事件类型 / 证据 / 限制 / 卸载 */
+.discovery-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.discovery-detail-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+}
+
+.discovery-detail-label {
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.discovery-detail-value {
+  min-width: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.discovery-detail code {
+  background: none;
+  padding: 0;
+}
+
+.discovery-detail > .btn {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.discovery-limits {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--status-waiting);
+  overflow-wrap: anywhere;
+}
+
+.discovery-limits svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* 接入管理工具栏：宽则搜索框与扫描并排，窄则搜索框整行、按钮换行 */
+.agents-toolbar {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  min-width: 0;
 }
 
-/* 卡片可用宽度不足时（如 400px 双列卡片），核心操作统一收成纯图标按钮：
-   aria-label 与 data-tip 保留完整语义，两个按钮形态一致，宽度不再随文案变化；
-   纯图标按钮高度仍为 24px：图标 12 + 上下内边距 10 + 边框 2 */
-@container discovery-card (max-width: 160px) {
-  .source-actions-core .source-action-label {
-    display: none;
-  }
+.agents-search {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
 
-  .source-actions-core .btn {
-    padding: 5px 6px;
-  }
+.agents-toolbar > .btn {
+  flex-shrink: 0;
 }
 
 .bridge-note {
@@ -1903,23 +2049,76 @@ code {
   gap: 5px;
 }
 
+/* 日期分组：居中文字 + 两侧 1px 细线的分隔形态，所有分组共用。
+   细线与文字垂直居中对齐（align-items: center），两侧等长延展到容器边缘。
+   文字不带底色；吸顶时整条标题铺与窗口底色一致的不透明遮罩，
+   滚过标题行的卡片被完全盖住（见 .history-day-label-mask）。
+   top 取负值抵消 .tab-content 的 padding-top：top: 0 会把标题钉在
+   滚动区可视顶端下方 10px，滚上去的卡片从这条缝里露出来（同 .clip-detail-head）。 */
 .history-day-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 10.5px;
   font-weight: 600;
-  color: var(--text-tertiary);
+  /* 文字不再有局部底色，提高一档阶梯保证去掉底后仍是正文级对比 */
+  color: var(--text-secondary);
   position: sticky;
   top: -10px;
-  margin: -10px -10px 0;
-  padding: 8px 12px 4px;
-  /* 吸顶时列表卡片会从标签底下穿过，所以它必须自带不透明底。
-     注意 --surface-base 在两套预设下解析成渐变（<image>），而 color-mix() 只接受 <color>：
-     旧写法 `color-mix(in srgb, var(--surface-base) 82%, transparent)` 整条声明失效，
-     四套预设×明暗下 computed background 均为 none，遮挡全靠 backdrop-filter，
-     等于让每个吸顶行常驻一层 GPU 模糊。
-     --surface-overlay 在浅色预设下仍是 92%–96% 的 alpha（4%–8% 透底），吸顶滚字会透出；
-     这里与 .clip-detail-head 同源改用 --clip-detail-face：四套预设×明暗下均为不透明纯色。 */
-  background: var(--clip-detail-face);
   z-index: var(--z-sticky);
+  padding: 4px 0;
+  /* 细线所在的透明区不拦截指针：卡片滚到标签下方时仍可 hover / 点击，
+     避免吸顶遮挡把卡片的 hover/click 反馈挡掉。只有文字块可交互。 */
+  pointer-events: none;
+}
+
+/* 整条吸顶遮罩：从滚动容器顶端一直盖到标题行底部（含上方 10px 内边距），
+   滚过标题条的卡片内容不会透出来。
+   窗口底色是渐变 + 四角氛围光，平面色会在两端出色带/接缝，因此这里按同一组
+   语义 Token 在固定视口坐标重绘窗口底：
+   - --capsule-face 是不透明窗口底，兜住 frosted/clear 的半透明窗口色；
+   - --window-fill 复刻窗口渐变；
+   - ::before 复刻 --decor 氛围光，并按预设自身的 --decor-opacity 衰减。
+   取舍：原生材质（Mica / 桌面透出）无法用 CSS 复刻，遮罩以 --capsule-face
+   实色承接，因此 frosted/clear 下比周围少一点桌面色偏；dream-gradient 与
+   frosted 两套主预设的深浅主题均无色带。 */
+.history-day-label-mask {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: var(--capsule-face);
+  background-image: var(--window-fill);
+  background-attachment: fixed;
+}
+
+.history-day-label-mask::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--decor);
+  background-attachment: fixed;
+  opacity: var(--decor-opacity, 1);
+  pointer-events: none;
+}
+
+.history-day-label::before,
+.history-day-label::after {
+  content: "";
+  flex: 1 1 0;
+  min-width: 12px;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.history-day-label-text {
+  /* 长日期文案在 320 窄窗下允许收缩换行，但不把两侧细线挤没。
+     只承载文字：不铺底、不加圆角，遮罩由整条 .history-day-label-mask 负责。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 2px 10px;
+  text-align: center;
+  pointer-events: auto;
 }
 
 .history-list {
@@ -1956,21 +2155,37 @@ code {
   min-width: 0;
 }
 
+/* 历史卡：卡面 / 圆角 / 阴影 / hover 由 .surface-card + .surface-card--interactive
+   统一提供，这里只保留历史列表自己的内边距与裁切约束。 */
 .history-item {
   padding: 7px 9px;
-  border-radius: var(--radius-card);
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-raised);
-  cursor: pointer;
   min-width: 0;
 }
 
-.history-item:hover {
-  border-color: var(--border-strong);
+/* 历史卡 hover 不位移：列表是长时间阅读的锚点，上浮会让相邻条目跟着晃。
+   只保留很轻的悬停阴影 + 1px 低对比描边（内描边不占布局、不盖文字）。
+   通用交互变体写在 styles-themes.css 的 @layer theme，而本文件组件样式整体在
+   @layer base；base 低于 theme，同级选择器覆盖不动，因此这条状态修正放进
+   @layer ui（高于 theme），作用范围仍只有 .history-item。
+   未读圆点 / aria-expanded 展开态 / selected 识别环均不受影响。 */
+@layer ui {
+  .history-item:hover {
+    transform: none;
+    box-shadow:
+      var(--card-shadow-hover),
+      inset 0 0 0 1px var(--border-strong);
+  }
 }
 
-.history-item.unread {
-  border-left: 3px solid var(--accent);
+/* 未读标识：标题行首的小圆点（局部强调），不再复用任务卡左侧色条——
+   那条竖条属于优先级语义，历史卡用它会被误读成 P0–P3。 */
+.history-unread-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .history-head {
@@ -2097,10 +2312,12 @@ code {
   overflow: hidden;
 }
 
+/* 标题行两端布局：左侧可换行文字块，右侧箭头固定最右并居中 */
 .settings-section-head {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
   width: 100%;
   padding: 9px 12px;
   text-align: left;
@@ -2110,17 +2327,47 @@ code {
   background: var(--surface-hover);
 }
 
+.settings-section-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .settings-section-title {
-  display: inline-flex;
-  align-items: center;
+  display: flex;
+  align-items: flex-start;
   gap: 7px;
+  min-width: 0;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
+.settings-section-title > svg {
+  flex-shrink: 0;
+}
+
+.settings-section-title-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .settings-chevron {
+  flex-shrink: 0;
   color: var(--text-tertiary);
+  transform: rotate(0deg);
+  transition: transform 140ms ease;
+}
+
+.settings-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-chevron {
+    transition: none;
+  }
 }
 
 .settings-section-desc {
@@ -2146,6 +2393,25 @@ code {
 
 .setting-row:last-child {
   border-bottom: none;
+}
+
+/* 设置页下拉：同列固定宽度，右边缘严格对齐；浮层右对齐不随选项文字抖动。
+   （只作用于设置页，不改变通用输入框与触发器宽度） */
+.settings-select-trigger {
+  flex: 0 0 150px;
+  width: 150px;
+  max-width: 150px;
+  justify-content: space-between;
+}
+
+/* 设置页内嵌的应用管理块自带 .panel-block 的 10px 内边距，会让其中的
+   设置行比其他分组短一截（右边缘错位 10px）。这里抵消这一层内边距与
+   1px 边框，让同页所有设置行共用同一条右边界，不改变通用 .panel-block。 */
+.settings-section-body .app-management .panel-block > .setting-row {
+  margin-left: -10px;
+  margin-right: -11px;
+  padding-left: 10px;
+  padding-right: 0;
 }
 
 .setting-row > span {
@@ -2195,6 +2461,16 @@ code {
   justify-content: flex-end;
 }
 
+/* 按钮成组：保持整体右对齐，窄窗时整组换行而不是单个按钮错位 */
+.btn-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  margin-left: auto;
+}
+
 .backup-list {
   margin-top: 8px;
   display: flex;
@@ -2217,6 +2493,80 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 备份记录卡：类型/时间为一级信息，文件名降为次级且可截断 */
+.backup-record-list {
+  gap: 4px;
+}
+
+.backup-record {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 5px 7px;
+}
+
+.backup-record-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.backup-record-kind {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.backup-record-flags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.backup-record-flags .chip {
+  font-size: 9.5px;
+  padding: 1px 5px;
+}
+
+.backup-record-size {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.backup-record-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.backup-record-time {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.backup-record-name {
+  flex: 1 1 120px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  opacity: 0.85;
 }
 
 /* ══ 弹窗 ═════════════════════════════════════════════════════ */
@@ -2582,10 +2932,6 @@ code {
 
 /* 窄窗口（极简 240-320px）：单列卡片、压缩间距 */
 @media (max-width: 360px) {
-  .discovery-grid {
-    grid-template-columns: 1fr;
-  }
-
   .agent-summary {
     gap: 5px;
   }
@@ -2599,7 +2945,7 @@ code {
   }
 
   .overview-card .overview-value {
-    font-size: 15px;
+    font-size: 13px;
   }
 
   .tab {
@@ -3321,6 +3667,8 @@ code {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* 网格按应用页实际内容宽度响应式，而不是整窗宽度 */
+  container-type: inline-size;
 }
 
 .apps-head {
@@ -3330,38 +3678,100 @@ code {
 .apps-filter-bar {
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+/* 搜索优先吃掉剩余空间；窄到放不下时搜索与刷新作为一组整体换行 */
+.apps-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 200px;
+  min-width: 0;
 }
 
 .apps-search {
-  min-width: 150px;
-  max-width: 240px;
+  flex: 1 1 120px;
+  min-width: 120px;
+  position: relative;
+  /* 焦点态只改边框颜色（1px 不变），不改变宽高与文字起始位置 */
+  transition: border-color 0.14s ease;
 }
 
+.apps-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border-strong));
+}
+
+/* 清空按钮绝对定位：出现/消失都不改变输入框宽高与文字起始位置 */
+.apps-search > .icon-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.apps-search input {
+  padding-right: 24px;
+}
+
+/* 内容宽度分档（按实测：320 视口 → 面板内容宽约 258px；400 视口 → 约 318px）：
+   卡片最小可读宽 116px，双列最低 2×116 + 6 间距 = 238px，因此最窄可用宽度也是双列；
+   三列最低 3×116 + 2×6 = 360px；≥560 起按宽度自动增列，不无限拉宽卡片。 */
 .apps-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
   align-content: start;
 }
 
+@container (min-width: 238px) {
+  .apps-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (min-width: 360px) {
+  .apps-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container (min-width: 560px) {
+  .apps-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+}
+
+/* 单行卡片：图标 + 名称/状态 + 收藏/更多。整卡 hover（不再只高亮上半部分），
+   圆角沿用设计系统 Token（`--radius-lg` 在本项目从未定义，旧值实际不生效）。 */
 .apps-tile {
   display: flex;
-  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
   min-width: 0;
+  min-height: 52px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-card);
   background: var(--surface-raised);
-  overflow: hidden;
+  transition: background-color 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.apps-tile:hover,
+.apps-tile.is-menu-open {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-raised);
 }
 
 .apps-tile-main {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex: 1;
   min-width: 0;
-  padding: 10px 10px 6px;
+  padding: 6px 2px 6px 8px;
   border: none;
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
   background: transparent;
   color: var(--text-primary);
   font-size: 12.5px;
@@ -3369,7 +3779,8 @@ code {
   cursor: pointer;
 }
 
-.apps-tile-main:hover {
+/* 按下反馈只出现在主区域的瞬时状态，不制造常驻半矩形高亮 */
+.apps-tile-main:active:not(:disabled) {
   background: var(--accent-soft);
 }
 
@@ -3378,15 +3789,29 @@ code {
   opacity: 0.75;
 }
 
+.apps-tile-actions {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  gap: 0;
+  padding: 0 4px 0 0;
+}
+
+/* 卡片内按钮保持 24px 视觉尺寸，双列窄卡也不会把名称挤走 */
+.apps-tile-actions .icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
 .apps-tile-avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
   color: #fff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -3408,6 +3833,10 @@ code {
 .apps-tile-state {
   font-size: 10px;
   color: var(--text-tertiary);
+  /* 窄卡下状态文字也必须单行省略，不能把 52px 卡片撑高 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .apps-tile-state.is-ok {
@@ -3420,32 +3849,6 @@ code {
 
 .apps-tile-state.is-bad {
   color: var(--status-error);
-}
-
-.apps-tile-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 6px 5px;
-}
-
-.apps-tile-add {
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 78px;
-  padding: 14px 8px;
-  border-style: dashed;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.apps-tile-add:hover {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 
 .apps-extras {
@@ -3545,13 +3948,6 @@ code {
   gap: 6px;
 }
 
-@media (max-width: 720px) {
-  .apps-search {
-    flex: 1 1 100%;
-    max-width: 100%;
-  }
-}
-
 /* 应用管理（设置） */
 .app-management {
   display: flex;
@@ -3570,7 +3966,8 @@ code {
 .target-admin-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px 10px;
+  flex-wrap: wrap;
   padding: 3px 4px;
   border-bottom: 1px dashed var(--border-subtle);
   font-size: 12px;
@@ -3580,26 +3977,41 @@ code {
   border-bottom: none;
 }
 
+/* 名称优先占用空间；类型与使用次数作为次级信息跟在后面 */
+.target-admin-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
 .target-admin-name {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.target-admin-type {
+.target-admin-meta {
+  flex-shrink: 0;
   font-size: 10px;
   color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.target-admin-memory {
   flex-shrink: 0;
 }
 
-.target-admin-uses {
-  font-size: 10px;
-  color: var(--text-tertiary);
-  width: 36px;
-  text-align: right;
+/* 收藏/隐藏/编辑/启动/删除统一右对齐；窄窗整组移到第二行 */
+.target-admin-ops {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 /* 编辑已保存目标：纵向表单，窄窗也保持字段可输入 */
@@ -3646,6 +4058,7 @@ code {
   font-size: 10px;
   color: var(--text-tertiary);
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .nav-log-name {
@@ -3660,6 +4073,7 @@ code {
   font-size: 10px;
   color: var(--text-tertiary);
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .nav-log-fb {
@@ -4728,7 +5142,7 @@ code {
    因此使用专用的不透明表面 `--clip-detail-face`（四套上下文契约见 styles-themes.test.ts）。
    top 取负值：滚动容器自身的 padding 会内缩 sticky 约束矩形，top:0 会钉在
    .clip-body 可视区顶下方 8px，露出一条内容带（WebView2 实测）；-8px 抵消其
-   padding-top，与 .history-day-label 抵消 .tab-content padding 是同一手法。 */
+   padding-top。 */
 .clip-detail-head {
   position: sticky;
   top: -8px;
@@ -5474,15 +5888,24 @@ code {
 
 .clip-danger-zone {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   margin-top: 2px;
   padding-top: 10px;
   border-top: 1px dashed var(--border-subtle);
   font-size: 10px;
   line-height: 1.55;
   color: var(--text-tertiary);
+}
+
+.clip-danger-zone .btn {
+  flex: none;
+}
+
+.clip-danger-note {
+  flex: 1;
+  min-width: 120px;
 }
 
 /* ── 任务关联 / Agent 本地导出 ── */
@@ -5622,8 +6045,9 @@ code {
 
 .clip-target {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
   width: 100%;
   text-align: left;
   padding: 5px 8px;
@@ -5631,6 +6055,40 @@ code {
   border-radius: 6px;
   background: var(--surface-raised);
   font-size: 11px;
+  min-width: 0;
+}
+
+/* 真实图标：固定尺寸容器，不参与撑高；缺失时显示统一通用窗口图标。 */
+.clip-target-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--text-tertiary) 10%, transparent);
+}
+
+.clip-target-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.clip-target-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 窄窗下卡片与状态/跳转按钮共享一行，卡片可收缩但文字省略。 */
+.clip-target-row .clip-target {
+  width: auto;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -5828,6 +6286,74 @@ code {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
+}
+
+/* 快捷键三行结构：名称/状态 → 组合/操作 → 说明 */
+.hotkey-row {
+  gap: 4px;
+}
+
+.hotkey-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.hotkey-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+
+.hotkey-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.hotkey-meta .chip {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+.hotkey-row-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* 快捷键组合保持完整可识别；空间不足时整组操作换行，不拆散单个按钮 */
+.hotkey-combo {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle, var(--text-tertiary));
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.hotkey-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.hotkey-row > .hotkey-note {
+  padding: 0;
+  line-height: 1.45;
 }
 
 .clip-config-error {
@@ -7833,6 +8359,22 @@ code {
 .cap-app:hover { background: var(--cap-card-face-hover); transform: translateY(-1px); }
 .cap-app:active { transform: none; }
 .cap-app:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* 「添加应用」入口：与普通卡片同网格对齐，但视觉权重更低——
+   去外阴影、去浮雕，只用轻边框与极浅背景表达可点击；hover 不上浮。 */
+.cap-app-add {
+  border: 1px solid var(--cap-divider);
+  background: transparent;
+  box-shadow: none;
+  color: var(--cap-text-2);
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.1s ease;
+}
+.cap-app-add:hover {
+  background: var(--cap-card-face-hover);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  transform: none;
+}
+.cap-app-add:active { transform: scale(0.97); }
+.cap-app-add:disabled { opacity: 0.35; cursor: default; }
 .cap-app-avatar {
   width: 34px;
   height: 34px;
@@ -7845,7 +8387,11 @@ code {
   background: linear-gradient(180deg, hsl(var(--app-hue, 250) 82% 97%), hsl(var(--app-hue, 250) 74% 90%));
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7), 0 1px 3px -1px rgba(52, 60, 132, 0.22);
 }
-.cap-app-avatar.is-add { color: var(--accent); background: var(--cap-accent-soft); }
+.cap-app-avatar.is-add {
+  color: var(--accent);
+  background: var(--cap-accent-soft);
+  box-shadow: none;
+}
 .cap-app-name {
   width: 100%;
   max-width: 100%;
@@ -7864,9 +8410,10 @@ code {
 :root[data-theme="dark"] .cap-app-avatar.is-add {
   color: var(--accent);
   background: var(--cap-accent-soft);
+  box-shadow: none;
 }
 
-/* 最近使用：横向排列的胶囊 */
+/* 网址 / 文件夹：横向排列的胶囊 */
 .cap-recent {
   flex: 0 0 auto;
   display: flex;
@@ -8885,15 +9432,13 @@ code {
   gap: 6px;
 }
 
+/* 收集箱卡：纯信息卡（整卡不可点，操作都在卡内按钮），
+   卡面 / 圆角 / 阴影由 .surface-card 统一提供，这里只负责信息结构与内边距。 */
 .inbox-item {
   display: flex;
   flex-direction: column;
   gap: 5px;
   padding: 8px 10px;
-  border-radius: var(--radius-card);
-  border: 1px solid var(--border-subtle);
-  background: var(--card-face);
-  box-shadow: var(--card-shadow);
 }
 
 .inbox-item.is-done {
@@ -10377,26 +10922,16 @@ code {
   padding: 6px 14px 12px;
 }
 
+/* 文件暂存架卡：卡面 / 圆角 / 阴影由 .surface-card 提供。
+   卡本体不可点击（勾选、预览、打开都是卡内按钮），因此不挂整卡 hover 位移，
+   避免暗示不存在的整卡点击；选中态用 --selected 的识别环，与 hover 明确区分。 */
 .shelf-item {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--surface-raised);
   position: relative;
   min-width: 0;
-  transition: border-color 0.12s, background 0.12s;
-}
-
-.shelf-item:hover {
-  border-color: var(--border-strong);
-}
-
-.shelf-item.selected {
-  border-color: var(--accent);
-  background: var(--accent-soft);
 }
 
 .shelf-item.missing {
@@ -11505,3 +12040,141 @@ span.wf-step-main {
     justify-content: center;
   }
 }
+
+/* 界面与导航（统一导航架构）：按面分组、键盘可用的上下排序。
+   只作用于本区块选择器，不复用/覆盖设置页其它分组样式。 */
+.nav-visibility-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 折叠外壳与内边距由 SettingsPanel 的 .settings-section-body 统一提供 */
+  padding: 0;
+}
+
+.nav-visibility-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.nav-visibility-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.nav-visibility-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.nav-visibility-preview {
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-visibility-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-visibility-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.nav-visibility-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.nav-visibility-entry-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-visibility-shortcut {
+  font-family: inherit;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.nav-visibility-current,
+.nav-visibility-hidden {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.nav-visibility-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.nav-visibility-move {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.nav-visibility-move:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.nav-visibility-move:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.nav-visibility-move:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.nav-visibility-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nav-visibility-error {
+  color: var(--status-error);
+}
+
+@media (max-width: 400px) {
+  .nav-visibility-row {
+    align-items: flex-start;
+  }
+}
+
+/* ══ 轻量化专项：低频页懒加载占位 + 导航显示设置 ══════════ */
+
+/* 懒加载 fallback：只占位不播放持续动画，避免切页闪烁 */
+.panel-loading {
+  min-height: 120px;
+}
+

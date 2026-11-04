@@ -25,6 +25,11 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
   return { ...actual, createTask, taskStats, listTasks };
 });
 
+/** 快捷提醒默认收起（轻量化专项 A2）：交互前先展开，功能语义不变。 */
+async function expandReminder(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "展开快捷提醒" }));
+}
+
 function taskResult(title: string) {
   return {
     id: "t-new",
@@ -53,6 +58,7 @@ describe("QuickReminder", () => {
     const user = userEvent.setup();
     createTask.mockResolvedValue(taskResult("休息一下"));
     render(<QuickReminder />);
+    await expandReminder(user);
 
     await user.type(screen.getByPlaceholderText(/快速提醒/), "休息一下");
     await user.click(screen.getByRole("button", { name: "10 分钟" }));
@@ -72,6 +78,7 @@ describe("QuickReminder", () => {
     const user = userEvent.setup();
     createTask.mockResolvedValue(taskResult("快速提醒"));
     render(<QuickReminder />);
+    await expandReminder(user);
     await user.click(screen.getByRole("button", { name: "30 分钟" }));
     await waitFor(() => expect(createTask).toHaveBeenCalled());
     expect(createTask.mock.calls[0][0].title).toBe("快速提醒");
@@ -80,6 +87,7 @@ describe("QuickReminder", () => {
   it("自定义 0 时 0 分：就地报错，不发请求", async () => {
     const user = userEvent.setup();
     render(<QuickReminder />);
+    await expandReminder(user);
     await user.click(screen.getByRole("button", { name: "自定义…" }));
     // 分钟改为 0（NumberInput 清空不提交，需显式输入 0）
     const minute = screen.getByLabelText("自定义分钟");
@@ -94,6 +102,7 @@ describe("QuickReminder", () => {
     const user = userEvent.setup();
     createTask.mockResolvedValue(taskResult("倒杯水"));
     render(<QuickReminder />);
+    await expandReminder(user);
     await user.click(screen.getByRole("button", { name: "自定义…" }));
     await user.clear(screen.getByLabelText("自定义小时"));
     await user.type(screen.getByLabelText("自定义小时"), "1");
@@ -110,6 +119,7 @@ describe("QuickReminder", () => {
     const user = userEvent.setup();
     createTask.mockRejectedValue(new Error("任务标题不能为空"));
     render(<QuickReminder />);
+    await expandReminder(user);
     await user.click(screen.getByRole("button", { name: "5 分钟" }));
     expect(await screen.findByText(/任务标题不能为空/)).toBeTruthy();
     expect(useUiStore.getState().toasts.some((t) => (t.message ?? "").includes("已创建提醒"))).toBe(false);

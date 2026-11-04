@@ -320,6 +320,8 @@ pub struct HooksAdapter {
     pub detect_impl: fn(&mut DetectionReport),
     /// hook 命令行构造（各产品对引号的处理不同，Codex 需要 cmd /c call 包裹）
     pub hook_command: fn(&Path, &str, &str) -> String,
+    /// 配置布局：多数产品为 Claude 兼容扁平结构；ZCode 为 hooks.events 嵌套结构
+    pub layout: hooks_install::HooksLayout,
     pub limitations: Vec<String>,
     pub timeout_secs: u64,
 }
@@ -385,9 +387,10 @@ impl ManagedAdapter for HooksAdapter {
         let events = (self.events)();
         let exe = std::env::current_exe()
             .map_err(|e| AppError::Agent(format!("无法定位 Task Dock 可执行文件: {}", e)))?;
+        // 预览必须与安装使用同一构造器，否则用户看到的命令与实际写入不一致
         let sample = events
             .first()
-            .map(|e| hooks_install::hook_command(&exe, self.source_id, e))
+            .map(|e| (self.hook_command)(&exe, self.source_id, e))
             .unwrap_or_default();
         Ok(json!({
             "adapter": self.id(),
@@ -430,7 +433,7 @@ impl ManagedAdapter for HooksAdapter {
         let files = (self.hooks_files)();
         // 多配置目录（Trae 国际/CN、WorkBuddy 多根）：全部预检查 + 统一快照，
         // 任一失败按快照恢复全部文件，不会只写一半。
-        let reports = hooks_install::install_hooks_set(&files, &specs)?;
+        let reports = hooks_install::install_hooks_set_with(&files, &specs, self.layout)?;
         // 记录安装元数据（供卸载与健康检查）
         let config = json!({
             "adapter": self.id(),
@@ -464,7 +467,7 @@ impl ManagedAdapter for HooksAdapter {
         let mut errors: Vec<String> = Vec::new();
         let mut remaining: Vec<String> = Vec::new();
         for file in &files {
-            match hooks_install::uninstall_hooks(file) {
+            match hooks_install::uninstall_hooks_with(file, self.layout) {
                 Ok(report) => reports.push(report),
                 Err(e) => {
                     errors.push(format!("{}: {}", file.display(), e));
@@ -494,7 +497,7 @@ impl ManagedAdapter for HooksAdapter {
         let events_ref: Vec<&str> = events.iter().map(|s| s.as_str()).collect();
         let files: Vec<Value> = (self.hooks_files)()
             .iter()
-            .map(|f| hooks_install::status_hooks(f, &events_ref).unwrap_or(Value::Null))
+            .map(|f| hooks_install::status_hooks_with(f, &events_ref, self.layout).unwrap_or(Value::Null))
             .collect();
         let legacy = hooks_install::legacy_script_path(app_data, self.source_id);
         Ok(json!({
@@ -672,8 +675,9 @@ pub fn sync_uninstall_state(
     })
 }
 
-/// 来源健康查询返回的原始证据列（enabled/verified/transport_verified/last_event_at/config）。
-type HealthRow = (i64, i64, i64, Option<String>, Option<String>);
+/// 来源健康查询返回的原始证据列
+/// （enabled / verified / transport_verified / last_event_at / config / 最近真实事件）。
+type HealthRow = (i64, i64, i64, Option<String>, Option<String>, Option<String>);
 
 /// 来源健康：严格区分
 /// 已禁用 / 已配置 / 通道已验证 / 曾经真实接入 / 最近真实事件 / 过期 / 未知。
@@ -684,7 +688,11 @@ pub fn source_health(db: &Db, source_id: &str) -> Value {
     let row: Option<HealthRow> = db
         .with_conn(|conn| {
             conn.query_row(
-                "SELECT enabled, verified, transport_verified, last_event_at, config FROM agent_sources WHERE id = ?1",
+                // last_event_at 会被「自测事件/手动 POST」污染，真实证据必须单独按 origin='real' 取
+                "SELECT s.enabled, s.verified, s.transport_verified, s.last_event_at, s.config, \
+                 (SELECT MAX(e.occurred_at) FROM agent_events e \
+                  WHERE e.source_id = s.id AND e.origin = 'real') \
+                 FROM agent_sources s WHERE s.id = ?1",
                 rusqlite::params![source_id],
                 |r| {
                     Ok((
@@ -693,6 +701,7 @@ pub fn source_health(db: &Db, source_id: &str) -> Value {
                         r.get::<_, i64>(2)?,
                         r.get::<_, Option<String>>(3)?,
                         r.get::<_, Option<String>>(4)?,
+                        r.get::<_, Option<String>>(5)?,
                     ))
                 },
             )
@@ -701,9 +710,11 @@ pub fn source_health(db: &Db, source_id: &str) -> Value {
         })
         .ok()
         .flatten();
-    let Some((enabled, verified, transport_verified, last_event_at, config)) = row else {
+    let Some((enabled, verified, transport_verified, last_event_at, config, last_real_event_at)) = row
+    else {
         return json!({ "state": "unregistered", "connection_state": "unknown" });
     };
+    let verified_flag = verified != 0;
     let stale = crate::db::Settings::load(db)
         .map(|s| s.stale_run_minutes.max(1) as i64)
         .unwrap_or(15);
@@ -713,35 +724,39 @@ pub fn source_health(db: &Db, source_id: &str) -> Value {
         .unwrap_or_else(|| json!({}));
     let configured = cfg.get("installed_at").is_some();
     let uninstall_partial = cfg.get("uninstall_partial_at").is_some();
-    let recent_event = last_event_at
+    // 「最近事件」只认宿主真实触发（origin='real'），自测/手动 POST 不算接入证据
+    let recent_event = last_real_event_at
         .as_deref()
         .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
         .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_minutes() < stale)
         .unwrap_or(false);
-    let real_event_seen = last_event_at.is_some() || verified != 0;
+    let real_event_seen = last_real_event_at.is_some();
 
     let state = if enabled == 0 {
         "disabled"
-    } else if verified != 0 && recent_event && configured {
+    } else if real_event_seen && recent_event && configured {
         "recent-event"
-    } else if verified != 0 && recent_event {
+    } else if real_event_seen && recent_event {
         "recent-unconfigured"
-    } else if verified != 0 {
+    } else if real_event_seen {
         "stale"
     } else if transport_verified != 0 {
         "transport-verified"
+    } else if verified_flag {
+        // 旧版本把自测事件写成真实事件：只有 verified 位、没有 origin=real 证据
+        "self-test-only"
     } else if configured {
         "awaiting-first-event"
-    } else if real_event_seen {
-        "history-only"
     } else {
         "no-events"
     };
+    // 只有「上报通道自测通过」或「宿主真实事件」才可称通道已验证。
+    // 仅有配置或旧版 verified 位（自测事件冒充真实）时保持 unknown，避免假阳性。
     let connection_state = if enabled == 0 {
         "disabled"
     } else if recent_event {
         "recent-event"
-    } else if configured || transport_verified != 0 {
+    } else if transport_verified != 0 {
         "channel-verified"
     } else {
         "unknown"
@@ -749,10 +764,13 @@ pub fn source_health(db: &Db, source_id: &str) -> Value {
     json!({
         "enabled": enabled != 0,
         "configured": configured,
-        "verified": verified != 0,
+        // verified 仅代表「已有宿主真实事件」；verified_flag 保留原始列供诊断
+        "verified": verified_flag && real_event_seen,
+        "verified_flag": verified_flag,
         "transport_verified": transport_verified != 0,
         "real_event_seen": real_event_seen,
         "last_event_at": last_event_at,
+        "last_real_event_at": last_real_event_at,
         "recent_event": recent_event,
         "installed_at": cfg.get("installed_at").cloned(),
         "uninstalled_at": cfg.get("uninstalled_at").cloned(),

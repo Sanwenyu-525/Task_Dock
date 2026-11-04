@@ -30,7 +30,7 @@ describe("formatErrorForUser", () => {
 
   it("无建议的错误码不追加空句", () => {
     const err = new AppError("未知错误", { code: "UNKNOWN_ERROR", category: "unknown" });
-    expect(formatErrorForUser(err, "操作").message).toBe("操作失败：未知错误");
+    expect(formatErrorForUser(err, "操作").message).toBe("操作失败：发生未知错误");
   });
 
   it("按错误码给出稳定建议", () => {

@@ -7,7 +7,7 @@
 //! 请求失败重试。bridge planning 命令全部 mock，store 用真实实现覆盖联动。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PlanningCenterPanel from "./PlanningCenterPanel";
 import { usePlanningStore } from "../../store/usePlanningStore";
@@ -248,29 +248,62 @@ describe("项目总览", () => {
   it("新建项目：填名创建后出现在项目里", async () => {
     const user = await renderWithProjects();
     await user.click(screen.getByRole("button", { name: /新建项目/ }));
-    const dialog = await screen.findByRole("dialog", { name: "新建项目" }, WAIT);
-    await user.type(within(dialog).getByLabelText("项目名称"), "新坑");
+    const editor = await screen.findByRole("region", { name: "新建项目" }, WAIT);
+    await user.type(within(editor).getByLabelText("项目名称"), "新坑");
     bridge.planningCreateProject.mockResolvedValue(proj("p3", "新坑"));
-    await user.click(within(dialog).getByRole("button", { name: "创建" }));
+    await user.click(within(editor).getByRole("button", { name: "创建" }));
     await waitFor(() => expect(bridge.planningCreateProject).toHaveBeenCalled(), WAIT);
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "新建项目" })).toBeNull(), WAIT);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "新建项目" })).toBeNull(), WAIT);
     expect(screen.getAllByText("新坑").length).toBeGreaterThan(0);
   });
 
-  it("编辑项目失败：提示错误、对话框保留用户输入", async () => {
+  it("项目目标日期：选择后标记未保存并随保存提交", async () => {
     const user = await renderWithProjects();
     await user.click(screen.getByRole("button", { name: "编辑项目" }));
-    const dialog = await screen.findByRole("dialog", { name: "编辑项目" }, { timeout: WAIT.timeout });
-    const nameInput = within(dialog).getByLabelText("项目名称") as HTMLInputElement;
+    const editor = await screen.findByRole("region", { name: "编辑项目" }, WAIT);
+    await user.click(within(editor).getByRole("textbox", { name: "目标日期" }));
+    await user.click(screen.getByRole("button", { name: "2026-11-20" }));
+    expect(within(editor).getByRole("status").textContent).toContain("未保存");
+
+    bridge.planningUpdateProject.mockResolvedValue(proj("p1", "我的应用", { target_date: "2026-11-20" }));
+    await user.click(within(editor).getByRole("button", { name: "保存" }));
+    await waitFor(
+      () =>
+        expect(bridge.planningUpdateProject).toHaveBeenCalledWith(
+          "p1",
+          expect.objectContaining({ target_date: "2026-11-20" }),
+        ),
+      WAIT,
+    );
+  });
+
+  it("编辑项目失败：提示错误、页面内编辑态保留用户输入", async () => {
+    const user = await renderWithProjects();
+    await user.click(screen.getByRole("button", { name: "编辑项目" }));
+    const editor = await screen.findByRole("region", { name: "编辑项目" }, { timeout: WAIT.timeout });
+    const nameInput = within(editor).getByLabelText("项目名称") as HTMLInputElement;
     await user.clear(nameInput);
     await user.type(nameInput, "改名后失败");
     bridge.planningUpdateProject.mockRejectedValue("写入被拒绝");
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(editor).getByRole("button", { name: "保存" }));
     await waitFor(() =>
       expect(useUiStore.getState().toasts.some((t) => t.kind === "error")).toBe(true),
     );
-    expect(screen.getByRole("dialog", { name: "编辑项目" })).toBeTruthy();
+    // 页面内编辑态保留：输入未丢失
+    expect(screen.getByRole("region", { name: "编辑项目" })).toBeTruthy();
     expect((screen.getByLabelText("项目名称") as HTMLInputElement).value).toBe("改名后失败");
+  });
+
+  it("项目未保存返回保护：放弃修改后回到总览", async () => {
+    const user = await renderWithProjects();
+    await user.click(screen.getByRole("button", { name: "编辑项目" }));
+    const editor = await screen.findByRole("region", { name: "编辑项目" }, WAIT);
+    await user.type(within(editor).getByLabelText("项目名称"), "改一半");
+    await user.click(within(editor).getByRole("button", { name: "返回项目总览" }));
+    expect(within(editor).getByRole("alert").textContent).toContain("未保存");
+    await user.click(within(editor).getByRole("button", { name: "放弃修改" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "编辑项目" })).toBeNull(), WAIT);
+    expect(screen.getByLabelText("项目概览")).toBeTruthy();
   });
 
   it("删除项目必须确认且明确影响面（功能/步骤/历史）", async () => {
@@ -291,37 +324,127 @@ describe("功能列表与详情", () => {
     await goToFeatures(user);
     await waitFor(() => expect(screen.getByRole("button", { name: "新增功能" })).toBeTruthy());
     await user.click(screen.getByRole("button", { name: "新增功能" }));
-    const dialog = await screen.findByRole("dialog", { name: "新增功能" }, WAIT);
-    await user.type(within(dialog).getByLabelText("功能名称"), "验收新功能");
-    await user.type(within(dialog).getByLabelText("验收标准"), "打开页面无报错");
+    const editor = await screen.findByRole("region", { name: "新增功能" }, WAIT);
+    await user.type(within(editor).getByLabelText("功能名称"), "验收新功能");
+    await user.type(within(editor).getByLabelText("验收标准"), "打开页面无报错");
     bridge.planningCreateFeature.mockResolvedValue(
       feat("f-new", "验收新功能", { acceptance_criteria: "打开页面无报错" }),
     );
-    await user.click(within(dialog).getByRole("button", { name: "创建" }));
+    await user.click(within(editor).getByRole("button", { name: "创建" }));
     await waitFor(() => expect(bridge.planningCreateFeature).toHaveBeenCalled(), WAIT);
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "新增功能" })).toBeNull(), WAIT);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "新增功能" })).toBeNull(), WAIT);
     expect(screen.getByRole("button", { name: /^验收新功能（/ })).toBeTruthy();
     await waitFor(() =>
       expect(usePlanningStore.getState().projects[0].stats.feature_total).toBe(4),
     );
   });
 
-  it("编辑功能失败：对话框保留输入", async () => {
+  it("编辑功能失败：页面内编辑态保留输入", async () => {
     const user = await renderWithProjects();
     await goToFeatures(user);
     await user.click(screen.getByRole("button", { name: /^登录系统（/ }));
     await user.click(screen.getByRole("button", { name: "编辑功能 登录系统" }));
-    const dialog = await screen.findByRole("dialog", { name: "编辑功能" }, WAIT);
-    const input = within(dialog).getByLabelText("功能名称") as HTMLInputElement;
+    const editor = await screen.findByRole("region", { name: "编辑功能" }, WAIT);
+    const input = within(editor).getByLabelText("功能名称") as HTMLInputElement;
     await user.clear(input);
     await user.type(input, "登录失败");
     bridge.planningUpdateFeature.mockRejectedValue("写入失败");
-    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await user.click(within(editor).getByRole("button", { name: "保存" }));
     await waitFor(() =>
       expect(useUiStore.getState().toasts.some((t) => t.kind === "error")).toBe(true),
     );
-    expect(screen.getByRole("dialog", { name: "编辑功能" })).toBeTruthy();
-    expect((within(dialog).getByLabelText("功能名称") as HTMLInputElement).value).toBe("登录失败");
+    expect(screen.getByRole("region", { name: "编辑功能" })).toBeTruthy();
+    expect((within(editor).getByLabelText("功能名称") as HTMLInputElement).value).toBe("登录失败");
+  });
+
+  it("功能目标日期：选择后标记未保存并随保存提交", async () => {
+    const user = await renderWithProjects();
+    await goToFeatures(user);
+    await user.click(screen.getByRole("button", { name: /^登录系统（/ }));
+    await user.click(screen.getByRole("button", { name: "编辑功能 登录系统" }));
+    const editor = await screen.findByRole("region", { name: "编辑功能" }, WAIT);
+    await user.click(within(editor).getByRole("textbox", { name: "目标日期" }));
+    await user.click(screen.getByRole("button", { name: "2026-11-20" }));
+    expect(within(editor).getByRole("status").textContent).toContain("未保存");
+
+    bridge.planningUpdateFeature.mockResolvedValue({ ...FEATURE_STEPS, target_date: "2026-11-20" });
+    await user.click(within(editor).getByRole("button", { name: "保存" }));
+    await waitFor(
+      () =>
+        expect(bridge.planningUpdateFeature).toHaveBeenCalledWith(
+          "f1",
+          expect.objectContaining({ target_date: "2026-11-20" }),
+        ),
+      WAIT,
+    );
+  });
+
+  it("详情快捷编辑日期失败：沿用现有错误提示，已保存值不变", async () => {
+    const user = await renderWithProjects();
+    await goToFeatures(user);
+    await user.click(screen.getByRole("button", { name: /^登录系统（/ }));
+    const detail = screen.getByRole("region", { name: "登录系统 详情" });
+    bridge.planningUpdateFeature.mockRejectedValue("写入失败");
+    await user.click(within(detail).getByRole("textbox", { name: "修改 登录系统 的目标日期" }));
+    await user.click(screen.getByRole("button", { name: "2026-11-20" }));
+
+    await waitFor(
+      () => expect(useUiStore.getState().toasts.some((t) => t.kind === "error")).toBe(true),
+      WAIT,
+    );
+    expect(within(detail).getByRole("textbox", { name: "修改 登录系统 的目标日期" })).toHaveProperty(
+      "value",
+      "",
+    );
+  });
+
+  it("未保存返回要保护：返回先出确认条，可继续编辑或放弃修改", async () => {
+    const user = await renderWithProjects();
+    await goToFeatures(user);
+    await user.click(screen.getByRole("button", { name: "新增功能" }));
+    const editor = await screen.findByRole("region", { name: "新增功能" }, WAIT);
+    await user.type(within(editor).getByLabelText("功能名称"), "草稿标题");
+    // 有未保存修改：返回不直接离开，先给页内确认条
+    await user.click(within(editor).getByRole("button", { name: "返回功能列表" }));
+    expect(within(editor).getByRole("alert").textContent).toContain("未保存");
+    await user.click(within(editor).getByRole("button", { name: "继续编辑" }));
+    expect(screen.getByRole("region", { name: "新增功能" })).toBeTruthy();
+    expect((screen.getByLabelText("功能名称") as HTMLInputElement).value).toBe("草稿标题");
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    await user.click(screen.getByRole("button", { name: "放弃修改" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "新增功能" })).toBeNull());
+  });
+
+  it("连点保存只提交一次（同步防重入）", async () => {
+    const user = await renderWithProjects();
+    await goToFeatures(user);
+    await user.click(screen.getByRole("button", { name: "新增功能" }));
+    const editor = await screen.findByRole("region", { name: "新增功能" }, WAIT);
+    await user.type(within(editor).getByLabelText("功能名称"), "只建一次");
+    let resolveCreate: (v: PlanningFeature) => void = () => {};
+    bridge.planningCreateFeature.mockImplementation(
+      () => new Promise<PlanningFeature>((resolve) => { resolveCreate = resolve; }),
+    );
+    const submit = within(editor).getByRole("button", { name: "创建" });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    await waitFor(() => expect(bridge.planningCreateFeature).toHaveBeenCalledTimes(1), WAIT);
+    resolveCreate(feat("f-once", "只建一次"));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "新增功能" })).toBeNull(), WAIT);
+  });
+
+  it("返回列表后筛选条件保留", async () => {
+    const user = await renderWithProjects();
+    await goToFeatures(user);
+    await user.type(screen.getByLabelText("搜索功能"), "数据库");
+    expect(screen.queryByRole("button", { name: /^全局搜索（/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /^登录系统（/ }));
+    await user.click(screen.getByRole("button", { name: "编辑功能 登录系统" }));
+    await screen.findByRole("region", { name: "编辑功能" }, WAIT);
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "编辑功能" })).toBeNull());
+    expect((screen.getByLabelText("搜索功能") as HTMLInputElement).value).toBe("数据库");
+    expect(screen.queryByRole("button", { name: /^全局搜索（/ })).toBeNull();
   });
 
   it("未拆分步骤显示「未拆分步骤」，不伪造百分比", async () => {
@@ -451,6 +574,47 @@ describe("里程碑", () => {
     expect(screen.getAllByText("尚未关联功能").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("已逾期")).toBeTruthy();
     expect(screen.queryByText("已完成")).toBeNull();
+  });
+
+  it("新建里程碑：页面内编辑态保存后回到时间轴；未保存返回受保护", async () => {
+    const user = await renderMilestoneProject();
+    await user.click(screen.getByRole("tab", { name: "里程碑" }));
+    await user.click(screen.getByRole("button", { name: /新建里程碑/ }));
+    const editor = await screen.findByRole("region", { name: "新建里程碑" }, WAIT);
+    await user.type(within(editor).getByLabelText("里程碑名称"), "三期");
+    // 未保存返回：先出确认条
+    await user.click(within(editor).getByRole("button", { name: "返回里程碑列表" }));
+    expect(within(editor).getByRole("alert").textContent).toContain("未保存");
+    await user.click(within(editor).getByRole("button", { name: "继续编辑" }));
+    bridge.planningCreateMilestone.mockResolvedValue(ms("m4", "三期"));
+    await user.click(within(editor).getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(bridge.planningCreateMilestone).toHaveBeenCalled(), WAIT);
+    await waitFor(
+      () => expect(screen.queryByRole("region", { name: "新建里程碑" })).toBeNull(),
+      WAIT,
+    );
+    expect(screen.getByText("三期")).toBeTruthy();
+  });
+
+  it("里程碑目标日期：选择后随创建提交", async () => {
+    const user = await renderMilestoneProject();
+    await user.click(screen.getByRole("tab", { name: "里程碑" }));
+    await user.click(screen.getByRole("button", { name: /新建里程碑/ }));
+    const editor = await screen.findByRole("region", { name: "新建里程碑" }, WAIT);
+    await user.type(within(editor).getByLabelText("里程碑名称"), "有日期");
+    await user.click(within(editor).getByRole("textbox", { name: "里程碑目标日期" }));
+    await user.click(screen.getByRole("button", { name: "2026-11-20" }));
+
+    bridge.planningCreateMilestone.mockResolvedValue(ms("m4", "有日期", 0, 0, "2026-11-20"));
+    await user.click(within(editor).getByRole("button", { name: "创建" }));
+    await waitFor(
+      () =>
+        expect(bridge.planningCreateMilestone).toHaveBeenCalledWith(
+          "p1",
+          expect.objectContaining({ target_date: "2026-11-20" }),
+        ),
+      WAIT,
+    );
   });
 
   it("查看关联功能跳到功能视图并按里程碑筛选", async () => {

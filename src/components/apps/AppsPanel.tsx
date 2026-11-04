@@ -11,16 +11,17 @@
 //! - 「运行中」筛选来自后端 `nav_target_running_states` 的真实窗口/进程快照
 //!   （打开页面或启动成功后按需查询一次，不轮询）；查询失败如实提示，不用
 //!   `use_count` / `last_used_at` 推断运行态。
-//! - 添加复用 `AppPicker standalone`；编辑复用共享 `TargetEditDialog`；
+//! - 添加复用 `AppPicker standalone` 子页面；编辑复用共享 `TargetEditForm` 页内表单；
 //!   本页只做删除确认与刷新，不写第二套保存逻辑。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, FolderOpen, Link2, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw,
-  Rocket, Search, Star, Trash2, X, EyeOff, Eye,
+  Search, Star, Trash2, X, EyeOff, Eye,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
-import { useNavigationStore } from "../../store/useNavigationStore";
+import { useNavigationStore, type RefreshOutcome } from "../../store/useNavigationStore";
+import { errorMessage } from "../../lib/errors";
 import {
   navDeleteTarget, navNavigate, navTargetRunningStates, navUpdateTarget,
   resultMessage, stateBadge, TARGET_TYPE_LABELS,
@@ -30,7 +31,7 @@ import { searchApps } from "../../lib/appSearch";
 import AppIcon from "../ui/AppIcon";
 import { ConfirmDialog, DropdownMenu } from "../ui";
 import AppPicker from "../navigation/AppPicker";
-import TargetEditDialog from "../settings/TargetEditDialog";
+import TargetEditForm from "./TargetEditForm";
 
 type AppFilter = "all" | "favorite" | "recent" | "running";
 
@@ -43,6 +44,24 @@ const FILTERS: ReadonlyArray<{ id: AppFilter; label: string }> = [
 
 /** 「运行中」只认真实快照；`unavailable` 是配置失效，不算运行中。 */
 const RUNNING_STATES = new Set(["has_window", "process_only"]);
+
+/**
+ * 只有名称真的被省略号截断时才给卡片挂 `data-tip`（值为应用名），
+ * 未截断完全不挂：避免全局 tooltip 把 exe 路径浮层压在相邻卡片文字上。
+ * 必须在 mouseenter / focus 事件里同步写入，全局 tooltip 的冒泡监听才能读到。
+ */
+function syncTruncatedNameTip(el: HTMLButtonElement, name: string) {
+  const nameEl = el.querySelector<HTMLElement>(".apps-tile-name");
+  if (nameEl && nameEl.scrollWidth > nameEl.clientWidth + 1) {
+    el.dataset.tip = name;
+  } else {
+    delete el.dataset.tip;
+  }
+}
+
+function clearNameTip(el: HTMLButtonElement) {
+  delete el.dataset.tip;
+}
 
 export default function AppsPanel() {
   const showToast = useUiStore((s) => s.showToast);
@@ -58,9 +77,17 @@ export default function AppsPanel() {
   const [statesError, setStatesError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<NavTarget | null>(null);
+  /** 页内编辑表单是否有未保存更改；切换目标/进入添加页前据此保护 */
+  const [editorDirty, setEditorDirty] = useState(false);
+  /** 有未保存更改时被拦下的离开意图，确认放弃后再执行 */
+  const [pendingLeave, setPendingLeave] = useState<
+    { kind: "edit"; target: NavTarget } | { kind: "add" } | { kind: "manage" } | null
+  >(null);
   const [pendingDelete, setPendingDelete] = useState<NavTarget | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [launchingIds, setLaunchingIds] = useState<ReadonlySet<string>>(new Set());
+  /** 哪张卡片的「更多」菜单正展开：让整卡保持 hover 态，菜单关闭后恢复 */
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
 
   const apps = useMemo(
     () => targets.filter((t) => t.target_type === "application" && !t.hidden),
@@ -166,6 +193,29 @@ export default function AppsPanel() {
       return next;
     });
 
+  /** 写入已成功、界面刷新失败时：保留成功事实 + 刷新失败说明 + 只读重试。 */
+  function notifyRefresh(
+    successMessage: string,
+    outcome: RefreshOutcome,
+    retry: () => Promise<RefreshOutcome>,
+  ) {
+    if (outcome === "ok") {
+      showToast(successMessage, { kind: "success" });
+      return;
+    }
+    if (outcome === "stale") return;
+    showToast(`${successMessage}，但列表刷新失败`, {
+      kind: "warning",
+      action: {
+        label: "重试刷新",
+        run: () => void retry().then((next) => {
+          if (next === "ok") showToast("列表已刷新", { kind: "success" });
+          else if (next === "error") showToast("刷新仍未成功，请稍后再试", { kind: "error" });
+        }),
+      },
+    });
+  }
+
   /** 启动或聚焦：复用后端 Router；只有后端确认成功才刷新「最近使用」。 */
   async function launch(t: NavTarget) {
     if (launchingIds.has(t.id)) return;
@@ -176,11 +226,18 @@ export default function AppsPanel() {
       // 成功但 verification_level 可能只是 requested-unverified：提示文案由后端如实给出，
       // 前端不额外宣称「已聚焦」。
       if (r.success) {
-        await loadTargets(true);
+        // 启动已成功；刷新失败只影响列表展示，不能把启动结果说成失败。
+        const outcome = await loadTargets(true);
         await fetchRunningStates();
+        if (outcome === "error") {
+          showToast("应用已启动，但「最近使用」刷新失败", {
+            kind: "warning",
+            action: { label: "重试刷新", run: () => void loadTargets(true) },
+          });
+        }
       }
     } catch (e) {
-      showToast(`「${t.display_name}」启动失败：${String(e)}`, { kind: "error" });
+      showToast(`「${t.display_name}」启动失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       markLaunching(t.id, false);
     }
@@ -189,31 +246,94 @@ export default function AppsPanel() {
   async function toggleFavorite(t: NavTarget) {
     try {
       await navUpdateTarget(t.id, { favorite: !t.favorite });
-      await loadTargets(true);
     } catch (e) {
-      showToast(`收藏操作失败：${String(e)}`, { kind: "error" });
+      showToast(`收藏操作失败：${errorMessage(e)}`, { kind: "error" });
+      return;
     }
+    // 收藏已写入；刷新失败单独说明。
+    const outcome = await loadTargets(true);
+    notifyRefresh(t.favorite ? "已取消收藏" : "已收藏", outcome, () => loadTargets(true));
   }
 
   async function toggleHidden(t: NavTarget) {
     try {
       await navUpdateTarget(t.id, { hidden: !t.hidden });
-      await loadTargets(true);
-      await fetchRunningStates();
     } catch (e) {
-      showToast(`隐藏操作失败：${String(e)}`, { kind: "error" });
+      showToast(`隐藏操作失败：${errorMessage(e)}`, { kind: "error" });
+      return;
     }
+    const outcome = await loadTargets(true);
+    await fetchRunningStates();
+    notifyRefresh(t.hidden ? "已取消隐藏" : "已隐藏", outcome, () => loadTargets(true));
   }
 
   async function refreshAll(showSuccess: boolean) {
-    await loadTargets(true);
+    // 用本次调用的返回值判定结果，不读旧 store 状态推断成功。
+    const outcome = await loadTargets(true);
     await fetchRunningStates();
-    const error = useNavigationStore.getState().targetsError;
-    if (error) {
-      showToast(`刷新失败：${error}`, { kind: "error" });
+    if (outcome === "error") {
+      const reason = useNavigationStore.getState().targetsError ?? "读取失败";
+      showToast(`刷新失败：${reason}`, {
+        kind: "error",
+        action: { label: "重试", run: () => void refreshAll(showSuccess) },
+      });
       return;
     }
+    if (outcome === "stale") return;
     if (showSuccess) showToast("应用清单已刷新", { kind: "success" });
+  }
+
+  function closeEditor() {
+    setEditing(null);
+    setEditorDirty(false);
+  }
+
+  /** 页内编辑：切换目标不丢改动；有未保存更改时先确认。 */
+  function requestEdit(t: NavTarget) {
+    if (editing?.id === t.id) return;
+    if (editing && editorDirty) {
+      setPendingLeave({ kind: "edit", target: t });
+      return;
+    }
+    setEditing(t);
+    setEditorDirty(false);
+  }
+
+  function requestAdd() {
+    if (editing && editorDirty) {
+      setPendingLeave({ kind: "add" });
+      return;
+    }
+    closeEditor();
+    setAddOpen(true);
+  }
+
+  function requestManage() {
+    if (editing && editorDirty) {
+      setPendingLeave({ kind: "manage" });
+      return;
+    }
+    // 复用设置页的一次性配置意图；消费后清除，不反复自动弹出
+    requestAppConfig("manage");
+    setTab("settings");
+  }
+
+  function applyPendingLeave() {
+    const intent = pendingLeave;
+    setPendingLeave(null);
+    if (!intent) return;
+    if (intent.kind === "edit") {
+      setEditing(intent.target);
+      setEditorDirty(false);
+      return;
+    }
+    closeEditor();
+    if (intent.kind === "add") {
+      setAddOpen(true);
+    } else {
+      requestAppConfig("manage");
+      setTab("settings");
+    }
   }
 
   /** 次要操作统一走菜单，避免每个网格堆一排按钮。 */
@@ -223,7 +343,7 @@ export default function AppsPanel() {
         key: "edit",
         label: "编辑配置",
         icon: <Pencil size={12} aria-hidden="true" />,
-        onSelect: () => setEditing(t),
+        onSelect: () => requestEdit(t),
       },
       {
         key: "hide",
@@ -259,21 +379,36 @@ export default function AppsPanel() {
     const running = runningStates[t.id];
     const badge = RUNNING_STATES.has(running) ? stateBadge(running) : null;
     const busy = launchingIds.has(t.id);
-    const title = t.exe_path || t.url || t.path || t.display_name;
+    // 单行卡片：主区域（图标 + 名称/状态）是一个按钮，收藏/更多是并列的独立
+    // 按钮（不是嵌套按钮），因此点收藏与菜单不会冒泡触发启动。
     return (
-      <div className="apps-tile" key={t.id}>
+      <div className={`apps-tile ${menuOpenId === t.id ? "is-menu-open" : ""}`} key={t.id}>
         <button
           type="button"
           className="apps-tile-main"
           onClick={() => void launch(t)}
           disabled={busy}
-          data-tip={busy ? "启动中…" : title}
+          // 只在名称被截断时由 hover/focus 同步挂 data-tip；不再把 exe 路径塞进 tooltip
+          data-tip={busy ? "启动中…" : undefined}
+          data-tip-locked={busy ? "1" : undefined}
+          onMouseEnter={(e) => {
+            if (!busy) syncTruncatedNameTip(e.currentTarget, t.display_name);
+          }}
+          onMouseLeave={(e) => {
+            if (!busy) clearNameTip(e.currentTarget);
+          }}
+          onFocus={(e) => {
+            if (!busy) syncTruncatedNameTip(e.currentTarget, t.display_name);
+          }}
+          onBlur={(e) => {
+            if (!busy) clearNameTip(e.currentTarget);
+          }}
           aria-label={`启动 ${t.display_name}`}
         >
           <AppIcon
             targetId={t.id}
             name={t.display_name}
-            size={28}
+            size={20}
             enabled={t.target_type === "application"}
             className="apps-tile-avatar"
           />
@@ -290,17 +425,6 @@ export default function AppsPanel() {
         </button>
         <div className="apps-tile-actions">
           {renderStar(t)}
-          <button
-            type="button"
-            className="icon-btn sm"
-            data-tip="启动 / 聚焦窗口"
-            aria-label={`启动 ${t.display_name}`}
-            onClick={() => void launch(t)}
-            disabled={busy}
-          >
-            <Rocket size={12} aria-hidden="true" />
-          </button>
-          <span className="flex-spacer" />
           <DropdownMenu
             trigger={({ ref, expanded, onClick, onKeyDown }) => (
               <button
@@ -319,6 +443,9 @@ export default function AppsPanel() {
             items={menuItems(t)}
             menuLabel={`应用操作：${t.display_name}`}
             placement="bottom-end"
+            onOpenChange={(open) =>
+              setMenuOpenId((prev) => (open ? t.id : prev === t.id ? null : prev))
+            }
           />
         </div>
       </div>
@@ -335,7 +462,20 @@ export default function AppsPanel() {
           className="apps-extra-main"
           onClick={() => void launch(t)}
           disabled={busy}
-          data-tip={t.url || t.path || t.display_name}
+          data-tip={busy ? "启动中…" : undefined}
+          data-tip-locked={busy ? "1" : undefined}
+          onMouseEnter={(e) => {
+            if (!busy) syncTruncatedNameTip(e.currentTarget, t.display_name);
+          }}
+          onMouseLeave={(e) => {
+            if (!busy) clearNameTip(e.currentTarget);
+          }}
+          onFocus={(e) => {
+            if (!busy) syncTruncatedNameTip(e.currentTarget, t.display_name);
+          }}
+          onBlur={(e) => {
+            if (!busy) clearNameTip(e.currentTarget);
+          }}
           aria-label={`打开 ${t.display_name}`}
         >
           <span className="apps-extra-icon" aria-hidden="true"><Icon size={13} /></span>
@@ -386,17 +526,13 @@ export default function AppsPanel() {
           <button
             type="button"
             className="btn"
-            onClick={() => {
-              // 复用设置页的一次性配置意图；消费后清除，不反复自动弹出
-              requestAppConfig("manage");
-              setTab("settings");
-            }}
+            onClick={requestManage}
             data-tip="打开设置中的应用管理"
             aria-label="管理应用"
           >
             管理
           </button>
-          <button type="button" className="btn primary" onClick={() => setAddOpen(true)}>
+          <button type="button" className="btn primary" onClick={requestAdd}>
             <Plus size={13} aria-hidden="true" /> 添加应用
           </button>
         </div>
@@ -416,36 +552,51 @@ export default function AppsPanel() {
             </button>
           ))}
         </div>
-        <span className="flex-spacer" />
-        <div className="picker-search apps-search">
-          <Search size={13} aria-hidden="true" />
-          <input
-            value={query}
-            placeholder="搜索应用名称"
-            aria-label="搜索应用名称"
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          {query && (
-            <button
-              type="button"
-              className="icon-btn sm"
-              aria-label="清除搜索"
-              onClick={() => setQuery("")}
-            >
-              <X size={12} aria-hidden="true" />
-            </button>
-          )}
+        {/* 搜索与刷新作为一组换行：避免只剩刷新图标单独占一行 */}
+        <div className="apps-search-row">
+          <div className="picker-search apps-search">
+            <Search size={13} aria-hidden="true" />
+            <input
+              value={query}
+              placeholder="搜索应用名称"
+              aria-label="搜索应用名称"
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {query && (
+              <button
+                type="button"
+                className="icon-btn sm"
+                aria-label="清除搜索"
+                onClick={() => setQuery("")}
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => void refreshAll(true)}
+            data-tip="刷新目标列表与运行状态（不重新扫描软件）"
+            aria-label="刷新应用清单"
+          >
+            <RefreshCw size={13} aria-hidden="true" />
+          </button>
         </div>
-        <button
-          type="button"
-          className="btn sm"
-          onClick={() => void refreshAll(true)}
-          data-tip="刷新目标列表与运行状态（不重新扫描软件）"
-          aria-label="刷新应用清单"
-        >
-          <RefreshCw size={12} aria-hidden="true" /> 刷新
-        </button>
       </div>
+
+      {editing && (
+        <TargetEditForm
+          key={editing.id}
+          target={editing}
+          onClose={closeEditor}
+          onSaved={async () => {
+            closeEditor();
+            await refreshAll(false);
+          }}
+          onDirtyChange={setEditorDirty}
+        />
+      )}
 
       {statesError && filter === "running" && (
         <div className="wf-error-text" role="status">
@@ -474,7 +625,7 @@ export default function AppsPanel() {
       {targetsError === null && targetsLoaded && noAppsAtAll && (
         <div className="wf-empty">
           <p className="wf-hint-text">还没有配置应用。添加后会立即出现在这里，也会同步到胶囊与设置页。</p>
-          <button type="button" className="btn primary" onClick={() => setAddOpen(true)}>
+          <button type="button" className="btn primary" onClick={requestAdd}>
             <Plus size={13} aria-hidden="true" /> 添加应用
           </button>
         </div>
@@ -495,16 +646,6 @@ export default function AppsPanel() {
       {targetsLoaded && !noAppsAtAll && (
         <div className="apps-grid" aria-label="应用快捷方式">
           {visibleApps.map(renderTile)}
-          {/* 网格末尾常驻添加入口；不受筛选/搜索/数量影响 */}
-          <button
-            type="button"
-            className="apps-tile apps-tile-add"
-            onClick={() => setAddOpen(true)}
-            aria-label="添加应用"
-          >
-            <Plus size={16} aria-hidden="true" />
-            <span>添加应用</span>
-          </button>
         </div>
       )}
 
@@ -515,13 +656,18 @@ export default function AppsPanel() {
         </section>
       )}
 
-      <TargetEditDialog
-        target={editing}
-        onClose={() => setEditing(null)}
-        onSaved={async () => {
-          setEditing(null);
-          await refreshAll(false);
-        }}
+      <ConfirmDialog
+        open={!!pendingLeave}
+        title="放弃未保存的更改？"
+        detail={
+          pendingLeave?.kind === "edit"
+            ? `当前「${editing?.display_name ?? ""}」的修改尚未保存，切换目标后会丢失。`
+            : "当前编辑的修改尚未保存，离开后会丢失。"
+        }
+        confirmLabel="放弃更改"
+        danger
+        onCancel={() => setPendingLeave(null)}
+        onConfirm={applyPendingLeave}
       />
 
       <ConfirmDialog
@@ -537,15 +683,27 @@ export default function AppsPanel() {
           setDeleteBusy(true);
           try {
             await navDeleteTarget(pendingDelete.id);
-            await Promise.all([loadTargets(true), loadTaskLinks()]);
-            await fetchRunningStates();
-            showToast("目标已删除", { kind: "success" });
-            setPendingDelete(null);
           } catch (e) {
-            showToast(`删除失败：${String(e)}`, { kind: "error" });
-          } finally {
+            showToast(`删除失败：${errorMessage(e)}`, { kind: "error" });
             setDeleteBusy(false);
+            return;
           }
+          setPendingDelete(null);
+          // 删除已成功：刷新失败只标「部分成功」，不能报成删除失败，也不重复创建数据。
+          const [tOutcome, lOutcome] = await Promise.all([loadTargets(true), loadTaskLinks()]);
+          await fetchRunningStates();
+          if (tOutcome === "error" || lOutcome === "error") {
+            showToast("目标已删除，但关联列表刷新失败", {
+              kind: "warning",
+              action: {
+                label: "重试刷新",
+                run: () => void Promise.all([loadTargets(true), loadTaskLinks()]),
+              },
+            });
+          } else if (tOutcome === "ok") {
+            showToast("目标已删除", { kind: "success" });
+          }
+          setDeleteBusy(false);
         }}
       />
     </div>

@@ -13,6 +13,7 @@ import { useUiStore } from "../../store/useUiStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { navNavigate, verificationLabel, type NavigationResult } from "../../lib/navigation";
+import { errorMessage } from "../../lib/errors";
 import { summarizeWorkspace } from "../../lib/workspace";
 import { useOverlayLayer } from "../ui/overlay";
 
@@ -62,6 +63,8 @@ export default function WorkspaceLauncher() {
   const cap = settings?.nav_workspace_max ?? 8;
   // selector 只取稳定引用，列表在 useMemo 派生（避免每次渲染新建数组触发无限重渲染）
   const linksByTask = useNavigationStore((s) => s.linksByTask);
+  const linksError = useNavigationStore((s) => s.linksError);
+  const loadTaskLinks = useNavigationStore((s) => s.loadTaskLinks);
   const links = useMemo(
     () => linksByTask[workspace.task?.id ?? ""] ?? [],
     [linksByTask, workspace.task],
@@ -149,7 +152,7 @@ export default function WorkspaceLauncher() {
               actual_action: null,
               fallback_used: false,
               target_id: list[i].target_id,
-              reason: String(e),
+              reason: errorMessage(e),
               verification_level: "none",
             },
           };
@@ -193,8 +196,18 @@ export default function WorkspaceLauncher() {
           </button>
         </div>
         <div className="modal-body">
+          {linksError && (
+            // 关联读取失败 ≠ 没有关联：旧数据可能过期，明确标注并允许重试
+            <div className="empty-hint error-text" role="status">
+              关联信息读取失败：{linksError}
+              {list.length > 0 ? "（下方为上次结果，可能不是最新）" : "；暂时无法确认关联目标，不代表没有关联"}
+              <button className="btn sm" onClick={() => void loadTaskLinks()}>重试</button>
+            </div>
+          )}
           <div className="workspace-hint">
-            将按顺序打开 {list.length} 个关联目标（已运行的优先唤醒窗口）。任务状态不会因此改变。
+            {linksError && list.length === 0
+              ? "关联信息未读取成功，暂不能确定要启动的目标。任务状态不会因此改变。"
+              : `将按顺序打开 ${list.length} 个关联目标（已运行的优先唤醒窗口）。任务状态不会因此改变。`}
             {truncated && ` 已按设置截取前 ${cap} 个（导航偏好中可调）。`}
           </div>
           <div className="workspace-list" role="list">

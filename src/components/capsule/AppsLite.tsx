@@ -60,12 +60,16 @@ export default function AppsLite() {
     [targets],
   );
 
+  // 默认顺序沿用应用中心的规则：收藏优先 → 最近使用 → 名称。
+  // `last_used_at` / `use_count` 仍来自后端真实计数，这里只做展示排序。
   const ranked = useMemo(
     () =>
-      [...visible].sort((a, b) => {
-        if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
-        return (b.use_count ?? 0) - (a.use_count ?? 0);
-      }),
+      [...visible].sort(
+        (a, b) =>
+          Number(b.favorite) - Number(a.favorite) ||
+          (b.last_used_at ?? "").localeCompare(a.last_used_at ?? "") ||
+          a.display_name.localeCompare(b.display_name, "zh"),
+      ),
     [visible],
   );
 
@@ -94,15 +98,6 @@ export default function AppsLite() {
     return base.slice(0, q ? 7 : 6);
   }, [ranked, query]);
 
-  const recent = useMemo(
-    () =>
-      [...visible]
-        .filter((t) => t.last_used_at)
-        .sort((a, b) => (b.last_used_at ?? "").localeCompare(a.last_used_at ?? ""))
-        .slice(0, 3),
-    [visible],
-  );
-
   const launch = async (id: string, name: string) => {
     if (busyId) return;
     setBusyId(id);
@@ -111,7 +106,7 @@ export default function AppsLite() {
       if (!res.success) {
         flash(`${name}：${res.reason || "启动失败"}`);
       } else {
-        // 成功后刷新共享目标，让「最近使用」排序反映真实后端计数。
+        // 成功后刷新共享目标，让网格的「最近使用优先」排序反映真实后端计数。
         void loadTargets(true);
         if (res.actual_action === "focus_window") {
           flash(`已聚焦 ${name}`);
@@ -209,14 +204,14 @@ export default function AppsLite() {
             ))}
             <button
               type="button"
-              className="cap-app"
+              className="cap-app cap-app-add"
               aria-label="添加应用"
               onClick={() => openAppsConfig("picker")}
             >
               <span className="cap-app-avatar is-add" aria-hidden="true">
                 <Plus size={16} strokeWidth={2.4} />
               </span>
-              <span className="cap-app-name">添加</span>
+              <span className="cap-app-name">添加应用</span>
             </button>
           </div>
         )}
@@ -253,32 +248,6 @@ export default function AppsLite() {
             icon={<Search size={20} strokeWidth={1.6} aria-hidden="true" />}
             text="没有匹配的应用"
           />
-        )}
-
-        {recent.length > 0 && !loadFailedFresh && (
-          <div className="cap-recent">
-            <span className="cap-recent-title">最近使用</span>
-            <span className="cap-recent-list">
-              {recent.map((t) => (
-                <button
-                  type="button"
-                  key={t.id}
-                  className="cap-recent-chip"
-                  aria-label={`启动 ${t.display_name}`}
-                  onClick={() => void launch(t.id, t.display_name)}
-                >
-                  <i
-                    className="cap-recent-dot"
-                    style={{ "--app-hue": String(avatarHue(t.app_key || t.display_name)) } as CSSProperties}
-                    aria-hidden="true"
-                  >
-                    {(t.display_name || "?").slice(0, 1).toUpperCase()}
-                  </i>
-                  <span>{t.display_name}</span>
-                </button>
-              ))}
-            </span>
-          </div>
         )}
       </div>
 

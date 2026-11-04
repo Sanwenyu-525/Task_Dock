@@ -588,19 +588,43 @@ describe("吸顶与工具栏表面", () => {
     expect(imageTokenInColorMix(themesCss.replace(/\/\*[\s\S]*?\*\//g, ""))).toEqual([]);
   });
 
-  it("历史吸顶日期标签自带不透明底，不靠 backdrop-filter 遮", () => {
-    // 卡片会从标签底下穿过：没有自身不透明底就只能靠 GPU 模糊糊过去；
-    // --surface-overlay 在浅色预设下仍有 4%–8% alpha，故改用全不透明的 --clip-detail-face。
-    expect(appCssCode).toMatch(/\.history-day-label\s*\{[^}]*background:\s*var\(--clip-detail-face\)/);
-    expect(/\.history-day-label\s*\{[^}]*backdrop-filter/.test(appCssCode)).toBe(false);
-    // --clip-detail-face 在六个预设×明暗组合里都必须是不透明纯色
-    expect(themesCss).toMatch(/--clip-detail-face:\s*var\(--c-paper\)/);
-    const faceDecls = themesCss.match(/--clip-detail-face:\s*[^;]+;/g) ?? [];
-    expect(faceDecls.length).toBeGreaterThanOrEqual(4);
-    expect(faceDecls.some((d) => /transparent|rgba\(|color-mix/.test(d))).toBe(false);
+  it("历史吸顶日期标签：文字无底色，整条不透明遮罩按窗口底色重绘", () => {
+    const labelBody = appCssCode.match(/\.history-day-label\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(labelBody, "styles.css 缺少 .history-day-label").not.toBe("");
+    // 文字不再带局部底色：底色属于整条吸顶遮罩
+    const textBody = appCssCode.match(/\.history-day-label-text\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(textBody, "styles.css 缺少 .history-day-label-text").not.toBe("");
+    expect(textBody).not.toMatch(/background|border-radius/);
+    // 吸顶：负 top 抵消滚动容器 padding-top，滚过标题条的卡片不会从顶部缝里露出来
+    expect(labelBody).toMatch(/position:\s*sticky/);
+    expect(labelBody).toMatch(/top:\s*-\d+px/);
+    expect(labelBody).toMatch(/z-index:\s*var\(--z-sticky\)/);
+    // 细线所在的透明区不拦截指针，卡片滚过时 hover/click 反馈不被遮挡；只有文字块可交互
+    expect(labelBody).toMatch(/pointer-events:\s*none/);
+    expect(textBody).toMatch(/pointer-events:\s*auto/);
+    // 整条遮罩必须完全不透明：不透明窗口底 + 窗口渐变 + 氛围光（按预设自身的 --decor-opacity 衰减）
+    const mask = appCssCode.match(/\.history-day-label-mask\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(mask, "缺少整条吸顶遮罩 .history-day-label-mask").not.toBe("");
+    expect(mask).toMatch(/position:\s*absolute/);
+    expect(mask).toMatch(/inset:\s*0/);
+    expect(mask).toMatch(/background-color:\s*var\(--capsule-face\)/);
+    expect(mask).toMatch(/background-image:\s*var\(--window-fill\)/);
+    // 固定视口坐标重绘，才能和 .dock-window 的整窗渐变对齐、不出接缝
+    expect(mask).toMatch(/background-attachment:\s*fixed/);
+    const maskDecor = appCssCode.match(/\.history-day-label-mask::before\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(maskDecor, "遮罩缺少氛围光复刻层").not.toBe("");
+    expect(maskDecor).toMatch(/background-image:\s*var\(--decor\)/);
+    expect(maskDecor).toMatch(/opacity:\s*var\(--decor-opacity/);
+    // 不靠实时背景模糊遮内容
+    expect(appCssCode).not.toMatch(/\.history-day-label[^{]*\{[^}]*backdrop-filter/);
+    // 两侧细线使用低对比边框语义，深浅主题均可见
+    expect(appCssCode).toMatch(
+      /\.history-day-label::before[^{]*\{[^}]*background:\s*var\(--border-subtle\)/,
+    );
     // 同一个块里不得再出现两次 padding（后写的会静默覆盖前一个）
-    const body = appCssCode.match(/\.history-day-label\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(body.match(/padding\s*:/g)?.length).toBe(1);
+    expect(labelBody.match(/padding\s*:/g)?.length).toBe(1);
+    // 去掉文字底色后仍要保持正文级对比，不能退回弱对比灰
+    expect(labelBody).toMatch(/color:\s*var\(--text-(secondary|primary)\)/);
   });
 
   it("工具栏与操作条走圆角令牌，不各自写死像素", () => {
@@ -613,6 +637,44 @@ describe("吸顶与工具栏表面", () => {
     );
     // 行内标题编辑框交回全局 input 规则，不再自己用窗口渐变当底色
     expect(appCssCode).not.toMatch(/\.clip-title-input\s*\{[^}]*--surface-base/);
+  });
+});
+
+/* ── 全局卡片基础表面守卫（方案 D，2026-11-04）────────────────────
+   新页面接入共享卡片时，只允许追加 .surface-card / 变体类，
+   不得再把 radius / background / box-shadow 整套复制一遍。
+   这条测试只锁「已迁移」的卡片，避免误伤仍在独立维护的专用表面。 */
+describe("全局卡片基础表面", () => {
+  function bodyOf(css: string, selector: string): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`${escaped}\\s*\\{([^}]*)\\}`).exec(stripComments(css))?.[1] ?? "";
+  }
+
+  it(".surface-card 承担基础材质，.task-card 作为兼容别名并入同一规则", () => {
+    expect(themesCss).toMatch(
+      /\.surface-card,\s*\.task-card\s*\{[^}]*border-radius:\s*var\(--radius-card\)[^}]*background:\s*var\(--card-face\)[^}]*box-shadow:\s*var\(--card-shadow\)/,
+    );
+  });
+
+  it("历史卡 hover 只做描边与轻阴影，不做垂直位移", () => {
+    const hover = bodyOf(appCssCode, ".history-item:hover");
+    expect(hover, "缺少 .history-item:hover 覆盖").not.toBe("");
+    // 未分层组件层显式归零，压过 theme 层通用交互变体的 translateY(-1px)
+    expect(hover).toMatch(/transform:\s*none/);
+    expect(hover).not.toMatch(/translateY|translate3d/);
+    // 替代反馈是低对比内描边 + 已有的轻阴影，不占布局
+    expect(hover).toMatch(/box-shadow:[^;]*var\(--card-shadow-hover\)[^;]*inset 0 0 0 1px var\(--border-strong\)/);
+  });
+
+  it("已迁移的卡片不再自己写圆角 / 卡面 / 阴影", () => {
+    const migrated = [".history-item", ".inbox-item", ".shelf-item", ".discovery-card"];
+    for (const selector of migrated) {
+      const body = bodyOf(appCss, selector);
+      expect(body, `${selector} 没有找到规则`).not.toBe("");
+      expect(body, `${selector} 应改用 .surface-card`).not.toMatch(
+        /border-radius|box-shadow|--card-face|--surface-raised/,
+      );
+    }
   });
 });
 
@@ -886,6 +948,93 @@ describe("深色液态玻璃选中态（层叠回归）", () => {
     expect(focus?.[1], "缺少 .rail-item:focus-visible").toBeTruthy();
     expect(focus![1]).toMatch(/outline:\s*2px solid var\(--accent\)/);
     expect(focus![1]).toMatch(/outline-offset:\s*-2px/);
+  });
+});
+
+/* ── 交互稳定性专项（2026-11-04）────────────────────────────────
+   主题选择卡与左侧导航只用表面/颜色表达状态：
+   hover / 选中 / 按下不得出现位移、缩放或旋转；
+   reduced-motion 块之后不得再有覆盖它的过渡声明（层叠顺序守卫）。 */
+describe("预设卡与导航项的悬停稳定性", () => {
+  /** 匹配单个类及其状态链（`.rail-item.active`、`.preset-card:not(.active):hover`）。 */
+  const STATE_SELECTOR = /^\.(rail-item|preset-card)(?:[.:][\w-]+(?:\([^)]*\))?)*$/;
+
+  function declarations(selector: string): string {
+    return RULES.filter((rule) => selectorsOf(rule).includes(selector))
+      .map((rule) => rule.body)
+      .join("\n");
+  }
+
+  /** 只收集真正产生位移/缩放的声明；reduce 块里的 `transform: none` 视为无动效。 */
+  function motionOf(body: string): string[] {
+    const out: string[] = [];
+    for (const prop of ["transform", "translate", "scale", "rotate"]) {
+      const m = body.match(new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+);`));
+      if (m && m[1].trim() !== "none") out.push(`${prop}: ${m[1].trim()}`);
+    }
+    return out;
+  }
+
+  it("主题卡与导航项的状态规则不含 transform / translate / scale / rotate", () => {
+    const offenders: string[] = [];
+    for (const rule of RULES) {
+      const sels = selectorsOf(rule);
+      if (!sels.some((s) => STATE_SELECTOR.test(s))) continue;
+      for (const motion of motionOf(rule.body)) offenders.push(`${rule.selector} → ${motion}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("主题卡四态可区分：hover 淡染、选中强调环、键盘焦点环", () => {
+    const hover = declarations(".preset-card:not(.active):hover");
+    expect(hover).toMatch(/background-color:\s*color-mix/);
+    expect(motionOf(hover)).toEqual([]);
+
+    const selected = declarations(".preset-card.active");
+    expect(selected).toMatch(/0 0 0 1\.5px var\(--accent\)/);
+
+    const focus = declarations(".preset-card:focus-visible");
+    expect(focus).toMatch(/outline:\s*2px solid var\(--accent\)/);
+    expect(focus).toMatch(/outline-offset:\s*2px/);
+  });
+
+  it("导航项 hover / 选中 / 按下不位移，状态仍由背景与颜色表达", () => {
+    for (const selector of [".rail-item:hover", ".rail-item.active", ".rail-item.active:active"]) {
+      expect(motionOf(declarations(selector)), `${selector} 不应再声明位移动效`).toEqual([]);
+    }
+    expect(declarations(".rail-item:hover")).toMatch(/background:\s*var\(--rail-hover-face\)/);
+    expect(declarations(".rail-item.active")).toMatch(/background:\s*var\(--rail-active-face\)/);
+  });
+
+  it("reduced-motion 块之后没有覆盖它的 transition 声明", () => {
+    const css = stripComments(themesCss);
+    const blocks = [...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{/g)]
+      .map((m) => {
+        let depth = 0;
+        let end = m.index!;
+        for (; end < css.length; end += 1) {
+          if (css[end] === "{") depth += 1;
+          else if (css[end] === "}") {
+            depth -= 1;
+            if (depth === 0) break;
+          }
+        }
+        return { start: m.index!, end: end + 1, body: css.slice(m.index!, end + 1) };
+      })
+      .filter((block) => block.body.includes(".rail-item"));
+
+    expect(blocks.length, "缺少覆盖导航/预设卡的 reduced-motion 块").toBeGreaterThan(0);
+    const block = blocks[blocks.length - 1];
+    expect(block.body, "reduce 下导航项应关闭过渡").toMatch(/\.rail-item[\s\S]*?transition:\s*none/);
+    expect(block.body, "reduce 下预设卡应关闭位移动效").toMatch(
+      /\.preset-card[\s\S]*?transform:\s*none/,
+    );
+
+    // 关键：reduce 块之后的同名规则会按文件顺序压过它（历史回归点）。
+    const tail = css.slice(block.end);
+    expect(tail, "reduced-motion 之后仍有覆盖的 transition 声明").not.toMatch(
+      /\.(rail-item|preset-card)(?:[.:][\w-]+(?:\([^)]*\))?)*\s*\{[^}]*transition\s*:/,
+    );
   });
 });
 

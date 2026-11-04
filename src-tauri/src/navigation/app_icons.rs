@@ -143,6 +143,27 @@ pub fn extract_icon(
         return Err(AppError::Validation("缺少应用身份".into()));
     };
 
+    Ok(extract_with_cache(&source))
+}
+
+/// 按已验证的进程可执行路径提取图标（目标窗口场景）。
+/// 路径先走导航层安全校验（绝对路径 / .exe / 存在 / 非解释器），
+/// 不把前端字符串当作任意文件读取；同一 exe 复用同一份缓存。
+pub fn extract_icon_for_exe(exe_path: &str) -> Option<String> {
+    let exe_path = exe_path.trim();
+    if exe_path.is_empty() {
+        return None;
+    }
+    super::validate_exe_path(exe_path).ok()?;
+    let source = IconSource {
+        exe_path: exe_path.to_string(),
+        aumid: String::new(),
+    };
+    extract_with_cache(&source)
+}
+
+/// 带缓存的提取：缓存键 = 稳定身份；exe 额外按文件修改时间失效。
+fn extract_with_cache(source: &IconSource) -> Option<String> {
     let cache_key = if !source.aumid.is_empty() {
         format!("aumid:{}", source.aumid)
     } else {
@@ -157,12 +178,12 @@ pub fn extract_icon(
         let cache = icon_cache().lock().unwrap();
         if let Some(e) = cache.get(&cache_key) {
             if e.stamp == stamp {
-                return Ok(e.url.clone());
+                return e.url.clone();
             }
         }
     }
 
-    let url = platform_extract(&source);
+    let url = platform_extract(source);
     {
         let mut cache = icon_cache().lock().unwrap();
         if cache.len() >= 512 {
@@ -176,7 +197,7 @@ pub fn extract_icon(
             },
         );
     }
-    Ok(url)
+    url
 }
 
 #[cfg(windows)]

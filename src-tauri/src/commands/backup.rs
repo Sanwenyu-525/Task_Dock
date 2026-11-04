@@ -3499,8 +3499,9 @@ mod tests {
     // ── 大规模端到端验收 ──────────────────────────────────────────────
     // 100k 事件 / 10k 通知 / 5k 剪贴板条目 / 250 张真实 PNG（500 个资产）/ 100 个工作现场/
     // 真实归档与完整设置；备份后通过 restore_bundle 做一次完整恢复并逐项比对。
-    // 手动运行（建议 Release，测量才有意义）：
-    //   cargo test --release --lib commands::backup::tests::full_backup_100k_events_10k_notifications_roundtrip -- --ignored --nocapture
+    // 默认跳过（不拖慢常规测试门禁），仅在显式开启时真实执行（建议 Release，测量才有意义）：
+    //   $env:TASK_DOCK_SCALE_TEST="1"
+    //   cargo test --release --lib commands::backup::tests::full_backup_100k_events_10k_notifications_roundtrip -- --nocapture
     const SCALE_SOURCE: &str = "scale-agent";
     const SCALE_EVENTS: i64 = 100_000;
     const SCALE_NOTIFICATIONS: i64 = 10_000;
@@ -4258,9 +4259,14 @@ mod tests {
             .any(|line| line.map(|l| l.contains(needle)).unwrap_or(false))
     }
 
-    #[ignore = "十万级事件真实备份/恢复验收，手动运行（建议 --release）"]
     #[test]
     fn full_backup_100k_events_10k_notifications_roundtrip() {
+        // 自动化用可控开关而非 #[ignore]：默认快速跳过，显式开启后执行完整断言。
+        // 断言内容不随开关变化，避免「开关改变了被测语义」。
+        if std::env::var("TASK_DOCK_SCALE_TEST").as_deref() != Ok("1") {
+            eprintln!("跳过十万级备份验收：设置 TASK_DOCK_SCALE_TEST=1 后执行");
+            return;
+        }
         let src_root = temp_dir("scale-src");
         let dst_root = temp_dir("scale-dst");
         let src_clip = src_root.join("clipboard");

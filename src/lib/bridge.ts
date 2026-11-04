@@ -189,6 +189,8 @@ export interface DiscoveredAgent {
   /** 是否收到过真实（非自测）事件 */
   real_event_seen: boolean;
   last_event_at: string | null;
+  /** 宿主真实触发（origin='real'）的最近事件；自测/手动上报不计入 */
+  last_real_event_at: string | null;
   health_state: string;
   /** disabled | recent-event | channel-verified | unknown */
   connection_state: string;
@@ -306,6 +308,12 @@ export interface Settings {
   shelf_auto_cleanup_enabled?: boolean;
   shelf_retention_days?: number;
   shelf_max_storage_mb?: number;
+  /**
+   * 导航入口布局（v0.12）：完整面板与停靠胶囊各自的可见入口 + 排序。
+   * 版本化 JSON 对象，结构见 `src/lib/navVisibility.ts`；缺失或损坏时前端回退
+   * 注册中心默认值，后端只做对象级校验，不参与语义合并。
+   */
+  navigation_layout?: unknown;
 }
 
 /** 全局任务统计（跨所有筛选视图）。 */
@@ -1025,8 +1033,10 @@ export const clipboardRevealLocalPath = (path: string) =>
 /**
  * 批量查询文件路径状态：ok / missing / inaccessible。
  *
- * 后端在阻塞线程池中批量执行（最多 200 条）；后台任务异常结束时 Promise 以错误拒绝，
- * 调用方必须按「未知」处理，不得把所有路径视为存在。
+ * 后端在阻塞线程池中批量执行（最多 200 条），同时最多 3 个批量任务；超出以
+ * `SERVICE_OVERLOADED` 拒绝（不排队）。后台任务异常结束同样以错误拒绝：调用方必须
+ * 按「未知」处理，不得把所有路径视为存在；「繁忙」也不得显示成文件丢失，且不得自动
+ * 无限重试（当前调用方仅在重新进入详情时再查一次）。
  */
 export const clipboardPathStatus = (paths: string[]) =>
   invoke<string[]>("clipboard_path_status", { paths });
@@ -1078,19 +1088,33 @@ export const clipboardTaskLinks = (taskId: string) =>
   invoke<ClipboardTaskLink[]>("clipboard_task_links", { taskId });
 export const clipboardVisibleTargets = () =>
   invoke<PasteTarget[]>("clipboard_visible_targets");
+/**
+ * 目标窗口的真实应用图标（PNG data URL；无图标返回 null）。
+ * 后端按当前窗口身份重新解析 exe 路径并提取，前端不能传任意路径。
+ */
+export const clipboardTargetIcon = (hwnd: number, expectedPid?: number) =>
+  invoke<string | null>("clipboard_target_icon", { hwnd, expectedPid });
 export const clipboardForegroundTarget = () =>
   invoke<PasteTarget | null>("clipboard_foreground_target");
-export const clipboardPastePrecheck = (hwnd: number) =>
-  invoke<PasteTarget>("clipboard_paste_precheck", { hwnd });
-export const clipboardPasteGroup = (groupId: string, targetHwnd: number, itemIds?: string[]) =>
-  invoke<PasteStartReport>("clipboard_paste_group", { groupId, targetHwnd, itemIds });
+/** `expectedPid` 是选中窗口时记录的进程号；HWND 复用时会拒绝操作。 */
+export const clipboardPastePrecheck = (hwnd: number, expectedPid?: number) =>
+  invoke<PasteTarget>("clipboard_paste_precheck", { hwnd, expectedPid });
+export const clipboardPasteGroup = (
+  groupId: string,
+  targetHwnd: number,
+  expectedPid?: number,
+  itemIds?: string[],
+) => invoke<PasteStartReport>("clipboard_paste_group", { groupId, targetHwnd, expectedPid, itemIds });
 /** 任意多选逐项粘贴：不依赖永久分组，按传入顺序逐条写入并发送。 */
-export const clipboardPasteItems = (targetHwnd: number, itemIds: string[]) =>
-  invoke<PasteStartReport>("clipboard_paste_items", { targetHwnd, itemIds });
+export const clipboardPasteItems = (targetHwnd: number, expectedPid: number | undefined, itemIds: string[]) =>
+  invoke<PasteStartReport>("clipboard_paste_items", { targetHwnd, expectedPid, itemIds });
 export const clipboardPasteCancel = (jobId: string) =>
   invoke<void>("clipboard_paste_cancel", { jobId });
-export const clipboardPasteResume = (jobId: string, targetHwnd: number) =>
-  invoke<PasteStartReport>("clipboard_paste_resume", { jobId, targetHwnd });
+export const clipboardPasteResume = (jobId: string, targetHwnd: number, expectedPid?: number) =>
+  invoke<PasteStartReport>("clipboard_paste_resume", { jobId, targetHwnd, expectedPid });
+/** 跳转到目标窗口：只激活并核实前台，不写剪贴板、不发送按键。失败抛出具体原因。 */
+export const clipboardFocusTarget = (hwnd: number, expectedPid?: number) =>
+  invoke<PasteTarget>("clipboard_focus_target", { hwnd, expectedPid });
 export const clipboardPasteJob = (jobId: string) =>
   invoke<PasteJob>("clipboard_paste_job", { jobId });
 export const clipboardPasteActive = () =>

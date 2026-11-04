@@ -7,6 +7,7 @@
 //! 4. 重试动作统一包一层安全壳，重试自身失败会再次走统一上报，不抛出第二个异常。
 
 import { normalizeError, type AppError } from "./errors";
+import { localizedErrorMessage } from "../i18n/errors";
 import { useUiStore } from "../store/useUiStore";
 
 export interface ReportOptions {
@@ -55,14 +56,17 @@ export function errorSuggestion(err: AppError): string {
   }
 }
 
-/** 拼装面向用户的完整文案：操作 + 原因 + 下一步。 */
+/** 拼装面向用户的完整文案：操作 + 具体原因（本地化） + 不重复的下一步。 */
 export function formatErrorForUser(
   err: AppError,
   operation?: string,
 ): { title: string; message: string } {
-  const head = operation ? `${operation}失败：${err.message}` : err.message;
+  const reason = localizedErrorMessage(err);
+  const head = operation ? `${operation}失败：${reason}` : reason;
   const suggestion = errorSuggestion(err);
-  const message = suggestion ? `${head} ${suggestion}` : head;
+  // 文案自身已带可执行建议时不再追加，避免“请稍后重试…请稍后重试”式重复。
+  const alreadyActionable = /请[^。]{0,20}(重试|检查|确认|稍后|备份|等待|取消|刷新)/.test(reason);
+  const message = suggestion && !alreadyActionable ? `${head} ${suggestion}` : head;
   return { title: operation ?? "操作", message };
 }
 

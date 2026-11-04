@@ -6,7 +6,7 @@
 
 ```ts
 import {
-  Select, Combobox, DropdownMenu, Popover, DateTimePicker, NumberInput,
+  Select, Combobox, DropdownMenu, Popover, DateTimePicker, DatePicker, NumberInput,
   Tooltip, Dialog, ConfirmDialog, Checkbox, Switch,
   useOverlayLayer, useFocusTrap, useFocusRestore,
 } from "../components/ui";
@@ -187,6 +187,37 @@ interface DateTimePickerProps {
 
 解析与日历网格的纯函数在 `src/lib/datetime.ts`（`parseLocalInput` / `formatLocalInput` /
 `parseLooseInput` / `monthGrid` / `shiftDay` / `shiftMonth`）。
+
+## 5.1 DatePicker（纯日期）
+
+只处理 `YYYY-MM-DD`，**不携带时间语义、不转 UTC**。日历面板与 DateTimePicker 共用
+`CalendarGrid`（月份切换、周标题、选中/今天、方向键、PageUp/PageDown、Home/End、Enter/Space）。
+
+```ts
+interface DatePickerProps {
+  value: string;              // "YYYY-MM-DD"；空串 = 未设置
+  onChange: (value: string) => void;
+  placeholder?: string;       // 默认 "YYYY-MM-DD"
+  ariaLabel?: string;
+  disabled?: boolean;
+  clearable?: boolean;        // 默认 true；底部「清除」
+  size?: "sm" | "md";
+  className?: string;
+}
+```
+
+**交互与数据规则**：
+
+| 规则 | 说明 |
+| --- | --- |
+| 开关 | 点输入框展开；日历图标可开可关；点外部或 Escape 只关日历（复用 Popover + overlayStack） |
+| 选择 | 选日期立即 `onChange` 并关闭；底部「清除」提交空串，「今天」取本地今天；无确认按钮 |
+| 手输 | 接受 `2026-11-04` / `2026/11/4`，Enter 或失焦时规范化为 `YYYY-MM-DD`；非法输入只提示、不回调 |
+| 防重 | 值未变不重复回调；开关日历、切月不触发 `onChange` |
+| 校验 | 纯字符串年月日校验（闰年、月天数、跨年），不经 `Date`/UTC，避免时区偏移 |
+| 布局 | 面板 272px；下方空间不足自动上翻；窄窗由 Popover 的 size 中间件收敛；仍放不下时日历区内部滚动、底部操作固定；不改变主窗口尺寸 |
+
+纯函数在 `src/lib/datetime.ts`（`todayIsoDate` / `parseDateInput` / `isValidIsoDate`）。
 
 ## 6. NumberInput
 

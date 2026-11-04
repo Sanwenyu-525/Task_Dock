@@ -41,7 +41,7 @@ export default function WidgetCard({
 
   return (
     <section
-      className={`widget-card widget-size-${item.size} ${dragging ? "dragging" : ""}`}
+      className={`widget-card surface-card widget-size-${item.size} ${dragging ? "dragging" : ""}`}
       data-widget-id={item.widget_id}
       aria-label={t("widgets.cardAria", { title })}
       draggable={total > 1}

@@ -259,13 +259,13 @@ describe("任务面板", () => {
     });
     expect(screen.queryByText("参加项目同步会")).toBeNull();
 
-    // 日程：due_at 非空的未完成项
+    // 日程：due_at 非空的未完成项，sort=scheduled 让未来/未逾期排在逾期之前
     act(() => screen.getByRole("tab", { name: "日程" }).click());
     await screen.findByText("安排在下周的评审");
     expect(listTasks).toHaveBeenLastCalledWith({
       view: "scheduled",
       status: "pending",
-      sort: "due",
+      sort: "scheduled",
       limit: 12,
     });
 
@@ -332,6 +332,26 @@ describe("任务分段查询语义", () => {
     expect(listTasks).toHaveBeenLastCalledWith(dueTodayArgs);
     // 逾期任务不属于今日，不混入
     expect(screen.queryByText("逾期任务0")).toBeNull();
+  });
+
+  it("日程保留后端 sort=scheduled 的未来优先顺序，逾期仍属日程", async () => {
+    // 20 条逾期会把今天/未来计划挤出 LIMIT：后端已按「未来优先、逾期置后」返回，
+    // 面板不得再用本地逾期优先排序把它压回后面。
+    const future = task("s1", "下周评审", now + 3 * 86400_000);
+    const overdue = task("s2", "逾期跟进", now - 86400_000);
+    listTasks.mockImplementation(async (args: { view?: string }) => {
+      if (args.view === "scheduled") return [future, overdue];
+      return [overdue];
+    });
+    render(<TasksLite />);
+    await screen.findByText("逾期跟进");
+
+    act(() => screen.getByRole("tab", { name: "日程" }).click());
+    await screen.findByText("下周评审");
+    const order = screen
+      .getAllByText(/^(下周评审|逾期跟进)$/)
+      .map((el) => el.textContent);
+    expect(order).toEqual(["下周评审", "逾期跟进"]);
   });
 
   it("分段快速连续切换：旧响应不覆盖新筛选", async () => {
@@ -798,8 +818,42 @@ describe("应用面板", () => {
     render(<AppsLite />);
     await screen.findByText("应用0");
     fireEvent.click(screen.getByRole("button", { name: "添加应用" }));
+    expect(screen.getByText("添加应用")).toBeTruthy();
     expect(useUiStore.getState().appConfig?.kind).toBe("picker");
     expect(useUiStore.getState().tab).toBe("settings");
+  });
+
+  it("Lite 不再重复展示「最近使用」：同一应用只在网格出现一次", async () => {
+    useNavigationStore.setState({
+      targets: [
+        target("a", "Obsidian", { use_count: 3, last_used_at: iso(now) }),
+        target("b", "微信", { use_count: 1, last_used_at: iso(now - 86_400_000) }),
+      ],
+      targetsLoaded: true,
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    expect(screen.queryByText("最近使用")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "启动 Obsidian" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "启动 微信" })).toHaveLength(1);
+  });
+
+  it("默认网格按「收藏优先 → 最近使用 → 名称」排序", async () => {
+    useNavigationStore.setState({
+      targets: [
+        target("a", "Obsidian", { favorite: true }),
+        target("b", "Chrome", { last_used_at: iso(now) }),
+        target("c", "网易云", { last_used_at: iso(now - 3_600_000) }),
+        target("d", "微信"),
+      ],
+      targetsLoaded: true,
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    const order = screen
+      .getAllByRole("button", { name: /^启动 / })
+      .map((el) => el.getAttribute("aria-label"));
+    expect(order).toEqual(["启动 Obsidian", "启动 Chrome", "启动 网易云", "启动 微信"]);
   });
 
   it("只展示普通应用：网址/文件夹单独分区，Agent 会话不混入应用网格", async () => {

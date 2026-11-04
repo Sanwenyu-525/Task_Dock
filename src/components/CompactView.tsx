@@ -4,6 +4,7 @@ import QuickAdd from "./tasks/QuickAdd";
 import TaskItem from "./tasks/TaskItem";
 import { useTasksStore } from "../store/useTasksStore";
 import { useAgentsStore } from "../store/useAgentsStore";
+import { useNavigationStore } from "../store/useNavigationStore";
 import { useUiStore } from "../store/useUiStore";
 import { formatBetween, AGENT_STATE_LABELS } from "../lib/format";
 import { applyMode } from "../lib/bridge";
@@ -15,6 +16,8 @@ export default function CompactView() {
   const tasks = useTasksStore((s) => s.tasks);
   const stats = useTasksStore((s) => s.stats);
   const snapshot = useAgentsStore((s) => s.snapshot);
+  const linksError = useNavigationStore((s) => s.linksError);
+  const loadTaskLinks = useNavigationStore((s) => s.loadTaskLinks);
   const setTab = useUiStore((s) => s.setTab);
   const pending = tasks.filter((t) => t.status === "pending").slice(0, 5);
   const activeRuns = liveRuns(snapshot?.runs ?? []).slice(0, 3);
@@ -32,6 +35,15 @@ export default function CompactView() {
             {t("compact.all")}
           </button>
         </div>
+        {linksError && (
+          // 读取失败 ≠ 没有关联；窄窗只给一行说明与重试，不铺错误页
+          <div className="empty-hint error-text">
+            关联信息读取失败，卡片关联可能不是最新
+            <button className="link-btn" onClick={() => void loadTaskLinks()}>
+              重试
+            </button>
+          </div>
+        )}
         {pending.length === 0 && <div className="empty-hint">{t("compact.noTasks")}</div>}
         {pending.map((t) => (
           <TaskItem key={t.id} task={t} compact />

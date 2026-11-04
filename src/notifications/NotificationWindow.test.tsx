@@ -45,7 +45,7 @@ beforeEach(() => {
   showRound = 0;
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "get_settings") {
-      return Promise.resolve({ theme: "dark", visual_preset: "liquid-glass" });
+      return Promise.resolve({ theme: "dark", visual_preset: "frosted" });
     }
     if (cmd === "hide_notification_window" || cmd === "fit_notification_window") {
       return Promise.resolve(null);
@@ -303,7 +303,7 @@ describe("窗口生命周期", () => {
       expect(invokeMock).toHaveBeenCalledWith("hide_notification_window", { round: 1 });
     });
     expect(document.documentElement.dataset.theme).toBe("dark");
-    expect(document.documentElement.dataset.preset).toBe("liquid-glass");
+    expect(document.documentElement.dataset.preset).toBe("frosted");
   });
 });
 
@@ -484,7 +484,7 @@ describe("展开详情占位与视口同步", () => {
   it("工作区钳制时按后端实际生效高度释放，内容由栈内滚动承载", async () => {
     invokeMock.mockImplementation((cmd: string, args?: InvokeArgs) => {
       if (cmd === "get_settings") {
-        return Promise.resolve({ theme: "dark", visual_preset: "liquid-glass" });
+        return Promise.resolve({ theme: "dark", visual_preset: "frosted" });
       }
       if (cmd === "fit_notification_window") {
         const requested = (args as { height: number }).height;
@@ -523,7 +523,7 @@ describe("展开详情占位与视口同步", () => {
   it("fit 失败时超时安全释放，详情不会永久 opacity:0", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_settings") {
-        return Promise.resolve({ theme: "dark", visual_preset: "liquid-glass" });
+        return Promise.resolve({ theme: "dark", visual_preset: "frosted" });
       }
       if (cmd === "fit_notification_window") return Promise.reject(new Error("IPC 超时"));
       return Promise.resolve(null);

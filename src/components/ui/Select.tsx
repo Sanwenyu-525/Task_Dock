@@ -8,6 +8,7 @@
 
 import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ChevronDown, Check } from "lucide-react";
+import type { Placement } from "@floating-ui/react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
 import { t as i18n } from "../../i18n";
@@ -31,8 +32,11 @@ export interface SelectProps<T extends string = string> {
   className?: string;
   triggerClassName?: string;
   size?: "sm" | "md";
-  /** 弹出层对齐方式 */
-  placement?: "bottom-start" | "bottom-end" | "top-start" | "top-end";
+  /** 浮层与触发按钮的水平对齐：默认 end（右边缘对齐，向左展开）；
+   *  紧贴窗口左侧的窄控件可传 start，center 仅在明确需要时使用。 */
+  align?: "start" | "center" | "end";
+  /** 显式 placement 覆盖（含上下方向与对齐）；提供后优先于 align */
+  placement?: Placement;
   /** 触发按钮宽度策略 */
   block?: boolean;
   /** 列表目标最小宽度（px）：按最长选项文本 + 勾选标记 + 内边距声明；
@@ -51,10 +55,13 @@ export default function Select<T extends string = string>({
   className,
   triggerClassName,
   size = "md",
-  placement = "bottom-start",
+  align = "end",
+  placement,
   block = false,
   menuMinWidth,
 }: SelectProps<T>) {
+  // 默认右对齐（浮层右边缘与按钮右边缘一致，向左展开）；显式 placement 优先。
+  const resolvedPlacement: Placement = placement ?? (align === "center" ? "bottom" : `bottom-${align}`);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const anchorRef = useRef<HTMLButtonElement>(null);
@@ -196,7 +203,7 @@ export default function Select<T extends string = string>({
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
-        placement={placement}
+        placement={resolvedPlacement}
         matchWidth
         style={menuMinWidth ? ({ "--menu-min-w": `${menuMinWidth}px` } as CSSProperties) : undefined}
         className="ui-select-popover"

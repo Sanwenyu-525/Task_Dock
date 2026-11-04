@@ -12,36 +12,25 @@
 //!   折叠态只有翼片可画，退回沿轨道朝中心的方向。
 //! - 无障碍信息仍以 `aria-label` 为准（它比提示文案更完整，例如带待办数）。
 
+import { useEffect, useMemo } from "react";
 import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  Clipboard,
   Expand,
-  Inbox,
-  LayoutGrid,
-  ListTodo,
 } from "lucide-react";
-import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
 import CapsuleWing from "./CapsuleWing";
 import {
-  RAIL_CATEGORIES,
   type CapsuleCategory,
-  type RailCategory,
   type RailStatus,
 } from "../../lib/capsuleModel";
+import { navEntry, type NavEntry } from "../../lib/navigationRegistry";
+import { useNavigationLayout } from "../../lib/navigationLayout";
+import { useCapsuleStore } from "../../store/useCapsuleStore";
 import { CAPSULE_GAP_CSS, RAIL_THICKNESS_CSS } from "../../lib/capsuleLayout";
 import type { SnapEdge } from "../../lib/edgeSnap";
 import { t } from "../../i18n";
-
-/** 轨道四个分类按钮的图标。Agent 不在其中：它由顶部状态球直达（AgentIcon）。 */
-const ICONS: Record<RailCategory, IconComponent> = {
-  tasks: ListTodo,
-  inbox: Inbox,
-  clipboard: Clipboard,
-  apps: LayoutGrid,
-};
 
 /** 分类可读名：轨道四类 + Agent 端头球（面板 aria 也用它）。 */
 // getter 保持既有「点访问」调用不变，读取时取当前语言。
@@ -176,6 +165,44 @@ export default function CapsuleRail({
       }`
     : t("capsule.tone.unknown");
 
+  // ── 入口显隐与排序（统一导航架构）──────────────────────────────────
+  // 只过滤图标渲染：外轮廓、吸附与几何全部由 capsuleLayout / Win32 区域决定，
+  // **不随可见数量变化**；隐藏 Agent 状态球不影响后台监控与事件接收。
+  const layout = useNavigationLayout();
+  const capsuleEntries = useMemo(
+    () =>
+      layout.capsule
+        .map((id) => navEntry(id))
+        .filter(
+          (entry): entry is NavEntry =>
+            entry !== undefined && entry.surfaces.includes("capsule"),
+        ),
+    [layout.capsule],
+  );
+  const orbEntry = capsuleEntries.find((entry) => entry.id === "agents");
+  const categoryEntries = capsuleEntries.filter(
+    (entry) => entry.id !== "agents" && entry.capsuleCategory !== undefined,
+  );
+  // 合法分类集合包含 Agent 端头球：只留状态球时也能切到 Agent，而不是停在隐藏分类。
+  const visibleCategories = useMemo(() => {
+    const list: CapsuleCategory[] = [];
+    if (orbEntry) list.push("agents");
+    for (const entry of categoryEntries) {
+      if (entry.capsuleCategory) list.push(entry.capsuleCategory);
+    }
+    return list;
+  }, [orbEntry, categoryEntries]);
+  const firstVisibleCategory = visibleCategories[0];
+
+  // 当前分类被用户隐藏时，静默切到仍可见的第一个分类，避免幽灵选中态或空白面板。
+  // 直接写 UI Store 而不是调用 onSelect：不能因为配置变化就自动展开面板。
+  // 全部分类都被隐藏时收起面板：宁可回到折叠态，也不展示一个没有入口的面板。
+  useEffect(() => {
+    if (visibleCategories.includes(active)) return;
+    if (firstVisibleCategory) useCapsuleStore.getState().setActive(firstVisibleCategory);
+    else if (expanded) onCollapse();
+  }, [active, visibleCategories, firstVisibleCategory, expanded, onCollapse]);
+
   return (
     <div
       className={`capsule-rail cap-${vertical ? "v" : "h"} edge-${edge}`}
@@ -188,37 +215,41 @@ export default function CapsuleRail({
           绝对定位在按钮之下，不参与 flex 排布 */}
       <CapsuleWing edge={edge} />
 
-      {/* 顶部：Agent 总状态（真实聚合；空闲中性、运行蓝、等待/失败语义色） */}
-      <button
-        type="button"
-        className="cap-orb"
-        data-tone={status.agentsLoaded ? status.agentTone : "unknown"}
-        data-tip="Agent"
-        data-tip-placement={railTipPlacement("docked", edge, expanded, true)}
-        data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
-        aria-label={t("capsule.openAgents", { label: toneLabel })}
-        aria-pressed={expanded && active === "agents"}
-        onClick={() => onSelect("agents")}
-      >
-        <AgentIcon size={18} strokeWidth={1.8} aria-hidden="true" />
-        {status.agentAttention > 0 && (
-          <span className="cap-orb-badge" aria-hidden="true">
-            {status.agentAttention > 9 ? "9+" : status.agentAttention}
-          </span>
-        )}
-      </button>
+      {/* 顶部：Agent 总状态（真实聚合；空闲中性、运行蓝、等待/失败语义色）。
+          显隐由注册中心配置控制；隐藏只影响图标，不停止监控与事件接收。 */}
+      {orbEntry && (
+        <button
+          type="button"
+          className="cap-orb"
+          data-tone={status.agentsLoaded ? status.agentTone : "unknown"}
+          data-tip={CATEGORY_LABELS.agents}
+          data-tip-placement={railTipPlacement("docked", edge, expanded, true)}
+          data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
+          aria-label={t("capsule.openAgents", { label: toneLabel })}
+          aria-pressed={expanded && active === "agents"}
+          onClick={() => onSelect("agents")}
+        >
+          <orbEntry.icon size={18} strokeWidth={1.8} aria-hidden="true" />
+          {status.agentAttention > 0 && (
+            <span className="cap-orb-badge" aria-hidden="true">
+              {status.agentAttention > 9 ? "9+" : status.agentAttention}
+            </span>
+          )}
+        </button>
+      )}
 
       {/* 效果图里状态球与分类组之间没有分隔线：状态球靠尺寸/材质已足够分组，
           多一条线只会让轨道看起来像「被切开的工具栏」。 */}
       <div className="cap-nav">
-        {RAIL_CATEGORIES.map((c) => {
-          const Icon = ICONS[c];
+        {categoryEntries.map((entry) => {
+          const c = entry.capsuleCategory as CapsuleCategory;
+          const Icon = entry.icon;
           const isActive = active === c && expanded;
           // 徽标来自真实 store：待办数 / 收集箱未处理数；0 或未加载不显示
           const badge = c === "tasks" ? status.taskBadge : c === "inbox" ? status.inboxBadge : null;
           return (
             <button
-              key={c}
+              key={entry.id}
               type="button"
               className={`cap-btn${isActive ? " is-active" : ""}`}
               data-tip={CATEGORY_LABELS[c]}
@@ -247,7 +278,7 @@ export default function CapsuleRail({
                 </span>
               )}
             </span>
-              {/* 悬停/选中指示块：只属于四个分类按钮，Agent 端头球不渲染 */}
+              {/* 悬停/选中指示块：只属于分类按钮，Agent 端头球不渲染 */}
               <span className="cap-edge-tab" aria-hidden="true" />
             </button>
           );

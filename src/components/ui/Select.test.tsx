@@ -4,7 +4,7 @@
 //! Select 基元：键盘、鼠标、滚动、ARIA 与焦点恢复。
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import Select from "./Select";
@@ -104,6 +104,75 @@ describe("Select 基元", () => {
     await user.click(screen.getByRole("combobox", { name: "来源筛选" }));
     expect(screen.getByRole("listbox")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "别处" }));
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  // 右对齐是共享默认：浮层右边缘跟触发按钮右边缘一致，向左展开。
+  it("默认右对齐（bottom-end），align 可覆盖为 start", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("combobox", { name: "来源筛选" }));
+    const popover = document.querySelector(".ui-select-popover") as HTMLElement;
+    expect(popover.getAttribute("data-placement")).toBe("bottom-end");
+
+    cleanup();
+    render(
+      <Select
+        ariaLabel="左对齐覆盖"
+        align="start"
+        value="codex"
+        options={OPTIONS}
+        onChange={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("combobox", { name: "左对齐覆盖" }));
+    expect(document.querySelector(".ui-select-popover")?.getAttribute("data-placement")).toBe(
+      "bottom-start",
+    );
+  });
+
+  it("pointerdown 落在浮层外即关闭；落在浮层内不关闭", async () => {
+    const user = userEvent.setup();
+    render(
+      <div>
+        <Harness />
+        <button type="button" data-testid="outside">
+          别处
+        </button>
+      </div>,
+    );
+    const trigger = screen.getByRole("combobox", { name: "来源筛选" });
+    await user.click(trigger);
+    const listbox = screen.getByRole("listbox");
+    fireEvent.pointerDown(listbox);
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    fireEvent.pointerDown(screen.getByTestId("outside"));
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("外部滚动关闭，浮层内部列表滚动不关闭", async () => {
+    const user = userEvent.setup();
+    render(
+      <div>
+        <Harness />
+        <div data-testid="scroller" />
+      </div>,
+    );
+    const trigger = screen.getByRole("combobox", { name: "来源筛选" });
+    await user.click(trigger);
+    const listbox = document.querySelector(".ui-listbox") as HTMLElement;
+    fireEvent.scroll(listbox);
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    fireEvent.scroll(screen.getByTestId("scroller"));
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("窗口失焦关闭浮层", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("combobox", { name: "来源筛选" }));
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    fireEvent(window, new Event("blur"));
     expect(screen.queryByRole("listbox")).toBeNull();
   });
 

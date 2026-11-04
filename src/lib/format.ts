@@ -84,6 +84,26 @@ export function formatDuration(ms: number): string {
   return `${pad(m)}:${pad(s)}`;
 }
 
+/**
+ * 本地日期时间与明确时区（用于展示文件修改时间等真实元数据，不从名称猜时间）。
+ * 时区采用当前系统偏移，例如 UTC+08:00。
+ */
+export function formatLocalStamp(
+  iso: string | null | undefined,
+): { date: string; time: string; zone: string } | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const offset = -d.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const abs = Math.abs(offset);
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    time: formatHM(d),
+    zone: `UTC${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`,
+  };
+}
+
 /** 两个 ISO 时间之间的时长文本。 */
 export function formatBetween(startIso: string, endIso?: string | null, now = new Date()): string {
   const start = new Date(startIso).getTime();

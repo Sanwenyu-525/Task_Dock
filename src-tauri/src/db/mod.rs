@@ -1059,6 +1059,56 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_completion_occurrence
   WHERE due_at IS NOT NULL;
 "#,
     ),
+    (
+        29,
+        r#"
+-- v29：视觉预设收口（2026-11）。preset 只保留 frosted（默认）| dream-gradient，
+-- 历史值 liquid-glass / clear 统一迁移到 frosted。
+-- 幂等：仅命中这两个旧值，重复执行不再产生写入；只改 visual_preset 的 value，
+-- 不重置 theme / material 等其他设置，不触碰任务 / Agent / 剪贴板数据。
+UPDATE application_settings
+SET value = '"frosted"'
+WHERE key = 'visual_preset'
+  AND value IN ('"liquid-glass"', '"clear"');
+"#,
+    ),
+    (
+        30,
+        r#"
+-- v30（剪贴板截图组命名）：记录组名来源，区分自动命名与用户手动命名。
+-- auto_source = 由可靠来源标题/关联文本主题生成；auto_time = 时间兜底；
+-- manual = 用户手动命名（含全部历史分组，默认值，绝不自动覆盖）。
+ALTER TABLE clipboard_groups ADD COLUMN name_source TEXT NOT NULL DEFAULT 'manual'
+  CHECK (name_source IN ('manual', 'auto_source', 'auto_time'));
+"#,
+    ),
+    (
+        31,
+        r#"
+-- v31（ZCode 接入）：ZCode 提供用户级配置式 hooks（~/.zcode/cli/config.json 的
+-- hooks.events，需 hooks.enabled=true），任务坞改为官方 Hooks 适配器。
+-- 仅更新来源元数据；不写入任何 ZCode 配置（安装仍由用户在 Agent 页显式触发）。
+UPDATE agent_sources
+SET kind = 'transport',
+    adapter = 'zcode',
+    note = 'ZCode：通过 ~/.zcode/cli/config.json 的 hooks.events 生命周期钩子上报（安装时自动启用 hooks.enabled）',
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+WHERE id = 'zcode';
+"#,
+    ),
+    (
+        32,
+        r#"
+-- v32（剪贴板 OCR）：新增「自动识别图片文字」设置键，默认关闭。
+-- 条件插入：仅当已有剪贴板配置（origin 标记存在）时补键，避免旧库因缺键
+-- 触发 fail-closed；全新库仍由首次初始化（seed）统一写入，不会出现「已初始化」
+-- 却没有 origin 标记的半套配置。幂等：键已存在时不再写入。
+INSERT INTO application_settings (key, value, updated_at)
+SELECT 'clipboard_ocr_auto', 'false', strftime('%Y-%m-%dT%H:%M:%fZ','now')
+WHERE EXISTS (SELECT 1 FROM application_settings WHERE key = 'clipboard_config_origin')
+  AND NOT EXISTS (SELECT 1 FROM application_settings WHERE key = 'clipboard_ocr_auto');
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1636,12 +1686,13 @@ pub struct Settings {
     /// 窗口材质：solid（不透明）| glass（毛玻璃，不支持时自动回退 solid）
     #[serde(default = "default_material")]
     pub material: String,
-    /// 视觉预设（v0.6/v0.9）：dream-gradient | liquid-glass | frosted | clear。
-    /// 与 theme（明暗）/ material（材质）正交；未知值由前端回退到默认预设。
+    /// 视觉预设（2026-11 收口）：frosted（默认）| dream-gradient。
+    /// 与 theme（明暗）/ material（材质）正交；历史值 liquid-glass / clear
+    /// 以及缺失/非法值统一归一为 frosted（见 `normalized_visual_preset`）。
     #[serde(default = "default_visual_preset")]
     pub visual_preset: String,
-    /// 清透玻璃前景配色（v0.9）：auto | dark | light。
-    /// 只影响文字/图标色板，不改变玻璃材质；auto 表示跟随 theme。
+    /// 已废弃（2026-11）：清透预设下线后不再读取，仅保留键与默认值以兼容旧库/旧备份。
+    /// 不做破坏性迁移，旧值原样保留；前端不再写入 `html[data-clear-fg]`。
     #[serde(default = "default_clear_foreground")]
     pub clear_foreground: String,
     #[serde(default = "default_true")]
@@ -1787,6 +1838,9 @@ pub struct Settings {
     /// 高置信敏感内容过滤（如 PEM 私钥）；不宣称能识别全部密码/令牌
     #[serde(default = "default_true")]
     pub clipboard_sensitive_filter: bool,
+    /// 自动识别图片文字（默认关闭；第一阶段仅保存设置，不接入采集热路径）
+    #[serde(default)]
+    pub clipboard_ocr_auto: bool,
     /// 全局快速捕获上次选择的类型（task/idea/text/todo/link）
     #[serde(default = "default_capture_last_type")]
     pub quick_capture_last_type: String,
@@ -1800,6 +1854,11 @@ pub struct Settings {
     /// 托管副本总配额（MB）；引用模式不计入配额
     #[serde(default = "default_shelf_max_storage")]
     pub shelf_max_storage_mb: u32,
+    // ── 导航入口布局（v0.12；缺失时前端回退注册中心默认值）──
+    /// 版本化 JSON：`{ version, left: [], capsule: [], known: {...} }`。
+    /// 完整面板与停靠胶囊各自保存显隐与排序；后端只做结构校验，不参与语义合并。
+    #[serde(default)]
+    pub navigation_layout: serde_json::Value,
 }
 
 fn default_theme() -> String {
@@ -1812,7 +1871,20 @@ fn default_material() -> String {
     "glass".into()
 }
 fn default_visual_preset() -> String {
-    "dream-gradient".into()
+    "frosted".into()
+}
+
+/// 视觉预设读侧归一化（与前端 `resolveVisualPreset` 同一规则）：
+/// - `frosted` / `dream-gradient` 原样返回；
+/// - 历史值 `liquid-glass` / `clear` → `frosted`；
+/// - 缺失/损坏/非法 → `frosted`。
+pub fn normalized_visual_preset(value: &str) -> &'static str {
+    match value {
+        "dream-gradient" => "dream-gradient",
+        "frosted" => "frosted",
+        "liquid-glass" | "clear" => "frosted",
+        _ => "frosted",
+    }
 }
 fn default_clear_foreground() -> String {
     "auto".into()
@@ -1927,6 +1999,7 @@ pub const CLIPBOARD_SETTING_KEYS: &[&str] = &[
     "clipboard_paste_interval_html_ms",
     "clipboard_paste_interval_files_ms",
     "clipboard_sensitive_filter",
+    "clipboard_ocr_auto",
 ];
 
 /// 剪贴板配置初始化来源（内部诊断标记，不出现在设置界面）。
@@ -2050,6 +2123,7 @@ fn clipboard_value_valid(key: &str, value: &serde_json::Value) -> bool {
             | "clipboard_capture_html"
             | "clipboard_auto_group"
             | "clipboard_sensitive_filter"
+            | "clipboard_ocr_auto"
     );
     if boolean {
         return value.is_boolean();
@@ -2104,8 +2178,11 @@ impl Settings {
                 obj.remove(*key);
             }
         }
-        let s: Settings =
+        let mut s: Settings =
             serde_json::from_value(serde_json::Value::Object(obj)).unwrap_or_default();
+        // 预设读侧归一化：旧库/旧备份里的 liquid-glass / clear / 损坏值都不会
+        // 进入运行时；只改内存值，不在此写库（持久化回写由 v29 迁移负责）。
+        s.visual_preset = normalized_visual_preset(&s.visual_preset).to_string();
         Ok(s)
     }
 
@@ -2172,6 +2249,7 @@ impl Settings {
         boolean!(clipboard_capture_html, "clipboard_capture_html");
         boolean!(clipboard_auto_group, "clipboard_auto_group");
         boolean!(clipboard_sensitive_filter, "clipboard_sensitive_filter");
+        boolean!(clipboard_ocr_auto, "clipboard_ocr_auto");
         ranged!(
             clipboard_group_window_secs,
             "clipboard_group_window_secs",
@@ -2327,6 +2405,7 @@ impl Settings {
                 serde_json::json!(d.clipboard_paste_interval_files_ms)
             }
             "clipboard_sensitive_filter" => serde_json::json!(d.clipboard_sensitive_filter),
+            "clipboard_ocr_auto" => serde_json::json!(d.clipboard_ocr_auto),
             _ => return None,
         })
     }
@@ -3384,6 +3463,78 @@ mod tests {
         let mut rows = db.all_settings_raw().unwrap();
         rows.sort();
         rows
+    }
+
+    // ── 视觉预设收口（2026-11）──
+
+    /// 读侧归一化：缺失 / 历史值 / 损坏值都落到 frosted；不写库、不重置其他设置。
+    #[test]
+    fn visual_preset_normalizes_on_read_without_writing() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(
+            Settings::load(&db).unwrap().visual_preset,
+            "frosted",
+            "全新库缺省必须为 frosted"
+        );
+
+        raw_setting(&db, "theme", "\"dark\"");
+        raw_setting(&db, "material", "\"solid\"");
+        for (raw, expected) in [
+            ("\"liquid-glass\"", "frosted"),
+            ("\"clear\"", "frosted"),
+            ("\"frosted\"", "frosted"),
+            ("\"dream-gradient\"", "dream-gradient"),
+            ("\"neon\"", "frosted"),
+        ] {
+            raw_setting(&db, "visual_preset", raw);
+            let before = sorted_raw(&db);
+            let settings = Settings::load(&db).unwrap();
+            assert_eq!(settings.visual_preset, expected, "输入 {}", raw);
+            assert_eq!(settings.theme, "dark", "预设归一化不得重置主题");
+            assert_eq!(settings.material, "solid", "预设归一化不得重置材质");
+            assert_eq!(before, sorted_raw(&db), "读取归一化不得写库");
+        }
+    }
+
+    /// v29 数据迁移：只改 visual_preset 的旧值，其他键与数据不受影响，重复执行幂等。
+    #[test]
+    fn v29_normalizes_legacy_visual_preset_only() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        conn.execute(
+            "INSERT INTO application_settings (key, value, updated_at) VALUES
+             ('visual_preset', '\"liquid-glass\"', '2026-10-29T00:00:00+00:00'),
+             ('theme', '\"dark\"', '2026-10-29T00:00:00+00:00'),
+             ('material', '\"solid\"', '2026-10-29T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+
+        // 并行任务随后追加了 v30，这里按版本号定位 v29，避免依赖「最后一条迁移」。
+        let idx = MIGRATIONS.iter().position(|(v, _)| *v == 29).unwrap();
+        let (version, sql) = MIGRATIONS[idx];
+        apply_migrations(&conn, MIGRATIONS[idx - 1].0, &[(version, sql)]).unwrap();
+
+        let read = |key: &str| -> String {
+            conn.query_row(
+                "SELECT value FROM application_settings WHERE key = ?1",
+                [key],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(read("visual_preset"), "\"frosted\"");
+        assert_eq!(read("theme"), "\"dark\"", "迁移不得重置主题");
+        assert_eq!(read("material"), "\"solid\"", "迁移不得重置材质");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM application_settings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3, "迁移不得增删其他设置键");
+
+        // 幂等：重复执行不产生额外变化
+        conn.execute_batch(sql).unwrap();
+        assert_eq!(read("visual_preset"), "\"frosted\"");
+        assert_eq!(read("theme"), "\"dark\"");
     }
 
     /// 全新安装：seed 一次性写入默认值并标记来源，读取本身绝不自愈写入。

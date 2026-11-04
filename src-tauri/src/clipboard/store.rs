@@ -480,25 +480,32 @@ fn find_by_hash(db: &Db, hash: &str) -> AppResult<Option<ClipboardItem>> {
     })
 }
 
-type OpenGroup = Option<(String, Option<DateTime<Utc>>, usize, Option<String>)>;
+type OpenGroup = Option<(
+    String,
+    Option<DateTime<Utc>>,
+    usize,
+    Option<String>,
+    String,
+)>;
 
-/// 当前收集中的自动分组：id、最后一张截图时间、条数、组内最后一张截图的来源应用。
+/// 当前收集中的自动分组：id、最后一张截图时间、条数、组内最后一张截图的来源应用、名称来源。
 fn open_group(conn: &Connection) -> AppResult<OpenGroup> {
-    let row: Option<(String, Option<String>, i64, Option<String>)> = conn
+    let row: Option<(String, Option<String>, i64, Option<String>, String)> = conn
         .query_row(
             "SELECT g.id,
                 (SELECT MAX(i.created_at) FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
                  WHERE gi.group_id = g.id AND i.kind = 'image') AS last_image,
                 (SELECT COUNT(*) FROM clipboard_group_items gi WHERE gi.group_id = g.id) AS cnt,
                 (SELECT i.source_app FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
-                 WHERE gi.group_id = g.id AND i.kind = 'image' ORDER BY gi.position DESC LIMIT 1) AS image_source
+                 WHERE gi.group_id = g.id AND i.kind = 'image' ORDER BY gi.position DESC LIMIT 1) AS image_source,
+                g.name_source
              FROM clipboard_groups g WHERE g.status = 'collecting'
              ORDER BY g.updated_at DESC LIMIT 1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    Ok(row.map(|(id, last, cnt, src)| {
+    Ok(row.map(|(id, last, cnt, src, name_source)| {
         (
             id,
             last.and_then(|s| {
@@ -508,12 +515,47 @@ fn open_group(conn: &Connection) -> AppResult<OpenGroup> {
             }),
             cnt.max(0) as usize,
             src,
+            name_source,
         )
     }))
 }
 
+/// 时间兜底命名的组在关闭收集时补上图片数量；用户改名的组（manual）不参与。
+fn finalize_auto_group_name(conn: &Connection, group_id: &str) -> AppResult<()> {
+    let name: Option<(String, String)> = conn
+        .query_row(
+            "SELECT name, name_source FROM clipboard_groups WHERE id = ?1",
+            params![group_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((name, source)) = name else {
+        return Ok(());
+    };
+    if source != "auto_time" {
+        return Ok(());
+    }
+    let images: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+         WHERE gi.group_id = ?1 AND i.kind = 'image'",
+        params![group_id],
+        |r| r.get(0),
+    )?;
+    let images = images.max(0) as usize;
+    if images == 0 {
+        return Ok(());
+    }
+    let finalized = engine::finalize_time_group_name(&name, images);
+    conn.execute(
+        "UPDATE clipboard_groups SET name = ?1, updated_at = ?2 WHERE id = ?3 AND name_source = 'auto_time'",
+        params![finalized, crate::agents::now_iso(), group_id],
+    )?;
+    Ok(())
+}
+
 fn close_group_conn(conn: &Connection, group_id: &str) -> AppResult<()> {
     let now = crate::agents::now_iso();
+    finalize_auto_group_name(conn, group_id)?;
     conn.execute(
         "UPDATE clipboard_groups SET status = 'closed', closed_at = ?1, updated_at = ?1 WHERE id = ?2 AND status = 'collecting'",
         params![now, group_id],
@@ -523,6 +565,16 @@ fn close_group_conn(conn: &Connection, group_id: &str) -> AppResult<()> {
 
 fn close_all_collecting(conn: &Connection) -> AppResult<()> {
     let now = crate::agents::now_iso();
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM clipboard_groups WHERE status = 'collecting' AND name_source = 'auto_time'",
+        )?;
+        let mapped = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        mapped.collect::<Result<Vec<_>, _>>()?
+    };
+    for id in ids {
+        finalize_auto_group_name(conn, &id)?;
+    }
     conn.execute(
         "UPDATE clipboard_groups SET status = 'closed', closed_at = ?1, updated_at = ?1 WHERE status = 'collecting'",
         params![now],
@@ -554,15 +606,24 @@ fn next_group_seq(conn: &Connection) -> AppResult<i64> {
 fn create_group_row(
     conn: &Connection,
     name: &str,
+    name_source: &str,
     mode: &str,
     status: &str,
     now: &str,
 ) -> AppResult<String> {
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO clipboard_groups (id, name, mode, status, favorite, pinned, created_at, updated_at, closed_at)
-         VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, ?5, ?6)",
-        params![id, name, mode, status, now, if status == "closed" { Some(now) } else { None }],
+        "INSERT INTO clipboard_groups (id, name, name_source, mode, status, favorite, pinned, created_at, updated_at, closed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6, ?6, ?7)",
+        params![
+            id,
+            name,
+            name_source,
+            mode,
+            status,
+            now,
+            if status == "closed" { Some(now) } else { None }
+        ],
     )?;
     Ok(id)
 }
@@ -701,9 +762,9 @@ pub fn record_capture(
         }
 
         let open = open_group(&tx)?;
-        let (open_id, last_image, count, image_source) = match open {
-            Some(v) => (Some(v.0), v.1, v.2, v.3),
-            None => (None, None, 0, None),
+        let (open_id, last_image, count, image_source, open_name_source) = match open {
+            Some(v) => (Some(v.0), v.1, v.2, v.3, v.4),
+            None => (None, None, 0, None, String::new()),
         };
         let action = engine::decide_group(
             &p.kind,
@@ -719,6 +780,22 @@ pub fn record_capture(
             GroupAction::Append => {
                 if let Some(gid) = open_id {
                     append_group_item(&tx, &gid, &item_id, "auto", &now_iso)?;
+                    // 关联文本主题只在时间兜底组上生效：可靠来源标题优先，
+                    // 用户手动改名（manual）永不自动覆盖。
+                    if open_name_source == "auto_time" && !matches!(p.kind.as_str(), KIND_IMAGE | KIND_FILES) {
+                        let topic_src = if p.text.trim().is_empty() { &p.preview } else { &p.text };
+                        if let Some(topic) = engine::group_topic(topic_src) {
+                            let name = format!(
+                                "截图 · {}",
+                                engine::truncate_chars(&topic, engine::MAX_GROUP_TOPIC_CHARS)
+                            );
+                            tx.execute(
+                                "UPDATE clipboard_groups SET name = ?1, name_source = 'auto_source', updated_at = ?2
+                                 WHERE id = ?3 AND name_source = 'auto_time'",
+                                params![name, now_iso, gid],
+                            )?;
+                        }
+                    }
                     Some(gid)
                 } else {
                     None
@@ -726,8 +803,10 @@ pub fn record_capture(
             }
             GroupAction::Create => {
                 close_all_collecting(&tx)?;
-                let seq = next_group_seq(&tx)?;
-                let gid = create_group_row(&tx, &format!("截图组 {seq}"), "auto", "collecting", &now_iso)?;
+                let _seq = next_group_seq(&tx)?;
+                let (name, name_source) =
+                    engine::screenshot_group_name(Some(&p.source_title), &engine::local_time_label());
+                let gid = create_group_row(&tx, &name, name_source, "auto", "collecting", &now_iso)?;
                 append_group_item(&tx, &gid, &item_id, "auto", &now_iso)?;
                 Some(gid)
             }
@@ -1077,7 +1156,7 @@ pub fn create_manual_group(db: &Db, name: &str, item_ids: &[String]) -> AppResul
     let now = crate::agents::now_iso();
     let group_id = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
-        let gid = create_group_row(&tx, &name, "manual", "closed", &now)?;
+        let gid = create_group_row(&tx, &name, "manual", "manual", "closed", &now)?;
         let mut added = 0;
         for id in item_ids {
             let exists: i64 = tx.query_row(
@@ -1109,7 +1188,7 @@ pub fn rename_group(db: &Db, group_id: &str, name: &str) -> AppResult<ClipboardG
     let name = normalize_group_name(name, "未命名分组");
     db.with_conn(|conn| {
         let n = conn.execute(
-            "UPDATE clipboard_groups SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE clipboard_groups SET name = ?1, name_source = 'manual', updated_at = ?2 WHERE id = ?3",
             params![name, crate::agents::now_iso(), group_id],
         )?;
         if n == 0 {
@@ -1260,7 +1339,7 @@ pub fn split_group(
             let _ = tx.rollback();
             return Err(AppError::Validation("未选择属于该分组的条目".into()));
         }
-        let gid = create_group_row(&tx, &name, "manual", "closed", &now)?;
+        let gid = create_group_row(&tx, &name, "manual", "manual", "closed", &now)?;
         for id in &selected {
             append_group_item(&tx, &gid, id, "manual", &now)?;
             tx.execute(
@@ -1296,7 +1375,7 @@ pub fn merge_groups(db: &Db, group_ids: &[String], name: &str) -> AppResult<Clip
     let now = crate::agents::now_iso();
     let new_id = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
-        let gid = create_group_row(&tx, &name, "manual", "closed", &now)?;
+        let gid = create_group_row(&tx, &name, "manual", "manual", "closed", &now)?;
         let mut seen = HashSet::new();
         for source in group_ids {
             let ids: Vec<String> = {
@@ -1976,6 +2055,20 @@ pub fn image_abs_path(db: &Db, root: &Path, item_id: &str) -> Option<PathBuf> {
     asset_abs(root, &rel).ok()
 }
 
+/// 条目内容哈希：OCR 结果缓存的第二重身份（与条目 id 组合），内容变化即失效。
+/// 只返回哈希，不返回正文或像素。
+pub fn content_hash(db: &Db, item_id: &str) -> AppResult<Option<String>> {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT content_hash FROM clipboard_items WHERE id = ?1",
+                params![item_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2178,6 +2271,37 @@ mod tests {
         assert_eq!(b.item.copy_count, 2);
         let items = list_items(&db, &ClipboardFilter::default()).unwrap();
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn screenshot_group_name_uses_source_then_text_and_protects_manual_rename() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_group_window_secs = 45;
+
+        // 来源标题不可靠 → 时间兜底命名
+        let mut img = solid_image([200, 100, 40, 255], 30, 20);
+        img.source_title = String::new();
+        let first = record_capture(&db, &root.0, &img, &s).unwrap();
+        let gid = first.group_id.expect("截图必须建组");
+        let g = get_group(&db, &gid).unwrap();
+        assert!(g.name.starts_with("截图 · "), "不得再使用「截图组 N」: {}", g.name);
+        assert!(!g.name.contains("截图组"), "{}", g.name);
+
+        // 关联文本主题优先于时间兜底
+        let mut note = text_payload("版本评审记录\n第二行");
+        note.source_app = "snippingtool.exe".into();
+        record_capture(&db, &root.0, &note, &s).unwrap();
+        let g = get_group(&db, &gid).unwrap();
+        assert_eq!(g.name, "截图 · 版本评审记录");
+
+        // 用户手动改名后，后续自动命名绝不覆盖
+        rename_group(&db, &gid, "我的评审截图").unwrap();
+        let mut later = text_payload("补充说明");
+        later.source_app = "snippingtool.exe".into();
+        record_capture(&db, &root.0, &later, &s).unwrap();
+        assert_eq!(get_group(&db, &gid).unwrap().name, "我的评审截图");
     }
 
     #[test]

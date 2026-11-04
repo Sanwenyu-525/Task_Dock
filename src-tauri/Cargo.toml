@@ -83,7 +83,16 @@ windows = { version = "0.62", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
   "Win32_UI_Shell",
+  # 轻量本地 OCR（v0.6）：Windows.Media.Ocr + SoftwareBitmap（按需创建，不在启动时初始化）
+  "Foundation",
+  "Foundation_Collections",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage_Streams",
 ] }
+# WinRT 异步操作的状态轮询与结果读取（OCR 用；与 windows 的传递依赖同版本，无新增下载）
+windows-future = "0.3"
 # 注册表读取（卸载信息 / UWP 包注册）
 winreg = "0.55"
 # 开始菜单 .lnk 快捷方式解析（纯 Rust 实现；个别畸形 lnk 会 panic，

@@ -17,7 +17,7 @@ import {
   Send,
   Trash2,
 } from "lucide-react";
-import { Select, Checkbox, ConfirmDialog } from "../ui";
+import { DatePicker, Select, Checkbox, ConfirmDialog } from "../ui";
 import { formatRelative } from "../../lib/format";
 import {
   PLANNING_FEATURE_STATUS_LABELS,
@@ -283,16 +283,15 @@ export function PlanningFeatureCard({
             </div>
             <div className="planning-control">
               <span className="planning-control-label">目标日期</span>
-              <input
-                type="date"
-                className="input sm"
+              <DatePicker
+                size="sm"
                 value={feature.target_date ?? ""}
-                aria-label={`修改 ${feature.title} 的目标日期`}
-                onChange={(e) =>
+                ariaLabel={`修改 ${feature.title} 的目标日期`}
+                onChange={(v) =>
                   void run(
                     () =>
                       updateFeature(feature.id, {
-                        target_date: e.target.value === "" ? null : e.target.value,
+                        target_date: v === "" ? null : v,
                       }),
                     "目标日期修改失败",
                   )

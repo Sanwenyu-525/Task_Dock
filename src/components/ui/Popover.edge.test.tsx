@@ -105,7 +105,7 @@ describe("弹层边缘定位", () => {
 
     await user.click(screen.getByRole("combobox", { name: "测试下拉" }));
     const popover = await screen.findByRole("listbox");
-    await waitFor(() => expect(popover.getAttribute("data-placement")).toBe("bottom-start"));
+    await waitFor(() => expect(popover.getAttribute("data-placement")).toBe("bottom-end"));
   });
 
   it("底部空间不足时自动向上翻转", async () => {
@@ -115,7 +115,7 @@ describe("弹层边缘定位", () => {
 
     await user.click(screen.getByRole("combobox", { name: "测试下拉" }));
     const popover = await screen.findByRole("listbox");
-    await waitFor(() => expect(popover.getAttribute("data-placement")).toBe("top-start"));
+    await waitFor(() => expect(popover.getAttribute("data-placement")).toBe("top-end"));
   });
 
   it("弹层挂在 document.body 上，不受内容区裁剪", async () => {

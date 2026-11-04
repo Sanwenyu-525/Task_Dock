@@ -238,10 +238,16 @@ ACCESS_LOCK
     本次新建的那个文件对象——Windows 通过句柄 `SetFileInformationByHandle(FileDispositionInfo)`
     标记 delete-on-close，删除对象由句柄而非路径标识，句柄释放后路径被其他进程替换也不会
     误删；句柄级标记失败时保留文件不动，不回退成按路径 `remove_file`。绝不删除既有文件。
+    非 Windows 分支（2026-11-04）：Unix 上先取本次创建文件的句柄身份（`dev + ino`），与路径
+    当前 `symlink_metadata` 比对，一致才删除；身份不一致或无法确认时保留文件不动。这是
+    尽力保护，检查与 unlink 之间仍有理论窗口，**不宣称严格原子**——原则是宁可留下半成品，
+    也不删除其他进程后来放入同一路径的文件；其他无身份校验能力的平台一律保留文件。
   - `overwrite=true`：在同目录创建唯一临时文件 `.{filename}.{uuid}.tmp`，完整写入后
     `flush`+`sync_all` 并校验落盘长度，成功再 `std::fs::rename` 原子替换目标
     （Windows 即 `MoveFileExW(REPLACE_EXISTING)`）。替换失败（目标被占用、只读、无权限）
-    时原文件保持完整、临时文件被清理，错误如实返回。禁止 `fs::write` 截断原文件，也禁止
+    时原文件保持完整、临时文件被清理，错误如实返回。临时文件句柄保持到 `rename` 结束
+    （2026-11-04）：失败时仍按文件对象清理（Windows 句柄级、Unix 身份校验），不再“关闭后按
+    路径删除”；清理失败只记日志，不覆盖原始保存错误。禁止 `fs::write` 截断原文件，也禁止
     `exists()` + `write()` 的检查-写入组合。
 - **覆盖授权**：一次调用一次授权，绑定本次目标路径；后端不缓存、不复用授权，也不存在
   默认开启覆盖的调用点。授权由应用内确认框显式取得：系统保存对话框只负责选路径，返回
@@ -259,6 +265,10 @@ ACCESS_LOCK
   闸门（上限 2），超出直接返回可重试的 `Overloaded`，不排队、不形成无界写盘队列；后台任务
   异常结束（panic/取消）以错误拒绝，不伪装成功。`clipboard_path_status` 成功时返回结构不变
   （`Vec<String>`），后台异常时 Promise 拒绝，前端按「未知」fail-closed。
+  **2026-11-04 追加**：`clipboard_path_status` 增加请求级并发闸门（上限 3），与保存共用同一
+  小型配额结构（`Quota`/`QuotaGuard`）；超出立即返回可重试的 `Overloaded`，不排队、不建
+  等待队列，配额随后台任务成功/失败/panic 展开归还。前端把 `Overloaded` 归为「未知（后台
+  繁忙）」而非 `missing`，且不做自动重试，只在重新进入详情时再查一次。
 - **原始图片保真**：写入的是采集时落盘的原始 PNG 字节（`store::image_abs_path` 读取），
   不重新编码，像素与透明通道保持不变；返回值为写入字节数，成功后前端按“新建/覆盖”给出反馈。
 
@@ -376,3 +386,28 @@ failed/cancelled/confirmed`，其中 `confirmed` 仅在存在独立接收信号�
   不做“100% 识别”的承诺。
 - 高频复制超出队列容量：显式丢弃并计数（`dropped_events` / `dropped_contents`）；
   Windows 剪贴板无法回放被丢弃的内容，界面对应诊断字段可查。
+
+## 七、粘贴可靠性与目标身份（2026-11-04 补充）
+
+- **目标身份**：UI 选中窗口时记录 `HWND + PID`；`clipboard_paste_precheck` /
+  `clipboard_paste_group` / `clipboard_paste_items` / `clipboard_paste_resume` 均接受
+  `expectedPid`。句柄失效或被复用时 PID 不匹配，直接拒绝并提示刷新重选。
+- **执行前校验**：逐项执行仍由 `focus_target` 复用 `navigation::window_manager::focus_window`
+  （最小化恢复、置前、PID/前台复核），失败原因（最小化、前台锁定、权限不一致、窗口消失、
+  句柄复用）保留为具体错误；`send_paste` 在 `SendInput` 前再次确认 PID 与前台，未确认不发键。
+- **状态语义**：`InputSent` 只在发送 API 真实返回成功后写入；「写入剪贴板」与「发送按键」是两个
+  状态。API 成功不等于目标已接收，UI 只显示「未确认」；可能已被接收的内容不自动重发。
+- **跳转**：`clipboard_focus_target` 只做身份校验 + 激活 + 前台核实，不写剪贴板、不发按键；
+  与粘贴共用 `precheck_target` 与 `focus_window`。
+- **启动竞态**：前端在启动命令返回后先登记 `jobId`，立刻拉取一次 `clipboard_paste_job`
+  作为最终状态来源；实时事件仅在 jobId 与当前任务一致时生效，旧任务事件不得覆盖新任务。
+  不使用高频轮询。
+
+## 八、截图组自动命名（2026-11-04 补充）
+
+- v30 迁移为 `clipboard_groups` 追加 `name_source`（`manual` / `auto_source` / `auto_time`，
+  默认 `manual`）：历史分组一律视为用户命名，不会被自动命名覆盖；旧库升级无数据改写。
+- 自动命名优先级：可靠来源标题（`source_title`）> 关联文本主题（组内首条文本的首行）>
+  本地时间兜底（`截图 · MM-DD HH:mm`）；时间兜底组在关闭收集时补 `· N 张`。
+- 用户手动改名即写 `name_source = 'manual'`，此后任何自动命名/补数量都不再生效。
+  不引入 OCR / AI / 网络调用。

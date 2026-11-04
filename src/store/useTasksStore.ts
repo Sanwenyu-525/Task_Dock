@@ -30,7 +30,8 @@ export type TaskLiteScope = "all" | "pending" | "today" | "scheduled" | "complet
  * - all       最近创建的真实任务（含已完成）
  * - pending   未完成
  * - today     本地今天到期且未完成（后端 view=due_today）
- * - scheduled 有截止时间且未完成（后端 view=scheduled，只看 due_at）
+ * - scheduled 有截止时间且未完成（后端 view=scheduled，只看 due_at；sort=scheduled
+ *   让未逾期/未来任务排在逾期之前，避免积压的逾期任务占满 12 条把今天与未来挡住）
  * - completed 已完成，按完成时间倒序
  * limit:12 与面板实际展示量一致（后端 clamp 1..=200）。
  */
@@ -38,7 +39,7 @@ const LITE_QUERY: Record<TaskLiteScope, TaskFilter> = {
   all: { view: "all", status: "all", sort: "created", limit: 12 },
   pending: { view: "all", status: "pending", sort: "due", limit: 12 },
   today: { view: "due_today", status: "pending", sort: "due", limit: 12 },
-  scheduled: { view: "scheduled", status: "pending", sort: "due", limit: 12 },
+  scheduled: { view: "scheduled", status: "pending", sort: "scheduled", limit: 12 },
   completed: { view: "all", status: "completed", sort: "completed", limit: 12 },
 };
 
