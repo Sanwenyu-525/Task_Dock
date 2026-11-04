@@ -5,8 +5,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import NotificationWindow from "./NotificationWindow";
+import { initLocale } from "../i18n";
 import "../styles-themes.css";
 import "./styles-notifications.css";
+
+initLocale();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

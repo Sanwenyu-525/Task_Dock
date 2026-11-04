@@ -226,31 +226,39 @@ describe("材质以实际生效值驱动", () => {
 });
 
 describe("异步材质结果", () => {
-  it("过期的原生探测结果不会覆盖更新的材质选择", async () => {
+  it("材质 IPC 串行化：旧请求未完成时不并发下发新请求，过期结果被丢弃", async () => {
     let resolveGlass!: (v: unknown) => void;
-    let resolveSolid!: (v: unknown) => void;
     const glassP = new Promise((r) => {
       resolveGlass = r;
-    });
-    const solidP = new Promise((r) => {
-      resolveSolid = r;
     });
     api.getSettings.mockResolvedValue({ ...baseSettings });
     api.updateSettings.mockImplementation(async (patch: Record<string, unknown>) => ({
       ...baseSettings,
       ...patch,
     }));
-    api.applyWindowMaterial.mockImplementation((m: string) => (m === "glass" ? glassP : solidP));
+    api.applyWindowMaterial.mockImplementation((m: string) =>
+      m === "glass"
+        ? glassP
+        : Promise.resolve({
+            material: "solid",
+            applied: false,
+            effect: "none",
+            os_version: "10.0.26100",
+          }),
+    );
 
-    const loadP = useSettingsStore.getState().load();
-    const updateP = useSettingsStore.getState().update({ material: "solid" } as never);
+    // 第一条 glass 请求挂起，第二条 solid 请求必须排队等待它返回
+    const firstP = useSettingsStore.getState().update({ material: "glass" } as never);
+    await vi.waitFor(() => expect(api.applyWindowMaterial).toHaveBeenCalledTimes(1));
+    const secondP = useSettingsStore.getState().update({ material: "solid" } as never);
 
-    // 新的选择（solid）先返回
-    resolveSolid({ material: "solid", applied: false, effect: "none", os_version: "10.0.26100" });
-    await updateP;
-    expect(document.documentElement.dataset.material).toBe("solid");
+    // Rust 侧不识别请求序号：旧请求未返回时新请求必须排队，
+    // 否则两条 IPC 可能乱序落到主线程，窗口留下旧材质而界面已是新设置。
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.applyWindowMaterial).toHaveBeenCalledTimes(1);
+    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "dream-gradient");
 
-    // 旧探测后返回：必须被序号守卫丢弃
+    // 旧探测后返回：序号已过期，结果必须被丢弃
     resolveGlass({
       material: "glass",
       applied: true,
@@ -258,8 +266,11 @@ describe("异步材质结果", () => {
       effect: "mica",
       os_version: "10.0.26100",
     });
-    await loadP;
+    await firstP;
+    await secondP;
 
+    // 排队的 solid 随后执行并最终落地
+    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("solid", "dream-gradient");
     expect(document.documentElement.dataset.material).toBe("solid");
     expect(document.documentElement.dataset.nativeGlass).toBe("false");
     expect(useSettingsStore.getState().materialInfo?.resolved).toBe("solid");

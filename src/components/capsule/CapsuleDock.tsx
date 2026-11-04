@@ -41,6 +41,7 @@ export default function CapsuleDock() {
   const edge = useEdgeSnapStore((s) => s.dockedEdge);
   const reveal = useEdgeSnapStore((s) => s.reveal);
   const collapse = useEdgeSnapStore((s) => s.collapse);
+  const formSwitch = useEdgeSnapStore((s) => s.formSwitch);
   const feedback = useEdgeSnapStore((s) => s.feedback);
   const active = useCapsuleStore((s) => s.active);
   const setActive = useCapsuleStore((s) => s.setActive);
@@ -125,6 +126,7 @@ export default function CapsuleDock() {
         expanded={expanded}
         onSelect={onSelect}
         onCollapse={closePanel}
+        onForm={formSwitch ? () => formSwitch("full") : undefined}
       />
       {Panel && activeCategory && (
         <section

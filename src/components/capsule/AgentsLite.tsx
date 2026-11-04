@@ -45,6 +45,7 @@ function stamp(iso: string | null | undefined): string {
 
 export default function AgentsLite() {
   const snapshot = useAgentsStore((s) => s.snapshot);
+  const snapshotError = useAgentsStore((s) => s.snapshotError);
   const load = useAgentsStore((s) => s.load);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -78,6 +79,8 @@ export default function AgentsLite() {
     setBusy(true);
     try {
       await load();
+      // `load` 内部已捕获后端错误：结果以 store 的错误字段为准，不能把它当成功
+      setNotice(useAgentsStore.getState().snapshotError ? "刷新失败" : "已刷新");
     } catch {
       setNotice("刷新失败");
     } finally {
@@ -126,7 +129,9 @@ export default function AgentsLite() {
 
       <div className="cap-summary">
         <Activity size={13} strokeWidth={1.9} aria-hidden="true" />
-        {snapshot === null ? (
+        {snapshot === null && snapshotError !== null ? (
+          <span>读取失败</span>
+        ) : snapshot === null ? (
           <span>读取中…</span>
         ) : (
           // 数量口径全部来自 snapshot 的实时轮次（liveRuns），按状态分列、不合并：
@@ -140,12 +145,33 @@ export default function AgentsLite() {
                 · 失联 <b>{summary.disconnected}</b>
               </>
             ) : null}
+            {snapshotError !== null ? " · 可能不是最新" : null}
           </span>
         )}
       </div>
 
       <div className="cap-list">
-        {snapshot !== null && runs.length === 0 && (
+        {/* 首次读取失败：明确错误空态 + 重试，不能一直停在「读取中…」 */}
+        {snapshot === null && snapshotError !== null && (
+          <EmptyState
+            icon={<AgentIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
+            text="Agent 状态读取失败"
+            actionLabel="重试"
+            onAction={() => void refresh()}
+          />
+        )}
+
+        {/* 已有旧快照但本次刷新失败：保留旧数据，同时标注可能过期 */}
+        {snapshot !== null && snapshotError !== null && (
+          <div className="cap-item cap-error-row" role="alert">
+            <span className="cap-error-text">刷新失败，显示的是上次结果</span>
+            <button type="button" className="cap-mini" aria-label="重试刷新 Agent 状态" onClick={() => void refresh()}>
+              重试
+            </button>
+          </div>
+        )}
+
+        {snapshot !== null && snapshotError === null && runs.length === 0 && (
           <EmptyState
             icon={<AgentIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
             text="未检测到运行中的 Agent"
@@ -218,7 +244,9 @@ export default function AgentsLite() {
       </div>
 
       <div className="cap-foot">
-        <span className="cap-foot-note">{notice ?? "状态来自本地事件流"}</span>
+        <span className="cap-foot-note">
+          {notice ?? (snapshotError !== null ? "状态可能不是最新" : "状态来自本地事件流")}
+        </span>
         <button type="button" className="cap-link" onClick={() => openFullApp("agents")}>
           Agent 页
           <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />

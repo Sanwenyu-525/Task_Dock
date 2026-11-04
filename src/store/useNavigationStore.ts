@@ -12,6 +12,7 @@ import {
   type NavTarget,
   type TaskNavLink,
 } from "../lib/navigation";
+import { errorMessage } from "../lib/errors";
 
 /** 目标清单请求序号：只接受最新一次请求的结果（旧响应不得覆盖新数据）。 */
 let targetsSeq = 0;
@@ -20,6 +21,8 @@ export const useNavigationStore = create<{
   /** 软件扫描结果（null = 未加载） */
   scan: AppScanResult | null;
   scanning: boolean;
+  /** 扫描最近一次失败原因；null = 无错误。失败时保留旧扫描结果，但 UI 必须可见并可重试 */
+  scanError: string | null;
   /** 全部导航目标 */
   targets: NavTarget[];
   targetsLoaded: boolean;
@@ -27,6 +30,8 @@ export const useNavigationStore = create<{
   targetsError: string | null;
   /** taskId → 关联目标（含实时运行状态） */
   linksByTask: Record<string, TaskNavLink[]>;
+  /** 关联关系读取失败原因；失败时保留旧映射并标记「可能不是最新」 */
+  linksError: string | null;
   /** 选择器等 UI 打开状态（AppPicker 挂载用） */
   picker: { open: boolean; taskId: string | null };
   openPicker: (taskId: string | null) => void;
@@ -37,10 +42,12 @@ export const useNavigationStore = create<{
 }>((set, get) => ({
   scan: null,
   scanning: false,
+  scanError: null,
   targets: [],
   targetsLoaded: false,
   targetsError: null,
   linksByTask: {},
+  linksError: null,
   picker: { open: false, taskId: null },
   openPicker: (taskId) => set({ picker: { open: true, taskId } }),
   closePicker: () => set({ picker: { open: false, taskId: null } }),
@@ -50,9 +57,10 @@ export const useNavigationStore = create<{
     set({ scanning: true });
     try {
       const scan = await navScanApps(force);
-      set({ scan });
-    } catch {
-      // 保留旧扫描结果
+      set({ scan, scanError: null });
+    } catch (e) {
+      // 保留旧扫描结果，但记录失败原因——否则选择器会永远停在「加载中」。
+      set({ scanError: errorMessage(e) });
     } finally {
       set({ scanning: false });
     }
@@ -69,7 +77,7 @@ export const useNavigationStore = create<{
       if (seq !== targetsSeq) return;
       // 读取失败必须可见：面板据此显示错误态 + 重试，
       // 不能静默保旧值（或空数组）伪装成「尚未配置应用」。
-      set({ targetsError: String(e) });
+      set({ targetsError: errorMessage(e) });
     }
   },
 
@@ -83,9 +91,10 @@ export const useNavigationStore = create<{
       for (const list of Object.values(map)) {
         list.sort((a, b) => a.display_order - b.display_order);
       }
-      set({ linksByTask: map });
-    } catch {
-      // 保持旧映射
+      set({ linksByTask: map, linksError: null });
+    } catch (e) {
+      // 保持旧映射，但记录错误：抽屉/选择器据此提示「关联信息可能不是最新」
+      set({ linksError: errorMessage(e) });
     }
   },
 }));

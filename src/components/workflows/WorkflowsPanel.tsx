@@ -39,6 +39,7 @@ export default function WorkflowsPanel() {
   const refreshActive = useWorkflowsStore((s) => s.refreshActive);
   const activeRun = useWorkflowsStore((s) => s.activeRun);
   const activeRunDetail = useWorkflowsStore((s) => s.activeRunDetail);
+  const activeError = useWorkflowsStore((s) => s.activeError);
   const lastRuns = useWorkflowsStore((s) => s.lastRuns);
   const loadLastRun = useWorkflowsStore((s) => s.loadLastRun);
   const applyProgress = useWorkflowsStore((s) => s.applyProgress);
@@ -182,6 +183,16 @@ export default function WorkflowsPanel() {
             {activeRunDetail ? ` · ${activeRunDetail.completed_steps}/${activeRunDetail.total_steps} 步` : ""}
           </span>
         </div>
+      ) : null}
+
+      {activeError ? (
+        // 状态查询失败 ≠ 已结束：保留旧进度并标记可能过期，给重试入口
+        <p className="wf-error-text" role="status">
+          运行状态同步失败，当前进度可能不是最新：{activeError}
+          <button type="button" className="btn sm" onClick={() => void refreshActive()}>
+            重试
+          </button>
+        </p>
       ) : null}
 
       {workflowsError ? (

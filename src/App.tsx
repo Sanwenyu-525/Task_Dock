@@ -18,12 +18,15 @@ import CompactView from "./components/CompactView";
 import FullView from "./components/FullView";
 import TaskEditor from "./components/tasks/TaskEditor";
 import WorkspaceLauncher from "./components/navigation/WorkspaceLauncher";
+import { GlobalSearchDialog } from "./components/global-search/GlobalSearchDialog";
 import ClipboardDrawer from "./components/clipboard/ClipboardDrawer";
 import TaskContextDrawer from "./components/context/TaskContextDrawer";
 import Toast from "./components/Toast";
 import TooltipLayer from "./components/ui/TooltipLayer";
 import SnapOverlay from "./components/SnapOverlay";
+import { reportError } from "./lib/errorReport";
 import CapsuleDock from "./components/capsule/CapsuleDock";
+import DockFormToggle from "./components/capsule/DockFormToggle";
 import WindowResizeGrips from "./components/WindowResizeGrips";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
 import { isCapsuleMode, measureTitlebarHeight } from "./lib/edgeSnap";
@@ -40,6 +43,7 @@ import {
   onQuickCaptureCreated,
   onReminderFired,
   onReminderSnoozed,
+  onSnapFormChanged,
   onThemeChanged,
   undoSnooze,
 } from "./lib/bridge";
@@ -95,11 +99,15 @@ export default function App() {
   }, [settings, snapEnabled]);
 
   useEffect(() => {
-    loadSettings();
-    refreshTasks();
-    loadAgents();
-    loadNavLinks();
-    loadNavTargets();
+    // 启动加载失败必须可见：设置读取失败会决定主题/导航等基础状态，给出重试入口；
+    // 任务/导航读取失败由各自 store 的错误状态在对应面板展示（不在启动阶段刷 Toast）。
+    void Promise.resolve(loadSettings()).catch((e) =>
+      reportError(e, { operation: "读取设置", retry: () => loadSettings() }),
+    );
+    void refreshTasks();
+    void loadAgents();
+    void loadNavLinks();
+    void loadNavTargets();
   }, [loadSettings, refreshTasks, loadAgents, loadNavLinks, loadNavTargets]);
 
   // 行动中心开关：关闭时停止定时刷新并清空聚合（Agent 事件仍照常入库）；
@@ -178,7 +186,7 @@ export default function App() {
                   scheduleTaskRefresh();
                 })
                 .catch((e) =>
-                  useUiStore.getState().showToast(`撤销失败：${String(e)}`, { kind: "error" }),
+                  reportError(e, { operation: "撤销延后" }),
                 );
             },
           },
@@ -223,6 +231,10 @@ export default function App() {
     scope.add(onThemeChanged((t) => {
       // 托盘路径：后端已写库，这里同步 store 并应用 DOM 主题
       syncExternal({ theme: t });
+    }));
+    scope.add(onSnapFormChanged((form) => {
+      // 右键菜单已持久化；这里同步偏好，吸附引擎订阅 store 后原地切换形态。
+      syncExternal({ snap_display_mode: form === "full" ? "full" : "capsule" });
     }));
     scope.add(onAppReady(() => {
       refreshTasks();
@@ -276,10 +288,15 @@ export default function App() {
         </div>
         <TaskEditor />
         <WorkspaceLauncher />
+        <GlobalSearchDialog />
       </div>
       {capsuleMode && <CapsuleDock />}
-      {/* 四角缩放：圆角区域裁掉了原生角热区，由区域内热区接住（停靠胶囊期不需要） */}
-      {!capsuleMode && <WindowResizeGrips />}
+      {/* 完整面板停靠态：贴停靠边提供一个轻量「收缩为胶囊」入口（复用轨道按钮图标），
+          不占内容布局。主界面仍然完整可见、可操作。 */}
+      {snapPhase === "docked-full" && dockedEdge && <DockFormToggle edge={dockedEdge} />}
+      {/* 四角缩放：圆角区域裁掉了原生角热区，由区域内热区接住（胶囊/完整面板停靠期不需要，
+          停靠几何由吸附引擎维持，避免缩放把手破坏贴边齐平） */}
+      {!capsuleMode && snapPhase !== "docked-full" && <WindowResizeGrips />}
       <SnapOverlay />
       <Toast />
       <TooltipLayer />

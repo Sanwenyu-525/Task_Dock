@@ -228,13 +228,23 @@ export const useClipboardStore = create<{
   liteError: string | null;
   /** 监听运行状态（clipboardStatus 派生；与列表错误分开显示） */
   monitor: ClipboardMonitorState;
+  /**
+   * 轻量视图面板是否处于活跃态（独立于 `lite` 是否有数据）。
+   *
+   * 组件挂载即活跃，哪怕首次查询失败（`lite === null`）或正在读取——事件到达
+   * 时必须继续刷新，否则「打开面板 → 复制 → 读取失败一次」会永久停在错误空态。
+   */
+  liteActive: boolean;
   /** 读一次轻量视图（胶囊面板挂载时调用；失败不清除已成功数据） */
   loadLite: () => Promise<void>;
   /** 读一次监听状态（面板打开与手动重试时调用，不轮询） */
   loadMonitor: () => Promise<void>;
   /** 面板卸载：作废在途请求并释放轻量视图 */
   releaseLite: () => void;
-  setLive: (active: boolean) => void;
+  /** 完整剪贴板页活跃态：只有它为真时，剪贴板事件才刷新完整列表。 */
+  setFullLive: (active: boolean) => void;
+  /** 轻量面板活跃态：只有它为真时，剪贴板事件才刷新 `lite`。 */
+  setLiteLive: (active: boolean) => void;
 }>((set, get) => ({
   view: null,
   filters: { kind: "all", search: "", favorite: false },
@@ -443,6 +453,7 @@ export const useClipboardStore = create<{
   liteLoading: false,
   liteStatus: "loading",
   liteError: null,
+  liteActive: false,
   monitor: "checking",
   loadLite: async () => {
     const seq = ++liteSeq;
@@ -478,51 +489,112 @@ export const useClipboardStore = create<{
   releaseLite: () => {
     liteSeq += 1; // 卸载后回来的响应一律作废
     monitorSeq += 1;
+    // 面板卸载即不再活跃；即使组件清理顺序异常，也不留下活跃引用
+    liveLiteRefs = 0;
     set({
       lite: null,
       liteLoading: false,
       liteStatus: "loading",
       liteError: null,
+      liteActive: false,
       monitor: "checking", // 下次打开重新确认，绝不带着旧结论伪装新鲜
     });
+    ensureLive();
   },
 
-  setLive: (active) => {
-    if (active) acquireLive();
-    else releaseLive();
+  setFullLive: (active) => {
+    if (active) {
+      if (liveFullRefs === 0) {
+        liveFullRefs = 1;
+        ensureLive();
+      }
+      return;
+    }
+    if (liveFullRefs === 0) return;
+    liveFullRefs = 0;
+    ensureLive();
+  },
+
+  setLiteLive: (active) => {
+    const wasActive = get().liteActive;
+    if (active) {
+      if (wasActive) return;
+      liveLiteRefs += 1;
+      set({ liteActive: true });
+      ensureLive();
+      return;
+    }
+    if (!wasActive) return;
+    liveLiteRefs = Math.max(0, liveLiteRefs - 1);
+    set({ liteActive: false });
+    ensureLive();
   },
 }));
 
 /**
  * 实时监听：**整个应用只有一个** `onClipboardChanged` 监听。
  *
- * 剪贴板既可能是侧边栏页面、又可能是任务关联抽屉；若两处各自注册监听，
- * 一次采集事件会被处理两遍（重复刷新、重复去抖），这里用引用计数保证唯一性。
+ * 完整页与胶囊轻量面板只是同一物理订阅的两个逻辑消费者：
+ * - `liveFullRefs` 决定是否静默刷新完整列表（完整页未打开时不得因 Lite 事件查 80 条）；
+ * - `liveLiteRefs` 决定是否刷新 `lite`（首次加载失败/为空时也必须继续刷新）。
+ *
+ * 订阅失败不再被静默吞掉：`SubscriptionScope.add` 返回是否注册成功，失败时销毁
+ * 这个空作用域并安排退避重试，避免「liveScope 非空但监听实际没建立，之后永远
+ * 无法重新订阅」。重试始终复用同一个作用域槽位，不会叠加监听。
  */
 let liveScope: ReturnType<typeof createSubscriptionScope> | null = null;
-let liveRefs = 0;
+let liveFullRefs = 0;
+let liveLiteRefs = 0;
 let liveTimer: number | undefined;
+let liveRetryTimer: number | undefined;
+let liveRetryAttempt = 0;
+/** 事件去抖；连续事件合并成一次刷新，但始终会在 300ms 后执行。 */
+const LIVE_DEBOUNCE_MS = 300;
+/** 订阅失败后的重试退避上限：面板保持打开时持续尝试恢复，不做数据轮询。 */
+const LIVE_RETRY_MAX_MS = 10_000;
 
-function acquireLive() {
-  liveRefs += 1;
-  if (liveScope) return;
-  liveScope = createSubscriptionScope();
-  liveScope.add(
-    onClipboardChanged(() => {
-      if (liveTimer !== undefined) window.clearTimeout(liveTimer);
-      liveTimer = window.setTimeout(() => {
-        liveTimer = undefined;
-        void useClipboardStore.getState().load({ silent: true });
-        // 面板打开着就顺带刷一次轻量视图：两个入口同一份状态
-        if (useClipboardStore.getState().lite !== null) void useClipboardStore.getState().loadLite();
-      }, 300);
-    }),
-  );
+function liveConsumerCount() {
+  return liveFullRefs + liveLiteRefs;
 }
 
-function releaseLive() {
-  liveRefs = Math.max(0, liveRefs - 1);
-  if (liveRefs > 0) return;
+function ensureLive() {
+  if (liveConsumerCount() === 0) {
+    teardownLive();
+    return;
+  }
+  if (liveScope) return;
+
+  const scope = createSubscriptionScope();
+  liveScope = scope;
+  void scope.add(onClipboardChanged(handleClipboardChanged)).then((registered) => {
+    if (registered) {
+      liveRetryAttempt = 0;
+      return;
+    }
+    // 订阅失败：销毁这个空作用域，否则后续 ensureLive 会永远短路
+    if (liveScope !== scope) return;
+    liveScope = null;
+    scope.dispose();
+    scheduleLiveRetry();
+  });
+}
+
+function scheduleLiveRetry() {
+  if (liveConsumerCount() === 0 || liveRetryTimer !== undefined) return;
+  const delay = Math.min(1000 * 2 ** liveRetryAttempt, LIVE_RETRY_MAX_MS);
+  liveRetryAttempt += 1;
+  liveRetryTimer = window.setTimeout(() => {
+    liveRetryTimer = undefined;
+    ensureLive();
+  }, delay);
+}
+
+function teardownLive() {
+  if (liveRetryTimer !== undefined) {
+    window.clearTimeout(liveRetryTimer);
+    liveRetryTimer = undefined;
+  }
+  liveRetryAttempt = 0;
   if (liveTimer !== undefined) {
     window.clearTimeout(liveTimer);
     liveTimer = undefined;
@@ -531,12 +603,34 @@ function releaseLive() {
   liveScope = null;
 }
 
-/** 测试/热更新用：重置请求代际，避免跨代响应污染新实例。 */
+function handleClipboardChanged() {
+  if (liveTimer !== undefined) window.clearTimeout(liveTimer);
+  liveTimer = window.setTimeout(() => {
+    liveTimer = undefined;
+    const state = useClipboardStore.getState();
+    if (liveFullRefs > 0) void state.load({ silent: true });
+    // 用活跃态而不是 `lite !== null`：首次读取失败时也要能被事件带出错误态
+    if (liveLiteRefs > 0) void state.loadLite();
+  }, LIVE_DEBOUNCE_MS);
+}
+
+/** 测试/热更新用：重置请求代际与实时监听，避免跨代响应/旧监听污染新实例。 */
 export function resetClipboardRequestState() {
   filterGen += 1;
   reqSeq += 1;
   // 代际已推进，任何遗留的离场快照都不该再钉进新列表；收尾定时器一并回收
   for (const t of exitTimers.values()) clearTimeout(t);
   exitTimers.clear();
-  useClipboardStore.setState({ exiting: {} });
+  teardownLive();
+  liveFullRefs = 0;
+  liveLiteRefs = 0;
+  useClipboardStore.setState({ exiting: {}, liteActive: false });
+}
+
+// 热更新时旧模块的监听与定时器必须释放：否则旧 store 实例的监听会继续回调，
+// 与新实例叠加，表现为「事件到达但面板不更新 / 重复刷新」。
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    resetClipboardRequestState();
+  });
 }

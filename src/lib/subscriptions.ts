@@ -12,8 +12,13 @@ export type UnlistenFn = () => void;
 
 export interface SubscriptionScope {
   readonly closed: boolean;
-  /** 登记一个尚未兑现的监听；作用域已关闭时立即反订阅。 */
-  add: (pending: Promise<UnlistenFn>) => void;
+  /**
+   * 登记一个尚未兑现的监听；作用域已关闭时立即反订阅。
+   * 返回 Promise<boolean>：true 表示监听已建立并归本作用域管理，false 表示
+   * 订阅失败或作用域已关闭（调用方据此决定是否重建订阅，失败不会产生
+   * 未处理的 rejection）。既有调用方可忽略返回值。
+   */
+  add: (pending: Promise<UnlistenFn>) => Promise<boolean>;
   /** 关闭作用域并释放全部已建立的监听（幂等）。 */
   dispose: () => void;
 }
@@ -27,17 +32,16 @@ export function createSubscriptionScope(): SubscriptionScope {
       return closed;
     },
     add(pending) {
-      pending.then(
+      return pending.then(
         (unlisten) => {
           if (closed) {
             safeCall(unlisten);
-          } else {
-            unlisteners.push(unlisten);
+            return false;
           }
+          unlisteners.push(unlisten);
+          return true;
         },
-        () => {
-          // 订阅失败不应产生未处理的 rejection；功能层已有状态提示
-        },
+        () => false, // 订阅失败不应产生未处理的 rejection，由调用方决定是否重试
       );
     },
     dispose() {

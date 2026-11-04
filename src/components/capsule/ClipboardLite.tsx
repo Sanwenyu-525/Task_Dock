@@ -22,7 +22,9 @@ import {
   clipboardGroup,
   type ClipboardItem,
 } from "../../lib/bridge";
+import { normalizeError } from "../../lib/errors";
 import { useClipboardStore } from "../../store/useClipboardStore";
+import { useUiStore } from "../../store/useUiStore";
 import { ClipboardThumb } from "../clipboard/Media";
 import { openFullApp } from "./actions";
 import { EmptyState, PanelHead, Segmented, sizeLabel, type SegOption } from "./PanelKit";
@@ -83,7 +85,8 @@ export default function ClipboardLite() {
   const loadLite = useClipboardStore((s) => s.loadLite);
   const loadMonitor = useClipboardStore((s) => s.loadMonitor);
   const releaseLite = useClipboardStore((s) => s.releaseLite);
-  const setLive = useClipboardStore((s) => s.setLive);
+  const setLiteLive = useClipboardStore((s) => s.setLiteLive);
+  const showToast = useUiStore((s) => s.showToast);
   const items = lite?.items ?? null;
   // 只给「有图的分组」取封面，最多 2 组，顺序按后端返回
   const groups = useMemo(
@@ -100,12 +103,12 @@ export default function ClipboardLite() {
   useEffect(() => {
     void loadLite();
     void loadMonitor();
-    setLive(true);
+    setLiteLive(true);
     return () => {
-      setLive(false);
+      setLiteLive(false);
       releaseLite();
     };
-  }, [loadLite, loadMonitor, releaseLite, setLive]);
+  }, [loadLite, loadMonitor, releaseLite, setLiteLive]);
 
   // 封面：只为「有图的分组」读详情，且最多 2 组（有界、失败静默）
   useEffect(() => {
@@ -133,12 +136,27 @@ export default function ClipboardLite() {
     return () => window.clearTimeout(t);
   }, [copied]);
 
+  /** 复制失败按原因提示：条目不存在（列表需刷新）/ 剪贴板被占用 / 写入失败。 */
+  const reportCopyFailure = (e: unknown, what: "条目" | "截图组") => {
+    const err = normalizeError(e);
+    if (err.code === "NOT_FOUND") {
+      showToast(`${what}已不存在，正在刷新列表`, { kind: "error", code: err.code });
+      void loadLite();
+      return;
+    }
+    if (/占用/.test(err.message)) {
+      showToast("剪贴板被其他程序占用，请稍后重试", { kind: "error", code: err.code });
+      return;
+    }
+    showToast(`复制${what}失败：${err.message}`, { kind: "error", code: err.code });
+  };
+
   const copyItem = async (id: string) => {
     try {
       await clipboardCopyItem(id);
-      setCopied(id);
-    } catch {
-      // 失败不显示「已复制」
+      setCopied(id); // 只有成功才显示勾选反馈
+    } catch (e) {
+      reportCopyFailure(e, "条目");
     }
   };
 
@@ -146,8 +164,8 @@ export default function ClipboardLite() {
     try {
       await clipboardCopyGroupRich(id);
       setCopied(id);
-    } catch {
-      // 同上
+    } catch (e) {
+      reportCopyFailure(e, "截图组");
     }
   };
 

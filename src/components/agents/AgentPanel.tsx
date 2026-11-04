@@ -27,6 +27,7 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { AGENT_STATE_LABELS, formatBetween, formatRelative } from "../../lib/format";
 import { buildTree, liveSummary, type TreeAgent, type TreeSession } from "../../lib/agentTree";
 import { copyText } from "../../lib/clipboard";
+import { reportError } from "../../lib/errorReport";
 
 const HEALTH_LABELS: Record<string, string> = {
   live: "已连接 · 事件实时",
@@ -70,6 +71,7 @@ type Section = "monitor" | "onboard";
 
 export default function AgentPanel() {
   const snapshot = useAgentsStore((s) => s.snapshot);
+  const snapshotError = useAgentsStore((s) => s.snapshotError);
   const load = useAgentsStore((s) => s.load);
   const settings = useSettingsStore((s) => s.settings);
   const showToast = useUiStore((s) => s.showToast);
@@ -87,11 +89,11 @@ export default function AgentPanel() {
     try {
       setScan(await discoveryScan());
     } catch (e) {
-      showToast(`扫描失败: ${String(e)}`, { kind: "error" });
+      reportError(e, { operation: "扫描 Agent" });
     } finally {
       setScanning(false);
     }
-  }, [showToast]);
+  }, []);
 
   useEffect(() => {
     if (!scan) runScan();
@@ -236,7 +238,7 @@ export default function AgentPanel() {
       await refreshTasks();
       showToast(`已创建 ${created.length} 个任务`, { kind: "success" });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      reportError(e, { operation: "创建任务" });
     }
   }
 
@@ -247,16 +249,35 @@ export default function AgentPanel() {
       const ok = await copyText(dir);
       showToast(ok ? "投递目录已复制" : `投递目录：${dir}`, { kind: ok ? "success" : "info" });
     } catch (e) {
-      showToast(String(e), { kind: "error" });
+      reportError(e, { operation: "读取投递目录" });
     }
   }
 
   if (!snapshot) {
-    return <div className="empty-hint">加载中…</div>;
+    // 快照读取失败 ≠ 正在加载：给出真实错误与重试，避免无限「加载中」
+    return snapshotError ? (
+      <div className="empty-hint error-text" role="alert">
+        读取 Agent 状态失败：{snapshotError}
+        <button className="btn sm" onClick={() => void load()}>
+          重试
+        </button>
+      </div>
+    ) : (
+      <div className="empty-hint">加载中…</div>
+    );
   }
 
   return (
     <div className="agents-panel">
+      {snapshotError && (
+        // 保留旧快照但明确标记可能过期；持续故障不依赖一次性 Toast
+        <div className="empty-hint error-text" role="status">
+          Agent 状态同步失败，下方显示的数据可能不是最新：{snapshotError}
+          <button className="btn sm" onClick={() => void load()}>
+            重试
+          </button>
+        </div>
+      )}
       {/* ══ 分区切换 ══ */}
       <div className="seg-group agents-section-switch" role="tablist" aria-label="Agent 分区">
         <button

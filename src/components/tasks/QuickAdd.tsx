@@ -9,12 +9,15 @@ import { useUiStore } from "../../store/useUiStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { describeRecurrence, fromLocalInputValue, toLocalInputValue } from "../../lib/format";
 import { DateTimePicker } from "../ui";
+import { useLocale } from "../../hooks/useLocale";
+import { localizedErrorMessage } from "../../i18n/errors";
 
 interface Props {
   compact?: boolean;
 }
 
 export default function QuickAdd({ compact }: Props) {
+  const { t } = useLocale();
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState<ParsedInput | null>(null);
   const [dueInput, setDueInput] = useState("");
@@ -40,7 +43,7 @@ export default function QuickAdd({ compact }: Props) {
       setParsed(p);
       setDueInput(toLocalInputValue(p.due_at));
     } catch (e) {
-      setError(String(e));
+      setError(localizedErrorMessage(e));
     } finally {
       setParsing(false);
     }
@@ -60,10 +63,10 @@ export default function QuickAdd({ compact }: Props) {
       setText("");
       setParsed(null);
       setDueInput("");
-      showToast(`已创建「${task.title}」`, { kind: "success" });
+      showToast(t("quickAdd.created", { title: task.title }), { kind: "success" });
       inputRef.current?.focus();
     } catch (e) {
-      showToast(`创建失败：${String(e)}`, { kind: "error" });
+      showToast(t("quickAdd.createFailed", { error: localizedErrorMessage(e) }), { kind: "error" });
     } finally {
       setCreating(false);
     }
@@ -84,7 +87,7 @@ export default function QuickAdd({ compact }: Props) {
         <input
           ref={inputRef}
           className="quick-add-input input-embedded"
-          placeholder="快速添加：明天下午三点开会 / 每周一早上九点提交周报"
+          placeholder={t("quickAdd.placeholder")}
           value={text}
           disabled={creating}
           onChange={(e) => setText(e.target.value)}
@@ -106,7 +109,13 @@ export default function QuickAdd({ compact }: Props) {
           onClick={parsed ? onCreate : onParse}
           disabled={!text.trim() || busy}
         >
-          {parsed ? (creating ? "创建中…" : "创建") : parsing ? "解析中…" : "解析"}
+          {parsed
+            ? creating
+              ? t("quickAdd.creating")
+              : t("quickAdd.create")
+            : parsing
+              ? t("quickAdd.parsing")
+              : t("quickAdd.parse")}
         </button>
       </div>
 
@@ -114,37 +123,48 @@ export default function QuickAdd({ compact }: Props) {
         <div className="quick-add-preview">
           <div className="preview-line">
             <strong>{parsed.title}</strong>
-            <button className="icon-btn sm" onClick={onCancel} data-tip="取消" aria-label="取消">
+            <button
+              className="icon-btn sm"
+              onClick={onCancel}
+              data-tip={t("common.cancel")}
+              aria-label={t("common.cancel")}
+            >
               <X size={12} />
             </button>
           </div>
           <div className="preview-meta">
             <label>
-              时间
+              {t("quickAdd.time")}
               <DateTimePicker
                 size="sm"
-                ariaLabel="时间"
+                ariaLabel={t("quickAdd.time")}
                 value={dueInput}
                 disabled={creating}
                 onChange={setDueInput}
               />
             </label>
             {parsed.recurrence && (
-              <span className="chip">重复：{describeRecurrence(parsed.recurrence)}</span>
+              <span className="chip">
+                {t("quickAdd.recurrence", { value: describeRecurrence(parsed.recurrence) })}
+              </span>
             )}
             {parsed.advance_minutes ? (
-              <span className="chip">提前 {parsed.advance_minutes} 分钟</span>
+              <span className="chip">
+                {t("quickAdd.advance", { minutes: parsed.advance_minutes })}
+              </span>
             ) : null}
           </div>
           {!parsed.has_explicit_time && (
             <div className="preview-hint">
               {parsed.due_at
-                ? "仅识别到日期，已默认 09:00，请确认或修改"
-                : "未识别到时间，请手动设置（不会静默猜测）"}
+                ? t("quickAdd.dateOnlyHint")
+                : t("quickAdd.noTimeHint")}
             </div>
           )}
           {parsed.matched.length > 0 && (
-            <div className="preview-matched">已识别：{parsed.matched.join(" · ")}</div>
+            <div className="preview-matched">
+              {t("quickAdd.recognized", { items: parsed.matched.join(" · ") })}
+            </div>
           )}
         </div>
       )}

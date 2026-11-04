@@ -30,6 +30,7 @@ import {
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
 import { useShelfStore } from "../../store/useShelfStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { ConfirmDialog } from "../ui/Dialog";
@@ -119,6 +120,20 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       void verifyExists(ids);
     })();
   }, [active, load, refreshMeta, verifyExists]);
+
+  // 全局搜索定位：清过滤确保目标条目在列表中（详情数据源是当前 items），
+  // 然后按 id 打开详情；详情在 items 重新加载完成前不渲染，加载后自动出现。
+  const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
+  const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
+  useEffect(() => {
+    if (!pendingLocate || pendingLocate.category !== "shelf") return;
+    const intent = pendingLocate;
+    consumeLocate();
+    if (useShelfStore.getState().filter.search) setFilter({ search: "" });
+    setDetail(intent.id);
+    // 仅响应定位意图变化。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLocate]);
 
   // 搜索输入去抖
   const onSearchInput = useCallback(

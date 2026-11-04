@@ -11,19 +11,17 @@ import { useUiStore } from "../../store/useUiStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { formatDue } from "../../lib/format";
 import { NumberInput } from "../ui";
+import { useLocale } from "../../hooks/useLocale";
+import { localizedErrorMessage } from "../../i18n/errors";
 
-const PRESETS: { minutes: number; label: string }[] = [
-  { minutes: 5, label: "5 分钟" },
-  { minutes: 10, label: "10 分钟" },
-  { minutes: 15, label: "15 分钟" },
-  { minutes: 30, label: "30 分钟" },
-  { minutes: 60, label: "1 小时" },
-];
+/** 预设分钟数；文案在渲染时本地化（1 小时仍按分钟存储）。 */
+const PRESET_MINUTES = [5, 10, 15, 30, 60];
 
 /** 自定义上限：24 小时（与后端 snooze 钳制一致）。 */
 const MAX_MINUTES = 24 * 60;
 
 export default function QuickReminder() {
+  const { t } = useLocale();
   const [title, setTitle] = useState("");
   const [customOpen, setCustomOpen] = useState(false);
   const [hours, setHours] = useState(0);
@@ -36,7 +34,7 @@ export default function QuickReminder() {
   async function start(minutesFromNow: number) {
     if (creating) return;
     if (!Number.isFinite(minutesFromNow) || minutesFromNow < 1 || minutesFromNow > MAX_MINUTES) {
-      setError("提醒时长需在 1 分钟到 24 小时之间");
+      setError(t("quickReminder.errorRange"));
       return;
     }
     setCreating(true);
@@ -44,17 +42,20 @@ export default function QuickReminder() {
     try {
       const remindAt = new Date(Date.now() + minutesFromNow * 60_000).toISOString();
       const task = await create({
-        title: title.trim() || "快速提醒",
+        title: title.trim() || t("quickReminder.defaultTitle"),
         remind_at: remindAt,
       });
       showToast(
-        `已创建提醒「${task.title}」，预计 ${formatDue(task.remind_at)} 提醒`,
+        t("quickReminder.created", {
+          title: task.title,
+          time: formatDue(task.remind_at),
+        }),
         { kind: "success" },
       );
       setTitle("");
       setCustomOpen(false);
     } catch (e) {
-      setError(String(e));
+      setError(localizedErrorMessage(e));
     } finally {
       setCreating(false);
     }
@@ -64,12 +65,12 @@ export default function QuickReminder() {
     const h = Math.round(hours);
     const m = Math.round(minutes);
     if (!(h >= 0 && h <= 23) || !(m >= 0 && m <= 59)) {
-      setError("自定义时长：小时 0-23、分钟 0-59");
+      setError(t("quickReminder.errorCustom"));
       return;
     }
     const total = h * 60 + m;
     if (total < 1) {
-      setError("至少 1 分钟后提醒");
+      setError(t("quickReminder.errorMin"));
       return;
     }
     void start(total);
@@ -81,7 +82,7 @@ export default function QuickReminder() {
         <BellRing size={14} className="quick-add-icon" />
         <input
           className="quick-add-input input-embedded"
-          placeholder="快速提醒：输入内容后选时长（如「休息一下」+ 10 分钟）"
+          placeholder={t("quickReminder.placeholder")}
           value={title}
           disabled={creating}
           maxLength={200}
@@ -96,14 +97,16 @@ export default function QuickReminder() {
         {creating && <Loader2 size={12} className="spin quick-add-spinner" />}
       </div>
       <div className="quick-reminder-presets">
-        {PRESETS.map((p) => (
+        {PRESET_MINUTES.map((minutes) => (
           <button
-            key={p.minutes}
+            key={minutes}
             className="seg-btn sm"
             disabled={creating}
-            onClick={() => void start(p.minutes)}
+            onClick={() => void start(minutes)}
           >
-            {p.label}
+            {minutes >= 60
+              ? t("format.hours", { n: minutes / 60 })
+              : t("format.minutes", { n: minutes })}
           </button>
         ))}
         <button
@@ -115,7 +118,7 @@ export default function QuickReminder() {
             setError("");
           }}
         >
-          自定义…
+          {t("quickReminder.custom")}
         </button>
       </div>
       {customOpen && (
@@ -125,21 +128,21 @@ export default function QuickReminder() {
             min={0}
             max={23}
             value={hours}
-            ariaLabel="自定义小时"
+            ariaLabel={t("quickReminder.customHoursAria")}
             onChange={setHours}
           />
-          <span className="endpoint-hint">时</span>
+          <span className="endpoint-hint">{t("quickReminder.hoursUnit")}</span>
           <NumberInput
             size="sm"
             min={0}
             max={59}
             value={minutes}
-            ariaLabel="自定义分钟"
+            ariaLabel={t("quickReminder.customMinutesAria")}
             onChange={setMinutes}
           />
-          <span className="endpoint-hint">分后提醒</span>
+          <span className="endpoint-hint">{t("quickReminder.minutesUnit")}</span>
           <button className="btn primary sm" onClick={onStartCustom} disabled={creating}>
-            {creating ? "创建中…" : "开始"}
+            {creating ? t("quickReminder.creating") : t("quickReminder.start")}
           </button>
         </div>
       )}

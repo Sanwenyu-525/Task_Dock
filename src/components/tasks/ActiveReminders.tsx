@@ -25,26 +25,13 @@ import { formatCountdown, formatDue } from "../../lib/format";
 import { useUiStore } from "../../store/useUiStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { DropdownMenu } from "../ui";
+import { useLocale } from "../../hooks/useLocale";
+import { localizedErrorMessage } from "../../i18n/errors";
 
-const SNOOZE_OPTIONS: { minutes: number; label: string }[] = [
-  { minutes: 5, label: "5 分钟" },
-  { minutes: 10, label: "10 分钟" },
-  { minutes: 30, label: "30 分钟" },
-  { minutes: 60, label: "1 小时" },
-];
-
-function kindLabel(kind: string): string {
-  switch (kind) {
-    case "advance":
-      return "提前提醒";
-    case "custom":
-      return "自定义提醒";
-    default:
-      return "截止提醒";
-  }
-}
+const SNOOZE_MINUTES = [5, 10, 30, 60];
 
 export default function ActiveReminders() {
+  const { t } = useLocale();
   const [items, setItems] = useState<ActiveReminder[] | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const now = useSharedClock();
@@ -78,7 +65,9 @@ export default function ActiveReminders() {
       await snoozeReminder(item.taskId, minutes);
       load();
     } catch (e) {
-      showToast(`延后失败：${String(e)}`, { kind: "error" });
+      showToast(t("activeReminders.snoozeFailed", { error: localizedErrorMessage(e) }), {
+        kind: "error",
+      });
     } finally {
       setBusyTaskId(null);
     }
@@ -89,11 +78,15 @@ export default function ActiveReminders() {
     setBusyTaskId(item.taskId);
     try {
       const n = await cancelReminders(item.taskId);
-      showToast(`已取消「${item.taskTitle}」的 ${n} 条提醒`, { kind: "info" });
+      showToast(t("activeReminders.cancelToast", { title: item.taskTitle, count: n }), {
+        kind: "info",
+      });
       await refreshTasks();
       load();
     } catch (e) {
-      showToast(`取消失败：${String(e)}`, { kind: "error" });
+      showToast(t("activeReminders.cancelFailed", { error: localizedErrorMessage(e) }), {
+        kind: "error",
+      });
     } finally {
       setBusyTaskId(null);
     }
@@ -102,11 +95,13 @@ export default function ActiveReminders() {
   if (items === null || items.length === 0) return null;
 
   return (
-    <div className="active-reminders" role="region" aria-label="进行中的提醒">
+    <div className="active-reminders" role="region" aria-label={t("activeReminders.region")}>
       <div className="active-reminders-head">
         <Timer size={12} />
-        <span>进行中的提醒</span>
-        <span className="endpoint-hint">{items.length} 条</span>
+        <span>{t("activeReminders.title")}</span>
+        <span className="endpoint-hint">
+          {t("activeReminders.count", { count: items.length })}
+        </span>
       </div>
       {items.map((item) => {
         const remindMs = new Date(item.remindAt).getTime();
@@ -119,16 +114,26 @@ export default function ActiveReminders() {
             className={`active-reminder-card ${expired ? "expired" : ""}`}
           >
             <span className="reminder-countdown" aria-live="off">
-              {expired ? "已到期" : formatCountdown(remaining)}
+              {expired ? t("activeReminders.expired") : formatCountdown(remaining)}
             </span>
             <div className="reminder-info">
               <span className="reminder-title" title={item.taskTitle}>
                 {item.taskTitle}
               </span>
               <span className="reminder-meta">
-                <Clock3 size={10} /> 预计 {formatDue(item.remindAt)} · {kindLabel(item.kind)}
-                {item.snoozed && <span className="chip reminder-snoozed-chip">已延后</span>}
-                {item.hasRecurrence && <span className="chip">重复任务</span>}
+                <Clock3 size={10} />{" "}
+                {t("activeReminders.expected", { time: formatDue(item.remindAt) })} ·{" "}
+                {item.kind === "advance"
+                  ? t("activeReminders.kind.advance")
+                  : item.kind === "custom"
+                    ? t("activeReminders.kind.custom")
+                    : t("activeReminders.kind.deadline")}
+                {item.snoozed && (
+                  <span className="chip reminder-snoozed-chip">{t("activeReminders.snoozed")}</span>
+                )}
+                {item.hasRecurrence && (
+                  <span className="chip">{t("activeReminders.recurring")}</span>
+                )}
               </span>
             </div>
             <DropdownMenu
@@ -139,26 +144,31 @@ export default function ActiveReminders() {
                   className="btn sm"
                   aria-expanded={expanded}
                   aria-haspopup="menu"
-                  aria-label={`延后「${item.taskTitle}」`}
+                  aria-label={t("activeReminders.snoozeAria", { title: item.taskTitle })}
                   disabled={busy}
                   onClick={onClick}
                   onKeyDown={onKeyDown}
                 >
-                  <AlarmClock size={12} /> 延后
+                  <AlarmClock size={12} /> {t("activeReminders.snooze")}
                 </button>
               )}
-              items={SNOOZE_OPTIONS.map((o) => ({
-                key: String(o.minutes),
-                label: `${o.label}后再提醒`,
-                onSelect: () => void onSnooze(item, o.minutes),
+              items={SNOOZE_MINUTES.map((minutes) => ({
+                key: String(minutes),
+                label: t("activeReminders.snoozeOption", {
+                  label:
+                    minutes >= 60
+                      ? t("format.hours", { n: minutes / 60 })
+                      : t("format.minutes", { n: minutes }),
+                }),
+                onSelect: () => void onSnooze(item, minutes),
               }))}
-              menuLabel="延后提醒"
+              menuLabel={t("activeReminders.snoozeMenu")}
             />
             {!item.hasRecurrence && (
               <button
                 className="icon-btn sm"
-                data-tip="取消提醒（保留任务与通知历史）"
-                aria-label={`取消「${item.taskTitle}」的提醒`}
+                data-tip={t("activeReminders.cancelTip")}
+                aria-label={t("activeReminders.cancelAria", { title: item.taskTitle })}
                 disabled={busy}
                 onClick={() => void onCancel(item)}
               >

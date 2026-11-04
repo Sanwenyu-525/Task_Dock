@@ -5,14 +5,16 @@
 //!
 //! 真实性约束：
 //! - 列表只来自用户**已配置**的快捷目标，不预置微信 / Chrome / VS Code；
-//! - 当前后端不提供应用图标资源，因此用「稳定色相 + 首字母」方块（`avatarHue`
-//!   是纯函数，同一 app_key 恒得同色），而不是伪造的品牌图标；
+//! - 应用图标走统一的 `AppIcon`（后端按需提取 Windows 真实图标），
+//!   网址/文件夹没有可执行文件，仍用「稳定色相 + 首字母」圆点；
 //! - 搜索框做的是对已加载目标的本地过滤（真实可用），不是装饰；
 //! - 启动失败如实提示后端返回的 `reason`，不显示「已启动」。
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { LayoutGrid, Plus, Search, Settings2 } from "lucide-react";
-import { navNavigate, avatarHue } from "../../lib/navigation";
+import { navNavigate, avatarHue, type NavTarget } from "../../lib/navigation";
+import { searchApps } from "../../lib/appSearch";
+import AppIcon from "../ui/AppIcon";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { openAppsConfig } from "./actions";
 import { EmptyState, PanelHead } from "./PanelKit";
@@ -68,10 +70,25 @@ export default function AppsLite() {
   );
 
   const grid = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const base = q
-      ? ranked.filter((t) => t.display_name.toLowerCase().includes(q))
-      : ranked;
+    const q = query.trim();
+    // 与选择器/应用中心共用同一套搜索规则（中文连续子串、英文大小写、身份绑定别名），
+    // 数据范围是「已配置集合」，不是扫描到的全部应用。
+    let base = ranked;
+    if (q) {
+      const byId = new Map(ranked.map((t) => [t.id, t]));
+      base = searchApps(
+        ranked.map((t) => ({
+          key: t.id,
+          displayName: t.display_name,
+          category: t.category,
+          exePath: t.exe_path || t.url || t.path,
+          identity: t.app_key,
+        })),
+        q,
+      )
+        .map((s) => byId.get(s.key))
+        .filter((t): t is NavTarget => !!t);
+    }
     // 非搜索态留一格给「添加」按钮；添加按钮任何情况下都可见，
     // 超出的目标通过「管理」进入完整设置页处理。
     return base.slice(0, q ? 7 : 6);
@@ -184,13 +201,7 @@ export default function AppsLite() {
                 aria-busy={busyId === t.id}
                 onClick={() => void launch(t.id, t.display_name)}
               >
-                <span
-                  className="cap-app-avatar"
-                  style={{ "--app-hue": String(avatarHue(t.app_key || t.display_name)) } as CSSProperties}
-                  aria-hidden="true"
-                >
-                  {(t.display_name || "?").slice(0, 1).toUpperCase()}
-                </span>
+                <AppIcon targetId={t.id} name={t.display_name} size={34} />
                 <span className="cap-app-name" data-tip={t.display_name}>
                   {t.display_name}
                 </span>

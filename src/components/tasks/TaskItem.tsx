@@ -147,6 +147,7 @@ export default function TaskItem({ task, compact }: Props) {
   return (
     <div
       ref={rowRef}
+      data-task-id={task.id}
       className={`task-card task-item priority-${task.priority} ${task.status} ${leaving ? "leaving" : ""}`}
     >
       <button

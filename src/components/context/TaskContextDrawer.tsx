@@ -46,6 +46,8 @@ import {
   type TaskContext,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+import { useTasksStore } from "../../store/useTasksStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useActionsStore, kindLabel as actionKindLabel } from "../../store/useActionsStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -225,6 +227,55 @@ export default function TaskContextDrawer() {
   useOverlayLayer("drawer", open, () => closeContext());
   // 焦点陷阱：捕获对话框打开时由它自己接管
   useFocusTrap(open && !captureOpen, drawerRef);
+
+  // 全局搜索定位：消费 workspace 意图 —— 找到关联任务打开上下文抽屉并展开
+  // 目标快照；**绝不自动恢复现场**（恢复必须用户显式点击恢复按钮）。
+  const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
+  const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
+  const openContext = useUiStore((s) => s.openContext);
+  const storeTasks = useTasksStore((s) => s.tasks);
+  const loadTasks = useTasksStore((s) => s.load);
+  useEffect(() => {
+    if (!pendingLocate || pendingLocate.category !== "workspace") return;
+    const intent = pendingLocate;
+    consumeLocate();
+    const snapshotId = intent.id;
+    const taskId = intent.parentId;
+    if (!taskId) {
+      showToast("该现场未关联任务，无法从搜索直接打开", { kind: "warning" });
+      return;
+    }
+    let cancelled = false;
+    const openWithTask = async (attempt: number) => {
+      const t =
+        useTasksStore.getState().tasks.find((x) => x.id === taskId) ??
+        storeTasks.find((x) => x.id === taskId);
+      if (t) {
+        openContext(t);
+        setDetailId(snapshotId);
+        return;
+      }
+      if (cancelled) return;
+      if (attempt === 0) {
+        try {
+          await loadTasks({ view: "all", status: "all" });
+        } catch {
+          // 由重试统一兜底
+        }
+      }
+      if (attempt < 3 && !cancelled) {
+        window.setTimeout(() => void openWithTask(attempt + 1), 350);
+        return;
+      }
+      showToast("未能定位到关联任务，请在任务页手动查看该现场", { kind: "warning" });
+    };
+    void openWithTask(0);
+    return () => {
+      cancelled = true;
+    };
+    // 仅响应定位意图变化；storeTasks 仅为读取快照引用。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLocate]);
 
   if (!open || !task) return null;
 

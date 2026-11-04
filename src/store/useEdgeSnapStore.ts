@@ -6,7 +6,7 @@
 //! phase=free、无停靠边、无操作入口 —— UI 层自然全部隐藏。
 
 import { create } from "zustand";
-import type { SnapEdge, SnapPhase } from "../lib/edgeSnap";
+import type { DockForm, SnapEdge, SnapPhase } from "../lib/edgeSnap";
 
 let feedbackSeq = 0;
 
@@ -32,6 +32,11 @@ export interface EdgeSnapUiState {
   collapse: (() => void) | null;
   /** 引擎注入：解除吸附并恢复普通窗口；可选指定目标模式（跳转完整页时用）。 */
   undock: ((mode?: string) => void) | null;
+  /**
+   * 引擎注入：切换停靠形态（只写偏好；已停靠时由引擎原地切换，浮动时不移动窗口）。
+   * 供胶囊轨道与完整面板上的轻量入口复用。未启用为 null。
+   */
+  formSwitch: ((form: DockForm) => void) | null;
   sync: (p: {
     phase: SnapPhase;
     candidateEdge: SnapEdge | null;
@@ -44,6 +49,7 @@ export interface EdgeSnapUiState {
   setReveal: (fn: (() => void) | null) => void;
   setCollapse: (fn: (() => void) | null) => void;
   setUndock: (fn: ((mode?: string) => void) | null) => void;
+  setFormSwitch: (fn: ((form: DockForm) => void) | null) => void;
   reset: () => void;
 }
 
@@ -57,6 +63,7 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   reveal: null,
   collapse: null,
   undock: null,
+  formSwitch: null,
   sync: (p) => set(p),
   notifyDocked: (edge) => set({ feedback: { edge, seq: ++feedbackSeq } }),
   setRegionUnsynced: (v) => set({ regionUnsynced: v }),
@@ -64,6 +71,7 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   setReveal: (fn) => set({ reveal: fn }),
   setCollapse: (fn) => set({ collapse: fn }),
   setUndock: (fn) => set({ undock: fn }),
+  setFormSwitch: (fn) => set({ formSwitch: fn }),
   reset: () =>
     set({
       phase: "free",
@@ -75,5 +83,6 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
       reveal: null,
       collapse: null,
       undock: null,
+      formSwitch: null,
     }),
 }));

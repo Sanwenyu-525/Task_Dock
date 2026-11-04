@@ -34,15 +34,10 @@ import {
   type WorkflowLastRunSummary,
   type WorkflowRunPage,
 } from "../lib/bridge";
+import { errorMessage } from "../lib/errors";
 
 export function errText(e: unknown): string {
-  if (typeof e === "string") return e;
-  if (e instanceof Error) return e.message;
-  try {
-    return JSON.stringify(e);
-  } catch {
-    return String(e);
-  }
+  return errorMessage(e);
 }
 
 interface WorkflowsState {
@@ -55,6 +50,10 @@ interface WorkflowsState {
   activeRunDetail: WorkflowRunDetail | null;
   /** 各工作流最近一次运行的摘要（卡片展示）。 */
   lastRuns: Record<string, WorkflowLastRunSummary>;
+  /** 活动运行状态刷新失败：保留旧进度但标记「可能不是最新」 */
+  activeError: string | null;
+  /** 最近运行摘要读取失败：不影响列表，但卡片需标记数据过期 */
+  lastRunError: string | null;
   /** 历史对话框：当前查看的工作流的分页运行记录。 */
   history: { workflowId: string | null; page: WorkflowRunPage | null; loading: boolean; error: string | null };
 
@@ -90,6 +89,8 @@ export const useWorkflowsStore = create<WorkflowsState>((set, get) => ({
   workflowsError: null,
   activeRun: null,
   activeRunDetail: null,
+  activeError: null,
+  lastRunError: null,
   lastRuns: {},
   history: { workflowId: null, page: null, loading: false, error: null },
 
@@ -109,7 +110,7 @@ export const useWorkflowsStore = create<WorkflowsState>((set, get) => ({
   refreshActive: async () => {
     try {
       const activeRun = await workflowActive();
-      set({ activeRun });
+      set({ activeRun, activeError: null });
       if (activeRun) {
         const detail = await workflowRunDetail(activeRun.run_id);
         // 活动槽可能在两次 await 之间释放：仍以最新 activeRun 为准
@@ -120,18 +121,22 @@ export const useWorkflowsStore = create<WorkflowsState>((set, get) => ({
       } else {
         set({ activeRunDetail: null });
       }
-    } catch {
-      // 概览失败不打断面板：保留旧状态，运行详情会在下一次事件推送时更新
+    } catch (e) {
+      // 查询失败不得清空旧进度（会被误读成已结束）；面板显示「状态可能不是最新」+ 重试
+      set({ activeError: errorMessage(e) });
     }
   },
 
   loadLastRun: async (workflowId) => {
     try {
       const summary = await workflowLastRunSummary(workflowId);
-      if (!summary) return;
-      set((s) => ({ lastRuns: { ...s.lastRuns, [workflowId]: summary } }));
-    } catch {
-      // 最近运行读取失败不影响列表展示
+      set((s) => ({
+        lastRunError: null,
+        ...(summary ? { lastRuns: { ...s.lastRuns, [workflowId]: summary } } : {}),
+      }));
+    } catch (e) {
+      // 只标记错误，保留旧摘要；不阻断列表
+      set({ lastRunError: errorMessage(e) });
     }
   },
 
@@ -206,6 +211,7 @@ export const useWorkflowsStore = create<WorkflowsState>((set, get) => ({
         cancel_requested: false,
       },
       activeRunDetail: detail,
+      activeError: null,
     });
     void get().loadLastRun(id);
     return detail;

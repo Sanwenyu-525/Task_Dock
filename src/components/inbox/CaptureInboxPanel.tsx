@@ -21,8 +21,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCaptureStore } from "../../store/useCaptureStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
+import { locateElement } from "../global-search/locate";
 import { copyText } from "../../lib/clipboard";
 import { formatRelative } from "../../lib/format";
 import type { CaptureItem, CaptureKind } from "../../lib/bridge";
@@ -80,6 +82,24 @@ export default function CaptureInboxPanel() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 全局搜索定位：切到「全部」确保已处理/已转任务条目可见，数据渲染后滚动高亮。
+  const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
+  const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
+  const [locateId, setLocateId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pendingLocate || pendingLocate.category !== "capture") return;
+    const intent = pendingLocate;
+    consumeLocate();
+    if (filter !== "all") setFilter("all");
+    setLocateId(intent.id);
+    void load();
+    locateElement({
+      find: () => document.querySelector<HTMLElement>(`[data-capture-id="${CSS.escape(intent.id)}"]`),
+    });
+    // 仅响应定位意图变化。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLocate]);
 
   // 二次确认超时自动收起，避免一直停留在危险态
   useEffect(() => {
@@ -254,7 +274,8 @@ export default function CaptureInboxPanel() {
             return (
               <li
                 key={item.id}
-                className={`inbox-item${item.status === "inbox" ? "" : " is-done"}`}
+                data-capture-id={item.id}
+                className={`inbox-item${item.status === "inbox" ? "" : " is-done"}${locateId === item.id ? " gs-locate-flash" : ""}`}
                 aria-label={itemLabel(item)}
               >
                 <div className="inbox-head">

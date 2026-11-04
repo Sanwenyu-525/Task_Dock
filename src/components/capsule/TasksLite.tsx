@@ -5,8 +5,11 @@
 //! 动作落库，store.refresh() 在面板打开时顺带刷新这份轻量列表——
 //! 主窗口与胶囊因此只有一个状态源。
 //!
-//! 分段筛选全部是对**已取回的同一份真实列表**做本地过滤，不新增 IPC，
-//! 也不伪造「已完成」视图：已完成的量来自 `stats.completed_today`。
+//! 分段筛选只在**同一份真实结果**上做本地细分：待办/今日/日程共用一个
+//! status=pending 的轻量结果，已完成单独用 status=completed 读取——否则
+//! 「最近 12 条」的截断会把可能存在的已完成任务误显示为空。
+//! 面板底栏明确标注「最近记录」，完整入口在「全部任务」。
+//! 已完成的量来自 `stats.completed_today`，不伪造数据。
 //!
 //! 完成交互：先置 `is-done` 视觉态（320ms）再移出列表；`toggle` 失败则撤销
 //! 该视觉态并重新拉取真实列表，同时在底栏给出一次失败提示——
@@ -15,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
 import type { Task } from "../../lib/bridge";
-import { useTasksStore } from "../../store/useTasksStore";
+import { useTasksStore, type TaskLiteScope } from "../../store/useTasksStore";
 import { openFullApp } from "./actions";
 import { dueLabel, sortPending } from "./format";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
@@ -32,6 +35,13 @@ const FILTERS: readonly SegOption<Filter>[] = [
   { value: "done", label: "已完成" },
 ];
 
+/** 分段 → 需要读取的轻量结果范围：只有「已完成」需要换一份查询。 */
+function scopeOf(filter: Filter): TaskLiteScope {
+  if (filter === "done") return "completed";
+  if (filter === "all") return "all";
+  return "pending";
+}
+
 const sameDay = (a: number, b: number): boolean => {
   const x = new Date(a);
   const y = new Date(b);
@@ -44,6 +54,7 @@ const sameDay = (a: number, b: number): boolean => {
 
 export default function TasksLite() {
   const items = useTasksStore((s) => s.lite);
+  const liteScope = useTasksStore((s) => s.liteScope);
   const liteError = useTasksStore((s) => s.liteError);
   const loadLite = useTasksStore((s) => s.loadLite);
   const releaseLite = useTasksStore((s) => s.releaseLite);
@@ -58,11 +69,20 @@ export default function TasksLite() {
   const stats = useTasksStore((s) => s.stats);
 
   // 面板打开 → 取一次轻量列表；关闭 → 释放并作废在途响应。
-  // 五个分段全部在本地切分：切分段不产生新 IPC，也不会出现两次快照不一致。
   useEffect(() => {
-    void loadLite();
+    void loadLite("all");
     return () => releaseLite();
   }, [loadLite, releaseLite]);
+
+  /**
+   * 切分段只在数据范围不同时重新读取：待办/今日/日程共用 pending 结果，
+   * 已完成单独读 completed。请求数量受控，不随每次点击都发一条。
+   */
+  const changeFilter = (next: Filter) => {
+    setFilter(next);
+    const target = scopeOf(next);
+    if (useTasksStore.getState().liteScope !== target) void loadLite(target);
+  };
 
   // 所有延时都必须可回收：面板卸载时清空，避免对已卸载组件 setState
   useEffect(() => {
@@ -118,8 +138,10 @@ export default function TasksLite() {
   };
 
   const now = Date.now();
+  const scopeReady = items !== null && liteScope === scopeOf(filter);
   const visible = useMemo(() => {
-    if (!items) return null;
+    // 分段范围与已取回数据不一致时视为读取中：不拿旧范围的列表冒充新分段
+    if (!items || liteScope !== scopeOf(filter)) return null;
     // 展示顺序在面板里定：过期优先 → 截止升序 → 无期限最后，已完成按完成时间倒序
     const pendingList = sortPending(items.filter((t) => t.status !== "completed"));
     const doneList = items
@@ -136,7 +158,7 @@ export default function TasksLite() {
       return true;
     });
     return list.slice(0, 12);
-  }, [items, filter, now, hidden]);
+  }, [items, liteScope, filter, now, hidden]);
 
   const localDone = items?.filter((t) => t.status === "completed").length ?? 0;
   const pending = stats?.pending ?? items?.filter((t) => t.status !== "completed").length ?? 0;
@@ -146,7 +168,15 @@ export default function TasksLite() {
   const pct = total > 0 ? Math.round((doneToday / total) * 100) : 0;
   // 数据错误与空态分开：失败时旧列表保留展示 + 可重试错误条；没成功过则错误空态
   const dataError = liteError !== null;
-  const noTasksAtAll = items !== null && items.length === 0;
+  const noTasksAtAll = scopeReady && items !== null && items.length === 0;
+  const emptyText =
+    filter === "done"
+      ? "暂无已完成任务"
+      : filter === "today" || filter === "scheduled"
+        ? "该筛选下没有任务"
+        : filter === "pending"
+          ? "暂无待办任务"
+          : "暂无任务";
 
   return (
     <>
@@ -165,7 +195,7 @@ export default function TasksLite() {
         }
       />
 
-      <Segmented label="任务筛选" options={FILTERS} value={filter} onChange={setFilter} />
+      <Segmented label="任务筛选" options={FILTERS} value={filter} onChange={changeFilter} />
 
       <div className="cap-list">
         {/* 错误优先于空态：读取失败绝不伪装成「暂无待办」 */}
@@ -174,14 +204,19 @@ export default function TasksLite() {
             icon={<ListTodo size={22} strokeWidth={1.6} aria-hidden="true" />}
             text="任务列表读取失败"
             actionLabel="重试"
-            onAction={() => void loadLite()}
+            onAction={() => void loadLite(scopeOf(filter))}
           />
         )}
 
         {dataError && items !== null && (
           <div className="cap-item cap-error-row" role="alert">
             <span className="cap-error-text">刷新失败，显示的是上次结果</span>
-            <button type="button" className="cap-mini" aria-label="重试读取任务列表" onClick={() => void loadLite()}>
+            <button
+              type="button"
+              className="cap-mini"
+              aria-label="重试读取任务列表"
+              onClick={() => void loadLite(scopeOf(filter))}
+            >
               重试
             </button>
           </div>
@@ -190,13 +225,7 @@ export default function TasksLite() {
         {!dataError && visible !== null && visible.length === 0 && (
           <EmptyState
             icon={<ListTodo size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text={
-              noTasksAtAll
-                ? "暂无待办"
-                : filter === "done"
-                  ? "还没有已完成的任务"
-                  : "该筛选下没有任务"
-            }
+            text={emptyText}
             actionLabel={noTasksAtAll ? "新建任务" : undefined}
             onAction={() => inputRef.current?.focus()}
           />
@@ -252,7 +281,7 @@ export default function TasksLite() {
       <div className="cap-foot">
         <span className="cap-foot-note">
           <CheckCircle2 size={12} strokeWidth={1.8} aria-hidden="true" />
-          {notice ?? `已完成 ${doneToday} 项`}
+          {notice ?? `最近记录 · 完成 ${doneToday}`}
         </span>
         {/* 零任务时没有「今天的完成进度」可言，不渲染无意义的 0% 进度条 */}
         {!noTasksAtAll && (

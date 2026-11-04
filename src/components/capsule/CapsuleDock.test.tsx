@@ -18,6 +18,7 @@ vi.mock("../../lib/bridge", () => ({
   onClipboardChanged: async () => () => {},
   onQuickCaptureCreated: async () => () => {},
   listTasks: async () => [],
+  agentSnapshot: async () => ({ sources: [], instances: [], sessions: [], runs: [] }),
   openAgentSession: async () => undefined,
   clipboardView: async () => ({ items: [], groups: [], stats: {}, total_items: 0 }),
   clipboardGroup: async () => ({ items: [] }),
@@ -112,7 +113,7 @@ beforeEach(() => {
   // active 是模块级 store，会跨用例残留，必须复位到默认分类
   useCapsuleStore.setState({ active: "tasks" });
   useTasksStore.setState({ stats: null });
-  useAgentsStore.setState({ snapshot: null });
+  useAgentsStore.setState({ snapshot: null, snapshotError: null });
 });
 
 afterEach(() => {
@@ -142,7 +143,7 @@ describe("CapsuleDock · 折叠 / 展开", () => {
     useCapsuleStore.setState({ active: "tasks" });
     const { container } = mountAt("docked-revealed");
     expect(container.querySelector(".capsule-panel")).toBeTruthy();
-    await screen.findByText("暂无待办");
+    await screen.findByText("暂无任务");
 
     act(() => {
       container.querySelector<HTMLButtonElement>('.cap-btn[aria-label^="任务"]')!.click();
@@ -201,7 +202,7 @@ describe("CapsuleDock · 分类与相位的单一事实来源", () => {
     const { container } = mountAt("docked-revealed");
     expect(useCapsuleStore.getState().active).toBe("tasks");
     expect(container.querySelector(".capsule-panel")).toBeTruthy();
-    await screen.findByText("暂无待办");
+    await screen.findByText("暂无任务");
   });
 
   it("展开保留上一次的分类选择，而不是每次都跳回默认", async () => {
@@ -291,7 +292,7 @@ describe("CapsuleDock · 真实状态与空状态", () => {
   it("任务面板空状态：不出现 0，提供创建入口", async () => {
     useCapsuleStore.setState({ active: "tasks" });
     mountAt("docked-revealed");
-    await screen.findByText("暂无待办");
+    await screen.findByText("暂无任务");
     expect(screen.getByRole("button", { name: "新建任务" })).toBeTruthy();
   });
 

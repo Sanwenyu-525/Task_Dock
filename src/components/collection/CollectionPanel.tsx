@@ -14,16 +14,18 @@
 import { useUiStore } from "../../store/useUiStore";
 import CaptureInboxPanel from "../inbox/CaptureInboxPanel";
 import ShelfPanel from "../shelf/ShelfPanel";
+import { useLocale } from "../../hooks/useLocale";
 
 export default function CollectionPanel() {
+  const { t } = useLocale();
   const sub = useUiStore((s) => s.collectionSub);
   const setTab = useUiStore((s) => s.setTab);
 
   return (
     <div className="collection-panel">
       <div className="collection-head">
-        <span className="collection-title">收集与暂存</span>
-        <div className="seg-group" role="tablist" aria-label="收集与暂存子页">
+        <span className="collection-title">{t("collection.title")}</span>
+        <div className="seg-group" role="tablist" aria-label={t("collection.subTabs")}>
           <button
             type="button"
             role="tab"
@@ -31,7 +33,7 @@ export default function CollectionPanel() {
             className={`seg-btn ${sub === "inbox" ? "active" : ""}`}
             onClick={() => setTab("inbox")}
           >
-            快速收集
+            {t("collection.inbox")}
           </button>
           <button
             type="button"
@@ -40,7 +42,7 @@ export default function CollectionPanel() {
             className={`seg-btn ${sub === "shelf" ? "active" : ""}`}
             onClick={() => setTab("shelf")}
           >
-            文件暂存
+            {t("collection.shelf")}
           </button>
         </div>
       </div>

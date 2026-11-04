@@ -26,6 +26,7 @@ const clipboardStatus = vi.fn();
 const quickCaptureList = vi.fn();
 const quickCaptureState = vi.fn();
 const openAgentSession = vi.fn();
+const agentSnapshot = vi.fn();
 const navListTargets = vi.fn();
 const navNavigate = vi.fn();
 
@@ -51,6 +52,7 @@ vi.mock("../../lib/bridge", () => ({
   clipboardThumb: async () => null,
   clipboardImage: async () => null,
   openAgentSession: (...a: unknown[]) => openAgentSession(...a),
+  agentSnapshot: (...a: unknown[]) => agentSnapshot(...a),
   applyMode: async () => undefined,
 }));
 
@@ -58,6 +60,8 @@ vi.mock("../../lib/navigation", () => ({
   navNavigate: (...a: unknown[]) => navNavigate(...a),
   navListTargets: (...a: unknown[]) => navListTargets(...a),
   avatarHue: () => 250,
+  // AppIcon 统一请求真实图标；胶囊测试只关心名称/启动，图标直接回退字母
+  navAppIcon: async () => null,
 }));
 
 import TasksLite from "./TasksLite";
@@ -72,8 +76,14 @@ import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import type { AgentSnapshot, Task } from "../../lib/bridge";
 
-const now = Date.now();
+//! 固定到「今天中午」的时间锚点：今日/逾期/日程断言不再受跑测时刻影响
+//! （凌晨或深夜 +/- 1 小时会跨日，曾经导致用例在特定时段必失败）。
+const ANCHOR = new Date();
+ANCHOR.setHours(12, 0, 0, 0);
+const now = ANCHOR.getTime();
 const iso = (ms: number) => new Date(ms).toISOString();
+
+const EMPTY_SNAPSHOT: AgentSnapshot = { sources: [], instances: [], sessions: [], runs: [] };
 
 function task(id: string, title: string, due: number | null, extra: Partial<Task> = {}): Task {
   return {
@@ -108,6 +118,8 @@ beforeEach(() => {
   quickCaptureList.mockReset();
   quickCaptureState.mockReset();
   openAgentSession.mockReset();
+  agentSnapshot.mockReset();
+  agentSnapshot.mockResolvedValue(EMPTY_SNAPSHOT);
   navListTargets.mockReset();
   navNavigate.mockReset();
   taskStats.mockResolvedValue({
@@ -127,13 +139,20 @@ beforeEach(() => {
     configOrigin: null,
     captureAllowed: true,
   });
-  useTasksStore.setState({ stats: null, lite: null, liteLoading: false, liteError: null });
-  useAgentsStore.setState({ snapshot: null });
+  useTasksStore.setState({
+    stats: null,
+    lite: null,
+    liteScope: "all",
+    liteLoading: false,
+    liteError: null,
+  });
+  useAgentsStore.setState({ snapshot: null, snapshotError: null });
   useClipboardStore.setState({
     lite: null,
     liteLoading: false,
     liteStatus: "loading",
     liteError: null,
+    liteActive: false,
     monitor: "checking",
   });
   useCaptureStore.setState({
@@ -190,29 +209,37 @@ describe("任务面板", () => {
     expect(listTasks.mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("分段筛选只过滤已取回的真实列表（五段与效果图一致）", async () => {
-    listTasks.mockResolvedValue([
-      ...items,
-      task("t4", "整理依赖清单", null, {
-        status: "completed",
-        completed_at: iso(now - 120_000),
-      }),
-    ]);
+  it("分段筛选按范围读取必要结果：已完成不被最近待办截断", async () => {
+    const completed = task("t4", "整理依赖清单", null, {
+      status: "completed",
+      completed_at: iso(now - 120_000),
+    });
+    // 模拟「最近 12 条」全是待办、已完成被挤出的真实截断
+    listTasks.mockImplementation(async (args: { status: string }) =>
+      args.status === "completed" ? [completed] : items,
+    );
     render(<TasksLite />);
     await screen.findByText("整理产品周报");
 
-    // 一次取回 pending + completed：status=all，而不是两次快照拼接；
-    // limit:12 与面板实际展示量一致（轻量列表 payload 压缩）
+    // 初始取 pending + completed 的 all 范围；limit:12 与面板展示量一致
     expect(listTasks).toHaveBeenCalledWith({ view: "all", status: "all", sort: "due", limit: 12 });
 
     const tabs = screen.getAllByRole("tab").map((el) => el.textContent);
     expect(tabs).toEqual(["全部", "待办", "今日", "日程", "已完成"]);
 
     act(() => screen.getByRole("tab", { name: "待办" }).click());
-    expect(screen.getByText("整理产品周报")).toBeTruthy();
+    await screen.findByText("整理产品周报");
     expect(screen.queryByText("整理依赖清单")).toBeNull();
+    // 待办换成 status=pending 的范围（只读必要结果）
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "all",
+      status: "pending",
+      sort: "due",
+      limit: 12,
+    });
 
-    // 今日 = 截止时间落在今天（含今天已过期的 1 小时前那条），无期限的不在内
+    // 今日/日程与待办共用 pending 结果：不产生新请求
+    const callsAfterPending = listTasks.mock.calls.length;
     act(() => screen.getByRole("tab", { name: "今日" }).click());
     expect(screen.getByText("整理产品周报")).toBeTruthy();
     expect(screen.getByText("参加项目同步会")).toBeTruthy();
@@ -220,16 +247,29 @@ describe("任务面板", () => {
 
     act(() => screen.getByRole("tab", { name: "日程" }).click());
     expect(screen.queryByText("准备评审材料")).toBeNull();
+    expect(listTasks.mock.calls.length).toBe(callsAfterPending);
 
+    // 已完成独立查询：不会被「最近 12 条待办」截断成误判为空
     act(() => screen.getByRole("tab", { name: "已完成" }).click());
-    expect(screen.getByText("整理依赖清单")).toBeTruthy();
+    await screen.findByText("整理依赖清单");
     expect(screen.queryByText("整理产品周报")).toBeNull();
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "all",
+      status: "completed",
+      sort: "due",
+      limit: 12,
+    });
 
     act(() => screen.getByRole("tab", { name: "全部" }).click());
-    expect(screen.getByText("准备评审材料")).toBeTruthy();
-    expect(screen.getByText("整理依赖清单")).toBeTruthy();
-    // 筛选是本地过滤：切分段不再查询后端
-    expect(listTasks).toHaveBeenCalledTimes(1);
+    await screen.findByText("准备评审材料");
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "all",
+      status: "all",
+      sort: "due",
+      limit: 12,
+    });
+    // 四次查询：初始 all / pending / completed / all，同范围切换不重复请求
+    expect(listTasks).toHaveBeenCalledTimes(4);
   });
 
   it("已完成的条目不提供「再点一次完成」的假入口", async () => {
@@ -297,6 +337,23 @@ describe("Agent 面板", () => {
     expect(summary).toContain("运行中");
     expect(summary).toContain("等待");
     expect(summary).toContain("失败");
+  });
+
+  it("首次读取失败显示错误空态并重试，不永久停在「读取中…」", async () => {
+    agentSnapshot.mockRejectedValueOnce(new Error("ipc broken"));
+    render(<AgentsLite />);
+
+    await screen.findByText("Agent 状态读取失败");
+    expect(screen.queryByText("读取中…")).toBeNull();
+    // 失败不是空数据：不能显示「暂无运行中」这种正常空态文案
+    expect(screen.queryByText("未检测到运行中的 Agent")).toBeNull();
+
+    // 重试成功后恢复真实快照，错误空态消失
+    act(() => screen.getByRole("button", { name: "重试" }).click());
+    await waitFor(() =>
+      expect(useAgentsStore.getState().snapshotError).toBeNull(),
+    );
+    expect(screen.queryByText("Agent 状态读取失败")).toBeNull();
   });
 
   it("打开会话调用真实命令；失败时如实提示", async () => {
@@ -381,6 +438,41 @@ describe("剪贴板面板", () => {
     // 复制不触发重新拉取：历史顺序不因复制而跳动
     expect(clipboardView).toHaveBeenCalledTimes(1);
     expect(container.querySelector(".cap-item .cap-item-title")?.textContent).toBe(firstBefore);
+  });
+
+  it("复制失败给出明确提示，且不显示成功勾选", async () => {
+    clipboardView.mockResolvedValue(view);
+    // 条目已不存在：提示刷新，而不是静默失败
+    clipboardCopyItem.mockRejectedValueOnce({
+      code: "NOT_FOUND",
+      message: "clipboard item not found",
+    });
+    const { container } = render(<ClipboardLite />);
+    await screen.findByText("界面设计方案");
+
+    act(() => screen.getByRole("button", { name: "复制「界面设计方案」" }).click());
+    await waitFor(() =>
+      expect(useUiStore.getState().toasts.map((t) => t.message)).toContain(
+        "条目已不存在，正在刷新列表",
+      ),
+    );
+    // 刷新列表是恢复动作（不是把失败当成功）
+    await waitFor(() => expect(clipboardView.mock.calls.length).toBeGreaterThan(1));
+    expect(container.querySelector(".cap-mini.is-ok")).toBeNull();
+  });
+
+  it("剪贴板被占用时提示稍后重试", async () => {
+    clipboardView.mockResolvedValue(view);
+    clipboardCopyItem.mockRejectedValueOnce("剪贴板被其他程序占用，请稍后重试");
+    render(<ClipboardLite />);
+    await screen.findByText("界面设计方案");
+
+    act(() => screen.getByRole("button", { name: "复制「界面设计方案」" }).click());
+    await waitFor(() =>
+      expect(useUiStore.getState().toasts.map((t) => t.message)).toContain(
+        "剪贴板被其他程序占用，请稍后重试",
+      ),
+    );
   });
 });
 
@@ -542,7 +634,7 @@ describe("错误状态（读取失败绝不伪装成空态）", () => {
     listTasks.mockRejectedValue(new Error("db locked"));
     render(<TasksLite />);
     await screen.findByText("任务列表读取失败");
-    expect(screen.queryByText("暂无待办")).toBeNull();
+    expect(screen.queryByText("暂无任务")).toBeNull();
 
     listTasks.mockResolvedValueOnce([task("t1", "重试后拿到的任务", null)]);
     act(() => screen.getByRole("button", { name: "重试" }).click());
@@ -569,7 +661,7 @@ describe("错误状态（读取失败绝不伪装成空态）", () => {
   it("零任务不渲染完成进度条（无意义的 0% 不出现）", async () => {
     listTasks.mockResolvedValue([]);
     const { container } = render(<TasksLite />);
-    await screen.findByText("暂无待办");
+    await screen.findByText("暂无任务");
     expect(container.querySelector(".cap-progress")).toBeNull();
     // 有任务时进度条存在
     cleanup();

@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Flag, KanbanSquare, LayoutList, LayoutDashboard } from "lucide-react";
 import { usePlanningStore } from "../../store/usePlanningStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import ProjectsView from "./ProjectsView";
 import FeatureListView from "./FeatureListView";
 import PlanningKanban from "./PlanningKanban";
@@ -72,6 +73,30 @@ export default function PlanningWorkspace() {
     setMilestoneFilterId(milestoneId);
     setView("features");
   };
+
+  // 全局搜索定位：按结果类型分发到既有视图跳转（不修改任何规划数据）。
+  // feature/milestone 先确保所属项目被选中，再复用 openFeature/openMilestone。
+  const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
+  const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
+  useEffect(() => {
+    if (!pendingLocate || pendingLocate.category !== "planning") return;
+    const intent = pendingLocate;
+    consumeLocate();
+    const switchProject = async (projectId: string) => {
+      if (projectId && projectId !== activeProjectId) {
+        await Promise.resolve(selectProject(projectId));
+      }
+    };
+    if (intent.kind === "project") {
+      void switchProject(intent.id).then(() => setView("overview"));
+    } else if (intent.kind === "feature") {
+      void switchProject(intent.parentId ?? "").then(() => openFeature(intent.id));
+    } else if (intent.kind === "milestone") {
+      void switchProject(intent.parentId ?? "").then(() => openMilestone(intent.id));
+    }
+    // 仅响应定位意图变化。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLocate]);
 
   return (
     <div className="planning-workspace">

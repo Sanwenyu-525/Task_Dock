@@ -14,7 +14,7 @@
 //! - **退出清理**：订阅经 SubscriptionScope、离场定时器统一登记并在卸载释放。
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand as invoke } from "../lib/errors";
 import { listen } from "@tauri-apps/api/event";
 import { getSettings, snoozeReminder, toggleTask } from "../lib/bridge";
 import { createSubscriptionScope } from "../lib/subscriptions";

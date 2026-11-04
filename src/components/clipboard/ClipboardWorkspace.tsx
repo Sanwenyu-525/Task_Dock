@@ -36,9 +36,11 @@ import {
   type CopyReport,
   type DeleteReport,
 } from "../../lib/bridge";
+import { errorMessage } from "../../lib/errors";
 import { formatBytes, objectHint } from "../../lib/clipboardUi";
 import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
@@ -91,7 +93,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const setSection = useClipboardStore((s) => s.setSection);
   const setSearchText = useClipboardStore((s) => s.setSearchText);
   const load = useClipboardStore((s) => s.load);
-  const setLive = useClipboardStore((s) => s.setLive);
+  const setFullLive = useClipboardStore((s) => s.setFullLive);
   const toggleItemSelection = useClipboardStore((s) => s.toggleItemSelection);
   const toggleGroupSelection = useClipboardStore((s) => s.toggleGroupSelection);
   const clearSelection = useClipboardStore((s) => s.clearSelection);
@@ -100,6 +102,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   /** 列表里点缩略图直接打开的原图灯箱（详情视图内的灯箱由 ClipboardItemDetail 自己托管） */
   const [previewImage, setPreviewImage] = useState<ClipboardItem | null>(null);
   const [status, setStatus] = useState<ClipboardStatus | null>(null);
+  /** 状态读取失败：保留旧状态并标记过期，避免把「监听异常」显示成未知/正常 */
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [groupName, setGroupName] = useState("");
   const [mergeName, setMergeName] = useState("");
@@ -281,6 +285,19 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     return () => window.clearTimeout(t);
   }, [searchText, active, filters.search, setFilters]);
 
+  // 全局搜索定位：消费一次性意图，直接按 id 打开条目详情
+  // （ClipboardItemDetail 以 itemId 独立取数，不依赖当前过滤列表）。
+  const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
+  const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
+  useEffect(() => {
+    if (!pendingLocate || pendingLocate.category !== "clipboard") return;
+    const intent = pendingLocate;
+    consumeLocate();
+    setDetail({ kind: "item", id: intent.id });
+    // 仅响应定位意图变化。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLocate]);
+
   // 关联模式固定回到「历史」：上次浏览停在「分组」时直接复用会让用户看不到任何可选条目
   useEffect(() => {
     if (!linkTask) return;
@@ -291,9 +308,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   // 实时监听：交给 store 统一管理（全局只建一个 Tauri 监听）
   useEffect(() => {
     if (!active) return;
-    setLive(true);
-    return () => setLive(false);
-  }, [active, setLive]);
+    setFullLive(true);
+    return () => setFullLive(false);
+  }, [active, setFullLive]);
 
   // 监听状态（区分「已暂停」与「监听线程未启动」）
   useEffect(() => {
@@ -301,9 +318,14 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     let alive = true;
     clipboardStatus()
       .then((s) => {
-        if (alive) setStatus(s);
+        if (alive) {
+          setStatus(s);
+          setStatusError(null);
+        }
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (alive) setStatusError(errorMessage(e));
+      });
     return () => {
       alive = false;
     };
@@ -742,6 +764,24 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           )}
         </div>
       </header>
+      {statusError && (
+        <div className="empty-hint error-text" role="status">
+          剪贴板状态读取失败：{statusError}（下方状态可能不是最新）
+          <button
+            className="btn sm"
+            onClick={() => {
+              clipboardStatus()
+                .then((s) => {
+                  setStatus(s);
+                  setStatusError(null);
+                })
+                .catch((e) => setStatusError(errorMessage(e)));
+            }}
+          >
+            重试
+          </button>
+        </div>
+      )}
 
       {configError && (
         <div className="clip-link-banner clip-config-banner" role="alert">

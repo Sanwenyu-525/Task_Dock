@@ -1,5 +1,5 @@
-//! 标题栏：品牌 + Agent 实时状态 + 模式/明暗/视觉预设菜单 + 窗口操作。
-//! 状态点订阅 agents store（响应式）；completed 历史轮次不算实时运行状态。
+//! 标题栏：品牌 + 模式/明暗/视觉预设菜单 + 窗口操作。
+//! 标题栏不再展示 Agent 状态点：状态聚合仍由 Agent 面板/紧凑视图/行动页承载。
 //!
 //! v0.6：菜单改用统一的 DropdownMenu 基元（键盘导航、Escape 只关本层、
 //! 自动翻转定位），并把剪贴板入口移交给左侧导航——完整模式不再放剪贴板按钮。
@@ -10,11 +10,8 @@ import {
   Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Palette, Clipboard,
 } from "lucide-react";
 import { useSettingsStore } from "../store/useSettingsStore";
-import { useAgentsStore } from "../store/useAgentsStore";
 import { useUiStore } from "../store/useUiStore";
 import { applyMode } from "../lib/bridge";
-import { AGENT_STATE_LABELS } from "../lib/format";
-import { worstAgentState } from "../lib/agentTree";
 import { PRESET_LABELS, VISUAL_PRESETS, resolveVisualPreset } from "../lib/theme";
 import DropdownMenu, { type DropdownMenuItem } from "./ui/DropdownMenu";
 
@@ -73,7 +70,6 @@ function MenuButton({
 export default function TitleBar({ inert = false }: { inert?: boolean }) {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
-  const snapshot = useAgentsStore((s) => s.snapshot);
   const openClipboard = useUiStore((s) => s.openClipboard);
   const closeClipboard = useUiStore((s) => s.closeClipboard);
   const clipboardOpen = useUiStore((s) => s.clipboardOpen);
@@ -81,8 +77,6 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
   const theme = settings?.theme ?? "system";
   const preset = resolveVisualPreset(settings?.visual_preset);
 
-  // 响应式：订阅 snapshot，实时状态不含历史 completed 轮次
-  const state = worstAgentState(snapshot);
   const modeItem = MODES.find((m) => m.id === mode) ?? MODES[2];
   const themeItem = THEMES.find((t) => t.id === theme) ?? THEMES[2];
 
@@ -117,11 +111,6 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
   return (
     <div className="titlebar" data-tauri-drag-region inert={inert}>
       <span className="brand-orb" aria-hidden="true" />
-      <span
-        className={`agent-dot state-${state}`}
-        data-tip={`Agent 状态：${AGENT_STATE_LABELS[state] ?? state}`}
-        aria-label={`Agent 状态：${AGENT_STATE_LABELS[state] ?? state}`}
-      />
       <span className="titlebar-title" data-tauri-drag-region>
         Task Dock
       </span>

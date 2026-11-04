@@ -18,6 +18,7 @@ import {
   ChevronRight,
   ChevronUp,
   Clipboard,
+  Expand,
   Inbox,
   LayoutGrid,
   ListTodo,
@@ -32,6 +33,7 @@ import {
 } from "../../lib/capsuleModel";
 import { CAPSULE_GAP_CSS, RAIL_THICKNESS_CSS } from "../../lib/capsuleLayout";
 import type { SnapEdge } from "../../lib/edgeSnap";
+import { t } from "../../i18n";
 
 /** 轨道四个分类按钮的图标。Agent 不在其中：它由顶部状态球直达（AgentIcon）。 */
 const ICONS: Record<RailCategory, IconComponent> = {
@@ -42,20 +44,41 @@ const ICONS: Record<RailCategory, IconComponent> = {
 };
 
 /** 分类可读名：轨道四类 + Agent 端头球（面板 aria 也用它）。 */
+// getter 保持既有「点访问」调用不变，读取时取当前语言。
 export const CATEGORY_LABELS: Record<CapsuleCategory, string> = {
-  tasks: "任务",
-  inbox: "收集箱",
-  agents: "Agent",
-  clipboard: "剪贴板",
-  apps: "应用",
+  get tasks() {
+    return t("capsule.category.tasks");
+  },
+  get inbox() {
+    return t("capsule.category.inbox");
+  },
+  get agents() {
+    return t("capsule.category.agents");
+  },
+  get clipboard() {
+    return t("capsule.category.clipboard");
+  },
+  get apps() {
+    return t("capsule.category.apps");
+  },
 };
 
 const TONE_TEXT: Record<RailStatus["agentTone"], string> = {
-  idle: "Agent 空闲",
-  running: "Agent 运行中",
-  waiting: "Agent 等待确认",
-  failed: "Agent 执行失败",
-  disconnected: "Agent 连接中断",
+  get idle() {
+    return t("capsule.tone.idle");
+  },
+  get running() {
+    return t("capsule.tone.running");
+  },
+  get waiting() {
+    return t("capsule.tone.waiting");
+  },
+  get failed() {
+    return t("capsule.tone.failed");
+  },
+  get disconnected() {
+    return t("capsule.tone.disconnected");
+  },
 };
 
 /** 展开态气泡一律朝**屏幕内侧（面板侧）**弹出，四个停靠边做镜像：
@@ -132,6 +155,7 @@ export default function CapsuleRail({
   expanded,
   onSelect,
   onCollapse,
+  onForm,
 }: {
   edge: SnapEdge;
   status: RailStatus;
@@ -140,13 +164,17 @@ export default function CapsuleRail({
   expanded: boolean;
   onSelect: (c: CapsuleCategory) => void;
   onCollapse: () => void;
+  /** 可选：切到「完整面板」停靠形态（未启用吸附时缺省）。 */
+  onForm?: () => void;
 }) {
   const vertical = edge === "left" || edge === "right";
   const CollapseIcon =
     edge === "left" ? ChevronLeft : edge === "right" ? ChevronRight : edge === "top" ? ChevronUp : ChevronDown;
   const toneLabel = status.agentsLoaded
-    ? `${TONE_TEXT[status.agentTone]}${status.agentAttention > 0 ? `，${status.agentAttention} 个待处理` : ""}`
-    : "Agent 状态未知";
+    ? `${TONE_TEXT[status.agentTone]}${
+        status.agentAttention > 0 ? t("capsule.attention", { n: status.agentAttention }) : ""
+      }`
+    : t("capsule.tone.unknown");
 
   return (
     <div
@@ -154,7 +182,7 @@ export default function CapsuleRail({
       data-tauri-drag-region
       role="toolbar"
       aria-orientation={vertical ? "vertical" : "horizontal"}
-      aria-label="胶囊分类导航"
+      aria-label={t("capsule.railAria")}
     >
       {/* 表面层：液态翼片的唯一可见轮廓（贴边齐平、两侧外扩），
           绝对定位在按钮之下，不参与 flex 排布 */}
@@ -168,7 +196,7 @@ export default function CapsuleRail({
         data-tip="Agent"
         data-tip-placement={railTipPlacement("docked", edge, expanded, true)}
         data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
-        aria-label={`${toneLabel}，打开 Agent 面板`}
+        aria-label={t("capsule.openAgents", { label: toneLabel })}
         aria-pressed={expanded && active === "agents"}
         onClick={() => onSelect("agents")}
       >
@@ -198,9 +226,14 @@ export default function CapsuleRail({
               data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
               aria-label={
                 c === "tasks" && status.tasksLoaded
-                  ? `任务，${status.pending ?? 0} 个待办${status.overdue > 0 ? `，${status.overdue} 个逾期` : ""}`
+                  ? status.overdue > 0
+                    ? t("capsule.tasksOverdueAria", {
+                        pending: status.pending ?? 0,
+                        overdue: status.overdue,
+                      })
+                    : t("capsule.tasksAria", { pending: status.pending ?? 0 })
                   : c === "inbox" && status.inboxCount !== null
-                    ? `收集箱，${status.inboxCount} 条未处理`
+                    ? t("capsule.inboxAria", { count: status.inboxCount })
                     : CATEGORY_LABELS[c]
               }
               aria-pressed={isActive}
@@ -223,6 +256,22 @@ export default function CapsuleRail({
 
       <div className="cap-sep cap-sep-bottom" aria-hidden="true" />
 
+      {/* 形态切换：把停靠展示从「胶囊」换成完整窗口（设置/右键菜单之外的最小入口）。
+          折叠态同样可用（这是离开胶囊形态的轻量出口），文案与图标复用轨道视觉。 */}
+      {onForm && (
+        <button
+          type="button"
+          className="cap-collapse cap-form"
+          data-tip={t("capsule.toFull")}
+          data-tip-placement={railTipPlacement("docked", edge, expanded)}
+          data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
+          aria-label={t("capsule.toFull")}
+          onClick={onForm}
+        >
+          <Expand size={15} strokeWidth={2} aria-hidden="true" />
+        </button>
+      )}
+
       {/* 底部：收起（箭头朝向屏幕边缘 = 面板实际收起方向）。
           折叠态没有「再收起」这件事，因此保留占位（避免图标在两种状态间跳动）
           但不渲染可见控件，也不进 Tab 序列——不再长期摆一个灰箭头。 */}
@@ -230,10 +279,10 @@ export default function CapsuleRail({
         type="button"
         className="cap-collapse"
         data-inert={expanded ? "false" : "true"}
-        data-tip="收起"
+        data-tip={t("capsule.collapse")}
         data-tip-placement={railTipPlacement("docked", edge, expanded)}
         data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
-        aria-label={expanded ? "收起功能面板" : "功能面板已收起"}
+        aria-label={expanded ? t("capsule.collapseAria") : t("capsule.collapsedAria")}
         aria-disabled={!expanded}
         tabIndex={expanded ? 0 : -1}
         aria-hidden={!expanded}

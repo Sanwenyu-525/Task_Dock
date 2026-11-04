@@ -24,6 +24,7 @@ import {
   updateSettings,
   type Settings,
 } from "../lib/bridge";
+import { errorMessage } from "../lib/errors";
 import {
   hasNativeGlass,
   presetRadius,
@@ -52,6 +53,8 @@ export interface MaterialInfo {
   osVersion: string;
   /** Win32 圆角区域是否应用成功（false 时四角可能露原生直角） */
   shapeApplied: boolean;
+  /** 原生材质 IPC 失败原因：非空时 resolved 为 CSS/不透明降级，需在设置页如实说明并可重试 */
+  materialError?: string | null;
 }
 
 function match(q: string): boolean {
@@ -81,7 +84,12 @@ export const useSettingsStore = create<{
   load: () => Promise<void>;
   update: (patch: Partial<Settings>) => Promise<void>;
   /** 托盘/事件路径：后端已持久化，前端只同步并应用 */
-  syncExternal: (patch: { theme?: string; mode?: string; visual_preset?: string }) => void;
+  syncExternal: (patch: {
+    theme?: string;
+    mode?: string;
+    visual_preset?: string;
+    snap_display_mode?: "capsule" | "full";
+  }) => void;
   /** 系统主题/对比度/透明偏好变化时重算 DOM（不写后端） */
   reapplyFromSystem: () => void;
 }>((set, get) => {
@@ -120,12 +128,30 @@ export const useSettingsStore = create<{
    */
   let materialEpoch = 0;
 
-  async function applyMaterial(): Promise<void> {
+  /**
+   * 材质 IPC 串行链。Rust 侧不识别请求序号：并发的 `apply_window_material`
+   * 可能乱序落到主线程，导致「界面已是新预设、窗口却挂着旧材质」。
+   * 序号只能忽略过期响应，不能撤销已经执行的窗口改动，因此这里让请求排队，
+   * 后发请求一定在后执行；排队期间又有更新时跳过中间态，只落最后一次设置。
+   */
+  let materialChain: Promise<void> = Promise.resolve();
+
+  function applyMaterial(): Promise<void> {
     const epoch = ++materialEpoch;
+    const run = async () => {
+      if (epoch !== materialEpoch) return; // 已有更新的请求在队列里，跳过本次
+      await applyMaterialNow(epoch);
+    };
+    materialChain = materialChain.then(run, run);
+    return materialChain;
+  }
+
+  async function applyMaterialNow(epoch: number): Promise<void> {
     const requested = currentMaterial();
     let glassApplied: boolean | null = null;
     let effect = "none";
     let osVersion = "";
+    let materialError: string | null = null;
 
     // 每次都真探测：请求 glass 时应用 Mica/Acrylic/CSS，请求 solid 时清除。
     // Rust 端幂等；系统偏好变化是低频操作，这点 IPC 成本换来状态绝对一致。
@@ -139,8 +165,10 @@ export const useSettingsStore = create<{
         glassApplied = r.applied;
         effect = r.effect;
         osVersion = r.os_version;
-      } catch {
+      } catch (e) {
         if (epoch !== materialEpoch) return;
+        // 原生材质调用失败：如实记录原因，界面按实际渲染通道展示降级状态
+        materialError = errorMessage(e);
         glassApplied = false;
       }
     } else {
@@ -189,6 +217,7 @@ export const useSettingsStore = create<{
         effect: requested === "glass" ? effect : "none",
         osVersion,
         shapeApplied,
+        materialError,
       },
     });
   }

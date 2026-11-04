@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { agentSnapshot, type AgentSnapshot } from "../lib/bridge";
+import { errorMessage } from "../lib/errors";
 
 export type AgentRefreshPriority = "critical" | "normal";
 
@@ -51,7 +52,7 @@ function isHidden(): boolean {
 }
 
 function applySnapshot(s: AgentSnapshot) {
-  useAgentsStore.setState({ snapshot: s });
+  useAgentsStore.setState({ snapshot: s, snapshotError: null });
 }
 
 async function fetchSnapshot(): Promise<void> {
@@ -72,7 +73,9 @@ async function fetchSnapshot(): Promise<void> {
     } catch (e) {
       failures += 1;
       retryAt = Date.now() + Math.min(10000, 500 * 2 ** Math.min(failures, 5));
-      metrics.lastError = String(e);
+      metrics.lastError = errorMessage(e);
+      // 持续失败要让面板如实显示「状态可能不是最新」，不能把离线/故障伪装成正常运行
+      useAgentsStore.setState({ snapshotError: metrics.lastError });
       dirty = true;
     } finally {
       lastFetchAt = Date.now();
@@ -169,10 +172,13 @@ function bindVisibilitySync() {
 
 export const useAgentsStore = create<{
   snapshot: AgentSnapshot | null;
+  /** 快照读取失败原因（保留旧快照，标记状态可能过期）；null = 正常 */
+  snapshotError: string | null;
   /** 与后端手动刷新/向导等交互路径使用：立即拉取（单飞） */
   load: () => Promise<void>;
 }>(() => ({
   snapshot: null,
+  snapshotError: null,
   load: async () => {
     bindVisibilitySync();
     await refreshAgentsNow();

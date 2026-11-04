@@ -10,6 +10,7 @@
 //!   docked-visible  已停靠且完整可见（首次停靠显示 1.2s「已吸附」反馈）
 //!   docked-hidden   已停靠并滑出屏幕，仅留 SNAP_STRIP 物理像素触发条
 //!   docked-revealed 由触发条唤出（临时展开；光标离开后再次隐藏，不重复反馈）
+//!   docked-full     已停靠且保持完整窗口尺寸（不裁剪、不自动收缩；v1.0 新增）
 //!
 //! 坐标口径：**全部物理像素**（与 Tauri outerPosition / workArea / cursorPosition
 //! 一致）。SNAP_STRIP 等常量按需求使用物理像素，高 DPI 下不做换算。
@@ -39,7 +40,16 @@ export type SnapPhase =
   | "candidate"
   | "docked-visible"
   | "docked-hidden"
-  | "docked-revealed";
+  | "docked-revealed"
+  | "docked-full";
+
+/**
+ * 停靠展示形态（用户偏好 + 当前实际形态同一套取值）：
+ * - `capsule`：停靠后收缩为胶囊轨道/面板（原有行为）；
+ * - `full`：停靠后保持完整窗口尺寸与内容，鼠标移出不收缩。
+ * 偏好存于设置 `snap_display_mode`；当前实际形态由引擎在停靠成功后更新。
+ */
+export type DockForm = "capsule" | "full";
 
 // ── 常量（物理像素 / 毫秒）──────────────────────────────────
 
@@ -262,11 +272,14 @@ export function isSnapEdge(v: unknown): v is SnapEdge {
  * （旧模型只能从隐藏态唤出）。
  */
 const LEGAL_TRANSITIONS: Record<SnapPhase, readonly SnapPhase[]> = {
-  free: ["candidate", "docked-visible", "docked-hidden"],
-  candidate: ["free", "docked-visible"],
-  "docked-visible": ["docked-hidden", "docked-revealed", "free"],
-  "docked-hidden": ["docked-revealed", "free"],
-  "docked-revealed": ["docked-hidden", "docked-visible", "free"],
+  // free/candidate → docked-full：重启恢复或用户偏好为「完整面板」时直接停靠。
+  free: ["candidate", "docked-visible", "docked-hidden", "docked-full"],
+  candidate: ["free", "docked-visible", "docked-full"],
+  "docked-visible": ["docked-hidden", "docked-revealed", "docked-full", "free"],
+  "docked-hidden": ["docked-revealed", "docked-full", "free"],
+  "docked-revealed": ["docked-hidden", "docked-visible", "docked-full", "free"],
+  // 完整面板：可原地切回胶囊（docked-hidden），也可拖离恢复浮动。
+  "docked-full": ["docked-hidden", "docked-visible", "free"],
 };
 
 export function canTransition(from: SnapPhase, to: SnapPhase): boolean {
@@ -275,6 +288,8 @@ export function canTransition(from: SnapPhase, to: SnapPhase): boolean {
 
 export const isDockedPhase = (p: SnapPhase): boolean => p.startsWith("docked-");
 export const isHiddenPhase = (p: SnapPhase): boolean => p === "docked-hidden";
+/** 完整面板停靠相位：主界面可见、不裁剪、不自动收缩。 */
+export const isFullDockPhase = (p: SnapPhase): boolean => p === "docked-full";
 
 /**
  * 胶囊模式（隐藏主界面 + 挂载 CapsuleDock）的唯一判据。
@@ -285,7 +300,7 @@ export const isHiddenPhase = (p: SnapPhase): boolean => p === "docked-hidden";
  * 主界面可见，也不进入一个无法渲染的胶囊态。
  */
 export const isCapsuleMode = (phase: SnapPhase, edge: SnapEdge | null): boolean =>
-  isDockedPhase(phase) && edge !== null;
+  isDockedPhase(phase) && phase !== "docked-full" && edge !== null;
 /** 处于可自动隐藏的相位（停靠且可见）。 */
 export const canAutoHide = (p: SnapPhase): boolean =>
   p === "docked-visible" || p === "docked-revealed";
