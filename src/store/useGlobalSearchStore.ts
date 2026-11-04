@@ -233,6 +233,14 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
         set({ pendingLocate: intent });
         break;
       }
+      case "notes": {
+        // 顺序不能反：setTab 会把 collectionSub 重置到 inbox/shelf，
+        // 先切顶级入口再切子页签，最后下发定位意图。
+        ui.setTab("inbox");
+        ui.setCollectionSub("notes");
+        set({ pendingLocate: intent });
+        break;
+      }
       default:
         // 未知分类不伪装跳转。
         set({ open: true, notice: "该结果类型暂不支持跳转" });

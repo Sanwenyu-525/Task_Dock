@@ -14,12 +14,14 @@
 import { useUiStore } from "../../store/useUiStore";
 import CaptureInboxPanel from "../inbox/CaptureInboxPanel";
 import ShelfPanel from "../shelf/ShelfPanel";
+import NotesPanel from "../notes/NotesPanel";
 import { useLocale } from "../../hooks/useLocale";
 
 export default function CollectionPanel() {
   const { t } = useLocale();
   const sub = useUiStore((s) => s.collectionSub);
   const setTab = useUiStore((s) => s.setTab);
+  const setCollectionSub = useUiStore((s) => s.setCollectionSub);
 
   return (
     <div className="collection-panel">
@@ -44,10 +46,26 @@ export default function CollectionPanel() {
           >
             {t("collection.shelf")}
           </button>
+          {/* 笔记是第三个子页，不占用逻辑 Tab / Ctrl+数字，只切子页状态 */}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={sub === "notes"}
+            className={`seg-btn ${sub === "notes" ? "active" : ""}`}
+            onClick={() => setCollectionSub("notes")}
+          >
+            {t("collection.notes")}
+          </button>
         </div>
       </div>
       <div className="collection-body">
-        {sub === "inbox" ? <CaptureInboxPanel /> : <ShelfPanel />}
+        {sub === "inbox" ? (
+          <CaptureInboxPanel />
+        ) : sub === "shelf" ? (
+          <ShelfPanel />
+        ) : (
+          <NotesPanel />
+        )}
       </div>
     </div>
   );

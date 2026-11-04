@@ -43,6 +43,7 @@ export const GLOBAL_SEARCH_CATEGORIES = [
   "agents",
   "workspace",
   "planning",
+  "notes",
 ] as const;
 export type GlobalSearchCategory = (typeof GLOBAL_SEARCH_CATEGORIES)[number];
 export type GlobalSearchCategoryFilter = GlobalSearchCategory | "all";
@@ -57,6 +58,7 @@ export const GLOBAL_SEARCH_CATEGORY_LABELS: Record<GlobalSearchCategoryFilter, s
   agents: "Agent",
   workspace: "工作现场",
   planning: "规划中心",
+  notes: "笔记",
 };
 
 /** 分类内子类型的中文展示（未列出的 kind 原样显示）。 */
@@ -68,6 +70,7 @@ export const GLOBAL_SEARCH_KIND_LABELS: Record<string, string> = {
   project: "项目",
   feature: "功能",
   milestone: "里程碑",
+  note: "笔记",
   text: "文本",
   url: "链接",
   html: "网页",

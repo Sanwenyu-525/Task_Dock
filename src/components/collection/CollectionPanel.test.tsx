@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 
 vi.mock("../inbox/CaptureInboxPanel", () => ({ default: () => <div>inbox-panel</div> }));
 vi.mock("../shelf/ShelfPanel", () => ({ default: () => <div>shelf-panel</div> }));
+vi.mock("../notes/NotesPanel", () => ({ default: () => <div>notes-panel</div> }));
 
 import CollectionPanel from "./CollectionPanel";
 import { useUiStore } from "../../store/useUiStore";
@@ -53,5 +54,17 @@ describe("CollectionPanel", () => {
     });
     // collectionSub 由 setTab 幂等同步 → 重渲染为收集箱
     expect(screen.getByText("inbox-panel")).toBeTruthy();
+  });
+
+  it("「笔记」子页只切换 collectionSub，不占用逻辑 Tab", async () => {
+    const user = userEvent.setup();
+    render(<CollectionPanel />);
+    await user.click(screen.getByRole("tab", { name: "笔记" }));
+    expect(screen.getByText("notes-panel")).toBeTruthy();
+    expect(screen.queryByText("inbox-panel")).toBeNull();
+    expect(useUiStore.getState().collectionSub).toBe("notes");
+    // 逻辑 Tab 不变：笔记不是顶级导航，也不占用 Ctrl+数字
+    expect(useUiStore.getState().tab).toBe("inbox");
+    expect(screen.getByRole("tab", { name: "笔记" }).getAttribute("aria-selected")).toBe("true");
   });
 });

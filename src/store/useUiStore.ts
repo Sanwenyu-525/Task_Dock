@@ -5,6 +5,7 @@ export type Tab =
   | "tasks"
   | "agents"
   | "apps"
+  | "widgets"
   | "actions"
   | "clipboard"
   | "inbox"
@@ -40,6 +41,7 @@ export const RAIL_ORDER: readonly Tab[] = [
   "tasks",
   "agents",
   "apps",
+  "widgets",
   "actions",
   "clipboard",
   "inbox",
@@ -89,10 +91,12 @@ export const useUiStore = create<{
   tab: Tab;
   setTab: (t: Tab) => void;
   /**
-   * 「收集与暂存」合并入口的子页状态（v0.8）：inbox=快速收集 / shelf=文件暂存。
+   * 「收集与暂存」合并入口的子页状态（v0.8）：inbox=快速收集 / shelf=文件暂存 /
+   * notes=快速笔记（仅子页，不占用逻辑 Tab 与 Ctrl+数字）。
    * setTab(inbox|shelf) 时幂等同步；点击合并入口回打开上一次的子页（默认 inbox）。
    */
-  collectionSub: "inbox" | "shelf";
+  collectionSub: "inbox" | "shelf" | "notes";
+  setCollectionSub: (sub: "inbox" | "shelf" | "notes") => void;
   editor: { open: boolean; task: Task | null };
   openEditor: (task?: Task) => void;
   closeEditor: () => void;
@@ -143,6 +147,7 @@ export const useUiStore = create<{
       collectionSub: t === "inbox" || t === "shelf" ? t : s.collectionSub,
     })),
   collectionSub: "inbox",
+  setCollectionSub: (sub) => set({ collectionSub: sub }),
   editor: { open: false, task: null },
   openEditor: (task) => set({ editor: { open: true, task: task ?? null } }),
   closeEditor: () => set({ editor: { open: false, task: null } }),

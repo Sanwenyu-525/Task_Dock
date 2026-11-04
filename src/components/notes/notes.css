@@ -1,0 +1,438 @@
+/* 快速笔记（P2）
+ * 只使用语义 Token；复用 btn / icon-btn / seg-group / empty-state 等既有基类。
+ * 窄窗（<= 720px）改为上下布局：列表限高，编辑器占据剩余空间。
+ */
+
+.notes-panel {
+  display: grid;
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+.notes-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding-right: 2px;
+}
+
+.notes-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.notes-sidebar-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.notes-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--card-face);
+  color: var(--text-tertiary);
+}
+
+.notes-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.notes-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.notes-search-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.notes-filter {
+  align-self: flex-start;
+}
+
+.notes-error {
+  padding: 7px 9px;
+  border-radius: var(--radius-control);
+  border: 1px solid color-mix(in srgb, var(--c-danger) 35%, transparent);
+  background: color-mix(in srgb, var(--c-danger) 8%, transparent);
+  color: var(--c-danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.notes-list-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 2px;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+
+.notes-list-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 12px;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.notes-list-empty p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.notes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.notes-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.notes-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+}
+
+.notes-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 1px;
+}
+
+.notes-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--accent-soft);
+}
+
+.notes-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.notes-item-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notes-item-flags {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+  flex: none;
+}
+
+.notes-item-excerpt {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.notes-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+
+.notes-item-tag {
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.notes-main {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.notes-main-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 24px;
+}
+
+.notes-main-empty p {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.notes-main-empty-hint {
+  font-size: 11px !important;
+  color: var(--text-tertiary);
+}
+
+.notes-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.notes-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.notes-title-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--card-face);
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  outline: none;
+}
+
+.notes-title-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.notes-editor-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.notes-template-select {
+  max-width: 96px;
+}
+
+.notes-danger.is-confirming {
+  color: var(--c-danger);
+  border-color: color-mix(in srgb, var(--c-danger) 45%, transparent);
+}
+
+.notes-confirm-text {
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+.notes-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.notes-save-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+
+.notes-save-state.is-saved {
+  color: var(--accent);
+}
+
+.notes-save-state.is-failed {
+  color: var(--c-danger);
+  overflow-wrap: anywhere;
+}
+
+.notes-save-state.is-editing {
+  color: var(--text-secondary);
+}
+
+.notes-retry-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 「覆盖保存」是危险动作（会覆盖其他窗口的修改），文字用危险色区分。 */
+.notes-retry-btn.notes-danger {
+  color: var(--c-danger);
+}
+
+/* 全局搜索定位到笔记时的短时高亮：类名由 locateElement 统一增删。 */
+.notes-item.gs-locate-flash {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background: var(--accent-soft);
+  box-shadow: var(--card-shadow);
+}
+
+.notes-char-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.notes-restored {
+  padding: 6px 9px;
+  border-radius: var(--radius-control);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  background: var(--accent-soft);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.notes-link-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.notes-link-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 160px;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.notes-link-field > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.notes-content-input {
+  flex: 1;
+  min-height: 160px;
+  min-width: 0;
+  resize: none;
+  padding: 10px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--card-face);
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, "Cascadia Code", Consolas, monospace);
+  font-size: 12.5px;
+  line-height: 1.65;
+  outline: none;
+  overflow-y: auto;
+}
+
+.notes-content-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.notes-content-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.notes-spin {
+  animation: notes-spin 0.9s linear infinite;
+}
+
+@keyframes notes-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .notes-panel {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(120px, 40%) minmax(0, 1fr);
+  }
+
+  .notes-sidebar {
+    min-height: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 8px;
+  }
+
+  .notes-list {
+    max-height: none;
+  }
+
+  .notes-link-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notes-spin {
+    animation: none;
+  }
+
+  .notes-item {
+    transition: none;
+  }
+}

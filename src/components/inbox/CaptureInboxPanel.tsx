@@ -18,10 +18,12 @@ import {
   ListTodo,
   RefreshCw,
   SquareCheck,
+  StickyNote,
   Trash2,
 } from "lucide-react";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { useNotesStore } from "../../store/useNotesStore";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
 import { locateElement } from "../global-search/locate";
@@ -72,6 +74,7 @@ export default function CaptureInboxPanel() {
   const remove = useCaptureStore((s) => s.remove);
   const showToast = useUiStore((s) => s.showToast);
   const setTab = useUiStore((s) => s.setTab);
+  const setCollectionSub = useUiStore((s) => s.setCollectionSub);
   const addTextToShelf = useShelfStore((s) => s.addText);
   const addLinkToShelf = useShelfStore((s) => s.addLink);
 
@@ -172,6 +175,35 @@ export default function CaptureInboxPanel() {
       }
     },
     [addLinkToShelf, addTextToShelf, setTab, showToast],
+  );
+
+  /**
+   * 转为笔记：后端在事务内查重（source_capture_id 唯一索引）并只读原条目，
+   * 重复点击幂等返回同一条笔记；失败不改变收集箱内容。
+   * 不自动切换子页把用户拽离收集箱，只给可选的「查看」。
+   */
+  const onConvertToNote = useCallback(
+    async (item: CaptureItem) => {
+      setBusyId(item.id);
+      try {
+        const result = await useNotesStore.getState().convertCapture(item.id);
+        showToast(result.duplicate ? "已存在对应笔记，已定位" : "已转为笔记", {
+          kind: "success",
+          action: {
+            label: "查看",
+            run: () => {
+              setTab("inbox");
+              setCollectionSub("notes");
+            },
+          },
+        });
+      } catch (e) {
+        showToast(String(e), { kind: "error" });
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [setCollectionSub, setTab, showToast],
   );
 
   const onDelete = useCallback(
@@ -315,6 +347,16 @@ export default function CaptureInboxPanel() {
                     onClick={() => void onConvert(item)}
                   >
                     <ListPlus size={12} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn sm"
+                    aria-label="转为笔记"
+                    data-tip="转为笔记（保留本条）"
+                    disabled={busy}
+                    onClick={() => void onConvertToNote(item)}
+                  >
+                    <StickyNote size={12} aria-hidden="true" />
                   </button>
                   <button
                     type="button"
