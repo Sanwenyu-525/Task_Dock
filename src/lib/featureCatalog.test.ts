@@ -57,7 +57,7 @@ describe("12 项核心功能登记", () => {
     expect(f.title).toBe("全局搜索");
     expect(f.priority).toBe("P1");
     expect(f.category).toBe("workflow");
-    // v0.9：统一检索层与八类跳转落地；已发现应用/笔记/FTS5 仍在缺口清单 → partial
+    // v0.9：统一检索层与八类跳转落地；已发现应用/FTS5 仍在缺口清单 → partial
     expect(f.status).toBe("partial");
   });
 
@@ -208,22 +208,22 @@ describe("目录结构契约", () => {
 });
 
 describe("统计摘要", () => {
-  it("全目录状态计数与验收基线一致（28 = 4 + 11 + 13 + 0）", () => {
+  it("全目录状态计数与验收基线一致（28 = 9 + 13 + 6 + 0）", () => {
     const s = featureCatalogSummary();
     expect(s.total).toBe(28);
     expect(s.coreTotal).toBe(12);
-    // v0.8：文件暂存架落地为 partial（拖出与场景联动仍在缺口清单）
-    // v0.9：一键工作流落地为 partial（进入场景步骤待场景工作区模块）
-    // v0.9：全局搜索落地为 partial（已发现应用/笔记/FTS5 仍在缺口清单）
-    expect(s.implemented).toBe(4);
-    expect(s.partial).toBe(11);
-    expect(s.planned).toBe(13);
+    // v0.10（2026-11-04 七项功能验收整改）：专注与休息、快速笔记、Agent 工作时间统计、
+    // 任务统计与效率分析、自定义全局快捷键 planned→implemented；
+    // 多语言 i18n（主壳未抽取）、桌面微件库（无独立宿主窗口）planned→partial。
+    expect(s.implemented).toBe(9);
+    expect(s.partial).toBe(13);
+    expect(s.planned).toBe(6);
     expect(s.blocked).toBe(0);
     // 状态计数之和必须等于总功能数
     expect(s.implemented + s.partial + s.planned + s.blocked).toBe(s.total);
-    // verified / unverified 之和必须等于总功能数
-    expect(s.verified).toBe(3);
-    expect(s.unverified).toBe(25);
+    // 真机走查（2026-11-04）通过的 5 项 implemented 记为 verified
+    expect(s.verified).toBe(8);
+    expect(s.unverified).toBe(20);
     expect(s.verified + s.unverified).toBe(s.total);
   });
 

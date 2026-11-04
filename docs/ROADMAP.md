@@ -16,7 +16,8 @@
 
 **验证口径**：verified = 该功能当前范围内有自动化测试或历史真机验收证据；unverified = 未充分验证。**「已实现」不等于「已通过验收」**。
 
-当前计数：共 28 项（核心 12 项）——已实现 4 · 部分实现 10 · 待开发 14 · 受阻 0；已验证 3。
+当前计数：共 28 项（核心 12 项）——已实现 9 · 部分实现 13 · 待开发 6 · 受阻 0；已验证 8。
+（2026-11-04 七项功能验收整改后按 `featureCatalog.ts` 计算；状态口径与验证口径见上。）
 
 ---
 
@@ -34,13 +35,13 @@
 
 | 功能 | 状态 | 摘要 |
 |---|---|---|
-| 文件暂存架 `core.file-shelf` | planned | 独立临时资料收纳区，与剪贴板历史严格区分；复用 clipboard_assets 存储 |
+| 文件暂存架 `core.file-shelf` | partial | v0.8 已交付基础暂存架：独立界面、四种添加方式、引用/托管双存储、搜索筛选、批量操作、过期清理、任务关联与备份。缺口：系统级拖出到资源管理器（OLE 通道未实现）、场景 `scene_id` 联动、真机拖入验收 |
 | 一键工作流 `core.one-click-workflow` | partial | v0.9 已交付：白名单动作编排（打开应用/网页/文件目录、创建任务、恢复工作现场）、顺序执行引擎（暂停/继续/取消、逐步骤反馈、失败策略）、幂等（单运行槽 + 操作 ID 回执 + 异常退出标 interrupted 不重放）、开发/办公模板、运行历史分页；SQLite v23 + 备份登记。入口：导航「工作流」（Ctrl+7）。缺口：「进入场景」步骤待场景工作区模块。**真机窗口跳转未验证** |
 | 智能通知聚合 `core.notification-aggregation` | partial | 已有：双额度限流、完成合并摘要、静音、历史持久化。缺口：跨来源聚合视图、逐条优先级、通知摘要视图 |
-| 专注与休息 `core.focus-timer` | planned | 番茄钟/久坐提醒/专注记录；复用 1s 调度器，不新增高频轮询 |
-| 全局搜索 `core.global-search` | planned | 跨模块统一搜索 + 快捷键唤起；复用各面板现有查询，不建第二套数据库 |
-| 任务统计与效率分析 `tasks.stats-trends` | planned | 已有概览卡；缺按日/周/月统计、完成率趋势、分类效率分析 |
-| 自定义全局快捷键 `ux.custom-hotkeys` | planned | 当前固定热键；缺录制控件与冲突检测 |
+| 专注与休息 `core.focus-timer` | implemented ✅已验证 | v0.10 已交付：focus_* 12 个命令、番茄钟/正计时开始暂停继续完成取消、休息与久坐提醒（可关/可延后）、每日专注记录与历史（v27 focus_sessions/focus_daily_stats，纳入备份）、任务关联专注、胶囊徽标同步。入口：任务页右上「专注与休息」、完整模式胶囊徽标。真机 2026-11-04 走查开始→暂停→继续→取消 |
+| 全局搜索 `core.global-search` | partial | v0.9 统一检索层与八类跳转；搜索已覆盖任务、笔记、剪贴板、已保存导航目标。缺口：已发现（未登记）应用搜索、FTS5 索引（万级数据实测达标前不引入） |
+| 任务统计与效率分析 `tasks.stats-trends` | implemented ✅已验证 | v0.10 已交付：task_analytics（日/周/月）、完成率/逾期率/趋势/分类效率、v24 task_completion_events（纳入备份）、任务页「任务统计」子视图与空态。真机 2026-11-04 走查日→周→月与空数据边界 |
+| 自定义全局快捷键 `ux.custom-hotkeys` | implemented ✅已验证 | v0.10 已交付：hotkeys_snapshot/change/reset、录制控件（应用内/全局分组）、冲突与系统占用提示、无修饰键拒绝、hotkeys.json 即时生效并重启保持。入口：设置 → 窗口与快捷键。已知限制：hotkeys.json 不在数据库备份内。真机 2026-11-04 走查录制与拒绝路径 |
 | 图片放大及全屏预览 `ux.image-fullscreen` | implemented ✅已验证 | 图片灯箱：缩放/平移/双击/另存为，弹层栈隔离。入口：剪贴板图片详情 |
 | 剪贴板多类型专用查看器 `ux.clipboard-viewers` | implemented ✅已验证 | HTML 白名单只读阅读器、图片灯箱、文件预览、URL 详情。入口：剪贴板条目详情 |
 
@@ -48,7 +49,7 @@
 
 | 功能 | 状态 | 摘要 |
 |---|---|---|
-| 快速笔记 `core.quick-notes` | planned | 本地轻量笔记：自动保存、置顶、模板、关联任务/现场；不做知识管理系统 |
+| 快速笔记 `core.quick-notes` | implemented ✅已验证 | v0.10 已交付：notes 表（v25，纳入备份）+ 11 个 notes_* 命令、自动保存、收藏置顶、搜索、内置模板、关联任务/工作现场、捕获转笔记、全局搜索笔记分类。入口：收集与暂存 → 笔记；收集箱「转为笔记」。真机 2026-11-04 走查新建→保存→搜索与空态 |
 | 生活例行事项 `core.life-routines` | partial | 已有：周期任务引擎可覆盖。缺口：今日待办视图、打卡与连续记录、延后处理、自定义分类。**复用任务与重复规则，不建第二套任务系统** |
 
 ## Agent 扩展（P1，7 项）
@@ -60,10 +61,12 @@
 | Cursor 专用适配器 `agent.cursor-adapter` | implemented（待本轮真实验证） | 已实现：用户级 ~/.cursor/hooks.json（保留 version 等字段）、camelCase 事件映射。缺口：本轮未在真实 Cursor 会话触发事件 |
 | Gemini CLI 接入 `agent.gemini-cli` | implemented（待本轮真实验证） | 已实现：~/.gemini/settings.json、11 个生命周期事件基线、AfterAgent/SessionEnd 映射完成态。缺口：本轮未在真实 Gemini CLI 会话触发事件；SessionEnd 为 best-effort，结束/失败仍以事件为准 |
 | ZCode 自动接入完善 `agent.zcode-integration` | partial | 已有：发现 + 通用桥接（HTTP/文件）。缺口：插件自动注册验证、真实执行状态读取（当前如实显示「未知」） |
-| Agent 工作时间统计 `agent.work-time-stats` | planned | 按来源/会话统计运行时长、等待时长、失败率 |
+| Agent 工作时间统计 `agent.work-time-stats` | implemented ✅已验证 | v0.10 已交付：agent_work_time_stats 聚合（执行/等待时长、失败率、按来源与会话）、Agent 面板「统计」tab（近 7/30 天、真实/模拟来源隔离）、空态与口径说明；集成测试 23 用例。真机 2026-11-04 走查范围切换与来源隔离 |
 | Agent 执行时间轴 `agent.execution-timeline` | partial | 已有：历史页统一事件时间轴（按日分组、重复聚合）。缺口：按 run 可视化、时长统计 |
 
 > 参考资料：Gemini CLI 官方 Hooks 文档 [https://geminicli.com/docs/hooks/](https://geminicli.com/docs/hooks/)（事件参考 [https://geminicli.com/docs/hooks/reference/](https://geminicli.com/docs/hooks/reference/)），2026-11-03 实际核验；与 Claude Code 的 Hooks 事件名、配置格式和退出码语义不同，不得套用。
+>
+> **已知目录偏差（2026-11-04 登记，未在本次整改范围）**：上表 Claude / Cursor / Gemini 三行按代码落地记为 implemented（待真实会话验证），而 `featureCatalog.ts` 中仍为 planned；本轮未在真实会话触发事件，待验证后统一回写目录与计数。当前总数统计以 `featureCatalog.ts` 为准。
 >
 > 已完成并从规划移除（避免失效条目）：Qoder / WorkBuddy 专用适配器（hooks 接入已实现并真实联调，见 [AGENT_COVERAGE_MATRIX.md](../AGENT_COVERAGE_MATRIX.md)）；Agent 人工介入收件箱（已落地为 Agent 行动中心 `core.agent-action-center`）。
 
@@ -71,8 +74,8 @@
 
 | 功能 | 状态 | 摘要 |
 |---|---|---|
-| 多语言 i18n `eco.i18n` | planned | 文案抽取 + 英文支持，默认简体中文不变 |
-| 桌面微件库 `eco.widgets` | planned | 迷你图表、进度环等可选微件；不增加常驻资源负担 |
+| 多语言 i18n `eco.i18n` | partial | v0.10 已交付：语言资源层（zh-CN/en-US + MessageKey）、设置「语言」切换（简中/English/跟随系统）、localStorage 持久化与非法值回落、日期/错误码本地化；七项功能面板与胶囊/紧凑/极简/剪贴板/通知等 36 个源文件已接入。缺口：完整模式主壳（主导航与任务/Agent/应用等页面）仍为中文硬编码（真机切 English 后导航仍中文）、设置页分区标题与部分空态未抽取、语言偏好不随备份迁移 |
+| 桌面微件库 `eco.widgets` | partial | v0.10 已交付：主窗「微件」页 6 类（今日任务/下一条提醒/Agent 状态/快捷操作/专注倒计时/今日效率）、微件库开关与尺寸、计数与空态、只读复用选择器不新增 IPC、localStorage 持久化。缺口：独立桌面微件宿主窗口（不能脱离主窗摆放）、多显示器/DPI 摆放与吸附、布局不随备份迁移、注册机制未开放。真机 2026-11-04 走查停用全部→空态→重新启用 |
 | 第三方插件系统及沙箱 `eco.plugins` | planned | Adapter/视图插件，沙箱与权限设计先行 |
 | WebDAV / 文件同步 `eco.sync` | planned | 用户显式开启的自托管同步，默认永不开启；凭据不入日志 |
 | macOS / Linux 适配 `eco.cross-platform` | planned | 平台抽象已预留；需补 Vibrancy/AppIndicator/剪贴板平台层 |
@@ -92,6 +95,6 @@
 1. **智能提醒收尾**（core.smart-reminders）：snooze API 已有，补 UI 入口与倒计时，工作量小。
 2. **生活例行事项**（core.life-routines）：复用周期任务引擎，主要工作量在视图层。
 3. **场景工作区**（core.scenario-workspace）：依赖现场快照与批量启动器（均已就绪），需先定场景数据模型。
-4. **专注与休息**（core.focus-timer）：独立性强，可与 2/3 并行。
+4. **多语言主壳抽取**（eco.i18n）：语言资源层与七项功能面板已就绪，剩余为完整模式主壳文案与设置分区标题，可与 2/3 并行。
 
 > 以上顺序为建议，不代表已排期；任何一项开发前以其 `acceptanceCriteria` 为验收基线。

@@ -375,24 +375,29 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     title: "专注与休息",
     description: "轻量番茄钟与休息提醒：自定义时长、久坐提醒、每日专注记录。",
     detail:
-      "轻量专注管理：番茄钟、自定义专注时长、休息计时、久坐提醒、工作时长统计与任务关联专注。约束：计时状态可靠（后台运行不依赖高频轮询，复用现有 1s 调度器）、休息提醒可关闭、不打断重要 Agent 操作、支持深浅主题、不增加长期后台资源负担。",
-    status: "planned",
+      "已交付（v0.10）：独立专注域与 12 个 focus_* 命令，会话历史与按本地日期聚合落库（迁移 v27，" +
+      "focus_sessions / focus_daily_stats 纳入 BACKUP_TABLES）；复用 1s 调度器派生剩余时间，不新增常驻线程；" +
+      "任务关联专注保存任务标题快照，任务删除后历史仍可展示；完整模式胶囊徽标同步阶段与剩余时间；" +
+      "久坐提醒可关闭、可稍后提醒。真机走查（2026-11-04）覆盖开始→暂停→继续→取消与历史记录。",
+    status: "implemented",
     priority: "P1",
-    existingFeatures: [],
-    missingFeatures: [
-      "番茄钟计时器与状态持久化",
-      "休息 / 久坐提醒（可关闭）",
-      "每日专注记录与历史统计",
-      "任务关联专注（专注时段归属任务）",
+    existingFeatures: [
+      "番茄钟 / 正计时：开始、暂停、继续、完成、取消；状态由 1s 调度器派生，快照可恢复",
+      "休息与久坐提醒：会话结束自动进入休息，可延长 / 跳过；久坐可稍后提醒，均可在偏好中关闭",
+      "每日专注记录与历史：focus_sessions + focus_daily_stats（v27，纳入备份），按本地日期聚合、最近记录可查",
+      "任务关联专注：绑定任务并保存标题快照，完成后历史保留",
+      "完整模式胶囊徽标展示当前阶段与剩余时间（FocusCapsuleBadge）",
     ],
-    dependencies: ["任务调度器复用（避免新增长驻线程）", "通知系统"],
+    missingFeatures: [],
+    dependencies: ["任务调度器复用（避免新增长驻线程）", "通知系统", "悬浮胶囊徽标"],
     acceptanceCriteria: [
       "计时跨窗口隐藏 / 恢复保持正确",
       "专注统计按日可查",
       "关闭休息提醒后不再打扰",
       "Agent 关键操作期间不弹出打断",
     ],
-    verification: "unverified",
+    verification: "verified",
+    entryPoints: ["任务页右上「专注与休息」（FocusWorkspace）", "完整模式悬浮胶囊专注徽标"],
   },
   {
     id: "core.global-search",
@@ -414,7 +419,6 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     ],
     missingFeatures: [
       "已发现（未登记）应用的搜索：需只读应用扫描缓存访问器与 AppPicker 登记链路，当前仅搜索已保存导航目标",
-      "快速笔记分类：等笔记模块真正实现后以轻量适配器接入",
       "FTS5 索引：LIKE 全表扫描在万级数据实测达标前不引入",
     ],
     dependencies: ["各面板现有查询命令", "防抖与查询上限（避免大库卡顿）"],
@@ -433,23 +437,28 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     title: "快速笔记",
     description: "轻量临时笔记：快速新建、自动保存、置顶搜索、关联任务。",
     detail:
-      "第一版采用本地轻量存储（新表或复用设置存储），支持快速新建、自动保存、编辑删除、收藏置顶、搜索、常用文本模板、关联任务与工作现场；快速捕获的内容可转为笔记。明确不做复杂知识管理系统（无双向链接、无富文本编辑器）。",
-    status: "planned",
+      "已交付（v0.10）：notes 表（迁移 v25，纳入 BACKUP_TABLES）与 11 个 notes_* 命令；面板支持新建 / 编辑 / " +
+      "删除、自动保存（防抖）、收藏置顶、搜索、内置常用模板、关联任务与工作现场；收集箱条目可直接转为笔记；" +
+      "统一搜索已接入笔记分类。明确不做双向链接与富文本。真机走查（2026-11-04）覆盖新建→自动保存→搜索命中→无结果空态。",
+    status: "implemented",
     priority: "P2",
-    existingFeatures: [],
-    missingFeatures: [
-      "笔记实体与编辑界面（自动保存）",
-      "收藏置顶与搜索",
-      "常用文本模板",
-      "关联任务 / 现场；快速捕获转笔记",
+    existingFeatures: [
+      "笔记实体与编辑界面：notes 表（v25 迁移，纳入备份），编辑自动保存",
+      "收藏 / 置顶与搜索（notes_set_flags / notes_search）",
+      "常用文本模板（notes_templates 内置模板）",
+      "关联任务与工作现场（notes_set_task / notes_set_workspace）",
+      "快速捕获转笔记（notes_convert_capture）",
+      "全局搜索已覆盖笔记分类",
     ],
-    dependencies: ["SQLite 新表（登记 BACKUP_TABLES）", "全局快速捕获（转换来源）"],
+    missingFeatures: [],
+    dependencies: ["SQLite 新表（已登记 BACKUP_TABLES）", "全局快速捕获（转换来源）", "全局搜索适配"],
     acceptanceCriteria: [
       "新建 / 编辑 / 删除 / 置顶 / 搜索可用",
       "输入自动保存，无丢失",
       "可关联任务并从任务上下文查看",
     ],
-    verification: "unverified",
+    verification: "verified",
+    entryPoints: ["收集与暂存 → 笔记", "收集箱条目「转为笔记」", "全局搜索 → 笔记"],
   },
   {
     id: "core.life-routines",
@@ -600,14 +609,22 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     category: "agent",
     title: "Agent 工作时间统计",
     description: "按来源 / 会话统计运行时长、等待时长与失败率。",
-    detail: "基于 agent_runs / agent_events 聚合统计：按来源、会话维度统计运行时长、等待时长、失败率，帮助评估各 Agent 的实际效率。",
-    status: "planned",
+    detail:
+      "已交付（v0.10）：只读聚合命令 agent_work_time_stats，按来源与会话统计执行时长、等待时长与失败率；" +
+      "Agent 面板「统计」tab 支持近 7 / 30 天与真实 / 模拟来源隔离，并提供口径说明与空态；" +
+      "集成测试 tests/agent_work_time_stats.rs（23 用例）。真机走查（2026-11-04）覆盖范围切换与真实数据来源。",
+    status: "implemented",
     priority: "P1",
-    existingFeatures: [],
-    missingFeatures: ["时长聚合查询", "统计视图与图表", "失败率口径定义"],
+    existingFeatures: [
+      "agent_work_time_stats 聚合：执行时长、等待时长、失败率，按来源与会话维度",
+      "Agent 面板「统计」tab：近 7 / 30 天切换，真实 / 模拟数据来源隔离",
+      "空态与统计口径说明；只读连接，不阻塞 Agent 实时管线",
+    ],
+    missingFeatures: [],
     dependencies: ["agent_runs 时间水位（last_event_at / ingest_seq）已具备"],
     acceptanceCriteria: ["统计口径可解释、可复核", "大数据量下查询有上限"],
-    verification: "unverified",
+    verification: "verified",
+    entryPoints: ["Agent 面板 → 统计 tab"],
   },
   {
     id: "agent.execution-timeline",
@@ -636,31 +653,47 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     category: "workflow",
     title: "任务统计与效率分析",
     description: "完成率趋势、分类效率分析与日 / 周 / 月统计图表。",
-    detail: "当前统计为概览卡（待完成 / 今日到期 / 逾期 / 今日完成）。本项扩展为趋势型分析：按日 / 周 / 月统计、完成率趋势、分类效率分析。",
-    status: "planned",
+    detail:
+      "已交付（v0.10）：task_analytics 只读统计命令 + v24 task_completion_events（纳入 BACKUP_TABLES）；" +
+      "任务页「任务统计」子视图支持日 / 周 / 月切换，展示完成率、逾期率、完成与逾期趋势、分类效率；" +
+      "空数据给出明确空态。真机走查（2026-11-04）覆盖日 → 周 → 月切换与空数据边界。",
+    status: "implemented",
     priority: "P1",
-    existingFeatures: ["统计概览卡：待完成 / 今日到期 / 逾期（可点击跳转）/ 今日完成"],
-    missingFeatures: ["按日 / 周 / 月统计", "完成率与逾期率趋势", "分类效率分析", "图表呈现（轻量、可关）"],
+    existingFeatures: [
+      "task_analytics：日 / 周 / 月范围，待办、今日到期、逾期、完成计数与完成率 / 逾期率",
+      "完成与逾期趋势、分类效率分析",
+      "v24 task_completion_events 记录完成事实（纳入备份，旧备份缺表时按空表处理）",
+      "任务页「任务统计」子视图：4 张概览卡 + 轻量图表，空数据显示空态",
+    ],
+    missingFeatures: [],
     dependencies: ["tasks 表时间字段查询", "轻量图表方案（避免引入重型依赖）"],
     acceptanceCriteria: ["统计口径与概览卡一致", "时间范围可切换"],
-    verification: "unverified",
+    verification: "verified",
+    entryPoints: ["任务页右上「任务统计」（TaskAnalyticsPanel）"],
   },
   {
     id: "ux.custom-hotkeys",
     category: "workflow",
     title: "自定义全局快捷键",
     description: "设置界面录制全局与应用内快捷键，含冲突检测。",
-    detail: "当前全局热键固定为 Ctrl+Alt+T（显示 / 隐藏主窗）与 Ctrl+Shift+Space（快速录入），应用内快捷键固定。目标是设置界面可录制自定义组合并检测冲突。",
-    status: "planned",
+    detail:
+      "已交付（v0.10）：hotkeys_snapshot / hotkeys_change / hotkeys_reset 三个命令 + 设置页录制控件；" +
+      "应用内与全局热键分组管理，录制时即时校验冲突与系统占用，无修饰键组合被拒绝；" +
+      "配置持久化到 hotkeys.json，改键立即生效、重启保持。已知限制：hotkeys.json 不在数据库备份范围内。" +
+      "真机走查（2026-11-04）覆盖录制 Ctrl+Shift+J 生效与无修饰键被拒。",
+    status: "implemented",
     priority: "P1",
     existingFeatures: [
-      "固定全局热键 + set_hotkeys_enabled 开关",
-      "应用内快捷键：Ctrl+1…9 / Ctrl+0 / Ctrl+K / Ctrl+Shift+C（逻辑顺序取自 TAB_ORDER 单一事实源；「应用」入口不占数字键）",
+      "设置页「快捷键」录制控件：逐动作编辑 / 重置 / Esc 取消，应用内与全局分组",
+      "冲突检测与系统占用提示；无修饰键组合拒绝保存",
+      "后端热键即时重新注册，配置持久化 hotkeys.json，重启保持",
+      "快捷键总开关 set_hotkeys_enabled 保留",
     ],
-    missingFeatures: ["快捷键录制控件", "冲突检测与系统占用提示", "与后端热键注册的双向同步"],
+    missingFeatures: [],
     dependencies: ["tauri_plugin_global_shortcut 重新注册能力已具备"],
     acceptanceCriteria: ["录制冲突时明确提示", "改键后立即生效且重启保持"],
-    verification: "unverified",
+    verification: "verified",
+    entryPoints: ["设置 → 窗口与快捷键 → 快捷键"],
   },
   {
     id: "ux.image-fullscreen",
@@ -708,28 +741,57 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     category: "ecosystem",
     title: "多语言 i18n",
     description: "界面文案抽取与英文支持。",
-    detail: "将界面文案抽取为语言资源，支持英文；默认简体中文不变。",
-    status: "planned",
+    detail:
+      "已部分交付（v0.10）：语言资源层（zh-CN / en-US，MessageKey 类型约束）、useLocale 与「设置 → 语言」切换" +
+      "（简体中文 / English / 跟随系统）；偏好写入 localStorage（taskdock.locale），即时生效、重启保留、非法值回落中文；" +
+      "七项功能面板与胶囊 / 紧凑 / 极简 / 剪贴板 / 通知等 36 个源文件已接入。真机走查（2026-11-04）切到 English 后" +
+      "功能面板与语言行即时切换，但完整模式主导航仍显示中文——主壳文案尚未抽取，故整体为 partial。",
+    status: "partial",
     priority: "P2",
-    existingFeatures: [],
-    missingFeatures: ["文案抽取与语言资源层", "设置项语言切换", "日期时间本地化复核"],
+    existingFeatures: [
+      "语言资源层与 MessageKey 类型约束（zh-CN / en-US）",
+      "设置项语言切换（简体中文 / English / 跟随系统），localStorage 持久化、即时生效、重启保留、非法值回落",
+      "日期 / 错误码本地化（i18n/format、i18n/errors）",
+      "七项功能面板与胶囊 / 紧凑 / 极简 / 剪贴板 / 通知等 36 个源文件已接入",
+    ],
+    missingFeatures: [
+      "完整模式主壳未抽取：主导航与任务 / Agent / 应用等大部分页面仍为中文硬编码（真机切到 English 后导航仍为中文）",
+      "设置页分区标题、部分空态与提示文案尚未接入语言资源",
+      "语言偏好仅存 localStorage，不随数据库备份迁移",
+    ],
     dependencies: ["全量文案盘点（一次性成本较高）"],
     acceptanceCriteria: ["切换语言即时生效", "不破坏现有语义 Token 与布局"],
     verification: "unverified",
+    entryPoints: ["设置 → 外观与主题 → 语言"],
   },
   {
     id: "eco.widgets",
     category: "ecosystem",
     title: "桌面微件库",
     description: "迷你图表、今日进度环等可选桌面微件。",
-    detail: "在悬浮胶囊之外提供可选的桌面微件（迷你图表、今日进度环等），按需开关，不增加常驻资源负担。",
-    status: "planned",
+    detail:
+      "部分交付（v0.10）：主导航「微件」页提供 6 类微件（今日任务 / 下一条提醒 / Agent 状态 / 快捷操作 / " +
+      "专注倒计时 / 今日效率），微件库按需开关并可选尺寸，数据只读复用各模块选择器、不新增 IPC，隐藏时不轮询；" +
+      "启用状态与顺序存于 localStorage。尚未提供独立桌面微件宿主窗口，无法脱离主窗摆放或跨显示器定位；" +
+      "布局不随数据库备份迁移。真机走查（2026-11-04）覆盖停用全部→空态→重新启用。",
+    status: "partial",
     priority: "P2",
-    existingFeatures: ["悬浮胶囊（任务 / Agent / 剪贴板 / 应用四分类）作为形态参照"],
-    missingFeatures: ["微件宿主窗口与布局", "微件注册机制", "资源占用约束"],
+    existingFeatures: [
+      "主导航「微件」页：6 类微件（今日任务 / 下一条提醒 / Agent 状态 / 快捷操作 / 专注倒计时 / 今日效率）",
+      "微件库按需开关与尺寸（紧凑 / 标准 / 宽松），已启用计数与空态",
+      "数据只读复用各模块现有选择器，不新增 IPC；未挂载时不轮询",
+      "启用状态、顺序与尺寸持久化在 localStorage",
+    ],
+    missingFeatures: [
+      "独立桌面微件宿主窗口（当前仅主窗内页面，不能脱离主窗摆放）",
+      "多显示器 / DPI 摆放与贴边吸附（窗口能力尚未接入微件）",
+      "微件布局不随数据库备份迁移（仅 localStorage）",
+      "微件注册机制未对外开放",
+    ],
     dependencies: ["窗口管理能力（独立小窗、DPI、多显示器）已具备"],
     acceptanceCriteria: ["微件可独立开关", "隐藏后不留后台轮询"],
     verification: "unverified",
+    entryPoints: ["主导航 → 微件"],
   },
   {
     id: "eco.plugins",
