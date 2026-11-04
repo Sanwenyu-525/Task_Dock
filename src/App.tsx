@@ -11,7 +11,7 @@ import {
 import { useUiStore, type Tab } from "./store/useUiStore";
 import { useNavigationStore } from "./store/useNavigationStore";
 import { useEdgeSnap, useWindowPersistence } from "./hooks/useEdgeSnap";
-import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
+import { useHotkeysRuntime } from "./store/useHotkeysStore";
 import TitleBar from "./components/TitleBar";
 import MinimalView from "./components/MinimalView";
 import CompactView from "./components/CompactView";
@@ -252,8 +252,9 @@ export default function App() {
   // 卸载（或热更新）时清掉未执行的行动中心刷新调度，避免遗留定时器
   useEffect(() => () => cancelActionsRefresh(), []);
 
-  // 应用内快捷键：Ctrl+1…8 切标签（完整模式）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
-  useGlobalShortcuts();
+  // 自定义快捷键：应用内（app_local）按键在前端按配置分发，系统级（system_global）
+  // 由 Rust 侧常驻注册；录制期间不触发任何动作，旧全局监听已移除避免重复触发。
+  useHotkeysRuntime();
 
   // Escape 关闭优先级：弹层栈里有任何一层时由栈顶消费；
   // 只有栈空（没有任何菜单 / 抽屉 / 对话框）时，Escape 才隐藏窗口。

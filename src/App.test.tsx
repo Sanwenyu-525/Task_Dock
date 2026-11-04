@@ -46,7 +46,7 @@ vi.mock("./hooks/useEdgeSnap", () => ({
   useWindowPersistence: () => undefined,
 }));
 
-vi.mock("./hooks/useGlobalShortcuts", () => ({ useGlobalShortcuts: () => undefined }));
+vi.mock("./store/useHotkeysStore", () => ({ useHotkeysRuntime: () => undefined }));
 
 vi.mock("./components/TitleBar", () => ({ default: () => <div data-testid="titlebar" /> }));
 vi.mock("./components/MinimalView", () => ({ default: () => <div /> }));

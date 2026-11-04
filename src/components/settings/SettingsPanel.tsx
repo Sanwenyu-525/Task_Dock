@@ -1,7 +1,7 @@
 //! 设置面板：外观与主题 / 窗口与快捷键 / 通知 / Agent 接入 / 数据与备份 / 开发者选项。
 //! 统一控件风格；高级选项（Agent 接入细节、开发者工具）默认折叠。
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
@@ -42,6 +42,8 @@ import {
   resolveVisualPreset,
 } from "../../lib/theme";
 import { useUiStore } from "../../store/useUiStore";
+import { errorMessage } from "../../lib/errors";
+import { reportError } from "../../lib/errorReport";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { copyText } from "../../lib/clipboard";
 import MockControls from "../agents/MockControls";
@@ -49,6 +51,8 @@ import AppManagement from "./AppManagement";
 import AppPicker from "../navigation/AppPicker";
 import { NumberInput, Select, Switch } from "../ui";
 import { ConfirmDialog } from "../ui/Dialog";
+import HotkeysSection from "./hotkeys/HotkeysSection";
+import LanguageSetting from "../../i18n/LanguageSetting";
 
 function sumAuditCounts(c: AuditTableCounts): number {
   return c.events + c.sessions + c.runs + c.instances + c.notifications;
@@ -87,6 +91,7 @@ export default function SettingsPanel() {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const materialInfo = useSettingsStore((s) => s.materialInfo);
+  const reapplyFromSystem = useSettingsStore((s) => s.reapplyFromSystem);
   const showToast = useUiStore((s) => s.showToast);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [inboxDir, setInboxDir] = useState("");
@@ -107,6 +112,8 @@ export default function SettingsPanel() {
   const [dangerBusy, setDangerBusy] = useState(false);
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [pendingPicker, setPendingPicker] = useState(false);
+  /** 设置页附属数据（备份/剪贴板统计/剪贴板状态）读取失败：显示真实错误与重试，不伪装成空数据 */
+  const [dataLoadError, setDataLoadError] = useState<string | null>(null);
   const snapPhase = useEdgeSnapStore((s) => s.phase);
 
   // 工具面板「应用」页的一次性配置意图（消费后立即清除，避免反复自动弹出）。
@@ -134,16 +141,29 @@ export default function SettingsPanel() {
     setAppPickerOpen(true);
   }, [pendingPicker, snapPhase]);
 
-  useEffect(() => {
-    listBackups().then(setBackups).catch(() => setBackups([]));
-    clipboardStats().then(setClipStats).catch(() => setClipStats(null));
-    clipboardStatus()
-      .then((s) => {
-        setClipConfigError(s.configError ?? null);
-        setClipConfigOrigin(s.configOrigin ?? null);
-      })
-      .catch(() => {});
+  const loadPanelData = useCallback(async () => {
+    setDataLoadError(null);
+    const [backupResult, statsResult, statusResult] = await Promise.allSettled([
+      listBackups(),
+      clipboardStats(),
+      clipboardStatus(),
+    ]);
+    // 每项独立落地：一项失败不覆盖其他项，也不把失败清成空数据
+    if (backupResult.status === "fulfilled") setBackups(backupResult.value);
+    if (statsResult.status === "fulfilled") setClipStats(statsResult.value);
+    if (statusResult.status === "fulfilled") {
+      setClipConfigError(statusResult.value.configError ?? null);
+      setClipConfigOrigin(statusResult.value.configOrigin ?? null);
+    }
+    const failure = [backupResult, statsResult, statusResult].find(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    if (failure) setDataLoadError(errorMessage(failure.reason));
   }, []);
+
+  useEffect(() => {
+    void loadPanelData();
+  }, [loadPanelData]);
 
   async function onRepairClipboard(resume: boolean) {
     setBusyKey("clip-repair");
@@ -159,7 +179,7 @@ export default function SettingsPanel() {
         { kind: "success" },
       );
     } catch (e) {
-      showToast(`修复剪贴板配置失败：${String(e)}`, { kind: "error" });
+      reportError(e, { operation: "修复剪贴板配置" });
     } finally {
       setBusyKey(null);
     }
@@ -394,8 +414,22 @@ export default function SettingsPanel() {
   const retention = diag?.retention;
   const frontendMetrics = getAgentRefreshMetrics();
 
+  // 添加应用改为内容区子页面：替换设置内容，不叠覆盖式大 Modal；
+  // 组件保持挂载，返回后各设置项状态不丢失。
+  if (appPickerOpen) {
+    return <AppPicker standalone variant="page" onClose={() => setAppPickerOpen(false)} />;
+  }
+
   return (
     <div className="settings-panel">
+      {dataLoadError && (
+        <div className="setting-note error-text" role="alert">
+          部分设置数据读取失败：{dataLoadError}（下方显示的可能不是最新状态）
+          <button type="button" className="btn sm" onClick={() => void loadPanelData()}>
+            重试
+          </button>
+        </div>
+      )}
       <Section icon={Palette} title="外观与主题">
         {/* v0.6：视觉预设（设计语言）与明暗/材质正交，切换即时生效且不影响业务状态 */}
         <div className="setting-row column">
@@ -476,9 +510,17 @@ export default function SettingsPanel() {
             onChange={(v) => update({ material: v as never })}
           />
         </div>
+        <LanguageSetting />
         <div className="setting-note">
           {settings.material === "glass" ? (
-            glassDowngraded ? (
+            materialInfo?.materialError ? (
+              // 失败原因与「系统不支持」区分：失败是可通过重试恢复的
+              <>原生材质应用失败，已按可读性方案降级：{materialInfo.materialError}
+                <button type="button" className="btn sm" onClick={() => reapplyFromSystem()}>
+                  重试应用
+                </button>
+              </>
+            ) : glassDowngraded ? (
               <>已自动回退为不透明：当前系统不支持（{materialInfo?.osVersion || "版本未知"}）
                 或开启了高对比度 / 减少透明效果</>
             ) : materialInfo?.applied ? (
@@ -509,11 +551,25 @@ export default function SettingsPanel() {
             onChange={(v) => update({ snap_enabled: v })}
           />
         </div>
+        <div className="setting-row">
+          <span>边缘吸附方式</span>
+          <Select
+            ariaLabel="边缘吸附方式"
+            size="sm"
+            disabled={!settings.snap_enabled}
+            value={settings.snap_display_mode === "full" ? "full" : "capsule"}
+            options={[
+              { value: "capsule", label: "胶囊隐藏" },
+              { value: "full", label: "完整面板" },
+            ]}
+            onChange={(v) => update({ snap_display_mode: v as "capsule" | "full" })}
+          />
+        </div>
         <div className="setting-note">
-          把窗口拖近屏幕边缘（约 28px 内）会显示「松开吸附」提示，松开即停靠并自动隐藏；
-          之后把鼠标移到屏幕边缘的状态胶囊上稍作停留（或点击）即可唤出，移开后再次隐藏。
-          胶囊上会显示待办数量与 Agent 运行状态。向屏幕中间拖离边缘，或点击标题栏的
-          磁铁图标即可解除吸附；关闭此开关时若窗口已隐藏，会先自动展开。
+          把窗口拖近屏幕边缘（约 28px 内）会显示「松开吸附」提示，松开即停靠。
+          胶囊隐藏：停靠后自动收缩为胶囊，鼠标移出再次隐藏；完整面板：保持完整窗口
+          与内容贴边，鼠标移出不收缩，仍可拖离恢复浮动。两种形态共用同一套磁吸与窗口生命周期，
+          已停靠时切换会原地生效，浮动时只影响下次吸附。
         </div>
         <div className="setting-row">
           <span>开机自启动</span>
@@ -528,26 +584,18 @@ export default function SettingsPanel() {
           />
         </div>
         <div className="setting-row">
-          <span>全局快捷键（Ctrl+Alt+T 显示 · Ctrl+Shift+Space 打开快速捕获窗口）</span>
+          <span>系统级快捷键总开关（当前组合见下方「快捷键管理」）</span>
           <Switch
             checked={settings.hotkey_enabled}
             disabled={busyKey === "hotkey"}
-            ariaLabel="全局快捷键（Ctrl+Alt+T 显示 · Ctrl+Shift+Space 打开快速捕获窗口）"
+            ariaLabel="系统级快捷键总开关（当前组合见下方「快捷键管理」）"
             onChange={(v) => withBusy("hotkey", async () => {
               await setHotkeysEnabled(v);
               await useSettingsStore.getState().load();
             })}
           />
         </div>
-        <div className="setting-row">
-          <span>应用内快捷键（Ctrl+1…9 与 Ctrl+0 切换标签 · Ctrl+K 快速添加 · Ctrl+Shift+C 剪贴板）</span>
-          <span className="setting-value">窗口聚焦时生效</span>
-        </div>
-        <div className="setting-note">
-          Ctrl+1…9 与 Ctrl+0 仅完整模式有效，顺序与左侧导航一致：收集箱为 Ctrl+5、文件暂存为 Ctrl+6、
-          工作流为 Ctrl+7、历史为 Ctrl+8、规划中心为 Ctrl+9、设置为 Ctrl+0。
-          Ctrl+Shift+C 在完整模式切到剪贴板页，紧凑/极简模式开关临时剪贴板抽屉。
-        </div>
+        <HotkeysSection />
       </Section>
 
       <Section
@@ -583,7 +631,7 @@ export default function SettingsPanel() {
       </Section>
 
       <Section icon={Navigation} title="应用与快捷方式" description="软件发现、导航偏好与跳转记录">
-        <AppManagement />
+        <AppManagement onRequestAdd={() => setAppPickerOpen(true)} />
       </Section>
 
       <Section
@@ -1256,8 +1304,6 @@ export default function SettingsPanel() {
           if (!dangerBusy) setPendingDanger(null);
         }}
       />
-      {/* 从工具面板「添加应用」进入：独立配置模式（不关联任务） */}
-      {appPickerOpen && <AppPicker standalone onClose={() => setAppPickerOpen(false)} />}
     </div>
   );
 }
