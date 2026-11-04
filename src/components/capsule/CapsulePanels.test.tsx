@@ -69,6 +69,7 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
+import { useUiStore } from "../../store/useUiStore";
 import type { AgentSnapshot, Task } from "../../lib/bridge";
 
 const now = Date.now();
@@ -465,6 +466,74 @@ describe("应用面板", () => {
     await screen.findByText("Obsidian");
     await screen.findByText("刷新失败，显示的是上次结果");
     expect(screen.queryByText("尚未配置快捷应用")).toBeNull();
+  });
+
+  it("添加按钮始终可见（列表占满也不消失），点击写入一次性配置意图并切到设置页", async () => {
+    useNavigationStore.setState({
+      targets: Array.from({ length: 8 }, (_, i) => target(`a${i}`, `应用${i}`)),
+      targetsLoaded: true,
+    });
+    useUiStore.setState({ appConfig: null });
+    render(<AppsLite />);
+    await screen.findByText("应用0");
+    fireEvent.click(screen.getByRole("button", { name: "添加应用" }));
+    expect(useUiStore.getState().appConfig?.kind).toBe("picker");
+    expect(useUiStore.getState().tab).toBe("settings");
+  });
+
+  it("只展示普通应用：网址/文件夹单独分区，Agent 会话不混入应用网格", async () => {
+    useNavigationStore.setState({
+      targets: [
+        target("a", "Obsidian"),
+        target("u", "项目官网", { target_type: "url", url: "https://example.com" }),
+        target("s", "Agent 会话", { target_type: "agent_session", agent_source_id: "codex" }),
+      ],
+      targetsLoaded: true,
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    // 普通应用网格：启动语义
+    expect(screen.getByRole("button", { name: "启动 Obsidian" })).toBeTruthy();
+    // 网址/文件夹单独分区：打开语义，不进入 4 列应用网格
+    expect(screen.getByText("网址 / 文件夹")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "打开 项目官网" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "启动 项目官网" })).toBeNull();
+    expect(screen.queryByText("Agent 会话")).toBeNull();
+  });
+
+  it("空状态「去配置」直接进入可添加应用界面；「管理」进入应用管理意图", async () => {
+    useNavigationStore.setState({ targets: [], targetsLoaded: true, targetsError: null });
+    useUiStore.setState({ appConfig: null, tab: "tasks" });
+    render(<AppsLite />);
+    fireEvent.click(await screen.findByRole("button", { name: "去配置" }));
+    expect(useUiStore.getState().appConfig?.kind).toBe("picker");
+    expect(useUiStore.getState().tab).toBe("settings");
+
+    // 一次性意图消费后不会重复触发；「管理」写入新的 manage 意图
+    useUiStore.setState({ appConfig: null, tab: "tasks" });
+    fireEvent.click(screen.getByRole("button", { name: "管理快捷应用" }));
+    expect(useUiStore.getState().appConfig?.kind).toBe("manage");
+    expect(useUiStore.getState().tab).toBe("settings");
+  });
+
+  it("启动成功后刷新共享目标（最近使用排序反映真实计数）", async () => {
+    useNavigationStore.setState({ targets: [target("a", "Obsidian")], targetsLoaded: true });
+    navNavigate.mockResolvedValue({
+      success: true,
+      requested_action: "focus",
+      actual_action: "focus_window",
+      fallback_used: false,
+      target_id: "a",
+      verification_level: "window",
+    });
+    navListTargets.mockResolvedValue([
+      target("a", "Obsidian", { use_count: 1, last_used_at: iso(now) }),
+    ]);
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    fireEvent.click(screen.getByRole("button", { name: "启动 Obsidian" }));
+    await screen.findByText("已聚焦 Obsidian");
+    await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
   });
 });
 

@@ -151,11 +151,11 @@ function ToastProbe() {
   );
 }
 
-function renderPicker(props?: { taskId?: string | null }) {
+function renderPicker(props?: { taskId?: string | null; standalone?: boolean }) {
   const onClose = vi.fn();
   render(
     <>
-      <AppPicker taskId={props?.taskId ?? null} onClose={onClose} />
+      <AppPicker taskId={props?.taskId ?? null} standalone={props?.standalone} onClose={onClose} />
       <ToastProbe />
     </>,
   );
@@ -344,5 +344,45 @@ describe("AppPicker", () => {
       expect(toast.dataset.kind).toBe("error");
     });
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("独立配置模式：保存目标但不产生任务关联，刷新共享目标后关闭", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    const t = targetFix("target-vsc", "VS Code", "vscode");
+    vi.mocked(navSaveTarget).mockResolvedValue(t);
+    const loadTargets = useNavigationStore.getState().loadTargets;
+    const { onClose } = renderPicker({ standalone: true });
+
+    // 标题与 Agent 会话区按应用配置模式呈现，不混入任务/会话语义
+    expect(screen.getByRole("dialog", { name: "添加应用与快捷方式" })).toBeTruthy();
+    expect(screen.queryByText(/从 Agent 会话选择/)).toBeNull();
+
+    await user.click(await screen.findByRole("option", { name: /VS Code/ }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(navLinkTask)).not.toHaveBeenCalled();
+    expect(loadTargets).toHaveBeenCalledWith(true);
+    const toast = screen.getByTestId("toast");
+    expect(toast.textContent).toContain("已添加「VS Code」");
+    expect(toast.dataset.kind).toBe("success");
+  });
+
+  it("独立配置模式重复添加：复用现有目标并提示「已在快捷列表中」，不关联任务", async () => {
+    const user = userEvent.setup();
+    const existing = targetFix("target-vsc", "VS Code", "vscode");
+    seedStores({ targets: [existing] });
+    vi.mocked(navSaveTarget).mockResolvedValue(existing);
+    const { onClose } = renderPicker({ standalone: true });
+
+    await user.click(await screen.findByRole("option", { name: /VS Code/ }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // 后端按 app_key 幂等，前端只保存一次、不产生第二套关联
+    expect(vi.mocked(navSaveTarget)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(navLinkTask)).not.toHaveBeenCalled();
+    const toast = screen.getByTestId("toast");
+    expect(toast.textContent).toContain("已在快捷列表中");
+    expect(toast.dataset.kind).toBe("info");
   });
 });

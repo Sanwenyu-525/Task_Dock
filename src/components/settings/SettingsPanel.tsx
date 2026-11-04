@@ -42,9 +42,11 @@ import {
   resolveVisualPreset,
 } from "../../lib/theme";
 import { useUiStore } from "../../store/useUiStore";
+import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { copyText } from "../../lib/clipboard";
 import MockControls from "../agents/MockControls";
 import AppManagement from "./AppManagement";
+import AppPicker from "../navigation/AppPicker";
 import { NumberInput, Select, Switch } from "../ui";
 import { ConfirmDialog } from "../ui/Dialog";
 
@@ -103,6 +105,34 @@ export default function SettingsPanel() {
     | null
   >(null);
   const [dangerBusy, setDangerBusy] = useState(false);
+  const [appPickerOpen, setAppPickerOpen] = useState(false);
+  const [pendingPicker, setPendingPicker] = useState(false);
+  const snapPhase = useEdgeSnapStore((s) => s.phase);
+
+  // 工具面板「应用」页的一次性配置意图（消费后立即清除，避免反复自动弹出）。
+  const appConfig = useUiStore((s) => s.appConfig);
+  const clearAppConfig = useUiStore((s) => s.clearAppConfig);
+  useEffect(() => {
+    if (!appConfig) return;
+    const kind = appConfig.kind;
+    clearAppConfig();
+    if (kind === "picker") {
+      // 胶囊仍处于 Win32 区域裁剪态时先挂起，等解除停靠进入 free 再挂载选择器，
+      // 避免大型模态被裁掉。
+      setPendingPicker(true);
+    } else {
+      // 管理意图：滚动到应用管理区（设置页可能刚由胶囊切换出来）
+      requestAnimationFrame(() => {
+        document.querySelector(".app-management")?.scrollIntoView({ block: "start" });
+      });
+    }
+  }, [appConfig, clearAppConfig]);
+
+  useEffect(() => {
+    if (!pendingPicker || snapPhase !== "free") return;
+    setPendingPicker(false);
+    setAppPickerOpen(true);
+  }, [pendingPicker, snapPhase]);
 
   useEffect(() => {
     listBackups().then(setBackups).catch(() => setBackups([]));
@@ -358,6 +388,7 @@ export default function SettingsPanel() {
 
   const glassDowngraded =
     settings.material === "glass" && materialInfo?.resolved === "solid";
+  const activePreset = resolveVisualPreset(settings.visual_preset);
   const pipe = diag?.pipeline;
   const inboxStats = diag?.file_drop;
   const retention = diag?.retention;
@@ -452,7 +483,11 @@ export default function SettingsPanel() {
                 或开启了高对比度 / 减少透明效果</>
             ) : materialInfo?.applied ? (
               materialInfo.effect === "css" ? (
-                <>CSS 半透明玻璃已生效（原生模糊不可用，已启用可读性增强）：桌面仅轻微透出，背景文字不会干扰正文</>
+                activePreset === "clear" ? (
+                  <>清透玻璃已生效：桌面与其他应用窗口原样透出（不启用原生模糊，可用“清透前景”调整文字明暗）</>
+                ) : (
+                  <>CSS 柔光玻璃已生效（原生模糊不可用，已启用可读性增强）：桌面仅轻微透出，背景文字不会干扰正文</>
+                )
               ) : (
                 <>原生模糊已生效（{materialInfo.effect}），桌面背景自然透出窗口</>
               )
@@ -505,12 +540,12 @@ export default function SettingsPanel() {
           />
         </div>
         <div className="setting-row">
-          <span>应用内快捷键（Ctrl+1…8 切换标签 · Ctrl+K 快速添加 · Ctrl+Shift+C 剪贴板）</span>
+          <span>应用内快捷键（Ctrl+1…9 与 Ctrl+0 切换标签 · Ctrl+K 快速添加 · Ctrl+Shift+C 剪贴板）</span>
           <span className="setting-value">窗口聚焦时生效</span>
         </div>
         <div className="setting-note">
-          Ctrl+1…8 仅完整模式有效，顺序与左侧导航一致：收集箱为 Ctrl+5、历史为 Ctrl+6、
-          规划中心为 Ctrl+7、设置为 Ctrl+8。
+          Ctrl+1…9 与 Ctrl+0 仅完整模式有效，顺序与左侧导航一致：收集箱为 Ctrl+5、文件暂存为 Ctrl+6、
+          工作流为 Ctrl+7、历史为 Ctrl+8、规划中心为 Ctrl+9、设置为 Ctrl+0。
           Ctrl+Shift+C 在完整模式切到剪贴板页，紧凑/极简模式开关临时剪贴板抽屉。
         </div>
       </Section>
@@ -1221,6 +1256,8 @@ export default function SettingsPanel() {
           if (!dangerBusy) setPendingDanger(null);
         }}
       />
+      {/* 从工具面板「添加应用」进入：独立配置模式（不关联任务） */}
+      {appPickerOpen && <AppPicker standalone onClose={() => setAppPickerOpen(false)} />}
     </div>
   );
 }

@@ -35,12 +35,19 @@ interface Props {
   windowLink?: TaskNavLink | null;
   /** 选择模式：返回已保存的目标（不关联任务） */
   onSelect?: (target: NavTarget) => void;
+  /**
+   * 独立配置模式：保存目标、不关联任务，保存后刷新共享目标列表并返回结果。
+   * 与任务关联模式共用同一套 `navSaveTarget` 后端接口。
+   */
+  standalone?: boolean;
   onClose: () => void;
 }
 
-export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Props) {
+export default function AppPicker({ taskId, windowLink, onSelect, standalone, onClose }: Props) {
   const showToast = useUiStore((s) => s.showToast);
-  const { scan, scanning, loadApps, targets } = useNavigationStore();
+  const { scan, scanning, loadApps, targets, loadTargets } = useNavigationStore();
+  const taskMode = !!taskId;
+  const standaloneMode = !taskMode && !!standalone;
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [manualOpen, setManualOpen] = useState(false);
@@ -111,8 +118,20 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
         category: a.category,
         overwrite_name: false,
       };
+      const existing = targets.find(
+        (x) => x.target_type === "application" && x.app_key === a.app_key,
+      );
       const t = await navSaveTarget(input);
-      await afterPick(t, `已关联「${t.display_name}」`);
+      // 独立配置模式复用后端「同 app_key 幂等」语义：已存在的目标不会产生重复行。
+      await afterPick(
+        t,
+        taskMode
+          ? `已关联「${t.display_name}」`
+          : existing
+            ? `「${t.display_name}」已在快捷列表中`
+            : `已添加「${t.display_name}」`,
+        existing && !taskMode ? "info" : "success",
+      );
     } catch (e) {
       showToast(String(e), { kind: "error" });
     } finally {
@@ -120,7 +139,7 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
     }
   }
 
-  async function afterPick(t: NavTarget, msg: string) {
+  async function afterPick(t: NavTarget, msg: string, kind: "success" | "info" = "success") {
     try {
       if (taskId) {
         // 已关联过则提示而非重复关联
@@ -132,17 +151,24 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
         await navLinkTask(taskId, t.id, false, "default");
         await useNavigationStore.getState().loadTaskLinks();
         await useTasksStore.getState().refresh();
-        showToast(msg, { kind: "success" });
+        showToast(msg, { kind });
         onClose();
       } else if (onSelect) {
         onSelect(t);
+        onClose();
+      } else if (standaloneMode) {
+        // 独立配置：保存后共享目标列表立即更新（工具面板下一帧就能看到）
+        await loadTargets(true);
+        showToast(msg, { kind });
         onClose();
       } else {
         onClose();
       }
     } catch (e) {
       // 关联失败必须可见：目标已保存，用户可重试关联
-      showToast(`已保存目标，但关联失败：${String(e)}`, { kind: "error" });
+      showToast(taskId ? `已保存目标，但关联失败：${String(e)}` : `已保存目标，但列表刷新失败：${String(e)}`, {
+        kind: "error",
+      });
     }
   }
 
@@ -197,7 +223,15 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
         onClose();
       } else {
         await navPickWindowIdentity(t.id, w.hwnd);
-        await afterPick(t, `已选择「${t.display_name}」`);
+        await afterPick(
+          t,
+          taskMode
+            ? `已选择「${t.display_name}」`
+            : existing
+              ? `「${t.display_name}」已在快捷列表中`
+              : `已添加「${t.display_name}」`,
+          existing && !taskMode ? "info" : "success",
+        );
       }
     } catch (e) {
       showToast(`未能记录窗口身份：${String(e)}`, { kind: "error" });
@@ -212,7 +246,7 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
     return (
       <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
         <div className="modal app-picker" ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true"
-        aria-label="选择关联目标" onMouseDown={(e) => e.stopPropagation()}>
+        aria-label={standaloneMode ? "添加应用与快捷方式" : "选择关联目标"} onMouseDown={(e) => e.stopPropagation()}>
           <div className="modal-head"><span>为 {windowLink.target.display_name} 选择窗口</span>
             <button className="icon-btn sm" onClick={onClose} aria-label="关闭"><X size={14} /></button>
           </div>
@@ -230,9 +264,9 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
   return (
     <div className="modal-mask" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal app-picker" ref={modalRef} tabIndex={-1} role="dialog" aria-modal="true"
-        aria-label="选择关联目标" onMouseDown={(e) => e.stopPropagation()}>
+        aria-label={standaloneMode ? "添加应用与快捷方式" : "选择关联目标"} onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <span><AppWindow size={14} /> 选择关联目标{taskId ? "（将关联到任务）" : ""}</span>
+          <span><AppWindow size={14} /> {taskMode ? "选择关联目标（将关联到任务）" : standaloneMode ? "添加应用与快捷方式" : "选择应用"}</span>
           <button className="icon-btn sm" onClick={onClose} aria-label="关闭"><X size={14} /></button>
         </div>
         <div className="modal-body">
@@ -286,7 +320,16 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
                   <button
                     key={t.id}
                     className="chip picker-chip"
-                    onClick={() => busyKey || afterPick(t, `已关联「${t.display_name}」`)}
+                    onClick={() =>
+                      busyKey ||
+                      afterPick(
+                        t,
+                        taskMode
+                          ? `已关联「${t.display_name}」`
+                          : `「${t.display_name}」已在快捷列表中`,
+                        taskMode ? "success" : "info",
+                      )
+                    }
                   >
                     {t.favorite ? <Star size={10} /> : <Clock size={10} />}
                     {t.display_name}
@@ -319,7 +362,9 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
             )}
           </div>
 
-          {/* Agent 会话快捷区（v0.4：会话可作为导航目标，支持恢复/工作区跳转） */}
+          {/* Agent 会话快捷区（v0.4：会话可作为导航目标，支持恢复/工作区跳转）
+              应用配置模式只管理普通应用/网址/目录，不混入 Agent 会话。 */}
+          {!standaloneMode && (
           <div className="picker-windows">
             <button className="link-btn" onClick={() => setAgentOpen((v) => !v)}>
               <AgentIcon size={11} /> {agentOpen ? "收起 Agent 会话" : "从 Agent 会话选择…"}
@@ -351,6 +396,7 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
               </div>
             )}
           </div>
+          )}
 
           {/* 应用列表 */}
           <div className="picker-list" role="listbox" aria-label="已安装软件">
@@ -395,7 +441,14 @@ export default function AppPicker({ taskId, windowLink, onSelect, onClose }: Pro
             <ManualAddForm
               onSaved={async (t, msg) => {
                 setManualOpen(false);
-                await afterPick(t, msg);
+                const existed = targets.some(
+                  (x) => x.target_type === t.target_type && x.app_key === t.app_key,
+                );
+                await afterPick(
+                  t,
+                  existed && !taskMode ? `「${t.display_name}」已在快捷列表中` : msg,
+                  existed && !taskMode ? "info" : "success",
+                );
               }}
               showToast={showToast}
             />

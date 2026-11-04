@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { LayoutGrid, Plus, Search, Settings2 } from "lucide-react";
 import { navNavigate, avatarHue } from "../../lib/navigation";
 import { useNavigationStore } from "../../store/useNavigationStore";
-import { openFullApp } from "./actions";
+import { openAppsConfig } from "./actions";
 import { EmptyState, PanelHead } from "./PanelKit";
 
 export default function AppsLite() {
@@ -44,8 +44,17 @@ export default function AppsLite() {
     timers.current.push(t);
   };
 
+  // 只展示普通应用快捷方式：网址/文件夹单独分区，Agent 会话不进入应用网格。
   const visible = useMemo(
-    () => targets.filter((t) => !t.hidden),
+    () => targets.filter((t) => !t.hidden && t.target_type === "application"),
+    [targets],
+  );
+
+  const extras = useMemo(
+    () =>
+      targets.filter(
+        (t) => !t.hidden && (t.target_type === "url" || t.target_type === "directory"),
+      ),
     [targets],
   );
 
@@ -63,7 +72,9 @@ export default function AppsLite() {
     const base = q
       ? ranked.filter((t) => t.display_name.toLowerCase().includes(q))
       : ranked;
-    return base.slice(0, 7);
+    // 非搜索态留一格给「添加」按钮；添加按钮任何情况下都可见，
+    // 超出的目标通过「管理」进入完整设置页处理。
+    return base.slice(0, q ? 7 : 6);
   }, [ranked, query]);
 
   const recent = useMemo(
@@ -82,10 +93,14 @@ export default function AppsLite() {
       const res = await navNavigate(id);
       if (!res.success) {
         flash(`${name}：${res.reason || "启动失败"}`);
-      } else if (res.actual_action === "focus_window") {
-        flash(`已聚焦 ${name}`);
-      } else if (res.fallback_used) {
-        flash(`${name}：已用备用方式打开`);
+      } else {
+        // 成功后刷新共享目标，让「最近使用」排序反映真实后端计数。
+        void loadTargets(true);
+        if (res.actual_action === "focus_window") {
+          flash(`已聚焦 ${name}`);
+        } else if (res.fallback_used) {
+          flash(`${name}：已用备用方式打开`);
+        }
       }
     } catch {
       flash(`${name}：启动失败`);
@@ -98,7 +113,7 @@ export default function AppsLite() {
   // 伪装成「尚未配置快捷应用」。读取失败且从未成功 → 错误空态（可重试）；
   // 失败但已有旧清单 → 旧清单保留 + 错误提示条。
   const loadError = targetsError !== null;
-  const empty = targetsLoaded && !loadError && ranked.length === 0;
+  const empty = targetsLoaded && !loadError && ranked.length === 0 && extras.length === 0;
   const loadFailedFresh = loadError && !targetsLoaded;
   const loadFailedStale = loadError && targetsLoaded;
 
@@ -112,7 +127,7 @@ export default function AppsLite() {
             type="button"
             className="cap-iconbtn"
             aria-label="管理快捷应用"
-            onClick={() => openFullApp("settings")}
+            onClick={() => openAppsConfig("manage")}
           >
             <Settings2 size={15} strokeWidth={2} aria-hidden="true" />
           </button>
@@ -154,7 +169,7 @@ export default function AppsLite() {
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
             text="尚未配置快捷应用"
             actionLabel="去配置"
-            onAction={() => openFullApp("settings")}
+            onAction={() => openAppsConfig("picker")}
           />
         )}
 
@@ -176,28 +191,53 @@ export default function AppsLite() {
                 >
                   {(t.display_name || "?").slice(0, 1).toUpperCase()}
                 </span>
-                <span className="cap-app-name" title={t.display_name}>
+                <span className="cap-app-name" data-tip={t.display_name}>
                   {t.display_name}
                 </span>
               </button>
             ))}
-            {grid.length < 8 && !query.trim() && (
-              <button
-                type="button"
-                className="cap-app"
-                aria-label="添加或管理快捷应用"
-                onClick={() => openFullApp("settings")}
-              >
-                <span className="cap-app-avatar is-add" aria-hidden="true">
-                  <Plus size={16} strokeWidth={2.4} />
-                </span>
-                <span className="cap-app-name">添加</span>
-              </button>
-            )}
+            <button
+              type="button"
+              className="cap-app"
+              aria-label="添加应用"
+              onClick={() => openAppsConfig("picker")}
+            >
+              <span className="cap-app-avatar is-add" aria-hidden="true">
+                <Plus size={16} strokeWidth={2.4} />
+              </span>
+              <span className="cap-app-name">添加</span>
+            </button>
           </div>
         )}
 
-        {grid.length === 0 && !empty && !loadFailedFresh && (
+        {extras.length > 0 && !loadFailedFresh && !query.trim() && (
+          <div className="cap-recent">
+            <span className="cap-recent-title">网址 / 文件夹</span>
+            <span className="cap-recent-list">
+              {extras.slice(0, 4).map((t) => (
+                <button
+                  type="button"
+                  key={t.id}
+                  className="cap-recent-chip"
+                  aria-label={`打开 ${t.display_name}`}
+                  data-tip={t.url || t.path}
+                  onClick={() => void launch(t.id, t.display_name)}
+                >
+                  <i
+                    className="cap-recent-dot"
+                    style={{ "--app-hue": String(avatarHue(t.app_key || t.display_name)) } as CSSProperties}
+                    aria-hidden="true"
+                  >
+                    {(t.display_name || "?").slice(0, 1).toUpperCase()}
+                  </i>
+                  <span>{t.display_name}</span>
+                </button>
+              ))}
+            </span>
+          </div>
+        )}
+
+        {query.trim() && grid.length === 0 && !loadFailedFresh && (
           <EmptyState
             icon={<Search size={20} strokeWidth={1.6} aria-hidden="true" />}
             text="没有匹配的应用"
@@ -233,7 +273,7 @@ export default function AppsLite() {
 
       <div className="cap-foot">
         <span className="cap-foot-note">{notice ?? "点击即启动或聚焦已有窗口"}</span>
-        <button type="button" className="cap-link" onClick={() => openFullApp("settings")}>
+        <button type="button" className="cap-link" onClick={() => openAppsConfig("manage")}>
           管理
         </button>
       </div>

@@ -20,3 +20,14 @@ export function openFullApp(tab: Tab): void {
     void applyMode("full");
   }
 }
+
+/**
+ * 打开「应用配置」：切到完整窗口的设置页，并把一次性意图交给设置面板消费。
+ *
+ * 胶囊处于 Win32 `SetWindowRgn` 裁剪态，大型选择器/设置界面若挂在胶囊里会被裁掉；
+ * 因此先从胶囊解除停靠进入完整窗口（`openFullApp`），再由设置面板渲染选择器。
+ */
+export function openAppsConfig(kind: "picker" | "manage"): void {
+  useUiStore.getState().requestAppConfig(kind);
+  openFullApp("settings");
+}

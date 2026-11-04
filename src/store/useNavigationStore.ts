@@ -13,6 +13,9 @@ import {
   type TaskNavLink,
 } from "../lib/navigation";
 
+/** 目标清单请求序号：只接受最新一次请求的结果（旧响应不得覆盖新数据）。 */
+let targetsSeq = 0;
+
 export const useNavigationStore = create<{
   /** 软件扫描结果（null = 未加载） */
   scan: AppScanResult | null;
@@ -56,10 +59,14 @@ export const useNavigationStore = create<{
   },
 
   loadTargets: async (_force = false) => {
+    // 请求序号防竞态：保存/删除后连续触发多次刷新时，旧响应不得覆盖新数据。
+    const seq = ++targetsSeq;
     try {
       const targets = await navListTargets(true);
+      if (seq !== targetsSeq) return;
       set({ targets, targetsLoaded: true, targetsError: null });
     } catch (e) {
+      if (seq !== targetsSeq) return;
       // 读取失败必须可见：面板据此显示错误态 + 重试，
       // 不能静默保旧值（或空数组）伪装成「尚未配置应用」。
       set({ targetsError: String(e) });
