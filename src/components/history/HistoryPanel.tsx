@@ -1,6 +1,6 @@
 //! 历史面板：通知 + Agent 事件统一时间轴。
 //! 按日分组、连续重复（失联/重连等）聚合、来源/类型/时间过滤、
-//! 点击展开详情、通知点击标已读、清空需二次确认；
+//! 点击展开详情、通知点击标已读、清空走统一 ConfirmDialog（危险操作默认聚焦取消）；
 //! 订阅 notification / agent-changed 事件实时刷新。
 //!
 //! 分页与筛选全部在数据库完成：通知与事件各自 keyset 翻页，`has_more` 与
@@ -28,7 +28,7 @@ import {
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
-import { Select } from "../ui";
+import { ConfirmDialog, Select } from "../ui";
 import { NOTIFICATION_KIND_LABELS, AGENT_STATE_LABELS, formatRelative } from "../../lib/format";
 import { groupHistory } from "../../lib/historyGroup";
 
@@ -117,6 +117,7 @@ export default function HistoryPanel() {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
   const [detailKey, setDetailKey] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const queryKey = `${sourceFilter}\u0000${timeFilter}`;
   const queryKeyRef = useRef(queryKey);
   queryKeyRef.current = queryKey;
@@ -262,20 +263,19 @@ export default function HistoryPanel() {
     }
   }
 
-  async function onClear() {
-    if (!confirmClear) {
-      setConfirmClear(true);
-      window.setTimeout(() => setConfirmClear(false), 3000);
-      return;
-    }
+  /** 清空按钮只打开确认框；真正的删除由确认框回调执行（与危险操作统一口径）。 */
+  async function onClearConfirmed() {
+    if (clearing) return;
+    setClearing(true);
     try {
       await clearNotifications();
       await refresh("replace");
       showToast("通知已清空（Agent 事件流水保留）", { kind: "success" });
+      setConfirmClear(false);
     } catch (e) {
       showToast(String(e), { kind: "error" });
     } finally {
-      setConfirmClear(false);
+      setClearing(false);
     }
   }
 
@@ -360,8 +360,8 @@ export default function HistoryPanel() {
         <button className="btn sm" onClick={onMarkAll} disabled={unread === 0} title="全部标为已读">
           <CheckCheck size={12} /> 全部已读
         </button>
-        <button className={`btn sm ${confirmClear ? "danger" : ""}`} onClick={onClear} title={confirmClear ? "再次点击确认清空" : "清空通知"}>
-          <Trash2 size={12} /> {confirmClear ? "确认清空？" : "清空"}
+        <button className="btn sm" onClick={() => setConfirmClear(true)} data-tip="清空通知历史">
+          <Trash2 size={12} /> 清空
         </button>
       </div>
 
@@ -481,6 +481,17 @@ export default function HistoryPanel() {
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmClear}
+        title="清空通知历史？"
+        detail="将删除全部通知记录（Agent 事件流水保留）。此操作不可撤销。"
+        confirmLabel="确认清空"
+        danger
+        busy={clearing}
+        onCancel={() => setConfirmClear(false)}
+        onConfirm={() => void onClearConfirmed()}
+      />
     </div>
   );
 }

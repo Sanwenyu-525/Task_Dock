@@ -268,6 +268,26 @@ describe("窗口生命周期", () => {
     await waitFor(() => expect(screen.getByText("展开详情")).toBeTruthy());
   });
 
+  it("启动快照读取失败后，下一轮展示前补取设置并按快照渲染", async () => {
+    let attempts = 0;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_settings") {
+        attempts += 1;
+        return attempts === 1
+          ? Promise.reject(new Error("IPC 未就绪"))
+          : Promise.resolve({ theme: "light", visual_preset: "frosted" });
+      }
+      return Promise.resolve(null);
+    });
+    render(<NotificationWindow />);
+    await waitFor(() => expect(attempts).toBe(1));
+    // 首次读取失败后快照缺失：展示事件到达时必须再取一次，不能永久按系统明暗渲染
+    emitShow([cardData({ kind: "agent_done", title: "Agent 本轮执行完成" })]);
+    await waitFor(() => expect(document.documentElement.dataset.preset).toBe("frosted"));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(attempts).toBe(2);
+  });
+
   it("队列为空时请求隐藏窗口；主题快照落到 data-theme", async () => {
     render(<NotificationWindow />);
     emitShow([cardData({ kind: "agent_done" })]);

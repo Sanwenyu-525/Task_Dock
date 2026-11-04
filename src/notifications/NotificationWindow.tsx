@@ -60,6 +60,8 @@ export default function NotificationWindow() {
     () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches,
   );
   const [snap, setSnap] = useState<SettingsSnap | null>(null);
+  /** 当前快照的同步镜像：show 事件回调里判断是否需要补取设置（state 在回调里是旧值）。 */
+  const snapRef = useRef<SettingsSnap | null>(null);
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   /** 最近一次上报的窗口高度；每轮展示（收到 show 事件）重置为 -1。
@@ -96,15 +98,24 @@ export default function NotificationWindow() {
     [],
   );
 
+  /** 读取设置快照。启动瞬间 IPC 可能尚未就绪（读失败会静默回退系统明暗，
+   *  导致通知窗口长期与设置里的主题/预设不一致），所以 show 事件到达时若快照
+   *  仍缺失会再取一次——按真实事件驱动补取，而不是定时重试。 */
+  const loadSnap = useCallback(() => {
+    void getSettings()
+      .then((s) => {
+        const next = { theme: s.theme, visualPreset: s.visual_preset ?? "" };
+        snapRef.current = next;
+        setSnap(next);
+      })
+      .catch(() => {
+        // 本次失败不阻塞展示；下一次 show 事件会再补取
+      });
+  }, []);
+
   // 设置快照 + 主题同步（与主窗/右键菜单同一套事实来源）
   useEffect(() => {
-    void getSettings()
-      .then((s) =>
-        setSnap({ theme: s.theme, visualPreset: s.visual_preset ?? "" }),
-      )
-      .catch(() => {
-        // 快照缺失时按系统明暗渲染，不阻塞通知展示
-      });
+    loadSnap();
     const scope = createSubscriptionScope();
     scope.add(
       listen<string>("theme-changed", (e) =>
@@ -123,7 +134,7 @@ export default function NotificationWindow() {
       scope.dispose();
       mq?.removeEventListener("change", onSystem);
     };
-  }, []);
+  }, [loadSnap]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -142,6 +153,9 @@ export default function NotificationWindow() {
       listen<NotificationCardData[]>(SHOW_EVENT, (e) => {
         const payload = Array.isArray(e.payload) ? e.payload : [e.payload];
         if (payload.length === 0) return;
+        // 启动快照读取失败时（IPC 未就绪等瞬时原因），展示前补取一次：
+        // 否则整轮卡片都会按系统明暗渲染，与设置里的主题/预设不一致。
+        if (!snapRef.current) loadSnap();
         // 新一轮展示：强制重新上报高度（后端不可见期间已把高度缓存重置为初始值）
         reportedRef.current = -1;
         setCards((q) => applyIncoming(q, payload, Date.now()));
@@ -151,7 +165,7 @@ export default function NotificationWindow() {
       }),
     );
     return () => scope.dispose();
-  }, []);
+  }, [loadSnap]);
 
   // 队列空 → 隐藏窗口（WebView 保留复用）；有卡片 → 保持显示
   useEffect(() => {
