@@ -68,6 +68,10 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
   };
 });
 
+vi.mock("./analytics/TaskAnalyticsPanel", () => ({
+  default: () => <div>analytics-panel</div>,
+}));
+
 function seedTasks() {
   useTasksStore.setState({
     tasks: ALL_TASKS,
@@ -165,5 +169,26 @@ describe("TasksPanel 筛选交互", () => {
     expect(screen.getByText("买牛奶")).toBeTruthy();
     expect(screen.getByText(/列表刷新失败/)).toBeTruthy();
     expect(screen.queryByText("任务读取失败")).toBeNull();
+  });
+
+  it("「统计」入口切换到任务统计子视图，可再次点击或 Escape 关闭", async () => {
+    const user = userEvent.setup();
+    seedTasks();
+    render(<TasksPanel />);
+
+    await user.click(screen.getByRole("button", { name: "任务统计" }));
+    expect(screen.getByText("analytics-panel")).toBeTruthy();
+    // 列表被统计视图替换，不并存
+    expect(screen.queryByText("买牛奶")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "返回任务列表" }));
+    expect(screen.getByText("买牛奶")).toBeTruthy();
+    expect(screen.queryByText("analytics-panel")).toBeNull();
+
+    // Escape 关闭统计子视图
+    await user.click(screen.getByRole("button", { name: "任务统计" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText("analytics-panel")).toBeNull());
+    expect(screen.getByText("买牛奶")).toBeTruthy();
   });
 });

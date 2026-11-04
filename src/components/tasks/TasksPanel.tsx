@@ -11,7 +11,9 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { locateElement } from "../global-search/locate";
 import { Select } from "../ui";
-import { Search, X, ListChecks, CalendarClock, AlertTriangle, Inbox, Sparkles } from "lucide-react";
+import { BarChart3, Search, X, ListChecks, CalendarClock, AlertTriangle, Inbox, Sparkles, Timer } from "lucide-react";
+import TaskAnalyticsPanel from "./analytics/TaskAnalyticsPanel";
+import FocusWorkspace from "../focus/FocusWorkspace";
 
 const VIEWS = [
   { id: "today", label: "今日" },
@@ -42,6 +44,23 @@ export default function TasksPanel() {
   const refresh = useTasksStore((s) => s.refresh);
   const stats = useTasksStore((s) => s.stats);
   const [searchOpen, setSearchOpen] = useState(false);
+  // 任务统计子视图（默认日范围，打开才请求；关闭后面板卸载即取消请求）。
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  // 专注与休息子视图：与列表/统计互斥，按需挂载（关闭即卸载，停止订阅与共享时钟引用）。
+  const [focusOpen, setFocusOpen] = useState(false);
+
+  // Escape 关闭子视图：捕获阶段优先处理，避免冒泡到窗口级「隐藏到托盘」。
+  useEffect(() => {
+    if (!analyticsOpen && !focusOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setAnalyticsOpen(false);
+      setFocusOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [analyticsOpen, focusOpen]);
 
   const hasSearch = !!filter.search?.trim();
   const searchVisible = searchOpen || hasSearch;
@@ -54,6 +73,9 @@ export default function TasksPanel() {
     if (!pendingLocate || pendingLocate.category !== "tasks") return;
     const intent = pendingLocate;
     consumeLocate();
+    // 定位必须回到列表：子视图打开时先关闭，否则目标行不在 DOM 中。
+    setAnalyticsOpen(false);
+    setFocusOpen(false);
     if (filter.view !== "all" || filter.status !== "all" || filter.search !== intent.keyword) {
       setFilter({ view: "all", status: "all", search: intent.keyword });
     }
@@ -117,6 +139,30 @@ export default function TasksPanel() {
           ))}
         </div>
         <span className="flex-spacer" />
+        <button
+          className={`icon-btn sm ${focusOpen ? "active" : ""}`}
+          data-tip={focusOpen ? "返回任务列表" : "专注与休息"}
+          aria-label={focusOpen ? "返回任务列表" : "专注与休息"}
+          aria-pressed={focusOpen}
+          onClick={() => {
+            setFocusOpen((v) => !v);
+            setAnalyticsOpen(false);
+          }}
+        >
+          {focusOpen ? <X size={13} /> : <Timer size={13} />}
+        </button>
+        <button
+          className={`icon-btn sm ${analyticsOpen ? "active" : ""}`}
+          data-tip={analyticsOpen ? "返回任务列表" : "任务统计"}
+          aria-label={analyticsOpen ? "返回任务列表" : "任务统计"}
+          aria-pressed={analyticsOpen}
+          onClick={() => {
+            setAnalyticsOpen((v) => !v);
+            setFocusOpen(false);
+          }}
+        >
+          {analyticsOpen ? <X size={13} /> : <BarChart3 size={13} />}
+        </button>
         <button
           className={`icon-btn sm ${searchVisible ? "active" : ""}`}
           data-tip={searchVisible ? "收起搜索" : "搜索任务"}
@@ -184,7 +230,12 @@ export default function TasksPanel() {
         </div>
       )}
 
-      <div className="task-list">
+      {analyticsOpen ? (
+        <TaskAnalyticsPanel />
+      ) : focusOpen ? (
+        <FocusWorkspace />
+      ) : (
+        <div className="task-list">
         {error && tasks.length > 0 && (
           // 列表刷新失败：保留上次结果并明确标记「可能不是最新」，不伪装成已刷新
           <div className="empty-hint error-text task-list-error" role="status">
@@ -239,7 +290,8 @@ export default function TasksPanel() {
         {tasks.map((t) => (
           <TaskItem key={t.id} task={t} />
         ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

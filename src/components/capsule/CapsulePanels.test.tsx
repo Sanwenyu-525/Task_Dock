@@ -110,6 +110,7 @@ beforeEach(() => {
   listTasks.mockReset();
   toggleTask.mockReset();
   taskStats.mockReset();
+  createFromQuickAdd.mockReset();
   clipboardView.mockReset();
   clipboardGroup.mockReset();
   clipboardCopyItem.mockReset();
@@ -143,6 +144,7 @@ beforeEach(() => {
     stats: null,
     lite: null,
     liteScope: "all",
+    liteTarget: "all",
     liteLoading: false,
     liteError: null,
   });
@@ -209,20 +211,29 @@ describe("任务面板", () => {
     expect(listTasks.mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("分段筛选按范围读取必要结果：已完成不被最近待办截断", async () => {
+  it("分段筛选按范围读取必要结果：今日/日程/已完成各用自己的真实查询", async () => {
     const completed = task("t4", "整理依赖清单", null, {
       status: "completed",
       completed_at: iso(now - 120_000),
     });
-    // 模拟「最近 12 条」全是待办、已完成被挤出的真实截断
-    listTasks.mockImplementation(async (args: { status: string }) =>
-      args.status === "completed" ? [completed] : items,
-    );
+    const todayTask = task("t5", "今天要交的周报", now + 3600_000);
+    const scheduled = task("t6", "安排在下周的评审", now + 3 * 86400_000);
+    listTasks.mockImplementation(async (args: { view?: string; status?: string }) => {
+      if (args.view === "due_today") return [todayTask];
+      if (args.view === "scheduled") return [scheduled];
+      if (args.status === "completed") return [completed];
+      return items;
+    });
     render(<TasksLite />);
     await screen.findByText("整理产品周报");
 
-    // 初始取 pending + completed 的 all 范围；limit:12 与面板展示量一致
-    expect(listTasks).toHaveBeenCalledWith({ view: "all", status: "all", sort: "due", limit: 12 });
+    // 初始「全部」= 最近创建的真实任务，limit 与面板展示量一致
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "all",
+      status: "all",
+      sort: "created",
+      limit: 12,
+    });
 
     const tabs = screen.getAllByRole("tab").map((el) => el.textContent);
     expect(tabs).toEqual(["全部", "待办", "今日", "日程", "已完成"]);
@@ -230,7 +241,6 @@ describe("任务面板", () => {
     act(() => screen.getByRole("tab", { name: "待办" }).click());
     await screen.findByText("整理产品周报");
     expect(screen.queryByText("整理依赖清单")).toBeNull();
-    // 待办换成 status=pending 的范围（只读必要结果）
     expect(listTasks).toHaveBeenLastCalledWith({
       view: "all",
       status: "pending",
@@ -238,16 +248,26 @@ describe("任务面板", () => {
       limit: 12,
     });
 
-    // 今日/日程与待办共用 pending 结果：不产生新请求
-    const callsAfterPending = listTasks.mock.calls.length;
+    // 今日：后端 due_today 先过滤再 LIMIT，不在前 12 条 pending 里本地筛
     act(() => screen.getByRole("tab", { name: "今日" }).click());
-    expect(screen.getByText("整理产品周报")).toBeTruthy();
-    expect(screen.getByText("参加项目同步会")).toBeTruthy();
-    expect(screen.queryByText("准备评审材料")).toBeNull();
+    await screen.findByText("今天要交的周报");
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "due_today",
+      status: "pending",
+      sort: "due",
+      limit: 12,
+    });
+    expect(screen.queryByText("参加项目同步会")).toBeNull();
 
+    // 日程：due_at 非空的未完成项
     act(() => screen.getByRole("tab", { name: "日程" }).click());
-    expect(screen.queryByText("准备评审材料")).toBeNull();
-    expect(listTasks.mock.calls.length).toBe(callsAfterPending);
+    await screen.findByText("安排在下周的评审");
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "scheduled",
+      status: "pending",
+      sort: "due",
+      limit: 12,
+    });
 
     // 已完成独立查询：不会被「最近 12 条待办」截断成误判为空
     act(() => screen.getByRole("tab", { name: "已完成" }).click());
@@ -256,7 +276,7 @@ describe("任务面板", () => {
     expect(listTasks).toHaveBeenLastCalledWith({
       view: "all",
       status: "completed",
-      sort: "due",
+      sort: "completed",
       limit: 12,
     });
 
@@ -265,11 +285,15 @@ describe("任务面板", () => {
     expect(listTasks).toHaveBeenLastCalledWith({
       view: "all",
       status: "all",
-      sort: "due",
+      sort: "created",
       limit: 12,
     });
-    // 四次查询：初始 all / pending / completed / all，同范围切换不重复请求
-    expect(listTasks).toHaveBeenCalledTimes(4);
+    // 六次查询：初始 all / pending / due_today / scheduled / completed / all
+    expect(listTasks).toHaveBeenCalledTimes(6);
+
+    // 同范围重复点击不重复请求
+    act(() => screen.getByRole("tab", { name: "全部" }).click());
+    expect(listTasks).toHaveBeenCalledTimes(6);
   });
 
   it("已完成的条目不提供「再点一次完成」的假入口", async () => {
@@ -279,6 +303,211 @@ describe("任务面板", () => {
     render(<TasksLite />);
     await screen.findByText("整理依赖清单");
     expect(screen.queryByRole("button", { name: "完成「整理依赖清单」" })).toBeNull();
+  });
+});
+
+describe("任务分段查询语义", () => {
+  const dueTodayArgs = {
+    view: "due_today",
+    status: "pending",
+    sort: "due",
+    limit: 12,
+  };
+
+  it("今日分段使用 view=due_today，不依赖被截断的 pending 列表", async () => {
+    // pending 结果被 12 条逾期占满，今天到期的任务根本不在其中（旧实现即误判为空）
+    const overdue = Array.from({ length: 12 }, (_, i) =>
+      task(`o${i}`, `逾期任务${i}`, now - (i + 1) * 3600_000),
+    );
+    const todayTask = task("td", "今天到期的任务", now + 3600_000);
+    listTasks.mockImplementation(async (args: { view?: string }) => {
+      if (args.view === "due_today") return [todayTask];
+      return overdue;
+    });
+    render(<TasksLite />);
+    await screen.findByText("逾期任务0");
+
+    act(() => screen.getByRole("tab", { name: "今日" }).click());
+    await screen.findByText("今天到期的任务");
+    expect(listTasks).toHaveBeenLastCalledWith(dueTodayArgs);
+    // 逾期任务不属于今日，不混入
+    expect(screen.queryByText("逾期任务0")).toBeNull();
+  });
+
+  it("分段快速连续切换：旧响应不覆盖新筛选", async () => {
+    const initial = [task("i1", "初始任务", now + 3600_000)];
+    const pendingTask = task("p1", "待办分段的旧响应", now + 3600_000);
+    const todayTask = task("d1", "今日分段的新响应", now + 1800_000);
+    let resolvePending = (_v: Task[]) => {};
+    let resolveToday = (_v: Task[]) => {};
+    listTasks.mockImplementation((args: { view?: string; status?: string }) => {
+      if (args.view === "due_today") {
+        return new Promise<Task[]>((resolve) => {
+          resolveToday = resolve;
+        });
+      }
+      if (args.status === "pending") {
+        return new Promise<Task[]>((resolve) => {
+          resolvePending = resolve;
+        });
+      }
+      return Promise.resolve(initial);
+    });
+    render(<TasksLite />);
+    await screen.findByText("初始任务");
+
+    act(() => screen.getByRole("tab", { name: "待办" }).click());
+    act(() => screen.getByRole("tab", { name: "今日" }).click());
+
+    // 后发的今日先返回
+    await act(async () => {
+      resolveToday([todayTask]);
+      await Promise.resolve();
+    });
+    await screen.findByText("今日分段的新响应");
+
+    // 先发的待办响应迟到，不得覆盖当前分段
+    await act(async () => {
+      resolvePending([pendingTask]);
+      await Promise.resolve();
+    });
+    expect(useTasksStore.getState().liteScope).toBe("today");
+    expect(screen.getByText("今日分段的新响应")).toBeTruthy();
+    expect(screen.queryByText("待办分段的旧响应")).toBeNull();
+  });
+
+  it("切回刚离开的分段时重新确认，不被迟到响应清空", async () => {
+    const initial = [task("i1", "初始任务", now + 3600_000)];
+    const pendingTask = task("p1", "迟到的待办", now + 3600_000);
+    let allCalls = 0;
+    let resolvePending = (_v: Task[]) => {};
+    let resolveSecondAll = (_v: Task[]) => {};
+    listTasks.mockImplementation((args: { view?: string; status?: string }) => {
+      if (args.view === "all" && args.status === "all") {
+        allCalls += 1;
+        if (allCalls === 1) return Promise.resolve(initial);
+        return new Promise<Task[]>((resolve) => {
+          resolveSecondAll = resolve;
+        });
+      }
+      if (args.status === "pending") {
+        return new Promise<Task[]>((resolve) => {
+          resolvePending = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+    render(<TasksLite />);
+    await screen.findByText("初始任务");
+
+    // all → pending → all：切回时必须重新发请求，不能让在途 pending 作废 all
+    act(() => screen.getByRole("tab", { name: "待办" }).click());
+    act(() => screen.getByRole("tab", { name: "全部" }).click());
+    expect(allCalls).toBe(2);
+
+    await act(async () => {
+      resolveSecondAll(initial);
+      await Promise.resolve();
+    });
+    await screen.findByText("初始任务");
+
+    // 先发的 pending 响应迟到，不得覆盖当前全部范围
+    await act(async () => {
+      resolvePending([pendingTask]);
+      await Promise.resolve();
+    });
+    expect(useTasksStore.getState().liteScope).toBe("all");
+    expect(screen.getByText("初始任务")).toBeTruthy();
+    expect(screen.queryByText("迟到的待办")).toBeNull();
+  });
+
+  it("请求失败保留旧数据并显示错误条，不显示空态、不冒充新分段", async () => {
+    const pendingTask = task("p1", "旧待办", now + 3600_000);
+    listTasks.mockResolvedValue([pendingTask]);
+    render(<TasksLite />);
+    await screen.findByText("旧待办");
+    act(() => screen.getByRole("tab", { name: "待办" }).click());
+    await screen.findByText("旧待办");
+
+    // 当前分段刷新失败：旧列表保留 + 错误条，不显示「暂无待办任务」
+    listTasks.mockRejectedValueOnce(new Error("boom"));
+    await act(async () => {
+      await useTasksStore.getState().loadLite();
+    });
+    await screen.findByText("刷新失败，显示的是上次结果");
+    expect(screen.getByText("旧待办")).toBeTruthy();
+    expect(screen.queryByText("暂无待办任务")).toBeNull();
+
+    // 切到今日失败：旧范围数据不得冒充今日，也不显示今日空态
+    listTasks.mockRejectedValueOnce(new Error("boom"));
+    act(() => screen.getByRole("tab", { name: "今日" }).click());
+    await screen.findByText("任务列表读取失败");
+    expect(screen.queryByText("旧待办")).toBeNull();
+    expect(screen.queryByText("今天没有到期任务")).toBeNull();
+  });
+
+  it("新建/完成任务后保持当前分段刷新", async () => {
+    const todayTask = task("d1", "今天到期", now + 3600_000);
+    listTasks.mockImplementation(async (args: { view?: string }) => {
+      if (args.view === "due_today") return [todayTask];
+      return [];
+    });
+    toggleTask.mockResolvedValue({
+      ...todayTask,
+      status: "completed",
+      completed_at: iso(now),
+    });
+    createFromQuickAdd.mockResolvedValue(task("n1", "临时任务", null));
+    render(<TasksLite />);
+    await screen.findByText("暂无任务");
+
+    act(() => screen.getByRole("tab", { name: "今日" }).click());
+    await screen.findByText("今天到期");
+    const dueTodayCalls = () =>
+      listTasks.mock.calls.filter(([args]) => (args as { view?: string }).view === "due_today")
+        .length;
+    expect(dueTodayCalls()).toBe(1);
+
+    // 完成：store.toggle → refresh → loadLite() 必须仍查 due_today
+    act(() => screen.getByRole("button", { name: "完成「今天到期」" }).click());
+    await waitFor(() => expect(toggleTask).toHaveBeenCalledWith("d1"));
+    await waitFor(() => expect(dueTodayCalls()).toBe(2));
+
+    // 新建：quickCreate → refresh 同样保持今日范围
+    const callsBeforeCreate = listTasks.mock.calls.length;
+    fireEvent.change(screen.getByLabelText("快速添加任务"), {
+      target: { value: "临时任务" },
+    });
+    fireEvent.keyDown(screen.getByLabelText("快速添加任务"), { key: "Enter" });
+    await waitFor(() => expect(createFromQuickAdd).toHaveBeenCalled());
+    await waitFor(() => expect(dueTodayCalls()).toBe(3));
+    // refresh 没有把轻量列表退回「全部」范围
+    expect(
+      listTasks.mock.calls
+        .slice(callsBeforeCreate)
+        .some(([args]) => {
+          const a = args as { view?: string; status?: string };
+          return a.view === "all" && a.status === "all";
+        }),
+    ).toBe(false);
+  });
+
+  it("全部/待办/今日/日程/已完成各自的空态文案", async () => {
+    listTasks.mockResolvedValue([]);
+    render(<TasksLite />);
+    await screen.findByText("暂无任务");
+
+    act(() => screen.getByRole("tab", { name: "待办" }).click());
+    await screen.findByText("暂无待办任务");
+
+    act(() => screen.getByRole("tab", { name: "今日" }).click());
+    await screen.findByText("今天没有到期任务");
+
+    act(() => screen.getByRole("tab", { name: "日程" }).click());
+    await screen.findByText("暂无日程任务");
+
+    act(() => screen.getByRole("tab", { name: "已完成" }).click());
+    await screen.findByText("暂无已完成任务");
   });
 });
 

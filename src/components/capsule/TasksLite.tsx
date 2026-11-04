@@ -1,13 +1,15 @@
 //! 任务面板（胶囊内，对照 `docs/design-refs/v07/停靠效果图/01-tasks.png`）。
 //!
-//! 数据：**不再自持列表**。列表来自 `useTasksStore.lite`（挂载时 loadLite()
-//! 取一次 list_tasks：view=all, status=all, sort=due），完成/新增走 store 的
-//! 动作落库，store.refresh() 在面板打开时顺带刷新这份轻量列表——
-//! 主窗口与胶囊因此只有一个状态源。
+//! 数据：**不再自持列表**。列表来自 `useTasksStore.lite`（挂载时按「全部」
+//! 读取一份真实结果，切换分段时按该分段的真实查询再读一份）——完成/新增走
+//! store 的动作落库，store.refresh() 在面板打开时保持当前分段刷新这份轻量
+//! 列表，主窗口与胶囊因此只有一个状态源。
 //!
-//! 分段筛选只在**同一份真实结果**上做本地细分：待办/今日/日程共用一个
-//! status=pending 的轻量结果，已完成单独用 status=completed 读取——否则
-//! 「最近 12 条」的截断会把可能存在的已完成任务误显示为空。
+//! 分段查询对应关系：待办=status=pending；今日=后端 view=due_today（本地今天
+//! 到期且未完成）；日程=后端 view=scheduled（due_at 非空且未完成）；已完成=
+//! status=completed 按完成时间倒序；全部=最近创建的真实任务。**后端先按真实
+//! 条件过滤、排序，最后 LIMIT 12**，前端不做「前 12 条再筛」的二次截断——
+//! 否则 20 条逾期任务会把今天到期的任务挤出结果，面板误显示为空。
 //! 面板底栏明确标注「最近记录」，完整入口在「全部任务」。
 //! 已完成的量来自 `stats.completed_today`，不伪造数据。
 //!
@@ -17,7 +19,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
-import type { Task } from "../../lib/bridge";
 import { useTasksStore, type TaskLiteScope } from "../../store/useTasksStore";
 import { openFullApp } from "./actions";
 import { dueLabel, sortPending } from "./format";
@@ -35,22 +36,11 @@ const FILTERS: readonly SegOption<Filter>[] = [
   { value: "done", label: "已完成" },
 ];
 
-/** 分段 → 需要读取的轻量结果范围：只有「已完成」需要换一份查询。 */
+/** 分段 → 轻量查询范围：一一对应，每个分段只取自己需要的真实结果。 */
 function scopeOf(filter: Filter): TaskLiteScope {
   if (filter === "done") return "completed";
-  if (filter === "all") return "all";
-  return "pending";
+  return filter;
 }
-
-const sameDay = (a: number, b: number): boolean => {
-  const x = new Date(a);
-  const y = new Date(b);
-  return (
-    x.getFullYear() === y.getFullYear() &&
-    x.getMonth() === y.getMonth() &&
-    x.getDate() === y.getDate()
-  );
-};
 
 export default function TasksLite() {
   const items = useTasksStore((s) => s.lite);
@@ -75,13 +65,22 @@ export default function TasksLite() {
   }, [loadLite, releaseLite]);
 
   /**
-   * 切分段只在数据范围不同时重新读取：待办/今日/日程共用 pending 结果，
-   * 已完成单独读 completed。请求数量受控，不随每次点击都发一条。
+   * 切分段只在数据范围不同时重新读取：每个分段对应一份真实查询。
+   * `liteScope` 是已有数据的范围，`liteTarget` 是最近请求的范围；两者任一
+   * 与目标不一致就要重新确认——否则切回刚离开的分段时，在途响应会把旧范围
+   * 数据作废，而面板误以为已有数据不再请求，最终停在空白。
    */
   const changeFilter = (next: Filter) => {
     setFilter(next);
     const target = scopeOf(next);
-    if (useTasksStore.getState().liteScope !== target) void loadLite(target);
+    const state = useTasksStore.getState();
+    if (
+      state.liteScope !== target ||
+      state.liteTarget !== target ||
+      state.liteError !== null
+    ) {
+      void loadLite(target);
+    }
   };
 
   // 所有延时都必须可回收：面板卸载时清空，避免对已卸载组件 setState
@@ -138,27 +137,19 @@ export default function TasksLite() {
   };
 
   const now = Date.now();
-  const scopeReady = items !== null && liteScope === scopeOf(filter);
+  const scope = scopeOf(filter);
+  // 只有「已成功写入的数据范围」与当前分段一致时，才允许据此判断空态。
+  const scopeReady = items !== null && liteScope === scope;
   const visible = useMemo(() => {
     // 分段范围与已取回数据不一致时视为读取中：不拿旧范围的列表冒充新分段
     if (!items || liteScope !== scopeOf(filter)) return null;
-    // 展示顺序在面板里定：过期优先 → 截止升序 → 无期限最后，已完成按完成时间倒序
+    // 范围已由后端查询表达（过滤 + 排序 + LIMIT），面板只负责展示排序与移出动画。
     const pendingList = sortPending(items.filter((t) => t.status !== "completed"));
     const doneList = items
       .filter((t) => t.status === "completed")
       .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
-    const ordered = [...pendingList, ...doneList].filter((t) => !hidden.has(t.id));
-    const isDone = (t: Task) => t.status === "completed";
-    const list = ordered.filter((t) => {
-      if (filter === "done") return isDone(t);
-      if (isDone(t)) return filter === "all";
-      if (filter === "pending") return true;
-      if (filter === "today") return t.due_at ? sameDay(new Date(t.due_at).getTime(), now) : false;
-      if (filter === "scheduled") return t.due_at !== null;
-      return true;
-    });
-    return list.slice(0, 12);
-  }, [items, liteScope, filter, now, hidden]);
+    return [...pendingList, ...doneList].filter((t) => !hidden.has(t.id)).slice(0, 12);
+  }, [items, liteScope, filter, hidden]);
 
   const localDone = items?.filter((t) => t.status === "completed").length ?? 0;
   const pending = stats?.pending ?? items?.filter((t) => t.status !== "completed").length ?? 0;
@@ -168,15 +159,18 @@ export default function TasksLite() {
   const pct = total > 0 ? Math.round((doneToday / total) * 100) : 0;
   // 数据错误与空态分开：失败时旧列表保留展示 + 可重试错误条；没成功过则错误空态
   const dataError = liteError !== null;
+  // 空态只在「当前分段的真实查询结果为空」时出现，不能由 LIMIT 截断推断
   const noTasksAtAll = scopeReady && items !== null && items.length === 0;
   const emptyText =
     filter === "done"
       ? "暂无已完成任务"
-      : filter === "today" || filter === "scheduled"
-        ? "该筛选下没有任务"
-        : filter === "pending"
-          ? "暂无待办任务"
-          : "暂无任务";
+      : filter === "today"
+        ? "今天没有到期任务"
+        : filter === "scheduled"
+          ? "暂无日程任务"
+          : filter === "pending"
+            ? "暂无待办任务"
+            : "暂无任务";
 
   return (
     <>
@@ -198,31 +192,32 @@ export default function TasksLite() {
       <Segmented label="任务筛选" options={FILTERS} value={filter} onChange={changeFilter} />
 
       <div className="cap-list">
-        {/* 错误优先于空态：读取失败绝不伪装成「暂无待办」 */}
-        {dataError && items === null && (
+        {/* 错误优先于空态：读取失败绝不伪装成「暂无任务」。
+            当前分段尚无成功数据时给错误空态；已有当前分段数据则保留列表 + 错误条。 */}
+        {dataError && !scopeReady && (
           <EmptyState
             icon={<ListTodo size={22} strokeWidth={1.6} aria-hidden="true" />}
             text="任务列表读取失败"
             actionLabel="重试"
-            onAction={() => void loadLite(scopeOf(filter))}
+            onAction={() => void loadLite(scope)}
           />
         )}
 
-        {dataError && items !== null && (
+        {dataError && scopeReady && (
           <div className="cap-item cap-error-row" role="alert">
             <span className="cap-error-text">刷新失败，显示的是上次结果</span>
             <button
               type="button"
               className="cap-mini"
               aria-label="重试读取任务列表"
-              onClick={() => void loadLite(scopeOf(filter))}
+              onClick={() => void loadLite(scope)}
             >
               重试
             </button>
           </div>
         )}
 
-        {!dataError && visible !== null && visible.length === 0 && (
+        {!dataError && scopeReady && visible !== null && visible.length === 0 && (
           <EmptyState
             icon={<ListTodo size={22} strokeWidth={1.6} aria-hidden="true" />}
             text={emptyText}
@@ -230,7 +225,7 @@ export default function TasksLite() {
             onAction={() => inputRef.current?.focus()}
           />
         )}
-        {visible?.map((t) => {
+        {scopeReady && visible?.map((t) => {
           const due = dueLabel(t.due_at, now);
           const completed = t.status === "completed";
           const isDone = completing.has(t.id) || completed;
@@ -283,8 +278,8 @@ export default function TasksLite() {
           <CheckCircle2 size={12} strokeWidth={1.8} aria-hidden="true" />
           {notice ?? `最近记录 · 完成 ${doneToday}`}
         </span>
-        {/* 零任务时没有「今天的完成进度」可言，不渲染无意义的 0% 进度条 */}
-        {!noTasksAtAll && (
+        {/* 全局零任务时没有「今天的完成进度」可言，不渲染无意义的 0% 进度条 */}
+        {total > 0 && (
           <span className="cap-progress" aria-hidden="true">
             <i style={{ width: `${pct}%` }} />
           </span>
