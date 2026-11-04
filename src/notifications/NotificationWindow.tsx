@@ -19,8 +19,14 @@ import { listen } from "@tauri-apps/api/event";
 import { getSettings, snoozeReminder, toggleTask } from "../lib/bridge";
 import { createSubscriptionScope } from "../lib/subscriptions";
 import { resolveSecondaryPreset, resolveTheme, resolveVisualPreset } from "../lib/theme";
-import type { ActionId, NotificationCardData, QueuedCard } from "./notificationTypes";
-import { applyIncoming, withoutCard } from "./notificationUtils";
+import type {
+  ActionId,
+  NotificationCardData,
+  NotificationFitResult,
+  NotificationShowPayload,
+  QueuedCard,
+} from "./notificationTypes";
+import { applyIncoming, revealTarget, withoutCard } from "./notificationUtils";
 import NotificationStack from "./NotificationStack";
 
 /** 后端 notification_window.rs 的 SHOW_EVENT（避免跨入口 import 后端常量）。 */
@@ -29,6 +35,10 @@ const SHOW_EVENT = "notification-show";
 const EXIT_MS = 210;
 /** 卡内动作失败的行内反馈展示时长 */
 const FEEDBACK_MS = 3000;
+/** 占位释放的最长等待（帧回调被节流/fit 失败时的安全退化上限）。
+ *  实测 WebView2 视口同步在部分环境下可达 ~350ms，安全阀必须明显高于该值，
+ *  否则会在窗口尚未长高时提前展示详情、重新引入底部裁切。 */
+const REVEAL_TIMEOUT_MS = 1200;
 
 interface SettingsSnap {
   theme: string;
@@ -54,6 +64,9 @@ export default function NotificationWindow() {
   const [cards, setCards] = useState<QueuedCard[]>([]);
   const [leavingIds, setLeavingIds] = useState<ReadonlySet<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  /** 展开详情的目标高度尚未就绪：详情只以零高度影子节点参与测量，不绘制。
+   *  窗口 fit 到目标高度后清空此状态，详情才进入正常布局并播放入场动画。 */
+  const [expandHoldId, setExpandHoldId] = useState<string | null>(null);
   const [busy, setBusy] = useState<ActionId | null>(null);
   const [feedback, setFeedback] = useState<{ id: string; msg: string } | null>(null);
   const [prefersDark, setPrefersDark] = useState(
@@ -73,13 +86,30 @@ export default function NotificationWindow() {
   const revealedRef = useRef<Set<string>>(new Set());
   /** 当前卡片快照：reveal 回调异步执行，需要读最新一批卡片键。 */
   const cardsRef = useRef<QueuedCard[]>([]);
-  /** 上一提交批次已出现过的卡片键：渲染期比对出“新出现的卡片”，提交后再更新。 */
-  const knownKeysRef = useRef<ReadonlySet<string>>(new Set());
   const [, bumpReveal] = useState(0);
   // 离场/反馈定时器统一登记：卸载时全部释放，不留悬挂回调
   const timersRef = useRef<Set<number>>(new Set());
   // 已进入离场的 id：自动消失与手动关闭竞态下只允许一个离场定时器
   const leavingRef = useRef<Set<string>>(new Set());
+  /** 当前轮次号（后端随 notification-show 下发）：fit 回传时原样带回，后端据此丢弃迟到请求。 */
+  const roundRef = useRef<number | null>(null);
+  /** 本轮 fit 序号：同一轮内快速展开/收起时保证后发的尺寸调整胜出。 */
+  const fitSeqRef = useRef(0);
+  /** 最近一次 fit 的 token：只有最新一次 fit 的回调可以安排占位释放。 */
+  const fitTokenRef = useRef(0);
+  /** 最近一次 fit 的请求高度与后端实际生效高度（可能被工作区钳制）。 */
+  const lastFitRef = useRef<{ wanted: number; applied: number } | null>(null);
+  /** 最新一次测量的目标高度：释放判定每帧读取它，字体加载/换行导致目标变化时不会提前释放。 */
+  const wantedRef = useRef(0);
+  /** 等待窗口就绪后再展示的展开目标。 */
+  const pendingExpandRef = useRef<{ id: string; wanted: number } | null>(null);
+  /** expandedId 的同步镜像：异步释放回调不能读到已过期的渲染闭包。 */
+  const expandedIdRef = useRef<string | null>(null);
+  /** 占位释放的 rAF / 一次性超时与令牌：新测量、hide、卸载都会取消旧回调。 */
+  const revealRafRef = useRef<number | null>(null);
+  const revealTimerRef = useRef<number | null>(null);
+  const revealTokenRef = useRef(0);
+  const disposedRef = useRef(false);
 
   const spawnTimer = useCallback((fn: () => void, ms: number): number => {
     const t = window.setTimeout(() => {
@@ -97,6 +127,29 @@ export default function NotificationWindow() {
     },
     [],
   );
+
+  /** 取消尚未完成的占位释放（rAF 与一次性超时）。 */
+  const cancelRevealWait = useCallback(() => {
+    revealTokenRef.current += 1;
+    if (revealRafRef.current !== null) {
+      window.cancelAnimationFrame(revealRafRef.current);
+      revealRafRef.current = null;
+    }
+    if (revealTimerRef.current !== null) {
+      window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+  }, []);
+
+  // StrictMode 会挂载→卸载→再挂载：disposed 标记必须在 setup 里复位，
+  // 卸载后所有异步释放回调都不再更新状态。
+  useEffect(() => {
+    disposedRef.current = false;
+    return () => {
+      disposedRef.current = true;
+      cancelRevealWait();
+    };
+  }, [cancelRevealWait]);
 
   /** 读取设置快照。启动瞬间 IPC 可能尚未就绪（读失败会静默回退系统明暗，
    *  导致通知窗口长期与设置里的主题/预设不一致），所以 show 事件到达时若快照
@@ -150,9 +203,20 @@ export default function NotificationWindow() {
     const scope = createSubscriptionScope();
     // 订阅建立成功后才向后端声明就绪：此后后端才允许显示通知窗口。
     scope.add(
-      listen<NotificationCardData[]>(SHOW_EVENT, (e) => {
-        const payload = Array.isArray(e.payload) ? e.payload : [e.payload];
+      listen<NotificationShowPayload | NotificationCardData[]>(SHOW_EVENT, (e) => {
+        // 兼容旧形态（裸卡片数组）：新协议携带 round，前后端用它关联 fit 轮次。
+        const payload = Array.isArray(e.payload)
+          ? e.payload
+          : Array.isArray(e.payload?.cards)
+            ? e.payload.cards
+            : [];
         if (payload.length === 0) return;
+        if (!Array.isArray(e.payload) && typeof e.payload?.round === "number") {
+          roundRef.current = e.payload.round;
+          // 每批新轮次重新编号：后端也按批次重置序号，旧 fit 不能覆盖新轮次。
+          fitSeqRef.current = 0;
+          lastFitRef.current = null;
+        }
         // 启动快照读取失败时（IPC 未就绪等瞬时原因），展示前补取一次：
         // 否则整轮卡片都会按系统明暗渲染，与设置里的主题/预设不一致。
         if (!snapRef.current) loadSnap();
@@ -172,15 +236,19 @@ export default function NotificationWindow() {
     if (cards.length === 0 && leavingIds.size === 0) {
       // 下一轮展示重新走占位：窗口隐藏后，视口高度与卡片高度都要重新同步
       revealedRef.current.clear();
-      knownKeysRef.current = new Set();
-      void invoke("hide_notification_window").catch(() => {});
+      pendingExpandRef.current = null;
+      expandedIdRef.current = null;
+      setExpandHoldId(null);
+      cancelRevealWait();
+      // 携带本轮轮次：若隐藏请求在途时后端已送出下一批通知，后端会忽略它，避免丢通知。
+      void invoke("hide_notification_window", { round: roundRef.current }).catch(() => {});
     }
-  }, [cards.length, leavingIds.size]);
+  }, [cards.length, leavingIds.size, cancelRevealWait]);
 
-  // 本批次卡片键提交后登记：下一批渲染用它比对出“新出现的卡片”
-  useEffect(() => {
+  // 本批次卡片键在提交后、测量前登记：占位释放只覆盖本次 fit 已测量的卡片，
+  // 之后到达的新卡仍保持占位，等它自己的 fit/视口就绪。
+  useLayoutEffect(() => {
     cardsRef.current = cards;
-    knownKeysRef.current = new Set(cards.map((c) => c.mergeKey));
   }, [cards]);
 
   const leaving = leavingIds.size > 0;
@@ -196,24 +264,66 @@ export default function NotificationWindow() {
     // （消失前闪缩、位置漂移）。离场结束、剩余卡片重新布局后只收缩一次。
     if (!stack || cards.length === 0 || leaving) return;
 
-    /** 解除新卡占位：等 WebView 视口跟上窗口高度后再绘制（实测视口比原生窗口晚 4~9ms）。
-     *  视口被工作区高度钳制而不再变化时，最多再等 8 帧，避免卡片一直不出现。 */
-    const releaseWhenSized = (wanted: number) => {
-      // 只释放本次 fit 对应的卡片：轮询期间若有新卡到达，它要等自己的 fit，
-      // 不能被这一轮提前放出来（否则仍会在旧视口里被裁一帧）。
-      const keys = cardsRef.current.map((c) => c.mergeKey);
-      const before = window.innerHeight;
-      let tries = 0;
+    /** 展开详情的自然高度：影子容器高度为 0、不占布局，内部 .ntf-extra 仍按
+     *  真实卡片宽度布局；连同它自身的 margin 一起计入目标，避免少算一段间距。 */
+    const heldExtraHeight = (): number => {
+      const extra = stack.querySelector<HTMLElement>(".ntf-extra-measure .ntf-extra");
+      if (!extra) return 0;
+      const extraStyle = getComputedStyle(extra);
+      const marginTop = parseFloat(extraStyle.marginTop) || 0;
+      const marginBottom = parseFloat(extraStyle.marginBottom) || 0;
+      return Math.max(0, extra.getBoundingClientRect().height + marginTop + marginBottom);
+    };
+
+    /** 解除占位：只释放本次 fit 已覆盖的卡片（之后到达的新卡等自己的 fit），
+     *  以及仍有效的展开目标。 */
+    const releaseHeld = (keys: readonly string[]) => {
+      if (disposedRef.current) return;
+      revealTokenRef.current += 1;
+      if (revealRafRef.current !== null) {
+        window.cancelAnimationFrame(revealRafRef.current);
+        revealRafRef.current = null;
+      }
+      if (revealTimerRef.current !== null) {
+        window.clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = null;
+      }
+      for (const key of keys) {
+        revealedRef.current.add(key);
+      }
+      const pending = pendingExpandRef.current;
+      if (pending && expandedIdRef.current === pending.id) {
+        pendingExpandRef.current = null;
+        setExpandHoldId((held) => (held === pending.id ? null : held));
+      }
+      bumpReveal((n) => n + 1);
+    };
+
+    /** 等原生窗口与 WebView 视口都达到目标后再展示新增内容。
+     *  - 每帧读取最新目标：字体回退/换行改变高度时不会按旧目标提前释放；
+     *  - 后端 fit 结果被工作区/最大高度钳制时收敛到 applied，剩余内容由栈内滚动承载；
+     *  - 一次性超时兜底：rAF 被节流或 fit 失败时也不会让新卡永久 opacity:0。 */
+    const scheduleReveal = (wanted: number, keys: readonly string[]) => {
+      if (disposedRef.current) return;
+      wantedRef.current = wanted;
+      cancelRevealWait();
+      const token = ++revealTokenRef.current;
+      const deadline = performance.now() + REVEAL_TIMEOUT_MS;
       const tick = () => {
-        const h = window.innerHeight;
-        if (h !== before || h + 1 >= wanted || tries++ >= 8) {
-          for (const key of keys) revealedRef.current.add(key);
-          bumpReveal((n) => n + 1);
+        if (disposedRef.current || token !== revealTokenRef.current) return;
+        const target = revealTarget(wantedRef.current, lastFitRef.current);
+        if (window.innerHeight + 1.5 >= target || performance.now() >= deadline) {
+          releaseHeld(keys);
           return;
         }
-        requestAnimationFrame(tick);
+        revealRafRef.current = window.requestAnimationFrame(tick);
       };
-      requestAnimationFrame(tick);
+      revealRafRef.current = window.requestAnimationFrame(tick);
+      // rAF 在窗口被遮挡/最小化时可能被节流：一次性超时保证状态最终收敛。
+      revealTimerRef.current = window.setTimeout(() => {
+        if (disposedRef.current || token !== revealTokenRef.current) return;
+        releaseHeld(keys);
+      }, REVEAL_TIMEOUT_MS + 50);
     };
 
     const measure = () => {
@@ -224,18 +334,45 @@ export default function NotificationWindow() {
       const frame = stack.parentElement ?? stack;
       const style = getComputedStyle(frame);
       const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-      // scrollHeight 含被 max-height 钳制而溢出的内容，窗口按真实内容高度增长；
+      // 展开详情的影子节点不占布局（高度 0），其自然高度单独计入目标。
       // +2px 容差：分数 DPI 下视口高度可能比窗口逻辑高度矮 1px（与右键菜单一致）
-      const height = Math.ceil(stack.scrollHeight + padY) + 2;
+      const height = Math.ceil(stack.scrollHeight + padY + heldExtraHeight()) + 2;
       // 布局尚未完成（scrollHeight=0）或异常小时不上报：避免把窗口缩到最小高度
       if (!Number.isFinite(height) || height < 80) return;
-      if (height === reportedRef.current) return;
+      wantedRef.current = height;
+      const pending = pendingExpandRef.current;
+      if (pending && expandedIdRef.current === pending.id) pending.wanted = height;
+      // 本次 fit 覆盖的卡片快照：之后到达的新卡不在其中，仍保持占位。
+      const keys = cardsRef.current.map((c) => c.mergeKey);
+      if (height === reportedRef.current) {
+        // 高度未变（再次展开/目标已上报）：仍需走一次就绪判定，
+        // 否则展开详情可能永远等不到 fit 回调而保持占位。
+        if (pending) scheduleReveal(height, keys);
+        return;
+      }
       reportedRef.current = height;
-      void invoke("fit_notification_window", { height })
-        .catch(() => {})
+      const seq = ++fitSeqRef.current;
+      const round = roundRef.current;
+      const token = ++fitTokenRef.current;
+      void invoke<NotificationFitResult>("fit_notification_window", {
+        height,
+        round,
+        seq,
+      })
+        .then((res) => {
+          if (disposedRef.current || token !== fitTokenRef.current) return;
+          if (res && res.accepted !== false && Number.isFinite(res.applied)) {
+            lastFitRef.current = { wanted: height, applied: res.applied };
+          }
+        })
+        .catch(() => {
+          if (disposedRef.current || token !== fitTokenRef.current) return;
+          // fit 失败：不重试、不抛错；超时释放后内容由栈内滚动承载。
+          lastFitRef.current = null;
+        })
         .finally(() => {
-          // 窗口尺寸已生效后，解除新卡占位，让它们带入场动画出现
-          releaseWhenSized(height);
+          if (disposedRef.current || token !== fitTokenRef.current) return;
+          scheduleReveal(height, keys);
         });
     };
 
@@ -266,7 +403,7 @@ export default function NotificationWindow() {
       document.fonts?.removeEventListener?.("loadingdone", onFontsDone);
       ro?.disconnect();
     };
-  }, [cards, leaving, expandedId, feedback]);
+  }, [cards, leaving, expandedId, expandHoldId, feedback, cancelRevealWait]);
 
   const dismiss = useCallback(
     (id: string) => {
@@ -279,9 +416,16 @@ export default function NotificationWindow() {
         next.add(id);
         return next;
       });
+      // 关闭的卡片不能继续作为展开目标：否则迟到的释放回调会把占位状态写回已卸载的卡片
+      if (pendingExpandRef.current?.id === id) pendingExpandRef.current = null;
+      if (expandedIdRef.current === id) expandedIdRef.current = null;
+      setExpandHoldId((held) => (held === id ? null : held));
       setExpandedId((e) => (e === id ? null : e));
       spawnTimer(() => {
         leavingRef.current.delete(id);
+        // 离场完成后才撤销“已释放”标记：同一合并键再次出现时需要重新占位等窗口长高。
+        const removedKey = cardsRef.current.find((c) => c.id === id)?.mergeKey;
+        if (removedKey) revealedRef.current.delete(removedKey);
         setCards((q) => withoutCard(q, id, Date.now()));
         setLeavingIds((ids) => {
           const next = new Set(ids);
@@ -304,8 +448,20 @@ export default function NotificationWindow() {
   const onAction = useCallback(
     (card: QueuedCard, id: ActionId) => {
       if (id === "expand") {
-        // 展开互斥：同一时间只展开一张（与原型一致）
-        setExpandedId((e) => (e === card.id ? null : card.id));
+        // 展开互斥：同一时间只展开一张（与原型一致）。
+        // 展开时详情先以零高度影子节点参与测量，窗口 fit 到目标高度后才真正展示；
+        // 收起时直接卸载详情，窗口随后按缩小后的高度收起（右下角锚点不变）。
+        if (expandedId === card.id) {
+          pendingExpandRef.current = null;
+          expandedIdRef.current = null;
+          setExpandHoldId(null);
+          setExpandedId(null);
+        } else {
+          pendingExpandRef.current = { id: card.id, wanted: 0 };
+          expandedIdRef.current = card.id;
+          setExpandHoldId(card.id);
+          setExpandedId(card.id);
+        }
         return;
       }
       setBusy(id);
@@ -416,15 +572,13 @@ export default function NotificationWindow() {
       }
       setBusy(null);
     },
-    [dismiss, showFeedback],
+    [dismiss, showFeedback, expandedId],
   );
 
-  // 新出现的卡片先占位：等窗口与 WebView 视口都按新高度稳定后再绘制，
-  // 避免入场时底部按钮被旧视口/旧窗口裁掉（合并更新沿用已有卡片，不占位）。
+  // 本轮尚未释放的卡片先占位：等窗口与 WebView 视口都按新高度稳定后再绘制，
+  // 避免入场时底部按钮被旧视口/旧窗口裁掉。合并更新沿用已释放的键，不重放入场动画。
   const heldKeys: ReadonlySet<string> = new Set(
-    cards
-      .filter((c) => !knownKeysRef.current.has(c.mergeKey) && !revealedRef.current.has(c.mergeKey))
-      .map((c) => c.mergeKey),
+    cards.filter((c) => !revealedRef.current.has(c.mergeKey)).map((c) => c.mergeKey),
   );
 
   return (
@@ -433,6 +587,7 @@ export default function NotificationWindow() {
         cards={cards}
         leavingIds={leavingIds}
         heldKeys={heldKeys}
+        extraHeldId={expandHoldId}
         expandedId={expandedId}
         busy={busy}
         feedback={feedback}

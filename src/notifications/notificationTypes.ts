@@ -12,6 +12,22 @@ export type NotificationKind =
   | "digest"
   | "generic";
 
+/** 后端 notification-show 事件：round 标识本批通知轮次，fit 回传时原样带回。
+ *  仅用于前后端轮次关联，不参与卡片渲染。 */
+export interface NotificationShowPayload {
+  round: number;
+  cards: NotificationCardData[];
+}
+
+/** fit_notification_window 的执行结果：applied 是工作区/最大高度钳制后的实际逻辑高度，
+ *  可能小于请求高度（此时内容由通知栈内部滚动承载）。 */
+export interface NotificationFitResult {
+  accepted: boolean;
+  round: number;
+  applied: number;
+  clamped: boolean;
+}
+
 /** 后端 notification-show 事件的单张卡片载荷。 */
 export interface NotificationCardData {
   id: string;

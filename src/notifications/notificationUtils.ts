@@ -373,3 +373,17 @@ export function actionsFor(card: QueuedCard): ActionId[] {
   }
 }
 
+
+/** 视口就绪目标：只有作用于当前内容高度的 fit 结果才能作为目标上限。
+ * - 没有 fit 结果：按最新测量高度等待；
+ * - fit 针对的是旧测量：继续等最新高度，不能因视口变化提前解除占位；
+ * - fit 被工作区/最大高度钳制（applied < requested）：目标收敛到系统允许值，
+ *   剩余内容由通知栈内部滚动承载。 */
+export function revealTarget(
+  wanted: number,
+  fit: { wanted: number; applied: number } | null,
+): number {
+  if (!fit) return wanted;
+  if (fit.wanted + 0.5 < wanted) return wanted;
+  return Math.min(wanted, fit.applied);
+}

@@ -454,6 +454,17 @@ body {
   line-height: 1.5;
   animation: ntfDetailIn 0.2s ease-out;
 }
+/* 展开详情的测量影子：高度 0、不占布局、不绘制；内部 .ntf-extra 仍按真实
+   卡片宽度布局，供窗口先算好目标高度。就绪后影子消失，正常节点播入场动画。 */
+.ntf-extra-measure {
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+.ntf-extra-measure .ntf-extra {
+  animation: none;
+}
 .ntf-extra-line {
   display: flex;
   justify-content: space-between;

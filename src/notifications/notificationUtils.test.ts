@@ -19,6 +19,7 @@ import {
   relativeTime,
   remainingMs,
   resumeDeadline,
+  revealTarget,
   waitingDuration,
   withoutCard,
 } from "./notificationUtils";
@@ -311,5 +312,26 @@ describe("动作配置的诚实性", () => {
   it("执行中/完成提供查看详情", () => {
     expect(actionsFor(queued({ kind: "agent_running" }))).toEqual(["view"]);
     expect(actionsFor(queued({ kind: "agent_done" }))).toEqual(["view"]);
+  });
+});
+
+describe("展开/新卡的视口就绪目标", () => {
+  it("没有 fit 结果时按最新测量高度等待", () => {
+    expect(revealTarget(320, null)).toBe(320);
+  });
+
+  it("旧 fit 不覆盖新测量：字体/换行让目标变高时必须继续等", () => {
+    // fit 对应 300，但随后测量已变为 340：不能按 300 提前解除占位
+    expect(revealTarget(340, { wanted: 300, applied: 300 })).toBe(340);
+  });
+
+  it("当前 fit 已生效时按实际高度收敛", () => {
+    expect(revealTarget(320, { wanted: 320, applied: 320 })).toBe(320);
+  });
+
+  it("工作区/最大高度钳制时按 applied 释放，剩余内容由内部滚动承载", () => {
+    expect(revealTarget(700, { wanted: 700, applied: 530 })).toBe(530);
+    // applied 略高于目标（亚像素）时仍以目标为准
+    expect(revealTarget(320, { wanted: 320, applied: 321 })).toBe(320);
   });
 });

@@ -40,6 +40,7 @@ function chipClass(kind: string): string {
 export default function NotificationCard({
   card,
   held = false,
+  extraHeld = false,
   leaving,
   expanded,
   busy,
@@ -51,6 +52,8 @@ export default function NotificationCard({
   card: QueuedCard;
   /** 窗口已可见时新增：先占位不绘制，等窗口按新高度显示后再播入场动画。 */
   held?: boolean;
+  /** 展开详情已请求但窗口高度尚未就绪：只以零高度影子节点参与测量，不绘制。 */
+  extraHeld?: boolean;
   leaving: boolean;
   expanded: boolean;
   busy: ActionId | null;
@@ -154,6 +157,24 @@ export default function NotificationCard({
     );
   }
 
+  // 详情节点在「窗口高度就绪前」包进零高度影子容器：参与测量但不占布局、
+  // 不绘制；窗口长到目标高度后再由正常布局接管并播 ntfDetailIn 动画。
+  const extraContent =
+    expanded && rows.length > 0 ? (
+      <div className="ntf-extra">
+        {rows.map((r, i) => (
+          <div
+            key={`${r.label}-${i}`}
+            // 长原因/长路径改为整行左对齐，避免被 max-width 挤成右对齐的多行碎块
+            className={`ntf-extra-line${r.value.length > 36 ? " long" : ""}`}
+          >
+            <span>{r.label}</span>
+            <strong className={r.warning ? "warning" : undefined}>{r.value}</strong>
+          </div>
+        ))}
+      </div>
+    ) : null;
+
   return (
     <article
       className={`ntf-card${held ? " ntf-held" : ""}${leaving ? " leaving" : ""}${expanded ? " expanded" : ""}`}
@@ -228,20 +249,14 @@ export default function NotificationCard({
         onAction={(id) => onAction(card, id)}
       />
 
-      {expanded && rows.length > 0 && (
-        <div className="ntf-extra">
-          {rows.map((r, i) => (
-            <div
-              key={`${r.label}-${i}`}
-              // 长原因/长路径改为整行左对齐，避免被 max-width 挤成右对齐的多行碎块
-              className={`ntf-extra-line${r.value.length > 36 ? " long" : ""}`}
-            >
-              <span>{r.label}</span>
-              <strong className={r.warning ? "warning" : undefined}>{r.value}</strong>
-            </div>
-          ))}
-        </div>
-      )}
+      {extraContent &&
+        (extraHeld ? (
+          <div className="ntf-extra-measure" aria-hidden="true">
+            {extraContent}
+          </div>
+        ) : (
+          extraContent
+        ))}
 
       {/* 只有存在补充信息时才提供就地展开；纯重复信息不再显示无意义入口。 */}
       {rows.length > 0 && (

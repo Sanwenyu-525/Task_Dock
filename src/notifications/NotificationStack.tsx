@@ -11,6 +11,7 @@ export default function NotificationStack({
   busy,
   feedback,
   heldKeys,
+  extraHeldId,
   rootRef,
   onExpire,
   onClose,
@@ -20,6 +21,8 @@ export default function NotificationStack({
   leavingIds: ReadonlySet<string>;
   /** 窗口已可见时新增的卡片键：先占位（不绘制）等窗口长高，避免入场瞬间被裁。 */
   heldKeys: ReadonlySet<string>;
+  /** 展开详情尚未等到窗口高度就绪的卡片 id：详情以零高度影子节点参与测量，不绘制。 */
+  extraHeldId: string | null;
   expandedId: string | null;
   busy: ActionId | null;
   feedback: { id: string; msg: string } | null;
@@ -47,6 +50,7 @@ export default function NotificationStack({
             // 同键更新就地复用实例（不重放入场动画）；不同键互不干扰
             card={card}
             held={heldKeys.has(card.mergeKey)}
+            extraHeld={extraHeldId === card.id}
             leaving={leavingIds.has(card.id)}
             expanded={expandedId === card.id}
             busy={busy}
