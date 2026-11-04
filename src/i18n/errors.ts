@@ -29,9 +29,13 @@ export const ERROR_MESSAGE_KEYS: Record<ErrorCode, MessageKey> = {
 /**
  * 把任意错误转成当前语言的用户可读文案。
  * 结构化错误 → 本地化文案；旧格式错误 → 保留原始 message（不改写、不猜测）。
+ * 后端可能先于前端新增错误码（`normalizeError` 会按字符串原样接收），未知 code
+ * 必须回退到通用错误，不能返回 `undefined` 导致界面空白。
  */
 export function localizedErrorMessage(raw: unknown): string {
   const error = normalizeError(raw);
   if (error.legacy) return error.message;
-  return t(ERROR_MESSAGE_KEYS[error.code]);
+  const key = ERROR_MESSAGE_KEYS[error.code];
+  const text = key ? t(key) : "";
+  return text || t("errors.UNKNOWN_ERROR");
 }

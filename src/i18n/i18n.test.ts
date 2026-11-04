@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { enUS } from "../locales/en-US";
 import { zhCN, type MessageKey } from "../locales/zh-CN";
 import {
@@ -12,6 +12,7 @@ import {
 import {
   __resetLocaleForTests,
   getLocale,
+  initLocale,
   LOCALE_STORAGE_KEY,
   readStoredPreference,
   setLocalePreference,
@@ -109,5 +110,66 @@ describe("跟随系统", () => {
   it("显式偏好不受系统语言影响", () => {
     expect(resolveLocale("en-US", "zh-CN")).toBe("en-US");
     expect(resolveLocale("zh-CN", "en-US")).toBe("zh-CN");
+  });
+});
+
+describe("重启恢复（模块重新加载）", () => {
+  it("读取已保存偏好；损坏值在启动时回退中文", async () => {
+    localStorage.setItem(LOCALE_STORAGE_KEY, "en-US");
+    vi.resetModules();
+    const en = await import("./index");
+    expect(en.getLocale()).toBe("en-US");
+    expect(en.readStoredPreference()).toBe("en-US");
+
+    localStorage.setItem(LOCALE_STORAGE_KEY, "fr-FR");
+    vi.resetModules();
+    const zh = await import("./index");
+    expect(zh.getLocale()).toBe("zh-CN");
+    expect(zh.readStoredPreference()).toBe("zh-CN");
+  });
+});
+
+describe("跨窗口同步（storage 事件）", () => {
+  function dispatchStorage(key: string | null, newValue: string | null) {
+    window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+  }
+
+  it("其他窗口写入 en-US 后本窗口内存态与 <html lang> 同步更新", () => {
+    const dispose = initLocale();
+    try {
+      localStorage.setItem(LOCALE_STORAGE_KEY, "en-US");
+      dispatchStorage(LOCALE_STORAGE_KEY, "en-US");
+      expect(getLocale()).toBe("en-US");
+      expect(document.documentElement.lang).toBe("en-US");
+
+      localStorage.setItem(LOCALE_STORAGE_KEY, "zh-CN");
+      dispatchStorage(LOCALE_STORAGE_KEY, "zh-CN");
+      expect(getLocale()).toBe("zh-CN");
+      expect(document.documentElement.lang).toBe("zh-CN");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("其他窗口清空存储（key=null）或写入非法值时回退中文", () => {
+    setLocalePreference("en-US");
+    const dispose = initLocale();
+    try {
+      dispatchStorage(null, null);
+      expect(getLocale()).toBe("zh-CN");
+
+      setLocalePreference("en-US");
+      dispatchStorage(LOCALE_STORAGE_KEY, "fr-FR");
+      expect(getLocale()).toBe("zh-CN");
+    } finally {
+      dispose();
+    }
+  });
+
+  it("解绑后不再响应 storage 事件", () => {
+    const dispose = initLocale();
+    dispose();
+    dispatchStorage(LOCALE_STORAGE_KEY, "en-US");
+    expect(getLocale()).toBe("zh-CN");
   });
 });

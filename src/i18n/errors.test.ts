@@ -34,4 +34,13 @@ describe("错误码映射", () => {
     setLocalePreference("en-US");
     expect(localizedErrorMessage(legacy)).toBe("磁盘写入失败：磁盘已满");
   });
+
+  it("后端新增未知错误码时回退通用文案，不返回 undefined", () => {
+    const future = normalizeError({ code: "FUTURE_ERROR_CODE", message: "raw message" });
+    expect(future.legacy).toBe(false);
+    expect(localizedErrorMessage(future)).toBe("发生未知错误");
+
+    setLocalePreference("en-US");
+    expect(localizedErrorMessage(future)).toBe("An unexpected error occurred.");
+  });
 });

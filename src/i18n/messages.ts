@@ -110,6 +110,9 @@ function interpolate(message: string, params?: MessageParams): string {
  * `count` 参数会触发复数变体（`键_one` / `键_other`）。
  */
 export function translate(locale: LocaleCode, key: MessageKey, params?: MessageParams): string {
+  // 防御运行时传入非法键（例如后端返回了前端未登记的错误码）：
+  // 不能让 undefined 穿透成 React 空文本或 `undefined` 字符串。
+  if (typeof key !== "string" || key.length === 0) return "";
   const primary = lookup(locale, key, params);
   if (primary !== undefined) return interpolate(primary, params);
   if (locale !== DEFAULT_LOCALE) reportMissing(locale, key);

@@ -24,6 +24,8 @@ interface LocaleState {
   locale: LocaleCode;
   setPreference: (preference: LocalePreference) => void;
   syncSystem: () => void;
+  /** 其他窗口写入 `taskdock.locale` 后同步本窗口内存态（不回写存储，避免事件回环）。 */
+  syncFromStorage: (raw: string | null) => void;
 }
 
 function systemLanguage(): string | null {
@@ -67,26 +69,37 @@ function applyDocumentLocale(locale: LocaleCode): void {
 const initialPreference = readStoredPreference();
 const initialLocale = resolveLocale(initialPreference, systemLanguage());
 
-export const useLocaleStore = create<LocaleState>((set, get) => ({
-  preference: initialPreference,
-  locale: initialLocale,
-  setPreference: (preference) => {
-    // 调用方可能来自旧配置/手写存储，非法值统一收敛到默认中文。
-    const next = isLocalePreference(preference) ? preference : DEFAULT_LOCALE;
-    const locale = resolveLocale(next, systemLanguage());
-    persistPreference(next);
-    set({ preference: next, locale });
+export const useLocaleStore = create<LocaleState>((set, get) => {
+  const applyPreference = (preference: LocalePreference) => {
+    const locale = resolveLocale(preference, systemLanguage());
+    set({ preference, locale });
     applyDocumentLocale(locale);
-  },
-  syncSystem: () => {
-    if (get().preference !== "system") return;
-    const locale = resolveLocale("system", systemLanguage());
-    if (locale !== get().locale) {
-      set({ locale });
-      applyDocumentLocale(locale);
-    }
-  },
-}));
+  };
+
+  return {
+    preference: initialPreference,
+    locale: initialLocale,
+    setPreference: (preference) => {
+      // 调用方可能来自旧配置/手写存储，非法值统一收敛到默认中文。
+      const next = isLocalePreference(preference) ? preference : DEFAULT_LOCALE;
+      persistPreference(next);
+      applyPreference(next);
+    },
+    syncSystem: () => {
+      if (get().preference !== "system") return;
+      const locale = resolveLocale("system", systemLanguage());
+      if (locale !== get().locale) {
+        set({ locale });
+        applyDocumentLocale(locale);
+      }
+    },
+    syncFromStorage: (raw) => {
+      // 损坏值 / 其他窗口清空存储时同样收敛到默认中文，与启动读取保持一致。
+      const next = isLocalePreference(raw) ? raw : DEFAULT_LOCALE;
+      applyPreference(next);
+    },
+  };
+});
 
 applyDocumentLocale(initialLocale);
 
@@ -109,15 +122,26 @@ export function t(key: MessageKey, params?: MessageParams): string {
 }
 
 /**
- * 在主窗口与各独立 WebView 入口调用一次：同步 `<html lang>`，并监听系统语言变化
- * （仅在偏好为「跟随系统」时实际切换）。返回解绑函数，便于测试与热重载。
+ * 在主窗口与各独立 WebView 入口调用一次：同步 `<html lang>`，监听系统语言变化
+ * （仅在偏好为「跟随系统」时实际切换），并监听其他窗口写入的 `taskdock.locale`
+ * （设置页只在主窗口，但捕获/通知/右键菜单窗口常驻不重建，必须靠 storage 事件同步）。
+ * 返回解绑函数，便于测试与热重载。
  */
 export function initLocale(): () => void {
   applyDocumentLocale(useLocaleStore.getState().locale);
   if (typeof window === "undefined") return () => {};
   const onLanguageChange = () => useLocaleStore.getState().syncSystem();
+  const onStorage = (event: StorageEvent) => {
+    // `localStorage.clear()` 触发的 key 为 null，同样按「未配置」回退默认语言。
+    if (event.key !== null && event.key !== LOCALE_STORAGE_KEY) return;
+    useLocaleStore.getState().syncFromStorage(event.newValue);
+  };
   window.addEventListener("languagechange", onLanguageChange);
-  return () => window.removeEventListener("languagechange", onLanguageChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener("languagechange", onLanguageChange);
+    window.removeEventListener("storage", onStorage);
+  };
 }
 
 /** 仅供测试：恢复默认语言并清空缺失键记录。 */
