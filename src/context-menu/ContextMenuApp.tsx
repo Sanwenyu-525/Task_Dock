@@ -13,7 +13,7 @@
 //! fit 测量仅在 show 后执行一次（rAF 内读取，避免布局抖动）。
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand as invoke } from "../lib/errors";
 import { listen } from "@tauri-apps/api/event";
 import { Check } from "lucide-react";
 import { getSettings } from "../lib/bridge";
@@ -65,6 +65,7 @@ export default function ContextMenuApp() {
         theme: s.theme,
         autostart: s.autostart,
         visual_preset: s.visual_preset,
+        snap_display_mode: s.snap_display_mode,
       };
       setSnap(next);
       return next;
@@ -137,6 +138,11 @@ export default function ContextMenuApp() {
     scope.add(
       listen<string>("mode-changed", (e) =>
         setSnap((s) => (s ? { ...s, mode: e.payload } : s)),
+      ),
+    );
+    scope.add(
+      listen<string>("snap-form-changed", (e) =>
+        setSnap((s) => (s ? { ...s, snap_display_mode: e.payload } : s)),
       ),
     );
     // 系统明暗变化：theme=system 时实时反映

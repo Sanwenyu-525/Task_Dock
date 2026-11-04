@@ -414,6 +414,8 @@ pub struct MenuSnapshot {
     pub theme: String,
     pub autostart: bool,
     pub visual_preset: String,
+    /// 边缘吸附展示形态：capsule | full
+    pub snap_display_mode: String,
 }
 
 fn read_snapshot(db: &Db) -> Option<MenuSnapshot> {
@@ -422,6 +424,7 @@ fn read_snapshot(db: &Db) -> Option<MenuSnapshot> {
         theme: s.theme,
         autostart: s.autostart,
         visual_preset: s.visual_preset,
+        snap_display_mode: s.snap_display_mode,
     })
 }
 
@@ -492,6 +495,26 @@ pub fn context_menu_action(
                     tracing::warn!("切换主题失败（不广播 theme-changed）: {e}");
                     err_result(&db, format!("切换主题失败：{e}"))
                 }
+            }
+        }
+        // 边缘吸附方式：只持久化偏好并广播；主窗口引擎负责原地切换（浮动窗口不移动）。
+        "snap-form:capsule" | "snap-form:full" => {
+            let form = action.trim_start_matches("snap-form:").to_string();
+            match crate::commands::settings::validate_setting(
+                "snap_display_mode",
+                &serde_json::json!(form),
+            ) {
+                Ok(()) => match db.set_setting("snap_display_mode", serde_json::json!(form)) {
+                    Ok(()) => {
+                        let _ = app.emit("snap-form-changed", form);
+                        ok_result(&db)
+                    }
+                    Err(e) => {
+                        tracing::warn!("切换边缘吸附方式失败: {e}");
+                        err_result(&db, format!("切换边缘吸附方式失败：{e}"))
+                    }
+                },
+                Err(e) => err_result(&db, e.to_string()),
             }
         }
         "autostart" => {

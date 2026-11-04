@@ -3,6 +3,7 @@
 //! ContextMenuApp.runAction 走 invoke，不在此处触达任何状态源。
 
 import {
+  Expand,
   Eye,
   Minus,
   Monitor,
@@ -11,6 +12,7 @@ import {
   Plus,
   Power,
   Rocket,
+  Shrink,
   Square,
   Sun,
   Zap,
@@ -27,6 +29,8 @@ export type MenuAction =
   | "theme:light"
   | "theme:dark"
   | "theme:system"
+  | "snap-form:capsule"
+  | "snap-form:full"
   | "autostart"
   | "quit";
 
@@ -35,8 +39,8 @@ export interface MenuItemDef {
   label: string;
   icon: LucideIcon;
   action: MenuAction;
-  /** 单选组：勾选 = 快照对应字段 === 动作参数（mode / theme） */
-  radio?: "mode" | "theme";
+  /** 单选组：勾选 = 快照对应字段 === 动作参数（mode / theme / snapForm） */
+  radio?: "mode" | "theme" | "snapForm";
   /** 开关型：独立于单选组，勾选 = 快照布尔字段（autostart） */
   toggle?: "autostart";
 }
@@ -52,9 +56,10 @@ export interface MenuSnapshot {
   theme: string;
   autostart: boolean;
   visual_preset: string;
+  snap_display_mode: string;
 }
 
-/** 分组结构即任务规范的四大组：常用操作 / 布局模式 / 外观与系统 / 退出操作。 */
+/** 分组结构：常用操作 / 布局模式 / 吸附方式 / 外观与系统 / 退出操作。 */
 export const MENU_GROUPS: readonly MenuGroupDef[] = [
   {
     key: "common",
@@ -72,6 +77,26 @@ export const MENU_GROUPS: readonly MenuGroupDef[] = [
       { key: "mode-minimal", label: "极简模式", icon: Minus, action: "mode:minimal", radio: "mode" },
       { key: "mode-compact", label: "紧凑模式", icon: Square, action: "mode:compact", radio: "mode" },
       { key: "mode-full", label: "完整模式", icon: PanelsTopLeft, action: "mode:full", radio: "mode" },
+    ],
+  },
+  {
+    key: "snap",
+    label: "吸附方式",
+    items: [
+      {
+        key: "snap-form-capsule",
+        label: "胶囊隐藏",
+        icon: Shrink,
+        action: "snap-form:capsule",
+        radio: "snapForm",
+      },
+      {
+        key: "snap-form-full",
+        label: "完整面板",
+        icon: Expand,
+        action: "snap-form:full",
+        radio: "snapForm",
+      },
     ],
   },
   {
@@ -98,6 +123,11 @@ export const FLAT_ITEMS: readonly MenuItemDef[] = MENU_GROUPS.flatMap((g) => g.i
 export function isItemChecked(item: MenuItemDef, snap: MenuSnapshot): boolean {
   if (item.radio === "mode") return snap.mode === item.action.slice("mode:".length);
   if (item.radio === "theme") return snap.theme === item.action.slice("theme:".length);
+  if (item.radio === "snapForm") {
+    // 老库/缺省设置按「胶囊隐藏」展示勾选，与后端默认值一致。
+    const form = snap.snap_display_mode === "full" ? "full" : "capsule";
+    return form === item.action.slice("snap-form:".length);
+  }
   if (item.toggle === "autostart") return snap.autostart;
   return false;
 }
@@ -117,7 +147,7 @@ export function validateMenuConfig(): string[] {
     if (seenActions.has(item.action)) problems.push(`动作重复: ${item.action}`);
     seenActions.add(item.action);
   }
-  for (const group of ["mode", "theme"] as const) {
+  for (const group of ["mode", "theme", "snapForm"] as const) {
     const radios = FLAT_ITEMS.filter((it) => it.radio === group);
     if (radios.length === 0) problems.push(`单选组 ${group} 为空`);
   }

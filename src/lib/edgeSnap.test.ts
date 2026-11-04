@@ -50,6 +50,7 @@ import {
   isRevealProtected,
   isSnapEdge,
   isCapsuleMode,
+  isFullDockPhase,
   shouldConfirmDock,
   shouldExpireCandidate,
   shouldHideAfterLeave,
@@ -855,5 +856,41 @@ describe("标题栏高度量取 measureTitlebarHeight", () => {
     resetTitlebarHeightCache();
     expect(measureTitlebarHeight()).toBe(TITLEBAR_HEIGHT_CSS);
     expect(TITLEBAR_HEIGHT_CSS).toBe(41);
+  });
+});
+
+describe("完整面板停靠态 docked-full（v1.0 形态切换）", () => {
+  it("任意可停靠来源都能切到 docked-full（含重启恢复与已停靠原地切换）", () => {
+    for (const from of ["free", "candidate", "docked-visible", "docked-hidden", "docked-revealed"] as const) {
+      expect(canTransition(from, "docked-full")).toBe(true);
+    }
+  });
+
+  it("docked-full 可原地切回胶囊（hidden/visible）或拖离恢复 free", () => {
+    expect(canTransition("docked-full", "docked-hidden")).toBe(true);
+    expect(canTransition("docked-full", "docked-visible")).toBe(true);
+    expect(canTransition("docked-full", "free")).toBe(true);
+  });
+
+  it("docked-full 不回退到 candidate / 重复进入 docked-full", () => {
+    expect(canTransition("docked-full", "candidate")).toBe(false);
+    expect(canTransition("docked-full", "docked-full")).toBe(false);
+  });
+
+  it("完整面板不参与自动收缩：canAutoHide 不覆盖 docked-full", () => {
+    expect(canAutoHide("docked-full")).toBe(false);
+  });
+
+  it("完整面板不进入胶囊模式（主界面保持完整可见、不挂载 CapsuleDock）", () => {
+    for (const edge of [null, "left", "right", "top", "bottom"] as const) {
+      expect(isCapsuleMode("docked-full", edge)).toBe(false);
+    }
+  });
+
+  it("isFullDockPhase 只认 docked-full", () => {
+    expect(isFullDockPhase("docked-full")).toBe(true);
+    for (const p of ["free", "candidate", "docked-visible", "docked-hidden", "docked-revealed"] as const) {
+      expect(isFullDockPhase(p)).toBe(false);
+    }
   });
 });

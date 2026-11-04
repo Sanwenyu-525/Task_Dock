@@ -65,6 +65,7 @@ import {
   detectCandidateEdge,
   edgeDistance,
   isDockedPhase,
+  isFullDockPhase,
   isHiddenPhase,
   isRectMostlyVisible,
   isSnapEdge,
@@ -78,6 +79,7 @@ import {
   shouldUndockByDrag,
   snapMoveGuard,
   undockAnchorTarget,
+  type DockForm,
   type SnapArea,
   type SnapEdge,
   type SnapPhase,
@@ -152,6 +154,44 @@ function memorizeMonitor(m: MonitorLike): DockedMonitor {
   };
 }
 
+/** 设置值 → 停靠形态；缺失/未知值一律回退到胶囊（老用户默认兼容）。 */
+function dockFormFromSetting(v: unknown): DockForm {
+  return v === "full" ? "full" : "capsule";
+}
+
+/**
+ * 按矩形与各显示器的交集选目标屏：多屏/主副屏分辨率不同/显示器断开时，
+ * 不能拿 `monitors[0]`（主屏）的尺寸套到副屏。完全离屏时退化为「中心最近」。
+ */
+function monitorForRect(rect: SnapRect, monitors: readonly MonitorLike[]): MonitorLike {
+  if (monitors.length <= 1) return monitors[0] as MonitorLike;
+  let best = monitors[0] as MonitorLike;
+  let bestArea = -1;
+  for (const m of monitors) {
+    const a = toArea(m);
+    const ix = Math.max(0, Math.min(rect.x + rect.w, a.x + a.w) - Math.max(rect.x, a.x));
+    const iy = Math.max(0, Math.min(rect.y + rect.h, a.y + a.h) - Math.max(rect.y, a.y));
+    const area = ix * iy;
+    if (area > bestArea) {
+      bestArea = area;
+      best = m;
+    }
+  }
+  if (bestArea > 0) return best;
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const m of monitors) {
+    const a = toArea(m);
+    const d = Math.hypot(cx - (a.x + a.w / 2), cy - (a.y + a.h / 2));
+    if (d < bestDist) {
+      bestDist = d;
+      best = m;
+    }
+  }
+  return best;
+}
+
 /** 引擎内部状态机（restore 坐标已不再需要：窗口不离开停靠位）。 */
 interface SnapMachine {
   phase: SnapPhase;
@@ -219,7 +259,10 @@ export function useEdgeSnap(enabled: boolean) {
     let restoreAttempts = 0; // 重启恢复的有界重试计数
     let dockedMonitor: DockedMonitor | null = null; // 停靠显示器记忆
     let dockedPos: SnapPoint | null = null; // 停靠时窗口目标位置（偏离判定基准）
+    let dockedSize: { w: number; h: number } | null = null; // 停靠时窗口尺寸（识别程序缩放）
     let capsuleCenter: number | null = null; // 胶囊沿边中心（物理像素）
+    /** 当前实际停靠形态（偏好存于设置；停靠成功后才切换实际形态）。 */
+    let dockedForm: DockForm = "capsule";
     let magnetizedNow = false; // candidate 是否在磁吸区（≤28；仅在变化时同步 store）
     /** 最近一次写入 snap_state 的沿边中心（沿边重定位只在变化时落库）。 */
     let persistedCenter: number | null = null;
@@ -291,8 +334,10 @@ export function useEdgeSnap(enabled: boolean) {
         machine.edge = null;
         dockedMonitor = null;
         dockedPos = null;
+        dockedSize = null;
         capsuleCenter = null;
         leftSince = null;
+        dockedForm = "capsule";
       }
       if (machine.phase !== "candidate") magnetizedNow = false;
       syncUi();
@@ -460,6 +505,7 @@ export function useEdgeSnap(enabled: boolean) {
 
     /** 相位 → 区域形态的唯一映射（恢复时据此把区域校准回已提交状态）。 */
     function regionForPhase(phase: SnapPhase): CapsuleRegionMode {
+      if (phase === "docked-full") return "off";
       if (phase === "docked-revealed") return "panel";
       if (isDockedPhase(phase)) return "rail";
       return "off";
@@ -474,7 +520,9 @@ export function useEdgeSnap(enabled: boolean) {
       machine.edge = machine.phase === "candidate" ? prevEdge : null;
       dockedMonitor = null;
       dockedPos = null;
+      dockedSize = null;
       capsuleCenter = null;
+      dockedForm = "capsule";
       syncUi();
     }
 
@@ -554,17 +602,183 @@ export function useEdgeSnap(enabled: boolean) {
     }
 
     /**
+     * 完整面板停靠：保持用户窗口尺寸（仅在超出可用区时收敛），贴边齐平，
+     * 关闭 Win32 裁剪（区域 off），相位进入 `docked-full`。
+     *
+     * `fromDocked=true` 表示「已停靠的胶囊 → 完整面板」的原地切换：失败时不清
+     * 停靠边、不调用 `abortDock`，而是恢复旧几何并把区域校准回旧相位，避免
+     * UI 仍在胶囊/原生却已变整窗的错配。
+     */
+    async function dockFull(
+      edge: SnapEdge,
+      center: number,
+      feedback: boolean,
+      fromDocked = false,
+    ): Promise<boolean> {
+      const { monitor } = await fetchRect();
+      if (disposed || !monitor) return false;
+      const prevEdge = machine.edge;
+      const prevMonitor = dockedMonitor;
+      const prevDockedPos = dockedPos;
+      const prevDockedSize = dockedSize;
+      const prevCenter = capsuleCenter;
+      dockedMonitor = memorizeMonitor(monitor);
+      const scale = dockedMonitor.scaleFactor;
+      const wa = dockedMonitor.workArea;
+      let rect = await fetchRectOnly();
+      if (disposed) return false;
+      const prevRect = { ...rect };
+
+      const rollback = async () => {
+        await restoreDockGeometry(prevRect, wa);
+        dockedMonitor = prevMonitor;
+        dockedPos = prevDockedPos;
+        dockedSize = prevDockedSize;
+        capsuleCenter = prevCenter;
+        if (fromDocked) {
+          // 区域若已被切到 off（或提交协议已按旧相位回退），再兜一次旧相位区域，
+          // 保证「React 仍停靠 / 原生也仍按停靠形态裁剪」。
+          if (isDockedPhase(machine.phase)) {
+            await setCapsuleRegion(regionForPhase(machine.phase));
+          }
+          return;
+        }
+        dockRetryAt = Date.now() + DOCK_RETRY_MS;
+        abortDock(prevEdge);
+      };
+
+      // 胶囊容器尺寸不是用户窗口几何：从胶囊形态原地切换或重启恢复时，
+      // 先恢复用户的模式尺寸，再按该尺寸贴边（不拉满全高、不强改宽度）。
+      if (isCapsuleContainerSize(rect, scale)) {
+        const mode = useSettingsStore.getState().settings?.mode ?? "full";
+        const restored = await restoreModeSize(mode, scale);
+        if (disposed) return false;
+        if (!restored) {
+          await rollback();
+          return false;
+        }
+        rect = await fetchRectOnly();
+        if (disposed) return false;
+      }
+
+      // 超出可用区时才收敛尺寸；正常模式下完全保留用户宽度/高度。
+      const w = Math.max(1, Math.min(rect.w, wa.w));
+      const h = Math.max(1, Math.min(rect.h, wa.h));
+      if (w !== rect.w || h !== rect.h) {
+        try {
+          await win.setSize(new PhysicalSize(w, h));
+          rect = { ...rect, w, h };
+        } catch {
+          await rollback();
+          return false;
+        }
+      }
+
+      machine.edge = edge;
+      const pos = capsuleWindowRect(edge, wa, center, { w, h });
+      if (!(await moveWindow(pos.x, pos.y, true))) {
+        await rollback();
+        return false;
+      }
+      dockedPos = { x: pos.x, y: pos.y };
+      dockedSize = { w, h };
+      capsuleCenter = center;
+      // 区域最后提交：off 成功后才进入 docked-full，失败时提交协议会自动
+      // 把区域校准回当前相位（胶囊切换时仍是 rail）。
+      if (!(await setRegionThenPhase("off", "docked-full"))) {
+        await rollback();
+        return false;
+      }
+      dockedForm = "full";
+      dockRetryAt = 0;
+      if (feedback) ui.notifyDocked(edge);
+      void persistSnap(edge, false, center);
+      persistedCenter = center;
+      syncMagnetDock();
+      return true;
+    }
+
+    /**
+     * 已停靠的完整面板 → 胶囊：缩回容器尺寸、重算轨道区域、进入 docked-hidden。
+     * 任一步失败都恢复完整面板几何并把区域退回 off，绝不留下半尺寸/半裁剪窗口。
+     */
+    async function switchDockedToCapsule(): Promise<boolean> {
+      const edge = machine.edge;
+      const m = dockedMonitor;
+      if (!edge || !m) return false;
+      const prevRect = await fetchRectOnly();
+      if (disposed) return false;
+      const center = capsuleCenter ?? alongCenterOf(edge, prevRect);
+      const container = capsuleContainerSize(edge);
+      const want = {
+        w: toPhysical(container.w, m.scaleFactor),
+        h: toPhysical(container.h, m.scaleFactor),
+      };
+      const rollback = async () => {
+        await restoreDockGeometry(prevRect, m.workArea);
+        if (machine.phase === "docked-full") await setCapsuleRegion("off");
+        dockedPos = { x: prevRect.x, y: prevRect.y };
+        dockedSize = { w: prevRect.w, h: prevRect.h };
+        capsuleCenter = center;
+      };
+      try {
+        await win.setSize(new PhysicalSize(want.w, want.h));
+      } catch {
+        await rollback();
+        return false;
+      }
+      const pos = capsuleWindowRect(edge, m.workArea, center, want);
+      if (!(await moveWindow(pos.x, pos.y, true))) {
+        await rollback();
+        return false;
+      }
+      if (!(await setRegionThenPhase("rail", "docked-hidden"))) {
+        await rollback();
+        return false;
+      }
+      dockedPos = { x: pos.x, y: pos.y };
+      dockedSize = want;
+      capsuleCenter = center;
+      dockedForm = "capsule";
+      leftSince = null;
+      void persistSnap(edge, true, center);
+      persistedCenter = center;
+      syncMagnetDock();
+      return true;
+    }
+
+    /**
+     * 停靠形态切换的唯一入口（仅在已停靠时生效）。
+     * 浮动态只更新偏好、不移动窗口；已停靠时原地切换形态。
+     */
+    async function applyDockForm(form: DockForm): Promise<boolean> {
+      if (!isDockedPhase(machine.phase) || !machine.edge) return false;
+      const alreadyFull = machine.phase === "docked-full";
+      if (dockedForm === form && alreadyFull === (form === "full")) return true;
+      if (form === "full") {
+        const center =
+          capsuleCenter ?? alongCenterOf(machine.edge, await fetchRectOnly());
+        return dockFull(machine.edge, center, false, true);
+      }
+      return switchDockedToCapsule();
+    }
+
+    /**
      * 停靠到某条边：撑到容器尺寸 → 贴边齐平（胶囊沿边居中）→ 区域切到轨道。
      * `phase` 由调用方决定（重启恢复直接进 docked-hidden，无反馈）。
      * 任一后续步骤失败都必须回滚已发生的尺寸/位置变化，避免留下一个被放大
      * 且贴边的普通窗口（以及被污染的 window_rect）。
+     *
+     * 用户偏好为「完整面板」时不走容器尺寸路径，直接按完整窗口停靠。
      */
     async function dockTo(
       edge: SnapEdge,
       center: number,
       phase: "docked-visible" | "docked-hidden",
       feedback: boolean,
+      form: DockForm = dockFormFromSetting(useSettingsStore.getState().settings?.snap_display_mode),
     ): Promise<boolean> {
+      if (form === "full") return dockFull(edge, center, feedback);
       const { monitor } = await fetchRect();
       if (disposed || !monitor) return false;
       const prevEdge = machine.edge;
@@ -606,7 +820,9 @@ export function useEdgeSnap(enabled: boolean) {
         return false;
       }
       dockedPos = { x: pos.x, y: pos.y };
+      dockedSize = { w: rect.w, h: rect.h };
       capsuleCenter = center;
+      dockedForm = "capsule";
       // 区域成功后才提交停靠相位；失败时回滚几何 + 清掉本次半成立的停靠上下文
       if (!(await setRegionThenPhase("rail", phase))) {
         await restoreDockGeometry(prevRect, dockedMonitor.workArea);
@@ -626,6 +842,8 @@ export function useEdgeSnap(enabled: boolean) {
     /** 折叠：只保留轨道（面板收起）。窗口不动，只切区域。 */
     async function collapseToRail(hidden: boolean): Promise<boolean> {
       if (!machine.edge) return false;
+      // 完整面板没有「折叠为轨道」概念；收缩入口是形态切换（→ 胶囊）。
+      if (machine.phase === "docked-full") return false;
       const ok = await setRegionThenPhase("rail", hidden ? "docked-hidden" : "docked-visible");
       if (ok) void persistSnap(machine.edge, hidden, capsuleCenter);
       return ok;
@@ -634,6 +852,8 @@ export function useEdgeSnap(enabled: boolean) {
     /** 展开：露出轨道 + 功能面板。窗口不动，只切区域。 */
     async function expandPanel(): Promise<boolean> {
       if (!machine.edge) return false;
+      // 完整面板本身就是完整界面，无需再「展开面板」。
+      if (machine.phase === "docked-full") return false;
       if (machine.phase === "docked-revealed") return true;
       if (machine.phase !== "docked-hidden" && machine.phase !== "docked-visible") return false;
       // 展开不依赖分类状态：`useCapsuleStore.active` 恒有值，托盘 / 热键 / 重启恢复
@@ -865,7 +1085,9 @@ export function useEdgeSnap(enabled: boolean) {
         if (disposed || monitors.length === 0) return;
         const areas = monitors.map(toArea);
         if (isRectMostlyVisible(rect, areas)) return;
-        const wa = toWorkArea(monitors[0] as MonitorLike);
+        // 选与窗口相交最大的显示器，而不是主屏：多屏时窗口可能本就在副屏上，
+        // 拿主屏可用区套坐标会把用户窗口硬拉回主屏。
+        const wa = toWorkArea(monitorForRect(rect, monitors as MonitorLike[]));
         const x = Math.max(wa.x, Math.min(rect.x, wa.x + wa.w - rect.w));
         const y = Math.max(wa.y, Math.min(rect.y, wa.y + wa.h - rect.h));
         await moveWindow(x, y, true);
@@ -894,12 +1116,34 @@ export function useEdgeSnap(enabled: boolean) {
         const monitors = await availableMonitors();
         if (disposed || monitors.length === 0) return;
         if (isRectMostlyVisible(rect, monitors.map(toArea))) return;
-        const wa = toWorkArea(monitors[0] as MonitorLike);
+        const monitor = monitorForRect(rect, monitors as MonitorLike[]);
+        dockedMonitor = memorizeMonitor(monitor);
+        const wa = dockedMonitor.workArea;
+        const scale = dockedMonitor.scaleFactor;
         const edge = machine.edge ?? "left";
-        const center = capsuleCenter ?? (edge === "left" || edge === "right" ? wa.y + wa.h / 2 : wa.x + wa.w / 2);
-        const pos = capsuleWindowRect(edge, wa, center, { w: rect.w, h: rect.h });
+        const center =
+          capsuleCenter ?? (edge === "left" || edge === "right" ? wa.y + wa.h / 2 : wa.x + wa.w / 2);
+        // 完整面板按当前窗口尺寸收敛到可用区；胶囊相位按新显示器 DPI 回到容器尺寸。
+        const want = isFullDockPhase(machine.phase)
+          ? { w: Math.max(1, Math.min(rect.w, wa.w)), h: Math.max(1, Math.min(rect.h, wa.h)) }
+          : (() => {
+              const container = capsuleContainerSize(edge);
+              return {
+                w: toPhysical(container.w, scale),
+                h: toPhysical(container.h, scale),
+              };
+            })();
+        if (want.w !== rect.w || want.h !== rect.h) {
+          try {
+            await win.setSize(new PhysicalSize(want.w, want.h));
+          } catch {
+            return;
+          }
+        }
+        const pos = capsuleWindowRect(edge, wa, center, want);
         if (await moveWindow(pos.x, pos.y, true)) {
           dockedPos = { x: pos.x, y: pos.y };
+          dockedSize = want;
           capsuleCenter = center;
         }
       } catch {
@@ -1060,6 +1304,69 @@ export function useEdgeSnap(enabled: boolean) {
           if (++healthCheckTick % 20 === 0) await recoverVisibility();
           return;
         }
+        case "docked-full": {
+          // 完整面板：不轮询光标、不自动收缩（鼠标移出必须保持完整）。
+          // 只保留拖拽收尾的解除判定与低频几何/可用区校准。
+          const rect = await fetchRectOnly();
+          if (disposed) return;
+          const settled = Date.now() - lastMoveAt >= SNAP_DRAG_SETTLE_MS;
+          if (settled) {
+            if (undockCheckDue || (undockRetryAt > 0 && Date.now() >= undockRetryAt)) {
+              const deviated =
+                machine.edge !== null &&
+                dockedPos !== null &&
+                shouldUndockByDrag(rect, dockedPos, machine.edge);
+              if (deviated && Date.now() >= undockRetryAt) {
+                await undockByDrag();
+                undockCheckDue = false;
+                return;
+              }
+              if (!deviated) {
+                undockCheckDue = false;
+                undockRetryAt = 0;
+              }
+            }
+            commitAlong(rect);
+          }
+          if (settled && ++healthCheckTick % 20 === 0) {
+            // 分辨率变更 / 显示器断开 / 任务栏改位：完整面板必须仍在可用区内贴边。
+            // 拖动中不做（`settled=false`），避免和用户的沿边拖动抢位置。
+            await ensureFullDockFits();
+            await recoverVisibility();
+          }
+          return;
+        }
+      }
+    }
+
+    /**
+     * 完整面板的低频几何校准：只在实际偏离时写窗口 API（不是每拍轮询）。
+     * 处理分辨率变更、副屏 DPI 变化、任务栏位置变化后「贴边但越界/离缝」的情况。
+     */
+    async function ensureFullDockFits(): Promise<void> {
+      const edge = machine.edge;
+      if (!edge || !dockedMonitor) return;
+      const rect = await fetchRectOnly();
+      if (disposed) return;
+      const wa = dockedMonitor.workArea;
+      const w = Math.max(1, Math.min(rect.w, wa.w));
+      const h = Math.max(1, Math.min(rect.h, wa.h));
+      const center = capsuleCenter ?? alongCenterOf(edge, rect);
+      const pos = capsuleWindowRect(edge, wa, center, { w, h });
+      const sizeChanged = w !== rect.w || h !== rect.h;
+      const moved = pos.x !== rect.x || pos.y !== rect.y;
+      if (!sizeChanged && !moved) return;
+      if (sizeChanged) {
+        try {
+          await win.setSize(new PhysicalSize(w, h));
+        } catch {
+          return;
+        }
+      }
+      if (await moveWindow(pos.x, pos.y, true)) {
+        dockedPos = { x: pos.x, y: pos.y };
+        dockedSize = { w, h };
+        capsuleCenter = center;
       }
     }
 
@@ -1070,6 +1377,39 @@ export function useEdgeSnap(enabled: boolean) {
       if (isDockedPhase(machine.phase)) {
         const edge = machine.edge;
         if (!edge) return;
+        // 程序性尺寸变化（外部模式切换 / 缩放）不是拖离意图：右/下边缩小宽度
+        // 会制造 >38 的“离开磁吸区”假象。这里先按当前形态收敛尺寸并重新贴边，
+        // 再清掉偏离标记，避免误解除停靠。
+        if (
+          dockedSize &&
+          (Math.abs(rect.w - dockedSize.w) > 1 || Math.abs(rect.h - dockedSize.h) > 1)
+        ) {
+          const full = machine.phase === "docked-full";
+          const container = capsuleContainerSize(edge);
+          const want = full
+            ? { w: Math.min(rect.w, wa.w), h: Math.min(rect.h, wa.h) }
+            : {
+                w: toPhysical(container.w, monitor.scaleFactor ?? 1),
+                h: toPhysical(container.h, monitor.scaleFactor ?? 1),
+              };
+          if (want.w !== rect.w || want.h !== rect.h) {
+            try {
+              await win.setSize(new PhysicalSize(want.w, want.h));
+            } catch {
+              return;
+            }
+          }
+          const center = capsuleCenter ?? alongCenterOf(edge, rect);
+          const pos = capsuleWindowRect(edge, wa, center, want);
+          if (await moveWindow(pos.x, pos.y, true)) {
+            dockedPos = { x: pos.x, y: pos.y };
+            dockedSize = want;
+            capsuleCenter = center;
+          }
+          undockCheckDue = false;
+          undockRetryAt = 0;
+          return;
+        }
         // 拖离意图标记：法向位移越过解除阈值就置位，由 tick 在静止后收尾。
         // 折叠态（docked-hidden）不做轮询，没有这个标记就会"拖出去停在半脱开"。
         if (dockedPos && shouldUndockByDrag(rect, dockedPos, edge)) {
@@ -1188,6 +1528,34 @@ export function useEdgeSnap(enabled: boolean) {
     ui.setReveal(() => runExclusive(expandPanel));
     ui.setCollapse(() => runExclusive(collapsePanel));
     ui.setUndock((mode) => runExclusive(() => undockCore(mode)));
+    // 形态入口（胶囊轨道 / 完整面板按钮）：只写偏好，实际切换由下方订阅串行执行，
+    // 保证右键菜单、设置页、面板按钮三个入口走同一条状态迁移路径。
+    ui.setFormSwitch((form) => {
+      if (disposed) return;
+      void useSettingsStore
+        .getState()
+        .update({ snap_display_mode: form })
+        .catch((err) => console.warn("[edge-snap] 保存停靠形态失败", err));
+    });
+
+    const unsubSettings = useSettingsStore.subscribe((state, prev) => {
+      if (disposed) return;
+      const nextForm = dockFormFromSetting(state.settings?.snap_display_mode);
+      const prevForm = dockFormFromSetting(prev.settings?.snap_display_mode);
+      if (nextForm !== prevForm) {
+        // 浮动态：只记住偏好，不强行移动窗口；已停靠：原地切换形态。
+        runExclusive(() => applyDockForm(nextForm));
+      }
+      // 完整面板贴边后改变模式尺寸：apply_mode 只改尺寸不会重新贴齐，
+      // 用同一事务重新算一次齐平位置（胶囊态由容器尺寸接管，无需处理）。
+      if (state.settings?.mode !== prev.settings?.mode) {
+        runExclusive(async () => {
+          if (machine.phase !== "docked-full" || !machine.edge) return;
+          const center = capsuleCenter ?? alongCenterOf(machine.edge, await fetchRectOnly());
+          await dockFull(machine.edge, center, false, true);
+        });
+      }
+    });
 
     // 磁力参数下发（一次，非逐帧）：原生侧据此在 WM_MOVING 里修正移动矩形。
     void setMagneticDragConfig(
@@ -1207,9 +1575,11 @@ export function useEdgeSnap(enabled: boolean) {
       window.removeEventListener("pointermove", onDomPointer);
       window.removeEventListener("pointerdown", onDomPointer);
       scope.dispose();
+      unsubSettings();
       ui.setReveal(null);
       ui.setCollapse(null);
       ui.setUndock(null);
+      ui.setFormSwitch(null);
       snapMoveGuard.setHidden(false);
       // 磁力层随引擎一起停用：残留的停靠基准会让下一次普通拖拽被"拉住"。
       // 与区域一样延后一个宏任务再决定——StrictMode 重挂载时新实例会先递增

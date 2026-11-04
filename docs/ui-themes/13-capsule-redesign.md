@@ -278,6 +278,10 @@ docked-revealed → docked-hidden | docked-visible | free
 - **任务** `TasksLite`：一次 `list_tasks({view:"all", status:"all", sort:"due"})`，
   五个分段（全部/待办/今日/日程/已完成）在本地切分；完成走 `useTasksStore.toggle`，
   失败回滚并重拉，成功先给 320ms 勾选反馈再移出。
+  （2026-11-04 更正：分段已改为各自的真实查询——全部 `status=all, sort=created`、
+  待办 `status=pending, sort=due`、今日 `view=due_today, status=pending`、
+  日程 `view=scheduled, status=pending`、已完成 `status=completed, sort=completed`；
+  后端先过滤/排序再 `LIMIT 12`，本地不再二次截断，避免逾期任务挤掉今天到期项。）
 - **Agent** `AgentsLite`：`useAgentsStore.snapshot` 派生 `liveRuns` / `liveSummary`，
   按 failed → waiting → running → disconnected 排序；会话数/运行数/时间全部来自快照，
   不写死名称、不伪造进度；每个 Agent 只有「打开会话」「查看」两个真实动作。

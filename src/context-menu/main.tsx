@@ -5,8 +5,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import ContextMenuApp from "./ContextMenuApp";
+import { initLocale } from "../i18n";
 import "../styles-themes.css";
 import "./styles-context-menu.css";
+
+initLocale();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

@@ -19,6 +19,7 @@ const ALLOWED_KEYS: &[&str] = &[
     "visual_preset",
     "clear_foreground",
     "snap_enabled",
+    "snap_display_mode",
     "autostart",
     "hotkey_enabled",
     "http_enabled",
@@ -117,6 +118,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "visual_preset" => enum_of(v, key, &["dream-gradient", "liquid-glass", "frosted", "clear"]),
         // 清透玻璃的独立前景色板（v0.9）：玻璃材质不随主题变化，文字配色可强制
         "clear_foreground" => enum_of(v, key, &["auto", "dark", "light"]),
+        // 边缘吸附展示形态：胶囊隐藏（默认）| 完整面板
+        "snap_display_mode" => enum_of(v, key, &["capsule", "full"]),
         "snap_enabled"
         | "autostart"
         | "hotkey_enabled"

@@ -15,17 +15,19 @@ const snap: MenuSnapshot = {
   theme: "system",
   autostart: true,
   visual_preset: "liquid-glass",
+  snap_display_mode: "capsule",
 };
 
 describe("菜单配置结构", () => {
-  it("按规范提供四组、共 11 项", () => {
+  it("按规范提供五组、共 13 项", () => {
     expect(MENU_GROUPS.map((g) => g.label)).toEqual([
       "常用操作",
       "布局模式",
+      "吸附方式",
       "外观与系统",
       "退出操作",
     ]);
-    expect(FLAT_ITEMS).toHaveLength(11);
+    expect(FLAT_ITEMS).toHaveLength(13);
     expect(FLAT_ITEMS.some((it) => it.action === "quick-capture")).toBe(true);
   });
 
@@ -82,7 +84,17 @@ describe("initialActiveIndex", () => {
     expect(initialActiveIndex(snap)).toBe(FLAT_ITEMS.findIndex((it) => it.action === "mode:compact"));
   });
 
-  it("无任何勾选（极端快照）回落第一项", () => {
-    expect(initialActiveIndex({ mode: "", theme: "", autostart: false, visual_preset: "" })).toBe(0);
+  it("吸附方式缺省时按「胶囊隐藏」勾选（老库兼容）", () => {
+    // 除吸附方式外都无勾选：`snap_display_mode` 为空按 capsule 处理，
+    // 因此落点在吸附组的「胶囊隐藏」，而不是第一项。
+    expect(
+      initialActiveIndex({
+        mode: "",
+        theme: "",
+        autostart: false,
+        visual_preset: "",
+        snap_display_mode: "",
+      }),
+    ).toBe(FLAT_ITEMS.findIndex((it) => it.action === "snap-form:capsule"));
   });
 });
