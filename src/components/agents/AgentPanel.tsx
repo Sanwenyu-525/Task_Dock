@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   RefreshCw, Power, PowerOff, ExternalLink, Copy, CheckCircle2, AlertTriangle,
   ShieldQuestion, ListChecks, Radar, PlugZap, Trash2, Plus, ChevronRight, ChevronDown,
-  Activity, X, Eye, EyeOff, CircleSlash, MonitorUp,
+  Activity, X, Eye, EyeOff, CircleSlash, MonitorUp, BarChart3,
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import {
@@ -28,6 +28,7 @@ import { AGENT_STATE_LABELS, formatBetween, formatRelative } from "../../lib/for
 import { buildTree, liveSummary, type TreeAgent, type TreeSession } from "../../lib/agentTree";
 import { copyText } from "../../lib/clipboard";
 import { reportError } from "../../lib/errorReport";
+import AgentStatsView from "./stats/AgentStatsView";
 
 const HEALTH_LABELS: Record<string, string> = {
   live: "已连接 · 事件实时",
@@ -67,7 +68,7 @@ interface WizardState {
   error: string;
 }
 
-type Section = "monitor" | "onboard";
+type Section = "monitor" | "stats" | "onboard";
 
 export default function AgentPanel() {
   const snapshot = useAgentsStore((s) => s.snapshot);
@@ -289,6 +290,14 @@ export default function AgentPanel() {
           <Activity size={12} /> 运行监控
         </button>
         <button
+          className={`seg-btn ${section === "stats" ? "active" : ""}`}
+          role="tab"
+          aria-selected={section === "stats"}
+          onClick={() => setSection("stats")}
+        >
+          <BarChart3 size={12} /> 统计
+        </button>
+        <button
           className={`seg-btn ${section === "onboard" ? "active" : ""}`}
           role="tab"
           aria-selected={section === "onboard"}
@@ -364,6 +373,8 @@ export default function AgentPanel() {
           </div>
         </>
       )}
+
+      {section === "stats" && <AgentStatsView />}
 
       {section === "onboard" && (
         <>
