@@ -1,4 +1,5 @@
-//! 完整模式：左侧垂直导航 + 任务 / Agent / 行动 / 剪贴板 / 收集与暂存 / 工作流 / 历史 / 规划中心 / 设置 **九个视觉入口**。
+//! 完整模式：左侧垂直导航 + 任务 / Agent / 应用 / 行动 / 剪贴板 / 收集与暂存 / 工作流 / 历史 / 规划中心 / 设置 **十个视觉入口**。
+//! 应用中心（v0.10）复用既有导航目标体系，三端（侧栏 / 胶囊 / 设置）共享同一份数据。
 //!
 //! v0.6：由顶部横向标签改为**左侧垂直导航**（两套视觉预设共用同一结构）。
 //! - 图标 + 文字，选中态由预设决定（梦幻渐变=淡色药丸，液态玻璃=玻璃胶囊）
@@ -9,22 +10,23 @@
 //! - v0.7：新增「收集箱」与「规划中→规划中心」入口
 //! - v0.8：新增「暂存架」入口，随后与收集箱**合并为「收集与暂存」单一视觉入口**
 //!   （页面内双子页签：快速收集 | 文件暂存）。
+//! - v0.10：新增「应用」视觉入口（Agent 之后、行动之前）
 //!
-//! 逻辑 Tab 与快捷键：v0.9 起 TAB_ORDER 为 10 个逻辑 Tab（新增「工作流」），快捷键
-//! Ctrl+1…9 依次映射前九个逻辑位、Ctrl+0=设置；Ctrl+5=快速收集（inbox）、
-//! Ctrl+6=文件暂存（shelf），旧 setTab("inbox"/"shelf") 调用全部有效；视觉合并
-//! 只发生在 RAIL 导航渲染层（见 RAIL_ENTRIES）。
+//! 逻辑 Tab 与快捷键：`TAB_ORDER` 仍是 10 个逻辑 Tab（快捷键 Ctrl+1…9 与 Ctrl+0 的
+//! 事实源，Ctrl+5=快速收集、Ctrl+6=文件暂存）；「应用」只存在于视觉顺序 `RAIL_ORDER`，
+//! **不占用 Ctrl+数字**，已有快捷键语义不漂移。视觉合并只发生在 RAIL 导航渲染层。
 //!
 //! 徽标口径：合并入口徽标 = 未处理捕获条数（useCaptureStore.inboxCount），
 //! 即「待处理收集内容」；暂存条目总数**不计入**未处理徽标。
 
 import { useEffect } from "react";
-import { useUiStore, TAB_ORDER, type Tab } from "../store/useUiStore";
+import { useUiStore, RAIL_ORDER, type Tab } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
 import TasksPanel from "./tasks/TasksPanel";
 import AgentPanel from "./agents/AgentPanel";
+import AppsPanel from "./apps/AppsPanel";
 import ActionCenterPanel from "./actions/ActionCenterPanel";
 import ClipboardPanel from "./clipboard/ClipboardPanel";
 import CollectionPanel from "./collection/CollectionPanel";
@@ -32,7 +34,7 @@ import WorkflowsPanel from "./workflows/WorkflowsPanel";
 import HistoryPanel from "./history/HistoryPanel";
 import PlanningCenterPanel from "./roadmap/PlanningCenterPanel";
 import SettingsPanel from "./settings/SettingsPanel";
-import { Inbox, ListTodo, Clipboard, History, Map, Settings as SettingsIcon, Plus, Workflow } from "lucide-react";
+import { Inbox, ListTodo, Clipboard, History, Map, Settings as SettingsIcon, Plus, Workflow, LayoutGrid } from "lucide-react";
 import AgentIcon, { type IconComponent } from "./ui/AgentIcon";
 import PointerClickIcon from "./ui/PointerClickIcon";
 import { railTipPlacement } from "./capsule/CapsuleRail";
@@ -43,6 +45,8 @@ const TAB_META: Record<
 > = {
   tasks: { label: "任务", icon: ListTodo, badge: "pending" },
   agents: { label: "Agent", icon: AgentIcon, badge: "intervention" },
+  // v0.10：应用中心（Agent 之后、行动之前）；仅视觉入口，不占快捷键
+  apps: { label: "应用", icon: LayoutGrid },
   actions: { label: "行动", icon: PointerClickIcon, badge: "attention" },
   clipboard: { label: "剪贴板", icon: Clipboard },
   inbox: { label: "收集箱", icon: Inbox, badge: "inbox" },
@@ -65,10 +69,11 @@ interface RailEntry {
 }
 
 /**
- * 视觉导航（按 TAB_ORDER 折叠）：shelf 折入 inbox 的「收集与暂存」入口，
- * 其余 1:1。快捷键仍按 TAB_ORDER 逐个映射（Ctrl+5=inbox、Ctrl+6=shelf），不偏移。
+ * 视觉导航（按 RAIL_ORDER 折叠）：shelf 折入 inbox 的「收集与暂存」入口，
+ * 其余 1:1。快捷键仍按 TAB_ORDER 逐个映射（Ctrl+5=inbox、Ctrl+6=shelf），不偏移；
+ * 仅视觉入口「应用」不占用数字键。
  */
-const RAIL_ENTRIES: RailEntry[] = TAB_ORDER.flatMap((id): RailEntry[] => {
+const RAIL_ENTRIES: RailEntry[] = RAIL_ORDER.flatMap((id): RailEntry[] => {
   if (id === "shelf") return []; // 折入收集与暂存
   if (id === "inbox") {
     return [{ key: "collection", label: "收集与暂存", icon: Inbox, badge: "inbox", tabs: ["inbox", "shelf"] }];
@@ -162,6 +167,7 @@ export default function FullView() {
       <div className={`tab-content tab-content-${tab}`}>
         {tab === "tasks" && <TasksPanel />}
         {tab === "agents" && <AgentPanel />}
+        {tab === "apps" && <AppsPanel />}
         {tab === "actions" && <ActionCenterPanel />}
         {tab === "clipboard" && <ClipboardPanel />}
         {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}

@@ -13,13 +13,19 @@ import {
   resultMessage, TARGET_TYPE_LABELS,
   type NavLogRow, type NavTarget,
 } from "../../lib/navigation";
-import { ConfirmDialog, Dialog, NumberInput, Select, Switch } from "../ui";
+import { ConfirmDialog, NumberInput, Select, Switch } from "../ui";
 import AppPicker from "../navigation/AppPicker";
+import TargetEditDialog from "./TargetEditDialog";
 
 /** 记住的窗口身份（类名+标题），targetId → 身份；无记忆的不在表里。 */
 type WinMemories = Record<string, { class_name: string; title: string }>;
 
-export default function AppManagement() {
+export default function AppManagement({
+  onRequestAdd,
+}: {
+  /** 由外层页面接管「添加应用」子页面（避免在设置页内部再叠一层弹窗）。 */
+  onRequestAdd?: () => void;
+} = {}) {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const showToast = useUiStore((s) => s.showToast);
@@ -82,6 +88,13 @@ export default function AppManagement() {
   async function refresh() {
     await Promise.all([loadTargets(true), loadApps(true)]);
     navRecentLogs(20).then(setLogs).catch(() => {});
+    // loadTargets/loadApps 会吞掉错误并记录到 store；必须复查，不能刷新失败还提示成功。
+    const { targetsError, scanError } = useNavigationStore.getState();
+    const failed = targetsError ?? scanError;
+    if (failed) {
+      showToast(`刷新失败：${failed}`, { kind: "error" });
+      return;
+    }
     showToast("应用清单已刷新", { kind: "success" });
   }
 
@@ -158,7 +171,10 @@ export default function AppManagement() {
         <div className="panel-block-head">
           <span>已保存的目标（{visible.length}）</span>
           <div className="btn-group">
-            <button className="btn sm primary" onClick={() => setAddOpen(true)}>
+            <button
+              className="btn sm primary"
+              onClick={() => (onRequestAdd ? onRequestAdd() : setAddOpen(true))}
+            >
               <Plus size={12} /> 添加应用
             </button>
             <button
@@ -303,8 +319,8 @@ export default function AppManagement() {
         </div>
       </div>
 
-      {/* 添加应用：独立配置模式，不关联任务；保存后共享目标列表自动刷新 */}
-      {addOpen && <AppPicker standalone onClose={() => setAddOpen(false)} />}
+      {/* 添加应用：独立配置模式；有外层页面时由其渲染子页面，避免叠弹窗 */}
+      {addOpen && <AppPicker standalone variant="page" onClose={() => setAddOpen(false)} />}
 
       {/* 编辑配置（身份字段不可改，见弹窗内说明） */}
       <TargetEditDialog
@@ -341,144 +357,5 @@ export default function AppManagement() {
         }}
       />
     </div>
-  );
-}
-
-/** 编辑已保存目标：仅允许修改后端白名单字段；程序路径/网址/身份键保持只读。 */
-function TargetEditDialog({
-  target,
-  onClose,
-  onSaved,
-}: {
-  target: NavTarget | null;
-  onClose: () => void;
-  onSaved: () => Promise<void> | void;
-}) {
-  const showToast = useUiStore((s) => s.showToast);
-  const [name, setName] = useState("");
-  const [args, setArgs] = useState("");
-  const [cwd, setCwd] = useState("");
-  const [titleHint, setTitleHint] = useState("");
-  const [favorite, setFavorite] = useState(false);
-  const [hidden, setHidden] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!target) return;
-    setName(target.display_name);
-    setArgs(target.launch_args);
-    setCwd(target.working_dir);
-    setTitleHint(target.window_title_hint);
-    setFavorite(target.favorite);
-    setHidden(target.hidden);
-  }, [target]);
-
-  if (!target) return null;
-  const targetId = target.id;
-  const isApp = target.target_type === "application";
-  const identity = isApp ? target.exe_path : target.target_type === "url" ? target.url : target.path;
-
-  async function save() {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      showToast("显示名称不能为空", { kind: "error" });
-      return;
-    }
-    setBusy(true);
-    try {
-      const patch = {
-        display_name: trimmed,
-        favorite,
-        hidden,
-        ...(isApp
-          ? {
-              launch_args: args.trim(),
-              working_dir: cwd.trim(),
-              window_title_hint: titleHint.trim(),
-            }
-          : {}),
-      };
-      // 身份字段（EXE 路径 / 网址 / 目录）不在后端白名单内，前端不伪造。
-      await navUpdateTarget(targetId, patch);
-      showToast("配置已保存", { kind: "success" });
-      await onSaved();
-    } catch (e) {
-      showToast(String(e), { kind: "error" });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog
-      open
-      onClose={onClose}
-      title="编辑应用配置"
-      size="md"
-      footer={
-        <>
-          <button className="btn" onClick={onClose} disabled={busy}>取消</button>
-          <button className="btn primary" onClick={save} disabled={busy}>保存</button>
-        </>
-      }
-    >
-      <div className="target-edit-form">
-        <label className="target-edit-field">
-          <span>显示名称</span>
-          <input
-            className="input"
-            value={name}
-            maxLength={80}
-            onChange={(e) => setName(e.target.value)}
-            aria-label="显示名称"
-          />
-        </label>
-        <div className="endpoint-hint">
-          目标身份：{identity || "—"}。路径/网址属于身份字段，不能在此修改；如需更换请新增目标后删除旧项。
-        </div>
-        {isApp && (
-          <>
-            <label className="target-edit-field">
-              <span>启动参数</span>
-              <input
-                className="input"
-                value={args}
-                onChange={(e) => setArgs(e.target.value)}
-                placeholder="留空表示无参数"
-                aria-label="启动参数"
-              />
-            </label>
-            <label className="target-edit-field">
-              <span>工作目录</span>
-              <input
-                className="input"
-                value={cwd}
-                onChange={(e) => setCwd(e.target.value)}
-                placeholder="留空表示使用程序所在目录"
-                aria-label="工作目录"
-              />
-            </label>
-            <label className="target-edit-field">
-              <span>窗口标题匹配提示</span>
-              <input
-                className="input"
-                value={titleHint}
-                onChange={(e) => setTitleHint(e.target.value)}
-                placeholder="用于多窗口时优先匹配，可留空"
-                aria-label="窗口标题匹配提示"
-              />
-            </label>
-          </>
-        )}
-        <div className="setting-row">
-          <span>收藏（工具面板优先展示）</span>
-          <Switch checked={favorite} ariaLabel="收藏" onChange={setFavorite} />
-        </div>
-        <div className="setting-row">
-          <span>隐藏（不显示在选择器与工具面板）</span>
-          <Switch checked={hidden} ariaLabel="隐藏" onChange={setHidden} />
-        </div>
-      </div>
-    </Dialog>
   );
 }

@@ -4,6 +4,7 @@ import type { Task } from "../lib/bridge";
 export type Tab =
   | "tasks"
   | "agents"
+  | "apps"
   | "actions"
   | "clipboard"
   | "inbox"
@@ -13,10 +14,32 @@ export type Tab =
   | "roadmap"
   | "settings";
 
-/** 完整模式侧边栏顺序：导航渲染、Ctrl+1…9 与 Ctrl+0、快捷键说明共用这一处定义。 */
+/**
+ * 快捷键逻辑顺序：Ctrl+1…9 映射前九个逻辑 Tab、Ctrl+0=设置。
+ * **已发布语义，禁止因视觉入口调整而改变**（新增入口默认不占用数字键）。
+ */
 export const TAB_ORDER: readonly Tab[] = [
   "tasks",
   "agents",
+  "actions",
+  "clipboard",
+  "inbox",
+  "shelf",
+  "workflows",
+  "history",
+  "roadmap",
+  "settings",
+] as const;
+
+/**
+ * 完整模式侧边栏视觉顺序：导航渲染、提示与文档共用这一处定义。
+ * v0.10 新增「应用」入口（位于 Agent 之后、行动之前）；它不占用 Ctrl+数字，
+ * 因此与 `TAB_ORDER` 分离，避免已有快捷键语义漂移。
+ */
+export const RAIL_ORDER: readonly Tab[] = [
+  "tasks",
+  "agents",
+  "apps",
   "actions",
   "clipboard",
   "inbox",
@@ -48,6 +71,10 @@ export interface ToastData {
   message: string;
   kind: ToastKind;
   action?: ToastAction;
+  /** 稳定错误码：去重与诊断依据优先于文案 */
+  code?: string;
+  /** 可核验的技术细节（悬停可见），不进入正文 */
+  detail?: string;
   /** 入队时间戳：用于相同消息短时间去重 */
   at: number;
 }
@@ -55,7 +82,7 @@ export interface ToastData {
 /** Toast 队列容量上限：超过时移除最早的普通提示（错误优先保留） */
 export const TOAST_QUEUE_MAX = 3;
 
-/** 相同消息（同文案同类型）在该窗口内的重复推送直接忽略 */
+/** 相同根因（同错误码同文案）在该窗口内的重复推送直接忽略 */
 const TOAST_DEDUP_MS = 2000;
 
 export const useUiStore = create<{
@@ -79,7 +106,10 @@ export const useUiStore = create<{
   closeContext: () => void;
   toast: ToastData | null;
   toasts: ToastData[];
-  showToast: (msg: string | null, opts?: { kind?: ToastKind; action?: ToastAction }) => void;
+  showToast: (
+    msg: string | null,
+    opts?: { kind?: ToastKind; action?: ToastAction; code?: string; detail?: string },
+  ) => void;
   dismissToast: (id?: number) => void;
   quickAddToken: number;
   bumpQuickAdd: () => void;
@@ -135,10 +165,11 @@ export const useUiStore = create<{
     const kind = opts?.kind ?? "info";
     const now = Date.now();
     set((s) => {
-      // 相同消息短时间去重：避免重复操作刷出多条相同提示
-      const dup = [...s.toasts].reverse().find(
-        (t) => t.message === msg && t.kind === kind && now - t.at < TOAST_DEDUP_MS,
-      );
+      // 相同根因去重：优先错误码 + 文案，避免轮询/重复点击刷屏
+      const dup = [...s.toasts].reverse().find((t) => {
+        const sameCode = opts?.code ? t.code === opts.code : true;
+        return t.message === msg && t.kind === kind && sameCode && now - t.at < TOAST_DEDUP_MS;
+      });
       if (dup) {
         return { toast: dup, toasts: s.toasts };
       }
@@ -147,6 +178,8 @@ export const useUiStore = create<{
         message: msg,
         kind,
         action: opts?.action,
+        code: opts?.code,
+        detail: opts?.detail,
         at: now,
       };
       let toasts = [...s.toasts, next];

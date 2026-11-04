@@ -2,8 +2,9 @@
  * @vitest-environment jsdom
  */
 //! 完整模式左侧导航（v0.8：收集箱+暂存架合并为「收集与暂存」单一视觉入口）：
-//! - 八个视觉入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
-//! - 逻辑 Tab 仍是 9 个（Ctrl+5=快速收集、Ctrl+6=文件暂存），视觉合并不改快捷键；
+//! - 十个视觉入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
+//! - 逻辑 Tab 仍是 10 个（Ctrl+5=快速收集、Ctrl+6=文件暂存），视觉合并不改快捷键；
+//! - v0.10 新增「应用」入口（Agent 之后、行动之前），不占 Ctrl+数字；
 //! - 徽标直接复用任务统计 / 行动中心 / 收集箱未处理计数，不新造计数；
 //! - 顶部入口切到任务页并聚焦快速添加；
 //! - 「收集箱」位于剪贴板之后、历史之前；「规划中心」位于历史之后、设置之前。
@@ -15,6 +16,7 @@ import userEvent from "@testing-library/user-event";
 // 面板本身有独立测试，这里只验证导航结构，避免加载全部业务依赖
 vi.mock("./tasks/TasksPanel", () => ({ default: () => <div>tasks-panel</div> }));
 vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }));
+vi.mock("./apps/AppsPanel", () => ({ default: () => <div>apps-panel</div> }));
 vi.mock("./actions/ActionCenterPanel", () => ({ default: () => <div>actions-panel</div> }));
 vi.mock("./clipboard/ClipboardPanel", () => ({ default: () => <div>clipboard-panel</div> }));
 vi.mock("./inbox/CaptureInboxPanel", () => ({ default: () => <div>inbox-panel</div> }));
@@ -53,11 +55,11 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("渲染九个视觉导航入口与顶部新建按钮（收集箱+暂存架合并）", () => {
+  it("渲染十个视觉导航入口与顶部新建按钮（收集箱+暂存架合并）", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["任务", "Agent", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
+    for (const label of ["任务", "Agent", "应用", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
     expect(screen.queryByRole("button", { name: /^暂存架/ })).toBeNull();
@@ -67,6 +69,30 @@ describe("完整模式左侧导航", () => {
     expect(nav.lastElementChild?.className).toBe("rail-items");
     // 默认任务页
     expect(screen.getByText("tasks-panel")).toBeTruthy();
+  });
+
+  it("应用入口位于 Agent 与行动之间，点击后进入应用中心", async () => {
+    const user = userEvent.setup();
+    render(<FullView />);
+    const items = [...document.querySelectorAll(".rail-items .rail-item")];
+    // aria-label 可能追加徽标说明（如「收集与暂存（2 条待处理收集）」），只比较入口名
+    expect(items.map((el) => el.getAttribute("aria-label")?.split("（")[0])).toEqual([
+      "任务",
+      "Agent",
+      "应用",
+      "行动",
+      "剪贴板",
+      "收集与暂存",
+      "工作流",
+      "历史",
+      "规划中心",
+      "设置",
+    ]);
+
+    await user.click(navItem("应用"));
+    expect(screen.getByText("apps-panel")).toBeTruthy();
+    expect(useUiStore.getState().tab).toBe("apps");
+    expect(navItem("应用").getAttribute("aria-current")).toBe("page");
   });
 
   it("点击导航切换面板，并保留 aria-current 语义", async () => {

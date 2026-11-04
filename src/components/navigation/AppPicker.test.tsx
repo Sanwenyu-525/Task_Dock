@@ -18,6 +18,7 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import AppPicker from "./AppPicker";
+import { APP_PAGE_SIZE } from "../../lib/appSearch";
 import {
   navLinkTask,
   navListWindows,
@@ -26,6 +27,7 @@ import {
   navPickTaskWindow,
   navLinkTaskWindow,
   navSaveTarget,
+  navUpdateTarget,
   type DiscoveredApp,
   type NavTarget,
   type TaskNavLink,
@@ -46,6 +48,8 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
     navPickWindowIdentity: vi.fn(),
     navPickTaskWindow: vi.fn(async () => {}),
     navLinkTaskWindow: vi.fn(async () => "link-id"),
+    navUpdateTarget: vi.fn(async () => {}),
+    navAppIcon: vi.fn(async () => null),
   };
 });
 
@@ -384,5 +388,189 @@ describe("AppPicker", () => {
     const toast = screen.getByTestId("toast");
     expect(toast.textContent).toContain("已在快捷列表中");
     expect(toast.dataset.kind).toBe("info");
+  });
+
+  it("独立配置模式重复添加已隐藏目标：提示可恢复显示，确认后取消隐藏且不覆盖自定义配置", async () => {
+    const user = userEvent.setup();
+    const hidden = { ...targetFix("target-vsc", "VS Code（自定义名）", "vscode"), hidden: true, favorite: true, launch_args: "--safe-mode" };
+    seedStores({ targets: [hidden] });
+    vi.mocked(navSaveTarget).mockResolvedValue(hidden);
+    const loadTargets = useNavigationStore.getState().loadTargets;
+    const { onClose } = renderPicker({ standalone: true });
+
+    await user.click(await screen.findByRole("option", { name: /VS Code/ }));
+
+    // 保持选择器打开并明确提示，而不是「提示已存在但页面上看不到」
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("恢复显示");
+    expect(vi.mocked(navUpdateTarget)).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "恢复显示" }));
+    await waitFor(() => expect(vi.mocked(navUpdateTarget)).toHaveBeenCalledWith("target-vsc", { hidden: false }));
+    // 只取消隐藏：名称/收藏/启动参数等自定义配置不提交
+    expect(vi.mocked(navUpdateTarget).mock.calls[0][1]).toEqual({ hidden: false });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(loadTargets).toHaveBeenCalledWith(true);
+    expect(screen.getByTestId("toast").textContent).toContain("已恢复显示");
+  });
+
+  it("扫描失败显示错误与重试，不会永远停在「加载中」", () => {
+    seedStores();
+    useNavigationStore.setState({ scan: null, scanning: false, scanError: "扫描服务不可用" });
+    renderPicker({ standalone: true });
+
+    expect(screen.getByText(/扫描失败/)).toBeTruthy();
+    expect(screen.queryByText("加载中…")).toBeNull();
+    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+  });
+
+  it("搜索「微信」命中主程序与相关独立应用；不连续中文不命中", async () => {
+    const user = userEvent.setup();
+    seedStores({
+      apps: [
+        appFix({ app_key: "weixin", display_name: "微信", category: "im", exe_path: "D:\\微信\\Weixin\\Weixin.exe" }),
+        appFix({ app_key: "wxwork", display_name: "企业微信", category: "im", exe_path: "C:\\Program Files\\WXWork\\WXWork.exe" }),
+        appFix({ app_key: "wxdev", display_name: "微信开发者工具", category: "dev", exe_path: "C:\\Tencent\\微信开发者工具\\微信开发者工具.exe" }),
+        appFix({ app_key: "minichat", display_name: "微型聊天工具", category: "im" }),
+        APP_CHROME,
+      ],
+    });
+    renderPicker({ standalone: true });
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+
+    await user.type(screen.getByLabelText("搜索应用"), "微信");
+    expect(within(list).getByText("微信")).toBeTruthy();
+    expect(within(list).getByText("企业微信")).toBeTruthy();
+    expect(within(list).getByText("微信开发者工具")).toBeTruthy();
+    expect(within(list).queryByText("微型聊天工具")).toBeNull();
+
+    await user.clear(screen.getByLabelText("搜索应用"));
+    await user.type(screen.getByLabelText("搜索应用"), "微开");
+    expect(within(list).queryByText("微信开发者工具")).toBeNull();
+    expect(screen.getByText(/没有匹配「微开」/)).toBeTruthy();
+  });
+
+  it("英文搜索大小写不敏感：WECHAT / wechat 命中同一应用", async () => {
+    const user = userEvent.setup();
+    seedStores({
+      apps: [
+        appFix({ app_key: "weixin", display_name: "WeChat", category: "im", exe_path: "D:\\微信\\Weixin\\Weixin.exe" }),
+        APP_CHROME,
+      ],
+    });
+    renderPicker({ standalone: true });
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+
+    for (const q of ["WECHAT", "wechat", "WeChat"]) {
+      await user.clear(screen.getByLabelText("搜索应用"));
+      await user.type(screen.getByLabelText("搜索应用"), q);
+      expect(within(list).getByText("WeChat")).toBeTruthy();
+      expect(within(list).queryByText("Chrome")).toBeNull();
+    }
+  });
+
+  it("大量结果分页完整：首屏 40 条，「加载更多」后 60 条全部可见", async () => {
+    const user = userEvent.setup();
+    const many = Array.from({ length: 60 }, (_, i) =>
+      appFix({ app_key: `wechat-${i}`, display_name: `微信应用${i}`, category: "im" }),
+    );
+    seedStores({ apps: many });
+    renderPicker({ standalone: true });
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+
+    expect(within(list).getAllByRole("option")).toHaveLength(APP_PAGE_SIZE);
+    expect(within(list).getByText(`共 60 个匹配`)).toBeTruthy();
+
+    await user.click(within(list).getByRole("button", { name: /加载更多/ }));
+    expect(within(list).getAllByRole("option")).toHaveLength(60);
+    expect(within(list).queryByRole("button", { name: /加载更多/ })).toBeNull();
+  });
+
+  it("扫描不完整时明确提示，不与「没有匹配」混淆", () => {
+    seedStores();
+    useNavigationStore.setState({
+      scan: {
+        apps: [APP_VSCODE, APP_WECHAT, APP_CHROME],
+        scanned_at: "2026-10-28T00:00:00Z",
+        duration_ms: 1,
+        counts: {},
+        diagnostics: { startmenu_truncated: 1 },
+      },
+    });
+    renderPicker({ standalone: true });
+
+    expect(screen.getByText(/应用发现可能不完整/)).toBeTruthy();
+  });
+});
+
+describe("AppPicker 子页面（variant=page）", () => {
+  function renderPage() {
+    const onClose = vi.fn();
+    render(
+      <>
+        <AppPicker standalone variant="page" onClose={onClose} />
+        <ToastProbe />
+      </>,
+    );
+    return { onClose };
+  }
+
+  it("以内容区页面呈现：没有 dialog 遮罩，返回按钮关闭页面", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    const { onClose } = renderPage();
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("region", { name: "添加应用" })).toBeTruthy();
+    expect(screen.getByRole("listbox", { name: "已安装软件" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "返回应用列表" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("多选两个应用后批量添加：逐个保存、刷新列表并关闭页面", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navSaveTarget).mockImplementation(async (input) =>
+      targetFix("t-" + input.display_name, input.display_name, input.exe_path ?? ""),
+    );
+    const { onClose } = renderPage();
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+
+    const addBtn = screen.getByRole("button", { name: "添加已选应用" });
+    expect((addBtn as HTMLButtonElement).disabled).toBe(true);
+
+    await user.click(within(list).getByRole("option", { name: /VS Code/ }));
+    await user.click(within(list).getByRole("option", { name: /微信/ }));
+    expect(screen.getByText("已选 2")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "添加已选应用（2）" }));
+    await waitFor(() => expect(navSaveTarget).toHaveBeenCalledTimes(2));
+    expect(useNavigationStore.getState().loadTargets).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it("已添加应用显示明确状态且不可重复选择", async () => {
+    seedStores({ targets: [targetFix("t1", "微信", "wechat")] });
+    renderPage();
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+
+    const saved = within(list).getByRole("option", { name: /微信/ });
+    expect((saved as HTMLButtonElement).disabled).toBe(true);
+    expect(within(saved).getByText("已添加")).toBeTruthy();
+  });
+
+  it("运行窗口选择在页面内切换，返回后回到发现列表", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navListWindows).mockResolvedValue([]);
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText("没有可交互的窗口")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "返回添加应用" }));
+    expect(screen.getByRole("listbox", { name: "已安装软件" })).toBeTruthy();
   });
 });

@@ -38,6 +38,10 @@ pub struct AppScanResult {
     pub scanned_at: String,
     pub duration_ms: u64,
     pub counts: HashMap<String, usize>,
+    /// 来源级诊断（如 startmenu_truncated / uwp_scan_failed）：
+    /// 用于区分「没有匹配」与「发现不完整」，不把扫描失败说成没有结果。
+    #[serde(default)]
+    pub diagnostics: HashMap<String, u32>,
 }
 
 /// 应用运行状态（区分「进程在」与「有窗口」）。
@@ -67,6 +71,7 @@ pub fn scan_installed_apps(force: bool) -> AppScanResult {
         let guard = cache_cell().lock().unwrap();
         if let Some((at, r)) = guard.as_ref() {
             if !force && at.elapsed() < SCAN_CACHE_TTL {
+                super::app_icons::register_discovered(&r.apps);
                 return r.clone();
             }
         }
@@ -75,6 +80,8 @@ pub fn scan_installed_apps(force: bool) -> AppScanResult {
     let mut result = scan_now();
     result.duration_ms = started.elapsed().as_millis() as u64;
     result.scanned_at = crate::agents::now_iso();
+    // 登记可提取图标的应用身份（图标接口只认这些身份，不接受任意路径）
+    super::app_icons::register_discovered(&result.apps);
     *cache_cell().lock().unwrap() = Some((Instant::now(), result.clone()));
     result
 }
@@ -214,18 +221,30 @@ fn known_app_candidates() -> Vec<(String, String)> {
 fn scan_now() -> AppScanResult {
     let mut apps: Vec<DiscoveredApp> = Vec::new();
     let mut counts = HashMap::new();
+    let mut diagnostics: HashMap<String, u32> = HashMap::new();
 
     let n0 = apps.len();
-    for a in scan_start_menu() {
+    let (menu, truncated) = scan_start_menu();
+    for a in menu {
         push_unique(&mut apps, a);
     }
     counts.insert("startmenu".into(), apps.len() - n0);
+    if truncated {
+        diagnostics.insert("startmenu_truncated".into(), 1);
+    }
 
     let n0 = apps.len();
     for a in scan_known() {
         push_unique(&mut apps, a);
     }
     counts.insert("known".into(), apps.len() - n0);
+
+    // App Paths：软件注册的启动入口（开始菜单缺失时的可靠补充，不猜安装路径）
+    let n0 = apps.len();
+    for a in scan_app_paths() {
+        push_unique(&mut apps, a);
+    }
+    counts.insert("app_paths".into(), apps.len() - n0);
 
     let n0 = apps.len();
     for a in scan_registry() {
@@ -234,10 +253,14 @@ fn scan_now() -> AppScanResult {
     counts.insert("registry".into(), apps.len() - n0);
 
     let n0 = apps.len();
-    for a in scan_uwp() {
+    let (uwp, uwp_ok) = scan_uwp();
+    for a in uwp {
         push_unique(&mut apps, a);
     }
     counts.insert("uwp".into(), apps.len() - n0);
+    if !uwp_ok {
+        diagnostics.insert("uwp_scan_failed".into(), 1);
+    }
 
     apps.sort_by(|a, b| {
         a.display_name
@@ -249,6 +272,7 @@ fn scan_now() -> AppScanResult {
         scanned_at: String::new(),
         duration_ms: 0,
         counts,
+        diagnostics,
     }
 }
 
@@ -259,6 +283,7 @@ fn scan_now() -> AppScanResult {
         scanned_at: String::new(),
         duration_ms: 0,
         counts: HashMap::new(),
+        diagnostics: HashMap::new(),
     }
 }
 
@@ -272,9 +297,9 @@ fn push_unique(apps: &mut Vec<DiscoveredApp>, a: DiscoveredApp) {
     apps.push(a);
 }
 
-/// 开始菜单快捷方式（用户 + 所有用户）。
+/// 开始菜单快捷方式（用户 + 所有用户）。返回 (应用列表, 是否因预算耗尽而截断)。
 #[cfg(windows)]
-fn scan_start_menu() -> Vec<DiscoveredApp> {
+fn scan_start_menu() -> (Vec<DiscoveredApp>, bool) {
     let mut dirs = Vec::new();
     if let Ok(appdata) = std::env::var("APPDATA") {
         dirs.push(PathBuf::from(appdata).join("Microsoft\\Windows\\Start Menu\\Programs"));
@@ -290,7 +315,7 @@ fn scan_start_menu() -> Vec<DiscoveredApp> {
             break;
         }
     }
-    out
+    (out, budget == 0)
 }
 
 #[cfg(windows)]
@@ -333,23 +358,37 @@ fn parse_lnk(path: &Path) -> Option<DiscoveredApp> {
     if lower_name.contains("uninstall") || display_name.contains("卸载") {
         return None;
     }
-    let sl = std::panic::catch_unwind(|| lnk::ShellLink::open(path).ok())
-        .ok()
-        .flatten()?;
-    let target = sl
-        .link_info()
-        .as_ref()
-        .and_then(|li| li.local_base_path().clone())
-        .unwrap_or_default();
-    if target.is_empty() {
-        return None;
+    // 优先走 Windows Shell（IShellLinkW）：快捷方式的 LinkInfo 可能是历史遗留路径，
+    // 真实目标在 LinkTargetIDList 中（例：微信的 .lnk 里 LinkInfo 仍指向已删除的
+    // D:\微信\WeChat\WeChat.exe，而实际安装位置是 D:\微信\Weixin\Weixin.exe）。
+    let mut resolved = super::app_icons::resolve_shortcut(&path.to_string_lossy());
+    if !matches!(&resolved, Some((t, _, _)) if validate_exe_path(t).is_ok()) {
+        // COM 不可用或目标失效时回退到纯 Rust 解析（不因单一来源失败丢掉全部快捷方式）
+        resolved = std::panic::catch_unwind(|| lnk::ShellLink::open(path).ok())
+            .ok()
+            .flatten()
+            .and_then(|sl| {
+                let target = sl
+                    .link_info()
+                    .as_ref()
+                    .and_then(|li| li.local_base_path().clone())
+                    .unwrap_or_default();
+                if target.is_empty() {
+                    return None;
+                }
+                Some((
+                    target,
+                    sl.arguments().clone().unwrap_or_default(),
+                    sl.working_dir().clone().unwrap_or_default(),
+                ))
+            });
     }
+    let (target, launch_args, raw_wd) = resolved?;
     // 目标校验：绝对路径 + .exe + 存在 + 非解释器（复用导航安全校验）
     if validate_exe_path(&target).is_err() {
         return None;
     }
     let lower = target.to_ascii_lowercase();
-    let raw_wd = sl.working_dir().clone().unwrap_or_default();
     let working_dir = {
         let t = raw_wd.trim();
         if !t.is_empty() && Path::new(t).is_dir() {
@@ -364,12 +403,7 @@ fn parse_lnk(path: &Path) -> Option<DiscoveredApp> {
         category: category_for_exe(&lower).to_string(),
         window_title_hint: title_hint_for_exe(&lower).to_string(),
         exe_path: target,
-        launch_args: sl
-            .arguments()
-            .clone()
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
+        launch_args: launch_args.trim().to_string(),
         working_dir,
         app_user_model_id: String::new(),
         source: "startmenu".into(),
@@ -399,6 +433,94 @@ fn scan_known() -> Vec<DiscoveredApp> {
             })
         })
         .collect()
+}
+
+/// exe 是否为卸载/安装辅助程序（不应当作可启动应用）。
+fn is_helper_exe(lower: &str) -> bool {
+    let stem = Path::new(lower)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    stem.starts_with("unins")
+        || stem.contains("uninstall")
+        || stem.contains("setup")
+        || stem.contains("installer")
+}
+
+/// Uninstall 注册表的 DisplayIcon 常写成 `"C:\App\app.exe",0`，也可能只是图标资源
+///（.ico/.dll）。只有 .exe 才能当作可启动应用，其余一律不猜。
+fn exe_from_display_icon(icon: &str) -> Option<String> {
+    let raw = icon.split(',').next()?.trim().trim_matches('"').trim();
+    if raw.is_empty() || !raw.to_ascii_lowercase().ends_with(".exe") {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
+/// App Paths：软件自己注册的启动入口（HKCU / HKLM 64 位与 32 位视图）。
+/// 这是可靠系统来源，不猜测安装目录；与开始菜单/注册表按 app_key 去重。
+#[cfg(windows)]
+fn scan_app_paths() -> Vec<DiscoveredApp> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    use winreg::RegKey;
+
+    let roots = [
+        (
+            HKEY_LOCAL_MACHINE,
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+        ),
+        (
+            HKEY_CURRENT_USER,
+            "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths",
+        ),
+    ];
+    let mut out = Vec::new();
+    for (root, sub) in roots {
+        let Ok(key) = RegKey::predef(root).open_subkey(sub) else {
+            continue;
+        };
+        for name in key.enum_keys().flatten() {
+            let Ok(sk) = key.open_subkey(&name) else {
+                continue;
+            };
+            let exe: String = sk.get_value("").unwrap_or_default();
+            let exe = exe.trim().trim_matches('"').to_string();
+            // 含环境变量或空值无法可靠定位（不做猜测展开）
+            if exe.is_empty() || exe.contains('%') || validate_exe_path(&exe).is_err() {
+                continue;
+            }
+            let lower = exe.to_ascii_lowercase();
+            if is_helper_exe(&lower) {
+                continue;
+            }
+            let display_name = name
+                .strip_suffix(".exe")
+                .or_else(|| name.strip_suffix(".EXE"))
+                .unwrap_or(&name)
+                .trim()
+                .to_string();
+            if display_name.is_empty() {
+                continue;
+            }
+            out.push(DiscoveredApp {
+                app_key: lower.clone(),
+                display_name,
+                category: category_for_exe(&lower).to_string(),
+                window_title_hint: title_hint_for_exe(&lower).to_string(),
+                exe_path: exe,
+                launch_args: String::new(),
+                working_dir: String::new(),
+                app_user_model_id: String::new(),
+                source: "app_paths".into(),
+            });
+        }
+    }
+    out
 }
 
 /// 卸载注册表（HKLM 64/32 + HKCU）。
@@ -441,21 +563,30 @@ fn scan_registry() -> Vec<DiscoveredApp> {
             if sys_comp == 1 {
                 continue;
             }
-            let icon: String = sk.get_value("DisplayIcon").unwrap_or_default();
-            let exe = icon
-                .split(',')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .trim_matches('"')
-                .to_string();
-            if exe.is_empty() {
+            // 更新补丁 / 父级条目不是独立应用
+            let parent: String = sk.get_value("ParentKeyName").unwrap_or_default();
+            if !parent.trim().is_empty() {
                 continue;
             }
+            let release: String = sk.get_value("ReleaseType").unwrap_or_default();
+            let rel = release.to_ascii_lowercase();
+            if rel.contains("update") || rel.contains("hotfix") || rel.contains("patch") {
+                continue;
+            }
+            let icon: String = sk.get_value("DisplayIcon").unwrap_or_default();
+            // DisplayIcon 常见写法：`"C:\App\app.exe",0`；也可能是 .ico/.dll，
+            // 只有 exe 才能作为启动目标（图标文件不是可执行程序）。
+            let Some(exe) = exe_from_display_icon(&icon) else {
+                continue;
+            };
             if validate_exe_path(&exe).is_err() {
                 continue;
             }
             let lower = exe.to_ascii_lowercase();
+            // 卸载程序不是可启动应用；名称含卸载/Uninstall 的登记项同理
+            if is_helper_exe(&lower) || display.to_ascii_lowercase().contains("uninstall") {
+                continue;
+            }
             out.push(DiscoveredApp {
                 app_key: lower.clone(),
                 display_name: display.trim().to_string(),
@@ -474,7 +605,8 @@ fn scan_registry() -> Vec<DiscoveredApp> {
 
 /// UWP / MSIX：Get-StartApps 中带「!」的应用身份（单次 PowerShell 调用，限时 8s）。
 #[cfg(windows)]
-fn scan_uwp() -> Vec<DiscoveredApp> {
+fn scan_uwp() -> (Vec<DiscoveredApp>, bool) {
+    // 输出统一 UTF-8：默认控制台编码会把中文应用名变成乱码（搜索与展示都会失效）
     let out = run_powershell_with_timeout(
         &[
             "-NoProfile",
@@ -482,11 +614,14 @@ fn scan_uwp() -> Vec<DiscoveredApp> {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            "Get-StartApps | Where-Object { $_.AppID -like '*!*' } | ConvertTo-Csv -NoTypeInformation",
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-StartApps | Where-Object { $_.AppID -like '*!*' } | ConvertTo-Csv -NoTypeInformation",
         ],
         Duration::from_secs(8),
-    )
-    .unwrap_or_default();
+    );
+    let Some(out) = out else {
+        // PowerShell 不可用 / 超时：如实标记来源失败，不把「没有 UWP」当作扫描成功
+        return (Vec::new(), false);
+    };
     let mut apps = Vec::new();
     for line in out.lines().skip(1) {
         let line = line.trim();
@@ -518,7 +653,7 @@ fn scan_uwp() -> Vec<DiscoveredApp> {
             break;
         }
     }
-    apps
+    (apps, true)
 }
 
 /// 带超时的子进程执行（防止 PowerShell 挂起阻塞扫描）。
@@ -722,6 +857,70 @@ mod tests {
         assert!(
             *s == RunningState::ProcessOnly || *s == RunningState::NotRunning,
             "测试进程无 GUI 窗口，不得报 HasWindow"
+        );
+    }
+
+    #[test]
+    fn display_icon_only_accepts_exe_without_arguments() {
+        // 带引号 + 图标索引：取 exe 本身
+        assert_eq!(
+            exe_from_display_icon("\"C:\\Program Files\\App\\app.exe\",0"),
+            Some("C:\\Program Files\\App\\app.exe".to_string())
+        );
+        assert_eq!(
+            exe_from_display_icon("C:\\App\\app.exe,-1"),
+            Some("C:\\App\\app.exe".to_string())
+        );
+        // 图标资源 / DLL / 空值不能当启动目标
+        assert_eq!(exe_from_display_icon("C:\\App\\icon.ico"), None);
+        assert_eq!(exe_from_display_icon("C:\\App\\res.dll,2"), None);
+        assert_eq!(exe_from_display_icon("   "), None);
+    }
+
+    #[test]
+    fn uninstallers_and_setup_helpers_are_filtered() {
+        assert!(is_helper_exe("c:\\app\\unins000.exe"));
+        assert!(is_helper_exe("c:\\app\\uninstall.exe"));
+        assert!(is_helper_exe("c:\\app\\setup.exe"));
+        assert!(is_helper_exe("c:\\app\\installer.exe"));
+        // 正常应用不能被误杀（开发工具、通讯、便携程序）
+        assert!(!is_helper_exe("c:\\program files\\microsoft vs code\\code.exe"));
+        assert!(!is_helper_exe("c:\\tencent\\wxwork\\wxwork.exe"));
+        assert!(!is_helper_exe("d:\\portable\\tool.exe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn invalid_shortcut_is_ignored_without_panic() {
+        let dir = std::env::temp_dir().join(format!(
+            "task-dock-lnk-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("broken.lnk");
+        std::fs::write(&path, b"not a real shortcut").unwrap();
+        let parsed = parse_lnk(&path);
+        assert!(parsed.is_none(), "非法快捷方式必须被忽略，且不能 panic");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// 真机可复现样本：微信的 .lnk 的 LinkInfo 指向已删除的旧路径，
+    /// 真实目标在 LinkTargetIDList 中。未安装微信时跳过（不伪造结果）。
+    #[cfg(windows)]
+    #[test]
+    fn stale_link_info_shortcut_resolves_to_existing_target() {
+        let lnk = Path::new("C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\微信\\微信.lnk");
+        if !lnk.exists() {
+            eprintln!("skip: 本机未安装微信（{} 不存在）", lnk.display());
+            return;
+        }
+        let resolved = super::super::app_icons::resolve_shortcut(&lnk.to_string_lossy())
+            .expect("Shell 应能解析 IDList 中的真实目标");
+        assert!(
+            super::super::validate_exe_path(&resolved.0).is_ok(),
+            "解析出的目标必须是现有 exe：{}",
+            resolved.0
         );
     }
 }

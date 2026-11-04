@@ -2,6 +2,7 @@
 //!
 //! 分层：
 //! - `app_discovery`：软件发现（开始菜单 / 注册表 / UWP / 运行进程 / 常用路径），只做观测；
+//! - `app_icons`：Windows 真实图标提取（Shell 图标 / 快捷方式目标解析），按需、限并发、带缓存；
 //! - `window_manager`：Windows 顶层窗口枚举与焦点控制（EnumWindows / SetForegroundWindow）；
 //! - `target_resolver`：导航目标的持久化（navigation_targets）与执行前重校验；
 //! - `agent_navigation`：各 Agent 的跳转能力（证据化，不含观测逻辑）；
@@ -14,6 +15,7 @@
 
 pub mod agent_navigation;
 pub mod app_discovery;
+pub mod app_icons;
 pub mod router;
 pub mod target_resolver;
 pub mod window_manager;

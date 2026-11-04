@@ -401,14 +401,21 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     description: "一处搜索任务、剪贴板、应用、Agent 会话、现场与笔记。",
     detail:
       "统一搜索入口：全局快捷键唤起、实时搜索、分类筛选、结果快速跳转、最近搜索记录。复用现有各面板数据查询能力（任务 LIKE 查询、剪贴板标题搜索、历史过滤、应用扫描缓存），不复制数据建立第二套数据库；必要时仅建轻量索引并限制查询规模。",
-    status: "planned",
+    status: "partial",
     priority: "P1",
-    existingFeatures: [],
+    existingFeatures: [
+      "统一命令 global_search：单只读连接一次查询任务/剪贴板/收集箱/暂存架/应用/Agent/现场/规划中心八类数据（v0.9）",
+      "Ctrl+Shift+F 应用内快捷键 + 居中搜索弹窗（overlayStack dialog 层、焦点陷阱、防抖 220ms、乱序防护）",
+      "分类筛选（全部/任务/剪贴板/收集箱/文件暂存/应用/Agent/工作现场/规划中心）",
+      "确定性排序：匹配等级（精确>前缀>包含>元数据）→ 待办/置顶优先 → 时间新优先",
+      "结果跳转：任务滚动高亮、剪贴板条目详情、收集箱定位、暂存架详情、应用 navNavigate、Agent focusAgent、现场开上下文抽屉并展开快照、规划中心定位功能/里程碑/项目",
+      "最近搜索本地保存（≤10 条，去重、可清除，仅 localStorage 不出网）",
+      "SQL 全参数绑定 + LIKE 转义 + limit+1 探测 has_more；Agent 数据强制 origin=real 且来源 hidden=0",
+    ],
     missingFeatures: [
-      "全局搜索入口与快捷键",
-      "跨模块实时搜索与分类筛选（任务 / 剪贴板 / 暂存架 / 应用 / Agent / 会话 / 现场 / 笔记）",
-      "搜索结果快速跳转到对应面板与条目",
-      "最近搜索记录",
+      "已发现（未登记）应用的搜索：需只读应用扫描缓存访问器与 AppPicker 登记链路，当前仅搜索已保存导航目标",
+      "快速笔记分类：等笔记模块真正实现后以轻量适配器接入",
+      "FTS5 索引：LIKE 全表扫描在万级数据实测达标前不引入",
     ],
     dependencies: ["各面板现有查询命令", "防抖与查询上限（避免大库卡顿）"],
     acceptanceCriteria: [
@@ -648,7 +655,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     priority: "P1",
     existingFeatures: [
       "固定全局热键 + set_hotkeys_enabled 开关",
-      "应用内快捷键：Ctrl+1…8 / Ctrl+K / Ctrl+Shift+C（顺序取自 TAB_ORDER 单一事实源）",
+      "应用内快捷键：Ctrl+1…9 / Ctrl+0 / Ctrl+K / Ctrl+Shift+C（逻辑顺序取自 TAB_ORDER 单一事实源；「应用」入口不占数字键）",
     ],
     missingFeatures: ["快捷键录制控件", "冲突检测与系统占用提示", "与后端热键注册的双向同步"],
     dependencies: ["tauri_plugin_global_shortcut 重新注册能力已具备"],

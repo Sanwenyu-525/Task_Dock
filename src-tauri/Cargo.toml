@@ -70,8 +70,19 @@ windows-sys = { version = "0.60", features = [
   "Win32_System_LibraryLoader",
   "Win32_Security",
   "Win32_Graphics_Gdi",
+  # 真实应用图标：SHGetFileInfoW / ExtractIconExW（shell32）
+  "Win32_UI_Shell",
   # Agent Hooks 配置写入：MoveFileExW 原子替换（MOVEFILE_REPLACE_EXISTING | WRITE_THROUGH）
   "Win32_Storage_FileSystem",
+] }
+# Windows Shell COM（仅图标链路用）：IShellLinkW 解析 .lnk 真实目标、
+# IShellItemImageFactory 取 UWP 包图标。版本与 Cargo.lock 现有传递依赖一致（无新增下载）。
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
 ] }
 # 注册表读取（卸载信息 / UWP 包注册）
 winreg = "0.55"

@@ -356,6 +356,48 @@ pub fn list_targets(db: &Db, include_hidden: bool) -> AppResult<Vec<NavTargetRow
     })
 }
 
+/// 已保存应用目标的实时运行状态（按 id 返回 `has_window / process_only / not_running / unavailable`）。
+///
+/// 供应用中心「运行中」筛选与状态徽标使用；一次窗口枚举 + 一次进程快照，
+/// 只由前端显式调用（打开页面 / 启动成功后），**后端不做轮询**。
+/// 非 application 目标不返回（由调用方按类型展示，不推断）。
+pub fn running_states_by_id(
+    db: &Db,
+    ids: &[String],
+) -> AppResult<std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let wanted: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let targets = list_targets(db, false)?;
+    let apps: Vec<&NavTargetRow> = targets
+        .iter()
+        .filter(|t| wanted.contains(t.id.as_str()) && t.target_type == "application")
+        .collect();
+    if apps.is_empty() {
+        return Ok(out);
+    }
+    let keys: Vec<String> = apps.iter().map(|t| t.app_key.clone()).collect();
+    let running = super::app_discovery::running_states(&keys);
+    for t in apps {
+        // 配置失效优先于运行态：exe 被卸载 / 迁移后不能显示"运行中"。
+        let no_identity = t.exe_path.is_empty() && t.app_user_model_id.is_empty();
+        let exe_gone = !t.exe_path.is_empty() && !std::path::Path::new(&t.exe_path).exists();
+        let state = if no_identity || exe_gone {
+            "unavailable"
+        } else {
+            match running.get(&t.app_key) {
+                Some(super::app_discovery::RunningState::HasWindow) => "has_window",
+                Some(super::app_discovery::RunningState::ProcessOnly) => "process_only",
+                _ => "not_running",
+            }
+        };
+        out.insert(t.id.clone(), state.to_string());
+    }
+    Ok(out)
+}
+
 /// 目标元信息补丁（名称/图标/收藏/隐藏/标题提示）。
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TargetPatch {

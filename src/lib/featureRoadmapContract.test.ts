@@ -72,7 +72,7 @@ const EXPECTED_CORE_BY_PRIORITY: Record<FeaturePriority, readonly string[]> = {
   P2: ["core.quick-notes", "core.life-routines"],
 };
 
-/** 核心项状态精确集合（v0.8：文件暂存架 planned→partial；v0.9：一键工作流 planned→partial） */
+/** 核心项状态精确集合（v0.8：文件暂存架 planned→partial；v0.9：一键工作流、全局搜索 planned→partial） */
 const EXPECTED_CORE_BY_STATUS: Record<"implemented" | "partial" | "planned", readonly string[]> = {
   implemented: ["core.quick-capture", "core.agent-action-center"],
   partial: [
@@ -83,8 +83,9 @@ const EXPECTED_CORE_BY_STATUS: Record<"implemented" | "partial" | "planned", rea
     "core.life-routines",
     "core.file-shelf",
     "core.one-click-workflow",
+    "core.global-search",
   ],
-  planned: ["core.focus-timer", "core.global-search", "core.quick-notes"],
+  planned: ["core.focus-timer", "core.quick-notes"],
 };
 
 function featuresOf(ids: readonly string[]) {
@@ -115,7 +116,7 @@ describe("12 项核心功能精确契约", () => {
     }
   });
 
-  it("核心项状态精确集合：implemented 2 / partial 7 / planned 3", () => {
+  it("核心项状态精确集合：implemented 2 / partial 8 / planned 2", () => {
     for (const status of ["implemented", "partial", "planned"] as const) {
       const actual = featuresOf(EXPECTED_CORE_IDS)
         .filter((f) => f.status === status)
@@ -125,17 +126,18 @@ describe("12 项核心功能精确契约", () => {
     }
   });
 
-  it("全局搜索固定为 P1 / planned / workflow", () => {
+  it("全局搜索固定为 P1 / partial / workflow", () => {
     const f = getFeatureById("core.global-search");
     expect(f?.title).toBe("全局搜索");
     expect(f?.priority).toBe("P1");
-    expect(f?.status).toBe("planned");
+    // v0.9：统一检索层落地为 partial（已发现应用/笔记/FTS5 仍在缺口清单）
+    expect(f?.status).toBe("partial");
     expect(f?.category).toBe("workflow");
   });
 });
 
 describe("全目录统计契约", () => {
-  it("目录总数 28，状态计数 implemented=4 / partial=10 / planned=14 / blocked=0", () => {
+  it("目录总数 28，状态计数 implemented=4 / partial=11 / planned=13 / blocked=0", () => {
     expect(FEATURE_CATALOG).toHaveLength(28);
     const counts: Record<FeatureStatus, number> = {
       implemented: 0,
@@ -144,7 +146,7 @@ describe("全目录统计契约", () => {
       blocked: 0,
     };
     for (const f of FEATURE_CATALOG) counts[f.status] += 1;
-    expect(counts).toEqual({ implemented: 4, partial: 10, planned: 14, blocked: 0 });
+    expect(counts).toEqual({ implemented: 4, partial: 11, planned: 13, blocked: 0 });
   });
 
   it("摘要函数与目录实际计数一致（total / coreTotal / 状态 / 验证）", () => {

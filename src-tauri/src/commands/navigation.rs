@@ -25,6 +25,33 @@ pub async fn nav_scan_apps(
     .map_err(|e| crate::error::AppError::Agent(format!("扫描任务失败: {}", e)))?
 }
 
+/// 真实应用图标（PNG data URL）。只接受已保存目标 id 或扫描发现的 app_key。
+/// 提取在阻塞线程执行，全局最多 2 个并发；失败返回 null 由前端回退，不阻塞列表。
+#[tauri::command]
+pub async fn nav_app_icon(
+    db: State<'_, Arc<Db>>,
+    target_id: Option<String>,
+    app_key: Option<String>,
+) -> AppResult<Option<String>> {
+    use std::sync::OnceLock;
+    static LIMIT: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    let limit = LIMIT
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
+        .clone();
+    let permit = limit
+        .acquire_owned()
+        .await
+        .map_err(|_| AppError::Agent("图标任务队列已关闭".into()))?;
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = navigation::app_icons::extract_icon(&db, target_id.as_deref(), app_key.as_deref());
+        drop(permit);
+        result
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("图标提取任务失败: {}", e)))?
+}
+
 /// 当前顶层窗口列表（窗口选择器用；绕过缓存取最新）。
 #[tauri::command]
 pub fn nav_list_windows() -> Vec<navigation::window_manager::WindowInfo> {
@@ -57,6 +84,21 @@ pub fn nav_list_targets(
     include_hidden: Option<bool>,
 ) -> AppResult<Vec<navigation::target_resolver::NavTargetRow>> {
     navigation::target_resolver::list_targets(&db, include_hidden.unwrap_or(false))
+}
+
+/// 已保存应用目标的实时运行状态（应用中心按需查询；不做轮询）。
+/// 只接受 application 目标；配置失效返回 unavailable，不虚报运行中。
+#[tauri::command]
+pub async fn nav_target_running_states(
+    db: State<'_, Arc<Db>>,
+    ids: Vec<String>,
+) -> AppResult<std::collections::HashMap<String, String>> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        navigation::target_resolver::running_states_by_id(&db, &ids)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("运行状态查询失败: {}", e)))?
 }
 
 #[tauri::command]
