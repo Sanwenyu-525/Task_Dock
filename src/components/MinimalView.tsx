@@ -6,34 +6,43 @@ import { useUiStore } from "../store/useUiStore";
 import { formatRelative } from "../lib/format";
 import { applyMode } from "../lib/bridge";
 import { liveSummary } from "../lib/agentTree";
+import { useLocale } from "../hooks/useLocale";
 
 export default function MinimalView() {
   const stats = useTasksStore((s) => s.stats);
   const snapshot = useAgentsStore((s) => s.snapshot);
   const setTab = useUiStore((s) => s.setTab);
+  const { t } = useLocale();
 
   const live = liveSummary(snapshot);
   const agentSummary =
     live.failed > 0
-      ? `${live.failed} 个失败`
+      ? t("minimal.agentFailed", { n: live.failed })
       : live.waiting > 0
-        ? `${live.waiting} 个等待`
+        ? t("minimal.agentWaiting", { n: live.waiting })
         : live.running > 0
-          ? `${live.running} 个运行中`
-          : "全部空闲";
+          ? t("minimal.agentRunning", { n: live.running })
+          : t("minimal.allIdle");
 
   return (
     <div className="minimal-view">
       <button
         className="minimal-count"
         onClick={() => { setTab("tasks"); applyMode("full"); }}
-        title="切换到完整模式 · 查看任务"
+        title={t("minimal.switchToFull")}
       >
         <span className="minimal-number">{stats?.pending ?? "—"}</span>
-        <span className="minimal-label">待办</span>
+        <span className="minimal-label">{t("minimal.pending")}</span>
       </button>
-      <div className="minimal-next" title={stats?.next_due_at ? `下次到期 ${formatRelative(stats.next_due_at)}` : "暂无安排"}>
-        <span className="minimal-next-label">下次到期</span>
+      <div
+        className="minimal-next"
+        title={
+          stats?.next_due_at
+            ? t("minimal.nextDueTip", { time: formatRelative(stats.next_due_at) })
+            : t("minimal.noSchedule")
+        }
+      >
+        <span className="minimal-next-label">{t("minimal.nextDue")}</span>
         <span className="minimal-next-value">
           {stats?.next_due_at ? formatRelative(stats.next_due_at) : "—"}
         </span>
@@ -41,7 +50,7 @@ export default function MinimalView() {
       <button
         className={`minimal-agent state-${live.worst}`}
         onClick={() => { setTab("agents"); applyMode("full"); }}
-        title="Agent 实时状态 · 点击查看"
+        title={t("minimal.agentStatusTip")}
       >
         <span className={`minimal-agent-dot state-${live.worst}`} />
         <span>{agentSummary}</span>

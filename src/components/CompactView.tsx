@@ -8,8 +8,10 @@ import { useUiStore } from "../store/useUiStore";
 import { formatBetween, AGENT_STATE_LABELS } from "../lib/format";
 import { applyMode } from "../lib/bridge";
 import { liveRuns } from "../lib/agentTree";
+import { useLocale } from "../hooks/useLocale";
 
 export default function CompactView() {
+  const { t } = useLocale();
   const tasks = useTasksStore((s) => s.tasks);
   const stats = useTasksStore((s) => s.stats);
   const snapshot = useAgentsStore((s) => s.snapshot);
@@ -22,12 +24,15 @@ export default function CompactView() {
       <QuickAdd compact />
       <div className="compact-section">
         <div className="compact-section-head">
-          <span>最近待办{stats && stats.pending > pending.length ? ` · ${stats.pending}` : ""}</span>
+          <span>
+            {t("compact.recentTasks")}
+            {stats && stats.pending > pending.length ? ` · ${stats.pending}` : ""}
+          </span>
           <button className="link-btn" onClick={() => { setTab("tasks"); applyMode("full"); }}>
-            全部
+            {t("compact.all")}
           </button>
         </div>
-        {pending.length === 0 && <div className="empty-hint">暂无待办</div>}
+        {pending.length === 0 && <div className="empty-hint">{t("compact.noTasks")}</div>}
         {pending.map((t) => (
           <TaskItem key={t.id} task={t} compact />
         ))}
@@ -35,9 +40,9 @@ export default function CompactView() {
       {activeRuns.length > 0 && (
         <div className="compact-section">
           <div className="compact-section-head">
-            <span>活跃 Agent</span>
+            <span>{t("compact.activeAgents")}</span>
             <button className="link-btn" onClick={() => { setTab("agents"); applyMode("full"); }}>
-              详情
+              {t("compact.details")}
             </button>
           </div>
           {activeRuns.map((r) => {

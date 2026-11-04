@@ -10,6 +10,7 @@ import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEv
 import { ChevronDown, Check } from "lucide-react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
+import { t as i18n } from "../../i18n";
 
 export interface SelectOption<T extends string = string> {
   value: T;
@@ -43,7 +44,7 @@ export default function Select<T extends string = string>({
   value,
   options,
   onChange,
-  placeholder = "请选择",
+  placeholder = i18n("select.placeholder"),
   disabled = false,
   ariaLabel,
   id,
@@ -204,7 +205,9 @@ export default function Select<T extends string = string>({
         ariaLabel={ariaLabel}
       >
         <div className="ui-listbox" ref={listRef}>
-          {options.length === 0 && <div className="ui-listbox-empty">暂无可选项</div>}
+          {options.length === 0 && (
+            <div className="ui-listbox-empty">{i18n("select.empty")}</div>
+          )}
           {options.map((o, i) => {
             const isSelected = o.value === value;
             const isActive = i === activeIndex;

@@ -23,6 +23,19 @@ import {
   shiftMonth,
   todayLocal,
 } from "../../lib/datetime";
+import { useLocale } from "../../hooks/useLocale";
+import type { LocaleCode } from "../../i18n";
+
+const WEEK_START = new Date(2024, 0, 1); // 2024-01-01 是周一，仅用于取周几文案
+
+/** 周标题由 Intl 生成（zh-CN 得到「一…日」，en-US 得到「M…S」），不硬编码。 */
+function weekHeads(locale: LocaleCode): string[] {
+  return Array.from({ length: 7 }, (_, i) =>
+    new Intl.DateTimeFormat(locale, { weekday: "narrow" }).format(
+      new Date(WEEK_START.getFullYear(), WEEK_START.getMonth(), WEEK_START.getDate() + i),
+    ),
+  );
+}
 
 export interface DateTimePickerProps {
   value: string;
@@ -39,13 +52,11 @@ export interface DateTimePickerProps {
   minuteStep?: number;
 }
 
-const WEEK_HEADS = ["一", "二", "三", "四", "五", "六", "日"];
-
 export default function DateTimePicker({
   value,
   onChange,
   onClear,
-  placeholder = "未设置",
+  placeholder,
   ariaLabel,
   id,
   disabled = false,
@@ -54,6 +65,9 @@ export default function DateTimePicker({
   clearable = true,
   minuteStep = 1,
 }: DateTimePickerProps) {
+  const { locale, t } = useLocale();
+  const resolvedPlaceholder = placeholder ?? t("dateTime.placeholder");
+  const heads = weekHeads(locale);
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(() => formatLocalDisplay(value));
   const [error, setError] = useState<string | null>(null);
@@ -102,14 +116,14 @@ export default function DateTimePicker({
   }
 
   function commitText() {
-    const t = text.trim();
-    if (!t) {
+    const raw = text.trim();
+    if (!raw) {
       if (value !== "") commit("");
       return;
     }
-    const parsed = parseLooseInput(t);
+    const parsed = parseLooseInput(raw);
     if (!parsed) {
-      setError("格式不正确，请按 2026-10-30 18:30 输入");
+      setError(t("dateTime.invalidFormat"));
       return;
     }
     setError(null);
@@ -174,13 +188,13 @@ export default function DateTimePicker({
         onClick={() => (open ? setOpen(false) : openPicker())}
       >
         <CalendarDays size={13} className="ui-dtp-icon" aria-hidden="true" />
-        <span className="ui-dtp-text">{value ? formatLocalDisplay(value) : placeholder}</span>
+        <span className="ui-dtp-text">{value ? formatLocalDisplay(value) : resolvedPlaceholder}</span>
         {clearable && value && !disabled ? (
           <span
             className="ui-dtp-clear"
             role="button"
             tabIndex={-1}
-            aria-label="清空日期时间"
+            aria-label={t("dateTime.clearAria")}
             onMouseDown={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -204,7 +218,7 @@ export default function DateTimePicker({
         matchWidth={false}
         className="ui-dtp-popover"
         role="dialog"
-        ariaLabel={ariaLabel ?? "选择日期与时间"}
+        ariaLabel={ariaLabel ?? t("dateTime.pickerAria")}
       >
         <div className="ui-dtp">
           <div className="ui-dtp-top">
@@ -213,7 +227,7 @@ export default function DateTimePicker({
               className={`ui-dtp-input ${error ? "is-error" : ""}`}
               value={text}
               placeholder="2026-10-30 18:30"
-              aria-label={`${ariaLabel ?? "日期时间"}（可直接输入）`}
+              aria-label={t("dateTime.inputAria", { label: ariaLabel ?? t("dateTime.pickerAria") })}
               aria-invalid={error ? true : undefined}
               onChange={(e) => {
                 setText(e.target.value);
@@ -234,28 +248,28 @@ export default function DateTimePicker({
             <button
               type="button"
               className="icon-btn sm"
-              aria-label="上个月"
+              aria-label={t("dateTime.prevMonth")}
               onClick={() => setViewYM((ym) => shiftMonth(ym, -1))}
             >
               <ChevronLeft size={13} />
             </button>
             <span className="ui-cal-title" aria-live="polite">
-              {vy} 年 {vm} 月
+              {t("dateTime.yearMonth", { year: vy, month: vm })}
             </span>
             <button
               type="button"
               className="icon-btn sm"
-              aria-label="下个月"
+              aria-label={t("dateTime.nextMonth")}
               onClick={() => setViewYM((ym) => shiftMonth(ym, 1))}
             >
               <ChevronRight size={13} />
             </button>
           </div>
 
-          <table className="ui-cal" aria-label="选择日期">
+          <table className="ui-cal" aria-label={t("dateTime.tableAria")}>
             <thead>
               <tr>
-                {WEEK_HEADS.map((w) => (
+                {heads.map((w) => (
                   <th key={w} scope="col" abbr={w}>
                     {w}
                   </th>
@@ -293,13 +307,13 @@ export default function DateTimePicker({
           <div className="ui-dtp-time">
             <Clock size={12} aria-hidden="true" />
             <label className="ui-dtp-field">
-              <span>时</span>
+              <span>{t("dateTime.hour")}</span>
               <input
                 type="number"
                 min={0}
                 max={23}
                 value={parts ? parts.hour : ""}
-                aria-label="小时"
+                aria-label={t("dateTime.hourAria")}
                 onChange={(e) => {
                   const h = Number(e.target.value);
                   if (!Number.isInteger(h) || h < 0 || h > 23) return;
@@ -308,14 +322,14 @@ export default function DateTimePicker({
               />
             </label>
             <label className="ui-dtp-field">
-              <span>分</span>
+              <span>{t("dateTime.minute")}</span>
               <input
                 type="number"
                 min={0}
                 max={59}
                 step={minuteStep}
                 value={parts ? parts.minute : ""}
-                aria-label="分钟"
+                aria-label={t("dateTime.minuteAria")}
                 onChange={(e) => {
                   const mi = Number(e.target.value);
                   if (!Number.isInteger(mi) || mi < 0 || mi > 59) return;
@@ -334,7 +348,7 @@ export default function DateTimePicker({
                 commit(formatLocalInput(n));
               }}
             >
-              现在
+              {t("dateTime.now")}
             </button>
             {clearable && (
               <button
@@ -345,7 +359,7 @@ export default function DateTimePicker({
                   onClear?.();
                 }}
               >
-                清空
+                {t("dateTime.clear")}
               </button>
             )}
           </div>

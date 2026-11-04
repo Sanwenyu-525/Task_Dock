@@ -7,6 +7,7 @@ import { useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, X } from "lucide-react";
 import { useFocusTrap, useOverlayLayer } from "./overlay";
+import { t as i18n } from "../../i18n";
 
 export interface DialogProps {
   open: boolean;
@@ -60,7 +61,12 @@ export function Dialog({
       >
         <header className="ui-dialog-head">
           <span className="ui-dialog-title">{title}</span>
-          <button type="button" className="icon-btn sm" aria-label="关闭" onClick={onClose}>
+          <button
+            type="button"
+            className="icon-btn sm"
+            aria-label={i18n("dialog.close")}
+            onClick={onClose}
+          >
             <X size={14} />
           </button>
         </header>
@@ -89,8 +95,8 @@ export function ConfirmDialog({
   open,
   title,
   detail,
-  confirmLabel = "确认",
-  cancelLabel = "取消",
+  confirmLabel = i18n("dialog.confirm"),
+  cancelLabel = i18n("dialog.cancel"),
   danger = false,
   busy = false,
   onConfirm,
