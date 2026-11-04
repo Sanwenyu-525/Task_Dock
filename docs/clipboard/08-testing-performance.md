@@ -759,3 +759,62 @@ UI 线程可交互**；后者本轮未真机测量。
    整批路径检查只占一个后台任务。
 4. **构建排队**：每次构建前统计 `cargo/rustc/link.exe` 与 node 构建进程，≥3 时轮询；实际遇到
    并行会话构建占用与一次探针执行时短暂达到 5 个进程，未终止任何非本任务进程。
+
+### 11.6 真机写入型测试的 effective 登记与快照完整性（2026-11-04）
+
+`src-tauri/tests/real_clipboard.rs` 的写入型真机测试强化了两处数据安全；生产剪贴板链路
+（读取、采集、粘贴、`snapshot`、`WriteOutcome`）未改。
+
+#### 11.6.1 登记实际写入形态
+
+平台允许辅助格式降级（HTML、DIB、文件纯文本）与文件路径有效性过滤，
+`WriteOutcome::Written` 的 `effective` 才是剪贴板上真实存在的形态。测试工具现在：
+
+- 解构 `{ seq, effective, degraded }`，写入成功后的第一条语句执行
+  `note_written(&effective)`，登记先于任何可能 panic 的断言；
+- 即时比较、有限次复核、失败诊断与后续回读一律使用 `effective`；
+- `degraded` 非空时明确列出未写入格式；写入型真机用例要求完整格式保真，
+  因此判测试失败，但守卫已登记实际内容，Drop 仍按内容归属尝试恢复；
+- `requested != effective`（文件路径被过滤）同样在登记后判失败。
+
+#### 11.6.2 模拟接管与真实接管
+
+- 测试自己模拟的「用户中途复制」通过 `write_simulated_takeover()` 写入，
+  成功后立即登记；panic 时内容归属匹配，恢复用户原内容。
+- 真实外部程序写入不经过本进程、不登记；panic 时内容归属不匹配，
+  `restore_if_own_content` 返回 `KeepUserCopy`，保留用户新内容。
+- 守卫正常结束与 Drop 合计最多恢复一次；恢复失败如实记录，不重试、不伪报成功。
+
+#### 11.6.3 快照完整性
+
+新增只读 `platform::SnapshotProbe` / `snapshot_probe()`：同一次 `OpenClipboard`
+内枚举格式并读取快照。写入型真机测试启动前由 `probe_refusal()` 判定：
+
+- 允许：显式写回的 `CF_UNICODETEXT`、`CF_DIB`、`CF_HDROP`、`HTML Format`、`PNG`，
+  Windows 系统合成格式 `CF_TEXT`、`CF_OEMTEXT`、`CF_BITMAP`、`CF_PALETTE`、`CF_DIBV5`，
+  以及仅承载语言标记的 `CF_LOCALE`（不保证逐字节还原，但不影响正文）；
+- 拒绝：RTF、Office 私有格式、第三方注册格式、元文件、TIFF/RIFF/WAVE 等，
+  以及取不到快照（剪贴板被占用）的情况。
+
+注意：`EnumClipboardFormats` 会把系统可转换格式一并枚举，`CF_DIBV5` 可由
+`CF_DIB`/`CF_BITMAP` 自动合成，因此 DIBV5 不能作为「存在额外私有数据」的证据。
+完整性保证的边界是「受支持的载荷形态 + 系统合成格式」，不是剪贴板所有字节格式；
+含私有格式时拒绝启动，不做降级恢复。
+
+#### 11.6.4 验证（2026-11-04）
+
+工作目录 `src-tauri/`，最终在真实工作树执行：
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test --test real_clipboard` | 14 passed / 0 failed / 3 ignored（模拟剪贴板；真实写入型用例未执行） |
+| `cargo test --lib clipboard` | 159 passed / 0 failed |
+| `cargo test --test clipboard_source_snapshot` | 3 passed / 0 failed |
+| `cargo check --lib` | EXIT 0 |
+
+新增受控用例 8 个（完整写入后立即 panic、HTML/DIB 降级、文件路径过滤、
+模拟接管立即登记、真实外部接管保留、恢复失败不重试、快照拒绝）与 1 个平台层
+格式分类单测。验证期间并行会话的 `hotkeys/store.rs` 曾处于未闭合中间态、工作树编译
+一度被阻塞；先用「HEAD + 本轮两个文件」的隔离导出树验证通过，待该会话恢复后已在
+真实工作树复跑同一组命令并通过。该文件不属于本任务，未修改。
+真实写入型 `#[ignore]` 用例与 Windows 真实应用来源识别仍未执行。

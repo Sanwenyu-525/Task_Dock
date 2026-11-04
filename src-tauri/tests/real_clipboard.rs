@@ -19,12 +19,18 @@
 //! 边界与诚实性：
 //! - 开始前先快照真实剪贴板；**若快照无法恢复（有内容但读不出可写回载荷，或原剪贴板为空、
 //!   无法恢复成空）直接中止**，绝不冒丢失用户内容的风险；
+//! - 启动前还要求剪贴板只包含可无损恢复的格式（纯文本 / HTML / PNG / CF_DIB / 文件路径
+//!   及系统合成格式）。含 RTF、Office 私有格式、第三方自定义格式或元文件时直接中止：
+//!   `ClipboardPayload` 重建不出这些格式，写回会永久丢失它们；
+//! - 平台允许辅助格式降级（HTML / DIB）与文件路径有效性过滤：守卫登记和后续内容比较
+//!   一律使用 `WriteOutcome::Written::effective`，且登记发生在任何可能 panic 的断言之前；
 //! - 写入型用例使用 RAII `ClipboardRestoreGuard`：正常结束与 panic 栈展开合计最多恢复一次，
 //!   恢复仍走 `restore_if_own_content` 的内容归属比较；用户中途复制返回 `KeepUserCopy`
 //!   并保留新内容。**强杀、`panic=abort`、系统崩溃/断电不执行 `Drop`，不宣称 100% 可靠**；
 //! - 全程只打印类型/尺寸/字节数/计数，绝不打印正文、路径或像素内容；
-//! - 「用户中途复制」由本工具在平台边界写入一段模拟内容触发——写入守卫只比较内容归属，
-//!   与第三方程序写入等价，但本次写入仍来自本进程，故结论标注为「平台级等价验证」；
+//! - 「用户中途复制」由本工具在平台边界写入一段模拟内容触发。它与真实外部写入的区别是：
+//!   模拟内容由本进程写入并**立即登记**为 `last_written`，panic 时守卫按内容归属仍会恢复
+//!   用户原内容；真实外部写入不会登记，内容比较不匹配，守卫保留用户新内容。
 //! - 键盘注入（Ctrl+V）与目标应用（微信/浏览器/记事本/Office/Agent 输入框）的实际落地
 //!   需要运行中的 GUI，本工具**不做按键注入**，那部分必须人工验收单独记录；
 //!   第二个用例只做真机窗口层只读校验（可见目标不含本进程、目标身份可复核、
@@ -40,8 +46,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use task_dock_lib::clipboard::image;
 use task_dock_lib::clipboard::paste::{self, payload_for_item};
 use task_dock_lib::clipboard::platform::{
-    self, ClipboardMatch, ClipboardPayload, ClipboardRead, RestoreOutcome, Snapshot, WriteGuard,
-    WriteOutcome,
+    self, ClipboardMatch, ClipboardPayload, ClipboardRead, RestoreOutcome, Snapshot, SnapshotProbe,
+    WriteGuard, WriteOutcome,
 };
 use task_dock_lib::clipboard::{store, CapturedContent, CapturedImage};
 use task_dock_lib::db::{Db, Settings};
@@ -246,26 +252,68 @@ fn read_content(label: &str) -> CapturedContent {
     }
 }
 
+/// 把平台写入结果收敛为「实际写入形态」，并保证登记先于任何断言。
+///
+/// Windows 允许辅助格式降级（HTML / DIB）与文件路径有效性过滤：
+/// `effective` 才是剪贴板上真实存在的形态，`degraded` 列出没写成的辅助格式。
+/// 登记必须发生在任何可能 panic 的断言之前——否则断言失败时守卫仍拿着
+/// 「请求形态」，恢复前的内容比较必然不通过，会把测试自己少写的格式误判成
+/// 用户接管，最终把测试内容留在剪贴板里。
+///
+/// 本文件的真机用例都要求完整格式保真：只要发生降级，或实际形态与请求不一致
+/// （例如无效文件路径被静默过滤），就在登记之后判定测试失败。失败是如实的，
+/// 但守卫已经记录了实际内容，Drop 仍能按内容归属尝试恢复。
+fn register_and_validate_write(
+    guard: &mut ClipboardRestoreGuard<'_>,
+    requested: &ClipboardPayload,
+    outcome: WriteOutcome,
+    label: &str,
+) -> (u32, ClipboardPayload) {
+    let WriteOutcome::Written {
+        seq,
+        effective,
+        degraded,
+    } = outcome
+    else {
+        panic!("{label}：无条件写入必须成功，实际 {outcome:?}");
+    };
+    // 写入成功后的第一条语句：登记剪贴板上实际存在的内容。
+    guard.note_written(&effective);
+    if !degraded.is_empty() {
+        panic!(
+            "{label}：真机用例要求完整格式保真，实际发生降级：未写入 {}（请求 {} / 实际 {}）",
+            degraded.join("、"),
+            describe(requested),
+            describe(&effective),
+        );
+    }
+    if requested != &effective {
+        panic!(
+            "{label}：写入未报告降级，但实际形态与请求不一致（文件路径可能被有效性过滤）：请求 {} / 实际 {}",
+            describe(requested),
+            describe(&effective),
+        );
+    }
+    (seq, effective)
+}
+
 fn write_and_verify(
     payload: &ClipboardPayload,
     watermark: &AtomicU32,
     guard: &mut ClipboardRestoreGuard<'_>,
     label: &str,
-) -> u32 {
+) -> (u32, ClipboardPayload) {
     let outcome = platform::write_guarded_notifying(payload, WriteGuard::Unconditional, watermark)
         .unwrap_or_else(|e| panic!("{label}：真实剪贴板写入失败：{e}"));
-    let WriteOutcome::Written { seq, .. } = outcome else {
-        panic!("{label}：无条件写入必须成功，实际 {outcome:?}");
-    };
-    // 写入成功后立刻登记：后续任何断言 panic 时，Drop 都知道要恢复哪一次内容。
-    guard.note_written(payload);
+    let (seq, effective) = register_and_validate_write(guard, payload, outcome, label);
+    // 比对一律以 effective 为准：即使将来放宽降级，也不能拿「请求形态」去比。
     // 立即比较一次；若真机存在「写入已关闭、格式尚未发布完」的瞬态窗口，
     // 记录下来并再复核，绝不静默放宽成「只要最终一致就算通过」。
-    if platform::clipboard_match(payload) != ClipboardMatch::Same {
+    if platform::clipboard_match(&effective) != ClipboardMatch::Same {
         let mut recovered_at = None;
         for (i, delay) in [20u64, 40, 80, 150].into_iter().enumerate() {
             std::thread::sleep(std::time::Duration::from_millis(delay));
-            if platform::clipboard_match(payload) == ClipboardMatch::Same {
+            if platform::clipboard_match(&effective) == ClipboardMatch::Same {
                 recovered_at = Some((i + 2, delay));
                 break;
             }
@@ -276,15 +324,49 @@ fn write_and_verify(
             ),
             None => panic!(
                 "{label}：写入后真实剪贴板内容始终与载荷不一致\n{}",
-                mismatch_report(label, payload, seq)
+                mismatch_report(label, &effective, seq)
             ),
         }
     }
     println!(
         "  写入 {label} · {} · 回读一致（seq={seq}）",
-        describe(payload)
+        describe(&effective)
     );
-    seq
+    // 返回实际形态：后续回读/比对必须以它为准，不能再用请求载荷。
+    (seq, effective)
+}
+
+/// 模拟「用户中途复制」：测试自身在平台边界写入内容，成功后**立即**登记。
+///
+/// 与 `register_and_validate_write` 的区别：这里只模拟第三方写入，不要求完整
+/// 格式保真（`degraded` 只记录），但同样必须在成功后的第一条语句登记实际形态。
+/// 登记一旦延迟，中间任何断言 panic 都会让守卫按旧内容判断归属，把测试自己的
+/// 写入误当成用户接管而跳过恢复。
+///
+/// 返回实际写入形态：调用方的内容比较必须用它，而不是请求载荷。
+fn write_simulated_takeover(
+    guard: &mut ClipboardRestoreGuard<'_>,
+    payload: &ClipboardPayload,
+) -> ClipboardPayload {
+    let outcome = platform::write_guarded(payload, WriteGuard::Unconditional)
+        .expect("模拟用户中途复制必须写入成功");
+    let WriteOutcome::Written {
+        seq: _,
+        effective,
+        degraded,
+    } = outcome
+    else {
+        panic!("模拟用户中途复制必须写入成功，实际 {outcome:?}");
+    };
+    // 成功后的第一条语句：登记剪贴板上实际存在的内容。
+    guard.note_written(&effective);
+    if !degraded.is_empty() {
+        println!(
+            "  模拟用户内容发生辅助格式降级（{}），守卫按实际形态登记",
+            degraded.join("、")
+        );
+    }
+    effective
 }
 
 /// 失败诊断：只打印序列号、类型、尺寸与字节数，绝不打印正文/路径/像素内容。
@@ -365,11 +447,43 @@ fn mismatch_report(label: &str, expected: &ClipboardPayload, written_seq: u32) -
     )
 }
 
-/// 只有在「结束后确实能把原内容写回去」时才允许开始真机写入。
+/// 纯判定：快照探测结果是否允许启动写入型真机测试。
+///
+/// 两种情况必须拒绝：
+/// - 快照取不到（剪贴板被占用）：既没有恢复依据，也无法证明可恢复；
+/// - 存在 `ClipboardPayload` 无法无损重建的格式（RTF、Office 私有格式、
+///   第三方自定义格式、元文件等）：写回后这些格式会永久丢失。
+fn probe_refusal(probe: &SnapshotProbe) -> Option<String> {
+    if probe.snapshot.is_none() {
+        return Some("剪贴板被其他程序占用，无法取快照，也无法证明可恢复".into());
+    }
+    if !probe.unsupported_formats.is_empty() {
+        return Some(format!(
+            "本机剪贴板包含测试工具无法无损恢复的格式：{}。写入后这些格式会永久丢失；请先复制一段纯文本或测试专用简单图片再运行",
+            probe.unsupported_formats.join("、")
+        ));
+    }
+    None
+}
+
+/// 只有在「结束后确实能把原内容按原始格式写回去」时才允许开始真机写入。
 /// CF_HDROP 的路径可能已被删除，这类快照读得到却写不回，必须提前中止；
 /// 同理，读不出可写回载荷（超大图、只支持私有格式）也一律不开始。
 fn restorable_snapshot() -> Option<Snapshot> {
-    let snapshot = platform::snapshot();
+    // 先证明格式层面可完整恢复：枚举与读取在同一次剪贴板打开内完成。
+    // 这里区分「能恢复受支持的内容」与「能完整恢复原始格式」——只有前者
+    // 不够，恢复时丢掉的 RTF/私有格式无法向用户交代。系统合成格式
+    // （CF_TEXT/CF_OEMTEXT/CF_BITMAP/CF_DIBV5 等）由 Windows 自行重建，不算丢失。
+    let probe = platform::snapshot_probe();
+    if let Some(reason) = probe_refusal(&probe) {
+        eprintln!("中止：{reason}");
+        return None;
+    }
+    let Some(snapshot) = probe.snapshot else {
+        // probe_refusal 已覆盖 None；保留分支避免将来改动漏判。
+        eprintln!("中止：未能取得剪贴板快照");
+        return None;
+    };
     match snapshot.payload.as_ref() {
         None => match platform::read_clipboard(true) {
             ClipboardRead::Empty(_) => {
@@ -555,9 +669,9 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         let label = format!("第 {} 项({})", idx + 1, item.kind);
         let payload = payload_for_item(&db, &root, item)
             .unwrap_or_else(|e| panic!("{}：载荷构造失败：{e}", label));
-        write_and_verify(&payload, &watermark, &mut restore_guard, &label);
+        let (_, written) = write_and_verify(&payload, &watermark, &mut restore_guard, &label);
 
-        let back = read_content_within(&label, &payload).unwrap_or_else(|| {
+        let back = read_content_within(&label, &written).unwrap_or_else(|| {
             panic!(
                 "环境阻塞：{label} 写入成功后 150ms 内剪贴板被第三方持续改写，本机无法回读判定（写入瞬间一致性已单独断言通过）"
             )
@@ -606,8 +720,9 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         width: ghost_img.width,
         height: ghost_img.height,
     };
-    write_and_verify(&ghost_payload, &watermark, &mut restore_guard, "全透明图");
-    let ghost_back = read_content_within("全透明图", &ghost_payload)
+    let (_, ghost_written) =
+        write_and_verify(&ghost_payload, &watermark, &mut restore_guard, "全透明图");
+    let ghost_back = read_content_within("全透明图", &ghost_written)
         .unwrap_or_else(|| panic!("环境阻塞：全透明图写入后被第三方改写，本机不可判定"));
     let ghost_read = ghost_back
         .image
@@ -631,9 +746,10 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
     let files_payload = ClipboardPayload::Files {
         paths: files.clone(),
     };
-    write_and_verify(&files_payload, &watermark, &mut restore_guard, "文件");
+    let (_, files_written) =
+        write_and_verify(&files_payload, &watermark, &mut restore_guard, "文件");
     println!("  {}", sample_line("文件写入后即时采样"));
-    let files_back = read_content_within("文件", &files_payload)
+    let files_back = read_content_within("文件", &files_written)
         .unwrap_or_else(|| panic!("环境阻塞：CF_HDROP 在写入后被第三方剥离，本机不可判定"));
     println!("  {}", sample_line("文件回读成功采样"));
     assert_eq!(files_back.kind, "files", "CF_HDROP 必须判定为文件");
@@ -647,9 +763,10 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         text: "真机富文本 TD-REAL-HTML-MARKER".into(),
         html: Some("<b>真机富文本</b> TD-REAL-HTML-MARKER".into()),
     };
-    write_and_verify(&rich, &watermark, &mut restore_guard, "富文本");
+    let (_, rich_written) = write_and_verify(&rich, &watermark, &mut restore_guard, "富文本");
     // 富文本是模拟接管前本进程的最后一次写入；守卫已记录，用于内容守卫与最终恢复。
-    let rich_back = read_content_within("富文本", &rich)
+    // 后续一律比较实际写入形态 rich_written。
+    let rich_back = read_content_within("富文本", &rich_written)
         .unwrap_or_else(|| panic!("环境阻塞：CF_HTML 写入后被第三方改写，本机不可判定"));
     assert!(
         rich_back.text.contains("TD-REAL-HTML-MARKER"),
@@ -665,13 +782,16 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         text: "用户中途复制 TD-REAL-TAKEOVER-MARKER".into(),
         html: None,
     };
-    platform::write_payload(&takeover).expect("模拟用户中途复制必须写入成功");
+    // 测试自己模拟「外部写入」：写入成功后立即登记，之后任何断言失败都由
+    // Drop 按内容归属清理。这与真正的用户接管不同——真实接管不经过本进程，
+    // 守卫的 last_written 仍是旧内容，内容比较会返回 KeepUserCopy 并保留新内容。
+    let takeover_written = write_simulated_takeover(&mut restore_guard, &takeover);
     println!("  已写入模拟的用户内容（平台边界：守卫只看内容归属）");
     let guarded_next = ClipboardPayload::Text {
         text: "队列里的下一项 TD-REAL-SHOULD-NOT-LAND".into(),
         html: None,
     };
-    let blocked = platform::write_guarded(&guarded_next, WriteGuard::Content(&rich))
+    let blocked = platform::write_guarded(&guarded_next, WriteGuard::Content(&rich_written))
         .expect("守卫写入调用本身不得报错");
     assert_eq!(
         blocked,
@@ -679,19 +799,16 @@ fn real_clipboard_roundtrip_keeps_order_alpha_and_user_content() {
         "内容已不是本进程最后一次写入时，守卫必须拒绝 EmptyClipboard"
     );
     assert_eq!(
-        eventual_match("用户接管", &takeover),
+        eventual_match("用户接管", &takeover_written),
         ClipboardMatch::Same,
         "用户中途复制的内容必须原样保留，绝不被队列覆盖\n{}",
-        mismatch_report("用户接管", &takeover, platform::current_sequence()),
+        mismatch_report("用户接管", &takeover_written, platform::current_sequence()),
     );
     assert_ne!(
         platform::clipboard_match(&guarded_next),
         ClipboardMatch::Same,
         "被拒绝的写入不得落到真实剪贴板"
     );
-    // 这段「模拟用户内容」是测试自己写入的，登记为最后一次写入以便结束时清理；
-    // 真实用户中途复制不会经过本进程，内容归属比较会返回 KeepUserCopy 并保留用户内容。
-    restore_guard.note_written(&takeover);
 
     // ── 6. 恢复用户原内容 ─────────────────────────────────────────
     let restored = restore_guard
@@ -840,10 +957,15 @@ fn real_failed_write_restores_previous_content() {
             );
             return;
         }
-        Ok(WriteOutcome::Written { .. }) => {
-            // 意外写入成功：先登记，保证随后 panic 时 Drop 能按内容归属恢复。
-            restore_guard.note_written(&broken);
-            panic!("无效文件载荷绝不能报告写入成功");
+        Ok(WriteOutcome::Written {
+            effective,
+            degraded,
+            ..
+        }) => {
+            // 意外写入成功：先登记平台实际写入的形态，再 panic；
+            // 否则随后的 Drop 会拿请求形态去比较，可能误判成用户接管。
+            restore_guard.note_written(&effective);
+            panic!("无效文件载荷绝不能报告写入成功（降级格式={degraded:?}）");
         }
     };
     let msg = err.to_string();
@@ -1078,3 +1200,310 @@ fn restore_guard_handles_empty_snapshot_without_panic() {
     assert_eq!(*clip.current.borrow(), Some(written));
 }
 
+/// panic 负载在 `panic!` 传入格式化字符串时是 `String`，纯字面量时是 `&str`。
+fn panic_message(err: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = err.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else {
+        "<非字符串 panic>".into()
+    }
+}
+
+/// P1-1：写入成功后第一条语句就是登记；随后立刻 panic，Drop 仍能按实际内容恢复。
+#[test]
+fn registered_write_is_restored_after_immediate_panic() {
+    let original = fake_text("原内容");
+    let requested = ClipboardPayload::Text {
+        text: "正文".into(),
+        html: None,
+    };
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+    let mut guard = guard_for(Some(original.clone()), &clip);
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let (seq, effective) = register_and_validate_write(
+            &mut guard,
+            &requested,
+            WriteOutcome::Written {
+                seq: 42,
+                effective: requested.clone(),
+                degraded: vec![],
+            },
+            "完整写入",
+        );
+        assert_eq!(seq, 42);
+        // 模拟平台写入已生效：剪贴板此刻就是 effective。
+        *clip.current.borrow_mut() = Some(effective);
+        panic!("模拟写入成功后立即断言失败");
+    }));
+
+    assert!(result.is_err(), "闭包必须真的 panic");
+    assert_eq!(
+        guard.last_written.as_ref(),
+        Some(&requested),
+        "完整写入必须登记实际形态"
+    );
+    drop(guard);
+    assert_eq!(clip.restore_calls.get(), 1);
+    assert_eq!(
+        clip.last_outcome.get(),
+        Some(RestoreOutcome::Restored),
+        "写入后立即 panic 必须按登记内容恢复"
+    );
+    assert_eq!(*clip.current.borrow(), Some(original));
+}
+
+/// P1-1：HTML 辅助格式降级时，登记必须是 `effective`（无 HTML），
+/// 而不是请求载荷（带 HTML）；否则 Drop 的内容比较会把自己少写的格式
+/// 误判成用户接管，跳过恢复。
+#[test]
+fn html_degraded_write_registers_effective_then_fails_and_restores() {
+    let original = fake_text("原内容");
+    let requested = ClipboardPayload::Text {
+        text: "正文".into(),
+        html: Some("<b>正文</b>".into()),
+    };
+    let effective = ClipboardPayload::Text {
+        text: "正文".into(),
+        html: None,
+    };
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+    let mut guard = guard_for(Some(original.clone()), &clip);
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        register_and_validate_write(
+            &mut guard,
+            &requested,
+            WriteOutcome::Written {
+                seq: 9,
+                effective: effective.clone(),
+                degraded: vec!["HTML".into()],
+            },
+            "HTML 降级",
+        );
+    }));
+
+    let msg = panic_message(result.expect_err("要求完整格式保真的用例必须因降级失败"));
+    assert!(msg.contains("HTML"), "降级诊断必须点名具体格式：{msg}");
+    assert_eq!(
+        guard.last_written.as_ref(),
+        Some(&effective),
+        "守卫必须登记 actual effective，而不是请求载荷"
+    );
+    // 真实平台在 panic 之前已经把 effective 写进剪贴板。
+    *clip.current.borrow_mut() = Some(effective.clone());
+    drop(guard);
+    assert_eq!(
+        clip.last_outcome.get(),
+        Some(RestoreOutcome::Restored),
+        "降级后 panic 必须能恢复原内容，不能误判为用户接管"
+    );
+    assert_eq!(*clip.current.borrow(), Some(original));
+}
+
+/// P1-1：DIB 辅助格式降级同样要登记实际形态（这里是同一图片载荷），
+/// 并在登记之后判定测试失败，Drop 仍执行恢复。
+#[test]
+fn dib_degraded_write_fails_but_still_restores() {
+    let original = fake_text("原内容");
+    let requested = ClipboardPayload::Image {
+        png: vec![0x89, b'P', b'N', b'G', 1, 2, 3],
+        rgba: Some(vec![255u8; 2 * 2 * 4]),
+        width: 2,
+        height: 2,
+    };
+    let effective = requested.clone();
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+    let mut guard = guard_for(Some(original.clone()), &clip);
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        register_and_validate_write(
+            &mut guard,
+            &requested,
+            WriteOutcome::Written {
+                seq: 11,
+                effective: effective.clone(),
+                degraded: vec!["DIB".into()],
+            },
+            "DIB 降级",
+        );
+    }));
+
+    let msg = panic_message(result.expect_err("DIB 降级必须判定测试失败"));
+    assert!(msg.contains("DIB"), "降级诊断必须点名具体格式：{msg}");
+    assert_eq!(guard.last_written.as_ref(), Some(&effective));
+    *clip.current.borrow_mut() = Some(effective);
+    drop(guard);
+    assert_eq!(clip.last_outcome.get(), Some(RestoreOutcome::Restored));
+    assert_eq!(*clip.current.borrow(), Some(original));
+}
+
+/// P1-1：文件路径有效性过滤不会出现在 `degraded` 里，但会让 effective 少于请求；
+/// 必须在登记 effective 之后判定失败，并仍能恢复原内容。
+#[test]
+fn file_path_filtering_fails_after_registration_and_still_restores() {
+    let original = fake_text("原内容");
+    let requested = ClipboardPayload::Files {
+        paths: vec![
+            r"C:\taskdock-acceptance\valid-a.txt".into(),
+            r"Z:\taskdock-acceptance\missing-b.bin".into(),
+        ],
+    };
+    let effective = ClipboardPayload::Files {
+        paths: vec![r"C:\taskdock-acceptance\valid-a.txt".into()],
+    };
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+    let mut guard = guard_for(Some(original.clone()), &clip);
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        register_and_validate_write(
+            &mut guard,
+            &requested,
+            WriteOutcome::Written {
+                seq: 12,
+                effective: effective.clone(),
+                degraded: vec![],
+            },
+            "文件过滤",
+        );
+    }));
+
+    let msg = panic_message(result.expect_err("请求路径被过滤必须判定测试失败"));
+    assert!(
+        msg.contains("不一致") && msg.contains("过滤"),
+        "过滤诊断必须说明实际形态与请求不一致：{msg}"
+    );
+    assert_eq!(
+        guard.last_written.as_ref(),
+        Some(&effective),
+        "守卫必须登记过滤后的实际路径列表"
+    );
+    *clip.current.borrow_mut() = Some(effective);
+    drop(guard);
+    assert_eq!(clip.last_outcome.get(), Some(RestoreOutcome::Restored));
+    assert_eq!(*clip.current.borrow(), Some(original));
+}
+
+/// P1-2：测试自己模拟「外部接管」时，写入成功后立即登记，因此随后 panic
+/// 仍会恢复用户原内容 A（模拟接管不等于真实用户接管）。
+#[test]
+fn simulated_takeover_registered_immediately_is_restored_after_panic() {
+    let original = fake_text("原内容 A");
+    let written_b = fake_text("测试写入 B");
+    let takeover_c = fake_text("模拟接管 C");
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let mut guard = guard_for(Some(original.clone()), &clip);
+        // 测试写入 B：平台成功后立即登记。
+        guard.note_written(&written_b);
+        *clip.current.borrow_mut() = Some(written_b.clone());
+        // 测试模拟外部接管 C：同样在成功后立即登记，中间没有任何断言。
+        guard.note_written(&takeover_c);
+        *clip.current.borrow_mut() = Some(takeover_c.clone());
+        panic!("模拟随后断言失败");
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(clip.restore_calls.get(), 1, "Drop 必须尝试恢复一次");
+    assert_eq!(
+        clip.last_outcome.get(),
+        Some(RestoreOutcome::Restored),
+        "模拟接管由测试自己写入并登记，恢复必须执行"
+    );
+    assert_eq!(
+        *clip.current.borrow(),
+        Some(original),
+        "必须恢复用户原内容 A"
+    );
+}
+
+/// P1-2 对照：真正的外部用户写入 D 不经过本进程、不登记，
+/// panic 时内容归属不匹配，必须保留 D。
+#[test]
+fn real_external_takeover_is_kept_after_panic() {
+    let original = fake_text("原内容 A");
+    let written_b = fake_text("测试写入 B");
+    let external_d = fake_text("外部用户写入 D");
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let mut guard = guard_for(Some(original.clone()), &clip);
+        guard.note_written(&written_b);
+        *clip.current.borrow_mut() = Some(written_b.clone());
+        // 外部程序写入 D：测试不知道也无法登记，模拟真实的用户接管。
+        *clip.current.borrow_mut() = Some(external_d.clone());
+        panic!("模拟断言失败");
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(clip.restore_calls.get(), 1);
+    assert_eq!(
+        clip.last_outcome.get(),
+        Some(RestoreOutcome::KeepUserCopy),
+        "真实外部接管必须保留用户新内容"
+    );
+    assert_eq!(*clip.current.borrow(), Some(external_d));
+}
+
+/// 正常结束路径恢复失败时如实返回错误，且 Drop 不得重试、不得伪报成功。
+#[test]
+fn failed_finish_is_reported_and_not_retried_in_drop() {
+    let original = fake_text("原内容");
+    let written = fake_text("测试写入");
+    let clip = Rc::new(FakeClipboard::new(Some(original)));
+    clip.fail_next.set(1);
+    let mut guard = guard_for(Some(fake_text("原内容")), &clip);
+    guard.note_written(&written);
+    *clip.current.borrow_mut() = Some(written.clone());
+
+    let err = guard
+        .finish("模拟恢复失败")
+        .expect_err("恢复失败必须如实返回错误");
+    assert!(err.to_string().contains("模拟恢复失败"));
+    drop(guard);
+
+    assert_eq!(clip.restore_calls.get(), 1, "finish 失败后 Drop 不得重试");
+    assert_eq!(clip.last_outcome.get(), None, "失败结果不得伪报成功");
+    assert_eq!(*clip.current.borrow(), Some(written));
+}
+
+/// P2：快照探测必须在启动前拒绝「无法完整恢复原始格式」的剪贴板。
+#[test]
+fn snapshot_probe_refuses_unsupported_formats_and_unreadable_clipboard() {
+    let supported = SnapshotProbe {
+        snapshot: Some(Snapshot {
+            sequence: 1,
+            payload: Some(fake_text("原内容")),
+        }),
+        unsupported_formats: vec![],
+    };
+    assert!(
+        probe_refusal(&supported).is_none(),
+        "纯受支持格式必须允许启动写入型测试"
+    );
+
+    let multi = SnapshotProbe {
+        snapshot: Some(Snapshot {
+            sequence: 2,
+            payload: Some(fake_text("正文")),
+        }),
+        unsupported_formats: vec!["\"Rich Text Format\"".into(), "CF_METAFILEPICT".into()],
+    };
+    let reason = probe_refusal(&multi).expect("复杂多格式剪贴板必须拒绝启动");
+    assert!(
+        reason.contains("Rich Text Format") && reason.contains("CF_METAFILEPICT"),
+        "拒绝信息必须点名具体格式：{reason}"
+    );
+
+    let busy = SnapshotProbe {
+        snapshot: None,
+        unsupported_formats: vec![],
+    };
+    assert!(
+        probe_refusal(&busy).is_some(),
+        "取不到快照（剪贴板被占用）必须拒绝启动"
+    );
+}

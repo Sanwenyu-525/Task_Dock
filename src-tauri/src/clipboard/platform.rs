@@ -534,6 +534,19 @@ pub struct Snapshot {
     pub payload: Option<ClipboardPayload>,
 }
 
+/// 写入型真机测试的启动探测（只读，不属于生产粘贴链路）。
+///
+/// `snapshot` 为 `None` 表示剪贴板当前打不开，既取不到快照也无法证明可恢复；
+/// `unsupported_formats` 非空表示剪贴板上存在 `ClipboardPayload` 无法无损重建的
+/// 格式（RTF、Office 私有格式、第三方自定义格式、元文件等）。
+/// 两种情况都必须拒绝启动写入型测试——测试工具只能重建
+/// CF_UNICODETEXT / HTML Format / PNG / CF_DIB / CF_HDROP 及其系统合成格式。
+#[derive(Debug)]
+pub struct SnapshotProbe {
+    pub snapshot: Option<Snapshot>,
+    pub unsupported_formats: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestoreOutcome {
     /// 没有可恢复内容（原剪贴板为空或格式不支持）
@@ -912,6 +925,14 @@ pub fn snapshot() -> Snapshot {
     imp::snapshot()
 }
 
+/// 快照 + 格式完整性探测：同一次剪贴板打开内完成格式枚举与读取，
+/// 避免「先查格式、再快照」之间被其他程序改写而漏判。
+///
+/// 只供写入型真机验收判断能否安全启动，生产粘贴链路仍使用 `snapshot`。
+pub fn snapshot_probe() -> SnapshotProbe {
+    imp::snapshot_probe()
+}
+
 /// 只有剪贴板内容仍是本进程最后一次写入时才恢复，绝不覆盖用户后来复制的内容。
 ///
 /// 以内容而不是序列号为准：Windows 会在 CloseClipboard 后继续为合成格式递增序列号，
@@ -1006,9 +1027,10 @@ mod imp {
         GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
     };
     use windows_sys::Win32::System::DataExchange::{
-        AddClipboardFormatListener, CloseClipboard, EmptyClipboard, GetClipboardData,
-        GetClipboardOwner, GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
-        RegisterClipboardFormatW, RemoveClipboardFormatListener, SetClipboardData,
+        AddClipboardFormatListener, CloseClipboard, EmptyClipboard, EnumClipboardFormats,
+        GetClipboardData, GetClipboardFormatNameW, GetClipboardOwner, GetClipboardSequenceNumber,
+        IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
+        RemoveClipboardFormatListener, SetClipboardData,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Memory::{
@@ -1428,6 +1450,114 @@ mod imp {
             sequence,
             payload: payload_from_read(read),
         }
+    }
+
+    /// 快照 + 不可无损恢复格式清单：格式枚举与读取在同一次打开内完成。
+    ///
+    /// 这里只做**只读**判断，不尝试解析或保存未知格式；无法读出的格式一律
+    /// 视为「不可完整恢复」，由调用方拒绝写入型测试。
+    pub fn snapshot_probe() -> SnapshotProbe {
+        let _access = lock_access();
+        if !open_clipboard() {
+            return SnapshotProbe {
+                snapshot: None,
+                unsupported_formats: Vec::new(),
+            };
+        }
+        let unsupported_formats = unsafe { unsupported_formats_open() };
+        let read = unsafe { read_open(true) };
+        unsafe { close() };
+        let sequence = unsafe { GetClipboardSequenceNumber() };
+        SnapshotProbe {
+            snapshot: Some(Snapshot {
+                sequence,
+                payload: payload_from_read(read),
+            }),
+            unsupported_formats,
+        }
+    }
+
+    /// 调用方必须已持有剪贴板锁；枚举本工具无法无损重建的格式。
+    unsafe fn unsupported_formats_open() -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut fmt = 0u32;
+        loop {
+            fmt = EnumClipboardFormats(fmt);
+            if fmt == 0 {
+                break;
+            }
+            if is_recoverable_format(fmt) {
+                continue;
+            }
+            let name = describe_format(fmt);
+            if !out.contains(&name) {
+                out.push(name);
+            }
+            if out.len() >= 32 {
+                out.push("（其余格式省略）".into());
+                break;
+            }
+        }
+        out
+    }
+
+    /// 本工具能**显式写回**或由 Windows 从这些格式**自动合成**的剪贴板格式。
+    ///
+    /// 显式写回：CF_UNICODETEXT、CF_DIB、CF_HDROP、HTML Format、PNG；
+    /// 系统合成：CF_TEXT / CF_OEMTEXT / CF_BITMAP / CF_PALETTE / CF_DIBV5；
+    /// 随文本出现的元数据：CF_LOCALE（只标记语言，不承载正文内容）。
+    /// 注意 `EnumClipboardFormats` 会把系统可合成的格式一起枚举
+    /// （例如只有 CF_DIB 时也会出现 CF_DIBV5），因此「枚举到 DIBV5」不能证明
+    /// 剪贴板上有额外的私有数据，不能据此拒绝。
+    ///
+    /// 其余格式（RTF、Office 私有格式、第三方自定义格式、元文件、TIFF/RIFF/WAVE、
+    /// 延迟渲染的自定义格式）不在 `ClipboardPayload` 的重建能力内：写回后会永久
+    /// 丢失，必须视为不可完整恢复。宁可拒绝启动，也不做「看起来恢复了、实际少了
+    /// 格式」的假成功。
+    pub(super) fn is_recoverable_format(fmt: u32) -> bool {
+        if fmt == CF_UNICODETEXT as u32 || fmt == CF_DIB as u32 || fmt == CF_HDROP as u32 {
+            return true;
+        }
+        // 预定义格式：CF_TEXT=1、CF_BITMAP=2、CF_OEMTEXT=7、CF_PALETTE=9、
+        // CF_LOCALE=16、CF_DIBV5=17（系统由 CF_DIB/CF_BITMAP 合成）。
+        if matches!(fmt, 1 | 2 | 7 | 9 | 16 | 17) {
+            return true;
+        }
+        matches!(
+            unsafe { clipboard_format_name(fmt) }.as_deref(),
+            Some("HTML Format") | Some("PNG")
+        )
+    }
+
+    /// 仅供诊断/拒绝信息使用：预定义格式没有可查询名称，按常量名输出。
+    pub(super) fn describe_format(fmt: u32) -> String {
+        let known = match fmt {
+            3 => Some("CF_METAFILEPICT"),
+            4 => Some("CF_SYLK"),
+            5 => Some("CF_DIF"),
+            6 => Some("CF_TIFF"),
+            10 => Some("CF_PENDATA"),
+            11 => Some("CF_RIFF"),
+            12 => Some("CF_WAVE"),
+            14 => Some("CF_ENHMETAFILE"),
+            17 => Some("CF_DIBV5"),
+            _ => None,
+        };
+        if let Some(name) = known {
+            return name.to_string();
+        }
+        unsafe { clipboard_format_name(fmt) }
+            .map(|n| format!("\"{n}\""))
+            .unwrap_or_else(|| format!("CF#{fmt}"))
+    }
+
+    unsafe fn clipboard_format_name(fmt: u32) -> Option<String> {
+        let mut buf = [0u16; 256];
+        let n = GetClipboardFormatNameW(fmt, buf.as_mut_ptr(), buf.len() as i32);
+        if n <= 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..n as usize]))
     }
 
     /// 已打开的剪贴板读到的内容 → 可回写的载荷；无法完整比较的形态返回 None。
@@ -2620,6 +2750,13 @@ mod imp {
         }
     }
 
+    pub fn snapshot_probe() -> SnapshotProbe {
+        SnapshotProbe {
+            snapshot: Some(snapshot()),
+            unsupported_formats: Vec::new(),
+        }
+    }
+
     pub fn send_ctrl_v() -> AppResult<()> {
         Err(AppError::Validation("当前平台不支持粘贴自动化".into()))
     }
@@ -2757,6 +2894,65 @@ mod tests {
             !payload_matches_read(&with_html, Some("正文"), None, None, &[]),
             "实际没有 HTML 时，带 HTML 的期望形态不该判为一致"
         );
+    }
+
+    /// P2 快照完整性：写入型真机测试只允许在「显式写回 + 系统合成」的格式集合上启动。
+    ///
+    /// RTF、Office 私有格式、第三方自定义格式与元文件都无法由 `ClipboardPayload`
+    /// 无损重建；把它们当成可恢复会在恢复时静默丢掉原始格式，因此必须判为不可恢复。
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_integrity_allows_only_losslessly_recoverable_formats() {
+        use super::imp::{describe_format, format_id, is_recoverable_format};
+        use windows_sys::Win32::System::Ole::{
+            CF_BITMAP, CF_DIB, CF_DIBV5, CF_HDROP, CF_LOCALE, CF_METAFILEPICT, CF_OEMTEXT,
+            CF_PALETTE, CF_TEXT, CF_UNICODETEXT,
+        };
+
+        for fmt in [
+            CF_TEXT as u32,
+            CF_BITMAP as u32,
+            CF_OEMTEXT as u32,
+            CF_DIB as u32,
+            CF_PALETTE as u32,
+            CF_UNICODETEXT as u32,
+            CF_HDROP as u32,
+            CF_LOCALE as u32,
+            // EnumClipboardFormats 会把系统合成格式一并枚举：只有 CF_DIB 的剪贴板
+            // 也会看到 CF_DIBV5，因此它必须按可恢复处理，否则所有图片剪贴板都会被误拒。
+            CF_DIBV5 as u32,
+        ] {
+            assert!(
+                is_recoverable_format(fmt),
+                "{} 是显式写回或系统合成格式，必须判为可恢复",
+                describe_format(fmt)
+            );
+        }
+
+        for name in ["HTML Format", "PNG"] {
+            let fmt = format_id(name);
+            assert_ne!(fmt, 0, "{name} 必须可注册");
+            assert!(
+                is_recoverable_format(fmt),
+                "{name} 由本工具显式写回，必须判为可恢复"
+            );
+        }
+
+        // 元文件无法由 ClipboardPayload 重建；RTF 等私有格式更不可能。
+        assert!(!is_recoverable_format(CF_METAFILEPICT as u32));
+        assert_eq!(describe_format(CF_METAFILEPICT as u32), "CF_METAFILEPICT");
+        let rtf = format_id("Rich Text Format");
+        assert_ne!(rtf, 0);
+        assert!(
+            !is_recoverable_format(rtf),
+            "RTF 无法通过 ClipboardPayload 无损重建"
+        );
+        assert!(
+            describe_format(rtf).contains("Rich Text Format"),
+            "拒绝信息必须让用户看懂是哪种格式"
+        );
+        let private = format_id("Vendor.Private.Payload");
+        assert!(!is_recoverable_format(private));
     }
 
     #[test]
