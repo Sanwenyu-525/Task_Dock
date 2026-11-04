@@ -971,7 +971,20 @@ export const agentInboxRetry = () => invoke<number>("agent_inbox_retry");
 
 // ── 智能剪贴板（v0.5）──
 export const clipboardView = (filter?: ClipboardFilter) =>
-  invoke<ClipboardView>("clipboard_view", { filter });
+  invoke<ClipboardView>("clipboard_view", {
+    // Rust 侧 ClipboardFilter.favorite 为非可选 bool（无 serde default），缺字段会被
+    // serde 以「missing field favorite」拒绝；在 IPC 边界统一补齐默认值，
+    // 调用方只需传自己关心的字段（轻量列表曾因只传 limit 而长期加载失败）。
+    filter: {
+      kind: filter?.kind ?? null,
+      search: filter?.search ?? null,
+      favorite: filter?.favorite ?? false,
+      groupId: filter?.groupId ?? null,
+      taskId: filter?.taskId ?? null,
+      limit: filter?.limit ?? null,
+      offset: filter?.offset ?? null,
+    },
+  });
 export const clipboardItem = (itemId: string) =>
   invoke<ClipboardItem>("clipboard_item", { itemId });
 export const clipboardGroup = (groupId: string) =>
@@ -1976,6 +1989,9 @@ export const shelfAddFromClipboard = (
     groupId: groupId ?? null,
   });
 
+/** 单条全量读取（含 content）：列表载荷不带大文本。 */
+export const shelfGetItem = (id: string) => invoke<ShelfItem>("shelf_get_item", { id });
+
 export const shelfUpdate = (id: string, patch: ShelfUpdatePatch) =>
   invoke<ShelfItem>("shelf_update", { id, patch });
 
@@ -2013,6 +2029,217 @@ export const shelfTaskLinks = (itemId: string) =>
 
 export const shelfLinkTask = (itemId: string, taskId: string) =>
   invoke<void>("shelf_link_task", { itemId, taskId });
+
+// ── 一键工作流（v0.9）：白名单动作编排、顺序执行、暂停 / 取消与运行历史 ──
+
+export type WorkflowStepType =
+  | "open_app"
+  | "open_url"
+  | "open_path"
+  | "create_task"
+  | "enter_scene"
+  | "restore_workspace";
+
+export type WorkflowOnError = "stop" | "continue";
+
+/** 运行步骤回执状态（pending → running → 终态；skipped = 步骤停用）。 */
+export type WorkflowRunStepStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "skipped"
+  | "failed"
+  | "cancelled";
+
+/** 运行稳定态。pausing/cancelling 过渡态只出现在事件流（activeRun 概览），不落库。 */
+export type WorkflowRunStatus =
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface WorkflowStepParams {
+  target_id?: string;
+  title?: string;
+  description?: string;
+  priority?: number;
+  remind_at?: string | null;
+  advance_minutes?: number;
+  snapshot_id?: string;
+  scene_id?: string;
+}
+
+export interface WorkflowStep {
+  id: string;
+  workflow_id: string;
+  step_type: WorkflowStepType;
+  params: WorkflowStepParams;
+  display_order: number;
+  enabled: boolean;
+  on_error: WorkflowOnError;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  sort_order: number;
+  step_count: number;
+  created_at: string;
+  updated_at: string;
+  last_run_at: string | null;
+}
+
+export interface WorkflowStepInput {
+  /** 前端生成的稳定 ID；新建步骤传空串由后端生成。 */
+  id: string;
+  step_type: WorkflowStepType;
+  params: WorkflowStepParams;
+  enabled: boolean;
+  on_error: WorkflowOnError;
+}
+
+export interface WorkflowInput {
+  name: string;
+  description?: string;
+  steps?: WorkflowStepInput[];
+}
+
+export interface WorkflowPatch {
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+}
+
+export interface WorkflowDetail extends Workflow {
+  steps: WorkflowStep[];
+}
+
+export interface WorkflowRunStep {
+  id: string;
+  run_id: string;
+  step_id: string;
+  step_type: WorkflowStepType;
+  display_order: number;
+  status: WorkflowRunStepStatus;
+  detail: string;
+  result: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  operation_id: string;
+}
+
+export interface WorkflowRun {
+  id: string;
+  workflow_id: string;
+  workflow_name: string;
+  status: WorkflowRunStatus;
+  current_step_index: number;
+  total_steps: number;
+  completed_steps: number;
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export interface WorkflowRunDetail extends WorkflowRun {
+  steps: WorkflowRunStep[];
+}
+
+export interface WorkflowRunPage {
+  items: WorkflowRun[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** 当前活动运行概览（全局单槽；UI 据此显示「执行中」并启用暂停 / 取消）。 */
+export interface WorkflowActiveRun {
+  run_id: string;
+  workflow_id: string;
+  paused: boolean;
+  cancel_requested: boolean;
+}
+
+export interface WorkflowLastRunSummary {
+  run_id: string;
+  status: WorkflowRunStatus;
+  total_steps: number;
+  completed_steps: number;
+  error: string | null;
+  started_at: string;
+  started_at_local: string;
+  finished_at: string | null;
+}
+
+export const workflowList = () => invoke<Workflow[]>("workflow_list");
+export const workflowGet = (id: string) => invoke<WorkflowDetail>("workflow_get", { id });
+export const workflowCreate = (input: WorkflowInput) =>
+  invoke<WorkflowDetail>("workflow_create", { input });
+export const workflowUpdate = (id: string, patch: WorkflowPatch) =>
+  invoke<WorkflowDetail>("workflow_update", { id, patch });
+export const workflowDelete = (id: string) => invoke<void>("workflow_delete", { id });
+export const workflowDuplicate = (id: string) =>
+  invoke<WorkflowDetail>("workflow_duplicate", { id });
+export const workflowReorder = (orderedIds: string[]) =>
+  invoke<void>("workflow_reorder", { orderedIds });
+/** 整表替换步骤编排（原子事务；增删改排序共用）。 */
+export const workflowReplaceSteps = (id: string, steps: WorkflowStepInput[]) =>
+  invoke<WorkflowDetail>("workflow_replace_steps", { id, steps });
+
+export const workflowRun = (id: string) => invoke<WorkflowRunDetail>("workflow_run", { id });
+export const workflowPause = (id: string) => invoke<WorkflowRunDetail>("workflow_pause", { id });
+export const workflowResume = (id: string) => invoke<WorkflowRunDetail>("workflow_resume", { id });
+export const workflowCancel = (id: string) => invoke<WorkflowRunDetail>("workflow_cancel", { id });
+export const workflowActive = () => invoke<WorkflowActiveRun | null>("workflow_active");
+
+export const workflowRunDetail = (runId: string) =>
+  invoke<WorkflowRunDetail>("workflow_run_detail", { runId });
+export const workflowLastRun = (id: string) =>
+  invoke<WorkflowRunDetail | null>("workflow_last_run", { id });
+export const workflowLastRunSummary = (id: string) =>
+  invoke<WorkflowLastRunSummary | null>("workflow_last_run_summary", { id });
+export const workflowListRuns = (id: string, limit?: number, offset?: number) =>
+  invoke<WorkflowRunPage>("workflow_list_runs", { id, limit: limit ?? 20, offset: offset ?? 0 });
+
+/** 运行进度推送：payload 为完整运行详情（运行头 + 全部步骤回执）。 */
+export const onWorkflowRunProgress = (cb: (payload: WorkflowRunDetail) => void): Promise<UnlistenFn> =>
+  listen<WorkflowRunDetail>("workflow-run-progress", (e) => cb(e.payload));
+
+/** 步骤类型的中文标签（与后端 StepType::label 对齐）。 */
+export const WORKFLOW_STEP_TYPE_LABELS: Record<WorkflowStepType, string> = {
+  open_app: "打开应用 / 激活窗口",
+  open_url: "打开网页",
+  open_path: "打开文件或目录",
+  create_task: "创建任务",
+  enter_scene: "进入场景",
+  restore_workspace: "恢复工作现场",
+};
+
+/** 运行状态的中文标签。 */
+export const WORKFLOW_RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
+  running: "执行中",
+  paused: "已暂停",
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+  interrupted: "已中断",
+};
+
+/** 步骤回执状态的中文标签。 */
+export const WORKFLOW_STEP_STATUS_LABELS: Record<WorkflowRunStepStatus, string> = {
+  pending: "待执行",
+  running: "执行中",
+  succeeded: "成功",
+  skipped: "已跳过",
+  failed: "失败",
+  cancelled: "已取消",
+};
 
 export const shelfUnlinkTask = (itemId: string, taskId: string) =>
   invoke<void>("shelf_unlink_task", { itemId, taskId });

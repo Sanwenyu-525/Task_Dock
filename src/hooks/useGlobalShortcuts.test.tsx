@@ -1,8 +1,9 @@
 /**
  * @vitest-environment jsdom
  */
-//! 全局快捷键契约（v0.7；v0.8 新增暂存架）：
-//! - Ctrl+1…9 依次切到九个侧边栏入口，顺序与左侧导航一致；
+//! 全局快捷键契约（v0.7；v0.8 收集箱/暂存架合并视觉入口后快捷键语义不变）：
+//! - Ctrl+1…9 依次切到前九个逻辑 Tab，Ctrl+0 切到最后一个逻辑 Tab（设置）；
+//!   Ctrl+5=快速收集、Ctrl+6=文件暂存；
 //! - Ctrl+K 触发快速添加；输入框里不抢按键；
 //! - Ctrl+Shift+C 完整模式进剪贴板页面，紧凑/极简模式开关临时抽屉；
 //! - 非完整模式不响应 Ctrl+数字（避免极简窗口被切到隐藏页面）。
@@ -35,7 +36,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("全局快捷键", () => {
-  it("Ctrl+1…9 依次切到九个侧边栏入口", () => {
+  it("Ctrl+1…9 依次切到前九个逻辑 Tab（工作流加入后 TAB_ORDER 共 10 项）", () => {
     renderHook(() => useGlobalShortcuts());
     const expected: Tab[] = [
       "tasks",
@@ -44,20 +45,33 @@ describe("全局快捷键", () => {
       "clipboard",
       "inbox",
       "shelf",
+      "workflows",
       "history",
       "roadmap",
       "settings",
     ];
     expect([...TAB_ORDER]).toEqual(expected);
-    for (let i = 0; i < expected.length; i++) {
+    for (let i = 0; i < 9; i++) {
       press({ code: `Digit${i + 1}`, ctrlKey: true });
       expect(useUiStore.getState().tab).toBe(expected[i]);
     }
+    // Ctrl+5 / Ctrl+6 语义不变：快速收集 / 文件暂存（合并视觉入口的两个子页）
+    press({ code: "Digit5", ctrlKey: true });
+    expect(useUiStore.getState().tab).toBe("inbox");
+    press({ code: "Digit6", ctrlKey: true });
+    expect(useUiStore.getState().tab).toBe("shelf");
   });
 
-  it("Ctrl+9 是最后一个入口（设置），无第 10 个入口", () => {
+  it("Ctrl+9 进入规划中心（第 9 逻辑位）", () => {
     renderHook(() => useGlobalShortcuts());
     press({ code: "Digit9", ctrlKey: true });
+    expect(useUiStore.getState().tab).toBe("roadmap");
+  });
+
+  it("Ctrl+0 进入设置（第 10 逻辑位）", () => {
+    renderHook(() => useGlobalShortcuts());
+    press({ code: "Digit0", ctrlKey: true });
+    expect(useUiStore.getState().tab).toBe(TAB_ORDER[TAB_ORDER.length - 1]);
     expect(useUiStore.getState().tab).toBe("settings");
   });
 

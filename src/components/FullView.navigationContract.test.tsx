@@ -3,11 +3,15 @@
  */
 //! 左侧导航契约测试（脚本侧清单 ↔ 真实导航）：
 //! - scripts/rail-contract.mjs 供 Playwright 脚本使用（脚本无法导入 TS 模块），
-//!   此处校验它与 `TAB_ORDER`、FullView 实际渲染的入口顺序 / aria-label / data-tip 一致；
+//!   此处校验它与 `TAB_ORDER`（10 个逻辑 Tab）、`RAIL_ENTRIES`（9 个视觉入口）及
+//!   FullView 实际渲染的入口顺序 / aria-label / data-tip 一致；
+//! - v0.8 起收集箱+暂存架合并为「收集与暂存」单一视觉入口：inbox / shelf 两个
+//!   逻辑 Tab 都让该入口呈选中态；快捷键仍按 TAB_ORDER 映射（Ctrl+5/6）不偏移；
+//! - v0.9 新增「工作流」视觉入口（Ctrl+7），第 10 个逻辑 Tab（设置）= Ctrl+0；
 //! - 同时校验导航顶部「新建任务」按钮（`.rail-new-task`）的类名与可访问名；
-//! - 导航增删、换序、改名时本测试失败，防止脚本侧 RAIL_ITEM_COUNT=7 一类的过期断言再次出现。
+//! - 导航增删、换序、改名时本测试失败，防止脚本侧过期断言再次出现。
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 
 // 与 FullView.test.tsx 保持一致：只验证导航结构，不加载面板业务依赖。
@@ -15,31 +19,40 @@ vi.mock("./tasks/TasksPanel", () => ({ default: () => <div>tasks-panel</div> }))
 vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }));
 vi.mock("./actions/ActionCenterPanel", () => ({ default: () => <div>actions-panel</div> }));
 vi.mock("./clipboard/ClipboardPanel", () => ({ default: () => <div>clipboard-panel</div> }));
-vi.mock("./inbox/CaptureInboxPanel", () => ({ default: () => <div>inbox-panel</div> }));
-vi.mock("./shelf/ShelfPanel", () => ({ default: () => <div>shelf-panel</div> }));
+vi.mock("./collection/CollectionPanel", () => ({ default: () => <div>collection-panel</div> }));
+vi.mock("./workflows/WorkflowsPanel", () => ({ default: () => <div>workflows-panel</div> }));
 vi.mock("./history/HistoryPanel", () => ({ default: () => <div>history-panel</div> }));
 vi.mock("./roadmap/FeatureRoadmapPanel", () => ({ default: () => <div>roadmap-panel</div> }));
 vi.mock("./settings/SettingsPanel", () => ({ default: () => <div>settings-panel</div> }));
 
 import FullView from "./FullView";
-import { TAB_ORDER } from "../store/useUiStore";
+import { TAB_ORDER, type Tab } from "../store/useUiStore";
 import {
+  LOGICAL_TABS,
   RAIL_ADD_BUTTON,
   RAIL_ENTRIES,
   RAIL_ITEM_COUNT,
   RAIL_LABELS,
 } from "../../scripts/rail-contract.mjs";
 
+beforeEach(() => {
+  // 稳定徽标：不注入 store 计数，全部按 0 断言基础可访问名
+});
+
 afterEach(cleanup);
 
 describe("脚本侧导航契约与真实导航一致", () => {
-  it("九入口 id 顺序与 TAB_ORDER 完全一致", () => {
+  it("视觉入口 9 项；逻辑 Tab 10 项且与 TAB_ORDER 完全一致", () => {
     expect(RAIL_ITEM_COUNT).toBe(9);
-    expect(RAIL_ENTRIES.map((e) => e.id)).toEqual([...TAB_ORDER]);
+    expect([...LOGICAL_TABS]).toEqual([...TAB_ORDER]);
+    // 合并入口覆盖 inbox+shelf，其余 1:1
+    const covered = RAIL_ENTRIES.flatMap((e) => (e.tabs ?? [e.id]));
+    expect([...covered].sort()).toEqual([...TAB_ORDER].sort());
+    expect(RAIL_ENTRIES.find((e) => e.id === "collection")?.tabs).toEqual(["inbox", "shelf"]);
   });
 
-  it("快捷键按顺序对应 Ctrl+1…9", () => {
-    expect(RAIL_ENTRIES.map((e) => e.shortcut)).toEqual([
+  it("快捷键按 TAB_ORDER 顺序映射，不因视觉合并偏移", () => {
+    const shortcutsPerLogicalTab = [
       "Ctrl+1",
       "Ctrl+2",
       "Ctrl+3",
@@ -49,7 +62,21 @@ describe("脚本侧导航契约与真实导航一致", () => {
       "Ctrl+7",
       "Ctrl+8",
       "Ctrl+9",
-    ]);
+      "Ctrl+0",
+    ];
+    expect([...TAB_ORDER]).toEqual([...LOGICAL_TABS]);
+    // 合并入口声明覆盖 Ctrl+5 与 Ctrl+6 两个逻辑位
+    const collection = RAIL_ENTRIES.find((e) => e.id === "collection");
+    expect(collection?.shortcut).toBe("Ctrl+5 / Ctrl+6");
+    expect(shortcutsPerLogicalTab[TAB_ORDER.indexOf("inbox")]).toBe("Ctrl+5");
+    expect(shortcutsPerLogicalTab[TAB_ORDER.indexOf("shelf")]).toBe("Ctrl+6");
+    // 其余视觉入口快捷键与逻辑位一致
+    for (const e of RAIL_ENTRIES) {
+      if (e.id === "collection") continue;
+      expect(e.shortcut, `${e.label} 快捷键`).toBe(
+        shortcutsPerLogicalTab[TAB_ORDER.indexOf(e.id as Tab)],
+      );
+    }
   });
 
   it("FullView 渲染的入口顺序、data-tip、aria-label 与契约一致", () => {
@@ -62,7 +89,7 @@ describe("脚本侧导航契约与真实导航一致", () => {
       const aria = (el.getAttribute("aria-label") ?? "").trim();
       const tip = (el.getAttribute("data-tip") ?? "").trim();
       expect(aria.startsWith(label), `第 ${i + 1} 个入口 aria-label 应以「${label}」开头`).toBe(true);
-      expect(tip, `第 ${i + 1} 个入口 data-tip 应为「${label}」`).toBe(label);
+      expect(tip.startsWith(label), `第 ${i + 1} 个入口 data-tip 应以「${label}」开头`).toBe(true);
     });
   });
 

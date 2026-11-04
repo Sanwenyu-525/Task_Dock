@@ -98,7 +98,7 @@ describe("12 项核心功能登记", () => {
     const partialCore = CORE_FEATURE_IDS.map((id) => getFeatureById(id)!).filter(
       (f) => f.status === "partial",
     );
-    // 复核结论：场景工作区 / 现场恢复 / 智能提醒 / 通知聚合 / 生活例行 / 文件暂存架 为 partial（快速捕获已落地）
+    // 复核结论：场景工作区 / 现场恢复 / 智能提醒 / 通知聚合 / 生活例行 / 文件暂存架 / 一键工作流 为 partial（快速捕获已落地）
     expect(partialCore.map((f) => f.id).sort()).toEqual(
       [
         "core.scenario-workspace",
@@ -107,6 +107,7 @@ describe("12 项核心功能登记", () => {
         "core.notification-aggregation",
         "core.life-routines",
         "core.file-shelf",
+        "core.one-click-workflow",
       ].sort(),
     );
     for (const f of partialCore) {
@@ -205,14 +206,15 @@ describe("目录结构契约", () => {
 });
 
 describe("统计摘要", () => {
-  it("全目录状态计数与验收基线一致（28 = 4 + 9 + 15 + 0）", () => {
+  it("全目录状态计数与验收基线一致（28 = 4 + 10 + 14 + 0）", () => {
     const s = featureCatalogSummary();
     expect(s.total).toBe(28);
     expect(s.coreTotal).toBe(12);
     // v0.8：文件暂存架落地为 partial（拖出与场景联动仍在缺口清单）
+    // v0.9：一键工作流落地为 partial（进入场景步骤待场景工作区模块）
     expect(s.implemented).toBe(4);
-    expect(s.partial).toBe(9);
-    expect(s.planned).toBe(15);
+    expect(s.partial).toBe(10);
+    expect(s.planned).toBe(14);
     expect(s.blocked).toBe(0);
     // 状态计数之和必须等于总功能数
     expect(s.implemented + s.partial + s.planned + s.blocked).toBe(s.total);

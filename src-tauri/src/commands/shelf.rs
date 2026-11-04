@@ -415,6 +415,13 @@ pub fn shelf_reveal_item(state: State<'_, Arc<ShelfState>>, id: String) -> AppRe
     Ok(())
 }
 
+/// 单条全量读取（含 content）：列表载荷不带大文本，跨模块转存等需要
+/// 完整内容的场景先经此命令取权威行，再消费字段。
+#[tauri::command]
+pub fn shelf_get_item(state: State<'_, Arc<ShelfState>>, id: String) -> AppResult<shelf::ShelfItem> {
+    shelf::item(&rt(&state).db, &id)
+}
+
 #[derive(Debug, Serialize)]
 pub struct ShelfTextPayload {
     pub content: String,

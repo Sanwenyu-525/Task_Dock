@@ -1,9 +1,9 @@
 /**
  * @vitest-environment jsdom
  */
-//! 完整模式左侧导航（v0.7；v0.8 新增暂存架入口）：
-//! - 九个入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
-//! - 点击切换 tab（保持 Ctrl+1…9 同一套 store）；
+//! 完整模式左侧导航（v0.8：收集箱+暂存架合并为「收集与暂存」单一视觉入口）：
+//! - 八个视觉入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
+//! - 逻辑 Tab 仍是 9 个（Ctrl+5=快速收集、Ctrl+6=文件暂存），视觉合并不改快捷键；
 //! - 徽标直接复用任务统计 / 行动中心 / 收集箱未处理计数，不新造计数；
 //! - 顶部入口切到任务页并聚焦快速添加；
 //! - 「收集箱」位于剪贴板之后、历史之前；「规划中心」位于历史之后、设置之前。
@@ -18,7 +18,8 @@ vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }
 vi.mock("./actions/ActionCenterPanel", () => ({ default: () => <div>actions-panel</div> }));
 vi.mock("./clipboard/ClipboardPanel", () => ({ default: () => <div>clipboard-panel</div> }));
 vi.mock("./inbox/CaptureInboxPanel", () => ({ default: () => <div>inbox-panel</div> }));
-vi.mock("./shelf/ShelfPanel", () => ({ default: () => <div>shelf-panel</div> }));
+vi.mock("./collection/CollectionPanel", () => ({ default: () => <div>collection-panel</div> }));
+vi.mock("./workflows/WorkflowsPanel", () => ({ default: () => <div>workflows-panel</div> }));
 vi.mock("./history/HistoryPanel", () => ({ default: () => <div>history-panel</div> }));
 vi.mock("./roadmap/PlanningCenterPanel", () => ({ default: () => <div>roadmap-panel</div> }));
 vi.mock("./settings/SettingsPanel", () => ({ default: () => <div>settings-panel</div> }));
@@ -52,13 +53,15 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("渲染九个导航入口与顶部新建按钮", () => {
+  it("渲染九个视觉导航入口与顶部新建按钮（收集箱+暂存架合并）", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["任务", "Agent", "行动", "剪贴板", "收集箱", "暂存架", "历史", "规划中心", "设置"]) {
+    for (const label of ["任务", "Agent", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
+    expect(screen.queryByRole("button", { name: /^暂存架/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^收集箱/ })).toBeNull();
     expect(screen.getByRole("button", { name: "新建任务" })).toBeTruthy();
     expect(nav.firstElementChild?.className).toBe("rail-head");
     expect(nav.lastElementChild?.className).toBe("rail-items");
@@ -90,14 +93,28 @@ describe("完整模式左侧导航", () => {
     expect(navItem("剪贴板").getAttribute("aria-current")).toBe("page");
   });
 
-  it("收集箱是第 5 个入口，点击后进入收集箱页面", async () => {
+  it("收集与暂存是第 5 个视觉入口：点击默认进入快速收集子页", async () => {
     const user = userEvent.setup();
+    useUiStore.setState({ collectionSub: "inbox" });
     render(<FullView />);
 
-    await user.click(navItem("收集箱"));
-    expect(screen.getByText("inbox-panel")).toBeTruthy();
+    await user.click(navItem("收集与暂存"));
+    expect(screen.getByText("collection-panel")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("inbox");
-    expect(navItem("收集箱").getAttribute("aria-current")).toBe("page");
+    expect(navItem("收集与暂存").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("inbox 与 shelf 两个逻辑 Tab 都激活同一视觉入口；点击合并入口回到上次子页", async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ tab: "shelf", collectionSub: "shelf" });
+    render(<FullView />);
+
+    expect(screen.getByText("collection-panel")).toBeTruthy();
+    expect(navItem("收集与暂存").getAttribute("aria-current")).toBe("page");
+
+    // 点击合并入口打开「上一次的子页」（collectionSub=shelf → tab 回 shelf）
+    await user.click(navItem("收集与暂存"));
+    expect(useUiStore.getState().tab).toBe("shelf");
   });
 
   it("规划中心位于历史之后、设置之前，点击后渲染规划面板（Tab 身份仍为 roadmap）", async () => {
@@ -118,7 +135,7 @@ describe("完整模式左侧导航", () => {
     expect(badges).toContain("3");
     expect(badges).toContain("1");
     expect(badges).toContain("2");
-    // 顺序跟随 TAB_ORDER：任务、Agent、行动、收集箱
+    // 顺序跟随视觉入口：任务、Agent、行动、收集与暂存（徽标=待处理收集，不含暂存条目）
     expect(badges).toEqual(["3", "1", "2", "2"]);
   });
 

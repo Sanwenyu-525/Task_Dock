@@ -119,6 +119,21 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `[1..5]` + `by_setpos=-1`。monthly 以锚点月为相位按 `k*interval` 步进，修复「每两个月」退化为每月。
 - **旧数据兼容**：`by_setpos` 可空，旧规则读回为 null 且行为不变，不静默改写旧设置。
 
+### 工具面板后端复用与 list_tasks limit（2026-11-04）
+
+- 停靠坞四个工具面板与收集箱 Lite 全部复用既有命令与 Store（`list_tasks`/
+  `create_task`/`toggle_task`、`agent_snapshot`、`nav_list_targets`/`nav_navigate`、
+  `quick_capture_list`/`quick_capture_state`、`clipboard_view`/`clipboard_status`），
+  未新增第二套持久化、Agent 监控器或导航引擎。
+- `list_tasks` 的 `TaskFilter` 新增可选 `limit`（u32，1..=200，越界收敛；缺省行为
+  完全不变），在 filter+sort 之后应用 SQL LIMIT；胶囊任务 Lite 传 `limit: 12`，
+  完整页不传保持全量。
+- 胶囊分类栏小 Agent 入口由「收集箱」取代：`RAIL_CATEGORIES =
+  ["tasks","inbox","clipboard","apps"]`，顶部状态球仍打开 Agent 面板
+  （`CapsuleCategory = RailCategory | "agents"`）；收集箱 Lite 复用
+  `quick_capture_list("inbox",8,0)` + `quick_capture_state`，事件刷新共用
+  App 层既有的单条 `quick-capture-created` 监听。
+
 ### 3. Agent 接入层（agents/）
 - 统一接入管线（`pipeline.rs`）：HTTP / 文件投递 / Hook CLI / 插件桥接 / Mock 的事件
   先进入有界队列。队列容量、批大小、合并窗口可配置；队列满时关键状态返回可重试错误
@@ -310,6 +325,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   运行状态按需刷新不轮询）；任务卡最多直列 3 个目标图标，其余折叠进快捷菜单（键盘可操作）；
   `AppPicker` 应用选择器（搜索/分类/当前窗口/手动登记）；`WorkspaceLauncher` 工作区
   顺序批量启动（可取消、部分成功明确）；设置页新增「应用与快捷方式」管理区。
+  v0.5（2026-11-04）起 `AppPicker` 支持两种独立模式：**任务关联模式**（保存目标 + 关联任务）
+  与**独立配置模式**（`standalone`，只保存目标、不要求任务 ID、不写任务关联，保存后刷新
+  `useNavigationStore` 目标清单），两模式共用同一 `navSaveTarget` 后端接口；
+  工具面板「应用」页的添加/管理入口经 `useUiStore` 的一次性 `appConfig` 意图进入完整窗口
+  设置页（胶囊的 Win32 区域裁剪内不挂载大型弹层），意图消费后清除。
   系统级窗口控制全部在 Rust 后端，React 不触碰 Win32。
 - 智能剪贴板（v0.6 起进入侧边栏）：完整模式为**第 4 个导航入口**（任务 / Agent /
   行动 / 剪贴板 / 历史 / 设置），**完整模式标题栏不再保留剪贴板入口按钮**；
@@ -398,6 +418,22 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   本地导出（可用）。
 - 详细设计、测试与限制见 [docs/clipboard/](clipboard/01-requirements.md)，
   整改分类证据见 [clipboard/10-remediation-acceptance.md](clipboard/10-remediation-acceptance.md)。
+
+#### 2026-11-04 采集可靠性加固（工具面板联检轮）
+
+- **读取占用有界重排**：`open_clipboard` 120ms 重试仍被独占（Office 延迟渲染、剪贴板
+  管理器等场景）时，事件不再永久丢弃——重排回事件队列（上限 3 次，总等待约 480ms），
+  超限才 `read_failed++`；不引入无限重试或无界队列。
+- **清空→复制竞态修复**：`clipboard_clear_history` 先记 `clear_seq` 再推进
+  `capture_epoch`，两步之间到达的复制旧实现被旧代数误杀；改由
+  `cleared_stale_gate`（旧代数**且**序列号不晚于清空水位才丢）判定，序列号为内容
+  先后权威证据；事件层与内容层（`QueuedCapture.sequence`）统一。
+- **监听盲区计数**：启动/看门狗重启间隙到达的 `WM_CLIPBOARDUPDATE` 此前静默消失，
+  现计入 `clipboard_status.monitor.unobserved_events`（新增诊断字段，向后兼容）。
+- **IPC 契约归一化（bridge 层）**：Rust `ClipboardFilter.favorite` 为非可选 `bool`
+  （无 serde default），bridge `clipboard_view` 在 IPC 边界统一补齐全部字段默认值；
+  修复轻量列表只传 `limit` 时被 serde 以「missing field favorite」拒绝的问题
+  （此前表现为停靠坞剪贴板面板「读取失败/暂无记录」而完整页正常）。
 
 ### 8. 行动中心（actions/，v0.5）
 `actions::feed` 是**只读读模型**，与写路径完全分离：确认操作只写 `action_acks` 与通知已读位，
@@ -670,3 +706,28 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   - 无任何外网请求；草稿与捕获记录只存本地 SQLite，随备份策略处理；
   - 唤起前前台 HWND 只存进程内存、不落库；焦点恢复单次尽力，失败静默降级；
   - 捕获窗口 capability 仅 `core:default` + `core:event:default`，业务命令走自定义 IPC。
+
+### v0.9 一键工作流（2026-11-04）
+
+- 迁移 v23 新增四表：`workflows`（定义）→ `workflow_steps`（编排，`step_type`
+  CHECK 白名单 + params JSON）→ `workflow_runs`（运行头，只存稳定态）→
+  `workflow_run_steps`（逐步骤回执，含副作用前落库的 `operation_id`）。
+  全部登记 `BACKUP_TABLES`（class=workflow；定义/步骤快速备份全量，运行/回执按
+  最近 20 次截断）与 `EXTENDED_TABLES`（依赖序如上）。
+- 步骤类型白名单：`open_app / open_url / open_path`（引用 `navigation_targets.id`，
+  执行时由 router 重新校验目标）、`create_task`（复用 `create_task_inner`）、
+  `restore_workspace`（显式选择快照，走统一恢复门禁）、`enter_scene`（场景工作区
+  未集成，校验层拒绝执行，仅保留类型）。**无任意 Shell / PowerShell / 脚本执行面**；
+  前端不能透传可执行路径，参数保存与执行双重校验。
+- 执行引擎（`src-tauri/src/workflows/engine.rs`）：顺序执行；进程内全局单槽保证
+  同一时刻最多一个工作流（槽锁内只做内存读写与建运行事务，无 IO/窗口操作）；
+  暂停/取消经 `RunControl` 原子位 + Condvar，取消不强制终止系统操作；会抢焦点的
+  步骤在工作现场恢复运行期间等待（有界 30s，超时如实失败）；单步 panic 由
+  `catch_unwind` 隔离为步骤失败。进度经 `workflow-run-progress` 事件推送完整运行
+  详情，前端不做轮询。
+- 幂等与恢复：连续运行请求被槽拒绝；`operation_id` 在副作用前持久化；启动时把
+  遗留 running/paused 运行标为 `interrupted`（running 步骤标 failed、pending 标
+  cancelled），**绝不自动重放有副作用的步骤**。运行历史每工作流保留最近 50 条
+  （`prune_runs` 只删运行记录，不碰定义）。
+- 新命令 16 个（`commands/workflows.rs`，`workflow_*` 前缀），参数 camelCase；
+  详细数据模型、状态机与接口边界见 [docs/workflows/README.md](workflows/README.md)。

@@ -429,10 +429,15 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShelfItem> {
 }
 
 fn get_item(db: &Db, id: &str) -> AppResult<ShelfItem> {
-    let sql = format!("SELECT {ITEM_COLS} FROM shelf_items WHERE id = ?1");
+    // 单条读取带 content（link=URL / text=正文）；列表查询不带（大文本不进前端内存）
+    let sql = format!("SELECT {ITEM_COLS}, content FROM shelf_items WHERE id = ?1");
     db.with_read(|conn| {
-        conn.query_row(&sql, params![id], |row| item_from_row(row))
-            .map_err(|_| AppError::NotFound(format!("暂存条目不存在: {id}")))
+        conn.query_row(&sql, params![id], |row| {
+            let mut item = item_from_row(row)?;
+            item.content = row.get(18)?;
+            Ok(item)
+        })
+        .map_err(|_| AppError::NotFound(format!("暂存条目不存在: {id}")))
     })
 }
 

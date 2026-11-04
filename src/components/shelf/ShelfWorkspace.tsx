@@ -11,12 +11,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
-  Clipboard, HardDrive, Loader2, Plus, Search, Settings2, Star, Trash2, Upload,
+  ChevronDown, Clipboard, HardDrive, Loader2, Plus, Search, Settings2, Star, Trash2, Upload, X,
 } from "lucide-react";
 import {
   clipboardView,
   getSettings,
+  quickCaptureSubmit,
   shelfCleanup,
+  shelfGetItem,
   shelfCopyFiles,
   shelfCopyPaths,
   shelfOpenItem,
@@ -52,6 +54,7 @@ interface PendingDelete {
 
 export default function ShelfWorkspace({ active }: { active: boolean }) {
   const showToast = useUiStore((s) => s.showToast);
+  const setTab = useUiStore((s) => s.setTab);
   const items = useShelfStore((s) => s.items);
   const total = useShelfStore((s) => s.total);
   const groups = useShelfStore((s) => s.groups);
@@ -99,6 +102,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     freed_bytes: number;
   } | null>(null);
   const [cleanupBusy, setCleanupBusy] = useState(false);
+  /** 反向转存（暂存架→收集箱）在途守卫：菜单项 disabled，防连点重复创建 */
+  const [toInboxBusy, setToInboxBusy] = useState(false);
   const searchTimer = useRef<number | null>(null);
 
   // 初次进入：加载列表 + 分组/统计；随后批量核对引用存在性（当前一页）
@@ -283,6 +288,42 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             },
           ]
         : []),
+      ...(item.kind === "text" || item.kind === "link"
+        ? [
+            {
+              key: "to-inbox",
+              label: "添加到收集箱",
+              disabled: toInboxBusy,
+              onSelect: () => {
+                if (toInboxBusy) return;
+                setToInboxBusy(true);
+                // 列表载荷不含 content（大文本不进前端内存）：先取全量权威行再转存。
+                // 复用快速捕获既有提交通道（client_id 幂等去重）；原暂存条目保留，
+                // 失败不改动任何状态。
+                shelfGetItem(item.id)
+                  .then((full) => {
+                    const content = (full.content ?? "").trim();
+                    if (!content) {
+                      showToast("该条目缺少可转存的内容", { kind: "error" });
+                      return;
+                    }
+                    const input =
+                      full.kind === "link"
+                        ? { client_id: crypto.randomUUID(), kind: "link" as const, content, url: content }
+                        : { client_id: crypto.randomUUID(), kind: "text" as const, content };
+                    return quickCaptureSubmit(input).then(() =>
+                      showToast("已添加到收集箱", {
+                        kind: "success",
+                        action: { label: "查看", run: () => setTab("inbox") },
+                      }),
+                    );
+                  })
+                  .catch((e) => showToast(String(e), { kind: "error" }))
+                  .finally(() => setToInboxBusy(false));
+              },
+            },
+          ]
+        : []),
       {
         key: "favorite",
         label: item.favorite ? "取消收藏" : "收藏",
@@ -318,7 +359,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         },
       },
     ],
-    [groups, showToast, updateItem, moveToGroup],
+    [groups, showToast, updateItem, moveToGroup, toInboxBusy, setTab],
   );
 
   const detailItem = items.find((i) => i.id === detailId) ?? null;
@@ -368,6 +409,33 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
 
   return (
     <div className={`shelf-workspace ${dragOver ? "drag-over" : ""}`}>
+      {/* 面板标题行（对齐剪贴板 clip-head 结构） */}
+      <div className="shelf-head">
+        <span className="shelf-head-title">文件暂存架</span>
+        {total > 0 && <span className="shelf-head-count">{total} 项</span>}
+        <button
+          type="button"
+          className="icon-btn sm"
+          aria-label="空间占用与清理设置"
+          data-tip="空间占用与清理"
+          onClick={() => {
+            setCleanupOpen((v) => !v);
+            setCleanupPreview(null);
+          }}
+        >
+          <Settings2 size={14} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="icon-btn sm"
+          aria-label="清空暂存架"
+          data-tip="清空（保留收藏/置顶）"
+          onClick={() => setConfirmClear(true)}
+        >
+          <Trash2 size={14} aria-hidden="true" />
+        </button>
+      </div>
+
       {/* 工具栏 */}
       <div className="shelf-toolbar">
         <button
@@ -381,7 +449,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         <DropdownMenu
           trigger={(props) => (
             <button {...props} type="button" className="icon-btn sm" aria-label="更多添加方式">
-              ▾
+              <ChevronDown size={14} aria-hidden="true" />
             </button>
           )}
           items={[
@@ -480,29 +548,6 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           />
           保存副本
         </label>
-
-        <button
-          type="button"
-          className="icon-btn sm"
-          aria-label="空间占用与清理设置"
-          data-tip="空间占用与清理"
-          onClick={() => {
-            setCleanupOpen((v) => !v);
-            setCleanupPreview(null);
-          }}
-        >
-          <Settings2 size={14} aria-hidden="true" />
-        </button>
-
-        <button
-          type="button"
-          className="icon-btn sm"
-          aria-label="清空暂存架"
-          data-tip="清空（保留收藏/置顶）"
-          onClick={() => setConfirmClear(true)}
-        >
-          <Trash2 size={14} aria-hidden="true" />
-        </button>
       </div>
 
       {/* 清理设置面板 */}
@@ -580,7 +625,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
               aria-label="关闭剪贴板选择"
               onClick={() => setClipOpen(false)}
             >
-              ×
+              <X size={12} aria-hidden="true" />
             </button>
           </div>
           {clipboardEntries.length === 0 ? (
@@ -857,7 +902,7 @@ function CleanupPanel({
       <div className="shelf-cleanup-head">
         <HardDrive size={14} aria-hidden="true" /> 空间与清理
         <button type="button" className="icon-btn sm" aria-label="关闭清理设置" onClick={onClose}>
-          ×
+          <X size={12} aria-hidden="true" />
         </button>
       </div>
       {stats && (

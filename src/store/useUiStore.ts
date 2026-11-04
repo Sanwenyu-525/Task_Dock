@@ -8,11 +8,12 @@ export type Tab =
   | "clipboard"
   | "inbox"
   | "shelf"
+  | "workflows"
   | "history"
   | "roadmap"
   | "settings";
 
-/** 完整模式侧边栏顺序：导航渲染、Ctrl+1…9、快捷键说明共用这一处定义。 */
+/** 完整模式侧边栏顺序：导航渲染、Ctrl+1…9 与 Ctrl+0、快捷键说明共用这一处定义。 */
 export const TAB_ORDER: readonly Tab[] = [
   "tasks",
   "agents",
@@ -20,6 +21,7 @@ export const TAB_ORDER: readonly Tab[] = [
   "clipboard",
   "inbox",
   "shelf",
+  "workflows",
   "history",
   "roadmap",
   "settings",
@@ -59,6 +61,11 @@ const TOAST_DEDUP_MS = 2000;
 export const useUiStore = create<{
   tab: Tab;
   setTab: (t: Tab) => void;
+  /**
+   * 「收集与暂存」合并入口的子页状态（v0.8）：inbox=快速收集 / shelf=文件暂存。
+   * setTab(inbox|shelf) 时幂等同步；点击合并入口回打开上一次的子页（默认 inbox）。
+   */
+  collectionSub: "inbox" | "shelf";
   editor: { open: boolean; task: Task | null };
   openEditor: (task?: Task) => void;
   closeEditor: () => void;
@@ -88,9 +95,24 @@ export const useUiStore = create<{
   agentFocus: AgentFocusTarget | null;
   focusAgent: (target: Omit<AgentFocusTarget, "token">) => void;
   clearAgentFocus: () => void;
+  /**
+   * 工具面板「应用」页发起的一次性配置意图：
+   * picker = 打开应用选择器（添加/编辑目标）；manage = 定位到应用管理区。
+   * 由设置页消费后清除，避免反复自动弹出。
+   */
+  appConfig: { kind: "picker" | "manage"; token: number } | null;
+  requestAppConfig: (kind: "picker" | "manage") => void;
+  clearAppConfig: () => void;
 }>((set) => ({
   tab: "tasks",
-  setTab: (t) => set({ tab: t }),
+  // 收集箱/暂存架是同一视觉入口的两个子页：setTab 落到其中之一时同步子页状态，
+  // 其余 Tab 不改动上次子页选择（合并入口「回到上次子页」的语义依据）。
+  setTab: (t) =>
+    set((s) => ({
+      tab: t,
+      collectionSub: t === "inbox" || t === "shelf" ? t : s.collectionSub,
+    })),
+  collectionSub: "inbox",
   editor: { open: false, task: null },
   openEditor: (task) => set({ editor: { open: true, task: task ?? null } }),
   closeEditor: () => set({ editor: { open: false, task: null } }),
@@ -163,4 +185,8 @@ export const useUiStore = create<{
       agentFocus: { ...target, token: (s.agentFocus?.token ?? 0) + 1 },
     })),
   clearAgentFocus: () => set({ agentFocus: null }),
+  appConfig: null,
+  requestAppConfig: (kind) =>
+    set((s) => ({ appConfig: { kind, token: (s.appConfig?.token ?? 0) + 1 } })),
+  clearAppConfig: () => set({ appConfig: null }),
 }));

@@ -22,6 +22,7 @@ mod window_shape;
 mod window_cursor;
 mod winproc;
 pub mod workspace;
+pub mod workflows;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -418,6 +419,9 @@ pub fn run() {
                 Ok(max) => agents::bump_ingest_seq(max),
                 Err(e) => tracing::warn!("读取受理序号水位失败: {}", e),
             }
+            // 一键工作流：把上次异常退出遗留的 running/paused 运行标记为 interrupted
+            //（绝不自动重放有副作用的步骤）。
+            commands::workflows::recover_on_startup(&db);
             handle.manage(db.clone());
             let settings = db::Settings::load(&db).unwrap_or_default();
 
@@ -456,12 +460,34 @@ pub fn run() {
             let hub = Arc::new(AgentHub::new(handle.clone(), db.clone()));
             handle.manage(hub.clone());
 
+            // 主窗口在此显式创建（tauri.conf.json 中 main 设了 "create": false）。
+            // 根因：配置窗口会在 setup 完成前创建并开始加载前端，页面里的
+            // get_settings / list_tasks 因此可能在 DB 等状态尚未 manage 时失败，
+            // 表现为「重启后主题 / 视觉预设 / 材质停在默认值，刷新页面才恢复」。
+            // 推迟到上述状态全部托管之后再创建，首屏 IPC 必定可用。
+            // 其余窗口（context-menu / notification / capture）保持原有创建时机，
+            // 不受此改动影响。
+            if let Some(cfg) = handle
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned()
+            {
+                tauri::WebviewWindowBuilder::from_config(&handle, &cfg)?.build()?;
+            }
+
             // 窗口恢复（位置/模式/关闭行为）
             restore_window(&handle, &db);
 
             // 圆角外形按当前视觉预设先落一次（前端加载后会以真实预设再同步一次），
             // 保证窗口第一次显示时四角就是圆角，不会闪一下直角。
-            window_shape::set_radius(if settings.visual_preset == "liquid-glass" {
+            // 两种玻璃预设（柔光 / 清透）同样使用 20px，与前端 presetRadius 保持一致。
+            window_shape::set_radius(if matches!(
+                settings.visual_preset.as_str(),
+                "liquid-glass" | "frosted" | "clear"
+            ) {
                 20.0
             } else {
                 18.0
@@ -896,6 +922,7 @@ pub fn run() {
             commands::context::task_context,
             // 文件暂存架（v0.8）
             commands::shelf::shelf_list,
+            commands::shelf::shelf_get_item,
             commands::shelf::shelf_stats,
             commands::shelf::shelf_groups,
             commands::shelf::shelf_group_create,
@@ -919,6 +946,24 @@ pub fn run() {
             commands::shelf::shelf_task_links,
             commands::shelf::shelf_link_task,
             commands::shelf::shelf_unlink_task,
+            // 一键工作流（v0.9）
+            commands::workflows::workflow_list,
+            commands::workflows::workflow_get,
+            commands::workflows::workflow_create,
+            commands::workflows::workflow_update,
+            commands::workflows::workflow_delete,
+            commands::workflows::workflow_duplicate,
+            commands::workflows::workflow_reorder,
+            commands::workflows::workflow_replace_steps,
+            commands::workflows::workflow_run,
+            commands::workflows::workflow_pause,
+            commands::workflows::workflow_resume,
+            commands::workflows::workflow_cancel,
+            commands::workflows::workflow_active,
+            commands::workflows::workflow_run_detail,
+            commands::workflows::workflow_last_run,
+            commands::workflows::workflow_last_run_summary,
+            commands::workflows::workflow_list_runs,
         ])
         .build(context)
         .expect("启动 Task Dock 失败")

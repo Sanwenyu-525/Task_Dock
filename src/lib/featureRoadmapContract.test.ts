@@ -3,7 +3,8 @@
 //! 目的：锁定本次回归核对的关键契约，防止并行会话更新统计时发生静默漂移：
 //! - CORE_FEATURE_IDS 恰好 12 项，ID、标题、顺序固定；
 //! - 12 项核心 P0=5 / P1=5 / P2=2；全局搜索固定 P1；核心项状态集合固定；
-//! - 目录 28 项，状态 implemented=4 / partial=8 / planned=16 / blocked=0；
+//! - 目录 28 项，状态 implemented=4 / partial=10 / planned=14 / blocked=0
+//!   （v0.9：一键工作流 planned → partial，进入场景步骤待场景工作区）；
 //! - Gemini CLI 保持 planned（不重新登记为受阻）。
 //!
 //! 本文件只校验数据，不渲染面板；面板交互由既有
@@ -71,7 +72,7 @@ const EXPECTED_CORE_BY_PRIORITY: Record<FeaturePriority, readonly string[]> = {
   P2: ["core.quick-notes", "core.life-routines"],
 };
 
-/** 核心项状态精确集合（v0.8：文件暂存架由 planned 提升为 partial） */
+/** 核心项状态精确集合（v0.8：文件暂存架 planned→partial；v0.9：一键工作流 planned→partial） */
 const EXPECTED_CORE_BY_STATUS: Record<"implemented" | "partial" | "planned", readonly string[]> = {
   implemented: ["core.quick-capture", "core.agent-action-center"],
   partial: [
@@ -81,13 +82,9 @@ const EXPECTED_CORE_BY_STATUS: Record<"implemented" | "partial" | "planned", rea
     "core.notification-aggregation",
     "core.life-routines",
     "core.file-shelf",
-  ],
-  planned: [
     "core.one-click-workflow",
-    "core.focus-timer",
-    "core.global-search",
-    "core.quick-notes",
   ],
+  planned: ["core.focus-timer", "core.global-search", "core.quick-notes"],
 };
 
 function featuresOf(ids: readonly string[]) {
@@ -118,7 +115,7 @@ describe("12 项核心功能精确契约", () => {
     }
   });
 
-  it("核心项状态精确集合：implemented 2 / partial 6 / planned 4", () => {
+  it("核心项状态精确集合：implemented 2 / partial 7 / planned 3", () => {
     for (const status of ["implemented", "partial", "planned"] as const) {
       const actual = featuresOf(EXPECTED_CORE_IDS)
         .filter((f) => f.status === status)
@@ -138,7 +135,7 @@ describe("12 项核心功能精确契约", () => {
 });
 
 describe("全目录统计契约", () => {
-  it("目录总数 28，状态计数 implemented=4 / partial=9 / planned=15 / blocked=0", () => {
+  it("目录总数 28，状态计数 implemented=4 / partial=10 / planned=14 / blocked=0", () => {
     expect(FEATURE_CATALOG).toHaveLength(28);
     const counts: Record<FeatureStatus, number> = {
       implemented: 0,
@@ -147,7 +144,7 @@ describe("全目录统计契约", () => {
       blocked: 0,
     };
     for (const f of FEATURE_CATALOG) counts[f.status] += 1;
-    expect(counts).toEqual({ implemented: 4, partial: 9, planned: 15, blocked: 0 });
+    expect(counts).toEqual({ implemented: 4, partial: 10, planned: 14, blocked: 0 });
   });
 
   it("摘要函数与目录实际计数一致（total / coreTotal / 状态 / 验证）", () => {

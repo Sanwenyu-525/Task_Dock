@@ -10,6 +10,7 @@ import {
   Check,
   Copy,
   FileText,
+  FolderPlus,
   Inbox,
   Lightbulb,
   Link2,
@@ -20,6 +21,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCaptureStore } from "../../store/useCaptureStore";
+import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
 import { copyText } from "../../lib/clipboard";
 import { formatRelative } from "../../lib/format";
@@ -67,6 +69,9 @@ export default function CaptureInboxPanel() {
   const convertToTask = useCaptureStore((s) => s.convertToTask);
   const remove = useCaptureStore((s) => s.remove);
   const showToast = useUiStore((s) => s.showToast);
+  const setTab = useUiStore((s) => s.setTab);
+  const addTextToShelf = useShelfStore((s) => s.addText);
+  const addLinkToShelf = useShelfStore((s) => s.addLink);
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -120,6 +125,33 @@ export default function CaptureInboxPanel() {
       }
     },
     [markHandled, showToast],
+  );
+
+  /**
+   * 添加到暂存架（v0.8 跨模块转存）：text/idea → 暂存文本，link → 暂存链接。
+   * 走 useShelfStore 既有动作（引用其本地合并与统计刷新）；原收集条目**保留**，
+   * 失败不改变任何状态；busyId 复用逐条在途守卫，连点不会重复创建。
+   */
+  const onSendToShelf = useCallback(
+    async (item: CaptureItem) => {
+      setBusyId(item.id);
+      try {
+        if (item.kind === "link" && item.url) {
+          await addLinkToShelf(item.url);
+        } else {
+          await addTextToShelf(item.content);
+        }
+        showToast("已添加到文件暂存", {
+          kind: "success",
+          action: { label: "查看", run: () => setTab("shelf") },
+        });
+      } catch (e) {
+        showToast(String(e), { kind: "error" });
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [addLinkToShelf, addTextToShelf, setTab, showToast],
   );
 
   const onDelete = useCallback(
@@ -273,6 +305,18 @@ export default function CaptureInboxPanel() {
                   >
                     <Check size={12} aria-hidden="true" />
                   </button>
+                  {(item.kind === "text" || item.kind === "idea" || item.kind === "link") && (
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label={`添加到暂存架：${KIND_LABELS[item.kind]}`}
+                      data-tip="添加到暂存架（保留本条）"
+                      disabled={busy}
+                      onClick={() => void onSendToShelf(item)}
+                    >
+                      <FolderPlus size={12} aria-hidden="true" />
+                    </button>
+                  )}
                   {confirming ? (
                     <>
                       <button

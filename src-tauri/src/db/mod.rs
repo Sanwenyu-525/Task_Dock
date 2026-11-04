@@ -876,6 +876,85 @@ CREATE TABLE shelf_task_links (
 CREATE INDEX idx_shelf_task_links_item ON shelf_task_links(item_id);
 "#,
     ),
+    (
+        23,
+        r#"
+-- v23（Task Dock 0.9）：一键工作流 —— 用户编排的白名单动作序列（v1）。
+-- 步骤类型白名单（workflow_steps.step_type CHECK 强约束）：
+--   open_app / open_url / open_path = 复用统一导航 nav_navigate（目标引用
+--     navigation_targets.id，执行时后端重新校验，前端不能透传路径）；
+--   create_task = 复用任务创建 API（title/description/priority/提醒）；
+--   enter_scene = 场景工作区步骤（模块尚未集成，校验层拒绝执行，仅保留类型）；
+--   restore_workspace = 显式选择已有快照，走工作现场恢复门禁。
+-- 不支持任意 Shell / PowerShell / 脚本下载执行（安全红线）。
+
+-- 工作流定义。enabled=false 时不可运行；sort_order 控制卡片顺序；
+-- last_run_at 仅作展示冗余，权威数据在 workflow_runs。
+CREATE TABLE workflows (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_run_at TEXT
+);
+
+-- 步骤编排。params 为 JSON，按 step_type 结构化校验（保存与执行双重校验）；
+-- enabled=false 的步骤运行时记为 skipped；on_error 控制失败后停止或继续。
+CREATE TABLE workflow_steps (
+  id TEXT PRIMARY KEY NOT NULL,
+  workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  step_type TEXT NOT NULL CHECK (step_type IN
+    ('open_app','open_url','open_path','create_task','enter_scene','restore_workspace')),
+  params TEXT NOT NULL DEFAULT '{}',
+  display_order INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+  on_error TEXT NOT NULL DEFAULT 'stop' CHECK (on_error IN ('stop','continue')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_workflow_steps_wf ON workflow_steps(workflow_id, display_order);
+
+-- 运行记录。status 只存稳定态（running/paused/completed/failed/cancelled/interrupted）；
+-- pausing/cancelling 过渡态仅存在于内存与事件流，崩溃后恢复不会误标。
+-- interrupted = 应用异常退出时未结束的运行，恢复后绝不自动重放副作用步骤。
+CREATE TABLE workflow_runs (
+  id TEXT PRIMARY KEY NOT NULL,
+  workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  workflow_name TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN
+    ('running','paused','completed','failed','cancelled','interrupted')),
+  current_step_index INTEGER NOT NULL DEFAULT 0,
+  total_steps INTEGER NOT NULL DEFAULT 0,
+  completed_steps INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  error TEXT
+);
+CREATE INDEX idx_workflow_runs_wf ON workflow_runs(workflow_id, started_at DESC);
+
+-- 逐步骤执行回执。operation_id 在执行副作用前持久化（幂等审计依据）；
+-- result 为 JSON 摘要（如 create_task 的 task_id、导航的 verification_level），
+-- 不含文件路径正文等隐私内容。
+CREATE TABLE workflow_run_steps (
+  id TEXT PRIMARY KEY NOT NULL,
+  run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL,
+  step_type TEXT NOT NULL,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN
+    ('pending','running','succeeded','skipped','failed','cancelled')),
+  detail TEXT NOT NULL DEFAULT '',
+  result TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  operation_id TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_workflow_run_steps_run ON workflow_run_steps(run_id, display_order);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -3046,6 +3125,10 @@ mod tests {
                      DROP TABLE IF EXISTS shelf_task_links;
                      DROP TABLE IF EXISTS shelf_items;
                      DROP TABLE IF EXISTS shelf_groups;
+                     DROP TABLE IF EXISTS workflow_run_steps;
+                     DROP TABLE IF EXISTS workflow_runs;
+                     DROP TABLE IF EXISTS workflow_steps;
+                     DROP TABLE IF EXISTS workflows;
                      PRAGMA user_version = 4;",
                 )?;
                 Ok::<_, AppError>(())

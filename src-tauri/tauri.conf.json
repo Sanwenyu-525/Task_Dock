@@ -24,7 +24,8 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": true,
-        "visible": false
+        "visible": false,
+        "create": false
       },
       {
         "label": "context-menu",

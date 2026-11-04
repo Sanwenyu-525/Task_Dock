@@ -41,6 +41,9 @@ pub const QUICK_NOTIFICATION_LIMIT: i64 = 500;
 pub const QUICK_NAV_LOG_LIMIT: i64 = 500;
 pub const QUICK_CLIPBOARD_ITEM_LIMIT: i64 = 2_000;
 pub const QUICK_CLIPBOARD_PASTE_LIMIT: i64 = 500;
+/// 工作流运行历史：快速备份保留最近 20 次运行（与库内 50 条/工作流的保留策略独立，
+/// 备份取更保守值）；工作流定义与步骤在快速备份中全量保存。
+pub const QUICK_WORKFLOW_RUN_LIMIT: i64 = 20;
 
 /// 恢复提交标记：与业务数据同事务写入，用于崩溃恢复判定。
 pub const RESTORE_COMMIT_KEY: &str = "restore_commit_id";
@@ -83,6 +86,11 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "shelf_groups",
     "shelf_items",
     "shelf_task_links",
+    // 一键工作流（v0.9）：定义 → 步骤 → 运行 → 回执（外键依赖序）。
+    "workflows",
+    "workflow_steps",
+    "workflow_runs",
+    "workflow_run_steps",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -281,6 +289,34 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         "all",
         310,
         &["tasks", "shelf_items"],
+        true
+    ),
+    // 一键工作流（v0.9）：定义与步骤是用户配置，快速备份全量保存；
+    // 运行记录与回执是历史数据，快速备份按最近 20 次运行截断。
+    // 依赖序：工作流 → 步骤 → 运行 → 回执。
+    rule!("workflows", "workflow", "all", 320, &[], true),
+    rule!(
+        "workflow_steps",
+        "workflow",
+        "all",
+        325,
+        &["workflows"],
+        true
+    ),
+    rule!(
+        "workflow_runs",
+        "workflow",
+        "recent",
+        330,
+        &["workflows"],
+        true
+    ),
+    rule!(
+        "workflow_run_steps",
+        "workflow",
+        "recent",
+        335,
+        &["workflow_runs"],
         true
     ),
 ];
@@ -537,7 +573,19 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         // 文件暂存架：条目与托管副本全量保存（占用受 shelf_max_storage_mb 配额约束）
         | "shelf_groups"
         | "shelf_items"
-        | "shelf_task_links" => format!("SELECT * FROM {} ORDER BY rowid", table),
+        | "shelf_task_links"
+        // 一键工作流：定义与步骤是用户配置，快速备份全量保存
+        | "workflows"
+        | "workflow_steps" => format!("SELECT * FROM {} ORDER BY rowid", table),
+        // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
+        "workflow_runs" => format!(
+            "SELECT * FROM workflow_runs WHERE id IN (SELECT id FROM workflow_runs ORDER BY started_at DESC, rowid DESC LIMIT {}) ORDER BY rowid",
+            QUICK_WORKFLOW_RUN_LIMIT
+        ),
+        "workflow_run_steps" => format!(
+            "SELECT * FROM workflow_run_steps WHERE run_id IN (SELECT id FROM workflow_runs ORDER BY started_at DESC, rowid DESC LIMIT {}) ORDER BY rowid",
+            QUICK_WORKFLOW_RUN_LIMIT
+        ),
         "clipboard_snapshot_links" => format!(
             "SELECT * FROM clipboard_snapshot_links WHERE (target_type = 'group' AND target_id IN (SELECT id FROM clipboard_groups)) OR (target_type = 'item' AND target_id IN ({})) ORDER BY rowid",
             items

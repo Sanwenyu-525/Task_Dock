@@ -83,3 +83,17 @@ describe("useUiStore · Toast 队列", () => {
     expect(useUiStore.getState().toast).toBeNull();
   });
 });
+
+describe("收集与暂存合并入口子页状态（v0.8）", () => {
+  it("setTab(inbox|shelf) 幂等同步 collectionSub；其他 Tab 不改动上次子页", () => {
+    const ui = useUiStore.getState();
+    ui.setTab("shelf");
+    expect(useUiStore.getState().collectionSub).toBe("shelf");
+    useUiStore.getState().setTab("inbox");
+    expect(useUiStore.getState().collectionSub).toBe("inbox");
+    useUiStore.getState().setTab("tasks");
+    expect(useUiStore.getState().collectionSub).toBe("inbox");
+    useUiStore.getState().setTab("shelf");
+    expect(useUiStore.getState().tab).toBe("shelf");
+  });
+});

@@ -86,8 +86,8 @@ describe("结构渲染", () => {
 });
 
 describe("四类状态卡片交互", () => {
-  it("planned：点击后显示「功能待开发」", () => {
-    const card = cardOf("一键工作流");
+  it("planned：点击后显示「功能待开发」（v0.9 起一键工作流为 partial，改用专注与休息）", () => {
+    const card = cardOf("专注与休息");
     fireEvent.click(within(card).getByRole("button"));
     expect(within(card).getByText("功能待开发")).toBeTruthy();
   });
@@ -135,7 +135,7 @@ describe("四类状态卡片交互", () => {
   });
 
   it("再次点击收起详情", () => {
-    const card = cardOf("一键工作流");
+    const card = cardOf("专注与休息");
     const head = within(card).getByRole("button");
     fireEvent.click(head);
     expect(within(card).getByText("功能待开发")).toBeTruthy();
@@ -145,15 +145,16 @@ describe("四类状态卡片交互", () => {
 });
 
 describe("筛选与搜索", () => {
-  it("状态筛选：只显示对应状态的卡片（v0.8 起暂存架为部分实现）", () => {
+  it("状态筛选：只显示对应状态的卡片（v0.8 暂存架、v0.9 一键工作流为部分实现）", () => {
     fireEvent.click(screen.getByRole("button", { name: "待开发" }));
-    expect(cardOf("一键工作流")).toBeTruthy();
+    expect(cardOf("专注与休息")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Agent 行动中心（/ })).toBeNull();
     expect(screen.getByRole("status").textContent).toContain("筛选结果");
 
     fireEvent.click(screen.getByRole("button", { name: "部分实现" }));
     expect(cardOf("文件暂存架")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^一键工作流（/ })).toBeNull();
+    expect(cardOf("一键工作流")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^专注与休息（/ })).toBeNull();
   });
 
   it("状态筛选 planned：能找到 Gemini CLI，且不再显示受阻说明", () => {

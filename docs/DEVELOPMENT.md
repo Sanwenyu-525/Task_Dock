@@ -168,6 +168,21 @@ task_dock/
 | `planning_activity_page(project_id, feature_id?, limit?, offset?)` | 进度历史分页（时间倒序，limit≤100） |
 | `planning_add_note(project_id, feature_id?, message)` | 用户开发日志（kind=note；不解析内容、不推断进度） |
 
+### 一键工作流命令速查（v0.9）
+
+前端封装在 `src/lib/bridge.ts`（workflow 段）；数据模型、白名单与状态机详见
+[docs/workflows/README.md](workflows/README.md)。
+
+| 命令 | 用途 |
+|---|---|
+| `workflow_list` / `workflow_get` / `workflow_create` / `workflow_update` / `workflow_delete` / `workflow_duplicate` | 定义 CRUD + 复制（删除级联步骤/运行/回执） |
+| `workflow_reorder(ordered_ids)` | 卡片排序（必须包含全部工作流 id） |
+| `workflow_replace_steps(id, steps)` | 整表替换步骤编排（原子事务；增删改排序共用） |
+| `workflow_run(id)`（async） | 启动运行；全局单槽，冲突返回可读错误 |
+| `workflow_pause` / `workflow_resume` / `workflow_cancel` / `workflow_active` | 运行控制与活动概览（只置位，不等引擎） |
+| `workflow_run_detail(run_id)` / `workflow_last_run(id)` / `workflow_last_run_summary(id)` | 运行详情 / 最近一次运行 |
+| `workflow_list_runs(id, limit?, offset?)` | 运行历史分页（limit≤100，新→旧；每工作流保留最近 50 条） |
+
 ### 性能测试（需手动运行，不进入 CI）
 
 ```bash

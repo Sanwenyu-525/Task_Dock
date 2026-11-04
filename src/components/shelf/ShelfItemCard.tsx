@@ -134,7 +134,7 @@ export default function ShelfItemCard({
           <span className="shelf-tag mode">{modeLabel(item)}</span>
           <span>{formatBytes(item.byte_size)}</span>
           <span aria-hidden="true">·</span>
-          <span>{sourceLabel(item)}</span>
+          <span className="shelf-item-src">{sourceLabel(item)}</span>
           <span aria-hidden="true">·</span>
           <span className="shelf-item-time">
             <Clock size={11} aria-hidden="true" />

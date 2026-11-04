@@ -1,6 +1,7 @@
-//! 全局快捷键（v0.7）。
+//! 全局快捷键（v0.7；v0.9 扩展到 Ctrl+0）。
 //!
-//! - Ctrl+1…8：完整模式切换八个侧边栏入口，顺序见 `TAB_ORDER`
+//! - Ctrl+1…9 与 Ctrl+0：完整模式按 `TAB_ORDER` 顺序切换侧边栏入口
+//!   （第 10 个逻辑 Tab「设置」= Ctrl+0，其余依次 Ctrl+1…9）
 //! - Ctrl+K：快速添加任务
 //! - Ctrl+Shift+C：完整模式进入剪贴板页面；紧凑 / 极简模式开关临时剪贴板抽屉
 //!
@@ -60,9 +61,11 @@ export function useGlobalShortcuts(): void {
       }
       if (typing) return;
 
-      const match = /^Digit([1-9])$/.exec(e.code);
+      // Ctrl+1…9 → 前 9 个逻辑 Tab；Ctrl+0 → 最后一个（v0.9 起 = 设置）。
+      const match = /^Digit([0-9])$/.exec(e.code);
       if (!match) return;
-      const index = Number(match[1]) - 1;
+      const digit = Number(match[1]);
+      const index = digit === 0 ? TAB_ORDER.length - 1 : digit - 1;
       if (index >= TAB_ORDER.length) return;
       if (!isFullMode()) return;
       e.preventDefault();

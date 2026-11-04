@@ -10,6 +10,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import CaptureInboxPanel from "./CaptureInboxPanel";
 import { useCaptureStore } from "../../store/useCaptureStore";
+import { useUiStore } from "../../store/useUiStore";
 import type { CaptureItem } from "../../lib/bridge";
 
 const bridge = vi.hoisted(() => ({
@@ -24,12 +25,21 @@ const clipboard = vi.hoisted(() => ({
   copyText: vi.fn(async () => true),
 }));
 
+const shelfStore = vi.hoisted(() => ({
+  addText: vi.fn(async () => ({ id: "shelf-1" })),
+  addLink: vi.fn(async () => ({ id: "shelf-2" })),
+}));
+
 vi.mock("../../lib/bridge", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/bridge")>()),
   ...bridge,
 }));
 
 vi.mock("../../lib/clipboard", () => clipboard);
+
+vi.mock("../../store/useShelfStore", () => ({
+  useShelfStore: (selector: (s: typeof shelfStore) => unknown) => selector(shelfStore),
+}));
 
 function makeItem(overrides: Partial<CaptureItem> = {}): CaptureItem {
   return {
@@ -61,6 +71,8 @@ afterEach(cleanup);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  shelfStore.addText.mockResolvedValue({ id: "shelf-1" });
+  shelfStore.addLink.mockResolvedValue({ id: "shelf-2" });
   useCaptureStore.setState({
     items: [],
     filter: "inbox",
@@ -234,5 +246,59 @@ describe("CaptureInboxPanel", () => {
     await waitFor(() => {
       expect(bridge.quickCaptureList).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe("CaptureInboxPanel 跨模块转存（v0.8）", () => {
+  async function renderWithItem(overrides: Partial<CaptureItem>) {
+    render(<CaptureInboxPanel />);
+    // 等初始加载完成（beforeEach 已 mock quickCaptureList 返回 INBOX_ITEM：task 类型）
+    await waitFor(() => expect(screen.getByLabelText(/任务：/)).toBeTruthy());
+    const target = makeItem(overrides);
+    useCaptureStore.setState({ items: [target] });
+    const item = await screen.findByLabelText(new RegExp(`^${overrides.kind === "link" ? "链接" : "文字"}：`));
+    return { item, btn: within(item).getByRole("button", { name: `添加到暂存架：${overrides.kind === "link" ? "链接" : "文字"}` }) };
+  }
+
+  it("文本条目「添加到暂存架」调用 addText，成功后原条目保留", async () => {
+    const user = userEvent.setup();
+    const { btn } = await renderWithItem({ kind: "text", content: "转存文本样例" });
+    await user.click(btn);
+    await waitFor(() => expect(shelfStore.addText).toHaveBeenCalledWith("转存文本样例"));
+    expect(shelfStore.addText).toHaveBeenCalledTimes(1);
+  });
+
+  it("链接条目转存调用 addLink（携带 URL），原条目保留", async () => {
+    shelfStore.addText.mockClear();
+    const user = userEvent.setup();
+    const { btn } = await renderWithItem({ kind: "link", content: "示例站", url: "https://example.com/a" });
+    await user.click(btn);
+    await waitFor(() => expect(shelfStore.addLink).toHaveBeenCalledWith("https://example.com/a"));
+    expect(shelfStore.addText).not.toHaveBeenCalled();
+  });
+
+  it("失败时提示错误且原条目状态不变", async () => {
+    shelfStore.addText.mockRejectedValueOnce(new Error("配额不足"));
+    const user = userEvent.setup();
+    const { btn } = await renderWithItem({ kind: "text", content: "转存失败样例" });
+    await user.click(btn);
+    // Toast 渲染在应用外壳（App），此处断言 ui store 的队列与原条目保留
+    await waitFor(() =>
+      expect(useUiStore.getState().toasts.some((t) => t.message.includes("配额不足"))).toBe(true),
+    );
+    expect(screen.getByText(/转存失败样例/)).toBeTruthy();
+  });
+
+  it("在途守卫：转存进行中按钮禁用，连点不重复创建", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    shelfStore.addText.mockImplementationOnce(() => gate.then(() => ({ id: "shelf-9" })));
+    const user = userEvent.setup();
+    const { btn } = await renderWithItem({ kind: "text", content: "在途守卫样例" });
+    await user.click(btn);
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    release();
+    await waitFor(() => expect((btn as HTMLButtonElement).disabled).toBe(false));
+    expect(shelfStore.addText).toHaveBeenCalledTimes(1);
   });
 });

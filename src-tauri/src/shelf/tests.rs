@@ -216,6 +216,10 @@ fn link_and_text_items() {
     assert_eq!(text.kind, KIND_TEXT);
     assert!(text.display_name.contains("第一行"));
     assert!(add_text(&db, "   ", "manual", None).is_err());
+    // 单条读取必须带出 content（回归：列表查询不含 content，get_item 必须单独补）
+    let (content, truncated) = read_text(&db, Path::new(""), &text.id).unwrap();
+    assert_eq!(content, "第一行\n第二行");
+    assert!(!truncated);
     // content 不进列表载荷（大文本不进前端内存）
     let page = list(&db, &ListFilter { limit: 10, ..Default::default() }).unwrap();
     assert!(page.items.iter().all(|i| i.content.is_none()));
