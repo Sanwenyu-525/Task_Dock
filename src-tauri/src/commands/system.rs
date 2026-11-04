@@ -118,27 +118,29 @@ pub fn set_hotkeys_enabled(
     db: State<'_, Arc<Db>>,
     enabled: bool,
 ) -> AppResult<()> {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
-    db.set_setting("hotkey_enabled", serde_json::json!(enabled))?;
-    let gs = app.global_shortcut();
-    // 注册/注销失败只告警降级，不 panic：两条快捷键互相独立，
-    // 一条被其他实例占用不影响另一条（如 debug 实例占用 Ctrl+Shift+Space）。
-    for accel in ["Ctrl+Alt+T", "Ctrl+Shift+Space"] {
-        let shortcut = match accel.parse::<Shortcut>() {
-            Ok(shortcut) => shortcut,
-            Err(_) => {
-                tracing::warn!("全局快捷键 {} 解析失败", accel);
-                continue;
-            }
-        };
-        if enabled {
-            if let Err(e) = gs.register(shortcut) {
-                tracing::warn!("全局快捷键 {} 注册失败: {}", accel, e);
-            }
-        } else if let Err(e) = gs.unregister(shortcut) {
-            tracing::warn!("全局快捷键 {} 注销失败: {}", accel, e);
-        }
+    // 旧版总开关映射到「所有系统级快捷键」的启停，统一走快捷键管理器，
+    // 不再各自直接调用插件，避免两套注册状态互相覆盖。
+    let manager = crate::hotkeys::manager()
+        .ok_or_else(|| crate::error::AppError::Unavailable("快捷键模块尚未初始化".to_string()))?;
+    let outcome = manager.set_all_system_enabled(enabled)?;
+    if !outcome.ok {
+        // 部分失败：回退已改动的项，避免开关与实际注册状态不一致。
+        let _ = manager.set_all_system_enabled(!enabled);
+        let detail = outcome
+            .results
+            .iter()
+            .filter(|result| !result.ok)
+            .filter_map(|result| result.error.clone())
+            .collect::<Vec<_>>()
+            .join("；");
+        return Err(crate::error::AppError::Unavailable(if detail.is_empty() {
+            "部分系统级快捷键未能应用，已回退".to_string()
+        } else {
+            format!("部分系统级快捷键未能应用，已回退：{detail}")
+        }));
     }
+    db.set_setting("hotkey_enabled", serde_json::json!(enabled))?;
+    crate::hotkeys::emit_changed(&app);
     Ok(())
 }
 

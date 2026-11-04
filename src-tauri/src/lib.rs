@@ -2,6 +2,7 @@
 
 pub mod actions;
 pub mod agents;
+pub mod agent_stats;
 pub mod alloc_stats;
 #[global_allocator]
 static GLOBAL_ALLOCATOR: alloc_stats::TrackingAllocator = alloc_stats::TrackingAllocator;
@@ -10,14 +11,19 @@ pub mod commands;
 pub mod context_menu;
 pub mod db;
 pub mod error;
+pub mod focus;
+pub mod global_search;
+pub mod hotkeys;
 mod magnetic;
 pub mod navigation;
 pub mod nlp;
+mod notes;
 pub mod notification_window;
 pub mod quick_capture;
 pub mod recurrence;
 pub mod scheduler;
 pub mod shelf;
+pub mod task_analytics;
 mod window_shape;
 mod window_cursor;
 mod winproc;
@@ -31,7 +37,7 @@ use crate::error::AppError;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 use agents::{AgentAdapter, AgentHub, AgentState};
 use db::Db;
@@ -208,7 +214,11 @@ fn restore_window(app: &AppHandle, db: &Db) {
         return;
     };
     // 显示模式尺寸（先同步最小尺寸，避免常驻 minWidth 钳制极简模式）
-    let settings = db::Settings::load(db).unwrap_or_default();
+    // 设置读取失败时窗口仍要恢复，但不能静默：记录诊断，尺寸回退默认
+    let settings = db::Settings::load(db).unwrap_or_else(|e| {
+        tracing::warn!("恢复窗口时读取设置失败，使用默认值: {}", e);
+        Default::default()
+    });
     commands::system::set_mode_window_size(&win, settings.mode.as_str());
 
     // 记忆位置（越界则用默认位置）
@@ -339,23 +349,9 @@ pub fn run() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    let hotkey_on = app
-                        .try_state::<Arc<Db>>()
-                        .map(|db| {
-                            db::Settings::load(&db)
-                                .map(|s| s.hotkey_enabled)
-                                .unwrap_or(true)
-                        })
-                        .unwrap_or(true);
-                    if !hotkey_on {
-                        return;
-                    }
-                    if shortcut.matches(Modifiers::CONTROL | Modifiers::ALT, Code::KeyT) {
-                        toggle_main(app);
-                    } else if shortcut.matches(Modifiers::CONTROL | Modifiers::SHIFT, Code::Space) {
-                        // 全局快速捕获：常驻 capture 窗口 toggle（不再展开主窗口）
-                        quick_capture::toggle(app);
-                    }
+                    // 统一由快捷键管理器匹配「实际注册成功」的动作；
+                    // 未匹配（旧配置/已禁用/注册失败）时静默返回，不吞按键。
+                    crate::hotkeys::handle_shortcut(app, shortcut);
                 })
                 .build(),
         )
@@ -423,7 +419,10 @@ pub fn run() {
             //（绝不自动重放有副作用的步骤）。
             commands::workflows::recover_on_startup(&db);
             handle.manage(db.clone());
-            let settings = db::Settings::load(&db).unwrap_or_default();
+            let settings = db::Settings::load(&db).unwrap_or_else(|e| {
+                tracing::warn!("启动时读取设置失败，使用默认值（剪贴板等模块将按默认关闭）: {}", e);
+                Default::default()
+            });
 
             // 智能剪贴板：模块关闭时不启动监听/维护；监听失败只降级为「不自动记录」。
             // 配置不可靠时保持监听线程运行但停止采集（fail-closed），
@@ -600,21 +599,9 @@ pub fn run() {
                 let _ = handle.autolaunch().enable();
             }
 
-            // 全局热键（注册失败仅告警降级，不 panic：Ctrl+Shift+Space 可能被其他实例占用）
-            if settings.hotkey_enabled {
-                use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let gs = handle.global_shortcut();
-                for accel in ["Ctrl+Alt+T", "Ctrl+Shift+Space"] {
-                    match accel.parse::<Shortcut>() {
-                        Ok(shortcut) => {
-                            if let Err(e) = gs.register(shortcut) {
-                                tracing::warn!("全局快捷键 {} 注册失败: {}", accel, e);
-                            }
-                        }
-                        Err(_) => tracing::warn!("全局快捷键 {} 解析失败", accel),
-                    }
-                }
-            }
+            // 自定义快捷键：加载配置 → 合并动作 → 注册系统级组合 → 记录真实状态。
+            // 旧版 `hotkey_enabled` 只作为「系统级默认启用」的种子；注册失败会写入状态并在 UI 展示。
+            crate::hotkeys::init(&handle, settings.hotkey_enabled);
 
             // 托盘
             setup_tray(app).expect("托盘初始化失败");
@@ -677,6 +664,12 @@ pub fn run() {
             // 提醒调度引擎
             scheduler::start_scheduler(handle.clone(), db.clone(), hub.clone());
 
+            // 专注会话恢复：上次退出时仍在运行的会话转为「已暂停（应用重启）」，
+            // 不补记退出区间。必须在调度器启动后、窗口交互前完成。
+            if let Err(e) = focus::restore_on_startup(&db) {
+                tracing::warn!("专注会话恢复失败: {}", e);
+            }
+
             // 事件保留/归档：后台任务，启动路径不扫表（首跑延迟 20 秒）
             agents::retention::start_background(handle.clone(), db.clone());
 
@@ -715,8 +708,37 @@ pub fn run() {
             commands::tasks::unlink_task_agent,
             commands::tasks::list_task_links,
             commands::tasks::pending_items_to_tasks,
+            // 任务统计（tasks.stats-trends）：只读聚合，打开统计子视图时按需调用
+            commands::task_analytics::task_analytics,
+            // 专注与休息（core.focus-timer）：Rust 侧权威状态机 + 既有 1 秒调度推进
+            commands::focus::focus_snapshot,
+            commands::focus::focus_history,
+            commands::focus::focus_start,
+            commands::focus::focus_start_break,
+            commands::focus::focus_pause,
+            commands::focus::focus_resume,
+            commands::focus::focus_finish,
+            commands::focus::focus_cancel,
+            commands::focus::focus_extend_break,
+            commands::focus::focus_skip_break,
+            commands::focus::focus_update_prefs,
+            commands::focus::focus_snooze_sedentary,
+            // 快速笔记（core.quick-notes）
+            commands::notes::notes_list,
+            commands::notes::notes_get,
+            commands::notes::notes_create,
+            commands::notes::notes_update,
+            commands::notes::notes_delete,
+            commands::notes::notes_set_flags,
+            commands::notes::notes_set_task,
+            commands::notes::notes_set_workspace,
+            commands::notes::notes_templates,
+            commands::notes::notes_search,
+            commands::notes::notes_convert_capture,
             // Agent
             commands::agents::agent_snapshot,
+            // Agent 工作时间统计（只读聚合）
+            commands::agent_stats::agent_work_time_stats,
             commands::audit::audit_test_data,
             commands::agents::set_source_enabled,
             commands::agents::create_source,
@@ -758,6 +780,10 @@ pub fn run() {
             commands::data::list_backups,
             commands::data::auto_backup_if_needed,
             // 系统
+            // 自定义快捷键（ux.custom-hotkeys）
+            commands::hotkeys::hotkeys_snapshot,
+            commands::hotkeys::hotkeys_change,
+            commands::hotkeys::hotkeys_reset,
             commands::system::quit_app,
             commands::system::set_autostart,
             commands::system::apply_mode,
@@ -789,9 +815,11 @@ pub fn run() {
             notification_window::notification_ui_ready,
             // 统一导航（v0.4）
             commands::navigation::nav_scan_apps,
+            commands::navigation::nav_app_icon,
             commands::navigation::nav_list_windows,
             commands::navigation::nav_list_target_windows,
             commands::navigation::nav_list_targets,
+            commands::navigation::nav_target_running_states,
             commands::navigation::nav_save_target,
             commands::navigation::nav_update_target,
             commands::navigation::nav_delete_target,
@@ -964,6 +992,8 @@ pub fn run() {
             commands::workflows::workflow_last_run,
             commands::workflows::workflow_last_run_summary,
             commands::workflows::workflow_list_runs,
+            // 全局搜索（v0.9，统一只读检索层）
+            commands::global_search::global_search,
         ])
         .build(context)
         .expect("启动 Task Dock 失败")
@@ -1271,7 +1301,10 @@ pub fn agentctl(args: &[String]) -> i32 {
                     return 2;
                 }
             };
-            let settings = db::Settings::load(&db).unwrap_or_default();
+            let settings = db::Settings::load(&db).unwrap_or_else(|e| {
+                tracing::warn!("agentctl 读取设置失败，使用默认端口: {}", e);
+                Default::default()
+            });
             let body = serde_json::json!({
                 "source_id": source,
                 "session_id": format!("agentctl-{}", uuid::Uuid::new_v4()),

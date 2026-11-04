@@ -955,6 +955,110 @@ CREATE TABLE workflow_run_steps (
 CREATE INDEX idx_workflow_run_steps_run ON workflow_run_steps(run_id, display_order);
 "#,
     ),
+    (
+        24,
+        r#"
+-- v24（Task Dock 0.9）：任务统计（tasks.stats-trends）完成事件表。
+-- 只新增表与索引，不改既有表结构；旧数据库升级后表为空，由下方回填补齐可还原的事实。
+-- 回填边界：只回填 tasks 中仍然存在的真实 completed_at（普通任务）；重复任务的历史完成期次
+--           在升级前没有持久化，无法还原，禁止伪造。
+
+CREATE TABLE task_completion_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  -- 真实完成时间（UTC ISO8601），与 tasks.completed_at 同源
+  completed_at TEXT NOT NULL,
+  -- 完成时该期任务的截止时间快照（可为空：无截止任务）
+  due_at TEXT,
+  -- 完成时的分类 / 优先级快照，避免任务后续改名导致历史分布漂移
+  category TEXT NOT NULL DEFAULT '',
+  priority INTEGER NOT NULL DEFAULT 2,
+  -- user = 用户实际勾选完成（含重复任务每一期）；backfill = 升级时按既有 completed_at 回填
+  origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user','backfill')),
+  -- once = 普通任务；recurring = 重复任务的某一期
+  kind TEXT NOT NULL DEFAULT 'once' CHECK (kind IN ('once','recurring')),
+  created_at TEXT NOT NULL
+);
+
+-- 统计按完成时间范围查询；按到期时间反查历史期次；按任务反查用于撤销完成
+CREATE INDEX idx_task_completion_at ON task_completion_events(completed_at);
+CREATE INDEX idx_task_completion_due ON task_completion_events(due_at);
+CREATE INDEX idx_task_completion_task ON task_completion_events(task_id, completed_at);
+
+-- 为「本期到期任务」查询补充 due_at 索引（既有 idx_tasks_status_due 以 status 开头，
+-- 单独按 due_at 范围过滤无法高效利用；只新增索引，不改表）。
+CREATE INDEX idx_tasks_due_at ON tasks(due_at);
+
+-- 回填：仅使用真实存在的 completed_at，不推断历史。
+INSERT INTO task_completion_events
+  (id, task_id, completed_at, due_at, category, priority, origin, kind, created_at)
+SELECT
+  lower(hex(randomblob(16))),
+  id,
+  completed_at,
+  due_at,
+  category,
+  priority,
+  'backfill',
+  'once',
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM tasks
+WHERE status = 'completed' AND completed_at IS NOT NULL;
+"#,
+    ),
+    (
+        25,
+        // 快速笔记（core.quick-notes）：纯新增表与索引，无列变更。
+        // 旧数据库升级即建表；旧备份无 notes 段时恢复后为空表。
+        crate::notes::schema::NOTES_SCHEMA,
+    ),
+    (
+        26,
+        r#"
+-- v26：Agent 工作时间统计（只读聚合）所需索引；不新增表、不写回运行状态。
+-- 轮次范围查询：origin + started_at 范围（与既有 idx_runs_origin_updated 互补）
+CREATE INDEX IF NOT EXISTS idx_runs_origin_started
+  ON agent_runs(origin, started_at DESC);
+
+-- 无 run_id 轮次的事件按会话回放：source + session + 受理序号
+CREATE INDEX IF NOT EXISTS idx_events_source_session_seq
+  ON agent_events(source_id, session_external_id, ingest_seq DESC);
+"#,
+    ),
+    (
+        27,
+        // 专注与休息（core.focus-timer）：会话历史 + 按本地日期聚合。
+        // 无外键：任务被硬删除后仍保留 task_id 与 task_title 快照用于历史展示。
+        // 与 `focus::store::FOCUS_SCHEMA_SQL` 等价（该常量同时用于测试初始化）。
+        crate::focus::store::FOCUS_SCHEMA_SQL,
+    ),
+    (
+        28,
+        r#"
+-- v28（七项功能统一集成）：任务完成事件的期次幂等约束。
+-- 背景：重复任务的完成是「推进期次 + 写本期事件」两步，v24 只有表没有唯一约束，
+-- 并发或异常重试可能产生同一 (task_id, kind, due_at) 的多条事件，导致完成数虚高。
+-- 应用层已有 NOT EXISTS 守卫；此处补齐数据库级等价约束（防御迁移回填/备份恢复/
+-- 未来写入路径）。due_at 为 NULL 的任务不参与（SQLite 唯一索引不约束 NULL）。
+
+-- 先清理历史重复：同一任务同一期次只保留最早完成时间的一条（幂等、可重复执行）。
+DELETE FROM task_completion_events
+WHERE due_at IS NOT NULL AND id NOT IN (
+  SELECT id FROM (
+    SELECT id, ROW_NUMBER() OVER (
+      PARTITION BY task_id, kind, due_at
+      ORDER BY completed_at ASC, rowid ASC
+    ) AS rn
+    FROM task_completion_events
+    WHERE due_at IS NOT NULL
+  ) WHERE rn = 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_completion_occurrence
+  ON task_completion_events(task_id, kind, due_at)
+  WHERE due_at IS NOT NULL;
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1542,6 +1646,9 @@ pub struct Settings {
     pub clear_foreground: String,
     #[serde(default = "default_true")]
     pub snap_enabled: bool,
+    /// 边缘吸附展示形态：`capsule`（默认，老库缺键自动兼容）| `full`。
+    #[serde(default = "default_snap_display_mode")]
+    pub snap_display_mode: String,
     #[serde(default)]
     pub autostart: bool,
     #[serde(default = "default_true")]
@@ -1709,6 +1816,9 @@ fn default_visual_preset() -> String {
 }
 fn default_clear_foreground() -> String {
     "auto".into()
+}
+fn default_snap_display_mode() -> String {
+    "capsule".into()
 }
 fn default_true() -> bool {
     true
@@ -3103,6 +3213,9 @@ mod tests {
                      DROP INDEX IF EXISTS idx_events_origin_source_received_id;
                      DROP INDEX IF EXISTS idx_notifications_origin_created_id;
                      DROP INDEX IF EXISTS idx_notifications_origin_kind_created_id;
+                     -- v26（工作时间统计）新增索引：降级后不存在，需先撤销再删列
+                     DROP INDEX IF EXISTS idx_events_source_session_seq;
+                     DROP INDEX IF EXISTS idx_runs_origin_started;
                      ALTER TABLE agent_events DROP COLUMN ingest_seq;
                      ALTER TABLE agent_events DROP COLUMN origin;
                      ALTER TABLE agent_sources DROP COLUMN category;
@@ -3129,6 +3242,10 @@ mod tests {
                      DROP TABLE IF EXISTS workflow_runs;
                      DROP TABLE IF EXISTS workflow_steps;
                      DROP TABLE IF EXISTS workflows;
+                     -- v24/v25（任务统计、快速笔记）：降级后不存在的表与索引
+                     DROP TABLE IF EXISTS task_completion_events;
+                     DROP TABLE IF EXISTS notes;
+                     DROP INDEX IF EXISTS idx_tasks_due_at;
                      PRAGMA user_version = 4;",
                 )?;
                 Ok::<_, AppError>(())

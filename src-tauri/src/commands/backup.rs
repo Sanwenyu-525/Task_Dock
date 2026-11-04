@@ -91,6 +91,13 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "workflow_steps",
     "workflow_runs",
     "workflow_run_steps",
+    // 快速笔记：长期记录；与任务 / 工作现场为弱关联（ON DELETE SET NULL）。
+    "notes",
+    // 任务完成事件：派生的完成事实（FK → tasks ON DELETE CASCADE）。
+    "task_completion_events",
+    // 专注与休息：会话历史与日聚合（无外键依赖）。
+    "focus_sessions",
+    "focus_daily_stats",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -319,6 +326,31 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["workflow_runs"],
         true
     ),
+    // 任务完成事件（v0.9 统计）：派生的完成事实，恢复顺序晚于 tasks。
+    // 用通用行格式（extended=true）：旧备份没有该段时按「缺表即跳过」，
+    // 新备份必须显式声明该段，避免空表与缺表混淆。
+    rule!(
+        "task_completion_events",
+        "core",
+        "all",
+        35,
+        &["tasks"],
+        true
+    ),
+    // 快速笔记（v0.9）：用户长期内容，快速备份也全量保存；
+    // 与任务 / 工作现场为弱关联，恢复顺序晚于 tasks 与 workspace_snapshots。
+    rule!(
+        "notes",
+        "core",
+        "all",
+        340,
+        &["tasks", "workspace_snapshots"],
+        true
+    ),
+    // 专注与休息（v0.10）：会话历史与日聚合都是用户数据，快速备份也全量保存。
+    // 无外键：task_id 只作弱引用，任务删除后历史仍保留标题快照。
+    rule!("focus_sessions", "focus", "all", 350, &[], true),
+    rule!("focus_daily_stats", "focus", "all", 355, &[], true),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -576,7 +608,13 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "shelf_task_links"
         // 一键工作流：定义与步骤是用户配置，快速备份全量保存
         | "workflows"
-        | "workflow_steps" => format!("SELECT * FROM {} ORDER BY rowid", table),
+        | "workflow_steps"
+    // 快速笔记与任务完成事件：用户长期内容 / 派生完成事实，快速备份也不截断
+    | "notes"
+    | "task_completion_events"
+    // 专注与休息：会话历史与日聚合都是用户数据，快速备份也全量保存
+    | "focus_sessions"
+    | "focus_daily_stats" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(
             "SELECT * FROM workflow_runs WHERE id IN (SELECT id FROM workflow_runs ORDER BY started_at DESC, rowid DESC LIMIT {}) ORDER BY rowid",

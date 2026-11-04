@@ -62,13 +62,14 @@ pub struct TaskInput {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct TaskFilter {
-    pub view: Option<String>,   // today | tomorrow | week | all | overdue
+    // today | tomorrow | week | all | overdue | due_today | scheduled
+    pub view: Option<String>,
     pub status: Option<String>, // pending | completed | all
     pub category: Option<String>,
     pub tag: Option<String>,
     pub priority: Option<u8>,
     pub search: Option<String>,
-    pub sort: Option<String>, // due | priority | created
+    pub sort: Option<String>, // due | priority | created | completed
     /// 返回条数上限（可选）。None 行为与旧版完全一致（不限制）；
     /// Some(n) 收敛到 1..=200，在筛选与排序之后应用 SQL LIMIT。
     /// 供面板/收集箱分页或首屏拉取，避免一次拉全量任务。
@@ -307,6 +308,23 @@ fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
             params.push(Box::new(tomorrow_start.to_rfc3339()));
             idx += 1;
         }
+        // 胶囊「今日」：本地今天 0 点 ≤ due_at < 本地明天 0 点，只含真实到期项。
+        // 与 today（due_at 为空或早于明天）刻意不同：后者是完整页的「今日视图」，
+        // 包含逾期与无期限任务，不能混用。
+        Some("due_today") => {
+            sql += &format!(
+                " AND t.due_at IS NOT NULL AND t.due_at >= ?{} AND t.due_at < ?{}",
+                idx,
+                idx + 1
+            );
+            params.push(Box::new(today_start.to_rfc3339()));
+            params.push(Box::new(tomorrow_start.to_rfc3339()));
+            idx += 2;
+        }
+        // 胶囊「日程」：只要有截止时间就算（不扩展 remind_at，保持产品现有语义）。
+        Some("scheduled") => {
+            sql += " AND t.due_at IS NOT NULL";
+        }
         Some("tomorrow") => {
             sql += &format!(" AND t.due_at >= ?{} AND t.due_at < ?{}", idx, idx + 1);
             params.push(Box::new(tomorrow_start.to_rfc3339()));
@@ -368,6 +386,10 @@ fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
             " ORDER BY t.priority ASC, t.due_at IS NULL, t.due_at ASC, t.created_at DESC"
         }
         Some("created") => " ORDER BY t.created_at DESC",
+        // 已完成分段按完成时间倒序（NULL 殿后）；只新增分支，不改既有排序。
+        Some("completed") => {
+            " ORDER BY t.completed_at IS NULL, t.completed_at DESC, t.created_at DESC"
+        }
         _ => " ORDER BY t.due_at IS NULL, t.due_at ASC, t.priority ASC, t.created_at DESC",
     };
     sql += order;
@@ -593,43 +615,97 @@ pub fn update_task_inner(db: &Db, id: &str, input: TaskInput) -> AppResult<Task>
 
 #[tauri::command]
 pub fn toggle_task(db: State<'_, Arc<Db>>, id: String) -> AppResult<Task> {
-    let task = get_task(&db, &id)?;
+    toggle_task_inner(&db, &id)
+}
+
+/// 切换完成状态的核心逻辑（命令与测试共用）。
+///
+/// 完成 / 重新打开时同步维护完成事件表（`task_analytics`）：
+/// - 普通任务完成：状态、提醒、完成事件在同一事务，避免「完成了但没记上」；
+/// - 重复任务完成：期次推进（含提醒重建）与本期完成事件在同一事务内提交，
+///   任意一步失败整体回滚，不会出现「任务已进入下一期但历史完成事件丢失」；
+/// - 重新打开：删除同一完成时间的用户事件，避免重开后仍计入历史完成。
+pub(crate) fn toggle_task_inner(db: &Db, id: &str) -> AppResult<Task> {
+    let task = get_task(db, id)?;
     let now = now_iso();
     if task.status == "pending" {
         if task.recurrence.is_some() {
-            // 重复任务：完成即推进到下一次，任务本身保持 pending（循环任务）
-            crate::scheduler::advance_task_now(&db, &id)?;
-            return get_task(&db, &id);
+            // 重复任务：完成即推进到下一次，任务本身保持 pending（循环任务）。
+            //
+            // 期次身份 = 进入本函数时读到的 due_at。推进函数用 `WHERE due_at IS ?`
+            // 做 CAS：并发双击时只有一个请求能把期次推进，后到者得到 Conflict，
+            // 既不重复推进也不重复写事件。只有 AdvanceOutcome::Advanced 才记事件，
+            // 因此自动到期推进（调度器）不会被误记成用户完成。
+            let outcome = db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                let outcome = crate::scheduler::advance_recurrence_tx(
+                    &tx,
+                    id,
+                    task.due_at.as_deref(),
+                    &Utc::now(),
+                )?;
+                if let crate::scheduler::AdvanceOutcome::Advanced { from_due, .. } = &outcome {
+                    crate::task_analytics::record_completion(
+                        &tx,
+                        id,
+                        &now,
+                        from_due.as_deref(),
+                        &task.category,
+                        task.priority as i64,
+                        "recurring",
+                    )?;
+                }
+                tx.commit()?;
+                Ok::<_, AppError>(outcome)
+            })?;
+            tracing::debug!(task_id = %id, ?outcome, "重复任务完成处理完成");
+            return get_task(db, id);
         }
         db.with_conn(|conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
                 "UPDATE tasks SET status = 'completed', completed_at = ?1, updated_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, id],
             )?;
-            conn.execute(
+            tx.execute(
                 "UPDATE task_reminders SET fired = 1, fired_at = ?1 WHERE task_id = ?2 AND fired = 0",
                 rusqlite::params![now, id],
             )?;
+            crate::task_analytics::record_completion(
+                &tx,
+                id,
+                &now,
+                task.due_at.as_deref(),
+                &task.category,
+                task.priority as i64,
+                "once",
+            )?;
+            tx.commit()?;
             Ok::<_, AppError>(())
         })?;
     } else {
-        // 重新打开：状态回退与提醒重建在同一事务
+        // 重新打开：状态回退、撤销完成事件与提醒重建在同一事务
         db.with_conn(|conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
                 "UPDATE tasks SET status = 'pending', completed_at = NULL, updated_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, id],
             )?;
+            if let Some(completed_at) = task.completed_at.as_deref() {
+                crate::task_analytics::remove_completion(&tx, id, completed_at)?;
+            }
             rebuild_reminders_tx(
-                conn,
-                &id,
+                &tx,
+                id,
                 task.due_at.as_deref(),
                 task.remind_at.as_deref(),
                 task.advance_minutes,
             )?;
+            tx.commit()?;
             Ok::<_, AppError>(())
         })?;
     }
-    get_task(&db, &id)
+    get_task(db, id)
 }
 
 #[tauri::command]
@@ -2217,5 +2293,196 @@ mod tests {
         .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].title, "已完成任务");
+    }
+
+    /// 测试辅助：直接改状态与完成时间（生产写入走 toggle_task）。
+    fn set_status(db: &Db, id: &str, status: &str, completed_at: Option<&str>) {
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE tasks SET status = ?1, completed_at = ?2 WHERE id = ?3",
+                rusqlite::params![status, completed_at, id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// 胶囊「今日」契约（2026-11-04）：due_today 与完整页 today 不同，
+    /// 只取本地今天到期项；20 条逾期不得占满 LIMIT 把今天那条挤掉。
+    #[test]
+    fn due_today_view_filters_before_limit_and_excludes_overdue() {
+        let db = db();
+        let (today_start, tomorrow_start) = local_day_bounds();
+        for i in 0..20 {
+            let due = (today_start - Duration::hours(2) - Duration::minutes(i)).to_rfc3339();
+            create(&db, &format!("逾期任务{i}"), Some(due), None);
+        }
+        let today_due = (today_start + Duration::minutes(30)).to_rfc3339();
+        create(&db, "今天到期", Some(today_due.clone()), None);
+
+        let got = list_tasks_inner(
+            &db,
+            TaskFilter {
+                view: Some("due_today".into()),
+                status: Some("pending".into()),
+                sort: Some("due".into()),
+                limit: Some(12),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let start = today_start.to_rfc3339();
+        let end = tomorrow_start.to_rfc3339();
+        assert_eq!(got.len(), 1, "LIMIT 前已过滤逾期，只应剩今天到期项");
+        assert_eq!(got[0].title, "今天到期");
+        assert_eq!(got[0].due_at.as_deref(), Some(today_due.as_str()));
+        assert!(
+            got.iter().all(|t| {
+                let d = t.due_at.as_deref().unwrap();
+                d >= start.as_str() && d < end.as_str()
+            }),
+            "due_today 结果必须落在本地今天区间内"
+        );
+    }
+
+    /// 胶囊「日程」契约（2026-11-04）：只看 due_at 是否为空，
+    /// 大量无期限待办不能把有计划的任务挤出 LIMIT。
+    #[test]
+    fn scheduled_view_only_returns_tasks_with_due_at() {
+        let db = db();
+        for i in 0..20 {
+            create(&db, &format!("无期限{i}"), None, None);
+        }
+        let mut planned = Vec::new();
+        for i in 1..=3 {
+            let due = (Utc::now() + Duration::days(i)).to_rfc3339();
+            planned.push(due.clone());
+            create(&db, &format!("有计划{i}"), Some(due), None);
+        }
+
+        let got = list_tasks_inner(
+            &db,
+            TaskFilter {
+                view: Some("scheduled".into()),
+                status: Some("pending".into()),
+                sort: Some("due".into()),
+                limit: Some(12),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().all(|t| t.due_at.is_some()));
+        assert!(got.iter().all(|t| t.title.starts_with("有计划")));
+        for due in planned {
+            assert!(
+                got.iter()
+                    .any(|t| t.due_at.as_deref() == Some(due.as_str())),
+                "缺少有计划任务: {due}"
+            );
+        }
+    }
+
+    /// 胶囊「已完成」契约（2026-11-04）：大量待办不能把已完成挤出 LIMIT，
+    /// 且 completed 排序按完成时间倒序。
+    #[test]
+    fn completed_status_is_not_starved_by_many_pending_tasks() {
+        let db = db();
+        for i in 0..20 {
+            let due = (Utc::now() - Duration::hours(1) - Duration::minutes(i)).to_rfc3339();
+            create(&db, &format!("待办{i}"), Some(due), None);
+        }
+        let older = create(&db, "已完成甲", None, None);
+        let newer = create(&db, "已完成乙", None, None);
+        set_status(&db, &older.id, "completed", Some("2026-11-01T10:00:00+00:00"));
+        set_status(&db, &newer.id, "completed", Some("2026-11-02T10:00:00+00:00"));
+
+        let got = list_tasks_inner(
+            &db,
+            TaskFilter {
+                status: Some("completed".into()),
+                sort: Some("completed".into()),
+                limit: Some(12),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|t| t.status == "completed"));
+        assert_eq!(got[0].title, "已完成乙", "按 completed_at 倒序");
+        assert_eq!(got[1].title, "已完成甲");
+    }
+
+    /// 过滤 → 排序 → LIMIT 的顺序（2026-11-04）：LIMIT 截断前必须已完成
+    /// status 过滤；否则 pending 会占满名额。排序也在 LIMIT 前生效。
+    #[test]
+    fn filter_and_sort_run_before_limit_truncation() {
+        let db = db();
+        for i in 0..20 {
+            let due = (Utc::now() + Duration::minutes(i)).to_rfc3339();
+            create(&db, &format!("待办{i}"), Some(due), None);
+        }
+        let early = create(&db, "已完成早", None, None);
+        let late = create(&db, "已完成晚", None, None);
+        set_status(&db, &early.id, "completed", Some("2026-11-01T10:00:00+00:00"));
+        set_status(&db, &late.id, "completed", Some("2026-11-02T10:00:00+00:00"));
+
+        let got = list_tasks_inner(
+            &db,
+            TaskFilter {
+                status: Some("completed".into()),
+                sort: Some("completed".into()),
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(got.len(), 1, "LIMIT 只作用在已过滤的结果上");
+        assert_eq!(got[0].title, "已完成晚", "排序在 LIMIT 前生效");
+    }
+
+    /// 既有 view=today 语义保持不变：含无期限与已逾期，只排除明天及以后。
+    #[test]
+    fn existing_today_view_semantics_unchanged() {
+        let db = db();
+        let (today_start, tomorrow_start) = local_day_bounds();
+        create(
+            &db,
+            "今天",
+            Some((today_start + Duration::hours(1)).to_rfc3339()),
+            None,
+        );
+        create(&db, "无期限", None, None);
+        create(
+            &db,
+            "逾期",
+            Some((today_start - Duration::hours(2)).to_rfc3339()),
+            None,
+        );
+        create(
+            &db,
+            "明天",
+            Some((tomorrow_start + Duration::hours(1)).to_rfc3339()),
+            None,
+        );
+
+        let got = list_tasks_inner(
+            &db,
+            TaskFilter {
+                view: Some("today".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let titles: Vec<&str> = got.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(got.len(), 3);
+        for want in ["今天", "无期限", "逾期"] {
+            assert!(titles.contains(&want), "today 视图缺少 {want}");
+        }
+        assert!(!titles.contains(&"明天"));
     }
 }

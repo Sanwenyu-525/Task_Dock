@@ -38,6 +38,9 @@ pub fn start_scheduler(app: AppHandle, db: Arc<Db>, hub: Arc<AgentHub>) {
             hub.flush_notification_digest();
             // 稍后提醒：到期的通知卡片重新送自定义通知窗口（无独立定时器）
             crate::notification_window::poll_snoozed(&app);
+            // 专注/休息/久坐推进（内存单调时钟；每 30 秒才落库一次）。
+            // 复用本循环，不新建第二套常驻 1 秒调度器。
+            crate::focus::tick(&app, &db, &hub);
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
@@ -218,9 +221,11 @@ pub fn fire_reminder_core(
                 now.to_rfc3339(),
             ],
         )? > 0;
-        // 4) 重复任务推进：仅「截止」类提醒推进，且保留原任务状态
+        // 4) 重复任务推进：仅「截止」类提醒推进，且保留原任务状态。
+        //    自动到期推进不是用户完成，因此不写 task_completion_events；
+        //    期次被并发推进（Conflict）时本 tick 不修改任何数据。
         if rem.kind == "due" && item.task_has_recurrence {
-            advance_recurrence_tx(&tx, &rem.task_id, item.task_due_at.as_deref(), now)?;
+            let _ = advance_recurrence_tx(&tx, &rem.task_id, item.task_due_at.as_deref(), now)?;
         }
         tx.commit()?;
         // 通知历史无论是否静音都入库（不因限流/静音丢失）；弹窗权限单独判定。
@@ -233,13 +238,37 @@ pub fn fire_reminder_core(
     })
 }
 
+/// 重复任务推进结果。
+///
+/// 调用方必须区分「真的消耗掉一期」与「规则结束 / 无规则 / 期次已被并发推进」：
+/// 只有 `Advanced` 才能记为一次用户完成事件，否则会把自动到期推进或并发请求
+/// 误记成用户完成。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AdvanceOutcome {
+    /// 已把期次从 `from_due` 推进到 `to_due`（`from_due` 是本次被消耗的期次）。
+    Advanced {
+        from_due: Option<String>,
+        to_due: String,
+    },
+    /// 任务没有重复规则（被并发解除关联等）。
+    NoRule,
+    /// 规则已结束（`until` 已过）或无法算出下一期。
+    Exhausted,
+    /// 期次已被其他请求推进：本次不做任何修改。
+    Conflict,
+}
+
 /// 重复任务推进到下一次发生（跨过当前时刻，补偿休眠/停机期间错过的期次）。
-fn advance_recurrence_tx(
+///
+/// `current_due` 同时作为**期次身份**：末尾的 `UPDATE ... WHERE due_at IS ?` 是
+/// 乐观并发控制，只有仍持有该期次的调用方能推进；并发完成同一期时后到者得到
+/// `Conflict`，不会把同一周期推进两次，也不会写第二条完成事件。
+pub(crate) fn advance_recurrence_tx(
     conn: &Connection,
     task_id: &str,
     current_due: Option<&str>,
     now: &DateTime<Utc>,
-) -> AppResult<()> {
+) -> AppResult<AdvanceOutcome> {
     let rule = conn
         .query_row(
             "SELECT rr.id, rr.freq, rr.interval, rr.by_weekday, rr.by_monthday, rr.by_setpos, rr.until, rr.anchor, t.advance_minutes
@@ -273,7 +302,7 @@ fn advance_recurrence_tx(
         advance_minutes,
     )) = rule
     else {
-        return Ok(());
+        return Ok(AdvanceOutcome::NoRule);
     };
     let by_weekday: Vec<u32> = serde_json::from_str(&by_weekday_json).unwrap_or_default();
     let mut base_due = current_due.and_then(parse_utc).unwrap_or(*now);
@@ -297,14 +326,14 @@ fn advance_recurrence_tx(
             base_local,
         );
         let Some(next_local) = next else {
-            return Ok(());
+            return Ok(AdvanceOutcome::Exhausted);
         };
         let candidate: DateTime<Utc> = next_local.with_timezone(&Utc);
         if let Some(until) = &until {
             if let Some(u) = parse_utc(until) {
                 if candidate > u {
                     // 超过结束日期：不再推进
-                    return Ok(());
+                    return Ok(AdvanceOutcome::Exhausted);
                 }
             }
         }
@@ -315,7 +344,7 @@ fn advance_recurrence_tx(
         }
     }
     let Some(next_utc) = next_utc else {
-        return Ok(());
+        return Ok(AdvanceOutcome::Exhausted);
     };
 
     let next_iso = next_utc.to_rfc3339();
@@ -324,6 +353,18 @@ fn advance_recurrence_tx(
     } else {
         next_iso.clone()
     };
+
+    // 期次身份 CAS：只有 due_at 仍是本次读到的期次时才推进。放在最前面，
+    // 冲突时不触碰提醒，避免并发请求把同一批提醒反复删改。
+    let changed = conn.execute(
+        "UPDATE tasks SET due_at = ?1, remind_at = ?2, updated_at = ?3
+         WHERE id = ?4 AND due_at IS ?5",
+        rusqlite::params![next_iso, remind_iso, now_iso(), task_id, current_due],
+    )?;
+    if changed == 0 {
+        tracing::debug!("重复任务 {} 的期次已被并发推进，本次跳过", task_id);
+        return Ok(AdvanceOutcome::Conflict);
+    }
 
     // 清理该任务未触发的旧提醒，写入新一轮（与任务 due 更新同事务）
     conn.execute(
@@ -342,27 +383,26 @@ fn advance_recurrence_tx(
             rusqlite::params![uuid::Uuid::new_v4().to_string(), task_id, remind_iso, remind_iso],
         )?;
     }
-    conn.execute(
-        "UPDATE tasks SET due_at = ?1, remind_at = ?2, updated_at = ?3 WHERE id = ?4",
-        rusqlite::params![next_iso, remind_iso, now_iso(), task_id],
-    )?;
     let _ = rule_id;
     tracing::info!("重复任务 {} 已推进至 {}", task_id, next_iso);
-    Ok(())
+    Ok(AdvanceOutcome::Advanced {
+        from_due: current_due.map(str::to_string),
+        to_due: next_iso,
+    })
 }
 
 /// 供「完成重复任务」命令调用：立即推进一次。
 pub fn advance_task_now(db: &Db, task_id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
-        let due: Option<String> = conn
+        let tx = conn.unchecked_transaction()?;
+        let due: Option<String> = tx
             .query_row(
                 "SELECT due_at FROM tasks WHERE id = ?1",
                 rusqlite::params![task_id],
                 |r| r.get(0),
             )
             .optional()?;
-        let tx = conn.unchecked_transaction()?;
-        advance_recurrence_tx(&tx, task_id, due.as_deref(), &Utc::now())?;
+        let _ = advance_recurrence_tx(&tx, task_id, due.as_deref(), &Utc::now())?;
         tx.commit()?;
         Ok::<_, AppError>(())
     })
@@ -461,7 +501,7 @@ mod tests {
 
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            advance_recurrence_tx(
+            let _ = advance_recurrence_tx(
                 &tx,
                 &task_id,
                 Some(&due_at.with_timezone(&Utc).to_rfc3339()),
@@ -813,7 +853,7 @@ mod tests {
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
             let due: Option<String> = Some(stale.with_timezone(&Utc).to_rfc3339());
-            advance_recurrence_tx(&tx, &task_id, due.as_deref(), &Utc::now())?;
+            let _ = advance_recurrence_tx(&tx, &task_id, due.as_deref(), &Utc::now())?;
             tx.commit()?;
             Ok::<_, AppError>(())
         })
@@ -934,7 +974,7 @@ mod tests {
     fn advance(db: &Db, task_id: &str, due_local: chrono::DateTime<chrono::Local>) {
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            advance_recurrence_tx(
+            let _ = advance_recurrence_tx(
                 &tx,
                 task_id,
                 Some(&due_local.with_timezone(&Utc).to_rfc3339()),

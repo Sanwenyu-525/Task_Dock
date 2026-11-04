@@ -19,7 +19,7 @@ use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
 /// 支持的搜索分类（前端分类筛选与后端一一对应）。
-pub const CATEGORIES: [&str; 8] = [
+pub const CATEGORIES: [&str; 9] = [
     "tasks",
     "clipboard",
     "capture",
@@ -28,6 +28,7 @@ pub const CATEGORIES: [&str; 8] = [
     "agents",
     "workspace",
     "planning",
+    "notes",
 ];
 
 /// 每类默认返回条数（任务书性能要求）。
@@ -745,6 +746,44 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
     Ok(out)
 }
 
+/// 快速笔记：复用 notes 模块已公开的稳定查询接口（LIKE 转义在 notes 内部完成，
+/// 这里不重复拼 pattern）。笔记是用户长期记录，分类与收集箱（临时）严格区分。
+fn search_notes(conn: &Connection, q: &str, limit: i64) -> AppResult<Vec<Candidate>> {
+    let mut out = Vec::new();
+    for note in crate::notes::store::search_in_conn(conn, q, limit)? {
+        let raw_title = note.title.trim();
+        let title = if raw_title.is_empty() {
+            "无标题笔记".to_string()
+        } else {
+            raw_title.to_string()
+        };
+        let mut subtitle = "笔记".to_string();
+        if note.favorite {
+            subtitle.push_str(" · 收藏");
+        } else if note.pinned {
+            subtitle.push_str(" · 置顶");
+        }
+        let rank = rank_match(q, &title, &note.excerpt);
+        out.push((
+            rank,
+            GlobalSearchResult {
+                id: note.id.clone(),
+                category: "notes".into(),
+                kind: "note".into(),
+                title: truncate(&title, TITLE_MAX_CHARS),
+                subtitle,
+                snippet: truncate(note.excerpt.trim(), SNIPPET_MAX_CHARS),
+                occurred_at: Some(note.updated_at),
+                status: None,
+                priority: None,
+                target_id: Some(note.id),
+                parent_id: None,
+            },
+        ));
+    }
+    Ok(out)
+}
+
 // ── 入口 ────────────────────────────────────────────────────
 
 /// 执行统一搜索。`categories` 为空/None 表示全部分类；非法分类名返回 Validation 错误。
@@ -804,6 +843,9 @@ pub fn run_search(
         }
         if want("planning") {
             push("planning", search_planning(conn, &query, &pat, sql_limit))?;
+        }
+        if want("notes") {
+            push("notes", search_notes(conn, &query, sql_limit))?;
         }
         Ok(())
     })?;
@@ -1098,8 +1140,34 @@ mod tests {
     fn invalid_category_is_rejected() {
         let (_dir, db) = temp_db("cat");
         seed_all(&db);
-        let err = run_search(&db, "登录", &["notes".into()], 0).unwrap_err();
+        // 注意："notes" 自 v0.10 起是合法分类，这里用真正未知的分类名。
+        let err = run_search(&db, "登录", &["unknown_category".into()], 0).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn notes_are_searchable_and_located() {
+        let (_dir, db) = temp_db("notes");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO notes (id, title, content, pinned, favorite, revision, created_at, updated_at)
+                 VALUES ('n1','登录设计备忘','登录页要支持扫码与验证码',1,0,1,'2026-11-01T10:00:00Z','2026-11-01T10:00:00Z')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let rs = run_search(&db, "登录", &["notes".into()], 5).unwrap();
+        assert_eq!(rs.groups.len(), 1);
+        let group = &rs.groups[0];
+        assert_eq!(group.category, "notes");
+        let item = &group.items[0];
+        assert_eq!(item.kind, "note");
+        assert_eq!(item.target_id.as_deref(), Some("n1"));
+        assert_eq!(item.title, "登录设计备忘");
+        assert!(item.subtitle.contains("笔记"));
+        assert!(item.snippet.contains("扫码"));
     }
 
     #[test]

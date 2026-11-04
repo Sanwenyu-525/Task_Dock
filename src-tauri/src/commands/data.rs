@@ -1975,12 +1975,16 @@ fn import_data_inner(
             outcome.assets,
             outcome.archives
         );
+        // 用户表已被整体替换：丢弃专注模块的进程内缓存（偏好/轮次/活跃会话），
+        // 否则旧值会写回新库，界面也可能显示新库中已不存在的会话。
+        crate::focus::reset_runtime();
         return Ok(outcome);
     }
     let raw = std::fs::read_to_string(source)?;
     let data: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|e| AppError::Validation(format!("导出文件不是合法 JSON: {}", e)))?;
     let outcome = crate::commands::restore::restore_legacy_json(&data_dir, db, source, &data)?;
+    crate::focus::reset_runtime();
     tracing::info!("数据导入完成: {}（{}）", path, outcome.message);
     Ok(outcome)
 }
