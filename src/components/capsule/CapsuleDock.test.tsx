@@ -61,6 +61,10 @@ vi.mock("../../lib/navigation", () => ({
   avatarHue: () => 250,
 }));
 
+// 专注徽标需要 Tauri IPC（focus_snapshot / 事件监听）；本文件只验证胶囊外壳与轨道，
+// 徽标行为由 FocusCapsuleBadge.test.tsx 独立覆盖，这里隔离掉避免真实 IPC。
+vi.mock("../focus/FocusCapsuleBadge", () => ({ default: () => null }));
+
 import CapsuleDock from "./CapsuleDock";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useCapsuleStore } from "../../store/useCapsuleStore";

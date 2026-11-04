@@ -17,6 +17,7 @@ import AgentsLite from "./AgentsLite";
 import ClipboardLite from "./ClipboardLite";
 import InboxLite from "./InboxLite";
 import AppsLite from "./AppsLite";
+import FocusCapsuleBadge from "../focus/FocusCapsuleBadge";
 import { railStatus, railAriaLabel } from "../../lib/capsuleModel";
 import type { CapsuleCategory } from "../../lib/capsuleModel";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
@@ -134,6 +135,8 @@ export default function CapsuleDock() {
           className={`capsule-panel panel-${edge}`}
           aria-label={`${CATEGORY_LABELS[activeCategory]}面板`}
         >
+          {/* 专注状态徽标：无活动会话时返回 null，不占位、不新增轮询 */}
+          <FocusCapsuleBadge className="capsule-focus-slot" />
           <Panel />
         </section>
       )}
