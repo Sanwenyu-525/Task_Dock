@@ -1,6 +1,6 @@
 //! 与 Tauri 后端的类型化桥接层。
 
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand as invoke } from "./errors";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface RecurrenceRule {
@@ -234,6 +234,11 @@ export interface Settings {
   /** 清透模式前景配色：auto 跟随明暗主题 | dark 深色文字 | light 浅色文字。 */
   clear_foreground: "auto" | "dark" | "light";
   snap_enabled: boolean;
+  /**
+   * 边缘吸附展示形态：capsule 胶囊隐藏（默认，老用户兼容）| full 完整面板。
+   * 完整面板停靠不强制置顶；仅影响停靠后的展示，不改变窗口生命周期。
+   */
+  snap_display_mode: "capsule" | "full";
   autostart: boolean;
   hotkey_enabled: boolean;
   http_enabled: boolean;
@@ -1517,6 +1522,9 @@ export const onModeChanged = (cb: (mode: string) => void): Promise<UnlistenFn> =
   listen<string>("mode-changed", (e) => cb(e.payload));
 export const onThemeChanged = (cb: (theme: string) => void): Promise<UnlistenFn> =>
   listen<string>("theme-changed", (e) => cb(e.payload));
+/** 右键菜单切换「边缘吸附方式」后广播：capsule | full（主窗口据此原地切换形态）。 */
+export const onSnapFormChanged = (cb: (form: string) => void): Promise<UnlistenFn> =>
+  listen<string>("snap-form-changed", (e) => cb(e.payload));
 export const onFocusQuickAdd = (cb: () => void): Promise<UnlistenFn> =>
   listen("focus-quick-add", () => cb());
 export const onAppReady = (cb: () => void): Promise<UnlistenFn> =>

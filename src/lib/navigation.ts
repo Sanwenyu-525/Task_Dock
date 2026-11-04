@@ -3,7 +3,7 @@
 //! 语义对齐后端：前端只传目标 ID 与行为偏好，不透传可执行路径/参数；
 //! 所有结果如实携带 verification_level / fallback_used，UI 不得夸大成功。
 
-import { invoke } from "@tauri-apps/api/core";
+import { invokeCommand as invoke } from "./errors";
 
 export type NavigationTargetType =
   | "application"
@@ -114,6 +114,8 @@ export interface AppScanResult {
   scanned_at: string;
   duration_ms: number;
   counts: Record<string, number>;
+  /** 来源级诊断：startmenu_truncated / uwp_scan_failed 等（区分「没有匹配」与「发现不完整」） */
+  diagnostics?: Record<string, number>;
 }
 
 export interface WindowInfo {
@@ -169,12 +171,24 @@ export interface NavigateOptions {
 // ── 扫描与目标 ──
 export const navScanApps = (force = false) =>
   invoke<AppScanResult>("nav_scan_apps", { force });
+/**
+ * 真实应用图标（PNG data URL；无图标返回 null）。
+ * 只传「已保存目标 id」或「扫描发现的 app_key」，后端不接受任意路径。
+ */
+export const navAppIcon = (identity: { targetId?: string; appKey?: string }) =>
+  invoke<string | null>("nav_app_icon", {
+    targetId: identity.targetId ?? null,
+    appKey: identity.appKey ?? null,
+  });
 export const navListWindows = () => invoke<WindowInfo[]>("nav_list_windows");
 /** 某应用目标的候选窗口（后端按进程身份过滤，含微信/QQ 等多进程宿主的子窗口） */
 export const navListTargetWindows = (targetId: string) =>
   invoke<WindowInfo[]>("nav_list_target_windows", { targetId });
 export const navListTargets = (includeHidden = false) =>
   invoke<NavTarget[]>("nav_list_targets", { includeHidden });
+/** 已保存应用目标的实时运行状态（按需查询一次，不做轮询；非 application 目标不返回）。 */
+export const navTargetRunningStates = (ids: string[]) =>
+  invoke<Record<string, string>>("nav_target_running_states", { ids });
 export const navSaveTarget = (input: TargetInput) =>
   invoke<NavTarget>("nav_save_target", { input });
 export const navUpdateTarget = (id: string, patch: TargetPatch) =>

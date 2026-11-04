@@ -34,6 +34,11 @@ function ToastItem({ toast }: { toast: ToastData }) {
   }, [paused, toast, dismiss]);
 
   const Icon = KIND_ICON[toast.kind] ?? Info;
+  // 悬停给出完整诊断：错误码 + 技术细节，正文保持简洁安全
+  const tip =
+    toast.kind === "error" || toast.kind === "warning"
+      ? [toast.code, toast.message, toast.detail].filter(Boolean).join(" · ")
+      : undefined;
 
   return (
     <div
@@ -48,7 +53,7 @@ function ToastItem({ toast }: { toast: ToastData }) {
     >
       <Icon size={13} className="toast-icon" aria-hidden="true" />
       {/* 单行省略避免撑破布局；错误文案可能很长，hover 时用 data-tip 给出完整内容以便诊断 */}
-      <span className="toast-message" data-tip={toast.kind === "error" ? toast.message : undefined}>
+      <span className="toast-message" data-tip={tip}>
         {toast.message}
       </span>
       {toast.action && (
@@ -56,7 +61,12 @@ function ToastItem({ toast }: { toast: ToastData }) {
           type="button"
           className="toast-action"
           onClick={() => {
-            toast.action?.run();
+            // 操作本身失败不能把异常抛进事件处理链（会触发未处理异常兜底）
+            try {
+              toast.action?.run();
+            } catch {
+              // 具体失败由 action 内部统一上报
+            }
             dismiss(toast.id);
           }}
         >

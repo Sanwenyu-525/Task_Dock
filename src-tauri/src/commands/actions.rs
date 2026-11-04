@@ -33,7 +33,8 @@ pub fn actions_open_session(
     session_id: String,
 ) -> AppResult<NavigationResult> {
     crate::agents::validate_session_id(&session_id)?;
-    let settings = crate::db::Settings::load(&db).unwrap_or_default();
+    // 设置读取失败不能静默用默认值导航：可能打开错误的编辑器/会话，直接向上返回可诊断错误
+    let settings = crate::db::Settings::load(&db)?;
     let r = crate::navigation::agent_navigation::resume_session(
         &db,
         &source_id,
