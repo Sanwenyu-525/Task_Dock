@@ -126,9 +126,11 @@ task_dock/
 
 | 命令 | 用途 |
 |---|---|
-| `nav_scan_apps(force?)` | 软件扫描（开始菜单/注册表/UWP/常用路径；后端 5 分钟缓存） |
+| `nav_scan_apps(force?)` | 软件扫描（开始菜单/卸载注册表/App Paths/UWP/常用路径；返回 `diagnostics` 标记截断或来源失败；后端 5 分钟缓存） |
+| `nav_app_icon(target_id?, app_key?)` | 按需提取真实 Windows 图标（`data:image/png;base64`；只接受已保存目标 id 或扫描登记过的 app_key） |
 | `nav_list_windows()` | 当前可交互顶层窗口（窗口选择器） |
 | `nav_list_targets` / `nav_save_target` / `nav_update_target` / `nav_delete_target` | 目标 CRUD（保存时全量安全校验 + app_key 幂等去重） |
+| `nav_target_running_states(ids)` | 已保存应用目标的实时运行态（`has_window/process_only/not_running/unavailable`；按需查询，不轮询） |
 | `nav_link_task` / `nav_unlink_task` / `nav_update_task_link` / `nav_task_targets` / `nav_all_task_links` | 任务关联管理 |
 | `nav_navigate(target_id, options?)` | **统一跳转入口**（前端只传目标 ID；结果含 verification_level / fallback_used） |
 | `nav_agent_capabilities(source_id)` | Agent 跳转能力（证据化，动态探测） |
@@ -183,6 +185,43 @@ task_dock/
 | `workflow_run_detail(run_id)` / `workflow_last_run(id)` / `workflow_last_run_summary(id)` | 运行详情 / 最近一次运行 |
 | `workflow_list_runs(id, limit?, offset?)` | 运行历史分页（limit≤100，新→旧；每工作流保留最近 50 条） |
 
+### 任务统计 / 快速笔记 / 快捷键 / Agent 工作时间命令速查（v0.9）
+
+前端未接线前可直接用 `invoke` 调用；参数 camelCase，嵌套结构体字段保持 snake_case。
+
+| 命令 | 用途 |
+|---|---|
+| `task_analytics(range?)` | 任务统计趋势与分类/优先级分布（`day\|week\|month`，默认 `day`；只读） |
+| `notes_list(query?, pinnedOnly?, favoriteOnly?, taskId?, workspaceId?, limit?, offset?)` | 笔记列表 / 本地搜索（limit 1~200，默认 50） |
+| `notes_get(id)` / `notes_create(input)` / `notes_update(id, input)` / `notes_delete(id)` | 笔记 CRUD（删除幂等，返回是否实际删除） |
+| `notes_set_flags(id, pinned?, favorite?)` / `notes_set_task(id, taskId?)` / `notes_set_workspace(id, workspaceId?)` | 置顶/收藏、弱关联任务或工作现场（传 null 解除） |
+| `notes_templates()` | 内置模板列表（纯常量，不落库） |
+| `notes_search(query, limit?)` | 与 `notes_list(query)` 同一语义的快捷入口 |
+| `notes_convert_capture(captureId)` | 捕获箱条目复制为笔记（原条目不变；重试幂等返回 `duplicate=true`） |
+| `hotkeys_snapshot()` | 动作清单 + 实际注册状态 + 失败原因（启动/变更后读取） |
+| `hotkeys_change(action, accelerator?, enabled?)` | 修改单个动作的组合或启用态；省略字段保持不变 |
+| `hotkeys_reset(action?)` | 恢复默认组合（省略 `action` 表示全部重置） |
+| `agent_work_time_stats(query: { from, to, origin?, source_id?, bucket? })` | Agent 工作时间聚合（只读；`from/to` RFC3339，`origin` 默认 `real`，`bucket` 默认 `day`） |
+
+### 专注与休息命令速查（core.focus-timer，v0.10）
+
+状态在 Rust 侧权威维护；前端只读快照 + 共享时钟。除 `focus_update_prefs` 返回
+`FocusPrefs` 外，其余变更命令返回最新 `FocusSnapshot`。
+
+| 命令 | 用途 |
+|---|---|
+| `focus_snapshot()` | 当前会话 / 今日统计 / 偏好 / 久坐计划 |
+| `focus_history(limit?)` | 最近会话历史（默认 20，任务删除后保留标题快照） |
+| `focus_start(taskId?)` | 开始专注（可关联任务；已有活跃会话时幂等返回当前状态） |
+| `focus_start_break()` | 开始休息（短休/长休由轮次自动选择） |
+| `focus_pause()` / `focus_resume()` / `focus_finish()` / `focus_cancel()` | 暂停 / 继续 / 完成（计轮次）/ 放弃（不计轮次） |
+| `focus_extend_break(minutes)` / `focus_skip_break()` | 延长休息 / 跳过休息（非休息会话返回 Conflict） |
+| `focus_update_prefs(patch)` | 更新专注/休息时长、自动开始、久坐开关与间隔 |
+| `focus_snooze_sedentary(minutes)` | 延后久坐提醒 |
+
+迁移版本：v24 任务完成事件、v25 快速笔记、v26 Agent 统计索引、**v27 专注会话与日聚合**、
+**v28 完成事件期次幂等索引**（最新版本以 `src-tauri/src/db/mod.rs` 的 `MIGRATIONS` 为准）。
+
 ### 性能测试（需手动运行，不进入 CI）
 
 ```bash
@@ -212,6 +251,25 @@ npm run build && node scripts/make-preview.mjs && node scripts/render-perf.mjs
 - 新增 Agent 事件字段：同步更新 `AgentEvent`、`validate_event`、`docs/AGENT_ADAPTERS.md`。
 - 导航新增目标类型：同步 `NavigationTargetType`、`target_resolver::validate_input`、
   `router::execute_with_ctx` 分支与 `APP_NAVIGATION_MATRIX.md`；新增 Agent 跳转能力必须给证据标注。
+
+### 错误处理接入规范（2026-11-04）
+
+- 后端新增命令返回 `AppResult<T>`/`AppError`，不要返回字符串错误；错误分类由
+  `error.rs` 的 `code()/user_message()/detail()` 统一决定。新增错误变体必须同时补
+  `meta()` 映射（code/category/severity/retryable）与单测。禁止把 SQL、堆栈、剪贴板
+  正文、账户名写进 `message`/`detail`。
+- 前端所有窗口的 Tauri 调用都走 `import { invokeCommand as invoke } from "./errors"`，
+  不得直接 `import { invoke } from "@tauri-apps/api/core"`；这样错误码与可读文案才稳定。
+- 用户主动操作失败用 `reportError(e, { operation, retry })`：必须能回答「哪个操作失败、
+  为什么、下一步做什么」；可安全重试时才给 `retry`。表单错误优先字段级提示，
+  不要用全局 Toast 代替。
+- 后台轮询/事件失败用 `recordBackgroundError`（或 store 内 `errorMessage`），写入模块
+  错误状态并在面板内联展示；禁止每次轮询都 Toast。读取失败一律不要展示成空数据，
+  保留旧数据时必须标记「可能不是最新」并给重试入口。
+- 全局兜底：渲染异常交给 `components/ErrorBoundary.tsx`，未处理 Promise rejection
+  由 `lib/globalErrors.ts` 处理；不要在模块内重复监听 window error/unhandledrejection。
+- 新增错误提示的验收至少覆盖：分类正确、提示出现在正确窗口、重试真实执行、重试成功
+  后状态消除、失败后用户数据安全、无重复弹窗/重复订阅。
 
 ### UI 组件（v0.6）
 

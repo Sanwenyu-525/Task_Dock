@@ -128,6 +128,13 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - `list_tasks` 的 `TaskFilter` 新增可选 `limit`（u32，1..=200，越界收敛；缺省行为
   完全不变），在 filter+sort 之后应用 SQL LIMIT；胶囊任务 Lite 传 `limit: 12`，
   完整页不传保持全量。
+- `list_tasks` 的 `view` 新增 `due_today`（本地今天 0 点 ≤ due_at < 本地明天 0 点）
+  与 `scheduled`（due_at IS NOT NULL），`sort` 新增 `completed`（completed_at DESC，
+  NULL 殿后）。既有 view/sort 分支行为不变。胶囊任务 Lite 的分段因此各自按真实条件
+  查询：全部 = status=all + sort=created、待办 = status=pending + sort=due、
+  今日 = view=due_today + status=pending、日程 = view=scheduled + status=pending、
+  已完成 = status=completed + sort=completed；后端先过滤/排序再 LIMIT 12，
+  修掉「20 条逾期占满前 12 条、今天到期项被截断」的误判。
 - 胶囊分类栏小 Agent 入口由「收集箱」取代：`RAIL_CATEGORIES =
   ["tasks","inbox","clipboard","apps"]`，顶部状态球仍打开 Agent 面板
   （`CapsuleCategory = RailCategory | "agents"`）；收集箱 Lite 复用
@@ -154,6 +161,14 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   /等待/完成/失败/断连/提醒共用同一骨架模板；等待卡支持「稍后提醒」（内存暂存、
   调度器每秒到期重放）；用户点击「查看详情/通知中心」才激活主窗口并跳转标签页。
   多窗口能力清单见 `src-tauri/capabilities/`（通知窗口需 `core:event:default`）。
+  **轮次协议与展开同步（2026-11-04）**：`notification-show` 载荷为
+  `{ round, cards }`，每批通知分配唯一轮次；前端 `fit_notification_window`
+  原样回传 `round + seq`，后端只接受当前轮次且序号单调递增的请求，迟到/乱序的
+  上一轮尺寸请求直接丢弃；`hide_notification_window` 同样携带 `round`，若在途
+  期间已有新批次则忽略隐藏，避免丢通知。fit 返回工作区/最大高度钳制后的
+  `applied` 高度，前端据此判定 WebView 视口就绪并把超出内容交给栈内滚动。
+  展开详情不会先于窗口长高而可见：详情先以零高度影子节点参与测量，窗口达到
+  目标高度且视口同步后再进入正常布局并播放入场动画（400ms 超时安全退化）。
 - 过期清理：超过 `stale_run_minutes`（默认 15min）无更新的活跃轮次 → `disconnected`，**不推断任务成败**。
 - 事件保留（`retention.rs`）：启动 20s 后运行一次、此后每 6 小时；默认保留 30 天或
   最多 20 万行，仅 `running`/`idle` 可清理，归档失败则中止删除。
@@ -210,10 +225,19 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   前台句柄轮询核实」。桌面没有前台窗口（锁屏/无输入会话）时系统无法授予前台资格，此时如实返回
   `foreground-denied`，不把 API 调用成功当作已置前。HWND/PID 只作运行时身份，绝不落库。
   枚举带 1.2s TTL 缓存；进程树查询只在直接命中不到窗口时发生。
-- `app_discovery.rs`：开始菜单 .lnk（lnk crate 解析，catch_unwind 隔离畸形文件）+
-  卸载注册表（winreg）+ UWP（Get-StartApps 单次调用、8s 超时）+ 常用软件路径探测。
-  扫描带 5 分钟缓存；只扫明确位置，绝不全盘搜索；浏览器渲染进程等子进程不构成独立应用
+- `app_discovery.rs`：开始菜单 .lnk（优先 Windows Shell `IShellLinkW` 解析
+  LinkTargetIDList，避免 LinkInfo 中过期路径导致漏检；失败回退 lnk crate，
+  catch_unwind 隔离畸形文件）+ 卸载注册表（winreg，`DisplayIcon` 只接受 .exe，
+  过滤卸载器/更新补丁）+ App Paths 注册表（HKCU/HKLM 32/64 位视图）+
+  UWP（Get-StartApps 单次调用、8s 超时）+ 常用软件路径探测。
+  扫描带 5 分钟缓存，`AppScanResult.diagnostics` 标记开始菜单截断/UWP 失败；
+  只扫明确位置，绝不全盘搜索；浏览器渲染进程等子进程不构成独立应用
   （窗口层只枚举顶层窗口，天然排除）。
+- `app_icons.rs`：真实应用图标提取（`SHGetFileInfoW`/`ExtractIconExW`/UWP
+  `IShellItemImageFactory` → HICON → RGBA PNG data URL）。扫描与图标提取解耦，
+  前端按需调用 `nav_app_icon`；HICON/HBITMAP/DC 全部释放，`spawn_blocking` +
+  全局并发上限 2，内存缓存按「应用身份 + 文件更新时间/大小」失效。
+  只接受已保存目标 id 或本次扫描登记过的 app_key，绝不把前端任意路径当文件目标。
 - 控制台工具（`tasklist`/`reg`/`where`/`powershell`/opencode 探测）统一经
   `winproc::hidden()` 启动并设置 `CREATE_NO_WINDOW`：Release 为 `windows` 子系统，
   不隐藏控制台会在每次 Agent/应用扫描时闪出终端窗口。
@@ -252,6 +276,42 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   - 设置面板危险操作（清理测试/压测数据、恢复备份）由原生 `confirm` 统一改为
     `components/ui/Dialog.tsx` 的 `ConfirmDialog`（危险标识、执行中禁用重复提交、
     Escape/焦点管理走既有 overlay 栈）；原生文件选择器保留。
+- 统一错误模型（2026-11-04）：
+  - 后端 `src-tauri/src/error.rs` 的 `AppError` 序列化为结构化 payload：
+    `{ code, category, severity, retryable, message, detail? }`。`code` 是稳定机器码
+    （见下表），`message` 为可直接展示的安全文案，`detail` 仅放可核验技术信息
+    （sqlite 错误码、OS 错误类型），**不含 SQL、堆栈、剪贴板正文与账户名**。
+  - 前端 `src/lib/errors.ts` 的 `invokeCommand` 是所有窗口的 IPC 统一入口：
+    把结构化 payload / 旧字符串 / `Error` 归一化为 `AppError`（`toString()` 返回可读
+    文案，兼容既有 `String(e)`）；`legacy` 标记表示分类来自旧文案兜底，仅用于展示。
+  - 用户反馈唯一入口 `src/lib/errorReport.ts`：`reportError` 负责「操作名 + 原因 +
+    下一步建议 + 可选重试」，复用现有 Toast 队列（按 `code + message` 2s 去重，
+    悬停显示错误码与详情）；`recordBackgroundError` 只归一化不弹窗，后台失败写入
+    对应模块的内联错误状态。后台轮询失败禁止逐次 Toast。
+  - 模块约定：读取失败 ≠ 空数据（任务/应用/Agent/工作流/设置页均显示真实错误 +
+    重试，并保留旧数据标记「可能不是最新」）；写入成功但刷新失败必须分两阶段说明；
+    正常取消、用户暂停、明确不支持的可选效果不算错误。
+  - 渲染异常由 `src/components/ErrorBoundary.tsx` 兜底（不白屏、用户点击才重试）；
+    未处理 Promise rejection 由 `src/lib/globalErrors.ts` 兜底，同一根因 30s 内只提示一次。
+
+  错误码与分类对照（`category` 用于展示策略，不用于文案匹配）：
+
+  | code | category | severity | retryable | 典型场景 |
+  |---|---|---|---|---|
+  | VALIDATION_ERROR | validation | warning | true | 输入/参数校验失败 |
+  | NOT_FOUND | not_found / io | warning | false | 任务、文件、窗口不存在 |
+  | PERMISSION_DENIED | permission | error | false | 文件/目录权限不足 |
+  | IO_ERROR | io | error | true | 磁盘、文件占用、写入失败 |
+  | DATABASE_ERROR | database | error | false | SQLite 读写失败 |
+  | DATABASE_BUSY | database | warning | true | 数据库被占用/锁等待 |
+  | IPC_ERROR | ipc | error | true | 窗口/Tauri 调用失败 |
+  | SERVICE_UNAVAILABLE / SERVICE_OVERLOADED | service | error/warning | true | 依赖服务未启动 / 队列满 |
+  | AGENT_ERROR | agent | error | true | Agent 接入、扫描、适配器异常 |
+  | CONFLICT | conflict | warning | false | 已有运行中的同类长任务 |
+  | TIMEOUT | timeout | warning | true | 操作超时 |
+  | UNSUPPORTED | unsupported | warning | false | 系统不支持的可选效果 |
+  | DATA_INTEGRITY_ERROR | integrity | critical | false | 数据损坏/格式异常 |
+  | UNKNOWN_ERROR | unknown | error | false | 未归类（含旧格式兜底） |
 - 历史面板：默认加载 100 条，`list_agent_events(before=...)` keyset 分页加载更早事件，
   刷新增量合并；新通知/事件 500ms 防抖刷新。
 - 规划中心（v0.7）：roadmap Tab 升级为双数据源入口
@@ -346,8 +406,23 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   跳转 Agent 会话或任务上下文。
 - 任务上下文抽屉（v0.5）：`TaskContextDrawer` 复用次级抽屉视觉，按需加载
   `task_context`；现场恢复进度订阅 `workspace-restore-progress`，与剪贴板抽屉互斥。
-- 应用内快捷键：Ctrl+1…8 切换标签（顺序与侧边栏一致，取自 `useUiStore` 的
-  `TAB_ORDER` 单一事实源，v0.7 起含「收集箱」「规划中心」）、Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
+- 应用中心（v0.10）：左侧「应用」入口位于 Agent 与行动之间（`RAIL_ORDER` 视觉顺序；
+  **不占 Ctrl+数字**，快捷键仍严格按 `TAB_ORDER`）。`AppsPanel` 与胶囊应用面板、设置
+  应用管理三端共用 `useNavigationStore` + `navigation_targets`：添加复用
+  `AppPicker standalone`、编辑复用共享 `TargetEditDialog`、启动/聚焦复用 `navNavigate`。
+  运行态来自 `nav_target_running_states`（复用 `app_discovery::running_states` 的真实
+  窗口枚举 + 进程快照），只在打开页面 / 启动成功后按需查询一次，**不轮询**；
+  `has_window/process_only` 才算运行中，`unavailable` 表示配置失效，不作推断。
+- 应用搜索与图标（v0.11）：`lib/appSearch.ts` 统一搜索（中文连续子串、英文大小写不敏感、
+  身份绑定别名、完全匹配 → 前缀 → 包含 → 别名排序）；选择器搜索「已发现集合」，
+  应用中心/胶囊搜索「已配置集合」。`components/ui/AppIcon.tsx` 按需异步取真实 Windows 图标
+  （扫描先出文字、图标补充，失败统一回退字母，不阻塞选择）。`AppPicker` 新增
+  `variant="page"`：工具面板/应用管理/设置页的「添加应用」改为内容区子页面（返回、搜索、
+  分类横向滚动、多选批量添加、手动添加、当前窗口选择均在同一页面内切换），任务关联场景仍用
+  模态选择器。
+- 应用内快捷键：Ctrl+1…9 与 Ctrl+0 切换标签（顺序取自 `useUiStore` 的 `TAB_ORDER`，
+  与视觉顺序 `RAIL_ORDER` 分离；「应用」不分配快捷键，既有 Ctrl+语义不漂移）、
+  Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
   （完整模式切到剪贴板页，紧凑/最小模式开关临时抽屉）；
   输入框内不拦截，窗口聚焦时生效。实现见 `src/hooks/useGlobalShortcuts.ts`。
 - 视觉系统（v0.6）：三个正交维度——视觉预设 `visual_preset`
@@ -547,6 +622,63 @@ inbox/handled/converted、可选 url/note/task_id、`client_id` 唯一索引）�
 **隐私**：捕获内容只来自用户显式输入，不读剪贴板、不采集密码/凭据；日志与错误信息不记录
 正文，错误不拼接内容；无任何外网请求。功能与用户说明见
 [quick-capture/README.md](quick-capture/README.md)。
+
+### 12. 任务统计 / 快速笔记 / 自定义快捷键 / Agent 工作时间统计（v0.9，2026-11-04）
+
+四个模块各自独立（`task_analytics/`、`notes/`、`hotkeys/`、`agent_stats/`），共用同一套
+数据层与命令层，不新建平行任务系统，也不在前端重复聚合。
+- **任务统计（`task_analytics/`）**：迁移 v24 新增 `task_completion_events`（完成事实表，
+  `origin` 仅 `user|backfill`、`kind` 仅 `once|recurring`），并补 `tasks(due_at)` 索引。
+  普通任务完成时写入事件；重复任务每一期各写一条。升级时只用既有 `tasks.completed_at`
+  回填 `origin='backfill'`，**不推断、不伪造历史期次**。命令 `task_analytics(range)` 只读，
+  range ∈ `day|week|month`（默认 day），趋势按本地自然日/周/月分桶。取消完成会按
+  `(task_id, completed_at)` 删除对应事件，保证统计可回退。
+  **期次原子性与幂等（迁移 v28）**：重复任务完成时「期次推进（含提醒重建）+ 写入本期完成
+  事件」在同一事务提交，任一步失败整体回滚；推进以进入命令时读到的 `due_at` 作为期次身份
+  做 `UPDATE ... WHERE due_at IS ?` 乐观并发控制，并发/重放请求返回 `Conflict`，不会把同一
+  周期推进两次。迁移 v28 清理历史重复并建立部分唯一索引
+  `(task_id, kind, due_at) WHERE due_at IS NOT NULL`；`due_at` 为 NULL 的期次不参与去重
+  （否则重复任务的无截止期次会被永久吞掉），并发保护由事务内期次 CAS 负责。调度器自动到期
+  推进**不写**完成事件（不是用户完成），但照常写通知历史。
+- **快速笔记（`notes/`）**：迁移 v25 建 `notes` 表（`NOTES_SCHEMA` 常量，正文仅本地存储），
+  与任务 / 工作现场为弱关联（`ON DELETE SET NULL`）；`notes_convert_capture` 只把捕获箱
+  条目复制为笔记（原条目不改、不删除；同一 `capture_id` 重试幂等返回已有笔记）。搜索为本地
+  `LIKE` 截断（limit 1~200，默认 50），无外网、无向量索引。全局搜索以 `notes` 分类接入，
+  复用 `notes::store::search_in_conn`；定位走「收集与暂存 → 笔记」子页。
+- **自定义快捷键（`hotkeys/`）**：不新增迁移，注册状态存本机 `hotkeys.json`（应用数据目录），
+  旧设置 `hotkey_enabled` 仅作为「系统级默认启用」种子。管理器在启动时按动作注册，
+  **只记录实际注册成功的组合**；失败原因写入快照供 UI 展示，不静默失败。按键分发统一走
+  `tauri-plugin-global-shortcut` 单一 handler → `hotkeys::handle_shortcut`，未匹配即返回。
+  应用内（`app_local`）按键由 `useHotkeysRuntime` 在渲染进程分发；系统级（`system_global`）
+  按键不在前端重复监听。
+- **Agent 工作时间统计（`agent_stats/`）**：迁移 v26 只补两个索引
+  （`agent_runs(origin, started_at)`、`agent_events(source_id, session_external_id, ingest_seq)`），
+  **不新增表、不写回运行状态**；按本机自然日切窗聚合运行时长与事件量，未观测到的空闲时间
+  不计入。命令 `agent_work_time_stats({ from, to, origin? })` 只读（阻塞查询在线程池执行），
+  不做轮询。
+- 两张新表 `task_completion_events`、`notes` 均登记 `BACKUP_TABLES`（class=core，
+  快速备份全量）与 `EXTENDED_TABLES`（通用行格式，旧备份缺段按缺表跳过）。
+
+### 13. 专注与休息（core.focus-timer，v0.10，2026-11-04）
+
+模块位于 `focus/`（`core` / `model` / `store`），前端为 `components/focus/` 与
+`store/useFocusStore.ts`。状态由 Rust 侧权威维护，前端只读快照并用共享时钟推算展示。
+
+- **时间模型**：有效时长只由单调时钟 `Instant` 增量累加，墙钟时间仅作锚点与持久化。
+  两次 tick 间隔 **≥10 秒**视为进程被挂起/休眠，会话转「已暂停（unconfirmed_gap）」且
+  **不补记**该区间。落库只发生在状态变化、完成与每 30 秒恢复点，**绝不每秒写库**。
+- **调度复用**：`focus::tick` 由既有 `scheduler.rs` 的 1 秒循环调用，**不新增第二套常驻
+  定时器**；通知复用 `AgentHub` 提醒通道，事件为 `focus-changed/completed/sedentary`。
+- **单活跃会话**：数据库部分唯一索引 `idx_focus_single_active(active) WHERE active=1` 与
+  内存守卫双重保证；暂停态仍算活跃；重复开始/暂停/结束均为幂等空操作。
+- **启动恢复**：`lib.rs` setup 在调度器启动后调用 `focus::restore_on_startup`，把上次退出时
+  仍在运行的会话转「已暂停（app_restart）」，不补记退出区间。数据导入/备份恢复成功后调用
+  `focus::reset_runtime` 丢弃进程内缓存，避免旧偏好或幽灵会话写回新库。
+- **数据**：迁移 v27 建 `focus_sessions`（保留 `task_title` 快照、无外键，任务删除后历史仍
+  可读）与 `focus_daily_stats`（按本地日期聚合）；两表登记 `BACKUP_TABLES`（class=focus，
+  快速备份全量）与 `EXTENDED_TABLES`。偏好存 `application_settings` 的 `focus_*` 键。
+- **入口**：任务页「专注与休息」子视图（按需挂载，关闭即卸载），胶囊面板顶部状态徽标
+  （无活动会话返回 null，不占位、不新增轮询）。
 
 ## 三、数据模型（SQLite）
 
