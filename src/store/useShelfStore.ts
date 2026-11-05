@@ -118,10 +118,19 @@ let reqSeq = 0;
 /** 最近暂存独立代际：完整列表的刷新不能改写胶囊里的轻量切片。 */
 let recentSeq = 0;
 let recentLoadedAt = 0;
+/** 数据代次：新增/删除/改名后递增，早于变更的最近响应一律丢弃。 */
+let recentVersion = 0;
+
+/** 暂存数据发生变化：下次打开胶囊必须重新取最近列表，旧响应不得覆盖。 */
+function invalidateRecent(): void {
+  recentVersion += 1;
+  recentLoadedAt = 0;
+}
 
 /** 测试辅助：清掉最近切片的模块级软缓存，避免用例之间共享 TTL。 */
 export function __resetShelfRecentCache(): void {
   recentSeq += 1;
+  recentVersion += 1;
   recentLoadedAt = 0;
 }
 
@@ -189,11 +198,13 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     if (!force && s.recentLoading) return;
 
     const seq = ++recentSeq;
+    const version = recentVersion;
     set({ recentLoading: true, recentError: null });
     try {
-      // 只要最近 4 条：不读完整历史，也不动完整列表的筛选/分页状态。
-      const page = await shelfList({ limit: SHELF_RECENT_LIMIT, offset: 0 });
-      if (seq !== recentSeq) return;
+      // 只要最近 4 条：按创建时间倒序（不受置顶影响），不读完整历史，
+      // 也不动完整列表的筛选/分页状态。
+      const page = await shelfList({ sort: "recent", limit: SHELF_RECENT_LIMIT, offset: 0 });
+      if (seq !== recentSeq || version !== recentVersion) return;
       set({ recent: page.items, recentLoaded: true });
       recentLoadedAt = Date.now();
 
@@ -205,7 +216,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
       if (ids.length > 0) {
         try {
           const reports = await shelfCheckExists(ids);
-          if (seq !== recentSeq) return;
+          if (seq !== recentSeq || version !== recentVersion) return;
           const map = new Map(reports.map((r) => [r.id, r.exists_state]));
           set((prev) => ({
             recent: prev.recent.map((i) =>
@@ -217,7 +228,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
         }
       }
     } catch (e) {
-      if (seq === recentSeq) set({ recentError: String(e) });
+      if (seq === recentSeq && version === recentVersion) set({ recentError: String(e) });
     } finally {
       if (seq === recentSeq) set({ recentLoading: false });
     }
@@ -264,7 +275,11 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   addPaths: async (paths, mode, source, groupId) => {
     const report = await shelfAddPaths(paths, mode, source, groupId ?? null);
     if (report.added.length > 0) {
-      set((s) => ({ items: sortItems([...report.added, ...s.items]) }));
+      set((s) => ({
+        items: sortItems([...report.added, ...s.items]),
+        recent: [...report.added, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
+      }));
+      invalidateRecent();
       void get().refreshMeta();
       await get().load({ silent: true });
     }
@@ -273,14 +288,22 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
 
   addLink: async (url, groupId) => {
     const item = await shelfAddLink(url, groupId ?? null);
-    set((s) => ({ items: sortItems([item, ...s.items]) }));
+    set((s) => ({
+      items: sortItems([item, ...s.items]),
+      recent: [item, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
+    }));
+    invalidateRecent();
     void get().refreshMeta();
     return item;
   },
 
   addText: async (text, groupId) => {
     const item = await shelfAddText(text, groupId ?? null);
-    set((s) => ({ items: sortItems([item, ...s.items]) }));
+    set((s) => ({
+      items: sortItems([item, ...s.items]),
+      recent: [item, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
+    }));
+    invalidateRecent();
     void get().refreshMeta();
     return item;
   },
@@ -288,7 +311,11 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   addFromClipboard: async (itemIds, mode, groupId) => {
     const report = await shelfAddFromClipboard(itemIds, mode, groupId ?? null);
     if (report.added.length > 0) {
-      set((s) => ({ items: sortItems([...report.added, ...s.items]) }));
+      set((s) => ({
+        items: sortItems([...report.added, ...s.items]),
+        recent: [...report.added, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
+      }));
+      invalidateRecent();
       void get().refreshMeta();
       await get().load({ silent: true });
     }
@@ -299,7 +326,9 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     const item = await shelfUpdate(id, patch);
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? item : i)),
+      recent: s.recent.map((i) => (i.id === id ? item : i)),
     }));
+    invalidateRecent();
     void get().refreshMeta();
     return item;
   },
@@ -309,15 +338,18 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     const gone = new Set(ids);
     set((s) => ({
       items: s.items.filter((i) => !gone.has(i.id)),
+      recent: s.recent.filter((i) => !gone.has(i.id)),
       selectedIds: s.selectedIds.filter((id) => !gone.has(id)),
       detailId: s.detailId && gone.has(s.detailId) ? null : s.detailId,
     }));
+    invalidateRecent();
     void get().refreshMeta();
   },
 
   clearShelf: async (includeProtected) => {
     await shelfClear(includeProtected);
-    set({ items: [], total: 0, selectedIds: [], detailId: null });
+    set({ items: [], total: 0, selectedIds: [], detailId: null, recent: [] });
+    invalidateRecent();
     void get().refreshMeta();
   },
 
@@ -325,6 +357,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     const report = await shelfCleanup(dryRun, includeProtected);
     set({ lastCleanup: report });
     if (!dryRun) {
+      invalidateRecent();
       await get().load({ silent: true });
       void get().refreshMeta();
     }
@@ -384,6 +417,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
         ? await shelfMoveItems(ids, targetDir, strategy, removeAfter)
         : await shelfCopyTo(ids, targetDir, strategy, removeAfter);
     // 移动会改写路径、移除会删记录，统一以服务端列表为准刷新（保留失败项）。
+    invalidateRecent();
     await get().load({ silent: true });
     void get().refreshMeta();
     return report;
@@ -393,7 +427,9 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     const item = await shelfRelocateItem(id, path);
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? item : i)),
+      recent: s.recent.map((i) => (i.id === id ? item : i)),
     }));
+    invalidateRecent();
     return item;
   },
 

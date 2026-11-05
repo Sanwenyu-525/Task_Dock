@@ -220,7 +220,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - **历史入口与实时口径（2026-11-05，Round 3）**：
   - `agent_history_groups({ sourceId })` 用一条分组 `COUNT` 返回来源下每个真实实例
     （含快照中已消失、历史仍存在的实例）与「未关联实例」的历史会话数，供监控树补出
-    历史入口；只含实例标识与计数，不加载历史明细；`truncated` 表示超过分组上限。
+    历史入口；只含实例标识与计数，不加载历史明细；`truncated` 表示超过分组上限
+    （确定序返回：计数降序 + 实例键/实例行 ID，2026-11-06 Round 4；截断时界面提供
+    「搜索历史记录」入口，关键词搜索与按 ID 定位不依赖分组，可访问被截掉分组的
+    全部历史；展开的历史分区另有「有新的历史记录 · 更新」轻量提示，事件合并去抖后
+    仅做 `limit=1` 头部探测，不轮询、不自动刷新）。
   - `agent_history_sessions` 默认 `include_live=false`，在 SQL 中按轮次语义排除实时
     会话（存在 `origin='real'` 且 `running`/`waiting`，或 1 小时内
     `failed`/`disconnected` 的轮次），与前端 `liveState` 同一口径；`agent_history_session`
@@ -473,6 +477,20 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   （不做 48px 内推）；≤24px 仍由 `realignDocked` 拉回齐平（`moveWindow` 的
   force 参数跳过目标缓存，修复实测偏离被缓存短路、拉回不生效的问题）。
   隐藏态解除仍走「胶囊唤出 → 拖离」，`undock` store 字段随按钮一并删除。
+- 解除几何恢复脱离引擎互斥区（2026-11-06，capsule-redock 根因修复）：`undockCore` 的
+  busy 互斥只保护「区域 off + 相位提交」；尺寸恢复（等拖拽循环退出 ≥220ms + 稳定回读
+  400–600ms）改为带世代令牌（`restoreGen`）的后台事务，期间 `restoreInFlight` 延迟
+  candidate 确认/超时，避免恢复与停靠两路几何写入交错。此前恢复占住 busy 时所有
+  onMoved 评估被丢弃、`lastSeenRect` 冻结在解除触发位，用户立即反向拖动的新手势起点
+  被污染，`hasDockIntentAlongTrail` 净位移不足 → 永远进不了 candidate（「拖离后无法
+  重新吸附」根因）。配套：①停靠→free 提交时重置手势起点/轨迹/按压起点（解除后的
+  首次再吸附与普通自由窗口同一口径）；②free 相位把 `snapMoveGuard` 命中的程序性移动
+  排除出手势轨迹与意图评估（恢复事务搬运窗口不得凭空进候选）；③解除后用户按下过
+  窗口（`undockUserInteracted`）则跳过「锚定未应用」的兜底重定位；④`cursorPosition`
+  失败（受限会话 GetCursorPos 被拒）不再中止 candidate/docked-visible 拍内后续判定——
+  确认退化为「静默 + DOM 指针哨兵」口径。真机（125% DPI 隔离实例）：拖离 → 150ms 内
+  重抓反向拖回 → 重新吸附为胶囊，区域/尺寸/持久化正确。
+  （原 2026-10-31 记录中「48px 内推」「realignDocked」为旧实现描述，以本条为准。）
 - 主窗圆角与滚动条（2026-10-31）：液态玻璃预设 `--radius-window: 20px` 与
   `PRESET_WINDOW_RADIUS` / Win32 区域半径（逻辑像素，按 DPI 换算）对齐，消除
   dream/glass 18px 时 CSS 填充到不了区域边缘留下的圆角缝隙带；主窗滚动容器改用

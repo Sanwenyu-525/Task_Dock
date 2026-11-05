@@ -230,9 +230,11 @@ describe("useShelfStore", () => {
   it("loadRecent 只取轻量片段并回填存在性，不加载完整历史", async () => {
     await useShelfStore.getState().loadRecent();
     const s = useShelfStore.getState();
-    expect(shelfList).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: SHELF_RECENT_LIMIT, offset: 0 }),
-    );
+    expect(shelfList).toHaveBeenCalledWith({
+      sort: "recent",
+      limit: SHELF_RECENT_LIMIT,
+      offset: 0,
+    });
     expect(s.recent.length).toBeLessThanOrEqual(SHELF_RECENT_LIMIT);
     expect(s.recent.length).toBeGreaterThan(0);
     expect(s.recent.find((i) => i.id === "b")?.exists_state).toBe("missing");
@@ -270,5 +272,51 @@ describe("useShelfStore", () => {
     expect(s.recent).toHaveLength(before);
     expect(s.recentError).toContain("db locked");
     expect(s.recentLoading).toBe(false);
+  });
+
+  it("新增暂存后缓存失效，最近列表立即反映新条目", async () => {
+    await useShelfStore.getState().loadRecent();
+    expect(useShelfStore.getState().recentLoaded).toBe(true);
+    await useShelfStore.getState().addPaths(["D:\\new.txt"], "reference", "drag");
+    expect(useShelfStore.getState().recent[0]?.display_name).toBe("D:\\new.txt");
+    // 不等待 TTL：下一次访问必须重新取权威结果
+    await useShelfStore.getState().loadRecent();
+    const last = (shelfList as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(last).toEqual({ sort: "recent", limit: SHELF_RECENT_LIMIT, offset: 0 });
+  });
+
+  it("删除/改名后最近切片同步，不继续展示旧条目", async () => {
+    await useShelfStore.getState().loadRecent();
+    const first = useShelfStore.getState().recent[0];
+    expect(first).toBeTruthy();
+    await useShelfStore.getState().deleteItems([first.id], false);
+    expect(useShelfStore.getState().recent.some((i) => i.id === first.id)).toBe(false);
+  });
+
+  it("慢的旧最近响应不能覆盖变更后的结果", async () => {
+    await useShelfStore.getState().loadRecent();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    (shelfList as ReturnType<typeof vi.fn>).mockImplementationOnce(() =>
+      gate.then(() => ({
+        items: [
+          {
+            id: "stale",
+            kind: "file",
+            display_name: "过期结果",
+            exists_state: "ok",
+            storage_mode: "reference",
+          },
+        ],
+        total: 1,
+      })),
+    );
+    const pending = useShelfStore.getState().loadRecent({ force: true });
+    // 数据发生变化：旧响应返回时必须被丢弃
+    await useShelfStore.getState().deleteItems(["other"], false);
+    release();
+    await pending;
+    expect(useShelfStore.getState().recent.some((i) => i.id === "stale")).toBe(false);
+    expect(useShelfStore.getState().recentLoading).toBe(false);
   });
 });

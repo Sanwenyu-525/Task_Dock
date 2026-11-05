@@ -60,7 +60,7 @@ fn winrt_synthesize_then_cache_hit() {
     let dir = temp_cache_dir("roundtrip");
     let service = AudioService::new(Some(dir.clone()));
     let started = Instant::now();
-    let first = service.synthesize("任务已完成", None, "auto", 100, true, true, 50 * 1024 * 1024);
+    let first = service.synthesize("任务已完成", None, "auto", 100, true, true, 50 * 1024 * 1024, "system");
     println!(
         "first ok={} code={} cached={} persisted={} bytes={} latencyMs={} contentType={:?} voice={:?} fallback={}",
         first.ok,
@@ -77,7 +77,7 @@ fn winrt_synthesize_then_cache_hit() {
     assert!(!first.cached, "首次合成不应命中缓存");
     assert!(first.bytes > 0);
 
-    let second = service.synthesize("任务已完成", None, "auto", 100, true, true, 50 * 1024 * 1024);
+    let second = service.synthesize("任务已完成", None, "auto", 100, true, true, 50 * 1024 * 1024, "system");
     println!(
         "second ok={} code={} cached={} persisted={} bytes={} latencyMs={}",
         second.ok, second.code, second.cached, second.persisted, second.bytes, second.latency_ms
@@ -120,8 +120,8 @@ fn winrt_voice_and_rate_use_separate_cache_entries() {
         .find(|v| v.language.to_ascii_lowercase().starts_with("zh") && v.gender == "male")
         .expect("需要中文男声");
 
-    let plain = service.synthesize("任务已完成", None, "auto", 100, true, true, 50 * 1024 * 1024);
-    let slow = service.synthesize("任务已完成", None, "auto", 150, true, true, 50 * 1024 * 1024);
+    let plain = service.synthesize("任务已完成", None, "auto", 100, true, true, 50 * 1024 * 1024, "system");
+    let slow = service.synthesize("任务已完成", None, "auto", 150, true, true, 50 * 1024 * 1024, "system");
     // 显式语音使用 120 语速，与上面两种自动组合的 Key 必然不同。
     let by_female = service.synthesize(
         "任务已完成",
@@ -131,6 +131,7 @@ fn winrt_voice_and_rate_use_separate_cache_entries() {
         true,
         true,
         50 * 1024 * 1024,
+        "system",
     );
     let by_male = service.synthesize(
         "任务已完成",
@@ -140,6 +141,7 @@ fn winrt_voice_and_rate_use_separate_cache_entries() {
         true,
         true,
         50 * 1024 * 1024,
+        "system",
     );
     for (label, report) in [
         ("auto@100", &plain),
@@ -169,6 +171,7 @@ fn winrt_voice_and_rate_use_separate_cache_entries() {
         true,
         true,
         50 * 1024 * 1024,
+        "system",
     );
     assert!(again.ok && again.cached, "相同语音+语速必须命中缓存");
     let _ = std::fs::remove_dir_all(&dir);
@@ -183,7 +186,7 @@ fn winrt_concurrent_same_key_synthesizes_once() {
     for _ in 0..4 {
         let shared = Arc::clone(&service);
         handles.push(std::thread::spawn(move || {
-            shared.synthesize("任务已完成", None, "auto", 100, true, true, 50 * 1024 * 1024)
+            shared.synthesize("任务已完成", None, "auto", 100, true, true, 50 * 1024 * 1024, "system")
         }));
     }
     let mut cached_count = 0;

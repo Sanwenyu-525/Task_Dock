@@ -36,6 +36,9 @@ pub struct VoiceInfo {
     pub language: String,
     /// male | female | unknown（由系统 API 提供，不推测、不变调伪装）。
     pub gender: String,
+    /// 合成引擎 ID：系统语音固定 `system`；高品质引擎为其模型 ID。
+    /// 缓存 Key 与「音色与实际播报一致」的判定都以它 + 语音 ID 为准。
+    pub engine: String,
     pub available: bool,
 }
 
@@ -301,6 +304,7 @@ fn enumerate_voices(
                 name,
                 language,
                 gender: gender.into(),
+                engine: "system".into(),
                 available: true,
             },
             voice,
@@ -609,6 +613,7 @@ mod tests {
             name: id.into(),
             language: lang.into(),
             gender: gender.into(),
+            engine: "system".into(),
             available: true,
         }
     }

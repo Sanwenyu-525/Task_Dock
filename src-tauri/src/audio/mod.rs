@@ -37,6 +37,9 @@ pub const FIXED_PHRASES: &[&str] = &[
 
 pub const MAX_TEXT_CHARS: usize = 300;
 
+/// 内置系统引擎 ID（Windows WinRT / 系统语音）。高品质引擎的 ID 为模型 ID。
+pub const ENGINE_SYSTEM: &str = "system";
+
 /// 动态语音内存缓存：容量/TTL 都有上限，退出即释放，不落盘。
 const MEM_MAX_ENTRIES: usize = 16;
 const MEM_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -51,6 +54,53 @@ pub fn should_persist(text: &str, persist_requested: bool) -> bool {
     persist_requested && is_fixed_phrase(text.trim())
 }
 
+/// 合成引擎元数据（前端引擎选择器使用）。
+///
+/// 当前版本只集成系统引擎。高品质离线引擎经选型评估未达集成条件（体积/许可证，
+/// 见 `docs/audio/audio-notifications.md` §14），这里如实返回 `available=false`：
+/// 前端不得伪造音色、不得静默回退到系统语音假装成功。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineInfo {
+    pub id: String,
+    pub name: String,
+    /// 引擎当前是否可用于合成
+    pub available: bool,
+    /// 不可用原因码：not_integrated | unsupported_platform；可用时为空
+    pub reason: String,
+    /// 面向用户的简短说明（仅静态审查文案，不含系统细节）
+    pub detail: String,
+    /// 是否为需要单独下载模型的可选资源
+    pub requires_download: bool,
+}
+
+/// 引擎列表：系统引擎恒可用；高品质引擎如实报告未集成（不返回假音色）。
+fn engine_infos() -> Vec<EngineInfo> {
+    let neural_reason = if cfg!(windows) {
+        "not_integrated"
+    } else {
+        "unsupported_platform"
+    };
+    vec![
+        EngineInfo {
+            id: ENGINE_SYSTEM.into(),
+            name: "系统语音".into(),
+            available: true,
+            reason: String::new(),
+            detail: String::new(),
+            requires_download: false,
+        },
+        EngineInfo {
+            id: "neural".into(),
+            name: "高品质语音".into(),
+            available: false,
+            reason: neural_reason.into(),
+            detail: "高品质离线语音尚未启用：候选中文模型在体积或许可证上不满足分发要求".into(),
+            requires_download: true,
+        },
+    ]
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoicesReport {
@@ -58,6 +108,8 @@ pub struct VoicesReport {
     pub code: String,
     pub message: String,
     pub voices: Vec<VoiceInfo>,
+    /// 引擎清单（含不可用引擎的真实状态），供 UI 展示引擎选择
+    pub engines: Vec<EngineInfo>,
     pub has_chinese_male: bool,
     pub has_chinese_female: bool,
     pub platform: String,
@@ -262,6 +314,7 @@ impl AudioService {
                     code: err.code().into(),
                     message: err.message(),
                     voices: Vec::new(),
+                    engines: engine_infos(),
                     has_chinese_male: false,
                     has_chinese_female: false,
                     platform: platform_name().into(),
@@ -282,6 +335,7 @@ impl AudioService {
                         .any(|v| is_chinese(v) && v.gender == "female"),
                     platform: platform_name().into(),
                     voices,
+                    engines: engine_infos(),
                 };
                 report
             }
@@ -290,6 +344,7 @@ impl AudioService {
                 code: err.code().into(),
                 message: err.message(),
                 voices: Vec::new(),
+                engines: engine_infos(),
                 has_chinese_male: false,
                 has_chinese_female: false,
                 platform: platform_name().into(),
@@ -308,8 +363,18 @@ impl AudioService {
         persist_requested: bool,
         cache_enabled: bool,
         max_bytes: u64,
+        engine: &str,
     ) -> SynthesisReport {
         let started = Instant::now();
+        // 引擎校验先于任何引擎初始化：不可用引擎不得启动 WinRT 线程或触碰模型资源。
+        let engine = engine.trim();
+        if engine != ENGINE_SYSTEM {
+            return SynthesisReport::err(
+                "engine_unavailable",
+                "高品质离线语音未启用，请切换为系统语音",
+                started,
+            );
+        }
         let text = text.trim();
         if text.is_empty() {
             return SynthesisReport::err("text_empty", "播报文本为空", started);
@@ -351,7 +416,7 @@ impl AudioService {
                 return SynthesisReport::err(err.code(), &err.message(), started);
             }
         };
-        let key = cache_key(text, &voice.id, &voice.language, rate);
+        let key = cache_key(text, &voice.id, &voice.language, rate, engine);
 
         // 1) 先查持久化缓存。
         if allow_persist {
@@ -652,11 +717,29 @@ mod tests {
     #[test]
     fn text_bounds_are_enforced() {
         let service = AudioService::new(None);
-        let empty = service.synthesize("   ", None, "auto", 100, true, true, 50);
+        let empty = service.synthesize("   ", None, "auto", 100, true, true, 50, ENGINE_SYSTEM);
         assert_eq!(empty.code, "text_empty");
         let long = "a".repeat(MAX_TEXT_CHARS + 1);
-        let report = service.synthesize(&long, None, "auto", 100, false, true, 50);
+        let report =
+            service.synthesize(&long, None, "auto", 100, false, true, 50, ENGINE_SYSTEM);
         assert_eq!(report.code, "text_too_long");
+    }
+
+    #[test]
+    fn engine_metadata_is_truthful_and_unavailable_engine_is_structural() {
+        let service = AudioService::new(None);
+        // 未知/未启用引擎：结构化失败，且不得为一次非法请求初始化 WinRT 线程。
+        let report = service.synthesize("任务已完成", None, "auto", 100, false, true, 50, "neural");
+        assert_eq!(report.code, "engine_unavailable");
+        assert!(!service.is_worker_initialized());
+        // 引擎清单如实包含系统（可用）与高品质（不可用、需下载）两项。
+        let voices = service.voices();
+        let engines = voices.engines;
+        let system = engines.iter().find(|e| e.id == ENGINE_SYSTEM).expect("必须有系统引擎");
+        assert!(system.available && !system.requires_download);
+        let neural = engines.iter().find(|e| e.id == "neural").expect("必须如实报告高品质引擎状态");
+        assert!(!neural.available && neural.requires_download);
+        assert!(!neural.reason.is_empty());
     }
 
     #[test]
@@ -672,7 +755,7 @@ mod tests {
         let service = AudioService::new(None);
         assert!(!service.is_worker_initialized(), "构造服务不得启动 WinRT 线程");
         // 参数校验在触碰语音线程之前完成：不应为一次非法请求初始化 COM。
-        let empty = service.synthesize("   ", None, "auto", 100, true, true, 50);
+        let empty = service.synthesize("   ", None, "auto", 100, true, true, 50, ENGINE_SYSTEM);
         assert_eq!(empty.code, "text_empty");
         assert!(!service.is_worker_initialized());
         // 未初始化过就退出：不创建线程，也不阻塞。

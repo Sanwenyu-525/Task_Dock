@@ -919,6 +919,7 @@ pub fn run() {
             commands::clipboard::clipboard_item,
             commands::clipboard::clipboard_group,
             commands::clipboard::clipboard_group_page,
+            commands::clipboard::clipboard_group_item_position,
             commands::clipboard::clipboard_stats,
             commands::clipboard::clipboard_thumb,
             commands::clipboard::clipboard_image,

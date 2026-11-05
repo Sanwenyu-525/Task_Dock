@@ -108,6 +108,10 @@ interface World {
   undockAnchorCancelled: number;
   /** 后端持久化的用户自由窗口矩形（get_window_rect）；null = 无记录 */
   savedWindowRect: { x: number; y: number; w: number; h: number } | null;
+  /** 接下来 N 次 outerPosition 读取延迟指定毫秒（模拟解除恢复期间的 IPC 拥塞） */
+  delayRectReadMs: number;
+  /** cursorPosition 持续失败（受限会话形态：GetCursorPos 被拒） */
+  failCursor: boolean;
   /** update_settings 写回的完整设置快照（P2：形态偏好回滚断言用） */
   settings: Record<string, unknown>;
 }
@@ -146,6 +150,8 @@ const world: World = {
   undockAnchorApplied: false,
   undockAnchorCancelled: 0,
   savedWindowRect: null,
+  delayRectReadMs: 0,
+  failCursor: false,
   settings: { mode: "full", snap_display_mode: "capsule", theme: "light" },
 };
 
@@ -183,12 +189,21 @@ function resetWorld() {
   world.undockAnchorApplied = false;
   world.undockAnchorCancelled = 0;
   world.savedWindowRect = null;
+  world.delayRectReadMs = 0;
+  world.failCursor = false;
   world.settings = { mode: "full", snap_display_mode: "capsule", theme: "light" };
 }
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
-    outerPosition: async () => ({ x: world.pos.x, y: world.pos.y }),
+    outerPosition: async () => {
+      if (world.delayRectReadMs > 0) {
+        const delay = world.delayRectReadMs;
+        world.delayRectReadMs = 0;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      return { x: world.pos.x, y: world.pos.y };
+    },
     outerSize: async () => ({ width: world.size.width, height: world.size.height }),
     setPosition: async (p: { x: number; y: number }) => {
       world.positionAttempts += 1;
@@ -222,7 +237,10 @@ vi.mock("@tauri-apps/api/window", () => ({
     },
     onResized: () => Promise.resolve(() => {}),
   }),
-  cursorPosition: async () => ({ x: world.cursor.x, y: world.cursor.y }),
+  cursorPosition: async () => {
+    if (world.failCursor) throw new Error("mock cursorPosition rejected");
+    return { x: world.cursor.x, y: world.cursor.y };
+  },
   currentMonitor: async () => {
     if (world.monitorNullCalls > 0) {
       world.monitorNullCalls -= 1;
@@ -2274,5 +2292,256 @@ describe("Edge Tab：收起 / 恢复（复用胶囊区域事务）", () => {
     expect(world.pos.x).toBe(0);
     expect(world.pos.y).toBe(296);
     expect(lastRegion()).toEqual({ mode: "tab", edge: "left" });
+  });
+});
+
+// ── 拖离后重新吸附（capsule-redock 回归）──────────────────────
+//
+// 真实缺陷：胶囊拖离 → 窗口恢复完整面板后，用户立即抓起窗口反向拖向边缘，
+// 无法重新吸附。根因（2026-11-06）：解除事务把几何恢复（等拖拽循环退出 +
+// 稳定回读）放在 busy 互斥区内——期间 onMoved 评估被丢弃、lastSeenRect 冻结
+// 在解除触发位，用户重抓时手势起点被污染，吸附意图判定（净位移 ≥24 CSS px）
+// 失效，永远进不了 candidate。
+//
+// 本组用例按真实时序模拟：原生锚定在拖拽循环内恢复模式尺寸（窗口跟随光标），
+// 用户松手后立即重抓；按下起点的异步校正经由「矩形读取延迟」被真实否决
+// （真机形态：解除恢复的 IPC 拥塞使校正晚于用户首次移动返回）。
+
+describe("拖离后重新吸附（capsule-redock 回归）", () => {
+  /** 按下拖拽区域并立即移动窗口：起点异步校正因「已观测到移动」被否决。 */
+  async function pressAndMoveImmediately(x: number, y: number) {
+    await act(async () => {
+      const el = document.createElement("div");
+      el.setAttribute("data-tauri-drag-region", "");
+      document.body.appendChild(el);
+      // 按下起点的原生读取在本用例中延迟返回（IPC 拥塞），模拟真机竞态
+      world.delayRectReadMs = 300;
+      el.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      el.remove();
+      world.pos = { x, y };
+      fireMoved();
+      await Promise.resolve();
+    });
+  }
+
+  /** 原生锚定帧：解除请求已在拖拽循环内应用——窗口恢复模式尺寸并跟随光标。 */
+  async function anchorDragTo(x: number, y: number) {
+    await act(async () => {
+      world.size = { width: 400, height: 560 };
+      world.pos = { x, y };
+      fireMoved();
+      await Promise.resolve();
+    });
+  }
+
+  it("D1) 拖离后立即反向拖回原边：解除事务未结束也必须重新吸附为胶囊", async () => {
+    world.savedWindowRect = { x: 400, y: 300, w: 1000, h: 700 };
+    world.undockAnchorApplied = true; // 原生锚定已在拖拽循环内应用
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    expect(world.size).toEqual({ width: 404, height: 440 });
+
+    // ① 抓起胶囊拖离：首个越过磁吸退出阈值的事件触发解除（几何恢复随之启动）
+    await dragTo(40, 300);
+    // ② 原生锚定帧：窗口在拖拽循环内恢复完整尺寸并跟随光标移向屏幕中部
+    await anchorDragTo(300, 300);
+    await anchorDragTo(520, 300);
+    // ③ 松手后立即重抓，反向拖回左缘（起点校正被 300ms 延迟读取否决）
+    await releasePointer();
+    await pressAndMoveImmediately(500, 300);
+    await dragTo(200, 300);
+    await dragTo(60, 300);
+    await dragTo(20, 300);
+    await releasePointer();
+
+    // ④ 解除恢复与新一轮吸附都要收口：最终必须是胶囊停靠，偏好不被改写。
+    // （光标不在胶囊上时，停靠后会按既有设计在 ~450ms 后自动收起为触发条
+    //   docked-hidden——free 无法直接到达该相位，同样证明吸附已发生。）
+    await advance(4000);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.x).toBe(0);
+    expect(world.size).toEqual({ width: 404, height: 440 });
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+    // 偏好不得被拖离/再吸附改写（store 未加载设置时引擎按缺省 capsule 回退）
+    expect(useSettingsStore.getState().settings?.snap_display_mode ?? "capsule").toBe("capsule");
+  });
+
+  it("D2) 偏好 full 时同样的立即反向拖回：吸附为完整面板", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    world.savedWindowRect = { x: 400, y: 300, w: 1000, h: 700 };
+    world.undockAnchorApplied = true;
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-full");
+
+    await dragTo(40, 300);
+    await anchorDragTo(300, 300);
+    await anchorDragTo(520, 300);
+    await releasePointer();
+    await pressAndMoveImmediately(500, 300);
+    await dragTo(200, 300);
+    await dragTo(60, 300);
+    await dragTo(20, 300);
+    await releasePointer();
+    await advance(4000);
+
+    expect(phase()).toBe("docked-full");
+    expect(lastRegion()).toEqual({ mode: "off", edge: "left" });
+    expect(useSettingsStore.getState().settings?.snap_display_mode).toBe("full");
+  });
+
+  it("D3) 拖离后等待恢复完成（≥2s）再拖向边缘：正常吸附", async () => {
+    world.savedWindowRect = { x: 400, y: 300, w: 1000, h: 700 };
+    world.undockAnchorApplied = true;
+    mount();
+    await advance(50);
+    await dockLeft();
+
+    await dragTo(40, 300);
+    await anchorDragTo(520, 300);
+    await releasePointer();
+    await advance(2500); // 解除事务完全结束
+    expect(phase()).toBe("free");
+    expect(world.size).toEqual({ width: 1000, height: 700 }); // 用户尺寸已恢复
+
+    // 与普通自由窗口完全相同的吸附路径
+    await dragTo(200, 300);
+    await dragTo(20, 300);
+    expect(phase()).toBe("candidate");
+    await releasePointer();
+    await advance(600);
+    // 光标可能已触发空闲收起（docked-hidden 只能从停靠相位到达，同样证明吸附）
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.x).toBe(0);
+    expect(world.size).toEqual({ width: 404, height: 440 });
+  });
+
+  it("D4) 同一手势内拖离再拖回原边：识别为新一轮吸附", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+
+    // 拖离越过解除阈值（相位已提交 free），不松手直接拖回贴边（磁吸把窗口
+    // 带到近乎齐平的位置）后松手
+    await dragTo(40, 300);
+    await anchorDragTo(300, 300);
+    await dragTo(120, 300);
+    await dragTo(30, 300);
+    await dragTo(6, 300);
+    await releasePointer();
+    await advance(3500);
+
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.x).toBe(0);
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+  });
+
+  it("D5) 左缘拖离后拖到右缘松手：换边吸附为胶囊", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+
+    await dragTo(40, 300);
+    await anchorDragTo(960, 300);
+    await dragTo(1500, 300);
+    await dragTo(1520, 300); // 右缘候选区（1920 − 400 窗口宽 = 1520 齐平）
+    await releasePointer();
+    await advance(3500);
+
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.x).toBe(1920 - 404);
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "right" });
+  });
+
+  it("D6) 解除恢复进行中：候选确认延迟到恢复完成，几何写入不交错", async () => {
+    world.savedWindowRect = { x: 400, y: 300, w: 1000, h: 700 };
+    world.undockAnchorApplied = true;
+    mount();
+    await advance(50);
+    await dockLeft();
+    // 首次停靠本身写过 rail：之后的断言只看「解除→再吸附」这段的增量
+    const railWritesBefore = world.regionCalls.filter((r) => r.mode === "rail").length;
+
+    await dragTo(40, 300);
+    await anchorDragTo(520, 300);
+    await releasePointer();
+    await pressAndMoveImmediately(500, 300);
+    await dragTo(20, 300);
+    await releasePointer();
+
+    // 恢复事务仍在等待拖拽静默（1500ms 截止未到）：确认必须被延迟
+    await advance(600);
+    expect(phase()).toBe("candidate");
+    expect(world.regionCalls.filter((r) => r.mode === "rail").length).toBe(railWritesBefore);
+
+    // 恢复完成（用户尺寸写回在先），确认随后放行，停靠几何正常提交
+    await advance(3400);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    const restoreWrite = world.sizeCalls.findIndex((s) => s.w === 1000 && s.h === 700);
+    // 首次停靠也写过 404×440：只找恢复写回**之后**的那次（再吸附的容器重建）
+    const dockWrite = world.sizeCalls.findIndex(
+      (s, i) => i > restoreWrite && s.w === 404 && s.h === 440,
+    );
+    expect(restoreWrite).toBeGreaterThanOrEqual(0);
+    expect(dockWrite).toBeGreaterThan(restoreWrite);
+  });
+
+  it("D8) 光标读取持续失败：候选确认按指针哨兵收口，不永久卡死", async () => {
+    // 受限会话形态（真机诊断 2026-11-06）：GetCursorPos 被拒 → cursorPosition
+    // 每拍抛异常。确认条件退化为「静默 + DOM 指针哨兵」，语义与设计一致。
+    world.failCursor = true;
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    // 光标不可读 → 按离开交互区处理：450ms 连续离开确认后照常收起
+    await advance(800);
+    expect(phase()).toBe("docked-hidden");
+
+    // 解除后再次吸附：candidate 不因 cursor 异常卡死，确认正常放行
+    await dragTo(120, 300);
+    await advance(2200);
+    expect(phase()).toBe("free");
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+  });
+
+  it("D7) 125% DPI：立即反向拖回同样重新吸附，容器尺寸按缩放重建", async () => {
+    world.monitors = [
+      {
+        ...MAIN,
+        scaleFactor: 1.25,
+        size: { width: 2400, height: 1350 },
+        workArea: { position: { x: 0, y: 0 }, size: { width: 2400, height: 1290 } },
+      },
+    ];
+    world.savedWindowRect = { x: 500, y: 375, w: 1250, h: 875 };
+    world.undockAnchorApplied = true;
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    expect(world.size).toEqual({ width: 505, height: 550 }); // 404×440 × 1.25
+
+    await dragTo(48, 300); // 物理像素：48 > 38 退出阈值
+    await anchorDragTo(375, 375);
+    await anchorDragTo(650, 375);
+    await releasePointer();
+    await pressAndMoveImmediately(625, 375);
+    await dragTo(250, 375);
+    await dragTo(24, 375); // ≤24 物理像素进入候选区；意图阈值 = 24 CSS × 1.25 = 30
+    await releasePointer();
+    await advance(4000);
+
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.x).toBe(0);
+    expect(world.size).toEqual({ width: 505, height: 550 });
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
 });

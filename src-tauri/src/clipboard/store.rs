@@ -15,9 +15,9 @@ use super::engine::{self, CollectFamily, GroupAction, GroupCandidate, GroupSessi
 use super::image;
 use super::{
     CaptureOutcome, CapturedContent, CleanupReport, ClearReport, ClipboardGroup,
-    ClipboardGroupPage, ClipboardItem, ClipboardStats, ClipboardView, DeleteReport,
-    GroupKindCounts, KIND_FILES, KIND_IMAGE, KIND_URL, MAX_AUTO_GROUP_ITEMS, MAX_HTML_BYTES,
-    MAX_TEXT_BYTES,
+    ClipboardGroupItemPosition, ClipboardGroupPage, ClipboardItem, ClipboardStats, ClipboardView,
+    DeleteReport, GroupKindCounts, KIND_FILES, KIND_IMAGE, KIND_URL, MAX_AUTO_GROUP_ITEMS,
+    MAX_HTML_BYTES, MAX_TEXT_BYTES,
 };
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
@@ -369,6 +369,31 @@ pub fn get_group(db: &Db, group_id: &str) -> AppResult<ClipboardGroup> {
 pub const GROUP_PAGE_MAX_LIMIT: i64 = 50;
 pub const GROUP_PAGE_DEFAULT_LIMIT: i64 = 20;
 
+/// 组内容版本（计数 + 组更新时间 + 组内最近加入/最近出现时间）。
+///
+/// `get_group_page` 与 `get_group_item_position` 共用同一公式，保证两个接口返回的
+/// revision 不漂移（前端用 revision 对比判断「定位期间内容是否又变了」）。
+/// 公式与字段顺序是前端缓存键的一部分，不得改动；只做一次有界聚合，不引入新表。
+fn group_revision(
+    conn: &Connection,
+    group_id: &str,
+    item_count: i64,
+    image_count: i64,
+    updated_at: &str,
+) -> AppResult<String> {
+    let (max_added, max_seen): (String, String) = conn.query_row(
+        "SELECT COALESCE(MAX(gi.added_at), ''), COALESCE(MAX(i.last_seen_at), '')
+         FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+         WHERE gi.group_id = ?1",
+        params![group_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(format!(
+        "{}:{}:{}:{}:{}",
+        item_count, image_count, updated_at, max_added, max_seen
+    ))
+}
+
 /// 有界分组分页：SQL 阶段按 `position` 排序、可选只取图片、再 LIMIT/OFFSET。
 ///
 /// 与 `get_group` 的差异：
@@ -415,14 +440,13 @@ pub fn get_group_page(
         for r in rows {
             items.push(r?);
         }
-        // 版本号：组计数 + 组更新时间 + 组内最近加入/最近出现时间。
-        // 只做一次有界聚合，不引入新表或常驻缓存。
-        let (max_added, max_seen): (String, String) = conn.query_row(
-            "SELECT COALESCE(MAX(gi.added_at), ''), COALESCE(MAX(i.last_seen_at), '')
-             FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
-             WHERE gi.group_id = ?1",
-            params![group_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+        // 版本号：与 get_group_item_position 共用同一公式，避免两处 revision 漂移。
+        let revision = group_revision(
+            conn,
+            group_id,
+            group.item_count,
+            group.image_count,
+            &group.updated_at,
         )?;
         Ok(ClipboardGroupPage {
             group_id: group.id.clone(),
@@ -431,10 +455,70 @@ pub fn get_group_page(
             image_count: group.image_count,
             offset,
             limit,
-            revision: format!(
-                "{}:{}:{}:{}:{}",
-                group.item_count, group.image_count, group.updated_at, max_added, max_seen
-            ),
+            revision,
+        })
+    })
+}
+
+/// 组内条目定位：返回指定条目在组内「图片条目」中的 0-based 序位。
+///
+/// 供 Lite 原图预览在组内容变化后按图片 ID 恢复身份（而不是按旧序号回退显示另一张图）：
+/// - 组不存在 → `AppError::NotFound`，与 `get_group_page` 一致（前端据此退出预览）；
+/// - 条目不在组内或不是图片 → `found=false, index=None`，不报错；
+/// - 定位只做两条有界查询（序位 + 前序图片计数），不加载整组；
+/// - `revision` 与 `get_group_page` 共用同一公式。
+pub fn get_group_item_position(
+    db: &Db,
+    group_id: &str,
+    item_id: &str,
+) -> AppResult<ClipboardGroupItemPosition> {
+    db.with_conn(|conn| {
+        let group = conn
+            .query_row(
+                &format!("SELECT {GROUP_FIELDS} FROM clipboard_groups g WHERE g.id = ?1"),
+                params![group_id],
+                map_group,
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound("分组不存在".into()))?;
+        // 该条目在组内的 position；kind='image' 过滤保证只对图片条目给出序位。
+        let position: Option<i64> = conn
+            .query_row(
+                "SELECT gi.position FROM clipboard_group_items gi
+                 JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = ?1 AND gi.item_id = ?2 AND i.kind = 'image'",
+                params![group_id, item_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let index = match position {
+            // 图片序位 = 组内排在它前面的图片条目数，与 get_group_page 的
+            // imagesOnly 过滤 + position 排序完全一致。
+            Some(pos) => {
+                let before: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM clipboard_group_items gj
+                     JOIN clipboard_items j ON j.id = gj.item_id
+                     WHERE gj.group_id = ?1 AND j.kind = 'image' AND gj.position < ?2",
+                    params![group_id, pos],
+                    |r| r.get(0),
+                )?;
+                Some(before)
+            }
+            None => None,
+        };
+        let revision = group_revision(
+            conn,
+            group_id,
+            group.item_count,
+            group.image_count,
+            &group.updated_at,
+        )?;
+        Ok(ClipboardGroupItemPosition {
+            found: index.is_some(),
+            index,
+            image_count: group.image_count,
+            total_count: group.item_count,
+            revision,
         })
     })
 }
@@ -4270,6 +4354,118 @@ mod tests {
         .unwrap();
         let failed = get_group_page(&db, &gid, Some(1), Some(0), true);
         assert!(failed.is_err(), "底层读取失败必须返回错误");
+    }
+
+    // ── 组内条目定位（get_group_item_position）────────────────
+
+    #[test]
+    fn group_item_position_counts_only_images_before_target() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let img1 = record_capture(&db, &root.0, &image_payload(1), &s)
+            .unwrap()
+            .item
+            .id;
+        let note = record_capture(&db, &root.0, &text_payload("说明"), &s)
+            .unwrap()
+            .item
+            .id;
+        let img2 = record_capture(&db, &root.0, &image_payload(2), &s)
+            .unwrap()
+            .item
+            .id;
+        let files = record_capture(&db, &root.0, &files_payload(&["C:\\a.png"]), &s)
+            .unwrap()
+            .item
+            .id;
+        let img3 = record_capture(&db, &root.0, &image_payload(3), &s)
+            .unwrap()
+            .item
+            .id;
+        let g = create_manual_group(
+            &db,
+            "混合组",
+            &[img1.clone(), note.clone(), img2.clone(), files.clone(), img3.clone()],
+        )
+        .unwrap();
+        let page = get_group_page(&db, &g.id, Some(50), Some(0), true).unwrap();
+        assert_eq!(page.image_count, 3, "组内图片总数必须只数图片条目");
+
+        // 前面有非图片条目时，index 只数图片条目（img3 之前有 img1/img2 两张图）。
+        let pos = get_group_item_position(&db, &g.id, &img3).unwrap();
+        assert!(pos.found);
+        assert_eq!(pos.index, Some(2));
+        assert_eq!(pos.image_count, 3);
+        assert_eq!(pos.total_count, 5);
+        let pos1 = get_group_item_position(&db, &g.id, &img1).unwrap();
+        assert_eq!(pos1.index, Some(0));
+        let pos2 = get_group_item_position(&db, &g.id, &img2).unwrap();
+        assert_eq!(pos2.index, Some(1));
+
+        // 非图片条目在组内但不是图片：found=false，不报错。
+        let note_pos = get_group_item_position(&db, &g.id, &note).unwrap();
+        assert!(!note_pos.found);
+        assert_eq!(note_pos.index, None);
+        assert_eq!((note_pos.image_count, note_pos.total_count), (3, 5));
+
+        // 不在本组内的条目：found=false，不报错。
+        let outsider = record_capture(&db, &root.0, &image_payload(4), &s)
+            .unwrap()
+            .item
+            .id;
+        let outside = get_group_item_position(&db, &g.id, &outsider).unwrap();
+        assert!(!outside.found);
+        assert_eq!(outside.index, None);
+        assert_eq!((outside.image_count, outside.total_count), (3, 5));
+    }
+
+    #[test]
+    fn group_item_position_missing_group_is_not_found() {
+        let db = Db::open_in_memory().unwrap();
+        let err = get_group_item_position(&db, "missing-group", "any-item").unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+    }
+
+    #[test]
+    fn group_item_position_revision_matches_group_page() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let a = record_capture(&db, &root.0, &image_payload(1), &s)
+            .unwrap()
+            .item
+            .id;
+        let b = record_capture(&db, &root.0, &image_payload(2), &s)
+            .unwrap()
+            .item
+            .id;
+        let g = create_manual_group(&db, "版本组", &[a, b.clone()]).unwrap();
+
+        let page = get_group_page(&db, &g.id, Some(9), Some(0), true).unwrap();
+        let pos = get_group_item_position(&db, &g.id, &b).unwrap();
+        assert!(pos.found);
+        assert_eq!(pos.index, Some(1));
+        assert_eq!(
+            pos.revision, page.revision,
+            "定位接口与分页接口的 revision 不得漂移"
+        );
+
+        // 组内容变化后两者必须同步变化（前端靠 revision 一致性判断数据是否可信）。
+        let c = record_capture(&db, &root.0, &image_payload(3), &s)
+            .unwrap()
+            .item
+            .id;
+        add_to_group(&db, &g.id, std::slice::from_ref(&c)).unwrap();
+        let page2 = get_group_page(&db, &g.id, Some(9), Some(0), true).unwrap();
+        let pos2 = get_group_item_position(&db, &g.id, &b).unwrap();
+        assert_ne!(pos2.revision, page.revision);
+        assert_eq!(pos2.revision, page2.revision);
+        assert_eq!(pos2.index, Some(1), "追加到组尾不影响已有图片的序位");
     }
 
     #[test]

@@ -853,6 +853,8 @@ pub struct ListFilter {
     pub favorite_only: bool,
     pub limit: i64,
     pub offset: i64,
+    /// ""/"default" = 置顶优先（完整暂存架）；"recent" = 纯按创建时间倒序（胶囊最近暂存）
+    pub sort: String,
 }
 
 pub fn list(db: &Db, filter: &ListFilter) -> AppResult<ShelfPage> {
@@ -890,11 +892,20 @@ pub fn list(db: &Db, filter: &ListFilter) -> AppResult<ShelfPage> {
     };
     let limit = filter.limit.clamp(1, 500);
     let offset = filter.offset.max(0);
+    // 排序是显式契约：默认保持完整暂存架「置顶优先」；
+    // recent 只按创建时间，置顶不能把刚添加的普通条目挤出最近列表。
+    let order_sql = match filter.sort.as_str() {
+        "" | "default" => "pinned DESC, created_at DESC, id DESC",
+        "recent" => "created_at DESC, id DESC",
+        other => {
+            return Err(AppError::Validation(format!("未知的暂存列表排序: {other}")));
+        }
+    };
 
     // content 参与 LIKE 但不返回列表（大文本不进前端内存）
     let sql = format!(
         "SELECT {ITEM_COLS} FROM shelf_items {where_sql} \
-         ORDER BY pinned DESC, created_at DESC, id DESC LIMIT {limit} OFFSET {offset}"
+         ORDER BY {order_sql} LIMIT {limit} OFFSET {offset}"
     );
     let count_sql = format!("SELECT COUNT(*) FROM shelf_items {where_sql}");
     db.with_read(|conn| {

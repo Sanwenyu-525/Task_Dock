@@ -20,7 +20,19 @@ const openShelfItem = vi.fn();
 const copyShelfFiles = vi.fn();
 const copyShelfPaths = vi.fn();
 const addShelfPaths = vi.fn();
+const getShelfItem = vi.fn();
+const readShelfText = vi.fn();
+const copyClipboardText = vi.fn();
 const openDialog = vi.fn();
+
+// 导航结果可控：默认成功并执行 after；个别用例模拟被未保存草稿阻止。
+const openFullAppMock = vi.hoisted(() =>
+  vi.fn((_tab: string, after?: () => void) => {
+    after?.();
+    return "switched";
+  }),
+);
+vi.mock("./actions", () => ({ openFullApp: openFullAppMock }));
 
 type Handler = (event: { payload: Record<string, unknown> }) => void;
 const handlers: Handler[] = [];
@@ -54,6 +66,9 @@ vi.mock("../../lib/bridge", () => ({
   shelfCopyFiles: (...a: unknown[]) => copyShelfFiles(...a),
   shelfCopyPaths: (...a: unknown[]) => copyShelfPaths(...a),
   shelfAddPaths: (...a: unknown[]) => addShelfPaths(...a),
+  shelfGetItem: (...a: unknown[]) => getShelfItem(...a),
+  shelfReadText: (...a: unknown[]) => readShelfText(...a),
+  clipboardCopyText: (...a: unknown[]) => copyClipboardText(...a),
   shelfStats: vi.fn(async () => ({
     total: 0,
     file_count: 0,
@@ -79,6 +94,7 @@ vi.mock("../../lib/bridge", () => ({
 import InboxDropPane from "./InboxDropPane";
 import { useDropTargetsStore, __resetDropSubmitGuard } from "../../store/useDropTargetsStore";
 import { useShelfStore, __resetShelfRecentCache } from "../../store/useShelfStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { __resetFileDrop } from "../../lib/fileDrop";
 
 function target(over: Partial<Record<string, unknown>> = {}) {
@@ -163,13 +179,24 @@ beforeEach(() => {
   copyShelfFiles.mockReset();
   copyShelfPaths.mockReset();
   addShelfPaths.mockReset();
+  getShelfItem.mockReset();
+  readShelfText.mockReset();
+  copyClipboardText.mockReset();
   openDialog.mockReset();
+  openFullAppMock.mockReset();
+  openFullAppMock.mockImplementation((_tab: string, after?: () => void) => {
+    after?.();
+    return "switched";
+  });
   listRecent.mockResolvedValue({ items: [], total: 0 });
   checkExists.mockResolvedValue([]);
   openShelfItem.mockResolvedValue(undefined);
   copyShelfFiles.mockResolvedValue(1);
   copyShelfPaths.mockResolvedValue(1);
   addShelfPaths.mockResolvedValue({ added: [], failed: [] });
+  getShelfItem.mockResolvedValue(shelfItem({ content: "链接内容" }));
+  readShelfText.mockResolvedValue({ content: "正文内容", truncated: false });
+  copyClipboardText.mockResolvedValue(undefined);
   openDialog.mockResolvedValue(null);
   __resetShelfRecentCache();
   useShelfStore.setState({
@@ -178,6 +205,7 @@ beforeEach(() => {
     recentLoaded: false,
     recentError: null,
   });
+  useGlobalSearchStore.setState({ pendingLocate: null });
   __resetFileDrop();
   __resetDropSubmitGuard();
   useDropTargetsStore.setState({
@@ -519,6 +547,138 @@ describe("InboxDropPane", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "复制路径" }));
     await waitFor(() => expect(copyShelfPaths).toHaveBeenCalledWith(["s1"]));
     expect(screen.getByText("报告.pdf")).toBeTruthy();
+  });
+
+  it("文本条目只提供查看/复制内容，不出现复制路径；正文按需读取", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({
+      items: [shelfItem({ id: "s3", kind: "text", display_name: "会议纪要", original_path: null })],
+      total: 1,
+    });
+    render(<InboxDropPane />);
+    await screen.findByText("会议纪要");
+    expect(readShelfText).not.toHaveBeenCalled(); // 列表不加载正文
+
+    fireEvent.click(screen.getByRole("button", { name: "「会议纪要」更多操作" }));
+    expect(await screen.findByRole("menuitem", { name: "查看内容" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "复制内容" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "复制路径" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "复制文件" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "复制内容" }));
+    await waitFor(() => expect(readShelfText).toHaveBeenCalledWith("s3"));
+    await waitFor(() => expect(copyClipboardText).toHaveBeenCalledWith("正文内容"));
+    await screen.findByText("内容已复制");
+  });
+
+  it("链接条目复制链接而不是路径或文件", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const link = shelfItem({
+      id: "s4",
+      kind: "link",
+      display_name: "示例链接",
+      original_path: null,
+      content: null,
+    });
+    listRecent.mockResolvedValue({ items: [link], total: 1 });
+    getShelfItem.mockResolvedValue({ ...link, content: "https://example.com/a" });
+    render(<InboxDropPane />);
+    await screen.findByText("示例链接");
+
+    fireEvent.click(screen.getByRole("button", { name: "「示例链接」更多操作" }));
+    expect(await screen.findByRole("menuitem", { name: "复制链接" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "复制路径" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "复制文件" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "复制链接" }));
+    await waitFor(() => expect(getShelfItem).toHaveBeenCalledWith("s4"));
+    await waitFor(() => expect(copyClipboardText).toHaveBeenCalledWith("https://example.com/a"));
+    await screen.findByText("链接已复制");
+  });
+
+  it("文件夹只复制路径；图片可复制文件", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({
+      items: [
+        shelfItem({ id: "s5", kind: "folder", display_name: "项目目录", file_ext: null }),
+        shelfItem({ id: "s6", kind: "image", display_name: "截图.png", file_ext: "png" }),
+      ],
+      total: 2,
+    });
+    render(<InboxDropPane />);
+    await screen.findByText("项目目录");
+
+    fireEvent.click(screen.getByRole("button", { name: "「项目目录」更多操作" }));
+    expect(await screen.findByRole("menuitem", { name: "复制路径" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "复制文件" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "「截图.png」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制文件" }));
+    await waitFor(() => expect(copyShelfFiles).toHaveBeenCalledWith(["s6"]));
+  });
+
+  it("文件失效时给出明确错误，不调用复制", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({
+      items: [shelfItem({ exists_state: "missing" })],
+      total: 1,
+    });
+    render(<InboxDropPane />);
+    await screen.findByText("报告.pdf");
+
+    fireEvent.click(screen.getByRole("button", { name: "「报告.pdf」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制文件" }));
+    await screen.findByText("文件不存在，无法复制");
+    expect(copyShelfFiles).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "「报告.pdf」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制路径" }));
+    await screen.findByText("文件不存在，无法复制路径");
+    expect(copyShelfPaths).not.toHaveBeenCalled();
+  });
+
+  it("文本被截断时明确拒绝，不把部分正文当完整内容复制", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({
+      items: [shelfItem({ id: "s7", kind: "text", display_name: "超长文本" })],
+      total: 1,
+    });
+    readShelfText.mockResolvedValue({ content: "前 1MB", truncated: true });
+    render(<InboxDropPane />);
+    await screen.findByText("超长文本");
+
+    fireEvent.click(screen.getByRole("button", { name: "「超长文本」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制内容" }));
+    await screen.findByText("内容过大，未能完整复制");
+    expect(copyClipboardText).not.toHaveBeenCalled();
+  });
+
+  it("定位最近暂存条目：导航成功后下发一次性定位意图", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({ items: [shelfItem()], total: 1 });
+    render(<InboxDropPane />);
+    await screen.findByText("报告.pdf");
+
+    fireEvent.click(screen.getByRole("button", { name: "「报告.pdf」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "在暂存架中查看" }));
+    await waitFor(() => {
+      const intent = useGlobalSearchStore.getState().pendingLocate;
+      expect(intent?.category).toBe("shelf");
+      expect(intent?.id).toBe("s1");
+    });
+  });
+
+  it("导航被阻止时不残留定位意图（after 不会执行）", async () => {
+    openFullAppMock.mockImplementationOnce(() => "blocked");
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({ items: [shelfItem()], total: 1 });
+    render(<InboxDropPane />);
+    await screen.findByText("报告.pdf");
+
+    fireEvent.click(screen.getByRole("button", { name: "「报告.pdf」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "在暂存架中查看" }));
+    await waitFor(() => expect(openFullAppMock).toHaveBeenCalled());
+    expect(useGlobalSearchStore.getState().pendingLocate).toBeNull();
   });
 
   it("最近暂存可在胶囊内直接添加文件（默认引用）", async () => {

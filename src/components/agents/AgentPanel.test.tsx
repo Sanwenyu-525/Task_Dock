@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useUiStore } from "../../store/useUiStore";
 import AgentPanel from "./AgentPanel";
-import type { AgentSnapshot, DiscoveredAgent } from "../../lib/bridge";
+import type { AgentChangedEvent, AgentSnapshot, DiscoveredAgent } from "../../lib/bridge";
 
 const ipc = vi.hoisted(() => ({
   discoveryScan: vi.fn(),
@@ -19,6 +19,7 @@ const ipc = vi.hoisted(() => ({
   historyRuns: vi.fn(),
   historySession: vi.fn(),
   historyGroups: vi.fn(),
+  onAgentChanged: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -30,6 +31,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     agentHistoryRuns: ipc.historyRuns,
     agentHistorySession: ipc.historySession,
     agentHistoryGroups: ipc.historyGroups,
+    onAgentChanged: ipc.onAgentChanged,
     adapterPreview: vi.fn(async () => ({})),
     adapterInstall: vi.fn(async () => ({})),
     adapterVerify: vi.fn(async () => ({ ok: true })),
@@ -154,6 +156,29 @@ function searchInput(): HTMLInputElement {
   return screen.getByLabelText("搜索 Agent 名称或来源 ID") as HTMLInputElement;
 }
 
+// ── agent-changed 可触发式监听器（P3-01 用例用）──
+let agentChangedHandlers: ((payload: AgentChangedEvent) => void)[] = [];
+let unlistenAgentChanged: ReturnType<typeof vi.fn>;
+
+/** 派发一条后端批量聚合的 agent-changed 事件给当前所有订阅者。 */
+function emitAgentChanged(
+  payload: Partial<AgentChangedEvent> & Pick<AgentChangedEvent, "source_id">,
+) {
+  const full: AgentChangedEvent = {
+    sources: [payload.source_id],
+    session_id: "sess-x",
+    states: {},
+    batch: 1,
+    changed: true,
+    deduplicated: false,
+    late: false,
+    ...payload,
+  };
+  act(() => {
+    for (const cb of [...agentChangedHandlers]) cb(full);
+  });
+}
+
 beforeEach(() => {
   // 折叠偏好走 localStorage；每个用例从默认展开状态开始，避免跨用例串状态
   localStorage.clear();
@@ -163,6 +188,16 @@ beforeEach(() => {
   ipc.historyRuns.mockResolvedValue({ items: [], total: 0, next_cursor: null });
   ipc.historySession.mockResolvedValue(null);
   ipc.historyGroups.mockResolvedValue({ items: [], truncated: false });
+  // agent-changed：记录订阅回调；退订时调用 spy 并从列表移除。
+  agentChangedHandlers = [];
+  unlistenAgentChanged = vi.fn();
+  ipc.onAgentChanged.mockImplementation((cb: (payload: AgentChangedEvent) => void) => {
+    agentChangedHandlers.push(cb);
+    return Promise.resolve(() => {
+      unlistenAgentChanged();
+      agentChangedHandlers = agentChangedHandlers.filter((h) => h !== cb);
+    });
+  });
   useAgentsStore.setState({ snapshot: snapshot(), snapshotError: null });
   useUiStore.setState({ agentFocus: null });
 });
@@ -935,5 +970,294 @@ describe("折叠分组", () => {
     render(<AgentPanel />);
     fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
     await screen.findByText("Codex CLI");
+  });
+});
+
+describe("历史分组截断的可访问性（P2-02）", () => {
+  it("分组截断时说明可搜索访问全部历史，按钮聚焦面板搜索框", async () => {
+    ipc.historyGroups.mockResolvedValue({
+      items: Array.from({ length: 3 }, (_, i) => ({
+        source_id: "codex",
+        instance_id: `inst-${i}`,
+        instance_key: `instance-${i}`,
+        display_name: `实例 ${i}`,
+        count: 1,
+      })),
+      truncated: true,
+    });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByText("Codex CLI"));
+
+    const hint = await screen.findByText(/历史实例过多/);
+    expect(hint.textContent).toContain("3");
+    expect(hint.textContent).toContain("可用搜索访问全部历史");
+    const btn = screen.getByRole("button", { name: "搜索历史记录" });
+    fireEvent.click(btn);
+    // 不新增第二个输入框：焦点交给面板顶部既有的监控/历史搜索输入框
+    expect(document.activeElement).toBe(searchInput());
+  });
+});
+
+describe("历史列表更新反馈（agent-changed 轻量探测）", () => {
+  function groupOf(count: number) {
+    return {
+      items: [
+        { source_id: "codex", instance_id: null, instance_key: null, display_name: null, count },
+      ],
+      truncated: false,
+    };
+  }
+
+  function histItem(i: number, overrides: Record<string, unknown> = {}) {
+    return {
+      id: `hist-${i}`,
+      source_id: "codex",
+      external_id: `ext-hist-${i}`,
+      title: `历史会话 ${i}`,
+      status: "completed",
+      first_seen_at: ago(600 + i),
+      last_seen_at: ago(500 + i),
+      last_run_id: null,
+      instance_id: null,
+      run_count: 1,
+      ...overrides,
+    };
+  }
+
+  function pageOf(n: number, total = n) {
+    return {
+      items: Array.from({ length: n }, (_, i) => histItem(i)),
+      total,
+      next_cursor: null,
+    };
+  }
+
+  const probes = () => ipc.historySessions.mock.calls.filter((c) => c[0]?.limit === 1);
+
+  /** 展开 Codex → 展开未关联实例的历史分区，等首屏历史页落地。 */
+  async function openHistorySection() {
+    render(<AgentPanel />);
+    await act(async () => {}); // 初始扫描等 promise 落地
+    fireEvent.click(screen.getByText("Codex CLI"));
+    fireEvent.click(screen.getByRole("button", { name: "历史会话分区" }));
+    await act(async () => {}); // 首屏历史页落地
+    expect(screen.getByText("历史会话 0")).toBeTruthy();
+  }
+
+  it("展开历史分区后同 source 事件触发一次去抖探测，头部不同则提示更新", async () => {
+    vi.useFakeTimers();
+    try {
+      ipc.historyGroups.mockResolvedValue(groupOf(11));
+      ipc.historySessions.mockImplementation((opts: { limit?: number } = {}) => {
+        if (opts.limit === 1) {
+          return Promise.resolve({
+            items: [histItem(0, { id: "hist-new", title: "新完成的历史会话", last_seen_at: ago(1) })],
+            total: 11,
+            next_cursor: null,
+          });
+        }
+        return Promise.resolve(pageOf(10, 11));
+      });
+
+      await openHistorySection();
+      expect(screen.queryByRole("button", { name: /有新的历史记录/ })).toBeNull();
+
+      emitAgentChanged({ source_id: "codex", session_id: "hist-new" });
+      // 800ms 去抖：窗口内不探测
+      await act(async () => {
+        vi.advanceTimersByTime(799);
+      });
+      expect(probes()).toHaveLength(0);
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+      // 一批事件只发一次 limit=1 的轻量探测（不是全量刷新）
+      expect(probes()).toHaveLength(1);
+      expect(probes()[0][0]).toEqual(
+        expect.objectContaining({ sourceId: "codex", unassigned: true, limit: 1 }),
+      );
+      await act(async () => {});
+      expect(screen.getByRole("button", { name: /有新的历史记录/ })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("去抖窗口内的多次事件只探测一次", async () => {
+    vi.useFakeTimers();
+    try {
+      ipc.historyGroups.mockResolvedValue(groupOf(11));
+      ipc.historySessions.mockImplementation((opts: { limit?: number } = {}) =>
+        opts.limit === 1
+          ? Promise.resolve({
+              items: [histItem(50, { id: "hist-new", title: "新完成的历史会话" })],
+              total: 11,
+              next_cursor: null,
+            })
+          : Promise.resolve(pageOf(10, 11)),
+      );
+      await openHistorySection();
+
+      emitAgentChanged({ source_id: "codex", session_id: "x1" });
+      await act(async () => {
+        vi.advanceTimersByTime(300);
+      });
+      emitAgentChanged({ source_id: "codex", session_id: "x2" });
+      await act(async () => {
+        vi.advanceTimersByTime(300);
+      });
+      emitAgentChanged({ source_id: "codex", session_id: "x3" });
+      await act(async () => {
+        vi.advanceTimersByTime(799);
+      });
+      expect(probes()).toHaveLength(0);
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(probes()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("点击「更新」按正常 pageSize 重拉，提示消失，已展开会话保留且不重复", async () => {
+    vi.useFakeTimers();
+    try {
+      let pageLoads = 0;
+      ipc.historyGroups.mockResolvedValue(groupOf(11));
+      ipc.historySessions.mockImplementation((opts: { limit?: number } = {}) => {
+        if (opts.limit === 1) {
+          return Promise.resolve({
+            items: [histItem(0, { id: "hist-new", title: "新完成的历史会话" })],
+            total: 11,
+            next_cursor: null,
+          });
+        }
+        pageLoads += 1;
+        if (pageLoads === 1) return Promise.resolve(pageOf(10, 11));
+        // 更新后的新第一页不再包含 hist-3
+        return Promise.resolve({
+          items: Array.from({ length: 10 }, (_, i) =>
+            histItem(100 + i, { title: `新页历史会话 ${i}` }),
+          ),
+          total: 11,
+          next_cursor: null,
+        });
+      });
+      await openHistorySection();
+
+      // 展开一条历史会话（hist-3）
+      fireEvent.click(screen.getByText("历史会话 3"));
+      await act(async () => {});
+
+      emitAgentChanged({ source_id: "codex", session_id: "hist-new" });
+      await act(async () => {
+        vi.advanceTimersByTime(800);
+      });
+      await act(async () => {});
+      expect(screen.getByRole("button", { name: /有新的历史记录/ })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: /有新的历史记录/ }));
+      await act(async () => {});
+
+      // 提示消失；以正常 pageSize（无 cursor）重新拉取
+      expect(screen.queryByRole("button", { name: /有新的历史记录/ })).toBeNull();
+      const reloads = ipc.historySessions.mock.calls.filter(
+        (c) => c[0]?.limit === 10 && !c[0]?.cursor,
+      );
+      expect(reloads).toHaveLength(2);
+      expect(reloads[1][0]).toEqual(
+        expect.objectContaining({ sourceId: "codex", unassigned: true, limit: 10 }),
+      );
+
+      // 新第一页渲染；hist-3 不在新页但因已展开被保留在列表中，且只出现一次
+      expect(screen.getByText("新页历史会话 0")).toBeTruthy();
+      expect(screen.getAllByText("历史会话 3")).toHaveLength(1);
+      expect(screen.queryByText("历史会话 0")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("其他 source 的事件不触发探测", async () => {
+    vi.useFakeTimers();
+    try {
+      ipc.historyGroups.mockResolvedValue(groupOf(10));
+      ipc.historySessions.mockImplementation((opts: { limit?: number } = {}) =>
+        opts.limit === 1
+          ? Promise.resolve({ items: [histItem(99)], total: 10, next_cursor: null })
+          : Promise.resolve(pageOf(10, 10)),
+      );
+      await openHistorySection();
+
+      emitAgentChanged({ source_id: "trae", sources: ["trae"], session_id: "t-1" });
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+      await act(async () => {});
+      expect(probes()).toHaveLength(0);
+      expect(screen.queryByRole("button", { name: /有新的历史记录/ })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("探测头部相同则不提示", async () => {
+    vi.useFakeTimers();
+    try {
+      ipc.historyGroups.mockResolvedValue(groupOf(10));
+      ipc.historySessions.mockImplementation((opts: { limit?: number } = {}) =>
+        opts.limit === 1
+          ? Promise.resolve({ items: [histItem(0)], total: 10, next_cursor: null })
+          : Promise.resolve(pageOf(10, 10)),
+      );
+      await openHistorySection();
+
+      emitAgentChanged({ source_id: "codex", session_id: "hist-0" });
+      await act(async () => {
+        vi.advanceTimersByTime(800);
+      });
+      await act(async () => {});
+      expect(probes()).toHaveLength(1);
+      expect(screen.queryByRole("button", { name: /有新的历史记录/ })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("组件卸载后退订 agent-changed，迟到事件不引发状态更新", async () => {
+    ipc.historyGroups.mockResolvedValue(groupOf(10));
+    ipc.historySessions.mockResolvedValue(pageOf(10, 10));
+    const { unmount } = render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByText("Codex CLI"));
+    fireEvent.click(screen.getByRole("button", { name: "历史会话分区" }));
+    await screen.findByText("历史会话 0");
+    expect(ipc.onAgentChanged).toHaveBeenCalled();
+    expect(agentChangedHandlers.length).toBe(1);
+    const staleCb = agentChangedHandlers[0];
+
+    unmount();
+    await waitFor(() => expect(unlistenAgentChanged).toHaveBeenCalled());
+    expect(agentChangedHandlers).toHaveLength(0);
+
+    // 卸载后再派发（队列残留回调 + 重新派发）：监听已移除/已置 disposed，无报错
+    expect(() =>
+      act(() => {
+        staleCb?.({
+          source_id: "codex",
+          sources: ["codex"],
+          session_id: "late",
+          states: {},
+          batch: 1,
+          changed: true,
+          deduplicated: false,
+          late: false,
+        });
+      }),
+    ).not.toThrow();
+    expect(() => emitAgentChanged({ source_id: "codex", session_id: "late" })).not.toThrow();
   });
 });

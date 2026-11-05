@@ -921,13 +921,29 @@ export interface TtsVoiceInfo {
   name: string;
   language: string;
   gender: "male" | "female" | "unknown";
+  /** 合成引擎 ID：系统语音固定 `system`；高品质引擎为其模型 ID */
+  engine: string;
   available: boolean;
+}
+/**
+ * 引擎元数据：`available=false` 时 UI 必须如实展示原因，
+ * 不得伪造音色、不得静默回退（后端同样拒绝不可用引擎的合成请求）。
+ */
+export interface TtsEngineInfo {
+  id: string;
+  name: string;
+  available: boolean;
+  /** not_integrated | unsupported_platform；可用时为空 */
+  reason: string;
+  detail: string;
+  requiresDownload: boolean;
 }
 export interface TtsVoicesReport {
   ok: boolean;
   code: string;
   message: string;
   voices: TtsVoiceInfo[];
+  engines: TtsEngineInfo[];
   hasChineseMale: boolean;
   hasChineseFemale: boolean;
   platform: string;
@@ -975,6 +991,8 @@ export const ttsSynthesize = (args: {
   gender?: string;
   rate?: number;
   persist?: boolean;
+  /** 合成引擎；缺省为 system。不可用引擎返回结构化 engine_unavailable */
+  engine?: string;
 }) => invoke<TtsSynthesisReport>("tts_synthesize", args);
 export const ttsCacheStats = () => invoke<TtsCacheReport>("tts_cache_stats");
 export const ttsCacheClear = () => invoke<TtsCacheClearReport>("tts_cache_clear");
@@ -1368,6 +1386,25 @@ export const clipboardGroupPage = (
     limit: opts.limit,
     offset: opts.offset ?? 0,
     imagesOnly: opts.imagesOnly ?? false,
+  });
+/**
+ * 组内条目定位（`clipboard_group_item_position`）：返回条目在组内「图片序列」中的
+ * 0-based 序位与组内容版本（revision 与 `clipboard_group_page` 完全一致）。
+ * 组不存在时后端返回 NotFound；条目不在组内或不是图片时 `found=false`、`index=null`。
+ * Lite 原图预览用它按图片 ID 恢复身份，组内容变化后不静默换成另一张图。
+ */
+export interface ClipboardGroupItemPosition {
+  found: boolean;
+  index: number | null;
+  imageCount: number;
+  totalCount: number;
+  revision: string;
+}
+
+export const clipboardGroupItemPosition = (groupId: string, itemId: string) =>
+  invoke<ClipboardGroupItemPosition>("clipboard_group_item_position", {
+    groupId,
+    itemId,
   });
 export const clipboardStats = () => invoke<ClipboardStats>("clipboard_stats");
 export const clipboardThumb = (itemId: string) =>
@@ -2351,6 +2388,8 @@ export const shelfList = (opts?: {
   favorite_only?: boolean;
   limit?: number;
   offset?: number;
+  /** default = 置顶优先（完整暂存架）；recent = 纯创建时间倒序（胶囊最近暂存） */
+  sort?: "default" | "recent";
 }) =>
   invoke<ShelfPage>("shelf_list", {
     search: opts?.search ?? null,
@@ -2359,6 +2398,7 @@ export const shelfList = (opts?: {
     favoriteOnly: opts?.favorite_only ?? false,
     limit: opts?.limit ?? 100,
     offset: opts?.offset ?? 0,
+    sort: opts?.sort ?? null,
   });
 
 export const shelfStats = () => invoke<ShelfStats>("shelf_stats");

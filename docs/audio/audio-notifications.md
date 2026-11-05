@@ -206,6 +206,9 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 | `AudioContext.resume()` 失败 | 3s 超时/异常明确 reject，不把自动播放失败当作播放成功 |
 | 睡眠恢复 | 事件驱动，不补播；超补偿窗口的旧提醒只入库/推进、不发声 |
 | 退出 | 服务 `dispose()` 停止播放、取消预生成、关闭 AudioContext；Rust 退出时取消在途合成并 join 常驻线程 |
+| 请求未启用的引擎 | 结构化 `engine_unavailable`；**不初始化**引擎线程、不静默回退到系统音色 |
+| 试听文本为空/超长 | `text_empty` / `text_too_long`（前端上限 80 字符），不发起合成 |
+| 试听被用户停止 | `cancelled`，不计成功；立即释放独占播放通道 |
 | 设置写入失败（如语音开关保存失败） | 结构化 Toast「音频设置保存失败：<原因>；原设置保持不变」；开关由 store 值驱动自动回弹，不抛未处理 rejection，不影响其它设置 |
 
 ## 10. 验证与证据
@@ -338,3 +341,54 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 语音侧行为不变：TTS 开关/语速/音量/声音写入仍走 `update_settings`，预生成与播放策略、
 常驻 WinRT 线程、缓存 Key、白名单均未改动。第五轮证据见
 `tmp/acceptance/tts-blank-window/report-round2-2026-11-05.md`。
+
+## 14. 音色系统升级与高品质离线语音评估（2026-11-05 第六轮）
+
+### 14.1 双引擎架构
+
+| 引擎 | ID | 状态 | 说明 |
+|---|---|---|---|
+| 系统语音 | `system` | 可用 | Windows WinRT（`SpeechSynthesizer`），零下载、低内存；常驻 MTA 线程（单次 `CoInitializeEx`，不恢复每次合成销毁 COM） |
+| 高品质语音 | `neural` | **本版本未启用** | 后端 `tts_synthesize` 对非 `system` 引擎返回结构化 `engine_unavailable`；`tts_list_voices` 的 `engines[]` 如实返回 `available=false` 与原因，前端不伪造音色、不静默回退 |
+
+- 接口：`tts_list_voices` 返回 `voices[]`（新增 `engine` 字段）与 `engines[]`（id/name/available/reason/detail/requiresDownload）；
+  `tts_synthesize` 增加可选 `engine`（缺省 `system`）。音色枚举、试听、合成、缓存、错误报告全部复用既有 `AudioService` 与前端唯一调度者。
+- 引擎隔离：缓存 Key 已加入引擎维度（`cache_key(text, voice_id, language, rate, engine)`），
+  同名音色在不同引擎下不会命中彼此缓存；Key 版本升至 `tts-key/2/wav`，旧 `winrt-speech/1` 条目不再命中并随 LRU 自然淘汰（不做批量删除）。
+- 资源生命周期：未启用高品质引擎时不加载任何模型；系统引擎仍按需创建、退出时取消并 join。
+
+### 14.2 音色选择器（设置页「语音播报」）
+
+- 引擎行：系统语音（可用）/ 高品质语音（不可用，附真实原因与「需单独下载模型」说明）。
+- 音色列表：名称、语言（中文/英文）、性别、引擎、可用性、当前选中；行内独立试听按钮；
+  点击行才保存默认音色（并同步 `tts_voice_gender`），试听不改设置。
+- 试听：同一条再次点击停止；切换试听先中止上一条；同一时刻只有一条（复用唯一播放通道）；失败/回退如实提示；成功不弹提示。
+- 试听内容：4 条真实播报句式（任务已完成 / 需要你的操作 / 你的日程提醒时间到了 / AI 助手已完成当前任务）+ 自定义文本（≤80 字符，仅内存使用，不持久化）。
+- 筛选：全部/中文/英文/男声/女声，仅当音色数 > 4 时出现；支持上下/Home/End 键盘导航与 `role=radio` 状态。
+- 主题：全部使用语义 Token，浅色/深色/两套预设共用；窄窗（≤340px）纵向排列。
+
+### 14.3 播报文本自然度
+
+- 动态标签（来源名/任务标题）统一经 `sanitizeSpeechLabel` 清洗：去控制字符、URL、邮箱、Windows/UNC 路径；
+  连续标点收敛；纯符号标签丢弃；按字符截断到 40 字符（避免整段朗读长标题）。
+- 文本长度上限仍保留 300 字符（后端 `MAX_TEXT_CHARS`），作为防御性兜底。
+- 不做大模型润色；不新增难懂的音色调节项（仅保留语速/音量/声音偏好）。
+
+### 14.4 高品质离线引擎选型评估（未集成，阻断原因）
+
+| 方案 | 引擎许可 | 中文模型/权重许可 | 体积 | 运行依赖 | 结论 |
+|---|---|---|---|---|---|
+| Piper（rhasspy/piper → OHF-Voice/piper1-gpl） | 迁移后仓库名即声明 GPL；官方 README 明确「嵌入 espeak-ng 做音素化」 | 各 voice 单独（多为 CC-BY 等，需逐个核对） | 中（~20–60MB/voice） | 原生 C++/ONNX；espeak-ng 数据 | **阻断**：GPL + espeak-ng 与项目分发方式冲突，需产品/法务决策 |
+| MeloTTS | MIT | 未单独声明预训练模型许可；中文+英文混合 | 中-大 | **Python + PyTorch** | **阻断**：违反「不强制安装 Python 运行环境」 |
+| Kokoro-82M（ONNX 路径） | Apache-2.0 | Apache-2.0；中文需多语模型（sherpa-onnx 提供 kokoro-multi-lang） | 大：fp32 ~300MB 级；量化后仍 ≥~90MB | ONNX Runtime + G2P/词典 | **暂缓**：许可可行，但体积与 G2P 集成成本最高；且需新增 onnxruntime 二进制 |
+| sherpa-onnx（Apache-2.0，Rust API 可用） | Apache-2.0 | 小体积中文 Matcha `matcha-icefall-zh-baker`：官方文档注明训练数据 **仅限非商业用途**；VITS zh 系列为社区 HF 模型，许可逐模型不一 | 中-大（Matcha ~167MB + vocoder ~51MB） | 原生库（构建需 cmake 或预编译库；本机无 cmake） | **阻断**：唯一「小体积」中文模型为非商业许可；其余合规选项体积大/许可未明 |
+
+**结论**：在「体积/许可/无 Python/可维护」四项同时满足的前提下，本轮未找到可安全默认集成的高品质中文离线模型；
+按任务规则停止阶段二集成，保留已完成并验证的音色体验升级，阻断原因如上（许可证需产品决策，不作为代码缺陷）。
+
+### 14.5 阶段二落地路径（后续）
+
+1. 若接受 Apache-2.0 + 数百 MB 可选下载：以 `sherpa-onnx`（Rust API + 预编译库）× `kokoro-multi-lang`（中文）实现
+   `neural` 引擎：模型清单（id/大小/SHA-256/许可）→ 用户确认下载（可取消/续传/校验）→ 按需加载 + 空闲释放（有界 TTL，无轮询）。
+2. 若接受 GPL：Piper + 中文 voice，需同步 GPL 合规方案（分发源码/许可声明），并单独核对每个 weight 的许可。
+3. 任一方案落地前：缓存 Key 已隔离、`engine` 参数与 `engines[]` 元数据已就位，前端只需补充引擎选择持久化（`tts_engine` 设置键）与安装/进度 UI。

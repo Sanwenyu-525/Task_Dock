@@ -38,7 +38,14 @@ function shortPath(path: string): string {
   return `…\\${parts.slice(-3).join("\\")}`;
 }
 
-export default function DropTargetManager({ onClose }: { onClose: () => void }) {
+export default function DropTargetManager({
+  onClose,
+  onDirtyChange,
+}: {
+  onClose: () => void;
+  /** 把「有未保存表单」上报给工作区：外部定位需要先确认才能切换视图。 */
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const targets = useDropTargetsStore((s) => s.targets);
   const loading = useDropTargetsStore((s) => s.loading);
   const error = useDropTargetsStore((s) => s.error);
@@ -54,12 +61,29 @@ export default function DropTargetManager({ onClose }: { onClose: () => void }) 
   const [confirmId, setConfirmId] = useState<string | null>(null);
   /** 有未保存表单时返回暂存架必须先确认，不能静默丢弃输入。 */
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  /** 表单字段相对初始值是否真的变化（只是打开表单不算未保存修改）。 */
+  const [formDirty, setFormDirty] = useState(false);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const formOpen = adding || editing !== null;
+  const dirty = formOpen && formDirty;
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  // 打开/切换表单时先清掉上一张表单的脏标记，等新表单上报真实差异。
+  useEffect(() => {
+    setFormDirty(false);
+  }, [adding, editing]);
+
+  // 卸载时清掉标记：离开视图后不存在「未保存表单」。
+  useEffect(() => {
+    return () => onDirtyChange?.(false);
+  }, [onDirtyChange]);
 
   const run = async (fn: () => Promise<unknown>, ok?: string) => {
     try {
@@ -71,7 +95,7 @@ export default function DropTargetManager({ onClose }: { onClose: () => void }) 
   };
 
   const requestClose = () => {
-    if (formOpen) {
+    if (dirty) {
       setConfirmDiscard(true);
       return;
     }
@@ -136,6 +160,7 @@ export default function DropTargetManager({ onClose }: { onClose: () => void }) 
         <DropTargetForm
           target={null}
           variant="shelf"
+          onDirtyChange={setFormDirty}
           onDone={(msg) => {
             setAdding(false);
             if (msg) showToast(msg, { kind: "success" });
@@ -171,6 +196,7 @@ export default function DropTargetManager({ onClose }: { onClose: () => void }) 
                 <DropTargetForm
                   target={t}
                   variant="shelf"
+                  onDirtyChange={setFormDirty}
                   onDone={(msg) => {
                     setEditing(null);
                     if (msg) showToast(msg, { kind: "success" });

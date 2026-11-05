@@ -532,7 +532,15 @@ pub fn query_groups(
              GROUP BY s.source_id,
                       CASE WHEN i.id IS NULL THEN NULL ELSE s.instance_id END,
                       i.instance_key, i.display_name
-             ORDER BY s.source_id, n DESC
+             -- 确定序（P2-02）：n 相同时按 instance_key、实例行 ID 升序，保证两次查询
+             -- 的可见子集不重排。实例行 ID 用 COALESCE(i.id, '') 而不是裸
+             -- s.instance_id：未关联分组内各行的 s.instance_id 可能是 NULL 或不同的
+             -- 悬空 ID（GROUP BY 取任意行，计划变化会带动排序漂移），而 i.id 对整个
+             -- 未关联分组恒为 NULL、对真实分组恒等于实例主键，才是分组常量。
+             -- 聚合输出最多 MAX_GROUPS+1 行，内存排序开销可忽略；仍保持有界 LIMIT。
+             ORDER BY s.source_id, n DESC,
+                      COALESCE(i.instance_key, ''),
+                      COALESCE(i.id, '')
              LIMIT {}",
             clauses.join(" AND "),
             MAX_GROUPS + 1
@@ -2138,5 +2146,321 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    /// P2-02：分组超过 2000 上限后仍可访问。截断必须如实标记、两次查询的可见
+    /// 子集与顺序完全一致（确定序），且被截掉分组的会话仍可搜索 / 定位。
+    #[test]
+    fn groups_over_limit_are_truncated_stably_and_tail_is_searchable() {
+        let db = memdb();
+        db.with_conn(|conn| {
+            insert_source(conn, "codex", false)?;
+            let tx = conn.unchecked_transaction()?;
+            for i in 0..(MAX_GROUPS as usize + 1) {
+                let inst = format!("inst-{i:04}");
+                insert_instance(
+                    &tx,
+                    &inst,
+                    "codex",
+                    &format!("instance-{i:04}"),
+                    "2026-01-01T00:00:00+00:00",
+                )?;
+                let sid = format!("sess-{i:04}");
+                // 第 2001 个实例的会话给独立标题，用于验证截断后仍可被关键词命中。
+                let title = if i == MAX_GROUPS as usize {
+                    "超限边缘会话".to_string()
+                } else {
+                    format!("批量会话 {i}")
+                };
+                insert_session(
+                    &tx,
+                    &sid,
+                    "codex",
+                    Some(&inst),
+                    "idle",
+                    "2026-01-01T00:00:00+00:00",
+                    &title,
+                    &sid,
+                )?;
+            }
+            tx.commit()?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let run = || query_groups(&db, &AgentHistoryGroupQuery::default()).unwrap();
+        let first = run();
+        assert!(first.truncated, "2001 个分组必须如实标记 truncated");
+        assert_eq!(
+            first.items.len(),
+            MAX_GROUPS as usize,
+            "截断后恰返回 2000 个分组"
+        );
+        // 排序稳定性：两次查询结果完全一致。
+        let key = |g: &AgentHistoryGroup| {
+            (
+                g.source_id.clone(),
+                g.instance_id.clone(),
+                g.instance_key.clone(),
+                g.display_name.clone(),
+                g.count,
+            )
+        };
+        let second = run();
+        let order: Vec<_> = first.items.iter().map(key).collect();
+        let order_again: Vec<_> = second.items.iter().map(key).collect();
+        assert_eq!(order, order_again, "两次查询的可见子集与顺序必须完全一致");
+
+        // 确定序：(source_id, n DESC, instance_key) 全序——instance_key 在同一
+        // source 内唯一（UNIQUE(source_id, instance_key)），因此窗口断言覆盖全序。
+        for w in first.items.windows(2) {
+            let (x, y) = (&w[0], &w[1]);
+            assert!(x.source_id <= y.source_id, "来源之间按 source_id 升序");
+            if x.source_id == y.source_id && x.count == y.count {
+                let xk = x.instance_key.clone().unwrap_or_default();
+                let yk = y.instance_key.clone().unwrap_or_default();
+                assert!(xk < yk, "同数量分组必须按 instance_key 稳定排序: {xk} !< {yk}");
+            } else {
+                assert!(x.count >= y.count, "同来源内必须按数量降序");
+            }
+        }
+        assert_eq!(
+            first.items[0].instance_key.as_deref(),
+            Some("instance-0000"),
+            "同数量按 instance_key 升序"
+        );
+        assert_eq!(first.items[MAX_GROUPS as usize - 1].instance_key.as_deref(), Some("instance-1999"));
+        assert!(!first
+            .items
+            .iter()
+            .any(|g| g.instance_key.as_deref() == Some("instance-2000")));
+
+        // 截断 ≠ 不可访问：第 2001 个分组的会话仍可被关键词搜索命中并按 ID 打开。
+        let hit = query_sessions(
+            &db,
+            &AgentSessionHistoryQuery {
+                keyword: Some("超限边缘".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hit.total, 1, "被截断分组的会话必须仍可被关键词搜索命中");
+        assert_eq!(hit.items[0].source_id, "codex");
+        assert!(find_session(&db, &hit.items[0].id).unwrap().is_some(),
+            "find_session 必须能打开被截断分组的会话");
+    }
+
+    /// P2-02：隐藏来源与已删除来源（无 agent_sources 行的残留会话）不得进入分组。
+    #[test]
+    fn groups_exclude_hidden_and_deleted_sources() {
+        let db = memdb();
+        db.with_conn(|conn| {
+            insert_source(conn, "codex", false)?;
+            insert_source(conn, "hidden-src", true)?;
+            insert_session(
+                conn,
+                "s-codex",
+                "codex",
+                None,
+                "idle",
+                "2026-01-01T00:00:00+00:00",
+                "可见来源",
+                "e1",
+            )?;
+            insert_session(
+                conn,
+                "s-hidden",
+                "hidden-src",
+                None,
+                "idle",
+                "2026-01-01T00:00:00+00:00",
+                "隐藏来源",
+                "e2",
+            )?;
+            // 模拟「已删除来源」的残留会话（无 agent_sources 行）：防御性场景，
+            // 分组查询 INNER JOIN agent_sources 必须天然排除，不伪造来源分组。
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+            conn.execute(
+                "INSERT INTO agent_sessions
+                   (id, source_id, external_id, title, status, first_seen_at, last_seen_at,
+                    last_run_id, instance_id, origin)
+                 VALUES ('s-ghost', 'ghost-src', 'e3', '幽灵来源', 'idle',
+                         '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', NULL, NULL, 'real')",
+                [],
+            )?;
+            conn.pragma_update(None, "foreign_keys", "ON")?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let groups = query_groups(&db, &AgentHistoryGroupQuery::default()).unwrap();
+        assert_eq!(groups.items.len(), 1, "只应返回可见来源 codex 的分组");
+        assert_eq!(groups.items[0].source_id, "codex");
+        assert!(!groups.items.iter().any(|g| g.source_id == "hidden-src"));
+        assert!(!groups.items.iter().any(|g| g.source_id == "ghost-src"));
+        assert!(!groups.truncated);
+
+        // 历史会话查询同样排除隐藏与残留来源。
+        let sessions = query_sessions(
+            &db,
+            &AgentSessionHistoryQuery {
+                limit: Some(100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(sessions.total, 1, "隐藏与已删除来源的会话不进入历史查询");
+    }
+
+    /// P2-02：同一来源两个实例 display_name 相同、instance_key 不同 → 两个独立分组。
+    #[test]
+    fn same_display_name_instances_stay_separate_groups() {
+        let db = memdb();
+        db.with_conn(|conn| {
+            insert_source(conn, "codex", false)?;
+            insert_instance(conn, "inst-a", "codex", "key-alpha", "2026-01-01T00:00:00+00:00")?;
+            insert_instance(conn, "inst-b", "codex", "key-beta", "2026-01-01T00:00:00+00:00")?;
+            // 构造前提：display_name 相同（insert_instance 默认用 key 作为名称）。
+            conn.execute(
+                "UPDATE agent_instances SET display_name = '同名实例' WHERE id IN ('inst-a','inst-b')",
+                [],
+            )?;
+            insert_session(
+                conn,
+                "s-a",
+                "codex",
+                Some("inst-a"),
+                "idle",
+                "2026-01-01T00:00:00+00:00",
+                "A",
+                "ea",
+            )?;
+            insert_session(
+                conn,
+                "s-b",
+                "codex",
+                Some("inst-b"),
+                "idle",
+                "2026-01-01T00:00:00+00:00",
+                "B",
+                "eb",
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let groups = query_groups(&db, &AgentHistoryGroupQuery::default()).unwrap();
+        let named: Vec<_> = groups
+            .items
+            .iter()
+            .filter(|g| g.instance_id.is_some())
+            .collect();
+        assert_eq!(
+            named.len(),
+            2,
+            "display_name 相同、instance_key 不同的两个实例不得合并成分组"
+        );
+        let names: std::collections::HashSet<_> =
+            named.iter().map(|g| g.display_name.as_deref().unwrap()).collect();
+        assert_eq!(names.len(), 1, "构造前提：display_name 相同");
+        // 确定序：同数量按 instance_key 升序，两个分组顺序可复现。
+        assert_eq!(named[0].instance_key.as_deref(), Some("key-alpha"));
+        assert_eq!(named[1].instance_key.as_deref(), Some("key-beta"));
+    }
+
+    /// P2-02：未关联实例分组遵循既有 LIMIT 语义——未被截断时正常返回；
+    /// 超限被截掉时 truncated=true 如实反映，不出现在结果里。
+    #[test]
+    fn unassigned_group_follows_limit_semantics() {
+        let db = memdb();
+        db.with_conn(|conn| {
+            insert_source(conn, "bulk", false)?;
+            insert_source(conn, "solo", false)?;
+            let tx = conn.unchecked_transaction()?;
+            // bulk：2000 个实例分组（各 2 条历史会话）+ 1 条未关联会话 = 2001 组，
+            // 未关联分组数量最少、按 n DESC 排最后，被截掉。
+            for i in 0..MAX_GROUPS as usize {
+                let inst = format!("inst-{i:04}");
+                insert_instance(
+                    &tx,
+                    &inst,
+                    "bulk",
+                    &format!("instance-{i:04}"),
+                    "2026-01-01T00:00:00+00:00",
+                )?;
+                for j in 0..2 {
+                    let sid = format!("sess-{i:04}-{j}");
+                    insert_session(
+                        &tx,
+                        &sid,
+                        "bulk",
+                        Some(&inst),
+                        "idle",
+                        "2026-01-01T00:00:00+00:00",
+                        &sid,
+                        &sid,
+                    )?;
+                }
+            }
+            insert_session(
+                &tx,
+                "sess-unassigned",
+                "bulk",
+                None,
+                "idle",
+                "2026-01-01T00:00:00+00:00",
+                "未关联",
+                "eu",
+            )?;
+            // solo：只有一条未关联会话 → 未截断时未关联分组正常返回。
+            insert_session(
+                &tx,
+                "solo-sess",
+                "solo",
+                None,
+                "idle",
+                "2026-01-01T00:00:00+00:00",
+                "单条",
+                "es",
+            )?;
+            tx.commit()?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let solo = query_groups(
+            &db,
+            &AgentHistoryGroupQuery {
+                source_id: Some("solo".into()),
+                include_live: None,
+            },
+        )
+        .unwrap();
+        assert!(!solo.truncated);
+        assert_eq!(solo.items.len(), 1);
+        assert!(
+            solo.items[0].instance_id.is_none(),
+            "未被截断时未关联分组正常返回"
+        );
+        assert_eq!(solo.items[0].count, 1);
+
+        let bulk = query_groups(
+            &db,
+            &AgentHistoryGroupQuery {
+                source_id: Some("bulk".into()),
+                include_live: None,
+            },
+        )
+        .unwrap();
+        assert!(bulk.truncated, "2001 个分组超限必须标记 truncated");
+        assert_eq!(bulk.items.len(), MAX_GROUPS as usize);
+        assert!(
+            !bulk.items.iter().any(|g| g.instance_id.is_none()),
+            "未关联分组被截掉时不得出现在结果里"
+        );
+        assert!(
+            bulk.items.iter().all(|g| g.count == 2),
+            "被截掉的应是最小分组（未关联 1 条），保留的全是 2 条的实例分组"
+        );
     }
 }

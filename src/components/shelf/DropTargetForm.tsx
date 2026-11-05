@@ -10,7 +10,7 @@
 //! - 编辑时只提交本表单字段，目标 id、排序、可见性等既有配置原样保留；
 //! - 保存失败不落任何本地状态：store 不更新，界面继续显示旧目标。
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { AlertTriangle, ChevronDown, FolderOpen, Loader2, X } from "lucide-react";
 import type { DropTargetOpMode, ShelfConflictStrategy, ShelfDropTarget } from "../../lib/bridge";
@@ -77,6 +77,7 @@ export default function DropTargetForm({
   formId,
   hideActions = false,
   onBusyChange,
+  onDirtyChange,
 }: {
   /** null=新增；否则为编辑已有目标（只提交表单字段，保留 id/排序/可见性） */
   target: ShelfDropTarget | null;
@@ -88,6 +89,8 @@ export default function DropTargetForm({
   /** 胶囊底栏统一提供保存/取消时，隐藏表单内重复按钮 */
   hideActions?: boolean;
   onBusyChange?: (busy: boolean) => void;
+  /** 字段相对初始值是否变化：目标管理用它区分「打开表单」与「真的有未保存修改」。 */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const s = VARIANTS[variant];
   const create = useDropTargetsStore((st) => st.create);
@@ -98,6 +101,20 @@ export default function DropTargetForm({
   const [conflict, setConflict] = useState<ShelfConflictStrategy>(target?.conflict ?? "rename");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** 打开表单时的初始值：只有真正改动过才需要在离开时确认。 */
+  const baseline = useRef({
+    name: target?.name ?? "",
+    path: target?.path ?? "",
+    mode: (target?.op_mode ?? "copy") as DropTargetOpMode,
+    conflict: (target?.conflict ?? "rename") as ShelfConflictStrategy,
+  });
+
+  useEffect(() => {
+    const b = baseline.current;
+    onDirtyChange?.(
+      name !== b.name || path !== b.path || mode !== b.mode || conflict !== b.conflict,
+    );
+  }, [name, path, mode, conflict, onDirtyChange]);
 
   const markBusy = (next: boolean) => {
     setBusy(next);

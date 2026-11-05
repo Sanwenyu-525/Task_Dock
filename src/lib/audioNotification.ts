@@ -50,6 +50,32 @@ export const FIXED_PHRASES = [
 /** 试听用文本：刻意不在固定短语白名单内，避免试听写入持久缓存。 */
 const PREVIEW_TEXT = "语音播报已就绪";
 
+/**
+ * 设置页可选的试听短语：覆盖真实播报句式，便于比较音色而不必先应用。
+ * 与后端固定短语白名单无耦合（试听永不落盘）。
+ */
+export const PREVIEW_PHRASES = [
+  "任务已完成",
+  "需要你的操作",
+  "你的日程提醒时间到了",
+  "AI 助手已完成当前任务",
+] as const;
+
+/** 试听文本上限：限制滥用合成资源（后端另有 300 字符总上限）。 */
+export const PREVIEW_MAX_CHARS = 80;
+
+export type PreviewStage = "synthesizing" | "playing";
+
+export interface VoicePreviewOptions {
+  /** 显式音色 ID（"" = 自动）：试听指定音色但**不修改**默认设置 */
+  voiceId?: string;
+  gender?: string;
+  rate?: number;
+  text?: string;
+  /** 阶段回调：合成中 / 已交给播放器（用于按钮状态，不伪造播放进度） */
+  onStage?: (stage: PreviewStage) => void;
+}
+
 const KIND_MAP: Record<string, AudioEventKind> = {
   agent_running: "agent_started",
   agent_started: "agent_started",
@@ -183,6 +209,40 @@ export function eventKindOf(raw: string): AudioEventKind | null {
   return KIND_MAP[raw] ?? null;
 }
 
+/** 动态标签（来源名/任务标题）朗读前的清洗上限：过长的标题没有播报价值。 */
+export const MAX_SPEECH_LABEL_CHARS = 40;
+
+/**
+ * 播报标签清洗：只保留适合朗读的内容。
+ *
+ * - 去掉控制字符并折叠空白；
+ * - 去掉 URL / 邮箱 / Windows 路径 / UNC 路径（朗读它们既无意义又可能泄露隐私）；
+ * - 连续标点收敛，避免 TTS 产生不自然的长停顿；
+ * - 清洗后没有字母或数字（纯符号）则整段丢弃；
+ * - 超过上限截断（按字符而非字节，避免拆开代理对）。
+ */
+export function sanitizeSpeechLabel(raw: string | null | undefined): string {
+  if (typeof raw !== "string") return "";
+  let text = raw
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/www\.\S+/gi, " ")
+    .replace(/\b[\w.+-]+@[\w-]+\.[\w.]+\b/g, " ")
+    .replace(/[A-Za-z]:\\[^\s，。；、）]+/g, " ")
+    .replace(/\\\\[^\s，。；、）]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/([，。！？、；：])\1+/g, "$1")
+    .trim();
+  if (!text) return "";
+  if (!/[\p{L}\p{N}]/u.test(text)) return "";
+  const chars = Array.from(text);
+  if (chars.length > MAX_SPEECH_LABEL_CHARS) {
+    text = chars.slice(0, MAX_SPEECH_LABEL_CHARS).join("").trim();
+  }
+  return text;
+}
+
 /** 组播报文本。来源名/标题属于动态内容，默认不持久化（后端还有白名单兜底）。 */
 export function composeSpeech(
   kind: AudioEventKind,
@@ -206,8 +266,11 @@ export function composeSpeech(
                 ? "任务提醒时间到"
                 : "日程提醒时间到";
   const labels: string[] = [];
-  if (settings.speakSource && opts.sourceName?.trim()) labels.push(opts.sourceName.trim());
-  if (settings.speakTitle && opts.taskTitle?.trim()) labels.push(opts.taskTitle.trim());
+  // 清洗后再判断是否为空：清洗可能把「只有 URL 的标题」变成空字符串。
+  const source = sanitizeSpeechLabel(opts.sourceName);
+  const title = sanitizeSpeechLabel(opts.taskTitle);
+  if (settings.speakSource && source) labels.push(source);
+  if (settings.speakTitle && title) labels.push(title);
   const text =
     labels.length > 0 ? `「${labels.join(" · ")}」${base}` : base;
   const clipped = text.length > 300 ? `${text.slice(0, 300)}` : text;
@@ -262,6 +325,7 @@ export interface AudioAdapters {
     gender?: string;
     rate?: number;
     persist?: boolean;
+    engine?: string;
   }) => Promise<TtsSynthesisReport>;
   playTone: (kind: AudioEventKind, volume: number, signal: AbortSignal) => Promise<void>;
   playSpeech: (dataUrl: string, volume: number, signal: AbortSignal) => Promise<void>;
@@ -934,10 +998,15 @@ export class AudioNotificationService {
   }
 
   /**
-   * 设置页试听语音：按当前设置合成（不持久化），成功后单实例播放。
-   * 显式略过 TTS 总开关，便于用户在开启前先确认声音；仍服从全局静音。
+   * 设置页试听语音：合成后单实例播放，**不修改**任何设置、不落盘缓存。
+   *
+   * - 不传 `voiceId` 时按当前设置（旧行为）；传了则只试听该音色，
+   *   默认音色与性别偏好保持不变；
+   * - 显式略过 TTS 总开关，便于用户在开启前先确认声音；仍服从全局静音与语音音量；
+   * - 切换试听会中止上一条（同一时间只有一条试听）；
+   * - 真实播报占通道时返回 busy，绝不与通知叠音。
    */
-  async previewSpeech(): Promise<AudioPreviewResult> {
+  async previewSpeech(options: VoicePreviewOptions = {}): Promise<AudioPreviewResult> {
     if (this.disposed) return { ok: false, code: "disposed" };
     const snap = readAudioSettings(this.deps.getSettings());
     if (snap.muted) return { ok: false, code: "muted" };
@@ -945,32 +1014,46 @@ export class AudioNotificationService {
     this.previewController?.abort();
     // 语音音量 0：不做无意义的合成与播放，明确回报单通道静音。
     if (snap.ttsVolume <= 0) return { ok: false, code: "silent_speech" };
+    const text = (options.text ?? PREVIEW_TEXT).trim();
+    if (!text) return { ok: false, code: "text_empty" };
+    if (text.length > PREVIEW_MAX_CHARS) return { ok: false, code: "text_too_long" };
+    const explicitVoice = options.voiceId !== undefined;
+    const voiceId = explicitVoice ? options.voiceId : snap.ttsVoiceId;
+    const gender = options.gender ?? snap.ttsGender;
+    const rate = options.rate ?? snap.ttsRate;
     const controller = new AbortController();
     this.previewController = controller;
     this.previewing = true;
+    options.onStage?.("synthesizing");
     try {
       const report = await this.deps.synthesize({
-        text: PREVIEW_TEXT,
-        voiceId: snap.ttsVoiceId || undefined,
-        gender: snap.ttsGender,
-        rate: snap.ttsRate,
+        text,
+        voiceId: voiceId || undefined,
+        gender,
+        rate,
         persist: false,
       });
       if (controller.signal.aborted) return { ok: false, code: "cancelled" };
       if (!report.ok || !report.dataUrl) {
         return { ok: false, code: report.code || "failed" };
       }
-      // 合成期间切换了声音/语速：试听结果作废，避免听到旧声音。
-      const after = readAudioSettings(this.deps.getSettings());
-      if (
-        after.ttsVoiceId !== snap.ttsVoiceId ||
-        after.ttsGender !== snap.ttsGender ||
-        after.ttsRate !== snap.ttsRate
-      ) {
-        return { ok: false, code: "cancelled" };
+      // 按当前设置试听时，合成期间切换了声音/语速则作废；显式试听不受设置变化影响
+      // （新一次试听会中止本控制器）。
+      if (!explicitVoice) {
+        const after = readAudioSettings(this.deps.getSettings());
+        if (
+          after.ttsVoiceId !== snap.ttsVoiceId ||
+          after.ttsGender !== snap.ttsGender ||
+          after.ttsRate !== snap.ttsRate
+        ) {
+          return { ok: false, code: "cancelled" };
+        }
       }
       if (this.pumping) return { ok: false, code: "busy" };
+      options.onStage?.("playing");
       await this.deps.playSpeech(report.dataUrl, snap.ttsVolume, controller.signal);
+      // 播放期间用户点了停止：如实回报 cancelled，不把中断当成播放成功。
+      if (controller.signal.aborted) return { ok: false, code: "cancelled" };
       return {
         ok: true,
         code: "ok",
@@ -983,6 +1066,12 @@ export class AudioNotificationService {
       if (this.previewController === controller) this.previewController = null;
       this.endPreview();
     }
+  }
+
+  /** 主动停止试听（再次点击试听按钮 / 离开设置页）：只中止试听，不影响真实播报。 */
+  stopPreview(): void {
+    this.previewController?.abort();
+    this.previewController = null;
   }
 
   /** 语音关闭/静音/切声音：停止当前语音并让在途合成结果失效；提示音不受影响。 */

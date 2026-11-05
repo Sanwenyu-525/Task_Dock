@@ -230,6 +230,12 @@ export default function AgentPanel() {
   // 两处搜索状态相互独立；只在本已加载的数据上派生，不触发后端扫描。
   const [monitorQuery, setMonitorQuery] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
+  // 历史分组截断提示的「搜索历史记录」入口：把焦点交还面板顶部唯一的搜索输入框
+  // （SearchField 已有 aria-label/占位，不新增第二个输入框）。
+  const monitorSearchRef = useRef<HTMLInputElement | null>(null);
+  const focusMonitorSearch = useCallback(() => {
+    monitorSearchRef.current?.focus();
+  }, []);
   const [sectionOpen, setSectionOpen] = useState<Record<AgentSectionId, boolean>>(() =>
     readCollapsibleState(AGENT_SECTIONS_KEY, AGENT_SECTION_DEFAULTS),
   );
@@ -696,6 +702,7 @@ export default function AgentPanel() {
               placeholder={tr("agent.ui.searchPlaceholder")}
               value={monitorQuery}
               onChange={setMonitorQuery}
+              inputRef={monitorSearchRef}
               clearLabel={tr("agent.ui.clearSearch")}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
@@ -760,6 +767,7 @@ export default function AgentPanel() {
                 focusSessionId={agentFocus?.sessionId ?? null}
                 focusRunId={agentFocus?.refId ?? null}
                 focusPin={focusPin}
+                onRequestSearchFocus={focusMonitorSearch}
                 discovery={discoveryBySource.get(agent.id)}
                 onConnect={
                   discoveryBySource.has(agent.id)
@@ -1237,6 +1245,7 @@ function AgentNode({
   focusSessionId,
   focusRunId,
   focusPin,
+  onRequestSearchFocus,
   discovery,
   onConnect,
 }: {
@@ -1249,6 +1258,8 @@ function AgentNode({
   focusRunId: string | null;
   /** 快照外会话的后端定位结果（仅命中对应真实分组时注入） */
   focusPin?: { item: AgentHistorySession; agentId: string; instanceId: string | null } | null;
+  /** 分组截断时的可操作出口：聚焦面板顶部搜索框（搜索可访问全部历史） */
+  onRequestSearchFocus: () => void;
   discovery?: DiscoveredAgent;
   onConnect?: () => void;
 }) {
@@ -1538,8 +1549,18 @@ function AgentNode({
             </div>
           )}
           {historyGroups.truncated && (
+            // P2-02：截断不只提示，还给出可操作出口——搜索不依赖分组，可访问全部历史。
             <div className="empty-hint">
-              历史实例过多，仅显示前 {historyGroups.items.length} 个分组
+              历史实例过多，列表仅显示部分实例（前 {historyGroups.items.length} 个分组），
+              可用搜索访问全部历史
+              <button
+                type="button"
+                className="btn sm"
+                aria-label="搜索历史记录"
+                onClick={onRequestSearchFocus}
+              >
+                搜索历史记录
+              </button>
             </div>
           )}
           {historyGroups.loading && !agent.connected && displayInstances.length === 0 && (
@@ -1611,6 +1632,11 @@ function SessionList({
     enabled: historyOpen,
     pageSize: HISTORY_PAGE,
   });
+  // P3-01「有新的历史记录 · 更新」：刷新前记住本列表中处于展开状态的历史会话；
+  // 刷新后掉出已加载页的保留在列表顶部（按 id 去重、复用旧 item 对象），保证
+  // 「不突然改变当前展开的会话」。后端 total 仍为准，保留项只是展示补充；
+  // 用户折叠该会话或它重新进入已加载页后自动移除。
+  const retainedRef = useRef<Map<string, AgentHistorySession>>(new Map());
   // 折叠态数量来自右侧一次聚合查询（AgentNode 层），展开后由分页 total 接管。
   // 后端历史查询与 COUNT 已排除实时会话，这里不再前端过滤，避免「total 未过滤、
   // 列表被过滤」造成数量与首屏不一致。
@@ -1621,17 +1647,35 @@ function SessionList({
     : historyCount;
   const liveIds = new Set(live.map((s) => s.id));
   const historyItems = history.items;
-  // 快照外定位结果固定在最前；若后端分页已包含同一条则按 id 去重。
+  // 保留项：仍在展开状态、且不在当前已加载页中的历史会话（Map 键即 id，天然去重）。
+  const retainedItems: AgentHistorySession[] = [];
+  for (const [id, item] of retainedRef.current) {
+    if (!expanded[id] || historyItems.some((n) => n.id === id)) continue;
+    retainedItems.push(item);
+  }
+  // 快照外定位结果固定在最前；若后端分页/保留项已包含同一条则按 id 去重。
   const pinnedItem =
     pinnedSession &&
     !liveIds.has(pinnedSession.id) &&
+    !retainedItems.some((item) => item.id === pinnedSession.id) &&
     !historyItems.some((item) => item.id === pinnedSession.id)
       ? pinnedSession
       : null;
   const shownHistory = [
     ...(pinnedItem ? [{ item: pinnedItem, session: toTreeSession(pinnedItem) }] : []),
+    ...retainedItems.map((item) => ({ item, session: toTreeSession(item) })),
     ...historyItems.map((item) => ({ item, session: toTreeSession(item) })),
   ];
+
+  /** 点击「有新的历史记录 · 更新」：立即消除提示并按正常分页重拉；已展开的
+   *  历史会话先记入保留集合，刷新后若掉出第一页仍显示在列表顶部。 */
+  function onUpdateHistory() {
+    retainedRef.current = new Map(
+      history.items.filter((item) => !!expanded[item.id]).map((item) => [item.id, item]),
+    );
+    history.markSeen();
+    history.reload();
+  }
 
   // 通知定位：目标可能不在第一页；按游标有上限地加载，最多 10 页（100 条），
   // 不因一次定位请求整段历史。
@@ -1700,6 +1744,17 @@ function SessionList({
                 : `共 ${historyCount} 条历史`}
         </span>
       </button>
+      {historyOpen && history.hasNewer && (
+        // 轻量提示按钮：不新增浮层、不抢键盘焦点，点击后手动刷新。
+        <button
+          type="button"
+          className="btn sm tree-history-newer"
+          aria-label="有新的历史记录，点击更新历史列表"
+          onClick={onUpdateHistory}
+        >
+          有新的历史记录 · 更新
+        </button>
+      )}
       {historyOpen && history.error && (
         <div className="empty-hint error-text" role="alert">
           历史会话加载失败：{history.error}

@@ -1,7 +1,8 @@
 //! 本地语音缓存：内容寻址文件名 + 原子写 + 有界 LRU。
 //!
 //! - 文件名只使用稳定哈希，绝不把播报原文写入路径（敏感动态文本不会落盘）。
-//! - Key 覆盖：引擎/格式版本、语音 ID、语言、语速、文本。音量只影响播放，不参与 Key。
+//! - Key 覆盖：引擎 ID、引擎/格式版本、语音 ID、语言、语速、文本。音量只影响播放，
+//!   不参与 Key。不同引擎即使音色同名也绝不会命中彼此的缓存。
 //! - 写入走「临时文件 + 原子替换」，半成品不会被后续请求当成有效缓存。
 //! - LRU 以文件 mtime 为序；命中时最多每 60 秒触碰一次 mtime，避免高频磁盘写。
 //! - 读取失败（损坏/被外部删除）直接丢弃条目并返回未命中，由调用方重新合成。
@@ -17,16 +18,27 @@ use sha2::{Digest, Sha256};
 
 /// 影响音频字节的格式/引擎版本。任何影响合成结果的改动都必须递增，
 /// 使旧缓存整体失效（缓存目录中旧文件由 LRU 自然回收）。
-pub const ENGINE_FORMAT_VERSION: &str = "winrt-speech/1/wav";
+///
+/// v2（2026-11-05 音色系统升级）：Key 增加引擎维度，旧 `winrt-speech/1` 条目
+/// 不再命中并随 LRU 自然淘汰（不做批量删除，避免误删用户仍在使用的条目）。
+pub const ENGINE_FORMAT_VERSION: &str = "tts-key/2/wav";
 
 /// 命中后触碰 mtime 的最小间隔。
 const TOUCH_INTERVAL: Duration = Duration::from_secs(60);
 
 /// 稳定缓存 Key：SHA-256 前 128 位（32 个十六进制字符），文件名即 `<key>.<ext>`。
-pub fn cache_key(text: &str, voice_id: &str, language: &str, rate_percent: u32) -> String {
+pub fn cache_key(
+    text: &str,
+    voice_id: &str,
+    language: &str,
+    rate_percent: u32,
+    engine: &str,
+) -> String {
     let mut hasher = Sha256::new();
     // 使用不可出现在常规文本中的分隔符，避免字段拼接歧义。
+    // 引擎 ID 放在版本号之前：不同引擎（系统 / 高品质模型）绝不共享音频。
     for field in [
+        engine,
         ENGINE_FORMAT_VERSION,
         voice_id,
         language,
@@ -469,20 +481,22 @@ mod tests {
 
     #[test]
     fn key_is_stable_and_sensitive_to_audio_parameters() {
-        let a = cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100);
-        assert_eq!(a, cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100));
+        let a = cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100, "system");
+        assert_eq!(a, cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100, "system"));
         assert_eq!(a.len(), 32);
-        assert_ne!(a, cache_key("任务已完成", "voice-zh-cn", "zh-CN", 150));
-        assert_ne!(a, cache_key("任务已完成", "voice-other", "zh-CN", 100));
-        assert_ne!(a, cache_key("任务已完成", "voice-zh-cn", "en-US", 100));
-        assert_ne!(a, cache_key("需要你的操作", "voice-zh-cn", "zh-CN", 100));
+        assert_ne!(a, cache_key("任务已完成", "voice-zh-cn", "zh-CN", 150, "system"));
+        assert_ne!(a, cache_key("任务已完成", "voice-other", "zh-CN", 100, "system"));
+        assert_ne!(a, cache_key("任务已完成", "voice-zh-cn", "en-US", 100, "system"));
+        assert_ne!(a, cache_key("需要你的操作", "voice-zh-cn", "zh-CN", 100, "system"));
+        // 引擎隔离：同名音色在不同引擎下不得复用缓存。
+        assert_ne!(a, cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100, "neural"));
     }
 
     #[test]
     fn put_get_roundtrip_and_hit_does_not_rewrite() {
         let dir = temp_dir("roundtrip");
         let mut cache = TtsCache::new(Some(dir.clone()));
-        let key = cache_key("任务已完成", "v", "zh-CN", 100);
+        let key = cache_key("任务已完成", "v", "zh-CN", 100, "system");
         assert!(cache.get(&key).is_none());
         let wav = wav_bytes(b"abc");
         assert!(cache.put(&key, "wav", &wav, 50 * 1024 * 1024));
@@ -500,7 +514,7 @@ mod tests {
     fn invalid_wav_is_never_served_and_entry_is_dropped() {
         let dir = temp_dir("bad-wav");
         let mut cache = TtsCache::new(Some(dir.clone()));
-        let key = cache_key("执行失败", "v", "zh-CN", 100);
+        let key = cache_key("执行失败", "v", "zh-CN", 100, "system");
         // 只有 RIFF/WAVE 魔数、长度不足的截断文件。
         assert!(cache.put(&key, "wav", b"RIFFxxxxWAVE", 1024));
         let path = dir.join(format!("{key}.wav"));
@@ -508,7 +522,7 @@ mod tests {
         assert!(!path.exists(), "损坏缓存应被移除");
         assert_eq!(cache.stats().files, 0);
 
-        let key2 = cache_key("任务提醒时间到", "v", "zh-CN", 100);
+        let key2 = cache_key("任务提醒时间到", "v", "zh-CN", 100, "system");
         let mut no_data = wav_bytes(b"");
         no_data[36..40].copy_from_slice(b"JUNK");
         assert!(cache.put(&key2, "wav", &no_data, 1024));
@@ -520,7 +534,7 @@ mod tests {
     fn corrupted_entry_is_dropped_and_misses() {
         let dir = temp_dir("corrupt");
         let mut cache = TtsCache::new(Some(dir.clone()));
-        let key = cache_key("执行失败", "v", "zh-CN", 100);
+        let key = cache_key("执行失败", "v", "zh-CN", 100, "system");
         assert!(cache.put(&key, "wav", &wav_bytes(b"abc"), 1024));
         let path = dir.join(format!("{key}.wav"));
         fs::write(&path, b"").expect("写空文件模拟损坏");
@@ -536,7 +550,7 @@ mod tests {
         let mut cache = TtsCache::new(Some(dir.clone()));
         // 每个 100 字节，上限 300 字节：写入 5 个后只保留最新的 3 个。
         for i in 0..5u32 {
-            let key = cache_key(&format!("phrase-{i}"), "v", "zh-CN", 100);
+            let key = cache_key(&format!("phrase-{i}"), "v", "zh-CN", 100, "system");
             assert!(cache.put(&key, "wav", &vec![b'x'; 100], 300));
         }
         let stats = cache.stats();
@@ -550,7 +564,7 @@ mod tests {
     fn oversized_payload_is_not_cached() {
         let dir = temp_dir("oversize");
         let mut cache = TtsCache::new(Some(dir.clone()));
-        let key = cache_key("phrase", "v", "zh-CN", 100);
+        let key = cache_key("phrase", "v", "zh-CN", 100, "system");
         assert!(!cache.put(&key, "wav", &vec![b'x'; 512], 256));
         assert_eq!(cache.stats().files, 0);
         let _ = fs::remove_dir_all(dir);
@@ -561,7 +575,7 @@ mod tests {
         let dir = temp_dir("clear");
         fs::write(dir.join("user-note.txt"), b"keep").expect("写用户文件");
         let mut cache = TtsCache::new(Some(dir.clone()));
-        let key = cache_key("任务已完成", "v", "zh-CN", 100);
+        let key = cache_key("任务已完成", "v", "zh-CN", 100, "system");
         assert!(cache.put(&key, "wav", wav_bytes(b"abcd").as_slice(), 1024));
         let (freed, removed) = cache.clear();
         assert_eq!(removed, 1);
@@ -574,7 +588,7 @@ mod tests {
     #[test]
     fn rescan_only_adopts_service_generated_file_names() {
         let dir = temp_dir("rescan-foreign");
-        let key = cache_key("任务已完成", "v", "zh-CN", 100);
+        let key = cache_key("任务已完成", "v", "zh-CN", 100, "system");
         fs::write(dir.join(format!("{key}.wav")), wav_bytes(b"abcd")).expect("写本服务缓存");
         fs::write(dir.join("user-recording.wav"), wav_bytes(b"abcd")).expect("写用户文件");
         let mut cache = TtsCache::new(Some(dir.clone()));
@@ -593,7 +607,7 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt;
         let dir = temp_dir("clear-fail");
         let mut cache = TtsCache::new(Some(dir.clone()));
-        let key = cache_key("任务已完成", "v", "zh-CN", 100);
+        let key = cache_key("任务已完成", "v", "zh-CN", 100, "system");
         assert!(cache.put(&key, "wav", wav_bytes(b"abcd").as_slice(), 1024));
         let path = dir.join(format!("{key}.wav"));
         // Windows 文件占用：仅允许读共享，删除会得到 sharing violation。
@@ -620,7 +634,7 @@ mod tests {
         let mut cache = TtsCache::new(Some(dir.clone()));
         let mut paths = Vec::new();
         for i in 0..2u32 {
-            let key = cache_key(&format!("phrase-{i}"), "v", "zh-CN", 100);
+            let key = cache_key(&format!("phrase-{i}"), "v", "zh-CN", 100, "system");
             assert!(cache.put(&key, "wav", wav_bytes(&vec![b'x'; 100]).as_slice(), 10_000));
             paths.push(dir.join(format!("{key}.wav")));
         }

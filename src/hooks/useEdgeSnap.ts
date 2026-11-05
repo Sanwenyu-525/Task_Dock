@@ -426,6 +426,25 @@ export function useEdgeSnap(enabled: boolean) {
     let pressOriginRect: SnapRect | null = null;
     let pressOriginAt = 0;
     let pressOriginToken = 0;
+    /**
+     * 解除后的**几何恢复后台事务**（v0.7.1 capsule-redock 修复）。
+     *
+     * 区域与相位提交仍在引擎互斥区（busy）内完成；尺寸恢复要等原生拖拽循环
+     * 退出（≥220ms 静默）再加稳定回读（400–600ms），若继续占住 busy，期间的
+     * onMoved 评估会被全部丢弃、`lastSeenRect` 冻结在解除触发位——用户紧接着
+     * 抓起恢复后的窗口反向拖动时，新手势的起点被污染，吸附意图判定必然失效
+     *（「拖离后无法重新吸附」的根因）。恢复因此脱离 busy：不阻塞评估、不改
+     * 状态机，只在完成前延迟候选确认（`restoreInFlight`），避免两路几何写入
+     * 交错。`restoreGen` 使重复解除/卸载后迟到的恢复自行作废。
+     */
+    let restoreGen = 0;
+    let restoreInFlight = false;
+    let restoreDone: Promise<void> = Promise.resolve();
+    /**
+     * 解除提交后用户是否已按下过窗口（任意 pointerdown）。置位后跳过
+     * 「锚定未应用」的兜底重定位——用户已抓住窗口，程序性搬动会与手势打架。
+     */
+    let undockUserInteracted = false;
     const machine: SnapMachine = { phase: "free", edge: null };
 
     // ── 启动显示门 ──────────────────────────────────────────
@@ -484,6 +503,7 @@ export function useEdgeSnap(enabled: boolean) {
       if (isDockedPhase(next) && !machine.edge) return false;
       if (next === "free" && regionUnknown) return false;
       if (!canTransition(machine.phase, next)) return false;
+      const wasDocked = isDockedPhase(machine.phase);
       machine.phase = next;
       invariantRecoveryAttempts = 0;
       invariantRecoveryAt = 0;
@@ -497,6 +517,17 @@ export function useEdgeSnap(enabled: boolean) {
         dockedForm = "capsule";
         // 停靠会话结束：临时形态覆盖随之失效，下次吸附回到持久化偏好。
         sessionFormOverride = null;
+        if (wasDocked) {
+          // 解除提交 = 新一轮自由窗口生涯的开始：上一轮停靠会话的手势数据
+          // （起点冻结在解除触发位、轨迹属于拖离手势）不得参与下一轮吸附的
+          // 意图判定。起点置空后由下一个 onMoved 用最新 lastSeenRect 重建，
+          // 「拖离后首次重新吸附」因此与普通自由窗口首次吸附同一口径。
+          // candidate→free（提示超时/滞回退出）不是解除，不在此列。
+          gestureStartRect = null;
+          gestureTrail = [];
+          pressOriginRect = null;
+          undockUserInteracted = false;
+        }
       }
       if (machine.phase !== "candidate") magnetizedNow = false;
       syncUi();
@@ -532,7 +563,12 @@ export function useEdgeSnap(enabled: boolean) {
         .then((rect) => {
           if (disposed || token !== pressOriginToken) return;
           // 已经有移动观测、或 IPC 回包太慢（窗口可能已在拖动中），都不采用。
-          if (lastMoveAt > pressOriginAt || Date.now() - pressOriginAt > 120) return;
+          // 例外：移动来自引擎自身的程序性写入（解除后的几何恢复/兜底定位），
+          // 不是用户在拖——读到的仍是「按下时窗口所在位置」，应当采用。
+          if (Date.now() - pressOriginAt > 120) return;
+          if (lastMoveAt > pressOriginAt && !snapMoveGuard.isProgrammaticMove(rect.x, rect.y)) {
+            return;
+          }
           pressOriginRect = rect;
         })
         .catch(() => {
@@ -1681,49 +1717,69 @@ export function useEdgeSnap(enabled: boolean) {
       persistedCenter = null;
       undockCheckDue = false;
       void persistSnap(null, false, null);
+      // ── 几何恢复：后台事务，不占用引擎互斥区（capsule-redock 根因修复）──────
+      // busy 只保护「区域 + 相位」这一提交点。尺寸恢复要等原生拖拽循环退出
+      // （≥220ms 静默）加稳定回读（400–600ms），过去占住 busy 期间所有 onMoved
+      // 评估被丢弃、lastSeenRect 冻结在解除触发位，用户立即反向拖动的新手势
+      // 起点被污染，吸附意图判定失效（拖离后无法重新吸附）。恢复脱离 busy 后
+      // 评估持续流动；`restoreInFlight` 让候选确认延迟到恢复完成，避免两路
+      // 几何写入交错；`restoreGen` 使重复解除/卸载后迟到的恢复自行作废。
+      //
       // 尺寸恢复规则（P2-2，三条路径各自独立）：
       // 1) 明确指定 targetMode（打开完整页等）：沿用既有规则，按目标模式尺寸；
       // 2) 完整面板 → 自由：窗口本来就是用户尺寸，不做任何重置；
       // 3) 胶囊 → 自由：恢复 **用户最后一次自由尺寸**（window_rect），而不是
       //    把 404×440 容器尺寸或模式预设当成用户尺寸。
-      const sizeRestored =
-        targetMode !== undefined
-          ? await restoreModeSize(mode, scale)
-          : wasFull
-            ? true
-            : await restoreUserSize(scale, mode);
-      await clampIntoWorkArea();
-      if (!sizeRestored) {
-        // 重试用尽：区域已确认解除（offOk），但模式尺寸仍未恢复。这里把
-        // 四件事分开记录，避免把「解除成功」误当成「几何已复原」：
-        // 区域 / 尺寸 / 工作区可见性 / 是否已持久化。
-        let inWorkArea = false;
+      const gen = ++restoreGen;
+      restoreInFlight = true;
+      restoreDone = (async () => {
         try {
-          const rect = await fetchRectOnly();
-          const monitors = await availableMonitors();
-          inWorkArea = monitors.length > 0 && isRectMostlyVisible(rect, monitors.map(toArea));
-        } catch {
-          // 读不回按「无法确认」处理
+          const sizeRestored =
+            targetMode !== undefined
+              ? await restoreModeSize(mode, scale)
+              : wasFull
+                ? true
+                : await restoreUserSize(scale, mode);
+          if (disposed || gen !== restoreGen) return;
+          await clampIntoWorkArea();
+          if (disposed || gen !== restoreGen) return;
+          if (!sizeRestored) {
+            // 重试用尽：区域已确认解除（offOk），但模式尺寸仍未恢复。这里把
+            // 四件事分开记录，避免把「解除成功」误当成「几何已复原」：
+            // 区域 / 尺寸 / 工作区可见性 / 是否已持久化。
+            let inWorkArea = false;
+            try {
+              const rect = await fetchRectOnly();
+              const monitors = await availableMonitors();
+              inWorkArea = monitors.length > 0 && isRectMostlyVisible(rect, monitors.map(toArea));
+            } catch {
+              // 读不回按「无法确认」处理
+            }
+            console.warn("[edge-snap] 解除完成但模式尺寸未恢复", {
+              mode,
+              regionUndocked: true,
+              sizeRestored: false,
+              inWorkArea,
+              persisted: false, // 容器尺寸在持久化路径被显式拒绝
+            });
+          }
+          if (anchorRequested) {
+            let applied = false;
+            try {
+              applied = await takeUndockAnchorApplied();
+            } catch {
+              applied = false;
+            }
+            // 原生没在拖拽循环内应用（拖拽在请求前已结束等）：按实际恢复后的
+            // 尺寸回退定位。已应用时窗口在拖拽中就已标题栏居中跟手，不得再动。
+            // 用户解除后已按下过窗口（准备拖动/点击）时同样不动：程序性搬动
+            // 会与用户手势打架，窗口可见性由 clampIntoWorkArea 兜底。
+            if (!applied && !undockUserInteracted) await anchorRestoredWindowToCursor(scale);
+          }
+        } finally {
+          if (gen === restoreGen) restoreInFlight = false;
         }
-        console.warn("[edge-snap] 解除完成但模式尺寸未恢复", {
-          mode,
-          regionUndocked: true,
-          sizeRestored: false,
-          inWorkArea,
-          persisted: false, // 容器尺寸在持久化路径被显式拒绝
-        });
-      }
-      if (anchorRequested && !disposed) {
-        let applied = false;
-        try {
-          applied = await takeUndockAnchorApplied();
-        } catch {
-          applied = false;
-        }
-        // 原生没在拖拽循环内应用（拖拽在请求前已结束等）：按实际恢复后的
-        // 尺寸回退定位。已应用时窗口在拖拽中就已标题栏居中跟手，不得再动。
-        if (!applied) await anchorRestoredWindowToCursor(scale);
-      }
+      })();
       return true;
     }
 
@@ -1783,12 +1839,21 @@ export function useEdgeSnap(enabled: boolean) {
     }
 
     /** 拖拽解除：用户把胶囊拖离停靠位超过阈值。不内推——窗口已在用户手上。
-     *  唯一使用鼠标锚定的解除路径（原生拖拽循环内对齐，未应用时回退定位）。 */
+     *  唯一使用鼠标锚定的解除路径（原生拖拽循环内对齐，未应用时回退定位）。
+     *  几何恢复在后台事务里收尾（不占 busy），可见矩形保存随之延后：
+     *  恢复完成后的矩形才是用户真正的自由窗口几何。 */
     async function undockByDrag(): Promise<void> {
       if (!(await undockCore(undefined, true))) return;
-      const rect = await fetchRectOnly();
-      if (disposed) return;
-      void saveVisibleRect(rect);
+      const settled = restoreDone;
+      void settled.then(async () => {
+        if (disposed) return;
+        try {
+          const rect = await fetchRectOnly();
+          if (!disposed) void saveVisibleRect(rect);
+        } catch {
+          // 持久化钩子会在后续 onMoved/onResized 里兜底保存
+        }
+      });
     }
 
     /**
@@ -1955,7 +2020,10 @@ export function useEdgeSnap(enabled: boolean) {
           return;
         }
         case "candidate": {
-          const cursor = await cursorPosition();
+          // 光标读取失败（受限会话等环境）不得卡死整个确认路径：按「不在窗内」
+          // 处理，松手判定交给更可靠的 DOM 指针哨兵（拖拽期间无指针事件，恢复
+          // 即松手）。否则 candidate 既不确认也不超时，吸附提示永久残留。
+          const cursor = await cursorPosition().catch(() => null);
           if (disposed) return;
           const now = Date.now();
           const sinceMove = now - lastMoveAt;
@@ -1963,24 +2031,37 @@ export function useEdgeSnap(enabled: boolean) {
           if (disposed || !monitor) return;
           // 静默期后收到过 DOM 指针事件 = 原生拖拽已结束（拖拽期间无 DOM 指针事件）
           const domAfterMove = domPointerAt > lastMoveAt;
-          const inside = cursor.x >= rect.x && cursor.x <= rect.x + rect.w && cursor.y >= rect.y && cursor.y <= rect.y + rect.h;
+          const inside =
+            cursor !== null &&
+            cursor.x >= rect.x && cursor.x <= rect.x + rect.w && cursor.y >= rect.y && cursor.y <= rect.y + rect.h;
           // 区域失准期间不再反复尝试停靠（每次尝试都会写区域）：先让有界恢复
           // 把原生校准回当前相位，恢复成功后的下一拍再走正常确认。
+          // 解除后的几何恢复（后台事务）未收尾时同样延迟：恢复与停靠都在写
+          // 窗口尺寸/位置，交错会让双方回读验证互相失败。恢复有界（等静默
+          // 1500ms + 稳定回读 ×4 次重试），延迟期间候选提示保持，用户意图不丢。
           if (
             !regionUnknown &&
+            !restoreInFlight &&
             now >= dockRetryAt &&
             shouldConfirmDock(machine.phase, machine.edge, sinceMove, inside, domAfterMove) &&
             machine.edge
           ) {
             await dockTo(machine.edge, alongCenterOf(machine.edge, rect), "docked-visible", true);
-          } else if (!regionUnknown && shouldExpireCandidate(machine.phase, sinceMove)) {
+          } else if (
+            !regionUnknown &&
+            !restoreInFlight &&
+            shouldExpireCandidate(machine.phase, sinceMove)
+          ) {
             setPhase("free"); // 提示兜底超时：松手光标未离开窗口时不永久残留
           }
           return;
         }
         case "docked-visible":
         case "docked-revealed": {
-          const cursor = await cursorPosition();
+          // 光标读取失败按「离开交互区」处理（有 450ms 连续离开确认兜底，
+          // 不会立刻收起）；同 candidate：读取异常不得中止本拍其余判定
+          //（拖离解除、沿边重定位都依赖这拍继续执行）。
+          const cursor = await cursorPosition().catch(() => null);
           if (disposed) return;
           const now = Date.now();
           const edge = machine.edge;
@@ -2002,9 +2083,9 @@ export function useEdgeSnap(enabled: boolean) {
             machine.phase === "docked-revealed",
             m.scaleFactor,
           );
-          const local = { x: cursor.x - rect.x, y: cursor.y - rect.y };
+          const local = cursor ? { x: cursor.x - rect.x, y: cursor.y - rect.y } : null;
           // 外扩容差 = 轨道与面板之间的间隙宽度：鼠标从轨道移到面板不会被判成离开
-          const inZone = pointInCapsule(local, regions, CAPSULE_HIT_SLOP);
+          const inZone = local !== null && pointInCapsule(local, regions, CAPSULE_HIT_SLOP);
           if (inZone) {
             leftSince = null;
           } else if (leftSince === null) {
@@ -2300,10 +2381,16 @@ export function useEdgeSnap(enabled: boolean) {
       }
       // free / candidate：滞回判定
       const detected = detectCandidateEdge(rect, wa);
-      // 记录本次手势的观测轨迹（有界）；最近两拍的方向用于拒绝「被磁力带回 /
-      // 平行擦边」这类没有主动靠拢意图的拖动。
-      gestureTrail.push({ ...rect });
-      if (gestureTrail.length > GESTURE_TRAIL_MAX) gestureTrail.shift();
+      // 程序性移动（解除后的几何恢复 / 兜底定位等引擎写入）不是用户手势：
+      // 不入轨迹、不评吸附意图——否则恢复事务把窗口搬近某条边时会被误判成
+      // 「用户拖向边缘」而凭空进入候选、静默后自动停靠。
+      const programmaticMove = snapMoveGuard.isProgrammaticMove(rect.x, rect.y);
+      if (!programmaticMove) {
+        // 记录本次手势的观测轨迹（有界）；最近两拍的方向用于拒绝「被磁力带回 /
+        // 平行擦边」这类没有主动靠拢意图的拖动。
+        gestureTrail.push({ ...rect });
+        if (gestureTrail.length > GESTURE_TRAIL_MAX) gestureTrail.shift();
+      }
       if (machine.phase === "candidate" && machine.edge) {
         if (detected && detected !== machine.edge) {
           machine.edge = detected; // 更近的另一条边（拖过角落）
@@ -2318,7 +2405,7 @@ export function useEdgeSnap(enabled: boolean) {
         }
         return;
       }
-      if (detected) {
+      if (detected && !programmaticMove) {
         // 几何命中（进入吸附区）不等于吸附意图：自由窗口贴边平行拖动，或只是
         // 被磁力领先吸进阈值，都不应因此吸附并收缩。只有相对手势起点向该边
         // 净位移超过「磁力领先上限 + 余量」才进入候选；明确拖向边缘的释放
@@ -2418,6 +2505,9 @@ export function useEdgeSnap(enabled: boolean) {
     const onDomPointerDown = (event: PointerEvent): void => {
       domPointerAt = Date.now();
       if (machine.phase !== "free" && machine.phase !== "candidate") return;
+      // 解除后用户触碰窗口任意位置即视为接管：锚定兜底重定位让位（见
+      // undockCore 的恢复事务）。程序性搬动不该与用户操作同时发生。
+      undockUserInteracted = true;
       const target = event.target;
       if (!(target instanceof Element)) return;
       if (!target.closest("[data-tauri-drag-region]")) return;

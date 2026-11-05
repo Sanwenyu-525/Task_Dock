@@ -2,7 +2,9 @@
 //!
 //! 与实时快照刷新完全分离：历史请求只由「展开/搜索」显式触发，不轮询、不随
 //! `agent-changed` 事件全量重拉，因此实时事件刷新不会被历史查询阻塞，历史分页
-//! 也不会覆盖实时状态。
+//! 也不会覆盖实时状态。会话列表加载成功后仅订阅 `agent-changed` 做 limit=1 的
+//! 轻量头部探测（800ms 去抖，P3-01），发现更新只置 `hasNewer` 交由 UI 提示，
+//! 绝不自动重拉。
 //!
 //! 一致性规则：
 //! - 筛选条件变化 = 一次新的「代际」；旧代际的响应（无论成功/失败）直接丢弃，
@@ -17,6 +19,7 @@ import {
   agentHistoryGroups,
   agentHistoryRuns,
   agentHistorySessions,
+  onAgentChanged,
   type AgentHistoryGroup,
   type AgentHistorySession,
   type AgentHistorySessionsQuery,
@@ -24,7 +27,7 @@ import {
 } from "../lib/bridge";
 import { errorMessage } from "../lib/errors";
 
-export interface AgentHistoryPageState<T> {
+export interface AgentHistoryPageBase<T> {
   items: T[];
   /** 后端 COUNT 聚合的准确总数（与当前页/游标无关） */
   total: number;
@@ -38,6 +41,16 @@ export interface AgentHistoryPageState<T> {
   hasMore: boolean;
   loadMore: () => Promise<void>;
   reload: () => void;
+}
+
+export interface AgentHistoryPageState<T> extends AgentHistoryPageBase<T> {
+  /**
+   * 轻量探测（limit=1）发现「比当前列表头部更新的会话」。
+   * 只置位提示，绝不自动 reload、不清除已加载分页、不改滚动。
+   */
+  hasNewer: boolean;
+  /** 用户确认提示（点击「更新」时立即消除提示，不等刷新完成） */
+  markSeen: () => void;
 }
 
 interface PageData<T> {
@@ -72,6 +85,9 @@ function uniqueAppend<T extends { id: string }>(prev: T[], next: T[]): T[] {
   return merged;
 }
 
+/** 「有新的历史记录」探测去抖：一批 agent-changed 事件只安排一次轻量探测。 */
+const NEWER_PROBE_DEBOUNCE_MS = 800;
+
 function useSessionsPage(
   query: AgentHistorySessionsQuery,
   key: string,
@@ -79,17 +95,24 @@ function useSessionsPage(
   pageSize: number,
 ): AgentHistoryPageState<AgentHistorySession> {
   const [state, setState] = useState<PageData<AgentHistorySession>>(EMPTY);
+  const [hasNewer, setHasNewer] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const generation = useRef(0);
   const loadingMoreRef = useRef(false);
   const queryRef = useRef(query);
   queryRef.current = query;
+  // 探测比较需要读取「当前列表头部」；用 ref 避免 head 变化反复重挂订阅。
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // 探测在途标志：同一分区同一时刻最多一个在途探测，不并发。
+  const probeInFlightRef = useRef(false);
 
   useEffect(() => {
     const gen = ++generation.current;
     loadingMoreRef.current = false;
     if (!enabled) {
       setState(EMPTY());
+      setHasNewer(false);
       return;
     }
     // 新筛选立即清空旧结果，避免旧筛选内容短暂冒充新结果。
@@ -107,6 +130,8 @@ function useSessionsPage(
           error: null,
           loaded: true,
         });
+        // 全量重拉成功 = 头部已是最新的已知状态，复位提示。
+        setHasNewer(false);
       } catch (e) {
         if (gen !== generation.current) return;
         setState({ ...EMPTY(), error: errorMessage(e) });
@@ -117,6 +142,95 @@ function useSessionsPage(
       generation.current += 1;
     };
   }, [enabled, key, pageSize, reloadToken]);
+
+  // 「有新的历史记录」轻量探测（P3-01）：列表成功加载后订阅 agent-changed，
+  // 800ms 去抖合并一批事件，再用 limit=1 的单行查询比较头部是否变化。
+  // 绝不自动 reload、不清除已加载分页、不改滚动，只把 hasNewer 交给 UI 提示；
+  // 页面隐藏时跳过探测，可见性恢复后补一次。不新增轮询/interval。
+  useEffect(() => {
+    if (!enabled || !state.loaded) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let missedWhileHidden = false;
+    let unlisten: (() => void) | null = null;
+
+    const clearTimer = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    const probe = async () => {
+      if (disposed || probeInFlightRef.current) return;
+      if (document.visibilityState === "hidden") {
+        // 隐藏期间不探测；记录遗漏，可见性恢复后补一次。
+        missedWhileHidden = true;
+        return;
+      }
+      probeInFlightRef.current = true;
+      const gen = generation.current;
+      try {
+        const page = await agentHistorySessions({ ...queryRef.current, limit: 1 });
+        // 代际守卫：响应回来时代际已变（筛选变化/重拉/卸载）→ 丢弃。
+        if (disposed || gen !== generation.current) return;
+        const newest = page.items[0];
+        if (!newest) return;
+        const head = stateRef.current.items[0];
+        // 头部 id 或 last_seen_at 任一变化都算「有更新」；相同则不打扰。
+        if (!head || newest.id !== head.id || newest.last_seen_at !== head.last_seen_at) {
+          setHasNewer(true);
+        }
+      } catch {
+        // 探测失败保持静默：不打扰用户；下一个事件会重新探测。
+      } finally {
+        probeInFlightRef.current = false;
+      }
+    };
+
+    const scheduleProbe = () => {
+      clearTimer();
+      timer = setTimeout(() => {
+        timer = null;
+        void probe();
+      }, NEWER_PROBE_DEBOUNCE_MS);
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible" || !missedWhileHidden) return;
+      missedWhileHidden = false;
+      clearTimer();
+      void probe();
+    };
+
+    void onAgentChanged((payload) => {
+      if (disposed) return;
+      const sid = queryRef.current.sourceId;
+      // 指定了来源时只关心本来源的事件；未指定（全局搜索页）任何事件都检查。
+      if (sid && payload.source_id !== sid && !payload.sources.includes(sid)) return;
+      if (document.visibilityState === "hidden") missedWhileHidden = true;
+      scheduleProbe();
+    }).then((fn) => {
+      if (disposed) {
+        // 订阅完成前已卸载：立即退订，避免泄漏监听器。
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      disposed = true;
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      // 卸载/条件变化：在途探测响应由 disposed + 探测自捕获的代际守卫丢弃。
+      // 这里不能动 generation.current：cleanup 也会在 loaded true→false（点击
+      // 「更新」重拉）时运行，递增会连带作废正在途的全量重拉响应。
+      setHasNewer(false);
+      if (unlisten) unlisten();
+    };
+  }, [enabled, key, state.loaded]);
 
   const loadMore = useCallback(async () => {
     const cursor = state.nextCursor;
@@ -149,12 +263,15 @@ function useSessionsPage(
   }, [enabled, pageSize, state.loading, state.nextCursor]);
 
   const reload = useCallback(() => setReloadToken((n) => n + 1), []);
+  const markSeen = useCallback(() => setHasNewer(false), []);
 
   return {
     ...state,
+    hasNewer,
     hasMore: state.nextCursor !== null,
     loadMore,
     reload,
+    markSeen,
   };
 }
 
@@ -306,7 +423,7 @@ export function useAgentRunHistory(
   sessionId: string | null,
   enabled: boolean,
   pageSize = 10,
-): AgentHistoryPageState<AgentRun> {
+): AgentHistoryPageBase<AgentRun> {
   const [state, setState] = useState<RunsData>(EMPTY_RUNS);
   const [reloadToken, setReloadToken] = useState(0);
   const generation = useRef(0);

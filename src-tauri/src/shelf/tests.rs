@@ -243,6 +243,7 @@ fn fsops_copy_file_conflict_skip_and_rename_without_new_records() {
             favorite_only: false,
             limit: 100,
             offset: 0,
+            sort: "default".into(),
         },
     )
     .unwrap()
@@ -282,6 +283,7 @@ fn fsops_copy_file_conflict_skip_and_rename_without_new_records() {
             favorite_only: false,
             limit: 100,
             offset: 0,
+            sort: "default".into(),
         },
     )
     .unwrap()
@@ -1641,7 +1643,7 @@ fn drop_copies_file_and_keeps_source() {
     assert!(copied.exists());
     assert_eq!(std::fs::read(&copied).unwrap(), b"hello");
     assert_eq!(
-        list(&db, &ListFilter { search: None, kind: "all".into(), group_id: "all".into(), favorite_only: false, limit: 10, offset: 0 })
+        list(&db, &ListFilter { search: None, kind: "all".into(), group_id: "all".into(), favorite_only: false, limit: 10, offset: 0, sort: "default".into() })
             .unwrap()
             .total,
         0,
@@ -2246,4 +2248,95 @@ fn drop_journal_recovery_cleans_only_own_part_file() {
         })
         .unwrap();
     assert_eq!(left, 0, "安全终态后应清掉日志");
+}
+
+#[test]
+fn recent_sort_ignores_pinned_and_is_stable() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let pinned_at = "2020-01-01T00:00:00.000Z";
+
+    let mut old = Vec::new();
+    for i in 0..10 {
+        let src = write_source(&tmp.0, &format!("old-{i}.txt"), b"old");
+        old.push(add_ref(&db, &tmp.shelf(), &src));
+    }
+    // 10 条旧条目全部置顶，并把创建时间压到 2020：
+    // 若最近查询仍带 pinned 优先，新条目会被挤出前 4。
+    db.with_conn(|conn| {
+        for item in &old {
+            conn.execute(
+                "UPDATE shelf_items SET pinned = 1, created_at = ?1 WHERE id = ?2",
+                rusqlite::params![pinned_at, item.id],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    let newest = add_ref(
+        &db,
+        &tmp.shelf(),
+        &write_source(&tmp.0, "newest.txt", b"new"),
+    );
+
+    let recent = list(
+        &db,
+        &ListFilter {
+            sort: "recent".into(),
+            limit: 4,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        recent.items[0].id, newest.id,
+        "最近列表第一条必须是刚添加的普通条目"
+    );
+    assert!(!recent.items[0].pinned);
+    assert_eq!(recent.items.len(), 4);
+
+    // 默认排序保持原语义：置顶优先，不被 recent 参数改变。
+    let normal = list(
+        &db,
+        &ListFilter {
+            limit: 4,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(normal.items[0].pinned, "默认排序仍应置顶优先");
+    assert_ne!(normal.items[0].id, newest.id);
+
+    // 相同 created_at 时按 id DESC 稳定排列，重复查询结果一致。
+    let all = list(
+        &db,
+        &ListFilter {
+            sort: "recent".into(),
+            limit: 100,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let same_time: Vec<&str> = all
+        .items
+        .iter()
+        .filter(|i| i.created_at == pinned_at)
+        .map(|i| i.id.as_str())
+        .collect();
+    let mut expected = same_time.clone();
+    expected.sort_by(|a, b| b.cmp(a));
+    assert_eq!(same_time, expected, "同时间条目必须按 id 倒序稳定排列");
+
+    assert!(
+        list(
+            &db,
+            &ListFilter {
+                sort: "bogus".into(),
+                ..Default::default()
+            }
+        )
+        .is_err(),
+        "未知排序参数必须明确报错，不能静默改变语义"
+    );
 }

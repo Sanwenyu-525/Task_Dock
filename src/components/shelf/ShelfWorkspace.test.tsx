@@ -7,19 +7,27 @@
 //! 「有未保存表单时返回需确认」以及「目标管理期间不注册文件拖入消费者」。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within, act } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({
   shelfList: vi.fn(),
   shelfGroups: vi.fn(),
   shelfStats: vi.fn(),
   shelfCheckExists: vi.fn(),
+  shelfGetItem: vi.fn(),
   shelfDropTargets: vi.fn(),
   shelfDropTargetCreate: vi.fn(),
   shelfDropTargetUpdate: vi.fn(),
   shelfDropTargetDelete: vi.fn(),
   shelfDropTargetMove: vi.fn(),
   shelfDropTargetOpen: vi.fn(),
+  // 详情组件会读取任务关联/文本预览；测试里给空结果，避免真实 invoke。
+  listTasks: vi.fn(async () => []),
+  shelfTaskLinks: vi.fn(async () => []),
+  shelfTaskLink: vi.fn(async () => undefined),
+  shelfUnlinkTask: vi.fn(async () => undefined),
+  shelfReadText: vi.fn(async () => ({ content: "正文", truncated: false })),
+  shelfReadImage: vi.fn(async () => null),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -40,6 +48,43 @@ import { useShelfStore } from "../../store/useShelfStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { useUiStore } from "../../store/useUiStore";
+
+function shelfRow(id: string, over: Record<string, unknown> = {}) {
+  return {
+    id,
+    kind: "file",
+    display_name: `条目 ${id}`,
+    source_kind: "picker",
+    storage_mode: "reference",
+    original_path: `D:\\Docs\\${id}.zip`,
+    managed_path: null,
+    content: null,
+    byte_size: 1024,
+    file_ext: "zip",
+    favorite: false,
+    pinned: false,
+    exists_state: "ok",
+    group_id: "shelf-default",
+    scene_id: null,
+    note: "",
+    expire_at: null,
+    created_at: "2026-11-01T00:00:00Z",
+    updated_at: "2026-11-01T00:00:00Z",
+    ...over,
+  };
+}
+
+function locate(id: string, token: number) {
+  return {
+    category: "shelf",
+    id,
+    kind: "file",
+    parentId: null,
+    keyword: "",
+    token,
+  };
+}
 
 function stats(total = 0) {
   return {
@@ -62,6 +107,7 @@ beforeEach(() => {
   api.shelfStats.mockResolvedValue(stats(0));
   api.shelfCheckExists.mockResolvedValue([]);
   api.shelfDropTargets.mockResolvedValue([]);
+  api.shelfGetItem.mockResolvedValue(shelfRow("s1"));
   dropMock.register.mockClear();
 
   useShelfStore.setState({
@@ -95,7 +141,10 @@ beforeEach(() => {
   useGlobalSearchStore.setState({ pendingLocate: null });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function baseTarget() {
   return {
@@ -143,6 +192,7 @@ describe("ShelfWorkspace 内容视图分离", () => {
     fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
     await screen.findByText("工作资料");
     fireEvent.click(screen.getByRole("button", { name: "编辑「工作资料」" }));
+    fireEvent.change(screen.getByDisplayValue("工作资料"), { target: { value: "工作资料改" } });
 
     fireEvent.click(screen.getByRole("button", { name: "返回文件暂存架" }));
     const dialog = await screen.findByRole("dialog", { name: "放弃未保存的目标修改？" });
@@ -179,6 +229,128 @@ describe("ShelfWorkspace 内容视图分离", () => {
     );
     expect(useGlobalSearchStore.getState().pendingLocate).toBeNull();
     expect(useShelfStore.getState().detailId).toBe("s1");
+  });
+
+  it("目标管理视图中定位：自动退出视图并打开详情（条目不在当前页也能读）", async () => {
+    api.shelfDropTargets.mockResolvedValue([baseTarget()]);
+    api.shelfGetItem.mockResolvedValueOnce(shelfRow("s9", { display_name: "目标文件" }));
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
+    await screen.findByText("工作资料");
+
+    act(() => {
+      useGlobalSearchStore.setState({ pendingLocate: locate("s9", 2) });
+    });
+
+    await waitFor(() => expect(useShelfStore.getState().detailId).toBe("s9"));
+    expect(screen.queryByRole("heading", { name: "投递目标" })).toBeNull();
+    expect(screen.getByPlaceholderText("搜索名称 / 内容 / 备注")).toBeTruthy();
+    // 不在第一页：单条读取兜底渲染详情
+    expect(api.shelfGetItem).toHaveBeenCalledWith("s9");
+    await screen.findByRole("region", { name: "详情：目标文件" });
+  });
+
+  it("编辑目标时定位：取消保留表单；确认后放弃输入并定位", async () => {
+    api.shelfDropTargets.mockResolvedValue([baseTarget()]);
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
+    await screen.findByText("工作资料");
+    fireEvent.click(screen.getByRole("button", { name: "编辑「工作资料」" }));
+    await screen.findByRole("form", { name: "编辑投递目标" });
+    fireEvent.change(screen.getByDisplayValue("工作资料"), { target: { value: "工作资料改" } });
+    // 让 DropTargetManager 的 dirty 上报 effect 先执行
+    await act(async () => {});
+
+    act(() => {
+      useGlobalSearchStore.setState({ pendingLocate: locate("s1", 3) });
+    });
+    const dialog = await screen.findByRole("dialog", {
+      name: "放弃未保存的目标修改并查看文件？",
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(screen.getByRole("form", { name: "编辑投递目标" })).toBeTruthy();
+    expect(useGlobalSearchStore.getState().pendingLocate).toBeNull();
+    expect(useShelfStore.getState().detailId).toBeNull();
+
+    act(() => {
+      useGlobalSearchStore.setState({ pendingLocate: locate("s1", 4) });
+    });
+    const dialog2 = await screen.findByRole("dialog", {
+      name: "放弃未保存的目标修改并查看文件？",
+    });
+    fireEvent.click(within(dialog2).getByRole("button", { name: "放弃并定位" }));
+
+    await waitFor(() => expect(useShelfStore.getState().detailId).toBe("s1"));
+    expect(screen.queryByRole("heading", { name: "投递目标" })).toBeNull();
+    expect(screen.queryByRole("form", { name: "编辑投递目标" })).toBeNull();
+  });
+
+  it("只打开表单但未修改：外部定位直接切换，不弹放弃确认", async () => {
+    api.shelfDropTargets.mockResolvedValue([baseTarget()]);
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
+    await screen.findByText("工作资料");
+    fireEvent.click(screen.getByRole("button", { name: "编辑「工作资料」" }));
+    await screen.findByRole("form", { name: "编辑投递目标" });
+    await act(async () => {});
+
+    act(() => {
+      useGlobalSearchStore.setState({ pendingLocate: locate("s1", 5) });
+    });
+
+    await waitFor(() => expect(useShelfStore.getState().detailId).toBe("s1"));
+    expect(
+      screen.queryByRole("dialog", { name: "放弃未保存的目标修改并查看文件？" }),
+    ).toBeNull();
+    expect(screen.queryByRole("heading", { name: "投递目标" })).toBeNull();
+  });
+
+  it("连续两次定位：只执行最新请求，旧响应不覆盖", async () => {
+    let releaseOld!: (v: { items: never[]; total: number }) => void;
+    let releaseNew!: (v: { items: never[]; total: number }) => void;
+    const oldLoad = new Promise<{ items: never[]; total: number }>((r) => (releaseOld = r));
+    const newLoad = new Promise<{ items: never[]; total: number }>((r) => (releaseNew = r));
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await waitFor(() => expect(api.shelfList).toHaveBeenCalledTimes(1));
+    api.shelfList.mockReturnValueOnce(oldLoad).mockReturnValueOnce(newLoad);
+
+    act(() => {
+      useGlobalSearchStore.setState({ pendingLocate: locate("old", 10) });
+    });
+    await waitFor(() => expect(api.shelfList).toHaveBeenCalledTimes(2));
+    act(() => {
+      useGlobalSearchStore.setState({ pendingLocate: locate("new", 11) });
+    });
+    await waitFor(() => expect(api.shelfList).toHaveBeenCalledTimes(3));
+
+    releaseNew({ items: [], total: 0 });
+    await waitFor(() => expect(useShelfStore.getState().detailId).toBe("new"));
+    releaseOld({ items: [], total: 0 });
+    await act(async () => {});
+    expect(useShelfStore.getState().detailId).toBe("new");
+    expect(api.shelfGetItem).not.toHaveBeenCalledWith("old");
+  });
+
+  it("目标已删除：明确提示并清除详情，不假装打开", async () => {
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    api.shelfGetItem.mockRejectedValueOnce(new Error("暂存条目不存在"));
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+
+    act(() => {
+      useGlobalSearchStore.setState({ pendingLocate: locate("gone", 20) });
+    });
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("无法打开暂存条目：暂存条目不存在", { kind: "error" }),
+    );
+    expect(useShelfStore.getState().detailId).toBeNull();
+    expect(screen.queryByRole("region", { name: /详情：/ })).toBeNull();
+    toast.mockRestore();
   });
 });
 

@@ -54,6 +54,7 @@ pub fn shelf_list(
     favorite_only: Option<bool>,
     limit: Option<i64>,
     offset: Option<i64>,
+    sort: Option<String>,
 ) -> AppResult<shelf::ShelfPage> {
     let st = rt(&state);
     let filter = shelf::ListFilter {
@@ -63,6 +64,7 @@ pub fn shelf_list(
         favorite_only: favorite_only.unwrap_or(false),
         limit: limit.unwrap_or(100),
         offset: offset.unwrap_or(0),
+        sort: sort.unwrap_or_default(),
     };
     shelf::list(&st.db, &filter)
 }

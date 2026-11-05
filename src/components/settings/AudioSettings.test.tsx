@@ -31,12 +31,13 @@ const mocks = vi.hoisted(() => {
     update: vi.fn(async () => settings),
     toast: vi.fn(),
     previewTone: vi.fn<() => Promise<PreviewResult>>(async () => ({ ok: true, code: "ok" })),
-    previewSpeech: vi.fn<() => Promise<PreviewResult>>(async () => ({
+    previewSpeech: vi.fn<(opts?: unknown) => Promise<PreviewResult>>(async () => ({
       ok: true,
       code: "ok",
       voiceName: "Microsoft Huihui",
       fallback: false,
     })),
+    stopPreview: vi.fn(),
     listVoices: vi.fn(),
     cacheStats: vi.fn(),
     cacheClear: vi.fn(),
@@ -63,7 +64,10 @@ vi.mock("../../lib/audioNotification", () => ({
   getAudioService: () => ({
     previewTone: mocks.previewTone,
     previewSpeech: mocks.previewSpeech,
+    stopPreview: mocks.stopPreview,
   }),
+  PREVIEW_PHRASES: ["任务已完成", "需要你的操作", "你的日程提醒时间到了", "AI 助手已完成当前任务"],
+  PREVIEW_MAX_CHARS: 80,
 }));
 
 vi.mock("../../lib/bridge", () => ({
@@ -97,6 +101,7 @@ beforeEach(() => {
   mocks.toast.mockClear();
   mocks.previewTone.mockClear();
   mocks.previewSpeech.mockClear();
+  mocks.stopPreview.mockClear();
   mocks.listVoices.mockReset();
   mocks.cacheStats.mockReset();
   mocks.cacheClear.mockReset();
@@ -107,12 +112,24 @@ beforeEach(() => {
     platform: "windows",
     hasChineseMale: true,
     hasChineseFemale: false,
+    engines: [
+      { id: "system", name: "系统语音", available: true, reason: "", detail: "", requiresDownload: false },
+      {
+        id: "neural",
+        name: "高品质语音",
+        available: false,
+        reason: "not_integrated",
+        detail: "",
+        requiresDownload: true,
+      },
+    ],
     voices: [
       {
         id: "female-id",
         name: "Huihui",
         language: "zh-CN",
         gender: "female",
+        engine: "system",
         available: true,
       },
       {
@@ -120,6 +137,7 @@ beforeEach(() => {
         name: "Kangkang",
         language: "zh-CN",
         gender: "male",
+        engine: "system",
         available: true,
       },
     ],
@@ -186,14 +204,25 @@ describe("AudioSettings", () => {
     ).toBeTruthy();
   });
 
-  it("试听与清理按钮走统一服务/命令并反馈结果", async () => {
+  it("逐音色试听走统一服务；成功后不弹提示、不应用设置", async () => {
     renderPanel();
     await waitFor(() => expect(mocks.cacheStats).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole("button", { name: "settings.audio.previewSpeech" }));
-    await waitFor(() => expect(mocks.previewSpeech).toHaveBeenCalledTimes(1));
-    expect(mocks.toast).toHaveBeenCalledWith(
-      'settings.audio.previewVoice|{"voice":"Microsoft Huihui"}',
+    mocks.previewSpeech.mockResolvedValueOnce({
+      ok: true,
+      code: "ok",
+      voiceName: "Huihui",
+      fallback: false,
+    });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: 'settings.audio.previewVoiceAria|{"voice":"Huihui · settings.audio.gender.female"}',
+      }),
     );
+    await waitFor(() => expect(mocks.previewSpeech).toHaveBeenCalledTimes(1));
+    const opts = mocks.previewSpeech.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(opts.voiceId).toBe("female-id");
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.toast).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "settings.ttsCache.clear" }));
     await waitFor(() => expect(mocks.cacheClear).toHaveBeenCalledTimes(1));
@@ -216,12 +245,14 @@ describe("AudioSettings", () => {
     renderPanel({ ...OPEN, "audio-sound": true });
     await waitFor(() => expect(mocks.listVoices).toHaveBeenCalled());
     const speechButton = screen.getByRole("button", {
-      name: "settings.audio.previewSpeech",
+      name: 'settings.audio.previewVoiceAria|{"voice":"Huihui · settings.audio.gender.female"}',
     }) as HTMLButtonElement;
     await waitFor(() => expect(speechButton.disabled).toBe(false));
     fireEvent.click(speechButton);
     await waitFor(() => expect(mocks.previewSpeech).toHaveBeenCalledTimes(1));
-    expect(mocks.toast).toHaveBeenCalledWith("settings.audio.previewSilentSpeech");
+    expect(mocks.toast).toHaveBeenCalledWith("settings.audio.previewSilentSpeech", {
+      kind: "error",
+    });
     expect(mocks.toast).not.toHaveBeenCalledWith("settings.audio.previewOk");
 
     mocks.previewTone.mockResolvedValueOnce({ ok: false, code: "silent_tone" });

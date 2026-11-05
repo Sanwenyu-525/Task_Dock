@@ -10,14 +10,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ArrowLeft, ArrowUpRight, ChevronLeft, ChevronRight, FileText, ImageOff, Loader2 } from "lucide-react";
 import {
+  clipboardGroupItemPosition,
   clipboardGroupPage,
   clipboardItem,
   type ClipboardGroup,
+  type ClipboardGroupItemPosition,
   type ClipboardGroupPage,
   type ClipboardItem,
 } from "../../lib/bridge";
 import { fileBaseName, kindLabel } from "../../lib/clipboardUi";
 import { normalizeError } from "../../lib/errors";
+import { useUiStore } from "../../store/useUiStore";
 import { ClipboardThumb, useLargeImage } from "../clipboard/Media";
 import { useFocusRestore, useOverlayLayer } from "../ui/overlay";
 import { EmptyState, sizeLabel } from "./PanelKit";
@@ -50,6 +53,11 @@ export type ClipboardLiteView =
 export const TEXT_RENDER_LIMIT = 20_000;
 const FILE_LIST_LIMIT = 30;
 const GROUP_THUMB_LIMIT = 9;
+/**
+ * 序列刷新时有界查找的页数上限（10 页 = 90 张缩略图元数据）。
+ * 超出该范围的定位结果不再逐页重建，改为回到组首并给出明确提示。
+ */
+const GROUP_LOAD_PAGE_LIMIT = 10;
 
 /** 按 id 合并分页缩略图，防止组内容变化后 offset 位移造成重复条目。 */
 function mergeThumbs(
@@ -289,6 +297,7 @@ export function ClipboardLiteImageView({
   const rootRef = useRef<HTMLDivElement>(null);
   useFocusRestore(active);
   useOverlayLayer("sublayer", active, onBack, rootRef);
+  const showToast = useUiStore((s) => s.showToast);
   const [items, setItems] = useState<ClipboardItem[]>(() =>
     sequence && sequence.items.length > 0 ? sequence.items : [item],
   );
@@ -328,56 +337,195 @@ export function ClipboardLiteImageView({
   }, [items.length]);
 
   /**
-   * revision 变化后的重建：从最新第一页开始，按需补页直到能按图片 ID 找回当前项，
-   * 或覆盖原序号。最多补 10 页（90 张缩略图元数据），不加载整组原图/全部组。
-   * 每次补页都使用新 revision；绝不把不同 revision 的页拼接。
+   * revision 变化后的重建。核心规则是「按图片 ID 恢复身份」，不按旧序号回退：
+   * 1) 当前图片仍在第一页 → 直接保持（位置可以变）；
+   * 2) 否则走后端定位接口（clipboard_group_item_position，不走 groupPageCache）按 ID
+   *    找回序位，按需顺序补页到该序位所在页（有界，最多 GROUP_LOAD_PAGE_LIMIT 页）；
+   * 3) 图片已删除/移出本组 → 按旧序号 clamp 到新总数内选相邻图片，并给出明确提示；
+   * 4) 组已删除（NotFound）→ 明确提示并退出组内预览；
+   * 5) 超出查找上限 → 回到组首并明确提示。任何路径都不允许静默显示其他图片。
+   * 定位与补页期间 revision 再次变化只整体重试一次；每次 await 后都做代际检查，
+   * 旧请求一律不写任何 state。
    */
   const refreshSequence = useCallback(
-    async (request: number) => {
+    async (request: number, assumeGone = false) => {
       if (!sequence) return;
-      const first = await loadGroupPage(sequence.group, GROUP_THUMB_LIMIT, 0, true);
-      if (request !== pageSeq.current) return;
-      const revision = first.revision;
+      const group = sequence.group;
+      const stale = () => request !== pageSeq.current;
+      /** 组已删除（NotFound）的统一出口：提示 + 退出组内预览。 */
+      const leaveGroupGone = () => {
+        showToast("截图组已删除，已退出预览", { kind: "info" });
+        setLoadingMore(false);
+        onBack();
+      };
+      const loadFirstPage = async (): Promise<ClipboardGroupPage> => {
+        try {
+          return await loadGroupPage(group, GROUP_THUMB_LIMIT, 0, true);
+        } catch (e) {
+          if (stale()) throw e;
+          if (normalizeError(e).code === "NOT_FOUND") {
+            leaveGroupGone();
+            throw new Error("group-gone");
+          }
+          throw e;
+        }
+      };
+
+      if (assumeGone) {
+        // 组已从列表快照消失：分页缓存可能仍命中旧摘要（clearGroupPageCache 在父级
+        // effect 中执行，晚于本 effect），不能靠第一页请求发现删除。定位接口不走
+        // 缓存，NotFound 才是组删除的权威信号；仍存在则继续常规刷新兜底。
+        try {
+          await clipboardGroupItemPosition(group.id, currentId);
+        } catch (e) {
+          if (stale()) return;
+          if (normalizeError(e).code === "NOT_FOUND") {
+            leaveGroupGone();
+            return;
+          }
+          throw e;
+        }
+        if (stale()) return;
+      }
+
+      let first = await loadFirstPage();
+      if (stale()) return;
       if (first.items.length === 0) {
         setNotice("截图组图片已全部移除");
         setLoadingMore(false);
         onBack();
         return;
       }
-      let nextItems = mergeThumbs([], first.items);
-      let nextTotal = Math.max(first.imageCount, nextItems.length, 1);
+      let revision = first.revision;
       const oldIndex = index;
-      let keep = nextItems.findIndex((entry) => entry.id === currentId);
-      let pages = 0;
-      while (
-        keep < 0 &&
-        nextItems.length < nextTotal &&
-        nextItems.length <= oldIndex &&
-        pages < 10
-      ) {
-        pages += 1;
-        const page = await loadGroupPage(
-          sequence.group,
-          GROUP_THUMB_LIMIT,
-          nextItems.length,
-          true,
-        );
-        if (request !== pageSeq.current) return;
-        // 又发生一次内容变化：停止拼接，保留当前已加载的最新前缀。
-        if (page.revision !== revision || page.items.length === 0) break;
-        nextItems = mergeThumbs(nextItems, page.items);
-        nextTotal = Math.max(nextTotal, page.imageCount, nextItems.length);
-        keep = nextItems.findIndex((entry) => entry.id === currentId);
+
+      // ── 第 1 步：找回当前图片。第一页直接命中则无需定位接口；
+      //    定位返回的 revision 与第一页不一致时整体重试一次，仍不一致按「未找到」处理。
+      let loc: ClipboardGroupItemPosition | null = null;
+      let retried = false;
+      while (!first.items.some((entry) => entry.id === currentId)) {
+        let probe: ClipboardGroupItemPosition;
+        try {
+          probe = await clipboardGroupItemPosition(group.id, currentId);
+        } catch (e) {
+          if (stale()) return;
+          if (normalizeError(e).code === "NOT_FOUND") {
+            leaveGroupGone();
+            return;
+          }
+          throw e; // 其它错误交给调用方显示，绝不静默换图
+        }
+        if (stale()) return;
+        if (probe.revision === revision) {
+          loc = probe;
+          break;
+        }
+        if (retried) {
+          // 整体重试后仍不一致（内容变化过快）：按「未找到」降级，走相邻回退并提示。
+          loc = { ...probe, found: false, index: null };
+          break;
+        }
+        retried = true;
+        first = await loadFirstPage();
+        if (stale()) return;
+        if (first.items.length === 0) {
+          setNotice("截图组图片已全部移除");
+          setLoadingMore(false);
+          onBack();
+          return;
+        }
+        revision = first.revision;
       }
+
+      /**
+       * 有界重建前缀：从 start 继续顺序补页直到覆盖 target 序位（含）或达到页数上限；
+       * 返回是否未能覆盖 target（截断）。每页校验 revision，页空/变化即停止拼接，
+       * 绝不把不同 revision 的页拼在一起。
+       */
+      const buildPrefix = async (
+        start: ClipboardItem[],
+        startTotal: number,
+        target: number,
+        maxExtraPages: number,
+      ): Promise<{ items: ClipboardItem[]; total: number; truncated: boolean }> => {
+        let built = start;
+        let builtTotal = Math.max(startTotal, built.length, 1);
+        let pages = 0;
+        while (target >= built.length && built.length < builtTotal && pages < maxExtraPages) {
+          pages += 1;
+          const page = await loadGroupPage(group, GROUP_THUMB_LIMIT, built.length, true);
+          if (stale()) return { items: built, total: builtTotal, truncated: true };
+          if (page.revision !== revision || page.items.length === 0) break;
+          built = mergeThumbs(built, page.items);
+          builtTotal = Math.max(builtTotal, page.imageCount, built.length);
+        }
+        return { items: built, total: builtTotal, truncated: target >= built.length };
+      };
+
+      let nextItems: ClipboardItem[];
+      let nextTotal: number;
+      let nextIndex: number;
+      let nextNotice: string;
+      if (loc === null) {
+        // 当前图片仍在第一页：位置可以变，身份不变。
+        nextItems = first.items;
+        nextTotal = Math.max(first.imageCount, nextItems.length, 1);
+        nextIndex = Math.max(0, nextItems.findIndex((entry) => entry.id === currentId));
+        nextNotice = "截图组内容已变化，已刷新";
+      } else if (loc.found && loc.index !== null) {
+        const p = loc.index;
+        if (p >= GROUP_LOAD_PAGE_LIMIT * GROUP_THUMB_LIMIT) {
+          // 超出有界查找能力：回到组首并明确提示（不允许静默显示其他图片）。
+          nextItems = first.items;
+          nextTotal = Math.max(loc.imageCount, 1);
+          nextIndex = 0;
+          nextNotice = `当前图片已移动到第 ${p + 1} 张，超出预载范围，已回到组首`;
+        } else {
+          const built = await buildPrefix(
+            first.items,
+            Math.max(loc.imageCount, first.imageCount),
+            p,
+            Math.floor(p / GROUP_THUMB_LIMIT),
+          );
+          if (stale()) return;
+          // 防御：无论按序位还是按 ID，最终都必须以「当前图片确实在前缀里」为准。
+          const keep = built.items.findIndex((entry) => entry.id === currentId);
+          nextItems = built.items;
+          nextTotal = Math.max(loc.imageCount, built.total, 1);
+          if (keep >= 0) {
+            nextIndex = keep;
+            nextNotice = "截图组内容已变化，已刷新";
+          } else {
+            // revision 在补页期间再次变化导致前缀截断：明确提示相邻回退，不静默。
+            nextIndex = Math.max(0, nextItems.length - 1);
+            nextNotice = "截图组内容再次变化，未能找回当前图片，已切换到相邻图片";
+          }
+        }
+      } else {
+        // 当前图片已被删除/移出本组：按旧序号 clamp 到新总数内选相邻图片。
+        const imageCount = Math.max(0, loc.imageCount);
+        const target = imageCount > 0 ? Math.min(oldIndex, imageCount - 1) : 0;
+        const built = await buildPrefix(
+          first.items,
+          Math.max(loc.imageCount, first.imageCount),
+          target,
+          GROUP_LOAD_PAGE_LIMIT - 1,
+        );
+        if (stale()) return;
+        nextItems = built.items;
+        nextTotal = Math.max(loc.imageCount, built.total, 1);
+        nextIndex = Math.min(target, Math.max(0, nextItems.length - 1));
+        nextNotice = retried
+          ? "截图组内容变化过快，未能确认当前图片，已切换到相邻图片"
+          : "截图组内容已变化，当前图片已不在截图组中，已切换到相邻图片";
+      }
+
+      if (stale()) return;
       revisionRef.current = revision;
       setItems(nextItems);
       setTotal(nextTotal);
-      setIndex(
-        keep >= 0
-          ? keep
-          : Math.min(oldIndex, Math.max(0, nextItems.length - 1)),
-      );
-      setNotice("截图组内容已变化，已刷新");
+      setIndex(nextIndex);
+      setNotice(nextNotice);
       setLoadingMore(false);
       if (sequence.onReplace) {
         sequence.onReplace(nextItems, nextTotal, revision);
@@ -385,29 +533,37 @@ export function ClipboardLiteImageView({
         sequence.onAppend(nextItems.slice(first.items.length));
       }
     },
-    [sequence, currentId, index, onBack],
+    [sequence, currentId, index, onBack, showToast],
   );
 
-  /** 组摘要签名：预览期间组被删图/拆分/合并时，重新取第一页并校正当前位置。 */
+  /**
+   * 组摘要签名：预览期间组被删图/拆分/合并时，重新取第一页并校正当前位置；
+   * 组从列表消失（liveGroup 变 undefined）同样触发一次刷新 —— 定位/分页接口会返回
+   * NotFound，refreshSequence 据此提示并退出组内预览。只在变化时触发一次，不轮询。
+   */
   const liveSignature = liveGroup
     ? `${liveGroup.updated_at}|${liveGroup.image_count}|${liveGroup.item_count}`
     : "";
   const liveSignatureRef = useRef(liveSignature);
   useEffect(() => {
-    if (!sequence || !liveGroup || liveSignature === liveSignatureRef.current) return;
+    if (!sequence) return;
+    const groupGone = !liveGroup && liveSignatureRef.current !== "";
+    if (!groupGone && (!liveGroup || liveSignature === liveSignatureRef.current)) return;
     liveSignatureRef.current = liveSignature;
     const request = ++pageSeq.current;
     setLoadingMore(true);
     setLoadError("");
-    void refreshSequence(request).catch((e) => {
+    void refreshSequence(request, groupGone).catch((e) => {
       if (request !== pageSeq.current) return;
+      // 组删除的退出已在 refreshSequence 内完成，这里的 "group-gone" 哨兵不展示。
+      if (e instanceof Error && e.message === "group-gone") return;
       setLoadError(normalizeError(e).message);
       setLoadingMore(false);
     });
     // 只在组摘要变化时刷新；currentId/index 由 refreshSequence 读取最新值，
     // 不能作为依赖，否则每次翻页都会重新触发刷新。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveSignature]);
+  }, [liveSignature, liveGroup]);
 
   /** 只补下一页缩略图元数据，不预加载任何原图。 */
   const loadNextPage = useCallback(async () => {

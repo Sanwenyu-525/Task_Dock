@@ -4,13 +4,15 @@
 //! 避免设置页产生第二个音频调度者。语音列表与缓存统计在对应分组展开时读取，
 //! 关闭 TTS 时不会在后台初始化语音引擎。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Bell, HardDrive, Play, RefreshCw, Trash2, Volume2 } from "lucide-react";
 import { CollapsibleSection } from "../ui";
 import { NumberInput, Select, Switch } from "../ui";
 import { formatBytes } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
-import { getAudioService, type AudioPreviewResult } from "../../lib/audioNotification";
+import { getAudioService } from "../../lib/audioNotification";
+import { previewMessage } from "../../lib/audioPreview";
+import VoicePicker from "./VoicePicker";
 import {
   ttsCacheClear,
   ttsCacheStats,
@@ -27,9 +29,6 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
-
-/** Select 不接受空字符串作为“已选择”，用哨兵值表示“自动”。 */
-const AUTO_VOICE = "__auto_voice__";
 
 interface AudioSettingsProps {
   openSections: SettingsSectionOpenState;
@@ -82,38 +81,6 @@ const DEFAULT_EVENT_ON: Record<string, boolean> = {
   tts_task_due: true,
   tts_reminder: true,
 };
-
-function previewMessage(
-  result: AudioPreviewResult,
-  t: (key: MessageKey, vars?: Record<string, string | number>) => string,
-): string {
-  if (result.ok) {
-    if (result.fallback && result.voiceName) {
-      return t("settings.audio.previewFallback", { voice: result.voiceName });
-    }
-    if (result.voiceName) return t("settings.audio.previewVoice", { voice: result.voiceName });
-    return t("settings.audio.previewOk");
-  }
-  switch (result.code) {
-    case "muted":
-      return t("settings.audio.previewMuted");
-    case "silent_tone":
-      return t("settings.audio.previewSilentTone");
-    case "silent_speech":
-      return t("settings.audio.previewSilentSpeech");
-    case "busy":
-      return t("settings.audio.previewBusy");
-    case "no_voice":
-    case "noVoice":
-      return t("settings.audio.previewNoVoice");
-    case "unsupported":
-      return t("settings.audio.previewUnsupported");
-    case "cancelled":
-      return t("settings.audio.previewCancelled");
-    default:
-      return t("settings.audio.previewFailed");
-  }
-}
 
 export default function AudioSettings({ openSections, onToggle }: AudioSettingsProps) {
   const { t } = useLocale();
@@ -179,37 +146,6 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
     if (cacheOpen) void loadCache();
   }, [cacheOpen, loadCache]);
 
-  const voiceOptions = useMemo(() => {
-    const options: { value: string; label: string; disabled?: boolean }[] = [
-      { value: AUTO_VOICE, label: t("settings.audio.voiceAuto") },
-    ];
-    for (const voice of voices?.voices ?? []) {
-      const gender =
-        voice.gender === "female"
-          ? t("settings.audio.gender.female")
-          : voice.gender === "male"
-            ? t("settings.audio.gender.male")
-            : null;
-      const suffix = [voice.language, gender].filter(Boolean).join(" · ");
-      options.push({
-        value: voice.id,
-        label: `${voice.name}${suffix ? ` · ${suffix}` : ""}${
-          voice.available ? "" : t("settings.audio.voiceUnavailable")
-        }`,
-        disabled: !voice.available,
-      });
-    }
-    // 已保存但系统已移除的语音：保留为不可选项，避免 UI 静默改用户选择。
-    if (settings?.tts_voice_id && !voices?.voices.some((v) => v.id === settings.tts_voice_id)) {
-      options.push({
-        value: settings.tts_voice_id,
-        label: t("settings.audio.voiceMissing"),
-        disabled: true,
-      });
-    }
-    return options;
-  }, [voices, settings?.tts_voice_id, t]);
-
   if (!settings) return null;
 
   const soundVolume = settings.audio_sound_volume ?? 70;
@@ -230,15 +166,6 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
     setBusy("tone");
     try {
       showToast(previewMessage(await getAudioService().previewTone(), t));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function onPreviewSpeech() {
-    setBusy("speech");
-    try {
-      showToast(previewMessage(await getAudioService().previewSpeech(), t));
     } finally {
       setBusy(null);
     }
@@ -377,37 +304,28 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
             }
           />
         </div>
-        <div className="setting-row">
-          <span>{t("settings.audio.voice")}</span>
-          <Select
-            value={settings.tts_voice_id || AUTO_VOICE}
-            ariaLabel={t("settings.audio.voice")}
-            disabled={voiceLoading || busy === "speech"}
-            menuMinWidth={220}
-            options={voiceOptions}
-            onChange={(value) => {
-              if (value === AUTO_VOICE) {
-                save({ tts_voice_id: "" });
-                return;
-              }
-              const picked = voices?.voices.find((v) => v.id === value);
-              const pickedGender =
-                picked?.gender === "male" || picked?.gender === "female"
-                  ? picked.gender
-                  : undefined;
-              save({
-                tts_voice_id: value,
-                ...(pickedGender ? { tts_voice_gender: pickedGender } : {}),
-              });
-            }}
-          />
-        </div>
-        {voiceLoading && <div className="setting-note">{t("settings.audio.voiceLoading")}</div>}
-        {voiceError && (
-          <div className="setting-note">
-            {t("settings.audio.voiceLoadFailed", { error: voiceError })}
-          </div>
-        )}
+        {/* 统一音色选择器：逐项试听（不应用）、点击行才保存默认音色。 */}
+        <VoicePicker
+          voices={voices?.voices ?? []}
+          engines={voices?.engines ?? []}
+          loading={voiceLoading}
+          error={voiceError}
+          selectedId={settings.tts_voice_id ?? ""}
+          gender={gender}
+          rate={ttsRate}
+          onSelect={(voice) => {
+            if (!voice) {
+              save({ tts_voice_id: "" });
+              return;
+            }
+            const pickedGender =
+              voice.gender === "male" || voice.gender === "female" ? voice.gender : undefined;
+            save({
+              tts_voice_id: voice.id,
+              ...(pickedGender ? { tts_voice_gender: pickedGender } : {}),
+            });
+          }}
+        />
         {selectedVoiceUnavailable && (
           <div className="setting-note">{t("settings.audio.selectedUnavailable")}</div>
         )}
@@ -434,27 +352,16 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
         </div>
         <div className="setting-row">
           <span>{t("settings.audio.ttsRate")}</span>
-          <div className="btn-row">
-            <NumberInput
-              size="sm"
-              min={50}
-              max={200}
-              step={5}
-              value={ttsRate}
-              suffix="%"
-              ariaLabel={t("settings.audio.ttsRate")}
-              onChange={(v) => save({ tts_rate: v })}
-            />
-            <button
-              className="btn sm"
-              onClick={onPreviewSpeech}
-              disabled={busy !== null || voiceLoading}
-              aria-label={t("settings.audio.previewSpeech")}
-            >
-              {busy === "speech" ? <RefreshCw size={11} className="spin" /> : <Play size={11} />}{" "}
-              {t("settings.audio.preview")}
-            </button>
-          </div>
+          <NumberInput
+            size="sm"
+            min={50}
+            max={200}
+            step={5}
+            value={ttsRate}
+            suffix="%"
+            ariaLabel={t("settings.audio.ttsRate")}
+            onChange={(v) => save({ tts_rate: v })}
+          />
         </div>
         <div className="setting-row">
           <span>{t("settings.audio.speakSource")}</span>

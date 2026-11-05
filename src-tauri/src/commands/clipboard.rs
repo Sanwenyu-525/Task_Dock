@@ -14,9 +14,9 @@ use crate::clipboard::paste::{self, PasteStartReport};
 use crate::clipboard::platform::{self, ClipboardPayload, TargetWindow};
 use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteJob};
 use crate::clipboard::{
-    engine, ocr::OcrReport, CleanupReport, ClearReport, ClipboardGroup, ClipboardGroupPage,
-    ClipboardItem, ClipboardRuntime, ClipboardStats, ClipboardView, CopyReport, DeleteReport,
-    KIND_FILES, KIND_IMAGE, KIND_URL,
+    engine, ocr::OcrReport, CleanupReport, ClearReport, ClipboardGroup, ClipboardGroupItemPosition,
+    ClipboardGroupPage, ClipboardItem, ClipboardRuntime, ClipboardStats, ClipboardView, CopyReport,
+    DeleteReport, KIND_FILES, KIND_IMAGE, KIND_URL,
 };
 use crate::db::Settings;
 use crate::error::{AppError, AppResult};
@@ -86,6 +86,19 @@ pub fn clipboard_group_page(
         offset,
         images_only.unwrap_or(false),
     )
+}
+
+/// Lite 原图预览的条目定位：返回条目在组内「图片序列」中的 0-based 序位与组版本。
+///
+/// 与 `clipboard_group_page` 同风格（同步命令、有界查询），供前端在组内容变化后按
+/// 图片 ID 恢复当前预览。组不存在 → NotFound；条目不在组内或不是图片 → found=false。
+#[tauri::command]
+pub fn clipboard_group_item_position(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    group_id: String,
+    item_id: String,
+) -> AppResult<ClipboardGroupItemPosition> {
+    store::get_group_item_position(&runtime(&state).db, &group_id, &item_id)
 }
 
 #[tauri::command]

@@ -228,6 +228,27 @@ pub struct ClipboardGroupPage {
     pub revision: String,
 }
 
+/// 组内条目定位结果（`clipboard_group_item_position`）：Lite 原图预览在组内容变化后
+/// 按图片 ID 恢复身份用，避免按旧序号回退成另一张图。
+///
+/// 字段风格与 `ClipboardGroupPage` 一致（camelCase）：
+/// - 组不存在 → `AppError::NotFound`（前端据此退出预览），不返回本结构体；
+/// - 条目不在组内或不是图片 → `found=false, index=null`，不报错。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardGroupItemPosition {
+    /// 该条目是否仍是组内的图片条目。
+    pub found: bool,
+    /// 该条目在组内「图片条目」中的 0-based 序位；未找到时为 None。
+    pub index: Option<i64>,
+    /// 组内图片条目数（不受本次查询影响，与 `get_group_page` 同源）。
+    pub image_count: i64,
+    /// 组内全部条目数。
+    pub total_count: i64,
+    /// 组内容版本：与 `get_group_page` 完全相同的组合公式，供前端校验一致性。
+    pub revision: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClipboardStats {
     pub items: i64,

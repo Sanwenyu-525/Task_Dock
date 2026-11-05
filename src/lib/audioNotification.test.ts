@@ -3,11 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AudioNotificationService,
   DONE_BATCH_LIMIT,
+  MAX_SPEECH_LABEL_CHARS,
+  PREVIEW_MAX_CHARS,
   DONE_MERGE_WINDOW_MS,
   EVENT_PRIORITY,
   QUEUE_LIMIT,
   composeSpeech,
   readAudioSettings,
+  sanitizeSpeechLabel,
   toneGain,
   type AudioAdapters,
   type AudioEventKind,
@@ -212,14 +215,16 @@ describe("composeSpeech", () => {
     ).toBe("多个任务已完成");
   });
 
-  it("超过 300 字截断，避免超长播报", () => {
-    const long = "a".repeat(500);
+  it("超长标题按标签上限截断，不会整段朗读（300 字上限仍作为兜底）", () => {
+    const long = "任务".repeat(250);
     const result = composeSpeech(
       "agent_failed",
       { taskTitle: long },
       { speakSource: false, speakTitle: true },
     );
-    expect(result.text.length).toBe(300);
+    // 标签清洗上限 40 字符：播报只保留开头一小段，总长度远低于 300 兜底上限。
+    expect(Array.from(result.text).length).toBeLessThan(80);
+    expect(result.text).not.toContain("任务".repeat(21));
   });
 });
 
@@ -351,6 +356,61 @@ describe("AudioNotificationService", () => {
     const result = await h.service.previewSpeech();
     expect(result.ok).toBe(true);
     expect(h.synth[0]).toMatchObject({ voiceId: "voice-b", rate: 120, persist: false });
+  });
+
+  it("显式音色试听：只试听该音色、不修改设置、不受当前设置变化影响", async () => {
+    const h = makeHarness(fakeSettings({ tts_voice_id: "voice-a", tts_voice_gender: "auto" }));
+    const gate = h.holdSynth();
+    const stages: string[] = [];
+    const pending = h.service.previewSpeech({
+      voiceId: "voice-b",
+      gender: "male",
+      rate: 130,
+      text: "需要你的操作",
+      onStage: (stage) => stages.push(stage),
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.synth[0]).toMatchObject({
+      voiceId: "voice-b",
+      gender: "male",
+      rate: 130,
+      text: "需要你的操作",
+      persist: false,
+    });
+    // 默认音色在试听期间被改：显式试听仍继续（不是按当前设置试听）
+    h.setSettings({ tts_voice_id: "voice-c" });
+    gate.release();
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    expect(h.events).toContain("speech");
+    expect(stages).toEqual(["synthesizing", "playing"]);
+    // 设置未被试听改写
+    expect(h.settings.tts_voice_id).toBe("voice-c");
+  });
+
+  it("试听文本为空或超长：结构化拒绝，不发起合成", async () => {
+    const h = makeHarness();
+    await expect(h.service.previewSpeech({ text: "   " })).resolves.toMatchObject({
+      ok: false,
+      code: "text_empty",
+    });
+    await expect(
+      h.service.previewSpeech({ text: "很".repeat(PREVIEW_MAX_CHARS + 1) }),
+    ).resolves.toMatchObject({ ok: false, code: "text_too_long" });
+    expect(h.synth).toHaveLength(0);
+    h.service.dispose();
+  });
+
+  it("stopPreview 中止播放并回报 cancelled（不把中断当成功）", async () => {
+    const h = makeHarness();
+    const gate = h.holdSpeech();
+    const pending = h.service.previewSpeech({ voiceId: "voice-b", text: "任务已完成" });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(h.events).toContain("speech");
+    h.service.stopPreview();
+    gate.release();
+    await expect(pending).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    expect(h.service.diagnostics().previewing).toBe(false);
+    h.service.dispose();
   });
 
   it("提示音音量 0：试听不播放并回报单通道静音（不是成功）", async () => {
@@ -608,5 +668,37 @@ describe("EVENT_PRIORITY", () => {
       expect(EVENT_PRIORITY[ordered[i - 1]]).toBeGreaterThanOrEqual(EVENT_PRIORITY[ordered[i]]);
     }
     expect(EVENT_PRIORITY.agent_waiting).toBeGreaterThan(EVENT_PRIORITY.agent_failed);
+  });
+});
+
+describe("播报标签清洗（自然度与隐私）", () => {
+  it("去掉 URL / 文件路径 / 邮箱，只保留可朗读内容", () => {
+    expect(sanitizeSpeechLabel("修 bug https://example.com/x?y=1")).toBe("修 bug");
+    expect(sanitizeSpeechLabel(String.raw`C:\Users\me\secret.txt`)).toBe("");
+    expect(sanitizeSpeechLabel(String.raw`\\server\share\a.docx`)).toBe("");
+    expect(sanitizeSpeechLabel("联系 a.b@c.com 处理")).toBe("联系 处理");
+  });
+
+  it("纯符号/控制字符被丢弃，连续标点收敛，长标题按字符截断", () => {
+    expect(sanitizeSpeechLabel("!!!？？")).toBe("");
+    expect(sanitizeSpeechLabel("	  ")).toBe("");
+    expect(sanitizeSpeechLabel("完成了！！！")).toBe("完成了！");
+    const long = "任".repeat(MAX_SPEECH_LABEL_CHARS + 20);
+    expect(Array.from(sanitizeSpeechLabel(long))).toHaveLength(MAX_SPEECH_LABEL_CHARS);
+  });
+
+  it("composeSpeech 只用清洗后的标签：只有 URL 的标题不进入播报", () => {
+    const withUrlTitle = composeSpeech(
+      "agent_done",
+      { sourceName: "Claude", taskTitle: "https://example.com/task/1" },
+      { speakSource: true, speakTitle: true },
+    );
+    expect(withUrlTitle.text).toBe("「Claude」任务已完成");
+    const symbolsOnly = composeSpeech(
+      "agent_done",
+      { sourceName: "!!!", taskTitle: null },
+      { speakSource: true, speakTitle: true },
+    );
+    expect(symbolsOnly.text).toBe("任务已完成");
   });
 });

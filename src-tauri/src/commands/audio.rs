@@ -40,6 +40,7 @@ pub async fn tts_synthesize(
     gender: Option<String>,
     rate: Option<u32>,
     persist: Option<bool>,
+    engine: Option<String>,
 ) -> AppResult<SynthesisReport> {
     let settings = Settings::load(&db)?;
     let service = Arc::clone(&audio);
@@ -49,6 +50,8 @@ pub async fn tts_synthesize(
     let rate = rate.unwrap_or(settings.tts_rate);
     let persist = persist.unwrap_or(false);
     let voice_id = voice_id.filter(|v| !v.trim().is_empty());
+    // 未指定时使用系统引擎；非法引擎由 AudioService 返回结构化 engine_unavailable。
+    let engine = engine.unwrap_or_else(|| crate::audio::ENGINE_SYSTEM.to_string());
 
     tauri::async_runtime::spawn_blocking(move || {
         service.synthesize(
@@ -59,6 +62,7 @@ pub async fn tts_synthesize(
             persist,
             cache_enabled,
             max_bytes,
+            &engine,
         )
     })
     .await

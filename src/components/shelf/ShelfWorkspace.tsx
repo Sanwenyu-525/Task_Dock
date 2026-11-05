@@ -34,7 +34,7 @@ import { registerFileDropConsumer } from "../../lib/fileDrop";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
-import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { useGlobalSearchStore, type GlobalSearchLocateIntent } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
 import { ConfirmDialog } from "../ui/Dialog";
 import { DropdownMenu, SearchField } from "../ui";
@@ -124,6 +124,14 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const [cleanupOpen, setCleanupOpen] = useState(false);
   /** 投递目标管理（工具面板「文件投递」共用同一份配置） */
   const [targetsOpen, setTargetsOpen] = useState(false);
+  /** 目标管理里是否有未保存表单：外部定位请求必须先确认才能离开。 */
+  const [targetsDirty, setTargetsDirty] = useState(false);
+  /** 等待未保存确认的定位意图（已从全局 store 消费，取消后不会延迟执行）。 */
+  const [locatePending, setLocatePending] = useState<GlobalSearchLocateIntent | null>(null);
+  const [locateConfirm, setLocateConfirm] = useState(false);
+  /** 目标不在当前一页时，用单条读取兜底显示详情。 */
+  const [detailFallback, setDetailFallback] = useState<ShelfItem | null>(null);
+  const locateRunSeq = useRef(0);
   const [clipboardEntries, setClipboardEntries] = useState<
     { id: string; kind: string; preview: string }[]
   >([]);
@@ -173,30 +181,75 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     })();
   }, [active, load, refreshMeta, verifyExists]);
 
-  // 全局搜索定位：清过滤确保目标条目在列表中（详情数据源是当前 items），
-  // 然后按 id 打开详情；详情在 items 重新加载完成前不渲染，加载后自动出现。
+  // 全局搜索 / 胶囊最近暂存定位：必须先回到文件暂存架视图，再打开详情。
+  // 目标管理有未保存表单时不能静默丢弃：弹确认，取消后意图已消费，不会延迟误执行。
   const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
   const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
+
+  const runLocate = useCallback(
+    async (intent: GlobalSearchLocateIntent) => {
+      const seq = ++locateRunSeq.current;
+      // 复位全部筛选（不只搜索词）：目标条目可能被类型/分组/收藏筛选挡住。
+      // 同时等列表按新筛选加载完成：load 会用服务端结果收敛 detailId，
+      // 若提前 setDetail，旧筛选结果会把刚设置的详情清掉。
+      const f = useShelfStore.getState().filter;
+      const needReset = f.search || f.kind !== "all" || f.group_id !== "all" || f.favorite_only;
+      if (needReset) {
+        await setFilter({ search: "", kind: "all", group_id: "all", favorite_only: false });
+      } else {
+        // 无条件拉一次权威列表：可能在途的旧 load 会清掉不在当前页的 detailId。
+        await load();
+      }
+      if (seq !== locateRunSeq.current) return; // 只执行最新一次合法定位
+      setDetail(intent.id);
+    },
+    [load, setFilter, setDetail],
+  );
 
   useEffect(() => {
     if (!pendingLocate || pendingLocate.category !== "shelf") return;
     const intent = pendingLocate;
     consumeLocate();
-    // 复位全部筛选（不只搜索词）：目标条目可能被类型/分组/收藏筛选挡住。
-    // 先等列表按新筛选加载完成再打开详情：load 会用服务端结果收敛 detailId，
-    // 若提前 setDetail，旧筛选结果会把刚设置的详情清掉。
-    const f = useShelfStore.getState().filter;
-    const needReset = f.search || f.kind !== "all" || f.group_id !== "all" || f.favorite_only;
-    if (needReset) {
-      void setFilter({ search: "", kind: "all", group_id: "all", favorite_only: false }).then(
-        () => setDetail(intent.id),
-      );
-    } else {
-      setDetail(intent.id);
+    if (targetsOpen && targetsDirty) {
+      // 先不切视图：等用户确认；意图放在本地，取消即丢弃。
+      setLocatePending(intent);
+      setLocateConfirm(true);
+      return;
     }
-    // 仅响应定位意图变化。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingLocate]);
+    if (targetsOpen) {
+      setTargetsOpen(false);
+      setTargetsDirty(false);
+    }
+    void runLocate(intent);
+  }, [pendingLocate, targetsOpen, targetsDirty, consumeLocate, runLocate]);
+
+  // 目标不在当前一页（或列表加载失败）时，用单条读取兜底显示详情；
+  // 只读一条，不为了定位加载全部历史。
+  useEffect(() => {
+    if (!detailId) {
+      setDetailFallback(null);
+      return;
+    }
+    if (items.some((i) => i.id === detailId)) {
+      setDetailFallback(null);
+      return;
+    }
+    if (loading) return;
+    let alive = true;
+    void shelfGetItem(detailId)
+      .then((item) => {
+        if (alive) setDetailFallback(item);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setDetailFallback(null);
+        showToast(`无法打开暂存条目：${errorMessage(e)}`, { kind: "error" });
+        setDetail(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [detailId, items, loading, showToast, setDetail]);
 
   // 胶囊「文件投递 → 管理」的一次性意图：进入本页后展开投递目标面板。
   // 意图由 store 持有，页面还没挂载时也不会丢（下次挂载即消费）。
@@ -547,7 +600,9 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     ],
   );
 
-  const detailItem = items.find((i) => i.id === detailId) ?? null;
+  const detailItem =
+    items.find((i) => i.id === detailId) ??
+    (detailFallback && detailFallback.id === detailId ? detailFallback : null);
   const selectedItems = items.filter((i) => selectedIds.includes(i.id));
   const movableSelected = selectedItems.filter(canMoveItem);
   const copyableSelected = selectedItems.filter(canCopyItem);
@@ -616,7 +671,13 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     <div className={`shelf-workspace ${dragOver ? "drag-over" : ""}`}>
       {targetsOpen ? (
         /* 目标管理是独立内容视图：暂存架工具栏/筛选/列表/空态都不再挂载 */
-        <DropTargetManager onClose={() => setTargetsOpen(false)} />
+        <DropTargetManager
+          onClose={() => {
+            setTargetsOpen(false);
+            setTargetsDirty(false);
+          }}
+          onDirtyChange={setTargetsDirty}
+        />
       ) : (
         <>
       {/* 面板标题行（对齐剪贴板 clip-head 结构） */}
@@ -1150,6 +1211,28 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       />
         </>
       )}
+
+      {/* 外部定位（胶囊最近暂存/全局搜索）遇到目标管理未保存表单：
+          确认后才离开；取消只丢定位意图，保留编辑内容。 */}
+      <ConfirmDialog
+        open={locateConfirm}
+        title="放弃未保存的目标修改并查看文件？"
+        detail="投递目标管理中还有未保存的修改。继续会放弃这些输入，返回文件暂存架并定位到该条目。"
+        confirmLabel="放弃并定位"
+        danger
+        onConfirm={() => {
+          const intent = locatePending;
+          setLocateConfirm(false);
+          setLocatePending(null);
+          setTargetsOpen(false);
+          setTargetsDirty(false);
+          if (intent) void runLocate(intent);
+        }}
+        onCancel={() => {
+          setLocateConfirm(false);
+          setLocatePending(null);
+        }}
+      />
     </div>
   );
 }

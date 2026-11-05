@@ -17,6 +17,7 @@ import { clearGroupPageCache, groupPageCacheKey, loadGroupPage } from "./Clipboa
 
 const clipboardView = vi.fn();
 const clipboardGroupPage = vi.fn();
+const clipboardGroupItemPosition = vi.fn();
 const clipboardCopyItem = vi.fn();
 const clipboardCopyGroupRich = vi.fn();
 const clipboardStatus = vi.fn();
@@ -31,6 +32,7 @@ vi.mock("../../lib/bridge", () => ({
   onClipboardChanged: async () => () => {},
   clipboardView: (...a: unknown[]) => clipboardView(...a),
   clipboardGroupPage: (...a: unknown[]) => clipboardGroupPage(...a),
+  clipboardGroupItemPosition: (...a: unknown[]) => clipboardGroupItemPosition(...a),
   clipboardCopyItem: (...a: unknown[]) => clipboardCopyItem(...a),
   clipboardCopyGroupRich: (...a: unknown[]) => clipboardCopyGroupRich(...a),
   clipboardStatus: (...a: unknown[]) => clipboardStatus(...a),
@@ -102,6 +104,7 @@ function view(items: ClipboardItem[], groups: ClipboardGroup[] = []) {
 beforeEach(() => {
   clipboardView.mockReset();
   clipboardGroupPage.mockReset();
+  clipboardGroupItemPosition.mockReset();
   clipboardCopyItem.mockReset();
   clipboardCopyGroupRich.mockReset();
   clipboardStatus.mockReset();
@@ -113,6 +116,13 @@ beforeEach(() => {
   clipboardGroup.mockReset();
   clipboardView.mockResolvedValue(view([]));
   clipboardGroupPage.mockResolvedValue({ items: [], totalCount: 0, imageCount: 0, offset: 0 });
+  clipboardGroupItemPosition.mockResolvedValue({
+    found: false,
+    index: null,
+    imageCount: 0,
+    totalCount: 0,
+    revision: "r0",
+  });
   clipboardVisibleTargets.mockResolvedValue([]);
   clipboardPasteActive.mockResolvedValue(null);
   clipboardGroup.mockResolvedValue({ items: [] });
@@ -816,7 +826,7 @@ describe("A5 截图组原图序列导航", () => {
 
     fireEvent.keyDown(window, { key: "ArrowLeft" });
     await waitFor(() => expect(screen.getByText("1 / 2")).toBeTruthy());
-    expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("TWO-1");
+    expect((await screen.findByRole("img", { name: "剪贴板图片预览" })).getAttribute("src")).toContain("TWO-1");
   });
 
   it("超过一页：第 9 张继续下一张时按需补页，序号按真实总数显示", async () => {
@@ -900,7 +910,7 @@ describe("A5 截图组原图序列导航", () => {
     );
     // 第一张迟到：不能把当前第二张替换成旧图。
     act(() => resolveFirst("data:image/png;base64,RACE-1"));
-    expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("RACE-2");
+    expect((await screen.findByRole("img", { name: "剪贴板图片预览" })).getAttribute("src")).toContain("RACE-2");
     expect(screen.getByText("2 / 2")).toBeTruthy();
   });
 
@@ -915,6 +925,14 @@ describe("A5 截图组原图序列导航", () => {
         return pageOf(g.id, all.slice(offset, offset + opts.limit), 20, 20, revision);
       },
     );
+    // 组内容变化后当前图片可能跨页：按定位接口按 ID 找回（revision 随全局变量同步）。
+    clipboardGroupItemPosition.mockImplementation(async (_gid: string, itemId: string) => ({
+      found: true,
+      index: all.findIndex((i) => i.id === itemId),
+      imageCount: 20,
+      totalCount: 20,
+      revision,
+    }));
     clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
     render(<ClipboardLite />);
     await screen.findByText("变更组");
@@ -997,6 +1015,13 @@ describe("A5 截图组原图序列导航", () => {
 
     // 组内容变化：第二张被删除，总数变为 2。预览层应按最新序列刷新并落到相邻项。
     deleted = true;
+    clipboardGroupItemPosition.mockResolvedValue({
+      found: false,
+      index: null,
+      imageCount: 2,
+      totalCount: 2,
+      revision: "r2",
+    });
     const updated = group({
       ...g,
       image_count: 2,
@@ -1006,10 +1031,330 @@ describe("A5 截图组原图序列导航", () => {
     act(() => {
       useClipboardStore.setState({ lite: view([], [updated]) });
     });
-    expect(await screen.findByText(/截图组内容已变化/)).toBeTruthy();
+    expect(await screen.findByText(/当前图片已不在截图组中/)).toBeTruthy();
     expect(screen.getByText("2 / 2")).toBeTruthy();
     await waitFor(() =>
       expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("del-3"),
+    );
+  });
+
+  it("当前图片前插入 2 张：仍保持原图片 ID，序号与总数反映最新结果（不静默换图）", async () => {
+    const all = Array.from({ length: 20 }, (_, i) => imageOf(`ins-${i + 1}`, `插入 ${i + 1}`));
+    const g = group({ id: "seq-ins", name: "插入组", image_count: 20, item_count: 20 });
+    let revision = "r1";
+    let images = all;
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockImplementation(
+      async (_id: string, opts: { limit: number; offset?: number }) => {
+        const offset = opts.offset ?? 0;
+        return pageOf(g.id, images.slice(offset, offset + opts.limit), images.length, images.length, revision);
+      },
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("插入组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「插入组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 9 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 9 张图片" }));
+    expect(await screen.findByText("9 / 20")).toBeTruthy();
+    expect((await screen.findByRole("img", { name: "剪贴板图片预览" })).getAttribute("src")).toContain("ins-9");
+
+    // 当前图片前插入 2 张：ins-9 变为第 11 张、总数 22。必须按图片 ID 保持同一张图。
+    images = [imageOf("ins-new-1", "新图 1"), imageOf("ins-new-2", "新图 2"), ...all];
+    revision = "r2";
+    clipboardGroupItemPosition.mockResolvedValue({
+      found: true,
+      index: 10,
+      imageCount: 22,
+      totalCount: 22,
+      revision: "r2",
+    });
+    const updated = group({
+      ...g,
+      image_count: 22,
+      item_count: 22,
+      updated_at: new Date(now + 60_000).toISOString(),
+    });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [updated]) });
+    });
+
+    expect(await screen.findByText(/截图组内容已变化/)).toBeTruthy();
+    // 核心回归断言：组内排序变化不得悄悄改变当前图片 ID。
+    expect((await screen.findByRole("img", { name: "剪贴板图片预览" })).getAttribute("src")).toContain("ins-9");
+    expect(screen.getByText("11 / 22")).toBeTruthy();
+    expect(clipboardGroupItemPosition).toHaveBeenCalledWith("seq-ins", "ins-9");
+
+    // 返回组视图：下层组视图已同步到新 revision 的最新前缀。
+    fireEvent.keyDown(window, { key: "Escape" });
+    await screen.findByRole("button", { name: "查看截图组第 9 张图片" });
+  });
+
+  it("当前图片前删除 2 张：仍保持原图片 ID，序号前移到 7（第一页命中不浪费定位请求）", async () => {
+    const all = Array.from({ length: 20 }, (_, i) => imageOf(`shr-${i + 1}`, `收缩 ${i + 1}`));
+    const g = group({ id: "seq-shr", name: "收缩组", image_count: 20, item_count: 20 });
+    let revision = "r1";
+    let images = all;
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockImplementation(
+      async (_id: string, opts: { limit: number; offset?: number }) => {
+        const offset = opts.offset ?? 0;
+        return pageOf(g.id, images.slice(offset, offset + opts.limit), images.length, images.length, revision);
+      },
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("收缩组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「收缩组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 9 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 9 张图片" }));
+    expect(await screen.findByText("9 / 20")).toBeTruthy();
+
+    // 删除前 2 张：shr-9 变为第 7 张；第一页（9 条）直接命中，无需定位接口。
+    images = all.slice(2);
+    revision = "r2";
+    const updated = group({
+      ...g,
+      image_count: 18,
+      item_count: 18,
+      updated_at: new Date(now + 60_000).toISOString(),
+    });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [updated]) });
+    });
+
+    expect(await screen.findByText("7 / 18")).toBeTruthy();
+    expect((await screen.findByRole("img", { name: "剪贴板图片预览" })).getAttribute("src")).toContain("shr-9");
+    expect(clipboardGroupItemPosition).not.toHaveBeenCalled();
+  });
+
+  it("当前图片移到下一页（跨过第一页边界）：按 ID 补页找回，不显示别的图", async () => {
+    const all = Array.from({ length: 20 }, (_, i) => imageOf(`cross-${i + 1}`, `跨页 ${i + 1}`));
+    const g = group({ id: "seq-cross", name: "跨页组", image_count: 20, item_count: 20 });
+    let revision = "r1";
+    let images = all;
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockImplementation(
+      async (_id: string, opts: { limit: number; offset?: number }) => {
+        const offset = opts.offset ?? 0;
+        return pageOf(g.id, images.slice(offset, offset + opts.limit), images.length, images.length, revision);
+      },
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("跨页组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「跨页组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 5 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 5 张图片" }));
+    expect(await screen.findByText("5 / 20")).toBeTruthy();
+
+    // 前面插入 6 张：cross-5 变为第 11 张（index 10），跨过第一页边界。
+    const head = Array.from({ length: 6 }, (_, i) => imageOf(`cross-new-${i + 1}`, `新头 ${i + 1}`));
+    images = [...head, ...all];
+    revision = "r2";
+    clipboardGroupItemPosition.mockResolvedValue({
+      found: true,
+      index: 10,
+      imageCount: 26,
+      totalCount: 26,
+      revision: "r2",
+    });
+    const updated = group({
+      ...g,
+      image_count: 26,
+      item_count: 26,
+      updated_at: new Date(now + 60_000).toISOString(),
+    });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [updated]) });
+    });
+
+    expect(await screen.findByText("11 / 26")).toBeTruthy();
+    expect((await screen.findByRole("img", { name: "剪贴板图片预览" })).getAttribute("src")).toContain("cross-5");
+    // 定位序位落在第二页：只补一页缩略图元数据（offset 9）。
+    expect(clipboardGroupPage).toHaveBeenCalledWith("seq-cross", {
+      limit: 9,
+      offset: 9,
+      imagesOnly: true,
+    });
+  });
+
+  it("当前组被删除（分页接口 NotFound）：明确提示并退出组内预览，不静默停留", async () => {
+    const g = group({ id: "seq-gone", name: "消失组", image_count: 3, item_count: 3 });
+    const imgs = [1, 2, 3].map((n) => imageOf(`gone-${n}`, `消失 ${n}`));
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockResolvedValue(pageOf(g.id, imgs, 3, 3, "r1"));
+    clipboardImage.mockResolvedValue("data:image/png;base64,GONE");
+    render(<ClipboardLite />);
+    await screen.findByText("消失组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「消失组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 1 张图片" }));
+    expect(await screen.findByRole("img", { name: "剪贴板图片预览" })).toBeTruthy();
+
+    // 组从列表快照删除：定位接口返回 NotFound（组不存在）→ 提示 + 退出组内预览。
+    clipboardGroupItemPosition.mockRejectedValue({ code: "NOT_FOUND", message: "分组不存在" });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], []) });
+    });
+
+    expect(await screen.findByRole("button", { name: "查看截图组第 1 张图片" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "剪贴板图片预览" })).toBeNull();
+    expect(useUiStore.getState().toasts.map((t) => t.message)).toContain(
+      "截图组已删除，已退出预览",
+    );
+  });
+
+  it("当前图片移动到其他截图组：定位 found=false → 相邻图片 + 明确提示", async () => {
+    const g = group({ id: "seq-moved", name: "移出组", image_count: 3, item_count: 3 });
+    const initial = [imageOf("mv-1", "移出 1"), imageOf("mv-2", "移出 2"), imageOf("mv-3", "移出 3")];
+    const after = [imageOf("mv-1", "移出 1"), imageOf("mv-4", "新进 4"), imageOf("mv-3", "移出 3")];
+    clipboardView.mockResolvedValue(view([], [g]));
+    let moved = false;
+    clipboardGroupPage.mockImplementation(async () =>
+      moved ? pageOf(g.id, after, 3, 3, "r2") : pageOf(g.id, initial, 3, 3, "r1"),
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("移出组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「移出组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 2 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 2 张图片" }));
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+
+    // mv-2 被移动到其他截图组：本组定位 found=false → 按旧序号落到相邻图片。
+    moved = true;
+    clipboardGroupItemPosition.mockResolvedValue({
+      found: false,
+      index: null,
+      imageCount: 3,
+      totalCount: 3,
+      revision: "r2",
+    });
+    const updated = group({ ...g, updated_at: new Date(now + 60_000).toISOString() });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [updated]) });
+    });
+
+    expect(await screen.findByText(/当前图片已不在截图组中/)).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("mv-4"),
+    );
+    expect(screen.getByText("2 / 3")).toBeTruthy();
+  });
+
+  it("连续两次 revision 更新：后者胜出、旧请求不写 state、无重复请求风暴", async () => {
+    const all = Array.from({ length: 20 }, (_, i) => imageOf(`tw-${i + 1}`, `连变 ${i + 1}`));
+    const g = group({ id: "seq-twice", name: "连变组", image_count: 20, item_count: 20 });
+    let revision = "r1";
+    clipboardView.mockResolvedValue(view([], [g]));
+    let armed = false;
+    let slowGate: ((v: ClipboardGroupPage) => void) | null = null;
+    clipboardGroupPage.mockImplementation(
+      async (_id: string, opts: { limit: number; offset?: number }) => {
+        const offset = opts.offset ?? 0;
+        const page = pageOf(g.id, all.slice(offset, offset + opts.limit), 20, 20, revision);
+        if (armed && offset === 0 && opts.limit === 9) {
+          armed = false;
+          return new Promise<ClipboardGroupPage>((res) => {
+            slowGate = res;
+          });
+        }
+        return page;
+      },
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("连变组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「连变组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 9 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 9 张图片" }));
+    expect(await screen.findByText("9 / 20")).toBeTruthy();
+
+    // 变异同一 group 对象：liveSignature 变化触发预览层刷新，但组视图 props 引用
+    // 不变 → 组视图不会整体重读，并发只发生在两次序列刷新之间。
+    // 第一次变化：刷新请求被挂起；第二次变化随后到来，必须使前者整体作废。
+    armed = true;
+    g.updated_at = new Date(now + 60_000).toISOString();
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [g]) });
+    });
+    revision = "r3";
+    g.updated_at = new Date(now + 120_000).toISOString();
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [g]) });
+    });
+    // 刷新 2 用 r3 直接完成：当前图片仍在第一页，最终状态必须与 r3 一致。
+    expect(await screen.findByText(/截图组内容已变化/)).toBeTruthy();
+    expect(screen.getByText("9 / 20")).toBeTruthy();
+    expect((await screen.findByRole("img", { name: "剪贴板图片预览" })).getAttribute("src")).toContain("tw-9");
+    expect(clipboardGroupItemPosition).not.toHaveBeenCalled();
+
+    // 迟到的旧响应（r2）：不得覆盖 r3 的最终状态。
+    act(() => slowGate?.(pageOf(g.id, all.slice(0, 9), 20, 20, "r2")));
+    expect(screen.getByText("9 / 20")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("tw-9");
+
+    // 无重复请求风暴：第一页（limit 9 / offset 0）只有初始打开 + 两次刷新 = 3 次。
+    expect(
+      clipboardGroupPage.mock.calls.filter(
+        (c) => (c[1] as { limit: number; offset?: number }).limit === 9 &&
+          ((c[1] as { offset?: number }).offset ?? 0) === 0,
+      ),
+    ).toHaveLength(3);
+
+    // 之后继续翻页仍用最新 revision，不回第一页。
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    expect(await screen.findByText("10 / 20")).toBeTruthy();
+  });
+
+  it("当前图片移动超出预载范围（>90）：明确提示并回到组首，不静默显示其他图片", async () => {
+    const all = Array.from({ length: 120 }, (_, i) => imageOf(`beyond-${i + 1}`, `超限 ${i + 1}`));
+    const g = group({ id: "seq-beyond", name: "超限组", image_count: 120, item_count: 120 });
+    let revision = "r1";
+    let images = all;
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockImplementation(
+      async (_id: string, opts: { limit: number; offset?: number }) => {
+        const offset = opts.offset ?? 0;
+        return pageOf(g.id, images.slice(offset, offset + opts.limit), images.length, images.length, revision);
+      },
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("超限组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「超限组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 1 张图片" }));
+    expect(await screen.findByText("1 / 120")).toBeTruthy();
+
+    // 前面插入 100 张：beyond-1 变为第 101 张，超出 10 页（90 张）的预载查找能力。
+    const head = Array.from({ length: 100 }, (_, i) => imageOf(`beyond-new-${i + 1}`, `超限新 ${i + 1}`));
+    images = [...head, ...all];
+    revision = "r2";
+    clipboardGroupItemPosition.mockResolvedValue({
+      found: true,
+      index: 100,
+      imageCount: 220,
+      totalCount: 220,
+      revision: "r2",
+    });
+    const updated = group({
+      ...g,
+      image_count: 220,
+      item_count: 220,
+      updated_at: new Date(now + 60_000).toISOString(),
+    });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [updated]) });
+    });
+
+    // 明确提示新序位并回到组首（组首图片 + 提示），绝不静默显示其他图片。
+    expect(await screen.findByText(/超出预载范围，已回到组首/)).toBeTruthy();
+    expect(screen.getByText(/第 101 张/)).toBeTruthy();
+    expect(screen.getByText("1 / 220")).toBeTruthy();
+    expect((await screen.findByRole("img", { name: "剪贴板图片预览" })).getAttribute("src")).toContain(
+      "beyond-new-1",
     );
   });
 
