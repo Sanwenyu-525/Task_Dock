@@ -92,12 +92,19 @@ export type LargeImageState = "loading" | "ready" | "missing" | "error";
 export function useLargeImage(
   itemId: string,
   enabled: boolean,
-): { state: LargeImageState; url: string | null; error: string } {
+): { state: LargeImageState; url: string | null; error: string; forId: string } {
   const [state, setState] = useState<LargeImageState>("loading");
   const [url, setUrl] = useState<string | null>(() => imageCache.get(itemId) ?? null);
   const [error, setError] = useState("");
+  /**
+   * 当前状态归属的条目 id。切换条目时 effect 在提交后才执行，期间 `state/url`
+   * 仍是上一张的值；调用方用 `forId !== 当前条目` 判定「还没轮到这张」，
+   * 避免把旧图带着新条目的元信息渲染出来（灯箱多图切换的竞态兜底）。
+   */
+  const [forId, setForId] = useState(itemId);
   useEffect(() => {
     if (!enabled) return;
+    setForId(itemId);
     const cached = imageCache.get(itemId);
     if (cached) {
       setState("ready");
@@ -128,7 +135,7 @@ export function useLargeImage(
       alive = false;
     };
   }, [itemId, enabled]);
-  return { state, url, error };
+  return { state, url, error, forId };
 }
 
 /**

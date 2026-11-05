@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use super::engine::{self, GroupAction};
 use super::image;
 use super::{
-    CaptureOutcome, CapturedContent, CleanupReport, ClearReport, ClipboardGroup, ClipboardItem,
-    ClipboardStats, ClipboardView, DeleteReport, KIND_FILES, KIND_IMAGE, MAX_HTML_BYTES,
-    MAX_TEXT_BYTES,
+    CaptureOutcome, CapturedContent, CleanupReport, ClearReport, ClipboardGroup,
+    ClipboardGroupPage, ClipboardItem, ClipboardStats, ClipboardView, DeleteReport, KIND_FILES,
+    KIND_IMAGE, MAX_HTML_BYTES, MAX_TEXT_BYTES,
 };
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
@@ -28,6 +28,16 @@ const ITEM_FIELDS: &str =
  EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'image') AS has_image,
  EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'thumb') AS has_thumb,
  i.source_kind";
+
+/// 分页查询字段：不读取 `text`/`html`，避免把大正文带进 IPC；`text` 用 `preview` 填充，
+/// 与既有列表接口的 compact 语义一致。
+const PAGE_ITEM_FIELDS: &str =
+    "i.id, i.kind, i.preview, i.title, i.title_source, i.byte_size,
+     i.source_app, i.source_title, i.image_width, i.image_height, i.file_paths,
+     i.favorite, i.pinned, i.copy_count, i.created_at, i.last_seen_at,
+     EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'image') AS has_image,
+     EXISTS(SELECT 1 FROM clipboard_assets a WHERE a.item_id = i.id AND a.role = 'thumb') AS has_thumb,
+     i.source_kind";
 
 const GROUP_FIELDS: &str = "g.id, g.name, g.mode, g.status, g.favorite, g.pinned, g.created_at,
  g.updated_at, g.closed_at,
@@ -61,6 +71,35 @@ fn map_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
         has_image: row.get::<_, i64>(18)? != 0,
         has_thumb: row.get::<_, i64>(19)? != 0,
         source_kind: row.get(20)?,
+    })
+}
+
+fn map_page_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
+    let preview: String = row.get(2)?;
+    let raw_paths: String = row.get(10)?;
+    Ok(ClipboardItem {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        // 分页不读正文：text 与列表接口一致地回填 preview，html 恒为空。
+        text: preview.clone(),
+        html: String::new(),
+        preview,
+        title: row.get(3)?,
+        title_source: row.get(4)?,
+        byte_size: row.get(5)?,
+        source_app: row.get(6)?,
+        source_title: row.get(7)?,
+        image_width: row.get::<_, Option<i64>>(8)?.map(|v| v.max(0) as u32),
+        image_height: row.get::<_, Option<i64>>(9)?.map(|v| v.max(0) as u32),
+        file_paths: serde_json::from_str(&raw_paths).unwrap_or_default(),
+        favorite: row.get::<_, i64>(11)? != 0,
+        pinned: row.get::<_, i64>(12)? != 0,
+        copy_count: row.get(13)?,
+        created_at: row.get(14)?,
+        last_seen_at: row.get(15)?,
+        has_image: row.get::<_, i64>(16)? != 0,
+        has_thumb: row.get::<_, i64>(17)? != 0,
+        source_kind: row.get(18)?,
     })
 }
 
@@ -239,6 +278,80 @@ pub fn get_group(db: &Db, group_id: &str) -> AppResult<ClipboardGroup> {
             group.items.push(r?);
         }
         Ok(group)
+    })
+}
+
+/// Lite 分组分页的 limit 上限与默认值（单次读取与 IPC 载荷有界）。
+pub const GROUP_PAGE_MAX_LIMIT: i64 = 50;
+pub const GROUP_PAGE_DEFAULT_LIMIT: i64 = 20;
+
+/// 有界分组分页：SQL 阶段按 `position` 排序、可选只取图片、再 LIMIT/OFFSET。
+///
+/// 与 `get_group` 的差异：
+/// - 不读取 `text`/`html`，条目只带列表/缩略图字段；
+/// - `total_count`/`image_count` 用分组聚合列，不受 LIMIT 影响；
+/// - `limit` 超过 `GROUP_PAGE_MAX_LIMIT` 时截断（不报错），并返回实际生效值；
+/// - 新增 `revision` 供前端按「组 + 分页 + imagesOnly + 内容版本」组成缓存键。
+///
+/// 兼容性：`get_group` 与整组复制（`clipboard_copy_group_rich` / `..._files` 走 `get_group`）
+/// 保持原样，不受这里的 LIMIT 影响；复制路径不经过本函数。
+pub fn get_group_page(
+    db: &Db,
+    group_id: &str,
+    limit: Option<i64>,
+    offset: Option<i64>,
+    images_only: bool,
+) -> AppResult<ClipboardGroupPage> {
+    let limit = limit
+        .unwrap_or(GROUP_PAGE_DEFAULT_LIMIT)
+        .clamp(1, GROUP_PAGE_MAX_LIMIT);
+    let offset = offset.unwrap_or(0).max(0);
+    db.with_conn(|conn| {
+        let group = conn
+            .query_row(
+                &format!("SELECT {GROUP_FIELDS} FROM clipboard_groups g WHERE g.id = ?1"),
+                params![group_id],
+                map_group,
+            )
+            .optional()?
+            .ok_or_else(|| AppError::NotFound("分组不存在".into()))?;
+        let mut sql = format!(
+            "SELECT {PAGE_ITEM_FIELDS} FROM clipboard_group_items gi
+             JOIN clipboard_items i ON i.id = gi.item_id
+             WHERE gi.group_id = ?1"
+        );
+        if images_only {
+            sql.push_str(" AND i.kind = 'image'");
+        }
+        // 顺序与 get_group 完全一致，分页不得打乱组内位置。
+        sql.push_str(" ORDER BY gi.position LIMIT ?2 OFFSET ?3");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![group_id, limit, offset], map_page_item)?;
+        let mut items = Vec::with_capacity(limit as usize);
+        for r in rows {
+            items.push(r?);
+        }
+        // 版本号：组计数 + 组更新时间 + 组内最近加入/最近出现时间。
+        // 只做一次有界聚合，不引入新表或常驻缓存。
+        let (max_added, max_seen): (String, String) = conn.query_row(
+            "SELECT COALESCE(MAX(gi.added_at), ''), COALESCE(MAX(i.last_seen_at), '')
+             FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+             WHERE gi.group_id = ?1",
+            params![group_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(ClipboardGroupPage {
+            group_id: group.id.clone(),
+            items,
+            total_count: group.item_count,
+            image_count: group.image_count,
+            offset,
+            limit,
+            revision: format!(
+                "{}:{}:{}:{}:{}",
+                group.item_count, group.image_count, group.updated_at, max_added, max_seen
+            ),
+        })
     })
 }
 
@@ -1930,13 +2043,37 @@ fn purge_orphan_files(db: &Db, root: &Path) -> AppResult<FilePurge> {
     let mut report = FilePurge::default();
     for sub in ["images", "thumbs"] {
         let dir = root.join(sub);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(meta) = entry.metadata() else {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            // 目录不存在（从未写入过该类资产）是正常情况，不计失败。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            // 权限不足、路径被非目录占用等真实 IO 故障：不能假装已清理干净。
+            // 计入失败数让调用方如实报告，并保留文件供下次清理重试。
+            Err(e) => {
+                report.failed += 1;
+                tracing::warn!("剪贴板缓存目录读取失败（{}）：{}", sub, e.kind());
                 continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                // 枚举过程中目录项消失属正常竞态；其它读取错误必须计入失败。
+                Err(e) => {
+                    report.failed += 1;
+                    tracing::warn!("剪贴板缓存目录项读取失败（{}）：{}", sub, e.kind());
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let meta = match entry.metadata() {
+                Ok(meta) => meta,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    report.failed += 1;
+                    tracing::warn!("剪贴板缓存文件元数据读取失败：{}", e.kind());
+                    continue;
+                }
             };
             if !meta.is_file() {
                 continue;
@@ -2433,6 +2570,52 @@ mod tests {
         let second = clear_history(&db, &root.0).unwrap();
         assert_eq!(second.items, 0);
         assert_eq!(second.groups, 0);
+        // 从未创建过 images/thumbs 目录属正常情况，不得计为失败
+        assert_eq!(first.failed_files, 0);
+        assert_eq!(second.failed_files, 0);
+    }
+
+    #[test]
+    fn purge_orphan_files_reports_directory_io_error_and_keeps_cleaning_others() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        // images 被普通文件占用：read_dir 返回真实 IO 错误（非 NotFound），
+        // 不能被静默跳过，否则调用方会误以为缓存已全部清理。
+        std::fs::write(root.0.join("images"), b"not a directory").unwrap();
+        std::fs::create_dir_all(root.0.join("thumbs")).unwrap();
+        let orphan = root.0.join("thumbs").join("orphan.png");
+        std::fs::write(&orphan, b"cache").unwrap();
+
+        let purge = purge_orphan_files(&db, &root.0).unwrap();
+        assert!(
+            purge.failed >= 1,
+            "目录读取失败必须计入 failed，实际 failed={}",
+            purge.failed
+        );
+        assert_eq!(purge.removed, 1, "其它可读目录仍要正常清理");
+        assert!(!orphan.exists());
+
+        // 失败可重试：修好目录后再次清理，不再报告目录级失败。
+        std::fs::remove_file(root.0.join("images")).unwrap();
+        std::fs::create_dir_all(root.0.join("images")).unwrap();
+        let again = purge_orphan_files(&db, &root.0).unwrap();
+        assert_eq!(again.failed, 0);
+    }
+
+    #[test]
+    fn purge_orphan_files_keeps_referenced_assets() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let image = record_capture(&db, &root.0, &image_payload(3), &s).unwrap();
+        let rel = asset_rel(&db, &image.item.id, "image").unwrap().unwrap();
+        let abs = asset_abs(&root.0, &rel).unwrap();
+        assert!(abs.exists());
+
+        let purge = purge_orphan_files(&db, &root.0).unwrap();
+        assert_eq!(purge.removed, 0);
+        assert_eq!(purge.failed, 0);
+        assert!(abs.exists(), "仍被数据库引用的缓存文件绝不能被当成孤儿删除");
     }
 
     #[test]
@@ -3073,5 +3256,274 @@ mod tests {
             "资产写入失败后不能留下半条数据库记录"
         );
         let _ = std::fs::remove_file(&bad_root);
+    }
+
+    // ── Lite 分组分页（有界查询）────────────────────────────
+
+    fn capture_ids(
+        db: &Db,
+        root: &Path,
+        payloads: impl IntoIterator<Item = CapturedContent>,
+        s: &Settings,
+    ) -> Vec<String> {
+        payloads
+            .into_iter()
+            .map(|p| record_capture(db, root, &p, s).unwrap().item.id)
+            .collect()
+    }
+
+    #[test]
+    fn group_page_reports_true_counts_for_one_and_nine_images() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let one_id = record_capture(&db, &root.0, &image_payload(3), &s)
+            .unwrap()
+            .item
+            .id;
+        let one = create_manual_group(&db, "单图", std::slice::from_ref(&one_id)).unwrap();
+        let page = get_group_page(&db, &one.id, Some(1), Some(0), true).unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!((page.total_count, page.image_count), (1, 1));
+        assert!(page.items[0].has_thumb, "封面查询必须带缩略图标记");
+
+        let ids = capture_ids(
+            &db,
+            &root.0,
+            (0..9).map(image_payload),
+            &s,
+        );
+        let nine = create_manual_group(&db, "九图", &ids).unwrap();
+        let page = get_group_page(&db, &nine.id, Some(9), Some(0), true).unwrap();
+        assert_eq!(page.items.len(), 9);
+        assert_eq!((page.total_count, page.image_count), (9, 9));
+        assert_eq!(
+            page.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            ids,
+            "组内顺序必须与创建顺序一致"
+        );
+
+        // 超过上限按 50 截断，实际生效值必须回传，避免前端误判拿到了全部数据。
+        let clamped = get_group_page(&db, &nine.id, Some(999), Some(-3), false).unwrap();
+        assert_eq!(clamped.limit, GROUP_PAGE_MAX_LIMIT);
+        assert_eq!(clamped.offset, 0, "负 offset 归零");
+        assert_eq!(clamped.items.len(), 9);
+        assert_eq!(clamped.total_count, 9, "截断不影响真实总数");
+    }
+
+    #[test]
+    fn group_page_hundred_images_reads_only_requested_page() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let ids = capture_ids(&db, &root.0, (0..100).map(image_payload), &s);
+        let g = create_manual_group(&db, "百图", &ids).unwrap();
+        // 兼容性：完整详情接口行为不变，仍返回全部条目（整组复制走这里）。
+        let full = get_group(&db, &g.id).unwrap();
+        assert_eq!(full.items.len(), 100);
+        let full_ids: Vec<String> = full.items.iter().map(|i| i.id.clone()).collect();
+
+        let page = get_group_page(&db, &g.id, Some(9), Some(0), true).unwrap();
+        assert_eq!(page.items.len(), 9);
+        assert_eq!(
+            page.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            full_ids[..9].to_vec(),
+            "Lite 第一页必须与完整查询的前 9 条一致"
+        );
+        assert_eq!((page.total_count, page.image_count), (100, 100));
+
+        let page2 = get_group_page(&db, &g.id, Some(9), Some(9), true).unwrap();
+        assert_eq!(page2.offset, 9);
+        assert_eq!(page2.items[0].id, full_ids[9]);
+
+        let full_bytes = serde_json::to_vec(&full.items).unwrap().len();
+        let page_bytes = serde_json::to_vec(&page.items).unwrap().len();
+        assert!(
+            page_bytes * 5 < full_bytes,
+            "分页载荷必须显著小于整组（{} vs {}）",
+            page_bytes,
+            full_bytes
+        );
+    }
+
+    #[test]
+    fn group_page_five_hundred_mixed_items_preserves_order_and_omits_body() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let mut payloads = Vec::new();
+        for i in 0..500 {
+            if i % 2 == 0 {
+                payloads.push(text_payload(&format!("记录 {i} {}", "x".repeat(8000))));
+            } else {
+                payloads.push(image_payload((i / 2) as u8));
+            }
+        }
+        let ids = capture_ids(&db, &root.0, payloads, &s);
+        let g = create_manual_group(&db, "五百", &ids).unwrap();
+
+        let full = get_group(&db, &g.id).unwrap();
+        assert_eq!(full.items.len(), 500);
+
+        // imagesOnly 在 SQL 阶段筛掉文本，按 position 顺序分页。
+        let mut collected = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = get_group_page(&db, &g.id, Some(50), Some(offset), true).unwrap();
+            let n = page.items.len();
+            assert_eq!((page.total_count, page.image_count), (500, 250));
+            collected.extend(page.items.iter().map(|i| i.id.clone()));
+            if n == 0 {
+                break;
+            }
+            offset += n as i64;
+        }
+        let expected: Vec<String> = full
+            .items
+            .iter()
+            .filter(|i| i.kind == "image")
+            .map(|i| i.id.clone())
+            .collect();
+        assert_eq!(collected, expected, "分页拼接必须等于完整图片顺序");
+
+        // 任一页都不携带完整正文/HTML。
+        let page = get_group_page(&db, &g.id, Some(50), Some(0), false).unwrap();
+        for item in &page.items {
+            assert!(item.html.is_empty(), "分页条目不得携带 HTML");
+            assert_eq!(item.text, item.preview, "分页条目 text 只回填 preview");
+            assert!(item.preview.chars().count() <= 220);
+        }
+        let long_text = full
+            .items
+            .iter()
+            .find(|i| i.kind == "text")
+            .expect("混合记录应包含文本");
+        assert!(long_text.text.len() > 8000, "完整查询仍保留正文");
+
+        let full_bytes = serde_json::to_vec(&full.items).unwrap().len();
+        let page_bytes = serde_json::to_vec(&page.items).unwrap().len();
+        assert!(
+            page_bytes * 4 < full_bytes,
+            "500 条混排下分页载荷应显著更小（{} vs {}）",
+            page_bytes,
+            full_bytes
+        );
+    }
+
+    #[test]
+    fn group_page_keeps_interleaved_order_and_cover_falls_back_after_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_group_window_secs = 45;
+        let first = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
+        let gid = first.group_id.expect("截图应建组");
+        let mut note = text_payload("说明");
+        note.source_app = "snippingtool.exe".into();
+        record_capture(&db, &root.0, &note, &s).unwrap();
+        record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
+
+        let full = get_group(&db, &gid).unwrap();
+        let page = get_group_page(&db, &gid, Some(10), Some(0), false).unwrap();
+        assert_eq!(
+            page.items.iter().map(|i| i.kind.as_str()).collect::<Vec<_>>(),
+            vec!["image", "text", "image"],
+            "分页不得打乱图片/文字交错顺序"
+        );
+        assert_eq!(page.total_count, 3);
+        assert_eq!(page.image_count, 2);
+
+        // 封面：只取 1 条图片；封面被删后自动回退到下一张真实存在的图片。
+        let cover = get_group_page(&db, &gid, Some(1), Some(0), true).unwrap();
+        assert_eq!(cover.items.len(), 1);
+        assert_eq!(cover.items[0].id, full.items[0].id);
+        delete_items(&db, &root.0, std::slice::from_ref(&cover.items[0].id)).unwrap();
+        let cover = get_group_page(&db, &gid, Some(1), Some(0), true).unwrap();
+        assert_eq!(cover.items.len(), 1);
+        assert_eq!(cover.items[0].id, full.items[2].id, "封面被删后回退到下一张图");
+        assert_eq!((cover.total_count, cover.image_count), (2, 1));
+        assert!(get_group(&db, &gid).is_ok(), "组内仍有内容，分组必须保留");
+
+        // 组不存在时必须与「空组」区分：返回 NOT_FOUND 而不是空页。
+        assert_eq!(
+            get_group_page(&db, "missing-group", Some(1), None, true).unwrap_err().code(),
+            "NOT_FOUND"
+        );
+    }
+
+    #[test]
+    fn group_page_not_found_and_read_failure_are_errors() {
+        let db = Db::open_in_memory().unwrap();
+        let err = get_group_page(&db, "missing-group", Some(10), Some(0), true).unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+
+        // 模拟读取失败（隔离库内删表）：错误必须冒泡，不能返回空页伪装成功。
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
+        db.with_conn(|c| {
+            c.execute("DROP TABLE clipboard_group_items", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let failed = get_group_page(&db, &a.group_id.unwrap(), Some(1), Some(0), true);
+        assert!(failed.is_err(), "底层读取失败必须返回错误");
+    }
+
+    #[test]
+    fn group_page_switches_groups_and_revision_invalidates() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
+        let b = record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
+        let g1 = create_manual_group(&db, "组一", std::slice::from_ref(&a.item.id)).unwrap();
+        let g2 = create_manual_group(
+            &db,
+            "组二",
+            &[b.item.id.clone(), a.item.id.clone()],
+        )
+        .unwrap();
+
+        // 快速切换不同组：响应必须带 groupId，且各页条目互不串组。
+        for round in 0..10 {
+            let p1 = get_group_page(&db, &g1.id, Some(1), Some(0), false).unwrap();
+            assert_eq!(p1.group_id, g1.id);
+            assert_eq!(p1.items[0].id, a.item.id);
+            let p2 = get_group_page(&db, &g2.id, Some(2), Some(0), false).unwrap();
+            assert_eq!(p2.group_id, g2.id);
+            assert_eq!(p2.items[0].id, b.item.id);
+            assert_eq!(p2.total_count, 2);
+            assert!(round < 10);
+        }
+
+        // 重复打开同一组：内容未变时 revision 稳定（可复用缓存）。
+        let first = get_group_page(&db, &g1.id, Some(1), Some(0), false).unwrap();
+        let again = get_group_page(&db, &g1.id, Some(1), Some(0), false).unwrap();
+        assert_eq!(first.revision, again.revision);
+        assert_eq!(first.items.len(), again.items.len());
+
+        // 组内容变化后 revision 必须变化，且分页拿到新条目。
+        add_to_group(&db, &g1.id, std::slice::from_ref(&b.item.id)).unwrap();
+        let changed = get_group_page(&db, &g1.id, Some(5), Some(0), false).unwrap();
+        assert_ne!(changed.revision, first.revision, "组成员变化后缓存必须失效");
+        assert_eq!(changed.total_count, 2);
+        assert_eq!(changed.items.len(), 2);
+
+        // 不同 imagesOnly/分页不得复用同一缓存键语义：分页内容确实随参数变化。
+        let images = get_group_page(&db, &g1.id, Some(5), Some(0), true).unwrap();
+        let all = get_group_page(&db, &g1.id, Some(5), Some(0), false).unwrap();
+        assert_eq!(images.items.len(), all.items.len());
+        let page2 = get_group_page(&db, &g1.id, Some(1), Some(1), false).unwrap();
+        assert_eq!(page2.offset, 1);
+        assert_eq!(page2.items[0].id, b.item.id);
     }
 }

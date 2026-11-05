@@ -40,6 +40,14 @@ import { useClipboardStore } from "../../store/useClipboardStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 
+/** 确定性冲刷：等 mock IPC 与 React 提交完成（act 退出时强制 flush 渲染）。 */
+async function flushClick(click: () => void) {
+  await act(async () => {
+    click();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+  });
+}
+
 function makeItem(i: number, over: Partial<ClipboardItem> = {}): ClipboardItem {
   return {
     id: `ci${i}`,
@@ -183,6 +191,124 @@ describe("分组详情", () => {
   });
 });
 
+describe("纯图片分组的紧凑双列布局", () => {
+  const rowIds = () =>
+    Array.from(document.querySelectorAll<HTMLElement>("[data-clip-row]")).map((r) => r.dataset.clipRow);
+
+  function images(ids: string[]): ClipboardItem[] {
+    return ids.map((id, i) =>
+      makeItem(i, {
+        id,
+        kind: "image",
+        has_thumb: true,
+        has_image: true,
+        title: `图 ${i + 1}`,
+        preview: `1440×900`,
+      }),
+    );
+  }
+
+  it("纯图片分组渲染双列缩略图卡片：标题、序号、大小与移除按钮齐全", async () => {
+    const items = images(["ci-grid-a", "ci-grid-b", "ci-grid-c"]);
+    bridge.clipboardGroup.mockResolvedValue(makeGroup(items));
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+    expect(document.querySelector(".clip-group-items")).toBeNull();
+    expect(document.querySelectorAll(".clip-group-shots > li")).toHaveLength(3);
+    // 缩略图卡片可点开大图，顺序 = 分组真实顺序
+    expect(await screen.findByRole("button", { name: "查看第 1 张图片大图" })).toBeTruthy();
+    expect(document.querySelectorAll(".clip-shot-meta")[0].textContent).toContain("第 1 张");
+    expect(document.querySelectorAll(".clip-shot-meta")[0].textContent).toContain("20 B");
+    expect(screen.getByRole("button", { name: "从分组移除第 1 项" })).toBeTruthy();
+  });
+
+  it("混合类型分组仍按原顺序使用列表，不套用网格", async () => {
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+
+    expect(document.querySelector(".clip-group-shots")).toBeNull();
+    expect(document.querySelector(".clip-group-items")).toBeTruthy();
+    expect(rowIds()).toEqual(["ci0", "ci1"]);
+  });
+
+  it("整理与拆分模式切回顺序列表，退出后恢复双列", async () => {
+    const user = userEvent.setup();
+    bridge.clipboardGroup.mockResolvedValue(makeGroup(images(["ci-grid-t1", "ci-grid-t2"])));
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+
+    await user.click(screen.getByRole("button", { name: "整理与拆分" }));
+    expect(document.querySelector(".clip-group-items")).toBeTruthy();
+    expect(document.querySelector(".clip-group-shots")).toBeNull();
+    expect(await screen.findAllByRole("button", { name: "选择用于拆分" })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "下移第 1 项" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "整理与拆分" }));
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+    expect(document.querySelector(".clip-group-items")).toBeNull();
+    expect(screen.queryByRole("button", { name: "选择用于拆分" })).toBeNull();
+  });
+
+  it("双列布局移除条目：离场顺序不变，落定后保持真实顺序，焦点交给相邻卡片", async () => {
+    const items = images(["ci-grid-r1", "ci-grid-r2", "ci-grid-r3"]);
+    bridge.clipboardGroup.mockResolvedValue(makeGroup(items));
+    bridge.clipboardRemoveGroupItem.mockResolvedValue(
+      makeGroup([items[0], items[2]]),
+    );
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+    await waitFor(() => expect(document.querySelector(".clip-group-shots")).toBeTruthy());
+
+    await flushClick(() =>
+      fireEvent.click(screen.getByRole("button", { name: "从分组移除第 2 项" })),
+    );
+    expect(
+      document
+        .querySelector<HTMLElement>('[data-clip-row="ci-grid-r2"]')
+        ?.classList.contains("removing"),
+    ).toBe(true);
+    expect(rowIds()).toEqual(["ci-grid-r1", "ci-grid-r2", "ci-grid-r3"]);
+
+    await waitFor(() => expect(document.querySelector('[data-clip-row="ci-grid-r2"]')).toBeNull());
+    expect(rowIds()).toEqual(["ci-grid-r1", "ci-grid-r3"]);
+    await waitFor(() => {
+      const next = document.querySelector<HTMLElement>(
+        '[data-clip-row="ci-grid-r3"] .clip-shot-info',
+      );
+      expect(next).toBeTruthy();
+      expect(document.activeElement).toBe(next);
+    });
+  });
+
+  it("纯图片分组在整理模式仍可拆分，剩余顺序与后端一致", async () => {
+    const user = userEvent.setup();
+    const items = images(["ci-grid-s1", "ci-grid-s2", "ci-grid-s3"]);
+    bridge.clipboardGroup.mockResolvedValueOnce(makeGroup(items));
+    bridge.clipboardSplitGroup.mockResolvedValue(makeGroup([items[2]]));
+    bridge.clipboardGroup.mockResolvedValue(makeGroup([items[2]]));
+    render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
+    await screen.findByText("截图集合");
+
+    await user.click(screen.getByRole("button", { name: "整理与拆分" }));
+    const checks = screen.getAllByRole("button", { name: "选择用于拆分" });
+    await user.click(checks[0]);
+    await user.click(checks[1]);
+    await user.click(screen.getByRole("button", { name: "拆分为新分组" }));
+
+    await waitFor(() =>
+      expect(bridge.clipboardSplitGroup).toHaveBeenCalledWith(
+        "g1",
+        ["ci-grid-s1", "ci-grid-s2"],
+        "拆分分组",
+      ),
+    );
+    await waitFor(() => expect(rowIds()).toEqual(["ci-grid-s3"]));
+  });
+});
+
 describe("分组详情的离场与顺序反馈", () => {
   const rowIds = () =>
     Array.from(document.querySelectorAll<HTMLElement>("[data-clip-row]")).map((r) => r.dataset.clipRow);
@@ -192,7 +318,6 @@ describe("分组详情的离场与顺序反馈", () => {
   }
 
   it("移除行先收拢离场，动画结束才按服务端顺序落定", async () => {
-    const user = userEvent.setup();
     bridge.clipboardGroup.mockResolvedValue(
       makeGroup([makeItem(0), makeItem(1), makeItem(2)]),
     );
@@ -200,31 +325,24 @@ describe("分组详情的离场与顺序反馈", () => {
     render(<ClipboardGroupDetail groupId="g1" {...noProps} />);
     await screen.findByText("截图集合");
 
-    await user.click(screen.getByRole("button", { name: "从分组移除第 2 项" }));
+    await flushClick(() =>
+      fireEvent.click(screen.getByRole("button", { name: "从分组移除第 2 项" })),
+    );
 
     await waitFor(() => expect(bridge.clipboardRemoveGroupItem).toHaveBeenCalledWith("g1", "ci1"));
     // mock 已调用 ≠ React 已把离场行提交到 DOM：setGroup(next) 与 scheduleRowExit
     // 是两次提交，全量并发渲染变慢时会先看到「ci1 已不在列表」的中间态。
-    // 等离场行真正带着 removing 出现，再断言顺序，避免把提交时序当成回归。
-    await waitFor(() => {
-      const row = document.querySelector<HTMLElement>('[data-clip-row="ci1"]');
-      expect(row?.classList.contains("removing")).toBe(true);
-      expect(row?.getAttribute("aria-hidden")).toBe("true");
-    });
+    // 这里用 flushClick 把两次提交压进同一次 act，再同步断言离场行仍在原位。
+    expect(
+      document.querySelector<HTMLElement>('[data-clip-row="ci1"]')?.classList.contains("removing"),
+    ).toBe(true);
+    expect(document.querySelector('[data-clip-row="ci1"]')?.getAttribute("aria-hidden")).toBe("true");
     // 离场行按原位补位，其余行不被打乱
     expect(rowIds()).toEqual(["ci0", "ci1", "ci2"]);
 
     await waitFor(() => expect(document.querySelector('[data-clip-row="ci1"]')).toBeNull());
     expect(rowIds()).toEqual(["ci0", "ci2"]);
   });
-
-  /** 确定性冲刷：等 mock IPC 与 React 提交完成（act 退出时强制 flush 渲染）。 */
-  async function flushClick(click: () => void) {
-    await act(async () => {
-      click();
-      for (let i = 0; i < 4; i++) await Promise.resolve();
-    });
-  }
 
   it("连续移除相邻两条：第二条的离场位置保持在第一条之后，顺序不乱", async () => {
     const base = [makeItem(0), makeItem(1), makeItem(2)];
@@ -483,5 +601,80 @@ describe("分组详情的离场与顺序反馈", () => {
       expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual(["ci2"]),
     );
     expect(useClipboardStore.getState().view?.groups).toEqual([]);
+  });
+
+  it("分组已不存在（groups_deleted=0）：不演成功、不从本地移除，交给刷新定性", async () => {
+    const user = userEvent.setup();
+    const group = makeGroup([makeItem(0), makeItem(1)]);
+    bridge.clipboardGroup.mockResolvedValue(group);
+    bridge.clipboardDeleteGroup.mockResolvedValue({
+      deleted: 0,
+      freed_bytes: 0,
+      retained_shared: 0,
+      groups_deleted: 0,
+    });
+    const askAndRun = (opts: { run: () => unknown }) => {
+      void opts.run();
+    };
+    const onBack = vi.fn();
+    const onChanged = vi.fn();
+    useClipboardStore.setState({
+      view: viewOf([makeItem(0), makeItem(1), makeItem(2)], [group]),
+    });
+    render(
+      <ClipboardGroupDetail
+        groupId="g1"
+        {...noProps}
+        askConfirm={askAndRun}
+        onBack={onBack}
+        onChanged={onChanged}
+      />,
+    );
+    await screen.findByText("截图集合");
+
+    await user.click(screen.getByRole("button", { name: "删除分组及内容" }));
+
+    await waitFor(() =>
+      expect(useUiStore.getState().toast?.message).toContain("这些内容已经不存在"),
+    );
+    // 没真删就不能演成功，也不能把本地数据先抹掉
+    expect(useUiStore.getState().toast?.kind).toBe("warning");
+    expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual([
+      "ci0",
+      "ci1",
+      "ci2",
+    ]);
+    expect(useClipboardStore.getState().view?.groups.map((g) => g.id)).toEqual(["g1"]);
+    expect(onChanged).toHaveBeenCalled();
+    expect(onBack).toHaveBeenCalled();
+  });
+
+  it("分组删除请求失败：错误提示且不本地移除任何数据", async () => {
+    const user = userEvent.setup();
+    const group = makeGroup([makeItem(0), makeItem(1)]);
+    bridge.clipboardGroup.mockResolvedValue(group);
+    bridge.clipboardDeleteGroup.mockRejectedValue(new Error("db busy"));
+    const askAndRun = (opts: { run: () => unknown }) => {
+      void opts.run();
+    };
+    const onBack = vi.fn();
+    useClipboardStore.setState({
+      view: viewOf([makeItem(0), makeItem(1), makeItem(2)], [group]),
+    });
+    render(
+      <ClipboardGroupDetail groupId="g1" {...noProps} askConfirm={askAndRun} onBack={onBack} />,
+    );
+    await screen.findByText("截图集合");
+
+    await user.click(screen.getByRole("button", { name: "删除分组及内容" }));
+
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("error"));
+    expect(useUiStore.getState().toast?.message).toContain("删除分组失败");
+    expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual([
+      "ci0",
+      "ci1",
+      "ci2",
+    ]);
+    expect(onBack).not.toHaveBeenCalled();
   });
 });

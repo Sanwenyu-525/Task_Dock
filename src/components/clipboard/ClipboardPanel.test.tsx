@@ -10,7 +10,7 @@
 //! - 页面形态没有「关闭」按钮（那是抽屉才有的）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const bridge = vi.hoisted(() => ({
@@ -44,6 +44,17 @@ import type { ClipboardItem, ClipboardView, DeleteReport } from "../../lib/bridg
 import { useClipboardStore, resetClipboardRequestState } from "../../store/useClipboardStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
+
+/**
+ * 提前把 mock IPC 之后的离场状态同步提交到 DOM。
+ * 全量并发跑测试时 React 调度可能落后于真实 190ms 计时器，离场卡片会「还没渲染就已结束」；
+ * 这里只补一次确定性的提交，动画结束仍由真实计时器驱动（不缩短/不跳过离场）。
+ */
+async function flushExitCommit() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
 
 function makeItem(i: number): ClipboardItem {
   return {
@@ -343,9 +354,10 @@ describe("剪贴板主页面", () => {
     await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
-
-    await waitFor(() => expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ci0"]));
-    // 被删条目仍留在 DOM 中收拢淡出；此刻不得抢先刷新（否则用户看不到「哪条被删了」）
+    // 提交离场态后再断言：并发跑全量套件时 React 调度可能落后于真实 190ms 计时器。
+    await flushExitCommit();
+    expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ci0"]);
+    // 被删条目仍留在 DOM 中收拢淡出；此刻不得抢先刷新（否则用户看不到「哪条被删了」）。
     expect(document.querySelector(".clip-item.removing")).toBeTruthy();
     expect(bridge.clipboardView.mock.calls.length).toBe(callsBefore);
 
@@ -452,8 +464,11 @@ describe("操作反馈与离场", () => {
     await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
-    await waitFor(() => expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ci0"]));
+    // 提交离场态：全量并发跑测试时 React 调度可能晚于 190ms 真实计时器，
+    // 若不留一次同步冲刷，离场卡片会「没渲染就已结束」。断言仍按真实动画时长收尾。
+    await flushExitCommit();
     expect(document.querySelector(".clip-item.removing")).toBeTruthy();
+    expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ci0"]);
 
     // 动画期间后端采集事件到达：服务端结果里 ci0 已消失、多了一条新内容 ci9
     bridge.clipboardView.mockResolvedValue(viewOfItems([makeItem(1), makeItem(2), makeItem(9)]));
@@ -478,12 +493,11 @@ describe("操作反馈与离场", () => {
     await user.click(screen.getAllByRole("button", { name: "删除" })[1]);
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
-
-    await waitFor(() => expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ciB"]));
-    // 后端已返回 ≠ store 的 beginExit 已提交到 DOM；全量并发下两者有间隙，
-    // 直接取 .removing 会拿到 undefined。等离场卡片真正出现再按 ID 断言。
-    await waitFor(() => expect(removingCard()?.dataset.clipId).toBe("ciB"));
+    await flushExitCommit();
+    expect(removingCard()?.dataset.clipId).toBe("ciB");
     expect(document.querySelector('[data-clip-id="ciA"]')?.classList.contains("removing")).toBe(false);
+    expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ciB"]);
+    // 成功提示在离场结束后才出现（不会被离场动画吞掉）
     await waitFor(() => expect(useUiStore.getState().toast?.message).toContain("同样的周报正文"));
   });
 
@@ -672,12 +686,42 @@ describe("操作反馈与离场", () => {
     const dialog = await screen.findByRole("dialog", { name: "删除分组「调试截图」？" });
     expect(dialog.textContent).toContain("分组内的历史条目仍保留");
     await user.click(await within(dialog).findByRole("button", { name: "删除分组" }));
-
-    await waitFor(() => expect(bridge.clipboardDeleteGroup).toHaveBeenCalledWith("cg1", false));
+    await flushExitCommit();
     expect(removingCard()?.dataset.clipId).toBe("cg1");
+    expect(bridge.clipboardDeleteGroup).toHaveBeenCalledWith("cg1", false);
     await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("success"));
     expect(useUiStore.getState().toast?.message).toContain("分组「调试截图」已删除");
     expect(useUiStore.getState().toast?.message).toContain("历史条目仍保留");
+  });
+
+  it("删除分组但分组已不存在（groups_deleted=0）：不演成功、不本地移除，刷新定性", async () => {
+    const user = userEvent.setup();
+    bridge.clipboardView.mockResolvedValueOnce({
+      ...viewOfItems([makeItem(0)]),
+      groups: [makeGroup()] as unknown as ClipboardView["groups"],
+    });
+    // 删除后的静默刷新里分组已经不在了
+    bridge.clipboardView.mockResolvedValue(viewOfItems([makeItem(0)]));
+    bridge.clipboardDeleteGroup.mockResolvedValue({
+      deleted: 0,
+      freed_bytes: 0,
+      retained_shared: 0,
+      groups_deleted: 0,
+    });
+    render(<ClipboardPanel />);
+    await screen.findByText("第 0 条剪贴板预览");
+
+    await user.click(screen.getByRole("tab", { name: /分组/ }));
+    await user.click(await screen.findByRole("button", { name: "删除分组" }));
+    const dialog = await screen.findByRole("dialog", { name: "删除分组「调试截图」？" });
+    await user.click(await within(dialog).findByRole("button", { name: "删除分组" }));
+
+    await waitFor(() => expect(bridge.clipboardDeleteGroup).toHaveBeenCalledWith("cg1", false));
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("warning"));
+    expect(useUiStore.getState().toast?.message).toContain("这些内容已经不存在");
+    // 数量为 0 不代表成功：不播放成功离场，也不从本地待删集合里移除
+    expect(removingCard()).toBeNull();
+    expect(useClipboardStore.getState().exiting).toEqual({});
   });
 
   it("抽屉形态走同一条离场链（页面与抽屉不是两套实现）", async () => {
@@ -688,6 +732,7 @@ describe("操作反馈与离场", () => {
     await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
+    await flushExitCommit();
 
     await waitFor(() => expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ci0"]));
     expect(removingCard()?.dataset.clipId).toBe("ci0");

@@ -4,16 +4,18 @@
 //! 统一详情结构：标题 → 元信息 → 类型专属预览区 → 类型专属操作 → 通用操作。
 //! 类型专属部分只换预览与就近操作，不另起一套页面骨架。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft, Check, CircleCheck, Code2, Copy, ExternalLink, Eye, FileText,
-  FolderOpen, Link2, Pencil, Pin, Search, Star, Trash2, X, AppWindow, Info,
+  FolderOpen, Link2, Loader2, Pencil, Pin, ScanText, Search, Star, Trash2, X, AppWindow, Info,
 } from "lucide-react";
 import {
   clipboardCopyItem,
   clipboardDeleteItems,
   clipboardItem,
   clipboardLinkTask,
+  clipboardOcr,
+  clipboardOcrCancel,
   clipboardOpenLocalPath,
   clipboardOpenUrl,
   clipboardPathStatus,
@@ -21,6 +23,7 @@ import {
   clipboardRevealLocalPath,
   clipboardToggleItem,
   type ClipboardItem,
+  type ClipboardOcrReport,
 } from "../../lib/bridge";
 import { copyText } from "../../lib/clipboard";
 import { errorMessage, normalizeError } from "../../lib/errors";
@@ -41,6 +44,32 @@ import type { AskConfirm, LinkTask } from "./types";
 /** 文件路径状态：ok / missing / inaccessible / checking / unknown（查询失败，不可确认）。 */
 type PathState = "ok" | "missing" | "inaccessible" | "checking" | "unknown";
 
+/** OCR 面板状态：同一详情内展示结果，不弹模态框。 */
+type OcrView =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | { kind: "result"; report: ClipboardOcrReport }
+  | { kind: "notice"; tone: "unavailable" | "error"; message: string };
+
+/** 搜索关键词上限：只填代表性片段，绝不把整篇长文塞进搜索框。 */
+const OCR_SEARCH_KEYWORD_MAX = 24;
+
+/** 每次请求使用独立 id，用于精准取消与「迟到结果不落地」校验。 */
+function newOcrRequestId(): string {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  return `ocr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** 取第一段有内容的文字并截断，作为历史搜索关键词。 */
+function ocrSearchKeyword(text: string): string {
+  const line = text.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  const collapsed = line.replace(/[ \t\u3000]+/g, " ");
+  return collapsed.length > OCR_SEARCH_KEYWORD_MAX
+    ? collapsed.slice(0, OCR_SEARCH_KEYWORD_MAX)
+    : collapsed;
+}
+
 /** 后端返回的是字符串：非预期的取值一律按「无法确认」处理，不默认成存在。 */
 function normalizePathState(v: unknown): PathState {
   return v === "ok" || v === "missing" || v === "inaccessible" ? v : "unknown";
@@ -52,12 +81,15 @@ export default function ClipboardItemDetail({
   askConfirm,
   onBack,
   onChanged,
+  onSearchHistory,
 }: {
   itemId: string;
   linkTask: LinkTask;
   askConfirm: AskConfirm;
   onBack: () => void;
   onChanged: () => void;
+  /** 在当前剪贴板历史里按关键词搜索；由列表容器提供，分组详情内没有搜索框时可缺省。 */
+  onSearchHistory?: (query: string) => void;
 }) {
   const showToast = useUiStore((s) => s.showToast);
   const bumpLink = useUiStore((s) => s.bumpClipboardLink);
@@ -78,6 +110,21 @@ export default function ClipboardItemDetail({
    * 只在用户重新进入详情时再试一次。
    */
   const [pathCheckBusy, setPathCheckBusy] = useState(false);
+  /** 图片文字识别面板：结果留在本详情内，不另开弹窗。 */
+  const [ocr, setOcr] = useState<OcrView>({ kind: "idle" });
+  /** 当前有效请求 id；切换条目/卸载时据此精准取消，迟到的旧结果不落地。 */
+  const activeOcr = useRef<string | null>(null);
+
+  // 切换条目或离开详情：立即取消进行中的识别，丢弃旧结果，面板回到初始态。
+  useEffect(() => {
+    setOcr({ kind: "idle" });
+    setLightbox(false);
+    return () => {
+      const rid = activeOcr.current;
+      activeOcr.current = null;
+      if (rid) void clipboardOcrCancel(rid).catch(() => {});
+    };
+  }, [itemId]);
 
   useEffect(() => {
     let alive = true;
@@ -145,13 +192,16 @@ export default function ClipboardItemDetail({
     try {
       const r = await clipboardCopyItem(itemId);
       const warn = r.warnings.length > 0 ? `；${r.warnings.join("；")}` : "";
+      // 写入成功即成功；统计失败等降级项显示「部分成功」，不报告成复制失败
+      const partial = r.warnings.length > 0 || r.stats_recorded === false;
       showToast(
-        `已复制（${r.mode.toUpperCase()}，${formatBytes(r.bytes)}）${warn}`,
-        { kind: r.warnings.length > 0 ? "info" : "success" },
+        `已复制${partial ? "（部分成功）" : ""}（${r.mode.toUpperCase()}，${formatBytes(r.bytes)}）${warn}`,
+        { kind: partial ? "info" : "success" },
       );
       await reload();
       // 复制只增加使用次数；列表就地更新，避免整表刷新导致分页与滚动位置变化。
-      useClipboardStore.getState().bumpItemCopy(itemId);
+      // 统计没落库时不能本地加次数。
+      if (r.stats_recorded !== false) useClipboardStore.getState().bumpItemCopy(itemId);
     } catch (e) {
       showToast(`复制失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
@@ -255,6 +305,87 @@ export default function ClipboardItemDetail({
       showToast("已在资源管理器中定位", { kind: "success" });
     } catch (e) {
       showToast(`定位失败：${errorMessage(e)}`, { kind: "error" });
+    }
+  }
+
+  // ── 图片文字识别（按需执行，同一详情内展示） ──
+
+  async function onExtractText() {
+    if (!item || ocr.kind === "running") return;
+    const rid = newOcrRequestId();
+    const target = item.id;
+    activeOcr.current = rid;
+    setOcr({ kind: "running" });
+    try {
+      const report = await clipboardOcr(target, rid);
+      // 已切换条目或已离开详情：旧请求的结果一律丢弃，不覆盖新条目的面板。
+      if (activeOcr.current !== rid) return;
+      activeOcr.current = null;
+      switch (report.status) {
+        case "ok":
+        case "empty":
+          setOcr({ kind: "result", report });
+          break;
+        case "unavailable":
+          setOcr({
+            kind: "notice",
+            tone: "unavailable",
+            message: report.reason || "本机无法使用 Windows 本地文字识别",
+          });
+          break;
+        case "busy":
+          // 不排队、不自动重试：明确告诉用户另一张图正在识别，按钮立即恢复。
+          setOcr({ kind: "idle" });
+          showToast(report.reason || "另一张图片正在识别，请稍后重试", { kind: "warning" });
+          break;
+        case "cancelled":
+          setOcr({ kind: "idle" });
+          break;
+        case "too_large":
+          // 不是「没有识别到文字」：明确提示图片超出识别预算并建议截取局部。
+          setOcr({
+            kind: "notice",
+            tone: "error",
+            message: report.reason || "图片过大，请截取需要的局部后再识别",
+          });
+          break;
+        default:
+          setOcr({
+            kind: "notice",
+            tone: "error",
+            message: report.reason || "识别失败，请稍后重试",
+          });
+          break;
+      }
+    } catch (e) {
+      if (activeOcr.current !== rid) return;
+      activeOcr.current = null;
+      setOcr({ kind: "notice", tone: "error", message: errorMessage(e) });
+    }
+  }
+
+  async function onCopyOcrText(text: string) {
+    const ok = await copyText(text);
+    showToast(ok ? "识别文字已复制" : "复制失败", { kind: ok ? "success" : "error" });
+  }
+
+  function onSearchOcrText(text: string) {
+    if (!onSearchHistory) return;
+    const keyword = ocrSearchKeyword(text);
+    if (!keyword) return;
+    onSearchHistory(keyword);
+    showToast(`已用「${keyword}」搜索历史`, { kind: "info" });
+  }
+
+  /** 只有用户主动点击才会写入标题；识别完成绝不自动覆盖，包括手动标题。 */
+  async function onUseOcrTitle(title: string) {
+    try {
+      const updated = await clipboardRenameItem(itemId, title);
+      setItem(updated);
+      useClipboardStore.getState().renameItem(itemId, updated.title, updated.title_source);
+      showToast("已将识别文字设为标题", { kind: "success" });
+    } catch (e) {
+      showToast(`标题保存失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -446,6 +577,109 @@ export default function ClipboardItemDetail({
           </div>
         )}
 
+        {/* 图片详情内就地提取文字：按需执行，结果不弹新窗口，加载与结果使用同一高度区域。 */}
+        {item.kind === "image" && (
+          <section className="clip-ocr-block" aria-label="图片文字识别">
+            <div className="clip-block-head">
+              <span>图片文字</span>
+              <div className="clip-block-head-actions">
+                <button
+                  className="btn sm"
+                  onClick={() => void onExtractText()}
+                  disabled={ocr.kind === "running"}
+                  aria-busy={ocr.kind === "running"}
+                  data-tip="使用本机 Windows 文字识别，离线执行，不上传图片"
+                >
+                  {ocr.kind === "running" ? (
+                    <Loader2 size={11} className="spin" aria-hidden="true" />
+                  ) : (
+                    <ScanText size={11} aria-hidden="true" />
+                  )}
+                  {ocr.kind === "running" ? "识别中…" : "提取文字"}
+                </button>
+              </div>
+            </div>
+
+            {ocr.kind === "idle" && (
+              <div className="clip-ocr-status">
+                识别这张图片中的文字，全程在本机离线执行，不上传图片或文字。
+              </div>
+            )}
+
+            {ocr.kind === "running" && (
+              <div className="clip-ocr-status" role="status">
+                正在识别图片文字…
+              </div>
+            )}
+
+            {ocr.kind === "result" && ocr.report.status === "ok" && (
+              <>
+                <textarea
+                  className="clip-ocr-text"
+                  readOnly
+                  spellCheck={false}
+                  aria-label="识别出的文字"
+                  value={ocr.report.text}
+                />
+                <div className="clip-ocr-actions">
+                  <button
+                    className="btn sm"
+                    onClick={() => void onCopyOcrText(ocr.report.text)}
+                  >
+                    <Copy size={11} /> 复制文字
+                  </button>
+                  {onSearchHistory && ocrSearchKeyword(ocr.report.text) !== "" && (
+                    <button
+                      className="btn sm"
+                      onClick={() => onSearchOcrText(ocr.report.text)}
+                      data-tip="只把开头的关键词填入搜索框，不会搜索整篇长文"
+                    >
+                      <Search size={11} /> 用文字搜索历史
+                    </button>
+                  )}
+                  {ocr.report.suggestedTitle && (
+                    <button
+                      className="btn sm"
+                      onClick={() => void onUseOcrTitle(ocr.report.suggestedTitle!)}
+                      data-tip="仅在你点击时写入标题；不会自动覆盖现有标题"
+                    >
+                      <Pencil size={11} /> 设为标题
+                    </button>
+                  )}
+                  <span className="clip-ocr-meta">
+                    {ocr.report.chars} 字 · {ocr.report.lines} 行
+                    {ocr.report.cached
+                      ? " · 缓存结果"
+                      : ` · ${ocr.report.durationMs} ms`}
+                  </span>
+                </div>
+              </>
+            )}
+
+            {ocr.kind === "result" && ocr.report.status === "empty" && (
+              <div className="clip-ocr-status" role="status">
+                未识别到文字
+              </div>
+            )}
+
+            {ocr.kind === "notice" && (
+              <>
+                <div
+                  className={`clip-ocr-status is-${ocr.tone}`}
+                  role={ocr.tone === "error" ? "alert" : "status"}
+                >
+                  {ocr.message}
+                </div>
+                {ocr.tone === "unavailable" && (
+                  <div className="clip-hint">
+                    需要系统已安装中文 / 英文 OCR 语言包。本应用不会自动下载模型，也不会改用云端识别。
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        )}
+
         {isUrl && (
           <div className="clip-url-block">
             <div className="clip-url-line">
@@ -618,8 +852,13 @@ export default function ClipboardItemDetail({
                     setBusy(true);
                     try {
                       const r = await clipboardCopyItem(item.id);
-                      showToast(`已复制富文本（${formatBytes(r.bytes)}）`, { kind: "success" });
-                      useClipboardStore.getState().bumpItemCopy(item.id);
+                      const warn = r.warnings.length > 0 ? `；${r.warnings.join("；")}` : "";
+                      const partial = r.warnings.length > 0 || r.stats_recorded === false;
+                      // 写入成功即成功；统计失败只降级为「部分成功」，不报复制失败
+                      showToast(`已复制富文本${partial ? "（部分成功）" : ""}（${formatBytes(r.bytes)}）${warn}`, {
+                        kind: partial ? "info" : "success",
+                      });
+                      if (r.stats_recorded !== false) useClipboardStore.getState().bumpItemCopy(item.id);
                     } catch (e) {
                       showToast(`复制失败：${errorMessage(e)}`, { kind: "error" });
                     } finally {

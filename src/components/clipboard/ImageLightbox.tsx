@@ -1,5 +1,8 @@
 //! 图片大图预览层（灯箱）。
 //!
+//! - 分组内多图：`items` 给出按分组顺序的图片序列时，左右箭头 / ←→ 键在图片间切换，
+//!   底部显示「2 / 5」；首尾不循环，单图不显示箭头。切换只重算适应窗口并清掉上一张的
+//!   缩放/平移，不影响分组原顺序（混合分组只过滤出图片）；
 //! - 等比适应窗口（不上采样小图），指针为中心的滚轮缩放、拖拽平移；
 //! - 双击在适应窗口 ↔ 实际尺寸间切换；平移钳制保证图片不会完全拖出可视区；
 //! - 关闭路径三条：遮罩空白处单击、关闭按钮、Escape。图片本体、工具栏、
@@ -20,7 +23,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  Copy, Download, Loader2, Minus, Plus, Scan, SquareEqual, X,
+  ChevronLeft, ChevronRight, Copy, Download, Loader2, Minus, Plus, Scan, SquareEqual, X,
 } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
@@ -39,8 +42,6 @@ import type { AskConfirm } from "./types";
 /** 绝对缩放边界：下限允许缩到很小看全貌，上限 16 倍足够看清细节。 */
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 16;
-/** 适应窗口计算时四周预留的呼吸空隙（px）。 */
-const STAGE_PAD = 24;
 /** 单档缩放步进（工具栏按钮）。 */
 const STEP = 1.25;
 
@@ -66,21 +67,48 @@ function clampPan(v: View, nw: number, nh: number, availW: number, availH: numbe
 
 export default function ImageLightbox({
   item,
+  items,
   askConfirm,
   onClose,
 }: {
+  /** 打开预览的那一条（单图模式下的唯一一张） */
   item: ClipboardItem;
+  /**
+   * 同一分组内按真实顺序排列的图片序列（只含图片）。缺省 = 单图模式，不显示切换控件；
+   * 混合分组由调用方先过滤出图片，这里不再改变顺序。
+   */
+  items?: ClipboardItem[];
   /** 应用内覆盖确认通道；缺省时「目标已存在」一律按拒绝覆盖处理（绝不写盘）。 */
   askConfirm?: AskConfirm;
   onClose: () => void;
 }) {
   const showToast = useUiStore((s) => s.showToast);
   const rootRef = useRef<HTMLDivElement>(null);
-  // 与历史卡片、详情页共用同一套来源结构，避免放大预览又露出原始 exe 名
-  const src = clipSource(item);
   const stageRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-  const { state, url, error } = useLargeImage(item.id, true);
+  /**
+   * 当前预览的条目：分组模式下在 `items` 内切换；分组里被移除的条目会按最近位置
+   * 回退到相邻图片，全部移除则直接关闭预览。
+   */
+  const [currentId, setCurrentId] = useState(item.id);
+  /** 分组内最近一次所在位置：当前图片被移除时据此落到相邻图片。 */
+  const indexRef = useRef(0);
+  const ordered = items && items.length > 0 ? items : [item];
+  const foundIndex = ordered.findIndex((i) => i.id === currentId);
+  const index = foundIndex >= 0
+    ? foundIndex
+    : Math.min(indexRef.current, Math.max(0, ordered.length - 1));
+  if (foundIndex >= 0) indexRef.current = index;
+  const current = ordered[index] ?? item;
+  const multi = items !== undefined && ordered.length > 1;
+  const { state, url, error, forId } = useLargeImage(current.id, true);
+  /**
+   * 切换条目后 effect 尚未执行时，state/url 仍属于上一张；按「加载中」处理，
+   * 不让旧图带着新条目的元信息出现。
+   */
+  const viewState = forId === current.id ? state : "loading";
+  // 与历史卡片、详情页共用同一套来源结构，避免放大预览又露出原始 exe 名
+  const src = clipSource(current);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [view, setView] = useState<View>({ s: 1, x: 0, y: 0 });
   const [isFit, setIsFit] = useState(true);
@@ -119,16 +147,82 @@ export default function ImageLightbox({
    */
   const pressTargetRef = useRef<EventTarget | null>(null);
 
+  /** 清掉上一张的缩放/平移并恢复「适应窗口」态。 */
+  const resetPreview = useCallback(() => {
+    setNatural(null);
+    setView({ s: 1, x: 0, y: 0 });
+    setIsFit(true);
+    movedRef.current = false;
+    pressTargetRef.current = null;
+  }, []);
+
+  /** 切换到分组内第 nextIndex 张；首尾不循环，越界一律忽略。 */
+  const goTo = useCallback(
+    (nextIndex: number) => {
+      if (nextIndex < 0 || nextIndex >= ordered.length) return;
+      const next = ordered[nextIndex];
+      if (!next || next.id === current.id) return;
+      resetPreview();
+      setCurrentId(next.id);
+    },
+    [ordered, current.id, resetPreview],
+  );
+
+  /**
+   * 分组内容变化（移除/拆分/重排）时校正预览位置：
+   * - 当前图片仍存在 → 保持不动；
+   * - 当前图片被移出 → 按原位置就近落到相邻图片；
+   * - 分组里已没有图片 → 关闭预览，不留一个指向已删除数据的灯箱。
+   */
+  const orderedKey = items ? items.map((i) => i.id).join("|") : "";
+  useEffect(() => {
+    if (!items) return;
+    if (items.length === 0) {
+      onClose();
+      return;
+    }
+    if (items.some((i) => i.id === currentId)) return;
+    resetPreview();
+    setCurrentId(items[Math.min(indexRef.current, items.length - 1)].id);
+    // 只跟随顺序键变化；onClose/resetPreview 是稳定引用
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderedKey]);
+
+  /**
+   * ←/→ 在分组图片间切换。灯箱是最高层模态，按键在 capture 阶段消费，
+   * 不穿透到底层页面；单图模式不注册（保持既有行为）。
+   */
+  const navRef = useRef({ index, multi, goTo });
+  navRef.current = { index, multi, goTo };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const nav = navRef.current;
+      if (!nav.multi) return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      e.stopPropagation();
+      nav.goTo(e.key === "ArrowLeft" ? nav.index - 1 : nav.index + 1);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   useOverlayLayer("modalTop", true, onClose, rootRef);
   useFocusTrap(true, rootRef);
 
-  /** 当前可用空间（舞台内容区减去呼吸空隙）。 */
+  /** 当前可用空间（舞台内容区减去左右/上下内边距，多图模式给箭头留出空间）。 */
   const avail = useCallback(() => {
     const el = stageRef.current;
-    if (!el) return { w: 0, h: 0 };
+    if (!el) return { w: 0, h: 0, padX: 0, padY: 0 };
+    const cs = getComputedStyle(el);
+    const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
     return {
-      w: Math.max(1, el.clientWidth - STAGE_PAD * 2),
-      h: Math.max(1, el.clientHeight - STAGE_PAD * 2),
+      w: Math.max(1, el.clientWidth - padX),
+      h: Math.max(1, el.clientHeight - padY),
+      padX: parseFloat(cs.paddingLeft) || 0,
+      padY: parseFloat(cs.paddingTop) || 0,
     };
   }, []);
 
@@ -145,11 +239,11 @@ export default function ImageLightbox({
   /** 以舞台坐标 p 为不动点缩放到 ns。 */
   const zoomAt = useCallback(
     (px: number, py: number, ns: number, nw: number, nh: number) => {
-      const { w, h } = avail();
+      const { w, h, padX, padY } = avail();
       setView((v) => {
         const s2 = clamp(ns, MIN_SCALE, MAX_SCALE);
-        const cx = px - w / 2 - STAGE_PAD;
-        const cy = py - h / 2 - STAGE_PAD;
+        const cx = px - w / 2 - padX;
+        const cy = py - h / 2 - padY;
         const k = s2 / v.s;
         return clampPan({ s: s2, x: cx - (cx - v.x) * k, y: cy - (cy - v.y) * k }, nw, nh, w, h);
       });
@@ -220,6 +314,12 @@ export default function ImageLightbox({
     let startY = 0;
     const down = (e: PointerEvent) => {
       if (e.button !== 0) return;
+      // 切换箭头不参与拖拽：记录落点即可，避免把点按钮误判成「点遮罩关闭」
+      if ((e.target as HTMLElement | null)?.closest?.("[data-clip-lightbox-nav]")) {
+        movedRef.current = false;
+        pressTargetRef.current = e.target;
+        return;
+      }
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -311,12 +411,15 @@ export default function ImageLightbox({
   const onCopy = async () => {
     setBusy(true);
     try {
-      const r = await clipboardCopyItem(item.id);
+      const r = await clipboardCopyItem(current.id);
       const warn = r.warnings.length > 0 ? `；${r.warnings.join("；")}` : "";
-      showToast(`已复制原图（${formatBytes(r.bytes)}）${warn}`, {
-        kind: r.warnings.length > 0 ? "info" : "success",
+      const partial = r.warnings.length > 0 || r.stats_recorded === false;
+      // 写入成功即成功；统计失败等降级项显示「部分成功」，不报告成复制失败
+      showToast(`已复制原图${partial ? "（部分成功）" : ""}（${formatBytes(r.bytes)}）${warn}`, {
+        kind: partial ? "info" : "success",
       });
-      useClipboardStore.getState().bumpItemCopy(item.id);
+      // 统计没落库时不本地加次数，避免 UI 与数据库长期不一致
+      if (r.stats_recorded !== false) useClipboardStore.getState().bumpItemCopy(current.id);
     } catch (e) {
       showToast(`复制失败：${String(e)}`, { kind: "error" });
     } finally {
@@ -337,7 +440,7 @@ export default function ImageLightbox({
     savingRef.current = true;
     setBusy(true);
     try {
-      const id8 = item.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "image";
+      const id8 = current.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "image";
       let chosen: string | null = null;
       try {
         chosen = await save({
@@ -378,7 +481,7 @@ export default function ImageLightbox({
         savingRef.current = true;
         setBusyIfMounted(true);
         try {
-          const bytes = await clipboardSaveImage(item.id, targetPath, overwrite);
+          const bytes = await clipboardSaveImage(current.id, targetPath, overwrite);
           showToast(
             overwrite
               ? `已覆盖保存（${formatBytes(bytes)}）：${targetPath}`
@@ -426,27 +529,27 @@ export default function ImageLightbox({
     >
       <div
         ref={stageRef}
-        className="clip-lightbox-stage"
+        className={`clip-lightbox-stage${multi ? " multi" : ""}`}
         onClick={onStageClick}
         onDoubleClick={onDoubleClick}
       >
-        {state === "loading" && (
+        {viewState === "loading" && (
           <div className="clip-lightbox-status" role="status">
             <Loader2 size={18} className="spin" aria-hidden="true" /> 正在加载原图…
           </div>
         )}
-        {state === "missing" && (
+        {viewState === "missing" && (
           <div className="clip-lightbox-status">图片文件缺失或已被清理，无法预览</div>
         )}
-        {state === "error" && (
+        {viewState === "error" && (
           <div className="clip-lightbox-status">图片读取失败：{error}</div>
         )}
-        {state === "ready" && (
+        {viewState === "ready" && (
           <img
             ref={imgRef}
             className="clip-lightbox-img"
             src={url ?? undefined}
-            alt={item.title || "剪贴板图片"}
+            alt={current.title || "剪贴板图片"}
             draggable={false}
             style={{
               transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})`,
@@ -454,15 +557,54 @@ export default function ImageLightbox({
             onLoad={onImgLoad}
           />
         )}
+        {multi && (
+          <>
+            <button
+              type="button"
+              className="clip-lightbox-nav prev"
+              data-clip-lightbox-nav
+              data-tip="上一张"
+              aria-label="上一张"
+              disabled={index === 0}
+              onClick={(e) => {
+                e.stopPropagation();
+                goTo(index - 1);
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <ChevronLeft size={20} />
+            </button>
+            <button
+              type="button"
+              className="clip-lightbox-nav next"
+              data-clip-lightbox-nav
+              data-tip="下一张"
+              aria-label="下一张"
+              disabled={index >= ordered.length - 1}
+              onClick={(e) => {
+                e.stopPropagation();
+                goTo(index + 1);
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <ChevronRight size={20} />
+            </button>
+          </>
+        )}
       </div>
 
       <div className="clip-lightbox-bar">
         <div className="clip-lightbox-info">
+          {multi && (
+            <span className="clip-lightbox-counter" aria-live="polite">
+              {index + 1} / {ordered.length}
+            </span>
+          )}
           {natural ? (
             <>
               <span>{natural.w}×{natural.h}</span>
               <span>PNG（存储格式）</span>
-              <span>{formatBytes(item.byte_size)}</span>
+              <span>{formatBytes(current.byte_size)}</span>
               <span
                 className="clip-lightbox-source"
                 tabIndex={0}
@@ -472,7 +614,7 @@ export default function ImageLightbox({
               </span>
             </>
           ) : (
-            <span>{state === "loading" ? "读取图片信息…" : "无图片信息"}</span>
+            <span>{viewState === "loading" ? "读取图片信息…" : "无图片信息"}</span>
           )}
         </div>
         <div className="clip-lightbox-tools">
@@ -524,7 +666,7 @@ export default function ImageLightbox({
             className="icon-btn sm"
             data-tip="复制原图"
             aria-label="复制原图"
-            disabled={state !== "ready" || busy}
+            disabled={viewState !== "ready" || busy}
             onClick={onCopy}
           >
             <Copy size={13} />
@@ -534,7 +676,7 @@ export default function ImageLightbox({
             className="icon-btn sm"
             data-tip="另存为"
             aria-label="另存为"
-            disabled={state !== "ready" || busy}
+            disabled={viewState !== "ready" || busy}
             onClick={onSaveAs}
           >
             <Download size={13} />

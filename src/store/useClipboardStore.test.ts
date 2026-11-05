@@ -399,4 +399,74 @@ describe("useClipboardStore", () => {
       expect(useClipboardStore.getState().view?.items).toHaveLength(1);
     });
   });
+
+  describe("全量清空后的本地一致性", () => {
+    it("清空成功后离场快照与定时器一起失效，静默刷新不会把旧行钉回空列表", async () => {
+      vi.useFakeTimers();
+      try {
+        useClipboardStore.setState({ view: viewOf(["a", "b"]) });
+        useClipboardStore.getState().beginExit(["b"], "item");
+        useClipboardStore.getState().resetAfterClear();
+
+        expect(useClipboardStore.getState().exiting).toEqual({});
+        expect(useClipboardStore.getState().view?.items).toEqual([]);
+        // 已回收的收尾定时器不能在稍后把快照重新附加
+        vi.advanceTimersByTime(500);
+
+        mockedView.mockResolvedValueOnce(viewOf([]));
+        await useClipboardStore.getState().load({ silent: true });
+        expect(useClipboardStore.getState().view?.items).toEqual([]);
+        expect(useClipboardStore.getState().exiting).toEqual({});
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("清空后清空多选、错误与胶囊轻量视图，避免残留已删条目", () => {
+      useClipboardStore.setState({
+        view: viewOf(["a", "b"], ["g1"]),
+        selectedItems: ["a"],
+        selectedGroups: ["g1"],
+        error: "旧错误",
+        lite: { items: [{ id: "a" }], groups: [{ id: "g1" }] } as never,
+        liteStatus: "ready",
+      });
+
+      useClipboardStore.getState().resetAfterClear();
+
+      const state = useClipboardStore.getState();
+      expect(state.selectedItems).toEqual([]);
+      expect(state.selectedGroups).toEqual([]);
+      expect(state.error).toBeNull();
+      expect(state.lite).toEqual({ items: [], groups: [] });
+      expect(state.liteStatus).toBe("empty");
+    });
+
+    it("清空时旧的在途请求不得覆盖新空列表", async () => {
+      useClipboardStore.setState({ view: viewOf(["a", "b"]) });
+      const stale = deferred<ClipboardView>();
+      mockedView.mockReturnValueOnce(stale.promise);
+      const staleRun = useClipboardStore.getState().load({ silent: true });
+
+      useClipboardStore.getState().resetAfterClear();
+      mockedView.mockResolvedValueOnce(viewOf([]));
+      await useClipboardStore.getState().load();
+
+      stale.resolve(viewOf(["a", "b"]));
+      await staleRun;
+
+      expect(useClipboardStore.getState().view?.items).toEqual([]);
+      expect(useClipboardStore.getState().loadingMore).toBe(false);
+    });
+
+    it("清空失败（未调用 resetAfterClear）时保留现有数据与离场快照", () => {
+      useClipboardStore.setState({ view: viewOf(["a", "b"]), selectedItems: ["b"] });
+      useClipboardStore.getState().beginExit(["b"], "item");
+
+      // 失败路径不调用 resetAfterClear：本地数据必须原样保留
+      expect(useClipboardStore.getState().view?.items.map((i) => i.id)).toEqual(["a", "b"]);
+      expect(useClipboardStore.getState().exiting.b).toBeTruthy();
+      expect(useClipboardStore.getState().selectedItems).toEqual(["b"]);
+    });
+  });
 });

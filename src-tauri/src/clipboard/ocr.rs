@@ -7,7 +7,7 @@
 //! - 缓存按「条目 id + 内容哈希」关联，只存文字与元信息，不存解码图。
 //! - 日志只记录状态、尺寸、耗时，不记录识别文本。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,22 @@ pub const MAX_OCR_TEXT_CHARS: usize = 20_000;
 /// 输入像素上限（超过则等比缩小后识别）。4K（约 830 万）原样保留，
 /// 超宽拼接截图按面积收敛，避免 WinRT 侧再复制一份超大位图。
 pub const OCR_MAX_PIXELS: u64 = 24_000_000;
+/// 解码前像素上限：超过直接拒绝，不启动 OCR 引擎。
+///
+/// 解码后的 RGBA 是 `像素数 ×4`：24M 像素对应 96 MB 输入缓冲。
+/// 只按容器字节判断不可靠——纯色/低熵 PNG 可以只有几十 KB 却解出几百 MB。
+pub const OCR_MAX_DECODE_PIXELS: u64 = 24_000_000;
+/// 单次 OCR 输入内存预算（字节），覆盖：解码 RGBA、缩放输出、DataWriter 缓冲、
+/// SoftwareBitmap 副本、引擎自身与可能的双语言识别。
+///
+/// 依据本机实测：3000×2000（600 万像素）峰值约 101 MB；
+/// 按同一倍数放大到 24M 像素约 400 MB，这里取 448 MiB 作为闸门。
+/// 这是本机定值，不宣称适用于所有设备。
+pub const OCR_INPUT_BUDGET_BYTES: u64 = 448 * 1024 * 1024;
+/// WinRT 引擎与双语言识别的固定开销估值（字节）。
+const OCR_ENGINE_OVERHEAD_BYTES: u64 = 64 * 1024 * 1024;
+/// 引擎单边上限的保守回退值（实际值在解码后由 `MaxImageDimension` 查询）。
+const OCR_ENGINE_MAX_EDGE_FALLBACK: u64 = 10_000;
 /// 会话内缓存条目上限（LRU）。
 pub const OCR_CACHE_ENTRIES: usize = 16;
 
@@ -35,6 +51,8 @@ pub const STATUS_UNAVAILABLE: &str = "unavailable";
 pub const STATUS_BUSY: &str = "busy";
 pub const STATUS_CANCELLED: &str = "cancelled";
 pub const STATUS_ERROR: &str = "error";
+/// 图片超过解码前预算：明确与「没有识别到文字」区分。
+pub const STATUS_TOO_LARGE: &str = "too_large";
 
 /// 引擎失败原因（不包含图片内容）。
 enum RunError {
@@ -103,6 +121,18 @@ impl OcrReport {
         r
     }
 
+    /// 超过解码前预算：不启动引擎，也不写成「没有识别到文字」。
+    fn too_large(width: u32, height: u32, estimated_bytes: u64) -> Self {
+        let mut r = Self::base(STATUS_TOO_LARGE, "image_too_large");
+        r.reason = Some(format!(
+            "图片过大（{width}×{height}，预估占用约 {} MB），请截取需要的局部后再识别",
+            estimated_bytes / (1024 * 1024)
+        ));
+        r.width = width;
+        r.height = height;
+        r
+    }
+
     fn cancelled(duration_ms: u64) -> Self {
         let mut r = Self::base(STATUS_CANCELLED, "cancelled");
         r.reason = Some("识别已取消".into());
@@ -124,9 +154,13 @@ impl CacheEntry {
 }
 
 /// 有界 LRU：新条目在尾部，命中后移到尾部，超限从头部淘汰。
+///
+/// `epoch` 是轻量失效代数：删除/清空/维护清理都会自增。识别开始时记录代数，
+/// 结束时只有代数未变才写回缓存，避免「已删条目」被迟到的任务重新写回。
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<CacheEntry>,
+    epoch: u64,
 }
 
 impl Cache {
@@ -151,6 +185,57 @@ impl Cache {
         while self.entries.len() > OCR_CACHE_ENTRIES {
             self.entries.pop_front();
         }
+    }
+
+    /// 识别结束时的写回：代数已变（期间发生过删除/清空/清理）则不写。
+    fn put_if_epoch(&mut self, item_id: &str, hash: &str, report: &OcrReport, epoch: u64) -> bool {
+        if self.epoch != epoch {
+            return false;
+        }
+        self.put(item_id, hash, report);
+        true
+    }
+
+    fn invalidate(&mut self, items: &[String]) {
+        if items.is_empty() {
+            return;
+        }
+        self.entries
+            .retain(|e| !items.iter().any(|id| id == &e.item_id));
+        self.bump_epoch();
+    }
+
+    fn clear(&mut self) {
+        // 即使当前没有缓存条目也要自增代数：清空历史时可能正好有识别任务在跑，
+        // 它的迟到结果必须被丢弃（不能因为缓存为空就不失效）。
+        self.entries.clear();
+        self.bump_epoch();
+    }
+
+    /// 按「条目仍存在且内容哈希未变」校正缓存，只做淘汰，不推进代数。
+    ///
+    /// `snapshot` 是本次校正开始时已有的条目 id；快照之后新加的条目不动。
+    /// 返回是否真的淘汰了条目（内容哈希变化也需要让在跑的旧任务失效，
+    /// 由调用方决定是否推进代数）。
+    fn retain_existing(&mut self, snapshot: &[String], current: &HashMap<String, String>) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|e| {
+            if !snapshot.iter().any(|id| id == &e.item_id) {
+                return true;
+            }
+            current.get(&e.item_id) == Some(&e.hash)
+        });
+        self.entries.len() != before
+    }
+
+    /// 数据库不可读、无法确认旧内容安全时的保守处置：整体丢弃并推进代数。
+    fn discard_all(&mut self) {
+        self.entries.clear();
+        self.bump_epoch();
+    }
+
+    fn bump_epoch(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
     }
 
     fn len(&self) -> usize {
@@ -208,6 +293,82 @@ impl OcrService {
         self.cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 
+    /// 当前进行中的请求标识（诊断与取消并发测试用，不含正文）。
+    pub fn active_request(&self) -> Option<String> {
+        self.running
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(|task| task.request_id.clone())
+    }
+
+    /// 条目删除后只失效这些条目，其余缓存保留。
+    pub fn invalidate_items(&self, item_ids: &[String]) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.invalidate(item_ids);
+        }
+    }
+
+    /// 清空历史后整体失效；迟到任务因代数变化不会再写回。
+    pub fn clear_cache(&self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.clear();
+        }
+    }
+
+    /// 推进缓存失效代数：让已经开始、尚未结束的识别任务在结束时放弃写回。
+    ///
+    /// 与「缓存校正」分开：真实删除（单条 / 整组 / 清空 / 过期清理）即使缓存为空，
+    /// 也必须调用它，否则在跑的旧任务会把已删条目的结果写进缓存。
+    pub fn advance_epoch(&self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.bump_epoch();
+        }
+    }
+
+    /// 自动过期/维护清理后校正缓存：条目已删除或内容哈希变化即淘汰。
+    ///
+    /// `deleted` 表示本次操作是否**实际删除了条目**；为真时先推进代数（不依赖下面的
+    /// 数据库查询结果），保证缓存为空、或数据库随后不可读时，在跑的旧任务也不会写回。
+    /// 先在锁外快照条目 id，再逐条做短查询（最多 `OCR_CACHE_ENTRIES` 条），
+    /// 不长时间持有缓存锁或数据库锁。
+    /// 数据库不可读时无法确认旧内容安全：整体丢弃并推进代数，不假定旧缓存仍有效。
+    pub fn retain_existing(&self, db: &Db, deleted: bool) {
+        if deleted {
+            self.advance_epoch();
+        }
+        let snapshot: Vec<String> = match self.cache.lock() {
+            Ok(cache) => cache.entries.iter().map(|e| e.item_id.clone()).collect(),
+            Err(_) => return,
+        };
+        if snapshot.is_empty() {
+            return;
+        }
+        let mut current: HashMap<String, String> = HashMap::new();
+        for id in &snapshot {
+            match store::content_hash(db, id) {
+                Ok(Some(hash)) => {
+                    current.insert(id.clone(), hash);
+                }
+                // 条目已删除：不放进 current，随后淘汰。
+                Ok(None) => {}
+                // 数据库不可读：不能假定旧内容安全。
+                Err(_) => {
+                    if let Ok(mut cache) = self.cache.lock() {
+                        cache.discard_all();
+                    }
+                    return;
+                }
+            }
+        }
+        if let Ok(mut cache) = self.cache.lock() {
+            // 内容哈希变化说明旧结果已不对应当前内容，同样推进代数让在跑的旧任务失效。
+            if cache.retain_existing(&snapshot, &current) {
+                cache.bump_epoch();
+            }
+        }
+    }
+
     /// 同步执行一次识别。调用方必须在阻塞线程上运行，不得在 UI 线程直接调用。
     pub fn recognize(
         &self,
@@ -217,6 +378,8 @@ impl OcrService {
         request_id: &str,
     ) -> OcrReport {
         let started = Instant::now();
+        // 先记录代数再查条目：识别尚未登记时发生的删除/清空/清理，也必须让结果不写回。
+        let cache_epoch = self.cache.lock().map(|c| c.epoch).unwrap_or(0);
         let item = match store::get_item(db, item_id) {
             Ok(item) => item,
             Err(AppError::NotFound(msg)) => return OcrReport::unavailable("missing_image", &msg),
@@ -263,6 +426,26 @@ impl OcrService {
             Ok(bytes) => bytes,
             Err(_) => return OcrReport::unavailable("missing_image", "图片文件无法读取"),
         };
+        // 解码前闸门：只读 IHDR 宽高，不分配像素缓冲。超限直接拒绝，不启动引擎。
+        let (hdr_w, hdr_h) = match image::png_dimensions(&bytes) {
+            Ok(dim) => dim,
+            Err(e) => {
+                return OcrReport::error(
+                    "decode_failed",
+                    &e.to_string(),
+                    started.elapsed().as_millis() as u64,
+                )
+            }
+        };
+        if let Some(estimated) = exceeds_decode_budget(hdr_w, hdr_h) {
+            tracing::debug!(
+                width = hdr_w,
+                height = hdr_h,
+                estimated_bytes = estimated,
+                "剪贴板 OCR 图片超过解码前预算"
+            );
+            return OcrReport::too_large(hdr_w, hdr_h, estimated);
+        }
         let (rgba, width, height) = match image::decode_png_rgba(&bytes) {
             Ok(decoded) => decoded,
             Err(e) => {
@@ -313,7 +496,10 @@ impl OcrService {
         };
 
         if matches!(report.status.as_str(), STATUS_OK | STATUS_EMPTY) {
-            self.cache_put(item_id, &hash, &report);
+            // 期间发生过删除/清空/清理（代数变化）时不写回，避免已删条目“复活”。
+            if !self.cache_put(item_id, &hash, &report, cache_epoch) {
+                tracing::debug!("剪贴板 OCR 结果未写缓存：缓存已失效");
+            }
         }
         tracing::debug!(
             status = report.status,
@@ -331,10 +517,12 @@ impl OcrService {
         self.cache.lock().ok()?.get(item_id, hash)
     }
 
-    fn cache_put(&self, item_id: &str, hash: &str, report: &OcrReport) {
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.put(item_id, hash, report);
-        }
+    /// 写回缓存；代数已变（期间发生过删除/清空/清理）时返回 `false`，不写入。
+    fn cache_put(&self, item_id: &str, hash: &str, report: &OcrReport, epoch: u64) -> bool {
+        let Ok(mut cache) = self.cache.lock() else {
+            return false;
+        };
+        cache.put_if_epoch(item_id, hash, report, epoch)
     }
 }
 
@@ -354,17 +542,51 @@ impl Drop for BusyLease<'_> {
 
 /// 超过单边/像素上限时等比缩小；返回最终像素与尺寸。
 fn scale_for_ocr(rgba: Vec<u8>, width: u32, height: u32) -> (Vec<u8>, u32, u32) {
-    let max_edge = windows_ocr_max_dimension() as u64;
+    let (w, h) = target_ocr_size(width, height, windows_ocr_max_dimension() as u64);
+    if w == width && h == height {
+        return (rgba, width, height);
+    }
+    (downscale_box(&rgba, width, height, w, h), w, h)
+}
+
+/// 估算一次 OCR 输入的内存峰值（字节）：解码 RGBA + 缩放输出 +
+/// DataWriter 缓冲 + SoftwareBitmap 副本 + 引擎/双语言开销。
+fn estimate_ocr_input_bytes(width: u32, height: u32) -> u64 {
+    let pixels = (width as u64).saturating_mul(height as u64);
+    let (out_w, out_h) = target_ocr_size(width, height, OCR_ENGINE_MAX_EDGE_FALLBACK);
+    let out_pixels = (out_w as u64).saturating_mul(out_h as u64);
+    pixels
+        .saturating_mul(4)
+        .saturating_add(out_pixels.saturating_mul(4 * 3))
+        .saturating_add(OCR_ENGINE_OVERHEAD_BYTES)
+}
+
+/// 解码前预算判定：返回超限时的估算字节数，`None` 表示可进入解码。
+///
+/// 几何像素上限与内存预算同时检查：只按文件大小判断会被高压缩率 PNG 绕过。
+fn exceeds_decode_budget(width: u32, height: u32) -> Option<u64> {
+    let pixels = (width as u64).saturating_mul(height as u64);
+    let estimated = estimate_ocr_input_bytes(width, height);
+    if pixels > OCR_MAX_DECODE_PIXELS || estimated > OCR_INPUT_BUDGET_BYTES {
+        Some(estimated)
+    } else {
+        None
+    }
+}
+
+/// 计算 OCR 输入尺寸：像素与单边都在上限内时保持不变，否则按面积/边长取小等比缩小。
+/// 纯尺寸计算单独抽出，便于在不需要分配巨大像素缓冲的情况下验证策略。
+fn target_ocr_size(width: u32, height: u32, max_edge: u64) -> (u32, u32) {
     let pixels = width as u64 * height as u64;
     if pixels <= OCR_MAX_PIXELS && (width as u64) <= max_edge && (height as u64) <= max_edge {
-        return (rgba, width, height);
+        return (width, height);
     }
     let area_scale = (OCR_MAX_PIXELS as f64 / pixels as f64).sqrt();
     let edge_scale = max_edge as f64 / width.max(height) as f64;
     let scale = area_scale.min(edge_scale).min(1.0);
     let w = ((width as f64 * scale).round().max(1.0)) as u32;
     let h = ((height as f64 * scale).round().max(1.0)) as u32;
-    (downscale_box(&rgba, width, height, w, h), w, h)
+    (w, h)
 }
 
 /// 区域平均缩小（只用于超出上限的超大截图）。
@@ -431,6 +653,9 @@ fn is_full_width_punct(c: char) -> bool {
             | '、'
             | '；'
             | '：'
+            | '．'
+            | '－'
+            | '／'
             | '？'
             | '！'
             | '（'
@@ -539,7 +764,8 @@ fn recognize_pixels(
     cancel: &AtomicBool,
     started: Instant,
 ) -> Result<Recognized, RunError> {
-    let _com = ComGuard::init();
+    // COM 初始化失败时不得继续识别；失败路径未增加引用计数，ComGuard 不会反初始化。
+    let _com = ComGuard::init().map_err(|e| RunError::Unavailable(e.message()))?;
     let languages = available_languages();
     if languages.is_empty() {
         return Err(RunError::Unavailable(
@@ -704,30 +930,81 @@ fn run_engine(
     Ok((text, lines))
 }
 
-/// 当前线程的 COM 初始化作用域；S_FALSE（已初始化）不负责反初始化。
-struct ComGuard(bool);
+/// COM 初始化失败的明确原因；这两种情况都不得调用 `CoUninitialize`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComInitError {
+    /// 线程已用不兼容的套间模型初始化（例如 STA），本次调用未增加引用计数。
+    ChangedMode,
+    /// 其他失败（`E_OUTOFMEMORY`、`E_FAIL` 等），本次调用未增加引用计数。
+    Failed(i32),
+}
+
+impl ComInitError {
+    fn message(self) -> String {
+        match self {
+            Self::ChangedMode => {
+                "线程 COM 套间模型不兼容（RPC_E_CHANGED_MODE），无法使用 Windows OCR".into()
+            }
+            Self::Failed(code) => format!("COM 初始化失败（HRESULT 0x{code:08X}）"),
+        }
+    }
+}
+
+/// `CoInitializeEx` 返回值的处置分类（纯函数，便于在无 COM 环境验证）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComDisposition {
+    /// `S_OK`（本次初始化）或 `S_FALSE`（线程已初始化，本次调用仍增加引用计数）：
+    /// 两种情况都必须配对一次 `CoUninitialize`。
+    MustUninitialize,
+    ChangedMode,
+    Failed,
+}
+
+fn com_disposition(hr: windows::core::HRESULT) -> ComDisposition {
+    use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
+    if hr == S_OK || hr == S_FALSE {
+        ComDisposition::MustUninitialize
+    } else if hr == RPC_E_CHANGED_MODE {
+        ComDisposition::ChangedMode
+    } else {
+        ComDisposition::Failed
+    }
+}
+
+/// 当前线程的 COM 初始化作用域（RAII）。
+///
+/// 声明在引擎/位图对象之前，作用域退出时先释放 COM 对象、最后反初始化。
+struct ComGuard {
+    owns_reference: bool,
+}
 
 impl ComGuard {
-    fn init() -> Self {
+    fn init() -> Result<Self, ComInitError> {
         let hr = unsafe {
             windows::Win32::System::Com::CoInitializeEx(
                 None,
                 windows::Win32::System::Com::COINIT_MULTITHREADED,
             )
         };
-        Self(hr.is_ok() && hr.0 != 1)
+        let owns_reference = match com_disposition(hr) {
+            ComDisposition::MustUninitialize => true,
+            ComDisposition::ChangedMode => return Err(ComInitError::ChangedMode),
+            ComDisposition::Failed => return Err(ComInitError::Failed(hr.0)),
+        };
+        Ok(Self { owns_reference })
     }
 }
 
 impl Drop for ComGuard {
     fn drop(&mut self) {
-        if self.0 {
+        if self.owns_reference {
             unsafe {
-                let _ = windows::Win32::System::Com::CoUninitialize();
+                windows::Win32::System::Com::CoUninitialize();
             }
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -743,25 +1020,30 @@ mod tests {
 
     #[test]
     fn normalize_joins_spaced_digits_and_fixes_full_width_punct() {
-        assert_eq!(normalize_ocr_text("共 1 2 条 记录"), "共12条记录");
+        // 中文与数字之间保留一个空格（OCR 逐字空格只在 CJK-CJK / 数字-数字之间合并）。
+        assert_eq!(normalize_ocr_text("共 1 2 条 记录"), "共 12 条记录");
         assert_eq!(
             normalize_ocr_text("Task Dock v0 ． 5 ． 0 已 发 布"),
             "Task Dock v0.5.0 已发布"
         );
-        assert_eq!(normalize_ocr_text("时 间 8 ： 30"), "时间8:30");
+        assert_eq!(normalize_ocr_text("时 间 8 ： 30"), "时间 8:30");
     }
 
     #[test]
     fn normalize_keeps_latin_word_spacing() {
         assert_eq!(
             normalize_ocr_text("OCR 320 ms, 共 18 行 文字"),
-            "OCR 320 ms, 共18行文字"
+            "OCR 320 ms, 共 18 行文字"
         );
     }
 
     #[test]
     fn normalize_trims_and_drops_empty_lines() {
-        assert_eq!(normalize_ocr_text("\n  \n第一行\n\n第二行  \n\n"), "第一行\n第二行");
+        // 段落间最多保留一个空行，首尾空行去掉。
+        assert_eq!(
+            normalize_ocr_text("\n  \n第一行\n\n第二行  \n\n"),
+            "第一行\n\n第二行"
+        );
     }
 
     #[test]
@@ -775,7 +1057,8 @@ mod tests {
         let service = OcrService::new();
         for i in 0..(OCR_CACHE_ENTRIES + 4) {
             let report = OcrReport::base(STATUS_OK, "ok");
-            service.cache_put(&format!("id-{i}"), &format!("hash-{i}"), &report);
+            let epoch = service.cache.lock().unwrap().epoch;
+            service.cache_put(&format!("id-{i}"), &format!("hash-{i}"), &report, epoch);
         }
         assert_eq!(service.cached_entries(), OCR_CACHE_ENTRIES);
         assert!(service.cache_get("id-0", "hash-0").is_none());
@@ -791,7 +1074,8 @@ mod tests {
     fn cache_hit_requires_same_content_hash() {
         let service = OcrService::new();
         let report = OcrReport::base(STATUS_OK, "ok");
-        service.cache_put("id-1", "hash-1", &report);
+        let epoch = service.cache.lock().unwrap().epoch;
+        assert!(service.cache_put("id-1", "hash-1", &report, epoch));
         let hit = service.cache_get("id-1", "hash-1").expect("命中");
         assert!(hit.cached);
         assert!(service.cache_get("id-1", "hash-2").is_none());
@@ -829,21 +1113,22 @@ mod tests {
 
     #[test]
     fn scale_policy_keeps_normal_screenshot() {
-        let rgba = vec![0u8; 4 * 4 * 4];
-        let (pixels, w, h) = scale_for_ocr(rgba, 4, 4);
-        assert_eq!((w, h), (4, 4));
-        assert_eq!(pixels.len(), 4 * 4 * 4);
+        assert_eq!(target_ocr_size(4, 4, 10_000), (4, 4));
+        // 6000×4000 = 2400 万，刚好等于上限，不缩放
+        assert_eq!(target_ocr_size(6000, 4000, 10_000), (6000, 4000));
+        // 4K 截图原样保留
+        assert_eq!(target_ocr_size(3840, 2160, 10_000), (3840, 2160));
     }
 
     #[test]
     fn scale_policy_downsizes_oversized_image() {
-        // 6000×4000 = 2400 万，刚好等于上限，不缩放
-        let (_, w, h) = scale_for_ocr(vec![0u8; 4], 6000, 4000);
-        assert_eq!((w, h), (6000, 4000));
-        // 9000×6000 = 5400 万，按面积收敛
-        let (_, w, h) = scale_for_ocr(vec![0u8; 4], 9000, 6000);
+        // 9000×6000 = 5400 万，按面积收敛到 24M 像素以内
+        let (w, h) = target_ocr_size(9000, 6000, 10_000);
         assert!((w as u64 * h as u64) <= OCR_MAX_PIXELS);
         assert!(w <= 9000 && h <= 6000);
+        // 单边超过 10000 时按边长收敛
+        let (w2, h2) = target_ocr_size(20_000, 500, 10_000);
+        assert!(w2 <= 10_000 && h2 <= 500);
     }
 
     #[test]
@@ -852,5 +1137,218 @@ mod tests {
         let out = downscale_box(&white, 4, 4, 2, 2);
         assert_eq!(out.len(), 2 * 2 * 4);
         assert!(out.chunks(4).all(|px| px == [255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn com_disposition_pairs_s_ok_and_s_false() {
+        use windows::Win32::Foundation::{E_FAIL, E_OUTOFMEMORY, RPC_E_CHANGED_MODE, S_FALSE, S_OK};
+        // S_OK 与 S_FALSE 都是「本次调用成功」，都必须配对一次 CoUninitialize。
+        assert_eq!(com_disposition(S_OK), ComDisposition::MustUninitialize);
+        assert_eq!(com_disposition(S_FALSE), ComDisposition::MustUninitialize);
+        // 模式冲突与其他失败不得反初始化。
+        assert_eq!(com_disposition(RPC_E_CHANGED_MODE), ComDisposition::ChangedMode);
+        assert_eq!(com_disposition(E_OUTOFMEMORY), ComDisposition::Failed);
+        assert_eq!(com_disposition(E_FAIL), ComDisposition::Failed);
+        assert!(ComInitError::ChangedMode.message().contains("套间"));
+        assert!(ComInitError::Failed(E_FAIL.0).message().contains("0x8000"));
+    }
+
+    #[test]
+    fn com_guard_balances_second_init_returning_s_false() {
+        // 在独立线程验证：两次成功初始化（第二次必然是 S_FALSE）都要配对反初始化。
+        // 反初始化后引用计数归零，再次初始化必须返回 S_OK 而不是 S_FALSE。
+        std::thread::spawn(|| {
+            {
+                let first = ComGuard::init().expect("首次初始化");
+                let second = ComGuard::init().expect("重复初始化（S_FALSE）仍算成功");
+                drop(second);
+                drop(first);
+            }
+            let hr = unsafe {
+                windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_MULTITHREADED,
+                )
+            };
+            assert_eq!(
+                hr,
+                windows::Win32::Foundation::S_OK,
+                "COM 引用计数未归零：S_FALSE 说明有初始化没有配对反初始化"
+            );
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        })
+        .join()
+        .expect("COM 生命周期线程不应 panic");
+    }
+
+    #[test]
+    fn com_guard_rejects_incompatible_apartment() {
+        std::thread::spawn(|| {
+            let hr = unsafe {
+                windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                )
+            };
+            assert_eq!(hr, windows::Win32::Foundation::S_OK);
+            let err = ComGuard::init().err().expect("STA 线程上 MTA 初始化应失败");
+            assert_eq!(err, ComInitError::ChangedMode);
+            // 失败路径未增加引用计数，只反初始化本线程自己那次 STA 初始化。
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        })
+        .join()
+        .expect("COM 套间冲突线程不应 panic");
+    }
+
+    #[test]
+    fn decode_budget_rejects_oversized_before_decoding() {
+        // 4K 在预算内
+        assert!(exceeds_decode_budget(3840, 2160).is_none());
+        // 6000×4000 = 2400 万，处于允许上限
+        assert!(exceeds_decode_budget(6000, 4000).is_none());
+        // 8000×6000 = 4800 万，超过几何像素上限
+        assert!(exceeds_decode_budget(8000, 6000).is_some());
+        // 30000×30000 = 9 亿像素，纯几何超限
+        assert!(exceeds_decode_budget(30_000, 30_000).is_some());
+        // 高而窄：像素不超但在单边缩放下估算仍可控
+        assert!(exceeds_decode_budget(20_000, 600).is_none());
+    }
+
+    #[test]
+    fn invalidate_items_only_touches_requested_entries() {
+        let service = OcrService::new();
+        for id in ["id-a", "id-b", "id-c"] {
+            let report = OcrReport::base(STATUS_OK, "ok");
+            let epoch = service.cache.lock().unwrap().epoch;
+            assert!(service.cache_put(id, "hash-1", &report, epoch));
+        }
+        service.invalidate_items(&["id-b".into()]);
+        assert!(service.cache_get("id-a", "hash-1").is_some());
+        assert!(service.cache_get("id-b", "hash-1").is_none());
+        assert!(service.cache_get("id-c", "hash-1").is_some());
+    }
+
+    #[test]
+    fn clear_cache_removes_everything() {
+        let service = OcrService::new();
+        for id in ["id-a", "id-b"] {
+            let report = OcrReport::base(STATUS_OK, "ok");
+            let epoch = service.cache.lock().unwrap().epoch;
+            assert!(service.cache_put(id, "hash-1", &report, epoch));
+        }
+        assert_eq!(service.cached_entries(), 2);
+        service.clear_cache();
+        assert_eq!(service.cached_entries(), 0);
+    }
+
+    #[test]
+    fn late_result_is_not_written_back_after_invalidation() {
+        let service = OcrService::new();
+        let report = OcrReport::base(STATUS_OK, "ok");
+        // 模拟一个识别任务开始时的代数
+        let epoch = service.cache.lock().unwrap().epoch;
+        // 期间条目被删除
+        service.invalidate_items(&["id-late".into()]);
+        // 迟到的结果不得写回
+        assert!(!service.cache_put("id-late", "hash-1", &report, epoch));
+        assert_eq!(service.cached_entries(), 0);
+        // 无关条目同样不受影响（旧结果只是不缓存，不会写入已删条目）
+        let fresh = service.cache.lock().unwrap().epoch;
+        assert!(service.cache_put("id-other", "hash-1", &report, fresh));
+        assert_eq!(service.cached_entries(), 1);
+    }
+
+    #[test]
+    fn late_result_is_not_written_back_after_clear() {
+        let service = OcrService::new();
+        let report = OcrReport::base(STATUS_OK, "ok");
+        let epoch = service.cache.lock().unwrap().epoch;
+        service.clear_cache();
+        assert!(!service.cache_put("id-late", "hash-1", &report, epoch));
+        assert_eq!(service.cached_entries(), 0);
+    }
+
+    #[test]
+    fn retain_existing_drops_missing_and_changed_entries() {
+        let mut cache = Cache::default();
+        let report = OcrReport::base(STATUS_OK, "ok");
+        cache.put("id-keep", "hash-1", &report);
+        cache.put("id-gone", "hash-1", &report);
+        cache.put("id-changed", "hash-old", &report);
+        let epoch = cache.epoch;
+        let snapshot = vec![
+            "id-keep".to_string(),
+            "id-gone".to_string(),
+            "id-changed".to_string(),
+        ];
+        let mut current = HashMap::new();
+        current.insert("id-keep".to_string(), "hash-1".to_string());
+        current.insert("id-changed".to_string(), "hash-new".to_string());
+        // 校正只负责淘汰，不自己推进代数。
+        assert!(cache.retain_existing(&snapshot, &current));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get("id-keep", "hash-1").is_some());
+        assert_eq!(cache.epoch, epoch, "校正不得偷偷推进代数");
+    }
+
+    #[test]
+    fn empty_cache_group_delete_still_invalidates_in_flight_task() {
+        // 复现漏洞：缓存为空但识别在跑时删除整组，迟到的结果不能写进缓存。
+        let db = Db::open_in_memory().unwrap();
+        let service = OcrService::new();
+        let report = OcrReport::base(STATUS_OK, "ok");
+        let epoch = service.cache.lock().unwrap().epoch;
+        assert_eq!(service.cached_entries(), 0);
+        service.retain_existing(&db, true);
+        assert!(!service.cache_put("id-group", "hash-1", &report, epoch));
+        assert_eq!(service.cached_entries(), 0);
+    }
+
+    #[test]
+    fn cleanup_without_deletion_keeps_in_flight_result_writable() {
+        // 没有实际删除条目的清理周期不应丢弃在跑任务的结果。
+        let db = Db::open_in_memory().unwrap();
+        let service = OcrService::new();
+        let report = OcrReport::base(STATUS_OK, "ok");
+        let epoch = service.cache.lock().unwrap().epoch;
+        service.retain_existing(&db, false);
+        assert!(service.cache_put("id-keep", "hash-1", &report, epoch));
+    }
+
+    #[test]
+    fn db_failure_discards_unverifiable_cache() {
+        let db = Db::open_in_memory().unwrap();
+        let service = OcrService::new();
+        let report = OcrReport::base(STATUS_OK, "ok");
+        let epoch = service.cache.lock().unwrap().epoch;
+        assert!(service.cache_put("id-a", "hash-1", &report, epoch));
+        // 让 content_hash 查询失败：仅内存测试库，直接删表。
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TABLE clipboard_items")
+                .map_err(AppError::from)?;
+            Ok(())
+        })
+        .unwrap();
+        service.retain_existing(&db, false);
+        assert_eq!(
+            service.cached_entries(),
+            0,
+            "数据库不可读时不得假定旧缓存仍有效"
+        );
+        assert!(
+            !service.cache_put("id-a", "hash-1", &report, epoch),
+            "丢弃后旧任务的迟到结果也不得写回"
+        );
+    }
+
+    #[test]
+    fn too_large_report_is_not_empty_text() {
+        let report = OcrReport::too_large(8000, 6000, 700 * 1024 * 1024);
+        assert_eq!(report.status, STATUS_TOO_LARGE);
+        assert_eq!(report.code, "image_too_large");
+        assert_eq!((report.width, report.height), (8000, 6000));
+        assert!(!report.text.contains("未识别"));
+        let reason = report.reason.unwrap();
+        assert!(reason.contains("截取"), "提示应建议截取局部：{reason}");
     }
 }

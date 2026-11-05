@@ -186,6 +186,13 @@ pub(crate) const CONTENT_QUEUE_MAX_BYTES: usize = 128 * 1024 * 1024;
 /// 剪贴板被其他程序占用时事件重排的上限（每次重排 open_clipboard 内部还会
 /// 重试约 120ms）：总等待有界，超限才放弃并计入 read_failed。
 pub(crate) const MAX_READ_BUSY_RETRIES: u32 = 3;
+/// 读空后的复核次数与等待：Win32 写入方常按 EmptyClipboard→SetClipboardData 两步
+/// 提交，两步之间存在一个可被监听线程读到的空窗口（实测外部复制偶发
+/// `observed=1 / captured=0 / empty_events=1`，而数百毫秒后剪贴板里确有 PNG）。
+/// 空读只做一次有界复核，复核仍空才计入 `empty_events`，避免把已落地的复制永久丢弃，
+/// 也不改变「空剪贴板」的判定语义。
+pub(crate) const MAX_EMPTY_RECHECK: u32 = 1;
+pub(crate) const EMPTY_RECHECK_DELAY_MS: u64 = 120;
 
 struct MonitorCounters {
     observed_events: AtomicU64,
@@ -528,23 +535,51 @@ pub struct TargetWindow {
     pub exe_path: String,
 }
 
+/// 粘贴前快照的读取结果类别。
+///
+/// 「剪贴板为空」「当前读不到」「格式不支持/读取不完整」是三种不同事实，
+/// 不能都当成「用户/其他程序接管」：前两者没有可保护的内容，后者只能证明
+/// 无法验证，而不是内容已经变了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotState {
+    /// 已读到可完整比较的载荷。
+    Captured,
+    /// 剪贴板上没有任何本应用能识别的内容格式。
+    Empty,
+    /// 存在内容格式，但无法完整读取或无法重建（例如损坏的图片、超大文本、
+    /// 只含未知格式）。
+    Unsupported,
+    /// 当前打不开剪贴板，连快照都取不到。
+    Unreadable,
+}
+
 #[derive(Debug)]
 pub struct Snapshot {
     pub sequence: u32,
     pub payload: Option<ClipboardPayload>,
+    pub state: SnapshotState,
 }
 
 /// 写入型真机测试的启动探测（只读，不属于生产粘贴链路）。
 ///
 /// `snapshot` 为 `None` 表示剪贴板当前打不开，既取不到快照也无法证明可恢复；
 /// `unsupported_formats` 非空表示剪贴板上存在 `ClipboardPayload` 无法无损重建的
-/// 格式（RTF、Office 私有格式、第三方自定义格式、元文件等）。
-/// 两种情况都必须拒绝启动写入型测试——测试工具只能重建
+/// 格式（RTF、Office 私有格式、第三方自定义格式、元文件等）；
+/// `reconstruction` 判断这份格式集合能否由**读取到的单个载荷**重建（复合格式、
+/// HTML-only、路径失效、枚举失败都在这里拒绝）。
+/// 以上任一情况都必须拒绝启动写入型测试——测试工具只能重建
 /// CF_UNICODETEXT / HTML Format / PNG / CF_DIB / CF_HDROP 及其系统合成格式。
 #[derive(Debug)]
 pub struct SnapshotProbe {
     pub snapshot: Option<Snapshot>,
     pub unsupported_formats: Vec<String>,
+    /// 整份快照能否由读取到的载荷安全重建。
+    ///
+    /// 「每个格式都在白名单里」不等于「能重建整份内容」：剪贴板可能同时含多个
+    /// 独立内容表示（如文本 + PNG），而 `ClipboardPayload` 只能按 `classify()`
+    /// 优先级保留一种，其余会在恢复时永久丢失；HTML-only 能读出载荷，却过不了
+    /// 写入层「纯文本非空」的必需格式约束。`Err` 中的原因可直接展示给使用者。
+    pub reconstruction: Result<(), String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -585,8 +620,12 @@ pub enum WriteOutcome {
         /// 未能写入的辅助格式名（用户可见提示用）。
         degraded: Vec<String>,
     },
-    /// 守卫拒绝：剪贴板内容或序列号已变化，本次没有执行 EmptyClipboard。
+    /// 守卫拒绝：剪贴板内容已可靠判定为不同，或序列号已变化；
+    /// 本次没有执行 EmptyClipboard。
     SequenceChanged,
+    /// 守卫无法可靠验证当前剪贴板内容（图片格式读不到/解码失败等），
+    /// 本次没有执行 EmptyClipboard，也不能据此断言内容已被改写。
+    Unverifiable,
 }
 
 /// 单次格式写入的结果。
@@ -753,13 +792,18 @@ fn finish_restore(written: AppResult<()>) -> AppResult<RestoreOutcome> {
 /// Windows 会在 `CloseClipboard` 之后继续为合成/延迟渲染格式递增序列号，
 /// 因此「序列号变化」不等于「用户换了内容」。粘贴前必须用内容比较兜底，
 /// 既不能误停正常粘贴，也不能把用户后来复制的内容当成自己的。
+///
+/// 返回 `None` 表示**无法验证**：只允许出现在图片内容上（没有可解码的 PNG，
+/// 也没有可解码的 DIB/DIBV5）。无法验证既不能当成 Same（会覆盖用户内容），
+/// 也不能当成 Different（会把「读不到」误报成用户接管）。
 pub(crate) fn payload_matches_read(
     expected: &ClipboardPayload,
     text: Option<&str>,
     html: Option<&str>,
     png: Option<&[u8]>,
+    dib: Option<&[u8]>,
     files: &[String],
-) -> bool {
+) -> Option<bool> {
     match expected {
         ClipboardPayload::Text {
             text: expected_text,
@@ -771,12 +815,12 @@ pub(crate) fn payload_matches_read(
             let html = html.filter(|h| !h.is_empty());
             let expected_html = expected_html.as_ref().filter(|h| !h.is_empty());
             if !expected_text.is_empty() && text != Some(expected_text.as_str()) {
-                return false;
+                return Some(false);
             }
             match expected_html {
-                Some(expected_html) => html == Some(expected_html.as_str()),
+                Some(expected_html) => Some(html == Some(expected_html.as_str())),
                 // 纯文本写入不应带 HTML；若出现 HTML，说明剪贴板已是别处的内容
-                None => html.is_none(),
+                None => Some(html.is_none()),
             }
         }
         ClipboardPayload::Image {
@@ -786,45 +830,92 @@ pub(crate) fn payload_matches_read(
             height,
         } => {
             if expected_png.is_empty() {
-                return false;
+                return Some(false);
             }
+            // PNG 原始字节完全一致 → 直接判 Same，不做解码。
             if png == Some(expected_png.as_slice()) {
-                return true;
+                return Some(true);
+            }
+            // 完全没有任何图片格式、却存在文本/HTML/文件：这是可靠的不同内容，
+            // 不能因为「图片读不到」而报告成无法验证、放过用户的接管。
+            let has_other_content = text.is_some_and(|t| !t.is_empty())
+                || html.is_some_and(|h| !h.is_empty())
+                || !files.is_empty();
+            if png.is_none() && dib.is_none() && has_other_content {
+                return Some(false);
             }
             // Windows 会用同源 CF_DIB 合成/替换「PNG」容器：容器字节变了不代表图片内容变了。
             // 只比容器字节会把本进程自己写入的图片误判成「用户已接管」，
             // 逐项粘贴会中途停、自写抑制会失效并重复入库，必须回退到像素判定。
-            let Some(actual) = png else { return false };
-            let (mut expected_rgba, expected_size) = match rgba {
-                Some(rgba) if !rgba.is_empty() => (rgba.clone(), (*width, *height)),
-                _ => match image::decode_png_rgba(expected_png) {
-                    Ok((rgba, w, h)) => (rgba, (w, h)),
-                    Err(_) => return false,
-                },
-            };
-            match image::decode_png_rgba(actual) {
-                Ok((mut actual_rgba, actual_w, actual_h)) => {
-                    // 两侧都必须按采集规则归一 Alpha：32bpp CF_DIB 合成出的 PNG 容器
-                    // Alpha 字节全 0（通道未被使用），入库时已按不透明处理成 255。
-                    // 不归一就等于拿「Alpha=0 的容器」比「Alpha=255 的入库版本」，
-                    // 本进程刚写入的图片永远匹配不上自己的快照，逐项粘贴会在第 1 项
-                    // 就停成「剪贴板已被其他程序更新」。真实透明图（Alpha 并非全 0）
-                    // 不归一，仍与不透明图区分开。
-                    image::canonicalize_unused_alpha(&mut expected_rgba);
-                    image::canonicalize_unused_alpha(&mut actual_rgba);
-                    (actual_w, actual_h) == expected_size && actual_rgba == expected_rgba
+            //
+            // 剪贴板只有 CF_DIB/CF_DIBV5（Snipping Tool、Snipaste、旧式应用、
+            // 第三方剪贴板管理器）时根本没有 PNG 容器：此时只能用 DIB 像素比较，
+            // 否则「没有 PNG」会被误判成「内容已变化」，第 1 项就写不进来。
+            let expected_pixels = expected_image_pixels(expected_png, rgba.as_ref(), *width, *height);
+            let actual_pixels = actual_image_pixels(png, dib);
+            match (expected_pixels, actual_pixels) {
+                (Some((expected_rgba, expected_size)), Some((actual_rgba, actual_size))) => {
+                    Some(actual_size == expected_size && actual_rgba == expected_rgba)
                 }
-                Err(_) => false,
+                // 任一侧无法可靠解码：只能如实返回「无法验证」。
+                _ => None,
             }
         }
-        ClipboardPayload::Files { paths } => {
+        ClipboardPayload::Files { paths } => Some(
             paths.len() == files.len()
                 && paths
                     .iter()
                     .zip(files)
-                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b)),
+        ),
+    }
+}
+
+/// 期望侧图片像素：优先使用随载荷缓存的 RGBA（尺寸元数据缺失或长度不符时
+/// 退回解码 PNG）。两侧都按同一条 Alpha 归一规则处理。
+fn expected_image_pixels(
+    png: &[u8],
+    rgba: Option<&Vec<u8>>,
+    width: u32,
+    height: u32,
+) -> Option<(Vec<u8>, (u32, u32))> {
+    if let Some(cached) = rgba.filter(|r| !r.is_empty()) {
+        if width > 0
+            && height > 0
+            && cached.len() == width as usize * height as usize * 4
+        {
+            let mut pixels = cached.clone();
+            image::canonicalize_unused_alpha(&mut pixels);
+            return Some((pixels, (width, height)));
         }
     }
+    let (mut pixels, w, h) = image::decode_png_rgba(png).ok()?;
+    image::canonicalize_unused_alpha(&mut pixels);
+    Some((pixels, (w, h)))
+}
+
+/// 实际侧图片像素：优先解码 PNG 容器，失败/缺失时退回 CF_DIB / CF_DIBV5。
+///
+/// DIB 分支覆盖「只有 DIB」的剪贴板；`dib_to_rgba` 已按 Windows 语义把
+/// 「Alpha 未使用」归为不透明，这里再做一次归一保持与 PNG 分支一致。
+fn actual_image_pixels(
+    png: Option<&[u8]>,
+    dib: Option<&[u8]>,
+) -> Option<(Vec<u8>, (u32, u32))> {
+    if let Some(bytes) = png {
+        if let Ok((mut pixels, w, h)) = image::decode_png_rgba(bytes) {
+            // 32bpp CF_DIB 合成出的 PNG 容器 Alpha 字节全 0（通道未被使用），
+            // 入库时已按不透明处理成 255。不归一就等于拿「Alpha=0 的容器」
+            // 比「Alpha=255 的入库版本」，本进程刚写入的图片永远匹配不上自己的
+            // 快照，逐项粘贴会在第 1 项就停成「剪贴板已被其他程序更新」。
+            // 真实透明图（Alpha 并非全 0）不归一，仍与不透明图区分开。
+            image::canonicalize_unused_alpha(&mut pixels);
+            return Some((pixels, (w, h)));
+        }
+    }
+    let (mut pixels, w, h) = image::dib_to_rgba(dib?)?;
+    image::canonicalize_unused_alpha(&mut pixels);
+    Some((pixels, (w, h)))
 }
 
 /// 内容不一致的诊断信息：只含格式名与字节数，绝不含正文、路径或图片内容。
@@ -833,6 +924,7 @@ pub(crate) fn payload_mismatch_detail(
     text: Option<&str>,
     html: Option<&str>,
     png: Option<&[u8]>,
+    dib: Option<&[u8]>,
     files: &[String],
 ) -> String {
     match expected {
@@ -849,9 +941,10 @@ pub(crate) fn payload_mismatch_detail(
         ClipboardPayload::Image {
             png: expected_png, ..
         } => format!(
-            "期望 png={}B；实际 png={:?}B",
+            "期望 png={}B；实际 png={:?}B dib={:?}B",
             expected_png.len(),
-            png.map(|p| p.len())
+            png.map(|p| p.len()),
+            dib.map(|d| d.len())
         ),
         ClipboardPayload::Files { paths } => {
             format!("期望 files={}；实际 files={}", paths.len(), files.len())
@@ -881,6 +974,9 @@ pub fn write_payload(payload: &ClipboardPayload) -> AppResult<u32> {
         WriteOutcome::SequenceChanged => {
             Err(AppError::Validation("剪贴板状态已变化，写入已取消".into()))
         }
+        WriteOutcome::Unverifiable => Err(AppError::Validation(
+            "无法验证剪贴板当前内容，写入已取消".into(),
+        )),
     }
 }
 
@@ -897,6 +993,9 @@ pub fn write_payload_notifying(
         WriteOutcome::SequenceChanged => {
             Err(AppError::Validation("剪贴板状态已变化，写入已取消".into()))
         }
+        WriteOutcome::Unverifiable => Err(AppError::Validation(
+            "无法验证剪贴板当前内容，写入已取消".into(),
+        )),
     }
 }
 
@@ -1021,7 +1120,8 @@ mod imp {
     use std::sync::Mutex;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WAIT_OBJECT_0, WPARAM,
+        CloseHandle, GetLastError, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, SetLastError,
+        WAIT_OBJECT_0, WPARAM,
     };
     use windows_sys::Win32::Security::{
         GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
@@ -1439,66 +1539,172 @@ mod imp {
             return Snapshot {
                 sequence: current_sequence(),
                 payload: None,
+                state: SnapshotState::Unreadable,
             };
         }
         let read = unsafe { read_open(true) };
+        let (payload, state) = unsafe { snapshot_payload_state(read) };
         unsafe { close() };
         // 序列号必须在 CloseClipboard 之后读取：关闭时可能因合成格式继续递增，
         // 锁内读到的值会偏小，导致后续守卫误判“剪贴板已被其他程序更新”。
         let sequence = unsafe { GetClipboardSequenceNumber() };
         Snapshot {
             sequence,
-            payload: payload_from_read(read),
+            payload,
+            state,
         }
     }
 
-    /// 快照 + 不可无损恢复格式清单：格式枚举与读取在同一次打开内完成。
+    /// 把已打开剪贴板读到的内容归类成可恢复载荷 + 快照语义。
     ///
-    /// 这里只做**只读**判断，不尝试解析或保存未知格式；无法读出的格式一律
-    /// 视为「不可完整恢复」，由调用方拒绝写入型测试。
+    /// 「空」与「读不到/不支持」必须分开：前者没有可保护内容，后者只能说明
+    /// 无法验证，不能在任何后续路径里被当成「用户接管」。
+    unsafe fn snapshot_payload_state(read: ClipboardRead) -> (Option<ClipboardPayload>, SnapshotState) {
+        let payload = payload_from_read(read);
+        if payload.is_some() {
+            return (payload, SnapshotState::Captured);
+        }
+        // 读不到可比较载荷：只有剪贴板上确实存在本应用认识的内容格式，
+        // 才说明这是「存在但无法完整读取」而不是「确实为空」。
+        let state = if has_recognizable_content_format() {
+            SnapshotState::Unsupported
+        } else {
+            SnapshotState::Empty
+        };
+        (None, state)
+    }
+
+    /// 剪贴板上是否存在本应用能识别（但不一定能完整比较）的内容格式。
+    unsafe fn has_recognizable_content_format() -> bool {
+        if IsClipboardFormatAvailable(CF_UNICODETEXT as u32) != 0
+            || IsClipboardFormatAvailable(CF_HDROP as u32) != 0
+            || IsClipboardFormatAvailable(CF_DIB as u32) != 0
+            || IsClipboardFormatAvailable(CF_DIBV5 as u32) != 0
+        {
+            return true;
+        }
+        let html = format_id("HTML Format");
+        if html != 0 && IsClipboardFormatAvailable(html) != 0 {
+            return true;
+        }
+        let png = format_id("PNG");
+        png != 0 && IsClipboardFormatAvailable(png) != 0
+    }
+
+    /// 快照 + 不可无损恢复格式清单 + 整份快照重建判定。
+    ///
+    /// 格式枚举与内容读取在同一次 `OpenClipboard` 内完成：两者对应同一份剪贴板
+    /// 状态，不存在「按旧格式列表判断新内容」的窗口。这里只做**只读**判断，
+    /// 不尝试解析或保存未知格式；无法读出的格式一律视为「不可完整恢复」，
+    /// 由调用方拒绝写入型测试。
     pub fn snapshot_probe() -> SnapshotProbe {
         let _access = lock_access();
         if !open_clipboard() {
             return SnapshotProbe {
                 snapshot: None,
                 unsupported_formats: Vec::new(),
+                // 打不开剪贴板时连格式都枚举不到，必须 fail-closed。
+                reconstruction: Err("剪贴板被其他程序占用，无法枚举格式".into()),
             };
         }
-        let unsupported_formats = unsafe { unsupported_formats_open() };
+        let enumerated = unsafe { enum_formats_open() };
         let read = unsafe { read_open(true) };
+        let (payload, state) = unsafe { snapshot_payload_state(read) };
         unsafe { close() };
         let sequence = unsafe { GetClipboardSequenceNumber() };
+        let (unsupported_formats, reconstruction) = match enumerated {
+            Ok(formats) => {
+                let mut unsupported: Vec<String> = formats
+                    .iter()
+                    .filter(|(fmt, _)| !is_recoverable_format(*fmt))
+                    .map(|(_, name)| name.clone())
+                    .collect();
+                if unsupported.len() > 32 {
+                    unsupported.truncate(32);
+                    unsupported.push("（其余格式省略）".into());
+                }
+                let reconstruction = match payload.as_ref() {
+                    Some(payload) => snapshot_reconstruction(&formats, payload),
+                    // 空/不可读快照由调用方按 `SnapshotState` 给出更精确的拒绝原因。
+                    None => Ok(()),
+                };
+                (unsupported, reconstruction)
+            }
+            Err(reason) => (Vec::new(), Err(reason)),
+        };
         SnapshotProbe {
             snapshot: Some(Snapshot {
                 sequence,
-                payload: payload_from_read(read),
+                payload,
+                state,
             }),
             unsupported_formats,
+            reconstruction,
         }
     }
 
-    /// 调用方必须已持有剪贴板锁；枚举本工具无法无损重建的格式。
-    unsafe fn unsupported_formats_open() -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
+    /// 调用方必须已持有剪贴板锁；枚举格式，并区分「正常结束」与枚举失败。
+    ///
+    /// `EnumClipboardFormats` 返回 0 既可能是「没有更多格式」，也可能是 API 失败；
+    /// 文档要求用 `GetLastError` 区分。因此每次调用前清零错误码，返回 0 时只有
+    /// 错误码为 0 才算正常结束。枚举中途失败时不能用已枚举到的部分判断完整性——
+    /// 那样可能漏掉后面的不支持格式，整体判为「无法确认」，由调用方 fail-closed。
+    unsafe fn enum_formats_open() -> Result<Vec<(u32, String)>, String> {
+        let mut out: Vec<(u32, String)> = Vec::new();
         let mut fmt = 0u32;
         loop {
+            SetLastError(0);
             fmt = EnumClipboardFormats(fmt);
             if fmt == 0 {
+                let err = GetLastError();
+                if err != 0 {
+                    return Err(format!(
+                        "枚举剪贴板格式失败（错误码 {err}），无法确认可完整恢复"
+                    ));
+                }
                 break;
             }
-            if is_recoverable_format(fmt) {
-                continue;
-            }
-            let name = describe_format(fmt);
-            if !out.contains(&name) {
-                out.push(name);
-            }
-            if out.len() >= 32 {
-                out.push("（其余格式省略）".into());
-                break;
-            }
+            out.push((fmt, describe_format(fmt)));
         }
-        out
+        Ok(out)
+    }
+
+    /// 剪贴板格式承载的「内容表示」类别。
+    ///
+    /// 只看格式 ID/名称，不读取格式内容。用于区分「Windows 自动合成的表示」
+    /// 与「独立存储的数据格式」：同一族的格式可由同一份载荷重建，不同族则
+    /// 会在单一载荷恢复时互相覆盖。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum FormatClass {
+        /// 文本正文（CF_TEXT / CF_OEMTEXT 与 CF_UNICODETEXT 由 Windows 互转）。
+        Text,
+        /// HTML 片段（独立格式，必须显式写回）。
+        Html,
+        /// 图片（PNG / CF_DIB / CF_DIBV5 / CF_BITMAP 是同一图像的不同表示）。
+        Image,
+        /// 文件路径列表。
+        Files,
+        /// 不承载独立内容：语言标记、调色板等，由 Windows 随内容重建。
+        Companion,
+        /// 本工具无法重建的格式。
+        Unsupported,
+    }
+
+    pub(super) fn classify_format(fmt: u32) -> FormatClass {
+        match fmt {
+            // CF_TEXT=1 / CF_OEMTEXT=7 与 CF_UNICODETEXT 是同一文本的系统转换形式。
+            f if f == 1 || f == 7 || f == CF_UNICODETEXT as u32 => FormatClass::Text,
+            // CF_BITMAP=2 / CF_DIB / CF_DIBV5 是同一图像的不同表示。
+            f if f == 2 || f == CF_DIB as u32 || f == CF_DIBV5 as u32 => FormatClass::Image,
+            // CF_PALETTE=9 只描述 CF_BITMAP 的调色板；CF_LOCALE=16 只标记语言。
+            9 | 16 => FormatClass::Companion,
+            f if f == CF_HDROP as u32 => FormatClass::Files,
+            _ => match unsafe { clipboard_format_name(fmt) }.as_deref() {
+                Some("HTML Format") => FormatClass::Html,
+                Some("PNG") => FormatClass::Image,
+                _ => FormatClass::Unsupported,
+            },
+        }
     }
 
     /// 本工具能**显式写回**或由 Windows 从这些格式**自动合成**的剪贴板格式。
@@ -1515,18 +1721,134 @@ mod imp {
     /// 丢失，必须视为不可完整恢复。宁可拒绝启动，也不做「看起来恢复了、实际少了
     /// 格式」的假成功。
     pub(super) fn is_recoverable_format(fmt: u32) -> bool {
-        if fmt == CF_UNICODETEXT as u32 || fmt == CF_DIB as u32 || fmt == CF_HDROP as u32 {
-            return true;
+        classify_format(fmt) != FormatClass::Unsupported
+    }
+
+    /// 判断「读取到的载荷能否重建整份剪贴板」。
+    ///
+    /// 白名单只能说明每个格式**单独**受支持；多个**独立内容表示**同时存在时，
+    /// `ClipboardPayload` 只能保留一种（`classify()` 优先级：文件 > 图片 >
+    /// HTML > 文本），恢复时其余表示会永久丢失。因此这里按内容族检查：
+    /// - 文本族与 HTML 由同一个 `Text` 载荷重建（要求纯文本非空、HTML 可写回）；
+    /// - PNG / DIB / DIBV5 / BITMAP / PALETTE 是同一图片的常见表示，由 `Image` 载荷重建；
+    /// - 文件列表只能由 `Files` 载荷重建，且路径必须仍然有效；
+    /// - 文本 / HTML / 图片 / 文件分属不同族时，当前载荷无法同时保留，保守拒绝；
+    /// - 枚举失败、格式为空、载荷过不了写入层约束，同样拒绝。
+    ///
+    /// 无法可靠区分时一律拒绝：写入型真机测试宁可不动剪贴板，也不能做
+    /// 「看起来恢复了、实际少了内容」的假成功。
+    pub(super) fn snapshot_reconstruction(
+        formats: &[(u32, String)],
+        payload: &ClipboardPayload,
+    ) -> Result<(), String> {
+        if formats.is_empty() {
+            return Err("未能枚举到任何剪贴板格式，无法确认可完整恢复".into());
         }
-        // 预定义格式：CF_TEXT=1、CF_BITMAP=2、CF_OEMTEXT=7、CF_PALETTE=9、
-        // CF_LOCALE=16、CF_DIBV5=17（系统由 CF_DIB/CF_BITMAP 合成）。
-        if matches!(fmt, 1 | 2 | 7 | 9 | 16 | 17) {
-            return true;
+        let mut text: Vec<&str> = Vec::new();
+        let mut html: Vec<&str> = Vec::new();
+        let mut image: Vec<&str> = Vec::new();
+        let mut files: Vec<&str> = Vec::new();
+        let mut unsupported: Vec<&str> = Vec::new();
+        for (fmt, name) in formats {
+            match classify_format(*fmt) {
+                FormatClass::Text => text.push(name.as_str()),
+                FormatClass::Html => html.push(name.as_str()),
+                FormatClass::Image => image.push(name.as_str()),
+                FormatClass::Files => files.push(name.as_str()),
+                FormatClass::Companion => {}
+                FormatClass::Unsupported => unsupported.push(name.as_str()),
+            }
         }
-        matches!(
-            unsafe { clipboard_format_name(fmt) }.as_deref(),
-            Some("HTML Format") | Some("PNG")
-        )
+        if !unsupported.is_empty() {
+            return Err(format!(
+                "剪贴板包含无法重建的格式：{}，写回后会永久丢失",
+                unsupported.join("、")
+            ));
+        }
+        let joined = |list: &[&str]| list.join("、");
+        match payload {
+            ClipboardPayload::Text {
+                text: body,
+                html: payload_html,
+            } => {
+                if !image.is_empty() {
+                    return Err(format!(
+                        "剪贴板同时含文本与图片（{}、{}）：单一载荷只能保留图片，文本会在恢复时丢失",
+                        joined(&text),
+                        joined(&image)
+                    ));
+                }
+                if !files.is_empty() {
+                    return Err(format!(
+                        "剪贴板同时含文本与文件路径（{}、{}）：单一载荷只能保留文件，文本会在恢复时丢失",
+                        joined(&text),
+                        joined(&files)
+                    ));
+                }
+                if body.is_empty() {
+                    return Err(format!(
+                        "剪贴板只有 HTML（{}）而没有纯文本：现有写入机制要求非空纯文本，无法无损写回 HTML",
+                        joined(&html)
+                    ));
+                }
+                if !html.is_empty() && payload_html.is_none() {
+                    return Err(format!(
+                        "剪贴板含 HTML（{}），但未读出可写回的 HTML 片段，恢复会丢失 HTML",
+                        joined(&html)
+                    ));
+                }
+                if html.is_empty() && payload_html.is_some() {
+                    return Err(
+                        "读取到 HTML 载荷但剪贴板上没有 HTML Format，恢复会丢失 HTML".into(),
+                    );
+                }
+                if payload_html.is_some() && format_id("HTML Format") == 0 {
+                    return Err("HTML Format 无法注册，恢复会丢失 HTML".into());
+                }
+            }
+            ClipboardPayload::Image { .. } => {
+                if !text.is_empty() {
+                    return Err(format!(
+                        "剪贴板同时含图片与独立文本（{}、{}）：单一载荷只能保留图片，文本会在恢复时丢失",
+                        joined(&image),
+                        joined(&text)
+                    ));
+                }
+                if !html.is_empty() {
+                    return Err(format!(
+                        "剪贴板同时含图片与独立 HTML（{}、{}）：单一载荷只能保留图片，HTML 会在恢复时丢失",
+                        joined(&image),
+                        joined(&html)
+                    ));
+                }
+                if !files.is_empty() {
+                    return Err(format!(
+                        "剪贴板同时含图片与文件路径（{}、{}）：单一载荷只能保留图片，文件会在恢复时丢失",
+                        joined(&image),
+                        joined(&files)
+                    ));
+                }
+            }
+            ClipboardPayload::Files { paths } => {
+                if !text.is_empty() || !html.is_empty() || !image.is_empty() {
+                    return Err(format!(
+                        "剪贴板同时含文件路径与文本/HTML/图片（{}）：单一载荷只能保留文件，其余内容会在恢复时丢失",
+                        joined(&files)
+                    ));
+                }
+                if valid_file_paths(paths).is_empty() {
+                    return Err(format!(
+                        "剪贴板里的 {} 个文件路径已失效，恢复写入必然失败",
+                        paths.len()
+                    ));
+                }
+            }
+        }
+        // 放行前再验证载荷能经现有写入机制重建（与 `write_formats_with` 共用判据）。
+        if !payload_writable(payload) {
+            return Err("读取到的载荷无法经现有写入机制重建，恢复必然失败".into());
+        }
+        Ok(())
     }
 
     /// 仅供诊断/拒绝信息使用：预定义格式没有可查询名称，按常量名输出。
@@ -1752,6 +2074,49 @@ mod imp {
         write_formats_with(payload, |fmt, data| unsafe { set_bytes(fmt, data) })
     }
 
+    /// 每条内容只有一个必需格式，其余为辅助格式：
+    /// - 必需格式失败 → 整体失败，调用方负责把清空前的内容放回去；
+    /// - 辅助格式失败 → 记为降级，实际形态里剔除该字段，
+    ///   后续比对以实际形态为准。
+    ///
+    /// 之所以必须区分必需与辅助：必需格式缺失时剪贴板里根本没有这份内容，
+    /// 报成功等于骗用户；辅助格式缺失只影响部分应用，剪贴板里仍有可用内容，
+    /// 应当如实降级而不是中止整轮粘贴。
+    ///
+    /// 下面的 `*_payload_writable` 就是这里「必需格式」的判据：快照重建探测与
+    /// 真实写入共用同一组函数，避免探测放行、写入才失败的规则漂移
+    /// （HTML-only 就是典型：读取侧有载荷，写入侧直接报错）。
+    pub(super) fn text_payload_writable(text: &str) -> bool {
+        !text.is_empty()
+    }
+
+    /// 图片载荷能否写入：`PNG` 是必需格式（DIB 只是辅助格式）。
+    pub(super) fn image_payload_writable(png: &[u8]) -> bool {
+        format_id("PNG") != 0 && !png.is_empty()
+    }
+
+    /// 文件载荷的必需路径，条件与 `write_formats_with` 完全一致。
+    pub(super) fn valid_file_paths(paths: &[String]) -> Vec<String> {
+        paths
+            .iter()
+            .filter(|p| {
+                let path = Path::new(p);
+                path.is_absolute() && path.exists()
+            })
+            .take(MAX_FILE_COUNT)
+            .cloned()
+            .collect()
+    }
+
+    /// 载荷能否经现有写入机制重建（只读判断，不触碰剪贴板）。
+    pub(super) fn payload_writable(payload: &ClipboardPayload) -> bool {
+        match payload {
+            ClipboardPayload::Text { text, .. } => text_payload_writable(text),
+            ClipboardPayload::Image { png, .. } => image_payload_writable(png),
+            ClipboardPayload::Files { paths } => !valid_file_paths(paths).is_empty(),
+        }
+    }
+
     /// 每种内容有且只有一个必需格式，其余为辅助格式：
     /// - 必需格式失败 → 整体失败，调用方负责把清空前的内容放回去；
     /// - 辅助格式失败 → 记为降级，实际形态里剔除该字段，
@@ -1769,7 +2134,7 @@ mod imp {
     {
         match payload {
             ClipboardPayload::Text { text, html } => {
-                if text.is_empty() {
+                if !text_payload_writable(text) {
                     return Err(AppError::Validation("写入剪贴板失败".into()));
                 }
                 if !set(CF_UNICODETEXT as u32, &text_utf16_bytes(text)) {
@@ -1805,7 +2170,7 @@ mod imp {
                 height,
             } => {
                 let fmt = format_id("PNG");
-                if fmt == 0 || png.is_empty() || !set(fmt, png) {
+                if !image_payload_writable(png) || !set(fmt, png) {
                     return Err(AppError::Validation("写入剪贴板失败".into()));
                 }
                 let dib = match rgba {
@@ -1835,15 +2200,7 @@ mod imp {
                 })
             }
             ClipboardPayload::Files { paths } => {
-                let valid: Vec<String> = paths
-                    .iter()
-                    .filter(|p| {
-                        let path = Path::new(p);
-                        path.is_absolute() && path.exists()
-                    })
-                    .take(MAX_FILE_COUNT)
-                    .cloned()
-                    .collect();
+                let valid = valid_file_paths(paths);
                 if valid.is_empty() {
                     return Err(AppError::Validation("写入剪贴板失败".into()));
                 }
@@ -1867,27 +2224,46 @@ mod imp {
     }
 
     /// 调用方必须已持有剪贴板锁；读取全部可比较格式并判断内容是否一致。
-    unsafe fn content_matches_open(expected: &ClipboardPayload) -> bool {
+    ///
+    /// 图片必须与快照走同一条语义：PNG 容器缺失时（剪贴板只有 CF_DIB/CF_DIBV5）
+    /// 回退到 DIB 像素；两者都读不出可靠内容时返回 `None`（无法验证），
+    /// 既不冒充 Same，也不谎报 Different。
+    unsafe fn content_matches_open(expected: &ClipboardPayload) -> Option<bool> {
         let text = read_text();
         let html = read_html();
-        let png = read_png_bytes();
         let files = read_files();
+        let png = read_png_bytes();
+        // 只有图片载荷、且 PNG 容器字节不等于期望值时，才需要额外读取 DIB：
+        // 自写后比对通常 PNG 字节完全一致（Windows/延迟格式只影响序列号），
+        // 不必每次比较都复制一份几十 MB 的 32bpp DIB。
+        let dib = match expected {
+            ClipboardPayload::Image {
+                png: expected_png, ..
+            } if png.as_deref() != Some(expected_png.as_slice()) => read_dib_bytes(),
+            _ => None,
+        };
         let same = payload_matches_read(
             expected,
             text.as_deref(),
             html.as_deref(),
             png.as_deref(),
+            dib.as_deref(),
             &files,
         );
-        if !same {
+        if same != Some(true) {
             // 只记录格式与字节数，绝不记录正文/路径/图片内容。
             tracing::debug!(
-                "剪贴板内容不一致：{}",
+                "剪贴板内容不一致（{}）：{}",
+                match same {
+                    Some(_) => "已确认不同",
+                    None => "无法验证",
+                },
                 payload_mismatch_detail(
                     expected,
                     text.as_deref(),
                     html.as_deref(),
                     png.as_deref(),
+                    dib.as_deref(),
                     &files
                 )
             );
@@ -1923,17 +2299,25 @@ mod imp {
         }
         // 守卫判定与 EmptyClipboard/写入全程持有剪贴板锁：
         // 其他进程无法在这两步之间插入，内容一致即可安全覆盖。
+        let mut content_verdict: Option<Option<bool>> = None;
         let allowed = unsafe {
             let sequence = GetClipboardSequenceNumber();
             match &guard {
                 WriteGuard::Content(expected) => {
-                    guard_allows(&guard, sequence, content_matches_open(expected))
+                    let verdict = content_matches_open(expected);
+                    content_verdict = Some(verdict);
+                    verdict == Some(true)
                 }
                 _ => guard_allows(&guard, sequence, false),
             }
         };
         if !allowed {
             unsafe { CloseClipboard() };
+            // Content 守卫「无法验证」时不能返回 SequenceChanged：那会让上层
+            // 误报成「用户/其他程序接管」，实际只是当前图片格式读不出可靠内容。
+            if content_verdict == Some(None) {
+                return Ok(WriteOutcome::Unverifiable);
+            }
             return Ok(WriteOutcome::SequenceChanged);
         }
         // EmptyClipboard 是不可逆动作：一旦清空成功、后续主格式写入失败，用户
@@ -2012,8 +2396,9 @@ mod imp {
             ));
         }
         // 只有内容仍是本进程最后一次写入时才恢复；序列号增长不作为恢复依据。
+        // 「无法验证」同样不恢复：宁可保留用户可能已复制的新内容，也不覆盖。
         let matches = unsafe { content_matches_open(last_written) };
-        if !matches {
+        if matches != Some(true) {
             unsafe { CloseClipboard() };
             return Ok(RestoreOutcome::KeepUserCopy);
         }
@@ -2048,10 +2433,12 @@ mod imp {
         }
         let same = unsafe { content_matches_open(expected) };
         unsafe { close() };
-        if same {
-            ClipboardMatch::Same
-        } else {
-            ClipboardMatch::Different
+        match same {
+            Some(true) => ClipboardMatch::Same,
+            Some(false) => ClipboardMatch::Different,
+            // 读取不到可靠内容（例如只有损坏的图片格式）：如实返回无法确认，
+            // 既不是 Same 也不是 Different。
+            None => ClipboardMatch::Unavailable,
         }
     }
 
@@ -2567,6 +2954,24 @@ mod imp {
                             tracing::debug!("剪贴板跳过：{}", reason);
                         }
                         ClipboardRead::Empty(reason) => {
+                            // 复核窗口内的空读：先等待写入方完成 SetClipboardData 再读一次。
+                            // 有界（至多 MAX_EMPTY_RECHECK 次），复核次数与重排都走同一事件队列，
+                            // 若期间来了新复制会按既有合并逻辑收敛到最新事件。
+                            if ev.retries < MAX_EMPTY_RECHECK {
+                                let retry_no = ev.retries + 1;
+                                let mut retried = ev;
+                                retried.retries = retry_no;
+                                std::thread::sleep(Duration::from_millis(EMPTY_RECHECK_DELAY_MS));
+                                let (outcome, _) = event_q.push_counting(retried, 1);
+                                if outcome == PushOutcome::Closed {
+                                    break;
+                                }
+                                tracing::debug!(
+                                    "剪贴板读空，等待写入完成后复核（第 {} 次）",
+                                    retry_no
+                                );
+                                continue;
+                            }
                             MONITOR_COUNTERS
                                 .empty_events
                                 .fetch_add(1, Ordering::Relaxed);
@@ -2747,6 +3152,7 @@ mod imp {
         Snapshot {
             sequence: 0,
             payload: None,
+            state: SnapshotState::Unreadable,
         }
     }
 
@@ -2754,6 +3160,8 @@ mod imp {
         SnapshotProbe {
             snapshot: Some(snapshot()),
             unsupported_formats: Vec::new(),
+            // 非 Windows 平台没有真实剪贴板语义，不能证明可恢复：fail-closed。
+            reconstruction: Err("当前平台不支持剪贴板探测，无法确认可完整恢复".into()),
         }
     }
 
@@ -2881,8 +3289,9 @@ mod tests {
             text: "正文".into(),
             html: None,
         };
-        assert!(
-            payload_matches_read(&expected, Some("正文"), None, None, &[]),
+        assert_eq!(
+            payload_matches_read(&expected, Some("正文"), None, None, None, &[]),
+            Some(true),
             "只写了纯文本时，按纯文本形态比对必须一致"
         );
         // 期望里有 HTML、实际没有 → 不一致（这正是降级要规避的误判来源）。
@@ -2890,8 +3299,9 @@ mod tests {
             text: "正文".into(),
             html: Some("<b>正文</b>".into()),
         };
-        assert!(
-            !payload_matches_read(&with_html, Some("正文"), None, None, &[]),
+        assert_eq!(
+            payload_matches_read(&with_html, Some("正文"), None, None, None, &[]),
+            Some(false),
             "实际没有 HTML 时，带 HTML 的期望形态不该判为一致"
         );
     }
@@ -2953,6 +3363,173 @@ mod tests {
         );
         let private = format_id("Vendor.Private.Payload");
         assert!(!is_recoverable_format(private));
+    }
+
+    /// P1-1/P1-2：整份快照能否由读取到的单个载荷重建。
+    ///
+    /// 白名单只证明「每个格式单独受支持」；文本 + PNG 这类复合剪贴板在恢复时
+    /// 只能保留一种表示，必须拒绝。HTML-only 能从读取侧得到载荷，但写入层要求
+    /// 非空纯文本，也必须拒绝——否则会先清空剪贴板、再写回失败，丢掉用户内容。
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_reconstruction_requires_rebuilding_every_independent_format() {
+        use super::imp::{
+            format_id, payload_writable, snapshot_reconstruction, write_formats_with,
+        };
+        use windows_sys::Win32::System::Ole::{
+            CF_BITMAP, CF_DIB, CF_DIBV5, CF_HDROP, CF_LOCALE, CF_OEMTEXT, CF_PALETTE, CF_TEXT,
+            CF_UNICODETEXT,
+        };
+
+        fn formats(ids: &[u32]) -> Vec<(u32, String)> {
+            ids.iter()
+                .map(|id| (*id, imp::describe_format(*id)))
+                .collect()
+        }
+
+        let text_formats = [
+            CF_UNICODETEXT as u32,
+            CF_TEXT as u32,
+            CF_OEMTEXT as u32,
+            CF_LOCALE as u32,
+        ];
+        // 2x2 图片：只用于验证写入层约束，避免 DIB 往返产生大块内存。
+        let image = ClipboardPayload::Image {
+            png: vec![1, 2, 3, 4],
+            rgba: Some(vec![0u8; 2 * 2 * 4]),
+            width: 2,
+            height: 2,
+        };
+        let image_formats = [
+            format_id("PNG"),
+            CF_DIB as u32,
+            CF_DIBV5 as u32,
+            CF_BITMAP as u32,
+            CF_PALETTE as u32,
+        ];
+        let html_format = format_id("HTML Format");
+        assert_ne!(html_format, 0, "HTML Format 必须可注册");
+        let body = ClipboardPayload::Text {
+            text: "正文".into(),
+            html: None,
+        };
+
+        // 纯文本 / 纯 PNG / PNG+DIB —— 单族格式必须放行，且载荷确实能写回。
+        for (ids, payload, label) in [
+            (&text_formats[..], &body, "纯文本"),
+            (&image_formats[..], &image, "PNG+DIB 同源图片"),
+        ] {
+            assert!(
+                snapshot_reconstruction(&formats(ids), payload).is_ok(),
+                "{label} 必须允许启动"
+            );
+            assert!(payload_writable(payload), "{label} 载荷必须满足写入条件");
+            assert!(
+                write_formats_with(payload, |_, _| true).is_ok(),
+                "{label} 放行载荷必须符合真实写入约束"
+            );
+        }
+
+        // 文本 + HTML：同一 Text 载荷可同时重建两个格式，放行。
+        let rich = ClipboardPayload::Text {
+            text: "正文".into(),
+            html: Some("<b>正文</b>".into()),
+        };
+        let mut text_html = text_formats.to_vec();
+        text_html.push(html_format);
+        assert!(
+            snapshot_reconstruction(&formats(&text_html), &rich).is_ok(),
+            "纯文本+HTML 在能正确重建时必须放行"
+        );
+        assert!(write_formats_with(&rich, |_, _| true).is_ok());
+
+        // HTML-only：读取成功但写入层拒绝，探测必须提前拒绝。
+        let html_only = ClipboardPayload::Text {
+            text: String::new(),
+            html: Some("<b>x</b>".into()),
+        };
+        let reason = snapshot_reconstruction(&formats(&[html_format]), &html_only)
+            .expect_err("HTML-only 不可安全恢复");
+        assert!(
+            reason.contains("HTML") && reason.contains("纯文本"),
+            "拒绝原因必须说明 HTML-only 的写入约束：{reason}"
+        );
+        assert!(
+            write_formats_with(&html_only, |_, _| true).is_err(),
+            "写入层必须同样拒绝 HTML-only，证明探测与写入判据一致"
+        );
+
+        // PNG + 独立文本：classify 只会保留图片，文本会丢失。
+        let mut png_text = image_formats.to_vec();
+        png_text.push(CF_UNICODETEXT as u32);
+        png_text.push(CF_TEXT as u32);
+        let reason = snapshot_reconstruction(&formats(&png_text), &image)
+            .expect_err("图片+独立文本必须拒绝");
+        assert!(reason.contains("文本"), "拒绝原因必须点名文本：{reason}");
+
+        // 图片 + 独立 HTML：classify 只会保留图片，HTML 会丢失。
+        let mut png_html = image_formats.to_vec();
+        png_html.push(html_format);
+        let reason = snapshot_reconstruction(&formats(&png_html), &image)
+            .expect_err("图片+独立 HTML 必须拒绝");
+        assert!(reason.contains("HTML"), "拒绝原因必须点名 HTML：{reason}");
+
+        // 文件 + 文本：无法证明文本只是路径清单，保守拒绝。
+        let existing = std::env::current_exe()
+            .expect("测试进程路径")
+            .to_string_lossy()
+            .to_string();
+        let files = ClipboardPayload::Files {
+            paths: vec![existing.clone()],
+        };
+        let mut files_text = vec![CF_HDROP as u32, CF_UNICODETEXT as u32];
+        let reason = snapshot_reconstruction(&formats(&files_text), &files)
+            .expect_err("文件+独立文本必须拒绝");
+        assert!(reason.contains("文件"), "拒绝原因必须点名文件：{reason}");
+        files_text.clear();
+        files_text.push(CF_HDROP as u32);
+        assert!(
+            snapshot_reconstruction(&formats(&files_text), &files).is_ok(),
+            "纯文件路径必须允许启动"
+        );
+
+        // 路径失效：读得到却写不回，必须拒绝。
+        let gone = ClipboardPayload::Files {
+            paths: vec!["C:\\task-dock-nonexistent\\nope.txt".into()],
+        };
+        let reason = snapshot_reconstruction(&formats(&[CF_HDROP as u32]), &gone)
+            .expect_err("失效路径必须拒绝");
+        assert!(reason.contains("失效"), "拒绝原因必须说明路径失效：{reason}");
+        assert!(
+            write_formats_with(&gone, |_, _| true).is_err(),
+            "写入层同样不接受失效路径"
+        );
+
+        // 空格式集合 / 空载荷：无法确认，保守拒绝。
+        assert!(snapshot_reconstruction(&[], &body).is_err());
+        let empty = ClipboardPayload::Text {
+            text: String::new(),
+            html: None,
+        };
+        assert!(snapshot_reconstruction(&formats(&text_formats), &empty).is_err());
+
+        // 未注册/私有格式混入：无论载荷多正常都必须拒绝。
+        let rtf = format_id("Rich Text Format");
+        assert_ne!(rtf, 0);
+        let mut with_rtf = text_formats.to_vec();
+        with_rtf.push(rtf);
+        let reason = snapshot_reconstruction(&formats(&with_rtf), &body)
+            .expect_err("RTF 会永久丢失");
+        assert!(
+            reason.contains("Rich Text Format"),
+            "拒绝原因必须点名 RTF：{reason}"
+        );
+        let office = format_id("Microsoft Office Word 2003 XML");
+        let mut with_office = text_formats.to_vec();
+        with_office.push(office);
+        let reason =
+            snapshot_reconstruction(&formats(&with_office), &body).expect_err("Office 私有格式会丢失");
+        assert!(reason.contains("Office"), "拒绝原因必须点名 Office 格式：{reason}");
     }
 
     #[test]
@@ -3158,30 +3735,52 @@ mod tests {
             text: "验收".into(),
             html: None,
         };
-        assert!(payload_matches_read(&plain, Some("验收"), None, None, &[]));
-        assert!(!payload_matches_read(&plain, Some("别的"), None, None, &[]));
-        assert!(
-            !payload_matches_read(&plain, Some("验收"), Some("<b>验收</b>"), None, &[]),
+        assert_eq!(
+            payload_matches_read(&plain, Some("验收"), None, None, None, &[]),
+            Some(true)
+        );
+        assert_eq!(
+            payload_matches_read(&plain, Some("别的"), None, None, None, &[]),
+            Some(false)
+        );
+        assert_eq!(
+            payload_matches_read(
+                &plain,
+                Some("验收"),
+                Some("<b>验收</b>"),
+                None,
+                None,
+                &[]
+            ),
+            Some(false),
             "纯文本项遇到 HTML 必须视为内容已换"
         );
         let rich = ClipboardPayload::Text {
             text: "验收".into(),
             html: Some("<b>验收</b>".into()),
         };
-        assert!(payload_matches_read(
-            &rich,
-            Some("验收"),
-            Some("<b>验收</b>"),
-            None,
-            &[]
-        ));
-        assert!(!payload_matches_read(
-            &rich,
-            Some("验收"),
-            Some("<i>验收</i>"),
-            None,
-            &[]
-        ));
+        assert_eq!(
+            payload_matches_read(
+                &rich,
+                Some("验收"),
+                Some("<b>验收</b>"),
+                None,
+                None,
+                &[]
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            payload_matches_read(
+                &rich,
+                Some("验收"),
+                Some("<i>验收</i>"),
+                None,
+                None,
+                &[]
+            ),
+            Some(false)
+        );
     }
 
     #[test]
@@ -3220,8 +3819,9 @@ mod tests {
             width: 4,
             height: 4,
         };
-        assert!(
-            payload_matches_read(&payload, None, None, Some(&out), &[]),
+        assert_eq!(
+            payload_matches_read(&payload, None, None, Some(&out), None, &[]),
+            Some(true),
             "容器字节变了但像素同源，必须判定为同一份内容"
         );
         let with_rgba = ClipboardPayload::Image {
@@ -3230,25 +3830,29 @@ mod tests {
             width: 4,
             height: 4,
         };
-        assert!(
-            payload_matches_read(&with_rgba, None, None, Some(&out), &[]),
+        assert_eq!(
+            payload_matches_read(&with_rgba, None, None, Some(&out), None, &[]),
+            Some(true),
             "带像素缓存时同样按像素判定"
         );
         let mut changed = rgba.clone();
         changed[0] = changed[0].wrapping_add(1);
         let changed_png = image::encode_png(&changed, 4, 4).unwrap();
-        assert!(
-            !payload_matches_read(&payload, None, None, Some(&changed_png), &[]),
+        assert_eq!(
+            payload_matches_read(&payload, None, None, Some(&changed_png), None, &[]),
+            Some(false),
             "像素真的变了必须判定为不同内容"
         );
         let resized_png = image::encode_png(&rgba[..4 * 3 * 4], 4, 3).unwrap();
-        assert!(
-            !payload_matches_read(&payload, None, None, Some(&resized_png), &[]),
+        assert_eq!(
+            payload_matches_read(&payload, None, None, Some(&resized_png), None, &[]),
+            Some(false),
             "尺寸不同必须判定为不同内容"
         );
-        assert!(
-            !payload_matches_read(&payload, None, None, None, &[]),
-            "读不到图片必须判定为不同内容"
+        assert_eq!(
+            payload_matches_read(&payload, None, None, None, None, &[]),
+            None,
+            "读不到图片只能判定为无法验证，不能伪造 Same 或 Different"
         );
     }
 
@@ -3281,8 +3885,9 @@ mod tests {
             width: 4,
             height: 4,
         };
-        assert!(
-            payload_matches_read(&expected, None, None, Some(&zero_alpha_png), &[]),
+        assert_eq!(
+            payload_matches_read(&expected, None, None, Some(&zero_alpha_png), None, &[]),
+            Some(true),
             "Alpha 全 0 的容器属于未使用通道，必须判定为同一份图片内容"
         );
         let expected_cached = ClipboardPayload::Image {
@@ -3295,15 +3900,24 @@ mod tests {
             width: 4,
             height: 4,
         };
-        assert!(
-            payload_matches_read(&expected_cached, None, None, Some(&zero_alpha_png), &[]),
+        assert_eq!(
+            payload_matches_read(
+                &expected_cached,
+                None,
+                None,
+                Some(&zero_alpha_png),
+                None,
+                &[]
+            ),
+            Some(true),
             "带像素缓存的期望侧同样要归一"
         );
 
         // 真实透明信息（Alpha 并非全 0）不能被归一成不透明。
         let transparent_png = encode_with_alpha(128);
-        assert!(
-            !payload_matches_read(&expected, None, None, Some(&transparent_png), &[]),
+        assert_eq!(
+            payload_matches_read(&expected, None, None, Some(&transparent_png), None, &[]),
+            Some(false),
             "半透明图片与不透明图片是不同内容，绝不因归一而判为相同"
         );
     }
@@ -3314,72 +3928,270 @@ mod tests {
             text: "验收".into(),
             html: None,
         };
-        assert!(
-            payload_matches_read(&plain, Some("验收"), Some(""), None, &[]),
+        assert_eq!(
+            payload_matches_read(&plain, Some("验收"), Some(""), None, None, &[]),
+            Some(true),
             "长度为 0 的 HTML 片段不是内容，不能把自写纯文本判成用户接管"
         );
         let rich = ClipboardPayload::Text {
             text: "验收".into(),
             html: Some("<b>验收</b>".into()),
         };
-        assert!(
-            !payload_matches_read(&rich, Some("验收"), Some(""), None, &[]),
+        assert_eq!(
+            payload_matches_read(&rich, Some("验收"), Some(""), None, None, &[]),
+            Some(false),
             "期望富文本却只读回空片段，必须判定为不同内容"
         );
-        assert!(
-            !payload_matches_read(&rich, Some("验收"), None, None, &[]),
+        assert_eq!(
+            payload_matches_read(&rich, Some("验收"), None, None, None, &[]),
+            Some(false),
             "期望富文本却读不到 HTML，必须判定为不同内容"
         );
         let empty_rich = ClipboardPayload::Text {
             text: "验收".into(),
             html: Some(String::new()),
         };
-        assert!(
-            payload_matches_read(&empty_rich, Some("验收"), None, None, &[]),
+        assert_eq!(
+            payload_matches_read(&empty_rich, Some("验收"), None, None, None, &[]),
+            Some(true),
             "期望侧的空 HTML 与实际侧同样按不存在处理"
         );
     }
 
     #[test]
     fn payload_match_compares_image_bytes_and_file_names() {
+        let rgba: Vec<u8> = vec![10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 1, 2, 3, 255];
+        let png = image::encode_png(&rgba, 2, 2).unwrap();
         let image = ClipboardPayload::Image {
-            png: vec![1, 2, 3],
+            png: png.clone(),
             rgba: None,
-            width: 1,
-            height: 1,
+            width: 2,
+            height: 2,
         };
-        assert!(payload_matches_read(
-            &image,
+        assert_eq!(
+            payload_matches_read(&image, None, None, Some(&png), None, &[]),
+            Some(true),
+            "PNG 原始字节完全一致时必须直接判 Same"
+        );
+        let changed_rgba: Vec<u8> = {
+            let mut v = rgba.clone();
+            v[0] = v[0].wrapping_add(1);
+            v
+        };
+        let changed_png = image::encode_png(&changed_rgba, 2, 2).unwrap();
+        assert_eq!(
+            payload_matches_read(&image, None, None, Some(&changed_png), None, &[]),
+            Some(false),
+            "真实不同的图片必须判 Different，绝不能被算成相同"
+        );
+        assert_eq!(
+            payload_matches_read(&image, None, None, None, None, &[]),
             None,
-            None,
-            Some(&[1, 2, 3]),
-            &[]
-        ));
-        assert!(!payload_matches_read(
-            &image,
-            None,
-            None,
-            Some(&[1, 2, 4]),
-            &[]
-        ));
-        assert!(!payload_matches_read(&image, None, None, None, &[]));
+            "没有任何可解码的图片格式时只能判「无法验证」"
+        );
         let files = ClipboardPayload::Files {
             paths: vec!["C:\\Temp\\a.txt".into()],
         };
-        assert!(payload_matches_read(
-            &files,
+        assert_eq!(
+            payload_matches_read(
+                &files,
+                None,
+                None,
+                None,
+                None,
+                &["c:\\temp\\A.TXT".into()]
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            payload_matches_read(
+                &files,
+                None,
+                None,
+                None,
+                None,
+                &["C:\\Temp\\b.txt".into()]
+            ),
+            Some(false)
+        );
+    }
+
+    /// 把自下而上 CF_DIB 的行序翻转成负高度（自上而下）的等价 DIB。
+    fn top_down_dib(bottom_up: &[u8], width: usize, height: usize) -> Vec<u8> {
+        let mut out = bottom_up.to_vec();
+        out[8..12].copy_from_slice(&(-(height as i32)).to_le_bytes());
+        for y in 0..height / 2 {
+            let a = 40 + y * width * 4;
+            let b = 40 + (height - 1 - y) * width * 4;
+            for i in 0..width * 4 {
+                out.swap(a + i, b + i);
+            }
+        }
+        out
+    }
+
+    /// 构造 BITMAPV5HEADER（124 字节）形式的手工 DIB，用于验证 DIBV5-only 剪贴板。
+    fn dib_v5_from_rgba(rgba: &[u8], width: u32, height: u32, alpha_mask: u32) -> Vec<u8> {
+        let base = image::rgba_to_dib(rgba, width, height);
+        let mut out = vec![0u8; 124 + (width * height * 4) as usize];
+        out[0..4].copy_from_slice(&124u32.to_le_bytes());
+        out[4..8].copy_from_slice(&width.to_le_bytes());
+        out[8..12].copy_from_slice(&height.to_le_bytes());
+        out[12..14].copy_from_slice(&1u16.to_le_bytes());
+        out[14..16].copy_from_slice(&32u16.to_le_bytes());
+        out[16..20].copy_from_slice(&3u32.to_le_bytes()); // BI_BITFIELDS
+        out[20..24].copy_from_slice(&(width * height * 4).to_le_bytes());
+        out[40..44].copy_from_slice(&0x00FF0000u32.to_le_bytes());
+        out[44..48].copy_from_slice(&0x0000FF00u32.to_le_bytes());
+        out[48..52].copy_from_slice(&0x000000FFu32.to_le_bytes());
+        out[52..56].copy_from_slice(&alpha_mask.to_le_bytes());
+        out[124..].copy_from_slice(&base[40..]);
+        out
+    }
+
+    /// 关键回归：Snipping Tool / Snipaste / 旧式应用只写 CF_DIB 时，Windows 不会
+    /// 自动合成「PNG」。若写入前比较只认 PNG，快照（由 DIB 解码）与比较（读不到
+    /// PNG）语义不一致，就把「没有变化」误判成「被其他程序更新」，逐项粘贴第 1 项
+    /// 直接被守卫拒绝。
+    #[test]
+    fn payload_match_accepts_dib_only_clipboard() {
+        let rgba: Vec<u8> = (0..4 * 4 * 4)
+            .map(|i| {
+                if i % 4 == 3 {
+                    255
+                } else {
+                    (i as u8).wrapping_mul(31).wrapping_add(5)
+                }
+            })
+            .collect();
+        let png = image::encode_png(&rgba, 4, 4).unwrap();
+        let expected = ClipboardPayload::Image {
+            png,
+            rgba: Some(rgba.clone()),
+            width: 4,
+            height: 4,
+        };
+        let bottom_up = image::rgba_to_dib(&rgba, 4, 4);
+        assert_eq!(
+            payload_matches_read(&expected, None, None, None, Some(&bottom_up), &[]),
+            Some(true),
+            "只有 CF_DIB 的剪贴板必须能与快照判为同一份内容"
+        );
+        assert_eq!(
+            payload_matches_read(
+                &expected,
+                None,
+                None,
+                None,
+                Some(&top_down_dib(&bottom_up, 4, 4)),
+                &[]
+            ),
+            Some(true),
+            "负高度/自上而下行序只是编码差异，像素相同必须判 Same"
+        );
+        // 32bpp BI_RGB 的 Alpha 字节全 0 表示未使用，不是全透明。
+        let mut zero_alpha = bottom_up.clone();
+        for px in zero_alpha[40..].chunks_exact_mut(4) {
+            px[3] = 0;
+        }
+        assert_eq!(
+            payload_matches_read(&expected, None, None, None, Some(&zero_alpha), &[]),
+            Some(true),
+            "Alpha 未使用的 DIB 必须按不透明处理，与入库版本一致"
+        );
+        // DIBV5（BI_BITFIELDS）形态同样可比较：有 Alpha 掩码/无 Alpha 掩码都覆盖。
+        let v5 = dib_v5_from_rgba(&rgba, 4, 4, 0xFF00_0000);
+        assert_eq!(
+            payload_matches_read(&expected, None, None, None, Some(&v5), &[]),
+            Some(true),
+            "DIBV5-only 剪贴板必须可比较"
+        );
+        let v5_no_alpha = dib_v5_from_rgba(&rgba, 4, 4, 0);
+        assert_eq!(
+            payload_matches_read(&expected, None, None, None, Some(&v5_no_alpha), &[]),
+            Some(true),
+            "DIBV5 无 Alpha 掩码时不能把「未使用」当成全透明"
+        );
+    }
+
+    /// 真正不同的图片绝不能因为「容器不是 PNG」而被放过（拒绝覆盖用户的图片）。
+    #[test]
+    fn payload_match_rejects_different_dib_only_image() {
+        let rgba: Vec<u8> = (0..4 * 4 * 4)
+            .map(|i| if i % 4 == 3 { 255 } else { (i as u8).wrapping_mul(17) })
+            .collect();
+        let expected = ClipboardPayload::Image {
+            png: image::encode_png(&rgba, 4, 4).unwrap(),
+            rgba: None,
+            width: 4,
+            height: 4,
+        };
+        let mut changed = rgba.clone();
+        changed[0] = changed[0].wrapping_add(1);
+        assert_eq!(
+            payload_matches_read(
+                &expected,
+                None,
+                None,
+                None,
+                Some(&image::rgba_to_dib(&changed, 4, 4)),
+                &[]
+            ),
+            Some(false),
+            "像素真的不同必须判 Different"
+        );
+        assert_eq!(
+            payload_matches_read(
+                &expected,
+                None,
+                None,
+                None,
+                Some(&image::rgba_to_dib(&rgba[..4 * 3 * 4], 4, 3)),
+                &[]
+            ),
+            Some(false),
+            "尺寸不同必须判 Different"
+        );
+    }
+
+    /// 没有任何可解码图片来源（PNG 损坏且 DIB 缺失/截断）时只能返回「无法验证」：
+    /// 既不能冒充 Same 去覆盖，也不能谎报 Different 去指控用户接管。
+    #[test]
+    fn payload_match_unverifiable_without_readable_image() {
+        let rgba: Vec<u8> = vec![0, 0, 0, 255, 9, 9, 9, 255, 8, 8, 8, 255, 7, 7, 7, 255];
+        let expected = ClipboardPayload::Image {
+            png: image::encode_png(&rgba, 2, 2).unwrap(),
+            rgba: None,
+            width: 2,
+            height: 2,
+        };
+        assert_eq!(
+            payload_matches_read(&expected, None, None, None, None, &[]),
             None,
+            "完全没有图片格式时必须判「无法验证」"
+        );
+        assert_eq!(
+            payload_matches_read(&expected, None, None, Some(&[1, 2, 3]), None, &[]),
             None,
+            "PNG 无法解码且无 DIB 时必须判「无法验证」"
+        );
+        assert_eq!(
+            payload_matches_read(&expected, None, None, None, Some(&[0u8; 39]), &[]),
             None,
-            &["c:\\temp\\A.TXT".into()]
-        ));
-        assert!(!payload_matches_read(
-            &files,
-            None,
-            None,
-            None,
-            &["C:\\Temp\\b.txt".into()]
-        ));
+            "DIB 读取不完整/截断时必须判「无法验证」"
+        );
+        assert_eq!(
+            payload_matches_read(
+                &expected,
+                Some("用户后来复制的文本"),
+                None,
+                None,
+                None,
+                &[]
+            ),
+            Some(false),
+            "期望是图片、实际只剩文本时必须判 Different（用户确实接管了）"
+        );
     }
 
     #[test]

@@ -8,15 +8,15 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, State};
 
-use crate::clipboard::agent_bridge::{self, AgentClipboardTarget, ExportPackage};
+use crate::clipboard::agent_bridge::{self, AgentTargetsSnapshot, ExportPackage};
 use crate::clipboard::export;
 use crate::clipboard::paste::{self, PasteStartReport};
 use crate::clipboard::platform::{self, ClipboardPayload, TargetWindow};
 use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteJob};
 use crate::clipboard::{
-    engine, ocr::OcrReport, CleanupReport, ClearReport, ClipboardGroup, ClipboardItem,
-    ClipboardRuntime, ClipboardStats, ClipboardView, CopyReport, DeleteReport, KIND_FILES,
-    KIND_IMAGE, KIND_URL,
+    engine, ocr::OcrReport, CleanupReport, ClearReport, ClipboardGroup, ClipboardGroupPage,
+    ClipboardItem, ClipboardRuntime, ClipboardStats, ClipboardView, CopyReport, DeleteReport,
+    KIND_FILES, KIND_IMAGE, KIND_URL,
 };
 use crate::db::Settings;
 use crate::error::{AppError, AppResult};
@@ -65,6 +65,27 @@ pub fn clipboard_group(
         *item = compact(item.clone());
     }
     Ok(group)
+}
+
+/// Lite 分组有界分页：SQL 阶段排序/筛选/LIMIT，不读正文与原图字节。
+///
+/// `imagesOnly=true` 时只返回图片条目；`limit` 超过 `store::GROUP_PAGE_MAX_LIMIT` 时
+/// 按上限截断，实际生效值随响应返回。完整分组详情仍走 `clipboard_group`（行为不变）。
+#[tauri::command]
+pub fn clipboard_group_page(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    group_id: String,
+    limit: Option<i64>,
+    offset: Option<i64>,
+    images_only: Option<bool>,
+) -> AppResult<ClipboardGroupPage> {
+    store::get_group_page(
+        &runtime(&state).db,
+        &group_id,
+        limit,
+        offset,
+        images_only.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -141,14 +162,26 @@ pub fn clipboard_copy_item(
     let mode = variant_mode(&payload);
     let bytes = payload_bytes(&payload);
     let seq = platform::write_payload_notifying(&payload, &rt.self_write)?;
-    // 只累加使用次数，列表顺序不变；前端局部更新该条目，无需整表刷新。
-    store::bump_copy(&rt.db, &item_id)?;
+    // 剪贴板写入成功即复制成功。使用次数只是附带统计：统计持久化失败不能把一次
+    // 真实成功的复制改判为失败（用户会看到「复制失败」并重复复制）。失败时通过
+    // warnings 让前端显示「部分成功」，且不本地累加次数（没落库的次数不能显示）；
+    // 绝不为了补偿统计而重复写剪贴板，也不改变列表排序语义。
+    let mut warnings = item_copy_warnings(&item);
+    let stats_recorded = match store::bump_copy(&rt.db, &item_id) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("剪贴板使用次数记录失败：{e}");
+            warnings.push("使用次数未能记录（统计写入失败），不影响本次复制".into());
+            false
+        }
+    };
     Ok(CopyReport {
         mode: mode.into(),
         bytes,
-        warnings: item_copy_warnings(&item),
+        warnings,
         sequence: seq,
         item_count: 1,
+        stats_recorded,
     })
 }
 
@@ -435,6 +468,8 @@ fn copy_rich_impl(rt: &ClipboardRuntime, items: &[ClipboardItem]) -> AppResult<C
         warnings,
         sequence: seq,
         item_count: items.len() as i64,
+        // 批量复制不累加单条使用次数，不存在统计失败。
+        stats_recorded: true,
     })
 }
 
@@ -479,6 +514,8 @@ fn copy_files_impl(rt: &ClipboardRuntime, items: &[ClipboardItem]) -> AppResult<
         warnings,
         sequence: seq,
         item_count: paths.len() as i64,
+        // 批量复制不累加单条使用次数，不存在统计失败。
+        stats_recorded: true,
     })
 }
 
@@ -598,6 +635,10 @@ pub fn clipboard_delete_items(
         ));
     }
     let report = store::delete_items(&rt.db, &rt.root, &ids)?;
+    // 只失效被删条目的 OCR 结果缓存，其余条目不受影响；确实删除了才推进代数。
+    if report.deleted > 0 {
+        rt.ocr.invalidate_items(&ids);
+    }
     rt.emit_changed("delete-items");
     Ok(report)
 }
@@ -615,6 +656,9 @@ pub fn clipboard_delete_group(
         ));
     }
     let report = store::delete_group(&rt.db, &rt.root, &group_id, also_delete_items)?;
+    // 按「条目仍存在且内容哈希未变」校正缓存：删掉的随组失效，未删的保留；
+    // 实际删除了条目时即使缓存为空也推进代数，避免在跑的旧任务回写已删条目。
+    rt.ocr.retain_existing(&rt.db, report.deleted > 0);
     rt.emit_changed("delete-group");
     Ok(report)
 }
@@ -638,6 +682,8 @@ pub fn clipboard_clear_history(state: State<'_, Arc<ClipboardRuntime>>) -> AppRe
         .store(crate::clipboard::platform::current_sequence(), Ordering::SeqCst);
     rt.capture_epoch.fetch_add(1, Ordering::SeqCst);
     let report = store::clear_history(&rt.db, &rt.root)?;
+    // 清空后整体失效；识别中的旧任务因代数变化不会再写回缓存。
+    rt.ocr.clear_cache();
     rt.emit_changed("clear-history");
     Ok(report)
 }
@@ -981,6 +1027,8 @@ pub fn clipboard_cleanup(state: State<'_, Arc<ClipboardRuntime>>) -> AppResult<C
     // 与采集入库/清空互斥：避免在“资产文件已写、条目未插库”之间删除新采集的图片。
     let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
     let report = store::cleanup(&rt.db, &rt.root, &config.settings)?;
+    // 自动过期/超额清理后校正 OCR 缓存：已删除或内容变化的条目不再命中。
+    rt.ocr.retain_existing(&rt.db, report.items_deleted > 0);
     rt.emit_changed("cleanup");
     Ok(report)
 }
@@ -1003,31 +1051,47 @@ pub fn clipboard_status(state: State<'_, Arc<ClipboardRuntime>>) -> serde_json::
     })
 }
 
+/// 探测含注册表/安装路径/进程与窗口枚举，单次实测 17–28s；同步命令会冻结主线程，
+/// 因此移入 spawn_blocking。前端默认收起面板时不调用；`refresh=true` 由用户「重新探测」触发。
+/// 返回真实快照时间与是否命中缓存，前端不得把响应到达时间当作扫描时间。
 #[tauri::command]
-pub fn clipboard_agent_targets(
+pub async fn clipboard_agent_targets(
     state: State<'_, Arc<ClipboardRuntime>>,
-) -> Vec<AgentClipboardTarget> {
-    agent_bridge::targets(&runtime(&state).db)
+    refresh: Option<bool>,
+) -> AppResult<AgentTargetsSnapshot> {
+    let db = runtime(&state).db.clone();
+    let force = refresh.unwrap_or(false);
+    let snapshot = tauri::async_runtime::spawn_blocking(move || agent_bridge::targets(&db, force))
+        .await
+        .map_err(|e| AppError::Agent(format!("Agent 探测任务失败: {e}")))?;
+    Ok(snapshot)
 }
 
+/// 导出包需要复制/解码图片并写多个文件；大分组可能耗时，放到后台线程避免冻结主线程。
+/// 只做线程迁移，导出格式与目录策略不变；前端关闭面板不会取消此任务，文件仍会保留。
 #[tauri::command]
-pub fn clipboard_export_for_agent(
+pub async fn clipboard_export_for_agent(
     app: AppHandle,
     state: State<'_, Arc<ClipboardRuntime>>,
     target_type: String,
     target_id: String,
     task_id: Option<String>,
 ) -> AppResult<ExportPackage> {
-    let rt = runtime(&state);
+    let rt = runtime(&state).clone();
     let data_dir = crate::app_data_dir(&app);
-    let pkg = agent_bridge::export_package(
-        &rt.db,
-        &rt.root,
-        &data_dir,
-        &target_type,
-        &target_id,
-        task_id.as_deref(),
-    )?;
+    let worker = rt.clone();
+    let pkg = tauri::async_runtime::spawn_blocking(move || {
+        agent_bridge::export_package(
+            &worker.db,
+            &worker.root,
+            &data_dir,
+            &target_type,
+            &target_id,
+            task_id.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| AppError::Io(std::io::Error::other(format!("导出后台任务异常结束：{e}"))))??;
     rt.emit_changed("export-agent");
     Ok(pkg)
 }

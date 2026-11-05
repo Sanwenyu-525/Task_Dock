@@ -20,8 +20,8 @@ use tauri::{AppHandle, Emitter};
 
 use super::engine;
 use super::platform::{
-    self, ClipboardMatch, ClipboardPayload, RestoreOutcome, Snapshot, TargetWindow, WriteGuard,
-    WriteOutcome,
+    self, ClipboardMatch, ClipboardPayload, RestoreOutcome, Snapshot, SnapshotState, TargetWindow,
+    WriteGuard, WriteOutcome,
 };
 use super::store;
 use super::{ClipboardItem, KIND_FILES, KIND_HTML, KIND_IMAGE};
@@ -240,6 +240,17 @@ pub(crate) fn run_plan(
     let mut skipped = 0i64;
     let mut remaining = plan.item_ids.clone();
     let mut notes: Vec<String> = Vec::new();
+    // 粘贴前快照读不全（格式不支持/读取失败）与「剪贴板为空」是不同事实：
+    // 前者意味着原内容无法恢复，必须如实提前说明，不能等到失败时才发现。
+    match snapshot.state {
+        SnapshotState::Captured | SnapshotState::Empty => {}
+        SnapshotState::Unsupported => notes.push(
+            "粘贴前剪贴板包含无法完整保存的格式，粘贴后无法恢复原内容".into(),
+        ),
+        SnapshotState::Unreadable => {
+            notes.push("粘贴前无法读取剪贴板，原内容可能无法恢复".into())
+        }
+    }
     let mut states: Vec<(String, ItemState)> = Vec::new();
     let mut status = "completed";
     let mut user_took_over = false;
@@ -292,14 +303,25 @@ pub(crate) fn run_plan(
                 Some(ClipboardMatch::Unavailable) => {
                     status = "failed";
                     notes.push(
-                        "无法读取剪贴板确认内容（被其他程序占用），已停止且未写入任何内容".into(),
+                        "无法确认剪贴板内容（读取失败或格式无法验证），已停止且本次未写入任何内容"
+                            .into(),
                     );
                     break;
                 }
-                Some(ClipboardMatch::Different) | None => {
+                Some(ClipboardMatch::Different) => {
                     status = "failed";
                     user_took_over = true;
                     notes.push("检测到剪贴板被其他程序更新，已停止并保留最新内容".into());
+                    break;
+                }
+                // 没有可比对基准（粘贴前就读不到/格式不支持）：只能说明无法验证，
+                // 不能据此断言用户接管。
+                None => {
+                    status = "failed";
+                    notes.push(
+                        "检测到剪贴板状态变化，但粘贴前内容无法比较，已停止且本次未写入任何内容"
+                            .into(),
+                    );
                     break;
                 }
             }
@@ -485,9 +507,43 @@ pub(crate) fn run_plan(
             }
             Ok(WriteOutcome::SequenceChanged) => {
                 status = "failed";
-                user_took_over = true;
+                // Content 守卫判定为可靠不同 → 用户/其他程序确实更新了剪贴板；
+                // Sequence 守卫只能证明序列号变了，无法证明内容被换，不能指控用户接管。
+                let verified_different = matches!(guard, WriteGuard::Content(_));
+                if verified_different {
+                    user_took_over = true;
+                    notes.push(format!(
+                        "第 {} 项写入前检测到剪贴板已被其他程序更新，本项未写入、也未覆盖新内容",
+                        idx + 1
+                    ));
+                } else {
+                    notes.push(format!(
+                        "第 {} 项写入前剪贴板状态已变化（粘贴前内容无法完整比较），本项未写入、也未覆盖新内容",
+                        idx + 1
+                    ));
+                }
+                set_state(
+                    &mut states,
+                    progress,
+                    id,
+                    idx,
+                    ItemState::Failed,
+                    sent,
+                    &remaining,
+                    Some(if verified_different {
+                        "剪贴板已变化，拒绝覆盖"
+                    } else {
+                        "剪贴板状态已变化，拒绝覆盖"
+                    }),
+                );
+                break;
+            }
+            Ok(WriteOutcome::Unverifiable) => {
+                // 「读不出可靠内容」不是「用户接管」：没有写入、没有执行 EmptyClipboard，
+                // 仅停止并如实报告无法验证，让调用方决定是否重试。
+                status = "failed";
                 notes.push(format!(
-                    "第 {} 项写入前检测到剪贴板已被其他程序更新，本项未写入、也未覆盖新内容",
+                    "第 {} 项写入前无法验证剪贴板当前内容（图片格式读取失败或不受支持），本项未写入、也未覆盖新内容",
                     idx + 1
                 ));
                 set_state(
@@ -498,7 +554,7 @@ pub(crate) fn run_plan(
                     ItemState::Failed,
                     sent,
                     &remaining,
-                    Some("剪贴板已变化，拒绝覆盖"),
+                    Some("无法验证剪贴板内容，拒绝覆盖"),
                 );
                 break;
             }
@@ -615,6 +671,12 @@ pub(crate) fn run_plan(
         io.sleep_ms(grace);
         // 恢复本身在同一剪贴板锁内确认「内容仍是自己最后一次写入」；
         // 序列号增长不作为恢复依据，内容不符则保留用户新内容。
+        let no_snapshot_note = || match snapshot.state {
+            SnapshotState::Empty => "粘贴前剪贴板为空，未做恢复",
+            SnapshotState::Unsupported => "粘贴前剪贴板格式不支持完整保存，未做恢复",
+            SnapshotState::Unreadable => "粘贴前无法读取剪贴板，未做恢复",
+            SnapshotState::Captured => "粘贴前剪贴板内容不可用，未做恢复",
+        };
         match last_payload.as_ref() {
             Some(last) => match io.restore_if_own_content(&snapshot, last) {
                 Ok(RestoreOutcome::Restored) => {
@@ -624,12 +686,10 @@ pub(crate) fn run_plan(
                 Ok(RestoreOutcome::KeepUserCopy) => {
                     notes.push("粘贴期间剪贴板被其他程序更新，未恢复原内容（保留最新内容）".into())
                 }
-                Ok(RestoreOutcome::NoSnapshot) => {
-                    notes.push("粘贴前剪贴板为空或格式不支持，未做恢复".into())
-                }
+                Ok(RestoreOutcome::NoSnapshot) => notes.push(no_snapshot_note().into()),
                 Err(e) => notes.push(format!("恢复原剪贴板失败：{e}")),
             },
-            None => notes.push("粘贴前剪贴板为空或格式不支持，未做恢复".into()),
+            None => notes.push(no_snapshot_note().into()),
         }
     }
 
@@ -1335,6 +1395,9 @@ mod tests {
         takeover_before_send_after_writes: Cell<usize>,
         settle_after_writes: Cell<usize>,
         unavailable_reads: Cell<u32>,
+        guard_unverifiable: Cell<bool>,
+        snapshot_state: Cell<SnapshotState>,
+        snapshot_payload: RefCell<Option<ClipboardPayload>>,
         restore_result: RefCell<RestoreOutcome>,
         applied: Cell<usize>,
         writes: RefCell<Vec<String>>,
@@ -1373,6 +1436,9 @@ mod tests {
                 takeover_before_send_after_writes: Cell::new(0),
                 settle_after_writes: Cell::new(0),
                 unavailable_reads: Cell::new(0),
+                guard_unverifiable: Cell::new(false),
+                snapshot_state: Cell::new(SnapshotState::Captured),
+                snapshot_payload: RefCell::new(Some(baseline_payload())),
                 restore_result: RefCell::new(RestoreOutcome::Restored),
                 applied: Cell::new(0),
                 writes: RefCell::new(Vec::new()),
@@ -1412,7 +1478,8 @@ mod tests {
         fn snapshot(&self) -> Snapshot {
             Snapshot {
                 sequence: self.snap_seq,
-                payload: Some(baseline_payload()),
+                payload: self.snapshot_payload.borrow().clone(),
+                state: self.snapshot_state.get(),
             }
         }
 
@@ -1441,6 +1508,9 @@ mod tests {
             self.writes.borrow_mut().push(text.clone());
             self.payloads.borrow_mut().push(payload.clone());
             self.timeline.borrow_mut().push(format!("write:{text}"));
+            if self.guard_unverifiable.get() {
+                return Ok(WriteOutcome::Unverifiable);
+            }
             if self.force_sequence_changed.get() {
                 self.seq.set(self.seq.get() + 1);
                 *self.current.borrow_mut() = Some(user_payload());
@@ -1898,6 +1968,89 @@ mod tests {
         );
         assert!(outcome.restored, "写入过剪贴板且按键未发送时应恢复原内容");
         assert_eq!(io.restores.borrow().as_slice(), ["a".to_string()]);
+    }
+
+    #[test]
+    fn unverifiable_write_guard_stops_without_claiming_user_takeover() {
+        // 只有 DIB/损坏图片格式导致无法解码时，写入守卫只能返回「无法验证」：
+        // 既不能覆盖，也不能谎报成「剪贴板已被其他程序更新」。
+        let io = FakeIo::new(7);
+        io.guard_unverifiable.set(true);
+        let p = plan(&["a", "b"], timing());
+        let mut load = loader(&[("a", KIND_TEXT), ("b", KIND_TEXT)]);
+        let cancel = AtomicBool::new(false);
+        let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
+        assert_eq!(outcome.status, "failed");
+        assert!(!outcome.user_took_over, "无法验证不等于用户接管");
+        assert_eq!(outcome.sent, 0);
+        assert_eq!(io.applied.get(), 0, "无法验证时绝不能执行 EmptyClipboard/写入");
+        assert_eq!(
+            outcome.remaining,
+            vec!["a".to_string(), "b".to_string()],
+            "未写入的条目必须保留在待处理列表"
+        );
+        assert!(
+            outcome.notes.iter().any(|n| n.contains("无法验证")),
+            "notes={:?}",
+            outcome.notes
+        );
+        assert!(
+            outcome
+                .states
+                .iter()
+                .any(|(id, state)| id == "a" && *state == ItemState::Failed),
+            "失败必须定位到第 1 项：{:?}",
+            outcome.states
+        );
+        assert!(
+            !io.timeline.borrow().iter().any(|e| e == "send"),
+            "未写入时绝不发送按键"
+        );
+    }
+
+    #[test]
+    fn unreadable_snapshot_is_reported_but_paste_continues_safely() {
+        // 快照读不到 ≠ 剪贴板为空 ≠ 用户接管：序列号守卫仍能保证不覆盖未知内容。
+        let io = FakeIo::new(3);
+        io.snapshot_state.set(SnapshotState::Unreadable);
+        *io.snapshot_payload.borrow_mut() = None;
+        let p = plan(&["a", "b"], timing());
+        let mut load = loader(&[("a", KIND_TEXT), ("b", KIND_TEXT)]);
+        let cancel = AtomicBool::new(false);
+        let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
+        assert_eq!(outcome.status, "completed");
+        assert_eq!(outcome.sent, 2);
+        assert!(!outcome.user_took_over);
+        assert!(
+            outcome
+                .notes
+                .iter()
+                .any(|n| n.contains("粘贴前无法读取剪贴板")),
+            "notes={:?}",
+            outcome.notes
+        );
+    }
+
+    #[test]
+    fn sequence_change_without_comparable_baseline_is_not_user_takeover() {
+        // 粘贴前就取不到可比对内容时，序列号增长可能只是系统合成格式，
+        // 只能如实报告「无法比较」，不能指控用户接管。
+        let io = FakeIo::new(5);
+        io.snapshot_state.set(SnapshotState::Unsupported);
+        *io.snapshot_payload.borrow_mut() = None;
+        io.seq.set(6);
+        let p = plan(&["a", "b"], timing());
+        let mut load = loader(&[("a", KIND_TEXT), ("b", KIND_TEXT)]);
+        let cancel = AtomicBool::new(false);
+        let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
+        assert_eq!(outcome.status, "failed");
+        assert!(!outcome.user_took_over);
+        assert_eq!(io.applied.get(), 0);
+        assert!(
+            outcome.notes.iter().any(|n| n.contains("无法比较")),
+            "notes={:?}",
+            outcome.notes
+        );
     }
 
     fn solid_capture(color: [u8; 4], w: u32, h: u32) -> crate::clipboard::CapturedContent {

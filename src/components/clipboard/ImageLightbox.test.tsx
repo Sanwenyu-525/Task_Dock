@@ -205,6 +205,119 @@ describe("ImageLightbox 关闭路径", () => {
   });
 });
 
+describe("ImageLightbox 分组多图切换", () => {
+  const currentImg = () => document.querySelector<HTMLImageElement>(".clip-lightbox-img");
+  const counter = () => document.querySelector(".clip-lightbox-counter")?.textContent;
+
+  function group(n: number) {
+    return Array.from({ length: n }, (_, i) => makeItem({ title: `图 ${i + 1}` }));
+  }
+
+  it("单张不显示切换箭头与序号，原有单图行为不变", async () => {
+    renderBox();
+    await waitFor(() => expect(currentImg()).not.toBeNull());
+    expect(screen.queryByLabelText("上一张")).toBeNull();
+    expect(screen.queryByLabelText("下一张")).toBeNull();
+    expect(counter()).toBeUndefined();
+  });
+
+  it("箭头按分组顺序切换，首尾禁用且不循环，底部显示 2 / 3", async () => {
+    const items = group(3);
+    render(<ImageLightbox item={items[0]} items={items} onClose={vi.fn()} />);
+    await waitFor(() => expect(currentImg()).not.toBeNull());
+    expect(counter()).toContain("1 / 3");
+    expect((screen.getByLabelText("上一张") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("下一张") as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByLabelText("下一张"));
+    await waitFor(() => expect(currentImg()?.getAttribute("alt")).toBe("图 2"));
+    expect(counter()).toContain("2 / 3");
+    expect((screen.getByLabelText("上一张") as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByLabelText("下一张"));
+    await waitFor(() => expect(currentImg()?.getAttribute("alt")).toBe("图 3"));
+    expect(counter()).toContain("3 / 3");
+    expect((screen.getByLabelText("下一张") as HTMLButtonElement).disabled).toBe(true);
+
+    // 末张再点「下一张」不回到第一张
+    fireEvent.click(screen.getByLabelText("下一张"));
+    expect(currentImg()?.getAttribute("alt")).toBe("图 3");
+  });
+
+  it("键盘 ←/→ 切换且不穿透到底层页面", async () => {
+    const items = group(3);
+    render(<ImageLightbox item={items[0]} items={items} onClose={vi.fn()} />);
+    await waitFor(() => expect(currentImg()).not.toBeNull());
+
+    const leaked = vi.fn();
+    window.addEventListener("keydown", leaked);
+    try {
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      await waitFor(() => expect(counter()).toContain("2 / 3"));
+      expect(leaked).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(window, { key: "ArrowLeft" });
+      await waitFor(() => expect(counter()).toContain("1 / 3"));
+      // 第一张再按左键停住
+      fireEvent.keyDown(window, { key: "ArrowLeft" });
+      expect(counter()).toContain("1 / 3");
+    } finally {
+      window.removeEventListener("keydown", leaked);
+    }
+  });
+
+  it("快速连续切换：先发出的旧加载晚到也不覆盖当前图片", async () => {
+    const items = group(2);
+    const resolvers = new Map<string, (v: string | null) => void>();
+    bridge.clipboardImage.mockImplementation(
+      (id: string) => new Promise<string | null>((resolve) => resolvers.set(id, resolve)),
+    );
+    render(<ImageLightbox item={items[0]} items={items} onClose={vi.fn()} />);
+    await waitFor(() => expect(resolvers.has(items[0].id)).toBe(true));
+
+    fireEvent.click(screen.getByLabelText("下一张"));
+    await waitFor(() => expect(resolvers.has(items[1].id)).toBe(true));
+
+    // 后一张先返回，前一张随后才返回
+    resolvers.get(items[1].id)?.("data:image/png;base64,Qg==");
+    await waitFor(() => expect(currentImg()?.getAttribute("alt")).toBe("图 2"));
+    resolvers.get(items[0].id)?.("data:image/png;base64,QQ==");
+    await waitFor(() => expect(counter()).toContain("2 / 2"));
+    expect(currentImg()?.getAttribute("alt")).toBe("图 2");
+    expect(currentImg()?.getAttribute("src")).toBe("data:image/png;base64,Qg==");
+  });
+
+  it("当前图片被移出分组：预览安全落到相邻图片", async () => {
+    const items = group(3);
+    const onClose = vi.fn();
+    const view = render(
+      <ImageLightbox item={items[1]} items={items} onClose={onClose} />,
+    );
+    await waitFor(() => expect(currentImg()).not.toBeNull());
+    expect(counter()).toContain("2 / 3");
+
+    // 移除当前（第 2 张）：列表变短，按原位置就近落到下一张
+    view.rerender(
+      <ImageLightbox item={items[1]} items={[items[0], items[2]]} onClose={onClose} />,
+    );
+    await waitFor(() => expect(currentImg()?.getAttribute("alt")).toBe("图 3"));
+    expect(counter()).toContain("2 / 2");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("分组里没有图片时关闭预览，不留指向已删除数据的灯箱", async () => {
+    const items = group(2);
+    const onClose = vi.fn();
+    const view = render(
+      <ImageLightbox item={items[0]} items={items} onClose={onClose} />,
+    );
+    await waitFor(() => expect(currentImg()).not.toBeNull());
+
+    view.rerender(<ImageLightbox item={items[0]} items={[]} onClose={onClose} />);
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+});
+
 describe("ImageLightbox 工具动作", () => {
   it("复制原图调用受控复制命令并携带条目 id", async () => {
     const item = makeItem();

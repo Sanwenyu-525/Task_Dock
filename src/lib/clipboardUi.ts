@@ -46,6 +46,32 @@ export function groupModeLabel(mode: string): string {
 }
 
 /**
+ * 分组删除的判定与反馈文案（卡片列表与分组详情共用）。
+ *
+ * `deleted` 只统计连带删除的条目，分组本身删没删看 `groups_deleted`；
+ * 数量为 0 表示并发下已被别处删掉——绝不能演一场成功、也不能本地移除。
+ */
+export function groupDeleteFeedback(
+  name: string,
+  alsoItems: boolean,
+  r: { groups_deleted: number; deleted: number; retained_shared: number },
+): { removed: boolean; message: string; kind: "success" | "warning" } {
+  if (r.groups_deleted <= 0) {
+    return { removed: false, message: "这些内容已经不存在，列表已刷新", kind: "warning" };
+  }
+  const retained = alsoItems && r.retained_shared > 0
+    ? `；${r.retained_shared} 条因仍被引用而保留`
+    : "";
+  return {
+    removed: true,
+    message: alsoItems
+      ? `已删除 ${r.deleted} 条内容${retained}`
+      : `分组「${name}」已删除，历史条目仍保留`,
+    kind: "success",
+  };
+}
+
+/**
  * 常见 Windows 应用的展示名。
  *
  * 纯静态查表：渲染时零系统调用、零扫描。完整应用清单需要扫注册表/开始菜单，

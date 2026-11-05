@@ -12,7 +12,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Merge, Pause, Play, RefreshCw, Search,
+  AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Merge, Pause, Play, RefreshCw,
   Settings as SettingsIcon, Star, Trash2, X,
 } from "lucide-react";
 import {
@@ -37,7 +37,7 @@ import {
   type DeleteReport,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
-import { formatBytes, objectHint } from "../../lib/clipboardUi";
+import { formatBytes, groupDeleteFeedback, objectHint } from "../../lib/clipboardUi";
 import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
@@ -45,6 +45,7 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 import { ConfirmDialog } from "../ui/Dialog";
+import SearchField from "../ui/SearchField";
 import ClipboardGroupCard from "./ClipboardGroupCard";
 import ClipboardGroupDetail from "./ClipboardGroupDetail";
 import ClipboardItemCard from "./ClipboardItemCard";
@@ -98,7 +99,25 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const toggleGroupSelection = useClipboardStore((s) => s.toggleGroupSelection);
   const clearSelection = useClipboardStore((s) => s.clearSelection);
 
-  const [detail, setDetail] = useState<ClipboardDetail | null>(null);
+  const [detail, setDetailState] = useState<ClipboardDetail | null>(null);
+  /** 详情打开前的列表滚动位置；返回列表时按同一筛选恢复（不恢复旧筛选的位置）。 */
+  const savedListScrollRef = useRef<{ top: number; filterKey: string } | null>(null);
+  const restoreListScrollRef = useRef<{ top: number; filterKey: string } | null>(null);
+  /**
+   * 打开/关闭详情的统一入口：在列表仍然挂载时同步记录滚动位置，
+   * 关闭时把快照交给 layout effect 在列表重新挂载后恢复。
+   */
+  function setDetail(next: ClipboardDetail | null) {
+    if (next && !detail) {
+      savedListScrollRef.current = {
+        top: scrollRef.current?.scrollTop ?? 0,
+        filterKey: listFilterKey,
+      };
+    } else if (!next && detail) {
+      restoreListScrollRef.current = savedListScrollRef.current;
+    }
+    setDetailState(next);
+  }
   /** 列表里点缩略图直接打开的原图灯箱（详情视图内的灯箱由 ClipboardItemDetail 自己托管） */
   const [previewImage, setPreviewImage] = useState<ClipboardItem | null>(null);
   const [status, setStatus] = useState<ClipboardStatus | null>(null);
@@ -114,6 +133,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     danger?: boolean;
     run: () => void | Promise<void>;
   } | null>(null);
+  /** 列表滚动状态的归属键：筛选或「历史/分组」视图一变，旧锚点与旧位置一律作废。 */
+  const listFilterKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}`;
   const drawerRef = useRef<HTMLElement>(null);
 
   // 删除反馈链：执行中（等后端确认）→ 目标卡片离场 → 离场结束再静默补位。
@@ -129,6 +150,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   /** 后端尚未确认：目标卡片显示执行中并挡住重复提交 */
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+  /** 真实滚动容器是 `.clip-body`（`.clip-list` 只是行容器，自身不滚动）。 */
+  const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   /** 发起操作时用户所在的卡片：确认框会抢走焦点，等到确认后再取就拿不到了 */
   const confirmAnchor = useRef<string | null>(null);
@@ -156,8 +179,70 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     (view?.items.map((i) => i.id).join("|") ?? "") +
     "|" +
     (view?.groups.map((g) => g.id).join("|") ?? "");
+
+  /**
+   * 滚动锚点：记录滚动后第一个可见行（条目 ID + 相对可视区顶部的偏移）。
+   * 只在 scroll 事件里按阈值采样并读一次 rect，没有持续 rAF，也不写样式，
+   * 因此不会强制重排；列表结构变化时才用它做一次滚动补偿。
+   */
+  const scrollAnchorRef = useRef<{ id: string; delta: number } | null>(null);
+  const scrollMetaRef = useRef<{ filterKey: string; sig: string } | null>(null);
+  function recordScrollAnchor() {
+    const body = scrollRef.current;
+    if (!body) return;
+    const rows = Array.from(body.querySelectorAll<HTMLElement>("[data-clip-id]"));
+    const viewportTop = body.getBoundingClientRect().top;
+    for (const row of rows) {
+      const rect = row.getBoundingClientRect();
+      // 第一条与可视区相交的行就是滚动锚点；顶部行被新内容挤下去时据此还原
+      if (rect.bottom > viewportTop + 1) {
+        scrollAnchorRef.current = { id: row.dataset.clipId ?? "", delta: rect.top - viewportTop };
+        return;
+      }
+    }
+    scrollAnchorRef.current = null;
+  }
+
   useLayoutEffect(() => {
+    // 详情占用 .clip-body 时没有列表行：只更新归属键，不补偿也不播 FLIP
+    if (detail) {
+      scrollMetaRef.current = { filterKey: listFilterKey, sig: flipSig };
+      return;
+    }
+    const body = scrollRef.current;
     const el = listRef.current;
+    let compensated = false;
+    const prevMeta = scrollMetaRef.current;
+    scrollMetaRef.current = { filterKey: listFilterKey, sig: flipSig };
+    if (body && prevMeta) {
+      if (prevMeta.filterKey !== listFilterKey) {
+        // 筛选/分组切换允许回顶；旧筛选的滚动状态不得落到新筛选上
+        body.scrollTop = 0;
+        scrollAnchorRef.current = null;
+      } else if (prevMeta.sig !== flipSig) {
+        const anchor = scrollAnchorRef.current;
+        // 顶部附近不补偿，保证外部新增历史时正常显示最新内容
+        if (anchor && body.scrollTop > 8) {
+          const rows = body.querySelectorAll<HTMLElement>("[data-clip-id]");
+          let row: HTMLElement | null = null;
+          for (const r of rows) {
+            if (r.dataset.clipId === anchor.id) {
+              row = r;
+              break;
+            }
+          }
+          if (row) {
+            const delta = row.getBoundingClientRect().top - body.getBoundingClientRect().top;
+            const shift = delta - anchor.delta;
+            if (Math.abs(shift) >= 1) {
+              body.scrollTop += shift;
+              scrollAnchorRef.current = { id: anchor.id, delta };
+              compensated = true;
+            }
+          }
+        }
+      }
+    }
     if (!el) return;
     const rows = Array.from(el.querySelectorAll<HTMLElement>("[data-clip-id]"));
     const tops = new Map(rows.map((r) => [r.dataset.clipId ?? "", r.offsetTop]));
@@ -166,7 +251,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     listTopsRef.current = tops;
     // 首次渲染没有参照位置；离场开始/结束的渲染不做重排（收拢动画已表达位移）
     if (prev.size === 0 || exitCount > 0 || prevExiting > 0) return;
-    if (prefersReducedMotion() || rows.length > 60) return;
+    // 滚动补偿已经表达位移，再叠 FLIP 会双重移动（数据正确性优先于动画）
+    if (compensated || prefersReducedMotion() || rows.length > 60) return;
     for (const r of rows) {
       const id = r.dataset.clipId ?? "";
       const before = prev.get(id);
@@ -179,7 +265,20 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flipSig]);
+  }, [flipSig, listFilterKey, detail]);
+
+  /** 从详情返回列表：列表重新挂载后恢复原滚动位置（同一筛选内才恢复）。 */
+  useLayoutEffect(() => {
+    if (detail) return;
+    const body = scrollRef.current;
+    const saved = restoreListScrollRef.current;
+    restoreListScrollRef.current = null;
+    if (!body || !saved) return;
+    if (saved.filterKey !== listFilterKey) return;
+    body.scrollTop = saved.top;
+    recordScrollAnchor();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail]);
 
   /** 焦点在被删卡片上时，先记下相邻行的 id，供离场结束后接管焦点。 */
   function captureFocusAnchor(ids: string[]): string | null {
@@ -368,16 +467,21 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
 
   function reportCopy(r: CopyReport) {
     const warn = r.warnings.length > 0 ? `；${r.warnings.join("；")}` : "";
-    showToast(`已复制 ${r.item_count} 项（${r.mode.toUpperCase()}，${formatBytes(r.bytes)}）${warn}`, {
-      kind: r.warnings.length > 0 ? "info" : "success",
-    });
+    // 剪贴板写入成功但统计/降级项未完成时显示「部分成功」，不冒充完全成功
+    const partial = r.warnings.length > 0 || r.stats_recorded === false;
+    showToast(
+      `${partial ? "已复制（部分成功）" : "已复制"} ${r.item_count} 项（${r.mode.toUpperCase()}，${formatBytes(r.bytes)}）${warn}`,
+      { kind: partial ? "info" : "success" },
+    );
   }
 
   async function onCopyItem(item: ClipboardItem) {
     try {
-      reportCopy(await clipboardCopyItem(item.id));
+      const r = await clipboardCopyItem(item.id);
+      reportCopy(r);
       // 复制不改变排序：只就地更新使用次数，避免整表刷新导致分页丢失或滚动跳顶。
-      useClipboardStore.getState().bumpItemCopy(item.id);
+      // 统计没落库时不能显示次数（否则 UI 与数据库永久不一致）。
+      if (r.stats_recorded !== false) useClipboardStore.getState().bumpItemCopy(item.id);
     } catch (e) {
       showToast(`复制失败：${errorMessage(e)}`, { kind: "error" });
     }
@@ -476,7 +580,15 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           "group",
           () => clipboardDeleteGroup(group.id, false),
           (r) => r.groups_deleted,
-          () => showToast(`分组「${group.name}」已删除，历史条目仍保留`, { kind: "success" }),
+          // 与分组详情共用同一反馈函数：判定看 groups_deleted，文案不各写一份
+          (deleted) => {
+            const feedback = groupDeleteFeedback(group.name, false, {
+              groups_deleted: deleted,
+              deleted,
+              retained_shared: 0,
+            });
+            showToast(feedback.message, { kind: feedback.kind });
+          },
         ),
     });
   }
@@ -494,8 +606,12 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         setBusy("clear-history");
         try {
           const r = await clipboardClearHistory();
-          clearSelection();
+          // 后端确认成功后才让本地离场快照/定时器失效；失败时保留现有数据。
           setDetail(null);
+          setPreviewImage(null);
+          // 清空后没有「原列表」可返回：丢弃刚记录的详情返回快照
+          restoreListScrollRef.current = null;
+          useClipboardStore.getState().resetAfterClear();
           const warn = r.failed_files > 0
             ? `；${r.failed_files} 个缓存文件删除失败，将在下次清理时重试`
             : "";
@@ -814,22 +930,16 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       {!detail && (
         <>
           <div className="clip-toolbar">
-            <div className="clip-search">
-              <Search size={12} />
-              <input
-                className="input-embedded"
-                ref={searchRef}
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="搜索文字、来源应用、文件名…"
-                aria-label="搜索剪贴板历史"
-              />
-              {searchText && (
-                <button className="icon-btn sm" data-tip="清除搜索" aria-label="清除搜索" onClick={() => setSearchText("")}>
-                  <X size={11} />
-                </button>
-              )}
-            </div>
+            <SearchField
+              className="clip-search"
+              size="compact"
+              inputRef={searchRef}
+              value={searchText}
+              onChange={setSearchText}
+              placeholder="搜索文字、来源应用、文件名…"
+              ariaLabel="搜索剪贴板历史"
+              clearLabel="清除搜索"
+            />
             <button
               className={`icon-btn sm ${filters.favorite ? "active" : ""}`}
               data-tip={filters.favorite ? "显示全部" : "只看收藏"}
@@ -879,7 +989,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         </>
       )}
 
-      <div className="clip-body">
+      <div className="clip-body" ref={scrollRef} onScroll={recordScrollAnchor}>
         {detail?.kind === "item" ? (
           <ClipboardItemDetail
             itemId={detail.id}
@@ -887,6 +997,13 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             askConfirm={askConfirm}
             onBack={() => setDetail(null)}
             onChanged={() => void load({ silent: true })}
+            onSearchHistory={(query) => {
+              // 只填入关键词：同时更新搜索框文本与筛选条件，避免防抖回写旧值。
+              useClipboardStore.getState().setSearchText(query);
+              setFilters({ search: query, kind: "all", favorite: false });
+              setSection("items");
+              setDetail(null);
+            }}
           />
         ) : detail?.kind === "group" ? (
           <ClipboardGroupDetail

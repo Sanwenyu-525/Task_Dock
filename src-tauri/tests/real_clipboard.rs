@@ -47,7 +47,7 @@ use task_dock_lib::clipboard::image;
 use task_dock_lib::clipboard::paste::{self, payload_for_item};
 use task_dock_lib::clipboard::platform::{
     self, ClipboardMatch, ClipboardPayload, ClipboardRead, RestoreOutcome, Snapshot, SnapshotProbe,
-    WriteGuard, WriteOutcome,
+    SnapshotState, WriteGuard, WriteOutcome,
 };
 use task_dock_lib::clipboard::{store, CapturedContent, CapturedImage};
 use task_dock_lib::db::{Db, Settings};
@@ -449,10 +449,12 @@ fn mismatch_report(label: &str, expected: &ClipboardPayload, written_seq: u32) -
 
 /// 纯判定：快照探测结果是否允许启动写入型真机测试。
 ///
-/// 两种情况必须拒绝：
+/// 三种情况必须拒绝：
 /// - 快照取不到（剪贴板被占用）：既没有恢复依据，也无法证明可恢复；
 /// - 存在 `ClipboardPayload` 无法无损重建的格式（RTF、Office 私有格式、
-///   第三方自定义格式、元文件等）：写回后这些格式会永久丢失。
+///   第三方自定义格式、元文件等）：写回后这些格式会永久丢失；
+/// - 格式都受支持、但整份内容无法由单个载荷重建（复合格式、HTML-only、
+///   路径失效、格式枚举失败）：白名单通过不等于能完整恢复。
 fn probe_refusal(probe: &SnapshotProbe) -> Option<String> {
     if probe.snapshot.is_none() {
         return Some("剪贴板被其他程序占用，无法取快照，也无法证明可恢复".into());
@@ -461,6 +463,11 @@ fn probe_refusal(probe: &SnapshotProbe) -> Option<String> {
         return Some(format!(
             "本机剪贴板包含测试工具无法无损恢复的格式：{}。写入后这些格式会永久丢失；请先复制一段纯文本或测试专用简单图片再运行",
             probe.unsupported_formats.join("、")
+        ));
+    }
+    if let Err(reason) = &probe.reconstruction {
+        return Some(format!(
+            "本机剪贴板内容无法由现有载荷完整重建：{reason}。写入后原内容会被永久覆盖，拒绝开始写入型真机测试",
         ));
     }
     None
@@ -958,6 +965,10 @@ fn real_failed_write_restores_previous_content() {
             );
             return;
         }
+        Ok(WriteOutcome::Unverifiable) => {
+            println!("提前结束：守卫无法验证当前剪贴板内容，未执行覆盖，无需再验证失败恢复");
+            return;
+        }
         Ok(WriteOutcome::Written {
             effective,
             degraded,
@@ -1062,6 +1073,7 @@ fn guard_for(
         Snapshot {
             sequence: 0,
             payload: original,
+            state: SnapshotState::Captured,
         },
         Box::new(FakeRestorer { clip: clip.clone() }),
     )
@@ -1478,8 +1490,10 @@ fn snapshot_probe_refuses_unsupported_formats_and_unreadable_clipboard() {
         snapshot: Some(Snapshot {
             sequence: 1,
             payload: Some(fake_text("原内容")),
+            state: SnapshotState::Captured,
         }),
         unsupported_formats: vec![],
+        reconstruction: Ok(()),
     };
     assert!(
         probe_refusal(&supported).is_none(),
@@ -1490,8 +1504,10 @@ fn snapshot_probe_refuses_unsupported_formats_and_unreadable_clipboard() {
         snapshot: Some(Snapshot {
             sequence: 2,
             payload: Some(fake_text("正文")),
+            state: SnapshotState::Captured,
         }),
         unsupported_formats: vec!["\"Rich Text Format\"".into(), "CF_METAFILEPICT".into()],
+        reconstruction: Ok(()),
     };
     let reason = probe_refusal(&multi).expect("复杂多格式剪贴板必须拒绝启动");
     assert!(
@@ -1502,9 +1518,99 @@ fn snapshot_probe_refuses_unsupported_formats_and_unreadable_clipboard() {
     let busy = SnapshotProbe {
         snapshot: None,
         unsupported_formats: vec![],
+        reconstruction: Err("剪贴板被其他程序占用，无法枚举格式".into()),
     };
     assert!(
         probe_refusal(&busy).is_some(),
         "取不到快照（剪贴板被占用）必须拒绝启动"
+    );
+}
+
+/// P1-1：白名单全部通过仍可能无法重建整份内容（文本 + PNG），必须拒绝。
+#[test]
+fn snapshot_probe_refuses_whitelisted_but_unreconstructible_clipboard() {
+    let probe = SnapshotProbe {
+        snapshot: Some(Snapshot {
+            sequence: 3,
+            payload: Some(ClipboardPayload::Image {
+                png: vec![1, 2, 3],
+                rgba: None,
+                width: 1,
+                height: 1,
+            }),
+            state: SnapshotState::Captured,
+        }),
+        unsupported_formats: vec![],
+        reconstruction: Err("剪贴板同时含文本与图片：单一载荷只能保留图片，文本会在恢复时丢失".into()),
+    };
+    let reason = probe_refusal(&probe).expect("载荷无法重建整份内容时必须拒绝");
+    assert!(
+        reason.contains("文本") && reason.contains("图片"),
+        "拒绝信息必须说明丢失的是哪类内容：{reason}"
+    );
+}
+
+/// P1-2：HTML-only 等读取成功但写回失败的快照，必须拒绝而不是先清空再失败。
+#[test]
+fn snapshot_probe_refuses_html_only_and_enumeration_failure() {
+    let html_only = SnapshotProbe {
+        snapshot: Some(Snapshot {
+            sequence: 4,
+            payload: Some(ClipboardPayload::Text {
+                text: String::new(),
+                html: Some("<b>x</b>".into()),
+            }),
+            state: SnapshotState::Captured,
+        }),
+        unsupported_formats: vec![],
+        reconstruction: Err(
+            "剪贴板只有 HTML 而没有纯文本：现有写入机制要求非空纯文本，无法无损写回 HTML".into(),
+        ),
+    };
+    let reason = probe_refusal(&html_only).expect("HTML-only 必须拒绝");
+    assert!(
+        reason.contains("HTML") && reason.contains("纯文本"),
+        "拒绝信息必须说明 HTML-only 的写入层约束：{reason}"
+    );
+
+    let enum_failed = SnapshotProbe {
+        snapshot: Some(Snapshot {
+            sequence: 5,
+            payload: Some(fake_text("原内容")),
+            state: SnapshotState::Captured,
+        }),
+        unsupported_formats: vec![],
+        reconstruction: Err("枚举剪贴板格式失败（错误码 5），无法确认可完整恢复".into()),
+    };
+    let reason = probe_refusal(&enum_failed).expect("枚举失败必须 fail-closed");
+    assert!(
+        reason.contains("枚举") && reason.contains("完整恢复"),
+        "枚举失败的拒绝信息必须可定位：{reason}"
+    );
+}
+
+/// 拒绝发生在任何写入之前：启动顺序是「探测 → 拒绝立即返回」，
+/// 不构造恢复守卫、不执行 EmptyClipboard、不执行任何测试写入，原内容保持不变。
+#[test]
+fn refused_probe_performs_no_clipboard_write_or_restore() {
+    let original = fake_text("原内容");
+    let clip = Rc::new(FakeClipboard::new(Some(original.clone())));
+    let probe = SnapshotProbe {
+        snapshot: Some(Snapshot {
+            sequence: 6,
+            payload: Some(original.clone()),
+            state: SnapshotState::Captured,
+        }),
+        unsupported_formats: vec![],
+        reconstruction: Err("剪贴板同时含图片与独立 HTML".into()),
+    };
+    let reason = probe_refusal(&probe).expect("不可重建快照必须拒绝");
+    assert!(reason.contains("完整重建"));
+    // 拒绝分支只返回原因，未曾触碰剪贴板：没有恢复写入，也没有 EmptyClipboard。
+    assert_eq!(clip.restore_calls.get(), 0, "拒绝时不得执行恢复写入");
+    assert_eq!(
+        *clip.current.borrow(),
+        Some(original),
+        "拒绝时原剪贴板内容必须保持不变"
     );
 }

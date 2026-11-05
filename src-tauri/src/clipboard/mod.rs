@@ -146,6 +146,28 @@ pub struct ClipboardGroup {
     pub items: Vec<ClipboardItem>,
 }
 
+/// Lite 分组分页视图：只返回当页条目（不含完整正文与原图字节）。
+///
+/// 契约字段为 camelCase（`totalCount`/`imageCount`），与 `ClipboardItem`/`ClipboardGroup`
+/// 既有的 snake_case 列表字段分开：前端只在该命令上使用 camelCase。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardGroupPage {
+    /// 所属分组 id：并发切换分组时前端据此丢弃过期响应。
+    pub group_id: String,
+    pub items: Vec<ClipboardItem>,
+    /// 组内全部条目数（不受 limit/imagesOnly 影响）。
+    pub total_count: i64,
+    /// 组内图片条目数（同样不受分页影响）。
+    pub image_count: i64,
+    /// 本次实际生效的 offset（负值归零）。
+    pub offset: i64,
+    /// 本次实际生效的 limit（超过上限时截断）。
+    pub limit: i64,
+    /// 组内容版本（计数 + 组更新时间 + 组内最近变更），供前端缓存键使用。
+    pub revision: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClipboardStats {
     pub items: i64,
@@ -204,7 +226,7 @@ pub struct ClearReport {
     pub items: i64,
     pub groups: i64,
     pub freed_bytes: i64,
-    /// 数据库已清空但缓存文件未能删除的数量；下次清理会重试。
+    /// 数据库已清空但缓存未能清理的项数（含整个缓存目录读取失败）；下次清理会重试。
     pub failed_files: i64,
 }
 
@@ -216,6 +238,12 @@ pub struct CopyReport {
     pub warnings: Vec<String>,
     pub sequence: u32,
     pub item_count: i64,
+    /// 使用次数是否已落库。
+    ///
+    /// `false` 表示剪贴板**写入已成功**，只是使用次数统计持久化失败：前端应显示
+    /// 「部分成功」并跳过本地次数累加（没落库的次数不能显示）。批量复制不累加
+    /// 单条使用次数，此字段恒为 `true`，仅表示没有统计失败需要报告。
+    pub stats_recorded: bool,
 }
 
 /// 剪贴板运行时：持有监听、粘贴管理与共享的自我写入序列号。
@@ -403,24 +431,27 @@ impl ClipboardRuntime {
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner());
                             match store::cleanup(&runtime.db, &runtime.root, &config.settings) {
-                                Ok(r)
+                                Ok(r) => {
+                                    // 自动过期/超额清理后校正 OCR 缓存：已删除或内容变化的条目不再命中；
+                                    // 实际删除了条目时即使缓存为空也推进代数，避免在跑的旧任务回写。
+                                    runtime.ocr.retain_existing(&runtime.db, r.items_deleted > 0);
                                     if r.items_deleted > 0
                                         || r.groups_closed > 0
-                                        || r.orphan_files_removed > 0 =>
-                                {
-                                    tracing::info!(
-                                        "剪贴板清理：条目 {}，关闭分组 {}，释放 {} 字节，孤儿文件 {}",
-                                        r.items_deleted,
-                                        r.groups_closed,
-                                        r.bytes_freed,
-                                        r.orphan_files_removed
-                                    );
-                                    let _ = runtime.app.emit(
-                                        "clipboard-changed",
-                                        serde_json::json!({ "kind": "cleanup" }),
-                                    );
+                                        || r.orphan_files_removed > 0
+                                    {
+                                        tracing::info!(
+                                            "剪贴板清理：条目 {}，关闭分组 {}，释放 {} 字节，孤儿文件 {}",
+                                            r.items_deleted,
+                                            r.groups_closed,
+                                            r.bytes_freed,
+                                            r.orphan_files_removed
+                                        );
+                                        let _ = runtime.app.emit(
+                                            "clipboard-changed",
+                                            serde_json::json!({ "kind": "cleanup" }),
+                                        );
+                                    }
                                 }
-                                Ok(_) => {}
                                 Err(e) => tracing::warn!("剪贴板清理失败: {}", e),
                             }
                         }

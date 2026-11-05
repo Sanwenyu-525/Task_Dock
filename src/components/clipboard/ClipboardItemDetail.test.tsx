@@ -19,6 +19,9 @@ const bridge = vi.hoisted(() => ({
   clipboardRevealLocalPath: vi.fn(),
   clipboardCopyItem: vi.fn(),
   clipboardCopyText: vi.fn(),
+  clipboardImage: vi.fn(),
+  clipboardOcr: vi.fn(),
+  clipboardOcrCancel: vi.fn(),
   clipboardDeleteItems: vi.fn(),
   clipboardToggleItem: vi.fn(),
   clipboardRenameItem: vi.fn(),
@@ -33,7 +36,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
 });
 
 import ClipboardItemDetail from "./ClipboardItemDetail";
-import type { ClipboardItem } from "../../lib/bridge";
+import type { ClipboardItem, ClipboardOcrReport } from "../../lib/bridge";
 import { resetOverlayStack } from "../../lib/overlayStack";
 
 beforeEach(() => {
@@ -51,6 +54,8 @@ beforeEach(() => {
   bridge.clipboardOpenLocalPath.mockResolvedValue(undefined);
   bridge.clipboardRevealLocalPath.mockResolvedValue(undefined);
   bridge.clipboardPathStatus.mockResolvedValue([]);
+  bridge.clipboardImage.mockResolvedValue(null);
+  bridge.clipboardOcrCancel.mockResolvedValue(false);
   bridge.workspaceList.mockResolvedValue([]);
   bridge.clipboardAgentTargets.mockResolvedValue([]);
 });
@@ -383,5 +388,264 @@ describe("采集环境", () => {
     expect(block.textContent).toContain("旧记录未记录识别方式");
     expect(block.textContent).not.toContain("可确认");
     expect(block.textContent).not.toContain("系统记录）");
+  });
+});
+
+describe("图片文字识别", () => {
+  function makeReport(over: Partial<ClipboardOcrReport> = {}): ClipboardOcrReport {
+    return {
+      status: "ok",
+      code: "ok",
+      text: "智能剪贴板\n示例文字",
+      reason: null,
+      durationMs: 120,
+      cached: false,
+      lines: 2,
+      chars: 9,
+      width: 800,
+      height: 600,
+      engine: "zh-Hans-CN",
+      suggestedTitle: "智能剪贴板",
+      ...over,
+    };
+  }
+
+  const imageItem = (over: Partial<ClipboardItem> = {}) =>
+    makeItem({
+      kind: "image",
+      text: "",
+      preview: "截图 1",
+      has_image: true,
+      image_width: 800,
+      image_height: 600,
+      ...over,
+    });
+
+  async function renderImage(
+    over: Partial<ClipboardItem> = {},
+    props: { onSearchHistory?: (q: string) => void; onBack?: () => void } = {},
+  ) {
+    bridge.clipboardItem.mockResolvedValue(imageItem(over));
+    const view = render(
+      <ClipboardItemDetail
+        itemId="ci1"
+        linkTask={null}
+        askConfirm={({ run }) => void run()}
+        onBack={props.onBack ?? vi.fn()}
+        onChanged={vi.fn()}
+        onSearchHistory={props.onSearchHistory}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: /提取文字/ })).toBeTruthy());
+    return view;
+  }
+
+  const extractButton = () => screen.getByRole("button", { name: /提取文字/ }) as HTMLButtonElement;
+
+  it("启动请求、加载态禁止重复点击，完成后在同一详情内展示结果", async () => {
+    let resolve!: (r: ClipboardOcrReport) => void;
+    bridge.clipboardOcr.mockReturnValue(
+      new Promise<ClipboardOcrReport>((r) => {
+        resolve = r;
+      }),
+    );
+    await renderImage();
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(bridge.clipboardOcr).toHaveBeenCalledTimes(1));
+    const [itemId, requestId] = bridge.clipboardOcr.mock.calls[0];
+    expect(itemId).toBe("ci1");
+    expect(typeof requestId).toBe("string");
+    expect(requestId.length).toBeGreaterThan(0);
+
+    const running = screen.getByRole("button", { name: /识别中/ }) as HTMLButtonElement;
+    expect(running.disabled).toBe(true);
+    expect(screen.getByText("正在识别图片文字…")).toBeTruthy();
+    // 进行中重复点击不得重复启动
+    fireEvent.click(running);
+    expect(bridge.clipboardOcr).toHaveBeenCalledTimes(1);
+
+    resolve(makeReport());
+    const textarea = await waitFor(
+      () => screen.getByLabelText("识别出的文字") as HTMLTextAreaElement,
+    );
+    expect(textarea.value).toBe("智能剪贴板\n示例文字");
+    expect(extractButton().disabled).toBe(false);
+  });
+
+  it("复制文字写入受控剪贴板", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    bridge.clipboardOcr.mockResolvedValue(makeReport());
+    await renderImage();
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(screen.getByLabelText("识别出的文字")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /复制文字/ }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("智能剪贴板\n示例文字"));
+  });
+
+  it("用文字搜索历史只填入截断后的关键词，不塞整篇长文", async () => {
+    const long = "这是一段很长的识别文字用于搜索历史并且不应该整篇塞进去\n第二行内容";
+    const onSearchHistory = vi.fn();
+    bridge.clipboardOcr.mockResolvedValue(makeReport({ text: long, chars: long.length }));
+    await renderImage({}, { onSearchHistory });
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(screen.getByLabelText("识别出的文字")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /用文字搜索历史/ }));
+    expect(onSearchHistory).toHaveBeenCalledTimes(1);
+    const keyword = onSearchHistory.mock.calls[0][0] as string;
+    expect(keyword.length).toBeLessThanOrEqual(24);
+    expect(long.startsWith(keyword)).toBe(true);
+    expect(onSearchHistory.mock.calls[0][0]).not.toContain("\n第二行");
+  });
+
+  it("未点击「设为标题」不会写入标题；点击后使用识别建议标题", async () => {
+    const manual = imageItem({ title: "我的手动标题", title_source: "manual" });
+    bridge.clipboardOcr.mockResolvedValue(makeReport());
+    bridge.clipboardRenameItem.mockResolvedValue({
+      ...manual,
+      title: "智能剪贴板",
+      title_source: "manual",
+    });
+    await renderImage({ title: "我的手动标题", title_source: "manual" });
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(screen.getByLabelText("识别出的文字")).toBeTruthy());
+    // 识别完成本身绝不写标题，手动标题保持原样
+    expect(bridge.clipboardRenameItem).not.toHaveBeenCalled();
+    expect(screen.getByText("我的手动标题")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /设为标题/ }));
+    await waitFor(() =>
+      expect(bridge.clipboardRenameItem).toHaveBeenCalledWith("ci1", "智能剪贴板"),
+    );
+  });
+
+  it("空结果明确显示「未识别到文字」", async () => {
+    bridge.clipboardOcr.mockResolvedValue(
+      makeReport({
+        status: "empty",
+        code: "no_text",
+        text: "",
+        reason: "未识别到文字",
+        chars: 0,
+        lines: 0,
+        suggestedTitle: null,
+      }),
+    );
+    await renderImage();
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(screen.getByText("未识别到文字")).toBeTruthy());
+    expect(extractButton().disabled).toBe(false);
+  });
+
+  it("引擎不可用给出明确提示，不自动下载模型，并恢复按钮", async () => {
+    bridge.clipboardOcr.mockResolvedValue(
+      makeReport({
+        status: "unavailable",
+        code: "engine_unavailable",
+        text: "",
+        reason: "未安装可用的 OCR 语言包",
+        chars: 0,
+        lines: 0,
+        suggestedTitle: null,
+      }),
+    );
+    await renderImage();
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(screen.getByText("未安装可用的 OCR 语言包")).toBeTruthy());
+    expect(screen.getByText(/不会自动下载模型/)).toBeTruthy();
+    expect(extractButton().disabled).toBe(false);
+  });
+
+  it("识别失败展示具体原因并恢复按钮", async () => {
+    bridge.clipboardOcr.mockResolvedValue(
+      makeReport({
+        status: "error",
+        code: "recognize_failed",
+        text: "",
+        reason: "识别服务返回异常",
+        chars: 0,
+        lines: 0,
+        suggestedTitle: null,
+      }),
+    );
+    await renderImage();
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(screen.getByText("识别服务返回异常")).toBeTruthy());
+    expect(extractButton().disabled).toBe(false);
+    expect(screen.queryByLabelText("识别出的文字")).toBeNull();
+  });
+
+  it("超大图明确提示图片过大并建议截取局部，不报成「未识别到文字」", async () => {
+    bridge.clipboardOcr.mockResolvedValue(
+      makeReport({
+        status: "too_large",
+        code: "image_too_large",
+        text: "",
+        reason: "图片过大（20000×20000，预估占用约 1526 MB），请截取需要的局部后再识别",
+        chars: 0,
+        lines: 0,
+        suggestedTitle: null,
+      }),
+    );
+    await renderImage();
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(screen.getByText(/图片过大/)).toBeTruthy());
+    expect(screen.getByText(/截取需要的局部/)).toBeTruthy();
+    expect(screen.queryByText("未识别到文字")).toBeNull();
+    expect(screen.queryByLabelText("识别出的文字")).toBeNull();
+    expect(extractButton().disabled).toBe(false);
+  });
+
+  it("切换到其他条目不串结果：旧请求被取消，迟到结果不落地", async () => {
+    let resolveOld!: (r: ClipboardOcrReport) => void;
+    bridge.clipboardOcr.mockImplementation((id: string) =>
+      id === "old"
+        ? new Promise<ClipboardOcrReport>((r) => {
+            resolveOld = r;
+          })
+        : Promise.resolve(makeReport({ text: "新图文字" })),
+    );
+    bridge.clipboardItem.mockImplementation((id: string) =>
+      Promise.resolve(imageItem({ id })),
+    );
+    const props = {
+      linkTask: null,
+      askConfirm: () => {},
+      onBack: vi.fn(),
+      onChanged: vi.fn(),
+    };
+    const view = render(<ClipboardItemDetail itemId="old" {...props} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /提取文字/ })).toBeTruthy());
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(bridge.clipboardOcr).toHaveBeenCalledTimes(1));
+
+    view.rerender(<ClipboardItemDetail itemId="new" {...props} />);
+    await waitFor(() => expect(bridge.clipboardOcrCancel).toHaveBeenCalled());
+    resolveOld(makeReport({ text: "旧图文字" }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector(".clip-ocr-text")).toBeNull();
+    expect(screen.queryByText("旧图文字")).toBeNull();
+  });
+
+  it("离开详情时取消进行中的识别", async () => {
+    let resolveLater!: (r: ClipboardOcrReport) => void;
+    bridge.clipboardOcr.mockReturnValue(
+      new Promise<ClipboardOcrReport>((r) => {
+        resolveLater = r;
+      }),
+    );
+    const view = await renderImage();
+    fireEvent.click(extractButton());
+    await waitFor(() => expect(bridge.clipboardOcr).toHaveBeenCalledTimes(1));
+    const requestId = bridge.clipboardOcr.mock.calls[0][1] as string;
+    view.unmount();
+    expect(bridge.clipboardOcrCancel).toHaveBeenCalledWith(requestId);
+    // 迟到结果到达后不得抛错，也不再有可见结果
+    resolveLater(makeReport());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector(".clip-ocr-text")).toBeNull();
   });
 });

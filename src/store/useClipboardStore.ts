@@ -111,6 +111,12 @@ let monitorSeq = 0;
  */
 const exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+/** 丢弃全部离场快照定时器（清空成功 / 测试与热更新重置共用）。 */
+function dropExitTimers() {
+  for (const t of exitTimers.values()) clearTimeout(t);
+  exitTimers.clear();
+}
+
 function mergeItems(current: ClipboardView["items"], next: ClipboardView["items"]) {
   const seen = new Set(current.map((i) => i.id));
   const merged = [...current];
@@ -213,6 +219,17 @@ export const useClipboardStore = create<{
   beginExit: (ids: string[], kind: "item" | "group") => void;
   /** 结束离场：放开钉住的行并从本地视图剔除（服务端已经没有它们）。幂等。 */
   endExit: (ids: string[]) => void;
+  /**
+   * 全量清空成功后的前端一致性收尾（**只能在后端确认清空成功后调用**）。
+   *
+   * - 丢弃全部离场快照并回收收尾定时器：否则后续静默刷新会把已删行按快照
+   *   重新钉回空列表（看起来像「清空后内容又回来了」）；
+   * - 清空多选与轻量视图，推进筛选/请求代际，让清空前发起的在途响应一律作废；
+   * - 立即呈现空态，随后 `load()` 以服务端结果为准；
+   * - 清空失败时不得调用，否则会提前丢掉仍有效的本地数据；
+   * - 不影响单项/批量删除的离场动画（这里只处理「全部已删」这一种终态）。
+   */
+  resetAfterClear: () => void;
   toggleItemSelection: (id: string) => void;
   toggleGroupSelection: (id: string) => void;
   clearSelection: () => void;
@@ -433,6 +450,49 @@ export const useClipboardStore = create<{
       };
     }),
 
+  resetAfterClear: () =>
+    set((s) => {
+      // 离场快照与定时器必须一起失效：只清快照会让定时器到点再 endExit；
+      // 只清定时器则快照会被后续静默刷新重新钉回。
+      dropExitTimers();
+      filterGen += 1;
+      reqSeq += 1;
+      liteSeq += 1;
+      const stats = s.view?.stats;
+      return {
+        exiting: {},
+        selectedItems: [],
+        selectedGroups: [],
+        error: null,
+        loading: false,
+        loadingMore: false,
+        // 立即呈现空态；随后 load() 以服务端结果为准，旧请求已按代际作废
+        view:
+          s.view && stats
+            ? {
+                ...s.view,
+                items: [],
+                groups: [],
+                total_items: 0,
+                stats: {
+                  ...stats,
+                  items: 0,
+                  groups: 0,
+                  images: 0,
+                  files: 0,
+                  favorites: 0,
+                  bytes: 0,
+                  asset_bytes: 0,
+                },
+              }
+            : s.view,
+        // 胶囊轻量视图与完整页一致：正在显示时同步清空，避免残留已删条目
+        lite: s.lite ? { items: [], groups: [] } : s.lite,
+        liteStatus: s.lite ? "empty" : s.liteStatus,
+        liteError: null,
+      };
+    }),
+
   toggleItemSelection: (id) =>
     set((s) => ({
       selectedItems: s.selectedItems.includes(id)
@@ -619,8 +679,7 @@ export function resetClipboardRequestState() {
   filterGen += 1;
   reqSeq += 1;
   // 代际已推进，任何遗留的离场快照都不该再钉进新列表；收尾定时器一并回收
-  for (const t of exitTimers.values()) clearTimeout(t);
-  exitTimers.clear();
+  dropExitTimers();
   teardownLive();
   liveFullRefs = 0;
   liveLiteRefs = 0;

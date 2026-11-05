@@ -836,6 +836,77 @@ UI 线程可交互**；后者本轮未真机测量。
 优先级与手动改名保护。Windows 真机（记事本/VS Code/浏览器/图片/文件列表/最小化/关闭/
 执行中用户复制/取消后续传）**未执行**，单测不代表真机结论。
 
+#### 11.6.6 快照「可重建性」判定与 HTML-only 拒绝（2026-11-05）
+
+**发现的 P1 数据安全缺口**
+
+1. **多格式快照误放行**：11.6 的白名单只检查「每个格式单独受支持」，但
+   `ClipboardPayload` 只能按 `classify()` 优先级保留一种内容表示（文件 > 图片 >
+   HTML > 文本）。剪贴板同时含 `CF_UNICODETEXT` 与 `PNG` 时，读取得到文本 + 图片，
+   载荷是 `Image`，恢复只写 PNG/DIB，**原始文本永久丢失**；图片 + 独立 HTML、
+   文件 + 独立文本同理。白名单全通过仍会启动写入型测试。
+2. **HTML-only 误判**：`payload_from_read()` 会返回
+   `Text { text: "", html: Some(..) }`，而 `write_formats_with()` 对空文本直接报错。
+   快照能读、恢复必失败：测试先清空剪贴板，再恢复失败，用户原 HTML 丢失。
+
+**修复（只读探测扩展，不做完整多格式快照系统）**
+
+| 位置 | 变化 |
+|---|---|
+| `platform.rs` `SnapshotProbe` | 新增 `reconstruction: Result<(), String>`，区分「格式受支持」与「整份快照可安全重建」；`probe_refusal()` 把它作为第三道拒绝条件 |
+| `platform.rs` `FormatClass` / `classify_format()` | 按内容族分类：`Text`（CF_TEXT/CF_OEMTEXT/CF_UNICODETEXT，系统互转）、`Html`（HTML Format，独立存储）、`Image`（PNG/CF_DIB/CF_DIBV5/CF_BITMAP）、`Files`（CF_HDROP）、`Companion`（CF_PALETTE/CF_LOCALE，随内容重建）、`Unsupported`；`is_recoverable_format()` 改为复用该分类 |
+| `platform.rs` `snapshot_reconstruction()` | 族不与载荷匹配即拒绝：文本+图片、文本+文件、图片+文本/HTML/文件、文件+文本/HTML/图片均拒绝；文本+HTML 要求纯文本非空且 HTML 片段能读回；PNG+DIB 视为同一图片表示放行；路径必须仍存在；含 Unsupported 格式一律拒绝；格式集合为空或载荷过不了写入层约束同样拒绝 |
+| `platform.rs` `enum_formats_open()` | 每次枚举前 `SetLastError(0)`，返回 0 时用 `GetLastError()` 区分「正常结束」与「API 失败」；失败即整体判为不可确认（不是用已枚举到的部分继续判断，避免漏掉后续不支持格式） |
+| `platform.rs` `text_payload_writable()` / `image_payload_writable()` / `valid_file_paths()` / `payload_writable()` | 从 `write_formats_with()` 抽出的「必需格式」判据，写入与探测共用同一组函数；`write_formats_with()` 正常行为不变 |
+| `tests/real_clipboard.rs` | `probe_refusal()` 接入 `reconstruction`；新增复合格式、HTML-only、枚举失败、拒绝时不写剪贴板 4 个模拟用例 |
+| `platform.rs` 单测 | 新增 `snapshot_reconstruction_requires_rebuilding_every_independent_format`，覆盖纯文本/纯 PNG/PNG+DIB/文本+HTML 放行、HTML-only、PNG+文本、图片+HTML、文件+文本、路径失效、RTF/Office 私有格式拒绝，并对放行载荷执行 `write_formats_with(|_,_| true)` 证明符合真实写入约束 |
+
+**判定矩阵（格式集合 → 结果）**
+
+| 快照格式 | 载荷 | 结果 |
+|---|---|---|
+| CF_UNICODETEXT + CF_TEXT/CF_OEMTEXT + CF_LOCALE | Text（非空） | 放行 |
+| CF_UNICODETEXT + HTML Format | Text（文本非空、HTML 可写回） | 放行 |
+| PNG + CF_DIB + CF_DIBV5 + CF_BITMAP + CF_PALETTE | Image | 放行（同一图片表示） |
+| HTML Format（无纯文本） | Text{text:"", html} | 拒绝（写入层要求非空纯文本） |
+| PNG + CF_UNICODETEXT | Image | 拒绝（文本会丢） |
+| PNG / CF_DIB + HTML Format | Image | 拒绝（HTML 会丢） |
+| CF_HDROP + CF_UNICODETEXT | Files | 拒绝（无法证明文本只是路径清单） |
+| CF_HDROP，路径已删除 | Files | 拒绝（写回必失败） |
+| 含 RTF / Office 私有 / 第三方格式 | 任意 | 拒绝（写回后永久丢失） |
+| 枚举 API 失败 | 任意 | 拒绝（fail-closed） |
+
+**边界检查结果**
+
+- 枚举正常结束与 API 失败已区分；枚举失败不用部分结果判断完整性，直接 fail-closed。
+- 格式检查与内容读取在同一次 `OpenClipboard` 内完成，对应同一份剪贴板状态。
+- 只读探测持锁时间与既有 `snapshot()` 同级（一次打开、一次读取、一次关闭），不长期持锁、
+  不轮询、不新增后台线程。
+- 探测不解析未知格式、不复制格式内容；唯一新增内存是格式名称列表（≤ 实际格式数），
+  被拒绝清单截断到 32 项。
+- 拒绝路径在任何写入之前返回：`restorable_snapshot()` 只读，`EmptyClipboard()` 只在
+  `write_formats_with()` 成功进入写入阶段后才发生。
+
+**验证（工作目录 `src-tauri/`）**
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test --test real_clipboard` | **17 passed / 0 failed / 3 ignored**（EXIT 0） |
+| `cargo test --test clipboard_source_snapshot` | **3 passed / 0 failed / 0 ignored**（EXIT 0） |
+| `cargo test --lib clipboard` | **219 passed / 0 failed / 1 ignored**（EXIT 0，过滤口径含其他模块名匹配 `clipboard` 的用例） |
+| `cargo check --lib` | **EXIT 0** |
+
+以上均在真实工作树执行。并行会话期间共享 `target` 内的 `task-dock.exe` 被其他实例占用，
+`cargo test` 无法重链 bin（os error 5），因此 `real_clipboard` 使用已登记隔离 target
+`src-tauri/target-clipboard-probe/`；其余三条使用共享 `target`。验证过程中工作树多次出现
+其他会话的未提交中间态（`widget_windows.rs`、`audio/mod.rs`、`workflows/store.rs` 及
+`platform.rs` 内的空读复核代码），等待其自行恢复后重跑通过，未回滚、未覆盖任何并行改动。
+真实写入型 `#[ignore]` 用例未执行。
+
+剩余风险：Chrome/VS Code 等应用复制时附带的自定义格式（如内部 clip type）会被判
+Unsupported 而保守拒绝，需要在明确授权的隔离桌面单独验证；这是「宁可拒绝也不丢内容」的
+预期行为，不是缺陷。
+
 ### 11.7 并发配额、跨平台失败清理与临时文件生命周期（2026-11-04 收尾）
 
 范围：`clipboard_path_status` 请求级并发、非 Windows 失败清理、`write_replace` 临时文件
@@ -904,3 +975,254 @@ UI 线程可交互**；后者本轮未真机测量。
 并发达上限时的 UI 行为均**未执行**。既有 Rust 层保存耗时数据见 §11.5.4；路径批量查询
 仅有语义/上限单测，没有耗时样本，不能据此推断慢盘表现。Windows 真实文件系统行为
 （排他创建、替换、句柄级清理、rename 失败清理）由 §11.7.3 的 Rust 用例在 NTFS 上实际覆盖。
+
+## 十二、2026-11-04 本地 OCR 验收
+
+### 12.1 自动化结果
+
+工作目录：Rust 在 `src-tauri/`，前端在仓库根；均为本次实际执行。
+
+| 命令 | 结果 | 说明 |
+|---|---|---|
+| `cargo test --test ocr -- --ignored --test-threads=1` | EXIT 0；**15 passed / 0 failed** | 真机 Windows OCR；中/英/中英混排/数字/空白/图形/小字/大图/暗色/损坏图/不可用/取消/并发/重复请求/缓存失效 |
+| `cargo test --lib clipboard::ocr` | EXIT 0；**12 passed / 0 failed** | 文本规范化、LRU、内容哈希、闸门、取消匹配、缩放与降采样 |
+| `cargo test --test ocr_perf -- --ignored --nocapture --test-threads=1` | EXIT 0；**1 passed** | 资源/耗时采样，见 12.2 |
+| `npx vitest run` | EXIT 0；**1635 passed / 130 files** | 含新增 9 个 OCR 前端用例 |
+| `npx vite build` | EXIT 0 | 产物 `dist/` |
+| `npx tsc --noEmit` | EXIT 2；错误全部来自并行会话的 `ImageLightbox.tsx`（未使用导入）与未跟踪的 `ClipboardLite.test.tsx`（重复 id），**本次改动文件无类型错误** | 未修改他人文件 |
+
+测试输入均为仓库内自造图 `src-tauri/tests/fixtures/ocr/`，不读取用户剪贴板。
+
+### 12.2 资源与耗时（debug 测试进程，单次样本）
+
+条件：Windows 11 10.0.26200，debug 构建，OCR 测试进程自身 working set / private bytes，
+后台线程每 2ms 采样；样本数 1 轮，机器同时有其他会话任务，**不是空闲机器**。数值仅代表
+该条件，不能推断长期泄漏或 release 表现。
+
+| 阶段 | WS | Private | 耗时 |
+|---|---|---|---|
+| 基线（已入库 6 张图，未识别） | 14.36 MB | 4.60 MB | — |
+| 首次识别（zh.png） | 19.35 MB | 5.43 MB | 93 ms |
+| 单张最大图（3000×2000）峰值 | 109.45 MB | 101.03 MB | 174 ms |
+| 连续 6 张峰值 | 30.40 MB | 19.79 MB | 总 345 ms；单项 0/74/59/144/0/66 ms（含 2 次缓存命中） |
+| 完成后等待 2s | 19.76 MB | 6.37 MB | — |
+| 相对基线净增 | +5.40 MB | +1.77 MB | 累计 CPU 0.031 s |
+
+结论：**在上述条件下未观察到无界增长**；单张峰值主要来自 3000×2000 RGBA 解码与
+`SoftwareBitmap` 复制（一次约 24 MB 级缓冲），调用结束即释放并回落。识别结束后
+`busy=false`、缓存 6/16，无残留任务。应用侧不创建常驻线程、定时器或轮询；后台识别任务
+由命令层配额限制为 ≤1。未单独统计进程线程数（未执行）。
+
+### 12.3 UI 走查（B 通道，非原生）
+
+`scripts/serve-preview.mjs` + Playwright，1280×900 视口、400 宽窗口渲染。已确认：
+浅/深主题下原图、识别结果、三个操作按钮完整无遮挡；120px 固定结果区在加载/结果之间
+不跳动；不可用状态提示与「不会自动下载模型」说明可见。**这不代表 WebView2 原生窗口、
+DPI、真实系统剪辑板行为**；原生验证因 `task-dock.exe` 被其他会话占用而 ENVIRONMENT BLOCKED。
+
+证据：`tmp/acceptance/clipboard-ocr/`（`ocr-ok-light-2026-11-04.png`、
+`ocr-ok-dark-2026-11-04.png`、`ocr-unavailable-light-2026-11-04.png`、`report.md`）。
+
+## 十三、2026-11-04 本地 OCR 第二轮修复验收（COM / 内存预算 / 缓存失效 / 取消）
+
+范围：`src-tauri/src/clipboard/ocr.rs`、`clipboard/image.rs`、`clipboard/mod.rs`、
+`commands/clipboard.rs` 的删除路径、`tests/ocr.rs`、`tests/ocr_perf.rs` 与前端
+`bridge.ts` / `ClipboardItemDetail.tsx`。**未新增自动识别、AI 总结等功能；未改
+`SettingsPanel.tsx` 与其他模块。**
+
+### 13.1 修复内容
+
+| 项 | 变更 | 验证落点 |
+|---|---|---|
+| P1 COM 生命周期 | `S_OK` / `S_FALSE` 都视为「本次调用成功」并配对一次 `CoUninitialize`；`RPC_E_CHANGED_MODE` 与其他失败明确报错且不反初始化；保持 RAII，先释放 WinRT 对象再反初始化 | `com_disposition_pairs_s_ok_and_s_false`、`com_guard_balances_second_init_returning_s_false`（二次 init 后 drop 再 `CoInitializeEx` 必须得 `S_OK`）、`com_guard_rejects_incompatible_apartment` |
+| P1 解码前预算 | 读 IHDR 头拿宽高，解码前校验 24M 像素 / 448 MiB 估算；超限返回 `too_large`（`image_too_large`），不启动引擎；前端提示截取局部 | `png_dimensions_*`、`decode_budget_rejects_oversized_before_decoding`、`too_large_report_is_not_empty_text`、集成 `oversized_image_is_rejected_before_decode` |
+| P2 缓存失效 | 新增 `invalidate_items` / `clear_cache` / `retain_existing`；接入单条删除、删组、清空、`clipboard_cleanup` 与维护线程过期清理；`epoch` 保证迟到任务不回写 | `invalidate_items_only_touches_requested_entries`、`clear_cache_removes_everything`、`late_result_is_not_written_back_after_invalidation` / `_clear`、`retain_existing_drops_missing_and_changed_entries`、集成 `deleting_one_item_invalidates_only_its_cache_entry`、`auto_expiry_cleanup_evicts_cache_entries` |
+| P2 取消 | 集成测试改为以 `active_request()` 为同步点确定性命中运行中任务，严格断言 `cancelled` 且 5s 内返回、不缓存、配额与登记释放、可立即再次识别 | 集成 `cancel_hits_running_task_and_releases_resources` |
+| P3 自动 OCR | 后端配置结构与 v32 迁移不变；采集热路径无自动识别调用，历史 `true` 也不触发；设置页开关由并行会话置为不可操作 | `Settings` 结构未改；无新增采集调用点 |
+
+实现中发现并修复的一处测试暴露的真实缺陷：`Cache::clear()` 原在缓存为空时提前返回、
+不自增代数，导致「正在识别 + 此时清空历史」的迟到结果仍会写回；`retain_existing` 同样只在
+真的淘汰条目时自增代数，无法覆盖「删除尚未进入缓存的条目」。两处均改为**总是自增代数**。
+
+### 13.2 自动化结果（实际执行）
+
+工作目录：Rust 在 `src-tauri/`，前端在仓库根。
+
+| 命令 | 结果 | 证据 |
+|---|---|---|
+| `cargo check` | EXIT 0（仅其他模块 2 条既有 warning） | 终端输出 |
+| `cargo test --lib clipboard::ocr` | EXIT 0；**22 passed / 0 failed** | 终端输出 |
+| `cargo test --test ocr -- --ignored --test-threads=1` | **18 passed / 0 failed**（cargo 因其他实例占用 `target/debug/task-dock.exe` 在 bin 链接步骤失败，测试二进制已编译，直接运行同一二进制 `ocr-*.exe --ignored --test-threads=1`，结果相同） | 终端输出 |
+| `cargo test --test ocr_perf -- --ignored --nocapture --test-threads=1` | 同上，**1 passed** | `tmp/acceptance/clipboard-ocr/ocr-perf-round2-20261104.log` |
+| `npx vitest run src/components/clipboard/ClipboardItemDetail.test.tsx` | EXIT 0，1 文件全通过（新增「超大图明确提示」用例） | 终端输出 |
+| `npx vitest run src/components/clipboard/` | EXIT 0；**12 文件 / 194 用例全通过**（中途一轮 4 例失败来自并行会话当次改动的分组网格/离场锚点，其修复后复跑通过；另一次分页用例在机器高负载下超时，单跑与复跑均通过） | 终端输出 |
+| `npm run build` | 早前 EXIT 0；收尾时 `tsc` 因并行会话 `src/components/capsule/AppsLite.tsx` 与 `src/lib/audioNotification.test.ts` 报错 EXIT 2，未用跳过 tsc 的构建冒充通过 | 终端输出 |
+
+测试输入全部为仓库内自造图（`tests/fixtures/ocr/`），不读取用户剪贴板；日志不含识别正文。
+
+### 13.3 资源与耗时（debug 测试进程，单轮样本）
+
+条件：Windows 11 10.0.26200，debug 构建，共享增量缓存；机器同时有并行会话构建与运行实例
+（**非空闲**）；后台线程每 2ms 采样；样本数 1 轮。数值只代表该条件，不能推断 release 或长期泄漏。
+
+| 场景 | 状态 | 耗时 | 进程峰值 Private / WS |
+|---|---|---|---|
+| 基线（已入库，未识别） | — | — | 3.70 MB / 13.49 MB |
+| 首次中文识别 | ok | 85 ms | 整轮后 5.62 MB / 19.19 MB |
+| 3000×2000（历史参照图） | ok | 153 ms | 101.21 MB / 109.40 MB |
+| 1080p 合成图 | empty（无色带文字） | 99 ms | 41.14 MB / 50.20 MB |
+| 4K 合成图 | empty | 452 ms | 136.66 MB / 144.96 MB |
+| 6000×4000（接近 24M 预算） | empty | 1,154 ms | 376.30 MB / 383.93 MB |
+| 20000×20000（超预算） | **too_large** | **0 ms** | 5.91 MB / 19.10 MB（未启动引擎） |
+| 连续 10 张（含缓存命中与 960×540 变体） | 6 ok / 4 empty | 总 523 ms | 22.47 MB / 30.74 MB |
+| 识别中取消 | cancelled | 248 ms 响应 | 不缓存、闸门释放 |
+| 删除后缓存条目 | — | — | 12 条（未删条目保留） |
+| 清空后缓存条目 | — | — | 0 |
+| 完成后静置 | — | — | 7.48 MB / 20.25 MB，相对基线 +3.78 MB / +6.76 MB；累计 CPU 0.578 s |
+
+结论：**在上述条件下未观察到无界增长**。接近预算的 6000×4000 峰值约 376 MB，低于
+448 MiB 闸门；超预算图在 0 ms 内被拒绝且峰值回到基线附近，说明没有解码大图。
+3000×2000 的 101 MB 与历史 109 MB 同量级，仅作参照，不算本轮修订前结果。
+不使用「适用于所有设备」的结论：预算值来自本机实测。
+
+### 13.4 未验证与环境阻塞
+
+1. **原生 UI 真机链路**（复制中文截图 → 详情 → 提取文字 → 复制文字 → 文字搜索 → 设标题 →
+   重进看缓存 → 识别中切条目 → 损坏图报错 → 深浅主题 → 窄窗）：本机有两个其他会话运行的
+   `task-dock.exe`（PID 33392 / 39248）占用 `target/debug/task-dock.exe`，链接阶段
+   `os error 5`；未终止他人进程，记 **ENVIRONMENT BLOCKED**，不以浏览器模拟冒充原生 OCR。
+2. **原生取消边界**：`IAsyncOperation::Cancel()` 是请求取消，WinRT 内部计算何时停止不可保证；
+   能保证的是调用方及时返回、不缓存不完整结果、配额释放、可立即开始下一次。
+3. **超预算图的真机 UI 提示**：仅单测与集成断言，原生界面提示样式未真机确认。
+4. **多语言/双语言识别峰值**：本机仅安装 zh/en 引擎，双语言并行路径未构造样本。
+
+
+
+## 十四、复制回流、滚动稳定性与清空一致性（2026-11-04）
+
+### 14.1 自动化与针对性验证（本次实际执行）
+
+| 项 | 命令（工作目录） | 结果 |
+|---|---|---|
+| 滚动/复制回归 | `npx vitest run src/components/clipboard/ClipboardWorkspace.scroll.test.tsx`（仓库根） | 5 passed / 0 failed，退出码 0；含中部新增历史补偿、顶部不补偿、复制不改变位置、详情往返与筛选切换、统计失败部分成功 |
+| 剪贴板相关套件 | `npx vitest run src/store/useClipboardStore.test.ts src/components/clipboard src/components/capsule`（仓库根） | 20 files / 359 tests passed，退出码 0（含新增清空快照失效、旧响应作废、胶囊同步清空） |
+| Tauri 构建 | `npx vite build`（仓库根） | 退出码 0（`tsc` 被其他会话未跟踪文件 `src/lib/audioNotification.test.ts` 的既有类型错误阻塞，非本任务改动） |
+| Rust 剪贴板单测 | `cargo test --lib clipboard`（`src-tauri/`） | 见 14.2；完整套件复跑时另一会话正在改 `navigation/app_discovery.rs`，曾出现临时编译失败，需按时间点区分 |
+
+### 14.2 缓存清理 IO 异常
+
+`purge_orphan_files` 新增两条测试（`clipboard::store::tests`）：
+
+- `purge_orphan_files_reports_directory_io_error_and_keeps_cleaning_others`：把 `images`
+  占成普通文件使 `read_dir` 返回真实 IO 错误，断言失败数 ≥1、其它目录仍正常清理，
+  修好目录后重跑失败数归零（可重试）；
+- `purge_orphan_files_keeps_referenced_assets`：仍被数据库引用的资产不被当孤儿删除。
+
+目录不存在（`NotFound`）属正常情况，不计失败；不删除外部原文件，也不触碰系统剪贴板。
+
+### 14.3 未验证与边界
+
+1. **真实系统剪贴板**：`src-tauri/tests/real_clipboard.rs` 会改写系统剪贴板，本次无法确认
+   当前剪贴板内容可安全恢复，**未执行**，不标记通过。
+2. **Windows 延迟通知 / 其他进程短暂占用**：依赖真实 Win32 消息时序，本次只有既有
+   `classify_event` / `clear_supersedes` / `cleared_stale_gate` 单测，未做真机长测。
+3. **滚动行为的真实渲染**：Vitest 用受控行高模拟布局（jsdom 无真实滚动），能证明补偿
+   逻辑与阈值；真实 WebView2 的滚动惯性、DPI、贴边等仍需真机走查。
+4. **原生窗口/DPI/多显示器**：未执行。
+
+## 十五、2026-11-04 第三轮：缓存失效代数拆分与内存复核
+
+范围：`ocr.rs` 的缓存控制面、`commands/clipboard.rs` 的删除路径、`clipboard/mod.rs` 的维护线程、
+`tests/ocr.rs` 的并发用例。**未新增自动识别，未改 OCR 对外命令接口，未改其他模块。**
+
+### 15.1 修复内容
+
+| 项 | 变更 | 验证落点 |
+|---|---|---|
+| 校正与代数推进分离 | `Cache::retain_existing` 只按「条目仍存在、内容哈希未变」淘汰并返回是否淘汰，**不再自增** `epoch`；新增 `OcrService::advance_epoch()`；`OcrService::retain_existing(&Db, deleted)` 在 `deleted` 为真时**先**推进代数，再校正 | `retain_existing_drops_missing_and_changed_entries`（断言 epoch 不变）、`empty_cache_group_delete_still_invalidates_in_flight_task`、`cleanup_without_deletion_keeps_in_flight_result_writable` |
+| 空缓存 + 真实删除 | 单条删除仅在 `report.deleted > 0` 时 `invalidate_items`；删组/清理/维护线程把 `deleted` 标志传给 `retain_existing`，缓存为空也推进代数 | 集成 `delete_group_during_recognition_does_not_cache_late_result`、`cleanup_during_recognition_does_not_cache_late_result`、`clear_history_during_recognition_discards_late_result` |
+| 识别起点记录代数 | `recognize` 在查询条目**之前**记录 `epoch`，覆盖「任务尚未登记时发生删除/清空」的窗口 | 上述并发用例 + `late_result_is_not_written_back_after_invalidation` / `_clear` |
+| DB 校正异常 | `store::content_hash` 任一条目读取失败 → `Cache::discard_all()`（清空并推进代数），不假定旧缓存安全；删除 store 返回错误时不调用失效逻辑，不伪造成功 | `db_failure_discards_unverifiable_cache` |
+| 未删除条目保留 | 快照式校正只淘汰已删/哈希变化条目，单条删除只移除指定 id | `retain_existing_drops_missing_and_changed_entries`、`invalidate_items_only_touches_requested_entries`、集成 `deleting_one_item_invalidates_only_its_cache_entry` |
+
+确定性并发用例不靠 sleep：`active_request()` 在登记完成时暴露 `requestId`（登记发生在读文件/解码/
+调用引擎之前），测试轮询该登记点（5s 上限），删除/清理/清空完成后先断言任务仍在进行，再 join
+识别线程并断言缓存 0、`is_busy() == false`、`active_request() == None`。识别对象使用
+2400×1800 合成图，删除目标与其分离（同组但被另一组共享），保证识别能完整走完引擎。
+
+实现中发现并修复的真实缺陷：第二轮 `OcrService::retain_existing` 在缓存快照为空时直接 return，
+导致「缓存为空 + 识别在跑 + 删整组/过期清理」不推进代数，迟到结果仍会写回；同时第二轮把它改成
+「校正时总是自增」，会误伤没有实际删除时的在跑任务。第三轮改为「校正不自增、删除路径显式推进」。
+
+### 15.2 自动化结果（实际执行）
+
+| 命令 | 结果 | 证据 |
+|---|---|---|
+| `cargo check --tests`（`src-tauri/`） | EXIT 0（另有其他模块既有 warning） | 终端输出 |
+| `cargo test --lib clipboard::ocr` | EXIT 0；**25 passed / 0 failed** | `tmp/acceptance/clipboard-ocr/cargo-test-lib-ocr-round3-20261104.log` |
+| `cargo test --test ocr -- --ignored --test-threads=1` | **21 passed / 0 failed**，15.42 s；cargo 因其他实例占用 `target/debug/task-dock.exe` 在 bin 链接步骤失败，直接运行已重建的 `target/debug/deps/ocr-*.exe` | `tmp/acceptance/clipboard-ocr/cargo-test-ocr-round3-20261104.log` |
+| `cargo test --test ocr_perf -- --ignored --nocapture --test-threads=1` | **1 passed**，9.67 s | `tmp/acceptance/clipboard-ocr/ocr-perf-round3-20261104.log` |
+| `npx vitest run src/components/clipboard/`（仓库根） | EXIT 0；**12 files / 207 tests passed** | `tmp/acceptance/clipboard-ocr/vitest-clipboard-round3-20261104.log` |
+| `npm run build`（仓库根，含 `tsc --noEmit`） | EXIT 0，8.04 s | `tmp/acceptance/clipboard-ocr/npm-build-round3-20261104.log` |
+
+### 15.3 内存复核（不改架构）
+
+缓冲清单与结论：
+
+| 缓冲/对象 | 生命周期 | 结论 |
+|---|---|---|
+| PNG 容器 `Vec<u8>` | 读到文件后、缩放前；缩放后即 drop | 不与解码图长期共存 |
+| 解码 RGBA（4×P） | 进入 `recognize_pixels`；不缩放时 move、不复制 | 唯一的大输入缓冲 |
+| 缩放输出（4×S） | 仅超 `OCR_MAX_PIXELS` 时生成；box 过滤需同时持有源缓冲 | 峰值 = 4P + 4S，无法再省 |
+| `DataWriter` 缓冲（4×S） | `WriteBytes` 复制 → `DetachBuffer` 后交给位图 | WinRT 公开 API 必需的一份复制 |
+| `SoftwareBitmap`（4×S） | `CreateCopyFromBuffer` 复制；每次识别结束关闭 | 与 `DataWriter` 缓冲短暂共存 |
+| 中英二次识别 | 同一 `pixels` 复用，仅在第一轮为纯拉丁时才做；引擎与位图按轮次重建 | 不复制源像素，不并发持有两份位图 |
+| 引擎/COM | 每次调用临时创建，作用域结束关闭并反初始化 | 不常驻、不预加载 |
+
+- 预算估算维持 `4P + 12×S + 64 MiB`（P=原像素，S=缩放后像素）：12×S 对应
+  `DataWriter` 缓冲、`SoftwareBitmap` 副本与 RGBA 输入各一份。`OCR_INPUT_BUDGET_BYTES = 448 MiB`
+  是**准入闸门，不是实测峰值保证**；未做调参（没有实测依据表明需要）。
+- 未发现我们代码里多余的整幅像素副本：可省略的一步是「`WriteBytes` 之后提前释放源 RGBA」，
+  但它要留给可能的第二次语言识别，且 WinRT 位图创建仍需缓冲与位图同时存在，收益有限且会改动
+  引擎路径，本轮不做。
+- 结束释放：取消/失败/超限路径都关闭位图、释放 `BusyLease` 配额与运行中登记；测试断言
+  `busy=false` 且 `active_request()==None`，可立即再次识别。
+
+### 15.4 第三轮实测（debug 测试进程，单轮样本）
+
+条件：Windows 11 10.0.26200，debug 构建，共享增量缓存，后台 2 ms 采样，单轮样本；**这是独立
+Rust 测试进程，不是完整 task_dock 应用**（完整应用本轮未测）。机器当时有其他会话运行/编辑，
+不声明为空闲条件。
+
+| 场景 | 状态 | 耗时 | 峰值 Private / WS |
+|---|---|---|---|
+| 基线（已入库未识别） | — | — | 3.58 MB / 12.87 MB |
+| 首次中文识别 | ok | 53 ms | 7.27 MB / 20.03 MB（采样点） |
+| 3000×2000 | ok | 105 ms | 100.99 MB / 109.28 MB |
+| 1080p 合成图 | empty | 62 ms | 40.46 MB / 49.73 MB |
+| 4K 合成图 | empty | 279 ms | 139.60 MB / 144.66 MB |
+| 6000×4000（接近 24M 预算） | empty | 723 ms | 373.42 MB / 382.21 MB |
+| 20000×20000（超预算） | too_large | 0 ms | 5.18 MB / 18.61 MB（未解码、未启引擎） |
+| 连续 10 张 | 5 ok / 5 empty | 总 278 ms | 峰值 22.47 MB / 29.15 MB |
+| 识别中取消 | cancelled | 130 ms 响应 | 不缓存，配额释放 |
+| 删除后缓存条目 | — | — | 12 条（未删条目保留） |
+| 清空后缓存条目 | — | — | 0 |
+| 完成后静置 | — | — | 7.99 MB / 20.32 MB（相对基线 +4.42 MB / +7.45 MB），累计 CPU 1.531 s |
+
+结论：在上述条件下**未观察到持续线性增长**；接近预算的 6000×4000 峰值 373 MB 低于 448 MiB
+闸门，超预算图 0 ms 拒绝且峰值接近基线，说明没有解码大图。静置后相对基线有约 4.4 MB
+（Private）回升，属于本机 WinRT/分配器保留，不能据此宣称「无泄漏」，也不能把 448 MiB
+当作实际峰值保证。
+
+### 15.5 未验证与环境阻塞
+
+1. **原生 UI 端到端**（截图复制 → 详情 → 提取文字 → 复制文字核对系统剪贴板 → 文字搜索 →
+   设标题 → 重进验缓存 → 识别中切条目 → 空白图 → 超预算提示 → 引擎不可用 → 深浅主题 /
+   两种材质 / 约 400px 窄窗）：`target/debug/task-dock.exe` 仍被其他实例占用
+   （PID 39248，`D:\Develop\task_dock\src-tauri\target\debug\task-dock.exe`），链接失败
+   `os error 5`；未结束他人实例，本轮未启动隔离 target 的完整构建，记 **ENVIRONMENT BLOCKED**。
+2. **完整 task_dock 应用内存画像**：未测，只有独立 Rust 测试进程数据；不能把测试进程数值
+   当作应用常驻峰值。
+3. **长期稳定性 / 泄漏**：仅单轮样本与连续 10 张，不构成长期无泄漏结论。
+4. **双语言识别峰值**：本机仅 zh/en 引擎；二次识别路径有单测覆盖，未构造双语言实际样本。
+5. **原生系统剪贴板恢复**：本轮未改写系统剪贴板，也未执行原生复制核对。

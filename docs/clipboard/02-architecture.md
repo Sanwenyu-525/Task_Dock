@@ -123,6 +123,14 @@ Windows 剪贴板内容**不可重放**：事件被丢弃后无法补读当时�
 `read_failed` 单独统计「已完成 10×12 ms 重试仍打不开剪贴板」；两者分开后，
 诊断时不会再把“配置不让记”误读成“读取失败”。
 
+**2026-11-05 补充（第四轮外部采集修复）**：Win32 写入方通常按
+`EmptyClipboard → SetClipboardData` 两步提交，两步之间存在一个可被监听线程读到的空窗口。
+实测外部 PowerShell 进程写注册 PNG 偶发 `observed=1 / captured=0 / empty_events=1`，
+而 400 ms 后剪贴板中确有完整 PNG。现读空只做**一次**有界复核
+（`MAX_EMPTY_RECHECK = 1`，`EMPTY_RECHECK_DELAY_MS = 120`），复核仍空才计入
+`empty_events` 并记日志；该复核不放宽自写过滤、不引入无限重试，也不改变
+「空剪贴板」的判定语义。
+
 
 并发约定：
 
@@ -201,6 +209,7 @@ ACCESS_LOCK
 | 查询 | `clipboard_view`、`clipboard_item`、`clipboard_group`、`clipboard_stats`、`clipboard_thumb`、`clipboard_image` |
 | 复制 | `clipboard_copy_item`、`clipboard_copy_text`、`clipboard_copy_group_rich`、`clipboard_copy_group_files`、`clipboard_copy_items_rich`、`clipboard_copy_items_files` |
 | 多类型专属操作（v0.7，2026-11-03） | `clipboard_save_image`（另存落盘 PNG；显式 `overwrite` 覆盖授权，无授权原子排他创建、授权时临时文件 + rename 安全替换，见「另存为写入安全」）、`clipboard_open_url`（复用导航 URL 校验仅 http/https，系统默认浏览器委托）、`clipboard_open_local_path`（导航本地路径校验 + 系统关联程序）、`clipboard_reveal_local_path`（explorer /select）、`clipboard_path_status`（批量文件存在性：ok/missing/inaccessible，≤200 条） |
+| 本地 OCR（2026-11-04） | `clipboard_ocr`（只传条目 id 与前端请求 id，Rust 侧读取图片缓存并本地识别，返回结构化状态，见「九、本地 OCR」）、`clipboard_ocr_cancel`（按 requestId 精准取消） |
 | 整理 | `clipboard_toggle_item`、`clipboard_toggle_group`、`clipboard_close_group`、`clipboard_delete_items`、`clipboard_delete_group`、`clipboard_create_group`、`clipboard_rename_group`、`clipboard_rename_item`、`clipboard_add_to_group`、`clipboard_remove_group_item`、`clipboard_move_group_item`、`clipboard_split_group`、`clipboard_merge_groups` |
 | 任务关联 | `clipboard_link_task`、`clipboard_unlink_task`、`clipboard_task_links` |
 | 快照关联（v0.5 并行模块） | `clipboard_link_snapshot`、`clipboard_unlink_snapshot`、`clipboard_snapshot_links` |
@@ -411,3 +420,141 @@ failed/cancelled/confirmed`，其中 `confirmed` 仅在存在独立接收信号�
   本地时间兜底（`截图 · MM-DD HH:mm`）；时间兜底组在关闭收集时补 `· N 张`。
 - 用户手动改名即写 `name_source = 'manual'`，此后任何自动命名/补数量都不再生效。
   不引入 OCR / AI / 网络调用。
+
+## 九、本地 OCR（2026-11-04 新增）
+
+### 引擎与真机能力
+
+- 使用系统自带 `Windows.Media.Ocr.OcrEngine`（WinRT），**不引入 PaddleOCR / Tesseract
+  等模型依赖，不联网、不上传**；本机 Win11 10.0.26200 已安装 `zh-Hans-CN` 与 `en-US`，
+  `MaxImageDimension = 10000`。
+- 语言选择：优先中文引擎，结果不含 CJK 时用英文引擎重跑一次；两者都没有返回
+  `unavailable`，不自动下载语言包。
+- 已知识别特性：中文引擎输出的 `OcrLine.Text` 会**逐字插入空格**，后端做 CJK/数字/
+  全角标点邻接合并与 ASCII 语境半角化；`2026 → 2926`、`- → 一` 一类误识属于引擎限制，
+  不做猜测性替换。11px 左右极小字识别为乱码，放大 2×/3× 实测无改善，因此**不做放大**。
+
+### 按需执行与并发
+
+- 不常驻、不预加载、不在启动时创建 WinRT OCR 对象；只在用户点击「提取文字」时，
+  在 Tauri 阻塞线程池中临时完成 `CoInitializeEx(MTA)` → 引擎 → 识别 → 释放。
+- 双重上限：命令层 `MAX_CONCURRENT_OCR = 1` 配额（超限直接返回 `status: busy`，不排队、
+  不新开线程），服务层再用 `AtomicBool` 闸门保护直接调用；重复点击由前端加载态禁用。
+- 取消：每次请求带独立 `requestId`；`clipboard_ocr_cancel` 只取消匹配请求。切换条目或
+  离开详情时前端立即取消，并丢弃迟到的旧结果（请求 id 闭包校验）。
+- 超时 20s；识别过程中每 3ms 轮询一次 WinRT `AsyncStatus`，可响应取消。
+
+### 图片输入与资源释放
+
+- 只接受现有条目 id：Rust 侧经 `image_abs_path` 读取 PNG 缓存并解码为 RGBA，
+  **不通过 IPC 传整张 PNG**。
+- 像素上限 `OCR_MAX_PIXELS = 24M`（4K 原样保留）；超过时按面积/单边等比缩小（区域平均），
+  单边不得超过 10000。禁止放大。
+- 解码后的 RGBA 只在本次调用内存在：转交 `SoftwareBitmap` 后立即释放缓冲；结束、失败、
+  取消都会关闭 `SoftwareBitmap` 并释放 `DataWriter` / WinRT 对象。
+
+### 缓存
+
+- 会话内 LRU，最多 16 条；键为「条目 id + `content_hash`」。内容变化不命中旧结果
+  （hash 不同），条目删除后再次识别返回 `missing_image`。
+- 只缓存 `OcrReport`（文字、状态、尺寸、耗时、建议标题），不缓存解码图。
+- 只缓存 `ok` / `empty`；失败与取消不缓存，便于重试。
+
+### 隐私与日志
+
+- 全程本机离线，不上传图片或文字，不写系统日志正文。
+- `tracing::debug!` 只记录状态、code、宽高、耗时、是否缓存，**不记录识别文本**；
+  前端不把识别文本写入任何持久化设置（除非用户主动点「设为标题」）。
+
+### 标题与前端
+
+- 新增 `engine::title_from_ocr`：确定性规则（跳空行、去无意义短片段、选代表性行、
+  限 30 字符、保留中英文数字），不调用 LLM。
+- 入口只在**图片详情**的类型专属操作区；灯箱工具栏无余量，不加入口。
+- 结果在同一详情内展示（固定 120px 高、可滚动、可全选），加载与结果共用同一高度区域；
+  提供复制文字 / 用文字搜索历史（只把首行截断到 ≤24 字符填入现有搜索框）/
+  设为标题（**必须用户主动点击**，绝不自动覆盖手动标题）。
+
+### 配置与兼容性
+
+- 设置键 `clipboard_ocr_auto`（默认 `false`），v32 迁移仅在既有剪贴板配置存在且键缺失时
+  插入 `'false'`；旧库 fail-closed，新库不产生半套配置。第一阶段**只保存设置，不接入采集
+  热路径**，UI 明确标注「待开发」。
+- 命令签名新增两个（见 IPC 表），DTO 字段 camelCase；返回 `status` / `code` / `text` /
+  `reason` / `durationMs` / `chars` / `lines` / `width` / `height` / `engine` /
+  `suggestedTitle` / `cached`，不破坏既有命令。
+
+## 十、2026-11-04 第二轮修复（COM 生命周期 / 解码前预算 / 缓存失效）
+
+### COM 初始化生命周期
+
+- `CoInitializeEx(MTA)` 按返回值分三类处置：
+  - `S_OK`（本次初始化）与 `S_FALSE`（线程已初始化、本次调用**仍增加一次引用计数**）都属于
+    「本次调用成功」，作用域结束必须配对一次 `CoUninitialize()`；把 `S_FALSE` 当失败会漏掉
+    反初始化，线程退出时引用计数不归零。
+  - `RPC_E_CHANGED_MODE`（线程已用不兼容套间模型初始化）→ 明确返回 `unavailable`，文案指出
+    套间冲突；**本次调用未增加引用计数，绝不反初始化**。
+  - 其他失败（`E_OUTOFMEMORY` / `E_FAIL` 等）→ 明确失败，不反初始化，也不继续识别。
+- `ComGuard` 保持 RAII：声明在引擎/位图对象之前，作用域退出先释放 WinRT 对象、最后反初始化；
+  初始化失败直接返回 `Err`，不进入识别流程。
+
+### 解码前内存闸门
+
+- 顺序为：读文件 → `image::png_dimensions`（只解析签名 + IHDR 宽高，24 字节内）→ 预算判定 →
+  通过后才 `decode_png_rgba` → `scale_for_ocr` → 启动引擎。
+- 双闸门：像素数 ≤ `OCR_MAX_DECODE_PIXELS = 24M` **且**估算字节 ≤
+  `OCR_INPUT_BUDGET_BYTES = 448 MiB`。估算覆盖：解码 RGBA（4 字节/像素）、缩放输出、
+  `DataWriter` 缓冲、`SoftwareBitmap` 副本（按缩放后像素 ×4×3）与引擎/双语言固定开销 64 MiB。
+  依据是本机实测 3000×2000 峰值约 101 MB，按比例放大到 24M 像素约 400 MB，取 448 MiB 闸门；
+  这是本机定值，不宣称适用于所有设备。
+- 超限返回 `status = "too_large"` / `code = "image_too_large"`，**不启动引擎**，前端提示
+  「图片过大…请截取需要的局部后再识别」，与「没有识别到文字」（`empty`）严格区分。
+- 不能按文件字节判断：纯色/低熵 PNG 可以只有几十 KB 却解出数百 MB，只有 IHDR 才是真实尺寸。
+- 超限在 `BusyLease` 作用域内提前返回，配额与进行中登记由 Drop 释放，不留半完成结果。
+
+### 缓存与删除联动
+
+- 保留 `item_id + content_hash` 键与 16 条 LRU 上限；控制面拆成「缓存校正」与「失效代数推进」
+  两件事，避免互相绑定：
+  - `invalidate_items(&[String])`：移除指定条目并推进 `epoch`（单条删除）；
+  - `clear_cache()` / `Cache::clear()`：清空全部条目并推进 `epoch`（清空历史）；
+  - `retain_existing(&Db, deleted)`：整组删除 / 过期清理后的校正。`deleted` 为真时**先**推进
+    `epoch`，再按「条目仍存在且内容哈希未变」淘汰快照内条目（≤16 条）；`deleted` 为假（没有
+    实际删除）不推进代数，避免无谓失效。
+- 接入真实删除路径：
+  - `clipboard_delete_items` → 仅 `report.deleted > 0` 时 `invalidate_items(ids)`；
+  - `clipboard_delete_group` → `retain_existing(&Db, report.deleted > 0)`；
+  - `clipboard_clear_history` → `clear_cache()`；
+  - `clipboard_cleanup` 与维护线程 300s 自动过期清理 →
+    `retain_existing(&Db, report.items_deleted > 0)`。
+- 迟到任务不回写：识别**开始时（查条目之前）**记录 `epoch`，写回时 `put_if_epoch` 校验；期间
+  发生删除/清空/清理导致代数变化，结果直接丢弃。即使缓存为空，真实删除也会推进代数，覆盖
+  「缓存为空 + 识别在跑 + 删整组/过期清理」的窗口，已删条目不会在缓存中「复活」。
+- 数据库边界：`retain_existing` 先在缓存锁内快照条目 id，出锁后逐条做 `store::content_hash`
+  短查询，再进锁校正；**数据库读取失败时整体丢弃缓存并推进代数**（无法确认旧内容安全，
+  不能假定旧缓存仍然有效）。删除/清空先由 store 完成，store 返回错误时不调用失效逻辑，
+  不伪造删除成功。
+- 锁与数据库：快照与校正之间不持有数据库锁，不引入跨请求的长生命周期 DB 锁；不改 OCR 对外
+  命令接口，不新增轮询。
+- 日志只记录失效动作与条目计数，不记录条目正文、已删图片的识别文本。
+- 2026-11-04 更正：第二轮曾把 `Cache::retain_existing` 改成「校正时总是自增代数」；第三轮拆分后
+  **校正本身不自增**，由删除路径传入的 `deleted` 标志负责推进。这样既能覆盖空缓存下的迟到
+  写回，又不会在「没有实际删除、只是校正」时误伤在跑任务。
+
+### 取消与保证边界
+
+- 确定性取消：`OcrService::active_request()` 暴露当前已登记的 `requestId`（登记发生在读文件/
+  解码/调用引擎之前），测试以它为同步点，命中后取消必然早于引擎完成；不靠 sleep 猜测节奏。
+- 取消只匹配 `requestId`，错误 id 不影响其他任务；取消/超时/失败都会关闭 `SoftwareBitmap`、
+  丢弃结果、释放配额与登记。
+- **保证边界**：`IAsyncOperation::Cancel()` 只是请求取消，WinRT 内部识别计算不保证在调用返回时
+  立刻停止；「前端丢弃迟到结果」不等于「后台计算已停止」。可保证的是：调用方不等待完整结果、
+  不缓存不完整结果、配额已释放、可立即开始下一次。
+
+### 自动 OCR 暂缓
+
+- `clipboard_ocr_auto` 设置键与 v32 迁移保持原样（默认 `false`，历史值不删除、不改写）。
+- 采集热路径**没有**自动识别调用：即使历史库里该键为 `true`，复制图片也只入库、不触发 OCR；
+  识别只由用户在图片详情中手动触发。设置页开关本轮置为不可操作并显示
+  「待开发，目前仅支持手动提取文字。」
+

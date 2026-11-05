@@ -14,20 +14,31 @@
 //!
 //! 分段筛选（全部 / 文本 / 图片 / 文件）是对同一份真实列表的本地过滤。
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, Check, Clipboard, Copy, FileText, Images, Layers } from "lucide-react";
 import {
   clipboardCopyGroupRich,
   clipboardCopyItem,
-  clipboardGroup,
   type ClipboardItem,
+  type CopyReport,
 } from "../../lib/bridge";
 import { normalizeError } from "../../lib/errors";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useUiStore } from "../../store/useUiStore";
 import { ClipboardThumb } from "../clipboard/Media";
 import { openFullApp } from "./actions";
-import { EmptyState, PanelHead, Segmented, sizeLabel, type SegOption } from "./PanelKit";
+import {
+  ClipboardLiteFilesView,
+  ClipboardLiteGroupView,
+  ClipboardLiteImageView,
+  ClipboardLiteTextView,
+  clearGroupPageCache,
+  liteMeta,
+  liteTitle,
+  loadGroupPage,
+  type ClipboardLiteView,
+} from "./ClipboardLiteViews";
+import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 
 /** 监听状态的展示文案与状态点色调（与列表数据状态分开显示）。 */
 const MONITOR_TEXT: Record<string, { text: string; tone: "none" | "ok" | "warn" | "bad" }> = {
@@ -51,25 +62,11 @@ const FILTERS: readonly SegOption<Filter>[] = [
 
 const TEXT_KINDS = new Set(["text", "html", "link", "code"]);
 
-function titleOf(item: ClipboardItem): string {
-  const t = (item.title || "").trim();
-  if (t) return t;
-  const raw = (item.preview || item.text || "").replace(/\s+/g, " ").trim();
-  if (raw) return raw;
-  if (item.has_image) return "图片";
-  if (item.file_paths.length > 0) return `${item.file_paths.length} 个文件`;
-  return "（空内容）";
-}
-
-/** 行内类型 + 规格说明（真实字段，不推算）：图片尺寸 / 字数 / 文件数 / 体积。 */
-function metaOf(item: ClipboardItem): string {
-  if (item.has_image) {
-    const dim = item.image_width && item.image_height ? `${item.image_width} × ${item.image_height}` : "图片";
-    return `${dim} · ${sizeLabel(item.byte_size)}`;
-  }
-  if (item.file_paths.length > 0) return `文件 · ${sizeLabel(item.byte_size)}`;
-  const chars = (item.text || item.preview || "").replace(/\s+/g, "").length;
-  return chars > 0 ? `文本 · ${chars} 字` : `文本 · ${sizeLabel(item.byte_size)}`;
+/** 行 → 二级视图：图片优先（原图预览），其次文件列表，最后文本查看。 */
+function viewOfItem(item: ClipboardItem): ClipboardLiteView {
+  if (item.has_image) return { kind: "image", item };
+  if (item.file_paths.length > 0) return { kind: "files", item };
+  return { kind: "text", item };
 }
 
 function toneOf(item: ClipboardItem): { cls: string; icon: typeof FileText } {
@@ -97,6 +94,11 @@ export default function ClipboardLite() {
   /** 截图组 → 可作封面的条目 id（按需读详情，最多 2 组） */
   const [covers, setCovers] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState<string | null>(null);
+  /** 二级视图栈：图片 / 文本 / 文件 / 截图组；分组里再点图会压入原图预览。 */
+  const [views, setViews] = useState<ClipboardLiteView[]>([]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const listScroll = useRef(0);
+  const prevViewCount = useRef(0);
 
   // 面板打开 → 取一次轻量视图 + 监听状态，并接入全局唯一的 clipboard-changed
   // 监听（store 内部引用计数：完整页面与胶囊面板共用同一个监听，不会重复注册）。
@@ -110,16 +112,32 @@ export default function ClipboardLite() {
     };
   }, [loadLite, loadMonitor, releaseLite, setLiteLive]);
 
-  // 封面：只为「有图的分组」读详情，且最多 2 组（有界、失败静默）
+  // 列表快照变化 = 组内容可能变化（新增/删除/移动/分组修改）→ 封面与预览缓存整体失效。
+  useEffect(() => {
+    clearGroupPageCache();
+  }, [lite]);
+
+  // 封面：有界查询每个有图分组的第 1 张（limit 1 / imagesOnly），最多 2 组；
+  // 同一快照内复用缓存，不重复请求；失败静默，不影响文案与复制。
   useEffect(() => {
     if (groups.length === 0) return;
     let alive = true;
     void (async () => {
       for (const g of groups) {
         try {
-          const detail = await clipboardGroup(g.id);
-          const cover = detail.items.find((i) => i.has_thumb) ?? detail.items.find((i) => i.has_image);
-          if (alive && cover) setCovers((prev) => ({ ...prev, [g.id]: cover.id }));
+          const page = await loadGroupPage(g, 1, 0, true);
+          if (!alive) return;
+          const cover = page.items[0];
+          // 组内图片被删空时同时移除旧封面 id，避免继续请求已不存在的缩略图。
+          setCovers((prev) => {
+            if (cover) {
+              return prev[g.id] === cover.id ? prev : { ...prev, [g.id]: cover.id };
+            }
+            if (!(g.id in prev)) return prev;
+            const next = { ...prev };
+            delete next[g.id];
+            return next;
+          });
         } catch {
           // 缩略图失败不影响文案与复制
         }
@@ -136,8 +154,20 @@ export default function ClipboardLite() {
     return () => window.clearTimeout(t);
   }, [copied]);
 
+  // 退出二级视图后恢复列表滚动位置（列表在详情期间不渲染，滚动值由 ref 记住）。
+  useLayoutEffect(() => {
+    if (prevViewCount.current > 0 && views.length === 0) {
+      const el = listRef.current;
+      if (el) {
+        el.scrollTop = listScroll.current;
+        el.focus({ preventScroll: true });
+      }
+    }
+    prevViewCount.current = views.length;
+  }, [views.length]);
+
   /** 复制失败按原因提示：条目不存在（列表需刷新）/ 剪贴板被占用 / 写入失败。 */
-  const reportCopyFailure = (e: unknown, what: "条目" | "截图组") => {
+  const reportCopyFailure = (e: unknown, what: string) => {
     const err = normalizeError(e);
     if (err.code === "NOT_FOUND") {
       showToast(`${what}已不存在，正在刷新列表`, { kind: "error", code: err.code });
@@ -151,10 +181,26 @@ export default function ClipboardLite() {
     showToast(`复制${what}失败：${err.message}`, { kind: "error", code: err.code });
   };
 
+  /**
+   * 剪贴板写入成功但统计/降级项未完成时给出「部分成功」提示。
+   * 写入本身已成功，因此绝不能回退成「复制失败」。
+   */
+  const copyPartialText = (r: CopyReport): string | null => {
+    const partial = r.warnings.length > 0 || r.stats_recorded === false;
+    if (!partial) return null;
+    const detail = [
+      ...(r.stats_recorded === false ? ["使用次数未记录"] : []),
+      ...r.warnings,
+    ].join("；");
+    return detail ? `已复制（部分成功：${detail}）` : "已复制（部分成功）";
+  };
+
   const copyItem = async (id: string) => {
     try {
-      await clipboardCopyItem(id);
-      setCopied(id); // 只有成功才显示勾选反馈
+      const r = await clipboardCopyItem(id);
+      setCopied(id); // 写入成功才显示勾选反馈；统计失败不影响勾选
+      const partial = copyPartialText(r);
+      if (partial) showToast(partial, { kind: "info" });
     } catch (e) {
       reportCopyFailure(e, "条目");
     }
@@ -162,12 +208,49 @@ export default function ClipboardLite() {
 
   const copyGroup = async (id: string) => {
     try {
-      await clipboardCopyGroupRich(id);
+      const r = await clipboardCopyGroupRich(id);
       setCopied(id);
+      const partial = copyPartialText(r);
+      if (partial) showToast(partial, { kind: "info" });
     } catch (e) {
       reportCopyFailure(e, "截图组");
     }
   };
+
+  /** 二级视图里的复制：不复用列表勾选态，改为一次性 toast 反馈。 */
+  const copyDetailItem = async (id: string, what: string) => {
+    try {
+      const r = await clipboardCopyItem(id);
+      const partial = copyPartialText(r);
+      showToast(partial ?? `已复制${what}`, { kind: partial ? "info" : "success" });
+      return true;
+    } catch (e) {
+      reportCopyFailure(e, "条目");
+      return false;
+    }
+  };
+
+  const copyDetailGroup = async (id: string) => {
+    try {
+      const r = await clipboardCopyGroupRich(id);
+      const partial = copyPartialText(r);
+      showToast(partial ?? "已复制截图组", { kind: partial ? "info" : "success" });
+      return true;
+    } catch (e) {
+      reportCopyFailure(e, "截图组");
+      return false;
+    }
+  };
+
+  const openFull = () => openFullApp("clipboard");
+
+  /** 打开二级视图：记住列表滚动位置，返回时恢复。 */
+  const openView = (view: ClipboardLiteView) => {
+    listScroll.current = listRef.current?.scrollTop ?? 0;
+    setViews([view]);
+  };
+  const pushView = (view: ClipboardLiteView) => setViews((s) => [...s, view]);
+  const closeTop = () => setViews((s) => s.slice(0, -1));
 
   const list = useMemo(() => {
     if (!items) return null;
@@ -190,6 +273,53 @@ export default function ClipboardLite() {
   const trulyEmpty = liteStatus === "empty";
   const empty = !dataError && list !== null && list.length === 0 && !showGroups;
   const monitorInfo = MONITOR_TEXT[monitor] ?? MONITOR_TEXT.unknown;
+
+  // 二级视图：只替换面板内容（不新开窗口、不改面板尺寸），下层视图保持挂载，
+  // 因此截图组 → 原图 → 返回组时无需重新请求；每层各自接入 overlayStack。
+  if (views.length > 0) {
+    return (
+      <>
+        {views.map((view, index) => (
+          <div
+            className="cap-clip-view"
+            key={view.kind === "group" ? `group:${view.group.id}` : `${view.kind}:${view.item.id}:${index}`}
+            hidden={index !== views.length - 1}
+          >
+            {view.kind === "image" ? (
+              <ClipboardLiteImageView
+                item={view.item}
+                onBack={closeTop}
+                onOpenFull={openFull}
+                onCopyItem={copyDetailItem}
+              />
+            ) : view.kind === "text" ? (
+              <ClipboardLiteTextView
+                item={view.item}
+                onBack={closeTop}
+                onOpenFull={openFull}
+                onCopyItem={copyDetailItem}
+              />
+            ) : view.kind === "files" ? (
+              <ClipboardLiteFilesView
+                item={view.item}
+                onBack={closeTop}
+                onOpenFull={openFull}
+                onCopyItem={copyDetailItem}
+              />
+            ) : (
+              <ClipboardLiteGroupView
+                group={lite?.groups.find((g) => g.id === view.group.id) ?? view.group}
+                onBack={closeTop}
+                onOpenFull={openFull}
+                onCopyGroup={copyDetailGroup}
+                onOpenImage={(item) => pushView({ kind: "image", item })}
+              />
+            )}
+          </div>
+        ))}
+      </>
+    );
+  }
 
   return (
     <>
@@ -230,7 +360,7 @@ export default function ClipboardLite() {
 
       <Segmented label="剪贴板类型筛选" options={FILTERS} value={filter} onChange={setFilter} />
 
-      <div className="cap-list">
+      <div className="cap-list" ref={listRef} tabIndex={-1}>
         {/* 错误优先于空态：有旧数据 → 旧列表 + 可重试错误条；无数据 → 错误空态 */}
         {dataError && items !== null && (
           <div className="cap-item cap-error-row" role="alert">
@@ -269,23 +399,35 @@ export default function ClipboardLite() {
         {showGroups &&
           groups.map((g) => (
             <div className="cap-item cap-clip-row" key={g.id}>
-              <span className="cap-stack" aria-hidden="true">
-                <i>
-                  <Layers size={13} strokeWidth={1.8} />
-                </i>
-                <i />
-                <i>
-                  {covers[g.id] ? <ClipboardThumb itemId={covers[g.id]} hasThumb size={46} /> : null}
-                </i>
-              </span>
-              <span className="cap-main">
+              <button
+                type="button"
+                className="cap-clip-hit"
+                aria-label={`预览截图组「${g.name || "截图组"}」`}
+                onClick={() => openView({ kind: "group", group: g })}
+              >
+                <span className="cap-stack" aria-hidden="true">
+                  <i>
+                    <Layers size={13} strokeWidth={1.8} />
+                  </i>
+                  <i />
+                  <i>
+                    {covers[g.id] ? <ClipboardThumb itemId={covers[g.id]} hasThumb size={46} /> : null}
+                  </i>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="cap-main cap-clip-main"
+                aria-label={`查看截图组「${g.name || "截图组"}」`}
+                onClick={() => openView({ kind: "group", group: g })}
+              >
                 <span className="cap-item-title" title={g.name || "截图组"}>
                   {g.name || "截图组"}
                 </span>
                 <span className="cap-item-sub">
                   截图组 · {g.image_count} 张{g.item_count > g.image_count ? ` · 共 ${g.item_count} 项` : ""}
                 </span>
-              </span>
+              </button>
               <button
                 type="button"
                 className={`cap-mini is-icon${copied === g.id ? " is-ok" : ""}`}
@@ -308,23 +450,33 @@ export default function ClipboardLite() {
             <div className="cap-item cap-clip-row" key={it.id}>
               {it.has_image && it.has_thumb ? (
                 <span className="cap-clip-thumb">
-                  <ClipboardThumb itemId={it.id} hasThumb size={46} />
+                  <ClipboardThumb
+                    itemId={it.id}
+                    hasThumb
+                    size={46}
+                    onOpen={() => openView({ kind: "image", item: it })}
+                  />
                 </span>
               ) : (
                 <span className={`cap-tile ${tone.cls}`} aria-hidden="true">
                   <Icon size={17} strokeWidth={1.8} />
                 </span>
               )}
-              <span className="cap-main">
-                <span className="cap-item-title clip-2" title={titleOf(it)}>
-                  {titleOf(it)}
+              <button
+                type="button"
+                className="cap-main cap-clip-main"
+                aria-label={`查看「${liteTitle(it)}」`}
+                onClick={() => openView(viewOfItem(it))}
+              >
+                <span className="cap-item-title clip-2" title={liteTitle(it)}>
+                  {liteTitle(it)}
                 </span>
-                <span className="cap-item-sub">{metaOf(it)}</span>
-              </span>
+                <span className="cap-item-sub">{liteMeta(it)}</span>
+              </button>
               <button
                 type="button"
                 className={`cap-mini is-icon${copied === it.id ? " is-ok" : ""}`}
-                aria-label={`复制「${titleOf(it)}」`}
+                aria-label={`复制「${liteTitle(it)}」`}
                 onClick={() => void copyItem(it.id)}
               >
                 {copied === it.id ? (

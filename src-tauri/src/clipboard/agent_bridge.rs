@@ -6,7 +6,11 @@
 //!
 //! 绝不自动上传、绝不自动发送：导出目录写完即返回路径，是否交给 Agent 由用户决定。
 
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -43,6 +47,19 @@ pub struct AgentClipboardTarget {
     pub export: AgentCapability,
     /// direct / import / paste / export / none
     pub recommended: String,
+}
+
+/// 一次探测的可核验元数据。
+///
+/// `probed_at_ms` 是**生成这份列表的真实扫描完成时间**（Unix 毫秒）；命中 5 分钟缓存时
+/// 它就是旧快照的时间，而不是本次响应的到达时间。前端据此区分「缓存结果」与「刚扫描」，
+/// 不得把响应时间当作扫描时间展示。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTargetsSnapshot {
+    pub targets: Vec<AgentClipboardTarget>,
+    pub probed_at_ms: i64,
+    /// true = 直接复用了已有快照，本次请求没有重新扫描。
+    pub cached: bool,
 }
 
 /// 能力矩阵只依据可核验事实：当前没有任何 Agent 提供
@@ -97,16 +114,116 @@ fn capability_matrix(
     (direct_send, file_import, desktop_paste, export, recommended)
 }
 
+/// 探测结果缓存：`scan_all` 含登记表/安装路径/进程与窗口枚举，单次实测 17–28s。
+/// 展开「Agent 兼容信息」才触发探测，缓存 5 分钟；安装/启动状态变化由用户点
+/// 「重新探测」强制刷新，不做常驻轮询。
+const TARGETS_TTL: Duration = Duration::from_secs(300);
+/// 缓存快照：扫描完成时刻、结果、以及全局扫描序号。
+type TargetsCacheEntry = (Instant, Vec<AgentClipboardTarget>, u64);
+static TARGETS_CACHE: LazyLock<Mutex<Option<TargetsCacheEntry>>> = LazyLock::new(|| Mutex::new(None));
+/// 每次真实扫描完成后递增：用来识别「请求开始后已有别的请求完成了一次扫描」。
+static TARGETS_SCAN_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TARGETS_SCANS: AtomicU64 = AtomicU64::new(0);
+
 /// 列出剪贴板导出可配合的 Agent；不在此列表中的程序仍可手动选择导出的文件。
-pub fn targets(db: &Db) -> Vec<AgentClipboardTarget> {
+pub fn targets(db: &Db, force_refresh: bool) -> AgentTargetsSnapshot {
+    let (targets, probed_at_ms, cached) =
+        snapshot_or_scan(force_refresh, || targets_uncached(db));
+    AgentTargetsSnapshot {
+        targets,
+        probed_at_ms,
+        cached,
+    }
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 缓存快照的生成时间（Unix 毫秒）：用「当前时间 - 已过时长」而不是记录时的墙钟，
+/// 避免系统时间调整让展示时间失真。
+fn snapshot_unix_ms(at: Instant) -> i64 {
+    now_unix_ms() - at.elapsed().as_millis() as i64
+}
+
+/// 缓存读写的唯一入口（抽出扫描闭包便于测试缓存语义）。
+///
+/// 扫描期间一直持锁：普通并发请求会排队，只有第一个真正扫描，其余直接拿到同一份结果，
+/// 不会出现「多个窗口同时各扫一遍」。强制刷新的并发请求按 **请求开始时的扫描序号** 合并：
+/// 如果排队期间已有更新的扫描完成，直接复用该结果，避免 N 次「重新探测」排成 N 次
+/// 17–28s 的全量扫描、占满后台线程。锁内没有 await，也不持有数据库连接以外的资源。
+///
+/// 返回值第三项 `cached` 表示本次请求是否直接命中已有快照（未重新扫描）。
+fn snapshot_or_scan<F>(force_refresh: bool, scan: F) -> (Vec<AgentClipboardTarget>, i64, bool)
+where
+    F: FnOnce() -> Vec<AgentClipboardTarget>,
+{
+    // 必须在拿锁之前读取：这是「本请求开始时刻」的扫描序号基准。
+    let started_after_seq = TARGETS_SCAN_SEQ.load(Ordering::Acquire);
+    let mut guard = TARGETS_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, cached, seq)) = guard.as_ref() {
+        let reusable = if force_refresh {
+            // 排队期间已有更新的扫描完成 → 本请求不必再扫一遍。
+            *seq > started_after_seq
+        } else {
+            at.elapsed() < TARGETS_TTL
+        };
+        if reusable {
+            return (cached.clone(), snapshot_unix_ms(*at), true);
+        }
+    }
+    let fresh = scan();
+    let at = Instant::now();
+    let seq = TARGETS_SCAN_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+    *guard = Some((at, fresh.clone(), seq));
+    (fresh, now_unix_ms(), false)
+}
+
+#[cfg(test)]
+fn reset_targets_cache() {
+    *TARGETS_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    TARGETS_SCAN_SEQ.store(0, Ordering::Release);
+    TARGETS_SCANS.store(0, Ordering::Relaxed);
+}
+
+/// 把缓存快照「调旧」，用于在不等待 5 分钟的前提下验证 TTL 过期路径。
+#[cfg(test)]
+fn age_targets_cache(age: Duration) {
+    let mut guard = TARGETS_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, _, _)) = guard.as_mut() {
+        *at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+    }
+}
+
+fn targets_uncached(db: &Db) -> Vec<AgentClipboardTarget> {
+    #[cfg(test)]
+    TARGETS_SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    // 空列表只代表「当前没有发现可列出的 Agent」：`scan_all` 不返回错误信号，
+    // 因此这里不把空列表当作探测失败，也不会用空结果覆盖已有有效快照（调用方按需重扫）。
     let mut out = Vec::new();
     for d in crate::agents::discovery::scan_all(db) {
         if d.source_id == "bridge" {
             continue;
         }
-        let caps = crate::navigation::agent_navigation::capabilities(&d.source_id);
-        let evidence = caps.can_focus_window.evidence.clone();
-        let window_present = evidence == "window-present";
+        // 未安装的 Agent 不可能有可交互窗口，跳过窗口/CLI 探测，减少一次全量扫描的探测次数。
+        let (evidence, window_present) = if d.installed {
+            let caps = crate::navigation::agent_navigation::capabilities(&d.source_id);
+            let evidence = caps.can_focus_window.evidence.clone();
+            (evidence.clone(), evidence == "window-present")
+        } else {
+            ("not-installed".to_string(), false)
+        };
         let (direct_send, file_import, desktop_paste, export, recommended) =
             capability_matrix(d.installed, window_present);
         out.push(AgentClipboardTarget {
@@ -254,6 +371,68 @@ fn kind_label(kind: &str) -> &'static str {
     }
 }
 
+/// 单次导出目录创建的最大尝试次数。完整 UUID 正常一次即成；上限只防测试/异常环境下
+/// 名称生成器持续返回已存在名字时无限循环。
+const EXPORT_DIR_MAX_ATTEMPTS: usize = 5;
+
+/// 独占创建一个**全新**导出目录并返回其路径。
+///
+/// 安全边界（历史导出目录与用户数据不可被误删/覆盖）：
+/// - 目录名默认用**完整 UUID v4**，碰撞概率可忽略；命名冲突时换名重试，绝不复用已有目录。
+/// - 用 `create_dir`（独占创建）而不是 `create_dir_all`：目标已存在一定返回 `AlreadyExists`，
+///   不会被当成「创建成功」。
+/// - 父目录 `clipboard-exports/` 允许已存在（那是共享容器），但本函数只返回新建的子目录；
+///   清理守卫只删除这个子目录，绝不向上删除父目录或历史导出。
+fn unique_export_dir<F>(base: &Path, mut next_name: F) -> AppResult<PathBuf>
+where
+    F: FnMut() -> String,
+{
+    std::fs::create_dir_all(base)?;
+    for _ in 0..EXPORT_DIR_MAX_ATTEMPTS {
+        let candidate = base.join(next_name());
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(AppError::Io(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "导出目录名连续冲突，已放弃本次导出（未触碰任何已有目录）",
+    )))
+}
+
+/// 导出目录的收尾守卫：写盘中途失败时删除**本次新建**的半成品目录，成功时 `commit()` 保留。
+/// 路径由 `unique_export_dir` 独占创建，因此 Drop 的删除范围只可能是这次调用自己的目录，
+/// 不会覆盖或删除历史导出、也不会删除其他任务正在写入的目录。
+struct ExportDirGuard {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl ExportDirGuard {
+    fn create_in(base: &Path) -> AppResult<Self> {
+        Ok(Self {
+            path: unique_export_dir(base, || uuid::Uuid::new_v4().to_string())?,
+            keep: false,
+        })
+    }
+
+    fn commit(self) {
+        // 消费 self 后 Drop 仍会执行，但 keep=true 时不再删除。
+        let mut this = self;
+        this.keep = true;
+    }
+}
+
+impl Drop for ExportDirGuard {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 /// 导出条目或分组为本地包；`app_data` 为应用数据目录。
 /// 组按展示顺序导出，图片复制为独立 PNG 文件，Markdown 中保留实际顺序。
 pub fn export_package(
@@ -281,11 +460,10 @@ pub fn export_package(
         _ => return Err(AppError::Validation("未知导出类型".into())),
     };
 
-    let export_id = uuid::Uuid::new_v4().to_string();
-    let dir = app_data
-        .join("clipboard-exports")
-        .join(&export_id[..8.min(export_id.len())]);
-    std::fs::create_dir_all(&dir)?;
+    // 目录名是完整 UUID 且独占创建：已存在的目录不会被复用，历史导出不受影响。
+    // 任一步写盘失败都会在中途返回，守卫只删除这次新建的半成品目录。
+    let dir_guard = ExportDirGuard::create_in(&app_data.join("clipboard-exports"))?;
+    let dir = dir_guard.path.clone();
 
     let mut w = Writer {
         markdown: String::new(),
@@ -368,6 +546,8 @@ pub fn export_package(
     for name in &w.files {
         files.push(dir.join(name).to_string_lossy().into_owned());
     }
+    // 全部文件写成功才保留目录；此前任何 `?` 提前返回都会触发 Drop 清理。
+    dir_guard.commit();
     Ok(ExportPackage {
         dir: dir.to_string_lossy().into_owned(),
         markdown_path: markdown_path.to_string_lossy().into_owned(),
@@ -432,8 +612,15 @@ mod tests {
     }
 
     fn image() -> CapturedContent {
+        image_with_seed(0)
+    }
+
+    /// 内容不同的图片（`record_capture` 会按内容去重，性能用例必须避免 10 张完全相同）。
+    fn image_with_seed(seed: u8) -> CapturedContent {
         let (w, h) = (16u32, 12u32);
-        let rgba = vec![200u8; (w * h * 4) as usize];
+        let mut rgba = vec![200u8; (w * h * 4) as usize];
+        rgba[0] = seed;
+        rgba[1] = seed.wrapping_add(1);
         CapturedContent {
             kind: "image".into(),
             text: String::new(),
@@ -517,5 +704,362 @@ mod tests {
         assert!(md.contains("周会"));
         assert!(md.contains("讨论发布计划"));
         assert!(pkg.warnings.is_empty());
+    }
+
+    /// 有限、可复现的导出耗时探针：输出条目数、文件数与实测毫秒。
+    /// 只用于记录当前机器/构建条件下的数字，不设时间阈值（不同机器不可比）。
+    /// 用 `cargo test --lib export_timing_probe -- --nocapture` 查看 `[perf]` 行。
+    #[test]
+    fn export_timing_probe() {
+        let db = Db::open_in_memory().unwrap();
+        let root = Temp::new();
+        let data = Temp::new();
+        let s = crate::db::Settings {
+            clipboard_auto_group: false,
+            ..Default::default()
+        };
+
+        let measure = |label: &str,
+                       target_type: &str,
+                       target_id: &str,
+                       expect_items: usize,
+                       expect_files: usize| {
+            let started = Instant::now();
+            let pkg =
+                export_package(&db, &root.0, &data.0, target_type, target_id, None).unwrap();
+            let ms = started.elapsed().as_millis();
+            println!(
+                "[perf] case={label} items={} files={} elapsed_ms={ms}",
+                pkg.item_count,
+                pkg.files.len()
+            );
+            assert_eq!(pkg.item_count, expect_items as i64, "条目数不应因导出改变");
+            assert_eq!(pkg.files.len(), expect_files, "文件数与格式应保持稳定");
+        };
+
+        let single = store::record_capture(&db, &root.0, &text("普通文本一条"), &s).unwrap();
+        measure("single-text", "item", &single.item.id, 1, 2);
+
+        let text_ids: Vec<String> = (0..100)
+            .map(|i| {
+                let body = format!("第 {i} 条文字内容，用于验证多条目导出不会重复读文件。");
+                store::record_capture(&db, &root.0, &text(&body), &s)
+                    .unwrap()
+                    .item
+                    .id
+            })
+            .collect();
+        let text_group = store::create_manual_group(&db, "100 条文字", &text_ids).unwrap();
+        measure("100-text-group", "group", &text_group.id, 100, 2);
+
+        let small_ids: Vec<String> = (0..10)
+            .map(|i| {
+                store::record_capture(&db, &root.0, &image_with_seed(i), &s)
+                    .unwrap()
+                    .item
+                    .id
+            })
+            .collect();
+        let small_group = store::create_manual_group(&db, "10 张小图", &small_ids).unwrap();
+        measure("10-small-images", "group", &small_group.id, 10, 12);
+
+        let large_ids: Vec<String> = (0..10)
+            .map(|i| {
+                let (w, h) = (512u32, 512u32);
+                let mut rgba = vec![180u8; (w * h * 4) as usize];
+                rgba[0] = i as u8; // 避免内容去重把 10 张大图合并成 1 条
+                rgba[1] = i as u8;
+                let content = CapturedContent {
+                    kind: "image".into(),
+                    text: String::new(),
+                    html: String::new(),
+                    preview: String::new(),
+                    file_paths: vec![],
+                    image: Some(CapturedImage {
+                        png: crate::clipboard::image::encode_png(&rgba, w, h).unwrap(),
+                        width: w,
+                        height: h,
+                        rgba,
+                    }),
+                    source_app: "snippingtool.exe".into(),
+                    source_title: "截图工具".into(),
+                    source_kind: "owner".into(),
+                    byte_size: 0,
+                };
+                store::record_capture(&db, &root.0, &content, &s)
+                    .unwrap()
+                    .item
+                    .id
+            })
+            .collect();
+        let large_group = store::create_manual_group(&db, "10 张大图", &large_ids).unwrap();
+        measure("10-large-512-images", "group", &large_group.id, 10, 12);
+    }
+
+    /// 缓存是进程级单例，相关用例串行执行，避免彼此清空/调旧快照。
+    static CACHE_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn lock_cache_tests() -> std::sync::MutexGuard<'static, ()> {
+        CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn counting_scan(
+        counter: &std::sync::atomic::AtomicU64,
+    ) -> impl Fn() -> Vec<AgentClipboardTarget> + '_ {
+        move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn targets_cache_reuses_result_and_honors_force_refresh() {
+        let _g = lock_cache_tests();
+        reset_targets_cache();
+        let scans = std::sync::atomic::AtomicU64::new(0);
+
+        let first = snapshot_or_scan(false, counting_scan(&scans));
+        assert!(first.0.is_empty());
+        assert!(!first.2, "首次请求必须真实扫描");
+        assert!(first.1 > 0, "必须返回真实扫描时间戳");
+
+        let second = snapshot_or_scan(false, counting_scan(&scans));
+        assert!(second.0.is_empty());
+        assert!(second.2, "TTL 内必须标记为缓存结果");
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "TTL 内重复请求不应再次扫描"
+        );
+        assert!(
+            second.1 <= first.1,
+            "缓存结果的时间戳不得晚于首次扫描时间"
+        );
+
+        assert!(snapshot_or_scan(true, counting_scan(&scans)).0.is_empty());
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "显式刷新必须重新扫描"
+        );
+    }
+
+    #[test]
+    fn targets_cache_expires_and_rescans() {
+        let _g = lock_cache_tests();
+        reset_targets_cache();
+        let scans = std::sync::atomic::AtomicU64::new(0);
+
+        snapshot_or_scan(false, counting_scan(&scans));
+        age_targets_cache(TARGETS_TTL + Duration::from_secs(1));
+        let after = snapshot_or_scan(false, counting_scan(&scans));
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "超过 TTL 必须重新扫描"
+        );
+        assert!(!after.2, "TTL 过期后的结果不是缓存命中");
+    }
+
+    #[test]
+    fn empty_result_is_cached_without_being_treated_as_failure() {
+        let _g = lock_cache_tests();
+        reset_targets_cache();
+        let scans = std::sync::atomic::AtomicU64::new(0);
+
+        // scan_all 没有失败通道：空列表就是「当前没有可列出的 Agent」。
+        let first = snapshot_or_scan(false, counting_scan(&scans));
+        assert!(first.0.is_empty() && !first.2);
+        let again = snapshot_or_scan(false, counting_scan(&scans));
+        assert!(again.0.is_empty() && again.2);
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "空结果同样是有效快照，不应触发重扫或当作失败"
+        );
+    }
+
+    #[test]
+    fn concurrent_probes_scan_once_and_share_result() {
+        let _g = lock_cache_tests();
+        reset_targets_cache();
+        let scans = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let scans = scans.clone();
+            handles.push(std::thread::spawn(move || {
+                let r = snapshot_or_scan(false, || {
+                    scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(30));
+                    Vec::new()
+                });
+                assert!(r.0.is_empty());
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "并发请求应共享同一次扫描"
+        );
+    }
+
+    #[test]
+    fn concurrent_force_refresh_is_coalesced() {
+        let _g = lock_cache_tests();
+        reset_targets_cache();
+        let scans = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        // 屏障保证所有线程都在第一次扫描完成前读到起始序号。
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let scans = scans.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                snapshot_or_scan(true, || {
+                    scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    std::thread::sleep(Duration::from_millis(150));
+                    Vec::new()
+                })
+            }));
+        }
+        for handle in handles {
+            assert!(handle.join().unwrap().0.is_empty());
+        }
+        assert_eq!(
+            scans.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "并发的强制刷新不应排成多次全量扫描"
+        );
+    }
+
+    #[test]
+    fn export_dir_never_reuses_an_existing_directory() {
+        let base = Temp::new();
+        let existing = base.0.join("existing-export");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::write(existing.join("user-note.txt"), "keep me").unwrap();
+
+        let names = std::cell::RefCell::new(vec!["existing-export".to_string(), "fresh-export".to_string()]);
+        let created = unique_export_dir(&base.0, || names.borrow_mut().remove(0)).unwrap();
+
+        assert!(created.ends_with("fresh-export"), "冲突时必须换一个新名字");
+        assert_eq!(
+            std::fs::read_to_string(existing.join("user-note.txt")).unwrap(),
+            "keep me",
+            "已存在目录及其中文件不得被复用或覆盖"
+        );
+        assert!(existing.exists(), "已存在目录不得被删除");
+    }
+
+    #[test]
+    fn export_dir_gives_up_after_attempt_limit_and_keeps_existing_data() {
+        let base = Temp::new();
+        let existing = base.0.join("taken");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::write(existing.join("old.md"), "old export").unwrap();
+
+        let err = unique_export_dir(&base.0, || "taken".to_string()).unwrap_err();
+        assert!(
+            err.to_string().contains("冲突"),
+            "连续冲突必须返回明确错误: {err}"
+        );
+        assert!(existing.join("old.md").exists(), "失败路径不得删除已有数据");
+    }
+
+    #[test]
+    fn export_dir_uses_full_uuid() {
+        let base = Temp::new();
+        let guard = ExportDirGuard::create_in(&base.0).unwrap();
+        let name = guard.path.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(name.len(), 36, "目录名应为完整 UUID（36 字符）");
+        assert!(uuid::Uuid::parse_str(&name).is_ok());
+        guard.commit();
+        assert!(base.0.join(&name).is_dir(), "commit 后目录应保留");
+    }
+
+    /// 三个写盘阶段（图片 / Markdown / manifest）失败时，守卫只能删除本次新建的部分目录，
+    /// 不得触碰同级的其他历史导出或用户文件。
+    #[test]
+    fn failed_export_stages_clean_only_own_directory() {
+        let base = Temp::new();
+        let history = base.0.join("history-export");
+        std::fs::create_dir(&history).unwrap();
+        std::fs::write(history.join("clipboard.md"), "历史导出").unwrap();
+
+        for stage in ["image", "markdown", "manifest"] {
+            let guard = ExportDirGuard::create_in(&base.0).unwrap();
+            let own = guard.path.clone();
+            match stage {
+                // 第一张图片写到一半失败。
+                "image" => std::fs::write(own.join("001-image.png"), b"partial").unwrap(),
+                // 图片已写完，Markdown 写入失败。
+                "markdown" => std::fs::write(own.join("001-image.png"), b"png").unwrap(),
+                // Markdown 已写完，manifest 写入失败。
+                _ => {
+                    std::fs::write(own.join("001-image.png"), b"png").unwrap();
+                    std::fs::write(own.join("clipboard.md"), "md").unwrap();
+                }
+            }
+            drop(guard);
+            assert!(!own.exists(), "{stage} 阶段失败必须清理本次半成品目录");
+            assert!(
+                history.join("clipboard.md").exists(),
+                "{stage} 阶段失败不得删除其他历史导出"
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_exports_create_distinct_directories() {
+        let base = Temp::new();
+        let base_path = std::sync::Arc::new(base.0.clone());
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let base_path = base_path.clone();
+            handles.push(std::thread::spawn(move || {
+                let guard = ExportDirGuard::create_in(&base_path).unwrap();
+                let path = guard.path.clone();
+                guard.commit();
+                path
+            }));
+        }
+        let mut dirs: Vec<PathBuf> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        dirs.sort();
+        dirs.dedup();
+        assert_eq!(dirs.len(), 8, "并发导出必须各自得到独立目录");
+        assert!(dirs.iter().all(|d| d.is_dir()));
+    }
+
+    /// 真机性能探针：需要本机已安装/运行部分 Agent，结果依赖环境，故默认不参与 CI。
+    /// `cd src-tauri && cargo test --lib measure_targets_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn measure_targets_cost() {
+        let db = Db::open_in_memory().unwrap();
+        for round in 0..3 {
+            let t = std::time::Instant::now();
+            let list = targets(&db, false);
+            println!(
+                "targets round {round}: {:?}, {} agents, {} scans",
+                t.elapsed(),
+                list.targets.len(),
+                TARGETS_SCANS.load(std::sync::atomic::Ordering::Relaxed)
+            );
+        }
+        let t = std::time::Instant::now();
+        let _ = targets(&db, true);
+        println!(
+            "targets forced refresh: {:?}, {} scans",
+            t.elapsed(),
+            TARGETS_SCANS.load(std::sync::atomic::Ordering::Relaxed)
+        );
     }
 }

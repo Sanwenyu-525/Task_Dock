@@ -59,6 +59,30 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> AppResult<Vec<u8>> {
     Ok(out)
 }
 
+/// 只读取 PNG 的 IHDR 宽高，不解码像素、不分配像素缓冲。
+///
+/// 用于解码前做内存预算闸门：高压缩率 PNG 的容器可能只有几十 KB，
+/// 但解码后的 RGBA 是 `宽 × 高 × 4` 字节。
+pub fn png_dimensions(bytes: &[u8]) -> AppResult<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    // 签名(8) + IHDR 块长度(4) + 类型(4) + 宽高(8)
+    if bytes.len() < 24 {
+        return Err(AppError::Validation("PNG 文件不完整".into()));
+    }
+    if bytes[..8] != SIGNATURE {
+        return Err(AppError::Validation("不是有效的 PNG 文件".into()));
+    }
+    if &bytes[12..16] != b"IHDR" {
+        return Err(AppError::Validation("PNG 缺少 IHDR 头".into()));
+    }
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    if width == 0 || height == 0 {
+        return Err(AppError::Validation("图片尺寸无效".into()));
+    }
+    Ok((width, height))
+}
+
 pub fn decode_png_rgba(bytes: &[u8]) -> AppResult<(Vec<u8>, u32, u32)> {
     let decoder = png::Decoder::new(Cursor::new(bytes));
     let mut reader = decoder.read_info().map_err(png_err)?;
@@ -834,5 +858,26 @@ mod tests {
         let mut short = vec![0u8; 3];
         canonicalize_unused_alpha(&mut short);
         assert_eq!(short, vec![0u8; 3]);
+    }
+
+    #[test]
+    fn png_dimensions_reads_header_without_decoding() {
+        let rgba = vec![9u8; 3 * 2 * 4];
+        let png = encode_png(&rgba, 3, 2).unwrap();
+        assert_eq!(png_dimensions(&png).unwrap(), (3, 2));
+        // 截断到只有头部（没有 IDAT/CRC）：仍然能拿到尺寸，证明不依赖像素数据。
+        let header_only = &png[..24];
+        assert_eq!(png_dimensions(header_only).unwrap(), (3, 2));
+    }
+
+    #[test]
+    fn png_dimensions_rejects_non_png_and_invalid_size() {
+        assert!(png_dimensions(b"not a png at all").is_err());
+        assert!(png_dimensions(&[0u8; 24]).is_err());
+        let png = encode_png(&vec![0u8; 4], 1, 1).unwrap();
+        // 人为把宽高改成 0：必须拒绝，避免后续按 0 计算预算。
+        let mut zero = png[..24].to_vec();
+        zero[16..20].copy_from_slice(&0u32.to_be_bytes());
+        assert!(png_dimensions(&zero).is_err());
     }
 }

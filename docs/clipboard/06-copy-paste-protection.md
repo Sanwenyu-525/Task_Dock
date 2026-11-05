@@ -19,12 +19,32 @@
 3. `platform::write_payload_notifying` 写系统剪贴板，并在同一访问锁内登记
    `self_write` 序列号，监听侧不会把这次复制当成外部采集；
 4. `bump_copy` 只累加 `copy_count`，**不更新 `last_seen_at`**：复制是使用操作，
-   不是新的采集事件；列表排序保持稳定；
+   不是新的采集事件；列表排序保持稳定。**写入结果与统计持久化必须分离**：
+   `bump_copy` 失败只降级为警告（`stats_recorded=false`），绝不把一次已成功的
+   剪贴板写入改判成“复制失败”，也不为补偿统计而重复写剪贴板；
 5. 不广播 `clipboard-changed`；前端收到复制结果后就地更新该条目的使用次数，
-   不重新请求列表（避免已加载分页被缩回第一页、滚动位置跳变）；
-6. 返回 `CopyReport { mode, bytes, warnings, sequence, item_count }`。
+   不重新请求列表（避免已加载分页被缩回第一页、滚动位置跳变）。`stats_recorded=false`
+   时前端不本地累加次数（没落库的次数不能显示）；
+6. 返回 `CopyReport { mode, bytes, warnings, sequence, item_count, stats_recorded }`。
 
 文件条目若部分路径失效，复制仍成功，但返回“N 个文件路径已不存在”的警告。
+
+### 统计失败不改判复制失败（2026-11-04）
+
+真机路径上的顺序是：`write_payload_notifying` 成功 → `bump_copy`。修复前
+`bump_copy(...)?` 把统计写入失败升级成整条命令错误，前端提示“复制失败”，
+而系统剪贴板里其实已经是该条目内容，用户会重复复制。
+
+现行契约：
+
+- **成功与否只看剪贴板写入**；统计失败写入 `CopyReport.warnings` 并把
+  `stats_recorded` 置为 `false`；
+- 前端统一显示「已复制 / 已复制（部分成功）/ 复制失败」三态：有降级项或统计
+  失败即“部分成功”，不作为失败提示；
+- 单条复制入口（列表卡片、详情页、胶囊轻量视图）都遵守：`stats_recorded=false`
+  不调用本地 `bumpItemCopy`，避免 UI 计数与数据库永久不一致；
+- 统计失败日志只记录错误类型/摘要，不含剪贴板正文或文件路径。
+
 
 ### 通用文本复制（路径 / 目录 / 令牌）
 
@@ -262,6 +282,23 @@ ACCESS_LOCK
 
 以上均属于“有损恢复”，任务消息会说明是否恢复以及未恢复原因；不会静默宣称完整恢复。
 无法无损恢复时选择**停止恢复并说明**，而不是覆盖用户内容。
+
+### 2026-11-04 图片内容比较的 DIB 兜底（逐项粘贴第 1 项失败修复）
+
+- 现象：剪贴板只有 `CF_DIB`/`CF_DIBV5`（截图工具、Snipaste、旧式应用）时，初始快照
+  能由 DIB 解码成 PNG + RGBA，但写入前比较只读取原生 `PNG` 格式；读不到 PNG 被当成
+  “内容已变化”，守卫拒绝写入，报“第 1 项写入前检测到剪贴板已被其他程序更新”。
+- 修复：快照与比较统一为同一图片语义——PNG 原始字节相等直接 `Same`；否则按
+  PNG / DIB / DIBV5 解码成 RGBA 比较尺寸与像素，Alpha 全 0 视为“通道未使用”归一为
+  不透明；负高度/自下而上行序、BI_BITFIELDS Alpha 掩码、stride 由解码层处理。
+- 新增 `SnapshotState`（`Captured` / `Empty` / `Unsupported` / `Unreadable`）与
+  `WriteOutcome::Unverifiable`：只有 DIB、损坏图片等“读取不到可靠内容”的路径不再
+  谎报“用户接管”，也不伪造 `Same`；守卫与恢复仍不覆盖用户内容。
+- 安全边界不变：Content 守卫、HWND/PID 校验、前台确认、锁内比较后写入、用户接管
+  保护均保留；无法验证时不执行 `EmptyClipboard`。
+- 单测覆盖 `payload_match_accepts_dib_only_clipboard`、
+  `payload_match_rejects_different_dib_only_image`、
+  `payload_match_unverifiable_without_readable_image` 等；真机验证明细见任务验收报告。
 
 ## 五、兼容性适配
 
