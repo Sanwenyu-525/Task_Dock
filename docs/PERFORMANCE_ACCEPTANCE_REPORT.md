@@ -465,3 +465,30 @@ D（整桌面+文件回退+通知）/ E（负载后空闲 30min）/ F（重复�
 
 **在结果出来之前，原报告「主进程内存增长根因未定位」这一保留项维持不变**，不因插桩就宣称
 「无泄漏」。
+
+## 14. 2026-11-04 最终 P0 复验轮（追加，不覆盖上轮结论）
+
+- Git 基线：`cbf1447`；工作树含多会话未提交改动。详细任务级报告：
+  `tmp/acceptance/final-p0-backup-restore/report.md`；完整表格见
+  `docs/PERFORMANCE_FINAL_ACCEPTANCE.md` §15。
+- **P0-01 全量备份覆盖：通过**。备份注册表已从旧文档的 25 表扩到 **43 表**（含 v0.7 规划、
+  v0.8 货架、v0.9 工作流/笔记/任务完成事件、v0.10 专注），`backup_registry_covers_every_schema_table`
+  对 `sqlite_master` 双向校验，新增用户表未登记即失败；事件归档与剪贴板/货架资产文件按块打包。
+- **P0-02 恢复原子性：通过**。状态机 `PREPARING→VALIDATED→READY_TO_COMMIT→COMMITTING→COMPLETED`，
+  失败 `ROLLBACK_REQUIRED→ROLLING_BACK→ROLLED_BACK`；数据库替换与 `restore_commit_id` 在**同一
+  SQLite 事务**提交，之后才是文件提交，崩溃由 `recover_pending` 续做/回滚。
+  `cargo test --lib commands::restore::` **23 passed / 0 failed**。
+- **P1-03 退出超时恢复：通过**。`agents/pipeline.rs` 31 例、`agents/spool.rs` 6 例全部通过，
+  含 500 条已接收退出、3000 条跨队列+合并缓冲、HTTP 在途、重复退出、spool 写失败如实报告、
+  重启幂等重放不复活轮次。
+- **十万级真实往返（Release，`TASK_DOCK_SCALE_TEST=1`）**：100k 事件 + 10k 通知 + 5k 剪贴板
+  + 500 资产文件（250 张真实 PNG）+ 100 工作现场 + 2 归档；bundle **63,961,639 B**，
+  备份 **619 ms**、恢复 **5,760 ms**、峰值 WS **54.9 MB**，43 表行数与 SHA-256 全部一致。
+- **A–E 后端压测**：A 300,000/600 s（0 未持久化，DB p95 86.43 ms）；B 12,000/60 s；
+  C 120k 提交、67,851 次可重试拒绝、关键事件 0 丢失；D 5/5；E 36,000/1800 s，RSS −1.2 MB
+  （未观察到泄漏型增长，单次采样不作“无泄漏”结论）。证据：`docs/performance/results/*-20261104-*.json`。
+- **门禁**：tsc/build 通过；`npm test` 1,716/1,723（7 例失败位于并行在途前端文件，隔离复跑 4/4 通过）；
+  `cargo check/test --all-targets`、fmt、clippy 因并行编译错误（`widget_windows.rs` E0638）
+  **ENVIRONMENT BLOCKED**，需在无并行编辑的干净树复跑。
+- **发布判定：CONDITIONAL PASS**（P0 与 P1-03 已修复并真实验证；全仓门禁、真机 30 分钟、
+  真实断电/满盘未完成）。

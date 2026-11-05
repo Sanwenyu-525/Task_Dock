@@ -357,3 +357,140 @@ scrollIntoViewIfNeeded(container, item): void;
    提示文案同时放 `data-tip`。
 5. **新控件必须覆盖 9 种状态**（Default/Hover/Pressed/Focus-visible/Selected/
    Disabled/Loading/Error/Empty），见 [08-interaction-spec.md](08-interaction-spec.md) 第 4 节。
+
+### 复用约束（10 条，2026-11-04）
+
+1. 新建 UI 前先查 `src/components/ui/` 与 `index.ts`；已有组件能覆盖就**扩展 props**，不复制第二版。
+2. 再查设计系统基础样式（`.surface-card`、`.input-embedded`、`.search-box`、`.icon-btn`、
+   `--interactive` / `--selected`）与语义 Token；能用既有结构就不新增平行类。
+3. 同语义重复出现时优先合并；只有**业务语义不同**（即使颜色相同）才允许独立实现。
+4. 公共组件只承担通用职责：布局/交互/视觉；业务状态枚举、取数、持久化、请求过滤一律留在业务层。
+5. 新公共组件必须有导出的 Props 类型与最小单测（结构、ARIA、禁用态、主题/尺寸变体）。
+6. 新增 CSS 前先查重：优先补公共组件块或页面级宽度/密度差异；不新增第二套卡片、输入、焦点环。
+7. 焦点环只允许一层：容器负责唯一高亮，内层 `input` 用 `.input-embedded` 不重复绘制。
+8. 修样式冲突靠**收敛选择器与语义 Token**，不靠提高 specificity、`!important` 或叠加覆盖规则。
+9. 不因「看起来相似」强行合并不同业务状态映射；徽标文案与状态枚举仍由业务层决定。
+10. 迁移页面时保留原有搜索/筛选/持久化/键盘逻辑；只替换视觉与结构，逐页判定语义是否相同。
+
+---
+
+## 12. CollapsibleSection（可折叠分组，2026-11-04）
+
+`src/components/ui/CollapsibleSection.tsx`，由设置页 `Section` 的交互模式抽象而来，
+外观与设置页折叠分组一致（`.collapsible-section*`，全部使用现有语义 Token）。
+
+**职责**：只负责「标题行 + 可展开内容」的结构与交互，不承载业务、不读写存储。
+
+**Props**：
+`title`（纯文本）、`icon?`、`description?`、`badge?`、`actions?`（标题右侧操作区）、
+`expanded?` + `onExpandedChange?`（受控，优先）、`defaultExpanded?`（非受控）、
+`disabled?`、`id?`（稳定 `aria-controls` 前缀）、`className?`、`children`。
+
+**焦点**：内容区聚焦时点标题折叠，焦点先收回触发按钮；受控父组件从外部收起时，
+布局阶段检查 `document.activeElement` 并回收焦点（用聚焦标记 + 一次 layout effect，
+不注册 document 监听、不用定时器）。内容容器始终存在，折叠时 `hidden` 且不渲染子节点，
+`aria-controls` 始终指向真实节点。
+
+**持久化约定**：组件**不写 localStorage**。需要跨会话记忆时由调用方用
+`src/lib/collapsibleState.ts`（版本化结构、损坏/不可用回退默认值、只接受声明键），
+分组 ID 用稳定英文标识，禁止用中文标题做键。
+
+**适用**：设置项分组、接入/桥接等低频大区块的渐进披露。
+**不适用**：单条列表项的内联展开（如 Agent 卡片详情）、高频切换的筛选面板；
+不要为复用给每个列表项再套一层大卡片外壳。
+
+**标题区结构（2026-11-05）**：标题区固定为两层，避免按卡片高度或固定偏移做补丁：
+
+- 标题行 `.collapsible-title-row`：`[图标] [标题] [badge]` 的 `.collapsible-title` + `.collapsible-chevron`；
+- 描述 `.collapsible-desc`：标题行的下一个兄弟节点，位于 `.collapsible-text` 内。
+
+箭头只与标题行中心对齐（`align-items: center`），不再与「标题 + 描述」整体垂直居中；
+描述与箭头横向同列但处于下一行，不做绝对定位。无描述时高度仍为单行标题；
+标题或描述换行由 flex 布局自适应，箭头 `flex: 0 0 auto` 不被挤压。
+依赖 DOM 位置的测试与样式覆盖应使用 `.collapsible-title-row`，不要再假定箭头是按钮的最后一个子节点。
+
+**设置页已迁移（2026-11-04）**：`SettingsPanel.tsx` 的局部 `Section` 已改为
+`CollapsibleSection` 的薄适配层；`settingsSections.ts` 与既有存储键保持不变，
+跨页定位改用 `[data-collapsible-section="settings-<id>"]` 并自动展开目标分组。
+业务操作、默认折叠与用户偏好均未重置。
+
+## 13. SearchField（搜索输入，2026-11-04）
+
+`src/components/ui/SearchField.tsx`。只做输入交互与视觉，**不负责过滤、请求、防抖或匹配算法**。
+
+```ts
+interface SearchFieldProps {
+  value: string;
+  onChange: (value: string) => void;      // 只回传字符串
+  ariaLabel: string;                      // 必填
+  placeholder?: string;
+  clearLabel?: string;                    // 默认「清除搜索」
+  icon?: ReactNode;                       // 缺省 Search 图标
+  onClear?: () => void;                   // 先 onChange("")，再回调
+  onKeyDown?: (e: ReactKeyboardEvent<HTMLInputElement>) => void;
+  disabled?: boolean;
+  autoFocus?: boolean;
+  size?: "compact" | "default";           // 13px / 12px（均用输入 Token）
+  className?: string;
+  inputRef?: RefObject<HTMLInputElement | null>;
+}
+```
+
+要点：容器复用 `.search-box` 表面 + `.ui-search` 尺寸，输入挂 `.input-embedded`，
+焦点环只由容器 `:focus-within` 表达（含两套预设的玻璃/内凹样式）；清空按钮始终占位，
+出现/消失不改变输入宽度。Escape 只转发给调用方；输入法组合输入期间不转发按键。
+`SearchField` 未覆盖带自动补全的 `Combobox`：后者保留自身键盘与过滤语义。
+
+## 14. StatusBadge（状态徽标，2026-11-04）
+
+`src/components/ui/StatusBadge.tsx`。只负责语义色、尺寸、图标与长文案换行。
+
+```ts
+type StatusTone = "neutral" | "info" | "success" | "warning" | "danger";
+interface StatusBadgeProps {
+  tone: StatusTone;
+  size?: "sm" | "md";        // 9px / 10px
+  icon?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  dataTip?: string;          // 统一 data-tip，不用原生 title
+}
+```
+
+颜色只引用 `--status-*` / `--accent` / `--text-tertiary`。业务状态到 tone 的映射
+（如 Agent 健康状态、规划状态、收集箱状态）必须留在业务组件，不写进本组件。
+
+## 15. 卡片分层（2026-11-04）
+
+| 结构 | 职责 | 不负责 |
+|---|---|---|
+| `.surface-card` | 卡面：`--card-face` 背景、`--radius-card` 圆角、`--card-shadow` 阴影 | 交互、选中、业务状态 |
+| `.surface-card--interactive` | 整卡可点击：hover 阴影抬升 + 1px 位移、`focus-visible` 焦点环、`cursor:pointer` | 选中识别 |
+| `.surface-card--selected` | 选中识别：`--accent-soft` 衬底 + 识别环，不改变卡片深度 | hover 抬升、状态色 |
+| `.task-card` | 兼容旧引用的任务卡选择器，共享 `.surface-card` 卡面 + `--task-flow` 变体 + 自身内边距 | 新组件不应再新增同类兼容选择器 |
+| `.panel-block` | 设置/表单里的小块容器：1px 边框 + 卡片圆角 + `--surface-raised`，属于轻量分区而非可交互卡 | 折叠、选中、整卡点击 |
+| `CollapsibleSection` | 大区块渐进披露的完整外壳（标题行 + 卡面 + 内容区） | 列表项内联展开、业务持久化 |
+
+规则：
+- 普通卡片一律 `.surface-card`；可点击追加 `--interactive`，选中追加 `--selected`，不复制卡面。
+- 纯布局容器（栅格、分组、工具条）**不加卡面/边框/阴影**；单条列表详情用内联展开，不套大折叠外壳。
+- 禁止新建与 `.surface-card` 重复的 `GlobalCard` 或页面级卡片基类；页面只允许补宽度/密度/内容结构。
+- 删除局部卡面定义前先用引用检索确认无使用；状态色与卡面职责分离，不把 `--status-*` 写进卡面基类。
+
+## 16. 输入框 Typography 与原生光标（2026-11-04）
+
+Token 位于 `src/styles-ui.css` 的 `@layer ui :root`，所有文本输入共用：
+
+| Token | 值 | 用途 |
+|---|---|---|
+| `--input-font-size-sm` | 12px | 紧凑容器（SearchField compact、胶囊输入、设置数字输入、日期/时间微输入） |
+| `--input-font-size` | 13px | 常规单行/多行文本输入（默认档） |
+| `--input-font-size-lg` | 14px | 大号输入预留档（全局搜索等） |
+| `--input-line-height` | 1.45 | 统一输入行高，与正文一致 |
+| `--input-caret-color` | `var(--accent)` | 原生光标颜色，随主题切换 |
+
+规则：
+- 原生光标高度跟随字体度量（≈ `font-size`），`caret-color` **只改颜色**；光标偏小必须回到字号与行高，禁止伪元素、假光标、动画或 JS 模拟。
+- 常规输入 13px；紧凑输入不低于 12px。高度差由 padding / 控件高度承担，不能靠压低字号。
+- 焦点环只由容器 `:focus-within` 提供一层；内层 `input` 不写 `outline` / `box-shadow`，聚焦不改变控件尺寸。
+- 新增输入先查 `SearchField`、`.input-embedded` 与本 Token 表，不另造字号或焦点样式；`caret-color` 不用于修高度。

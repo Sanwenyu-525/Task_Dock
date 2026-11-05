@@ -146,7 +146,16 @@ const shim = `
   ];
 
   // ?tasks=empty：空状态走查（列表与统计为空，其他 fixture 仍完整，避免互相引用报错）
-  const LIST_TASKS = q.get("tasks") === "empty" ? [] : tasks;
+  // ?tasks=overdue：补一条真实已过期任务，使「逾期」统计与列表语义一致（默认夹具不含逾期项）
+  const LIST_TASKS =
+    q.get("tasks") === "empty"
+      ? []
+      : q.get("tasks") === "overdue"
+        ? [
+            { id: "t5", title: "逾期报告待复核", description: "", priority: 1, status: "pending", category: "工作", tags: [], due_at: iso(45), remind_at: null, advance_minutes: 0, recurrence: null, created_at: iso(700), updated_at: iso(40), completed_at: null, linked_agents: 0 },
+            ...tasks,
+          ]
+        : tasks;
   if (q.get("tasks") === "empty") {
     stats.pending = 0;
     stats.overdue = 0;
@@ -320,6 +329,25 @@ const shim = `
     captureAllowed: true,
     monitor: { captured: 128, ignored: 6, errors: 0, last_at: iso(1) },
   };
+  // 「导出给 Agent」面板夹具：覆盖窗口可用 / 已安装 / 未安装与超长名称。
+  const agentCap = (supported, evidence, note) => ({ supported, evidence, note });
+  const clipboardAgentTargets = [
+    { source_id: "codex", display_name: "Codex", installed: true, window_present: true, evidence: "window-present", note: "窗口可用：可手动逐项粘贴，或导出本地包", direct_send: agentCap(false, "unsupported-interface", "当前没有经过验证的结构化发送接口，不会自动上传或发送。"), file_import: agentCap(false, "unverified", "官方文件导入接口未验证，需要在应用内手动附加导出包。"), desktop_paste: agentCap(true, "window-present", "需用户手动选择窗口并逐项触发，只代表按键动作已发送，接收情况无法确认。"), export: agentCap(true, "local-export", "本地导出始终可用，不自动上传。"), recommended: "paste" },
+    { source_id: "claude", display_name: "Claude Code (Windows Experimental Preview 2026.11 — 超长名称与英文技术标识)", installed: true, window_present: false, evidence: "exe-found", note: "已安装：当前没有可交互窗口", direct_send: agentCap(false, "unsupported-interface", "没有可直接调用的结构化接口。"), file_import: agentCap(true, "verified-interface", "支持在会话中附加本地文件，需用户手动操作。"), desktop_paste: agentCap(false, "exe-found", "未检测到可交互窗口，无法手动逐项粘贴。"), export: agentCap(true, "local-export", "本地导出始终可用。"), recommended: "import" },
+    { source_id: "cursor", display_name: "Cursor", installed: true, window_present: true, evidence: "window-present", note: "窗口可用：可手动逐项粘贴，或导出本地包", direct_send: agentCap(false, "unsupported-interface", "没有可直接调用的结构化接口。"), file_import: agentCap(false, "unverified", "文件导入接口未验证。"), desktop_paste: agentCap(true, "window-present", "需用户手动选择窗口并逐项触发。"), export: agentCap(true, "local-export", "本地导出始终可用。"), recommended: "paste" },
+    { source_id: "trae", display_name: "Trae", installed: true, window_present: false, evidence: "exe-found", note: "已安装：当前没有可交互窗口", direct_send: agentCap(false, "unsupported-interface", "没有可直接调用的结构化接口。"), file_import: agentCap(false, "unverified", "文件导入接口未验证。"), desktop_paste: agentCap(false, "exe-found", "未检测到可交互窗口。"), export: agentCap(true, "local-export", "本地导出始终可用。"), recommended: "export" },
+    { source_id: "windsurf", display_name: "Windsurf", installed: false, window_present: false, evidence: "not-installed", note: "未安装", direct_send: agentCap(false, "not-installed", "未安装，无法发送。"), file_import: agentCap(false, "not-installed", "未安装，无法导入。"), desktop_paste: agentCap(false, "not-installed", "未安装，无法桌面粘贴。"), export: agentCap(true, "local-export", "仍可导出本地文件后手动附加。"), recommended: "export" },
+    { source_id: "opencode", display_name: "OpenCode", installed: true, window_present: true, evidence: "window-present", note: "窗口可用：可手动逐项粘贴，或导出本地包", direct_send: agentCap(false, "unsupported-interface", "没有可直接调用的结构化接口。"), file_import: agentCap(false, "unverified", "文件导入接口未验证。"), desktop_paste: agentCap(true, "window-present", "需用户手动选择窗口并逐项触发。"), export: agentCap(true, "local-export", "本地导出始终可用。"), recommended: "paste" },
+  ];
+  const clipboardExportPackage = {
+    dir: "C:\\\\Users\\\\preview\\\\AppData\\\\Roaming\\\\task-dock\\\\agent-exports\\\\20261104-201500-cg1",
+    markdown_path: "C:\\\\Users\\\\preview\\\\AppData\\\\Roaming\\\\task-dock\\\\agent-exports\\\\20261104-201500-cg1\\\\clipboard.md",
+    manifest_path: "C:\\\\Users\\\\preview\\\\AppData\\\\Roaming\\\\task-dock\\\\agent-exports\\\\20261104-201500-cg1\\\\manifest.json",
+    files: ["clipboard.md", "manifest.json", "image-01.png"],
+    item_count: 3,
+    summary: "已导出 3 项（图片 1 张）",
+    warnings: [],
+  };
 
   // ── 智能剪贴板夹具（v0.6 视觉走查：抽屉展开态）──
   const clipboardItems = [
@@ -371,7 +399,22 @@ const shim = `
     switch (cmd) {
       case "get_settings": return settings;
       case "update_settings": return { ...settings, ...(args?.patch || {}) };
-      case "list_tasks": return LIST_TASKS.filter((t) => (args?.filter?.status === "all" ? true : t.status === (args?.filter?.status || "pending")));
+      case "list_tasks": {
+        const f = args?.filter || {};
+        const q2 = (f.search || "").trim();
+        const now2 = Date.now();
+        return LIST_TASKS.filter((t) => {
+          if (f.status && f.status !== "all" && t.status !== f.status) return false;
+          if (q2 && !((t.title || "").includes(q2) || (t.description || "").includes(q2))) return false;
+          // 仅补 overdue 视图语义（与后端一致：有截止时间、早于当前、仍未完成）；
+          // 其余视图保持原 harness 行为，避免影响其他走查脚本
+          if (f.view === "overdue") {
+            const due = t.due_at ? new Date(t.due_at).getTime() : NaN;
+            return Number.isFinite(due) && due < now2 && t.status === "pending";
+          }
+          return true;
+        });
+      }
       case "task_stats": return stats;
       case "list_task_links": return taskAgentLinks.filter((l) => l.task_id === args?.taskId);
       case "parse_quick_add": return { title: (args?.text || "").replace(/明天|下午|三点/g, "").trim() || "新任务", due_at: iso(1440), recurrence: null, advance_minutes: null, matched: ["明天", "下午三点"], has_explicit_time: true, date_only: false };
@@ -492,6 +535,8 @@ const shim = `
       case "clipboard_link_task": return { id: "cl-new", task_id: args?.taskId, target_type: args?.targetType, target_id: args?.targetId, created_at: iso(0), label: "预览素材", kind: "text" };
       case "clipboard_unlink_task": return null;
       case "clipboard_status": return clipboardStatus;
+      case "clipboard_agent_targets": return clipboardAgentTargets;
+      case "clipboard_export_for_agent": return clipboardExportPackage;
       case "clipboard_probe": return { ok: true, message: "预览夹具：剪贴板可用", keys: ["Ctrl+C"], checked_at: iso(0) };
       case "clipboard_visible_targets": return [];
       case "clipboard_foreground_target": return null;

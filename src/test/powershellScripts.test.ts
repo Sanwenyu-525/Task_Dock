@@ -20,18 +20,18 @@ const ROOT = resolve(__dirname, "..", "..");
 const SCAN_DIRS = ["scripts", "src-tauri"];
 const SKIP_DIRS = new Set([
   "node_modules",
-  "target",
-  "target-accept",
-  "target-measure",
   "dist",
   ".git",
   "__pycache__",
 ]);
+// 并行会话的隔离构建目录（target / target-ocr-final / target-widgets-final…）体积可达数十 GB，
+// 递归遍历会把本用例拖过 5s 超时。凡 `target` 前缀目录一律跳过（构建缓存不含 .ps1 源码）。
+const SKIP_PREFIXES = ["target"];
 
 function collectPs1(dir: string, out: string[] = []): string[] {
   if (!existsSync(dir)) return out;
   for (const entry of readdirSync(dir)) {
-    if (SKIP_DIRS.has(entry)) continue;
+    if (SKIP_DIRS.has(entry) || SKIP_PREFIXES.some((p) => entry.startsWith(p))) continue;
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) collectPs1(full, out);
     else if (entry.toLowerCase().endsWith(".ps1")) out.push(full);

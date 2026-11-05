@@ -43,7 +43,7 @@
 | --- | --- |
 | 标题栏高度 | 36（padding 9/6 + 内容 24） |
 | 导航项 | 宽 50 / 高 46，圆角 12，图标 18，标签 9.5 |
-| 统计卡 | 高 72，圆角 13，图标 15，数值 18/700，标签 9.5 |
+| 统计卡 | 高约 39，圆角 13，单行「数值 20/600 + 标签 11.5」，无图标；≤384px 18/11 |
 | 快速添加行 | 高 34，圆角 9，按钮 8/600/11 |
 | 筛选药丸 | 高 24，圆角 7/9，字号 11 |
 | 任务卡 | 圆角 13，无左色条（方案 D，见 §12），标题 12.5/500 |
@@ -78,7 +78,7 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 | `--radius-card` | 13 | 13 |
 | `--radius-control` | 9 | 9 |
 
-间距节奏：4 / 6 / 8 / 10 / 12。统计卡间距 7，内容区左右内边距 10，导航轨内边距 6。
+间距节奏：4 / 6 / 8 / 10 / 12。统计卡容器间距 7、卡内数值与标签间距 6，内容区左右内边距 10，导航轨内边距 6。
 
 ---
 
@@ -175,8 +175,19 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 
 ### 6.2 统计卡
 
-图标在上（15px，按语义着色：待完成=强调、今日到期=紫、逾期=橙），数值 18/700，标签 9.5 弱色。
-**数值与标签永不着色为警告色**，只有图标与逾期卡的描边表达语义（避免满屏红字）。
+三卡等宽等高（`flex:1`），单行水平居中：左侧数值、右侧标签；**数值前不再放图标**
+（图标语义与标签重复，已移除）。
+
+- 数值 20px / 600 / 行高 1.1，`font-variant-numeric: tabular-nums`，0→999 切换不抖动；
+  窄窗（≤384px）降为 18px，不继续无限缩字号。
+- 标签约 11.5px / 行高 1.2，`--text-secondary`，单行 `nowrap` + 省略号，不换行撑高卡片；
+  窄窗 11px。
+- 数值与标签同基线（`align-items: baseline`），间距 6px，窄窗收 4px；
+  卡内 padding 9/4/8，窄窗 8/2/7。
+- 默认全部中性色（数值 `--text-primary`、标签 `--text-secondary`）；
+  **仅逾期 >0 时数值转 `--status-error`**，0 值不加 `warn` 类，也不靠图标或描边强调。
+- 与其它一级表面共用 `--card-face` / `--card-shadow`，不加额外阴影或边框；
+  逾期卡是按钮（`role="button"`），Enter / Space 可激活，点击目标 ≥22×22。
 
 ### 6.3 快速添加
 
@@ -227,7 +238,8 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 
 1. 正文/标题对比度 ≥ 4.5:1，辅助文字 ≥ 4.5:1（弱化但可读），禁用纯装饰性文字。
 2. 任何半透明表面上，正文不得直接压在壁纸色上：卡片必须有不透明基底（≥ 0.6）。
-3. 字号下限：正文 12.5，辅助 10，标签 9.5（仅用于 ≤4 字的导航标签与统计标签）。
+3. 字号下限：正文 12.5，辅助 10，导航标签 9.5（仅用于 ≤4 字的导航标签）；
+   统计卡标签 ≥11（当前 11.5，窄窗 11）。
 4. 点击目标 ≥ 22×22（标题栏图标 24，导航项 50×46）。
 5. 深色主题下不使用纯黑 `#000` 与纯白正文 `#fff`（避免光晕与硬边）。
 
@@ -498,12 +510,19 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 
 日期分组统一为**居中文字 + 两侧 1px 细线**的分隔形态（今天 / 近 3 天 / 近 7 天 / 具体日期同一套）：
 
-- `.history-day-label` 是 `sticky; top: 0` 的 flex 行，`::before` / `::after` 各为一条
+- `.history-day-label` 是 `sticky; top: -10px` 的 flex 行，`::before` / `::after` 各为一条
   `flex: 1 1 0`、`height: 1px`、`background: var(--border-subtle)` 的细线，等长延展到容器左右边缘，
   与文字垂直居中对齐（`align-items: center`）；文字左右各留 10px 间距。
-- 标签容器**不铺整行底色**；只有文字块 `.history-day-label-text` 带局部淡染底
-  （`--clip-detail-face` 掺 10% `--accent`，两端均不透明，结果仍不透明）与 5px 圆角。
-  吸顶时卡片从细线区与文字块旁穿行，只有文字那一小块遮住内容，仍清晰可读。
+- 标签容器**不铺整行底色，文字块也不带局部底**（`.history-day-label-text` 只有 `padding`、
+  无 `background` / `border-radius`），文字用 `--text-secondary` 保持正文级对比。
+- 吸顶遮挡由整条 `.history-day-label-mask` 负责：`position: absolute; inset: 0; z-index: -1`，
+  以 `--capsule-face`（四套预设×明暗均不透明的窗口底）兜底，再以 `background-attachment: fixed`
+  在固定视口坐标重绘 `--window-fill` 窗口渐变，`::before` 复刻 `--decor` 并按预设自身的
+  `--decor-opacity` 衰减。固定坐标系与占满视口的 `.dock-window` 一致，因此不会与周围出现色带或接缝。
+- `top: -10px` 抵消 `.tab-content` 的 `padding-top`：`top: 0` 会把标题钉在滚动区可视顶端下方 10px，
+  滚上去的卡片从这条缝里露出来（与 `.clip-detail-head` 同一手法）。`top` 只在吸附时生效，不改正常流布局。
+- 取舍：原生材质（Mica / 桌面透出）无法用 CSS 复刻，遮罩以 `--capsule-face` 实色承接，
+  因此 frosted / clear 下比周围少一点桌面色偏；dream-gradient 与 frosted 两套主预设的深浅主题均无色带。
 - 不引入 `backdrop-filter`；`--surface-base` / `--surface-overlay` 分别是 `<image>` 与带 alpha 的
   颜色，不能拿来当吸顶底。
 - 标签容器 `pointer-events: none`、文字块 `pointer-events: auto`：细线所在的透明带不拦截指针，
@@ -553,3 +572,23 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 
 未接入：`.apps-tile`（应用卡片会话归属）、`.overview-card`（统计卡尺寸与布局差异大）、
 `.planning-project-*`（容器 / 色叠层 / accent 渐变识别）、`.preset-card` 与表单控件（控件层）。
+
+### 14.8 微件页职责与桌面表面（2026-11-05）
+
+- **职责**：微件页 = 工作台，承载已启用微件的启停、桌面显示、置顶、尺寸、条目上限、排序与
+  卡内展开配置；微件库 = 只负责添加，仅列未启用项与依赖状态，提供「添加到工作台 / 添加到
+  桌面」，全部添加后只保留简洁完成态。库中不再重复管理表单。
+- **卡片头部**：左侧拖动手柄 + 名称 + 必要运行态；右侧桌面显示开关、配置展开、停用。
+  置顶 / 尺寸 / 条目上限 / 位置重置收进卡内展开区，不新增模态弹窗。
+- **状态独立**：桌面显示开关只写 `desktop.visible`，停用只写 `enabled`；关闭看板卡片不影响
+  桌面窗口，反之亦然。
+- **布局**：`.widgets-grid` 使用 `align-items: start`，卡片按内容自然高度；≤620px 单列、
+  ≤900px 两列、≥1180px 四列（md 跨 2 列可并排），不为填满窗口拉伸内容。
+- **桌面表面**：仅在 `.wd-root` 作用域新增 `--wd-control-face / -hover / -border` 与
+  `--wd-cell-face`，操作按钮、统计格改为低对比中性面 + inset 描边；主内容保持透明。
+  不改全局 `--control-face` 语义，不影响主窗口按钮。
+- **列表反馈**：hover 6% / active 10% 中性底，`focus-visible` 用 2px accent 焦点环，
+  disabled 明确弱化；不使用 `--accent-soft` 整行实心高亮，hover 不改行高、图标与文字不位移。
+- **桌面预设**：高度按内容密度收紧（today-tasks md 340×220、next-reminder 320×145、
+  agent-status 340×190、quick-actions 340×126、focus-timer 300×128、efficiency 320×150）；
+  预设只在新建 / 切换尺寸时生效，用户自定义尺寸优先，内容变化不触发自动 resize。

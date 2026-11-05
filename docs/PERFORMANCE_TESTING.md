@@ -877,3 +877,19 @@ python scripts/perf/memory-phases.py --jsonl docs/performance/results/DIAG-C-ui-
 
 **边界**：只覆盖 20 事件/秒、单实例、单显示器；未做 ETW/Heap 逐分配点归因；
 未覆盖 500 事件/秒持续负载、8 小时以上长跑、安装形态与长时间 UI 交互。
+
+## 4.6 2026-11-04 复验：十万级备份与接入压测的可重复命令
+
+- 十万级备份/恢复改为环境开关（不再是 `#[ignore]`，断言不变）：
+  `$env:TASK_DOCK_SCALE_TEST="1"; cargo test --release --lib commands::backup::tests::full_backup_100k_events_10k_notifications_roundtrip -- --nocapture`
+  证据写入 `src-tauri/target/acceptance/v05-scale-100k.json`，本轮复本归档到
+  `tmp/acceptance/final-p0-backup-restore/scale-100k-20261104.json`。
+- 接入压测 A–E 仍为手动 `--ignored` 套件（确定性负载，不适合进常规门禁）：
+  `cargo test --release --test ingest_perf scenario_a -- --ignored --nocapture`
+  （`scenario_b`/`scenario_c`/`scenario_d`/`scenario_e` 同理），结果写入
+  `docs/performance/results/`。`scenario_e` 为 30 分钟管线级稳定测试；
+  整机 WebView2/托盘 30 分钟观测仍以 §4.7 的 2026-10-31 机级证据为准，
+  本轮未重跑整机长跑，报告中如实标注。
+- 并行会话占用同一 `src-tauri/target` 时，cargo 会阻塞在文件锁；本轮部分压测改用
+  `CARGO_TARGET_DIR=src-tauri/target-final-p0`（已登记，任务结束回收）。
+  非空闲机器条件下得到的吞吐/延迟数据只作为下界，不作为发布上限声明。

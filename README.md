@@ -81,8 +81,9 @@ This file exists as a hello-style top-level file for connection verification.
   全量数据、事件归档与全部剪贴板图片，快速备份显式 `partial=true` 并记录截断原因；
   恢复使用 staging/vault/日志状态机与提交标记，数据库与资产/归档要么全部生效、
   要么全部回滚；旧版备份保留新模块数据，损坏/缺图/篡改包在写入前拒绝。
-  100k 事件 + 10k 通知 + 5k 剪贴板条目 + 500 张真实 PNG 的实测结果与仍存在的
-  恢复内存边界见 [最终验收](docs/PERFORMANCE_FINAL_ACCEPTANCE.md)；
+  100k 事件 + 10k 通知 + 5k 剪贴板条目 + 500 张真实 PNG 的实测（2026-11-04：备份 619 ms、
+  恢复 5.6 s、峰值 54.9 MB，43 表与资产 SHA 全部一致）见
+  [最终验收](docs/PERFORMANCE_FINAL_ACCEPTANCE.md)；
 - **Agent 监控**：自动发现 + 一键接入向导 + 分层监控树（Agent→实例→会话→轮次→事件，
   事务性 ingest + 幂等/乱序/终态保护）；Agent 跳转能力证据化（Codex `codex resume` 实测基线；
   OpenCode 运行时探测；无官方接口的诚实降级，不臆造 Deep Link）；

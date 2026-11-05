@@ -71,6 +71,9 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   读路径走 `with_read`，不占写锁；锁中毒时自动恢复。
 - 迁移机制：`MIGRATIONS` 数组按 `PRAGMA user_version` 顺序应用，新增版本只追加不修改。
 - 设置存储：`application_settings` 键值表 + `Settings` 强类型视图（`#[serde(default)]` 兜底）。
+  - 2026-11-04：反序列化失败改为逐键定位（`salvage_invalid_settings`），仅类型损坏的字段
+    各自回退默认，其他合法设置与数据库原始值不变；剪贴板安全配置继续 fail-closed；诊断只记录
+    键名不记录值；读取不写库、无迁移。详见 `tmp/acceptance/navigation-blank-screen/reverify-report-20261104.md`。
 - WAL 模式 + `busy_timeout`，外键约束开启；v0.5 补充事件/通知/轮次/会话查询索引。
 - 读延迟诊断：调用数、平均耗时、≥100ms 慢查询计数（`read_stats()`）。
 - 事件保留：仅清理 `running`/`idle`，先归档 JSONL 再分块删除；受保护状态永不自动删除。
@@ -97,6 +100,15 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     通知历史照常入库——静音只影响打扰行为。
   - 停靠胶囊的 Agent 异常提示音受三层开关约束：`agent_alert_sound`、`notify_muted`、
     `notify_agent` 任一关闭即不发声（胶囊声音不绕过通知总开关）。
+    **更正（2026-11-04）**：v0.13 起提示音与 TTS 改由统一音频服务调度，开关为
+    `audio_sound_enabled` / `tts_enabled`，只服从 `notify_muted`，**不再受**系统通知显示开关
+    `notify_agent` / `notify_reminder` 影响；单事件开关与缓存策略见
+    [docs/audio/audio-notifications.md](audio/audio-notifications.md)。旧
+    `agent_alert_sound` 仅作为兼容键读取，`false` 映射为关闭 waiting/failed 提示音。
+    **补充（2026-11-04 第二轮）**：`audio-event` 一律 `emit_to("main", ...)`，只由主窗口的
+    唯一音频服务消费，停靠胶囊/通知窗/微件窗不订阅、不重复播；提醒过期策略与弹窗分离——
+    超出 `overdue_grace_hours` 的提醒仍入库并推进重复任务，但不再发声（`FiredNotify.audio=false`），
+    `notify_reminder=false` 只关弹窗、不关声音。
   - OS 通知发送失败从 `debug` 升为 `warn` 日志（含错误原文），结果可通过
     `notification_stats()`（attempted/succeeded/failed）复核；失败不影响通知历史提交，不重试。
 
@@ -233,9 +245,18 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   catch_unwind 隔离畸形文件）+ 卸载注册表（winreg，`DisplayIcon` 只接受 .exe，
   过滤卸载器/更新补丁）+ App Paths 注册表（HKCU/HKLM 32/64 位视图）+
   UWP（Get-StartApps 单次调用、8s 超时）+ 常用软件路径探测。
-  扫描带 5 分钟缓存，`AppScanResult.diagnostics` 标记开始菜单截断/UWP 失败；
+  **候选分层（2026-11-04）**：各来源统一走 `candidate_tier` —— `normal` 默认展示、
+  `advanced`（更新器 / 崩溃报告 / 后台服务 / 维护工具等）默认折叠、可由用户
+  「显示高级项」展开、`invalid`（卸载/安装例程）不进入扫描结果。判定只认独立文件名
+  语义与完整短语，不做任意子串删除，避免误伤开发工具/终端/软件管理器；过滤只作用于
+  **新扫描候选**，绝不修改、隐藏或删除用户已保存的快捷应用。
+  扫描改为**用户主动触发**：进入应用中心/胶囊应用面板/添加子页都不自动扫描，
+  会话内结果可直接展示并标注上次扫描时间，失败保留旧结果并可重扫；
+  `AppScanResult.diagnostics` 如实标记开始菜单预算/深度截断、UWP 失败或条目上限，
+  不把「没有匹配」说成「扫描完整」。
   只扫明确位置，绝不全盘搜索；浏览器渲染进程等子进程不构成独立应用
-  （窗口层只枚举顶层窗口，天然排除）。
+  （窗口层只枚举顶层窗口，天然排除）。自动发现覆盖不到的类型（绿色版/便携软件、
+  无开始菜单入口的自定义程序）通过「手动添加」登记 EXE / 网址 / 文件夹。
 - `app_icons.rs`：真实应用图标提取（`SHGetFileInfoW`/`ExtractIconExW`/UWP
   `IShellItemImageFactory` → HICON → RGBA PNG data URL）。扫描与图标提取解耦，
   前端按需调用 `nav_app_icon`；HICON/HBITMAP/DC 全部释放，`spawn_blocking` +
@@ -244,10 +265,14 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 控制台工具（`tasklist`/`reg`/`where`/`powershell`/opencode 探测）统一经
   `winproc::hidden()` 启动并设置 `CREATE_NO_WINDOW`：Release 为 `windows` 子系统，
   不隐藏控制台会在每次 Agent/应用扫描时闪出终端窗口。
-- `target_resolver.rs`：`navigation_targets`（用户确认过的可信启动配置，按
-  app_key+target_type 幂等去重）、`task_navigation_targets`（任务关联：display_order /
+- `target_resolver.rs`：`navigation_targets`（用户确认过的可信启动配置）、
+  `task_navigation_targets`（任务关联：display_order /
   is_default / launch_behavior，UNIQUE(task_id, target_id)）、`navigation_log`（执行流水）。
   与既有 `task_agent_links` 并存互补，旧表与历史数据不动。
+  **快捷方式类型（v33 迁移，2026-11-04）**：`shortcut_kind` 区分 `app`（普通应用，
+  按 app_key+target_type 去重）与 `window`（指定窗口，同程序可多条，按稳定窗口身份去重）；
+  `bound_window_identity` 保存类名+标题+EXE 的稳定身份，**绝不保存 HWND**。旧行迁移为
+  `app` + 空绑定，行为与升级前一致；任务窗口记忆解析优先任务记忆 → 绑定身份 → 目标记忆。
   **配置保护（2026-11-03）**：再次扫描/重复关联同一 app_key 只复用现有目标，
   `save_target` 默认不覆盖 launch_args / working_dir / window_title_hint / icon / category；
   只有 `overwrite_config=true`（用户确认）或 `update_target` 显式补丁（新增
@@ -427,6 +452,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   选中态由「更多」按钮（`aria-current="page"`）承担，菜单项以单选勾选显示当前页；菜单复用
   `Popover`/`DropdownMenu` 的视口翻转与外部关闭，不自算坐标；底部「自定义导航」经
   `settingsSections.requestSettingsSectionReveal` 展开并滚动到设置页「导航自定义」分区。
+  （2026-11-04 补充）胶囊入口扩展原则：Lite 面板型（高频、轻量、复用现有后端）才进胶囊；
+  完整配置页 / 复杂编辑 / 大量历史等重型界面走快捷跳转进完整工作区。轨道固定几何决定
+  当前只支持「状态球 + 4 个分类」，新增第 5 类需同步改 `styles.css`、`capsuleLayout.ts` 与
+  `window_shape.rs`；两类入口判定、改动清单与可见性边界见
+  [docs/ui-themes/13-capsule-redesign.md](ui-themes/13-capsule-redesign.md)。
 - 智能剪贴板（v0.6 起进入侧边栏）：完整模式为**第 4 个导航入口**（任务 / Agent /
   行动 / 剪贴板 / 历史 / 设置），**完整模式标题栏不再保留剪贴板入口按钮**；
   任务关联场景仍以
@@ -445,7 +475,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 应用中心（v0.10）：左侧「应用」入口位于 Agent 与行动之间（`RAIL_ORDER` 视觉顺序；
   **不占 Ctrl+数字**，快捷键仍严格按 `TAB_ORDER`）。`AppsPanel` 与胶囊应用面板、设置
   应用管理三端共用 `useNavigationStore` + `navigation_targets`：添加复用
-  `AppPicker standalone`、编辑复用共享 `TargetEditDialog`、启动/聚焦复用 `navNavigate`。
+  `AppPicker standalone`、编辑复用共享 `TargetEditForm`、启动/聚焦复用 `navNavigate`。
   运行态来自 `nav_target_running_states`（复用 `app_discovery::running_states` 的真实
   窗口枚举 + 进程快照），只在打开页面 / 启动成功后按需查询一次，**不轮询**；
   `has_window/process_only` 才算运行中，`unavailable` 表示配置失效，不作推断。
@@ -456,6 +486,13 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `variant="page"`：工具面板/应用管理/设置页的「添加应用」改为内容区子页面（返回、搜索、
   分类横向滚动、多选批量添加、手动添加、当前窗口选择均在同一页面内切换），任务关联场景仍用
   模态选择器。
+- 应用添加入口与快捷方式类型（2026-11-04，v33）：胶囊「+」与应用中心「添加应用」写入一次性
+  `useUiStore.appsAddRequest` 后展开完整窗口并切到「应用」页，由已挂载的 `AppsPanel` 消费一次
+  并打开 `AppPicker` 添加子页面；保存/批量完成后回到应用中心并立即刷新，**不再绕经设置页**，
+  设置页内发起的添加仍停留在设置上下文。同一程序可同时存在一条普通应用快捷方式（程序身份、
+  启动或聚焦）与多条指定窗口快捷方式（稳定窗口身份、优先聚焦该窗口）；窗口选择页改为
+  「单选窗口 → 选快捷方式类型 → 确认添加」，添加动作本身不切换用户当前窗口，激活时窗口不存在
+  按既有策略降级并如实反馈，不宣称恢复原窗口。
 - 应用内快捷键：Ctrl+1…9 与 Ctrl+0 切换标签（顺序取自 `useUiStore` 的 `TAB_ORDER`，
   与视觉顺序 `RAIL_ORDER` 分离；「应用」不分配快捷键，既有 Ctrl+语义不漂移）、
   Ctrl+K 快速添加、Ctrl+Shift+C 剪贴板
@@ -616,6 +653,26 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   Agent 徽标只统计 waiting + failed。
 - 兼容：`snap_state` 新增可选 `center`；停靠期不写 `window_rect`；
   解除吸附按模式尺寸恢复。
+- 稳定性修复（2026-11-04，窗口定位 / 状态机 / Win32 裁剪）：
+  - `capsule_regions` 在面板矩形越界或零尺寸时返回 `None`（整次应用显式失败并记 warn），
+    不再退化成「只裁轨道」却报告成功；前端展开前先回读容器尺寸并按可用宽度收敛，区域写入
+    后仍以 `GetWindowRgn` 真实几何校验。展开请求失败时 `App.tsx` 只按相位判定胶囊模式
+    （`isCapsuleMode`），缺边宁可不渲染内容，也不回退完整主界面把控件泄露进翼片。
+  - 拖拽期（原生合成层）：`magnetic::in_size_move` 标记 `WM_ENTERSIZEMOVE` 窗口，
+    `window_shape::apply` 在拖拽循环内跳过 `GetWindowRgn` 回读与 `apply_dwm` 写入，
+    只在尺寸/DPI 真变时重建区域；松手由 `WM_EXITSIZEMOVE → flush_deferred` 一次性回读补写。
+    诊断开关 `TASK_DOCK_DRAG_DIAG=1` 以 ≥500ms 低频记录原生事实（前端拖拽期无 CSS 状态写入）。
+    该路径的真实拖拽观感验收未在本次授权范围内执行（见验收报告）。
+  - 形态切换事务：`formSwitchSeq` 令牌 + 有界 `runExclusiveResult`；只有回读成功才确认新偏好，
+    失败回滚到最后确认成功的 `snap_display_mode`，快速连续切换只落最后一次；引擎忙碌导致的
+    「延后」不算失败，不回滚偏好。
+  - 用户尺寸：完整面板解除吸附前把用户矩形写入 `window_rect`（胶囊容器尺寸永不写入），
+    解除后从 `window_rect` 恢复；无记录时回退模式默认尺寸。
+  - 工作区/DPI：`refreshDockedMonitor` 每 20 tick 检查真实显示器几何变化并按比例锚定重贴，
+    应用失败时回退记忆值，避免「记了新显示器但几何没跟上」。
+  - `snap_state` 兼容扩展：新增可选 `center_ratio` 与 `display`（name / bounds / workArea /
+    scaleFactor）；旧记录缺字段仍按绝对 `center` 与窗口所在屏恢复，顺序为
+    name → bounds → workArea → 窗口所在屏，比例优先于越界的绝对中心。
 
 ### 11. 快速捕获（quick_capture/，v0.7）
 
@@ -694,7 +751,8 @@ inbox/handled/converted、可选 url/note/task_id、`client_id` 唯一索引）�
   **只记录实际注册成功的组合**；失败原因写入快照供 UI 展示，不静默失败。按键分发统一走
   `tauri-plugin-global-shortcut` 单一 handler → `hotkeys::handle_shortcut`，未匹配即返回。
   应用内（`app_local`）按键由 `useHotkeysRuntime` 在渲染进程分发；系统级（`system_global`）
-  按键不在前端重复监听。
+  按键不在前端重复监听。`hotkeys.json` 随备份迁移；恢复时逐项重新校验/注册，冲突则降级
+  或禁用并保留原配置为待解决项（见「v0.10 用户配置备份」）。
 - **Agent 工作时间统计（`agent_stats/`）**：迁移 v26 只补两个索引
   （`agent_runs(origin, started_at)`、`agent_events(source_id, session_external_id, ingest_seq)`），
   **不新增表、不写回运行状态**；按本机自然日切窗聚合运行时长与事件量，未观测到的空闲时间
@@ -724,6 +782,63 @@ inbox/handled/converted、可选 url/note/task_id、`client_id` 唯一索引）�
 - **入口**：任务页「专注与休息」子视图（按需挂载，关闭即卸载），胶囊面板顶部状态徽标
   （无活动会话返回 null，不占位、不新增轮询）。
 
+### 14. 桌面微件独立窗口（v0.10，2026-11-04）
+
+微件可从主窗内看板升级为独立桌面窗口，**复用既有微件组件、Store 与数据源**，不复制业务层。
+
+- **宿主入口**：`widget.html` + `src/widgets/main.tsx` 是独立前端入口，**不挂载 `App.tsx`**，
+  因此不启动主窗全局监听、刷新调度、贴边吸附与偏好镜像。宿主只做「读快照 → 渲染 → 上报几何」；
+  主窗内的 `components/widgets/WidgetDesktopBridge.tsx` 是唯一窗口创建/销毁调度方。
+- **窗口与权限**：Rust `widget_windows.rs` 用 `WebviewWindowBuilder` 动态创建 label
+  `widget-<type>`，透明无边框、关闭即 `destroy`（不保留隐藏 WebView）。权限单独收口在
+  `capabilities/widgets.json`（`windows: ["widget-*"]`，仅 `core:default`、`core:event:default`
+  与 `core:window:allow-start-dragging`），**不继承主窗能力集**。
+- **层级与焦点**：默认普通层级，用户可开「始终置顶」；窗口 `set_focusable(false)`，不抢键盘焦点；
+  首版不做 WorkerW 桌面嵌入与复杂吸附/自动隐藏。
+- **跨 WebView 状态**：Zustand 不跨窗口共享。主窗是唯一数据所有者，微件只读带 `revision` 的快照，
+  按 `revision` 丢弃旧消息；事件协议 `widget-snapshot` / `widget-snapshot-request` /
+  `widget-action` / `widget-bounds-changed` / `widget-window-dismissed`。专注与效率数据仅在窗口
+  打开期间订阅，提醒仅在提醒窗口打开时读取，Agent 复用既有监控快照（**不新增扫描器**）。
+- **位置与 DPI**：配置存归一化锚点 `nx/ny`（相对显示器工作区）+ 显示器名称快照 + 逻辑尺寸 +
+  `topmost`，不存物理像素坐标；Rust 按当前显示器 `scale_factor` 换算，显示器缺失/越界/插拔时
+  回落主屏并 `clamp` 回工作区，**永不永久留在屏外**。拖动/缩放结束去抖后上报，主窗写盘一次，
+  **不逐帧写**。跨设备恢复不盲用原显示器坐标。
+- **配置模型**：扩展现有 `taskdock.widgets.layout.v1` 与 `preferences.json` 镜像的 `widgets` 镜像
+  （`WidgetDesktopState`），旧数据缺字段按「不显示/不置顶」安全默认补齐；`enabled`（看板卡片）
+  与 `desktop.visible`（桌面窗口）相互独立。恢复默认会同时关闭桌面窗口并清位置，管理页已明示。
+- **材质与圆角**：独立窗口不启用原生 Mica/Acrylic，统一使用 CSS 半透明表面（`solid` 材质回退
+  不透明）；Win32 圆角裁剪复用 `window_shape::apply_with_radius` 的独立窗口路径，DPI 变化时重裁。
+- **证据边界**：单元/构建验证覆盖迁移、状态独立、坐标归一化与协议；真实多窗口拖动、多显示器插拔、
+  100–200% DPI 与资源回收需真机验收，不作为自动化结论。
+
+**复验修正（2026-11-04，review-fix）**
+
+- **尺寸三态**：`size`（sm/md/lg）决定窗口预设；`desktop.width/height` 只保存**用户手动缩放**后的
+  自定义尺寸，切换预设时清空。Rust 记录每个类型最后一次 `set_size` 的逻辑尺寸，几何上报时
+  与之比较判定 `customSize`；程序缩放、DPI 换算、首次创建测量值都不得写成自定义尺寸。
+- **今日任务**：桌面微件不读任务页 `tasks`（会受筛选/排序/分页影响），改由主窗调用
+  `list_tasks({ view: "due_today_or_overdue", status: "pending", sort: "due", limit })`，
+  后端只查「今日到期 + 已逾期且未完成」并在排序后限量；失败保留上次成功数据并显式标记过期。
+  点击条目时若当前列表不含该任务，主窗调用 `fetch_task(id)` 取回后打开编辑器，任务页仅是最终失败兜底。
+- **窗口生命周期对账**：主窗按类型串行窗口命令，创建完成后再次校验 `desktop.visible`，期间被关闭
+  则立即销毁；Rust `Destroyed` 事件补发 `widget-window-dismissed`（幂等），避免幽灵窗口。
+  `desktopRuntime`（hidden/creating/shown/failed，仅内存）区分配置期望与实际窗口，管理页分别统计
+  「桌面 N」与「已显示 N」，失败可重试。
+- **可见性判定**：不再以「与显示器有任意交集」算可见；要求任一显示器工作区内至少保留
+  `120×48` 逻辑像素的可操作区域，否则收进当前屏或回落默认层叠位。
+- **窗口表面可读性**：独立微件窗口直接叠在壁纸上，表面透明度收紧到接近不透明（≥0.975），
+  仅保留高光/渐变；不改主窗与胶囊材质。
+
+**真机修正（2026-11-04，real-run）**
+
+- **窗口创建命令必须 async**：`show_widget_window` 原为同步命令，在 IPC/Windows 消息线程内执行，
+  而 `WebviewWindowBuilder::build()` 创建 WebView2 控制器依赖消息循环继续运转，同线程阻塞等待
+  会互锁——前端永久停在「正在创建」，桌面不出现任何窗口。改为 `async fn` 后创建、尺寸、置顶、
+  关闭重开、退出回收全部恢复正常。
+- **隔离实例即独立应用身份**：`instance_identifier`（`lib.rs`）在设置 `TASK_DOCK_DATA_DIR` 时把
+  AUMID 派生为 `com.taskdock.desktop.iso.<hash>`。并行验收同时启动多个隔离实例时，系统任务栏 /
+  应用列表会把它们视为多个独立应用（同名图标）。这是隔离设计的有意行为，不是应用条目重复。
+
 ## 三、数据模型（SQLite）
 
 ```
@@ -738,7 +853,8 @@ agent_runs     (UNIQUE(source_id, external_run_id) WHERE NOT NULL；v0.5 起带 
 agent_events   (流水，仅元数据；v0.5 起带 origin + (origin, received_at) 复合索引)
 agent_instances(v0.5 起带 origin)
 
-navigation_targets        （用户确认的目标；app_key+target_type 幂等去重）
+navigation_targets        （用户确认的目标；普通应用按 app_key+target_type 去重，
+                            v33 起指定窗口按 shortcut_kind+bound_window_identity 区分）
 navigation_log            （导航执行流水，供失败回看）
 
 clipboard_items           （内容哈希唯一；文字/元数据；图片/文件引用）
@@ -816,6 +932,29 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 
 **兼容性**：旧版 JSON 导出仍可导入；旧 bundle 缺少扩展模块时不会删除新模块数据；
 新程序拒绝高于 `MANIFEST_VERSION` 的备份，避免静默丢失未知模块。
+
+### v0.10 用户配置备份与恢复（2026-11-04）
+
+`hotkeys.json`、语言偏好（`taskdock.locale`）与微件布局原本只在数据目录 / localStorage，
+换机或恢复备份会丢失。现复用既有 bundle，在 **header 增加可选 `config` 字段**，不新增
+顶层 record：旧读取器会忽略 header 未知字段，因此「旧版本读新备份」与「新版本读旧备份」
+双向都不因配置被拒；缺失即旧备份语义（不改本机配置）。`BUNDLE_VERSION` / `MANIFEST_VERSION`
+与 SQLite schema 均未变，配置自身 `version=1`。
+
+- **偏好镜像**：前端变更经 `set_user_preferences` 原子写 `preferences.json`（300ms 防抖）；
+  启动时 `get_user_preferences` 对账，localStorage 缺失才用文件补齐，冲突时 localStorage
+  优先并回写。恢复后写 `preferences.restore-pending.json` 并广播
+  `user-preferences-restored`；前端以文件为准覆盖 localStorage，再以 `restoreId` 回执清除。
+- **校验**：语言仅接受 `zh-CN|en-US|system`，非法回退 `zh-CN`；微件按
+  `WIDGET_DEFAULTS` 白名单过滤未知类型、重复 ID 与非法尺寸，保留支持项顺序/启用状态；
+  配置损坏只跳过该字段并返回 warning，不阻断数据恢复。
+- **快捷键**：恢复后逐项重新校验组合合法性、重复项与系统占用；成功才标记已注册，
+  失败降级默认组合或禁用并保留 `hotkeys.restore-pending.json`。管理器尚未初始化时只写
+  文件并提示「下次启动注册」，不伪装成功。
+- **顺序与失败策略**：数据库事务 → 资产/归档 → 用户配置；配置是次要数据，写失败只产生
+  warning，不回滚已恢复的任务数据；恢复点 bundle 同样包含恢复前配置。
+- **列表/确认**：`bundle_meta` 与 `list_backups` 返回 `config_included`，恢复确认与备份列表
+  据此提示是否携带用户配置。
 
 ### v0.7 规划中心数据与备份兼容（2026-11-03）
 

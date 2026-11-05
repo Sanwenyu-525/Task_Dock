@@ -426,3 +426,189 @@ RESIZABLE 时加 THICKFRAME；其 `WM_NCCALCSIZE` 返回 0 使客户区=整窗�
 **旧结论更正**：§4「Win11 上 `DWMWCP_ROUND` 会额外提供系统级阴影与抗锯齿圆角」在**胶囊小区域**
 场景下不成立且有害——它让 DWM 在整窗矩形上画出系统边框 + 外部投影；该条仅对「区域≈整窗」的
 主窗兜底路径（`FullFallback`）保留。
+
+---
+
+## 10. 2026-11-04 更正：右键菜单圆角改「CSS 像素支撑区域 + DONOTROUND」
+
+**更正对象**：§3.1 中「右键菜单仍用 `CreateRoundRectRgn`」「胶囊与右键菜单弹窗保持各自独立
+的区域几何」的旧实现描述（保留原文，不再按该描述实现）。右键菜单仍是独立窗口、独立几何，
+但**不再使用 GDI 硬边圆角椭圆**。
+
+**现象**：右键菜单四角出现阶梯锯齿，部分条件下叠加双圆角/月牙缝与异常系统边框。
+
+**根因（真机几何 + 静态代码双向确认）**：
+
+1. `context_menu` 独立窗口此前走 Popup 分支 `CreateRoundRectRgn(0,0,w,h,2r,2r)`；
+   `CreateRoundRectRgn` 是**二值区域**，没有抗锯齿，16 CSS px 的弧被 GDI 按物理像素切出
+   阶梯；同时该区域的弧线与 CSS `border-radius` 的 AA 外沿不完全重合，会切进 CSS 的半透明
+   边缘像素（深色桌面上表现为一圈白色/浅色阶梯）。
+2. Popup 分支成功写区域后**仍**把 `DWMWA_WINDOW_CORNER_PREFERENCE` 设为 `DWMWCP_ROUND`。
+   DWM 的 8 DIP 系统弧与区域/CSS 的 16px 弧不是同心弧，两者相交 → **双圆角 + 透明月牙缝**；
+   `DWMWCP_ROUND` 还会沿整窗矩形画系统边框/投影（机制同 §9），在区域外或边缘形成异常边框。
+   即：**同一窗口被 Win32 区域与 DWM 系统角同时裁剪**，这是锯齿之外的第二层缺陷。
+
+**修复**（`src-tauri/src/window_shape.rs`、`src-tauri/src/context_menu.rs`）：
+
+1. Popup 分支改用与主窗同一套 `support_rect_rgn()`（逐行 CSS 弧像素支撑形状）：覆盖 CSS
+   真正触及的像素（含极低 alpha AA 外沿），排除完全透明像素；右/下边界用开区间，不引入
+   `+1` 容差。区域随 `Resized` / `ScaleFactorChanged` 重新应用（`apply_with_radius`），
+   缓存 stamp 含 hwnd/物理宽高/半径/DPI，尺寸变化与 DPI 变化都会失效重算。
+2. 区域写入成功 → `DWMWCP_DONOTROUND`（`dwm_rounded_for_popup(true) == false`）；仅区域
+   失败退化为直角矩形时用 `ROUND` 兜底，避免完全失去圆角。单测
+   `dwm_round_is_never_used_for_popup_region` 锁定该契约。
+3. 表面不再叠原生材质/整菜单 `backdrop-filter`，可见外形完全由「区域 + CSS AA 弧」定义。
+4. 未采用「整窗矩形区域」方案：§3.1 已记录非激活态 WebView2 矩形白底回填，菜单窗口同样不适用。
+
+**真机证据**（`tmp/acceptance/context-menu-visual-fix/`，125% DPI，真实 Tauri 窗口桌面合成截图）：
+
+- 菜单窗口 `rect=2035,621,313,751`，`GetWindowRgn` 回读 `regionType=3(COMPLEX)`、
+  `regionBox=[0,0,313,751]`，`dwmCornerPreference=1(DONOTROUND)`，`dwmBorderColor=-1`；
+- 反复打开两次几何完全一致（无 resize 漂移）；
+- 四角 6× 放大（`screenshots/corners.png`、`light-corners.png`、`dark-corners.png`、
+  `light-on-dark-corners.png`）无阶梯、无第二道系统弧、无矩形回填、无系统边框；
+- 失焦关闭后原菜单区域无残留（`screenshots/blur-leftover.png`）。
+
+**回归口径**：菜单圆角验收必须同时看「区域类型/包围盒」与「桌面合成截图四角放大」；只看
+`GetWindowRgn` 成功不能证明无锯齿，只截 WebView2 页面也不能证明区域裁剪。
+
+**限制**：区域仍是二值裁剪，最终 1px 级平滑由 CSS AA 弧提供；在 100/150/200% DPI 上只有
+几何单测（`popup_support_region_scales_with_dpi`）覆盖，本机实机仅 125%。
+
+## 11. 2026-11-04 第二轮：圆角重入调度与菜单工作区高度
+
+### 11.1 Popup 圆角重入必须保留 ShapeTarget 与半径
+
+**根因**：`window_shape::apply_impl` 的重入处理用全局 `APPLYING` / `PENDING` 布尔，检测到
+重入时再次调用 `apply(&win)`（等价 `ShapeTarget::Main`），**丢失了调用方传入的
+`ShapeTarget` 与 `logical_radius`**。右键菜单（Popup / 16px）在 `Resized` /
+`ScaleFactorChanged` 连续触发时会被按 Main / 18px 重算：Popup 区域包围盒按主窗规则多 1px、
+弧半径变大；同时全局布尔让不同 HWND（主窗与菜单）互相阻塞或覆盖。
+
+**修复**：改为按 **HWND** 的 `ApplyGate`：
+
+- `applying: HashSet<isize>`：仅同 hwnd 视为重入；不同 hwnd 各自进入，不互相等待；
+- `pending: HashMap<isize, PendingShape>`：`PendingShape { target, radius_milli }`，
+  半径以「逻辑像素 × 1000」整数保存（与 `set_radius` 同一夹取规则，NaN→18、0..40），
+  重入不丢精度、不回落默认形态；
+- `apply_impl` 循环消费本 hwnd 的最新请求（后到覆盖先到），离开临界区与取剩余请求在同一把
+  锁内完成，避免丢请求；仍在临界区外时用 `run_on_main_thread` 补偿，且补偿直接调用
+  `apply_impl(..., radius, target)`，不再调用 `apply()`；
+- 每窗口最多 8 轮收敛，正常 1–2 轮（尺寸稳定即退出），不无限重试。
+
+**契约**：任何延迟/补偿重算都必须携带原始 `ShapeTarget` 与逻辑半径；Main 与 Popup 的区域
+策略（`main_region_rgn` 含 +1 边界 / `support_rect_rgn` 不含）不得混用。
+
+**测试与真机**：`cargo test --lib window_shape` 30 passed，新增
+`popup_reentry_preserves_target_and_radius`、`main_and_popup_requests_do_not_cross`、
+`latest_reentry_request_wins_per_hwnd`、`radius_milli_clamps_and_rounds_like_set_radius`、
+`forget_window_clears_stamp_and_stability`、`popup_stamp_invalidates_on_dpi_change`。
+125% DPI 真机对菜单连续 `SetWindowPos`（751→300→600→400→751→240→700→751）后：
+`regionBox=[0,0,313,751]` 与窗口宽高一致（回落 Main 会多 1px）、`dwmCornerPreference=1`。
+
+### 11.2 菜单高度按锚点所在工作区收放
+
+**根因**：`fit_context_menu()` 把窗口高度固定夹在 80–900 逻辑像素，`place_menu()` 只算位置，
+高 DPI 小屏上窗口底部会超出工作区，末项不可达。
+
+**策略**（`src-tauri/src/context_menu.rs`）：
+
+- **自然高度与实际窗口高度分离**：`MENU_NATURAL_HEIGHT`（前端 `scrollHeight` 实测）与
+  `MENU_WINDOW_HEIGHT`（实际写入窗口）各自保存；被小屏裁剪不反向污染自然高度，回到大屏可恢复。
+- **按工作区 + DPI 收放**：`max_window_height(wa, scale) = (wa.h − 2·EDGE_MARGIN) / scale`，
+  `resolve_menu_height = clamp(natural, 80, 2000) ∩ max_window_height`；工作区取**锚点所在显示器**
+  的工作区（不是物理分辨率）。
+- **不足不拉伸**：内容小于窗口时窗口取自然高度，不拉高、不留空；超出部分由菜单内部滚动承接
+  （CSS `max-height:100vh; overflow-y:auto`，键盘 `focus()` 自动滚入视）。
+- **避免 fit ↔ resize 回环**：只有前端在 show 后回传自然高度时调 `fit_context_menu`；后端
+  `Resized` 只重设区域、不调 fit；高度差 <0.5 逻辑像素不 `set_size`（吸收 DPI/测量舍入，
+  避免 125%/150% 出现的 1px 幽灵滚动条）。
+- **显示器变化**：`ScaleFactorChanged` 触发 `refit_visible`（重算高度 + 位置）；`show_at` 在
+  显示前按当前工作区计算，切换显示器后重开即按新工作区收放。
+
+**验证**：`cargo test --lib context_menu` 17 passed（含 1366×768、1280×720、极小工作区、
+分数 DPI、高度阈值、自然高度恢复等 9 个纯函数测试）。125% 真机：菜单自然高度 601 逻辑 /
+物理 751，本机工作区逻辑 2048×1104 未触发钳制（如实标注）；把窗口压到 300 物理高后内部滚动
+生效，`End` 把焦点落到「退出」并滚入视，恢复后窗口回到 313×751。
+
+## 12. 2026-11-04 第三轮：重入时序复核与销毁清理
+
+### 12.1 P2-01 / P2-02：在当前调用模型下不可达（未改调度逻辑）
+
+两条推测竞态的前提都是「`apply_impl` 执行期间，同 HWND 又进入一次 `apply_impl`」，
+即 `ApplyGate::try_enter` 返回 false 并写入 `pending`。逐条核对了全部入口后结论是
+**该风险在当前代码中不存在**：
+
+- 所有 `window_shape::apply` / `apply_with_radius` 入口都在窗口线程：`on_window_event`
+  回调（`Resized` / `Moved` / `ScaleFactorChanged` / `Focused`）、`setup`、托盘/命令路径，
+  命令路径统一经 `apply_on_main_thread`（`run_on_main_thread` + 2s 超时）。
+- 窗口事件由事件循环派发（`tauri-runtime-wry 2.12.3` 的 `handle_event_loop` 收到
+  `RunEvent::WindowEvent` 后调用回调），不在 `SetWindowPos` / `SetWindowRgn` 调用栈内同步
+  回调；`apply_pass` 内部也没有会泵消息或同步触发窗口事件的调用。
+- 因此同 HWND 的 `apply_impl` 天然串行，`applying` 在入口时不可能已包含该 HWND，
+  `pending` 不会被写入；「同参数 pending 落在稳定性检查之后」没有可达路径。
+- P2-02 的补偿路径同样成立：`apply_impl` 只在窗口线程执行，而 `run_on_main_thread` 在
+  主线程上会**同步内联执行**（`tauri-runtime-wry` 的 `send_user_message`：主线程直接
+  `handle_user_message` → `Message::Task(task) => task()`），不存在「补偿排队期间新请求
+  先执行、旧补偿再覆盖」的时间窗；且每次 pass 都重新读取窗口尺寸，不会回写旧尺寸。
+
+结论：不引入版本号/代际序号，不改循环收敛条件（保持 8 轮上限、最新请求覆盖旧请求、
+不同 HWND 独立）。后续若引入跨线程 `apply`，需同时满足「同 HWND 的进入与 pending 取走
+在同一临界区」并补对应并发测试。
+
+### 12.2 P3-01：销毁清理补齐 `ApplyGate`
+
+`forget_window(hwnd)` 原本只清 `RegionCache`、胶囊区域状态、启动空白标记与拖拽延迟校准；
+本轮补上 `ApplyGate::forget(hwnd)`（`applying` + `pending` 一并移除，同一把锁内完成）。
+正常路径下这两者离开 `apply_impl` 即为空，此清理是为窗口销毁/句柄复用边界补全生命周期，
+不新增锁层级、不改变重入判定。销毁与重入交错时：销毁回调与 `apply_impl` 同在窗口线程，
+不存在「销毁时仍在 apply」的交错；若未来出现，`forget` 也保证复用后的新窗口不吃旧请求。
+
+### 12.3 新增确定性测试（`cargo test --lib window_shape`，36 passed）
+
+- `same_shape_reentry_is_kept_and_consumed_once`：同参数重入按最新一条记录、只取走一次；
+- `latest_pending_replaces_older_target_and_radius`：期间目标/半径变化时旧请求不得回写；
+- `gate_forget_clears_pending_and_applying_before_hwnd_reuse`：销毁后无未决请求，HWND
+  复用可重新进入；
+- `gate_serializes_same_hwnd_across_threads`：channel 作同步点（不 sleep）验证同 HWND
+  后到请求被延后且不丢失；
+- `gate_allows_different_hwnds_concurrently`：Barrier 同点放行，不同 HWND 不互相阻塞；
+- `repeated_resize_passes_settle_on_latest_size_per_hwnd`：连续尺寸变化只保留最新 pass 尺寸。
+
+### 12.4 「外部 `SetWindowPos` 改高度后 `set_size` 不落地」判定
+
+判定为**验收工具造成的外部状态分叉，不是产品缺陷**，机制已按当前代码复核：
+
+- `MENU_WINDOW_HEIGHT` 是产品自维护的**逻辑高度缓存**，只在 `apply_window_height`
+  成功 `set_size` 后更新；产品写尺寸的唯一入口是 `show_at` / `refit_visible` /
+  `fit_context_menu`，菜单又是 `resizable:false`，正常用户无法绕过。
+- 验收脚本用外部 `SetWindowPos` 把窗口压到 300 物理像素时缓存仍是自然高度 601；
+  重开时 `apply_window_height(601)` 判定 `|601-601| < 0.5`（`height_needs_resize`）→
+  **根本不调用 `set_size`**，窗口保留外部高度。现象看似「隐藏态 set_size 不落地」，
+  实为「判定无需 resize」。
+- 同高度的 `fit_context_menu` 也不会修复该分叉；只有目标高度与缓存差 ≥0.5（内容高度
+  变化、DPI/工作区变化）才会再次 `set_size`。启动时窗口隐藏、前端首次 fit 把 620
+  改到 601 并落地，说明隐藏态 `set_size` 本身可达。
+- 结论：不为异常测试手段增加「每次显示强制回读真实窗口尺寸」的分支；产品路径不可复现，
+  边界记录在验收报告 §9.5。外部改高后若要恢复，重启实例或让内容高度产生 ≥0.5 变化。
+
+### 12.5 第三轮验证（2026-11-04）
+
+- 命令：`npx vitest run src/context-menu` 35 passed；`cargo test --lib window_shape`
+  36 passed；`cargo test --lib context_menu` 17 passed；`cargo check --lib` 通过；
+  隔离构建 `target-context-menu-r3` 成功。`npm run build` 本次因其他会话未完成的
+  `WidgetDesktopBridge.tsx` 类型错误失败（与本模块无关，见验收报告 §9.4）。
+- 真机（125% DPI、单显示器、隔离实例）：菜单 `rect=2035,621,313,751`、
+  `regionBox=[0,0,313,751]`（与窗口一致，未回落 Main 的 +1px）、`regionType=3`、
+  `dwmCornerPreference=1`、`dwmBorderColor=-1`；resize 风暴
+  751→300→600→400→751→240→700→751 后仍 313×751、区域一致、DONOTROUND 保持。
+- 视觉：深/浅主题桌面合成与四角 6× 放大（`r3-dark*.png`、`r3-light*.png`）表面不透明、
+  文字/图标可读，四角平滑、无双弧/白三角/系统矩形；与第二轮 `r2-dark-corners.png` 同形态。
+- 主题同步：菜单「跟随系统」下用 CDP 媒体模拟 dark/light，`data-theme` 实时跟随
+  （通道 C，不代表 OS 级切换）；验收期间系统主题被外部切换导致两张旧截图明暗不一致，
+  查清非产品问题。
+- 300 物理高：`scrollHeight=599 / clientHeight=238 / maxScroll=361`，`End` 后
+  `scrollTop=360.8`、焦点末项「退出」可见（`r3-scroll-end.png`）。
+- 限制：仅 125% DPI 与单显示器；100/150/200%、多显示器与小工作区钳制仍由单测覆盖，
+  不声称真机全 DPI 通过。
+

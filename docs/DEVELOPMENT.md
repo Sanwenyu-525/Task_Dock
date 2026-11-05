@@ -360,6 +360,10 @@ Rust 构建缓存是本仓库最大的磁盘开销项（2026-10-31 实测各隔�
 全部被 `.gitignore` 忽略（`/target-*/` 与 `src-tauri/target-*/` 通配），新建任何
 `target-<name>` 隔离目录不会误入 Git。
 
+`report` 除固定清单外，还会动态扫描仓库根与 `src-tauri/` 下所有 `target-*` 目录，并显示
+归属 `task`/`pid`（无标记显示 `[未登记]`）；动态扫描仅用于统计展示，不改变 `cleanup`
+的白名单与归属校验。
+
 ### 7.3 build-guard.mjs 用法
 
 ```bash

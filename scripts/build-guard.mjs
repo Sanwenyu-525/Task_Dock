@@ -25,7 +25,7 @@ import {
   rmSync, statSync, writeFileSync, appendFileSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve, sep, basename, isAbsolute } from "node:path";
+import { dirname, join, relative, resolve, sep, basename, isAbsolute } from "node:path";
 
 const REPO_ROOT = realpathSync(dirname(dirname(fileURLToPath(import.meta.url))));
 const MARKER_NAME = ".build-guard-owner.json";
@@ -105,21 +105,54 @@ function dirSizeBytes(dir) {
   return total;
 }
 
-function cacheSummary(withSizes) {
-  const rows = [];
-  for (const rel of [...KNOWN_CACHES, NESTED_ANOMALY]) {
-    const abs = join(REPO_ROOT, rel);
-    if (!existsSync(abs)) continue;
+// 动态发现某个目录下的 target-* 普通目录（不跟随符号链接/联接点）。
+// 仅用于 report/precheck 统计，不参与 cleanup 的白名单与归属判定。
+function discoverTargetDirs(baseAbs) {
+  const found = [];
+  let entries;
+  try { entries = readdirSync(baseAbs, { withFileTypes: true }); } catch { return found; }
+  for (const e of entries) {
+    if (!e.name.startsWith("target-")) continue;
+    const abs = join(baseAbs, e.name);
     let st;
     try { st = lstatSync(abs); } catch { continue; }
-    const row = {
-      path: rel,
-      anomaly: rel === NESTED_ANOMALY,
+    if (st.isSymbolicLink() || !st.isDirectory()) continue;
+    found.push(abs);
+  }
+  return found;
+}
+
+function readOwner(abs) {
+  try {
+    const m = JSON.parse(readFileSync(join(abs, MARKER_NAME), "utf8"));
+    if (m && typeof m.task === "string" && typeof m.pid === "number") return m;
+  } catch { /* 无标记或格式损坏，按未登记处理 */ }
+  return null;
+}
+
+function cacheSummary(withSizes) {
+  const rows = [];
+  const seen = new Set();
+  const add = (abs, anomaly = false) => {
+    if (seen.has(abs)) return;
+    seen.add(abs);
+    let st;
+    try { st = lstatSync(abs); } catch { return; }
+    rows.push({
+      path: relative(REPO_ROOT, abs).split(sep).join("/"),
+      anomaly,
       kind: st.isSymbolicLink() ? "symlink/junction" : st.isDirectory() ? "dir" : "file",
       mtime: st.mtime?.toISOString() ?? null,
       bytes: withSizes ? dirSizeBytes(abs) : null,
-    };
-    rows.push(row);
+      owner: readOwner(abs),
+    });
+  };
+  for (const rel of [...KNOWN_CACHES, NESTED_ANOMALY]) {
+    const abs = join(REPO_ROOT, rel);
+    if (existsSync(abs)) add(abs, rel === NESTED_ANOMALY);
+  }
+  for (const base of [REPO_ROOT, join(REPO_ROOT, "src-tauri")]) {
+    for (const abs of discoverTargetDirs(base)) add(abs);
   }
   return rows;
 }
@@ -153,7 +186,8 @@ function runPrecheck(args, withSizes) {
   for (const c of caches) {
     const size = c.bytes === null ? "" : `  ${formatGB(c.bytes)}`;
     const tag = c.anomaly ? "  [异常嵌套，根因见 docs/DEVELOPMENT.md §构建产物]" : "";
-    console.log(`  ${c.path}${size}${tag}`);
+    const owner = c.owner ? `  归属 task=${c.owner.task} pid=${c.owner.pid}` : "  [未登记]";
+    console.log(`  ${c.path}${size}${owner}${tag}`);
     if (c.anomaly) {
       warnings.push(
         `检测到异常嵌套构建目录 ${c.path}（CARGO_TARGET_DIR 相对路径 + 错误 cwd 的产物），` +
@@ -352,14 +386,28 @@ function runCleanup(args) {
 
 // ---------------------------------------------------------------- main
 
-const args = parseArgs(process.argv.slice(2));
-const cmd = args._[0] ?? "precheck";
-switch (cmd) {
-  case "precheck": process.exit(runPrecheck(args, false));
-  case "report": process.exit(runPrecheck(args, true));
-  case "register": process.exit(runRegister(args));
-  case "cleanup": process.exit(runCleanup(args));
-  default:
-    console.error(`未知子命令：${cmd}（可用：precheck | report | register | cleanup）`);
-    process.exit(1);
+const SELF_PATH = fileURLToPath(import.meta.url);
+function isDirectRun() {
+  const arg = process.argv[1];
+  if (!arg) return false;
+  try {
+    return realpathSync(resolve(arg)).toLowerCase() === realpathSync(SELF_PATH).toLowerCase();
+  } catch { return false; }
 }
+
+// 仅在直接执行时进入 CLI；被测试 import 时只导出纯函数
+if (isDirectRun()) {
+  const args = parseArgs(process.argv.slice(2));
+  const cmd = args._[0] ?? "precheck";
+  switch (cmd) {
+    case "precheck": process.exit(runPrecheck(args, false));
+    case "report": process.exit(runPrecheck(args, true));
+    case "register": process.exit(runRegister(args));
+    case "cleanup": process.exit(runCleanup(args));
+    default:
+      console.error(`未知子命令：${cmd}（可用：precheck | report | register | cleanup）`);
+      process.exit(1);
+  }
+}
+
+export { discoverTargetDirs };

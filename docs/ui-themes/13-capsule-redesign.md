@@ -628,3 +628,66 @@ Agent 状态球与四个分类共用同一张方向表，不再有「端头一�
 - 当前激活分类被隐藏时切到仍可见分类（优先 Agent 状态球），全部隐藏时收起面板；
   设置页提供单面恢复默认，胶囊轨道始终保留「回到完整面板 / 收起」控件作为恢复路径。
 - 回归：`CapsuleDock.test.tsx`、`CapsulePanels.test.tsx`、`CapsuleRail.tooltip.test.tsx`。
+
+**补充（2026-11-04）：胶囊入口扩展原则与改动清单**
+
+本节只沉淀扩展规则与约束，不新增入口，也不改现有外观。
+
+**结论**：胶囊入口的身份、默认顺序/显隐已由 `navigationRegistry.ts` 单一事实源驱动，
+`CapsuleRail` 按 `layout.capsule` 渲染、`CapsuleDock` 按 `capsuleCategory` 选面板；
+显隐/排序经 `navigationLayout.ts` 写入 SQLite 且两套配置独立。**现有架构已满足扩展**，
+不需要为未来入口重构轨道、注册中心或配置层。
+
+**入口分两类**（先分类，再决定是否进胶囊）：
+
+| 类型 | 判定 | 处理 |
+|---|---|---|
+| **Lite 面板型** | 高频查看、操作简单（≤1 步主操作）、数据量小、可复用现有后端能力，无需复杂表单 | 可作为胶囊分类，复用 `Lite` 面板 |
+| **快捷跳转型** | 完整配置页、复杂编辑、大量历史/图表数据、规划中心等重型界面 | 直接进完整工作区，**不造** Lite 页 |
+
+判定顺序：先问「用户会不会一天打开多次且只看一眼」，再问「Lite 面板能否在不新增
+IPC/轮询的前提下完成核心动作」。两者任一不成立即为快捷跳转型。禁止把完整页面塞进
+340×440 面板，也禁止为凑入口新建后端聚合接口。
+
+**新增一个胶囊入口的改动清单**（当前实现下的真实分散点）：
+
+| # | 位置 | 改动 | 是否可省 |
+|---|---|---|---|
+| 1 | `src/lib/capsuleModel.ts:21` `RailCategory` | 加分类字面量 | 否（类型） |
+| 2 | `src/lib/capsuleModel.ts:24` `CapsuleCategory` | 随 `RailCategory` 自动扩展 | 否 |
+| 3 | `src/lib/capsuleModel.ts:26` `RAIL_CATEGORIES` | 加分类（顺序契约） | 否 |
+| 4 | `src/lib/navigationRegistry.ts:52-64` `NavEntryId` | 加稳定 ID | 否 |
+| 5 | `src/lib/navigationRegistry.ts:103-293` `NAV_ENTRIES` | 加入口（`surfaces`、`tabs`、`capsuleCategory`、`defaults.capsule`） | 否 |
+| 6 | `src/components/capsule/CapsuleDock.tsx:32-38` `PANELS` | 加面板组件映射（`Record<CapsuleCategory, …>` 会强制编译报错） | 否 |
+| 7 | `src/components/capsule/CapsuleRail.tsx:37-53` `CATEGORY_LABELS` | 加 getter（同样受 `Record` 穷尽检查） | 否 |
+| 8 | `src/locales/zh-CN/index.ts:155-159`、`src/locales/en-US/index.ts:140-144` | 加 `capsule.category.<id>` 文案 | 否（`MessageKey` 强约束） |
+| 9 | `src/components/capsule/CapsuleRail.tsx:182,184` | 状态球/category 分组以 `id === "agents"` 判定 | 仅当新入口也是 `agent-status` 类才需动 |
+| 10 | `src/components/capsule/CapsuleRail.tsx:249` | 徽标只对 tasks/inbox 取值 | 否（新分类无徽标属预期） |
+| 11 | `src/store/useCapsuleStore.ts:16` | 默认分类 | 仅当默认入口变更 |
+| 12 | `src/styles.css:7473-7477` | 轨道几何（400 长、内容组 212/±106、可点击 ±121） | **受几何上限约束，见下** |
+
+测试侧也要同步：`src/lib/capsuleModel.test.ts:123-124`（分类顺序）、
+`src/components/capsule/CapsuleRail.tooltip.test.tsx`（按四个分类/六个锚点断言命中区）。
+
+**几何上限（当前只支持「状态球 + 4 个分类」）**：轨道固定 400 CSS px，内容组
+36 + 8 + 4×36 + 3×8 = 212 居中落在 ±106，端头按钮仍在肩部厚度 ≥36 的可点击区 ±121 内。
+再加一个 44px 节距的分类，内容组变 256 → ±128，端头图标进入曲面肩部，会被
+`SetWindowRgn` 区域裁掉命中区。因此：
+
+- 新增第 5 个胶囊分类**不能只加数据**，必须同时改 `styles.css` 几何与
+  `src-tauri/src/window_shape.rs` 的 `capsule_regions`（尺寸三端同步：`src/lib/capsuleLayout.ts`
+  + `src/styles.css` + `window_shape.rs`），属于视觉/原生改动，需单独任务评估；
+- 在几何未变之前，新增入口应优先走「快捷跳转型」进完整工作区，或**替换**现有分类，
+  不得挤压现有四个分类的命中区。
+
+**可见性边界结论**：
+
+- 状态球（`kind: "agent-status"`）是全局状态入口，不是第 5 个页签：它不进 `.cap-nav`，
+  不参与分类排序（胶囊顺序里把 `agents` 排到末尾，球仍固定在轨道端头）；
+- 隐藏当前分类时静默切到仍可见的第一个分类（优先状态球），隐藏非当前分类不重开面板；
+- 只留状态球时仍可停在 Agent 面板；**全部隐藏时收起面板**，轨道仍保留「切换为完整面板 /
+  收起」控件，所以不存在「把自己锁死」的空白死入口；胶囊不强制至少保留一个分类入口；
+- 折叠态只挂载轨道，不渲染 `.capsule-panel`，不存在空面板容器。
+
+回归：`src/components/capsule/capsuleNavigationContract.test.tsx`（集合一致、分类有面板、
+状态球不计分类、隐藏/全隐行为、持久化与两面独立）。
