@@ -131,6 +131,11 @@ pub struct TaskAnalytics {
     pub trend: Vec<TrendPoint>,
     pub by_category: Vec<CategoryStat>,
     pub by_priority: Vec<PriorityStat>,
+    /// 分母完整性：`false` 表示本期窗口内存在无法还原的重复任务到期期次
+    /// （调度器自动推进、停机补偿跳期、用户主动改期等没有独立记录），
+    /// 此时完成率 / 逾期率的分母偏小、可能偏高。
+    /// 非重复任务与可还原的完成事件仍按实际统计。
+    pub history_complete: bool,
     pub definitions: AnalyticsDefinitions,
 }
 
@@ -142,6 +147,21 @@ struct EventRow {
     category: String,
     priority: i64,
     kind: String,
+}
+
+/// 重复任务规则快照（统计只读；不参与推进，也不修改任何规则）。
+#[derive(Debug, Clone)]
+struct RecurringTaskRow {
+    task_id: String,
+    due_at: Option<String>,
+    created_at: String,
+    freq: String,
+    interval: i64,
+    by_weekday: Vec<u32>,
+    by_monthday: Option<u32>,
+    by_setpos: Option<i32>,
+    until: Option<String>,
+    anchor: String,
 }
 
 #[derive(Debug, Clone)]
@@ -281,18 +301,30 @@ fn normalize_category(raw: &str) -> String {
     }
 }
 
-/// 读取趋势窗口内的事件与到期任务（有界查询，不做全表扫描）。
+/// 读取趋势窗口内的事件、到期任务与重复规则（有界查询，不做全表扫描）。
 ///
-/// 三条查询在同一个只读事务内执行，保证「任务行 / 完成事件 / 事件存在性」来自同一
-/// 快照；否则并发完成恰好落在两条语句之间时，会出现完成数已加、到期数未加（或相反）
-/// 的瞬时偏差。
+/// 四条查询在同一个只读事务内执行，保证「任务行 / 完成事件 / 事件存在性 / 规则」
+/// 来自同一快照；否则并发完成恰好落在两条语句之间时，会出现完成数已加、到期数
+/// 未加（或相反）的瞬时偏差。
 fn load_rows(
     conn: &Connection,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-) -> AppResult<(Vec<EventRow>, Vec<DueTaskRow>, HashSet<String>)> {
+) -> AppResult<(
+    Vec<EventRow>,
+    Vec<DueTaskRow>,
+    HashSet<String>,
+    Vec<RecurringTaskRow>,
+)> {
     let start_iso = start.to_rfc3339();
     let end_iso = end.to_rfc3339();
+    // 锚点存的是本地日期，窗口结束是「本地午夜对应的 UTC 瞬间」；在正时区直接对
+    // UTC 瞬间取 date() 会退回前一天。这里先转成本地日期字符串再比较。
+    let end_local_date = end
+        .with_timezone(&Local)
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
     let tx = conn.unchecked_transaction()?;
 
     let events = {
@@ -351,8 +383,289 @@ fn load_rows(
         rows.collect::<Result<HashSet<_>, _>>()?
     };
 
+    // 只读取可能在本窗口产生到期期次的重复任务：规则锚点早于窗口结束，且规则
+    // 未在窗口开始前结束。优先用 anchor（首次发生的本地日期，测试可注入），
+    // 缺失时回退 created_at；datetime()/date() 兼容历史数据里的 `Z` / `+00:00`。
+    //
+    // 还要包含「本期有完成事件、但首次发生日在窗口之后」的规则：用户提前完成
+    // 未来期次是合法操作，不能因为任务当前 due_at 在窗口外就把规则行漏掉——
+    // 否则后续校验会把它误判成「规则已解除」，凭空标记统计不完整。
+    let recurring = {
+        let mut stmt = tx.prepare(
+            "SELECT t.id, t.due_at, t.created_at, rr.freq, rr.interval, rr.by_weekday,
+                    rr.by_monthday, rr.by_setpos, rr.until, rr.anchor
+             FROM tasks t
+             JOIN recurrence_rules rr ON rr.id = t.recurrence_rule_id
+             WHERE (
+                     (CASE WHEN trim(rr.anchor) <> '' THEN rr.anchor ELSE date(t.created_at, 'localtime') END)
+                       < ?1
+                     OR EXISTS (
+                       SELECT 1 FROM task_completion_events e
+                       WHERE e.task_id = t.id
+                         AND e.completed_at >= ?3 AND e.completed_at < ?4
+                     )
+                   )
+               AND (rr.until IS NULL OR trim(rr.until) = '' OR datetime(rr.until) >= datetime(?2))",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![end_local_date, start_iso, start_iso, end_iso],
+            |row| {
+                let by_weekday_raw: String = row.get(5)?;
+                Ok(RecurringTaskRow {
+                    task_id: row.get(0)?,
+                    due_at: row.get(1)?,
+                    created_at: row.get(2)?,
+                    freq: row.get(3)?,
+                    interval: row.get(4)?,
+                    by_weekday: serde_json::from_str(&by_weekday_raw).unwrap_or_default(),
+                    by_monthday: row.get(6)?,
+                    by_setpos: row.get(7)?,
+                    until: row.get(8)?,
+                    anchor: row.get(9)?,
+                })
+            },
+        )?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
     tx.commit()?;
-    Ok((events, tasks, completed_with_events))
+    Ok((events, tasks, completed_with_events, recurring))
+}
+
+/// 本地日期 + 时刻 → 本地时间；DST 跳变中不存在的时刻返回 None（该期次跳过，
+/// 与 `local_midnight` 的防御策略一致，不让统计查询 panic）。
+fn local_at(date: NaiveDate, time: chrono::NaiveTime) -> Option<DateTime<Local>> {
+    match Local.from_local_datetime(&date.and_time(time)) {
+        MappedLocalTime::Single(dt) => Some(dt),
+        MappedLocalTime::Ambiguous(earliest, _) => Some(earliest),
+        MappedLocalTime::None => None,
+    }
+}
+
+/// 从 `anchor` 开始按 `interval` 对齐，返回不早于 `from` 的第一个网格日期。
+fn first_on_grid(anchor: NaiveDate, interval: i64, from: NaiveDate) -> NaiveDate {
+    if from <= anchor {
+        return anchor;
+    }
+    let interval = interval.max(1);
+    let diff = (from - anchor).num_days();
+    let steps = (diff + interval - 1) / interval;
+    shift_days(anchor, steps * interval)
+}
+
+fn last_day_of_month(year: i32, month0: i32) -> NaiveDate {
+    let (next_year, next_month0) = if month0 >= 11 {
+        (year + 1, 0)
+    } else {
+        (year, month0 + 1)
+    };
+    shift_days(month_start(next_year, next_month0), -1)
+}
+
+/// 某月第 N 个（或最后一个）命中 `by_weekday` 的日期；与重复任务引擎同义。
+fn nth_weekday_in_month(
+    year: i32,
+    month0: i32,
+    by_weekday: &[u32],
+    pos: i32,
+) -> Option<NaiveDate> {
+    if pos == 0 {
+        return None;
+    }
+    let mut hits: Vec<NaiveDate> = Vec::new();
+    let last = last_day_of_month(year, month0);
+    let mut date = month_start(year, month0);
+    while date <= last {
+        if by_weekday.contains(&crate::recurrence::weekday_num(date)) {
+            hits.push(date);
+        }
+        date = shift_days(date, 1);
+    }
+    if pos == -1 {
+        hits.last().copied()
+    } else {
+        hits.get(pos.unsigned_abs() as usize - 1).copied()
+    }
+}
+
+/// 计算某个重复任务在**已经到期**（<= now）且落在本期窗口内的规则期次。
+///
+/// 只用于完整性判断，不参与完成率分母：分母仍只统计仍可还原的期次，避免把
+/// 推算出来的历史当作事实。返回 UTC 毫秒时间戳集合，便于与事件 / 任务行对齐。
+fn expected_past_occurrences(
+    row: &RecurringTaskRow,
+    window_start: NaiveDate,
+    window_end: NaiveDate,
+    now_local: DateTime<Local>,
+) -> HashSet<i64> {
+    let mut occurrences = HashSet::new();
+    let Some(due_utc) = row.due_at.as_deref().and_then(parse_utc) else {
+        return occurrences;
+    };
+    let due_local = due_utc.with_timezone(&Local);
+    let time = due_local.time();
+    let anchor = NaiveDate::parse_from_str(&row.anchor, "%Y-%m-%d")
+        .ok()
+        .or_else(|| {
+            parse_utc(&row.created_at).map(|v| v.with_timezone(&Local).date_naive())
+        });
+    let Some(anchor) = anchor else {
+        return occurrences;
+    };
+    let until = row.until.as_deref().and_then(parse_utc);
+    let interval = row.interval.max(1);
+    let window_start_utc = local_midnight(window_start);
+    let window_end_utc = local_midnight(window_end);
+
+    let mut push = |date: NaiveDate| {
+        if date < anchor || date < window_start || date >= window_end {
+            return;
+        }
+        let Some(candidate_local) = local_at(date, time) else {
+            return;
+        };
+        if candidate_local > now_local {
+            return;
+        }
+        let candidate_utc = candidate_local.with_timezone(&Utc);
+        if candidate_utc < window_start_utc || candidate_utc >= window_end_utc {
+            return;
+        }
+        if let Some(until) = until {
+            if candidate_utc > until {
+                return;
+            }
+        }
+        occurrences.insert(candidate_utc.timestamp_millis());
+    };
+
+    match row.freq.as_str() {
+        "daily" => {
+            let mut date = first_on_grid(anchor, interval, window_start);
+            while date < window_end {
+                push(date);
+                date = shift_days(date, interval);
+            }
+        }
+        "weekly" => {
+            if row.by_weekday.is_empty() {
+                return occurrences;
+            }
+            let mut date = anchor.max(window_start);
+            while date < window_end {
+                let weeks = (date - anchor).num_weeks();
+                if weeks >= 0
+                    && weeks % interval == 0
+                    && row
+                        .by_weekday
+                        .contains(&crate::recurrence::weekday_num(date))
+                {
+                    push(date);
+                }
+                date = shift_days(date, 1);
+            }
+        }
+        "monthly" => {
+            let anchor_total = anchor.year() as i64 * 12 + anchor.month0() as i64;
+            let start_total =
+                window_start.year() as i64 * 12 + window_start.month0() as i64;
+            let end_total = window_end.year() as i64 * 12 + window_end.month0() as i64;
+            let scan_total = anchor_total.max(start_total);
+            let diff = scan_total - anchor_total;
+            let mut k = (diff + interval - 1) / interval;
+            loop {
+                let total = anchor_total + k * interval;
+                if total >= end_total {
+                    break;
+                }
+                let year = total.div_euclid(12) as i32;
+                let month0 = total.rem_euclid(12) as i32;
+                let date = if let Some(pos) =
+                    row.by_setpos.filter(|_| !row.by_weekday.is_empty())
+                {
+                    nth_weekday_in_month(year, month0, &row.by_weekday, pos)
+                } else {
+                    let day = row.by_monthday.unwrap_or(anchor.day()).clamp(1, 31);
+                    let last = last_day_of_month(year, month0);
+                    NaiveDate::from_ymd_opt(year, month0 as u32 + 1, day.min(last.day()))
+                };
+                if let Some(date) = date {
+                    push(date);
+                }
+                k += 1;
+            }
+        }
+        _ => {}
+    }
+
+    occurrences
+}
+
+/// 判断本期分母是否完整。
+///
+/// 只对**可还原**的到期期次做校对：规则推算出的、已经到期的期次必须能在
+/// 完成任务行或完成事件里找到。找不到就说明该期次被调度器自动推进、停机补偿
+/// 跳过或用户改期抹掉了，本期 `due` 分母偏小，完成率 / 逾期率可能偏高。
+fn evaluate_history_complete(
+    recurring: &[RecurringTaskRow],
+    events: &[EventRow],
+    tasks: &[DueTaskRow],
+    window_start: NaiveDate,
+    window_end: NaiveDate,
+    now_local: DateTime<Local>,
+) -> bool {
+    let mut reconstructed: HashMap<String, HashSet<i64>> = HashMap::new();
+    for event in events {
+        if let Some(due) = &event.due_at {
+            if let Some(due_utc) = parse_utc(due) {
+                reconstructed
+                    .entry(event.task_id.clone())
+                    .or_default()
+                    .insert(due_utc.timestamp_millis());
+            }
+        }
+    }
+    for task in tasks {
+        if let Some(due_utc) = parse_utc(&task.due_at) {
+            reconstructed
+                .entry(task.id.clone())
+                .or_default()
+                .insert(due_utc.timestamp_millis());
+        }
+    }
+
+    let rule_task_ids: HashSet<&str> = recurring
+        .iter()
+        .map(|row| row.task_id.as_str())
+        .collect();
+    // 规则已解除但仍有重复完成事件：后续期次无法再按规则校验/还原。
+    for event in events {
+        if event.kind == "recurring" && !rule_task_ids.contains(event.task_id.as_str()) {
+            return false;
+        }
+    }
+
+    for row in recurring {
+        if row.due_at.is_none() {
+            // 当前无截止时间，却存在重复完成事件：曾经发生过的期次已无规则
+            // 起点可供还原（例如清空截止时间后仍保留历史）。
+            if events
+                .iter()
+                .any(|event| event.task_id == row.task_id && event.kind == "recurring")
+            {
+                return false;
+            }
+            continue;
+        }
+        let known = reconstructed.get(&row.task_id);
+        for ms in expected_past_occurrences(row, window_start, window_end, now_local) {
+            if known.map_or(true, |set| !set.contains(&ms)) {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 /// 按固定「当前本地时间」计算统计（测试可注入时间）。
@@ -370,7 +683,7 @@ pub(crate) fn report_at(
         .collect();
     let (window_start, window_end) = (bounds[0].0, bounds[bounds.len() - 1].1);
 
-    let (events, tasks, completed_with_events) =
+    let (events, tasks, completed_with_events, recurring) =
         db.with_read(|conn| load_rows(conn, window_start, window_end))?;
 
     let mut stats: Vec<BucketStat> = vec![BucketStat::default(); buckets.len()];
@@ -523,6 +836,15 @@ pub(crate) fn report_at(
         .collect();
 
     let (range_start, range_end) = range_window(kind, today);
+    // 完整性只针对本期；趋势桶的历史缺失不在本字段里逐桶声明。
+    let history_complete = evaluate_history_complete(
+        &recurring,
+        &events,
+        &tasks,
+        range_start,
+        range_end,
+        now_local,
+    );
 
     Ok(TaskAnalytics {
         range: kind.key(),
@@ -534,6 +856,7 @@ pub(crate) fn report_at(
         trend,
         by_category,
         by_priority,
+        history_complete,
         definitions: DEFINITIONS,
     })
 }
@@ -541,11 +864,11 @@ pub(crate) fn report_at(
 /// 指标口径（唯一来源：前端原样展示）。
 pub const DEFINITIONS: AnalyticsDefinitions = AnalyticsDefinitions {
     completed: "完成数量：范围内真实发生的完成动作。普通任务每次勾选完成记 1 次；重复任务每完成一期记 1 次（任务本身保持未完成并推进到下一期）；同一任务的同一期次只计 1 次。",
-    completion_rate: "完成率 = 本期到期任务中已完成的数量 / 本期到期任务数。分母含本期尚未到期的任务，因此本期未结束时它是「当前进度」而不是最终结果。",
-    overdue_rate: "逾期率 = 本期到期任务中逾期的数量 / 本期到期任务数。逾期指：完成时间晚于截止时间，或仍未完成且截止时间已过（本期尚未到期的任务不算逾期）。",
-    trend: "趋势按本地日历分桶：日视图近 14 天、周视图近 12 周（周一为一周起点）、月视图近 12 个月。完成与逾期同为计数，共用刻度。",
+    completion_rate: "完成率 = 本期到期任务中已完成的数量 / 本期到期任务数。分母含本期尚未到期的任务，因此本期未结束时它是「当前进度」而不是最终结果；分母只统计仍可还原的到期期次，history_complete=false 时实际到期期次可能更多、完成率可能偏高。",
+    overdue_rate: "逾期率 = 本期到期任务中逾期的数量 / 本期到期任务数。逾期指：完成时间晚于截止时间，或仍未完成且截止时间已过（本期尚未到期的任务不算逾期）；分母只统计仍可还原的到期期次，history_complete=false 时可能偏高。",
+    trend: "趋势按本地日历分桶：日视图近 14 天、周视图近 12 周（周一为一周起点）、月视图近 12 个月。完成与逾期同为计数，共用刻度；历史分桶同样受下面「历史限制」影响。",
     distribution: "分类 / 优先级分布按「完成事件发生时的快照」统计；分类为空显示为「未分类」。这是完成分布，不代表各分类的整体效率。",
-    history: "历史限制：升级前已完成的普通任务按数据库中真实的 completed_at 回填；重复任务的历史完成期次在升级前没有持久化，无法还原，也不会伪造回填。升级后的完成动作会写入完成事件并按期次去重。",
+    history: "历史限制：完成数量来自真实完成事件（普通任务每次完成记 1 次，重复任务每完成一期记 1 次）；到期分母只统计仍可还原的期次。重复任务被调度器自动推进、停机/休眠后补偿跳过、或用户主动改期时，被跳过的期次没有独立记录，无法可靠还原，也不会伪造回填；检测到这类缺失时 history_complete=false，前端会标注「不完整统计」。升级前重复任务的历史完成期次同样无法还原；升级前已完成的普通任务按数据库中真实的 completed_at 回填。",
 };
 
 /// 供命令层调用：读取任务统计。
@@ -636,6 +959,26 @@ mod tests {
             .to_rfc3339()
     }
 
+    /// 依赖真实 `toggle_task_inner`（完成时间取当前时钟）的用例必须按「今天」取日期：
+    /// 写死具体日期会在第二天起把完成事件排除在 `report_at` 的当日窗口外。
+    fn today_at(hour: u32, minute: u32) -> String {
+        let date = Local::now().date_naive();
+        Local
+            .from_local_datetime(&date.and_hms_opt(hour, minute, 0).unwrap())
+            .unwrap()
+            .with_timezone(&Utc)
+            .to_rfc3339()
+    }
+
+    fn day_offset(days: i64, hour: u32, minute: u32) -> String {
+        let date = Local::now().date_naive() + chrono::Duration::days(days);
+        Local
+            .from_local_datetime(&date.and_hms_opt(hour, minute, 0).unwrap())
+            .unwrap()
+            .with_timezone(&Utc)
+            .to_rfc3339()
+    }
+
     fn task_input(title: &str, due: Option<String>, recurrence: Option<RecurrenceRuleInput>) -> TaskInput {
         TaskInput {
             title: title.to_string(),
@@ -709,18 +1052,19 @@ mod tests {
         assert_eq!(report.by_priority.len(), 4);
         assert!(report.by_priority.iter().all(|p| p.completed == 0));
         assert!(report.definitions.completion_rate.contains("分母"));
+        assert!(report.history_complete, "空库没有缺失期次");
     }
 
     #[test]
     fn completing_task_records_event_and_full_rate() {
         let db = setup();
         // 截止时间放到当天末尾，避免真实时钟决定「是否晚于截止」而影响完成率断言。
-        let today_due = local_iso(2026, 11, 4, 23, 59);
+        let today_due = today_at(23, 59);
         let task = create_task_inner(&db, task_input("写报告", Some(today_due), None)).unwrap();
         toggle_task_inner(&db, &task.id).unwrap();
 
         assert_eq!(count_events(&db), 1);
-        let report = report_at(&db, RangeKind::Day, fixed_now()).unwrap();
+        let report = report_at(&db, RangeKind::Day, Local::now()).unwrap();
         assert_eq!(report.summary.completed, 1);
         assert_eq!(report.summary.recurring_completed, 0);
         assert_eq!(report.summary.due, 1);
@@ -1048,22 +1392,22 @@ mod tests {
     #[test]
     fn distribution_uses_completion_snapshot() {
         let db = setup();
-        let a = task_input("A", Some(local_iso(2026, 11, 4, 9, 0)), None);
+        let a = task_input("A", Some(today_at(9, 0)), None);
         let mut a = a;
         a.category = Some("工作".into());
         a.priority = Some(0);
         let task_a = create_task_inner(&db, a).unwrap();
-        let mut b = task_input("B", Some(local_iso(2026, 11, 4, 9, 30)), None);
+        let mut b = task_input("B", Some(today_at(9, 30)), None);
         b.category = Some("工作".into());
         b.priority = Some(0);
         let task_b = create_task_inner(&db, b).unwrap();
-        let task_c = create_task_inner(&db, task_input("C", Some(local_iso(2026, 11, 4, 10, 0)), None)).unwrap();
+        let task_c = create_task_inner(&db, task_input("C", Some(today_at(10, 0)), None)).unwrap();
 
         toggle_task_inner(&db, &task_a.id).unwrap();
         toggle_task_inner(&db, &task_b.id).unwrap();
         toggle_task_inner(&db, &task_c.id).unwrap();
 
-        let report = report_at(&db, RangeKind::Day, fixed_now()).unwrap();
+        let report = report_at(&db, RangeKind::Day, Local::now()).unwrap();
         let work = report.by_category.iter().find(|c| c.category == "工作").unwrap();
         assert_eq!(work.completed, 2);
         assert!((work.share - 2.0 / 3.0).abs() < 1e-9);
@@ -1079,7 +1423,7 @@ mod tests {
         };
         edit.priority = Some(1);
         crate::commands::tasks::update_task_inner(&db, &task_a.id, edit).unwrap();
-        let again = report_at(&db, RangeKind::Day, fixed_now()).unwrap();
+        let again = report_at(&db, RangeKind::Day, Local::now()).unwrap();
         assert!(again.by_category.iter().any(|c| c.category == "工作" && c.completed == 2));
         assert!(!again.by_category.iter().any(|c| c.category == "生活"));
     }
@@ -1143,5 +1487,283 @@ mod tests {
         assert_eq!(report.summary.due, 2000);
         assert_eq!(report.summary.completed, 0);
         assert_eq!(report.summary.overdue_rate, Some(0.0));
+        assert!(report.history_complete, "普通任务的到期期次全部可还原");
+    }
+
+    // ── 历史完整性（B2）：区分实际统计与不完整统计 ─────────────────────
+
+    fn weekly(days: Vec<u32>) -> RecurrenceRuleInput {
+        RecurrenceRuleInput {
+            freq: "weekly".into(),
+            interval: 1,
+            by_weekday: days,
+            by_monthday: None,
+            by_setpos: None,
+        }
+    }
+
+    fn set_task_due(db: &Db, id: &str, due: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tasks SET due_at = ?1 WHERE id = ?2",
+                rusqlite::params![due, id],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    /// 调度器自动推进（到期触发）不写完成事件；被跨过的期次无法还原，
+    /// 本期分母偏小，必须标记为不完整而不是给出虚高的完成率。
+    #[test]
+    fn auto_advanced_recurring_occurrence_marks_history_incomplete() {
+        let db = setup();
+        let due = local_iso(2026, 11, 3, 9, 0);
+        let task =
+            create_task_inner(&db, task_input("每日站会", Some(due.clone()), Some(daily()))).unwrap();
+        let now_utc = fixed_now().with_timezone(&Utc);
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let _ = crate::scheduler::advance_recurrence_tx(
+                &tx,
+                &task.id,
+                Some(due.as_str()),
+                &now_utc,
+            )?;
+            tx.commit()?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        assert_eq!(count_events(&db), 0, "自动推进不是用户完成");
+        let report = report_at(&db, RangeKind::Day, fixed_now()).unwrap();
+        assert_eq!(report.summary.completed, 0);
+        assert_eq!(report.summary.due, 0, "被自动推进掉的今日期次没有独立记录");
+        assert_eq!(report.summary.completion_rate, None, "分母为 0 不得伪装成 0%");
+        assert!(!report.history_complete, "存在无法还原的自动推进期次");
+    }
+
+    /// 多日未开机：一次补偿推进跨过多个每日期次，全部缺失。
+    #[test]
+    fn multi_day_gap_marks_history_incomplete() {
+        let db = setup();
+        let due = local_iso(2026, 11, 1, 9, 0);
+        let task =
+            create_task_inner(&db, task_input("每日打卡", Some(due.clone()), Some(daily()))).unwrap();
+        let now_utc = fixed_now().with_timezone(&Utc);
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let outcome = crate::scheduler::advance_recurrence_tx(
+                &tx,
+                &task.id,
+                Some(due.as_str()),
+                &now_utc,
+            )?;
+            tx.commit()?;
+            Ok::<_, AppError>(outcome)
+        })
+        .unwrap();
+
+        assert_eq!(count_events(&db), 0);
+        let report = report_at(&db, RangeKind::Week, fixed_now()).unwrap();
+        // 推进后的下一期（11-05）仍在周窗口内，计入分母；更早的期次不可还原。
+        assert_eq!(report.summary.due, 1);
+        assert_eq!(report.summary.completion_rate, Some(0.0));
+        assert!(!report.history_complete, "补偿跳期后本周分母无法完整还原");
+    }
+
+    /// 提前完成（截止时间未到）是真实完成事件，分母与完成率都准确。
+    #[test]
+    fn early_recurring_completion_keeps_history_complete() {
+        let db = setup();
+        let due = today_at(23, 59);
+        let task =
+            create_task_inner(&db, task_input("每日复盘", Some(due), Some(daily()))).unwrap();
+        toggle_task_inner(&db, &task.id).unwrap();
+
+        let report = report_at(&db, RangeKind::Day, Local::now()).unwrap();
+        assert_eq!(report.summary.completed, 1);
+        assert_eq!(report.summary.due, 1);
+        assert_eq!(report.summary.due_completed, 1);
+        assert_eq!(report.summary.due_overdue, 0, "提前完成不算逾期");
+        assert_eq!(report.summary.completion_rate, Some(1.0));
+        assert!(report.history_complete);
+    }
+
+    /// 提前完成「首次发生日在窗口之后」的期次：规则行必须仍被加载，
+    /// 不能因为当前 due_at 在窗口外就误判成规则已解除、凭空标记不完整。
+    #[test]
+    fn future_first_occurrence_completed_early_keeps_history_complete() {
+        let db = setup();
+        // 首次发生日在明天 09:00，落在「今日」窗口之外；今天提前完成。
+        let due = day_offset(1, 9, 0);
+        let task =
+            create_task_inner(&db, task_input("明日周报", Some(due), Some(daily()))).unwrap();
+        toggle_task_inner(&db, &task.id).unwrap();
+
+        let report = report_at(&db, RangeKind::Day, Local::now()).unwrap();
+        assert_eq!(report.summary.completed, 1);
+        assert_eq!(report.summary.recurring_completed, 1);
+        assert_eq!(report.summary.due, 0, "首次到期在窗口外，不计本期分母");
+        assert!(
+            report.history_complete,
+            "提前完成未来期次不是历史缺失，不得标记不完整"
+        );
+    }
+
+    /// 每个已到期期次都有完成事件或任务行时，历史可完整还原。
+    #[test]
+    fn fully_reconstructed_recurring_week_is_complete() {
+        let db = setup();
+        let monday = local_iso(2026, 11, 2, 9, 0);
+        let tuesday = local_iso(2026, 11, 3, 9, 0);
+        let wednesday = local_iso(2026, 11, 4, 9, 0);
+        let task =
+            create_task_inner(&db, task_input("每日站会", Some(monday.clone()), Some(daily())))
+                .unwrap();
+        record_at_due(&db, &task.id, &local_iso(2026, 11, 2, 8, 55), &monday);
+        record_at_due(&db, &task.id, &local_iso(2026, 11, 3, 8, 55), &tuesday);
+        // 周三期次仍未完成（任务行就是它），应计入分母且算逾期。
+        set_task_due(&db, &task.id, &wednesday);
+
+        let report = report_at(&db, RangeKind::Week, fixed_now()).unwrap();
+        assert_eq!(report.summary.due, 3);
+        assert_eq!(report.summary.due_completed, 2);
+        assert_eq!(report.summary.due_overdue, 1);
+        assert!(report.history_complete, "周一/周二/周三期次全部可还原");
+    }
+
+    /// 每日任务本期截止已过、当时未完成，今天才补做：补偿推进同时跳过了今天的期次，
+    /// 完成动作本身仍计入实际完成数，但本期到期分母不完整。
+    #[test]
+    fn late_completion_after_missed_period_marks_history_incomplete() {
+        let db = setup();
+        // 昨天 00:00 已逾期：无论测试在几点运行，补做后的下一期都落在明天，
+        // 完成事件归属昨天，不会给今天凭空补出到期分母。
+        let overdue = day_offset(-1, 0, 0);
+        let task =
+            create_task_inner(&db, task_input("补做", Some(overdue), Some(daily()))).unwrap();
+        toggle_task_inner(&db, &task.id).unwrap();
+
+        assert_eq!(count_events(&db), 1);
+        let report = report_at(&db, RangeKind::Day, Local::now()).unwrap();
+        assert_eq!(report.summary.completed, 1, "补做是真实完成动作");
+        assert_eq!(report.summary.due, 0, "今日期次被补偿推进跨过");
+        assert!(!report.history_complete);
+    }
+
+    /// 每周多日规则：未完成的周一/周三期次被自动推进跨过时标记不完整。
+    #[test]
+    fn weekly_auto_skip_marks_history_incomplete() {
+        let db = setup();
+        let monday = local_iso(2026, 11, 2, 9, 0);
+        let task = create_task_inner(
+            &db,
+            task_input("每周例会", Some(monday.clone()), Some(weekly(vec![1, 3, 5]))),
+        )
+        .unwrap();
+        let now_utc = fixed_now().with_timezone(&Utc);
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let _ = crate::scheduler::advance_recurrence_tx(
+                &tx,
+                &task.id,
+                Some(monday.as_str()),
+                &now_utc,
+            )?;
+            tx.commit()?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let report = report_at(&db, RangeKind::Week, fixed_now()).unwrap();
+        assert_eq!(report.summary.completed, 0);
+        // 推进后的周五期次仍在周窗口内，计入分母；周一/周三期次不可还原。
+        assert_eq!(report.summary.due, 1);
+        assert!(!report.history_complete, "周一/周三期次不可还原");
+    }
+
+    /// 每 N 月规则按锚点月对齐：间隔月份不应被误算为缺失期次。
+    #[test]
+    fn monthly_interval_aligns_without_phantom_occurrences() {
+        let db = setup();
+        let september = local_iso(2026, 9, 10, 9, 0);
+        let october_now = Local.with_ymd_and_hms(2026, 10, 15, 10, 30, 0).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input(
+                "双月报表",
+                Some(september.clone()),
+                Some(RecurrenceRuleInput {
+                    freq: "monthly".into(),
+                    interval: 2,
+                    by_weekday: vec![],
+                    by_monthday: Some(10),
+                    by_setpos: None,
+                }),
+            ),
+        )
+        .unwrap();
+        // 10 月不是锚点月的 2 个月倍数，推进应直接到 11-10。
+        db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let _ = crate::scheduler::advance_recurrence_tx(
+                &tx,
+                &task.id,
+                Some(september.as_str()),
+                &october_now.with_timezone(&Utc),
+            )?;
+            tx.commit()?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let report = report_at(&db, RangeKind::Month, october_now).unwrap();
+        assert_eq!(report.summary.due, 0, "10 月没有该规则的期次");
+        assert!(report.history_complete, "间隔月不是缺失期次");
+    }
+
+    /// 跨午夜 / 本地时区：00:10 到期、00:30 完成，属于同一天且算逾期。
+    #[test]
+    fn cross_midnight_due_occurrence_counts_in_local_day() {
+        let db = setup();
+        insert_pending_task(&db, "midnight");
+        record_at_due(
+            &db,
+            "midnight",
+            &local_iso(2026, 11, 4, 0, 30),
+            &local_iso(2026, 11, 4, 0, 10),
+        );
+
+        let report = report_at(&db, RangeKind::Day, fixed_now()).unwrap();
+        assert_eq!(report.summary.due, 1);
+        assert_eq!(report.summary.due_completed, 1);
+        assert_eq!(report.summary.due_overdue, 1);
+        assert!(report.history_complete);
+    }
+
+    /// 规则被解除但重复完成事件仍在：后续期次无法再按规则还原。
+    #[test]
+    fn detached_rule_with_recurring_history_marks_incomplete() {
+        let db = setup();
+        let due = today_at(23, 59);
+        let task =
+            create_task_inner(&db, task_input("每日总结", Some(due), Some(daily()))).unwrap();
+        toggle_task_inner(&db, &task.id).unwrap();
+        // 显式清除重复规则（模拟用户「不再重复」）。
+        crate::commands::tasks::update_task_inner(
+            &db,
+            &task.id,
+            TaskInput {
+                title: "每日总结".into(),
+                recurrence: Some(None),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let report = report_at(&db, RangeKind::Day, Local::now()).unwrap();
+        assert_eq!(report.summary.completed, 1);
+        assert!(!report.history_complete, "规则已解除，重复历史不可校验");
     }
 }

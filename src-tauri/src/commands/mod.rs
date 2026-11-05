@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod agents;
 pub mod agent_stats;
+pub mod audio;
 pub mod audit;
 pub mod backup;
 pub mod clipboard;
@@ -20,6 +21,7 @@ pub mod settings;
 pub mod system;
 pub mod task_analytics;
 pub mod tasks;
+pub mod user_preferences;
 pub mod workspace;
 pub mod workflows;
 

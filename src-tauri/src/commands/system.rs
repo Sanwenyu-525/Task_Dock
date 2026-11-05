@@ -386,7 +386,32 @@ pub fn notify_ui_ready(app: AppHandle) -> bool {
     cleared
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// 显示器矩形（物理像素）：仅用于停靠恢复的历史几何比对，不参与业务。
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize)]
+pub struct SnapDisplayRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// 停靠显示器恢复信息（P2-4）：Windows 显示器序号不稳定，这里同时记录
+/// 可读名称与几何/DPI，恢复时按「名称 → 几何 → 最近可用屏」逐级匹配。
+/// 全部字段可缺失：旧记录与新记录都要能反序列化。
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SnapDisplayInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<SnapDisplayRect>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_area: Option<SnapDisplayRect>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale_factor: Option<f64>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct WindowSnapState {
     pub edge: String, // left | right | top | bottom | none
     pub hidden: bool,
@@ -394,6 +419,17 @@ pub struct WindowSnapState {
     /// 可选——旧版本记录没有该字段，缺失时按当前窗口中心重新停靠。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub center: Option<f64>,
+    /// 沿边中心相对显示器可用区的比例（0–1）：分辨率/DPI 变化后按比例重算，
+    /// 避免使用过期的绝对像素。旧记录缺失，回退到绝对 `center`。
+    #[serde(
+        rename = "centerRatio",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub center_ratio: Option<f64>,
+    /// 停靠目标显示器的身份与几何；旧记录缺失时按窗口所在显示器恢复。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<SnapDisplayInfo>,
 }
 
 impl WindowSnapState {
@@ -992,25 +1028,29 @@ mod tests {
         assert!(WindowSnapState {
             edge: "left".into(),
             hidden: true,
-            center: None
+            center: None,
+            ..Default::default()
         }
         .is_valid());
         assert!(WindowSnapState {
             edge: "none".into(),
             hidden: false,
-            center: Some(540.0)
+            center: Some(540.0),
+            ..Default::default()
         }
         .is_valid());
         assert!(!WindowSnapState {
             edge: "banana".into(),
             hidden: true,
-            center: None
+            center: None,
+            ..Default::default()
         }
         .is_valid());
         assert!(!WindowSnapState {
             edge: String::new(),
             hidden: false,
-            center: None
+            center: None,
+            ..Default::default()
         }
         .is_valid());
     }

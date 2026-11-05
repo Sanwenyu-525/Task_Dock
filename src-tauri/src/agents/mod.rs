@@ -425,6 +425,8 @@ pub struct NotificationOut {
     pub source_name: String,
     /// 事件原因/错误摘要（失败卡的错误原因、等待卡的等待原因；不写历史正文）。
     pub detail: Option<String>,
+    /// 任务标题（仅用于语音播报；默认不持久化、不写通知历史正文之外的日志）。
+    pub task_title: Option<String>,
 }
 
 /// 事件幂等键：Adapter 提供事件 ID 时按 ID；否则按内容签名。
@@ -978,6 +980,11 @@ pub fn ingest_core(
                     .map(str::trim)
                     .filter(|m| !m.is_empty())
                     .map(str::to_string),
+                task_title: if title.is_empty() {
+                    None
+                } else {
+                    Some(title.clone())
+                },
             });
         }
     }
@@ -1230,6 +1237,58 @@ impl AgentHub {
         if outcomes.is_empty() {
             return;
         }
+        // 统一音频服务事件：与「是否弹系统通知/是否合并弹窗」解耦，覆盖全部真实状态迁移
+        // （含默认关闭的 started/disconnected），前端负责去重、合并、限流与优先级。
+        // 优先用 notification_history.id 作为事件唯一标识；无通知的状态（如 running）
+        // 用轮次 + 状态迁移生成唯一 ID，避免按文本去重。
+        let audio_items: Vec<serde_json::Value> = outcomes
+            .iter()
+            .filter(|o| !o.deduplicated && !o.late)
+            .filter_map(|o| {
+                let kind = match o.state {
+                    AgentState::Running if o.prev_state != Some(AgentState::Running) => {
+                        "agent_started"
+                    }
+                    AgentState::Waiting => "agent_waiting",
+                    AgentState::Failed => "agent_failed",
+                    AgentState::Completed => "agent_done",
+                    AgentState::Disconnected => "agent_disconnected",
+                    _ => return None,
+                };
+                let (event_id, source_name, task_title): (
+                    String,
+                    Option<String>,
+                    Option<String>,
+                ) = match o.notification.as_ref() {
+                    Some(n) => (
+                        n.nh_id.clone(),
+                        Some(n.source_name.clone()),
+                        n.task_title.clone(),
+                    ),
+                    None => (
+                        format!("run:{}:{}:{}", o.run_row_id, kind, uuid::Uuid::new_v4()),
+                        None,
+                        None,
+                    ),
+                };
+                Some(serde_json::json!({
+                    "eventId": event_id,
+                    "kind": kind,
+                    "sourceName": source_name,
+                    "taskTitle": task_title,
+                }))
+            })
+            .collect();
+        if !audio_items.is_empty() {
+            // 只发主窗口：其他 WebView（通知/菜单/微件）不作为音频调度者，
+            // 避免同一事件在多窗口重复播放。
+            let _ = self.app.emit_to(
+                "main",
+                "audio-event",
+                serde_json::json!({ "items": audio_items }),
+            );
+        }
+
         let has_notification = outcomes.iter().any(|o| o.notification.is_some());
         if has_notification {
             let items: Vec<NotifyItem> = outcomes
@@ -1502,6 +1561,19 @@ impl AgentHub {
                 )
             };
             self.notify_agent_popups(&[item]);
+            // 断连汇总同样进入统一音频服务的真实事件队列（默认开关关闭）。
+            let _ = self.app.emit_to(
+                "main",
+                "audio-event",
+                serde_json::json!({
+                    "items": [{
+                        "eventId": format!("stale:{}", uuid::Uuid::new_v4()),
+                        "kind": "agent_disconnected",
+                        "sourceName": null,
+                        "taskTitle": null,
+                    }]
+                }),
+            );
             let _ = self.app.emit(
                 "agent-changed",
                 serde_json::json!({ "stale_cleanup": notified.len() }),

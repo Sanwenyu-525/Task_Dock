@@ -622,8 +622,12 @@ fn scenario_b_burst_200eps() {
 #[ignore = "压测场景 C：需手动运行（持续过载 + 恢复）"]
 fn scenario_c_overload_recovers() {
     let _guard = scenario_guard();
-    let secs = env_u64("TD_PERF_C_SECS", 20);
-    let agents = env_u64("TD_PERF_C_AGENTS", 8) as usize;
+    // 默认参数必须真正制造过载：临界事件不走合并，需要超过 sink 处理能力（batch 10 / 30ms
+    // ≈ 333 事件/秒）的临界速率才能打满 64 槽队列。2026-11-04 复验：8×100 与 40×50
+    // 都被合并/批处理吸收（overload_rejects=0），因此取 40×100（临界 400/秒）；
+    // 断言不变，仅调整负载规模。
+    let secs = env_u64("TD_PERF_C_SECS", 30);
+    let agents = env_u64("TD_PERF_C_AGENTS", 40) as usize;
     let rate = env_u64("TD_PERF_C_RATE", 100);
     let (db, dir) = temp_db("c");
     let sink: Arc<dyn IngestSink> = Arc::new(DbSink {

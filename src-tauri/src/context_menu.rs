@@ -10,10 +10,12 @@
 //!   空间不足翻到下方，仍放不下则收进工作区；水平方向以锚点为中心、
 //!   左右越界时收进工作区。物理像素 = 逻辑尺寸 × 锚点所在显示器缩放，
 //!   多显示器按 `monitor_from_point` 取工作区（100%~200% DPI 均按此换算）。
-//! - **材质**：与主窗共用 `apply_material_to_window`（v0.6 整改）——
-//!   Win11 + 区域裁剪 → blur（窗口自身合成，受 SetWindowRgn 约束），
-//!   不再用 apply_acrylic（Win11 上是 DWM SystemBackdrop，会越过区域
-//!   在圆角外画出灰蓝残影，见 docs/ui-themes/12-v06-window-corners.md）。
+//! - **材质**：默认不挂原生材质（`apply_menu_material` 只清理残留），
+//!   桌面模糊会越过区域在圆角外留下暗楔；表面可读性由 CSS 高不透明度
+//!   柔光层承担（见 styles-context-menu.css）。
+//! - **圆角**：Win32 区域使用与主窗同一套「CSS 圆角像素支撑形状」
+//!   （`window_shape::apply_with_radius`），DWM 角偏好固定 DONOTROUND；
+//!   区域成功后不再有第二层系统弧/系统边框（2026-11-04 真机修复）。
 //! - **动作**：`context_menu_action` 与原托盘 `on_menu_event` 一一对应，
 //!   复用同一批 inner 函数（apply_mode_inner / set_autostart_inner /
 //!   request_exit），不创建第二份状态源；失败返回错误、成功才广播事件
@@ -36,7 +38,8 @@ pub const WINDOW_LABEL: &str = "context-menu";
 /// 后端 → 菜单窗口：即将在锚点处显示（刷新设置快照 + 重放入场动画 + 回传尺寸）。
 pub const SHOW_EVENT: &str = "context-menu-show";
 
-/// 菜单 CSS 圆角（逻辑像素），与 styles-context-menu.css 的 border-radius 一致。
+/// 菜单 CSS 圆角（逻辑像素），与 styles-context-menu.css 的 border-radius 一致；
+/// Win32 区域按该逻辑半径 × DPI 生成逐行像素支撑形状（不再用 GDI 硬边椭圆）。
 pub const MENU_RADIUS: f64 = 16.0;
 /// 菜单边缘与屏幕锚点的间距（物理像素）。
 pub const ANCHOR_GAP: f64 = 8.0;
@@ -46,18 +49,26 @@ pub const EDGE_MARGIN: f64 = 6.0;
 pub const BLUR_CLOSE_DELAY_MS: u64 = 160;
 
 /// 弹窗默认逻辑尺寸（与 tauri.conf.json 的 width/height 保持一致）。
-/// 宽度是设计常量（250px，规范建议 230–250）；初始高度取内容上界，
-/// 首开后 fit_context_menu 只收放**高度**到实测内容高度，
+/// 宽度是设计常量（250px，规范建议 230–250）；高度取内容自然高度，
+/// 再按锚点所在显示器工作区收放（见 `resolve_menu_height`），
 /// 宽度不再回环（避免 测量→set_size→再测量 的舍入漂移）。
 const DEFAULT_SIZE: (f64, f64) = (250.0, 620.0);
 
 /// 最近一次显示的锚点（屏幕物理坐标）。
 static ANCHOR: Mutex<(f64, f64)> = Mutex::new((0.0, 0.0));
-/// 菜单内容的逻辑高度（前端 fit_context_menu 回传后缓存；宽度恒为 DEFAULT_SIZE.0）。
-static MENU_HEIGHT: Mutex<f64> = Mutex::new(620.0);
+/// 菜单内容的**自然高度**（逻辑像素，由前端按 scrollHeight 实测回传）。
+/// 与「实际写入窗口的高度」分开：小屏被工作区裁剪时自然高度保持不变，
+/// 回到大屏后可直接恢复，不会被裁剪值反向污染。
+static MENU_NATURAL_HEIGHT: Mutex<f64> = Mutex::new(DEFAULT_SIZE.1);
+/// 实际写入窗口的逻辑高度（= min(自然高度, 锚点所在显示器工作区可用高度)）。
+static MENU_WINDOW_HEIGHT: Mutex<f64> = Mutex::new(DEFAULT_SIZE.1);
+/// 内容自然高度的合理上界：只防异常 IPC 值，不当作窗口裁剪上限。
+const MAX_NATURAL_HEIGHT: f64 = 2000.0;
+/// 窗口最小可用高度；工作区比它还小时以工作区为准，绝不为凑最小值而溢出。
+const MIN_WINDOW_HEIGHT: f64 = 80.0;
 /// 失焦延迟关闭令牌：show/fit/hide 都会 bump 使未决任务失效。
 static BLUR_TOKEN: AtomicU64 = AtomicU64::new(0);
-/// 弹窗是否已应用原生材质（失败在下次显示时重试，不阻塞打开路径）。
+/// 弹窗材质方案是否已初始化（失败在下次显示时重试，不阻塞打开路径）。
 static MATERIAL_APPLIED: AtomicBool = AtomicBool::new(false);
 /// 弹窗 Win32 句柄（前台钩子回调里做 O(1) 比较，避免在回调内查询 Tauri 状态）。
 static MENU_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -130,6 +141,78 @@ pub fn place_menu(
     (left.round() as i32, top.round() as i32)
 }
 
+/// 锚点所在工作区能容纳的最大窗口高度（逻辑像素）。
+///
+/// 物理可用高度 = 工作区高度 − 上下各 `EDGE_MARGIN`；再按该显示器缩放换算回逻辑像素。
+/// 这样窗口无论在高 DPI 小屏还是普通屏打开，都不会超出**工作区**（不是物理分辨率）。
+pub fn max_window_height(wa: WorkArea, scale: f64) -> f64 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let available_phys = (wa.h as f64 - 2.0 * EDGE_MARGIN).max(1.0);
+    (available_phys / scale).max(1.0)
+}
+
+/// 菜单窗口实际应取的高度：内容自然高度优先（不足不拉伸），
+/// 超出锚点所在工作区时收进工作区，超出的内容由菜单内部滚动承担。
+pub fn resolve_menu_height(natural: f64, wa: WorkArea, scale: f64) -> f64 {
+    let natural = if natural.is_finite() {
+        natural.clamp(MIN_WINDOW_HEIGHT, MAX_NATURAL_HEIGHT)
+    } else {
+        DEFAULT_SIZE.1
+    };
+    natural.min(max_window_height(wa, scale))
+}
+
+/// 以当前自然高度 + 锚点所在显示器工作区算出窗口尺寸；取不到显示器时只按自然高度。
+fn desired_size(app: &AppHandle, anchor: (f64, f64)) -> (f64, f64) {
+    let natural = *MENU_NATURAL_HEIGHT.lock().unwrap_or_else(|e| e.into_inner());
+    let height = match monitor_at(app, anchor) {
+        Some((wa, scale)) => resolve_menu_height(natural, wa, scale),
+        None => natural.clamp(MIN_WINDOW_HEIGHT, MAX_NATURAL_HEIGHT),
+    };
+    (DEFAULT_SIZE.0, height)
+}
+
+/// <0.5 逻辑像素视为同一高度：吸收测量/DPI 舍入，避免 fit ↔ resize 回环。
+fn height_needs_resize(cached: f64, target: f64) -> bool {
+    (cached - target).abs() >= 0.5
+}
+
+/// 只在高度实际变化时改窗口尺寸（<0.5 逻辑像素视为相同）：避免 fit ↔ resize 回环。
+/// 返回是否真的调用了 `set_size`。
+fn apply_window_height(win: &tauri::WebviewWindow, height: f64) -> bool {
+    let mut cached = MENU_WINDOW_HEIGHT.lock().unwrap_or_else(|e| e.into_inner());
+    if !height_needs_resize(*cached, height) {
+        return false;
+    }
+    if win
+        .set_size(tauri::LogicalSize::new(DEFAULT_SIZE.0, height))
+        .is_err()
+    {
+        return false;
+    }
+    *cached = height;
+    true
+}
+
+/// DPI / 显示器变化后重算**可见**菜单的高度与位置（自然高度不变，只按新工作区收放）。
+/// 只由 `ScaleFactorChanged` 调用；`Resized` 不调用，避免 set_size 自触发回环。
+fn refit_visible(app: &AppHandle) {
+    let Some(win) = menu_window(app) else { return };
+    if !win.is_visible().unwrap_or(false) {
+        return;
+    }
+    let anchor = *ANCHOR.lock().unwrap_or_else(|e| e.into_inner());
+    let size = desired_size(app, anchor);
+    apply_window_height(&win, size.1);
+    if let Some(pos) = compute_position(app, anchor, size) {
+        let _ = win.set_position(pos);
+    }
+}
+
 // ── 窗口生命周期 ─────────────────────────────────────────────
 
 /// 菜单弹窗的原生材质：**默认不挂**（v0.6 整改的真机矩阵结论）——
@@ -143,7 +226,13 @@ pub fn apply_material(app: &AppHandle) {
     }
     let Some(win) = menu_window(app) else { return };
     let result = crate::commands::system::apply_menu_material(app, &win);
-    MATERIAL_APPLIED.store(true, Ordering::Relaxed);
+    // 默认路径 effect=none 表示「按设计不挂原生材质」，视为已初始化；
+    // 显式后端的清理/应用失败则留待下次显示重试，不伪装成功。
+    if result.effect == "none" || result.applied {
+        MATERIAL_APPLIED.store(true, Ordering::Relaxed);
+    } else {
+        tracing::debug!(effect = %result.effect, "右键菜单原生材质未生效，下次显示重试");
+    }
     tracing::debug!(
         effect = %result.effect,
         applied = result.applied,
@@ -153,13 +242,6 @@ pub fn apply_material(app: &AppHandle) {
 
 fn menu_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     app.get_webview_window(WINDOW_LABEL)
-}
-
-fn cached_size() -> (f64, f64) {
-    (
-        DEFAULT_SIZE.0,
-        *MENU_HEIGHT.lock().unwrap_or_else(|e| e.into_inner()),
-    )
 }
 
 fn cancel_pending_blur_close() {
@@ -315,7 +397,11 @@ pub fn show_at(app: &AppHandle, anchor: (f64, f64)) {
     // 右键重开：取消未决失焦关闭，避免「关闭-显示」竞态闪烁
     cancel_pending_blur_close();
     apply_material(app);
-    if let Some(pos) = compute_position(app, anchor, cached_size()) {
+    // 显示前先按**锚点所在显示器工作区**收放高度：小屏/高 DPI 下即使用户还没
+    // 回传实测高度，也不会先显示一个超出工作区的窗口。
+    let size = desired_size(app, anchor);
+    apply_window_height(&win, size.1);
+    if let Some(pos) = compute_position(app, anchor, size) {
         tracing::debug!(pos = ?pos, "右键菜单：定位完成");
         let _ = win.set_position(pos);
     }
@@ -349,8 +435,14 @@ pub fn init(app: &AppHandle) {
         let w = win.clone();
         win.on_window_event(move |event| match event {
             tauri::WindowEvent::Focused(false) => schedule_blur_close(w.app_handle()),
-            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+            tauri::WindowEvent::Resized(_) => {
                 crate::window_shape::apply_with_radius(&w, MENU_RADIUS);
+            }
+            tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                // DPI / 显示器变化：圆角按新 scale 重算，窗口高度与位置也按新工作区重算
+                // （这里不调 fit_context_menu，避免与前端测量形成 resize 回环）。
+                crate::window_shape::apply_with_radius(&w, MENU_RADIUS);
+                refit_visible(w.app_handle());
             }
             tauri::WindowEvent::Destroyed => {
                 if let Ok(h) = w.hwnd() {
@@ -372,24 +464,30 @@ pub fn hide_context_menu(app: AppHandle) {
     hide(&app);
 }
 
-/// 菜单内容把实测逻辑高度回传给后端：收放窗口**高度**并按锚点重新定位。
+/// 菜单内容把实测**自然高度**回传给后端：实际窗口高度 =
+/// min(自然高度, 锚点所在显示器工作区可用高度)，超出部分由菜单内部滚动承担。
 /// 宽度是设计常量（DEFAULT_SIZE.0），不由前端回传，避免测量回环漂移。
-/// 高度未变化时不做任何事（重复 show 不会反复 resize）。
+/// 高度未变化时不做任何事（重复 show / 小屏钳制都不会反复 resize）。
 #[tauri::command]
 pub fn fit_context_menu(app: AppHandle, height: f64) {
-    let h = height.clamp(80.0, 900.0);
-    let ch = *MENU_HEIGHT.lock().unwrap_or_else(|e| e.into_inner());
-    if (ch - h).abs() < 0.5 {
+    if !height.is_finite() {
         return;
     }
-    *MENU_HEIGHT.lock().unwrap_or_else(|e| e.into_inner()) = h;
-    let w = DEFAULT_SIZE.0;
+    // 自然高度只做合理性夹取，不再当作窗口裁剪上限：小屏回到大屏后可直接恢复。
+    let natural = height.clamp(MIN_WINDOW_HEIGHT, MAX_NATURAL_HEIGHT);
+    *MENU_NATURAL_HEIGHT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = natural;
+
     let Some(win) = menu_window(&app) else { return };
-    let visible = win.is_visible().unwrap_or(false);
-    let _ = win.set_size(tauri::LogicalSize::new(w, h));
-    if visible {
-        let anchor = *ANCHOR.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pos) = compute_position(&app, anchor, (w, h)) {
+    let anchor = *ANCHOR.lock().unwrap_or_else(|e| e.into_inner());
+    let size = desired_size(&app, anchor);
+    if !apply_window_height(&win, size.1) {
+        // 自然高度变了但窗口高度未变（被工作区钳制）：不 resize、不重定位。
+        return;
+    }
+    if win.is_visible().unwrap_or(false) {
+        if let Some(pos) = compute_position(&app, anchor, size) {
             let _ = win.set_position(pos);
         }
     }
@@ -623,5 +721,99 @@ mod tests {
         let (x, y) = place_menu((960.0, 800.0), (252.0, 500.0), 0.0, wa_full_hd());
         assert_eq!(x, 960 - 126);
         assert_eq!(y, (800.0 - ANCHOR_GAP - 500.0) as i32);
+    }
+
+    // ── 工作区高度约束（P2-02） ─────────────────────────────────
+
+    fn wa_height(h: i32) -> WorkArea {
+        WorkArea::new(0, 0, 1920, h)
+    }
+
+    #[test]
+    fn natural_height_is_not_stretched_on_large_screens() {
+        // 1920×1080（工作区 1032）：自然高度原样使用，不用工作区高度拉伸
+        assert_eq!(resolve_menu_height(622.0, wa_height(1032), 1.0), 622.0);
+        assert_eq!(resolve_menu_height(622.0, wa_height(1032), 1.25), 622.0);
+    }
+
+    #[test]
+    fn clamps_on_1366x768_work_area_at_all_dpi() {
+        // 1366×768：工作区 728 物理像素（100% 可容纳 716 逻辑 → 不裁剪）
+        assert_eq!(resolve_menu_height(622.0, wa_height(728), 1.0), 622.0);
+        // 125%：可用 (728-12)/1.25 = 572.8
+        let at125 = resolve_menu_height(622.0, wa_height(728), 1.25);
+        assert!((at125 - 572.8).abs() < 0.01, "125% actual={at125}");
+        // 150%：477.33；200%：358
+        let at150 = resolve_menu_height(622.0, wa_height(728), 1.5);
+        assert!((at150 - (716.0 / 1.5)).abs() < 0.01, "150% actual={at150}");
+        assert_eq!(resolve_menu_height(622.0, wa_height(728), 2.0), 358.0);
+    }
+
+    #[test]
+    fn clamps_on_1280x720_work_area() {
+        // 1280×720：工作区 680 → 100% 可容纳 668（622 不裁剪）
+        assert_eq!(resolve_menu_height(622.0, wa_height(680), 1.0), 622.0);
+        let at125 = resolve_menu_height(622.0, wa_height(680), 1.25);
+        assert!((at125 - 534.4).abs() < 0.01, "125% actual={at125}");
+        assert_eq!(resolve_menu_height(622.0, wa_height(680), 2.0), 334.0);
+    }
+
+    #[test]
+    fn restores_natural_height_when_work_area_grows() {
+        let small = resolve_menu_height(742.0, wa_height(728), 1.5);
+        assert!(small < 742.0, "高 DPI 小屏必须收进工作区");
+        let large = resolve_menu_height(742.0, wa_height(1032), 1.0);
+        assert_eq!(large, 742.0, "回到大屏必须恢复自然高度，不被裁剪值污染");
+    }
+
+    #[test]
+    fn tall_menu_at_bottom_corner_stays_inside_work_area() {
+        let wa = wa_height(728);
+        let h = resolve_menu_height(900.0, wa, 1.25);
+        let (x, y) = place_menu((1900.0, 726.0), (DEFAULT_SIZE.0, h), 1.25, wa);
+        let mw = (DEFAULT_SIZE.0 * 1.25).round() as i32;
+        let mh = (h * 1.25).round() as i32;
+        assert!(y >= EDGE_MARGIN as i32);
+        assert!(y + mh <= 728 - EDGE_MARGIN as i32, "y={y} mh={mh}");
+        assert!(x >= EDGE_MARGIN as i32);
+        assert!(x + mw <= 1920 - EDGE_MARGIN as i32, "x={x} mw={mw}");
+    }
+
+    #[test]
+    fn tiny_work_area_never_overflows() {
+        // 极端小工作区：窗口取可用高度，不为了 MIN_WINDOW_HEIGHT 溢出工作区
+        assert_eq!(resolve_menu_height(622.0, wa_height(100), 1.0), 88.0);
+        assert_eq!(resolve_menu_height(622.0, wa_height(40), 1.0), 28.0);
+    }
+
+    #[test]
+    fn fractional_dpi_rounds_into_work_area_exactly() {
+        // 125%：572.8 逻辑 = 716 物理，恰好贴工作区下缘；不能因取整多出 1px
+        let h = resolve_menu_height(622.0, wa_height(728), 1.25);
+        assert_eq!((h * 1.25).round() as i32, 716);
+        let (_, y) = place_menu((960.0, 720.0), (DEFAULT_SIZE.0, h), 1.25, wa_height(728));
+        assert!(y + 716 <= 728 - EDGE_MARGIN as i32);
+    }
+
+    #[test]
+    fn height_threshold_absorbs_subpixel_rounding() {
+        // 0.4px 差异不 resize（防 fit↔resize 回环）；0.5px 起才更新
+        assert!(!height_needs_resize(622.0, 622.4));
+        assert!(!height_needs_resize(622.0, 621.6));
+        assert!(height_needs_resize(622.0, 622.5));
+        assert!(height_needs_resize(622.0, 621.5));
+    }
+
+    #[test]
+    fn invalid_values_fall_back() {
+        assert_eq!(
+            resolve_menu_height(f64::NAN, wa_height(1032), 1.0),
+            DEFAULT_SIZE.1
+        );
+        assert_eq!(max_window_height(wa_height(1032), 0.0), 1020.0);
+        assert_eq!(
+            resolve_menu_height(0.0, wa_height(1032), 1.0),
+            MIN_WINDOW_HEIGHT
+        );
     }
 }

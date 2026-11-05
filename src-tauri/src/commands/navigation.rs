@@ -25,13 +25,15 @@ pub async fn nav_scan_apps(
     .map_err(|e| crate::error::AppError::Agent(format!("扫描任务失败: {}", e)))?
 }
 
-/// 真实应用图标（PNG data URL）。只接受已保存目标 id 或扫描发现的 app_key。
+/// 真实应用图标（PNG data URL）。只接受已保存目标 id、扫描发现的 app_key，
+/// 或窗口选择页给出的真实 exe 路径（后端仍做安全校验）。
 /// 提取在阻塞线程执行，全局最多 2 个并发；失败返回 null 由前端回退，不阻塞列表。
 #[tauri::command]
 pub async fn nav_app_icon(
     db: State<'_, Arc<Db>>,
     target_id: Option<String>,
     app_key: Option<String>,
+    exe_path: Option<String>,
 ) -> AppResult<Option<String>> {
     use std::sync::OnceLock;
     static LIMIT: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
@@ -44,7 +46,13 @@ pub async fn nav_app_icon(
         .map_err(|_| AppError::Agent("图标任务队列已关闭".into()))?;
     let db = db.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = navigation::app_icons::extract_icon(&db, target_id.as_deref(), app_key.as_deref());
+        // exe_path 只用于窗口选择页的「尚未保存」窗口；后端仍做绝对路径/.exe/存在/非解释器校验。
+        let result = navigation::app_icons::extract_icon(
+            &db,
+            target_id.as_deref(),
+            app_key.as_deref(),
+            exe_path.as_deref(),
+        );
         drop(permit);
         result
     })
@@ -107,6 +115,21 @@ pub fn nav_save_target(
     input: navigation::target_resolver::TargetInput,
 ) -> AppResult<navigation::target_resolver::NavTargetRow> {
     navigation::target_resolver::save_target(&db, &input)
+}
+
+/// 由真实窗口创建「指定窗口快捷方式」：后端即时解析稳定身份（类名+标题+exe）落库，
+/// HWND 只用于本次解析、绝不持久化。不聚焦、不启动、不改动用户当前窗口。
+#[tauri::command]
+pub fn nav_save_window_target(
+    db: State<'_, Arc<Db>>,
+    hwnd: isize,
+    display_name: Option<String>,
+) -> AppResult<navigation::target_resolver::NavTargetRow> {
+    navigation::target_resolver::save_window_shortcut(
+        &db,
+        hwnd,
+        display_name.as_deref(),
+    )
 }
 
 #[tauri::command]

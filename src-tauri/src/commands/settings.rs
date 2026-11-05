@@ -77,6 +77,32 @@ const ALLOWED_KEYS: &[&str] = &[
     "shelf_max_storage_mb",
     // 导航入口布局（v0.12）：完整面板 / 停靠胶囊各自的显隐与排序（版本化 JSON）
     "navigation_layout",
+    // 统一提示音 / 语音播报 / 本地语音缓存（v0.13）
+    "audio_sound_enabled",
+    "audio_sound_volume",
+    "audio_sound_agent_started",
+    "audio_sound_agent_done",
+    "audio_sound_agent_waiting",
+    "audio_sound_agent_failed",
+    "audio_sound_agent_disconnected",
+    "audio_sound_task_due",
+    "audio_sound_reminder",
+    "tts_enabled",
+    "tts_voice_id",
+    "tts_voice_gender",
+    "tts_volume",
+    "tts_rate",
+    "tts_speak_source",
+    "tts_speak_title",
+    "tts_agent_started",
+    "tts_agent_done",
+    "tts_agent_waiting",
+    "tts_agent_failed",
+    "tts_agent_disconnected",
+    "tts_task_due",
+    "tts_reminder",
+    "tts_cache_enabled",
+    "tts_cache_max_mb",
 ];
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
@@ -151,7 +177,44 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "clipboard_capture_html"
         | "clipboard_auto_group"
         | "clipboard_sensitive_filter"
-        | "clipboard_ocr_auto" => bool_of(v, key),
+        | "clipboard_ocr_auto"
+        // 统一提示音 / 语音播报 / 缓存（v0.13）
+        | "audio_sound_enabled"
+        | "audio_sound_agent_started"
+        | "audio_sound_agent_done"
+        | "audio_sound_agent_waiting"
+        | "audio_sound_agent_failed"
+        | "audio_sound_agent_disconnected"
+        | "audio_sound_task_due"
+        | "audio_sound_reminder"
+        | "tts_enabled"
+        | "tts_speak_source"
+        | "tts_speak_title"
+        | "tts_agent_started"
+        | "tts_agent_done"
+        | "tts_agent_waiting"
+        | "tts_agent_failed"
+        | "tts_agent_disconnected"
+        | "tts_task_due"
+        | "tts_reminder"
+        | "tts_cache_enabled" => bool_of(v, key),
+        "audio_sound_volume" | "tts_volume" => int_in_range(v, key, 0, 100),
+        "tts_rate" => int_in_range(v, key, 50, 200),
+        "tts_cache_max_mb" => int_in_range(v, key, 1, 2048),
+        "tts_voice_gender" => enum_of(v, key, &["auto", "female", "male"]),
+        // 系统语音唯一 ID 是自由字符串（Windows 生成的 ID），只做长度/控制字符边界校验
+        "tts_voice_id" => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| AppError::Validation("tts_voice_id 必须是字符串".into()))?;
+            if s.chars().count() > 256 {
+                return Err(AppError::Validation("tts_voice_id 超过 256 字符".into()));
+            }
+            if s.chars().any(|c| c.is_control()) {
+                return Err(AppError::Validation("tts_voice_id 含非法控制字符".into()));
+            }
+            Ok(())
+        }
         "http_port" => int_in_range(v, key, 1, 65535),
         "overdue_grace_hours" => int_in_range(v, key, 0, 24 * 60),
         "stale_run_minutes" => int_in_range(v, key, 1, 24 * 60),
@@ -302,6 +365,10 @@ pub fn update_settings(
     if let Some(preset) = obj.get("visual_preset").and_then(|v| v.as_str()) {
         let _ = app.emit("visual-preset-changed", preset.to_string());
     }
+    // 材质同样影响已打开的独立微件窗口（solid 回退不透明表面）。
+    if let Some(material) = obj.get("material").and_then(|v| v.as_str()) {
+        let _ = app.emit("material-changed", material.to_string());
+    }
     let updated = Settings::load_display(&db)?;
     // 模块级生命周期：关闭工作现场时停止正在进行的恢复；剪贴板启停同步监听线程
     if obj.contains_key("workspace_enabled") && !updated.workspace_enabled {
@@ -315,6 +382,12 @@ pub fn update_settings(
             if let Some(rt) = app.try_state::<Arc<crate::clipboard::ClipboardRuntime>>() {
                 rt.inner().set_enabled(config.settings.clipboard_enabled);
             }
+        }
+    }
+    // 语音缓存容量变更：立即按 LRU 收敛到新上限，不必等下一次写入才清理。
+    if obj.contains_key("tts_cache_max_mb") || obj.contains_key("tts_cache_enabled") {
+        if let Some(svc) = app.try_state::<Arc<crate::audio::AudioService>>() {
+            svc.inner().apply_policy(updated.tts_cache_max_mb);
         }
     }
     // Hook 上报 CLI 依赖该文件读取端口/令牌/启停（失败不影响设置保存，CLI 会自动走文件回退）
@@ -504,6 +577,53 @@ mod tests {
         assert!(validate_setting("backup_retain_days", &serde_json::json!(7)).is_ok());
         assert!(validate_setting("backup_retain_days", &serde_json::json!(366)).is_err());
         assert!(validate_setting("overdue_grace_hours", &serde_json::json!(24)).is_ok());
+    }
+
+    #[test]
+    fn audio_settings_are_validated_and_allowlisted() {
+        for key in [
+            "audio_sound_enabled",
+            "audio_sound_agent_started",
+            "audio_sound_agent_done",
+            "audio_sound_agent_waiting",
+            "audio_sound_agent_failed",
+            "audio_sound_agent_disconnected",
+            "audio_sound_task_due",
+            "audio_sound_reminder",
+            "tts_enabled",
+            "tts_voice_id",
+            "tts_voice_gender",
+            "tts_volume",
+            "tts_rate",
+            "tts_speak_source",
+            "tts_speak_title",
+            "tts_agent_started",
+            "tts_agent_done",
+            "tts_agent_waiting",
+            "tts_agent_failed",
+            "tts_agent_disconnected",
+            "tts_task_due",
+            "tts_reminder",
+            "tts_cache_enabled",
+            "tts_cache_max_mb",
+        ] {
+            assert!(ALLOWED_KEYS.contains(&key), "{key} 必须可持久化");
+        }
+        assert!(validate_setting("audio_sound_volume", &serde_json::json!(70)).is_ok());
+        assert!(validate_setting("audio_sound_volume", &serde_json::json!(101)).is_err());
+        assert!(validate_setting("audio_sound_volume", &serde_json::json!("70")).is_err());
+        assert!(validate_setting("tts_volume", &serde_json::json!(0)).is_ok());
+        assert!(validate_setting("tts_rate", &serde_json::json!(50)).is_ok());
+        assert!(validate_setting("tts_rate", &serde_json::json!(200)).is_ok());
+        assert!(validate_setting("tts_rate", &serde_json::json!(201)).is_err());
+        assert!(validate_setting("tts_cache_max_mb", &serde_json::json!(1)).is_ok());
+        assert!(validate_setting("tts_cache_max_mb", &serde_json::json!(2048)).is_ok());
+        assert!(validate_setting("tts_cache_max_mb", &serde_json::json!(0)).is_err());
+        assert!(validate_setting("tts_voice_gender", &serde_json::json!("female")).is_ok());
+        assert!(validate_setting("tts_voice_gender", &serde_json::json!("auto")).is_ok());
+        assert!(validate_setting("tts_voice_gender", &serde_json::json!("robot")).is_err());
+        assert!(validate_setting("tts_voice_id", &serde_json::json!("Microsoft Huihui")).is_ok());
+        assert!(validate_setting("tts_voice_id", &serde_json::json!("bad\u{0007}id")).is_err());
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod actions;
 pub mod agents;
 pub mod agent_stats;
 pub mod alloc_stats;
+pub mod audio;
 #[global_allocator]
 static GLOBAL_ALLOCATOR: alloc_stats::TrackingAllocator = alloc_stats::TrackingAllocator;
 pub mod clipboard;
@@ -24,8 +25,10 @@ pub mod recurrence;
 pub mod scheduler;
 pub mod shelf;
 pub mod task_analytics;
+pub mod user_preferences;
 mod window_shape;
 mod window_cursor;
+mod widget_windows;
 mod winproc;
 pub mod workspace;
 pub mod workflows;
@@ -271,8 +274,8 @@ fn restore_window(app: &AppHandle, db: &Db) {
     // Moved 也在监听之列：贴边吸附的隐藏/恢复只改窗口位置不改尺寸，而吸附
     // 流程会把区域留在中间状态（真机实测恢复后区域卡在 40x150 碎片上），
     // 只监听 Resized/Focused 时位置恢复后内容将永久被裁。apply() 内部有
-    // GetWindowRgn 实况校验与缓存，区域已正确时是纯读检查，拖动产生的高频
-    // Moved 不会引发昂贵的重设。
+    // GetWindowRgn 实况校验与缓存；系统模态移动循环（拖拽整个窗口）内还会
+    // 跳过回读与 DWM 写入，避免逐帧重合成导致拖动中整窗透明，松手后再补齐。
     let win_for_shape = win.clone();
     win.on_window_event(move |event| {
         if matches!(
@@ -419,6 +422,20 @@ pub fn run() {
             //（绝不自动重放有副作用的步骤）。
             commands::workflows::recover_on_startup(&db);
             handle.manage(db.clone());
+            // 统一音频通知服务（TTS 合成 + 本地缓存）：
+            // 缓存目录走 app_cache_dir/audio/tts（验收/便携模式随 TASK_DOCK_DATA_DIR 隔离），
+            // 启动时不初始化 WinRT 引擎；只有实际播报/预生成时才合成。
+            let audio_cache_dir = std::env::var_os("TASK_DOCK_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .map(|d| d.join("audio-cache").join("tts"))
+                .or_else(|| {
+                    handle
+                        .path()
+                        .app_cache_dir()
+                        .ok()
+                        .map(|p| p.join("audio").join("tts"))
+                });
+            handle.manage(Arc::new(audio::AudioService::new(audio_cache_dir)));
             let settings = db::Settings::load(&db).unwrap_or_else(|e| {
                 tracing::warn!("启动时读取设置失败，使用默认值（剪贴板等模块将按默认关闭）: {}", e);
                 Default::default()
@@ -511,6 +528,13 @@ pub fn run() {
                     Err(e) => tracing::warn!("无法获取主窗句柄，拖拽磁力未安装: {e}"),
                 }
                 magnetic::watch_destroy(&win);
+                // 拖拽期间 `window_shape::apply` 会跳过回读与 DWM 写入（逐帧写会让
+                // DWM 反复重新合成，表现为拖动中整窗透明）。松手时由磁力层的
+                // `WM_EXITSIZEMOVE` 调 `flush_deferred`，通过本回调一次性补做校准。
+                let win_for_flush = win.clone();
+                window_shape::register_apply_hook(Box::new(move || {
+                    let _ = window_shape::apply(&win_for_flush);
+                }));
             }
 
             // 窗口材质（毛玻璃）：在显示窗口之前应用，避免透明闪烁；
@@ -693,6 +717,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // 任务
             commands::tasks::list_tasks,
+            commands::tasks::fetch_task,
             commands::tasks::task_stats,
             commands::tasks::create_task,
             commands::tasks::update_task,
@@ -769,9 +794,17 @@ pub fn run() {
             // 设置
             commands::settings::get_settings,
             commands::settings::update_settings,
+            // 统一提示音 / 语音播报 / 本地语音缓存（v0.13）
+            commands::audio::tts_list_voices,
+            commands::audio::tts_synthesize,
+            commands::audio::tts_cache_stats,
+            commands::audio::tts_cache_clear,
             commands::settings::clipboard_repair_config,
             commands::settings::save_window_rect,
             commands::settings::get_window_rect,
+            // 用户偏好镜像（语言 / 桌面微件布局；备份恢复经 preferences.json）
+            commands::user_preferences::get_user_preferences,
+            commands::user_preferences::set_user_preferences,
             // 数据
             commands::data::export_data,
             commands::data::import_data,
@@ -813,6 +846,17 @@ pub fn run() {
             notification_window::notification_snooze,
             notification_window::notification_navigate,
             notification_window::notification_ui_ready,
+            // 桌面微件独立窗口（P2：主窗口为唯一数据所有者，微件窗口只读快照）
+            widget_windows::show_widget_window,
+            widget_windows::hide_widget_window,
+            widget_windows::dismiss_widget_window,
+            widget_windows::set_widget_topmost,
+            widget_windows::widget_window_info,
+            widget_windows::report_widget_bounds,
+            widget_windows::reset_widget_position,
+            widget_windows::publish_widget_snapshot,
+            widget_windows::request_widget_snapshot,
+            widget_windows::dispatch_widget_action,
             // 统一导航（v0.4）
             commands::navigation::nav_scan_apps,
             commands::navigation::nav_app_icon,
@@ -821,6 +865,7 @@ pub fn run() {
             commands::navigation::nav_list_targets,
             commands::navigation::nav_target_running_states,
             commands::navigation::nav_save_target,
+            commands::navigation::nav_save_window_target,
             commands::navigation::nav_update_target,
             commands::navigation::nav_delete_target,
             commands::navigation::nav_save_agent_session_target,
@@ -868,6 +913,7 @@ pub fn run() {
             commands::clipboard::clipboard_view,
             commands::clipboard::clipboard_item,
             commands::clipboard::clipboard_group,
+            commands::clipboard::clipboard_group_page,
             commands::clipboard::clipboard_stats,
             commands::clipboard::clipboard_thumb,
             commands::clipboard::clipboard_image,
@@ -987,6 +1033,7 @@ pub fn run() {
             commands::workflows::workflow_duplicate,
             commands::workflows::workflow_reorder,
             commands::workflows::workflow_replace_steps,
+            commands::workflows::workflow_save,
             commands::workflows::workflow_run,
             commands::workflows::workflow_pause,
             commands::workflows::workflow_resume,
@@ -1091,6 +1138,13 @@ pub fn request_exit(app: &AppHandle) {
             }
         }
         let _ = app.emit("app-shutting-down", ());
+        // 停止语音工作线程：设置退出标志取消在途合成，再等待线程结束（毫秒级）。
+        if let Some(audio) = app.try_state::<Arc<audio::AudioService>>() {
+            let service = Arc::clone(&audio);
+            let _ = tauri::async_runtime::spawn_blocking(move || service.shutdown()).await;
+        }
+        // 退出流程销毁微件窗口时统一标记 app-exit，避免被当成用户主动关闭而改写配置。
+        crate::widget_windows::mark_app_exit();
         EXIT_READY.store(true, Ordering::SeqCst);
         app.exit(0);
     });
@@ -1355,6 +1409,7 @@ pub fn agentctl(args: &[String]) -> i32 {
                 },
                 clipboard_dir: Some(clipboard.as_path()),
                 shelf_dir: Some(shelf.as_path()),
+                data_dir: Some(data_dir.as_path()),
             };
             match commands::backup::write_bundle(&db, sources, &target, kind) {
                 Ok(r) => serde_json::to_string_pretty(&serde_json::json!({
@@ -1364,6 +1419,8 @@ pub fn agentctl(args: &[String]) -> i32 {
                     "bytes": r.bytes,
                     "sha256": r.sha256,
                     "counts": r.counts,
+                    "config_included": r.config_included,
+                    "warnings": r.warnings,
                 }))
                 .unwrap_or_default(),
                 Err(e) => {

@@ -296,6 +296,12 @@ pub fn list_tasks(db: State<'_, Arc<Db>>, filter: TaskFilter) -> AppResult<Vec<T
     list_tasks_inner(&db, filter)
 }
 
+/// 单个任务读取：微件点击时主窗口列表可能因筛选未包含该任务，需要按 ID 取回详情。
+#[tauri::command]
+pub fn fetch_task(db: State<'_, Arc<Db>>, id: String) -> AppResult<Task> {
+    get_task(&db, &id)
+}
+
 fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
     let mut sql = format!("{} WHERE 1=1", TASK_SELECT);
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -320,6 +326,13 @@ fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
             params.push(Box::new(today_start.to_rfc3339()));
             params.push(Box::new(tomorrow_start.to_rfc3339()));
             idx += 2;
+        }
+        // 桌面微件「今日任务」：今日到期 + 已逾期，均为未完成（status 默认 pending）。
+        // 只按截止时间筛选，不携带页面筛选/排序/分页状态；LIMIT 在排序后应用。
+        Some("due_today_or_overdue") => {
+            sql += &format!(" AND t.due_at IS NOT NULL AND t.due_at < ?{}", idx);
+            params.push(Box::new(tomorrow_start.to_rfc3339()));
+            idx += 1;
         }
         // 胶囊「日程」：只要有截止时间就算（不扩展 remind_at，保持产品现有语义）。
         Some("scheduled") => {

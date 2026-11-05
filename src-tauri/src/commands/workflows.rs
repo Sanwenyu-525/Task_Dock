@@ -89,6 +89,20 @@ pub fn workflow_reorder(
     store::reorder_workflows(&db, &ordered_ids)
 }
 
+/// 编辑保存：元信息 + 步骤编排单事务写入，避免「步骤成功、元信息失败」的半保存。
+#[tauri::command]
+pub fn workflow_save(
+    db: State<'_, Arc<Db>>,
+    id: String,
+    name: String,
+    description: String,
+    steps: Vec<crate::workflows::StepInput>,
+) -> AppResult<WorkflowDetail> {
+    let rows = store::replace_steps_and_update(&db, &id, name, description, steps)?;
+    let (wf, _) = store::get_workflow(&db, &id)?;
+    Ok(WorkflowDetail { workflow: wf, steps: rows })
+}
+
 /// 整表替换步骤编排（原子事务；步骤 ID 由前端生成以保持编辑稳定性）。
 #[tauri::command]
 pub fn workflow_replace_steps(

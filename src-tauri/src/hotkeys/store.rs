@@ -79,27 +79,49 @@ impl HotkeyStore for FileHotkeyStore {
     }
 
     fn save(&self, config: &HotkeyConfigFile) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建快捷键配置目录失败：{e}"))?;
-        }
-        let data = serde_json::to_vec_pretty(config)
-            .map_err(|e| format!("序列化快捷键配置失败：{e}"))?;
-        let tmp = self
-            .path
-            .with_extension(format!("tmp-{}.json", stamp()));
-        {
-            let mut file = fs::File::create(&tmp)
-                .map_err(|e| format!("创建临时快捷键配置失败：{e}"))?;
-            file.write_all(&data)
-                .map_err(|e| format!("写入临时快捷键配置失败：{e}"))?;
-            file.sync_all()
-                .map_err(|e| format!("刷新临时快捷键配置失败：{e}"))?;
-        }
-        fs::rename(&tmp, &self.path).map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            format!("替换快捷键配置失败：{e}")
-        })
+        save_config_atomic(&self.path, config)
     }
+}
+
+/// 原子写入任意快捷键配置文件（临时文件 → sync → rename）。
+///
+/// 恢复流程在管理器尚未初始化（启动续跑）时也用它落盘；
+/// 上一份有效文件只在 rename 成功后才被替换。
+pub fn save_config_atomic(path: &std::path::Path, config: &HotkeyConfigFile) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建快捷键配置目录失败：{e}"))?;
+    }
+    let data = serde_json::to_vec_pretty(config)
+        .map_err(|e| format!("序列化快捷键配置失败：{e}"))?;
+    let tmp = path.with_extension(format!("tmp-{}.json", stamp()));
+    {
+        let mut file = fs::File::create(&tmp)
+            .map_err(|e| format!("创建临时快捷键配置失败：{e}"))?;
+        file.write_all(&data)
+            .map_err(|e| format!("写入临时快捷键配置失败：{e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("刷新临时快捷键配置失败：{e}"))?;
+    }
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("替换快捷键配置失败：{e}")
+    })
+}
+
+/// 保存「恢复时未能完全应用」的原始配置，供用户/诊断随后处理。
+/// 文件名固定为 `hotkeys.restore-pending.json`，不覆盖 `hotkeys.json` 本身。
+pub fn save_pending_config(
+    data_dir: &std::path::Path,
+    config: &HotkeyConfigFile,
+) -> Result<(), String> {
+    save_config_atomic(&data_dir.join(PENDING_RESTORE_FILE), config)
+}
+
+pub const PENDING_RESTORE_FILE: &str = "hotkeys.restore-pending.json";
+
+/// 删除遗留的待解决原始配置（本次恢复全部应用成功时）。
+pub fn clear_pending_config(data_dir: &std::path::Path) {
+    let _ = fs::remove_file(data_dir.join(PENDING_RESTORE_FILE));
 }
 
 #[cfg(test)]

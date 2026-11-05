@@ -1109,6 +1109,21 @@ WHERE EXISTS (SELECT 1 FROM application_settings WHERE key = 'clipboard_config_o
   AND NOT EXISTS (SELECT 1 FROM application_settings WHERE key = 'clipboard_ocr_auto');
 "#,
     ),
+    (
+        33,
+        r#"
+-- v33（应用快捷方式）：区分「普通应用快捷方式」与「指定窗口快捷方式」。
+-- 同一程序可以有多个指定窗口快捷方式，因此去重规则从 app_key 收窄为
+-- (app_key, shortcut_kind, 稳定窗口身份)；普通应用仍只保留一行。
+-- bound_window_identity 存稳定身份（窗口类名+标题+exe，绝不保存 HWND），
+-- 旧目标默认 'app' + 空绑定，行为与升级前一致。
+ALTER TABLE navigation_targets
+  ADD COLUMN shortcut_kind TEXT NOT NULL DEFAULT 'app'
+  CHECK (shortcut_kind IN ('app', 'window'));
+ALTER TABLE navigation_targets
+  ADD COLUMN bound_window_identity TEXT NOT NULL DEFAULT '';
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1859,6 +1874,66 @@ pub struct Settings {
     /// 完整面板与停靠胶囊各自保存显隐与排序；后端只做结构校验，不参与语义合并。
     #[serde(default)]
     pub navigation_layout: serde_json::Value,
+    // ── 统一提示音 / 语音播报 / 本地语音缓存（v0.13；全部带默认值，旧库无键可反序列化）──
+    /// 提示音总开关（与 TTS 总开关、系统通知显示开关相互独立）
+    #[serde(default = "default_true")]
+    pub audio_sound_enabled: bool,
+    /// 提示音音量（0~100）
+    #[serde(default = "default_sound_volume")]
+    pub audio_sound_volume: u32,
+    #[serde(default)]
+    pub audio_sound_agent_started: bool,
+    #[serde(default = "default_true")]
+    pub audio_sound_agent_done: bool,
+    #[serde(default = "default_true")]
+    pub audio_sound_agent_waiting: bool,
+    #[serde(default = "default_true")]
+    pub audio_sound_agent_failed: bool,
+    #[serde(default)]
+    pub audio_sound_agent_disconnected: bool,
+    #[serde(default = "default_true")]
+    pub audio_sound_task_due: bool,
+    #[serde(default = "default_true")]
+    pub audio_sound_reminder: bool,
+    /// 语音播报总开关（默认关闭；关闭时不初始化 WinRT 引擎）
+    #[serde(default)]
+    pub tts_enabled: bool,
+    /// 用户选择的语音唯一 ID（空 = 按性别偏好自动选择中文语音）
+    #[serde(default)]
+    pub tts_voice_id: String,
+    /// 性别偏好：auto | female | male（仅用于自动选择，不伪造缺省语音）
+    #[serde(default = "default_tts_gender")]
+    pub tts_voice_gender: String,
+    /// 播报音量（0~100；仅影响播放，不参与合成缓存 Key）
+    #[serde(default = "default_tts_volume")]
+    pub tts_volume: u32,
+    /// 语速百分比（50~200；由合成阶段决定，参与缓存 Key）
+    #[serde(default = "default_tts_rate")]
+    pub tts_rate: u32,
+    #[serde(default = "default_true")]
+    pub tts_speak_source: bool,
+    #[serde(default)]
+    pub tts_speak_title: bool,
+    #[serde(default)]
+    pub tts_agent_started: bool,
+    #[serde(default = "default_true")]
+    pub tts_agent_done: bool,
+    #[serde(default = "default_true")]
+    pub tts_agent_waiting: bool,
+    #[serde(default = "default_true")]
+    pub tts_agent_failed: bool,
+    #[serde(default)]
+    pub tts_agent_disconnected: bool,
+    #[serde(default = "default_true")]
+    pub tts_task_due: bool,
+    #[serde(default = "default_true")]
+    pub tts_reminder: bool,
+    /// 固定语音持久化缓存开关（动态文本始终不落盘）
+    #[serde(default = "default_true")]
+    pub tts_cache_enabled: bool,
+    /// 本地语音缓存容量上限（MB，1~2048，默认 50）
+    #[serde(default = "default_tts_cache_max_mb")]
+    pub tts_cache_max_mb: u32,
 }
 
 fn default_theme() -> String {
@@ -1884,6 +1959,17 @@ pub fn normalized_visual_preset(value: &str) -> &'static str {
         "frosted" => "frosted",
         "liquid-glass" | "clear" => "frosted",
         _ => "frosted",
+    }
+}
+
+/// 显示模式读侧归一化（与前端 `resolveWindowMode` 同一规则）：
+/// - `minimal` / `compact` / `full` 原样返回；
+/// - 缺失/损坏/非法 → `full`（外壳始终存在一个有效视图槽）。
+pub fn normalized_mode(value: &str) -> &'static str {
+    match value {
+        "minimal" => "minimal",
+        "compact" => "compact",
+        _ => "full",
     }
 }
 fn default_clear_foreground() -> String {
@@ -1967,6 +2053,21 @@ fn default_clip_paste_files_interval() -> u32 {
 }
 fn default_capture_last_type() -> String {
     "task".into()
+}
+fn default_sound_volume() -> u32 {
+    70
+}
+fn default_tts_gender() -> String {
+    "auto".into()
+}
+fn default_tts_volume() -> u32 {
+    80
+}
+fn default_tts_rate() -> u32 {
+    100
+}
+fn default_tts_cache_max_mb() -> u32 {
+    50
 }
 fn default_shelf_retention() -> u32 {
     30
@@ -2112,6 +2213,32 @@ fn clipboard_u32(
     Some(value)
 }
 
+/// 反序列化失败时逐键定位类型不匹配的字段并剔除。
+///
+/// 只把真正损坏的键交给 serde 补默认值，其余合法设置原样保留；未知/内部键
+/// （`window_rect`、`restore_commit_id` 等）会被 serde 忽略，不会被误删。
+/// 返回被剔除的键名（不含值），由调用方记录诊断；本函数不写库。
+fn salvage_invalid_settings(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut dropped = Vec::new();
+    for key in obj.keys().cloned().collect::<Vec<_>>() {
+        let Some(value) = obj.get(&key).cloned() else {
+            continue;
+        };
+        let mut single = serde_json::Map::new();
+        single.insert(key.clone(), value);
+        // 用单键对象验证该字段能否独立反序列化：失败即该字段类型/结构损坏。
+        if serde_json::from_value::<Settings>(serde_json::Value::Object(single)).is_err() {
+            dropped.push(key);
+        }
+    }
+    for key in &dropped {
+        obj.remove(key);
+    }
+    dropped
+}
+
 /// 单个剪贴板键的 JSON 值是否可安全采用（供 `Settings::load` 剔除损坏字段）。
 fn clipboard_value_valid(key: &str, value: &serde_json::Value) -> bool {
     let boolean = matches!(
@@ -2178,11 +2305,61 @@ impl Settings {
                 obj.remove(*key);
             }
         }
-        let mut s: Settings =
-            serde_json::from_value(serde_json::Value::Object(obj)).unwrap_or_default();
+        // 显示模式是外壳唯一视图判据：反序列化前先剔除非法值（字符串但不在
+        // 枚举内 / null / 数字），缺失时由 serde 默认补 "full"。
+        // 这样单个损坏的 mode 只影响它自己，不会触发整套设置回退（连带主题、
+        // 材质、布局等被重置），也不会把非法值送进前端让三个视图槽全部失活。
+        let mode_invalid = obj
+            .get("mode")
+            .map(|v| !matches!(v.as_str(), Some("minimal" | "compact" | "full")))
+            .unwrap_or(false);
+        if mode_invalid {
+            tracing::warn!("设置中的显示模式非法，已按默认 full 运行");
+            obj.remove("mode");
+        }
+        // v0.13 旧配置兼容：v0.6 的 `agent_alert_sound=false` 只关闭等待/失败提示音；
+        // 新库已有独立事件键时不再套用，避免覆盖用户此后在新设置页的选择。
+        let legacy_alert_sound_off = obj.get("agent_alert_sound").and_then(|v| v.as_bool())
+            == Some(false)
+            && obj.get("audio_sound_agent_waiting").is_none()
+            && obj.get("audio_sound_agent_failed").is_none();
+        let mut s = match serde_json::from_value::<Settings>(serde_json::Value::Object(obj.clone()))
+        {
+            Ok(s) => s,
+            Err(_) => {
+                // 单个非关键字段类型损坏（如 theme 写成数字、http_port 写成字符串）
+                // 不得让整套设置回退默认值：逐键剔除类型不匹配的字段，只让这些
+                // 字段各自回退默认值，主题/导航/窗口等无关偏好保持原值。
+                let dropped = salvage_invalid_settings(&mut obj);
+                if !dropped.is_empty() {
+                    // 只记录键名，不打印值（避免泄露 http_token 等敏感内容）；也不写库，
+                    // 数据库原始值保留，供用户在设置页重新保存或人工排查。
+                    tracing::warn!(keys = %dropped.join(","), "设置字段类型损坏，仅这些字段回退默认值");
+                }
+                match serde_json::from_value::<Settings>(serde_json::Value::Object(obj)) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // 兜底（正常不会到达）：如实记录序列化错误，便于定位残余损坏键。
+                        tracing::warn!("设置反序列化失败，本次按默认值运行：{e}");
+                        Settings::default()
+                    }
+                }
+            }
+        };
         // 预设读侧归一化：旧库/旧备份里的 liquid-glass / clear / 损坏值都不会
         // 进入运行时；只改内存值，不在此写库（持久化回写由 v29 迁移负责）。
         s.visual_preset = normalized_visual_preset(&s.visual_preset).to_string();
+        // 显示模式是外壳唯一视图判据：非法值会让前端三个视图槽全部失活
+        // （只剩标题栏与背景）。与前端 `resolveWindowMode` 同一规则，读侧收敛。
+        if s.mode != normalized_mode(&s.mode) {
+            tracing::warn!(mode = %s.mode, "非法显示模式已回退为 full");
+            s.mode = normalized_mode(&s.mode).to_string();
+        }
+        if legacy_alert_sound_off {
+            // 只映射旧开关实际控制的两类事件，不清空其他默认可播事件。
+            s.audio_sound_agent_waiting = false;
+            s.audio_sound_agent_failed = false;
+        }
         Ok(s)
     }
 
@@ -2612,6 +2789,42 @@ mod tests {
             ))
             .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn v33_window_shortcut_columns_default_to_plain_app_and_preserve_existing_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..32]).unwrap();
+        conn.execute(
+            "INSERT INTO navigation_targets (id, display_name, target_type, app_key, exe_path, created_at, updated_at)
+             VALUES ('old', '旧应用', 'application', 'C:\\App\\old.exe', 'C:\\App\\old.exe', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+        apply_migrations(&conn, 32, MIGRATIONS).unwrap();
+        let (kind, bound): (String, String) = conn
+            .query_row(
+                "SELECT shortcut_kind, bound_window_identity FROM navigation_targets WHERE id = 'old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "app", "旧目标必须保持普通应用语义");
+        assert!(bound.is_empty(), "旧目标不得凭空获得窗口绑定");
+        let cols: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('navigation_targets') WHERE name IN ('shortcut_kind', 'bound_window_identity')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cols, 2);
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            MIGRATIONS[MIGRATIONS.len() - 1].0
         );
     }
 
@@ -3254,124 +3467,58 @@ mod tests {
     /// （created_at 与导航关联严格相等 + 同身份会话目标存在）回填为 auto。
     #[test]
     fn v5_backfills_auto_compat_links_and_keeps_user_links() {
-        let dir = std::env::temp_dir().join(format!("td-mig5-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("t.db");
+        let dir = temp_dir("mig5");
+        // 用正式历史迁移构造 v4 夹具：只应用 v1..v4，绝不在最新库上人工回滚 schema。
+        // 后者会与后续迁移新增的列（如 v33 的 shortcut_kind）冲突，导致升级时重复加列。
+        let path = db_file_with_version(&dir, 4);
         {
-            // 构造 v4 库：一条手工关联（v0.3 语义）+ 一条 v0.4-dev 自动影子记录
-            let db = Db::open(&path).unwrap(); // 全新库 → 迁移到 v4（此时 MIGRATIONS 已含 v5，需手动降级构造）
-            db.with_conn(|c| {
-                // 手动把库降回 v4（模拟升级前状态）：v5/v6 的列、v7 的剪贴板表先撤销
-                c.execute_batch(
-                    "ALTER TABLE task_navigation_targets DROP COLUMN window_fallback;
-                     ALTER TABLE task_navigation_targets DROP COLUMN window_identity;
-                     ALTER TABLE task_agent_links DROP COLUMN origin;
-                     DROP TABLE clipboard_group_items;
-                     DROP TABLE clipboard_assets;
-                     DROP TABLE clipboard_task_links;
-                     DROP TABLE clipboard_paste_jobs;
-                     DROP TABLE clipboard_groups;
-                     DROP TABLE clipboard_items;
-                     DROP TABLE clipboard_snapshot_links;
-                     DROP TABLE workspace_snapshot_items;
-                     DROP TABLE workspace_snapshots;
-                     DROP TABLE action_acks;
-                     DROP TABLE quick_capture_items;
-                     DROP TABLE quick_capture_draft;
-                     DROP INDEX IF EXISTS idx_events_ingest_seq;
-                     DROP INDEX IF EXISTS idx_events_run_latest;
-                     DROP INDEX IF EXISTS idx_events_origin_received;
-                     DROP INDEX IF EXISTS idx_sources_category;
-                     DROP INDEX IF EXISTS idx_runs_origin_status;
-                     DROP INDEX IF EXISTS idx_runs_origin_updated;
-                     DROP INDEX IF EXISTS idx_sessions_origin_last;
-                     DROP INDEX IF EXISTS idx_instances_origin_last;
-                     DROP INDEX IF EXISTS idx_notifications_origin_created;
-                     DROP INDEX IF EXISTS idx_notifications_unread_origin;
-                     DROP INDEX IF EXISTS idx_events_origin_received_id;
-                     DROP INDEX IF EXISTS idx_events_origin_source_received_id;
-                     DROP INDEX IF EXISTS idx_notifications_origin_created_id;
-                     DROP INDEX IF EXISTS idx_notifications_origin_kind_created_id;
-                     -- v26（工作时间统计）新增索引：降级后不存在，需先撤销再删列
-                     DROP INDEX IF EXISTS idx_events_source_session_seq;
-                     DROP INDEX IF EXISTS idx_runs_origin_started;
-                     ALTER TABLE agent_events DROP COLUMN ingest_seq;
-                     ALTER TABLE agent_events DROP COLUMN origin;
-                     ALTER TABLE agent_sources DROP COLUMN category;
-                     ALTER TABLE agent_sessions DROP COLUMN origin;
-                     ALTER TABLE agent_runs DROP COLUMN origin;
-                     ALTER TABLE agent_instances DROP COLUMN origin;
-                     ALTER TABLE notification_history DROP COLUMN agent_origin;
-                     ALTER TABLE agent_runs DROP COLUMN last_ingest_seq;
-                     ALTER TABLE agent_runs DROP COLUMN last_event_at;
-                     DELETE FROM application_settings WHERE key = 'origin_backfill_v12';
-                     -- v18（规划中心）在降级时尚未存在：撤销到 v4 语义需一并移除
-                     DROP TABLE planning_activity;
-                     DROP TABLE planning_feature_steps;
-                     DROP TABLE planning_features;
-                     DROP TABLE planning_milestones;
-                     DROP TABLE planning_projects;
-                     -- v20（重复规则 by_setpos）同样属于降级后不存在的列
-                     ALTER TABLE recurrence_rules DROP COLUMN by_setpos;
-                     -- v22（文件暂存架）同样属于降级后不存在的表
-                     DROP TABLE IF EXISTS shelf_task_links;
-                     DROP TABLE IF EXISTS shelf_items;
-                     DROP TABLE IF EXISTS shelf_groups;
-                     DROP TABLE IF EXISTS workflow_run_steps;
-                     DROP TABLE IF EXISTS workflow_runs;
-                     DROP TABLE IF EXISTS workflow_steps;
-                     DROP TABLE IF EXISTS workflows;
-                     -- v24/v25（任务统计、快速笔记）：降级后不存在的表与索引
-                     DROP TABLE IF EXISTS task_completion_events;
-                     DROP TABLE IF EXISTS notes;
-                     DROP INDEX IF EXISTS idx_tasks_due_at;
-                     PRAGMA user_version = 4;",
-                )?;
-                Ok::<_, AppError>(())
-            })
-            .unwrap();
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
             let now_auto = "2026-10-27T08:00:00.123456789+00:00";
             let now_user = "2026-10-20T08:00:00+00:00";
-            db.with_conn(|c| {
-                c.execute(
-                    "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
-                     VALUES ('t1','任务','',2,'pending','','[]',0,?1,?1)",
-                    rusqlite::params![now_user],
-                )?;
-                c.execute(
-                    "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
-                     VALUES ('t2','任务2','',2,'pending','','[]',0,?1,?1)",
-                    rusqlite::params![now_user],
-                )?;
-                c.execute(
-                    "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
-                     VALUES ('s1','codex','sess-1','会话','running',?1,?1)",
-                    rusqlite::params![now_user],
-                )?;
-                // 手工关联（v0.3 时间戳，无导航关联）
-                c.execute(
-                    "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, created_at)
-                     VALUES ('l-user','t1','codex','sess-1',?1)",
-                    rusqlite::params![now_user],
-                )?;
-                // v0.4-dev 自动影子记录：created_at 与导航关联严格相等
-                c.execute(
-                    "INSERT INTO navigation_targets (id, display_name, target_type, app_key, agent_source_id, agent_session_id, created_at, updated_at)
-                     VALUES ('nt1','会话','agent_session','codex:sess-1','codex','sess-1',?1,?1)",
-                    rusqlite::params![now_auto],
-                )?;
-                c.execute(
-                    "INSERT INTO task_navigation_targets (id, task_id, target_id, display_order, is_default, launch_behavior, created_at)
-                     VALUES ('nl1','t2','nt1',0,0,'default',?1)",
-                    rusqlite::params![now_auto],
-                )?;
-                c.execute(
-                    "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, created_at)
-                     VALUES ('l-auto','t2','codex','sess-1',?1)",
-                    rusqlite::params![now_auto],
-                )?;
-                Ok::<_, AppError>(())
-            })
+            conn.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES ('t1','任务','',2,'pending','','[]',0,?1,?1)",
+                rusqlite::params![now_user],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES ('t2','任务2','',2,'pending','','[]',0,?1,?1)",
+                rusqlite::params![now_user],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES ('s1','codex','sess-1','会话','running',?1,?1)",
+                rusqlite::params![now_user],
+            )
+            .unwrap();
+            // 手工关联（v0.3 时间戳，无导航关联）
+            conn.execute(
+                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, created_at)
+                 VALUES ('l-user','t1','codex','sess-1',?1)",
+                rusqlite::params![now_user],
+            )
+            .unwrap();
+            // v0.4-dev 自动影子记录：created_at 与导航关联严格相等
+            conn.execute(
+                "INSERT INTO navigation_targets (id, display_name, target_type, app_key, agent_source_id, agent_session_id, created_at, updated_at)
+                 VALUES ('nt1','会话','agent_session','codex:sess-1','codex','sess-1',?1,?1)",
+                rusqlite::params![now_auto],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO task_navigation_targets (id, task_id, target_id, display_order, is_default, launch_behavior, created_at)
+                 VALUES ('nl1','t2','nt1',0,0,'default',?1)",
+                rusqlite::params![now_auto],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, created_at)
+                 VALUES ('l-auto','t2','codex','sess-1',?1)",
+                rusqlite::params![now_auto],
+            )
             .unwrap();
         }
         // 重新打开 → 应用 v5 迁移
@@ -3405,6 +3552,96 @@ mod tests {
             })
             .unwrap();
         assert_eq!(n, 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 历史库升级回归：v4 旧库升到最新版本后旧数据保留、新列默认值正确、
+    /// 迁移重复执行安全（不重复加列、不重复回填、不丢数据）。
+    #[test]
+    fn historical_v4_upgrade_to_latest_is_idempotent_and_preserves_data() {
+        let dir = temp_dir("mig-upgrade");
+        let path = db_file_with_version(&dir, 4);
+        let created = "2026-10-20T08:00:00+00:00";
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            conn.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES ('t-old','旧任务','',2,'pending','','[]',0,?1,?1)",
+                rusqlite::params![created],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO navigation_targets (id, display_name, target_type, app_key, created_at, updated_at)
+                 VALUES ('nt-old','旧应用','application','c:/tools/old.exe',?1,?1)",
+                rusqlite::params![created],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO task_navigation_targets (id, task_id, target_id, display_order, is_default, launch_behavior, created_at)
+                 VALUES ('nl-old','t-old','nt-old',0,1,'default',?1)",
+                rusqlite::params![created],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO task_agent_links (id, task_id, source_id, session_external_id, created_at)
+                 VALUES ('l-old','t-old','codex','sess-old',?1)",
+                rusqlite::params![created],
+            )
+            .unwrap();
+        }
+
+        let latest = MIGRATIONS[MIGRATIONS.len() - 1].0;
+        let db = Db::open(&path).unwrap();
+        let snapshot = |db: &Db| {
+            db.with_conn(|c| {
+                let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+                let tasks: i64 = c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
+                let navs: i64 =
+                    c.query_row("SELECT COUNT(*) FROM navigation_targets", [], |r| r.get(0))?;
+                let nav_links: i64 =
+                    c.query_row("SELECT COUNT(*) FROM task_navigation_targets", [], |r| r.get(0))?;
+                let links: i64 =
+                    c.query_row("SELECT COUNT(*) FROM task_agent_links", [], |r| r.get(0))?;
+                let (shortcut_kind, bound_identity): (String, String) = c.query_row(
+                    "SELECT shortcut_kind, bound_window_identity FROM navigation_targets WHERE id='nt-old'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                let origin: String = c.query_row(
+                    "SELECT origin FROM task_agent_links WHERE id='l-old'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok::<_, AppError>((
+                    version,
+                    tasks,
+                    navs,
+                    nav_links,
+                    links,
+                    shortcut_kind,
+                    bound_identity,
+                    origin,
+                ))
+            })
+            .unwrap()
+        };
+
+        let first = snapshot(&db);
+        assert_eq!(first.0, latest, "历史库必须升级到最新版本");
+        assert_eq!(
+            (first.1, first.2, first.3, first.4),
+            (1, 1, 1, 1),
+            "升级不得丢失旧任务 / 导航目标 / 关联"
+        );
+        assert_eq!(first.5, "app", "新增 shortcut_kind 对旧数据默认 app");
+        assert_eq!(first.6, "", "新增 bound_window_identity 对旧数据默认空");
+        assert_eq!(first.7, "user", "旧手工关联必须保持 user，不得被回填为 auto");
+
+        // 再次打开 = 在最新版本上重复执行迁移，必须安全且不改变数据。
+        let again = snapshot(&Db::open(&path).unwrap());
+        assert_eq!(again, first, "迁移重复执行必须幂等");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3465,6 +3702,29 @@ mod tests {
         rows
     }
 
+    // ── 音频提示（2026-11）──
+
+    /// 旧 `agent_alert_sound=false` 只映射等待/失败两类事件；新键存在后不再覆盖。
+    #[test]
+    fn legacy_agent_alert_sound_maps_to_event_switches() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "agent_alert_sound", "false");
+        let settings = Settings::load(&db).unwrap();
+        assert!(!settings.audio_sound_agent_waiting);
+        assert!(!settings.audio_sound_agent_failed);
+        assert!(
+            settings.audio_sound_agent_done,
+            "旧开关不得连带关闭其他新事件默认值"
+        );
+
+        raw_setting(&db, "audio_sound_agent_waiting", "true");
+        let settings = Settings::load(&db).unwrap();
+        assert!(
+            settings.audio_sound_agent_waiting,
+            "用户已在新设置页显式开启时，旧键不得覆盖"
+        );
+    }
+
     // ── 视觉预设收口（2026-11）──
 
     /// 读侧归一化：缺失 / 历史值 / 损坏值都落到 frosted；不写库、不重置其他设置。
@@ -3494,6 +3754,69 @@ mod tests {
             assert_eq!(settings.material, "solid", "预设归一化不得重置材质");
             assert_eq!(before, sorted_raw(&db), "读取归一化不得写库");
         }
+    }
+
+    /// 显示模式读侧归一化（P1 空白屏防线）：
+    /// 非法/缺失/损坏值一律回退 `full`，其他设置不受影响，且不写库。
+    /// 模式是前端外壳唯一的视图判据；非法值会让三个视图槽同时失活。
+    #[test]
+    fn invalid_mode_normalizes_to_full_on_read() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(
+            Settings::load(&db).unwrap().mode,
+            "full",
+            "全新库缺省必须为 full"
+        );
+
+        raw_setting(&db, "theme", "\"dark\"");
+        raw_setting(&db, "material", "\"solid\"");
+        for (raw, expected) in [
+            ("\"minimal\"", "minimal"),
+            ("\"compact\"", "compact"),
+            ("\"full\"", "full"),
+            ("\"Full\"", "full"),
+            ("\"complete\"", "full"),
+            ("\"\"", "full"),
+            ("null", "full"),
+        ] {
+            raw_setting(&db, "mode", raw);
+            let before = sorted_raw(&db);
+            let settings = Settings::load(&db).unwrap();
+            assert_eq!(settings.mode, expected, "输入 {}", raw);
+            assert_eq!(settings.theme, "dark", "模式归一化不得重置主题");
+            assert_eq!(settings.material, "solid", "模式归一化不得重置材质");
+            assert_eq!(before, sorted_raw(&db), "读取归一化不得写库");
+        }
+    }
+
+    /// 单个字段类型损坏时只回退该字段，不得重置其他合法设置，且不写库。
+    #[test]
+    fn broken_field_only_falls_back_itself() {
+        let db = Db::open_in_memory().unwrap();
+        raw_setting(&db, "http_port", "\"not-a-port\"");
+        raw_setting(&db, "theme", "\"dark\"");
+        raw_setting(&db, "material", "\"solid\"");
+        raw_setting(&db, "mode", "\"compact\"");
+        raw_setting(
+            &db,
+            "navigation_layout",
+            r#"{"left":["tasks","clipboard"],"right":["agents"]}"#,
+        );
+        raw_setting(&db, "clipboard_enabled", "false");
+        let before = sorted_raw(&db);
+
+        let s = Settings::load(&db).unwrap();
+        assert_eq!(s.http_port, default_http_port(), "损坏字段单独回退默认值");
+        assert_eq!(s.theme, "dark", "损坏无关字段不得重置主题");
+        assert_eq!(s.material, "solid", "损坏无关字段不得重置材质");
+        assert_eq!(s.mode, "compact", "损坏无关字段不得重置显示模式");
+        assert_eq!(
+            s.navigation_layout["left"],
+            serde_json::json!(["tasks", "clipboard"]),
+            "损坏无关字段不得重置导航布局"
+        );
+        assert!(!s.clipboard_enabled, "损坏无关字段不得重置剪贴板配置");
+        assert_eq!(before, sorted_raw(&db), "读取不得写库覆盖原始值");
     }
 
     /// v29 数据迁移：只改 visual_preset 的旧值，其他键与数据不受影响，重复执行幂等。

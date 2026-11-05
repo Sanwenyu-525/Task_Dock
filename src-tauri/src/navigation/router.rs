@@ -210,12 +210,15 @@ pub(crate) fn navigate_application(
             "任务窗口身份与应用不一致，请重新选择",
         );
     }
-    let remembered = task_memory.or_else(|| {
-        effective_memory(
-            window_manager::load_memory(db, &t.id),
-            settings.nav_remember_window,
-        )
-    });
+    // 指定窗口快捷方式：目标自带的稳定窗口身份优先于历史窗口记忆（旧任务绑定仍最高）。
+    let remembered = task_memory
+        .or_else(|| t.bound_window_identity.clone())
+        .or_else(|| {
+            effective_memory(
+                window_manager::load_memory(db, &t.id),
+                settings.nav_remember_window,
+            )
+        });
     let explicit_memory = remembered
         .as_ref()
         .is_some_and(|m| m.origin == window_manager::MemoryOrigin::User);

@@ -1,8 +1,9 @@
 //! Windows 真实应用图标：按需提取、内存缓存、有限并发。
 //!
 //! 安全边界：
-//! - 前端只能传「已保存目标 id」或「扫描发现的 app_key」，后端据此解析身份；
-//! - 绝不把前端传入的字符串当作任意文件路径读取；
+//! - 前端只能传「已保存目标 id」「扫描发现的 app_key」或「真实窗口给出的 exe 路径」，
+//!   后端逐项校验身份（exe 路径走绝对路径/.exe/存在/非解释器校验）；
+//! - 绝不把未经校验的前端字符串当作任意文件读取；
 //! - HICON/HBITMAP/DC 句柄全部释放，提取在 spawn_blocking 中执行，不阻塞 IPC 线程；
 //! - 缓存按「稳定身份 + 文件修改时间」失效，避免文件替换后长期显示旧图标。
 
@@ -134,16 +135,23 @@ pub fn extract_icon(
     db: &Db,
     target_id: Option<&str>,
     app_key: Option<&str>,
+    exe_path: Option<&str>,
 ) -> AppResult<Option<String>> {
-    let source = if let Some(id) = target_id.filter(|s| !s.is_empty()) {
-        source_from_target(db, id)?
-    } else if let Some(key) = app_key.filter(|s| !s.is_empty()) {
-        source_from_app_key(key)?
-    } else {
-        return Err(AppError::Validation("缺少应用身份".into()));
-    };
-
-    Ok(extract_with_cache(&source))
+    if let Some(id) = target_id.filter(|s| !s.is_empty()) {
+        let source = source_from_target(db, id)?;
+        return Ok(extract_with_cache(&source));
+    }
+    if let Some(key) = app_key.filter(|s| !s.is_empty()) {
+        let source = source_from_app_key(key)?;
+        return Ok(extract_with_cache(&source));
+    }
+    if let Some(exe) = exe_path.filter(|s| !s.trim().is_empty()) {
+        // 目标窗口场景：路径已由窗口枚举产生，仍走导航层安全校验；
+        // 校验失败返回错误，前端统一回退字母图标，不打断列表。
+        super::validate_exe_path(exe)?;
+        return Ok(extract_icon_for_exe(exe));
+    }
+    Err(AppError::Validation("缺少应用身份".into()))
 }
 
 /// 按已验证的进程可执行路径提取图标（目标窗口场景）。
@@ -560,6 +568,7 @@ mod tests {
                 app_user_model_id: aumid,
                 window_title_hint: String::new(),
                 source: "test".into(),
+                tier: "normal".into(),
             })
             .collect();
         register_discovered(&apps);

@@ -295,6 +295,63 @@ fn replace_steps_is_atomic_and_reorders() {
 }
 
 #[test]
+fn replace_steps_and_update_is_single_transaction() {
+    let db = temp_db("save-atomic");
+    let wf = create_workflow(
+        &db,
+        wf_input("旧名称", vec![step_input("create_task", r#"{"title":"a"}"#)]),
+    )
+    .unwrap();
+    let before = list_steps(&db, &wf.id).unwrap();
+
+    // 名称校验失败：步骤与名称都不得改动（编辑器分两步保存时曾出现步骤已落库）
+    let err = replace_steps_and_update(
+        &db,
+        &wf.id,
+        "   ".into(),
+        "新描述".into(),
+        vec![step_input("create_task", r#"{"title":"b"}"#)],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("不能为空"), "{}", err);
+    let after = list_steps(&db, &wf.id).unwrap();
+    assert_eq!(
+        before.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+        after.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+        "名称失败时既有步骤必须原样保留"
+    );
+    assert_eq!(get_workflow(&db, &wf.id).unwrap().0.description, "");
+
+    // 步骤校验失败：新名称也不得提前写入
+    let err = replace_steps_and_update(
+        &db,
+        &wf.id,
+        "新名称".into(),
+        "新描述".into(),
+        vec![step_input("shell", r#"{}"#)],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("未知步骤类型"), "{}", err);
+    assert_eq!(get_workflow(&db, &wf.id).unwrap().0.name, "旧名称");
+
+    // 成功路径：名称、描述、步骤一次提交
+    let saved = replace_steps_and_update(
+        &db,
+        &wf.id,
+        "新名称".into(),
+        "新描述".into(),
+        vec![step_input("create_task", r#"{"title":"b"}"#)],
+    )
+    .unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].params.title, "b");
+    let (row, _) = get_workflow(&db, &wf.id).unwrap();
+    assert_eq!(row.name, "新名称");
+    assert_eq!(row.description, "新描述");
+}
+
+
+#[test]
 fn duplicate_copies_definition_not_history() {
     let db = temp_db("dup");
     seed_target(&db, "tgt-url", "url");

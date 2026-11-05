@@ -53,9 +53,19 @@ static ANCHOR: Mutex<Option<Anchor>> = Mutex::new(None);
 /// 最近一次实际下发的窗口尺寸/位置：避免每次高度回传都重复 set_size/set_position。
 static LAST_SET_SIZE: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 static LAST_SET_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+/// 窗口可见性事务串行锁：`show_cards` / `hide` / `fit` / watchdog 都在进程内串行执行
+/// 「轮次校验 + 窗口可见性/几何提交」，让 hide 与新一轮 show 有明确的线性化顺序：
+/// 旧轮次的 hide 要么在新批次建立前完成（新批次按隐藏态重新 show），要么在新批次建立后
+/// 被拒绝（不会把已发出的新通知一起藏掉）。绝不出现「A 校验通过 → B 建立新轮次 → A 才 hide」。
+///
+/// 只由后台/异步线程持有（通知管线、调度器、watchdog、async 命令）；Tauri 主线程的窗口
+/// 事件回调（Destroyed）不获取此锁。持锁期间可能阻塞等待主线程窗口消息，但主线程从不
+/// 反向等待此锁，因此不会死锁。
+/// 锁序：WINDOW_OPS → SHOW_STATE → ANCHOR/STACK_HEIGHT/LAST_*。任何路径都不得反向加锁。
+static WINDOW_OPS: Mutex<()> = Mutex::new(());
 /// 隐藏态首帧显示状态：内容已发送但窗口还没 show，等待前端首次测量（纯状态机，可单测）。
-/// 锁序：SHOW_STATE → ANCHOR/STACK_HEIGHT/LAST_*（fit 在同一把锁内完成校验与几何提交）；
-/// show_cards/hide 不会持有 SHOW_STATE 再取 ANCHOR，避免反向加锁。
+/// 锁序：WINDOW_OPS → SHOW_STATE → ANCHOR/STACK_HEIGHT/LAST_*；
+/// 持 SHOW_STATE 时只做纯状态变更，不调用可能等待主线程的窗口 API。
 static SHOW_STATE: Mutex<PendingShowState> = Mutex::new(PendingShowState {
     round: 0,
     pending: false,
@@ -431,23 +441,24 @@ impl PendingShowState {
         self.round
     }
 
-    /// 校验并记录一次 fit：轮次必须匹配，序号必须单调递增。
-    /// `None` 供旧调用方/兼容路径使用；正常前端始终携带 round+seq。
+    /// 校验并记录一次 fit：轮次必须携带且匹配当前轮，序号必须携带且单调递增。
+    /// 生产前端始终携带 round+seq；缺失轮次的旧请求一律拒绝，避免绕过新轮次保护。
     fn accepts_fit(&mut self, round: Option<u64>, seq: Option<u64>) -> bool {
-        if !fit_belongs_to_round(self.round, round) {
+        let (Some(round), Some(seq)) = (round, seq) else {
+            return false;
+        };
+        if round != self.round {
             return false;
         }
-        if let Some(seq) = seq {
-            if seq != 0 && seq <= self.last_fit_seq {
-                return false;
-            }
-            self.last_fit_seq = seq;
+        if seq <= self.last_fit_seq {
+            return false;
         }
+        self.last_fit_seq = seq;
         true
     }
 
     /// 消费待显示标记：只有决定显示（或窗口已可见）才清除，避免重复 show。
-    /// 轮次不匹配的迟到回调不得清掉当前轮标记。
+    /// 轮次缺失或不匹配的迟到回调一律返回 false，且不得清掉当前轮标记。
     fn take(&mut self, round: Option<u64>, visible: bool) -> bool {
         if !fit_belongs_to_round(self.round, round) {
             return false;
@@ -459,18 +470,22 @@ impl PendingShowState {
         show
     }
 
-    /// hide：只接受当前轮次的请求；更晚的批次已经到达时忽略，避免把新通知一起隐藏。
+    /// hide：只接受携带且等于当前轮次的请求；更晚的批次已经到达时忽略，避免把新通知一起隐藏。
+    /// 缺失轮次的旧请求同样拒绝（不存在绕过新轮次保护的兼容路径）。
     /// 接受后推进轮次并清空待显示，让本轮的迟到 fit 无法再改尺寸或重新显示。
     fn begin_hide(&mut self, round: Option<u64>) -> bool {
-        if let Some(round) = round {
-            if round != self.round {
-                return false;
-            }
+        if !fit_belongs_to_round(self.round, round) {
+            return false;
         }
+        self.invalidate_round();
+        true
+    }
+
+    /// 作废当前轮次（窗口销毁/已确认隐藏）：无外部 token 校验，仅供内部生命周期使用。
+    fn invalidate_round(&mut self) {
         self.pending = false;
         self.last_fit_seq = 0;
         self.round = self.round.wrapping_add(1);
-        true
     }
 
     /// 发送失败：只撤销仍属于该轮次的待显示标记。
@@ -481,11 +496,15 @@ impl PendingShowState {
     }
 }
 
-/// 请求轮次是否仍属于当前轮；`None` 视为当前轮（兼容无轮次号的旧调用）。
+/// 请求轮次是否仍属于当前轮：必须携带且相等；缺失轮次的旧调用一律视为过期。
 pub fn fit_belongs_to_round(current_round: u64, fit_round: Option<u64>) -> bool {
-    fit_round
-        .map(|round| round == current_round)
-        .unwrap_or(true)
+    fit_round == Some(current_round)
+}
+
+/// hide 提交校验：begin_hide 通过后若已有更新批次推进轮次，则必须放弃窗口隐藏，
+/// 保证旧轮次永远不会隐藏新轮次已发出的通知（WINDOW_OPS 串行化之外的防御性二次校验）。
+pub fn hide_commit_allowed(current_round: u64, hide_token: u64) -> bool {
+    current_round == hide_token
 }
 
 /// 判定一次几何回传（fit）或 watchdog 到期是否应触发 show：
@@ -503,6 +522,11 @@ pub fn decide_show_after_fit(
 
 fn show_state() -> std::sync::MutexGuard<'static, PendingShowState> {
     SHOW_STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 获取窗口可见性事务锁（见 WINDOW_OPS 的锁序说明）。
+fn window_ops() -> std::sync::MutexGuard<'static, ()> {
+    WINDOW_OPS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// 分配新批次轮次；返回轮次号与是否处于隐藏待显示态。
@@ -539,6 +563,9 @@ pub fn show_cards(app: &AppHandle, popups: &[Popup]) -> bool {
         tracing::debug!("notification 窗口不存在，OS 通知兜底");
         return false;
     };
+    // 可见性事务：与 hide/fit/watchdog 串行化，先锁定「当前是否可见 + 本轮轮次」，
+    // 再做几何/emit。hide 不可能在本事务建立轮次后插入（见 WINDOW_OPS 锁序说明）。
+    let _ops = window_ops();
     let payload: Vec<NotificationCardPayload> = popups
         .iter()
         .cloned()
@@ -632,7 +659,7 @@ fn show_window(win: &tauri::WebviewWindow) {
 
 /// 一次性兜底：前端异常未上报高度时，≤600ms 后按当前缓存高度显示窗口（通知不丢）。
 /// 只有本轮仍处于待显示且轮次号匹配才显示——hide()/新一轮会推进轮次号使其自动失效。
-/// 判定与 show 在同一把状态锁内完成，避免判定后被并发的 hide 抢先隐藏、再被旧回调显示。
+/// 判定与 show 都在 WINDOW_OPS 内完成，避免判定后被并发的 hide 抢先隐藏、再被旧回调显示。
 /// 不常驻轮询；每个隐藏批次最多一个一次性定时器，过期即释放。
 fn spawn_show_watchdog(app: &AppHandle, round: u64) {
     let app = app.clone();
@@ -641,9 +668,13 @@ fn spawn_show_watchdog(app: &AppHandle, round: u64) {
         let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
             return;
         };
+        let _ops = window_ops();
         let visible = win.is_visible().unwrap_or(false);
-        let mut state = show_state();
-        let show = state.take(Some(round), visible);
+        let show = {
+            // 持 SHOW_STATE 只做纯状态判定，窗口调用放到锁外（锁序见 WINDOW_OPS 注释）。
+            let mut state = show_state();
+            state.take(Some(round), visible)
+        };
         if show {
             tracing::debug!("通知窗口首帧测量未回传，watchdog 按当前高度兜底显示");
             show_window(&win);
@@ -652,14 +683,33 @@ fn spawn_show_watchdog(app: &AppHandle, round: u64) {
 }
 
 /// 通知栈为空时由前端调用：隐藏窗口但保留 WebView 常驻复用。
-/// 携带 round 时只接受当前轮次；若后端已送出下一批通知（round 更晚），
-/// 说明 hide 在途时来了新通知，忽略本次隐藏，避免新通知被一起藏掉。
+/// 只接受携带当前轮次的请求；无轮次的旧请求直接拒绝（不再有绕过新轮次保护的兼容路径）。
+/// 整个「校验 + win.hide() + 几何重置」在 WINDOW_OPS 内完成，与新一轮 show 线性化：
+/// 新一轮要么在隐藏前建立（本请求的轮次已过期而被拒绝），要么在隐藏后建立（按隐藏态重新 show）。
 pub fn hide(app: &AppHandle, round: Option<u64>) -> bool {
-    if !show_state().begin_hide(round) {
-        tracing::debug!(?round, "忽略过期的通知窗口 hide 请求（已有更新的轮次）");
+    let Some(round) = round else {
+        tracing::debug!("忽略缺少轮次号的通知窗口 hide 请求");
+        return false;
+    };
+    let _ops = window_ops();
+    let hide_token = {
+        let mut state = show_state();
+        if !state.begin_hide(Some(round)) {
+            tracing::debug!(
+                round,
+                current_round = state.round,
+                "忽略过期的通知窗口 hide 请求（已有更新的轮次）"
+            );
+            return false;
+        }
+        state.round
+    };
+    // 防御性提交校验：串行化被绕过（未来重构误删 WINDOW_OPS）时也绝不隐藏新轮次。
+    if !hide_commit_allowed(show_state().round, hide_token) {
+        tracing::warn!(hide_token, "hide 提交前轮次已更新，放弃隐藏");
         return false;
     }
-    tracing::debug!(?round, "通知窗口 hide 已应用");
+    tracing::debug!(round, "通知窗口 hide 已应用");
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         let _ = win.hide();
     }
@@ -685,7 +735,7 @@ pub fn init(app: &AppHandle) {
                 reset_round_geometry();
                 *STACK_HEIGHT.lock().unwrap_or_else(|e| e.into_inner()) = 160.0;
                 // 窗口销毁：作废当前轮次，迟到的 fit/watchdog 不得访问已失效窗口。
-                show_state().begin_hide(None);
+                show_state().invalidate_round();
             }
         });
     }
@@ -729,28 +779,46 @@ pub struct FitNotificationResult {
 /// 前端回传实测内容高度：收放窗口**高度**并保持本轮显示器锚点不动。
 /// 只在当前锚定显示器内调整，不因鼠标移到别的屏幕而跨屏；宽度按工作区钳制。
 ///
-/// 轮次协议：`round` 必须等于当前批次；`seq` 在同一轮内必须单调递增。
-/// 校验与几何提交在同一把状态锁内完成——迟到的上一轮 fit 既不能改尺寸，
-/// 也不能在 hide 之后重新显示窗口。
+/// 轮次协议（生产路径强制）：`round` 与 `seq` 都必须携带；`round` 必须等于当前批次，
+/// `seq` 在同一轮内必须单调递增（从 1 开始）。缺失轮次的旧请求一律拒绝，不能绕过新轮次保护。
+///
+/// 全程持有 WINDOW_OPS：校验、几何提交、首次 show 与并发的 hide/新一轮 show 线性化，
+/// 迟到的上一轮 fit 既不能改尺寸，也不能在 hide 之后重新显示窗口。
+/// 命令声明为 async：在 tokio 线程执行，不占用 Tauri 主线程，避免与主线程窗口消息互等。
 #[tauri::command]
-pub fn fit_notification_window(
+pub async fn fit_notification_window(
     app: AppHandle,
     height: f64,
     round: Option<u64>,
     seq: Option<u64>,
 ) -> FitNotificationResult {
-    let mut state = show_state();
-    if !state.accepts_fit(round, seq) {
+    let _ops = window_ops();
+    let (Some(round), Some(seq)) = (round, seq) else {
+        let current_round = show_state().round;
+        tracing::debug!("忽略缺少轮次/序号的通知窗口 fit 请求（生产路径必须携带 round+seq）");
+        return FitNotificationResult {
+            accepted: false,
+            round: current_round,
+            applied: cached_height(),
+            clamped: false,
+        };
+    };
+    let (current_round, accepted) = {
+        // 只做纯状态校验，窗口调用放到锁外（锁序见 WINDOW_OPS 注释）。
+        let mut state = show_state();
+        let current_round = state.round;
+        (current_round, state.accepts_fit(Some(round), Some(seq)))
+    };
+    if !accepted {
         tracing::debug!(
-            ?round,
-            ?seq,
-            current_round = state.round,
-            last_seq = state.last_fit_seq,
+            round,
+            seq,
+            current_round,
             "忽略过期的通知窗口 fit 请求（轮次/序号不匹配）"
         );
         return FitNotificationResult {
             accepted: false,
-            round: state.round,
+            round: current_round,
             applied: cached_height(),
             clamped: false,
         };
@@ -760,7 +828,7 @@ pub fn fit_notification_window(
     let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
         return FitNotificationResult {
             accepted: true,
-            round: state.round,
+            round: current_round,
             applied: h,
             clamped: false,
         };
@@ -777,14 +845,17 @@ pub fn fit_notification_window(
     // 首帧测量完成：隐藏态的窗口此刻才显示，用的就是刚下发的最终高度/位置，
     // 不会再出现 160px 视口下先显示一帧的裁切；已可见时只收放高度，不重复 show。
     let visible = win.is_visible().unwrap_or(false);
-    let show = state.take(round, visible);
+    let show = {
+        let mut state = show_state();
+        state.take(Some(round), visible)
+    };
     if show {
         show_window(&win);
     }
     let clamped = applied + 0.5 < h;
     tracing::debug!(
-        ?round,
-        ?seq,
+        round,
+        seq,
         requested = h,
         applied,
         clamped,
@@ -792,14 +863,14 @@ pub fn fit_notification_window(
     );
     FitNotificationResult {
         accepted: true,
-        round: state.round,
+        round: current_round,
         applied,
         clamped,
     }
 }
 
 #[tauri::command]
-pub fn hide_notification_window(app: AppHandle, round: Option<u64>) {
+pub async fn hide_notification_window(app: AppHandle, round: Option<u64>) {
     hide(&app, round);
 }
 
@@ -1224,7 +1295,8 @@ mod tests {
     fn destroy_invalidates_round_without_a_round_token() {
         let mut state = PendingShowState::default();
         let round = state.begin_batch(true);
-        assert!(state.begin_hide(None));
+        // 窗口销毁是内部生命周期事件：直接作废轮次，不接受外部 token。
+        state.invalidate_round();
         assert!(!state.take(Some(round), false));
         assert!(!state.accepts_fit(Some(round), Some(1)));
     }
@@ -1270,12 +1342,100 @@ mod tests {
     }
 
     #[test]
-    fn legacy_calls_without_round_remain_accepted() {
+    fn legacy_calls_without_round_are_rejected() {
         let mut state = PendingShowState::default();
         state.begin_batch(true);
-        assert!(state.accepts_fit(None, None));
-        assert!(state.take(None, false));
+        // 生产路径必须携带 round+seq：缺失轮次的旧请求不能绕过新轮次保护。
+        assert!(!state.accepts_fit(None, None));
+        assert!(!state.accepts_fit(None, Some(1)));
+        assert!(!state.accepts_fit(Some(state.round), None));
+        assert!(!state.take(None, false));
+        assert!(state.pending, "被拒绝的旧请求不得清掉当前轮的待显示标记");
+        // 同一轮内 seq 从 1 开始且必须单调递增（0 不是合法序号）。
+        assert!(!state.accepts_fit(Some(state.round), Some(0)));
+        assert!(state.accepts_fit(Some(state.round), Some(1)));
+        assert!(state.take(Some(state.round), false));
         assert!(!state.pending);
+    }
+
+    #[test]
+    fn stale_hide_cannot_hide_a_new_batch_between_validation_and_commit() {
+        // 精确构造 P1 竞态顺序，不依赖 sleep：
+        // 1) A 的 hide 通过轮次校验（尚未执行 win.hide()）；
+        // 2) 在此期间 B 建立了新批次并已发出通知；
+        // 3) A 继续提交隐藏 —— 必须被拒绝，B 不得被隐藏。
+        let mut state = PendingShowState::default();
+        let round_a = state.begin_batch(false);
+        assert!(state.begin_hide(Some(round_a)));
+        let hide_token = state.round;
+        let round_b = state.begin_batch(false);
+        assert_ne!(round_b, hide_token, "新批次必须推进轮次");
+        assert!(
+            !hide_commit_allowed(state.round, hide_token),
+            "旧轮次的 hide 提交必须被拒绝，否则会隐藏 B 的通知"
+        );
+        // B 未受旧 hide 影响：仍可正常接受 fit；窗口已可见时取用待显示标记不发生重复 show。
+        assert!(state.accepts_fit(Some(round_b), Some(1)));
+        assert!(!state.take(Some(round_b), true));
+        assert!(
+            !state.take(Some(round_b), false),
+            "B 不是隐藏态批次，不应再 show"
+        );
+    }
+
+    #[test]
+    fn hide_before_new_batch_hides_only_the_old_batch() {
+        // 另一种合法交错：hide 先完成窗口隐藏，随后 B 以隐藏态建立新批次，
+        // 新批次仍能通过自己的首次 fit 正常显示（不能被当成「已隐藏」丢弃）。
+        let mut state = PendingShowState::default();
+        let round_a = state.begin_batch(false);
+        assert!(state.begin_hide(Some(round_a)));
+        let round_b = state.begin_batch(true);
+        assert!(state.pending);
+        assert!(state.accepts_fit(Some(round_b), Some(1)));
+        assert!(state.take(Some(round_b), false));
+        assert!(!state.pending);
+    }
+
+    #[test]
+    fn late_fit_for_a_hidden_window_is_rejected_without_state_change() {
+        // 已隐藏窗口收到迟到 fit：既不改高度（由命令层拒绝），也不解除新轮占位。
+        let mut state = PendingShowState::default();
+        let round = state.begin_batch(true);
+        assert!(state.begin_hide(Some(round)));
+        // hide 自身推进轮次后，本轮旧 fit 一律拒绝，且不会让已隐藏窗口重新显示。
+        assert!(!state.accepts_fit(Some(round), Some(1)));
+        assert!(!state.take(Some(round), false));
+        assert!(
+            !state.take(Some(round + 1), false),
+            "隐藏后的轮次没有待显示批次"
+        );
+        assert!(!state.pending);
+    }
+
+    #[test]
+    fn same_round_out_of_order_fits_keep_the_latest() {
+        // 同轮次多个 fit 乱序：后到的旧序号不得覆盖新尺寸。
+        let mut state = PendingShowState::default();
+        let round = state.begin_batch(true);
+        assert!(state.accepts_fit(Some(round), Some(1)));
+        assert!(state.accepts_fit(Some(round), Some(2)));
+        assert!(!state.accepts_fit(Some(round), Some(1)));
+        assert!(!state.accepts_fit(Some(round), Some(2)));
+        assert!(state.accepts_fit(Some(round), Some(3)));
+        assert_eq!(state.last_fit_seq, 3);
+    }
+
+    #[test]
+    fn watchdog_expiry_does_not_clear_a_newer_batch_or_hidden_round() {
+        // watchdog 到期时若已出现新批次（或已 hide），旧轮次判定必须失败。
+        let mut state = PendingShowState::default();
+        let old = state.begin_batch(true);
+        assert!(state.begin_hide(Some(old)));
+        let current = state.begin_batch(true);
+        assert!(!state.take(Some(old), false), "旧 watchdog 不得消费新批次");
+        assert!(state.pending, "新批次仍等待自己的 fit/watchdog");
+        assert!(state.take(Some(current), false));
     }
 
     #[test]

@@ -90,6 +90,10 @@ windows = { version = "0.62", features = [
   "Graphics_Imaging",
   "Media_Ocr",
   "Storage_Streams",
+  # 本地语音播报（WinRT SpeechSynthesis）：枚举系统语音、异步合成取 WAV 流。
+  # 与 OCR 共用同一 windows/0.62 版本，Media_Core 提供 SpeechSynthesisStream。
+  "Media_Core",
+  "Media_SpeechSynthesis",
 ] }
 # WinRT 异步操作的状态轮询与结果读取（OCR 用；与 windows 的传递依赖同版本，无新增下载）
 windows-future = "0.3"

@@ -361,13 +361,16 @@ pub fn is_extended_table(table: &str) -> bool {
     EXTENDED_TABLES.contains(&table)
 }
 
-/// 备份来源目录：归档、剪贴板资产与暂存架托管文件。
+/// 备份来源目录：归档、剪贴板资产、暂存架托管文件与用户配置。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BackupSources<'a> {
     pub archive_dir: Option<&'a Path>,
     pub clipboard_dir: Option<&'a Path>,
     /// 文件暂存架托管根目录（data_dir/shelf）；None = 不打包托管副本
     pub shelf_dir: Option<&'a Path>,
+    /// 应用数据目录：读取 `preferences.json` / `hotkeys.json` 写入可选 config 记录。
+    /// None = 不打包用户配置（旧调用方/单元测试保持原有行为）。
+    pub data_dir: Option<&'a Path>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,6 +408,10 @@ pub struct BackupWriteResult {
     pub bytes: u64,
     pub sha256: String,
     pub counts: serde_json::Value,
+    /// 是否打包含快捷键/语言/微件布局的可选 config 记录。
+    pub config_included: bool,
+    /// 配置读取/归一化警告（未知动作、损坏文件等）；不影响数据备份成功。
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -438,6 +445,10 @@ pub struct ReadBackup {
     /// 新格式 bundle 明确携带扩展模块（剪贴板/工作现场/行动中心）。
     pub extended: bool,
     pub manifest_version: i64,
+    /// header 内可选的用户配置（快捷键/语言/微件）；旧备份为 None。
+    pub config: Option<crate::user_preferences::BundleConfig>,
+    /// 配置解析/归一化警告（不阻断恢复）。
+    pub warnings: Vec<String>,
 }
 
 fn sha_hex(hasher: Sha256) -> String {
@@ -1414,6 +1425,18 @@ pub fn write_bundle(
         &uuid::Uuid::new_v4().to_string()[..8]
     ));
     let mut writer = BundleWriter::create(&tmp)?;
+    // 用户配置在 header 内以可选 `config` 字段携带：旧版本读取器会忽略
+    // header 未知字段，不会像未知 record 那样整体拒绝备份（双向兼容）。
+    let collected = match sources.data_dir {
+        Some(dir) => crate::user_preferences::collect_export_config(dir),
+        None => crate::user_preferences::CollectedConfig::default(),
+    };
+    let config_included = collected.config.is_some();
+    let config_value = match collected.config.as_ref() {
+        Some(config) => Some(serde_json::to_value(config)?),
+        None => None,
+    };
+    let config_warnings = collected.warnings;
     let result = db.with_read(|conn| {
             let tx = conn.unchecked_transaction()?;
             let totals = table_counts(&tx)?;
@@ -1453,7 +1476,7 @@ pub fn write_bundle(
                 }
             }
             let exported_at = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-            writer.line(&serde_json::json!({
+            let mut header = serde_json::json!({
                 "record": "header",
                 "app": "task-dock",
                 "format": BUNDLE_FORMAT,
@@ -1470,7 +1493,16 @@ pub fn write_bundle(
                 "registry": BACKUP_TABLES,
                 "excluded_settings": EXCLUDED_SETTINGS,
                 "device_specific_settings": DEVICE_SPECIFIC_SETTINGS,
-            }))?;
+                // 列表/检查界面据此提示「此备份是否含用户配置」；
+                // config 本体是可选字段，缺失即旧备份语义。
+                "config_included": config_included,
+            });
+            if let Some(config) = config_value.clone() {
+                if let Some(obj) = header.as_object_mut() {
+                    obj.insert("config".to_string(), config);
+                }
+            }
+            writer.line(&header)?;
 
             write_small_sections(&mut writer, &tx)?;
             let events = write_events(&mut writer, &tx, event_limit)?;
@@ -1654,6 +1686,8 @@ pub fn write_bundle(
         bytes,
         sha256,
         counts,
+        config_included,
+        warnings: config_warnings,
     })
 }
 
@@ -2274,6 +2308,12 @@ fn read_bundle_impl(
         .get("extended_modules")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // 可选用户配置：旧备份没有该字段 → None（本机配置保持不变）。
+    // 单字段损坏只跳过该部分并产生 warning，绝不因此拒绝整个备份。
+    let (config, config_warnings) = match header.get("config") {
+        None | Some(serde_json::Value::Null) => (None, Vec::new()),
+        Some(value) => crate::user_preferences::parse_bundle_config(value),
+    };
     // 行数与完整性行一致，防止“合法哈希 + 截断 section”的自洽文件
     let counts = integrity
         .get("counts")
@@ -2421,6 +2461,7 @@ fn read_bundle_impl(
         "partial": header.get("partial").cloned().unwrap_or(serde_json::Value::Bool(true)),
         "manifest_version": manifest_version,
         "extended_modules": extended,
+        "config_included": config.is_some(),
         // registry 头透传：导入侧以「导出时的表注册表」校验扩展模块完整性，
         // 旧备份（registry 无新表）不会因新版新增扩展表被误判为不完整。
         "registry": header.get("registry").cloned().unwrap_or(serde_json::Value::Null),
@@ -2456,6 +2497,8 @@ fn read_bundle_impl(
         assets: staged_assets,
         extended,
         manifest_version,
+        config,
+        warnings: config_warnings,
     })
 }
 
@@ -2478,6 +2521,8 @@ pub fn bundle_meta(path: &Path) -> Option<serde_json::Value> {
         "counts": value.get("totals").cloned().unwrap_or(serde_json::Value::Null),
         "manifest_version": value.get("manifest_version").cloned().unwrap_or(serde_json::Value::Null),
         "extended_modules": value.get("extended_modules").cloned().unwrap_or(serde_json::Value::Bool(false)),
+        // 可选用户配置（快捷键 / 语言 / 微件布局）；旧备份缺省即 false。
+        "config_included": value.get("config_included").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "exported_at": value.get("exported_at").cloned().unwrap_or(serde_json::Value::Null),
     }))
 }
@@ -2630,6 +2675,91 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// 用户配置（快捷键/语言/微件）作为可选 header.config 打包：
+    /// - 完整与快速备份都包含；
+    /// - 旧备份（没有 config 字段）读取为「无配置」，不报错；
+    /// - 损坏的 config 只跳过该部分并给出 warning，不拒绝整个备份。
+    #[test]
+    fn optional_user_config_is_packaged_and_old_bundles_stay_compatible() {
+        use crate::hotkeys::model::{find_def, HotkeyBinding, HotkeyConfigFile, CONFIG_VERSION};
+        use crate::user_preferences;
+
+        let dir = temp_dir("user-config");
+        let db = memdb();
+        seed_minimal(&db);
+        let widgets = user_preferences::normalize_widgets(&serde_json::json!([
+            {"type":"today-tasks","enabled":true,"config":{"maxItems":8}},
+            {"type":"unknown-widget","enabled":true}
+        ]))
+        .0;
+        user_preferences::write_preferences(&dir, Some("en-US"), Some(&widgets)).unwrap();
+        let hotkeys = HotkeyConfigFile {
+            version: CONFIG_VERSION,
+            bindings: vec![HotkeyBinding {
+                action: "quick_add_task".into(),
+                scope: find_def("quick_add_task").unwrap().scope,
+                accelerator: "Ctrl+Shift+K".into(),
+                enabled: true,
+            }],
+        };
+        std::fs::write(
+            dir.join("hotkeys.json"),
+            serde_json::to_string_pretty(&hotkeys).unwrap(),
+        )
+        .unwrap();
+
+        let target = dir.join("with-config.json");
+        let written = write_bundle(
+            &db,
+            BackupSources {
+                data_dir: Some(&dir),
+                ..Default::default()
+            },
+            &target,
+            BackupKind::Quick,
+        )
+        .unwrap();
+        assert!(written.config_included);
+        assert_eq!(
+            bundle_meta(&target).unwrap()["config_included"],
+            true,
+            "列表/恢复确认必须能从备份头判断是否携带用户配置"
+        );
+        let read = read_bundle(&target, &dir.join("staging")).unwrap();
+        let config = read.config.expect("config 必须随备份携带");
+        assert_eq!(config.locale.as_deref(), Some("en-US"));
+        assert_eq!(config.widgets.as_ref().unwrap().len(), 6);
+        assert!(config.widgets.as_ref().unwrap()[0].enabled);
+        assert_eq!(
+            config.hotkeys.as_ref().unwrap().bindings[0].accelerator,
+            "Ctrl+Shift+K"
+        );
+
+        // 旧式备份（不传 data_dir）没有 config 字段，读取为 None 且不产生错误。
+        let plain = dir.join("without-config.json");
+        let written =
+            write_bundle(&db, BackupSources::default(), &plain, BackupKind::Full).unwrap();
+        assert!(!written.config_included);
+        assert_eq!(
+            bundle_meta(&plain).unwrap()["config_included"],
+            false,
+            "旧式无配置备份必须标记为未携带配置"
+        );
+        let read = read_bundle(&plain, &dir.join("staging-plain")).unwrap();
+        assert!(read.config.is_none());
+        assert!(read.warnings.is_empty());
+
+        // 配置损坏：只跳过配置，备份其余部分仍可读取。
+        let broken = dir.join("broken-config.json");
+        rewrite_lines(&target, &broken, |lines| {
+            lines[0]["config"] = serde_json::json!("not-an-object");
+        });
+        let read = read_bundle(&broken, &dir.join("staging-broken")).unwrap();
+        assert!(read.config.is_none());
+        assert!(read.warnings.iter().any(|w| w.contains("用户配置不是对象")));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// 规划中心（v0.7）：项目/功能/步骤/里程碑/历史必须进入完整与快速备份，
     /// 恢复后逐行还原（快速备份对规划数据不截断）。
     #[test]
@@ -2670,7 +2800,8 @@ mod tests {
         )
         .unwrap();
         crate::commands::planning::add_step_impl(&db, f.id.clone(), "步骤一".into()).unwrap();
-        crate::commands::planning::add_note_impl(&db, p.id.clone(), None, "开发日志".into()).unwrap();
+        crate::commands::planning::add_note_impl(&db, p.id.clone(), None, "开发日志".into())
+            .unwrap();
 
         for kind in [BackupKind::Full, BackupKind::Quick] {
             let (_, read, dir) = write_then_read(&db, kind);
@@ -2682,7 +2813,7 @@ mod tests {
                 "planning_activity",
             ] {
                 assert!(
-                    spilled_rows(&read, table).len() >= 1,
+                    !spilled_rows(&read, table).is_empty(),
                     "{:?} 备份缺少规划表 {} 数据",
                     kind,
                     table
@@ -2695,9 +2826,17 @@ mod tests {
             assert_eq!(restored.len(), 1, "{:?} 备份恢复后项目丢失", kind);
             assert_eq!(restored[0].name, "备份验证项目");
             assert_eq!(restored[0].stats.feature_total, 1);
-            let feats = crate::commands::planning::list_features_impl(&dst, restored[0].id.clone()).unwrap();
+            let feats = crate::commands::planning::list_features_impl(&dst, restored[0].id.clone())
+                .unwrap();
             assert_eq!(feats[0].step_total, 1);
-            let acts = crate::commands::planning::activity_page_impl(&dst, restored[0].id.clone(), None, None, None).unwrap();
+            let acts = crate::commands::planning::activity_page_impl(
+                &dst,
+                restored[0].id.clone(),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             assert!(acts.items.len() >= 2, "{:?} 备份恢复后历史丢失", kind);
             std::fs::remove_dir_all(dir).ok();
         }
@@ -2899,6 +3038,7 @@ mod tests {
                 archive_dir: Some(&archive),
                 clipboard_dir: None,
                 shelf_dir: None,
+                data_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -2938,6 +3078,7 @@ mod tests {
                 archive_dir: Some(&archive),
                 clipboard_dir: None,
                 shelf_dir: None,
+                data_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -3332,6 +3473,7 @@ mod tests {
                 archive_dir: None,
                 clipboard_dir: Some(&root),
                 shelf_dir: None,
+                data_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -3391,6 +3533,7 @@ mod tests {
                 archive_dir: None,
                 clipboard_dir: Some(&root),
                 shelf_dir: None,
+                data_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -3418,6 +3561,7 @@ mod tests {
                 archive_dir: None,
                 clipboard_dir: Some(&root),
                 shelf_dir: None,
+                data_dir: None,
             },
             &target,
             BackupKind::Full,
@@ -4295,6 +4439,7 @@ mod tests {
                 archive_dir: Some(&src_archive),
                 clipboard_dir: Some(&src_clip),
                 shelf_dir: None,
+                data_dir: None,
             },
             &bundle,
             BackupKind::Full,

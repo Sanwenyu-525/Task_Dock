@@ -105,6 +105,22 @@ pub struct RestoreJournal {
     #[serde(default)]
     pub plan: Vec<PlannedFile>,
     pub error: Option<String>,
+    /// 本次备份携带的用户配置（快捷键/语言/微件）；旧备份/旧日志为 None。
+    #[serde(default)]
+    pub config: Option<crate::user_preferences::BundleConfig>,
+    /// 配置是否已应用。崩溃续跑时据此避免重复应用；应用本身是幂等的。
+    #[serde(default)]
+    pub config_applied: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RestoreConfigSummary {
+    pub included: bool,
+    pub locale: Option<String>,
+    pub widgets: usize,
+    pub hotkeys_applied: usize,
+    pub hotkeys_disabled: usize,
+    pub hotkeys_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +137,10 @@ pub struct RestoreOutcome {
     pub extended_preserved: bool,
     pub recovered: bool,
     pub message: String,
+    /// 本次恢复携带的用户配置摘要；None = 备份不含配置（本机配置保持不变）。
+    pub config: Option<RestoreConfigSummary>,
+    /// 配置归一化/快捷键注册/偏好写入等非致命问题，供 UI 逐条展示。
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -583,6 +603,8 @@ fn write_pre_backup(
         archive_dir: Some(archive.as_path()),
         clipboard_dir: Some(clipboard.as_path()),
         shelf_dir: Some(shelf.as_path()),
+        // 恢复点也包含当前用户配置：配置恢复失败/回滚时可用它找回原快捷键/偏好。
+        data_dir: Some(data_dir),
     };
     backup::write_bundle(db, sources, &path, BackupKind::Full)?;
     Ok(path)
@@ -593,12 +615,95 @@ fn cleanup_after_success(data_dir: &Path, journal: &RestoreJournal) {
     remove_journal(data_dir);
 }
 
+/// 应用备份中的用户配置（语言/微件/快捷键）。
+///
+/// 调用时机：数据库与资产/归档全部提交成功之后。配置属于次要数据：
+/// - 偏好文件写入失败 → 只产生警告，不回滚数据库，也不会清空本机原配置；
+/// - 快捷键无法重新注册 → 降级默认或禁用并写 warning，原配置另存为待解决项；
+/// - 该函数永不返回 Err，避免把「配置失败」伪装成数据恢复失败或反之。
+fn apply_restored_config(
+    data_dir: &Path,
+    config: &crate::user_preferences::BundleConfig,
+    restore_id: &str,
+) -> (Vec<String>, RestoreConfigSummary) {
+    let mut warnings = Vec::new();
+    let mut summary = RestoreConfigSummary {
+        included: true,
+        locale: None,
+        widgets: 0,
+        hotkeys_applied: 0,
+        hotkeys_disabled: 0,
+        hotkeys_pending: false,
+    };
+
+    if config.locale.is_some() || config.widgets.is_some() {
+        match crate::user_preferences::write_preferences(
+            data_dir,
+            config.locale.as_deref(),
+            config.widgets.as_deref(),
+        ) {
+            Ok(()) => {
+                summary.locale = config.locale.clone();
+                summary.widgets = config.widgets.as_ref().map(|w| w.len()).unwrap_or(0);
+                // 让前端在下一次启动/收到事件时以文件为准覆盖旧 localStorage，
+                // 否则「localStorage 优先」的对账规则会把刚恢复的偏好顶掉。
+                if let Err(error) =
+                    crate::user_preferences::mark_restore_pending(data_dir, restore_id)
+                {
+                    warnings.push(format!(
+                        "用户偏好已写入，但恢复标记保存失败（{error}）；重启后可能仍显示本机旧偏好"
+                    ));
+                }
+            }
+            Err(error) => warnings.push(format!(
+                "用户偏好写入失败（{error}），语言与微件保持本机当前设置"
+            )),
+        }
+    }
+
+    if let Some(hotkeys) = config.hotkeys.as_ref() {
+        let report = crate::hotkeys::restore_from_bundle(data_dir, hotkeys);
+        summary.hotkeys_applied = report.applied;
+        summary.hotkeys_disabled = report.disabled;
+        summary.hotkeys_pending = report.pending_saved;
+        warnings.extend(report.warnings);
+    }
+
+    (warnings, summary)
+}
+
+/// 恢复流程与崩溃续跑的统一切入点：每个恢复会话只应用一次配置。
+/// 应用后立即写日志；日志写失败只会导致下次启动重复应用（幂等），不会丢数据。
+fn apply_config_if_needed(
+    data_dir: &Path,
+    journal: &mut RestoreJournal,
+) -> (Vec<String>, Option<RestoreConfigSummary>) {
+    if journal.config_applied {
+        return (Vec::new(), None);
+    }
+    let Some(config) = journal.config.clone() else {
+        journal.config_applied = true;
+        if let Err(error) = write_journal(data_dir, journal) {
+            tracing::warn!("写入恢复日志（无配置）失败: {}", error);
+        }
+        return (Vec::new(), None);
+    };
+    let (warnings, summary) = apply_restored_config(data_dir, &config, &journal.session_id);
+    journal.config_applied = true;
+    if let Err(error) = write_journal(data_dir, journal) {
+        tracing::warn!("写入恢复日志（配置已应用）失败: {}", error);
+    }
+    (warnings, Some(summary))
+}
+
 fn success_outcome(
     journal: &RestoreJournal,
     assets: usize,
     archives: usize,
     extended_preserved: bool,
     recovered: bool,
+    config: Option<RestoreConfigSummary>,
+    warnings: Vec<String>,
 ) -> RestoreOutcome {
     RestoreOutcome {
         session_id: journal.session_id.clone(),
@@ -616,6 +721,8 @@ fn success_outcome(
         } else {
             "恢复完成".into()
         },
+        config,
+        warnings,
     }
 }
 
@@ -655,6 +762,8 @@ pub fn restore_bundle(
         pre_backup: None,
         plan: Vec::new(),
         error: None,
+        config: None,
+        config_applied: false,
     };
     write_journal(data_dir, &mut journal)?;
 
@@ -692,6 +801,8 @@ pub fn restore_bundle(
     );
     journal.backup_kind = read.kind.clone();
     journal.partial = read.partial;
+    // 用户配置随日志持久化：崩溃续跑时无需重新读取备份，也能继续应用。
+    journal.config = read.config.clone();
     journal.phase = "validated".into();
     journal.state = RestoreState::Validated;
     if let Err(e) = write_journal(data_dir, &mut journal) {
@@ -822,9 +933,15 @@ pub fn restore_bundle(
         file_index += 1;
     }
 
-    // 6. 先落盘完成状态，再清理提交标记：任一时刻崩溃都能判断“数据库已提交”。
+    // 6. 用户配置在数据与文件全部提交后应用：配置失败只产生 warning，
+    //    不回滚已成功恢复的任务数据（回滚点里也包含恢复前配置，可按需找回）。
     journal.phase = "files_committed".into();
     let _ = write_journal(data_dir, &mut journal);
+    let mut warnings = read.warnings.clone();
+    let (config_warnings, config_summary) = apply_config_if_needed(data_dir, &mut journal);
+    warnings.extend(config_warnings);
+
+    // 7. 先落盘完成状态，再清理提交标记：任一时刻崩溃都能判断“数据库已提交”。
     journal.state = RestoreState::Completed;
     journal.phase = "marker_pending".into();
     if let Err(e) = write_journal(data_dir, &mut journal) {
@@ -853,6 +970,8 @@ pub fn restore_bundle(
         read.archives.len(),
         !read.extended,
         false,
+        config_summary,
+        warnings,
     ))
 }
 
@@ -906,6 +1025,8 @@ pub fn restore_legacy_json(
         pre_backup: None,
         plan: Vec::new(),
         error: None,
+        config: None,
+        config_applied: false,
     };
     write_journal(data_dir, &mut journal)?;
     let parsed = match data::validate_import(db, data) {
@@ -965,7 +1086,7 @@ pub fn restore_legacy_json(
     journal.phase = "done".into();
     let _ = write_journal(data_dir, &mut journal);
     cleanup_after_success(data_dir, &journal);
-    Ok(success_outcome(&journal, 0, 0, true, false))
+    Ok(success_outcome(&journal, 0, 0, true, false, None, Vec::new()))
 }
 
 /// 启动时/恢复前调用：处理上次中断的恢复。
@@ -1010,6 +1131,10 @@ pub fn recover_pending(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryOut
                     let cause = AppError::Agent(format!("恢复完成收尾时文件校验失败: {}", e));
                     return rollback_recovery(data_dir, db, journal, &cause);
                 }
+                let (warnings, _) = apply_config_if_needed(data_dir, &mut journal);
+                for warning in warnings {
+                    tracing::warn!("恢复完成收尾时应用用户配置: {}", warning);
+                }
                 clear_marker(db)?;
             }
             cleanup_session(data_dir, &journal.session_id);
@@ -1032,6 +1157,10 @@ pub fn recover_pending(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryOut
                 if let Err(e) = complete_planned_files(&journal) {
                     let cause = AppError::Agent(format!("恢复续跑失败: {}", e));
                     return rollback_recovery(data_dir, db, journal, &cause);
+                }
+                let (warnings, _) = apply_config_if_needed(data_dir, &mut journal);
+                for warning in warnings {
+                    tracing::warn!("恢复续跑时应用用户配置: {}", warning);
                 }
                 journal.state = RestoreState::Completed;
                 journal.phase = "recovery_done".into();
@@ -1196,6 +1325,7 @@ mod tests {
             archive_dir: Some(&archive_dir),
             clipboard_dir: Some(&clipboard_dir),
             shelf_dir: None,
+            data_dir: None,
         };
         backup::write_bundle(
             &db,
@@ -1331,6 +1461,176 @@ mod tests {
                 .unwrap_or(false),
             "恢复前完整备份必须保留"
         );
+    }
+
+    /// 构造带用户配置的完整 bundle；返回 (源库, bundle 路径, 源数据目录)。
+    fn bundle_with_user_config(tag: &str) -> (Db, PathBuf, PathBuf) {
+        use crate::hotkeys::model::{
+            find_def, HotkeyBinding, HotkeyConfigFile, CONFIG_VERSION,
+        };
+        let root = temp_dir(tag);
+        let db = memdb();
+        seed_task(&db, "cfg-task", "配置来源任务");
+        let widgets = crate::user_preferences::normalize_widgets(&serde_json::json!([
+            {"type":"today-tasks","enabled":true,"config":{"maxItems":8}},
+            {"type":"unknown-widget","enabled":true}
+        ]))
+        .0;
+        crate::user_preferences::write_preferences(&root, Some("en-US"), Some(&widgets))
+            .unwrap();
+        let hotkeys = HotkeyConfigFile {
+            version: CONFIG_VERSION,
+            bindings: vec![HotkeyBinding {
+                action: "quick_add_task".into(),
+                scope: find_def("quick_add_task").unwrap().scope,
+                accelerator: "Ctrl+Shift+K".into(),
+                enabled: true,
+            }],
+        };
+        crate::hotkeys::store::save_config_atomic(&root.join("hotkeys.json"), &hotkeys).unwrap();
+        let bundle = root.join("with-config.json");
+        let sources = BackupSources {
+            archive_dir: None,
+            clipboard_dir: None,
+            shelf_dir: None,
+            data_dir: Some(&root),
+        };
+        backup::write_bundle(&db, sources, &bundle, BackupKind::Full).unwrap();
+        (db, bundle, root)
+    }
+
+    #[test]
+    fn restore_applies_user_config_and_marks_pending_for_next_start() {
+        let (_src_db, bundle, src_root) = bundle_with_user_config("cfg-apply");
+        let target_root = temp_dir("cfg-target");
+        let db = make_target_db();
+
+        let outcome = restore_bundle(
+            &target_root,
+            &db,
+            &bundle,
+            &restore_opts(RestoreFaults::default()),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, RestoreState::Completed);
+        let summary = outcome.config.expect("恢复结果必须报告配置摘要");
+        assert_eq!(summary.locale.as_deref(), Some("en-US"));
+        assert_eq!(summary.widgets, 6);
+        // 测试进程没有初始化快捷键管理器：不能在摘要里声称已注册。
+        assert_eq!(summary.hotkeys_applied, 0);
+        assert!(!summary.hotkeys_pending);
+        // 测试进程没有初始化快捷键管理器：必须明确提示“下次启动注册”，不能伪装成功。
+        assert!(outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("将在下次启动时注册")));
+
+        // preferences.json / hotkeys.json 落盘；pending 标记供前端下次启动覆盖 localStorage。
+        let loaded = crate::user_preferences::load_preferences(&target_root);
+        assert_eq!(loaded.locale.as_deref(), Some("en-US"));
+        assert_eq!(loaded.widgets.unwrap().len(), 6);
+        let (restore_id, warning) = crate::user_preferences::pending_restore(&target_root);
+        assert!(warning.is_none());
+        assert_eq!(restore_id.as_deref(), Some(outcome.session_id.as_str()));
+        let hotkeys_raw = std::fs::read_to_string(target_root.join("hotkeys.json")).unwrap();
+        assert!(hotkeys_raw.contains("Ctrl+Shift+K"));
+        // 任务数据同时被恢复（配置失败/成功都不影响数据事务）。
+        assert!(task_title(&db, "cfg-task").is_some());
+        std::fs::remove_dir_all(src_root).ok();
+        std::fs::remove_dir_all(target_root).ok();
+    }
+
+    #[test]
+    fn restore_old_bundle_without_config_keeps_local_preferences() {
+        let src_root = temp_dir("cfg-old-src");
+        let db = memdb();
+        seed_task(&db, "old-task", "旧备份任务");
+        let bundle = src_root.join("old.json");
+        backup::write_bundle(
+            &db,
+            BackupSources::default(),
+            &bundle,
+            BackupKind::Full,
+        )
+        .unwrap();
+
+        let target_root = temp_dir("cfg-old-target");
+        let target_db = memdb();
+        let widgets = crate::user_preferences::normalize_widgets(&serde_json::json!([])).0;
+        crate::user_preferences::write_preferences(
+            &target_root,
+            Some("zh-CN"),
+            Some(&widgets),
+        )
+        .unwrap();
+        let local_hotkeys = crate::hotkeys::model::HotkeyConfigFile {
+            version: crate::hotkeys::model::CONFIG_VERSION,
+            bindings: vec![crate::hotkeys::model::HotkeyBinding {
+                action: "quick_add_task".into(),
+                scope: crate::hotkeys::model::HotkeyScope::AppLocal,
+                accelerator: "Ctrl+Shift+L".into(),
+                enabled: true,
+            }],
+        };
+        crate::hotkeys::store::save_config_atomic(
+            &target_root.join("hotkeys.json"),
+            &local_hotkeys,
+        )
+        .unwrap();
+
+        let outcome = restore_bundle(
+            &target_root,
+            &target_db,
+            &bundle,
+            &restore_opts(RestoreFaults::default()),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, RestoreState::Completed);
+        assert!(outcome.config.is_none());
+        assert!(outcome.warnings.is_empty());
+        let loaded = crate::user_preferences::load_preferences(&target_root);
+        assert_eq!(loaded.locale.as_deref(), Some("zh-CN"));
+        let hotkeys_raw = std::fs::read_to_string(target_root.join("hotkeys.json")).unwrap();
+        assert!(hotkeys_raw.contains("Ctrl+Shift+L"));
+        assert!(!target_root
+            .join(crate::user_preferences::PREFERENCES_PENDING_FILE)
+            .exists());
+        std::fs::remove_dir_all(src_root).ok();
+        std::fs::remove_dir_all(target_root).ok();
+    }
+
+    #[test]
+    fn restore_failure_before_commit_leaves_config_files_untouched() {
+        let (_src_db, bundle, src_root) = bundle_with_user_config("cfg-fail-src");
+        let target_root = temp_dir("cfg-fail-target");
+        let db = make_target_db();
+        let widgets = crate::user_preferences::normalize_widgets(&serde_json::json!([])).0;
+        crate::user_preferences::write_preferences(
+            &target_root,
+            Some("zh-CN"),
+            Some(&widgets),
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(target_root.join("preferences.json")).unwrap();
+
+        let error = restore_bundle(
+            &target_root,
+            &db,
+            &bundle,
+            &restore_opts(RestoreFaults {
+                fail_before_db_commit: true,
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("模拟故障"));
+        let after = std::fs::read_to_string(target_root.join("preferences.json")).unwrap();
+        assert_eq!(before, after, "数据库提交前失败不得改动本机偏好");
+        assert!(!target_root
+            .join(crate::user_preferences::PREFERENCES_PENDING_FILE)
+            .exists());
+        std::fs::remove_dir_all(src_root).ok();
+        std::fs::remove_dir_all(target_root).ok();
     }
 
     #[test]

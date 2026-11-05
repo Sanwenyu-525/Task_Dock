@@ -26,8 +26,8 @@
 //! 区域外的内容不绘制、也不接收鼠标；其几何与主窗独立。弹窗（右键菜单）继续用
 //! 自己的圆角区域与半径。
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use tauri::{Runtime, WebviewWindow};
@@ -41,11 +41,64 @@ static RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
 /// 圆角之外的透明像素上，GDI 硬边不可见。主窗不使用这个固定值，而是用
 /// `main_region_rgn()` 的逐行像素支撑形状（见该函数文档）。
 const REGION_AA_INSET: i32 = 2;
-/// 正在执行 SetWindowRgn；此期间到达的请求只置 PENDING，由外层合并重算。
-/// （全局短临界区串行化：SetWindowRgn 本身廉价，串行只损失并行度不损正确性。）
-static APPLYING: AtomicBool = AtomicBool::new(false);
-/// 外层执行期间又有新的应用请求（通常是 SetWindowRgn 自己触发的 resize 事件）。
-static PENDING: AtomicBool = AtomicBool::new(false);
+/// 同一 HWND 的重入应用请求：必须保留调用方原始的目标类型与逻辑半径，
+/// 补偿重算不得回落到主窗默认形态（右键菜单是 Popup/16px，不是 Main/18px）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingShape {
+    target: ShapeTarget,
+    /// 逻辑半径 × 1000；用整数保存，重入还原时不丢精度。
+    radius_milli: u32,
+}
+
+/// 按 **HWND** 串行化 `SetWindowRgn`：同窗口重入只记录最新请求（保留 target/radius），
+/// 不同窗口各自独立进入，不互相阻塞、不互相覆盖。
+#[derive(Default)]
+struct ApplyGate {
+    applying: HashSet<isize>,
+    pending: HashMap<isize, PendingShape>,
+}
+
+impl ApplyGate {
+    /// 进入应用临界区；返回 `false` 表示同 hwnd 正在应用，调用方应 `defer` 后返回。
+    fn try_enter(&mut self, hwnd: isize) -> bool {
+        self.applying.insert(hwnd)
+    }
+
+    /// 重入请求按 hwnd 覆盖为最新参数；窗口对象仍由外层闭包持有。
+    fn defer(&mut self, hwnd: isize, shape: PendingShape) {
+        self.pending.insert(hwnd, shape);
+    }
+
+    fn take(&mut self, hwnd: isize) -> Option<PendingShape> {
+        self.pending.remove(&hwnd)
+    }
+
+    fn leave(&mut self, hwnd: isize) {
+        self.applying.remove(&hwnd);
+    }
+
+    /// 窗口销毁清理：进行中标记与未决请求都不得跨 HWND 复用残留。
+    fn forget(&mut self, hwnd: isize) {
+        self.applying.remove(&hwnd);
+        self.pending.remove(&hwnd);
+    }
+}
+
+static GATE: LazyLock<Mutex<ApplyGate>> = LazyLock::new(|| Mutex::new(ApplyGate::default()));
+
+fn gate() -> std::sync::MutexGuard<'static, ApplyGate> {
+    GATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 逻辑半径 → milli 整数（与 `set_radius` 同一夹取规则：非法值回退 18）。
+fn radius_milli(logical_radius: f64) -> u32 {
+    let r = if logical_radius.is_finite() {
+        logical_radius.clamp(0.0, 40.0)
+    } else {
+        18.0
+    };
+    (r * 1000.0).round() as u32
+}
 
 /// 一次成功应用的区域参数。hwnd/尺寸/DPI/半径任一变化都必须重做。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,8 +123,9 @@ struct CapsuleStamp {
     params: CapsuleParams,
 }
 
-/// 应用对象：完整主窗与独立弹窗（右键菜单）。两者都用圆角区域，
-/// 但主窗的区域半径额外内收 `REGION_AA_INSET`，把硬边藏进 CSS 抗锯齿弧外侧。
+/// 应用对象：完整主窗与独立弹窗（右键菜单）。两者都使用「CSS 圆角像素支撑
+/// 形状」区域，可见轮廓由 WebView2 的 CSS 抗锯齿弧定义；区域只负责把完全
+/// 透明的像素移出窗口（裁剪与命中），不再用 GDI 硬边椭圆。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShapeTarget {
     Main,
@@ -278,6 +332,89 @@ pub fn forget_window(hwnd: isize) {
         .forget(hwnd);
     // 启动空白标记同样按 hwnd 绑定：句柄被复用后不得继续裁新窗口
     let _ = take_blank(hwnd);
+    // 延迟校准同样按 hwnd 绑定：句柄复用后不得替新窗口补做旧请求。
+    let _ = DEFERRED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&hwnd);
+    // 重入调度状态同样按 hwnd 绑定：销毁后不得残留未决补偿请求/进行中标记。
+    gate().forget(hwnd);
+}
+
+// ── 拖拽期间的延迟校准（窗口拖拽透明异常修复）─────────────────
+//
+// 系统模态移动循环里，tao 为每个位置变化派发 `Moved`，`lib.rs` 因此逐帧调用
+// `apply()`。窗口移动**不改变自身尺寸**，区域在窗口局部坐标里也不随位置变化；
+// 逐帧 `GetWindowRgn` 回读 + `DwmGet/SetWindowAttribute` 只会让 DWM 在拖拽期间
+// 反复重新合成（真机表现为拖动中整窗透明/闪烁，松手、截图或焦点变化才恢复）。
+//
+// 契约：移动循环内 `apply` 允许按缓存命中直接返回；尺寸/DPI 真变时仍重建区域，
+// 但**不做回读、不碰 DWM**。松手（`WM_EXITSIZEMOVE`）后由 `flush_deferred`
+// 在窗口线程一次性完成回读校验与 DWM 角偏好校准。
+static DEFERRED: LazyLock<Mutex<HashSet<isize>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+static APPLY_HOOK: LazyLock<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// 注册「重新应用主窗形状」的窗口线程回调（`lib.rs` 启动时调用一次）。
+pub fn register_apply_hook(hook: Box<dyn Fn() + Send + Sync>) {
+    *APPLY_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+}
+
+/// 拖拽结束后补做被推迟的区域/DWM 校准（窗口线程调用；无待办时不做任何事）。
+pub fn flush_deferred(hwnd: isize) {
+    let pending = DEFERRED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&hwnd);
+    if !pending {
+        return;
+    }
+    let hook = APPLY_HOOK.lock().unwrap_or_else(|e| e.into_inner());
+    match hook.as_ref() {
+        Some(hook) => hook(),
+        None => tracing::debug!(hwnd, "拖拽结束但未注册形状回调，跳过延迟校准"),
+    }
+}
+
+/// 低频拖拽诊断（`TASK_DOCK_DRAG_DIAG=1`）：只记录原生侧事实，用于区分
+/// 「CSS 值变化」与「原生合成异常」。前端在拖拽期间没有任何状态写入，
+/// 因此若这里每 500ms 采样都显示 `stamp_current=true` 且无区域重建，
+/// 即可排除 CSS/DOM 路径，把问题定位到 DWM 合成层。
+fn drag_diag(
+    hwnd: isize,
+    w: i32,
+    h: i32,
+    scale: f64,
+    dragging: bool,
+    stamp_current: bool,
+    region_rebuild: bool,
+) {
+    // 显式 opt-in：未设置或 `0` 时关闭，避免生产路径每 500ms 采样。
+    let enabled = std::env::var("TASK_DOCK_DRAG_DIAG")
+        .map(|v| v != "0")
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    static LAST: LazyLock<Mutex<Option<std::time::Instant>>> = LazyLock::new(|| Mutex::new(None));
+    let now = std::time::Instant::now();
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(prev) = *last {
+        if now.duration_since(prev).as_millis() < 500 {
+            return;
+        }
+    }
+    *last = Some(now);
+    tracing::info!(
+        hwnd,
+        w,
+        h,
+        scale,
+        dragging,
+        stamp_current,
+        region_rebuild,
+        "窗口形状诊断（拖拽期跳过回读/DWM）"
+    );
 }
 
 /// 诊断开关（环境变量，真机矩阵验收用）：
@@ -320,6 +457,15 @@ fn dwm_rounded_for(shape: MainRegionShape) -> bool {
     matches!(shape, MainRegionShape::FullFallback)
 }
 
+/// 弹窗（右键菜单）区域成功时是否设置 `DWMWCP_ROUND`。
+///
+/// 与主窗同一契约：自定义区域一旦应用成功，可见外形必须完全由区域 + CSS 弧
+/// 定义，DWM 的 8 DIP 系统弧会与 CSS 16px 弧形成双圆角/月牙缝，并沿整窗矩形
+/// 绘制系统边框与投影。只有区域写入失败（退回直角矩形）时才允许 ROUND 兜底。
+fn dwm_rounded_for_popup(region_applied: bool) -> bool {
+    !region_applied
+}
+
 /// 设置逻辑半径（0 = 直角），返回夹取后的实际值。
 pub fn set_radius(radius: f64) -> f64 {
     let clamped = if radius.is_finite() {
@@ -359,18 +505,30 @@ fn apply_impl<R: Runtime>(
     };
     let hwnd = handle.0 as isize;
 
-    if APPLYING.swap(true, Ordering::SeqCst) {
-        // 重入：不能直接丢弃，否则拖拽缩放的最后一次尺寸可能永远得不到圆角。
-        PENDING.store(true, Ordering::SeqCst);
-        return false;
+    let mut current = PendingShape {
+        target,
+        radius_milli: radius_milli(logical_radius),
+    };
+
+    {
+        let mut gate = gate();
+        if !gate.try_enter(hwnd) {
+            // 重入：保留本次的窗口对象（外层持有）、目标类型与半径，交由外层下一 pass 应用。
+            gate.defer(hwnd, current);
+            return false;
+        }
     }
 
     let mut applied = false;
     // 一次拖动会产生连续尺寸。每次 pass 后重新读取实际尺寸；尺寸变了或期间有新
     // 请求就再来一次，直到窗口稳定（上限防止异常环境下死循环）。
     for _ in 0..8 {
-        PENDING.store(false, Ordering::SeqCst);
-        applied |= apply_pass(win, hwnd, logical_radius, target);
+        applied |= apply_pass(
+            win,
+            hwnd,
+            current.radius_milli as f64 / 1000.0,
+            current.target,
+        );
         let stable = match win.outer_size() {
             Ok(size) => {
                 REGIONS
@@ -381,18 +539,32 @@ fn apply_impl<R: Runtime>(
             }
             Err(_) => false,
         };
-        if stable && !PENDING.load(Ordering::SeqCst) {
+        // 只取**本 hwnd** 的重入请求；其它窗口的请求由它们各自的调用处理。
+        let next = gate().take(hwnd);
+        if let Some(next) = next {
+            if next != current {
+                // 目标/半径变了：下一 pass 必须按新参数执行，不能沿用旧形态。
+                current = next;
+                continue;
+            }
+            // 参数相同：本次 pass 已覆盖该请求，仅尺寸未稳定时才继续。
+        }
+        if stable {
             break;
         }
     }
 
-    APPLYING.store(false, Ordering::SeqCst);
-
-    // 在「检查 PENDING」与「清除 APPLYING」之间仍可能到达一个请求；补一次异步应用。
-    if PENDING.swap(false, Ordering::SeqCst) {
+    // 「离开临界区」与「取剩余请求」必须在同一临界区完成：否则两步之间到达的请求
+    // 会看到 applying 为空而直接执行，而这里又取不到它；同一临界区内两种路径互斥。
+    let leftover = {
+        let mut gate = gate();
+        gate.leave(hwnd);
+        gate.take(hwnd)
+    };
+    if let Some(next) = leftover {
         let w = win.clone();
         let _ = w.clone().run_on_main_thread(move || {
-            let _ = apply(&w);
+            let _ = apply_impl(&w, next.radius_milli as f64 / 1000.0, next.target);
         });
     }
     applied
@@ -489,6 +661,10 @@ fn main_region_rgn(w: i32, h: i32, radius: f64) -> Option<windows_sys::Win32::Gr
 /// 来源之一）。这里复用主窗的 `support_from_edge()`：逐行求「CSS 弧最早着色的
 /// 像素」，把相同起点合并成矩形并集，再平移到 `(x0, y0)`。
 ///
+/// 胶囊面板与右键菜单弹窗（`ShapeTarget::Popup`）共用本函数：弹窗半径 16px
+/// 虽小，但 `CreateRoundRectRgn` 的硬边仍会切进 CSS 抗锯齿弧（深色桌面上是
+/// 一圈白色阶梯，浅色桌面上是灰黑锯齿），因此不再保留弹窗专用的硬边椭圆。
+///
 /// 右/下边界用**开区间**（`x0 + w`），与 CSS 盒子尺寸一一对应；主窗那套 `+1`
 /// 口径只影响包围盒回读的 1px 容差，这里不需要。
 #[cfg(windows)]
@@ -539,7 +715,8 @@ fn support_rect_rgn(
     }
 }
 
-/// CSS 圆角对应的物理像素半径（弹窗区域仍用圆角矩形；主窗用支撑形状）。
+/// CSS 圆角对应的物理像素半径（用于区域缓存 stamp 与回读点判定；
+/// 实际区域形状由 `main_region_rgn` / `support_rect_rgn` 的逐行支撑算法生成）。
 fn rounded_region_radius(logical_radius: f64, scale: f64) -> i32 {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
@@ -561,9 +738,18 @@ fn apply_pass<R: Runtime>(
     logical_radius: f64,
     target: ShapeTarget,
 ) -> bool {
-    use windows_sys::Win32::Graphics::Gdi::{
-        CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn,
-    };
+    use windows_sys::Win32::Graphics::Gdi::{DeleteObject, SetWindowRgn};
+
+    // 系统模态移动循环内（拖拽整个窗口）：窗口移动不改变尺寸与区域内容，
+    // 因此不做回读、不写 DWM，松手后由 `flush_deferred` 一次性校准。
+    // 尺寸/DPI 真变（拖动窗口边缘）仍会走重建路径，只是同样跳过回读与 DWM。
+    let dragging = target == ShapeTarget::Main && crate::magnetic::in_size_move(hwnd);
+    if dragging {
+        DEFERRED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(hwnd);
+    }
 
     // 每次都重新读取几何：外层 pass 开始后窗口可能又被拖动了。
     let size = match win.outer_size() {
@@ -608,7 +794,7 @@ fn apply_pass<R: Runtime>(
     // 窗口位置/尺寸在停靠期间保持不变，区域切换是唯一的视觉状态变化。
     if target == ShapeTarget::Main {
         if let Some(cap) = capsule_for(hwnd) {
-            return apply_capsule_pass(hwnd, w, h, scale, cap);
+            return apply_capsule_pass(hwnd, w, h, scale, cap, dragging);
         }
         // 启动停靠恢复：区域先裁成 1×1 空白，等前端把几何 + 轨道区域一次做完。
         // 胶囊优先（见 `BLANK` 注释）：这里只在**还没有胶囊状态**时生效。
@@ -621,8 +807,8 @@ fn apply_pass<R: Runtime>(
         }
     }
 
-    // 主窗：逐行构造 CSS 圆角的像素支撑形状（保留 AA 外沿、不覆盖透明像素）；
-    // 弹窗：沿用与 CSS 同值的圆角矩形区域。
+    // 主窗与弹窗都使用逐行构造的 CSS 圆角像素支撑形状（保留 AA 外沿、
+    // 不覆盖任何完全透明的像素）：可见轮廓由 CSS 抗锯齿弧定义，区域不提供硬边。
     let stamp = RegionStamp {
         hwnd,
         width: size.width,
@@ -630,23 +816,24 @@ fn apply_pass<R: Runtime>(
         radius: r as u32,
         scale_milli,
     };
-    let current = {
+    let stamp_current = {
         let cache = REGIONS.lock().unwrap_or_else(|e| e.into_inner());
         cache.is_current(&stamp)
-    } && region_is_current(hwnd, w, h, r);
+    };
+    // 拖拽中跳过 `GetWindowRgn` 回读（逐帧 GDI 回读与 DWM 查询会打断合成）；
+    // 松手后的 flush 会做一次完整回读校验。
+    let current = stamp_current && (dragging || region_is_current(hwnd, w, h, r));
+    drag_diag(hwnd, w, h, scale, dragging, stamp_current, !current);
 
     let mut ok = current;
     if !current {
         ok = unsafe {
             let rgn = if target == ShapeTarget::Main {
                 main_region_rgn(w, h, css_phys)
-            } else if r <= 1 {
-                // +1 覆盖末行像素（与既有胶囊区域口径一致）。
-                let raw = CreateRectRgn(0, 0, w + 1, h + 1);
-                (!raw.is_null()).then_some(raw)
             } else {
-                let raw = CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2);
-                (!raw.is_null()).then_some(raw)
+                // 弹窗不再用 CreateRoundRectRgn（GDI 二值硬边会切进 CSS AA 弧，
+                // 四角表现为阶梯锯齿）；与胶囊面板共用同一像素支撑形状。
+                support_rect_rgn(0, 0, w, h, css_phys)
             };
             match rgn {
                 None => false,
@@ -672,14 +859,20 @@ fn apply_pass<R: Runtime>(
     if target == ShapeTarget::Main {
         // DWM 角偏好由区域形态决定（纯函数契约，见 `dwm_rounded_for`）：
         // 整窗区域与胶囊区域都 DONOTROUND；只有区域写入失败、退回系统圆角兜底时才 ROUND。
-        let shape = if ok {
-            MainRegionShape::Full
-        } else {
-            MainRegionShape::FullFallback
-        };
-        apply_dwm(hwnd, dwm_rounded_for(shape));
+        // 拖拽中不写 DWM（逐帧写会让 DWM 反复重新合成，表现为拖动中整窗透明）；
+        // 松手后的 flush 会按当时形态补写一次。
+        if !dragging {
+            let shape = if ok {
+                MainRegionShape::Full
+            } else {
+                MainRegionShape::FullFallback
+            };
+            apply_dwm(hwnd, dwm_rounded_for(shape));
+        }
     } else {
-        apply_dwm(hwnd, r > 0);
+        // 弹窗与主窗同一契约：区域成功必须 DONOTROUND，否则 DWM 会按整窗矩形
+        // 叠加 8 DIP 系统弧与边框/投影，与 CSS 16px 弧形成双圆角/月牙缝。
+        apply_dwm(hwnd, dwm_rounded_for_popup(ok));
     }
     ok
 }
@@ -913,8 +1106,12 @@ impl CapsuleRegionSet {
 /// - 轨道贴停靠边齐平（外扩一侧压在屏幕边缘上，切线水平）；
 /// - 面板始终在轨道**内侧**（朝屏幕内部），与轨道同轴居中、间隔 `gap`。
 ///
-/// 物理像素按 DPI 换算。窗口尺寸不足以容纳面板时**放弃面板**（只保留轨道），
-/// 绝不产生负尺寸或越界区域——前端会先把窗口撑到容器尺寸，这里是退化兜底。
+/// 物理像素按 DPI 换算。**请求展开但窗口不足以容纳「轨道 ∪ 面板」时返回 `None`**
+/// （整次应用失败），绝不退化成「只裁轨道却报告成功」：前端的提交协议以本次
+/// 返回值与 `GetWindowRgn` 回读为准，退化成功会让 UI 提交 `docked-revealed`，
+/// 表现为「React 显示面板 / 原生只露翼片」并泄露完整工作区控件。
+/// 前端在展开前必须先把窗口撑到容器尺寸（`ensureCapsuleContainer`）。
+/// 折叠态只要求容纳轨道，窗口足够即可。
 pub(crate) fn capsule_regions(
     window_w: i32,
     window_h: i32,
@@ -1009,13 +1206,10 @@ pub(crate) fn capsule_regions(
     }
     let (pw, ph) = (panel_w.min(window_w), panel_h.min(window_h));
     if pw <= 0 || ph <= 0 {
-        return Some(CapsuleRegionSet {
-            rail,
-            rail_polygon,
-            panel: None,
-            gap_probe: None,
-            notch_probe,
-        });
+        tracing::warn!(
+            "胶囊面板尺寸退化（w={window_w} h={window_h} pw={pw} ph={ph}），展开请求失败",
+        );
+        return None;
     }
     let (px, py) = match cap.edge {
         0 => (rail.x + rail.width + gap, (window_h - ph) / 2),
@@ -1023,19 +1217,14 @@ pub(crate) fn capsule_regions(
         2 => ((window_w - pw) / 2, rail.y + rail.height + gap),
         _ => ((window_w - pw) / 2, rail.y - gap - ph),
     };
-    // 越界即放弃面板：宁可只显示轨道，也不让区域跑到窗口外/压住轨道
+    // 越界 = 本次展开失败，而不是「静默只显示轨道」：退化结果若被当成成功，
+    // 前端会把相位推进到 docked-revealed，但原生只有翼片，面板控件全部被裁掉。
     if px < 0 || py < 0 || px + pw > window_w || py + ph > window_h {
         tracing::warn!(
-            "胶囊面板区域越界，退化为仅轨道（w={window_w} h={window_h} edge={} px={px} py={py} pw={pw} ph={ph}）",
+            "胶囊面板区域越界，展开请求失败（w={window_w} h={window_h} edge={} px={px} py={py} pw={pw} ph={ph}）",
             cap.edge
         );
-        return Some(CapsuleRegionSet {
-            rail,
-            rail_polygon,
-            panel: None,
-            gap_probe: None,
-            notch_probe,
-        });
+        return None;
     }
     let panel = CapsuleRegionRect {
         x: px,
@@ -1064,7 +1253,14 @@ pub(crate) fn capsule_regions(
 /// 成功后用 GetWindowRgn **回读验证**：包围盒一致 + 轨道/面板中心在区域内 +
 /// 间隙中点在区域外 + 外框缺角在区域外——SetWindowRgn 返回成功不代表区域内容正确。
 #[cfg(windows)]
-fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParams) -> bool {
+fn apply_capsule_pass(
+    hwnd: isize,
+    w: i32,
+    h: i32,
+    scale: f64,
+    cap: CapsuleParams,
+    dragging: bool,
+) -> bool {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::{
         CombineRgn, CreatePolygonRgn, DeleteObject, SetWindowRgn, RGN_ERROR, RGN_OR, WINDING,
@@ -1088,12 +1284,18 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
     // 尺寸、DPI 与胶囊参数都没变时区域内容必然一致，不必重复 CreatePolygonRgn +
     // SetWindowRgn（重设同一区域会触发整窗失效并被系统重新裁剪）。系统重置区域
     // 或形态被外部改写时回读校验会失败，仍按原路径重建（保留失败恢复）。
-    let cached = {
+    let stamp_current = {
         let cache = REGIONS.lock().unwrap_or_else(|e| e.into_inner());
         cache.capsule_is_current(&stamp)
-    } && capsule_region_matches(hwnd, &set);
+    };
+    // 拖拽中跳过 `GetWindowRgn` 回读：逐帧回读 + DWM 查询会让 DWM 反复重新合成。
+    // 松手后的 `flush_deferred` 会完整回读一次并补写 DWM。
+    let cached = stamp_current && (dragging || capsule_region_matches(hwnd, &set));
+    drag_diag(hwnd, w, h, scale, dragging, stamp_current, !cached);
     if cached {
-        apply_dwm(hwnd, dwm_rounded_for(MainRegionShape::Capsule));
+        if !dragging {
+            apply_dwm(hwnd, dwm_rounded_for(MainRegionShape::Capsule));
+        }
         return true;
     }
     let round =
@@ -1132,7 +1334,8 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
             }
         }
     };
-    let verified = applied && capsule_region_matches(hwnd, &set);
+    // 拖拽中不做回读（见上）；只有写入成功才允许记为"已应用"，松手后 flush 复核。
+    let verified = applied && (dragging || capsule_region_matches(hwnd, &set));
     tracing::debug!(
         hwnd,
         edge = cap.edge,
@@ -1161,7 +1364,10 @@ fn apply_capsule_pass(hwnd: isize, w: i32, h: i32, scale: f64, cap: CapsuleParam
     // 只有胶囊，CopyFromScreen 却是整窗轮廓 + 阴影（差异像素全部比背景更暗）。
     // 胶囊态保持主窗一致的 DONOTROUND 后，区域外暗像素/白簇/阴影全部归零，胶囊
     // 逐像素不变（证据：tmp/acceptance/docked-window-residual-fix/）。
-    apply_dwm(hwnd, dwm_rounded_for(MainRegionShape::Capsule));
+    // 拖拽中跳过 DWM 写入（松手后的 flush 会补写）。
+    if !dragging {
+        apply_dwm(hwnd, dwm_rounded_for(MainRegionShape::Capsule));
+    }
     verified
 }
 
@@ -1532,6 +1738,34 @@ mod tests {
         assert_eq!(css_support_left(0, 0, r), 0, "退化高度不越界");
     }
 
+    /// 右键菜单弹窗（CSS 16px）在 100/125/150/200% 下的区域几何：
+    /// 物理半径按 DPI 取整，弧首行必须保留 AA 支撑、逐行单调收窄、
+    /// 半径行之后转为直边。锁住「菜单圆角不随 DPI 产生阶梯/缺角」。
+    #[test]
+    fn popup_support_region_scales_with_dpi() {
+        let h = 592;
+        for scale in [1.0f64, 1.25, 1.5, 2.0] {
+            let r = rounded_region_radius(crate::context_menu::MENU_RADIUS, scale);
+            assert!(r > 1, "scale={scale}");
+            // 首行必须切掉透明像素（保留 AA 外沿），但不能整行截断
+            let first = css_support_left(0, h, r as f64);
+            assert!(first > 0 && first < r, "scale={scale} first={first}");
+            let mut prev = first;
+            for y in 1..r - 1 {
+                let x = css_support_left(y, h, r as f64);
+                assert!(x <= prev, "scale={scale} y={y} 弧必须单调收窄");
+                assert!(x <= r - 1);
+                prev = x;
+            }
+            assert_eq!(css_support_left(r, h, r as f64), 0, "scale={scale} 转直边");
+            assert_eq!(
+                css_support_left(h - 1, h, r as f64),
+                first,
+                "scale={scale} 底边镜像"
+            );
+        }
+    }
+
     #[test]
     fn region_stamp_invalidates_on_every_identity_field() {
         let base = RegionStamp {
@@ -1680,6 +1914,241 @@ mod tests {
             dwm_rounded_for(MainRegionShape::FullFallback),
             "只有区域写入失败的系统圆角兜底才允许 ROUND"
         );
+    }
+
+    /// 右键菜单弹窗与主窗同一契约：区域成功后必须 DONOTROUND。
+    /// 2026-11-04 真机根因：弹窗同时被 Win32 圆角区域（GDI 硬边）与
+    /// DWM `DWMWCP_ROUND`（8 DIP 系统弧）裁剪，四角出现双弧/月牙缝/阶梯锯齿。
+    #[test]
+    fn dwm_round_is_never_used_for_popup_region() {
+        assert!(
+            !dwm_rounded_for_popup(true),
+            "弹窗区域成功时必须 DONOTROUND：可见外形由区域 + CSS AA 弧定义"
+        );
+        assert!(
+            dwm_rounded_for_popup(false),
+            "只有弹窗区域写入失败才允许 ROUND 兜底"
+        );
+    }
+
+    // ── 重入调度（P2-01）：目标类型 / 半径 / HWND 隔离 ─────────────
+
+    const POPUP_16: PendingShape = PendingShape {
+        target: ShapeTarget::Popup,
+        radius_milli: 16_000,
+    };
+    const MAIN_18: PendingShape = PendingShape {
+        target: ShapeTarget::Main,
+        radius_milli: 18_000,
+    };
+
+    #[test]
+    fn popup_reentry_preserves_target_and_radius() {
+        let mut gate = ApplyGate::default();
+        assert!(gate.try_enter(11), "首次进入必须成功");
+        assert!(!gate.try_enter(11), "同 hwnd 重入必须被拦下");
+        gate.defer(11, POPUP_16);
+        // 补偿重算只能拿回 Popup/16px，不能回落到 Main/18px。
+        assert_eq!(gate.take(11), Some(POPUP_16));
+        assert_eq!(POPUP_16.radius_milli as f64 / 1000.0, 16.0);
+    }
+
+    #[test]
+    fn main_and_popup_requests_do_not_cross() {
+        let mut gate = ApplyGate::default();
+        assert!(gate.try_enter(1), "主窗进入");
+        assert!(gate.try_enter(2), "不同 hwnd 不得被同一把锁阻塞");
+        gate.defer(2, POPUP_16);
+        gate.defer(1, MAIN_18);
+        assert_eq!(
+            gate.take(1).map(|p| p.target),
+            Some(ShapeTarget::Main),
+            "主窗请求不得被弹窗参数覆盖"
+        );
+        assert_eq!(
+            gate.take(2).map(|p| p.target),
+            Some(ShapeTarget::Popup),
+            "弹窗请求不得被主窗参数覆盖"
+        );
+        assert_eq!(gate.take(1), None, "取走后不得重复执行");
+        gate.leave(1);
+        gate.leave(2);
+        assert!(gate.try_enter(1), "离开后必须能再次进入");
+    }
+
+    #[test]
+    fn latest_reentry_request_wins_per_hwnd() {
+        let mut gate = ApplyGate::default();
+        assert!(gate.try_enter(7));
+        gate.defer(7, POPUP_16);
+        gate.defer(
+            7,
+            PendingShape {
+                target: ShapeTarget::Popup,
+                radius_milli: 20_000,
+            },
+        );
+        assert_eq!(gate.take(7).unwrap().radius_milli, 20_000);
+    }
+
+    /// 同参数重入：请求按最新一条记录，外层只能取走一次（不丢、不重复执行）。
+    #[test]
+    fn same_shape_reentry_is_kept_and_consumed_once() {
+        let mut gate = ApplyGate::default();
+        assert!(gate.try_enter(9));
+        assert!(!gate.try_enter(9), "同 hwnd 重入必须被拦下");
+        gate.defer(9, POPUP_16);
+        assert_eq!(gate.take(9), Some(POPUP_16));
+        assert_eq!(gate.take(9), None, "补偿不得重复执行");
+        gate.leave(9);
+        assert!(gate.try_enter(9), "收敛后必须能再次进入");
+    }
+
+    /// 期间多次请求（含目标变化）：下一 pass 只能用最新参数，旧请求不得回写。
+    #[test]
+    fn latest_pending_replaces_older_target_and_radius() {
+        let mut gate = ApplyGate::default();
+        assert!(gate.try_enter(3));
+        gate.defer(3, POPUP_16);
+        gate.defer(3, MAIN_18);
+        assert_eq!(gate.take(3), Some(MAIN_18), "必须以最新请求为准");
+        assert_eq!(gate.take(3), None, "旧请求不得残留");
+    }
+
+    /// P3-01：销毁清理必须覆盖重入调度状态；句柄复用后不得命中旧未决请求。
+    #[test]
+    fn gate_forget_clears_pending_and_applying_before_hwnd_reuse() {
+        let mut gate = ApplyGate::default();
+        assert!(gate.try_enter(42));
+        assert!(!gate.try_enter(42));
+        gate.defer(42, POPUP_16);
+        gate.forget(42);
+        assert_eq!(gate.take(42), None, "销毁后不得留下未决补偿请求");
+        // 句柄被系统复用：新窗口必须能进入，且不受旧状态影响
+        assert!(gate.try_enter(42));
+        assert_eq!(gate.take(42), None);
+    }
+
+    /// 真线程同步（channel 作同步点，不 sleep）：同 hwnd 后到请求被延后记录，
+    /// 外层取走后不得丢失。
+    #[test]
+    fn gate_serializes_same_hwnd_across_threads() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let shared = Arc::new(Mutex::new(ApplyGate::default()));
+        assert!(shared.lock().unwrap().try_enter(5));
+        let (tx, rx) = mpsc::channel();
+        let second = Arc::clone(&shared);
+        let handle = std::thread::spawn(move || {
+            let mut gate = second.lock().unwrap();
+            let entered = gate.try_enter(5);
+            if !entered {
+                gate.defer(5, POPUP_16);
+            }
+            tx.send(entered).unwrap();
+        });
+        let entered = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!entered, "同 hwnd 后到调用必须被延后");
+        let mut gate = shared.lock().unwrap();
+        gate.leave(5);
+        assert_eq!(gate.take(5), Some(POPUP_16), "延后请求不得丢失");
+        drop(gate);
+        handle.join().unwrap();
+    }
+
+    /// 真线程同步（Barrier 在同一临界点放行）：不同 hwnd 互不阻塞。
+    #[test]
+    fn gate_allows_different_hwnds_concurrently() {
+        use std::sync::{mpsc, Arc, Barrier};
+
+        let shared = Arc::new(Mutex::new(ApplyGate::default()));
+        let barrier = Arc::new(Barrier::new(2));
+        let (tx, rx) = mpsc::channel();
+        let handles: Vec<_> = [1isize, 2isize]
+            .into_iter()
+            .map(|hwnd| {
+                let gate = Arc::clone(&shared);
+                let barrier = Arc::clone(&barrier);
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let entered = gate.lock().unwrap().try_enter(hwnd);
+                    tx.send((hwnd, entered)).unwrap();
+                })
+            })
+            .collect();
+        for _ in 0..2 {
+            let (hwnd, entered) = rx.recv().unwrap();
+            assert!(entered, "hwnd {hwnd} 被其它窗口阻塞");
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    /// 连续尺寸变化只保留最新一次 pass 的尺寸，用于稳定性判定。
+    #[test]
+    fn repeated_resize_passes_settle_on_latest_size_per_hwnd() {
+        let mut cache = RegionCache::new();
+        for (w, h) in [(300, 700), (313, 751), (280, 640), (313, 751)] {
+            cache.set_last_pass_size(7, (w, h));
+        }
+        assert_eq!(cache.last_pass_size(7), Some((313, 751)));
+        assert_eq!(cache.last_pass_size(8), None, "其它窗口不得共享稳定性记录");
+    }
+
+    #[test]
+    fn radius_milli_clamps_and_rounds_like_set_radius() {
+        assert_eq!(radius_milli(f64::NAN), 18_000, "非法值回退 18");
+        assert_eq!(radius_milli(-1.0), 0);
+        assert_eq!(radius_milli(40.5), 40_000);
+        assert_eq!(radius_milli(16.0), 16_000);
+        assert_eq!(radius_milli(16.0004), 16_000);
+    }
+
+    /// 窗口销毁后，尺寸/DPI/半径缓存（含稳定性记录）必须一并清除；
+    /// 句柄被系统复用后不得误判为「已应用」。
+    #[test]
+    fn forget_window_clears_stamp_and_stability() {
+        let mut cache = RegionCache::new();
+        let stamp = RegionStamp {
+            hwnd: 5,
+            width: 300,
+            height: 700,
+            radius: 20,
+            scale_milli: 1250,
+        };
+        cache.update(stamp);
+        cache.set_last_pass_size(5, (300, 700));
+        assert!(cache.is_current(&stamp));
+        cache.forget(5);
+        assert!(!cache.is_current(&stamp));
+        assert!(cache.last_pass_size(5).is_none());
+    }
+
+    /// DPI 变化必须让弹窗区域缓存失效并重算（半径物理像素随 scale 变化）。
+    #[test]
+    fn popup_stamp_invalidates_on_dpi_change() {
+        let stamp = RegionStamp {
+            hwnd: 5,
+            width: 300,
+            height: 700,
+            radius: 20,
+            scale_milli: 1250,
+        };
+        let mut cache = RegionCache::new();
+        cache.update(stamp);
+        assert!(cache.is_current(&stamp));
+        for scale in [1000, 1500, 2000] {
+            assert!(
+                !cache.is_current(&RegionStamp {
+                    scale_milli: scale,
+                    ..stamp
+                }),
+                "scale={scale} 必须失效"
+            );
+        }
     }
 
     // ── 分类胶囊区域几何 ──────────────────────────────────────
@@ -1959,19 +2428,22 @@ mod tests {
             "非法 DPI 回退 1"
         );
 
-        // 窗口太窄放不下面板：只保留轨道，绝不产生越界区域
-        let s = capsule_regions(
-            120,
-            420,
-            1.0,
-            &CapsuleParams {
-                expanded: true,
-                ..CAP
-            },
-        )
-        .unwrap();
-        assert!(s.panel.is_none());
-        assert!(s.rail.x + s.rail.width <= 120);
+        // 窗口太窄放不下面板：展开请求必须整体失败，不能退化成「只裁轨道」后
+        // 仍报告成功（否则前端提交 docked-revealed，面板控件被裁进翼片）。
+        assert!(
+            capsule_regions(
+                120,
+                420,
+                1.0,
+                &CapsuleParams {
+                    expanded: true,
+                    ..CAP
+                }
+            )
+            .is_none()
+        );
+        // 折叠态同样宽度只要求容纳轨道，仍应成功
+        assert!(capsule_regions(120, 420, 1.0, &CAP).is_some());
         // 窗口太矮：轨道长度钳制到窗口高
         let s = capsule_regions(400, 90, 1.0, &CAP).unwrap();
         assert_eq!((s.rail.y, s.rail.height), (0, 90));
@@ -2103,9 +2575,9 @@ mod tests {
                 expanded: true,
                 ..CAP
             };
-            assert!(apply_capsule_pass(hwnd as isize, 404, 504, 1.0, cap));
+            assert!(apply_capsule_pass(hwnd as isize, 404, 504, 1.0, cap, false));
             assert!(
-                apply_capsule_pass(hwnd as isize, 404, 504, 1.0, cap),
+                apply_capsule_pass(hwnd as isize, 404, 504, 1.0, cap, false),
                 "缓存命中后回读校验必须仍然成立"
             );
 

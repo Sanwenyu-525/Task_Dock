@@ -392,6 +392,50 @@ pub fn reorder_workflows(db: &Db, ordered_ids: &[String]) -> AppResult<()> {
     })
 }
 
+/// 编辑保存：名称 / 描述 / 步骤整表替换在同一事务内完成。
+///
+/// 之前的「先 replace_steps 再 update_workflow」是两条独立事务，元信息失败时
+/// 步骤已落库、界面却只报失败。编辑路径必须整次原子，避免半保存状态。
+pub fn replace_steps_and_update(
+    db: &Db,
+    workflow_id: &str,
+    name: String,
+    description: String,
+    inputs: Vec<StepInput>,
+) -> AppResult<Vec<WorkflowStepRow>> {
+    let name = check_workflow_name(&name)?;
+    let description = check_workflow_description(&description)?;
+    let normalized = normalize_step_inputs(db, &inputs)?;
+    let now = now_iso();
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let exists: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM workflows WHERE id = ?1",
+                [workflow_id],
+                |r| r.get(0),
+            )
+            .map_err(AppError::from)?;
+        if exists == 0 {
+            return Err(AppError::NotFound(format!("工作流不存在: {}", workflow_id)));
+        }
+        tx.execute(
+            "UPDATE workflows SET name = ?1, description = ?2, updated_at = ?3 WHERE id = ?4",
+            params![name, description, now, workflow_id],
+        )
+        .map_err(AppError::from)?;
+        tx.execute(
+            "DELETE FROM workflow_steps WHERE workflow_id = ?1",
+            [workflow_id],
+        )
+        .map_err(AppError::from)?;
+        insert_steps_tx(&tx, workflow_id, &normalized)?;
+        tx.commit().map_err(AppError::from)?;
+        Ok(())
+    })?;
+    list_steps(db, workflow_id)
+}
+
 /// 整表替换步骤编排（新增 / 编辑 / 删除 / 排序共用一个原子事务）。
 pub fn replace_steps(
     db: &Db,

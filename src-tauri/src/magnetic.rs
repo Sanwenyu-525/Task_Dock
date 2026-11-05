@@ -1187,6 +1187,10 @@ mod win {
             WM_EXITSIZEMOVE => {
                 let result = call_old(hwnd, msg, wparam, lparam);
                 IN_SIZE_MOVE.with(|f| f.set(false));
+                // 拖拽期间 `window_shape::apply` 被推迟（不逐帧 SetWindowRgn / DWM）：
+                // 松手后在窗口线程一次性校准区域与 DWM 角偏好。这里直接调用，
+                // 与 `lib.rs` 的事件回调同处主线程，不额外起线程。
+                crate::window_shape::flush_deferred(hwnd as isize);
                 // 拖拽期间前端可能已解除吸附（拖离阈值/跨边/显式解除，DOCKED 已清零）：
                 // 此时窗口几何由前端接管（恢复模式尺寸、回工作区），原生磁力不得再回弹——
                 // finish 的停靠基准是拖拽开始时的快照，按它回弹会把刚解除的窗口拽回停靠位。
@@ -1355,6 +1359,15 @@ mod win {
         TARGET.load(Ordering::Relaxed) != 0
     }
 
+    /// 指定窗口是否正处于系统模态移动/缩放循环内（`WM_ENTERSIZEMOVE`…`WM_EXITSIZEMOVE`）。
+    ///
+    /// 供 `window_shape` 判定「拖拽期间不要逐帧写区域/DWM」：窗口移动不改变
+    /// 窗口自身尺寸，区域在窗口局部坐标里也不随位置变化，因此拖拽期间唯一
+    /// 需要的原生动作是**推迟到松手后一次性校准**。
+    pub fn in_size_move(hwnd: isize) -> bool {
+        TARGET.load(Ordering::Relaxed) == hwnd && IN_SIZE_MOVE.with(|f| f.get())
+    }
+
     #[cfg(test)]
     mod style_tests {
         use super::*;
@@ -1480,7 +1493,12 @@ mod win {
 }
 
 #[cfg(windows)]
-pub use win::{install, installed, uninstall};
+pub use win::{in_size_move, install, installed, uninstall};
+
+#[cfg(not(windows))]
+pub fn in_size_move(_hwnd: isize) -> bool {
+    false
+}
 
 #[cfg(not(windows))]
 pub fn install(_hwnd: isize) -> bool {

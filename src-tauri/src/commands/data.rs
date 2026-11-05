@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::agents::now_iso;
 use crate::commands::backup::BackupKind;
@@ -723,6 +723,7 @@ fn backup_to_dir(
         },
         clipboard_dir: Some(clipboard.as_path()),
         shelf_dir: Some(shelf.as_path()),
+        data_dir: Some(data_dir),
     };
     let result = crate::commands::backup::write_bundle(db, sources, &path, kind)?;
     Ok((path.to_string_lossy().to_string(), result))
@@ -783,6 +784,8 @@ pub fn list_backups(app: tauri::AppHandle) -> AppResult<Vec<serde_json::Value>> 
             "totals": bundle.as_ref().and_then(|m| m.get("counts")).cloned().unwrap_or(serde_json::Value::Null),
             "truncated_tables": bundle.as_ref().and_then(|m| m.get("truncated_tables")).cloned().unwrap_or(serde_json::Value::Null),
             "extended_modules": bundle.as_ref().and_then(|m| m.get("extended_modules")).cloned().unwrap_or(serde_json::Value::Bool(false)),
+            // 可选用户配置（快捷键/语言/微件）：旧备份没有该字段时为 false。
+            "config_included": bundle.as_ref().and_then(|m| m.get("config_included")).cloned().unwrap_or(serde_json::Value::Bool(false)),
         }));
     }
     out.sort_by(|a, b| {
@@ -1978,6 +1981,12 @@ fn import_data_inner(
         // 用户表已被整体替换：丢弃专注模块的进程内缓存（偏好/轮次/活跃会话），
         // 否则旧值会写回新库，界面也可能显示新库中已不存在的会话。
         crate::focus::reset_runtime();
+        // 恢复包含用户配置时通知各窗口立即重读（pending 标记保证重启后仍生效）。
+        if outcome.config.is_some() {
+            let _ = app.emit(crate::user_preferences::EVENT_RESTORED, ());
+            // 快捷键注册状态可能已变化，设置页据此重新拉取快照。
+            let _ = app.emit(crate::hotkeys::EVENT_CHANGED, ());
+        }
         return Ok(outcome);
     }
     let raw = std::fs::read_to_string(source)?;
@@ -3110,6 +3119,7 @@ mod tests {
                 archive_dir: Some(&archive),
                 clipboard_dir: Some(&data_dir.join("clipboard")),
                 shelf_dir: Some(&data_dir.join("shelf")),
+                data_dir: Some(&data_dir),
             },
             &bundle,
             BackupKind::Full,

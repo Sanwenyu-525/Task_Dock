@@ -43,6 +43,11 @@ pub struct NavTargetRow {
     pub use_count: i64,
     pub created_at: String,
     pub updated_at: String,
+    /// "app" = 普通应用快捷方式（按程序身份去重）；"window" = 指定窗口快捷方式
+    /// （同程序可多条，按稳定窗口身份去重）。历史行为默认为 "app"。
+    pub shortcut_kind: String,
+    /// 指定窗口快捷方式的稳定身份（类名+标题+exe，不含 HWND）；普通应用为 null。
+    pub bound_window_identity: Option<WindowMemory>,
 }
 
 /// 保存/更新目标的输入（target_type 决定校验哪些字段）。
@@ -113,7 +118,7 @@ pub struct NavLogRow {
     pub created_at: String,
 }
 
-const TARGET_COLS: &str = "id, display_name, target_type, app_key, exe_path, launch_args, working_dir, app_user_model_id, url, path, agent_source_id, agent_session_id, window_title_hint, icon, category, favorite, hidden, last_used_at, use_count, created_at, updated_at";
+const TARGET_COLS: &str = "id, display_name, target_type, app_key, exe_path, launch_args, working_dir, app_user_model_id, url, path, agent_source_id, agent_session_id, window_title_hint, icon, category, favorite, hidden, last_used_at, use_count, created_at, updated_at, shortcut_kind, bound_window_identity";
 
 fn row_to_target(r: &rusqlite::Row<'_>) -> rusqlite::Result<NavTargetRow> {
     Ok(NavTargetRow {
@@ -138,6 +143,15 @@ fn row_to_target(r: &rusqlite::Row<'_>) -> rusqlite::Result<NavTargetRow> {
         use_count: r.get(18)?,
         created_at: r.get(19)?,
         updated_at: r.get(20)?,
+        shortcut_kind: r.get(21)?,
+        bound_window_identity: {
+            let raw: String = r.get(22)?;
+            if raw.trim().is_empty() {
+                None
+            } else {
+                serde_json::from_str(&raw).ok()
+            }
+        },
     })
 }
 
@@ -254,7 +268,7 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
     db.with_conn(|conn| {
         let existing: Option<String> = conn
             .query_row(
-                "SELECT id FROM navigation_targets WHERE app_key = ?1 AND target_type = ?2",
+                "SELECT id FROM navigation_targets WHERE app_key = ?1 AND target_type = ?2 AND shortcut_kind = 'app'",
                 rusqlite::params![app_key, input.target_type],
                 |r| r.get(0),
             )
@@ -299,8 +313,9 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
                 "INSERT INTO navigation_targets
                    (id, display_name, target_type, app_key, exe_path, launch_args, working_dir,
                     app_user_model_id, url, path, agent_source_id, agent_session_id,
-                    window_title_hint, icon, category, favorite, hidden, use_count, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, 0, 0, ?16, ?16)",
+                    window_title_hint, icon, category, favorite, hidden, use_count, created_at, updated_at,
+                    shortcut_kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 0, 0, 0, ?16, ?16, 'app')",
                 rusqlite::params![
                     id,
                     name,
@@ -323,6 +338,111 @@ pub fn save_target(db: &Db, input: &TargetInput) -> AppResult<NavTargetRow> {
         }
         get_target_conn(conn, &id)?.ok_or_else(|| AppError::NotFound("目标保存后读取失败".into()))
     })
+}
+
+/// 从真实窗口创建「指定窗口快捷方式」：同一程序可保留多条，每条绑定一个稳定
+/// 窗口身份（类名+标题+exe，**绝不持久化 HWND**）。
+///
+/// 语义边界：
+/// - 只认窗口自身可解析的 exe，权限受限时明确拒绝，不猜程序身份；
+/// - 同程序同身份重复添加 = 复用原目标，不产生重复行；同程序不同窗口 = 新行；
+/// - 不聚焦、不启动、不改动用户当前窗口（添加是配置行为，不是导航行为）。
+pub fn save_window_shortcut(
+    db: &Db,
+    hwnd: isize,
+    display_name: Option<&str>,
+) -> AppResult<NavTargetRow> {
+    let w = super::window_manager::top_windows_force()
+        .into_iter()
+        .find(|w| w.hwnd == hwnd)
+        .ok_or_else(|| AppError::NotFound("窗口已关闭，请重新选择".into()))?;
+    save_window_shortcut_for_window(db, &w, display_name)
+}
+
+/// `save_window_shortcut` 的纯数据核心（不枚举窗口，便于单测）。
+fn save_window_shortcut_for_window(
+    db: &Db,
+    w: &WindowInfo,
+    display_name: Option<&str>,
+) -> AppResult<NavTargetRow> {
+    let raw_exe = w
+        .exe_path
+        .clone()
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "无法识别该窗口所属程序（权限受限），不能添加；请改用「仅添加应用」或手动登记 EXE"
+                    .into(),
+            )
+        })?;
+    let exe = validate_exe_path(&raw_exe)?;
+    let app_key = exe.to_string_lossy().to_ascii_lowercase();
+    let name = display_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| derive_window_name(w));
+    if name.chars().count() > 120 {
+        return Err(AppError::Validation("目标名称超过 120 字符".into()));
+    }
+    let identity = WindowMemory::from_window_with_origin(w, MemoryOrigin::User);
+    let bound = serde_json::to_string(&identity)?;
+    let now = now_iso();
+
+    let id = db.with_conn(|conn| {
+        // 同程序同稳定身份复用；同程序不同窗口保留独立行（互不覆盖窗口记忆）。
+        let mut stmt = conn.prepare(
+            "SELECT id, bound_window_identity FROM navigation_targets
+             WHERE target_type = 'application' AND shortcut_kind = 'window' AND app_key = ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![app_key], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (existing_id, raw) = row?;
+            let Ok(existing) = serde_json::from_str::<WindowMemory>(&raw) else {
+                continue;
+            };
+            if same_window_identity(&existing, &identity) {
+                return Ok::<_, AppError>(existing_id);
+            }
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO navigation_targets
+               (id, display_name, target_type, app_key, exe_path, launch_args, working_dir,
+                app_user_model_id, url, path, agent_source_id, agent_session_id,
+                window_title_hint, icon, category, favorite, hidden, use_count, created_at, updated_at,
+                shortcut_kind, bound_window_identity)
+             VALUES (?1, ?2, 'application', ?3, ?4, '', '', '', '', '', '', '',
+                     '', '', '', 0, 0, 0, ?5, ?5, 'window', ?6)",
+            rusqlite::params![id, name, app_key, raw_exe.trim(), now, bound],
+        )?;
+        Ok(id)
+    })?;
+
+    get_target(db, &id)?.ok_or_else(|| AppError::NotFound("目标保存后读取失败".into()))
+}
+
+fn same_window_identity(a: &WindowMemory, b: &WindowMemory) -> bool {
+    a.class_name == b.class_name
+        && a.title == b.title
+        && a.exe_path.eq_ignore_ascii_case(&b.exe_path)
+}
+
+/// 窗口标题 → 默认显示名：取分隔符前的程序/文档名，截断到 60 字符。
+fn derive_window_name(w: &WindowInfo) -> String {
+    let mut name = w.title.trim();
+    for sep in [" - ", " – ", " · "] {
+        if let Some(head) = name.split(sep).next() {
+            name = head;
+        }
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return "窗口应用".into();
+    }
+    name.chars().take(60).collect()
 }
 
 fn get_target_conn(conn: &rusqlite::Connection, id: &str) -> AppResult<Option<NavTargetRow>> {
@@ -1594,5 +1714,136 @@ mod tests {
         assert_eq!(logs[0].target_name, "目标B", "最新在前");
         prune_logs(&db, 1).unwrap();
         assert_eq!(recent_logs(&db, 10).unwrap().len(), 1);
+    }
+
+    // ── 指定窗口快捷方式（v33）──────────────────────────────
+
+    fn win_fix(hwnd: isize, title: &str, exe: &str) -> WindowInfo {
+        WindowInfo {
+            hwnd,
+            pid: 42,
+            title: title.into(),
+            class_name: "Chrome_WidgetWin_1".into(),
+            is_minimized: false,
+            exe_path: Some(exe.into()),
+        }
+    }
+
+    #[test]
+    fn window_shortcuts_allow_same_program_multiple_windows_without_overwrites() {
+        let db = Db::open_in_memory().unwrap();
+        let gh = win_fix(1001, "GitHub - Google Chrome", "C:\\Windows\\System32\\notepad.exe");
+        let chat = win_fix(1002, "ChatGPT - Google Chrome", "C:\\Windows\\System32\\notepad.exe");
+        let a = save_window_shortcut_for_window(&db, &gh, None).unwrap();
+        let b = save_window_shortcut_for_window(&db, &chat, None).unwrap();
+        assert_ne!(a.id, b.id, "同程序不同窗口必须是独立快捷方式");
+        assert_eq!(a.shortcut_kind, "window");
+        assert_eq!(b.shortcut_kind, "window");
+        assert_eq!(a.app_key, b.app_key, "程序身份仍是真实 exe，不伪造 app_key");
+        assert_eq!(
+            a.bound_window_identity.as_ref().unwrap().title,
+            "GitHub - Google Chrome"
+        );
+        assert_eq!(
+            b.bound_window_identity.as_ref().unwrap().title,
+            "ChatGPT - Google Chrome"
+        );
+        // 重复添加同一窗口 = 复用，不产生重复行
+        let again = save_window_shortcut_for_window(&db, &gh, Some("重复")).unwrap();
+        assert_eq!(again.id, a.id);
+        let count: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM navigation_targets WHERE shortcut_kind = 'window'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn window_shortcut_coexists_with_plain_app_and_plain_dedupe_is_unchanged() {
+        let db = Db::open_in_memory().unwrap();
+        let w = win_fix(2001, "GitHub - Google Chrome", "C:\\Windows\\System32\\notepad.exe");
+        let win = save_window_shortcut_for_window(&db, &w, None).unwrap();
+        let plain = save_target(&db, &app_input("C:\\Windows\\System32\\notepad.exe", "Chrome")).unwrap();
+        let plain2 = save_target(&db, &app_input("C:\\Windows\\System32\\notepad.exe", "Chrome 改名")).unwrap();
+        assert_ne!(win.id, plain.id, "窗口快捷方式不占用普通应用行");
+        assert_eq!(plain.id, plain2.id, "普通应用仍按 app_key 去重");
+        assert_eq!(plain.shortcut_kind, "app");
+        assert_eq!(win.shortcut_kind, "window");
+    }
+
+    #[test]
+    fn window_shortcut_persists_identity_without_hwnd() {
+        let db = Db::open_in_memory().unwrap();
+        let a = save_window_shortcut_for_window(
+            &db,
+            &win_fix(3001, "Inbox - Chrome", "C:\\Windows\\System32\\notepad.exe"),
+            Some("工作邮箱"),
+        )
+        .unwrap();
+        assert_eq!(a.display_name, "工作邮箱");
+        let raw: String = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT bound_window_identity FROM navigation_targets WHERE id = ?1",
+                    [&a.id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert!(!raw.contains("3001"), "稳定身份绝不能持久化 HWND");
+        assert!(raw.contains("Inbox - Chrome"));
+        // 重新读取（模拟重启后的持久化读取）仍能还原身份
+        let reloaded = get_target(&db, &a.id).unwrap().unwrap();
+        assert_eq!(
+            reloaded.bound_window_identity.unwrap().title,
+            "Inbox - Chrome"
+        );
+    }
+
+    #[test]
+    fn window_shortcut_rejects_missing_exe_identity() {
+        let db = Db::open_in_memory().unwrap();
+        let mut w = win_fix(4001, "受保护窗口", "C:\\Windows\\System32\\notepad.exe");
+        w.exe_path = None;
+        let err = save_window_shortcut_for_window(&db, &w, None).unwrap_err();
+        assert!(err.to_string().contains("权限受限"), "实际: {}", err);
+        let count: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM navigation_targets", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "拒绝时不得留下半成品目标");
+    }
+
+    #[test]
+    fn window_shortcut_deleting_one_leaves_the_other_bound() {
+        let db = Db::open_in_memory().unwrap();
+        let a = save_window_shortcut_for_window(
+            &db,
+            &win_fix(5001, "项目 A - Chrome", "C:\\Windows\\System32\\notepad.exe"),
+            None,
+        )
+        .unwrap();
+        let b = save_window_shortcut_for_window(
+            &db,
+            &win_fix(5002, "项目 B - Chrome", "C:\\Windows\\System32\\notepad.exe"),
+            None,
+        )
+        .unwrap();
+        delete_target(&db, &a.id).unwrap();
+        let left = get_target(&db, &b.id).unwrap().unwrap();
+        assert_eq!(
+            left.bound_window_identity.unwrap().title,
+            "项目 B - Chrome",
+            "删除一个窗口快捷方式不得影响另一个的绑定"
+        );
     }
 }

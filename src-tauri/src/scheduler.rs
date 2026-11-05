@@ -115,6 +115,30 @@ async fn tick(app: &AppHandle, db: &Db, hub: &AgentHub) -> AppResult<()> {
         hub.notify_reminder_popups(&popups);
     }
     let task_ids: Vec<String> = fired.iter().map(|n| n.task_id.clone()).collect();
+    // 统一音频服务：只有「仍在过期补偿窗口内」的提醒才出声；
+    // 严重过期的旧提醒仍照常入库、推进重复任务与广播刷新，只是不再打扰用户。
+    // 是否静音/是否开启 TTS/是否只关桌面通知，由前端按设置统一裁决，不在此过滤 popup。
+    let audio_items: Vec<serde_json::Value> = fired
+        .iter()
+        .filter(|n| n.audio)
+        .map(|n| {
+            serde_json::json!({
+                "eventId": format!("reminder:{}:{}", n.task_id, n.occurrence),
+                "kind": if n.reminder_kind == "advance" { "reminder" } else { "task_due" },
+                "sourceName": null,
+                "taskTitle": n.task_title,
+            })
+        })
+        .collect();
+    if !audio_items.is_empty() {
+        // 只发主窗口：通知/菜单/胶囊/微件窗口不持有音频调度者，
+        // 从结构上保证跨 WebView 不会重复播放。
+        let _ = app.emit_to(
+            "main",
+            "audio-event",
+            serde_json::json!({ "items": audio_items }),
+        );
+    }
     let _ = app.emit(
         "reminder-fired",
         serde_json::json!({ "task_ids": task_ids }),
@@ -134,8 +158,17 @@ pub struct FiredNotify {
     pub title: String,
     pub body: String,
     pub task_id: String,
+    /// 任务标题（语音播报可选使用；只进内存，不落盘、不进缓存 Key 之外的日志）
+    pub task_title: String,
+    /// 提醒类型：due | advance（用于区分「任务到期」与「日程提醒」的音频开关）
+    pub reminder_kind: String,
+    /// 期次身份（occurrence），与 task_id 组合成音频事件的唯一去重标识
+    pub occurrence: String,
     /// 是否允许弹 OS 通知：与业务状态分离，静音不影响 fired/推进/广播
     pub popup: bool,
+    /// 是否允许发声：只在过期补偿窗口（overdue_grace_hours）内为 true；
+    /// 超窗仍入库/推进，但不再播放提示音或语音。
+    pub audio: bool,
 }
 
 /// 触发一条提醒：领取 → 通知记录 →（重复任务）推进，全部在同一个事务内完成。
@@ -233,7 +266,11 @@ pub fn fire_reminder_core(
             title,
             body,
             task_id: rem.task_id.clone(),
+            task_title: item.task_title.clone(),
+            reminder_kind: rem.kind.clone(),
+            occurrence: rem.occurrence.clone(),
             popup: inserted && notify,
+            audio: within_grace,
         }))
     })
 }
@@ -626,6 +663,67 @@ mod tests {
             })
             .unwrap();
         assert_eq!(notified, 1, "只产生一条提醒通知");
+    }
+
+    #[test]
+    fn overdue_beyond_grace_is_silent_but_still_records_and_advances() {
+        // 超补偿窗口：不允许打扰（无提示音/语音），但业务历史与重复任务推进不受影响。
+        let db = setup();
+        let past = (Utc::now() - chrono::Duration::hours(30)).with_timezone(&chrono::Local);
+        let task_id = seed_recurring_task(&db, past);
+        let mut settings = Settings::load(&db).unwrap();
+        settings.overdue_grace_hours = 1;
+        settings.notify_reminder = true;
+        settings.notify_muted = false;
+        let item = due_item(&db, &task_id);
+        let out = fire_reminder_core(&db, &item, &Utc::now(), &settings)
+            .unwrap()
+            .expect("提醒仍应触发入库");
+        assert!(!out.audio, "超出 overdue_grace_hours 不得发声");
+        assert!(!out.popup, "超出补偿窗口不弹桌面通知");
+        let notified: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM notification_history WHERE kind = 'reminder' AND ref_id = ?1",
+                    rusqlite::params![task_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(notified, 1, "静音策略不得丢弃通知历史");
+        let new_due: String = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT due_at FROM tasks WHERE id = ?1",
+                    rusqlite::params![task_id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert!(
+            parse_utc(&new_due).unwrap() > Utc::now(),
+            "重复任务仍应推进到未来"
+        );
+    }
+
+    #[test]
+    fn notify_reminder_off_keeps_audio_but_skips_popup() {
+        // 「只关桌面通知、保留声音」：popup=false 不等于 audio=false。
+        let db = setup();
+        let past = (Utc::now() - chrono::Duration::minutes(5)).with_timezone(&chrono::Local);
+        let task_id = seed_recurring_task(&db, past);
+        let mut settings = Settings::load(&db).unwrap();
+        settings.overdue_grace_hours = 24;
+        settings.notify_reminder = false;
+        settings.notify_muted = false;
+        let item = due_item(&db, &task_id);
+        let out = fire_reminder_core(&db, &item, &Utc::now(), &settings)
+            .unwrap()
+            .expect("提醒仍应触发");
+        assert!(out.audio, "仅关桌面通知时仍应允许提示音/语音");
+        assert!(!out.popup, "关闭桌面通知后不弹窗");
     }
 
     #[test]

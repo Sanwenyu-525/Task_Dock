@@ -28,8 +28,12 @@ pub struct DiscoveredApp {
     pub app_user_model_id: String,
     /// 窗口标题提示（exe 无法唯一判定时的窗口匹配辅助，如「微信」）
     pub window_title_hint: String,
-    /// startmenu | registry | uwp | known
+    /// startmenu | registry | uwp | known | app_paths
     pub source: String,
+    /// normal（默认展示）| advanced（默认折叠，可在「显示高级项」查看）。
+    /// 无效候选（卸载/安装例程等）不会进入扫描结果。
+    #[serde(default)]
+    pub tier: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -253,13 +257,16 @@ fn scan_now() -> AppScanResult {
     counts.insert("registry".into(), apps.len() - n0);
 
     let n0 = apps.len();
-    let (uwp, uwp_ok) = scan_uwp();
+    let (uwp, uwp_ok, uwp_truncated) = scan_uwp();
     for a in uwp {
         push_unique(&mut apps, a);
     }
     counts.insert("uwp".into(), apps.len() - n0);
     if !uwp_ok {
         diagnostics.insert("uwp_scan_failed".into(), 1);
+    }
+    if uwp_truncated {
+        diagnostics.insert("uwp_truncated".into(), 1);
     }
 
     apps.sort_by(|a, b| {
@@ -309,18 +316,34 @@ fn scan_start_menu() -> (Vec<DiscoveredApp>, bool) {
     }
     let mut out = Vec::new();
     let mut budget = MAX_LNK_FILES;
+    let mut truncated = false;
     for dir in dirs {
-        walk_lnk_dir(&dir, 0, &mut budget, &mut out);
         if budget == 0 {
+            // 还有未遍历的根目录：预算确实被耗尽，不能只看 budget==0 就报截断。
+            truncated = true;
             break;
         }
+        walk_lnk_dir(&dir, 0, &mut budget, &mut out, &mut truncated);
     }
-    (out, budget == 0)
+    (out, truncated)
 }
 
 #[cfg(windows)]
-fn walk_lnk_dir(dir: &Path, depth: usize, budget: &mut usize, out: &mut Vec<DiscoveredApp>) {
-    if depth > MAX_LNK_DEPTH || *budget == 0 {
+fn walk_lnk_dir(
+    dir: &Path,
+    depth: usize,
+    budget: &mut usize,
+    out: &mut Vec<DiscoveredApp>,
+    truncated: &mut bool,
+) {
+    if depth > MAX_LNK_DEPTH {
+        // 深度上限：只有目录里确实还有内容时才标记「发现不完整」，空目录不算截断。
+        if std::fs::read_dir(dir)
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false)
+        {
+            *truncated = true;
+        }
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -328,11 +351,13 @@ fn walk_lnk_dir(dir: &Path, depth: usize, budget: &mut usize, out: &mut Vec<Disc
     };
     for entry in entries.flatten() {
         if *budget == 0 {
+            // 仍有未处理条目 → 预算截断；恰好处理完最后一条则不会走到这里。
+            *truncated = true;
             return;
         }
         let path = entry.path();
         if path.is_dir() {
-            walk_lnk_dir(&path, depth + 1, budget, out);
+            walk_lnk_dir(&path, depth + 1, budget, out, truncated);
         } else if path
             .extension()
             .map(|e| e.eq_ignore_ascii_case("lnk"))
@@ -354,10 +379,6 @@ fn parse_lnk(path: &Path) -> Option<DiscoveredApp> {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    let lower_name = display_name.to_ascii_lowercase();
-    if lower_name.contains("uninstall") || display_name.contains("卸载") {
-        return None;
-    }
     // 优先走 Windows Shell（IShellLinkW）：快捷方式的 LinkInfo 可能是历史遗留路径，
     // 真实目标在 LinkTargetIDList 中（例：微信的 .lnk 里 LinkInfo 仍指向已删除的
     // D:\微信\WeChat\WeChat.exe，而实际安装位置是 D:\微信\Weixin\Weixin.exe）。
@@ -389,6 +410,11 @@ fn parse_lnk(path: &Path) -> Option<DiscoveredApp> {
         return None;
     }
     let lower = target.to_ascii_lowercase();
+    let tier = candidate_tier(&display_name, &lower);
+    if tier == CandidateTier::Invalid {
+        // 卸载/安装例程不进入候选；高级项保留，由前端默认折叠、可展开。
+        return None;
+    }
     let working_dir = {
         let t = raw_wd.trim();
         if !t.is_empty() && Path::new(t).is_dir() {
@@ -407,6 +433,7 @@ fn parse_lnk(path: &Path) -> Option<DiscoveredApp> {
         working_dir,
         app_user_model_id: String::new(),
         source: "startmenu".into(),
+        tier: tier.as_str().to_string(),
     })
 }
 
@@ -430,21 +457,131 @@ fn scan_known() -> Vec<DiscoveredApp> {
                 working_dir: String::new(),
                 app_user_model_id: String::new(),
                 source: "known".into(),
+                tier: CandidateTier::Normal.as_str().to_string(),
             })
         })
         .collect()
 }
 
-/// exe 是否为卸载/安装辅助程序（不应当作可启动应用）。
-fn is_helper_exe(lower: &str) -> bool {
-    let stem = Path::new(lower)
+/// 候选分层：普通 / 高级（默认折叠、可展开）/ 无效（不进扫描结果）。
+/// 所有来源共用同一套判定，避免各扫描函数各自维护一份不一致的字符串黑名单。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateTier {
+    Normal,
+    Advanced,
+    Invalid,
+}
+
+impl CandidateTier {
+    fn as_str(self) -> &'static str {
+        match self {
+            CandidateTier::Normal => "normal",
+            CandidateTier::Advanced => "advanced",
+            CandidateTier::Invalid => "invalid",
+        }
+    }
+}
+
+fn exe_stem(exe_lower: &str) -> String {
+    Path::new(exe_lower)
         .file_stem()
         .map(|s| s.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    stem.starts_with("unins")
-        || stem.contains("uninstall")
-        || stem.contains("setup")
-        || stem.contains("installer")
+        .unwrap_or_default()
+}
+
+/// 卸载/安装例程：只有精确的文件名形态才判无效，避免把
+/// `uninstall-tool.exe`（合法卸载管理器）或路径含 setup 的开发工具误杀。
+fn is_uninstaller_stem(stem: &str) -> bool {
+    if matches!(stem, "uninstall" | "uninstaller" | "uninst") {
+        return true;
+    }
+    // unins000.exe / unins001.exe 等 Inno Setup 卸载器
+    stem.strip_prefix("unins")
+        .map(|rest| rest.is_empty() || rest.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
+fn is_installer_stem(stem: &str) -> bool {
+    if matches!(
+        stem,
+        "setup" | "installer" | "install" | "installshield" | "dpinst" | "dpinst64" | "driverinstall"
+    ) {
+        return true;
+    }
+    // setup64.exe / setup_x64.exe 等安装包，不把 setup-tool 之类的合法工具算进来
+    stem.strip_prefix("setup")
+        .map(|rest| {
+            !rest.is_empty()
+                && rest
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '_' || c == '-' || c == 'x')
+        })
+        .unwrap_or(false)
+}
+
+/// 高级项：可启动但对日常使用没有意义的组件（更新器 / 崩溃报告 / 后台服务 / 维护工具）。
+/// 只按「文件名独立语义 + 显示名完整短语」匹配，不做任意子串删除，
+/// 因此开发工具、终端、软件管理器里的 update/service/setup 不会被误折叠。
+fn is_advanced_candidate(display_name: &str, stem: &str) -> bool {
+    let name = display_name.trim().to_ascii_lowercase();
+    const NAME_MARKERS: &[&str] = &[
+        "update service",
+        "crash reporter",
+        "crashpad",
+        "background service",
+        "maintenance tool",
+        "uninstall helper",
+    ];
+    if NAME_MARKERS.iter().any(|m| name.contains(m)) {
+        return true;
+    }
+    // 完整词尾：避免把 `CodeUpdater 调试工具` 这类名字里的子串当成更新器
+    if name == "updater" || name.ends_with(" updater") {
+        return true;
+    }
+    // 名称明确是卸载入口（快捷方式可能指向主程序+卸载参数），默认折叠但仍可展开
+    if name.starts_with("uninstall") || display_name.starts_with("卸载") {
+        return true;
+    }
+    // 中文短语（完整词，不做单字匹配）
+    const CN_MARKERS: &[&str] = &[
+        "更新服务",
+        "更新程序",
+        "后台服务",
+        "崩溃报告",
+        "维护工具",
+        "卸载辅助",
+        "驱动安装",
+    ];
+    if CN_MARKERS.iter().any(|m| display_name.contains(m)) {
+        return true;
+    }
+    // 文件名级：只认独立后缀/精确名，`service-hub`、`update-checker` 之类开发工具不受影响。
+    const STEM_SUFFIXES: &[&str] = &[
+        "updater",
+        "crashpad_handler",
+        "crashreporter",
+        "dismhost",
+        "maintenancetool",
+    ];
+    if STEM_SUFFIXES.iter().any(|m| {
+        stem == *m || stem.ends_with(&format!("_{}", m)) || stem.ends_with(&format!("-{}", m))
+    }) {
+        return true;
+    }
+    stem == "service" || stem.ends_with("_service") || stem.ends_with("-service")
+}
+
+/// 统一候选判定：各来源只负责收集，不再各自写一套卸载/更新过滤。
+fn candidate_tier(display_name: &str, exe_lower: &str) -> CandidateTier {
+    let stem = exe_stem(exe_lower);
+    if is_uninstaller_stem(&stem) || is_installer_stem(&stem) {
+        return CandidateTier::Invalid;
+    }
+    if is_advanced_candidate(display_name, &stem) {
+        return CandidateTier::Advanced;
+    }
+    CandidateTier::Normal
 }
 
 /// Uninstall 注册表的 DisplayIcon 常写成 `"C:\App\app.exe",0`，也可能只是图标资源
@@ -495,9 +632,6 @@ fn scan_app_paths() -> Vec<DiscoveredApp> {
                 continue;
             }
             let lower = exe.to_ascii_lowercase();
-            if is_helper_exe(&lower) {
-                continue;
-            }
             let display_name = name
                 .strip_suffix(".exe")
                 .or_else(|| name.strip_suffix(".EXE"))
@@ -505,6 +639,10 @@ fn scan_app_paths() -> Vec<DiscoveredApp> {
                 .trim()
                 .to_string();
             if display_name.is_empty() {
+                continue;
+            }
+            let tier = candidate_tier(&display_name, &lower);
+            if tier == CandidateTier::Invalid {
                 continue;
             }
             out.push(DiscoveredApp {
@@ -517,6 +655,7 @@ fn scan_app_paths() -> Vec<DiscoveredApp> {
                 working_dir: String::new(),
                 app_user_model_id: String::new(),
                 source: "app_paths".into(),
+                tier: tier.as_str().to_string(),
             });
         }
     }
@@ -583,8 +722,9 @@ fn scan_registry() -> Vec<DiscoveredApp> {
                 continue;
             }
             let lower = exe.to_ascii_lowercase();
-            // 卸载程序不是可启动应用；名称含卸载/Uninstall 的登记项同理
-            if is_helper_exe(&lower) || display.to_ascii_lowercase().contains("uninstall") {
+            // 卸载程序不是可启动应用；更新/崩溃报告等归为高级项（默认折叠、可展开）。
+            let tier = candidate_tier(display.trim(), &lower);
+            if tier == CandidateTier::Invalid {
                 continue;
             }
             out.push(DiscoveredApp {
@@ -597,6 +737,7 @@ fn scan_registry() -> Vec<DiscoveredApp> {
                 working_dir: String::new(),
                 app_user_model_id: String::new(),
                 source: "registry".into(),
+                tier: tier.as_str().to_string(),
             });
         }
     }
@@ -605,7 +746,7 @@ fn scan_registry() -> Vec<DiscoveredApp> {
 
 /// UWP / MSIX：Get-StartApps 中带「!」的应用身份（单次 PowerShell 调用，限时 8s）。
 #[cfg(windows)]
-fn scan_uwp() -> (Vec<DiscoveredApp>, bool) {
+fn scan_uwp() -> (Vec<DiscoveredApp>, bool, bool) {
     // 输出统一 UTF-8：默认控制台编码会把中文应用名变成乱码（搜索与展示都会失效）
     let out = run_powershell_with_timeout(
         &[
@@ -620,9 +761,10 @@ fn scan_uwp() -> (Vec<DiscoveredApp>, bool) {
     );
     let Some(out) = out else {
         // PowerShell 不可用 / 超时：如实标记来源失败，不把「没有 UWP」当作扫描成功
-        return (Vec::new(), false);
+        return (Vec::new(), false, false);
     };
     let mut apps = Vec::new();
+    let mut truncated = false;
     for line in out.lines().skip(1) {
         let line = line.trim();
         if line.is_empty() || line == "\"Name\",\"AppID\"" {
@@ -638,6 +780,11 @@ fn scan_uwp() -> (Vec<DiscoveredApp>, bool) {
         if name.is_empty() || super::validate_aumid(&aumid).is_err() {
             continue;
         }
+        if apps.len() >= 200 {
+            // 继续遍历只为准确判定「是否真的还有更多条目」，不产生假截断诊断。
+            truncated = true;
+            continue;
+        }
         apps.push(DiscoveredApp {
             app_key: aumid.clone(),
             display_name: name,
@@ -648,12 +795,10 @@ fn scan_uwp() -> (Vec<DiscoveredApp>, bool) {
             app_user_model_id: aumid,
             window_title_hint: String::new(),
             source: "uwp".into(),
+            tier: CandidateTier::Normal.as_str().to_string(),
         });
-        if apps.len() >= 200 {
-            break;
-        }
     }
-    (apps, true)
+    (apps, true, truncated)
 }
 
 /// 带超时的子进程执行（防止 PowerShell 挂起阻塞扫描）。
@@ -782,6 +927,7 @@ mod tests {
                 app_user_model_id: String::new(),
                 window_title_hint: String::new(),
                 source: "startmenu".into(),
+                tier: "normal".into(),
             },
         );
         push_unique(
@@ -796,6 +942,7 @@ mod tests {
                 app_user_model_id: String::new(),
                 window_title_hint: String::new(),
                 source: "registry".into(),
+                tier: "normal".into(),
             },
         );
         push_unique(
@@ -810,6 +957,7 @@ mod tests {
                 app_user_model_id: String::new(),
                 window_title_hint: String::new(),
                 source: "startmenu".into(),
+                tier: "normal".into(),
             },
         );
         assert_eq!(apps.len(), 1, "同 key 与空 key 不得重复入库");
@@ -841,6 +989,12 @@ mod tests {
                 );
             }
             assert!(!a.display_name.trim().is_empty());
+            assert!(
+                a.tier == "normal" || a.tier == "advanced",
+                "扫描候选只能是普通项或高级项：{} -> {}",
+                a.display_name,
+                a.tier
+            );
         }
     }
 
@@ -878,15 +1032,104 @@ mod tests {
     }
 
     #[test]
-    fn uninstallers_and_setup_helpers_are_filtered() {
-        assert!(is_helper_exe("c:\\app\\unins000.exe"));
-        assert!(is_helper_exe("c:\\app\\uninstall.exe"));
-        assert!(is_helper_exe("c:\\app\\setup.exe"));
-        assert!(is_helper_exe("c:\\app\\installer.exe"));
+    fn uninstallers_and_setup_helpers_are_invalid() {
+        // 无效：卸载/安装例程本身不是可交互应用，不进候选
+        assert_eq!(
+            candidate_tier("Foo", "c:\\app\\unins000.exe"),
+            CandidateTier::Invalid
+        );
+        assert_eq!(
+            candidate_tier("Foo", "c:\\app\\uninstall.exe"),
+            CandidateTier::Invalid
+        );
+        assert_eq!(
+            candidate_tier("Foo", "c:\\app\\setup.exe"),
+            CandidateTier::Invalid
+        );
+        assert_eq!(
+            candidate_tier("Foo", "c:\\app\\setup64.exe"),
+            CandidateTier::Invalid
+        );
+        assert_eq!(
+            candidate_tier("Foo", "c:\\app\\installer.exe"),
+            CandidateTier::Invalid
+        );
         // 正常应用不能被误杀（开发工具、通讯、便携程序）
-        assert!(!is_helper_exe("c:\\program files\\microsoft vs code\\code.exe"));
-        assert!(!is_helper_exe("c:\\tencent\\wxwork\\wxwork.exe"));
-        assert!(!is_helper_exe("d:\\portable\\tool.exe"));
+        assert_eq!(
+            candidate_tier("Visual Studio Code", "c:\\program files\\microsoft vs code\\code.exe"),
+            CandidateTier::Normal
+        );
+        assert_eq!(
+            candidate_tier("企业微信", "c:\\tencent\\wxwork\\wxwork.exe"),
+            CandidateTier::Normal
+        );
+        assert_eq!(
+            candidate_tier("便携工具", "d:\\portable\\tool.exe"),
+            CandidateTier::Normal
+        );
+    }
+
+    #[test]
+    fn updater_and_service_components_are_advanced_not_deleted() {
+        // 高级项：可展开查看，不能被当作无效直接删除
+        assert_eq!(
+            candidate_tier("Google Update", "c:\\app\\updater.exe"),
+            CandidateTier::Advanced
+        );
+        assert_eq!(
+            candidate_tier("Acme 更新服务", "c:\\app\\acme_service.exe"),
+            CandidateTier::Advanced
+        );
+        assert_eq!(
+            candidate_tier("Crash Reporter", "c:\\app\\crashpad_handler.exe"),
+            CandidateTier::Advanced
+        );
+        assert_eq!(
+            candidate_tier("Background Service", "c:\\app\\agent.exe"),
+            CandidateTier::Advanced
+        );
+        // 卸载入口指向主程序时（名称而非安装器文件）默认折叠，仍可展开
+        assert_eq!(
+            candidate_tier("Uninstall Foo", "c:\\app\\foo.exe"),
+            CandidateTier::Advanced
+        );
+        // 开发工具文件名含 update/service 但语义独立，不得误折叠
+        assert_eq!(
+            candidate_tier("CodeUpdater 调试工具", "c:\\dev\\update-checker.exe"),
+            CandidateTier::Normal
+        );
+        assert_eq!(
+            candidate_tier("ServiceHub", "c:\\jetbrains\\servicehub.exe"),
+            CandidateTier::Normal
+        );
+        assert_eq!(
+            candidate_tier("Windows Terminal", "c:\\terminal\\windows-terminal.exe"),
+            CandidateTier::Normal
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lnk_budget_truncation_is_accurate() {
+        let dir = std::env::temp_dir().join(format!(
+            "task-dock-lnk-budget-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        for name in ["a.lnk", "b.lnk"] {
+            std::fs::write(dir.join(name), b"broken").unwrap();
+        }
+        let mut out = Vec::new();
+        let mut truncated = false;
+        let mut budget = 2usize;
+        walk_lnk_dir(&dir, 0, &mut budget, &mut out, &mut truncated);
+        assert!(!truncated, "预算恰好覆盖全部条目时不得报截断");
+        let mut out = Vec::new();
+        let mut truncated = false;
+        let mut budget = 1usize;
+        walk_lnk_dir(&dir, 0, &mut budget, &mut out, &mut truncated);
+        assert!(truncated, "仍有未处理条目时必须报截断");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(windows)]
