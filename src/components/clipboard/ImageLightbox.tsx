@@ -3,6 +3,8 @@
 //! - 分组内多图：`items` 给出按分组顺序的图片序列时，左右箭头 / ←→ 键在图片间切换，
 //!   底部显示「2 / 5」；首尾不循环，单图不显示箭头。切换只重算适应窗口并清掉上一张的
 //!   缩放/平移，不影响分组原顺序（混合分组只过滤出图片）；
+//!   分组图片超过单页上限时，`items` 只含已加载部分、`total` 给出真实总数，
+//!   箭头在已加载末尾会触发 `onNeedMore` 追加下一页，序号始终按真实总数显示；
 //! - 等比适应窗口（不上采样小图），指针为中心的滚轮缩放、拖拽平移；
 //! - 双击在适应窗口 ↔ 实际尺寸间切换；平移钳制保证图片不会完全拖出可视区；
 //! - 关闭路径三条：遮罩空白处单击、关闭按钮、Escape。图片本体、工具栏、
@@ -68,6 +70,11 @@ function clampPan(v: View, nw: number, nh: number, availW: number, availH: numbe
 export default function ImageLightbox({
   item,
   items,
+  total,
+  sequenceReady = true,
+  onNeedMore,
+  listLoading,
+  listError,
   askConfirm,
   onClose,
 }: {
@@ -76,8 +83,25 @@ export default function ImageLightbox({
   /**
    * 同一分组内按真实顺序排列的图片序列（只含图片）。缺省 = 单图模式，不显示切换控件；
    * 混合分组由调用方先过滤出图片，这里不再改变顺序。
+   *
+   * 分组图片较多时调用方按页追加，`items` 只是已加载部分；真实总数由 `total` 给出，
+   * 箭头与序号都以 `total` 为准，不能停在已加载页的末尾。
    */
   items?: ClipboardItem[];
+  /** 分组图片真实总数（≥ items.length）；缺省视为 items.length。 */
+  total?: number;
+  /**
+   * 分组真实序列是否已就绪。首屏未返回时 `items` 只是「点击的那张封面」占位，
+   * 其中的索引不是正式位置；此标记为 false 时方向键只累积相对位移，
+   * 等真实序列到达再换算，避免从错误序号起步。
+   */
+  sequenceReady?: boolean;
+  /** 已加载序列不足时请求下一页（调用方追加后 items 增长）；缺省不加载。 */
+  onNeedMore?: () => void;
+  /** 下一页在途：序号旁显示加载态，不切换或清空当前图片。 */
+  listLoading?: boolean;
+  /** 分组图片列表读取失败：在工具栏内给出准确错误，不伪装成单图。 */
+  listError?: string;
   /** 应用内覆盖确认通道；缺省时「目标已存在」一律按拒绝覆盖处理（绝不写盘）。 */
   askConfirm?: AskConfirm;
   onClose: () => void;
@@ -93,14 +117,27 @@ export default function ImageLightbox({
   const [currentId, setCurrentId] = useState(item.id);
   /** 分组内最近一次所在位置：当前图片被移除时据此落到相邻图片。 */
   const indexRef = useRef(0);
+  /** 尚未加载到位、但用户已经按箭头要求切换到的目标位置。 */
+  const pendingIndexRef = useRef<number | null>(null);
+  /**
+   * 首屏真实序列到达前累积的相对位移（只记方向与次数，不记绝对位置）。
+   * 占位数组只有被点的那一张，索引 0 不代表组内第 1 张。
+   */
+  const pendingStepsRef = useRef(0);
   const ordered = items && items.length > 0 ? items : [item];
   const foundIndex = ordered.findIndex((i) => i.id === currentId);
   const index = foundIndex >= 0
     ? foundIndex
     : Math.min(indexRef.current, Math.max(0, ordered.length - 1));
-  if (foundIndex >= 0) indexRef.current = index;
+  // 占位序列里的 0 不是正式位置，不能写回 indexRef 供删除校正使用。
+  if (foundIndex >= 0 && sequenceReady) indexRef.current = index;
   const current = ordered[index] ?? item;
-  const multi = items !== undefined && ordered.length > 1;
+  /**
+   * 分组真实总数：`items` 可能只是已加载的前几页（单页有上限），
+   * 箭头与序号都必须按真实总数判断，不能停在已加载页末尾。
+   */
+  const totalCount = items !== undefined ? Math.max(ordered.length, total ?? 0) : ordered.length;
+  const multi = items !== undefined && totalCount > 1;
   const { state, url, error, forId } = useLargeImage(current.id, true);
   /**
    * 切换条目后 effect 尚未执行时，state/url 仍属于上一张；按「加载中」处理，
@@ -156,16 +193,37 @@ export default function ImageLightbox({
     pressTargetRef.current = null;
   }, []);
 
-  /** 切换到分组内第 nextIndex 张；首尾不循环，越界一律忽略。 */
-  const goTo = useCallback(
-    (nextIndex: number) => {
-      if (nextIndex < 0 || nextIndex >= ordered.length) return;
-      const next = ordered[nextIndex];
-      if (!next || next.id === current.id) return;
+  /**
+   * 按方向切换分组内图片；首尾不循环，越界一律忽略。
+   *
+   * - 首屏序列未就绪：只累积相对位移，等真实顺序到达后统一换算目标位置，
+   *   加载期间连按多次也会逐次累加，不会都落到同一张。
+   * - 已有未加载到位的目标：从 pending 目标继续累加，分页边界连按同样有效。
+   */
+  const goBy = useCallback(
+    (delta: -1 | 1) => {
+      if (!items) return;
+      if (!sequenceReady) {
+        pendingStepsRef.current += delta;
+        onNeedMore?.();
+        return;
+      }
+      const base = pendingIndexRef.current ?? index;
+      const target = base + delta;
+      if (target < 0 || target >= totalCount) return;
+      const next = ordered[target];
+      // 目标页尚未加载：记下目标位置并请求下一页，追加完成后自动切过去。
+      if (!next) {
+        pendingIndexRef.current = target;
+        onNeedMore?.();
+        return;
+      }
+      pendingIndexRef.current = null;
+      if (next.id === current.id) return;
       resetPreview();
       setCurrentId(next.id);
     },
-    [ordered, current.id, resetPreview],
+    [items, sequenceReady, ordered, index, current.id, resetPreview, totalCount, onNeedMore],
   );
 
   /**
@@ -182,6 +240,9 @@ export default function ImageLightbox({
       return;
     }
     if (items.some((i) => i.id === currentId)) return;
+    // 当前条目已不存在：旧的待切换目标与加载期位移都不再可信。
+    pendingIndexRef.current = null;
+    pendingStepsRef.current = 0;
     resetPreview();
     setCurrentId(items[Math.min(indexRef.current, items.length - 1)].id);
     // 只跟随顺序键变化；onClose/resetPreview 是稳定引用
@@ -189,11 +250,61 @@ export default function ImageLightbox({
   }, [orderedKey]);
 
   /**
+   * 首屏真实序列到达：把加载期间累积的相对位移换算成真实顺序下的目标位置。
+   * 用 layout effect，避免先按占位索引渲染一帧再跳位。
+   * 打开的图片已被删除（真实序列里找不到）时丢弃位移，交给上面的就近落位。
+   */
+  useLayoutEffect(() => {
+    if (!items || !sequenceReady) return;
+    const steps = pendingStepsRef.current;
+    if (steps === 0) return;
+    pendingStepsRef.current = 0;
+    const base = items.findIndex((i) => i.id === currentId);
+    if (base < 0) return;
+    const target = clamp(base + steps, 0, totalCount - 1);
+    if (target >= items.length) {
+      pendingIndexRef.current = target;
+      onNeedMore?.();
+      return;
+    }
+    const next = items[target];
+    if (!next || next.id === currentId) return;
+    resetPreview();
+    setCurrentId(next.id);
+    // 只在「就绪」或真实序列变化时换算；currentId 此时仍是打开时的条目
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sequenceReady, orderedKey]);
+
+  /**
+   * 目标页追加后补上用户先前按箭头要求的位置（见 goBy 的 pendingIndexRef）。
+   * 目标还没出现在已加载前缀时继续请求下一页；请求失败/条目被删导致目标
+   * 永远不出现时，pending 留在原地并在下次按键时被覆盖。
+   */
+  useEffect(() => {
+    const pending = pendingIndexRef.current;
+    if (pending === null || !items) return;
+    if (pending >= totalCount) {
+      pendingIndexRef.current = null;
+      return;
+    }
+    const next = items[pending];
+    if (!next) {
+      if (items.length < totalCount) onNeedMore?.();
+      return;
+    }
+    pendingIndexRef.current = null;
+    if (next.id === currentId) return;
+    resetPreview();
+    setCurrentId(next.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderedKey, totalCount, onNeedMore]);
+
+  /**
    * ←/→ 在分组图片间切换。灯箱是最高层模态，按键在 capture 阶段消费，
    * 不穿透到底层页面；单图模式不注册（保持既有行为）。
    */
-  const navRef = useRef({ index, multi, goTo });
-  navRef.current = { index, multi, goTo };
+  const navRef = useRef({ multi, goBy });
+  navRef.current = { multi, goBy };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const nav = navRef.current;
@@ -202,11 +313,20 @@ export default function ImageLightbox({
       if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
       e.preventDefault();
       e.stopPropagation();
-      nav.goTo(e.key === "ArrowLeft" ? nav.index - 1 : nav.index + 1);
+      nav.goBy(e.key === "ArrowLeft" ? -1 : 1);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
+
+  /**
+   * 临近已加载序列末尾时提前补下一页，避免用户按到第 50 张后停下来等待；
+   * 调用方负责去重与并发上限，这里只表达「还差一点」。
+   */
+  useEffect(() => {
+    if (!items || ordered.length >= totalCount) return;
+    if (index >= ordered.length - 2) onNeedMore?.();
+  }, [items, index, ordered.length, totalCount, onNeedMore]);
 
   useOverlayLayer("modalTop", true, onClose, rootRef);
   useFocusTrap(true, rootRef);
@@ -565,10 +685,10 @@ export default function ImageLightbox({
               data-clip-lightbox-nav
               data-tip="上一张"
               aria-label="上一张"
-              disabled={index === 0}
+              disabled={sequenceReady && index === 0}
               onClick={(e) => {
                 e.stopPropagation();
-                goTo(index - 1);
+                goBy(-1);
               }}
               onDoubleClick={(e) => e.stopPropagation()}
             >
@@ -580,10 +700,10 @@ export default function ImageLightbox({
               data-clip-lightbox-nav
               data-tip="下一张"
               aria-label="下一张"
-              disabled={index >= ordered.length - 1}
+              disabled={sequenceReady && index >= totalCount - 1}
               onClick={(e) => {
                 e.stopPropagation();
-                goTo(index + 1);
+                goBy(1);
               }}
               onDoubleClick={(e) => e.stopPropagation()}
             >
@@ -597,7 +717,16 @@ export default function ImageLightbox({
         <div className="clip-lightbox-info">
           {multi && (
             <span className="clip-lightbox-counter" aria-live="polite">
-              {index + 1} / {ordered.length}
+              {/* 首屏序列未就绪时占位索引不是真实位置，不显示错误序号 */}
+              {sequenceReady ? `${index + 1} / ${totalCount}` : `… / ${totalCount}`}
+              {(listLoading || !sequenceReady) && ordered.length < totalCount && (
+                <Loader2 size={11} className="spin" aria-hidden="true" />
+              )}
+            </span>
+          )}
+          {listError && (
+            <span className="clip-lightbox-list-error" role="status">
+              {listError}
             </span>
           )}
           {natural ? (

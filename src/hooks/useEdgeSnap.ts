@@ -73,8 +73,9 @@ import {
   isHiddenPhase,
   isRectMostlyVisible,
   isSnapEdge,
+  isTabPhase,
   alongDeviation,
-  hasDockIntent,
+  hasDockIntentAlongTrail,
   measureTitlebarHeight,
   rebaseAlong,
   shouldConfirmDock,
@@ -94,10 +95,13 @@ import {
 } from "../lib/edgeSnap";
 import {
   CAPSULE_GAP_CSS,
+  PANEL_EXIT_MS,
+  TAB_TRANSITION_MS,
   alongCenterOf,
   capsuleContainerSize,
   capsuleRegionsPhysical,
   capsuleWindowRect,
+  clampTabCenter,
   isCapsuleContainerSize,
   needsContainerResize,
   pointInCapsule,
@@ -290,7 +294,11 @@ async function persistSnap(
   edge: SnapEdge | null,
   hidden: boolean,
   center: number | null,
-  extra: { centerRatio?: number | null; display?: SnapDisplayInfo | null } = {},
+  extra: {
+    centerRatio?: number | null;
+    display?: SnapDisplayInfo | null;
+    form?: "capsule" | "tab" | null;
+  } = {},
 ): Promise<void> {
   return enqueueWrite(async () => {
     try {
@@ -333,7 +341,18 @@ export function useEdgeSnap(enabled: boolean) {
       center: number | null;
       centerRatio: number | null;
       display: SnapDisplayInfo | null;
+      /** 重启前的形态：Edge Tab 恢复为标签；其余按胶囊。 */
+      form: "capsule" | "tab";
     } | null = null;
+
+    // ── Edge Tab 过渡与拖动（与胶囊共用同一窗口/区域/Win32 磁力层）───────────
+    /** 过渡期间禁止并发形态提交；动画结束/失败后必定复位。 */
+    let tabAnimating = false;
+    let tabDragging = false;
+    /** 拖动起点沿边中心（物理 px）；每次按下重置。 */
+    let tabDragBase: number | null = null;
+    /** 本次按下是否真的移动过窗口：仅此时在松手后持久化位置。 */
+    let tabDragMoved = false;
     let restoreAttempts = 0; // 重启恢复的有界重试计数
     let dockedMonitor: DockedMonitor | null = null; // 停靠显示器记忆
     let dockedPos: SnapPoint | null = null; // 停靠时窗口目标位置（偏离判定基准）
@@ -361,7 +380,12 @@ export function useEdgeSnap(enabled: boolean) {
      * 分辨率或 DPI 变化后，比例能重算出有效坐标，避免用过期绝对像素；
      * 旧记录没有这些字段，恢复逻辑仍按 `center` / 当前窗口所在屏回退。
      */
-    function persistDockedSnap(edge: SnapEdge, hidden: boolean, center: number | null): void {
+    function persistDockedSnap(
+      edge: SnapEdge,
+      hidden: boolean,
+      center: number | null,
+      form: "capsule" | "tab" = "capsule",
+    ): void {
       const m = dockedMonitor;
       let centerRatio: number | null = null;
       let display: SnapDisplayInfo | null = null;
@@ -377,7 +401,7 @@ export function useEdgeSnap(enabled: boolean) {
         display = displayInfoOf(m);
       }
       persistedCenter = center;
-      void persistSnap(edge, hidden, center, { centerRatio, display });
+      void persistSnap(edge, hidden, center, { centerRatio, display, form });
     }
     /**
      * 拖拽期间曾观察到「法向位移超过解除阈值」：折叠态（docked-hidden）不做
@@ -391,6 +415,17 @@ export function useEdgeSnap(enabled: boolean) {
      */
     let lastSeenRect: SnapRect | null = null;
     let gestureStartRect: SnapRect | null = null;
+    /** 本次手势已观测到的矩形（有界），用于判定最近轨迹方向。 */
+    const GESTURE_TRAIL_MAX = 8;
+    let gestureTrail: SnapRect[] = [];
+    /**
+     * 按下时的真实窗口矩形：快速拖动时首个 `onMoved` 可能已是合并后的大位移，
+     * 不能拿它当手势起点。按下时先记 `lastSeenRect`，再用一次轻量原生读取校正
+     * （观测到移动之前的读数才有效）。
+     */
+    let pressOriginRect: SnapRect | null = null;
+    let pressOriginAt = 0;
+    let pressOriginToken = 0;
     const machine: SnapMachine = { phase: "free", edge: null };
 
     // ── 启动显示门 ──────────────────────────────────────────
@@ -481,6 +516,28 @@ export function useEdgeSnap(enabled: boolean) {
     async function fetchRectOnly(): Promise<SnapRect> {
       const [pos, size] = await Promise.all([win.outerPosition(), win.outerSize()]);
       return { x: pos.x, y: pos.y, w: size.width, h: size.height };
+    }
+
+    /**
+     * 记录拖拽按下时的真实窗口矩形。
+     * 只在自由/候选态的可拖拽区域触发，普通点击不会多发起 IPC。
+     * `lastSeenRect` 先作为同步兜底；异步读取只在「按下后尚未观测到移动」时生效，
+     * 避免把拖动中的位置当起点。
+     */
+    function capturePressOrigin(): void {
+      pressOriginAt = Date.now();
+      pressOriginRect = lastSeenRect ? { ...lastSeenRect } : null;
+      const token = ++pressOriginToken;
+      void fetchRectOnly()
+        .then((rect) => {
+          if (disposed || token !== pressOriginToken) return;
+          // 已经有移动观测、或 IPC 回包太慢（窗口可能已在拖动中），都不采用。
+          if (lastMoveAt > pressOriginAt || Date.now() - pressOriginAt > 120) return;
+          pressOriginRect = rect;
+        })
+        .catch(() => {
+          // 读不到位置只影响起点精度，保留 lastSeenRect 兜底。
+        });
     }
 
     /** 程序移动：幂等（同目标跳过）、登记防污染守卫、失败返回 false。 */
@@ -788,6 +845,7 @@ export function useEdgeSnap(enabled: boolean) {
     /** 相位 → 区域形态的唯一映射（恢复时据此把区域校准回已提交状态）。 */
     function regionForPhase(phase: SnapPhase): CapsuleRegionMode {
       if (phase === "docked-full") return "off";
+      if (phase === "docked-tab") return "tab";
       if (phase === "docked-revealed") return "panel";
       if (isDockedPhase(phase)) return "rail";
       return "off";
@@ -989,6 +1047,8 @@ export function useEdgeSnap(enabled: boolean) {
      * 任一步失败都恢复完整面板几何并把区域退回 off，绝不留下半尺寸/半裁剪窗口。
      */
     async function switchDockedToCapsule(): Promise<boolean> {
+      // Edge Tab 的恢复走独立过渡（restoreFromTab），不在这里重新缩放窗口。
+      if (tabAnimating || machine.phase === "docked-tab") return false;
       const edge = machine.edge;
       const m = dockedMonitor;
       if (!edge || !m) return false;
@@ -1094,7 +1154,7 @@ export function useEdgeSnap(enabled: boolean) {
      * 不变（本来就没改过），绝不把临时意图冒充长期配置。
      */
     async function requestSessionForm(form: DockForm): Promise<boolean> {
-      if (disposed) return false;
+      if (disposed || tabAnimating) return false;
       if (!isDockedPhase(machine.phase) || !machine.edge) return false;
       const seq = ++formSwitchSeq;
       const result = await runExclusiveResult(() => applyDockForm(form));
@@ -1122,7 +1182,7 @@ export function useEdgeSnap(enabled: boolean) {
     async function dockTo(
       edge: SnapEdge,
       center: number,
-      phase: "docked-visible" | "docked-hidden",
+      phase: "docked-visible" | "docked-hidden" | "docked-tab",
       feedback: boolean,
       /**
        * 未显式指定时按「本次停靠会话的临时覆盖 → 持久化偏好」决定形态：
@@ -1176,7 +1236,8 @@ export function useEdgeSnap(enabled: boolean) {
       capsuleCenter = center;
       dockedForm = "capsule";
       // 区域成功后才提交停靠相位；失败时回滚几何 + 清掉本次半成立的停靠上下文
-      if (!(await setRegionThenPhase("rail", phase))) {
+      const mode = phase === "docked-tab" ? "tab" : "rail";
+      if (!(await setRegionThenPhase(mode, phase))) {
         await restoreDockGeometry(prevRect, dockedMonitor.workArea);
         dockRetryAt = Date.now() + DOCK_RETRY_MS;
         abortDock(prevEdge);
@@ -1184,7 +1245,7 @@ export function useEdgeSnap(enabled: boolean) {
       }
       dockRetryAt = 0;
       if (feedback) ui.notifyDocked(edge);
-      persistDockedSnap(edge, phase === "docked-hidden", center);
+      persistDockedSnap(edge, phase === "docked-hidden", center, phase === "docked-tab" ? "tab" : "capsule");
       // 停靠事务已提交（区域已生效、窗口已齐平）：现在才把基准交给原生磁力层
       syncMagnetDock();
       return true;
@@ -1192,7 +1253,10 @@ export function useEdgeSnap(enabled: boolean) {
 
     /** 折叠：只保留轨道（面板收起）。窗口不动，只切区域。 */
     async function collapseToRail(hidden: boolean): Promise<boolean> {
+      if (tabAnimating) return false;
       if (!machine.edge) return false;
+      // Edge Tab 不属于「可折叠胶囊」，恢复只能走 restoreFromTab。
+      if (machine.phase === "docked-tab") return false;
       // 完整面板没有「折叠为轨道」概念；收缩入口是形态切换（→ 胶囊）。
       if (machine.phase === "docked-full") return false;
       const ok = await setRegionThenPhase("rail", hidden ? "docked-hidden" : "docked-visible");
@@ -1202,6 +1266,7 @@ export function useEdgeSnap(enabled: boolean) {
 
     /** 展开：先确认容器尺寸/贴边位置，再切出轨道 + 功能面板区域。 */
     async function expandPanel(): Promise<boolean> {
+      if (tabAnimating || machine.phase === "docked-tab") return false;
       const edge = machine.edge;
       if (!edge) return false;
       // 完整面板本身就是完整界面，无需再「展开面板」。
@@ -1233,8 +1298,174 @@ export function useEdgeSnap(enabled: boolean) {
 
     /** 收起功能面板（Esc / 收起按钮 / 再次点击当前分类）。 */
     async function collapsePanel(): Promise<boolean> {
+      if (tabAnimating) return false;
       if (machine.phase !== "docked-revealed") return true;
       return collapseToRail(false);
+    }
+
+    // ── Edge Tab 形态事务 ────────────────────────────────────────────────
+    // 窗口尺寸/位置在停靠期间保持不变：收起只是「轨道侧滑出可视区」+
+    // 「标签在贴边处渐显」，动画结束后才把 Win32 区域收紧到标签矩形。
+    // 恢复复用同一套插值与区域协议（rail 是 tab 的超集，先扩区域再动画）。
+    function tabReducedMotion(): boolean {
+      return typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+    }
+
+    function delay(ms: number): Promise<void> {
+      return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+    }
+
+    /** 收起为极简标签：Capsule（轨道/面板）→ Edge Tab。 */
+    async function collapseToTab(): Promise<boolean> {
+      if (disposed || tabAnimating) return false;
+      const edge = machine.edge;
+      if (!edge || !dockedMonitor) return false;
+      if (
+        machine.phase !== "docked-visible" &&
+        machine.phase !== "docked-hidden" &&
+        machine.phase !== "docked-revealed"
+      ) {
+        return false;
+      }
+      tabAnimating = true;
+      try {
+        if (machine.phase === "docked-revealed") {
+          // 面板先自然收合（保留挂载 + 离场动画），再切回轨道区域；
+          // 否则相位提前推进会让 CapsuleDock 立即卸载面板，出现「突然消失」。
+          const store = useEdgeSnapStore.getState();
+          if (!tabReducedMotion()) {
+            store.setPanelExiting(true);
+            await delay(PANEL_EXIT_MS);
+            if (disposed) {
+              store.setPanelExiting(false);
+              return false;
+            }
+          }
+          const regionOk = await setRegionThenPhase("rail", "docked-visible");
+          // 区域提交后再放开挂载：失败时面板重新可见，不会停在透明态。
+          store.setPanelExiting(false);
+          if (!regionOk) return false;
+        }
+        undockCheckDue = false;
+        let ok: boolean;
+        if (tabReducedMotion()) {
+          // 减少动态：直接提交形态，不保留任何过渡态。
+          ok = await setRegionThenPhase("tab", "docked-tab");
+        } else {
+          useEdgeSnapStore.getState().setTabTransition("to-tab");
+          await delay(TAB_TRANSITION_MS + 20);
+          if (disposed) return false;
+          ok = await setRegionThenPhase("tab", "docked-tab");
+          useEdgeSnapStore.getState().setTabTransition(null);
+          // 失败时 setRegionThenPhase 已把区域回滚为当前相位（rail）；
+          // 移除过渡类后轨道重新可见，不会留下半截动画。
+        }
+        if (!ok) return false;
+        leftSince = null;
+        persistDockedSnap(edge, false, capsuleCenter, "tab");
+        syncMagnetDock();
+        return true;
+      } finally {
+        tabAnimating = false;
+      }
+    }
+
+    /** 点击标签恢复：Edge Tab → Capsule 轨道（复用同一套过渡与区域协议）。 */
+    async function restoreFromTab(): Promise<boolean> {
+      if (disposed || tabAnimating) return false;
+      const edge = machine.edge;
+      const m = dockedMonitor;
+      const size = dockedSize;
+      if (!edge || !m || !size || machine.phase !== "docked-tab") return false;
+      tabAnimating = true;
+      try {
+        const rect = await fetchRectOnly();
+        if (disposed) return false;
+        const scale = m.scaleFactor;
+        const center = clampTabCenter(
+          edge,
+          m.workArea,
+          capsuleCenter ?? alongCenterOf(edge, rect),
+          scale,
+        );
+        // 拖动只允许沿边位移，但收到 OS 舍入/健康检查校准后仍可能差几像素：
+        // 动画开始前先归位到贴边基准（一次写入 + 回读，不用逐帧命令）。
+        const pos = capsuleWindowRect(edge, m.workArea, center, size);
+        if (rect.x !== pos.x || rect.y !== pos.y) {
+          if (!(await moveVerified(pos.x, pos.y))) return false;
+          if (disposed) return false;
+        }
+        dockedPos = { x: pos.x, y: pos.y };
+        dockedSize = { w: size.w, h: size.h };
+        capsuleCenter = center;
+        let ok: boolean;
+        if (tabReducedMotion()) {
+          ok = await setRegionThenPhase("rail", "docked-visible");
+        } else {
+          // rail ⊇ tab：先扩区域，标签外观不变，随后轨道从屏外滑入。
+          if (!(await setCapsuleRegion("rail"))) return false;
+          if (disposed) return false;
+          useEdgeSnapStore.getState().setTabTransition("from-tab");
+          await delay(TAB_TRANSITION_MS + 20);
+          if (disposed) return false;
+          ok = setPhase("docked-visible");
+          if (!ok) {
+            // 状态机拒绝：把区域退回标签，避免留下「整条轨道可点击但界面只有标签」。
+            await setCapsuleRegion("tab");
+          }
+          useEdgeSnapStore.getState().setTabTransition(null);
+        }
+        if (!ok) return false;
+        leftSince = null;
+        persistDockedSnap(edge, false, center, "capsule");
+        syncMagnetDock();
+        return true;
+      } finally {
+        tabAnimating = false;
+      }
+    }
+
+    /** 按下标签：记录沿边基准；任何形态切换都被 `tabAnimating`/相位阻止。 */
+    function beginTabDrag(): void {
+      if (machine.phase !== "docked-tab" || tabAnimating) return;
+      tabDragging = true;
+      tabDragBase = capsuleCenter;
+      tabDragMoved = false;
+    }
+
+    /** 沿边拖动：只改沿边中心，法向（X 轴/贴边位置）保持不变。 */
+    function dragTabBy(deltaCss: number): void {
+      if (!tabDragging || machine.phase !== "docked-tab") return;
+      const edge = machine.edge;
+      const m = dockedMonitor;
+      const size = dockedSize;
+      if (!edge || !m || !size) return;
+      const scale = m.scaleFactor;
+      const fallbackRect = {
+        x: dockedPos?.x ?? 0,
+        y: dockedPos?.y ?? 0,
+        w: size.w,
+        h: size.h,
+      };
+      const base = tabDragBase ?? capsuleCenter ?? alongCenterOf(edge, fallbackRect);
+      const center = clampTabCenter(edge, m.workArea, base + deltaCss * scale, scale);
+      const pos = capsuleWindowRect(edge, m.workArea, center, size);
+      dockedPos = { x: pos.x, y: pos.y };
+      capsuleCenter = center;
+      tabDragMoved = true;
+      void moveWindow(pos.x, pos.y, true);
+    }
+
+    function endTabDrag(): void {
+      const moved = tabDragging && tabDragMoved;
+      tabDragging = false;
+      tabDragBase = null;
+      tabDragMoved = false;
+      // 拖动只改沿边位置：松手即持久化，保证重启后的标签与真实窗口位置一致。
+      if (moved && !tabAnimating && machine.phase === "docked-tab" && machine.edge) {
+        persistDockedSnap(machine.edge, false, capsuleCenter, "tab");
+      }
     }
 
     /**
@@ -1522,7 +1753,12 @@ export function useEdgeSnap(enabled: boolean) {
       syncMagnetDock();
       // 沿边重定位也要带上显示器身份与比例（P2-4），否则下一次恢复会丢掉
       // 这些字段，只能退回绝对像素。
-      persistDockedSnap(edge, isHiddenPhase(machine.phase), center);
+      persistDockedSnap(
+        edge,
+        isHiddenPhase(machine.phase),
+        center,
+        isTabPhase(machine.phase) ? "tab" : "capsule",
+      );
     }
 
     /** 解除后把窗口收回工作区（模式尺寸可能比胶囊容器大，贴边位置会溢出）。 */
@@ -1687,9 +1923,11 @@ export function useEdgeSnap(enabled: boolean) {
             const ok = await dockTo(
               edge,
               target ?? fallback,
-              "docked-hidden",
+              pendingRestore.form === "tab" ? "docked-tab" : "docked-hidden",
               false,
-              undefined,
+              // Edge Tab 优先于「完整面板」偏好：先恢复标签形态（容器尺寸），
+              // 用户点开后再按既有入口进入面板/完整面板。
+              pendingRestore.form === "tab" ? "capsule" : undefined,
               monitor,
             );
             if (ok) {
@@ -1844,6 +2082,21 @@ export function useEdgeSnap(enabled: boolean) {
           }
           return;
         }
+        case "docked-tab": {
+          // Edge Tab：不轮询光标、不自动展开/收起（手动形态）。
+          // 拖动由 `dragTabBy` 直接控制窗口沿边位置；静止后只落库一次。
+          if (tabAnimating) return;
+          if (Date.now() - lastMoveAt >= SNAP_DRAG_SETTLE_MS) {
+            const rect = await fetchRectOnly();
+            if (disposed) return;
+            commitAlong(rect);
+          }
+          if (++healthCheckTick % 20 === 0) {
+            await refreshDockedMonitor();
+            await recoverVisibility();
+          }
+          return;
+        }
         case "docked-full": {
           // 完整面板：不轮询光标、不自动收缩（鼠标移出必须保持完整）。
           // 只保留拖拽收尾的解除判定与低频几何/可用区校准。
@@ -1961,7 +2214,12 @@ export function useEdgeSnap(enabled: boolean) {
       const after = await fetchRectOnly();
       if (disposed) return;
       commitAlong(after);
-      persistDockedSnap(edge, isHiddenPhase(machine.phase), capsuleCenter ?? center);
+      persistDockedSnap(
+        edge,
+        isHiddenPhase(machine.phase),
+        capsuleCenter ?? center,
+        isTabPhase(machine.phase) ? "tab" : "capsule",
+      );
       syncMagnetDock();
     }
 
@@ -2042,6 +2300,10 @@ export function useEdgeSnap(enabled: boolean) {
       }
       // free / candidate：滞回判定
       const detected = detectCandidateEdge(rect, wa);
+      // 记录本次手势的观测轨迹（有界）；最近两拍的方向用于拒绝「被磁力带回 /
+      // 平行擦边」这类没有主动靠拢意图的拖动。
+      gestureTrail.push({ ...rect });
+      if (gestureTrail.length > GESTURE_TRAIL_MAX) gestureTrail.shift();
       if (machine.phase === "candidate" && machine.edge) {
         if (detected && detected !== machine.edge) {
           machine.edge = detected; // 更近的另一条边（拖过角落）
@@ -2061,9 +2323,13 @@ export function useEdgeSnap(enabled: boolean) {
         // 被磁力领先吸进阈值，都不应因此吸附并收缩。只有相对手势起点向该边
         // 净位移超过「磁力领先上限 + 余量」才进入候选；明确拖向边缘的释放
         // 仍由 `shouldConfirmDock` 在静止后正常确认。
-        const approach =
-          edgeDistance(gestureStartRect, wa, detected) - edgeDistance(rect, wa, detected);
-        if (!hasDockIntent(approach, monitor.scaleFactor ?? 1)) return;
+        // 起点优先用「按下时」的真实矩形，而不是首个观测点：快速拖动时首拍可能
+        // 已是合并后的大位移，净位移会被算小而漏判成「没往边缘去」。
+        const start = gestureStartRect ?? lastSeenRect ?? rect;
+        if (
+          !hasDockIntentAlongTrail(start, gestureTrail, wa, detected, monitor.scaleFactor ?? 1)
+        )
+          return;
         machine.edge = detected;
         setPhase("candidate");
         setMagnetized(edgeDistance(rect, wa, detected) <= SNAP_CANDIDATE_ENTER_DIST);
@@ -2128,8 +2394,12 @@ export function useEdgeSnap(enabled: boolean) {
         const now = Date.now();
         // 手势边界在监听器里同步判定：busy 时 `runExclusive` 只保留最后一次
         // 评估，若把起点判定放进 handleMoved，首拍被丢弃会丢失真实起点。
-        if (lastSeenRect === null || now - lastMoveAt >= SNAP_DRAG_SETTLE_MS) {
-          gestureStartRect = lastSeenRect;
+        // 按下即新起点（不受上一次手势 220ms 静止窗口影响）：快速拖动时首个
+        // onMoved 可能已是合并后的大位移，只有按下时的矩形才是真实起点。
+        const pressIsNew = pressOriginRect !== null && pressOriginAt > lastMoveAt;
+        if (lastSeenRect === null || now - lastMoveAt >= SNAP_DRAG_SETTLE_MS || pressIsNew) {
+          gestureStartRect = (pressIsNew ? pressOriginRect : lastSeenRect) ?? null;
+          gestureTrail = [];
         }
         lastMoveAt = now; // 同步记录：拖拽活动信号不受 busy 影响
         runExclusive(handleMoved);
@@ -2143,8 +2413,18 @@ export function useEdgeSnap(enabled: boolean) {
     const onDomPointer = (): void => {
       domPointerAt = Date.now();
     };
+    // 按下时记录真实窗口矩形（手势起点）。只在自由/候选态的拖拽区域触发：
+    // 普通点击与停靠态的拖离/沿边拖动已有各自路径，不需要额外 IPC。
+    const onDomPointerDown = (event: PointerEvent): void => {
+      domPointerAt = Date.now();
+      if (machine.phase !== "free" && machine.phase !== "candidate") return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (!target.closest("[data-tauri-drag-region]")) return;
+      capturePressOrigin();
+    };
     window.addEventListener("pointermove", onDomPointer, { passive: true });
-    window.addEventListener("pointerdown", onDomPointer, { passive: true });
+    window.addEventListener("pointerdown", onDomPointerDown, { passive: true });
 
     // 重启恢复：读取持久化 snap_state，交给 tick 串行执行（避免与 onMoved 竞态）。
     void (async () => {
@@ -2163,6 +2443,7 @@ export function useEdgeSnap(enabled: boolean) {
                 ? saved.centerRatio
                 : null,
             display: saved.display ?? null,
+            form: saved.form === "tab" ? "tab" : "capsule",
           };
         } else {
           // 无停靠记录：窗口无需等恢复，立即放行显示
@@ -2182,6 +2463,18 @@ export function useEdgeSnap(enabled: boolean) {
     // 两种入口复用同一套几何与相位事务，只是成功/失败后的偏好处理不同。
     ui.setFormSwitch((form) => {
       void requestSessionForm(form);
+    });
+    // Edge Tab：与 reveal/collapse 相同，进入引擎串行队列，避免和 tick / 停靠事务竞争。
+    ui.setTabActions({
+      collapse: () => {
+        void runExclusiveResult(() => collapseToTab());
+      },
+      restore: () => {
+        void runExclusiveResult(() => restoreFromTab());
+      },
+      beginDrag: beginTabDrag,
+      dragBy: dragTabBy,
+      endDrag: endTabDrag,
     });
 
     const unsubSettings = useSettingsStore.subscribe((state, prev) => {
@@ -2227,13 +2520,21 @@ export function useEdgeSnap(enabled: boolean) {
       disposed = true;
       window.clearInterval(timer);
       window.removeEventListener("pointermove", onDomPointer);
-      window.removeEventListener("pointerdown", onDomPointer);
+      window.removeEventListener("pointerdown", onDomPointerDown);
       scope.dispose();
       unsubSettings();
       ui.setReveal(null);
       ui.setCollapse(null);
       ui.setUndock(null);
       ui.setFormSwitch(null);
+      ui.setTabActions({
+        collapse: null,
+        restore: null,
+        beginDrag: null,
+        dragBy: null,
+        endDrag: null,
+      });
+      ui.setTabTransition(null);
       snapMoveGuard.setHidden(false);
       // 磁力层随引擎一起停用：残留的停靠基准会让下一次普通拖拽被"拉住"。
       // 与区域一样延后一个宏任务再决定——StrictMode 重挂载时新实例会先递增

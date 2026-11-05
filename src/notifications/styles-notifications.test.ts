@@ -78,6 +78,18 @@ describe("状态语义色（原型 C 方案六值）", () => {
   });
 });
 
+describe("品牌图标", () => {
+  it("左上角 logo 保持 18px 容器并等比缩放，不变形", () => {
+    const symbol = rule(".ntf-app-symbol");
+    expect(symbol).toBeDefined();
+    expect(symbol!.body).toContain("width: 18px");
+    expect(symbol!.body).toContain("height: 18px");
+    const img = rule(".ntf-app-symbol img");
+    expect(img).toBeDefined();
+    expect(img!.body).toContain("object-fit: contain");
+  });
+});
+
 describe("动效约束", () => {
   it("入场/离场时长符合原型（260ms / 200ms）", () => {
     expect(ntfCss).toContain("ntfEnter 0.26s");

@@ -699,6 +699,23 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     已停靠窗口跨边切换必须先真正离开当前边磁吸区（`shouldSwitchDockEdge`，阈值
     与 `SNAP_CANDIDATE_EXIT_DIST` 一致），避免齐平窗口在角落处因距离平手被判成
     换边——换边会解除停靠并按默认偏好重新吸附，完整面板因此意外变回胶囊。
+  - 极简吸附态 Edge Tab（2026-11-05）：停靠形态扩为三态——完整面板 / 胶囊 / 极简标签
+    （`SnapPhase` 新增 `docked-tab`），仍由 `useEdgeSnap` 单一状态机 + `canTransition`
+    守卫写入；标签几何 `10×46 CSS`（水平边镜像为 `46×10`）由 `capsuleLayout.ts` 与
+    `window_shape.rs::edge_tab_regions` 双端锁定，区域为贴屏直边 + 内侧 8px 圆角的圆角矩形，
+    另加缺口探针验证不误拦其他应用。收起/恢复复用同一套 `tabTransition` 过渡（
+    `to-tab` / `from-tab`）：轨道 `transform` 侧滑 + `clip-path` 收成 46px 高条 + 标签
+    38% 起交叉渐显，300ms `cubic-bezier(.22,1,.36,1)`，reduced-motion 直接提交；过渡中
+    `tabAnimating` 防重入，窗口区域只在过渡结束提交一次（`setRegionThenPhase`），不每帧
+    发窗口命令。持久化在既有 `snap_state` 上追加可选 `form`（`capsule` / `tab`），重启按
+    偏好直接恢复标签；自由态 → 标签的转移仅用于重启恢复。标签点击恢复、垂直拖动只改
+    纵向中心（`beginTabDrag/dragTabBy/endTabDrag` + `tabAlongDelta`），明显向内拖动按
+    `TAB_RESTORE_DRAG_CSS` 阈值恢复且拖动结束不再触发点击恢复。面板展开态收起额外有一段
+    160ms 离场（`panelExiting` + `PANEL_EXIT_MS`）：面板先淡出再写轨道区域，避免相位推进
+    当拍卸载面板造成「突然消失」。
+  - 构建溯源（2026-11-05）：`build.rs` 注入 `TASK_DOCK_GIT_COMMIT` / `TASK_DOCK_BUILD_TIME`，
+    `performance_diagnostics` 在 `build` 段返回 commit、构建时间（Unix 秒）、debug/release
+    profile 与当前 exe 路径；不新增依赖、不写用户路径到公开日志。
 
 ### 11. 快速捕获（quick_capture/，v0.7）
 

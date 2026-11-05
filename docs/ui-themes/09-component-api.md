@@ -219,6 +219,27 @@ interface DatePickerProps {
 
 纯函数在 `src/lib/datetime.ts`（`todayIsoDate` / `parseDateInput` / `isValidIsoDate`）。
 
+## 5.2 DatePicker / DateTimePicker 视觉规格（2026-11-05 统一）
+
+两者**只统一视觉语言，不统一提交语义**：纯日期选中即提交并关闭；日期时间需选日期与时间，
+底部提供「清空 / 现在」，不额外强制确认按钮。差异属有意设计。
+
+共享结构（`src/styles-ui.css`，全部走语义 Token，不复制第二套）：
+
+| 部件 | 规格 |
+| --- | --- |
+| 触发器 `.ui-date-trigger` | `inline-flex`、gap 6px、`--input-font-size`、圆角 `--radius-control`、表面 `--control-face`/`--control-shadow`，hover/active/focus/disabled 与 Select 触发器一致；`size-sm` 高度 26px / 字号 12px，`md` 高度 30px / 字号 13px |
+| 面板 `.ui-date-panel` | 宽 `min(272px, calc(100vw - 24px))`、gap 8px、padding 4px；超出可视区由 Popover 翻转并在内部滚动，底部操作固定 |
+| 日格 `.ui-cal-day` | 高 28px、字号 11.5px、圆角 7px；hover 走 `--menu-hover`，active/选中走 `--menu-active-face`，`focus-visible` 用 accent 内描边 |
+| 周标题 / 月份切换 | 周标题由 Intl 生成；月份切换复用 `.icon-btn.sm`（22×22） |
+| 底部操作 `.ui-date-actions` | 上边框 `--divider`、`space-between`：左侧为次要操作「清除 / 清空」（`.ui-date-link`），右侧为强调操作「今天 / 现在」（`.ui-date-link.is-accent`），字号 11px |
+| 主题 | 深浅主题与两套视觉预设均复用同一套 Token；不写硬编码颜色 |
+
+实现提示：全局样式层顺序为 `base → theme → ui → menu → ntf → widget-window`，
+`widget-window` 层存在未限定作用域的 `button` 重置，会压过 `@layer ui` 内的按钮样式。
+日期组件因此在 `styles-ui.css` 末尾保留一段**非分层**的重置块（仅作用于上述类名），
+后续若把该全局 `button` 重置收敛到 `.widget-window` 作用域内，可删除这段兜底。
+
 ## 6. NumberInput
 
 数值输入，带步进按钮。

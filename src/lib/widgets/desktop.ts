@@ -82,7 +82,48 @@ export type DesktopWidgetSnapshot =
 export interface WidgetSnapshotEnvelope {
   widgetType: WidgetType;
   revision: number;
+  /**
+   * 主窗口 WebView 会话标识。主窗重载后 revision 从 0 重新计数，
+   * 接收端据 epoch 变化重置 revision 代，避免把新会话快照当旧消息丢弃。
+   */
+  epoch: string;
+  /** 目标窗口实例代际；旧窗口/旧请求产生的快照带旧值，接收端必须丢弃。 */
+  generation: number;
   snapshot: DesktopWidgetSnapshot;
+}
+
+/** 微件窗口 → 主窗口：请求首帧快照，携带调用窗口自身的代际。 */
+export interface WidgetSnapshotRequestEvent {
+  widgetType: WidgetType;
+  generation: number;
+}
+
+/** 接收端已接受的快照水位。 */
+export interface WidgetSnapshotGuard {
+  epoch: string | null;
+  revision: number;
+  generation: number | null;
+}
+
+export function createSnapshotGuard(): WidgetSnapshotGuard {
+  return { epoch: null, revision: -1, generation: null };
+}
+
+/**
+ * 是否接受这份快照：
+ * - 代际必须与接收窗口一致（旧窗口/旧请求被忽略）；
+ * - 同一主窗会话内按 revision 去重，重复/迟到快照不重复更新；
+ * - 主窗会话切换（重载）时接受并重置水位，不能拿上一会话的 revision 比较。
+ */
+export function shouldAcceptSnapshot(
+  guard: WidgetSnapshotGuard,
+  envelope: WidgetSnapshotEnvelope,
+  windowGeneration: number | null,
+): boolean {
+  if (windowGeneration !== null && envelope.generation !== windowGeneration) return false;
+  if (guard.generation !== null && envelope.generation !== guard.generation) return false;
+  if (guard.epoch !== envelope.epoch) return true;
+  return isNewerRevision(guard.revision, envelope.revision);
 }
 
 export interface WidgetBoundsReport {
@@ -212,4 +253,13 @@ export function desktopWindowSize(type: WidgetType, size: WidgetSize, desktop?: 
 /** revision 只增不减；窗口收到更旧的快照直接忽略（多窗口/重建竞态兜底）。 */
 export function isNewerRevision(previous: number, next: number): boolean {
   return Number.isFinite(next) && next > previous;
+}
+
+/** 接受后推进水位；同一快照被忽略时水位保持不变。 */
+export function advanceSnapshotGuard(envelope: WidgetSnapshotEnvelope): WidgetSnapshotGuard {
+  return {
+    epoch: envelope.epoch,
+    revision: envelope.revision,
+    generation: envelope.generation,
+  };
 }

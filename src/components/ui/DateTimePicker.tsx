@@ -122,7 +122,7 @@ export default function DateTimePicker({
         ref={anchorRef}
         type="button"
         id={id}
-        className={`ui-dtp-trigger size-${size} ${open ? "is-open" : ""} ${value ? "" : "is-placeholder"} ${
+        className={`ui-date-trigger ui-dtp-trigger size-${size} ${open ? "is-open" : ""} ${value ? "" : "is-placeholder"} ${
           className ?? ""
         }`}
         aria-label={ariaLabel}
@@ -164,7 +164,7 @@ export default function DateTimePicker({
         role="dialog"
         ariaLabel={ariaLabel ?? t("dateTime.pickerAria")}
       >
-        <div className="ui-dtp">
+        <div className="ui-date-panel ui-dtp">
           <div className="ui-dtp-top">
             <input
               type="text"
@@ -233,21 +233,11 @@ export default function DateTimePicker({
             </label>
           </div>
 
-          <div className="ui-dtp-actions">
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => {
-                const n = nowLocal();
-                commit(formatLocalInput(n));
-              }}
-            >
-              {t("dateTime.now")}
-            </button>
+          <div className="ui-date-actions">
             {clearable && (
               <button
                 type="button"
-                className="btn sm"
+                className="ui-date-link"
                 onClick={() => {
                   commit("");
                   onClear?.();
@@ -256,6 +246,16 @@ export default function DateTimePicker({
                 {t("dateTime.clear")}
               </button>
             )}
+            <button
+              type="button"
+              className="ui-date-link is-accent"
+              onClick={() => {
+                const n = nowLocal();
+                commit(formatLocalInput(n));
+              }}
+            >
+              {t("dateTime.now")}
+            </button>
           </div>
         </div>
       </Popover>

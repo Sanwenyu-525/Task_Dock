@@ -501,10 +501,31 @@ describe("AppPicker", () => {
     expect(loadApps).not.toHaveBeenCalled();
     expect(screen.getByText("尚未扫描本机应用")).toBeTruthy();
     expect(screen.getByText(/点击「扫描本机应用」查找可以添加的桌面程序/)).toBeTruthy();
+    // 弹层同样按列表区常规布局靠左，不居中
+    const gate = screen.getByText("尚未扫描本机应用").closest(".picker-scan-state");
+    expect(gate?.className).toContain("picker-scan-state--top");
+    expect(gate?.className).not.toContain("picker-scan-state--center");
     expect(screen.queryByText(/加载中/)).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "扫描本机应用" }));
     expect(loadApps).toHaveBeenCalledWith(true);
+  });
+
+  it("弹层首次扫描：状态区仍使用居中修饰类", () => {
+    seedStores();
+    useNavigationStore.setState({
+      scan: null,
+      scanning: true,
+      scanError: null,
+      scanPartial: true,
+      scanProgress: { discovered: 1, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+    });
+    renderPicker({ standalone: true });
+
+    const gate = screen.getByText(/正在扫描本机应用/).closest(".picker-scan-state");
+    expect(gate?.className).toContain("picker-scan-state");
+    expect(gate?.className).toContain("picker-scan-state--center");
+    expect(gate?.className).not.toContain("picker-scan-state--top");
   });
 
   it("已有会话扫描结果直接展示，不自动刷新；显示上次扫描时间并可手动重扫", async () => {
@@ -570,7 +591,7 @@ describe("AppPicker", () => {
     await user.clear(screen.getByLabelText("搜索应用"));
     await user.type(screen.getByLabelText("搜索应用"), "微开");
     expect(within(list).queryByText("微信开发者工具")).toBeNull();
-    expect(screen.getByText(/没有匹配「微开」/)).toBeTruthy();
+    expect(screen.getByText("没有找到匹配的应用，可以尝试其他关键词或手动添加。")).toBeTruthy();
   });
 
   it("英文搜索大小写不敏感：WECHAT / wechat 命中同一应用", async () => {
@@ -624,6 +645,40 @@ describe("AppPicker", () => {
 
     expect(screen.getByText(/应用发现可能不完整/)).toBeTruthy();
   });
+
+  it("扫描中搜索无匹配：提示仍在继续扫描，不提前说「没有匹配」", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    useNavigationStore.setState({
+      scanning: true,
+      scanProgress: { discovered: 3, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+    });
+    renderPicker({ standalone: true });
+
+    await user.type(screen.getByLabelText("搜索应用"), "zzz");
+    expect(screen.getByText("正在继续扫描，暂未发现匹配的应用…")).toBeTruthy();
+    expect(screen.queryByText(/没有找到匹配的应用/)).toBeNull();
+    // 扫描进度提示仍然保留
+    expect(screen.getByText(/正在扫描（已发现 3 个 · 已扫描来源 1\/5）/)).toBeTruthy();
+  });
+
+  it("扫描失败但保留部分结果：明确不完整，搜索无匹配不冒充扫描结束", async () => {
+    const user = userEvent.setup();
+    seedStores({ apps: [APP_VSCODE] });
+    useNavigationStore.setState({ scanning: false, scanError: "来源读取失败", scanPartial: true });
+    renderPicker({ standalone: true });
+
+    await user.type(screen.getByLabelText("搜索应用"), "微信");
+    expect(screen.getByText(/当前仅显示已发现的部分结果（不完整）/)).toBeTruthy();
+    expect(
+      screen.getByText("没有找到匹配的应用；扫描未完成，结果可能不完整，可尝试重新扫描或手动添加。"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/没有找到匹配的应用，可以尝试其他关键词/)).toBeNull();
+    // 已发现的内容仍可用：清空搜索后部分结果没有被丢弃
+    await user.clear(screen.getByLabelText("搜索应用"));
+    expect(screen.getByText(/共 1 个可添加应用/)).toBeTruthy();
+    expect(screen.getByRole("option", { name: /VS Code/ })).toBeTruthy();
+  });
 });
 
 describe("AppPicker 子页面（variant=page）", () => {
@@ -660,6 +715,10 @@ describe("AppPicker 子页面（variant=page）", () => {
 
     expect(loadApps).not.toHaveBeenCalled();
     expect(screen.getByText("尚未扫描本机应用")).toBeTruthy();
+    // 未扫描引导按列表区常规布局靠左，不使用扫描中的居中容器
+    const gate = screen.getByText("尚未扫描本机应用").closest(".picker-scan-state");
+    expect(gate?.className).toContain("picker-scan-state--top");
+    expect(gate?.className).not.toContain("picker-scan-state--center");
     // 从当前窗口选择 / 手动添加始终可达
     expect(screen.getByRole("button", { name: "从当前窗口选择" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "手动添加" })).toBeTruthy();
@@ -667,6 +726,52 @@ describe("AppPicker 子页面（variant=page）", () => {
     await user.click(screen.getByRole("button", { name: "扫描本机应用" }));
     expect(loadApps).toHaveBeenCalledWith(true);
     expect(loadApps).toHaveBeenCalledTimes(1);
+  });
+
+  it("未扫描切换到扫描中：只切换修饰类，不重建外框、不挤动工具栏", async () => {
+    seedStores();
+    useNavigationStore.setState({ scan: null, scanning: false, scanError: null });
+    renderPage();
+
+    const gate = screen.getByText("尚未扫描本机应用").closest(".picker-scan-state");
+    expect(gate).toBeTruthy();
+    expect(gate?.className).toContain("picker-scan-state");
+    expect(gate?.className).toContain("picker-scan-state--top");
+
+    useNavigationStore.setState({
+      scanning: true,
+      scanPartial: true,
+      scanProgress: { discovered: 3, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+    });
+
+    const next = document.querySelector(".picker-scan-state");
+    // 外框沿用同一 DOM 节点 + 同一基础类（appPicker.css 的 min-height 契约），
+    // 切换状态只换修饰类，所以外框高度与上下工具栏位置不变。
+    expect(next).toBe(gate);
+    await waitFor(() =>
+      expect(next?.className).toContain("picker-scan-state--center"),
+    );
+    expect(next?.className).toContain("picker-scan-state");
+    expect(next?.className).not.toContain("picker-scan-state--top");
+    expect(screen.getByRole("textbox", { name: "搜索应用" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "分类筛选" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "添加已选应用" })).toBeTruthy();
+  });
+
+  it("首次扫描失败保持列表区常规布局，不居中", () => {
+    seedStores();
+    useNavigationStore.setState({
+      scan: null,
+      scanning: false,
+      scanError: "来源读取失败",
+      scanPartial: false,
+    });
+    renderPage();
+
+    expect(screen.getByText(/应用扫描失败/)).toBeTruthy();
+    const gate = screen.getByText(/应用扫描失败/).closest(".picker-scan-state");
+    expect(gate?.className).toContain("picker-scan-state--top");
+    expect(gate?.className).not.toContain("picker-scan-state--center");
   });
 
   it("扫描中禁用重复提交，已有结果时保留展示", () => {
@@ -706,6 +811,9 @@ describe("AppPicker 子页面（variant=page）", () => {
     // 状态区占据可用列表区域并居中（搜索栏/分类/底栏保持稳定）
     const centered = box?.closest(".picker-scan-state");
     expect(centered).toBeTruthy();
+    expect(centered?.className).toContain("picker-scan-state");
+    expect(centered?.className).toContain("picker-scan-state--center");
+    expect(centered?.className).not.toContain("picker-scan-state--top");
     expect(centered?.parentElement?.className).toContain("app-picker-page-body");
     expect(screen.getByRole("textbox", { name: "搜索应用" })).toBeTruthy();
     expect(screen.getByRole("group", { name: "分类筛选" })).toBeTruthy();
@@ -729,6 +837,23 @@ describe("AppPicker 子页面（variant=page）", () => {
     expect(box?.querySelector(".picker-scan-progress")?.textContent).toContain("已发现 0 个");
     // 状态区仍在可用列表区域居中，不会退化成空列表提示
     expect(document.querySelector(".picker-scan-state")).toBeTruthy();
+  });
+
+  it("扫描中尚未收到首批事件：第二行仍显示真实已发现数，不编造来源进度", () => {
+    seedStores();
+    useNavigationStore.setState({
+      scan: null,
+      scanning: true,
+      scanError: null,
+      scanPartial: true,
+      scanProgress: { discovered: 0, sourcesDone: 0, sourcesTotal: 0, batches: 0 },
+    });
+    renderPage();
+
+    const box = screen.getByText(/正在扫描本机应用/).closest(".picker-scanning");
+    const progress = box?.querySelector(".picker-scan-progress");
+    expect(progress?.textContent).toBe("已发现 0 个");
+    expect(box?.textContent).not.toMatch(/\d+\s?%/);
   });
 
   it("已有结果时重扫：列表与选择保持，只显示进度", async () => {
@@ -960,5 +1085,78 @@ describe("AppPicker 子页面（variant=page）", () => {
     expect(screen.queryByRole("listbox", { name: "已安装软件" })).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
     expect(navSaveWindowTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it("子页扫描中搜索无匹配：显示继续扫描，不显示扫描结束文案", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    useNavigationStore.setState({
+      scanning: true,
+      scanProgress: { discovered: 2, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+    });
+    renderPage();
+
+    await user.type(screen.getByLabelText("搜索应用"), "zzz");
+    expect(screen.getByText("正在继续扫描，暂未发现匹配的应用…")).toBeTruthy();
+    expect(screen.queryByText("没有找到匹配的应用，可以尝试其他关键词或手动添加。")).toBeNull();
+    // 匹配结果区域为空，但搜索栏、分类与扫描进度都保留
+    expect(screen.getByRole("textbox", { name: "搜索应用" })).toBeTruthy();
+    expect(screen.getByText(/正在扫描（已发现 2 个 · 已扫描来源 1\/5）/)).toBeTruthy();
+  });
+
+  it("子页扫描中后续批次发现匹配：立即展示，并保留扫描进度", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    useNavigationStore.setState({
+      scan: null,
+      scanning: true,
+      scanPartial: true,
+      scanError: null,
+      scanProgress: { discovered: 0, sourcesDone: 0, sourcesTotal: 0, batches: 0 },
+    });
+    renderPage();
+
+    await user.type(screen.getByLabelText("搜索应用"), "微信");
+    expect(screen.queryByRole("listbox", { name: "已安装软件" })).toBeNull();
+    expect(screen.getByText(/正在扫描本机应用/)).toBeTruthy();
+
+    // 后续来源批次到达：无需重新输入关键词，匹配项立即出现
+    useNavigationStore.setState({
+      scan: { apps: [APP_WECHAT], scanned_at: "", duration_ms: 1, counts: {} },
+      scanProgress: { discovered: 4, sourcesDone: 2, sourcesTotal: 5, batches: 2 },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("listbox", { name: "已安装软件" })).toBeTruthy(),
+    );
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+    expect(within(list).getByText("微信")).toBeTruthy();
+    expect(screen.getByText(/正在扫描（已发现 4 个 · 已扫描来源 2\/5）/)).toBeTruthy();
+  });
+
+  it("重新扫描中保留上次结果、搜索词、分类筛选与已选项", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    renderPage();
+
+    await user.type(screen.getByLabelText("搜索应用"), "chr");
+    await user.click(screen.getByRole("button", { name: "浏览器" }));
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+    await user.click(within(list).getByRole("option", { name: /Chrome/ }));
+    expect(screen.getByText("已选 1")).toBeTruthy();
+
+    useNavigationStore.setState({
+      scanning: true,
+      scanProgress: { discovered: 7, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/正在扫描（已发现 7 个 · 已扫描来源 1\/5）/)).toBeTruthy(),
+    );
+    expect((screen.getByRole("textbox", { name: "搜索应用" }) as HTMLInputElement).value).toBe("chr");
+    expect(
+      screen.getByRole("button", { name: "浏览器" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(screen.getByText("已选 1")).toBeTruthy();
+    expect(within(screen.getByRole("listbox", { name: "已安装软件" })).getByText("Chrome")).toBeTruthy();
   });
 });

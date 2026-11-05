@@ -9,9 +9,12 @@
 //! - 轨道永远在停靠边一侧（left→左、right→右、top→上、bottom→下），
 //!   面板永远朝屏幕内部展开；`cap-h` 时二者上下排列。
 //! - 折叠态只挂载轨道（面板不渲染，也就没有多余的可聚焦元素）。
+//! - 极简吸附态（`docked-tab`）只挂载 `EdgeTab`；形态过渡期间轨道与标签
+//!   同时存在，由 `styles.css` 的 `.is-to-tab` / `.is-from-tab` 做交叉过渡。
 
 import { useCallback, useEffect, useState, type ComponentType } from "react";
 import CapsuleRail, { CATEGORY_LABELS } from "./CapsuleRail";
+import EdgeTab from "./EdgeTab";
 import TasksLite from "./TasksLite";
 import AgentsLite from "./AgentsLite";
 import ClipboardLite from "./ClipboardLite";
@@ -42,6 +45,9 @@ export default function CapsuleDock() {
   const reveal = useEdgeSnapStore((s) => s.reveal);
   const collapse = useEdgeSnapStore((s) => s.collapse);
   const formSwitch = useEdgeSnapStore((s) => s.formSwitch);
+  const collapseToTab = useEdgeSnapStore((s) => s.collapseToTab);
+  const tabTransition = useEdgeSnapStore((s) => s.tabTransition);
+  const panelExiting = useEdgeSnapStore((s) => s.panelExiting);
   const feedback = useEdgeSnapStore((s) => s.feedback);
   const active = useCapsuleStore((s) => s.active);
   const setActive = useCapsuleStore((s) => s.setActive);
@@ -51,6 +57,9 @@ export default function CapsuleDock() {
   const inboxCountLoaded = useCaptureStore((s) => s.inboxCountLoaded);
 
   const expanded = phase === "docked-revealed";
+  // 稳定形态：docked-tab 且没有过渡 → 只画标签；过渡中同时保留轨道与标签做交叉淡入淡出。
+  const stableTab = phase === "docked-tab" && tabTransition === null;
+  const transitioning = tabTransition !== null;
   // 未加载（false）传 null：徽标显示中性，不把未知伪装成 0
   const status = railStatus(stats, snapshot, Date.now(), inboxCountLoaded ? inboxCount : null);
   const [pulse, setPulse] = useState(0);
@@ -94,8 +103,10 @@ export default function CapsuleDock() {
 
   if (!edge) return null;
   const vertical = edge === "left" || edge === "right";
-  // 面板可见性只看相位：分类恒有值，展开态不存在「没有面板内容」的空白态
-  const activeCategory: CapsuleCategory | null = expanded ? active : null;
+  // 面板可见性：展开态恒有内容；离场阶段（phase 已推进）仍保留挂载做收合动画，
+  // 否则「展开 → 收为标签」会在动画开始前面板瞬间消失。
+  const panelMounted = (expanded || panelExiting) && !transitioning;
+  const activeCategory: CapsuleCategory | null = panelMounted ? active : null;
   const Panel = activeCategory ? PANELS[activeCategory] : null;
 
   return (
@@ -105,6 +116,8 @@ export default function CapsuleDock() {
         vertical ? "dock-v" : "dock-h",
         `edge-${edge}`,
         expanded ? "is-expanded" : "is-collapsed",
+        stableTab ? "is-tab" : "",
+        transitioning ? `is-${tabTransition}` : "",
         pulse ? "is-snap" : "",
       ]
         .filter(Boolean)
@@ -113,25 +126,37 @@ export default function CapsuleDock() {
       role="region"
       aria-label={railAriaLabel(edge, status)}
     >
-      <CapsuleRail
-        edge={edge}
-        status={status}
-        active={active}
-        expanded={expanded}
-        onSelect={onSelect}
-        onCollapse={closePanel}
-        onForm={formSwitch ? () => formSwitch("full") : undefined}
-      />
+      {!stableTab && (
+        <CapsuleRail
+          edge={edge}
+          status={status}
+          active={active}
+          expanded={expanded}
+          onSelect={onSelect}
+          onCollapse={closePanel}
+          onForm={formSwitch ? () => formSwitch("full") : undefined}
+          onTab={collapseToTab ?? undefined}
+        />
+      )}
       {Panel && activeCategory && (
         <section
           key={activeCategory}
-          className={`capsule-panel panel-${edge}`}
+          className={`capsule-panel panel-${edge}${panelExiting ? " is-closing" : ""}`}
           aria-label={`${CATEGORY_LABELS[activeCategory]}面板`}
         >
           {/* 专注状态徽标：无活动会话时返回 null，不占位、不新增轮询 */}
           <FocusCapsuleBadge className="capsule-focus-slot" />
           <Panel />
         </section>
+      )}
+      {(stableTab || transitioning) && (
+        <EdgeTab
+          edge={edge}
+          tone={status.agentsLoaded ? status.agentTone : "unknown"}
+          appear={
+            tabTransition === "to-tab" ? "in" : tabTransition === "from-tab" ? "out" : "idle"
+          }
+        />
       )}
     </div>
   );

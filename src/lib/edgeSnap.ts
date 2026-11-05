@@ -11,6 +11,7 @@
 //!   docked-hidden   已停靠并滑出屏幕，仅留 SNAP_STRIP 物理像素触发条
 //!   docked-revealed 由触发条唤出（临时展开；光标离开后再次隐藏，不重复反馈）
 //!   docked-full     已停靠且保持完整窗口尺寸（不裁剪、不自动收缩；v1.0 新增）
+//!   docked-tab      已停靠并收起为贴边极简标签（Edge Tab；窗口不移动，仅缩小区域）
 //!
 //! 坐标口径：**全部物理像素**（与 Tauri outerPosition / workArea / cursorPosition
 //! 一致）。SNAP_STRIP 等常量按需求使用物理像素，高 DPI 下不做换算。
@@ -41,7 +42,8 @@ export type SnapPhase =
   | "docked-visible"
   | "docked-hidden"
   | "docked-revealed"
-  | "docked-full";
+  | "docked-full"
+  | "docked-tab";
 
 /**
  * 停靠展示形态（用户偏好 + 当前实际形态同一套取值）：
@@ -273,13 +275,16 @@ export function isSnapEdge(v: unknown): v is SnapEdge {
  */
 const LEGAL_TRANSITIONS: Record<SnapPhase, readonly SnapPhase[]> = {
   // free/candidate → docked-full：重启恢复或用户偏好为「完整面板」时直接停靠。
-  free: ["candidate", "docked-visible", "docked-hidden", "docked-full"],
+  // free → docked-tab：仅重启恢复（持久化 form=tab）直接重新停靠为标签。
+  free: ["candidate", "docked-visible", "docked-hidden", "docked-full", "docked-tab"],
   candidate: ["free", "docked-visible", "docked-full"],
-  "docked-visible": ["docked-hidden", "docked-revealed", "docked-full", "free"],
-  "docked-hidden": ["docked-revealed", "docked-full", "free"],
+  "docked-visible": ["docked-hidden", "docked-revealed", "docked-full", "free", "docked-tab"],
+  "docked-hidden": ["docked-revealed", "docked-full", "free", "docked-tab"],
   "docked-revealed": ["docked-hidden", "docked-visible", "docked-full", "free"],
   // 完整面板：可原地切回胶囊（docked-hidden），也可拖离恢复浮动。
   "docked-full": ["docked-hidden", "docked-visible", "free"],
+  // Edge Tab：只能恢复为胶囊轨道或拖离；不直接进入完整面板/面板展开态。
+  "docked-tab": ["docked-visible", "free"],
 };
 
 export function canTransition(from: SnapPhase, to: SnapPhase): boolean {
@@ -302,9 +307,12 @@ export const isFullDockPhase = (p: SnapPhase): boolean => p === "docked-full";
  */
 export const isCapsuleMode = (phase: SnapPhase): boolean =>
   isDockedPhase(phase) && phase !== "docked-full";
-/** 处于可自动隐藏的相位（停靠且可见）。 */
+/** 处于可自动隐藏的相位（停靠且可见）。Edge Tab 为手动形态，不自动展开/收起。 */
 export const canAutoHide = (p: SnapPhase): boolean =>
   p === "docked-visible" || p === "docked-revealed";
+
+/** Edge Tab 相位：窗口不移动，只把区域收紧为贴边标签。 */
+export const isTabPhase = (p: SnapPhase): boolean => p === "docked-tab";
 
 // ── 坐标计算 ────────────────────────────────────────────────
 
@@ -372,6 +380,38 @@ export const SNAP_DOCK_INTENT_CSS = SNAP_MAGNET_MAX_LEAD + 8;
 export function hasDockIntent(approach: number, scaleFactor: number = 1): boolean {
   const scale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
   return approach >= SNAP_DOCK_INTENT_CSS * scale;
+}
+
+/** 轨迹方向容差（CSS px）：抖动与磁力回弹允许的「远离」幅度。 */
+const SNAP_DOCK_TRAIL_SLACK_CSS = 6;
+
+/**
+ * 手势意图的完整判定：净位移 + 最近轨迹方向。
+ *
+ * 必须用**按下时**的真实窗口矩形作起点（`start`）：快速拖动时首个 `onMoved`
+ * 可能已是合并后的大位移，若把首个观测点当起点，净位移会被算小，反而判成
+ * 「没有往边缘去」。`trail` 是本次手势已观测到的矩形序列（最后一个为当前值），
+ * 用最近两拍的法向方向拒绝「被磁力带回/平行擦边」：明显在远离该边时不算意图。
+ * 当前窗口必须已进入该边候选区（由 `detectCandidateEdge` 在调用前保证）。
+ */
+export function hasDockIntentAlongTrail(
+  start: SnapRect,
+  trail: readonly SnapRect[],
+  area: SnapArea,
+  edge: SnapEdge,
+  scaleFactor: number = 1,
+): boolean {
+  const current = trail.length > 0 ? trail[trail.length - 1] : start;
+  const approach = edgeDistance(start, area, edge) - edgeDistance(current, area, edge);
+  if (!hasDockIntent(approach, scaleFactor)) return false;
+  if (trail.length > 1) {
+    const scale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+    const prev = trail[trail.length - 2];
+    const driftingAway =
+      edgeDistance(current, area, edge) - edgeDistance(prev, area, edge);
+    if (driftingAway > SNAP_DOCK_TRAIL_SLACK_CSS * scale) return false;
+  }
+  return true;
 }
 
 /**

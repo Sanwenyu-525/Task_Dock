@@ -34,6 +34,21 @@ export const TEXT_RENDER_LIMIT = 20_000;
 const FILE_LIST_LIMIT = 30;
 const GROUP_THUMB_LIMIT = 9;
 
+/** 按 id 合并分页缩略图，防止组内容变化后 offset 位移造成重复条目。 */
+function mergeThumbs(
+  base: readonly ClipboardItem[],
+  extra: readonly ClipboardItem[],
+): ClipboardItem[] {
+  const seen = new Set<string>();
+  const out: ClipboardItem[] = [];
+  for (const item of [...base, ...extra]) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
 /**
  * 组摘要：列表快照里的计数/更新时间。后端 revision 只在响应里返回，
  * 前端用它做最终缓存键；摘要则用于在发请求前判断「列表已显示内容变化」，
@@ -509,9 +524,19 @@ export function ClipboardLiteGroupView({
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [err, setErr] = useState("");
   const seq = useRef(0);
+  /** 分页追加的缩略图：首屏之外的条目按用户操作逐页读取，不一次性拉取整组。 */
+  const [extra, setExtra] = useState<ClipboardItem[]>([]);
+  const [morePhase, setMorePhase] = useState<"idle" | "loading" | "error">("idle");
+  const [moreErr, setMoreErr] = useState("");
+  const moreSeq = useRef(0);
 
   const load = useCallback(() => {
     const n = ++seq.current;
+    // 首屏重读时旧的后台分页结果一并作废，避免把上一份序列拼进来。
+    moreSeq.current += 1;
+    setExtra([]);
+    setMorePhase("idle");
+    setMoreErr("");
     setPhase("loading");
     setErr("");
     loadGroupPage(group, GROUP_THUMB_LIMIT, 0, true).then(
@@ -532,10 +557,43 @@ export function ClipboardLiteGroupView({
     load();
     return () => {
       seq.current += 1;
+      moreSeq.current += 1;
     };
   }, [load]);
 
-  const thumbs = (page?.items ?? []).slice(0, GROUP_THUMB_LIMIT);
+  const thumbs = page ? mergeThumbs(page.items, extra) : [];
+  const remaining = page ? Math.max(0, page.imageCount - thumbs.length) : 0;
+
+  /** 查看剩余图片：复用同一有界分页接口，每次只多读一页缩略图。 */
+  const loadMore = useCallback(() => {
+    if (!page || morePhase === "loading") return;
+    if (thumbs.length >= page.imageCount) return;
+    const n = ++moreSeq.current;
+    setMorePhase("loading");
+    setMoreErr("");
+    loadGroupPage(group, GROUP_THUMB_LIMIT, thumbs.length, true).then(
+      (d) => {
+        if (n !== moreSeq.current) return;
+        // 组内容在分页期间变化：offset 已不可信，放弃拼接并从第一页重读。
+        if (d.revision !== page.revision) {
+          setMorePhase("idle");
+          load();
+          return;
+        }
+        setExtra((prev) => {
+          const merged = mergeThumbs(page.items, [...prev, ...d.items]);
+          const fresh = merged.slice(page.items.length);
+          return fresh.length === prev.length ? prev : fresh;
+        });
+        setMorePhase("idle");
+      },
+      (e) => {
+        if (n !== moreSeq.current) return;
+        setMoreErr(normalizeError(e).message);
+        setMorePhase("error");
+      },
+    );
+  }, [page, morePhase, thumbs.length, group, load]);
   // 总数/图片数一律来自有界查询响应，不用到手条目数冒充组内总数。
   const sub =
     phase === "ready" && page
@@ -547,7 +605,7 @@ export function ClipboardLiteGroupView({
     phase === "ready" && page
       ? page.imageCount > thumbs.length
         ? `共 ${page.imageCount} 张，仅显示前 ${thumbs.length} 张`
-        : "组内图片按需预览"
+        : `共 ${page.imageCount} 张，已全部显示`
       : sub;
   return (
     <ClipboardLiteShell
@@ -605,7 +663,34 @@ export function ClipboardLiteGroupView({
                 <ClipboardThumb itemId={img.id} hasThumb={img.has_thumb} size={86} />
               </button>
             ))}
+            {remaining > 0 && (
+              <button
+                type="button"
+                className="cap-clip-tile is-more"
+                aria-label={`加载更多截图，还有 ${remaining} 张`}
+                disabled={morePhase === "loading"}
+                onClick={loadMore}
+              >
+                {morePhase === "loading" ? (
+                  <Loader2 size={14} className="spin" aria-hidden="true" />
+                ) : (
+                  <span>
+                    还有
+                    <br />
+                    {remaining} 张
+                  </span>
+                )}
+              </button>
+            )}
           </div>
+          {morePhase === "error" ? (
+            <div className="cap-clip-state is-error" role="alert">
+              <span>加载更多失败：{moreErr}</span>
+              <button type="button" className="cap-link" onClick={loadMore}>
+                重试
+              </button>
+            </div>
+          ) : null}
         </div>
       )}
     </ClipboardLiteShell>

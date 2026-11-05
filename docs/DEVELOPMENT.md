@@ -396,3 +396,36 @@ node scripts/build-guard.mjs cleanup --dir <绝对路径> --execute  # 真删
 - 预警阈值（默认 25 GB，`--warn-free-gb`）：低于则警告并建议先 `report`。
 - `scripts/perf/gate-run.sh`、`gate-fourth-round.sh` 已在开头接入 precheck（失败 exit 2 中止门禁）。
 - 未签名安装包首次运行会被 SmartScreen 拦截（「更多信息 → 仍要运行」），属预期现象。
+
+### 7.6 dev profile 的调试信息级别（2026-11-05）
+
+`src-tauri/Cargo.toml` 现在设置：
+
+```toml
+[profile.dev]
+debug = "line-tables-only"
+```
+
+**为什么**：dev/debug 构建默认写完整调试信息（类型、局部变量、内联信息），在 MSVC 目标上
+会为每个 crate 生成大体积 `.pdb`；2026-11-05 检查 `src-tauri/target` 时 `.pdb` 共 528 个、
+合计约 15.5 GiB，是构建缓存的第二大开销。`line-tables-only` 只保留文件/行号表，
+panic 栈与调试器仍能定位到**文件和行号**，但看不到局部变量值、结构体字段与内联帧。
+
+**影响范围**：`cargo build` / `cargo check` / `cargo test` / `tauri dev` 都走 dev profile，
+因此测试二进制与调试构建的 PDB 一并变小；`[profile.release]` 未改动，发布包行为不变。
+
+**磁盘提醒**：
+- 体积下降对**下次**构建生效，属预期值，本仓库尚无实测对比数据（未执行全量对比构建）。
+- 已存在的 `.pdb` 不会被 Cargo 自动清理；需要回收空间时，先确认没有正在运行的调试实例，
+  再删除 `src-tauri/target/debug` 下的陈旧 `.pdb`（或用 `cargo clean` 清空整个缓存）。
+  清理前按 §7.3 用 `build-guard` 检查是否被并行会话占用。
+
+**需要完整变量时临时覆盖**（环境变量优先级高于 Cargo.toml）：
+
+```powershell
+$env:CARGO_PROFILE_DEV_DEBUG = "2"; cargo build    # PowerShell
+CARGO_PROFILE_DEV_DEBUG=2 cargo build              # bash / Git Bash
+```
+
+覆盖后会重新编译受影响的 crate，PDB 也随之回到完整体积；用完删除该环境变量即可恢复。
+`CARGO_PROFILE_DEV_DEBUG = 0` 可临时得到最小体积（但栈只有地址，无文件名/行号）。

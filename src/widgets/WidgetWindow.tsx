@@ -19,7 +19,9 @@ import { useLocale } from "../hooks/useLocale";
 import { createSubscriptionScope } from "../lib/subscriptions";
 import { resolveSecondaryPreset, resolveTheme, resolveVisualPreset } from "../lib/theme";
 import {
-  isNewerRevision,
+  advanceSnapshotGuard,
+  createSnapshotGuard,
+  shouldAcceptSnapshot,
   typeFromWindowLabel,
   type DesktopActionKind,
   type DesktopWidgetSnapshot,
@@ -53,6 +55,12 @@ import TodayTasksWidget from "../components/widgets/TodayTasksWidget";
 const BOUNDS_DEBOUNCE_MS = 350;
 /** 首帧快照等待上限；超时只提示并可手动重试，不启动轮询。 */
 const CONNECT_TIMEOUT_MS = 4000;
+/** 首帧失败的有限次自动重连（含首次共 3 次），成功/销毁即停。 */
+const CONNECT_ATTEMPTS = 3;
+const CONNECT_RETRY_DELAYS_MS = [1200, 2400];
+
+/** 连接失败分型：订阅失败 / IPC 请求失败 / 首帧超时。 */
+type ConnectFailure = "listen" | "request" | "timeout";
 
 function createRelay<T>(): { source: WidgetSource<T>; push: (value: T | null) => void } {
   let value: T | null = null;
@@ -98,13 +106,18 @@ export default function WidgetWindow() {
   }, []);
 
   const [snapshot, setSnapshot] = useState<DesktopWidgetSnapshot | null>(null);
-  const [timedOut, setTimedOut] = useState(false);
-  const [listenError, setListenError] = useState(false);
+  const [connectFailure, setConnectFailure] = useState<ConnectFailure | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
   const [topmost, setTopmost] = useState(false);
   /** 置顶/关闭等窗口命令失败：必须在窗口内给出可操作反馈，不能静默失败。 */
   const [actionError, setActionError] = useState<string | null>(null);
-  const revisionRef = useRef(-1);
+  /** 已接受快照的水位（会话 / revision / 窗口代际）。 */
+  const guardRef = useRef(createSnapshotGuard());
+  /** Rust 回报的当前窗口代际；旧代际快照必须丢弃。 */
+  const windowGenerationRef = useRef<number | null>(null);
+  /** 已失败次数：用于有界自动重连，成功即清零。 */
+  const failedAttemptsRef = useRef(0);
+  const connectStartedAtRef = useRef(Date.now());
   const timeoutRef = useRef<number | null>(null);
 
   const [themeSnap, setThemeSnap] = useState<{
@@ -182,20 +195,12 @@ export default function WidgetWindow() {
     root.dataset.material = themeSnap?.material ?? "glass";
   }, [themeSnap, prefersDark]);
 
-  // —— 快照订阅：带 revision 守卫；超时只提示，不轮询 ——
-  const armTimeout = useCallback(() => {
-    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-    setTimedOut(false);
-    timeoutRef.current = window.setTimeout(() => {
-      timeoutRef.current = null;
-      setTimedOut(true);
-    }, CONNECT_TIMEOUT_MS);
-  }, []);
-
-  /** 重试 = 重新走一遍「注册监听 → 请求首帧」，同时覆盖监听失败与超时两种状态。 */
+  // —— 快照订阅：会话 / 代际 / revision 三重守卫；有限次自动重连，不轮询 ——
+  /** 手动重试：清零失败计数并重走「注册监听 → 请求首帧」。 */
   const retryConnect = useCallback(() => {
-    setListenError(false);
-    setTimedOut(false);
+    failedAttemptsRef.current = 0;
+    connectStartedAtRef.current = Date.now();
+    setConnectFailure(null);
     setConnectAttempt((attempt) => attempt + 1);
   }, []);
 
@@ -203,26 +208,62 @@ export default function WidgetWindow() {
     if (!type) return;
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
+    let retryTimer: number | null = null;
+
+    const failConnect = (reason: ConnectFailure) => {
+      if (disposed) return;
+      setConnectFailure(reason);
+      const failed = failedAttemptsRef.current + 1;
+      failedAttemptsRef.current = failed;
+      if (failed < CONNECT_ATTEMPTS) {
+        const delay = CONNECT_RETRY_DELAYS_MS[failed - 1] ?? CONNECT_RETRY_DELAYS_MS.at(-1)!;
+        retryTimer = window.setTimeout(() => {
+          retryTimer = null;
+          // 重新走一轮效果：清理旧监听与定时器，不会累积重复订阅。
+          setConnectAttempt((attempt) => attempt + 1);
+        }, delay);
+        return;
+      }
+      // 只记录分型、次数与耗时；不含任务/提醒正文等业务数据。
+      console.warn("[widget-connect] first snapshot failed", {
+        widgetType: type,
+        reason,
+        attempts: failed,
+        elapsedMs: Date.now() - connectStartedAtRef.current,
+      });
+    };
+
+    const armTimeout = () => {
+      if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = window.setTimeout(() => {
+        timeoutRef.current = null;
+        failConnect("timeout");
+      }, CONNECT_TIMEOUT_MS);
+    };
 
     const connect = async () => {
       let un: UnlistenFn;
       try {
         un = await onWidgetSnapshot((envelope: WidgetSnapshotEnvelope) => {
           if (disposed || envelope.widgetType !== type) return;
-          if (!isNewerRevision(revisionRef.current, envelope.revision)) return;
-          revisionRef.current = envelope.revision;
+          if (!shouldAcceptSnapshot(guardRef.current, envelope, windowGenerationRef.current)) {
+            return;
+          }
+          guardRef.current = advanceSnapshotGuard(envelope);
+          failedAttemptsRef.current = 0;
+          if (retryTimer !== null) {
+            window.clearTimeout(retryTimer);
+            retryTimer = null;
+          }
           if (timeoutRef.current !== null) {
             window.clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
           }
+          setConnectFailure(null);
           setSnapshot(envelope.snapshot);
-          setTimedOut(false);
         });
       } catch {
-        if (!disposed) {
-          setListenError(true);
-          setTimedOut(false);
-        }
+        failConnect("listen");
         return;
       }
       if (disposed) {
@@ -233,7 +274,7 @@ export default function WidgetWindow() {
       // 监听注册成功后才请求首帧：否则主窗口可能先把快照发在一个尚未订阅的窗口里。
       armTimeout();
       void requestWidgetSnapshot().catch(() => {
-        if (!disposed) setTimedOut(true);
+        if (!disposed) failConnect("request");
       });
     };
 
@@ -241,12 +282,13 @@ export default function WidgetWindow() {
     return () => {
       disposed = true;
       unlisten?.();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       if (timeoutRef.current !== null) {
         window.clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
     };
-  }, [type, connectAttempt, armTimeout]);
+  }, [type, connectAttempt]);
 
   // —— 初始置顶状态：由 Rust 回报，避免界面与真实窗口不一致 ——
   useEffect(() => {
@@ -254,7 +296,12 @@ export default function WidgetWindow() {
     let disposed = false;
     void getWidgetWindowInfo()
       .then((info) => {
-        if (!disposed) setTopmost(info.topmost);
+        if (disposed) return;
+        windowGenerationRef.current = info.generation;
+        if (guardRef.current.generation === null) {
+          guardRef.current = { ...guardRef.current, generation: info.generation };
+        }
+        setTopmost(info.topmost);
       })
       .catch(() => {});
     return () => {
@@ -362,10 +409,18 @@ export default function WidgetWindow() {
     if (!snapshot) {
       return (
         <div className="wd-state" role="status">
-          {listenError || timedOut ? (
+          {connectFailure ? (
             <>
               <AlertTriangle size={16} aria-hidden="true" />
-              <span>{t(listenError ? "widgetWindow.listenFailed" : "widgetWindow.timeout")}</span>
+              <span>
+                {t(
+                  connectFailure === "listen"
+                    ? "widgetWindow.listenFailed"
+                    : connectFailure === "request"
+                      ? "widgetWindow.requestFailed"
+                      : "widgetWindow.timeout",
+                )}
+              </span>
               <button type="button" className="wd-retry" onClick={retryConnect}>
                 <RefreshCw size={11} aria-hidden="true" /> {t("widgetWindow.retry")}
               </button>

@@ -156,7 +156,10 @@ export default function WidgetCard({
           )}
           <button
             className={`widget-icon-btn ${item.desktop.visible ? "is-on" : ""}`}
-            aria-label={t("widgets.desktop.showAria", { title })}
+            aria-label={t(
+              item.desktop.visible ? "widgets.desktop.hideAria" : "widgets.desktop.showAria",
+              { title },
+            )}
             aria-pressed={item.desktop.visible}
             data-tip={
               phase === "failed"

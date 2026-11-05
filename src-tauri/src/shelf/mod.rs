@@ -208,6 +208,8 @@ impl ShelfState {
         std::fs::create_dir_all(root.join("images"))?;
         std::fs::create_dir_all(root.join("thumbs"))?;
         purge_part_files(&root);
+        // 上次退出/崩溃留下的移动日志：启动时按最小恢复规则对齐磁盘与数据库。
+        fsops::recover_pending_file_ops(&db);
         Ok(Self {
             db,
             root,
@@ -1880,6 +1882,8 @@ pub fn start_auto_cleanup(db: Arc<Db>, root: PathBuf) {
             }
         });
 }
+
+pub mod fsops;
 
 #[cfg(test)]
 mod tests;

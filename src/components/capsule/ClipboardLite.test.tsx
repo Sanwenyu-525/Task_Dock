@@ -496,6 +496,70 @@ describe("A4 截图组有界预览", () => {
     fireEvent.click(screen.getByRole("button", { name: "复制整组" }));
     await waitFor(() => expect(clipboardCopyGroupRich).toHaveBeenCalledWith("lite-group-c"));
   });
+
+  it("9 张不是真实全部：明确剩余数量，按页加载更多后显示全部且返回保留", async () => {
+    const g = group({ id: "lite-group-more", name: "截图组 更多", image_count: 12, item_count: 12 });
+    const images = Array.from({ length: 12 }, (_, i) => imageOf(`more-${i + 1}`, `组图 ${i + 1}`));
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockImplementation(
+      async (id: string, opts: { limit: number; offset?: number; imagesOnly?: boolean }) => {
+        const offset = opts.offset ?? 0;
+        return pageOf(id, images.slice(offset, offset + opts.limit), 12, 12, "r1");
+      },
+    );
+    clipboardImage.mockResolvedValue("data:image/png;base64,LITE-MORE");
+    render(<ClipboardLite />);
+    await screen.findByText("截图组 更多");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「截图组 更多」" }));
+
+    await screen.findByRole("button", { name: "查看截图组第 9 张图片" });
+    // 首屏只到 9 张：必须说明这是真实总数的一部分，而不是组里只有 9 张。
+    expect(screen.getByText("共 12 张，仅显示前 9 张")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "查看截图组第 10 张图片" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多截图，还有 3 张" }));
+    await screen.findByRole("button", { name: "查看截图组第 12 张图片" });
+    expect(clipboardGroupPage).toHaveBeenCalledWith("lite-group-more", {
+      limit: 9,
+      offset: 9,
+      imagesOnly: true,
+    });
+    expect(screen.queryByRole("button", { name: /加载更多截图/ })).toBeNull();
+    expect(screen.getByText("共 12 张，已全部显示")).toBeTruthy();
+
+    // 打开第 12 张再返回：分页结果仍保留，不退回前 9 张。
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 12 张图片" }));
+    await screen.findByRole("button", { name: "返回列表" });
+    fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
+    await screen.findByRole("button", { name: "查看截图组第 12 张图片" });
+    expect(screen.getByText("共 12 张，已全部显示")).toBeTruthy();
+  });
+
+  it("加载更多失败给出错误与重试，不静默停在前 9 张", async () => {
+    const g = group({ id: "lite-group-fail", name: "截图组 失败", image_count: 12, item_count: 12 });
+    const images = Array.from({ length: 12 }, (_, i) => imageOf(`fail-${i + 1}`, `组图 ${i + 1}`));
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockImplementation(
+      async (id: string, opts: { limit: number; offset?: number }) => {
+        if ((opts.offset ?? 0) > 0) throw new Error("读取超时");
+        return pageOf(id, images.slice(0, opts.limit), 12, 12, "r1");
+      },
+    );
+    render(<ClipboardLite />);
+    await screen.findByText("截图组 失败");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「截图组 失败」" }));
+    await screen.findByRole("button", { name: "查看截图组第 9 张图片" });
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多截图，还有 3 张" }));
+    await waitFor(() => expect(screen.getByText(/加载更多失败：读取超时/)).toBeTruthy());
+    expect(screen.getByText("共 12 张，仅显示前 9 张")).toBeTruthy();
+
+    clipboardGroupPage.mockResolvedValueOnce(pageOf(g.id, images.slice(9), 12, 12, "r1"));
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByRole("button", { name: "查看截图组第 12 张图片" });
+    expect(screen.queryByText(/加载更多失败/)).toBeNull();
+    expect(screen.getByText("共 12 张，已全部显示")).toBeTruthy();
+  });
 });
 
 describe("二级视图 Escape 层级", () => {

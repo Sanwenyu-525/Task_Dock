@@ -103,6 +103,13 @@ winreg = "0.55"
 # 调用方以 catch_unwind 隔离，坏文件跳过不影响扫描）
 lnk = "0.5"
 
+# 开发构建的 PDB 体积控制（2026-11-05）：完整调试信息让 target/debug 下的 .pdb
+# 膨胀到 15 GiB 级别。line-tables-only 只保留文件/行号表（崩溃栈仍可定位到文件和行），
+# 不生成类型/局部变量/内联信息，显著压缩 PDB。需要完整变量时临时覆盖：
+# CARGO_PROFILE_DEV_DEBUG=2 cargo build（见 docs/DEVELOPMENT.md 第七章）。
+[profile.dev]
+debug = "line-tables-only"
+
 # 注意：不得设置 panic = "abort" —— 导航扫描依赖 catch_unwind 隔离畸形 .lnk 的
 # 解析 panic（真机验收发现：panic=abort 下 catch_unwind 失效，扫描到用户开始
 # 菜单中的异常快捷方式会让整个应用直接退出）。

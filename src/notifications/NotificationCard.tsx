@@ -19,17 +19,8 @@ import {
 } from "./notificationUtils";
 import NotificationIcon, { kindAriaLabel } from "./NotificationIcon";
 import NotificationActions from "./NotificationActions";
-
-function BrandGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="m6 3 3.2 1.3 1.3 3.2-1.3 3.2L6 12 2.8 10.7 1.5 7.5l1.3-3.2L6 3Zm9 3 2.3 4.7L22 13l-4.7 2.3L15 20l-2.3-4.7L8 13l4.7-2.3L15 6Z"
-      />
-    </svg>
-  );
-}
+// 项目品牌图标（与 src-tauri/icons 的 01-flat-2d 应用图标同源，取 64px 档兼顾小尺寸清晰度）
+import appLogo from "../../assets/branding/icons/01-flat-2d/64x64.png";
 
 function chipClass(kind: string): string {
   if (kind === "agent_done") return "done";
@@ -206,7 +197,7 @@ export default function NotificationCard({
     >
       <header className="ntf-head">
         <span className="ntf-app-symbol" aria-hidden="true">
-          <BrandGlyph />
+          <img src={appLogo} alt="" width={18} height={18} draggable={false} />
         </span>
         <strong>Task Dock</strong>
         <span className="ntf-timestamp">{relativeTime(card.createdAt, now)}</span>

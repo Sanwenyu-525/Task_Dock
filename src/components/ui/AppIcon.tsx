@@ -111,12 +111,23 @@ export default function AppIcon({
   // 近白/浅色 logo：浅色主题下白底白字几乎不可见。用主题语义色做极轻底衬，
   // 并用低透明度深色描边保证任意底色下都可辨认；彩色/深色图标保持原始外观。
   const light = Boolean(icon?.light);
+  // 描边画在图片外侧，父容器 overflow:hidden 会裁掉贴边的阴影；给浅色图标留出
+  // 1–2px 内边距，保证轮廓完整可见（彩色/深色图标保持原始尺寸，不外扩）。
+  const lightPad = Math.max(1, Math.round(size * 0.08));
   const lightStyle: CSSProperties | undefined = light
     ? {
-        background:
-          "color-mix(in srgb, var(--text-primary, #22263c) 12%, transparent)",
         filter:
           "drop-shadow(0 0 1px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 1px rgba(0, 0, 0, 0.3))",
+      }
+    : undefined;
+  const lightBoxStyle: CSSProperties | undefined = light
+    ? {
+        background:
+          "color-mix(in srgb, var(--text-primary, #22263c) 14%, transparent)",
+        padding: lightPad,
+        boxSizing: "border-box",
+        boxShadow:
+          "inset 0 0 0 1px color-mix(in srgb, var(--text-primary, #22263c) 28%, transparent)",
       }
     : undefined;
   return (
@@ -128,6 +139,7 @@ export default function AppIcon({
         borderRadius: Math.max(5, Math.round(size * 0.2)),
         fontSize: Math.max(10, Math.round(size * 0.46)),
         background: icon ? "transparent" : `hsl(${hue} 58% 45%)`,
+        ...lightBoxStyle,
       }}
       aria-hidden="true"
     >

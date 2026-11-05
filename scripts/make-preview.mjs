@@ -357,7 +357,93 @@ const shim = `
     { id: "ci4", kind: "image", text: "", html: "", preview: "截图 1280×720", title: "截图 1280×720", title_source: "auto", has_image: true, has_thumb: true, byte_size: 24576, source_app: "SnippingTool.exe", source_title: "截屏", image_width: 1280, image_height: 720, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(64), last_seen_at: iso(64), sensitive: false },
     { id: "ci5", kind: "files", text: "", html: "", preview: "3 个文件", title: "README.md 等 3 个文件", title_source: "auto", has_image: false, has_thumb: false, byte_size: 0, source_app: "Explorer.exe", source_title: "资源管理器", image_width: null, image_height: null, file_paths: ["D:\\Develop\\task_dock\\README.md", "D:\\Develop\\task_dock\\docs\\ARCHITECTURE.md", "D:\\Develop\\task_dock\\package.json"], favorite: false, pinned: false, copy_count: 1, created_at: iso(90), last_seen_at: iso(90), sensitive: false },
   ];
+  // 智能连续收集走查夹具：覆盖图片组 / 文本组 / 链接组 / 文件组 / 混合组 / 单项遗留组，
+  // 并保留一条没有 kind_counts / cover_items 的旧分组，验证前端回退路径。
+  const clipExtra = (o) => ({
+    id: o.id, kind: o.kind, text: o.text ?? "", html: "", preview: o.preview,
+    title: o.title ?? "", title_source: "auto", has_image: o.kind === "image",
+    has_thumb: o.kind === "image", byte_size: o.bytes ?? 32,
+    source_app: o.app ?? "Code.exe", source_title: o.win ?? "", image_width: o.w ?? null,
+    image_height: o.h ?? null, file_paths: o.files ?? [], favorite: false, pinned: false,
+    copy_count: 1, created_at: iso(o.ago ?? 5), last_seen_at: iso(o.ago ?? 5), sensitive: false,
+  });
+  const clipImg1 = clipExtra({ id: "ci6", kind: "image", preview: "截图 1920×1080", title: "截图 1920×1080", w: 1920, h: 1080, app: "SnippingTool.exe", win: "截屏", ago: 3 });
+  const clipImg2 = clipExtra({ id: "ci7", kind: "image", preview: "截图 1366×768", title: "截图 1366×768", w: 1366, h: 768, app: "SnippingTool.exe", win: "截屏", ago: 4 });
+  const clipImg3 = clipExtra({ id: "ci8", kind: "image", preview: "截图 1024×640", title: "截图 1024×640", w: 1024, h: 640, app: "SnippingTool.exe", win: "截屏", ago: 5 });
+  const clipLongText1 = clipExtra({
+    id: "ci9", kind: "text", app: "WINWORD.EXE", win: "会议纪要.docx", ago: 8,
+    preview: "会议纪要：确认交付节奏与验收范围，下周一同步给客户；联调窗口从周三提前到周二，接口冻结时间不变；设计稿以 v07 为准，冻结后不再接受配色调整。",
+    title: "会议纪要：交付节奏与验收范围",
+  });
+  const clipLongText2 = clipExtra({
+    id: "ci10", kind: "text", app: "WINWORD.EXE", win: "会议纪要.docx", ago: 9,
+    preview: "第二段：接口联调负责人张三，本周五前给出联调结论；前端回归由李四负责，覆盖 320 / 400 窄窗与深浅主题。",
+    title: "",
+  });
+  const clipUrl1 = clipExtra({
+    id: "ci11", kind: "link", app: "chrome.exe", win: "GitHub Actions - Google Chrome", ago: 12,
+    preview: "https://docs.github.com/zh/actions/using-workflows/workflow-syntax-for-github-actions",
+    title: "GitHub Actions 工作流语法",
+  });
+  const clipUrl2 = clipExtra({
+    id: "ci12", kind: "link", app: "chrome.exe", win: "Figma - Google Chrome", ago: 13,
+    preview: "https://www.figma.com/file/abcdef/Design-System?node-id=12%3A3456",
+    title: "Design System – Figma",
+  });
+  const clipFiles1 = clipExtra({
+    id: "ci13", kind: "files", app: "explorer.exe", win: "下载", ago: 16,
+    preview: "3 个文件", title: "季度报告.docx 等 3 个文件",
+    files: ["C:\\Users\\preview\\Downloads\\季度报告.docx", "C:\\Users\\preview\\Downloads\\预算.xlsx", "C:\\Users\\preview\\Downloads\\立项说明.pdf"],
+  });
+  const clipFiles2 = clipExtra({
+    id: "ci14", kind: "files", app: "explorer.exe", win: "下载", ago: 17,
+    preview: "2 个文件", title: "评审记录.md 等 2 个文件",
+    files: ["C:\\Users\\preview\\Downloads\\评审记录.md", "C:\\Users\\preview\\Downloads\\截图清单.txt"],
+  });
+  const clipSingle = clipExtra({
+    id: "ci15", kind: "text", app: "notepad.exe", win: "无标题 - 记事本", ago: 22,
+    preview: "单条复制：仅一条内容，还不足以成立自动分组，作为候选等待下一条连续复制。",
+    title: "单条复制候选",
+  });
+  // 灯箱走查夹具：7 图组验证箭头/序号，57 图组验证跨单页 50 张后的分页追加。
+  const clipMany = Array.from({ length: 57 }, (_, idx) => {
+    const w = 1600;
+    const h = 900 - (idx % 4) * 90;
+    return clipExtra({
+      id: "cbig" + (idx + 1), kind: "image", preview: "截图 " + w + "×" + h, title: "截图 " + w + "×" + h,
+      w, h, app: "SnippingTool.exe", win: "截屏", ago: 2,
+    });
+  });
+
+  const clipGroup = (o) => ({
+    id: o.id, name: o.name, mode: "auto", status: o.status ?? "closed", favorite: false,
+    pinned: o.pinned ?? false, created_at: iso(o.ago), updated_at: iso(o.ago - 1),
+    closed_at: iso(o.ago - 1), item_count: o.items.length,
+    image_count: o.items.filter((i) => i.kind === "image").length,
+    preview: o.preview ?? "", kind_counts: o.counts, cover_items: o.covers ?? [], items: o.items,
+  });
+  const clipCounts = (items) => ({
+    image: items.filter((i) => i.kind === "image").length,
+    text: items.filter((i) => i.kind === "text" || i.kind === "html").length,
+    html: items.filter((i) => i.kind === "html").length,
+    url: items.filter((i) => i.kind === "link" || i.kind === "url").length,
+    files: items.filter((i) => i.kind === "files").length,
+  });
+  const clipGroups = (items, o) => clipGroup({ ...o, items, counts: clipCounts(items) });
+
+  clipboardItems.push(clipImg1, clipImg2, clipImg3, clipLongText1, clipLongText2, clipUrl1, clipUrl2, clipFiles1, clipFiles2, clipSingle);
+
   const clipboardGroups = [
+    clipGroups([clipImg1, clipImg2, clipImg3], { id: "cg-img", name: "连续截图 · 调试过程", ago: 3, preview: "截图 1920×1080", covers: [clipImg1, clipImg2, clipImg3], status: "collecting" }),
+    clipGroups([clipImg1], { id: "cg-img1", name: "截图 · 单图", ago: 4, preview: "截图 1920×1080", covers: [clipImg1] }),
+    clipGroups(clipMany.slice(0, 7), { id: "cg-img7", name: "截图 · 项目评审", ago: 2, preview: clipMany[0].preview, covers: clipMany.slice(0, 3) }),
+    clipGroups(clipMany, { id: "cg-img57", name: "截图 · 长图集", ago: 1, preview: clipMany[0].preview, covers: clipMany.slice(0, 3) }),
+    clipGroups([clipLongText1, clipLongText2], { id: "cg-text", name: "会议纪要摘录", ago: 8, preview: clipLongText1.preview }),
+    clipGroups([clipUrl1, clipUrl2], { id: "cg-link", name: "工作流与设计稿链接", ago: 12, preview: clipUrl1.preview }),
+    clipGroups([clipFiles1, clipFiles2], { id: "cg-files", name: "季度报告相关文件", ago: 16, preview: clipFiles1.title }),
+    clipGroups([clipImg1, clipLongText1, clipImg2, clipUrl1], { id: "cg-mixed", name: "登录流程排查记录", ago: 3, preview: clipLongText1.preview, covers: [clipImg1, clipLongText1, clipImg2] }),
+    clipGroups([clipSingle], { id: "cg-single", name: "单条复制候选", ago: 22, preview: clipSingle.preview }),
+    // 旧数据：后端未补充 kind_counts / cover_items 时，前端按 item_count + image_count 回退。
     { id: "cg1", name: "调试截图（3 项）", mode: "auto", status: "closed", favorite: false, pinned: false, created_at: iso(70), updated_at: iso(60), closed_at: iso(60), item_count: 3, image_count: 1, preview: "截图 1280×720" },
   ];
   const clipboardStats = {
@@ -511,7 +597,8 @@ const shim = `
       case "clipboard_view":
         return {
           items: clipboardItems.map((i) => ({ ...i })),
-          groups: clipboardGroups.map((g) => ({ ...g })),
+          // 列表接口与真实契约一致：不返回分组明细 items，只有详情接口才带。
+          groups: clipboardGroups.map(({ items: _detail, ...g }) => ({ ...g })),
           stats: { ...clipboardStats, items: clipboardItems.length, groups: clipboardGroups.length },
           total_items: clipboardItems.length,
         };
@@ -519,12 +606,26 @@ const shim = `
       case "clipboard_item": return clipboardItems.find((i) => i.id === args?.itemId) ?? clipboardItems[0];
       // 分组详情接口必须带 items/image_count/preview（bridge.ClipboardGroup 的「仅详情接口填充」字段），
       // 缺 items 会让 ClipboardGroupDetail 遍历 group.items 时直接崩树（白屏）。
-      case "clipboard_group": return {
-        ...clipboardGroups[0],
-        image_count: 1,
-        preview: clipboardItems[3].preview,
-        items: [clipboardItems[3], clipboardItems[0], clipboardItems[2]],
-      };
+      case "clipboard_group": {
+        const g = clipboardGroups.find((x) => x.id === args?.groupId) ?? clipboardGroups[0];
+        const { items: detail, ...rest } = g;
+        return { ...rest, items: (detail ?? []).map((i) => ({ ...i })) };
+      }
+      // 分组图片分页（灯箱走查）：只返回请求范围内的图片元数据，offset 在图片行内计算。
+      case "clipboard_group_page": {
+        const g = clipboardGroups.find((x) => x.id === args?.groupId);
+        const images = (g?.items ?? []).filter((i) => (args?.imagesOnly ? i.kind === "image" : true));
+        const offset = Math.max(0, args?.offset ?? 0);
+        const limit = Math.min(50, Math.max(1, args?.limit ?? 50));
+        return {
+          groupId: args?.groupId, items: images.slice(offset, offset + limit).map((i) => ({ ...i })),
+          totalCount: images.length, imageCount: g?.image_count ?? images.length,
+          offset, limit, revision: "rev-" + images.length + "-" + (g?.updated_at ?? ""),
+        };
+      }
+      // 灯箱走查占位原图（真实链路由后端返回 PNG data URL；这里只用于布局/交互走查）
+      case "clipboard_image":
+        return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='900'><rect width='1600' height='900' fill='%23212a36'/><rect x='80' y='80' width='1440' height='740' fill='%23dce6f5'/><text x='120' y='180' font-size='64' fill='%23212a36'>preview image</text></svg>";
       case "clipboard_thumb":
         // 走查截图缩略图用：给一张占位图（真实链路由后端按 item 返回 PNG data URL）
         return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='76'><rect width='120' height='76' fill='%2361789a'/><rect x='8' y='8' width='104' height='60' fill='%23dce6f5'/></svg>";

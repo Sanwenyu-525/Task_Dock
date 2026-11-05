@@ -57,6 +57,44 @@ export const CAPSULE_GAP_CSS = 8;
 /** 面板圆角（CSS px）；轨道为全圆角（厚度/2）。 */
 export const PANEL_RADIUS_CSS = 24;
 
+// ── Edge Tab（极简吸附标签）跨端契约 ─────────────────────────
+/** 标签垂直于停靠边的厚度（CSS px）。 */
+export const TAB_WIDTH_CSS = 10;
+/** 标签沿边方向的长度（CSS px）。 */
+export const TAB_HEIGHT_CSS = 46;
+/** 标签靠屏幕内侧两角的圆角（CSS px）；贴屏一侧保持直角。 */
+export const TAB_RADIUS_CSS = 8;
+/** 收起/恢复动画总时长（CSS 与引擎共用的口径，ms）。 */
+export const TAB_TRANSITION_MS = 300;
+/** 功能面板离场时长（ms）：先自然收合，再开始胶囊侧滑。 */
+export const PANEL_EXIT_MS = 160;
+/** 点击与拖动的位移判定阈值（CSS px）。 */
+export const TAB_CLICK_SLOP_CSS = 4;
+/** 向屏幕内部拖动恢复胶囊的法向阈值（CSS px）。 */
+export const TAB_RESTORE_DRAG_CSS = 28;
+
+/** 标签沿边方向在物理像素下的跨度（用于拖拽时把标签限制在可用区内）。 */
+export function tabSpanPhysical(edge: SnapEdge, scale: number): number {
+  return toPhysical(isVerticalEdge(edge) ? TAB_HEIGHT_CSS : TAB_WIDTH_CSS, scale);
+}
+
+/**
+ * 把 Edge Tab 的沿边中心钳制在显示器可用区内（物理像素）。
+ * 标签必须完整可见，不能出现贴到任务栏后面或屏幕外无法点击的情况。
+ */
+export function clampTabCenter(
+  edge: SnapEdge,
+  area: SnapArea,
+  center: number,
+  scale: number,
+): number {
+  const span = tabSpanPhysical(edge, scale);
+  const origin = isVerticalEdge(edge) ? area.y : area.x;
+  const extent = isVerticalEdge(edge) ? area.h : area.w;
+  if (extent <= span) return origin + extent / 2;
+  return Math.max(origin + span / 2, Math.min(origin + extent - span / 2, center));
+}
+
 /** 胶囊容器：停靠时窗口至少要这么大，才能同时容纳轨道与面板。 */
 export const CAPSULE_CONTAINER_W_CSS = RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_WIDTH_CSS; // 404
 export const CAPSULE_CONTAINER_H_CSS = PANEL_HEIGHT_CSS; // 440

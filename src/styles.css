@@ -3965,6 +3965,7 @@ code {
 /* 单行卡片：图标 + 名称/状态 + 收藏/更多。整卡 hover（不再只高亮上半部分），
    圆角沿用设计系统 Token（`--radius-lg` 在本项目从未定义，旧值实际不生效）。 */
 .apps-tile {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 0;
@@ -4023,26 +4024,40 @@ code {
   height: 24px;
 }
 
-/* 直接删除入口：与收藏/菜单并列，始终占位（不改变卡片尺寸），
-   默认隐藏，卡片悬停或键盘聚焦时出现。 */
-.apps-tile-actions .apps-tile-del,
-.apps-extra-row .apps-tile-del {
+/* 应用卡片删除入口：不占布局宽度——绝对定位在卡片右上角，
+   因此名称截断点与没有删除按钮时一致，删除按钮出现前后卡片尺寸不变。
+   热区只有按钮自身（22×22），不覆盖启动主区；卡片悬停或键盘聚焦时淡入。 */
+.apps-tile > .apps-tile-del {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
   width: 22px;
   height: 22px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   opacity: 0;
   pointer-events: none;
+  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 }
-.apps-tile:hover .apps-tile-del,
-.apps-tile:focus-within .apps-tile-del,
-.apps-extra-row:hover .apps-tile-del,
-.apps-extra-row:focus-within .apps-tile-del,
+/* 网址/文件夹行空间充裕，删除入口仍排在收藏/更多之后参与布局，位置不变。 */
+.apps-extra-row > .apps-tile-del {
+  width: 22px;
+  height: 22px;
+  color: var(--text-secondary);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+.apps-tile:hover > .apps-tile-del,
+.apps-tile:focus-within > .apps-tile-del,
+.apps-extra-row:hover > .apps-tile-del,
+.apps-extra-row:focus-within > .apps-tile-del,
 .apps-tile-del:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
-.apps-tile-actions .apps-tile-del:hover,
-.apps-extra-row .apps-tile-del:hover {
+.apps-tile > .apps-tile-del:hover,
+.apps-extra-row > .apps-tile-del:hover {
   color: var(--status-error);
   background: color-mix(in srgb, var(--status-error) 12%, transparent);
 }
@@ -4052,8 +4067,8 @@ code {
 }
 /* 触屏没有 hover：删除入口常显。 */
 @media (hover: none) {
-  .apps-tile-actions .apps-tile-del,
-  .apps-extra-row .apps-tile-del {
+  .apps-tile > .apps-tile-del,
+  .apps-extra-row > .apps-tile-del {
     opacity: 1;
     pointer-events: auto;
   }
@@ -5028,9 +5043,123 @@ code {
   cursor: zoom-in;
 }
 
-.clip-thumb-open:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.clip-thumb-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 分组卡片类型预览：图片/混合组用 1–3 张封面，其他类型用图标；窄窗只留一张封面。 */
+.clip-group-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  align-self: center;
+  min-width: 44px;
+  height: 44px;
+}
+
+.clip-type-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-base);
+  color: var(--text-secondary);
+}
+
+.clip-type-tile.link {
+  color: var(--accent);
+}
+
+.clip-type-tile.mixed {
+  color: var(--text-secondary);
+  background: var(--accent-soft);
+}
+
+/* 多图轻量叠放，宽度约 44 + 28×2 */
+.clip-cover-stack {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.clip-cover-stack > .clip-thumb-open + .clip-thumb-open {
+  margin-left: -16px;
+}
+
+/* 数量徽标：挪到封面右侧，不遮挡封面内容；只在总数超过可见封面数时显示真实总数。 */
+.clip-cover-total {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  padding: 0 3px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-base);
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* 删除与普通操作之间的分隔：留出可感知的间距，降低误点删除的概率 */
+.clip-actions-sep {
+  flex: 0 0 auto;
+  width: 5px;
+}
+
+.clip-menu-state {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* 分组摘要最多两行；长 URL/连续英文可断行，不撑破卡片 */
+.clip-preview.clip-group-summary {
+  align-items: flex-start;
+}
+
+.clip-preview.clip-group-summary > span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.clip-link-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+
+.clip-link-domain {
+  color: var(--text-secondary);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.clip-link-rest {
+  color: var(--text-tertiary);
+  margin-left: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 窄窗（320/400）只保留一张封面，把横向空间让给摘要与操作。 */
+@media (max-width: 400px) {
+  .clip-cover-stack > .clip-thumb-open:nth-child(n + 2) {
+    display: none;
+  }
 }
 
 .clip-meta {
@@ -6079,11 +6208,25 @@ code {
 }
 
 .clip-lightbox-counter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   min-width: 42px;
   text-align: center;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
+}
+
+/* 分组图片列表分页/读取失败：工具栏内如实提示，不打断当前图片 */
+.clip-lightbox-list-error {
+  color: var(--status-error);
+  font-size: 11px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .clip-lightbox-zoom {
@@ -8134,6 +8277,40 @@ code {
     inset 0 1px 0 color-mix(in srgb, var(--c-paper) 98%, transparent),
     0 1px 2px -1px color-mix(in srgb, var(--c-ink) 10%, transparent);
 
+  /* Edge Tab（极简标签）：玻璃面 + 深色内描边 + 贴屏侧高光。
+     浅色壁纸上白色表面本身不可辨，必须靠 ink 内描边提供轮廓对比；
+     纯白顶面在浅桌面上会突兀，因此压低白面、加深描边，仍保持玻璃感。 */
+  --cap-tab-face: linear-gradient(
+    180deg,
+    color-mix(in srgb, color-mix(in srgb, var(--c-paper) 95%, var(--c-ink)) 82%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 56%, transparent) 100%
+  );
+  --cap-tab-face-hover: linear-gradient(
+    180deg,
+    color-mix(in srgb, color-mix(in srgb, var(--c-paper) 97%, var(--c-ink)) 92%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 74%, transparent) 100%
+  );
+  --cap-tab-ring: color-mix(in srgb, var(--c-ink) 34%, transparent);
+  --cap-tab-ring-hover: color-mix(in srgb, var(--c-ink) 46%, transparent);
+  --cap-tab-edge: color-mix(in srgb, var(--c-paper) 60%, transparent);
+  --cap-tab-edge-hover: color-mix(in srgb, var(--c-paper) 84%, transparent);
+  --cap-tab-focus: color-mix(in srgb, var(--c-accent) 72%, transparent);
+
+  /* 分类项内侧指示条：白色在浅色翼片上不可见、在深色上又像残片，
+     统一改用品牌色，hover 低强度、选中高强度，两侧主题都可辨识。 */
+  --cap-ind-hot: color-mix(in srgb, var(--c-accent) 52%, transparent);
+  --cap-ind-active: color-mix(in srgb, var(--c-accent) 86%, transparent);
+
+  /* 空闲/未知态状态球：弱化常驻高饱和渐变，仅运行态保留品牌实色；
+     语义告警仍由状态环表达，不改变数据来源。 */
+  --cap-orb-quiet: linear-gradient(
+    148deg,
+    color-mix(in srgb, #5b57cf 20%, var(--c-paper)) 0%,
+    color-mix(in srgb, #7c4ee0 24%, var(--c-paper)) 100%
+  );
+  --cap-orb-quiet-glyph: color-mix(in srgb, #4b45c6 78%, var(--c-ink));
+  --cap-orb-quiet-inner: color-mix(in srgb, var(--c-paper) 70%, transparent);
+
   --cap-chip-face: color-mix(in srgb, var(--c-paper) 58%, transparent);
   --cap-chip-face-hover: color-mix(in srgb, var(--c-paper) 86%, transparent);
   --cap-seg-face: color-mix(
@@ -8180,6 +8357,33 @@ code {
   --cap-card-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--c-paper) 12%, transparent),
     0 1px 2px -1px color-mix(in srgb, var(--c-night) 40%, transparent);
+
+  --cap-tab-face: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--c-paper) 16%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 8%, transparent) 100%
+  );
+  --cap-tab-face-hover: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--c-paper) 26%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 14%, transparent) 100%
+  );
+  --cap-tab-ring: color-mix(in srgb, var(--c-paper) 36%, transparent);
+  --cap-tab-ring-hover: color-mix(in srgb, var(--c-paper) 50%, transparent);
+  --cap-tab-edge: color-mix(in srgb, var(--c-paper) 36%, transparent);
+  --cap-tab-edge-hover: color-mix(in srgb, var(--c-paper) 54%, transparent);
+  --cap-tab-focus: color-mix(in srgb, var(--c-paper) 78%, transparent);
+
+  --cap-ind-hot: color-mix(in srgb, var(--c-accent) 58%, transparent);
+  --cap-ind-active: color-mix(in srgb, var(--c-accent) 92%, transparent);
+
+  --cap-orb-quiet: linear-gradient(
+    148deg,
+    color-mix(in srgb, #4d5bd6 76%, #22283a) 0%,
+    color-mix(in srgb, #7c4ee0 72%, #22283a) 100%
+  );
+  --cap-orb-quiet-glyph: rgba(255, 255, 255, 0.90);
+  --cap-orb-quiet-inner: rgba(255, 255, 255, 0.14);
 
   --cap-chip-face: color-mix(in srgb, var(--c-paper) 7%, transparent);
   --cap-chip-face-hover: color-mix(in srgb, var(--c-paper) 14%, transparent);
@@ -8257,6 +8461,21 @@ code {
    可点击范围内（±121），因此端头按钮不会被曲线切掉。 */
 .cap-v { flex-direction: column; width: 56px; height: 400px; }
 .cap-h { flex-direction: row; width: 400px; height: 56px; }
+
+/* 拖拽光标语义（2026-11-05 · drag-cursor-feedback）：
+   轨道根节点的 grab 由 `styles-ui.css` 的 `.ui-drag-surface` 提供；
+   拖动会话期间（`CapsuleRail` 维护 `.is-dragging`）整条轨道切 grabbing。
+   分类组/分隔线自身不带 `data-tauri-drag-region`，按下不会拖动窗口，
+   因此保持默认箭头；功能按钮各有 pointer 规则，不被覆盖。 */
+.capsule-rail .cap-nav,
+.capsule-rail .cap-sep {
+  cursor: default;
+}
+.capsule-rail.is-dragging,
+.capsule-rail.is-dragging .cap-nav,
+.capsule-rail.is-dragging .cap-sep {
+  cursor: grabbing;
+}
 
 /* 翼片表面：viewBox 与 CSS 尺寸 1:1，渐变按停靠方向换算，坐标由组件内联给 */
 .cap-wing {
@@ -8567,6 +8786,13 @@ code {
    只多一个沿轨道的间距，不重排既有按钮。 */
 .cap-form { margin-top: 4px; }
 .cap-h .cap-form { margin-top: 0; margin-left: 4px; }
+/* 极简标签入口与「完整面板」入口同一尺寸/间距，紧接在其下方。 */
+.cap-to-tab { margin-top: 4px; }
+.cap-h .cap-to-tab { margin-top: 0; margin-left: 4px; }
+/* 三个底部按钮（完整面板 / 极简标签 / 收起）统一 4px 间距，避免新增按钮后
+   与既有「收起」按钮贴在一起造成视觉分组错误。 */
+.cap-collapse:not(.cap-form):not(.cap-to-tab) { margin-top: 4px; }
+.cap-h .cap-collapse:not(.cap-form):not(.cap-to-tab) { margin-top: 0; margin-left: 4px; }
 
 /* 完整面板停靠态的轻量「收缩为胶囊」入口：贴着停靠边居中悬浮，
    不占内容布局；宽度/圆角/色板沿用胶囊按钮 Token，深浅主题自动跟随。 */
@@ -8595,6 +8821,255 @@ code {
 .cap-form-toggle[data-edge="right"] { right: 6px; top: 50%; transform: translateY(-50%); }
 .cap-form-toggle[data-edge="top"] { top: 6px; left: 50%; transform: translateX(-50%); }
 .cap-form-toggle[data-edge="bottom"] { bottom: 6px; left: 50%; transform: translateX(-50%); }
+
+/* ── Edge Tab（极简吸附态）──────────────────────────────────────
+   贴屏幕边缘的细玻璃标签：厚度 10px、沿边 46px（与 Rust
+   `CAPSULE_TAB_*` 常量同一契约，见 lib/capsuleLayout.ts）。
+   不显示胶囊功能图标，只留一条极细状态线；深浅主题沿用胶囊玻璃 Token。 */
+.capsule-tab {
+  position: absolute;
+  z-index: 3;
+  width: 10px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: var(--cap-tab-face);
+  /* 只做内描边/内侧高光：窗口区域恰好等于标签矩形，外投影会被 SetWindowRgn 裁掉。 */
+  box-shadow:
+    inset 0 0 0 1px var(--cap-tab-ring),
+    inset 0 1px 0 var(--cap-tab-edge);
+  cursor: pointer;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  transition:
+    background 0.14s ease,
+    opacity 0.14s ease,
+    box-shadow 0.14s ease;
+}
+.capsule-tab.edge-left {
+  left: 0;
+  top: 50%;
+  translate: 0 -50%;
+  border-radius: 0 8px 8px 0;
+}
+.capsule-tab.edge-right {
+  right: 0;
+  top: 50%;
+  translate: 0 -50%;
+  border-radius: 8px 0 0 8px;
+}
+.capsule-tab.edge-top {
+  top: 0;
+  left: 50%;
+  width: 46px;
+  height: 10px;
+  translate: -50% 0;
+  border-radius: 0 0 8px 8px;
+}
+.capsule-tab.edge-bottom {
+  bottom: 0;
+  left: 50%;
+  width: 46px;
+  height: 10px;
+  translate: -50% 0;
+  border-radius: 8px 8px 0 0;
+}
+/* 拖动光标语义（2026-11-05 · drag-cursor-feedback）：
+   悬停/单击保持 pointer；超过 `classifyTabGesture` 的点击阈值后
+   （`EdgeTab` 维护 `.is-dragging`）才切 grabbing，松手/取消即恢复。 */
+.capsule-tab.is-dragging {
+  cursor: grabbing;
+}
+@media (hover: hover) {
+  /* 悬停只提亮表面与轮廓，不改尺寸、不发光。 */
+  .capsule-tab:hover {
+    background: var(--cap-tab-face-hover);
+    box-shadow:
+      inset 0 0 0 1px var(--cap-tab-ring-hover),
+      inset 0 1px 0 var(--cap-tab-edge-hover);
+  }
+}
+/* 焦点环收在标签内部：10px 宽的区域外描边会被 Win32 区域裁掉。 */
+.capsule-tab:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px var(--cap-tab-focus),
+    inset 0 1px 0 var(--cap-tab-edge);
+}
+.capsule-tab-line {
+  width: 2px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--wing-badge);
+  opacity: 0.9;
+}
+.capsule-tab.edge-top .capsule-tab-line,
+.capsule-tab.edge-bottom .capsule-tab-line {
+  width: 18px;
+  height: 2px;
+}
+.capsule-tab[data-tone="idle"] .capsule-tab-line { background: var(--wing-badge); }
+.capsule-tab[data-tone="running"] .capsule-tab-line { background: var(--status-running); }
+.capsule-tab[data-tone="waiting"] .capsule-tab-line { background: var(--status-waiting); }
+.capsule-tab[data-tone="failed"] .capsule-tab-line { background: var(--status-error); }
+.capsule-tab[data-tone="disconnected"] .capsule-tab-line { background: var(--status-disconnected); }
+.capsule-tab[data-tone="unknown"] .capsule-tab-line { background: var(--status-disconnected); }
+
+/* ── 胶囊 ⇄ Edge Tab 侧滑收纳 ───────────────────────────────────
+   四个停靠边共用同一组 keyframes：方向/裁剪轴由 `--tab-slide-*`
+   与 `--tab-clip` 参数化，动画逻辑只有一套（恢复用反向 keyframes）。
+   - 位移只用 transform，透明度只用 opacity，圆角/裁剪用 clip-path；
+     图标保持原尺寸（不缩放），因此不会被横向压缩变形。
+   - 收纳：轨道向停靠边滑出并裁成标签长度，后半段与标签交叉淡出；
+   - 恢复：从同一终点滑回，标签先淡出、图标后渐显。 */
+.capsule-dock {
+  --tab-slide-x: 0px;
+  --tab-slide-y: 0px;
+  --tab-clip: inset(0 0);
+}
+.capsule-dock.edge-left {
+  --tab-slide-x: -46px;
+  --tab-clip: inset(44.25% 0);
+}
+.capsule-dock.edge-right {
+  --tab-slide-x: 46px;
+  --tab-clip: inset(44.25% 0);
+}
+.capsule-dock.edge-top {
+  --tab-slide-y: -46px;
+  --tab-clip: inset(0 44.25%);
+}
+.capsule-dock.edge-bottom {
+  --tab-slide-y: 46px;
+  --tab-clip: inset(0 44.25%);
+}
+
+@keyframes capsule-rail-to-tab {
+  0% {
+    transform: none;
+    clip-path: inset(0 0);
+    opacity: 1;
+  }
+  55% {
+    transform: translate(var(--tab-slide-x), var(--tab-slide-y));
+    clip-path: var(--tab-clip);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--tab-slide-x), var(--tab-slide-y));
+    clip-path: var(--tab-clip);
+    opacity: 0;
+  }
+}
+@keyframes capsule-rail-from-tab {
+  0% {
+    transform: translate(var(--tab-slide-x), var(--tab-slide-y));
+    clip-path: var(--tab-clip);
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    clip-path: inset(0 0);
+    opacity: 1;
+  }
+}
+@keyframes capsule-tab-content-out {
+  0% { opacity: 1; }
+  46%, 100% { opacity: 0; }
+}
+@keyframes capsule-tab-content-in {
+  0%, 34% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes capsule-tab-in {
+  0%, 38% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes capsule-tab-out {
+  0% { opacity: 1; }
+  36%, 100% { opacity: 0; }
+}
+
+.capsule-dock.is-to-tab .capsule-rail {
+  animation: capsule-rail-to-tab 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.capsule-dock.is-from-tab .capsule-rail {
+  animation: capsule-rail-from-tab 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.capsule-dock.is-to-tab .cap-orb,
+.capsule-dock.is-to-tab .cap-nav,
+.capsule-dock.is-to-tab .cap-sep,
+.capsule-dock.is-to-tab .cap-collapse {
+  animation: capsule-tab-content-out 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.capsule-dock.is-from-tab .cap-orb,
+.capsule-dock.is-from-tab .cap-nav,
+.capsule-dock.is-from-tab .cap-sep,
+.capsule-dock.is-from-tab .cap-collapse {
+  animation: capsule-tab-content-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.capsule-tab.is-in {
+  animation: capsule-tab-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.capsule-tab.is-out {
+  animation: capsule-tab-out 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 减少动态：引擎已直接提交形态；CSS 侧同时取消过渡，避免宏观/微观两套开关不同步。 */
+@media (prefers-reduced-motion: reduce) {
+  .capsule-dock.is-to-tab .capsule-rail,
+  .capsule-dock.is-from-tab .capsule-rail,
+  .capsule-dock.is-to-tab .cap-orb,
+  .capsule-dock.is-to-tab .cap-nav,
+  .capsule-dock.is-to-tab .cap-sep,
+  .capsule-dock.is-to-tab .cap-collapse,
+  .capsule-dock.is-from-tab .cap-orb,
+  .capsule-dock.is-from-tab .cap-nav,
+  .capsule-dock.is-from-tab .cap-sep,
+  .capsule-dock.is-from-tab .cap-collapse,
+  .capsule-tab.is-in,
+  .capsule-tab.is-out {
+    animation: none;
+  }
+}
+
+/* 功能面板离场（Capsule → Edge Tab 的第一步）：先自然收合，再开始轨道侧滑。
+   引擎在 `PANEL_EXIT_MS` 内保留面板挂载，随后才推进相位并播放侧滑。 */
+.capsule-dock {
+  --panel-exit-x: 0px;
+  --panel-exit-y: 0px;
+}
+.capsule-dock.edge-left { --panel-exit-x: -12px; }
+.capsule-dock.edge-right { --panel-exit-x: 12px; }
+.capsule-dock.edge-top { --panel-exit-y: -12px; }
+.capsule-dock.edge-bottom { --panel-exit-y: 12px; }
+.capsule-dock.edge-left .capsule-panel { transform-origin: left center; }
+.capsule-dock.edge-right .capsule-panel { transform-origin: right center; }
+.capsule-dock.edge-top .capsule-panel { transform-origin: center top; }
+.capsule-dock.edge-bottom .capsule-panel { transform-origin: center bottom; }
+.capsule-panel.is-closing {
+  animation: capsule-panel-out 160ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  pointer-events: none;
+}
+@keyframes capsule-panel-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translate(var(--panel-exit-x), var(--panel-exit-y)) scale(0.985);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .capsule-panel.is-closing {
+    animation: none;
+    opacity: 0;
+  }
+}
 
 /* ── 功能面板外壳 ─────────────────────────────────────────────
    参考图的面板是一块**单层**玻璃卡：一个 24px 圆角、一圈 1px 白内描边、
@@ -9386,6 +9861,21 @@ code {
   line-height: 0;
 }
 .cap-clip-tile:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: 10px; }
+/* 「还有 N 张」分页入口：与缩略图同高，复用现有网格与分页缓存，不新建预览状态。 */
+.cap-clip-tile.is-more {
+  height: 86px;
+  width: 100%;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px dashed var(--border-subtle);
+  background: var(--cap-chip-face);
+  color: var(--cap-text-2);
+  font-size: 11px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.cap-clip-tile.is-more:hover { background: var(--cap-chip-face-hover); }
+.cap-clip-tile.is-more:disabled { opacity: 0.6; cursor: default; }
 
 .cap-clip-foot { margin-top: 8px; }
 .cap-clip-foot-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
@@ -9485,8 +9975,8 @@ code {
   color: var(--cap-text-2);
   cursor: pointer;
 }
-/* Hover 视觉只落在 36px 图标片上，点击范围仍由整个格子承担；
-   不再给整格铺一块大圆角灰底。 */
+/* 普通应用没有任何 hover/active 装饰：整格与 36px 图标片都不铺背景，
+   只保留真实图标与名称；点击热区仍由整个格子承担。 */
 .cap-app:hover,
 .cap-app:active {
   background: transparent;
@@ -9497,14 +9987,9 @@ code {
   display: grid;
   place-items: center;
   border-radius: 11px;
+  /* 图标容器不做 hover/active 底色，也不留 background 过渡：
+     浅色 Logo 在临时灰底上会重新丢失对比度，且 hover 会出现多余色块。 */
   background: transparent;
-  transition: background 0.14s ease;
-}
-.cap-app:hover .cap-app-icon {
-  background: color-mix(in srgb, var(--cap-text-2) 6%, transparent);
-}
-.cap-app:active .cap-app-icon {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 /* --focus-ring 在本主题里是图层组合（不能作 box-shadow 颜色），
    统一改用实色 outline，保证格子有清晰的键盘焦点。 */
@@ -9533,7 +10018,9 @@ code {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: var(--cap-text-3);
+  /* 静止态用次级文本语义 Token（不是三级）：深色主题下三级对比偏弱，
+     保证删除入口在悬停/键盘聚焦出现时可辨认，不硬编码颜色。 */
+  color: var(--cap-text-2);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
@@ -9557,30 +10044,29 @@ code {
 @media (hover: none) {
   .cap-app-del { opacity: 1; pointer-events: auto; }
 }
-/* 「添加应用」入口：与普通网格项同尺寸承接入点击，但默认不画卡片——
-   不加边框、不加底色、不加外阴影，只保留与图标同尺度的加号；hover 才给极轻反馈。 */
+/* 「添加应用」入口：与普通网格项同尺寸承接触点；视觉容器是与应用图标同尺度的
+   34px 圆角方框，只有常显 1px 细轮廓 + 居中加号，不铺底色、不投外阴影。 */
 .cap-app-add {
-  justify-content: center;
+  /* 与普通应用图标垂直对齐：普通项图标自格子顶部 5px 起，
+     这里也从顶部起排，而不是在 78px 整格内居中（否则缺名称会让加号明显偏低）。 */
+  justify-content: flex-start;
   gap: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
   color: var(--cap-text-2);
-  transition: background 0.14s ease;
 }
-/* hover 反馈只落在 34px 的加号圆上，不把整格铺成一块高亮卡片。 */
-.cap-app-add:hover { background: transparent; }
+/* hover 只让轮廓色轻微偏向强调色：不加背景、不加阴影、不缩放。 */
 .cap-app-add:hover .cap-app-avatar.is-add {
-  background: color-mix(in srgb, var(--cap-text-2) 6%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
 }
-/* Active 只换色不位移：网格项不做缩放，避免同行图标视觉抖动。 */
-.cap-app-add:active { background: transparent; }
+/* active 轻量按压：只在 34px 方框内加一层极轻的强调底色，尺寸与位置不变。 */
 .cap-app-add:active .cap-app-avatar.is-add {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 72%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-/* --focus-ring 在本主题里是图层组合（不能作 box-shadow 颜色），
-   这里改用实色 outline，保证纯加号入口仍有清晰的键盘焦点反馈。 */
-.cap-app-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
+/* 键盘焦点由下方 `.cap-app:focus-visible, .cap-app-add:focus-visible` 统一规则
+   只画一次 2px outline，这里不再叠第二层焦点框。 */
 .cap-app-add:disabled { opacity: 0.35; cursor: default; }
 .cap-app-avatar {
   width: 34px;
@@ -9594,10 +10080,14 @@ code {
   background: transparent;
   box-shadow: none;
 }
+/* 添加入口视觉容器：常显 1px 轮廓；默认透明底，不加玻璃光晕与外投影。
+   轮廓取次级文本 Token 的混合值，深浅主题与柔光玻璃下都能看到边界。 */
 .cap-app-avatar.is-add {
+  border: 1px solid color-mix(in srgb, var(--cap-text-2) 30%, transparent);
   color: var(--accent);
   background: transparent;
   box-shadow: none;
+  transition: border-color 0.14s ease, background 0.14s ease;
 }
 .cap-app-name {
   width: 100%;
@@ -12451,11 +12941,21 @@ code {
   gap: 6px;
 }
 
+/* 任务选择器复用 ui/Select：这里只约束布局宽度，视觉全部由公共组件提供。 */
 .shelf-task-select {
   flex: 1;
   min-width: 0;
   max-width: 240px;
-  font-size: 11.5px;
+}
+
+.shelf-links-status {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.shelf-links-status.is-error {
+  color: var(--menu-danger);
 }
 
 .shelf-note-input {
@@ -13342,5 +13842,294 @@ span.wf-step-main {
 /* 懒加载 fallback：只占位不播放持续动画，避免切页闪烁 */
 .panel-loading {
   min-height: 120px;
+}
+
+/* ══ 暂存架文件操作内嵌面板（移动 / 复制） ═══════════════════ */
+.shelf-fileop {
+  margin: 0 14px 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.shelf-fileop-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shelf-fileop-head h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.shelf-fileop-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.shelf-fileop-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.shelf-fileop-close {
+  margin-left: auto;
+}
+
+.shelf-fileop-body {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.shelf-fileop-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 220px;
+}
+
+.shelf-fileop-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.shelf-fileop-dirlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 150px;
+  overflow: auto;
+}
+
+.shelf-fileop-dirlist li {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.shelf-fileop-dir {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shelf-fileop-dir:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.shelf-fileop-dir:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+}
+
+.shelf-fileop-dir.is-active {
+  border-color: var(--border-subtle);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.shelf-fileop-dir:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.shelf-fileop-dir-name {
+  flex-shrink: 0;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.shelf-fileop-dir-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+
+.shelf-fileop-badge {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.shelf-fileop-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.shelf-fileop-target,
+.shelf-fileop-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shelf-fileop-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.shelf-fileop-target-path {
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-fileop-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.shelf-fileop-warn {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.shelf-fileop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.shelf-fileop-result {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shelf-fileop-summary {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.shelf-fileop-failures {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 132px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shelf-fileop-failures li {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.shelf-fileop-failure-name {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.shelf-fileop-failure-reason {
+  color: var(--text-tertiary);
+}
+
+/* 固定/最近目录分组、目标目录行与危险提示（全部使用语义 Token） */
+.shelf-fileop-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shelf-fileop-target-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shelf-fileop-target-row .shelf-fileop-target-path {
+  flex: 1;
+  min-width: 0;
+}
+
+.shelf-fileop-mode-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.shelf-fileop-warn.is-danger {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  color: var(--status-error);
+}
+
+.shelf-fileop:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+.shelf-detail-hint {
+  margin: 0;
+  width: 100%;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+@media (max-width: 420px) {
+  .shelf-fileop-col {
+    min-width: 100%;
+  }
 }
 

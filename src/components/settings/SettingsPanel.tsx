@@ -893,6 +893,7 @@ export default function SettingsPanel() {
             onChange={(v) => update({ clipboard_auto_group: v })}
           />
         </div>
+        <div className="setting-note">{t("settings.clipboard.autoGroupNote")}</div>
         <div className="setting-row">
           <span>{t("settings.clipboard.groupWindow")}</span>
           <NumberInput

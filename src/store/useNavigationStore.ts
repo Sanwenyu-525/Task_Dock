@@ -39,6 +39,45 @@ export interface ScanProgress {
   batches: number;
 }
 
+/**
+ * 扫描状态机（显式建模，UI 不再用 `scan === null && scanning` 之类的组合推断）：
+ * - `unscanned`：从未扫描，也不在扫描；
+ * - `scanning-empty`：扫描中且尚无任何可用结果（含首个空批次）；
+ * - `scanning-partial`：扫描中但已有可用结果（首批结果或重扫时的上次完整结果），
+ *   列表继续接收新批次；
+ * - `complete`：本次/上次结果完整可用（刷新失败但上次结果完整也归入此态，另有提示）；
+ * - `partial`：结果可用但不完整（首次扫描中途失败，或本轮刷新后标明部分来源失败）；
+ * - `failed`：没有任何可用结果（首次扫描直接失败）。
+ */
+export type ScanState =
+  | "unscanned"
+  | "scanning-empty"
+  | "scanning-partial"
+  | "complete"
+  | "partial"
+  | "failed";
+
+/**
+ * 由扫描字段派生状态。空批次不会把 `scan` 置为非 null，因此不会提前翻成
+ * `complete`；`scanning` 优先，确保「后续来源仍在扫」时不显示完成。
+ * `incomplete` 由调用方根据 `scan.diagnostics` 判定（部分来源失败的诊断）。
+ */
+export function deriveScanState(input: {
+  scan: AppScanResult | null;
+  scanning: boolean;
+  scanError: string | null;
+  scanPartial: boolean;
+  incomplete?: boolean;
+}): ScanState {
+  if (input.scan === null) {
+    if (input.scanning) return "scanning-empty";
+    return input.scanError !== null ? "failed" : "unscanned";
+  }
+  if (input.scanning) return "scanning-partial";
+  if (input.incomplete || (input.scanPartial && input.scanError !== null)) return "partial";
+  return "complete";
+}
+
 /** 按 app_key 去重并按名称稳定排序，保证批次追加时列表顺序不抖动。 */
 function mergeProgressiveApps(apps: Map<string, DiscoveredApp>): DiscoveredApp[] {
   return [...apps.values()].sort((a, b) => {

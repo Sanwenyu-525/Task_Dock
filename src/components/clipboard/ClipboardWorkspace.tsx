@@ -10,7 +10,7 @@
 //! - Escape 走全局弹层栈：确认框(dialog) → 顶层模态(modalTop，图片灯箱) →
 //!   子弹层(sublayer) → 抽屉(drawer) → 主窗口。
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Merge, Pause, Play, RefreshCw,
   Settings as SettingsIcon, Star, Trash2, X,
@@ -25,6 +25,7 @@ import {
   clipboardCreateGroup,
   clipboardDeleteGroup,
   clipboardDeleteItems,
+  clipboardGroupPage,
   clipboardLinkTask,
   clipboardMergeGroups,
   clipboardStatus,
@@ -62,6 +63,40 @@ const KIND_CHIPS: { id: string; label: string }[] = [
   { id: "image", label: "图片" },
   { id: "files", label: "文件" },
 ];
+
+/**
+ * 图片灯箱的预览上下文。
+ * - `single`：从单条卡片打开，只有当前图片；
+ * - `group`：从分组封面打开，`items` 是已加载的图片序列（只含图片、按 position），
+ *   `total` 是组内图片真实总数（可能大于已加载数）。分组封面 `cover_items` 最多 3 张，
+ *   绝不当作整组序列使用。
+ */
+interface PreviewState {
+  mode: "single" | "group";
+  /** 打开时点击的图片 id（分组序列就绪前先用它占位） */
+  itemId: string;
+  groupId: string | null;
+  items: ClipboardItem[];
+  total: number;
+  /** 后端内容版本；翻页时变化说明分组内容已移动，需要重取第一页 */
+  revision: string | null;
+  /**
+   * 首屏真实图片序列是否已返回。false 时 items 只有打开的那张封面占位，
+   * 灯箱不能把占位索引当成组内正式位置。
+   */
+  ready: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
+/** 分组图片分页大小：与后端单页上限（50）一致，只取轻量元数据，不取原图。 */
+const PREVIEW_PAGE_SIZE = 50;
+
+/** 追加下一页时按 id 去重，保证序列不重复、不改变已加载顺序。 */
+function mergePreviewItems(loaded: ClipboardItem[], next: ClipboardItem[]): ClipboardItem[] {
+  const seen = new Set(loaded.map((i) => i.id));
+  return [...loaded, ...next.filter((i) => !seen.has(i.id))];
+}
 
 export interface ClipboardWorkspaceProps {
   variant: "page" | "drawer";
@@ -118,8 +153,110 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     }
     setDetailState(next);
   }
-  /** 列表里点缩略图直接打开的原图灯箱（详情视图内的灯箱由 ClipboardItemDetail 自己托管） */
-  const [previewImage, setPreviewImage] = useState<ClipboardItem | null>(null);
+  /**
+   * 列表里点缩略图打开的原图灯箱（详情视图内的灯箱由 ClipboardItemDetail 自己托管）。
+   * 分组封面只给出点击的那张图片；整组图片序列在打开后用 `clipboard_group_page`
+   * 按页取轻量元数据，不能用封面（最多 3 张）冒充整组。
+   */
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const previewRef = useRef<PreviewState | null>(null);
+  previewRef.current = preview;
+  /** 预览请求代号：打开/关闭/换组立即失效，旧请求不得回写新状态。 */
+  const previewGenRef = useRef(0);
+
+  /** 关闭灯箱：递增代号让在途分组分页请求全部作废，并清空预览状态。 */
+  function closePreview() {
+    previewGenRef.current += 1;
+    setPreview(null);
+  }
+
+  /** 单条卡片 → 单图灯箱（不显示切换控件）。 */
+  function openSingleImage(item: ClipboardItem) {
+    previewGenRef.current += 1;
+    setPreview({
+      mode: "single",
+      itemId: item.id,
+      groupId: null,
+      items: [item],
+      total: 1,
+      revision: null,
+      ready: true,
+      loading: false,
+      error: null,
+    });
+  }
+
+  /** 分组封面 → 分组多图灯箱；先用点击的封面占位，随即按页取真实图片序列。 */
+  function openGroupImage(group: ClipboardGroup, item: ClipboardItem) {
+    const gen = ++previewGenRef.current;
+    setPreview({
+      mode: "group",
+      itemId: item.id,
+      groupId: group.id,
+      items: [item],
+      total: Math.max(1, group.image_count),
+      revision: null,
+      ready: false,
+      loading: true,
+      error: null,
+    });
+    void fetchGroupPreviewPage(group.id, gen, 0);
+  }
+
+  async function fetchGroupPreviewPage(groupId: string, gen: number, offset: number) {
+    try {
+      const page = await clipboardGroupPage(groupId, {
+        limit: PREVIEW_PAGE_SIZE,
+        offset,
+        imagesOnly: true,
+      });
+      if (gen !== previewGenRef.current) return;
+      const current = previewRef.current;
+      if (!current || current.groupId !== groupId) return;
+      // 翻页期间分组内容变了（移动/新增/删除）：丢弃已拼接的旧序列，从第一页重取，
+      // 避免序号与 position 错位；灯箱会按当前图片 id 重新定位。
+      if (offset > 0 && current.revision && page.revision !== current.revision) {
+        await fetchGroupPreviewPage(groupId, gen, 0);
+        return;
+      }
+      const items = offset === 0 ? page.items : mergePreviewItems(current.items, page.items);
+      setPreview({
+        ...current,
+        items,
+        total: Math.max(items.length, page.imageCount),
+        revision: page.revision,
+        ready: true,
+        loading: false,
+        error: null,
+      });
+    } catch (e) {
+      if (gen !== previewGenRef.current) return;
+      const current = previewRef.current;
+      if (!current || current.groupId !== groupId) return;
+      // 首屏失败时没有可靠序列，退回单图展示并明确报错，不伪造总数；后续页失败保留已加载部分。
+      setPreview({
+        ...current,
+        total: offset === 0 ? current.items.length : current.total,
+        // 首屏失败时没有真实序列，按单图收尾并明确报错，不再等待占位定位。
+        ready: true,
+        loading: false,
+        error: `分组图片读取失败：${errorMessage(e)}`,
+      });
+    }
+  }
+
+  /** 灯箱临近已加载末尾时补下一页；串行且最多一次在途，避免重复 IPC。 */
+  const requestMorePreviewRef = useRef<() => void>(() => {});
+  requestMorePreviewRef.current = () => {
+    const p = previewRef.current;
+    if (!p || p.mode !== "group" || !p.groupId || p.loading) return;
+    if (p.items.length >= p.total) return;
+    const next = { ...p, loading: true };
+    previewRef.current = next;
+    setPreview(next);
+    void fetchGroupPreviewPage(p.groupId, previewGenRef.current, p.items.length);
+  };
+  const onPreviewNeedMore = useCallback(() => requestMorePreviewRef.current(), []);
   const [status, setStatus] = useState<ClipboardStatus | null>(null);
   /** 状态读取失败：保留旧状态并标记过期，避免把「监听异常」显示成未知/正常 */
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -435,6 +572,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     if (active) return;
     setDetail(null);
     setConfirm(null);
+    // 离开面板时关掉灯箱：递增代号作废在途分组分页请求，避免回到面板后旧图闪现
+    setPreview(null);
+    previewGenRef.current += 1;
   }, [active]);
 
   // 弹层栈：详情子视图 → 抽屉。确认框由 ConfirmDialog 自己注册（dialog，优先级最高）。
@@ -608,7 +748,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           const r = await clipboardClearHistory();
           // 后端确认成功后才让本地离场快照/定时器失效；失败时保留现有数据。
           setDetail(null);
-          setPreviewImage(null);
+          closePreview();
           // 清空后没有「原列表」可返回：丢弃刚记录的详情返回快照
           restoreListScrollRef.current = null;
           useClipboardStore.getState().resetAfterClear();
@@ -755,7 +895,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           <div className="clip-empty">
             <Clipboard size={22} className="clip-empty-icon" />
             <strong>暂无分组</strong>
-            <span>连续截图会自动成组；也可以在历史中勾选条目后手动创建分组。</span>
+            <span>连续复制的相关操作会自动整理为分组；也可以在历史中勾选条目后手动创建分组。</span>
           </div>
         );
       }
@@ -777,6 +917,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               onDetail={() => setDetail({ kind: "group", id: g.id })}
               onDelete={() => onDeleteGroup(g)}
               onLink={() => void onLink("group", g.id)}
+              onOpenImage={(item) => openGroupImage(g, item)}
             />
           ))}
         </div>
@@ -829,7 +970,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               onDetail={() => setDetail({ kind: "item", id: item.id })}
               onDelete={() => onDeleteItem(item)}
               onLink={() => void onLink("item", item.id)}
-              onOpenImage={() => setPreviewImage(item)}
+              onOpenImage={() => openSingleImage(item)}
             />
           ))}
         </div>
@@ -842,6 +983,14 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       </>
     );
   }
+
+  /**
+   * 灯箱当前条目：优先按打开时的 id 定位（分组序列可能晚到），找不到就退回序列首张。
+   * 序列为空（分组已无图片/被删）时关闭灯箱，不留指向已删除数据的预览。
+   */
+  const previewItem = preview
+    ? preview.items.find((i) => i.id === preview.itemId) ?? preview.items[0]
+    : null;
 
   const body = (
     <>
@@ -1159,12 +1308,18 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         }}
       />
 
-      {previewImage && (
+      {preview && previewItem && (
         <ImageLightbox
-              item={previewImage}
-              askConfirm={askConfirm}
-              onClose={() => setPreviewImage(null)}
-            />
+          item={previewItem}
+          items={preview.mode === "group" ? preview.items : undefined}
+          total={preview.mode === "group" ? preview.total : undefined}
+          sequenceReady={preview.mode === "group" ? preview.ready : true}
+          listLoading={preview.mode === "group" && preview.loading}
+          listError={preview.mode === "group" ? preview.error ?? undefined : undefined}
+          onNeedMore={preview.mode === "group" ? onPreviewNeedMore : undefined}
+          askConfirm={askConfirm}
+          onClose={closePreview}
+        />
       )}
     </>
   );

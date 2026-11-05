@@ -1,0 +1,87 @@
+{
+  "backend_only": true,
+  "config": {
+    "agents": 40,
+    "batch_size": 10,
+    "coalesce_ms": 100,
+    "duration_secs": 30,
+    "injected_sink_delay_ms": 30,
+    "queue_capacity": 64,
+    "rate_per_agent": 100
+  },
+  "counts": {
+    "critical_failed": 0,
+    "critical_missing_in_db": 0,
+    "critical_ok": 11960,
+    "critical_retries": 67851,
+    "critical_sent": 11960,
+    "max_queue_depth": 64,
+    "merge_buffer_after_load": 930,
+    "merged": 73644,
+    "overload_rejects": 67851,
+    "recovery_ok": true,
+    "sampled": 34272,
+    "submit_errors": 0,
+    "submitted": 119960
+  },
+  "db": {
+    "by_state": {
+      "completed": 5961,
+      "running": 4180,
+      "waiting": 6000
+    },
+    "events": 16141
+  },
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "note": "真实 IngestPipeline + 真实 SQLite 状态机；不含 WebView2/Tauri 窗口与托盘 UI",
+  "pass": true,
+  "pipeline": {
+    "batches": 1520,
+    "coalesce_ms": 100,
+    "commit_failures": 0,
+    "db_write_latency": {
+      "max_ms": 156.51,
+      "p50_ms": 47.64,
+      "p95_ms": 99.1,
+      "p99_ms": 113.96,
+      "samples": 1024
+    },
+    "events_merged": 69548,
+    "events_processed": 15200,
+    "events_received": 119960,
+    "events_sampled": 34272,
+    "events_spooled": 0,
+    "events_unsaved": 0,
+    "fallback_jobs": 0,
+    "ingest_latency": {
+      "max_ms": 644.87,
+      "p50_ms": 405.52,
+      "p95_ms": 491.92,
+      "p99_ms": 517.85,
+      "samples": 2048
+    },
+    "last_batch_size": 10,
+    "last_flush_at": "2026-11-04T13:00:55.078291+00:00",
+    "lifecycle": "running",
+    "max_batch_size": 10,
+    "merge_buffer": 930,
+    "overload_rejects": 67851,
+    "queue_capacity": 64,
+    "queue_depth_events": 0,
+    "queue_depth_jobs": 0,
+    "running": true,
+    "spool_failures": 0,
+    "spool_pending_files": 0,
+    "submissions": 12044,
+    "uptime_secs": 82
+  },
+  "scenario": "C",
+  "started_at": "2026-11-04T13:00:59.766542600+00:00"
+}

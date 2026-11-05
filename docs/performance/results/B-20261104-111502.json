@@ -1,0 +1,83 @@
+{
+  "backend_only": true,
+  "config": {
+    "agents": 4,
+    "duration_secs": 60,
+    "expected_events": 12000,
+    "rate_per_agent": 50
+  },
+  "counts": {
+    "critical_failed": 0,
+    "critical_missing_in_db": 0,
+    "critical_ok": 1200,
+    "critical_sent": 1200,
+    "max_batch_size": 20,
+    "max_queue_depth": 60,
+    "merged": 0,
+    "sampled": 0,
+    "submit_errors": 0,
+    "submitted": 12000
+  },
+  "db": {
+    "by_state": {
+      "completed": 600,
+      "running": 1882,
+      "waiting": 600
+    },
+    "events": 3082
+  },
+  "drain_ms": 0,
+  "elapsed_ms": 60516,
+  "machine": {
+    "app_version": "0.5.0",
+    "arch": "x86_64",
+    "computer": "LAPTOP-RTUVXZ-G",
+    "logical_cpus": 20,
+    "os": "windows",
+    "profile": "release"
+  },
+  "note": "真实 IngestPipeline + 真实 SQLite 状态机；不含 WebView2/Tauri 窗口与托盘 UI",
+  "pass": true,
+  "pipeline": {
+    "batches": 224,
+    "coalesce_ms": 250,
+    "commit_failures": 0,
+    "db_write_latency": {
+      "max_ms": 36.6,
+      "p50_ms": 10.67,
+      "p95_ms": 27.01,
+      "p99_ms": 30.46,
+      "samples": 224
+    },
+    "events_merged": 8918,
+    "events_processed": 3082,
+    "events_received": 12000,
+    "events_sampled": 0,
+    "events_spooled": 0,
+    "events_unsaved": 0,
+    "fallback_jobs": 0,
+    "ingest_latency": {
+      "max_ms": 308.6,
+      "p50_ms": 152.1,
+      "p95_ms": 276.14,
+      "p99_ms": 296.55,
+      "samples": 2048
+    },
+    "last_batch_size": 8,
+    "last_flush_at": "2026-11-04T11:15:01.730571100+00:00",
+    "lifecycle": "running",
+    "max_batch_size": 20,
+    "merge_buffer": 0,
+    "overload_rejects": 0,
+    "queue_capacity": 1024,
+    "queue_depth_events": 0,
+    "queue_depth_jobs": 0,
+    "running": true,
+    "spool_failures": 0,
+    "spool_pending_files": 0,
+    "submissions": 12000,
+    "uptime_secs": 60
+  },
+  "scenario": "B",
+  "started_at": "2026-11-04T11:15:02.091831500+00:00"
+}

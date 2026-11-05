@@ -35,7 +35,6 @@ const MAX_WIDTH: f64 = 560.0;
 const MIN_HEIGHT: f64 = 120.0;
 const MAX_HEIGHT: f64 = 640.0;
 const EDGE_MARGIN: i32 = 24;
-const CASCADE_STEP: i32 = 44;
 /// 拖动后至少要留出可操作标题区，不能以「与显示器有任意交集」当作可见。
 const MIN_VISIBLE_WIDTH: i32 = 120;
 const MIN_VISIBLE_HEIGHT: i32 = 48;
@@ -54,6 +53,14 @@ static CLOSE_REASON: LazyLock<Mutex<HashMap<String, &'static str>>> =
 /// 带代际可避免旧窗口销毁时清掉新窗口的记录。
 static PROGRAMMATIC_SIZE: LazyLock<Mutex<HashMap<String, (u64, f64, f64)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 串行化「创建窗口 → 设尺寸 → 放置 → 显示」整段。
+///
+/// `default_position` 依据其它微件窗口**已可见**的真实矩形做列内堆叠；前端按类型
+/// 分队列只能保证同类顺序，跨类型仍会并发创建。若并发，各窗口在放置时都还看不到
+/// 对方，六个窗口会全部落在同一个右上角默认位（真实冷启动已复现）。放置属于对
+/// 全局窗口集合的读-改-写，必须在这里串行，而不是靠调用方自觉排队。
+static PLACEMENT_LOCK: Mutex<()> = Mutex::new(());
 
 fn next_window_generation(kind: &str) -> u64 {
     let Ok(mut generations) = WINDOW_GENERATION.lock() else {
@@ -267,14 +274,6 @@ impl WorkArea {
     }
 }
 
-fn widget_index(kind: &str) -> i32 {
-    WIDGET_TYPES
-        .iter()
-        .position(|item| *item == kind)
-        .map(|index| index as i32)
-        .unwrap_or(0)
-}
-
 fn clamp_size(value: f64, min: f64, max: f64) -> f64 {
     if value.is_finite() {
         value.clamp(min, max).round()
@@ -313,17 +312,65 @@ fn anchored_position(area: WorkArea, window_w: i32, window_h: i32, nx: f64, ny: 
     )
 }
 
-/// 默认层叠位：右上角向下错开，避免六类微件完全重叠；越界后回绕。
-fn default_position(area: WorkArea, window_w: i32, window_h: i32, index: i32) -> (i32, i32) {
-    let max_x = area.x + (area.width - window_w).max(0);
-    let max_y = area.y + (area.height - window_h).max(0);
-    let mut y = area.y + EDGE_MARGIN + index * CASCADE_STEP;
-    let mut x = max_x - EDGE_MARGIN;
-    if y > max_y {
-        y = area.y + EDGE_MARGIN;
-        x = max_x - EDGE_MARGIN - index * CASCADE_STEP;
+/// 已存在窗口的物理矩形，用于首次默认布局的贪心排布。
+#[derive(Clone, Copy)]
+struct WindowRect {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+/// 首次默认布局：从工作区右上角向下排列，放不下时向左开新列。
+///
+/// 旧实现以固定 44px 错开，220/270 高的窗口会被下一个窗口大面积压住。
+/// 这里按已存在窗口的**真实物理尺寸**做列内堆叠，列右缘对齐、列间留缝，
+/// 既保证六类微件首次打开互不重叠，也不影响用户之后的自由拖动/缩放。
+fn default_position(
+    area: WorkArea,
+    existing: &[WindowRect],
+    window_w: i32,
+    window_h: i32,
+) -> (i32, i32) {
+    const COLUMN_GAP: i32 = 12;
+    const MAX_COLUMNS: usize = 4;
+    let top = area.y + EDGE_MARGIN;
+    let bottom = area.y + area.height - EDGE_MARGIN;
+    let mut column_right = area.x + area.width - EDGE_MARGIN;
+
+    for _ in 0..MAX_COLUMNS {
+        let x = (column_right - window_w).max(area.x);
+        let mut next_y = top;
+        let mut min_left = i32::MAX;
+        let mut column_count = 0usize;
+        for rect in existing {
+            // 同列判定：右缘对齐。列内宽度可以不同，但右缘必须落在同一竖线。
+            if (rect.x + rect.width - column_right).abs() <= 2 {
+                column_count += 1;
+                next_y = next_y.max(rect.y + rect.height + COLUMN_GAP);
+                min_left = min_left.min(rect.x);
+            }
+        }
+        if column_count == 0 {
+            next_y = top;
+            min_left = x;
+        }
+        if next_y + window_h <= bottom {
+            return (x.clamp(area.x, (area.x + area.width - window_w).max(area.x)), next_y);
+        }
+        let next_right = min_left - COLUMN_GAP;
+        if next_right - window_w < area.x {
+            break;
+        }
+        column_right = next_right;
     }
-    (x.clamp(area.x, max_x), y.clamp(area.y, max_y))
+
+    // 极端窄小工作区：仍保证窗口完整可见；可能与其他微件重叠，但用户可拖动分开。
+    let x = (area.x + area.width - EDGE_MARGIN - window_w)
+        .max(area.x)
+        .min(area.x + (area.width - window_w).max(0));
+    let y = top.clamp(area.y, area.y + (area.height - window_h).max(0));
+    (x, y)
 }
 
 fn anchor_from_position(area: WorkArea, window_w: i32, window_h: i32, x: i32, y: i32) -> (f64, f64) {
@@ -452,6 +499,31 @@ struct Placement {
     scale: f64,
 }
 
+/// 收集其余微件窗口的物理矩形；首次布局只依据真实尺寸排布。
+///
+/// 不按 `is_visible()` 过滤：`show()` 是把调用投递到事件循环，返回值不代表系统
+/// 已把窗口标记为可见。真实冷启动里六个窗口创建请求会接连到达，先创建的窗口
+/// 在窗口管理器看来仍是「不可见」，于是后续窗口都按空集合排布、堆到同一个角落。
+/// 创建/放置/显示已由 `PLACEMENT_LOCK` 串行，因此这里出现的其它微件窗口一定已经
+/// 完成了放置与显示；直接读它的真实矩形才是可靠依据。
+fn existing_widget_rects(app: &AppHandle, kind: &str) -> Vec<WindowRect> {
+    WIDGET_TYPES
+        .iter()
+        .filter(|item| **item != kind)
+        .filter_map(|item| {
+            let window = app.get_webview_window(&window_label(item))?;
+            let position = window.outer_position().ok()?;
+            let size = window.outer_size().ok()?;
+            Some(WindowRect {
+                x: position.x,
+                y: position.y,
+                width: size.width as i32,
+                height: size.height as i32,
+            })
+        })
+        .collect()
+}
+
 fn place_window(
     app: &AppHandle,
     win: &WebviewWindow,
@@ -471,7 +543,8 @@ fn place_window(
     let h = (height * scale).round() as i32;
     let (x, y) = match (reset_position, nx, ny) {
         (true, ..) | (false, None, _) | (false, _, None) => {
-            default_position(area, w, h, widget_index(kind))
+            let existing = existing_widget_rects(app, kind);
+            default_position(area, &existing, w, h)
         }
         (false, Some(nx), Some(ny)) => anchored_position(area, w, h, nx, ny),
     };
@@ -576,6 +649,10 @@ fn attach_window_events(app: &AppHandle, win: &WebviewWindow, kind: String, gene
 
 fn create_window(app: &AppHandle, kind: &str) -> AppResult<(WebviewWindow, u64)> {
     let label = window_label(kind);
+    // 代际必须在 build 之前分配：WebView2 在 build() 期间就可能加载页面并发起首帧请求，
+    // 若此时还没占代际，请求与之后的快照都会带旧值（0），窗口自身的 info 也会读到旧值，
+    // 导致真实快照被接收端当成旧实例永久丢弃。先占代际后建窗，保证实例身份从头一致。
+    let generation = next_window_generation(kind);
     let win = WebviewWindowBuilder::new(
         app,
         &label,
@@ -596,7 +673,6 @@ fn create_window(app: &AppHandle, kind: &str) -> AppResult<(WebviewWindow, u64)>
     let _ = win.set_focusable(false);
     apply_shape(&win);
     crate::window_shape::watch_destroy(&win);
-    let generation = next_window_generation(kind);
     attach_window_events(app, &win, kind.to_string(), generation);
     Ok((win, generation))
 }
@@ -613,6 +689,16 @@ pub async fn show_widget_window(
     spec: WidgetWindowSpec,
 ) -> AppResult<WidgetWindowInfo> {
     assert_main(&window)?;
+    // 锁必须整段由同步函数持有：`MutexGuard` 不可跨 `.await`，async 命令只做入口校验。
+    place_and_show(app, spec)
+}
+
+/// 串行段：创建（必要时）→ 设尺寸/置顶 → 首次放置 → 显示 → 应用圆角。
+/// 见 `PLACEMENT_LOCK`：并发创建会让默认层叠看到空的已存在窗口集合。
+fn place_and_show(app: AppHandle, spec: WidgetWindowSpec) -> AppResult<WidgetWindowInfo> {
+    let _placement = PLACEMENT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let kind = validate_type(&spec.widget_type)?;
     let width = clamp_size(spec.width, MIN_WIDTH, MAX_WIDTH);
     let height = clamp_size(spec.height, MIN_HEIGHT, MAX_HEIGHT);
@@ -755,6 +841,8 @@ pub fn publish_widget_snapshot(
     window: WebviewWindow,
     widget_type: String,
     revision: u64,
+    epoch: Option<String>,
+    generation: Option<u64>,
     snapshot: serde_json::Value,
 ) -> AppResult<bool> {
     assert_main(&window)?;
@@ -763,12 +851,20 @@ pub fn publish_widget_snapshot(
     let Some(target_window) = app.get_webview_window(&target) else {
         return Ok(false);
     };
+    // 代际校验：主窗口可能持有旧请求的应答，窗口已重建时必须丢弃，
+    // 不能让旧代际数据被新窗口当成当前快照。
+    let current_generation = current_window_generation(kind);
+    if generation.is_some_and(|value| value != current_generation) {
+        return Ok(false);
+    }
     // 只推给对应窗口，不广播到主窗口/其他微件，避免无谓的 IPC 唤醒。
     target_window.emit(
         EVENT_SNAPSHOT,
         serde_json::json!({
             "widgetType": kind,
             "revision": revision,
+            "epoch": epoch.unwrap_or_default(),
+            "generation": current_generation,
             "snapshot": snapshot,
         }),
     )?;
@@ -779,10 +875,15 @@ pub fn publish_widget_snapshot(
 #[tauri::command]
 pub fn request_widget_snapshot(app: AppHandle, window: WebviewWindow) -> AppResult<()> {
     let kind = caller_type(&window)?;
+    let generation = current_window_generation(&kind);
+    // 带上本窗口代际：主窗口把它回显进快照，接收端据此拒绝旧实例的数据。
     emit_to_main(
         &app,
         EVENT_REQUEST,
-        serde_json::json!({ "widgetType": kind }),
+        serde_json::json!({
+            "widgetType": kind,
+            "generation": generation,
+        }),
     );
     Ok(())
 }
@@ -859,14 +960,49 @@ mod tests {
     }
 
     #[test]
-    fn default_positions_cascade_without_leaving_work_area() {
-        let (x, y) = default_position(area(), 340, 280, 5);
-        assert!(x >= 0 && x + 340 <= 1920);
-        assert!(y >= 0 && y + 280 <= 1040);
-        assert_ne!(
-            default_position(area(), 340, 280, 0),
-            default_position(area(), 340, 280, 1)
-        );
+    fn default_positions_stack_without_overlap() {
+        let (x, y) = default_position(area(), &[], 340, 280);
+        assert_eq!((x, y), (1920 - 24 - 340, 24));
+        let first = WindowRect {
+            x,
+            y,
+            width: 340,
+            height: 280,
+        };
+        let (next_x, next_y) = default_position(area(), &[first], 320, 240);
+        // 同列右缘对齐，纵向按上一窗口真实高度 + 间距堆叠。
+        assert_eq!(next_x, 1920 - 24 - 320);
+        assert_eq!(next_y, 24 + 280 + 12);
+        assert!(next_y + 240 <= 1040 - 24);
+    }
+
+    #[test]
+    fn default_positions_open_new_column_when_full() {
+        let rects: Vec<WindowRect> = (0..3)
+            .map(|index| WindowRect {
+                x: 1920 - 24 - 340,
+                y: 24 + index * (300 + 12),
+                width: 340,
+                height: 300,
+            })
+            .collect();
+        let (x, y) = default_position(area(), &rects, 340, 300);
+        // 右列放不下第四个：在原列左侧留 12px 开新列，从顶部重新堆叠。
+        assert_eq!(x, 1920 - 24 - 340 - 12 - 340);
+        assert_eq!(y, 24);
+    }
+
+    #[test]
+    fn default_position_keeps_window_inside_work_area() {
+        let tiny = WorkArea {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 500,
+        };
+        let (x, y) = default_position(tiny, &[], 340, 280);
+        assert!(x >= 0 && x + 340 <= 800);
+        assert!(y >= 0 && y + 280 <= 500);
     }
 
     #[test]

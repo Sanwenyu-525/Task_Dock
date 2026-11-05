@@ -44,9 +44,12 @@ export default function ShelfImageLightbox({
   const [url, setUrl] = useState<string | null>(null);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [view, setView] = useState<View>({ s: 1, x: 0, y: 0 });
+  /** 平移手势进行中：只影响光标（grabbing），不参与平移计算。 */
+  const [panning, setPanning] = useState(false);
   const viewRef = useRef(view);
   viewRef.current = view;
   const movedRef = useRef(false);
+  const downPointRef = useRef<{ x: number; y: number } | null>(null);
   const pressTargetRef = useRef<EventTarget | null>(null);
 
   useEffect(() => {
@@ -82,6 +85,23 @@ export default function ShelfImageLightbox({
     if (state === "ok" && natural) fit();
   }, [state, natural, fit]);
 
+  // 平移期间的光标会话：舞台内松手由自身 pointerup 收尾，指针在窗口外松开
+  // 或窗口失焦/隐藏时由这里的全局监听兜底；平移结束即摘掉全部监听。
+  useEffect(() => {
+    if (!panning) return;
+    const end = () => setPanning(false);
+    window.addEventListener("pointerup", end, true);
+    window.addEventListener("pointercancel", end, true);
+    window.addEventListener("blur", end);
+    document.addEventListener("visibilitychange", end);
+    return () => {
+      window.removeEventListener("pointerup", end, true);
+      window.removeEventListener("pointercancel", end, true);
+      window.removeEventListener("blur", end);
+      document.removeEventListener("visibilitychange", end);
+    };
+  }, [panning]);
+
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const stage = stageRef.current;
@@ -106,13 +126,20 @@ export default function ShelfImageLightbox({
   const onPointerDown = (e: React.PointerEvent) => {
     pressTargetRef.current = e.target;
     movedRef.current = false;
-    if (e.target !== e.currentTarget) return;
+    if (e.button !== 0) return;
+    setPanning(true);
+    downPointRef.current = { x: e.clientX, y: e.clientY };
+    // 图片在舞台内：按下图片同样要捕获指针，否则放大后图片铺满视口时无法平移。
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
-    if (e.buttons !== 1 || e.target !== e.currentTarget || !natural) return;
-    movedRef.current = true;
+    if (e.buttons !== 1 || !natural) return;
+    // 4px 以内视为点击抖动，不记为拖拽，避免点图片关闭被误吞（对齐剪贴板灯箱）
+    const down = downPointRef.current;
+    if (down && Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y) > 4) {
+      movedRef.current = true;
+    }
     const stage = stageRef.current;
     if (!stage) return;
     setView((v) => {
@@ -153,10 +180,12 @@ export default function ShelfImageLightbox({
     >
       <div
         ref={stageRef}
-        className="shelf-lightbox-stage"
+        className={`shelf-lightbox-stage${panning ? " is-dragging" : ""}`}
         onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
+        onPointerUp={() => setPanning(false)}
+        onPointerCancel={() => setPanning(false)}
         onClick={onStageClick}
       >
         {state === "loading" && (

@@ -1093,6 +1093,12 @@ fn parse_extended(
         if !src.has_table(table) {
             continue;
         }
+        if crate::commands::backup::is_local_transient_table(table) {
+            // 未完成操作日志属于设备本地瞬时状态：旧备份里的行一律忽略，
+            // 不使用他机绝对路径执行任何文件操作。
+            modules.tables.insert(*table, Vec::new());
+            continue;
+        }
         let columns = table_columns(db, table)?;
         if columns.is_empty() {
             return Err(AppError::Validation(format!(
@@ -1870,6 +1876,9 @@ pub(crate) fn import_parsed_with(
             // v6：扩展模块（依赖顺序由 backup::EXTENDED_TABLES 保证）
             if parsed.extended.active {
                 for table in crate::commands::backup::EXTENDED_TABLES {
+                    if crate::commands::backup::is_local_transient_table(table) {
+                        continue;
+                    }
                     if let Some(rows) = parsed.extended.tables.get(table) {
                         insert_extended_rows(conn, table, rows)?;
                     }

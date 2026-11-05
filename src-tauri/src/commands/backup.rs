@@ -86,6 +86,9 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "shelf_groups",
     "shelf_items",
     "shelf_task_links",
+    // 暂存架文件操作增强（v0.14）：最近目标目录与未完成的移动日志。
+    "shelf_recent_dirs",
+    "shelf_file_ops",
     // 一键工作流（v0.9）：定义 → 步骤 → 运行 → 回执（外键依赖序）。
     "workflows",
     "workflow_steps",
@@ -298,6 +301,10 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["tasks", "shelf_items"],
         true
     ),
+    // 暂存架文件操作增强：最近目录是轻量用户偏好；操作日志只保留未完成项，
+    // 正常完成即删除，恢复时由启动恢复逻辑消费，不承载用户业务数据。
+    rule!("shelf_recent_dirs", "shelf", "all", 315, &[], true),
+    rule!("shelf_file_ops", "shelf", "all", 316, &["shelf_items"], true),
     // 一键工作流（v0.9）：定义与步骤是用户配置，快速备份全量保存；
     // 运行记录与回执是历史数据，快速备份按最近 20 次运行截断。
     // 依赖序：工作流 → 步骤 → 运行 → 回执。
@@ -359,6 +366,12 @@ pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
 
 pub fn is_extended_table(table: &str) -> bool {
     EXTENDED_TABLES.contains(&table)
+}
+
+/// 设备本地瞬时状态：只服务本机未完成操作恢复，绝不进入跨设备备份，
+/// 恢复旧备份时也一律忽略，防止用他机绝对路径删除/改写本机文件。
+pub fn is_local_transient_table(table: &str) -> bool {
+    matches!(table, "shelf_file_ops")
 }
 
 /// 备份来源目录：归档、剪贴板资产、暂存架托管文件与用户配置。
@@ -617,6 +630,9 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "shelf_groups"
         | "shelf_items"
         | "shelf_task_links"
+        // 最近目录：用户选择的目标目录偏好，属于可迁移业务数据（shelf_file_ops
+        // 是设备本地瞬时日志，不走此分支，由写循环单独写空 section）
+        | "shelf_recent_dirs"
         // 一键工作流：定义与步骤是用户配置，快速备份全量保存
         | "workflows"
         | "workflow_steps"
@@ -1525,6 +1541,16 @@ pub fn write_bundle(
             counts.insert("navigation_log".into(), nav_logs as i64);
 
             for table in EXTENDED_TABLES {
+                if is_local_transient_table(table) {
+                    // 即使为空也写 section 以保持新格式的「空表/缺表」区分，但不写任何本机路径。
+                    writer.line(&Section {
+                        record: "section",
+                        table,
+                        rows: &[] as &[serde_json::Value],
+                    })?;
+                    counts.insert((*table).to_string(), 0);
+                    continue;
+                }
                 let n = write_generic_table(&mut writer, &tx, table, kind)?;
                 counts.insert((*table).to_string(), n as i64);
             }
@@ -2660,6 +2686,47 @@ mod tests {
                 commit_marker: None,
             },
         )
+    }
+
+    #[test]
+    fn backup_excludes_device_local_shelf_file_ops() {
+        let db = memdb();
+        seed_minimal(&db);
+        let other_device = temp_dir("other-device-path");
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO shelf_file_ops (id,item_id,op,phase,source,target,created_at) \
+                 VALUES ('op1','item-x','move','copied',?1,?2,?3)",
+                rusqlite::params![
+                    other_device.join("源.txt").to_string_lossy(),
+                    other_device.join("目标.txt").to_string_lossy(),
+                    now_iso()
+                ],
+            )?;
+            Ok::<_, crate::error::AppError>(())
+        })
+        .unwrap();
+
+        let (_, read, dir) = write_then_read(&db, BackupKind::Full);
+        assert_eq!(
+            spilled_rows(&read, "shelf_file_ops").len(),
+            0,
+            "设备本地瞬时操作日志不得进入备份"
+        );
+        assert_eq!(read.counts["shelf_file_ops"], 0);
+
+        // 恢复旧/新备份都不得把未完成操作日志搬进新设备。
+        let dest = memdb();
+        seed_minimal(&dest);
+        import_read(&dest, &read).unwrap();
+        let n: i64 = dest
+            .with_read(|c| {
+                c.query_row("SELECT COUNT(*) FROM shelf_file_ops", [], |r| r.get(0))
+                    .map_err(crate::error::AppError::from)
+            })
+            .unwrap();
+        assert_eq!(n, 0, "恢复后不得保留他机路径的操作日志");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

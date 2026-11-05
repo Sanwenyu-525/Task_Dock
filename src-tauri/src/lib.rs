@@ -1024,6 +1024,13 @@ pub fn run() {
             commands::shelf::shelf_task_links,
             commands::shelf::shelf_link_task,
             commands::shelf::shelf_unlink_task,
+            commands::shelf::shelf_move_items,
+            commands::shelf::shelf_copy_to,
+            commands::shelf::shelf_relocate_item,
+            commands::shelf::shelf_recent_dirs,
+            commands::shelf::shelf_recent_dir_pin,
+            commands::shelf::shelf_recent_dir_remove,
+            commands::shelf::shelf_recent_dirs_clear,
             // 一键工作流（v0.9）
             commands::workflows::workflow_list,
             commands::workflows::workflow_get,

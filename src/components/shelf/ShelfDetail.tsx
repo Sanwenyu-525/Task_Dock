@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Copy, ExternalLink, FolderOpen, Link2, Loader2, Plus, Save, Trash2, X,
+  ArrowRightLeft, Copy, ExternalLink, FolderOpen, Link2, Loader2, Plus, Save, Trash2, X,
 } from "lucide-react";
 import {
   listTasks,
@@ -25,6 +25,7 @@ import { clipboardTime, formatBytes } from "../../lib/clipboardUi";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
 import { ConfirmDialog } from "../ui/Dialog";
+import Select from "../ui/Select";
 import HtmlReader from "../clipboard/HtmlReader";
 import ShelfImageLightbox from "./ShelfImageLightbox";
 
@@ -34,9 +35,15 @@ const PREVIEW_RENDER_LIMIT = 200_000;
 export default function ShelfDetail({
   item,
   onClose,
+  onFileOp,
+  onRelocate,
 }: {
   item: ShelfItem;
   onClose: () => void;
+  /** 打开「移动原文件到… / 复制到…」内嵌面板（由工作区复用同一面板） */
+  onFileOp?: (op: "move" | "copy") => void;
+  /** 失效引用条目重新选择外部路径 */
+  onRelocate?: () => void;
 }) {
   const showToast = useUiStore((s) => s.showToast);
   const updateItem = useShelfStore((s) => s.updateItem);
@@ -48,6 +55,9 @@ export default function ShelfDetail({
   const [textError, setTextError] = useState<string | null>(null);
   const [links, setLinks] = useState<ShelfTaskLink[]>([]);
   const [taskOptions, setTaskOptions] = useState<{ id: string; title: string }[]>([]);
+  const [taskOptionsState, setTaskOptionsState] = useState<"loading" | "ready" | "error">("loading");
+  const [taskOptionsError, setTaskOptionsError] = useState("");
+  const [taskToLink, setTaskToLink] = useState("");
   const [noteDraft, setNoteDraft] = useState(item.note);
   const [savingNote, setSavingNote] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -105,20 +115,44 @@ export default function ShelfDetail({
 
   useEffect(() => {
     void reloadLinks();
+    let alive = true;
+    setTaskOptionsState("loading");
+    setTaskOptionsError("");
+    setTaskToLink("");
     listTasks({ view: "all", limit: 200 })
-      .then((tasks) => setTaskOptions(tasks.map((t) => ({ id: t.id, title: t.title }))))
-      .catch(() => setTaskOptions([]));
+      .then((tasks) => {
+        if (!alive) return;
+        setTaskOptions(tasks.map((t) => ({ id: t.id, title: t.title })));
+        setTaskOptionsState("ready");
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setTaskOptions([]);
+        setTaskOptionsError(String(e));
+        setTaskOptionsState("error");
+      });
+    return () => {
+      alive = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.id]);
 
   const missing = item.exists_state === "missing";
-  const linkInputRef = useRef<HTMLSelectElement>(null);
+
+  const linkPlaceholder =
+    taskOptionsState === "loading"
+      ? "正在加载任务…"
+      : taskOptionsState === "error"
+        ? "任务列表加载失败"
+        : taskOptions.length === 0
+          ? "暂无可关联任务"
+          : "选择任务…";
 
   const addLink = async () => {
-    const select = linkInputRef.current;
-    if (!select || !select.value) return;
+    if (!taskToLink) return;
     try {
-      await shelfLinkTask(item.id, select.value);
+      await shelfLinkTask(item.id, taskToLink);
+      setTaskToLink("");
       await reloadLinks();
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -259,6 +293,43 @@ export default function ShelfDetail({
           >
             <FolderOpen size={13} aria-hidden="true" /> 所在文件夹
           </button>
+          {!missing && item.storage_mode === "reference" && onFileOp && (
+            <button
+              type="button"
+              className="btn sm"
+              data-tip="移动引用模式的原文件，文件物理位置会改变"
+              onClick={() => onFileOp("move")}
+            >
+              <ArrowRightLeft size={13} aria-hidden="true" /> 移动原文件到…
+            </button>
+          )}
+          {!missing &&
+            (item.kind === "file" || item.kind === "image" || item.kind === "folder") &&
+            onFileOp && (
+              <button
+                type="button"
+                className="btn sm"
+                data-tip={
+                  item.storage_mode === "managed"
+                    ? "导出托管副本，原副本保留；是否删除可在面板中选择"
+                    : "复制到目标目录，原文件不动"
+                }
+                onClick={() => onFileOp("copy")}
+              >
+                <Copy size={13} aria-hidden="true" />{" "}
+                {item.storage_mode === "managed" ? "导出副本到…" : "复制到…"}
+              </button>
+            )}
+          {missing && item.storage_mode === "reference" && onRelocate && (
+            <button type="button" className="btn sm" onClick={onRelocate}>
+              重新定位…
+            </button>
+          )}
+          {missing && item.storage_mode === "managed" && (
+            <p className="shelf-detail-hint">
+              托管副本已丢失：不支持指向外部文件，请通过备份恢复，或删除该记录后重新添加。
+            </p>
+          )}
           <button
             type="button"
             className="btn sm"
@@ -300,18 +371,30 @@ export default function ShelfDetail({
             </li>
           ))}
         </ul>
+        {taskOptionsState === "error" && (
+          <p className="shelf-links-status is-error" role="alert">
+            任务列表加载失败：{taskOptionsError}
+          </p>
+        )}
         <div className="shelf-links-add">
-          <select ref={linkInputRef} className="shelf-task-select" aria-label="选择要关联的任务" defaultValue="">
-            <option value="" disabled>
-              选择任务…
-            </option>
-            {taskOptions.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.title}
-              </option>
-            ))}
-          </select>
-          <button type="button" className="btn sm" onClick={() => void addLink()}>
+          <Select
+            value={taskToLink}
+            options={taskOptions.map((t) => ({ value: t.id, label: t.title }))}
+            onChange={setTaskToLink}
+            placeholder={linkPlaceholder}
+            disabled={taskOptionsState !== "ready" || taskOptions.length === 0}
+            ariaLabel="选择要关联的任务"
+            size="sm"
+            align="start"
+            menuMinWidth={200}
+            triggerClassName="shelf-task-select"
+          />
+          <button
+            type="button"
+            className="btn sm"
+            disabled={!taskToLink}
+            onClick={() => void addLink()}
+          >
             <Plus size={13} aria-hidden="true" /> 关联
           </button>
         </div>

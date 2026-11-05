@@ -5,6 +5,7 @@
 //! 自动翻转定位），并把剪贴板入口移交给左侧导航——完整模式不再放剪贴板按钮。
 //! 紧凑/极简模式没有左侧导航，仍靠标题栏的剪贴板按钮作为临时入口。
 
+import { useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Palette, Clipboard,
@@ -68,6 +69,77 @@ function MenuButton({
   );
 }
 
+/**
+ * 窗口拖拽光标会话：标题栏拖拽区按下时进入 `is-dragging`（grabbing），
+ * 结束后回到 grab。
+ *
+ * Tauri 的 drag region 在 mousedown 里调用原生 `startDragging`，进入 Win32 的
+ * 模态移动循环；循环期间 WebView2 收不到指针事件（`useEdgeSnap` 同一条实测
+ * 结论），所以松手后**不会有 pointerup**。结束信号取「指针事件恢复」：
+ * - `pointermove` 只认 `buttons === 0`：拖拽开始前的最后几毫秒仍可能收到
+ *   按住状态的移动事件，不能据此提前复位；
+ * - `pointerup` / `pointercancel` 覆盖没走到原生循环的普通点击与中断；
+ * - `blur` / `visibilitychange` 覆盖失焦、切走与页面隐藏。
+ * 任一信号先到即摘掉本次会话的全部监听，不会累积（一次性会话）。
+ */
+function useWindowDragCursor() {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    let endSession: (() => void) | null = null;
+
+    const stop = () => {
+      root.classList.remove("is-dragging");
+      endSession?.();
+      endSession = null;
+    };
+
+    const start = () => {
+      stop(); // 上一条会话若因事件缺失没收尾，先清掉再开新的
+      root.classList.add("is-dragging");
+      const end = () => stop();
+      const onMove = (event: PointerEvent) => {
+        if (event.buttons === 0) stop();
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
+      window.addEventListener("blur", end);
+      document.addEventListener("visibilitychange", end);
+      endSession = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        window.removeEventListener("blur", end);
+        document.removeEventListener("visibilitychange", end);
+      };
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const target = event.target;
+      if (!(target instanceof Element) || !root.contains(target)) return;
+      // 与 Tauri 一致：只认事件 target 自身的 data-tauri-drag-region
+      //（父级属性不向下传递，按钮/操作区不在这里起拖）。
+      if (!target.hasAttribute("data-tauri-drag-region")) return;
+      start();
+    };
+
+    // 捕获阶段：Tauri 的 drag.js 在 mousedown 里 stopImmediatePropagation，
+    // pointerdown 先于 mousedown，且捕获阶段不受其影响。
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      stop();
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, []);
+
+  return rootRef;
+}
+
 export default function TitleBar({ inert = false }: { inert?: boolean }) {
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
@@ -110,12 +182,19 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
     onSelect: () => update({ visual_preset: id }),
   }));
 
+  const titleRef = useWindowDragCursor();
+
   return (
-    <div className="titlebar" data-tauri-drag-region inert={inert}>
+    <div
+      ref={titleRef}
+      className="titlebar ui-drag-surface ui-drag-session"
+      data-tauri-drag-region
+      inert={inert}
+    >
       {/* 品牌球也作为窗口拖拽热区：Tauri 的 drag-region 只认事件 target 自身的
           data-tauri-drag-region，父级标题栏的属性不会向下传递。 */}
-      <span className="brand-orb" aria-hidden="true" data-tauri-drag-region />
-      <span className="titlebar-title" data-tauri-drag-region>
+      <span className="brand-orb ui-drag-surface" aria-hidden="true" data-tauri-drag-region />
+      <span className="titlebar-title ui-drag-surface" data-tauri-drag-region>
         Task Dock
       </span>
 

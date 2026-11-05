@@ -548,3 +548,91 @@ pub fn shelf_unlink_task(
 ) -> AppResult<()> {
     shelf::unlink_task(&rt(&state).db, &item_id, &task_id)
 }
+
+// ── 文件操作（移动 / 复制 / 重定位） ────────────────────────
+
+/// 移动原文件/文件夹到目标目录；managed、link、text 明确拒绝。
+#[tauri::command]
+pub async fn shelf_move_items(
+    state: State<'_, Arc<ShelfState>>,
+    ids: Vec<String>,
+    target_dir: String,
+    conflict_strategy: Option<String>,
+    remove_after: Option<bool>,
+) -> AppResult<shelf::fsops::ShelfOpReport> {
+    let st = state.inner().clone();
+    let strategy =
+        shelf::fsops::parse_conflict_strategy(conflict_strategy.as_deref().unwrap_or("skip"))?;
+    let remove_after = remove_after.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        shelf::fsops::move_items(&st.db, &st.root, &ids, &target_dir, strategy, remove_after)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("移动任务失败: {e}")))?
+}
+
+/// 复制到目标目录（含托管副本导出）；源文件始终保留。
+#[tauri::command]
+pub async fn shelf_copy_to(
+    state: State<'_, Arc<ShelfState>>,
+    ids: Vec<String>,
+    target_dir: String,
+    conflict_strategy: Option<String>,
+    remove_after: Option<bool>,
+) -> AppResult<shelf::fsops::ShelfOpReport> {
+    let st = state.inner().clone();
+    let strategy =
+        shelf::fsops::parse_conflict_strategy(conflict_strategy.as_deref().unwrap_or("skip"))?;
+    let remove_after = remove_after.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        // 复用现有复制并发闸：整批占用一个名额，避免与托管添加并发叠加 IO。
+        let _permit = st.acquire_copy_permit();
+        shelf::fsops::copy_items(&st.db, &st.root, &ids, &target_dir, strategy, remove_after)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("复制任务失败: {e}")))?
+}
+
+/// 失效引用条目重新指向用户选择的外部文件/文件夹。
+#[tauri::command]
+pub async fn shelf_relocate_item(
+    state: State<'_, Arc<ShelfState>>,
+    id: String,
+    path: String,
+) -> AppResult<shelf::ShelfItem> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        shelf::fsops::relocate_item(&st.db, &id, &path)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("重定位任务失败: {e}")))?
+}
+
+#[tauri::command]
+pub async fn shelf_recent_dirs(
+    state: State<'_, Arc<ShelfState>>,
+) -> AppResult<Vec<shelf::fsops::ShelfRecentDir>> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || shelf::fsops::list_recent_dirs(&st.db))
+        .await
+        .map_err(|e| AppError::Agent(format!("读取最近目录失败: {e}")))?
+}
+
+#[tauri::command]
+pub fn shelf_recent_dir_pin(
+    state: State<'_, Arc<ShelfState>>,
+    path: String,
+    pinned: bool,
+) -> AppResult<()> {
+    shelf::fsops::set_recent_dir_pinned(&rt(&state).db, &path, pinned)
+}
+
+#[tauri::command]
+pub fn shelf_recent_dir_remove(state: State<'_, Arc<ShelfState>>, path: String) -> AppResult<()> {
+    shelf::fsops::remove_recent_dir(&rt(&state).db, &path)
+}
+
+#[tauri::command]
+pub fn shelf_recent_dirs_clear(state: State<'_, Arc<ShelfState>>) -> AppResult<()> {
+    shelf::fsops::clear_recent_dirs(&rt(&state).db)
+}

@@ -484,8 +484,10 @@ export default function AppsPanel() {
               setMenuOpenId((prev) => (open ? t.id : prev === t.id ? null : prev))
             }
           />
-          {renderDelete(t)}
         </div>
+        {/* 删除入口脱离收藏/更多所在的布局流：绝对定位在卡片右上角，
+            名称截断点因此与没有删除按钮时一致，hit 区仅限按钮自身。 */}
+        {renderDelete(t)}
       </div>
     );
   }

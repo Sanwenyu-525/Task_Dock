@@ -33,7 +33,7 @@ const discovered = (key: string, name = key) => ({
   category: "other",
 });
 
-import { useNavigationStore } from "./useNavigationStore";
+import { deriveScanState, useNavigationStore } from "./useNavigationStore";
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -363,5 +363,52 @@ describe("loadApps · 渐进扫描", () => {
 
     scan.resolve({ apps: [discovered("a", "Alpha")], scanned_at: "2026-11-05T10:00:00Z" } as never);
     await expect(load).resolves.toBe("ok");
+  });
+});
+
+describe("deriveScanState · 显式扫描状态机", () => {
+  const scan = { apps: [discovered("a")], scanned_at: "2026-11-05T10:00:00Z" } as never;
+
+  it("未扫描：没有结果、不在扫描、没有错误", () => {
+    expect(
+      deriveScanState({ scan: null, scanning: false, scanError: null, scanPartial: false }),
+    ).toBe("unscanned");
+  });
+
+  it("扫描中·尚无结果：空批次只推进进度，不得翻成完成", () => {
+    expect(
+      deriveScanState({ scan: null, scanning: true, scanError: null, scanPartial: true }),
+    ).toBe("scanning-empty");
+  });
+
+  it("扫描中·已有结果：首批到达后立即展示，后续来源未完成前不算完成", () => {
+    expect(
+      deriveScanState({ scan, scanning: true, scanError: null, scanPartial: true }),
+    ).toBe("scanning-partial");
+  });
+
+  it("完成：结果与诊断都完整", () => {
+    expect(
+      deriveScanState({ scan, scanning: false, scanError: null, scanPartial: false }),
+    ).toBe("complete");
+    // 刷新失败但上次结果完整：仍按完成（另有「显示上次结果」提示，不降级为部分失败）。
+    expect(
+      deriveScanState({ scan, scanning: false, scanError: "刷新失败", scanPartial: false }),
+    ).toBe("complete");
+  });
+
+  it("部分失败：有结果但明确不完整（中途失败或诊断报告部分来源失败）", () => {
+    expect(
+      deriveScanState({ scan, scanning: false, scanError: "来源读取失败", scanPartial: true }),
+    ).toBe("partial");
+    expect(
+      deriveScanState({ scan, scanning: false, scanError: null, scanPartial: false, incomplete: true }),
+    ).toBe("partial");
+  });
+
+  it("完全失败：没有任何可用结果", () => {
+    expect(
+      deriveScanState({ scan: null, scanning: false, scanError: "扫描服务不可用", scanPartial: false }),
+    ).toBe("failed");
   });
 });

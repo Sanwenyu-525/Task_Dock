@@ -198,6 +198,7 @@ static CAPSULE_APPLY_SEQ: AtomicU64 = AtomicU64::new(0);
 /// - `off`   ：恢复整窗圆角区域（未停靠 / 解除吸附）
 /// - `rail`  ：只露出分类轨道（折叠态）
 /// - `panel` ：露出「轨道 ∪ 功能面板」（展开态）
+/// - `tab`   ：只露出贴边的极简标签（Edge Tab）
 ///
 /// 窗口位置与尺寸在停靠期间**不变**，区域切换是唯一的状态变化——
 /// 这是「鼠标在吸附条与悬浮窗口之间来回跳动」的结构性修复：
@@ -218,7 +219,7 @@ pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String, seq: u64
         .map_err(|e| crate::error::AppError::Agent(format!("无法获取主窗口句柄: {e}")))?;
     match mode.as_str() {
         "off" => crate::window_shape::set_capsule(hwnd, None),
-        "rail" | "panel" => {
+        "rail" | "panel" | "tab" => {
             let edge_id = match edge.as_str() {
                 "left" => 0,
                 "right" => 1,
@@ -237,12 +238,13 @@ pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String, seq: u64
                     thickness_css: CAPSULE_THICKNESS_CSS,
                     length_css: CAPSULE_LENGTH_CSS,
                     expanded: mode == "panel",
+                    tab: mode == "tab",
                 }),
             );
         }
         other => {
             return Err(crate::error::AppError::Validation(format!(
-                "apply_window_capsule.mode 非法: {other}（允许: off|rail|panel）"
+                "apply_window_capsule.mode 非法: {other}（允许: off|rail|panel|tab）"
             )));
         }
     }
@@ -430,6 +432,10 @@ pub struct WindowSnapState {
     /// 停靠目标显示器的身份与几何；旧记录缺失时按窗口所在显示器恢复。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<SnapDisplayInfo>,
+    /// 显示形态：`capsule`（轨道/面板）或 `tab`（Edge Tab）。
+    /// 旧记录缺失 → 按胶囊恢复；非法值在 `is_valid` 中拒绝。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<String>,
 }
 
 impl WindowSnapState {
@@ -438,7 +444,7 @@ impl WindowSnapState {
         matches!(
             self.edge.as_str(),
             "left" | "right" | "top" | "bottom" | "none"
-        )
+        ) && matches!(self.form.as_deref(), None | Some("capsule") | Some("tab"))
     }
 }
 
@@ -483,12 +489,14 @@ pub fn performance_diagnostics(
 ) -> AppResult<serde_json::Value> {
     let settings = crate::db::Settings::load(&db)?;
     if !settings.perf_diagnostics_enabled {
-        return Ok(serde_json::json!({ "enabled": false }));
+        // 即使性能采样关闭也返回构建信息：用于区分同版本号的不同构建。
+        return Ok(serde_json::json!({ "enabled": false, "build": build_info() }));
     }
     let snap = hub.snapshot()?;
     Ok(serde_json::json!({
         "enabled": true,
         "generated_at": crate::agents::now_iso(),
+        "build": build_info(),
         "pipeline": pipeline.stats(),
         "http": crate::agents::http_ingest::stats_snapshot(),
         "file_drop": crate::agents::file_drop::stats_snapshot(),
@@ -503,6 +511,19 @@ pub fn performance_diagnostics(
         // 前端刷新调度指标由前端 getAgentRefreshMetrics() 自行展示
         // （后端不伪造前端计数）。
     }))
+}
+
+/// 构建溯源信息（编译期注入）：短 commit、构建时间（Unix 秒）、debug/release、
+/// 当前运行可执行文件路径。仅通过本地诊断 IPC 返回，不写入应用日志。
+fn build_info() -> serde_json::Value {
+    serde_json::json!({
+        "commit": option_env!("TASK_DOCK_GIT_COMMIT").unwrap_or("unknown"),
+        "built_at_unix": option_env!("TASK_DOCK_BUILD_TIME").unwrap_or("unknown"),
+        "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "exe": std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "unknown".to_string()),
+    })
 }
 
 // ── 窗口材质（毛玻璃）────────────────────────────────────────
@@ -992,6 +1013,7 @@ mod tests {
                 thickness_css: CAPSULE_THICKNESS_CSS,
                 length_css: CAPSULE_LENGTH_CSS,
                 expanded: false,
+                tab: false,
             };
             // 断言**最终外框**：left 纵向 → width=厚度、
             // height=平直主体 + 2×肩部（88）

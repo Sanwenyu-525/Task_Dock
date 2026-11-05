@@ -477,6 +477,19 @@ datetime-local 互转、Agent 树聚合（10 例）；
   未修改断言、未跳过；不能把“09:44 曾通过”写成“最终始终全部通过”。
   **2026-10-30 16:45 追加**：同机交互会话复跑 `cargo test --lib navigation::router`
   → **10 passed / 0 failed**，两例真实通过（此前挡住它们的记事本「他人已存在的单实例多标签进程」已不在）。
+  **2026-11-05 追加（导航测试门禁稳定性）**：为区分「产品窗口身份竞态」与「测试依赖外部桌面状态」，
+  `src-tauri/src/navigation/router.rs` 做了两处最小抽取（不改产品行为）：
+  1）窗口身份判定抽成纯函数 `same_window_identity` / `explicit_window_still_present`，
+     并新增纯逻辑用例 `explicit_window_identity_ignores_title_and_checks_hwnd_pid_class`
+     （标题变化不算身份变化；hwnd/pid/class 任一变化必须判为已变化），可在任意桌面运行；
+  2）前台用例的前置条件改为「自建记事本窗口连续两次枚举身份一致」才进入导航
+     （`wait_for_stable_owned_window`），不要求系统里只有一个记事本实例；
+  失败分支会先断言「产品声称身份已变化时窗口是否仍可枚举」——窗口仍在才 panic（产品缺陷），
+  窗口确实被系统重建则记 `env_blocked`（环境竞态，不伪装通过、也不放宽断言）。
+  **执行前提**：交互式桌面登录（非锁屏/服务会话）、允许前台置前、无其他会话正在跑同类记事本用例
+  （`NOTEPAD_TEST_LOCK` 已串行化同类用例）。
+  **推荐命令**：单独跑 `cargo test --lib navigation::router::tests`（在 `src-tauri/` 内）；
+  整仓回归再跑 `cargo test --lib`。锁屏或前台锁拒绝时按 `ENVIRONMENT BLOCKED` 记录，不标记通过。
 - **2026-10-30 16:41 追加**：上条「真机剪贴板 46/46」之外，本轮另跑 `TD_REAL_CLIPBOARD=1`
   真机套件 **3 passed / 0 failed** 与图文混合粘贴 GUI 验收 **52/52 PASS**；
   微信/Office/Word 与 Agent 类应用接收在本轮**仍未复跑**（矩阵脚本从未入库，见

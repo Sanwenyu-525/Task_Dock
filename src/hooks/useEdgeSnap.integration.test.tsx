@@ -48,7 +48,12 @@ interface World {
   positionAttempts: number;
   sizeCalls: Array<{ w: number; h: number }>;
   regionCalls: Array<{ mode: string; edge: string }>;
-  snapWrites: Array<{ edge: string; hidden: boolean; center: number | null }>;
+  snapWrites: Array<{
+    edge: string;
+    hidden: boolean;
+    center: number | null;
+    form?: string | null;
+  }>;
   rectWrites: Array<{ x: number; y: number; w: number; h: number }>;
   modeCalls: string[];
   /** applyMode 失败（模拟解除后尺寸恢复失败） */
@@ -60,6 +65,7 @@ interface World {
     hidden: boolean;
     center?: number | null;
     centerRatio?: number | null;
+    form?: "capsule" | "tab" | null;
     display?: {
       name?: string | null;
       bounds?: { x: number; y: number; w: number; h: number };
@@ -250,7 +256,9 @@ vi.mock("../lib/bridge", () => ({
     center: number | null = null,
     extra: Record<string, unknown> = {},
   ) => {
-    world.snapWrites.push({ edge, hidden, center });
+    const write: World["snapWrites"][number] = { edge, hidden, center };
+    if (extra.form !== undefined) write.form = extra.form as string | null;
+    world.snapWrites.push(write);
     world.snapState = { edge, hidden, center, ...(extra as object) } as World["snapState"];
   },
   getWindowRect: async () => world.savedWindowRect,
@@ -333,6 +341,7 @@ import {
   resetTitlebarHeightCache,
   TITLEBAR_HEIGHT_CSS,
 } from "../lib/edgeSnap";
+import { PANEL_EXIT_MS } from "../lib/capsuleLayout";
 
 function fireMoved() {
   for (const cb of [...world.movedHandlers]) cb();
@@ -349,6 +358,21 @@ async function dragTo(x: number, y: number) {
   await act(async () => {
     world.pos = { x, y };
     fireMoved();
+    await Promise.resolve();
+  });
+}
+
+/** 模拟在拖拽区域按下：引擎据此记录按下时的真实窗口矩形（手势起点）。 */
+async function pressDragRegion() {
+  const el = document.createElement("div");
+  el.setAttribute("data-tauri-drag-region", "");
+  document.body.appendChild(el);
+  await act(async () => {
+    el.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    el.remove();
+    // 轻量矩形读取是 2 次 IPC（Promise.all + then），等微任务链落地。
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
   });
 }
@@ -2008,6 +2032,20 @@ describe("快速拖动与事件合并的吸附意图", () => {
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
   });
 
+  it("按下时读取的真实矩形作起点：引擎尚未观测外部移动时，贴边平行拖动不误吸附", async () => {
+    mount();
+    await advance(50); // 引擎记录静止起点 (300,300)
+    // 窗口已被外部移动（引擎尚未收到 onMoved），lastSeenRect 仍是旧位置
+    world.pos = { x: 20, y: 300 };
+    await pressDragRegion(); // 按下时读到真实矩形 (20,300)
+    await dragTo(20, 900); // 沿左边平行大幅移动：法向净位移为 0
+    expect(phase()).toBe("free");
+    await releasePointer();
+    await advance(600);
+    expect(phase()).toBe("free");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+  });
+
   it("快速单次沿边位移（事件幅度大但无向边净位移）：不误吸附", async () => {
     // 静止起点已在吸附区外侧（磁力把窗口拉近但未触发吸附）
     world.pos = { x: 40, y: 300 };
@@ -2074,5 +2112,167 @@ describe("标题栏高度量取（jsdom）", () => {
       el.remove();
       resetTitlebarHeightCache();
     }
+  });
+});
+
+describe("Edge Tab：收起 / 恢复（复用胶囊区域事务）", () => {
+  async function collapseToTab() {
+    await act(async () => {
+      useEdgeSnapStore.getState().collapseToTab?.();
+      await vi.advanceTimersByTimeAsync(400);
+    });
+  }
+
+  it("胶囊 → 标签：区域切 tab、窗口不移动、持久化 form=tab", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    const posBefore = { ...world.pos };
+
+    await collapseToTab();
+
+    expect(phase()).toBe("docked-tab");
+    expect(lastRegion()).toEqual({ mode: "tab", edge: "left" });
+    expect(world.pos).toEqual(posBefore);
+    expect(world.snapWrites.at(-1)).toMatchObject({ edge: "left", form: "tab" });
+    expect(useEdgeSnapStore.getState().tabTransition).toBeNull();
+  });
+
+  it("快速重复点击收起只执行一次区域提交（不叠加过渡）", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    const before = world.regionCalls.length;
+
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.collapseToTab?.();
+      s.collapseToTab?.();
+      s.collapseToTab?.();
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(phase()).toBe("docked-tab");
+    expect(
+      world.regionCalls.slice(before).filter((c) => c.mode === "tab"),
+    ).toHaveLength(1);
+  });
+
+  it("点击标签恢复胶囊；快速重复点击只扩一次区域", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+
+    const before = world.regionCalls.length;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.restoreTab?.();
+      s.restoreTab?.();
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(phase()).toBe("docked-visible");
+    expect(
+      world.regionCalls.slice(before).filter((c) => c.mode === "rail"),
+    ).toHaveLength(1);
+    expect(useEdgeSnapStore.getState().tabTransition).toBeNull();
+    expect(world.snapWrites.at(-1)).toMatchObject({ edge: "left", form: "capsule" });
+  });
+
+  it("prefers-reduced-motion：直接提交形态，不进入过渡态", async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+
+    try {
+      mount();
+      await advance(50);
+      await dockLeft();
+      await collapseToTab();
+
+      expect(phase()).toBe("docked-tab");
+      expect(useEdgeSnapStore.getState().tabTransition).toBeNull();
+      expect(lastRegion()).toEqual({ mode: "tab", edge: "left" });
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it("展开态收为标签：面板先离场，过渡期不提前卸载/不提前切区", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await act(async () => {
+      useEdgeSnapStore.getState().reveal?.();
+      await Promise.resolve();
+    });
+    await advance(20);
+    expect(phase()).toBe("docked-revealed");
+
+    await act(async () => {
+      useEdgeSnapStore.getState().collapseToTab?.();
+      await Promise.resolve();
+    });
+    // 离场阶段：面板仍保留（panelExiting），相位与区域都不应提前提交。
+    await advance(PANEL_EXIT_MS - 40);
+    expect(useEdgeSnapStore.getState().panelExiting).toBe(true);
+    expect(phase()).toBe("docked-revealed");
+    expect(lastRegion()).toEqual({ mode: "panel", edge: "left" });
+
+    // 离场结束 → 先切回轨道区域（胶囊可见），再开始侧滑过渡。
+    await advance(60);
+    expect(useEdgeSnapStore.getState().panelExiting).toBe(false);
+    expect(phase()).toBe("docked-visible");
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+    expect(useEdgeSnapStore.getState().tabTransition).toBe("to-tab");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(phase()).toBe("docked-tab");
+    expect(lastRegion()).toEqual({ mode: "tab", edge: "left" });
+    expect(useEdgeSnapStore.getState().tabTransition).toBeNull();
+  });
+
+  it("拖动标签松手后持久化真实沿边位置（重启一致）", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(40);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+
+    const saved = world.snapWrites.at(-1)!;
+    expect(saved).toMatchObject({ edge: "left", form: "tab" });
+    expect(saved.center).toBe(world.pos.y + world.size.height / 2);
+  });
+
+  it("重启恢复：持久化 form=tab 直接恢复标签形态", async () => {
+    world.snapState = { edge: "left", hidden: false, center: 516, form: "tab" };
+    mount();
+    await advance(400);
+
+    expect(phase()).toBe("docked-tab");
+    expect(world.pos.x).toBe(0);
+    expect(world.pos.y).toBe(296);
+    expect(lastRegion()).toEqual({ mode: "tab", edge: "left" });
   });
 });

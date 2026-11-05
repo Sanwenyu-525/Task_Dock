@@ -56,6 +56,9 @@ import { openFullApp } from "../capsule/actions";
 const REMINDER_DEBOUNCE_MS = 800;
 /** 任务 Store 一次操作可能连发多次通知；合并成一次后端查询。 */
 const TASK_REFRESH_DEBOUNCE_MS = 300;
+/** 主窗事件监听注册的有界重试：首次 + 2 次退避重试。 */
+const BRIDGE_REGISTER_ATTEMPTS = 3;
+const BRIDGE_REGISTER_RETRY_DELAYS_MS = [400, 1200];
 
 interface TasksViewCache {
   items: Task[] | null;
@@ -117,9 +120,21 @@ export default function WidgetDesktopBridge() {
   const { t } = useLocale();
 
   const [openTypes, setOpenTypes] = useState<ReadonlySet<WidgetType>>(new Set());
+  /**
+   * 主窗事件监听是否全部就绪。独立微件窗口必须等它为 true 才创建：
+   * 否则窗口 WebView 发出的首帧 snapshot 请求可能早于监听注册而被丢弃。
+   */
+  const [bridgeReady, setBridgeReady] = useState(false);
+  const bridgeReadyRef = useRef(false);
+  /** 主窗 WebView 会话标识：重载后变化，接收端据此重置 revision 代。 */
+  const epochRef = useRef(
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+  );
   const openRef = useRef<Set<WidgetType>>(new Set());
   const revisionRef = useRef<Map<WidgetType, number>>(new Map());
   const latestRef = useRef<Map<WidgetType, DesktopWidgetSnapshot>>(new Map());
+  /** 最近一次快照请求携带的代际；show 结果返回前也能把首帧发回正确实例。 */
+  const requestGenerationRef = useRef<Map<WidgetType, number>>(new Map());
   const lastPersistErrorRef = useRef<string | null>(null);
   const resetSeqRef = useRef<Record<string, number>>({});
   const retrySeqRef = useRef<Record<string, number>>({});
@@ -157,19 +172,36 @@ export default function WidgetDesktopBridge() {
   }, []);
 
   // 0) 布局水合：微件页可能从未被打开过，桌面窗口仍必须能从 localStorage 恢复。
+  //    必须等主窗监听就绪后再水合；窗口创建只发生在水合之后（见 Effect 1），
+  //    这道屏障保证「主窗能应答首帧请求」早于「依赖它的独立窗口被创建」。
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri() || !bridgeReady) return;
     void useWidgetsStore.getState().hydrate();
-  }, []);
+  }, [bridgeReady]);
 
   const publish = useCallback((type: WidgetType, snapshot: DesktopWidgetSnapshot) => {
     latestRef.current.set(type, snapshot);
     if (!openRef.current.has(type)) return;
     const revision = (revisionRef.current.get(type) ?? 0) + 1;
     revisionRef.current.set(type, revision);
-    void publishWidgetSnapshot(type, revision, snapshot).catch(() => {
-      // 窗口恰在此刻关闭/重建：下一次 request 会重新推送，不重复重试。
-    });
+    const generation =
+      generationRef.current.get(type) ?? requestGenerationRef.current.get(type);
+    void publishWidgetSnapshot(type, revision, snapshot, {
+      epoch: epochRef.current,
+      generation,
+    })
+      // 发布失败不阻断其它微件；只记录分型与次数，不含业务数据。
+      .then((ok) => {
+        if (!ok) {
+          console.warn("[widget-connect] snapshot publish rejected", { widgetType: type });
+        }
+      })
+      .catch((error) => {
+        console.warn("[widget-connect] snapshot publish failed", {
+          widgetType: type,
+          error: errorMessage(error),
+        });
+      });
   }, []);
 
   const buildTasksSnapshot = useCallback((): TodayTasksSnapshot => {
@@ -409,6 +441,9 @@ export default function WidgetDesktopBridge() {
           pendingOpenRef.current.delete(type);
           markOpen(type, true);
           setRuntime(latest, "shown");
+          // 窗口复用场景（主窗 WebView 重载后）不会重新发 request，这里主动补发
+          // 当前快照；新窗口 WebView 未就绪时事件自然丢弃，其加载后会自行请求。
+          publishFresh(type);
           const requestedTopmost = latest.desktop.topmost;
           useWidgetsStore
             .getState()
@@ -427,12 +462,12 @@ export default function WidgetDesktopBridge() {
           });
         }
       }),
-    [enqueue, markOpen, showToast, syncAppliedKey, t],
+    [enqueue, markOpen, publishFresh, showToast, syncAppliedKey, t],
   );
 
   // 1) 视图与窗口同步：只在「桌面显示」开关/尺寸/置顶/位置变化时发命令。
   useEffect(() => {
-    if (!isTauri() || !hydrated) return;
+    if (!isTauri() || !hydrated || !bridgeReady) return;
     for (const item of widgets) {
       const type = item.type;
 
@@ -490,6 +525,7 @@ export default function WidgetDesktopBridge() {
     widgets,
     desktopResetSeq,
     hydrated,
+    bridgeReady,
     enqueue,
     ensureWindow,
     refreshTodayTasks,
@@ -500,7 +536,7 @@ export default function WidgetDesktopBridge() {
 
   // 1b) 失败后的手动重试：创建失败重建窗口；关闭失败则重试销毁。
   useEffect(() => {
-    if (!isTauri() || !hydrated) return;
+    if (!isTauri() || !hydrated || !bridgeReady) return;
     for (const item of widgets) {
       const type = item.type;
       const seq = desktopRetrySeq[item.widget_id] ?? 0;
@@ -515,7 +551,7 @@ export default function WidgetDesktopBridge() {
       }
       void ensureWindow(type);
     }
-  }, [widgets, desktopRetrySeq, hydrated, ensureWindow]);
+  }, [widgets, desktopRetrySeq, hydrated, bridgeReady, ensureWindow]);
 
   // 2) 任务/Agent：全局 Store 已有事件驱动，这里只在对应窗口打开时发布。
   useEffect(() => {
@@ -597,31 +633,57 @@ export default function WidgetDesktopBridge() {
   }, [openTypes, refreshReminders]);
 
   // 5) 微件窗口 → 主窗口事件（快照请求 / 点击动作 / 几何 / 关闭）。
+  //    全部监听注册完成才置 `bridgeReady`；独立窗口创建依赖该信号，杜绝
+  //    「窗口已创建、主窗还未注册请求监听」导致的首帧快照丢失。
   useEffect(() => {
     if (!isTauri()) return;
     let disposed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
     const unsubs: Array<() => void> = [];
+    // 每轮（含依赖变化触发的重注册）都先关闭就绪信号，避免窗口在空窗期被创建。
+    bridgeReadyRef.current = false;
+    setBridgeReady(false);
 
-    void onWidgetSnapshotRequest(({ widgetType }) => {
-      if (!openRef.current.has(widgetType)) return;
-      // 窗口 WebView 已挂载并成功注册监听：这是 `shown` 之外的最小就绪确认，
-      // 只把仍在 creating 的窗口推进到 shown，不引入轮询。
-      const item = itemOf(widgetType);
-      const runtime = item
-        ? useWidgetsStore.getState().desktopRuntime[item.widget_id]
-        : undefined;
-      if (item?.desktop.visible && runtime?.phase === "creating") {
-        setRuntime(item, "shown");
+    const disposeUnsubs = () => {
+      for (const un of unsubs.splice(0)) {
+        try {
+          un();
+        } catch {
+          // 监听可能已随 WebView/事件总线销毁：重复释放不影响重新注册。
+        }
       }
-      publishFresh(widgetType);
-      // 首帧请求顺带刷新一次今日任务，避免窗口重开时展示过期缓存。
-      if (widgetType === "today-tasks") void refreshTodayTasks();
-    }).then((un) => {
-      if (disposed) un();
-      else unsubs.push(un);
-    });
+    };
 
-    void onWidgetAction((payload) => {
+    /** 注册单个监听；disposed 后立即退订，避免重试轮次留下重复订阅。 */
+    const track = (pending: Promise<() => void>) =>
+      pending.then((un) => {
+        if (disposed) un();
+        else unsubs.push(un);
+      });
+
+    const register = async () => {
+      attempts += 1;
+      try {
+        // 快照请求监听必须最先完成：它是首帧快照的唯一入口。
+        const unRequest = await onWidgetSnapshotRequest(({ widgetType, generation }) => {
+          requestGenerationRef.current.set(widgetType, generation);
+          if (!openRef.current.has(widgetType)) return;
+          // snapshot 请求只说明 WebView 已挂载；窗口是否真正显示以 show 命令成功返回为准，
+          // 因此不在此推进 creating → shown，避免「显示成功」提示早于 Rust 真实结果。
+          publishFresh(widgetType);
+          // 首帧请求顺带刷新一次今日任务，避免窗口重开时展示过期缓存。
+          if (widgetType === "today-tasks") void refreshTodayTasks();
+        });
+        if (disposed) {
+          unRequest();
+          return;
+        }
+        unsubs.push(unRequest);
+
+        // 其余监听并行注册；少一条都会让窗口行为不完整，全部成功才算就绪。
+        await Promise.all([
+          track(onWidgetAction((payload) => {
       const ui = useUiStore.getState();
       const tasks = useTasksStore.getState();
       switch (payload.action) {
@@ -677,12 +739,9 @@ export default function WidgetDesktopBridge() {
           openFullApp("tasks");
           break;
       }
-    }).then((un) => {
-      if (disposed) un();
-      else unsubs.push(un);
-    });
+          })),
 
-    void onWidgetBounds((payload) => {
+          track(onWidgetBounds((payload) => {
       const store = useWidgetsStore.getState();
       const item = store.widgets.find((entry) => entry.type === payload.widgetType);
       if (!item) return;
@@ -707,12 +766,9 @@ export default function WidgetDesktopBridge() {
       } else if (!persistError) {
         lastPersistErrorRef.current = null;
       }
-    }).then((un) => {
-      if (disposed) un();
-      else unsubs.push(un);
-    });
+          })),
 
-    void onWidgetDismissed((event) => {
+          track(onWidgetDismissed((event) => {
       const { widgetType, generation, reason } = event;
       const item = itemOf(widgetType);
       if (!item) return;
@@ -775,14 +831,41 @@ export default function WidgetDesktopBridge() {
         setRuntime(item, "hidden");
       }
       syncAppliedKey(widgetType);
-    }).then((un) => {
-      if (disposed) un();
-      else unsubs.push(un);
-    });
+          })),
+        ]);
+        if (disposed) return;
+        bridgeReadyRef.current = true;
+        setBridgeReady(true);
+      } catch (error) {
+        disposeUnsubs();
+        if (disposed) return;
+        if (attempts < BRIDGE_REGISTER_ATTEMPTS) {
+          const delay = BRIDGE_REGISTER_RETRY_DELAYS_MS[attempts - 1] ?? 1200;
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            void register();
+          }, delay);
+          return;
+        }
+        bridgeReadyRef.current = false;
+        setBridgeReady(false);
+        // 监听无法注册时创建窗口只会得到永久「未连接」：如实报错，不假装就绪。
+        showToast(t("widgets.desktop.bridgeFailed", { message: errorMessage(error) }), {
+          kind: "error",
+        });
+      }
+    };
+
+    void register();
 
     return () => {
       disposed = true;
-      for (const un of unsubs) un();
+      bridgeReadyRef.current = false;
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      disposeUnsubs();
     };
   }, [
     markOpen,
@@ -800,6 +883,7 @@ export default function WidgetDesktopBridge() {
       openRef.current.clear();
       revisionRef.current.clear();
       latestRef.current.clear();
+      requestGenerationRef.current.clear();
       appliedKeyRef.current.clear();
       queuesRef.current.clear();
       generationRef.current.clear();

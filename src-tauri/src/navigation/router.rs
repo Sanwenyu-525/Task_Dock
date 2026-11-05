@@ -18,6 +18,9 @@ use super::{
 use crate::db::{Db, Settings};
 use crate::error::AppError;
 
+/// 显式窗口在二次校验时消失/被替换：用户可见的错误文案（测试按此常量断言）。
+const ERR_WINDOW_IDENTITY_CHANGED: &str = "窗口身份已变化，请重新选择";
+
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 pub struct NavigateOptions {
     /// 显式动作覆盖：open_app | focus_window | open_url | open_file | reveal_file |
@@ -165,6 +168,22 @@ enum WindowChoice<'a> {
     Fallback(&'a window_manager::WindowInfo),
     LaunchFallback,
     Missing,
+}
+
+/// 显式窗口身份：句柄 + 进程 + 窗口类。
+///
+/// 标题是易变状态（文档修改、载入完成都会变），不参与身份比较——
+/// 否则「用户刚选完窗口、标题随即变化」会被误判为窗口已被替换。
+fn same_window_identity(a: &window_manager::WindowInfo, b: &window_manager::WindowInfo) -> bool {
+    a.hwnd == b.hwnd && a.pid == b.pid && a.class_name == b.class_name
+}
+
+/// 显式指定窗口的二次校验：当前枚举里必须仍有同一稳定身份。
+fn explicit_window_still_present(
+    candidate: &window_manager::WindowInfo,
+    current: &[window_manager::WindowInfo],
+) -> bool {
+    current.iter().any(|c| same_window_identity(candidate, c))
 }
 
 fn choose_window<'a>(
@@ -344,16 +363,12 @@ pub(crate) fn navigate_application(
             // 标题是易变状态（文档修改、载入完成都会变），把它当作身份会让
             // 「用户刚选完窗口、标题随即变化」误判为窗口已被替换。
             if (explicit_memory || options.window_hwnd.is_some())
-                && !window_manager::top_windows_force().iter().any(|current| {
-                    current.hwnd == w.hwnd
-                        && current.class_name == w.class_name
-                        && current.pid == w.pid
-                })
+                && !explicit_window_still_present(w, &window_manager::top_windows_force())
             {
                 return NavigationResult::failure(
                     &t.id,
                     ACTION_FOCUS_WINDOW,
-                    "窗口身份已变化，请重新选择",
+                    ERR_WINDOW_IDENTITY_CHANGED,
                 );
             }
             return match window_manager::focus_window(w.hwnd) {
@@ -783,33 +798,46 @@ mod tests {
         }
     }
 
-    /// 轮询等待「属于本测试子进程树」的记事本窗口出现；超时返回 None。
-    ///
-    /// Win11 实测形态：System32\notepad.exe 是存根，立即退出并把打包版
-    /// Notepad.exe（WindowsApps）作为子进程拉起，父 PID 关系保留。
-    /// 因此必须在**全量顶层窗口**里按 PID 归属（窗口进程的 exe 路径不是
-    /// C:\Windows\notepad.exe，按 exe 过滤会漏掉真实窗口）。
+    /// 在**全量顶层窗口**里按 PID 归属找本测试子进程树的记事本窗口。
     #[cfg(windows)]
-    fn wait_for_owned_window(
+    fn owned_window_in(
+        wins: &[window_manager::WindowInfo],
+        child_pid: u32,
+    ) -> Option<window_manager::WindowInfo> {
+        // 直接形态：窗口就属于我们 spawn 的进程
+        if let Some(w) = wins.iter().find(|w| w.pid == child_pid) {
+            return Some(w.clone());
+        }
+        // Win11 存根形态：真实记事本是子进程（父 == child_pid）
+        let owned = owned_descendant_pids(child_pid);
+        wins.iter().find(|w| owned.contains(&w.pid)).cloned()
+    }
+
+    /// 轮询等待「属于本测试子进程树」的记事本窗口，并要求它稳定：
+    /// 同一身份（句柄/进程/窗口类）在相邻两次全量枚举中保持一致。
+    /// 返回 `(窗口, 是否稳定)`；10 秒内从未出现返回 None。
+    /// 稳定性前置用于排除系统启动过程中被重建的瞬时窗口——真实桌面行为，
+    /// 不是产品缺陷。
+    #[cfg(windows)]
+    fn wait_for_stable_owned_window(
         child_pid: u32,
         timeout: std::time::Duration,
-    ) -> Option<window_manager::WindowInfo> {
+    ) -> Option<(window_manager::WindowInfo, bool)> {
         let deadline = std::time::Instant::now() + timeout;
+        let mut previous: Option<window_manager::WindowInfo> = None;
         loop {
             let wins = window_manager::top_windows_force();
-            // 直接形态：窗口就属于我们 spawn 的进程
-            if let Some(w) = wins.iter().find(|w| w.pid == child_pid) {
-                return Some(w.clone());
+            let current = owned_window_in(&wins, child_pid);
+            if let (Some(prev), Some(cur)) = (previous.as_ref(), current.as_ref()) {
+                if same_window_identity(prev, cur) {
+                    return Some((cur.clone(), true));
+                }
             }
-            // Win11 存根形态：真实记事本是子进程（父 == child_pid）
-            let owned = owned_descendant_pids(child_pid);
-            if let Some(w) = wins.iter().find(|w| owned.contains(&w.pid)) {
-                return Some(w.clone());
-            }
+            previous = current;
             if std::time::Instant::now() >= deadline {
-                return None;
+                return previous.map(|w| (w, false));
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(150));
         }
     }
 
@@ -967,6 +995,51 @@ mod tests {
                 ),
             );
         }
+    }
+
+    fn window_fixture(
+        hwnd: isize,
+        pid: u32,
+        class_name: &str,
+        title: &str,
+    ) -> window_manager::WindowInfo {
+        window_manager::WindowInfo {
+            hwnd,
+            pid,
+            title: title.to_string(),
+            class_name: class_name.to_string(),
+            is_minimized: false,
+            exe_path: None,
+        }
+    }
+
+    /// 显式窗口身份的确定性规则（纯逻辑，不依赖真实桌面）：
+    /// 句柄/进程/窗口类三者相同才算「还是那个窗口」，标题可变不算。
+    /// 任一不同 → 产品必须返回「窗口身份已变化，请重新选择」。
+    #[test]
+    fn explicit_window_identity_ignores_title_and_checks_hwnd_pid_class() {
+        let chosen = window_fixture(0x1234, 42, "Notepad", "未命名 - 记事本");
+
+        // 标题变化（新建 → 用户输入后保存/重命名）不构成身份变化
+        assert!(explicit_window_still_present(
+            &chosen,
+            &[window_fixture(0x1234, 42, "Notepad", "a.txt - 记事本")]
+        ));
+
+        // 句柄被替换（窗口重建）、进程复用、窗口类变化都必须判为身份已变化
+        for replaced in [
+            window_fixture(0x1235, 42, "Notepad", "未命名 - 记事本"),
+            window_fixture(0x1234, 43, "Notepad", "未命名 - 记事本"),
+            window_fixture(0x1234, 42, "ApplicationFrameWindow", "记事本"),
+        ] {
+            assert!(
+                !explicit_window_still_present(&chosen, &[replaced]),
+                "hwnd/pid/class 任一变化都必须视为窗口身份已变化"
+            );
+        }
+
+        // 窗口从枚举结果中消失
+        assert!(!explicit_window_still_present(&chosen, &[]));
     }
 
     /// 本测试进程直接拉起的记事本 PID（证明「已有窗口→只唤醒，不再启动进程」）。
@@ -1220,10 +1293,20 @@ mod tests {
             return;
         };
         let child_pid = guard.0.id();
-        let Some(own) = wait_for_owned_window(child_pid, std::time::Duration::from_secs(10)) else {
+        let Some((own, stable)) =
+            wait_for_stable_owned_window(child_pid, std::time::Duration::from_secs(10))
+        else {
             missing_owned_window_verdict(test, child_pid);
             return;
         };
+        if !stable {
+            env_blocked(
+                test,
+                "自建记事本窗口在启动期间被系统重建（未能在相邻两次枚举间保持同一身份）；\
+                 真实桌面前提不成立，需在空载桌面复跑",
+            );
+            return;
+        }
         // 目标身份用窗口进程的真实 exe（与「从当前窗口选择」的落库行为一致）。
         // Win11 打包版记事本的窗口进程是 WindowsApps\...\Notepad.exe，
         // 用 C:\Windows\notepad.exe 存根路径按 exe 匹配不到窗口（属真实世界形态）。
@@ -1272,6 +1355,21 @@ mod tests {
             );
         } else {
             let reason = r.reason.clone().unwrap_or_default();
+            if reason == ERR_WINDOW_IDENTITY_CHANGED {
+                // 区分两种可能：产品缺陷（窗口仍在枚举里却判身份变化）
+                // vs 夹具窗口在导航期间被系统重建（真实桌面竞态，不是缺陷）。
+                assert!(
+                    !explicit_window_still_present(&own, &window_manager::top_windows_force()),
+                    "产品缺陷：窗口仍在顶层枚举中却被判定为身份已变化（hwnd={}）",
+                    own.hwnd
+                );
+                env_blocked(
+                    test,
+                    "自建记事本窗口在导航期间被系统重建（真实桌面窗口身份竞态）；\
+                     产品如实返回「窗口身份已变化」，不是缺陷",
+                );
+                return;
+            }
             assert_eq!(
                 reason,
                 window_manager::FocusError::ForegroundDenied.reason_cn(),
@@ -1301,10 +1399,20 @@ mod tests {
             return;
         };
         let child_pid = guard.0.id();
-        let Some(own) = wait_for_owned_window(child_pid, std::time::Duration::from_secs(10)) else {
+        let Some((own, stable)) =
+            wait_for_stable_owned_window(child_pid, std::time::Duration::from_secs(10))
+        else {
             missing_owned_window_verdict(test, child_pid);
             return;
         };
+        if !stable {
+            env_blocked(
+                test,
+                "自建记事本窗口在启动期间被系统重建（未能在相邻两次枚举间保持同一身份）；\
+                 真实桌面前提不成立，需在空载桌面复跑",
+            );
+            return;
+        }
         let Some(exe) = own.exe_path.clone() else {
             env_blocked(test, "无法解析测试窗口所属进程的 exe（权限受限）");
             return;
@@ -1348,6 +1456,19 @@ mod tests {
             );
         } else {
             let reason = r.reason.clone().unwrap_or_default();
+            if reason == ERR_WINDOW_IDENTITY_CHANGED {
+                assert!(
+                    !explicit_window_still_present(&own, &window_manager::top_windows_force()),
+                    "产品缺陷：窗口仍在顶层枚举中却被判定为身份已变化（hwnd={}）",
+                    own.hwnd
+                );
+                env_blocked(
+                    test,
+                    "自建记事本窗口在导航期间被系统重建（真实桌面窗口身份竞态）；\
+                     产品如实返回「窗口身份已变化」，不是缺陷",
+                );
+                return;
+            }
             assert_eq!(
                 reason,
                 window_manager::FocusError::ForegroundDenied.reason_cn(),

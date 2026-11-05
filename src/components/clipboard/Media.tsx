@@ -4,7 +4,8 @@
 //! - 加载 promise 全局去重（详情大图与灯箱同时触发只发一次 IPC）；
 //! - 成功结果进 LRU 缓存（上限 2 条，重复打开不重复 IPC，超出即释放最旧）。
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { Image as ImageIcon } from "lucide-react";
 import { clipboardImage, clipboardThumb } from "../../lib/bridge";
 
@@ -139,21 +140,104 @@ export function useLargeImage(
 }
 
 /**
+ * 一次性可见性观察：进入视口（含预加载余量）后返回 true 并断开观察。
+ * 不支持 IntersectionObserver 的环境（jsdom/旧内核）直接视为可见，避免永不加载。
+ */
+export function useInViewport<T extends Element>(
+  rootMargin = "240px",
+): [RefObject<T | null>, boolean] {
+  const ref = useRef<T | null>(null);
+  const [visible, setVisible] = useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
+  useEffect(() => {
+    if (visible) return;
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [rootMargin, visible]);
+  return [ref, visible];
+}
+
+/**
+ * 窄容器分组卡片只渲染一张封面，其余封面连缩略图 IPC 都不发起。
+ *
+ * 优先观察卡片自身宽度（左侧导航占位后内容区可能远窄于窗口），ResizeObserver
+ * 只在尺寸变化时回调且仅在布尔翻转时更新 state；没有可观察容器或环境不支持时
+ * 退回窗口宽度，不引入轮询或高频尺寸监听。
+ */
+const COMPACT_QUERY = "(max-width: 400px)";
+const compactMq =
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(COMPACT_QUERY)
+    : null;
+export function useCompactViewport(
+  containerRef?: RefObject<HTMLElement | null>,
+  /** 卡片/容器内容宽度低于该阈值时收敛为单张封面 */
+  threshold = 440,
+): boolean {
+  const [compact, setCompact] = useState(() => compactMq?.matches ?? false);
+  // 用 layout effect：初次挂载先同步量一次容器宽度，在首帧绘制前定稿；
+  // 只依赖 ResizeObserver 回调会让首帧按窗口宽度渲染 3 张封面，再跳成 1 张。
+  useLayoutEffect(() => {
+    const el = containerRef?.current;
+    const applyWidth = (width: number) => {
+      if (width <= 0) return;
+      const next = width < threshold;
+      setCompact((prev) => (prev === next ? prev : next));
+    };
+    if (!el || typeof ResizeObserver === "undefined") {
+      if (!compactMq) return;
+      const sync = () => setCompact(compactMq.matches);
+      sync();
+      compactMq.addEventListener("change", sync);
+      return () => compactMq.removeEventListener("change", sync);
+    }
+    applyWidth(el.clientWidth);
+    // 之后只在尺寸真正变化时回调，不做轮询或常驻高频测量。
+    const observer = new ResizeObserver((entries) => {
+      applyWidth(entries[0]?.contentRect.width ?? el.clientWidth);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [containerRef, threshold]);
+  return compact;
+}
+
+/**
  * 缩略图；提供 onOpen 时整块成为「直接打开大图」的按钮（不必先进详情）。
  * 无缩略图也要可点：灯箱会如实报出缺失/读取失败，而不是给一个死图标。
+ * `enabled=false` 时先渲染占位，等调用方确认可见后再发起 IPC。
  */
 export function ClipboardThumb({
   itemId,
   hasThumb,
   size = 40,
   onOpen,
+  enabled = true,
+  openLabel = "查看大图",
 }: {
   itemId: string;
   hasThumb: boolean;
   size?: number;
   onOpen?: () => void;
+  enabled?: boolean;
+  openLabel?: string;
 }) {
-  const url = useThumbnail(itemId, hasThumb);
+  const url = useThumbnail(itemId, hasThumb && enabled);
   const body = url ? (
     <img
       className="clip-thumb"
@@ -182,7 +266,7 @@ export function ClipboardThumb({
       // Enter 冒泡到卡片会再触发一次「打开详情」；Space 同理，按键不外传
       onKeyDown={(e) => e.stopPropagation()}
       data-tip="点击查看大图"
-      aria-label="查看大图"
+      aria-label={openLabel}
     >
       {body}
     </button>

@@ -167,13 +167,17 @@ fn enrich_groups(conn: &Connection, groups: &mut [ClipboardGroup]) -> AppResult<
     }
 
     // 每组最多 3 张封面：窗口函数在 SQL 阶段限制，避免把大组的所有图片元数据带回来。
+    // 外层显式按 group_id + position 排序：封面数组按查询返回顺序累积，
+    // 不依赖 SQLite 的扫描/窗口计划恰好返回有序行。
     let mut stmt = conn.prepare(&format!(
         "SELECT x.group_id, {PAGE_ITEM_FIELDS} FROM (
-           SELECT gi.group_id, gi.item_id,
+           SELECT gi.group_id, gi.item_id, gi.position,
              ROW_NUMBER() OVER (PARTITION BY gi.group_id ORDER BY gi.position) AS rn
            FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
            WHERE gi.group_id IN ({placeholders}) AND i.kind = 'image'
-         ) x JOIN clipboard_items i ON i.id = x.item_id WHERE x.rn <= 3"
+         ) x JOIN clipboard_items i ON i.id = x.item_id
+         WHERE x.rn <= 3
+         ORDER BY x.group_id, x.position, x.rn"
     ))?;
     let rows = stmt.query_map(params_from_iter(args.iter()), |r| {
         Ok((r.get::<_, String>(0)?, map_page_item_at(r, 1)?))
@@ -986,9 +990,11 @@ fn candidate_topic(conn: &Connection, item_id: &str) -> AppResult<Option<String>
         )
         .optional()?;
     Ok(row.and_then(|(title, source_title, preview)| {
+        // 逐项过滤不可辨识来源：自动图片标题（截图 855×399）会被跳过，
+        // 继续尝试来源窗口标题，最后才由调用方用时间兜底。
         [title, source_title, preview]
             .into_iter()
-            .find(|s| !s.trim().is_empty())
+            .find_map(|s| engine::group_topic(&s))
     }))
 }
 
@@ -2654,6 +2660,43 @@ mod tests {
         }
     }
 
+    fn url_payload(url: &str) -> CapturedContent {
+        CapturedContent {
+            kind: "url".into(),
+            text: url.into(),
+            html: String::new(),
+            preview: String::new(),
+            file_paths: vec![],
+            image: None,
+            source_app: "chrome.exe".into(),
+            source_title: "浏览器".into(),
+            source_kind: "owner".into(),
+            byte_size: 0,
+        }
+    }
+
+    fn files_payload(paths: &[&str]) -> CapturedContent {
+        CapturedContent {
+            kind: "files".into(),
+            text: String::new(),
+            html: String::new(),
+            preview: String::new(),
+            file_paths: paths.iter().map(|p| p.to_string()).collect(),
+            image: None,
+            source_app: "explorer.exe".into(),
+            source_title: "文件资源管理器".into(),
+            source_kind: "owner".into(),
+            byte_size: 0,
+        }
+    }
+
+    fn from_unknown_source(mut p: CapturedContent) -> CapturedContent {
+        p.source_app = String::new();
+        p.source_title = String::new();
+        p.source_kind = "unknown".into();
+        p
+    }
+
     fn image_payload(color: u8) -> CapturedContent {
         let (w, h) = (40u32, 30u32);
         let rgba: Vec<u8> = (0..(w * h))
@@ -3175,6 +3218,306 @@ mod tests {
         // 不存在的条目返回 NotFound
         let err = rename_item(&db, "no-such-id", "标题").unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[test]
+    fn consecutive_text_link_and_file_copies_collect_by_type() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_group_window_secs = 45;
+
+        // 连续文本：第二条才成立正式组，组内按实际顺序保留两段。
+        let t1 = record_capture(&db, &root.0, &text_payload("第一段文本"), &s).unwrap();
+        assert!(t1.group_id.is_none());
+        let t2 = record_capture(&db, &root.0, &text_payload("第二段文本"), &s).unwrap();
+        let text_group = t2.group_id.expect("连续文本应成组");
+        let g = get_group(&db, &text_group).unwrap();
+        assert_eq!(g.mode, "auto");
+        assert_eq!(g.status, "collecting");
+        assert_eq!(g.kind_counts.text, 2, "两段文本计入文本数量");
+        assert_eq!(g.kind_counts.image, 0);
+        close_group(&db, &text_group).unwrap();
+
+        // 连续链接：同来源的相邻链接成组。
+        let u1 = record_capture(
+            &db,
+            &root.0,
+            &url_payload("https://example.com/one"),
+            &s,
+        )
+        .unwrap();
+        assert!(u1.group_id.is_none());
+        let u2 = record_capture(
+            &db,
+            &root.0,
+            &url_payload("https://example.com/two"),
+            &s,
+        )
+        .unwrap();
+        let link_group = u2.group_id.expect("连续链接应成组");
+        let g = get_group(&db, &link_group).unwrap();
+        assert_eq!(g.kind_counts.url, 2);
+        assert_eq!(g.kind_counts.text, 0, "链接不重复计入文本");
+        close_group(&db, &link_group).unwrap();
+
+        // 连续文件：每次复制一个文件条目，相邻条目成文件组。
+        let f1 = record_capture(
+            &db,
+            &root.0,
+            &files_payload(&["C:\\tmp\\报告.docx"]),
+            &s,
+        )
+        .unwrap();
+        assert!(f1.group_id.is_none());
+        let f2 = record_capture(
+            &db,
+            &root.0,
+            &files_payload(&["C:\\tmp\\预算.xlsx"]),
+            &s,
+        )
+        .unwrap();
+        let file_group = f2.group_id.expect("连续文件应成组");
+        let g = get_group(&db, &file_group).unwrap();
+        assert_eq!(g.kind_counts.files, 2);
+        assert_eq!(g.kind_counts.image, 0);
+    }
+
+    #[test]
+    fn single_multi_file_copy_only_becomes_candidate() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let out = record_capture(
+            &db,
+            &root.0,
+            &files_payload(&["C:\\tmp\\a.png", "C:\\tmp\\b.txt"]),
+            &s,
+        )
+        .unwrap();
+        assert!(out.group_id.is_none(), "一次复制多个文件仍是一条文件条目");
+        assert!(list_groups(&db, &ClipboardFilter::default())
+            .unwrap()
+            .is_empty());
+        let cand = db
+            .with_conn(|c| read_candidate(c))
+            .unwrap()
+            .expect("单条文件复制应保留候选，等待下一次连续复制");
+        assert_eq!(cand.item_id, out.item.id);
+        assert_eq!(cand.family, "file");
+    }
+
+    #[test]
+    fn unknown_source_text_copies_stay_ungrouped() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(
+            &db,
+            &root.0,
+            &from_unknown_source(text_payload("来源未知一")),
+            &s,
+        )
+        .unwrap();
+        let b = record_capture(
+            &db,
+            &root.0,
+            &from_unknown_source(text_payload("来源未知二")),
+            &s,
+        )
+        .unwrap();
+        assert!(a.group_id.is_none());
+        assert!(b.group_id.is_none(), "来源未知时保守处理，不按时间猜测");
+        assert!(list_groups(&db, &ClipboardFilter::default())
+            .unwrap()
+            .is_empty());
+        let cand = db.with_conn(|c| read_candidate(c)).unwrap().unwrap();
+        assert_eq!(cand.item_id, b.item.id, "后一条覆盖候选");
+        assert!(!cand.source_known);
+    }
+
+    #[test]
+    fn manual_grouping_clears_candidate_promotion() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &text_payload("候选内容"), &s).unwrap();
+        assert!(a.group_id.is_none());
+        let manual =
+            create_manual_group(&db, "手动整理", std::slice::from_ref(&a.item.id)).unwrap();
+        assert_eq!(manual.mode, "manual");
+
+        let b = record_capture(&db, &root.0, &text_payload("后续内容"), &s).unwrap();
+        assert!(
+            b.group_id.is_none(),
+            "候选已被手动归类，不能再被自动组拉入"
+        );
+        assert_eq!(
+            list_groups(&db, &ClipboardFilter::default()).unwrap().len(),
+            1,
+            "只保留手动分组"
+        );
+        let cand = db.with_conn(|c| read_candidate(c)).unwrap().unwrap();
+        assert_eq!(cand.item_id, b.item.id);
+    }
+
+    #[test]
+    fn manual_close_starts_a_new_collection_session() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &text_payload("会话一"), &s).unwrap();
+        assert!(a.group_id.is_none());
+        let b = record_capture(&db, &root.0, &text_payload("会话二"), &s).unwrap();
+        let g1 = b.group_id.expect("连续文本应成组");
+        let closed = close_group(&db, &g1).unwrap();
+        assert_eq!(closed.status, "closed");
+
+        let c = record_capture(&db, &root.0, &text_payload("会话三"), &s).unwrap();
+        assert!(c.group_id.is_none(), "手动结束后第一条只成为候选");
+        let d = record_capture(&db, &root.0, &text_payload("会话四"), &s).unwrap();
+        let g2 = d.group_id.expect("下一段连续文本应开新组");
+        assert_ne!(g1, g2);
+        assert_eq!(get_group(&db, &g1).unwrap().items.len(), 2);
+    }
+
+    #[test]
+    fn other_app_collection_is_not_blocked_by_open_session() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_group_window_secs = 45;
+
+        // A 应用连续文本组成会话。
+        let a1 = record_capture(&db, &root.0, &text_payload("A 一"), &s).unwrap();
+        assert!(a1.group_id.is_none());
+        let a2 = record_capture(&db, &root.0, &text_payload("A 二"), &s).unwrap();
+        let ga = a2.group_id.expect("A 应用连续文本应成组");
+
+        // B 应用插入复制：第一条成为候选，第二条应与候选成组，而不是被 A 的会话挡住。
+        let b1 = record_capture(
+            &db,
+            &root.0,
+            &url_payload("https://example.com/b1"),
+            &s,
+        )
+        .unwrap();
+        assert!(b1.group_id.is_none());
+        let b2 = record_capture(
+            &db,
+            &root.0,
+            &url_payload("https://example.com/b2"),
+            &s,
+        )
+        .unwrap();
+        let gb = b2.group_id.expect("B 应用连续链接应独立成组");
+        assert_ne!(ga, gb);
+        let g = get_group(&db, &gb).unwrap();
+        assert_eq!(g.kind_counts.url, 2);
+        assert_eq!(
+            get_group(&db, &ga).unwrap().status,
+            "closed",
+            "A 的会话因另一应用开始新收集而结束，但内容保留"
+        );
+        assert_eq!(get_group(&db, &ga).unwrap().items.len(), 2);
+    }
+
+    #[test]
+    fn auto_group_stops_at_item_limit_and_restarts() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let first = record_capture(&db, &root.0, &text_payload("上限 1"), &s).unwrap();
+        assert!(first.group_id.is_none());
+        let mut gid = None;
+        for i in 2..=MAX_AUTO_GROUP_ITEMS {
+            let out = record_capture(
+                &db,
+                &root.0,
+                &text_payload(&format!("上限 {}", i)),
+                &s,
+            )
+            .unwrap();
+            gid = gid.or(out.group_id);
+        }
+        let gid = gid.expect("应形成文本组");
+        let g = get_group(&db, &gid).unwrap();
+        assert_eq!(g.items.len(), MAX_AUTO_GROUP_ITEMS, "组内数量有上限");
+        assert_eq!(g.status, "collecting", "达到上限的最后一条仍属于当前会话");
+
+        let overflow = record_capture(
+            &db,
+            &root.0,
+            &text_payload("上限 溢出"),
+            &s,
+        )
+        .unwrap();
+        assert!(overflow.group_id.is_none(), "超限条目只成为新候选");
+        assert_eq!(
+            get_group(&db, &gid).unwrap().status,
+            "closed",
+            "下一条到来时结束已满的会话"
+        );
+        assert_eq!(
+            get_group(&db, &gid).unwrap().items.len(),
+            MAX_AUTO_GROUP_ITEMS,
+            "已满会话内容保留"
+        );
+        let next = record_capture(
+            &db,
+            &root.0,
+            &text_payload("上限 新组"),
+            &s,
+        )
+        .unwrap();
+        let g2 = next.group_id.expect("超限后的连续内容应可成新组");
+        assert_ne!(g2, gid);
+    }
+
+    #[test]
+    fn duplicate_capture_keeps_candidate_and_creates_no_group() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &text_payload("相同内容"), &s).unwrap();
+        assert!(a.group_id.is_none());
+        let dup = record_capture(&db, &root.0, &text_payload("相同内容"), &s).unwrap();
+        assert!(!dup.created, "相同内容遵守现有去重");
+        assert!(dup.group_id.is_none());
+        assert_eq!(list_items(&db, &ClipboardFilter::default()).unwrap().len(), 1);
+        assert!(list_groups(&db, &ClipboardFilter::default())
+            .unwrap()
+            .is_empty());
+        let cand = db.with_conn(|c| read_candidate(c)).unwrap().unwrap();
+        assert_eq!(cand.item_id, a.item.id, "去重不覆盖候选");
+    }
+
+    #[test]
+    fn candidate_from_previous_boot_is_not_reused() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &text_payload("重启前候选"), &s).unwrap();
+        assert!(a.group_id.is_none());
+        // 模拟上一次进程留下的候选：启动标识与当前进程不同。
+        db.with_conn(|c| {
+            let mut row = read_candidate(c)?.unwrap();
+            row.boot = "previous-process".into();
+            c.execute(
+                "UPDATE application_settings SET value = ?1 WHERE key = ?2",
+                params![serde_json::to_string(&row)?, CANDIDATE_KEY],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let b = record_capture(&db, &root.0, &text_payload("重启后内容"), &s).unwrap();
+        assert!(b.group_id.is_none(), "跨重启的旧候选不得续用");
+        assert!(list_groups(&db, &ClipboardFilter::default())
+            .unwrap()
+            .is_empty());
+        let cand = db.with_conn(|c| read_candidate(c)).unwrap().unwrap();
+        assert_eq!(cand.item_id, b.item.id);
     }
 
     #[test]
@@ -3978,5 +4321,80 @@ mod tests {
         let page2 = get_group_page(&db, &g1.id, Some(1), Some(1), false).unwrap();
         assert_eq!(page2.offset, 1);
         assert_eq!(page2.items[0].id, b.item.id);
+    }
+
+    // ── 分组封面顺序稳定性 ─────────────────────────────
+
+    fn cover_ids(groups: &[ClipboardGroup], group_id: &str) -> Vec<String> {
+        groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .map(|g| g.cover_items.iter().map(|i| i.id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn group_cover_items_stay_in_position_order_across_groups() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let a = capture_ids(&db, &root.0, (1..=6).map(image_payload), &s);
+        let b = capture_ids(&db, &root.0, (11..=16).map(image_payload), &s);
+        let ga = create_manual_group(&db, "组 A", &a).unwrap();
+        let gb = create_manual_group(&db, "组 B", &b).unwrap();
+
+        // 多组混合：每组的封面都必须是本组 position 最小的前 3 张。
+        for _ in 0..5 {
+            let groups = list_groups(&db, &ClipboardFilter::default()).unwrap();
+            assert_eq!(cover_ids(&groups, &ga.id), a[..3].to_vec());
+            assert_eq!(cover_ids(&groups, &gb.id), b[..3].to_vec());
+            for (gid, ids) in [(&ga.id, &a), (&gb.id, &b)] {
+                for id in cover_ids(&groups, gid) {
+                    assert!(ids.contains(&id), "封面不得串到其它分组");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn group_cover_items_follow_reorder_and_deletion() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+
+        let ids = capture_ids(&db, &root.0, (21..=25).map(image_payload), &s);
+        let g = create_manual_group(&db, "重排", &ids).unwrap();
+        assert_eq!(
+            cover_ids(&list_groups(&db, &ClipboardFilter::default()).unwrap(), &g.id),
+            ids[..3].to_vec()
+        );
+
+        // 重排：最后一张移到最前，封面顺序必须跟随 position。
+        move_group_item(&db, &g.id, &ids[4], 0).unwrap();
+        assert_eq!(
+            cover_ids(&list_groups(&db, &ClipboardFilter::default()).unwrap(), &g.id),
+            vec![ids[4].clone(), ids[0].clone(), ids[1].clone()]
+        );
+
+        // 从组内移除一条（条目本身保留）。
+        remove_group_item(&db, &g.id, &ids[0]).unwrap();
+        assert_eq!(
+            cover_ids(&list_groups(&db, &ClipboardFilter::default()).unwrap(), &g.id),
+            vec![ids[4].clone(), ids[1].clone(), ids[2].clone()]
+        );
+
+        // 删除底层条目后，封面按剩余条目的 position 重新收敛。
+        delete_items(&db, &root.0, &[ids[2].clone()]).unwrap();
+        for _ in 0..3 {
+            let groups = list_groups(&db, &ClipboardFilter::default()).unwrap();
+            assert_eq!(
+                cover_ids(&groups, &g.id),
+                vec![ids[4].clone(), ids[1].clone(), ids[3].clone()]
+            );
+            assert_eq!(groups.iter().find(|x| x.id == g.id).unwrap().image_count, 3);
+        }
     }
 }

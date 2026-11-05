@@ -10,13 +10,17 @@ import {
   WIDGET_SIZES,
 } from "./model";
 import {
+  advanceSnapshotGuard,
   classifyWidgetDismissal,
+  createSnapshotGuard,
   desktopWindowLabel,
   desktopWindowSize,
   isNewerRevision,
+  shouldAcceptSnapshot,
   typeFromWindowLabel,
   WIDGET_EVENTS,
   type WidgetDismissedEvent,
+  type WidgetSnapshotEnvelope,
 } from "./desktop";
 import { desktopFromWindowInfo } from "./desktopBridge";
 
@@ -51,6 +55,50 @@ describe("快照 revision", () => {
   it("事件名保持唯一，避免多窗口串线", () => {
     const names = Object.values(WIDGET_EVENTS);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+describe("快照接收守卫（会话 / 代际 / revision）", () => {
+  const envelope = (overrides: Partial<WidgetSnapshotEnvelope> = {}): WidgetSnapshotEnvelope => ({
+    widgetType: "quick-actions",
+    revision: 1,
+    epoch: "epoch-a",
+    generation: 4,
+    snapshot: { widgetType: "quick-actions", updatedAt: "2026-11-05T00:00:00.000Z" },
+    ...overrides,
+  });
+
+  it("同一会话内只接受递增 revision，重复快照不重复更新", () => {
+    const guard = { ...createSnapshotGuard(), epoch: "epoch-a", revision: 2, generation: 4 };
+    expect(shouldAcceptSnapshot(guard, envelope({ revision: 3 }), 4)).toBe(true);
+    expect(shouldAcceptSnapshot(guard, envelope({ revision: 2 }), 4)).toBe(false);
+    expect(shouldAcceptSnapshot(guard, envelope({ revision: 1 }), 4)).toBe(false);
+  });
+
+  it("主窗会话切换（重载）后接受新 revision 计数并重置水位", () => {
+    const guard = { ...createSnapshotGuard(), epoch: "epoch-a", revision: 9, generation: 4 };
+    expect(shouldAcceptSnapshot(guard, envelope({ epoch: "epoch-b", revision: 1 }), 4)).toBe(true);
+    expect(advanceSnapshotGuard(envelope({ epoch: "epoch-b", revision: 1 }))).toEqual({
+      epoch: "epoch-b",
+      revision: 1,
+      generation: 4,
+    });
+  });
+
+  it("旧窗口代际事件被忽略，不覆盖新实例快照", () => {
+    const guard = createSnapshotGuard();
+    expect(shouldAcceptSnapshot(guard, envelope({ generation: 3 }), 4)).toBe(false);
+    expect(shouldAcceptSnapshot(guard, envelope({ generation: 4 }), 4)).toBe(true);
+    // 已接受过某代际后，旧代际迟到仍应丢弃。
+    const advanced = advanceSnapshotGuard(envelope({ generation: 4 }));
+    expect(shouldAcceptSnapshot(advanced, envelope({ generation: 3, revision: 9 }), 4)).toBe(false);
+  });
+
+  it("窗口代际未知时先接受，代际回报后按已知值过滤", () => {
+    const guard = createSnapshotGuard();
+    expect(shouldAcceptSnapshot(guard, envelope({ generation: 5 }), null)).toBe(true);
+    expect(shouldAcceptSnapshot(guard, envelope({ generation: 5, revision: 2 }), 5)).toBe(true);
+    expect(shouldAcceptSnapshot(guard, envelope({ generation: 6, revision: 3 }), 5)).toBe(false);
   });
 });
 

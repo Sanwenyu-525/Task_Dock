@@ -199,6 +199,13 @@ pub const CAPSULE_GAP_CSS: u32 = 8;
 /// 面板圆角（轨道为全圆角 = 厚度/2）。
 pub const CAPSULE_PANEL_RADIUS_CSS: u32 = 24;
 
+/// Edge Tab（极简吸附标签）厚度/宽度（垂直于停靠边，CSS px）。
+pub const CAPSULE_TAB_WIDTH_CSS: u32 = 10;
+/// Edge Tab 长度（沿边方向，CSS px）。
+pub const CAPSULE_TAB_HEIGHT_CSS: u32 = 46;
+/// Edge Tab 靠屏幕内侧的圆角（CSS px；贴屏一侧保持直角）。
+pub const CAPSULE_TAB_RADIUS_CSS: u32 = 8;
+
 /// 胶囊区域参数（Smart Dock Capsule）。
 /// 数值与前端 `src/lib/capsuleLayout.ts` 保持一致（跨端契约，两端单测锁定）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +218,8 @@ pub struct CapsuleParams {
     pub length_css: u32,
     /// true = 展开态（轨道 ∪ 面板）；false = 折叠态（仅轨道）
     pub expanded: bool,
+    /// true = Edge Tab（仅露出贴边的极简标签；优先于 expanded）
+    pub tab: bool,
 }
 
 /// 胶囊模式按 **hwnd** 绑定：只作用于主窗口，右键菜单弹窗
@@ -1053,6 +1062,98 @@ pub(crate) fn wing_outline(
     (bw, bh, pts)
 }
 
+/// Edge Tab 区域：贴边的一条极简标签，靠屏幕内侧两角为圆角、贴屏一侧保持直角。
+/// 与轨道/面板共用同一窗口（尺寸与位置不变），只把可见与可命中范围收紧到标签。
+fn capsule_tab_regions(
+    window_w: i32,
+    window_h: i32,
+    scale: f64,
+    edge: u8,
+) -> Option<CapsuleRegionSet> {
+    let tab_w = ((CAPSULE_TAB_WIDTH_CSS as f64) * scale).round() as i32;
+    let tab_h = ((CAPSULE_TAB_HEIGHT_CSS as f64) * scale).round() as i32;
+    if tab_w <= 0 || tab_h <= 0 {
+        return None;
+    }
+    // 垂直于停靠边的是 tab_w，沿边方向是 tab_h；左右停靠为纵标签，上下停靠为横标签。
+    let vertical = edge <= 1;
+    let (rect_w, rect_h) = if vertical {
+        (tab_w, tab_h)
+    } else {
+        (tab_h, tab_w)
+    };
+    if rect_w > window_w || rect_h > window_h {
+        return None;
+    }
+    let (x, y) = match edge {
+        0 => (0, (window_h - rect_h) / 2),
+        1 => (window_w - rect_w, (window_h - rect_h) / 2),
+        2 => ((window_w - rect_w) / 2, 0),
+        _ => ((window_w - rect_w) / 2, window_h - rect_h),
+    };
+    let radius = (((CAPSULE_TAB_RADIUS_CSS as f64) * scale).floor() as i32 - REGION_AA_INSET)
+        .max(1)
+        .min(rect_w.min(rect_h) / 2);
+    let local = tab_outline(edge, tab_w, tab_h, radius);
+    let rail_polygon: Vec<(i32, i32)> = local
+        .iter()
+        .map(|&(px, py)| {
+            (
+                round_px(px + x as f64).clamp(0, window_w),
+                round_px(py + y as f64).clamp(0, window_h),
+            )
+        })
+        .collect();
+    let rail = CapsuleRegionRect {
+        x,
+        y,
+        width: rect_w,
+        height: rect_h,
+        radius: 0,
+    };
+    // 靠屏幕内侧的角必须落在区域外，证明裁的是圆角标签而不是整块矩形。
+    let notch_probe = match edge {
+        0 => Some((x + rect_w - 1, y)),
+        1 => Some((x, y)),
+        2 => Some((x, y + rect_h - 1)),
+        _ => Some((x, y)),
+    };
+    Some(CapsuleRegionSet {
+        rail,
+        rail_polygon,
+        panel: None,
+        gap_probe: None,
+        notch_probe,
+    })
+}
+
+/// 标签轮廓（局部坐标）：贴屏一侧为直角，靠屏幕内侧两角按 `radius` 采样圆角。
+/// 先按「纵向左侧标签」生成，再按停靠边翻转/旋转。
+fn tab_outline(edge: u8, rect_w: i32, rect_h: i32, radius: i32) -> Vec<(f64, f64)> {
+    let (tw, th, r) = (rect_w as f64, rect_h as f64, radius as f64);
+    let mut pts: Vec<(f64, f64)> = vec![(0.0, 0.0), (0.0, th), (tw - r, th)];
+    push_arc(&mut pts, tw - r, th - r, r, 90.0, 0.0, 6);
+    pts.push((tw, r));
+    push_arc(&mut pts, tw - r, r, r, 0.0, -90.0, 6);
+    pts.into_iter()
+        .map(|(v, u)| match edge {
+            0 => (v, u),
+            1 => (tw - v, u),
+            2 => (u, v),
+            // 下边：原点在窗口底部，屏幕边为 y=tw（贴屏直角），内侧 y=0 两角圆角。
+            _ => (u, tw - v),
+        })
+        .collect()
+}
+
+fn push_arc(out: &mut Vec<(f64, f64)>, cx: f64, cy: f64, r: f64, from: f64, to: f64, steps: u32) {
+    for i in 1..=steps {
+        let t = from + (to - from) * (i as f64) / (steps as f64);
+        let rad = t.to_radians();
+        out.push((cx + r * rad.cos(), cy + r * rad.sin()));
+    }
+}
+
 /// 胶囊区域集合：折叠态只有轨道；展开态 = 轨道 ∪ 面板（轨道为翼片多边形，
 /// 面板为圆角矩形，中间由 `gap` 分隔，**不连通**——间隙既不属于区域也不拦截鼠标）。
 #[derive(Clone, Debug, PartialEq)]
@@ -1129,6 +1230,9 @@ pub(crate) fn capsule_regions(
     // 退化防护必须在取整/钳制之前：0 厚度/长度不得被 `max(1)` 兜成 1px
     if cap.thickness_css == 0 || cap.length_css == 0 {
         return None;
+    }
+    if cap.tab {
+        return capsule_tab_regions(window_w, window_h, scale, cap.edge);
     }
     let (thickness, length, shoulder) = wing_metrics(scale, cap.thickness_css, cap.length_css);
     let panel_w = ((CAPSULE_PANEL_WIDTH_CSS as f64) * scale).round() as i32;
@@ -1626,6 +1730,7 @@ mod tests {
                 thickness_css: 56,
                 length_css: 224,
                 expanded: false,
+                tab: false,
             },
         };
         let mut cache = RegionCache::new();
@@ -1708,6 +1813,7 @@ mod tests {
                 thickness_css: 56,
                 length_css: 224,
                 expanded: false,
+                tab: false,
             },
         };
         assert!(!cache.capsule_is_current(&capsule));
@@ -2158,6 +2264,7 @@ mod tests {
         thickness_css: 56,
         length_css: 224,
         expanded: false,
+        tab: false,
     };
     /// 胶囊容器（前端在停靠时把窗口撑到该尺寸）：垂直停靠 404×440。
     const CONTAINER_W: i32 = 404;
@@ -2323,6 +2430,55 @@ mod tests {
             assert!(
                 !poly_contains(&s.rail_polygon, nx, ny),
                 "edge={edge} 缺角在外"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_tab_regions_are_flush_and_inside_on_all_edges() {
+        let tab_w = CAPSULE_TAB_WIDTH_CSS as i32;
+        let tab_h = CAPSULE_TAB_HEIGHT_CSS as i32;
+        for (edge, w, h) in [
+            (0u8, CONTAINER_W, CONTAINER_H),
+            (1, CONTAINER_W, CONTAINER_H),
+            (2, CONTAINER_W, CONTAINER_H_HORIZ),
+            (3, CONTAINER_W, CONTAINER_H_HORIZ),
+        ] {
+            let s = capsule_regions(
+                w,
+                h,
+                1.0,
+                &CapsuleParams {
+                    edge,
+                    tab: true,
+                    ..CAP
+                },
+            )
+            .unwrap();
+            let vertical = edge <= 1;
+            let (rect_w, rect_h) = if vertical {
+                (tab_w, tab_h)
+            } else {
+                (tab_h, tab_w)
+            };
+            assert_eq!((s.rail.width, s.rail.height), (rect_w, rect_h), "edge={edge}");
+            let expect = match edge {
+                0 => (0, (h - rect_h) / 2),
+                1 => (w - rect_w, (h - rect_h) / 2),
+                2 => ((w - rect_w) / 2, 0),
+                _ => ((w - rect_w) / 2, h - rect_h),
+            };
+            assert_eq!((s.rail.x, s.rail.y), expect, "edge={edge} 应贴边");
+            for &(px, py) in &s.rail_polygon {
+                assert!(
+                    (0..=w).contains(&px) && (0..=h).contains(&py),
+                    "edge={edge} 轮廓越界 ({px},{py})"
+                );
+            }
+            let (nx, ny) = s.notch_probe.expect("标签应有缺角探针");
+            assert!(
+                !poly_contains(&s.rail_polygon, nx, ny),
+                "edge={edge} 靠内两角应为圆角（缺角在区域外）"
             );
         }
     }

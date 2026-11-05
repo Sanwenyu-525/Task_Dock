@@ -22,6 +22,7 @@ import type { WidgetSources } from "../../lib/widgets/sources";
 import { useLocale } from "../../hooks/useLocale";
 import { useWidgetsStore } from "../../store/useWidgetsStore";
 import { useUiStore } from "../../store/useUiStore";
+import { ConfirmDialog } from "../ui";
 import WidgetCard from "./WidgetCard";
 import WidgetLibrary from "./WidgetLibrary";
 import "./widgets.css";
@@ -50,6 +51,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
 
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   /** 已请求桌面显示、但窗口尚未确认成功的微件（id → 标题）。 */
   const pendingDesktopRef = useRef<Map<string, string>>(new Map());
 
@@ -150,7 +152,13 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
     setConfig(id, patch);
   }
 
+  /** 恢复默认会关闭桌面窗口并清除位置/置顶/尺寸，先用现有轻量确认拦截。 */
   function onReset() {
+    setResetConfirmOpen(true);
+  }
+
+  function confirmReset() {
+    setResetConfirmOpen(false);
     const ok = reset();
     setDraggingId(null);
     pendingDesktopRef.current.clear();
@@ -271,6 +279,16 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
           </button>
         </div>
       )}
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        title={t("widgets.resetLayoutAria")}
+        detail={t("widgets.resetLayoutHint")}
+        confirmLabel={t("widgets.resetLayout")}
+        danger
+        onConfirm={confirmReset}
+        onCancel={() => setResetConfirmOpen(false)}
+      />
     </div>
   );
 }

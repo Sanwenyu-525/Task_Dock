@@ -1,6 +1,7 @@
 //! 剪贴板 UI 展示辅助（纯函数）。
 
 import { formatDayLabel, formatHM } from "./format";
+import type { ClipboardGroup, ClipboardItem } from "./bridge";
 
 export const CLIP_KIND_LABELS: Record<string, string> = {
   text: "文字",
@@ -44,6 +45,104 @@ export function groupStatusLabel(status: string): string {
 export function groupModeLabel(mode: string): string {
   return mode === "auto" ? "自动" : "手动";
 }
+
+export interface GroupKindCounts {
+  image: number;
+  text: number;
+  html: number;
+  url: number;
+  files: number;
+}
+
+export type ClipGroupFamily = "image" | "text" | "link" | "files" | "mixed";
+
+type GroupCountSource = Pick<
+  ClipboardGroup,
+  "kind_counts" | "image_count" | "item_count"
+>;
+
+/**
+ * 组内类型计数。列表接口已下发 kind_counts；旧数据/旧后端缺失时按
+ * image_count 与 item_count 兜底（只能区分图片组与文本组，不臆造链接/文件）。
+ */
+export function groupKindCounts(group: GroupCountSource): GroupKindCounts {
+  const raw = group.kind_counts;
+  if (raw) {
+    return {
+      image: Math.max(0, raw.image ?? 0),
+      text: Math.max(0, raw.text ?? 0),
+      html: Math.max(0, raw.html ?? 0),
+      url: Math.max(0, raw.url ?? 0),
+      files: Math.max(0, raw.files ?? 0),
+    };
+  }
+  const total = Math.max(0, group.item_count ?? 0);
+  const images = Math.min(total, Math.max(0, group.image_count ?? 0));
+  return { image: images, text: total - images, html: 0, url: 0, files: 0 };
+}
+
+/** 与后端 CollectFamily 一致：图片为封面优先，其余按主要类型归类，多种类型为混合。 */
+export function groupFamily(group: GroupCountSource): ClipGroupFamily {
+  const c = groupKindCounts(group);
+  const total = c.image + c.text + c.html + c.url + c.files;
+  if (c.image > 0 && total > c.image) return "mixed";
+  if (c.image > 0) return "image";
+  if (c.files > 0 && total > c.files) return "mixed";
+  if (c.files > 0) return "files";
+  if (c.url > 0 && total > c.url) return "mixed";
+  if (c.url > 0) return "link";
+  return "text";
+}
+
+/** 类型数量片段：`3 张截图 · 1 段文本 · 2 个链接`。 */
+export function groupComposition(group: GroupCountSource): string[] {
+  const c = groupKindCounts(group);
+  const parts: string[] = [];
+  if (c.image > 0) parts.push(`${c.image} 张截图`);
+  const textCount = c.text + c.html;
+  if (textCount > 0) parts.push(`${textCount} 段文本`);
+  if (c.url > 0) parts.push(`${c.url} 个链接`);
+  if (c.files > 0) parts.push(`${c.files} 个文件`);
+  return parts;
+}
+
+/** 图片组仅有「图片 W×H」这类预览，不作为可读摘要展示。 */
+const IMAGE_ONLY_PREVIEW = /^图片(?:\s+\d+×\d+)?$/;
+
+/**
+ * 分组卡片的一句话摘要：只使用后端已下发的 preview（首条内容摘要），
+ * 不读正文、不联网补元数据；图片预览转成空串，由缩略图承担识别。
+ */
+export function groupExcerpt(group: Pick<ClipboardGroup, "preview">): string {
+  const flat = (group.preview ?? "").replace(/\s+/g, " ").trim();
+  if (!flat || IMAGE_ONLY_PREVIEW.test(flat)) return "";
+  return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat;
+}
+
+/** 链接组展示：域名优先，路径作为次要信息；解析失败时退回原链接。 */
+export function linkSummary(url: string): { domain: string; rest: string } {
+  const raw = (url ?? "").trim();
+  // 展示用域名去掉 www. 前缀，`urlDomain` 本身保留原始主机名供其他调用方使用
+  const domain = urlDomain(raw).replace(/^www\./i, "");
+  if (!domain) return { domain: "", rest: raw };
+  try {
+    const u = new URL(raw);
+    const rest = `${u.pathname}${u.search}`.replace(/^\/$/, "");
+    return { domain, rest };
+  } catch {
+    return { domain, rest: "" };
+  }
+}
+
+/** 图片组代表尺寸（来自封面元数据，不读图片本体）。 */
+export function groupCoverSize(
+  covers: Pick<ClipboardItem, "image_width" | "image_height">[] | undefined,
+): string {
+  const first = covers?.[0];
+  if (!first?.image_width || !first?.image_height) return "";
+  return `${first.image_width}×${first.image_height}`;
+}
+
 
 /**
  * 分组删除的判定与反馈文案（卡片列表与分组详情共用）。

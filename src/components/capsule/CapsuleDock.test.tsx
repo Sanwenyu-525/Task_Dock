@@ -11,7 +11,7 @@
 //! - 空状态：不显示无意义的 0。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 
 vi.mock("../../lib/bridge", () => ({
@@ -325,5 +325,106 @@ describe("CapsuleDock · 真实状态与空状态", () => {
     useAgentsStore.setState({ snapshot: snapshotWith(run("running")) });
     mountAt("docked-revealed");
     await waitFor(() => expect(screen.getByText("修复登录")).toBeTruthy());
+  });
+});
+
+describe("CapsuleDock · 极简标签（Edge Tab）", () => {
+  const restoreTab = vi.fn();
+  const beginTabDrag = vi.fn();
+  const dragTabBy = vi.fn();
+  const endTabDrag = vi.fn();
+  const collapseToTab = vi.fn();
+  const formSwitch = vi.fn();
+
+  function mountTab(extra: Record<string, unknown> = {}) {
+    useEdgeSnapStore.setState({
+      phase: "docked-tab",
+      dockedEdge: "left",
+      candidateEdge: null,
+      reveal,
+      collapse,
+      formSwitch,
+      collapseToTab,
+      restoreTab,
+      beginTabDrag,
+      dragTabBy,
+      endTabDrag,
+      tabTransition: null,
+      ...(extra as object),
+    });
+    return render(<CapsuleDock />);
+  }
+
+  beforeEach(() => {
+    restoreTab.mockReset();
+    beginTabDrag.mockReset();
+    dragTabBy.mockReset();
+    endTabDrag.mockReset();
+    collapseToTab.mockReset();
+    formSwitch.mockReset();
+  });
+
+  it("稳定标签态只渲染标签，不渲染轨道与面板", () => {
+    const { container } = mountTab();
+    expect(container.querySelector(".capsule-tab")).toBeTruthy();
+    expect(container.querySelector(".capsule-rail")).toBeNull();
+    expect(container.querySelector(".capsule-panel")).toBeNull();
+  });
+
+  it("收起入口与「完整面板」入口相邻、位于其下方，点击调用 collapseToTab", () => {
+    useEdgeSnapStore.setState({ formSwitch, collapseToTab });
+    mountAt("docked-hidden");
+    const full = document.querySelector<HTMLButtonElement>('[aria-label="完整面板"]');
+    const tab = document.querySelector<HTMLButtonElement>('[aria-label="收起为极简标签"]');
+    expect(full).toBeTruthy();
+    expect(tab).toBeTruthy();
+    expect(full!.nextElementSibling).toBe(tab);
+    act(() => tab!.click());
+    expect(collapseToTab).toHaveBeenCalledTimes(1);
+    expect(formSwitch).not.toHaveBeenCalled();
+  });
+
+  it("点击标签恢复胶囊（键盘激活路径）", () => {
+    const { container } = mountTab();
+    act(() => {
+      container.querySelector<HTMLButtonElement>(".capsule-tab")!.click();
+    });
+    expect(restoreTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("拖动超过沿边阈值只移动位置，松手后不再触发点击恢复", () => {
+    const { container } = mountTab();
+    const tab = container.querySelector<HTMLButtonElement>(".capsule-tab")!;
+    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(tab, { pointerId: 1, clientX: 0, clientY: 40 });
+    fireEvent.pointerUp(tab, { pointerId: 1, clientX: 0, clientY: 40 });
+    // 指针点击由 pointerup 判定；拖动型不会恢复
+    expect(restoreTab).not.toHaveBeenCalled();
+    expect(dragTabBy).toHaveBeenCalledWith(40);
+    expect(endTabDrag).toHaveBeenCalledTimes(1);
+    // 浏览器随后派发的指针 click（detail >= 1）必须被忽略
+    fireEvent.click(tab, { detail: 1 });
+    expect(restoreTab).not.toHaveBeenCalled();
+  });
+
+  it("收起过渡中轨道与标签同时存在，并挂交叉过渡类", () => {
+    const { container } = mountTab({ tabTransition: "to-tab" });
+    expect(container.querySelector(".capsule-rail")).toBeTruthy();
+    expect(container.querySelector(".capsule-tab")).toBeTruthy();
+    expect(container.querySelector(".capsule-dock")!.className).toContain("is-to-tab");
+  });
+
+  it("功能面板离场阶段（相位已推进）仍挂载并带 is-closing，不提前卸载", () => {
+    // 引擎在 PANEL_EXIT_MS 内先保留挂载；此时区域已切回轨道、相位为 docked-visible。
+    useEdgeSnapStore.setState({
+      phase: "docked-visible",
+      dockedEdge: "left",
+      panelExiting: true,
+      tabTransition: null,
+    });
+    const { container } = render(<CapsuleDock />);
+    const panel = container.querySelector(".capsule-panel");
+    expect(panel).toBeTruthy();
+    expect(panel!.className).toContain("is-closing");
   });
 });

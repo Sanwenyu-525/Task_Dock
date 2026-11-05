@@ -59,6 +59,7 @@ import {
   shouldLeaveMagnetRange,
   shouldSwitchDockEdge,
   hasDockIntent,
+  hasDockIntentAlongTrail,
   SNAP_DOCK_INTENT_CSS,
   shouldUndockByDrag,
   shouldRevealByDwell,
@@ -913,6 +914,30 @@ describe("沿边拖动的吸附意图与跨边守卫", () => {
     // 非法缩放回退 1，不放大阈值。
     expect(hasDockIntent(SNAP_DOCK_INTENT_CSS, 0)).toBe(true);
     expect(hasDockIntent(SNAP_DOCK_INTENT_CSS, Number.NaN)).toBe(true);
+  });
+
+  it("轨迹判定用按下时的真实起点：首个观测点已是合并后的大位移仍算意图", () => {
+    // 按下时 (300,300)，首拍已到贴边 (20,300)：净接近 280，不能因起点丢失而漏判。
+    expect(hasDockIntentAlongTrail(rect(300, 300), [rect(20, 300)], WA, "left")).toBe(true);
+    // 按下时已在贴边位，平行拖动法向净位移 0：不算意图。
+    expect(hasDockIntentAlongTrail(rect(20, 300), [rect(20, 900)], WA, "left")).toBe(false);
+  });
+
+  it("最近轨迹明显在远离该边时不算意图（磁力回弹 / 平行擦边）", () => {
+    // 净位移足够，但最后一拍相对上一拍远离左缘 40（超过容差 6）。
+    expect(
+      hasDockIntentAlongTrail(rect(300, 300), [rect(20, 300), rect(60, 300)], WA, "left"),
+    ).toBe(false);
+    // 抖动 5px 在容差内，仍算意图。
+    expect(
+      hasDockIntentAlongTrail(rect(300, 300), [rect(20, 300), rect(25, 300)], WA, "left"),
+    ).toBe(true);
+  });
+
+  it("轨迹判定四边一致", () => {
+    expect(hasDockIntentAlongTrail(rect(1620, 300), [rect(1900, 300)], WA, "right")).toBe(true);
+    expect(hasDockIntentAlongTrail(rect(700, 300), [rect(700, 0)], WA, "top")).toBe(true);
+    expect(hasDockIntentAlongTrail(rect(700, 200), [rect(700, 472)], WA, "bottom")).toBe(true);
   });
 
   it("四边：仍齐平在当前边时禁止跨边切换", () => {

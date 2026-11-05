@@ -105,7 +105,7 @@ export default function DatePicker({
     <>
       <div
         ref={anchorRef}
-        className={`ui-dp size-${size} ${open ? "is-open" : ""} ${disabled ? "is-disabled" : ""} ${
+        className={`ui-date-trigger ui-dp size-${size} ${open ? "is-open" : ""} ${disabled ? "is-disabled" : ""} ${
           className ?? ""
         }`}
       >
@@ -162,7 +162,7 @@ export default function DatePicker({
         role="dialog"
         ariaLabel={ariaLabel ?? t("datePicker.pickerAria")}
       >
-        <div className="ui-dp-panel" ref={panelRef}>
+        <div className="ui-date-panel ui-dp-panel" ref={panelRef}>
           <div className="ui-dp-main">
             <CalendarGrid
               viewYM={viewYM}
@@ -174,11 +174,11 @@ export default function DatePicker({
               ariaLabel={t("dateTime.tableAria")}
             />
           </div>
-          <div className="ui-dp-foot">
+          <div className="ui-date-actions">
             {clearable ? (
               <button
                 type="button"
-                className="ui-dp-link"
+                className="ui-date-link"
                 onClick={() => {
                   commit("");
                   setOpen(false);
@@ -191,7 +191,7 @@ export default function DatePicker({
             )}
             <button
               type="button"
-              className="ui-dp-link is-accent"
+              className="ui-date-link is-accent"
               onClick={() => pickDay(today)}
             >
               {t("datePicker.today")}

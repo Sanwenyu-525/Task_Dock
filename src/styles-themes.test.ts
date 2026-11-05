@@ -1064,12 +1064,38 @@ describe("胶囊面板共享输入与添加入口", () => {
     expect(rule![1]).not.toMatch(/var\(--focus-ring\)/);
   });
 
-  it("添加入口默认无边框、无底色、无外阴影", () => {
+  it("添加入口有常显轮廓、默认无外阴影与底色", () => {
     const rule = /\.cap-app-add\s*\{([\s\S]*?)\}/.exec(appCss);
     expect(rule?.[1], "缺少 .cap-app-add 基础规则").toBeTruthy();
+    // 整格按钮本身不画边框/底色/外阴影，轮廓只落在 34px 视觉容器上
     expect(rule![1]).toMatch(/border:\s*0/);
     expect(rule![1]).toMatch(/background:\s*transparent/);
     expect(rule![1]).toMatch(/box-shadow:\s*none/);
+
+    const avatar = /(?:^|\n)\.cap-app-avatar\.is-add\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(avatar?.[1], "缺少 .cap-app-avatar.is-add 轮廓规则").toBeTruthy();
+    expect(avatar![1]).toMatch(/border:\s*1px solid/);
+    expect(avatar![1]).toMatch(/background:\s*transparent/);
+    expect(avatar![1]).toMatch(/box-shadow:\s*none/);
+  });
+
+  it("普通应用 hover / active 不绘制背景块，只保留真实图标", () => {
+    const cell = /\.cap-app:hover,\s*\.cap-app:active\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(cell?.[1], "缺少 .cap-app hover/active 规则").toBeTruthy();
+    expect(cell![1]).toMatch(/background:\s*transparent/);
+    // 图标容器不得再出现 hover / active 背景，也不留 background 过渡
+    expect(appCss).not.toMatch(/\.cap-app:hover[^{]*\.cap-app-icon\s*\{[^}]*background\s*:/);
+    expect(appCss).not.toMatch(/\.cap-app:active[^{]*\.cap-app-icon\s*\{[^}]*background\s*:/);
+    expect(appCss).not.toMatch(/\.cap-app-icon\s*\{[^}]*transition:\s*background/);
+  });
+
+  it("添加入口有清晰键盘焦点且不叠第二层焦点框", () => {
+    // 由面板焦点统一规则只画一次 2px 实色 outline
+    expect(appCss).toMatch(
+      /\.cap-app-add:focus-visible,[\s\S]{0,300}?\{[^}]*outline:\s*2px solid var\(--accent\)/,
+    );
+    // 不再存在单独声明的第二层焦点框（offset 与外层规则不一致）
+    expect(appCss).not.toMatch(/\}\s*\.cap-app-add:focus-visible\s*\{/);
   });
 
   it("compact 搜索档沿用常规字号（13px），容器高度保持 26px 不撑破工具栏", () => {

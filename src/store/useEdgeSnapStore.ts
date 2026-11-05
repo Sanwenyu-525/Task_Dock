@@ -38,6 +38,21 @@ export interface EdgeSnapUiState {
    * 轻量入口复用。长期偏好仍由设置页 / 右键菜单更新。未启用为 null。
    */
   formSwitch: ((form: DockForm) => void) | null;
+  /** 引擎注入：胶囊收起为 Edge Tab（带侧滑收纳动画）。未启用为 null。 */
+  collapseToTab: (() => void) | null;
+  /** 引擎注入：Edge Tab 恢复为胶囊轨道（复用同一套过渡）。未启用为 null。 */
+  restoreTab: (() => void) | null;
+  // Edge Tab 拖动：只改沿边位置，不切形态；向屏幕内部拖动由组件在松手时判定恢复。
+  beginTabDrag: (() => void) | null;
+  dragTabBy: ((deltaCss: number) => void) | null;
+  endTabDrag: (() => void) | null;
+  /** 动画中的过渡态（仅 UI 用；稳定形态仍以 phase 为准）。 */
+  tabTransition: "to-tab" | "from-tab" | null;
+  /**
+   * 功能面板离场（仅 UI 用）：收起为标签时，面板先自然收合再切区域。
+   * 为 true 期间即使相位已不在 `docked-revealed`，面板仍保持挂载并播放离场。
+   */
+  panelExiting: boolean;
   sync: (p: {
     phase: SnapPhase;
     candidateEdge: SnapEdge | null;
@@ -51,6 +66,15 @@ export interface EdgeSnapUiState {
   setCollapse: (fn: (() => void) | null) => void;
   setUndock: (fn: ((mode?: string) => void) | null) => void;
   setFormSwitch: (fn: ((form: DockForm) => void) | null) => void;
+  setTabActions: (p: {
+    collapse: (() => void) | null;
+    restore: (() => void) | null;
+    beginDrag: (() => void) | null;
+    dragBy: ((deltaCss: number) => void) | null;
+    endDrag: (() => void) | null;
+  }) => void;
+  setTabTransition: (v: "to-tab" | "from-tab" | null) => void;
+  setPanelExiting: (v: boolean) => void;
   reset: () => void;
 }
 
@@ -65,6 +89,13 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   collapse: null,
   undock: null,
   formSwitch: null,
+  collapseToTab: null,
+  restoreTab: null,
+  beginTabDrag: null,
+  dragTabBy: null,
+  endTabDrag: null,
+  tabTransition: null,
+  panelExiting: false,
   sync: (p) => set(p),
   notifyDocked: (edge) => set({ feedback: { edge, seq: ++feedbackSeq } }),
   setRegionUnsynced: (v) => set({ regionUnsynced: v }),
@@ -73,6 +104,16 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   setCollapse: (fn) => set({ collapse: fn }),
   setUndock: (fn) => set({ undock: fn }),
   setFormSwitch: (fn) => set({ formSwitch: fn }),
+  setTabActions: (p) =>
+    set({
+      collapseToTab: p.collapse,
+      restoreTab: p.restore,
+      beginTabDrag: p.beginDrag,
+      dragTabBy: p.dragBy,
+      endTabDrag: p.endDrag,
+    }),
+  setTabTransition: (v) => set({ tabTransition: v }),
+  setPanelExiting: (v) => set({ panelExiting: v }),
   reset: () =>
     set({
       phase: "free",
@@ -85,5 +126,12 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
       collapse: null,
       undock: null,
       formSwitch: null,
+      collapseToTab: null,
+      restoreTab: null,
+      beginTabDrag: null,
+      dragTabBy: null,
+      endTabDrag: null,
+      tabTransition: null,
+      panelExiting: false,
     }),
 }));

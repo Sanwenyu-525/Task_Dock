@@ -13,6 +13,7 @@ import {
   type WidgetBoundsReport,
   type WidgetDismissedEvent,
   type WidgetSnapshotEnvelope,
+  type WidgetSnapshotRequestEvent,
   type WidgetWindowInfo,
 } from "./desktop";
 import type { WidgetDesktopState, WidgetType } from "./model";
@@ -76,15 +77,25 @@ export async function resetWidgetPosition(type: WidgetType): Promise<void> {
   await invoke("reset_widget_position", { widgetType: type });
 }
 
+export interface SnapshotPublishMeta {
+  /** 主窗口 WebView 会话标识；接收端据此区分主窗重载前后的 revision。 */
+  epoch: string;
+  /** 目标窗口代际；缺省时由 Rust 读取当前窗口代际。 */
+  generation?: number;
+}
+
 export async function publishWidgetSnapshot(
   type: WidgetType,
   revision: number,
   snapshot: unknown,
+  meta: SnapshotPublishMeta,
 ): Promise<boolean> {
   if (!available()) return false;
   return invoke<boolean>("publish_widget_snapshot", {
     widgetType: type,
     revision,
+    epoch: meta.epoch,
+    generation: meta.generation ?? null,
     snapshot,
   });
 }
@@ -109,9 +120,11 @@ export function onWidgetSnapshot(listener: (payload: WidgetSnapshotEnvelope) => 
 }
 
 export function onWidgetSnapshotRequest(
-  listener: (payload: { widgetType: WidgetType }) => void,
+  listener: (payload: WidgetSnapshotRequestEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<{ widgetType: WidgetType }>(WIDGET_EVENTS.request, (event) => listener(event.payload));
+  return listen<WidgetSnapshotRequestEvent>(WIDGET_EVENTS.request, (event) =>
+    listener(event.payload),
+  );
 }
 
 export function onWidgetAction(listener: (payload: WidgetActionEvent) => void): Promise<UnlistenFn> {

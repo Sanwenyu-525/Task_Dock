@@ -26,8 +26,8 @@ import { persistLayout, readStoredLayout, onLayoutReplaced } from "../lib/widget
  * - creating：已发出创建命令，尚未确认成功；
  * - shown：**Rust `show_widget_window` 已返回成功，即系统窗口已创建并显示**。
  *   不承诺 WebView 页面首帧已渲染、业务数据已加载或内容无错误——这些由微件页面
- *   自身展示 loading / error；页面首个 snapshot 请求也算最小就绪确认，可把仍在
- *   creating 的窗口推进到 shown；
+ *   自身展示 loading / error；页面首个 snapshot 请求只说明 WebView 已挂载，
+ *   不等于窗口已成功显示，不改变 phase。
  * - failed：创建/关闭/复位等窗口命令失败，错误信息在 `error`，可手动重试。
  */
 export type WidgetDesktopPhase = "hidden" | "creating" | "shown" | "failed";

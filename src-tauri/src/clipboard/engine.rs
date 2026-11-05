@@ -673,8 +673,9 @@ pub fn group_rich_html(
 ///
 /// 规则：
 /// - 关闭自动分组：`None`；
-/// - 有收集会话且窗口内未满额：能关联则 `Append`；不能关联则当前条目转为
-///   候选（不同应用的独立复制各自开候选，不按时间粗暴合并）；
+/// - 有收集会话且窗口内未满额：能关联则 `Append`；不能关联时先看当前条目
+///   能否与窗口内的候选成组（另一个应用正在连续复制时，不被当前会话挡住），
+///   仍不能则当前条目转为候选（不同应用的独立复制各自开候选，不按时间粗暴合并）；
 /// - 无会话（或会话已满/已过期）：与窗口内候选同属一次收集则
 ///   `CreateWithCandidate`，否则当前条目成为新的候选；
 /// - 首条内容永远只是候选，不产生单条自动分组。
@@ -713,31 +714,48 @@ pub fn decide_group(
                 }
             }
         }
-        // 会话已满/过期/来源不相关：当前条目不能并入，转为候选。
+        // 会话已满/过期/来源不相关：先看当前条目能否与候选（另一个应用/类型）
+        // 成组；不能并入时当前条目才转为候选。
+        if let Some(c) = candidate {
+            if candidate_joins(c, now, window, family, item_source_app, item_source_known) {
+                return GroupAction::CreateWithCandidate;
+            }
+        }
         return GroupAction::Candidate;
     }
     if let Some(c) = candidate {
-        if now - c.at <= window
-            && compatible(
-                c.family,
-                c.family == CollectFamily::Image,
-                Some(c.source_app),
-                c.source_known,
-                if c.family == CollectFamily::Image {
-                    Some(c.source_app)
-                } else {
-                    None
-                },
-                c.family == CollectFamily::Image && c.source_known,
-                family,
-                item_source_app,
-                item_source_known,
-            )
-        {
+        if candidate_joins(c, now, window, family, item_source_app, item_source_known) {
             return GroupAction::CreateWithCandidate;
         }
     }
     GroupAction::Candidate
+}
+
+/// 当前条目能否与窗口内的候选属于同一次收集。
+fn candidate_joins(
+    c: &GroupCandidate<'_>,
+    now: DateTime<Utc>,
+    window: Duration,
+    family: CollectFamily,
+    item_source_app: &str,
+    item_source_known: bool,
+) -> bool {
+    now - c.at <= window
+        && compatible(
+            c.family,
+            c.family == CollectFamily::Image,
+            Some(c.source_app),
+            c.source_known,
+            if c.family == CollectFamily::Image {
+                Some(c.source_app)
+            } else {
+                None
+            },
+            c.family == CollectFamily::Image && c.source_known,
+            family,
+            item_source_app,
+            item_source_known,
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -763,8 +781,31 @@ pub fn decide_restore(has_snapshot: bool, user_changed: bool) -> RestoreDecision
 /// 截图组自动命名的主题长度上限（字符数）。
 pub const MAX_GROUP_TOPIC_CHARS: usize = 24;
 
+/// 自动生成的图片标题/摘要（`截图 855×399`、`图片 1200×800`）不是可辨识主题。
+///
+/// 这类文本只描述类型与尺寸，拿去做组名会得到「截图 · 截图 855×399」式重复；
+/// 过滤后让来源窗口标题或时间兜底成为主题，已有数据不做批量改名。
+fn is_auto_image_label(text: &str) -> bool {
+    fn dims(raw: &str) -> bool {
+        let Some((w, h)) = raw.split_once('×') else {
+            return false;
+        };
+        !w.is_empty()
+            && !h.is_empty()
+            && w.chars().all(|c| c.is_ascii_digit())
+            && h.chars().all(|c| c.is_ascii_digit())
+    }
+    if let Some(rest) = text.strip_prefix("截图") {
+        return rest.is_empty() || (rest.starts_with(' ') && dims(rest.trim_start()));
+    }
+    if let Some(rest) = text.strip_prefix("图片") {
+        return rest.starts_with(' ') && dims(rest.trim_start());
+    }
+    false
+}
+
 /// 从来源标题/关联文本中提取可用于组名的主题：
-/// 取首个非空行并折叠空白；`unknown`/`未知`/`无标题` 不是可靠信息，返回 None。
+/// 取首个非空行并折叠空白；`unknown`/`未知`/`无标题` 与自动图片标签不是可靠信息，返回 None。
 pub fn group_topic(raw: &str) -> Option<String> {
     for line in raw.lines() {
         let text = collapse_ws(line.trim());
@@ -773,6 +814,9 @@ pub fn group_topic(raw: &str) -> Option<String> {
         }
         let lower = text.to_ascii_lowercase();
         if matches!(lower.as_str(), "unknown" | "未知" | "无标题" | "未命名") {
+            continue;
+        }
+        if is_auto_image_label(&text) {
             continue;
         }
         return Some(text);
@@ -1298,6 +1342,85 @@ mod tests {
     }
 
     #[test]
+    fn candidate_can_start_group_while_another_session_collects() {
+        let now = Utc::now();
+        let t0 = now - Duration::seconds(10);
+        let image_session = session(
+            CollectFamily::Image,
+            true,
+            Some(t0),
+            3,
+            Some("snip.exe"),
+            true,
+            Some("snip.exe"),
+            true,
+        );
+
+        // 文本会话来自记事本，另一个应用在 Chrome 连续复制链接：这两类会话互不兼容，
+        // 若不让候选晋升，Chrome 的连续复制会被无关会话一直挡住。
+        // （截图会话内的文字/链接按产品规则保留顺序，不走这条回退。）
+        let text_session = session(
+            CollectFamily::Text,
+            false,
+            Some(t0),
+            3,
+            Some("notepad.exe"),
+            true,
+            None,
+            false,
+        );
+        let link_candidate = candidate(CollectFamily::Link, t0, "chrome.exe", true);
+        assert_eq!(
+            decide_group(
+                KIND_URL,
+                true,
+                now,
+                45,
+                Some(&text_session),
+                Some(&link_candidate),
+                "chrome.exe",
+                true
+            ),
+            GroupAction::CreateWithCandidate,
+            "另一应用连续链接不被无关会话挡住"
+        );
+
+        // 候选来源未知时保持保守，不因会话存在就放宽。
+        let unknown_candidate = candidate(CollectFamily::Link, t0, "", false);
+        assert_eq!(
+            decide_group(
+                KIND_URL,
+                true,
+                now,
+                45,
+                Some(&text_session),
+                Some(&unknown_candidate),
+                "",
+                false
+            ),
+            GroupAction::Candidate,
+            "来源未知的候选不并入"
+        );
+
+        // 不同来源的图片各自成组，避免浏览器图片混入截图组。
+        let chrome_image = candidate(CollectFamily::Image, t0, "chrome.exe", true);
+        assert_eq!(
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                45,
+                Some(&image_session),
+                Some(&chrome_image),
+                "chrome.exe",
+                true
+            ),
+            GroupAction::CreateWithCandidate,
+            "不同来源的连续图片各自成组"
+        );
+    }
+
+    #[test]
     fn auto_title_rules_per_kind() {
         // 普通文本：首个有效短句
         assert_eq!(
@@ -1422,6 +1545,13 @@ mod tests {
         let (name, source) = screenshot_group_name(None, "11-04 14:32");
         assert_eq!(name, "截图 · 11-04 14:32");
         assert_eq!(source, "auto_time");
+
+        // 自动生成的图片标题/摘要只描述类型与尺寸，不能重复成「截图 · 截图 855×399」
+        let (name, source) = screenshot_group_name(Some("截图 855×399"), "11-04 14:32");
+        assert_eq!(name, "截图 · 11-04 14:32");
+        assert_eq!(source, "auto_time");
+        assert_eq!(group_topic("截图"), None);
+        assert_eq!(group_topic("图片 1200×800"), None);
 
         // 主题取首个非空行并折叠空白，超长截断
         assert_eq!(group_topic("\n\n  项目   评审  \n第二行"), Some("项目 评审".into()));

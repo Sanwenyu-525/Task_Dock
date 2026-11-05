@@ -1124,6 +1124,37 @@ ALTER TABLE navigation_targets
   ADD COLUMN bound_window_identity TEXT NOT NULL DEFAULT '';
 "#,
     ),
+    (
+        34,
+        r#"
+-- v34（文件暂存架增强）：最近目标目录 + 移动操作日志（最小恢复依据）。
+-- 最近目录：去重按规范化绝对路径，pinned 可固定在「最近目录」区域；
+-- 数量上限 8 由应用层维护，列表仅在打开面板时读取，不在启动时扫描目录。
+CREATE TABLE shelf_recent_dirs (
+  path TEXT PRIMARY KEY NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  last_used_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_shelf_recent_dirs_used
+  ON shelf_recent_dirs(pinned DESC, last_used_at DESC);
+
+-- 文件操作日志：磁盘移动与 SQLite 引用更新不是原子操作，记录阶段以便
+-- 启动时恢复不一致（intent=准备中，copied=已复制并校验但源未清理，
+-- moved=磁盘已移动但数据库尚未完成更新）。正常完成后立即删除对应行，
+-- 该表只保留未完成/中断的操作，不属于用户业务数据。
+CREATE TABLE shelf_file_ops (
+  id TEXT PRIMARY KEY NOT NULL,
+  item_id TEXT NOT NULL,
+  op TEXT NOT NULL CHECK (op IN ('move','copy')),
+  phase TEXT NOT NULL CHECK (phase IN ('intent','copied','moved')),
+  source TEXT NOT NULL,
+  target TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

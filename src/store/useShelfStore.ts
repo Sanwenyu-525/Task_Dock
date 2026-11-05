@@ -12,7 +12,10 @@ import {
   shelfCheckExists,
   shelfCleanup,
   shelfClear,
+  shelfCopyTo,
   shelfDelete,
+  shelfMoveItems,
+  shelfRelocateItem,
   shelfGroupCreate,
   shelfGroupDelete,
   shelfGroups,
@@ -22,9 +25,11 @@ import {
   shelfUnlinkTask,
   shelfUpdate,
   type ShelfCleanupReport,
+  type ShelfConflictStrategy,
   type ShelfGroup,
   type ShelfItem,
   type ShelfKind,
+  type ShelfOpReport,
   type ShelfStats,
   type ShelfUpdatePatch,
 } from "../lib/bridge";
@@ -79,6 +84,15 @@ interface ShelfState {
   renameGroup: (id: string, name: string) => Promise<void>;
   removeGroup: (id: string) => Promise<void>;
   moveToGroup: (ids: string[], groupId: string) => Promise<void>;
+  /** 文件操作：move=移动原文件，copy=复制到目录/导出托管副本。 */
+  runFileOp: (
+    op: "move" | "copy",
+    ids: string[],
+    targetDir: string,
+    strategy: ShelfConflictStrategy,
+    removeAfter: boolean,
+  ) => Promise<ShelfOpReport>;
+  relocateItem: (id: string, path: string) => Promise<ShelfItem>;
   unlinkTask: (itemId: string, taskId: string) => Promise<void>;
   toggleSelect: (id: string) => void;
   selectAll: () => void;
@@ -294,6 +308,25 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
       selectedIds: [],
     }));
     void get().refreshMeta();
+  },
+
+  runFileOp: async (op, ids, targetDir, strategy, removeAfter) => {
+    const report =
+      op === "move"
+        ? await shelfMoveItems(ids, targetDir, strategy, removeAfter)
+        : await shelfCopyTo(ids, targetDir, strategy, removeAfter);
+    // 移动会改写路径、移除会删记录，统一以服务端列表为准刷新（保留失败项）。
+    await get().load({ silent: true });
+    void get().refreshMeta();
+    return report;
+  },
+
+  relocateItem: async (id, path) => {
+    const item = await shelfRelocateItem(id, path);
+    set((s) => ({
+      items: s.items.map((i) => (i.id === id ? item : i)),
+    }));
+    return item;
   },
 
   unlinkTask: async (itemId, taskId) => {

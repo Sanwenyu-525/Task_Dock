@@ -296,6 +296,67 @@ describe("AppsPanel 应用中心", () => {
     await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
   });
 
+  it("直接 X 删除是启动的并列按钮：不启动、需确认、取消不调用后端", async () => {
+    seed([targetFix()]);
+    render(<AppsPanel />);
+
+    const del = screen.getByRole("button", { name: "从快捷列表删除 Obsidian" });
+    // 删除按钮与启动主区域同级，内部不再嵌套按钮
+    expect(del.closest(".apps-tile")?.querySelector(".apps-tile-main")).toBeTruthy();
+    expect(del.querySelector("button")).toBeNull();
+    // 不占布局宽度：直接挂在卡片根节点上，而不是收藏/更多所在的布局流里，
+    // 因此名称可用宽度与没有删除按钮时一致
+    expect(del.parentElement?.className).toContain("apps-tile");
+    expect(del.closest(".apps-tile-actions")).toBeNull();
+    expect(
+      document.querySelector(".apps-tile-actions")?.querySelectorAll("button"),
+    ).toHaveLength(2);
+
+    fireEvent.click(del);
+    expect(navNavigate).not.toHaveBeenCalled();
+    expect(navDeleteTarget).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByRole("dialog", { name: /删除「Obsidian」/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(navDeleteTarget).not.toHaveBeenCalled();
+    expect(screen.getByText("Obsidian")).toBeTruthy();
+  });
+
+  it("直接 X 删除失败保留条目并给出原因", async () => {
+    seed([targetFix()]);
+    vi.mocked(navDeleteTarget).mockRejectedValueOnce(new Error("database is locked"));
+    render(<AppsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "从快捷列表删除 Obsidian" }));
+    const dialog = await screen.findByRole("dialog", { name: /删除「Obsidian」/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+
+    await waitFor(() => expect(navDeleteTarget).toHaveBeenCalledWith("target-obs"));
+    await waitFor(() =>
+      expect(useUiStore.getState().toast?.message ?? "").toContain("删除失败"),
+    );
+    expect(screen.getByText("Obsidian")).toBeTruthy();
+  });
+
+  it("删除成功但刷新失败：提示部分成功，不误报删除失败", async () => {
+    seed([targetFix()]);
+    vi.mocked(navDeleteTarget).mockResolvedValueOnce(undefined);
+    vi.mocked(navListTargets).mockRejectedValueOnce(new Error("ipc broken"));
+    render(<AppsPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "从快捷列表删除 Obsidian" }));
+    const dialog = await screen.findByRole("dialog", { name: /删除「Obsidian」/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+
+    await waitFor(() =>
+      expect(useUiStore.getState().toast?.message ?? "").toContain("目标已删除，但关联列表刷新失败"),
+    );
+    expect(useUiStore.getState().toast?.kind).toBe("warning");
+    expect(useUiStore.getState().toast?.message ?? "").not.toContain("删除失败");
+    // 删除已成功：本地隐藏，不因刷新失败把条目显示回来
+    expect(screen.queryByText("Obsidian")).toBeNull();
+  });
+
   it("单行卡片：真实图标、收藏与更多并列，均不触发启动；菜单保留三项操作", async () => {
     seed([targetFix()]);
     render(<AppsPanel />);

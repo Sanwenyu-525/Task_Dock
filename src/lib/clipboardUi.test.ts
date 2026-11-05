@@ -5,6 +5,12 @@ import {
   clipSource,
   copyPreflight,
   formatBytes,
+  groupComposition,
+  groupCoverSize,
+  groupExcerpt,
+  groupFamily,
+  groupKindCounts,
+  linkSummary,
   looksLikeCode,
   sourceAppKey,
   sourceAppName,
@@ -262,5 +268,74 @@ describe("looksLikeCode", () => {
       "}",
     ].join("\n");
     expect(looksLikeCode(json)).toBe(true);
+  });
+});
+
+describe("groupKindCounts / groupFamily", () => {
+  it("按类型数量判定分组族，混合内容不误判为单一类型", () => {
+    expect(groupFamily({ item_count: 3, image_count: 3 })).toBe("image");
+    expect(groupKindCounts({ item_count: 3, image_count: 0 })).toEqual({
+      image: 0,
+      text: 3,
+      html: 0,
+      url: 0,
+      files: 0,
+    });
+    expect(
+      groupFamily({
+        item_count: 3,
+        image_count: 2,
+        kind_counts: { image: 2, text: 1, html: 0, url: 0, files: 0 },
+      }),
+    ).toBe("mixed");
+    expect(
+      groupFamily({
+        item_count: 2,
+        image_count: 0,
+        kind_counts: { image: 0, text: 0, html: 0, url: 2, files: 0 },
+      }),
+    ).toBe("link");
+    expect(
+      groupFamily({
+        item_count: 2,
+        image_count: 0,
+        kind_counts: { image: 0, text: 0, html: 0, url: 0, files: 2 },
+      }),
+    ).toBe("files");
+  });
+
+  it("类型数量合并 html 与 text，并按固定顺序展示", () => {
+    expect(
+      groupComposition({
+        item_count: 5,
+        image_count: 2,
+        kind_counts: { image: 2, text: 1, html: 1, url: 1, files: 0 },
+      }),
+    ).toEqual(["2 张截图", "2 段文本", "1 个链接"]);
+  });
+});
+
+describe("groupExcerpt / linkSummary", () => {
+  it("图片预览不作为文本摘要，长文本截断", () => {
+    expect(groupExcerpt({ preview: "图片 1920×1080" })).toBe("");
+    expect(groupExcerpt({ preview: "图片" })).toBe("");
+    const long = "很长的文本".repeat(40);
+    const out = groupExcerpt({ preview: long });
+    expect(out.endsWith("…")).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(121);
+  });
+
+  it("链接摘要优先域名，路径作为次要信息", () => {
+    expect(linkSummary("https://www.example.com/a/b?x=1")).toEqual({
+      domain: "example.com",
+      rest: "/a/b?x=1",
+    });
+    expect(linkSummary("not-a-url")).toEqual({ domain: "", rest: "not-a-url" });
+  });
+
+  it("封面尺寸只读取已有元数据", () => {
+    expect(groupCoverSize([{ image_width: 1920, image_height: 1080 }])).toBe("1920×1080");
+    expect(groupCoverSize([])).toBe("");
+    expect(groupCoverSize(undefined)).toBe("");
   });
 });

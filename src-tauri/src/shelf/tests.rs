@@ -72,6 +72,436 @@ fn original_path_normalization_blocks_traversal() {
     assert!(normalize_original_path("C:\\..\\..\\x").is_err());
 }
 
+// ── 文件操作：移动 ──────────────────────────────────────────
+
+#[test]
+fn fsops_move_reference_file_updates_path_and_keeps_item_identity() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src_dir = tmp.0.join("源 目录");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let file = write_source(&src_dir, "计划 文档.txt", b"abc");
+    let item = add_ref(&db, &tmp.shelf(), &file);
+    let target = tmp.0.join("目标 目录");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert_eq!(report.failed, 0);
+
+    let moved = target.join("计划 文档.txt");
+    assert!(!file.exists(), "移动后源文件不应残留");
+    assert!(moved.exists(), "移动后目标文件必须存在");
+    let refreshed = get_item(&db, &item.id).unwrap();
+    assert_eq!(refreshed.id, item.id, "移动不得删旧建新");
+    assert_eq!(
+        refreshed.original_path.as_deref(),
+        Some(moved.to_string_lossy().as_ref())
+    );
+    assert_eq!(refreshed.exists_state, "ok");
+    assert_eq!(refreshed.kind, KIND_FILE);
+    assert_eq!(refreshed.favorite, item.favorite);
+    assert_eq!(refreshed.pinned, item.pinned);
+    assert_eq!(refreshed.group_id, item.group_id);
+}
+
+#[test]
+fn fsops_move_folder_updates_child_and_duplicate_references() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let folder = tmp.0.join("项目");
+    std::fs::create_dir_all(&folder).unwrap();
+    let child = write_source(&folder, "说明.md", b"# hi");
+    let folder_item = add_ref(&db, &tmp.shelf(), &folder);
+    let child_item = add_ref(&db, &tmp.shelf(), &child);
+    // 同一文件被两条记录引用，移动父目录后都必须同步，不残留失效引用。
+    let duplicate = add_ref(&db, &tmp.shelf(), &child);
+    let target = tmp.0.join("归档");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[folder_item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1);
+    let moved_root = target.join("项目");
+    assert!(!folder.exists());
+    assert!(moved_root.join("说明.md").exists());
+    for id in [&child_item.id, &duplicate.id] {
+        let row = get_item(&db, id).unwrap();
+        assert_eq!(
+            row.original_path.as_deref(),
+            Some(moved_root.join("说明.md").to_string_lossy().as_ref())
+        );
+        assert_eq!(row.exists_state, "ok");
+    }
+}
+
+#[test]
+fn fsops_move_rejects_same_dir_subdir_and_managed() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let dir = tmp.0.join("src");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = write_source(&dir, "a.txt", b"a");
+    let item = add_ref(&db, &tmp.shelf(), &file);
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &dir.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.skipped, 1);
+    assert!(file.exists());
+    assert!(report.entries[0].reason.as_deref().unwrap().contains("目标目录"));
+
+    // 文件夹移入自身子目录必须拒绝
+    let folder = tmp.0.join("树");
+    std::fs::create_dir_all(folder.join("子")).unwrap();
+    let folder_item = add_ref(&db, &tmp.shelf(), &folder);
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[folder_item.id.clone()],
+        &folder.join("子").to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.failed, 1, "{:?}", report.entries);
+    assert!(folder.exists(), "拒绝后源目录不得变化");
+
+    // managed 副本不得被当作外部原文件移动
+    let managed_src = write_source(&tmp.0, "托管.txt", b"managed");
+    let managed = add_managed(
+        &db,
+        &tmp.shelf(),
+        &managed_src.to_string_lossy(),
+        "picker",
+        None,
+    )
+    .unwrap();
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[managed.id.clone()],
+        &dir.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.failed, 1);
+    assert!(report.entries[0]
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("托管副本"));
+    assert_eq!(
+        get_item(&db, &managed.id).unwrap().managed_path,
+        managed.managed_path
+    );
+}
+
+// ── 文件操作：复制 ──────────────────────────────────────────
+
+#[test]
+fn fsops_copy_file_conflict_skip_and_rename_without_new_records() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let a_dir = tmp.0.join("a");
+    let b_dir = tmp.0.join("b");
+    std::fs::create_dir_all(&a_dir).unwrap();
+    std::fs::create_dir_all(&b_dir).unwrap();
+    let a = write_source(&a_dir, "同名.txt", b"one");
+    let b = write_source(&b_dir, "同名.txt", b"two");
+    let ia = add_ref(&db, &tmp.shelf(), &a);
+    let ib = add_ref(&db, &tmp.shelf(), &b);
+    let target = tmp.0.join("dest");
+    std::fs::create_dir_all(&target).unwrap();
+    let before = list(
+        &db,
+        &ListFilter {
+            search: None,
+            kind: "all".into(),
+            group_id: "all".into(),
+            favorite_only: false,
+            limit: 100,
+            offset: 0,
+        },
+    )
+    .unwrap()
+    .total;
+
+    let report = fsops::copy_items(
+        &db,
+        &tmp.shelf(),
+        &[ia.id.clone(), ib.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert_eq!(report.skipped, 1);
+    assert!(a.exists() && b.exists(), "复制必须保留源文件");
+    assert!(target.join("同名.txt").exists());
+
+    let report = fsops::copy_items(
+        &db,
+        &tmp.shelf(),
+        &[ib.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Rename,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert!(target.join("同名 (1).txt").exists());
+    let after = list(
+        &db,
+        &ListFilter {
+            search: None,
+            kind: "all".into(),
+            group_id: "all".into(),
+            favorite_only: false,
+            limit: 100,
+            offset: 0,
+        },
+    )
+    .unwrap()
+    .total;
+    assert_eq!(after, before, "复制到目录不得向暂存架重复添加记录");
+}
+
+#[test]
+fn fsops_copy_folder_and_batch_partial_failure_keep_failed_entries() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let folder = tmp.0.join("素材");
+    std::fs::create_dir_all(&folder).unwrap();
+    write_source(&folder, "一.txt", b"1");
+    write_source(&folder, "二.txt", b"2");
+    let folder_item = add_ref(&db, &tmp.shelf(), &folder);
+
+    let missing_dir = tmp.0.join("missing");
+    std::fs::create_dir_all(&missing_dir).unwrap();
+    let missing = write_source(&missing_dir, "lost.txt", b"x");
+    let missing_item = add_ref(&db, &tmp.shelf(), &missing);
+    std::fs::remove_file(&missing).unwrap();
+
+    let target = tmp.0.join("out");
+    std::fs::create_dir_all(&target).unwrap();
+    let report = fsops::copy_items(
+        &db,
+        &tmp.shelf(),
+        &[folder_item.id.clone(), missing_item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert_eq!(report.failed, 1);
+    assert!(target.join("素材").is_dir());
+    assert!(target.join("素材").join("一.txt").exists());
+    assert!(folder.exists());
+    let failed = report
+        .entries
+        .iter()
+        .find(|e| e.status == "failed")
+        .unwrap();
+    assert!(failed.reason.as_deref().unwrap().contains("失效"));
+}
+
+#[test]
+fn fsops_managed_export_copy_keeps_managed_path_and_remove_after_only_record() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "导出.csv", b"a,b\n");
+    let managed = add_managed(&db, &tmp.shelf(), &src.to_string_lossy(), "picker", None).unwrap();
+    let managed_file = tmp
+        .shelf()
+        .join(managed.managed_path.as_deref().unwrap());
+    let target = tmp.0.join("export");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let report = fsops::copy_items(
+        &db,
+        &tmp.shelf(),
+        &[managed.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert!(target.join("导出.csv").is_file());
+    assert!(managed_file.exists(), "导出必须保留托管副本");
+    assert_eq!(
+        get_item(&db, &managed.id).unwrap().managed_path,
+        managed.managed_path,
+        "导出不得改写 managed_path"
+    );
+
+    let report = fsops::copy_items(
+        &db,
+        &tmp.shelf(),
+        &[managed.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Rename,
+        true,
+    )
+    .unwrap();
+    assert_eq!(report.removed, 1);
+    assert!(get_item(&db, &managed.id).is_err());
+    assert!(target.join("导出 (1).csv").is_file(), "已移动的目标文件必须保留");
+}
+
+#[test]
+fn fsops_copy_remove_after_keeps_reference_source_file() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "引用.txt", b"keep");
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("dest2");
+    std::fs::create_dir_all(&target).unwrap();
+    let report = fsops::copy_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        true,
+    )
+    .unwrap();
+    assert_eq!(report.removed, 1);
+    assert!(src.exists(), "移除暂存记录不得删除用户原文件");
+    assert!(target.join("引用.txt").exists());
+}
+
+// ── 失效重定位 / 恢复 / 最近目录 ────────────────────────────
+
+#[test]
+fn fsops_relocate_validates_type_and_mode() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let old = write_source(&tmp.0, "旧.txt", b"old");
+    let item = add_ref(&db, &tmp.shelf(), &old);
+    std::fs::remove_file(&old).unwrap();
+
+    let new = write_source(&tmp.0, "新 文件.txt", b"new!");
+    let updated = fsops::relocate_item(&db, &item.id, &new.to_string_lossy()).unwrap();
+    assert_eq!(updated.id, item.id);
+    assert_eq!(
+        updated.original_path.as_deref(),
+        Some(new.to_string_lossy().as_ref())
+    );
+    assert_eq!(updated.exists_state, "ok");
+    assert_eq!(updated.byte_size, 4);
+
+    let folder = tmp.0.join("目录");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file_item = add_ref(&db, &tmp.shelf(), &new);
+    assert!(fsops::relocate_item(&db, &file_item.id, &folder.to_string_lossy()).is_err());
+
+    let managed_src = write_source(&tmp.0, "m.txt", b"m");
+    let managed = add_managed(
+        &db,
+        &tmp.shelf(),
+        &managed_src.to_string_lossy(),
+        "picker",
+        None,
+    )
+    .unwrap();
+    let err = fsops::relocate_item(&db, &managed.id, &managed_src.to_string_lossy()).unwrap_err();
+    assert!(err.to_string().contains("托管副本"));
+}
+
+#[test]
+fn fsops_recovery_after_disk_move_rewrites_paths() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "崩溃.txt", b"data");
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("恢复目标.txt");
+    // 模拟：磁盘已移动、进程在写库前退出，日志停留在 moved。
+    std::fs::rename(&src, &target).unwrap();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
+             VALUES ('op1', ?1, 'move', 'moved', ?2, ?3, '2026-01-01T00:00:00Z')",
+            params![
+                item.id,
+                src.to_string_lossy(),
+                target.to_string_lossy()
+            ],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    fsops::recover_pending_file_ops(&db);
+    let row = get_item(&db, &item.id).unwrap();
+    assert_eq!(
+        row.original_path.as_deref(),
+        Some(target.to_string_lossy().as_ref())
+    );
+    let left: i64 = db
+        .with_read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM shelf_file_ops", [], |r| r.get(0))
+                .map_err(AppError::from)
+        })
+        .unwrap();
+    assert_eq!(left, 0, "恢复成功后必须清理日志");
+}
+
+#[test]
+fn fsops_recent_dirs_dedup_order_pin_and_limit() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let mut dirs = Vec::new();
+    for i in 0..9 {
+        let d = tmp.0.join(format!("dir{i}"));
+        std::fs::create_dir_all(&d).unwrap();
+        fsops::touch_recent_dir(&db, &d.to_string_lossy()).unwrap();
+        dirs.push(d);
+    }
+    let list = fsops::list_recent_dirs(&db).unwrap();
+    assert_eq!(list.len(), fsops::MAX_RECENT_DIRS, "最多保留 8 个");
+    assert!(!list.iter().any(|d| d.path == dirs[0].to_string_lossy()),
+        "超限时淘汰最久未用目录");
+
+    // 去重：再次使用不新增
+    fsops::touch_recent_dir(&db, &dirs[8].to_string_lossy()).unwrap();
+    assert_eq!(fsops::list_recent_dirs(&db).unwrap().len(), 8);
+
+    fsops::set_recent_dir_pinned(&db, &dirs[8].to_string_lossy(), true).unwrap();
+    let list = fsops::list_recent_dirs(&db).unwrap();
+    assert!(list[0].pinned, "固定目录排在最前");
+    assert_eq!(list[0].path, dirs[8].to_string_lossy());
+
+    fsops::remove_recent_dir(&db, &dirs[7].to_string_lossy()).unwrap();
+    assert_eq!(fsops::list_recent_dirs(&db).unwrap().len(), 7);
+    fsops::clear_recent_dirs(&db).unwrap();
+    assert!(fsops::list_recent_dirs(&db).unwrap().is_empty());
+}
+
 #[test]
 fn backup_rel_validation_accepts_shelf_namespace() {
     // 剪贴板命名空间不变
@@ -518,3 +948,506 @@ fn backup_rejects_missing_shelf_dir_when_managed_items_exist() {
         "不得静默产出无文件的备份: {err}"
     );
 }
+
+// ── 跨卷移动：内容校验 / 部分删除 / 故障注入恢复 ─────────────
+
+fn clear_faults() {
+    fsops::test_support::clear();
+}
+
+fn insert_journal_row(db: &Db, item_id: &str, op: &str, phase: &str, src: &Path, dst: &Path) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                uuid::Uuid::new_v4().to_string(),
+                item_id,
+                op,
+                phase,
+                src.to_string_lossy(),
+                dst.to_string_lossy(),
+                now_iso()
+            ],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+fn journal_count(db: &Db) -> i64 {
+    db.with_read(|conn| {
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM shelf_file_ops", [], |r| r.get(0))?;
+        Ok(n)
+    })
+    .unwrap()
+}
+
+fn tree_files(root: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                stack.push(path);
+            } else {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((rel, std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+#[test]
+fn fsops_cross_volume_detects_corrupted_copy_and_keeps_source() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = tmp.0.join("树");
+    std::fs::create_dir_all(src.join("空目录")).unwrap();
+    std::fs::write(src.join("甲.txt"), b"content-alpha").unwrap();
+    std::fs::write(src.join("乙.txt"), b"content-beta").unwrap();
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("dest");
+    std::fs::create_dir_all(&target).unwrap();
+
+    fsops::test_support::set_always("force_cross_volume");
+    fsops::test_support::set_once("copy_corrupt");
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.failed, 1, "{:?}", report.entries);
+    assert!(src.exists(), "校验失败后源目录必须完整保留");
+    assert!(!target.join("树").exists(), "校验失败不得建立最终目标");
+    assert_eq!(
+        tree_files(&src),
+        vec![
+            ("乙.txt".to_string(), b"content-beta".to_vec()),
+            ("甲.txt".to_string(), b"content-alpha".to_vec())
+        ]
+    );
+    assert_eq!(
+        get_item(&db, &item.id).unwrap().original_path.as_deref(),
+        Some(src.to_string_lossy().as_ref())
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(&target)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(leftovers.is_empty(), "失败后不得残留临时副本: {leftovers:?}");
+    clear_faults();
+}
+
+#[test]
+fn fsops_cross_volume_move_preserves_nested_and_empty_dirs() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = tmp.0.join("源");
+    std::fs::create_dir_all(src.join("嵌套/空")).unwrap();
+    std::fs::write(src.join("嵌套/说明 文档.txt"), b"unicode").unwrap();
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("目标");
+    std::fs::create_dir_all(&target).unwrap();
+
+    fsops::test_support::set_always("force_cross_volume");
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    let moved = target.join("源");
+    assert!(!src.exists());
+    assert!(moved.join("嵌套/空").is_dir(), "空目录必须保留");
+    assert_eq!(
+        std::fs::read(moved.join("嵌套/说明 文档.txt")).unwrap(),
+        b"unicode"
+    );
+    assert_eq!(
+        get_item(&db, &item.id).unwrap().original_path.as_deref(),
+        Some(moved.to_string_lossy().as_ref())
+    );
+    assert_eq!(journal_count(&db), 0);
+    clear_faults();
+}
+
+#[test]
+fn fsops_partial_source_delete_keeps_only_complete_target() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = tmp.0.join("源");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.txt"), b"aaa").unwrap();
+    std::fs::write(src.join("b.txt"), b"bbb").unwrap();
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("目标");
+    std::fs::create_dir_all(&target).unwrap();
+
+    fsops::test_support::set_always("force_cross_volume");
+    fsops::test_support::set_always("source_remove_partial_first");
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.partial, 1, "{:?}", report.entries);
+    assert_eq!(report.failed, 0);
+    let moved = target.join("源");
+    assert_eq!(
+        tree_files(&moved),
+        vec![
+            ("a.txt".to_string(), b"aaa".to_vec()),
+            ("b.txt".to_string(), b"bbb".to_vec())
+        ],
+        "目标必须是完整副本"
+    );
+    assert!(src.exists(), "部分删除后源可能残留，不得递归清理");
+    assert!(report.entries[0].residual_source.is_some());
+    assert!(report.entries[0].recovery.is_some());
+    assert_eq!(
+        get_item(&db, &item.id).unwrap().original_path.as_deref(),
+        Some(moved.to_string_lossy().as_ref()),
+        "目标完整时应把引用切到目标"
+    );
+    assert_eq!(journal_count(&db), 0);
+    clear_faults();
+}
+
+#[test]
+fn fsops_partial_subdir_delete_keeps_target_and_residual_source() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = tmp.0.join("源");
+    std::fs::create_dir_all(src.join("子")).unwrap();
+    std::fs::write(src.join("子/一.txt"), b"one").unwrap();
+    std::fs::write(src.join("保留.txt"), b"keep").unwrap();
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("目标");
+    std::fs::create_dir_all(&target).unwrap();
+
+    fsops::test_support::set_always("force_cross_volume");
+    fsops::test_support::set_always("source_remove_partial_subdir");
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.partial, 1, "{:?}", report.entries);
+    let moved = target.join("源");
+    assert!(moved.join("子/一.txt").exists());
+    assert!(moved.join("保留.txt").exists());
+    assert!(!src.join("子").exists(), "注入的故障应模拟部分子目录删除");
+    assert!(src.join("保留.txt").exists());
+    assert_eq!(
+        get_item(&db, &item.id).unwrap().original_path.as_deref(),
+        Some(moved.to_string_lossy().as_ref())
+    );
+    clear_faults();
+}
+
+#[test]
+fn fsops_journal_phase_failure_never_deletes_source() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "a.txt", b"payload");
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("目标");
+    std::fs::create_dir_all(&target).unwrap();
+
+    fsops::test_support::set_always("force_cross_volume");
+    fsops::test_support::set_once("journal_copied_fail");
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.partial, 1, "{:?}", report.entries);
+    let moved = target.join("a.txt");
+    assert!(moved.exists(), "已校验目标必须保留");
+    assert!(src.exists(), "日志阶段失败时不得删除源");
+    // 模拟重启恢复：只清理本次临时副本/日志，不删除源与最终目标。
+    fsops::recover_pending_file_ops(&db);
+    assert!(moved.exists());
+    assert!(src.exists());
+    assert_eq!(journal_count(&db), 0);
+    clear_faults();
+}
+
+#[test]
+fn fsops_db_update_failure_keeps_target_and_recovers() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "a.txt", b"payload");
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("目标");
+    std::fs::create_dir_all(&target).unwrap();
+
+    fsops::test_support::set_always("force_cross_volume");
+    fsops::test_support::set_once("db_rewrite_fail");
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.partial, 1, "{:?}", report.entries);
+    let moved = target.join("a.txt");
+    assert!(moved.exists(), "数据库写入失败不得删除唯一完整副本");
+    assert!(!src.exists());
+    assert_eq!(
+        get_item(&db, &item.id).unwrap().original_path.as_deref(),
+        Some(src.to_string_lossy().as_ref())
+    );
+    fsops::recover_pending_file_ops(&db);
+    assert!(moved.exists());
+    assert_eq!(
+        get_item(&db, &item.id).unwrap().original_path.as_deref(),
+        Some(moved.to_string_lossy().as_ref())
+    );
+    assert_eq!(journal_count(&db), 0);
+    clear_faults();
+}
+
+#[test]
+fn recover_keeps_target_and_residual_source_after_crash() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = tmp.0.join("源");
+    let dst = tmp.0.join("目标");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&dst).unwrap();
+    // 构造「源被部分删除、目标完整」的中断现场。
+    std::fs::write(src.join("残留.txt"), b"residual").unwrap();
+    std::fs::write(dst.join("完整.txt"), b"complete").unwrap();
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    insert_journal_row(&db, &item.id, "move", "copied", &src, &dst);
+
+    fsops::recover_pending_file_ops(&db);
+    assert!(dst.join("完整.txt").exists(), "恢复不得删除完整目标");
+    assert!(src.join("残留.txt").exists(), "恢复不得递归清理残留源");
+    assert_eq!(
+        get_item(&db, &item.id).unwrap().original_path.as_deref(),
+        Some(dst.to_string_lossy().as_ref())
+    );
+    assert_eq!(journal_count(&db), 0);
+}
+
+#[test]
+fn recover_is_idempotent_and_keeps_diagnostic_when_both_missing() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = tmp.0.join("源");
+    let dst = tmp.0.join("目标");
+    std::fs::create_dir_all(&src).unwrap();
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    std::fs::remove_dir(&src).unwrap();
+    insert_journal_row(&db, &item.id, "move", "moved", &src, &dst);
+
+    fsops::recover_pending_file_ops(&db);
+    fsops::recover_pending_file_ops(&db);
+    assert_eq!(journal_count(&db), 1, "无法判定的异常必须保留诊断日志");
+    assert!(!src.exists() && !dst.exists());
+}
+
+#[test]
+fn fsops_parent_and_child_in_same_batch_moves_child_with_parent() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let folder = tmp.0.join("项目");
+    std::fs::create_dir_all(&folder).unwrap();
+    let child = write_source(&folder, "说明.md", b"# hi");
+    let folder_item = add_ref(&db, &tmp.shelf(), &folder);
+    let child_item = add_ref(&db, &tmp.shelf(), &child);
+    let target = tmp.0.join("归档");
+    std::fs::create_dir_all(&target).unwrap();
+
+    // 子项排在父项之前，也必须由父目录先处理。
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[child_item.id.clone(), folder_item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert_eq!(report.skipped, 1);
+    let moved = target.join("项目").join("说明.md");
+    assert!(moved.exists());
+    assert_eq!(
+        Path::new(
+            get_item(&db, &child_item.id)
+                .unwrap()
+                .original_path
+                .as_deref()
+                .unwrap()
+        ),
+        moved,
+        "子记录引用必须随父目录更新"
+    );
+    assert!(get_item(&db, &child_item.id).is_ok(), "子记录必须保留");
+}
+
+#[test]
+fn fsops_duplicate_physical_path_in_batch_is_skipped() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "same.txt", b"same");
+    let a = add_ref(&db, &tmp.shelf(), &src);
+    let b = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("目标");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[a.id.clone(), b.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert_eq!(report.skipped, 1);
+    assert_eq!(
+        std::fs::read_dir(&target).unwrap().count(),
+        1,
+        "同一物理路径不得重复复制/移动"
+    );
+    for id in [&a.id, &b.id] {
+        assert_eq!(
+            get_item(&db, id).unwrap().original_path.as_deref(),
+            Some(target.join("same.txt").to_string_lossy().as_ref())
+        );
+    }
+}
+
+#[test]
+fn copy_rejects_self_and_descendant_target() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let folder = tmp.0.join("树");
+    std::fs::create_dir_all(folder.join("子")).unwrap();
+    std::fs::write(folder.join("a.txt"), b"a").unwrap();
+    let item = add_ref(&db, &tmp.shelf(), &folder);
+
+    for target in [folder.clone(), folder.join("子")] {
+        let report = fsops::copy_items(
+            &db,
+            &tmp.shelf(),
+            &[item.id.clone()],
+            &target.to_string_lossy(),
+            fsops::ConflictStrategy::Skip,
+            false,
+        )
+        .unwrap();
+        assert_eq!(report.failed, 1, "{:?}", report.entries);
+        assert!(report.entries[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("自身"));
+    }
+    assert_eq!(
+        tree_files(&folder),
+        vec![("a.txt".to_string(), b"a".to_vec())],
+        "拒绝后不得产生重复副本"
+    );
+}
+
+#[test]
+fn copy_target_race_does_not_silently_overwrite() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "a.txt", b"original");
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("目标");
+    std::fs::create_dir_all(&target).unwrap();
+
+    fsops::test_support::set_always("force_cross_volume");
+    fsops::test_support::set_once("target_race");
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.failed, 1, "{:?}", report.entries);
+    assert_eq!(
+        std::fs::read(target.join("a.txt")).unwrap(),
+        b"racer",
+        "已存在的目标不得被静默覆盖"
+    );
+    assert_eq!(std::fs::read(&src).unwrap(), b"original");
+    clear_faults();
+}
+
+#[test]
+fn finish_report_distinguishes_record_cleanup_failure() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "a.txt", b"a");
+    let item = add_ref(&db, &tmp.shelf(), &src);
+    let target = tmp.0.join("目标");
+    std::fs::create_dir_all(&target).unwrap();
+
+    fsops::test_support::set_once("record_delete_fail");
+    let report = fsops::move_items(
+        &db,
+        &tmp.shelf(),
+        &[item.id.clone()],
+        &target.to_string_lossy(),
+        fsops::ConflictStrategy::Skip,
+        true,
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "文件操作成功不得被记录清理失败掩盖");
+    assert_eq!(report.record_cleanup_failed, 1);
+    assert!(report.record_cleanup_error.is_some());
+    assert_eq!(report.removed, 0);
+    assert!(target.join("a.txt").exists());
+    assert!(get_item(&db, &item.id).is_ok(), "失败项记录必须保留可恢复");
+    assert!(report.entries[0]
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("移除暂存记录失败"));
+    clear_faults();
+}
+

@@ -433,6 +433,15 @@ export interface ClipboardOcrReport {
   suggestedTitle: string | null;
 }
 
+/** 组内各内容类型的数量（html 计入文本展示，但仍单独给出）。 */
+export interface ClipboardGroupKindCounts {
+  image: number;
+  text: number;
+  html: number;
+  url: number;
+  files: number;
+}
+
 export interface ClipboardGroup {
   id: string;
   name: string;
@@ -448,6 +457,12 @@ export interface ClipboardGroup {
   item_count: number;
   image_count: number;
   preview: string;
+  /**
+   * 列表接口即填充；旧数据/旧后端可能缺失，前端按 item_count/image_count 兜底。
+   */
+  kind_counts?: ClipboardGroupKindCounts;
+  /** 图片组的代表缩略图（最多 3 条，只含图片元数据，不含正文）。 */
+  cover_items?: ClipboardItem[];
   /** 仅详情接口填充 */
   items: ClipboardItem[];
 }
@@ -911,6 +926,8 @@ export interface SnapStateExtra {
   /** 沿边中心在显示器可用区内的相对比例（0–1），用于分辨率变化后重算绝对坐标。 */
   centerRatio?: number | null;
   display?: SnapDisplayInfo | null;
+  /** 显示形态：`capsule`（轨道/面板）或 `tab`（Edge Tab）；旧记录缺失按胶囊恢复。 */
+  form?: "capsule" | "tab" | null;
 }
 export const saveSnapState = (
   edge: string,
@@ -925,6 +942,7 @@ export const saveSnapState = (
       center,
       centerRatio: extra.centerRatio ?? null,
       display: extra.display ?? null,
+      form: extra.form ?? null,
     },
   });
 export const getSnapState = () =>
@@ -935,6 +953,7 @@ export const getSnapState = () =>
         center?: number | null;
         centerRatio?: number | null;
         display?: SnapDisplayInfo | null;
+        form?: "capsule" | "tab" | null;
       }
     | null
   >("get_snap_state");
@@ -1106,7 +1125,7 @@ export const setHotkeysEnabled = (enabled: boolean) =>
 export const getAgentInboxDir = () => invoke<string>("get_agent_inbox_dir");
 
 /** 胶囊区域模式：off = 整窗；rail = 只露分类轨道；panel = 轨道 ∪ 功能面板。 */
-export type CapsuleRegionMode = "off" | "rail" | "panel";
+export type CapsuleRegionMode = "off" | "rail" | "panel" | "tab";
 
 /**
  * 分类胶囊区域（Smart Dock Capsule）：把主窗口的 Win32 区域裁成
@@ -2337,6 +2356,86 @@ export const shelfTaskLinks = (itemId: string) =>
 
 export const shelfLinkTask = (itemId: string, taskId: string) =>
   invoke<void>("shelf_link_task", { itemId, taskId });
+
+// ── 文件操作：移动 / 复制 / 失效重定位 / 最近目标目录 ──────────
+
+export type ShelfConflictStrategy = "skip" | "rename";
+
+export interface ShelfOpEntry {
+  id: string;
+  display_name: string;
+  source: string | null;
+  target: string | null;
+  status: "ok" | "skipped" | "failed";
+  reason: string | null;
+}
+
+export interface ShelfOpReport {
+  success: number;
+  skipped: number;
+  failed: number;
+  /** 按用户选择从暂存架移除的记录数 */
+  removed: number;
+  /** 托管文件删除失败数；后端结果模型演进期按 0 兜底 */
+  remove_failed_files?: number;
+  /** 逐项结果；缺失时按空列表兜底，面板仍展示汇总 */
+  entries?: ShelfOpEntry[];
+}
+
+export interface ShelfRecentDir {
+  path: string;
+  pinned: boolean;
+  last_used_at: string;
+  available: boolean;
+}
+
+/**
+ * 移动原文件/文件夹到目标目录。
+ * - 默认不覆盖同名：skip=跳过，rename=`名称 (1).ext`；
+ * - managed / link / text 由后端明确拒绝；
+ * - removeAfter=true 只移除成功处理的暂存记录，不删除已移动的目标文件。
+ */
+export const shelfMoveItems = (
+  ids: string[],
+  targetDir: string,
+  conflictStrategy: ShelfConflictStrategy = "skip",
+  removeAfter = false,
+) =>
+  invoke<ShelfOpReport>("shelf_move_items", {
+    ids,
+    targetDir,
+    conflictStrategy,
+    removeAfter,
+  });
+
+/** 复制到目录（托管条目为导出副本），源文件始终保留。 */
+export const shelfCopyTo = (
+  ids: string[],
+  targetDir: string,
+  conflictStrategy: ShelfConflictStrategy = "skip",
+  removeAfter = false,
+) =>
+  invoke<ShelfOpReport>("shelf_copy_to", {
+    ids,
+    targetDir,
+    conflictStrategy,
+    removeAfter,
+  });
+
+/** 失效引用条目重新指向外部文件/文件夹；托管条目拒绝。 */
+export const shelfRelocateItem = (id: string, path: string) =>
+  invoke<ShelfItem>("shelf_relocate_item", { id, path });
+
+/** 最近目标目录（最多 8 个，按固定 + 最近成功使用排序）。 */
+export const shelfRecentDirs = () => invoke<ShelfRecentDir[]>("shelf_recent_dirs");
+
+export const shelfRecentDirPin = (path: string, pinned: boolean) =>
+  invoke<void>("shelf_recent_dir_pin", { path, pinned });
+
+export const shelfRecentDirRemove = (path: string) =>
+  invoke<void>("shelf_recent_dir_remove", { path });
+
+export const shelfRecentDirsClear = () => invoke<void>("shelf_recent_dirs_clear");
 
 // ── 一键工作流（v0.9）：白名单动作编排、顺序执行、暂停 / 取消与运行历史 ──
 

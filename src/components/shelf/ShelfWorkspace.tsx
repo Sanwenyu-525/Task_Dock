@@ -39,6 +39,30 @@ import { DropdownMenu, SearchField } from "../ui";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
 import ShelfItemCard from "./ShelfItemCard";
 import ShelfDetail from "./ShelfDetail";
+import ShelfFileOpPanel, { type ShelfFileOpRequest } from "./ShelfFileOpPanel";
+
+/** 有真实文件/文件夹语义的条目（link/text 不参与移动与复制）。 */
+function isPhysicalItem(item: ShelfItem): boolean {
+  return item.kind === "file" || item.kind === "image" || item.kind === "folder";
+}
+
+/** 移动仅限 reference 且文件存在；managed 必须走导出副本。 */
+export function canMoveItem(item: ShelfItem): boolean {
+  return isPhysicalItem(item) && item.storage_mode === "reference" && item.exists_state !== "missing";
+}
+
+/** 复制/导出要求当前文件可读（托管副本存在或引用原文件存在）。 */
+export function canCopyItem(item: ShelfItem): boolean {
+  return isPhysicalItem(item) && item.exists_state !== "missing";
+}
+
+/** 批量复制入口的文案：托管副本只能「导出副本」，混合选择时两者都发生。 */
+export function copyActionLabel(items: ShelfItem[]): string {
+  const managed = items.filter((i) => i.storage_mode === "managed").length;
+  if (managed === 0) return "复制到…";
+  if (managed === items.length) return "导出副本到…";
+  return "复制 / 导出到…";
+}
 
 const KIND_FILTERS: { value: ShelfKind | "all"; label: string }[] = [
   { value: "all", label: "全部" },
@@ -82,6 +106,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const clearSelection = useShelfStore((s) => s.clearSelection);
   const setDetail = useShelfStore((s) => s.setDetail);
   const verifyExists = useShelfStore((s) => s.verifyExists);
+  const relocateItem = useShelfStore((s) => s.relocateItem);
 
   const [dragOver, setDragOver] = useState(false);
   /** 拖入/剪贴板添加的默认策略：引用优先（不偷偷复制占用磁盘），用户可显式切换。 */
@@ -106,6 +131,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const [cleanupBusy, setCleanupBusy] = useState(false);
   /** 反向转存（暂存架→收集箱）在途守卫：菜单项 disabled，防连点重复创建 */
   const [toInboxBusy, setToInboxBusy] = useState(false);
+  /** 内嵌文件操作面板（移动/复制共享同一套面板，不做大模态） */
+  const [fileOpRequest, setFileOpRequest] = useState<ShelfFileOpRequest | null>(null);
   const searchTimer = useRef<number | null>(null);
 
   // 初次进入：加载列表 + 分组/统计；随后批量核对引用存在性（当前一页）
@@ -264,6 +291,47 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     }
   };
 
+  // ── 文件操作：移动 / 复制 / 重定位 ──
+  const openFileOp = useCallback(
+    (op: "move" | "copy", chosen: ShelfItem[]) => {
+      const eligible = chosen.filter(op === "move" ? canMoveItem : canCopyItem);
+      if (eligible.length === 0) {
+        showToast(
+          op === "move"
+            ? "所选条目没有可移动的原文件（仅引用模式且文件存在时可移动；托管副本请用「导出副本到…」）"
+            : "所选条目没有可复制的文件（原文件或托管副本已失效）",
+          { kind: "error" },
+        );
+        return;
+      }
+      setFileOpRequest({
+        op,
+        ids: eligible.map((i) => i.id),
+        items: eligible,
+        excluded: chosen.length - eligible.length,
+      });
+    },
+    [showToast],
+  );
+
+  const relocateItemFlow = useCallback(
+    async (item: ShelfItem) => {
+      try {
+        const picked = await openDialog({
+          directory: item.kind === "folder",
+          multiple: false,
+          title: item.kind === "folder" ? "重新选择文件夹" : "重新选择文件",
+        });
+        if (typeof picked !== "string") return;
+        await relocateItem(item.id, picked);
+        showToast("已重新定位，路径与存在状态已刷新", { kind: "success" });
+      } catch (e) {
+        showToast(`重新定位失败：${errorMessage(e)}`, { kind: "error" });
+      }
+    },
+    [relocateItem, showToast],
+  );
+
   // ── 条目菜单 ──
   const itemMenuFor = useCallback(
     (item: ShelfItem): DropdownMenuItem[] => [
@@ -284,6 +352,35 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
                   showToast(`打开所在文件夹失败：${errorMessage(e)}`, { kind: "error" }),
                 );
               },
+            },
+          ]
+        : []),
+      ...(canMoveItem(item)
+        ? [
+            {
+              key: "move-to",
+              label: "移动原文件到…",
+              onSelect: () => openFileOp("move", [item]),
+            },
+          ]
+        : []),
+      ...(canCopyItem(item)
+        ? [
+            {
+              key: "copy-to",
+              label: item.storage_mode === "managed" ? "导出副本到…" : "复制到…",
+              onSelect: () => openFileOp("copy", [item]),
+            },
+          ]
+        : []),
+      ...(isPhysicalItem(item) &&
+      item.storage_mode === "reference" &&
+      item.exists_state === "missing"
+        ? [
+            {
+              key: "relocate",
+              label: "重新定位…",
+              onSelect: () => void relocateItemFlow(item),
             },
           ]
         : []),
@@ -365,7 +462,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       },
       ...groups.map((g) => ({
         key: `group-${g.id}`,
-        label: `${item.group_id === g.id ? "✓ " : ""}移动到：${g.name}`,
+        label: `${item.group_id === g.id ? "✓ " : ""}移动到分组：${g.name}`,
         onSelect: () => {
           moveToGroup([item.id], g.id).catch((e) => showToast(`移动分组失败：${errorMessage(e)}`, { kind: "error" }));
         },
@@ -380,10 +477,24 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         },
       },
     ],
-    [groups, showToast, updateItem, moveToGroup, toInboxBusy, setTab],
+    [
+      groups,
+      showToast,
+      updateItem,
+      moveToGroup,
+      toInboxBusy,
+      setTab,
+      openFileOp,
+      relocateItemFlow,
+    ],
   );
 
   const detailItem = items.find((i) => i.id === detailId) ?? null;
+  const selectedItems = items.filter((i) => selectedIds.includes(i.id));
+  const movableSelected = selectedItems.filter(canMoveItem);
+  const copyableSelected = selectedItems.filter(canCopyItem);
+  const copyLabel = copyActionLabel(copyableSelected);
+  const copyHasManaged = copyableSelected.some((i) => i.storage_mode === "managed");
 
   const quotaUsedPct =
     stats && stats.quota_mb > 0
@@ -697,6 +808,11 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         </div>
       )}
 
+      {/* 文件操作内嵌面板（移动 / 复制共享） */}
+      {fileOpRequest && (
+        <ShelfFileOpPanel request={fileOpRequest} onClose={() => setFileOpRequest(null)} />
+      )}
+
       {/* 列表 */}
       <div className="shelf-list" role="list" aria-label="暂存条目">
         {items.map((item) => (
@@ -807,6 +923,28 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           <button type="button" className="btn sm" onClick={copySelectedFiles}>
             复制文件
           </button>
+          <button
+            type="button"
+            className="btn sm"
+            disabled={movableSelected.length === 0}
+            data-tip="移动引用模式的原文件；托管副本请用「导出副本到…」"
+            onClick={() => openFileOp("move", selectedItems)}
+          >
+            移动原文件到…
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            disabled={copyableSelected.length === 0}
+            data-tip={
+              copyHasManaged
+                ? "托管副本导出为副本，引用文件复制到目标目录；原文件均不移动"
+                : "复制到目标目录，原文件与暂存记录保持不变"
+            }
+            onClick={() => openFileOp("copy", selectedItems)}
+          >
+            {copyLabel}
+          </button>
           <button type="button" className="btn sm" onClick={clearSelection}>
             取消选择
           </button>
@@ -814,7 +952,14 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       )}
 
       {/* 详情 */}
-      {detailItem && <ShelfDetail item={detailItem} onClose={() => setDetail(null)} />}
+      {detailItem && (
+        <ShelfDetail
+          item={detailItem}
+          onClose={() => setDetail(null)}
+          onFileOp={(op) => openFileOp(op, [detailItem])}
+          onRelocate={() => void relocateItemFlow(detailItem)}
+        />
+      )}
 
       {/* 拖入高亮遮罩 */}
       {dragOver && (

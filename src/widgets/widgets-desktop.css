@@ -35,7 +35,9 @@
     -webkit-user-select: none;
   }
 
-  button {
+  /* 该文件与主窗共享同一份打包 CSS（vite cssCodeSplit=false），必须限定在微件根节点；
+     无作用域的 button 重置会退掉主窗日期/时间组件的触发区底色与文字色。 */
+  .wd-root button {
     font: inherit;
     color: inherit;
     border: 0;
@@ -307,6 +309,12 @@
   background: var(--wd-control-face-hover);
   box-shadow: inset 0 0 0 1px var(--wd-control-border-hover);
   color: var(--text-primary);
+}
+
+/* 桌面窗口宽度固定为 280–400，效率统计 4 项指标保持单行 4 列；
+   否则会继承主窗「窄视口 2×2」规则，在默认 sm 高度内隐藏一半指标并产生纵向滚动。 */
+.wd-root .widget-stat-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .wd-root .widget-stat-grid li {

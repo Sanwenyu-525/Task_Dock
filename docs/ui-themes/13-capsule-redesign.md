@@ -691,3 +691,50 @@ IPC/轮询的前提下完成核心动作」。两者任一不成立即为快捷�
 
 回归：`src/components/capsule/capsuleNavigationContract.test.tsx`（集合一致、分类有面板、
 状态球不计分类、隐藏/全隐行为、持久化与两面独立）。
+
+## 十三、极简吸附态 Edge Tab（2026-11-05）
+
+**三种停靠形态**：完整面板（`snap_display_mode=full`，`docked-full`）· 胶囊（默认，
+`docked-visible` / `docked-hidden` / `docked-revealed`）· 极简标签（`docked-tab`）。
+三者统一由 `useEdgeSnap` 相位机管理，不新增并列布尔量。
+
+**转换**：胶囊「收起为极简标签」→ `docked-tab`；标签单击 / 明显向内拖动 → `docked-visible`；
+胶囊「完整面板」仍走既有会话形态切换（`requestSessionForm`），不接入完整面板收缩逻辑。
+`edgeSnap.ts::LEGAL_TRANSITIONS` 是唯一守卫，`free → docked-tab` 只用于重启恢复。
+
+**几何与命中**：标签 `10×46 CSS`（水平边 `46×10`），贴屏幕边为直边、内侧两角 8px 圆角；
+前端常量在 `capsuleLayout.ts`（`TAB_WIDTH_CSS` / `TAB_HEIGHT_CSS`），原生区域在
+`window_shape.rs::edge_tab_regions`，双端单测锁定；区域外另有缺口探针，避免隐形可点击区。
+标签纵向位置沿用胶囊中心并 clamp 在显示器工作区内，多显示器 / DPI 变化按既有收敛逻辑重贴。
+
+**动画**：`CapsuleDock` 在 `tabTransition` 非空时同时渲染轨道与标签，`is-to-tab` 时轨道
+`transform` 向屏幕边侧滑、`clip-path` 收成 46px 高的长条，图标随透明度降低；标签从 38%
+进度开始交叉渐显，保证在收纳完成前接替；`is-from-tab` 反向复用同一组关键帧。
+300ms、`cubic-bezier(0.22, 1, 0.36, 1)`，只动画 `transform` / `opacity` / `clip-path`，
+不压扁图标、不做 `scale`；`prefers-reduced-motion` 直接落到终点。窗口区域只在过渡结束
+提交一次，过渡期间 `tabAnimating` 拒绝重复请求，快速连点不会叠加动画。
+
+**交互**：标签单击恢复；垂直拖动只改中心，不切形态、不改吸附边；明显向内拖动超过
+`TAB_RESTORE_DRAG_CSS` 才恢复，拖动结束的 `pointerup` 不再触发点击恢复（`click` 仅接
+键盘激活）。工具提示沿用 `data-tip`，文案「收起为极简标签 / 完整面板」。
+
+**持久化**：`snap_state` 追加可选 `form`；重启按 `form=tab` 直接恢复标签，缺失时兼容为
+胶囊。恢复点按显示器几何重新 clamp，标签不会落在屏外。
+
+**证据**：本轮真机验证（真实 WebView2 + CDP + Win32 命中测试）记录在
+`tmp/acceptance/edge-tab/report.md`。
+
+**二轮修订（2026-11-05）**：
+
+- 面板展开态收起不再「相位推进即卸载」：`useEdgeSnapStore.panelExiting` 先置位，播放
+  `PANEL_EXIT_MS`（160ms，`capsule-panel-out`）的离场动画，再写轨道区域并推进
+  `docked-visible`；`CapsuleDock` 在 `expanded || panelExiting` 期间保持面板挂载并加
+  `is-closing`。`prefers-reduced-motion` 跳过等待与长动画。
+- 标签可见性改由语义 Token 驱动：`--cap-tab-face` / `--cap-tab-face-hover` /
+  `--cap-tab-ring` / `--cap-tab-ring-hover` / `--cap-tab-edge` / `--cap-tab-focus`；
+  浅色靠墨色内描边提供轮廓、纸白内侧高光提供体积，深色只覆盖透明度。只做内描边——
+  窗口区域恰好等于标签矩形，外投影会被 `SetWindowRgn` 裁掉。
+- 底部「完整面板 / 极简标签 / 收起」三个按钮继续复用 `.cap-collapse`，纵向间距统一
+  4px（横向边距沿用轨道布局），不新建重复组件、不放大点击区。
+- 二轮真机证据记录在 `tmp/acceptance/edge-tab-round2/report.md`（含 EXE 溯源、面板离场
+  采样、深浅主题原生截图、左右边缘 `WindowFromPoint` 命中测试、拖动与重启持久化）。

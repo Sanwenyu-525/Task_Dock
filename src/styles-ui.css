@@ -926,53 +926,63 @@
   color: var(--text-tertiary);
 }
 
-/* ── 日期时间选择器 ─────────────────────────────────────────── */
+/* ── 日期 / 日期时间共用视觉基座 ─────────────────────────────
+   触发区、日格、弹层宽度/间距、底部操作只用一套 Token。
+   业务交互差异（纯日期选中即提交；日期时间选完时间再确认）保持不变。 */
 
-.ui-dtp-trigger {
+.ui-date-trigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
   max-width: 100%;
-  padding: 5px 8px;
-  font-size: 12px;
+  min-height: 30px;
+  padding: 0 5px 0 8px;
+  font-size: var(--input-font-size);
   color: var(--text-primary);
   background: var(--control-face);
   box-shadow: var(--control-shadow);
   border: 1px solid transparent;
   border-radius: var(--radius-control);
-  cursor: pointer;
   transition: box-shadow 0.14s var(--ease-out), border-color 0.14s var(--ease-out);
 }
 
-.ui-dtp-trigger.size-sm {
-  padding: 3px 6px;
-  font-size: 11px;
+.ui-date-trigger.size-sm {
+  min-height: 26px;
+  padding: 0 3px 0 6px;
+  font-size: var(--input-font-size-sm);
 }
 
-.ui-dtp-trigger:hover:not(:disabled) {
+.ui-date-trigger:hover:not(:disabled):not(.is-disabled) {
   box-shadow: var(--control-shadow-hover, var(--control-shadow));
 }
 
-.ui-dtp-trigger:active:not(:disabled) {
+.ui-date-trigger:active:not(:disabled):not(.is-disabled) {
   box-shadow: var(--control-shadow-press, var(--control-shadow));
-  transform: translateY(0.5px);
 }
 
-.ui-dtp-trigger.is-open,
-.ui-dtp-trigger:focus-visible {
+.ui-date-trigger.is-open,
+.ui-date-trigger:focus-visible,
+.ui-date-trigger:focus-within {
   box-shadow: var(--control-shadow-focus);
   border-color: var(--accent);
   outline: none;
 }
 
-.ui-dtp-trigger:disabled {
+.ui-date-trigger:disabled,
+.ui-date-trigger.is-disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
-.ui-dtp-trigger.is-placeholder {
+.ui-date-trigger.is-placeholder {
   color: var(--text-tertiary);
+}
+
+/* 日期时间的触发区整块可点；纯日期的输入区要保留文本光标，
+   因此 pointer 只给日期时间的按钮。 */
+.ui-dtp-trigger {
+  cursor: pointer;
 }
 
 .ui-dtp-icon {
@@ -1003,12 +1013,16 @@
   color: var(--accent);
 }
 
-.ui-dtp {
+/* 日期 / 日期时间弹层的内层：宽度、内边距与纵向节奏完全一致；
+   窄窗口下用 min() 收敛，避免撑破 320/400 宽窗体。 */
+.ui-date-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 268px;
+  width: min(272px, calc(100vw - 24px));
+  min-width: 0;
   padding: 4px;
+  color: var(--menu-text);
 }
 
 .ui-dtp-top {
@@ -1079,9 +1093,9 @@
 
 .ui-cal-day {
   width: 100%;
-  height: 26px;
+  height: 28px;
   border-radius: 7px;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--menu-text);
   cursor: pointer;
   transition: background-color 0.1s var(--ease-out), color 0.1s var(--ease-out);
@@ -1089,6 +1103,16 @@
 
 .ui-cal-day:hover {
   background: var(--menu-hover);
+}
+
+.ui-cal-day:active {
+  background: var(--menu-active-face);
+  color: var(--menu-active-text);
+}
+
+.ui-cal-day:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .ui-cal-day.is-today {
@@ -1105,8 +1129,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 2px 2px;
-  border-top: 1px solid var(--divider);
+  padding: 2px 2px 0;
   color: var(--menu-text-dim);
 }
 
@@ -1143,50 +1166,44 @@
   border-color: var(--accent);
 }
 
-.ui-dtp-actions {
+/* 底部操作：两个选择器共用同一视觉等级（清除为次要、今天/此刻为强调项），
+   分隔线与内边距也一致。 */
+.ui-date-actions {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
-  gap: 6px;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 2px 0;
+  border-top: 1px solid var(--divider);
+}
+
+.ui-date-link {
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--menu-text-dim);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ui-date-link:hover {
+  color: var(--menu-text);
+  background: var(--menu-hover);
+}
+
+.ui-date-link.is-accent {
+  color: var(--accent);
 }
 
 /* ── 纯日期选择器（DatePicker） ────────────────────────────────
    与 DateTimePicker 共用 .ui-cal-* 网格；这里只补触发区、底部操作与
    错误提示。颜色全部走 Token，四套主题自动适配。 */
 
+/* 纯日期触发区：视觉与尺寸来自 .ui-date-trigger，这里只负责宽度与定位。 */
 .ui-dp {
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 4px;
   width: 100%;
-  min-width: 0;
-  min-height: 30px;
-  padding: 0 5px 0 8px;
-  background: var(--control-face);
-  box-shadow: var(--control-shadow);
-  border: 1px solid transparent;
-  border-radius: var(--radius-control);
-  transition: box-shadow 0.14s var(--ease-out), border-color 0.14s var(--ease-out);
-}
-
-.ui-dp.size-sm {
-  min-height: 26px;
-  padding: 0 3px 0 6px;
-}
-
-.ui-dp:hover:not(.is-disabled) {
-  box-shadow: var(--control-shadow-hover, var(--control-shadow));
-}
-
-.ui-dp.is-open,
-.ui-dp:focus-within {
-  box-shadow: var(--control-shadow-focus);
-  border-color: var(--accent);
-}
-
-.ui-dp.is-disabled {
-  opacity: 0.55;
 }
 
 /* 内嵌输入消费者：挂 .input-embedded（见文件上方「嵌入式输入原语」）。
@@ -1266,16 +1283,9 @@
 }
 
 .ui-dp-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: 272px;
-  max-width: 100%;
-  min-width: 0;
-  /* 上下都放不下时允许日历区内部滚动；footer 固定可见 */
+  /* 宽度、内边距与纵向节奏由 .ui-date-panel 统一；
+     这里只允许日历区内部滚动，底部操作固定可见。 */
   max-height: calc(var(--popover-max-h, 440px) - 8px);
-  padding: 4px;
-  color: var(--menu-text);
 }
 
 .ui-dp-main {
@@ -1297,38 +1307,7 @@
   background-clip: padding-box;
 }
 
-/* 格子等高：比 DateTimePicker 稍大，仍保持七列等宽 */
-.ui-dp-panel .ui-cal-day {
-  height: 28px;
-  font-size: 11.5px;
-}
-
-.ui-dp-foot {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 2px 0;
-}
-
-.ui-dp-link {
-  padding: 3px 6px;
-  font-size: 11px;
-  color: var(--menu-text-dim);
-  background: transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.ui-dp-link:hover {
-  color: var(--menu-text);
-  background: var(--menu-hover);
-}
-
-.ui-dp-link.is-accent {
-  color: var(--accent);
-}
+/* 日历区内部滚动时，日格尺寸仍由 .ui-cal-day 统一，不再单独放大。 */
 
 /* ── 与既有样式类对接（保持旧布局尺寸） ─────────────────────── */
 
@@ -1363,11 +1342,11 @@
   .ui-switch-thumb,
   .ui-option,
   .ui-cal-day,
-  .ui-dp {
+  .ui-date-trigger {
     transition: none;
   }
   .ui-select-trigger:active:not(:disabled),
-  .ui-dtp-trigger:active:not(:disabled),
+  .ui-date-trigger:active:not(:disabled):not(.is-disabled),
   .ui-checkbox input:active:not(:disabled) + .ui-checkbox-box {
     transform: none;
   }
@@ -1428,7 +1407,7 @@
   }
 
   .ui-select-trigger,
-  .ui-dtp-trigger,
+  .ui-date-trigger,
   .ui-number {
     border: 1px solid CanvasText;
   }
@@ -1439,4 +1418,99 @@
 .task-nav-btn[data-default="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* 日期组件按钮样式复位。
+   src/widgets/widgets-desktop.css 在最后声明的 @layer widget-window 里写了
+   全局 `button { font: inherit; color: inherit; border: 0; background: none }`，
+   其层优先级高于 @layer ui，会把日期组件的触发区底色/文字色、日格的选中与
+   hover 底色、底部操作强调色全部退化为按钮默认值。这里用无层级规则（优先级
+   高于任何 @layer）把日期组件的必要视觉显式复位，数值与上面 @layer ui 中的
+   视觉基座一致；若后续把该全局规则收敛到 .widget-window 作用域，本段可直接
+   删除而不改变视觉结果。 */
+.ui-date-trigger {
+  font-size: var(--input-font-size);
+  color: var(--text-primary);
+  background: var(--control-face);
+  border: 1px solid transparent;
+}
+
+.ui-date-trigger.size-sm {
+  font-size: var(--input-font-size-sm);
+}
+
+.ui-date-trigger.is-placeholder {
+  color: var(--text-tertiary);
+}
+
+.ui-date-trigger.is-open,
+.ui-date-trigger:focus-visible,
+.ui-date-trigger:focus-within {
+  border-color: var(--accent);
+}
+
+.ui-cal-day {
+  font-size: 11.5px;
+  color: var(--menu-text);
+  background: transparent;
+}
+
+.ui-cal-day:hover {
+  background: var(--menu-hover);
+}
+
+.ui-cal-day:active {
+  background: var(--menu-active-face);
+  color: var(--menu-active-text);
+}
+
+.ui-cal-day.is-selected {
+  background: var(--menu-active-face);
+  color: var(--menu-active-text);
+  font-weight: 600;
+}
+
+.ui-date-link {
+  font-size: 11px;
+  color: var(--menu-text-dim);
+  background: transparent;
+}
+
+.ui-date-link:hover {
+  color: var(--menu-text);
+  background: var(--menu-hover);
+}
+
+.ui-date-link.is-accent {
+  color: var(--accent);
+}
+
+/* ── 拖拽光标语义（2026-11-05 · drag-cursor-feedback）────────────
+   只表达「可拖 / 正在拖」，不参与命中判定，也不改变 Tauri startDragging。
+   标题栏拖拽区挂 .ui-drag-surface（grab）；拖拽会话期间容器加 .is-dragging，
+   整组切换为 grabbing。按钮与操作区自带 cursor，不受影响。 */
+.ui-drag-surface {
+  cursor: grab;
+}
+
+.ui-drag-session.is-dragging,
+.ui-drag-session.is-dragging .ui-drag-surface {
+  cursor: grabbing;
+}
+
+/* 标题栏操作区没有 data-tauri-drag-region（不会触发原生拖动），
+   空白间隙保持默认箭头，避免误示可拖。按钮仍由全局 button 规则给 pointer。 */
+.titlebar-actions {
+  cursor: default;
+}
+
+/* 暂存架图片灯箱：舞台与图片可平移（styles.css 已给图片 grab），
+   按住拖动期间切换为 grabbing。舞台遮罩本体不在此列，保持默认箭头。 */
+.shelf-lightbox-stage {
+  cursor: grab;
+}
+
+.shelf-lightbox-stage.is-dragging,
+.shelf-lightbox-stage.is-dragging img {
+  cursor: grabbing;
 }

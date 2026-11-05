@@ -1197,6 +1197,80 @@ describe("应用面板", () => {
     await screen.findByText("该快捷目标已不存在，列表已刷新");
     await waitFor(() => expect(screen.queryByText("Obsidian")).toBeNull());
   });
+
+  it("启动进行中删除按钮禁用：不打开确认、不重复启动", async () => {
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    let resolveNavigate!: (value: Record<string, unknown>) => void;
+    navNavigate.mockReturnValue(new Promise((resolve) => { resolveNavigate = resolve; }));
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+
+    fireEvent.click(screen.getByRole("button", { name: "启动 Obsidian" }));
+    const del = screen.getByRole("button", {
+      name: "从快捷列表删除 Obsidian",
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(del.disabled).toBe(true));
+
+    fireEvent.click(del);
+    expect(screen.queryByText(/从快捷列表删除「Obsidian」/)).toBeNull();
+    expect(navDeleteTarget).not.toHaveBeenCalled();
+    expect(navNavigate).toHaveBeenCalledTimes(1);
+
+    resolveNavigate({
+      success: true,
+      requested_action: "launch",
+      actual_action: "launch",
+      fallback_used: false,
+      target_id: "a",
+      verification_level: "launched",
+    });
+  });
+
+  it("确认删除重复点击只调用一次后端命令", async () => {
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    let resolveDelete!: () => void;
+    navDeleteTarget.mockReturnValue(new Promise<void>((resolve) => { resolveDelete = resolve; }));
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+
+    fireEvent.click(screen.getByRole("button", { name: "从快捷列表删除 Obsidian" }));
+    const confirm = await screen.findByRole("button", { name: "删除" });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(navDeleteTarget).toHaveBeenCalledTimes(1));
+
+    // 删除进行中按钮禁用，重复点击不会再发一次请求
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(navDeleteTarget).toHaveBeenCalledTimes(1);
+
+    resolveDelete();
+  });
+
+  it.each([1, 3, 4, 5, 7, 8, 20])(
+    "应用数量 %i 时添加入口固定在网格末尾，与普通项共用同一单元结构",
+    async (count) => {
+      const list = Array.from({ length: count }, (_, i) => target(`a${i}`, `应用${i}`));
+      useNavigationStore.setState({ targets: list, targetsLoaded: true, targetsError: null });
+      render(<AppsLite />);
+      await screen.findByText("应用0");
+
+      const grid = document.querySelector(".cap-app-grid") as HTMLElement;
+      expect(grid).toBeTruthy();
+      // 普通应用各占一个 slot，最后一个是加号入口
+      expect(document.querySelectorAll(".cap-app-slot")).toHaveLength(count);
+      expect(grid.children.length).toBe(count + 1);
+
+      const add = screen.getByRole("button", { name: "添加应用" });
+      expect(grid.lastElementChild).toBe(add);
+      // 与普通项共用 `.cap-app` 单元尺寸规范；纯图标，不靠文字撑高
+      expect(add.className.split(/\s+/)).toEqual(
+        expect.arrayContaining(["cap-app", "cap-app-add"]),
+      );
+      expect(add.textContent).toBe("");
+      expect(add.querySelector(".cap-app-name")).toBeNull();
+      expect(add.querySelector(".cap-app-avatar.is-add")).toBeTruthy();
+    },
+  );
 });
 
 describe("错误状态（读取失败绝不伪装成空态）", () => {

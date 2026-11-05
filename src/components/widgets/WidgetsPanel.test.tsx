@@ -328,6 +328,9 @@ describe("微件面板", () => {
 
     expect(item().desktop.visible).toBe(true);
     expect(screen.getByRole("button", { name: "停用「今日任务」" })).toBeTruthy();
+    // 图标按钮的无障碍名称必须反映当前动作（显示 → 隐藏），避免屏幕阅读器误读。
+    const hideToggle = screen.getByRole("button", { name: "在桌面隐藏「今日任务」" });
+    expect(hideToggle.getAttribute("aria-pressed")).toBe("true");
 
     fireEvent.click(screen.getByRole("button", { name: "停用「今日任务」" }));
     expect(item().enabled).toBe(false);
@@ -336,7 +339,7 @@ describe("微件面板", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "添加微件" }));
     fireEvent.click(screen.getByRole("button", { name: "将「今日任务」添加到工作台" }));
-    fireEvent.click(screen.getByRole("button", { name: "在桌面显示「今日任务」" }));
+    fireEvent.click(screen.getByRole("button", { name: "在桌面隐藏「今日任务」" }));
     expect(item().desktop.visible).toBe(false);
   });
 
@@ -674,7 +677,27 @@ describe("微件面板", () => {
     render(<WidgetsPanel />);
 
     fireEvent.click(screen.getByRole("button", { name: "恢复默认微件布局" }));
+    expect(screen.getByRole("dialog", { name: "恢复默认微件布局" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
     expect(screen.queryByText("还没有启用任何微件")).toBeNull();
+  });
+
+  it("取消恢复默认不会改变现有布局", () => {
+    const items = defaultWidgetItems().map((item) => ({ ...item, enabled: false }));
+    const today = items.find((item) => item.widget_id === "today-tasks")!;
+    today.enabled = true;
+    today.desktop.visible = true;
+    useWidgetsStore.setState({ widgets: items, hydrated: true });
+
+    render(<WidgetsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认微件布局" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    const target = useWidgetsStore
+      .getState()
+      .widgets.find((item) => item.widget_id === "today-tasks")!;
+    expect(target.enabled).toBe(true);
+    expect(target.desktop.visible).toBe(true);
   });
 
   it("恢复默认会关闭桌面显示，且页面与微件库不重复出现入口", () => {
@@ -700,6 +723,8 @@ describe("微件面板", () => {
     ).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "恢复默认微件布局" }));
+    expect(screen.getByText(/关闭桌面显示/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
 
     const target = useWidgetsStore
       .getState()
@@ -713,6 +738,26 @@ describe("微件面板", () => {
         (toast) => toast.message.includes("关闭桌面显示") && toast.kind === "info",
       ),
     ).toBe(true);
+  });
+
+  it("恢复默认持久化失败时不提示成功", () => {
+    enable();
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    try {
+      render(<WidgetsPanel />);
+      fireEvent.click(screen.getByRole("button", { name: "恢复默认微件布局" }));
+      fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
+
+      expect(
+        useUiStore.getState().toasts.some((toast) => toast.message.includes("已恢复默认")),
+      ).toBe(false);
+      expect(useUiStore.getState().toasts.some((toast) => toast.kind === "error")).toBe(true);
+      expect(useWidgetsStore.getState().persistError).toBeTruthy();
+    } finally {
+      setItem.mockRestore();
+    }
   });
 
   it("注入 A/C 数据源后显示真实倒计时与统计，而不是占位", () => {

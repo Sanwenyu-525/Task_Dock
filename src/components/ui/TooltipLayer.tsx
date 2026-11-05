@@ -12,6 +12,9 @@
 //! - 方向默认向上；锚点可用 `data-tip-placement`（top/bottom/left/right）改向，
 //!   距离可用 `data-tip-offset`（0–64，CSS px）微调；
 //!   供「气泡会落在原生区域之外」的锚点（胶囊轨道）把气泡指向可见区；
+//! - 胶囊折叠态只剩 56px 翼片被 Win32 区域裁切：锚点可用 `data-tip-compact`
+//!   换用紧凑气泡，并用 `data-tip-padding="0"` 取消视口留白，避免气泡被
+//!   收敛进轨道后被区域切掉内缘；
 //! - 与原生 `title` 互斥：需要主题化提示的控件用 `data-tip`，
 //!   纯文本截断提示（非交互元素）仍然保留原生 `title`。
 
@@ -43,6 +46,22 @@ function readOffset(el: HTMLElement): number {
 
 /** 气泡与窗口边缘的最小留白。 */
 const VIEWPORT_PADDING = 8;
+/** `data-tip-padding` 上限：再大就不是为贴边锚点服务了。 */
+const MAX_PADDING = 24;
+/**
+ * 允许锚点取消留白（胶囊折叠态）：窗口边缘就是翼片边缘，8px 留白会把
+ * 本已放得下的紧凑气泡推进轨道，再被 `SetWindowRgn` 切掉内缘。
+ */
+function readPadding(el: HTMLElement): number {
+  const raw = el.dataset.tipPadding?.trim();
+  if (!raw) return VIEWPORT_PADDING;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.min(MAX_PADDING, Math.max(0, Math.round(n))) : VIEWPORT_PADDING;
+}
+/** 紧凑气泡：字号/内边距更小，保证折叠态气泡横跨翼片厚度也能完整显示。 */
+function readCompact(el: HTMLElement): boolean {
+  return el.dataset.tipCompact === "1";
+}
 
 export interface TipRect {
   left: number;
@@ -120,6 +139,10 @@ interface TipState {
   placement: Placement;
   /** 与锚点的外扩距离（默认 6）：胶囊展开态用它把气泡推进面板可见区。 */
   offset: number;
+  /** 视口留白：折叠态胶囊传 0，让气泡可以贴到翼片内缘仍不被区域裁掉。 */
+  padding: number;
+  /** 紧凑气泡：胶囊折叠态用更小的字号/内边距，控制在 56px 翼片厚度内。 */
+  compact: boolean;
 }
 
 export default function TooltipLayer() {
@@ -150,7 +173,14 @@ export default function TooltipLayer() {
       if (!text) return;
       currentRef.current = el;
       anchorRef.current = el;
-      setTip({ el, text, placement: readPlacement(el), offset: readOffset(el) });
+      setTip({
+        el,
+        text,
+        placement: readPlacement(el),
+        offset: readOffset(el),
+        padding: readPadding(el),
+        compact: readCompact(el),
+      });
     };
 
     const onOver = (e: MouseEvent) => {
@@ -253,6 +283,7 @@ export default function TooltipLayer() {
         tip.placement,
         tip.offset,
         { width: window.innerWidth, height: window.innerHeight },
+        tip.padding,
       );
       setPosition((prev) =>
         prev && next && prev.left === next.left && prev.top === next.top ? prev : next
@@ -294,7 +325,7 @@ export default function TooltipLayer() {
       layer={null}
       offsetPx={tip?.offset ?? DEFAULT_OFFSET}
       role="tooltip"
-      className="ui-tooltip"
+      className={tip?.compact ? "ui-tooltip is-compact" : "ui-tooltip"}
       restoreFocus={false}
       dismissOnOutsidePress={false}
       flipToSide={false}

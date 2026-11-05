@@ -2,6 +2,7 @@
 //!
 //! 只渲染，不做决策：状态来自 `railStatus()`（真实 store 聚合），
 //! 相位来自 `useEdgeSnapStore`，当前分类来自 `useCapsuleStore`。
+//! 底部入口自上而下：展开完整面板 → 收起为极简标签 → 收起功能面板。
 //!
 //! 交互约定：
 //! - 点击分类 = 展开该分类面板；再次点击当前分类 = 收起（由 CapsuleDock 处理）；
@@ -12,13 +13,14 @@
 //!   折叠态只有翼片可画，退回沿轨道朝中心的方向。
 //! - 无障碍信息仍以 `aria-label` 为准（它比提示文案更完整，例如带待办数）。
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   Expand,
+  Shrink,
 } from "lucide-react";
 import CapsuleWing from "./CapsuleWing";
 import {
@@ -137,6 +139,71 @@ export const CAPSULE_TIP_INWARD_OFFSET = capsuleTipInwardOffset(CAP_ITEM_CSS);
 /** 收起按钮（26px）的外扩距离：25。 */
 export const CAPSULE_TIP_COLLAPSE_OFFSET = capsuleTipInwardOffset(CAP_COLLAPSE_CSS);
 
+/**
+ * 轨道拖拽光标会话：轨道空白处按下（事件 target 自身带 `data-tauri-drag-region`）
+ * 时进入 `is-dragging`（grabbing）；原生拖拽期间 WebView2 收不到指针事件，
+ * 因此结束信号取 pointerup / pointercancel / blur / visibilitychange，以及
+ * 恢复后的「按键已松开」pointermove。一次会话只装一组监听，结束即全部摘除。
+ * 按钮自身不带 drag-region，按下既不进入会话，也不会被误判为拖动。
+ */
+function useRailDragCursor() {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    let endSession: (() => void) | null = null;
+
+    const stop = () => {
+      root.classList.remove("is-dragging");
+      setDragging(false);
+      endSession?.();
+      endSession = null;
+    };
+
+    const start = () => {
+      stop(); // 上一条会话若因事件缺失没收尾，先清掉再开新的
+      root.classList.add("is-dragging");
+      setDragging(true);
+      const end = () => stop();
+      const onMove = (event: PointerEvent) => {
+        if (event.buttons === 0) stop();
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
+      window.addEventListener("blur", end);
+      document.addEventListener("visibilitychange", end);
+      endSession = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        window.removeEventListener("blur", end);
+        document.removeEventListener("visibilitychange", end);
+      };
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const target = event.target;
+      if (!(target instanceof Element) || !root.contains(target)) return;
+      // 与 Tauri drag.js 一致：只认事件 target 自身的 data-tauri-drag-region
+      if (!target.hasAttribute("data-tauri-drag-region")) return;
+      start();
+    };
+
+    root.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      stop();
+      root.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, []);
+
+  return { railRef: rootRef, dragging };
+}
+
 export default function CapsuleRail({
   edge,
   status,
@@ -145,6 +212,7 @@ export default function CapsuleRail({
   onSelect,
   onCollapse,
   onForm,
+  onTab,
 }: {
   edge: SnapEdge;
   status: RailStatus;
@@ -155,8 +223,11 @@ export default function CapsuleRail({
   onCollapse: () => void;
   /** 可选：切到「完整面板」停靠形态（未启用吸附时缺省）。 */
   onForm?: () => void;
+  /** 可选：收起为极简标签（Edge Tab）；未启用吸附时缺省。 */
+  onTab?: () => void;
 }) {
   const vertical = edge === "left" || edge === "right";
+  const { railRef, dragging } = useRailDragCursor();
   const CollapseIcon =
     edge === "left" ? ChevronLeft : edge === "right" ? ChevronRight : edge === "top" ? ChevronUp : ChevronDown;
   const toneLabel = status.agentsLoaded
@@ -164,6 +235,11 @@ export default function CapsuleRail({
         status.agentAttention > 0 ? t("capsule.attention", { n: status.agentAttention }) : ""
       }`
     : t("capsule.tone.unknown");
+  // 折叠态窗口只剩 56px 翼片并受 Win32 区域裁切：长文案横跨厚度时会被切掉内缘。
+  // 折叠态统一切到紧凑气泡，并取消视口留白（8px 留白同样会把气泡推进轨道）。
+  const compactTipProps = expanded
+    ? {}
+    : { "data-tip-compact": "1", "data-tip-padding": "0" };
 
   // ── 入口显隐与排序（统一导航架构）──────────────────────────────────
   // 只过滤图标渲染：外轮廓、吸附与几何全部由 capsuleLayout / Win32 区域决定，
@@ -205,7 +281,17 @@ export default function CapsuleRail({
 
   return (
     <div
-      className={`capsule-rail cap-${vertical ? "v" : "h"} edge-${edge}`}
+      ref={railRef}
+      className={[
+        "capsule-rail",
+        `cap-${vertical ? "v" : "h"}`,
+        `edge-${edge}`,
+        "ui-drag-surface",
+        "ui-drag-session",
+        dragging ? "is-dragging" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       data-tauri-drag-region
       role="toolbar"
       aria-orientation={vertical ? "vertical" : "horizontal"}
@@ -225,6 +311,7 @@ export default function CapsuleRail({
           data-tip={CATEGORY_LABELS.agents}
           data-tip-placement={railTipPlacement("docked", edge, expanded, true)}
           data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
+          {...compactTipProps}
           aria-label={t("capsule.openAgents", { label: toneLabel })}
           aria-pressed={expanded && active === "agents"}
           onClick={() => onSelect("agents")}
@@ -255,6 +342,7 @@ export default function CapsuleRail({
               data-tip={CATEGORY_LABELS[c]}
               data-tip-placement={railTipPlacement("docked", edge, expanded)}
               data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
+              {...compactTipProps}
               aria-label={
                 c === "tasks" && status.tasksLoaded
                   ? status.overdue > 0
@@ -294,13 +382,34 @@ export default function CapsuleRail({
         <button
           type="button"
           className="cap-collapse cap-form"
-          data-tip={t("capsule.toFullTip")}
+          /* 折叠态只保留「完整面板 / 收起」两个短词：完整提示在展开态仍可读，
+             `aria-label` 两种状态都保持完整语义 */
+          data-tip={expanded ? t("capsule.toFullTip") : t("capsule.toFull")}
           data-tip-placement={railTipPlacement("docked", edge, expanded)}
           data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
+          {...compactTipProps}
           aria-label={t("capsule.toFull")}
           onClick={onForm}
         >
           <Expand size={15} strokeWidth={2} aria-hidden="true" />
+        </button>
+      )}
+
+      {/* 极简吸附态入口：紧贴在「完整面板」按钮下方，尺寸/材质/焦点与它完全一致；
+          图标四角朝内（与 Expand 的朝外四角相反），一眼可分。
+          语义是 Capsule → Edge Tab，绝不接完整面板的收起逻辑。 */}
+      {onTab && (
+        <button
+          type="button"
+          className="cap-collapse cap-to-tab"
+          data-tip={expanded ? t("capsule.toTabTip") : t("capsule.collapse")}
+          data-tip-placement={railTipPlacement("docked", edge, expanded)}
+          data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
+          {...compactTipProps}
+          aria-label={t("capsule.toTabAria")}
+          onClick={onTab}
+        >
+          <Shrink size={15} strokeWidth={2} aria-hidden="true" />
         </button>
       )}
 

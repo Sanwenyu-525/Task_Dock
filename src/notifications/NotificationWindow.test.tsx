@@ -91,6 +91,22 @@ describe("六状态渲染", () => {
   }
 });
 
+describe("品牌图标", () => {
+  it("卡片左上角使用项目 logo 图片，而非内联品牌符号", async () => {
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "reminder", title: "写周报", body: "11-05 09:00" })]);
+    await waitFor(() => expect(document.querySelector(".ntf-card")).toBeTruthy());
+    const symbol = document.querySelector(".ntf-app-symbol");
+    expect(symbol, "卡片头部品牌图标容器应存在").toBeTruthy();
+    const img = symbol!.querySelector("img");
+    expect(img, "品牌图标应渲染 img 而非 svg").toBeTruthy();
+    expect(symbol!.querySelector("svg")).toBeNull();
+    expect(img!.getAttribute("src")).toMatch(/64x64\.png/);
+    expect(img!.getAttribute("width")).toBe("18");
+    expect(img!.getAttribute("height")).toBe("18");
+  });
+});
+
 describe("真实数据边界", () => {
   it("执行中卡不伪造百分比（不确定进度，无数字标签）", async () => {
     render(<NotificationWindow />);
