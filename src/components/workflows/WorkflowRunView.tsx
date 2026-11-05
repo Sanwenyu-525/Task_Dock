@@ -1,11 +1,10 @@
-//! 工作流运行对话框：运行确认 → 执行进度 → 逐步骤结果。
+//! 工作流运行详情（主内容区页内视图，不再使用 Dialog）。
 //!
-//! 进度来自 store（面板订阅 `workflow-run-progress` 事件推送后写入）；
-//! 打开对话框时若该工作流正在执行，直接显示进度。关闭对话框不影响后台执行，
-//! 重新打开可回到进度视图（活动运行在 store.refreshActive 中按需查询）。
+//! 进度来自 store（面板订阅 `workflow-run-progress` 事件推送后写入）；本视图不重复订阅。
+//! 返回列表只离开视图、不取消后台执行；同一工作流/任一同刻运行由 store 与后端双重约束。
 
-import { useEffect, useState } from "react";
-import { Loader2, Pause, Play, Square } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeft, Loader2, Pause, Play, Square } from "lucide-react";
 import {
   WORKFLOW_RUN_STATUS_LABELS,
   WORKFLOW_STEP_STATUS_LABELS,
@@ -13,7 +12,6 @@ import {
   stepParamsSummary,
 } from "./display";
 import type { WorkflowDetail, WorkflowRunStepStatus } from "../../lib/bridge";
-import { Dialog } from "../ui";
 import { useWorkflowsStore, errText } from "../../store/useWorkflowsStore";
 
 const STEP_STATUS_KIND: Record<WorkflowRunStepStatus, string> = {
@@ -25,14 +23,17 @@ const STEP_STATUS_KIND: Record<WorkflowRunStepStatus, string> = {
   cancelled: "muted",
 };
 
-export default function WorkflowRunDialog({
-  open,
-  onClose,
+export default function WorkflowRunView({
   workflow,
+  runId,
+  onStarted,
+  onBack,
 }: {
-  open: boolean;
-  onClose: () => void;
-  workflow: WorkflowDetail | null;
+  workflow: WorkflowDetail;
+  /** 已跟踪的运行 ID；null = 尚未启动 */
+  runId: string | null;
+  onStarted: (runId: string) => void;
+  onBack: () => void;
 }) {
   const activeRun = useWorkflowsStore((s) => s.activeRun);
   const activeRunDetail = useWorkflowsStore((s) => s.activeRunDetail);
@@ -45,32 +46,29 @@ export default function WorkflowRunDialog({
   const [busy, setBusy] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (open) {
-      setStartError(null);
-      setControlError(null);
-    }
-  }, [open]);
-
-  if (!workflow) return null;
-
-  const isThisActive = Boolean(activeRun && activeRun.workflow_id === workflow.id);
-  const detail = isThisActive ? activeRunDetail : null;
+  const detail =
+    activeRunDetail &&
+    activeRunDetail.workflow_id === workflow.id &&
+    (activeRunDetail.id === runId || activeRun?.run_id === runId)
+      ? activeRunDetail
+      : null;
   const running = Boolean(detail && detail.finished_at === null);
-  const paused = Boolean(activeRun?.paused && isThisActive);
+  const paused = Boolean(activeRun?.run_id === runId && activeRun?.paused);
   const finished = Boolean(detail && detail.finished_at !== null);
-  const conflict = Boolean(activeRun && activeRun.workflow_id !== workflow.id);
+  const conflict = Boolean(activeRun && activeRun.run_id !== runId);
 
   const enabledSteps = workflow.steps.filter((s) => s.enabled);
   const total = detail?.total_steps ?? enabledSteps.length;
   const completed = detail?.completed_steps ?? 0;
 
   const start = async () => {
-    if (busy) return;
+    if (busy || running || conflict) return;
     setBusy(true);
     setStartError(null);
+    setControlError(null);
     try {
-      await runWorkflow(workflow.id);
+      const started = await runWorkflow(workflow.id);
+      onStarted(started.id);
     } catch (e) {
       setStartError(errText(e));
     } finally {
@@ -84,58 +82,16 @@ export default function WorkflowRunDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      size="lg"
-      title={running ? `运行：${workflow.name}` : `工作流：${workflow.name}`}
-      ariaLabel={running ? `运行：${workflow.name}` : `工作流：${workflow.name}`}
-      footer={
-        <>
-          {running ? (
-            <>
-              {paused ? (
-                <button type="button" className="btn" onClick={guard(() => resumeWorkflow(workflow.id))}>
-                  <Play size={13} aria-hidden="true" /> 继续
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={guard(() => pauseWorkflow(workflow.id))}
-                  data-tip="当前步骤完成后暂停（运行中的步骤不可中断）"
-                >
-                  <Pause size={13} aria-hidden="true" /> 暂停
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn danger"
-                onClick={guard(() => cancelWorkflow(workflow.id))}
-                data-tip="不再开始后续步骤；已启动的动作不会撤销"
-              >
-                <Square size={12} aria-hidden="true" /> 取消运行
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              className="btn primary"
-              onClick={start}
-              disabled={busy || conflict}
-              data-autofocus
-            >
-              {busy ? <Loader2 size={13} className="spin" aria-hidden="true" /> : null}
-              <Play size={13} aria-hidden="true" /> 运行
-            </button>
-          )}
-          <button type="button" className="btn" onClick={onClose}>
-            {running ? "后台执行，关闭" : "关闭"}
-          </button>
-        </>
-      }
-    >
-      {!isThisActive && !finished ? (
+    <div className="wf-subpage" role="region" aria-label={`运行：${workflow.name}`}>
+      <header className="wf-subpage-head">
+        <button type="button" className="btn sm" onClick={onBack} aria-label="返回工作流列表">
+          <ArrowLeft size={13} aria-hidden="true" /> 返回列表
+        </button>
+        <h2 className="wf-subpage-title">运行：{workflow.name}</h2>
+        {running ? <span className="wf-subpage-note">返回列表后仍在后台执行</span> : null}
+      </header>
+
+      {!detail ? (
         <div className="wf-run-confirm">
           <p className="wf-run-note">
             将按顺序执行 {enabledSteps.length} 个启用步骤。运行中的单个步骤不可中断；
@@ -165,10 +121,20 @@ export default function WorkflowRunDialog({
               </li>
             ))}
           </ol>
+          <div className="wf-run-actions">
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => void start()}
+              disabled={busy || conflict || enabledSteps.length === 0}
+              data-autofocus
+            >
+              {busy ? <Loader2 size={13} className="spin" aria-hidden="true" /> : null}
+              <Play size={13} aria-hidden="true" /> 运行
+            </button>
+          </div>
         </div>
-      ) : null}
-
-      {detail ? (
+      ) : (
         <div className="wf-run-progress" aria-live="polite">
           <div className="wf-run-meta">
             <span className={`wf-run-state kind-${detail.status}`}>
@@ -209,9 +175,50 @@ export default function WorkflowRunDialog({
               </li>
             ))}
           </ol>
+          <div className="wf-run-actions">
+            {running ? (
+              <>
+                {paused ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={guard(() => resumeWorkflow(workflow.id))}
+                  >
+                    <Play size={13} aria-hidden="true" /> 继续
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={guard(() => pauseWorkflow(workflow.id))}
+                    data-tip="当前步骤完成后暂停（运行中的步骤不可中断）"
+                  >
+                    <Pause size={13} aria-hidden="true" /> 暂停
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn danger"
+                  onClick={guard(() => cancelWorkflow(workflow.id))}
+                  data-tip="不再开始后续步骤；已启动的动作不会撤销"
+                >
+                  <Square size={12} aria-hidden="true" /> 取消运行
+                </button>
+              </>
+            ) : finished ? (
+              <button
+                type="button"
+                className="btn"
+                onClick={onBack}
+                data-autofocus
+              >
+                返回列表
+              </button>
+            ) : null}
+          </div>
           {finished ? <p className="wf-hint-text">运行已结束；详情保留在「历史」中。</p> : null}
         </div>
-      ) : null}
-    </Dialog>
+      )}
+    </div>
   );
 }

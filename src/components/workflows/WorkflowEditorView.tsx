@@ -3,8 +3,8 @@
 //! 由工作流列表页切换进入，不再使用 Dialog：不新开窗口、不铺全局遮罩，
 //! 列表与编辑器共用内容区的单一滚动容器。保存成功后由调用方回到列表。
 //!
-//! 保存走两条命令：编辑 = replace_steps（原子）→ update（元信息）；
-//! 新建 = workflow_create（元信息 + 步骤一次写入）。
+//! 保存：编辑 = workflow_save（元信息 + 步骤单事务），新建 = workflow_create（同样原子）。
+//! 任一失败整体回滚并保留全部输入，不会出现步骤已落库、界面只报失败的部分成功。
 //! 目标与快照选项由后端列表提供（导航目标 / 工作现场快照），前端不拼路径。
 //! 「添加步骤」复用统一 `Select`（内部 Popover：锚定、翻转、边界收敛与层级由基础组件负责）。
 
@@ -13,8 +13,7 @@ import { ArrowDown, ArrowLeft, ArrowUp, Loader2, Trash2 } from "lucide-react";
 import {
   WORKFLOW_STEP_TYPE_LABELS,
   workflowCreate,
-  workflowReplaceSteps,
-  workflowUpdate,
+  workflowSave,
   type WorkflowDetail,
   type WorkflowOnError,
   type WorkflowStepInput,
@@ -25,6 +24,7 @@ import { navListTargets, type NavTarget } from "../../lib/navigation";
 import { workspaceList, type SnapshotSummary } from "../../lib/bridge";
 import { Combobox, DateTimePicker, Select } from "../ui";
 import { errText } from "../../store/useWorkflowsStore";
+import { useTabGuard } from "../../lib/tabGuard";
 import type { WorkflowTemplate } from "./templates";
 
 /** 编辑器内的步骤草稿。 */
@@ -178,6 +178,15 @@ export default function WorkflowEditorView({
   const isCreate = workflow === null;
   const { name, description, steps } = form;
 
+  // 跨主 Tab 切换统一走 store 门禁；保存中拒绝切换，脏时先确认。
+  useTabGuard({
+    id: "workflow-editor",
+    label: isCreate ? "新建工作流" : `编辑工作流「${workflow?.name ?? ""}」`,
+    dirty,
+    busy,
+    discard: onCancel,
+  });
+
   // 同步防重入：状态更新到下一次渲染之间，连点保存不能触发第二次请求。
   const busyRef = useRef(false);
   const aliveRef = useRef(true);
@@ -310,11 +319,8 @@ export default function WorkflowEditorView({
       if (isCreate) {
         detail = await workflowCreate({ name: trimmed, description: description.trim(), steps: stepInputs });
       } else {
-        // 先原子替换步骤，再更新元信息；任一失败都会把错误抛给界面（保留用户输入）
-        detail = await workflowReplaceSteps(workflow.id, stepInputs);
-        if (detail.name !== trimmed || detail.description !== description.trim()) {
-          detail = await workflowUpdate(workflow.id, { name: trimmed, description: description.trim() });
-        }
+        // 元信息 + 步骤在一次事务内写入；失败整体回滚，界面保留全部输入。
+        detail = await workflowSave(workflow.id, trimmed, description.trim(), stepInputs);
       }
       // 卸载（如切换页面）后到达的响应不再回调，避免无效更新
       if (aliveRef.current) onSaved(detail);

@@ -12,8 +12,7 @@ import userEvent from "@testing-library/user-event";
 import type { WorkflowDetail } from "../../lib/bridge";
 
 const workflowCreate = vi.fn();
-const workflowReplaceSteps = vi.fn();
-const workflowUpdate = vi.fn();
+const workflowSave = vi.fn();
 const workspaceList = vi.fn();
 const navListTargets = vi.fn();
 
@@ -27,8 +26,7 @@ vi.mock("../../lib/bridge", () => ({
     restore_workspace: "恢复工作现场",
   },
   workflowCreate: (...a: unknown[]) => workflowCreate(...a),
-  workflowReplaceSteps: (...a: unknown[]) => workflowReplaceSteps(...a),
-  workflowUpdate: (...a: unknown[]) => workflowUpdate(...a),
+  workflowSave: (...a: unknown[]) => workflowSave(...a),
   workspaceList: (...a: unknown[]) => workspaceList(...a),
 }));
 
@@ -67,8 +65,7 @@ function renderEditor(
 
 beforeEach(() => {
   workflowCreate.mockReset();
-  workflowReplaceSteps.mockReset();
-  workflowUpdate.mockReset();
+  workflowSave.mockReset();
   workspaceList.mockReset();
   navListTargets.mockReset();
   workspaceList.mockResolvedValue([]);
@@ -111,12 +108,11 @@ describe("WorkflowEditorView", () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
   });
 
-  it("编辑：先原子替换步骤，再在名称变化时更新元信息", async () => {
+  it("编辑：元信息与步骤一次事务提交（不再分两步）", async () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();
     const existing = detail();
-    workflowReplaceSteps.mockResolvedValue(existing);
-    workflowUpdate.mockResolvedValue(detail({ name: "新流程" }));
+    workflowSave.mockResolvedValue(detail({ name: "新流程" }));
 
     renderEditor(existing, { onSaved });
 
@@ -125,11 +121,27 @@ describe("WorkflowEditorView", () => {
     await user.type(name, "新流程");
     await user.click(screen.getByRole("button", { name: "保存" }));
 
-    await waitFor(() => expect(workflowReplaceSteps).toHaveBeenCalledWith("w1", []));
     await waitFor(() =>
-      expect(workflowUpdate).toHaveBeenCalledWith("w1", { name: "新流程", description: "旧描述" }),
+      expect(workflowSave).toHaveBeenCalledWith("w1", "新流程", "旧描述", []),
     );
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+  });
+
+  it("编辑保存单事务失败：保留输入、明确失败，不回调 onSaved", async () => {
+    const user = userEvent.setup();
+    const onSaved = vi.fn();
+    workflowSave.mockRejectedValue(new Error("事务回滚"));
+
+    renderEditor(detail(), { onSaved });
+    const name = screen.getByLabelText("名称") as HTMLInputElement;
+    await user.clear(name);
+    await user.type(name, "未保存的新名字");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("事务回滚"));
+    expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe("未保存的新名字");
+    expect(screen.getByRole("status").textContent).toContain("未保存");
+    expect(onSaved).not.toHaveBeenCalled();
   });
 
   it("保存失败：保留表单内容并显示错误，不回调 onSaved", async () => {

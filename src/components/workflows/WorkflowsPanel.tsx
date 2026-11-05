@@ -1,8 +1,9 @@
-//! 一键工作流面板：工作流卡片列表 + 新建/模板入口 + 编辑/运行/历史对话框。
+//! 一键工作流面板：工作流卡片列表 + 新建/模板入口 + 页内编辑/运行/历史。
 //!
+//! 编辑、运行详情与历史都是同一内容区的子视图（不叠 Dialog）；返回列表恢复滚动位置。
 //! 事件订阅：面板挂载期间订阅 `workflow-run-progress`（订阅引用计数遵循
 //! createSubscriptionScope 模式，卸载即释放）；面板隐藏时运行照常进行，
-//! 重新挂载用 refreshActive() 按需查询，不做轮询。
+//! 重新挂载用 refreshActive() 按需查询，不做轮询；子视图不重复订阅。
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -29,8 +30,9 @@ import { ConfirmDialog } from "../ui";
 import { runStatusKind } from "./display";
 import { WORKFLOW_TEMPLATES } from "./templates";
 import WorkflowEditorView from "./WorkflowEditorView";
-import WorkflowRunDialog from "./WorkflowRunDialog";
-import WorkflowHistoryDialog from "./WorkflowHistoryDialog";
+import WorkflowRunView from "./WorkflowRunView";
+import WorkflowHistoryView from "./WorkflowHistoryView";
+import { useLocale } from "../../hooks/useLocale";
 
 /** 内容区的滚动容器（页面级单一滚动）：向上找第一个 overflow-y 可滚动的祖先。 */
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
@@ -44,6 +46,7 @@ function findScrollParent(el: HTMLElement | null): HTMLElement | null {
 }
 
 export default function WorkflowsPanel() {
+  const { t: tr } = useLocale();
   const workflows = useWorkflowsStore((s) => s.workflows);
   const workflowsLoading = useWorkflowsStore((s) => s.workflowsLoading);
   const workflowsError = useWorkflowsStore((s) => s.workflowsError);
@@ -60,16 +63,15 @@ export default function WorkflowsPanel() {
   const updateWorkflow = useWorkflowsStore((s) => s.updateWorkflow);
   const reorderWorkflows = useWorkflowsStore((s) => s.reorderWorkflows);
 
-  /** null = 列表态；非空 = 页面内编辑态（不再使用 Dialog）。 */
-  const [editing, setEditing] = useState<{
-    workflow: WorkflowDetail | null;
-    template: (typeof WORKFLOW_TEMPLATES)[number] | null;
-  } | null>(null);
+  /** null = 列表态；非空 = 同一内容区的子视图（编辑 / 运行详情 / 历史）。 */
+  type PanelPage =
+    | { kind: "edit"; workflow: WorkflowDetail | null; template: (typeof WORKFLOW_TEMPLATES)[number] | null }
+    | { kind: "run"; workflow: WorkflowDetail; runId: string | null }
+    | { kind: "history"; workflow: Workflow };
+  const [page, setPage] = useState<PanelPage | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  /** 进入编辑前列表的滚动位置：返回时恢复，避免用户回到列表顶部。 */
+  /** 进入子视图前列表的滚动位置：返回时恢复，避免用户回到列表顶部。 */
   const listScrollTop = useRef(0);
-  const [runTarget, setRunTarget] = useState<WorkflowDetail | null>(null);
-  const [historyTarget, setHistoryTarget] = useState<Workflow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Workflow | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -100,8 +102,8 @@ export default function WorkflowsPanel() {
     if (sc) listScrollTop.current = sc.scrollTop;
   };
 
-  const closeEditor = () => {
-    setEditing(null);
+  const closePage = () => {
+    setPage(null);
     requestAnimationFrame(() => {
       const sc = findScrollParent(rootRef.current);
       if (sc) sc.scrollTop = listScrollTop.current;
@@ -112,14 +114,14 @@ export default function WorkflowsPanel() {
     setActionError(null);
     if (!wf) {
       rememberListScroll();
-      setEditing({ workflow: null, template });
+      setPage({ kind: "edit", workflow: null, template });
       return;
     }
     setBusyId(wf.id);
     try {
       const detail = await workflowGet(wf.id);
       rememberListScroll();
-      setEditing({ workflow: detail, template: null });
+      setPage({ kind: "edit", workflow: detail, template: null });
     } catch (e) {
       setActionError(errorMessage(e));
     } finally {
@@ -127,22 +129,44 @@ export default function WorkflowsPanel() {
     }
   };
 
-  /** 保存成功：刷新列表并回到列表态（列表滚动位置由 closeEditor 恢复）。 */
+  /** 保存成功：刷新列表并回到列表态（列表滚动位置由 closePage 恢复）。 */
   const handleSaved = () => {
     void loadWorkflows();
-    closeEditor();
+    closePage();
   };
 
   const openRun = async (wf: Workflow) => {
     setActionError(null);
     setBusyId(wf.id);
     try {
-      setRunTarget(await workflowGet(wf.id));
+      const detail = await workflowGet(wf.id);
+      rememberListScroll();
+      const runId = activeRun?.workflow_id === wf.id ? activeRun.run_id : null;
+      setPage({ kind: "run", workflow: detail, runId });
     } catch (e) {
       setActionError(errorMessage(e));
     } finally {
       setBusyId(null);
     }
+  };
+
+  /** 列表横幅「查看进度」：重新进入正在后台执行的工作流详情。 */
+  const openActiveRun = async () => {
+    if (!activeRun) return;
+    setActionError(null);
+    try {
+      const detail = await workflowGet(activeRun.workflow_id);
+      rememberListScroll();
+      setPage({ kind: "run", workflow: detail, runId: activeRun.run_id });
+    } catch (e) {
+      setActionError(errorMessage(e));
+    }
+  };
+
+  const openHistory = (wf: Workflow) => {
+    setActionError(null);
+    rememberListScroll();
+    setPage({ kind: "history", workflow: wf });
   };
 
   const guard = (id: string, fn: () => Promise<unknown>) => async () => {
@@ -174,20 +198,31 @@ export default function WorkflowsPanel() {
     : null;
 
   return (
-    <div ref={rootRef} className={`workflows-panel${editing ? " wf-editor-page" : ""}`}>
-      {editing ? (
+    <div ref={rootRef} className={`workflows-panel${page ? " wf-editor-page" : ""}`}>
+      {page?.kind === "edit" ? (
         <WorkflowEditorView
-          workflow={editing.workflow}
-          template={editing.template}
-          onCancel={closeEditor}
+          workflow={page.workflow}
+          template={page.template}
+          onCancel={closePage}
           onSaved={handleSaved}
         />
+      ) : page?.kind === "run" ? (
+        <WorkflowRunView
+          workflow={page.workflow}
+          runId={page.runId}
+          onStarted={(runId) =>
+            setPage((p) => (p?.kind === "run" ? { ...p, runId } : p))
+          }
+          onBack={closePage}
+        />
+      ) : page?.kind === "history" ? (
+        <WorkflowHistoryView workflow={page.workflow} onBack={closePage} />
       ) : (
         <>
       <header className="wf-head-row">
         <div>
-          <h2 className="wf-title">工作流</h2>
-          <p className="wf-subtitle">把常用操作编排为一次点击的固定顺序流程（白名单动作，无可执行脚本）。</p>
+          <h2 className="wf-title">{tr("workflows.title")}</h2>
+          <p className="wf-subtitle">{tr("workflows.subtitle")}</p>
         </div>
         <div className="wf-head-actions">
           <button
@@ -226,6 +261,10 @@ export default function WorkflowsPanel() {
             {activeRun.cancel_requested ? "（取消中）" : ""}
             {activeRunDetail ? ` · ${activeRunDetail.completed_steps}/${activeRunDetail.total_steps} 步` : ""}
           </span>
+          <span className="flex-spacer" />
+          <button type="button" className="btn sm" onClick={() => void openActiveRun()}>
+            查看进度
+          </button>
         </div>
       ) : null}
 
@@ -261,8 +300,8 @@ export default function WorkflowsPanel() {
 
       {workflows && workflows.length === 0 ? (
         <div className="wf-empty">
-          <p>还没有工作流。用「新建」从空白开始，或从开发 / 办公示例模板套用一份再修改。</p>
-          <p className="wf-hint-text">模板里的应用、目录、网页目标必须由你选择，Task Dock 不会假设安装了特定软件。</p>
+          <p>{tr("workflows.empty")}</p>
+          <p className="wf-hint-text">{tr("workflows.emptyHint")}</p>
         </div>
       ) : null}
 
@@ -295,7 +334,7 @@ export default function WorkflowsPanel() {
                       上次：{WORKFLOW_RUN_STATUS_LABELS[last.status]} · {last.started_at_local}
                     </span>
                   ) : (
-                    <span>从未运行</span>
+                    <span>{tr("workflows.neverRun")}</span>
                   )}
                 </div>
                 <div className="wf-card-actions">
@@ -328,7 +367,7 @@ export default function WorkflowsPanel() {
                     className="icon-btn sm"
                     aria-label={`${w.name} 运行历史`}
                     data-tip="运行历史"
-                    onClick={() => setHistoryTarget(w)}
+                    onClick={() => openHistory(w)}
                   >
                     <History size={14} aria-hidden="true" />
                   </button>
@@ -389,16 +428,6 @@ export default function WorkflowsPanel() {
 
         </>
       )}
-      <WorkflowRunDialog
-        open={runTarget !== null}
-        onClose={() => setRunTarget(null)}
-        workflow={runTarget}
-      />
-      <WorkflowHistoryDialog
-        open={historyTarget !== null}
-        onClose={() => setHistoryTarget(null)}
-        workflow={historyTarget}
-      />
       <ConfirmDialog
         open={deleteTarget !== null}
         title="删除工作流？"

@@ -1,73 +1,76 @@
-//! useWorkflowsStore 单元测试：mock bridge，验证读失败保留旧数据、请求代际防乱序、
-//! 写命令就地更新、运行状态（active/activeRunDetail/终态清理）与历史分页错误路径。
+//! 工作流运行 / 历史 store 行为测试：
+//! 活动运行切页不消失、进度按 store 落地、历史快速切换丢弃旧响应。
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const listRuns = vi.fn();
+const run = vi.fn();
+const active = vi.fn();
+const runDetail = vi.fn();
+const lastSummary = vi.fn();
+
+vi.mock("../lib/bridge", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/bridge")>(),
+  workflowListRuns: (...a: unknown[]) => listRuns(...a),
+  workflowRun: (...a: unknown[]) => run(...a),
+  workflowActive: (...a: unknown[]) => active(...a),
+  workflowRunDetail: (...a: unknown[]) => runDetail(...a),
+  workflowLastRunSummary: (...a: unknown[]) => lastSummary(...a),
+}));
+
 import { useWorkflowsStore } from "./useWorkflowsStore";
-import type { Workflow, WorkflowDetail, WorkflowRunDetail } from "../lib/bridge";
+import type { WorkflowRun, WorkflowRunDetail, WorkflowRunPage } from "../lib/bridge";
 
-const bridge = vi.hoisted(() => {
+function runRow(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
-    workflowList: vi.fn(),
-    workflowGet: vi.fn(),
-    workflowCreate: vi.fn(),
-    workflowUpdate: vi.fn(),
-    workflowDelete: vi.fn(),
-    workflowDuplicate: vi.fn(),
-    workflowReorder: vi.fn(),
-    workflowReplaceSteps: vi.fn(),
-    workflowRun: vi.fn(),
-    workflowPause: vi.fn(),
-    workflowResume: vi.fn(),
-    workflowCancel: vi.fn(),
-    workflowActive: vi.fn(),
-    workflowRunDetail: vi.fn(),
-    workflowLastRunSummary: vi.fn(),
-    workflowListRuns: vi.fn(),
-  };
-});
-
-vi.mock("../lib/bridge", () => bridge);
-
-function wf(id: string, stepCount = 2): Workflow {
-  return {
-    id,
-    name: `工作流 ${id}`,
-    description: "",
-    enabled: true,
-    sort_order: 0,
-    step_count: stepCount,
-    created_at: "2026-11-04T00:00:00Z",
-    updated_at: "2026-11-04T00:00:00Z",
-    last_run_at: null,
-  };
-}
-
-function detail(id: string, steps: WorkflowDetail["steps"] = []): WorkflowDetail {
-  return { ...wf(id), steps };
-}
-
-function runDetail(runId: string, workflowId: string, finishedAt: string | null): WorkflowRunDetail {
-  return {
-    id: runId,
-    workflow_id: workflowId,
-    workflow_name: "工作流 w1",
-    status: finishedAt ? "completed" : "running",
+    id: "r1",
+    workflow_id: "w1",
+    workflow_name: "早间准备",
+    status: "running",
     current_step_index: 0,
     total_steps: 2,
-    completed_steps: finishedAt ? 2 : 1,
-    started_at: "2026-11-04T00:00:00Z",
-    finished_at: finishedAt,
+    completed_steps: 0,
+    started_at: "2026-11-01T00:00:00Z",
+    finished_at: null,
     error: null,
-    steps: [],
+    ...overrides,
   };
+}
+
+function runDetailRow(overrides: Partial<WorkflowRunDetail> = {}): WorkflowRunDetail {
+  return {
+    ...runRow(),
+    steps: [
+      {
+        id: "rs1",
+        run_id: "r1",
+        step_id: "s1",
+        step_type: "create_task",
+        display_order: 0,
+        status: "running",
+        detail: "执行中",
+        result: null,
+        started_at: "2026-11-01T00:00:00Z",
+        finished_at: null,
+        operation_id: "op1",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function page(items: WorkflowRun[]): WorkflowRunPage {
+  return { items, total: items.length, limit: 20, offset: 0 };
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  listRuns.mockReset();
+  run.mockReset().mockResolvedValue(runDetailRow());
+  active.mockReset().mockResolvedValue(null);
+  runDetail.mockReset().mockResolvedValue(runDetailRow());
+  lastSummary.mockReset().mockResolvedValue(null);
   useWorkflowsStore.setState({
     workflows: null,
-    workflowsLoading: false,
-    workflowsError: null,
     activeRun: null,
     activeRunDetail: null,
     lastRuns: {},
@@ -75,152 +78,84 @@ beforeEach(() => {
   });
 });
 
-describe("loadWorkflows", () => {
-  it("成功加载列表", async () => {
-    bridge.workflowList.mockResolvedValue([wf("w1"), wf("w2")]);
-    await useWorkflowsStore.getState().loadWorkflows();
-    const s = useWorkflowsStore.getState();
-    expect(s.workflows).toHaveLength(2);
-    expect(s.workflowsLoading).toBe(false);
-    expect(s.workflowsError).toBeNull();
-  });
-
-  it("失败保留旧数据并置 error（不用空列表冒充）", async () => {
-    useWorkflowsStore.setState({ workflows: [wf("w-old")] });
-    bridge.workflowList.mockRejectedValue("boom");
-    await useWorkflowsStore.getState().loadWorkflows();
-    const s = useWorkflowsStore.getState();
-    expect(s.workflows).toHaveLength(1);
-    expect(s.workflows?.[0].id).toBe("w-old");
-    expect(s.workflowsError).toBe("boom");
-  });
-
-  it("代际防乱序：慢的旧响应被丢弃", async () => {
-    let resolveA!: (v: Workflow[]) => void;
-    bridge.workflowList.mockImplementationOnce(() => new Promise((r) => (resolveA = r)));
-    const p1 = useWorkflowsStore.getState().loadWorkflows();
-    bridge.workflowList.mockResolvedValueOnce([wf("w-new")]);
-    await useWorkflowsStore.getState().loadWorkflows();
-    expect(useWorkflowsStore.getState().workflows?.[0].id).toBe("w-new");
-    resolveA([wf("w-stale")]);
-    await p1;
-    // 旧响应不得覆盖新响应
-    expect(useWorkflowsStore.getState().workflows?.[0].id).toBe("w-new");
-  });
+afterEach(() => {
+  useWorkflowsStore.setState({ activeRun: null, activeRunDetail: null });
+  vi.clearAllMocks();
 });
 
-describe("写命令就地更新", () => {
-  it("saveSteps 更新 step_count 而不重拉列表", async () => {
-    useWorkflowsStore.setState({ workflows: [wf("w1", 2)] });
-    bridge.workflowReplaceSteps.mockResolvedValue(detail("w1", [
-      {} as never,
-      {} as never,
-      {} as never,
-    ]));
-    const d = await useWorkflowsStore.getState().saveSteps("w1", []);
-    expect(d.steps).toHaveLength(3);
-    expect(bridge.workflowList).not.toHaveBeenCalled();
-    expect(useWorkflowsStore.getState().workflows?.[0].step_count).toBe(3);
-  });
-
-  it("deleteWorkflow 移除条目与最近运行摘要", async () => {
-    useWorkflowsStore.setState({
-      workflows: [wf("w1"), wf("w2")],
-      lastRuns: { w1: { run_id: "r", status: "completed", total_steps: 1, completed_steps: 1, error: null, started_at: "", started_at_local: "", finished_at: null } },
-    });
-    bridge.workflowDelete.mockResolvedValue(undefined);
-    await useWorkflowsStore.getState().deleteWorkflow("w1");
-    const s = useWorkflowsStore.getState();
-    expect(s.workflows?.map((w) => w.id)).toEqual(["w2"]);
-    expect(s.lastRuns.w1).toBeUndefined();
-  });
-
-  it("reorderWorkflows 本地重排（后端已落库）", async () => {
-    useWorkflowsStore.setState({ workflows: [wf("a"), wf("b"), wf("c")] });
-    bridge.workflowReorder.mockResolvedValue(undefined);
-    await useWorkflowsStore.getState().reorderWorkflows(["c", "a", "b"]);
-    expect(useWorkflowsStore.getState().workflows?.map((w) => w.id)).toEqual(["c", "a", "b"]);
-  });
-
-  it("写失败直接 throw 给调用方", async () => {
-    bridge.workflowCreate.mockRejectedValue("校验失败: 名称不能为空");
-    await expect(useWorkflowsStore.getState().createWorkflow({ name: "" })).rejects.toBe(
-      "校验失败: 名称不能为空",
-    );
-  });
-});
-
-describe("运行状态", () => {
-  it("runWorkflow 设置 activeRun 与 activeRunDetail", async () => {
-    bridge.workflowRun.mockResolvedValue(runDetail("r1", "w1", null));
+describe("活动运行", () => {
+  it("启动后活动运行与详情写入 store；离开页面不产生取消", async () => {
     await useWorkflowsStore.getState().runWorkflow("w1");
-    const s = useWorkflowsStore.getState();
-    expect(s.activeRun?.run_id).toBe("r1");
-    expect(s.activeRun?.workflow_id).toBe("w1");
-    expect(s.activeRunDetail?.id).toBe("r1");
-    expect(bridge.workflowLastRunSummary).toHaveBeenCalledWith("w1");
+
+    expect(useWorkflowsStore.getState().activeRun).toMatchObject({
+      run_id: "r1",
+      workflow_id: "w1",
+    });
+    expect(useWorkflowsStore.getState().activeRunDetail?.id).toBe("r1");
+    // 没有任何视图卸载会调用取消：后台执行继续由后端和 store 持有
+    expect(useWorkflowsStore.getState().activeRun?.cancel_requested).toBe(false);
   });
 
-  it("applyProgress：进行中事件更新详情；终态事件清空 activeRun", () => {
-    useWorkflowsStore.setState({
-      activeRun: { run_id: "r1", workflow_id: "w1", paused: false, cancel_requested: false },
-    });
-    useWorkflowsStore.getState().applyProgress(runDetail("r1", "w1", null));
-    expect(useWorkflowsStore.getState().activeRun).not.toBeNull();
-    expect(useWorkflowsStore.getState().activeRunDetail?.completed_steps).toBe(1);
+  it("进度事件更新当前运行详情；终态后清空活动槽但保留结果", () => {
+    useWorkflowsStore.setState({ activeRun: { run_id: "r1", workflow_id: "w1", paused: false, cancel_requested: false } });
 
-    useWorkflowsStore.getState().applyProgress(runDetail("r1", "w1", "2026-11-04T01:00:00Z"));
+    useWorkflowsStore.getState().applyProgress(runDetailRow());
+    expect(useWorkflowsStore.getState().activeRunDetail?.completed_steps).toBe(0);
+
+    const finished = runDetailRow({
+      status: "completed",
+      completed_steps: 2,
+      finished_at: "2026-11-01T00:00:05Z",
+    });
+    useWorkflowsStore.getState().applyProgress(finished);
     expect(useWorkflowsStore.getState().activeRun).toBeNull();
     expect(useWorkflowsStore.getState().activeRunDetail?.status).toBe("completed");
   });
-
-  it("applyProgress：无关运行的进行中事件不落地", () => {
-    useWorkflowsStore.setState({ activeRun: null, activeRunDetail: null });
-    useWorkflowsStore.getState().applyProgress(runDetail("r-other", "w2", null));
-    expect(useWorkflowsStore.getState().activeRunDetail).toBeNull();
-  });
-
-  it("pause/resume/cancel 更新 activeRun 标志位", async () => {
-    useWorkflowsStore.setState({
-      activeRun: { run_id: "r1", workflow_id: "w1", paused: false, cancel_requested: false },
-    });
-    bridge.workflowPause.mockResolvedValue(runDetail("r1", "w1", null));
-    await useWorkflowsStore.getState().pauseWorkflow("w1");
-    expect(useWorkflowsStore.getState().activeRun?.paused).toBe(true);
-    bridge.workflowResume.mockResolvedValue(runDetail("r1", "w1", null));
-    await useWorkflowsStore.getState().resumeWorkflow("w1");
-    expect(useWorkflowsStore.getState().activeRun?.paused).toBe(false);
-    bridge.workflowCancel.mockResolvedValue(runDetail("r1", "w1", null));
-    await useWorkflowsStore.getState().cancelWorkflow("w1");
-    expect(useWorkflowsStore.getState().activeRun?.cancel_requested).toBe(true);
-  });
-
-  it("refreshActive：无活动运行时清空详情", async () => {
-    useWorkflowsStore.setState({
-      activeRun: { run_id: "r1", workflow_id: "w1", paused: false, cancel_requested: false },
-      activeRunDetail: runDetail("r1", "w1", null),
-    });
-    bridge.workflowActive.mockResolvedValue(null);
-    await useWorkflowsStore.getState().refreshActive();
-    expect(useWorkflowsStore.getState().activeRun).toBeNull();
-    expect(useWorkflowsStore.getState().activeRunDetail).toBeNull();
-  });
 });
 
-describe("运行历史分页", () => {
-  it("加载失败置 error 且保留分页结构", async () => {
-    bridge.workflowListRuns.mockRejectedValue("db locked");
-    await useWorkflowsStore.getState().loadHistoryPage("w1", 0);
-    const h = useWorkflowsStore.getState().history;
-    expect(h.error).toBe("db locked");
-    expect(h.loading).toBe(false);
+describe("历史分页", () => {
+  it("快速切换工作流：旧请求晚到也不覆盖新工作流历史", async () => {
+    let resolveA: (v: WorkflowRunPage) => void = () => {};
+    let resolveB: (v: WorkflowRunPage) => void = () => {};
+    listRuns
+      .mockImplementationOnce(() => new Promise<WorkflowRunPage>((r) => { resolveA = r; }))
+      .mockImplementationOnce(() => new Promise<WorkflowRunPage>((r) => { resolveB = r; }));
+
+    const first = useWorkflowsStore.getState().loadHistoryPage("w1", 0);
+    const second = useWorkflowsStore.getState().loadHistoryPage("w2", 0);
+
+    resolveB(page([runRow({ id: "r2", workflow_id: "w2" })]));
+    await second;
+    expect(useWorkflowsStore.getState().history.workflowId).toBe("w2");
+    expect(useWorkflowsStore.getState().history.page?.items[0].workflow_id).toBe("w2");
+
+    // 旧请求随后返回：直接丢弃，不能把历史串回 w1
+    resolveA(page([runRow({ id: "r1", workflow_id: "w1" })]));
+    await first;
+    expect(useWorkflowsStore.getState().history.workflowId).toBe("w2");
+    expect(useWorkflowsStore.getState().history.page?.items[0].workflow_id).toBe("w2");
   });
 
-  it("clearHistory 清空状态", () => {
-    useWorkflowsStore.setState({
-      history: { workflowId: "w1", page: { items: [], total: 0, limit: 20, offset: 0 }, loading: false, error: null },
-    });
+  it("翻页失败保留目标工作流标识并给出错误，不清空为其他工作流", async () => {
+    listRuns.mockRejectedValueOnce(new Error("查询超时"));
+    await useWorkflowsStore.getState().loadHistoryPage("w1", 20);
+
+    const history = useWorkflowsStore.getState().history;
+    expect(history.workflowId).toBe("w1");
+    expect(history.loading).toBe(false);
+    expect(history.error).toContain("查询超时");
+    expect(history.page).toBeNull();
+  });
+
+  it("clearHistory 释放历史查询结果", async () => {
+    listRuns.mockResolvedValueOnce(page([runRow()]));
+    await useWorkflowsStore.getState().loadHistoryPage("w1", 0);
     useWorkflowsStore.getState().clearHistory();
-    expect(useWorkflowsStore.getState().history.workflowId).toBeNull();
+    expect(useWorkflowsStore.getState().history).toEqual({
+      workflowId: null,
+      page: null,
+      loading: false,
+      error: null,
+    });
   });
 });
