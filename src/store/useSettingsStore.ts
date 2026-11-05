@@ -25,6 +25,7 @@ import {
   type Settings,
 } from "../lib/bridge";
 import { errorMessage } from "../lib/errors";
+import { isWindowMode, resolveWindowMode } from "../lib/windowMode";
 import {
   hasNativeGlass,
   presetRadius,
@@ -75,6 +76,26 @@ function currentPreset(): VisualPreset {
 
 /** 最近一次下发给 Win32 的半径，避免主题切换时重复 IPC。 */
 let lastRadius = -1;
+
+/**
+ * 设置读侧收敛：模式是外壳唯一视图判据，非法值必须拦在 store 之外。
+ *
+ * 只改内存值、不写库（持久化纠正由写入路径负责）：后端/旧备份/历史库可能
+ * 带回过 `""`、`"Full"` 或未来版本的新枚举；这些值会让 App 的三个
+ * `.view-slot` 全部不是 `active`，表现为「只剩标题栏和背景」的空白窗口。
+ * 归一化后非法值落到 `full`，导航与设置入口始终可达。诊断只记录一次，
+ * 避免每次设置刷新都刷日志。
+ */
+let invalidModeReported = false;
+
+function normalizeLoadedSettings(s: Settings): Settings {
+  if (isWindowMode(s.mode)) return s;
+  if (!invalidModeReported) {
+    invalidModeReported = true;
+    console.warn("[settings] 非法显示模式已回退为 full", { mode: s.mode });
+  }
+  return { ...s, mode: resolveWindowMode(s.mode) };
+}
 
 export const useSettingsStore = create<{
   settings: Settings | null;
@@ -223,7 +244,7 @@ export const useSettingsStore = create<{
 
     load: async () => {
       const s = await getSettings();
-      set({ settings: s });
+      set({ settings: normalizeLoadedSettings(s) });
       applyPresetToDom();
       applyThemeToDom();
       await applyMaterial();
@@ -235,7 +256,9 @@ export const useSettingsStore = create<{
         ? { ...patch, visual_preset: resolveVisualPreset(patch.visual_preset) }
         : patch;
       const s = await updateSettings(next);
-      set({ settings: s });
+      // 更新响应同样是「后端设置的完整快照」：任何无关字段（含 mode）都不能
+      // 因为一次导航/主题写入而让外壳进入无有效视图的状态。
+      set({ settings: normalizeLoadedSettings(s) });
       if (next.visual_preset) applyPresetToDom();
       if (patch.theme) applyThemeToDom();
       // 预设切换后重放一次材质/圆角应用，保证窗口状态与最新设置一致；
@@ -250,11 +273,11 @@ export const useSettingsStore = create<{
         ? resolveVisualPreset(patch.visual_preset)
         : undefined;
       set({
-        settings: {
+        settings: normalizeLoadedSettings({
           ...s,
           ...patch,
           ...(preset ? { visual_preset: preset } : {}),
-        } as Settings,
+        } as Settings),
       });
       if (preset) {
         applyPresetToDom();

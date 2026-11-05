@@ -139,10 +139,13 @@ function expectExpanded(head: HTMLElement, expanded: boolean) {
 
 /** 只统计可折叠分组（带折叠箭头）的展开内容，忽略其他会话新增的非折叠区块。 */
 function foldableBodyCount(): number {
-  const foldable = Array.from(document.querySelectorAll("[data-settings-section]")).filter((section) =>
-    section.querySelector(".settings-chevron"),
+  const foldable = Array.from(document.querySelectorAll("[data-collapsible-section]")).filter((section) =>
+    section.querySelector(".collapsible-chevron"),
   );
-  return foldable.reduce((sum, section) => sum + section.querySelectorAll(".settings-section-body").length, 0);
+  return foldable.reduce(
+    (sum, section) => sum + section.querySelectorAll(".collapsible-body:not([hidden])").length,
+    0,
+  );
 }
 
 beforeEach(() => {
@@ -171,8 +174,12 @@ describe("设置页分组折叠", () => {
     for (const title of SECTION_TITLES) {
       const head = sectionHead(title);
       expectExpanded(head, false);
-      // 箭头是按钮内最后一个元素，整行仍由按钮承载点击与键盘操作
-      expect(head.lastElementChild?.classList.contains("settings-chevron")).toBe(true);
+      // 箭头属于标题行（图标/标题/徽标同一层），整行仍由按钮承载点击与键盘操作
+      expect(
+        head.querySelector(".collapsible-title-row")?.lastElementChild?.classList.contains(
+          "collapsible-chevron",
+        ),
+      ).toBe(true);
     }
     expect(foldableBodyCount()).toBe(0);
   });
@@ -191,6 +198,30 @@ describe("设置页分组折叠", () => {
     expectExpanded(sectionHead("外观与主题"), true);
     expectExpanded(sectionHead("通知"), true);
     expectExpanded(sectionHead("数据与备份"), false);
+  });
+
+  it("自动识别图片文字开关为禁用状态并标注待开发", () => {
+    render(<SettingsPanel />);
+    fireEvent.click(sectionHead("智能剪贴板"));
+
+    const switchControl = screen.getByRole("switch", { name: "自动识别图片文字" }) as HTMLInputElement;
+    expect(switchControl.disabled).toBe(true);
+    expect(switchControl.checked).toBe(false);
+    expect(screen.getByText(/待开发，目前仅支持手动提取文字/)).toBeTruthy();
+  });
+
+  it("历史配置已是 true 时如实展示为开启、仍禁用且不重置配置", () => {
+    useSettingsStore.setState({ settings: { ...BASE_SETTINGS, clipboard_ocr_auto: true } });
+    render(<SettingsPanel />);
+    fireEvent.click(sectionHead("智能剪贴板"));
+
+    const switchControl = screen.getByRole("switch", { name: "自动识别图片文字" }) as HTMLInputElement;
+    expect(switchControl.checked).toBe(true);
+    expect(switchControl.disabled).toBe(true);
+    expect(screen.getByText(/待开发，目前仅支持手动提取文字/)).toBeTruthy();
+    // 禁用态下不触发业务更新，历史键值不被清空
+    fireEvent.click(switchControl);
+    expect(useSettingsStore.getState().settings?.clipboard_ocr_auto).toBe(true);
   });
 
   it("再次折叠会立即写回本地偏好", () => {

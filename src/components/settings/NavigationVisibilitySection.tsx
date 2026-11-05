@@ -24,6 +24,7 @@ import { errorMessage } from "../../lib/errors";
 import {
   entriesForSurface,
   leftEntryForTab,
+  navLabel,
   type NavEntry,
   type NavSurface,
 } from "../../lib/navigationRegistry";
@@ -34,18 +35,12 @@ import {
   setNavigationEntryVisible,
   useNavigationLayout,
 } from "../../lib/navigationLayout";
-
-const SURFACE_LABELS: Record<NavSurface, string> = {
-  left: "完整面板",
-  capsule: "停靠胶囊",
-};
-
-const SURFACE_HINTS: Record<NavSurface, string> = {
-  left: "左侧导航的入口与排列顺序。",
-  capsule: "停靠胶囊轨道上的图标与排列顺序；不改变外轮廓、吸附与窗口几何。",
-};
+import { useLocale } from "../../hooks/useLocale";
 
 export default function NavigationVisibilitySection() {
+  const { t } = useLocale();
+  const surfaceLabel = (surface: NavSurface) =>
+    surface === "left" ? t("nav.surface.left") : t("nav.surface.capsule");
   const settingsReady = useSettingsStore((s) => !!s.settings);
   const layout = useNavigationLayout();
   const tab = useUiStore((s) => s.tab);
@@ -118,7 +113,7 @@ export default function NavigationVisibilitySection() {
 
   return (
     <div className="nav-visibility-body">
-      <div className="nav-visibility-tabs" role="group" aria-label="选择要配置的界面">
+      <div className="nav-visibility-tabs" role="group" aria-label={t("nav.surfaceAria")}>
         {(["left", "capsule"] as const).map((value) => (
           <button
             key={value}
@@ -130,20 +125,20 @@ export default function NavigationVisibilitySection() {
               setError(null);
             }}
           >
-            {SURFACE_LABELS[value]}
+            {surfaceLabel(value)}
           </button>
         ))}
       </div>
-      <p className="nav-visibility-hint">{SURFACE_HINTS[surface]}</p>
+      <p className="nav-visibility-hint">
+        {surface === "left" ? t("nav.hint.left") : t("nav.hint.capsule")}
+      </p>
 
       <div className="nav-visibility-summary">
-        <span>
-          常驻 {visibleEntries.length} / {surfaceEntries.length} 项
-        </span>
+        <span>{t("nav.summary", { visible: visibleEntries.length, total: surfaceEntries.length })}</span>
         <span className="nav-visibility-preview">
           {visibleEntries.length > 0
-            ? visibleEntries.map((entry) => entry.label).join("、")
-            : "无（可从下方重新开启）"}
+            ? visibleEntries.map((entry) => navLabel(entry, t)).join(t("nav.listSeparator"))
+            : t("nav.previewEmpty")}
         </span>
       </div>
 
@@ -162,13 +157,13 @@ export default function NavigationVisibilitySection() {
                   className="nav-visibility-entry-icon"
                   aria-hidden="true"
                 />
-                <span className="nav-visibility-entry-label">{entry.label}</span>
+                <span className="nav-visibility-entry-label">{navLabel(entry, t)}</span>
                 {entry.shortcut && (
                   <kbd className="nav-visibility-shortcut">{entry.shortcut}</kbd>
                 )}
-                {current && <span className="nav-visibility-current">当前页</span>}
-                {entry.locked && <span className="nav-visibility-current">固定</span>}
-                {!visible && <span className="nav-visibility-hidden">已隐藏</span>}
+                {current && <span className="nav-visibility-current">{t("nav.current")}</span>}
+                {entry.locked && <span className="nav-visibility-current">{t("nav.locked")}</span>}
+                {!visible && <span className="nav-visibility-hidden">{t("nav.hidden")}</span>}
               </span>
               <span className="nav-visibility-actions">
                 {!entry.locked && (
@@ -178,7 +173,7 @@ export default function NavigationVisibilitySection() {
                       className="nav-visibility-move"
                       onClick={() => onMove(entry, -1)}
                       disabled={!visible || index <= 0 || busy}
-                      aria-label={`上移 ${entry.label}`}
+                      aria-label={t("nav.moveUp", { label: navLabel(entry, t) })}
                     >
                       <ArrowUp size={12} aria-hidden="true" />
                     </button>
@@ -189,7 +184,7 @@ export default function NavigationVisibilitySection() {
                       disabled={
                         !visible || index < 0 || index >= visibleEntries.length - 1 || busy
                       }
-                      aria-label={`下移 ${entry.label}`}
+                      aria-label={t("nav.moveDown", { label: navLabel(entry, t) })}
                     >
                       <ArrowDown size={12} aria-hidden="true" />
                     </button>
@@ -199,7 +194,9 @@ export default function NavigationVisibilitySection() {
                   checked={visible}
                   disabled={!settingsReady || busy || entry.locked}
                   ariaLabel={
-                    entry.locked ? `${entry.label}导航入口（固定）` : `${entry.label}导航入口显示`
+                    entry.locked
+                      ? t("nav.lockedAria", { label: navLabel(entry, t) })
+                      : t("nav.toggleAria", { label: navLabel(entry, t) })
                   }
                   onChange={(next) => void onToggle(entry, next)}
                 />
@@ -215,22 +212,20 @@ export default function NavigationVisibilitySection() {
           className="btn sm"
           onClick={() => void onReset()}
           disabled={!settingsReady || pendingId !== null}
-          aria-label={`恢复${SURFACE_LABELS[surface]}默认导航配置`}
+          aria-label={t("nav.resetAria", { surface: surfaceLabel(surface) })}
         >
-          <RotateCcw size={12} /> 恢复「{SURFACE_LABELS[surface]}」默认
+          <RotateCcw size={12} /> {t("nav.reset", { surface: surfaceLabel(surface) })}
         </button>
-        {!settingsReady && <span className="setting-note">设置尚未加载，请稍候。</span>}
+        {!settingsReady && <span className="setting-note">{t("nav.settingsNotLoaded")}</span>}
       </div>
 
       {surface === "capsule" && visibleEntries.length === 0 && (
-        <div className="setting-note">
-          胶囊已隐藏全部图标：轨道上的「切换为完整面板」按钮仍可用，也可在此重新开启入口。
-        </div>
+        <div className="setting-note">{t("nav.capsuleAllHidden")}</div>
       )}
 
       {error && (
         <div className="setting-note nav-visibility-error" role="alert">
-          保存失败：{error}（界面仍显示上次保存的配置）
+          {t("nav.saveFailed", { error })}
         </div>
       )}
     </div>

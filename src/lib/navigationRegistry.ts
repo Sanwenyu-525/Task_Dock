@@ -31,6 +31,7 @@ import {
 import AgentIcon, { type IconComponent } from "../components/ui/AgentIcon";
 import PointerClickIcon from "../components/ui/PointerClickIcon";
 import type { Tab } from "../store/useUiStore";
+import type { MessageKey, MessageParams } from "../i18n/messages";
 import type { CapsuleCategory } from "./capsuleModel";
 
 /** 入口出现的界面：完整面板左侧导航 / 停靠胶囊轨道。 */
@@ -70,7 +71,15 @@ export interface NavEntry {
   id: NavEntryId;
   kind: NavEntryKind;
   surfaces: readonly NavSurface[];
-  /** 左侧导航展示名（胶囊文案沿用既有 i18n 词典，见 CapsuleRail）。 */
+  /**
+   * 稳定翻译 Key：渲染时按当前语言取文案。入口身份仍是 `id`，改文案不影响
+   * 用户显隐 / 排序 / 快捷键。
+   */
+  labelKey: MessageKey;
+  /**
+   * 兼容字段：简体中文默认展示名。仅用于非 React 环境或旧调用方的默认回退，
+   * 组件渲染一律走 `t(labelKey)`，避免英文模式直出中文。
+   */
   label: string;
   icon: IconComponent;
   /** 该入口覆盖的逻辑 Tab（合并入口可覆盖多个；胶囊入口对应其面板）。 */
@@ -96,6 +105,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "tasks",
     kind: "page",
     surfaces: ["left", "capsule"],
+    labelKey: "nav.tasks",
     label: "任务",
     icon: ListTodo,
     tabs: ["tasks"],
@@ -112,6 +122,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "agents",
     kind: "agent-status",
     surfaces: ["left", "capsule"],
+    labelKey: "nav.agents",
     label: "Agent",
     icon: AgentIcon,
     tabs: ["agents"],
@@ -129,6 +140,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "apps",
     kind: "visual",
     surfaces: ["left", "capsule"],
+    labelKey: "nav.apps",
     label: "应用",
     icon: LayoutGrid,
     tabs: ["apps"],
@@ -143,6 +155,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "widgets",
     kind: "visual",
     surfaces: ["left"],
+    labelKey: "nav.widgets",
     label: "微件",
     icon: Blocks,
     tabs: ["widgets"],
@@ -156,6 +169,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "actions",
     kind: "page",
     surfaces: ["left"],
+    labelKey: "nav.actions",
     label: "行动",
     icon: PointerClickIcon,
     tabs: ["actions"],
@@ -171,6 +185,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "clipboard",
     kind: "page",
     surfaces: ["left", "capsule"],
+    labelKey: "nav.clipboard",
     label: "剪贴板",
     icon: Clipboard,
     tabs: ["clipboard"],
@@ -186,6 +201,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "collection",
     kind: "merged",
     surfaces: ["left"],
+    labelKey: "nav.collection",
     label: "收集与暂存",
     icon: Inbox,
     tabs: ["inbox", "shelf"],
@@ -201,6 +217,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "inbox",
     kind: "page",
     surfaces: ["capsule"],
+    labelKey: "nav.inbox",
     label: "收集箱",
     icon: Inbox,
     tabs: ["inbox"],
@@ -215,6 +232,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "workflows",
     kind: "page",
     surfaces: ["left"],
+    labelKey: "nav.workflows",
     label: "工作流",
     icon: Workflow,
     tabs: ["workflows"],
@@ -229,6 +247,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "history",
     kind: "page",
     surfaces: ["left"],
+    labelKey: "nav.history",
     label: "历史",
     icon: History,
     tabs: ["history"],
@@ -243,6 +262,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "roadmap",
     kind: "page",
     surfaces: ["left"],
+    labelKey: "nav.roadmap",
     label: "规划中心",
     icon: MapIcon,
     tabs: ["roadmap"],
@@ -257,6 +277,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     id: "settings",
     kind: "page",
     surfaces: ["left"],
+    labelKey: "nav.settings",
     label: "设置",
     icon: SettingsIcon,
     tabs: ["settings"],
@@ -306,4 +327,12 @@ export function leftEntryForTab(tab: Tab): NavEntry | undefined {
 /** 胶囊入口对应的分类身份；非胶囊入口返回 undefined。 */
 export function capsuleCategoryFor(id: string): CapsuleCategory | undefined {
   return ENTRY_BY_ID.get(id)?.capsuleCategory;
+}
+
+/** 按当前语言的翻译函数取入口展示名；`label` 只作为中文默认回退。 */
+export function navLabel(
+  entry: NavEntry,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): string {
+  return t(entry.labelKey);
 }

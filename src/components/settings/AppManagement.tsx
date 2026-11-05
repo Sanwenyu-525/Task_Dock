@@ -17,25 +17,39 @@ import {
 import { ConfirmDialog, NumberInput, Select, Switch } from "../ui";
 import AppPicker from "../navigation/AppPicker";
 import TargetEditForm from "../apps/TargetEditForm";
+import { useLocale } from "../../hooks/useLocale";
+import type { MessageKey } from "../../i18n";
 
 /** 记住的窗口身份（类名+标题），targetId → 身份；无记忆的不在表里。 */
 type WinMemories = Record<string, { class_name: string; title: string }>;
 
 /** 导航动作的易读名称；原始标识保留在 `data-action` / title 中供诊断。 */
-const NAV_ACTION_LABELS: Record<string, string> = {
-  open_app: "启动应用",
-  focus_window: "聚焦窗口",
-  open_url: "打开网址",
-  open_file: "打开文件",
-  reveal_file: "定位文件",
-  open_directory: "打开目录",
-  resume_session: "继续会话",
-  fallback: "降级处理",
+const NAV_ACTION_KEYS: Record<string, MessageKey> = {
+  open_app: "appMgmt.action.open_app",
+  focus_window: "appMgmt.action.focus_window",
+  open_url: "appMgmt.action.open_url",
+  open_file: "appMgmt.action.open_file",
+  reveal_file: "appMgmt.action.reveal_file",
+  open_directory: "appMgmt.action.open_directory",
+  resume_session: "appMgmt.action.resume_session",
+  fallback: "appMgmt.action.fallback",
 };
 
-function navActionLabel(action: string | null | undefined): string {
-  if (!action) return "未知动作";
-  return NAV_ACTION_LABELS[action] ?? action;
+const TARGET_TYPE_KEYS: Record<string, MessageKey> = {
+  application: "appMgmt.type.application",
+  url: "appMgmt.type.url",
+  file: "appMgmt.type.file",
+  directory: "appMgmt.type.directory",
+  agent_session: "appMgmt.type.agentSession",
+};
+
+function navActionLabel(
+  action: string | null | undefined,
+  t: (key: MessageKey, params?: Record<string, string | number | undefined>) => string,
+): string {
+  if (!action) return t("appMgmt.action.unknown");
+  const key = NAV_ACTION_KEYS[action];
+  return key ? t(key) : action;
 }
 
 export default function AppManagement({
@@ -44,6 +58,7 @@ export default function AppManagement({
   /** 由外层页面接管「添加应用」子页面（避免在设置页内部再叠一层弹窗）。 */
   onRequestAdd?: () => void;
 } = {}) {
+  const { t: tr } = useLocale();
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const showToast = useUiStore((s) => s.showToast);
@@ -129,18 +144,28 @@ export default function AppManagement({
     loadLogs();
     const state = useNavigationStore.getState();
     const problems: string[] = [];
-    if (targetsOutcome === "error") problems.push(`应用清单：${state.targetsError ?? "读取失败"}`);
-    if (scanOutcome === "error") problems.push(`应用扫描：${state.scanError ?? "扫描失败"}`);
+    if (targetsOutcome === "error")
+      problems.push(
+        tr("appMgmt.refresh.targets", {
+          error: state.targetsError ?? tr("appMgmt.refresh.readFailed"),
+        }),
+      );
+    if (scanOutcome === "error")
+      problems.push(
+        tr("appMgmt.refresh.scan", {
+          error: state.scanError ?? tr("appMgmt.refresh.scanFailed"),
+        }),
+      );
     if (problems.length > 0) {
-      showToast(`刷新部分失败：${problems.join("；")}`, {
+      showToast(tr("appMgmt.refresh.partial", { problems: problems.join("; ") }), {
         kind: "warning",
-        action: { label: "重试", run: () => void refresh() },
+        action: { label: tr("appMgmt.refresh.retry"), run: () => void refresh() },
       });
       return;
     }
     // 两次刷新都已被更新的请求取代：结果由那次请求落地，不重复提示成功。
     if (targetsOutcome === "stale" && scanOutcome === "stale") return;
-    showToast("应用清单已刷新", { kind: "success" });
+    showToast(tr("appMgmt.refresh.done"), { kind: "success" });
   }
 
   function closeEditor() {
@@ -192,59 +217,59 @@ export default function AppManagement({
       {/* 导航偏好 */}
       <div className="panel-block">
         <div className="panel-block-head">
-          <span><Navigation size={12} /> 导航偏好</span>
+          <span><Navigation size={12} /> {tr("appMgmt.prefs.title")}</span>
         </div>
         <div className="setting-row">
-          <span>优先唤醒现有窗口（而非重复启动）</span>
+          <span>{tr("appMgmt.prefs.reuseWindow")}</span>
           <Switch
             checked={settings.nav_prefer_focus}
-            ariaLabel="优先唤醒现有窗口（而非重复启动）"
+            ariaLabel={tr("appMgmt.prefs.reuseWindow")}
             onChange={(v) => update({ nav_prefer_focus: v })}
           />
         </div>
         <div className="setting-row">
-          <span>允许启动未运行的程序</span>
+          <span>{tr("appMgmt.prefs.launchNotRunning")}</span>
           <Switch
             checked={settings.nav_allow_launch}
-            ariaLabel="允许启动未运行的程序"
+            ariaLabel={tr("appMgmt.prefs.launchNotRunning")}
             onChange={(v) => update({ nav_allow_launch: v })}
           />
         </div>
         <div className="setting-row">
-          <span>精准跳转失败时按层级降级（关闭则直接报错）</span>
+          <span>{tr("appMgmt.prefs.fallback")}</span>
           <Switch
             checked={settings.nav_fallback}
-            ariaLabel="精准跳转失败时按层级降级（关闭则直接报错）"
+            ariaLabel={tr("appMgmt.prefs.fallback")}
             onChange={(v) => update({ nav_fallback: v })}
           />
         </div>
         <div className="setting-row">
-          <span>记住上次选择的窗口（多窗口应用）</span>
+          <span>{tr("appMgmt.prefs.rememberWindow")}</span>
           <Switch
             checked={settings.nav_remember_window}
-            ariaLabel="记住上次选择的窗口（多窗口应用）"
+            ariaLabel={tr("appMgmt.prefs.rememberWindow")}
             onChange={(v) => update({ nav_remember_window: v })}
           />
         </div>
         <div className="setting-row">
-          <span>工作区批量启动数量上限（{settings.nav_workspace_max}）</span>
+          <span>{tr("appMgmt.prefs.workspaceMax", { max: settings.nav_workspace_max })}</span>
           <NumberInput
             value={settings.nav_workspace_max}
             min={1}
             max={20}
-            ariaLabel="工作区批量启动数量上限（{settings.nav_workspace_max}）"
+            ariaLabel={tr("appMgmt.prefs.workspaceMax", { max: settings.nav_workspace_max })}
             onChange={(v) => update({ nav_workspace_max: v })}
           />
         </div>
         <div className="setting-row">
-          <span>默认浏览器</span>
+          <span>{tr("appMgmt.prefs.defaultBrowser")}</span>
           <Select
-            ariaLabel="默认浏览器"
+            ariaLabel={tr("appMgmt.prefs.defaultBrowser")}
             size="sm"
             triggerClassName="settings-select-trigger"
             value={settings.nav_default_browser}
             options={[
-              { value: "", label: "系统默认" },
+              { value: "", label: tr("appMgmt.prefs.systemDefault") },
               ...browsers.map((b) => ({ value: b.app_key, label: b.display_name })),
             ]}
             onChange={(v) => update({ nav_default_browser: v })}
@@ -255,40 +280,52 @@ export default function AppManagement({
       {/* 已保存目标 */}
       <div className="panel-block">
         <div className="panel-block-head">
-          <span>已保存的目标（{visible.length}）</span>
+          <span>{tr("appMgmt.targets.savedHeader", { count: visible.length })}</span>
           <div className="btn-group">
             <button
               className="btn sm primary"
               onClick={requestAdd}
             >
-              <Plus size={12} /> 添加应用
+              <Plus size={12} /> {tr("appMgmt.targets.addApp")}
             </button>
             <button
               className="btn sm"
               onClick={() => setShowHidden((v) => !v)}
-              data-tip={showHidden ? "隐藏已隐藏项" : "显示隐藏项"}
-              aria-label={showHidden ? "隐藏已隐藏项" : "显示隐藏项"}
+              data-tip={
+                showHidden ? tr("appMgmt.targets.hideHidden") : tr("appMgmt.targets.showHidden")
+              }
+              aria-label={
+                showHidden ? tr("appMgmt.targets.hideHidden") : tr("appMgmt.targets.showHidden")
+              }
             >
               {showHidden ? <Eye size={12} /> : <EyeOff size={12} />}
             </button>
             <button className="btn sm" onClick={refresh} disabled={scanning}>
-              <RefreshCw size={12} className={scanning ? "spin" : ""} /> 重新扫描
+              <RefreshCw size={12} className={scanning ? "spin" : ""} />{" "}
+              {tr("appMgmt.targets.rescan")}
             </button>
           </div>
         </div>
         {scan && (
           <div className="endpoint-hint">
-            最近扫描 {scan.counts.startmenu ?? 0} 个开始菜单 / {scan.counts.registry ?? 0} 个注册表 /
-            {" "}{scan.counts.uwp ?? 0} 个商店应用 / {scan.counts.known ?? 0} 个常用位置（{scan.duration_ms}ms）
+            {tr("appMgmt.targets.scanSummary", {
+              startmenu: scan.counts.startmenu ?? 0,
+              registry: scan.counts.registry ?? 0,
+              uwp: scan.counts.uwp ?? 0,
+              known: scan.counts.known ?? 0,
+              ms: scan.duration_ms,
+            })}
           </div>
         )}
         {(targetsError || scanError) && (
           // Toast 消失后仍可在此查看持续故障；重试成功后 store 自动清除
           <div className="empty-hint error-text" role="status">
-            {targetsError && <div>应用清单读取失败：{targetsError}（列表为上次结果，可能不是最新）</div>}
-            {scanError && <div>应用扫描失败：{scanError}</div>}
+            {targetsError && (
+              <div>{tr("appMgmt.targets.targetsFailed", { error: targetsError })}</div>
+            )}
+            {scanError && <div>{tr("appMgmt.targets.scanFailed", { error: scanError })}</div>}
             <button className="btn sm" onClick={() => void refresh()}>
-              重试
+              {tr("appMgmt.refresh.retry")}
             </button>
           </div>
         )}
@@ -305,7 +342,7 @@ export default function AppManagement({
           />
         )}
         {visible.length === 0 && (
-          <div className="empty-hint">暂无目标；点上方「添加应用」，或从任务编辑器登记应用/网址/目录</div>
+          <div className="empty-hint">{tr("appMgmt.targets.empty")}</div>
         )}
         <div className="target-admin-list">
           {visible.slice(0, 60).map((t) => (
@@ -315,16 +352,21 @@ export default function AppManagement({
                   {t.display_name}
                 </span>
                 <span className="target-admin-meta">
-                  {TARGET_TYPE_LABELS[t.target_type]}
-                  {t.use_count > 0 ? ` · ${t.use_count} 次` : ""}
+                  {TARGET_TYPE_KEYS[t.target_type]
+                    ? tr(TARGET_TYPE_KEYS[t.target_type] as MessageKey)
+                    : TARGET_TYPE_LABELS[t.target_type]}
+                  {t.use_count > 0 ? tr("appMgmt.targets.useCount", { count: t.use_count }) : ""}
                 </span>
                 {/* 窗口记忆徽标：显示该目标记住的精确窗口身份，可在操作区一键清除 */}
                 {t.target_type === "application" && winMems[t.id] && (
                   <span
                     className="chip target-admin-memory"
-                    title={`窗口: ${winMems[t.id].title}（类名 ${winMems[t.id].class_name}）`}
+                    title={tr("appMgmt.targets.windowTitle", {
+                      title: winMems[t.id].title,
+                      className: winMems[t.id].class_name,
+                    })}
                   >
-                    窗口记忆
+                    {tr("appMgmt.targets.memoryBadge")}
                   </span>
                 )}
               </div>
@@ -332,8 +374,10 @@ export default function AppManagement({
                 {t.target_type === "application" && winMems[t.id] && (
                   <button
                     className="icon-btn sm"
-                    data-tip="清除窗口记忆（下次导航恢复按标题匹配）"
-                    aria-label={`清除窗口记忆 ${t.display_name}`}
+                    data-tip={tr("appMgmt.targets.clearMemory")}
+                    aria-label={tr("appMgmt.targets.clearMemoryAria", {
+                      name: t.display_name,
+                    })}
                     onClick={async () => {
                       try {
                         await navForgetWindow(t.id);
@@ -342,9 +386,12 @@ export default function AppManagement({
                           delete next[t.id];
                           return next;
                         });
-                        showToast("已清除窗口记忆", { kind: "success" });
+                        showToast(tr("appMgmt.targets.memoryCleared"), { kind: "success" });
                       } catch (e) {
-                        showToast(`清除窗口记忆失败：${errorMessage(e)}`, { kind: "error" });
+                        showToast(
+                          tr("appMgmt.targets.memoryClearFailed", { error: errorMessage(e) }),
+                          { kind: "error" },
+                        );
                       }
                     }}
                   >
@@ -353,20 +400,31 @@ export default function AppManagement({
                 )}
               <button
                 className={`icon-btn sm ${t.favorite ? "default-on" : ""}`}
-                data-tip={t.favorite ? "取消收藏" : "收藏"}
-                aria-label={t.favorite ? `取消收藏 ${t.display_name}` : `收藏 ${t.display_name}`}
+                data-tip={
+                  t.favorite ? tr("appMgmt.targets.unfavorite") : tr("appMgmt.targets.favorite")
+                }
+                aria-label={
+                  t.favorite
+                    ? tr("appMgmt.targets.unfavoriteAria", { name: t.display_name })
+                    : tr("appMgmt.targets.favoriteAria", { name: t.display_name })
+                }
                 onClick={async () => {
                   try {
                     await navUpdateTarget(t.id, { favorite: !t.favorite });
                   } catch (e) {
-                    showToast(`收藏操作失败：${errorMessage(e)}`, { kind: "error" });
+                    showToast(tr("appMgmt.targets.favoriteFailed", { error: errorMessage(e) }), {
+                      kind: "error",
+                    });
                     return;
                   }
                   const outcome = await loadTargets(true);
                   if (outcome === "error") {
-                    showToast("已更新收藏，但列表刷新失败", {
+                    showToast(tr("appMgmt.targets.favoriteStale"), {
                       kind: "warning",
-                      action: { label: "重试刷新", run: () => void loadTargets(true) },
+                      action: {
+                        label: tr("appMgmt.targets.retryRefresh"),
+                        run: () => void loadTargets(true),
+                      },
                     });
                   }
                 }}
@@ -375,20 +433,29 @@ export default function AppManagement({
               </button>
               <button
                 className={`icon-btn sm ${t.hidden ? "default-on" : ""}`}
-                data-tip={t.hidden ? "取消隐藏" : "隐藏（不显示在选择器）"}
-                aria-label={t.hidden ? `取消隐藏 ${t.display_name}` : `隐藏 ${t.display_name}`}
+                data-tip={t.hidden ? tr("appMgmt.targets.unhide") : tr("appMgmt.targets.hide")}
+                aria-label={
+                  t.hidden
+                    ? tr("appMgmt.targets.unhideAria", { name: t.display_name })
+                    : tr("appMgmt.targets.hideAria", { name: t.display_name })
+                }
                 onClick={async () => {
                   try {
                     await navUpdateTarget(t.id, { hidden: !t.hidden });
                   } catch (e) {
-                    showToast(`隐藏操作失败：${errorMessage(e)}`, { kind: "error" });
+                    showToast(tr("appMgmt.targets.hideFailed", { error: errorMessage(e) }), {
+                      kind: "error",
+                    });
                     return;
                   }
                   const outcome = await loadTargets(true);
                   if (outcome === "error") {
-                    showToast("已更新隐藏状态，但列表刷新失败", {
+                    showToast(tr("appMgmt.targets.hideStale"), {
                       kind: "warning",
-                      action: { label: "重试刷新", run: () => void loadTargets(true) },
+                      action: {
+                        label: tr("appMgmt.targets.retryRefresh"),
+                        run: () => void loadTargets(true),
+                      },
                     });
                   }
                 }}
@@ -397,16 +464,16 @@ export default function AppManagement({
               </button>
               <button
                 className="icon-btn sm"
-                data-tip="编辑配置"
-                aria-label={`编辑 ${t.display_name}`}
+                data-tip={tr("appMgmt.targets.editTip")}
+                aria-label={tr("appMgmt.targets.editAria", { name: t.display_name })}
                 onClick={() => requestEdit(t)}
               >
                 <Pencil size={11} />
               </button>
               <button
                 className="icon-btn sm"
-                data-tip="测试启动 / 聚焦窗口"
-                aria-label={`测试启动 ${t.display_name}`}
+                data-tip={tr("appMgmt.targets.testTip")}
+                aria-label={tr("appMgmt.targets.testAria", { name: t.display_name })}
                 onClick={async () => {
                   try {
                     const r = await navNavigate(t.id);
@@ -416,7 +483,9 @@ export default function AppManagement({
                     // 记录读取失败不能伪装成「暂无记录」：走 loadLogs 设置可见错误态。
                     loadLogs();
                   } catch (e) {
-                    showToast(`启动失败：${errorMessage(e)}`, { kind: "error" });
+                    showToast(tr("appMgmt.targets.launchFailed", { error: errorMessage(e) }), {
+                      kind: "error",
+                    });
                   }
                 }}
               >
@@ -424,8 +493,8 @@ export default function AppManagement({
               </button>
               <button
                 className="icon-btn sm"
-                data-tip="删除目标（关联任务会同步解除）"
-                aria-label={`删除 ${t.display_name}`}
+                data-tip={tr("appMgmt.targets.deleteTip")}
+                aria-label={tr("appMgmt.targets.deleteAria", { name: t.display_name })}
                 onClick={() => setPendingDelete(t)}
               >
                 <Trash2 size={11} />
@@ -439,18 +508,22 @@ export default function AppManagement({
       {/* 导航记录 */}
       <div className="panel-block">
         <div className="panel-block-head">
-          <span><ClipboardList size={12} /> 最近导航记录</span>
+          <span><ClipboardList size={12} /> {tr("appMgmt.logs.title")}</span>
         </div>
         {logsError && (
           <div className="empty-hint error-text" role="status">
-            导航记录读取失败：{logsError}
+            {tr("appMgmt.logs.failed", { error: logsError })}
             <button className="btn sm" onClick={() => void loadLogs()}>
-              重试
+              {tr("appMgmt.refresh.retry")}
             </button>
           </div>
         )}
-        {!logsError && logs === null && <div className="empty-hint">加载中…</div>}
-        {!logsError && logs !== null && logs.length === 0 && <div className="empty-hint">暂无记录</div>}
+        {!logsError && logs === null && (
+          <div className="empty-hint">{tr("appMgmt.logs.loading")}</div>
+        )}
+        {!logsError && logs !== null && logs.length === 0 && (
+          <div className="empty-hint">{tr("appMgmt.logs.empty")}</div>
+        )}
         <div className="nav-log-list">
           {logs?.slice(0, 10).map((l) => {
             const rawAction = l.actual_action ?? l.requested_action;
@@ -463,10 +536,12 @@ export default function AppManagement({
                   data-action={rawAction}
                   title={rawAction}
                 >
-                  {navActionLabel(rawAction)}
+                  {navActionLabel(rawAction, tr)}
                 </span>
                 {!l.success && <span title={l.reason}><Ban size={10} /></span>}
-                {l.fallback_used && <span className="nav-log-fb">降级</span>}
+                {l.fallback_used && (
+                  <span className="nav-log-fb">{tr("appMgmt.logs.fallback")}</span>
+                )}
               </div>
             );
           })}
@@ -479,13 +554,13 @@ export default function AppManagement({
       {/* 编辑配置：页内表单，身份字段只读（见表单内说明） */}
       <ConfirmDialog
         open={!!pendingLeave}
-        title="放弃未保存的更改？"
+        title={tr("appMgmt.leave.title")}
         detail={
           pendingLeave?.kind === "edit"
-            ? `当前「${editing?.display_name ?? ""}」的修改尚未保存，切换目标后会丢失。`
-            : "当前编辑的修改尚未保存，离开后会丢失。"
+            ? tr("appMgmt.leave.detailEditing", { name: editing?.display_name ?? "" })
+            : tr("appMgmt.leave.detailDirty")
         }
-        confirmLabel="放弃更改"
+        confirmLabel={tr("appMgmt.leave.confirm")}
         danger
         onCancel={() => setPendingLeave(null)}
         onConfirm={applyPendingLeave}
@@ -494,9 +569,9 @@ export default function AppManagement({
       {/* 删除确认：明确提示任务关联会被解除 */}
       <ConfirmDialog
         open={!!pendingDelete}
-        title={`删除「${pendingDelete?.display_name ?? ""}」？`}
-        detail="该目标的所有任务关联会一并解除（任务本身不受影响）。删除后如需恢复，需要在任务编辑器或应用选择器中重新添加。"
-        confirmLabel="删除"
+        title={tr("appMgmt.delete.title", { name: pendingDelete?.display_name ?? "" })}
+        detail={tr("appMgmt.delete.detail")}
+        confirmLabel={tr("appMgmt.delete.confirm")}
         danger
         busy={deleteBusy}
         onCancel={() => setPendingDelete(null)}
@@ -506,7 +581,7 @@ export default function AppManagement({
           try {
             await navDeleteTarget(pendingDelete.id);
           } catch (e) {
-            showToast(`删除失败：${errorMessage(e)}`, { kind: "error" });
+            showToast(tr("appMgmt.delete.failed", { error: errorMessage(e) }), { kind: "error" });
             setDeleteBusy(false);
             return;
           }
@@ -517,10 +592,10 @@ export default function AppManagement({
             useNavigationStore.getState().loadTaskLinks(),
           ]);
           if (tOutcome === "error" || lOutcome === "error") {
-            showToast("目标已删除，但关联列表刷新失败", {
+            showToast(tr("appMgmt.delete.stale"), {
               kind: "warning",
               action: {
-                label: "重试刷新",
+                label: tr("appMgmt.targets.retryRefresh"),
                 run: () => {
                   void Promise.all([
                     loadTargets(true),
@@ -530,7 +605,7 @@ export default function AppManagement({
               },
             });
           } else if (tOutcome === "ok") {
-            showToast("目标已删除", { kind: "success" });
+            showToast(tr("appMgmt.delete.done"), { kind: "success" });
           }
           setDeleteBusy(false);
         }}

@@ -5,9 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
-  RefreshCw, ChevronRight, Navigation, Clipboard, Trash2, Gauge, Layers, Compass,
+  RefreshCw, Navigation, Clipboard, Trash2, Gauge, Layers, Compass, AlertTriangle,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
+import { CollapsibleSection } from "../ui";
 import {
   auditTestData,
   backupNow,
@@ -38,7 +39,6 @@ import { formatBytes, kindLabel } from "../../lib/clipboardUi";
 import { formatLocalStamp } from "../../lib/format";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import {
-  PRESET_LABELS,
   VISUAL_PRESETS,
   resolveVisualPreset,
 } from "../../lib/theme";
@@ -48,6 +48,7 @@ import { reportError } from "../../lib/errorReport";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { copyText } from "../../lib/clipboard";
 import MockControls from "../agents/MockControls";
+import AudioSettings from "./AudioSettings";
 import AppManagement from "./AppManagement";
 import AppPicker from "../navigation/AppPicker";
 import { NumberInput, Select, Switch } from "../ui";
@@ -55,6 +56,8 @@ import { ConfirmDialog } from "../ui/Dialog";
 import HotkeysSection from "./hotkeys/HotkeysSection";
 import NavigationVisibilitySection from "./NavigationVisibilitySection";
 import LanguageSetting from "../../i18n/LanguageSetting";
+import { useLocale } from "../../hooks/useLocale";
+import type { MessageKey } from "../../i18n";
 import {
   SETTINGS_SECTION_REVEAL_EVENT,
   consumeSettingsSectionReveal,
@@ -70,11 +73,14 @@ function sumAuditCounts(c: AuditTableCounts): number {
 }
 
 /** 备份类型只按后端元数据判断；未知值明确标未知，绝不猜测为完整。 */
-function backupKindLabel(kind: string | null | undefined): string {
-  if (kind === "quick") return "快速备份";
-  if (kind === "full") return "完整备份";
-  if (!kind) return "旧版备份";
-  return "类型未知";
+function backupKindLabel(
+  kind: string | null | undefined,
+  t: (key: MessageKey) => string,
+): string {
+  if (kind === "quick") return t("settings.data.kind.quick");
+  if (kind === "full") return t("settings.data.kind.full");
+  if (!kind) return t("settings.data.kind.legacy");
+  return t("settings.data.kind.unknown");
 }
 
 /** 可折叠设置分组；展开状态由外层统一持有并持久化，禁止用中文标题作键。 */
@@ -96,32 +102,22 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="settings-section" data-settings-section={sectionId}>
-      <button
-        type="button"
-        className="settings-section-head"
-        onClick={onToggle}
-        aria-expanded={open}
-      >
-        <span className="settings-section-text">
-          <span className="settings-section-title">
-            <Icon size={13} />
-            <span className="settings-section-title-text">{title}</span>
-          </span>
-          {description && <span className="settings-section-desc">{description}</span>}
-        </span>
-        <ChevronRight
-          size={12}
-          className={`settings-chevron${open ? " is-open" : ""}`}
-          aria-hidden="true"
-        />
-      </button>
-      {open && <div className="settings-section-body">{children}</div>}
-    </section>
+    <CollapsibleSection
+      id={`settings-${sectionId}`}
+      className="settings-collapsible"
+      icon={<Icon size={13} />}
+      title={title}
+      description={description}
+      expanded={open}
+      onExpandedChange={onToggle}
+    >
+      {children}
+    </CollapsibleSection>
   );
 }
 
 export default function SettingsPanel() {
+  const { t } = useLocale();
   const settings = useSettingsStore((s) => s.settings);
   const update = useSettingsStore((s) => s.update);
   const materialInfo = useSettingsStore((s) => s.materialInfo);
@@ -144,6 +140,8 @@ export default function SettingsPanel() {
     | null
   >(null);
   const [dangerBusy, setDangerBusy] = useState(false);
+  /** 恢复完成后仍可回看的配置告警（快捷键冲突/未知微件/语言回退等）。 */
+  const [restoreWarnings, setRestoreWarnings] = useState<string[]>([]);
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [pendingPicker, setPendingPicker] = useState(false);
   /** 设置页附属数据（备份/剪贴板统计/剪贴板状态）读取失败：显示真实错误与重试，不伪装成空数据 */
@@ -202,7 +200,7 @@ export default function SettingsPanel() {
     const first = requestAnimationFrame(() => {
       const second = requestAnimationFrame(() => {
         document
-          .querySelector('[data-settings-section="apps"]')
+          .querySelector('[data-collapsible-section="settings-apps"]')
           ?.scrollIntoView({ block: "start" });
       });
       scrollRafs.current.push(second);
@@ -223,7 +221,7 @@ export default function SettingsPanel() {
       setSectionOpen(sectionId, true);
       const first = requestAnimationFrame(() => {
         const second = requestAnimationFrame(() => {
-          const target = document.querySelector(`[data-settings-section="${sectionId}"]`);
+          const target = document.querySelector(`[data-collapsible-section="settings-${sectionId}"]`);
           // jsdom / 老 WebView 可能没有 scrollIntoView，缺失时只展开不滚动。
           if (target && typeof target.scrollIntoView === "function") {
             target.scrollIntoView({ block: "start" });
@@ -279,7 +277,9 @@ export default function SettingsPanel() {
       setClipConfigOrigin(status.configOrigin ?? null);
       setClipStats(await clipboardStats());
       showToast(
-        resume ? "剪贴板配置已修复，自动记录已恢复" : "剪贴板配置已修复，自动记录保持暂停",
+        resume
+          ? t("settings.clipboard.repairedResume")
+          : t("settings.clipboard.repairedPause"),
         { kind: "success" },
       );
     } catch (e) {
@@ -298,7 +298,7 @@ export default function SettingsPanel() {
     try {
       setDiag(await performanceDiagnostics());
     } catch (e) {
-      showToast(`诊断读取失败：${String(e)}`, { kind: "error" });
+      showToast(t("settings.diagnostics.diagFailed", { error: String(e) }), { kind: "error" });
     } finally {
       setBusyKey(null);
     }
@@ -308,8 +308,10 @@ export default function SettingsPanel() {
     await withBusy("retention", async () => {
       const r = await agentRetentionRun();
       showToast(
-        `清理完成：删除 ${r.deleted} 条 running/idle 事件，归档 ${r.archived} 条` +
-          (r.archive_error ? `（归档异常：${r.archive_error}）` : ""),
+        t("settings.diagnostics.retentionDone", { deleted: r.deleted, archived: r.archived }) +
+          (r.archive_error
+            ? t("settings.diagnostics.archiveError", { error: r.archive_error })
+            : ""),
         { kind: r.archive_error ? "error" : "success" },
       );
       await refreshDiag();
@@ -319,7 +321,7 @@ export default function SettingsPanel() {
   async function onInboxRetry() {
     await withBusy("inbox-retry", async () => {
       const n = await agentInboxRetry();
-      showToast(`已移回 ${n} 个失败投递文件`, { kind: "success" });
+      showToast(t("settings.diagnostics.inboxRetried", { count: n }), { kind: "success" });
     });
   }
 
@@ -330,8 +332,8 @@ export default function SettingsPanel() {
       const n = sumAuditCounts(r.provable_total);
       showToast(
         n > 0
-          ? `发现 ${n} 条可证明的测试/压测数据（dry-run，未修改任何数据）`
-          : "没有可证明的测试/压测数据",
+          ? t("settings.data.auditFound", { count: n })
+          : t("settings.data.auditNone"),
         { kind: "success" },
       );
     });
@@ -343,7 +345,7 @@ export default function SettingsPanel() {
       setTestAudit(preview);
       const n = sumAuditCounts(preview.provable_total);
       if (n === 0) {
-        showToast("没有可证明的测试数据，无需清理", { kind: "success" });
+        showToast(t("settings.data.auditNoneToClean"), { kind: "success" });
         return;
       }
       // 危险操作：改走应用内确认框（保留完整风险说明；确认后 runAuditApply 执行）
@@ -361,12 +363,12 @@ export default function SettingsPanel() {
       const deleted = r.deleted ? sumAuditCounts(r.deleted) : 0;
       showToast(
         r.backup_path
-          ? `已清理 ${deleted} 条；清理前快照：${r.backup_path}`
-          : r.notes[0] ?? "未删除任何数据",
+          ? t("settings.data.auditCleaned", { count: deleted, path: r.backup_path })
+          : r.notes[0] ?? t("settings.data.auditNoDelete"),
         { kind: r.fk_violations > 0 ? "error" : "success" },
       );
     } catch (e) {
-      showToast(`清理失败：${String(e)}`, { kind: "error" });
+      showToast(t("settings.data.auditFailed", { error: String(e) }), { kind: "error" });
     } finally {
       setDangerBusy(false);
       setPendingDanger(null);
@@ -387,11 +389,15 @@ export default function SettingsPanel() {
       const r = await clipboardCleanup();
       await refreshClipStats();
       showToast(
-        `清理完成：删除 ${r.items_deleted} 条，关闭 ${r.groups_closed} 个分组，释放 ${formatBytes(r.bytes_freed)}`,
+        t("settings.clipboard.cleanupDone", {
+          items: r.items_deleted,
+          groups: r.groups_closed,
+          bytes: formatBytes(r.bytes_freed),
+        }),
         { kind: "success" },
       );
     } catch (e) {
-      showToast(`清理失败：${String(e)}`, { kind: "error" });
+      showToast(t("settings.clipboard.cleanupFailed", { error: String(e) }), { kind: "error" });
     } finally {
       setBusyKey(null);
     }
@@ -403,29 +409,36 @@ export default function SettingsPanel() {
       const r = await clipboardProbe();
       if (r.readable) {
         showToast(
-          `当前剪贴板可读取：${kindLabel(r.kind ?? "")}，${formatBytes(r.bytes ?? 0)}${
-            r.fileCount ? `，${r.fileCount} 个文件` : ""
-          }（探测不返回正文）`,
+          t("settings.clipboard.probeReadable", {
+            kind: kindLabel(r.kind ?? ""),
+            bytes: formatBytes(r.bytes ?? 0),
+            files: r.fileCount ? t("settings.clipboard.probeFiles", { count: r.fileCount }) : "",
+          }),
           { kind: "success" },
         );
       } else {
-        showToast(`当前剪贴板不可记录：${r.reason ?? "格式不支持"}`, { kind: "info" });
+        showToast(
+          t("settings.clipboard.probeUnreadable", {
+            reason: r.reason ?? t("settings.clipboard.unsupported"),
+          }),
+          { kind: "info" },
+        );
       }
     } catch (e) {
-      showToast(`探测失败：${String(e)}`, { kind: "error" });
+      showToast(t("settings.clipboard.probeFailed", { error: String(e) }), { kind: "error" });
     } finally {
       setBusyKey(null);
     }
   }
 
-  if (!settings) return <div className="empty-hint">加载中…</div>;
+  if (!settings) return <div className="empty-hint">{t("settings.loading")}</div>;
 
   async function withBusy(key: string, fn: () => Promise<void>) {
     setBusyKey(key);
     try {
       await fn();
     } catch (e) {
-      showToast(`操作失败：${String(e)}`, { kind: "error" });
+      showToast(t("settings.opFailed", { error: String(e) }), { kind: "error" });
     } finally {
       setBusyKey(null);
     }
@@ -439,7 +452,7 @@ export default function SettingsPanel() {
       });
       if (!path) return;
       await exportData(path);
-      showToast(`已导出：${path}`, { kind: "success" });
+      showToast(t("settings.agent.copied", { value: path }), { kind: "success" });
     });
   }
 
@@ -447,20 +460,27 @@ export default function SettingsPanel() {
     await withBusy("import", async () => {
       const path = await openDialog({
         multiple: false,
-        filters: [{ name: "Task Dock 备份", extensions: ["jsonl", "json"] }],
+        filters: [{ name: "Task Dock backup", extensions: ["jsonl", "json"] }],
       });
       if (!path || Array.isArray(path)) return;
       const meta = await inspectBackup(path);
       const truncated = meta.truncated_tables ?? [];
       const lines = [
         meta.partial
-          ? "这是快速/部分备份：事件、通知、导航日志与剪贴板历史按上限截断，恢复后超出部分不会回来。"
+          ? t("settings.data.importPartial")
           : meta.format === "legacy-json"
-            ? "这是旧版 JSON 导出：仅恢复任务/Agent/导航，库内剪贴板、工作现场与行动中心数据会保留。"
-            : "完整备份：将替换任务、Agent、导航、剪贴板与工作现场等全部数据。",
-        truncated.length ? `截断的表：${truncated.join("、")}（这些表只保留备份内的部分行）。` : "",
-        "恢复前会自动创建完整恢复点；任一环节失败将自动回滚到恢复前状态。",
-        "继续恢复？",
+            ? t("settings.data.importLegacy")
+            : t("settings.data.importFull"),
+        truncated.length
+          ? t("settings.data.importTruncated", {
+              tables: truncated.join(t("settings.data.listSeparator")),
+            })
+          : "",
+        meta.config_included
+          ? t("settings.data.importConfigIncluded")
+          : t("settings.data.importConfigAbsent"),
+        t("settings.data.importRollback"),
+        t("settings.data.importContinue"),
       ].filter(Boolean);
       // 危险操作：改走应用内确认框（保留完整风险说明；确认后 runImport 执行）
       setPendingDanger({
@@ -479,14 +499,30 @@ export default function SettingsPanel() {
     try {
       const outcome = await importData(pendingDanger.path, pendingDanger.partial);
       setBackups(await listBackups());
+      // 配置恢复是非致命环节：数据已恢复时，冲突/降级必须持续可见，不能只闪一条 Toast。
+      setRestoreWarnings(outcome.warnings ?? []);
       showToast(
-        `恢复完成：${outcome.message}${
-          outcome.assets || outcome.archives ? `（资产 ${outcome.assets}，归档 ${outcome.archives}）` : ""
-        }`,
+        t("settings.data.importRestored", { message: outcome.message }) +
+          (outcome.assets || outcome.archives
+            ? t("settings.data.importAssets", {
+                assets: outcome.assets,
+                archives: outcome.archives,
+              })
+            : ""),
         { kind: "success" },
       );
+      if (outcome.config?.included) {
+        showToast(
+          t("settings.data.importConfigSummary", {
+            locale: outcome.config.locale ?? t("common.unknown"),
+            widgets: outcome.config.widgets,
+            hotkeys: outcome.config.hotkeys_applied,
+          }),
+          { kind: "info" },
+        );
+      }
     } catch (e) {
-      showToast(`恢复失败：${String(e)}`, { kind: "error" });
+      showToast(t("settings.data.importFailed", { error: String(e) }), { kind: "error" });
     } finally {
       setDangerBusy(false);
       setPendingDanger(null);
@@ -498,7 +534,12 @@ export default function SettingsPanel() {
       const dir = await getAgentInboxDir();
       setInboxDir(dir);
       const ok = await copyText(dir);
-      showToast(ok ? `已复制：${dir}` : `目录：${dir}`, { kind: ok ? "success" : "info" });
+      showToast(
+        ok
+          ? t("settings.agent.copied", { value: dir })
+          : t("settings.agent.dir", { value: dir }),
+        { kind: ok ? "success" : "info" },
+      );
     });
   }
 
@@ -506,7 +547,10 @@ export default function SettingsPanel() {
     await withBusy("token", async () => {
       const token = useSettingsStore.getState().settings?.http_token ?? "";
       const ok = await copyText(token);
-      showToast(ok ? "令牌已复制" : "复制失败，请展开后手动选择", { kind: ok ? "success" : "error" });
+      showToast(
+        ok ? t("settings.agent.tokenCopied") : t("settings.agent.copyFailed"),
+        { kind: ok ? "success" : "error" },
+      );
     });
   }
 
@@ -527,25 +571,35 @@ export default function SettingsPanel() {
     <div className="settings-panel">
       {dataLoadError && (
         <div className="setting-note error-text" role="alert">
-          部分设置数据读取失败：{dataLoadError}（下方显示的可能不是最新状态）
+          {t("settings.loadError", { error: dataLoadError })}
           <button type="button" className="btn sm" onClick={() => void loadPanelData()}>
-            重试
+            {t("common.retry")}
           </button>
         </div>
       )}
       <Section
         sectionId="appearance"
         icon={Palette}
-        title="外观与主题"
+        title={t("settings.section.appearance")}
         open={openSections.appearance}
         onToggle={() => toggleSection("appearance")}
       >
         {/* v0.6：视觉预设（设计语言）与明暗/材质正交，切换即时生效且不影响业务状态 */}
         <div className="setting-row column">
-          <span>视觉主题</span>
-          <div className="preset-picker" role="radiogroup" aria-label="视觉主题">
+          <span>{t("settings.appearance.preset")}</span>
+          <div className="preset-picker" role="radiogroup" aria-label={t("settings.appearance.preset")}>
             {VISUAL_PRESETS.map((id) => {
               const active = resolveVisualPreset(settings.visual_preset) === id;
+              const presetLabels =
+                id === "frosted"
+                  ? {
+                      name: t("settings.preset.frosted.name"),
+                      tagline: t("settings.preset.frosted.tagline"),
+                    }
+                  : {
+                      name: t("settings.preset.dreamGradient.name"),
+                      tagline: t("settings.preset.dreamGradient.tagline"),
+                    };
               return (
                 <button
                   key={id}
@@ -553,7 +607,7 @@ export default function SettingsPanel() {
                   aria-checked={active}
                   className={`preset-card preset-${id} ${active ? "active" : ""}`}
                   onClick={() => update({ visual_preset: id })}
-                  title={PRESET_LABELS[id].tagline}
+                  title={presetLabels.tagline}
                 >
                   <span className="preset-preview" aria-hidden="true">
                     <span className="pp-rail" />
@@ -565,8 +619,8 @@ export default function SettingsPanel() {
                     </span>
                   </span>
                   <span className="preset-meta">
-                    <strong>{PRESET_LABELS[id].name}</strong>
-                    <em>{PRESET_LABELS[id].tagline}</em>
+                    <strong>{presetLabels.name}</strong>
+                    <em>{presetLabels.tagline}</em>
                   </span>
                   <span className="preset-radio" aria-hidden="true" />
                 </button>
@@ -575,31 +629,31 @@ export default function SettingsPanel() {
           </div>
         </div>
         <div className="setting-row">
-          <span>配色</span>
+          <span>{t("settings.appearance.color")}</span>
           <Select
-            ariaLabel="配色"
+            ariaLabel={t("settings.appearance.color")}
             size="sm"
             triggerClassName="settings-select-trigger"
             value={settings.theme}
             options={[
-              { value: "system", label: "跟随系统" },
-              { value: "light", label: "浅色" },
-              { value: "dark", label: "深色" },
+              { value: "system", label: t("settings.appearance.theme.system") },
+              { value: "light", label: t("settings.appearance.theme.light") },
+              { value: "dark", label: t("settings.appearance.theme.dark") },
             ]}
             onChange={(v) => update({ theme: v as never })}
           />
         </div>
         {/* 清透预设已下线，clear_foreground 仅保留键兼容、不再读取。 */}
         <div className="setting-row">
-          <span>窗口材质</span>
+          <span>{t("settings.appearance.material")}</span>
           <Select
-            ariaLabel="窗口材质"
+            ariaLabel={t("settings.appearance.material")}
             size="sm"
             triggerClassName="settings-select-trigger"
             value={settings.material}
             options={[
-              { value: "glass", label: "玻璃（半透明）" },
-              { value: "solid", label: "不透明" },
+              { value: "glass", label: t("settings.appearance.material.glass") },
+              { value: "solid", label: t("settings.appearance.material.solid") },
             ]}
             onChange={(v) => update({ material: v as never })}
           />
@@ -609,25 +663,26 @@ export default function SettingsPanel() {
           {settings.material === "glass" ? (
             materialInfo?.materialError ? (
               // 失败原因与「系统不支持」区分：失败是可通过重试恢复的
-              <>原生材质应用失败，已按可读性方案降级：{materialInfo.materialError}
+              <>{t("settings.appearance.materialFailed", { error: materialInfo.materialError })}
                 <button type="button" className="btn sm" onClick={() => reapplyFromSystem()}>
-                  重试应用
+                  {t("settings.appearance.reapply")}
                 </button>
               </>
             ) : glassDowngraded ? (
-              <>已自动回退为不透明：当前系统不支持（{materialInfo?.osVersion || "版本未知"}）
-                或开启了高对比度 / 减少透明效果</>
+              <>{t("settings.appearance.glassDowngraded", {
+                version: materialInfo?.osVersion || t("settings.appearance.versionUnknown"),
+              })}</>
             ) : materialInfo?.applied ? (
               materialInfo.effect === "css" ? (
-                <>CSS 柔光玻璃已生效（原生模糊不可用，已启用可读性增强）：桌面仅轻微透出，背景文字不会干扰正文</>
+                <>{t("settings.appearance.cssGlass")}</>
               ) : (
-                <>原生模糊已生效（{materialInfo.effect}），桌面背景自然透出窗口</>
+                <>{t("settings.appearance.nativeGlass", { effect: materialInfo.effect })}</>
               )
             ) : (
-              <>正在探测系统材质支持…</>
+              <>{t("settings.appearance.probing")}</>
             )
           ) : (
-            <>普通不透明主题，兼容性最佳</>
+            <>{t("settings.appearance.opaque")}</>
           )}
         </div>
       </Section>
@@ -635,8 +690,8 @@ export default function SettingsPanel() {
       <Section
         sectionId="navigation"
         icon={Compass}
-        title="导航自定义"
-        description="选择常驻功能，其余通过「更多」访问；隐藏不删除数据。"
+        title={t("settings.section.navigation")}
+        description={t("settings.section.navigationDesc")}
         open={openSections.navigation}
         onToggle={() => toggleSection("navigation")}
       >
@@ -646,45 +701,40 @@ export default function SettingsPanel() {
       <Section
         sectionId="window-hotkeys"
         icon={AppWindow}
-        title="窗口与快捷键"
+        title={t("settings.section.windowHotkeys")}
         open={openSections["window-hotkeys"]}
         onToggle={() => toggleSection("window-hotkeys")}
       >
         <div className="setting-row">
-          <span>贴边吸附 / 自动隐藏</span>
+          <span>{t("settings.window.snap")}</span>
           <Switch
             checked={settings.snap_enabled}
-            ariaLabel="贴边吸附 / 自动隐藏"
+            ariaLabel={t("settings.window.snap")}
             onChange={(v) => update({ snap_enabled: v })}
           />
         </div>
         <div className="setting-row">
-          <span>边缘吸附方式</span>
+          <span>{t("settings.window.snapMode")}</span>
           <Select
-            ariaLabel="边缘吸附方式"
+            ariaLabel={t("settings.window.snapMode")}
             size="sm"
             triggerClassName="settings-select-trigger"
             disabled={!settings.snap_enabled}
             value={settings.snap_display_mode === "full" ? "full" : "capsule"}
             options={[
-              { value: "capsule", label: "胶囊隐藏" },
-              { value: "full", label: "完整面板" },
+              { value: "capsule", label: t("settings.window.snapMode.capsule") },
+              { value: "full", label: t("settings.window.snapMode.full") },
             ]}
             onChange={(v) => update({ snap_display_mode: v as "capsule" | "full" })}
           />
         </div>
-        <div className="setting-note">
-          把窗口拖近屏幕边缘（约 28px 内）会显示「松开吸附」提示，松开即停靠。
-          胶囊隐藏：停靠后自动收缩为胶囊，鼠标移出再次隐藏；完整面板：保持完整窗口
-          与内容贴边，鼠标移出不收缩，仍可拖离恢复浮动。两种形态共用同一套磁吸与窗口生命周期，
-          已停靠时切换会原地生效，浮动时只影响下次吸附。
-        </div>
+        <div className="setting-note">{t("settings.window.snapNote")}</div>
         <div className="setting-row">
-          <span>开机自启动</span>
+          <span>{t("settings.window.autostart")}</span>
           <Switch
             checked={settings.autostart}
             disabled={busyKey === "autostart"}
-            ariaLabel="开机自启动"
+            ariaLabel={t("settings.window.autostart")}
             onChange={(v) => withBusy("autostart", async () => {
               await setAutostart(v);
               await useSettingsStore.getState().load();
@@ -692,11 +742,11 @@ export default function SettingsPanel() {
           />
         </div>
         <div className="setting-row">
-          <span>系统级快捷键总开关（当前组合见下方「快捷键管理」）</span>
+          <span>{t("settings.window.hotkeySwitch")}</span>
           <Switch
             checked={settings.hotkey_enabled}
             disabled={busyKey === "hotkey"}
-            ariaLabel="系统级快捷键总开关（当前组合见下方「快捷键管理」）"
+            ariaLabel={t("settings.window.hotkeySwitch")}
             onChange={(v) => withBusy("hotkey", async () => {
               await setHotkeysEnabled(v);
               await useSettingsStore.getState().load();
@@ -709,43 +759,37 @@ export default function SettingsPanel() {
       <Section
         sectionId="features"
         icon={Layers}
-        title="功能模块"
-        description="独立启停；关闭不会删除已有数据，Agent 核心接入始终保留"
+        title={t("settings.section.features")}
+        description={t("settings.section.featuresDesc")}
         open={openSections.features}
         onToggle={() => toggleSection("features")}
       >
         <div className="setting-row">
-          <span>工作现场（捕获窗口组合并恢复）</span>
+          <span>{t("settings.features.workspace")}</span>
           <Switch
             checked={settings.workspace_enabled}
-            ariaLabel="工作现场（捕获窗口组合并恢复）"
+            ariaLabel={t("settings.features.workspace")}
             onChange={(v) => update({ workspace_enabled: v })}
           />
         </div>
-        <div className="setting-note">
-          关闭后停止捕获与后台恢复，正在进行的恢复会被取消；已有现场保留，重新开启即可继续使用。
-        </div>
+        <div className="setting-note">{t("settings.features.workspaceNote")}</div>
         <div className="setting-row">
-          <span>行动中心（聚合 Agent 事件与提醒）</span>
+          <span>{t("settings.features.actions")}</span>
           <Switch
             checked={settings.actions_enabled}
-            ariaLabel="行动中心（聚合 Agent 事件与提醒）"
+            ariaLabel={t("settings.features.actions")}
             onChange={(v) => update({ actions_enabled: v })}
           />
         </div>
-        <div className="setting-note">
-          关闭后停止聚合刷新与徽标；Agent 事件仍照常入库，历史、会话跳转与任务联动不受影响。
-        </div>
-        <div className="setting-note">
-          智能剪贴板的启停在下方「智能剪贴板」分组中管理；关闭后不再采集新内容，历史仍可查看。
-        </div>
+        <div className="setting-note">{t("settings.features.actionsNote")}</div>
+        <div className="setting-note">{t("settings.features.clipboardNote")}</div>
       </Section>
 
       <Section
         sectionId="apps"
         icon={Navigation}
-        title="应用与快捷方式"
-        description="软件发现、导航偏好与跳转记录"
+        title={t("settings.section.apps")}
+        description={t("settings.section.appsDesc")}
         open={openSections.apps}
         onToggle={() => toggleSection("apps")}
       >
@@ -755,291 +799,292 @@ export default function SettingsPanel() {
       <Section
         sectionId="clipboard"
         icon={Clipboard}
-        title="智能剪贴板"
-        description="监听、自动分组、容量与隐私（标题栏剪贴板图标打开历史抽屉）"
+        title={t("settings.section.clipboard")}
+        description={t("settings.section.clipboardDesc")}
         open={openSections.clipboard}
         onToggle={() => toggleSection("clipboard")}
       >
         {clipConfigError && (
           <div className="setting-row setting-row-block clip-config-error" role="alert">
-            <strong>剪贴板配置异常，自动记录已暂停</strong>
+            <strong>{t("settings.clipboard.configErrorTitle")}</strong>
             <span>{clipConfigError.message}</span>
-            <span>
-              损坏的原始值已保留在本地备份中；修复只会重写无法解析的键。修复前不会读取或记录任何新内容。
-            </span>
+            <span>{t("settings.clipboard.configErrorNote")}</span>
             <div className="clip-config-actions">
               <button
                 className="btn sm"
                 disabled={busyKey === "clip-repair"}
                 onClick={() => void onRepairClipboard(true)}
               >
-                修复并恢复记录
+                {t("settings.clipboard.repairResume")}
               </button>
               <button
                 className="btn sm"
                 disabled={busyKey === "clip-repair"}
                 onClick={() => void onRepairClipboard(false)}
               >
-                仅修复（保持暂停）
+                {t("settings.clipboard.repairPause")}
               </button>
             </div>
           </div>
         )}
         {!clipConfigError && clipConfigOrigin === "legacy_upgrade_paused" && (
           <div className="setting-row setting-row-block" role="status">
-            <strong>从旧版本升级：剪贴板记录保持暂停</strong>
-            <span>
-              旧版本没有剪贴板配置，无法确认此前的记录授权，因此不会自动开始采集。确认需要后，取消下方“暂停记录”即可。
-            </span>
+            <strong>{t("settings.clipboard.legacyTitle")}</strong>
+            <span>{t("settings.clipboard.legacyNote")}</span>
           </div>
         )}
         <div className="setting-row">
-          <span>启用剪贴板记录（关闭后不再采集新内容）</span>
+          <span>{t("settings.clipboard.enabled")}</span>
           <Switch
             checked={settings.clipboard_enabled}
-            ariaLabel="启用剪贴板记录（关闭后不再采集新内容）"
+            ariaLabel={t("settings.clipboard.enabled")}
             onChange={(v) => update({ clipboard_enabled: v })}
           />
         </div>
         <div className="setting-row">
-          <span>暂停记录（保留历史，恢复后继续）</span>
+          <span>{t("settings.clipboard.paused")}</span>
           <Switch
             checked={settings.clipboard_paused}
-            ariaLabel="暂停记录（保留历史，恢复后继续）"
+            ariaLabel={t("settings.clipboard.paused")}
             onChange={(v) => update({ clipboard_paused: v })}
           />
         </div>
         <div className="setting-row">
-          <span>记录图片（截图 / 位图）</span>
+          <span>{t("settings.clipboard.images")}</span>
           <Switch
             checked={settings.clipboard_capture_images}
-            ariaLabel="记录图片（截图 / 位图）"
+            ariaLabel={t("settings.clipboard.images")}
             onChange={(v) => update({ clipboard_capture_images: v })}
           />
         </div>
         <div className="setting-row">
-          <span>记录文件列表</span>
+          <span>{t("settings.clipboard.ocrAuto")}</span>
+          {/* 后端采集热路径尚未实现自动 OCR：保持读取既有配置用于如实展示，
+              但不提供可操作入口，避免用户打开一个实际不生效的开关。 */}
+          <Switch
+            checked={settings.clipboard_ocr_auto ?? false}
+            disabled
+            ariaLabel={t("settings.clipboard.ocrAuto")}
+            onChange={(v) => update({ clipboard_ocr_auto: v })}
+          />
+        </div>
+        <div className="setting-note">{t("settings.clipboard.ocrAutoNote")}</div>
+        <div className="setting-row">
+          <span>{t("settings.clipboard.files")}</span>
           <Switch
             checked={settings.clipboard_capture_files}
-            ariaLabel="记录文件列表"
+            ariaLabel={t("settings.clipboard.files")}
             onChange={(v) => update({ clipboard_capture_files: v })}
           />
         </div>
         <div className="setting-row">
-          <span>记录富文本 HTML（关闭后退回纯文本）</span>
+          <span>{t("settings.clipboard.html")}</span>
           <Switch
             checked={settings.clipboard_capture_html}
-            ariaLabel="记录富文本 HTML（关闭后退回纯文本）"
+            ariaLabel={t("settings.clipboard.html")}
             onChange={(v) => update({ clipboard_capture_html: v })}
           />
         </div>
         <div className="setting-row">
-          <span>连续截图自动分组</span>
+          <span>{t("settings.clipboard.autoGroup")}</span>
           <Switch
             checked={settings.clipboard_auto_group}
-            ariaLabel="连续截图自动分组"
+            ariaLabel={t("settings.clipboard.autoGroup")}
             onChange={(v) => update({ clipboard_auto_group: v })}
           />
         </div>
         <div className="setting-row">
-          <span>自动分组窗口（秒，5–600）</span>
+          <span>{t("settings.clipboard.groupWindow")}</span>
           <NumberInput
             value={settings.clipboard_group_window_secs}
             min={5}
             max={600}
-            ariaLabel="自动分组窗口（秒，5–600）"
+            ariaLabel={t("settings.clipboard.groupWindow")}
             onChange={(v) => update({ clipboard_group_window_secs: v })}
           />
         </div>
         <div className="setting-row">
-          <span>非收藏条目保留天数</span>
+          <span>{t("settings.clipboard.retentionDays")}</span>
           <NumberInput
             value={settings.clipboard_retention_days}
             min={1}
             max={3650}
-            ariaLabel="非收藏条目保留天数"
+            ariaLabel={t("settings.clipboard.retentionDays")}
             onChange={(v) => update({ clipboard_retention_days: v })}
           />
         </div>
         <div className="setting-row">
-          <span>最大条目数（非收藏 / 非置顶）</span>
+          <span>{t("settings.clipboard.maxItems")}</span>
           <NumberInput
             value={settings.clipboard_max_items}
             min={20}
             max={50000}
-            ariaLabel="最大条目数（非收藏 / 非置顶）"
+            ariaLabel={t("settings.clipboard.maxItems")}
             onChange={(v) => update({ clipboard_max_items: v })}
           />
         </div>
         <div className="setting-row">
-          <span>图片缓存上限（MB）</span>
+          <span>{t("settings.clipboard.maxStorage")}</span>
           <NumberInput
             value={settings.clipboard_max_storage_mb}
             min={16}
             max={102400}
-            ariaLabel="图片缓存上限（MB）"
+            ariaLabel={t("settings.clipboard.maxStorage")}
             onChange={(v) => update({ clipboard_max_storage_mb: v })}
           />
         </div>
         <div className="setting-row">
-          <span>文本 / 链接粘贴间隔（毫秒，100–5000）</span>
+          <span>{t("settings.clipboard.pasteInterval")}</span>
           <NumberInput
             value={settings.clipboard_paste_interval_ms}
             min={100}
             max={5000}
             step={50}
-            ariaLabel="文本 / 链接粘贴间隔（毫秒，100–5000）"
+            ariaLabel={t("settings.clipboard.pasteInterval")}
             onChange={(v) => update({ clipboard_paste_interval_ms: v })}
           />
         </div>
         <div className="setting-row">
-          <span>富文本粘贴间隔（毫秒）</span>
+          <span>{t("settings.clipboard.pasteIntervalHtml")}</span>
           <NumberInput
             value={settings.clipboard_paste_interval_html_ms}
             min={100}
             max={5000}
             step={50}
-            ariaLabel="富文本粘贴间隔（毫秒）"
+            ariaLabel={t("settings.clipboard.pasteIntervalHtml")}
             onChange={(v) => update({ clipboard_paste_interval_html_ms: v })}
           />
         </div>
         <div className="setting-row">
-          <span>图片粘贴间隔（毫秒，建议 ≥ 1000）</span>
+          <span>{t("settings.clipboard.pasteIntervalImage")}</span>
           <NumberInput
             value={settings.clipboard_paste_interval_image_ms}
             min={100}
             max={5000}
             step={50}
-            ariaLabel="图片粘贴间隔（毫秒，建议 ≥ 1000）"
+            ariaLabel={t("settings.clipboard.pasteIntervalImage")}
             onChange={(v) => update({ clipboard_paste_interval_image_ms: v })}
           />
         </div>
         <div className="setting-row">
-          <span>文件粘贴间隔（毫秒）</span>
+          <span>{t("settings.clipboard.pasteIntervalFiles")}</span>
           <NumberInput
             value={settings.clipboard_paste_interval_files_ms}
             min={100}
             max={5000}
             step={50}
-            ariaLabel="文件粘贴间隔（毫秒）"
+            ariaLabel={t("settings.clipboard.pasteIntervalFiles")}
             onChange={(v) => update({ clipboard_paste_interval_files_ms: v })}
           />
         </div>
         <div className="setting-row">
-          <span>高置信敏感内容过滤（如 PEM 私钥）</span>
+          <span>{t("settings.clipboard.sensitiveFilter")}</span>
           <Switch
             checked={settings.clipboard_sensitive_filter}
-            ariaLabel="高置信敏感内容过滤（如 PEM 私钥）"
+            ariaLabel={t("settings.clipboard.sensitiveFilter")}
             onChange={(v) => update({ clipboard_sensitive_filter: v })}
           />
         </div>
-        <div className="setting-note">
-          敏感过滤只覆盖明确的高置信模式，不宣称能识别全部密码 / 令牌；日志只记录类型、大小与计数，
-          绝不记录剪贴板正文或图片内容。来源应用由剪贴板所有者窗口（系统记录）或前台窗口推断，无法识别时会标记为「未知来源」，
-          此时排除名单无法证明生效，并会启用更保守的凭据字段过滤。建议把密码管理器加入下方排除名单。
-          暂停记录后不会读取也不会上传任何内容；发送给 Agent 必须由你在界面中手动触发。
-        </div>
+        <div className="setting-note">{t("settings.clipboard.sensitiveNote")}</div>
         <div className="setting-row setting-row-block">
-          <span>应用排除名单（exe 名或路径，逗号 / 换行分隔）</span>
+          <span>{t("settings.clipboard.exclude")}</span>
           <textarea
             className="setting-textarea"
             rows={2}
             value={excludeApps}
             placeholder="keepass.exe, 1password.exe"
-            aria-label="剪贴板排除的应用名单"
+            aria-label={t("settings.clipboard.excludeAria")}
             onChange={(e) => setExcludeApps(e.target.value)}
             onBlur={() => {
               if (excludeApps !== settings.clipboard_exclude_apps) {
                 update({ clipboard_exclude_apps: excludeApps }).catch((e) =>
-                  showToast(`保存排除名单失败：${String(e)}`, { kind: "error" }),
+                  showToast(t("settings.clipboard.excludeSaveFailed", { error: String(e) }), {
+                    kind: "error",
+                  }),
                 );
               }
             }}
           />
         </div>
         <div className="setting-row">
-          <span>当前占用</span>
+          <span>{t("settings.clipboard.usage")}</span>
           <span className="setting-value">
             {clipStats
-              ? `${clipStats.items} 条 · ${clipStats.groups} 组 · 图片缓存 ${formatBytes(clipStats.asset_bytes)} / ${formatBytes(clipStats.max_storage_bytes)}`
-              : "读取中…"}
+              ? t("settings.clipboard.usageValue", {
+                  items: clipStats.items,
+                  groups: clipStats.groups,
+                  used: formatBytes(clipStats.asset_bytes),
+                  max: formatBytes(clipStats.max_storage_bytes),
+                })
+              : t("settings.clipboard.reading")}
           </span>
         </div>
         <div className="setting-row">
-          <span>诊断与维护</span>
+          <span>{t("settings.clipboard.maintenance")}</span>
           <div className="btn-row">
             <button className="btn sm" onClick={refreshClipStats} disabled={busyKey !== null}>
-              <RefreshCw size={11} /> 刷新统计
+              <RefreshCw size={11} /> {t("settings.clipboard.refreshStats")}
             </button>
             <button className="btn sm" onClick={onClipProbe} disabled={busyKey !== null}>
-              探测当前剪贴板
+              {t("settings.clipboard.probe")}
             </button>
             <button className="btn sm" onClick={onClipCleanup} disabled={busyKey !== null}>
-              {busyKey === "clip-cleanup" ? <RefreshCw size={11} className="spin" /> : <Trash2 size={11} />} 立即清理
+              {busyKey === "clip-cleanup" ? <RefreshCw size={11} className="spin" /> : <Trash2 size={11} />}{" "}
+              {t("settings.clipboard.cleanup")}
             </button>
           </div>
         </div>
-        <div className="setting-note">
-          「立即清理」按保留天数与容量上限删除非收藏条目，并回收孤儿图片文件；置顶与收藏不受自动清理影响。
-        </div>
+        <div className="setting-note">{t("settings.clipboard.cleanupNote")}</div>
       </Section>
 
       <Section
         sectionId="notifications"
         icon={Bell}
-        title="通知"
+        title={t("settings.section.notifications")}
         open={openSections.notifications}
         onToggle={() => toggleSection("notifications")}
       >
         <div className="setting-row">
-          <span>任务提醒通知</span>
+          <span>{t("settings.notifications.reminder")}</span>
           <Switch
             checked={settings.notify_reminder}
-            ariaLabel="任务提醒通知"
+            ariaLabel={t("settings.notifications.reminder")}
             onChange={(v) => update({ notify_reminder: v })}
           />
         </div>
         <div className="setting-row">
-          <span>Agent 状态通知（等待 / 完成 / 失败）</span>
+          <span>{t("settings.notifications.agent")}</span>
           <Switch
             checked={settings.notify_agent}
-            ariaLabel="Agent 状态通知（等待 / 完成 / 失败）"
+            ariaLabel={t("settings.notifications.agent")}
             onChange={(v) => update({ notify_agent: v })}
           />
         </div>
         <div className="setting-row">
-          <span>全部静音（仍记录到收件箱）</span>
+          <span>{t("settings.notifications.muted")}</span>
           <Switch
             checked={settings.notify_muted}
-            ariaLabel="全部静音（仍记录到收件箱）"
+            ariaLabel={t("settings.notifications.muted")}
             onChange={(v) => update({ notify_muted: v })}
           />
         </div>
         <div className="setting-row">
-          <span>高频完成合并为一条摘要</span>
+          <span>{t("settings.notifications.aggregate")}</span>
           <Switch
             checked={settings.notify_done_aggregate}
-            ariaLabel="高频完成合并为一条摘要"
+            ariaLabel={t("settings.notifications.aggregate")}
             onChange={(v) => update({ notify_done_aggregate: v })}
           />
         </div>
         <div className="setting-row">
-          <span>Agent 异常提示音（隐藏态胶囊）</span>
-          <Switch
-            checked={settings.agent_alert_sound}
-            ariaLabel="Agent 异常提示音（隐藏态胶囊）"
-            onChange={(v) => update({ agent_alert_sound: v })}
-          />
-        </div>
-        <div className="setting-row">
-          <span>通知限流窗口（秒 / 最多独立弹窗）</span>
+          <span>{t("settings.notifications.rateWindow")}</span>
           <div className="btn-row">
             <NumberInput
               size="sm"
               min={10}
               max={3600}
               value={settings.notify_rate_window_secs}
-              ariaLabel="通知限流窗口（秒）"
+              ariaLabel={t("settings.notifications.rateWindowAria")}
               onChange={(v) => update({ notify_rate_window_secs: v })}
             />
             <NumberInput
@@ -1047,87 +1092,92 @@ export default function SettingsPanel() {
               min={1}
               max={20}
               value={settings.notify_burst_max}
-              ariaLabel="最多独立弹窗数"
+              ariaLabel={t("settings.notifications.burstAria")}
               onChange={(v) => update({ notify_burst_max: v })}
             />
           </div>
         </div>
-        <div className="setting-note">
-          等待/失败会优先弹出；同一窗口内超出的状态变化合并为一条摘要并照常写入收件箱，不丢历史。
-        </div>
+        <div className="setting-note">{t("settings.notifications.note")}</div>
         <div className="setting-row">
-          <span>过期提醒补偿窗口（小时）</span>
+          <span>{t("settings.notifications.overdueGrace")}</span>
           <NumberInput
             value={settings.overdue_grace_hours}
             min={1}
             max={168}
-            ariaLabel="过期提醒补偿窗口（小时）"
+            ariaLabel={t("settings.notifications.overdueGrace")}
             onChange={(v) => update({ overdue_grace_hours: v })}
           />
         </div>
       </Section>
 
+      <AudioSettings openSections={openSections} onToggle={toggleSection} />
+
       <Section
         sectionId="agent"
         icon={AgentIcon}
-        title="Agent 接入"
-        description="HTTP 端口、令牌与健康判定"
+        title={t("settings.section.agent")}
+        description={t("settings.section.agentDesc")}
         open={openSections.agent}
         onToggle={() => toggleSection("agent")}
       >
         <div className="setting-row">
-          <span>本地 HTTP 接入（仅回环）</span>
+          <span>{t("settings.agent.http")}</span>
           <Switch
             checked={settings.http_enabled}
-            ariaLabel="本地 HTTP 接入（仅回环）"
+            ariaLabel={t("settings.agent.http")}
             onChange={(v) => update({ http_enabled: v })}
           />
         </div>
         <div className="setting-row">
-          <span>端口</span>
+          <span>{t("settings.agent.port")}</span>
           <NumberInput
             value={settings.http_port}
             min={1024}
             max={65535}
-            ariaLabel="端口"
+            ariaLabel={t("settings.agent.port")}
             onChange={(v) => update({ http_port: v })}
           />
         </div>
         <div className="setting-row">
-          <span>接入令牌</span>
+          <span>{t("settings.agent.token")}</span>
           <div className="token-row">
             <code className="token-box">
               {tokenRevealed ? settings.http_token : `${settings.http_token.slice(0, 4)}${"•".repeat(16)}`}
             </code>
             <button
               className="icon-btn sm"
-              data-tip={tokenRevealed ? "隐藏" : "显示"}
-              aria-label={tokenRevealed ? "隐藏令牌" : "显示令牌"}
+              data-tip={tokenRevealed ? t("settings.agent.hide") : t("settings.agent.show")}
+              aria-label={tokenRevealed ? t("settings.agent.hideToken") : t("settings.agent.showToken")}
               onClick={() => setTokenRevealed((v) => !v)}
             >
               {tokenRevealed ? <EyeOff size={12} /> : <Eye size={12} />}
             </button>
-            <button className="icon-btn sm" data-tip="复制令牌" aria-label="复制令牌" onClick={onCopyToken}>
+            <button
+              className="icon-btn sm"
+              data-tip={t("settings.agent.copyToken")}
+              aria-label={t("settings.agent.copyToken")}
+              onClick={onCopyToken}
+            >
               <Copy size={12} />
             </button>
           </div>
         </div>
         <div className="setting-row">
-          <span>状态过期判定（分钟无更新 → 断开，不推断成败）</span>
+          <span>{t("settings.agent.stale")}</span>
           <NumberInput
             value={settings.stale_run_minutes}
             min={1}
             max={120}
-            ariaLabel="状态过期判定（分钟无更新 → 断开，不推断成败）"
+            ariaLabel={t("settings.agent.stale")}
             onChange={(v) => update({ stale_run_minutes: v })}
           />
         </div>
         <div className="setting-row">
-          <span>文件投递目录</span>
+          <span>{t("settings.agent.inboxDir")}</span>
           <div className="btn-row">
             {inboxDir && <code className="token-box">{inboxDir}</code>}
             <button className="btn sm" onClick={onCopyInbox} disabled={busyKey === "inbox"}>
-              {busyKey === "inbox" ? "获取中…" : "获取并复制"}
+              {busyKey === "inbox" ? t("settings.agent.fetching") : t("settings.agent.fetchCopy")}
             </button>
           </div>
         </div>
@@ -1136,30 +1186,30 @@ export default function SettingsPanel() {
       <Section
         sectionId="data"
         icon={Database}
-        title="数据与备份"
+        title={t("settings.section.data")}
         open={openSections.data}
         onToggle={() => toggleSection("data")}
       >
         <div className="setting-row">
-          <span>每日自动备份</span>
+          <span>{t("settings.data.autoBackup")}</span>
           <Switch
             checked={settings.auto_backup}
-            ariaLabel="每日自动备份"
+            ariaLabel={t("settings.data.autoBackup")}
             onChange={(v) => update({ auto_backup: v })}
           />
         </div>
         <div className="setting-row">
-          <span>备份保留天数</span>
+          <span>{t("settings.data.retainDays")}</span>
           <NumberInput
             value={settings.backup_retain_days}
             min={1}
             max={90}
-            ariaLabel="备份保留天数"
+            ariaLabel={t("settings.data.retainDays")}
             onChange={(v) => update({ backup_retain_days: v })}
           />
         </div>
         <div className="setting-row">
-          <span>数据操作</span>
+          <span>{t("settings.data.actions")}</span>
           <div className="btn-row">
             <button
               className="btn sm"
@@ -1167,10 +1217,11 @@ export default function SettingsPanel() {
               onClick={() => withBusy("backup", async () => {
                 const p = await backupNow(false);
                 setBackups(await listBackups());
-                showToast(`快速备份完成（标记为部分数据）：${p}`, { kind: "success" });
+                showToast(t("settings.data.quickBackupDone", { path: p }), { kind: "success" });
               })}
             >
-              {busyKey === "backup" ? <RefreshCw size={12} className="spin" /> : null} 快速备份
+              {busyKey === "backup" ? <RefreshCw size={12} className="spin" /> : null}{" "}
+              {t("settings.data.quickBackup")}
             </button>
             <button
               className="btn sm"
@@ -1178,15 +1229,32 @@ export default function SettingsPanel() {
               onClick={() => withBusy("backup-full", async () => {
                 const p = await backupNow(true);
                 setBackups(await listBackups());
-                showToast(`完整备份完成（全部事件与归档）：${p}`, { kind: "success" });
+                showToast(t("settings.data.fullBackupDone", { path: p }), { kind: "success" });
               })}
             >
-              {busyKey === "backup-full" ? <RefreshCw size={12} className="spin" /> : null} 完整备份
+              {busyKey === "backup-full" ? <RefreshCw size={12} className="spin" /> : null}{" "}
+              {t("settings.data.fullBackup")}
             </button>
-            <button className="btn sm" onClick={onExport} disabled={busyKey === "export"}>导出 JSON</button>
-            <button className="btn sm" onClick={onImport} disabled={busyKey === "import"}>恢复备份…</button>
+            <button className="btn sm" onClick={onExport} disabled={busyKey === "export"}>
+              {t("settings.data.export")}
+            </button>
+            <button className="btn sm" onClick={onImport} disabled={busyKey === "import"}>
+              {t("settings.data.import")}
+            </button>
           </div>
         </div>
+        {restoreWarnings.length > 0 && (
+          <div className="setting-note" role="status">
+            <strong>
+              <AlertTriangle size={12} aria-hidden="true" /> {t("settings.data.importWarnings")}
+            </strong>
+            <ul>
+              {restoreWarnings.map((warning, index) => (
+                <li key={`${index}-${warning}`}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        )}
         {backups.length > 0 && (
           <div className="backup-list backup-record-list">
             {backups.slice(0, 8).map((b) => {
@@ -1196,23 +1264,37 @@ export default function SettingsPanel() {
               return (
                 <div key={b.name} className="backup-item backup-record">
                   <div className="backup-record-head">
-                    <span className="backup-record-kind">{backupKindLabel(b.kind)}</span>
+                    <span className="backup-record-kind">{backupKindLabel(b.kind, t)}</span>
                     <span className="backup-record-flags">
-                      {b.partial && <span className="chip">部分数据</span>}
+                      {b.partial && <span className="chip">{t("settings.data.partial")}</span>}
                       {truncatedTables.length > 0 && (
-                        <span className="chip" title={`截断的表：${truncatedTables.join("、")}`}>
-                          截断 {truncatedTables.length} 表
+                        <span
+                          className="chip"
+                          title={t("settings.data.truncatedTitle", {
+                            tables: truncatedTables.join(t("settings.data.listSeparator")),
+                          })}
+                        >
+                          {t("settings.data.truncated", { count: truncatedTables.length })}
                         </span>
                       )}
-                      {b.extended_modules && <span className="chip">含扩展模块</span>}
+                      {b.extended_modules && (
+                        <span className="chip">{t("settings.data.extended")}</span>
+                      )}
+                      {b.config_included && (
+                        <span className="chip">{t("settings.data.configIncluded")}</span>
+                      )}
                     </span>
                     <span className="backup-record-size">{formatBytes(b.size)}</span>
                   </div>
                   <div className="backup-record-sub">
                     <span className="backup-record-time">
                       {stamp
-                        ? `${stamp.date} ${stamp.time}（${stamp.zone}）`
-                        : "修改时间未知"}
+                        ? t("settings.data.stamp", {
+                            date: stamp.date,
+                            time: stamp.time,
+                            zone: stamp.zone,
+                          })
+                        : t("settings.data.timeUnknown")}
                     </span>
                     <span className="backup-record-name" title={b.name}>
                       {b.name}
@@ -1225,52 +1307,65 @@ export default function SettingsPanel() {
         )}
 
         <div className="setting-row">
-          <span>测试/压测数据审计</span>
+          <span>{t("settings.data.audit")}</span>
           <div className="btn-row">
             <button className="btn sm" onClick={onAuditPreview} disabled={busyKey === "audit-preview"}>
-              {busyKey === "audit-preview" ? <RefreshCw size={12} className="spin" /> : null} 预览
+              {busyKey === "audit-preview" ? <RefreshCw size={12} className="spin" /> : null}{" "}
+              {t("settings.data.auditPreview")}
             </button>
             <button className="btn sm" onClick={onAuditApply} disabled={busyKey === "audit-apply"}>
-              {busyKey === "audit-apply" ? <RefreshCw size={12} className="spin" /> : null} 清理可证明数据…
+              {busyKey === "audit-apply" ? <RefreshCw size={12} className="spin" /> : null}{" "}
+              {t("settings.data.auditApply")}
             </button>
           </div>
         </div>
         {testAudit && (
           <div className="backup-list">
             <div className="backup-item">
-              <span>可证明测试数据</span>
+              <span>{t("settings.data.provable")}</span>
               <span>
-                {sumAuditCounts(testAudit.provable_total)} 条（
-                {testAudit.provable.map((p) => `${p.origin} ${sumAuditCounts(p.counts)}`).join(" / ") ||
-                  "无"}
-                ）
+                {t("settings.data.provableValue", {
+                  count: sumAuditCounts(testAudit.provable_total),
+                  detail:
+                    testAudit.provable
+                      .map((p) => `${p.origin} ${sumAuditCounts(p.counts)}`)
+                      .join(" / ") || t("settings.data.none"),
+                })}
               </span>
             </div>
             <div className="backup-item">
-              <span>真实数据（保留）</span>
+              <span>{t("settings.data.real")}</span>
               <span>
-                事件 {testAudit.real.events} · 会话 {testAudit.real.sessions} · 轮次 {testAudit.real.runs} ·
-                通知 {testAudit.real.notifications}
+                {t("settings.data.realValue", {
+                  events: testAudit.real.events,
+                  sessions: testAudit.real.sessions,
+                  runs: testAudit.real.runs,
+                  notifications: testAudit.real.notifications,
+                })}
               </span>
             </div>
             {testAudit.deleted && (
               <div className="backup-item">
-                <span>本次已删除</span>
+                <span>{t("settings.data.deleted")}</span>
                 <span>
-                  事件 {testAudit.deleted.events} · 会话 {testAudit.deleted.sessions} · 轮次{" "}
-                  {testAudit.deleted.runs} · 通知 {testAudit.deleted.notifications}
+                  {t("settings.data.realValue", {
+                    events: testAudit.deleted.events,
+                    sessions: testAudit.deleted.sessions,
+                    runs: testAudit.deleted.runs,
+                    notifications: testAudit.deleted.notifications,
+                  })}
                 </span>
               </div>
             )}
             {testAudit.backup_path && (
               <div className="backup-item">
-                <span>清理前快照</span>
+                <span>{t("settings.data.snapshot")}</span>
                 <span style={{ wordBreak: "break-all" }}>{testAudit.backup_path}</span>
               </div>
             )}
             {testAudit.uncertain.length > 0 && (
               <div className="backup-item">
-                <span>待人工确认</span>
+                <span>{t("settings.data.uncertain")}</span>
                 <span>{testAudit.uncertain.map((u) => `${u.kind} ${u.count}`).join(" · ")}</span>
               </div>
             )}
@@ -1279,156 +1374,176 @@ export default function SettingsPanel() {
             ))}
           </div>
         )}
-        <div className="setting-note">
-          只清理由服务端判定为 selftest / benchmark / mock 的数据；预览为 dry-run，不修改任何内容。
-          清理前自动生成库快照，无法证明来源的记录保留并列入待人工确认。
-        </div>
+        <div className="setting-note">{t("settings.data.auditNote")}</div>
       </Section>
 
       <Section
         sectionId="diagnostics"
         icon={Gauge}
-        title="性能诊断"
-        description="接入队列、延迟分位、SQLite 与事件保留（只读）"
+        title={t("settings.section.diagnostics")}
+        description={t("settings.section.diagnosticsDesc")}
         open={openSections.diagnostics}
         onToggle={() => toggleSection("diagnostics")}
       >
         <div className="setting-row">
-          <span>采集性能诊断（关闭后仅保留最小计数）</span>
+          <span>{t("settings.diagnostics.enabled")}</span>
           <Switch
             checked={settings.perf_diagnostics_enabled}
-            ariaLabel="采集性能诊断（关闭后仅保留最小计数）"
+            ariaLabel={t("settings.diagnostics.enabled")}
             onChange={(v) => update({ perf_diagnostics_enabled: v })}
           />
         </div>
         <div className="setting-row">
-          <span>运行快照</span>
+          <span>{t("settings.diagnostics.snapshot")}</span>
           <div className="btn-row">
             <button className="btn sm" onClick={refreshDiag} disabled={busyKey === "diag"}>
-              {busyKey === "diag" ? <RefreshCw size={12} className="spin" /> : null} 刷新
+              {busyKey === "diag" ? <RefreshCw size={12} className="spin" /> : null}{" "}
+              {t("settings.diagnostics.refresh")}
             </button>
             <button className="btn sm" onClick={onRetentionRun} disabled={busyKey === "retention"}>
-              {busyKey === "retention" ? "清理中…" : "清理旧事件"}
+              {busyKey === "retention"
+                ? t("settings.diagnostics.pruning")
+                : t("settings.diagnostics.prune")}
             </button>
             <button className="btn sm" onClick={onInboxRetry} disabled={busyKey === "inbox-retry"}>
-              重试失败投递
+              {t("settings.diagnostics.retryInbox")}
             </button>
           </div>
         </div>
         {diag?.enabled && pipe && (
           <div className="backup-list">
             <div className="backup-item">
-              <span>接入队列</span>
+              <span>{t("settings.diagnostics.queue")}</span>
               <span>
-                {pipe.queue_depth_events}/{pipe.queue_capacity} · 合并 {pipe.events_merged} · 采样{" "}
-                {pipe.events_sampled} · 拒绝 {pipe.overload_rejects}
+                {t("settings.diagnostics.queueValue", {
+                  depth: pipe.queue_depth_events,
+                  capacity: pipe.queue_capacity,
+                  merged: pipe.events_merged,
+                  sampled: pipe.events_sampled,
+                  rejected: pipe.overload_rejects,
+                })}
               </span>
             </div>
             <div className="backup-item">
-              <span>处理 / 批次</span>
+              <span>{t("settings.diagnostics.batches")}</span>
               <span>
-                {pipe.events_processed}/{pipe.events_received} · {pipe.batches} 批 · 在途合并{" "}
-                {pipe.merge_buffer}
+                {t("settings.diagnostics.batchesValue", {
+                  processed: pipe.events_processed,
+                  received: pipe.events_received,
+                  batches: pipe.batches,
+                  buffer: pipe.merge_buffer,
+                })}
               </span>
             </div>
             <div className="backup-item">
-              <span>接入延迟</span>
+              <span>{t("settings.diagnostics.ingest")}</span>
               <span>
                 p50 {pipe.ingest_latency.p50_ms}ms · p95 {pipe.ingest_latency.p95_ms}ms · p99{" "}
                 {pipe.ingest_latency.p99_ms}ms
               </span>
             </div>
             <div className="backup-item">
-              <span>写库延迟</span>
+              <span>{t("settings.diagnostics.write")}</span>
               <span>
-                p50 {pipe.db_write_latency.p50_ms}ms · p95 {pipe.db_write_latency.p95_ms}ms · 失败{" "}
+                p50 {pipe.db_write_latency.p50_ms}ms · p95 {pipe.db_write_latency.p95_ms}ms ·{" "}
                 {pipe.commit_failures}
               </span>
             </div>
             <div className="backup-item">
-              <span>SQLite 读</span>
+              <span>{t("settings.diagnostics.sqlite")}</span>
               <span>
-                平均 {diag.sqlite?.avg_ms ?? "-"}ms · {diag.sqlite?.calls ?? 0} 次 · 慢查询{" "}
-                {diag.sqlite?.slow_queries_100ms ?? 0}
+                {t("settings.diagnostics.sqliteValue", {
+                  avg: diag.sqlite?.avg_ms ?? "-",
+                  calls: diag.sqlite?.calls ?? 0,
+                  slow: diag.sqlite?.slow_queries_100ms ?? 0,
+                })}
               </span>
             </div>
             <div className="backup-item">
-              <span>文件投递</span>
+              <span>{t("settings.diagnostics.fileDrop")}</span>
               <span>
-                待处理 {inboxStats?.pending_files ?? 0} 个 / {inboxStats?.pending_bytes ?? 0} B · 失败{" "}
-                {inboxStats?.failed_files ?? 0} · 最老 {inboxStats?.oldest_age_secs ?? 0}s
+                {t("settings.diagnostics.fileDropValue", {
+                  pending: inboxStats?.pending_files ?? 0,
+                  bytes: inboxStats?.pending_bytes ?? 0,
+                  failed: inboxStats?.failed_files ?? 0,
+                  age: inboxStats?.oldest_age_secs ?? 0,
+                })}
               </span>
             </div>
             <div className="backup-item">
-              <span>事件表</span>
+              <span>{t("settings.diagnostics.events")}</span>
               <span>
-                共 {retention?.total_rows ?? 0} · 可清理 {retention?.prunable_rows ?? 0} · 受保护{" "}
-                {retention?.protected_rows ?? 0}
+                {t("settings.diagnostics.eventsValue", {
+                  total: Number(retention?.total_rows ?? 0),
+                  prunable: Number(retention?.prunable_rows ?? 0),
+                  protected: Number(retention?.protected_rows ?? 0),
+                })}
               </span>
             </div>
             <div className="backup-item">
-              <span>前端刷新</span>
+              <span>{t("settings.diagnostics.frontend")}</span>
               <span>
-                快照 {frontendMetrics.snapshotRequests} 次 · 峰值并发 {frontendMetrics.maxConcurrent} ·
-                合并 {frontendMetrics.coalesced} · 隐藏跳过 {frontendMetrics.skippedHidden}
+                {t("settings.diagnostics.frontendValue", {
+                  snapshots: frontendMetrics.snapshotRequests,
+                  maxConcurrent: frontendMetrics.maxConcurrent,
+                  coalesced: frontendMetrics.coalesced,
+                  skipped: frontendMetrics.skippedHidden,
+                })}
               </span>
             </div>
           </div>
         )}
         {diag && !diag.enabled && (
-          <div className="setting-note">诊断采集已关闭；不会采样延迟分位，队列与计数仍正常工作。</div>
+          <div className="setting-note">{t("settings.diagnostics.off")}</div>
         )}
         <div className="setting-row">
-          <span>running/idle 事件保留天数（0 = 不限）</span>
+          <span>{t("settings.diagnostics.retentionDays")}</span>
           <NumberInput
             value={settings.agent_event_retention_days}
             min={0}
             max={365}
-            ariaLabel="running/idle 事件保留天数（0 = 不限）"
+            ariaLabel={t("settings.diagnostics.retentionDays")}
             onChange={(v) => update({ agent_event_retention_days: v })}
           />
         </div>
         <div className="setting-row">
-          <span>running/idle 事件行数上限（0 = 不限）</span>
+          <span>{t("settings.diagnostics.maxRows")}</span>
           <NumberInput
             value={settings.agent_event_max_rows}
             min={0}
             step={10000}
-            ariaLabel="running/idle 事件行数上限（0 = 不限）"
+            ariaLabel={t("settings.diagnostics.maxRows")}
             onChange={(v) => update({ agent_event_max_rows: v })}
           />
         </div>
         <div className="setting-row">
-          <span>清理前归档 JSONL</span>
+          <span>{t("settings.diagnostics.archive")}</span>
           <Switch
             checked={settings.agent_event_archive}
-            ariaLabel="清理前归档 JSONL"
+            ariaLabel={t("settings.diagnostics.archive")}
             onChange={(v) => update({ agent_event_archive: v })}
           />
         </div>
-        <div className="setting-note">
-          只自动清理 running / idle 进度事件；waiting / failed / completed / disconnected
-          永不自动删除。清理前先写 JSONL 归档，归档失败则本次不删除。
-        </div>
+        <div className="setting-note">{t("settings.diagnostics.note")}</div>
       </Section>
 
       <Section
         sectionId="developer"
         icon={FlaskConical}
-        title="开发者选项"
-        description="Mock 模拟适配器与调试工具（普通用户无需展开）"
+        title={t("settings.section.developer")}
+        description={t("settings.section.developerDesc")}
         open={openSections.developer}
         onToggle={() => toggleSection("developer")}
       >
         <div className="setting-row">
-          <span>启用 Mock 模拟适配器（重启应用后完全生效）</span>
+          <span>{t("settings.developer.mock")}</span>
           <Switch
             checked={settings.mock_enabled}
-            ariaLabel="启用 Mock 模拟适配器（重启应用后完全生效）"
+            ariaLabel={t("settings.developer.mock")}
             onChange={(v) => update({ mock_enabled: v })}
           />
         </div>
-        <div className="setting-note">模拟控制台仅用于无真实 Agent 环境下验证 UI / 通知 / 托盘链路，事件明确标注「模拟」，不作为真实接入证据。</div>
+        <div className="setting-note">{t("settings.developer.note")}</div>
         <MockControls />
       </Section>
 
@@ -1438,23 +1553,21 @@ export default function SettingsPanel() {
         danger
         title={
           pendingDanger?.type === "audit-apply"
-            ? "清理测试/压测数据"
+            ? t("settings.danger.auditTitle")
             : pendingDanger?.type === "import"
               ? pendingDanger.partial
-                ? "恢复部分备份"
-                : "恢复备份"
+                ? t("settings.danger.importPartialTitle")
+                : t("settings.danger.importTitle")
               : ""
         }
         detail={
           pendingDanger?.type === "audit-apply"
-            ? `将删除 ${pendingDanger.count} 条可证明的测试/压测数据（事件、会话、轮次、实例与通知）。\n\n` +
-              "清理前会自动生成数据库快照（VACUUM INTO），失败即中止；\n" +
-              "无法证明来源的数据保持不动，并列入待人工确认。"
+            ? t("settings.danger.auditDetail", { count: pendingDanger.count })
             : pendingDanger?.type === "import"
               ? pendingDanger.detail
               : undefined
         }
-        confirmLabel="继续"
+        confirmLabel={t("settings.danger.confirm")}
         busy={dangerBusy}
         onConfirm={() => {
           if (pendingDanger?.type === "audit-apply") void runAuditApply();

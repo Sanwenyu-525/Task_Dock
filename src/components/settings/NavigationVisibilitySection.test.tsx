@@ -13,6 +13,7 @@ import NavigationVisibilitySection from "./NavigationVisibilitySection";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { defaultNavigationLayout } from "../../lib/navVisibility";
+import { __resetLocaleForTests, setLocalePreference } from "../../i18n";
 
 const bridgeMocks = vi.hoisted(() => ({ updateSettings: vi.fn() }));
 const updateSettings = bridgeMocks.updateSettings;
@@ -172,5 +173,34 @@ describe("导航自定义区块", () => {
     expect(
       (useSettingsStore.getState().settings?.navigation_layout as { left: string[] }).left,
     ).toContain("apps");
+  });
+});
+
+// 英文模式：设置页导航自定义区块的标题、摘要、开关可访问名与提示全部翻译，
+// 隐藏/排序仍由稳定 ID 驱动，界面布局只依赖文案长度（允许换行/截断）。
+describe("导航自定义区块 · 英文", () => {
+  afterEach(() => {
+    __resetLocaleForTests();
+  });
+
+  it("英文界面展示完整面板/胶囊入口、摘要与操作 aria-label", async () => {
+    const user = userEvent.setup();
+    setLocalePreference("en-US");
+    render(<NavigationVisibilitySection />);
+
+    expect(screen.getByText("11 of 11 pinned")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Full panel" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Docked capsule" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Show Tasks navigation entry" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Settings navigation entry (pinned)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Move Tasks up" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Restore default Full panel navigation" }),
+    ).toBeTruthy();
+
+    // 隐藏入口仍写入稳定 ID，不受英文文案影响
+    await user.click(screen.getByRole("switch", { name: "Show Apps navigation entry" }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
+    expect(updateSettings.mock.calls[0][0].navigation_layout.left).not.toContain("apps");
   });
 });

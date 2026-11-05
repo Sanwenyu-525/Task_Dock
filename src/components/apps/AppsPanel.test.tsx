@@ -80,7 +80,7 @@ function seed(targets: NavTarget[]) {
     scanError: null,
     loadTaskLinks: vi.fn(async () => "ok" as const),
   });
-  useUiStore.setState({ toast: null, tab: "apps" });
+  useUiStore.setState({ toast: null, tab: "apps", appsAddRequest: null });
 }
 
 beforeEach(() => {
@@ -98,6 +98,19 @@ describe("AppsPanel 应用中心", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "添加应用" })[0]);
     expect(await screen.findByRole("dialog", { name: "添加应用与快捷方式" })).toBeTruthy();
+  });
+
+  it("胶囊添加意图只消费一次：打开添加页并清除，取消/重新挂载不会自动重开", async () => {
+    seed([targetFix()]);
+    useUiStore.setState({ appsAddRequest: { token: 1 } });
+    render(<AppsPanel />);
+    expect(await screen.findByRole("dialog", { name: "添加应用与快捷方式" })).toBeTruthy();
+    expect(useUiStore.getState().appsAddRequest).toBeNull();
+
+    // 取消/返回后重新挂载：没有新意图就不再自动打开。
+    cleanup();
+    render(<AppsPanel />);
+    expect(screen.queryByRole("dialog", { name: "添加应用与快捷方式" })).toBeNull();
   });
 
   it("展示全部已配置应用（不受胶囊 6–7 个容量限制），添加入口只在顶部保留一处", () => {

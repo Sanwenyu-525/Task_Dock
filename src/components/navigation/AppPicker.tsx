@@ -5,8 +5,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  X, Search, RefreshCw, Plus, Star, Clock, Monitor, AppWindow, ArrowLeft,
+  X, RefreshCw, Plus, Star, Clock, Monitor, AppWindow, ArrowLeft, Check,
 } from "lucide-react";
+import SearchField from "../ui/SearchField";
 import AgentIcon from "../ui/AgentIcon";
 import AppIcon from "../ui/AppIcon";
 import { searchApps, APP_PAGE_SIZE } from "../../lib/appSearch";
@@ -19,7 +20,7 @@ import { errorMessage } from "../../lib/errors";
 import { reportError } from "../../lib/errorReport";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 import {
-  navLinkTask, navListWindows, navListTargetWindows, navListTargets, navLinkTaskWindow, navPickTaskWindow, navPickWindowIdentity, navSaveTarget, navSaveAgentSessionTarget, navUpdateTarget,
+  navLinkTask, navListWindows, navListTargetWindows, navListTargets, navLinkTaskWindow, navPickTaskWindow, navPickWindowIdentity, navSaveTarget, navSaveWindowTarget, navSaveAgentSessionTarget, navUpdateTarget,
   CATEGORY_LABELS,
   type DiscoveredApp, type NavTarget, type TargetInput, type WindowInfo, type TaskNavLink,
 } from "../../lib/navigation";
@@ -27,11 +28,39 @@ import {
 const CATEGORY_ORDER = ["all", "browser", "im", "music", "dev", "file", "uwp", "other"];
 
 /**
- * 明显的卸载/更新/后台组件：默认不显示，但保留「显示高级项」入口与数量提示。
- * 只匹配名称中的强特征，避免误伤开发工具、便携软件或用户自定义程序。
+ * 明显的卸载/更新/后台组件：后端扫描已给出 `tier`，这里保留名称兜底，
+ * 用于兼容旧缓存或测试数据（无 tier 字段时按名称判断）。
  */
 const BACKGROUND_COMPONENT_NAME =
   /^(unins|setup|updater?$|installer)|(卸载程序|卸载工具|更新程序|安装程序|后台服务|驱动组件)/i;
+
+/** 高级项：默认折叠，可点「显示高级项」查看；不删除、不影响已保存目标。 */
+function isAdvancedApp(a: DiscoveredApp): boolean {
+  return a.tier ? a.tier === "advanced" : BACKGROUND_COMPONENT_NAME.test(a.display_name);
+}
+
+/** 把来源级诊断翻译成用户能理解的一句话（细节仍留在调试字段里）。 */
+function scanIssueText(diagnostics?: Record<string, number>): string {
+  if (!diagnostics) return "";
+  const parts: string[] = [];
+  if ((diagnostics.startmenu_truncated ?? 0) > 0) parts.push("开始菜单快捷方式超出本次扫描上限");
+  if ((diagnostics.uwp_scan_failed ?? 0) > 0) parts.push("应用商店来源读取失败");
+  if ((diagnostics.uwp_truncated ?? 0) > 0) parts.push("应用商店条目超出本次扫描上限");
+  return parts.join("；");
+}
+
+/** 上次扫描时间：无法解析时返回空串，不伪造时间。 */
+function formatScanTime(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 /** 扫描结果 → 保存目标入参（单个添加与批量添加共用，避免两套字段映射）。 */
 function discoveredToInput(a: DiscoveredApp): TargetInput {
@@ -84,7 +113,7 @@ export default function AppPicker({
 }: Props) {
   const showToast = useUiStore((s) => s.showToast);
   const {
-    scan, scanning, scanError, loadApps, targets, targetsError, loadTargets,
+    scan, scanning, scanError, loadApps, targets, targetsLoaded, targetsError, loadTargets,
     linksError, loadTaskLinks,
   } = useNavigationStore();
   const taskMode = !!taskId;
@@ -103,11 +132,18 @@ export default function AppPicker({
   // 重复添加「已被隐藏」的已保存目标时，先确认恢复显示，避免用户以为没添加成功
   const [restoreTarget, setRestoreTarget] = useState<NavTarget | null>(null);
   // 子页面视图：发现列表 / 当前运行窗口 / 手动添加（都在同一内容区切换，不叠弹层）
-  const [pageView, setPageView] = useState<"discover" | "windows" | "manual">("discover");
+  // 更换现有关联窗口时没有「发现/添加」语义，直接进入窗口选择页。
+  const [pageView, setPageView] = useState<"discover" | "windows" | "manual">(() =>
+    isPage && windowLink ? "windows" : "discover",
+  );
   // 多选：只保存选中的应用，未提交前不改动已添加列表
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchError, setBatchError] = useState<string | null>(null);
+  // 当前窗口选择页：单选单个窗口 + 选择快捷方式类型，提交前不改动任何目标。
+  const [selectedWindow, setSelectedWindow] = useState<WindowInfo | null>(null);
+  const [windowMode, setWindowMode] = useState<"focus" | "launch">("focus");
+  const [windowNotice, setWindowNotice] = useState<string | null>(null);
   // 默认隐藏明显的卸载/更新等后台组件，保留入口可查看（不悄悄吞掉结果）
   const [showAdvanced, setShowAdvanced] = useState(false);
   const sessions = useAgentsStore((s) => s.snapshot?.sessions ?? EMPTY_SESSIONS);
@@ -153,19 +189,28 @@ export default function AppPicker({
     });
   }
 
+  /**
+   * 只读取已保存目标（用于「已添加/已隐藏」状态），不触发本机软件扫描。
+   * 扫描必须由用户点击「扫描本机应用 / 重新扫描」主动发起；
+   * 已有会话内扫描结果直接展示，挂载/切页都不自动刷新。
+   */
   useEffect(() => {
-    if (!scan) loadApps(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!targetsLoaded) void loadTargets();
+  }, [targetsLoaded, loadTargets]);
 
   useEffect(() => {
     if (windowLink) {
       setWindows(null);
       setWindowsError(null);
+      if (isPage) {
+        setSelectedWindow(null);
+        setWindowMode("focus");
+        setPageView("windows");
+      }
       // 按目标身份取窗口：进程树匹配可覆盖微信/QQ/酷狗等宿主子进程窗口
       void refreshWindows(windowLink.target.id);
     }
-  }, [windowLink]);
+  }, [windowLink, isPage]);
 
   /** 枚举窗口：失败保留错误文案（不清成空列表），并提供重试入口。 */
   async function refreshWindows(targetId?: string) {
@@ -180,6 +225,95 @@ export default function AppPicker({
     }
   }
 
+  /**
+   * 扫描状态提示（页面与弹层共用）：
+   * 未扫描时给主动扫描引导；扫描中不显示「加载中…」占位；失败可重试。
+   */
+  function renderScanGate() {
+    if (scanFailedFresh) {
+      return (
+        <div className="empty-hint error-text" role="alert">
+          应用扫描失败：{scanError}
+          <button className="btn sm" onClick={() => void loadApps(true)}>
+            扫描本机应用
+          </button>
+        </div>
+      );
+    }
+    if (scanUnscanned) {
+      return (
+        <div className="picker-unscanned" role="status">
+          <div className="picker-unscanned-title">尚未扫描本机应用</div>
+          <div className="picker-unscanned-desc">
+            点击「扫描本机应用」查找可以添加的桌面程序，也可以直接从当前窗口选择或手动添加
+          </div>
+          <button className="btn primary sm" onClick={() => void loadApps(true)}>
+            扫描本机应用
+          </button>
+        </div>
+      );
+    }
+    if (scanRefreshing) {
+      return (
+        <div className="empty-hint picker-scanning" role="status">
+          <RefreshCw size={12} className="spin" /> 正在扫描本机应用…
+        </div>
+      );
+    }
+    return null;
+  }
+
+  /** 已有结果时的失败 / 部分成功提示：保留上次成功结果，原因可见、可重扫。 */
+  function renderScanNotices() {
+    if (!scan) return null;
+    return (
+      <>
+        {scanError && (
+          <div className="empty-hint error-text" role="status">
+            扫描刷新失败，当前显示上次结果：{scanError}
+            <button className="btn sm" onClick={() => void loadApps(true)}>
+              重试
+            </button>
+          </div>
+        )}
+        {scanIncomplete && (
+          <div className="empty-hint picker-scan-warn" role="status">
+            应用发现可能不完整：{scanIssue}。
+            <button className="btn sm" onClick={() => void loadApps(true)}>
+              重新扫描
+            </button>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  /** 结果摘要：数量 + 上次扫描时间 + 是否正在刷新，细节留在 diagnostics。 */
+  function renderScanSummary(total: number) {
+    if (!scan) return null;
+    return (
+      <div className="picker-count" role="status">
+        共 {total} 个{query.trim() ? "匹配" : "可添加"}应用
+        {scan.scanned_at ? ` · 上次扫描 ${formatScanTime(scan.scanned_at)}` : ""}
+        {scanning ? " · 正在重新扫描…" : ""}
+        {scanIncomplete ? " · 部分来源失败" : ""}
+      </div>
+    );
+  }
+
+  // 窗口列表刷新后，若选中的窗口已消失（关闭/标题变化），清空选择并提示重选，
+  // 避免把旧 HWND 当成仍然有效的窗口提交。
+  useEffect(() => {
+    if (pageView !== "windows" || !selectedWindow || !windows) return;
+    const stillThere = windows.some(
+      (w) => w.hwnd === selectedWindow.hwnd && w.title === selectedWindow.title,
+    );
+    if (!stillThere) {
+      setSelectedWindow(null);
+      setWindowNotice("所选窗口已关闭或标题已变化，请重新选择");
+    }
+  }, [windows, pageView, selectedWindow]);
+
   // 已保存目标 → 已关联去重（同任务已关联的标记，不重复加）。
   // 注意：selector 必须返回稳定引用（zustand v5 严格相等），新 Set 在 useMemo 里建。
   const linksByTask = useNavigationStore((s) => s.linksByTask);
@@ -190,7 +324,8 @@ export default function AppPicker({
 
   // 与选择器/应用中心/胶囊共用同一套搜索规则（中文连续子串、英文大小写、身份绑定别名）
   const apps = useMemo(() => {
-    const list = scan?.apps ?? [];
+    // invalid 项后端已不返回；这里再挡一次，兼容旧缓存/测试数据。
+    const list = (scan?.apps ?? []).filter((a) => a.tier !== "invalid");
     const byKey = new Map(list.map((a) => [a.app_key, a]));
     const searchable = list.map((a) => ({
       key: a.app_key,
@@ -215,24 +350,30 @@ export default function AppPicker({
 
   const visibleApps = apps.slice(0, visibleCount);
   const hasMore = apps.length > visibleApps.length;
-  const scanIncomplete =
-    (scan?.diagnostics?.startmenu_truncated ?? 0) > 0 ||
-    (scan?.diagnostics?.uwp_scan_failed ?? 0) > 0;
+  const scanIssue = scanIssueText(scan?.diagnostics);
+  const scanIncomplete = scanIssue.length > 0;
+  // 扫描状态：未扫描 / 扫描中 / 失败（无旧结果）/ 已有结果（可能伴随失败或部分成功）
+  const scanUnscanned = scan === null && !scanning && scanError === null;
+  const scanFailedFresh = scan === null && !scanning && scanError !== null;
+  const scanRefreshing = scan === null && scanning;
 
   // 子页面：已添加状态与高级筛选（默认隐藏后台组件，可一键查看，不伪造结果）
   const savedByKey = useMemo(() => {
     const map = new Map<string, NavTarget>();
     for (const t of targets) {
-      if (t.target_type === "application") map.set(t.app_key, t);
+      // 指定窗口快捷方式不占用「普通应用」的已添加状态：同一程序仍可再添加普通快捷方式。
+      if (t.target_type === "application" && (t.shortcut_kind ?? "app") === "app") {
+        map.set(t.app_key, t);
+      }
     }
     return map;
   }, [targets]);
   const hiddenByDefault = useMemo(
-    () => apps.filter((a) => BACKGROUND_COMPONENT_NAME.test(a.display_name)),
+    () => apps.filter(isAdvancedApp),
     [apps],
   );
   const pageApps = useMemo(
-    () => (showAdvanced ? apps : apps.filter((a) => !BACKGROUND_COMPONENT_NAME.test(a.display_name))),
+    () => (showAdvanced ? apps : apps.filter((a) => !isAdvancedApp(a))),
     [apps, showAdvanced],
   );
   const pageVisible = pageApps.slice(0, visibleCount);
@@ -328,7 +469,10 @@ export default function AppPicker({
     for (const a of items) {
       try {
         const existing = targets.find(
-          (x) => x.target_type === "application" && x.app_key === a.app_key,
+          (x) =>
+            x.target_type === "application" &&
+            x.app_key === a.app_key &&
+            (x.shortcut_kind ?? "app") === "app",
         );
         if (existing) {
           // 已在列表但被隐藏：按用户本次「添加」意图恢复显示，只改 hidden，不动自定义字段
@@ -387,39 +531,81 @@ export default function AppPicker({
     onClose();
   }
 
+  /** 同程序普通应用快捷方式（不含指定窗口快捷方式）。 */
+  function plainTargetForExe(path: string): NavTarget | undefined {
+    return targets.find(
+      (t) =>
+        t.target_type === "application" &&
+        (t.shortcut_kind ?? "app") === "app" &&
+        (t.exe_path ?? "").toLowerCase() === path.toLowerCase(),
+    );
+  }
+
+  /** 是否已存在完全相同的指定窗口快捷方式（类名+标题+exe）。 */
+  function windowShortcutExists(w: WindowInfo): boolean {
+    return targets.some((t) => {
+      if (t.target_type !== "application" || (t.shortcut_kind ?? "app") !== "window") return false;
+      const bound = t.bound_window_identity;
+      return (
+        !!bound &&
+        !!w.exe_path &&
+        bound.class_name === w.class_name &&
+        bound.title === w.title &&
+        bound.exe_path.toLowerCase() === w.exe_path.toLowerCase()
+      );
+    });
+  }
+
   /**
-   * 子页面窗口视图：区分「切换已有窗口」与「重新启动应用」。
-   * 前者额外记录窗口身份（后续导航优先聚焦）；后者只保存启动目标。
+   * 当前窗口选择页的「确认添加」：只保存配置，不聚焦、不启动、不切走用户当前窗口。
+   * - 优先切换到此窗口：后端一次性解析稳定身份落库（同身份复用，同程序多窗口各自独立）；
+   * - 仅添加应用：只保存普通应用快捷方式，不绑定任何窗口身份。
    */
-  async function pickWindowForPage(w: WindowInfo, mode: "focus" | "launch") {
+  async function confirmWindowAdd() {
+    const w = selectedWindow;
+    if (!w || busyKey) return;
     if (!w.exe_path) {
-      showToast("该窗口无法识别所属程序（权限受限），请手动登记 exe 路径", { kind: "error" });
+      setWindowNotice("无法识别该窗口所属程序（权限受限），不能添加；请改用手动登记 EXE");
       return;
     }
-    if (busyKey) return;
-    setBusyKey(String(w.hwnd));
+    setBusyKey(`window:${w.hwnd}`);
+    setWindowNotice(null);
+    // 提交前判定：保存后 targets 尚未刷新，避免把「刚保存」误判成「已存在」。
+    const already =
+      windowMode === "focus" ? windowShortcutExists(w) : !!plainTargetForExe(w.exe_path);
     try {
       const name = w.title.split(/ [-–·] /)[0].slice(0, 60) || "窗口应用";
-      const existing = (await navListTargets(true)).find(
-        (t) => t.target_type === "application" && t.exe_path.toLowerCase() === w.exe_path!.toLowerCase(),
-      );
-      const t = existing ?? await navSaveTarget({
-        target_type: "application",
-        display_name: name,
-        exe_path: w.exe_path,
-        overwrite_name: false,
-      });
-      if (mode === "focus") await navPickWindowIdentity(t.id, w.hwnd);
+      let t: NavTarget;
+      if (windowMode === "focus") {
+        t = await navSaveWindowTarget(w.hwnd);
+      } else {
+        const existing = plainTargetForExe(w.exe_path);
+        t =
+          existing ??
+          (await navSaveTarget({
+            target_type: "application",
+            display_name: name,
+            exe_path: w.exe_path,
+            overwrite_name: false,
+          }));
+      }
       const outcome = await loadTargets(true);
       finishWithRefresh(
-        mode === "focus" ? `已添加「${name}」并记录当前窗口` : `已添加「${name}」（启动时新开）`,
+        already
+          ? `「${t.display_name}」已在快捷列表中`
+          : windowMode === "focus"
+            ? `已添加「${t.display_name}」并绑定当前窗口`
+            : `已添加「${t.display_name}」（不绑定窗口）`,
         outcome,
         () => loadTargets(true),
+        already ? "info" : "success",
       );
+      setSelectedWindow(null);
       setPageView("discover");
-      setQuery("");
     } catch (e) {
-      showToast(`未能添加窗口应用：${errorMessage(e)}`, { kind: "error" });
+      // 保存失败：留在当前页并保留选择，方便重试；不吞掉后端的具体原因。
+      setWindowNotice(`添加失败：${errorMessage(e)}`);
+      showToast(`添加失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusyKey(null);
     }
@@ -502,8 +688,12 @@ export default function AppPicker({
       }
       const name = w.title.split(/ [-–·] /)[0].slice(0, 60) || "窗口应用";
       // 查询现有应用，避免选择窗口时覆盖共用目标的启动参数。
-      const existing = (await navListTargets(true)).find((t) =>
-        t.target_type === "application" && t.exe_path.toLowerCase() === w.exe_path!.toLowerCase());
+      const existing = (await navListTargets(true)).find(
+        (t) =>
+          t.target_type === "application" &&
+          (t.shortcut_kind ?? "app") === "app" &&
+          (t.exe_path ?? "").toLowerCase() === w.exe_path!.toLowerCase(),
+      );
       const t = existing ?? await navSaveTarget({
         target_type: "application",
         display_name: name,
@@ -541,32 +731,46 @@ export default function AppPicker({
           <button
             type="button"
             className="icon-btn sm"
-            aria-label={pageView === "discover" ? "返回应用列表" : "返回添加应用"}
+            aria-label={
+              windowLink ? "返回任务编辑" : pageView === "discover" ? "返回应用列表" : "返回添加应用"
+            }
             onClick={() => {
-              if (pageView === "discover") onClose();
+              // 更换现有关联窗口是单层子页，返回直接回任务编辑，不经过「添加应用」。
+              if (windowLink || pageView === "discover") onClose();
               else setPageView("discover");
             }}
           >
             <ArrowLeft size={15} />
           </button>
           <span className="app-picker-page-title">
-            {pageView === "discover" ? "添加应用" : pageView === "windows" ? "从当前窗口选择" : "手动添加"}
+            {windowLink
+              ? `为「${windowLink.target.display_name}」选择窗口`
+              : pageView === "discover"
+                ? "添加应用"
+                : pageView === "windows"
+                  ? "从当前窗口选择"
+                  : "手动添加"}
           </span>
-          {selectedKeys.size > 0 && (
+          {pageView === "discover" && selectedKeys.size > 0 && (
             <span className="picker-selected-count" role="status">已选 {selectedKeys.size}</span>
           )}
           <span className="flex-spacer" />
           {pageView === "discover" && (
             <div className="app-picker-page-tools">
-              <button className="btn sm" onClick={() => void loadApps(true)} disabled={scanning}>
-                <RefreshCw size={12} className={scanning ? "spin" : ""} />
-                {scanning ? "扫描中…" : "刷新"}
-              </button>
+              {scan !== null && (
+                <button className="btn sm" onClick={() => void loadApps(true)} disabled={scanning}>
+                  <RefreshCw size={12} className={scanning ? "spin" : ""} />
+                  {scanning ? "扫描中…" : "重新扫描"}
+                </button>
+              )}
               <button
                 className="btn sm"
                 onClick={() => {
+                  setSelectedWindow(null);
+                  setWindowNotice(null);
+                  setWindowMode("focus");
                   setPageView("windows");
-                  if (!windows) void refreshWindows();
+                  void refreshWindows();
                 }}
               >
                 <Monitor size={12} /> 从当前窗口选择
@@ -579,50 +783,132 @@ export default function AppPicker({
         </header>
 
         {pageView === "windows" && (
-          <div className="app-picker-page-body">
-            <div className="endpoint-hint">
-              「切换此窗口」会记录窗口身份，后续优先聚焦已有窗口；「启动时新开」只保存启动目标。
-            </div>
-            {windowsError && (
-              <div className="empty-hint error-text" role="alert">
-                读取窗口失败：{windowsError}
-                <button className="btn sm" onClick={() => void refreshWindows()}>重试</button>
+          <>
+            <div className="app-picker-page-body">
+              <ol className="picker-window-steps">
+                <li>① 选择窗口</li>
+                {!windowLink && <li>② 选择快捷方式类型</li>}
+                <li>{windowLink ? "② 确认更换" : "③ 确认添加"}</li>
+              </ol>
+              <div className="endpoint-hint">
+                {windowLink
+                  ? "只更新这条关联的窗口身份，不会切换你当前的窗口。记录类名、标题与程序，不保存 HWND；窗口关闭或标题变化后需要重新选择。"
+                  : "添加只保存配置，不会切换你当前的窗口。指定窗口快捷方式会记录类名、标题与程序，不保存 HWND；窗口关闭或标题变化后需要重新选择，不会静默切换到同程序的其他窗口。仅添加应用不绑定窗口，启动时按程序打开/聚焦；部分单实例应用可能只激活已有窗口。"}
               </div>
-            )}
-            {!windows && !windowsError && <div className="empty-hint">正在读取窗口…</div>}
-            {!windowsError && windows?.length === 0 && (
-              <div className="empty-hint">没有可交互的窗口</div>
-            )}
-            {!windowsError && windows?.map((w) => (
-              <div key={w.hwnd} className="picker-window-row">
-                <div className="picker-window-info">
-                  <span className="picker-window-title">{w.title}</span>
-                  <span className="picker-window-exe">
-                    {w.exe_path ? w.exe_path.split("\\").pop() : "无法识别所属程序"}
+              {windowNotice && (
+                <div className="empty-hint picker-window-notice" role="status">{windowNotice}</div>
+              )}
+              {windowsError && (
+                <div className="empty-hint error-text" role="alert">
+                  读取窗口失败：{windowsError}
+                  <button className="btn sm" onClick={() => void refreshWindows()}>重试</button>
+                </div>
+              )}
+              {!windows && !windowsError && <div className="empty-hint">正在读取窗口…</div>}
+              {!windowsError && windows?.length === 0 && (
+                <div className="empty-hint">没有可交互的窗口</div>
+              )}
+              {!windowsError && (
+                <div className="picker-window-page-list" role="radiogroup" aria-label="选择窗口">
+                  {windows?.map((w) => {
+                    const selected = selectedWindow?.hwnd === w.hwnd;
+                    const unavailable = !w.exe_path;
+                    return (
+                      <button
+                        key={w.hwnd}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        aria-disabled={unavailable}
+                        disabled={!!busyKey}
+                        className={`picker-window-row ${selected ? "is-selected" : ""} ${unavailable ? "is-unavailable" : ""}`}
+                        onClick={() => {
+                          if (unavailable) {
+                            setSelectedWindow(null);
+                            setWindowNotice("无法识别该窗口所属程序（权限受限），不能添加；请改用手动登记 EXE");
+                            return;
+                          }
+                          setSelectedWindow(w);
+                          setWindowNotice(null);
+                        }}
+                      >
+                        <AppIcon
+                          exePath={w.exe_path ?? undefined}
+                          name={w.title}
+                          size={28}
+                        />
+                        <span className="picker-window-info">
+                          <span className="picker-window-title" data-tip={w.title}>{w.title}</span>
+                          <span className="picker-window-exe">
+                            {w.exe_path
+                              ? w.exe_path.split("\\").pop()
+                              : "无法识别所属程序（权限受限），不能添加"}
+                          </span>
+                        </span>
+                        <span className="picker-window-check" aria-hidden="true">
+                          {selected && <Check size={14} />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {!windowLink && (
+                <div className="picker-window-mode" role="radiogroup" aria-label="快捷方式类型">
+                <div className="picker-window-mode-title">快捷方式类型</div>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={windowMode === "focus"}
+                  className={`picker-mode-option ${windowMode === "focus" ? "is-selected" : ""}`}
+                  disabled={!!busyKey}
+                  onClick={() => setWindowMode("focus")}
+                >
+                  <span className="picker-mode-name">优先切换到此窗口（推荐）</span>
+                  <span className="picker-mode-desc">
+                    绑定当前窗口的稳定身份；窗口可用时优先聚焦它，不覆盖同程序其他窗口。
                   </span>
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={windowMode === "launch"}
+                  className={`picker-mode-option ${windowMode === "launch" ? "is-selected" : ""}`}
+                  disabled={!!busyKey}
+                  onClick={() => setWindowMode("launch")}
+                >
+                  <span className="picker-mode-name">仅添加应用，不绑定窗口</span>
+                  <span className="picker-mode-desc">
+                    只保存程序启动目标，不记录窗口身份；不会强制新开窗口。
+                  </span>
+                </button>
                 </div>
-                <div className="picker-window-actions">
-                  <button
-                    className="btn sm primary"
-                    disabled={!w.exe_path || !!busyKey}
-                    onClick={() => void pickWindowForPage(w, "focus")}
-                  >
-                    添加并切换此窗口
-                  </button>
-                  <button
-                    className="btn sm"
-                    disabled={!w.exe_path || !!busyKey}
-                    onClick={() => void pickWindowForPage(w, "launch")}
-                  >
-                    仅添加（启动时新开）
-                  </button>
-                </div>
-              </div>
-            ))}
-            <div>
-              <button className="btn sm" onClick={() => void refreshWindows()}>刷新窗口</button>
+              )}
             </div>
-          </div>
+            <div className="app-picker-page-foot">
+              <button
+                className="btn sm"
+                onClick={() => void refreshWindows(windowLink?.target.id)}
+                disabled={!!busyKey}
+              >
+                刷新窗口
+              </button>
+              <span className="flex-spacer" />
+              <button
+                className="btn primary sm"
+                disabled={!selectedWindow || !!busyKey}
+                onClick={() => void (windowLink ? pickWindow(selectedWindow!) : confirmWindowAdd())}
+              >
+                {busyKey
+                  ? windowLink
+                    ? "更新中…"
+                    : "添加中…"
+                  : windowLink
+                    ? "使用此窗口"
+                    : "确认添加"}
+              </button>
+            </div>
+          </>
         )}
 
         {pageView === "manual" && (
@@ -630,7 +916,10 @@ export default function AppPicker({
             <ManualAddForm
               onSaved={async (t, msg) => {
                 const existed = targets.some(
-                  (x) => x.target_type === t.target_type && x.app_key === t.app_key,
+                  (x) =>
+                    x.target_type === t.target_type &&
+                    x.app_key === t.app_key &&
+                    (x.shortcut_kind ?? "app") === "app",
                 );
                 // 保存已成功；刷新失败必须单独说明，不能静默当成整体成功。
                 const outcome = await loadTargets(true);
@@ -649,27 +938,15 @@ export default function AppPicker({
         {pageView === "discover" && (
           <>
             <div className="picker-search-row">
-              <div className="picker-search">
-                <Search size={12} />
-                <input
-                  data-autofocus
-                  className="input-embedded"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="搜索已安装软件…"
-                  aria-label="搜索应用"
-                />
-                {query && (
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label="清空搜索"
-                    onClick={() => setQuery("")}
-                  >
-                    <X size={12} />
-                  </button>
-                )}
-              </div>
+              <SearchField
+                className="picker-search"
+                size="compact"
+                autoFocus
+                value={query}
+                onChange={setQuery}
+                placeholder="搜索已安装软件…"
+                ariaLabel="搜索应用"
+              />
             </div>
 
             <div className="picker-cats-scroll">
@@ -703,57 +980,42 @@ export default function AppPicker({
                   <button className="btn sm" onClick={() => void loadTaskLinks()}>重试</button>
                 </div>
               )}
-              {scanError && scan === null ? (
-                <div className="empty-hint error-text" role="alert">
-                  应用扫描失败：{scanError}
-                  <button className="btn sm" onClick={() => void loadApps(true)}>重试</button>
-                </div>
-              ) : scan === null || scanning ? (
-                <div className="empty-hint">{scanning ? "扫描中…" : "加载中…"}</div>
-              ) : (
+              {renderScanGate()}
+              {scan !== null && (
                 <>
-                  {scanError && (
-                    <div className="empty-hint error-text" role="status">
-                      扫描刷新失败，当前显示上次结果：{scanError}
-                      <button className="btn sm" onClick={() => void loadApps(true)}>重试</button>
-                    </div>
-                  )}
-                  {scanIncomplete && (
-                    <div className="empty-hint picker-scan-warn" role="status">
-                      应用发现可能不完整：开始菜单快捷方式超出扫描上限，或应用商店来源读取失败。
-                      <button className="btn sm" onClick={() => void loadApps(true)}>重新扫描</button>
-                    </div>
-                  )}
+                  {renderScanNotices()}
+                  <div className="picker-count" role="status">
+                    共 {pageApps.length} 个{query.trim() ? "匹配" : "可添加"}应用
+                    {scan.scanned_at ? ` · 上次扫描 ${formatScanTime(scan.scanned_at)}` : ""}
+                    {scanning ? " · 正在重新扫描…" : ""}
+                    {scanIncomplete ? " · 部分来源失败" : ""}
+                    {hiddenByDefault.length > 0 && !showAdvanced && (
+                      <button
+                        className="link-btn picker-advanced"
+                        onClick={() => setShowAdvanced(true)}
+                      >
+                        显示高级项（{hiddenByDefault.length}）
+                      </button>
+                    )}
+                    {showAdvanced && (
+                      <button
+                        className="link-btn picker-advanced"
+                        onClick={() => setShowAdvanced(false)}
+                      >
+                        隐藏高级项
+                      </button>
+                    )}
+                  </div>
                   {pageApps.length === 0 ? (
                     <div className="empty-hint">
                       {query.trim()
                         ? `没有匹配「${query.trim()}」的应用；可换个关键词，或手动添加`
                         : apps.length > 0
                           ? "当前只显示常用应用；点「显示高级项」查看被默认隐藏的后台组件"
-                          : "没有匹配的应用；可点「手动添加」登记任意 EXE / 网址 / 目录"}
-                      <button className="btn sm" onClick={() => void loadApps(true)}>重新扫描</button>
+                          : "扫描完成，未发现可添加的应用；可从当前窗口选择或手动添加"}
                     </div>
                   ) : (
                     <>
-                      <div className="picker-count" role="status">
-                        共 {pageApps.length} 个匹配
-                        {hiddenByDefault.length > 0 && !showAdvanced && (
-                          <button
-                            className="link-btn picker-advanced"
-                            onClick={() => setShowAdvanced(true)}
-                          >
-                            显示高级项（{hiddenByDefault.length}）
-                          </button>
-                        )}
-                        {showAdvanced && (
-                          <button
-                            className="link-btn picker-advanced"
-                            onClick={() => setShowAdvanced(false)}
-                          >
-                            隐藏高级项
-                          </button>
-                        )}
-                      </div>
                       <div className="app-picker-page-grid" role="listbox" aria-label="已安装软件" aria-multiselectable="true">
                         {pageVisible.map((a) => {
                           const saved = savedByKey.get(a.app_key);
@@ -854,25 +1116,25 @@ export default function AppPicker({
         <div className="modal-body">
           {/* 搜索 + 刷新 */}
           <div className="picker-search-row">
-            <div className="picker-search">
-              <Search size={12} />
-              <input
-                data-autofocus
-                className="input-embedded"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜索已安装软件…"
-                aria-label="搜索应用"
-              />
-            </div>
-            <button
-              className="btn sm"
-              onClick={() => loadApps(true)}
-              disabled={scanning}
-              title="重新扫描开始菜单 / 注册表 / 应用商店（不扫描全盘）"
-            >
-              <RefreshCw size={12} className={scanning ? "spin" : ""} /> {scanning ? "扫描中…" : "刷新"}
-            </button>
+            <SearchField
+              className="picker-search"
+              size="compact"
+              autoFocus
+              value={query}
+              onChange={setQuery}
+              placeholder="搜索已安装软件…"
+              ariaLabel="搜索应用"
+            />
+            {scan !== null && (
+              <button
+                className="btn sm"
+                onClick={() => loadApps(true)}
+                disabled={scanning}
+                title="重新扫描开始菜单 / 注册表 / 应用商店（不扫描全盘）"
+              >
+                <RefreshCw size={12} className={scanning ? "spin" : ""} /> {scanning ? "扫描中…" : "重新扫描"}
+              </button>
+            )}
             <button className="btn sm" onClick={() => setManualOpen((v) => !v)}>
               <Plus size={12} /> 手动添加
             </button>
@@ -1024,48 +1286,19 @@ export default function AppPicker({
 
           {/* 应用列表 */}
           <div className="picker-list" role="listbox" aria-label="已安装软件">
-            {scanError && scan === null ? (
-              // 扫描失败 ≠ 没有应用：明确失败原因 + 重试，避免永远停在「加载中」
-              <div className="empty-hint error-text" role="alert">
-                应用扫描失败：{scanError}
-                <button className="btn sm" onClick={() => void loadApps(true)}>
-                  重试
-                </button>
-              </div>
-            ) : scan === null || scanning ? (
-              <div className="empty-hint">{scanning ? "扫描中…" : "加载中…"}</div>
-            ) : (
+            {renderScanGate()}
+            {scan !== null && (
               <>
-                {scanError && (
-                  <div className="empty-hint error-text" role="status">
-                    扫描刷新失败，当前显示上次结果：{scanError}
-                    <button className="btn sm" onClick={() => void loadApps(true)}>
-                      重试
-                    </button>
-                  </div>
-                )}
-                {scanIncomplete && (
-                  <div className="empty-hint picker-scan-warn" role="status">
-                    应用发现可能不完整：开始菜单快捷方式超出扫描上限，或应用商店来源读取失败。
-                    <button className="btn sm" onClick={() => void loadApps(true)}>
-                      重新扫描
-                    </button>
-                  </div>
-                )}
+                {renderScanNotices()}
+                {renderScanSummary(apps.length)}
                 {apps.length === 0 ? (
                   <div className="empty-hint">
                     {query.trim()
                       ? `没有匹配「${query.trim()}」的应用；可换个关键词，或手动添加`
-                      : "没有匹配的应用；可点「手动添加」登记任意 EXE / 网址 / 目录"}
-                    <button className="btn sm" onClick={() => void loadApps(true)}>
-                      重新扫描
-                    </button>
+                      : "扫描完成，未发现可添加的应用；可点「手动添加」登记任意 EXE / 网址 / 目录"}
                   </div>
                 ) : (
                   <>
-                    <div className="picker-count" role="status">
-                      共 {apps.length} 个匹配
-                    </div>
                     {visibleApps.map((a) => {
                       const linked = linkedKeys.has(a.app_key);
                       const running = runningApps.has(a.app_key);
@@ -1109,7 +1342,10 @@ export default function AppPicker({
               onSaved={async (t, msg) => {
                 setManualOpen(false);
                 const existed = targets.some(
-                  (x) => x.target_type === t.target_type && x.app_key === t.app_key,
+                  (x) =>
+                    x.target_type === t.target_type &&
+                    x.app_key === t.app_key &&
+                    (x.shortcut_kind ?? "app") === "app",
                 );
                 await afterPick(
                   t,

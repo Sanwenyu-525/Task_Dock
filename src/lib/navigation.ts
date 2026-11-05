@@ -44,6 +44,10 @@ export interface NavTarget {
   use_count: number;
   created_at: string;
   updated_at: string;
+  /** app = 普通应用快捷方式（按程序去重）；window = 指定窗口快捷方式（按稳定身份去重） */
+  shortcut_kind?: "app" | "window";
+  /** 指定窗口快捷方式绑定的稳定身份（类名+标题+exe，不含 HWND） */
+  bound_window_identity?: WindowMemory | null;
 }
 
 export interface TargetInput {
@@ -107,6 +111,9 @@ export interface DiscoveredApp {
   app_user_model_id: string;
   window_title_hint: string;
   source: string;
+  /** 后端扫描分层：normal 默认展示；advanced 默认折叠、可「显示高级项」；
+   * invalid 不应出现在结果中（旧缓存可能没有该字段，按 normal 处理）。 */
+  tier?: "normal" | "advanced" | "invalid";
 }
 
 export interface AppScanResult {
@@ -173,12 +180,18 @@ export const navScanApps = (force = false) =>
   invoke<AppScanResult>("nav_scan_apps", { force });
 /**
  * 真实应用图标（PNG data URL；无图标返回 null）。
- * 只传「已保存目标 id」或「扫描发现的 app_key」，后端不接受任意路径。
+ * 只传「已保存目标 id」「扫描发现的 app_key」或窗口选择页的真实 exe 路径；
+ * 后端对 exe 路径做绝对路径/.exe/存在/非解释器校验。
  */
-export const navAppIcon = (identity: { targetId?: string; appKey?: string }) =>
+export const navAppIcon = (identity: {
+  targetId?: string;
+  appKey?: string;
+  exePath?: string;
+}) =>
   invoke<string | null>("nav_app_icon", {
     targetId: identity.targetId ?? null,
     appKey: identity.appKey ?? null,
+    exePath: identity.exePath ?? null,
   });
 export const navListWindows = () => invoke<WindowInfo[]>("nav_list_windows");
 /** 某应用目标的候选窗口（后端按进程身份过滤，含微信/QQ 等多进程宿主的子窗口） */
@@ -191,6 +204,12 @@ export const navTargetRunningStates = (ids: string[]) =>
   invoke<Record<string, string>>("nav_target_running_states", { ids });
 export const navSaveTarget = (input: TargetInput) =>
   invoke<NavTarget>("nav_save_target", { input });
+/** 由真实窗口保存「指定窗口快捷方式」：后端即时解析稳定身份，HWND 不落库、不聚焦当前窗口。 */
+export const navSaveWindowTarget = (hwnd: number, displayName?: string) =>
+  invoke<NavTarget>("nav_save_window_target", {
+    hwnd,
+    displayName: displayName ?? null,
+  });
 export const navUpdateTarget = (id: string, patch: TargetPatch) =>
   invoke<void>("nav_update_target", { id, patch });
 export const navDeleteTarget = (id: string) =>

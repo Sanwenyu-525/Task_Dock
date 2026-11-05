@@ -27,6 +27,7 @@ import {
   navPickTaskWindow,
   navLinkTaskWindow,
   navSaveTarget,
+  navSaveWindowTarget,
   navUpdateTarget,
   type DiscoveredApp,
   type NavTarget,
@@ -43,6 +44,7 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
     navAllTaskLinks: vi.fn(async () => []),
     navListWindows: vi.fn(async () => [] as WindowInfo[]),
     navSaveTarget: vi.fn(),
+    navSaveWindowTarget: vi.fn(),
     navLinkTask: vi.fn(async () => "link-id"),
     navSaveAgentSessionTarget: vi.fn(),
     navPickWindowIdentity: vi.fn(),
@@ -118,6 +120,21 @@ const WIN_NOTEPAD: WindowInfo = {
   class_name: "Notepad",
   is_minimized: false,
   exe_path: "C:\\Windows\\System32\\notepad.exe",
+};
+
+const WIN_CHROME_GITHUB: WindowInfo = {
+  hwnd: 777,
+  pid: 200,
+  title: "GitHub - Google Chrome",
+  class_name: "Chrome_WidgetWin_1",
+  is_minimized: false,
+  exe_path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+};
+
+const WIN_CHROME_CHATGPT: WindowInfo = {
+  ...WIN_CHROME_GITHUB,
+  hwnd: 888,
+  title: "ChatGPT - Google Chrome",
 };
 
 /** 注入 store 初始数据（真实 zustand 实例；动作替换为 vi.fn 防意外 IPC）。 */
@@ -468,7 +485,64 @@ describe("AppPicker", () => {
 
     expect(screen.getByText(/扫描失败/)).toBeTruthy();
     expect(screen.queryByText("加载中…")).toBeNull();
-    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "扫描本机应用" })).toBeTruthy();
+  });
+
+  it("未扫描时不自动发起扫描，显示主动扫描引导", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    useNavigationStore.setState({ scan: null, scanning: false, scanError: null });
+    const loadApps = useNavigationStore.getState().loadApps;
+    renderPicker({ standalone: true });
+
+    // 挂载只读取已保存目标，不触发本机软件扫描
+    expect(loadApps).not.toHaveBeenCalled();
+    expect(screen.getByText("尚未扫描本机应用")).toBeTruthy();
+    expect(screen.getByText(/点击「扫描本机应用」查找可以添加的桌面程序/)).toBeTruthy();
+    expect(screen.queryByText(/加载中/)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "扫描本机应用" }));
+    expect(loadApps).toHaveBeenCalledWith(true);
+  });
+
+  it("已有会话扫描结果直接展示，不自动刷新；显示上次扫描时间并可手动重扫", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    const loadApps = useNavigationStore.getState().loadApps;
+    renderPicker({ standalone: true });
+
+    expect(loadApps).not.toHaveBeenCalled();
+    expect(screen.getByText(/上次扫描/)).toBeTruthy();
+    expect(screen.getByText(/共 3 个可添加应用/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "重新扫描" }));
+    expect(loadApps).toHaveBeenCalledWith(true);
+  });
+
+  it("高级项默认折叠、可展开，普通程序不受影响", async () => {
+    const user = userEvent.setup();
+    seedStores({
+      apps: [
+        APP_VSCODE,
+        appFix({
+          app_key: "updater",
+          display_name: "Google Update",
+          category: "other",
+          tier: "advanced",
+        }),
+      ],
+    });
+    render(
+      <>
+        <AppPicker standalone variant="page" onClose={vi.fn()} />
+        <ToastProbe />
+      </>,
+    );
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+
+    expect(within(list).queryByText("Google Update")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /显示高级项（1）/ }));
+    expect(within(list).getByText("Google Update")).toBeTruthy();
   });
 
   it("搜索「微信」命中主程序与相关独立应用；不连续中文不命中", async () => {
@@ -526,7 +600,7 @@ describe("AppPicker", () => {
     const list = screen.getByRole("listbox", { name: "已安装软件" });
 
     expect(within(list).getAllByRole("option")).toHaveLength(APP_PAGE_SIZE);
-    expect(within(list).getByText(`共 60 个匹配`)).toBeTruthy();
+    expect(within(list).getByText(/共 60 个可添加应用/)).toBeTruthy();
 
     await user.click(within(list).getByRole("button", { name: /加载更多/ }));
     expect(within(list).getAllByRole("option")).toHaveLength(60);
@@ -573,6 +647,35 @@ describe("AppPicker 子页面（variant=page）", () => {
 
     await user.click(screen.getByRole("button", { name: "返回应用列表" }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("首次进入添加子页不自动扫描；只有用户点扫描才触发", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    useNavigationStore.setState({ scan: null, scanning: false, scanError: null });
+    const loadApps = useNavigationStore.getState().loadApps;
+    renderPage();
+
+    expect(loadApps).not.toHaveBeenCalled();
+    expect(screen.getByText("尚未扫描本机应用")).toBeTruthy();
+    // 从当前窗口选择 / 手动添加始终可达
+    expect(screen.getByRole("button", { name: "从当前窗口选择" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "手动添加" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "扫描本机应用" }));
+    expect(loadApps).toHaveBeenCalledWith(true);
+    expect(loadApps).toHaveBeenCalledTimes(1);
+  });
+
+  it("扫描中禁用重复提交，已有结果时保留展示", () => {
+    seedStores();
+    useNavigationStore.setState({ scanning: true });
+    renderPage();
+
+    const rescan = screen.getByRole("button", { name: /扫描中…/ });
+    expect((rescan as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("listbox", { name: "已安装软件" })).toBeTruthy();
+    expect(screen.getByText(/正在重新扫描/)).toBeTruthy();
   });
 
   it("多选两个应用后批量添加：逐个保存、刷新列表并关闭页面", async () => {
@@ -631,17 +734,143 @@ describe("AppPicker 子页面（variant=page）", () => {
     expect(within(saved).getByText("已添加")).toBeTruthy();
   });
 
-  it("运行窗口选择在页面内切换，返回后回到发现列表", async () => {
+  it("运行窗口选择在页面内切换，返回后回到发现列表且不重置搜索", async () => {
     const user = userEvent.setup();
     seedStores();
     vi.mocked(navListWindows).mockResolvedValue([]);
     renderPage();
 
+    const search = screen.getByRole("textbox", { name: "搜索应用" });
+    await user.type(search, "VS");
     await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(await screen.findByText("没有可交互的窗口")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "返回添加应用" }));
     expect(screen.getByRole("listbox", { name: "已安装软件" })).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "搜索应用" }) as HTMLInputElement).value).toBe("VS");
+  });
+
+  it("窗口页默认单选且优先切换：确认只保存稳定身份，不聚焦/不串已选计数", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navListWindows).mockResolvedValue([WIN_CHROME_GITHUB, WIN_CHROME_CHATGPT]);
+    vi.mocked(navSaveWindowTarget).mockResolvedValue(targetFix("t-win", "Chrome", "chrome"));
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
+    const github = await screen.findByRole("radio", { name: /GitHub - Google Chrome/ });
+    await user.click(github);
+
+    expect(github.getAttribute("aria-checked")).toBe("true");
+    // 窗口页不沿用已安装软件的多选状态
+    expect(screen.queryByText(/已选 \d/)).toBeNull();
+    expect(
+      screen.getByRole("radio", { name: /优先切换到此窗口/ }).getAttribute("aria-checked"),
+    ).toBe("true");
+
+    await user.click(screen.getByRole("button", { name: "确认添加" }));
+    await waitFor(() => expect(navSaveWindowTarget).toHaveBeenCalledWith(777));
+    // 添加是配置行为，不触发导航/窗口聚焦，也不退化成旧的「先存应用再绑身份」
+    expect(navPickWindowIdentity).not.toHaveBeenCalled();
+    expect(navSaveTarget).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole("listbox", { name: "已安装软件" })).toBeTruthy(),
+    );
+  });
+
+  it("同程序多窗口各自独立提交，不会复用同一个普通应用目标", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navListWindows).mockResolvedValue([WIN_CHROME_GITHUB, WIN_CHROME_CHATGPT]);
+    vi.mocked(navSaveWindowTarget).mockImplementation(async (hwnd) =>
+      targetFix(`t-${hwnd}`, "Chrome", "chrome"),
+    );
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
+    await user.click(await screen.findByRole("radio", { name: /GitHub - Google Chrome/ }));
+    await user.click(screen.getByRole("button", { name: "确认添加" }));
+    await waitFor(() => expect(navSaveWindowTarget).toHaveBeenCalledWith(777));
+
+    await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
+    await user.click(await screen.findByRole("radio", { name: /ChatGPT - Google Chrome/ }));
+    await user.click(screen.getByRole("button", { name: "确认添加" }));
+    await waitFor(() => expect(navSaveWindowTarget).toHaveBeenCalledWith(888));
+    expect(navSaveWindowTarget).toHaveBeenCalledTimes(2);
+  });
+
+  it("「仅添加应用」只保存普通快捷方式，不绑定窗口身份", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navListWindows).mockResolvedValue([WIN_NOTEPAD]);
+    vi.mocked(navSaveTarget).mockResolvedValue(targetFix("t-app", "doc.txt", "notepad"));
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
+    await user.click(await screen.findByRole("radio", { name: /doc.txt - 记事本/ }));
+    await user.click(screen.getByRole("radio", { name: /仅添加应用，不绑定窗口/ }));
+    expect(
+      screen.getByRole("radio", { name: /仅添加应用，不绑定窗口/ }).getAttribute("aria-checked"),
+    ).toBe("true");
+    await user.click(screen.getByRole("button", { name: "确认添加" }));
+
+    await waitFor(() => expect(navSaveTarget).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(navSaveTarget).mock.calls[0][0].exe_path).toBe(WIN_NOTEPAD.exe_path);
+    expect(navSaveWindowTarget).not.toHaveBeenCalled();
+  });
+
+  it("无 exe 身份的窗口明确提示不能添加，且确认按钮保持禁用", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navListWindows).mockResolvedValue([{ ...WIN_NOTEPAD, hwnd: 999, exe_path: null }]);
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
+    const row = await screen.findByRole("radio", { name: /doc.txt - 记事本/ });
+    await user.click(row);
+
+    expect(screen.getByText(/无法识别该窗口所属程序（权限受限），不能添加/)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "确认添加" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(navSaveWindowTarget).not.toHaveBeenCalled();
+  });
+
+  it("刷新后所选窗口消失：清空选择并提示重选", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navListWindows).mockResolvedValue([WIN_NOTEPAD]);
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
+    await user.click(await screen.findByRole("radio", { name: /doc.txt - 记事本/ }));
+    vi.mocked(navListWindows).mockResolvedValue([]);
+    await user.click(screen.getByRole("button", { name: "刷新窗口" }));
+
+    expect(await screen.findByText(/所选窗口已关闭或标题已变化，请重新选择/)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "确认添加" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("绑定失败：留在窗口页、保留选择并给出具体原因，可重试", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    vi.mocked(navListWindows).mockResolvedValue([WIN_NOTEPAD]);
+    vi.mocked(navSaveWindowTarget).mockRejectedValue(new Error("窗口已关闭，请重新选择"));
+    const { onClose } = renderPage();
+
+    await user.click(screen.getByRole("button", { name: "从当前窗口选择" }));
+    const row = await screen.findByRole("radio", { name: /doc.txt - 记事本/ });
+    await user.click(row);
+    await user.click(screen.getByRole("button", { name: "确认添加" }));
+
+    // 页面内提示 + Toast 都会给出具体原因
+    expect((await screen.findAllByText(/添加失败：窗口已关闭，请重新选择/)).length).toBeGreaterThan(0);
+    expect(row.getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("listbox", { name: "已安装软件" })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(navSaveWindowTarget).toHaveBeenCalledTimes(1);
   });
 });

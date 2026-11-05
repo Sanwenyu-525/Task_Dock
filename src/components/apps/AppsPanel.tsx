@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, FolderOpen, Link2, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw,
-  Search, Star, Trash2, X, EyeOff, Eye,
+  Star, Trash2, EyeOff, Eye,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import { useNavigationStore, type RefreshOutcome } from "../../store/useNavigationStore";
@@ -29,17 +29,19 @@ import {
 } from "../../lib/navigation";
 import { searchApps } from "../../lib/appSearch";
 import AppIcon from "../ui/AppIcon";
-import { ConfirmDialog, DropdownMenu } from "../ui";
+import { ConfirmDialog, DropdownMenu, SearchField } from "../ui";
 import AppPicker from "../navigation/AppPicker";
 import TargetEditForm from "./TargetEditForm";
+import { useLocale } from "../../hooks/useLocale";
+import type { MessageKey } from "../../i18n";
 
 type AppFilter = "all" | "favorite" | "recent" | "running";
 
-const FILTERS: ReadonlyArray<{ id: AppFilter; label: string }> = [
-  { id: "all", label: "全部" },
-  { id: "favorite", label: "收藏" },
-  { id: "recent", label: "最近使用" },
-  { id: "running", label: "运行中" },
+const FILTERS: ReadonlyArray<{ id: AppFilter; labelKey: MessageKey }> = [
+  { id: "all", labelKey: "apps.filter.all" },
+  { id: "favorite", labelKey: "apps.filter.favorite" },
+  { id: "recent", labelKey: "apps.filter.recent" },
+  { id: "running", labelKey: "apps.filter.running" },
 ];
 
 /** 「运行中」只认真实快照；`unavailable` 是配置失效，不算运行中。 */
@@ -64,9 +66,12 @@ function clearNameTip(el: HTMLButtonElement) {
 }
 
 export default function AppsPanel() {
+  const { t: tr } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
   const requestAppConfig = useUiStore((s) => s.requestAppConfig);
   const setTab = useUiStore((s) => s.setTab);
+  const appsAddRequest = useUiStore((s) => s.appsAddRequest);
+  const clearAppsAddRequest = useUiStore((s) => s.clearAppsAddRequest);
   const {
     targets, targetsLoaded, targetsError, loadTargets, loadTaskLinks,
   } = useNavigationStore();
@@ -204,13 +209,13 @@ export default function AppsPanel() {
       return;
     }
     if (outcome === "stale") return;
-    showToast(`${successMessage}，但列表刷新失败`, {
+    showToast(tr("apps.refreshStale", { success: successMessage }), {
       kind: "warning",
       action: {
-        label: "重试刷新",
+        label: tr("apps.retryRefresh"),
         run: () => void retry().then((next) => {
-          if (next === "ok") showToast("列表已刷新", { kind: "success" });
-          else if (next === "error") showToast("刷新仍未成功，请稍后再试", { kind: "error" });
+          if (next === "ok") showToast(tr("apps.refreshedAgain"), { kind: "success" });
+          else if (next === "error") showToast(tr("apps.refreshStillFailed"), { kind: "error" });
         }),
       },
     });
@@ -230,14 +235,16 @@ export default function AppsPanel() {
         const outcome = await loadTargets(true);
         await fetchRunningStates();
         if (outcome === "error") {
-          showToast("应用已启动，但「最近使用」刷新失败", {
+          showToast(tr("apps.launchRefreshFailed"), {
             kind: "warning",
-            action: { label: "重试刷新", run: () => void loadTargets(true) },
+            action: { label: tr("apps.retryRefresh"), run: () => void loadTargets(true) },
           });
         }
       }
     } catch (e) {
-      showToast(`「${t.display_name}」启动失败：${errorMessage(e)}`, { kind: "error" });
+      showToast(tr("apps.launchFailed", { name: t.display_name, error: errorMessage(e) }), {
+        kind: "error",
+      });
     } finally {
       markLaunching(t.id, false);
     }
@@ -247,24 +254,24 @@ export default function AppsPanel() {
     try {
       await navUpdateTarget(t.id, { favorite: !t.favorite });
     } catch (e) {
-      showToast(`收藏操作失败：${errorMessage(e)}`, { kind: "error" });
+      showToast(tr("apps.favoriteFailed", { error: errorMessage(e) }), { kind: "error" });
       return;
     }
     // 收藏已写入；刷新失败单独说明。
     const outcome = await loadTargets(true);
-    notifyRefresh(t.favorite ? "已取消收藏" : "已收藏", outcome, () => loadTargets(true));
+    notifyRefresh(t.favorite ? tr("apps.unfavorited") : tr("apps.favorited"), outcome, () => loadTargets(true));
   }
 
   async function toggleHidden(t: NavTarget) {
     try {
       await navUpdateTarget(t.id, { hidden: !t.hidden });
     } catch (e) {
-      showToast(`隐藏操作失败：${errorMessage(e)}`, { kind: "error" });
+      showToast(tr("apps.hideFailed", { error: errorMessage(e) }), { kind: "error" });
       return;
     }
     const outcome = await loadTargets(true);
     await fetchRunningStates();
-    notifyRefresh(t.hidden ? "已取消隐藏" : "已隐藏", outcome, () => loadTargets(true));
+    notifyRefresh(t.hidden ? tr("apps.unhidden") : tr("apps.hidden"), outcome, () => loadTargets(true));
   }
 
   async function refreshAll(showSuccess: boolean) {
@@ -272,15 +279,15 @@ export default function AppsPanel() {
     const outcome = await loadTargets(true);
     await fetchRunningStates();
     if (outcome === "error") {
-      const reason = useNavigationStore.getState().targetsError ?? "读取失败";
-      showToast(`刷新失败：${reason}`, {
+      const reason = useNavigationStore.getState().targetsError ?? tr("apps.readFailed");
+      showToast(tr("apps.refreshFailed", { reason }), {
         kind: "error",
-        action: { label: "重试", run: () => void refreshAll(showSuccess) },
+        action: { label: tr("common.retry"), run: () => void refreshAll(showSuccess) },
       });
       return;
     }
     if (outcome === "stale") return;
-    if (showSuccess) showToast("应用清单已刷新", { kind: "success" });
+    if (showSuccess) showToast(tr("apps.refreshed"), { kind: "success" });
   }
 
   function closeEditor() {
@@ -307,6 +314,14 @@ export default function AppsPanel() {
     closeEditor();
     setAddOpen(true);
   }
+
+  // 胶囊「+」的一次性意图：本组件挂载/收到新 token 时才消费并清除。
+  // 未挂载时意图保留在 store（异步展开窗口不丢），消费后清除（取消/返回不再自动重开）。
+  useEffect(() => {
+    if (!appsAddRequest) return;
+    clearAppsAddRequest();
+    requestAdd();
+  }, [appsAddRequest, clearAppsAddRequest, requestAdd]);
 
   function requestManage() {
     if (editing && editorDirty) {
@@ -389,7 +404,7 @@ export default function AppsPanel() {
           onClick={() => void launch(t)}
           disabled={busy}
           // 只在名称被截断时由 hover/focus 同步挂 data-tip；不再把 exe 路径塞进 tooltip
-          data-tip={busy ? "启动中…" : undefined}
+          data-tip={busy ? tr("apps.launching") : undefined}
           data-tip-locked={busy ? "1" : undefined}
           onMouseEnter={(e) => {
             if (!busy) syncTruncatedNameTip(e.currentTarget, t.display_name);
@@ -403,7 +418,7 @@ export default function AppsPanel() {
           onBlur={(e) => {
             if (!busy) clearNameTip(e.currentTarget);
           }}
-          aria-label={`启动 ${t.display_name}`}
+          aria-label={tr("apps.launchAria", { name: t.display_name })}
         >
           <AppIcon
             targetId={t.id}
@@ -414,11 +429,14 @@ export default function AppsPanel() {
           />
           <span className="apps-tile-text">
             <span className="apps-tile-name">{t.display_name}</span>
+            {t.shortcut_kind === "window" && (
+              <span className="apps-tile-state is-idle">指定窗口</span>
+            )}
             {badge && (
               <span className={`apps-tile-state is-${badge.tone}`}>{badge.label}</span>
             )}
             {running === "unavailable" && (
-              <span className="apps-tile-state is-bad">程序不可用</span>
+              <span className="apps-tile-state is-bad">{tr("apps.unavailable")}</span>
             )}
           </span>
           {busy && <Loader2 size={13} className="spin" aria-hidden="true" />}
@@ -431,7 +449,7 @@ export default function AppsPanel() {
                 ref={ref}
                 type="button"
                 className="icon-btn sm"
-                aria-label={`更多操作：${t.display_name}`}
+                aria-label={tr("apps.moreActions", { name: t.display_name })}
                 aria-haspopup="menu"
                 aria-expanded={expanded}
                 onClick={onClick}
@@ -441,7 +459,7 @@ export default function AppsPanel() {
               </button>
             )}
             items={menuItems(t)}
-            menuLabel={`应用操作：${t.display_name}`}
+            menuLabel={tr("apps.appMenu", { name: t.display_name })}
             placement="bottom-end"
             onOpenChange={(open) =>
               setMenuOpenId((prev) => (open ? t.id : prev === t.id ? null : prev))
@@ -462,7 +480,7 @@ export default function AppsPanel() {
           className="apps-extra-main"
           onClick={() => void launch(t)}
           disabled={busy}
-          data-tip={busy ? "启动中…" : undefined}
+          data-tip={busy ? tr("apps.launching") : undefined}
           data-tip-locked={busy ? "1" : undefined}
           onMouseEnter={(e) => {
             if (!busy) syncTruncatedNameTip(e.currentTarget, t.display_name);
@@ -476,7 +494,7 @@ export default function AppsPanel() {
           onBlur={(e) => {
             if (!busy) clearNameTip(e.currentTarget);
           }}
-          aria-label={`打开 ${t.display_name}`}
+          aria-label={tr("apps.openAria", { name: t.display_name })}
         >
           <span className="apps-extra-icon" aria-hidden="true"><Icon size={13} /></span>
           <span className="apps-tile-name">{t.display_name}</span>
@@ -490,7 +508,7 @@ export default function AppsPanel() {
               ref={ref}
               type="button"
               className="icon-btn sm"
-              aria-label={`更多操作：${t.display_name}`}
+              aria-label={tr("apps.moreActions", { name: t.display_name })}
               aria-haspopup="menu"
               aria-expanded={expanded}
               onClick={onClick}
@@ -500,7 +518,7 @@ export default function AppsPanel() {
             </button>
           )}
           items={menuItems(t)}
-          menuLabel={`网址/文件夹操作：${t.display_name}`}
+          menuLabel={tr("apps.extraMenu", { name: t.display_name })}
           placement="bottom-end"
         />
       </div>
@@ -519,27 +537,27 @@ export default function AppsPanel() {
     <div className="apps-panel">
       <header className="wf-head-row apps-head">
         <div>
-          <h2 className="wf-title">应用</h2>
-          <p className="wf-subtitle">快捷启动与窗口切换</p>
+          <h2 className="wf-title">{tr("apps.title")}</h2>
+          <p className="wf-subtitle">{tr("apps.subtitle")}</p>
         </div>
         <div className="wf-head-actions">
           <button
             type="button"
             className="btn"
             onClick={requestManage}
-            data-tip="打开设置中的应用管理"
-            aria-label="管理应用"
+            data-tip={tr("apps.manageTip")}
+            aria-label={tr("apps.manage")}
           >
-            管理
+            {tr("apps.manage")}
           </button>
           <button type="button" className="btn primary" onClick={requestAdd}>
-            <Plus size={13} aria-hidden="true" /> 添加应用
+            <Plus size={13} aria-hidden="true" /> {tr("apps.add")}
           </button>
         </div>
       </header>
 
       <div className="filter-bar primary apps-filter-bar">
-        <div className="seg-group subtle" role="group" aria-label="应用筛选">
+        <div className="seg-group subtle" role="group" aria-label={tr("apps.filterAria")}>
           {FILTERS.map((f) => (
             <button
               key={f.id}
@@ -548,37 +566,27 @@ export default function AppsPanel() {
               aria-pressed={filter === f.id}
               onClick={() => setFilter(f.id)}
             >
-              {f.label}
+              {tr(f.labelKey)}
             </button>
           ))}
         </div>
         {/* 搜索与刷新作为一组换行：避免只剩刷新图标单独占一行 */}
         <div className="apps-search-row">
-          <div className="picker-search apps-search">
-            <Search size={13} aria-hidden="true" />
-            <input
-              value={query}
-              placeholder="搜索应用名称"
-              aria-label="搜索应用名称"
-              onChange={(e) => setQuery(e.target.value)}
-            />
-            {query && (
-              <button
-                type="button"
-                className="icon-btn sm"
-                aria-label="清除搜索"
-                onClick={() => setQuery("")}
-              >
-                <X size={12} aria-hidden="true" />
-              </button>
-            )}
-          </div>
+          <SearchField
+            className="apps-search"
+            size="compact"
+            value={query}
+            onChange={setQuery}
+            placeholder={tr("apps.searchPlaceholder")}
+            ariaLabel={tr("apps.searchAria")}
+            clearLabel={tr("apps.clearSearch")}
+          />
           <button
             type="button"
             className="icon-btn"
             onClick={() => void refreshAll(true)}
-            data-tip="刷新目标列表与运行状态（不重新扫描软件）"
-            aria-label="刷新应用清单"
+            data-tip={tr("apps.refreshTip")}
+            aria-label={tr("apps.refreshAria")}
           >
             <RefreshCw size={13} aria-hidden="true" />
           </button>
@@ -600,33 +608,33 @@ export default function AppsPanel() {
 
       {statesError && filter === "running" && (
         <div className="wf-error-text" role="status">
-          运行状态查询失败：{statesError}
+          {tr("apps.statesFailed", { error: statesError })}
           <button type="button" className="link-btn" onClick={() => void fetchRunningStates()}>
-            重试
+            {tr("common.retry")}
           </button>
         </div>
       )}
 
       {!targetsLoaded && !targetsError && (
         <div className="wf-empty-steps">
-          <Loader2 size={13} className="spin" aria-hidden="true" /> 加载中…
+          <Loader2 size={13} className="spin" aria-hidden="true" /> {tr("apps.loading")}
         </div>
       )}
 
       {targetsError && (
         <div className="wf-error-block" role="alert">
-          <span><AlertTriangle size={13} aria-hidden="true" /> 应用清单加载失败：{targetsError}</span>
+          <span><AlertTriangle size={13} aria-hidden="true" /> {tr("apps.loadFailed", { error: targetsError })}</span>
           <button type="button" className="btn sm" onClick={() => void refreshAll(false)}>
-            重试
+            {tr("common.retry")}
           </button>
         </div>
       )}
 
       {targetsError === null && targetsLoaded && noAppsAtAll && (
         <div className="wf-empty">
-          <p className="wf-hint-text">还没有配置应用。添加后会立即出现在这里，也会同步到胶囊与设置页。</p>
+          <p className="wf-hint-text">{tr("apps.empty")}</p>
           <button type="button" className="btn primary" onClick={requestAdd}>
-            <Plus size={13} aria-hidden="true" /> 添加应用
+            <Plus size={13} aria-hidden="true" /> {tr("apps.add")}
           </button>
         </div>
       )}
@@ -634,24 +642,24 @@ export default function AppsPanel() {
       {targetsLoaded && !noAppsAtAll && visibleApps.length === 0 && visibleExtras.length === 0 && (
         <div className="wf-empty-steps">
           {filter === "recent"
-            ? "还没有最近使用记录；启动一次应用后会按真实使用时间排序。"
+            ? tr("apps.emptyRecent")
             : filter === "running"
-              ? "当前没有检测到正在运行的应用。"
+              ? tr("apps.emptyRunning")
               : filter === "favorite"
-                ? "还没有收藏的应用。"
-                : `没有匹配「${query.trim()}」的应用。`}
+                ? tr("apps.emptyFavorite")
+                : tr("apps.emptyQuery", { query: query.trim() })}
         </div>
       )}
 
       {targetsLoaded && !noAppsAtAll && (
-        <div className="apps-grid" aria-label="应用快捷方式">
+        <div className="apps-grid" aria-label={tr("apps.gridAria")}>
           {visibleApps.map(renderTile)}
         </div>
       )}
 
       {visibleExtras.length > 0 && (
-        <section className="apps-extras" aria-label="网址与文件夹">
-          <h3 className="apps-section-title">网址与文件夹</h3>
+        <section className="apps-extras" aria-label={tr("apps.extrasAria")}>
+          <h3 className="apps-section-title">{tr("apps.extrasTitle")}</h3>
           <div className="apps-extra-list">{visibleExtras.map(renderExtraRow)}</div>
         </section>
       )}

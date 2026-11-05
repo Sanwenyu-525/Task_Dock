@@ -12,6 +12,7 @@ import { create } from "zustand";
 import { errorMessage, invokeCommand } from "../lib/errors";
 import { useSettingsStore } from "./useSettingsStore";
 import { TAB_ORDER, useUiStore } from "./useUiStore";
+import { resolveWindowMode } from "../lib/windowMode";
 import type { Tab } from "./useUiStore";
 import {
   acceleratorFromEvent,
@@ -176,7 +177,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function isFullMode(): boolean {
-  return (useSettingsStore.getState().settings?.mode ?? "full") === "full";
+  return resolveWindowMode(useSettingsStore.getState().settings?.mode) === "full";
 }
 
 /** 执行应用内动作；返回 false 表示当前模式不适用，不应吞掉按键。 */

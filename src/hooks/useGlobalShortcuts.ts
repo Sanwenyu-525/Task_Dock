@@ -15,6 +15,7 @@
 import { useEffect } from "react";
 import { useUiStore, TAB_ORDER } from "../store/useUiStore";
 import { useSettingsStore } from "../store/useSettingsStore";
+import { resolveWindowMode } from "../lib/windowMode";
 
 function isTypingTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -28,7 +29,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function isFullMode(): boolean {
-  return (useSettingsStore.getState().settings?.mode ?? "full") === "full";
+  return resolveWindowMode(useSettingsStore.getState().settings?.mode) === "full";
 }
 
 export function useGlobalShortcuts(): void {
