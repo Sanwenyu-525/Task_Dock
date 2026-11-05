@@ -6,7 +6,7 @@
 //! - 计数来自后端全局 SQL，与筛选/分页无关；列表使用 keyset 游标加载更多；
 //! - 监控覆盖度单独展示：未接入/未验证的来源明确说明，绝不显示成「监控中」。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   AlertTriangle,
   Bell,
@@ -21,6 +21,7 @@ import {
 import AgentIcon from "../ui/AgentIcon";
 import {
   useActionsStore,
+  actionViewKey,
   attentionCount,
   categoryCount,
   kindLabel,
@@ -113,10 +114,19 @@ export default function ActionCenterPanel() {
   const openContext = useUiStore((s) => s.openContext);
   const [busy, setBusy] = useState<string | null>(null);
   /**
-   * 标记已处理（默认筛选不含已处理时该行会退出列表）：先播收拢淡出再提交。
-   * 动画只是反馈层——失败立即弹回原位；「历史」分类 ack 后仍留在列表，不播。
+   * 标记已处理（默认筛选不含已处理时该行会退出列表）：先执行 `ack()`，
+   * 只有真成功且需要退出当前筛选才播收拢淡出。
+   *
+   * `ack()` 内部会立刻静默刷新并移除这一行；这里保留一份最小快照（原条目、
+   * 展示索引、点击时高度），刷新与后台事件都不会把离场行提前卸载。
+   * 「历史」分类或已处理筛选下行不退出列表，不播动画；失败不做反向动画。
    */
-  const [leavingId, setLeavingId] = useState<string | null>(null);
+  const [exitSnapshot, setExitSnapshot] = useState<{
+    item: ActionItem;
+    index: number;
+    height: number;
+  } | null>(null);
+  const exitTimerRef = useRef<number | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
 
   const category: ActionCategory = filter.category ?? "intervention";
@@ -126,9 +136,36 @@ export default function ActionCenterPanel() {
   const attention = attentionCount(feed);
   const categoryTotal = categoryCount(feed, category);
 
+  // 离场快照只参与渲染、不写回 store：后台刷新/翻页既不会提前卸载它，也不会重复插入
+  const displayedItems = useMemo(() => {
+    const items = current?.items ?? [];
+    const snap = exitSnapshot;
+    if (!snap || items.some((i) => i.id === snap.item.id)) return items;
+    const out = items.slice();
+    out.splice(Math.min(Math.max(0, snap.index), out.length), 0, snap.item);
+    return out;
+  }, [current, exitSnapshot]);
+
   useEffect(() => {
     if (!feed) void load();
   }, [feed, load]);
+
+  // 筛选/分类变化后，旧视图的离场快照不再属于新视图；一并清掉定时器
+  useEffect(() => {
+    if (exitTimerRef.current !== null) {
+      window.clearTimeout(exitTimerRef.current);
+      exitTimerRef.current = null;
+    }
+    setExitSnapshot(null);
+  }, [category, filter.kind, filter.priority, filter.source_id, filter.task_id, filter.include_acked]);
+
+  // 卸载（关闭抽屉或切走）时不留悬空定时器
+  useEffect(
+    () => () => {
+      if (exitTimerRef.current !== null) window.clearTimeout(exitTimerRef.current);
+    },
+    [],
+  );
 
   const coverageIssues = useMemo(
     () => (feed?.coverage ?? []).filter((c) => c.level !== "live"),
@@ -162,16 +199,13 @@ export default function ActionCenterPanel() {
     if (busy) return;
     // 历史/已处理筛选下该行不会离开列表，没有「退出」可演
     const exitsList = category !== "history" && !item.acked && !(filter.include_acked ?? false);
+    // 发起时固定视图身份：请求在途期间切了分类/筛选，返回后不得把旧条目插进新列表
+    const viewKey = actionViewKey(filter);
+    // ack 会立即静默刷新并移除该行，先记下展示索引与高度，供动画期间渲染快照
+    const index = displayedItems.findIndex((i) => i.id === item.id);
+    const height = rowRefs.current.get(item.id)?.offsetHeight ?? 0;
     setBusy(item.id);
     try {
-      if (exitsList && !prefersReducedMotion()) {
-        const el = rowRefs.current.get(item.id);
-        if (el) {
-          el.style.setProperty("--clip-exit-h", `${el.offsetHeight}px`);
-          setLeavingId(item.id);
-          await new Promise((r) => setTimeout(r, EXIT_MS));
-        }
-      }
       if (item.acked) {
         await unack([item.id]);
         showToast("已恢复为待处理", { kind: "info" });
@@ -186,12 +220,23 @@ export default function ActionCenterPanel() {
             : "这一项已经是已处理状态，列表已刷新",
           { kind: n > 0 ? "success" : "info" },
         );
+        // 真成功、仍处发起时的视图、且需要退出当前筛选，才播离场；
+        // 返回 0（已被处理过）不演首次成功，切走后的旧视图也不在新列表里演离场
+        const sameView = actionViewKey(useActionsStore.getState().filter) === viewKey;
+        if (n > 0 && exitsList && sameView && !prefersReducedMotion()) {
+          setExitSnapshot({ item, index: Math.max(0, index), height });
+          if (exitTimerRef.current !== null) window.clearTimeout(exitTimerRef.current);
+          exitTimerRef.current = window.setTimeout(() => {
+            exitTimerRef.current = null;
+            setExitSnapshot(null);
+          }, EXIT_MS);
+        }
       }
     } catch (e) {
+      // 失败不做反向动画：这一行从未进入离场，保持原样
+      setExitSnapshot(null);
       showToast(`确认失败：${String(e)}`, { kind: "error" });
     } finally {
-      // 失败时撤掉离场状态让行弹回原位；成功时行已随刷新离开列表
-      setLeavingId(null);
       setBusy(null);
     }
   }
@@ -384,7 +429,7 @@ export default function ActionCenterPanel() {
 
           {error && <div className="empty-hint error-text">加载失败：{error}</div>}
           {!current && !error && <div className="empty-hint">加载中…</div>}
-          {current && current.items.length === 0 && (
+          {current && displayedItems.length === 0 && (
             <div className="empty-state">
               <div className="empty-icon">
                 <Inbox size={22} />
@@ -397,9 +442,11 @@ export default function ActionCenterPanel() {
               </div>
             </div>
           )}
-          {current && current.items.length > 0 && (
+          {current && displayedItems.length > 0 && (
             <div className="action-list">
-              {current.items.map((item) => (
+              {displayedItems.map((item) => {
+                const leaving = exitSnapshot?.item.id === item.id;
+                return (
                 <div
                   key={item.id}
                   ref={(el) => {
@@ -407,8 +454,15 @@ export default function ActionCenterPanel() {
                     else rowRefs.current.delete(item.id);
                   }}
                   className={`task-card action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""} ${
-                    leavingId === item.id ? "leaving" : ""
+                    leaving ? "leaving" : ""
                   }`}
+                  inert={leaving || undefined}
+                  aria-hidden={leaving || undefined}
+                  style={
+                    leaving && exitSnapshot && exitSnapshot.height > 0
+                      ? ({ "--clip-exit-h": `${exitSnapshot.height}px` } as CSSProperties)
+                      : undefined
+                  }
                 >
                   <button
                     className="action-main"
@@ -468,7 +522,8 @@ export default function ActionCenterPanel() {
                     )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
               {current.has_more && (
                 <div className="action-more">
                   <button

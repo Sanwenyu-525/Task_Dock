@@ -4,7 +4,7 @@
 //! 行动中心：需介入 / 通知 / 历史三层展示，计数与筛选/分页相互独立。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, act } from "@testing-library/react";
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/bridge")>();
@@ -24,6 +24,7 @@ import type {
   ActionCategory,
   ActionCounts,
   ActionFeed,
+  ActionFilter,
   ActionItem,
 } from "../../lib/bridge";
 import { useActionsStore } from "../../store/useActionsStore";
@@ -252,7 +253,7 @@ describe("ActionCenterPanel 三层展示", () => {
 });
 
 describe("ActionCenterPanel 已处理退出反馈", () => {
-  it("默认筛选下标记已处理：先收拢离场再确认，行随后退出待处理列表", async () => {
+  it("默认筛选下标记已处理：先提交 ack，真成功后才离场，行随后退出待处理列表", async () => {
     useActionsStore.setState({
       feed: feedOf({
         items: [itemOf("run:1")],
@@ -262,17 +263,75 @@ describe("ActionCenterPanel 已处理退出反馈", () => {
     // 确认后的静默刷新里该行已不在待处理列表（初始 feed 由 setState 预置，不走请求）
     feedMock.mockResolvedValue(feedOf({ items: [], counts: countsOf({ intervention: 1 }) }));
     const { actionsAck } = await import("../../lib/bridge");
-    vi.mocked(actionsAck).mockResolvedValue(1);
+    let resolveAck: (n: number) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((res) => {
+        resolveAck = res;
+      }),
+    );
     const { container } = render(<ActionCenterPanel />);
     await screen.findByText("构建失败");
 
     fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
 
-    // 动画先播：收拢淡出，行仍在 DOM；确认完成随刷新退出
+    // 动画不挡在后端前面：点击即 ack，结果未知时不进入离场
+    expect(vi.mocked(actionsAck)).toHaveBeenCalledWith(["run:1"]);
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+
+    resolveAck(1);
+    // 真成功后才收拢淡出；此时列表刷新已经把它移除，但快照仍在 DOM 中演完离场
     await waitFor(() => expect(container.querySelector(".action-item.leaving")).toBeTruthy());
-    await waitFor(() => expect(vi.mocked(actionsAck)).toHaveBeenCalledWith(["run:1"]));
     await waitFor(() => expect(container.querySelector(".action-item")).toBeNull());
     expect(useUiStore.getState().toast?.message).toContain("退出待处理列表");
+  });
+
+  it("后端返回 0（已经被处理过）：不播成功离场、不演首次成功", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    feedMock.mockResolvedValue(feedOf({ items: [] }));
+    const { actionsAck } = await import("../../lib/bridge");
+    vi.mocked(actionsAck).mockResolvedValue(0);
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("info"));
+    expect(useUiStore.getState().toast?.message).toContain("已经是已处理");
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+  });
+
+  it("离场期间后台整表刷新：快照不被提前卸载，也不重复插入", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    // ack 触发的刷新返回空表；之后的后台刷新返回另一条
+    feedMock.mockResolvedValueOnce(feedOf({ items: [] }));
+    feedMock.mockResolvedValue(
+      feedOf({ items: [itemOf("run:2", { title: "另一个失败" })], counts: countsOf({ intervention: 1 }) }),
+    );
+    const { actionsAck } = await import("../../lib/bridge");
+    vi.mocked(actionsAck).mockResolvedValue(1);
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    await waitFor(() => expect(container.querySelector(".action-item.leaving")).toBeTruthy());
+
+    // 后台整表刷新替换了 feed：离场快照必须继续可见，且只出现一次
+    act(() => {
+      useActionsStore.setState({
+        feed: feedOf({ items: [itemOf("run:2", { title: "另一个失败" })], counts: countsOf({ intervention: 1 }) }),
+      });
+    });
+    const leavingRows = container.querySelectorAll(".action-item.leaving");
+    expect(leavingRows).toHaveLength(1);
+    expect(leavingRows[0].textContent).toContain("构建失败");
+    expect(screen.getByText("另一个失败")).toBeTruthy();
+
+    await waitFor(() => expect(container.querySelector(".action-item.leaving")).toBeNull());
+    expect(screen.getByText("另一个失败")).toBeTruthy();
   });
 
   it("已处理筛选下标记已处理：行不退出列表，只翻状态，不播离场", async () => {
@@ -317,6 +376,259 @@ describe("ActionCenterPanel 已处理退出反馈", () => {
 
     await waitFor(() => expect(container.querySelector(".action-item.acked")).toBeTruthy());
     expect(container.querySelector(".action-item.leaving")).toBeNull();
+  });
+
+  it("点击后立即切分类：旧请求返回时新列表已加载，不把旧条目插进新视图", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    feedMock.mockImplementation(async (f: ActionFilter = {}) =>
+      feedOf({
+        category: f.category ?? "intervention",
+        items:
+          (f.category ?? "intervention") === "notification"
+            ? [itemOf("run:9", { category: "notification", kind: "reminder", title: "新通知" })]
+            : [],
+      }),
+    );
+    const { actionsAck } = await import("../../lib/bridge");
+    let resolveAck: (n: number) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((res) => {
+        resolveAck = res;
+      }),
+    );
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    fireEvent.click(screen.getByRole("button", { name: /通知/ }));
+    await waitFor(() => expect(useActionsStore.getState().feed?.category).toBe("notification"));
+    expect(screen.getByText("新通知")).toBeTruthy();
+
+    // 旧请求此刻才返回：后端已生效，但当前视图不是它发起时的那一个
+    await act(async () => {
+      resolveAck(1);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("构建失败")).toBeNull();
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+    expect(useActionsStore.getState().feed?.category).toBe("notification");
+    // 切筛选已经触发过一次加载；旧请求不得再刷新一次
+    expect(feedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("未完成时切优先级：旧请求返回不污染新筛选", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    feedMock.mockResolvedValue(feedOf({ items: [] }));
+    const { actionsAck } = await import("../../lib/bridge");
+    let resolveAck: (n: number) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((res) => {
+        resolveAck = res;
+      }),
+    );
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    act(() => useActionsStore.getState().setFilter({ priority: 0 }));
+    await waitFor(() => expect(feedMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      resolveAck(1);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("构建失败")).toBeNull();
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+    expect(useActionsStore.getState().filter.priority).toBe(0);
+  });
+
+  it("未完成时切来源：旧请求返回不污染新筛选", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    feedMock.mockResolvedValue(feedOf({ items: [] }));
+    const { actionsAck } = await import("../../lib/bridge");
+    let resolveAck: (n: number) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((res) => {
+        resolveAck = res;
+      }),
+    );
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    act(() => useActionsStore.getState().setFilter({ source_id: "other" }));
+    await waitFor(() => expect(feedMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      resolveAck(1);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("构建失败")).toBeNull();
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+    expect(useActionsStore.getState().filter.source_id).toBe("other");
+  });
+
+  it("未完成时切任务：旧请求返回不污染新筛选", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    feedMock.mockResolvedValue(feedOf({ items: [] }));
+    const { actionsAck } = await import("../../lib/bridge");
+    let resolveAck: (n: number) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((res) => {
+        resolveAck = res;
+      }),
+    );
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    act(() => useActionsStore.getState().setFilter({ task_id: "task-x" }));
+    await waitFor(() => expect(feedMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      resolveAck(1);
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("构建失败")).toBeNull();
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+    expect(useActionsStore.getState().filter.task_id).toBe("task-x");
+  });
+
+  it("连续快速切换分类：只认最后一次视图，旧请求不演出、不插入", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    feedMock.mockImplementation(async (f: ActionFilter = {}) => feedOf({ category: f.category ?? "intervention", items: [] }));
+    const { actionsAck } = await import("../../lib/bridge");
+    let resolveAck: (n: number) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((res) => {
+        resolveAck = res;
+      }),
+    );
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    fireEvent.click(screen.getByRole("button", { name: /通知/ }));
+    fireEvent.click(screen.getByRole("button", { name: /历史/ }));
+    await waitFor(() => expect(useActionsStore.getState().feed?.category).toBe("history"));
+
+    await act(async () => {
+      resolveAck(1);
+      await Promise.resolve();
+    });
+
+    expect(useActionsStore.getState().feed?.category).toBe("history");
+    expect(screen.queryByText("构建失败")).toBeNull();
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+  });
+
+  it("旧请求完成时新筛选已加载：不替换已加载列表，也不多刷一次", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    feedMock.mockImplementation(async (f: ActionFilter = {}) =>
+      feedOf({ category: f.category ?? "intervention", items: [itemOf("run:9", { title: "新列表条目" })] }),
+    );
+    const { actionsAck } = await import("../../lib/bridge");
+    let resolveAck: (n: number) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((res) => {
+        resolveAck = res;
+      }),
+    );
+    render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    fireEvent.click(screen.getByRole("button", { name: /通知/ }));
+    await waitFor(() => expect(screen.getByText("新列表条目")).toBeTruthy());
+    const loaded = useActionsStore.getState().feed;
+
+    await act(async () => {
+      resolveAck(1);
+      await Promise.resolve();
+    });
+
+    // 新筛选的列表保持引用不变：旧请求没有触发第二次整表加载
+    expect(useActionsStore.getState().feed).toBe(loaded);
+    expect(feedMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("构建失败")).toBeNull();
+  });
+
+  it("切回原筛选以后端真实数据为准，不复活旧条目", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    // 后端已处理：原筛选再查时该条目不再返回
+    feedMock.mockImplementation(async (f: ActionFilter = {}) => feedOf({ category: f.category ?? "intervention", items: [] }));
+    const { actionsAck } = await import("../../lib/bridge");
+    let resolveAck: (n: number) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((res) => {
+        resolveAck = res;
+      }),
+    );
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    fireEvent.click(screen.getByRole("button", { name: /通知/ }));
+    await waitFor(() => expect(useActionsStore.getState().feed?.category).toBe("notification"));
+    await act(async () => {
+      resolveAck(1);
+      await Promise.resolve();
+    });
+    // 通知视图不该出现旧筛选的条目与离场快照
+    expect(screen.queryByText("构建失败")).toBeNull();
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /需介入/ }));
+    await waitFor(() => expect(useActionsStore.getState().feed?.category).toBe("intervention"));
+    expect(screen.queryByText("构建失败")).toBeNull();
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+  });
+
+  it("切换后旧请求失败：不安插离场快照，错误如实提示", async () => {
+    useActionsStore.setState({
+      feed: feedOf({ items: [itemOf("run:1")], counts: countsOf({ intervention: 1 }) }),
+    });
+    feedMock.mockResolvedValue(feedOf({ items: [] }));
+    const { actionsAck } = await import("../../lib/bridge");
+    let rejectAck: (e: Error) => void = () => {};
+    vi.mocked(actionsAck).mockReturnValue(
+      new Promise<number>((_res, rej) => {
+        rejectAck = rej;
+      }),
+    );
+    const { container } = render(<ActionCenterPanel />);
+    await screen.findByText("构建失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记已处理" }));
+    act(() => useActionsStore.getState().setFilter({ priority: 1 }));
+    await waitFor(() => expect(feedMock).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      rejectAck(new Error("db locked"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("error"));
+    expect(container.querySelector(".action-item.leaving")).toBeNull();
+    expect(screen.queryByText("构建失败")).toBeNull();
   });
 
   it("确认失败：离场状态撤掉，行弹回原位并提示错误", async () => {

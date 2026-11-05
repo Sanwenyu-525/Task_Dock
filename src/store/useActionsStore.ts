@@ -27,6 +27,21 @@ let queued: { silent: boolean; countsOnly: boolean } | null = null;
 /** 列表替换代数：分页请求期间若列表被整体替换，旧游标页必须丢弃。 */
 let listVersion = 0;
 
+/**
+ * 视图身份：跨异步边界（ack 返回）判断是否仍处发起时的筛选。
+ * 用语义 key 而非对象引用——A→B→A 会生成新对象但仍是同一个视图。
+ */
+export function actionViewKey(f: ActionFilter): string {
+  return JSON.stringify([
+    f.category ?? "",
+    f.kind ?? "",
+    f.priority ?? "",
+    f.source_id ?? "",
+    f.task_id ?? "",
+    f.include_acked ?? false,
+  ]);
+}
+
 interface LoadOpts {
   silent?: boolean;
   /** 只刷新计数/覆盖度，不替换已加载的列表（后台事件刷新用） */
@@ -68,7 +83,13 @@ export const useActionsStore = create<ActionsState>((set, get) => ({
   },
   load: async (opts) => {
     if (inflight) {
-      queued = { silent: !!opts?.silent, countsOnly: !!opts?.countsOnly };
+      // 合并排队请求：只要任一排队请求要求完整列表，就不能降级成 countsOnly，
+      // 否则正式的列表刷新会被随后的事件计数刷新吃掉。
+      const prev = queued;
+      queued = {
+        silent: (prev?.silent ?? true) && !!opts?.silent,
+        countsOnly: (prev?.countsOnly ?? true) && !!opts?.countsOnly,
+      };
       return inflight;
     }
     if (!opts?.silent) set({ loading: true });
@@ -146,8 +167,12 @@ export const useActionsStore = create<ActionsState>((set, get) => ({
   /** 标记已处理；返回后端实际改动的条数（0 表示这条已经被处理过了）。 */
   ack: async (ids) => {
     if (!ids.length) return 0;
+    // 记录发起时的视图身份：请求在途期间用户可能已切分类/优先级/来源/任务。
+    // 旧请求的结果仍会在后端生效；只有仍处原视图（含 A→B→A 切回）才重新同步，
+    // 否则旧筛选的列表会被当成新视图数据写回。切筛选本身已触发加载。
+    const viewKey = actionViewKey(get().filter);
     const n = await actionsAck(ids);
-    await get().load({ silent: true });
+    if (actionViewKey(get().filter) === viewKey) await get().load({ silent: true });
     return n;
   },
   unack: async (ids) => {

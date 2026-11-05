@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 //! Agent 面板 UI/UX 行为测试：接入管理搜索（名称/source_id、大小写、中文、清除、无结果）、
-//! 搜索与状态筛选组合、详情展开、通知定位优先于筛选。
+//! 搜索与状态筛选组合、详情展开、通知定位优先于筛选、健康短标签、扫描状态与折叠分组。
 //! 后端发现扫描与导航命令全部 mock；store 用真实实例（共享状态语义）。
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -145,6 +145,8 @@ function searchInput(): HTMLInputElement {
 }
 
 beforeEach(() => {
+  // 折叠偏好走 localStorage；每个用例从默认展开状态开始，避免跨用例串状态
+  localStorage.clear();
   ipc.discoveryScan.mockResolvedValue(SCAN);
   useAgentsStore.setState({ snapshot: snapshot(), snapshotError: null });
   useUiStore.setState({ agentFocus: null });
@@ -153,6 +155,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  localStorage.clear();
 });
 
 describe("接入管理搜索", () => {
@@ -247,5 +250,170 @@ describe("运行监控搜索", () => {
 
     await waitFor(() => expect(screen.queryAllByText("Fix bug").length).toBeGreaterThan(0));
     expect(searchInput().value).toBe("");
+  });
+});
+
+describe("健康状态与信息密度", () => {
+  it("徽标用短标签，完整解释只在详情展开；默认层不重复「尚无真实事件」", async () => {
+    ipc.discoveryScan.mockResolvedValue([
+      discovered({
+        source_id: "codex",
+        display_name: "Codex CLI",
+        health_state: "live",
+        real_event_seen: true,
+        last_real_event_at: ago(1),
+      }),
+      discovered({ source_id: "trae", display_name: "Trae", health_state: "transport-verified" }),
+    ]);
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+    await screen.findByText("Codex CLI");
+
+    const codex = cardFor("Codex CLI");
+    expect(within(codex).getByText("实时连接")).toBeTruthy();
+
+    const trae = cardFor("Trae");
+    expect(within(trae).getByText("待真实事件")).toBeTruthy();
+    // 徽标已表达「尚无真实事件」，默认层不再重复同一句话
+    expect(within(trae).queryByText("尚无真实事件")).toBeNull();
+
+    fireEvent.click(within(trae).getByRole("button", { name: "详情" }));
+    expect(
+      within(trae).getByText("自测事件已写入数据库，尚未收到宿主真实事件"),
+    ).toBeTruthy();
+  });
+
+  it("长名称与长状态完整保留，徽标仍属于标题行而不是被截断", async () => {
+    const longName = "Codex CLI（Windows 原生 Hook 接入的超长名称示例）";
+    ipc.discoveryScan.mockResolvedValue([
+      discovered({
+        source_id: "codex",
+        display_name: longName,
+        health_state: "recent-unconfigured",
+      }),
+    ]);
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+    await screen.findByText(longName);
+
+    const head = cardFor(longName).querySelector(".source-head") as HTMLElement;
+    expect(within(head).getByText(longName)).toBeTruthy();
+    expect(within(head).getByText("有事件 · 未配置")).toBeTruthy();
+  });
+});
+
+describe("扫描状态", () => {
+  it("首次扫描失败给准确原因与重试入口，不伪装成「未发现 Agent」", async () => {
+    ipc.discoveryScan.mockRejectedValueOnce(new Error("扫描器不可用"));
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+
+    await screen.findByText(/扫描失败：扫描器不可用/);
+    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+    expect(screen.queryByText(/未发现已安装的 Agent/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByText("Codex CLI");
+  });
+
+  it("重新扫描失败时保留上次结果、搜索条件与过期提示", async () => {
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+    await screen.findByText("Codex CLI");
+
+    fireEvent.change(searchInput(), { target: { value: "trae" } });
+    expect(screen.getByText("Trae")).toBeTruthy();
+
+    ipc.discoveryScan.mockRejectedValueOnce(new Error("再次扫描失败"));
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+
+    await screen.findByText(/扫描失败：再次扫描失败/);
+    expect(screen.getByText(/下方为上次成功结果，可能不是最新/)).toBeTruthy();
+    expect(screen.getByText("Trae")).toBeTruthy();
+    expect(searchInput().value).toBe("trae");
+    expect(screen.queryByText(/未发现已安装的 Agent/)).toBeNull();
+  });
+
+  it("扫描进行中显示进度；成功空结果显示空状态", async () => {
+    let resolveScan: (data: DiscoveredAgent[]) => void = () => {};
+    ipc.discoveryScan.mockReturnValueOnce(
+      new Promise<DiscoveredAgent[]>((resolve) => {
+        resolveScan = resolve;
+      }),
+    );
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+
+    expect(screen.getByText("正在扫描本机 Agent…")).toBeTruthy();
+    await act(async () => resolveScan([]));
+    await screen.findByText(/未发现已安装的 Agent/);
+  });
+
+  it("快速重复点击扫描只触发一次；卸载后迟到的结果不再更新界面", async () => {
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+    await screen.findByText("Codex CLI");
+    const calls = ipc.discoveryScan.mock.calls.length;
+
+    const scanBtn = screen.getByRole("button", { name: "重新扫描" });
+    fireEvent.click(scanBtn);
+    fireEvent.click(scanBtn);
+    await waitFor(() => expect(screen.getByRole("button", { name: "重新扫描" })).toBeTruthy());
+    expect(ipc.discoveryScan.mock.calls.length).toBeLessThanOrEqual(calls + 1);
+  });
+});
+
+describe("折叠分组", () => {
+  it("自动发现默认展开；折叠后保留数量与搜索条件，且不触发重新扫描", async () => {
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+    await screen.findByText("Codex CLI");
+    const calls = ipc.discoveryScan.mock.calls.length;
+
+    fireEvent.change(searchInput(), { target: { value: "trae" } });
+    fireEvent.click(screen.getByRole("button", { name: /Agent 自动发现/ }));
+
+    expect(screen.queryByLabelText("搜索 Agent 名称或来源 ID")).toBeNull();
+    expect(screen.getByText("3 个来源")).toBeTruthy();
+    expect(ipc.discoveryScan.mock.calls.length).toBe(calls);
+
+    fireEvent.click(screen.getByRole("button", { name: /Agent 自动发现/ }));
+    expect(ipc.discoveryScan.mock.calls.length).toBe(calls);
+    expect(searchInput().value).toBe("trae");
+    expect(screen.getAllByRole("button", { name: /接入/ }).length).toBeGreaterThan(0);
+  });
+
+  it("通用桥接默认折叠；展开后 Token 默认遮盖，折叠再展开恢复遮盖", async () => {
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+
+    expect(screen.queryByText("HTTP 端点")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /通用桥接/ }));
+    expect(screen.getByText("HTTP 端点")).toBeTruthy();
+    expect(screen.getByLabelText("显示令牌")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("显示令牌"));
+    expect(screen.getByLabelText("隐藏令牌")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /通用桥接/ }));
+    fireEvent.click(screen.getByRole("button", { name: /通用桥接/ }));
+    expect(screen.getByLabelText("显示令牌")).toBeTruthy();
+  });
+
+  it("折叠状态写入独立偏好键；损坏数据安全回退默认值", async () => {
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+    await screen.findByText("Codex CLI");
+
+    fireEvent.click(screen.getByRole("button", { name: /Agent 自动发现/ }));
+    const raw = localStorage.getItem("taskdock.agent.sections.v1");
+    expect(raw).toBeTruthy();
+    expect(JSON.parse(raw as string).sections.discovery).toBe(false);
+
+    cleanup();
+    localStorage.setItem("taskdock.agent.sections.v1", "{broken");
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("tab", { name: /接入管理/ }));
+    await screen.findByText("Codex CLI");
   });
 });

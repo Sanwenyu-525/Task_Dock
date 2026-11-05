@@ -5,20 +5,31 @@
 //! - 「已安装 ≠ 已连接」；健康状态只由真实事件证据决定
 //! - 会话未携带实例信息时直接挂在 Agent 下，不伪造实例
 //! - Agent 结束一轮执行 ≠ 普通任务完成；失联 ≠ 失败
+//! - 接入向导是页内视图；安装/验证/回滚运行态存于 useAgentOnboardingStore，
+//!   切换主 Tab 卸载组件不丢结果、不重复执行、不误报取消。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   RefreshCw, Power, PowerOff, ExternalLink, Copy, CheckCircle2, AlertTriangle,
   ShieldQuestion, ListChecks, Radar, PlugZap, Trash2, Plus, ChevronRight, ChevronDown,
-  Activity, X, Eye, EyeOff, CircleSlash, MonitorUp, BarChart3, Search,
+  Activity, Eye, EyeOff, CircleSlash, MonitorUp, BarChart3, ArrowLeft, Loader2,
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
+import CollapsibleSection from "../ui/CollapsibleSection";
+import SearchField from "../ui/SearchField";
+import StatusBadge, { type StatusTone } from "../ui/StatusBadge";
+import { persistCollapsibleState, readCollapsibleState } from "../../lib/collapsibleState";
 import {
-  adapterInstall, adapterPreview, adapterUninstall, adapterVerify,
+  adapterUninstall, adapterVerify,
   createSource, deleteSource, discoveryScan, getAgentInboxDir, openAgentSession,
   pendingItemsToTasks, setSourceEnabled,
   type DiscoveredAgent,
 } from "../../lib/bridge";
+import {
+  onboardBusy,
+  useAgentOnboardingStore,
+  type OnboardState,
+} from "../../store/useAgentOnboardingStore";
 import { navAgentAction, navAgentCapabilities, type AgentNavCapabilities } from "../../lib/navigation";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { errorMessage } from "../../lib/errors";
@@ -30,23 +41,48 @@ import { buildTree, liveSummary, type TreeAgent, type TreeSession } from "../../
 import { copyText } from "../../lib/clipboard";
 import { reportError } from "../../lib/errorReport";
 import AgentStatsView from "./stats/AgentStatsView";
+import { useLocale } from "../../hooks/useLocale";
 
 // 徽标只描述「接入证据强度」，不把已安装 / 已配置 / 验证通过 / 已连接混为一谈。
-// 文案尽量短，窄卡片下优先让徽标换行，而不是挤压 Agent 名称。
+// 徽标只做「一级短标签」，窄卡片下优先让徽标换行而不是挤压名称，完整证据解释放在展开区（HEALTH_DETAILS），
+// 短文案不改变任何状态枚举与真实事件语义。
 const HEALTH_LABELS: Record<string, string> = {
-  live: "已连接 · 实时",
-  "recent-event": "最近有真实事件",
-  "recent-unconfigured": "曾有真实事件 · 未配置",
-  stale: "状态已过期",
-  "transport-verified": "通道已验证 · 待真实事件",
-  "awaiting-first-event": "已配置 · 待真实事件",
+  live: "实时连接",
+  "recent-event": "真实事件已验证",
+  "recent-unconfigured": "有事件 · 未配置",
+  stale: "已过期",
+  "transport-verified": "待真实事件",
+  "awaiting-first-event": "待事件",
   // 只有自测/旧版本写入的 verified 位，没有任何 origin=real 事件
-  "self-test-only": "仅自测通过 · 待真实事件",
-  "history-only": "历史接入记录",
-  "no-events": "未收到事件",
+  "self-test-only": "仅自测",
+  "history-only": "历史记录",
+  "no-events": "无事件",
   disabled: "已禁用",
   unregistered: "未注册",
 };
+
+/** 接入证据强度 → 徽标语义色；业务映射留在本页，公共组件不内置状态判断。 */
+function healthTone(state: string): StatusTone {
+  if (state === "live" || state === "recent-event") return "success";
+  if (state === "recent-unconfigured" || state === "stale") return "warning";
+  if (
+    state === "transport-verified" ||
+    state === "awaiting-first-event" ||
+    state === "self-test-only"
+  ) {
+    return "info";
+  }
+  return "neutral";
+}
+
+/** 这些短标签本身已表达「尚无真实事件」，默认层不再重复同一句话。 */
+const NO_EVENT_BADGE_STATES = new Set([
+  "transport-verified",
+  "awaiting-first-event",
+  "self-test-only",
+  "no-events",
+  "unregistered",
+]);
 
 /** 展开区的完整状态解释：只说证据，不推断在线。 */
 const HEALTH_DETAILS: Record<string, string> = {
@@ -82,55 +118,106 @@ const KIND_LABELS: Record<string, string> = {
 
 /** 运行监控的状态筛选。 */
 const MONITOR_FILTERS = [
-  { id: "attention", label: "需关注" },
-  { id: "all", label: "全部" },
+  { id: "attention", labelKey: "agent.ui.filter.attention" },
+  { id: "all", labelKey: "agent.ui.all" },
 ] as const;
-
-type WizardStep = "preview" | "installing" | "verifying" | "result";
-
-interface WizardState {
-  agent: DiscoveredAgent;
-  step: WizardStep;
-  preview: Record<string, unknown> | null;
-  result: unknown;
-  error: string;
-}
 
 type Section = "monitor" | "stats" | "onboard";
 
+/** 扫描状态显式建模：`idle`（未扫）/ `scanning` / `success` / `error`，
+ *  不再用 `scan === null` 同时表示「未加载」与「失败」。 */
+type ScanState =
+  | { status: "idle" }
+  | { status: "scanning"; previous: DiscoveredAgent[] | null }
+  | { status: "success"; data: DiscoveredAgent[] }
+  | { status: "error"; message: string; previous: DiscoveredAgent[] | null };
+
+/** 接入管理分组折叠偏好：稳定英文 ID + 独立 storage key，损坏时回退默认值。 */
+const AGENT_SECTION_DEFAULTS = { discovery: true, bridge: false, custom: false } as const;
+type AgentSectionId = keyof typeof AGENT_SECTION_DEFAULTS;
+const AGENT_SECTIONS_KEY = "taskdock.agent.sections.v1";
+
 export default function AgentPanel() {
+  const { t: tr } = useLocale();
   const snapshot = useAgentsStore((s) => s.snapshot);
   const snapshotError = useAgentsStore((s) => s.snapshotError);
   const load = useAgentsStore((s) => s.load);
   const settings = useSettingsStore((s) => s.settings);
   const showToast = useUiStore((s) => s.showToast);
   const refreshTasks = useTasksStore((s) => s.refresh);
-  const [scan, setScan] = useState<DiscoveredAgent[] | null>(null);
-  const [scanning, setScanning] = useState(false);
-  const [wizard, setWizard] = useState<WizardState | null>(null);
+  const [scanState, setScanState] = useState<ScanState>({ status: "idle" });
+  const scanSeq = useRef(0);
+  const lastScanRef = useRef<DiscoveredAgent[] | null>(null);
+  // 运行态在 store 中：组件卸载（切主 Tab）后仍保留步骤、结果与错误。
+  const wizard = useAgentOnboardingStore((s) => s.wizard);
+  const wizardRevision = useAgentOnboardingStore((s) => s.revision);
+  const openWizard = useAgentOnboardingStore((s) => s.open);
+  const installWizard = useAgentOnboardingStore((s) => s.install);
+  const retryVerifyWizard = useAgentOnboardingStore((s) => s.retryVerify);
+  const rollbackWizard = useAgentOnboardingStore((s) => s.uninstall);
+  const dismissWizard = useAgentOnboardingStore((s) => s.dismiss);
   const [inboxDir, setInboxDir] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [section, setSection] = useState<Section>("monitor");
+  // 若上次离开时接入操作仍在进行/结果未确认，重新进入直接回到向导页。
+  const [section, setSection] = useState<Section>(() =>
+    useAgentOnboardingStore.getState().wizard ? "onboard" : "monitor",
+  );
   const [monitorFilter, setMonitorFilter] = useState<(typeof MONITOR_FILTERS)[number]["id"]>("attention");
   // 两处搜索状态相互独立；只在本已加载的数据上派生，不触发后端扫描。
   const [monitorQuery, setMonitorQuery] = useState("");
   const [discoverQuery, setDiscoverQuery] = useState("");
+  const [sectionOpen, setSectionOpen] = useState<Record<AgentSectionId, boolean>>(() =>
+    readCollapsibleState(AGENT_SECTIONS_KEY, AGENT_SECTION_DEFAULTS),
+  );
+
+  const scanData =
+    scanState.status === "success"
+      ? scanState.data
+      : scanState.status === "scanning" || scanState.status === "error"
+        ? scanState.previous
+        : null;
+  const scanning = scanState.status === "scanning";
+  const scanError = scanState.status === "error" ? scanState.message : null;
 
   const runScan = useCallback(async () => {
-    setScanning(true);
+    // 请求序号：快速重复扫描 / 卸载后的迟到结果都不能覆盖最新一次
+    const seq = ++scanSeq.current;
+    setScanState({ status: "scanning", previous: lastScanRef.current });
     try {
-      setScan(await discoveryScan());
+      const data = await discoveryScan();
+      if (seq !== scanSeq.current) return;
+      lastScanRef.current = data;
+      setScanState({ status: "success", data });
     } catch (e) {
+      if (seq !== scanSeq.current) return;
+      setScanState({
+        status: "error",
+        message: errorMessage(e),
+        previous: lastScanRef.current,
+      });
       reportError(e, { operation: "扫描 Agent" });
-    } finally {
-      setScanning(false);
     }
   }, []);
 
+  // 首次进入自动扫描；卸载后让尚未返回的扫描结果失效（不再 setState）
   useEffect(() => {
-    if (!scan) runScan();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (scanState.status === "idle") void runScan();
+  }, [scanState.status, runScan]);
+  useEffect(
+    () => () => {
+      scanSeq.current += 1;
+    },
+    [],
+  );
+
+  function setSectionExpanded(sectionId: AgentSectionId, open: boolean) {
+    setSectionOpen((prev) => {
+      if (prev[sectionId] === open) return prev;
+      const next = { ...prev, [sectionId]: open };
+      persistCollapsibleState(AGENT_SECTIONS_KEY, next);
+      return next;
+    });
+  }
 
   const tree = useMemo(() => (snapshot ? buildTree(snapshot) : []), [snapshot]);
   const summary = liveSummary(snapshot);
@@ -227,41 +314,36 @@ export default function AgentPanel() {
   // 运行监控与「接入管理」共用同一次扫描结果，不额外起第二套发现逻辑
   const discoveryBySource = useMemo(() => {
     const m = new Map<string, DiscoveredAgent>();
-    for (const d of scan ?? []) m.set(d.source_id, d);
+    for (const d of scanData ?? []) m.set(d.source_id, d);
     return m;
-  }, [scan]);
+  }, [scanData]);
 
   // 接入管理搜索：同样只在本已加载的扫描结果上派生，扫描按钮才是唯一的数据更新入口。
   const visibleSources = useMemo(
-    () => (scan ?? []).filter((d) => matchesSource(discoverQuery, d.display_name, d.source_id)),
-    [scan, discoverQuery],
+    () => (scanData ?? []).filter((d) => matchesSource(discoverQuery, d.display_name, d.source_id)),
+    [scanData, discoverQuery],
   );
-  const discoverSearching = discoverQuery.trim().length > 0;
+  // 自定义来源计数用于折叠标题行；与表单使用同一套预置 ID 排除规则
+  const customSourceCount = useMemo(
+    () => (snapshot?.sources ?? []).filter((x) => !PRESET_SOURCE_IDS.has(x.id)).length,
+    [snapshot],
+  );
+  const scanBadge = scanning
+    ? "扫描中…"
+    : scanError
+      ? "扫描失败"
+      : scanData
+        ? `${scanData.length} 个来源`
+        : "未扫描";
 
-  // ── 向导动作 ──
-  async function openWizard(agent: DiscoveredAgent) {
-    setWizard({ agent, step: "preview", preview: null, result: null, error: "" });
-    try {
-      const preview = await adapterPreview(agent.source_id);
-      setWizard((w) => (w ? { ...w, preview } : w));
-    } catch (e) {
-      setWizard((w) => (w ? { ...w, error: errorMessage(e) } : w));
-    }
-  }
-  async function wizardInstall() {
-    if (!wizard) return;
-    setWizard({ ...wizard, step: "installing", error: "" });
-    try {
-      const result = await adapterInstall(wizard.agent.source_id);
-      setWizard((w) => (w ? { ...w, step: "verifying" } : w));
-      const verify = await adapterVerify(wizard.agent.source_id);
-      setWizard((w) => (w ? { ...w, step: "result", result: { install: result, verify } } : w));
-      await Promise.all([runScan(), load()]);
-    } catch (e) {
-      setWizard((w) => (w ? { ...w, step: "result", error: errorMessage(e) } : w));
-    }
-  }
-  async function wizardUninstall(agentId: string) {
+  // 接入操作完成后刷新本地面板数据；运行态由 store 持有，面板卸载时跳过，
+  // 重新进入时首次扫描会自动取最新状态。
+  useEffect(() => {
+    if (wizardRevision > 0) void runScan();
+  }, [wizardRevision, runScan]);
+
+  // ── 来源卡动作（不在向导弹窗内）──
+  async function uninstallAgent(agentId: string) {
     try {
       await adapterUninstall(agentId);
       showToast("已卸载 Task Dock 写入的配置（第三方配置保留）", { kind: "success" });
@@ -313,13 +395,13 @@ export default function AgentPanel() {
     // 快照读取失败 ≠ 正在加载：给出真实错误与重试，避免无限「加载中」
     return snapshotError ? (
       <div className="empty-hint error-text" role="alert">
-        读取 Agent 状态失败：{snapshotError}
+        {tr("agent.ui.loadFailed", { error: snapshotError })}
         <button className="btn sm" onClick={() => void load()}>
-          重试
+          {tr("common.retry")}
         </button>
       </div>
     ) : (
-      <div className="empty-hint">加载中…</div>
+      <div className="empty-hint">{tr("common.loading")}…</div>
     );
   }
 
@@ -328,21 +410,21 @@ export default function AgentPanel() {
       {snapshotError && (
         // 保留旧快照但明确标记可能过期；持续故障不依赖一次性 Toast
         <div className="empty-hint error-text" role="status">
-          Agent 状态同步失败，下方显示的数据可能不是最新：{snapshotError}
+          {tr("agent.ui.syncFailed", { error: snapshotError })}
           <button className="btn sm" onClick={() => void load()}>
-            重试
+            {tr("common.retry")}
           </button>
         </div>
       )}
       {/* ══ 分区切换 ══ */}
-      <div className="seg-group agents-section-switch" role="tablist" aria-label="Agent 分区">
+      <div className="seg-group agents-section-switch" role="tablist" aria-label={tr("agent.ui.sectionAria")}>
         <button
           className={`seg-btn ${section === "monitor" ? "active" : ""}`}
           role="tab"
           aria-selected={section === "monitor"}
           onClick={() => setSection("monitor")}
         >
-          <Activity size={12} /> 运行监控
+          <Activity size={12} /> {tr("agent.ui.monitor")}
         </button>
         <button
           className={`seg-btn ${section === "stats" ? "active" : ""}`}
@@ -350,7 +432,7 @@ export default function AgentPanel() {
           aria-selected={section === "stats"}
           onClick={() => setSection("stats")}
         >
-          <BarChart3 size={12} /> 统计
+          <BarChart3 size={12} /> {tr("agent.ui.stats")}
         </button>
         <button
           className={`seg-btn ${section === "onboard" ? "active" : ""}`}
@@ -358,7 +440,7 @@ export default function AgentPanel() {
           aria-selected={section === "onboard"}
           onClick={() => setSection("onboard")}
         >
-          <PlugZap size={12} /> 接入管理
+          <PlugZap size={12} /> {tr("agent.ui.onboard")}
         </button>
       </div>
 
@@ -366,66 +448,54 @@ export default function AgentPanel() {
         <>
           {/* ══ 状态摘要 ══ */}
           <div className="agent-summary">
-            <div className={`summary-card s-running ${summary.running ? "" : "muted"}`} title="正在执行的轮次">
+            <div className={`summary-card s-running ${summary.running ? "" : "muted"}`} title={tr("agent.ui.runningTip")}>
               <span className="summary-value">{summary.running}</span>
-              <span className="summary-label">运行中</span>
+              <span className="summary-label">{tr("agent.ui.running")}</span>
             </div>
-            <div className={`summary-card s-waiting ${summary.waiting ? "" : "muted"}`} title="等待人工介入">
+            <div className={`summary-card s-waiting ${summary.waiting ? "" : "muted"}`} title={tr("agent.ui.waitingTip")}>
               <span className="summary-value">{summary.waiting}</span>
-              <span className="summary-label">等待介入</span>
+              <span className="summary-label">{tr("agent.ui.waiting")}</span>
             </div>
-            <div className={`summary-card s-error ${summary.failed ? "" : "muted"}`} title="近期报告失败的轮次">
+            <div className={`summary-card s-error ${summary.failed ? "" : "muted"}`} title={tr("agent.ui.failedTip")}>
               <span className="summary-value">{summary.failed}</span>
-              <span className="summary-label">异常</span>
+              <span className="summary-label">{tr("agent.ui.failed")}</span>
             </div>
-            <div className="summary-card muted" title="已产生会话/实例的来源">
+            <div className="summary-card muted" title={tr("agent.ui.sourcesTip")}>
               <span className="summary-value">{connectedSources}</span>
-              <span className="summary-label">已连接来源</span>
+              <span className="summary-label">{tr("agent.ui.sources")}</span>
             </div>
           </div>
 
           <div className="filter-bar primary">
-            <div className="seg-group subtle" role="group" aria-label="监控筛选">
+            <div className="seg-group subtle" role="group" aria-label={tr("agent.ui.filterAria")}>
               {MONITOR_FILTERS.map((f) => (
                 <button
                   key={f.id}
                   className={`seg-btn ${monitorFilter === f.id ? "active" : ""}`}
                   onClick={() => setMonitorFilter(f.id)}
                 >
-                  {f.label}
+                  {tr(f.labelKey)}
                 </button>
               ))}
             </div>
-            <div className="search-box agents-search">
-              <Search size={12} aria-hidden="true" />
-              <input
-                className="input-embedded"
-                aria-label="搜索 Agent 名称或来源 ID"
-                placeholder="搜索名称 / ID"
-                value={monitorQuery}
-                onChange={(e) => setMonitorQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    // stopPropagation：别让 Escape 冒泡到窗口级「隐藏到托盘」
-                    e.stopPropagation();
-                    setMonitorQuery("");
-                  }
-                }}
-              />
-              {monitorSearching && (
-                <button
-                  className="icon-btn sm"
-                  data-tip="清空搜索"
-                  aria-label="清空搜索"
-                  onClick={() => setMonitorQuery("")}
-                >
-                  <X size={11} />
-                </button>
-              )}
-            </div>
+            <SearchField
+              className="agents-search"
+              ariaLabel={tr("agent.ui.searchAria")}
+              placeholder={tr("agent.ui.searchPlaceholder")}
+              value={monitorQuery}
+              onChange={setMonitorQuery}
+              clearLabel={tr("agent.ui.clearSearch")}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  // stopPropagation：别让 Escape 冒泡到窗口级「隐藏到托盘」
+                  e.stopPropagation();
+                  setMonitorQuery("");
+                }
+              }}
+            />
             <span className="flex-spacer" />
-            <button className="btn sm" onClick={load} title="重新加载快照">
-              <RefreshCw size={12} /> 刷新
+            <button className="btn sm" onClick={load} title={tr("agent.ui.refreshTip")}>
+              <RefreshCw size={12} /> {tr("agent.ui.refresh")}
             </button>
           </div>
 
@@ -434,14 +504,20 @@ export default function AgentPanel() {
             <div className="empty-state">
               <div className="empty-icon"><AgentIcon size={22} /></div>
               <div className="empty-title">
-                {monitorSearching ? "没有匹配的 Agent" : "没有需要关注的 Agent"}
+                {monitorSearching ? tr("agent.ui.noMatch") : tr("agent.ui.noAttention")}
               </div>
               <div className="empty-hint">
                 {monitorSearching
-                  ? `没有名称或来源 ID 匹配「${monitorQuery.trim()}」；清空搜索可恢复${monitorFilter === "attention" ? "「需关注」" : "「全部」"}范围内的结果`
+                  ? tr("agent.ui.noMatchHint", {
+                      query: monitorQuery.trim(),
+                      scope:
+                        monitorFilter === "attention"
+                          ? tr("agent.ui.scopeAttention")
+                          : tr("agent.ui.scopeAll"),
+                    })
                   : monitorFilter === "attention"
-                    ? "各 Agent 空闲中；接入后真实事件到达会自动出现在这里"
-                    : "尚无 Agent 会话；到「接入管理」接入第一个 Agent"}
+                    ? tr("agent.ui.idleHint")
+                    : tr("agent.ui.emptyHint")}
               </div>
             </div>
           )}
@@ -472,53 +548,72 @@ export default function AgentPanel() {
 
       {section === "stats" && <AgentStatsView />}
 
-      {section === "onboard" && (
+      {section === "onboard" && wizard && (
+        <AgentOnboardView
+          state={wizard}
+          onDismiss={dismissWizard}
+          onRetryPreview={() => void openWizard(wizard.agent)}
+          onInstall={() => void installWizard()}
+          onRetryVerify={() => void retryVerifyWizard()}
+          onRollback={() => void rollbackWizard()}
+        />
+      )}
+
+      {section === "onboard" && !wizard && (
         <>
-          {/* ══ 自动发现 ══ */}
-          <div className="panel-block">
-            <div className="panel-block-head">
-              <span><Radar size={12} /> Agent 自动发现</span>
-            </div>
+          {/* ══ 自动发现（默认展开；折叠标题行保留来源数量与扫描状态）══ */}
+          <CollapsibleSection
+            id="agent-section-discovery"
+            title="Agent 自动发现"
+            icon={<Radar size={12} />}
+            badge={scanBadge}
+            expanded={sectionOpen.discovery}
+            onExpandedChange={(open) => setSectionExpanded("discovery", open)}
+          >
             {/* 工具栏：宽时并排，窄时搜索框占满一行、扫描按钮换行，不互相挤压 */}
             <div className="agents-toolbar">
-              <div className="search-box agents-search">
-                <Search size={12} aria-hidden="true" />
-                <input
-                  className="input-embedded"
-                  aria-label="搜索 Agent 名称或来源 ID"
-                  placeholder="搜索名称 / source_id"
-                  value={discoverQuery}
-                  onChange={(e) => setDiscoverQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      e.stopPropagation();
-                      setDiscoverQuery("");
-                    }
-                  }}
-                />
-                {discoverSearching && (
-                  <button
-                    className="icon-btn sm"
-                    data-tip="清空搜索"
-                    aria-label="清空搜索"
-                    onClick={() => setDiscoverQuery("")}
-                  >
-                    <X size={11} />
-                  </button>
-                )}
-              </div>
-              <button className="btn sm" onClick={runScan} disabled={scanning}>
+              <SearchField
+                className="agents-search"
+                ariaLabel="搜索 Agent 名称或来源 ID"
+                placeholder="搜索名称 / source_id"
+                value={discoverQuery}
+                onChange={setDiscoverQuery}
+                clearLabel="清空搜索"
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.stopPropagation();
+                    setDiscoverQuery("");
+                  }
+                }}
+              />
+              <button className="btn sm" onClick={() => void runScan()} disabled={scanning}>
                 <RefreshCw size={12} className={scanning ? "spin" : ""} />{" "}
-                {scanning ? "扫描中…" : "扫描"}
+                {scanning ? "扫描中…" : scanData ? "重新扫描" : "扫描"}
               </button>
             </div>
-            {scan === null && <div className="empty-hint">扫描中…</div>}
-            {scan !== null && scan.length === 0 && (
+
+            {scanError && (
+              <div className="empty-hint error-text agents-scan-error" role="alert">
+                <span>
+                  扫描失败：{scanError}
+                  {scanData ? "；下方为上次成功结果，可能不是最新" : ""}
+                </span>
+                <button className="btn sm" onClick={() => void runScan()} disabled={scanning}>
+                  重试
+                </button>
+              </div>
+            )}
+            {scanning && (
+              <div className="empty-hint agents-scan-progress" role="status">
+                {scanData ? "正在重新扫描，下方结果可能不是最新…" : "正在扫描本机 Agent…"}
+              </div>
+            )}
+            {!scanning && scanState.status === "success" && scanData?.length === 0 && (
               <div className="empty-hint">未发现已安装的 Agent；可先安装 Codex / Trae 等后重新扫描</div>
             )}
-            {scan !== null && scan.length > 0 && visibleSources.length === 0 && (
+            {scanData && scanData.length > 0 && visibleSources.length === 0 && (
               <div className="empty-hint">
-                没有名称或 source_id 匹配「{discoverQuery.trim()}」；清空搜索可显示全部 {scan.length} 个来源
+                没有名称或 source_id 匹配「{discoverQuery.trim()}」；清空搜索可显示全部 {scanData.length} 个来源
               </div>
             )}
             {visibleSources.length > 0 && (
@@ -529,7 +624,7 @@ export default function AgentPanel() {
                     agent={a}
                     onConnect={() => openWizard(a)}
                     onVerify={() => reVerify(a.source_id)}
-                    onUninstall={() => wizardUninstall(a.source_id)}
+                    onUninstall={() => uninstallAgent(a.source_id)}
                     onChanged={async () => {
                       await Promise.all([runScan(), load()]);
                     }}
@@ -542,54 +637,51 @@ export default function AgentPanel() {
               <AlertTriangle size={11} /> 「已安装」仅代表在本机检测到安装，不等于已连接；
               连接状态以真实事件证据（健康徽标）为准。
             </div>
-          </div>
+          </CollapsibleSection>
 
-          {/* ══ 通用桥接（不支持自动接入的 Agent）══ */}
-          <div className="panel-block">
-            <div className="panel-block-head">
-              <span>通用桥接（任意 Agent · HTTP / 文件投递）</span>
-              <button className="btn sm" onClick={onCopyInbox}>
-                <Copy size={12} /> 复制目录
-              </button>
+          {/* ══ 通用桥接（默认折叠）══ */}
+          <CollapsibleSection
+            id="agent-section-bridge"
+            title="通用桥接"
+            description="HTTP / 文件投递"
+            icon={<PlugZap size={12} />}
+            expanded={sectionOpen.bridge}
+            onExpandedChange={(open) => setSectionExpanded("bridge", open)}
+          >
+            <div className="bridge-body">
+              <div className="bridge-actions">
+                <button className="btn sm" onClick={onCopyInbox}>
+                  <Copy size={12} /> 复制目录
+                </button>
+              </div>
+              <EndpointInfo
+                port={settings?.http_port ?? 47821}
+                token={settings?.http_token ?? ""}
+                showToast={showToast}
+              />
             </div>
-            <EndpointInfo
-              port={settings?.http_port ?? 47821}
-              token={settings?.http_token ?? ""}
+          </CollapsibleSection>
+
+          {/* ══ 自定义来源（默认折叠；表单随分组展开，不再有内外两层开合）══ */}
+          <CollapsibleSection
+            id="agent-section-custom"
+            title="自定义来源"
+            description="动态注册 · HTTP / 文件投递"
+            icon={<Plus size={12} />}
+            badge={customSourceCount > 0 ? `${customSourceCount} 个` : undefined}
+            expanded={sectionOpen.custom}
+            onExpandedChange={(open) => setSectionExpanded("custom", open)}
+          >
+            <CustomSourceForm
+              onCreated={async () => {
+                await Promise.all([load(), runScan()]);
+              }}
               showToast={showToast}
             />
-          </div>
-
-          {/* ══ 自定义来源 ══ */}
-          <CustomSourceForm
-            onCreated={async () => {
-              await Promise.all([load(), runScan()]);
-            }}
-            showToast={showToast}
-          />
+          </CollapsibleSection>
         </>
       )}
 
-      {/* ══ 接入向导弹窗 ══ */}
-      {wizard && (
-        <WizardModal
-          state={wizard}
-          onClose={() => setWizard(null)}
-          onInstall={wizardInstall}
-          onRetryVerify={async () => {
-            try {
-              const verify = await adapterVerify(wizard.agent.source_id);
-              setWizard((w) => (w ? { ...w, step: "result", result: { verify } } : w));
-              await Promise.all([runScan(), load()]);
-            } catch (e) {
-              setWizard((w) => (w ? { ...w, error: errorMessage(e) } : w));
-            }
-          }}
-          onCancel={async () => {
-            if (wizard.step === "result") await wizardUninstall(wizard.agent.source_id);
-            setWizard(null);
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -675,10 +767,15 @@ function SourceCard({
         <span className="source-name" data-tip={agent.display_name}>
           <AgentIcon size={13} /> {agent.display_name}
         </span>
-        <span className={`health-badge h-${agent.health_state}`} data-tip={healthDetail}>
-          {badgeIcon}
+        <StatusBadge
+          tone={healthTone(agent.health_state)}
+          size="md"
+          icon={badgeIcon}
+          className="health-badge"
+          dataTip={healthDetail}
+        >
           {healthLabel}
-        </span>
+        </StatusBadge>
       </div>
 
       {/* 第一层：安装状态 / 运行实例 / 最近真实事件（自然高度，不内部滚动） */}
@@ -686,11 +783,12 @@ function SourceCard({
         <div className="discovery-facts">
           <span>{agent.installed ? "已安装" : "未安装"}</span>
           <span>运行实例 {agent.running_instances.length}</span>
-          <span className={agent.last_real_event_at ? "fact-strong" : "fact-muted"}>
-            {agent.last_real_event_at
-              ? `最近真实事件 ${formatRelative(agent.last_real_event_at)}`
-              : "尚无真实事件"}
-          </span>
+          {/* 有真实事件才在默认层显示时间；徽标已表达「尚无真实事件」时不重复同一句 */}
+          {agent.last_real_event_at ? (
+            <span className="fact-strong">最近真实事件 {formatRelative(agent.last_real_event_at)}</span>
+          ) : NO_EVENT_BADGE_STATES.has(agent.health_state) ? null : (
+            <span className="fact-muted">尚无真实事件</span>
+          )}
         </div>
       </div>
 
@@ -1184,7 +1282,6 @@ const PRESET_SOURCE_IDS = new Set([
 ]);
 
 function CustomSourceForm({ onCreated, showToast }: { onCreated: () => Promise<void>; showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void }) {
-  const [open, setOpen] = useState(false);
   const [id, setId] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1198,41 +1295,37 @@ function CustomSourceForm({ onCreated, showToast }: { onCreated: () => Promise<v
     [snapshot],
   );
 
+  // 表单随外层分组展开，本层不再维护「添加 / 收起」，避免内外两层开合打架
   return (
-    <div className="panel-block">
-      <div className="panel-block-head">
-        <span>自定义来源（动态注册）</span>
-        <button className="btn sm" onClick={() => setOpen(!open)}>
-          {open ? <X size={12} /> : <Plus size={12} />} {open ? "收起" : "添加"}
+    <>
+      <div className="custom-source-form">
+        <input className="input sm" placeholder="来源 ID（如 my-agent）" value={id} onChange={(e) => setId(e.target.value)} />
+        <input className="input sm" placeholder="显示名称" value={name} onChange={(e) => setName(e.target.value)} />
+        <button
+          className="btn sm primary"
+          disabled={busy || !id.trim() || !name.trim()}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await createSource(id.trim(), name.trim());
+              showToast(`已注册来源 ${id.trim()}：可用 HTTP/文件以 source_id=${id.trim()} 上报`, { kind: "success" });
+              setId("");
+              setName("");
+              await onCreated();
+            } catch (e) {
+              showToast(`注册 Agent 来源失败：${errorMessage(e)}`, { kind: "error" });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "注册中…" : "注册"}
         </button>
       </div>
-      {open && (
-        <div className="custom-source-form">
-          <input className="input sm" placeholder="来源 ID（如 my-agent）" value={id} onChange={(e) => setId(e.target.value)} />
-          <input className="input sm" placeholder="显示名称" value={name} onChange={(e) => setName(e.target.value)} />
-          <button
-            className="btn sm primary"
-            disabled={busy || !id.trim() || !name.trim()}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await createSource(id.trim(), name.trim());
-                showToast(`已注册来源 ${id.trim()}：可用 HTTP/文件以 source_id=${id.trim()} 上报`, { kind: "success" });
-                setId("");
-                setName("");
-                await onCreated();
-              } catch (e) {
-                showToast(`注册 Agent 来源失败：${errorMessage(e)}`, { kind: "error" });
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {busy ? "注册中…" : "注册"}
-          </button>
-        </div>
-      )}
-      {mySources.length > 0 && (
+      <div className="endpoint-hint custom-source-note">
+        自定义来源不写入任何宿主配置；注册后用 HTTP / 文件投递上报，source_id 必须与注册值一致。
+      </div>
+      {mySources.length > 0 ? (
         <div className="custom-source-list">
           {mySources.map((s) => (
             <span key={s.id} className="chip">
@@ -1256,89 +1349,185 @@ function CustomSourceForm({ onCreated, showToast }: { onCreated: () => Promise<v
             </span>
           ))}
         </div>
+      ) : (
+        <div className="empty-hint">尚未注册自定义来源</div>
       )}
-    </div>
+    </>
   );
 }
 
-// ── 接入向导弹窗 ──
+// ── 接入向导（页内视图）──
+// 不再使用 modal-backdrop：内容进入「接入管理」分区，与列表共用同一个内容区。
+// 安装 / 验证 / 回滚的运行态在 store 中，离开页面不会取消，也不会重复触发。
 
-function WizardModal({
+function AgentOnboardView({
   state,
-  onClose,
+  onDismiss,
+  onRetryPreview,
   onInstall,
   onRetryVerify,
-  onCancel,
+  onRollback,
 }: {
-  state: WizardState;
-  onClose: () => void;
-  onInstall: () => Promise<void>;
-  onRetryVerify: () => Promise<void>;
-  onCancel: () => Promise<void>;
+  state: OnboardState;
+  onDismiss: () => void;
+  onRetryPreview: () => void;
+  onInstall: () => void;
+  onRetryVerify: () => void;
+  onRollback: () => void;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const busy = onboardBusy(state);
   const p = state.preview ?? {};
-  const files = (p.hook_files as string[] | undefined) ?? (p.plugin_file ? [p.plugin_file as string] : (p.plugin_dir ? [p.plugin_dir as string] : []));
+  const files =
+    (p.hook_files as string[] | undefined) ??
+    (p.plugin_file ? [p.plugin_file as string] : p.plugin_dir ? [p.plugin_dir as string] : []);
   const events = (p.events as string[] | undefined) ?? [];
-  const verify = (state.result as { verify?: { ok?: boolean; reason?: string; note?: string; received_at?: string } } | null)?.verify;
+  const verify = state.verify;
+
+  // 页内视图没有焦点陷阱：进入时把焦点放在区域容器，Escape 仅在非运行态返回。
+  useEffect(() => {
+    containerRef.current?.focus();
+  }, []);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal wizard-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <span><PlugZap size={14} /> 接入 {state.agent.display_name}</span>
-          <button className="icon-btn sm" onClick={onClose} aria-label="关闭"><X size={14} /></button>
+    <div
+      ref={containerRef}
+      className="agent-onboard-view wf-subpage"
+      role="region"
+      aria-label={`接入向导：${state.agent.display_name}`}
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !busy) {
+          e.stopPropagation();
+          onDismiss();
+        }
+      }}
+    >
+      <header className="wf-subpage-head">
+        <button
+          type="button"
+          className="btn sm"
+          onClick={onDismiss}
+          disabled={busy}
+          aria-label="返回接入列表"
+          data-tip={busy ? "安装 / 验证进行中，完成后可返回；切换主 Tab 不会取消操作" : undefined}
+        >
+          <ArrowLeft size={13} aria-hidden="true" /> 返回接入列表
+        </button>
+        <h2 className="wf-subpage-title">接入 {state.agent.display_name}</h2>
+        {busy ? (
+          <span className="wf-subpage-note" role="status">
+            <Loader2 size={12} className="spin" aria-hidden="true" />{" "}
+            {state.step === "uninstalling" ? "正在回滚…" : "操作进行中，离开此页或切换主 Tab 不会取消"}
+          </span>
+        ) : null}
+      </header>
+
+      {state.step === "preview" && (
+        <>
+          <div className="wizard-step-tag">第 1 步 · 配置预览（尚未写入任何文件）</div>
+          <ul className="wizard-preview">
+            <li>将修改的文件：{files.length ? files.map((f) => <code key={f}>{f}</code>) : "无"}</li>
+            <li>注册事件：{events.length ? events.join(" · ") : "（无自动事件通道）"}</li>
+            <li>写入前自动备份，第三方 hooks 原样保留，失败自动回滚</li>
+            {(p.limitations as string[] | undefined)?.map((l, i) => (
+              <li key={i} className="wizard-warn">
+                <AlertTriangle size={11} /> {l}
+              </li>
+            ))}
+          </ul>
+          {state.previewError ? (
+            <div className="wizard-error" role="alert">
+              <AlertTriangle size={12} /> 配置预览失败：{state.previewError}
+              <button className="btn sm" onClick={onRetryPreview}>
+                重新预览
+              </button>
+            </div>
+          ) : null}
+          <div className="wizard-actions">
+            <button className="btn" onClick={onDismiss}>
+              取消
+            </button>
+            <button className="btn primary" onClick={onInstall} disabled={!state.preview}>
+              确认并安装
+            </button>
+          </div>
+          <div className="wizard-note">
+            安装会写入上方列出的第三方配置文件；这是本步骤唯一的写入授权，确认后才执行。
+          </div>
+        </>
+      )}
+
+      {state.step === "installing" && (
+        <div className="empty-hint" role="status">
+          <Loader2 size={13} className="spin" aria-hidden="true" /> 正在写入配置（备份 → 原子写入 → 校验）…
         </div>
-        <div className="modal-body">
-          {state.step === "preview" && (
-            <>
-              <div className="wizard-step-tag">第 1 步 · 配置预览（尚未写入任何文件）</div>
-              <ul className="wizard-preview">
-                <li>将修改的文件：{files.length ? files.map((f) => <code key={f}>{f}</code>) : "无"}</li>
-                <li>注册事件：{events.length ? events.join(" · ") : "（无自动事件通道）"}</li>
-                <li>写入前自动备份，第三方 hooks 原样保留，失败自动回滚</li>
-                {(p.limitations as string[] | undefined)?.map((l, i) => (
-                  <li key={i} className="wizard-warn"><AlertTriangle size={11} /> {l}</li>
-                ))}
-              </ul>
-              {state.error && <div className="wizard-error">{state.error}</div>}
-              <div className="wizard-actions">
-                <button className="btn" onClick={onCancel}>取消</button>
-                <button className="btn primary" onClick={onInstall} disabled={!state.preview}>
-                  确认并安装
-                </button>
-              </div>
-            </>
-          )}
-          {state.step === "installing" && <div className="empty-hint">正在写入配置（备份 → 原子写入 → 校验）…</div>}
-          {state.step === "verifying" && <div className="empty-hint">正在执行真实链路验证（Hook 脚本 → Task Dock → 数据库）…</div>}
-          {state.step === "result" && (
-            <>
-              <div className="wizard-step-tag">第 3 步 · 接入结果</div>
-              {state.error ? (
-                <div className="wizard-error"><AlertTriangle size={12} /> {state.error}</div>
-              ) : verify ? (
-                <div className={verify.ok ? "wizard-ok" : "wizard-warn"}>
-                  {verify.ok ? (
-                    <>
-                      <CheckCircle2 size={13} /> 链路验证通过：测试事件已真实抵达数据库（{verify.received_at ?? ""}）
-                      <div className="wizard-note">{verify.note}</div>
-                    </>
-                  ) : (
-                    <>
-                      <AlertTriangle size={13} /> 验证未通过：{verify.reason}
-                      <button className="btn sm" onClick={onRetryVerify}>重试验证</button>
-                    </>
-                  )}
-                </div>
-              ) : null}
-              <div className="wizard-actions">
-                <button className="btn" onClick={onCancel}>回滚（卸载刚安装的配置）</button>
-                <button className="btn primary" onClick={onClose}>完成</button>
-              </div>
-            </>
-          )}
+      )}
+      {state.step === "verifying" && (
+        <div className="empty-hint" role="status">
+          <Loader2 size={13} className="spin" aria-hidden="true" /> 正在执行真实链路验证（Hook 脚本 → Task Dock → 数据库）…
         </div>
-      </div>
+      )}
+      {state.step === "uninstalling" && (
+        <div className="empty-hint" role="status">
+          <Loader2 size={13} className="spin" aria-hidden="true" /> 正在卸载 Task Dock 写入的配置（第三方配置保留）…
+        </div>
+      )}
+
+      {state.step === "result" && (
+        <>
+          <div className="wizard-step-tag">第 3 步 · 接入结果</div>
+          {state.installError ? (
+            <div className="wizard-error" role="alert">
+              <AlertTriangle size={12} /> 安装失败：{state.installError}
+              <div className="wizard-note">若已写入部分内容，后端已按契约自动回滚；可返回列表重新扫描确认。</div>
+            </div>
+          ) : null}
+          {state.installOk && verify ? (
+            <div className={verify.ok ? "wizard-ok" : "wizard-warn"} role={verify.ok ? "status" : "alert"}>
+              {verify.ok ? (
+                <>
+                  <CheckCircle2 size={13} /> 链路验证通过：测试事件已真实抵达数据库（{verify.received_at ?? ""}）
+                  <div className="wizard-note">
+                    {verify.note ?? "自测事件只证明链路可达，不代表宿主已产生真实事件。"}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <AlertTriangle size={13} /> 验证未通过：{verify.reason ?? "未知原因"}
+                  <button className="btn sm" onClick={onRetryVerify} disabled={busy}>
+                    重试验证
+                  </button>
+                </>
+              )}
+            </div>
+          ) : null}
+          {state.installOk && state.verifyError ? (
+            <div className="wizard-error" role="alert">
+              <AlertTriangle size={12} /> 验证失败：{state.verifyError}
+              <button className="btn sm" onClick={onRetryVerify} disabled={busy}>
+                重试验证
+              </button>
+            </div>
+          ) : null}
+          {state.rollbackError ? (
+            <div className="wizard-error" role="alert">
+              <AlertTriangle size={12} /> 回滚失败：{state.rollbackError}
+              <div className="wizard-note">配置可能仍保留；可重试回滚，或到来源卡用「卸载」再次执行。</div>
+            </div>
+          ) : null}
+          <div className="wizard-actions">
+            {state.installOk ? (
+              <button className="btn danger" onClick={onRollback} disabled={busy}>
+                回滚（卸载刚安装的配置）
+              </button>
+            ) : null}
+            <button className="btn primary" onClick={onDismiss} disabled={busy}>
+              完成
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

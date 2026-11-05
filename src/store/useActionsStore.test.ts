@@ -327,6 +327,81 @@ describe("useActionsStore 分页与后台刷新", () => {
     expect(useActionsStore.getState().loadingMore).toBe(false);
   });
 
+  it("普通列表加载排队时不会被后续计数刷新降级为 countsOnly", async () => {
+    let resolveFirst!: (f: ActionFeed) => void;
+    feedMock.mockImplementationOnce(
+      () => new Promise<ActionFeed>((r) => (resolveFirst = r)),
+    );
+    feedMock.mockResolvedValue(
+      feedOf({
+        items: [itemOf("run:2")],
+        counts: countsOf({ failed: 1, intervention: 1 }),
+      }),
+    );
+
+    // 计数刷新在途时，用户/确认流程要求一次正式的列表刷新，随后又来一次事件计数刷新
+    const first = useActionsStore.getState().load({ silent: true, countsOnly: true });
+    useActionsStore.getState().load();
+    useActionsStore.getState().load({ silent: true, countsOnly: true });
+    resolveFirst(feedOf({ counts: countsOf({ failed: 1, intervention: 1 }) }));
+    await first;
+
+    // 正式刷新必须保留下来，否则列表会停在旧数据上
+    expect(feedMock).toHaveBeenCalledTimes(2);
+    expect(useActionsStore.getState().feed?.items.map((i) => i.id)).toEqual(["run:2"]);
+  });
+
+  it("A→B→A 后 ack 成功：按原视图重新同步，不残留已处理条目", async () => {
+    let calls = 0;
+    feedMock.mockImplementation(() => {
+      calls += 1;
+      // 1 初次加载；2 切到「失败」；3 切回原视图（发出于 ack 完成前，含旧条目）；
+      // 4 及以后 ack 之后重新同步，后端已不再返回该条目
+      if (calls === 2) {
+        return Promise.resolve(
+          feedOf({ items: [itemOf("run:3", { kind: "failed" })], db_total: 1 }),
+        );
+      }
+      if (calls <= 3) {
+        return Promise.resolve(
+          feedOf({
+            items: [itemOf("run:1")],
+            counts: countsOf({ failed: 1, intervention: 1 }),
+          }),
+        );
+      }
+      return Promise.resolve(
+        feedOf({ items: [], counts: countsOf({ failed: 0, intervention: 0 }), db_total: 0 }),
+      );
+    });
+
+    let resolveAck!: (n: number) => void;
+    ackMock.mockImplementationOnce(() => new Promise<number>((r) => (resolveAck = r)));
+
+    await useActionsStore.getState().load();
+    expect(calls).toBe(1);
+    expect(useActionsStore.getState().feed?.items.map((i) => i.id)).toEqual(["run:1"]);
+
+    const ackP = useActionsStore.getState().ack(["run:1"]);
+    // 请求在途：切到「失败」再切回原视图；切回后的查询先返回旧数据（仍含 run:1）
+    useActionsStore.getState().setFilter({ kind: "failed" });
+    useActionsStore.getState().setFilter({ kind: undefined });
+    await vi.waitFor(() => expect(calls).toBe(3));
+    await vi.waitFor(() =>
+      expect(useActionsStore.getState().feed?.items.map((i) => i.id)).toEqual(["run:1"]),
+    );
+
+    // 后端此刻才真正处理完
+    resolveAck(1);
+    await ackP;
+
+    await vi.waitFor(() =>
+      expect(useActionsStore.getState().feed?.items).toEqual([]),
+    );
+    expect(ackMock).toHaveBeenCalledTimes(1);
+    expect(calls).toBe(4);
+  });
+
   it("加载更多期间列表被整体刷新替换时放弃旧游标页", async () => {
     feedMock.mockResolvedValueOnce(
       feedOf({
