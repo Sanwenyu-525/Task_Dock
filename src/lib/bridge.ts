@@ -258,6 +258,32 @@ export interface Settings {
   notify_done_aggregate: boolean;
   /** Agent 异常（waiting/failed）时隐藏态胶囊脉动 + 提示音（v0.6 异常变响） */
   agent_alert_sound: boolean;
+  // ── 统一提示音 / 语音播报 / 本地缓存（v0.13，后端缺键时有默认值）──
+  audio_sound_enabled?: boolean;
+  audio_sound_volume?: number;
+  audio_sound_agent_started?: boolean;
+  audio_sound_agent_done?: boolean;
+  audio_sound_agent_waiting?: boolean;
+  audio_sound_agent_failed?: boolean;
+  audio_sound_agent_disconnected?: boolean;
+  audio_sound_task_due?: boolean;
+  audio_sound_reminder?: boolean;
+  tts_enabled?: boolean;
+  tts_voice_id?: string;
+  tts_voice_gender?: "auto" | "female" | "male";
+  tts_volume?: number;
+  tts_rate?: number;
+  tts_speak_source?: boolean;
+  tts_speak_title?: boolean;
+  tts_agent_started?: boolean;
+  tts_agent_done?: boolean;
+  tts_agent_waiting?: boolean;
+  tts_agent_failed?: boolean;
+  tts_agent_disconnected?: boolean;
+  tts_task_due?: boolean;
+  tts_reminder?: boolean;
+  tts_cache_enabled?: boolean;
+  tts_cache_max_mb?: number;
   overdue_grace_hours: number;
   stale_run_minutes: number;
   auto_backup: boolean;
@@ -299,6 +325,11 @@ export interface Settings {
   clipboard_paste_interval_html_ms: number;
   clipboard_paste_interval_files_ms: number;
   clipboard_sensitive_filter: boolean;
+  /**
+   * 自动识别图片文字（v0.13）：默认 false。第一阶段只保存设置，
+   * 不接入采集热路径；手动「提取文字」始终可用。
+   */
+  clipboard_ocr_auto?: boolean;
   /**
    * 快速捕获上次使用的类型（v0.7）：task | idea | text | todo | link。
    * 旧库缺省该键时后端补默认 "task"；前端再做一次归一兜底。
@@ -381,6 +412,27 @@ export interface ClipboardItem {
   has_thumb: boolean;
 }
 
+/**
+ * 本地 OCR 结果。状态与短原因分开：
+ * ok / empty / unavailable / busy / cancelled / error / too_large。
+ * text 为识别与规范化后的文字（可能被后端截断到上限），不含图片内容。
+ */
+export interface ClipboardOcrReport {
+  status: "ok" | "empty" | "unavailable" | "busy" | "cancelled" | "error" | "too_large";
+  /** 机器可读原因：not_image / missing_image / engine_unavailable / busy / … */
+  code: string;
+  text: string;
+  reason: string | null;
+  durationMs: number;
+  cached: boolean;
+  lines: number;
+  chars: number;
+  width: number;
+  height: number;
+  engine: string | null;
+  suggestedTitle: string | null;
+}
+
 export interface ClipboardGroup {
   id: string;
   name: string;
@@ -398,6 +450,21 @@ export interface ClipboardGroup {
   preview: string;
   /** 仅详情接口填充 */
   items: ClipboardItem[];
+}
+
+/**
+ * 截图组有界分页结果（`clipboard_group_page`）：只下发请求范围内的条目，
+ * 不整组返回。`totalCount` / `imageCount` 是组内真实总数，不是到手条目数；
+ * `revision` 是后端内容版本（计数 + 组更新时间 + 组内最近变更），用于前端缓存键。
+ */
+export interface ClipboardGroupPage {
+  groupId: string;
+  items: ClipboardItem[];
+  totalCount: number;
+  imageCount: number;
+  offset: number;
+  limit: number;
+  revision: string;
 }
 
 export interface ClipboardStats {
@@ -440,6 +507,12 @@ export interface CopyReport {
   warnings: string[];
   sequence: number;
   item_count: number;
+  /**
+   * 使用次数是否已落库。`false` 表示剪贴板写入成功但统计持久化失败：
+   * 前端显示「部分成功」，且不得本地累加使用次数。
+   * 后端旧版本/预览夹具可能缺省该字段，按 `true` 兼容。
+   */
+  stats_recorded?: boolean;
 }
 
 export interface DeleteReport {
@@ -610,6 +683,16 @@ export interface AgentClipboardTarget {
   recommended: string;
 }
 
+/**
+ * 一次探测结果。`probed_at_ms` 是快照**真实扫描完成时间**（Unix 毫秒）；
+ * 命中 5 分钟缓存时它就是旧快照时间，`cached=true` 表示本次没有重新扫描。
+ */
+export interface AgentTargetsSnapshot {
+  targets: AgentClipboardTarget[];
+  probed_at_ms: number;
+  cached: boolean;
+}
+
 export interface ExportPackage {
   dir: string;
   markdown_path: string;
@@ -622,6 +705,8 @@ export interface ExportPackage {
 
 // ── 任务 ──
 export const listTasks = (filter: TaskFilter) => invoke<Task[]>("list_tasks", { filter });
+/** 按 ID 读取单个任务；用于微件点击时主窗当前筛选列表未加载该任务的场景。 */
+export const fetchTask = (id: string) => invoke<Task>("fetch_task", { id });
 export const taskStats = () => invoke<TaskStats>("task_stats");
 export const createTask = (input: TaskInput) => invoke<Task>("create_task", { input });
 export const updateTask = (id: string, input: TaskInput) => invoke<Task>("update_task", { id, input });
@@ -735,14 +820,124 @@ export const listAgentEvents = (
 export const getSettings = () => invoke<Settings>("get_settings");
 export const updateSettings = (patch: Partial<Settings>) =>
   invoke<Settings>("update_settings", { patch });
+
+// ── 统一音频通知服务：TTS 合成与本地缓存（v0.13）──
+export interface TtsVoiceInfo {
+  id: string;
+  name: string;
+  language: string;
+  gender: "male" | "female" | "unknown";
+  available: boolean;
+}
+export interface TtsVoicesReport {
+  ok: boolean;
+  code: string;
+  message: string;
+  voices: TtsVoiceInfo[];
+  hasChineseMale: boolean;
+  hasChineseFemale: boolean;
+  platform: string;
+}
+export interface TtsSynthesisReport {
+  ok: boolean;
+  code: string;
+  message: string;
+  dataUrl?: string;
+  contentType?: string;
+  voiceId?: string;
+  voiceName?: string;
+  language?: string;
+  gender?: string;
+  requestedVoiceId?: string;
+  /** 请求语音不可用、系统实际回退到另一语音（UI 应如实提示，不伪装） */
+  voiceFallback: boolean;
+  /** 来自持久化缓存（未重新合成） */
+  cached: boolean;
+  persisted: boolean;
+  bytes: number;
+  latencyMs: number;
+}
+export interface TtsCacheReport {
+  ok: boolean;
+  enabled: boolean;
+  bytes: number;
+  files: number;
+  maxBytes: number;
+  hits: number;
+  misses: number;
+  writes: number;
+  evictions: number;
+  memoryHits: number;
+}
+export interface TtsCacheClearReport {
+  ok: boolean;
+  freedBytes: number;
+  removedFiles: number;
+}
+export const ttsListVoices = () => invoke<TtsVoicesReport>("tts_list_voices");
+export const ttsSynthesize = (args: {
+  text: string;
+  voiceId?: string;
+  gender?: string;
+  rate?: number;
+  persist?: boolean;
+}) => invoke<TtsSynthesisReport>("tts_synthesize", args);
+export const ttsCacheStats = () => invoke<TtsCacheReport>("tts_cache_stats");
+export const ttsCacheClear = () => invoke<TtsCacheClearReport>("tts_cache_clear");
+/** 后端音频事件：来自真实 Agent 通知记录 / 任务提醒，eventId 用于去重。 */
+export interface AudioEventItem {
+  eventId: string;
+  kind: string;
+  sourceName?: string | null;
+  taskTitle?: string | null;
+}
+export interface AudioEventPayload {
+  items: AudioEventItem[];
+}
+export const onAudioEvent = (cb: (payload: AudioEventPayload) => void): Promise<UnlistenFn> =>
+  listen<AudioEventPayload>("audio-event", (e) => cb(e.payload));
 export const saveWindowRect = (rect: { x: number; y: number; w: number; h: number }) =>
   invoke<void>("save_window_rect", { rect });
 export const getWindowRect = () =>
   invoke<{ x: number; y: number; w: number; h: number } | null>("get_window_rect");
-export const saveSnapState = (edge: string, hidden: boolean, center: number | null = null) =>
-  invoke<void>("save_snap_state", { state: { edge, hidden, center } });
+/** 停靠显示器恢复信息（P2-4）：旧记录的这些字段全部缺失，必须保持可选。 */
+export interface SnapDisplayInfo {
+  name?: string | null;
+  bounds?: { x: number; y: number; w: number; h: number };
+  workArea?: { x: number; y: number; w: number; h: number };
+  scaleFactor?: number;
+}
+export interface SnapStateExtra {
+  /** 沿边中心在显示器可用区内的相对比例（0–1），用于分辨率变化后重算绝对坐标。 */
+  centerRatio?: number | null;
+  display?: SnapDisplayInfo | null;
+}
+export const saveSnapState = (
+  edge: string,
+  hidden: boolean,
+  center: number | null = null,
+  extra: SnapStateExtra = {},
+) =>
+  invoke<void>("save_snap_state", {
+    state: {
+      edge,
+      hidden,
+      center,
+      centerRatio: extra.centerRatio ?? null,
+      display: extra.display ?? null,
+    },
+  });
 export const getSnapState = () =>
-  invoke<{ edge: string; hidden: boolean; center?: number | null } | null>("get_snap_state");
+  invoke<
+    | {
+        edge: string;
+        hidden: boolean;
+        center?: number | null;
+        centerRatio?: number | null;
+        display?: SnapDisplayInfo | null;
+      }
+    | null
+  >("get_snap_state");
 
 // ── 数据 ──
 export interface BackupEntry {
@@ -758,6 +953,8 @@ export interface BackupEntry {
   truncated_tables?: string[] | null;
   /** 是否携带剪贴板/工作现场/行动中心扩展模块 */
   extended_modules?: boolean | null;
+  /** 是否携带可选用户配置（快捷键/语言/微件布局） */
+  config_included?: boolean | null;
 }
 
 /** 导入前读取的备份头信息（不解析正文）。 */
@@ -772,6 +969,39 @@ export interface BackupMeta {
   exported_at?: string | null;
   preserved_modules?: string[] | null;
   counts?: Record<string, number> | null;
+  /** 是否携带可选用户配置（快捷键/语言/微件布局）；旧备份为 false/缺省。 */
+  config_included?: boolean;
+}
+
+/** 备份内的单个微件偏好（与 src/lib/widgets/model.ts 的 WidgetItem 同形）。 */
+export interface UserWidgetPreference {
+  widget_id: string;
+  type: string;
+  enabled: boolean;
+  config: { maxItems?: number };
+  size: string;
+  sort_order: number;
+}
+
+/** 用户偏好镜像（preferences.json）与恢复标记的读取结果。 */
+export interface UserPreferencesView {
+  version: number;
+  locale: string | null;
+  widgets: UserWidgetPreference[] | null;
+  warnings: string[];
+  /** true = 刚恢复过配置：前端必须以文件为准覆盖本机 localStorage。 */
+  apply_restore: boolean;
+  restore_id: string | null;
+}
+
+/** 恢复后配置应用摘要（供 UI 提示，不参与成功/失败判定）。 */
+export interface RestoreConfigSummary {
+  included: boolean;
+  locale: string | null;
+  widgets: number;
+  hotkeys_applied: number;
+  hotkeys_disabled: number;
+  hotkeys_pending: boolean;
 }
 
 export interface RestoreOutcome {
@@ -786,6 +1016,10 @@ export interface RestoreOutcome {
   extended_preserved: boolean;
   recovered: boolean;
   message: string;
+  /** None = 备份不含用户配置，本机快捷键/语言/微件保持不变。 */
+  config: RestoreConfigSummary | null;
+  /** 配置归一化/快捷键注册/偏好写入等非致命问题。 */
+  warnings: string[];
 }
 
 export const exportData = (path: string) => invoke<string>("export_data", { path });
@@ -794,6 +1028,21 @@ export const importData = (path: string, allowPartial = false) =>
 export const inspectBackup = (path: string) => invoke<BackupMeta>("inspect_backup", { path });
 export const backupNow = (full = false) => invoke<string>("backup_now", { full });
 export const listBackups = () => invoke<BackupEntry[]>("list_backups");
+
+// ── 用户偏好镜像（语言 / 桌面微件布局）──
+// 运行时权威仍是 localStorage；这里只做文件镜像与恢复标记对账。
+export const getUserPreferences = () =>
+  invoke<UserPreferencesView>("get_user_preferences");
+export const setUserPreferences = (
+  locale: string | null,
+  widgets: UserWidgetPreference[] | null,
+  appliedRestoreId: string | null = null,
+) =>
+  invoke<UserPreferencesView>("set_user_preferences", {
+    locale,
+    widgets,
+    appliedRestoreId,
+  });
 
 export interface AuditTableCounts {
   events: number;
@@ -1002,11 +1251,38 @@ export const clipboardItem = (itemId: string) =>
   invoke<ClipboardItem>("clipboard_item", { itemId });
 export const clipboardGroup = (groupId: string) =>
   invoke<ClipboardGroup>("clipboard_group", { groupId });
+/**
+ * 有界读取截图组（`clipboard_group_page`，参数 camelCase）：
+ * limit 超过后端 `GROUP_PAGE_MAX_LIMIT=50` 会被截断并在响应 `limit` 回传实际值；
+ * `imagesOnly` 为 true 时 SQL 阶段只取图片条目。Lite 封面用 limit 1、组预览用 limit 9。
+ * 整组复制仍走 `clipboard_copy_group_rich`（完整数据），不要接到本命令上。
+ */
+export const clipboardGroupPage = (
+  groupId: string,
+  opts: { limit: number; offset?: number; imagesOnly?: boolean },
+) =>
+  invoke<ClipboardGroupPage>("clipboard_group_page", {
+    groupId,
+    limit: opts.limit,
+    offset: opts.offset ?? 0,
+    imagesOnly: opts.imagesOnly ?? false,
+  });
 export const clipboardStats = () => invoke<ClipboardStats>("clipboard_stats");
 export const clipboardThumb = (itemId: string) =>
   invoke<string | null>("clipboard_thumb", { itemId });
 export const clipboardImage = (itemId: string) =>
   invoke<string | null>("clipboard_image", { itemId });
+/**
+ * 图片文字识别：只传已有条目 id，Rust 侧直接读图片缓存，不通过 IPC 传整张图。
+ *
+ * 同一时刻最多 1 个任务；并发请求返回 `status: "busy"` 而不是排队。
+ * `requestId` 用于精准取消（切换条目 / 离开详情），每次请求必须新生成。
+ */
+export const clipboardOcr = (itemId: string, requestId: string) =>
+  invoke<ClipboardOcrReport>("clipboard_ocr", { itemId, requestId });
+/** 取消进行中的识别；只匹配同一 requestId，未命中返回 false。 */
+export const clipboardOcrCancel = (requestId: string) =>
+  invoke<boolean>("clipboard_ocr_cancel", { requestId });
 export const clipboardCopyItem = (itemId: string) =>
   invoke<CopyReport>("clipboard_copy_item", { itemId });
 /** 通用文本写入：与单项复制共用后端受控写入与自写登记。 */
@@ -1124,8 +1400,8 @@ export const clipboardStatus = () => invoke<ClipboardStatus>("clipboard_status")
 /** 用户显式修复损坏的剪贴板配置；resume=true 时同时恢复自动记录。 */
 export const clipboardRepairConfig = (resume: boolean) =>
   invoke<Settings>("clipboard_repair_config", { resume });
-export const clipboardAgentTargets = () =>
-  invoke<AgentClipboardTarget[]>("clipboard_agent_targets");
+export const clipboardAgentTargets = (refresh = false) =>
+  invoke<AgentTargetsSnapshot>("clipboard_agent_targets", { refresh });
 export const clipboardExportForAgent = (
   targetType: "item" | "group",
   targetId: string,
@@ -2223,6 +2499,13 @@ export const workflowReorder = (orderedIds: string[]) =>
 /** 整表替换步骤编排（原子事务；增删改排序共用）。 */
 export const workflowReplaceSteps = (id: string, steps: WorkflowStepInput[]) =>
   invoke<WorkflowDetail>("workflow_replace_steps", { id, steps });
+/** 编辑保存：名称 / 描述 / 步骤在单事务内写入，避免半保存。 */
+export const workflowSave = (
+  id: string,
+  name: string,
+  description: string,
+  steps: WorkflowStepInput[],
+) => invoke<WorkflowDetail>("workflow_save", { id, name, description, steps });
 
 export const workflowRun = (id: string) => invoke<WorkflowRunDetail>("workflow_run", { id });
 export const workflowPause = (id: string) => invoke<WorkflowRunDetail>("workflow_pause", { id });
