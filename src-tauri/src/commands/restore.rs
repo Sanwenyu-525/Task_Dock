@@ -636,11 +636,18 @@ fn apply_restored_config(
         hotkeys_pending: false,
     };
 
-    if config.locale.is_some() || config.widgets.is_some() {
+    if config.locale.is_some() || config.widgets.is_some() || config.app_grid_order.is_some() {
+        // 旧备份可能只带部分字段：缺省字段保留本机值，避免恢复语言/微件时
+        // 把已有的应用网格排序（或反之）从 preferences.json 里整段抹掉。
+        let existing = crate::user_preferences::load_preferences(data_dir);
+        let next_locale = config.locale.clone().or(existing.locale);
+        let next_widgets = config.widgets.clone().or(existing.widgets);
+        let next_order = config.app_grid_order.clone().or(existing.app_grid_order);
         match crate::user_preferences::write_preferences(
             data_dir,
-            config.locale.as_deref(),
-            config.widgets.as_deref(),
+            next_locale.as_deref(),
+            next_widgets.as_deref(),
+            next_order.as_deref(),
         ) {
             Ok(()) => {
                 summary.locale = config.locale.clone();
@@ -1476,8 +1483,13 @@ mod tests {
             {"type":"unknown-widget","enabled":true}
         ]))
         .0;
-        crate::user_preferences::write_preferences(&root, Some("en-US"), Some(&widgets))
-            .unwrap();
+        crate::user_preferences::write_preferences(
+            &root,
+            Some("en-US"),
+            Some(&widgets),
+            Some(&["__taskdock_app_add__".to_string(), "app-b".to_string()]),
+        )
+        .unwrap();
         let hotkeys = HotkeyConfigFile {
             version: CONFIG_VERSION,
             bindings: vec![HotkeyBinding {
@@ -1529,6 +1541,10 @@ mod tests {
         let loaded = crate::user_preferences::load_preferences(&target_root);
         assert_eq!(loaded.locale.as_deref(), Some("en-US"));
         assert_eq!(loaded.widgets.unwrap().len(), 6);
+        assert_eq!(
+            loaded.app_grid_order.as_deref(),
+            Some(&["__taskdock_app_add__".to_string(), "app-b".to_string()][..])
+        );
         let (restore_id, warning) = crate::user_preferences::pending_restore(&target_root);
         assert!(warning.is_none());
         assert_eq!(restore_id.as_deref(), Some(outcome.session_id.as_str()));
@@ -1561,6 +1577,7 @@ mod tests {
             &target_root,
             Some("zh-CN"),
             Some(&widgets),
+            Some(&["app-local".to_string()]),
         )
         .unwrap();
         let local_hotkeys = crate::hotkeys::model::HotkeyConfigFile {
@@ -1590,6 +1607,11 @@ mod tests {
         assert!(outcome.warnings.is_empty());
         let loaded = crate::user_preferences::load_preferences(&target_root);
         assert_eq!(loaded.locale.as_deref(), Some("zh-CN"));
+        // 旧备份没有排序字段：本机已有排序必须保留。
+        assert_eq!(
+            loaded.app_grid_order.as_deref(),
+            Some(&["app-local".to_string()][..])
+        );
         let hotkeys_raw = std::fs::read_to_string(target_root.join("hotkeys.json")).unwrap();
         assert!(hotkeys_raw.contains("Ctrl+Shift+L"));
         assert!(!target_root
@@ -1609,6 +1631,7 @@ mod tests {
             &target_root,
             Some("zh-CN"),
             Some(&widgets),
+            None,
         )
         .unwrap();
         let before = std::fs::read_to_string(target_root.join("preferences.json")).unwrap();

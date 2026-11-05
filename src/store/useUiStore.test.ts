@@ -8,6 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOAST_QUEUE_MAX, useUiStore } from "./useUiStore";
+import { registerTabGuard } from "../lib/tabGuard";
 
 const NOW = 1_000_000;
 
@@ -95,5 +96,75 @@ describe("收集与暂存合并入口子页状态（v0.8）", () => {
     expect(useUiStore.getState().collectionSub).toBe("inbox");
     useUiStore.getState().setTab("shelf");
     expect(useUiStore.getState().tab).toBe("shelf");
+  });
+});
+
+describe("导航事务结果（TabSwitchResult）", () => {
+  const cleanups: Array<() => void> = [];
+
+  beforeEach(() => {
+    useUiStore.setState({ tab: "tasks", pendingTab: null, toast: null, toasts: [] });
+  });
+
+  afterEach(() => {
+    while (cleanups.length > 0) cleanups.pop()!();
+    useUiStore.setState({ tab: "tasks", pendingTab: null });
+  });
+
+  it("无守卫：返回 switched 并同步执行 after", () => {
+    const after = vi.fn();
+    expect(useUiStore.getState().setTab("clipboard", { after })).toBe("switched");
+    expect(useUiStore.getState().tab).toBe("clipboard");
+    expect(after).toHaveBeenCalledTimes(1);
+  });
+
+  it("未保存草稿：返回 pending，after 只在确认后执行；取消不执行", () => {
+    const after = vi.fn();
+    const discard = vi.fn();
+    cleanups.push(
+      registerTabGuard({
+        id: "ui-store-dirty",
+        label: () => "笔记",
+        isDirty: () => true,
+        isBusy: () => false,
+        discard,
+      }),
+    );
+
+    expect(useUiStore.getState().setTab("clipboard", { after })).toBe("pending");
+    expect(after).not.toHaveBeenCalled();
+    expect(useUiStore.getState().pendingTab?.tab).toBe("clipboard");
+
+    useUiStore.getState().cancelPendingTab();
+    expect(after).not.toHaveBeenCalled();
+    expect(useUiStore.getState().tab).toBe("tasks");
+
+    expect(useUiStore.getState().setTab("clipboard", { after })).toBe("pending");
+    useUiStore.getState().confirmPendingTab();
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(useUiStore.getState().tab).toBe("clipboard");
+    expect(useUiStore.getState().pendingTab).toBeNull();
+  });
+
+  it("保存中：返回 blocked，不排队、不执行 after", () => {
+    const after = vi.fn();
+    cleanups.push(
+      registerTabGuard({
+        id: "ui-store-busy",
+        label: () => "笔记",
+        isDirty: () => false,
+        isBusy: () => true,
+        discard: vi.fn(),
+      }),
+    );
+
+    expect(useUiStore.getState().setTab("clipboard", { after })).toBe("blocked");
+    expect(useUiStore.getState().tab).toBe("tasks");
+    expect(useUiStore.getState().pendingTab).toBeNull();
+    expect(after).not.toHaveBeenCalled();
+    expect(useUiStore.getState().toasts.map((t) => t.message)).toContain(
+      "正在保存，请等待完成后再切换页面",
+    );
   });
 });

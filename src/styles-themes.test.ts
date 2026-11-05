@@ -347,7 +347,8 @@ describe("弹层表面可读性", () => {
   });
 
   it("胶囊表面使用不透明底：面板实色底 + 翼片三段渐变全部不含 alpha", () => {
-    const panel = /\.capsule-panel\s*\{([\s\S]*?)\}/.exec(appCss);
+    // 只取基础规则（行首 .capsule-panel），避免命中 .edge-left .capsule-panel 等组合选择器。
+    const panel = /^\s*\.capsule-panel\s*\{([\s\S]*?)\}/m.exec(appCss);
     expect(panel, "styles.css 缺少 .capsule-panel").toBeTruthy();
     expect(panel![1]).toMatch(/background-color:\s*var\(--wing-panel-base\)/);
     expect(panel![1]).toMatch(/background-image:\s*var\(--wing-panel-face\)/);

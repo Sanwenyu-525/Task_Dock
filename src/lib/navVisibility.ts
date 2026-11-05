@@ -98,15 +98,28 @@ export function insertEntryByDefaultOrder(
   return next;
 }
 
-/** 键盘可用的排序操作（上移 / 下移），不引入拖拽依赖。 */
+/** 键盘可用的排序操作（上移 / 下移），不引入拖拽依赖。
+ *
+ * 排序不变量：**锁定入口不可被直接或间接移动**。
+ * - `isFixed(id)` 判定固定入口（注册中心 `locked`）；
+ * - 目标邻居是固定入口时本次移动无效（返回原顺序副本），
+ *   保证普通入口永远不会把固定入口挤出末尾；
+ * - 隐藏入口不在可见数组里，天然不参与上下移动；
+ * - 排序只改变顺序，不改变任何入口的显隐（数组成员集合不变）。
+ */
 export function moveEntryInList(
   ids: readonly string[],
   id: string,
   delta: -1 | 1,
+  isFixed: (id: string) => boolean = () => false,
 ): string[] {
   const index = ids.indexOf(id);
+  if (index < 0) return [...ids];
+  if (isFixed(id)) return [...ids];
   const target = index + delta;
-  if (index < 0 || target < 0 || target >= ids.length) return [...ids];
+  if (target < 0 || target >= ids.length) return [...ids];
+  // 固定入口不可被普通入口挤走：跨越固定入口的移动一律无效。
+  if (isFixed(ids[target])) return [...ids];
   const next = [...ids];
   [next[index], next[target]] = [next[target], next[index]];
   return next;
@@ -182,6 +195,14 @@ export function normalizeNavigationLayout(raw: unknown): NavLayoutNormalization 
       if (persistedKnown.has(entry.id)) continue; // 老入口：缺失 = 用户隐藏
       if (!entry.defaults[surface].visible) continue; // 新入口默认隐藏
       merged = insertEntryByDefaultOrder(merged, entry.id, surface);
+    }
+    // 排序不变量：锁定入口固定在可见数组末尾。
+    // 旧配置/手工改库可能把锁定入口留在中间（历史 moveEntryInList 允许与它
+    // 交换），这里统一收敛，保证「普通入口的上下移动」永远不会间接移动它，
+    // 也让「恢复默认」与用户排序的边界可预期。锁定入口之间的相对顺序保持。
+    const lockedIds = merged.filter((id) => navEntry(id)?.locked);
+    if (lockedIds.length > 0) {
+      merged = [...merged.filter((id) => !navEntry(id)?.locked), ...lockedIds];
     }
     visible[surface] = merged;
   }

@@ -762,6 +762,11 @@ pub fn run() {
             commands::notes::notes_convert_capture,
             // Agent
             commands::agents::agent_snapshot,
+            // Agent 历史分页（P1-02）：实时快照之外的历史会话/轮次按需查询
+            commands::agents::agent_history_sessions,
+            commands::agents::agent_history_runs,
+            commands::agents::agent_history_session,
+            commands::agents::agent_history_groups,
             // Agent 工作时间统计（只读聚合）
             commands::agent_stats::agent_work_time_stats,
             commands::audit::audit_test_data,
@@ -995,6 +1000,7 @@ pub fn run() {
             quick_capture::quick_capture_mark_handled,
             quick_capture::quick_capture_delete,
             quick_capture::quick_capture_convert_to_task,
+            quick_capture::quick_capture_show,
             quick_capture::quick_capture_hide,
             // 统一任务上下文（v0.5）
             commands::context::task_context,
@@ -1031,6 +1037,14 @@ pub fn run() {
             commands::shelf::shelf_recent_dir_pin,
             commands::shelf::shelf_recent_dir_remove,
             commands::shelf::shelf_recent_dirs_clear,
+            // 快捷投递目标（收集箱「文件投递」）
+            commands::shelf::shelf_drop_targets_list,
+            commands::shelf::shelf_drop_target_create,
+            commands::shelf::shelf_drop_target_update,
+            commands::shelf::shelf_drop_target_delete,
+            commands::shelf::shelf_drop_target_move,
+            commands::shelf::shelf_drop_target_open,
+            commands::shelf::shelf_drop_to_directory,
             // 一键工作流（v0.9）
             commands::workflows::workflow_list,
             commands::workflows::workflow_get,

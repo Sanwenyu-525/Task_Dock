@@ -100,7 +100,7 @@ vi.mock("../lib/bridge", () => {
   };
 });
 
-import { useShelfStore } from "./useShelfStore";
+import { useShelfStore, __resetShelfRecentCache, SHELF_RECENT_LIMIT } from "./useShelfStore";
 import {
   shelfList,
   shelfStats,
@@ -113,6 +113,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 describe("useShelfStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetShelfRecentCache();
     useShelfStore.setState({
       items: [],
       total: 0,
@@ -121,6 +122,10 @@ describe("useShelfStore", () => {
       filter: { search: "", kind: "all", group_id: "all", favorite_only: false },
       loading: false,
       error: null,
+      recent: [],
+      recentLoading: false,
+      recentLoaded: false,
+      recentError: null,
       selectedIds: [],
       detailId: null,
       lastCleanup: null,
@@ -220,5 +225,50 @@ describe("useShelfStore", () => {
     expect(useShelfStore.getState().selectedIds).toEqual(["b"]);
     useShelfStore.getState().clearSelection();
     expect(useShelfStore.getState().selectedIds).toEqual([]);
+  });
+
+  it("loadRecent 只取轻量片段并回填存在性，不加载完整历史", async () => {
+    await useShelfStore.getState().loadRecent();
+    const s = useShelfStore.getState();
+    expect(shelfList).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: SHELF_RECENT_LIMIT, offset: 0 }),
+    );
+    expect(s.recent.length).toBeLessThanOrEqual(SHELF_RECENT_LIMIT);
+    expect(s.recent.length).toBeGreaterThan(0);
+    expect(s.recent.find((i) => i.id === "b")?.exists_state).toBe("missing");
+    expect(s.recentLoaded).toBe(true);
+    expect(s.items).toEqual([]); // 完整列表不受影响
+  });
+
+  it("loadRecent 在 TTL 内复用缓存，force 才重新请求", async () => {
+    await useShelfStore.getState().loadRecent();
+    await useShelfStore.getState().loadRecent();
+    expect(shelfList).toHaveBeenCalledTimes(1);
+    await useShelfStore.getState().loadRecent({ force: true });
+    expect(shelfList).toHaveBeenCalledTimes(2);
+  });
+
+  it("loadRecent 在途去重：并发调用只发一次请求", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    (shelfList as ReturnType<typeof vi.fn>).mockImplementationOnce(() =>
+      gate.then(() => ({ items: [], total: 0 })),
+    );
+    const a = useShelfStore.getState().loadRecent();
+    const b = useShelfStore.getState().loadRecent();
+    release();
+    await Promise.all([a, b]);
+    expect(shelfList).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadRecent 失败保留上次结果并给出错误，不伪装成空列表", async () => {
+    await useShelfStore.getState().loadRecent();
+    const before = useShelfStore.getState().recent.length;
+    (shelfList as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("db locked"));
+    await useShelfStore.getState().loadRecent({ force: true });
+    const s = useShelfStore.getState();
+    expect(s.recent).toHaveLength(before);
+    expect(s.recentError).toContain("db locked");
+    expect(s.recentLoading).toBe(false);
   });
 });

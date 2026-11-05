@@ -149,6 +149,9 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 - 首次开启 TTS、切换声音、语速或缓存开关时，服务异步顺序预生成 6 条固定短语。
 - 不阻塞启动与 UI；不并行拉起多个合成；真实播报优先（预生成在播放期间让路）。
 - 已有有效缓存的短语命中即返回，不重复合成；关闭 TTS 后取消剩余预生成。
+- 关闭 TTS 或关闭缓存时**同时清空预生成 Key**：`prewarmGeneration` 让在途预生成退出，
+  `prewarmKey` 置空保证重新启用（即使配置一字未改）必定重新预生成 —— 否则缓存被清理或
+  容量收敛后再开启会因「Key 未变」永远不再补缓存（2026-11-05 修复，见 §13）。
 - 预生成失败只记录诊断，真正播报时重新尝试，不作为播报前置依赖。
 
 ## 7. 设置与默认值
@@ -203,6 +206,7 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 | `AudioContext.resume()` 失败 | 3s 超时/异常明确 reject，不把自动播放失败当作播放成功 |
 | 睡眠恢复 | 事件驱动，不补播；超补偿窗口的旧提醒只入库/推进、不发声 |
 | 退出 | 服务 `dispose()` 停止播放、取消预生成、关闭 AudioContext；Rust 退出时取消在途合成并 join 常驻线程 |
+| 设置写入失败（如语音开关保存失败） | 结构化 Toast「音频设置保存失败：<原因>；原设置保持不变」；开关由 store 值驱动自动回弹，不抛未处理 rejection，不影响其它设置 |
 
 ## 10. 验证与证据
 
@@ -278,3 +282,59 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 ### 12.2 第三轮证据
 
 - 见 `tmp/acceptance/audio-tts-cache/report-round3-2026-11-05.md` 与同目录 `*-round3-*`。
+
+## 13. 2026-11-05 第四轮：主界面空白专项（语音播报启用后）
+
+> 相关任务：`tmp/acceptance/tts-blank-window/`。本轮以「启用语音播报后主界面只剩标题栏/背景」
+> 为验收目标，先复现再修，未改动常驻 WinRT 工作线程设计。
+
+### 13.1 根因（已证实）
+
+- **不是** `mode` 非法（读侧已在 store / 后端 / 外壳三层归一化，`App.shell.test.tsx` 锁住）。
+- **不是** WinRT/COM 崩溃：隔离实例中启用语音播报、预生成 6 条固定短语、试听、重启全部正常，
+  无访问冲突、无渲染异常、无错误边界触发（证据见报告 §3）。
+- **是**设置快照与外部写入的竞态：`update_settings` 返回后端读取的**完整设置快照**。
+  若读取发生在 `apply_mode`（标题栏/托盘/胶囊跳转/吸附解除）写入之前，响应里的 `mode`
+  就是旧值。旧实现无条件 `set({settings: snapshot})`，会把界面刚切到的模式（以及主题/
+  吸附形态）回退；**窗口尺寸由后端已经改变，界面却按旧模式渲染**，于是只剩标题栏与一条
+  内容区。第四轮在隔离实例上以「语音开关写入 + 同刻切极简模式」稳定复现过该回退。
+- 触发面不止语音：任何设置写入与模式/主题/吸附形态切换并发时都可能发生；语音开关只是
+  最容易在设置页触发的入口。
+
+### 13.2 修复
+
+| 层 | 改动 | 位置 |
+|---|---|---|
+| 设置快照 | 写入序号：只应用最后一次写入的响应，乱序旧响应整体丢弃 | `src/store/useSettingsStore.ts` `update()` |
+| 外部字段 | `mode`/`theme`/`visual_preset`/`snap_display_mode` 单独记版本；写入期间被 `syncExternal` 改写的字段保留当前值 | 同上 `syncExternal()` / `EXTERNAL_FIELDS` |
+| 残缺快照 | 缺失/`undefined` 键沿用上一份值；非法 `mode` 优先保留上一份合法值 | `normalizeLoadedSettings(s, prev, staleFields)` |
+| 渲染异常隔离 | 完整面板内容区加 `ErrorBoundary variant="compact" resetKey={tab}`：页面级异常只替换内容区，标题栏/导航可用，切页或重试恢复 | `src/components/FullView.tsx`、`src/components/ErrorBoundary.tsx` |
+| 写入失败反馈 | 音频设置所有写入统一 `save()`：失败弹结构化 Toast 并保持原值，不落到全局未处理异常 | `src/components/settings/AudioSettings.tsx`、i18n |
+| 预生成 | 关闭语音/缓存时清空 `prewarmKey`，重新启用必定重新预生成 | `src/lib/audioNotification.ts` |
+
+- 公开契约不变：未改命令签名、设置键、数据库 schema、备份 manifest、TTS 常驻线程与缓存 Key。
+- 未采用：延迟刷新、强制重载、轮询检测可见性、恢复默认设置、清空缓存、重构语音架构。
+
+### 13.3 证据
+
+- 前端口径：`npx tsc --noEmit`、`npm run build` 通过；`useSettingsStore` / `AudioSettings` /
+  `ErrorBoundary` / `audioNotification` 4 个套件 69 项全绿；全量 vitest 2263 通过
+  （4 项失败均为并行会话未提交的剪贴板离场动画用例，与本轮改动无交集）。
+- Rust：`cargo test` 1196 通过 / 0 失败 / 45 ignored。
+- 真机（隔离实例 + 真实 WebView2 + CDP）：启用/关闭/重启/试听/深浅主题/三模式并发 8 项全 PASS；
+  模式切换与语音写入并发连跑 3 轮无「界面模式 ≠ 窗口尺寸」样本。
+- 原始证据与截图：`tmp/acceptance/tts-blank-window/report.md`。
+- **未验证**：真实鼠标拖拽吸附进入/退出停靠、系统托盘路径、多显示器/不同 DPI 下的该竞态、
+  以及用户原始故障现场的精确复现（本轮在该工作树上未能用「仅启用语音」复现空白窗口）。
+
+### 13.4 更正（2026-11-05 第五轮）：设置写入并发模型
+
+§13.2 中「设置快照：写入序号（乱序旧响应整体丢弃）」的实现已在第五轮被取代：全局序号会
+把**不同字段**的较早成功响应整份丢弃（A 改语音开关、B 改语速时 A 的字段在库里但界面不
+反映；A 成功而 B 失败时 A 的成功不可见），已在 `docs/ARCHITECTURE.md`「设置写入并发契约」
+更新为新规则：写入串行 + 待发合并、字段级外部事件裁决（含补丁内字段）、发生压制时做一次
+有界终态核对（`mode` 走 `apply_mode` 修正窗口与库），失败按数据库真值对齐。
+
+语音侧行为不变：TTS 开关/语速/音量/声音写入仍走 `update_settings`，预生成与播放策略、
+常驻 WinRT 线程、缓存 Key、白名单均未改动。第五轮证据见
+`tmp/acceptance/tts-blank-window/report-round2-2026-11-05.md`。

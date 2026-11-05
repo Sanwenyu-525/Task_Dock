@@ -223,7 +223,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
     (voices === null ? false : !selectedVoice || !selectedVoice.available);
 
   const setEvent = (key: BooleanSettingKey, value: boolean) => {
-    void update({ [key]: value } as Partial<Settings>);
+    save({ [key]: value } as Partial<Settings>);
   };
 
   async function onPreviewTone() {
@@ -271,6 +271,21 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
     }
   }
 
+  /**
+   * 设置写入统一入口：失败必须就地反馈（一项设置写失败不等于界面坏了）。
+   *
+   * 音频分组里大多是 Switch / 下拉 / 数字框，事件处理器无法 await；不接住
+   * rejection 会落到全局未处理异常通道，被当成「后台任务失败」提示，文案与
+   * 实际操作对不上。这里给出结构化文案并保持原值（开关由 store 值驱动，自动回弹）。
+   */
+  function save(patch: Partial<Settings>) {
+    void update(patch).catch((e) => {
+      showToast(t("settings.audio.saveFailed", { error: errorMessage(e) }), {
+        kind: "error",
+      });
+    });
+  }
+
   return (
     <>
       <CollapsibleSection
@@ -287,7 +302,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
           <Switch
             checked={settings.audio_sound_enabled ?? true}
             ariaLabel={t("settings.audio.soundEnabled")}
-            onChange={(v) => update({ audio_sound_enabled: v })}
+            onChange={(v) => save({ audio_sound_enabled: v })}
           />
         </div>
         <div className="setting-row">
@@ -300,7 +315,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
               value={soundVolume}
               suffix="%"
               ariaLabel={t("settings.audio.soundVolume")}
-              onChange={(v) => update({ audio_sound_volume: v })}
+              onChange={(v) => save({ audio_sound_volume: v })}
             />
             <button
               className="btn sm"
@@ -343,7 +358,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
           <Switch
             checked={settings.tts_enabled ?? false}
             ariaLabel={t("settings.audio.ttsEnabled")}
-            onChange={(v) => update({ tts_enabled: v })}
+            onChange={(v) => save({ tts_enabled: v })}
           />
         </div>
         <div className="setting-row">
@@ -358,7 +373,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
             ]}
             onChange={(value) =>
               // 切换性别偏好时清空显式语音，避免偏好与实际播放不一致。
-              update({ tts_voice_gender: value as "auto" | "female" | "male", tts_voice_id: "" })
+              save({ tts_voice_gender: value as "auto" | "female" | "male", tts_voice_id: "" })
             }
           />
         </div>
@@ -372,7 +387,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
             options={voiceOptions}
             onChange={(value) => {
               if (value === AUTO_VOICE) {
-                void update({ tts_voice_id: "" });
+                save({ tts_voice_id: "" });
                 return;
               }
               const picked = voices?.voices.find((v) => v.id === value);
@@ -380,7 +395,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
                 picked?.gender === "male" || picked?.gender === "female"
                   ? picked.gender
                   : undefined;
-              void update({
+              save({
                 tts_voice_id: value,
                 ...(pickedGender ? { tts_voice_gender: pickedGender } : {}),
               });
@@ -414,7 +429,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
             value={ttsVolume}
             suffix="%"
             ariaLabel={t("settings.audio.ttsVolume")}
-            onChange={(v) => update({ tts_volume: v })}
+            onChange={(v) => save({ tts_volume: v })}
           />
         </div>
         <div className="setting-row">
@@ -428,7 +443,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
               value={ttsRate}
               suffix="%"
               ariaLabel={t("settings.audio.ttsRate")}
-              onChange={(v) => update({ tts_rate: v })}
+              onChange={(v) => save({ tts_rate: v })}
             />
             <button
               className="btn sm"
@@ -446,7 +461,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
           <Switch
             checked={settings.tts_speak_source ?? true}
             ariaLabel={t("settings.audio.speakSource")}
-            onChange={(v) => update({ tts_speak_source: v })}
+            onChange={(v) => save({ tts_speak_source: v })}
           />
         </div>
         <div className="setting-row">
@@ -454,7 +469,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
           <Switch
             checked={settings.tts_speak_title ?? false}
             ariaLabel={t("settings.audio.speakTitle")}
-            onChange={(v) => update({ tts_speak_title: v })}
+            onChange={(v) => save({ tts_speak_title: v })}
           />
         </div>
         {EVENTS.map((event) => (
@@ -484,7 +499,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
           <Switch
             checked={settings.tts_cache_enabled ?? true}
             ariaLabel={t("settings.ttsCache.enabled")}
-            onChange={(v) => update({ tts_cache_enabled: v })}
+            onChange={(v) => save({ tts_cache_enabled: v })}
           />
         </div>
         <div className="setting-row">

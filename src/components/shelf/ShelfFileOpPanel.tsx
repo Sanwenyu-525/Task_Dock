@@ -60,6 +60,7 @@ export default function ShelfFileOpPanel({
   const [report, setReport] = useState<ShelfOpReport | null>(null);
   const [showFailed, setShowFailed] = useState(false);
   const [showSkipped, setShowSkipped] = useState(false);
+  const [showPartial, setShowPartial] = useState(false);
 
   /** 同步单飞闸：state 更新有延迟，连点必须在 ref 层拦截。 */
   const busyRef = useRef(false);
@@ -238,9 +239,21 @@ export default function ShelfFileOpPanel({
       setReport(r);
       void loadDirs();
       const removeFailed = r.remove_failed_files ?? 0;
-      const summary = `成功 ${r.success} 项 · 跳过 ${r.skipped} 项 · 失败 ${r.failed} 项`;
-      // 结果只经一条 Toast 呈现，避免同一批次重复提示
-      if (r.failed === 0 && r.skipped === 0 && removeFailed === 0) {
+      const partial = r.partial ?? 0;
+      const recordCleanupFailed = r.record_cleanup_failed ?? 0;
+      const summary =
+        `成功 ${r.success} 项 · 跳过 ${r.skipped} 项 · 失败 ${r.failed} 项` +
+        (partial > 0 ? ` · 部分完成 ${partial} 项` : "");
+      // 结果只经一条 Toast 呈现，避免同一批次重复提示。
+      // partial / record_cleanup_failed 都是「有文件已落盘但仍有残留」，必须走 warning
+      // 且不自动关闭面板，让用户看到恢复建议。
+      if (
+        r.failed === 0 &&
+        r.skipped === 0 &&
+        removeFailed === 0 &&
+        partial === 0 &&
+        recordCleanupFailed === 0
+      ) {
         showToast(
           `${doneVerb} ${r.success} 项${r.removed > 0 ? `，并从暂存架移除 ${r.removed} 条记录` : ""}`,
           { kind: "success" },
@@ -248,6 +261,11 @@ export default function ShelfFileOpPanel({
         onClose();
       } else if (r.success === 0 && r.skipped === 0 && r.failed > 0) {
         showToast(`全部 ${r.failed} 项失败，请查看失败原因`, { kind: "error" });
+      } else if (partial > 0 || recordCleanupFailed > 0) {
+        const cleanup = recordCleanupFailed > 0
+          ? `；${recordCleanupFailed} 条记录清理失败`
+          : "";
+        showToast(`${summary}${cleanup}，请查看部分完成明细`, { kind: "warning" });
       } else if (r.success === 0 && r.failed === 0 && r.skipped > 0) {
         showToast(`${r.skipped} 项已跳过，请查看跳过原因`, { kind: "warning" });
       } else if (r.success > 0) {
@@ -276,7 +294,10 @@ export default function ShelfFileOpPanel({
   const entries: ShelfOpEntry[] = report?.entries ?? [];
   const failedEntries = entries.filter((e) => e.status === "failed");
   const skippedEntries = entries.filter((e) => e.status === "skipped");
+  const partialEntries = entries.filter((e) => e.status === "partial");
   const removeFailed = report?.remove_failed_files ?? 0;
+  const partial = report?.partial ?? 0;
+  const recordCleanupFailed = report?.record_cleanup_failed ?? 0;
 
   const renderDirRow = (d: ShelfRecentDir) => (
     <li key={d.path} className={d.pinned ? "is-pinned" : undefined}>
@@ -495,12 +516,47 @@ export default function ShelfFileOpPanel({
         <div className="shelf-fileop-result" aria-live="polite">
           <p className="shelf-fileop-summary">
             成功 {report.success} 项 · 跳过 {report.skipped} 项 · 失败 {report.failed} 项
+            {partial > 0 ? ` · 部分完成 ${partial} 项` : ""}
             {report.removed > 0 ? ` · 已移除 ${report.removed} 条记录` : ""}
           </p>
           {removeFailed > 0 && (
             <p className="shelf-fileop-warn is-danger">
               {removeFailed} 个托管文件未能删除（暂存记录已按选择移除，将在后续清理时兜底）。
             </p>
+          )}
+          {recordCleanupFailed > 0 && (
+            <p className="shelf-fileop-warn is-danger">
+              {recordCleanupFailed} 条暂存记录清理失败
+              {report.record_cleanup_error ? `：${report.record_cleanup_error}` : "，请稍后重试或手动处理。"}
+            </p>
+          )}
+          {partialEntries.length > 0 && (
+            <>
+              <button
+                type="button"
+                className="link-btn"
+                aria-expanded={showPartial}
+                onClick={() => setShowPartial((v) => !v)}
+              >
+                {showPartial ? "收起部分完成项" : `查看部分完成项（${partialEntries.length}）`}
+              </button>
+              {showPartial && (
+                <ul className="shelf-fileop-failures">
+                  {partialEntries.map((e, i) => (
+                    <li key={`${e.id}-${i}`}>
+                      <span className="shelf-fileop-failure-name" title={e.display_name || e.id}>
+                        {e.display_name || e.id}
+                      </span>
+                      <span className="shelf-fileop-failure-reason">
+                        {e.reason ?? "文件已写入目标，但源清理或记录更新未完成"}
+                        {e.residual_source ? ` · 残留源：${e.residual_source}` : ""}
+                        {e.recovery ? ` · 建议：${e.recovery}` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
           {failedEntries.length > 0 && (
             <>

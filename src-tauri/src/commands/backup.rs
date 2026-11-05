@@ -89,6 +89,8 @@ pub const EXTENDED_TABLES: &[&str] = &[
     // 暂存架文件操作增强（v0.14）：最近目标目录与未完成的移动日志。
     "shelf_recent_dirs",
     "shelf_file_ops",
+    // 收集箱文件投递（v35）：用户命名的快捷投递目标目录配置。
+    "shelf_drop_targets",
     // 一键工作流（v0.9）：定义 → 步骤 → 运行 → 回执（外键依赖序）。
     "workflows",
     "workflow_steps",
@@ -305,6 +307,9 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     // 正常完成即删除，恢复时由启动恢复逻辑消费，不承载用户业务数据。
     rule!("shelf_recent_dirs", "shelf", "all", 315, &[], true),
     rule!("shelf_file_ops", "shelf", "all", 316, &["shelf_items"], true),
+    // 快捷投递目标：用户显式配置的命名目录（别名/排序/显示开关/默认模式），
+    // 属于可迁移的用户配置，快速备份全量保存；不含任何文件内容或路径以外的隐私数据。
+    rule!("shelf_drop_targets", "shelf", "all", 317, &[], true),
     // 一键工作流（v0.9）：定义与步骤是用户配置，快速备份全量保存；
     // 运行记录与回执是历史数据，快速备份按最近 20 次运行截断。
     // 依赖序：工作流 → 步骤 → 运行 → 回执。
@@ -630,9 +635,10 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "shelf_groups"
         | "shelf_items"
         | "shelf_task_links"
-        // 最近目录：用户选择的目标目录偏好，属于可迁移业务数据（shelf_file_ops
-        // 是设备本地瞬时日志，不走此分支，由写循环单独写空 section）
+        // 最近目标目录与快捷投递目标：用户目录偏好，属于可迁移业务数据
+        // （shelf_file_ops 是设备本地瞬时日志，不走此分支，由写循环单独写空 section）
         | "shelf_recent_dirs"
+        | "shelf_drop_targets"
         // 一键工作流：定义与步骤是用户配置，快速备份全量保存
         | "workflows"
         | "workflow_steps"
@@ -2759,7 +2765,13 @@ mod tests {
             {"type":"unknown-widget","enabled":true}
         ]))
         .0;
-        user_preferences::write_preferences(&dir, Some("en-US"), Some(&widgets)).unwrap();
+        user_preferences::write_preferences(
+            &dir,
+            Some("en-US"),
+            Some(&widgets),
+            Some(&["__taskdock_app_add__".to_string(), "app-b".to_string()]),
+        )
+        .unwrap();
         let hotkeys = HotkeyConfigFile {
             version: CONFIG_VERSION,
             bindings: vec![HotkeyBinding {
@@ -2797,6 +2809,10 @@ mod tests {
         assert_eq!(config.locale.as_deref(), Some("en-US"));
         assert_eq!(config.widgets.as_ref().unwrap().len(), 6);
         assert!(config.widgets.as_ref().unwrap()[0].enabled);
+        assert_eq!(
+            config.app_grid_order.as_deref(),
+            Some(&["__taskdock_app_add__".to_string(), "app-b".to_string()][..])
+        );
         assert_eq!(
             config.hotkeys.as_ref().unwrap().bindings[0].accelerator,
             "Ctrl+Shift+K"
@@ -3383,6 +3399,54 @@ mod tests {
         assert_eq!(read2.counts["agent_events"], 300);
         std::fs::remove_dir_all(dir1).ok();
         std::fs::remove_dir_all(dir2).ok();
+    }
+
+    #[test]
+    fn drop_target_order_survives_backup_restore() {
+        // 历史库/旧备份里可能带重复 sort_order：备份→恢复必须原样保留，
+        // 且恢复后的上下移动仍然生效（否则界面点了没反应）。
+        let src = memdb();
+        seed_minimal(&src);
+        let dir = temp_dir("drop-order");
+        src.with_conn(|c| {
+            for (id, name, created) in [
+                ("a", "A", "2026-01-01T00:00:01Z"),
+                ("b", "B", "2026-01-01T00:00:02Z"),
+                ("c", "C", "2026-01-01T00:00:03Z"),
+            ] {
+                c.execute(
+                    "INSERT INTO shelf_drop_targets \
+                     (id,name,path,sort_order,show_in_capsule,op_mode,conflict,created_at,updated_at) \
+                     VALUES (?1,?2,?3,5,1,'copy','rename',?4,?4)",
+                    rusqlite::params![id, name, dir.join(id).to_string_lossy(), created],
+                )?;
+            }
+            Ok::<_, crate::error::AppError>(())
+        })
+        .unwrap();
+
+        let bundle = dir.join("backup.json");
+        write_bundle(&src, BackupSources::default(), &bundle, BackupKind::Full).unwrap();
+        let read = read_bundle(&bundle, &dir.join("staging")).unwrap();
+        assert_eq!(spilled_rows(&read, "shelf_drop_targets").len(), 3);
+
+        let dst = memdb();
+        import_read(&dst, &read).unwrap();
+        let order = |db: &Db| -> Vec<String> {
+            crate::shelf::drop_targets::list(db)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.id)
+                .collect()
+        };
+        assert_eq!(order(&dst), vec!["a", "b", "c"], "恢复后顺序与备份一致");
+        let moved = crate::shelf::drop_targets::reorder(&dst, "c", "up").unwrap();
+        assert_eq!(
+            moved.into_iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec!["a", "c", "b"],
+            "重复排序值在恢复后仍可正确调整"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

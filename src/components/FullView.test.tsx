@@ -85,7 +85,9 @@ describe("完整模式左侧导航", () => {
     expect(screen.queryByRole("button", { name: /^收集箱/ })).toBeNull();
     expect(screen.getByRole("button", { name: "新建任务" })).toBeTruthy();
     expect(nav.firstElementChild?.className).toBe("rail-head");
-    expect(nav.lastElementChild?.className).toBe("rail-items");
+    expect(nav.lastElementChild?.className).toBe("rail-foot");
+    // 设置固定在底部区域，不在中间滚动列表里
+    expect(document.querySelector(".rail-items .rail-item-fixed")).toBeNull();
     // 默认任务页
     expect(screen.getByText("tasks-panel")).toBeTruthy();
   });
@@ -93,7 +95,9 @@ describe("完整模式左侧导航", () => {
   it("应用入口位于 Agent 与行动之间，点击后进入应用中心", async () => {
     const user = userEvent.setup();
     render(<FullView />);
-    const items = [...document.querySelectorAll(".rail-items .rail-item")];
+    const items = [
+      ...document.querySelectorAll(".rail-items .rail-item, .rail-foot > .rail-item"),
+    ];
     // aria-label 可能追加徽标说明（如「收集与暂存（2 条待处理收集）」），只比较入口名
     expect(items.map((el) => el.getAttribute("aria-label")?.split("（")[0])).toEqual([
       "任务",
@@ -274,10 +278,16 @@ describe("导航显隐", () => {
       (node) => node.textContent,
     );
     expect(labels[0]).toBe("剪贴板");
-    // 锁定入口不可隐藏：归一化后自动补回，且固定末尾
+    // 锁定入口不可隐藏：归一化后自动补回，并渲染在固定底部区域（不在滚动列表）
     const settingsButton = screen.getByRole("button", { name: "设置" });
     expect(settingsButton).toBeTruthy();
-    expect(labels[labels.length - 1]).toBe("设置");
+    expect(settingsButton.closest(".rail-foot")).toBeTruthy();
+    expect(labels).not.toContain("设置");
+    // 底部区域：设置是最后一个条目
+    const footLabels = [...document.querySelectorAll(".rail-foot > .rail-item .rail-label")].map(
+      (node) => node.textContent,
+    );
+    expect(footLabels).toEqual(["设置"]);
     // 未隐藏项不会出现在「更多」
     expect(screen.queryByRole("button", { name: "更多导航入口" })).toBeNull();
   });
@@ -310,9 +320,9 @@ describe("英文导航", () => {
 
     const nav = screen.getByRole("navigation", { name: "Main navigation" });
     expect(nav).toBeTruthy();
-    const labels = [...document.querySelectorAll(".rail-items .rail-label")].map(
-      (node) => node.textContent,
-    );
+    const labels = [
+      ...document.querySelectorAll(".rail-items .rail-label, .rail-foot > .rail-item .rail-label"),
+    ].map((node) => node.textContent);
     expect(labels).toEqual([
       "Tasks",
       "Agents",
@@ -361,5 +371,58 @@ describe("英文导航", () => {
     expect(screen.getByRole("menuitemradio", { name: "Apps" })).toBeTruthy();
     await user.click(screen.getByRole("menuitem", { name: "Customize navigation" }));
     expect(useUiStore.getState().tab).toBe("settings");
+  });
+});
+
+// ── 侧栏三区域布局（2026-11-05）────────────────────────────────────
+// 顶部（新建任务）/ 中间（可排序入口，独立滚动）/ 底部（更多 + 固定设置）。
+describe("侧栏固定底部区域", () => {
+  it("设置固定底部；「更多」存在时位于设置上方", () => {
+    seedLeftLayout(allEntryIds("left").filter((id) => id !== "apps"));
+    render(<FullView />);
+
+    const foot = document.querySelector(".rail-foot");
+    expect(foot).toBeTruthy();
+    const footButtons = [...foot!.querySelectorAll(":scope > .rail-item, :scope > .rail-more .rail-item")];
+    const labels = footButtons.map((el) => el.getAttribute("aria-label"));
+    expect(labels).toEqual(["更多导航入口", "设置"]);
+    // 设置不属于中间滚动列表
+    expect(document.querySelector(".rail-items .rail-item-fixed")).toBeNull();
+    expect(screen.getByRole("button", { name: "设置" }).closest(".rail-items")).toBeNull();
+  });
+
+  it("无隐藏入口时底部只有设置", () => {
+    // 显式回到默认布局（同文件前序用例可能注入过自定义配置）
+    seedLeftLayout(allEntryIds("left"));
+    render(<FullView />);
+    const footLabels = [...document.querySelectorAll(".rail-foot > .rail-item, .rail-foot .rail-more .rail-item")].map(
+      (el) => el.getAttribute("aria-label"),
+    );
+    expect(footLabels).toEqual(["设置"]);
+  });
+
+  it("排序变化后设置仍在底部，按配置顺序渲染中间列表", () => {
+    const ids = allEntryIds("left").filter((id) => id !== "settings" && id !== "history");
+    seedLeftLayout([...ids, "history"].filter((id) => id !== "tasks").concat("tasks"));
+    render(<FullView />);
+
+    // 中间列表按配置顺序（tasks 被排到末尾）
+    const middle = [...document.querySelectorAll(".rail-items .rail-item")].map(
+      (el) => el.getAttribute("aria-label")?.split("（")[0],
+    );
+    expect(middle[middle.length - 1]).toBe("任务");
+    expect(middle).not.toContain("设置");
+    // 设置仍在固定底部区域
+    const settings = screen.getByRole("button", { name: "设置" });
+    expect(settings.closest(".rail-foot")).toBeTruthy();
+  });
+
+  it("低高度窗口：中间列表独立滚动，设置不在滚动容器内（结构断言）", () => {
+    render(<FullView />);
+    const scroller = document.querySelector(".rail-items");
+    expect(scroller).toBeTruthy();
+    // 滚动容器与底部区域是兄弟：设置不受滚动位置影响
+    expect(scroller!.nextElementSibling?.className).toBe("rail-foot");
+    expect(scroller!.querySelector(".rail-item-fixed")).toBeNull();
   });
 });

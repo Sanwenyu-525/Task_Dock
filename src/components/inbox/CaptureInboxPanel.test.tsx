@@ -19,6 +19,11 @@ const bridge = vi.hoisted(() => ({
   quickCaptureConvertToTask: vi.fn(),
   quickCaptureMarkHandled: vi.fn(),
   quickCaptureDelete: vi.fn(),
+  quickCaptureShow: vi.fn(async () => ({
+    visible: true,
+    focused: true,
+    focusError: null as string | null,
+  })),
 }));
 
 const clipboard = vi.hoisted(() => ({
@@ -91,6 +96,52 @@ beforeEach(() => {
 });
 
 describe("CaptureInboxPanel", () => {
+  it("页内「+ 快速记录」打开既有快速捕获窗口（不另建保存系统）", async () => {
+    const user = userEvent.setup();
+    render(<CaptureInboxPanel />);
+    await screen.findByText("明天 10 点交周报");
+
+    const btn = screen.getByRole("button", { name: "快速记录到收集箱" });
+    expect(btn.textContent).toContain("快速记录");
+    await user.click(btn);
+    expect(bridge.quickCaptureShow).toHaveBeenCalledTimes(1);
+  });
+
+  it("快速捕获窗口打开失败：如实提示，不伪装成功", async () => {
+    const user = userEvent.setup();
+    bridge.quickCaptureShow.mockRejectedValueOnce(new Error("window missing"));
+    render(<CaptureInboxPanel />);
+    await screen.findByText("明天 10 点交周报");
+
+    await user.click(screen.getByRole("button", { name: "快速记录到收集箱" }));
+    await waitFor(() =>
+      expect(useUiStore.getState().toasts.map((t) => t.message)).toContain(
+        "无法打开快速捕获：window missing",
+      ),
+    );
+  });
+
+  it("快速捕获窗口已显示但系统拒绝聚焦：区分提示，不误报打开失败", async () => {
+    const user = userEvent.setup();
+    bridge.quickCaptureShow.mockResolvedValueOnce({
+      visible: true,
+      focused: false,
+      focusError: "前台锁拒绝" as string | null,
+    });
+    render(<CaptureInboxPanel />);
+    await screen.findByText("明天 10 点交周报");
+
+    await user.click(screen.getByRole("button", { name: "快速记录到收集箱" }));
+    await waitFor(() =>
+      expect(useUiStore.getState().toasts.map((t) => t.message)).toContain(
+        "快速捕获已打开，但系统未允许自动聚焦：前台锁拒绝",
+      ),
+    );
+    expect(useUiStore.getState().toasts.map((t) => t.message)).not.toContain(
+      "无法打开快速捕获：前台锁拒绝",
+    );
+  });
+
   it("进入收集箱加载未处理列表并渲染类型、内容与时间", async () => {
     render(<CaptureInboxPanel />);
 

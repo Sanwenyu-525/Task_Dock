@@ -567,6 +567,9 @@ impl TtsWorker {
     }
 
     /// 停止接收新任务并等待线程结束（可重复调用）。
+    ///
+    /// WinRT 同步调用在极端环境（音频设备挂起/驱动异常）可能长时间不返回，
+    /// 因此等待设上限；超时后放弃 join（线程 detach）并记录告警，避免应用退出被永久阻塞。
     pub fn shutdown(&self) {
         self.cancel.store(true, Ordering::SeqCst);
         if let Ok(mut guard) = self.tx.lock() {
@@ -574,7 +577,15 @@ impl TtsWorker {
         }
         if let Ok(mut guard) = self.handle.lock() {
             if let Some(handle) = guard.take() {
-                let _ = handle.join();
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                while !handle.is_finished() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                if handle.is_finished() {
+                    let _ = handle.join();
+                } else {
+                    tracing::warn!("语音工作线程 2 秒内未退出，已放弃等待（应用继续退出）");
+                }
             }
         }
     }

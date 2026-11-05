@@ -67,4 +67,44 @@ describe("ErrorBoundary", () => {
     await user.click(screen.getByRole("button", { name: "重试加载" }));
     expect(screen.getByText("正常内容")).toBeTruthy();
   });
+
+  it("内容区兜底：显示模块名，切页（resetKey 变化）自动恢复且不需要重载窗口", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let crash = true;
+    function Panel() {
+      return crash ? <Boom crash /> : <div>设置内容</div>;
+    }
+    const { rerender } = render(
+      <ErrorBoundary variant="compact" resetKey="settings" label="设置">
+        <Panel />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByText("「设置」暂时无法显示")).toBeTruthy();
+    expect(screen.getByText(/切换到其它页面/)).toBeTruthy();
+
+    // 用户切到别的页面：resetKey 变化 → 清除错误并重新渲染子树
+    crash = false;
+    rerender(
+      <ErrorBoundary variant="compact" resetKey="tasks" label="任务">
+        <Panel />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByText("设置内容")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("resetKey 不变时保留兜底，不自动重试（避免报错-重渲染循环）", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { rerender } = render(
+      <ErrorBoundary variant="compact" resetKey="settings">
+        <Boom crash />
+      </ErrorBoundary>,
+    );
+    rerender(
+      <ErrorBoundary variant="compact" resetKey="settings">
+        <Boom crash />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByRole("alert")).toBeTruthy();
+  });
 });

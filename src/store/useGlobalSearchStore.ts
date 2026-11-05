@@ -63,6 +63,8 @@ interface GlobalSearchState {
   openResult: (item: GlobalSearchResult) => void;
   /** 目标模块消费定位意图后调用（清除意图）。 */
   consumeLocate: () => void;
+  /** 胶囊「最近暂存」跳转完整暂存架并定位条目（复用同一 pendingLocate 通道）。 */
+  requestShelfLocate: (id: string, kind: string) => void;
   clearRecent: () => void;
   setNotice: (n: string | null) => void;
 }
@@ -249,6 +251,18 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
   },
 
   consumeLocate: () => set({ pendingLocate: null }),
+
+  requestShelfLocate: (id, kind) =>
+    set({
+      pendingLocate: {
+        category: "shelf",
+        id,
+        kind,
+        parentId: null,
+        keyword: "",
+        token: ++locateSeq,
+      },
+    }),
 
   clearRecent: () => {
     clearRecentPersisted();

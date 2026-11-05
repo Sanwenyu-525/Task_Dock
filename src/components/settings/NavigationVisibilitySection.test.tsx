@@ -204,3 +204,52 @@ describe("导航自定义区块 · 英文", () => {
     expect(updateSettings.mock.calls[0][0].navigation_layout.left).not.toContain("apps");
   });
 });
+
+// ── 排序按钮与固定入口（2026-11-05）────────────────────────────────
+describe("排序按钮可见性与边界", () => {
+  it("胶囊界面的 Agent 状态球固定：不提供上移/下移，并标注固定位置", async () => {
+    const user = userEvent.setup();
+    render(<NavigationVisibilitySection />);
+    await user.click(screen.getByRole("button", { name: "停靠胶囊" }));
+
+    expect(screen.queryByRole("button", { name: "上移 Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "下移 Agent" })).toBeNull();
+    // Agent 仍可隐藏（隐藏不停止监控）
+    const agentSwitch = screen.getByRole("switch", { name: /Agent/ });
+    expect((agentSwitch as HTMLInputElement).disabled).toBe(false);
+    // 固定位置标注（与「固定」锁定标注区分）
+    expect(screen.getAllByText("固定位置").length).toBeGreaterThan(0);
+  });
+
+  it("左侧末位普通入口的「下移」禁用（不能越过固定的设置）", async () => {
+    seedLayout((layout) => {
+      // 把设置从可见数组里删掉：归一化会补回并收敛到末尾
+      layout.left = layout.left.filter((id) => id !== "settings");
+    });
+    render(<NavigationVisibilitySection />);
+
+    // 规划中心是最后一位普通入口，其下移按钮禁用（后面只有固定的设置）
+    const down = screen.getByRole("button", { name: "下移 规划中心" }) as HTMLButtonElement;
+    expect(down.disabled).toBe(true);
+    // 倒数第二位仍可下移
+    const upDown = screen.getByRole("button", { name: "下移 历史" }) as HTMLButtonElement;
+    expect(upDown.disabled).toBe(false);
+  });
+
+  it("排序操作立即持久化：配置数组顺序改变，且隐藏状态不变", async () => {
+    const user = userEvent.setup();
+    render(<NavigationVisibilitySection />);
+    const up = screen.getByRole("button", { name: "上移 Agent" });
+    await user.click(up);
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
+    const patch = updateSettings.mock.calls[0][0] as {
+      navigation_layout: { left: string[] };
+    };
+    const left = patch.navigation_layout.left;
+    expect(left.indexOf("agents")).toBe(left.indexOf("tasks") - 1);
+    // 成员集合不变（显隐不受排序影响）
+    expect([...left].sort()).toEqual([...defaultNavigationLayout().left].sort());
+    expect(left[left.length - 1]).toBe("settings");
+  });
+});

@@ -19,6 +19,7 @@ pub mod discovery_only;
 pub mod dsh;
 pub mod file_drop;
 pub mod gemini;
+pub mod history;
 pub mod hook_cli;
 pub mod hooks_install;
 pub mod http_ingest;

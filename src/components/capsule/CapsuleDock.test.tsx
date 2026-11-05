@@ -45,6 +45,24 @@ vi.mock("../../lib/bridge", () => ({
   },
   clipboardThumb: async () => null,
   clipboardImage: async () => null,
+  getUserPreferences: async () => ({
+    version: 1,
+    locale: null,
+    widgets: null,
+    app_grid_order: null,
+    warnings: [],
+    apply_restore: false,
+    restore_id: null,
+  }),
+  setUserPreferences: async () => ({
+    version: 1,
+    locale: null,
+    widgets: null,
+    app_grid_order: null,
+    warnings: [],
+    apply_restore: false,
+    restore_id: null,
+  }),
   applyMode: async () => undefined,
 }));
 
@@ -177,27 +195,11 @@ describe("CapsuleDock · 折叠 / 展开", () => {
     expect(collapse).toHaveBeenCalledTimes(1);
   });
 
-  it("折叠态不提供可见的收起控件（没有「再收起」这回事）", () => {
-    const { container } = mountAt("docked-hidden");
-    // 占位保留（避免展开/收起时图标跳动），但对用户与无障碍树都不可见
-    const btn = container.querySelector(".cap-collapse") as HTMLButtonElement;
-    expect(btn).toBeTruthy();
-    expect(btn.getAttribute("data-inert")).toBe("true");
-    expect(btn.getAttribute("aria-hidden")).toBe("true");
-    expect(btn.tabIndex).toBe(-1);
-    expect(screen.queryByRole("button", { name: "功能面板已收起" })).toBeNull();
-    act(() => btn.click());
-    expect(collapse).not.toHaveBeenCalled();
-  });
-
-  it("展开态收起按钮可见、可聚焦，点击即收起", () => {
+  it("不再渲染底部独立收起箭头：收起走再次点击当前分类 / Escape", () => {
     const { container } = mountAt("docked-revealed");
-    const btn = container.querySelector(".cap-collapse") as HTMLButtonElement;
-    expect(btn.getAttribute("data-inert")).toBe("false");
-    expect(btn.tabIndex).toBe(0);
-    expect(screen.getByRole("button", { name: "收起功能面板" })).toBe(btn);
-    act(() => btn.click());
-    expect(collapse).toHaveBeenCalledTimes(1);
+    // 形态出口（完整面板 / 极简标签）仍可存在，但「再收起」不再是独立箭头。
+    expect(container.querySelector(".cap-collapse:not(.cap-form):not(.cap-to-tab)")).toBeNull();
+    expect(screen.queryByRole("button", { name: "收起功能面板" })).toBeNull();
   });
 });
 

@@ -7,6 +7,7 @@ import {
   useActionsStore,
   scheduleActionsRefresh,
   cancelActionsRefresh,
+  shouldRefreshActions,
 } from "./store/useActionsStore";
 import { useUiStore, type Tab } from "./store/useUiStore";
 import { useNavigationStore } from "./store/useNavigationStore";
@@ -117,7 +118,9 @@ export default function App() {
   }, [loadSettings, refreshTasks, loadAgents, loadNavLinks, loadNavTargets]);
 
   // 行动中心开关：关闭时停止定时刷新并清空聚合（Agent 事件仍照常入库）；
-  // 重新开启后立即补一次聚合，无需重启应用。
+  // 重新开启后立即补一次聚合，无需重启应用。启动加载与事件刷新都按消费者
+  // 门控：入口隐藏、行动页未打开、主界面停靠时不为不可见的徽标付聚合查询
+  // （重新出现消费者时由 FullView / ActionCenterPanel 的恢复路径补刷新）。
   const actionsEnabled = settings?.actions_enabled ?? true;
   const settingsLoaded = settings !== null;
   useEffect(() => {
@@ -125,7 +128,7 @@ export default function App() {
     if (!actionsEnabled) {
       cancelActionsRefresh();
       useActionsStore.setState({ feed: null, error: null });
-    } else {
+    } else if (shouldRefreshActions()) {
       void loadActions();
     }
   }, [actionsEnabled, settingsLoaded, loadActions]);
@@ -153,15 +156,11 @@ export default function App() {
       // 统一调度：节流 + 单飞 + 合并，100 条事件不再触发 100 次全量快照
       scheduleAgentRefresh(critical ? "critical" : "normal");
       // 行动中心：同一批事件只触发一次去抖聚合（与 Agent 快照互不阻塞）
-      if (useSettingsStore.getState().settings?.actions_enabled !== false) {
-        scheduleActionsRefresh();
-      }
+      if (shouldRefreshActions()) scheduleActionsRefresh();
     }));
     scope.add(onReminderFired(() => {
       scheduleTaskRefresh();
-      if (useSettingsStore.getState().settings?.actions_enabled !== false) {
-        scheduleActionsRefresh();
-      }
+      if (shouldRefreshActions()) scheduleActionsRefresh();
     }));
     // 延后成功（任务卡 / 倒计时 / 桌面通知任意入口）：统一弹带「撤销」的 Toast。
     // 撤销只作用于本次实际改动的行；行已被再次延后/编辑/触发时后端按
@@ -202,9 +201,7 @@ export default function App() {
     // 新通知/新事件：任务列表（含 Agent 建的任务）与全局统计都要刷新
     scope.add(onNotification(() => {
       scheduleTaskRefresh();
-      if (useSettingsStore.getState().settings?.actions_enabled !== false) {
-        scheduleActionsRefresh();
-      }
+      if (shouldRefreshActions()) scheduleActionsRefresh();
     }));
     scope.add(onFocusQuickAdd(() => bumpQuickAdd()));
     // 快速捕获产生新条目：task / todo 会自动建任务，收集箱徽标与列表也要更新。

@@ -108,6 +108,12 @@
   不弹原生 `confirm`。
 - 空状态、加载态、错误态齐备；操作后局部刷新。
 - 转为任务：`inbox → converted`，写入 `task_id`，走与快速任务相同的创建链路（`nlp::parse` 提取时间）。
+- 2026-11-05 起工具栏提供明确的「+ 快速记录」入口：调用后端 `quick_capture_show` 打开既有
+  快速捕获窗口（窗口已打开时只聚焦，不会切换为隐藏）。草稿、类型选择、自然语言解析与
+  `client_id` 幂等提交全部复用捕获窗，不在收集箱内新建第二套保存逻辑。
+- `quick_capture_show` 返回真实显示结果 `{ visible, focused, focusError }`：窗口不存在或
+  `show()` 失败返回错误；窗口已显示但 Windows 前台锁拒绝自动聚焦时返回 `visible=true`、
+  `focused=false` 并附原因，前端提示「已打开但未聚焦」，不误报为打开失败，也不清空草稿。
 - 主窗口订阅 `quick-capture-created` 事件：刷新任务列表/统计与收集箱未处理计数
   （复用现有 `scheduleTaskRefresh` 合并刷新语义），进入收集箱 tab 时按需加载。
 

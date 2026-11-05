@@ -44,6 +44,7 @@ import { useClipboardStore } from "../../store/useClipboardStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useMainUiVisible } from "../../hooks/useMainUiVisible";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 import { ConfirmDialog } from "../ui/Dialog";
 import SearchField from "../ui/SearchField";
@@ -115,6 +116,11 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const showToast = useUiStore((s) => s.showToast);
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.update);
+  // 停靠期主界面 display:none + inert：页面与抽屉都不可见。活跃态 = 调用方
+  // active 且主界面可见，否则暂停加载/实时订阅/弹层注册（组件保持挂载，
+  // 状态不丢；恢复可见时 load effect 依赖变化自动补一次刷新）。
+  const uiVisible = useMainUiVisible();
+  const uiActive = active && uiVisible;
 
   const view = useClipboardStore((s) => s.view);
   const filters = useClipboardStore((s) => s.filters);
@@ -506,20 +512,20 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     });
   };
 
-  // 打开或筛选变化时拉取
+  // 打开或筛选变化时拉取（停靠隐藏期暂停；恢复可见时依赖变化自动补一次）
   useEffect(() => {
-    if (!active) return;
+    if (!uiActive) return;
     void load();
-  }, [active, filters.kind, filters.favorite, filters.search, load]);
+  }, [uiActive, filters.kind, filters.favorite, filters.search, load]);
 
   // 搜索防抖：输入框即时回显，筛选条件延迟落库
   useEffect(() => {
-    if (!active) return;
+    if (!uiActive) return;
     const t = window.setTimeout(() => {
       if (searchText !== filters.search) setFilters({ search: searchText });
     }, 260);
     return () => window.clearTimeout(t);
-  }, [searchText, active, filters.search, setFilters]);
+  }, [searchText, uiActive, filters.search, setFilters]);
 
   // 全局搜索定位：消费一次性意图，直接按 id 打开条目详情
   // （ClipboardItemDetail 以 itemId 独立取数，不依赖当前过滤列表）。
@@ -534,6 +540,24 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingLocate]);
 
+  // 工具面板「逐项粘贴」：一次性意图，切到本页后直接打开既有 PastePanel。
+  // 目标窗口选择、身份预检、队列进度、取消/恢复全部复用完整面板，
+  // 工具面板不维护第二套粘贴状态机。
+  const pasteRequest = useUiStore((s) => s.clipboardPasteRequest);
+  const clearPasteRequest = useUiStore((s) => s.clearClipboardPasteRequest);
+  useEffect(() => {
+    // 抽屉与页面共用 Workspace：只允许完整页面消费工具面板导航意图，
+    // 避免用户打开剪贴板抽屉时被一个待决粘贴请求劫持。
+    if (!pasteRequest || !uiActive || isDrawer) return;
+    const intent = pasteRequest;
+    clearPasteRequest();
+    // 导航事务异常/用户很久后才进入剪贴板：过期意图直接丢弃，不突然弹层。
+    if (Date.now() > intent.expiresAt) return;
+    setDetail({ kind: "paste", id: intent.groupId, name: intent.groupName });
+    // 仅响应一次性意图变化；setDetail 每次渲染重建，不能进依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pasteRequest, uiActive, isDrawer, clearPasteRequest]);
+
   // 关联模式固定回到「历史」：上次浏览停在「分组」时直接复用会让用户看不到任何可选条目
   useEffect(() => {
     if (!linkTask) return;
@@ -541,16 +565,18 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     clearSelection();
   }, [linkTask, clearSelection, setSection]);
 
-  // 实时监听：交给 store 统一管理（全局只建一个 Tauri 监听）
+  // 实时监听：交给 store 统一管理（全局只建一个 Tauri 监听）。
+  // 停靠隐藏期退出消费者引用（liveFullRefs 归零，无胶囊消费者时监听整体拆除）；
+  // 后端采集线程独立运行，不受此影响 —— 这里只停 UI 刷新，不停采集。
   useEffect(() => {
-    if (!active) return;
+    if (!uiActive) return;
     setFullLive(true);
     return () => setFullLive(false);
-  }, [active, setFullLive]);
+  }, [uiActive, setFullLive]);
 
   // 监听状态（区分「已暂停」与「监听线程未启动」）
   useEffect(() => {
-    if (!active) return;
+    if (!uiActive) return;
     let alive = true;
     clipboardStatus()
       .then((s) => {
@@ -565,7 +591,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     return () => {
       alive = false;
     };
-  }, [active]);
+  }, [uiActive]);
 
   // 关闭时重置子视图与确认框
   useEffect(() => {
@@ -578,13 +604,15 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   }, [active]);
 
   // 弹层栈：详情子视图 → 抽屉。确认框由 ConfirmDialog 自己注册（dialog，优先级最高）。
-  useOverlayLayer("sublayer", active && !!detail, () => setDetail(null));
+  // 按活跃态注册：停靠隐藏期的不可见弹层不得消费 Escape（否则胶囊态按 Esc
+  // 会去关看不见的详情/抽屉，而不是收起面板）。
+  useOverlayLayer("sublayer", uiActive && !!detail, () => setDetail(null));
   // 关联模式（从任务编辑器发起）时，抽屉是**盖在编辑器之上**的模态选择面，
   // Escape 必须先关抽屉而不是编辑器——弹层层级要和视觉层级一致。
   // 因此关联模式按 dialog 注册，并让任务编辑器在抽屉打开期间让出弹层栈。
-  useOverlayLayer(linkTask ? "dialog" : "drawer", active && isDrawer, () => (onClose ?? closeDrawer)(), drawerRef);
+  useOverlayLayer(linkTask ? "dialog" : "drawer", uiActive && isDrawer, () => (onClose ?? closeDrawer)(), drawerRef);
   // 焦点陷阱：抽屉内 Tab 循环；确认框打开时交由确认框自己接管
-  useFocusTrap(active && isDrawer && !confirm, drawerRef);
+  useFocusTrap(uiActive && isDrawer && !confirm, drawerRef);
 
   // 配置异常优先于 enabled/paused：损坏的配置绝不能显示为“监听中”。
   const configError = status?.configError ?? null;

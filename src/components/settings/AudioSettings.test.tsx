@@ -162,6 +162,22 @@ describe("AudioSettings", () => {
     expect(mocks.update).toHaveBeenCalledWith({ tts_enabled: true });
   });
 
+  it("设置写入失败：提示具体原因，开关回到原值，不产生未处理异常", async () => {
+    mocks.update.mockRejectedValueOnce(new Error("数据库被占用"));
+    renderPanel();
+    const toggle = screen.getByRole("switch", {
+      name: "settings.audio.ttsEnabled",
+    }) as HTMLInputElement;
+    fireEvent.click(toggle);
+    await waitFor(() => expect(mocks.toast).toHaveBeenCalledTimes(1));
+    expect(mocks.toast).toHaveBeenCalledWith(
+      'settings.audio.saveFailed|{"error":"数据库被占用"}',
+      { kind: "error" },
+    );
+    // 设置未变：开关仍由 store 值驱动（仍为 false）
+    expect(toggle.checked).toBe(false);
+  });
+
   it("语音读取失败显示错误并允许继续使用其他设置", async () => {
     mocks.listVoices.mockRejectedValueOnce(new Error("WinRT 不可用"));
     renderPanel();

@@ -396,6 +396,14 @@ export default function AppPicker({
   const scanFailedFresh = scanState === "failed";
   const scanRefreshing = scanState === "scanning-empty";
 
+  // 未扫描时输入搜索词 → 自动触发一次扫描。首次进入添加页仍然不主动扫描；
+  // loadApps 内部有 scanning 单飞守卫 + 代际序号：连续输入不会叠加请求，
+  // 旧请求也不会覆盖新的搜索/结果；失败后由页面上的重试按钮接管。
+  useEffect(() => {
+    if (!query.trim() || scanState !== "unscanned") return;
+    void loadApps();
+  }, [query, scanState, loadApps]);
+
   /**
    * 空列表提示（页面与弹层共用）：扫描中不得说「没有匹配」，否则会被误读为
    * 扫描已结束。状态一律来自 `deriveScanState()`，不在这里另建布尔组合。
@@ -498,7 +506,8 @@ export default function AppPicker({
       await navUpdateTarget(restoreTarget.id, { hidden: false });
       const outcome = await loadTargets(true);
       finishWithRefresh("已恢复显示", outcome, () => loadTargets(true));
-      onClose();
+      // 添加页保持打开：恢复后仍可继续添加，只有用户主动返回才离开。
+      if (!isPage) onClose();
     } catch (e) {
       showToast(`恢复显示失败：${errorMessage(e)}`, { kind: "error" });
     }
@@ -580,18 +589,16 @@ export default function AppPicker({
     if (refreshOutcome === "error") {
       finishWithRefresh(summaryText, refreshOutcome, () => loadTargets(true), "success");
       setSelectedKeys(new Set());
-      onClose();
       return;
     }
     if (refreshOutcome === "stale") {
       // 刷新被更新的请求取代：写入已完成，让最新一次的刷新结果落地即可。
+      // 仍停留在添加页，用户可以继续选择或主动返回。
       setSelectedKeys(new Set());
-      onClose();
       return;
     }
     showToast(summaryText, { kind: "success" });
     setSelectedKeys(new Set());
-    onClose();
   }
 
   /** 同程序普通应用快捷方式（不含指定窗口快捷方式）。 */
@@ -706,10 +713,12 @@ export default function AppPicker({
       return;
     }
     if (standaloneMode) {
-      // 独立配置：保存后共享目标列表立即更新（工具面板下一帧就能看到）
+      // 独立配置：保存后共享目标列表立即更新（工具面板下一帧就能看到）。
+      // 子页面（完整面板 / 设置里的「添加应用」）保持打开，让用户可以连续添加；
+      // 只有用户点返回/取消才离开。弹层形态维持原有语义（保存后关闭）。
       const outcome = await loadTargets(true);
       finishWithRefresh(msg, outcome, () => loadTargets(true), kind);
-      onClose();
+      if (!isPage) onClose();
       return;
     }
     onClose();

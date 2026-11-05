@@ -1883,6 +1883,7 @@ pub fn start_auto_cleanup(db: Arc<Db>, root: PathBuf) {
         });
 }
 
+pub mod drop_targets;
 pub mod fsops;
 
 #[cfg(test)]

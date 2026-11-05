@@ -18,6 +18,7 @@
 
 import { create } from "zustand";
 import {
+  applyMode,
   applyWindowMaterial,
   applyWindowRadius,
   getSettings,
@@ -87,14 +88,96 @@ let lastRadius = -1;
  * 避免每次设置刷新都刷日志。
  */
 let invalidModeReported = false;
+let invalidSnapshotReported = false;
 
-function normalizeLoadedSettings(s: Settings): Settings {
-  if (isWindowMode(s.mode)) return s;
-  if (!invalidModeReported) {
-    invalidModeReported = true;
-    console.warn("[settings] 非法显示模式已回退为 full", { mode: s.mode });
+/**
+ * 外部事件可写字段的版本号。
+ *
+ * `mode`（标题栏/托盘/胶囊跳转）、`theme`（托盘）、`snap_display_mode`（右键菜单）
+ * 会由 `syncExternal` 在**设置写入响应到达之前**更新到 store。写入响应是「后端
+ * 读取到的完整快照」，若它开始得比外部事件更早，快照里的这些字段就是旧值：
+ * 直接整体覆盖会让界面回退到旧模式/旧主题，而窗口尺寸、吸附形态已经是新值。
+ * 典型后果：窗口已按「极简」缩小，界面却仍按「完整」渲染，看起来只剩标题栏。
+ *
+ * 因此每个字段单独记版本：写入发起后版本变过的字段一律保留当前值，
+ * 并在写完后做一次有界「终态核对」（见 `reconcileExternalConflict`）。
+ *
+ * 注意：同字段的连续写入由写入队列串行保证顺序（见 `enqueueWrite`），
+ * 这里只处理**外部路径**（原生窗口命令 / 托盘 / 右键菜单）与在途快照的竞争。
+ */
+type ExternalField = "mode" | "theme" | "visual_preset" | "snap_display_mode";
+const EXTERNAL_FIELDS: readonly ExternalField[] = [
+  "mode",
+  "theme",
+  "visual_preset",
+  "snap_display_mode",
+];
+const externalFieldSeq: Record<ExternalField, number> = {
+  mode: 0,
+  theme: 0,
+  visual_preset: 0,
+  snap_display_mode: 0,
+};
+
+function bumpExternalFields(patch: Record<string, unknown>): void {
+  for (const key of EXTERNAL_FIELDS) {
+    if (patch[key] !== undefined) externalFieldSeq[key] += 1;
   }
-  return { ...s, mode: resolveWindowMode(s.mode) };
+}
+
+function snapshotExternalFields(): Record<ExternalField, number> {
+  return { ...externalFieldSeq };
+}
+
+/**
+ * 设置快照收敛（load / update / syncExternal 共用）。
+ *
+ * - 缺失或 `undefined` 的键沿用上一份值：残缺响应不得清空无关设置；
+ * - 非法 `mode`：优先保留上一份合法值，没有才回退 `full` —— 一次异常响应不能
+ *   顺带改变用户正在使用的显示模式；
+ * - `staleFields`：写入发起后**被外部事件改写过**的字段，一律保留当前值。
+ *   即使本次补丁显式包含该字段也一样——外部事件（apply_mode / 托盘 / 右键菜单）
+ *   发生在请求之后，是更新的意图（见上面版本号说明）。
+ */
+function normalizeLoadedSettings(
+  s: Settings,
+  prev: Settings | null = null,
+  staleFields: readonly ExternalField[] = [],
+): Settings {
+  if (!s || typeof s !== "object") {
+    if (!invalidSnapshotReported) {
+      invalidSnapshotReported = true;
+      console.warn("[settings] 设置快照不是对象，已保留当前设置");
+    }
+    if (prev) return prev;
+    // 没有任何可用旧值：交给调用方，由外壳层的 mode 归一化兜底。
+    return s;
+  }
+
+  let next: Settings = s;
+  if (prev) {
+    const merged: Record<string, unknown> = { ...prev };
+    for (const [key, value] of Object.entries(s)) {
+      if (value !== undefined) merged[key] = value;
+    }
+    next = merged as unknown as Settings;
+  }
+
+  if (!isWindowMode(next.mode)) {
+    const fallback = isWindowMode(prev?.mode) ? prev!.mode : resolveWindowMode(next.mode);
+    if (!invalidModeReported) {
+      invalidModeReported = true;
+      console.warn("[settings] 非法显示模式已回退", { mode: next.mode, fallback });
+    }
+    next = { ...next, mode: fallback };
+  }
+
+  for (const key of staleFields) {
+    if (prev && prev[key] !== undefined) {
+      (next as unknown as Record<string, unknown>)[key] = prev[key];
+    }
+  }
+  return next;
 }
 
 export const useSettingsStore = create<{
@@ -238,6 +321,175 @@ export const useSettingsStore = create<{
     });
   }
 
+  /**
+   * ── 设置写入队列：串行 + 合并 ────────────────────────────────────────
+   *
+   * 规则（可证明的并发契约）：
+   * 1. **任意时刻最多一个写入在途**。期间到达的请求合并为一个待发补丁：同键后值覆盖
+   *    前值、不同键累加。于是
+   *    - 不同字段的独立更新都会落地，互不吞掉（每个响应都会被应用）；
+   *    - 同字段连续写入按用户操作顺序到达后端（最后操作优先，且是**持久化**顺序，
+   *      不只是前端看起来正确）；
+   *    - 突发变更最多产生「1 在途 + 1 待发」两次 IPC，不会形成无界队列；
+   *    - 我方请求的响应不可能乱序（只存在一个在途请求）。
+   * 2. 响应**逐字段**裁决：快照缺失/`undefined` 的键保留现值；请求发起后被外部事件
+   *    （apply_mode / 托盘 / 右键菜单）改写的字段保留外部值（即使本次补丁包含该字段）。
+   * 3. 发生裁决丢弃时，在队列尾部做一次**有界终态核对**：重读数据库，必要时
+   *    重新下发外部值（`mode` 走 `apply_mode`，同时修正窗口尺寸），保证
+   *    UI、数据库、原生窗口三者一致，而不是只让 Zustand 看起来正确。
+   * 4. 失败只影响该批次：已成功批次的字段不回滚、不重放；失败后按数据库真值
+   *    对齐一次（防止后端部分写入造成分叉），错误照常回传给调用方提示。
+   */
+  interface WriteWaiter {
+    resolve: () => void;
+    reject: (e: unknown) => void;
+  }
+  let pendingPatch: Partial<Settings> | null = null;
+  let pendingWaiters: WriteWaiter[] = [];
+  let draining = false;
+  let reconciling = false;
+
+  function enqueueWrite(patch: Partial<Settings>): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (pendingPatch) {
+        // 合并待发批次：同键由后一次操作覆盖（用户最后一次操作优先）。
+        pendingPatch = { ...pendingPatch, ...patch };
+        pendingWaiters.push({ resolve, reject });
+      } else {
+        pendingPatch = { ...patch };
+        pendingWaiters = [{ resolve, reject }];
+      }
+      void drainWrites();
+    });
+  }
+
+  async function drainWrites(): Promise<void> {
+    if (draining) return;
+    draining = true;
+    try {
+      while (pendingPatch) {
+        const patch = pendingPatch;
+        const waiters = pendingWaiters;
+        pendingPatch = null;
+        pendingWaiters = [];
+        let staleFields: ExternalField[] = [];
+        try {
+          staleFields = await writeBatch(patch);
+          for (const w of waiters) w.resolve();
+        } catch (e) {
+          for (const w of waiters) w.reject(e);
+        }
+        if (staleFields.length > 0) await reconcileExternalConflict(staleFields);
+      }
+    } finally {
+      draining = false;
+    }
+  }
+
+  /**
+   * 执行一个批次；返回被外部事件压制的字段（非空表示需要终态核对）。
+   * 响应逐字段应用，副作用按实际写入的字段触发（不会因为别的请求被丢弃而漏执行）。
+   */
+  async function writeBatch(patch: Partial<Settings>): Promise<ExternalField[]> {
+    // 写侧兼容：历史调用方可能仍传 liquid-glass / clear，先归一为 frosted 再入库。
+    const next: Partial<Settings> = patch.visual_preset
+      ? { ...patch, visual_preset: resolveVisualPreset(patch.visual_preset) }
+      : patch;
+    const startedFields = snapshotExternalFields();
+    let snapshot: Settings;
+    try {
+      snapshot = await updateSettings(next);
+    } catch (e) {
+      // 失败：正常情况后端「先整体校验再写入」，不会留下半套设置；为覆盖极端
+      // 部分写入（磁盘/事务异常），按数据库真值对齐一次后再把错误交给调用方。
+      // 其他成功批次的字段在库里，仍会保留；不重放旧请求、不重置设置。
+      await alignWithDatabase(startedFields);
+      throw e;
+    }
+    const stale = EXTERNAL_FIELDS.filter(
+      (key) => externalFieldSeq[key] !== startedFields[key],
+    );
+    // 更新响应是「后端设置的完整快照」：任何无关字段（含 mode）都不能
+    // 因为一次语音/导航/主题写入而让外壳进入无有效视图的状态；写入发起后
+    // 被 apply_mode / 托盘事件改写的字段保留当前值，不用旧快照回退。
+    set({ settings: normalizeLoadedSettings(snapshot, get().settings, stale) });
+    // 副作用失败不能让「已成功写库」变成调用方看到的失败：单独兜住并记录诊断。
+    try {
+      if (next.visual_preset) applyPresetToDom();
+      if (patch.theme) applyThemeToDom();
+      // 预设切换后重放一次材质/圆角应用，保证窗口状态与最新设置一致；
+      // 原生后端已不再按预设名分支，这里保留重放以覆盖并行修改。
+      if (patch.material || next.visual_preset) await applyMaterial();
+    } catch (e) {
+      console.warn("[settings] 设置已保存，但界面副作用执行失败", e);
+    }
+    return stale;
+  }
+
+  /** 失败后对齐数据库真值（尽力而为；失败保持现值并记录诊断）。 */
+  async function alignWithDatabase(
+    startedFields: Record<ExternalField, number>,
+  ): Promise<void> {
+    try {
+      const truth = await getSettings();
+      if (!truth || typeof truth !== "object") return;
+      const stale = EXTERNAL_FIELDS.filter(
+        (key) => externalFieldSeq[key] !== startedFields[key],
+      );
+      set({ settings: normalizeLoadedSettings(truth, get().settings, stale) });
+      applyPresetToDom();
+      applyThemeToDom();
+    } catch (e) {
+      console.warn("[settings] 写入失败后对齐数据库失败，保留当前设置", e);
+    }
+  }
+
+  /**
+   * 外部事件冲突的终态核对（每批最多一次，且不并发）。
+   *
+   * 冲突意味着：写入发起后，另一个路径（apply_mode / 托盘 / 右键菜单）也改了字段。
+   * 界面已保留外部值；但后端写入顺序未知——如果我们的旧写入晚到，数据库会落后于
+   * 界面。这里重读数据库并**重新下发界面值**（`mode` 走 `apply_mode`，同时调整窗口
+   * 尺寸），使 UI / 数据库 / 原生窗口收敛到较新的外部意图。
+   */
+  async function reconcileExternalConflict(staleFields: readonly ExternalField[]): Promise<void> {
+    if (reconciling) return;
+    reconciling = true;
+    try {
+      const ui = get().settings;
+      if (!ui) return;
+      const db = await getSettings();
+      if (!db || typeof db !== "object") return;
+      if (staleFields.includes("mode") && isWindowMode(ui.mode) && db.mode !== ui.mode) {
+        // apply_mode 同时写库、调整窗口尺寸并广播 mode-changed（幂等）。
+        await applyMode(ui.mode);
+      }
+      // 只修复「本次确实被外部事件压制过」的字段：不碰与竞争无关的设置，
+      // 也不拿较旧的界面值覆盖数据库里可能更新的值。
+      const repair: Partial<Settings> = {};
+      for (const key of ["theme", "visual_preset", "snap_display_mode"] as const) {
+        if (staleFields.includes(key) && db[key] !== ui[key]) {
+          (repair as Record<string, unknown>)[key] = ui[key];
+        }
+      }
+      if (Object.keys(repair).length === 0) return;
+      const startedFields = snapshotExternalFields();
+      const fresh = await updateSettings(repair);
+      const stale = EXTERNAL_FIELDS.filter(
+        (key) => externalFieldSeq[key] !== startedFields[key],
+      );
+      set({ settings: normalizeLoadedSettings(fresh, get().settings, stale) });
+      if (repair.visual_preset) applyPresetToDom();
+      if (repair.theme) applyThemeToDom();
+      if (repair.visual_preset) await applyMaterial();
+    } catch (e) {
+      // 核对失败不重置设置：界面保留较新的外部值，下次事件/写入会再次对齐。
+      console.warn("[settings] 外部写入冲突核对失败，保留界面值", e);
+    } finally {
+      reconciling = false;
+    }
+  }
+
   return {
     settings: null,
     materialInfo: null,
@@ -250,21 +502,7 @@ export const useSettingsStore = create<{
       await applyMaterial();
     },
 
-    update: async (patch) => {
-      // 写侧兼容：历史调用方可能仍传 liquid-glass / clear，先归一为 frosted 再入库。
-      const next: Partial<Settings> = patch.visual_preset
-        ? { ...patch, visual_preset: resolveVisualPreset(patch.visual_preset) }
-        : patch;
-      const s = await updateSettings(next);
-      // 更新响应同样是「后端设置的完整快照」：任何无关字段（含 mode）都不能
-      // 因为一次导航/主题写入而让外壳进入无有效视图的状态。
-      set({ settings: normalizeLoadedSettings(s) });
-      if (next.visual_preset) applyPresetToDom();
-      if (patch.theme) applyThemeToDom();
-      // 预设切换后重放一次材质/圆角应用，保证窗口状态与最新设置一致；
-      // 原生后端已不再按预设名分支，这里保留重放以覆盖并行修改。
-      if (patch.material || next.visual_preset) await applyMaterial();
-    },
+    update: (patch) => enqueueWrite(patch),
 
     syncExternal: (patch) => {
       const s = get().settings;
@@ -272,12 +510,17 @@ export const useSettingsStore = create<{
       const preset = patch.visual_preset
         ? resolveVisualPreset(patch.visual_preset)
         : undefined;
+      // 外部事件是这些字段的最新事实源：记版本，阻止在途的设置响应把它们回退。
+      bumpExternalFields(patch as Record<string, unknown>);
       set({
-        settings: normalizeLoadedSettings({
-          ...s,
-          ...patch,
-          ...(preset ? { visual_preset: preset } : {}),
-        } as Settings),
+        settings: normalizeLoadedSettings(
+          {
+            ...s,
+            ...patch,
+            ...(preset ? { visual_preset: preset } : {}),
+          } as Settings,
+          s,
+        ),
       });
       if (preset) {
         applyPresetToDom();

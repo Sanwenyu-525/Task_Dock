@@ -101,6 +101,8 @@ const revisionCache = new Map<string, number>();
 /** 最近一次已提交内容，用于跳过重复的 Ctrl+S / 冲刷请求。 */
 const lastSubmitted = new Map<string, { title: string; content: string }>();
 const forced = new Set<string>();
+/** 按笔记 id 记录未解决的 revision 冲突；跨选中切换保留，直到覆盖保存或放弃。 */
+const conflictNotes = new Map<string, string>();
 let listSeq = 0;
 let selectSeq = 0;
 let queryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -186,6 +188,13 @@ function mergeSummary(previous: NoteSummary, note: Note): NoteSummary {
   return { ...summaryFromNote(note), created_at: previous.created_at };
 }
 
+/** 返回删除指定键后的新记录（不修改入参）。 */
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
+
 export type NotesState = {
   items: NoteSummary[];
   query: string;
@@ -203,6 +212,8 @@ export type NotesState = {
   conflict: boolean;
   restored: boolean;
   loadingNote: boolean;
+  /** 按笔记 id 记录最近一次自动保存失败/冲突原因；列表据此显示未保存徽标。 */
+  saveFailures: Record<string, string>;
 
   templates: NoteTemplate[];
   templatesLoaded: boolean;
@@ -250,14 +261,14 @@ const initialState: NotesState = {
   conflict: false,
   restored: false,
   loadingNote: false,
+  saveFailures: {},
   templates: [],
   templatesLoaded: false,
   linkOptions: { tasks: [], workspaces: [] },
   linkOptionsLoading: false,
 };
 
-export const useNotesStore = create<NotesState & NotesActions>((set, get) => {
-  const captureSnapshot = (id: string): SaveSnapshot | null => {
+export const useNotesStore = create<NotesState & NotesActions>((set, get) => {  const captureSnapshot = (id: string): SaveSnapshot | null => {
     const state = get();
     if (state.activeId !== id || !state.active || !state.draft) return null;
     return {
@@ -289,11 +300,13 @@ export const useNotesStore = create<NotesState & NotesActions>((set, get) => {
     note: Note,
   ) => {
     revisionCache.set(id, note.revision);
+    conflictNotes.delete(id);
     set((state) => {
+      const saveFailures = withoutKey(state.saveFailures, id);
       const items = state.items.map((item) =>
         item.id === id ? mergeSummary(item, note) : item,
       );
-      if (state.activeId !== id) return { items };
+      if (state.activeId !== id) return { items, saveFailures };
       const draft = state.draft;
       const typedSince = !!draft && (draft.title !== snapshot.title || draft.content !== snapshot.content);
       return {
@@ -327,9 +340,14 @@ export const useNotesStore = create<NotesState & NotesActions>((set, get) => {
     pendingSnapshots.delete(id);
     const snapshot = captureSnapshot(id);
     if (snapshot) writeLocalDraft(id, snapshot);
+    // 冲突要跟随笔记本身，而不是只存在于「当前选中」的临时状态：
+    // 切走再切回时若丢掉冲突标记，恢复出的草稿会被自动保存，静默覆盖他人修改。
+    if (normalized.code === "CONFLICT") conflictNotes.set(id, normalized.message);
     set((state) => {
-      if (state.activeId !== id) return {};
+      const saveFailures = { ...state.saveFailures, [id]: normalized.message };
+      if (state.activeId !== id) return { saveFailures };
       return {
+        saveFailures,
         saveState: "failed",
         saveError: normalized.message,
         conflict: normalized.code === "CONFLICT",
@@ -558,24 +576,37 @@ export const useNotesStore = create<NotesState & NotesActions>((set, get) => {
         revisionCache.set(id, note.revision);
         const local = readLocalDraft(id);
         const differs = !!local && (local.title !== note.title || local.content !== note.content);
+        // 该笔记仍有未解决的冲突：恢复出的本地草稿不得自动保存，
+        // 必须重新进入「保存失败 + 冲突」态，让用户显式覆盖或放弃。
+        const conflictMessage = conflictNotes.get(id) ?? null;
         set({
           active: note,
           draft: differs
             ? { title: local!.title, content: local!.content }
             : { title: note.title, content: note.content },
           dirty: differs,
-          saveState: differs ? "editing" : "saved",
-          saveError: null,
+          saveState: differs
+            ? conflictMessage
+              ? "failed"
+              : "editing"
+            : "saved",
+          saveError: conflictMessage,
           savedAt: differs ? null : note.updated_at,
+          conflict: !!conflictMessage,
           restored: differs,
           loadingNote: false,
         });
         if (differs) {
           scheduleDraftPersist(id);
-          // 恢复出来的草稿仍是未保存内容，自动排一次保存，无需用户再输入触发。
-          scheduleSave(id);
+          // 无冲突的草稿恢复后自动排一次保存；冲突则等待用户选择。
+          if (!conflictMessage) scheduleSave(id);
         } else {
           clearLocalDraft(id);
+          conflictNotes.delete(id);
+          set((state) => ({
+            saveFailures: withoutKey(state.saveFailures, id),
+            saveError: null,
+          }));
         }
       } catch (error) {
         if (token !== selectSeq) return;
@@ -614,7 +645,13 @@ export const useNotesStore = create<NotesState & NotesActions>((set, get) => {
     retrySave: async (force) => {
       const state = get();
       if (!state.activeId || !state.active || !state.draft) return;
-      if (force) set({ conflict: false });
+      if (force) {
+        conflictNotes.delete(state.activeId);
+        set((s) => ({
+          conflict: false,
+          saveFailures: withoutKey(s.saveFailures, state.activeId!),
+        }));
+      }
       clearTimer(saveTimers, state.activeId);
       const snapshot = captureSnapshot(state.activeId);
       if (snapshot) await enqueueSnapshot(snapshot, !!force);
@@ -633,6 +670,8 @@ export const useNotesStore = create<NotesState & NotesActions>((set, get) => {
       pendingSnapshots.delete(id);
       forced.delete(id);
       lastSubmitted.delete(id);
+      conflictNotes.delete(id);
+      set((s) => ({ saveFailures: withoutKey(s.saveFailures, id) }));
       const pending = inflight.get(id);
       if (pending) await pending;
       if (get().activeId !== id) return;
@@ -740,6 +779,8 @@ export const useNotesStore = create<NotesState & NotesActions>((set, get) => {
       revisionCache.delete(target);
       lastSubmitted.delete(target);
       forced.delete(target);
+      conflictNotes.delete(target);
+      set((s) => ({ saveFailures: withoutKey(s.saveFailures, target) }));
       const state = get();
       const remaining = state.items.filter((item) => item.id !== target);
       set({ items: remaining });
@@ -821,3 +862,13 @@ export const useNotesStore = create<NotesState & NotesActions>((set, get) => {
 });
 
 export { initialState as initialNotesState };
+
+/** 仅供测试：清空模块级运行时缓存（冲突标记、revision、队列与在途表）。 */
+export function __resetNotesRuntimeForTests(): void {
+  conflictNotes.clear();
+  revisionCache.clear();
+  lastSubmitted.clear();
+  forced.clear();
+  pendingSnapshots.clear();
+  inflight.clear();
+}

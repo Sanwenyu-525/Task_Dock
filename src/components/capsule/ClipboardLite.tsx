@@ -15,10 +15,11 @@
 //! 分段筛选（全部 / 文本 / 图片 / 文件）是对同一份真实列表的本地过滤。
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpRight, Check, Clipboard, Copy, FileText, Images, Layers } from "lucide-react";
+import { ArrowUpRight, Check, Clipboard, Copy, FileText, Images, Layers, Play } from "lucide-react";
 import {
   clipboardCopyGroupRich,
   clipboardCopyItem,
+  type ClipboardGroup,
   type ClipboardItem,
   type CopyReport,
 } from "../../lib/bridge";
@@ -84,14 +85,16 @@ export default function ClipboardLite() {
   const releaseLite = useClipboardStore((s) => s.releaseLite);
   const setLiteLive = useClipboardStore((s) => s.setLiteLive);
   const showToast = useUiStore((s) => s.showToast);
+  const requestPaste = useUiStore((s) => s.requestClipboardPaste);
   const items = lite?.items ?? null;
-  // 只给「有图的分组」取封面，最多 2 组，顺序按后端返回
+  // 所有有图分组都列出来（不再截断前两组），列表由固定高度内容区滚动承载；
+  // 每个分组最多展示 3 张真实封面（后端列表接口已填充 cover_items）。
   const groups = useMemo(
-    () => (lite?.groups ?? []).filter((g) => g.image_count > 0).slice(0, 2),
+    () => (lite?.groups ?? []).filter((g) => g.image_count > 0),
     [lite],
   );
   const [filter, setFilter] = useState<Filter>("all");
-  /** 截图组 → 可作封面的条目 id（按需读详情，最多 2 组） */
+  /** 旧数据/旧后端没有 cover_items 时，按需补读第 1 张作为降级封面 */
   const [covers, setCovers] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState<string | null>(null);
   /** 二级视图栈：图片 / 文本 / 文件 / 截图组；分组里再点图会压入原图预览。 */
@@ -117,13 +120,15 @@ export default function ClipboardLite() {
     clearGroupPageCache();
   }, [lite]);
 
-  // 封面：有界查询每个有图分组的第 1 张（limit 1 / imagesOnly），最多 2 组；
+  // 封面：优先用列表接口已带的 cover_items（最多 3 张，无需额外 IPC）；
+  // 旧数据缺失时才按需补读每个分组第 1 张（limit 1 / imagesOnly）作为降级。
   // 同一快照内复用缓存，不重复请求；失败静默，不影响文案与复制。
   useEffect(() => {
-    if (groups.length === 0) return;
+    const missing = groups.filter((g) => (g.cover_items?.length ?? 0) === 0);
+    if (missing.length === 0) return;
     let alive = true;
     void (async () => {
-      for (const g of groups) {
+      for (const g of missing) {
         try {
           const page = await loadGroupPage(g, 1, 0, true);
           if (!alive) return;
@@ -244,6 +249,17 @@ export default function ClipboardLite() {
 
   const openFull = () => openFullApp("clipboard");
 
+  /**
+   * 工具面板的逐项粘贴入口：把一次性意图绑定到本次导航事务，
+   * 只有切页成功（含用户确认放弃未保存草稿）后才写入 Store。
+   * 取消/保存中拦截时不留下请求，之后进入剪贴板页也不会突然弹层。
+   */
+  const openPaste = (group: ClipboardGroup) => {
+    openFullApp("clipboard", () => {
+      requestPaste(group.id, group.name || "截图组");
+    });
+  };
+
   /** 打开二级视图：记住列表滚动位置，返回时恢复。 */
   const openView = (view: ClipboardLiteView) => {
     listScroll.current = listRef.current?.scrollTop ?? 0;
@@ -288,6 +304,13 @@ export default function ClipboardLite() {
             {view.kind === "image" ? (
               <ClipboardLiteImageView
                 item={view.item}
+                sequence={view.sequence}
+                liveGroup={
+                  view.sequence
+                    ? lite?.groups.find((g) => g.id === view.sequence!.group.id)
+                    : undefined
+                }
+                active={index === views.length - 1}
                 onBack={closeTop}
                 onOpenFull={openFull}
                 onCopyItem={copyDetailItem}
@@ -312,7 +335,10 @@ export default function ClipboardLite() {
                 onBack={closeTop}
                 onOpenFull={openFull}
                 onCopyGroup={copyDetailGroup}
-                onOpenImage={(item) => pushView({ kind: "image", item })}
+                onPasteGroup={openPaste}
+                onOpenImage={(_item, _index, sequence) =>
+                  pushView({ kind: "image", item: _item, sequence })
+                }
               />
             )}
           </div>
@@ -397,7 +423,10 @@ export default function ClipboardLite() {
         )}
 
         {showGroups &&
-          groups.map((g) => (
+          groups.map((g) => {
+            const coverItems = (g.cover_items ?? []).slice(0, 3);
+            const legacyCover = coverItems.length === 0 ? covers[g.id] : undefined;
+            return (
             <div className="cap-item cap-clip-row" key={g.id}>
               <button
                 type="button"
@@ -405,14 +434,33 @@ export default function ClipboardLite() {
                 aria-label={`预览截图组「${g.name || "截图组"}」`}
                 onClick={() => openView({ kind: "group", group: g })}
               >
-                <span className="cap-stack" aria-hidden="true">
-                  <i>
-                    <Layers size={13} strokeWidth={1.8} />
-                  </i>
-                  <i />
-                  <i>
-                    {covers[g.id] ? <ClipboardThumb itemId={covers[g.id]} hasThumb size={46} /> : null}
-                  </i>
+                <span
+                  className={`cap-stack${coverItems.length > 0 ? " is-multi" : ""}`}
+                  aria-hidden="true"
+                >
+                  {coverItems.length > 0 ? (
+                    coverItems.map((cover) => (
+                      <i key={cover.id}>
+                        <ClipboardThumb
+                          itemId={cover.id}
+                          hasThumb={cover.has_thumb}
+                          size={26}
+                        />
+                      </i>
+                    ))
+                  ) : (
+                    <>
+                      <i>
+                        <Layers size={13} strokeWidth={1.8} />
+                      </i>
+                      <i />
+                      <i>
+                        {legacyCover ? (
+                          <ClipboardThumb itemId={legacyCover} hasThumb size={46} />
+                        ) : null}
+                      </i>
+                    </>
+                  )}
                 </span>
               </button>
               <button
@@ -428,6 +476,16 @@ export default function ClipboardLite() {
                   截图组 · {g.image_count} 张{g.item_count > g.image_count ? ` · 共 ${g.item_count} 项` : ""}
                 </span>
               </button>
+              {/* 逐项粘贴在复制左侧：与完整面板分组卡的操作顺序一致。 */}
+              <button
+                type="button"
+                className="cap-mini is-icon"
+                aria-label={`逐项粘贴截图组「${g.name || "截图组"}」`}
+                data-tip="逐项粘贴（选择目标窗口）"
+                onClick={() => openPaste(g)}
+              >
+                <Play size={13} strokeWidth={2} aria-hidden="true" />
+              </button>
               <button
                 type="button"
                 className={`cap-mini is-icon${copied === g.id ? " is-ok" : ""}`}
@@ -441,7 +499,8 @@ export default function ClipboardLite() {
                 )}
               </button>
             </div>
-          ))}
+            );
+          })}
 
         {list?.map((it) => {
           const tone = toneOf(it);

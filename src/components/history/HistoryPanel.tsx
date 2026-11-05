@@ -32,6 +32,7 @@ import { ConfirmDialog, Select } from "../ui";
 import { NOTIFICATION_KIND_LABELS, AGENT_STATE_LABELS, formatRelative } from "../../lib/format";
 import { groupHistory } from "../../lib/historyGroup";
 import { useLocale } from "../../hooks/useLocale";
+import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import type { MessageKey } from "../../i18n";
 
 type KindFilter = "all" | "notification" | "event";
@@ -192,7 +193,12 @@ export default function HistoryPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryKey]);
 
-  // 新通知 / Agent 事件到达 → 合并刷新（500ms 窗口，避免事件风暴下反复拉取全量历史）
+  // 新通知 / Agent 事件到达 → 合并刷新（500ms 窗口，避免事件风暴下反复拉取全量历史）。
+  // 停靠/模式切换的隐藏期间跳过（页面级消费者门控）：隐藏页不为事件批付
+  // 三条历史查询；恢复可见时由下方 effect 补一次合并刷新。
+  const visible = useFullViewVisible();
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   useEffect(() => {
     const scope = createSubscriptionScope();
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -200,6 +206,7 @@ export default function HistoryPanel() {
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
+        if (!visibleRef.current) return;
         if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
         void refresh("merge");
       }, 500);
@@ -214,6 +221,13 @@ export default function HistoryPanel() {
       scope.dispose();
     };
   }, [refresh]);
+
+  // 恢复可见：补一次合并刷新，弥补隐藏期间被门控跳过的事件（不重复拉首屏）
+  const prevVisibleRef = useRef(visible);
+  useEffect(() => {
+    if (visible && !prevVisibleRef.current) void refresh("merge");
+    prevVisibleRef.current = visible;
+  }, [visible, refresh]);
 
   const sourceOptions = useMemo(() => {
     const map = new Map<string, string>();

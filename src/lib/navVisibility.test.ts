@@ -187,3 +187,54 @@ describe("导航布局配置", () => {
     expect(isTabHidden({ ...base, left: [] }, "settings")).toBe(true);
   });
 });
+
+// ── 排序不变量（2026-11-05）────────────────────────────────────────
+// 锁定入口（设置）固定末尾：不能通过归一化被挤出，也不能被普通入口
+// 的上下移动间接推走；排序不改变显隐。
+describe("排序不变量：锁定入口固定末尾", () => {
+  it("归一化把位于中间的锁定入口收敛到可见数组末尾", () => {
+    // known 必须是完整快照：缺失的入口会被当成「新增入口」按默认值补回，
+    // 与本用例验证的「锁定入口收敛」无关。
+    const raw = {
+      version: NAV_LAYOUT_VERSION,
+      left: ["settings", "tasks", "agents"],
+      capsule: [],
+      known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
+    };
+    const { config } = normalizeNavigationLayout(raw);
+    expect(config.left).toEqual(["tasks", "agents", "settings"]);
+  });
+
+  it("普通入口不能与锁定入口交换位置（下移越过设置无效）", () => {
+    const ids = ["tasks", "agents", "settings"];
+    expect(moveEntryInList(ids, "agents", 1, (id) => id === "settings")).toEqual([
+      "tasks",
+      "agents",
+      "settings",
+    ]);
+    // 上移方向同样受保护：设置不会被挤到普通入口之后
+    expect(moveEntryInList(["tasks", "settings", "agents"], "agents", -1, (id) => id === "settings")).toEqual([
+      "tasks",
+      "settings",
+      "agents",
+    ]);
+  });
+
+  it("锁定入口自身不可移动", () => {
+    const ids = ["tasks", "agents", "settings"];
+    expect(moveEntryInList(ids, "settings", -1, (id) => id === "settings")).toEqual(ids);
+    expect(moveEntryInList(ids, "settings", 1, (id) => id === "settings")).toEqual(ids);
+  });
+
+  it("排序只改变顺序，不改变成员集合（隐藏状态不受影响）", () => {
+    const ids = ["tasks", "agents", "apps", "settings"];
+    const moved = moveEntryInList(ids, "apps", -1, (id) => id === "settings");
+    expect(moved).toEqual(["tasks", "apps", "agents", "settings"]);
+    expect([...moved].sort()).toEqual([...ids].sort());
+  });
+
+  it("恢复默认后锁定入口仍在末尾", () => {
+    const layout = defaultNavigationLayout();
+    expect(layout.left[layout.left.length - 1]).toBe("settings");
+  });
+});

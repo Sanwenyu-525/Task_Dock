@@ -1,3 +1,4 @@
+import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/bridge", () => ({
@@ -17,8 +18,13 @@ import type {
 import {
   attentionCount,
   categoryCount,
+  hasActionsFeedConsumer,
+  shouldRefreshActions,
   useActionsStore,
 } from "./useActionsStore";
+import { useEdgeSnapStore } from "./useEdgeSnapStore";
+import { useSettingsStore } from "./useSettingsStore";
+import { useUiStore } from "./useUiStore";
 
 const feedMock = vi.mocked(actionsFeed);
 const ackMock = vi.mocked(actionsAck);
@@ -452,5 +458,68 @@ describe("useActionsStore 分页与后台刷新", () => {
     const feed = useActionsStore.getState().feed;
     expect(feed?.items.map((i) => i.id)).toEqual(["run:2"]);
     expect(useActionsStore.getState().loadingMore).toBe(false);
+  });
+});
+
+// ── 消费者门控（导航显隐与资源生命周期）────────────────────────────────
+//
+// feed 只有两个 UI 消费者：侧栏徽标（入口可见时渲染）与行动中心页面。
+// App 的启动加载与事件聚合刷新以 shouldRefreshActions() 为门控；
+// 恢复路径由 FullView / ActionCenterPanel 的可见性 effect 承担。
+
+describe("useActionsStore 消费者门控", () => {
+  it("默认设置（布局缺失→全可见）时有消费者", () => {
+    expect(hasActionsFeedConsumer()).toBe(true);
+    expect(shouldRefreshActions()).toBe(true);
+  });
+
+  it("入口隐藏且不在行动页：无消费者，事件不调度聚合刷新", () => {
+    useSettingsStore.setState({
+      settings: {
+        navigation_layout: {
+          version: 1,
+          left: ["tasks"],
+          capsule: ["tasks"],
+          known: { left: ["tasks", "actions"], capsule: ["tasks", "actions"] },
+        },
+      },
+    } as never);
+    useUiStore.setState({ tab: "tasks" });
+    expect(hasActionsFeedConsumer()).toBe(false);
+    expect(shouldRefreshActions()).toBe(false);
+  });
+
+  it("入口隐藏但 tab=actions（隐藏页仍由「更多」进入）：仍有消费者", () => {
+    useSettingsStore.setState({
+      settings: {
+        navigation_layout: {
+          version: 1,
+          left: ["tasks"],
+          capsule: ["tasks"],
+          known: { left: ["tasks", "actions"], capsule: ["tasks", "actions"] },
+        },
+      },
+    } as never);
+    useUiStore.setState({ tab: "actions" });
+    expect(hasActionsFeedConsumer()).toBe(true);
+  });
+
+  it("主界面停靠胶囊期：即使入口可见也不算消费者（docked-full 除外）", () => {
+    useSettingsStore.setState({ settings: null });
+    useUiStore.setState({ tab: "tasks" });
+    act(() => useEdgeSnapStore.setState({ phase: "docked-revealed" }));
+    expect(hasActionsFeedConsumer()).toBe(false);
+    expect(shouldRefreshActions()).toBe(false);
+    act(() => useEdgeSnapStore.setState({ phase: "docked-full" }));
+    expect(hasActionsFeedConsumer()).toBe(true);
+    act(() => useEdgeSnapStore.setState({ phase: "free" }));
+  });
+
+  it("行动中心开关关闭时，即使有消费者也不调度", () => {
+    useSettingsStore.setState({
+      settings: { actions_enabled: false },
+    } as never);
+    expect(shouldRefreshActions()).toBe(false);
+    useSettingsStore.setState({ settings: null });
   });
 });

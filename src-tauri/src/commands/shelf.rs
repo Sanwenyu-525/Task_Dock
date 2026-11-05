@@ -636,3 +636,145 @@ pub fn shelf_recent_dir_remove(state: State<'_, Arc<ShelfState>>, path: String) 
 pub fn shelf_recent_dirs_clear(state: State<'_, Arc<ShelfState>>) -> AppResult<()> {
     shelf::fsops::clear_recent_dirs(&rt(&state).db)
 }
+
+// ── 快捷投递目标（收集箱「文件投递」子页） ──────────────────
+//
+// 目标目录一律按 **id** 解析：前端只提交 `target_id` 与被拖入的路径列表，
+// 真实目录从数据库读取，避免前端伪造目标路径把文件写到别处。
+
+#[derive(Debug, Deserialize)]
+pub struct DropTargetPatchArgs {
+    pub name: Option<String>,
+    pub path: Option<String>,
+    pub show_in_capsule: Option<bool>,
+    pub op_mode: Option<String>,
+    pub conflict: Option<String>,
+}
+
+/// 列表一次探测各目录可用性（`is_dir`）；网络盘可能阻塞，放阻塞线程。
+#[tauri::command]
+pub async fn shelf_drop_targets_list(
+    state: State<'_, Arc<ShelfState>>,
+) -> AppResult<Vec<shelf::drop_targets::DropTarget>> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || shelf::drop_targets::list(&st.db))
+        .await
+        .map_err(|e| AppError::Agent(format!("读取投递目标失败: {e}")))?
+}
+
+#[tauri::command]
+pub async fn shelf_drop_target_create(
+    state: State<'_, Arc<ShelfState>>,
+    name: Option<String>,
+    path: String,
+    show_in_capsule: Option<bool>,
+    op_mode: Option<String>,
+    conflict: Option<String>,
+) -> AppResult<shelf::drop_targets::DropTarget> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        shelf::drop_targets::create(
+            &st.db,
+            &st.root,
+            name.as_deref().unwrap_or(""),
+            &path,
+            show_in_capsule.unwrap_or(true),
+            op_mode.as_deref().unwrap_or(shelf::drop_targets::OP_COPY),
+            conflict.as_deref().unwrap_or(shelf::drop_targets::CONFLICT_RENAME),
+        )
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("添加投递目标失败: {e}")))?
+}
+
+#[tauri::command]
+pub async fn shelf_drop_target_update(
+    state: State<'_, Arc<ShelfState>>,
+    id: String,
+    patch: DropTargetPatchArgs,
+) -> AppResult<shelf::drop_targets::DropTarget> {
+    let st = state.inner().clone();
+    let patch = shelf::drop_targets::DropTargetPatch {
+        name: patch.name,
+        path: patch.path,
+        show_in_capsule: patch.show_in_capsule,
+        op_mode: patch.op_mode,
+        conflict: patch.conflict,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        shelf::drop_targets::update(&st.db, &st.root, &id, &patch)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("更新投递目标失败: {e}")))?
+}
+
+/// 只删配置行；真实目录与其内容一律不动。
+#[tauri::command]
+pub fn shelf_drop_target_delete(state: State<'_, Arc<ShelfState>>, id: String) -> AppResult<()> {
+    shelf::drop_targets::delete(&rt(&state).db, &id)
+}
+
+#[tauri::command]
+pub fn shelf_drop_target_move(
+    state: State<'_, Arc<ShelfState>>,
+    id: String,
+    direction: String,
+) -> AppResult<Vec<shelf::drop_targets::DropTarget>> {
+    shelf::drop_targets::reorder(&rt(&state).db, &id, &direction)
+}
+
+/// 在资源管理器中打开目标目录（目录必须存在；不存在时明确报错，不静默失败）。
+#[tauri::command]
+pub async fn shelf_drop_target_open(
+    state: State<'_, Arc<ShelfState>>,
+    id: String,
+) -> AppResult<()> {
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (_, dir) = shelf::drop_targets::resolve_dir(&st.db, &st.root, &id)?;
+        std::process::Command::new("explorer.exe")
+            .arg(dir.as_os_str())
+            .spawn()
+            .map_err(|e| AppError::Validation(format!("打开资源管理器失败: {e}")))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("打开目标目录失败: {e}")))?
+}
+
+/// 批次标识只用于操作日志归属：限制字符集与长度，避免脏值进入日志查询条件。
+fn sanitize_batch_id(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    if cleaned.is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// 把拖入的文件/文件夹直接投递到某个目标目录。
+///
+/// - 目标按 id 解析，前端不传目录字符串；
+/// - 默认复制且保留源文件；目标配置为 move 时走「同卷改名 / 跨卷复制校验后删源」；
+/// - 单条失败不影响其他独立条目，结果逐条返回。
+#[tauri::command]
+pub async fn shelf_drop_to_directory(
+    state: State<'_, Arc<ShelfState>>,
+    target_id: String,
+    paths: Vec<String>,
+    batch_id: Option<String>,
+) -> AppResult<shelf::fsops::DropReport> {
+    let st = state.inner().clone();
+    let batch = sanitize_batch_id(batch_id.as_deref().unwrap_or(""));
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = shelf::drop_targets::get(&st.db, &target_id)?;
+        shelf::fsops::drop_paths(&st.db, &st.root, &target, &paths, &batch)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("文件投递任务失败: {e}")))?
+}
+

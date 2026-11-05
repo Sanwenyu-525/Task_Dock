@@ -222,15 +222,7 @@ export default function ClipboardGroupCard({
             <Link2 size={11} /> 关联
           </button>
         )}
-        <button
-          className="icon-btn sm"
-          data-tip="复制整组（富文本）"
-          aria-label="复制整组内容"
-          onClick={onCopyRich}
-          disabled={locked}
-        >
-          <Copy size={12} />
-        </button>
+        {/* 逐项粘贴在复制左侧：与工具面板截图组行的操作顺序一致。 */}
         <button
           className="icon-btn sm"
           data-tip="逐项粘贴到当前窗口"
@@ -239,6 +231,15 @@ export default function ClipboardGroupCard({
           disabled={locked}
         >
           <Play size={12} />
+        </button>
+        <button
+          className="icon-btn sm"
+          data-tip="复制整组（富文本）"
+          aria-label="复制整组内容"
+          onClick={onCopyRich}
+          disabled={locked}
+        >
+          <Copy size={12} />
         </button>
         <button
           className="icon-btn sm"

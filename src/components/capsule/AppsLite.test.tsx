@@ -21,6 +21,24 @@ const navListTargets = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   applyMode: async () => undefined,
+  getUserPreferences: async () => ({
+    version: 1,
+    locale: null,
+    widgets: null,
+    app_grid_order: null,
+    warnings: [],
+    apply_restore: false,
+    restore_id: null,
+  }),
+  setUserPreferences: async () => ({
+    version: 1,
+    locale: null,
+    widgets: null,
+    app_grid_order: null,
+    warnings: [],
+    apply_restore: false,
+    restore_id: null,
+  }),
 }));
 
 // 只替换真实 IPC 调用，结果解释与图标工具使用真实实现，避免测试复制产品文案。
@@ -132,6 +150,32 @@ describe("AppsLite 反馈计时器", () => {
 });
 
 describe("AppsLite 启动错误区分", () => {
+  it("启动请求在途：图标区域显示 spinner，格子保持禁用直到结果落地", async () => {
+    let resolveLaunch!: (value: unknown) => void;
+    navNavigate.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveLaunch = resolve;
+      }),
+    );
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    render(<AppsLite />);
+
+    const btn = screen.getByRole("button", { name: "启动 Obsidian" }) as HTMLButtonElement;
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    expect(btn.getAttribute("aria-busy")).toBe("true");
+    expect(btn.disabled).toBe(true);
+    expect(btn.querySelector(".cap-app-spinner")).toBeTruthy();
+
+    await act(async () => {
+      resolveLaunch(launched("a"));
+    });
+    expect(btn.getAttribute("aria-busy")).toBe("false");
+    expect(btn.disabled).toBe(false);
+    expect(btn.querySelector(".cap-app-spinner")).toBeNull();
+  });
+
   it.each([
     [{ code: "PERMISSION_DENIED", message: "access denied" }, "没有权限启动该应用"],
     [{ code: "NOT_FOUND", message: "target missing" }, "应用或窗口不存在"],

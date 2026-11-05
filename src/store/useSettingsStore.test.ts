@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
+  applyMode: vi.fn(),
   applyWindowMaterial: vi.fn(),
   applyWindowRadius: vi.fn(async () => true),
 }));
@@ -20,6 +21,7 @@ const api = vi.hoisted(() => ({
 vi.mock("../lib/bridge", () => api);
 
 import { useSettingsStore } from "./useSettingsStore";
+import type { Settings } from "../lib/bridge";
 
 interface Flags {
   dark?: boolean;
@@ -352,5 +354,295 @@ describe("预设切换", () => {
       expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("glass", "frosted");
       expect(document.documentElement.dataset.clearFg).toBeUndefined();
     }
+  });
+});
+
+describe("设置写入并发契约（串行 + 合并 + 字段级裁决）", () => {
+  const BASE_FULL: Record<string, unknown> = {
+    theme: "light",
+    mode: "full",
+    material: "solid",
+    visual_preset: "frosted",
+    snap_enabled: false,
+    snap_display_mode: "capsule",
+    actions_enabled: true,
+    navigation_layout: { version: 1, left: [], capsule: [] },
+  };
+
+  interface Call {
+    patch: Record<string, unknown>;
+    resolve: (v: Settings) => void;
+    reject: (e: unknown) => void;
+    settled: boolean;
+  }
+
+  let db: Record<string, unknown>;
+  let calls: Call[];
+  let inFlight: number;
+  let maxInFlight: number;
+  let modeCalls: string[];
+
+  const update = (patch: Record<string, unknown>) =>
+    useSettingsStore.getState().update(patch as never);
+  const settings = () =>
+    useSettingsStore.getState().settings as unknown as Record<string, unknown>;
+  const settle = (i: number) => {
+    const c = calls[i];
+    if (c.settled) throw new Error(`call ${i} 已结束`);
+    c.settled = true;
+    inFlight -= 1;
+    db = { ...db, ...c.patch };
+    c.resolve({ ...db } as unknown as Settings);
+  };
+  /** 用指定快照结束请求（不改数据库）：模拟「后端已写库，但快照读取更早」。 */
+  const settleWith = (i: number, snapshot: Record<string, unknown>) => {
+    const c = calls[i];
+    if (c.settled) throw new Error(`call ${i} 已结束`);
+    c.settled = true;
+    inFlight -= 1;
+    c.resolve(snapshot as unknown as Settings);
+  };
+  const fail = (i: number, error: unknown) => {
+    const c = calls[i];
+    if (c.settled) throw new Error(`call ${i} 已结束`);
+    c.settled = true;
+    inFlight -= 1;
+    c.reject(error);
+  };
+
+  beforeEach(async () => {
+    db = { ...BASE_FULL };
+    calls = [];
+    inFlight = 0;
+    maxInFlight = 0;
+    modeCalls = [];
+    // 后端模型：update_settings 写库后返回完整快照；apply_mode 只写 mode。
+    api.getSettings.mockImplementation(async () => ({ ...db }) as unknown as Settings);
+    api.updateSettings.mockImplementation(
+      (patch: Record<string, unknown>) =>
+        new Promise<Settings>((resolve, reject) => {
+          calls.push({ patch, resolve, reject, settled: false });
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+        }),
+    );
+    api.applyMode.mockImplementation(async (mode: string) => {
+      modeCalls.push(mode);
+      db = { ...db, mode };
+    });
+    api.applyWindowMaterial.mockResolvedValue({
+      material: "glass",
+      applied: true,
+      effect: "mica",
+      os_version: "10.0.26100",
+    });
+    await useSettingsStore.getState().load();
+  });
+
+  it("S01 不同字段：A 先返回，两项都落地（不再整体丢弃旧响应）", async () => {
+    const a = update({ tts_enabled: true });
+    const b = update({ tts_rate: 120 });
+    expect(calls).toHaveLength(1); // 串行：B 等待 A
+    expect(calls[0].patch).toEqual({ tts_enabled: true });
+
+    settle(0);
+    await a;
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].patch).toEqual({ tts_rate: 120 });
+    settle(1);
+    await b;
+
+    expect(settings().tts_enabled).toBe(true);
+    expect(settings().tts_rate).toBe(120);
+    expect(db.tts_enabled).toBe(true);
+    expect(db.tts_rate).toBe(120);
+  });
+
+  it("S02 响应不可能乱序：任意时刻只有一个在途，待发请求合并为一次 IPC", async () => {
+    const a = update({ tts_enabled: true });
+    const b = update({ tts_rate: 120 });
+    const c = update({ tts_volume: 70 });
+    expect(calls).toHaveLength(1);
+
+    settle(0);
+    await a;
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    // B、C 合并：同一次请求里两项都在，不产生第三次 IPC
+    expect(calls[1].patch).toEqual({ tts_rate: 120, tts_volume: 70 });
+    settle(1);
+    await Promise.all([b, c]);
+
+    expect(maxInFlight).toBe(1);
+    expect(settings().tts_rate).toBe(120);
+    expect(settings().tts_volume).toBe(70);
+  });
+
+  it("S03 A 成功、B 失败：A 保留，B 报错且不回滚已成功字段", async () => {
+    const a = update({ tts_enabled: true });
+    settle(0);
+    await a;
+
+    const b = update({ tts_rate: 120 });
+    fail(1, new Error("数据库被占用"));
+    await expect(b).rejects.toThrow("数据库被占用");
+
+    expect(settings().tts_enabled).toBe(true);
+    expect(settings().tts_rate).toBe(undefined);
+    expect(db.tts_enabled).toBe(true);
+  });
+
+  it("S04 A 失败、B 成功：B 落地，A 不生效", async () => {
+    const a = update({ tts_enabled: true });
+    const b = update({ tts_rate: 120 });
+    fail(0, new Error("校验失败"));
+    await expect(a).rejects.toThrow();
+
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    settle(1);
+    await b;
+
+    expect(settings().tts_enabled).toBe(undefined);
+    expect(settings().tts_rate).toBe(120);
+    expect(db.tts_rate).toBe(120);
+  });
+
+  it("S05 同字段快速连续写入：最后一次操作胜出（数据库与界面一致）", async () => {
+    const a = update({ tts_rate: 110 });
+    const b = update({ tts_rate: 120 });
+    const c = update({ tts_rate: 130 });
+    expect(calls[0].patch).toEqual({ tts_rate: 110 });
+
+    settle(0);
+    await a;
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    // 中间值 120 被合并掉，只落最终值 130
+    expect(calls[1].patch).toEqual({ tts_rate: 130 });
+    settle(1);
+    await Promise.all([b, c]);
+
+    expect(settings().tts_rate).toBe(130);
+    expect(db.tts_rate).toBe(130);
+  });
+
+  it("S06 TTS 更新与外部 mode 事件并发：UI 与数据库都保持外部值", async () => {
+    const a = update({ tts_enabled: true });
+    // 外部路径（apply_mode）在请求发起后落库并广播
+    db = { ...db, mode: "minimal" };
+    useSettingsStore.getState().syncExternal({ mode: "minimal" });
+    // 语音写入的响应携带模式切换前读到的旧快照
+    settleWith(0, { ...db, mode: "full", tts_enabled: true });
+    await a;
+
+    expect(settings().mode).toBe("minimal");
+    expect(settings().tts_enabled).toBe(true);
+    // 数据库与界面一致，无需修复下发
+    await vi.waitFor(() => expect(modeCalls).toEqual([]));
+  });
+
+  it("S07 显式 mode 写入与外部 mode 事件并发：外部事件（更晚）胜出，并修复数据库", async () => {
+    const a = update({ mode: "compact" });
+    useSettingsStore.getState().syncExternal({ mode: "minimal" });
+    // 我方写入晚到，数据库被旧意图覆盖成 compact
+    db = { ...db, mode: "compact" };
+    settleWith(0, { ...db, mode: "compact" });
+    await a;
+
+    expect(settings().mode).toBe("minimal");
+    // 终态核对：重读数据库发现落后，用 apply_mode 重新落库 + 调整窗口
+    await vi.waitFor(() => expect(modeCalls).toEqual(["minimal"]));
+    expect(db.mode).toBe("minimal");
+    expect(settings().mode).toBe("minimal");
+  });
+
+  it("S07b 外部事件早于写入发起：本次写入生效", async () => {
+    db = { ...db, mode: "minimal" };
+    useSettingsStore.getState().syncExternal({ mode: "minimal" });
+    const a = update({ mode: "compact" });
+    settle(0);
+    await a;
+
+    expect(settings().mode).toBe("compact");
+    expect(modeCalls).toEqual([]);
+  });
+
+  it("S07c 吸附形态并发：旧快照不回退，数据库落后时重新下发界面值", async () => {
+    const a = update({ snap_display_mode: "capsule" });
+    useSettingsStore.getState().syncExternal({ snap_display_mode: "full" });
+    // 我方写入晚到：数据库被旧意图覆盖成 capsule
+    db = { ...db, snap_display_mode: "capsule" };
+    settleWith(0, { ...db, snap_display_mode: "capsule" });
+    await a;
+
+    expect(settings().snap_display_mode).toBe("full");
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].patch).toEqual({ snap_display_mode: "full" });
+    settle(1);
+    await vi.waitFor(() => expect(db.snap_display_mode).toBe("full"));
+  });
+
+  it("S08 主题/预设/语音并发：三项都落地，DOM 与原生材质副作用执行", async () => {
+    const a = update({ theme: "dark" });
+    const b = update({ tts_enabled: true });
+    const c = update({ visual_preset: "dream-gradient" });
+
+    settle(0);
+    await a;
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1].patch).toEqual({
+      tts_enabled: true,
+      visual_preset: "dream-gradient",
+    });
+    settle(1);
+    await Promise.all([b, c]);
+
+    expect(settings().theme).toBe("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(settings().visual_preset).toBe("dream-gradient");
+    expect(document.documentElement.dataset.preset).toBe("dream-gradient");
+    expect(api.applyWindowMaterial).toHaveBeenLastCalledWith("solid", "dream-gradient");
+  });
+
+  it("S09 运行时状态与重新加载（等价重启）一致", async () => {
+    const a = update({ tts_enabled: true });
+    settle(0);
+    await a;
+    const b = update({ theme: "dark", tts_rate: 120 });
+    settle(1);
+    await b;
+
+    await useSettingsStore.getState().load();
+    expect(settings()).toMatchObject({
+      tts_enabled: true,
+      tts_rate: 120,
+      theme: "dark",
+      mode: "full",
+    });
+  });
+
+  it("S10 残缺/非法响应：不损坏其他设置", async () => {
+    const a = update({ tts_enabled: true });
+    settleWith(0, {
+      ...db,
+      mode: "",
+      theme: undefined,
+      tts_enabled: true,
+    });
+    await a;
+
+    expect(settings().mode).toBe("full");
+    expect(settings().theme).toBe("light");
+    expect(settings().tts_enabled).toBe(true);
+    expect(settings().navigation_layout).toEqual({ version: 1, left: [], capsule: [] });
+  });
+
+  it("写入失败但后端已部分落库：按数据库真值对齐，不误报成功", async () => {
+    api.updateSettings.mockImplementationOnce(async (patch: Record<string, unknown>) => {
+      db = { ...db, ...patch }; // 已写入后失败（极端部分写入）
+      throw new Error("写入后失败");
+    });
+    const a = update({ tts_enabled: true, tts_rate: 120 });
+    await expect(a).rejects.toThrow("写入后失败");
+    await vi.waitFor(() => expect(settings().tts_enabled).toBe(true));
+    expect(settings().tts_rate).toBe(120);
   });
 });

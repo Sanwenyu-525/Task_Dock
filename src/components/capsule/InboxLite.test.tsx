@@ -18,6 +18,7 @@ const quickCaptureList = vi.fn();
 const quickCaptureState = vi.fn();
 const markHandled = vi.fn();
 const convertToTask = vi.fn();
+const dropTargets = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   quickCaptureList: (...a: unknown[]) => quickCaptureList(...a),
@@ -31,6 +32,28 @@ vi.mock("../../lib/bridge", () => ({
   quickCaptureSubmit: vi.fn(),
   quickCaptureHide: vi.fn(),
   applyMode: async () => undefined,
+  // 文件子页（默认不挂载，仍补齐导出，避免 mock 缺导出报错）
+  shelfDropTargets: (...a: unknown[]) => dropTargets(...a),
+  shelfDropTargetCreate: vi.fn(),
+  shelfDropTargetUpdate: vi.fn(),
+  shelfDropTargetDelete: vi.fn(),
+  shelfDropTargetMove: vi.fn(),
+  shelfDropTargetOpen: vi.fn(),
+  shelfDropToDirectory: vi.fn(),
+  // 最近暂存
+  shelfList: vi.fn(async () => ({ items: [], total: 0 })),
+  shelfCheckExists: vi.fn(async () => []),
+  shelfOpenItem: vi.fn(async () => undefined),
+  shelfCopyFiles: vi.fn(async () => 1),
+  shelfCopyPaths: vi.fn(async () => 1),
+  shelfAddPaths: vi.fn(async () => ({ added: [], failed: [] })),
+  SHELF_KIND_LABELS: {
+    file: "文件",
+    image: "图片",
+    folder: "文件夹",
+    link: "链接",
+    text: "文本",
+  },
 }));
 
 import InboxLite from "./InboxLite";
@@ -54,10 +77,13 @@ function item(id: string, content: string, extra = {}) {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   quickCaptureList.mockReset();
   quickCaptureState.mockReset();
   markHandled.mockReset();
   convertToTask.mockReset();
+  dropTargets.mockReset();
+  dropTargets.mockResolvedValue([]);
   useCaptureStore.setState({
     items: [],
     filter: "inbox",
@@ -176,5 +202,50 @@ describe("InboxLite", () => {
       (b.getAttribute("aria-label") ?? b.textContent ?? "").includes("完整收集箱"),
     );
     expect(links.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("切到「文件」：保留快速收集列表，投递子页读取目标配置", async () => {
+    quickCaptureList.mockResolvedValue([item("c1", "未处理的一条")]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 1 });
+    render(<InboxLite />);
+    await screen.findByText("未处理的一条");
+
+    fireEvent.click(screen.getByRole("tab", { name: "文件" }));
+    await screen.findByText("还没有文件投递目标");
+    expect(dropTargets).toHaveBeenCalledTimes(1);
+    // 切换是卸载而不是叠加：快速收集的列表不再渲染
+    expect(screen.queryByText("未处理的一条")).toBeNull();
+    expect(screen.getByText(/拖文件到卡片即可投递|把文件拖到目标卡片/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "快速收集" }));
+    await screen.findByText("未处理的一条");
+  });
+
+  it("记住上次使用的子页（localStorage），下次打开直达文件子页", async () => {
+    quickCaptureList.mockResolvedValue([]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 0 });
+    const first = render(<InboxLite />);
+    await screen.findByText("没有未处理的记录");
+    fireEvent.click(screen.getByRole("tab", { name: "文件" }));
+    await screen.findByText("还没有文件投递目标");
+    expect(localStorage.getItem("taskdock.capsule.inbox.sub.v1")).toBe("drop");
+    first.unmount();
+
+    render(<InboxLite />);
+    // 重新打开直接落在文件子页
+    await screen.findByText("还没有文件投递目标");
+    expect(screen.getByRole("tab", { name: "文件" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("读取 localStorage 失败时回落到快速收集（不因偏好存储异常白屏）", async () => {
+    const spy = vi.spyOn(window.localStorage, "getItem").mockImplementation(() => {
+      throw new Error("denied");
+    });
+    quickCaptureList.mockResolvedValue([]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 0 });
+    render(<InboxLite />);
+    await screen.findByText("没有未处理的记录");
+    expect(screen.getByRole("tab", { name: "快速收集" }).getAttribute("aria-selected")).toBe("true");
+    spy.mockRestore();
   });
 });

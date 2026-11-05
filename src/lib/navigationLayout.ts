@@ -101,7 +101,11 @@ export function setNavigationEntryVisible(
   }));
 }
 
-/** 上移 / 下移一个可见入口（键盘可用的排序实现，不引入拖拽系统）。 */
+/** 上移 / 下移一个可见入口（键盘可用的排序实现，不引入拖拽系统）。
+ *
+ * 锁定入口（`locked`）不可排序，也不可被普通入口间接挤走：
+ * 邻居是锁定入口时本次移动无效（配置保持原样，UI 不会出现假成功）。
+ */
 export function moveNavigationEntry(
   surface: NavSurface,
   id: string,
@@ -109,7 +113,12 @@ export function moveNavigationEntry(
 ): Promise<void> {
   return persistNavigationLayout((current) => ({
     ...current,
-    [surface]: moveEntryInList(current[surface], id, delta),
+    [surface]: moveEntryInList(
+      current[surface],
+      id,
+      delta,
+      (entryId) => navEntry(entryId)?.locked === true,
+    ),
   }));
 }
 

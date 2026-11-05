@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 
 import {
   AUTOSAVE_DELAY_MS,
+  __resetNotesRuntimeForTests,
   initialNotesState,
   useNotesStore,
   type Note,
@@ -173,6 +174,7 @@ function installFakeBackend(initial: Note[]) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  __resetNotesRuntimeForTests();
   useNotesStore.setState({ ...initialNotesState });
   localStorage.clear();
 });
@@ -334,6 +336,47 @@ describe("notes store 自动保存", () => {
 });
 
 describe("notes store 切换与恢复", () => {
+  it("冲突状态跟随笔记：切走再切回仍保留冲突入口，不自动保存覆盖他人修改", async () => {
+    installFakeBackend([
+      note({ id: "n1", content: "库内正文", revision: 5 }),
+      note({ id: "n2", content: "另一条笔记", revision: 1 }),
+    ]);
+    await useNotesStore.getState().load();
+    await useNotesStore.getState().select("n1");
+
+    invoke.mockImplementation(async (command: string, rawArgs?: InvokeArgs) => {
+      if (command === "notes_update") {
+        throw { code: "CONFLICT", message: "笔记已在其他位置更新" };
+      }
+      if (command === "notes_get") {
+        if (rawArgs?.id === "n1") {
+          return { ...note({ id: "n1", content: "远端最新正文", revision: 6 }) };
+        }
+        return { ...note({ id: "n2", content: "另一条笔记", revision: 1 }) };
+      }
+      return [];
+    });
+
+    useNotesStore.getState().updateDraft({ content: "本地未保存内容" });
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS + 50);
+    expect(useNotesStore.getState().conflict).toBe(true);
+
+    // 切到另一条再切回：冲突标记与本地草稿都必须保留。
+    await useNotesStore.getState().select("n2");
+    await useNotesStore.getState().select("n1");
+    const state = useNotesStore.getState();
+    expect(state.draft?.content).toBe("本地未保存内容");
+    expect(state.saveState).toBe("failed");
+    expect(state.conflict).toBe(true);
+    expect(state.saveError).toContain("其他位置更新");
+
+    // 不自动重试：给足防抖时间也不能产生新的写库请求。
+    const updatesBefore = invoke.mock.calls.filter(([cmd]) => cmd === "notes_update").length;
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS * 3);
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === "notes_update").length).toBe(updatesBefore);
+    expect(useNotesStore.getState().conflict).toBe(true);
+  });
+
   it("快速切换时立即切换 UI，旧请求完成后只更新列表摘要，不覆盖新笔记", async () => {
     installFakeBackend([
       note({ id: "n1", content: "A 的正文" }),

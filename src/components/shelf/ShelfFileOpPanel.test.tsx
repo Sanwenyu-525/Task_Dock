@@ -289,6 +289,44 @@ describe("ShelfFileOpPanel 执行与结果", () => {
     expect(screen.getByText("目标目录不可写")).toBeTruthy();
   });
 
+  it("部分完成/记录清理失败：不当作成功关闭，展示残留源与恢复建议", async () => {
+    const user = userEvent.setup();
+    runFileOp.mockResolvedValue(
+      report({
+        success: 0,
+        partial: 1,
+        record_cleanup_failed: 1,
+        record_cleanup_error: "数据库忙",
+        entries: [
+          {
+            id: "i1",
+            display_name: "half.txt",
+            source: "D:\\src\\half.txt",
+            target: "D:\\Pinned\\half.txt",
+            status: "partial",
+            reason: "源文件部分删除",
+            residual_source: "D:\\src\\half.txt",
+            recovery: "确认目标完整后手动删除残留源",
+          },
+        ],
+      }),
+    );
+    const { onClose } = renderPanel("move", [referenceItem()]);
+    await waitForDirs();
+
+    await user.click(screen.getByRole("button", { name: "移动" }));
+    await waitFor(() => expect(screen.getByText(/部分完成 1 项/)).toBeTruthy());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(ui.showToast).toHaveBeenCalledTimes(1);
+    expect(ui.showToast.mock.calls[0][1]).toEqual({ kind: "warning" });
+    expect(screen.getByText(/1 条暂存记录清理失败：数据库忙/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "查看部分完成项（1）" }));
+    expect(screen.getByText(/源文件部分删除/)).toBeTruthy();
+    expect(screen.getByText(/残留源：D:\\src\\half\.txt/)).toBeTruthy();
+    expect(screen.getByText(/建议：确认目标完整后手动删除残留源/)).toBeTruthy();
+  });
+
   it("全部失败：错误 Toast 并展示真实失败项", async () => {
     const user = userEvent.setup();
     runFileOp.mockResolvedValue(

@@ -847,7 +847,10 @@ export class AudioNotificationService {
       }
     }
     if (!snap.ttsEnabled || !snap.cacheEnabled) {
+      // 关闭语音/缓存：中止在途预生成，并清空 Key —— 重新启用时必须重新预生成。
+      // 不清空的话，缓存期间被清理/容量收敛后再次开启会因「Key 未变」永远不再预生成。
       this.prewarmGeneration += 1;
+      this.prewarmKey = "";
       return;
     }
     const key = [

@@ -9,9 +9,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
-  ChevronDown, Clipboard, HardDrive, Loader2, Plus, Settings2, Star, Trash2, Upload, X,
+  ChevronDown, Clipboard, FilterX, FolderInput, HardDrive, Loader2, Plus, Settings2, Star, Trash2, Upload, X,
 } from "lucide-react";
 import {
   clipboardView,
@@ -30,16 +29,20 @@ import {
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
+import { isCapsuleMode } from "../../lib/edgeSnap";
+import { registerFileDropConsumer } from "../../lib/fileDrop";
 import { useShelfStore } from "../../store/useShelfStore";
+import { useDropTargetsStore } from "../../store/useDropTargetsStore";
+import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
-import { createSubscriptionScope } from "../../lib/subscriptions";
 import { ConfirmDialog } from "../ui/Dialog";
 import { DropdownMenu, SearchField } from "../ui";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
 import ShelfItemCard from "./ShelfItemCard";
 import ShelfDetail from "./ShelfDetail";
 import ShelfFileOpPanel, { type ShelfFileOpRequest } from "./ShelfFileOpPanel";
+import DropTargetManager from "./DropTargetManager";
 
 /** 有真实文件/文件夹语义的条目（link/text 不参与移动与复制）。 */
 function isPhysicalItem(item: ShelfItem): boolean {
@@ -81,6 +84,8 @@ interface PendingDelete {
 export default function ShelfWorkspace({ active }: { active: boolean }) {
   const showToast = useUiStore((s) => s.showToast);
   const setTab = useUiStore((s) => s.setTab);
+  // 胶囊模式下本页被整体隐藏（dock-app inert）：拖入事件必须让给胶囊面板
+  const capsuleMode = useEdgeSnapStore((s) => isCapsuleMode(s.phase));
   const items = useShelfStore((s) => s.items);
   const total = useShelfStore((s) => s.total);
   const groups = useShelfStore((s) => s.groups);
@@ -117,6 +122,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const [clipOpen, setClipOpen] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  /** 投递目标管理（工具面板「文件投递」共用同一份配置） */
+  const [targetsOpen, setTargetsOpen] = useState(false);
   const [clipboardEntries, setClipboardEntries] = useState<
     { id: string; kind: string; preview: string }[]
   >([]);
@@ -134,6 +141,23 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   /** 内嵌文件操作面板（移动/复制共享同一套面板，不做大模态） */
   const [fileOpRequest, setFileOpRequest] = useState<ShelfFileOpRequest | null>(null);
   const searchTimer = useRef<number | null>(null);
+  /** 视图切换时保留暂存列表滚动位置（目标管理视图不渲染列表）。 */
+  const listRef = useRef<HTMLDivElement>(null);
+  const savedScroll = useRef(0);
+
+  useEffect(() => {
+    if (targetsOpen) {
+      savedScroll.current = listRef.current?.scrollTop ?? savedScroll.current;
+      // 进入目标管理立刻退出拖入态：此视图不接收文件。
+      setDragOver(false);
+    } else {
+      const top = savedScroll.current;
+      const raf = requestAnimationFrame(() => {
+        if (listRef.current) listRef.current.scrollTop = top;
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [targetsOpen]);
 
   // 初次进入：加载列表 + 分组/统计；随后批量核对引用存在性（当前一页）
   useEffect(() => {
@@ -153,15 +177,37 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   // 然后按 id 打开详情；详情在 items 重新加载完成前不渲染，加载后自动出现。
   const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
   const consumeLocate = useGlobalSearchStore((s) => s.consumeLocate);
+
   useEffect(() => {
     if (!pendingLocate || pendingLocate.category !== "shelf") return;
     const intent = pendingLocate;
     consumeLocate();
-    if (useShelfStore.getState().filter.search) setFilter({ search: "" });
-    setDetail(intent.id);
+    // 复位全部筛选（不只搜索词）：目标条目可能被类型/分组/收藏筛选挡住。
+    // 先等列表按新筛选加载完成再打开详情：load 会用服务端结果收敛 detailId，
+    // 若提前 setDetail，旧筛选结果会把刚设置的详情清掉。
+    const f = useShelfStore.getState().filter;
+    const needReset = f.search || f.kind !== "all" || f.group_id !== "all" || f.favorite_only;
+    if (needReset) {
+      void setFilter({ search: "", kind: "all", group_id: "all", favorite_only: false }).then(
+        () => setDetail(intent.id),
+      );
+    } else {
+      setDetail(intent.id);
+    }
     // 仅响应定位意图变化。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingLocate]);
+
+  // 胶囊「文件投递 → 管理」的一次性意图：进入本页后展开投递目标面板。
+  // 意图由 store 持有，页面还没挂载时也不会丢（下次挂载即消费）。
+  const manageRequest = useDropTargetsStore((s) => s.manageRequest);
+  const consumeManage = useDropTargetsStore((s) => s.consumeManage);
+  useEffect(() => {
+    if (manageRequest === 0) return;
+    consumeManage();
+    setTargetsOpen(true);
+    setCleanupOpen(false);
+  }, [manageRequest, consumeManage]);
 
   // 搜索输入去抖：输入框保留即时草稿，避免受控值与 250ms 去抖互相拉扯。
   const [searchDraft, setSearchDraft] = useState(filter.search ?? "");
@@ -173,10 +219,22 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     (v: string) => {
       if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
       searchTimer.current = window.setTimeout(() => {
+        searchTimer.current = null;
         void setFilter({ search: v });
       }, 250);
     },
     [setFilter],
+  );
+
+  // 卸载时回收待执行的去抖：面板切走后不再写 store 筛选（旧输入不会迟到落地）
+  useEffect(
+    () => () => {
+      if (searchTimer.current !== null) {
+        window.clearTimeout(searchTimer.current);
+        searchTimer.current = null;
+      }
+    },
+    [],
   );
 
   const reportAdd = useCallback(
@@ -189,31 +247,31 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     [showToast],
   );
 
-  // ── OS 文件拖入（Tauri drag-drop 事件，仅本页签激活时；随卸载释放）──
+  // ── OS 文件拖入（统一拖放分发，仅本页签激活时认领；随卸载释放）──
+  // 不用 `onDragDropEvent` 直接订阅：胶囊「文件投递」也在争用同一条 Webview 事件，
+  // 由 `lib/fileDrop` 统一仲裁，一次拖入只会有一个面板处理。
   useEffect(() => {
-    if (!active) return;
-    const scope = createSubscriptionScope();
-    scope.add(
-      getCurrentWebview()
-        .onDragDropEvent((event) => {
-          if (event.payload.type === "enter" || event.payload.type === "over") {
-            setDragOver(true);
-          } else if (event.payload.type === "drop") {
-            setDragOver(false);
-            const paths = event.payload.paths;
-            if (paths.length === 0) return;
-            addPaths(paths, copyOnAdd ? "managed" : "reference", "drag")
-              .then((r) => reportAdd(r, "已暂存"))
-              .catch((e) => showToast(`暂存拖入文件失败：${errorMessage(e)}`, { kind: "error" }));
-          } else {
-            setDragOver(false);
-          }
-        })
-        .then((unlisten) => unlisten ?? (() => {}))
-        .catch(() => () => {}),
-    );
-    return () => scope.dispose();
-  }, [active, copyOnAdd, addPaths, showToast, reportAdd]);
+    // 胶囊模式下本页被整体隐藏（dock-app inert），绝不能再抢拖入事件——
+    // 否则拖到胶囊上的文件会被悄悄塞进暂存架。
+    // 投递目标管理视图只负责目录配置：拖入不归暂存架管（要求一次拖入只有一个消费者）。
+    if (!active || capsuleMode || targetsOpen) return;
+    return registerFileDropConsumer({
+      id: "shelf-workspace",
+      // 低于胶囊投递卡片：胶囊展开时投递优先，其余情况由暂存架接收
+      priority: 10,
+      claim: () => true,
+      onEnter: () => setDragOver(true),
+      onOver: () => setDragOver(true),
+      onLeave: () => setDragOver(false),
+      onDrop: (paths) => {
+        setDragOver(false);
+        if (paths.length === 0) return;
+        addPaths(paths, copyOnAdd ? "managed" : "reference", "drag")
+          .then((r) => reportAdd(r, "已暂存"))
+          .catch((e) => showToast(`暂存拖入文件失败：${errorMessage(e)}`, { kind: "error" }));
+      },
+    });
+  }, [active, capsuleMode, targetsOpen, copyOnAdd, addPaths, showToast, reportAdd]);
 
   // ── 添加动作 ──
   const pickAndAdd = async (dirs: boolean) => {
@@ -501,6 +559,21 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       ? Math.min(100, Math.round((stats.managed_bytes / (stats.quota_mb * 1024 * 1024)) * 100))
       : 0;
 
+  // 空态必须区分「暂存架真空」与「当前筛选无结果」：stats.total 是未筛选总数。
+  const hasFilters =
+    filter.search.trim() !== "" ||
+    filter.kind !== "all" ||
+    filter.group_id !== "all" ||
+    filter.favorite_only;
+  const shelfHasItems = (stats?.total ?? 0) > 0;
+  /** 真空：没有任何条目（不是筛选无结果）。用于精简无对象的筛选栏。 */
+  const shelfTrulyEmpty = (stats?.total ?? 0) === 0 && total === 0;
+  const filteredEmpty = shelfHasItems && total === 0 && items.length === 0;
+  const clearFilters = () => {
+    setSearchDraft("");
+    void setFilter({ search: "", kind: "all", group_id: "all", favorite_only: false });
+  };
+
   const copySelectedFiles = () => {
     shelfCopyFiles(selectedIds)
       .then(() => showToast("文件已复制，可在资源管理器粘贴", { kind: "success" }))
@@ -541,10 +614,29 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
 
   return (
     <div className={`shelf-workspace ${dragOver ? "drag-over" : ""}`}>
+      {targetsOpen ? (
+        /* 目标管理是独立内容视图：暂存架工具栏/筛选/列表/空态都不再挂载 */
+        <DropTargetManager onClose={() => setTargetsOpen(false)} />
+      ) : (
+        <>
       {/* 面板标题行（对齐剪贴板 clip-head 结构） */}
       <div className="shelf-head">
         <span className="shelf-head-title">文件暂存架</span>
         {total > 0 && <span className="shelf-head-count">{total} 项</span>}
+        <button
+          type="button"
+          className={`icon-btn sm ${targetsOpen ? "active" : ""}`}
+          aria-label="投递目标管理"
+          aria-expanded={targetsOpen}
+          aria-pressed={targetsOpen}
+          data-tip="投递目标（工具面板共用）"
+          onClick={() => {
+            setTargetsOpen((v) => !v);
+            setCleanupOpen(false);
+          }}
+        >
+          <FolderInput size={14} aria-hidden="true" />
+        </button>
         <button
           type="button"
           className="icon-btn sm"
@@ -607,6 +699,9 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           }}
         />
 
+        {/* 暂存架真空时不摆一排没有对象的筛选项；有条目后恢复（筛选条件不丢） */}
+        {!shelfTrulyEmpty && (
+          <>
         <div className="seg-group" role="tablist" aria-label="类型筛选">
           {KIND_FILTERS.map((k) => (
             <button
@@ -669,6 +764,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         >
           <Star size={14} aria-hidden="true" />
         </button>
+          </>
+        )}
 
         <label
           className="shelf-copy-toggle"
@@ -682,6 +779,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           保存副本
         </label>
       </div>
+
+      {/* 投递目标管理已改为独立视图（见顶部 targetsOpen 分支），此处不再内联。 */}
 
       {/* 清理设置面板 */}
       {cleanupOpen && (
@@ -814,7 +913,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       )}
 
       {/* 列表 */}
-      <div className="shelf-list" role="list" aria-label="暂存条目">
+      <div className="shelf-list" role="list" aria-label="暂存条目" ref={listRef}>
         {items.map((item) => (
           <ShelfItemCard
             key={item.id}
@@ -827,13 +926,44 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             onPreview={() => setDetail(item.id)}
           />
         ))}
-        {items.length === 0 && !loading && (
+        {items.length === 0 && !loading && error && (
+          <div className="shelf-empty is-error" role="alert">
+            <p>暂存架读取失败</p>
+            <p className="shelf-empty-sub">{error}</p>
+            <button type="button" className="btn sm" onClick={() => void load()}>
+              重试
+            </button>
+          </div>
+        )}
+        {items.length === 0 && !loading && !error && filteredEmpty && (
+          <div className="shelf-empty">
+            <FilterX size={22} strokeWidth={1.5} aria-hidden="true" />
+            <p>没有匹配的文件</p>
+            <p className="shelf-empty-sub">
+              {hasFilters
+                ? `当前筛选条件下没有结果；暂存架里仍有 ${stats?.total ?? 0} 项。`
+                : `暂存架里仍有 ${stats?.total ?? 0} 项，可重新加载查看。`}
+            </p>
+            <button type="button" className="btn sm" onClick={clearFilters}>
+              清除筛选
+            </button>
+          </div>
+        )}
+        {items.length === 0 && !loading && !error && !filteredEmpty && (
           <div className="shelf-empty">
             <Upload size={22} strokeWidth={1.5} aria-hidden="true" />
             <p>把文件、图片拖进窗口，或用上方「添加」收纳链接与文本。</p>
             <p className="shelf-empty-sub">
               暂存架与剪贴板互相独立：这里只保存你主动放入的内容，删除剪贴板历史不影响暂存架。
             </p>
+            <div className="shelf-empty-actions">
+              <button type="button" className="btn sm primary" onClick={() => void pickAndAdd(false)}>
+                <Plus size={13} aria-hidden="true" /> 添加文件
+              </button>
+              <button type="button" className="btn sm" onClick={() => void pickAndAdd(true)}>
+                添加文件夹
+              </button>
+            </div>
           </div>
         )}
         {loading && (
@@ -1018,6 +1148,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         }}
         onCancel={() => setConfirmClear(false)}
       />
+        </>
+      )}
     </div>
   );
 }

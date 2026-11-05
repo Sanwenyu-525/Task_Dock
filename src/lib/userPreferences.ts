@@ -1,4 +1,4 @@
-//! 用户偏好（语言 / 桌面微件布局）的前端对账与镜像。
+//! 用户偏好（语言 / 桌面微件布局 / 应用网格排序）的前端对账与镜像。
 //!
 //! 运行时权威来源仍是 localStorage（`taskdock.locale`、
 //! `taskdock.widgets.layout.v1`）；本模块负责：
@@ -21,6 +21,11 @@ import {
 } from "./bridge";
 import { isLocalePreference, type LocalePreference } from "../i18n/messages";
 import { normalizeLayout, type WidgetItem } from "./widgets/model";
+import {
+  normalizeAppGridOrder,
+  readAppGridOrder,
+  writeAppGridOrder,
+} from "./appGridOrder";
 
 export const LOCALE_STORAGE_KEY = "taskdock.locale";
 export const WIDGETS_STORAGE_KEY = "taskdock.widgets.layout.v1";
@@ -32,9 +37,11 @@ const MIRROR_DELAY_MS = 300;
 
 type LocaleAppliedListener = (preference: LocalePreference) => void;
 type WidgetsAppliedListener = () => void;
+type AppGridOrderAppliedListener = () => void;
 
 const localeListeners = new Set<LocaleAppliedListener>();
 const widgetsListeners = new Set<WidgetsAppliedListener>();
+const appGridOrderListeners = new Set<AppGridOrderAppliedListener>();
 
 /** 注册「后端恢复的语言已写入 localStorage」回调；返回解绑函数。 */
 export function onLocalePreferenceApplied(
@@ -50,6 +57,12 @@ export function onWidgetsLayoutApplied(listener: WidgetsAppliedListener): () => 
   return () => widgetsListeners.delete(listener);
 }
 
+/** 注册「应用网格排序已被替换」回调；返回解绑函数。 */
+export function onAppGridOrderApplied(listener: AppGridOrderAppliedListener): () => void {
+  appGridOrderListeners.add(listener);
+  return () => appGridOrderListeners.delete(listener);
+}
+
 function notifyLocale(preference: LocalePreference): void {
   for (const listener of [...localeListeners]) {
     try {
@@ -62,6 +75,16 @@ function notifyLocale(preference: LocalePreference): void {
 
 function notifyWidgets(): void {
   for (const listener of [...widgetsListeners]) {
+    try {
+      listener();
+    } catch {
+      // 同上。
+    }
+  }
+}
+
+function notifyAppGridOrder(): void {
+  for (const listener of [...appGridOrderListeners]) {
     try {
       listener();
     } catch {
@@ -159,6 +182,10 @@ function serverWidgets(view: UserPreferencesView): WidgetItem[] | null {
   return normalizeLayout(view.widgets as UserWidgetPreference[]);
 }
 
+function serverAppGridOrder(view: UserPreferencesView): string[] | null {
+  return normalizeAppGridOrder(view.app_grid_order);
+}
+
 function serverLocale(view: UserPreferencesView): LocalePreference | null {
   return isLocalePreference(view.locale) ? view.locale : null;
 }
@@ -181,7 +208,8 @@ export async function mirrorPreferencesNow(): Promise<void> {
         mirrorDirty = false;
         const locale = readLocalLocalePreference();
         const widgets = readLocalWidgetsLayout();
-        await setUserPreferences(locale, widgets, null);
+        const appGridOrder = readAppGridOrder();
+        await setUserPreferences(locale, widgets, null, appGridOrder);
       } while (mirrorDirty);
     } catch {
       // 镜像失败不影响运行时；下一次变更或恢复会重试。
@@ -236,6 +264,7 @@ export function syncUserPreferences(force = false): Promise<void> {
     }
     const remoteLocale = serverLocale(view);
     const remoteWidgets = serverWidgets(view);
+    const remoteAppGridOrder = serverAppGridOrder(view);
 
     if (view.apply_restore) {
       // 恢复值优先：取消用户此前变更留下的防抖镜像，避免旧值稍后覆盖文件。
@@ -251,12 +280,18 @@ export function syncUserPreferences(force = false): Promise<void> {
         // 即使存储内容相同也通知一次：已挂载的 Store 可能仍是旧布局。
         notifyWidgets();
       }
+      if (remoteAppGridOrder !== null) {
+        writeAppGridOrder(remoteAppGridOrder);
+        // 即使内容相同也通知：已挂载的应用面板可能仍持有旧顺序。
+        notifyAppGridOrder();
+      }
       // 回执后清除 pending 标记；即使失败，下次启动仍会以文件为准重试。
       try {
         await setUserPreferences(
           readLocalLocalePreference(),
           readLocalWidgetsLayout(),
           view.restore_id,
+          readAppGridOrder(),
         );
       } catch {
         // 忽略：标记保留，下次启动重试。
@@ -273,12 +308,17 @@ export function syncUserPreferences(force = false): Promise<void> {
       writeLocalWidgetsLayout(remoteWidgets);
       notifyWidgets();
     }
+    if (readAppGridOrder() === null && remoteAppGridOrder !== null) {
+      writeAppGridOrder(remoteAppGridOrder);
+      notifyAppGridOrder();
+    }
     // localStorage 为准并回写文件；写失败不影响启动。
     try {
       await setUserPreferences(
         readLocalLocalePreference(),
         readLocalWidgetsLayout(),
         null,
+        readAppGridOrder(),
       );
     } catch {
       // 忽略。
@@ -332,4 +372,5 @@ export function __resetUserPreferencesForTests(): void {
   initialized = false;
   localeListeners.clear();
   widgetsListeners.clear();
+  appGridOrderListeners.clear();
 }

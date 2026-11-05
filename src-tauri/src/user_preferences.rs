@@ -31,6 +31,10 @@ pub const EVENT_RESTORED: &str = "user-preferences-restored";
 
 pub const LOCALE_VALUES: &[&str] = &["zh-CN", "en-US", "system"];
 pub const WIDGET_SIZES: &[&str] = &["sm", "md", "lg"];
+/// 应用网格「添加」伪项 ID，必须与 `src/lib/appGridOrder.ts` 保持一致。
+pub const APP_GRID_ADD_KEY: &str = "__taskdock_app_add__";
+const APP_GRID_ORDER_MAX: usize = 500;
+const APP_GRID_ID_MAX_CHARS: usize = 200;
 
 /// 微件类型与默认值（必须与 `src/lib/widgets/model.ts` 的 WIDGET_DEFINITIONS 一致）。
 pub const WIDGET_DEFAULTS: &[(&str, &str, bool)] = &[
@@ -103,11 +107,17 @@ pub struct BundleConfig {
     pub widgets: Option<Vec<WidgetItem>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hotkeys: Option<HotkeyConfigFile>,
+    /// 应用网格手动顺序（含加号伪项）；缺省表示从未手动排序。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_grid_order: Option<Vec<String>>,
 }
 
 impl BundleConfig {
     pub fn is_empty(&self) -> bool {
-        self.locale.is_none() && self.widgets.is_none() && self.hotkeys.is_none()
+        self.locale.is_none()
+            && self.widgets.is_none()
+            && self.hotkeys.is_none()
+            && self.app_grid_order.is_none()
     }
 }
 
@@ -115,7 +125,55 @@ impl BundleConfig {
 pub struct LoadedPreferences {
     pub locale: Option<String>,
     pub widgets: Option<Vec<WidgetItem>>,
+    pub app_grid_order: Option<Vec<String>>,
     pub warnings: Vec<String>,
+}
+
+/// 归一化应用网格排序：与前端 `normalizeAppGridOrder` 同一规则。
+///
+/// - 只接受字符串；空串/超长 ID（加号伪项除外）丢弃；
+/// - 去重（保留首次出现）、保留加号最多一次、上限 500；
+/// - 空数组归一化为 `None`，表示「没有手动排序」，不能用空数组清空本机顺序。
+pub fn normalize_app_grid_order(raw: &serde_json::Value) -> (Option<Vec<String>>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let entries: &[serde_json::Value] = match raw {
+        serde_json::Value::Array(items) => items,
+        serde_json::Value::Null => return (None, warnings),
+        _ => {
+            warnings.push("应用网格排序不是数组，已忽略".to_string());
+            return (None, warnings);
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in entries {
+        let Some(value) = entry.as_str() else {
+            warnings.push("应用网格排序包含非字符串条目，已忽略".to_string());
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        if value != APP_GRID_ADD_KEY && value.chars().count() > APP_GRID_ID_MAX_CHARS {
+            warnings.push("应用网格排序包含超长应用 ID，已忽略".to_string());
+            continue;
+        }
+        if !seen.insert(value.to_string()) {
+            continue;
+        }
+        out.push(value.to_string());
+        if out.len() >= APP_GRID_ORDER_MAX {
+            warnings.push(format!(
+                "应用网格排序超过 {APP_GRID_ORDER_MAX} 项，超出部分已忽略"
+            ));
+            break;
+        }
+    }
+    if out.is_empty() {
+        (None, warnings)
+    } else {
+        (Some(out), warnings)
+    }
 }
 
 fn atomic_write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
@@ -392,11 +450,21 @@ pub fn parse_bundle_config(raw: &serde_json::Value) -> (Option<BundleConfig>, Ve
         },
     };
 
+    let app_grid_order = match obj.get("app_grid_order") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let (normalized, mut issues) = normalize_app_grid_order(value);
+            warnings.append(&mut issues);
+            normalized
+        }
+    };
+
     let config = BundleConfig {
         version: CONFIG_VERSION,
         locale,
         widgets,
         hotkeys,
+        app_grid_order,
     };
     if config.is_empty() {
         (None, warnings)
@@ -450,12 +518,21 @@ fn read_preferences_file(
             Some(normalized)
         }
     };
+    let app_grid_order = match obj.get("app_grid_order") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => {
+            let (normalized, mut issues) = normalize_app_grid_order(value);
+            warnings.append(&mut issues);
+            normalized
+        }
+    };
     Ok((
         Some(BundleConfig {
             version: CONFIG_VERSION,
             locale,
             widgets,
             hotkeys: None,
+            app_grid_order,
         }),
         warnings,
     ))
@@ -467,27 +544,32 @@ pub fn load_preferences(data_dir: &Path) -> LoadedPreferences {
         Ok((Some(config), warnings)) => LoadedPreferences {
             locale: config.locale,
             widgets: config.widgets,
+            app_grid_order: config.app_grid_order,
             warnings,
         },
         Ok((None, warnings)) => LoadedPreferences {
             locale: None,
             widgets: None,
+            app_grid_order: None,
             warnings,
         },
         Err(error) => LoadedPreferences {
             locale: None,
             widgets: None,
+            app_grid_order: None,
             warnings: vec![format!("{error}；本次按 localStorage 当前值处理")],
         },
     }
 }
 
 /// 原子写入偏好镜像（临时文件 + sync + rename）。
-/// `locale`/`widgets` 为 None 时省略对应字段，保留文件里已有值由调用方合并。
+/// `locale`/`widgets`/`app_grid_order` 为 None 时省略对应字段，
+/// 保留文件里已有值由调用方合并。
 pub fn write_preferences(
     data_dir: &Path,
     locale: Option<&str>,
     widgets: Option<&[WidgetItem]>,
+    app_grid_order: Option<&[String]>,
 ) -> Result<(), String> {
     let mut obj = serde_json::Map::new();
     obj.insert(
@@ -504,6 +586,12 @@ pub fn write_preferences(
         obj.insert(
             "widgets".to_string(),
             serde_json::to_value(widgets).map_err(|e| format!("序列化微件布局失败：{e}"))?,
+        );
+    }
+    if let Some(order) = app_grid_order {
+        obj.insert(
+            "app_grid_order".to_string(),
+            serde_json::to_value(order).map_err(|e| format!("序列化应用网格排序失败：{e}"))?,
         );
     }
     atomic_write_json(
@@ -559,8 +647,9 @@ pub fn collect_export_config(data_dir: &Path) -> CollectedConfig {
     let config = BundleConfig {
         version: CONFIG_VERSION,
         locale: preferences.as_ref().and_then(|p| p.locale.clone()),
-        widgets: preferences.and_then(|p| p.widgets),
+        widgets: preferences.as_ref().and_then(|p| p.widgets.clone()),
         hotkeys,
+        app_grid_order: preferences.and_then(|p| p.app_grid_order),
     };
     CollectedConfig {
         config: if config.is_empty() { None } else { Some(config) },
@@ -697,6 +786,76 @@ mod tests {
     }
 
     #[test]
+    fn app_grid_order_normalizes_like_frontend() {
+        let (order, warnings) = normalize_app_grid_order(&serde_json::json!([
+            APP_GRID_ADD_KEY,
+            "app-a",
+            "app-a",
+            "",
+            42,
+            "x".repeat(APP_GRID_ID_MAX_CHARS + 1),
+            "app-b"
+        ]));
+        assert_eq!(
+            order.unwrap(),
+            vec![
+                APP_GRID_ADD_KEY.to_string(),
+                "app-a".to_string(),
+                "app-b".to_string()
+            ]
+        );
+        assert!(warnings.iter().any(|w| w.contains("非字符串")));
+        assert!(warnings.iter().any(|w| w.contains("超长")));
+        // 空数组/非数组归一化为 None，不能用来清空本机排序。
+        assert!(normalize_app_grid_order(&serde_json::json!([])).0.is_none());
+        let (none, warnings) = normalize_app_grid_order(&serde_json::json!({"bad": true}));
+        assert!(none.is_none());
+        assert!(warnings[0].contains("不是数组"));
+    }
+
+    #[test]
+    fn app_grid_order_roundtrips_and_only_order_is_not_empty() {
+        let dir = temp_dir("order-roundtrip");
+        let order = vec![APP_GRID_ADD_KEY.to_string(), "app-a".to_string()];
+        write_preferences(&dir, None, None, Some(&order)).unwrap();
+        let loaded = load_preferences(&dir);
+        assert_eq!(loaded.app_grid_order.as_ref(), Some(&order));
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join(PREFERENCES_FILE)).unwrap()).unwrap();
+        let (config, warnings) = parse_bundle_config(&raw);
+        let config = config.unwrap();
+        assert_eq!(config.app_grid_order.as_ref(), Some(&order));
+        assert!(!config.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // 损坏排序只跳过该字段，不拒绝其他配置。
+        let corrupt = serde_json::json!({
+            "version": 1,
+            "locale": "en-US",
+            "app_grid_order": "not-an-array"
+        });
+        let (config, warnings) = parse_bundle_config(&corrupt);
+        let config = config.unwrap();
+        assert_eq!(config.locale.as_deref(), Some("en-US"));
+        assert!(config.app_grid_order.is_none());
+        assert!(warnings.iter().any(|w| w.contains("应用网格排序")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collect_export_config_includes_app_grid_order() {
+        let dir = temp_dir("order-export");
+        let order = vec!["app-b".to_string(), APP_GRID_ADD_KEY.to_string()];
+        write_preferences(&dir, None, None, Some(&order)).unwrap();
+        let collected = collect_export_config(&dir);
+        let config = collected.config.unwrap();
+        assert_eq!(config.app_grid_order.as_ref(), Some(&order));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn bundle_config_parses_partially_and_skips_corrupt_sections() {
         let raw = serde_json::json!({
             "version": 1,
@@ -785,13 +944,13 @@ mod tests {
     fn preferences_attach_widgets_and_locale_atomically() {
         let dir = temp_dir("roundtrip");
         let widgets = normalize_widgets(&serde_json::json!([])).0;
-        write_preferences(&dir, Some("en-US"), Some(&widgets)).unwrap();
+        write_preferences(&dir, Some("en-US"), Some(&widgets), None).unwrap();
         let loaded = load_preferences(&dir);
         assert_eq!(loaded.locale.as_deref(), Some("en-US"));
         assert_eq!(loaded.widgets.as_ref().unwrap().len(), widgets.len());
         assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
         // 未传 widgets 时文件保留旧值（命令层负责合并）。
-        write_preferences(&dir, Some("zh-CN"), None).unwrap();
+        write_preferences(&dir, Some("zh-CN"), None, None).unwrap();
         let raw: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join(PREFERENCES_FILE)).unwrap()).unwrap();
         assert_eq!(raw["locale"], "zh-CN");
@@ -828,7 +987,7 @@ mod tests {
     fn collect_export_config_skips_corrupt_hotkeys_but_keeps_preferences() {
         let dir = temp_dir("collect");
         let widgets = normalize_widgets(&serde_json::json!([])).0;
-        write_preferences(&dir, Some("en-US"), Some(&widgets)).unwrap();
+        write_preferences(&dir, Some("en-US"), Some(&widgets), None).unwrap();
         fs::write(dir.join("hotkeys.json"), "broken").unwrap();
         let collected = collect_export_config(&dir);
         let config = collected.config.unwrap();

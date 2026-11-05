@@ -901,6 +901,8 @@ pub struct NotificationNavigateResult {
 }
 
 struct ResolvedSession {
+    /// 内部 agent_sessions.id：AgentPanel 的树节点 key 只认这个值。
+    session_id: String,
     external_session_id: String,
     run_matched: bool,
 }
@@ -914,30 +916,34 @@ fn resolve_session(
     ref_id: Option<&str>,
 ) -> AppResult<Option<ResolvedSession>> {
     use rusqlite::OptionalExtension;
-    let external = db.with_conn(|conn| {
+    // 先按内部 ID 查；未命中再按 external_id 查。两条路径都返回内部 ID，
+    // 避免前端收到 external_id 后按内部 ID 查找失败、定位目标被静默清除。
+    let by_internal = db.with_conn(|conn| {
         conn.query_row(
-            "SELECT external_id FROM agent_sessions WHERE id = ?1 AND source_id = ?2",
+            "SELECT id, external_id FROM agent_sessions WHERE id = ?1 AND source_id = ?2",
             rusqlite::params![session, source],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()
         .map_err(AppError::from)
     })?;
-    let external = match external {
-        Some(id) => id,
+    let (internal_id, external_id) = match by_internal {
+        Some(pair) => pair,
         None => {
-            let exists: i64 = db.with_conn(|conn| {
+            let by_external = db.with_conn(|conn| {
                 conn.query_row(
-                    "SELECT COUNT(*) FROM agent_sessions WHERE source_id = ?1 AND external_id = ?2",
+                    "SELECT id, external_id FROM agent_sessions \
+                     WHERE source_id = ?1 AND external_id = ?2",
                     rusqlite::params![source, session],
-                    |row| row.get(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
+                .optional()
                 .map_err(AppError::from)
             })?;
-            if exists == 0 {
-                return Ok(None);
+            match by_external {
+                Some(pair) => pair,
+                None => return Ok(None),
             }
-            session.to_string()
         }
     };
     let run_matched = match ref_id {
@@ -945,7 +951,7 @@ fn resolve_session(
             let found: i64 = db.with_conn(|conn| {
                 conn.query_row(
                     "SELECT COUNT(*) FROM agent_runs WHERE id = ?1 AND session_id = ?2 AND source_id = ?3",
-                    rusqlite::params![id, session, source],
+                    rusqlite::params![id, internal_id, source],
                     |row| row.get(0),
                 )
                 .map_err(AppError::from)
@@ -955,7 +961,8 @@ fn resolve_session(
         None => false,
     };
     Ok(Some(ResolvedSession {
-        external_session_id: external,
+        session_id: internal_id,
+        external_session_id: external_id,
         run_matched,
     }))
 }
@@ -1027,7 +1034,9 @@ pub async fn notification_navigate(
                 match outcome {
                     Some((resolved, resume_reason)) => {
                         focus.insert("sourceId".into(), source.clone().into());
-                        focus.insert("sessionId".into(), session.clone().into());
+                        // 始终回传内部 session id：前端监控树按内部 id 查找，
+                        // external_id 兼容输入不能原样透传。
+                        focus.insert("sessionId".into(), resolved.session_id.clone().into());
                         if let Some(id) = ref_id.as_deref() {
                             focus.insert("refId".into(), id.into());
                         }

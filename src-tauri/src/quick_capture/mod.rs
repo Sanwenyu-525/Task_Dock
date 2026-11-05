@@ -20,9 +20,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State};
+use serde::Serialize;
 
 use crate::db::Db;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::navigation::window_manager;
 
 pub mod store;
@@ -131,6 +132,19 @@ fn target_area(app: &AppHandle) -> Option<window_manager::MonitorWorkArea> {
 
 // ── 窗口生命周期 ────────────────────────────────────────────
 
+/// 打开快速捕获窗口的真实结果。
+///
+/// `visible` 为 true 表示窗口已显示；`focused` 为 false 时前端应提示
+/// 「已显示但系统未允许自动聚焦」，不能误报为打开失败。窗口不存在或 show 失败
+/// 由命令返回错误，前端据此给出可操作反馈。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickCaptureShowResult {
+    pub visible: bool,
+    pub focused: bool,
+    pub focus_error: Option<String>,
+}
+
 /// 热键入口（Ctrl+Shift+Space）：
 /// - 已可见且已聚焦 → 收起（toggle）；
 /// - 已可见但未聚焦 → 只聚焦，不重建；
@@ -149,6 +163,34 @@ pub fn toggle(app: &AppHandle) {
         let _ = app.emit_to(WINDOW_LABEL, SUMMONED_EVENT, ());
         return;
     }
+    if let Err(e) = show(app) {
+        tracing::warn!("快速捕获窗口显示失败: {e}");
+    }
+}
+
+/// 显式打开快速捕获窗口（收集箱「+ 快速记录」等入口）：
+/// 已可见时只聚焦，不因再次点击而收起；未可见时走与热键相同的定位/恢复草稿路径。
+pub fn show(app: &AppHandle) -> AppResult<QuickCaptureShowResult> {
+    let win = capture_window(app)
+        .ok_or_else(|| AppError::NotFound("快速捕获窗口不存在".into()))?;
+    if win.is_visible().unwrap_or(false) {
+        let _ = win.unminimize();
+        let focus_error = win.set_focus().err().map(|e| e.to_string());
+        let focused = win.is_focused().unwrap_or(false);
+        let _ = app.emit_to(WINDOW_LABEL, SUMMONED_EVENT, ());
+        return Ok(QuickCaptureShowResult {
+            visible: true,
+            focused,
+            focus_error: if focused {
+                None
+            } else {
+                Some(
+                    focus_error
+                        .unwrap_or_else(|| "系统前台锁阻止窗口自动聚焦".into()),
+                )
+            },
+        });
+    }
 
     // 记录唤起前的真实前台窗口（仅运行时内存；无效/本进程时为 None）
     *prev_foreground() = window_manager::foreground_hwnd();
@@ -166,9 +208,23 @@ pub fn toggle(app: &AppHandle) {
         tracing::debug!(x, y, w, h, "快速捕获窗口定位");
     }
     let _ = win.unminimize();
-    let _ = win.show();
-    let _ = win.set_focus();
+    // 只有 show 失败才算「窗口打开失败」；定位/尺寸失败仍尝试显示并如实报告焦点状态。
+    win.show()
+        .map_err(|e| AppError::Tauri(e))?;
+    let focus_error = win.set_focus().err().map(|e| e.to_string());
+    let focused = win.is_focused().unwrap_or(false);
     let _ = app.emit_to(WINDOW_LABEL, SUMMONED_EVENT, ());
+    Ok(QuickCaptureShowResult {
+        visible: true,
+        focused,
+        focus_error: if focused {
+            None
+        } else {
+            Some(
+                focus_error.unwrap_or_else(|| "系统前台锁阻止窗口自动聚焦".into()),
+            )
+        },
+    })
 }
 
 /// 隐藏捕获窗口。
@@ -354,6 +410,12 @@ pub fn quick_capture_convert_to_task(
     Ok(item)
 }
 
+/// 显式打开快速捕获窗口（收集箱「+ 快速记录」）：已打开时聚焦，不切换为隐藏。
+#[tauri::command]
+pub fn quick_capture_show(app: AppHandle) -> AppResult<QuickCaptureShowResult> {
+    show(&app)
+}
+
 /// 前端主动隐藏（Escape/关闭按钮）：恢复唤起前的前台窗口。
 #[tauri::command]
 pub fn quick_capture_hide(app: AppHandle) {
@@ -410,5 +472,20 @@ mod tests {
             assert_eq!((w, h), (640, 360), "scale={scale} 应回退 1.0");
             assert_eq!((x, y), (640, 336));
         }
+    }
+
+    #[test]
+    fn show_result_serializes_focus_error_as_camel_case() {
+        let value = serde_json::to_value(QuickCaptureShowResult {
+            visible: true,
+            focused: false,
+            focus_error: Some("foreground lock".into()),
+        })
+        .unwrap();
+        assert_eq!(value["visible"], true);
+        assert_eq!(value["focused"], false);
+        // 前端按 focusError 读取；snake_case 会让提示文案拿不到原因。
+        assert_eq!(value["focusError"], "foreground lock");
+        assert!(value.get("focus_error").is_none());
     }
 }

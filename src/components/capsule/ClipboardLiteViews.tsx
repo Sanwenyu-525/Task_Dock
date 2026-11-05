@@ -8,7 +8,7 @@
 //! - 所有异步读取带请求序号，旧响应不得覆盖新视图。
 
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { ArrowLeft, ArrowUpRight, FileText, ImageOff, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronLeft, ChevronRight, FileText, ImageOff, Loader2 } from "lucide-react";
 import {
   clipboardGroupPage,
   clipboardItem,
@@ -22,9 +22,26 @@ import { ClipboardThumb, useLargeImage } from "../clipboard/Media";
 import { useFocusRestore, useOverlayLayer } from "../ui/overlay";
 import { EmptyState, sizeLabel } from "./PanelKit";
 
+/** 截图组内图片序列：只携带缩略图元数据，原图由预览组件按当前项按需读取。 */
+export interface LiteImageSequence {
+  group: ClipboardGroup;
+  /** 已加载的缩略图（首屏或分页追加），顺序与组内真实顺序一致 */
+  items: ClipboardItem[];
+  /** 点击的图片在已加载序列中的位置 */
+  index: number;
+  /** 组内图片真实总数（不是已加载数） */
+  total: number;
+  /** 读取时的组内容版本；分页追加时用于发现内容变化 */
+  revision: string;
+  /** 预览翻到下一页时把新条目同步给下层截图组视图 */
+  onAppend: (items: ClipboardItem[]) => void;
+  /** 组 revision 变化并重建前缀时，把新前缀/总数/版本同步给下层组视图 */
+  onReplace?: (items: ClipboardItem[], total: number, revision: string) => void;
+}
+
 /** 二级视图栈元素：分组预览可以再把某一页压入原图预览。 */
 export type ClipboardLiteView =
-  | { kind: "image"; item: ClipboardItem }
+  | { kind: "image"; item: ClipboardItem; sequence?: LiteImageSequence }
   | { kind: "text"; item: ClipboardItem }
   | { kind: "files"; item: ClipboardItem }
   | { kind: "group"; group: ClipboardGroup };
@@ -246,48 +263,260 @@ function ClipboardLiteShell({
   );
 }
 
-/** 图片原图预览：复用 useLargeImage（LRU 2 条 + 按需 IPC），不铺全屏遮罩。 */
+/** 图片原图预览：复用 useLargeImage（LRU 2 条 + 按需 IPC），不铺全屏遮罩。
+ *
+ * 从截图组打开时携带 `sequence`：左右按钮 / ←→ 在当前组内切换，
+ * 序号按组内真实总数显示；已加载缩略图不足时只补下一页元数据，
+ * 原图仍只加载当前一张。单图（列表直接打开）不显示切换控件。
+ */
 export function ClipboardLiteImageView({
   item,
+  sequence,
+  liveGroup,
+  active = true,
   onBack,
   onOpenFull,
   onCopyItem,
 }: LiteViewProps & {
   item: ClipboardItem;
+  sequence?: LiteImageSequence;
+  /** 当前快照里的组摘要：组内容在预览期间变化时刷新序列 */
+  liveGroup?: ClipboardGroup;
+  /** 是否为当前最上层视图：下层视图不得抢键盘/弹层事件 */
+  active?: boolean;
   onCopyItem: (id: string, what: string) => Promise<boolean>;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
-  useFocusRestore(true);
-  useOverlayLayer("sublayer", true, onBack, rootRef);
-  const { state, url, error } = useLargeImage(item.id, true);
+  useFocusRestore(active);
+  useOverlayLayer("sublayer", active, onBack, rootRef);
+  const [items, setItems] = useState<ClipboardItem[]>(() =>
+    sequence && sequence.items.length > 0 ? sequence.items : [item],
+  );
+  const [index, setIndex] = useState(() =>
+    sequence ? Math.max(0, Math.min(sequence.index, sequence.items.length - 1)) : 0,
+  );
+  const [total, setTotal] = useState(() => Math.max(1, sequence?.total ?? 1));
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [notice, setNotice] = useState("");
+  const pageSeq = useRef(0);
+  /**
+   * 当前有效 revision：初次来自打开时的截图组；组内容变化/分页刷新后更新。
+   * 后续翻页必须与它比较，不能继续使用打开时冻结的 `sequence.revision`，
+   * 否则 revision 一旦更新，每次翻页都会误判为变化并回到第一页。
+   */
+  const revisionRef = useRef(sequence?.revision ?? "");
+  const current = items[index] ?? item;
+  const currentId = current.id;
+  const { state, url, error, forId } = useLargeImage(currentId, true);
+  // 切换条目后 effect 尚未执行时，state/url 仍属于上一张；按加载中处理，避免旧图配新元信息。
+  const viewState = forId === currentId ? state : "loading";
   const dim =
-    item.image_width && item.image_height
-      ? `${item.image_width} × ${item.image_height}`
+    current.image_width && current.image_height
+      ? `${current.image_width} × ${current.image_height}`
       : "图片";
+  const multi = !!sequence && total > 1;
+
+  // 卸载/返回后旧分页响应作废；原图加载由 useLargeImage 自己按条目守卫。
+  useEffect(() => () => {
+    pageSeq.current += 1;
+  }, []);
+
+  // 已加载序列变化时把位置钳制在有效范围（组内图片被删/分页刷新）。
+  useEffect(() => {
+    setIndex((prev) => Math.min(prev, Math.max(0, items.length - 1)));
+  }, [items.length]);
+
+  /**
+   * revision 变化后的重建：从最新第一页开始，按需补页直到能按图片 ID 找回当前项，
+   * 或覆盖原序号。最多补 10 页（90 张缩略图元数据），不加载整组原图/全部组。
+   * 每次补页都使用新 revision；绝不把不同 revision 的页拼接。
+   */
+  const refreshSequence = useCallback(
+    async (request: number) => {
+      if (!sequence) return;
+      const first = await loadGroupPage(sequence.group, GROUP_THUMB_LIMIT, 0, true);
+      if (request !== pageSeq.current) return;
+      const revision = first.revision;
+      if (first.items.length === 0) {
+        setNotice("截图组图片已全部移除");
+        setLoadingMore(false);
+        onBack();
+        return;
+      }
+      let nextItems = mergeThumbs([], first.items);
+      let nextTotal = Math.max(first.imageCount, nextItems.length, 1);
+      const oldIndex = index;
+      let keep = nextItems.findIndex((entry) => entry.id === currentId);
+      let pages = 0;
+      while (
+        keep < 0 &&
+        nextItems.length < nextTotal &&
+        nextItems.length <= oldIndex &&
+        pages < 10
+      ) {
+        pages += 1;
+        const page = await loadGroupPage(
+          sequence.group,
+          GROUP_THUMB_LIMIT,
+          nextItems.length,
+          true,
+        );
+        if (request !== pageSeq.current) return;
+        // 又发生一次内容变化：停止拼接，保留当前已加载的最新前缀。
+        if (page.revision !== revision || page.items.length === 0) break;
+        nextItems = mergeThumbs(nextItems, page.items);
+        nextTotal = Math.max(nextTotal, page.imageCount, nextItems.length);
+        keep = nextItems.findIndex((entry) => entry.id === currentId);
+      }
+      revisionRef.current = revision;
+      setItems(nextItems);
+      setTotal(nextTotal);
+      setIndex(
+        keep >= 0
+          ? keep
+          : Math.min(oldIndex, Math.max(0, nextItems.length - 1)),
+      );
+      setNotice("截图组内容已变化，已刷新");
+      setLoadingMore(false);
+      if (sequence.onReplace) {
+        sequence.onReplace(nextItems, nextTotal, revision);
+      } else if (nextItems.length > first.items.length) {
+        sequence.onAppend(nextItems.slice(first.items.length));
+      }
+    },
+    [sequence, currentId, index, onBack],
+  );
+
+  /** 组摘要签名：预览期间组被删图/拆分/合并时，重新取第一页并校正当前位置。 */
+  const liveSignature = liveGroup
+    ? `${liveGroup.updated_at}|${liveGroup.image_count}|${liveGroup.item_count}`
+    : "";
+  const liveSignatureRef = useRef(liveSignature);
+  useEffect(() => {
+    if (!sequence || !liveGroup || liveSignature === liveSignatureRef.current) return;
+    liveSignatureRef.current = liveSignature;
+    const request = ++pageSeq.current;
+    setLoadingMore(true);
+    setLoadError("");
+    void refreshSequence(request).catch((e) => {
+      if (request !== pageSeq.current) return;
+      setLoadError(normalizeError(e).message);
+      setLoadingMore(false);
+    });
+    // 只在组摘要变化时刷新；currentId/index 由 refreshSequence 读取最新值，
+    // 不能作为依赖，否则每次翻页都会重新触发刷新。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveSignature]);
+
+  /** 只补下一页缩略图元数据，不预加载任何原图。 */
+  const loadNextPage = useCallback(async () => {
+    if (!sequence || loadingMore || items.length >= total) return;
+    const request = ++pageSeq.current;
+    setLoadingMore(true);
+    setLoadError("");
+    try {
+      const page = await loadGroupPage(sequence.group, GROUP_THUMB_LIMIT, items.length, true);
+      if (request !== pageSeq.current) return;
+      if (page.revision !== revisionRef.current) {
+        // 组内容已变化：不同 revision 的页不能拼接。重建最新前缀并同步 revision，
+        // 下一次翻页继续使用新 revision，不会反复回到第一页。
+        await refreshSequence(request);
+        return;
+      }
+      if (page.items.length === 0) {
+        setTotal(Math.max(items.length, 1));
+        setLoadError("组内没有更多可加载的图片");
+        return;
+      }
+      const merged = mergeThumbs(items, page.items);
+      revisionRef.current = page.revision;
+      setItems(merged);
+      setTotal(Math.max(page.imageCount, merged.length, 1));
+      setIndex(Math.min(items.length, merged.length - 1));
+      setNotice("");
+      sequence.onAppend(page.items);
+    } catch (e) {
+      if (request !== pageSeq.current) return;
+      setLoadError(normalizeError(e).message);
+    } finally {
+      if (request === pageSeq.current) setLoadingMore(false);
+    }
+  }, [sequence, loadingMore, items, total, refreshSequence]);
+
+  const goBy = useCallback(
+    (delta: -1 | 1) => {
+      if (!sequence || total <= 1 || loadingMore) return;
+      const target = index + delta;
+      if (target < 0 || target >= total) return;
+      setNotice("");
+      if (target < items.length) {
+        setIndex(target);
+        return;
+      }
+      // 已到已加载前缀末尾：先补下一页，追加后落到目标位置。
+      if (target === items.length) void loadNextPage();
+    },
+    [sequence, total, loadingMore, index, items.length, loadNextPage],
+  );
+  const goRef = useRef(goBy);
+  goRef.current = goBy;
+
+  // 只在最上层注册方向键；输入框/文本域/组合输入中不拦截。
+  useEffect(() => {
+    if (!active || !multi) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      goRef.current(event.key === "ArrowLeft" ? -1 : 1);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [active, multi]);
+
   const stateNote =
-    state === "loading"
-      ? "原图读取中"
-      : state === "missing"
-        ? "图片文件缺失"
-        : state === "error"
-          ? "原图读取失败"
-          : "原图按需读取";
+    loadingMore
+      ? "正在加载下一张…"
+      : viewState === "loading"
+        ? "原图读取中"
+        : viewState === "missing"
+          ? "图片文件缺失"
+          : viewState === "error"
+            ? "原图读取失败"
+            : "原图按需读取";
+  const footerNote = multi
+    ? `${index + 1} / ${total} · ${stateNote}`
+    : stateNote;
+
   return (
     <ClipboardLiteShell
-      title={shortTitle(liteTitle(item))}
-      sub={`${dim} · ${sizeLabel(item.byte_size)}`}
+      title={shortTitle(liteTitle(current))}
+      sub={`${dim} · ${sizeLabel(current.byte_size)}`}
       rootRef={rootRef}
       onBack={onBack}
       onOpenFull={onOpenFull}
       footer={
         <>
-          <span className="cap-foot-note">{stateNote}</span>
+          <span className="cap-foot-note">{footerNote}</span>
           <div className="cap-clip-foot-actions">
             <button
               type="button"
               className="cap-mini"
-              disabled={state === "loading"}
-              onClick={() => void onCopyItem(item.id, "图片")}
+              disabled={viewState === "loading"}
+              onClick={() => void onCopyItem(current.id, "图片")}
             >
               复制图片
             </button>
@@ -299,16 +528,41 @@ export function ClipboardLiteImageView({
       }
     >
       <div className="cap-clip-image-stage">
-        {state === "ready" && url ? (
+        {multi && (
+          <>
+            <button
+              type="button"
+              className="cap-clip-image-nav is-prev"
+              aria-label="上一张图片"
+              disabled={index <= 0 || loadingMore}
+              onClick={() => goBy(-1)}
+            >
+              <ChevronLeft size={18} strokeWidth={2.2} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="cap-clip-image-nav is-next"
+              aria-label="下一张图片"
+              disabled={index >= total - 1 || loadingMore}
+              onClick={() => goBy(1)}
+            >
+              <ChevronRight size={18} strokeWidth={2.2} aria-hidden="true" />
+            </button>
+            <span className="cap-clip-image-counter" aria-live="polite">
+              {index + 1} / {total}
+            </span>
+          </>
+        )}
+        {viewState === "ready" && url ? (
           <img className="cap-clip-image" src={url} alt="剪贴板图片预览" draggable={false} />
         ) : (
-          <div className="cap-clip-state" role={state === "error" ? "alert" : "status"}>
-            {state === "loading" ? (
+          <div className="cap-clip-state" role={viewState === "error" ? "alert" : "status"}>
+            {viewState === "loading" ? (
               <>
                 <Loader2 size={16} className="spin" aria-hidden="true" />
                 <span>正在加载原图…</span>
               </>
-            ) : state === "missing" ? (
+            ) : viewState === "missing" ? (
               <>
                 <ImageOff size={16} aria-hidden="true" />
                 <span>图片文件缺失或已被清理</span>
@@ -321,6 +575,18 @@ export function ClipboardLiteImageView({
             )}
           </div>
         )}
+        {loadError ? (
+          <div className="cap-clip-notice is-error" role="alert">
+            加载下一张失败：{loadError}
+            <button type="button" className="cap-link" onClick={() => void loadNextPage()}>
+              重试
+            </button>
+          </div>
+        ) : notice ? (
+          <div className="cap-clip-notice" role="status">
+            {notice}
+          </div>
+        ) : null}
       </div>
     </ClipboardLiteShell>
   );
@@ -511,11 +777,13 @@ export function ClipboardLiteGroupView({
   onBack,
   onOpenFull,
   onCopyGroup,
+  onPasteGroup,
   onOpenImage,
 }: LiteViewProps & {
   group: ClipboardGroup;
   onCopyGroup: (id: string) => Promise<boolean>;
-  onOpenImage: (item: ClipboardItem) => void;
+  onPasteGroup: (group: ClipboardGroup) => void;
+  onOpenImage: (item: ClipboardItem, index: number, sequence: LiteImageSequence) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   useFocusRestore(true);
@@ -621,6 +889,14 @@ export function ClipboardLiteGroupView({
             <button
               type="button"
               className="cap-mini"
+              aria-label={`逐项粘贴截图组「${group.name || "截图组"}」`}
+              onClick={() => onPasteGroup(group)}
+            >
+              逐项粘贴
+            </button>
+            <button
+              type="button"
+              className="cap-mini"
               onClick={() => void onCopyGroup(group.id)}
             >
               复制整组
@@ -658,7 +934,41 @@ export function ClipboardLiteGroupView({
                 type="button"
                 className="cap-clip-tile"
                 aria-label={`查看截图组第 ${i + 1} 张图片`}
-                onClick={() => onOpenImage(img)}
+                onClick={() =>
+                  onOpenImage(img, i, {
+                    group,
+                    items: thumbs,
+                    index: i,
+                    total: page?.imageCount ?? thumbs.length,
+                    revision: page?.revision ?? "",
+                    // 预览翻页时把新页同步给下层组视图；返回后仍能看到已加载缩略图。
+                    onAppend: (more) => {
+                      setExtra((prev) => {
+                        const base = page?.items ?? [];
+                        const merged = mergeThumbs(base, [...prev, ...more]);
+                        return merged.slice(base.length);
+                      });
+                    },
+                    // revision 变化后下层组视图也切换到新前缀，避免返回后继续使用
+                    // 旧 revision 的 page.items 去拼接（会混合两个版本）。
+                    onReplace: (next, nextTotal, nextRevision) => {
+                      setPage((prevPage) =>
+                        prevPage
+                          ? {
+                              ...prevPage,
+                              items: next,
+                              imageCount: nextTotal,
+                              limit: next.length,
+                              revision: nextRevision,
+                            }
+                          : prevPage,
+                      );
+                      setExtra([]);
+                      setMorePhase("idle");
+                      setMoreErr("");
+                    },
+                  })
+                }
               >
                 <ClipboardThumb itemId={img.id} hasThumb={img.has_thumb} size={86} />
               </button>

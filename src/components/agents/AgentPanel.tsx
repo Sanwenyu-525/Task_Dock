@@ -21,8 +21,10 @@ import StatusBadge, { type StatusTone } from "../ui/StatusBadge";
 import { persistCollapsibleState, readCollapsibleState } from "../../lib/collapsibleState";
 import {
   adapterUninstall, adapterVerify,
+  agentHistorySession,
   createSource, deleteSource, discoveryScan, getAgentInboxDir, openAgentSession,
   pendingItemsToTasks, setSourceEnabled,
+  type AgentHistorySession, type AgentInstance, type AgentRun, type AgentSource,
   type DiscoveredAgent,
 } from "../../lib/bridge";
 import {
@@ -37,7 +39,14 @@ import { useUiStore } from "../../store/useUiStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { AGENT_STATE_LABELS, formatBetween, formatDue, formatRelative } from "../../lib/format";
-import { buildTree, liveSummary, type TreeAgent, type TreeSession } from "../../lib/agentTree";
+import { buildTree, liveSummary, type TreeAgent, type TreeRun, type TreeSession } from "../../lib/agentTree";
+import {
+  useAgentHistoryGroups,
+  useAgentHistorySearch,
+  useAgentRunHistory,
+  useAgentSessionHistory,
+  type AgentHistoryPageState,
+} from "../../hooks/useAgentHistory";
 import { copyText } from "../../lib/clipboard";
 import { reportError } from "../../lib/errorReport";
 import AgentStatsView from "./stats/AgentStatsView";
@@ -104,6 +113,61 @@ function matchesSource(query: string, name: string, id: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
   return `${name} ${id}`.toLowerCase().includes(q);
+}
+
+/** 会话/轮次标题匹配：面板搜索不仅找 Agent 名称，也能定位历史会话与任务标题。 */
+function sessionMatchesQuery(session: TreeSession, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  return (
+    session.title.toLowerCase().includes(q) ||
+    session.externalId.toLowerCase().includes(q) ||
+    session.runs.some((run) => run.taskTitle.toLowerCase().includes(q))
+  );
+}
+
+/** 历史分区/历史轮次每页条数：先渲染实时项，历史按需展开、分页加载。 */
+const HISTORY_PAGE = 10;
+const FAILED_RECENT_MS = 60 * 60 * 1000;
+
+/** 轮次是否属于「当前实时集合」：completed 与过期 failed/disconnected 归入历史。 */
+function isLiveTreeRun(run: TreeRun): boolean {
+  if (run.status === "running" || run.status === "waiting") return true;
+  if (run.status === "failed" || run.status === "disconnected") {
+    const at = new Date(run.updatedAt).getTime();
+    return Number.isFinite(at) && Date.now() - at <= FAILED_RECENT_MS;
+  }
+  return false;
+}
+
+/** 后端历史轮次 → 监控树轮次（字段命名转换；不含实时判定）。 */
+function toTreeRun(run: AgentRun): TreeRun {
+  return {
+    id: run.id,
+    externalRunId: run.external_run_id,
+    taskTitle: run.task_title,
+    status: run.status,
+    startedAt: run.started_at,
+    endedAt: run.ended_at,
+    updatedAt: run.updated_at,
+    pending: run.pending_items,
+  };
+}
+
+/**
+ * 后端历史会话 → 监控树会话。历史查询不带轮次明细（轮次单独分页），
+ * `runs` 为空；liveState 只用于样式，展示状态由 `displayStatus` 传真实 status。
+ */
+function toTreeSession(session: AgentHistorySession): TreeSession {
+  return {
+    id: session.id,
+    externalId: session.external_id,
+    title: session.title,
+    status: session.status,
+    lastSeen: session.last_seen_at,
+    runs: [],
+    liveState: "idle",
+  };
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -228,69 +292,198 @@ export default function AgentPanel() {
   const clearAgentFocus = useUiStore((s) => s.clearAgentFocus);
   /** 定位未命中次数：通知可能先于快照刷新到达，短暂等待树更新后再放弃 */
   const focusMissRef = useRef(0);
+  /** 正在/已经发起后端定位的会话 ID，避免快照每次刷新重复请求 */
+  const focusLookupRef = useRef<string | null>(null);
+  /** 已应用过的定位 token，避免同一目标因快照刷新反复重启滚动等待 */
+  const appliedFocusTokenRef = useRef<number | null>(null);
+  /** 取消上一次定位的滚动等待（新通知/卸载时） */
+  const focusScrollCancelRef = useRef<(() => void) | null>(null);
+  /**
+   * 快照外会话的后端定位结果：直接固定到对应真实分组的「历史会话」分区顶部，
+   * 保证超过快照 200 上限的会话定位后立即可见（仍以历史查询的 total 为准）。
+   */
+  const [focusPin, setFocusPin] = useState<{
+    item: AgentHistorySession;
+    agentId: string;
+    instanceId: string | null;
+  } | null>(null);
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
+
+  /**
+   * 等待目标行出现后滚动/高亮，再消费 agentFocus。
+   * 历史会话要等后端分页返回才渲染，不能只等两帧；等待有上限（2.5s）。
+   */
+  function scrollToAgentTarget(
+    sessionId: string,
+    runId: string | null,
+    onDone: () => void,
+  ): () => void {
+    let cancelled = false;
+    let frame = 0;
+    const deadline = Date.now() + 2500;
+    const tick = () => {
+      if (cancelled) return;
+      const el =
+        (runId && document.querySelector(`[data-agent-run-id="${runId}"]`)) ||
+        document.querySelector(`[data-agent-session-id="${sessionId}"]`);
+      if (el) {
+        const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+        el.scrollIntoView?.({ block: "center", behavior: reduced ? "auto" : "smooth" });
+        if (!reduced && el.animate) {
+          el.animate(
+            [
+              { boxShadow: "0 0 0 0 rgba(79, 125, 186, 0)" },
+              { boxShadow: "0 0 0 2px rgba(79, 125, 186, 0.55)" },
+              { boxShadow: "0 0 0 0 rgba(79, 125, 186, 0)" },
+            ],
+            { duration: 1200, easing: "ease-out" },
+          );
+        }
+        onDone();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        // 目标仍不可见（例如超出补页上限）：消费定位，不无限等待。
+        onDone();
+        return;
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }
+
+  const applyAgentFocus = useCallback(
+    (target: {
+      token: number;
+      agentId: string;
+      sessionId: string;
+      instanceId: string | null;
+      runId: string | null;
+    }) => {
+      appliedFocusTokenRef.current = target.token;
+      focusMissRef.current = 0;
+      setSection("monitor");
+      setMonitorFilter("all");
+      // 通知定位优先于任何筛选：清空搜索，确保即使当前条件把目标 Agent 过滤掉也能显示。
+      setMonitorQuery("");
+      setExpanded((e) => {
+        const next: Record<string, boolean> = {
+          ...e,
+          [target.agentId]: true,
+          [target.sessionId]: true,
+          // 目标可能位于「历史会话」分区：显式展开并保留，避免定位后清除 focus 时折叠回去。
+          [`${target.agentId}/${target.instanceId ?? "unassigned"}/history`]: true,
+        };
+        if (target.instanceId) next[`${target.agentId}/${target.instanceId}`] = true;
+        return next;
+      });
+      focusScrollCancelRef.current?.();
+      focusScrollCancelRef.current = scrollToAgentTarget(target.sessionId, target.runId, () => {
+        focusScrollCancelRef.current = null;
+        clearAgentFocus();
+      });
+    },
+    [clearAgentFocus],
+  );
 
   useEffect(() => {
     if (!agentFocus) {
       focusMissRef.current = 0;
+      focusLookupRef.current = null;
+      appliedFocusTokenRef.current = null;
       return;
     }
     if (tree.length === 0) return; // 快照未就绪时保留目标，等下一次树更新
-    const found = findSessionInTree(tree, agentFocus.sessionId);
-    if (!found) {
-      // 新会话刚入库时快照还没刷新：给几次树更新机会，避免静默丢失定位。
-      focusMissRef.current += 1;
-      if (focusMissRef.current >= 6) {
-        focusMissRef.current = 0;
-        clearAgentFocus(); // 约 6 次快照刷新后仍无此会话：视为已清理，不伪造定位
-      }
+    if (appliedFocusTokenRef.current === agentFocus.token) return;
+
+    const sessionId = agentFocus.sessionId;
+    const found = findSessionInTree(tree, sessionId);
+    if (found) {
+      focusLookupRef.current = null;
+      applyAgentFocus({
+        token: agentFocus.token,
+        agentId: found.agentId,
+        sessionId: found.session.id,
+        instanceId: found.instanceId,
+        runId: agentFocus.refId,
+      });
       return;
     }
-    focusMissRef.current = 0;
-    setSection("monitor");
-    setMonitorFilter("all");
-    // 通知定位优先于任何筛选：清空搜索，确保即使当前条件把目标 Agent 过滤掉也能显示。
-    setMonitorQuery("");
-    setExpanded((e) => {
-      const next: Record<string, boolean> = {
-        ...e,
-        [found.agentId]: true,
-        [found.session.id]: true,
-      };
-      if (found.instanceId) next[`${found.agentId}/${found.instanceId}`] = true;
-      return next;
-    });
-    let cancelled = false;
-    let frame = 0;
-    frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
-        if (cancelled) return;
-        const runId = agentFocus.refId;
-        const el =
-          (runId && document.querySelector(`[data-agent-run-id="${runId}"]`)) ||
-          document.querySelector(`[data-agent-session-id="${found.session.id}"]`);
-        if (el) {
-          const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-          el.scrollIntoView?.({ block: "center", behavior: reduced ? "auto" : "smooth" });
-          if (!reduced && el.animate) {
-            el.animate(
-              [
-                { boxShadow: "0 0 0 0 rgba(79, 125, 186, 0)" },
-                { boxShadow: "0 0 0 2px rgba(79, 125, 186, 0.55)" },
-                { boxShadow: "0 0 0 0 rgba(79, 125, 186, 0)" },
-              ],
-              { duration: 1200, easing: "ease-out" },
-            );
+
+    // 快照只保留最近 200 条：未命中时按会话行 ID 精确查询后端，
+    // 再展开真实的 source / instance（未知实例一律归入 unassigned，不伪造实例）。
+    if (focusLookupRef.current === sessionId) return;
+    focusLookupRef.current = sessionId;
+    void (async () => {
+      const stillCurrent = () =>
+        focusLookupRef.current === sessionId &&
+        useUiStore.getState().agentFocus?.sessionId === sessionId;
+      try {
+        const item = await agentHistorySession(sessionId);
+        if (!stillCurrent()) return;
+        if (!item) {
+          focusLookupRef.current = null;
+          focusMissRef.current += 1;
+          if (focusMissRef.current >= 6) {
+            focusMissRef.current = 0;
+            clearAgentFocus(); // 多次刷新后仍无此会话：视为已清理，不伪造定位
           }
+          return;
         }
-        // 滚动/高亮已发起后再消费目标，避免清除状态提前触发 cleanup 取消动画帧。
-        clearAgentFocus();
-      });
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
-    };
-  }, [agentFocus, tree, clearAgentFocus]);
+        const agent = treeRef.current.find((a) => a.id === item.source_id);
+        if (!agent) {
+          // 来源不在当前快照（隐藏/已移除）：没有真实分组可展开，不伪造。
+          focusLookupRef.current = null;
+          focusMissRef.current = 0;
+          clearAgentFocus();
+          return;
+        }
+        // 后端已把无效/非真实实例归一为 null；有效实例即使不在实时快照里，
+        // 也会由 agent_history_groups 补出真实入口，不能误归到未关联实例。
+        const instanceId = item.instance_id ?? null;
+        setFocusPin({
+          item,
+          agentId: item.source_id,
+          instanceId,
+        });
+        applyAgentFocus({
+          token: agentFocus.token,
+          agentId: item.source_id,
+          sessionId: item.id,
+          instanceId,
+          runId: agentFocus.refId,
+        });
+      } catch {
+        if (!stillCurrent()) return;
+        focusLookupRef.current = null;
+        focusMissRef.current += 1;
+        if (focusMissRef.current >= 6) {
+          focusMissRef.current = 0;
+          clearAgentFocus();
+        }
+      }
+    })();
+  }, [agentFocus, tree, applyAgentFocus, clearAgentFocus]);
+
+  // 新的定位目标与旧「固定行」不是同一会话时移除旧固定行，避免误导。
+  useEffect(() => {
+    if (!agentFocus) return;
+    setFocusPin((prev) => (prev && prev.item.id !== agentFocus.sessionId ? null : prev));
+  }, [agentFocus?.sessionId]);
+
+  // 组件卸载时取消尚未完成的滚动等待。
+  useEffect(
+    () => () => {
+      focusScrollCancelRef.current?.();
+      focusScrollCancelRef.current = null;
+    },
+    [],
+  );
 
   const connectedSources = useMemo(
     () =>
@@ -302,14 +495,33 @@ export default function AgentPanel() {
   );
 
   const visibleAgents = useMemo(() => {
+    const searching = monitorQuery.trim().length > 0;
     return tree.filter((a) => {
-      // 「需关注」只看真实执行状态：软件在运行但未接入不算需要关注
-      if (monitorFilter !== "all" && a.liveState === "idle") return false;
-      return matchesSource(monitorQuery, a.name, a.id);
+      // 「需关注」只看真实执行状态：软件在运行但未接入不算需要关注。
+      // 但搜索是显式查找，必须能命中空闲 Agent 的历史会话，不能被当前筛选挡住。
+      if (!searching && monitorFilter !== "all" && a.liveState === "idle") return false;
+      if (matchesSource(monitorQuery, a.name, a.id)) return true;
+      // 搜索历史会话标题 / 轮次任务标题：命中时保留该 Agent；
+      // 命中项由「历史搜索结果」区按后端分页展示（不在这里伪造历史数据）。
+      const q = monitorQuery.trim();
+      if (!q) return false;
+      return [
+        ...a.instances.flatMap((inst) => inst.sessions),
+        ...a.unassignedSessions,
+      ].some((session) => sessionMatchesQuery(session, q));
     });
   }, [tree, monitorFilter, monitorQuery]);
 
   const monitorSearching = monitorQuery.trim().length > 0;
+  // 历史搜索走后端分页（防抖 + 代际保护）；与实时快照刷新互不阻塞。
+  // 只有打开「运行监控」分区且有搜索词时才请求，不轮询。
+  const historySearch = useAgentHistorySearch(monitorQuery, section === "monitor");
+  const searchHasHits =
+    monitorSearching &&
+    (historySearch.loading ||
+      !!historySearch.error ||
+      historySearch.total > 0 ||
+      historySearch.items.length > 0);
 
   // 运行监控与「接入管理」共用同一次扫描结果，不额外起第二套发现逻辑
   const discoveryBySource = useMemo(() => {
@@ -499,8 +711,23 @@ export default function AgentPanel() {
             </button>
           </div>
 
+          {/* ══ 历史搜索结果（后端分页；与 Agent 名称过滤互不替代）══ */}
+          {monitorSearching && (
+            <HistorySearchResults
+              state={historySearch}
+              sources={snapshot.sources}
+              instances={snapshot.instances}
+              expanded={expanded}
+              setExpanded={setExpanded}
+              onPendingToTasks={onPendingToTasks}
+              showToast={showToast}
+              focusSessionId={agentFocus?.sessionId ?? null}
+              focusRunId={agentFocus?.refId ?? null}
+            />
+          )}
+
           {/* ══ 监控树 ══ */}
-          {visibleAgents.length === 0 && (
+          {visibleAgents.length === 0 && !searchHasHits && (
             <div className="empty-state">
               <div className="empty-icon"><AgentIcon size={22} /></div>
               <div className="empty-title">
@@ -530,6 +757,9 @@ export default function AgentPanel() {
                 setExpanded={setExpanded}
                 onPendingToTasks={onPendingToTasks}
                 showToast={showToast}
+                focusSessionId={agentFocus?.sessionId ?? null}
+                focusRunId={agentFocus?.refId ?? null}
+                focusPin={focusPin}
                 discovery={discoveryBySource.get(agent.id)}
                 onConnect={
                   discoveryBySource.has(agent.id)
@@ -1004,6 +1234,9 @@ function AgentNode({
   setExpanded,
   onPendingToTasks,
   showToast,
+  focusSessionId,
+  focusRunId,
+  focusPin,
   discovery,
   onConnect,
 }: {
@@ -1012,16 +1245,65 @@ function AgentNode({
   setExpanded: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   onPendingToTasks: (items: string[]) => Promise<void>;
   showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
+  focusSessionId: string | null;
+  focusRunId: string | null;
+  /** 快照外会话的后端定位结果（仅命中对应真实分组时注入） */
+  focusPin?: { item: AgentHistorySession; agentId: string; instanceId: string | null } | null;
   discovery?: DiscoveredAgent;
   onConnect?: () => void;
 }) {
   const open = !!expanded[agent.id];
+  /** 快照外历史定位：即使快照已把该来源挤出窗口，也要能展开它真实的历史分区。 */
+  const hasFocusPin = !!focusPin && focusPin.agentId === agent.id;
+  const pinnedUnassigned = hasFocusPin && focusPin?.instanceId === null;
   const [caps, setCaps] = useState<AgentNavCapabilities | null>(null);
+
+  // 历史入口分组：一次聚合查询补齐快照里没有近期会话的实例/未关联实例。
+  // 实时状态变化（运行→完成/失联）时刷新；150ms 去抖，不轮询。
+  const historyGroups = useAgentHistoryGroups(
+    agent.id,
+    open,
+    `${agent.liveState}:${agent.activeCount}:${agent.sessionCount}`,
+  );
+  const historyByInstance = useMemo(() => {
+    const map = new Map<string, number>();
+    let unassigned = 0;
+    for (const group of historyGroups.items) {
+      if (group.instance_id) {
+        map.set(group.instance_id, (map.get(group.instance_id) ?? 0) + group.count);
+      } else {
+        unassigned += group.count;
+      }
+    }
+    return { map, unassigned };
+  }, [historyGroups.items]);
+  // 快照里没有、但历史里有的真实实例（instance_id 来自 agent_instances，不伪造）。
+  const historyOnlyInstances = useMemo(
+    () =>
+      historyGroups.items
+        .filter(
+          (group) =>
+            group.instance_id &&
+            !agent.instances.some((inst) => inst.id === group.instance_id),
+        )
+        .map((group) => ({
+          id: group.instance_id!,
+          key: group.instance_key || group.instance_id!,
+          displayName: group.display_name || group.instance_key || group.instance_id!,
+          sessions: [],
+          historyCount: group.count,
+        })),
+    [agent.instances, historyGroups.items],
+  );
+  const hasHistory =
+    historyGroups.items.length > 0 || historyGroups.loading || !!historyGroups.error;
 
   // 三个正交维度：软件是否安装/运行（discovery）、监控是否接入（connected/health）、
   // 当前是否在执行（liveState）。进程存在绝不推导为「正在执行」。
   const softwareStatus = useMemo(() => {
     const running = discovery?.running_instances?.length ?? 0;
+    // 历史证据与「当前接入」分开：历史可查不代表当前在线。
+    if (hasHistory && !agent.connected) return "历史记录可查 · 当前无实时证据";
     if (!discovery) return agent.connected ? null : "未发现安装信息";
     if (running > 0 && !agent.connected) return "运行中 · 监控未连接";
     if (!discovery.installed) return "未安装";
@@ -1033,6 +1315,21 @@ function AgentNode({
     if (discovery.health_state === "self-test-only") return "仅自测通过 · 待真实事件";
     if (!discovery.real_event_seen) return "已配置 · 待真实事件";
     return null;
+  }, [agent.connected, discovery, hasHistory]);
+
+  // 已写入配置但尚未收到真实事件时，把第一条阻塞限制直接显示在默认行下方。
+  // Trae 的「需在 Trae 内开启全局 Hooks」属于用户必须手动完成的步骤，不能只藏在详情里。
+  const healthHint = useMemo(() => {
+    if (!discovery || agent.connected) return null;
+    const state = discovery.health_state;
+    if (
+      state === "awaiting-first-event" ||
+      state === "transport-verified" ||
+      state === "self-test-only"
+    ) {
+      return discovery.limitations[0] ?? null;
+    }
+    return null;
   }, [agent.connected, discovery]);
 
   // 展开时才探测跳转能力（证据化：探测结果随本机安装状态变化）
@@ -1041,6 +1338,29 @@ function AgentNode({
       navAgentCapabilities(agent.id).then(setCaps).catch(() => setCaps(null));
     }
   }, [open, agent.id, caps]);
+
+  // 展示用实例集合 = 快照实例（附历史数量）+ 历史里存在但快照没有的真实实例。
+  const displayInstances = [
+    ...agent.instances.map((inst) => ({
+      inst,
+      historyCount: historyByInstance.map.get(inst.id),
+    })),
+    ...historyOnlyInstances.map((inst) => ({
+      inst: {
+        id: inst.id,
+        key: inst.key,
+        displayName: inst.displayName,
+        sessions: [],
+      },
+      historyCount: inst.historyCount,
+    })),
+  ];
+  const unassignedLive = agent.unassignedSessions.filter(
+    (session) => session.liveState !== "idle",
+  ).length;
+  const unassignedHistoryCount = historyByInstance.unassigned;
+  const showUnassigned =
+    agent.unassignedSessions.length > 0 || pinnedUnassigned || unassignedHistoryCount > 0;
 
   return (
     <div className={`tree-agent attention-${agent.liveState}`}>
@@ -1077,6 +1397,11 @@ function AgentNode({
           <ExternalLink size={12} />
         </button>
       </div>
+      {healthHint && (
+        <div className="empty-hint agent-health-hint" role="status">
+          {healthHint}
+        </div>
+      )}
       {open && !agent.connected && (
         <div className="tree-children">
           <div className="tree-row">
@@ -1096,9 +1421,17 @@ function AgentNode({
           ) : null}
         </div>
       )}
-      {open && agent.connected && (
+      {open && (agent.connected || hasFocusPin || hasHistory) && (
         <div className="tree-children">
-          {agent.instances.map((inst) => (
+          {displayInstances.map(({ inst, historyCount }) => {
+            const liveCount = inst.sessions.filter(
+              (session) => session.liveState !== "idle",
+            ).length;
+            const totalCount =
+              historyCount === undefined
+                ? inst.sessions.length
+                : liveCount + historyCount;
+            return (
             <div key={inst.id} className="tree-instance">
               <div className="tree-row">
                 <button
@@ -1108,7 +1441,7 @@ function AgentNode({
                 >
                   {expanded[`${agent.id}/${inst.id}`] ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                   <span className="tree-inst-key" title={inst.key}>{inst.key}</span>
-                  <span className="tree-meta">{inst.sessions.length} 会话</span>
+                  <span className="tree-meta">{totalCount} 会话</span>
                 </button>
                 <button
                   className="icon-btn sm"
@@ -1129,50 +1462,379 @@ function AgentNode({
               </div>
               {expanded[`${agent.id}/${inst.id}`] && (
                 <div className="tree-children">
-                  {inst.sessions.map((sess) => (
-                    <SessionNode
-                      key={sess.id}
-                      agentId={agent.id}
-                      agentName={agent.name}
-                      session={sess}
-                      expanded={expanded}
-                      setExpanded={setExpanded}
-                      onPendingToTasks={onPendingToTasks}
-                      showToast={showToast}
-                      canResume={caps?.can_resume_session.supported ?? false}
-                      resumeNote={caps?.can_resume_session.note ?? ""}
-                      canFocus={caps?.can_focus_window.supported ?? false}
-                    />
-                  ))}
+                  <SessionList
+                    ownerKey={`${agent.id}/${inst.id}`}
+                    sourceId={agent.id}
+                    instanceId={inst.id}
+                    agentId={agent.id}
+                    agentName={agent.name}
+                    sessions={inst.sessions}
+                    historyCount={historyCount}
+                    expanded={expanded}
+                    setExpanded={setExpanded}
+                    focusSessionId={focusSessionId}
+                    focusRunId={focusRunId}
+                    pinnedSession={
+                      focusPin && focusPin.agentId === agent.id && focusPin.instanceId === inst.id
+                        ? focusPin.item
+                        : null
+                    }
+                    onPendingToTasks={onPendingToTasks}
+                    showToast={showToast}
+                    canResume={caps?.can_resume_session.supported ?? false}
+                    resumeNote={caps?.can_resume_session.note ?? ""}
+                    canFocus={caps?.can_focus_window.supported ?? false}
+                  />
                 </div>
               )}
             </div>
-          ))}
-          {agent.unassignedSessions.length > 0 && (
+            );
+          })}
+          {showUnassigned && (
             <div className="tree-instance">
               <div className="tree-row unassigned-head" title="事件未携带实例信息，保持真实关系">
                 <CircleSlash size={11} />
                 <span className="tree-inst-key">未关联实例</span>
-                <span className="tree-meta">{agent.unassignedSessions.length} 会话</span>
+                <span className="tree-meta">
+                  {Math.max(
+                    agent.unassignedSessions.length,
+                    pinnedUnassigned ? 1 : 0,
+                    unassignedLive + unassignedHistoryCount,
+                  )}{" "}
+                  会话
+                </span>
               </div>
-              {agent.unassignedSessions.map((sess) => (
-                <SessionNode
-                  key={sess.id}
-                  agentId={agent.id}
-                  agentName={agent.name}
-                  session={sess}
-                  expanded={expanded}
-                  setExpanded={setExpanded}
-                  onPendingToTasks={onPendingToTasks}
-                  showToast={showToast}
-                  canResume={caps?.can_resume_session.supported ?? false}
-                  resumeNote={caps?.can_resume_session.note ?? ""}
-                  canFocus={caps?.can_focus_window.supported ?? false}
-                />
-              ))}
+              <SessionList
+                ownerKey={`${agent.id}/unassigned`}
+                sourceId={agent.id}
+                instanceId={null}
+                agentId={agent.id}
+                agentName={agent.name}
+                sessions={agent.unassignedSessions}
+                historyCount={unassignedHistoryCount}
+                expanded={expanded}
+                setExpanded={setExpanded}
+                focusSessionId={focusSessionId}
+                focusRunId={focusRunId}
+                pinnedSession={
+                  focusPin && focusPin.agentId === agent.id && focusPin.instanceId === null
+                    ? focusPin.item
+                    : null
+                }
+                onPendingToTasks={onPendingToTasks}
+                showToast={showToast}
+                canResume={caps?.can_resume_session.supported ?? false}
+                resumeNote={caps?.can_resume_session.note ?? ""}
+                canFocus={caps?.can_focus_window.supported ?? false}
+              />
             </div>
           )}
+          {historyGroups.error && (
+            <div className="empty-hint error-text" role="status">
+              历史入口读取失败：{historyGroups.error}
+              <button className="btn sm" onClick={historyGroups.reload}>
+                重试
+              </button>
+            </div>
+          )}
+          {historyGroups.truncated && (
+            <div className="empty-hint">
+              历史实例过多，仅显示前 {historyGroups.items.length} 个分组
+            </div>
+          )}
+          {historyGroups.loading && !agent.connected && displayInstances.length === 0 && (
+            <div className="empty-hint">正在读取历史入口…</div>
+          )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 会话列表：实时会话来自快照（保持事件驱动刷新），历史会话在展开时调用后端
+ * keyset 分页，数量用后端 COUNT。快照 200 条上限之外的历史会话因此仍可访问，
+ * 且不会为数百条历史生成隐藏 DOM。
+ */
+function SessionList({
+  ownerKey,
+  sourceId,
+  instanceId,
+  agentId,
+  agentName,
+  sessions,
+  historyCount,
+  expanded,
+  setExpanded,
+  focusSessionId,
+  focusRunId,
+  pinnedSession,
+  onPendingToTasks,
+  showToast,
+  canResume,
+  resumeNote,
+  canFocus,
+}: {
+  ownerKey: string;
+  /** 真实来源 ID（历史查询的 sourceId） */
+  sourceId: string;
+  /** 真实实例行 ID；null 表示「未关联实例」分组 */
+  instanceId: string | null;
+  agentId: string;
+  agentName: string;
+  sessions: TreeSession[];
+  /** 后端历史分组 COUNT（不含实时会话）；未加载完成时为 undefined */
+  historyCount?: number;
+  expanded: Record<string, boolean>;
+  setExpanded: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  focusSessionId: string | null;
+  focusRunId: string | null;
+  /** 后端按 ID 定位到的快照外会话（仅所属真实分组接收） */
+  pinnedSession?: AgentHistorySession | null;
+  onPendingToTasks: (items: string[]) => Promise<void>;
+  showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
+  canResume: boolean;
+  resumeNote: string;
+  canFocus: boolean;
+}) {
+  const live = sessions.filter((s) => s.liveState !== "idle");
+  const focusInHistory =
+    !!focusSessionId &&
+    (pinnedSession?.id === focusSessionId ||
+      sessions.some((s) => s.liveState === "idle" && s.id === focusSessionId));
+  const historyKey = `${ownerKey}/history`;
+  const historyOpen = !!expanded[historyKey] || focusInHistory;
+  const history = useAgentSessionHistory({
+    sourceId,
+    instanceId,
+    unassigned: instanceId === null,
+    enabled: historyOpen,
+    pageSize: HISTORY_PAGE,
+  });
+  // 折叠态数量来自右侧一次聚合查询（AgentNode 层），展开后由分页 total 接管。
+  // 后端历史查询与 COUNT 已排除实时会话，这里不再前端过滤，避免「total 未过滤、
+  // 列表被过滤」造成数量与首屏不一致。
+  const displayTotal = historyOpen
+    ? history.loaded && !history.error
+      ? history.total
+      : historyCount
+    : historyCount;
+  const liveIds = new Set(live.map((s) => s.id));
+  const historyItems = history.items;
+  // 快照外定位结果固定在最前；若后端分页已包含同一条则按 id 去重。
+  const pinnedItem =
+    pinnedSession &&
+    !liveIds.has(pinnedSession.id) &&
+    !historyItems.some((item) => item.id === pinnedSession.id)
+      ? pinnedSession
+      : null;
+  const shownHistory = [
+    ...(pinnedItem ? [{ item: pinnedItem, session: toTreeSession(pinnedItem) }] : []),
+    ...historyItems.map((item) => ({ item, session: toTreeSession(item) })),
+  ];
+
+  // 通知定位：目标可能不在第一页；按游标有上限地加载，最多 10 页（100 条），
+  // 不因一次定位请求整段历史。
+  const focusLoads = useRef(0);
+  useEffect(() => {
+    focusLoads.current = 0;
+  }, [focusSessionId]);
+  useEffect(() => {
+    if (!focusSessionId || !historyOpen) return;
+    if (history.loading || history.loadingMore || !history.hasMore) return;
+    if (history.items.some((s) => s.id === focusSessionId)) return;
+    if (focusLoads.current >= 10) return;
+    focusLoads.current += 1;
+    void history.loadMore();
+  }, [focusSessionId, historyOpen, history]);
+
+  const renderSession = (
+    session: TreeSession,
+    runCount?: number,
+    displayStatus?: string,
+    contextLabel?: string,
+  ) => (
+    <SessionNode
+      key={session.id}
+      agentId={agentId}
+      agentName={agentName}
+      session={session}
+      expanded={expanded}
+      setExpanded={setExpanded}
+      displayStatus={displayStatus}
+      runCount={runCount}
+      contextLabel={contextLabel}
+      focusRunId={focusSessionId === session.id ? focusRunId : null}
+      onPendingToTasks={onPendingToTasks}
+      showToast={showToast}
+      canResume={canResume}
+      resumeNote={resumeNote}
+      canFocus={canFocus}
+    />
+  );
+
+  return (
+    <>
+      {live.map((session) => renderSession(session))}
+      <button
+        type="button"
+        className="tree-row tree-history-toggle"
+        aria-label="历史会话分区"
+        aria-expanded={historyOpen}
+        onClick={() => setExpanded((e) => ({ ...e, [historyKey]: !historyOpen }))}
+      >
+        {historyOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        <span className="tree-inst-key">
+          历史会话
+          {displayTotal !== null && <span className="tree-meta"> {displayTotal}</span>}
+        </span>
+        <span className="tree-meta">
+          {historyOpen
+            ? history.loading
+              ? "加载中…"
+              : `已加载 ${shownHistory.length} 条 · 实时 ${live.length} 条单列`
+            : historyCount === undefined
+              ? "展开加载完整历史"
+              : live.length > 0
+                ? `实时 ${live.length} · 历史 ${historyCount}`
+                : `共 ${historyCount} 条历史`}
+        </span>
+      </button>
+      {historyOpen && history.error && (
+        <div className="empty-hint error-text" role="alert">
+          历史会话加载失败：{history.error}
+          <button className="btn sm" onClick={history.reload}>
+            重试
+          </button>
+        </div>
+      )}
+      {historyOpen && !history.error && history.loading && (
+        <div className="empty-hint">正在加载历史会话…</div>
+      )}
+      {historyOpen &&
+        !history.error &&
+        !history.loading &&
+        shownHistory.length === 0 && <div className="empty-hint">暂无历史会话</div>}
+      {historyOpen &&
+        shownHistory.map(({ item, session }) =>
+          renderSession(
+            session,
+            item.run_count,
+            item.status,
+            pinnedItem && pinnedItem.id === item.id && item.instance_id && instanceId === null
+              ? `${agentName} · 实例 ${item.instance_id.slice(0, 8)}…`
+              : undefined,
+          ),
+        )}
+      {historyOpen && history.hasMore && (
+        <button
+          type="button"
+          className="btn sm tree-history-more"
+          onClick={() => void history.loadMore()}
+          disabled={history.loadingMore}
+        >
+          {history.loadingMore ? "加载中…" : "显示更多历史"}
+        </button>
+      )}
+    </>
+  );
+}
+
+/** 历史搜索结果：后端搜索 + 分页，条目携带真实来源/实例标签，不伪造实例关系。 */
+function HistorySearchResults({
+  state,
+  sources,
+  instances,
+  expanded,
+  setExpanded,
+  onPendingToTasks,
+  showToast,
+  focusSessionId,
+  focusRunId,
+}: {
+  state: AgentHistoryPageState<AgentHistorySession> & { query: string };
+  sources: AgentSource[];
+  instances: AgentInstance[];
+  expanded: Record<string, boolean>;
+  setExpanded: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  onPendingToTasks: (items: string[]) => Promise<void>;
+  showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
+  focusSessionId: string | null;
+  focusRunId: string | null;
+}) {
+  const sourceNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of sources) map.set(s.id, s.display_name);
+    return map;
+  }, [sources]);
+  const instanceNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const i of instances) map.set(i.id, i.display_name || i.instance_key || i.id);
+    return map;
+  }, [instances]);
+
+  // 防抖尚未完成/空搜索词时不显示空结果，避免「输入中」闪成无命中。
+  const active = state.query.length > 0;
+  return (
+    <div className="tree-agent history-search-results" role="region" aria-label="历史搜索结果">
+      <div className="tree-row unassigned-head">
+        <span className="tree-inst-key">历史搜索结果</span>
+        <span className="tree-meta">
+          {!active
+            ? "输入中…"
+            : state.loading
+              ? "搜索中…"
+              : state.error
+                ? "搜索失败"
+                : `共 ${state.total} 条`}
+        </span>
+      </div>
+      {active && state.error && (
+        <div className="empty-hint error-text" role="alert">
+          历史搜索失败：{state.error}
+          <button className="btn sm" onClick={state.reload}>
+            重试
+          </button>
+        </div>
+      )}
+      {active && !state.error && !state.loading && state.items.length === 0 && (
+        <div className="empty-hint">没有匹配的历史会话</div>
+      )}
+      {active &&
+        state.items.map((item) => {
+          const agentName = sourceNames.get(item.source_id) ?? item.source_id;
+          const instanceName = item.instance_id
+            ? (instanceNames.get(item.instance_id) ?? "未知实例")
+            : "未关联实例";
+          return (
+            <SessionNode
+              key={item.id}
+              agentId={item.source_id}
+              agentName={agentName}
+              session={toTreeSession(item)}
+              expanded={expanded}
+              setExpanded={setExpanded}
+              displayStatus={item.status}
+              runCount={item.run_count}
+              contextLabel={`${agentName} · ${instanceName}`}
+              focusRunId={focusSessionId === item.id ? focusRunId : null}
+              onPendingToTasks={onPendingToTasks}
+              showToast={showToast}
+              canResume={false}
+              resumeNote=""
+              canFocus={false}
+            />
+          );
+        })}
+      {active && state.hasMore && (
+        <button
+          type="button"
+          className="btn sm tree-history-more"
+          onClick={() => void state.loadMore()}
+          disabled={state.loadingMore}
+        >
+          {state.loadingMore ? "加载中…" : "显示更多结果"}
+        </button>
       )}
     </div>
   );
@@ -1184,6 +1846,11 @@ function SessionNode({
   session,
   expanded,
   setExpanded,
+  searchHit = false,
+  displayStatus,
+  runCount,
+  contextLabel,
+  focusRunId,
   onPendingToTasks,
   showToast,
   canResume,
@@ -1195,6 +1862,14 @@ function SessionNode({
   session: TreeSession;
   expanded: Record<string, boolean>;
   setExpanded: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  searchHit?: boolean;
+  /** 真实状态（历史条目用）；缺省沿用实时 liveState */
+  displayStatus?: string;
+  /** 轮次总数（历史条目用后端 run_count）；缺省用快照内轮次数 */
+  runCount?: number;
+  /** 搜索结果中的真实来源/实例标签 */
+  contextLabel?: string;
+  focusRunId: string | null;
   onPendingToTasks: (items: string[]) => Promise<void>;
   showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
   canResume: boolean;
@@ -1204,8 +1879,12 @@ function SessionNode({
   const open = !!expanded[session.id];
   // 能力未知（caps 未加载）时保守显示「跳转」；后端会诚实降级并在 Toast 说明
   const jumpSupported = canResume || canFocus;
+  const status = displayStatus ?? session.liveState;
   return (
-    <div className={`tree-session attention-${session.liveState}`} data-agent-session-id={session.id}>
+    <div
+      className={`tree-session attention-${session.liveState}${searchHit ? " is-search-hit" : ""}`}
+      data-agent-session-id={session.id}
+    >
       {/* 行容器 div + 兄弟按钮：展开只负责展开，跳转只负责跳转（修复嵌套 button） */}
       <div className="tree-row">
         <button
@@ -1214,11 +1893,18 @@ function SessionNode({
           aria-expanded={open}
         >
           {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          <span className={`session-state state-${session.liveState}`}>
-            {AGENT_STATE_LABELS[session.liveState] ?? "未知"}
+          <span className={`session-state state-${status}`}>
+            {AGENT_STATE_LABELS[status] ?? "未知"}
           </span>
+          {contextLabel && (
+            <span className="run-source" title={contextLabel}>
+              {contextLabel}
+            </span>
+          )}
           <span className="tree-title">{session.title || session.externalId.slice(0, 24)}</span>
-          <span className="tree-meta">{session.runs.length} 轮 · {formatRelative(session.lastSeen)}</span>
+          <span className="tree-meta">
+            {runCount ?? session.runs.length} 轮 · {formatRelative(session.lastSeen)}
+          </span>
         </button>
         <button
           className="icon-btn sm"
@@ -1242,35 +1928,130 @@ function SessionNode({
       </div>
       {open && (
         <div className="tree-children">
-          {session.runs.map((run) => (
-            <div
-              key={run.id}
-              className={`task-card run-item state-${run.status}`}
-              data-agent-run-id={run.id}
-            >
-              <span className={`agent-dot state-${run.status}`} />
-              <div className="run-main">
-                <div className="run-title">
-                  <span className="run-source">{run.externalRunId?.slice(0, 10) ?? "自动轮次"}</span>
-                  {run.taskTitle || "（无标题）"}
-                </div>
-                <div className="run-meta">
-                  {AGENT_STATE_LABELS[run.status] ?? "未知"} · {formatBetween(run.startedAt, run.endedAt)} · 活动 {formatRelative(run.updatedAt)}
-                </div>
-                {run.pending.length > 0 && (
-                  <div className="run-pending">
-                    <ListChecks size={11} /> {run.pending.length} 个待处理事项
-                    <button className="btn sm" onClick={() => onPendingToTasks(run.pending)}>
-                      转为任务
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
+          <RunList
+            sessionId={session.id}
+            runs={session.runs}
+            focusRunId={focusRunId}
+            onPendingToTasks={onPendingToTasks}
+          />
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * 轮次列表：实时轮次来自快照；历史轮次在展开时调用后端分页（准确 total + 游标）。
+ * 快照 run 上限（300）之外的历史轮次因此仍可访问。
+ */
+function RunList({
+  sessionId,
+  runs,
+  focusRunId,
+  onPendingToTasks,
+}: {
+  sessionId: string;
+  runs: TreeRun[];
+  focusRunId: string | null;
+  onPendingToTasks: (items: string[]) => Promise<void>;
+}) {
+  const history = useAgentRunHistory(sessionId, true, HISTORY_PAGE);
+  const [open, setOpen] = useState(false);
+  const live = runs.filter(isLiveTreeRun);
+  const snapshotHistory = runs.filter((run) => !isLiveTreeRun(run));
+  // 后端历史轮次查询默认排除实时轮次，COUNT 与列表同口径；这里不再前端过滤，
+  // 否则会出现「列表少了但 total 仍含实时轮次」的数量不一致。
+  const backendHistory = history.items.map(toTreeRun);
+  // 首屏加载中/失败时先用快照内的历史轮次兜底，避免面板空白；
+  // 成功后以分页结果为准，避免把快照上限当成完整历史。
+  const backendReady = !history.loading && !history.error;
+  const historyRuns = backendReady ? backendHistory : snapshotHistory;
+  const total = backendReady ? history.total : snapshotHistory.length;
+
+  // 通知定位：目标可能不在第一页；有上限地按游标加载（最多 10 页）。
+  const focusLoads = useRef(0);
+  useEffect(() => {
+    focusLoads.current = 0;
+  }, [focusRunId]);
+  useEffect(() => {
+    if (!focusRunId) return;
+    if (historyRuns.some((r) => r.id === focusRunId)) {
+      setOpen(true);
+      return;
+    }
+    if (!backendReady || history.loadingMore || !history.hasMore) return;
+    if (focusLoads.current >= 10) return;
+    focusLoads.current += 1;
+    void history.loadMore();
+  }, [focusRunId, historyRuns, backendReady, history.loadingMore, history.hasMore, history]);
+
+  const renderRun = (run: TreeRun) => (
+    <div
+      key={run.id}
+      className={`task-card run-item state-${run.status}`}
+      data-agent-run-id={run.id}
+    >
+      <span className={`agent-dot state-${run.status}`} />
+      <div className="run-main">
+        <div className="run-title">
+          <span className="run-source">{run.externalRunId?.slice(0, 10) ?? "自动轮次"}</span>
+          {run.taskTitle || "（无标题）"}
+        </div>
+        <div className="run-meta">
+          {AGENT_STATE_LABELS[run.status] ?? "未知"} · {formatBetween(run.startedAt, run.endedAt)} · 活动 {formatRelative(run.updatedAt)}
+        </div>
+        {run.pending.length > 0 && (
+          <div className="run-pending">
+            <ListChecks size={11} /> {run.pending.length} 个待处理事项
+            <button className="btn sm" onClick={() => onPendingToTasks(run.pending)}>
+              转为任务
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      {live.map(renderRun)}
+      <button
+        type="button"
+        className="tree-history-toggle tree-history-toggle--runs"
+        aria-label="历史轮次分区"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        历史轮次
+        {!history.loading && !history.error && (
+          <span className="tree-meta"> {total}</span>
+        )}
+        {history.loading && <span className="tree-meta"> 加载中…</span>}
+      </button>
+      {open && history.error && (
+        <div className="empty-hint error-text" role="alert">
+          历史轮次加载失败：{history.error}
+          <button className="btn sm" onClick={history.reload}>
+            重试
+          </button>
+        </div>
+      )}
+      {open && !history.error && !history.loading && historyRuns.length === 0 && (
+        <div className="empty-hint">暂无历史轮次</div>
+      )}
+      {open && historyRuns.map(renderRun)}
+      {open && backendReady && history.hasMore && (
+        <button
+          type="button"
+          className="btn sm tree-history-more"
+          onClick={() => void history.loadMore()}
+          disabled={history.loadingMore}
+        >
+          {history.loadingMore ? "加载中…" : "显示更多轮次"}
+        </button>
+      )}
+    </>
   );
 }
 

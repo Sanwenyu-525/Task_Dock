@@ -329,6 +329,29 @@ export function capsuleCategoryFor(id: string): CapsuleCategory | undefined {
   return ENTRY_BY_ID.get(id)?.capsuleCategory;
 }
 
+/**
+ * 入口在指定界面是否参与排序（设置页据此决定是否渲染上移/下移按钮）。
+ *
+ * 规则（与 navVisibility 的排序不变量一致）：
+ * - `locked` 系统入口（设置）不可排序：位置由渲染层固定在侧栏底部；
+ * - 胶囊界面的 Agent 状态球（`kind === "agent-status"`）是**固定状态入口**，
+ *   渲染在轨道端头，不参与普通分类排序——它仍可隐藏，隐藏不停止 Agent 监控
+ *   与关键事件接收；
+ * - 其余入口（普通页面 / 合并入口 / 仅视觉入口）可排序。
+ */
+export function isEntrySortable(entry: NavEntry, surface: NavSurface): boolean {
+  if (entry.locked) return false;
+  if (surface === "capsule" && entry.kind === "agent-status") return false;
+  return true;
+}
+
+/** 左侧界面中锁定（固定位置）的入口 ID；渲染层把它们放进固定底部区域。 */
+export function lockedEntryIds(surface: NavSurface): string[] {
+  return entriesForSurface(surface)
+    .filter((entry) => entry.locked)
+    .map((entry) => entry.id);
+}
+
 /** 按当前语言的翻译函数取入口展示名；`label` 只作为中文默认回退。 */
 export function navLabel(
   entry: NavEntry,

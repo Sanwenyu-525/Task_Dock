@@ -141,9 +141,12 @@ export default function WidgetWindow() {
   );
 
   // —— 主题：与主窗口/通知窗口同一事实来源，打开中的微件随设置实时切换 ——
+  /** 初始设置是否已成功读取；失败后主题事件会触发一次补取，不会永久停在 null。 */
+  const themeReadyRef = useRef(false);
   const loadTheme = useCallback(() => {
     void getSettings()
       .then((settings) => {
+        themeReadyRef.current = true;
         setThemeSnap({
           theme: settings.theme,
           visualPreset: settings.visual_preset ?? "",
@@ -151,28 +154,34 @@ export default function WidgetWindow() {
         });
       })
       .catch(() => {
-        // 读取失败时保持系统明暗；下次主题事件会再次校正。
+        // 读取失败时保持系统明暗；下一次主题事件会再补取一次（而不是永久丢弃事件）。
+        themeReadyRef.current = false;
       });
   }, []);
 
   useEffect(() => {
     loadTheme();
     const scope = createSubscriptionScope();
+    /** 事件先增量应用；若初始快照缺失，同时补取一次完整设置。 */
+    const applyThemePatch = (patch: Partial<NonNullable<typeof themeSnap>>) => {
+      setThemeSnap((current) =>
+        current
+          ? { ...current, ...patch }
+          : { theme: "system", visualPreset: "", material: "glass", ...patch },
+      );
+      if (!themeReadyRef.current) loadTheme();
+    };
     scope.add(
-      listen<string>("theme-changed", (event) =>
-        setThemeSnap((current) => (current ? { ...current, theme: event.payload } : current)),
-      ),
+      listen<string>("theme-changed", (event) => applyThemePatch({ theme: event.payload })),
     );
     scope.add(
       listen<string>("visual-preset-changed", (event) =>
-        setThemeSnap((current) =>
-          current ? { ...current, visualPreset: event.payload } : current,
-        ),
+        applyThemePatch({ visualPreset: event.payload }),
       ),
     );
     scope.add(
       listen<string>("material-changed", (event) =>
-        setThemeSnap((current) => (current ? { ...current, material: event.payload } : current)),
+        applyThemePatch({ material: event.payload }),
       ),
     );
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");

@@ -166,6 +166,66 @@ export interface AgentSnapshot {
   runs: AgentRun[];
 }
 
+/**
+ * 历史会话条目（P1-02 后端分页）。
+ * 与 `AgentSession` 字段一致，额外给出该会话的真实轮次数 `run_count`；
+ * 数据来自独立分页查询，不受实时快照 200 条上限影响。
+ */
+export interface AgentHistorySession extends AgentSession {
+  run_count: number;
+}
+
+export interface AgentHistorySessionsPage {
+  items: AgentHistorySession[];
+  /** 当前筛选条件下的全库总数（与游标无关） */
+  total: number;
+  /** 下一页游标；null 表示没有更多 */
+  next_cursor: string | null;
+}
+
+export interface AgentHistoryRunsPage {
+  items: AgentRun[];
+  total: number;
+  next_cursor: string | null;
+}
+
+/** 历史入口分组：按真实 source/instance 聚合历史数量（不含实时会话）。 */
+export interface AgentHistoryGroup {
+  source_id: string;
+  /** null = 未关联实例或实例行已失效 */
+  instance_id: string | null;
+  instance_key: string | null;
+  display_name: string | null;
+  count: number;
+}
+
+export interface AgentHistoryGroups {
+  items: AgentHistoryGroup[];
+  truncated: boolean;
+}
+
+/** 历史会话查询条件；未提供的字段表示不筛选。 */
+export interface AgentHistorySessionsQuery {
+  sourceId?: string;
+  instanceId?: string;
+  /** 只查未关联到任何已知实例的会话；与 instanceId 同时提供时以 instanceId 为准 */
+  unassigned?: boolean;
+  /** 会话状态（running/waiting/completed/failed/disconnected/idle） */
+  status?: string;
+  /** 会话标题 / external_id / 关联轮次任务标题 */
+  keyword?: string;
+  /** 按会话行 ID 精确查找（通知定位）；命中时忽略游标 */
+  sessionId?: string;
+  /**
+   * 是否包含实时会话。默认 false：历史列表/COUNT 与实时树互斥；
+   * 精确按会话 ID 定位由后端固定包含实时。
+   */
+  includeLive?: boolean;
+  cursor?: string;
+  /** 1..100，默认 20 */
+  limit?: number;
+}
+
 export interface DiscoveredAgent {
   source_id: string;
   display_name: string;
@@ -756,6 +816,25 @@ export const pendingItemsToTasks = (items: string[]) =>
 
 // ── Agent ──
 export const agentSnapshot = () => invoke<AgentSnapshot>("agent_snapshot");
+/**
+ * 历史会话分页（P1-02）：独立 COUNT + keyset 游标，不受实时快照上限影响。
+ * 展开历史分区、加载更多、搜索历史时调用；实时刷新仍走 `agentSnapshot`。
+ */
+export const agentHistorySessions = (query: AgentHistorySessionsQuery = {}) =>
+  invoke<AgentHistorySessionsPage>("agent_history_sessions", { query });
+/** 会话轮次按需分页：展开会话后再加载，避免一次拉全部历史轮次。 */
+export const agentHistoryRuns = (sessionId: string, cursor?: string | null, limit = 10) =>
+  invoke<AgentHistoryRunsPage>("agent_history_runs", {
+    sessionId,
+    cursor: cursor ?? undefined,
+    limit,
+  });
+/** 按会话行 ID 精确定位（通知跳转/深链）。 */
+export const agentHistorySession = (sessionId: string) =>
+  invoke<AgentHistorySession | null>("agent_history_session", { sessionId });
+/** 历史入口分组：一次聚合查询某来源下每个真实实例/未关联实例的历史数量。 */
+export const agentHistoryGroups = (query: { sourceId?: string; includeLive?: boolean } = {}) =>
+  invoke<AgentHistoryGroups>("agent_history_groups", { query });
 export const setSourceEnabled = (id: string, enabled: boolean) =>
   invoke<void>("set_source_enabled", { id, enabled });
 // 动态来源注册
@@ -1007,6 +1086,8 @@ export interface UserPreferencesView {
   version: number;
   locale: string | null;
   widgets: UserWidgetPreference[] | null;
+  /** 应用网格手动顺序（含加号伪项）；null = 从未手动排序。 */
+  app_grid_order: string[] | null;
   warnings: string[];
   /** true = 刚恢复过配置：前端必须以文件为准覆盖本机 localStorage。 */
   apply_restore: boolean;
@@ -1056,10 +1137,12 @@ export const setUserPreferences = (
   locale: string | null,
   widgets: UserWidgetPreference[] | null,
   appliedRestoreId: string | null = null,
+  appGridOrder: string[] | null = null,
 ) =>
   invoke<UserPreferencesView>("set_user_preferences", {
     locale,
     widgets,
+    appGridOrder,
     appliedRestoreId,
   });
 
@@ -1806,6 +1889,15 @@ export const quickCaptureDelete = (id: string) => invoke<void>("quick_capture_de
 /** 转为任务（后端复用任务创建链路并回写 task_id/status）。 */
 export const quickCaptureConvertToTask = (id: string) =>
   invoke<CaptureItem>("quick_capture_convert_to_task", { id });
+/** 打开快速捕获窗口（已打开时只聚焦，不切换为隐藏）。 */
+export interface QuickCaptureShowResult {
+  visible: boolean;
+  focused: boolean;
+  /** 窗口已显示但系统前台锁拒绝聚焦时的原因；不是打开失败。 */
+  focusError: string | null;
+}
+export const quickCaptureShow = () =>
+  invoke<QuickCaptureShowResult>("quick_capture_show");
 /**
  * 隐藏捕获窗口并恢复原前台焦点（后端实现）。
  * 后端命令为零参数（`quick_capture_hide()`），不传任何参数；
@@ -2366,18 +2458,29 @@ export interface ShelfOpEntry {
   display_name: string;
   source: string | null;
   target: string | null;
-  status: "ok" | "skipped" | "failed";
+  /** partial：目标已完整写入，但源清理或记录更新未完成 */
+  status: "ok" | "skipped" | "failed" | "partial";
   reason: string | null;
+  /** 部分完成时建议的恢复动作 */
+  recovery?: string | null;
+  /** 部分完成时仍残留的源路径 */
+  residual_source?: string | null;
 }
 
 export interface ShelfOpReport {
   success: number;
   skipped: number;
   failed: number;
+  /** 文件操作成功但源清理/记录更新未完成的数量 */
+  partial?: number;
   /** 按用户选择从暂存架移除的记录数 */
   removed: number;
   /** 托管文件删除失败数；后端结果模型演进期按 0 兜底 */
   remove_failed_files?: number;
+  /** 文件操作成功但移除暂存记录失败的数量 */
+  record_cleanup_failed?: number;
+  /** 记录清理失败的原因摘要 */
+  record_cleanup_error?: string | null;
   /** 逐项结果；缺失时按空列表兜底，面板仍展示汇总 */
   entries?: ShelfOpEntry[];
 }
@@ -2434,6 +2537,112 @@ export const shelfRecentDirPin = (path: string, pinned: boolean) =>
 
 export const shelfRecentDirRemove = (path: string) =>
   invoke<void>("shelf_recent_dir_remove", { path });
+
+// ── 快捷投递目标（收集箱「文件投递」子页） ──────────────────
+//
+// 与 `ShelfRecentDir` 的区别：那是文件操作面板的自动「最近使用」记录（路径主键、
+// 最多 8 条、无别名）；这里是用户命名的固定入口（别名、排序、工具面板显示开关、
+// 默认操作模式）。两者共享同一套路径校验，但存储与语义独立。
+
+/** copy=复制（默认，保留源文件）；move=移动（删除源文件，有更严格的安全流程）。 */
+export type DropTargetOpMode = "copy" | "move";
+
+export interface ShelfDropTarget {
+  id: string;
+  name: string;
+  path: string;
+  sort_order: number;
+  /** 是否出现在工具面板（胶囊）「文件投递」子页 */
+  show_in_capsule: boolean;
+  op_mode: DropTargetOpMode;
+  conflict: ShelfConflictStrategy;
+  /** 读取时探测的目录可用性；false 时前端禁止投递 */
+  available: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ShelfDropTargetPatch {
+  name?: string;
+  path?: string;
+  show_in_capsule?: boolean;
+  op_mode?: DropTargetOpMode;
+  conflict?: ShelfConflictStrategy;
+}
+
+export interface ShelfDropEntry {
+  source: string;
+  display_name: string;
+  target?: string | null;
+  /** ok / skipped / failed / partial */
+  status: "ok" | "skipped" | "failed" | "partial";
+  reason?: string | null;
+  recovery?: string | null;
+  residual_source?: string | null;
+}
+
+export interface ShelfDropReport {
+  batch_id: string;
+  target_id: string;
+  target_path: string;
+  op: DropTargetOpMode;
+  total: number;
+  success: number;
+  skipped: number;
+  failed: number;
+  partial: number;
+  /** 逐项结果；缺失时按空列表兜底（与 ShelfOpReport 同口径） */
+  entries?: ShelfDropEntry[];
+}
+
+/** 投递目标列表（每次读取都会探测目录可用性，不做后台轮询）。 */
+export const shelfDropTargets = () => invoke<ShelfDropTarget[]>("shelf_drop_targets_list");
+
+export const shelfDropTargetCreate = (input: {
+  name?: string;
+  path: string;
+  showInCapsule?: boolean;
+  opMode?: DropTargetOpMode;
+  conflict?: ShelfConflictStrategy;
+}) =>
+  invoke<ShelfDropTarget>("shelf_drop_target_create", {
+    name: input.name ?? null,
+    path: input.path,
+    showInCapsule: input.showInCapsule ?? null,
+    opMode: input.opMode ?? null,
+    conflict: input.conflict ?? null,
+  });
+
+export const shelfDropTargetUpdate = (id: string, patch: ShelfDropTargetPatch) =>
+  invoke<ShelfDropTarget>("shelf_drop_target_update", { id, patch });
+
+/** 只删除配置行；真实目录与其内容不受影响。 */
+export const shelfDropTargetDelete = (id: string) =>
+  invoke<void>("shelf_drop_target_delete", { id });
+
+export const shelfDropTargetMove = (id: string, direction: "up" | "down") =>
+  invoke<ShelfDropTarget[]>("shelf_drop_target_move", { id, direction });
+
+export const shelfDropTargetOpen = (id: string) =>
+  invoke<void>("shelf_drop_target_open", { id });
+
+/**
+ * 把拖入的路径直接投递到目标目录。
+ * - 目标按 id 由后端解析，前端不传目录字符串；
+ * - 单条失败不影响其他条目，结果逐条返回；
+ * - `batchId` 只用于操作日志归属（崩溃恢复区分批次）。
+ */
+export const shelfDropToDirectory = (
+  targetId: string,
+  paths: string[],
+  batchId: string,
+) =>
+  invoke<ShelfDropReport>("shelf_drop_to_directory", {
+    targetId,
+    paths,
+    batchId,
+  });
+
 
 export const shelfRecentDirsClear = () => invoke<void>("shelf_recent_dirs_clear");
 

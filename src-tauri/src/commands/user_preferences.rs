@@ -15,6 +15,8 @@ pub struct UserPreferencesView {
     pub version: i64,
     pub locale: Option<String>,
     pub widgets: Option<Vec<WidgetItem>>,
+    /// 应用网格手动顺序（含加号伪项）；None = 从未手动排序。
+    pub app_grid_order: Option<Vec<String>>,
     /// 归一化提示（非法语言回退、未知微件被过滤等），供设置页/启动诊断展示。
     pub warnings: Vec<String>,
     /// true = 刚恢复过配置，前端必须以文件为准覆盖本机 localStorage。
@@ -34,6 +36,7 @@ fn view(data_dir: &std::path::Path) -> UserPreferencesView {
         version: CONFIG_VERSION,
         locale: loaded.locale,
         widgets: loaded.widgets,
+        app_grid_order: loaded.app_grid_order,
         warnings,
         apply_restore: restore_id.is_some(),
         restore_id,
@@ -53,6 +56,7 @@ pub fn set_user_preferences(
     app: AppHandle,
     locale: Option<String>,
     widgets: Option<Vec<serde_json::Value>>,
+    app_grid_order: Option<Vec<serde_json::Value>>,
     applied_restore_id: Option<String>,
 ) -> AppResult<UserPreferencesView> {
     let data_dir = crate::app_data_dir(&app);
@@ -76,12 +80,22 @@ pub fn set_user_preferences(
         }
         None => existing.widgets.clone(),
     };
+    let next_app_grid_order: Option<Vec<String>> = match app_grid_order {
+        Some(raw) => {
+            let value = serde_json::Value::Array(raw);
+            let (normalized, issues) = user_preferences::normalize_app_grid_order(&value);
+            warnings.extend(issues);
+            normalized
+        }
+        None => existing.app_grid_order.clone(),
+    };
 
-    if next_locale.is_some() || next_widgets.is_some() {
+    if next_locale.is_some() || next_widgets.is_some() || next_app_grid_order.is_some() {
         user_preferences::write_preferences(
             &data_dir,
             next_locale.as_deref(),
             next_widgets.as_deref(),
+            next_app_grid_order.as_deref(),
         )
         .map_err(|message| {
             AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, message))
@@ -117,7 +131,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let widgets = user_preferences::normalize_widgets(&serde_json::json!([])).0;
-        user_preferences::write_preferences(&dir, Some("en-US"), Some(&widgets)).unwrap();
+        user_preferences::write_preferences(&dir, Some("en-US"), Some(&widgets), None).unwrap();
         user_preferences::mark_restore_pending(&dir, "sess-1").unwrap();
         let view = view(&dir);
         assert_eq!(view.locale.as_deref(), Some("en-US"));

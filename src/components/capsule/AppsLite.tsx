@@ -10,13 +10,22 @@
 //! - 搜索框做的是对已加载目标的本地过滤（真实可用），不是装饰；
 //! - 启动失败如实提示后端返回的 `reason`，不显示「已启动」。
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { LayoutGrid, Plus, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { LayoutGrid, Loader2, Plus, Search, X } from "lucide-react";
 import {
   navDeleteTarget, navNavigate, avatarHue, resultMessage, type NavTarget,
 } from "../../lib/navigation";
 import { normalizeError } from "../../lib/errors";
 import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
+import {
+  buildAppGrid,
+  filterAppGrid,
+  moveAppGridBy,
+  moveAppGridId,
+  readAppGridOrder,
+  writeAppGridOrder,
+} from "../../lib/appGridOrder";
+import { onAppGridOrderApplied, schedulePreferencesMirror } from "../../lib/userPreferences";
 import AppIcon from "../ui/AppIcon";
 import { SearchField } from "../ui";
 import { useNavigationStore } from "../../store/useNavigationStore";
@@ -50,6 +59,13 @@ export default function AppsLite() {
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  /** 用户手动网格顺序（含加号伪 id）；null = 使用自然顺序。 */
+  const [savedOrder, setSavedOrder] = useState<string[] | null>(() => readAppGridOrder());
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropHint, setDropHint] = useState<{ id: string; after: boolean } | null>(null);
+  const dragIdRef = useRef<string | null>(null);
+  /** 拖放结束后浏览器可能仍补发一次 click；用时间戳挡住误启动。 */
+  const lastDropAtRef = useRef(0);
   /** 待确认删除的目标：胶囊窗口被 Win32 区域裁成 340×440，不能复用完整面板的浮层删除框，
       改为面板内确认条（同一套确认语义与后端删除命令）。 */
   const [pendingDelete, setPendingDelete] = useState<NavTarget | null>(null);
@@ -74,6 +90,16 @@ export default function AppsLite() {
       noticeTimer.current = null;
     };
   }, []);
+
+  // 备份恢复会替换 localStorage 中的网格顺序：已挂载的面板同步重读，
+  // 不必重启应用。订阅在卸载时解除，不产生常驻监听。
+  useEffect(
+    () =>
+      onAppGridOrderApplied(() => {
+        setSavedOrder(readAppGridOrder());
+      }),
+    [],
+  );
 
   // 确认条打开时焦点落在「取消」；取消关闭后还给触发删除的按钮。
   // 删除成功时触发按钮已随列表移除，不再抢焦点。
@@ -148,16 +174,32 @@ export default function AppsLite() {
         .map((s) => byId.get(s.key))
         .filter((t): t is NavTarget => !!t);
     };
-    // 与完整面板一致：搜索只负责匹配，展示顺序仍按收藏 → 最近 → 名称，
-    // 避免同一份数据在两端给出不同顺序、或每次输入都发生位置跳动。
+    // 应用网格保持用户手动顺序（未手动排序时就是自然顺序），搜索只过滤不重排；
+    // 网址/文件夹没有手动排序语义，仍按收藏 → 名称。
     return {
-      apps: sortTargetsForDisplay(filter(ranked)),
+      apps: filter(ranked),
       extras: sortTargetsForDisplay(filter(rankedExtras), { recent: false }),
     };
   }, [ranked, rankedExtras, query]);
 
-  const grid = filtered.apps;
   const extraList = filtered.extras;
+
+  /** 完整网格（所有应用 + 加号），手动顺序在此生效。 */
+  const fullGrid = useMemo(
+    () => buildAppGrid(ranked, savedOrder),
+    [ranked, savedOrder],
+  );
+  const fullOrder = useMemo(() => fullGrid.map((entry) => entry.id), [fullGrid]);
+  /** 搜索命中的应用 id；null = 不过滤。 */
+  const matchedIds = useMemo(
+    () => (query.trim() ? new Set(filtered.apps.map((t) => t.id)) : null),
+    [filtered.apps, query],
+  );
+  // 加号跟随它前面仍匹配的应用：前面的项被过滤掉时自然前移，不固定跳到末尾。
+  const gridEntries = useMemo(
+    () => filterAppGrid(fullGrid, matchedIds),
+    [fullGrid, matchedIds],
+  );
 
   const launch = async (id: string, name: string) => {
     if (busyId) return;
@@ -235,6 +277,77 @@ export default function AppsLite() {
     setDeleteBusy(false);
   };
 
+  // ── 网格排序（应用 + 加号共用）──────────────────────────────
+  // 只用原生 HTML5 拖放与键盘移动，不引入拖拽库，也不把加号做成绝对定位浮层。
+  const commitOrder = (next: string[]) => {
+    if (next.length === 0) return;
+    writeAppGridOrder(next);
+    setSavedOrder(next);
+    // 排序属于用户偏好：防抖镜像到 preferences.json，随完整/快速备份迁移。
+    schedulePreferencesMirror();
+    flash("顺序已保存");
+  };
+
+  const isDropAfter = (event: ReactDragEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return event.clientX > rect.left + rect.width / 2;
+  };
+
+  const onDragStart = (event: ReactDragEvent<HTMLElement>, id: string) => {
+    dragIdRef.current = id;
+    setDragId(id);
+    event.dataTransfer.effectAllowed = "move";
+    // Firefox/WebView 需要 setData 才会真正开始拖拽；内容本身不参与业务。
+    event.dataTransfer.setData("text/plain", id);
+  };
+
+  const onDragOver = (event: ReactDragEvent<HTMLElement>, id: string) => {
+    const dragged = dragIdRef.current;
+    if (!dragged || dragged === id) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const after = isDropAfter(event);
+    setDropHint((prev) =>
+      prev?.id === id && prev.after === after ? prev : { id, after },
+    );
+  };
+
+  const endDrag = () => {
+    dragIdRef.current = null;
+    setDragId(null);
+    setDropHint(null);
+  };
+
+  const onDrop = (event: ReactDragEvent<HTMLElement>, targetId: string) => {
+    const dragged = dragIdRef.current;
+    if (!dragged || dragged === targetId) {
+      endDrag();
+      return;
+    }
+    event.preventDefault();
+    const after = isDropAfter(event);
+    lastDropAtRef.current = Date.now();
+    commitOrder(moveAppGridId(fullOrder, dragged, targetId, after));
+    endDrag();
+  };
+
+  /** 拖放结束后浏览器可能补发 click：短时间内挡住误启动。 */
+  const consumeDropClick = () => Date.now() - lastDropAtRef.current < 400;
+
+  const onOrderKeyDown = (event: ReactKeyboardEvent<HTMLElement>, id: string) => {
+    if (!event.altKey) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const next = moveAppGridBy(fullOrder, id, event.key === "ArrowLeft" ? -1 : 1);
+    if (next.every((value, index) => value === fullOrder[index])) return;
+    commitOrder(next);
+  };
+
+  const dropClass = (id: string) => {
+    if (dropHint?.id !== id) return "";
+    return dropHint.after ? "is-drop-after" : "is-drop-before";
+  };
+
   return (
     <>
       <PanelHead title="应用" sub="常用应用、快捷启动与窗口切换" />
@@ -300,52 +413,103 @@ export default function AppsLite() {
           <EmptyState
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
             text="尚未配置快捷应用"
-            actionLabel="去添加"
-            onAction={openAppsAdd}
           />
         )}
 
-        {!empty && !loadFailedFresh && (
-          <div className="cap-app-grid">
-            {grid.map((t) => (
-              <div className="cap-app-slot" key={t.id}>
-                <button
-                  type="button"
-                  className="cap-app"
-                  aria-label={`启动 ${t.display_name}`}
-                  aria-busy={busyId === t.id}
-                  disabled={busyId === t.id}
-                  onClick={() => void launch(t.id, t.display_name)}
+        {targetsLoaded && !loadFailedFresh && (
+          <div
+            className="cap-app-grid"
+            aria-label="应用网格，拖动或在项目上按 Alt+左右方向键调整顺序"
+          >
+            {gridEntries.map((entry) => {
+              if (entry.type === "add") {
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    data-grid-id={entry.id}
+                    className={`cap-app cap-app-add ${dropClass(entry.id)}`}
+                    aria-label="添加应用"
+                    draggable={!busyId}
+                    onDragStart={(e) => onDragStart(e, entry.id)}
+                    onDragEnd={endDrag}
+                    onDragOver={(e) => onDragOver(e, entry.id)}
+                    onDragLeave={(e) => {
+                      const related = e.relatedTarget;
+                      if (related instanceof Node && e.currentTarget.contains(related)) return;
+                      setDropHint((hint) => (hint?.id === entry.id ? null : hint));
+                    }}
+                    onDrop={(e) => onDrop(e, entry.id)}
+                    onKeyDown={(e) => onOrderKeyDown(e, entry.id)}
+                    onClick={() => {
+                      if (consumeDropClick()) return;
+                      openAppsAdd();
+                    }}
+                  >
+                    <span className="cap-app-avatar is-add" aria-hidden="true">
+                      <Plus size={16} strokeWidth={2.4} />
+                    </span>
+                  </button>
+                );
+              }
+              const t = entry.app;
+              return (
+                <div
+                  key={t.id}
+                  data-grid-id={t.id}
+                  className={`cap-app-slot ${dragId === t.id ? "is-dragging" : ""} ${dropClass(t.id)}`}
+                  onDragOver={(e) => onDragOver(e, t.id)}
+                  onDragLeave={(e) => {
+                    const related = e.relatedTarget;
+                    if (related instanceof Node && e.currentTarget.contains(related)) return;
+                    setDropHint((hint) => (hint?.id === t.id ? null : hint));
+                  }}
+                  onDrop={(e) => onDrop(e, t.id)}
                 >
-                  <span className="cap-app-icon">
-                    <AppIcon targetId={t.id} name={t.display_name} size={34} />
-                  </span>
-                  <span className="cap-app-name" data-tip={t.display_name}>
-                    {t.display_name}
-                  </span>
-                </button>
-                {/* 删除是启动的并列兄弟按钮，绝不嵌套在启动按钮内。 */}
-                <button
-                  type="button"
-                  className="cap-app-del"
-                  aria-label={`从快捷列表删除 ${t.display_name}`}
-                  disabled={busyId === t.id}
-                  onClick={(e) => requestDelete(t, e.currentTarget)}
-                >
-                  <X size={12} aria-hidden="true" />
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="cap-app cap-app-add"
-              aria-label="添加应用"
-              onClick={openAppsAdd}
-            >
-              <span className="cap-app-avatar is-add" aria-hidden="true">
-                <Plus size={16} strokeWidth={2.4} />
-              </span>
-            </button>
+                  <button
+                    type="button"
+                    data-grid-id={t.id}
+                    className="cap-app"
+                    aria-label={`启动 ${t.display_name}`}
+                    aria-busy={busyId === t.id}
+                    disabled={busyId === t.id}
+                    draggable={busyId !== t.id}
+                    onDragStart={(e) => onDragStart(e, t.id)}
+                    onDragEnd={endDrag}
+                    onKeyDown={(e) => onOrderKeyDown(e, t.id)}
+                    onClick={() => {
+                      if (consumeDropClick()) return;
+                      void launch(t.id, t.display_name);
+                    }}
+                  >
+                    <span className="cap-app-icon">
+                      <AppIcon targetId={t.id} name={t.display_name} size={34} />
+                      {busyId === t.id && (
+                        <Loader2
+                          size={17}
+                          strokeWidth={2.2}
+                          className="spin cap-app-spinner"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </span>
+                    <span className="cap-app-name" data-tip={t.display_name}>
+                      {t.display_name}
+                    </span>
+                  </button>
+                  {/* 删除是启动的并列兄弟按钮，绝不嵌套在启动按钮内。 */}
+                  <button
+                    type="button"
+                    className="cap-app-del"
+                    aria-label={`从快捷列表删除 ${t.display_name}`}
+                    disabled={busyId === t.id}
+                    onClick={(e) => requestDelete(t, e.currentTarget)}
+                  >
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -379,7 +543,7 @@ export default function AppsLite() {
           </div>
         )}
 
-        {query.trim() && grid.length === 0 && extraList.length === 0 && !loadFailedFresh && (
+        {query.trim() && filtered.apps.length === 0 && extraList.length === 0 && !loadFailedFresh && (
           <EmptyState
             icon={<Search size={20} strokeWidth={1.6} aria-hidden="true" />}
             text="没有匹配的应用"

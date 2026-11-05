@@ -6,6 +6,10 @@ use tauri::State;
 
 use crate::agents::codex;
 use crate::agents::discovery;
+use crate::agents::history::{
+    self, AgentHistoryGroupQuery, AgentHistoryGroups, AgentHistorySession, AgentRunHistoryPage,
+    AgentSessionHistoryPage,
+};
 use crate::agents::managed;
 use crate::agents::mock::{self, MockScenario};
 use crate::agents::{AgentHub, AgentSnapshot};
@@ -15,6 +19,63 @@ use crate::error::{AppError, AppResult};
 #[tauri::command]
 pub fn agent_snapshot(hub: State<'_, std::sync::Arc<AgentHub>>) -> AppResult<AgentSnapshot> {
     hub.snapshot()
+}
+
+/// 历史会话分页（P1-02）：实时快照只保留最近 200 条，历史数量与翻页必须走这里。
+/// 只读、有界（limit 1..100），支持来源/实例/状态/关键词筛选与按会话 ID 定位。
+/// SQLite 查询在 `spawn_blocking` 中执行，避免阻塞 Tauri 主线程。
+#[tauri::command]
+pub async fn agent_history_sessions(
+    db: State<'_, Arc<Db>>,
+    query: Option<crate::agents::history::AgentSessionHistoryQuery>,
+) -> AppResult<AgentSessionHistoryPage> {
+    let db = db.inner().clone();
+    let query = query.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || history::query_sessions(&db, &query))
+        .await
+        .map_err(|e| AppError::Agent(format!("历史会话查询失败: {e}")))?
+}
+
+/// 单个会话的轮次分页：会话展开时才按需加载，不随快照一次拉全部轮次。
+#[tauri::command]
+pub async fn agent_history_runs(
+    db: State<'_, Arc<Db>>,
+    session_id: String,
+    cursor: Option<String>,
+    limit: Option<i64>,
+) -> AppResult<AgentRunHistoryPage> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        history::query_runs(&db, &session_id, cursor.as_deref(), limit, None)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("历史轮次查询失败: {e}")))?
+}
+
+/// 按会话行 ID 精确定位（通知跳转/深链）；不存在返回 null，不伪造会话。
+#[tauri::command]
+pub async fn agent_history_session(
+    db: State<'_, Arc<Db>>,
+    session_id: String,
+) -> AppResult<Option<AgentHistorySession>> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || history::find_session(&db, &session_id))
+        .await
+        .map_err(|e| AppError::Agent(format!("历史会话定位失败: {e}")))?
+}
+
+/// 历史入口分组：一次 SQL 聚合返回某来源下每个真实实例/未关联实例的历史数量，
+/// 供监控树在没有近期快照会话时仍能显示历史入口；不在前端逐实例 COUNT。
+#[tauri::command]
+pub async fn agent_history_groups(
+    db: State<'_, Arc<Db>>,
+    query: Option<AgentHistoryGroupQuery>,
+) -> AppResult<AgentHistoryGroups> {
+    let db = db.inner().clone();
+    let query = query.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || history::query_groups(&db, &query))
+        .await
+        .map_err(|e| AppError::Agent(format!("历史入口分组查询失败: {e}")))?
 }
 
 #[tauri::command]

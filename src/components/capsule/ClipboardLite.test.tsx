@@ -11,6 +11,8 @@ import { overlayStack, registerOverlay, resetOverlayStack } from "../../lib/over
 import { resetClipboardRequestState, useClipboardStore } from "../../store/useClipboardStore";
 import { useUiStore } from "../../store/useUiStore";
 import ClipboardLite from "./ClipboardLite";
+import ClipboardPanel from "../clipboard/ClipboardPanel";
+import { registerTabGuard } from "../../lib/tabGuard";
 import { clearGroupPageCache, groupPageCacheKey, loadGroupPage } from "./ClipboardLiteViews";
 
 const clipboardView = vi.fn();
@@ -21,6 +23,9 @@ const clipboardStatus = vi.fn();
 const clipboardItem = vi.fn();
 const clipboardImage = vi.fn();
 const clipboardThumb = vi.fn();
+const clipboardVisibleTargets = vi.fn();
+const clipboardPasteActive = vi.fn();
+const clipboardGroup = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   onClipboardChanged: async () => () => {},
@@ -32,6 +37,10 @@ vi.mock("../../lib/bridge", () => ({
   clipboardItem: (...a: unknown[]) => clipboardItem(...a),
   clipboardImage: (...a: unknown[]) => clipboardImage(...a),
   clipboardThumb: (...a: unknown[]) => clipboardThumb(...a),
+  clipboardVisibleTargets: (...a: unknown[]) => clipboardVisibleTargets(...a),
+  clipboardPasteActive: (...a: unknown[]) => clipboardPasteActive(...a),
+  clipboardGroup: (...a: unknown[]) => clipboardGroup(...a),
+  onClipboardPaste: async () => () => {},
   applyMode: async () => undefined,
 }));
 
@@ -99,8 +108,14 @@ beforeEach(() => {
   clipboardItem.mockReset();
   clipboardImage.mockReset();
   clipboardThumb.mockReset();
+  clipboardVisibleTargets.mockReset();
+  clipboardPasteActive.mockReset();
+  clipboardGroup.mockReset();
   clipboardView.mockResolvedValue(view([]));
   clipboardGroupPage.mockResolvedValue({ items: [], totalCount: 0, imageCount: 0, offset: 0 });
+  clipboardVisibleTargets.mockResolvedValue([]);
+  clipboardPasteActive.mockResolvedValue(null);
+  clipboardGroup.mockResolvedValue({ items: [] });
   clipboardStatus.mockResolvedValue({
     enabled: true,
     paused: false,
@@ -290,7 +305,6 @@ describe("A4 截图组有界预览", () => {
       image_width: 800,
       image_height: 600,
     });
-
   const pageOf = (
     groupId: string,
     items: ClipboardItem[],
@@ -559,6 +573,487 @@ describe("A4 截图组有界预览", () => {
     await screen.findByRole("button", { name: "查看截图组第 12 张图片" });
     expect(screen.queryByText(/加载更多失败/)).toBeNull();
     expect(screen.getByText("共 12 张，已全部显示")).toBeTruthy();
+  });
+
+  it("多图封面：列表直接用 cover_items 渲染 2～3 张真实缩略图，额外读取被省略", async () => {
+    const covers = [1, 2, 3].map((n) => imageOf(`cover-${n}`, `封面 ${n}`));
+    const g = group({
+      id: "lite-group-covers",
+      name: "截图组 封面",
+      image_count: 5,
+      item_count: 5,
+      cover_items: covers,
+    });
+    clipboardView.mockResolvedValue(view([], [g]));
+    render(<ClipboardLite />);
+    await screen.findByText("截图组 封面");
+
+    const stack = document.querySelector(".cap-stack.is-multi") as HTMLElement;
+    expect(stack).toBeTruthy();
+    expect(stack.querySelectorAll("i")).toHaveLength(3);
+    // 封面来自列表接口，不为封面额外拉取组分页。
+    expect(clipboardGroupPage).not.toHaveBeenCalled();
+    await waitFor(() => expect(clipboardThumb).toHaveBeenCalledTimes(3));
+  });
+
+  it("截图组不再只显示前两组：所有有图分组都可访问", async () => {
+    const groups = [1, 2, 3, 4].map((n) =>
+      group({ id: `lite-group-${n}`, name: `截图组 ${n}`, image_count: 1, item_count: 1 }),
+    );
+    clipboardView.mockResolvedValue(view([], groups));
+    render(<ClipboardLite />);
+    await screen.findByText("截图组 1");
+    for (const n of [1, 2, 3, 4]) {
+      expect(
+        screen.getByRole("button", { name: `预览截图组「截图组 ${n}」` }),
+      ).toBeTruthy();
+    }
+  });
+
+  it("逐项粘贴按钮在复制左侧：请求完整面板的粘贴意图并切到剪贴板页", async () => {
+    const g = group({ id: "lite-group-paste", name: "截图组 粘贴", image_count: 2, item_count: 2 });
+    clipboardView.mockResolvedValue(view([], [g]));
+    useUiStore.setState({ clipboardPasteRequest: null, tab: "tasks" });
+    render(<ClipboardLite />);
+    await screen.findByText("截图组 粘贴");
+
+    const paste = screen.getByRole("button", { name: "逐项粘贴截图组「截图组 粘贴」" });
+    const copy = screen.getByRole("button", { name: "复制截图组「截图组 粘贴」" });
+    // DOM 顺序：粘贴在复制之前
+    expect(
+      paste.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(paste);
+    expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("lite-group-paste");
+    expect(useUiStore.getState().tab).toBe("clipboard");
+  });
+
+  it("未保存草稿拦截：取消导航不产生粘贴意图，确认后才打开 PastePanel", async () => {
+    const g = group({ id: "lite-group-nav", name: "截图组 导航", image_count: 2, item_count: 2 });
+    clipboardView.mockResolvedValue(view([], [g]));
+    useUiStore.setState({ tab: "tasks", clipboardPasteRequest: null, pendingTab: null });
+    const discard = vi.fn();
+    const unregister = registerTabGuard({
+      id: "round2-note-guard",
+      label: () => "笔记",
+      isDirty: () => true,
+      isBusy: () => false,
+      discard,
+    });
+    render(<ClipboardLite />);
+    await screen.findByText("截图组 导航");
+    const paste = screen.getByRole("button", { name: "逐项粘贴截图组「截图组 导航」" });
+
+    // 连续点击只留下一个待确认导航，不提前写意图。
+    fireEvent.click(paste);
+    fireEvent.click(paste);
+    expect(useUiStore.getState().pendingTab?.tab).toBe("clipboard");
+    expect(useUiStore.getState().clipboardPasteRequest).toBeNull();
+    expect(useUiStore.getState().tab).toBe("tasks");
+
+    act(() => useUiStore.getState().cancelPendingTab());
+    expect(useUiStore.getState().pendingTab).toBeNull();
+    expect(useUiStore.getState().clipboardPasteRequest).toBeNull();
+
+    // 再次发起并确认离开：导航成功后才写意图，完整页面消费后打开 PastePanel。
+    fireEvent.click(paste);
+    act(() => useUiStore.getState().confirmPendingTab());
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(useUiStore.getState().tab).toBe("clipboard");
+    expect(useUiStore.getState().pendingTab).toBeNull();
+    expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("lite-group-nav");
+
+    render(<ClipboardPanel />);
+    expect(await screen.findByText(/逐项粘贴 · 截图组 导航/)).toBeTruthy();
+    unregister();
+  });
+
+  it("当前页面保存中：拒绝导航且不留下粘贴意图", async () => {
+    const g = group({ id: "lite-group-busy", name: "截图组 保存中", image_count: 1, item_count: 1 });
+    clipboardView.mockResolvedValue(view([], [g]));
+    useUiStore.setState({ tab: "tasks", clipboardPasteRequest: null, pendingTab: null, toast: null, toasts: [] });
+    const unregister = registerTabGuard({
+      id: "round2-busy-guard",
+      label: () => "笔记",
+      isDirty: () => false,
+      isBusy: () => true,
+      discard: vi.fn(),
+    });
+    render(<ClipboardLite />);
+    await screen.findByText("截图组 保存中");
+    fireEvent.click(screen.getByRole("button", { name: "逐项粘贴截图组「截图组 保存中」" }));
+
+    expect(useUiStore.getState().tab).toBe("tasks");
+    expect(useUiStore.getState().pendingTab).toBeNull();
+    expect(useUiStore.getState().clipboardPasteRequest).toBeNull();
+    expect(useUiStore.getState().toasts.map((t) => t.message)).toContain(
+      "正在保存，请等待完成后再切换页面",
+    );
+    unregister();
+  });
+
+  it("过期粘贴意图不会在之后进入剪贴板页时突然弹层", async () => {
+    useUiStore.setState({
+      tab: "clipboard",
+      pendingTab: null,
+      clipboardPasteRequest: {
+        token: 99,
+        groupId: "expired-group",
+        groupName: "过期组",
+        expiresAt: Date.now() - 1_000,
+      },
+    });
+    render(<ClipboardPanel />);
+    await waitFor(() => expect(useUiStore.getState().clipboardPasteRequest).toBeNull());
+    expect(screen.queryByText(/逐项粘贴 · 过期组/)).toBeNull();
+  });
+
+  it("多个粘贴意图先后发生：只消费最后一次，不叠加弹层", async () => {
+    const groups = [
+      group({ id: "seq-intent-a", name: "意图 A", image_count: 1, item_count: 1 }),
+      group({ id: "seq-intent-b", name: "意图 B", image_count: 1, item_count: 1 }),
+    ];
+    clipboardView.mockResolvedValue(view([], groups));
+    useUiStore.setState({ tab: "tasks", clipboardPasteRequest: null, pendingTab: null });
+    render(<ClipboardLite />);
+    await screen.findByText("意图 A");
+    fireEvent.click(screen.getByRole("button", { name: "逐项粘贴截图组「意图 A」" }));
+    fireEvent.click(screen.getByRole("button", { name: "逐项粘贴截图组「意图 B」" }));
+    expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("seq-intent-b");
+
+    render(<ClipboardPanel />);
+    expect(await screen.findByText(/逐项粘贴 · 意图 B/)).toBeTruthy();
+    expect(screen.queryByText(/逐项粘贴 · 意图 A/)).toBeNull();
+  });
+
+  it("目标截图组已删除：仍打开粘贴面板并如实显示分组读取失败，不崩溃", async () => {
+    useUiStore.setState({
+      tab: "clipboard",
+      pendingTab: null,
+      clipboardPasteRequest: {
+        token: 100,
+        groupId: "deleted-group",
+        groupName: "已删除组",
+        expiresAt: Date.now() + 10_000,
+      },
+    });
+    clipboardGroup.mockRejectedValueOnce(new Error("分组已删除"));
+    render(<ClipboardPanel />);
+    expect(await screen.findByText(/逐项粘贴 · 已删除组/)).toBeTruthy();
+    // 不进入执行状态，也没有伪造目标窗口。
+    expect(screen.queryByRole("button", { name: /开始逐项粘贴/ })).toBeTruthy();
+  });
+});
+
+describe("A5 截图组原图序列导航", () => {
+  const imageOf = (id: string, title: string) =>
+    item({
+      id,
+      kind: "image",
+      title,
+      has_image: true,
+      has_thumb: true,
+      image_width: 800,
+      image_height: 600,
+    });
+  const pageOf = (
+    groupId: string,
+    items: ClipboardItem[],
+    totalCount: number,
+    imageCount: number,
+    revision = "r1",
+  ): ClipboardGroupPage => ({
+    groupId,
+    items,
+    totalCount,
+    imageCount,
+    offset: 0,
+    limit: items.length,
+    revision,
+  });
+
+  it("单图组：只显示原图，不出现上一张/下一张", async () => {
+    const g = group({ id: "seq-single", name: "单图组", image_count: 1, item_count: 1 });
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockResolvedValue(pageOf(g.id, [imageOf("single-1", "单图")], 1, 1));
+    clipboardImage.mockResolvedValue("data:image/png;base64,SINGLE");
+    render(<ClipboardLite />);
+    await screen.findByText("单图组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「单图组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 1 张图片" }));
+
+    expect(await screen.findByRole("img", { name: "剪贴板图片预览" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "上一张图片" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "下一张图片" })).toBeNull();
+  });
+
+  it("2 张图片：首尾禁用、按钮与方向键切换、序号更新", async () => {
+    const g = group({ id: "seq-two", name: "两张组", image_count: 2, item_count: 2 });
+    const imgs = [imageOf("two-1", "两张 1"), imageOf("two-2", "两张 2")];
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockResolvedValue(pageOf(g.id, imgs, 2, 2));
+    clipboardImage.mockImplementation(async (id: string) =>
+      id === "two-1" ? "data:image/png;base64,TWO-1" : "data:image/png;base64,TWO-2",
+    );
+    render(<ClipboardLite />);
+    await screen.findByText("两张组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「两张组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 1 张图片" }));
+
+    const img = await screen.findByRole("img", { name: "剪贴板图片预览" });
+    expect(img.getAttribute("src")).toContain("TWO-1");
+    expect(screen.getByText("1 / 2")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "上一张图片" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "下一张图片" }) as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    await waitFor(() => expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("TWO-2"));
+    expect(screen.getByText("2 / 2")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "下一张图片" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    await waitFor(() => expect(screen.getByText("1 / 2")).toBeTruthy());
+    expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("TWO-1");
+  });
+
+  it("超过一页：第 9 张继续下一张时按需补页，序号按真实总数显示", async () => {
+    const g = group({ id: "seq-many", name: "多图组", image_count: 12, item_count: 12 });
+    const all = Array.from({ length: 12 }, (_, i) => imageOf(`many-${i + 1}`, `多图 ${i + 1}`));
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockImplementation(
+      async (_id: string, opts: { limit: number; offset?: number; imagesOnly?: boolean }) => {
+        const offset = opts.offset ?? 0;
+        return pageOf(g.id, all.slice(offset, offset + opts.limit), 12, 12, "r1");
+      },
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("多图组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「多图组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 9 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 9 张图片" }));
+    expect(await screen.findByText("9 / 12")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    await screen.findByText("10 / 12");
+    expect(clipboardGroupPage).toHaveBeenCalledWith("seq-many", {
+      limit: 9,
+      offset: 9,
+      imagesOnly: true,
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("many-10"),
+    );
+
+    // 返回组视图后，预览期间补下的第 10～12 张已同步，不需要再点「加载更多」。
+    fireEvent.keyDown(window, { key: "Escape" });
+    await screen.findByRole("button", { name: "查看截图组第 10 张图片" });
+    expect(screen.getByText("共 12 张，已全部显示")).toBeTruthy();
+  });
+
+  it("图片读取失败与文件缺失都给出明确反馈，且仍可继续切换", async () => {
+    const g = group({ id: "seq-fail", name: "失败组", image_count: 2, item_count: 2 });
+    const imgs = [imageOf("fail-1", "失败 1"), imageOf("fail-2", "失败 2")];
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockResolvedValue(pageOf(g.id, imgs, 2, 2));
+    clipboardImage.mockImplementation(async (id: string) => {
+      if (id === "fail-1") throw new Error("decode failed");
+      return null;
+    });
+    render(<ClipboardLite />);
+    await screen.findByText("失败组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「失败组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 1 张图片" }));
+    expect(await screen.findByText(/图片读取失败/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    expect(await screen.findByText(/图片文件缺失或已被清理/)).toBeTruthy();
+    expect(screen.getByText("2 / 2")).toBeTruthy();
+  });
+
+  it("快速连续切换：旧原图响应不得覆盖当前图片", async () => {
+    const g = group({ id: "seq-race", name: "竞态组", image_count: 2, item_count: 2 });
+    const imgs = [imageOf("race-1", "竞态 1"), imageOf("race-2", "竞态 2")];
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockResolvedValue(pageOf(g.id, imgs, 2, 2));
+    let resolveFirst!: (v: string) => void;
+    clipboardImage.mockImplementation(async (id: string) => {
+      if (id === "race-1") {
+        return new Promise<string>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return "data:image/png;base64,RACE-2";
+    });
+    render(<ClipboardLite />);
+    await screen.findByText("竞态组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「竞态组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 1 张图片" }));
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("RACE-2"),
+    );
+    // 第一张迟到：不能把当前第二张替换成旧图。
+    act(() => resolveFirst("data:image/png;base64,RACE-1"));
+    expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("RACE-2");
+    expect(screen.getByText("2 / 2")).toBeTruthy();
+  });
+
+  it("20 张组在 revision 更新后继续翻页：不反复回第一页、不重复遗漏", async () => {
+    const all = Array.from({ length: 20 }, (_, i) => imageOf(`rev-${i + 1}`, `变更 ${i + 1}`));
+    const g = group({ id: "seq-rev", name: "变更组", image_count: 20, item_count: 20 });
+    let revision = "r1";
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockImplementation(
+      async (_id: string, opts: { limit: number; offset?: number }) => {
+        const offset = opts.offset ?? 0;
+        return pageOf(g.id, all.slice(offset, offset + opts.limit), 20, 20, revision);
+      },
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("变更组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「变更组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 9 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 9 张图片" }));
+    expect(await screen.findByText("9 / 20")).toBeTruthy();
+
+    // 外部新增/删除图片 → 组 revision 更新；当前第 9 张仍存在，应按 ID 保持位置。
+    revision = "r2";
+    const updated = group({ ...g, updated_at: new Date(now + 60_000).toISOString() });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [updated]) });
+    });
+    expect(await screen.findByText(/截图组内容已变化/)).toBeTruthy();
+    expect(screen.getByText("9 / 20")).toBeTruthy();
+
+    // 继续向后翻：必须使用最新 revision，而不是每次回到第一页。
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    expect(await screen.findByText("10 / 20")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    expect(await screen.findByText("11 / 20")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    expect(await screen.findByText("12 / 20")).toBeTruthy();
+    expect(clipboardGroupPage).toHaveBeenCalledWith("seq-rev", {
+      limit: 9,
+      offset: 9,
+      imagesOnly: true,
+    });
+    expect(screen.queryByText("9 / 20")).toBeNull();
+
+    // 再次 revision 变化：仍按当前 ID 保持位置，并可继续翻页。
+    revision = "r3";
+    const updatedAgain = group({
+      ...g,
+      updated_at: new Date(now + 120_000).toISOString(),
+    });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [updatedAgain]) });
+    });
+    expect(await screen.findByText("12 / 20")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "下一张图片" }));
+    expect(await screen.findByText("13 / 20")).toBeTruthy();
+
+    // 返回组视图后，下层组也使用新 revision 的前缀；继续加载剩余图片不会回第一页。
+    fireEvent.keyDown(window, { key: "Escape" });
+    await screen.findByRole("button", { name: "查看截图组第 18 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "加载更多截图，还有 2 张" }));
+    await screen.findByRole("button", { name: "查看截图组第 20 张图片" });
+    expect(clipboardGroupPage).toHaveBeenCalledWith("seq-rev", {
+      limit: 9,
+      offset: 18,
+      imagesOnly: true,
+    });
+  });
+
+  it("预览期间当前图片被删除：刷新序列并就近落到相邻图片，不显示已删数据", async () => {
+    const first = [imageOf("del-1", "删除 1"), imageOf("del-2", "删除 2"), imageOf("del-3", "删除 3")];
+    const g = group({
+      id: "seq-delete",
+      name: "删除组",
+      image_count: 3,
+      item_count: 3,
+      cover_items: first,
+    });
+    clipboardView.mockResolvedValue(view([], [g]));
+    let deleted = false;
+    clipboardGroupPage.mockImplementation(async () =>
+      deleted
+        ? pageOf(g.id, [first[0], first[2]], 2, 2, "r2")
+        : pageOf(g.id, first, 3, 3, "r1"),
+    );
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("删除组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「删除组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 2 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 2 张图片" }));
+    expect(await screen.findByText("2 / 3")).toBeTruthy();
+
+    // 组内容变化：第二张被删除，总数变为 2。预览层应按最新序列刷新并落到相邻项。
+    deleted = true;
+    const updated = group({
+      ...g,
+      image_count: 2,
+      item_count: 2,
+      updated_at: new Date(now + 60_000).toISOString(),
+    });
+    act(() => {
+      useClipboardStore.setState({ lite: view([], [updated]) });
+    });
+    expect(await screen.findByText(/截图组内容已变化/)).toBeTruthy();
+    expect(screen.getByText("2 / 2")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "剪贴板图片预览" }).getAttribute("src")).toContain("del-3"),
+    );
+  });
+
+  it("方向键在输入框内不劫持，焦点不在输入框时才切换图片", async () => {
+    const g = group({ id: "seq-keys", name: "键盘组", image_count: 2, item_count: 2 });
+    const imgs = [imageOf("keys-1", "键盘 1"), imageOf("keys-2", "键盘 2")];
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockResolvedValue(pageOf(g.id, imgs, 2, 2));
+    clipboardImage.mockImplementation(async (id: string) => `data:image/png;base64,${id}`);
+    render(<ClipboardLite />);
+    await screen.findByText("键盘组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「键盘组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 1 张图片" }));
+    expect(await screen.findByText("1 / 2")).toBeTruthy();
+
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    fireEvent.keyDown(input, { key: "ArrowRight" });
+    expect(screen.getByText("1 / 2")).toBeTruthy();
+    input.remove();
+
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    await waitFor(() => expect(screen.getByText("2 / 2")).toBeTruthy());
+  });
+
+  it("返回截图组后保留组内滚动位置", async () => {
+    const g = group({ id: "seq-scroll", name: "滚动组", image_count: 9, item_count: 9 });
+    const imgs = Array.from({ length: 9 }, (_, i) => imageOf(`scroll-${i + 1}`, `滚动 ${i + 1}`));
+    clipboardView.mockResolvedValue(view([], [g]));
+    clipboardGroupPage.mockResolvedValue(pageOf(g.id, imgs, 9, 9));
+    clipboardImage.mockResolvedValue("data:image/png;base64,SCROLL");
+    const { container } = render(<ClipboardLite />);
+    await screen.findByText("滚动组");
+    fireEvent.click(screen.getByRole("button", { name: "预览截图组「滚动组」" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    const scroller = container.querySelector(".cap-clip-scroll") as HTMLDivElement;
+    scroller.scrollTop = 72;
+    fireEvent.click(screen.getByRole("button", { name: "查看截图组第 1 张图片" }));
+    await screen.findByRole("img", { name: "剪贴板图片预览" });
+    fireEvent.click(screen.getByRole("button", { name: "返回列表" }));
+    await screen.findByRole("button", { name: "查看截图组第 1 张图片" });
+    expect((container.querySelector(".cap-clip-scroll") as HTMLDivElement).scrollTop).toBe(72);
   });
 });
 

@@ -159,6 +159,9 @@ vi.mock("./store/useActionsStore", () => ({
     sel({ feed: null, load: () => undefined }),
   scheduleActionsRefresh: () => undefined,
   cancelActionsRefresh: () => undefined,
+  // App 的启动/事件路径按消费者门控调度聚合刷新；外壳测试统一返回 true，
+  // 保证既有「启动即加载」断言语义不变（门控矩阵在 useActionsStore.test 单测）。
+  shouldRefreshActions: () => true,
 }));
 
 vi.mock("./store/useUiStore", () => ({

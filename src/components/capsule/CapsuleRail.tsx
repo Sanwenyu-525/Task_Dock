@@ -1,8 +1,10 @@
-//! 分类胶囊的左侧（或顶/底）轨道：Agent 总状态 + 四个分类入口 + 收起按钮。
+//! 分类胶囊的左侧（或顶/底）轨道：Agent 总状态 + 四个分类入口 + 形态出口。
 //!
 //! 只渲染，不做决策：状态来自 `railStatus()`（真实 store 聚合），
 //! 相位来自 `useEdgeSnapStore`，当前分类来自 `useCapsuleStore`。
-//! 底部入口自上而下：展开完整面板 → 收起为极简标签 → 收起功能面板。
+//! 底部入口自上而下：展开完整面板 → 收起为极简标签。
+//! 功能面板的收起不再提供独立箭头按钮：点击当前分类、Escape 或点击面板外
+//! 已覆盖全部收起路径，底部再放一个箭头属于重复入口且占用轨道空间。
 //!
 //! 交互约定：
 //! - 点击分类 = 展开该分类面板；再次点击当前分类 = 收起（由 CapsuleDock 处理）；
@@ -14,14 +16,7 @@
 //! - 无障碍信息仍以 `aria-label` 为准（它比提示文案更完整，例如带待办数）。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  ChevronUp,
-  Expand,
-  Shrink,
-} from "lucide-react";
+import { Expand, Shrink } from "lucide-react";
 import CapsuleWing from "./CapsuleWing";
 import {
   type CapsuleCategory,
@@ -228,8 +223,6 @@ export default function CapsuleRail({
 }) {
   const vertical = edge === "left" || edge === "right";
   const { railRef, dragging } = useRailDragCursor();
-  const CollapseIcon =
-    edge === "left" ? ChevronLeft : edge === "right" ? ChevronRight : edge === "top" ? ChevronUp : ChevronDown;
   const toneLabel = status.agentsLoaded
     ? `${TONE_TEXT[status.agentTone]}${
         status.agentAttention > 0 ? t("capsule.attention", { n: status.agentAttention }) : ""
@@ -413,26 +406,6 @@ export default function CapsuleRail({
         </button>
       )}
 
-      {/* 底部：收起（箭头朝向屏幕边缘 = 面板实际收起方向）。
-          折叠态没有「再收起」这件事，因此保留占位（避免图标在两种状态间跳动）
-          但不渲染可见控件，也不进 Tab 序列——不再长期摆一个灰箭头。 */}
-      <button
-        type="button"
-        className="cap-collapse"
-        data-inert={expanded ? "false" : "true"}
-        data-tip={t("capsule.collapse")}
-        data-tip-placement={railTipPlacement("docked", edge, expanded)}
-        data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
-        aria-label={expanded ? t("capsule.collapseAria") : t("capsule.collapsedAria")}
-        aria-disabled={!expanded}
-        tabIndex={expanded ? 0 : -1}
-        aria-hidden={!expanded}
-        onClick={() => {
-          if (expanded) onCollapse();
-        }}
-      >
-        <CollapseIcon size={15} strokeWidth={2} aria-hidden="true" />
-      </button>
     </div>
   );
 }

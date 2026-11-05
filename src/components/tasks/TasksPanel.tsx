@@ -171,18 +171,42 @@ export default function TasksPanel() {
 
   return (
     <div className="tasks-panel" ref={rootRef}>
-      {/* 全局概览（跨筛选视图） */}
+      {/* 全局概览（跨筛选视图）：三张卡都可点击下钻到对应列表 */}
       <div className="tasks-overview">
-        <div className="overview-card" data-tip={t("tasks.overview.pendingTip")}>
+        <div
+          className="overview-card is-clickable"
+          data-tip={t("tasks.overview.pendingTip")}
+          role="button"
+          tabIndex={0}
+          onClick={() => setFilter({ view: "all", status: "pending" })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setFilter({ view: "all", status: "pending" });
+            }
+          }}
+        >
           <span className="overview-value">{stats?.pending ?? "–"}</span>
           <span className="overview-label">{t("tasks.overview.pending")}</span>
         </div>
-        <div className="overview-card" data-tip={t("tasks.overview.dueTodayTip")}>
+        <div
+          className="overview-card is-clickable"
+          data-tip={t("tasks.overview.dueTodayTip")}
+          role="button"
+          tabIndex={0}
+          onClick={() => setFilter({ view: "today", status: "pending" })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setFilter({ view: "today", status: "pending" });
+            }
+          }}
+        >
           <span className="overview-value">{stats?.due_today ?? "–"}</span>
           <span className="overview-label">{t("tasks.overview.dueToday")}</span>
         </div>
         <div
-          className={`overview-card ${stats?.overdue ? "warn" : ""}`}
+          className={`overview-card is-clickable ${stats?.overdue ? "warn" : ""}`}
           data-tip={t("tasks.overview.overdueTip")}
           onClick={() => setFilter({ view: "overdue" })}
           role="button"

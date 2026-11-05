@@ -44,6 +44,7 @@ export default function NotesPanel() {
   const activeId = useNotesStore((s) => s.activeId);
   const active = useNotesStore((s) => s.active);
   const loadingNote = useNotesStore((s) => s.loadingNote);
+  const saveFailures = useNotesStore((s) => s.saveFailures);
 
   const load = useNotesStore((s) => s.load);
   const loadTemplates = useNotesStore((s) => s.loadTemplates);
@@ -112,20 +113,42 @@ export default function NotesPanel() {
     ["favorite", t("notes.filter.favorite")],
   ];
   const untitled = t("notes.untitled");
+  const pureEmpty =
+    !loading && !listError && items.length === 0 && !query.trim() && filter === "all";
+
+  // 一条笔记都没有时只呈现一个跨栏空态：不再让左侧列表空态与右侧编辑区空态
+  // 同时出现，也避免右栏留下整块无意义空白。
+  if (pureEmpty) {
+    return (
+      <div className="notes-panel notes-panel--empty">
+        <div className="notes-empty-state">
+          <FileText size={26} aria-hidden="true" />
+          <p className="notes-empty-title">{t("notes.empty")}</p>
+          <p className="notes-empty-hint">{t("notes.selectHintDetail")}</p>
+          <button type="button" className="btn primary" onClick={() => void onCreate()}>
+            <Plus size={13} aria-hidden="true" /> {t("notes.new")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const singlePane = items.length === 0 && !active;
 
   return (
-    <div className="notes-panel">
+    <div className={`notes-panel${singlePane ? " notes-panel--single" : ""}`}>
       <aside className="notes-sidebar">
         <div className="notes-sidebar-head">
           <span className="notes-sidebar-title">{t("notes.title")}</span>
           <button
             type="button"
-            className="icon-btn sm"
+            className="btn sm notes-new-btn"
             data-tip={t("notes.new")}
             aria-label={t("notes.new")}
             onClick={() => void onCreate()}
           >
-            <Plus size={14} />
+            <Plus size={13} aria-hidden="true" />
+            {t("notes.new")}
           </button>
         </div>
 
@@ -160,7 +183,10 @@ export default function NotesPanel() {
 
         {listError && (
           <div className="notes-error" role="alert">
-            {listError}
+            <span>{listError}</span>
+            <button type="button" className="link-btn" onClick={() => void load()}>
+              {t("common.retry")}
+            </button>
           </div>
         )}
 
@@ -169,7 +195,7 @@ export default function NotesPanel() {
             <Loader2 size={13} className="notes-spin" aria-hidden="true" />
             {t("notes.loading")}
           </div>
-        ) : items.length === 0 ? (
+        ) : listError ? null : items.length === 0 ? (
           <div className="notes-list-empty">
             <FileText size={20} aria-hidden="true" />
             <p>{query.trim() ? t("notes.noMatch") : t("notes.empty")}</p>
@@ -181,7 +207,9 @@ export default function NotesPanel() {
           </div>
         ) : (
           <ul className="notes-list" aria-label={t("notes.listAria")} aria-busy={loading}>
-            {items.map((item) => (
+            {items.map((item) => {
+              const failure = saveFailures[item.id];
+              return (
               <li key={item.id}>
                 <button
                   type="button"
@@ -193,6 +221,15 @@ export default function NotesPanel() {
                   <span className="notes-item-head">
                     <span className="notes-item-title">{displayTitle(item, untitled)}</span>
                     <span className="notes-item-flags">
+                      {failure && (
+                        <span
+                          className="notes-item-warning"
+                          data-tip={failure}
+                          aria-label={t("notes.save.unsavedBadge")}
+                        >
+                          {t("notes.save.unsavedBadge")}
+                        </span>
+                      )}
                       {item.pinned && <Pin size={12} aria-label={t("notes.pinnedAria")} />}
                       {item.favorite && (
                         <Star size={12} aria-label={t("notes.favoriteAria")} />
@@ -213,33 +250,39 @@ export default function NotesPanel() {
                   </span>
                 </button>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </aside>
 
-      <section className="notes-main" aria-label={t("notes.editorAria")}>
-        {active ? (
-          <NoteEditor />
-        ) : (
-          <div className="notes-main-empty">
-            {loadingNote ? (
-              <>
-                <Loader2 size={18} className="notes-spin" aria-hidden="true" />
-                <p>{t("notes.loadingNote")}</p>
-              </>
-            ) : (
-              <>
-                <FileText size={26} aria-hidden="true" />
-                <p>{t("notes.selectHint")}</p>
-                <p className="notes-main-empty-hint">
-                  {t("notes.selectHintDetail")}
-                </p>
-              </>
-            )}
-          </div>
-        )}
-      </section>
+      {!singlePane && (
+        <section className="notes-main" aria-label={t("notes.editorAria")}>
+          {active ? (
+            <NoteEditor />
+          ) : (
+            <div className="notes-main-empty">
+              {loadingNote ? (
+                <>
+                  <Loader2 size={18} className="notes-spin" aria-hidden="true" />
+                  <p>{t("notes.loadingNote")}</p>
+                </>
+              ) : (
+                <>
+                  <FileText size={26} aria-hidden="true" />
+                  <p>{t("notes.selectHint")}</p>
+                  <p className="notes-main-empty-hint">
+                    {t("notes.selectHintDetail")}
+                  </p>
+                  <button type="button" className="btn primary sm" onClick={() => void onCreate()}>
+                    <Plus size={13} aria-hidden="true" /> {t("notes.new")}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

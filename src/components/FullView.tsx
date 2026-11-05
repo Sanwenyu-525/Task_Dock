@@ -22,11 +22,12 @@
 //! 徽标口径：合并入口徽标 = 未处理捕获条数（useCaptureStore.inboxCount），
 //! 即「待处理收集内容」；暂存条目总数**不计入**未处理徽标。
 
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { useUiStore } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
+import { useFullViewVisible } from "../hooks/useMainUiVisible";
 // 高频页（任务 / Agent / 行动 / 剪贴板 / 收集与暂存）保持同步加载，避免切页白屏；
 // 低频页按需加载，降低首屏主包体积（轻量化专项 B）。打包后仍是本地资源，离线可用。
 import TasksPanel from "./tasks/TasksPanel";
@@ -36,6 +37,7 @@ import ClipboardPanel from "./clipboard/ClipboardPanel";
 import CollectionPanel from "./collection/CollectionPanel";
 import { WIDGET_SOURCES } from "./widgets/liveSources";
 import TabLeaveGuard from "./TabLeaveGuard";
+import ErrorBoundary from "./ErrorBoundary";
 
 import { Plus, MoreHorizontal, Settings2 } from "lucide-react";
 import { DropdownMenu } from "./ui";
@@ -43,6 +45,7 @@ import { railTipPlacement } from "./capsule/CapsuleRail";
 import {
   entriesForSurface,
   leftEntryForTab,
+  lockedEntryIds,
   navEntry,
   navLabel,
   type NavEntry,
@@ -75,6 +78,7 @@ export default function FullView() {
   const bumpQuickAdd = useUiStore((s) => s.bumpQuickAdd);
   const stats = useTasksStore((s) => s.stats);
   const actionFeed = useActionsStore((s) => s.feed);
+  const loadActions = useActionsStore((s) => s.load);
   const inboxCount = useCaptureStore((s) => s.inboxCount);
   const refreshInboxCount = useCaptureStore((s) => s.refreshInboxCount);
 
@@ -82,6 +86,10 @@ export default function FullView() {
   useEffect(() => {
     void refreshInboxCount();
   }, [refreshInboxCount]);
+
+  // 完整面板当前是否可见（mode=full 且未停靠）：DeferredView 保活下，
+  // 模式切换/停靠期页面组件仍是挂载态，页面级可选刷新以此做消费者门控。
+  const fullVisible = useFullViewVisible();
 
   // 两个徽标共用行动中心口径：需介入（未确认），不再用原始 waiting/failed 计数，
   // 避免同一状态在标签页与行动中心显示两个不同的数字。
@@ -98,10 +106,31 @@ export default function FullView() {
   // 当前页入口若被隐藏，**绝不临时插回侧栏**：其余图标位置保持稳定，避免布局
   // 跳动；当前页选中态由「更多」触发按钮承担，菜单内该项以单选勾选显示。
   // 排序来自配置数组顺序；过滤用数组过滤，禁止用 CSS 隐藏代替。
+  // 锁定入口（设置）**不在中间滚动列表渲染**：它固定在最底部区域，不参与排序。
   const layout = useNavigationLayout();
+  const lockedIds = lockedEntryIds("left");
   const currentEntry = leftEntryForTab(tab);
   const currentHidden = !!currentEntry && !layout.left.includes(currentEntry.id);
+
+  // ── 行动中心徽标的消费者恢复路径 ──────────────────────────────────
+  // App 的事件聚合刷新按消费者门控（shouldRefreshActions）：入口隐藏 /
+  // 行动页未打开 / 停靠隐藏期间计数停更。这里在「徽标重新有消费者」时补一次，
+  // 覆盖：重新显示入口、切到行动页、解除停靠、从其他模式回到完整模式。
+  const badgeConsumer = fullVisible && (layout.left.includes("actions") || tab === "actions");
+  const prevBadgeConsumer = useRef(badgeConsumer);
+  useEffect(() => {
+    if (badgeConsumer && !prevBadgeConsumer.current) {
+      void (actionFeed ? loadActions({ silent: true, countsOnly: true }) : loadActions());
+    }
+    prevBadgeConsumer.current = badgeConsumer;
+  }, [badgeConsumer, actionFeed, loadActions]);
+
   const entriesToRender = layout.left
+    .filter((id) => !lockedIds.includes(id))
+    .map((id) => navEntry(id))
+    .filter((entry): entry is NavEntry => entry !== undefined);
+  // 固定底部入口：锁定系统入口（设置）永远渲染在最底部，不属于滚动列表。
+  const fixedEntries = lockedIds
     .map((id) => navEntry(id))
     .filter((entry): entry is NavEntry => entry !== undefined);
   // 「更多」列出全部被隐藏入口（含当前页），否则当前页隐藏时菜单会凭空消失。
@@ -173,76 +202,108 @@ export default function FullView() {
             );
           })}
         </div>
-        {/* 隐藏入口的再入口：列出全部隐藏项（含当前页），不复制页面/数据。
-            当前页是否隐藏由触发按钮的选中态表示；菜单内用单选勾选当前项。 */}
-        {hiddenEntries.length > 0 && (
-          <div className="rail-items rail-more">
-            <DropdownMenu
-              menuLabel={t("nav.hiddenMenu")}
-              placement="bottom-start"
-              menuMinWidth={168}
-              trigger={({ ref, expanded, onClick, onKeyDown }) => (
-                <button
-                  ref={ref}
-                  type="button"
-                  className={`rail-item${currentHidden ? " active" : ""}`}
-                  aria-current={currentHidden ? "page" : undefined}
-                  aria-haspopup="menu"
-                  aria-expanded={expanded}
-                  aria-label={t("nav.moreAria")}
-                  data-tip={t("nav.more")}
-                  data-tip-placement={FLOATING_TIP_PLACEMENT}
-                  onClick={onClick}
-                  onKeyDown={onKeyDown}
-                >
-                  <span className="rail-icon">
-                    <MoreHorizontal size={18} strokeWidth={1.75} />
-                  </span>
-                  <span className="rail-label">{t("nav.more")}</span>
-                </button>
-              )}
-              items={[
-                ...hiddenEntries.map((entry) => ({
-                  key: entry.id,
-                  label: navLabel(entry, t),
-                  icon: <entry.icon size={14} strokeWidth={1.6} />,
-                  radio: true,
-                  checked: entry.tabs.includes(tab),
-                  onSelect: () => openEntry(entry),
-                })),
-                {
-                  key: "__customize-navigation",
-                  label: t("nav.customize"),
-                  icon: <Settings2 size={14} />,
-                  onSelect: () => {
-                    setTab("settings");
-                    // 跨模块定位：展开并滚动到「导航自定义」分区（不另建配置入口）。
-                    requestSettingsSectionReveal("navigation");
+        {/* 固定底部区域：不随中间列表滚动。
+            「更多」在上（仅存在隐藏入口时出现），设置恒在最底部——
+            系统入口不可隐藏/排序，任何窗口高度下都保持可达。 */}
+        <div className="rail-foot">
+          {hiddenEntries.length > 0 && (
+            <div className="rail-more">
+              <DropdownMenu
+                menuLabel={t("nav.hiddenMenu")}
+                placement="bottom-start"
+                menuMinWidth={168}
+                trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                  <button
+                    ref={ref}
+                    type="button"
+                    className={`rail-item${currentHidden ? " active" : ""}`}
+                    aria-current={currentHidden ? "page" : undefined}
+                    aria-haspopup="menu"
+                    aria-expanded={expanded}
+                    aria-label={t("nav.moreAria")}
+                    data-tip={t("nav.more")}
+                    data-tip-placement={FLOATING_TIP_PLACEMENT}
+                    onClick={onClick}
+                    onKeyDown={onKeyDown}
+                  >
+                    <span className="rail-icon">
+                      <MoreHorizontal size={18} strokeWidth={1.75} />
+                    </span>
+                    <span className="rail-label">{t("nav.more")}</span>
+                  </button>
+                )}
+                items={[
+                  ...hiddenEntries.map((entry) => ({
+                    key: entry.id,
+                    label: navLabel(entry, t),
+                    icon: <entry.icon size={14} strokeWidth={1.6} />,
+                    radio: true,
+                    checked: entry.tabs.includes(tab),
+                    onSelect: () => openEntry(entry),
+                  })),
+                  {
+                    key: "__customize-navigation",
+                    label: t("nav.customize"),
+                    icon: <Settings2 size={14} />,
+                    onSelect: () => {
+                      setTab("settings");
+                      // 跨模块定位：展开并滚动到「导航自定义」分区（不另建配置入口）。
+                      requestSettingsSectionReveal("navigation");
+                    },
                   },
-                },
-              ]}
-            />
-          </div>
-        )}
+                ]}
+              />
+            </div>
+          )}
+          {fixedEntries.map((entry) => {
+            const active = entry.tabs.includes(tab);
+            const label = navLabel(entry, t);
+            return (
+              <button
+                key={entry.id}
+                className={`rail-item rail-item-fixed ${active ? "active" : ""}`}
+                onClick={() => openEntry(entry)}
+                aria-current={active ? "page" : undefined}
+                aria-label={label}
+                data-tip={label}
+                data-tip-placement={FLOATING_TIP_PLACEMENT}
+              >
+                <span className="rail-icon">
+                  <entry.icon size={18} strokeWidth={1.75} />
+                </span>
+                <span className="rail-label">{label}</span>
+              </button>
+            );
+          })}
+        </div>
       </nav>
       <div className={`tab-content tab-content-${tab}`}>
         {/* 编辑中切换页面：由 store 门禁记录待决目标，这里统一确认，不各页重复拦截。 */}
         <TabLeaveGuard />
-        {/* 低频页首次进入时异步加载；fallback 只占位、不做持续动画，避免闪烁。 */}
-        <Suspense fallback={<div className="panel-loading" role="status" aria-label={t("nav.loading")} />}>
-          {tab === "tasks" && <TasksPanel />}
-          {tab === "agents" && <AgentPanel />}
-          {tab === "apps" && <AppsPanel />}
-          {tab === "widgets" && <WidgetsPanel sources={WIDGET_SOURCES} />}
-          {tab === "actions" && <ActionCenterPanel />}
-          {tab === "clipboard" && <ClipboardPanel />}
-          {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}
-          {(tab === "inbox" || tab === "shelf") && <CollectionPanel />}
-          {tab === "workflows" && <WorkflowsPanel />}
-          {tab === "history" && <HistoryPanel />}
-          {tab === "roadmap" && <PlanningCenterPanel />}
-          {tab === "settings" && <SettingsPanel />}
-        </Suspense>
+        {/* 内容区独立错误边界：单个页面渲染异常只替换内容区，标题栏与左侧导航
+            保持可用；切页（resetKey=tab）或点重试即恢复，不重载整个窗口。 */}
+        <ErrorBoundary
+          scope={`完整面板/${tab}`}
+          variant="compact"
+          resetKey={tab}
+          label={currentEntry ? navLabel(currentEntry, t) : undefined}
+        >
+          {/* 低频页首次进入时异步加载；fallback 只占位、不做持续动画，避免闪烁。 */}
+          <Suspense fallback={<div className="panel-loading" role="status" aria-label={t("nav.loading")} />}>
+            {tab === "tasks" && <TasksPanel />}
+            {tab === "agents" && <AgentPanel />}
+            {tab === "apps" && <AppsPanel />}
+            {tab === "widgets" && <WidgetsPanel sources={WIDGET_SOURCES} />}
+            {tab === "actions" && <ActionCenterPanel />}
+            {tab === "clipboard" && <ClipboardPanel />}
+            {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}
+            {(tab === "inbox" || tab === "shelf") && <CollectionPanel />}
+            {tab === "workflows" && <WorkflowsPanel />}
+            {tab === "history" && <HistoryPanel />}
+            {tab === "roadmap" && <PlanningCenterPanel />}
+            {tab === "settings" && <SettingsPanel />}
+          </Suspense>
+        </ErrorBoundary>
       </div>
     </div>
   );

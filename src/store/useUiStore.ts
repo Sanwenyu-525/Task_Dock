@@ -88,6 +88,9 @@ export const TOAST_QUEUE_MAX = 3;
 /** 相同根因（同错误码同文案）在该窗口内的重复推送直接忽略 */
 const TOAST_DEDUP_MS = 2000;
 
+/** 工具面板逐项粘贴意图有效期：导航被取消/页面异常时不会在很久以后突然弹层。 */
+export const CLIPBOARD_PASTE_REQUEST_TTL_MS = 15_000;
+
 /**
  * 跨 Tab 切换的待决导航：编辑中有未保存改动时只记录目标，等用户明确选择。
  * `after` 用于「打开编辑器」这类需要与切页一起完成的程序化导航。
@@ -98,9 +101,17 @@ export interface PendingTabNav {
   after: (() => void) | null;
 }
 
+/**
+ * 导航事务结果：
+ * - switched：已切页（after 已同步执行）
+ * - pending：被未保存草稿拦截，等待用户确认/取消（after 绑定在 pendingTab 上）
+ * - blocked：当前页面正在保存等硬拒绝，未切页且不会排队
+ */
+export type TabSwitchResult = "switched" | "pending" | "blocked";
+
 export const useUiStore = create<{
   tab: Tab;
-  setTab: (t: Tab, opts?: { force?: boolean; after?: () => void }) => void;
+  setTab: (t: Tab, opts?: { force?: boolean; after?: () => void }) => TabSwitchResult;
   /** 有待决的未保存切换时，由全局确认条消费 */
   pendingTab: PendingTabNav | null;
   confirmPendingTab: () => void;
@@ -159,6 +170,19 @@ export const useUiStore = create<{
   appsAddRequest: { token: number } | null;
   requestAppsAdd: () => void;
   clearAppsAddRequest: () => void;
+  /**
+   * 工具面板「逐项粘贴」的一次性意图：携带截图组身份，切到完整剪贴板页后
+   * 由 ClipboardWorkspace 打开既有 PastePanel（复用目标选择与粘贴状态机）。
+   */
+  clipboardPasteRequest: {
+    token: number;
+    groupId: string;
+    groupName: string;
+    /** 一次性意图有效期：导航/页面异常时不会在很久以后突然弹层。 */
+    expiresAt: number;
+  } | null;
+  requestClipboardPaste: (groupId: string, groupName: string) => void;
+  clearClipboardPasteRequest: () => void;
 }>((set, get) => ({
   tab: "tasks",
   // 收集箱/暂存架是同一视觉入口的两个子页：setTab 落到其中之一时同步子页状态，
@@ -175,11 +199,11 @@ export const useUiStore = create<{
             kind: "warning",
             code: "tab-guard-busy",
           });
-          return;
+          return "blocked";
         }
         if (guard.isDirty()) {
           set({ pendingTab: { tab: t, guardId: guard.id, after: opts?.after ?? null } });
-          return;
+          return "pending";
         }
       }
     }
@@ -189,6 +213,7 @@ export const useUiStore = create<{
       pendingTab: null,
     }));
     opts?.after?.();
+    return "switched";
   },
   pendingTab: null,
   confirmPendingTab: () => {
@@ -291,4 +316,15 @@ export const useUiStore = create<{
   requestAppsAdd: () =>
     set((s) => ({ appsAddRequest: { token: (s.appsAddRequest?.token ?? 0) + 1 } })),
   clearAppsAddRequest: () => set({ appsAddRequest: null }),
+  clipboardPasteRequest: null,
+  requestClipboardPaste: (groupId, groupName) =>
+    set((s) => ({
+      clipboardPasteRequest: {
+        token: (s.clipboardPasteRequest?.token ?? 0) + 1,
+        groupId,
+        groupName,
+        expiresAt: Date.now() + CLIPBOARD_PASTE_REQUEST_TTL_MS,
+      },
+    })),
+  clearClipboardPasteRequest: () => set({ clipboardPasteRequest: null }),
 }));

@@ -522,6 +522,25 @@ describe("任务页统计概览", () => {
     });
   });
 
+  it("三张统计卡都可点击下钻到对应筛选（待完成 / 今日到期 / 逾期）", () => {
+    seedTasks();
+    render(<TasksPanel />);
+    const cards = document.querySelectorAll<HTMLElement>(".overview-card");
+
+    fireEvent.click(cards[0]);
+    expect(useTasksStore.getState().filter).toMatchObject({ view: "all", status: "pending" });
+
+    fireEvent.click(cards[1]);
+    expect(useTasksStore.getState().filter).toMatchObject({ view: "today", status: "pending" });
+
+    fireEvent.click(cards[2]);
+    expect(useTasksStore.getState().filter).toMatchObject({ view: "overdue" });
+
+    // 键盘契约：Enter 同样可激活
+    fireEvent.keyDown(cards[0], { key: "Enter" });
+    expect(useTasksStore.getState().filter).toMatchObject({ view: "all", status: "pending" });
+  });
+
   it("逾期为 0 不加警告强调，>0 才标记", () => {
     seedTasks();
     render(<TasksPanel />);

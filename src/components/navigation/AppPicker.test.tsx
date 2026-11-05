@@ -891,7 +891,7 @@ describe("AppPicker 子页面（variant=page）", () => {
     expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
   });
 
-  it("多选两个应用后批量添加：逐个保存、刷新列表并关闭页面", async () => {
+  it("多选两个应用后批量添加：逐个保存、刷新列表并留在添加页（可继续添加）", async () => {
     const user = userEvent.setup();
     seedStores();
     vi.mocked(navSaveTarget).mockImplementation(async (input) =>
@@ -910,7 +910,63 @@ describe("AppPicker 子页面（variant=page）", () => {
     await user.click(screen.getByRole("button", { name: "添加已选应用（2）" }));
     await waitFor(() => expect(navSaveTarget).toHaveBeenCalledTimes(2));
     expect(useNavigationStore.getState().loadTargets).toHaveBeenCalledWith(true);
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    // 批量成功不自动退出：用户可继续选择/搜索，或主动点返回。
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "添加应用" })).toBeTruthy();
+    expect(screen.queryByText("已选 2")).toBeNull();
+  });
+
+  it("单个添加成功后保留添加页：已添加项状态更新，可连续添加第二个", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    const saved: NavTarget[] = [];
+    vi.mocked(navSaveTarget).mockImplementation(async (input) => {
+      const t = targetFix("t-" + input.display_name, input.display_name, input.exe_path ?? "");
+      saved.push(t);
+      return t;
+    });
+    const { onClose } = renderPage();
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+
+    await user.click(within(list).getByRole("option", { name: /VS Code/ }));
+    await user.click(screen.getByRole("button", { name: "添加已选应用（1）" }));
+    await waitFor(() => expect(navSaveTarget).toHaveBeenCalledTimes(1));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "添加应用" })).toBeTruthy();
+    expect(screen.getByTestId("toast").textContent).toContain("已添加 1 个应用");
+
+    // 不回到列表/不重开页面，直接继续添加第二个
+    await user.click(within(list).getByRole("option", { name: /微信/ }));
+    await user.click(screen.getByRole("button", { name: "添加已选应用（1）" }));
+    await waitFor(() => expect(navSaveTarget).toHaveBeenCalledTimes(2));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("未扫描时输入搜索词自动触发一次扫描；后续输入不重复触发", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    const loadApps = vi.fn(async () => {
+      // 真实 store 在发起扫描时同步置 scanning；这里模拟该单飞守卫。
+      useNavigationStore.setState({ scanning: true, scanPartial: true });
+      return "ok" as const;
+    });
+    useNavigationStore.setState({
+      scan: null,
+      scanning: false,
+      scanError: null,
+      scanPartial: false,
+      loadApps,
+    });
+    renderPage();
+    expect(loadApps).not.toHaveBeenCalled();
+
+    const search = screen.getByRole("textbox", { name: "搜索应用" });
+    await user.type(search, "微");
+    await waitFor(() => expect(loadApps).toHaveBeenCalledTimes(1));
+
+    // 扫描开始后继续输入不再叠加请求；旧请求也不会覆盖新的搜索词。
+    await user.type(search, "信");
+    expect(loadApps).toHaveBeenCalledTimes(1);
   });
 
   it("批量部分失败：成功项不回滚、失败项保留可重试，不误报整体成功", async () => {

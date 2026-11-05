@@ -428,10 +428,26 @@ export default function TaskContextDrawer() {
     }
   }
 
+  /** 删除确认的 3s 复位定时器：换目标/关闭时先清旧的，卸载时统一回收。 */
+  const confirmResetTimerRef = useRef<number | null>(null);
+  function armConfirmReset(id: string) {
+    if (confirmResetTimerRef.current !== null) window.clearTimeout(confirmResetTimerRef.current);
+    confirmResetTimerRef.current = window.setTimeout(() => {
+      confirmResetTimerRef.current = null;
+      setConfirmDelete((cur) => (cur === id ? null : cur));
+    }, 3000);
+  }
+  useEffect(
+    () => () => {
+      if (confirmResetTimerRef.current !== null) window.clearTimeout(confirmResetTimerRef.current);
+    },
+    [],
+  );
+
   async function onDelete(s: SnapshotSummary) {
     if (confirmDelete !== s.id) {
       setConfirmDelete(s.id);
-      window.setTimeout(() => setConfirmDelete((cur) => (cur === s.id ? null : cur)), 3000);
+      armConfirmReset(s.id);
       return;
     }
     setConfirmDelete(null);

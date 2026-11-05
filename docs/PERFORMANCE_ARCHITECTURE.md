@@ -169,6 +169,24 @@ DSH 的宿主插件**不能**靠把包放进 `~/.dsh/plugins/` 生效——那�
 - 三个视图常驻挂载，模式切换不丢状态；Zustand 使用细粒度选择器，
   Agent 树仅在其快照变化时重算。
 
+### 4.1 页面活跃态消费者门控（2026-11-05）
+
+DeferredView 保活使隐藏页面（切换模式 / 停靠胶囊期）仍处于挂载态；React 依旧
+重渲染隐藏子树，挂载中的页面级订阅也继续消费事件。为避免「为不可见 UI 付持续
+成本」，页面级**可选**刷新按消费者门控（语义见 ARCHITECTURE.md「导航显隐与资源
+生命周期」；核心后台能力一律不门控）：
+
+| 刷新/订阅 | 门控判据 | 恢复路径 |
+| --- | --- | --- |
+| 行动中心聚合（启动加载 + 事件 countsOnly，1200ms 去抖） | `useActionsStore.shouldRefreshActions()`：入口可见 / `tab=actions`，且主界面未停靠 | FullView 徽标 effect 与 `ActionCenterPanel` 在消费者重新出现时补一次（countsOnly / silent load） |
+| 剪贴板页/抽屉：列表加载、实时订阅（`setFullLive`）、`clipboard_status`、弹层注册 | `uiActive = active && useMainUiVisible()` | 恢复可见时 effect 依赖变化自动补一次加载；停靠期 liveFullRefs 归零，无胶囊消费者时全局 `clipboard-changed` 监听整体拆除（采集线程不受影响） |
+| 历史页事件合并刷新（500ms 去抖） | `useFullViewVisible()` + 原有 `document.visibilityState` | 恢复可见时补一次 merge 刷新 |
+| 任务倒计时共享时钟（1s tick） | `useFullViewVisible()`：`ActiveReminders` 行组件只在可见时挂载 | 重新挂载即重新订阅；sharedClock 首订阅者重新对齐时间 |
+
+测量口径：Tauri v2 Windows 的 invoke 走 `http://ipc.localhost/<cmd>` 自定义协议，
+CDP/Playwright 可在请求层按命令名计数（不拦截、不阻塞）。对照测量记录见
+`tmp/acceptance/navigation-resource-lifecycle/`（含 before/after exe 的 sha256）。
+
 ## 5. SQLite 读写与保留
 
 代码：`src-tauri/src/db/mod.rs`、`src-tauri/src/agents/retention.rs`、
@@ -206,6 +224,14 @@ DSH 的宿主插件**不能**靠把包放进 `~/.dsh/plugins/` 生效——那�
 - **归属隔离（v0.5）**：压测/自测事件的 `origin` 由服务端判定，
   不进入真实分类、不产生系统通知，也不计入「需介入」徽标，
   见 [AGENT_ADAPTERS.md](AGENT_ADAPTERS.md)。
+- **Agent 会话历史（2026-11-05，Round 3）**：`agent_sessions` 的 keyset 分页
+  （`last_seen_at DESC, id DESC`）与独立 `COUNT(*)` 在同一读事务中执行；实时会话
+  由 `EXISTS(agent_runs ...)` 子查询按轮次语义排除，不依赖快照或
+  `session.status='idle'`。历史命令经 `spawn_blocking` 执行，前端分组查询 150ms
+  去抖、无轮询。10k 会话 / 50 实例的 debug 测试（内存 SQLite、单线程、rustc 1.95.0、
+  3 次采样）：首页 5.9–6.6ms、深页 6.0–7.3ms、关键词 LIKE 页 10.0–12.1ms、分组
+  COUNT 22.3–25.6ms；**非生产库、非发布构建**，只用于确认当前实现没有明显的全表
+  放大，不作为发布性能承诺。
 
 ### 5.3 事件保留与归档
 

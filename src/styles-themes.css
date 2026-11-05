@@ -2142,6 +2142,36 @@
   display: none;
 }
 
+/* 固定底部区域：不参与中间列表滚动。
+   「更多」在上、设置恒在最底部；分隔线只在底部区域建立视觉层级，
+   不随主题/材质改色（用语义 tertiary 文本色混合，深浅主题一致）。 */
+.rail-foot {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding-top: 7px;
+}
+
+.rail-foot::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 2px;
+  right: 2px;
+  height: 1px;
+  background: color-mix(in srgb, var(--text-tertiary) 22%, transparent);
+  pointer-events: none;
+}
+
+/* 固定入口与普通入口共用同一套条目视觉；只保证不被滚动列表裁切 */
+.rail-foot .rail-item {
+  flex: none;
+}
+
 .rail-item {
   position: relative;
   display: flex;

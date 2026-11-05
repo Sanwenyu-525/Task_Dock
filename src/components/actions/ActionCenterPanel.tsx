@@ -28,6 +28,7 @@ import {
 } from "../../store/useActionsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import {
   taskContext,
   type ActionCategory,
@@ -149,6 +150,15 @@ export default function ActionCenterPanel() {
   useEffect(() => {
     if (!feed) void load();
   }, [feed, load]);
+
+  // 停靠/模式切换的隐藏期间，App 的事件聚合刷新按消费者门控会停更；
+  // 恢复可见时补一次合并刷新（feed 缺失时上面的挂载 effect 已兜底）。
+  const visible = useFullViewVisible();
+  const prevVisibleRef = useRef(visible);
+  useEffect(() => {
+    if (visible && !prevVisibleRef.current && feed) void load({ silent: true });
+    prevVisibleRef.current = visible;
+  }, [visible, feed, load]);
 
   // 筛选/分类变化后，旧视图的离场快照不再属于新视图；一并清掉定时器
   useEffect(() => {

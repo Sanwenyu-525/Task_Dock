@@ -184,7 +184,11 @@ export default function AgentsLite() {
           const title = r.task_title || session?.title || r.source_id;
           const label = AGENT_STATE_LABELS[r.status] ?? r.status;
           const sessionCount = snapshot?.sessions.filter((s) => s.source_id === r.source_id).length ?? 0;
-          const runCount = snapshot?.runs.filter((x) => x.source_id === r.source_id).length ?? 0;
+          // 「运行」只统计当前实时轮次（running/waiting/近期 failed/disconnected），
+          // 不能把 completed 历史轮次算成正在运行。
+          const runCount = liveRuns(snapshot?.runs ?? []).filter(
+            (x) => x.source_id === r.source_id,
+          ).length;
           const hue = avatarHue(r.source_id || title);
           return (
             <div className="cap-item cap-agent-row" key={r.id}>

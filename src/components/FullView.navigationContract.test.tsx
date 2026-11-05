@@ -94,7 +94,10 @@ describe("脚本侧导航契约与真实导航一致", () => {
 
   it("FullView 渲染的入口顺序、data-tip、aria-label 与契约一致", () => {
     render(<FullView />);
-    const items = [...document.querySelectorAll(".rail-items .rail-item")];
+    // 设置固定在底部区域（不在滚动列表内），仍属于视觉入口契约的一部分
+    const items = [
+      ...document.querySelectorAll(".rail-items .rail-item, .rail-foot > .rail-item"),
+    ];
     expect(items).toHaveLength(RAIL_ITEM_COUNT);
     expect(items.map((el) => el.getAttribute("data-tip"))).toEqual([...RAIL_LABELS]);
     items.forEach((el, i) => {

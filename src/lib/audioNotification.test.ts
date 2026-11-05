@@ -542,6 +542,40 @@ describe("AudioNotificationService", () => {
     h.service.dispose();
   });
 
+  it("关闭语音后再开启：重新执行固定短语预生成（关闭会清空预生成 Key）", async () => {
+    const h = makeHarness();
+    // 首次开启：1.2s 延迟后逐条预生成 6 条固定短语
+    h.service.onSettingsChanged(h.settings);
+    await vi.advanceTimersByTimeAsync(4000);
+    const warmed = h.synth.length;
+    expect(warmed).toBeGreaterThan(0);
+
+    // 关闭：中止预生成并清空 Key
+    h.setSettings({ tts_enabled: false });
+    h.service.onSettingsChanged(h.settings);
+    await vi.advanceTimersByTimeAsync(4000);
+    const afterDisable = h.synth.length;
+
+    // 同配置重新开启：必须重新预生成（否则缓存被清理后再也不会补）
+    h.setSettings({ tts_enabled: true });
+    h.service.onSettingsChanged(h.settings);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(h.synth.length).toBeGreaterThan(afterDisable);
+    h.service.dispose();
+  });
+
+  it("关闭语音会中止在途预生成，不再继续合成", async () => {
+    const h = makeHarness();
+    h.service.onSettingsChanged(h.settings);
+    await vi.advanceTimersByTimeAsync(1300); // 已进入第一条合成之后的等待
+    const started = h.synth.length;
+    h.setSettings({ tts_enabled: false });
+    h.service.onSettingsChanged(h.settings);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(h.synth.length).toBeLessThanOrEqual(started + 1);
+    h.service.dispose();
+  });
+
   it("dispose 释放 AudioContext", async () => {
     const h = makeHarness();
     h.service.dispose();

@@ -55,6 +55,24 @@ vi.mock("../../lib/bridge", () => ({
   clipboardImage: async () => null,
   openAgentSession: (...a: unknown[]) => openAgentSession(...a),
   agentSnapshot: (...a: unknown[]) => agentSnapshot(...a),
+  getUserPreferences: async () => ({
+    version: 1,
+    locale: null,
+    widgets: null,
+    app_grid_order: null,
+    warnings: [],
+    apply_restore: false,
+    restore_id: null,
+  }),
+  setUserPreferences: async () => ({
+    version: 1,
+    locale: null,
+    widgets: null,
+    app_grid_order: null,
+    warnings: [],
+    apply_restore: false,
+    restore_id: null,
+  }),
   applyMode: async () => undefined,
 }));
 
@@ -75,6 +93,12 @@ import TasksLite from "./TasksLite";
 import AgentsLite from "./AgentsLite";
 import ClipboardLite from "./ClipboardLite";
 import AppsLite from "./AppsLite";
+import {
+  APP_ADD_KEY,
+  clearAppGridOrder,
+  readAppGridOrder,
+  writeAppGridOrder,
+} from "../../lib/appGridOrder";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useClipboardStore } from "../../store/useClipboardStore";
@@ -179,6 +203,7 @@ beforeEach(() => {
     liteError: null,
   });
   useNavigationStore.setState({ targets: [], targetsLoaded: false, targetsError: null });
+  clearAppGridOrder();
 });
 
 afterEach(() => {
@@ -1023,11 +1048,15 @@ describe("应用面板", () => {
     expect(screen.queryByText("Agent 会话")).toBeNull();
   });
 
-  it("空状态「去添加」进入应用中心添加页；底部「管理」进入应用中心", async () => {
+  it("空状态提示「尚未配置」时加号仍在网格内；点加号进入应用中心添加页，底部「管理」进入应用中心", async () => {
     useNavigationStore.setState({ targets: [], targetsLoaded: true, targetsError: null });
     useUiStore.setState({ appConfig: null, appsAddRequest: null, tab: "tasks" });
     render(<AppsLite />);
-    fireEvent.click(await screen.findByRole("button", { name: "去添加" }));
+    await screen.findByText("尚未配置快捷应用");
+    const add = screen.getByRole("button", { name: "添加应用" });
+    // 加号不是空态里的另一个按钮，而是网格的正式格子。
+    expect(add.closest(".cap-app-grid")).toBeTruthy();
+    fireEvent.click(add);
     expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0);
     expect(useUiStore.getState().appConfig).toBeNull();
     expect(useUiStore.getState().tab).toBe("apps");
@@ -1246,17 +1275,17 @@ describe("应用面板", () => {
     resolveDelete();
   });
 
-  it.each([1, 3, 4, 5, 7, 8, 20])(
-    "应用数量 %i 时添加入口固定在网格末尾，与普通项共用同一单元结构",
+  it.each([0, 1, 3, 4, 5, 7, 8, 11, 12, 16, 20])(
+    "应用数量 %i 时加号参与网格布局：默认在末尾，与普通项共用同一单元结构",
     async (count) => {
       const list = Array.from({ length: count }, (_, i) => target(`a${i}`, `应用${i}`));
       useNavigationStore.setState({ targets: list, targetsLoaded: true, targetsError: null });
       render(<AppsLite />);
-      await screen.findByText("应用0");
+      if (count > 0) await screen.findByText("应用0");
 
       const grid = document.querySelector(".cap-app-grid") as HTMLElement;
       expect(grid).toBeTruthy();
-      // 普通应用各占一个 slot，最后一个是加号入口
+      // 普通应用各占一个 slot，加号是网格里的正式项（不是空态按钮/占位格）
       expect(document.querySelectorAll(".cap-app-slot")).toHaveLength(count);
       expect(grid.children.length).toBe(count + 1);
 
@@ -1271,6 +1300,102 @@ describe("应用面板", () => {
       expect(add.querySelector(".cap-app-avatar.is-add")).toBeTruthy();
     },
   );
+
+  it("加号可排序：拖到第一个应用之前并持久化，重新挂载后位置保持", async () => {
+    useNavigationStore.setState({
+      targets: [target("a0", "应用0"), target("a1", "应用1"), target("a2", "应用2")],
+      targetsLoaded: true,
+    });
+    const first = render(<AppsLite />);
+    await screen.findByText("应用0");
+    const grid = document.querySelector(".cap-app-grid") as HTMLElement;
+    const add = screen.getByRole("button", { name: "添加应用" });
+    const firstApp = screen.getByRole("button", { name: "启动 应用0" });
+
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" };
+    fireEvent.dragStart(add, { dataTransfer });
+    fireEvent.dragOver(firstApp, { dataTransfer, clientX: 0 });
+    fireEvent.drop(firstApp, { dataTransfer, clientX: 0 });
+
+    expect((grid.firstElementChild as HTMLElement).dataset.gridId).toBe(APP_ADD_KEY);
+    expect(readAppGridOrder()?.[0]).toBe(APP_ADD_KEY);
+
+    first.unmount();
+    render(<AppsLite />);
+    const gridAgain = document.querySelector(".cap-app-grid") as HTMLElement;
+    expect((gridAgain.firstElementChild as HTMLElement).dataset.gridId).toBe(APP_ADD_KEY);
+  });
+
+  it("加号可键盘排序：Alt+左方向键把它移到前一项之前并持久化", async () => {
+    useNavigationStore.setState({
+      targets: [target("a0", "应用0"), target("a1", "应用1")],
+      targetsLoaded: true,
+    });
+    render(<AppsLite />);
+    await screen.findByText("应用0");
+    const add = screen.getByRole("button", { name: "添加应用" });
+    fireEvent.keyDown(add, { key: "ArrowLeft", altKey: true });
+
+    const order = readAppGridOrder() ?? [];
+    expect(order).toEqual(["a0", APP_ADD_KEY, "a1"]);
+    const grid = document.querySelector(".cap-app-grid") as HTMLElement;
+    expect(
+      Array.from(grid.children).map((el) => (el as HTMLElement).dataset.gridId),
+    ).toEqual(["a0", APP_ADD_KEY, "a1"]);
+  });
+
+  it("搜索过滤不让加号无故跳到末尾：仍位于它前面匹配项之后", async () => {
+    useNavigationStore.setState({
+      targets: [target("a0", "应用0"), target("a1", "应用1"), target("a2", "应用2")],
+      targetsLoaded: true,
+    });
+    // 手动顺序：加号在两个应用之间
+    writeAppGridOrder(["a0", APP_ADD_KEY, "a1", "a2"]);
+    render(<AppsLite />);
+    await screen.findByText("应用0");
+
+    fireEvent.change(screen.getByLabelText("搜索快捷应用"), { target: { value: "应用1" } });
+    await waitFor(() => expect(screen.queryByText("应用0")).toBeNull());
+    const grid = document.querySelector(".cap-app-grid") as HTMLElement;
+    // 前面的 a0 被过滤掉，加号自然前移，而不是固定跳到匹配项之后
+    expect(
+      Array.from(grid.children).map((el) => (el as HTMLElement).dataset.gridId),
+    ).toEqual([APP_ADD_KEY, "a1"]);
+  });
+
+  it("应用增删不让加号跳位：新增项追加在末尾，删除项被剪掉", async () => {
+    useNavigationStore.setState({
+      targets: [target("a0", "应用0"), target("a1", "应用1")],
+      targetsLoaded: true,
+    });
+    writeAppGridOrder(["a0", APP_ADD_KEY, "a1"]);
+    render(<AppsLite />);
+    await screen.findByText("应用0");
+
+    const readGrid = () =>
+      Array.from(document.querySelector(".cap-app-grid")!.children).map(
+        (el) => (el as HTMLElement).dataset.gridId,
+      );
+    expect(readGrid()).toEqual(["a0", APP_ADD_KEY, "a1"]);
+
+    act(() => {
+      useNavigationStore.setState({
+        targets: [
+          target("a0", "应用0"),
+          target("a1", "应用1"),
+          target("a2", "应用2"),
+        ],
+      });
+    });
+    await waitFor(() => expect(readGrid()).toEqual(["a0", APP_ADD_KEY, "a1", "a2"]));
+
+    act(() => {
+      useNavigationStore.setState({
+        targets: [target("a1", "应用1"), target("a2", "应用2")],
+      });
+    });
+    await waitFor(() => expect(readGrid()).toEqual([APP_ADD_KEY, "a1", "a2"]));
+  });
 });
 
 describe("错误状态（读取失败绝不伪装成空态）", () => {

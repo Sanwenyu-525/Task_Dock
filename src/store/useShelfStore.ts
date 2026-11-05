@@ -37,6 +37,12 @@ import {
 /** 分页大小：与剪贴板面板一致的后端分页节奏。 */
 export const SHELF_PAGE_SIZE = 100;
 
+/** 工具面板「最近暂存」条数：只取一页的极小片段，不加载完整历史。 */
+export const SHELF_RECENT_LIMIT = 4;
+
+/** 最近暂存的软缓存：重新展开胶囊时 5s 内复用，避免子页来回切换重复 IPC。 */
+export const SHELF_RECENT_TTL_MS = 5_000;
+
 export interface ShelfFilter {
   search: string;
   kind: ShelfKind | "all";
@@ -52,6 +58,11 @@ interface ShelfState {
   filter: ShelfFilter;
   loading: boolean;
   error: string | null;
+  /** 工具面板「最近暂存」轻量切片（独立于完整列表，避免胶囊加载整页历史） */
+  recent: ShelfItem[];
+  recentLoading: boolean;
+  recentLoaded: boolean;
+  recentError: string | null;
   /** 多选（顺序无关；后端批量接口按 id 集合处理） */
   selectedIds: string[];
   detailId: string | null;
@@ -59,6 +70,8 @@ interface ShelfState {
   lastCleanup: ShelfCleanupReport | null;
 
   load: (opts?: { silent?: boolean }) => Promise<void>;
+  /** 最近暂存：limit 固定为 SHELF_RECENT_LIMIT；force 跳过 5s 软缓存 */
+  loadRecent: (opts?: { force?: boolean }) => Promise<void>;
   loadMore: () => Promise<void>;
   setFilter: (patch: Partial<ShelfFilter>) => Promise<void>;
   refreshMeta: () => Promise<void>;
@@ -102,6 +115,15 @@ interface ShelfState {
 
 /** 模块级请求代际：筛选切换后，旧响应不得覆盖新状态。 */
 let reqSeq = 0;
+/** 最近暂存独立代际：完整列表的刷新不能改写胶囊里的轻量切片。 */
+let recentSeq = 0;
+let recentLoadedAt = 0;
+
+/** 测试辅助：清掉最近切片的模块级软缓存，避免用例之间共享 TTL。 */
+export function __resetShelfRecentCache(): void {
+  recentSeq += 1;
+  recentLoadedAt = 0;
+}
 
 function sortItems(items: ShelfItem[]): ShelfItem[] {
   // 与后端排序保持一致（置顶优先、新者先），本地插入/更新后直接重排
@@ -120,6 +142,10 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   filter: { search: "", kind: "all", group_id: "all", favorite_only: false },
   loading: false,
   error: null,
+  recent: [],
+  recentLoading: false,
+  recentLoaded: false,
+  recentError: null,
   selectedIds: [],
   detailId: null,
   lastCleanup: null,
@@ -152,6 +178,48 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
       set({ error: String(e) });
     } finally {
       if (seq === reqSeq) set({ loading: false });
+    }
+  },
+
+  loadRecent: async (opts) => {
+    const force = opts?.force ?? false;
+    const s = get();
+    // 软缓存 + 在途去重：胶囊子页来回切换 / 重复挂载不产生请求风暴。
+    if (!force && s.recentLoaded && Date.now() - recentLoadedAt < SHELF_RECENT_TTL_MS) return;
+    if (!force && s.recentLoading) return;
+
+    const seq = ++recentSeq;
+    set({ recentLoading: true, recentError: null });
+    try {
+      // 只要最近 4 条：不读完整历史，也不动完整列表的筛选/分页状态。
+      const page = await shelfList({ limit: SHELF_RECENT_LIMIT, offset: 0 });
+      if (seq !== recentSeq) return;
+      set({ recent: page.items, recentLoaded: true });
+      recentLoadedAt = Date.now();
+
+      // 引用/托管文件是否仍可访问：一次批量元数据检查。检查失败时保留库内
+      // 上次状态（unknown 不等于 missing），不让辅助探测把列表变成错误态。
+      const ids = page.items
+        .filter((i) => i.kind !== "link" && i.kind !== "text")
+        .map((i) => i.id);
+      if (ids.length > 0) {
+        try {
+          const reports = await shelfCheckExists(ids);
+          if (seq !== recentSeq) return;
+          const map = new Map(reports.map((r) => [r.id, r.exists_state]));
+          set((prev) => ({
+            recent: prev.recent.map((i) =>
+              map.has(i.id) ? { ...i, exists_state: map.get(i.id) as ShelfItem["exists_state"] } : i,
+            ),
+          }));
+        } catch {
+          // 存在性探测是展示增强：失败不覆盖列表、不阻塞打开/复制。
+        }
+      }
+    } catch (e) {
+      if (seq === recentSeq) set({ recentError: String(e) });
+    } finally {
+      if (seq === recentSeq) set({ recentLoading: false });
     }
   },
 

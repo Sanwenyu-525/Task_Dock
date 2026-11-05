@@ -88,7 +88,13 @@ function expectContentAlive() {
 
 /** 常驻入口标签（不含「更多」再入口所在的 .rail-more 容器）。 */
 function railLabels(): string[] {
-  return [...document.querySelectorAll(".rail-items:not(.rail-more) .rail-item .rail-label")].map(
+  // 中间滚动列表 + 固定底部（设置）；「更多」触发按钮不在底部区域直接子级，
+  // 用 `> .rail-item` 排除，保持既有「仅入口」口径。
+  return [
+    ...document.querySelectorAll(
+      ".rail-items .rail-item .rail-label, .rail-foot > .rail-item .rail-label",
+    ),
+  ].map(
     (el) => el.textContent ?? "",
   );
 }

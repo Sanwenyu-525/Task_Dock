@@ -1155,6 +1155,48 @@ CREATE TABLE shelf_file_ops (
 CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
 "#,
     ),
+    (
+        35,
+        r#"
+-- v35（收集箱文件投递）：用户显式配置的「快捷投递目标」。
+-- 与 shelf_recent_dirs 职责不同：recent_dirs 是文件操作面板的自动最近记录
+-- （路径主键、无别名、最多 8 条）；本表是用户命名的固定入口，带别名、排序、
+-- 工具面板显示开关与默认操作模式。两者互不覆盖，也不与 shelf_groups（暂存分组）混用。
+-- path 忽略大小写唯一（Windows 路径语义），重复目录在应用层直接拒绝。
+-- 只保存配置：删除一行绝不触碰真实目录或其中的文件。
+CREATE TABLE shelf_drop_targets (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  path TEXT NOT NULL COLLATE NOCASE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  show_in_capsule INTEGER NOT NULL DEFAULT 1,
+  op_mode TEXT NOT NULL DEFAULT 'copy' CHECK (op_mode IN ('copy','move')),
+  conflict TEXT NOT NULL DEFAULT 'rename' CHECK (conflict IN ('skip','rename')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_shelf_drop_targets_path ON shelf_drop_targets(path);
+CREATE INDEX idx_shelf_drop_targets_order ON shelf_drop_targets(sort_order, created_at);
+"#,
+    ),
+    (
+        36,
+        r#"
+-- v36（P1-02 Agent 历史分页）：只为 keyset 分页补复合索引，不改表、不改数据。
+-- 会话按 (last_seen_at DESC, id DESC) 翻页；v12 已有 (origin, last_seen_at DESC, id DESC)，
+-- 这里补按来源/实例/状态筛选时仍能走索引的变体，避免深页排序退化为全表扫描。
+-- 轮次按 (updated_at DESC, id DESC) 在会话内翻页；既有 idx_runs_session 不含 id 列。
+-- 全部 IF NOT EXISTS：旧库可重复执行，不触碰既有数据。
+CREATE INDEX IF NOT EXISTS idx_sessions_origin_source_last_id
+  ON agent_sessions(origin, source_id, last_seen_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_origin_instance_last_id
+  ON agent_sessions(origin, instance_id, last_seen_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_origin_status_last_id
+  ON agent_sessions(origin, status, last_seen_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_session_updated_id
+  ON agent_runs(session_id, updated_at DESC, id DESC);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

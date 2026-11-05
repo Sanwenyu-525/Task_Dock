@@ -15,8 +15,18 @@ interface Props {
   children: ReactNode;
   /** 便于多窗口区分诊断来源（主窗口/快速捕获等），只进日志与通用文案 */
   scope?: string;
-  /** full = 主窗口完整兜底；compact = 小型悬浮窗口轻量兜底（内联样式） */
+  /** full = 主窗口完整兜底；compact = 小型悬浮窗口/内容区轻量兜底（内联样式） */
   variant?: "full" | "compact";
+  /**
+   * 恢复键：变化时自动清除错误并重新渲染子树。
+   *
+   * 用于「单个内容区异常不拖垮整个外壳」：内容区边界传入当前页面标识，
+   * 用户切到其它页面（或点重试）即可恢复，不需要重载整个窗口。
+   * 只在**已捕获错误**时重置，正常渲染不做任何额外 setState。
+   */
+  resetKey?: unknown;
+  /** 出错模块的可读名称（静态文案，例如当前页面名），仅用于兜底提示 */
+  label?: string;
 }
 
 interface State {
@@ -29,6 +39,13 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   static getDerivedStateFromError(error: Error): Partial<State> {
     return { error };
+  }
+
+  componentDidUpdate(prevProps: Props) {
+    // 页面/作用域切换即恢复：错误状态不跨页面残留，也不自动重试造成循环。
+    if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ error: null, attempt: 0 });
+    }
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
@@ -70,8 +87,10 @@ export default class ErrorBoundary extends Component<Props, State> {
             background: "transparent",
           }}
         >
-          <div style={{ color: "var(--text-primary)", fontWeight: 600 }}>界面暂时不可用</div>
-          <div>已停止渲染以保护当前内容。{retried}</div>
+          <div style={{ color: "var(--text-primary)", fontWeight: 600 }}>
+            {this.props.label ? `「${this.props.label}」暂时无法显示` : "界面暂时不可用"}
+          </div>
+          <div>已停止渲染以保护当前内容。{retried}可重试，或切换到其它页面。</div>
           <button
             type="button"
             onClick={this.retry}

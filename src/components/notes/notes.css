@@ -43,6 +43,59 @@
   align-self: flex-start;
 }
 
+/* 一条笔记也没有：单块跨栏空态，避免左右两栏各显示一次「空」。 */
+.notes-panel--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notes-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.notes-empty-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.notes-empty-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* 列表为空但仍有搜索/筛选时，只保留单栏，避免右侧空白编辑区。 */
+.notes-panel--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.notes-new-btn {
+  flex: none;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* 非当前笔记的自动保存失败/冲突：列表项上常显轻量徽标，不静默吞掉。 */
+.notes-item-warning {
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--c-danger) 40%, transparent);
+  color: var(--c-danger);
+  font-size: 9.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
 .notes-error {
   padding: 7px 9px;
   border-radius: var(--radius-control);
@@ -213,8 +266,10 @@
   outline: none;
 }
 
-.notes-title-input:focus {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+.notes-title-input:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .notes-editor-actions {
@@ -345,8 +400,10 @@
   overflow-y: auto;
 }
 
-.notes-content-input:focus {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+.notes-content-input:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .notes-content-input::placeholder {

@@ -8,11 +8,14 @@
 //! - 重复任务不提供「取消」（due 提醒是推进引擎输入）；
 //! - 卸载后释放 reminder-fired / reminder-snoozed 订阅。
 
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { useUiStore } from "../../store/useUiStore";
+import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
+import { clockRunning } from "../../lib/sharedClock";
 import ActiveReminders from "./ActiveReminders";
 import type { ActiveReminder } from "../../lib/bridge";
 
@@ -90,6 +93,8 @@ describe("ActiveReminders", () => {
     useUiStore.getState().showToast(null);
     taskStats.mockResolvedValue({ pending: 0, overdue: 0, due_today: 0, completed_today: 0, next_due_at: null });
     listTasks.mockResolvedValue([]);
+    // 页面活跃态是全局 store 派生：清掉跨用例的停靠相位残留
+    useEdgeSnapStore.setState({ phase: "free", dockedEdge: null });
   });
   afterEach(() => {
     cleanup();
@@ -176,6 +181,26 @@ describe("ActiveReminders", () => {
     ]);
     render(<ActiveReminders />);
     expect(await screen.findByText("已延后")).toBeTruthy();
+  });
+
+  it("停靠隐藏期不渲染倒计时并释放共享时钟，恢复可见时重新订阅", async () => {
+    activeReminders.mockResolvedValue([
+      item({ taskId: "t1", taskTitle: "停靠测试", remindAt: new Date(Date.now() + 30 * 60_000).toISOString() }),
+    ]);
+    const view = render(<ActiveReminders />);
+    expect(await screen.findByText("停靠测试")).toBeTruthy();
+    expect(clockRunning()).toBe(true);
+    // 停靠（主界面 display:none + inert）：行组件不渲染 → 最后一个时钟
+    // 消费者退出 → 共享定时器释放，不为隐藏页面每秒空转。
+    act(() => useEdgeSnapStore.setState({ phase: "docked-revealed" }));
+    expect(screen.queryByText("停靠测试")).toBeNull();
+    expect(clockRunning()).toBe(false);
+    // 解除停靠：重新挂载 → 重新订阅；items 状态保留在容器，无重新拉取闪烁。
+    act(() => useEdgeSnapStore.setState({ phase: "free" }));
+    expect(await screen.findByText("停靠测试")).toBeTruthy();
+    expect(clockRunning()).toBe(true);
+    view.unmount();
+    expect(clockRunning()).toBe(false);
   });
 
   it("卸载后释放事件订阅", async () => {

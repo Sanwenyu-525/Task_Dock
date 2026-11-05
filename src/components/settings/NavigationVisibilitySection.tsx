@@ -23,6 +23,7 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { errorMessage } from "../../lib/errors";
 import {
   entriesForSurface,
+  isEntrySortable,
   leftEntryForTab,
   navLabel,
   type NavEntry,
@@ -148,6 +149,15 @@ export default function NavigationVisibilitySection() {
           const index = visibleEntries.findIndex((item) => item.id === entry.id);
           const current = surface === "left" && entry.id === currentEntryId;
           const busy = pendingId === entry.id || pendingId === "__reset__";
+          // 排序规则与渲染层共用一份元数据：锁定入口与胶囊 Agent 状态球
+          // 不提供上移/下移按钮（不暴露无效操作）；末位可排序入口也不能越过
+          // 其后方的固定入口，因此「下移」边界按下一个可排序邻居判断。
+          const sortable = isEntrySortable(entry, surface);
+          const prevSortable = index > 0 && isEntrySortable(visibleEntries[index - 1], surface);
+          const nextSortable =
+            index >= 0 &&
+            index < visibleEntries.length - 1 &&
+            isEntrySortable(visibleEntries[index + 1], surface);
           return (
             <div className="setting-row nav-visibility-row" key={entry.id}>
               <span className="nav-visibility-entry">
@@ -163,16 +173,19 @@ export default function NavigationVisibilitySection() {
                 )}
                 {current && <span className="nav-visibility-current">{t("nav.current")}</span>}
                 {entry.locked && <span className="nav-visibility-current">{t("nav.locked")}</span>}
+                {!sortable && !entry.locked && (
+                  <span className="nav-visibility-fixed">{t("nav.fixedPosition")}</span>
+                )}
                 {!visible && <span className="nav-visibility-hidden">{t("nav.hidden")}</span>}
               </span>
               <span className="nav-visibility-actions">
-                {!entry.locked && (
+                {sortable && (
                   <>
                     <button
                       type="button"
                       className="nav-visibility-move"
                       onClick={() => onMove(entry, -1)}
-                      disabled={!visible || index <= 0 || busy}
+                      disabled={!visible || !prevSortable || busy}
                       aria-label={t("nav.moveUp", { label: navLabel(entry, t) })}
                     >
                       <ArrowUp size={12} aria-hidden="true" />
@@ -181,9 +194,7 @@ export default function NavigationVisibilitySection() {
                       type="button"
                       className="nav-visibility-move"
                       onClick={() => onMove(entry, 1)}
-                      disabled={
-                        !visible || index < 0 || index >= visibleEntries.length - 1 || busy
-                      }
+                      disabled={!visible || !nextSortable || busy}
                       aria-label={t("nav.moveDown", { label: navLabel(entry, t) })}
                     >
                       <ArrowDown size={12} aria-hidden="true" />

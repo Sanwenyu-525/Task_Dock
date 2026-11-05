@@ -14,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 
+use super::drop_targets::{DropTarget, OP_COPY, OP_MOVE};
 use super::*;
 
 /// 单批允许处理的条目上限（与添加接口一致量级，避免一次卡住阻塞线程过久）。
@@ -280,47 +281,189 @@ fn claim_ids(ids: &[String]) -> AppResult<OpClaim> {
     Ok(OpClaim { ids: ids.to_vec() })
 }
 
-/// 物理路径占用：不同条目 id 指向同一路径时也串行化，避免并发批次互相覆盖。
-static ACTIVE_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+/// 物理路径占用：文件操作同时保护**源**与**目标**两侧。
+///
+/// 只用「完全相同的路径」做互斥不足以保护目录树：批次 A 向 `D:\Archive` 复制、
+/// 批次 B 同时把 `D:\Archive` 整个搬走时，两边源路径毫不相干，却会互相破坏
+/// （目标目录在写入过程中消失、日志里的目标路径失效）。因此占用按
+/// **路径分量 + 读写模式**判定：
+///
+/// - `Exclusive`：会改变该路径及其子树的存在/内容的操作（移动源、最终写入目标）；
+/// - `Shared`：只要求该路径保持原位、可以并行的操作（向同一目录复制、复制时读取源）。
+///
+/// 冲突规则：
+/// - Exclusive vs Exclusive：相等或互为祖先/后代 → 冲突；
+/// - Exclusive vs Shared：Exclusive 是 Shared 的祖先或同一路径 → 冲突
+///   （移动父目录会毁掉写入方；移动无关子目录不影响写入）；
+/// - Shared vs Shared：从不冲突（同目录并行复制不同文件是安全的）。
+static ACTIVE_PATHS: OnceLock<Mutex<Vec<ActiveClaim>>> = OnceLock::new();
 
-fn active_paths() -> &'static Mutex<HashSet<String>> {
-    ACTIVE_PATHS.get_or_init(|| Mutex::new(HashSet::new()))
+fn active_paths() -> &'static Mutex<Vec<ActiveClaim>> {
+    ACTIVE_PATHS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+static CLAIM_OWNER_SEQ: OnceLock<Mutex<u64>> = OnceLock::new();
+
+fn next_claim_owner() -> u64 {
+    let mut seq = CLAIM_OWNER_SEQ
+        .get_or_init(|| Mutex::new(0))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *seq += 1;
+    *seq
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimMode {
+    /// 只读 / 只要求保持原位（并行安全）
+    Shared,
+    /// 独占：会移动、删除或最终写入该路径
+    Exclusive,
+}
+
+/// 一次占用的规范化路径。`parts` 用于比较，`label` 只用于错误信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaimKey {
+    parts: Vec<String>,
+    label: String,
+    mode: ClaimMode,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveClaim {
+    key: ClaimKey,
+    /// 每次 `claim_paths` 生成一个 owner：释放时只删除自己的登记，
+    /// 不会误删其他批次同路径的占用。
+    owner: u64,
+}
+
+/// 规范化路径分量：`canonicalize` 解析重解析点、8.3 短名与大小写；路径尚不存在时
+/// 逐级上溯到最近的已存在祖先，再把尾部拼回去——否则「父目录已规范化、子路径只做
+/// 了词法归一」会漏判父子关系。
+fn claim_components(path: &Path) -> Vec<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut tail: Vec<String> = Vec::new();
+    let mut cur = absolute.as_path();
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(cur) {
+            let mut out: Vec<String> = canonical
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+                .collect();
+            for part in tail.iter().rev() {
+                out.push(part.clone());
+            }
+            return out;
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_string_lossy().to_lowercase());
+                cur = parent;
+            }
+            _ => break,
+        }
+    }
+    canonical_components(&absolute)
+}
+
+fn claim_key(path: &Path, mode: ClaimMode) -> ClaimKey {
+    ClaimKey {
+        parts: claim_components(path),
+        label: path.to_string_lossy().into_owned(),
+        mode,
+    }
+}
+
+/// 相等或互为祖先/后代即冲突（按分量比较，避免 `C:\a` 与 `C:\ab` 被误判）。
+fn claim_keys_overlap(a: &[String], b: &[String]) -> bool {
+    components_prefix(a, b) || components_prefix(b, a)
+}
+
+/// 两条占用是否冲突（见上方规则）。
+fn claims_conflict(a: &ClaimKey, b: &ClaimKey) -> bool {
+    match (a.mode, b.mode) {
+        (ClaimMode::Shared, ClaimMode::Shared) => false,
+        // 独占方是共享方本身或它的祖先：共享方脚下的路径会被搬走/删除。
+        (ClaimMode::Shared, ClaimMode::Exclusive) => components_prefix(&b.parts, &a.parts),
+        (ClaimMode::Exclusive, ClaimMode::Shared) => components_prefix(&a.parts, &b.parts),
+        (ClaimMode::Exclusive, ClaimMode::Exclusive) => claim_keys_overlap(&a.parts, &b.parts),
+    }
+}
+
+#[derive(Debug)]
 struct PathClaim {
-    keys: Vec<String>,
+    owner: u64,
 }
 
 impl Drop for PathClaim {
     fn drop(&mut self) {
         let mut set = active_paths().lock().unwrap_or_else(|e| e.into_inner());
-        for key in &self.keys {
-            set.remove(key);
+        // 只删除本次 owner 的登记：成功、失败、提前返回都由 Drop 统一释放。
+        set.retain(|active| active.owner != self.owner);
+    }
+}
+
+/// 占用一批物理路径。任一占用与在途操作冲突时整体拒绝，不做「部分占用」，
+/// 避免调用方拿到不完整的保护。
+fn claim_paths(claims: &[(PathBuf, ClaimMode)]) -> AppResult<PathClaim> {
+    if claims.is_empty() {
+        return Ok(PathClaim { owner: next_claim_owner() });
+    }
+    let keys: Vec<ClaimKey> = claims.iter().map(|(p, m)| claim_key(p, *m)).collect();
+    let owner = next_claim_owner();
+    let mut set = active_paths().lock().unwrap_or_else(|e| e.into_inner());
+    for key in &keys {
+        // 同一批次内部的多个占用互不冲突（例如共享目标目录 + 独占其中的目标文件）
+        if let Some(active) = set
+            .iter()
+            .filter(|active| active.owner != owner)
+            .find(|active| claims_conflict(&active.key, key))
+        {
+            let what = match key.mode {
+                ClaimMode::Shared => "只读",
+                ClaimMode::Exclusive => "写入/移动",
+            };
+            return Err(AppError::Conflict(format!(
+                "路径 {}（{what}）与正在进行的文件操作（{}）冲突：两者是同一路径或父子目录，请等该操作结束后重试",
+                key.label, active.key.label
+            )));
         }
     }
-}
-
-fn claim_paths(keys: &[String]) -> AppResult<PathClaim> {
-    if keys.is_empty() {
-        return Ok(PathClaim { keys: Vec::new() });
-    }
-    let mut set = active_paths().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(busy) = keys.iter().find(|key| set.contains(*key)) {
-        return Err(AppError::Conflict(format!(
-            "路径 {busy} 正在被其他文件操作处理，请稍后再试"
-        )));
-    }
     for key in keys {
-        set.insert(key.clone());
+        let exists = set
+            .iter()
+            .any(|active| active.key.parts == key.parts && active.key.mode == key.mode);
+        if !exists {
+            set.push(ActiveClaim {
+                key,
+                owner,
+            });
+        }
     }
-    Ok(PathClaim { keys: keys.to_vec() })
+    Ok(PathClaim { owner })
 }
 
-fn path_claim_key(path: &Path) -> String {
-    std::fs::canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .to_lowercase()
+/// 批次级占用：源路径（复制=Shared 可并行读；移动=Exclusive）+ 目标目录（Shared）。
+///
+/// 目标目录只要求「保持原位」：另一个批次向同一目录复制不同文件是安全的（Shared vs
+/// Shared 不冲突）；但任何把该目录或其祖先搬走/删除的操作（Exclusive）都会冲突。
+fn claim_batch(
+    sources: &[PathBuf],
+    source_mode: ClaimMode,
+    target_dir: &Path,
+) -> AppResult<PathClaim> {
+    let mut claims: Vec<(PathBuf, ClaimMode)> = sources
+        .iter()
+        .map(|p| (p.clone(), source_mode))
+        .collect();
+    claims.push((target_dir.to_path_buf(), ClaimMode::Shared));
+    claim_paths(&claims)
 }
 
 fn path_depth(path: &Path) -> usize {
@@ -496,6 +639,94 @@ fn parent_eq_ci(a: &Path, b: &Path) -> bool {
         }
         _ => false,
     }
+}
+
+/// 规范化后的路径分量（大小写不敏感）：优先 canonicalize（解析符号链接/8.3 名），
+/// 路径尚不存在时退化为词法归一化（处理 `.`/`..`），避免因临时目录不存在而误判。
+fn canonical_components(path: &Path) -> Vec<String> {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect();
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut out: Vec<String> = Vec::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str().to_string_lossy().to_lowercase()),
+        }
+    }
+    out
+}
+
+fn components_prefix(prefix: &[String], path: &[String]) -> bool {
+    path.len() >= prefix.len() && path[..prefix.len()] == *prefix
+}
+
+/// 源路径与暂存架根是否重叠（相等 / 互为祖先）。
+/// 允许移动暂存架数据目录或其上级目录，会把托管资产与数据库一起搬走，
+/// 使所有 `managed_path` 失效；必须在磁盘操作前拒绝。
+fn overlaps_shelf_root(src: &Path, root: &Path) -> bool {
+    let a = canonical_components(src);
+    let b = canonical_components(root);
+    components_prefix(&a, &b) || components_prefix(&b, &a)
+}
+
+/// 「不覆盖」提交原语：同卷移动与复制最终提交共用。
+///
+/// `std::fs::rename` 在 Windows 上等价于 `MoveFileExW(REPLACE_EXISTING)`，
+/// 与 `resolve_target` / `copy_with_verify` 里的存在性检查之间存在竞态：检查通过后
+/// 目标若被并发创建，改名会静默覆盖它（文件被替换、目录被替换为空目录）。
+/// 这里显式使用不带 REPLACE 标志的 `MoveFileExW`，目标已存在时返回 `AlreadyExists`，
+/// 由调用方按冲突处理，绝不覆盖。文件和目录走同一条系统调用，语义一致。
+///
+/// 非 Windows 平台 `std` 没有 `RENAME_NOREPLACE` 等价物，只能先检查再改名；
+/// 这是明确记录的平台限制，当前交付目标为 Windows。
+#[cfg(windows)]
+fn rename_no_replace(src: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+    }
+    let src_w = wide(src);
+    let target_w = wide(target);
+    // SAFETY: 两个宽字符串都以 NUL 结尾且在调用期间保持存活；没有回调或额外生命周期。
+    let ok = unsafe { MoveFileExW(src_w.as_ptr(), target_w.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn rename_no_replace(src: &Path, target: &Path) -> std::io::Result<()> {
+    if path_lexists(target) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "target already exists",
+        ));
+    }
+    std::fs::rename(src, target)
+}
+
+/// 目标已存在的错误码：Windows 183 (ERROR_ALREADY_EXISTS) / 80 (ERROR_FILE_EXISTS)。
+fn is_already_exists(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(183) | Some(80))
+        || err.kind() == std::io::ErrorKind::AlreadyExists
 }
 
 /// 生成目标路径：默认跳过同名；rename 时按 `名称 (n).ext`（文件夹不带扩展名拆分）。
@@ -946,6 +1177,11 @@ pub fn recover_pending_file_ops(db: &Db) {
     for (id, item_id, op, phase, source, target) in rows {
         let src = Path::new(&source);
         let dst = Path::new(&target);
+        // 投递批次没有暂存条目可改写，按独立分支收敛（只清理本次临时副本）。
+        if item_id.starts_with(DROP_JOURNAL_PREFIX) {
+            recover_drop_journal(db, &id, &op, &phase, src, dst);
+            continue;
+        }
         if !journal_item_still_matches(db, &item_id, src, dst) {
             // 记录已删除或指向完全无关的新路径：旧日志不得触碰当前文件。
             tracing::warn!("暂存架操作日志 {id} 的条目已失效，丢弃日志但不操作文件");
@@ -1036,6 +1272,57 @@ pub fn recover_pending_file_ops(db: &Db) {
     }
 }
 
+/// 投递批次的启动收敛：没有数据库引用需要补写，只处理「本次操作自己创建的临时副本」。
+///
+/// 与条目操作的关键区别：**任何分支都不删除源或用户目标文件**。目标已存在即视为磁盘
+/// 动作完成（投递不登记记录）；源与目标都在时保留两者并记录残留；两者都不在时保留日志
+/// 供人工诊断，不判成功。
+fn recover_drop_journal(db: &Db, journal_id: &str, op: &str, phase: &str, src: &Path, dst: &Path) {
+    if is_part_name(dst) {
+        if path_lexists(src) {
+            remove_part(dst);
+            if journal_done(db, journal_id).is_err() {
+                tracing::warn!("投递日志 {journal_id} 清理失败，将在下次启动重试");
+            }
+        } else {
+            // 源已不在，临时副本可能是唯一完整副本：保留并记录诊断。
+            tracing::warn!(
+                "投递中断且源已不存在，保留临时副本待人工确认: {}",
+                dst.display()
+            );
+        }
+        return;
+    }
+    if op == "copy" {
+        // 复制到最终目标后才写 completed；无论成功失败都没有引用要改。
+        if journal_done(db, journal_id).is_err() {
+            tracing::warn!("投递复制日志 {journal_id} 清理失败，将在下次启动重试");
+        }
+        return;
+    }
+    // move：目标存在 = 磁盘移动已完成（阶段字段仅供诊断）。
+    if path_lexists(dst) {
+        if path_lexists(src) {
+            tracing::warn!(
+                "投递移动（阶段 {phase}）目标已建立但源仍残留（{}），未删除源",
+                src.display()
+            );
+        }
+        if journal_done(db, journal_id).is_err() {
+            tracing::warn!("投递移动日志 {journal_id} 清理失败，将在下次启动重试");
+        }
+        return;
+    }
+    if path_lexists(src) {
+        tracing::warn!("投递移动（阶段 {phase}）目标不存在但源仍存在，保留源不动并丢弃日志");
+        if journal_done(db, journal_id).is_err() {
+            tracing::warn!("投递移动日志 {journal_id} 清理失败，将在下次启动重试");
+        }
+        return;
+    }
+    tracing::error!("投递移动日志 {journal_id} 的源与目标都不存在，保留日志待人工处理");
+}
+
 // ── 复制 ────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1124,8 +1411,43 @@ fn copy_with_verify(src: &Path, part: &Path, target: &Path, is_dir: bool) -> App
                 target.display()
             )));
         }
+        // 故障注入：在最后一次检查之后、真正提交之前创建目标，模拟并发方的写入。
+        // 提交本身必须依赖系统级「不覆盖」语义，而不能依赖上面的检查。
+        #[cfg(test)]
+        if test_support::take("target_appears_before_commit") {
+            let _ = std::fs::write(target, b"racer");
+        }
+        #[cfg(test)]
+        if test_support::take("target_dir_removed_before_commit") {
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+        // 目标目录在复制/校验期间可能被外部程序移除（盘符重挂载、用户清空目录）。
+        // 提交前重新确认父目录仍是目录：给出可读原因，而不是把 rename 的
+        // 「系统找不到路径」直接抛给用户；真正的无覆盖仍由下面的原子提交保证。
+        if let Some(parent) = target.parent() {
+            if !parent.is_dir() {
+                return Err(AppError::Unavailable(format!(
+                    "目标目录在提交前已不存在或不可访问: {}",
+                    parent.display()
+                )));
+            }
+        }
         if is_dir {
-            std::fs::rename(&part, target)?;
+            // 目录也用「不覆盖」改名提交：`std::fs::rename` 在 Windows 上等价于
+            // MoveFileExW(REPLACE_EXISTING)，上面两次 exists 检查与提交之间仍有窗口，
+            // 目录同样不能靠「先检查再改名」保证无覆盖。
+            match rename_no_replace(&part, target) {
+                Ok(()) => {}
+                Err(e) if is_already_exists(&e) => {
+                    return Err(AppError::Conflict(format!(
+                        "目标在提交时已存在，拒绝覆盖: {}",
+                        target.display()
+                    )));
+                }
+                Err(e) => return Err(e.into()),
+            }
         } else {
             // 同目录内优先用硬链接建立最终目标：目标已存在时必然失败，避免 rename 覆盖。
             match std::fs::hard_link(&part, target) {
@@ -1141,13 +1463,17 @@ fn copy_with_verify(src: &Path, part: &Path, target: &Path, is_dir: bool) -> App
                     )));
                 }
                 Err(_) => {
-                    if path_lexists(target) {
-                        return Err(AppError::Conflict(format!(
-                            "目标已存在: {}",
-                            target.display()
-                        )));
+                    // 硬链接不可用（FAT32/exFAT、网络盘等）：回退仍必须无覆盖。
+                    match rename_no_replace(&part, target) {
+                        Ok(()) => {}
+                        Err(e) if is_already_exists(&e) => {
+                            return Err(AppError::Conflict(format!(
+                                "目标在提交时已存在，拒绝覆盖: {}",
+                                target.display()
+                            )));
+                        }
+                        Err(e) => return Err(e.into()),
                     }
-                    std::fs::rename(&part, target)?;
                 }
             }
         }
@@ -1169,6 +1495,358 @@ fn ensure_copy_dest_safe(src: &Path, target_dir: &Path) -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+/// 单条**物理路径**操作的结果（不含暂存条目字段）。
+///
+/// 暂存条目操作（copy_one / move_one）与收集箱投递（drop_paths）共用同一套磁盘语义，
+/// 只在「记录/引用更新」这一步分叉：前者改写 `original_path`，后者没有记录可改。
+#[derive(Clone)]
+struct PathOutcome {
+    /// ok / skipped / failed / partial
+    status: &'static str,
+    target: Option<PathBuf>,
+    reason: Option<String>,
+    recovery: Option<String>,
+    residual_source: Option<PathBuf>,
+}
+
+impl PathOutcome {
+    fn failed(reason: impl Into<String>) -> Self {
+        Self {
+            status: "failed",
+            target: None,
+            reason: Some(reason.into()),
+            recovery: None,
+            residual_source: None,
+        }
+    }
+
+    fn skipped(reason: impl Into<String>, target: Option<PathBuf>) -> Self {
+        Self {
+            status: "skipped",
+            target,
+            reason: Some(reason.into()),
+            recovery: None,
+            residual_source: None,
+        }
+    }
+
+    fn ok(target: PathBuf) -> Self {
+        Self {
+            status: "ok",
+            target: Some(target),
+            reason: None,
+            recovery: None,
+            residual_source: None,
+        }
+    }
+}
+
+/// 复制单个路径到目标目录（流式 + 校验 + 临时副本原子提交）。
+///
+/// `journal_item` 只用于操作日志归属：暂存条目传条目 id，投递批次传 `drop:<batch>`。
+fn copy_path_core(
+    db: &Db,
+    journal_item: &str,
+    src: &Path,
+    name: &OsString,
+    target_dir: &Path,
+    strategy: ConflictStrategy,
+) -> PathOutcome {
+    let is_dir = src.is_dir();
+    if let Err(e) = ensure_copy_dest_safe(src, target_dir) {
+        return PathOutcome::failed(e.to_string());
+    }
+    let (target, skipped) = match resolve_target(target_dir, name, is_dir, strategy) {
+        Ok(v) => v,
+        Err(e) => return PathOutcome::failed(e.to_string()),
+    };
+    if skipped {
+        return PathOutcome::skipped(
+            "目标目录已存在同名文件（同名策略：跳过）",
+            Some(target),
+        );
+    }
+    // 最终写入目标独占：两个批次同时解析出同一个目标路径时，后到者拿到可重试冲突，
+    // 不会各自写临时副本再互相覆盖（提交本身也已有原子无覆盖语义兜底）。
+    let _target_claim = match claim_paths(&[(target.clone(), ClaimMode::Exclusive)]) {
+        Ok(c) => c,
+        Err(e) => return PathOutcome::failed(e.to_string()),
+    };
+    let part = match part_path(&target) {
+        Ok(p) => p,
+        Err(e) => return PathOutcome::failed(e.to_string()),
+    };
+    let journal = match journal_insert(db, journal_item, "copy", src, &part) {
+        Ok(id) => id,
+        Err(e) => return PathOutcome::failed(format!("写入复制日志失败，未执行复制: {e}")),
+    };
+    match copy_with_verify(src, &part, &target, is_dir) {
+        Ok(()) => {
+            if let Err(e) = journal_done(db, &journal) {
+                tracing::warn!("复制已完成但清理操作日志失败（不影响结果）: {e}");
+            }
+            PathOutcome::ok(target)
+        }
+        Err(e) => {
+            remove_best_effort(&part);
+            if let Err(e2) = journal_done(db, &journal) {
+                tracing::warn!("复制失败后清理操作日志失败: {e2}");
+            }
+            let mut out = PathOutcome::failed(e.to_string());
+            out.target = Some(target);
+            out
+        }
+    }
+}
+
+/// 移动单个路径到目标目录：同卷原子改名，跨卷「复制 → 校验 → 删源」。
+///
+/// `rewrite` 在磁盘移动之后调用，用于把数据库里的引用切到新位置；投递批次没有
+/// 引用可改，传恒 `Ok` 的空实现。**rewrite 失败绝不删除源或目标**。
+fn move_path_core(
+    db: &Db,
+    journal_item: &str,
+    src: &Path,
+    name: &OsString,
+    target_dir: &Path,
+    strategy: ConflictStrategy,
+    rewrite: &dyn Fn(&Path, &Path) -> AppResult<()>,
+) -> PathOutcome {
+    let is_dir = src.is_dir();
+    if parent_eq_ci(src, target_dir) {
+        return PathOutcome::skipped("文件已经在目标目录内，未移动", None);
+    }
+    if is_dir {
+        if let Ok(c) = std::fs::canonicalize(src) {
+            if let Ok(t) = std::fs::canonicalize(target_dir) {
+                if t.starts_with(&c) {
+                    return PathOutcome::failed("不能把文件夹移动到它自身或子目录中");
+                }
+            }
+        }
+    }
+    if let Ok(m) = entry_meta(src) {
+        if is_reparse_point(&m) {
+            return PathOutcome::failed("路径是符号链接/联接点/重解析点，暂不支持移动");
+        }
+    }
+    let (target, skipped) = match resolve_target(target_dir, name, is_dir, strategy) {
+        Ok(v) => v,
+        Err(e) => return PathOutcome::failed(e.to_string()),
+    };
+    if skipped {
+        return PathOutcome::skipped(
+            "目标目录已存在同名文件（同名策略：跳过）",
+            Some(target),
+        );
+    }
+    // 最终目标独占：同路径的另一个移动/复制批次会拿到可重试冲突，
+    // 而不是在同一目标上互相 rename（提交本身也保证不覆盖）。
+    let _target_claim = match claim_paths(&[(target.clone(), ClaimMode::Exclusive)]) {
+        Ok(c) => c,
+        Err(e) => return PathOutcome::failed(e.to_string()),
+    };
+    // 目标目录可能在解析之后被外部程序移除：在真正移动前给出可读原因。
+    if let Some(parent) = target.parent() {
+        if !parent.is_dir() {
+            return PathOutcome::failed(format!(
+                "目标目录在移动前已不存在或不可访问: {}",
+                parent.display()
+            ));
+        }
+    }
+    let journal = match journal_insert(db, journal_item, "move", src, &target) {
+        Ok(id) => id,
+        Err(e) => return PathOutcome::failed(format!("写入移动日志失败，未执行移动: {e}")),
+    };
+
+    #[cfg(test)]
+    let same_volume = {
+        if test_support::enabled("force_cross_volume") {
+            false
+        } else {
+            same_volume(src, target_dir)
+        }
+    };
+    #[cfg(not(test))]
+    let same_volume = same_volume(src, target_dir);
+
+    if same_volume {
+        // 不用 std::fs::rename：Windows 上它会带 REPLACE_EXISTING，
+        // 与 resolve_target 的检查之间存在覆盖竞态。
+        match rename_no_replace(src, &target) {
+            Ok(()) => {
+                if let Err(e) = journal_phase(db, &journal, "moved") {
+                    tracing::warn!("同卷移动阶段日志写入失败，继续按目标存在恢复: {e}");
+                }
+                return match rewrite(src, &target) {
+                    Ok(()) => {
+                        if let Err(e) = journal_done(db, &journal) {
+                            tracing::warn!("移动完成但清理操作日志失败（不影响结果）: {e}");
+                        }
+                        PathOutcome::ok(target)
+                    }
+                    Err(e) => {
+                        // 尝试回滚，避免库与磁盘不一致；回滚失败则由启动恢复补写引用。
+                        match rename_no_replace(&target, src) {
+                            Ok(()) => {
+                                if let Err(e2) = journal_done(db, &journal) {
+                                    tracing::warn!("回滚后清理操作日志失败: {e2}");
+                                }
+                                PathOutcome::failed(format!(
+                                    "更新暂存架路径失败，已回滚移动: {e}"
+                                ))
+                            }
+                            Err(rollback_err) => PathOutcome {
+                                status: "partial",
+                                target: Some(target),
+                                reason: Some(format!(
+                                    "文件已移动到目标但暂存架路径更新失败，回滚也失败（{rollback_err}）；重启后将自动补写引用，请勿手动移动目标"
+                                )),
+                                recovery: Some(
+                                    "保持目标文件在原位，重启应用以自动恢复引用".into(),
+                                ),
+                                residual_source: None,
+                            },
+                        }
+                    }
+                };
+            }
+            Err(e) if is_already_exists(&e) => {
+                // 检查后目标被并发创建：绝不覆盖，交给用户重试（可重新选择冲突策略）。
+                if let Err(e2) = journal_done(db, &journal) {
+                    tracing::warn!("目标被占用后清理操作日志失败: {e2}");
+                }
+                return PathOutcome::failed(
+                    "目标位置在移动过程中出现同名文件，未覆盖任何文件；请确认后重试",
+                );
+            }
+            Err(e) if e.raw_os_error() == Some(17) => {
+                // EXDEV：同卷判定失效（如映射盘），降级到复制 + 校验 + 删除源。
+            }
+            Err(e) => {
+                if let Err(e2) = journal_done(db, &journal) {
+                    tracing::warn!("移动失败后清理操作日志失败: {e2}");
+                }
+                return PathOutcome::failed(format!("移动失败: {e}"));
+            }
+        }
+    }
+
+    // 跨卷：复制 → 内容校验 → 原子建立目标 → 删除源 → 更新数据库。
+    let part = match part_path(&target) {
+        Ok(p) => p,
+        Err(e) => {
+            if let Err(e2) = journal_done(db, &journal) {
+                tracing::warn!("准备临时副本失败后清理操作日志失败: {e2}");
+            }
+            return PathOutcome::failed(e.to_string());
+        }
+    };
+    // 日志先指向临时副本：中途退出时恢复逻辑可精确清理本次创建的 part。
+    if let Err(e) = journal_set_target(db, &journal, &part) {
+        if let Err(e2) = journal_done(db, &journal) {
+            tracing::warn!("记录临时副本路径失败后清理操作日志失败: {e2}");
+        }
+        return PathOutcome::failed(format!("记录临时副本路径失败，未执行移动: {e}"));
+    }
+    if let Err(e) = copy_with_verify(src, &part, &target, is_dir) {
+        remove_best_effort(&part);
+        if let Err(e2) = journal_done(db, &journal) {
+            tracing::warn!("跨盘复制失败后清理操作日志失败: {e2}");
+        }
+        return PathOutcome::failed(format!("跨盘复制或校验失败，源文件未删除: {e}"));
+    }
+    // 至此目标已完整校验。关键阶段日志失败时绝不继续删除源。
+    if let Err(e) = journal_mark_copied(db, &journal, &target) {
+        return PathOutcome {
+            status: "partial",
+            target: Some(target),
+            reason: Some(format!(
+                "目标副本已校验完整，但记录复制完成阶段失败，已保留源与目标未删除: {e}"
+            )),
+            recovery: Some("检查源与目标两份副本，确认后手动删除多余的一份".into()),
+            residual_source: None,
+        };
+    }
+
+    match remove_source_path(src, is_dir) {
+        Ok(()) => {
+            if let Err(e) = journal_phase(db, &journal, "moved") {
+                tracing::warn!("跨盘移动阶段日志写入失败，继续按目标存在恢复: {e}");
+            }
+            match rewrite(src, &target) {
+                Ok(()) => {
+                    if let Err(e) = journal_done(db, &journal) {
+                        tracing::warn!("移动完成但清理操作日志失败（不影响结果）: {e}");
+                    }
+                    PathOutcome::ok(target)
+                }
+                Err(e) => {
+                    // 文件系统已完成、数据库未更新：保留目标，交由启动恢复补写。
+                    PathOutcome {
+                        status: "partial",
+                        target: Some(target),
+                        reason: Some(format!(
+                            "文件已完整移动到目标，但暂存架路径更新失败，重启后将自动恢复: {e}"
+                        )),
+                        recovery: Some("保持目标文件在原位，重启应用以自动恢复引用".into()),
+                        residual_source: None,
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            // 源清理失败：源可能已部分删除，目标可能是唯一完整副本。绝不删除目标。
+            let src_still_there = path_lexists(src);
+            match rewrite(src, &target) {
+                Ok(()) => {
+                    if let Err(e2) = journal_done(db, &journal) {
+                        tracing::warn!("部分完成后清理操作日志失败: {e2}");
+                    }
+                    if src_still_there {
+                        PathOutcome {
+                            status: "partial",
+                            target: Some(target),
+                            reason: Some(format!(
+                                "目标副本已校验完整，但源清理未完成（源可能残留部分文件，{e}）；暂存引用已切到目标位置"
+                            )),
+                            recovery: Some(
+                                "目标副本完整可用；请手动检查并删除残留源目录".into(),
+                            ),
+                            residual_source: Some(src.to_path_buf()),
+                        }
+                    } else {
+                        let mut out = PathOutcome::ok(target);
+                        out.reason = Some(format!(
+                            "目标副本已校验完整，源清理返回错误但源已不存在: {e}"
+                        ));
+                        out
+                    }
+                }
+                Err(err) => {
+                    // 目标完整、源可能残留；不删除任何一方，保留日志供恢复重试。
+                    PathOutcome {
+                        status: "partial",
+                        target: Some(target),
+                        reason: Some(format!(
+                            "目标副本已校验完整，但源清理未完成且暂存路径更新失败: 清理错误 {e}；更新错误 {err}"
+                        )),
+                        recovery: Some(
+                            "保留源与目标，重启应用后检查恢复日志并手动确认".into(),
+                        ),
+                        residual_source: if src_still_there {
+                            Some(src.to_path_buf())
+                        } else {
+                            None
+                        },
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn copy_one(
@@ -1202,11 +1880,6 @@ fn copy_one(
         entry.reason = Some("同批次存在指向同一文件的重复记录，已跳过".into());
         return entry;
     }
-    let is_dir = src.is_dir();
-    if let Err(e) = ensure_copy_dest_safe(&src, target_dir) {
-        entry.reason = Some(e.to_string());
-        return entry;
-    }
     // 托管副本在架内使用 uuid 文件名，导出时还原用户可见的原文件名。
     let name = if item.storage_mode == MODE_MANAGED {
         let mut name = item.display_name.clone();
@@ -1226,48 +1899,12 @@ fn copy_one(
             }
         }
     };
-    let (target, skipped) = match resolve_target(target_dir, &name, is_dir, strategy) {
-        Ok(v) => v,
-        Err(e) => {
-            entry.reason = Some(e.to_string());
-            return entry;
-        }
-    };
-    entry.target = Some(target.to_string_lossy().into_owned());
-    if skipped {
-        entry.status = "skipped".into();
-        entry.reason = Some("目标目录已存在同名文件（同名策略：跳过）".into());
-        return entry;
-    }
-    let part = match part_path(&target) {
-        Ok(p) => p,
-        Err(e) => {
-            entry.reason = Some(e.to_string());
-            return entry;
-        }
-    };
-    let journal = match journal_insert(db, &item.id, "copy", &src, &part) {
-        Ok(id) => id,
-        Err(e) => {
-            entry.reason = Some(format!("写入复制日志失败，未执行复制: {e}"));
-            return entry;
-        }
-    };
-    match copy_with_verify(&src, &part, &target, is_dir) {
-        Ok(()) => {
-            if let Err(e) = journal_done(db, &journal) {
-                tracing::warn!("复制已完成但清理操作日志失败（不影响结果）: {e}");
-            }
-            entry.status = "ok".into();
-        }
-        Err(e) => {
-            remove_best_effort(&part);
-            if let Err(e2) = journal_done(db, &journal) {
-                tracing::warn!("复制失败后清理操作日志失败: {e2}");
-            }
-            entry.reason = Some(e.to_string());
-        }
-    }
+    let outcome = copy_path_core(db, &item.id, &src, &name, target_dir, strategy);
+    entry.status = outcome.status.into();
+    entry.target = outcome.target.map(|p| p.to_string_lossy().into_owned());
+    entry.reason = outcome.reason;
+    entry.recovery = outcome.recovery;
+    entry.residual_source = outcome.residual_source.map(|p| p.to_string_lossy().into_owned());
     entry
 }
 
@@ -1354,12 +1991,17 @@ fn move_one(
         }
     };
     entry.source = Some(src.to_string_lossy().into_owned());
+    if overlaps_shelf_root(&src, root) {
+        entry.reason = Some(
+            "不能移动 Task Dock 暂存架数据目录或其上级/内部目录，否则会破坏托管文件引用".into(),
+        );
+        return entry;
+    }
     if !seen_sources.insert(src.to_string_lossy().to_lowercase()) {
         entry.status = "skipped".into();
         entry.reason = Some("同批次存在指向同一文件的重复记录，已跳过".into());
         return entry;
     }
-    let is_dir = src.is_dir();
     let name = match source_name(&src) {
         Ok(n) => n,
         Err(e) => {
@@ -1367,209 +2009,15 @@ fn move_one(
             return entry;
         }
     };
-    if parent_eq_ci(&src, target_dir) {
-        entry.status = "skipped".into();
-        entry.reason = Some("文件已经在目标目录内，未移动".into());
-        return entry;
-    }
-    if is_dir {
-        if let Ok(c) = std::fs::canonicalize(&src) {
-            if let Ok(t) = std::fs::canonicalize(target_dir) {
-                if t.starts_with(&c) {
-                    entry.reason =
-                        Some("不能把文件夹移动到它自身或子目录中".into());
-                    return entry;
-                }
-            }
-        }
-    }
-    if let Ok(m) = entry_meta(&src) {
-        if is_reparse_point(&m) {
-            entry.reason = Some("路径是符号链接/联接点/重解析点，暂不支持移动".into());
-            return entry;
-        }
-    }
-    let (target, skipped) = match resolve_target(target_dir, &name, is_dir, strategy) {
-        Ok(v) => v,
-        Err(e) => {
-            entry.reason = Some(e.to_string());
-            return entry;
-        }
-    };
-    entry.target = Some(target.to_string_lossy().into_owned());
-    if skipped {
-        entry.status = "skipped".into();
-        entry.reason = Some("目标目录已存在同名文件（同名策略：跳过）".into());
-        return entry;
-    }
-    let journal = match journal_insert(db, &item.id, "move", &src, &target) {
-        Ok(id) => id,
-        Err(e) => {
-            entry.reason = Some(format!("写入移动日志失败，未执行移动: {e}"));
-            return entry;
-        }
-    };
-
-    #[cfg(test)]
-    let same_volume = {
-        if test_support::enabled("force_cross_volume") {
-            false
-        } else {
-            same_volume(&src, target_dir)
-        }
-    };
-    #[cfg(not(test))]
-    let same_volume = same_volume(&src, target_dir);
-
-    if same_volume {
-        match std::fs::rename(&src, &target) {
-            Ok(()) => {
-                if let Err(e) = journal_phase(db, &journal, "moved") {
-                    tracing::warn!("同卷移动阶段日志写入失败，继续按目标存在恢复: {e}");
-                }
-                match rewrite_after_move(db, &src, &target) {
-                    Ok(_) => {
-                        if let Err(e) = journal_done(db, &journal) {
-                            tracing::warn!("移动完成但清理操作日志失败（不影响结果）: {e}");
-                        }
-                        entry.status = "ok".into();
-                    }
-                    Err(e) => {
-                        // 尝试回滚，避免库与磁盘不一致；回滚失败则由启动恢复补写引用。
-                        match std::fs::rename(&target, &src) {
-                            Ok(()) => {
-                                if let Err(e2) = journal_done(db, &journal) {
-                                    tracing::warn!("回滚后清理操作日志失败: {e2}");
-                                }
-                                entry.reason =
-                                    Some(format!("更新暂存架路径失败，已回滚移动: {e}"));
-                            }
-                            Err(rollback_err) => {
-                                entry.status = "partial".into();
-                                entry.reason = Some(format!(
-                                    "文件已移动到目标但暂存架路径更新失败，回滚也失败（{rollback_err}）；重启后将自动补写引用，请勿手动移动目标"
-                                ));
-                                entry.recovery =
-                                    Some("保持目标文件在原位，重启应用以自动恢复引用".into());
-                            }
-                        }
-                    }
-                }
-                return entry;
-            }
-            Err(e) if e.raw_os_error() == Some(17) => {
-                // EXDEV：同卷判定失效（如映射盘），降级到复制 + 校验 + 删除源。
-            }
-            Err(e) => {
-                if let Err(e2) = journal_done(db, &journal) {
-                    tracing::warn!("移动失败后清理操作日志失败: {e2}");
-                }
-                entry.reason = Some(format!("移动失败: {e}"));
-                return entry;
-            }
-        }
-    }
-
-    // 跨卷：复制 → 内容校验 → 原子建立目标 → 删除源 → 更新数据库。
-    let part = match part_path(&target) {
-        Ok(p) => p,
-        Err(e) => {
-            if let Err(e2) = journal_done(db, &journal) {
-                tracing::warn!("准备临时副本失败后清理操作日志失败: {e2}");
-            }
-            entry.reason = Some(e.to_string());
-            return entry;
-        }
-    };
-    // 日志先指向临时副本：中途退出时恢复逻辑可精确清理本次创建的 part。
-    if let Err(e) = journal_set_target(db, &journal, &part) {
-        if let Err(e2) = journal_done(db, &journal) {
-            tracing::warn!("记录临时副本路径失败后清理操作日志失败: {e2}");
-        }
-        entry.reason = Some(format!("记录临时副本路径失败，未执行移动: {e}"));
-        return entry;
-    }
-    if let Err(e) = copy_with_verify(&src, &part, &target, is_dir) {
-        remove_best_effort(&part);
-        if let Err(e2) = journal_done(db, &journal) {
-            tracing::warn!("跨盘复制失败后清理操作日志失败: {e2}");
-        }
-        entry.reason = Some(format!("跨盘复制或校验失败，源文件未删除: {e}"));
-        return entry;
-    }
-    // 至此目标已完整校验。关键阶段日志失败时绝不继续删除源。
-    if let Err(e) = journal_mark_copied(db, &journal, &target) {
-        entry.status = "partial".into();
-        entry.reason = Some(format!(
-            "目标副本已校验完整，但记录复制完成阶段失败，已保留源与目标未删除: {e}"
-        ));
-        entry.recovery = Some("检查源与目标两份副本，确认后手动删除多余的一份".into());
-        return entry;
-    }
-
-    match remove_source_path(&src, is_dir) {
-        Ok(()) => {
-            if let Err(e) = journal_phase(db, &journal, "moved") {
-                tracing::warn!("跨盘移动阶段日志写入失败，继续按目标存在恢复: {e}");
-            }
-            match rewrite_after_move(db, &src, &target) {
-                Ok(_) => {
-                    if let Err(e) = journal_done(db, &journal) {
-                        tracing::warn!("移动完成但清理操作日志失败（不影响结果）: {e}");
-                    }
-                    entry.status = "ok".into();
-                }
-                Err(e) => {
-                    // 文件系统已完成、数据库未更新：保留目标，交由启动恢复补写。
-                    entry.status = "partial".into();
-                    entry.reason = Some(format!(
-                        "文件已完整移动到目标，但暂存架路径更新失败，重启后将自动恢复: {e}"
-                    ));
-                    entry.recovery = Some("保持目标文件在原位，重启应用以自动恢复引用".into());
-                }
-            }
-            entry
-        }
-        Err(e) => {
-            // 源清理失败：源可能已部分删除，目标可能是唯一完整副本。绝不删除目标。
-            let src_still_there = path_lexists(&src);
-            let db_result = rewrite_after_move(db, &src, &target);
-            match db_result {
-                Ok(_) => {
-                    if let Err(e2) = journal_done(db, &journal) {
-                        tracing::warn!("部分完成后清理操作日志失败: {e2}");
-                    }
-                    entry.status = "partial".into();
-                    if src_still_there {
-                        entry.residual_source = Some(src.to_string_lossy().into_owned());
-                        entry.reason = Some(format!(
-                            "目标副本已校验完整，但源清理未完成（源可能残留部分文件，{e}）；暂存引用已切到目标位置"
-                        ));
-                        entry.recovery =
-                            Some("目标副本完整可用；请手动检查并删除残留源目录".into());
-                    } else {
-                        entry.status = "ok".into();
-                        entry.reason = Some(format!(
-                            "目标副本已校验完整，源清理返回错误但源已不存在: {e}"
-                        ));
-                    }
-                }
-                Err(err) => {
-                    // 目标完整、源可能残留；不删除任何一方，保留日志供恢复重试。
-                    entry.status = "partial".into();
-                    entry.reason = Some(format!(
-                        "目标副本已校验完整，但源清理未完成且暂存路径更新失败: 清理错误 {e}；更新错误 {err}"
-                    ));
-                    entry.recovery =
-                        Some("保留源与目标，重启应用后检查恢复日志并手动确认".into());
-                    if src_still_there {
-                        entry.residual_source = Some(src.to_string_lossy().into_owned());
-                    }
-                }
-            }
-            entry
-        }
-    }
+    let outcome = move_path_core(db, &item.id, &src, &name, target_dir, strategy, &|old, new| {
+        rewrite_after_move(db, old, new)
+    });
+    entry.status = outcome.status.into();
+    entry.target = outcome.target.map(|p| p.to_string_lossy().into_owned());
+    entry.reason = outcome.reason;
+    entry.recovery = outcome.recovery;
+    entry.residual_source = outcome.residual_source.map(|p| p.to_string_lossy().into_owned());
+    entry
 }
 
 // ── 批量入口 ────────────────────────────────────────────────
@@ -1666,11 +2114,12 @@ pub fn move_items(
             (id.clone(), src)
         })
         .collect();
-    let path_keys: Vec<String> = order
+    let claim_targets: Vec<PathBuf> = order
         .iter()
-        .filter_map(|(_, src)| src.as_ref().map(|p| path_claim_key(p)))
+        .filter_map(|(_, src)| src.clone())
         .collect();
-    let _path_claim = claim_paths(&path_keys)?;
+    // 移动会改变源（独占）；目标目录只要求保持原位（同目录并发复制安全）。
+    let _path_claim = claim_batch(&claim_targets, ClaimMode::Exclusive, &dir)?;
     order.sort_by_key(|(_, src)| src.as_ref().map(|p| path_depth(p)).unwrap_or(usize::MAX));
 
     let mut completed: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
@@ -1776,11 +2225,12 @@ pub fn copy_items(
             (id.clone(), src)
         })
         .collect();
-    let path_keys: Vec<String> = order
+    let claim_targets: Vec<PathBuf> = order
         .iter()
-        .filter_map(|(_, src)| src.as_ref().map(|p| path_claim_key(p)))
+        .filter_map(|(_, src)| src.clone())
         .collect();
-    let _path_claim = claim_paths(&path_keys)?;
+    // 复制只读取源（共享，可与其他复制并行）；目标目录同样只要求保持原位。
+    let _path_claim = claim_batch(&claim_targets, ClaimMode::Shared, &dir)?;
     order.sort_by_key(|(_, src)| src.as_ref().map(|p| path_depth(p)).unwrap_or(usize::MAX));
 
     let mut completed: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
@@ -1859,6 +2309,238 @@ pub fn copy_items(
         })
         .collect();
     finish_report(db, root, &dir, entries, remove_after)
+}
+
+// ── 收集箱直接投递（任意外部路径 → 目标目录） ────────────────
+//
+// 与 `copy_items` / `move_items` 的区别只有两点：
+// 1. 源是**用户拖入的任意绝对路径**，不是暂存条目；因此没有 `original_path` 可改写，
+//    也没有「条目已删除/已失效」这类判定；
+// 2. 目标由**目标 id** 解析（后端按 id 取权威路径），前端不传目录字符串。
+// 磁盘语义（冲突策略、流式复制、校验、原子提交、跨卷删源顺序）全部复用同一套 core。
+
+/// 投递日志的归属前缀：`shelf_file_ops.item_id` 没有外键，用前缀区分「条目操作」
+/// 与「投递批次」，启动恢复据此走各自的收敛分支。
+pub const DROP_JOURNAL_PREFIX: &str = "drop:";
+
+#[derive(Debug, Serialize)]
+pub struct DropEntry {
+    pub source: String,
+    pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// ok / skipped / failed / partial
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residual_source: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DropReport {
+    pub batch_id: String,
+    pub target_id: String,
+    pub target_path: String,
+    /// 实际使用的模式：copy | move
+    pub op: String,
+    /// 去重后的待处理条数
+    pub total: i64,
+    pub success: i64,
+    pub skipped: i64,
+    pub failed: i64,
+    pub partial: i64,
+    pub entries: Vec<DropEntry>,
+}
+
+/// 校验并去重拖入路径：只接受绝对路径，重复项按大小写不敏感去重。
+fn dedup_drop_paths(paths: &[String]) -> AppResult<Vec<(PathBuf, String)>> {
+    let mut out: Vec<(PathBuf, String)> = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in paths {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let p = normalize_original_path(raw)?;
+        let key = p.to_string_lossy().to_lowercase();
+        if seen.insert(key) {
+            out.push((p, raw.to_string()));
+        }
+    }
+    if out.is_empty() {
+        return Err(AppError::Validation("没有可投递的文件".into()));
+    }
+    if out.len() > MAX_BATCH {
+        return Err(AppError::Validation(format!(
+            "单次最多投递 {MAX_BATCH} 项，请分批拖入"
+        )));
+    }
+    Ok(out)
+}
+
+/// 把拖入的路径投递到某个已配置的目标目录。
+///
+/// 失败一律落到**单条结果**而不是整批报错：单个文件被占用/无权限不能阻断其他独立文件。
+/// 只有「目标不可用」「参数非法」这类前置条件才返回 Err（此时没有执行任何文件操作）。
+pub fn drop_paths(
+    db: &Db,
+    root: &Path,
+    target: &DropTarget,
+    paths: &[String],
+    batch_id: &str,
+) -> AppResult<DropReport> {
+    let dir = normalize_target_dir(&target.path, root).map_err(|e| {
+        AppError::NotFound(format!(
+            "目标目录不可用: {}（{e}）。请检查磁盘是否连接，或重新选择目录",
+            target.path
+        ))
+    })?;
+    let strategy = parse_conflict_strategy(&target.conflict)?;
+    let move_mode = target.op_mode == OP_MOVE;
+    let mut sources = dedup_drop_paths(paths)?;
+
+    // 父目录先处理：拖入「文件夹 + 其中的文件」时，子项随父目录走，不重复操作。
+    sources.sort_by_key(|(p, _)| path_depth(p));
+
+    let claim_targets: Vec<PathBuf> = sources.iter().map(|(p, _)| p.clone()).collect();
+    // 投递同时占用源与目标：复制只读源（共享），移动独占源；目标目录只要求保持原位。
+    let source_mode = if move_mode {
+        ClaimMode::Exclusive
+    } else {
+        ClaimMode::Shared
+    };
+    let _path_claim = claim_batch(&claim_targets, source_mode, &dir)?;
+
+    let journal_item = format!("{DROP_JOURNAL_PREFIX}{batch_id}");
+    // 本批次已处理的父目录及其结果。**必须在操作前记录类型**：移动成功后源目录
+    // 已不存在，用 `src.is_dir()` 反查会得到 false，子项就会绕过「随父目录处理」
+    // 的判断被重复执行并误报失败。
+    let mut processed_dirs: Vec<(PathBuf, PathOutcome)> = Vec::new();
+    let mut entries: Vec<DropEntry> = Vec::with_capacity(sources.len());
+
+    for (src, raw) in sources {
+        let display_name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| raw.clone());
+
+        // 源类型在任何磁盘操作之前确定（移动/删除会改变源路径的存在性）。
+        let src_is_dir = src.is_dir();
+
+        // 父目录已处理时，子项的最终去向由父目录决定：即使子项的源路径已被父目录
+        // 的移动带走（`src.exists()` 为 false），也不能据此断言它失败。
+        let outcome = if let Some((parent, parent_outcome)) = processed_dirs
+            .iter()
+            .find(|(d, _)| is_strict_descendant(&src, d))
+        {
+            match parent_outcome.status {
+                "ok" => PathOutcome::skipped(
+                    format!(
+                        "父目录「{}」已在本批次中处理，子项随其一起完成",
+                        parent.display()
+                    ),
+                    None,
+                ),
+                _ if parent_outcome.status == "skipped" => PathOutcome::skipped(
+                    format!(
+                        "父目录「{}」已在本批次中跳过，子项未单独处理",
+                        parent.display()
+                    ),
+                    None,
+                ),
+                _ => {
+                    // 父目录只完成了一部分：子项可能已随父目录到达目标，也可能残留在
+                    // 源目录里。不冒充成功，也不重复执行文件操作。
+                    let residual = parent_outcome
+                        .residual_source
+                        .clone()
+                        .unwrap_or_else(|| parent.clone());
+                    PathOutcome {
+                        status: "partial",
+                        target: None,
+                        reason: Some(format!(
+                            "父目录「{}」本批次仅部分完成，子项可能残留在源目录，需要人工确认",
+                            parent.display()
+                        )),
+                        recovery: Some("检查源目录残留副本与目标目录，删除多余的一份".into()),
+                        residual_source: Some(residual),
+                    }
+                }
+            }
+        } else if !src.exists() {
+            PathOutcome::failed("源文件已不存在（可能已被移动或删除）")
+        } else if parent_eq_ci(&src, &dir) {
+            PathOutcome::skipped("已经在目标目录内，未重复处理", None)
+        } else if let Ok(canon_src) = std::fs::canonicalize(&src) {
+            match std::fs::canonicalize(root) {
+                Ok(canon_root) if canon_src.starts_with(&canon_root) => PathOutcome::failed(
+                    "不能把暂存架自己的托管目录投递到外部目录",
+                ),
+                _ => run_drop_one(db, &journal_item, &src, &dir, strategy, move_mode),
+            }
+        } else {
+            PathOutcome::failed("无法读取源路径（权限不足或路径不可访问）")
+        };
+
+        // 只要父目录有明确结果（成功/按策略跳过/部分完成），子项就不再单独操作；
+        // 只有失败的父目录才允许子项按独立条目继续尝试。
+        if src_is_dir && outcome.status != "failed" {
+            processed_dirs.push((src.clone(), outcome.clone()));
+        }
+        entries.push(DropEntry {
+            source: raw,
+            display_name,
+            target: outcome.target.map(|p| p.to_string_lossy().into_owned()),
+            status: outcome.status.to_string(),
+            reason: outcome.reason,
+            recovery: outcome.recovery,
+            residual_source: outcome.residual_source.map(|p| p.to_string_lossy().into_owned()),
+        });
+    }
+
+    if entries.iter().any(|e| e.status == "ok") {
+        // 与文件操作面板共用「最近目录」：投递成功过的目录也会出现在移动/复制面板里。
+        if let Err(e) = touch_recent_dir(db, &dir.to_string_lossy()) {
+            tracing::warn!("记录最近使用目录失败（不影响投递结果）: {e}");
+        }
+    }
+
+    let count = |s: &str| entries.iter().filter(|e| e.status == s).count() as i64;
+    Ok(DropReport {
+        batch_id: batch_id.to_string(),
+        target_id: target.id.clone(),
+        target_path: dir.to_string_lossy().into_owned(),
+        op: if move_mode { OP_MOVE } else { OP_COPY }.to_string(),
+        total: entries.len() as i64,
+        success: count("ok"),
+        skipped: count("skipped"),
+        failed: count("failed"),
+        partial: count("partial"),
+        entries,
+    })
+}
+
+/// 单个路径的投递；`rewrite` 恒成功——投递不产生任何数据库引用需要改写。
+fn run_drop_one(
+    db: &Db,
+    journal_item: &str,
+    src: &Path,
+    dir: &Path,
+    strategy: ConflictStrategy,
+    move_mode: bool,
+) -> PathOutcome {
+    let name = match source_name(src) {
+        Ok(n) => n,
+        Err(e) => return PathOutcome::failed(e.to_string()),
+    };
+    if move_mode {
+        move_path_core(db, journal_item, src, &name, dir, strategy, &|_, _| Ok(()))
+    } else {
+        copy_path_core(db, journal_item, src, &name, dir, strategy)
+    }
 }
 
 // ── 失效重定位 ──────────────────────────────────────────────
@@ -2029,4 +2711,473 @@ pub fn clear_recent_dirs(db: &Db) -> AppResult<()> {
         conn.execute("DELETE FROM shelf_recent_dirs", [])?;
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod move_safety_tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("td-fsops-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn rename_no_replace_refuses_to_overwrite_existing_target() {
+        let dir = temp_dir("no-replace");
+        let src = dir.join("src.txt");
+        let dst = dir.join("dst.txt");
+        std::fs::write(&src, b"source").unwrap();
+        std::fs::write(&dst, b"existing").unwrap();
+
+        let err = rename_no_replace(&src, &dst).unwrap_err();
+        assert!(is_already_exists(&err), "unexpected error: {err}");
+        // 两边内容都必须保持原样（源未移动、目标未被覆盖）。
+        assert_eq!(std::fs::read(&src).unwrap(), b"source");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"existing");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rename_no_replace_moves_when_target_absent() {
+        let dir = temp_dir("move-ok");
+        let src = dir.join("src.txt");
+        let dst = dir.join("dst.txt");
+        std::fs::write(&src, b"payload").unwrap();
+        rename_no_replace(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"payload");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rename_no_replace_refuses_to_overwrite_existing_directory() {
+        let dir = temp_dir("dir-no-replace");
+        let src = dir.join("src-dir");
+        let dst = dir.join("dst-dir");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.txt"), b"src").unwrap();
+        std::fs::write(dst.join("keep.txt"), b"keep").unwrap();
+
+        let err = rename_no_replace(&src, &dst).unwrap_err();
+        // 关键是「绝不覆盖」，具体错误码由系统决定（183 / 5 都代表目标存在）。
+        assert!(src.join("a.txt").exists(), "源目录不得被移走");
+        assert_eq!(
+            std::fs::read(dst.join("keep.txt")).unwrap(),
+            b"keep",
+            "已有目录与其内容不得被替换（err={err}）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn copy_commit_never_replaces_file_target_created_after_final_check() {
+        let dir = temp_dir("commit-race-file");
+        test_support::clear();
+        let src = dir.join("a.txt");
+        std::fs::write(&src, b"payload").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let target = out.join("a.txt");
+        let part = part_path(&target).unwrap();
+
+        // 目标在最后一次 exists 检查之后、真正提交之前出现（并发方写入）。
+        test_support::set_once("target_appears_before_commit");
+        let err = copy_with_verify(&src, &part, &target, false).unwrap_err();
+
+        assert!(
+            err.to_string().contains("拒绝覆盖") || err.to_string().contains("已存在"),
+            "必须以冲突失败而不是静默覆盖: {err}"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"racer",
+            "绝不能覆盖并发创建的目标文件"
+        );
+        assert!(!part.exists(), "提交失败后必须回收临时副本");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn copy_commit_never_replaces_directory_target_created_after_final_check() {
+        let dir = temp_dir("commit-race-dir");
+        test_support::clear();
+        let src = dir.join("folder");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub").join("x.txt"), b"x").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let target = out.join("folder");
+        let part = part_path(&target).unwrap();
+
+        test_support::set_once("target_appears_before_commit");
+        let err = copy_with_verify(&src, &part, &target, true).unwrap_err();
+
+        assert!(
+            err.to_string().contains("拒绝覆盖") || err.to_string().contains("已存在"),
+            "目录提交同样必须 fail-closed: {err}"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"racer", "不得覆盖目标路径");
+        assert!(!part.exists(), "提交失败后必须回收临时副本");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn claim_paths_rejects_same_and_nested_paths_until_released() {
+        let dir = temp_dir("claim-tree");
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        let child = tree.join("sub").join("a.txt");
+        std::fs::write(&child, b"a").unwrap();
+        let decoy = dir.join("tree2");
+        std::fs::create_dir_all(&decoy).unwrap();
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+
+        let held = claim_paths(&[(tree.clone(), ClaimMode::Exclusive)]).unwrap();
+        // 相同路径
+        let err = claim_paths(&[(tree.clone(), ClaimMode::Exclusive)]).unwrap_err();
+        assert!(err.to_string().contains("父子目录"), "{err}");
+        // 后代路径（父目录移动 VS 子文件移动）
+        let err = claim_paths(&[(child.clone(), ClaimMode::Exclusive)]).unwrap_err();
+        assert!(err.to_string().contains("父子目录"), "{err}");
+        // 大小写不同仍是同一路径
+        let upper = PathBuf::from(tree.to_string_lossy().to_uppercase());
+        assert!(
+            claim_paths(&[(upper, ClaimMode::Exclusive)]).is_err(),
+            "大小写不敏感"
+        );
+        // 名字前缀相近但不是祖先：不得误伤无关目录
+        let decoy_claim = claim_paths(&[(decoy.clone(), ClaimMode::Exclusive)]).unwrap();
+        drop(decoy_claim);
+        let other_claim = claim_paths(&[(other.clone(), ClaimMode::Exclusive)]).unwrap();
+        drop(other_claim);
+
+        // 释放后立即可再次占用（成功/失败/提前返回都走 Drop）
+        drop(held);
+        let child_claim = claim_paths(&[(child.clone(), ClaimMode::Exclusive)]).unwrap();
+        assert!(
+            claim_paths(&[(tree.clone(), ClaimMode::Exclusive)]).is_err(),
+            "子路径占用期间父目录同样冲突（双向保护）"
+        );
+        drop(child_claim);
+        assert!(claim_paths(&[(tree.clone(), ClaimMode::Exclusive)]).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 读写分层：同一稳定目录可以并行写入不同文件；独占目标文件仍互斥。
+    #[test]
+    fn shared_directory_claim_allows_parallel_writers() {
+        let dir = temp_dir("claim-shared");
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+
+        // 两个批次都只要求目标目录保持原位：允许并行
+        let a = claim_paths(&[(out.clone(), ClaimMode::Shared)]).unwrap();
+        let b = claim_paths(&[(out.clone(), ClaimMode::Shared)]).unwrap();
+        // 各自的最终目标文件独占，互不干扰
+        let fa = claim_paths(&[(out.join("a.txt"), ClaimMode::Exclusive)]).unwrap();
+        let fb = claim_paths(&[(out.join("b.txt"), ClaimMode::Exclusive)]).unwrap();
+        drop((fa, fb, a, b));
+
+        // 同一最终目标：后到者必须冲突
+        let first = claim_paths(&[(out.join("same.txt"), ClaimMode::Exclusive)]).unwrap();
+        let err = claim_paths(&[(out.join("same.txt"), ClaimMode::Exclusive)]).unwrap_err();
+        assert!(err.to_string().contains("冲突"), "{err}");
+        drop(first);
+        assert!(claim_paths(&[(out.join("same.txt"), ClaimMode::Exclusive)]).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 目录被独占（正在被移动/删除）时，写入方必须被拒绝；
+    /// 反过来，正在写入的目录也不能被搬走。
+    #[test]
+    fn exclusive_directory_blocks_shared_writers_in_both_directions() {
+        let dir = temp_dir("claim-rw");
+        let out = dir.join("out");
+        std::fs::create_dir_all(out.join("sub")).unwrap();
+
+        let moving = claim_paths(&[(out.clone(), ClaimMode::Exclusive)]).unwrap();
+        let err = claim_paths(&[(out.clone(), ClaimMode::Shared)]).unwrap_err();
+        assert!(err.to_string().contains("冲突"), "{err}");
+        // 祖先独占同样挡住后代写入（把 D:\Archive 搬走会毁掉 D:\Archive\Docs 的写入）
+        let err = claim_paths(&[(out.join("sub"), ClaimMode::Shared)]).unwrap_err();
+        assert!(err.to_string().contains("冲突"), "{err}");
+        drop(moving);
+
+        let writing = claim_paths(&[(out.join("sub"), ClaimMode::Shared)]).unwrap();
+        let err = claim_paths(&[(out.clone(), ClaimMode::Exclusive)]).unwrap_err();
+        assert!(err.to_string().contains("冲突"), "{err}");
+        drop(writing);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 一次失败的占用不能留下「部分占用」：要么全占用，要么全不占。
+    #[test]
+    fn failed_claim_does_not_partially_reserve_paths() {
+        let dir = temp_dir("claim-atomic");
+        let busy = dir.join("busy");
+        let free = dir.join("free");
+        std::fs::create_dir_all(&busy).unwrap();
+        std::fs::create_dir_all(&free).unwrap();
+
+        let held = claim_paths(&[(busy.clone(), ClaimMode::Exclusive)]).unwrap();
+        let err = claim_paths(&[
+            (free.clone(), ClaimMode::Exclusive),
+            (busy.clone(), ClaimMode::Exclusive),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("冲突"), "{err}");
+        // free 没有被前一次失败留下
+        let free_claim = claim_paths(&[(free.clone(), ClaimMode::Exclusive)]).unwrap();
+        drop(free_claim);
+        drop(held);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn drop_target_for(db: &Db, root: &Path, dir: &Path, mode: &str) -> super::super::drop_targets::DropTarget {
+        std::fs::create_dir_all(dir).unwrap();
+        super::super::drop_targets::create(
+            db,
+            root,
+            "归档",
+            &dir.to_string_lossy(),
+            true,
+            mode,
+            "rename",
+        )
+        .unwrap()
+    }
+
+    /// 目标目录正被其他批次移动时，复制/移动投递都必须整批拒绝（不写任何文件）。
+    #[test]
+    fn drop_into_directory_being_moved_is_rejected() {
+        let dir = temp_dir("claim-target-move");
+        let db = Db::open_in_memory().unwrap();
+        let root = dir.join("shelf");
+        let src = dir.join("a.txt");
+        std::fs::write(&src, b"payload").unwrap();
+        let out = dir.join("out");
+        let copy_target = drop_target_for(&db, &root, &out, "copy");
+        // 同一目录上的「移动模式」配置：直接改内存结构，避免重复路径被 create 拒绝
+        let mut move_target = copy_target.clone();
+        move_target.op_mode = "move".into();
+
+        let moving = claim_paths(&[(out.clone(), ClaimMode::Exclusive)]).unwrap();
+        for target in [&copy_target, &move_target] {
+            let err = drop_paths(
+                &db,
+                &root,
+                target,
+                &[src.to_string_lossy().into_owned()],
+                "b-target-claim",
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("冲突"), "{err}");
+        }
+        assert!(src.exists(), "被拒绝的批次不得动源文件");
+        assert!(!out.join("a.txt").exists(), "被拒绝的批次不得写目标目录");
+
+        drop(moving);
+        let report = drop_paths(
+            &db,
+            &root,
+            &copy_target,
+            &[src.to_string_lossy().into_owned()],
+            "b-target-claim",
+        )
+        .unwrap();
+        assert_eq!(report.success, 1, "{:?}", report.entries);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 另一个批次已在向同一目录复制另一个文件：本批次必须能并行完成，不被无谓串行化。
+    #[test]
+    fn parallel_drop_into_same_directory_only_blocks_same_target() {
+        let dir = temp_dir("claim-parallel");
+        let db = Db::open_in_memory().unwrap();
+        let root = dir.join("shelf");
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let out = dir.join("out");
+        let target = drop_target_for(&db, &root, &out, "copy");
+
+        // 模拟另一个在途批次：共享目标目录 + 独占 out/a.txt
+        let _other_dir = claim_paths(&[(out.clone(), ClaimMode::Shared)]).unwrap();
+        let _other_file = claim_paths(&[(out.join("a.txt"), ClaimMode::Exclusive)]).unwrap();
+
+        let report = drop_paths(
+            &db,
+            &root,
+            &target,
+            &[b.to_string_lossy().into_owned()],
+            "b-parallel",
+        )
+        .unwrap();
+        assert_eq!(report.success, 1, "不同目标文件必须可并行: {:?}", report.entries);
+        assert_eq!(std::fs::read(out.join("b.txt")).unwrap(), b"b");
+
+        // 同一目标文件则必须冲突（而不是两个批次各写一份）
+        let err = drop_paths(
+            &db,
+            &root,
+            &target,
+            &[a.to_string_lossy().into_owned()],
+            "b-parallel",
+        )
+        .unwrap();
+        assert_eq!(err.failed, 1, "{:?}", err.entries);
+        assert!(
+            err.entries[0].reason.as_deref().unwrap_or("").contains("冲突"),
+            "{:?}",
+            err.entries
+        );
+        assert!(a.exists(), "冲突时源文件保持原样");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 复制过程中目标目录被外部删除：必须失败并保留源，不得声称成功。
+    #[test]
+    fn target_dir_removed_before_commit_keeps_source_and_fails() {
+        let dir = temp_dir("claim-dir-removed");
+        let db = Db::open_in_memory().unwrap();
+        let root = dir.join("shelf");
+        let src = dir.join("a.txt");
+        std::fs::write(&src, b"payload").unwrap();
+        let out = dir.join("out");
+        let target = drop_target_for(&db, &root, &out, "copy");
+
+        test_support::clear();
+        test_support::set_once("target_dir_removed_before_commit");
+        let report = drop_paths(
+            &db,
+            &root,
+            &target,
+            &[src.to_string_lossy().into_owned()],
+            "b-dir-gone",
+        )
+        .unwrap();
+
+        assert_eq!(report.success, 0, "{:?}", report.entries);
+        assert_eq!(report.failed, 1, "{:?}", report.entries);
+        let reason = report.entries[0].reason.as_deref().unwrap_or("");
+        assert!(reason.contains("已不存在"), "{reason}");
+        assert_eq!(std::fs::read(&src).unwrap(), b"payload", "源文件必须完好");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 集成层：父目录正被移动时，同一目录树里的子文件复制必须被拒绝（而不是并发执行）。
+    #[test]
+    fn drop_batch_is_rejected_while_parent_directory_is_claimed() {
+        let dir = temp_dir("claim-drop");
+        let db = Db::open_in_memory().unwrap();
+        let root = dir.join("shelf");
+        let tree = dir.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let child = tree.join("a.txt");
+        std::fs::write(&child, b"a").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let target = super::super::drop_targets::create(
+            &db,
+            &root,
+            "归档",
+            &out.to_string_lossy(),
+            true,
+            "copy",
+            "rename",
+        )
+        .unwrap();
+
+        let held = claim_paths(&[(tree.clone(), ClaimMode::Exclusive)]).unwrap();
+        let err = drop_paths(
+            &db,
+            &root,
+            &target,
+            &[child.to_string_lossy().into_owned()],
+            "b-claim",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("父子目录"), "{err}");
+        assert!(!out.join("a.txt").exists(), "冲突时不得写入任何文件");
+
+        drop(held);
+        let report = drop_paths(
+            &db,
+            &root,
+            &target,
+            &[child.to_string_lossy().into_owned()],
+            "b-claim",
+        )
+        .unwrap();
+        assert_eq!(report.success, 1, "{:?}", report.entries);
+        assert!(out.join("a.txt").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 批次失败（校验失败/异常返回）后路径占用必须释放，下一批能正常拿到锁。
+    #[test]
+    fn failed_drop_batch_releases_path_claim() {
+        let dir = temp_dir("claim-release");
+        let db = Db::open_in_memory().unwrap();
+        let root = dir.join("shelf");
+        let src = dir.join("a.txt");
+        std::fs::write(&src, b"payload").unwrap();
+        let out = dir.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let target = super::super::drop_targets::create(
+            &db,
+            &root,
+            "归档",
+            &out.to_string_lossy(),
+            true,
+            "copy",
+            "rename",
+        )
+        .unwrap();
+        test_support::clear();
+        test_support::set_once("copy_corrupt");
+
+        let first = drop_paths(
+            &db,
+            &root,
+            &target,
+            &[src.to_string_lossy().into_owned()],
+            "b-fail",
+        )
+        .unwrap();
+        assert_eq!(first.failed, 1, "{:?}", first.entries);
+
+        let second = drop_paths(
+            &db,
+            &root,
+            &target,
+            &[src.to_string_lossy().into_owned()],
+            "b-retry",
+        )
+        .unwrap();
+        assert_eq!(second.success, 1, "{:?}", second.entries);
+        assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"payload");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn overlaps_shelf_root_rejects_root_ancestor_and_child() {
+        let root = temp_dir("shelf-root");
+        let child = root.join("files");
+        std::fs::create_dir_all(&child).unwrap();
+        let other = temp_dir("outside");
+        let ancestor = root.parent().unwrap().to_path_buf();
+
+        assert!(overlaps_shelf_root(&root, &root));
+        assert!(overlaps_shelf_root(&child, &root));
+        assert!(overlaps_shelf_root(&ancestor, &root));
+        assert!(!overlaps_shelf_root(&other, &root));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&other).ok();
+    }
 }

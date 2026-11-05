@@ -13,13 +13,23 @@ import { useUiStore } from "../../store/useUiStore";
 import AgentPanel from "./AgentPanel";
 import type { AgentSnapshot, DiscoveredAgent } from "../../lib/bridge";
 
-const ipc = vi.hoisted(() => ({ discoveryScan: vi.fn() }));
+const ipc = vi.hoisted(() => ({
+  discoveryScan: vi.fn(),
+  historySessions: vi.fn(),
+  historyRuns: vi.fn(),
+  historySession: vi.fn(),
+  historyGroups: vi.fn(),
+}));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/bridge")>();
   return {
     ...actual,
     discoveryScan: ipc.discoveryScan,
+    agentHistorySessions: ipc.historySessions,
+    agentHistoryRuns: ipc.historyRuns,
+    agentHistorySession: ipc.historySession,
+    agentHistoryGroups: ipc.historyGroups,
     adapterPreview: vi.fn(async () => ({})),
     adapterInstall: vi.fn(async () => ({})),
     adapterVerify: vi.fn(async () => ({ ok: true })),
@@ -148,6 +158,11 @@ beforeEach(() => {
   // 折叠偏好走 localStorage；每个用例从默认展开状态开始，避免跨用例串状态
   localStorage.clear();
   ipc.discoveryScan.mockResolvedValue(SCAN);
+  // 历史查询默认空页；用例按需覆盖（后端分页与实时快照完全独立）。
+  ipc.historySessions.mockResolvedValue({ items: [], total: 0, next_cursor: null });
+  ipc.historyRuns.mockResolvedValue({ items: [], total: 0, next_cursor: null });
+  ipc.historySession.mockResolvedValue(null);
+  ipc.historyGroups.mockResolvedValue({ items: [], truncated: false });
   useAgentsStore.setState({ snapshot: snapshot(), snapshotError: null });
   useUiStore.setState({ agentFocus: null });
 });
@@ -156,6 +171,491 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   localStorage.clear();
+});
+
+describe("运行监控 · 历史会话后端分页", () => {
+  type HistoryPage = Awaited<ReturnType<typeof import("../../lib/bridge").agentHistorySessions>>;
+
+  function historyItem(i: number, overrides: Partial<AgentHistorySessionLike> = {}) {
+    return {
+      id: `hist-${i}`,
+      source_id: "codex",
+      external_id: `ext-hist-${i}`,
+      title: `历史会话 ${i}`,
+      status: "completed",
+      first_seen_at: ago(600 + i),
+      last_seen_at: ago(500 + i),
+      last_run_id: null,
+      instance_id: null,
+      run_count: 1,
+      ...overrides,
+    };
+  }
+  type AgentHistorySessionLike = HistoryPage["items"][number];
+
+  function historyRun(i: number, sessionId = "s1") {
+    return {
+      id: `h-run-${i}`,
+      session_id: sessionId,
+      source_id: "codex",
+      external_run_id: null,
+      task_title: `历史轮次任务 ${i}`,
+      status: "completed",
+      started_at: ago(700 + i),
+      updated_at: ago(600 + i),
+      ended_at: ago(600 + i),
+      pending_items: [],
+      instance_id: null,
+    };
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  it("折叠态显示后端准确总数，且不渲染历史列表 DOM", async () => {
+    ipc.historyGroups.mockResolvedValue({
+      items: [
+        {
+          source_id: "codex",
+          instance_id: null,
+          instance_key: null,
+          display_name: null,
+          count: 25,
+        },
+      ],
+      truncated: false,
+    });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByText("Codex CLI"));
+
+    const toggle = screen.getByRole("button", { name: "历史会话分区" });
+    await waitFor(() => expect(toggle.textContent).toContain("25"));
+    // 准确数量来自后端分组 COUNT，不是快照切片，也不逐实例请求。
+    expect(ipc.historyGroups).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceId: "codex" }),
+    );
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // 折叠态不渲染历史会话与分页按钮。
+    expect(screen.queryByText("历史会话 0")).toBeNull();
+    expect(screen.queryByRole("button", { name: "显示更多历史" })).toBeNull();
+  });
+
+  it("展开历史分区按 10 条分页，显示更多使用 next_cursor", async () => {
+    ipc.historyGroups.mockResolvedValue({
+      items: [
+        {
+          source_id: "codex",
+          instance_id: null,
+          instance_key: null,
+          display_name: null,
+          count: 25,
+        },
+      ],
+      truncated: false,
+    });
+    ipc.historySessions.mockImplementation(
+      (opts: { limit?: number; cursor?: string } = {}) => {
+        if (opts.cursor === "cursor-1") {
+          return Promise.resolve({
+            items: Array.from({ length: 10 }, (_, i) => historyItem(i + 10)),
+            total: 25,
+            next_cursor: null,
+          });
+        }
+        return Promise.resolve({
+          items: Array.from({ length: 10 }, (_, i) => historyItem(i)),
+          total: 25,
+          next_cursor: "cursor-1",
+        });
+      },
+    );
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByText("Codex CLI"));
+
+    // 实时会话仍在快照层直接显示；折叠态数量来自分组 COUNT。
+    expect(screen.getByText("Fix bug")).toBeTruthy();
+    await waitFor(() => expect(ipc.historyGroups).toHaveBeenCalled());
+    expect(screen.queryByText("历史会话 0")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "历史会话分区" }));
+    expect(await screen.findByText("历史会话 0")).toBeTruthy();
+    const pageCalls = () =>
+      ipc.historySessions.mock.calls.filter((c) => c[0]?.limit === 10);
+    expect(pageCalls()).toHaveLength(1);
+    expect(pageCalls()[0][0]).toEqual(
+      expect.objectContaining({ sourceId: "codex", unassigned: true, limit: 10 }),
+    );
+    expect(screen.getByText("历史会话 9")).toBeTruthy();
+    expect(screen.queryByText("历史会话 10")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "显示更多历史" }));
+    expect(await screen.findByText("历史会话 10")).toBeTruthy();
+    expect(pageCalls()).toHaveLength(2);
+    expect(pageCalls()[1][0]).toEqual(expect.objectContaining({ cursor: "cursor-1", limit: 10 }));
+    expect(screen.getByText("历史会话 19")).toBeTruthy();
+    // 没有更多时不再显示「显示更多」
+    expect(screen.queryByRole("button", { name: "显示更多历史" })).toBeNull();
+  });
+
+  it("来源/实例没有近期快照会话时，仍按真实历史分组显示入口", async () => {
+    // Trae 在快照里没有 sessions/instances（connected=false），但历史有真实实例与未关联记录。
+    ipc.historyGroups.mockImplementation(async (query: { sourceId?: string } = {}) => {
+      if (query.sourceId !== "trae") return { items: [], truncated: false };
+      return {
+        items: [
+          {
+            source_id: "trae",
+            instance_id: "trae-inst-old",
+            instance_key: "Trae 旧实例",
+            display_name: "Trae 旧实例",
+            count: 3,
+          },
+          {
+            source_id: "trae",
+            instance_id: null,
+            instance_key: null,
+            display_name: null,
+            count: 2,
+          },
+        ],
+        truncated: false,
+      };
+    });
+    ipc.historySessions.mockResolvedValue({ items: [], total: 0, next_cursor: null });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    // 默认「需关注」隐藏空闲 Trae；切到全部后展开。
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    fireEvent.click(await screen.findByText("Trae"));
+
+    // 快照里没有这个实例，但历史分组给出真实 instance_key，不能丢入口。
+    expect(await screen.findByText("Trae 旧实例")).toBeTruthy();
+    expect(await screen.findByText("未关联实例")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Trae 旧实例"));
+    const toggles = await screen.findAllByRole("button", { name: "历史会话分区" });
+    await waitFor(() => expect(toggles.some((el) => el.textContent?.includes("3"))).toBe(true));
+    expect(toggles.some((el) => el.textContent?.includes("2"))).toBe(true);
+  });
+
+  it("历史数量与实时树一致：实时会话不进入历史 COUNT/第一页", async () => {
+    const base = snapshot();
+    // 一个实时会话 + 后端历史页只返回历史项；前端不得再按 liveIds 过滤 total。
+    ipc.historyGroups.mockResolvedValue({
+      items: [
+        {
+          source_id: "codex",
+          instance_id: null,
+          instance_key: null,
+          display_name: null,
+          count: 12,
+        },
+      ],
+      truncated: false,
+    });
+    ipc.historySessions.mockResolvedValue({
+      items: Array.from({ length: 10 }, (_, i) => historyItem(i)),
+      total: 12,
+      next_cursor: "history-cursor",
+    });
+    useAgentsStore.setState({ snapshot: base, snapshotError: null });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByText("Codex CLI"));
+    expect(screen.getByText("Fix bug")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "历史会话分区" }));
+
+    expect(await screen.findByText("历史会话 0")).toBeTruthy();
+    expect(screen.getAllByText("历史会话 0")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "显示更多历史" })).toBeTruthy();
+  });
+
+  it("历史分区保留真实实例筛选（instanceId 而非伪造实例）", async () => {
+    const base = snapshot();
+    base.instances = [
+      {
+        id: "inst-a",
+        source_id: "codex",
+        instance_key: "VS Code",
+        display_name: "实例 A",
+        exe_path: "",
+        first_seen_at: ago(10),
+        last_seen_at: ago(5),
+      },
+    ];
+    base.sessions = [
+      { ...base.sessions[0], instance_id: "inst-a" },
+    ];
+    useAgentsStore.setState({ snapshot: base, snapshotError: null });
+    ipc.historyGroups.mockResolvedValue({
+      items: [
+        {
+          source_id: "codex",
+          instance_id: "inst-a",
+          instance_key: "VS Code",
+          display_name: "实例 A",
+          count: 1,
+        },
+      ],
+      truncated: false,
+    });
+    ipc.historySessions.mockResolvedValue({
+      items: [historyItem(0, { instance_id: "inst-a" })],
+      total: 1,
+      next_cursor: null,
+    });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByText("Codex CLI"));
+    fireEvent.click(screen.getByText("VS Code"));
+    fireEvent.click(screen.getByRole("button", { name: "历史会话分区" }));
+
+    await waitFor(() =>
+      expect(ipc.historySessions).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceId: "codex", instanceId: "inst-a" }),
+      ),
+    );
+    expect(await screen.findByText("历史会话 0")).toBeTruthy();
+  });
+
+  it("快照未命中时按会话 ID 走后端定位，展开真实历史分区并保留展开状态", async () => {
+    const outside = historyItem(99, {
+      id: "hist-outside",
+      title: "快照外的历史会话",
+      external_id: "ext-outside",
+      instance_id: null,
+      run_count: 2,
+    });
+    ipc.historySession.mockResolvedValue(outside);
+    ipc.historyGroups.mockResolvedValue({
+      items: [
+        {
+          source_id: "codex",
+          instance_id: null,
+          instance_key: null,
+          display_name: null,
+          count: 1,
+        },
+      ],
+      truncated: false,
+    });
+    ipc.historySessions.mockResolvedValue({
+      items: [outside],
+      total: 1,
+      next_cursor: null,
+    });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+
+    act(() => {
+      useUiStore.setState({
+        agentFocus: { sourceId: "codex", sessionId: "hist-outside", refId: null, token: 7 },
+      });
+    });
+
+    // 快照中没有该会话：必须用后端按 ID 精确定位，并出现在真实分类（未关联实例）下。
+    expect(await screen.findByText("快照外的历史会话")).toBeTruthy();
+    expect(ipc.historySession).toHaveBeenCalledWith("hist-outside");
+    expect(ipc.historySessions).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceId: "codex", unassigned: true, limit: 10 }),
+    );
+    const toggle = screen.getByRole("button", { name: "历史会话分区" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.textContent).toContain("1");
+
+    // 清理 agentFocus 后，历史分区保持展开、定位行仍可见（展开状态不被清除）。
+    await waitFor(() => expect(useUiStore.getState().agentFocus).toBeNull());
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("快照外的历史会话")).toBeTruthy();
+  });
+
+  it("快照外实例的定位落在真实历史实例下，不误归未关联", async () => {
+    const outside = historyItem(100, {
+      id: "hist-inst",
+      title: "快照外实例会话",
+      instance_id: "inst-hist",
+    });
+    ipc.historySession.mockResolvedValue(outside);
+    ipc.historyGroups.mockResolvedValue({
+      items: [
+        {
+          source_id: "codex",
+          instance_id: "inst-hist",
+          instance_key: "deep-instance",
+          display_name: "深层实例",
+          count: 1,
+        },
+      ],
+      truncated: false,
+    });
+    ipc.historySessions.mockImplementation(async (query) =>
+      query && query.instanceId === "inst-hist"
+        ? { items: [outside], total: 1, next_cursor: null }
+        : { items: [], total: 0, next_cursor: null },
+    );
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    act(() => {
+      useUiStore.setState({
+        agentFocus: { sourceId: "codex", sessionId: "hist-inst", refId: null, token: 8 },
+      });
+    });
+
+    expect(await screen.findByText("快照外实例会话")).toBeTruthy();
+    expect(screen.getByText("deep-instance")).toBeTruthy();
+    expect(ipc.historySessions).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceId: "codex", instanceId: "inst-hist", limit: 10 }),
+    );
+    expect(ipc.historySessions).not.toHaveBeenCalledWith(
+      expect.objectContaining({ unassigned: true }),
+    );
+  });
+
+  it("搜索走后端分页并显示真实来源/实例；旧响应不得覆盖新筛选", async () => {
+    const base = snapshot();
+    base.instances = [
+      {
+        id: "inst-a",
+        source_id: "codex",
+        instance_key: "VS Code",
+        display_name: "实例 A",
+        exe_path: "",
+        first_seen_at: ago(10),
+        last_seen_at: ago(5),
+      },
+    ];
+    useAgentsStore.setState({ snapshot: base, snapshotError: null });
+
+    const oldResponse = deferred<HistoryPage>();
+    const newResponse = deferred<HistoryPage>();
+    ipc.historySessions.mockImplementation((opts: { keyword?: string } = {}) => {
+      const keyword = opts.keyword;
+      if (keyword === "old") return oldResponse.promise;
+      if (keyword === "new") return newResponse.promise;
+      return Promise.resolve({ items: [], total: 0, next_cursor: null });
+    });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+
+    fireEvent.change(searchInput(), { target: { value: "old" } });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 340));
+    });
+    expect(
+      ipc.historySessions.mock.calls.some((c) => c[0]?.keyword === "old"),
+    ).toBe(true);
+
+    fireEvent.change(searchInput(), { target: { value: "new" } });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 340));
+    });
+
+    // 新筛选先返回：显示新结果
+    await act(async () => {
+      newResponse.resolve({
+        items: [historyItem(7, { title: "新筛选命中" })],
+        total: 1,
+        next_cursor: null,
+      });
+    });
+    expect(await screen.findByText("新筛选命中")).toBeTruthy();
+
+    // 旧筛选的迟到响应必须丢弃，不能覆盖当前搜索词
+    await act(async () => {
+      oldResponse.resolve({
+        items: [historyItem(8, { title: "旧筛选迟到结果" })],
+        total: 1,
+        next_cursor: null,
+      });
+    });
+    expect(screen.queryByText("旧筛选迟到结果")).toBeNull();
+
+    const searchRegion = screen.getByRole("region", { name: "历史搜索结果" });
+    expect(within(searchRegion).getByText("共 1 条")).toBeTruthy();
+    expect(within(searchRegion).getByText("Codex CLI · 未关联实例")).toBeTruthy();
+  });
+
+  it("搜索结果按游标加载更多，总数仍取后端 total", async () => {
+    ipc.historySessions
+      .mockResolvedValueOnce({
+        items: [historyItem(1, { title: "命中一" })],
+        total: 3,
+        next_cursor: "search-cursor",
+      })
+      .mockResolvedValueOnce({
+        items: [
+          historyItem(2, { title: "命中二" }),
+          historyItem(3, { title: "命中三" }),
+        ],
+        total: 3,
+        next_cursor: null,
+      });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.change(searchInput(), { target: { value: "命中" } });
+
+    expect(await screen.findByText("命中一")).toBeTruthy();
+    const searchRegion = screen.getByRole("region", { name: "历史搜索结果" });
+    expect(within(searchRegion).getByText("共 3 条")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "显示更多结果" }));
+    expect(await screen.findByText("命中二")).toBeTruthy();
+    expect(screen.getByText("命中三")).toBeTruthy();
+    expect(ipc.historySessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ keyword: "命中", cursor: "search-cursor" }),
+    );
+    expect(screen.queryByRole("button", { name: "显示更多结果" })).toBeNull();
+  });
+
+  it("会话展开才按需加载轮次，并按游标显示更多", async () => {
+    ipc.historyRuns
+      .mockResolvedValueOnce({
+        items: [historyRun(0), historyRun(1)],
+        total: 12,
+        next_cursor: "run-cursor",
+      })
+      .mockResolvedValueOnce({
+        items: Array.from({ length: 10 }, (_, i) => historyRun(i + 2)),
+        total: 12,
+        next_cursor: null,
+      });
+
+    render(<AgentPanel />);
+    await screen.findByText("Codex CLI");
+    fireEvent.click(screen.getByText("Codex CLI"));
+
+    // 会话未展开：不得提前拉轮次。
+    expect(ipc.historyRuns).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Fix bug"));
+    await waitFor(() => expect(ipc.historyRuns).toHaveBeenCalledWith("s1", null, 10));
+
+    const runToggle = screen.getByRole("button", { name: "历史轮次分区" });
+    expect(runToggle.textContent).toContain("12");
+    fireEvent.click(runToggle);
+    expect(screen.getByText("历史轮次任务 0")).toBeTruthy();
+    expect(screen.queryByText("历史轮次任务 2")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "显示更多轮次" }));
+    expect(await screen.findByText("历史轮次任务 2")).toBeTruthy();
+    expect(ipc.historyRuns).toHaveBeenLastCalledWith("s1", "run-cursor", 10);
+    expect(screen.queryByRole("button", { name: "显示更多轮次" })).toBeNull();
+  });
 });
 
 describe("接入管理搜索", () => {
@@ -214,17 +714,19 @@ describe("接入管理搜索", () => {
 });
 
 describe("运行监控搜索", () => {
-  it("搜索与状态筛选可组合；清空后恢复当前筛选范围内的全部", async () => {
+  it("搜索可越过「需关注」筛选命中空闲 Agent；清空后恢复当前筛选", async () => {
     render(<AgentPanel />);
     await screen.findByText("Codex CLI");
 
     // 默认「需关注」只显示有实时轮次的 Codex
     expect(screen.queryByText("Trae")).toBeNull();
 
+    // 搜索是显式查找：空闲 Trae 也能被命中（便于找历史会话），Codex 被搜索过滤
     fireEvent.change(searchInput(), { target: { value: "trae" } });
-    expect(screen.getByText(/没有名称或来源 ID 匹配/)).toBeTruthy();
+    expect(screen.getByText("Trae")).toBeTruthy();
+    expect(screen.queryByText("Codex CLI")).toBeNull();
 
-    // 切到「全部」后同一搜索词命中 Trae，Codex 被搜索过滤
+    // 切到「全部」不影响当前搜索词
     fireEvent.click(screen.getByRole("button", { name: "全部" }));
     expect(screen.getByText("Trae")).toBeTruthy();
     expect(screen.queryByText("Codex CLI")).toBeNull();

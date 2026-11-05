@@ -137,6 +137,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `create_task`/`toggle_task`、`agent_snapshot`、`nav_list_targets`/`nav_navigate`、
   `quick_capture_list`/`quick_capture_state`、`clipboard_view`/`clipboard_status`），
   未新增第二套持久化、Agent 监控器或导航引擎。
+- 例外（v35，收集箱「文件投递」）：新增 7 个 `shelf_drop_target_*` /
+  `shelf_drop_to_directory` 命令与 `shelf_drop_targets` 表，用于「把拖入的文件直接
+  落到用户配置的真实目录」。它复用 `shelf/fsops.rs` 的复制/移动/冲突/校验实现，不建
+  第二套文件管理系统，也不向暂存架写记录；Webview 拖放事件由 `src/lib/fileDrop.ts`
+  单一订阅并仲裁所有权，避免暂存架与胶囊互抢事件。详见 `docs/shelf/README.md` §12。
 - `list_tasks` 的 `TaskFilter` 新增可选 `limit`（u32，1..=200，越界收敛；缺省行为
   完全不变），在 filter+sort 之后应用 SQL LIMIT；胶囊任务 Lite 传 `limit: 12`，
   完整页不传保持全量。
@@ -203,6 +208,28 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     `spooled_events` 与 `unsaved_events`，不伪报持久化。
   - 文件投递：目录上限 5,000 文件 / 256MiB、单文件 8MiB、单轮读取 16MiB / 1,000 事件；
     关键状态预留 250 文件 / 16MiB；失败隔离到 `failed/`，不删除他人文件。
+- **历史分页（2026-11-05，P1-02）**：实时快照 `snapshot_query` 仍只取最近 200 个会话 /
+  300 个轮次，用于监控树与状态聚合；历史数据不再由快照承载。`agents/history.rs` 提供
+  keyset 分页（会话 `last_seen_at DESC, id DESC`；轮次 `updated_at DESC, id DESC`）
+  与独立 `COUNT(*)`：命令 `agent_history_sessions`（来源/实例/状态/关键词筛选、
+  按会话 ID 定位）、`agent_history_runs`（会话内轮次，默认排除实时轮次）、
+  `agent_history_session`（精确定位）。迁移 v36 只追加复合索引，不改表与数据；
+  游标由后端签发，非法游标返回校验错误。前端历史分区/搜索结果/轮次展开均按需调用，
+  与实时快照刷新分离；通知定位在快照未命中时改用 `agent_history_session` 按会话 ID
+  定位，再展开真实来源/实例分区（未知实例不伪造）。
+- **历史入口与实时口径（2026-11-05，Round 3）**：
+  - `agent_history_groups({ sourceId })` 用一条分组 `COUNT` 返回来源下每个真实实例
+    （含快照中已消失、历史仍存在的实例）与「未关联实例」的历史会话数，供监控树补出
+    历史入口；只含实例标识与计数，不加载历史明细；`truncated` 表示超过分组上限。
+  - `agent_history_sessions` 默认 `include_live=false`，在 SQL 中按轮次语义排除实时
+    会话（存在 `origin='real'` 且 `running`/`waiting`，或 1 小时内
+    `failed`/`disconnected` 的轮次），与前端 `liveState` 同一口径；`agent_history_session`
+    定位使用 `include_live=true`。`COUNT(*)` 与分页在同一读事务内执行，保证总数与页
+    内容一致；隐藏来源（`hidden=1`）不进入历史查询/分组/关键词搜索。
+  - `agent_history_sessions` / `agent_history_runs` / `agent_history_session` /
+    `agent_history_groups` 均为 async 命令，数据库工作经 `spawn_blocking` 执行，
+    不阻塞 Tauri 主线程；前端分组查询 150ms 去抖，历史查询不轮询。
+
 - 性能设计与边界见 [PERFORMANCE_ARCHITECTURE.md](PERFORMANCE_ARCHITECTURE.md)。
 
 ### 4. Adapter 清单
@@ -334,6 +361,24 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     正常取消、用户暂停、明确不支持的可选效果不算错误。
   - 渲染异常由 `src/components/ErrorBoundary.tsx` 兜底（不白屏、用户点击才重试）；
     未处理 Promise rejection 由 `src/lib/globalErrors.ts` 兜底，同一根因 30s 内只提示一次。
+  - 内容区独立边界（2026-11-05 第四轮）：完整面板在 `.tab-content` 内再包一层
+    `ErrorBoundary variant="compact" resetKey={tab}`。单个页面渲染异常只替换内容区，
+    标题栏与左侧导航保持可用，切页（resetKey 变化）或点重试即恢复，不需要重载窗口；
+    根边界仍是最后一道防线，不按页面复制第二套错误边界。设置写入类失败（如语音开关
+    保存失败）走结构化 Toast（含原因并说明原值保持不变），不进入渲染异常通道。
+  - 设置写入并发契约（2026-11-05 第五轮，取代第四轮「全局写入序号」）：
+    1) **串行 + 合并**：`useSettingsStore` 内任意时刻最多一个 `update_settings` 在途，
+       期间到达的补丁合并为一笔待发（同键后值覆盖、不同键累加）。不同字段不会互相
+       吞掉；同字段按用户操作顺序**落库**（最后操作优先），而不只是界面看起来正确；
+       突发变更最多 1 在途 + 1 待发，不会形成无界队列；我方响应因此不可能乱序。
+    2) **字段级裁决**：快照缺失/`undefined` 的键保留现值；请求发起后被外部事件
+       （`apply_mode` / 托盘 / 右键菜单）改写过的字段保留外部值——**即使本次补丁包含
+       该字段**（外部事件更晚）。
+    3) **有界终态核对**：发生裁决丢弃时，在队列尾部重读数据库，仅对被压制过的字段
+       重新下发界面值（`mode` 走 `apply_mode`，同时修正窗口尺寸），保证 UI / 数据库 /
+       原生窗口一致；每次冲突最多一次，不循环。
+    4) **失败隔离**：失败只影响该批次，已成功批次不回滚；随后按数据库真值对齐一次
+       （覆盖极端部分写入），错误照常回传给调用方提示。
   - 用户提示与内部诊断分层（2026-11-04 第二轮）：界面只使用后端白名单 `message`/`detail`
     经前端再脱敏后的文本；SQL 行、堆栈、凭证（`token`/`bearer`/`password`）、
     Windows/macOS/Linux 用户目录在前后端各脱敏一次，`detail` 仅进 Toast 的 `data-tip`
@@ -470,6 +515,41 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   当前只支持「状态球 + 4 个分类」，新增第 5 类需同步改 `styles.css`、`capsuleLayout.ts` 与
   `window_shape.rs`；两类入口判定、改动清单与可见性边界见
   [docs/ui-themes/13-capsule-redesign.md](ui-themes/13-capsule-redesign.md)。
+- 导航显隐与资源生命周期（2026-11-05）：三层语义严格分离——
+  ①**导航可见性**（`navigation_layout`，只影响入口渲染）；②**页面活跃状态**
+  （`hooks/useMainUiVisible.ts`：`useMainUiVisible()` = 未停靠胶囊期；`useFullViewVisible()`
+  = mode=full 且未停靠；均从既有 store 派生，无第二状态源、无定时器）；③**后台业务启用**
+  （各模块既有设置开关）。隐藏导航入口 ≠ 停用后台能力：任务提醒调度、Agent 关键事件、
+  剪贴板采集、工作流执行、桌面微件不受任何门控影响。
+  DeferredView 保活的隐藏页面按「消费者」门控可选刷新：行动中心聚合以
+  `useActionsStore.hasActionsFeedConsumer()` 判定（入口可见 / tab=actions 且主界面可见），
+  启动加载与事件 countsOnly 刷新经 `shouldRefreshActions()` 门控，恢复消费者时由
+  FullView 徽标 effect 与 `ActionCenterPanel` 补刷新；剪贴板页/抽屉的加载、实时订阅
+  （`setFullLive`）、监听状态读取与弹层注册以 `uiActive = active && 主界面可见` 门控
+  （组件保持挂载，恢复可见自动补一次加载；停靠期 liveFullRefs 归零 → 无胶囊消费者时
+  全局监听整体拆除——只停 UI 刷新，不停采集）；历史页事件合并刷新与恢复可见补刷、
+  任务倒计时（`ActiveReminders`）的共享时钟订阅同样按 `useFullViewVisible()` 挂起，
+  隐藏期最后一个时钟消费者退出即释放定时器。核心事件驱动刷新（Agent 快照调度、
+  任务/导航合并刷新、采集计数）不参与门控。测试：`useMainUiVisible.test.tsx`、
+  `useActionsStore.test.ts`（门控矩阵）、`ActiveReminders.test.tsx`（停靠停钟）、
+  `ClipboardWorkspace.suspend.test.tsx`（页面挂起/恢复）。
+- 导航排序与固定入口（2026-11-05）：排序与可见性彻底分离，排序只改顺序、不改成员。
+  入口分两类：**普通入口**（可隐藏、可排序）与**固定入口**——`locked`（设置，完整面板）
+  与胶囊面 `kind="agent-status"`（Agent 状态球）。判定唯一入口为
+  `navigationRegistry.isEntrySortable(entry, surface)` / `lockedEntryIds(surface)`，UI 不自行猜测：
+  固定入口不渲染上下移动按钮（此前 Agent 状态球有按钮但排序无效），设置入口显示「固定位置」
+  徽标。不变量：①`moveEntryInList(ids, id, delta, isFixed)` 对固定项本身或固定目标一律拒绝
+  交换，普通项不能借交换「跨过」固定项；②`normalizeNavigationLayout` 把 `locked` 项收敛到
+  可见数组末尾（旧配置自愈）；③隐藏项不参与排序，恢复可见时按默认顺序插回；④排序沿用
+  `navigationLayout` 的串行写入链，连续点击不产生乱序写入；⑤写入失败保留 UI 原顺序并报错，
+  不做乐观假成功。完整面板侧栏三区域：顶部新建、中部可排序入口（`.rail-items`，独立滚动）、
+  底部固定区（`.rail-foot`：存在隐藏项时的「更多」+ 设置），固定区不随中部列表滚动且有分隔线。
+  停靠胶囊仍可隐藏 Agent 状态球，隐藏只影响入口渲染，不影响 Agent 事件监控与徽标计数。
+  原生几何契约：停靠形态完全由 `SetWindowRgn` 决定，`docked-full` 对应
+  `set_capsule(hwnd, None)`（整窗圆角区域，`GetWindowRgn` 包围盒等于窗口矩形，**不是**
+  「无区域」）；四向吸附后窗口保持用户模式尺寸并沿停靠边齐平，沿边位置由持久化
+  `centerRatio` 决定；点击命中与区域一致（`WindowFromPoint` 面板内命中主窗、面板外不命中）。
+  四向真机证据见 `tmp/acceptance/navigation-layout-fix/native-summary.json`。
 - 智能剪贴板（v0.6 起进入侧边栏）：完整模式为**第 4 个导航入口**（任务 / Agent /
   行动 / 剪贴板 / 历史 / 设置），**完整模式标题栏不再保留剪贴板入口按钮**；
   任务关联场景仍以
@@ -988,6 +1068,11 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   启动时 `get_user_preferences` 对账，localStorage 缺失才用文件补齐，冲突时 localStorage
   优先并回写。恢复后写 `preferences.restore-pending.json` 并广播
   `user-preferences-restored`；前端以文件为准覆盖 localStorage，再以 `restoreId` 回执清除。
+- **应用网格排序（2026-11-05）**：`taskdock.apps.grid.order.v1` 与语言/微件共用同一份
+  `preferences.json` 镜像与备份 header；数组包含普通应用 ID 和加号伪项
+  `__taskdock_app_add__`。Rust 与前端使用同一归一化规则（去重、空/超长 ID 丢弃、上限 500、
+  空数组视为无手动排序）。旧备份缺该字段、字段损坏或版本不符时保留本机排序；恢复时只覆盖
+  明确携带的字段，未知/已删除应用 ID 由前端 `buildAppGrid` 安全跳过。
 - **校验**：语言仅接受 `zh-CN|en-US|system`，非法回退 `zh-CN`；微件按
   `WIDGET_DEFAULTS` 白名单过滤未知类型、重复 ID 与非法尺寸，保留支持项顺序/启用状态；
   配置损坏只跳过该字段并返回 warning，不阻断数据恢复。

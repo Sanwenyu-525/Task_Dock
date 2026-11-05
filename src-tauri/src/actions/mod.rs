@@ -959,7 +959,9 @@ fn load_counts(conn: &Connection, cutoff: &str) -> AppResult<ActionCounts> {
 fn coverage(conn: &Connection) -> AppResult<Vec<CoverageRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, display_name, enabled, verified, transport_verified, last_event_at,
-                COALESCE(adapter, ''), COALESCE(note, '')
+                COALESCE(adapter, ''), COALESCE(note, ''),
+                (SELECT MAX(e.occurred_at) FROM agent_events e
+                 WHERE e.source_id = agent_sources.id AND e.origin = 'real')
          FROM agent_sources WHERE hidden = 0 AND id <> 'mock'
          ORDER BY enabled DESC, id",
     )?;
@@ -968,16 +970,19 @@ fn coverage(conn: &Connection) -> AppResult<Vec<CoverageRow>> {
         let enabled = r.get::<_, i64>(2)? != 0;
         let verified = r.get::<_, i64>(3)? != 0;
         let transport_verified = r.get::<_, i64>(4)? != 0;
-        let last_event_at: Option<String> = r.get(5)?;
+        // last_event_at 会被自测/手动 POST 污染；覆盖度只认宿主真实事件。
+        let last_real_event_at: Option<String> = r.get(8)?;
         let adapter: String = r.get(6)?;
         let note: String = r.get(7)?;
-        let monitored = enabled && transport_verified;
+        // 「已监控」= 启用且已有真实接入证据；transport_verified 只代表通道自测通过，
+        // 不能单独把来源算成在线（否则 selftest-only 会显示「N 个来源在线」）。
+        let monitored = enabled && verified;
         let level = if !enabled {
             "disabled".to_string()
-        } else if last_event_at.is_none() {
+        } else if last_real_event_at.is_none() {
             "no-events".to_string()
         } else {
-            let fresh = last_event_at
+            let fresh = last_real_event_at
                 .as_deref()
                 .and_then(parse_ts)
                 .map(|t| now - t <= Duration::hours(SOURCE_STALE_HOURS))
@@ -993,8 +998,14 @@ fn coverage(conn: &Connection) -> AppResult<Vec<CoverageRow>> {
         let explanation = match level.as_str() {
             "disabled" => "已停用：不接收事件".to_string(),
             "no-events" => "未接入：仅发现/安装，尚无真实事件".to_string(),
-            "stale" => format!("{} 小时无新事件，状态可能已过期", SOURCE_STALE_HOURS),
-            "not-configured" => "通道未验证：不显示运行状态".to_string(),
+            "stale" => format!("{} 小时无新真实事件，状态可能已过期", SOURCE_STALE_HOURS),
+            "not-configured" => {
+                if transport_verified {
+                    "通道自测通过，但尚无真实会话事件（不计为在线）".to_string()
+                } else {
+                    "通道未验证：不显示运行状态".to_string()
+                }
+            }
             _ => {
                 if verified {
                     "运行中：已收到真实会话事件".to_string()
@@ -1010,7 +1021,7 @@ fn coverage(conn: &Connection) -> AppResult<Vec<CoverageRow>> {
             verified,
             transport_verified,
             monitored,
-            last_event_at,
+            last_event_at: last_real_event_at,
             level,
             explanation,
             note: if note.is_empty() {
@@ -1902,10 +1913,12 @@ mod tests {
         );
         let f = feed_of(&db, "intervention");
         let codex = f.coverage.iter().find(|c| c.source_id == "codex").unwrap();
-        // 自测只能证明通道，不能把来源标成已验证真实接入
+        // 自测只能证明通道，不能把来源标成已验证真实接入，也不能算「在线」。
         assert!(!codex.verified);
         assert!(codex.transport_verified);
-        assert!(codex.explanation.contains("尚未收到真实会话事件"));
+        assert!(!codex.monitored);
+        assert_ne!(codex.level, "live");
+        assert!(codex.explanation.contains("尚无真实事件"));
         assert!(f.items.is_empty());
     }
 

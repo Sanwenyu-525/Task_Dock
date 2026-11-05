@@ -18,11 +18,13 @@ import {
   LOCALE_STORAGE_KEY,
   WIDGETS_STORAGE_KEY,
   __resetUserPreferencesForTests,
+  onAppGridOrderApplied,
   onLocalePreferenceApplied,
   onWidgetsLayoutApplied,
   schedulePreferencesMirror,
   syncUserPreferences,
 } from "./userPreferences";
+import { readAppGridOrder, writeAppGridOrder } from "./appGridOrder";
 import { defaultWidgetItems } from "./widgets/model";
 
 function widgetPayload() {
@@ -41,6 +43,7 @@ function view(overrides: Record<string, unknown> = {}) {
     version: 1,
     locale: "en-US",
     widgets: widgetPayload(),
+    app_grid_order: null,
     warnings: [],
     apply_restore: false,
     restore_id: null,
@@ -97,9 +100,66 @@ describe("恢复后启动", () => {
       "en-US",
       expect.any(Array),
       "sess-1",
+      null,
     );
     offLocale();
     offWidgets();
+  });
+
+  it("备份恢复应用网格排序：写入 localStorage、通知订阅并随回执提交", async () => {
+    bridgeMocks.getUserPreferences.mockResolvedValue(
+      view({
+        apply_restore: true,
+        restore_id: "sess-order",
+        app_grid_order: ["__taskdock_app_add__", "app-a"],
+      }),
+    );
+    const orderSpy = vi.fn();
+    const off = onAppGridOrderApplied(orderSpy);
+
+    await syncUserPreferences();
+
+    expect(readAppGridOrder()).toEqual(["__taskdock_app_add__", "app-a"]);
+    expect(orderSpy).toHaveBeenCalled();
+    expect(bridgeMocks.setUserPreferences).toHaveBeenCalledWith(
+      "en-US",
+      expect.any(Array),
+      "sess-order",
+      ["__taskdock_app_add__", "app-a"],
+    );
+    off();
+  });
+
+  it("正常启动 local 无排序时从文件补齐；本地已有排序时保持本地并回写", async () => {
+    bridgeMocks.getUserPreferences.mockResolvedValue(
+      view({ app_grid_order: ["app-remote"] }),
+    );
+    await syncUserPreferences();
+    expect(readAppGridOrder()).toEqual(["app-remote"]);
+
+    // 本地已有手动顺序：远端不同也不能覆盖，回写时使用本地顺序。
+    writeAppGridOrder(["app-local"]);
+    bridgeMocks.setUserPreferences.mockClear();
+    bridgeMocks.getUserPreferences.mockResolvedValue(
+      view({ app_grid_order: ["app-remote"] }),
+    );
+    await syncUserPreferences();
+    expect(readAppGridOrder()).toEqual(["app-local"]);
+    expect(bridgeMocks.setUserPreferences).toHaveBeenCalledWith(
+      "en-US",
+      expect.any(Array),
+      null,
+      ["app-local"],
+    );
+  });
+
+  it("损坏的远端排序被忽略，不清空本机排序", async () => {
+    writeAppGridOrder(["app-local"]);
+    bridgeMocks.getUserPreferences.mockResolvedValue(
+      view({ app_grid_order: "not-an-array" }),
+    );
+    await syncUserPreferences();
+    expect(readAppGridOrder()).toEqual(["app-local"]);
   });
 
   it("备份恢复保留桌面窗口字段，并按模型补齐缺失类型", async () => {
@@ -172,6 +232,7 @@ describe("正常启动对账", () => {
       "en-US",
       expect.any(Array),
       null,
+      null,
     );
     off();
   });
@@ -196,6 +257,7 @@ describe("正常启动对账", () => {
     expect(bridgeMocks.setUserPreferences).toHaveBeenCalledWith(
       "zh-CN",
       expect.any(Array),
+      null,
       null,
     );
   });
@@ -231,6 +293,7 @@ describe("变更镜像", () => {
     expect(bridgeMocks.setUserPreferences).toHaveBeenCalledWith(
       "en-US",
       expect.any(Array),
+      null,
       null,
     );
   });

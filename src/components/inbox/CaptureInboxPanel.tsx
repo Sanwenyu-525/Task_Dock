@@ -16,6 +16,7 @@ import {
   Link2,
   ListPlus,
   ListTodo,
+  Plus,
   RefreshCw,
   SquareCheck,
   StickyNote,
@@ -31,6 +32,7 @@ import { locateElement } from "../global-search/locate";
 import { copyText } from "../../lib/clipboard";
 import { formatRelative } from "../../lib/format";
 import type { CaptureItem, CaptureKind } from "../../lib/bridge";
+import { quickCaptureShow } from "../../lib/bridge";
 import { StatusBadge } from "../ui";
 import type { IconComponent } from "../ui/AgentIcon";
 
@@ -77,6 +79,29 @@ export default function CaptureInboxPanel() {
   const showToast = useUiStore((s) => s.showToast);
   const setTab = useUiStore((s) => s.setTab);
   const setCollectionSub = useUiStore((s) => s.setCollectionSub);
+
+  /**
+   * 页内「+ 快速记录」：打开既有快速捕获窗口（草稿 / 类型 / 幂等提交全部复用），
+   * 不在这里维护第二套输入与保存逻辑；窗口已打开时只聚焦，不会把窗口收起。
+   */
+  const openQuickRecord = useCallback(async () => {
+    try {
+      const result = await quickCaptureShow();
+      // 旧后端可能返回 undefined（无结果契约）：按成功处理，不误报。
+      if (result && result.visible && !result.focused) {
+        showToast(
+          result.focusError
+            ? `快速捕获已打开，但系统未允许自动聚焦：${result.focusError}`
+            : "快速捕获已打开，但系统未允许自动聚焦；请点击窗口继续",
+          { kind: "info" },
+        );
+      } else if (result && !result.visible) {
+        showToast("快速捕获窗口未能显示，请稍后重试", { kind: "error" });
+      }
+    } catch (e) {
+      showToast(`无法打开快速捕获：${errorMessage(e)}`, { kind: "error" });
+    }
+  }, [showToast]);
   const addTextToShelf = useShelfStore((s) => s.addText);
   const addLinkToShelf = useShelfStore((s) => s.addLink);
 
@@ -265,6 +290,15 @@ export default function CaptureInboxPanel() {
         <span className="inbox-count-hint">
           {items.length} 条{filter === "inbox" ? "未处理" : ""}
         </span>
+        <button
+          type="button"
+          className="btn primary sm"
+          aria-label="快速记录到收集箱"
+          data-tip="打开快速捕获窗口"
+          onClick={() => void openQuickRecord()}
+        >
+          <Plus size={12} aria-hidden="true" /> 快速记录
+        </button>
         <button
           type="button"
           className="btn sm"
