@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { avatarHue, navAppIcon } from "../../lib/navigation";
 
 export interface AppIconProps {
-  /** 已保存目标传 targetId；扫描结果传 appKey。两者都不传时只显示回退图标。 */
+  /** 已保存目标传 targetId；扫描结果传 appKey；窗口选择页可传真实 exePath。 */
   targetId?: string;
   appKey?: string;
+  exePath?: string;
   name: string;
   size?: number;
   /** URL / 文件夹等没有可执行文件的目标不需要请求图标。 */
@@ -33,7 +34,7 @@ function writeCache(key: string, url: string | null) {
   cache.set(key, { url, at: Date.now() });
 }
 
-function loadIcon(key: string, identity: { targetId?: string; appKey?: string }) {
+function loadIcon(key: string, identity: { targetId?: string; appKey?: string; exePath?: string }) {
   const cached = readCache(key);
   if (cached !== undefined) {
     return Promise.resolve(cached);
@@ -64,14 +65,22 @@ function loadIcon(key: string, identity: { targetId?: string; appKey?: string })
 export default function AppIcon({
   targetId,
   appKey,
+  exePath,
   name,
   size = 26,
   enabled = true,
   className = "",
 }: AppIconProps) {
-  const key = targetId ? `target:${targetId}` : appKey ? `app:${appKey}` : null;
-  const identityRef = useRef({ targetId, appKey });
-  identityRef.current = { targetId, appKey };
+  const normalizedExe = exePath?.trim().toLowerCase() || undefined;
+  const key = targetId
+    ? `target:${targetId}`
+    : appKey
+      ? `app:${appKey}`
+      : normalizedExe
+        ? `exe:${normalizedExe}`
+        : null;
+  const identityRef = useRef({ targetId, appKey, exePath });
+  identityRef.current = { targetId, appKey, exePath };
   const [url, setUrl] = useState<string | null>(() =>
     key ? readCache(key) ?? null : null,
   );

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { Task } from "../lib/bridge";
+import { activeTabGuard } from "../lib/tabGuard";
 
 export type Tab =
   | "tasks"
@@ -87,9 +88,23 @@ export const TOAST_QUEUE_MAX = 3;
 /** 相同根因（同错误码同文案）在该窗口内的重复推送直接忽略 */
 const TOAST_DEDUP_MS = 2000;
 
+/**
+ * 跨 Tab 切换的待决导航：编辑中有未保存改动时只记录目标，等用户明确选择。
+ * `after` 用于「打开编辑器」这类需要与切页一起完成的程序化导航。
+ */
+export interface PendingTabNav {
+  tab: Tab;
+  guardId: string;
+  after: (() => void) | null;
+}
+
 export const useUiStore = create<{
   tab: Tab;
-  setTab: (t: Tab) => void;
+  setTab: (t: Tab, opts?: { force?: boolean; after?: () => void }) => void;
+  /** 有待决的未保存切换时，由全局确认条消费 */
+  pendingTab: PendingTabNav | null;
+  confirmPendingTab: () => void;
+  cancelPendingTab: () => void;
   /**
    * 「收集与暂存」合并入口的子页状态（v0.8）：inbox=快速收集 / shelf=文件暂存 /
    * notes=快速笔记（仅子页，不占用逻辑 Tab 与 Ctrl+数字）。
@@ -137,21 +152,64 @@ export const useUiStore = create<{
   appConfig: { kind: "picker" | "manage"; token: number } | null;
   requestAppConfig: (kind: "picker" | "manage") => void;
   clearAppConfig: () => void;
-}>((set) => ({
+  /**
+   * 胶囊「+」的一进应用中心添加页意图（只消费一次）。
+   * 由 AppsPanel 在挂载/收到新 token 时消费并清除，避免返回或取消后自动重开。
+   */
+  appsAddRequest: { token: number } | null;
+  requestAppsAdd: () => void;
+  clearAppsAddRequest: () => void;
+}>((set, get) => ({
   tab: "tasks",
   // 收集箱/暂存架是同一视觉入口的两个子页：setTab 落到其中之一时同步子页状态，
   // 其余 Tab 不改动上次子页选择（合并入口「回到上次子页」的语义依据）。
-  setTab: (t) =>
+  // 门禁：编辑器有未保存改动时只记录目标；保存中直接拒绝切换并说明原因。
+  setTab: (t, opts) => {
+    const state = get();
+    // 同 Tab 内通过 `after` 重新打开编辑器（如小组件「新建任务」）也会替换草稿，同样需要门禁。
+    if (!opts?.force && (t !== state.tab || Boolean(opts?.after))) {
+      const guard = activeTabGuard();
+      if (guard) {
+        if (guard.isBusy()) {
+          state.showToast("正在保存，请等待完成后再切换页面", {
+            kind: "warning",
+            code: "tab-guard-busy",
+          });
+          return;
+        }
+        if (guard.isDirty()) {
+          set({ pendingTab: { tab: t, guardId: guard.id, after: opts?.after ?? null } });
+          return;
+        }
+      }
+    }
     set((s) => ({
       tab: t,
       collectionSub: t === "inbox" || t === "shelf" ? t : s.collectionSub,
-    })),
+      pendingTab: null,
+    }));
+    opts?.after?.();
+  },
+  pendingTab: null,
+  confirmPendingTab: () => {
+    const pending = get().pendingTab;
+    if (!pending) return;
+    const guard = activeTabGuard();
+    if (guard && guard.id === pending.guardId) guard.discard();
+    set({ pendingTab: null });
+    get().setTab(pending.tab, { force: true, after: pending.after ?? undefined });
+  },
+  cancelPendingTab: () => set({ pendingTab: null }),
   collectionSub: "inbox",
   setCollectionSub: (sub) => set({ collectionSub: sub }),
   editor: { open: false, task: null },
   // 编辑态由任务面板（TasksPanel）在页面内承载：从其他页（如小组件）打开时切回任务页，
   // 否则编辑表单没有宿主。
-  openEditor: (task) => set({ editor: { open: true, task: task ?? null }, tab: "tasks" }),
+  // 同样经过 setTab 门禁：其他页有未保存草稿时不能静默切走并卸载它。
+  openEditor: (task) =>
+    get().setTab("tasks", {
+      after: () => set({ editor: { open: true, task: task ?? null } }),
+    }),
   closeEditor: () => set({ editor: { open: false, task: null } }),
   workspace: { open: false, task: null },
   openWorkspace: (task) => set({ workspace: { open: true, task } }),
@@ -229,4 +287,8 @@ export const useUiStore = create<{
   requestAppConfig: (kind) =>
     set((s) => ({ appConfig: { kind, token: (s.appConfig?.token ?? 0) + 1 } })),
   clearAppConfig: () => set({ appConfig: null }),
+  appsAddRequest: null,
+  requestAppsAdd: () =>
+    set((s) => ({ appsAddRequest: { token: (s.appsAddRequest?.token ?? 0) + 1 } })),
+  clearAppsAddRequest: () => set({ appsAddRequest: null }),
 }));

@@ -31,6 +31,17 @@
   --z-toast: 890;
   --focus-ring: 0 0 0 2px var(--surface-base), 0 0 0 3.5px var(--accent);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ── 输入框排版 ──────────────────────────────────────────────
+     原生光标（caret）的视觉高度由 font-size/字体度量决定，
+     caret-color 只决定颜色。要修「光标过小」必须统一字号，
+     不能靠伪元素、动画或 JS 模拟光标。
+     sm 档仅用于高度受限的紧凑容器，下限 12px；常规文本输入 13px。 */
+  --input-font-size-sm: 12px;
+  --input-font-size: 13px;
+  --input-font-size-lg: 14px;
+  --input-line-height: 1.45;
+  --input-caret-color: var(--accent);
 }
 
 /* ── 通用浮层容器 ───────────────────────────────────────────── */
@@ -316,7 +327,8 @@
   border: none;
   background: none;
   box-shadow: none;
-  font-size: 12px;
+  font-size: var(--input-font-size);
+  line-height: var(--input-line-height);
   color: var(--text-primary);
   outline: none;
 }
@@ -336,18 +348,140 @@
 }
 
 /* ── 嵌入式输入原语 ─────────────────────────────────────────── */
-/* 嵌在组合输入容器（快速添加 / 搜索框 / 剪贴板搜索 / 目标选择搜索等）
-   里的透明 input：容器负责背景、边框、圆角与聚焦反馈（唯一可见边界），
-   input 自身不再绘制任何边框、阴影或外描边。
-   ui 层优先级高于 theme，用于豁免 theme 层 input:focus 的焦点阴影环，
-   否则容器 + input 会形成双重矩形。 */
+/* 全局约定（唯一来源）：容器 + 内嵌 input 的组合控件里，
+   容器（.ui-dp / .ui-combobox / .search-box / .quick-add-row /
+   .apps-search / .clip-search 等）负责背景、边框、圆角、阴影与
+   :focus-within 高亮，并且聚焦只改颜色/阴影、不改边框宽度（不推动布局）；
+   内嵌 input 自身在 focus / focus-visible 下一律不画
+   border / background / box-shadow / outline。
+   生效层级：本规则在 @layer ui，高于 @layer theme 的
+   `input:focus { box-shadow: var(--control-shadow-focus) }` 与
+   `input[type="text"]:focus { box-shadow: var(--inset-shadow-focus) }`，
+   因此主题层的通用焦点环只对未标类的独立 input 生效。
+   未挂 .input-embedded 的既有容器内嵌输入（.search-box / .quick-add-row /
+   .apps-search / .clip-search / .ui-combobox）一并列入下方选择器，
+   只清内层多余焦点层，不改容器外观；后续新组件统一挂 .input-embedded。 */
 .input-embedded,
 .input-embedded:focus,
-.input-embedded:focus-visible {
+.input-embedded:focus-visible,
+.search-box input,
+.search-box input:focus,
+.search-box input:focus-visible,
+.quick-add-row input,
+.quick-add-row input:focus,
+.quick-add-row input:focus-visible,
+.apps-search input,
+.apps-search input:focus,
+.apps-search input:focus-visible,
+.clip-search input,
+.clip-search input:focus,
+.clip-search input:focus-visible,
+.ui-combobox input,
+.ui-combobox input:focus,
+.ui-combobox input:focus-visible {
   border: none;
   background: transparent;
   box-shadow: none;
   outline: none;
+}
+
+/* 内嵌输入与全局 token 对齐光标颜色；字号由各消费者按 size 档位设置，
+   任何档位不得低于 --input-font-size-sm，否则原生光标明显偏小。 */
+.input-embedded,
+.search-box input,
+.quick-add-row input,
+.apps-search input,
+.clip-search input,
+.ui-combobox input {
+  caret-color: var(--input-caret-color);
+}
+
+/* ── 搜索输入（SearchField）───────────────────────────────────── */
+/* 容器继续沿用 .search-box 的表面与 :focus-within 高亮（含两套预设的
+   玻璃/内凹样式），这里只补尺寸、字体、光标与清空按钮占位，避免再造
+   一套边框/焦点环。 */
+.ui-search {
+  min-width: 0;
+}
+
+.ui-search .ui-search-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+}
+
+.ui-search .ui-search-input {
+  min-width: 0;
+  font-size: var(--input-font-size);
+  line-height: var(--input-line-height);
+  caret-color: var(--input-caret-color);
+}
+
+.ui-search--compact {
+  padding: 2px 4px 2px 7px;
+}
+
+.ui-search--compact .ui-search-input {
+  font-size: var(--input-font-size-sm);
+  line-height: var(--input-line-height);
+}
+
+/* 清空按钮始终占位：无内容时仅隐藏可见性，不改变输入宽度、不参与 Tab 顺序。 */
+.ui-search .ui-search-clear {
+  flex: 0 0 auto;
+}
+
+.ui-search .ui-search-clear.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* ── 状态徽标（StatusBadge）──────────────────────────────────── */
+.ui-status-badge {
+  --ui-status-tone: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--ui-status-tone) 28%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ui-status-tone) 12%, transparent);
+  color: var(--ui-status-tone);
+  font-size: 10px;
+  line-height: 1.5;
+  font-weight: 600;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.ui-status-badge > svg {
+  flex: 0 0 auto;
+}
+
+.ui-status-badge.size-sm {
+  gap: 2px;
+  padding: 1px 5px;
+  font-size: 9px;
+}
+
+.ui-status-badge.tone-info {
+  --ui-status-tone: var(--accent);
+}
+
+.ui-status-badge.tone-success {
+  --ui-status-tone: var(--status-success);
+}
+
+.ui-status-badge.tone-warning {
+  --ui-status-tone: var(--status-waiting);
+}
+
+.ui-status-badge.tone-danger {
+  --ui-status-tone: var(--status-error);
 }
 
 /* ── 菜单 ───────────────────────────────────────────────────── */
@@ -708,7 +842,8 @@
   border: none !important;
   background: none !important;
   box-shadow: none !important;
-  font-size: 12px;
+  font-size: var(--input-font-size-sm);
+  line-height: var(--input-line-height);
   text-align: center;
   outline: none;
   appearance: textfield;
@@ -850,7 +985,8 @@
 .ui-dtp-input {
   width: 100%;
   padding: 5px 7px;
-  font-size: 12px;
+  font-size: var(--input-font-size-sm);
+  line-height: var(--input-line-height);
   color: var(--text-primary);
   background: var(--control-face);
   border: 1px solid var(--border-subtle);
@@ -949,7 +1085,8 @@
 .ui-dtp-field input {
   width: 44px;
   padding: 3px 4px;
-  font-size: 11px;
+  font-size: var(--input-font-size-sm);
+  line-height: var(--input-line-height);
   text-align: center;
   color: var(--menu-text);
   background: var(--control-face);
@@ -1017,21 +1154,21 @@
   opacity: 0.55;
 }
 
+/* 内嵌输入消费者：挂 .input-embedded（见文件上方「嵌入式输入原语」）。
+   边框 / 背景 / 焦点环全部由外层 .ui-dp 唯一绘制，这里只保留布局与排版。 */
 .ui-dp-input {
   flex: 1;
   min-width: 0;
   width: 100%;
   padding: 6px 0;
-  font-size: 12px;
+  font-size: var(--input-font-size);
+  line-height: var(--input-line-height);
   color: var(--text-primary);
-  background: transparent;
-  border: 0;
-  outline: none;
 }
 
 .ui-dp.size-sm .ui-dp-input {
   padding: 3px 0;
-  font-size: 11px;
+  font-size: var(--input-font-size-sm);
 }
 
 .ui-dp-input::placeholder {

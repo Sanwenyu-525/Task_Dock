@@ -28,6 +28,9 @@ function maybeStop() {
 }
 
 function subscribe(listener: () => void): () => void {
+  // 首个订阅者重新对齐当前时间：计时器停止期间 snapshot 会冻结在上次停表时刻，
+  // 若停表较久（面板关闭后重新打开、跨用例），首次渲染会显示滞后的倒计时。
+  if (timer === null) snapshot = Date.now();
   listeners.add(listener);
   ensureRunning();
   return () => {

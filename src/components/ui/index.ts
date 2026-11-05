@@ -14,3 +14,17 @@ export { Checkbox, Switch, type CheckboxProps, type SwitchProps } from "./Toggle
 export { useOverlayLayer, useFocusTrap, useFocusRestore } from "./overlay";
 export { default as AgentIcon, type AgentIconProps, type IconComponent } from "./AgentIcon";
 export { default as PointerClickIcon, type PointerClickIconProps } from "./PointerClickIcon";
+export {
+  default as CollapsibleSection,
+  type CollapsibleSectionProps,
+} from "./CollapsibleSection";
+export {
+  default as SearchField,
+  type SearchFieldProps,
+  type SearchFieldSize,
+} from "./SearchField";
+export {
+  default as StatusBadge,
+  type StatusBadgeProps,
+  type StatusTone,
+} from "./StatusBadge";

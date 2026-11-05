@@ -48,6 +48,27 @@ afterEach(() => {
 });
 
 describe("DatePicker 交互与数据完整性", () => {
+  it("输入框消费共享嵌入式输入规则，焦点边界只由外层容器绘制", () => {
+    render(<Harness />);
+    const input = screen.getByRole("textbox", { name: "目标日期" });
+    // 全局约定见 styles-ui.css「嵌入式输入原语」：内层 input 不画边界/焦点环，
+    // 容器 .ui-dp 负责背景、边框、圆角、阴影与 :focus-within 高亮。
+    expect(input.classList.contains("ui-dp-input")).toBe(true);
+    expect(input.classList.contains("input-embedded")).toBe(true);
+    expect(input.closest(".ui-dp")).toBeTruthy();
+  });
+
+  it("日历图标可通过 Tab 获得键盘焦点", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    const input = screen.getByRole("textbox", { name: "目标日期" });
+    const toggle = screen.getByRole("button", { name: "选择日期" });
+
+    input.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(toggle);
+  });
+
   it("输入框点开日历，图标可再关闭（同一入口）", async () => {
     const user = userEvent.setup();
     render(<Harness />);

@@ -10,6 +10,7 @@
 //! - 同类嵌套时，DOM 上更内层的那个优先（不看注册顺序）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent } from "@testing-library/react";
 import {
   hasAutoHideBlockingOverlay,
   registerOverlay,
@@ -219,5 +220,135 @@ describe("胶囊自动收起与弹层判定", () => {
     expect(hasAutoHideBlockingOverlay()).toBe(true);
     release();
     expect(hasAutoHideBlockingOverlay()).toBe(false);
+  });
+});
+
+describe("全局 Escape 与 IME 组合边界", () => {
+  let host: HTMLDivElement;
+  let input: HTMLInputElement;
+
+  beforeEach(() => {
+    resetOverlayStack();
+    host = document.createElement("div");
+    input = document.createElement("input");
+    host.appendChild(input);
+    document.body.appendChild(host);
+    input.focus();
+  });
+
+  afterEach(() => {
+    resetOverlayStack();
+    setWindowEscapeHandler(null);
+    document.body.replaceChildren();
+  });
+
+  //! 全局监听在 window capture 阶段，早于输入框冒泡；这组用例固定「捕获 → 冒泡」的真实顺序，
+  //! 防止后续改动把 IME 守卫挪到冒泡、或让全局分发抢先消费 Escape。
+
+  it("无弹层：组合中 Escape 不隐藏主窗，组合结束后独立 Escape 才隐藏", () => {
+    const hide = vi.fn();
+    const inputKeydown = vi.fn();
+    setWindowEscapeHandler(hide);
+    input.addEventListener("keydown", inputKeydown);
+
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+    expect(hide).not.toHaveBeenCalled();
+    // 全局守卫直接返回，不消费事件，输入框自己的 keydown 仍能收到
+    expect(inputKeydown).toHaveBeenCalledTimes(1);
+
+    // Safari 顺序：compositionend 先到，keydown 只剩 keyCode 229
+    fireEvent.keyDown(input, { key: "Escape", keyCode: 229 });
+    expect(hide).not.toHaveBeenCalled();
+    expect(inputKeydown).toHaveBeenCalledTimes(2);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(hide).toHaveBeenCalledTimes(1);
+    expect(inputKeydown).toHaveBeenCalledTimes(3);
+  });
+
+  it("全局搜索弹层：组合中 Escape 不关弹层、不隐藏窗口；独立 Escape 才逐层关闭", () => {
+    const hide = vi.fn();
+    const close = vi.fn();
+    setWindowEscapeHandler(hide);
+    let release!: () => void;
+    release = registerOverlay({
+      kind: "dialog",
+      root: host,
+      onEscape: () => {
+        close();
+        release();
+      },
+    });
+
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+    fireEvent.keyDown(input, { key: "Escape", keyCode: 229 });
+    expect(close).not.toHaveBeenCalled();
+    expect(hide).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(hide).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("日期选择器（菜单）在模态内：组合中 Escape 两层都不关，独立 Escape 只关菜单", () => {
+    const hide = vi.fn();
+    const closePicker = vi.fn();
+    const closeModal = vi.fn();
+    setWindowEscapeHandler(hide);
+    const modalRoot = document.createElement("div");
+    const pickerRoot = document.createElement("div");
+    pickerRoot.appendChild(input);
+    modalRoot.appendChild(pickerRoot);
+    document.body.appendChild(modalRoot);
+
+    let releasePicker!: () => void;
+    releasePicker = registerOverlay({
+      kind: "menu",
+      root: pickerRoot,
+      onEscape: () => {
+        closePicker();
+        releasePicker();
+      },
+    });
+    let releaseModal!: () => void;
+    releaseModal = registerOverlay({
+      kind: "modal",
+      root: modalRoot,
+      onEscape: () => {
+        closeModal();
+        releaseModal();
+      },
+    });
+
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+    expect(closePicker).not.toHaveBeenCalled();
+    expect(closeModal).not.toHaveBeenCalled();
+    expect(hide).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(closePicker).toHaveBeenCalledTimes(1);
+    expect(closeModal).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(closeModal).toHaveBeenCalledTimes(1);
+    expect(hide).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("正常 Escape 由全局捕获消费：输入框冒泡不再收到（一次只关一层）", () => {
+    const close = vi.fn();
+    const seen = vi.fn();
+    registerOverlay({ kind: "menu", root: host, onEscape: close });
+    input.addEventListener("keydown", seen);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(seen).not.toHaveBeenCalled();
   });
 });

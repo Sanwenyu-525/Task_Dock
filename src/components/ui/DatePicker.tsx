@@ -111,7 +111,7 @@ export default function DatePicker({
       >
         <input
           type="text"
-          className={`ui-dp-input ${error ? "is-error" : ""}`}
+          className={`ui-dp-input input-embedded ${error ? "is-error" : ""}`}
           value={text}
           placeholder={placeholder ?? "YYYY-MM-DD"}
           aria-label={ariaLabel}

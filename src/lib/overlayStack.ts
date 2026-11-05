@@ -163,6 +163,8 @@ export function setWindowEscapeHandler(fn: (() => void) | null): void {
 export function installEscapeDispatcher(win: Window = window): () => void {
   const capture = (e: KeyboardEvent) => {
     if (e.key !== "Escape") return;
+    // 输入法组合中按 Escape 只取消候选词，不得关闭弹层
+    if (e.isComposing || e.keyCode === 229) return;
     const top = topOverlay();
     if (!top) return;
     // 同步摘除：同一次按键绝不会连关两层
@@ -175,6 +177,8 @@ export function installEscapeDispatcher(win: Window = window): () => void {
   };
   const bubble = (e: KeyboardEvent) => {
     if (e.key !== "Escape") return;
+    // 同上：组合态的 Escape 不能把主窗口藏进托盘
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.defaultPrevented) return; // 内层（输入框等）已自行消费
     if (topOverlay()) return;
     windowEscapeHandler?.();
