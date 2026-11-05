@@ -1,13 +1,24 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultWidgetItems } from "../lib/widgets/model";
+import {
+  defaultWidgetItems,
+  desktopPresetSize,
+  resolveDesktopWindowSize,
+} from "../lib/widgets/model";
 import { WIDGETS_STORAGE_KEY } from "../lib/widgets/storage";
 import { useWidgetsStore } from "./useWidgetsStore";
 
 function resetStore() {
   localStorage.clear();
-  useWidgetsStore.setState({ widgets: defaultWidgetItems(), hydrated: false });
+  useWidgetsStore.setState({
+    widgets: defaultWidgetItems(),
+    hydrated: false,
+    persistError: null,
+    desktopResetSeq: {},
+    desktopRetrySeq: {},
+    desktopRuntime: {},
+  });
 }
 
 function storedLayout(): { version: number; widgets: unknown[] } | null {
@@ -148,5 +159,106 @@ describe("布局变更与持久化", () => {
     } finally {
       setItem.mockRestore();
     }
+  });
+
+  it("写盘失败会暴露 persistError，下一次成功写入后清除", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    try {
+      useWidgetsStore.getState().hydrate();
+      useWidgetsStore.getState().setDesktop("agent-status", { visible: true });
+      expect(useWidgetsStore.getState().persistError).toBeTruthy();
+      expect(
+        useWidgetsStore.getState().widgets.find((item) => item.type === "agent-status")!.desktop
+          .visible,
+      ).toBe(true);
+    } finally {
+      setItem.mockRestore();
+    }
+    useWidgetsStore.getState().setDesktop("agent-status", { topmost: true });
+    expect(useWidgetsStore.getState().persistError).toBeNull();
+  });
+});
+
+describe("桌面尺寸三态", () => {
+  it("切换预设立即放弃手动缩放的自定义宽高", () => {
+    useWidgetsStore.getState().hydrate();
+    useWidgetsStore.getState().setDesktop("today-tasks", { width: 500, height: 320 });
+    expect(
+      useWidgetsStore.getState().widgets.find((item) => item.type === "today-tasks")!.desktop,
+    ).toMatchObject({ width: 500, height: 320 });
+
+    useWidgetsStore.getState().setSize("today-tasks", "md");
+
+    const item = useWidgetsStore.getState().widgets.find((entry) => entry.type === "today-tasks")!;
+    expect(item.size).toBe("md");
+    expect(item.desktop.width).toBeUndefined();
+    expect(item.desktop.height).toBeUndefined();
+    expect(resolveDesktopWindowSize("today-tasks", item.size, item.desktop)).toEqual(
+      desktopPresetSize("today-tasks", "md"),
+    );
+  });
+});
+
+describe("桌面显示与看板启用相互独立", () => {
+  it("旧布局缺少 desktop 字段时补齐安全默认（不显示/不置顶）", () => {
+    localStorage.setItem(
+      WIDGETS_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        widgets: [{ type: "today-tasks", enabled: true, size: "md" }],
+      }),
+    );
+
+    useWidgetsStore.getState().hydrate();
+
+    for (const item of useWidgetsStore.getState().widgets) {
+      expect(item.desktop.visible).toBe(false);
+      expect(item.desktop.topmost).toBe(false);
+      expect(item.desktop.nx).toBeUndefined();
+      expect(item.desktop.ny).toBeUndefined();
+    }
+  });
+
+  it("关闭看板卡片不会清除桌面显示配置", () => {
+    useWidgetsStore.getState().hydrate();
+    useWidgetsStore.getState().setDesktop("today-tasks", { visible: true, topmost: true });
+    useWidgetsStore.getState().toggle("today-tasks", false);
+
+    const item = useWidgetsStore.getState().widgets.find((it) => it.type === "today-tasks")!;
+    expect(item.enabled).toBe(false);
+    expect(item.desktop.visible).toBe(true);
+    expect(findStored("today-tasks")?.desktop).toMatchObject({ visible: true, topmost: true });
+  });
+
+  it("关闭桌面显示不会停用看板卡片", () => {
+    useWidgetsStore.getState().hydrate();
+    useWidgetsStore.getState().setDesktop("agent-status", { visible: true });
+    useWidgetsStore.getState().setDesktop("agent-status", { visible: false });
+
+    const item = useWidgetsStore.getState().widgets.find((it) => it.type === "agent-status")!;
+    expect(item.enabled).toBe(true);
+    expect(item.desktop.visible).toBe(false);
+  });
+
+  it("重置位置清空锚点与显示器并递增内存计数（不落盘计数）", () => {
+    useWidgetsStore.getState().hydrate();
+    useWidgetsStore.getState().setDesktop("efficiency", {
+      visible: true,
+      nx: 0.4,
+      ny: 0.3,
+      monitor: "DISPLAY2",
+    });
+
+    useWidgetsStore.getState().resetDesktopPosition("efficiency");
+
+    const item = useWidgetsStore.getState().widgets.find((it) => it.type === "efficiency")!;
+    expect(item.desktop.visible).toBe(true);
+    expect(item.desktop.nx).toBeUndefined();
+    expect(item.desktop.monitor).toBeUndefined();
+    expect(useWidgetsStore.getState().desktopResetSeq.efficiency).toBe(1);
+    expect(findStored("efficiency")?.desktop).not.toHaveProperty("nx");
+    expect(findStored("efficiency")).not.toHaveProperty("desktopResetSeq");
   });
 });

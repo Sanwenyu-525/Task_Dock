@@ -29,6 +29,8 @@ const openAgentSession = vi.fn();
 const agentSnapshot = vi.fn();
 const navListTargets = vi.fn();
 const navNavigate = vi.fn();
+const navDeleteTarget = vi.fn();
+const navAllTaskLinks = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   onClipboardChanged: async () => () => {},
@@ -56,13 +58,18 @@ vi.mock("../../lib/bridge", () => ({
   applyMode: async () => undefined,
 }));
 
-vi.mock("../../lib/navigation", () => ({
-  navNavigate: (...a: unknown[]) => navNavigate(...a),
-  navListTargets: (...a: unknown[]) => navListTargets(...a),
-  avatarHue: () => 250,
-  // AppIcon 统一请求真实图标；胶囊测试只关心名称/启动，图标直接回退字母
-  navAppIcon: async () => null,
-}));
+vi.mock("../../lib/navigation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/navigation")>();
+  return {
+    ...actual,
+    navNavigate: (...a: unknown[]) => navNavigate(...a),
+    navListTargets: (...a: unknown[]) => navListTargets(...a),
+    navDeleteTarget: (...a: unknown[]) => navDeleteTarget(...a),
+    navAllTaskLinks: (...a: unknown[]) => navAllTaskLinks(...a),
+    // AppIcon 统一请求真实图标；胶囊测试只关心名称/启动，图标直接回退字母
+    navAppIcon: async () => null,
+  };
+});
 
 import TasksLite from "./TasksLite";
 import AgentsLite from "./AgentsLite";
@@ -123,6 +130,9 @@ beforeEach(() => {
   agentSnapshot.mockResolvedValue(EMPTY_SNAPSHOT);
   navListTargets.mockReset();
   navNavigate.mockReset();
+  navDeleteTarget.mockReset();
+  navAllTaskLinks.mockReset();
+  navAllTaskLinks.mockResolvedValue([]);
   taskStats.mockResolvedValue({
     pending: 0,
     overdue: 0,
@@ -209,6 +219,77 @@ describe("任务面板", () => {
     expect(screen.getByText("整理产品周报")).toBeTruthy();
     // 失败后重新拉真实状态，不是本地猜测
     expect(listTasks.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("快速添加走真实命令并清空输入，任务立即出现在当前列表", async () => {
+    listTasks.mockResolvedValue(items);
+    createFromQuickAdd.mockResolvedValue(task("t7", "买牛奶", null));
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    const input = screen.getByLabelText("快速添加任务") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "买牛奶" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(createFromQuickAdd).toHaveBeenCalledWith("买牛奶", null, null, null),
+    );
+    await waitFor(() => expect(input.value).toBe(""));
+    // 成功添加后 store 会刷新当前分段，界面不需要本地伪造条目
+    expect(listTasks.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("快速添加输入挂内嵌输入类，并且输入法组合中的 Enter 不触发新增", async () => {
+    listTasks.mockResolvedValue(items);
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    const input = screen.getByLabelText("快速添加任务") as HTMLInputElement;
+    expect(input.classList.contains("input-embedded")).toBe(true);
+    fireEvent.change(input, { target: { value: "买牛奶" } });
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(createFromQuickAdd).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(createFromQuickAdd).toHaveBeenCalledWith("买牛奶", null, null, null),
+    );
+  });
+
+  it("点开任务标题显示基础详情，并可直接进入完整页编辑", async () => {
+    const detailed = task("t1", "整理产品周报", now + 3600_000, {
+      description: "补充评审意见",
+      category: "工作",
+      tags: ["周报", "评审"],
+      remind_at: iso(now + 1800_000),
+      recurrence: {
+        id: "r1",
+        freq: "weekly",
+        interval: 1,
+        by_weekday: [5],
+        by_monthday: null,
+        until: null,
+        anchor: iso(now),
+      },
+    });
+    listTasks.mockResolvedValue([detailed]);
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    fireEvent.click(screen.getByRole("button", { name: "查看「整理产品周报」详情" }));
+    expect(await screen.findByText("补充评审意见")).toBeTruthy();
+    expect(screen.getByText("截止")).toBeTruthy();
+    expect(screen.getByText("提醒")).toBeTruthy();
+    expect(screen.getByText("周报 · 评审")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "编辑「整理产品周报」" })).toBeTruthy();
+
+    act(() => {
+      screen.getByRole("button", { name: "编辑「整理产品周报」" }).click();
+    });
+    expect(useUiStore.getState().editor.open).toBe(true);
+    expect(useUiStore.getState().editor.task?.id).toBe("t1");
+    expect(useUiStore.getState().tab).toBe("tasks");
   });
 
   it("分段筛选按范围读取必要结果：今日/日程/已完成各用自己的真实查询", async () => {
@@ -581,6 +662,8 @@ describe("Agent 面板", () => {
     expect(screen.getByText("等待处理")).toBeTruthy();
     expect(screen.getByText(/会话\s*2/)).toBeTruthy();
     expect(screen.getByText(/待确认 1 项/)).toBeTruthy();
+    // 待确认摘要直接取快照里的第一条，不再只有数量
+    expect(screen.getByText("确认删除旧表")).toBeTruthy();
     // 摘要行按真实状态分列（不把实例/会话总数算成「运行中」）
     const summary = container.querySelector(".cap-summary")?.textContent ?? "";
     expect(summary).toContain("运行中");
@@ -781,7 +864,8 @@ describe("应用面板", () => {
     render(<AppsLite />);
     await screen.findByText("Obsidian");
     act(() => screen.getByRole("button", { name: "启动 Obsidian" }).click());
-    await screen.findByText("Obsidian：找不到可执行文件");
+    // 与完整面板共用 resultMessage：失败同样带目标名，不拼第二套文案。
+    await screen.findByText("「Obsidian」跳转失败：找不到可执行文件");
   });
 
   it("读取失败且从未成功 → 错误空态 + 重试，不伪装成「尚未配置快捷应用」", async () => {
@@ -809,18 +893,24 @@ describe("应用面板", () => {
     expect(screen.queryByText("尚未配置快捷应用")).toBeNull();
   });
 
-  it("添加按钮始终可见（列表占满也不消失），点击写入一次性配置意图并切到设置页", async () => {
+  it("添加按钮始终可见（列表占满也不消失），点击进入应用中心添加页而不是设置页", async () => {
     useNavigationStore.setState({
       targets: Array.from({ length: 8 }, (_, i) => target(`a${i}`, `应用${i}`)),
       targetsLoaded: true,
     });
-    useUiStore.setState({ appConfig: null });
+    useUiStore.setState({ appConfig: null, appsAddRequest: null });
     render(<AppsLite />);
     await screen.findByText("应用0");
-    fireEvent.click(screen.getByRole("button", { name: "添加应用" }));
-    expect(screen.getByText("添加应用")).toBeTruthy();
-    expect(useUiStore.getState().appConfig?.kind).toBe("picker");
-    expect(useUiStore.getState().tab).toBe("settings");
+    const add = screen.getByRole("button", { name: "添加应用" });
+    // 纯加号入口：可见文字已移除，但可访问名称保留；图标直接铺在卡片单元里
+    expect(add.textContent).toBe("");
+    expect(add.querySelector(".cap-app-name")).toBeNull();
+    expect(add.querySelector("svg")).toBeTruthy();
+    expect(screen.queryByText("添加应用")).toBeNull();
+    fireEvent.click(add);
+    expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0);
+    expect(useUiStore.getState().appConfig).toBeNull();
+    expect(useUiStore.getState().tab).toBe("apps");
   });
 
   it("Lite 不再重复展示「最近使用」：同一应用只在网格出现一次", async () => {
@@ -856,6 +946,63 @@ describe("应用面板", () => {
     expect(order).toEqual(["启动 Obsidian", "启动 Chrome", "启动 网易云", "启动 微信"]);
   });
 
+  it("应用数量不再截断：50 个应用全部可滚动访问，添加入口仍在列表末尾", async () => {
+    useNavigationStore.setState({
+      targets: Array.from({ length: 50 }, (_, i) => target(`a${i}`, `应用${i}`)),
+      targetsLoaded: true,
+    });
+    render(<AppsLite />);
+    await screen.findByText("应用0");
+    // 不做虚拟列表：完整列表都渲染在同一个滚动容器里
+    const appButtons = screen.getAllByRole("button", { name: /^启动 / });
+    expect(appButtons).toHaveLength(50);
+    expect(screen.getByText("应用49")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "添加应用" })).toBeTruthy();
+    // 管理入口在固定底栏，不随内容滚走
+    expect(screen.getByRole("button", { name: "管理" })).toBeTruthy();
+  });
+
+  it("搜索结果不限于前 7 条：第 7 个之后的匹配目标也能命中", async () => {
+    useNavigationStore.setState({
+      targets: Array.from({ length: 20 }, (_, i) => target(`a${i}`, `工具${i}`)),
+      targetsLoaded: true,
+    });
+    render(<AppsLite />);
+    await screen.findByText("工具0");
+    const input = screen.getByLabelText("搜索快捷应用");
+    fireEvent.change(input, { target: { value: "工具15" } });
+    await waitFor(() => expect(screen.queryByText("工具0")).toBeNull());
+    expect(screen.getByText("工具15")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "添加应用" })).toBeTruthy();
+  });
+
+  it("网址/文件夹/文件超过 4 个也完整展示，并参与搜索", async () => {
+    useNavigationStore.setState({
+      targets: [
+        ...Array.from({ length: 6 }, (_, i) =>
+          target(`u${i}`, `站点${i}`, {
+            target_type: "url" as const,
+            url: `https://example.com/really/long/path/that/should/not/break/layout/${i}`,
+          }),
+        ),
+        target("f", "项目目录", { target_type: "directory" as const, path: "D:\\Projects\\Demo" }),
+        target("doc", "说明文档", { target_type: "file" as const, path: "D:\\Docs\\readme.md" }),
+      ],
+      targetsLoaded: true,
+    });
+    render(<AppsLite />);
+    expect(screen.getByText("网址 / 文件夹 / 文件")).toBeTruthy();
+    for (let i = 0; i < 6; i += 1) {
+      expect(screen.getByRole("button", { name: `打开 站点${i}` })).toBeTruthy();
+    }
+    expect(screen.getByRole("button", { name: "打开 项目目录" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "打开 说明文档" })).toBeTruthy();
+    const input = screen.getByLabelText("搜索快捷应用");
+    fireEvent.change(input, { target: { value: "站点5" } });
+    await waitFor(() => expect(screen.queryByText("站点0")).toBeNull());
+    expect(screen.getByText("站点5")).toBeTruthy();
+  });
+
   it("只展示普通应用：网址/文件夹单独分区，Agent 会话不混入应用网格", async () => {
     useNavigationStore.setState({
       targets: [
@@ -870,25 +1017,27 @@ describe("应用面板", () => {
     // 普通应用网格：启动语义
     expect(screen.getByRole("button", { name: "启动 Obsidian" })).toBeTruthy();
     // 网址/文件夹单独分区：打开语义，不进入 4 列应用网格
-    expect(screen.getByText("网址 / 文件夹")).toBeTruthy();
+    expect(screen.getByText("网址 / 文件夹 / 文件")).toBeTruthy();
     expect(screen.getByRole("button", { name: "打开 项目官网" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "启动 项目官网" })).toBeNull();
     expect(screen.queryByText("Agent 会话")).toBeNull();
   });
 
-  it("空状态「去配置」直接进入可添加应用界面；「管理」进入应用管理意图", async () => {
+  it("空状态「去添加」进入应用中心添加页；底部「管理」进入应用中心", async () => {
     useNavigationStore.setState({ targets: [], targetsLoaded: true, targetsError: null });
-    useUiStore.setState({ appConfig: null, tab: "tasks" });
+    useUiStore.setState({ appConfig: null, appsAddRequest: null, tab: "tasks" });
     render(<AppsLite />);
-    fireEvent.click(await screen.findByRole("button", { name: "去配置" }));
-    expect(useUiStore.getState().appConfig?.kind).toBe("picker");
-    expect(useUiStore.getState().tab).toBe("settings");
+    fireEvent.click(await screen.findByRole("button", { name: "去添加" }));
+    expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0);
+    expect(useUiStore.getState().appConfig).toBeNull();
+    expect(useUiStore.getState().tab).toBe("apps");
 
-    // 一次性意图消费后不会重复触发；「管理」写入新的 manage 意图
-    useUiStore.setState({ appConfig: null, tab: "tasks" });
-    fireEvent.click(screen.getByRole("button", { name: "管理快捷应用" }));
-    expect(useUiStore.getState().appConfig?.kind).toBe("manage");
-    expect(useUiStore.getState().tab).toBe("settings");
+    // 顶部重复的管理图标已删除，只保留底部「管理」；管理不写设置页意图。
+    useUiStore.setState({ appConfig: null, appsAddRequest: null, tab: "tasks" });
+    expect(screen.queryByRole("button", { name: "管理快捷应用" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "管理" }));
+    expect(useUiStore.getState().appConfig).toBeNull();
+    expect(useUiStore.getState().tab).toBe("apps");
   });
 
   it("启动成功后刷新共享目标（最近使用排序反映真实计数）", async () => {
@@ -899,7 +1048,7 @@ describe("应用面板", () => {
       actual_action: "focus_window",
       fallback_used: false,
       target_id: "a",
-      verification_level: "window",
+      verification_level: "window-confirmed",
     });
     navListTargets.mockResolvedValue([
       target("a", "Obsidian", { use_count: 1, last_used_at: iso(now) }),
@@ -907,8 +1056,146 @@ describe("应用面板", () => {
     render(<AppsLite />);
     await screen.findByText("Obsidian");
     fireEvent.click(screen.getByRole("button", { name: "启动 Obsidian" }));
-    await screen.findByText("已聚焦 Obsidian");
+    await screen.findByText("「Obsidian」已确认窗口");
     await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
+  });
+
+  it("启动只收到 requested-unverified 时显示「已请求，未核实」，不冒充确认成功", async () => {
+    navNavigate.mockResolvedValueOnce({
+      success: true,
+      message: "requested",
+      requested_action: "open",
+      actual_action: null,
+      fallback_used: true,
+      reason: "WA_INACTIVE",
+      target_id: "a",
+      verification_level: "requested-unverified",
+    });
+    navListTargets.mockResolvedValue([
+      target("a", "Obsidian", { use_count: 1, last_used_at: iso(now) }),
+    ]);
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    fireEvent.click(screen.getByRole("button", { name: "启动 Obsidian" }));
+    const msg = await screen.findByText("「Obsidian」已请求，未核实（WA_INACTIVE）");
+    expect(msg.textContent).not.toContain("已确认");
+  });
+
+  it("启动失败不触发成功后刷新，也不显示成功文案", async () => {
+    navNavigate.mockResolvedValueOnce({
+      success: false,
+      message: "not found",
+      requested_action: "open",
+      actual_action: null,
+      fallback_used: false,
+      reason: "找不到可执行文件",
+      target_id: "a",
+      verification_level: "none",
+    });
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    const loadCalls = navListTargets.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "启动 Obsidian" }));
+    await screen.findByText("「Obsidian」跳转失败：找不到可执行文件");
+    expect(navListTargets.mock.calls.length).toBe(loadCalls);
+  });
+
+  it("胶囊搜索框复用共享 SearchField：容器与输入类名符合内嵌输入规范", async () => {
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    const input = screen.getByLabelText("搜索快捷应用");
+    const container = input.closest(".ui-search");
+    expect(container?.classList.contains("search-box")).toBe(true);
+    expect(container?.classList.contains("ui-search--capsule")).toBe(true);
+    expect(input.classList.contains("input-embedded")).toBe(true);
+  });
+
+  it("删除按钮与启动按钮是并列兄弟，不存在 button 嵌套", async () => {
+    navListTargets.mockResolvedValue([target("a", "Obsidian"), target("b", "Notion")]);
+    const { container } = render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    const slots = container.querySelectorAll(".cap-app-slot");
+    expect(slots.length).toBe(2);
+    for (const slot of Array.from(slots)) {
+      const launch = slot.querySelector(".cap-app");
+      expect(launch?.querySelector("button")).toBeNull();
+      const del = slot.querySelector(".cap-app-del");
+      expect(del?.tagName).toBe("BUTTON");
+      expect(launch?.parentElement).toBe(del?.parentElement);
+    }
+  });
+
+  it("点击删除不会启动应用；取消不调用删除命令且保留应用项", async () => {
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    fireEvent.click(screen.getByRole("button", { name: "从快捷列表删除 Obsidian" }));
+    expect(navNavigate).not.toHaveBeenCalled();
+    await screen.findByText(/从快捷列表删除「Obsidian」/);
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(navDeleteTarget).not.toHaveBeenCalled();
+    expect(screen.getByText("Obsidian")).toBeTruthy();
+  });
+
+  it("确认删除调用 nav_delete_target，成功后移除并刷新任务关联", async () => {
+    navListTargets.mockResolvedValueOnce([target("a", "Obsidian")]);
+    navListTargets.mockResolvedValue([]);
+    navDeleteTarget.mockResolvedValue(undefined);
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    fireEvent.click(screen.getByRole("button", { name: "从快捷列表删除 Obsidian" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    await waitFor(() => expect(navDeleteTarget).toHaveBeenCalledWith("a"));
+    await waitFor(() => expect(screen.queryByText("Obsidian")).toBeNull());
+    expect(navAllTaskLinks).toHaveBeenCalled();
+    expect(navNavigate).not.toHaveBeenCalled();
+    await screen.findByText("目标已删除");
+  });
+
+  it("删除失败保留应用项并显示具体原因", async () => {
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    navDeleteTarget.mockRejectedValue(new Error("database is locked"));
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    fireEvent.click(screen.getByRole("button", { name: "从快捷列表删除 Obsidian" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    await screen.findByText(/删除失败/);
+    expect(screen.getByText("Obsidian")).toBeTruthy();
+  });
+
+  it("删除成功但刷新失败：本地隐藏并提示部分成功，不误报删除失败", async () => {
+    navListTargets.mockRejectedValue(new Error("ipc broken"));
+    navDeleteTarget.mockResolvedValue(undefined);
+    useNavigationStore.setState({
+      targets: [target("a", "Obsidian")],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    fireEvent.click(screen.getByRole("button", { name: "从快捷列表删除 Obsidian" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    await waitFor(() => expect(screen.queryByText("Obsidian")).toBeNull());
+    await screen.findByText("目标已删除，但列表刷新失败");
+    expect(screen.queryByText(/删除失败/)).toBeNull();
+  });
+
+  it("目标已不存在（NOT_FOUND）按删除完成处理并刷新", async () => {
+    navListTargets.mockResolvedValue([]);
+    navDeleteTarget.mockRejectedValue({ code: "NOT_FOUND", message: "目标不存在" });
+    useNavigationStore.setState({
+      targets: [target("a", "Obsidian")],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    fireEvent.click(screen.getByRole("button", { name: "从快捷列表删除 Obsidian" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除" }));
+    await screen.findByText("该快捷目标已不存在，列表已刷新");
+    await waitFor(() => expect(screen.queryByText("Obsidian")).toBeNull());
   });
 });
 

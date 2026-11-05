@@ -112,5 +112,41 @@ export function searchApps<T extends SearchableApp>(
   return ranked.map((r) => r.item);
 }
 
+/** 已保存快捷目标的最小排序字段（完整面板与胶囊共用，避免各自复制一套排序）。 */
+export interface TargetSortFields {
+  favorite?: boolean | null;
+  last_used_at?: string | null;
+  display_name: string;
+}
+
+/**
+ * 快捷目标展示排序：收藏优先 → 最近使用 → 名称。
+ * `recent: false` 用于没有最近使用语义的分区（如网址/文件夹）；
+ * `favorite: false` 用于「最近使用」筛选，保持该筛选自身的最近优先语义。
+ */
+export function compareTargetOrder(
+  a: TargetSortFields,
+  b: TargetSortFields,
+  opts?: { recent?: boolean; favorite?: boolean },
+): number {
+  if (opts?.favorite !== false) {
+    const byFavorite = Number(Boolean(b.favorite)) - Number(Boolean(a.favorite));
+    if (byFavorite !== 0) return byFavorite;
+  }
+  if (opts?.recent !== false) {
+    const byRecent = (b.last_used_at ?? "").localeCompare(a.last_used_at ?? "");
+    if (byRecent !== 0) return byRecent;
+  }
+  return a.display_name.localeCompare(b.display_name, "zh");
+}
+
+/** 返回排序后的新数组，不修改入参。 */
+export function sortTargetsForDisplay<T extends TargetSortFields>(
+  items: readonly T[],
+  opts?: { recent?: boolean; favorite?: boolean },
+): T[] {
+  return [...items].sort((a, b) => compareTargetOrder(a, b, opts));
+}
+
 /** 列表分页大小：不做「只给前 N 条」的假完整，滚到底部/点加载更多继续取。 */
 export const APP_PAGE_SIZE = 40;

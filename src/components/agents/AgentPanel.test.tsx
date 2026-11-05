@@ -235,6 +235,24 @@ describe("运行监控搜索", () => {
     expect(screen.getByText("Trae")).toBeTruthy();
   });
 
+  it("self-test-only 在监控行如实显示「仅自测通过 · 待真实事件」，不冒充已连接", async () => {
+    const s = snapshot();
+    s.runs = [];
+    useAgentsStore.setState({ snapshot: s, snapshotError: null });
+    ipc.discoveryScan.mockResolvedValue([
+      discovered({
+        source_id: "codex",
+        display_name: "Codex CLI",
+        health_state: "self-test-only",
+        real_event_seen: false,
+      }),
+    ]);
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    const name = await screen.findByText("Codex CLI");
+    expect(name.closest(".tree-agent")?.textContent).toContain("仅自测通过 · 待真实事件");
+  });
+
   it("通知定位清除冲突的搜索条件，仍能显示目标会话", async () => {
     render(<AgentPanel />);
     await screen.findByText("Codex CLI");

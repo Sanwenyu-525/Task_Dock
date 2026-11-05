@@ -14,8 +14,68 @@
 //! CSS 侧（根容器透明、装饰伪元素不绘制）由 `styles-themes.test.ts` 守卫。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { act } from "react";
+
+// Tauri 事件订阅桩：保留真实的「注册 → 反订阅」语义，测试可手动派发事件，
+// 也可断言卸载后监听是否真正释放（App 依赖 scope.dispose 释放全部订阅）。
+const bridgeMock = vi.hoisted(() => {
+  const handlers = new Map<string, (payload?: unknown) => void>();
+  const subscriptions: string[] = [];
+  const unlistened: string[] = [];
+  return {
+    handlers,
+    subscriptions,
+    unlistened,
+    /** 生成与 bridge.onXxx 同签名的订阅函数。 */
+    listener:
+      (event: string) =>
+      (cb: (payload?: unknown) => void): Promise<() => void> => {
+        subscriptions.push(event);
+        handlers.set(event, cb);
+        return Promise.resolve(() => {
+          unlistened.push(event);
+          if (handlers.get(event) === cb) handlers.delete(event);
+        });
+      },
+    emit(event: string, payload?: unknown) {
+      const cb = handlers.get(event);
+      if (!cb) throw new Error(`事件 ${event} 没有订阅者`);
+      cb(payload);
+    },
+    reset() {
+      handlers.clear();
+      subscriptions.length = 0;
+      unlistened.length = 0;
+    },
+  };
+});
+
+// 设置 store 最小替身：syncExternal 记录入参，供「后端事件 → store 同步」断言。
+const settingsMock = vi.hoisted(() => {
+  const syncCalls: Array<Record<string, unknown>> = [];
+  const state = {
+    settings: {
+      mode: "full",
+      snap_enabled: true,
+      actions_enabled: true,
+      material: "solid",
+      snap_display_mode: "capsule",
+    },
+    materialInfo: { resolved: "solid" },
+    load: () => undefined,
+    syncExternal: (patch: Record<string, unknown>) => {
+      syncCalls.push(patch);
+    },
+  };
+  return {
+    state,
+    syncCalls,
+    reset() {
+      syncCalls.length = 0;
+    },
+  };
+});
 
 // 重视图与副作用钩子全部替身：本测试只关心 App 的停靠外壳结构。
 vi.mock("@tauri-apps/api/window", () => ({
@@ -28,16 +88,17 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 vi.mock("./lib/bridge", () => ({
   notifyUiReady: async () => true,
-  onAgentChanged: async () => () => undefined,
-  onAppReady: async () => () => undefined,
-  onFocusQuickAdd: async () => () => undefined,
-  onModeChanged: async () => () => undefined,
-  onNotification: async () => () => undefined,
-  onNotificationNavigate: async () => () => undefined,
-  onQuickCaptureCreated: async () => () => undefined,
-  onReminderFired: async () => () => undefined,
-  onReminderSnoozed: async () => () => undefined,
-  onThemeChanged: async () => () => undefined,
+  onAgentChanged: bridgeMock.listener("agent-changed"),
+  onAppReady: bridgeMock.listener("app-ready"),
+  onFocusQuickAdd: bridgeMock.listener("focus-quick-add"),
+  onModeChanged: bridgeMock.listener("mode-changed"),
+  onNotification: bridgeMock.listener("notification"),
+  onNotificationNavigate: bridgeMock.listener("notification-navigate"),
+  onQuickCaptureCreated: bridgeMock.listener("quick-capture-created"),
+  onReminderFired: bridgeMock.listener("reminder-fired"),
+  onReminderSnoozed: bridgeMock.listener("reminder-snoozed"),
+  onSnapFormChanged: bridgeMock.listener("snap-form-changed"),
+  onThemeChanged: bridgeMock.listener("theme-changed"),
   undoSnooze: async () => [0, 0],
 }));
 
@@ -47,6 +108,9 @@ vi.mock("./hooks/useEdgeSnap", () => ({
 }));
 
 vi.mock("./store/useHotkeysStore", () => ({ useHotkeysRuntime: () => undefined }));
+// 外壳测试不覆盖音频通知：避免其真实订阅（useSettingsStore.subscribe / getState）
+// 在最小 store 替身上抛错，污染停靠态断言。
+vi.mock("./lib/audioNotification", () => ({ useAudioNotifications: () => undefined }));
 
 vi.mock("./components/TitleBar", () => ({ default: () => <div data-testid="titlebar" /> }));
 vi.mock("./components/MinimalView", () => ({ default: () => <div /> }));
@@ -64,17 +128,15 @@ vi.mock("./components/capsule/TasksLite", () => ({ default: () => <div /> }));
 vi.mock("./components/capsule/AgentsLite", () => ({ default: () => <div /> }));
 vi.mock("./components/capsule/ClipboardLite", () => ({ default: () => <div /> }));
 vi.mock("./components/capsule/AppsLite", () => ({ default: () => <div /> }));
+// 胶囊里的专注徽标会订阅 Tauri 事件：jsdom 无 IPC，隔离掉避免真实 listen。
+vi.mock("./components/focus/FocusCapsuleBadge", () => ({ default: () => null }));
 
 // 业务 store 换成最小替身：避免真实 action 调后端（未 mock 的桥接函数会抛错）。
 vi.mock("./store/useSettingsStore", () => {
-  const state = {
-    settings: { mode: "full", snap_enabled: true, actions_enabled: true, material: "solid" },
-    materialInfo: { resolved: "solid" },
-    load: () => undefined,
-    syncExternal: () => undefined,
-  };
-  const useSettingsStore = (sel: (s: typeof state) => unknown) => sel(state);
-  (useSettingsStore as unknown as { getState: () => typeof state }).getState = () => state;
+  const useSettingsStore = (sel: (s: typeof settingsMock.state) => unknown) =>
+    sel(settingsMock.state);
+  (useSettingsStore as unknown as { getState: () => typeof settingsMock.state }).getState = () =>
+    settingsMock.state;
   return { useSettingsStore };
 });
 
@@ -114,7 +176,7 @@ import DeferredView from "./components/DeferredView";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
 
 function setSnap(p: {
-  phase: "free" | "docked-visible" | "docked-hidden" | "docked-revealed";
+  phase: "free" | "docked-visible" | "docked-hidden" | "docked-revealed" | "docked-full";
   dockedEdge: "left" | "right" | "top" | "bottom" | null;
 }) {
   act(() => {
@@ -127,12 +189,22 @@ function setSnap(p: {
   });
 }
 
+/** 渲染 App 并等待桥接订阅全部兑现（listen 返回 Promise<UnlistenFn>）。 */
+async function renderApp() {
+  const utils = render(<App />);
+  await waitFor(() => expect(bridgeMock.handlers.has("snap-form-changed")).toBe(true));
+  return utils;
+}
+
 beforeEach(() => {
+  bridgeMock.reset();
+  settingsMock.reset();
   useEdgeSnapStore.getState().reset();
 });
 
 afterEach(() => {
   cleanup();
+  bridgeMock.reset();
   useEdgeSnapStore.getState().reset();
 });
 
@@ -170,13 +242,116 @@ describe("App · 停靠态外壳", () => {
     expect(container.querySelector(".capsule-panel")).toBeTruthy();
   });
 
-  it("只有相位没有停靠边：不进入胶囊模式（主界面保持可见）", () => {
+  it("只有相位没有停靠边：外壳仍按停靠收起，且不挂载空胶囊", () => {
     const { container } = render(<App />);
     setSnap({ phase: "docked-hidden", dockedEdge: null });
     const root = container.querySelector(".dock-window")!;
-    expect(root.className).not.toContain("is-capsule");
+    // 缺边是停靠期的不变量破损瞬时态：宁可短暂空白，也不让完整界面落进 Win32 残留裁剪区
+    //（右侧曾出现只露一条翼片却带着完整控件）。CapsuleDock 无 edge 时返回 null，不产生空胶囊。
+    expect(root.className).toContain("is-capsule");
     expect(container.querySelector(".capsule-dock")).toBeNull();
-    expect((container.querySelector(".dock-app") as HTMLElement).hasAttribute("inert")).toBe(false);
+    expect((container.querySelector(".dock-app") as HTMLElement).hasAttribute("inert")).toBe(true);
+  });
+
+  it("完整面板停靠：主界面保持可见，显示「收缩为胶囊」入口", () => {
+    const { container } = render(<App />);
+    setSnap({ phase: "docked-full", dockedEdge: "left" });
+    const root = container.querySelector(".dock-window")!;
+    expect(root.className).not.toContain("is-capsule");
+    const app = container.querySelector(".dock-app") as HTMLElement;
+    expect(app.hasAttribute("inert")).toBe(false);
+    expect(container.querySelector(".capsule-dock")).toBeNull();
+    // 完整面板停靠态：贴边悬浮一个收缩入口；停靠几何由引擎维持，四角热区不参与命中。
+    expect(container.querySelector(".cap-form-toggle")).toBeTruthy();
+    expect(container.querySelector(".resize-grip")).toBeNull();
+  });
+
+  it("停靠形态切换：完整面板 ↔ 胶囊随相位原地更新", () => {
+    const { container } = render(<App />);
+    setSnap({ phase: "docked-full", dockedEdge: "right" });
+    expect(container.querySelector(".cap-form-toggle")).toBeTruthy();
+    expect(container.querySelector(".capsule-dock")).toBeNull();
+
+    setSnap({ phase: "docked-hidden", dockedEdge: "right" });
+    expect(container.querySelector(".dock-window")!.className).toContain("is-capsule");
+    expect(container.querySelector(".capsule-dock")).toBeTruthy();
+    expect(container.querySelector(".cap-form-toggle")).toBeNull();
+
+    setSnap({ phase: "docked-full", dockedEdge: "right" });
+    expect(container.querySelector(".dock-window")!.className).not.toContain("is-capsule");
+    expect(container.querySelector(".cap-form-toggle")).toBeTruthy();
+    expect(container.querySelector(".capsule-dock")).toBeNull();
+  });
+});
+
+describe("App · 形态按钮只切换本次停靠会话", () => {
+  it("胶囊「完整面板」走会话级 formSwitch，不触碰设置更新", () => {
+    const formSwitch = vi.fn();
+    const { container } = render(<App />);
+    act(() => useEdgeSnapStore.setState({ formSwitch }));
+    setSnap({ phase: "docked-revealed", dockedEdge: "left" });
+    const button = container.querySelector(".cap-form") as HTMLButtonElement;
+    expect(button).toBeTruthy();
+    fireEvent.click(button);
+    // 入口只表达「本次停靠会话切到完整面板」；长期偏好由设置页/右键菜单负责。
+    expect(formSwitch).toHaveBeenCalledWith("full");
+    expect(settingsMock.syncCalls).toHaveLength(0);
+  });
+
+  it("完整面板「收缩为胶囊」走会话级 formSwitch，不触碰设置更新", () => {
+    const formSwitch = vi.fn();
+    const { container } = render(<App />);
+    act(() => useEdgeSnapStore.setState({ formSwitch }));
+    setSnap({ phase: "docked-full", dockedEdge: "right" });
+    const button = container.querySelector(".cap-form-toggle") as HTMLButtonElement;
+    expect(button).toBeTruthy();
+    fireEvent.click(button);
+    expect(formSwitch).toHaveBeenCalledWith("capsule");
+    expect(settingsMock.syncCalls).toHaveLength(0);
+  });
+});
+
+describe("App · 吸附形态事件同步", () => {
+  it("snap-form-changed=full：同步 snap_display_mode=full", async () => {
+    await renderApp();
+    act(() => bridgeMock.emit("snap-form-changed", "full"));
+    expect(settingsMock.syncCalls).toEqual([{ snap_display_mode: "full" }]);
+  });
+
+  it("snap-form-changed=capsule：同步 snap_display_mode=capsule", async () => {
+    await renderApp();
+    act(() => bridgeMock.emit("snap-form-changed", "capsule"));
+    expect(settingsMock.syncCalls).toEqual([{ snap_display_mode: "capsule" }]);
+  });
+
+  it("未知取值按胶囊归一，避免写入非法形态", async () => {
+    await renderApp();
+    act(() => bridgeMock.emit("snap-form-changed", "bogus"));
+    expect(settingsMock.syncCalls).toEqual([{ snap_display_mode: "capsule" }]);
+  });
+
+  it("每次事件只同步一次（订阅不重复、不叠加）", async () => {
+    await renderApp();
+    expect(bridgeMock.subscriptions.filter((e) => e === "snap-form-changed")).toHaveLength(1);
+    act(() => {
+      bridgeMock.emit("snap-form-changed", "full");
+      bridgeMock.emit("snap-form-changed", "capsule");
+    });
+    expect(settingsMock.syncCalls).toEqual([
+      { snap_display_mode: "full" },
+      { snap_display_mode: "capsule" },
+    ]);
+  });
+
+  it("卸载时释放订阅：unlisten 被调用且事件不再送达", async () => {
+    const { unmount } = await renderApp();
+    expect(bridgeMock.handlers.has("snap-form-changed")).toBe(true);
+    unmount();
+    // 传输层已完成反订阅：unlisten 被调用，事件路由里不再有该监听。
+    expect(bridgeMock.unlistened).toContain("snap-form-changed");
+    expect(bridgeMock.handlers.has("snap-form-changed")).toBe(false);
+    expect(() => bridgeMock.emit("snap-form-changed", "full")).toThrow(/没有订阅者/);
+    expect(settingsMock.syncCalls).toHaveLength(0);
   });
 });
 

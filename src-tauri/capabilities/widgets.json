@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "widgets",
+  "description": "桌面微件独立窗口的最小能力集：只允许事件与自身拖动，不继承主窗口的插件权限。",
+  "windows": ["widget-*"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-start-dragging"
+  ]
+}

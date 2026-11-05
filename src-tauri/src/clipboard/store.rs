@@ -11,12 +11,13 @@ use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
-use super::engine::{self, GroupAction};
+use super::engine::{self, CollectFamily, GroupAction, GroupCandidate, GroupSession};
 use super::image;
 use super::{
     CaptureOutcome, CapturedContent, CleanupReport, ClearReport, ClipboardGroup,
-    ClipboardGroupPage, ClipboardItem, ClipboardStats, ClipboardView, DeleteReport, KIND_FILES,
-    KIND_IMAGE, MAX_HTML_BYTES, MAX_TEXT_BYTES,
+    ClipboardGroupPage, ClipboardItem, ClipboardStats, ClipboardView, DeleteReport,
+    GroupKindCounts, KIND_FILES, KIND_IMAGE, KIND_URL, MAX_AUTO_GROUP_ITEMS, MAX_HTML_BYTES,
+    MAX_TEXT_BYTES,
 };
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
@@ -75,31 +76,36 @@ fn map_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
 }
 
 fn map_page_item(row: &Row<'_>) -> rusqlite::Result<ClipboardItem> {
-    let preview: String = row.get(2)?;
-    let raw_paths: String = row.get(10)?;
+    map_page_item_at(row, 0)
+}
+
+/// `offset` 用于在查询前额外选择分组 id 等列（封面查询）。
+fn map_page_item_at(row: &Row<'_>, offset: usize) -> rusqlite::Result<ClipboardItem> {
+    let preview: String = row.get(offset + 2)?;
+    let raw_paths: String = row.get(offset + 10)?;
     Ok(ClipboardItem {
-        id: row.get(0)?,
-        kind: row.get(1)?,
+        id: row.get(offset)?,
+        kind: row.get(offset + 1)?,
         // 分页不读正文：text 与列表接口一致地回填 preview，html 恒为空。
         text: preview.clone(),
         html: String::new(),
         preview,
-        title: row.get(3)?,
-        title_source: row.get(4)?,
-        byte_size: row.get(5)?,
-        source_app: row.get(6)?,
-        source_title: row.get(7)?,
-        image_width: row.get::<_, Option<i64>>(8)?.map(|v| v.max(0) as u32),
-        image_height: row.get::<_, Option<i64>>(9)?.map(|v| v.max(0) as u32),
+        title: row.get(offset + 3)?,
+        title_source: row.get(offset + 4)?,
+        byte_size: row.get(offset + 5)?,
+        source_app: row.get(offset + 6)?,
+        source_title: row.get(offset + 7)?,
+        image_width: row.get::<_, Option<i64>>(offset + 8)?.map(|v| v.max(0) as u32),
+        image_height: row.get::<_, Option<i64>>(offset + 9)?.map(|v| v.max(0) as u32),
         file_paths: serde_json::from_str(&raw_paths).unwrap_or_default(),
-        favorite: row.get::<_, i64>(11)? != 0,
-        pinned: row.get::<_, i64>(12)? != 0,
-        copy_count: row.get(13)?,
-        created_at: row.get(14)?,
-        last_seen_at: row.get(15)?,
-        has_image: row.get::<_, i64>(16)? != 0,
-        has_thumb: row.get::<_, i64>(17)? != 0,
-        source_kind: row.get(18)?,
+        favorite: row.get::<_, i64>(offset + 11)? != 0,
+        pinned: row.get::<_, i64>(offset + 12)? != 0,
+        copy_count: row.get(offset + 13)?,
+        created_at: row.get(offset + 14)?,
+        last_seen_at: row.get(offset + 15)?,
+        has_image: row.get::<_, i64>(offset + 16)? != 0,
+        has_thumb: row.get::<_, i64>(offset + 17)? != 0,
+        source_kind: row.get(offset + 18)?,
     })
 }
 
@@ -117,8 +123,72 @@ fn map_group(row: &Row<'_>) -> rusqlite::Result<ClipboardGroup> {
         item_count: row.get(9)?,
         image_count: row.get(10)?,
         preview: row.get(11)?,
+        kind_counts: GroupKindCounts::default(),
+        cover_items: Vec::new(),
         items: Vec::new(),
     })
+}
+
+/// 为分组列表批量补充类型计数与封面（两次批量查询，避免 N+1）。
+///
+/// 只读取轻量元数据：封面最多每组 3 张图片，且不读取正文与原图字节。
+fn enrich_groups(conn: &Connection, groups: &mut [ClipboardGroup]) -> AppResult<()> {
+    if groups.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<String> = groups.iter().map(|g| g.id.clone()).collect();
+    let placeholders = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
+    let args: Vec<Value> = ids.iter().cloned().map(Value::Text).collect();
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT gi.group_id, i.kind, COUNT(*) FROM clipboard_group_items gi
+         JOIN clipboard_items i ON i.id = gi.item_id
+         WHERE gi.group_id IN ({placeholders}) GROUP BY gi.group_id, i.kind"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+    })?;
+    let mut counts: std::collections::HashMap<String, GroupKindCounts> = Default::default();
+    for r in rows {
+        let (gid, kind, n) = r?;
+        let entry = counts.entry(gid).or_default();
+        match kind.as_str() {
+            KIND_IMAGE => entry.image = n,
+            "html" => entry.html = n,
+            KIND_URL => entry.url = n,
+            KIND_FILES => entry.files = n,
+            _ => entry.text += n,
+        }
+    }
+    for g in groups.iter_mut() {
+        if let Some(c) = counts.remove(&g.id) {
+            g.kind_counts = c;
+        }
+    }
+
+    // 每组最多 3 张封面：窗口函数在 SQL 阶段限制，避免把大组的所有图片元数据带回来。
+    let mut stmt = conn.prepare(&format!(
+        "SELECT x.group_id, {PAGE_ITEM_FIELDS} FROM (
+           SELECT gi.group_id, gi.item_id,
+             ROW_NUMBER() OVER (PARTITION BY gi.group_id ORDER BY gi.position) AS rn
+           FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+           WHERE gi.group_id IN ({placeholders}) AND i.kind = 'image'
+         ) x JOIN clipboard_items i ON i.id = x.item_id WHERE x.rn <= 3"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(args.iter()), |r| {
+        Ok((r.get::<_, String>(0)?, map_page_item_at(r, 1)?))
+    })?;
+    let mut covers: std::collections::HashMap<String, Vec<ClipboardItem>> = Default::default();
+    for r in rows {
+        let (gid, item) = r?;
+        covers.entry(gid).or_default().push(item);
+    }
+    for g in groups.iter_mut() {
+        if let Some(c) = covers.remove(&g.id) {
+            g.cover_items = c;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -255,6 +325,7 @@ pub fn list_groups(db: &Db, filter: &ClipboardFilter) -> AppResult<Vec<Clipboard
         for r in rows {
             out.push(r?);
         }
+        enrich_groups(conn, &mut out)?;
         Ok(out)
     })
 }
@@ -275,7 +346,16 @@ pub fn get_group(db: &Db, group_id: &str) -> AppResult<ClipboardGroup> {
         ))?;
         let rows = stmt.query_map(params![group_id], map_item)?;
         for r in rows {
-            group.items.push(r?);
+            let item: ClipboardItem = r?;
+            group.kind_counts.add(&item.kind);
+            if item.kind == KIND_IMAGE && group.cover_items.len() < 3 {
+                group.cover_items.push(ClipboardItem {
+                    text: item.preview.clone(),
+                    html: String::new(),
+                    ..item.clone()
+                });
+            }
+            group.items.push(item);
         }
         Ok(group)
     })
@@ -593,47 +673,119 @@ fn find_by_hash(db: &Db, hash: &str) -> AppResult<Option<ClipboardItem>> {
     })
 }
 
-type OpenGroup = Option<(
-    String,
-    Option<DateTime<Utc>>,
-    usize,
-    Option<String>,
-    String,
-)>;
+struct OpenGroup {
+    id: String,
+    family: CollectFamily,
+    has_image: bool,
+    last_at: Option<DateTime<Utc>>,
+    item_count: usize,
+    last_source_app: Option<String>,
+    last_source_known: bool,
+    last_image_source_app: Option<String>,
+    last_image_source_known: bool,
+    name_source: String,
+}
 
-/// 当前收集中的自动分组：id、最后一张截图时间、条数、组内最后一张截图的来源应用、名称来源。
-fn open_group(conn: &Connection) -> AppResult<OpenGroup> {
-    let row: Option<(String, Option<String>, i64, Option<String>, String)> = conn
+/// 当前收集中的自动分组：家族、最后一条内容（任意类型）时间与来源、组内条数。
+fn open_group(conn: &Connection) -> AppResult<Option<OpenGroup>> {
+    let row: Option<(String, Option<String>, Option<String>, Option<String>, i64, Option<String>, Option<String>, Option<String>, String)> = conn
         .query_row(
             "SELECT g.id,
-                (SELECT MAX(i.created_at) FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
-                 WHERE gi.group_id = g.id AND i.kind = 'image') AS last_image,
+                (SELECT i.created_at FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = g.id ORDER BY gi.position DESC LIMIT 1) AS last_at,
+                (SELECT i.kind FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = g.id ORDER BY gi.position DESC LIMIT 1) AS last_kind,
+                (SELECT i.source_app FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = g.id ORDER BY gi.position DESC LIMIT 1) AS last_source,
                 (SELECT COUNT(*) FROM clipboard_group_items gi WHERE gi.group_id = g.id) AS cnt,
                 (SELECT i.source_app FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
                  WHERE gi.group_id = g.id AND i.kind = 'image' ORDER BY gi.position DESC LIMIT 1) AS image_source,
+                (SELECT i.source_kind FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = g.id ORDER BY gi.position DESC LIMIT 1) AS last_source_kind,
+                (SELECT i.source_kind FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                 WHERE gi.group_id = g.id AND i.kind = 'image' ORDER BY gi.position DESC LIMIT 1) AS image_source_kind,
                 g.name_source
              FROM clipboard_groups g WHERE g.status = 'collecting'
              ORDER BY g.updated_at DESC LIMIT 1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            },
         )
         .optional()?;
-    Ok(row.map(|(id, last, cnt, src, name_source)| {
-        (
-            id,
-            last.and_then(|s| {
-                DateTime::parse_from_rfc3339(&s)
-                    .ok()
-                    .map(|d| d.with_timezone(&Utc))
-            }),
-            cnt.max(0) as usize,
-            src,
-            name_source,
-        )
+    let Some((
+        id,
+        last_at,
+        last_kind,
+        last_source,
+        cnt,
+        image_source,
+        last_source_kind,
+        image_source_kind,
+        name_source,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let last_family = last_kind
+        .as_deref()
+        .map(CollectFamily::of_kind)
+        .unwrap_or(CollectFamily::Text);
+    let has_image = image_source.is_some();
+    // 家族按「组内是否已有该类内容」判定，用于命名与兼容比较；图片优先，
+    // 其次文件，再次文本，最后链接。
+    let family_sql: (bool, bool) = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                    WHERE gi.group_id = ?1 AND i.kind IN ('text','html')),
+                EXISTS(SELECT 1 FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+                    WHERE gi.group_id = ?1 AND i.kind = 'files')",
+        params![id],
+        |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, i64>(1)? != 0)),
+    )?;
+    let family = if has_image {
+        CollectFamily::Image
+    } else if family_sql.1 {
+        CollectFamily::File
+    } else if family_sql.0 {
+        CollectFamily::Text
+    } else if last_family == CollectFamily::Text {
+        CollectFamily::Link
+    } else {
+        last_family
+    };
+    Ok(Some(OpenGroup {
+        id,
+        family,
+        has_image,
+        last_at: last_at.as_deref().and_then(parse_iso),
+        item_count: cnt.max(0) as usize,
+        last_source_known: source_app_is_known(last_source.as_deref().unwrap_or(""))
+            && source_kind_is_known(last_source_kind.as_deref().unwrap_or("")),
+        last_source_app: last_source,
+        last_image_source_known: source_app_is_known(image_source.as_deref().unwrap_or(""))
+            && source_kind_is_known(image_source_kind.as_deref().unwrap_or("")),
+        last_image_source_app: image_source,
+        name_source,
     }))
 }
 
-/// 时间兜底命名的组在关闭收集时补上图片数量；用户改名的组（manual）不参与。
+fn parse_iso(raw: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
+}
+
+/// 时间兜底命名的组在关闭收集时补上数量；用户改名的组（manual）不参与。
 fn finalize_auto_group_name(conn: &Connection, group_id: &str) -> AppResult<()> {
     let name: Option<(String, String)> = conn
         .query_row(
@@ -648,17 +800,29 @@ fn finalize_auto_group_name(conn: &Connection, group_id: &str) -> AppResult<()> 
     if source != "auto_time" {
         return Ok(());
     }
-    let images: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
-         WHERE gi.group_id = ?1 AND i.kind = 'image'",
+    let (images, files, total): (i64, i64, i64) = conn.query_row(
+        "SELECT
+           COALESCE(SUM(CASE WHEN i.kind = 'image' THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN i.kind = 'files' THEN 1 ELSE 0 END), 0),
+           COUNT(*)
+         FROM clipboard_group_items gi JOIN clipboard_items i ON i.id = gi.item_id
+         WHERE gi.group_id = ?1",
         params![group_id],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let images = images.max(0) as usize;
-    if images == 0 {
+    // 数量单位随内容类型变化：截图组「张」、文件组「个文件」、其余「项」。
+    let (count, unit) = if images > 0 {
+        (images, "张")
+    } else if files > 0 {
+        (files, "个文件")
+    } else {
+        (total, "项")
+    };
+    let count = count.max(0) as usize;
+    if count == 0 {
         return Ok(());
     }
-    let finalized = engine::finalize_time_group_name(&name, images);
+    let finalized = engine::finalize_time_group_name(&name, count, unit);
     conn.execute(
         "UPDATE clipboard_groups SET name = ?1, updated_at = ?2 WHERE id = ?3 AND name_source = 'auto_time'",
         params![finalized, crate::agents::now_iso(), group_id],
@@ -693,6 +857,152 @@ fn close_all_collecting(conn: &Connection) -> AppResult<()> {
         params![now],
     )?;
     Ok(())
+}
+
+// ── 连续收集候选（轻量元数据，不持有正文/图片）────────────────
+
+const CANDIDATE_KEY: &str = "clipboard_group_candidate";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CandidateRow {
+    item_id: String,
+    /// image | text | link | file
+    family: String,
+    at: String,
+    source_app: String,
+    source_known: bool,
+    /// 写入候选的进程标识：重启后旧候选不再续用。
+    boot: String,
+}
+
+/// 进程级启动标识：跨重启的候选一律失效（与自动收集会话重启后关闭保持一致）。
+fn boot_id() -> &'static str {
+    static BOOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BOOT.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
+fn family_code(family: CollectFamily) -> &'static str {
+    match family {
+        CollectFamily::Image => "image",
+        CollectFamily::Text => "text",
+        CollectFamily::Link => "link",
+        CollectFamily::File => "file",
+    }
+}
+
+fn family_from_code(code: &str) -> CollectFamily {
+    match code {
+        "image" => CollectFamily::Image,
+        "link" => CollectFamily::Link,
+        "file" => CollectFamily::File,
+        _ => CollectFamily::Text,
+    }
+}
+
+fn read_candidate(conn: &Connection) -> AppResult<Option<CandidateRow>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM application_settings WHERE key = ?1",
+            params![CANDIDATE_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(raw.and_then(|s| serde_json::from_str::<CandidateRow>(&s).ok()))
+}
+
+fn clear_candidate(conn: &Connection) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM application_settings WHERE key = ?1",
+        params![CANDIDATE_KEY],
+    )?;
+    Ok(())
+}
+
+/// 读取可用候选：启动标识不匹配、条目已删除时自动清理。
+fn load_candidate(conn: &Connection) -> AppResult<Option<CandidateRow>> {
+    let Some(row) = read_candidate(conn)? else {
+        return Ok(None);
+    };
+    if row.boot != boot_id() {
+        clear_candidate(conn)?;
+        return Ok(None);
+    }
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM clipboard_items WHERE id = ?1)",
+        params![row.item_id],
+        |r| Ok(r.get::<_, i64>(0)? != 0),
+    )?;
+    if !exists {
+        clear_candidate(conn)?;
+        return Ok(None);
+    }
+    Ok(Some(row))
+}
+
+fn save_candidate(
+    conn: &Connection,
+    item_id: &str,
+    family: CollectFamily,
+    at: &str,
+    source_app: &str,
+    source_known: bool,
+) -> AppResult<()> {
+    let row = CandidateRow {
+        item_id: item_id.to_string(),
+        family: family_code(family).to_string(),
+        at: at.to_string(),
+        source_app: source_app.to_string(),
+        source_known,
+        boot: boot_id().to_string(),
+    };
+    conn.execute(
+        "INSERT INTO application_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        params![
+            CANDIDATE_KEY,
+            serde_json::to_string(&row)?,
+            crate::agents::now_iso()
+        ],
+    )?;
+    Ok(())
+}
+
+/// 候选条目是否已被归入任意分组（手动整理过就不要再并入自动组）。
+fn item_grouped(conn: &Connection, item_id: &str) -> AppResult<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM clipboard_group_items WHERE item_id = ?1)",
+        params![item_id],
+        |r| Ok(r.get::<_, i64>(0)? != 0),
+    )?)
+}
+
+/// 候选条目中最可靠的来源主题（自动标题优先，其次来源窗口标题、摘要）。
+fn candidate_topic(conn: &Connection, item_id: &str) -> AppResult<Option<String>> {
+    let row: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT title, source_title, preview FROM clipboard_items WHERE id = ?1",
+            params![item_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    Ok(row.and_then(|(title, source_title, preview)| {
+        [title, source_title, preview]
+            .into_iter()
+            .find(|s| !s.trim().is_empty())
+    }))
+}
+
+/// 两个内容家族合成一个组时的命名家族：图片优先，其次文件、链接、文本。
+fn name_family(first: CollectFamily, second: CollectFamily) -> CollectFamily {
+    if first == CollectFamily::Image || second == CollectFamily::Image {
+        CollectFamily::Image
+    } else if first == CollectFamily::File || second == CollectFamily::File {
+        CollectFamily::File
+    } else if first == CollectFamily::Link && second == CollectFamily::Link {
+        CollectFamily::Link
+    } else {
+        CollectFamily::Text
+    }
 }
 
 fn next_group_seq(conn: &Connection) -> AppResult<i64> {
@@ -875,61 +1185,135 @@ pub fn record_capture(
         }
 
         let open = open_group(&tx)?;
-        let (open_id, last_image, count, image_source, open_name_source) = match open {
-            Some(v) => (Some(v.0), v.1, v.2, v.3, v.4),
-            None => (None, None, 0, None, String::new()),
+        let candidate = load_candidate(&tx)?;
+        let candidate_at = candidate.as_ref().and_then(|c| parse_iso(&c.at));
+        let source_known =
+            source_app_is_known(&p.source_app) && source_kind_is_known(&p.source_kind);
+        let action = {
+            let session = open.as_ref().map(|o| GroupSession {
+                family: o.family,
+                has_image: o.has_image,
+                last_at: o.last_at,
+                item_count: o.item_count,
+                last_source_app: o.last_source_app.as_deref(),
+                last_source_known: o.last_source_known,
+                last_image_source_app: o.last_image_source_app.as_deref(),
+                last_image_source_known: o.last_image_source_known,
+                name_source: &o.name_source,
+            });
+            let candidate_view = candidate.as_ref().zip(candidate_at).map(|(c, at)| GroupCandidate {
+                item_id: &c.item_id,
+                family: family_from_code(&c.family),
+                at,
+                source_app: &c.source_app,
+                source_known: c.source_known,
+            });
+            engine::decide_group(
+                &p.kind,
+                settings.clipboard_auto_group,
+                now,
+                settings.clipboard_group_window_secs as i64,
+                session.as_ref(),
+                candidate_view.as_ref(),
+                &p.source_app,
+                source_known,
+            )
         };
-        let action = engine::decide_group(
-            &p.kind,
-            settings.clipboard_auto_group,
-            now,
-            settings.clipboard_group_window_secs as i64,
-            last_image,
-            count,
-            &p.source_app,
-            image_source.as_deref(),
-        );
+        let window = Duration::seconds(settings.clipboard_group_window_secs.max(1) as i64);
+        let session_stale = open
+            .as_ref()
+            .map(|o| {
+                o.item_count >= MAX_AUTO_GROUP_ITEMS
+                    || o.last_at.map(|t| now - t > window).unwrap_or(true)
+            })
+            .unwrap_or(false);
+        let item_family = CollectFamily::of_kind(&p.kind);
         let group_id = match action {
             GroupAction::Append => {
-                if let Some(gid) = open_id {
-                    append_group_item(&tx, &gid, &item_id, "auto", &now_iso)?;
+                if let Some(o) = open.as_ref() {
+                    append_group_item(&tx, &o.id, &item_id, "auto", &now_iso)?;
                     // 关联文本主题只在时间兜底组上生效：可靠来源标题优先，
                     // 用户手动改名（manual）永不自动覆盖。
-                    if open_name_source == "auto_time" && !matches!(p.kind.as_str(), KIND_IMAGE | KIND_FILES) {
+                    if o.name_source == "auto_time"
+                        && !matches!(p.kind.as_str(), KIND_IMAGE | KIND_FILES)
+                    {
                         let topic_src = if p.text.trim().is_empty() { &p.preview } else { &p.text };
                         if let Some(topic) = engine::group_topic(topic_src) {
-                            let name = format!(
-                                "截图 · {}",
-                                engine::truncate_chars(&topic, engine::MAX_GROUP_TOPIC_CHARS)
-                            );
+                            let name = engine::topic_group_name(o.family, &topic);
                             tx.execute(
                                 "UPDATE clipboard_groups SET name = ?1, name_source = 'auto_source', updated_at = ?2
                                  WHERE id = ?3 AND name_source = 'auto_time'",
-                                params![name, now_iso, gid],
+                                params![name, now_iso, o.id],
                             )?;
                         }
                     }
-                    Some(gid)
+                    clear_candidate(&tx)?;
+                    Some(o.id.clone())
                 } else {
                     None
                 }
             }
-            GroupAction::Create => {
-                close_all_collecting(&tx)?;
-                let _seq = next_group_seq(&tx)?;
-                let (name, name_source) =
-                    engine::screenshot_group_name(Some(&p.source_title), &engine::local_time_label());
-                let gid = create_group_row(&tx, &name, name_source, "auto", "collecting", &now_iso)?;
-                append_group_item(&tx, &gid, &item_id, "auto", &now_iso)?;
-                Some(gid)
+            GroupAction::CreateWithCandidate => {
+                // 候选条目可能已被手动整理或删除：不再并入自动组。
+                let candidate_ok = match candidate.as_ref() {
+                    Some(c) => !item_grouped(&tx, &c.item_id)? && candidate_at.is_some(),
+                    None => false,
+                };
+                if candidate_ok {
+                    close_all_collecting(&tx)?;
+                    let cand = candidate.as_ref().expect("candidate checked");
+                    let first_family = family_from_code(&cand.family);
+                    let topic = candidate_topic(&tx, &cand.item_id)?;
+                    let _seq = next_group_seq(&tx)?;
+                    let (name, name_source) = engine::auto_group_name(
+                        name_family(first_family, item_family),
+                        topic.as_deref(),
+                        &engine::local_time_label(),
+                    );
+                    let gid =
+                        create_group_row(&tx, &name, name_source, "auto", "collecting", &now_iso)?;
+                    append_group_item(&tx, &gid, &cand.item_id, "auto", &now_iso)?;
+                    append_group_item(&tx, &gid, &item_id, "auto", &now_iso)?;
+                    clear_candidate(&tx)?;
+                    Some(gid)
+                } else {
+                    clear_candidate(&tx)?;
+                    save_candidate(
+                        &tx,
+                        &item_id,
+                        item_family,
+                        &now_iso,
+                        &p.source_app,
+                        source_known,
+                    )?;
+                    None
+                }
             }
-            GroupAction::None => {
-                // 文本追加失败时若窗口已过期，顺手结束残留的收集会话
-                if let (Some(gid), Some(last)) = (open_id, last_image) {
-                    if now - last > Duration::seconds(settings.clipboard_group_window_secs as i64) {
-                        close_group_conn(&tx, &gid)?;
+            GroupAction::Candidate => {
+                // 不能并入：结束已满额/过期的收集会话，当前条目成为新候选。
+                if session_stale {
+                    if let Some(o) = open.as_ref() {
+                        close_group_conn(&tx, &o.id)?;
                     }
                 }
+                save_candidate(
+                    &tx,
+                    &item_id,
+                    item_family,
+                    &now_iso,
+                    &p.source_app,
+                    source_known,
+                )?;
+                None
+            }
+            GroupAction::None => {
+                if session_stale {
+                    if let Some(o) = open.as_ref() {
+                        close_group_conn(&tx, &o.id)?;
+                    }
+                }
+                // 自动分组关闭时不保留候选。
+                clear_candidate(&tx)?;
                 None
             }
         };
@@ -1138,6 +1522,12 @@ fn delete_items_conn(conn: &Connection, ids: &[String]) -> AppResult<(i64, Vec<S
             params![gid],
         )?;
         conn.execute("DELETE FROM clipboard_groups WHERE id = ?1", params![gid])?;
+    }
+    // 候选条目被删除后不再续用，避免下一条相关内容并入已不存在的内容。
+    if let Some(cand) = read_candidate(conn)? {
+        if ids.iter().any(|id| id == &cand.item_id) {
+            clear_candidate(conn)?;
+        }
     }
     Ok((deleted, paths))
 }
@@ -1924,7 +2314,7 @@ pub fn cleanup(db: &Db, root: &Path, settings: &Settings) -> AppResult<CleanupRe
         bytes_freed: 0,
         orphan_files_removed: 0,
     };
-    // 1) 关闭过期的自动收集会话（最后一张截图早于分组窗口）
+    // 1) 关闭过期的自动收集会话（最后一条内容早于分组窗口，任意内容类型）
     let closed = db.with_conn(|conn| {
         let cutoff = (Utc::now()
             - Duration::seconds(settings.clipboard_group_window_secs.max(1) as i64))
@@ -1934,12 +2324,32 @@ pub fn cleanup(db: &Db, root: &Path, settings: &Settings) -> AppResult<CleanupRe
              WHERE status = 'collecting' AND COALESCE(
                (SELECT MAX(i.created_at) FROM clipboard_group_items gi
                 JOIN clipboard_items i ON i.id = gi.item_id
-                WHERE gi.group_id = clipboard_groups.id AND i.kind = 'image'), updated_at) < ?2",
+                WHERE gi.group_id = clipboard_groups.id), updated_at) < ?2",
             params![crate::agents::now_iso(), cutoff],
         )?;
         Ok(n as i64)
     })?;
     report.groups_closed = closed;
+    // 过期候选不会在下次采集时续用；这里顺手清理，避免长期占用设置表。
+    db.with_conn(|conn| {
+        let cutoff = (Utc::now()
+            - Duration::seconds(settings.clipboard_group_window_secs.max(1) as i64))
+        .to_rfc3339();
+        if let Some(cand) = read_candidate(conn)? {
+            let expired = parse_iso(&cand.at)
+                .map(|at| at.to_rfc3339() < cutoff)
+                .unwrap_or(true);
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM clipboard_items WHERE id = ?1)",
+                params![cand.item_id],
+                |r| Ok(r.get::<_, i64>(0)? != 0),
+            )?;
+            if expired || !exists || cand.boot != boot_id() {
+                clear_candidate(conn)?;
+            }
+        }
+        Ok(())
+    })?;
 
     // 2) 保留期 + 条数上限 + 资产容量（收藏/置顶不参与）
     let (ids, freed, asset_paths) = db.with_conn(|conn| {
@@ -2421,7 +2831,18 @@ mod tests {
         let mut img = solid_image([200, 100, 40, 255], 30, 20);
         img.source_title = String::new();
         let first = record_capture(&db, &root.0, &img, &s).unwrap();
-        let gid = first.group_id.expect("截图必须建组");
+        assert!(first.group_id.is_none(), "首条截图只成为候选");
+        // 标题、来源标题与摘要都不可靠时，候选没有可用主题。
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE clipboard_items SET title = '', preview = '' WHERE id = ?1",
+                params![first.item.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let second = record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
+        let gid = second.group_id.expect("同来源的第二张截图应建组");
         let g = get_group(&db, &gid).unwrap();
         assert!(g.name.starts_with("截图 · "), "不得再使用「截图组 N」: {}", g.name);
         assert!(!g.name.contains("截图组"), "{}", g.name);
@@ -2624,11 +3045,14 @@ mod tests {
         let root = TempRoot::new();
         let mut s = settings();
         s.clipboard_group_window_secs = 45;
-        let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
-        let gid = a.group_id.expect("截图应建组");
+        let first = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
+        assert!(first.group_id.is_none(), "首张截图只成为候选");
         let mut note1 = text_payload("第一段说明");
         note1.source_app = "snippingtool.exe".into();
-        record_capture(&db, &root.0, &note1, &s).unwrap();
+        let gid = record_capture(&db, &root.0, &note1, &s)
+            .unwrap()
+            .group_id
+            .expect("第二项应与候选一起建组");
         record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
         let mut note2 = text_payload("第二段说明");
         note2.source_app = "snippingtool.exe".into();
@@ -2652,14 +3076,15 @@ mod tests {
         let root = TempRoot::new();
         let mut s = settings();
         s.clipboard_group_window_secs = 45;
-        let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
-        let gid = a.group_id.expect("截图应建组");
+        let first = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
+        assert!(first.group_id.is_none(), "首张截图只成为候选");
 
         // 「截图 A → 文字 → 截图 B」：文字来自其他应用也必须留在截图流里，
         // 不能用来源应用把用户真实顺序拆散。
         let mut note = text_payload("来自其他应用的说明文字");
         note.source_app = "chrome.exe".into();
         let out = record_capture(&db, &root.0, &note, &s).unwrap();
+        let gid = out.group_id.clone().expect("第二项应与候选一起建组");
         assert!(out.created);
         assert_eq!(
             out.group_id.as_deref(),
@@ -2683,16 +3108,31 @@ mod tests {
         );
         assert_eq!(g.image_count, 2);
 
-        // 另一张图片且来源明确不同 → 视为新截图会话，旧组结束
+        // 另一张图片且来源明确不同 → 先成为候选，不进入当前截图组
         let mut foreign = image_payload(3);
         foreign.source_app = "chrome.exe".into();
         let d = record_capture(&db, &root.0, &foreign, &s).unwrap();
-        let new_gid = d.group_id.expect("异来源图片应另建截图组");
+        assert!(
+            d.group_id.is_none(),
+            "异来源图片先成为候选，不得混入当前截图组"
+        );
+        let old = get_group(&db, &gid).unwrap();
+        assert_eq!(old.items.len(), 4, "旧截图组的顺序与内容不得被改变");
+        assert!(
+            old.items.iter().all(|i| i.id != d.item.id),
+            "异来源图片不得进入旧组"
+        );
+        // 旧会话结束后，同来源的下一条图片与候选一起成组。
+        close_group(&db, &gid).unwrap();
+        let mut foreign2 = image_payload(4);
+        foreign2.source_app = "chrome.exe".into();
+        let e = record_capture(&db, &root.0, &foreign2, &s).unwrap();
+        let new_gid = e.group_id.expect("同来源的第二张图片应与候选成组");
         assert_ne!(new_gid, gid, "不同来源的图片不得混入同一截图组");
         let old = get_group(&db, &gid).unwrap();
         assert_eq!(old.status, "closed", "旧截图会话必须结束");
         let new = get_group(&db, &new_gid).unwrap();
-        assert_eq!(new.items.len(), 1);
+        assert_eq!(new.items.len(), 2);
     }
 
     #[test]
@@ -2762,20 +3202,27 @@ mod tests {
         let mut s = settings();
         s.clipboard_group_window_secs = 5;
         let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
-        let g1 = a.group_id.unwrap();
+        assert!(a.group_id.is_none(), "首张截图只成为候选");
+        let b = record_capture(&db, &root.0, &image_payload(9), &s).unwrap();
+        let g1 = b.group_id.expect("同来源的第二张截图应建组");
         db.with_conn(|c| {
             c.execute(
                 "UPDATE clipboard_items SET created_at = ?1 WHERE id = ?2",
-                params![(Utc::now() - Duration::seconds(10)).to_rfc3339(), a.item.id],
+                params![
+                    (Utc::now() - Duration::seconds(10)).to_rfc3339(),
+                    b.item.id
+                ],
             )?;
             Ok(())
         })
         .unwrap();
-        let b = record_capture(&db, &root.0, &image_payload(9), &s).unwrap();
-        let g2 = b.group_id.unwrap();
-        assert_ne!(g1, g2);
+        let c = record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
+        assert!(c.group_id.is_none(), "超窗口的截图只成为候选");
         let first = get_group(&db, &g1).unwrap();
         assert_eq!(first.status, "closed", "过期后旧组自动结束");
+        let d = record_capture(&db, &root.0, &image_payload(3), &s).unwrap();
+        let g2 = d.group_id.expect("同来源的第二张截图应建新组");
+        assert_ne!(g1, g2);
     }
 
     #[test]
@@ -3423,10 +3870,13 @@ mod tests {
         let mut s = settings();
         s.clipboard_group_window_secs = 45;
         let first = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
-        let gid = first.group_id.expect("截图应建组");
+        assert!(first.group_id.is_none(), "首张截图只成为候选");
         let mut note = text_payload("说明");
         note.source_app = "snippingtool.exe".into();
-        record_capture(&db, &root.0, &note, &s).unwrap();
+        let gid = record_capture(&db, &root.0, &note, &s)
+            .unwrap()
+            .group_id
+            .expect("第二项应与候选一起建组");
         record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
 
         let full = get_group(&db, &gid).unwrap();
@@ -3467,12 +3917,15 @@ mod tests {
         let root = TempRoot::new();
         let s = settings();
         let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
+        assert!(a.group_id.is_none(), "首张截图只成为候选");
+        let b = record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
+        let gid = b.group_id.expect("同来源的第二张截图应建组");
         db.with_conn(|c| {
             c.execute("DROP TABLE clipboard_group_items", [])?;
             Ok(())
         })
         .unwrap();
-        let failed = get_group_page(&db, &a.group_id.unwrap(), Some(1), Some(0), true);
+        let failed = get_group_page(&db, &gid, Some(1), Some(0), true);
         assert!(failed.is_err(), "底层读取失败必须返回错误");
     }
 

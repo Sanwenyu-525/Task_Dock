@@ -11,16 +11,26 @@ import { useLocale } from "../../hooks/useLocale";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { openFullApp } from "../capsule/actions";
 
-export default function AgentStatusWidget() {
+export interface AgentStatusWidgetProps {
+  /** 独立桌面窗口：打开主窗口 Agent 页；默认使用本窗口导航。 */
+  onOpenAgents?: () => void;
+  /** 独立桌面窗口不得自行 load（否则每个窗口启动一套刷新），由主窗口快照注入。 */
+  autoLoad?: boolean;
+}
+
+export default function AgentStatusWidget({ onOpenAgents, autoLoad = true }: AgentStatusWidgetProps) {
   const { t } = useLocale();
   const snapshot = useAgentsStore((s) => s.snapshot);
   const snapshotError = useAgentsStore((s) => s.snapshotError);
   const load = useAgentsStore((s) => s.load);
 
   // 首次挂载若还没有快照，复用既有 load（单飞刷新）；之后完全由全局事件驱动。
+  // 桌面微件窗口关闭 autoLoad：数据统一由主窗口出版本快照，避免多 WebView 重复扫描。
   useEffect(() => {
-    if (!snapshot) void load();
-  }, [snapshot, load]);
+    if (autoLoad && !snapshot) void load();
+  }, [autoLoad, snapshot, load]);
+
+  const openAgents = () => (onOpenAgents ? onOpenAgents() : openFullApp("agents"));
 
   const summary = liveSummary(snapshot);
   const runs = attentionRuns(snapshot?.runs ?? [], Date.now(), 3);
@@ -57,7 +67,7 @@ export default function AgentStatusWidget() {
                 <button
                   className="widget-row"
                   aria-label={t("widgets.agentStatus.openRunAria", { title: runTitle })}
-                  onClick={() => openFullApp("agents")}
+                  onClick={openAgents}
                 >
                   <span className={`widget-state-dot state-${run.status}`} aria-hidden="true" />
                   <span className="widget-task-title">{runTitle}</span>
@@ -92,7 +102,7 @@ export default function AgentStatusWidget() {
       )}
 
       <div className="widget-foot">
-        <button className="widget-link" onClick={() => openFullApp("agents")}>
+        <button className="widget-link" onClick={openAgents}>
           {t("widgets.agentStatus.openPanel")}
         </button>
       </div>

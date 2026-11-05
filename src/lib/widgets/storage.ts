@@ -6,8 +6,21 @@
 //! 持久化只保存布局（enabled / config / size / sort_order），不保存业务数据。
 
 import { normalizeLayout, type WidgetItem } from "./model";
+import {
+  WIDGETS_STORAGE_KEY,
+  onWidgetsLayoutApplied,
+  schedulePreferencesMirror,
+} from "../userPreferences";
 
-export const WIDGETS_STORAGE_KEY = "taskdock.widgets.layout.v1";
+// 存储键与镜像逻辑统一放在 userPreferences，避免语言/微件各维护一份常量。
+export { WIDGETS_STORAGE_KEY };
+/** 恢复流程替换 localStorage 布局后通知 Store 重新读取（同一事件只订阅一次）。 */
+export const onLayoutReplaced = onWidgetsLayoutApplied;
+/**
+ * 布局版本保持 1：`desktop` 字段是对 v1 的**增量扩展**，旧版本读取时忽略未知字段、
+ * 新版本读取旧数据时由 normalizeLayout 补齐安全默认，双向可读。只有破坏性字段
+ * 变更（例如把 widgets 数组改成对象）才允许升版本并在此处加迁移分支。
+ */
 const LAYOUT_VERSION = 1;
 
 export interface WidgetStorageAdapter {
@@ -72,12 +85,19 @@ export function readStoredLayout(): WidgetItem[] | null {
   }
 }
 
-export function persistLayout(widgets: WidgetItem[]): void {
+/**
+ * 写回完整布局。返回是否真正写入：失败时 Store 会暴露 `persistError`，
+ * 管理页明确提示「仅本次会话有效」，不静默假装已保存。
+ */
+export function persistLayout(widgets: WidgetItem[]): boolean {
   const active = adapter ?? createLocalAdapter();
-  if (!active) return;
+  if (!active) return false;
   try {
     active.write(widgets);
+    // 防抖镜像到数据目录 preferences.json，供备份/恢复使用。
+    schedulePreferencesMirror();
+    return true;
   } catch {
-    // 写入失败只影响持久化，不影响当前交互。
+    return false;
   }
 }

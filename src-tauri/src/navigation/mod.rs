@@ -149,10 +149,8 @@ pub fn validate_exe_path(raw: &str) -> AppResult<std::path::PathBuf> {
         return Err(AppError::Validation("可执行路径为空".into()));
     }
     if !p.is_absolute() {
-        return Err(AppError::Validation(format!(
-            "可执行路径必须是绝对路径: {}",
-            raw
-        )));
+        // 用户可见原因不携带原始路径（本地目录信息只进技术日志）。
+        return Err(AppError::Validation("可执行路径必须是绝对路径".into()));
     }
     let lower = raw.trim().to_ascii_lowercase();
     if !lower.ends_with(".exe") {
@@ -169,7 +167,7 @@ pub fn validate_exe_path(raw: &str) -> AppResult<std::path::PathBuf> {
         )));
     }
     if !p.exists() {
-        return Err(AppError::Validation(format!("程序不存在: {}", raw)));
+        return Err(AppError::Validation("程序不存在或已被移动".into()));
     }
     Ok(p)
 }
@@ -306,10 +304,10 @@ pub fn validate_local_path(raw: &str) -> AppResult<std::path::PathBuf> {
         return Err(AppError::Validation("路径为空".into()));
     }
     if !p.is_absolute() {
-        return Err(AppError::Validation(format!("必须是绝对路径: {}", raw)));
+        return Err(AppError::Validation("必须以绝对路径给出本地文件或目录".into()));
     }
     if !p.exists() {
-        return Err(AppError::Validation(format!("路径不存在: {}", raw)));
+        return Err(AppError::Validation("本地文件或目录不存在或已被移动".into()));
     }
     Ok(p)
 }

@@ -3,9 +3,9 @@
 //! 目的：锁定本次回归核对的关键契约，防止并行会话更新统计时发生静默漂移：
 //! - CORE_FEATURE_IDS 恰好 12 项，ID、标题、顺序固定；
 //! - 12 项核心 P0=5 / P1=5 / P2=2；全局搜索固定 P1；核心项状态集合固定；
-//! - 目录 28 项，状态 implemented=4 / partial=10 / planned=14 / blocked=0
-//!   （v0.9：一键工作流 planned → partial，进入场景步骤待场景工作区）；
-//! - Gemini CLI 保持 planned（不重新登记为受阻）。
+//! - 目录 28 项，状态 implemented=12 / partial=13 / planned=3 / blocked=0
+//!   （2026-11-05：Claude Code / Cursor / Gemini CLI 适配器已落地，planned → implemented）；
+//! - Gemini CLI 为 implemented + unverified（真实会话未联调，不登记为受阻）。
 //!
 //! 本文件只校验数据，不渲染面板；面板交互由既有
 //! src/components/roadmap/FeatureRoadmapPanel.test.tsx（16 用例）覆盖。
@@ -142,7 +142,7 @@ describe("12 项核心功能精确契约", () => {
 });
 
 describe("全目录统计契约", () => {
-  it("目录总数 28，状态计数 implemented=9 / partial=13 / planned=6 / blocked=0", () => {
+  it("目录总数 28，状态计数 implemented=12 / partial=13 / planned=3 / blocked=0", () => {
     expect(FEATURE_CATALOG).toHaveLength(28);
     const counts: Record<FeatureStatus, number> = {
       implemented: 0,
@@ -151,7 +151,7 @@ describe("全目录统计契约", () => {
       blocked: 0,
     };
     for (const f of FEATURE_CATALOG) counts[f.status] += 1;
-    expect(counts).toEqual({ implemented: 9, partial: 13, planned: 6, blocked: 0 });
+    expect(counts).toEqual({ implemented: 12, partial: 13, planned: 3, blocked: 0 });
   });
 
   it("摘要函数与目录实际计数一致（total / coreTotal / 状态 / 验证）", () => {
@@ -177,10 +177,10 @@ describe("全目录统计契约", () => {
     expect(summary.verified + summary.unverified).toBe(summary.total);
   });
 
-  it("目录中不存在 blocked 项，Gemini CLI 保持 planned 且无 blockedReason", () => {
+  it("目录中不存在 blocked 项，Gemini CLI 为 implemented + unverified 且无 blockedReason", () => {
     expect(FEATURE_CATALOG.filter((f) => f.status === "blocked")).toHaveLength(0);
     const gemini = getFeatureById("agent.gemini-cli");
-    expect(gemini?.status).toBe("planned");
+    expect(gemini?.status).toBe("implemented");
     expect(gemini?.verification).toBe("unverified");
     expect(gemini?.blockedReason).toBeUndefined();
   });

@@ -141,9 +141,69 @@ pub struct ClipboardGroup {
     pub item_count: i64,
     pub image_count: i64,
     pub preview: String,
+    /// 组内各内容类型的数量（列表/详情接口都填充，用于卡片类型化预览）。
+    #[serde(default)]
+    pub kind_counts: GroupKindCounts,
+    /// 代表性图片条目（按组内顺序最多 3 条，只含轻量元数据，不含原图/正文）。
+    #[serde(default)]
+    pub cover_items: Vec<ClipboardItem>,
     /// 仅详情接口填充；列表接口为空
     #[serde(default)]
     pub items: Vec<ClipboardItem>,
+}
+
+/// 分组内容类型计数：卡片按类型渲染预览，不依赖加载全部条目。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GroupKindCounts {
+    #[serde(default)]
+    pub image: i64,
+    #[serde(default)]
+    pub text: i64,
+    #[serde(default)]
+    pub html: i64,
+    #[serde(default)]
+    pub url: i64,
+    #[serde(default)]
+    pub files: i64,
+}
+
+impl GroupKindCounts {
+    /// 按条目类型累加（详情接口从已加载条目直接统计）。
+    pub fn add(&mut self, kind: &str) {
+        match kind {
+            KIND_IMAGE => self.image += 1,
+            KIND_TEXT | "rich_text" => self.text += 1,
+            KIND_HTML => self.html += 1,
+            KIND_URL => self.url += 1,
+            KIND_FILES => self.files += 1,
+            _ => self.text += 1,
+        }
+    }
+
+    pub fn total(&self) -> i64 {
+        self.image + self.text + self.html + self.url + self.files
+    }
+}
+
+/// 分组卡片展示的内容家族（由类型计数推导，前端与命名共用语义）。
+impl GroupKindCounts {
+    pub fn family(&self) -> &'static str {
+        if self.image > 0 && self.total() > self.image {
+            "mixed"
+        } else if self.image > 0 {
+            "image"
+        } else if self.files > 0 && self.total() == self.files {
+            "files"
+        } else if self.files > 0 {
+            "mixed"
+        } else if self.url > 0 && self.total() == self.url {
+            "link"
+        } else if self.url > 0 {
+            "mixed"
+        } else {
+            "text"
+        }
+    }
 }
 
 /// Lite 分组分页视图：只返回当页条目（不含完整正文与原图字节）。

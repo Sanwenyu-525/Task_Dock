@@ -1,0 +1,465 @@
+//! 桌面微件独立窗口宿主。
+//!
+//! 设计约束：
+//! - 本窗口**不**挂载主窗口 `App.tsx`，只负责「读快照 → 渲染 → 上报几何」；
+//! - 数据所有者是主窗口 `WidgetDesktopBridge`；这里不直接查询 SQLite、不启动扫描器；
+//! - 快照带单调递增 `revision`，旧快照一律丢弃（窗口重建/竞态兜底）；
+//! - 拖动/缩放由 `onMoved`/`onResized` 去抖后上报一次，Rust 负责物理坐标与 DPI 换算；
+//! - 关闭 = 销毁 WebView（不隐藏常驻），下次显示由主窗口重新创建。
+
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { AlertTriangle, Loader2, Pin, PinOff, RefreshCw, X } from "lucide-react";
+
+import { getSettings } from "../lib/bridge";
+import { errorMessage } from "../lib/errors";
+import { useLocale } from "../hooks/useLocale";
+import { createSubscriptionScope } from "../lib/subscriptions";
+import { resolveSecondaryPreset, resolveTheme, resolveVisualPreset } from "../lib/theme";
+import {
+  isNewerRevision,
+  typeFromWindowLabel,
+  type DesktopActionKind,
+  type DesktopWidgetSnapshot,
+  type WidgetSnapshotEnvelope,
+} from "../lib/widgets/desktop";
+import {
+  dismissWidgetWindow,
+  dispatchWidgetAction,
+  getWidgetWindowInfo,
+  onWidgetSnapshot,
+  requestWidgetSnapshot,
+  reportWidgetBounds,
+  setWidgetTopmost,
+} from "../lib/widgets/desktopBridge";
+import { widgetDefinition, type WidgetType } from "../lib/widgets/model";
+import type {
+  EfficiencySnapshot,
+  EfficiencySource,
+  FocusSnapshot,
+  WidgetSource,
+} from "../lib/widgets/sources";
+import { useAgentsStore } from "../store/useAgentsStore";
+import { useTasksStore } from "../store/useTasksStore";
+import AgentStatusWidget from "../components/widgets/AgentStatusWidget";
+import { EfficiencyWidget, FocusTimerWidget } from "../components/widgets/DependencyWidgets";
+import { ReminderBody } from "../components/widgets/NextReminderWidget";
+import QuickActionsWidget from "../components/widgets/QuickActionsWidget";
+import TodayTasksWidget from "../components/widgets/TodayTasksWidget";
+
+/** 拖动/缩放停止后再上报，避免每帧调用 IPC 与写盘。 */
+const BOUNDS_DEBOUNCE_MS = 350;
+/** 首帧快照等待上限；超时只提示并可手动重试，不启动轮询。 */
+const CONNECT_TIMEOUT_MS = 4000;
+
+function createRelay<T>(): { source: WidgetSource<T>; push: (value: T | null) => void } {
+  let value: T | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    source: {
+      getSnapshot: () => value,
+      subscribe: (onChange) => {
+        listeners.add(onChange);
+        return () => listeners.delete(onChange);
+      },
+    },
+    push: (next) => {
+      if (next === value) return;
+      value = next;
+      for (const listener of listeners) listener();
+    },
+  };
+}
+
+// 专注/效率在本窗口没有独立 Store：主窗口把快照推进来，这里只做稳定引用转发。
+const focusRelay = createRelay<FocusSnapshot>();
+const efficiencyRelay = createRelay<EfficiencySnapshot>();
+const efficiencySource: EfficiencySource = {
+  ...efficiencyRelay.source,
+  // 重试只刷新数据，不唤回主窗口（Rust 侧对数据类动作不显示主窗）。
+  retry: () => {
+    void dispatchWidgetAction("retry-efficiency").catch(() => {});
+  },
+};
+
+export default function WidgetWindow() {
+  const { t } = useLocale();
+
+  // label 在 WebView 创建时即确定，不依赖 URL query。
+  const type = useMemo<WidgetType | null>(() => {
+    if (!isTauri()) return null;
+    try {
+      return typeFromWindowLabel(getCurrentWindow().label);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const [snapshot, setSnapshot] = useState<DesktopWidgetSnapshot | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
+  const [listenError, setListenError] = useState(false);
+  const [connectAttempt, setConnectAttempt] = useState(0);
+  const [topmost, setTopmost] = useState(false);
+  /** 置顶/关闭等窗口命令失败：必须在窗口内给出可操作反馈，不能静默失败。 */
+  const [actionError, setActionError] = useState<string | null>(null);
+  const revisionRef = useRef(-1);
+  const timeoutRef = useRef<number | null>(null);
+
+  const [themeSnap, setThemeSnap] = useState<{
+    theme: string;
+    visualPreset: string;
+    material: string;
+  } | null>(null);
+  const [prefersDark, setPrefersDark] = useState(() => {
+    try {
+      return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+    } catch {
+      return false;
+    }
+  });
+
+  const act = useCallback(
+    (action: DesktopActionKind, options: { tab?: string; taskId?: string } = {}) => {
+      void dispatchWidgetAction(action, options).catch(() => {});
+    },
+    [],
+  );
+
+  // —— 主题：与主窗口/通知窗口同一事实来源，打开中的微件随设置实时切换 ——
+  const loadTheme = useCallback(() => {
+    void getSettings()
+      .then((settings) => {
+        setThemeSnap({
+          theme: settings.theme,
+          visualPreset: settings.visual_preset ?? "",
+          material: settings.material,
+        });
+      })
+      .catch(() => {
+        // 读取失败时保持系统明暗；下次主题事件会再次校正。
+      });
+  }, []);
+
+  useEffect(() => {
+    loadTheme();
+    const scope = createSubscriptionScope();
+    scope.add(
+      listen<string>("theme-changed", (event) =>
+        setThemeSnap((current) => (current ? { ...current, theme: event.payload } : current)),
+      ),
+    );
+    scope.add(
+      listen<string>("visual-preset-changed", (event) =>
+        setThemeSnap((current) =>
+          current ? { ...current, visualPreset: event.payload } : current,
+        ),
+      ),
+    );
+    scope.add(
+      listen<string>("material-changed", (event) =>
+        setThemeSnap((current) => (current ? { ...current, material: event.payload } : current)),
+      ),
+    );
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const onSystemTheme = (event: MediaQueryListEvent) => setPrefersDark(event.matches);
+    media?.addEventListener("change", onSystemTheme);
+    return () => {
+      scope.dispose();
+      media?.removeEventListener("change", onSystemTheme);
+    };
+  }, [loadTheme]);
+
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const resolvedTheme = resolveTheme(themeSnap?.theme ?? "system", { prefersDark });
+    // 独立窗口需要可读底：清透预设映射到液态玻璃，不跟随主窗口全透明。
+    root.dataset.preset = resolveSecondaryPreset(
+      resolveVisualPreset(themeSnap?.visualPreset ?? ""),
+    );
+    root.dataset.theme = resolvedTheme;
+    root.dataset.material = themeSnap?.material ?? "glass";
+  }, [themeSnap, prefersDark]);
+
+  // —— 快照订阅：带 revision 守卫；超时只提示，不轮询 ——
+  const armTimeout = useCallback(() => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+    setTimedOut(false);
+    timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = null;
+      setTimedOut(true);
+    }, CONNECT_TIMEOUT_MS);
+  }, []);
+
+  /** 重试 = 重新走一遍「注册监听 → 请求首帧」，同时覆盖监听失败与超时两种状态。 */
+  const retryConnect = useCallback(() => {
+    setListenError(false);
+    setTimedOut(false);
+    setConnectAttempt((attempt) => attempt + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!type) return;
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+
+    const connect = async () => {
+      let un: UnlistenFn;
+      try {
+        un = await onWidgetSnapshot((envelope: WidgetSnapshotEnvelope) => {
+          if (disposed || envelope.widgetType !== type) return;
+          if (!isNewerRevision(revisionRef.current, envelope.revision)) return;
+          revisionRef.current = envelope.revision;
+          if (timeoutRef.current !== null) {
+            window.clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+          }
+          setSnapshot(envelope.snapshot);
+          setTimedOut(false);
+        });
+      } catch {
+        if (!disposed) {
+          setListenError(true);
+          setTimedOut(false);
+        }
+        return;
+      }
+      if (disposed) {
+        un();
+        return;
+      }
+      unlisten = un;
+      // 监听注册成功后才请求首帧：否则主窗口可能先把快照发在一个尚未订阅的窗口里。
+      armTimeout();
+      void requestWidgetSnapshot().catch(() => {
+        if (!disposed) setTimedOut(true);
+      });
+    };
+
+    void connect();
+    return () => {
+      disposed = true;
+      unlisten?.();
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    };
+  }, [type, connectAttempt, armTimeout]);
+
+  // —— 初始置顶状态：由 Rust 回报，避免界面与真实窗口不一致 ——
+  useEffect(() => {
+    if (!type) return;
+    let disposed = false;
+    void getWidgetWindowInfo()
+      .then((info) => {
+        if (!disposed) setTopmost(info.topmost);
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, [type]);
+
+  // —— 拖动/缩放上报：仅停止后一次；物理坐标与显示器由 Rust 计算 ——
+  useEffect(() => {
+    if (!type || !isTauri()) return;
+    let timer: number | null = null;
+    let disposed = false;
+    let unMove: UnlistenFn | null = null;
+    let unResize: UnlistenFn | null = null;
+
+    const schedule = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void reportWidgetBounds().catch(() => {});
+      }, BOUNDS_DEBOUNCE_MS);
+    };
+
+    const win = getCurrentWindow();
+    void win.onMoved(schedule).then((un) => {
+      if (disposed) un();
+      else unMove = un;
+    });
+    void win.onResized(schedule).then((un) => {
+      if (disposed) un();
+      else unResize = un;
+    });
+
+    return () => {
+      disposed = true;
+      unMove?.();
+      unResize?.();
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [type]);
+
+  // —— 快照落地：今日任务 / Agent 注入本窗口 Store 后复用现有组件 ——
+  useEffect(() => {
+    if (!snapshot) return;
+    switch (snapshot.widgetType) {
+      case "today-tasks":
+        useTasksStore.setState({
+          tasks: snapshot.tasks,
+          stats: snapshot.stats,
+          statsError: snapshot.statsError,
+          error: snapshot.error,
+          loading: snapshot.loading ?? false,
+        });
+        break;
+      case "agent-status":
+        useAgentsStore.setState({
+          snapshot: snapshot.snapshot,
+          snapshotError: snapshot.snapshotError,
+        });
+        break;
+      case "focus-timer":
+        focusRelay.push(snapshot.available ? snapshot.snapshot : null);
+        break;
+      case "efficiency":
+        efficiencyRelay.push(snapshot.available ? snapshot.snapshot : null);
+        break;
+      default:
+        break;
+    }
+  }, [snapshot]);
+
+  const toggleTopmost = useCallback(() => {
+    const next = !topmost;
+    setActionError(null);
+    setTopmost(next);
+    void setWidgetTopmost(next).catch((error: unknown) => {
+      // 真实置顶状态未改变：回退 UI，并提示失败原因。
+      setTopmost(topmost);
+      setActionError(t("widgetWindow.topmostFailed", { message: errorMessage(error) }));
+    });
+  }, [t, topmost]);
+
+  const close = useCallback(() => {
+    setActionError(null);
+    void dismissWidgetWindow().catch((error: unknown) => {
+      // 销毁失败时窗口仍在：不伪装成已关闭，给出重试入口（再次点击关闭）。
+      setActionError(t("widgetWindow.closeFailed", { message: errorMessage(error) }));
+    });
+  }, [t]);
+
+  if (!type) {
+    return (
+      <div className="wd-root">
+        <div className="wd-surface wd-message">
+          <AlertTriangle size={18} aria-hidden="true" />
+          <span>{t("widgetWindow.invalid")}</span>
+        </div>
+      </div>
+    );
+  }
+
+  const title = t(widgetDefinition(type).titleKey);
+
+  function renderBody() {
+    if (!snapshot) {
+      return (
+        <div className="wd-state" role="status">
+          {listenError || timedOut ? (
+            <>
+              <AlertTriangle size={16} aria-hidden="true" />
+              <span>{t(listenError ? "widgetWindow.listenFailed" : "widgetWindow.timeout")}</span>
+              <button type="button" className="wd-retry" onClick={retryConnect}>
+                <RefreshCw size={11} aria-hidden="true" /> {t("widgetWindow.retry")}
+              </button>
+            </>
+          ) : (
+            <>
+              <Loader2 size={16} className="spin" aria-hidden="true" />
+              <span>{t("widgetWindow.waiting")}</span>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    switch (snapshot.widgetType) {
+      case "today-tasks":
+        return (
+          <TodayTasksWidget
+            config={{ maxItems: snapshot.configMaxItems }}
+            onOpenTask={(task) => act("open-task", { taskId: task.id })}
+            onOpenPanel={() => act("open-panel", { tab: "tasks" })}
+          />
+        );
+      case "next-reminder":
+        return (
+          <ReminderBody
+            items={snapshot.items}
+            error={snapshot.error}
+            onRetry={() => act("refresh-reminder")}
+            onManage={() => act("manage-reminders")}
+          />
+        );
+      case "agent-status":
+        return <AgentStatusWidget autoLoad={false} onOpenAgents={() => act("open-agents")} />;
+      case "quick-actions":
+        return <QuickActionsWidget onAction={(key) => act(key)} />;
+      case "focus-timer":
+        return <FocusTimerWidget source={focusRelay.source} />;
+      case "efficiency":
+        return <EfficiencyWidget source={efficiencySource} />;
+      default:
+        return null;
+    }
+  }
+
+  return (
+    <div className="wd-root">
+      <div className="wd-surface" role="region" aria-label={title}>
+        <header className="wd-header">
+          <div className="wd-drag" data-tauri-drag-region>
+            <span className="wd-title">{title}</span>
+          </div>
+          <div className="wd-tools">
+            <button
+              type="button"
+              className={`wd-btn ${topmost ? "is-on" : ""}`}
+              aria-label={t(
+                topmost ? "widgetWindow.topmostOnAria" : "widgetWindow.topmostOffAria",
+                { title },
+              )}
+              aria-pressed={topmost}
+              onClick={toggleTopmost}
+            >
+              {topmost ? (
+                <Pin size={12} aria-hidden="true" />
+              ) : (
+                <PinOff size={12} aria-hidden="true" />
+              )}
+            </button>
+            <button
+              type="button"
+              className="wd-btn wd-close"
+              aria-label={t("widgetWindow.closeAria", { title })}
+              onClick={close}
+            >
+              <X size={12} aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+        {actionError && (
+          <div className="wd-action-error" role="alert">
+            <AlertTriangle size={12} aria-hidden="true" />
+            <span className="wd-action-error-text">{actionError}</span>
+            <button
+              type="button"
+              className="wd-action-error-close"
+              onClick={() => setActionError(null)}
+            >
+              {t("common.close")}
+            </button>
+          </div>
+        )}
+        <div className="wd-body">{renderBody()}</div>
+      </div>
+    </div>
+  );
+}

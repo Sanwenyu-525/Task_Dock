@@ -28,8 +28,10 @@ import { reportError } from "./lib/errorReport";
 import CapsuleDock from "./components/capsule/CapsuleDock";
 import DockFormToggle from "./components/capsule/DockFormToggle";
 import WindowResizeGrips from "./components/WindowResizeGrips";
+import WidgetDesktopBridge from "./components/widgets/WidgetDesktopBridge";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
 import { isCapsuleMode, measureTitlebarHeight } from "./lib/edgeSnap";
+import { resolveWindowMode } from "./lib/windowMode";
 import { createSubscriptionScope } from "./lib/subscriptions";
 import { setWindowEscapeHandler } from "./lib/overlayStack";
 import {
@@ -48,8 +50,11 @@ import {
   undoSnooze,
 } from "./lib/bridge";
 import { useCaptureStore } from "./store/useCaptureStore";
+import { useAudioNotifications } from "./lib/audioNotification";
 
 export default function App() {
+  // 统一音频通知服务：主窗口唯一调度所有者（Agent/任务/日程 → 提示音 + TTS）。
+  useAudioNotifications();
   const settings = useSettingsStore((s) => s.settings);
   const materialInfo = useSettingsStore((s) => s.materialInfo);
   const loadSettings = useSettingsStore((s) => s.load);
@@ -61,7 +66,9 @@ export default function App() {
   const loadNavTargets = useNavigationStore((s) => s.loadTargets);
   const loadActions = useActionsStore((s) => s.load);
 
-  const mode = settings?.mode ?? "full";
+  // 显示模式是外壳唯一的视图判据：非法/缺失值必须在渲染前收敛，否则三个
+  // `.view-slot` 可能同时不是 active（只剩标题栏与窗口背景的空白窗口）。
+  const mode = resolveWindowMode(settings?.mode);
   // 设置未加载完成前**不启用**贴边吸附：否则启动瞬间会按默认值 true 生效，
   // 可能把窗口滑出屏幕（并把该位置持久化），随后又因设置到达而停用。
   const snapEnabled = settings?.snap_enabled === true;
@@ -70,10 +77,10 @@ export default function App() {
   // 主界面整块隐藏，只渲染 CapsuleDock —— 避免"看不见但可聚焦"的残留控件。
   const snapPhase = useEdgeSnapStore((s) => s.phase);
   const dockedEdge = useEdgeSnapStore((s) => s.dockedEdge);
-  // 胶囊模式必须同时有相位与停靠边：只有相位时为 false，主界面保持可见，
-  // 与 CapsuleDock 的 `edge` 判据保持同一个事实来源（不会再出现
-  // 「主界面被隐藏、胶囊因缺少 edge 不渲染」的空窗口）。
-  const capsuleMode = isCapsuleMode(snapPhase, dockedEdge);
+  // 胶囊模式只看停靠相位（不看 edge）：停靠期 Win32 仍可能裁成轨道，缺边时若
+  // 回退显示主界面，完整工作区控件就会落进翼片区域（右侧只露一条翼片却带着
+  // 开关/隐藏图标/页面文字）。缺边是瞬时不一致态，宁可不渲染任何内容。
+  const capsuleMode = isCapsuleMode(snapPhase);
   // 用**实际生效**的材质上 class：原生 Mica/Acrylic 回退 solid 时，
   // 界面必须跟随降级，不能继续渲染半透明表面（v0.5 缺陷修复）。
   const material = materialInfo?.resolved ?? settings?.material ?? "solid";
@@ -306,6 +313,9 @@ export default function App() {
       <SnapOverlay />
       <Toast />
       <TooltipLayer />
+      {/* 桌面微件的唯一数据所有者：主窗口常驻，负责按布局创建/销毁独立窗口、
+          推送带 revision 的快照并落盘几何。胶囊/停靠期（dock-app inert）仍需运行。 */}
+      <WidgetDesktopBridge />
     </div>
   );
 }

@@ -7,6 +7,16 @@
   gap: 12px;
   min-height: 100%;
   padding: 2px 2px 16px;
+
+  /* 微件页局部材质：柔光/清透玻璃预设下，半透明卡面会让底层页面文字透出。
+     这里仅把本页卡片提升为实色表面（取主题的胶囊实色），不改变全局胶囊与
+     其他面板；不使用阴影或模糊掩盖。 */
+  --widget-local-face: var(--capsule-face, var(--card-face));
+}
+
+.widgets-page .widget-card,
+.widgets-page .widget-library {
+  background: var(--widget-local-face);
 }
 
 /* ── 顶栏 ─────────────────────────────────────────────────── */
@@ -61,7 +71,8 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(200px, 1fr));
   gap: 12px;
-  align-items: stretch;
+  /* 卡片按内容自然高度排列，不为了填满行高而拉伸内容。 */
+  align-items: start;
   align-content: start;
 }
 
@@ -88,6 +99,18 @@
   }
 }
 
+/* 宽窗：4 列让两个 md 卡片并排，避免默认布局在任何宽度下都只能单列。
+   窄窗仍按上面两档回落，md/lg 不跨出可用列宽。 */
+@media (min-width: 1180px) {
+  .widgets-grid {
+    grid-template-columns: repeat(4, minmax(200px, 1fr));
+  }
+
+  .widget-size-lg {
+    grid-column: span 4;
+  }
+}
+
 @media (max-width: 620px) {
   .widgets-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -108,9 +131,10 @@
 .widget-card {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
   padding: 10px 12px 9px;
+  align-self: start;
 }
 
 .widget-card.dragging {
@@ -144,7 +168,7 @@
   flex: 0 0 auto;
 }
 
-.widget-card:active .widget-grip {
+.widget-card.dragging .widget-grip {
   cursor: grabbing;
 }
 
@@ -159,24 +183,89 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
+/* 统一轻量反馈：hover 只用低对比背景，不用整块强调色。 */
 .widget-icon-btn:hover:not(:disabled) {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-primary);
+}
+
+.widget-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.widget-icon-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 11%, transparent);
+}
+
+/* 桌面显示开启：用强调色图标区分状态，但仍是低对比底色。 */
+.widget-icon-btn.is-on {
   color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.widget-icon-btn.is-on:hover:not(:disabled) {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .widget-icon-btn:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+/* 卡片内联配置区：低频项收在这里，默认收起，不新增模态弹窗。 */
+.widget-card-config {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--divider);
+}
+
+.widget-config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.widget-config-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.widget-config-label {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.widget-config-select {
+  min-width: 68px;
+}
+
+.widget-config-row > .ui-switch {
+  margin-left: auto;
+}
+
+.widget-config-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: auto;
 }
 
 .widget-card-body {
@@ -219,7 +308,8 @@
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 4px 5px;
+  min-height: 24px;
+  padding: 5px 6px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -227,10 +317,27 @@
   text-align: left;
   cursor: pointer;
   min-width: 0;
+  transition: background-color 0.12s ease;
 }
 
-.widget-row:hover {
-  background: var(--accent-soft);
+/* 列表行统一轻量反馈：hover / active 只调整背景明度，不改行高与图标位置；
+   行不承载「选中」语义，因此不额外造 selected 样式。 */
+.widget-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+.widget-row:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+.widget-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.widget-row:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .widget-task-title {
@@ -442,11 +549,18 @@
   font-size: 11.5px;
   cursor: pointer;
   min-width: 0;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
+/* 工作台内低对比反馈；桌面窗口在 widgets-desktop.css 中覆盖为柔和玻璃表面。 */
 .widget-action-btn:hover {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
   color: var(--accent);
+}
+
+.widget-action-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .widget-action-btn span {
@@ -502,6 +616,34 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* 刷新失败时保留旧数字，仅附加过期提示与重试入口。 */
+.widget-stale {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.widget-stale-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--status-error);
+}
+
+.widget-stale-retry {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 10.5px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.widget-stale-retry:hover {
+  text-decoration: underline;
 }
 
 .widget-rate {
@@ -604,11 +746,13 @@
   flex-direction: column;
 }
 
+/* 窄窗优先保证信息区有足够宽度：控件放不下时整行换行到下一行，
+   避免中文因宽度被压到只剩几个像素而逐字竖排。 */
 .widget-library-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 6px 10px;
   padding: 7px 2px;
   border-top: 1px solid var(--divider);
 }
@@ -625,6 +769,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1 1 190px;
   min-width: 0;
 }
 
@@ -651,6 +796,185 @@
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
+  max-width: 100%;
+}
+
+/* 窄窗：名称/说明占满一行，控件整体落到下一行左侧；不压缩字号，也不让
+   中文被挤成竖排。465px 及以下必须命中。 */
+@media (max-width: 560px) {
+  .widget-library-row {
+    align-items: stretch;
+  }
+
+  .widget-library-info {
+    flex-basis: 100%;
+  }
+
+  .widget-library-controls {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+}
+
+/* 桌面微件管理：位置重置与「看板/桌面」说明 */
+.widget-library-reset {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm, 8px);
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.widget-library-reset:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+
+.widget-library-reset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.widget-library-hint {
+  margin: 6px 2px 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-tertiary);
+}
+
+/* 全部添加完成态：不再重复列已启用项，只保留简洁结论与恢复默认入口。 */
+.widget-library-done {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 2px 0;
+  color: var(--status-success);
+}
+
+.widget-library-done > svg {
+  flex: 0 0 auto;
+}
+
+.widget-library-done-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.widget-library-done-text strong {
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.widget-library-done-text span {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* 桌面窗口真实状态：配置开启 != 窗口已建成。 */
+.widget-desktop-chip.pending,
+.widget-desktop-chip.creating {
+  background: var(--pill-face);
+  color: var(--text-secondary);
+}
+
+.widget-desktop-chip.shown {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.widget-desktop-chip.failed {
+  background: color-mix(in srgb, var(--status-error) 14%, transparent);
+  color: var(--status-error);
+}
+
+.widgets-count.warn {
+  color: var(--status-error);
+}
+
+.widgets-desktop-unavailable {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 2px 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid color-mix(in srgb, var(--icon-warn) 30%, transparent);
+  background: color-mix(in srgb, var(--icon-warn) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.widgets-desktop-unavailable svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--icon-warn);
+}
+
+/* 刷新失败但保留旧数据时的可见提示，不只是 tooltip。 */
+.widget-warn-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--status-error);
+  white-space: nowrap;
+}
+
+.widget-status-line > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widgets-persist-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 2px 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 34%, transparent);
+  background: color-mix(in srgb, var(--warning, #f59e0b) 10%, transparent);
+  color: var(--text-secondary);
+}
+
+.widgets-persist-error svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--warning, #f59e0b);
+}
+
+.widgets-persist-error div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.widgets-persist-error strong {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.widgets-persist-error span {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
 }
 
 /* ── 空态 ─────────────────────────────────────────────────── */
@@ -661,7 +985,7 @@
   align-items: center;
   justify-content: center;
   gap: 7px;
-  padding: 42px 18px;
+  padding: 30px 18px;
   border: 1px dashed var(--divider);
   border-radius: var(--radius-card);
   color: var(--text-tertiary);

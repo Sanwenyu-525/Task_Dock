@@ -160,6 +160,8 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.collapsedAria": "Panel collapsed",
   "capsule.toFull": "Full panel",
   "capsule.toCapsule": "Collapse to capsule",
+  "capsule.toFullTip": "Temporarily switch to the full panel for this dock session (keeps the default snap mode)",
+  "capsule.toCapsuleTip": "Temporarily collapse to capsule for this dock session (keeps the default snap mode)",
 
   "dialog.close": "Close",
   "dialog.confirm": "Confirm",
@@ -829,7 +831,7 @@ export const enUS: Record<MessageKey, string> = {
   "settings.window.snapMode": "Edge snap mode",
   "settings.window.snapMode.capsule": "Collapse to capsule",
   "settings.window.snapMode.full": "Keep full panel",
-  "settings.window.snapNote": "Dragging the window near a screen edge (within about 28px) shows a \"release to snap\" hint; release to dock. Collapse to capsule: after docking it shrinks to a capsule and hides again when the pointer leaves. Keep full panel: the full window stays flush with the content and does not collapse on pointer leave; you can still drag it away to float. Both share the same snapping and window lifecycle; switching while docked applies immediately, while floating it affects the next snap.",
+  "settings.window.snapNote": "Drag the window toward a screen edge (within about 28px) and release to dock; moving parallel along an edge does not snap. Collapse to capsule: after docking it shrinks to a capsule and hides again when the pointer leaves. Keep full panel: the full window stays flush with the content and does not collapse on pointer leave; you can still drag it away to float. Both share the same snapping and window lifecycle; switching while docked applies immediately. The form buttons on the capsule or panel only change the current dock session and revert to this default after you drag away or undock; choose here or in the context menu to change the long-term default.",
   "settings.window.autostart": "Start with Windows",
   "settings.window.hotkeySwitch": "System-wide hotkey master switch (current bindings are under \"Hotkey manager\" below)",
   "settings.features.workspace": "Workspace (capture and restore window sets)",

@@ -33,8 +33,9 @@ export interface EdgeSnapUiState {
   /** 引擎注入：解除吸附并恢复普通窗口；可选指定目标模式（跳转完整页时用）。 */
   undock: ((mode?: string) => void) | null;
   /**
-   * 引擎注入：切换停靠形态（只写偏好；已停靠时由引擎原地切换，浮动时不移动窗口）。
-   * 供胶囊轨道与完整面板上的轻量入口复用。未启用为 null。
+   * 引擎注入：**本次停靠会话**的临时形态切换（不改写持久化 `snap_display_mode`；
+   * 解除停靠后失效，下次吸附按设置里的默认吸附方式）。供胶囊轨道与完整面板上的
+   * 轻量入口复用。长期偏好仍由设置页 / 右键菜单更新。未启用为 null。
    */
   formSwitch: ((form: DockForm) => void) | null;
   sync: (p: {

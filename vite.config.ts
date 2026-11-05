@@ -10,6 +10,7 @@ export default defineConfig({
   clearScreen: false,
   // 多页入口：index.html（主窗）+ context-menu.html（右键菜单弹窗）
   // + notification.html（六状态桌面通知窗口）+ capture.html（全局快速捕获窗口）
+  // + widget.html（桌面微件独立窗口：轻量宿主，不挂载完整 App）
   build: {
     // 多入口时共享 CSS 会被拆成独立 chunk，浏览器按 chunk 顺序加载会让
     // styles-themes.css 排在 styles.css 之前，覆盖关系反转。合并为单文件，
@@ -21,6 +22,7 @@ export default defineConfig({
         "context-menu": resolve(__dirname, "context-menu.html"),
         notification: resolve(__dirname, "notification.html"),
         capture: resolve(__dirname, "capture.html"),
+        widget: resolve(__dirname, "widget.html"),
       },
     },
   },

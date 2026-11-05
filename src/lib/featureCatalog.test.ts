@@ -118,14 +118,16 @@ describe("12 项核心功能登记", () => {
     }
   });
 
-  it("Gemini CLI 当前为 planned：官方 Hooks 已存在，不再登记为受阻", () => {
+  it("Gemini CLI 适配器已落地为 implemented，但真实会话仍为 unverified", () => {
     const f = getFeatureById("agent.gemini-cli")!;
-    expect(f.status).toBe("planned");
+    expect(f.status).toBe("implemented");
     expect(f.verification).toBe("unverified");
     expect(f.blockedReason).toBeUndefined();
-    expect(f.missingFeatures.length, "待开发须登记剩余工作").toBeGreaterThan(0);
-    // 过时的受阻结论不得再作为功能说明出现
+    expect(f.existingFeatures.length, "已实现须列出现有能力").toBeGreaterThan(0);
+    expect(f.missingFeatures, "已实现不应再登记实现缺口").toHaveLength(0);
+    // 过时的受阻 / 待开发结论不得再作为功能说明出现
     expect(f.detail).not.toMatch(/未见官方 hooks/);
+    expect(f.detail).not.toMatch(/适配器待开发/);
   });
 });
 
@@ -208,16 +210,18 @@ describe("目录结构契约", () => {
 });
 
 describe("统计摘要", () => {
-  it("全目录状态计数与验收基线一致（28 = 9 + 13 + 6 + 0）", () => {
+  it("全目录状态计数与验收基线一致（28 = 12 + 13 + 3 + 0）", () => {
     const s = featureCatalogSummary();
     expect(s.total).toBe(28);
     expect(s.coreTotal).toBe(12);
     // v0.10（2026-11-04 七项功能验收整改）：专注与休息、快速笔记、Agent 工作时间统计、
     // 任务统计与效率分析、自定义全局快捷键 planned→implemented；
     // 多语言 i18n（主壳未抽取）、桌面微件库（无独立宿主窗口）planned→partial。
-    expect(s.implemented).toBe(9);
+    // 2026-11-05 轨道 A：Claude Code / Cursor / Gemini CLI 适配器已落地，目录同步
+    // planned→implemented；真实会话事件仍未联调，verification 保持 unverified。
+    expect(s.implemented).toBe(12);
     expect(s.partial).toBe(13);
-    expect(s.planned).toBe(6);
+    expect(s.planned).toBe(3);
     expect(s.blocked).toBe(0);
     // 状态计数之和必须等于总功能数
     expect(s.implemented + s.partial + s.planned + s.blocked).toBe(s.total);

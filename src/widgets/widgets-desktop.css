@@ -1,0 +1,314 @@
+@layer base, theme, ui, menu, ntf, widget-window;
+
+@layer widget-window {
+  /* ════════════════════════════════════════════════════════════════
+     桌面微件独立窗口表面（widget.html）
+     ────────────────────────────────────────────────────────────────
+     材质策略（与通知窗口一致，原因见 docs/ARCHITECTURE.md 窗口章节）：
+     - 不挂原生 Mica/Acrylic：DWM 按整个窗口矩形合成，圆角外会残留
+       材质，和 Win32 SetWindowRgn 裁剪冲突；
+     - 玻璃底色由 CSS 半透明渐变承担，浅色/深色均保持 ≥ 0.9 不透明度，
+       文字对比度不依赖桌面内容；
+     - 不使用 backdrop-filter：六窗口常驻时避免额外 GPU 合成开销。
+     圆角：16px，与 Rust `widget_windows::WIDGET_RADIUS` 一致；DPI 变化时
+     Rust 会重新裁剪区域，这里只负责 CSS 圆角与裁剪一致。
+     ════════════════════════════════════════════════════════════════ */
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+  }
+
+  body {
+    font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei",
+      -apple-system, sans-serif;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+
+  .wd-root {
+    box-sizing: border-box;
+    width: 100vw;
+    height: 100vh;
+    background: transparent;
+  }
+
+  .wd-surface {
+    box-sizing: border-box;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid transparent;
+    /* 半透明玻璃底：深色。桌面窗口直接叠在壁纸上，透底会让壁纸文字/图标
+       与微件文字混在一起；这里收紧到接近不透明，仅保留顶部高光与淡渐变。 */
+    background:
+      radial-gradient(
+        160px 110px at 88% -14%,
+        color-mix(in srgb, var(--c-mint, #7fe3ff) 12%, transparent),
+        transparent 72%
+      ),
+      linear-gradient(150deg, rgba(30, 38, 61, 0.975), rgba(19, 25, 43, 0.975));
+    border-color: rgba(176, 198, 245, 0.18);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
+
+  html[data-theme="light"] .wd-surface {
+    background:
+      radial-gradient(
+        160px 110px at 88% -14%,
+        color-mix(in srgb, var(--c-mint, #7fe3ff) 16%, transparent),
+        transparent 72%
+      ),
+      linear-gradient(150deg, rgba(252, 253, 255, 0.975), rgba(240, 245, 255, 0.975));
+    border-color: rgba(31, 47, 74, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  }
+
+  /* 用户选择「实心」材质时回退到不透底：正确性优先于玻璃观感。 */
+  html[data-material="solid"] .wd-surface {
+    background: var(--window-fill, rgba(24, 31, 49, 0.98));
+    border-color: var(--border-subtle, rgba(148, 168, 205, 0.18));
+    box-shadow: none;
+  }
+
+  .wd-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 30px;
+    padding: 0 6px 0 4px;
+  }
+
+  /* 拖动区与点击区分离：只有标题条可拖动，按钮永远不落在拖动区。 */
+  .wd-drag {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    padding-left: 8px;
+    cursor: grab;
+  }
+
+  .wd-drag:active {
+    cursor: grabbing;
+  }
+
+  .wd-title {
+    /* 拖动手势由父级 data-tauri-drag-region 接收；文本不拦截鼠标事件。 */
+    pointer-events: none;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10.5px;
+    font-weight: 650;
+    letter-spacing: 0.24px;
+    color: var(--text-secondary);
+  }
+
+  .wd-tools {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .wd-btn {
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 7px;
+    color: var(--text-tertiary);
+    transition: background-color 0.12s ease, color 0.12s ease;
+  }
+
+  .wd-btn:hover {
+    background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+    color: var(--text-primary);
+  }
+
+  .wd-btn.is-on {
+    color: var(--accent, #7fe3ff);
+    background: color-mix(in srgb, var(--accent, #7fe3ff) 14%, transparent);
+  }
+
+  .wd-btn.wd-close:hover {
+    color: #ff6b6b;
+    background: rgba(239, 68, 68, 0.16);
+  }
+
+  /* 窗口命令（置顶/关闭）失败提示：可操作、可关闭，不遮挡正文。 */
+  .wd-action-error {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 6px 4px;
+    padding: 4px 6px 4px 8px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--status-error, #ff6b6b) 12%, transparent);
+    color: var(--text-primary);
+    font-size: 10.5px;
+  }
+
+  .wd-action-error-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .wd-action-error-close {
+    flex: 0 0 auto;
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 10.5px;
+  }
+
+  .wd-action-error-close:hover {
+    background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+    color: var(--text-primary);
+  }
+
+  .wd-btn:focus-visible,
+  .wd-action-error-close:focus-visible,
+  .wd-retry:focus-visible {
+    outline: 2px solid var(--accent, #7fe3ff);
+    outline-offset: 1px;
+  }
+
+  .wd-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 0 12px 10px;
+    overflow: auto;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--text-primary) 22%, transparent) transparent;
+  }
+
+  .wd-body > * {
+    min-height: 0;
+  }
+
+  .wd-body::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .wd-body::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--text-primary) 22%, transparent);
+    border-radius: 999px;
+  }
+
+  .wd-state,
+  .wd-message {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 12px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 11.5px;
+  }
+
+  .wd-message {
+    height: 100%;
+  }
+
+  .wd-retry {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  }
+
+  .wd-retry:hover {
+    background: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  }
+
+  @keyframes wd-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .wd-state .spin {
+    animation: wd-spin 1s linear infinite;
+  }
+
+  /* 拖动/缩放过程中不做材质过渡，避免停止后出现透明度闪动。 */
+  @media (prefers-reduced-motion: reduce) {
+    .wd-state .spin {
+      animation: none;
+    }
+
+    .wd-btn {
+      transition: none;
+    }
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   桌面窗口内容表面（仅 .wd-root 作用域）
+   ────────────────────────────────────────────────────────────────
+   widgets.css 未分层，因此这里也必须保持未分层，才能覆盖微件组件的
+   默认 `--control-face` 亮白表面。变量与选择器都限定在 .wd-root：
+   - 不改全局 `--control-face` 语义，主窗口按钮不受影响；
+   - 主内容保持透明，只有操作按钮与统计格子使用低对比玻璃表面；
+   - 用 inset 边框代替 border，避免按钮尺寸变化导致文字位移。
+   ════════════════════════════════════════════════════════════════ */
+
+.wd-root {
+  --wd-control-face: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  --wd-control-face-hover: color-mix(in srgb, var(--text-primary) 11%, transparent);
+  --wd-control-border: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  --wd-control-border-hover: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  --wd-cell-face: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+
+.wd-root .widget-action-btn {
+  background: var(--wd-control-face);
+  box-shadow: inset 0 0 0 1px var(--wd-control-border);
+}
+
+.wd-root .widget-action-btn:hover {
+  background: var(--wd-control-face-hover);
+  box-shadow: inset 0 0 0 1px var(--wd-control-border-hover);
+  color: var(--text-primary);
+}
+
+.wd-root .widget-stat-grid li {
+  background: var(--wd-cell-face);
+}

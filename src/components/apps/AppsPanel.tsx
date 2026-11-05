@@ -17,17 +17,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, FolderOpen, Link2, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw,
-  Star, Trash2, EyeOff, Eye,
+  Star, Trash2, EyeOff, Eye, X,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import { useNavigationStore, type RefreshOutcome } from "../../store/useNavigationStore";
-import { errorMessage } from "../../lib/errors";
+import { errorMessage, normalizeError } from "../../lib/errors";
 import {
   navDeleteTarget, navNavigate, navTargetRunningStates, navUpdateTarget,
   resultMessage, stateBadge, TARGET_TYPE_LABELS,
   type NavTarget,
 } from "../../lib/navigation";
-import { searchApps } from "../../lib/appSearch";
+import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
 import AppIcon from "../ui/AppIcon";
 import { ConfirmDialog, DropdownMenu, SearchField } from "../ui";
 import AppPicker from "../navigation/AppPicker";
@@ -90,17 +90,26 @@ export default function AppsPanel() {
   >(null);
   const [pendingDelete, setPendingDelete] = useState<NavTarget | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  /** 后端删除成功但列表刷新失败时，本地先隐藏该项，避免旧缓存把已删除目标显示回来。 */
+  const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
   const [launchingIds, setLaunchingIds] = useState<ReadonlySet<string>>(new Set());
   /** 哪张卡片的「更多」菜单正展开：让整卡保持 hover 态，菜单关闭后恢复 */
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
 
   const apps = useMemo(
-    () => targets.filter((t) => t.target_type === "application" && !t.hidden),
-    [targets],
+    () => targets.filter(
+      (t) => t.target_type === "application" && !t.hidden && !removedIds.has(t.id),
+    ),
+    [targets, removedIds],
   );
   const extras = useMemo(
-    () => targets.filter((t) => !t.hidden && (t.target_type === "url" || t.target_type === "directory" || t.target_type === "file")),
-    [targets],
+    () => targets.filter(
+      (t) =>
+        !t.hidden &&
+        !removedIds.has(t.id) &&
+        (t.target_type === "url" || t.target_type === "directory" || t.target_type === "file"),
+    ),
+    [targets, removedIds],
   );
   // 目标集合变化才重新查询运行态（无定时器、无轮询）
   const appIdsKey = apps.map((a) => a.id).join(",");
@@ -123,7 +132,7 @@ export default function AppsPanel() {
       setStatesError(null);
     } catch (e) {
       // 运行态失败不影响浏览与启动，但「运行中」筛选必须如实提示
-      setStatesError(String(e));
+      setStatesError(errorMessage(e));
     }
   }, []);
 
@@ -133,10 +142,6 @@ export default function AppsPanel() {
   }, [targetsLoaded, appIdsKey, fetchRunningStates]);
 
   const visibleApps = useMemo(() => {
-    const byRecent = (a: NavTarget, b: NavTarget) =>
-      (b.last_used_at ?? "").localeCompare(a.last_used_at ?? "");
-    const byName = (a: NavTarget, b: NavTarget) => a.display_name.localeCompare(b.display_name, "zh");
-
     // 与应用选择器共用搜索规则（中文连续子串 / 英文大小写 / 身份绑定别名），
     // 数据范围是「已配置集合」（apps），不是扫描到的全部应用。
     let list = apps;
@@ -156,15 +161,13 @@ export default function AppsPanel() {
         .filter((t): t is NavTarget => !!t);
     }
     if (filter === "favorite") {
-      list = list.filter((t) => t.favorite).sort((a, b) => byRecent(a, b) || byName(a, b));
+      list = sortTargetsForDisplay(list.filter((t) => t.favorite), { favorite: false });
     } else if (filter === "recent") {
-      list = list.filter((t) => !!t.last_used_at).sort((a, b) => byRecent(a, b) || byName(a, b));
+      list = sortTargetsForDisplay(list.filter((t) => !!t.last_used_at), { favorite: false });
     } else if (filter === "running") {
       list = list.filter((t) => RUNNING_STATES.has(runningStates[t.id]));
     } else {
-      list = [...list].sort(
-        (a, b) => Number(b.favorite) - Number(a.favorite) || byRecent(a, b) || byName(a, b),
-      );
+      list = sortTargetsForDisplay(list);
     }
     return list;
   }, [apps, query, filter, runningStates]);
@@ -185,9 +188,7 @@ export default function AppsPanel() {
           .map((s) => byId.get(s.key))
           .filter((t): t is NavTarget => !!t)
       : extras;
-    return [...matched].sort(
-      (a, b) => Number(b.favorite) - Number(a.favorite) || a.display_name.localeCompare(b.display_name, "zh"),
-    );
+    return sortTargetsForDisplay(matched, { recent: false });
   }, [extras, query]);
 
   const markLaunching = (id: string, on: boolean) =>
@@ -390,6 +391,24 @@ export default function AppsPanel() {
     );
   }
 
+  /** 直接删除入口：与启动/收藏/菜单并列，不嵌套在任何按钮内。 */
+  function renderDelete(t: NavTarget) {
+    return (
+      <button
+        type="button"
+        className="icon-btn sm apps-tile-del"
+        aria-label={`从快捷列表删除 ${t.display_name}`}
+        disabled={launchingIds.has(t.id)}
+        onClick={(e) => {
+          e.stopPropagation();
+          setPendingDelete(t);
+        }}
+      >
+        <X size={11} aria-hidden="true" />
+      </button>
+    );
+  }
+
   function renderTile(t: NavTarget) {
     const running = runningStates[t.id];
     const badge = RUNNING_STATES.has(running) ? stateBadge(running) : null;
@@ -465,6 +484,7 @@ export default function AppsPanel() {
               setMenuOpenId((prev) => (open ? t.id : prev === t.id ? null : prev))
             }
           />
+          {renderDelete(t)}
         </div>
       </div>
     );
@@ -521,6 +541,7 @@ export default function AppsPanel() {
           menuLabel={tr("apps.extraMenu", { name: t.display_name })}
           placement="bottom-end"
         />
+        {renderDelete(t)}
       </div>
     );
   }
@@ -681,25 +702,46 @@ export default function AppsPanel() {
       <ConfirmDialog
         open={!!pendingDelete}
         title={`从快捷列表删除「${pendingDelete?.display_name ?? ""}」？`}
-        detail="该目标的所有任务关联会一并解除（任务本身不受影响）。删除后如需恢复，需要重新添加。"
+        detail="只删除 task_dock 中的快捷目标，不会卸载应用或删除程序文件；该目标的所有任务关联会一并解除（任务本身不受影响）。删除后如需恢复，需要重新添加。"
         confirmLabel="删除"
         danger
-        busy={deleteBusy}
+        busy={deleteBusy || (pendingDelete ? launchingIds.has(pendingDelete.id) : false)}
         onCancel={() => setPendingDelete(null)}
         onConfirm={async () => {
           if (!pendingDelete) return;
+          const target = pendingDelete;
           setDeleteBusy(true);
           try {
-            await navDeleteTarget(pendingDelete.id);
+            await navDeleteTarget(target.id);
           } catch (e) {
-            showToast(`删除失败：${errorMessage(e)}`, { kind: "error" });
+            const err = normalizeError(e, "nav_delete_target");
+            if (err.code === "NOT_FOUND") {
+              // 目标已被其他入口删除：等价于删除完成，刷新共享列表并如实提示。
+              setRemovedIds((prev) => new Set(prev).add(target.id));
+              setPendingDelete(null);
+              const [tOutcome, lOutcome] = await Promise.all([loadTargets(true), loadTaskLinks()]);
+              await fetchRunningStates();
+              if (tOutcome === "ok" && lOutcome === "ok") setRemovedIds(new Set());
+              showToast(
+                tOutcome === "error" || lOutcome === "error"
+                  ? "该快捷目标已不存在，但列表刷新失败"
+                  : "该快捷目标已不存在，列表已刷新",
+                { kind: "warning" },
+              );
+              setDeleteBusy(false);
+              return;
+            }
+            // 删除失败必须保留应用项，不把配置从列表里误删。
+            showToast(`删除失败：${err.reason || errorMessage(e)}`, { kind: "error" });
             setDeleteBusy(false);
             return;
           }
+          // 删除已成功：先本地隐藏，刷新失败只标「部分成功」，不报成删除失败。
+          setRemovedIds((prev) => new Set(prev).add(target.id));
           setPendingDelete(null);
-          // 删除已成功：刷新失败只标「部分成功」，不能报成删除失败，也不重复创建数据。
           const [tOutcome, lOutcome] = await Promise.all([loadTargets(true), loadTaskLinks()]);
           await fetchRunningStates();
+          if (tOutcome === "ok" && lOutcome === "ok") setRemovedIds(new Set());
           if (tOutcome === "error" || lOutcome === "error") {
             showToast("目标已删除，但关联列表刷新失败", {
               kind: "warning",

@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
 interface MockMonitor {
+  name?: string;
   position: { x: number; y: number };
   size: { width: number; height: number };
   workArea: { position: { x: number; y: number }; size: { width: number; height: number } };
@@ -54,11 +55,26 @@ interface World {
   failApplyMode: boolean;
   /** 接下来 N 次 applyMode 被原生拖拽循环吞掉：返回成功但窗口尺寸不变 */
   swallowModeSizeCalls: number;
-  snapState: { edge: string; hidden: boolean; center?: number | null } | null;
+  snapState: {
+    edge: string;
+    hidden: boolean;
+    center?: number | null;
+    centerRatio?: number | null;
+    display?: {
+      name?: string | null;
+      bounds?: { x: number; y: number; w: number; h: number };
+      workArea?: { x: number; y: number; w: number; h: number };
+      scaleFactor?: number;
+    } | null;
+  } | null;
   /** 持续移动失败（真机形态：setPosition 被系统拒绝，用于验证不写幻影基准） */
   failSetPosition: boolean;
   /** 持续缩放失败（模拟区域撑容器时 setSize 被系统拒绝） */
   failSetSize: boolean;
+  /** 接下来 N 次 setSize 返回成功但实际尺寸不变（模拟写入被原生循环吞掉） */
+  swallowSizeCalls: number;
+  /** 接下来 N 次 setPosition 返回成功但实际位置不变 */
+  swallowPositionCalls: number;
   /** 第 N 次 setSize 调用失败（1 起算）；null = 不按序号失败（用于回滚失败用例） */
   setSizeFailAt: number | null;
   /** 接下来 N 次 apply_window_capsule 返回 false（区域未应用/回读校验失败） */
@@ -84,10 +100,14 @@ interface World {
   undockAnchorApplied: boolean;
   /** 取消锚定请求的次数（解除中止/回滚路径） */
   undockAnchorCancelled: number;
+  /** 后端持久化的用户自由窗口矩形（get_window_rect）；null = 无记录 */
+  savedWindowRect: { x: number; y: number; w: number; h: number } | null;
+  /** update_settings 写回的完整设置快照（P2：形态偏好回滚断言用） */
+  settings: Record<string, unknown>;
 }
 
 const world: World = {
-  pos: { x: 0, y: 300 },
+  pos: { x: 300, y: 300 },
   size: { width: 400, height: 560 },
   cursor: { x: 200, y: 500 },
   monitors: [MAIN],
@@ -104,6 +124,8 @@ const world: World = {
   snapState: null,
   failSetPosition: false,
   failSetSize: false,
+  swallowSizeCalls: 0,
+  swallowPositionCalls: 0,
   setSizeFailAt: null,
   regionFailures: 0,
   regionFailMode: null,
@@ -117,10 +139,12 @@ const world: World = {
   undockAnchorCalls: [],
   undockAnchorApplied: false,
   undockAnchorCancelled: 0,
+  savedWindowRect: null,
+  settings: { mode: "full", snap_display_mode: "capsule", theme: "light" },
 };
 
 function resetWorld() {
-  world.pos = { x: 0, y: 300 };
+  world.pos = { x: 300, y: 300 };
   world.size = { width: 400, height: 560 };
   world.cursor = { x: 200, y: 500 };
   world.monitors = [MAIN];
@@ -137,6 +161,8 @@ function resetWorld() {
   world.snapState = null;
   world.failSetPosition = false;
   world.failSetSize = false;
+  world.swallowSizeCalls = 0;
+  world.swallowPositionCalls = 0;
   world.setSizeFailAt = null;
   world.regionFailures = 0;
   world.regionFailMode = null;
@@ -150,6 +176,8 @@ function resetWorld() {
   world.undockAnchorCalls = [];
   world.undockAnchorApplied = false;
   world.undockAnchorCancelled = 0;
+  world.savedWindowRect = null;
+  world.settings = { mode: "full", snap_display_mode: "capsule", theme: "light" };
 }
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -160,6 +188,11 @@ vi.mock("@tauri-apps/api/window", () => ({
       world.positionAttempts += 1;
       if (world.failSetPosition) throw new Error("mock setPosition rejected");
       world.setPositionCalls.push({ x: p.x, y: p.y });
+      if (world.swallowPositionCalls > 0) {
+        // 命令返回成功但位置没动：模拟原生拖拽循环吞掉写入
+        world.swallowPositionCalls -= 1;
+        return;
+      }
       world.pos = { x: p.x, y: p.y };
     },
     setSize: async (s: { width: number; height: number }) => {
@@ -167,6 +200,10 @@ vi.mock("@tauri-apps/api/window", () => ({
       const callNo = world.sizeCalls.length;
       if (world.failSetSize || (world.setSizeFailAt !== null && callNo >= world.setSizeFailAt)) {
         throw new Error("mock setSize rejected");
+      }
+      if (world.swallowSizeCalls > 0) {
+        world.swallowSizeCalls -= 1;
+        return; // 命令成功但尺寸未变
       }
       world.size = { width: s.width, height: s.height };
     },
@@ -207,9 +244,19 @@ vi.mock("@tauri-apps/api/dpi", () => ({
 
 vi.mock("../lib/bridge", () => ({
   getSnapState: async () => world.snapState,
-  saveSnapState: async (edge: string, hidden: boolean, center: number | null = null) => {
+  saveSnapState: async (
+    edge: string,
+    hidden: boolean,
+    center: number | null = null,
+    extra: Record<string, unknown> = {},
+  ) => {
     world.snapWrites.push({ edge, hidden, center });
-    world.snapState = { edge, hidden, center };
+    world.snapState = { edge, hidden, center, ...(extra as object) } as World["snapState"];
+  },
+  getWindowRect: async () => world.savedWindowRect,
+  updateSettings: async (patch: Record<string, unknown>) => {
+    world.settings = { ...world.settings, ...patch };
+    return world.settings as never;
   },
   saveWindowRect: async (rect: { x: number; y: number; w: number; h: number }) => {
     world.rectWrites.push(rect);
@@ -278,6 +325,8 @@ vi.mock("../lib/overlayStack", () => ({
 
 import { useEdgeSnap } from "./useEdgeSnap";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
+import { useUiStore } from "../store/useUiStore";
+import { useSettingsStore } from "../store/useSettingsStore";
 import {
   snapMoveGuard,
   measureTitlebarHeight,
@@ -322,6 +371,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   snapMoveGuard.reset();
   useEdgeSnapStore.getState().reset();
+  useSettingsStore.setState({ settings: null });
+  useUiStore.setState({ toasts: [] });
 });
 
 afterEach(() => {
@@ -376,7 +427,7 @@ describe("停靠：窗口贴边 + 区域切轨道", () => {
   });
 
   it("Aero Snap 半屏尺寸（1280×690）在停靠时归一为容器 404×440", async () => {
-    world.pos = { x: 20, y: 300 };
+    world.pos = { x: 320, y: 300 };
     world.size = { width: 1280, height: 690 }; // Windows 先把窗口吸成左半屏
     mount();
     await advance(50);
@@ -830,9 +881,12 @@ describe("区域写入失败：状态一致优先", () => {
     world.regionFailMode = "off"; // 冷却期间自动重试仍失败，保持停靠
     await advance(600);
     world.regionFailMode = null;
-    // 冷却后自动重试成功解除，再拖向另一条边才进入新边候选
+    // 冷却后自动重试成功解除，再拖向另一条边才进入新边候选。
+    // 新契约要求本次手势内有明确的「向边」位移，先模拟从远处重新拖过来。
     await advance(2200);
     expect(phase()).toBe("free");
+    await dragTo(1000, 300); // 先把窗口拖离右缘
+    await advance(300); // 停顿 → 下一次移动是新手势
     await dragTo(1500, 300);
     await advance(200);
     expect(phase()).toBe("candidate");
@@ -1240,6 +1294,766 @@ describe("拖离解除的鼠标锚定", () => {
 
     expect(phase()).toBe("free");
     expect(world.undockAnchorCalls).toHaveLength(1);
+  });
+});
+
+// ── 完整面板形态事务、用户尺寸与恢复信息（P2 / P3）────────────
+//
+// 逐项覆盖：偏好 full 的停靠与解除、胶囊解除恢复 window_rect 用户尺寸、
+// 容器尺寸不得写入 window_rect、full↔capsule 原地切换、失败回滚到最后确认
+// 成功形态、快速切换只落最后一次、工作区/DPI 变化重建停靠几何、
+// 重启恢复按显示器身份与比例定位（含旧记录兼容）。
+
+describe("完整面板与停靠形态事务", () => {
+  const setPref = async (form: "capsule" | "full") => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: form });
+      await Promise.resolve();
+    });
+    // 胶囊 → 完整必须等 `restoreModeSize` 的静止等待 + 二次稳定回读（约 1s）；
+    // 200ms 只够覆盖纯区域切换，会误判成失败。
+    await advance(1400);
+  };
+
+  it("1) 偏好 full：停靠后保持完整面板，不裁区域、不写胶囊容器尺寸", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    mount();
+    await advance(50);
+    await dockLeft();
+
+    expect(phase()).toBe("docked-full");
+    // 完整形态只允许一次「清胶囊区域」的 off，不得出现 rail/panel 裁剪。
+    expect(world.regionCalls.filter((c) => c.mode !== "off")).toHaveLength(0);
+    expect(world.size).toEqual({ width: 400, height: 560 });
+    expect(world.pos.x).toBe(0);
+  });
+
+  it("2) 完整面板解除：保持用户尺寸，不回退模式默认值、不重置位移", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-full");
+    const sizeCalls = world.sizeCalls.length;
+
+    await dragTo(120, 300);
+    await advance(2200);
+
+    expect(phase()).toBe("free");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+    expect(world.sizeCalls.length).toBe(sizeCalls);
+  });
+
+  it("3) 胶囊解除：从 window_rect 恢复用户尺寸，不把容器尺寸当用户尺寸", async () => {
+    world.savedWindowRect = { x: 700, y: 180, w: 560, h: 720 };
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(world.size).toEqual({ width: 404, height: 440 });
+
+    await dragTo(120, 300);
+    await advance(2600);
+
+    expect(phase()).toBe("free");
+    expect(world.size).toEqual({ width: 560, height: 720 });
+    expect(world.modeCalls).toHaveLength(0); // 有用户尺寸就不该套模式预设
+  });
+
+  it("4) 无 window_rect 记录：回退模式尺寸，不残留容器尺寸", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await dragTo(120, 300);
+    await advance(2600);
+
+    expect(phase()).toBe("free");
+    expect(world.modeCalls).toContain("full");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+  });
+
+  it("5) 停靠/折叠期间不把胶囊容器尺寸写入 window_rect", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await act(async () => {
+      world.cursor = { x: 900, y: 900 };
+    });
+    await advance(800);
+    expect(phase()).toBe("docked-hidden");
+
+    expect(world.rectWrites.some((r) => r.w === 404 && r.h === 440)).toBe(false);
+  });
+
+  it("6) full → capsule：原地收成胶囊（容器尺寸 + 轨道区域）", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-full");
+
+    await setPref("capsule");
+
+    expect(phase()).toBe("docked-hidden");
+    expect(world.size).toEqual({ width: 404, height: 440 });
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+  });
+
+  it("7) capsule → full：原地撑回完整面板并保持用户尺寸", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+
+    await setPref("full");
+
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+    expect(lastRegion()?.mode).toBe("off");
+  });
+
+  it("8) 切换失败（区域写入不通过）：保持原形态并回滚偏好", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    world.regionFailMode = "off";
+
+    await setPref("full");
+
+    // 等待切换结果期间光标不在轨道上，相位会先自动折叠；关键是**没有**进入
+    // docked-full，且几何仍是胶囊容器、偏好回滚到胶囊。
+    expect(phase()).toBe("docked-hidden");
+    expect(world.size).toEqual({ width: 404, height: 440 }); // 几何回滚到胶囊容器
+    expect(useSettingsStore.getState().settings?.snap_display_mode).toBe("capsule");
+  });
+
+  it("9) 快速连续切换：只落最后一次目标（令牌丢弃旧结果）", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-full");
+
+    await act(async () => {
+      void useSettingsStore.getState().update({ snap_display_mode: "capsule" });
+      void useSettingsStore.getState().update({ snap_display_mode: "full" });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await advance(2600);
+
+    expect(phase()).toBe("docked-full");
+    expect(useSettingsStore.getState().settings?.snap_display_mode).toBe("full");
+  });
+
+  it("10) 工作区变窄：停靠胶囊重新贴右缘（P2-3）", async () => {
+    mount();
+    await advance(50);
+    await dragTo(1500, 300);
+    await releasePointer();
+    await advance(400);
+    expect(phase()).toBe("docked-visible");
+    expect(world.pos.x).toBe(1516); // 1920 - 404
+
+    world.monitors = [
+      {
+        ...MAIN,
+        workArea: { position: { x: 0, y: 0 }, size: { width: 1600, height: 1032 } },
+      },
+    ];
+    await advance(3400);
+
+    expect(world.pos.x).toBe(1196); // 1600 - 404
+    expect(world.size).toEqual({ width: 404, height: 440 });
+    // 高频推进会让光标离开轨道而自动隐藏；隐藏不改变窗口位置（新模型只换区域）。
+    expect(phase()).toBe("docked-hidden");
+  });
+
+  it("11) DPI 变化：容器尺寸按新缩放大重建并重新贴边（P2-3）", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(world.size).toEqual({ width: 404, height: 440 });
+
+    world.monitors = [
+      {
+        ...MAIN,
+        position: { x: 0, y: 0 },
+        size: { width: 2880, height: 1620 },
+        workArea: { position: { x: 0, y: 0 }, size: { width: 2880, height: 1548 } },
+        scaleFactor: 1.5,
+      },
+    ];
+    await advance(3400);
+
+    expect(world.sizeCalls.at(-1)).toEqual({ w: 606, h: 660 });
+    expect(world.size).toEqual({ width: 606, height: 660 });
+    expect(world.pos.x).toBe(0);
+    expect(phase()).toBe("docked-hidden");
+  });
+
+  it("12) 重启恢复：按显示器名称选副屏并按比例定位（P2-4）", async () => {
+    world.monitors = [
+      MAIN,
+      {
+        name: "DISPLAY2",
+        position: { x: 1920, y: 0 },
+        size: { width: 1920, height: 1080 },
+        workArea: { position: { x: 1920, y: 0 }, size: { width: 1920, height: 1032 } },
+        scaleFactor: 1,
+      },
+    ];
+    world.snapState = {
+      edge: "right",
+      hidden: true,
+      center: 2000,
+      centerRatio: 0.5,
+      display: {
+        name: "DISPLAY2",
+        bounds: { x: 1920, y: 0, w: 1920, h: 1080 },
+        workArea: { x: 1920, y: 0, w: 1920, h: 1032 },
+        scaleFactor: 1,
+      },
+    };
+    mount();
+    await advance(500);
+
+    expect(phase()).toBe("docked-hidden");
+    expect(world.pos).toEqual({ x: 3436, y: 296 }); // 1920+1920-404；0+516-220
+    expect(world.size).toEqual({ width: 404, height: 440 });
+  });
+
+  it("13) 旧记录兼容（无比例/显示器）：用记录里的绝对中心", async () => {
+    world.snapState = { edge: "left", hidden: true, center: 516 };
+    mount();
+    await advance(500);
+
+    expect(phase()).toBe("docked-hidden");
+    expect(world.pos).toEqual({ x: 0, y: 296 });
+  });
+
+  it("14) 比例优先：越界的旧绝对中心被忽略，按比例重新落点", async () => {
+    world.snapState = { edge: "left", hidden: true, center: 5000, centerRatio: 0.25 };
+    mount();
+    await advance(500);
+
+    expect(phase()).toBe("docked-hidden");
+    expect(world.pos).toEqual({ x: 0, y: 38 }); // 0.25*1032 = 258 → 258-220
+  });
+});
+
+describe("异常注入：缺边清理、失准重试与真实几何回读", () => {
+  it("自由态且无停靠边卸载：仍下发 off，残留裁剪可被清除", async () => {
+    const view = mount();
+    await advance(20);
+    expect(phase()).toBe("free");
+    expect(world.regionCalls).toHaveLength(0);
+
+    view.rerender({ enabled: false });
+    await advance(1);
+
+    // off 与方向无关：缺边时也必须能清理，否则残留裁剪没有任何出口
+    expect(world.regionCalls.at(-1)).toEqual({ mode: "off", edge: "left" });
+  });
+
+  it("区域失准自动重试用尽 → 可见错误态，并可手动重新校准后恢复", async () => {
+    mount();
+    await advance(50);
+    world.regionFailures = 99; // rail 与 off 都失败
+    await dragTo(20, 300);
+    await releasePointer();
+    await advance(6000);
+
+    expect(useEdgeSnapStore.getState().regionUnsynced).toBe(true);
+    const toast = useUiStore.getState().toasts.find((t) => t.code === "dock_region");
+    expect(toast?.action?.label).toBe("重新校准");
+
+    // 手动恢复：即使当前没有停靠边，也按 off（方向无关）清理并回读确认
+    world.regionFailures = 0;
+    const offBefore = world.regionCalls.filter((c) => c.mode === "off").length;
+    await act(async () => {
+      toast!.action!.run();
+    });
+    await advance(100);
+
+    expect(useEdgeSnapStore.getState().regionUnsynced).toBe(false);
+    expect(world.regionCalls.filter((c) => c.mode === "off").length).toBeGreaterThan(offBefore);
+  });
+
+  it("setSize 返回成功但尺寸未生效：不提交停靠、不写持久化", async () => {
+    mount();
+    await advance(50);
+    world.swallowSizeCalls = 99;
+    await dragTo(20, 300);
+    await releasePointer();
+    await advance(800);
+
+    expect(phase()).not.toBe("docked-visible");
+    expect(useEdgeSnapStore.getState().dockedEdge).toBeNull();
+    expect(world.snapWrites).toHaveLength(0);
+    // 尺寸回读不符 → 在写区域之前就拒绝停靠，不留下轨道裁剪
+    expect(world.regionCalls).toHaveLength(0);
+  });
+
+  it("setPosition 返回成功但位置未生效：不提交停靠、不写持久化", async () => {
+    mount();
+    await advance(50);
+    world.swallowPositionCalls = 99;
+    await dragTo(20, 300);
+    await releasePointer();
+    await advance(800);
+
+    expect(phase()).not.toBe("docked-visible");
+    expect(useEdgeSnapStore.getState().dockedEdge).toBeNull();
+    expect(world.snapWrites).toHaveLength(0);
+  });
+
+  it("snap_state.hidden：展开写 false、收起写 true，恢复后库与真实相位一致", async () => {
+    world.snapState = { edge: "right", hidden: true, center: 516 };
+    mount();
+    await advance(400);
+    expect(phase()).toBe("docked-hidden");
+    expect(world.snapWrites.at(-1)?.hidden).toBe(true);
+
+    await act(async () => {
+      useEdgeSnapStore.getState().reveal?.();
+      await Promise.resolve();
+    });
+    await advance(20);
+    expect(phase()).toBe("docked-revealed");
+    expect(world.snapWrites.at(-1)?.hidden).toBe(false);
+
+    await act(async () => {
+      useEdgeSnapStore.getState().collapse?.();
+      await Promise.resolve();
+    });
+    await advance(20);
+    expect(phase()).toBe("docked-visible");
+    expect(world.snapWrites.at(-1)?.hidden).toBe(false);
+
+    // 光标移出 → 自动收起为 docked-hidden，持久化 hidden=true
+    world.cursor = { x: 500, y: 900 };
+    await advance(600);
+    expect(phase()).toBe("docked-hidden");
+    expect(world.snapWrites.at(-1)?.hidden).toBe(true);
+  });
+
+  it("恢复连续失败放弃后清掉陈旧停靠记录，避免每次启动重复空白恢复", async () => {
+    world.snapState = { edge: "left", hidden: true, center: 516 };
+    world.monitorNullCalls = 99;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mount();
+    await advance(5000);
+
+    expect(phase()).toBe("free");
+    expect(world.snapWrites.at(-1)).toEqual({ edge: "none", hidden: false, center: null });
+    warn.mockRestore();
+  });
+});
+
+// ── 临时停靠形态与会话隔离 ────────────────────────────────────
+//
+// 胶囊「完整面板」/ 面板「收缩为胶囊」= 本次停靠会话的临时切换，不得改写
+// 持久化 `snap_display_mode`；拖离/解除后临时覆盖失效，再次吸附按默认偏好。
+// 设置页/右键菜单 = 长期偏好，且优先于旧的临时状态。
+
+describe("临时停靠形态与会话隔离", () => {
+  const tempForm = async (form: "capsule" | "full") => {
+    await act(async () => {
+      useEdgeSnapStore.getState().formSwitch?.(form);
+      await Promise.resolve();
+    });
+    // 胶囊 ↔ 完整需要静止等待 + 二次稳定回读（约 1s）。
+    await advance(1400);
+  };
+  const pref = () => useSettingsStore.getState().settings?.snap_display_mode ?? "capsule";
+
+  it("A1) 胶囊临时展开完整面板：不写偏好；拖离后再吸附回胶囊", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    expect(pref()).toBe("capsule");
+
+    await tempForm("full");
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+    // 关键断言：临时展开不得把长期偏好改成 full。
+    expect(pref()).toBe("capsule");
+
+    await dragTo(120, 300);
+    await advance(2200);
+    expect(phase()).toBe("free");
+    expect(pref()).toBe("capsule");
+
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    expect(world.size).toEqual({ width: 404, height: 440 });
+    expect(pref()).toBe("capsule");
+  });
+
+  it("A2) 偏好 full → 临时收缩胶囊：拖离后再吸附仍回到完整面板", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-full");
+
+    await tempForm("capsule");
+    expect(phase()).toBe("docked-hidden");
+    expect(world.size).toEqual({ width: 404, height: 440 });
+    expect(pref()).toBe("full");
+
+    await dragTo(120, 300);
+    await advance(2200);
+    expect(phase()).toBe("free");
+
+    await dockLeft();
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+    expect(pref()).toBe("full");
+  });
+
+  it("A3) 临时切换失败：实际形态回滚，且不回写长期偏好", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    world.regionFailMode = "off";
+
+    await tempForm("full");
+
+    // 没有进入 docked-full，几何仍是胶囊容器；偏好保持 capsule（区别于
+    // requestDockForm 的「偏好回滚」，这里本来就没写过偏好）。
+    expect(phase()).not.toBe("docked-full");
+    expect(world.size).toEqual({ width: 404, height: 440 });
+    expect(pref()).toBe("capsule");
+  });
+
+  it("A4) 临时形态期间用户改默认偏好：最新明确设置优先，旧临时状态不反向覆盖", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    // 叠两层临时切换：最后一次临时目标 = capsule（旧覆盖仍存在）。
+    await tempForm("full");
+    await tempForm("capsule");
+    expect(phase()).toBe("docked-hidden");
+
+    // 用户明确把默认吸附方式改为 full：应清掉旧的临时覆盖并原地展开。
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+      await Promise.resolve();
+    });
+    await advance(1400);
+    expect(phase()).toBe("docked-full");
+    expect(pref()).toBe("full");
+  });
+
+  it("A5) 胶囊临时展开后从功能页面解除停靠：再吸附遵守默认偏好", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await tempForm("full");
+    expect(phase()).toBe("docked-full");
+
+    // 等价于 openFullApp()：解除停靠并把目标模式一起交给引擎。
+    await act(async () => {
+      useEdgeSnapStore.getState().undock?.("full");
+      await Promise.resolve();
+    });
+    await advance(600);
+    expect(phase()).toBe("free");
+    expect(pref()).toBe("capsule");
+
+    // 解除后是普通完整窗口（贴着原来的边），先拖离再重新拖向边缘。
+    await dragTo(300, 300);
+    await advance(300);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+    expect(world.size).toEqual({ width: 404, height: 440 });
+  });
+
+  it("A6) 快速连续临时切换：只落最后一次目标，偏好不变", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await act(async () => {
+      useEdgeSnapStore.getState().formSwitch?.("full");
+      useEdgeSnapStore.getState().formSwitch?.("capsule");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await advance(2600);
+
+    expect(phase()).toBe("docked-hidden");
+    expect(pref()).toBe("capsule");
+  });
+
+  it("A7) 重启恢复：临时形态不泄漏，按持久化偏好恢复", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await tempForm("full");
+    expect(phase()).toBe("docked-full");
+    const saved = world.snapWrites.at(-1)!;
+    expect(pref()).toBe("capsule");
+
+    // 冷启动：停靠记录里没有形态字段，恢复只能按持久化偏好（capsule）。
+    mounted.pop()!();
+    world.snapState = {
+      edge: saved.edge,
+      hidden: saved.hidden,
+      center: saved.center,
+    };
+    mount();
+    await advance(1200);
+
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.size).toEqual({ width: 404, height: 440 });
+    expect(pref()).toBe("capsule");
+  });
+
+  it.each([
+    {
+      name: "左缘",
+      drag: [20, 300] as const,
+      fullSize: { width: 400, height: 560 },
+      capsuleSize: { width: 404, height: 440 },
+    },
+    {
+      name: "右缘",
+      drag: [1500, 300] as const,
+      fullSize: { width: 400, height: 560 },
+      capsuleSize: { width: 404, height: 440 },
+    },
+    {
+      name: "上缘",
+      drag: [600, 20] as const,
+      fullSize: { width: 400, height: 560 },
+      capsuleSize: { width: 404, height: 504 },
+    },
+    {
+      name: "下缘",
+      drag: [600, 472] as const,
+      fullSize: { width: 400, height: 560 },
+      capsuleSize: { width: 404, height: 504 },
+    },
+  ])("A8) $name：临时展开/收缩的形态与几何正确", async ({ drag, fullSize, capsuleSize }) => {
+    mount();
+    await advance(50);
+    await dragTo(drag[0], drag[1]);
+    expect(phase()).toBe("candidate");
+    await releasePointer();
+    await advance(400);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+
+    await tempForm("full");
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual({ width: fullSize.width, height: fullSize.height });
+
+    await tempForm("capsule");
+    expect(phase()).toBe("docked-hidden");
+    expect(world.size).toEqual({
+      width: capsuleSize.width,
+      height: capsuleSize.height,
+    });
+  });
+});
+
+// ── 沿边拖动不得误触发形态变化 ────────────────────────────────
+//
+// 自由窗口平行贴边拖动不应仅因「进入吸附区 / 被磁力吸进来」就吸附收缩；
+// 已停靠的完整面板沿边上下移动必须保持完整面板，不能换边或解除后重吸附。
+
+describe("沿边拖动的吸附意图", () => {
+  const move = async (x: number, y: number) => {
+    await dragTo(x, y);
+  };
+
+  it("自由窗口沿左缘平行拖动：不进入候选、不收缩", async () => {
+    mount();
+    await advance(50);
+    // 起点已在吸附区附近但在外侧（磁力会把它再拉近一点），只做沿边移动。
+    await move(40, 300);
+    expect(phase()).toBe("free");
+    await move(40, 700);
+    await move(40, 900);
+    expect(phase()).toBe("free");
+
+    await releasePointer();
+    await advance(600);
+    expect(phase()).toBe("free");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+  });
+
+  it("边缘附近的斜向微动：没有向边净位移就不吸附", async () => {
+    mount();
+    await advance(50);
+    await move(40, 300);
+    await move(30, 700);
+    expect(phase()).toBe("free");
+
+    await releasePointer();
+    await advance(600);
+    expect(phase()).toBe("free");
+  });
+
+  it("明确向边缘拖动仍然正常吸附", async () => {
+    mount();
+    await advance(50);
+    await move(300, 300);
+    await move(20, 300);
+    expect(phase()).toBe("candidate");
+    await releasePointer();
+    await advance(400);
+    expect(phase()).toBe("docked-visible");
+  });
+
+  it("已停靠完整面板沿左缘上下拖动：保持完整形态与几何", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-full");
+    const sizeBefore = { ...world.size };
+
+    await move(0, 700);
+    await advance(400);
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual(sizeBefore);
+
+    // 越过上缘（y 越界）也不能被角落的另一条边“抢走”候选。
+    await move(0, -1);
+    await advance(400);
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual(sizeBefore);
+
+    await move(0, 300);
+    await advance(2200);
+    expect(phase()).toBe("docked-full");
+    expect(useSettingsStore.getState().settings?.snap_display_mode).toBe("full");
+  });
+
+  it("已停靠完整面板沿边拖动后保存新的沿边位置", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    mount();
+    await advance(50);
+    await dockLeft();
+
+    await move(0, 700);
+    await advance(2200);
+    expect(phase()).toBe("docked-full");
+    // 完整面板沿边中心 = 700 + 560/2
+    expect(world.snapWrites.at(-1)?.center).toBe(980);
+  });
+
+  it("已停靠胶囊沿边移动仍正常，且不改变形态", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    const savedBefore = world.snapWrites.at(-1)!;
+
+    await move(0, 700);
+    await advance(2200);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.size).toEqual({ width: 404, height: 440 });
+    // 沿边位置更新、形态未被误切。
+    expect(world.snapWrites.at(-1)?.center).toBe(savedBefore.center === null ? null : 920);
+  });
+});
+
+describe("快速拖动与事件合并的吸附意图", () => {
+  it("快速单次位移：首个事件已跳入吸附范围，仍按真实静止起点识别意图", async () => {
+    mount();
+    await advance(50); // 引擎完成一次矩形读取，静止起点 = (300,300)
+    await dragTo(20, 300);
+    expect(phase()).toBe("candidate");
+    await releasePointer();
+    await advance(400);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(lastRegion()?.edge).toBe("left");
+  });
+
+  it("事件合并：多个 onMoved 同步到达、中间位置未被评估，仍按首个观测起点算净位移", async () => {
+    mount();
+    await advance(50);
+    await act(async () => {
+      // 模拟后端/OS 合并：中间位移不单独评估，最后一次才是有效矩形
+      world.pos = { x: 200, y: 300 };
+      fireMoved();
+      world.pos = { x: 120, y: 300 };
+      fireMoved();
+      world.pos = { x: 20, y: 300 };
+      fireMoved();
+      await Promise.resolve();
+    });
+    await advance(50);
+    expect(phase()).toBe("candidate");
+    await releasePointer();
+    await advance(400);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+  });
+
+  it("快速单次沿边位移（事件幅度大但无向边净位移）：不误吸附", async () => {
+    // 静止起点已在吸附区外侧（磁力把窗口拉近但未触发吸附）
+    world.pos = { x: 40, y: 300 };
+    mount();
+    await advance(50);
+    await dragTo(40, 900);
+    expect(phase()).toBe("free");
+    await releasePointer();
+    await advance(600);
+    expect(phase()).toBe("free");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+  });
+
+  it("四角快速斜拖：按下缘净位移最大时不换到右缘", async () => {
+    // 静止在右下角内缩位置：只有向下存在净位移
+    world.pos = { x: 1400, y: 200 };
+    mount();
+    await advance(50);
+    await dragTo(1400, 472);
+    expect(phase()).toBe("candidate");
+    await releasePointer();
+    await advance(400);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(lastRegion()?.edge).toBe("bottom");
+  });
+
+  it("已停靠完整面板快速上下拖动：只改位置、不换边、不切形态", async () => {
+    await act(async () => {
+      await useSettingsStore.getState().update({ snap_display_mode: "full" });
+    });
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-full");
+    const sizeBefore = { ...world.size };
+
+    // 单次大跨度上移，再单次下移，中间不做额外 tick
+    await dragTo(0, 100);
+    expect(phase()).toBe("docked-full");
+    await dragTo(0, 800);
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual(sizeBefore);
+
+    await advance(2200);
+    expect(phase()).toBe("docked-full");
+    expect(world.snapWrites.at(-1)?.center).toBe(800 + sizeBefore.height / 2);
   });
 });
 

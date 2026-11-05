@@ -67,16 +67,42 @@ const focusSource: FocusSource = createMappedWidgetSource(
 );
 
 // —— 效率：日统计（与任务统计面板同一 IPC、同一口径） ——
+//
+// 一致性设计（widgets 验收 B1）：
+// 1. 按需加载：只有存在订阅者时才查询；模块级状态由所有微件实例共享，
+//    React StrictMode 的双挂载/多微件同时打开不会产生重复 IPC。
+// 2. 失效：任务 Store 的 `stats` 引用变化视为任务数据发生变化（创建/完成/
+//    删除/编辑最终都会走 `refresh()` → `loadStats()`，产生新对象）。只订阅
+//    全局 stats，不订阅 `tasks` 列表，避免筛选/翻页这类「仅列表刷新」误触发。
+// 3. 合并：一轮连续变化只保留一个 debounce 定时器（模块级，不按微件创建）。
+// 4. 代际：每次失效递增 `efficiencyRevision`；响应落地时 revision 或 stats
+//    引用已变化则丢弃旧结果，并在结束后强制补查一次，旧响应绝不覆盖新数据。
+// 5. 释放：最后一个订阅者释放时清掉待执行定时器并取消 Store 监听；再次打开
+//    时用「建立快照时的 stats 引用」判断缓存是否仍有效，失效则重查。
+// 6. 失败：保留上一次成功结果并标记 `stale`（微件显示「数据可能已过期」+
+//    重试）；从未成功时快照保持 null（等待接入），绝不把未知当成 0。
+const EFFICIENCY_DEBOUNCE_MS = 120;
+
+type TaskStatsSnapshot = ReturnType<typeof useTasksStore.getState>["stats"];
+
 let efficiencyData: TaskAnalytics | null = null;
 let efficiencySnapshot: EfficiencySnapshot | null = null;
+/** 生成 `efficiencyData` 时对应的任务 stats；用于判断缓存是否已失效。 */
+let efficiencyStats: TaskStatsSnapshot = null;
+let efficiencyStale = false;
+/** 任务数据代际：stats 引用每次变化递增。 */
+let efficiencyRevision = 0;
 let efficiencyInFlight: Promise<void> | null = null;
+let efficiencyTimer: ReturnType<typeof setTimeout> | null = null;
+let efficiencyStoreUnsub: (() => void) | null = null;
+/** 测试重置代际：旧请求在重置后落地时不得写入新状态。 */
+let efficiencyEpoch = 0;
 const efficiencyListeners = new Set<() => void>();
 
 function publishEfficiency() {
   const stats = useTasksStore.getState().stats;
   // 两个来源缺一不可：任一缺失都保持「等待接入」，不把未知当成 0。
-  if (!efficiencyData || !stats) return;
-  efficiencySnapshot = {
+  efficiencySnapshot = !efficiencyData || !stats ? null : {
     // 「完成次数」：含重复任务每一期（与任务统计面板卡片同名同源）。
     completedToday: efficiencyData.summary.completed,
     dueToday: efficiencyData.summary.due,
@@ -86,42 +112,134 @@ function publishEfficiency() {
       efficiencyData.summary.completion_rate == null
         ? null
         : efficiencyData.summary.completion_rate * 100,
+    ...(efficiencyStale ? { stale: true } : {}),
   };
   for (const listener of efficiencyListeners) listener();
 }
 
-function refreshEfficiency(): Promise<void> {
+function clearEfficiencyTimer() {
+  if (efficiencyTimer !== null) {
+    clearTimeout(efficiencyTimer);
+    efficiencyTimer = null;
+  }
+}
+
+/** 合并刷新：连续变化覆盖同一个定时器；无订阅者时不排队任何工作。 */
+function scheduleEfficiencyRefresh(delay = EFFICIENCY_DEBOUNCE_MS) {
+  if (efficiencyListeners.size === 0) return;
+  clearEfficiencyTimer();
+  efficiencyTimer = setTimeout(() => {
+    efficiencyTimer = null;
+    if (efficiencyListeners.size === 0) return;
+    void runEfficiencyQuery();
+  }, delay);
+}
+
+function attachEfficiencyStoreListener() {
+  if (efficiencyStoreUnsub) return;
+  efficiencyStoreUnsub = useTasksStore.subscribe((state, prev) => {
+    if (state.stats === prev.stats) return;
+    // 任务数据实际变化：旧统计立即失效；pending 先用新 stats 展示，
+    // 完成/到期/逾期等待下一次查询替换（查询失败时才标记 stale）。
+    efficiencyRevision += 1;
+    if (efficiencyData) publishEfficiency();
+    scheduleEfficiencyRefresh();
+  });
+}
+
+function detachEfficiencyStoreListener() {
+  efficiencyStoreUnsub?.();
+  efficiencyStoreUnsub = null;
+}
+
+/** 同一时刻只允许一个在途查询；期间的新变化由调用结束后的补查覆盖。 */
+function runEfficiencyQuery(): Promise<void> {
   if (efficiencyInFlight) return efficiencyInFlight;
-  efficiencyInFlight = fetchTaskAnalytics("day")
+  const epoch = efficiencyEpoch;
+  const startRevision = efficiencyRevision;
+  const startStats = useTasksStore.getState().stats;
+  const request = fetchTaskAnalytics("day")
     .then((data) => {
+      if (epoch !== efficiencyEpoch) return;
+      const currentStats = useTasksStore.getState().stats;
+      if (startRevision !== efficiencyRevision || startStats !== currentStats) {
+        // 查询期间任务又变了：结果已过期，不写入缓存；finally 中补查。
+        return;
+      }
       efficiencyData = data;
+      efficiencyStats = startStats;
+      efficiencyStale = false;
       publishEfficiency();
     })
     .catch(() => {
-      // 保留上一次成功结果；从未成功时微件保持「等待统计模块数据」，
-      // 不伪造 0，也不在每次渲染时重试。
+      if (epoch !== efficiencyEpoch) return;
+      if (efficiencyData) {
+        // 保留旧数据（不清零、不伪造），只叠加过期标记；重试入口由微件提供。
+        efficiencyStale = true;
+        publishEfficiency();
+      }
+      // 从未成功：保持 null → 微件显示「等待统计模块数据」，不显示假 0。
     })
     .finally(() => {
-      efficiencyInFlight = null;
+      if (efficiencyInFlight === request) efficiencyInFlight = null;
+      if (epoch !== efficiencyEpoch) return;
+      const currentStats = useTasksStore.getState().stats;
+      const changedDuringFlight =
+        startRevision !== efficiencyRevision || startStats !== currentStats;
+      if (changedDuringFlight && efficiencyListeners.size > 0 && efficiencyTimer === null) {
+        // 在途期间有新变化：本次结束（成功但已过期或失败）后必须再查一次。
+        scheduleEfficiencyRefresh(0);
+      }
     });
-  return efficiencyInFlight;
+  efficiencyInFlight = request;
+  return request;
 }
 
 const efficiencySource: EfficiencySource = {
   getSnapshot: () => efficiencySnapshot,
   subscribe: (onChange) => {
     efficiencyListeners.add(onChange);
-    void refreshEfficiency();
-    // 任务概览变化（新建/完成/删除）时重算展示；不触发统计查询。
-    const unsubscribeStats = useTasksStore.subscribe((state, prev) => {
-      if (state.stats !== prev.stats) publishEfficiency();
-    });
+    if (efficiencyListeners.size === 1) attachEfficiencyStoreListener();
+
+    const stats = useTasksStore.getState().stats;
+    // 缓存有效 = 统计已成功过，且生成它时的 stats 引用仍是当前引用（没有任务写入），
+    // 也没有处于失败待重试状态。StrictMode 的「卸载-重挂载」会命中有效缓存，不重复查询。
+    const cacheValid = efficiencyData !== null && efficiencyStats === stats && !efficiencyStale;
+    if (!cacheValid) {
+      // 有旧数据时先用「旧统计 + 最新 pending」渲染，随后刷新替换；
+      // 无旧数据时保持等待接入。
+      if (efficiencyData) publishEfficiency();
+      scheduleEfficiencyRefresh(efficiencyData ? EFFICIENCY_DEBOUNCE_MS : 0);
+    }
+
     return () => {
       efficiencyListeners.delete(onChange);
-      unsubscribeStats();
+      if (efficiencyListeners.size === 0) {
+        clearEfficiencyTimer();
+        detachEfficiencyStoreListener();
+      }
     };
   },
+  retry: () => {
+    if (efficiencyListeners.size === 0) return;
+    clearEfficiencyTimer();
+    void runEfficiencyQuery();
+  },
 };
+
+/** 仅供测试：清空模块级缓存、订阅、定时器与在途代际。 */
+export function __resetEfficiencySourceForTests() {
+  efficiencyEpoch += 1;
+  efficiencyListeners.clear();
+  clearEfficiencyTimer();
+  detachEfficiencyStoreListener();
+  efficiencyData = null;
+  efficiencySnapshot = null;
+  efficiencyStats = null;
+  efficiencyStale = false;
+  efficiencyRevision = 0;
+  efficiencyInFlight = null;
+}
 
 /** 微件面板的数据源（模块级常量：引用稳定，避免重复订阅）。 */
 export const WIDGET_SOURCES: WidgetSources = {

@@ -4,6 +4,7 @@
 import { AlertCircle, ChevronRight, ListTodo } from "lucide-react";
 
 import { formatDue } from "../../lib/format";
+import type { Task } from "../../lib/bridge";
 import type { WidgetConfig } from "../../lib/widgets/model";
 import { todayPendingTasks } from "../../lib/widgets/selectors";
 import { useLocale } from "../../hooks/useLocale";
@@ -11,7 +12,15 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
 import { openFullApp } from "../capsule/actions";
 
-export default function TodayTasksWidget({ config }: { config: WidgetConfig }) {
+export interface TodayTasksWidgetProps {
+  config: WidgetConfig;
+  /** 独立桌面窗口：把「打开任务」转交主窗口，不在本窗口改 UI 状态。 */
+  onOpenTask?: (task: Task) => void;
+  /** 独立桌面窗口：把「打开任务页」转交主窗口。 */
+  onOpenPanel?: () => void;
+}
+
+export default function TodayTasksWidget({ config, onOpenTask, onOpenPanel }: TodayTasksWidgetProps) {
   const { t } = useLocale();
   const tasks = useTasksStore((s) => s.tasks);
   const stats = useTasksStore((s) => s.stats);
@@ -37,8 +46,9 @@ export default function TodayTasksWidget({ config }: { config: WidgetConfig }) {
       <div className="widget-status-line">
         <span>{summary}</span>
         {warning && (
-          <span className="widget-warn" data-tip={warning}>
+          <span className="widget-warn-note" data-tip={warning}>
             <AlertCircle size={12} aria-hidden="true" />
+            <span>{t("widgets.todayTasks.staleShort")}</span>
           </span>
         )}
       </div>
@@ -52,7 +62,7 @@ export default function TodayTasksWidget({ config }: { config: WidgetConfig }) {
                 <button
                   className="widget-row"
                   aria-label={t("widgets.todayTasks.openAria", { title: task.title })}
-                  onClick={() => openEditor(task)}
+                  onClick={() => (onOpenTask ? onOpenTask(task) : openEditor(task))}
                 >
                   <span className="widget-task-title">{task.title}</span>
                   <span className={`widget-task-meta ${overdue ? "overdue" : ""}`}>
@@ -78,7 +88,10 @@ export default function TodayTasksWidget({ config }: { config: WidgetConfig }) {
       )}
 
       <div className="widget-foot">
-        <button className="widget-link" onClick={() => openFullApp("tasks")}>
+        <button
+          className="widget-link"
+          onClick={() => (onOpenPanel ? onOpenPanel() : openFullApp("tasks"))}
+        >
           {t("widgets.todayTasks.openPanel")}
         </button>
       </div>

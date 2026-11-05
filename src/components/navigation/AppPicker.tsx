@@ -3,7 +3,8 @@
 //! 数据策略：打开时用 store 缓存的扫描结果（后端另有 5 分钟缓存），
 //! 不做全量重扫；「刷新」按钮才触发强制扫描。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import "./appPicker.css";
 import {
   X, RefreshCw, Plus, Star, Clock, Monitor, AppWindow, ArrowLeft, Check,
 } from "lucide-react";
@@ -113,7 +114,8 @@ export default function AppPicker({
 }: Props) {
   const showToast = useUiStore((s) => s.showToast);
   const {
-    scan, scanning, scanError, loadApps, targets, targetsLoaded, targetsError, loadTargets,
+    scan, scanning, scanError, scanProgress, scanPartial,
+    loadApps, targets, targetsLoaded, targetsError, loadTargets,
     linksError, loadTaskLinks,
   } = useNavigationStore();
   const taskMode = !!taskId;
@@ -225,13 +227,20 @@ export default function AppPicker({
     }
   }
 
+  /** 扫描进度文案：只展示真实信息（已发现数 + 已完成来源数），不编造百分比。 */
+  function scanProgressText(): string {
+    if (!scanProgress || scanProgress.sourcesTotal <= 0) return "";
+    return `已发现 ${scanProgress.discovered} 个 · 已扫描来源 ${scanProgress.sourcesDone}/${scanProgress.sourcesTotal}`;
+  }
+
   /**
    * 扫描状态提示（页面与弹层共用）：
-   * 未扫描时给主动扫描引导；扫描中不显示「加载中…」占位；失败可重试。
+   * 未扫描时给主动扫描引导；扫描中在可用列表区域水平+垂直居中；失败可重试。
    */
   function renderScanGate() {
+    let content: ReactNode = null;
     if (scanFailedFresh) {
-      return (
+      content = (
         <div className="empty-hint error-text" role="alert">
           应用扫描失败：{scanError}
           <button className="btn sm" onClick={() => void loadApps(true)}>
@@ -239,9 +248,8 @@ export default function AppPicker({
           </button>
         </div>
       );
-    }
-    if (scanUnscanned) {
-      return (
+    } else if (scanUnscanned) {
+      content = (
         <div className="picker-unscanned" role="status">
           <div className="picker-unscanned-title">尚未扫描本机应用</div>
           <div className="picker-unscanned-desc">
@@ -252,25 +260,33 @@ export default function AppPicker({
           </button>
         </div>
       );
-    }
-    if (scanRefreshing) {
-      return (
+    } else if (scanRefreshing) {
+      const progress = scanProgressText();
+      // 两行结构：第一行是动作与图标，第二行是真实进度（已发现数 / 来源数）。
+      // 不塞进同一行，避免窄窗与高 DPI 下拥挤、错位换行。
+      content = (
         <div className="empty-hint picker-scanning" role="status">
-          <RefreshCw size={12} className="spin" /> 正在扫描本机应用…
+          <span className="picker-scanning-line">
+            <RefreshCw size={12} className="spin" /> 正在扫描本机应用…
+          </span>
+          {progress && <span className="picker-scan-progress">{progress}</span>}
         </div>
       );
     }
-    return null;
+    if (!content) return null;
+    return <div className="picker-scan-state">{content}</div>;
   }
 
-  /** 已有结果时的失败 / 部分成功提示：保留上次成功结果，原因可见、可重扫。 */
+  /** 已有结果时的失败 / 部分成功提示：区分「上次结果仍可用」与「仅有部分结果」。 */
   function renderScanNotices() {
     if (!scan) return null;
     return (
       <>
         {scanError && (
-          <div className="empty-hint error-text" role="status">
-            扫描刷新失败，当前显示上次结果：{scanError}
+          <div className="empty-hint error-text" role={scanPartial ? "alert" : "status"}>
+            {scanPartial
+              ? `扫描未完成，当前仅显示已发现的部分结果（不完整）：${scanError}`
+              : `扫描刷新失败，当前显示上次结果：${scanError}`}
             <button className="btn sm" onClick={() => void loadApps(true)}>
               重试
             </button>
@@ -295,7 +311,11 @@ export default function AppPicker({
       <div className="picker-count" role="status">
         共 {total} 个{query.trim() ? "匹配" : "可添加"}应用
         {scan.scanned_at ? ` · 上次扫描 ${formatScanTime(scan.scanned_at)}` : ""}
-        {scanning ? " · 正在重新扫描…" : ""}
+        {scanning
+          ? scanProgressText()
+            ? ` · 正在扫描（${scanProgressText()}）`
+            : " · 正在扫描…"
+          : ""}
         {scanIncomplete ? " · 部分来源失败" : ""}
       </div>
     );
@@ -343,10 +363,11 @@ export default function AppPicker({
       .filter((a): a is DiscoveredApp => !!a);
   }, [scan, query, category, targets]);
 
-  // 搜索词/分类/扫描结果变化后回到第一页，避免“加载更多”残留导致列表跳动
+  // 搜索词/分类变化后回到第一页，避免“加载更多”残留导致列表跳动。
+  // 渐进扫描批次不再重置分页：扫描期间已展开的条目不会被后续批次或最终收敛折回。
   useEffect(() => {
     setVisibleCount(APP_PAGE_SIZE);
-  }, [query, category, scan]);
+  }, [query, category]);
 
   const visibleApps = apps.slice(0, visibleCount);
   const hasMore = apps.length > visibleApps.length;
@@ -379,15 +400,16 @@ export default function AppPicker({
   const pageVisible = pageApps.slice(0, visibleCount);
   const pageHasMore = pageApps.length > pageVisible.length;
 
-  // 扫描结果变化后剔除已不存在身份的选中项，避免批量提交提交到失效条目
+  // 扫描结果变化后剔除已不存在身份的选中项，避免批量提交提交到失效条目。
+  // 渐进扫描期间列表尚不完整，暂不裁剪，否则已选中的应用会在新批次到达前被误删。
   useEffect(() => {
-    if (!isPage) return;
+    if (!isPage || scanning) return;
     const valid = new Set((scan?.apps ?? []).map((a) => a.app_key));
     setSelectedKeys((prev) => {
       const next = new Set([...prev].filter((k) => valid.has(k)));
       return next.size === prev.size ? prev : next;
     });
-  }, [scan, isPage]);
+  }, [scan, isPage, scanning]);
 
   const runningApps = useMemo(() => {
     const set = new Set<string>();
@@ -987,7 +1009,11 @@ export default function AppPicker({
                   <div className="picker-count" role="status">
                     共 {pageApps.length} 个{query.trim() ? "匹配" : "可添加"}应用
                     {scan.scanned_at ? ` · 上次扫描 ${formatScanTime(scan.scanned_at)}` : ""}
-                    {scanning ? " · 正在重新扫描…" : ""}
+                    {scanning
+                      ? scanProgressText()
+                        ? ` · 正在扫描（${scanProgressText()}）`
+                        : " · 正在扫描…"
+                      : ""}
                     {scanIncomplete ? " · 部分来源失败" : ""}
                     {hiddenByDefault.length > 0 && !showAdvanced && (
                       <button
@@ -1012,7 +1038,12 @@ export default function AppPicker({
                         ? `没有匹配「${query.trim()}」的应用；可换个关键词，或手动添加`
                         : apps.length > 0
                           ? "当前只显示常用应用；点「显示高级项」查看被默认隐藏的后台组件"
-                          : "扫描完成，未发现可添加的应用；可从当前窗口选择或手动添加"}
+                          : scanning
+                            // 后续来源还在扫描：不能提前宣称「扫描完成」
+                            ? "正在扫描，暂未发现可添加的应用…"
+                            : scanPartial
+                              ? "扫描未完成，暂未发现可添加的应用；可重试扫描"
+                              : "扫描完成，未发现可添加的应用；可从当前窗口选择或手动添加"}
                     </div>
                   ) : (
                     <>
@@ -1295,7 +1326,12 @@ export default function AppPicker({
                   <div className="empty-hint">
                     {query.trim()
                       ? `没有匹配「${query.trim()}」的应用；可换个关键词，或手动添加`
-                      : "扫描完成，未发现可添加的应用；可点「手动添加」登记任意 EXE / 网址 / 目录"}
+                      : scanning
+                        // 后续来源还在扫描：不能提前宣称「扫描完成」
+                        ? "正在扫描，暂未发现可添加的应用…"
+                        : scanPartial
+                          ? "扫描未完成，暂未发现可添加的应用；可重试扫描"
+                          : "扫描完成，未发现可添加的应用；可点「手动添加」登记任意 EXE / 网址 / 目录"}
                   </div>
                 ) : (
                   <>

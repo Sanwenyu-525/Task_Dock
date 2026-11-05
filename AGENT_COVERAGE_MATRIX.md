@@ -24,8 +24,11 @@
 自动化测试，但尚未在新开的真实 ZCode 会话中观察到宿主事件，故「已真实联调」仍为 ❌。
 **更正（2026-11-04）**：Trae 从通过计数移除——数据库中只有 `taskdock-selftest-trae` 自测事件，
 没有任何 `origin=real` 的宿主事件；`verified` 位由旧版本自测写入，属假阳性。
-本机真实环境确认：CN 版 `Trae CN.exe`（1.107.1）在运行，但进程名匹配与全局 Hooks 开关均未接入。
+本机真实环境确认：CN 版 `Trae CN.exe`（1.107.1）在运行；代码已覆盖 `Trae` / `Trae CN` 进程名匹配，
+但 `global_hooks_enabled` 由 Trae 自身控制，Task Dock 不修改该开关，需用户在 Trae 内手动开启。
 **本轮新增适配器**：Claude Code、Cursor、Gemini CLI（配置层已实现，真实会话事件 UNVERIFIED）；11 个仅发现型来源。
+**目录同步（2026-11-05）**：`featureCatalog.ts` 中上述三者状态由 planned 改为 implemented，
+`verification` 保持 unverified；与本文「已实现 ✅ / 已真实联调 ❌」两列口径一致，不因有适配器文件而标 verified。
 历史联调结果不作为本轮自动验收通过依据；本轮实际执行证据见 `tmp/acceptance/agent-universal-review/report.md`。
 
 ---

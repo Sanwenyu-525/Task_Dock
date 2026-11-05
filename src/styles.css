@@ -4023,6 +4023,42 @@ code {
   height: 24px;
 }
 
+/* 直接删除入口：与收藏/菜单并列，始终占位（不改变卡片尺寸），
+   默认隐藏，卡片悬停或键盘聚焦时出现。 */
+.apps-tile-actions .apps-tile-del,
+.apps-extra-row .apps-tile-del {
+  width: 22px;
+  height: 22px;
+  color: var(--text-tertiary);
+  opacity: 0;
+  pointer-events: none;
+}
+.apps-tile:hover .apps-tile-del,
+.apps-tile:focus-within .apps-tile-del,
+.apps-extra-row:hover .apps-tile-del,
+.apps-extra-row:focus-within .apps-tile-del,
+.apps-tile-del:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.apps-tile-actions .apps-tile-del:hover,
+.apps-extra-row .apps-tile-del:hover {
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
+}
+.apps-tile-del:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* 触屏没有 hover：删除入口常显。 */
+@media (hover: none) {
+  .apps-tile-actions .apps-tile-del,
+  .apps-extra-row .apps-tile-del {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 .apps-tile-avatar {
   display: inline-flex;
   align-items: center;
@@ -8082,20 +8118,38 @@ code {
     0 18px 40px -26px rgba(52, 60, 132, 0.58),
     0 3px 10px -6px rgba(52, 60, 132, 0.24);
 
-  --cap-card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.90) 0%, rgba(255, 255, 255, 0.66) 100%);
-  --cap-card-face-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.82) 100%);
+  /* 玻璃层的不透明度固定，颜色一律从 `--c-paper` / `--accent` 派生：
+     浅深主题只覆盖透明度与 inkshadow，不在胶囊内另造一套色板。 */
+  --cap-card-face: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--c-paper) 90%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 66%, transparent) 100%
+  );
+  --cap-card-face-hover: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--c-paper) 98%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 82%, transparent) 100%
+  );
   --cap-card-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.98),
-    0 1px 2px -1px rgba(52, 60, 132, 0.10);
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 98%, transparent),
+    0 1px 2px -1px color-mix(in srgb, var(--c-ink) 10%, transparent);
 
-  --cap-chip-face: rgba(255, 255, 255, 0.58);
-  --cap-chip-face-hover: rgba(255, 255, 255, 0.86);
-  --cap-seg-face: rgba(226, 233, 250, 0.55);
-  --cap-seg-active: #ffffff;
+  --cap-chip-face: color-mix(in srgb, var(--c-paper) 58%, transparent);
+  --cap-chip-face-hover: color-mix(in srgb, var(--c-paper) 86%, transparent);
+  --cap-seg-face: color-mix(
+    in srgb,
+    color-mix(in srgb, var(--c-paper) 88%, var(--accent)) 55%,
+    transparent
+  );
+  --cap-seg-active: var(--c-paper);
 
-  --cap-tile-face: linear-gradient(180deg, #ffffff 0%, #eef2ff 100%);
-  --cap-tile-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.9);
-  --cap-tile-shadow: 0 1px 3px -1px rgba(52, 60, 132, 0.18);
+  --cap-tile-face: linear-gradient(
+    180deg,
+    var(--c-paper) 0%,
+    color-mix(in srgb, var(--accent) 7%, var(--c-paper)) 100%
+  );
+  --cap-tile-ring: inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 90%, transparent);
+  --cap-tile-shadow: 0 1px 3px -1px color-mix(in srgb, var(--c-ink) 18%, transparent);
 
   --cap-text-1: var(--text-primary);
   --cap-text-2: var(--text-secondary);
@@ -8113,20 +8167,32 @@ code {
     0 20px 44px -26px rgba(0, 0, 0, 0.78),
     0 3px 10px -6px rgba(0, 0, 0, 0.5);
 
-  --cap-card-face: linear-gradient(180deg, rgba(255, 255, 255, 0.085) 0%, rgba(255, 255, 255, 0.045) 100%);
-  --cap-card-face-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.13) 0%, rgba(255, 255, 255, 0.07) 100%);
+  --cap-card-face: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--c-paper) 8.5%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 4.5%, transparent) 100%
+  );
+  --cap-card-face-hover: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--c-paper) 13%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 7%, transparent) 100%
+  );
   --cap-card-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 1px 2px -1px rgba(0, 0, 0, 0.4);
+    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 12%, transparent),
+    0 1px 2px -1px color-mix(in srgb, var(--c-night) 40%, transparent);
 
-  --cap-chip-face: rgba(255, 255, 255, 0.07);
-  --cap-chip-face-hover: rgba(255, 255, 255, 0.14);
-  --cap-seg-face: rgba(0, 0, 0, 0.22);
-  --cap-seg-active: rgba(255, 255, 255, 0.14);
+  --cap-chip-face: color-mix(in srgb, var(--c-paper) 7%, transparent);
+  --cap-chip-face-hover: color-mix(in srgb, var(--c-paper) 14%, transparent);
+  --cap-seg-face: color-mix(in srgb, var(--c-night) 22%, transparent);
+  --cap-seg-active: color-mix(in srgb, var(--c-paper) 14%, transparent);
 
-  --cap-tile-face: linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.05) 100%);
-  --cap-tile-ring: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
-  --cap-tile-shadow: 0 1px 3px -1px rgba(0, 0, 0, 0.5);
+  --cap-tile-face: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--c-paper) 12%, transparent) 0%,
+    color-mix(in srgb, var(--c-paper) 5%, transparent) 100%
+  );
+  --cap-tile-ring: inset 0 0 0 1px color-mix(in srgb, var(--c-paper) 10%, transparent);
+  --cap-tile-shadow: 0 1px 3px -1px color-mix(in srgb, var(--c-night) 50%, transparent);
 
   --cap-divider: color-mix(in srgb, var(--c-paper) 10%, transparent);
   --cap-track: color-mix(in srgb, var(--c-paper) 12%, transparent);
@@ -8271,6 +8337,7 @@ code {
    36px、蓝→紫柔和渐变、内高光、阴影克制；状态环只在运行/等待/失败时出现。 */
 .cap-orb {
   position: relative;
+  isolation: isolate; /* 让呼吸叠层（z-index:-1）落在球体背景之上、图标之下 */
   flex: 0 0 auto;
   width: 36px;
   height: 36px;
@@ -8293,28 +8360,68 @@ code {
 .cap-orb:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .cap-orb[data-tone="idle"],
 .cap-orb[data-tone="unknown"] { box-shadow: inset 0 1px 0 var(--cap-orb-inner); }
+/* 状态球本体呼吸：内叠层只做低对比径向光与轻微缩放，只用 opacity/transform，
+   不触发布局、不产生大面积外部光晕；颜色按状态轻微偏移。 */
+.cap-orb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 50% 30%,
+    var(--cap-orb-breath, rgba(255, 255, 255, 0.26)),
+    transparent 66%
+  );
+  opacity: 0.34;
+  transform: scale(0.98);
+}
 .cap-orb[data-tone="running"] {
+  --cap-orb-breath: color-mix(in srgb, var(--status-running) 46%, #fff);
   box-shadow:
     inset 0 1px 0 var(--cap-orb-inner),
     0 0 0 2px color-mix(in srgb, var(--status-running) 42%, transparent),
     0 4px 10px -6px color-mix(in srgb, var(--c-accent) 70%, transparent);
 }
 .cap-orb[data-tone="waiting"] {
+  --cap-orb-breath: color-mix(in srgb, var(--status-waiting) 50%, #fff);
   box-shadow:
     inset 0 1px 0 var(--cap-orb-inner),
     0 0 0 2px color-mix(in srgb, var(--status-waiting) 55%, transparent),
     0 4px 10px -6px color-mix(in srgb, var(--c-accent) 70%, transparent);
 }
 .cap-orb[data-tone="failed"] {
+  --cap-orb-breath: color-mix(in srgb, var(--status-error) 50%, #fff);
   box-shadow:
     inset 0 1px 0 var(--cap-orb-inner),
     0 0 0 2px color-mix(in srgb, var(--status-error) 55%, transparent),
     0 4px 10px -6px color-mix(in srgb, var(--c-accent) 70%, transparent);
 }
 .cap-orb[data-tone="disconnected"] {
+  --cap-orb-breath: color-mix(in srgb, var(--status-disconnected) 40%, #fff);
   box-shadow:
     inset 0 1px 0 var(--cap-orb-inner),
     0 0 0 2px color-mix(in srgb, var(--status-disconnected) 45%, transparent);
+}
+/* 仅活动态呼吸：running 最慢最克制，waiting 稍快提示需要关注，failed 略快表示异常。
+   idle/unknown/disconnected 保持静态高光，避免整条胶囊持续闪烁。 */
+.cap-orb[data-tone="running"]::after { animation: cap-orb-breathe 3.2s ease-in-out infinite; }
+.cap-orb[data-tone="waiting"]::after { animation: cap-orb-breathe 2.2s ease-in-out infinite; }
+.cap-orb[data-tone="failed"]::after { animation: cap-orb-breathe 2.6s ease-in-out infinite; }
+@keyframes cap-orb-breathe {
+  0%, 100% { opacity: 0.3; transform: scale(0.97); }
+  50% { opacity: 0.72; transform: scale(1.02); }
+}
+/* 降低动态偏好：保留静态高光，不做呼吸 */
+@media (prefers-reduced-motion: reduce) {
+  .cap-orb[data-tone="running"]::after,
+  .cap-orb[data-tone="waiting"]::after,
+  .cap-orb[data-tone="failed"]::after {
+    animation: none;
+    opacity: 0.5;
+    transform: none;
+  }
 }
 
 .cap-orb-badge {
@@ -8956,7 +9063,7 @@ code {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
+  height: var(--input-height-sm);
   padding: 0 9px;
   border-radius: 10px;
   background: var(--cap-chip-face);
@@ -8971,7 +9078,9 @@ code {
   outline: none;
   background: transparent;
   color: var(--cap-text-1);
-  font-size: var(--input-font-size-sm);
+  /* 30px 胶囊输入沿用常规字号（13px）：sm 档 12px 的原生光标偏小；
+     容器高度不变，仍保持工具面板的紧凑尺寸。 */
+  font-size: var(--input-font-size);
   line-height: var(--input-line-height);
 }
 .cap-input input::placeholder { color: var(--cap-text-3); }
@@ -9307,21 +9416,67 @@ code {
 
 /* ── 应用面板 ────────────────────────────────────────────── */
 .cap-search { margin-bottom: 9px; }
+/* 胶囊内删除确认条：窗口被 Win32 区域裁成 340×440，浮层对话框会越界被裁，
+   这里用面板内确认条承载同一套「确认后调用 nav_delete_target」流程。 */
+.cap-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 8px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: var(--cap-card-face);
+  box-shadow: var(--cap-card-shadow);
+}
+.cap-confirm-text {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--cap-text-1);
+}
+.cap-confirm-text span {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--cap-text-3);
+}
+.cap-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.cap-confirm-danger { color: var(--status-error); }
+.cap-confirm-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
+}
 .cap-app-grid {
+  /* 网格项统一外层高度：普通应用与「添加」入口共用同一行高，
+     不随应用数量、名称行数或当前行高变化。 */
+  --cap-app-cell-h: 78px;
   display: grid;
   /* minmax(0,1fr)：1fr 的最小值是 min-content，长应用名会把整列顶宽，
      四个格子随即互相挤压并溢出面板（浏览器走查里表现为标签串到隔壁格）。 */
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 7px;
+  grid-auto-rows: var(--cap-app-cell-h);
+  gap: 6px;
   padding: 1px 1px 2px;
+}
+/* 每个应用是「启动按钮 + 并列删除按钮」的格子容器；
+   删除按钮绝对定位，不参与图标/名称布局，也不改变格子尺寸。 */
+.cap-app-slot {
+  position: relative;
+  display: flex;
+  min-width: 0;
 }
 .cap-app {
   display: flex;
   flex-direction: column;
   align-items: center;
+  width: 100%;
   min-width: 0;
-  gap: 5px;
-  padding: 7px 3px 6px;
+  height: var(--cap-app-cell-h);
+  gap: 4px;
+  padding: 5px 3px;
   border: 0;
   border-radius: 13px;
   /* 视觉减负：默认不铺卡片底、不投外阴影，让真实图标与名称自己形成层级。 */
@@ -9329,36 +9484,100 @@ code {
   box-shadow: none;
   color: var(--cap-text-2);
   cursor: pointer;
+}
+/* Hover 视觉只落在 36px 图标片上，点击范围仍由整个格子承担；
+   不再给整格铺一块大圆角灰底。 */
+.cap-app:hover,
+.cap-app:active {
+  background: transparent;
+}
+.cap-app-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: transparent;
   transition: background 0.14s ease;
 }
-.cap-app:hover {
-  background: color-mix(in srgb, var(--cap-text-2) 7%, transparent);
+.cap-app:hover .cap-app-icon {
+  background: color-mix(in srgb, var(--cap-text-2) 6%, transparent);
 }
-.cap-app:active {
+.cap-app:active .cap-app-icon {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-.cap-app:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-/* 普通卡片里的真实图标不再套彩色底：保留图标本身的透明轮廓与字母回退色。 */
-.cap-app .app-icon { background: transparent !important; box-shadow: none; }
-/* 「添加应用」入口：与普通卡片同网格对齐，但视觉权重更低——
-   去外阴影、去浮雕，只用轻边框与极浅背景表达可点击；hover 不上浮。 */
+/* --focus-ring 在本主题里是图层组合（不能作 box-shadow 颜色），
+   统一改用实色 outline，保证格子有清晰的键盘焦点。 */
+.cap-app:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  box-shadow: none;
+}
+/* 启动中的应用格子原地禁用，避免连续点击重复请求；完成后恢复。 */
+.cap-app:disabled { opacity: 0.68; cursor: default; }
+/* 已加载的真实图标不再套彩色底；字母回退仍保留 AppIcon 的色相底，
+   不能被 `background: transparent` 一起吃掉。 */
+.cap-app .app-icon.is-loaded { background: transparent; box-shadow: none; }
+/* 右上角删除：默认隐藏，悬停/键盘聚焦时出现；22px 热区，图标 12px。
+   热区绝对定位在格子右上角，不与 36px 图标片和名称争布局。 */
+.cap-app-del {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cap-text-3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.cap-app-slot:hover .cap-app-del,
+.cap-app-slot:focus-within .cap-app-del,
+.cap-app-del:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.cap-app-del:hover {
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
+}
+.cap-app-del:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cap-app-del:disabled { opacity: 0.35; pointer-events: none; }
+/* 触屏没有 hover：删除入口常显，保证可发现、可操作。 */
+@media (hover: none) {
+  .cap-app-del { opacity: 1; pointer-events: auto; }
+}
+/* 「添加应用」入口：与普通网格项同尺寸承接入点击，但默认不画卡片——
+   不加边框、不加底色、不加外阴影，只保留与图标同尺度的加号；hover 才给极轻反馈。 */
 .cap-app-add {
   justify-content: center;
-  align-self: stretch;
   gap: 0;
-  border: 1px solid var(--cap-divider);
-  /* 极浅底 + 浅轮廓；网格项自动拉伸，高度与普通卡片一致（不靠固定像素猜测）。 */
-  background: color-mix(in srgb, var(--cap-text-2) 5%, transparent);
+  border: 0;
+  background: transparent;
   box-shadow: none;
   color: var(--cap-text-2);
-  transition: background 0.14s ease, border-color 0.14s ease, transform 0.1s ease;
+  transition: background 0.14s ease;
 }
-.cap-app-add:hover {
-  background: var(--cap-card-face-hover);
-  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
-  transform: none;
+/* hover 反馈只落在 34px 的加号圆上，不把整格铺成一块高亮卡片。 */
+.cap-app-add:hover { background: transparent; }
+.cap-app-add:hover .cap-app-avatar.is-add {
+  background: color-mix(in srgb, var(--cap-text-2) 6%, transparent);
 }
-.cap-app-add:active { transform: scale(0.97); }
+/* Active 只换色不位移：网格项不做缩放，避免同行图标视觉抖动。 */
+.cap-app-add:active { background: transparent; }
+.cap-app-add:active .cap-app-avatar.is-add {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
 /* --focus-ring 在本主题里是图层组合（不能作 box-shadow 颜色），
    这里改用实色 outline，保证纯加号入口仍有清晰的键盘焦点反馈。 */
 .cap-app-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
@@ -9449,6 +9668,26 @@ code {
   font-weight: 700;
   color: hsl(var(--app-hue, 250) 62% 40%);
   background: hsl(var(--app-hue, 250) 76% 92%);
+}
+
+/* 胶囊面板控件键盘焦点统一：`--focus-ring` 引用 `--surface-base`，在预设主题下
+   会解析成渐变（<image>），整条 box-shadow 声明失效。这里用实色 outline 统一
+   替换本任务可维护的面板控件（轨道按钮/表单开关归另一个任务，未在此改动）。
+   内描边偏移避免被滚动容器裁掉，也不因焦点出现改变控件尺寸。 */
+.cap-iconbtn:focus-visible,
+.cap-seg-btn:focus-visible,
+.cap-row-open:focus-visible,
+.cap-mini:focus-visible,
+.cap-check:focus-visible,
+.cap-link:focus-visible,
+.cap-clip-tile:focus-visible,
+.cap-clip-hit:focus-visible,
+.cap-clip-main:focus-visible,
+.cap-app:focus-visible,
+.cap-app-add:focus-visible,
+.cap-recent-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* 窄窗兜底：容器被系统压到小于胶囊容器时，面板退化为轨道内滚动，

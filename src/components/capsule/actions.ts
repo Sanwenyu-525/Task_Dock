@@ -22,12 +22,18 @@ export function openFullApp(tab: Tab): void {
 }
 
 /**
- * 打开「应用配置」：切到完整窗口的设置页，并把一次性意图交给设置面板消费。
+ * 打开「添加应用」：进入完整窗口的应用中心，并下发一次性添加意图。
  *
- * 胶囊处于 Win32 `SetWindowRgn` 裁剪态，大型选择器/设置界面若挂在胶囊里会被裁掉；
- * 因此先从胶囊解除停靠进入完整窗口（`openFullApp`），再由设置面板渲染选择器。
+ * 胶囊处于 Win32 `SetWindowRgn` 裁剪态，大型选择器若挂在胶囊里会被裁掉；
+ * 因此先解除停靠进入完整窗口。意图由 AppsPanel 消费一次即清除：
+ * 保存/取消/返回后不会再次自动打开，不把用户弹回设置页。
  */
-export function openAppsConfig(kind: "picker" | "manage"): void {
-  useUiStore.getState().requestAppConfig(kind);
-  openFullApp("settings");
+export function openAppsAdd(): void {
+  useUiStore.getState().requestAppsAdd();
+  openFullApp("apps");
+}
+
+/** 打开完整窗口的应用中心（管理已有快捷应用）。 */
+export function openAppsManager(): void {
+  openFullApp("apps");
 }

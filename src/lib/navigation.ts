@@ -3,7 +3,8 @@
 //! 语义对齐后端：前端只传目标 ID 与行为偏好，不透传可执行路径/参数；
 //! 所有结果如实携带 verification_level / fallback_used，UI 不得夸大成功。
 
-import { invokeCommand as invoke } from "./errors";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invokeCommand as invoke, sanitizeForUser } from "./errors";
 
 export type NavigationTargetType =
   | "application"
@@ -175,20 +176,43 @@ export interface NavigateOptions {
   task_link_id?: string;
 }
 
+/** 渐进扫描批次（后端按来源推送；`scan_id` 用于隔离过期请求）。 */
+export interface AppScanBatch {
+  scan_id: string;
+  /** startmenu | known | app_paths | registry | uwp */
+  source: string;
+  /** 本批新增（app_key 已去重） */
+  apps: DiscoveredApp[];
+  /** 含本批在内的累计发现数 */
+  discovered: number;
+  sources_done: number;
+  sources_total: number;
+}
+
 // ── 扫描与目标 ──
-export const navScanApps = (force = false) =>
-  invoke<AppScanResult>("nav_scan_apps", { force });
+export const navScanApps = (force = false, scanId?: string) =>
+  invoke<AppScanResult>("nav_scan_apps", { force, scanId: scanId ?? null });
+
+/** 订阅渐进扫描批次；调用方必须在扫描结束后注销，避免重复监听。 */
+export const onNavScanBatch = (handler: (batch: AppScanBatch) => void): Promise<UnlistenFn> =>
+  listen<AppScanBatch>("nav-scan-batch", (event) => handler(event.payload));
+
 /**
- * 真实应用图标（PNG data URL；无图标返回 null）。
+ * 真实应用图标（无图标返回 null）。
+ * `light` 表示近白/浅色图标：浅色主题下需要克制的自适应底衬与轮廓保障对比度。
  * 只传「已保存目标 id」「扫描发现的 app_key」或窗口选择页的真实 exe 路径；
  * 后端对 exe 路径做绝对路径/.exe/存在/非解释器校验。
  */
+export interface AppIconData {
+  url: string;
+  light: boolean;
+}
 export const navAppIcon = (identity: {
   targetId?: string;
   appKey?: string;
   exePath?: string;
 }) =>
-  invoke<string | null>("nav_app_icon", {
+  invoke<AppIconData | null>("nav_app_icon", {
     targetId: identity.targetId ?? null,
     appKey: identity.appKey ?? null,
     exePath: identity.exePath ?? null,
@@ -357,14 +381,15 @@ export function verificationLabel(level: string): string {
   }
 }
 
-/** 结果 → Toast 文案（含降级与验证级别提示）。 */
+/** 结果 → Toast 文案（含降级与验证级别提示；原因统一脱敏，不展示本地路径）。 */
 export function resultMessage(r: NavigationResult, name: string): string {
+  const reason = r.reason ? sanitizeForUser(r.reason) : "";
   if (!r.success) {
-    return `「${name}」跳转失败：${r.reason ?? "未知原因"}`;
+    return `「${name}」跳转失败：${reason || "未知原因"}`;
   }
   const v = verificationLabel(r.verification_level);
   if (r.fallback_used) {
-    return `「${name}」${v}${r.reason ? `（${r.reason}）` : ""}`;
+    return `「${name}」${v}${reason ? `（${reason}）` : ""}`;
   }
   return `「${name}」${v}`;
 }

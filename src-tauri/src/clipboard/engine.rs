@@ -16,9 +16,121 @@ use super::{
 /// 自动分组动作（由 store 解析具体的开放分组）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupAction {
+    /// 不参与分组（自动分组关闭）
     None,
+    /// 并入当前收集会话
     Append,
-    Create,
+    /// 当前条目作为候选，等待下一条相关内容
+    Candidate,
+    /// 候选条目 + 当前条目一起创建正式分组
+    CreateWithCandidate,
+}
+
+/// 连续收集的内容家族：同类操作才可能属于同一次收集。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectFamily {
+    Image,
+    Text,
+    Link,
+    File,
+}
+
+impl CollectFamily {
+    pub fn of_kind(kind: &str) -> Self {
+        match kind {
+            KIND_IMAGE => Self::Image,
+            KIND_URL => Self::Link,
+            KIND_FILES => Self::File,
+            // text 与 html 视为同一家族：富文本复制常伴随纯文本回退。
+            _ => Self::Text,
+        }
+    }
+
+    /// 分组名前缀（用于自动命名与追加主题命名）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Image => "截图",
+            Self::Text => "文本",
+            Self::Link => "链接",
+            Self::File => "文件",
+        }
+    }
+}
+
+/// 当前收集会话（由 store 从数据库解析，engine 只做纯判断）。
+#[derive(Debug, Clone)]
+pub struct GroupSession<'a> {
+    pub family: CollectFamily,
+    /// 会话内是否已包含图片：截图流允许夹杂文字/链接（现网已验证的工作流）。
+    pub has_image: bool,
+    /// 组内最后一条内容的时间（任意类型，不再只看截图）。
+    pub last_at: Option<DateTime<Utc>>,
+    pub item_count: usize,
+    /// 最后一条内容（任意类型）的来源。
+    pub last_source_app: Option<&'a str>,
+    pub last_source_known: bool,
+    /// 组内最后一张图片的来源：只有它才能判断「另一应用的图片」。
+    pub last_image_source_app: Option<&'a str>,
+    pub last_image_source_known: bool,
+    pub name_source: &'a str,
+}
+
+/// 尚未成组的第一条内容（轻量候选，不持有正文/图片）。
+#[derive(Debug, Clone)]
+pub struct GroupCandidate<'a> {
+    pub item_id: &'a str,
+    pub family: CollectFamily,
+    pub at: DateTime<Utc>,
+    pub source_app: &'a str,
+    pub source_known: bool,
+}
+
+fn same_known_source(base: Option<&str>, base_known: bool, app: &str, known: bool) -> bool {
+    if !base_known || !known {
+        return false;
+    }
+    base.map(str::trim)
+        .unwrap_or("")
+        .eq_ignore_ascii_case(app.trim())
+}
+
+/// 当前条目能否与已建立的内容（会话或候选）属于同一次收集。
+///
+/// 规则刻意保守：来源未知时默认不并组，只有「截图流夹杂文字/链接」这一条
+/// 现网已验证的工作流允许在来源不可靠时仍按顺序保留。
+fn compatible(
+    base_family: CollectFamily,
+    base_has_image: bool,
+    base_app: Option<&str>,
+    base_known: bool,
+    base_image_app: Option<&str>,
+    base_image_known: bool,
+    item_family: CollectFamily,
+    item_app: &str,
+    item_known: bool,
+) -> bool {
+    // 文件是独立收集流：不与图片/文本混合，文件之间也必须来源一致。
+    if base_family == CollectFamily::File || item_family == CollectFamily::File {
+        return base_family == CollectFamily::File
+            && item_family == CollectFamily::File
+            && same_known_source(base_app, base_known, item_app, item_known);
+    }
+    if base_has_image {
+        return match item_family {
+            // 新图片只与组内最后一张图片比较来源，避免「截图 → 文字说明 → 截图」
+            // 因为文字来自另一应用而误判成新会话。
+            CollectFamily::Image => {
+                same_known_source(base_image_app, base_image_known, item_app, item_known)
+            }
+            // 截图 A → 文字说明 → 截图 B：文字/链接按实际顺序留在截图流里。
+            _ => true,
+        };
+    }
+    if item_family == CollectFamily::Image {
+        // 文本/链接流中插入图片：只有同一已知来源才视为同一次收集。
+        return same_known_source(base_app, base_known, item_app, item_known);
+    }
+    same_known_source(base_app, base_known, item_app, item_known)
 }
 
 /// 内容类型判定（顺序即优先级）：
@@ -554,49 +666,78 @@ pub fn group_rich_html(
     (html, plain, warnings)
 }
 
-/// 自动分组决策：
-/// - 仅截图开启新组；文本/HTML/URL 只有在截图窗口仍有效时按实际顺序追加；
-/// - 非截图内容来自与组内截图**不同的应用**时不追加（大概率是无关复制，降低误分组）；
-///   任一方来源未知（空串）时保持窗口内追加的原行为；
-/// - 文件列表不参与截图自动分组；
-/// - 组内条数达到上限后，下一张截图开新组。
+/// 智能连续收集决策（纯函数）。
+///
+/// 输入只有内容类型、开关、时间窗口、当前收集会话与候选（均为轻量元数据），
+/// 不读数据库、不读剪贴板、不联网。
+///
+/// 规则：
+/// - 关闭自动分组：`None`；
+/// - 有收集会话且窗口内未满额：能关联则 `Append`；不能关联则当前条目转为
+///   候选（不同应用的独立复制各自开候选，不按时间粗暴合并）；
+/// - 无会话（或会话已满/已过期）：与窗口内候选同属一次收集则
+///   `CreateWithCandidate`，否则当前条目成为新的候选；
+/// - 首条内容永远只是候选，不产生单条自动分组。
 pub fn decide_group(
     kind: &str,
     auto_group: bool,
     now: DateTime<Utc>,
     window_secs: i64,
-    open_last_image_at: Option<DateTime<Utc>>,
-    open_item_count: usize,
+    session: Option<&GroupSession<'_>>,
+    candidate: Option<&GroupCandidate<'_>>,
     item_source_app: &str,
-    group_image_source_app: Option<&str>,
+    item_source_known: bool,
 ) -> GroupAction {
-    if !auto_group || kind == KIND_FILES {
+    if !auto_group {
         return GroupAction::None;
     }
+    let family = CollectFamily::of_kind(kind);
     let window = Duration::seconds(window_secs.max(1));
-    if let Some(last) = open_last_image_at {
-        if now - last <= window && open_item_count < MAX_AUTO_GROUP_ITEMS {
-            // 文字/HTML/图片之间的交错内容始终留在当前截图流里：
-            // 「截图 A → 文字 → 截图 B」是用户真实工作顺序，不能因为文字来自
-            // 记事本、截图来自截图工具就把它拆出去。
-            //
-            // 只有「另一张图片且来源应用明确不同」才视为新会话：同一窗口内
-            // 从浏览器复制图片后紧接着截图，若仍并入会把两种来源混成一组。
-            if kind == KIND_IMAGE {
-                if let Some(group_src) = group_image_source_app.filter(|s| !s.is_empty()) {
-                    if !item_source_app.is_empty() && item_source_app != group_src {
-                        return GroupAction::Create;
-                    }
+    if let Some(s) = session {
+        if s.item_count < MAX_AUTO_GROUP_ITEMS {
+            if let Some(last) = s.last_at {
+                if now - last <= window
+                    && compatible(
+                        s.family,
+                        s.has_image,
+                        s.last_source_app,
+                        s.last_source_known,
+                        s.last_image_source_app,
+                        s.last_image_source_known,
+                        family,
+                        item_source_app,
+                        item_source_known,
+                    )
+                {
+                    return GroupAction::Append;
                 }
             }
-            return GroupAction::Append;
+        }
+        // 会话已满/过期/来源不相关：当前条目不能并入，转为候选。
+        return GroupAction::Candidate;
+    }
+    if let Some(c) = candidate {
+        if now - c.at <= window
+            && compatible(
+                c.family,
+                c.family == CollectFamily::Image,
+                Some(c.source_app),
+                c.source_known,
+                if c.family == CollectFamily::Image {
+                    Some(c.source_app)
+                } else {
+                    None
+                },
+                c.family == CollectFamily::Image && c.source_known,
+                family,
+                item_source_app,
+                item_source_known,
+            )
+        {
+            return GroupAction::CreateWithCandidate;
         }
     }
-    if kind == KIND_IMAGE {
-        GroupAction::Create
-    } else {
-        GroupAction::None
-    }
+    GroupAction::Candidate
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -639,27 +780,49 @@ pub fn group_topic(raw: &str) -> Option<String> {
     None
 }
 
-/// 截图组名称：优先可靠来源信息/关联文本主题，信息不足时用时间兜底。
+/// 自动分组名称：优先可靠来源主题，信息不足时用时间兜底。
 ///
 /// 返回 `(name, name_source)`，`name_source` 直接写入数据库：
 /// `auto_source`（有主题）或 `auto_time`（时间兜底，关闭收集时可再补数量）。
 /// 不引入 OCR / AI / 网络调用；`time_label` 由调用方按本地时间格式化。
-pub fn screenshot_group_name(topic: Option<&str>, time_label: &str) -> (String, &'static str) {
+pub fn auto_group_name(
+    family: CollectFamily,
+    topic: Option<&str>,
+    time_label: &str,
+) -> (String, &'static str) {
     match topic.and_then(group_topic) {
         Some(text) => (
-            format!("截图 · {}", truncate_chars(&text, MAX_GROUP_TOPIC_CHARS)),
+            format!(
+                "{} · {}",
+                family.label(),
+                truncate_chars(&text, MAX_GROUP_TOPIC_CHARS)
+            ),
             "auto_source",
         ),
-        None => (format!("截图 · {time_label}"), "auto_time"),
+        None => (format!("{} · {}", family.label(), time_label), "auto_time"),
     }
 }
 
-/// 时间兜底组关闭收集时补上图片数量（只对 `auto_time` 组调用，不会覆盖用户改名）。
-pub fn finalize_time_group_name(name: &str, image_count: usize) -> String {
-    if image_count == 0 {
+/// 截图组名称（兼容旧调用）：等价于图片家族的自动命名。
+pub fn screenshot_group_name(topic: Option<&str>, time_label: &str) -> (String, &'static str) {
+    auto_group_name(CollectFamily::Image, topic, time_label)
+}
+
+/// 追加条目且来源主题变化时，按分组家族重命名（只对 `auto_source` 组调用）。
+pub fn topic_group_name(family: CollectFamily, topic: &str) -> String {
+    format!(
+        "{} · {}",
+        family.label(),
+        truncate_chars(&collapse_ws(topic.trim()), MAX_GROUP_TOPIC_CHARS)
+    )
+}
+
+/// 时间兜底组关闭收集时补上数量（只对 `auto_time` 组调用，不会覆盖用户改名）。
+pub fn finalize_time_group_name(name: &str, count: usize, unit: &str) -> String {
+    if count == 0 {
         return name.to_string();
     }
-    truncate_chars(&format!("{name} · {image_count} 张"), 80)
+    truncate_chars(&format!("{name} · {count} {unit}"), 80)
 }
 
 /// 本地时间戳（用于截图组时间兜底命名）。
@@ -854,13 +1017,64 @@ mod tests {
         assert!(get("EndHTML") > ef);
     }
 
+    fn session<'a>(
+        family: CollectFamily,
+        has_image: bool,
+        last_at: Option<DateTime<Utc>>,
+        item_count: usize,
+        last_source_app: Option<&'a str>,
+        last_source_known: bool,
+        last_image_source_app: Option<&'a str>,
+        last_image_source_known: bool,
+    ) -> GroupSession<'a> {
+        GroupSession {
+            family,
+            has_image,
+            last_at,
+            item_count,
+            last_source_app,
+            last_source_known,
+            last_image_source_app,
+            last_image_source_known,
+            name_source: "auto_time",
+        }
+    }
+
+    fn candidate<'a>(
+        family: CollectFamily,
+        at: DateTime<Utc>,
+        source_app: &'a str,
+        source_known: bool,
+    ) -> GroupCandidate<'a> {
+        GroupCandidate {
+            item_id: "candidate-1",
+            family,
+            at,
+            source_app,
+            source_known,
+        }
+    }
+
     #[test]
     fn grouping_window_and_interleaving() {
         let now = Utc::now();
         let t0 = now - Duration::seconds(10);
+
+        // 首条内容只成为候选，不产生单条自动分组。
         assert_eq!(
-            decide_group(KIND_IMAGE, true, now, 45, None, 0, "snip.exe", None),
-            GroupAction::Create
+            decide_group(KIND_IMAGE, true, now, 45, None, None, "snip.exe", true),
+            GroupAction::Candidate
+        );
+
+        let image_session = session(
+            CollectFamily::Image,
+            true,
+            Some(t0),
+            3,
+            Some("snip.exe"),
+            true,
+            Some("snip.exe"),
+            true,
         );
         assert_eq!(
             decide_group(
@@ -868,10 +1082,10 @@ mod tests {
                 true,
                 now,
                 45,
-                Some(t0),
-                3,
+                Some(&image_session),
+                None,
                 "snip.exe",
-                Some("snip.exe")
+                true
             ),
             GroupAction::Append
         );
@@ -881,10 +1095,10 @@ mod tests {
                 true,
                 now,
                 45,
-                Some(t0),
-                3,
+                Some(&image_session),
+                None,
                 "snip.exe",
-                Some("snip.exe")
+                true
             ),
             GroupAction::Append,
             "窗口内文本插入同一组并保留顺序"
@@ -895,10 +1109,10 @@ mod tests {
                 true,
                 now,
                 45,
-                Some(t0),
-                3,
+                Some(&image_session),
+                None,
                 "word.exe",
-                Some("snip.exe")
+                true
             ),
             GroupAction::Append,
             "文本来源不同也必须留在截图流中：「截图 A → 文字 → 截图 B」不拆组"
@@ -909,23 +1123,52 @@ mod tests {
                 true,
                 now,
                 45,
-                Some(t0),
-                3,
+                Some(&image_session),
+                None,
                 "chrome.exe",
-                Some("snip.exe")
+                true
             ),
-            GroupAction::Create,
-            "另一张图片来自不同应用时另起截图会话，避免把浏览器图片混入截图组"
+            GroupAction::Candidate,
+            "另一张图片来自不同应用时另起候选，避免把浏览器图片混入截图组"
         );
         assert_eq!(
-            decide_group(KIND_TEXT, true, now, 45, Some(t0), 3, "", Some("snip.exe")),
+            decide_group(
+                KIND_TEXT,
+                true,
+                now,
+                45,
+                Some(&image_session),
+                None,
+                "",
+                false
+            ),
             GroupAction::Append,
-            "条目来源未知时保持原行为"
+            "条目来源未知时仍按顺序留在截图流中"
+        );
+
+        let unknown_image_session = session(
+            CollectFamily::Image,
+            true,
+            Some(t0),
+            3,
+            Some("snip.exe"),
+            true,
+            Some(""),
+            false,
         );
         assert_eq!(
-            decide_group(KIND_TEXT, true, now, 45, Some(t0), 3, "word.exe", Some("")),
-            GroupAction::Append,
-            "组内截图来源未知时保持原行为"
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                45,
+                Some(&unknown_image_session),
+                None,
+                "word.exe",
+                true
+            ),
+            GroupAction::Candidate,
+            "组内最后一张截图来源未知时不再并组"
         );
         assert_eq!(
             decide_group(
@@ -933,13 +1176,13 @@ mod tests {
                 true,
                 now,
                 5,
-                Some(t0),
-                3,
+                Some(&image_session),
+                None,
                 "other.exe",
-                Some("snip.exe")
+                true
             ),
-            GroupAction::Create,
-            "超过窗口后新截图开新组"
+            GroupAction::Candidate,
+            "超过窗口后当前条目转为新候选"
         );
         assert_eq!(
             decide_group(
@@ -947,13 +1190,13 @@ mod tests {
                 true,
                 now,
                 5,
-                Some(t0),
-                3,
+                Some(&image_session),
+                None,
                 "snip.exe",
-                Some("snip.exe")
+                true
             ),
-            GroupAction::None,
-            "过期后文本不新建组"
+            GroupAction::Candidate,
+            "过期后文本不再追加到旧组"
         );
         assert_eq!(
             decide_group(
@@ -961,12 +1204,12 @@ mod tests {
                 true,
                 now,
                 45,
-                Some(t0),
-                3,
+                Some(&image_session),
+                None,
                 "snip.exe",
-                Some("snip.exe")
+                true
             ),
-            GroupAction::None,
+            GroupAction::Candidate,
             "文件列表不参与截图分组"
         );
         assert_eq!(
@@ -975,13 +1218,24 @@ mod tests {
                 false,
                 now,
                 45,
-                Some(t0),
-                3,
+                Some(&image_session),
+                None,
                 "snip.exe",
-                Some("snip.exe")
+                true
             ),
             GroupAction::None,
             "关闭自动分组后不动作"
+        );
+
+        let full_session = session(
+            CollectFamily::Image,
+            true,
+            Some(t0),
+            MAX_AUTO_GROUP_ITEMS,
+            Some("snip.exe"),
+            true,
+            Some("snip.exe"),
+            true,
         );
         assert_eq!(
             decide_group(
@@ -989,13 +1243,57 @@ mod tests {
                 true,
                 now,
                 45,
-                Some(t0),
-                MAX_AUTO_GROUP_ITEMS,
+                Some(&full_session),
+                None,
                 "snip.exe",
-                Some("snip.exe")
+                true
             ),
-            GroupAction::Create,
-            "达到组上限后开新组"
+            GroupAction::Candidate,
+            "达到组上限后当前条目转为新候选"
+        );
+
+        // 无会话时，窗口内同类候选与当前条目一起成组。
+        let image_candidate = candidate(CollectFamily::Image, t0, "snip.exe", true);
+        assert_eq!(
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                45,
+                None,
+                Some(&image_candidate),
+                "snip.exe",
+                true
+            ),
+            GroupAction::CreateWithCandidate
+        );
+        assert_eq!(
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                45,
+                None,
+                Some(&image_candidate),
+                "chrome.exe",
+                true
+            ),
+            GroupAction::Candidate,
+            "候选与当前条目来源不同则各自等待"
+        );
+        assert_eq!(
+            decide_group(
+                KIND_IMAGE,
+                true,
+                now,
+                5,
+                None,
+                Some(&image_candidate),
+                "snip.exe",
+                true
+            ),
+            GroupAction::Candidate,
+            "候选超过窗口后当前条目成为新候选"
         );
     }
 
@@ -1135,7 +1433,13 @@ mod tests {
 
     #[test]
     fn time_fallback_group_gets_image_count_on_close() {
-        assert_eq!(finalize_time_group_name("截图 · 11-04 14:32", 3), "截图 · 11-04 14:32 · 3 张");
-        assert_eq!(finalize_time_group_name("截图 · 11-04 14:32", 0), "截图 · 11-04 14:32");
+        assert_eq!(
+            finalize_time_group_name("截图 · 11-04 14:32", 3, "张"),
+            "截图 · 11-04 14:32 · 3 张"
+        );
+        assert_eq!(
+            finalize_time_group_name("截图 · 11-04 14:32", 0, "张"),
+            "截图 · 11-04 14:32"
+        );
     }
 }

@@ -288,12 +288,13 @@ export default function CapsuleRail({
       <div className="cap-sep cap-sep-bottom" aria-hidden="true" />
 
       {/* 形态切换：把停靠展示从「胶囊」换成完整窗口（设置/右键菜单之外的最小入口）。
-          折叠态同样可用（这是离开胶囊形态的轻量出口），文案与图标复用轨道视觉。 */}
+          折叠态同样可用（这是离开胶囊形态的轻量出口），文案与图标复用轨道视觉。
+          这里只切换**本次停靠会话**的临时形态，不写持久化默认吸附方式。 */}
       {onForm && (
         <button
           type="button"
           className="cap-collapse cap-form"
-          data-tip={t("capsule.toFull")}
+          data-tip={t("capsule.toFullTip")}
           data-tip-placement={railTipPlacement("docked", edge, expanded)}
           data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
           aria-label={t("capsule.toFull")}

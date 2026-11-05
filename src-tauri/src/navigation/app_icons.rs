@@ -10,6 +10,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use serde::Serialize;
+
 #[cfg(windows)]
 use windows::core::{GUID, HSTRING, Interface};
 #[cfg(windows)]
@@ -49,6 +51,34 @@ fn discovered_registry() -> &'static Mutex<HashMap<String, IconSource>> {
     CELL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// 真实图标载荷：PNG data URL + 自适应对比度提示（近白图标需要浅色主题底衬）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppIconData {
+    pub url: String,
+    /// 平均亮度 ≥ 200 的近白/浅色图标（由后端在编码前用原始 RGBA 判定，零额外解码）。
+    #[serde(default)]
+    pub light: bool,
+}
+
+/// 渐进扫描的批次登记：只追加本批身份，不清空旧登记。
+/// 扫描完成前保留旧身份，避免重扫期间已显示图标因登记被清空而请求失败；
+/// 扫描结束后由 [`register_discovered`] 整体收敛（清掉已卸载应用）。
+pub fn register_discovered_batch(apps: &[DiscoveredApp]) {
+    let mut reg = discovered_registry().lock().unwrap();
+    for a in apps {
+        if a.app_key.is_empty() {
+            continue;
+        }
+        reg.insert(
+            a.app_key.clone(),
+            IconSource {
+                exe_path: a.exe_path.clone(),
+                aumid: a.app_user_model_id.clone(),
+            },
+        );
+    }
+}
+
 /// 每次扫描成功后登记身份（旧结果整体替换，避免删除的应用长期驻留）。
 pub fn register_discovered(apps: &[DiscoveredApp]) {
     let mut reg = discovered_registry().lock().unwrap();
@@ -70,7 +100,7 @@ pub fn register_discovered(apps: &[DiscoveredApp]) {
 #[derive(Clone)]
 struct CacheEntry {
     stamp: u64,
-    url: Option<String>,
+    icon: Option<AppIconData>,
 }
 
 fn icon_cache() -> &'static Mutex<HashMap<String, CacheEntry>> {
@@ -136,7 +166,7 @@ pub fn extract_icon(
     target_id: Option<&str>,
     app_key: Option<&str>,
     exe_path: Option<&str>,
-) -> AppResult<Option<String>> {
+) -> AppResult<Option<AppIconData>> {
     if let Some(id) = target_id.filter(|s| !s.is_empty()) {
         let source = source_from_target(db, id)?;
         return Ok(extract_with_cache(&source));
@@ -149,7 +179,7 @@ pub fn extract_icon(
         // 目标窗口场景：路径已由窗口枚举产生，仍走导航层安全校验；
         // 校验失败返回错误，前端统一回退字母图标，不打断列表。
         super::validate_exe_path(exe)?;
-        return Ok(extract_icon_for_exe(exe));
+        return Ok(extract_icon_data_for_exe(exe));
     }
     Err(AppError::Validation("缺少应用身份".into()))
 }
@@ -158,6 +188,12 @@ pub fn extract_icon(
 /// 路径先走导航层安全校验（绝对路径 / .exe / 存在 / 非解释器），
 /// 不把前端字符串当作任意文件读取；同一 exe 复用同一份缓存。
 pub fn extract_icon_for_exe(exe_path: &str) -> Option<String> {
+    // 旧调用方（剪贴板窗口图标）只需要 data URL；显式路径不走向导出的身份登记。
+    extract_icon_data_for_exe(exe_path).map(|i| i.url)
+}
+
+/// 带对比度提示的图标载荷（导航应用列表需要 `light` 判定）。
+pub fn extract_icon_data_for_exe(exe_path: &str) -> Option<AppIconData> {
     let exe_path = exe_path.trim();
     if exe_path.is_empty() {
         return None;
@@ -171,7 +207,7 @@ pub fn extract_icon_for_exe(exe_path: &str) -> Option<String> {
 }
 
 /// 带缓存的提取：缓存键 = 稳定身份；exe 额外按文件修改时间失效。
-fn extract_with_cache(source: &IconSource) -> Option<String> {
+fn extract_with_cache(source: &IconSource) -> Option<AppIconData> {
     let cache_key = if !source.aumid.is_empty() {
         format!("aumid:{}", source.aumid)
     } else {
@@ -186,12 +222,12 @@ fn extract_with_cache(source: &IconSource) -> Option<String> {
         let cache = icon_cache().lock().unwrap();
         if let Some(e) = cache.get(&cache_key) {
             if e.stamp == stamp {
-                return e.url.clone();
+                return e.icon.clone();
             }
         }
     }
 
-    let url = platform_extract(source);
+    let icon = platform_extract(source);
     {
         let mut cache = icon_cache().lock().unwrap();
         if cache.len() >= 512 {
@@ -201,15 +237,15 @@ fn extract_with_cache(source: &IconSource) -> Option<String> {
             cache_key,
             CacheEntry {
                 stamp,
-                url: url.clone(),
+                icon: icon.clone(),
             },
         );
     }
-    url
+    icon
 }
 
 #[cfg(windows)]
-fn platform_extract(source: &IconSource) -> Option<String> {
+fn platform_extract(source: &IconSource) -> Option<AppIconData> {
     // COM 只用于 UWP 包图标；失败不影响普通 exe。
     if !source.aumid.is_empty() {
         return unsafe { png_from_aumid(&source.aumid) };
@@ -218,7 +254,7 @@ fn platform_extract(source: &IconSource) -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn platform_extract(_source: &IconSource) -> Option<String> {
+fn platform_extract(_source: &IconSource) -> Option<AppIconData> {
     None
 }
 
@@ -228,7 +264,7 @@ fn wide(src: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-unsafe fn png_from_exe(exe: &str) -> Option<String> {
+unsafe fn png_from_exe(exe: &str) -> Option<AppIconData> {
     // 优先让 Shell 直接按 48px 取图标（保留 alpha、适配 HiDPI）；
     // 失败再回退到 SHGetFileInfoW / PE 资源图标。
     if let Some(png) = png_from_shell_item(exe, 48) {
@@ -268,7 +304,7 @@ unsafe fn png_from_exe(exe: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-unsafe fn hicon_to_png(hicon: HICON) -> Option<String> {
+unsafe fn hicon_to_png(hicon: HICON) -> Option<AppIconData> {
     let mut info: ICONINFO = std::mem::zeroed();
     if GetIconInfo(hicon, &mut info) == 0 {
         return None;
@@ -285,7 +321,7 @@ unsafe fn hicon_to_png(hicon: HICON) -> Option<String> {
 
 /// 用 Shell 的 IShellItemImageFactory 按指定尺寸取图标（exe / UWP 通用）。
 #[cfg(windows)]
-unsafe fn png_from_shell_item(path: &str, size: i32) -> Option<String> {
+unsafe fn png_from_shell_item(path: &str, size: i32) -> Option<AppIconData> {
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     let hs = HSTRING::from(path);
     let item: IShellItemImageFactory =
@@ -304,13 +340,13 @@ unsafe fn png_from_shell_item(path: &str, size: i32) -> Option<String> {
 }
 
 #[cfg(windows)]
-unsafe fn png_from_aumid(aumid: &str) -> Option<String> {
+unsafe fn png_from_aumid(aumid: &str) -> Option<AppIconData> {
     png_from_shell_item(&format!("shell:AppsFolder\\{}", aumid), 48)
 }
 
 /// 把 32bpp 位图转成 PNG data URL；mask 为图标 AND 掩码（普通位图传 null）。
 #[cfg(windows)]
-unsafe fn bitmap_to_png(hbm: HBITMAP, hbm_mask: HBITMAP) -> Option<String> {
+unsafe fn bitmap_to_png(hbm: HBITMAP, hbm_mask: HBITMAP) -> Option<AppIconData> {
     if hbm.is_null() {
         return None;
     }
@@ -344,7 +380,28 @@ unsafe fn bitmap_to_png(hbm: HBITMAP, hbm_mask: HBITMAP) -> Option<String> {
             }
         }
     }
-    png_data_url(w as u32, h as u32, &rgba)
+    let url = png_data_url(w as u32, h as u32, &rgba)?;
+    Some(AppIconData {
+        url,
+        light: is_light_icon(&rgba),
+    })
+}
+
+/// 近白/浅色图标判定：只统计可见像素的平均亮度。
+/// 用于给白色/浅色 logo（浅色主题下几乎不可见）加克制底衬与轮廓；
+/// 彩色图标保持原始形状与配色，不做统一加底。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_light_icon(rgba: &[u8]) -> bool {
+    let mut sum = 0f64;
+    let mut count = 0u64;
+    for px in rgba.chunks_exact(4) {
+        if px[3] < 64 {
+            continue;
+        }
+        sum += 0.2126 * px[0] as f64 + 0.7152 * px[1] as f64 + 0.0722 * px[2] as f64;
+        count += 1;
+    }
+    count > 0 && sum / count as f64 >= 200.0
 }
 
 /// 读取位图像素为 RGBA（GDI 返回 BGRA）。
@@ -536,12 +593,70 @@ mod tests {
             exe_path: exe,
             aumid: String::new(),
         };
-        let url = platform_extract(&src).expect("Windows Shell 应能提取 exe 图标");
+        let icon = platform_extract(&src).expect("Windows Shell 应能提取 exe 图标");
         assert!(
-            url.starts_with("data:image/png;base64,"),
+            icon.url.starts_with("data:image/png;base64,"),
             "必须是真实 PNG data URL：{}",
-            &url[..url.len().min(32)]
+            &icon.url[..icon.url.len().min(32)]
         );
+    }
+
+    /// 验证真实提取链路：PNG 保留 RGBA 透明通道（浅色主题下的白 logo 依赖透明背景而非白底）。
+    #[cfg(windows)]
+    #[test]
+    fn extracted_shell_icon_png_keeps_alpha_channel() {
+        use base64::Engine as _;
+        let exe = r"C:\Windows\System32\notepad.exe";
+        if !std::path::Path::new(exe).exists() {
+            return;
+        }
+        let src = IconSource {
+            exe_path: exe.to_string(),
+            aumid: String::new(),
+        };
+        let icon = platform_extract(&src).expect("记事本图标应可提取");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(icon.url.trim_start_matches("data:image/png;base64,"))
+            .expect("data URL 必须可解码");
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .expect("必须是合法 PNG");
+        let mut buf = vec![0; reader.output_buffer_size().expect("PNG 尺寸可计算")];
+        let info = reader.next_frame(&mut buf).expect("PNG 必须可解码");
+        assert_eq!(info.color_type, png::ColorType::Rgba, "必须保留 alpha 通道");
+        let transparent = buf
+            .chunks_exact(4)
+            .filter(|px| px[3] == 0)
+            .count();
+        assert!(
+            transparent > 0,
+            "真实图标应存在透明像素（否则提取时被错误铺白底）"
+        );
+    }
+
+    /// 白色/浅色 logo（透明背景）必须被识别为需要对比度保障；彩色与全透明图标不误判。
+    #[test]
+    fn light_icon_detection_uses_visible_pixel_luminance() {
+        // 透明背景 + 白色字形（类似 ChatGPT/浅色 logo）
+        let mut white_on_transparent = Vec::new();
+        for _ in 0..8 {
+            white_on_transparent.extend_from_slice(&[255, 255, 255, 255]);
+            white_on_transparent.extend_from_slice(&[0, 0, 0, 0]);
+        }
+        assert!(is_light_icon(&white_on_transparent));
+
+        // 彩色图标（Chrome 蓝/红/黄）不应被当成浅色图标
+        let mut colored = Vec::new();
+        for _ in 0..8 {
+            colored.extend_from_slice(&[40, 120, 220, 255]);
+            colored.extend_from_slice(&[220, 60, 60, 255]);
+            colored.extend_from_slice(&[250, 200, 20, 255]);
+        }
+        assert!(!is_light_icon(&colored));
+
+        // 全透明图标没有可见像素：不判定为浅色，交给统一字母回退
+        let transparent = vec![0u8; 32];
+        assert!(!is_light_icon(&transparent));
     }
 
     /// 资源不存在时返回 None（由前端回退统一图标），而不是报错/panic。

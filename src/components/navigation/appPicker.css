@@ -1,0 +1,45 @@
+/* 首次扫描 / 未扫描 / 首次失败：在可用列表区域水平+垂直居中，
+   避免状态提示贴在左上角、下方留大片空白。只使用布局与现有语义 Token。 */
+.picker-scan-state {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+
+/* 弹层列表是 CSS Grid：状态区独占一整行不参与列布局 */
+.picker-list .picker-scan-state {
+  grid-column: 1 / -1;
+}
+
+.picker-scan-state > * {
+  max-width: 360px;
+  text-align: center;
+}
+
+/* 扫描中提示：两行纵向排列（第一行动作+图标，第二行真实进度）。
+   styles.css 的 .picker-scanning 是横向 inline-flex，进度塞在同一行会拥挤换行；
+   这里用更高特异性覆盖为纵向，不改全局样式文件。 */
+.picker-scan-state .picker-scanning {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.picker-scanning-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 真实进度（已发现数 / 已扫描来源），等宽数字避免文字抖动 */
+.picker-scan-progress {
+  display: block;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+  white-space: nowrap;
+  opacity: 0.72;
+}

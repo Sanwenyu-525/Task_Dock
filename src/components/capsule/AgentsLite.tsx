@@ -214,7 +214,13 @@ export default function AgentsLite() {
                   ) : null}
                 </span>
                 {r.pending_items.length > 0 ? (
-                  <span className="cap-agent-meta">待确认 {r.pending_items.length} 项</span>
+                  // 摘要直接复用快照里的 pending_items（不新起消息队列）：
+                  // 数量之外给出第一条内容，用户不必进完整页才知道要确认什么。
+                  <span className="cap-agent-meta cap-agent-pending">
+                    待确认 {r.pending_items.length} 项
+                    <i className="sep" aria-hidden="true" />
+                    <span className="cap-agent-pending-text">{r.pending_items[0]}</span>
+                  </span>
                 ) : null}
               </span>
               <span className="cap-agent-side">

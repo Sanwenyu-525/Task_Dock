@@ -659,7 +659,13 @@ describe("全局卡片基础表面", () => {
   it("历史卡 hover 只做描边与轻阴影，不做垂直位移", () => {
     const hover = bodyOf(appCssCode, ".history-item:hover");
     expect(hover, "缺少 .history-item:hover 覆盖").not.toBe("");
-    // 未分层组件层显式归零，压过 theme 层通用交互变体的 translateY(-1px)
+    // 必须落在顶层 ui 层：styles.css 整体包在 @layer base 内，若在 base 内再写
+    // @layer ui 会变成子层 base.ui，仍低于 theme，压不过通用交互变体的
+    // .surface-card--interactive:hover 的 translateY(-1px)。
+    expect(
+      appCssCode,
+      ".history-item:hover 必须写在顶层 @layer ui（不能嵌套在 base 内）",
+    ).toMatch(/\}\s*@layer\s+ui\s*\{[^}]*\.history-item:hover[^}]*transform:\s*none/);
     expect(hover).toMatch(/transform:\s*none/);
     expect(hover).not.toMatch(/translateY|translate3d/);
     // 替代反馈是低对比内描边 + 已有的轻阴影，不占布局
@@ -1035,6 +1041,57 @@ describe("预设卡与导航项的悬停稳定性", () => {
     expect(tail, "reduced-motion 之后仍有覆盖的 transition 声明").not.toMatch(
       /\.(rail-item|preset-card)(?:[.:][\w-]+(?:\([^)]*\))?)*\s*\{[^}]*transition\s*:/,
     );
+  });
+});
+
+/* ── 胶囊面板输入与网格复用规范（2026-11-05）────────────────────
+   胶囊搜索框改为复用 SearchField 后，焦点只允许外层容器画一次；
+   内层 input 不得再叠加背景/边框/outline/box-shadow。
+   添加入口回归为「与图标同尺度的加号」，不再是大面积卡片。 */
+describe("胶囊面板共享输入与添加入口", () => {
+  it("内嵌输入在 ui 层统一清掉第二层焦点背景/边框/阴影", () => {
+    const rule = /\.input-embedded[^{]*\{([\s\S]*?)\}/.exec(uiCss);
+    expect(rule?.[1], "缺少 .input-embedded 规范").toBeTruthy();
+    expect(rule![1]).toMatch(/border:\s*none/);
+    expect(rule![1]).toMatch(/box-shadow:\s*none/);
+    expect(rule![1]).toMatch(/outline:\s*none/);
+  });
+
+  it("胶囊搜索变体只由容器 :focus-within 表达焦点", () => {
+    const rule = /\.ui-search\.ui-search--capsule:focus-within\s*\{([\s\S]*?)\}/.exec(uiCss);
+    expect(rule?.[1], "缺少胶囊搜索焦点规则").toBeTruthy();
+    expect(rule![1]).toMatch(/box-shadow:\s*inset 0 0 0 1px var\(--accent\)/);
+    expect(rule![1]).not.toMatch(/var\(--focus-ring\)/);
+  });
+
+  it("添加入口默认无边框、无底色、无外阴影", () => {
+    const rule = /\.cap-app-add\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(rule?.[1], "缺少 .cap-app-add 基础规则").toBeTruthy();
+    expect(rule![1]).toMatch(/border:\s*0/);
+    expect(rule![1]).toMatch(/background:\s*transparent/);
+    expect(rule![1]).toMatch(/box-shadow:\s*none/);
+  });
+
+  it("compact 搜索档沿用常规字号（13px），容器高度保持 26px 不撑破工具栏", () => {
+    // 真实渲染实测：12px compact 档的 font box 约 11px，常规档 13px 约 12px；
+    // 统一提高字号而不放大容器，9 处工具栏行高不变。
+    const compactBox = /\.ui-search--compact\s*\{([\s\S]*?)\}/.exec(uiCss);
+    expect(compactBox?.[1], "缺少 compact 搜索容器规则").toBeTruthy();
+    expect(compactBox![1]).toMatch(/min-height:\s*26px/);
+    expect(compactBox![1]).toMatch(/padding:\s*2px 4px 2px 7px/);
+
+    const compactInput = /\.ui-search--compact \.ui-search-input\s*\{([\s\S]*?)\}/.exec(uiCss);
+    expect(compactInput?.[1], "缺少 compact 搜索输入字号规则").toBeTruthy();
+    expect(compactInput![1]).toMatch(/font-size:\s*var\(--input-font-size\)/);
+    expect(compactInput![1]).not.toMatch(/--input-font-size-sm/);
+
+    const capsuleBox = /\.ui-search\.ui-search--capsule\s*\{([\s\S]*?)\}/.exec(uiCss);
+    expect(capsuleBox?.[1], "缺少胶囊搜索容器规则").toBeTruthy();
+    expect(capsuleBox![1]).toMatch(/height:\s*var\(--input-height-sm\)/);
+
+    const quickAdd = /\.cap-input input\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(quickAdd?.[1], "缺少胶囊快捷输入规则").toBeTruthy();
+    expect(quickAdd![1]).toMatch(/font-size:\s*var\(--input-font-size\)/);
   });
 });
 

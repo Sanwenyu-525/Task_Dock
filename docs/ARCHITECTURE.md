@@ -257,11 +257,24 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   只扫明确位置，绝不全盘搜索；浏览器渲染进程等子进程不构成独立应用
   （窗口层只枚举顶层窗口，天然排除）。自动发现覆盖不到的类型（绿色版/便携软件、
   无开始菜单入口的自定义程序）通过「手动添加」登记 EXE / 网址 / 文件夹。
+  **渐进扫描（2026-11-05）**：`nav_scan_apps` 仍是用户主动触发的单一请求，但后端按来源
+  （startmenu → known → app_paths → registry → uwp）通过 Tauri 事件
+  `nav-scan-batch` 推送新增批次，缓存命中即时返回、不推送批次；
+  最终 `invoke` 返回的 `AppScanResult` 仍是权威结果。
+  事件负载 `{ scan_id, source, apps, discovered, sources_done, sources_total }`：
+  `scan_id` 由前端请求生成、后端原样回传，前端按代际丢弃过期批次；每批只含新增且
+  `app_key` 唯一的条目，累计数与最终结果一致。渐进阶段只登记本批图标身份
+  （`register_discovered_batch` 不清空旧登记），扫描完成后 `register_discovered` 整体收敛；
+  不引入轮询、无界队列或百分比估算，进度只显示「已发现 N 个 / 已扫描来源 x/y」。
 - `app_icons.rs`：真实应用图标提取（`SHGetFileInfoW`/`ExtractIconExW`/UWP
   `IShellItemImageFactory` → HICON → RGBA PNG data URL）。扫描与图标提取解耦，
   前端按需调用 `nav_app_icon`；HICON/HBITMAP/DC 全部释放，`spawn_blocking` +
   全局并发上限 2，内存缓存按「应用身份 + 文件更新时间/大小」失效。
   只接受已保存目标 id 或本次扫描登记过的 app_key，绝不把前端任意路径当文件目标。
+  **对比度提示（2026-11-05）**：`nav_app_icon` 返回 `{ url, light }`；`light` 由后端在编码前
+  用原始 RGBA 统计可见像素平均亮度（≥200）得到，零额外解码。前端只对 `light` 图标加
+  主题语义色轻底衬与低透明度深色描边，彩色/深色图标保持原始形状与比例；PNG 保留
+  RGBA 透明通道（有真实图标单测校验），白色 logo 不因提取被铺白底。
 - 控制台工具（`tasklist`/`reg`/`where`/`powershell`/opencode 探测）统一经
   `winproc::hidden()` 启动并设置 `CREATE_NO_WINDOW`：Release 为 `windows` 子系统，
   不隐藏控制台会在每次 Agent/应用扫描时闪出终端窗口。
@@ -673,6 +686,19 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   - `snap_state` 兼容扩展：新增可选 `center_ratio` 与 `display`（name / bounds / workArea /
     scaleFactor）；旧记录缺字段仍按绝对 `center` 与窗口所在屏恢复，顺序为
     name → bounds → workArea → 窗口所在屏，比例优先于越界的绝对中心。
+  - 形态语义分离（2026-11-05）：`snap_display_mode` 只代表**用户长期偏好**，由设置页 /
+    右键菜单 / 托盘经 `requestDockForm` 更新；胶囊轨道「完整面板」与完整面板「收缩为
+    胶囊」按钮走 `requestSessionForm`，只切换**本次停靠会话**（`sessionFormOverride`），
+    不写 `snap_display_mode`。解除停靠或换边后临时覆盖自动失效，`dockTo` 按
+    「临时覆盖 → 持久化偏好」选形态，因此「胶囊 → 临时完整 → 拖离 → 再吸附」回胶囊；
+    临时切换失败只回滚几何与相位，不回写偏好；临时形态期间用户明确修改默认偏好时，
+    新设置优先并清掉旧临时覆盖。重启恢复不读临时状态，只按持久化偏好与既有安全恢复协议。
+  - 沿边拖动（2026-11-05）：自由窗口进入候选除几何命中外，还要求本次手势内相对起点
+    有真实的「向边」净位移（`SNAP_DOCK_INTENT_CSS`，大于磁力领先上限
+    `SNAP_MAGNET_MAX_LEAD`），沿边平行拖动或仅被磁力吸进吸附区都不再吸附收缩；
+    已停靠窗口跨边切换必须先真正离开当前边磁吸区（`shouldSwitchDockEdge`，阈值
+    与 `SNAP_CANDIDATE_EXIT_DIST` 一致），避免齐平窗口在角落处因距离平手被判成
+    换边——换边会解除停靠并按默认偏好重新吸附，完整面板因此意外变回胶囊。
 
 ### 11. 快速捕获（quick_capture/，v0.7）
 

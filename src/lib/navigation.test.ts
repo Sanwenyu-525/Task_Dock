@@ -159,6 +159,21 @@ describe("resultMessage", () => {
     expect(msg).toContain("VS Code");
     expect(msg).not.toContain("失败");
   });
+
+  it("失败原因中的本地绝对路径先脱敏再展示", () => {
+    const msg = resultMessage(
+      result({
+        success: false,
+        reason: "启动失败: C:\\Users\\alice\\Apps\\tool.exe（系统找不到指定的程序文件）",
+      }),
+      "工具",
+    );
+    expect(msg).toContain("启动失败");
+    expect(msg).toContain("系统找不到指定的程序文件");
+    expect(msg).not.toContain("alice");
+    expect(msg).not.toContain("C:\\");
+    expect(msg).not.toContain("tool.exe");
+  });
 });
 
 describe("TARGET_TYPE_LABELS", () => {

@@ -159,11 +159,12 @@ describe("筛选与搜索", () => {
     expect(screen.queryByRole("button", { name: /^专注与休息（/ })).toBeNull();
   });
 
-  it("状态筛选 planned：能找到 Gemini CLI，且不再显示受阻说明", () => {
-    fireEvent.click(screen.getByRole("button", { name: "待开发" }));
+  it("状态筛选 implemented：能找到已落地的 Gemini CLI 适配器，且不再显示受阻说明", () => {
+    fireEvent.click(screen.getByRole("button", { name: "已实现" }));
     const card = cardOf("Gemini CLI 接入");
     fireEvent.click(within(card).getByRole("button"));
-    expect(within(card).getByText("功能待开发")).toBeTruthy();
+    expect(card.querySelector(".roadmap-cta.c-implemented")).toBeTruthy();
+    expect(within(card).getByText("现有入口")).toBeTruthy();
     expect(within(card).queryByText(/等待接口或平台条件确认/)).toBeNull();
     expect(within(card).queryByText(/未见官方 hooks/)).toBeNull();
   });

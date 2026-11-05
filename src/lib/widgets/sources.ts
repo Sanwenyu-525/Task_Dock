@@ -72,9 +72,17 @@ export interface EfficiencySnapshot {
   pending: number;
   /** 完成率 0~100，无法计算时为 null。 */
   completionRate: number | null;
+  /**
+   * 刷新失败、当前展示的是上一次成功结果时为 true。
+   * 微件据此显示「数据可能已过期」并提供重试；不得把旧值当作最新值静默展示。
+   */
+  stale?: boolean;
 }
 
-export type EfficiencySource = WidgetSource<EfficiencySnapshot>;
+export interface EfficiencySource extends WidgetSource<EfficiencySnapshot> {
+  /** 重新查询（失败 / 过期时由微件提供重试入口）；无订阅者时不启动。 */
+  retry?: () => void;
+}
 
 export interface WidgetSources {
   focus?: FocusSource;

@@ -247,6 +247,9 @@
   /* 强调与文字 */
   --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6366f1 55%, #8b5cf6 100%);
   --orb-gradient: linear-gradient(140deg, #b9d0ff 0%, #cbbdfd 46%, #f8c8e2 100%);
+  /* 品牌球叠色：梦幻底色中段约 253°，冷色必须更蓝才能形成色相转换 */
+  --orb-cool-tone: #6d8cf7;
+  --orb-warm-tone: #bc82e6;
   --orb-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 95%, transparent), rgba(240, 240, 255, 0.7));
   --orb-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.95),
@@ -464,6 +467,8 @@
 
   --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6f6ef0 55%, #9a7cf0 100%);
   --orb-gradient: linear-gradient(140deg, #6f8fd8 0%, #8f7fd0 48%, #c07fa8 100%);
+  --orb-cool-tone: #6d8cf7;
+  --orb-warm-tone: #bc82e6;
   --orb-face: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 12%, transparent), color-mix(in srgb, var(--c-paper) 4%, transparent));
   --orb-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 20%, transparent);
 
@@ -709,6 +714,8 @@
   --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
 
   --accent-gradient: linear-gradient(140deg, #85a5f5 0%, #5b78e8 48%, #6d8ef2 100%);
+  --orb-cool-tone: #8668f3;
+  --orb-warm-tone: #bc82e6;
   --orb-gradient: conic-gradient(
     from 210deg,
     #cfe2ff,
@@ -942,6 +949,8 @@
   --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
 
   --accent-gradient: linear-gradient(140deg, #7d9af0 0%, #5b78e8 48%, #6d8ef2 100%);
+  --orb-cool-tone: #8668f3;
+  --orb-warm-tone: #bc82e6;
   --orb-gradient: conic-gradient(
     from 210deg,
     #4f6fb8,
@@ -1900,49 +1909,100 @@
     0 3px 8px -3px rgba(99, 102, 241, 0.55);
 }
 
-/* 品牌球呼吸光晕：独立的固定层，只做 opacity 动画。
-   球体本身不缩放、不改变布局尺寸、不参与命中（pointer-events: none），
-   标题栏也不加整窗 filter——避免长驻应用每帧重绘大面积模糊。
-   径向渐变中心留空（球体所在区域透明），只在球体外围形成光环，
-   避免增强光晕时把圆圈本体一起洗亮；峰值/静息由主题 Token 控制。 */
-.brand-orb::after {
-  --orb-glow-color: var(--accent);
-  --orb-glow-min: 0.18;
-  --orb-glow-peak: 0.64;
+/* 品牌球色泽 Token（2026-11-04 三次改版）：叠色颜色按预设取值，动画仍只有一套。
+   梦幻渐变的 --orb-gradient 中段本身约 253° 紫蓝，旧冷色 #8668f3 也是 253°，
+   第一口气只改变亮度、色相不变；因此梦幻必须用更蓝的冷色（约 226°）才能形成
+   「冷蓝 → 柔紫」的色相转换。柔光玻璃底色约 215°，继续用 253° 冷色即偏蓝紫。
+   暖紫统一换成约 275°，第二口气与第一口气拉开色相差。 */
+:root {
+  --orb-cool-tone: #8668f3;
+  --orb-warm-tone: #bc82e6;
+}
+
+/* 品牌球循环呼吸（2026-11-04 二次改版）：静态蓝紫玻璃底 + 两层圆内动效。
+   ::before = 左上镜面高光 + 蓝紫内反光（第一口气更亮，冷调更明显）；
+   ::after  = 柔紫内反光（第二口气更慢、更饱满，色相偏紫）。
+   两层都是 inset:0 + 继承圆角 + pointer-events:none，完全裁在 14px 球内，
+   不向外发光；动画只改 opacity，不缩放、不改 box-shadow/filter，不触发布局。
+   单一时长 7.2s = 3.0s（快）+ 4.2s（慢），分段缓动做「加速→减速→短停→慢呼气」，
+   0%/100% 取同一静息值，循环无跳变；颜色/高光/节奏由同一时间轴驱动。 */
+.brand-orb::before {
+  --orb-layer-min: 0.18;
+  --orb-layer-fast: 0.72;
+  /* 第二口气里冷调主动退让，把色相让给 ::after 的柔紫 */
+  --orb-layer-slow: 0.26;
+  --orb-spec: color-mix(in srgb, var(--c-paper) 52%, transparent);
+  --orb-cool: color-mix(in srgb, var(--orb-cool-tone) 96%, transparent);
   content: "";
   position: absolute;
-  inset: -8px;
-  border-radius: 50%;
+  inset: 0;
+  border-radius: inherit;
   pointer-events: none;
-  background: radial-gradient(
-    circle,
-    transparent 0%,
-    transparent 30%,
-    color-mix(in srgb, var(--orb-glow-color) 36%, transparent) 46%,
-    color-mix(in srgb, var(--orb-glow-color) 20%, transparent) 62%,
-    color-mix(in srgb, var(--orb-glow-color) 8%, transparent) 80%,
-    transparent 100%
-  );
-  opacity: var(--orb-glow-min);
-  animation: brand-orb-breathe 3.6s ease-in-out infinite;
+  background:
+    /* 左上镜面高光：柔和渐隐，不做白闪点 */
+    radial-gradient(circle at 30% 24%, var(--orb-spec) 0%, transparent 58%),
+    /* 蓝紫内反光：第一口气峰值时色相偏蓝紫 */
+    radial-gradient(circle at 52% 46%, var(--orb-cool) 0%, transparent 74%);
+  opacity: var(--orb-layer-min);
+  animation: brand-orb-cycle 7.2s linear infinite;
 }
 
-/* 深色背景上光晕更显眼，峰值收低，避免霓虹感；两套预设共用同一组 Token。 */
+.brand-orb::after {
+  --orb-layer-min: 0.03;
+  --orb-layer-fast: 0.14;
+  --orb-layer-slow: 0.8;
+  --orb-warm: color-mix(in srgb, var(--orb-warm-tone) 96%, transparent);
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  /* 柔紫内反光：第二口气峰值时让球体更偏紫、更饱满 */
+  background: radial-gradient(circle at 56% 52%, var(--orb-warm) 0%, transparent 78%);
+  opacity: var(--orb-layer-min);
+  animation: brand-orb-cycle 7.2s linear infinite;
+}
+
+/* 深色降低峰值与高光，保留蓝紫玻璃感，不霓虹；预设不覆写，只换基础 Token。 */
+:root[data-theme="dark"] .brand-orb::before {
+  --orb-layer-min: 0.12;
+  --orb-layer-fast: 0.5;
+  --orb-layer-slow: 0.18;
+  --orb-spec: color-mix(in srgb, var(--c-paper) 28%, transparent);
+  /* 深色只压低透明度，冷色/暖紫色相仍由预设 Token 决定（梦幻仍需更蓝的冷色） */
+  --orb-cool: color-mix(in srgb, var(--orb-cool-tone) 84%, transparent);
+}
+
 :root[data-theme="dark"] .brand-orb::after {
-  --orb-glow-min: 0.16;
-  --orb-glow-peak: 0.44;
+  --orb-layer-min: 0.03;
+  --orb-layer-fast: 0.12;
+  --orb-layer-slow: 0.72;
+  --orb-warm: color-mix(in srgb, var(--orb-warm-tone) 90%, transparent);
 }
 
-@keyframes brand-orb-breathe {
-  0%, 100% { opacity: var(--orb-glow-min); }
-  50% { opacity: var(--orb-glow-peak); }
+@keyframes brand-orb-cycle {
+  /* 第一口气：0 → 41.67%（3.0s），吸气加速 → 近峰值减速 → 短停 → 呼气恢复 */
+  0% { opacity: var(--orb-layer-min); animation-timing-function: cubic-bezier(0.42, 0, 0.72, 0.52); }
+  12% { opacity: calc(var(--orb-layer-min) + (var(--orb-layer-fast) - var(--orb-layer-min)) * 0.42); animation-timing-function: cubic-bezier(0.18, 0.72, 0.28, 1); }
+  24% { opacity: var(--orb-layer-fast); animation-timing-function: linear; }
+  26.5% { opacity: var(--orb-layer-fast); animation-timing-function: cubic-bezier(0.33, 0, 0.55, 1); }
+  41.67% { opacity: var(--orb-layer-min); animation-timing-function: cubic-bezier(0.28, 0.08, 0.62, 0.6); }
+  /* 第二口气：41.67 → 100%（4.2s），同样节奏但整体更慢、呼气更长 */
+  53% { opacity: calc(var(--orb-layer-min) + (var(--orb-layer-slow) - var(--orb-layer-min)) * 0.42); animation-timing-function: cubic-bezier(0.18, 0.72, 0.28, 1); }
+  75.5% { opacity: var(--orb-layer-slow); animation-timing-function: linear; }
+  78% { opacity: var(--orb-layer-slow); animation-timing-function: cubic-bezier(0.33, 0, 0.55, 1); }
+  100% { opacity: var(--orb-layer-min); }
 }
 
-/* 减少动态：关闭呼吸，保留一层可见的静态柔光，仍能看出品牌球的蓝紫气质。 */
+/* 减少动态：关闭双周期循环，保留精致静态玻璃球（蓝紫底 + 轻微高光/紫色内反光）。 */
 @media (prefers-reduced-motion: reduce) {
+  .brand-orb::before {
+    animation: none;
+    opacity: 0.3;
+  }
   .brand-orb::after {
     animation: none;
-    opacity: 0.24;
+    opacity: 0.12;
   }
 }
 
@@ -2238,7 +2298,7 @@
 
 .overview-card {
   position: relative;
-  gap: 0;
+  gap: 6px;
   padding: 9px 4px 8px;
   border: none;
   border-radius: var(--radius-card);
@@ -2257,38 +2317,25 @@
   box-shadow: var(--card-shadow-hover);
 }
 
-.overview-icon {
-  margin-bottom: 1px;
-}
-
-.tone-accent .overview-icon {
-  color: var(--icon-accent);
-}
-
-.tone-violet .overview-icon {
-  color: var(--icon-violet);
-}
-
-.tone-warn .overview-icon {
-  color: var(--icon-warn);
-}
-
 .overview-value {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.3px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.2px;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
 
+/* 逾期 >0 才用告警色强调数字；0 值不加类，保持默认文字色 */
 .overview-card.warn .overview-value {
-  color: var(--text-primary);
+  color: var(--status-error);
 }
 
 /* 标签用 secondary：tertiary 在浅色预设对白底仅约 3.2-4.0:1（<4.5:1），
    且 9.5px CJK 近笔画粘连下限；≥10.5px + secondary 达标（玻璃底材待真机复核） */
 .overview-label {
-  font-size: 10.5px;
+  font-size: 11.5px;
+  line-height: 1.2;
   color: var(--text-secondary);
 }
 
@@ -2310,22 +2357,8 @@
 
 /* 组合输入容器统一悬停反馈：只抬一档阴影，聚焦态优先（:not 排除，不依赖声明顺序） */
 .quick-add-row:hover:not(:focus-within),
-.search-box:hover:not(:focus-within),
-.clip-search:hover:not(:focus-within) {
+.search-box:hover:not(:focus-within) {
   box-shadow: var(--control-shadow-hover, var(--control-shadow));
-}
-
-/* 剪贴板搜索框与快速添加/任务搜索统一为玻璃胶囊：
-   唯一可见边界 = 阴影环，去掉 base 层残留的 1px 硬边框与聚焦变色边框 */
-.clip-search {
-  border: none;
-  border-radius: 9px;
-  background: var(--control-face);
-  box-shadow: var(--control-shadow);
-}
-
-.clip-search:focus-within {
-  box-shadow: var(--control-shadow-focus);
 }
 
 .quick-add-icon {
@@ -2333,7 +2366,8 @@
 }
 
 .quick-add-input {
-  font-size: 12px;
+  font-size: var(--input-font-size);
+  line-height: var(--input-line-height);
   color: var(--text-primary);
 }
 
@@ -2441,12 +2475,6 @@ textarea:focus {
 /* 胶囊任务快速新增：焦点边界只由外层的 .cap-input:focus-within 提供，
    内部 input 不再叠加 --control-shadow-focus，避免聚焦时出现「大框套小框」。 */
 .cap-task-add input:focus {
-  box-shadow: none;
-}
-
-/* 应用中心搜索框：焦点只由外层 .apps-search:focus-within 的浅色边框表达，
-   内部 input 去掉紫色粗环（2026-11-04，避免焦点视觉比输入框本身还重）。 */
-.apps-search input:focus {
   box-shadow: none;
 }
 
@@ -2710,15 +2738,12 @@ textarea:focus {
 
 /* ── 11. 设置面板：预设选择卡 ───────────────────────────────── */
 
-.settings-section {
+/* 公共折叠分组与设置页共用同一卡面：柔光玻璃下不再各自定义边框/阴影。 */
+.collapsible-section {
   background: var(--card-face);
   border: none;
   border-radius: var(--radius-card);
   box-shadow: var(--card-shadow);
-}
-
-.settings-section-head:hover {
-  background: var(--surface-hover);
 }
 
 .setting-row {
@@ -2981,8 +3006,19 @@ textarea:focus {
     padding: 0;
   }
 
+  .overview-card {
+    /* 最窄窗：优先保住「数字 + 标签」同一行，压缩左右内边距与间距；
+       数值仍用 tabular-nums，标签超出时省略号截断，卡片高度不变 */
+    padding: 8px 2px 7px;
+    gap: 4px;
+  }
+
   .overview-value {
-    font-size: 17px;
+    font-size: 18px;
+  }
+
+  .overview-label {
+    font-size: 11px;
   }
 }
 
@@ -3174,8 +3210,7 @@ textarea:focus {
 
 /* 输入容器：浅内凹。容器负责唯一可见边界，内部 input 仍完全透明 */
 .quick-add-row,
-.search-box,
-.clip-search {
+.search-box {
   border: none;
   background: var(--inset-face);
   box-shadow: var(--inset-shadow);
@@ -3183,14 +3218,12 @@ textarea:focus {
 }
 
 .quick-add-row:hover:not(:focus-within),
-.search-box:hover:not(:focus-within),
-.clip-search:hover:not(:focus-within) {
+.search-box:hover:not(:focus-within) {
   box-shadow: var(--inset-shadow-hover);
 }
 
 .quick-add-row:focus-within,
-.search-box:focus-within,
-.clip-search:focus-within {
+.search-box:focus-within {
   box-shadow: var(--inset-shadow-focus);
 }
 

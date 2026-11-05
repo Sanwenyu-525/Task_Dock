@@ -57,6 +57,9 @@ import {
   normalDeviation,
   rebaseAlong,
   shouldLeaveMagnetRange,
+  shouldSwitchDockEdge,
+  hasDockIntent,
+  SNAP_DOCK_INTENT_CSS,
   shouldUndockByDrag,
   shouldRevealByDwell,
   visibleFraction,
@@ -246,13 +249,13 @@ describe("状态机转移表 canTransition", () => {
     expect(canAutoHide("candidate")).toBe(false);
   });
 
-  it("isCapsuleMode：停靠相位缺停靠边时不进入胶囊模式（不隐藏主界面、不挂载空胶囊）", () => {
+  it("isCapsuleMode：只看停靠相位，缺边也不回退主界面（防止控件落进残留裁剪区域）", () => {
     for (const phase of ["docked-visible", "docked-hidden", "docked-revealed"] as const) {
-      expect(isCapsuleMode(phase, null)).toBe(false);
-      expect(isCapsuleMode(phase, "left")).toBe(true);
+      expect(isCapsuleMode(phase)).toBe(true);
     }
-    expect(isCapsuleMode("free", "left")).toBe(false);
-    expect(isCapsuleMode("candidate", "left")).toBe(false);
+    expect(isCapsuleMode("free")).toBe(false);
+    expect(isCapsuleMode("candidate")).toBe(false);
+    expect(isCapsuleMode("docked-full")).toBe(false);
   });
 });
 
@@ -882,9 +885,7 @@ describe("完整面板停靠态 docked-full（v1.0 形态切换）", () => {
   });
 
   it("完整面板不进入胶囊模式（主界面保持完整可见、不挂载 CapsuleDock）", () => {
-    for (const edge of [null, "left", "right", "top", "bottom"] as const) {
-      expect(isCapsuleMode("docked-full", edge)).toBe(false);
-    }
+    expect(isCapsuleMode("docked-full")).toBe(false);
   });
 
   it("isFullDockPhase 只认 docked-full", () => {
@@ -892,5 +893,49 @@ describe("完整面板停靠态 docked-full（v1.0 形态切换）", () => {
     for (const p of ["free", "candidate", "docked-visible", "docked-hidden", "docked-revealed"] as const) {
       expect(isFullDockPhase(p)).toBe(false);
     }
+  });
+});
+
+describe("沿边拖动的吸附意图与跨边守卫", () => {
+  it("磁力领先范围内的平行拖动不算吸附意图", () => {
+    // 起点距边 40、平行拖动（法向净位移 0）：仅“进入吸附区”不得吸附。
+    expect(hasDockIntent(0)).toBe(false);
+    expect(hasDockIntent(-20)).toBe(false);
+    // 磁力领先上限本身（16）不足以构成意图，必须超过它再加余量。
+    expect(hasDockIntent(SNAP_MAGNET_MAX_LEAD)).toBe(false);
+    expect(hasDockIntent(SNAP_DOCK_INTENT_CSS)).toBe(true);
+    expect(hasDockIntent(SNAP_DOCK_INTENT_CSS + 1)).toBe(true);
+  });
+
+  it("意图阈值随 DPI 缩放（物理像素）", () => {
+    expect(hasDockIntent(SNAP_DOCK_INTENT_CSS * 1.5, 1.5)).toBe(true);
+    expect(hasDockIntent(SNAP_DOCK_INTENT_CSS * 1.4, 1.5)).toBe(false);
+    // 非法缩放回退 1，不放大阈值。
+    expect(hasDockIntent(SNAP_DOCK_INTENT_CSS, 0)).toBe(true);
+    expect(hasDockIntent(SNAP_DOCK_INTENT_CSS, Number.NaN)).toBe(true);
+  });
+
+  it("四边：仍齐平在当前边时禁止跨边切换", () => {
+    expect(shouldSwitchDockEdge(rect(0, 300), WA, "left")).toBe(false);
+    expect(shouldSwitchDockEdge(rect(1520, 300), WA, "right")).toBe(false);
+    expect(shouldSwitchDockEdge(rect(700, 0), WA, "top")).toBe(false);
+    expect(shouldSwitchDockEdge(rect(700, 472), WA, "bottom")).toBe(false);
+  });
+
+  it("四边：真正离开当前边磁吸区后允许跨边切换", () => {
+    expect(shouldSwitchDockEdge(rect(120, 300), WA, "left")).toBe(true);
+    expect(shouldSwitchDockEdge(rect(1400, 300), WA, "right")).toBe(true);
+    expect(shouldSwitchDockEdge(rect(700, 120), WA, "top")).toBe(true);
+    expect(shouldSwitchDockEdge(rect(700, 352), WA, "bottom")).toBe(true);
+  });
+
+  it("角落处的距离平手不会把沿边拖动判成换边", () => {
+    // 左缘面板被沿边拖到贴着上缘：top 距离也是 0，但当前边仍齐平。
+    const corner = rect(0, 0);
+    const detected = detectCandidateEdge(corner, WA);
+    // 候选边按固定顺序选择；守卫必须阻止「other !== edge」的跨边切换。
+    expect(detected === "left" || detected === "top").toBe(true);
+    expect(shouldSwitchDockEdge(corner, WA, "left")).toBe(false);
+    expect(shouldSwitchDockEdge(corner, WA, "top")).toBe(false);
   });
 });

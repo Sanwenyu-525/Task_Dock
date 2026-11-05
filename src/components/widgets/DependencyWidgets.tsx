@@ -3,7 +3,7 @@
 //! 接口未注入时只显示「等待接入」，绝不显示假倒计时或假统计；
 //! 也不在本文件复制 A/C 的查询与 SQL 逻辑。数据源契约见 lib/widgets/sources.ts。
 
-import { BarChart3, Hourglass, PlugZap } from "lucide-react";
+import { AlertTriangle, BarChart3, Hourglass, PlugZap } from "lucide-react";
 
 import type { EfficiencySource, FocusSource } from "../../lib/widgets/sources";
 import { formatCountdown } from "../../lib/format";
@@ -153,10 +153,23 @@ export function EfficiencyWidget({ source }: { source?: EfficiencySource }) {
         </li>
         <li>
           <strong>{snapshot.pending}</strong>
-          {/* 缺 widgets.efficiency.pending；暂复用极简模式的「待办」。 */}
-          <span>{t("minimal.pending")}</span>
+          <span>{t("widgets.efficiency.pending")}</span>
         </li>
       </ul>
+      {snapshot.stale && (
+        // 刷新失败：保留上一次数字，明确标记可能过期，并提供重试入口。
+        <div className="widget-status-line widget-stale" role="status">
+          <span className="widget-stale-label">
+            <AlertTriangle size={11} aria-hidden="true" />
+            {t("widgets.efficiency.stale")}
+          </span>
+          {source?.retry && (
+            <button type="button" className="widget-stale-retry" onClick={() => source.retry?.()}>
+              {t("widgets.efficiency.retry")}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

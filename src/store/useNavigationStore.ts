@@ -14,7 +14,9 @@ import {
   navAllTaskLinks,
   navListTargets,
   navScanApps,
+  onNavScanBatch,
   type AppScanResult,
+  type DiscoveredApp,
   type NavTarget,
   type TaskNavLink,
 } from "../lib/navigation";
@@ -28,12 +30,34 @@ let targetsSeq = 0;
 let linksSeq = 0;
 let scanSeq = 0;
 
+/** 渐进扫描进度：只展示真实信息（来源完成数），不适配虚假百分比。 */
+export interface ScanProgress {
+  /** 本次扫描累计发现数（含已推送批次） */
+  discovered: number;
+  sourcesDone: number;
+  sourcesTotal: number;
+  batches: number;
+}
+
+/** 按 app_key 去重并按名称稳定排序，保证批次追加时列表顺序不抖动。 */
+function mergeProgressiveApps(apps: Map<string, DiscoveredApp>): DiscoveredApp[] {
+  return [...apps.values()].sort((a, b) => {
+    const byName = a.display_name.toLowerCase().localeCompare(b.display_name.toLowerCase());
+    if (byName !== 0) return byName;
+    return a.app_key < b.app_key ? -1 : a.app_key > b.app_key ? 1 : 0;
+  });
+}
+
 export const useNavigationStore = create<{
   /** 软件扫描结果（null = 未加载） */
   scan: AppScanResult | null;
   scanning: boolean;
   /** 扫描最近一次失败原因；null = 无错误。失败时保留旧扫描结果，但 UI 必须可见并可重试 */
   scanError: string | null;
+  /** 扫描期间的真实进度（已发现数 / 已扫描来源）；未扫描或完成后为 null */
+  scanProgress: ScanProgress | null;
+  /** 当前 scan 是否为渐进批次拼出的不完整结果（首次扫描中 / 首次扫描中途失败） */
+  scanPartial: boolean;
   /** 全部导航目标 */
   targets: NavTarget[];
   targetsLoaded: boolean;
@@ -54,6 +78,8 @@ export const useNavigationStore = create<{
   scan: null,
   scanning: false,
   scanError: null,
+  scanProgress: null,
+  scanPartial: false,
   targets: [],
   targetsLoaded: false,
   targetsError: null,
@@ -67,18 +93,65 @@ export const useNavigationStore = create<{
     // 已有扫描在途：本次不再叠加请求；调用方把结果视为「由在途请求负责」。
     if (get().scanning) return "stale";
     const seq = ++scanSeq;
-    set({ scanning: true });
+    // 请求身份：后端原样回传，用于过滤旧扫描残留的批次事件。
+    const scanId = `scan-${seq}-${Date.now().toString(36)}`;
+    // 只有「上次是完整权威结果」时才保留旧列表；首次扫描的部分结果在重试时重建。
+    const keepPrevious = get().scan !== null && !get().scanPartial;
+    const merged = new Map<string, DiscoveredApp>();
+    let unlisten: (() => void) | null = null;
+    set({
+      scanning: true,
+      scanError: null,
+      scanProgress: { discovered: 0, sourcesDone: 0, sourcesTotal: 0, batches: 0 },
+      scanPartial: !keepPrevious,
+    });
     try {
-      const scan = await navScanApps(force);
+      // 先订阅再发起扫描，避免首批结果早于监听注册而丢失。
+      unlisten = await onNavScanBatch((batch) => {
+        if (seq !== scanSeq || batch.scan_id !== scanId) return;
+        for (const a of batch.apps) {
+          if (a.app_key) merged.set(a.app_key, a);
+        }
+        const update: Partial<ReturnType<typeof get>> = {
+          scanProgress: {
+            discovered: batch.discovered,
+            sourcesDone: batch.sources_done,
+            sourcesTotal: batch.sources_total,
+            batches: (get().scanProgress?.batches ?? 0) + 1,
+          },
+        };
+        // 已有完整结果时只补充进度，不替换列表（避免重扫期间列表抖动/清空）。
+        // 空批次（定位到 0 个应用）只推进进度，绝不创建 scan——否则界面会把
+        // 「扫描仍在进行、尚无结果」误判成「扫描完成、未发现应用」。
+        if (!keepPrevious && merged.size > 0) {
+          update.scan = {
+            apps: mergeProgressiveApps(merged),
+            scanned_at: "",
+            duration_ms: 0,
+            counts: {},
+            diagnostics: {},
+          };
+        }
+        set(update);
+      });
       if (seq !== scanSeq) return "stale";
-      set({ scan, scanError: null });
+      const scan = await navScanApps(force, scanId);
+      if (seq !== scanSeq) return "stale";
+      // 最终权威结果收敛列表、计数与诊断，避免渐进阶段的数据长期残留。
+      set({ scan, scanError: null, scanProgress: null, scanPartial: false });
       return "ok";
     } catch (e) {
       if (seq !== scanSeq) return "stale";
-      // 保留旧扫描结果，但记录失败原因——否则选择器会永远停在「加载中」。
-      set({ scanError: errorMessage(e) });
+      // 首次扫描中途失败：保留已发现的部分结果并明确标记「不完整」；
+      // 已有完整结果时保留上次结果。
+      set({
+        scanError: errorMessage(e),
+        scanProgress: null,
+        scanPartial: !keepPrevious && get().scan !== null,
+      });
       return "error";
     } finally {
+      unlisten?.();
       // 只允许最新请求收起 loading，避免旧请求提前把新请求的 scanning 置回 false。
       if (seq === scanSeq) set({ scanning: false });
     }

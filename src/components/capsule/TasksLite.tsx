@@ -21,11 +21,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
 import { useTasksStore, type TaskLiteScope } from "../../store/useTasksStore";
+import { useUiStore } from "../../store/useUiStore";
+import type { Task } from "../../lib/bridge";
+import { describeRecurrence } from "../../lib/format";
+import useImeComposition from "../../hooks/useImeComposition";
 import { openFullApp } from "./actions";
 import { dueLabel, sortPending } from "./format";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 
 type Filter = "all" | "pending" | "today" | "scheduled" | "done";
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** 详情里的绝对时间（行内只给「今天/逾期」相对文案，详情需要可核对的时刻）。 */
+function momentLabel(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return "";
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return `${sameYear ? "" : `${d.getFullYear()}/`}${d.getMonth() + 1}月${d.getDate()}日 ${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}`;
+}
 
 /** 分段与效果图一致：全部 / 待办 / 今日 / 日程 / 已完成。
  *  全部 = 待办 + 已完成（同一份真实列表，已完成排在后面且不可勾选）。 */
@@ -54,9 +71,13 @@ export default function TasksLite() {
   const [busy, setBusy] = useState(false);
   const [completing, setCompleting] = useState<ReadonlySet<string>>(new Set());
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [reopening, setReopening] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const timers = useRef<number[]>([]);
+  // 计时器用 Set 并在回调触发后删除：长期打开的面板不会把已结束的 ID 一直累积。
+  const timers = useRef(new Set<number>());
+  const ime = useImeComposition();
   const stats = useTasksStore((s) => s.stats);
 
   // 面板打开 → 取一次轻量列表；关闭 → 释放并作废在途响应。
@@ -86,15 +107,19 @@ export default function TasksLite() {
 
   // 所有延时都必须可回收：面板卸载时清空，避免对已卸载组件 setState
   useEffect(() => {
-    const list = timers.current;
+    const pending = timers.current;
     return () => {
-      list.forEach((t) => window.clearTimeout(t));
+      pending.forEach((t) => window.clearTimeout(t));
+      pending.clear();
     };
   }, []);
 
   const later = useCallback((fn: () => void, ms: number) => {
-    const t = window.setTimeout(fn, ms);
-    timers.current.push(t);
+    const t = window.setTimeout(() => {
+      timers.current.delete(t);
+      fn();
+    }, ms);
+    timers.current.add(t);
   }, []);
 
   const flash = useCallback(
@@ -124,6 +149,7 @@ export default function TasksLite() {
     setCompleting((prev) => new Set(prev).add(id));
     try {
       await useTasksStore.getState().toggle(id);
+      setExpandedId((cur) => (cur === id ? null : cur));
       // 视觉反馈先行：留 320ms 让勾选动画可见，再移出列表
       later(() => setHidden((prev) => new Set(prev).add(id)), 320);
     } catch {
@@ -133,8 +159,30 @@ export default function TasksLite() {
         return next;
       });
       flash("完成失败，已回滚");
-      void loadLite(); // 重新拉真实状态，不靠本地猜测
+      void loadLite(scopeOf(filter)); // 重新拉当前分段的真实状态，不靠本地猜测
     }
+  };
+
+  /** 已完成任务重新打开：状态写回仍走 store，失败同样回滚并重拉真实列表。 */
+  const reopen = async (id: string) => {
+    if (reopening) return;
+    setReopening(id);
+    try {
+      await useTasksStore.getState().toggle(id);
+      setExpandedId(null);
+      flash("已重新打开");
+    } catch {
+      flash("操作失败，已回滚");
+      void loadLite(scope);
+    } finally {
+      setReopening(null);
+    }
+  };
+
+  /** 详情里的「编辑」不复制表单：定位到完整任务页并复用主窗口编辑器。 */
+  const edit = (task: Task) => {
+    useUiStore.getState().openEditor(task);
+    openFullApp("tasks");
   };
 
   const now = Date.now();
@@ -236,45 +284,119 @@ export default function TasksLite() {
           const due = dueLabel(t.due_at, now);
           const completed = t.status === "completed";
           const isDone = completing.has(t.id) || completed;
+          const open = expandedId === t.id;
+          const desc = t.description.trim();
+          const remind = t.next_remind_at ?? t.remind_at;
+          const recurrence = describeRecurrence(t.recurrence);
           return (
-            <div className={`cap-item cap-task-row${isDone ? " is-done" : ""}`} key={t.id}>
-              {completed ? (
-                // 已完成的条目只呈现状态，不给「再点一次」的假入口：
-                // 取消完成属于主窗口的任务详情，胶囊内不做隐式写操作。
-                <span className="cap-check is-checked is-static" aria-hidden="true">
-                  <Check size={11} strokeWidth={3} />
-                </span>
-              ) : (
+            <div className="cap-task-group" key={t.id}>
+              <div className={`cap-item cap-task-row${isDone ? " is-done" : ""}`}>
+                {completed ? (
+                  // 已完成的条目只呈现状态，不给「再点一次」的完成入口；
+                  // 重新打开放在展开详情里，避免行内误触。
+                  <span className="cap-check is-checked is-static" aria-hidden="true">
+                    <Check size={11} strokeWidth={3} />
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className={`cap-check${isDone ? " is-checked" : ""}`}
+                    aria-label={`完成「${t.title}」`}
+                    aria-pressed={isDone}
+                    onClick={() => void complete(t.id)}
+                  >
+                    <Check size={11} strokeWidth={3} aria-hidden="true" />
+                  </button>
+                )}
                 <button
                   type="button"
-                  className={`cap-check${isDone ? " is-checked" : ""}`}
-                  aria-label={`完成「${t.title}」`}
-                  aria-pressed={isDone}
-                  onClick={() => void complete(t.id)}
+                  className="cap-main cap-row-open"
+                  aria-label={`${open ? "收起" : "查看"}「${t.title}」详情`}
+                  aria-expanded={open}
+                  aria-controls={`task-detail-${t.id}`}
+                  onClick={() => setExpandedId(open ? null : t.id)}
                 >
-                  <Check size={11} strokeWidth={3} aria-hidden="true" />
-                </button>
-              )}
-              <span className="cap-main">
-                <span className="cap-item-title" title={t.title}>
-                  {t.title}
-                </span>
-                <span className="cap-task-tags">
-                  {t.category ? <span className="cap-tag">{t.category}</span> : null}
-                  {t.due_at ? (
-                    <span className={`cap-pill tone-${due.tone}`}>{due.text}</span>
-                  ) : (
-                    <span className="cap-item-sub">无期限</span>
-                  )}
-                </span>
-              </span>
-              <span className="cap-task-side">
-                {t.remind_at ? (
-                  <span className="cap-task-bell" aria-label="已设置提醒" title="已设置提醒">
-                    <Bell size={12} strokeWidth={1.8} aria-hidden="true" />
+                  <span className="cap-item-title" title={t.title}>
+                    {t.title}
                   </span>
-                ) : null}
-              </span>
+                  <span className="cap-task-tags">
+                    {t.category ? <span className="cap-tag">{t.category}</span> : null}
+                    {t.due_at ? (
+                      <span className={`cap-pill tone-${due.tone}`}>{due.text}</span>
+                    ) : (
+                      <span className="cap-item-sub">无期限</span>
+                    )}
+                  </span>
+                </button>
+                <span className="cap-task-side">
+                  {t.remind_at ? (
+                    <span className="cap-task-bell" aria-label="已设置提醒" title="已设置提醒">
+                      <Bell size={12} strokeWidth={1.8} aria-hidden="true" />
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+              {open && (
+                <div className="cap-task-detail" id={`task-detail-${t.id}`}>
+                  {desc ? (
+                    <p className="cap-detail-desc">{desc}</p>
+                  ) : (
+                    <p className="cap-detail-desc is-muted">暂无备注</p>
+                  )}
+                  {t.due_at ? (
+                    <div className="cap-detail-row">
+                      <span className="cap-detail-label">截止</span>
+                      <span className="cap-detail-value">{momentLabel(t.due_at)}</span>
+                    </div>
+                  ) : null}
+                  {remind ? (
+                    <div className="cap-detail-row">
+                      <span className="cap-detail-label">提醒</span>
+                      <span className="cap-detail-value">{momentLabel(remind)}</span>
+                    </div>
+                  ) : null}
+                  {t.category ? (
+                    <div className="cap-detail-row">
+                      <span className="cap-detail-label">分类</span>
+                      <span className="cap-detail-value">{t.category}</span>
+                    </div>
+                  ) : null}
+                  {t.tags.length > 0 ? (
+                    <div className="cap-detail-row">
+                      <span className="cap-detail-label">标签</span>
+                      <span className="cap-detail-value">{t.tags.join(" · ")}</span>
+                    </div>
+                  ) : null}
+                  {recurrence ? (
+                    <div className="cap-detail-row">
+                      <span className="cap-detail-label">重复</span>
+                      <span className="cap-detail-value">{recurrence}</span>
+                    </div>
+                  ) : null}
+                  <div className="cap-detail-actions">
+                    {completed ? (
+                      <button
+                        type="button"
+                        className="cap-mini is-ok"
+                        aria-label={`重新打开「${t.title}」`}
+                        aria-busy={reopening === t.id}
+                        disabled={reopening === t.id}
+                        onClick={() => void reopen(t.id)}
+                      >
+                        重新打开
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="cap-mini"
+                      aria-label={`编辑「${t.title}」`}
+                      onClick={() => edit(t)}
+                    >
+                      编辑
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
@@ -300,11 +422,23 @@ export default function TasksLite() {
       <div className="cap-input cap-task-add">
         <Plus size={13} strokeWidth={2.2} aria-hidden="true" />
         <input
+          className="input-embedded"
           ref={inputRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onCompositionStart={ime.onCompositionStart}
+          onCompositionEnd={ime.onCompositionEnd}
           onKeyDown={(e) => {
-            if (e.key === "Enter") void add();
+            // 输入法确认候选的 Enter/Escape 不能触发新增或清空。
+            if (ime.isComposing(e)) return;
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void add();
+            } else if (e.key === "Escape" && text) {
+              e.preventDefault();
+              e.stopPropagation();
+              setText("");
+            }
           }}
           placeholder="添加任务，回车保存"
           aria-label="快速添加任务"

@@ -303,8 +303,9 @@ describe("AppsPanel 应用中心", () => {
     const main = screen.getByRole("button", { name: "启动 Obsidian" });
     expect(screen.getAllByRole("button", { name: "启动 Obsidian" })).toHaveLength(1);
     expect(main.querySelector(".app-icon")).toBeTruthy();
-    // 独立的火箭启动按钮已删除：卡片内只剩「主区域 / 收藏 / 更多」三个按钮
-    expect(document.querySelector(".apps-tile")?.querySelectorAll("button")).toHaveLength(3);
+    // 卡片内并列四个按钮：启动主区域 / 收藏 / 更多 / 直接删除（不嵌套）
+    expect(document.querySelector(".apps-tile")?.querySelectorAll("button")).toHaveLength(4);
+    expect(document.querySelector(".apps-tile-main")?.querySelector("button")).toBeNull();
     expect(screen.queryByLabelText("启动 / 聚焦窗口")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "收藏 Obsidian" }));
@@ -374,7 +375,7 @@ describe("AppsPanel 应用中心", () => {
     render(<AppsPanel />);
     const tile = document.querySelector(".apps-tile") as HTMLElement;
     expect(tile.querySelector(".apps-tile-name")?.textContent).toBe(longName);
-    expect(tile.querySelectorAll("button")).toHaveLength(3);
+    expect(tile.querySelectorAll("button")).toHaveLength(4);
   });
 
   it("hover 未截断的名称不挂 data-tip，不会把 exe 路径弹成浮层", () => {

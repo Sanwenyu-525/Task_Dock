@@ -1029,8 +1029,9 @@ function AgentNode({
     if (!agent.connected) return "未接入监控";
     if (discovery.health_state === "stale") return "已接入 · 事件过期";
     if (discovery.health_state === "disabled") return "接入已停用";
-    if (!discovery.real_event_seen) return "已配置 · 待真实事件";
+    // self-test-only 必然 real_event_seen=false：必须先判断，否则永远落到「待真实事件」而丢失自测语义
     if (discovery.health_state === "self-test-only") return "仅自测通过 · 待真实事件";
+    if (!discovery.real_event_seen) return "已配置 · 待真实事件";
     return null;
   }, [agent.connected, discovery]);
 

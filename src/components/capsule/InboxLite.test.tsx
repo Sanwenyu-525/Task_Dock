@@ -11,18 +11,20 @@
 //! - 面板卸载释放 lite 切片（作废在途响应，不多付 IPC）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 
 const quickCaptureList = vi.fn();
 const quickCaptureState = vi.fn();
+const markHandled = vi.fn();
+const convertToTask = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   quickCaptureList: (...a: unknown[]) => quickCaptureList(...a),
   quickCaptureState: (...a: unknown[]) => quickCaptureState(...a),
-  quickCaptureMarkHandled: vi.fn(),
+  quickCaptureMarkHandled: (...a: unknown[]) => markHandled(...a),
   quickCaptureDelete: vi.fn(),
-  quickCaptureConvertToTask: vi.fn(),
+  quickCaptureConvertToTask: (...a: unknown[]) => convertToTask(...a),
   quickCaptureSaveDraft: vi.fn(),
   quickCaptureClearDraft: vi.fn(),
   quickCaptureSetLastType: vi.fn(),
@@ -54,6 +56,8 @@ function item(id: string, content: string, extra = {}) {
 beforeEach(() => {
   quickCaptureList.mockReset();
   quickCaptureState.mockReset();
+  markHandled.mockReset();
+  convertToTask.mockReset();
   useCaptureStore.setState({
     items: [],
     filter: "inbox",
@@ -80,6 +84,32 @@ describe("InboxLite", () => {
     expect(quickCaptureList).toHaveBeenCalledWith("inbox", 8, 0);
     expect(screen.getByText("产品灵感：深色主题")).toBeTruthy();
     expect(screen.getByText(/未处理 2 条/)).toBeTruthy();
+  });
+
+  it("快捷转为任务：调用既有命令并立即移出未处理列表", async () => {
+    quickCaptureList.mockResolvedValue([item("c1", "周一提醒我修登录页")]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 1 });
+    convertToTask.mockResolvedValue(item("c1", "周一提醒我修登录页", { status: "converted", task_id: "t1" }));
+    render(<InboxLite />);
+    await screen.findByText("周一提醒我修登录页");
+
+    fireEvent.click(screen.getByRole("button", { name: "将「周一提醒我修登录页」转为任务" }));
+    await waitFor(() => expect(convertToTask).toHaveBeenCalledWith("c1"));
+    await waitFor(() => expect(screen.queryByText("周一提醒我修登录页")).toBeNull());
+    expect(screen.getByText("已转为任务")).toBeTruthy();
+  });
+
+  it("标记已处理失败：记录保留并给出可重试提示", async () => {
+    quickCaptureList.mockResolvedValue([item("c2", "产品灵感：深色主题")]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 1 });
+    markHandled.mockRejectedValue(new Error("db locked"));
+    render(<InboxLite />);
+    await screen.findByText("产品灵感：深色主题");
+
+    fireEvent.click(screen.getByRole("button", { name: "标记「产品灵感：深色主题」已处理" }));
+    await screen.findByText("标记失败，请重试");
+    expect(markHandled).toHaveBeenCalledWith("c2");
+    expect(screen.getByText("产品灵感：深色主题")).toBeTruthy();
   });
 
   it("没有未处理记录 → 空态 + 完整收集箱入口（不显示错误）", async () => {

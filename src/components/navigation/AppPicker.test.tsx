@@ -150,6 +150,8 @@ function seedStores(opts?: { apps?: DiscoveredApp[]; targets?: NavTarget[]; link
       counts: {},
     },
     scanning: false,
+    scanProgress: null,
+    scanPartial: false,
     targets: opts?.targets ?? [],
     targetsLoaded: true,
     targetsError: null,
@@ -675,7 +677,93 @@ describe("AppPicker 子页面（variant=page）", () => {
     const rescan = screen.getByRole("button", { name: /扫描中…/ });
     expect((rescan as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("listbox", { name: "已安装软件" })).toBeTruthy();
-    expect(screen.getByText(/正在重新扫描/)).toBeTruthy();
+    expect(screen.getByText(/正在扫描/)).toBeTruthy();
+  });
+
+  it("首次扫描：加载状态在列表区域居中，并显示真实来源进度", () => {
+    seedStores();
+    useNavigationStore.setState({
+      scan: null,
+      scanning: true,
+      scanError: null,
+      scanPartial: true,
+      scanProgress: { discovered: 42, sourcesDone: 2, sourcesTotal: 5, batches: 2 },
+    });
+    renderPage();
+
+    // 两行结构：第一行动作+图标，第二行为真实进度（不塞在同一行）
+    const line = screen.getByText(/正在扫描本机应用/);
+    expect(line.className).toContain("picker-scanning-line");
+    const box = line.closest(".picker-scanning");
+    expect(box).toBeTruthy();
+    const progress = box?.querySelector(".picker-scan-progress");
+    expect(progress?.textContent).toContain("已发现 42 个");
+    expect(progress?.textContent).toContain("已扫描来源 2/5");
+    // 进度是独立元素，不与动作行共用同一容器
+    expect(progress?.previousElementSibling).toBe(line);
+    // 不伪造百分比
+    expect(box?.textContent).not.toMatch(/\d+\s?%/);
+    // 状态区占据可用列表区域并居中（搜索栏/分类/底栏保持稳定）
+    const centered = box?.closest(".picker-scan-state");
+    expect(centered).toBeTruthy();
+    expect(centered?.parentElement?.className).toContain("app-picker-page-body");
+    expect(screen.getByRole("textbox", { name: "搜索应用" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "分类筛选" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "添加已选应用" })).toBeTruthy();
+  });
+
+  it("扫描中的空批次不提前显示「扫描完成」：保持居中加载态", () => {
+    seedStores();
+    useNavigationStore.setState({
+      scan: null,
+      scanning: true,
+      scanError: null,
+      scanPartial: true,
+      scanProgress: { discovered: 0, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+    });
+    renderPage();
+
+    expect(screen.queryByText(/扫描完成，未发现/)).toBeNull();
+    expect(screen.getByText(/正在扫描本机应用/)).toBeTruthy();
+    const box = screen.getByText(/正在扫描本机应用/).closest(".picker-scanning");
+    expect(box?.querySelector(".picker-scan-progress")?.textContent).toContain("已发现 0 个");
+    // 状态区仍在可用列表区域居中，不会退化成空列表提示
+    expect(document.querySelector(".picker-scan-state")).toBeTruthy();
+  });
+
+  it("已有结果时重扫：列表与选择保持，只显示进度", async () => {
+    const user = userEvent.setup();
+    seedStores();
+    renderPage();
+    const list = screen.getByRole("listbox", { name: "已安装软件" });
+    await user.click(within(list).getByRole("option", { name: /VS Code/ }));
+    expect(screen.getByText("已选 1")).toBeTruthy();
+
+    useNavigationStore.setState({
+      scanning: true,
+      scanProgress: { discovered: 7, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/正在扫描（已发现 7 个 · 已扫描来源 1\/5）/)).toBeTruthy(),
+    );
+    expect(screen.getByText(/共 3 个可添加应用/)).toBeTruthy();
+    expect(screen.getByRole("listbox", { name: "已安装软件" })).toBeTruthy();
+    expect(screen.getByText("已选 1")).toBeTruthy();
+  });
+
+  it("首次扫描中途失败：明确提示仅有部分结果，并保留已发现条目", () => {
+    seedStores({ apps: [APP_VSCODE] });
+    useNavigationStore.setState({
+      scanning: false,
+      scanError: "来源读取失败",
+      scanPartial: true,
+    });
+    renderPage();
+
+    expect(screen.getByText(/当前仅显示已发现的部分结果（不完整）/)).toBeTruthy();
+    expect(screen.getByText(/共 1 个可添加应用/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
   });
 
   it("多选两个应用后批量添加：逐个保存、刷新列表并关闭页面", async () => {

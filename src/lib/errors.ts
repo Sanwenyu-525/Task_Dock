@@ -178,6 +178,16 @@ export function sanitizeForUser(raw: unknown): string {
     });
 
   let text = lines.join(" ").replace(/\s+/g, " ").trim();
+  // 本地绝对路径（引号包裹的完整路径 / 盘符路径 / UNC）：用户提示只需要错误语义，
+  // 不暴露本机安装目录与临时目录。先处理完整路径，再处理无引号 token。
+  text = text.replace(/"[A-Za-z]:\\[^"]*"/g, '"<本地路径>"');
+  // 无引号盘符路径：后续以空白分隔的 token 只有仍含反斜杠时才并入（覆盖
+  // `C:\Program Files\App\app.exe` 这类带空格路径），避免吞掉句尾的中文语义。
+  text = text.replace(
+    /[A-Za-z]:\\[^\s"'<>|，。；：!?()（）【】]*(?:\s+[^\s"'<>|，。；：!?()（）【】]*\\[^\s"'<>|，。；：!?()（）【】]*)*/g,
+    "<本地路径>",
+  );
+  text = text.replace(/\\\\[^\s"'<>|，。；：!?()（）【】]+/g, "<本地路径>");
   // Windows 用户目录（任意盘符 + 旧版 Documents and Settings）
   text = text.replace(/[A-Za-z]:\\(?:Users|Documents and Settings)\\[^\\\s]+/gi, (m) =>
     m.slice(0, m.lastIndexOf("\\")) + "\\<用户>",

@@ -16,8 +16,15 @@ import {
   type MessageKey,
   type MessageParams,
 } from "./messages";
+import {
+  LOCALE_STORAGE_KEY,
+  initUserPreferences,
+  onLocalePreferenceApplied,
+  schedulePreferencesMirror,
+} from "../lib/userPreferences";
 
-export const LOCALE_STORAGE_KEY = "taskdock.locale";
+// 存储键统一由 userPreferences 模块定义（语言与微件布局共用一份镜像逻辑）。
+export { LOCALE_STORAGE_KEY };
 
 interface LocaleState {
   preference: LocalePreference;
@@ -54,6 +61,8 @@ function persistPreference(preference: LocalePreference): void {
   } catch {
     // 存储不可用（隐私模式 / 配额满）时只保留内存态，不影响本次会话切换。
   }
+  // 防抖镜像到数据目录 preferences.json，供备份/恢复使用（非 Tauri 环境自动跳过）。
+  schedulePreferencesMirror();
 }
 
 function applyDocumentLocale(locale: LocaleCode): void {
@@ -103,6 +112,12 @@ export const useLocaleStore = create<LocaleState>((set, get) => {
 
 applyDocumentLocale(initialLocale);
 
+// 后端恢复/文件补齐把语言写入 localStorage 后，仅同步本窗口内存态；
+// 不经过 setPreference，避免再次写存储形成镜像回环。
+onLocalePreferenceApplied((preference) => {
+  useLocaleStore.getState().syncFromStorage(preference);
+});
+
 /** 当前生效语言（非 React 环境也可用，如格式化工具）。 */
 export function getLocale(): LocaleCode {
   return useLocaleStore.getState().locale;
@@ -121,15 +136,27 @@ export function t(key: MessageKey, params?: MessageParams): string {
   return translate(useLocaleStore.getState().locale, key, params);
 }
 
+export interface InitLocaleOptions {
+  /**
+   * 是否执行偏好镜像对账（`initUserPreferences`）。
+   * 桌面微件窗口按需创建、数量可变，跳过可避免每个窗口重复发起同一组存储 IPC；
+   * 主题/语言仍由 `theme-changed`、`storage` 等事件与设置快照同步。
+   */
+  preferences?: boolean;
+}
+
 /**
  * 在主窗口与各独立 WebView 入口调用一次：同步 `<html lang>`，监听系统语言变化
  * （仅在偏好为「跟随系统」时实际切换），并监听其他窗口写入的 `taskdock.locale`
  * （设置页只在主窗口，但捕获/通知/右键菜单窗口常驻不重建，必须靠 storage 事件同步）。
  * 返回解绑函数，便于测试与热重载。
  */
-export function initLocale(): () => void {
+export function initLocale(options: InitLocaleOptions = {}): () => void {
   applyDocumentLocale(useLocaleStore.getState().locale);
   if (typeof window === "undefined") return () => {};
+  // 偏好镜像对账 + 恢复事件监听（非 Tauri 环境自动跳过）。
+  const disposePreferences =
+    options.preferences === false ? () => {} : initUserPreferences();
   const onLanguageChange = () => useLocaleStore.getState().syncSystem();
   const onStorage = (event: StorageEvent) => {
     // `localStorage.clear()` 触发的 key 为 null，同样按「未配置」回退默认语言。
@@ -141,6 +168,7 @@ export function initLocale(): () => void {
   return () => {
     window.removeEventListener("languagechange", onLanguageChange);
     window.removeEventListener("storage", onStorage);
+    disposePreferences();
   };
 }
 

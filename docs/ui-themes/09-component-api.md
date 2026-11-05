@@ -441,6 +441,20 @@ interface SearchFieldProps {
 出现/消失不改变输入宽度。Escape 只转发给调用方；输入法组合输入期间不转发按键。
 `SearchField` 未覆盖带自动补全的 `Combobox`：后者保留自身键盘与过滤语义。
 
+**胶囊外观变体（2026-11-05）**：传 `size="compact"` 并追加 `className="ui-search--capsule"`
+即可让贴边工具面板复用同一组件，而不复制输入结构。该变体只把表面、高度与圆角映射到
+`--cap-*` / `--input-height-sm`；焦点仍只由容器表达。贴边面板的应用搜索（`AppsLite`）
+已使用该变体，快速添加任务输入则复用 `.cap-input + .input-embedded`，两者都不得在内层
+`input` 上再画背景、边框或焦点阴影。
+
+**字号（2026-11-05 补充，全局 compact 档）**：`SearchField` 的 compact 档不再使用
+sm 档 12px，改用常规档 `--input-font-size`（13px）+ `--input-line-height`（1.45）。
+真实 Chromium 实测（AppPicker）：12px 时 font box 约 11px，13px 时约 12px，原生 caret
+视觉高度随之恢复；容器由清空按钮 22px + 垂直留白 4px 维持 26px，`min-height:26px`
+兜底，Notes/Clipboard/AppPicker 等工具栏行高不变。聚焦仍只由容器 `:focus-within`
+表达，内层 `input` 不得出现第二个焦点环。胶囊搜索（`.ui-search--capsule`）高度为
+`--input-height-sm`（30px），字号同样走 compact 全局规则，不单独设值。
+
 ## 14. StatusBadge（状态徽标，2026-11-04）
 
 `src/components/ui/StatusBadge.tsx`。只负责语义色、尺寸、图标与长文案换行。
@@ -483,10 +497,11 @@ Token 位于 `src/styles-ui.css` 的 `@layer ui :root`，所有文本输入共�
 
 | Token | 值 | 用途 |
 |---|---|---|
-| `--input-font-size-sm` | 12px | 紧凑容器（SearchField compact、胶囊输入、设置数字输入、日期/时间微输入） |
+| `--input-font-size-sm` | 12px | 高度受限的微输入（设置数字输入、日期/时间）；SearchField compact 已提升到常规档 13px |
 | `--input-font-size` | 13px | 常规单行/多行文本输入（默认档） |
 | `--input-font-size-lg` | 14px | 大号输入预留档（全局搜索等） |
 | `--input-line-height` | 1.45 | 统一输入行高，与正文一致 |
+| `--input-height-sm` | 30px | 胶囊搜索/快捷输入等紧凑单行控件高度 |
 | `--input-caret-color` | `var(--accent)` | 原生光标颜色，随主题切换 |
 
 规则：

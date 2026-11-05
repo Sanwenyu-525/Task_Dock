@@ -31,6 +31,131 @@ export interface WidgetConfig {
   maxItems?: number;
 }
 
+/**
+ * 桌面独立窗口配置（与「看板启用」相互独立）。
+ *
+ * 只存窗口归属信息，不存业务数据；坐标以**归一化锚点**（nx/ny，0~1，相对
+ * 显示器工作区）保存，跨显示器/跨设备恢复时按当前显示器重新换算，避免把
+ * 物理像素坐标盲搬到另一块屏幕。`width/height` 为 CSS 逻辑像素。
+ */
+export interface WidgetDesktopState {
+  /** 是否在桌面显示独立窗口；与 enabled（看板卡片）互不影响。 */
+  visible: boolean;
+  /** 用户是否要求「始终置顶」。 */
+  topmost: boolean;
+  /**
+   * 用户**手动缩放**后的自定义逻辑尺寸；缺省表示跟随 `size` 预设。
+   * 程序自身 set_size、首次创建测量值不得写入这里，否则切 sm/md/lg 会被旧尺寸覆盖。
+   */
+  width?: number;
+  height?: number;
+  /** 窗口左上角在工作区内的归一化锚点（0~1）。 */
+  nx?: number;
+  ny?: number;
+  /** 保存时所在显示器名称快照；找不到时按主显示器恢复。 */
+  monitor?: string;
+}
+
+export const DEFAULT_DESKTOP_STATE: WidgetDesktopState = {
+  visible: false,
+  topmost: false,
+};
+
+/** 桌面窗口逻辑尺寸上下限；防止手写/损坏配置把窗口缩成不可用或撑满屏幕。 */
+export const DESKTOP_WIDTH_RANGE = { min: 220, max: 560 } as const;
+export const DESKTOP_HEIGHT_RANGE = { min: 120, max: 640 } as const;
+
+/** 每类微件的桌面窗口预设（CSS 逻辑像素）。内容按该尺寸设计，保证可读且不溢出。 */
+const DESKTOP_PRESETS: Record<WidgetType, Record<WidgetSize, { width: number; height: number }>> = {
+  // 高度按内容密度收紧：默认尺寸不再预留大块空白；用户手动缩放优先于预设，
+  // 修改预设只影响后续新建/切尺寸的窗口，不会在内容变化时反复 resize。
+  "today-tasks": {
+    sm: { width: 300, height: 185 },
+    md: { width: 340, height: 220 },
+    lg: { width: 400, height: 270 },
+  },
+  "next-reminder": {
+    sm: { width: 280, height: 125 },
+    md: { width: 320, height: 145 },
+    lg: { width: 380, height: 170 },
+  },
+  "agent-status": {
+    sm: { width: 300, height: 160 },
+    md: { width: 340, height: 190 },
+    lg: { width: 400, height: 235 },
+  },
+  "quick-actions": {
+    sm: { width: 300, height: 120 },
+    md: { width: 340, height: 126 },
+    lg: { width: 380, height: 138 },
+  },
+  "focus-timer": {
+    sm: { width: 260, height: 120 },
+    md: { width: 300, height: 128 },
+    lg: { width: 360, height: 146 },
+  },
+  efficiency: {
+    sm: { width: 280, height: 132 },
+    md: { width: 320, height: 150 },
+    lg: { width: 380, height: 176 },
+  },
+};
+
+export function desktopPresetSize(type: WidgetType, size: WidgetSize): { width: number; height: number } {
+  return DESKTOP_PRESETS[type][size];
+}
+
+/** 解析桌面窗口实际逻辑尺寸：有自定义尺寸（用户手动缩放）优先，否则用 size 预设。 */
+export function resolveDesktopWindowSize(
+  type: WidgetType,
+  size: WidgetSize,
+  desktop: WidgetDesktopState | undefined,
+): { width: number; height: number } {
+  const preset = desktopPresetSize(type, size);
+  return {
+    width: clampDesktopSize(desktop?.width, DESKTOP_WIDTH_RANGE, preset.width),
+    height: clampDesktopSize(desktop?.height, DESKTOP_HEIGHT_RANGE, preset.height),
+  };
+}
+
+function clampDesktopSize(
+  value: unknown,
+  range: { min: number; max: number },
+  fallback: number,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.round(Math.min(range.max, Math.max(range.min, value)));
+}
+
+/** 归一化窗口锚点：非法值直接丢弃（由后端按默认层叠位放置）。 */
+function normalizeAnchor(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.min(1, Math.max(0, value));
+}
+
+/** 校验并归一化桌面窗口配置；未知/损坏字段回落到安全默认，不阻塞布局。 */
+export function normalizeDesktop(raw: unknown): WidgetDesktopState {
+  const source = isRecord(raw) ? raw : {};
+  const desktop: WidgetDesktopState = {
+    visible: source.visible === true,
+    topmost: source.topmost === true,
+  };
+  if (typeof source.width === "number" && Number.isFinite(source.width)) {
+    desktop.width = clampDesktopSize(source.width, DESKTOP_WIDTH_RANGE, DESKTOP_WIDTH_RANGE.min);
+  }
+  if (typeof source.height === "number" && Number.isFinite(source.height)) {
+    desktop.height = clampDesktopSize(source.height, DESKTOP_HEIGHT_RANGE, DESKTOP_HEIGHT_RANGE.min);
+  }
+  const nx = normalizeAnchor(source.nx);
+  const ny = normalizeAnchor(source.ny);
+  if (nx !== undefined) desktop.nx = nx;
+  if (ny !== undefined) desktop.ny = ny;
+  if (typeof source.monitor === "string" && source.monitor.trim()) {
+    desktop.monitor = source.monitor.trim().slice(0, 96);
+  }
+  return desktop;
+}
+
 export interface WidgetItem {
   /** 实例标识；第一版与 type 一致（每个类型一个实例）。 */
   widget_id: string;
@@ -39,6 +164,8 @@ export interface WidgetItem {
   config: WidgetConfig;
   size: WidgetSize;
   sort_order: number;
+  /** 桌面独立窗口状态；旧布局缺失时按安全默认（不显示）补齐。 */
+  desktop: WidgetDesktopState;
 }
 
 export interface WidgetDefinition {
@@ -148,6 +275,7 @@ export function defaultWidgetItems(): WidgetItem[] {
     config: normalizeConfig(def.type, {}),
     size: def.defaultSize,
     sort_order: index,
+    desktop: { ...DEFAULT_DESKTOP_STATE },
   }));
 }
 
@@ -179,6 +307,7 @@ export function normalizeLayout(raw: unknown): WidgetItem[] {
         config: normalizeConfig(type, entry.config),
         size: isWidgetSize(entry.size) ? entry.size : def.defaultSize,
         sort_order: out.length,
+        desktop: normalizeDesktop(entry.desktop),
       });
     }
   }
@@ -192,6 +321,7 @@ export function normalizeLayout(raw: unknown): WidgetItem[] {
       config: normalizeConfig(def.type, {}),
       size: def.defaultSize,
       sort_order: out.length,
+      desktop: { ...DEFAULT_DESKTOP_STATE },
     });
   }
 

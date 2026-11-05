@@ -14,13 +14,15 @@
 //! - 读取失败显示错误态 + 重试，绝不伪装成「没有未处理记录」；
 //! - 进入完整收集箱复用 `openFullApp("inbox")`（既有 Tab，不发明新导航）。
 
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlignLeft,
   ArrowUpRight,
+  Check,
   Inbox,
   Lightbulb,
   Link2,
+  ListPlus,
   ListTodo,
   SquareCheckBig,
 } from "lucide-react";
@@ -45,6 +47,11 @@ function previewOf(item: CaptureItem): string {
   return "（空内容）";
 }
 
+/** 动作按钮的可访问名称要短：正文可能很长，不能整段塞进 aria-label。 */
+function shortLabel(item: CaptureItem): string {
+  return previewOf(item).slice(0, 24);
+}
+
 export default function InboxLite() {
   const lite = useCaptureStore((s) => s.lite);
   const liteLoading = useCaptureStore((s) => s.liteLoading);
@@ -52,6 +59,14 @@ export default function InboxLite() {
   const inboxCount = useCaptureStore((s) => s.inboxCount);
   const loadInboxLite = useCaptureStore((s) => s.loadInboxLite);
   const releaseLite = useCaptureStore((s) => s.releaseLite);
+  const markHandled = useCaptureStore((s) => s.markHandled);
+  const convertToTask = useCaptureStore((s) => s.convertToTask);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // 回调触发后从 Set 删除：连续处理多条记录时不会把已结束的计时器 ID 累积下来。
+  const timers = useRef(new Set<number>());
 
   // 面板打开 → 取一次未处理切片 + 真实计数；关闭 → 释放并作废在途响应。
   useEffect(() => {
@@ -59,13 +74,56 @@ export default function InboxLite() {
     return () => releaseLite();
   }, [loadInboxLite, releaseLite]);
 
+  // 所有提示/隐藏延时都可回收，避免对已卸载组件 setState。
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      pending.forEach((t) => window.clearTimeout(t));
+      pending.clear();
+    };
+  }, []);
+
+  const flash = (msg: string) => {
+    setNotice(msg);
+    const t = window.setTimeout(() => {
+      timers.current.delete(t);
+      setNotice((n) => (n === msg ? null : n));
+    }, 2400);
+    timers.current.add(t);
+  };
+
   const loading = liteLoading && lite === null;
   const hasError = liteError !== null;
   // 面板口径以切片为准：lite 为 null（未加载）时不拿全局计数冒充面板状态
-  const items = lite ?? [];
+  const items = (lite ?? []).filter((it) => !handled.has(it.id));
 
   const retry = () => {
     void loadInboxLite();
+  };
+
+  /**
+   * 快捷处理走既有 store 命令；成功后立即从列表移除并刷新切片/计数，
+   * 失败则保留记录、给出提示，并以真实列表为准重新拉取。
+   */
+  const runAction = async (item: CaptureItem, kind: "convert" | "handled") => {
+    if (busyId) return;
+    setBusyId(item.id);
+    try {
+      if (kind === "convert") {
+        await convertToTask(item.id);
+      } else {
+        await markHandled(item.id);
+      }
+      setHandled((prev) => new Set(prev).add(item.id));
+      setExpandedId((cur) => (cur === item.id ? null : cur));
+      flash(kind === "convert" ? "已转为任务" : "已标记为已处理");
+      await loadInboxLite();
+    } catch {
+      flash(kind === "convert" ? "转为任务失败，请重试" : "标记失败，请重试");
+      void loadInboxLite();
+    } finally {
+      setBusyId(null);
+    }
   };
 
   return (
@@ -122,25 +180,79 @@ export default function InboxLite() {
 
         {items.map((it) => {
           const Icon = KIND_ICONS[it.kind] ?? AlignLeft;
+          const open = expandedId === it.id;
+          const busy = busyId === it.id;
+          const label = shortLabel(it);
+          const full = (it.content || "").trim() || it.url || "（空内容）";
           return (
-            <div className="cap-item cap-clip-row" key={it.id}>
-              <span className="cap-tile" aria-hidden="true">
-                <Icon size={17} strokeWidth={1.8} />
-              </span>
-              <span className="cap-main">
-                <span className="cap-item-title clip-2">{previewOf(it)}</span>
-                <span className="cap-item-sub">
-                  {it.note ? `${it.note} · ` : ""}
-                  {it.kind === "link" && it.url ? "链接" : "捕获"}
+            <div className="cap-inbox-group" key={it.id}>
+              <div className="cap-item cap-clip-row" aria-busy={busy}>
+                <span className="cap-tile" aria-hidden="true">
+                  <Icon size={17} strokeWidth={1.8} />
                 </span>
-              </span>
+                <button
+                  type="button"
+                  className="cap-main cap-row-open"
+                  aria-label={`${open ? "收起" : "查看"}「${label}」`}
+                  aria-expanded={open}
+                  aria-controls={`capture-detail-${it.id}`}
+                  onClick={() => setExpandedId(open ? null : it.id)}
+                >
+                  <span className="cap-item-title clip-2">{previewOf(it)}</span>
+                  <span className="cap-item-sub">
+                    {it.note ? `${it.note} · ` : ""}
+                    {it.kind === "link" && it.url ? "链接" : "捕获"}
+                  </span>
+                </button>
+                <span className="cap-inbox-actions">
+                  <button
+                    type="button"
+                    className="cap-mini is-icon"
+                    aria-label={`将「${label}」转为任务`}
+                    data-tip="转为任务"
+                    disabled={busy}
+                    onClick={() => void runAction(it, "convert")}
+                  >
+                    <ListPlus size={12} strokeWidth={2.2} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="cap-mini is-icon"
+                    aria-label={`标记「${label}」已处理`}
+                    data-tip="标记已处理"
+                    disabled={busy}
+                    onClick={() => void runAction(it, "handled")}
+                  >
+                    <Check size={12} strokeWidth={2.4} aria-hidden="true" />
+                  </button>
+                </span>
+              </div>
+              {open && (
+                <div className="cap-capture-detail" id={`capture-detail-${it.id}`}>
+                  <p className="cap-detail-desc">{full}</p>
+                  {it.url && it.kind === "link" ? (
+                    <div className="cap-detail-row">
+                      <span className="cap-detail-label">链接</span>
+                      <span className="cap-detail-value">{it.url}</span>
+                    </div>
+                  ) : null}
+                  {it.note ? (
+                    <div className="cap-detail-row">
+                      <span className="cap-detail-label">备注</span>
+                      <span className="cap-detail-value">{it.note}</span>
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </div>
           );
         })}
       </div>
 
       <div className="cap-foot">
-        <span className="cap-foot-note">快速捕获的记录先落在这里，处理完自动移出</span>
+        <span className="cap-foot-note">
+          {notice ?? "快速捕获的记录先落在这里，处理完自动移出"}
+        </span>
         <button type="button" className="cap-link" onClick={() => openFullApp("inbox")}>
           完整收集箱
           <ArrowUpRight size={12} strokeWidth={2.2} aria-hidden="true" />

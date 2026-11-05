@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { avatarHue, navAppIcon } from "../../lib/navigation";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { avatarHue, navAppIcon, type AppIconData } from "../../lib/navigation";
 
 export interface AppIconProps {
   /** 已保存目标传 targetId；扫描结果传 appKey；窗口选择页可传真实 exePath。 */
@@ -15,23 +15,23 @@ export interface AppIconProps {
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_LIMIT = 512;
-const cache = new Map<string, { url: string | null; at: number }>();
-const inflight = new Map<string, Promise<string | null>>();
+const cache = new Map<string, { icon: AppIconData | null; at: number }>();
+const inflight = new Map<string, Promise<AppIconData | null>>();
 
 /** 缓存命中才算命中：超过 TTL 或超过上限就重新请求，避免应用升级后长期显示旧图标。 */
-function readCache(key: string): string | null | undefined {
+function readCache(key: string): AppIconData | null | undefined {
   const entry = cache.get(key);
   if (!entry) return undefined;
   if (Date.now() - entry.at > CACHE_TTL_MS) {
     cache.delete(key);
     return undefined;
   }
-  return entry.url;
+  return entry.icon;
 }
 
-function writeCache(key: string, url: string | null) {
+function writeCache(key: string, icon: AppIconData | null) {
   if (cache.size >= CACHE_LIMIT) cache.clear();
-  cache.set(key, { url, at: Date.now() });
+  cache.set(key, { icon, at: Date.now() });
 }
 
 function loadIcon(key: string, identity: { targetId?: string; appKey?: string; exePath?: string }) {
@@ -42,9 +42,9 @@ function loadIcon(key: string, identity: { targetId?: string; appKey?: string; e
   const existing = inflight.get(key);
   if (existing) return existing;
   const task = navAppIcon(identity)
-    .then((url) => {
-      writeCache(key, url);
-      return url as string | null;
+    .then((icon) => {
+      writeCache(key, icon);
+      return icon;
     })
     .catch(() => {
       // 取不到图标（UWP、权限不足、文件被替换）统一回退到字母图标，不打扰用户。
@@ -81,25 +81,25 @@ export default function AppIcon({
         : null;
   const identityRef = useRef({ targetId, appKey, exePath });
   identityRef.current = { targetId, appKey, exePath };
-  const [url, setUrl] = useState<string | null>(() =>
+  const [icon, setIcon] = useState<AppIconData | null>(() =>
     key ? readCache(key) ?? null : null,
   );
 
   useEffect(() => {
     if (!key) {
-      setUrl(null);
+      setIcon(null);
       return;
     }
     const cached = readCache(key);
     if (cached !== undefined) {
-      setUrl(cached);
+      setIcon(cached);
       return;
     }
-    setUrl(null);
+    setIcon(null);
     if (!enabled) return;
     let cancelled = false;
     void loadIcon(key, identityRef.current).then((value) => {
-      if (!cancelled) setUrl(value);
+      if (!cancelled) setIcon(value);
     });
     return () => {
       cancelled = true;
@@ -108,28 +108,40 @@ export default function AppIcon({
 
   const initial = (name.trim()[0] ?? "?").toUpperCase();
   const hue = avatarHue(key ?? name);
+  // 近白/浅色 logo：浅色主题下白底白字几乎不可见。用主题语义色做极轻底衬，
+  // 并用低透明度深色描边保证任意底色下都可辨认；彩色/深色图标保持原始外观。
+  const light = Boolean(icon?.light);
+  const lightStyle: CSSProperties | undefined = light
+    ? {
+        background:
+          "color-mix(in srgb, var(--text-primary, #22263c) 12%, transparent)",
+        filter:
+          "drop-shadow(0 0 1px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 1px rgba(0, 0, 0, 0.3))",
+      }
+    : undefined;
   return (
     <span
-      className={`app-icon ${url ? "is-loaded" : ""} ${className}`.trim()}
+      className={`app-icon ${icon ? "is-loaded" : ""} ${light ? "is-light" : ""} ${className}`.trim()}
       style={{
         width: size,
         height: size,
         borderRadius: Math.max(5, Math.round(size * 0.2)),
         fontSize: Math.max(10, Math.round(size * 0.46)),
-        background: url ? "transparent" : `hsl(${hue} 58% 45%)`,
+        background: icon ? "transparent" : `hsl(${hue} 58% 45%)`,
       }}
       aria-hidden="true"
     >
-      {!url && <span className="app-icon-letter">{initial}</span>}
-      {url && (
+      {!icon && <span className="app-icon-letter">{initial}</span>}
+      {icon && (
         <img
           className="app-icon-img"
-          src={url}
+          src={icon.url}
           alt=""
           draggable={false}
+          style={lightStyle}
           onError={() => {
             writeCache(key ?? name, null);
-            setUrl(null);
+            setIcon(null);
           }}
         />
       )}

@@ -147,7 +147,9 @@ fn now_unix_ms() -> i64 {
 /// 缓存快照的生成时间（Unix 毫秒）：用「当前时间 - 已过时长」而不是记录时的墙钟，
 /// 避免系统时间调整让展示时间失真。
 fn snapshot_unix_ms(at: Instant) -> i64 {
-    now_unix_ms() - at.elapsed().as_millis() as i64
+    // 向上取整到毫秒：截断会少减不足 1ms 的零头，让缓存时间戳比实际扫描最多晚 1ms，
+    // 违反「缓存结果的时间戳不得晚于扫描时间」的契约（并行测试负载下必现）。
+    now_unix_ms() - at.elapsed().as_micros().div_ceil(1000) as i64
 }
 
 /// 缓存读写的唯一入口（抽出扫描闭包便于测试缓存语义）。

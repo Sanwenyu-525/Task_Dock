@@ -175,6 +175,8 @@ export const zhCN = {
   "capsule.collapsedAria": "功能面板已收起",
   "capsule.toFull": "完整面板",
   "capsule.toCapsule": "收缩为胶囊",
+  "capsule.toFullTip": "临时切换为完整面板（仅本次停靠会话，不改变默认吸附方式）",
+  "capsule.toCapsuleTip": "临时收缩为胶囊（仅本次停靠会话，不改变默认吸附方式）",
 
   // ── 对话框 / 选择器 ──
   "dialog.close": "关闭",
@@ -807,7 +809,7 @@ export const zhCN = {
   "settings.window.snapMode": "边缘吸附方式",
   "settings.window.snapMode.capsule": "胶囊隐藏",
   "settings.window.snapMode.full": "完整面板",
-  "settings.window.snapNote": "把窗口拖近屏幕边缘（约 28px 内）会显示「松开吸附」提示，松开即停靠。胶囊隐藏：停靠后自动收缩为胶囊，鼠标移出再次隐藏；完整面板：保持完整窗口与内容贴边，鼠标移出不收缩，仍可拖离恢复浮动。两种形态共用同一套磁吸与窗口生命周期，已停靠时切换会原地生效，浮动时只影响下次吸附。",
+  "settings.window.snapNote": "把窗口拖近屏幕边缘（约 28px 内）并松开即停靠；平行贴边移动不会触发吸附。胶囊隐藏：停靠后自动收缩为胶囊，鼠标移出再次隐藏；完整面板：保持完整窗口与内容贴边，鼠标移出不收缩，仍可拖离恢复浮动。两种形态共用同一套磁吸与窗口生命周期，已停靠时切换会原地生效。胶囊/面板上的「完整面板 / 收缩为胶囊」按钮只切换本次停靠会话，拖离或解除停靠后按这里的默认方式恢复；要改变长期默认形态，请在这里或右键菜单选择。",
   "settings.window.autostart": "开机自启动",
   "settings.window.hotkeySwitch": "系统级快捷键总开关（当前组合见下方「快捷键管理」）",
   "settings.features.workspace": "工作现场（捕获窗口组合并恢复）",

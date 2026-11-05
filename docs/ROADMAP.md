@@ -66,7 +66,7 @@
 
 > 参考资料：Gemini CLI 官方 Hooks 文档 [https://geminicli.com/docs/hooks/](https://geminicli.com/docs/hooks/)（事件参考 [https://geminicli.com/docs/hooks/reference/](https://geminicli.com/docs/hooks/reference/)），2026-11-03 实际核验；与 Claude Code 的 Hooks 事件名、配置格式和退出码语义不同，不得套用。
 >
-> **已知目录偏差（2026-11-04 登记，未在本次整改范围）**：上表 Claude / Cursor / Gemini 三行按代码落地记为 implemented（待真实会话验证），而 `featureCatalog.ts` 中仍为 planned；本轮未在真实会话触发事件，待验证后统一回写目录与计数。当前总数统计以 `featureCatalog.ts` 为准。
+> **目录已同步（2026-11-05）**：`featureCatalog.ts` 中 Claude / Cursor / Gemini 三项已由 planned 改为 implemented，与上表一致；三者 `verification` 仍为 unverified，只有真实会话事件入库后才可改为 verified。当前总数统计以 `featureCatalog.ts` 为准（implemented 12 / partial 13 / planned 3 / blocked 0）。
 >
 > 已完成并从规划移除（避免失效条目）：Qoder / WorkBuddy 专用适配器（hooks 接入已实现并真实联调，见 [AGENT_COVERAGE_MATRIX.md](../AGENT_COVERAGE_MATRIX.md)）；Agent 人工介入收件箱（已落地为 Agent 行动中心 `core.agent-action-center`）。
 

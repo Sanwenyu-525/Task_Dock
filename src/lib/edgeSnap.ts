@@ -294,13 +294,14 @@ export const isFullDockPhase = (p: SnapPhase): boolean => p === "docked-full";
 /**
  * 胶囊模式（隐藏主界面 + 挂载 CapsuleDock）的唯一判据。
  *
- * 必须同时满足「相位已停靠」与「停靠边已知」：只看相位会让 App 把主界面
- * 藏起来、而 CapsuleDock 因 `edge === null` 返回 null——窗口变成一块
- * 没有内容的透明矩形（用户看到的「整个胶囊消失」）。缺边时宁可保持
- * 主界面可见，也不进入一个无法渲染的胶囊态。
+ * 判据是**相位**而不是「相位 + 停靠边」：停靠相位意味着 Win32 区域可能仍是
+ * 轨道/面板，此时把主界面放出来会让完整工作区控件（开关、隐藏图标、页面文字）
+ * 落进翼片区域里，即「右侧只露一条翼片却带着完整控件」的泄露形态。
+ * 缺边属于不变量被破坏的瞬时态：宁可短暂空白（`CapsuleDock` 无 edge 返回 null），
+ * 也绝不把完整 UI 暴露在残留裁剪区域里；`useEdgeSnap` 会以安全路径恢复整窗。
  */
-export const isCapsuleMode = (phase: SnapPhase, edge: SnapEdge | null): boolean =>
-  isDockedPhase(phase) && phase !== "docked-full" && edge !== null;
+export const isCapsuleMode = (phase: SnapPhase): boolean =>
+  isDockedPhase(phase) && phase !== "docked-full";
 /** 处于可自动隐藏的相位（停靠且可见）。 */
 export const canAutoHide = (p: SnapPhase): boolean =>
   p === "docked-visible" || p === "docked-revealed";
@@ -355,6 +356,37 @@ export function detectCandidateEdge(
   return best !== null && bestDist <= dist && bestDist >= -SNAP_CANDIDATE_EXIT_DIST
     ? best
     : null;
+}
+
+/**
+ * 自由窗口的**吸附意图**阈值（CSS px）：本次手势内相对起点的法向净位移。
+ *
+ * 只看「进入吸附区」会让沿边平行拖动被磁力领先吸进阈值后就自动吸附并收缩。
+ * 自由窗口的磁力领先上限是 `SNAP_MAGNET_MAX_LEAD`，要求净位移超过它再加一点
+ * 余量，才能把「用户主动拖向边缘」与「仅被磁力带进来」区分开（不是统一抬高
+ * 吸附距离阈值）。
+ */
+export const SNAP_DOCK_INTENT_CSS = SNAP_MAGNET_MAX_LEAD + 8;
+
+/** 手势内是否形成「主动向边靠拢」的意图；`approach` 为靠近该边的净位移（物理像素）。 */
+export function hasDockIntent(approach: number, scaleFactor: number = 1): boolean {
+  const scale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  return approach >= SNAP_DOCK_INTENT_CSS * scale;
+}
+
+/**
+ * 停靠窗口跨边切换的前提：必须已经真正离开当前边的磁吸区。
+ *
+ * 窗口仍齐平在当前边时，角落处另一条边的距离也可能为 0，只按
+ * `detectCandidateEdge` 的「更近」判定会把沿边上下拖动误判成换边；
+ * 换边会先完整解除停靠，松手后按默认偏好重新吸附，完整面板因此变回胶囊。
+ */
+export function shouldSwitchDockEdge(
+  rect: SnapRect,
+  area: SnapArea,
+  currentEdge: SnapEdge,
+): boolean {
+  return shouldLeaveMagnetRange(edgeDistance(rect, area, currentEdge));
 }
 
 function clamp(v: number, lo: number, hi: number): number {

@@ -13,13 +13,37 @@ use crate::navigation::router::{self, NavigateOptions};
 
 // ── 软件发现 ────────────────────────────────────────────────
 
+/// 扫描本机应用：逐来源推送 `nav-scan-batch` 渐进事件，最终返回完整权威结果。
+///
+/// 前端按 `scan_id`（请求代际）过滤过期批次；扫描线程只做事件推送，不阻塞 IPC。
+/// 事件保留来源级粒度（5 个来源 + 缓存命中），不做百分比估算。
 #[tauri::command]
 pub async fn nav_scan_apps(
+    app: AppHandle,
     force: Option<bool>,
+    scan_id: Option<String>,
 ) -> AppResult<navigation::app_discovery::AppScanResult> {
+    use tauri::Emitter;
     let force = force.unwrap_or(false);
+    let scan_id = scan_id.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(navigation::app_discovery::scan_installed_apps(force))
+        let mut sources_done = 0usize;
+        Ok(navigation::app_discovery::scan_installed_apps_streaming(
+            force,
+            |apps, source, discovered| {
+                sources_done += 1;
+                let payload = navigation::app_discovery::AppScanBatch {
+                    scan_id: scan_id.clone(),
+                    source: source.to_string(),
+                    apps: apps.to_vec(),
+                    discovered,
+                    sources_done,
+                    sources_total: navigation::app_discovery::SCAN_SOURCES_TOTAL,
+                };
+                // 事件失败不影响扫描本身（例如窗口已关闭）；最终结果仍经 invoke 返回。
+                let _ = app.emit("nav-scan-batch", payload);
+            },
+        ))
     })
     .await
     .map_err(|e| crate::error::AppError::Agent(format!("扫描任务失败: {}", e)))?
@@ -34,7 +58,7 @@ pub async fn nav_app_icon(
     target_id: Option<String>,
     app_key: Option<String>,
     exe_path: Option<String>,
-) -> AppResult<Option<String>> {
+) -> AppResult<Option<navigation::app_icons::AppIconData>> {
     use std::sync::OnceLock;
     static LIMIT: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
     let limit = LIMIT

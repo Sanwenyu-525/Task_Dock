@@ -2128,7 +2128,8 @@ mod tests {
             &settings,
         )
         .unwrap();
-        let gid = a.group_id.clone().expect("首张图片应建组");
+        assert!(a.group_id.is_none(), "首张图片只成为候选");
+        let gid = b.group_id.clone().expect("同来源第二张图片应与候选成组");
         let group = store::get_group(&db, &gid).unwrap();
         assert_eq!(
             group

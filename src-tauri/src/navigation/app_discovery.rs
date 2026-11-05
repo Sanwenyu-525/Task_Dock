@@ -48,6 +48,23 @@ pub struct AppScanResult {
     pub diagnostics: HashMap<String, u32>,
 }
 
+/// 扫描进度的渐进事件负载（由 nav_scan_apps 逐来源推送，前端按 scan_id 过滤过期批次）。
+#[derive(Debug, Clone, Serialize)]
+pub struct AppScanBatch {
+    pub scan_id: String,
+    /// startmenu | known | app_paths | registry | uwp
+    pub source: String,
+    /// 本批新增（已按 app_key 去重）的应用
+    pub apps: Vec<DiscoveredApp>,
+    /// 含本批在内的累计发现数
+    pub discovered: usize,
+    pub sources_done: usize,
+    pub sources_total: usize,
+}
+
+/// 真机扫描的来源总数（缓存命中不推送批次）；用于前端展示「已扫描来源 x/y」而非虚假百分比。
+pub const SCAN_SOURCES_TOTAL: usize = 5;
+
 /// 应用运行状态（区分「进程在」与「有窗口」）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,20 +88,34 @@ fn cache_cell() -> &'static std::sync::Mutex<Option<(Instant, AppScanResult)>> {
 
 /// 扫描已安装软件（TTL 内直接返回缓存；force 绕过）。
 pub fn scan_installed_apps(force: bool) -> AppScanResult {
-    {
+    scan_installed_apps_streaming(force, |_, _, _| {})
+}
+
+/// 渐进扫描：每完成一个来源就回调本批新增应用与累计发现数。
+///
+/// 回调在扫描线程内同步执行，调用方（命令层）只做事件推送，不做重活；
+/// 最终仍返回完整权威结果，前端以该结果收敛 Store、缓存与诊断。
+pub fn scan_installed_apps_streaming<F>(force: bool, mut on_batch: F) -> AppScanResult
+where
+    F: FnMut(&[DiscoveredApp], &str, usize),
+{
+    let cached = {
         let guard = cache_cell().lock().unwrap();
-        if let Some((at, r)) = guard.as_ref() {
-            if !force && at.elapsed() < SCAN_CACHE_TTL {
-                super::app_icons::register_discovered(&r.apps);
-                return r.clone();
-            }
+        match guard.as_ref() {
+            Some((at, r)) if !force && at.elapsed() < SCAN_CACHE_TTL => Some(r.clone()),
+            _ => None,
         }
+    };
+    if let Some(r) = cached {
+        // 缓存命中是即时返回，无需渐进批次（也避免「来源 1/5」的误导性进度）。
+        super::app_icons::register_discovered(&r.apps);
+        return r;
     }
     let started = Instant::now();
-    let mut result = scan_now();
+    let mut result = scan_now_streaming(&mut on_batch);
     result.duration_ms = started.elapsed().as_millis() as u64;
     result.scanned_at = crate::agents::now_iso();
-    // 登记可提取图标的应用身份（图标接口只认这些身份，不接受任意路径）
+    // 扫描结束后整体收敛身份登记（清掉已卸载应用），并用最终结果刷新缓存。
     super::app_icons::register_discovered(&result.apps);
     *cache_cell().lock().unwrap() = Some((Instant::now(), result.clone()));
     result
@@ -221,11 +252,27 @@ fn known_app_candidates() -> Vec<(String, String)> {
 
 // ── 各来源扫描 ──────────────────────────────────────────────
 
+/// 逐来源扫描：每完成一个来源即登记本批身份并回调（渐进展示），
+/// 最终按应用名排序返回权威结果。
 #[cfg(windows)]
-fn scan_now() -> AppScanResult {
+fn scan_now_streaming<F>(on_batch: &mut F) -> AppScanResult
+where
+    F: FnMut(&[DiscoveredApp], &str, usize),
+{
     let mut apps: Vec<DiscoveredApp> = Vec::new();
     let mut counts = HashMap::new();
     let mut diagnostics: HashMap<String, u32> = HashMap::new();
+
+    fn publish<F>(apps: &[DiscoveredApp], from: usize, source: &str, on_batch: &mut F)
+    where
+        F: FnMut(&[DiscoveredApp], &str, usize),
+    {
+        let batch = &apps[from..];
+        // 先登记身份，保证前端收到批次后立即请求图标不会因「尚未登记」失败；
+        // 扫描完成前不清空旧登记，避免重扫期间已有图标失效。
+        super::app_icons::register_discovered_batch(batch);
+        on_batch(batch, source, apps.len());
+    }
 
     let n0 = apps.len();
     let (menu, truncated) = scan_start_menu();
@@ -236,12 +283,14 @@ fn scan_now() -> AppScanResult {
     if truncated {
         diagnostics.insert("startmenu_truncated".into(), 1);
     }
+    publish(&apps, n0, "startmenu", on_batch);
 
     let n0 = apps.len();
     for a in scan_known() {
         push_unique(&mut apps, a);
     }
     counts.insert("known".into(), apps.len() - n0);
+    publish(&apps, n0, "known", on_batch);
 
     // App Paths：软件注册的启动入口（开始菜单缺失时的可靠补充，不猜安装路径）
     let n0 = apps.len();
@@ -249,12 +298,14 @@ fn scan_now() -> AppScanResult {
         push_unique(&mut apps, a);
     }
     counts.insert("app_paths".into(), apps.len() - n0);
+    publish(&apps, n0, "app_paths", on_batch);
 
     let n0 = apps.len();
     for a in scan_registry() {
         push_unique(&mut apps, a);
     }
     counts.insert("registry".into(), apps.len() - n0);
+    publish(&apps, n0, "registry", on_batch);
 
     let n0 = apps.len();
     let (uwp, uwp_ok, uwp_truncated) = scan_uwp();
@@ -268,6 +319,7 @@ fn scan_now() -> AppScanResult {
     if uwp_truncated {
         diagnostics.insert("uwp_truncated".into(), 1);
     }
+    publish(&apps, n0, "uwp", on_batch);
 
     apps.sort_by(|a, b| {
         a.display_name
@@ -284,7 +336,10 @@ fn scan_now() -> AppScanResult {
 }
 
 #[cfg(not(windows))]
-fn scan_now() -> AppScanResult {
+fn scan_now_streaming<F>(_on_batch: &mut F) -> AppScanResult
+where
+    F: FnMut(&[DiscoveredApp], &str, usize),
+{
     AppScanResult {
         apps: Vec::new(),
         scanned_at: String::new(),
@@ -890,6 +945,44 @@ pub fn running_states(app_keys: &[String]) -> HashMap<String, RunningState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 真机验证渐进扫描：来源批次按顺序到达、批间 app_key 不重复、累计数单调且等于最终结果。
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "真机扫描（访问开始菜单/注册表/应用商店，耗时数秒）"]
+    fn streaming_scan_emits_source_batches_and_final_result() {
+        use std::collections::HashSet;
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut batches = 0usize;
+        let mut last_discovered = 0usize;
+        let mut monotonic = true;
+        let mut no_cross_batch_dupes = true;
+        let started = std::time::Instant::now();
+        let result = scan_installed_apps_streaming(true, |apps, source, discovered| {
+            batches += 1;
+            println!(
+                "batch {} source={} new={} discovered={} at {:?}",
+                batches,
+                source,
+                apps.len(),
+                discovered,
+                started.elapsed()
+            );
+            for a in apps {
+                if !seen.insert(a.app_key.clone()) {
+                    no_cross_batch_dupes = false;
+                }
+            }
+            if discovered < last_discovered {
+                monotonic = false;
+            }
+            last_discovered = discovered;
+        });
+        assert!(batches > 0, "至少应有来源批次");
+        assert!(no_cross_batch_dupes, "同一 app_key 不得跨批重复推送");
+        assert!(monotonic, "累计发现数必须单调不减");
+        assert_eq!(result.apps.len(), last_discovered, "最终结果与累计数应一致");
+    }
 
     #[test]
     fn categories_match_common_apps() {

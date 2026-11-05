@@ -11,6 +11,7 @@ import {
   invokeCommand,
   isRetryable,
   normalizeError,
+  sanitizeForUser,
 } from "./errors";
 
 const mockedInvoke = vi.mocked(invoke);
@@ -109,6 +110,26 @@ describe("normalizeError · 旧格式兼容", () => {
     });
     expect(err.message).not.toContain("abcdef123456");
     expect(err.detail).not.toContain("alice");
+  });
+
+  it("本地绝对路径不原样展示，错误语义保留", () => {
+    const noSpace = sanitizeForUser("启动失败: C:\\Tools\\bin\\app.exe（系统找不到指定的程序文件）");
+    expect(noSpace).toContain("启动失败");
+    expect(noSpace).toContain("系统找不到指定的程序文件");
+    expect(noSpace).not.toContain("C:\\Tools");
+    expect(noSpace).not.toContain("app.exe");
+
+    const spaced = sanitizeForUser("启动失败: C:\\Program Files\\App\\app.exe（权限不足）");
+    expect(spaced).toContain("启动失败");
+    expect(spaced).toContain("权限不足");
+    expect(spaced).not.toContain("C:\\");
+    expect(spaced).not.toContain("app.exe");
+
+    // 路径后的自然语言不得被一并吞掉
+    const trailing = sanitizeForUser("读取 C:\\Users\\alice\\secret.txt 失败");
+    expect(trailing).toContain("读取");
+    expect(trailing).toContain("失败");
+    expect(trailing).not.toContain("alice");
   });
 });
 

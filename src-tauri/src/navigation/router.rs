@@ -33,6 +33,27 @@ pub struct NavigateOptions {
 
 const LAUNCH_WINDOW_WAIT: Duration = Duration::from_secs(5);
 
+/// `Command::spawn` 失败 → 稳定的用户可见分类（不携带本地路径）。
+///
+/// 分类按 Windows 错误码固定，避免把「权限不足 / 文件已损坏 / 路径不存在」
+/// 全部退化成「操作失败」；原始细节只进技术日志（stderr）。
+fn launch_error_reason(e: &std::io::Error) -> String {
+    let detail = match e.raw_os_error() {
+        Some(2) => "系统找不到指定的程序文件".to_string(),
+        Some(3) => "系统找不到指定的路径".to_string(),
+        Some(5) => "系统拒绝访问（权限不足）".to_string(),
+        Some(740) => "该程序需要提升权限后才能启动".to_string(),
+        Some(193) => "不是有效的 Windows 应用程序".to_string(),
+        Some(code) => format!("系统无法启动该程序（os error {code}）"),
+        None => match e.kind() {
+            std::io::ErrorKind::NotFound => "程序文件不存在".to_string(),
+            std::io::ErrorKind::PermissionDenied => "系统拒绝访问（权限不足）".to_string(),
+            _ => format!("系统无法启动该程序（{:?}）", e.kind()),
+        },
+    };
+    format!("启动失败: {detail}")
+}
+
 /// 统一导航入口：读取目标 → 重校验 → 执行 → 记日志。
 pub fn navigate(
     db: &Db,
@@ -254,7 +275,8 @@ pub(crate) fn navigate_application(
                         verification_level: VerificationLevel::LaunchRequested.as_str().into(),
                     },
                     Err(e) => {
-                        NavigationResult::failure(&t.id, requested, format!("启动失败: {}", e))
+                        eprintln!("navigate: UWP 启动失败 aumid={}: {e}", t.app_user_model_id);
+                        NavigationResult::failure(&t.id, requested, launch_error_reason(&e))
                     }
                 }
             }
@@ -318,12 +340,14 @@ pub(crate) fn navigate_application(
             WindowChoice::Missing => (None, false),
         };
         if let Some(w) = chosen {
+            // 显式窗口的二次校验只比较稳定身份（句柄 + 进程 + 窗口类）。
+            // 标题是易变状态（文档修改、载入完成都会变），把它当作身份会让
+            // 「用户刚选完窗口、标题随即变化」误判为窗口已被替换。
             if (explicit_memory || options.window_hwnd.is_some())
                 && !window_manager::top_windows_force().iter().any(|current| {
                     current.hwnd == w.hwnd
                         && current.class_name == w.class_name
-                        && current.title == w.title
-                        && current.exe_path == w.exe_path
+                        && current.pid == w.pid
                 })
             {
                 return NavigationResult::failure(
@@ -458,11 +482,11 @@ pub(crate) fn navigate_application(
                 },
             }
         }
-        Err(e) => NavigationResult::failure(
-            &t.id,
-            ACTION_OPEN_APP,
-            format!("启动失败: {}（{:?}）", e, exe),
-        ),
+        Err(e) => {
+            // 技术细节（含 exe 路径）只写 stderr；用户可见原因不含本地路径。
+            eprintln!("navigate: 启动失败 exe={exe:?}: {e}");
+            NavigationResult::failure(&t.id, ACTION_OPEN_APP, launch_error_reason(&e))
+        }
     };
     if launch_fallback && result.success {
         result.requested_action = ACTION_FOCUS_WINDOW.into();
@@ -1095,7 +1119,57 @@ mod tests {
         let t = target_resolver::get_target(&d, "gone").unwrap().unwrap();
         let r = navigate_application(&d, &t, &Settings::default(), &NavigateOptions::default());
         assert!(!r.success, "exe 消失后不得假装跳转成功");
-        assert!(r.reason.unwrap().contains("卸载或迁移"));
+        let reason = r.reason.unwrap_or_default();
+        assert!(reason.contains("卸载或迁移"), "实际: {reason}");
+        assert!(
+            !reason.contains("C:\\Gone") && !reason.contains(":\\"),
+            "用户可见原因不得泄露本地路径: {reason}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn launch_failure_reason_hides_local_path_and_keeps_classification() {
+        // 构造一个真实存在但不是合法 PE 的 .exe，确定性地触发 CreateProcess 失败。
+        let dir = std::env::temp_dir().join(format!("task-dock-nav-reason-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("fake.exe");
+        std::fs::write(&fake, b"not a portable executable").unwrap();
+        let d = db();
+        let t = target_resolver::save_target(
+            &d,
+            &target_resolver::TargetInput {
+                target_type: "application".into(),
+                display_name: "损坏程序(测试)".into(),
+                exe_path: fake.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let r = navigate_application(
+            &d,
+            &t,
+            &Settings {
+                nav_allow_launch: true,
+                ..Default::default()
+            },
+            &NavigateOptions::default(),
+        );
+        assert!(!r.success, "无法执行的文件不得谎报成功");
+        let reason = r.reason.unwrap_or_default();
+        assert!(reason.starts_with("启动失败"), "必须保留稳定分类: {reason}");
+        assert!(
+            !reason.contains("fake.exe") && !reason.contains(":\\"),
+            "用户可见原因不得包含本地绝对路径: {reason}"
+        );
+        assert!(
+            reason.contains("不是有效的 Windows 应用程序")
+                || reason.contains("os error")
+                || reason.contains("权限不足"),
+            "应给出可理解的系统错误分类: {reason}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -5,7 +5,13 @@
 //! 排序等级（完全 > 前缀 > 包含 > 别名）与大量结果不丢失。
 
 import { describe, expect, it } from "vitest";
-import { matchRank, searchApps, APP_PAGE_SIZE, type SearchableApp } from "./appSearch";
+import {
+  matchRank,
+  searchApps,
+  sortTargetsForDisplay,
+  APP_PAGE_SIZE,
+  type SearchableApp,
+} from "./appSearch";
 
 function app(
   displayName: string,
@@ -126,6 +132,54 @@ describe("排序：完全匹配 > 前缀 > 包含 > 别名", () => {
 
   it("已保存自定义名参与匹配", () => {
     expect(matchRank(app("Code", { customName: "我的编辑器" }), "我的编辑器")).toBe(0);
+  });
+});
+
+describe("快捷目标展示排序（完整面板与胶囊共用）", () => {
+  const t = (
+    name: string,
+    opts?: { favorite?: boolean; recent?: string },
+  ) => ({
+    display_name: name,
+    favorite: opts?.favorite ?? false,
+    last_used_at: opts?.recent ?? null,
+  });
+
+  it("收藏优先 → 最近使用 → 名称", () => {
+    const sorted = sortTargetsForDisplay([
+      t("B 普通"),
+      t("A 收藏", { favorite: true }),
+      t("C 最近", { recent: "2026-11-01T00:00:00.000Z" }),
+      t("D 更近", { recent: "2026-11-02T00:00:00.000Z" }),
+    ]);
+    expect(sorted.map((x) => x.display_name)).toEqual([
+      "A 收藏",
+      "D 更近",
+      "C 最近",
+      "B 普通",
+    ]);
+  });
+
+  it("最近使用筛选不重新按收藏优先，保持自身最近语义", () => {
+    const sorted = sortTargetsForDisplay(
+      [t("收藏但旧", { favorite: true, recent: "2026-10-01T00:00:00.000Z" }), t("新", { recent: "2026-11-01T00:00:00.000Z" })],
+      { favorite: false },
+    );
+    expect(sorted.map((x) => x.display_name)).toEqual(["新", "收藏但旧"]);
+  });
+
+  it("无最近语义的分区（网址/文件夹/文件）按收藏后名称", () => {
+    const sorted = sortTargetsForDisplay(
+      [t("B"), t("A 收藏", { favorite: true }), t("A")],
+      { recent: false },
+    );
+    expect(sorted.map((x) => x.display_name)).toEqual(["A 收藏", "A", "B"]);
+  });
+
+  it("不修改入参数组", () => {
+    const input = [t("B"), t("A")];
+    sortTargetsForDisplay(input);
+    expect(input.map((x) => x.display_name)).toEqual(["B", "A"]);
   });
 });
 

@@ -41,6 +41,7 @@
   --input-font-size: 13px;
   --input-font-size-lg: 14px;
   --input-line-height: 1.45;
+  --input-height-sm: 30px;
   --input-caret-color: var(--accent);
 }
 
@@ -378,7 +379,10 @@
 .clip-search input:focus-visible,
 .ui-combobox input,
 .ui-combobox input:focus,
-.ui-combobox input:focus-visible {
+.ui-combobox input:focus-visible,
+.cap-input input,
+.cap-input input:focus,
+.cap-input input:focus-visible {
   border: none;
   background: transparent;
   box-shadow: none;
@@ -392,7 +396,8 @@
 .quick-add-row input,
 .apps-search input,
 .clip-search input,
-.ui-combobox input {
+.ui-combobox input,
+.cap-input input {
   caret-color: var(--input-caret-color);
 }
 
@@ -419,13 +424,43 @@
   caret-color: var(--input-caret-color);
 }
 
+/* compact 档只压缩水平留白与图标间距，不再压低字号：
+   12px 会让原生 caret 视觉高度明显小于常规输入（实测约 -8%）。
+   13px + 统一行高下，垂直留白保持 2px（清空按钮 22px 决定容器高度），
+   容器仍为 26px，不改变 9 处工具栏的既有行高。 */
 .ui-search--compact {
+  min-height: 26px;
   padding: 2px 4px 2px 7px;
 }
 
 .ui-search--compact .ui-search-input {
-  font-size: var(--input-font-size-sm);
+  font-size: var(--input-font-size);
   line-height: var(--input-line-height);
+}
+
+/* 胶囊面板变体：结构仍由 SearchField 提供，只把表面/尺寸映射到 `--cap-*`
+   语义 Token（该层高于 theme，覆盖 .search-box 的主题外观）。
+   焦点同样只由容器 :focus-within 表达；内层 input 已挂 .input-embedded，
+   不得再出现第二层背景/边框/outline/box-shadow。 */
+.ui-search.ui-search--capsule {
+  height: var(--input-height-sm);
+  padding: 0 9px;
+  gap: 6px;
+  border-radius: 10px;
+  background: var(--cap-chip-face);
+  box-shadow: inset 0 1px 2px -1px color-mix(in srgb, var(--c-night) 8%, transparent);
+  transition: box-shadow 0.12s ease, background 0.12s ease;
+}
+
+.ui-search.ui-search--capsule:focus-within {
+  background: var(--cap-chip-face-hover);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* 胶囊搜索容器固定 30px，仍用 compact 档的常规字号与统一行高；
+   只把表面/高度映射到胶囊 Token，不另设字号。 */
+.ui-search.ui-search--capsule .ui-search-icon {
+  color: var(--cap-text-3);
 }
 
 /* 清空按钮始终占位：无内容时仅隐藏可见性，不改变输入宽度、不参与 Tab 顺序。 */
