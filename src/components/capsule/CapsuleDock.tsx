@@ -26,7 +26,6 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { registerOverlay } from "../../lib/overlayStack";
-import { playAgentAlert } from "../../lib/agentAlert";
 
 /** 面板映射：轨道四类 + Agent（仅顶部状态球入口，仍打开 AgentsLite）。 */
 const PANELS: Record<CapsuleCategory, ComponentType> = {
@@ -56,14 +55,8 @@ export default function CapsuleDock() {
   const status = railStatus(stats, snapshot, Date.now(), inboxCountLoaded ? inboxCount : null);
   const [pulse, setPulse] = useState(0);
 
-  // 异常变响：进入 waiting/failed 时响一次（同状态 60s 冷却、设置可关）。
-  // 停靠期胶囊是唯一界面，这条通道归它；未停靠时由系统 Toast 负责。
-  useEffect(() => {
-    if (!status.agentsLoaded) return;
-    if (status.agentTone === "waiting" || status.agentTone === "failed") {
-      playAgentAlert(status.agentTone);
-    }
-  }, [status.agentsLoaded, status.agentTone]);
+  // 异常提示音（waiting/failed）已统一由 audioNotification 服务接管：它订阅后端
+  // `audio-event`（真实事件 ID），负责去重、冷却、队列与 TTS，不再从胶囊状态派生第二套规则。
 
   // 吸附成功反馈：短促脉冲（只动一次，不循环）
   useEffect(() => {
