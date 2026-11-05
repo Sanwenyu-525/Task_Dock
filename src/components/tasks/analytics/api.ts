@@ -65,6 +65,12 @@ export interface TaskAnalytics {
   trend: TrendPoint[];
   by_category: CategoryStat[];
   by_priority: PriorityStat[];
+  /**
+   * 分母完整性：false = 本期存在无法还原的重复任务期次（自动推进 / 补偿跳期 /
+   * 主动改期），完成率与逾期率可能偏高。旧后端没有该字段，按 undefined 处理
+   * （不显示「不完整」提示，保持兼容）。
+   */
+  history_complete?: boolean;
   definitions: AnalyticsDefinitions;
 }
 

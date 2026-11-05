@@ -12,6 +12,7 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { formatDue } from "../../lib/format";
 import { NumberInput } from "../ui";
 import { useLocale } from "../../hooks/useLocale";
+import useImeComposition from "../../hooks/useImeComposition";
 import { localizedErrorMessage } from "../../i18n/errors";
 
 /** 预设分钟数；文案在渲染时本地化（1 小时仍按分钟存储）。 */
@@ -31,6 +32,7 @@ export default function QuickReminder() {
   const [minutes, setMinutes] = useState(10);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const ime = useImeComposition();
   const showToast = useUiStore((s) => s.showToast);
   const create = useTasksStore((s) => s.create);
 
@@ -104,7 +106,11 @@ export default function QuickReminder() {
           disabled={creating}
           maxLength={200}
           onChange={(e) => setTitle(e.target.value)}
+          onCompositionStart={ime.onCompositionStart}
+          onCompositionEnd={ime.onCompositionEnd}
           onKeyDown={(e) => {
+            // 输入法确认候选的那次 Enter 不创建提醒，避免候选词未确认就误创建
+            if (ime.isComposing(e)) return;
             if (e.key === "Enter") {
               e.preventDefault();
               void start(10);

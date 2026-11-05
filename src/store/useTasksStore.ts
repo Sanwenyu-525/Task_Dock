@@ -18,6 +18,26 @@ import { errorMessage } from "../lib/errors";
 /** 轻量列表的在途请求代际：只认最后一次，旧响应不覆盖新列表 */
 let liteSeq = 0;
 
+/** 主列表的在途请求代际：旧筛选/旧搜索的响应（含错误）不得覆盖新视图 */
+let loadSeq = 0;
+
+/**
+ * 视图身份：离场、焦点交接、快照等跨异步边界的行为只比较语义筛选，
+ * 不比较对象引用——A→B→A 会生成新对象但仍是同一个视图。
+ */
+export function taskViewKey(f: TaskFilter): string {
+  return JSON.stringify([
+    f.view ?? "all",
+    f.status ?? "all",
+    f.category ?? "",
+    f.tag ?? "",
+    f.priority ?? "",
+    (f.search ?? "").trim(),
+    f.sort ?? "due",
+    f.limit ?? "",
+  ]);
+}
+
 /**
  * 轻量列表的查询范围：与面板分段一一对应。
  * 每个范围都由后端**先按真实条件过滤、排序，再 LIMIT**，
@@ -42,6 +62,27 @@ const LITE_QUERY: Record<TaskLiteScope, TaskFilter> = {
   scheduled: { view: "scheduled", status: "pending", sort: "scheduled", limit: 12 },
   completed: { view: "all", status: "completed", sort: "completed", limit: 12 },
 };
+
+/**
+ * 离场快照：任务完成后该行要退出当前筛选，动画期间整表刷新可能把它抽走。
+ * 面板按原索引把这一行补渲染到动画结束，结束后释放；不写回 `tasks`，
+ * 也不参与分页/排序，后台刷新返回的真实列表始终是唯一数据源。
+ */
+export interface TaskExitHold {
+  task: Task;
+  index: number;
+  /** 点击时紧随其后的非离场任务；刷新后据此保持前后顺序 */
+  beforeId: string | null;
+  /** 离场动画的起始高度（只在离场开始时量一次） */
+  height: number;
+  /**
+   * 登记序号。同一任务可能因重复点击/撤销后再次完成而先后登记两次，
+   * 先开始的动画结束时只能释放自己那一次，不能把新的离场快照一起删掉。
+   */
+  token: number;
+}
+
+let exitHoldToken = 0;
 
 export const useTasksStore = create<{
   tasks: Task[];
@@ -87,8 +128,17 @@ export const useTasksStore = create<{
     advanceMinutes: number | null,
   ) => Promise<Task>;
   update: (id: string, input: TaskInput) => Promise<Task>;
-  toggle: (id: string) => Promise<Task>;
+  /**
+   * 切换完成状态。`refresh: false` 让调用方把列表刷新推迟到离场动画结束——
+   * 后端写入立即提交，只有「何时同步列表」被延后，不能反过来推迟写入。
+   */
+  toggle: (id: string, opts?: { refresh?: boolean }) => Promise<Task>;
   remove: (id: string) => Promise<void>;
+  /** 离场动画期间的补渲染快照（不进入 `tasks`） */
+  exitHolds: TaskExitHold[];
+  /** 登记离场快照并返回本次登记的序号，供释放时精确匹配。 */
+  holdForExit: (task: Task, index: number, beforeId: string | null, height: number) => number;
+  releaseExitHold: (id: string, token: number) => void;
 }>((set, get) => ({
   tasks: [],
   stats: null,
@@ -101,18 +151,25 @@ export const useTasksStore = create<{
   liteTarget: "all",
   liteLoading: false,
   liteError: null,
+  exitHolds: [],
   setFilter: (f) => {
-    set({ filter: { ...get().filter, ...f } });
+    // 视图变了：旧视图的离场快照不再属于新列表，立即清掉（定时器由组件自行回收）
+    set({ filter: { ...get().filter, ...f }, exitHolds: [] });
     // 失败落在 store.error，由任务面板内联展示；这里不让 Promise 逃逸
     void get().load().catch(() => {});
   },
   load: async (filter) => {
     const f = filter ?? get().filter;
+    const seq = ++loadSeq;
     set({ loading: true });
     try {
       const tasks = await listTasks(f);
+      // 期间用户切了筛选/搜索/排序：这次响应属于过期视图，只丢弃不回写
+      if (seq !== loadSeq) return;
       set({ tasks, filter: f, loading: false, error: null });
     } catch (e) {
+      // 旧视图的失败同样过期：不能覆盖新视图已成功的结果与错误状态
+      if (seq !== loadSeq) return;
       set({ loading: false, error: errorMessage(e) });
       throw e;
     }
@@ -181,8 +238,10 @@ export const useTasksStore = create<{
     await get().refresh();
     return t;
   },
-  toggle: async (id) => {
+  toggle: async (id, opts) => {
     const t = await toggleTask(id);
+    // 离场动画由调用方负责收尾：写入已经落库，这里只把「同步列表」交还给它
+    if (opts?.refresh === false) return t;
     await get().refresh();
     return t;
   },
@@ -190,4 +249,20 @@ export const useTasksStore = create<{
     await deleteTask(id);
     await get().refresh();
   },
+  holdForExit: (task, index, beforeId, height) => {
+    const token = (exitHoldToken += 1);
+    set((s) => ({
+      exitHolds: [
+        ...s.exitHolds.filter((h) => h.task.id !== task.id),
+        { task, index: Math.max(0, index), beforeId, height, token },
+      ],
+    }));
+    return token;
+  },
+  releaseExitHold: (id, token) =>
+    set((s) =>
+      s.exitHolds.some((h) => h.task.id === id && h.token === token)
+        ? { exitHolds: s.exitHolds.filter((h) => h.task.id !== id || h.token !== token) }
+        : s,
+    ),
 }));

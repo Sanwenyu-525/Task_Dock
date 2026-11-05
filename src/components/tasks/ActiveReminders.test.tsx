@@ -103,19 +103,26 @@ describe("ActiveReminders", () => {
   });
 
   it("倒计时口径：>1h 时:分，<1h 分:秒，到期显示已到期", async () => {
-    activeReminders.mockResolvedValue([
-      item({ taskId: "t1", taskTitle: "一小时以上", remindAt: new Date(Date.now() + 90 * 60_000).toISOString() }),
-      item({ taskId: "t2", taskTitle: "不足一小时", remindAt: new Date(Date.now() + 30_000).toISOString() }),
-      item({ taskId: "t3", taskTitle: "过期提醒", remindAt: new Date(Date.now() - 5_000).toISOString() }),
-    ]);
-    render(<ActiveReminders />);
-    expect(await screen.findByText("一小时以上")).toBeTruthy();
-    expect(screen.getByText("1:30")).toBeTruthy();
-    expect(screen.getByText("00:30")).toBeTruthy();
-    const expiredText = screen.getByText("已到期");
-    expect(expiredText).toBeTruthy();
-    // 项目未引入 jest-dom：用原生 classList 断言，避免依赖额外匹配器
-    expect(expiredText.closest(".active-reminder-card")?.classList.contains("expired")).toBe(true);
+    // 只冻结 Date：构造提醒到首次渲染之间若耗时几毫秒，30s 会 floor 成 00:29，
+    // 与口径本身无关。保留真实定时器，避免影响 findByText 的等待机制。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      activeReminders.mockResolvedValue([
+        item({ taskId: "t1", taskTitle: "一小时以上", remindAt: new Date(Date.now() + 90 * 60_000).toISOString() }),
+        item({ taskId: "t2", taskTitle: "不足一小时", remindAt: new Date(Date.now() + 30_000).toISOString() }),
+        item({ taskId: "t3", taskTitle: "过期提醒", remindAt: new Date(Date.now() - 5_000).toISOString() }),
+      ]);
+      render(<ActiveReminders />);
+      expect(await screen.findByText("一小时以上")).toBeTruthy();
+      expect(screen.getByText("1:30")).toBeTruthy();
+      expect(screen.getByText("00:30")).toBeTruthy();
+      const expiredText = screen.getByText("已到期");
+      expect(expiredText).toBeTruthy();
+      // 项目未引入 jest-dom：用原生 classList 断言，避免依赖额外匹配器
+      expect(expiredText.closest(".active-reminder-card")?.classList.contains("expired")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("延后走真实 snooze_reminder，失败弹真实错误", async () => {

@@ -4,12 +4,12 @@
 //! 数量入口）；点击图标 = 打开该目标（≠ 任务完成）；多目标经快捷菜单选择；
 //! 菜单顶部提供「打开工作区」（批量启动由 WorkspaceLauncher 执行）。
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { AlarmClock, Check, Clock, Repeat, Link2, Pencil, Rocket, Layers } from "lucide-react";
 import type { Task } from "../../lib/bridge";
 import { snoozeReminder } from "../../lib/bridge";
 import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
-import { useTasksStore } from "../../store/useTasksStore";
+import { useTasksStore, taskViewKey } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { formatDue, isOverdue, priorityLabel, describeRecurrence } from "../../lib/format";
@@ -21,6 +21,40 @@ import { DropdownMenu } from "../ui";
 interface Props {
   task: Task;
   compact?: boolean;
+  /**
+   * 后台刷新已把这一行抽走时，由任务列表按离场快照补渲染。
+   * 此时沿用同一套离场外观与隔离，不再重复测高或起第二段动画。
+   */
+  exiting?: boolean;
+  exitHeight?: number;
+}
+
+/** 离场结束后的焦点归属：相邻任务；没有相邻任务就回到列表入口控件。 */
+function focusAfterExit(anchorId: string | null): void {
+  const usable = (el: HTMLElement | null): el is HTMLElement =>
+    !!el && !el.closest("[inert]") && !el.hasAttribute("disabled");
+  if (anchorId) {
+    const btn = document.querySelector<HTMLElement>(
+      `[data-task-id="${CSS.escape(anchorId)}"] .task-check`,
+    );
+    // 不把焦点交给另一个正在离场的任务，也不交给不可用的按钮
+    if (usable(btn)) {
+      btn.focus();
+      return;
+    }
+  }
+  // 相邻任务也不可用（连续完成把后续任务也送去离场）时，退到列表里第一个仍在场的任务
+  const alive = document.querySelector<HTMLElement>(
+    ".tasks-panel .task-list [data-task-id]:not(.leaving):not([inert]) .task-check",
+  );
+  if (usable(alive)) {
+    alive.focus();
+    return;
+  }
+  const fallback =
+    document.querySelector<HTMLElement>(".tasks-panel .quick-add-input") ??
+    document.querySelector<HTMLElement>(".tasks-panel .filter-bar.primary .seg-btn");
+  fallback?.focus();
 }
 
 /** 直列图标上限：超出部分折叠为数量入口，避免任务卡失控。 */
@@ -28,10 +62,12 @@ const MAX_INLINE_TARGETS = 3;
 /** 紧凑模式更窄（320px 也要可用），直列只留 2 个。 */
 const MAX_INLINE_TARGETS_COMPACT = 2;
 
-export default function TaskItem({ task, compact }: Props) {
+export default function TaskItem({ task, compact, exiting, exitHeight }: Props) {
   const toggle = useTasksStore((s) => s.toggle);
   const refreshTasks = useTasksStore((s) => s.refresh);
-  const statusFilter = useTasksStore((s) => s.filter.status);
+  const holdForExit = useTasksStore((s) => s.holdForExit);
+  const releaseExitHold = useTasksStore((s) => s.releaseExitHold);
+  const filter = useTasksStore((s) => s.filter);
   const openEditor = useUiStore((s) => s.openEditor);
   const showToast = useUiStore((s) => s.showToast);
   const openWorkspace = useUiStore((s) => s.openWorkspace);
@@ -49,27 +85,36 @@ export default function TaskItem({ task, compact }: Props) {
   const [leaving, setLeaving] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const overdue = task.status === "pending" && isOverdue(task.due_at);
+  const isLeaving = leaving || !!exiting;
+
+  // 视图切换后旧视图的完成离场不再成立（任务可能在新列表里正常出现），立即撤掉离场态
+  useEffect(() => {
+    setLeaving(false);
+  }, [filter]);
 
   async function onToggle() {
-    if (busy) return;
+    if (busy || isLeaving) return;
     const was = task.status;
-    const willExitList = was === "pending" && (statusFilter ?? "pending") === "pending";
+    const filterAtStart = useTasksStore.getState().filter;
+    const viewAtStart = taskViewKey(filterAtStart);
+    const willExitList = was === "pending" && (filterAtStart.status ?? "pending") === "pending";
+    // 点击即进入执行中并提交后端；动画只负责「成功且会退出筛选」后的离场反馈，
+    // 绝不为了动画推迟写入。列表刷新也等离场播完再发，避免这一行被提前抽走。
     setBusy(true);
+    let held = false;
+    /** 本次登记的离场快照序号：迟到的旧动画只能释放自己那一次。 */
+    let holdToken: number | null = null;
+    let handoff = false;
+    let anchorId: string | null = null;
     try {
-      if (willExitList && !prefersReducedMotion()) {
-        const el = rowRef.current;
-        if (el) {
-          // 高度只量这一次；等收拢播完再刷新，避免列表先抽走这一行导致动画被截断
-          el.style.setProperty("--clip-exit-h", `${el.offsetHeight}px`);
-          setLeaving(true);
-          await new Promise((r) => setTimeout(r, EXIT_MS));
-        }
-      }
-      const updated = await toggle(task.id);
+      const updated = await toggle(task.id, { refresh: false });
+      // 请求在途期间用户可能已切筛选/搜索/排序：此时成功结果只同步后端，
+      // 不得把旧视图的离场快照补渲染进新列表，也不得在新视图里演退出。
+      const sameView = taskViewKey(useTasksStore.getState().filter) === viewAtStart;
       if (was === "pending" && updated.status === "completed") {
         // 默认停在「未完成」筛选：这一行会消失，说清是退出筛选而不是被删掉
         showToast(
-          (statusFilter ?? "pending") === "pending"
+          (filterAtStart.status ?? "pending") === "pending" && sameView
             ? `已完成「${updated.title}」，已退出「未完成」列表（任务仍在，切到「已完成」可看到）`
             : `已完成「${updated.title}」`,
           {
@@ -82,15 +127,56 @@ export default function TaskItem({ task, compact }: Props) {
             },
           },
         );
+        if (willExitList && sameView) {
+          const el = rowRef.current;
+          const listEl = el?.closest(".task-list") ?? null;
+          const rows = listEl
+            ? Array.from(listEl.querySelectorAll<HTMLElement>("[data-task-id]"))
+            : [];
+          const selfIndex = el ? rows.indexOf(el) : -1;
+          const alive = (row: HTMLElement) =>
+            !row.classList.contains("leaving") && !row.hasAttribute("inert");
+          const nextId =
+            selfIndex >= 0 ? rows.slice(selfIndex + 1).find(alive)?.dataset.taskId ?? null : null;
+          const prevId =
+            selfIndex > 0
+              ? rows.slice(0, selfIndex).reverse().find(alive)?.dataset.taskId ?? null
+              : null;
+          anchorId = nextId ?? prevId;
+          // 焦点原本在被点的这一行（inert 后浏览器会把它丢到 body）→ 离场结束交还列表
+          handoff =
+            document.activeElement === document.body || (!!el && el.contains(document.activeElement));
+          if (!prefersReducedMotion() && el) {
+            // 高度只量这一次；后端已成功，接下来只是把这一行收拢退出
+            const height = el.offsetHeight;
+            el.style.setProperty("--clip-exit-h", `${height}px`);
+            // 后台整表刷新可能先抽走这一行：登记快照，动画期间由列表按原位置补渲染
+            holdToken = holdForExit(task, Math.max(0, selfIndex), nextId, height);
+            held = true;
+            setLeaving(true);
+            await new Promise((r) => setTimeout(r, EXIT_MS));
+          }
+        }
       } else if (was === "completed") {
         // 取消完成此前完全静默：状态翻了却没有任何反馈
         showToast(`已重新打开「${updated.title}」`, { kind: "info" });
       }
+      // 离场播完（或不需要离场）后再按服务端结果同步列表
+      await refreshTasks();
+      // 撤销或刷新失败后任务仍在列表里：撤掉离场态，不能让它一直不可见/不可操作
+      if (held && useTasksStore.getState().tasks.some((t) => t.id === task.id)) {
+        setLeaving(false);
+      }
+      // 视图没在请求期间变过才交还焦点，避免把焦点抢到另一个筛选的列表里
+      if (handoff && taskViewKey(useTasksStore.getState().filter) === viewAtStart) {
+        focusAfterExit(anchorId);
+      }
     } catch (e) {
-      // 后端没成功：撤掉离场状态，任务原位保持正常
+      // 后端没成功：从未进入离场状态，任务原位保持正常
       setLeaving(false);
       showToast(`更新任务状态失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
+      if (held && holdToken !== null) releaseExitHold(task.id, holdToken);
       setBusy(false);
     }
   }
@@ -149,7 +235,16 @@ export default function TaskItem({ task, compact }: Props) {
     <div
       ref={rowRef}
       data-task-id={task.id}
-      className={`task-card task-item priority-${task.priority} ${task.status} ${leaving ? "leaving" : ""}`}
+      className={`task-card task-item priority-${task.priority} ${task.status} ${isLeaving ? "leaving" : ""}`}
+      // 离场期间同时隔离鼠标与键盘：inert 让内部控件不可聚焦/不可点击，
+      // aria-hidden 让读屏器不再朗读正在退场的条目；结束后由列表交还焦点。
+      inert={isLeaving || undefined}
+      aria-hidden={isLeaving || undefined}
+      style={
+        exiting && exitHeight
+          ? ({ "--clip-exit-h": `${exitHeight}px` } as CSSProperties)
+          : undefined
+      }
     >
       <button
         className={`task-check ${task.status === "completed" ? "done" : ""}`}
@@ -157,7 +252,7 @@ export default function TaskItem({ task, compact }: Props) {
         title={task.status === "completed" ? "取消完成" : "完成"}
         aria-label={task.status === "completed" ? "取消完成" : "完成任务"}
         aria-busy={busy}
-        disabled={busy}
+        disabled={busy || isLeaving}
       >
         {task.status === "completed" && <Check size={12} />}
       </button>

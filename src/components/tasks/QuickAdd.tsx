@@ -10,6 +10,7 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { describeRecurrence, fromLocalInputValue, toLocalInputValue } from "../../lib/format";
 import { DateTimePicker } from "../ui";
 import { useLocale } from "../../hooks/useLocale";
+import useImeComposition from "../../hooks/useImeComposition";
 import { localizedErrorMessage } from "../../i18n/errors";
 
 interface Props {
@@ -25,6 +26,7 @@ export default function QuickAdd({ compact }: Props) {
   const [parsing, setParsing] = useState(false);
   const [creating, setCreating] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const ime = useImeComposition();
   const quickAddToken = useUiStore((s) => s.quickAddToken);
   const showToast = useUiStore((s) => s.showToast);
   const quickCreate = useTasksStore((s) => s.quickCreate);
@@ -91,7 +93,15 @@ export default function QuickAdd({ compact }: Props) {
           value={text}
           disabled={creating}
           onChange={(e) => setText(e.target.value)}
+          onCompositionStart={ime.onCompositionStart}
+          onCompositionEnd={ime.onCompositionEnd}
           onKeyDown={(e) => {
+            // 输入法组合中：Enter 用于确认候选、Escape 用于关闭候选，
+            // 都不能触发解析/创建或取消预览，也不能 preventDefault 打断 IME。
+            if (ime.isComposing(e)) {
+              if (e.key === "Escape") e.stopPropagation();
+              return;
+            }
             if (e.key === "Enter") {
               e.preventDefault();
               if (parsed) onCreate();

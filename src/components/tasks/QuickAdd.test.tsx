@@ -181,4 +181,58 @@ describe("QuickAdd", () => {
     expect(input.value).toBe("失败任务"); // 输入不丢失，可直接重试
     expect(screen.getByText("失败任务")).toBeTruthy(); // 预览保留
   });
+
+  it("中文组合中 Enter/Escape 不触发业务，组合结束后独立 Enter 正常解析", async () => {
+    vi.mocked(parseQuickAdd).mockResolvedValue(parseFix("开会"));
+    const input = renderQuickAdd();
+
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "kaihui" } });
+    // 选词的那次 Enter：只确认候选
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(vi.mocked(parseQuickAdd)).not.toHaveBeenCalled();
+    expect(input.value).toBe("kaihui"); // 候选状态不丢文本
+
+    // Safari 顺序：compositionend 先于 keydown，keydown 只剩 keyCode 229
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(vi.mocked(parseQuickAdd)).not.toHaveBeenCalled();
+
+    // 候选确认后的一次独立 Enter 才解析
+    fireEvent.change(input, { target: { value: "开会" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(parseQuickAdd).toHaveBeenCalledWith("开会"));
+  });
+
+  it("组合输入中按 Escape 只关候选，不取消已有预览", async () => {
+    vi.mocked(parseQuickAdd).mockResolvedValue(parseFix("开会"));
+    const input = renderQuickAdd();
+
+    fireEvent.change(input, { target: { value: "明天开会" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText("开会")).toBeTruthy();
+
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "明天开会kai" } });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+    expect(screen.queryByText("开会")).toBeTruthy(); // 预览仍在
+    expect(input.value).toBe("明天开会kai");
+    fireEvent.compositionEnd(input);
+  });
+
+  it("解析在途时连按 Enter 只发一次解析请求", async () => {
+    let resolveParse!: (parsed: ParsedInput) => void;
+    vi.mocked(parseQuickAdd).mockImplementation(
+      () => new Promise<ParsedInput>((resolve) => { resolveParse = resolve; }),
+    );
+    const input = renderQuickAdd();
+
+    fireEvent.change(input, { target: { value: "写周报" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(vi.mocked(parseQuickAdd)).toHaveBeenCalledTimes(1);
+
+    resolveParse(parseFix("写周报"));
+    expect(await screen.findByText("写周报")).toBeTruthy();
+  });
 });

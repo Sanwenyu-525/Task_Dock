@@ -6,7 +6,8 @@
 //! 返回列表时由 `TasksPanel` 恢复列表滚动位置；筛选状态存放在 `useTasksStore`，不丢失。
 //! 未保存返回先在页内确认条上确认，保存失败保留全部表单内容。
 //!
-//! 关联目标选择器（`AppPicker`）保持其既有模态行为（本任务不改其交互形态）。
+//! 关联目标选择器（`AppPicker`）复用其页内子视图（`variant="page"`）：替换编辑区内容、
+//! 保留编辑草稿，选择或返回后回到原编辑上下文，不再叠一层弹窗。
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -37,6 +38,7 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { describeRecurrence, formatDue, fromLocalInputValue, toLocalInputValue } from "../../lib/format";
 import { errorMessage } from "../../lib/errors";
+import { useTabGuard } from "../../lib/tabGuard";
 import AppPicker from "../navigation/AppPicker";
 import { TargetAvatar } from "../navigation/TargetMenu";
 import { DateTimePicker, NumberInput, Select } from "../ui";
@@ -325,6 +327,15 @@ export default function TaskEditorView({ task, onClose }: TaskEditorViewProps) {
     (remindTouched && remind !== initial.remind) ||
     recurrenceDirty;
 
+  // 跨主 Tab 切换统一走 store 门禁：脏时先确认，保存中拒绝切换；放弃时关闭本编辑态。
+  useTabGuard({
+    id: "task-editor",
+    label: isCreate ? "新建任务" : `编辑任务「${task?.title ?? ""}」`,
+    dirty,
+    busy,
+    discard: onClose,
+  });
+
   /** 返回列表：有未保存修改时先出页内确认条，不弹大窗。 */
   function requestLeave() {
     if (busyRef.current) return;
@@ -348,7 +359,15 @@ export default function TaskEditorView({ task, onClose }: TaskEditorViewProps) {
   // Escape：日期/下拉弹层先由弹层栈消费（注册更早）；没有弹层时才回到列表。
   // preventDefault 阻止冒泡阶段的窗口级「隐藏到托盘」。
   const escapeRef = useRef(requestLeave);
-  escapeRef.current = requestLeave;
+  escapeRef.current = () => {
+    // 页内选择器是最上层，Escape 先返回编辑区，不影响任务草稿。
+    if (pickerOpen) {
+      setPickerOpen(false);
+      setPickerLink(null);
+      return;
+    }
+    requestLeave();
+  };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -559,6 +578,23 @@ export default function TaskEditorView({ task, onClose }: TaskEditorViewProps) {
   }
 
   const sessions = (agents?.sessions ?? []).slice(0, 50);
+
+  // 关联目标选择是同一内容区的子视图：编辑器保持挂载，草稿不会因选择而丢失。
+  if (pickerOpen && task) {
+    return (
+      <div className="task-editor task-editor-picker">
+        <AppPicker
+          variant="page"
+          windowLink={pickerLink}
+          taskId={task.id}
+          onClose={() => {
+            setPickerOpen(false);
+            setPickerLink(null);
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="task-editor">
@@ -1115,14 +1151,6 @@ export default function TaskEditorView({ task, onClose }: TaskEditorViewProps) {
         </button>
       </div>
 
-      {pickerOpen && task && (
-        <AppPicker
-          windowLink={pickerLink}
-          taskId={task.id}
-          onClose={() => setPickerOpen(false)}
-          onSelect={undefined}
-        />
-      )}
     </div>
   );
 }

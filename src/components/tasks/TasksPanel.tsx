@@ -4,7 +4,7 @@
 //! v0.9：编辑任务改为页面内编辑态（列表 ↔ 编辑切换），退出后恢复列表滚动位置；
 //! 筛选状态本就在 `useTasksStore`，切换不丢失。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import QuickAdd from "./QuickAdd";
 import QuickReminder from "./QuickReminder";
 import ActiveReminders from "./ActiveReminders";
@@ -15,10 +15,12 @@ import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { locateElement } from "../global-search/locate";
-import { Select } from "../ui";
-import { BarChart3, Search, X, ListChecks, CalendarClock, AlertTriangle, Inbox, Sparkles, Timer } from "lucide-react";
+import { Select, SearchField } from "../ui";
+import { BarChart3, X, Search, ListChecks, AlertTriangle, Inbox, Sparkles, Timer } from "lucide-react";
 import TaskAnalyticsPanel from "./analytics/TaskAnalyticsPanel";
 import FocusWorkspace from "../focus/FocusWorkspace";
+import { useLocale } from "../../hooks/useLocale";
+import type { MessageKey } from "../../i18n";
 
 /** 内容区滚动容器（`.tab-content`）：编辑态切换时用它记录/恢复列表位置。 */
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
@@ -31,30 +33,32 @@ function findScrollParent(el: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
-const VIEWS = [
-  { id: "today", label: "今日" },
-  { id: "tomorrow", label: "明日" },
-  { id: "week", label: "本周" },
-  { id: "overdue", label: "逾期" },
-  { id: "all", label: "全部" },
+const VIEWS: readonly { id: "today" | "tomorrow" | "week" | "overdue" | "all"; labelKey: MessageKey }[] = [
+  { id: "today", labelKey: "tasks.view.today" },
+  { id: "tomorrow", labelKey: "tasks.view.tomorrow" },
+  { id: "week", labelKey: "tasks.view.week" },
+  { id: "overdue", labelKey: "tasks.view.overdue" },
+  { id: "all", labelKey: "tasks.view.all" },
 ] as const;
 
-const STATUSES = [
-  { id: "pending", label: "未完成" },
-  { id: "completed", label: "已完成" },
-  { id: "all", label: "全部状态" },
+const STATUSES: readonly { id: "pending" | "completed" | "all"; labelKey: MessageKey }[] = [
+  { id: "pending", labelKey: "tasks.status.pending" },
+  { id: "completed", labelKey: "tasks.status.completed" },
+  { id: "all", labelKey: "tasks.status.all" },
 ] as const;
 
-const SORTS = [
-  { id: "due", label: "按时间" },
-  { id: "priority", label: "按紧急度" },
-  { id: "created", label: "按创建" },
+const SORTS: readonly { id: "due" | "priority" | "created"; labelKey: MessageKey }[] = [
+  { id: "due", labelKey: "tasks.sort.due" },
+  { id: "priority", labelKey: "tasks.sort.priority" },
+  { id: "created", labelKey: "tasks.sort.created" },
 ] as const;
 
 export default function TasksPanel() {
+  const { t } = useLocale();
   const filter = useTasksStore((s) => s.filter);
   const setFilter = useTasksStore((s) => s.setFilter);
   const tasks = useTasksStore((s) => s.tasks);
+  const exitHolds = useTasksStore((s) => s.exitHolds);
   const loading = useTasksStore((s) => s.loading);
   const error = useTasksStore((s) => s.error);
   const refresh = useTasksStore((s) => s.refresh);
@@ -118,6 +122,23 @@ export default function TasksPanel() {
   const hasSearch = !!filter.search?.trim();
   const searchVisible = searchOpen || hasSearch;
 
+  /**
+   * 离场补渲染：完成行的动画还没播完时，后台整表刷新可能先把这一行抽走。
+   * 这里只在渲染层把快照按原位置补回，`tasks` 仍是后端返回的唯一真实数据；
+   * 快照在动画结束或切换视图时释放，不会长期残留、也不会进入排序/分页。
+   */
+  const displayedTasks = useMemo(() => {
+    if (!exitHolds.length) return tasks;
+    let out = tasks.slice();
+    for (const hold of [...exitHolds].sort((a, b) => a.index - b.index)) {
+      if (out.some((task) => task.id === hold.task.id)) continue;
+      const before = hold.beforeId ? out.findIndex((task) => task.id === hold.beforeId) : -1;
+      const at = before >= 0 ? before : Math.min(hold.index, out.length);
+      out = [...out.slice(0, at), hold.task, ...out.slice(at)];
+    }
+    return out;
+  }, [tasks, exitHolds]);
+
   // 全局搜索定位：消费一次性意图（只处理任务类；workspace 意图由 TaskContextDrawer 消费）。
   // 用关键词过滤确保目标可见，数据渲染后滚动高亮。
   const pendingLocate = useGlobalSearchStore((s) => s.pendingLocate);
@@ -152,19 +173,17 @@ export default function TasksPanel() {
     <div className="tasks-panel" ref={rootRef}>
       {/* 全局概览（跨筛选视图） */}
       <div className="tasks-overview">
-        <div className="overview-card tone-accent" data-tip="全部未完成任务">
-          <ListChecks size={15} strokeWidth={1.9} className="overview-icon" />
+        <div className="overview-card" data-tip={t("tasks.overview.pendingTip")}>
           <span className="overview-value">{stats?.pending ?? "–"}</span>
-          <span className="overview-label">待完成</span>
+          <span className="overview-label">{t("tasks.overview.pending")}</span>
         </div>
-        <div className="overview-card tone-violet" data-tip="今天到期">
-          <CalendarClock size={15} strokeWidth={1.9} className="overview-icon" />
+        <div className="overview-card" data-tip={t("tasks.overview.dueTodayTip")}>
           <span className="overview-value">{stats?.due_today ?? "–"}</span>
-          <span className="overview-label">今日到期</span>
+          <span className="overview-label">{t("tasks.overview.dueToday")}</span>
         </div>
         <div
-          className={`overview-card tone-warn ${stats?.overdue ? "warn" : ""}`}
-          data-tip="已过期未完成"
+          className={`overview-card ${stats?.overdue ? "warn" : ""}`}
+          data-tip={t("tasks.overview.overdueTip")}
           onClick={() => setFilter({ view: "overdue" })}
           role="button"
           tabIndex={0}
@@ -176,9 +195,8 @@ export default function TasksPanel() {
             }
           }}
         >
-          <AlertTriangle size={15} strokeWidth={1.9} className="overview-icon" />
           <span className="overview-value">{stats?.overdue ?? "–"}</span>
-          <span className="overview-label">逾期</span>
+          <span className="overview-label">{t("tasks.overview.overdue")}</span>
         </div>
       </div>
 
@@ -188,7 +206,7 @@ export default function TasksPanel() {
 
       {/* 主筛选：日期视图优先 */}
       <div className="filter-bar primary">
-        <div className="seg-group" role="group" aria-label="日期范围">
+        <div className="seg-group" role="group" aria-label={t("tasks.rangeAria")}>
           {VIEWS.map((v) => (
             <button
               key={v.id}
@@ -196,15 +214,15 @@ export default function TasksPanel() {
               aria-pressed={filter.view === v.id}
               onClick={() => setFilter({ view: v.id })}
             >
-              {v.label}
+              {t(v.labelKey)}
             </button>
           ))}
         </div>
         <span className="flex-spacer" />
         <button
           className={`icon-btn sm ${focusOpen ? "active" : ""}`}
-          data-tip={focusOpen ? "返回任务列表" : "专注与休息"}
-          aria-label={focusOpen ? "返回任务列表" : "专注与休息"}
+          data-tip={focusOpen ? t("tasks.backToList") : t("tasks.focus")}
+          aria-label={focusOpen ? t("tasks.backToList") : t("tasks.focus")}
           aria-pressed={focusOpen}
           onClick={() => {
             setFocusOpen((v) => !v);
@@ -215,8 +233,8 @@ export default function TasksPanel() {
         </button>
         <button
           className={`icon-btn sm ${analyticsOpen ? "active" : ""}`}
-          data-tip={analyticsOpen ? "返回任务列表" : "任务统计"}
-          aria-label={analyticsOpen ? "返回任务列表" : "任务统计"}
+          data-tip={analyticsOpen ? t("tasks.backToList") : t("tasks.analytics")}
+          aria-label={analyticsOpen ? t("tasks.backToList") : t("tasks.analytics")}
           aria-pressed={analyticsOpen}
           onClick={() => {
             setAnalyticsOpen((v) => !v);
@@ -227,8 +245,8 @@ export default function TasksPanel() {
         </button>
         <button
           className={`icon-btn sm ${searchVisible ? "active" : ""}`}
-          data-tip={searchVisible ? "收起搜索" : "搜索任务"}
-          aria-label={searchVisible ? "收起搜索" : "搜索任务"}
+          data-tip={searchVisible ? t("tasks.search.collapse") : t("tasks.search.open")}
+          aria-label={searchVisible ? t("tasks.search.collapse") : t("tasks.search.open")}
           onClick={() => {
             if (searchOpen && !hasSearch) setSearchOpen(false);
             else {
@@ -243,7 +261,7 @@ export default function TasksPanel() {
 
       {/* 次级工具栏：状态 + 排序 + 搜索输入（收起时不占高度） */}
       <div className="filter-bar secondary">
-        <div className="seg-group subtle" role="group" aria-label="状态">
+        <div className="seg-group subtle" role="group" aria-label={t("tasks.statusAria")}>
           {STATUSES.map((s) => (
             <button
               key={s.id}
@@ -251,7 +269,7 @@ export default function TasksPanel() {
               aria-pressed={(filter.status ?? "pending") === s.id}
               onClick={() => setFilter({ status: s.id })}
             >
-              {s.label}
+              {t(s.labelKey)}
             </button>
           ))}
         </div>
@@ -259,37 +277,31 @@ export default function TasksPanel() {
         <Select
           className="sort-select"
           size="sm"
-          ariaLabel="排序方式"
+          ariaLabel={t("tasks.sortAria")}
           value={filter.sort ?? "due"}
-          options={SORTS.map((s) => ({ value: s.id, label: s.label }))}
+          options={SORTS.map((s) => ({ value: s.id, label: t(s.labelKey) }))}
           onChange={(v) => setFilter({ sort: v })}
         />
       </div>
 
       {searchVisible && (
-        <div className="search-box">
-          <Search size={12} />
-          <input
-            autoFocus
-            className="input-embedded"
-            placeholder="搜索标题 / 描述（Enter 确认）"
-            value={filter.search ?? ""}
-            onChange={(e) => setFilter({ search: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                // stopPropagation：别让 Escape 继续冒泡到窗口级「隐藏到托盘」的动作
-                e.stopPropagation();
-                setFilter({ search: "" });
-                setSearchOpen(false);
-              }
-            }}
-          />
-          {hasSearch && (
-            <button className="icon-btn sm" data-tip="清空搜索" aria-label="清空搜索" onClick={() => setFilter({ search: "" })}>
-              <X size={11} />
-            </button>
-          )}
-        </div>
+        <SearchField
+          size="compact"
+          autoFocus
+          placeholder={t("tasks.searchPlaceholder")}
+          ariaLabel={t("tasks.searchAria")}
+          clearLabel={t("tasks.searchClear")}
+          value={filter.search ?? ""}
+          onChange={(v) => setFilter({ search: v })}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              // stopPropagation：别让 Escape 继续冒泡到窗口级「隐藏到托盘」的动作
+              e.stopPropagation();
+              setFilter({ search: "" });
+              setSearchOpen(false);
+            }
+          }}
+        />
       )}
 
       {analyticsOpen ? (
@@ -301,39 +313,39 @@ export default function TasksPanel() {
         {linksError && (
           // 关联读取失败 ≠ 没有关联：保留旧图标但明确标注可能过期，并提供重试
           <div className="empty-hint error-text task-list-error" role="status">
-            关联信息读取失败：{linksError}（卡片上的关联目标可能不是最新）
+            {t("tasks.linksFailed", { error: linksError })}
             <button className="btn sm" onClick={() => void loadTaskLinks()}>
-              重试
+              {t("common.retry")}
             </button>
           </div>
         )}
-        {error && tasks.length > 0 && (
+        {error && displayedTasks.length > 0 && (
           // 列表刷新失败：保留上次结果并明确标记「可能不是最新」，不伪装成已刷新
           <div className="empty-hint error-text task-list-error" role="status">
-            列表刷新失败：{error}（当前显示上次结果）
+            {t("tasks.refreshFailed", { error })}
             <button className="btn sm" onClick={() => void refresh()}>
-              重试
+              {t("common.retry")}
             </button>
           </div>
         )}
-        {loading && tasks.length === 0 && !error && (
+        {loading && displayedTasks.length === 0 && !error && (
           <div className="empty-state">
             <div className="empty-icon"><ListChecks size={22} /></div>
-            <div className="empty-title">加载中…</div>
+            <div className="empty-title">{t("tasks.loading")}</div>
           </div>
         )}
-        {!loading && error && tasks.length === 0 && (
+        {!loading && error && displayedTasks.length === 0 && (
           // 读取失败 ≠ 没有任务：给出真实错误与重试入口
           <div className="empty-state" role="alert">
             <div className="empty-icon"><AlertTriangle size={22} /></div>
-            <div className="empty-title">任务读取失败</div>
+            <div className="empty-title">{t("tasks.loadFailed")}</div>
             <div className="empty-hint error-text">{error}</div>
             <button className="btn sm primary" onClick={() => void refresh()}>
-              重试
+              {t("common.retry")}
             </button>
           </div>
         )}
-        {!loading && !error && tasks.length === 0 && (
+        {!loading && !error && displayedTasks.length === 0 && (
           <div className="empty-state">
             {/* 轻量插画：纯 CSS 渐变气泡 + 一个 SVG 图标，无位图资源 */}
             <div className="empty-art" aria-hidden="true">
@@ -349,18 +361,28 @@ export default function TasksPanel() {
               </span>
             </div>
             <div className="empty-title">
-              {hasSearch ? "没有匹配的任务" : filter.view === "overdue" ? "没有逾期任务，很好" : "这里还很清爽"}
+              {hasSearch
+                ? t("tasks.empty.search")
+                : filter.view === "overdue"
+                  ? t("tasks.empty.overdue")
+                  : t("tasks.empty.default")}
             </div>
             <div className="empty-hint">
-              {hasSearch
-                ? "换个关键词，或清空搜索查看全部"
-                : "用上方输入框快速添加，支持「明天下午三点开会」这样的自然语言"}
+              {hasSearch ? t("tasks.empty.searchHint") : t("tasks.empty.defaultHint")}
             </div>
           </div>
         )}
-        {tasks.map((t) => (
-          <TaskItem key={t.id} task={t} />
-        ))}
+        {displayedTasks.map((task) => {
+          const hold = exitHolds.find((h) => h.task.id === task.id);
+          return (
+            <TaskItem
+              key={task.id}
+              task={task}
+              exiting={!!hold}
+              exitHeight={hold?.height}
+            />
+          );
+        })}
         </div>
       )}
     </div>

@@ -203,6 +203,13 @@ export default function TaskAnalyticsPanel() {
             </div>
           )}
 
+          {data.history_complete === false && (
+            <div className="analytics-inline-error" role="status">
+              <AlertTriangle size={12} aria-hidden="true" />{" "}
+              <span>{t("taskAnalytics.historyIncomplete")}</span>
+            </div>
+          )}
+
           <div className="analytics-cards">
             <div className="analytics-card" data-tip={t("taskAnalytics.definitions.completed")}>
               {/* 完成动作计数：与概览/胶囊的「今日完成」（按任务行计，重复任务完成后

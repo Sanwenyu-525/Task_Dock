@@ -8,7 +8,7 @@
 //! - 创建失败显示真实错误，不显示成功 Toast。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { useUiStore } from "../../store/useUiStore";
@@ -123,5 +123,47 @@ describe("QuickReminder", () => {
     await user.click(screen.getByRole("button", { name: "5 分钟" }));
     expect(await screen.findByText(/任务标题不能为空/)).toBeTruthy();
     expect(useUiStore.getState().toasts.some((t) => (t.message ?? "").includes("已创建提醒"))).toBe(false);
+  });
+
+  it("中文组合中的 Enter 不创建，组合结束后独立 Enter 才创建", async () => {
+    createTask.mockResolvedValue(taskResult("倒杯水"));
+    render(<QuickReminder />);
+    await expandReminder(userEvent.setup());
+
+    const input = screen.getByPlaceholderText(/快速提醒/) as HTMLInputElement;
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "daobei" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(createTask).not.toHaveBeenCalled();
+    expect(input.value).toBe("daobei");
+
+    // Safari 顺序：compositionend 后 keydown 仅剩 keyCode 229
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    expect(createTask).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "倒杯水" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(createTask).toHaveBeenCalledTimes(1));
+    expect(createTask.mock.calls[0][0].title).toBe("倒杯水");
+  });
+
+  it("创建在途连按 Enter 只创建一次", async () => {
+    let resolveCreate!: (task: ReturnType<typeof taskResult>) => void;
+    createTask.mockImplementation(
+      () => new Promise<ReturnType<typeof taskResult>>((resolve) => { resolveCreate = resolve; }),
+    );
+    render(<QuickReminder />);
+    await expandReminder(userEvent.setup());
+
+    const input = screen.getByPlaceholderText(/快速提醒/) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "写周报" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(createTask).toHaveBeenCalledTimes(1));
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(createTask).toHaveBeenCalledTimes(1);
+
+    resolveCreate(taskResult("写周报"));
   });
 });

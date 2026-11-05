@@ -4,7 +4,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertTriangle,
   AppWindow,
+  ArrowLeft,
   Bell,
   Camera,
   Check,
@@ -118,14 +120,17 @@ export default function TaskContextDrawer() {
     null,
   );
 
-  // 捕获窗口对话框
+  // 捕获窗口是抽屉内的展开区，不再叠第二层模态
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureWindows, setCaptureWindows] = useState<CaptureWindow[]>([]);
   const [captureSelected, setCaptureSelected] = useState<Set<number>>(new Set());
   const [captureName, setCaptureName] = useState("");
   const [captureLoading, setCaptureLoading] = useState(false);
+  const [captureError, setCaptureError] = useState<string | null>(null);
 
   const drawerRef = useRef<HTMLElement>(null);
+  /** 同步防重入：勾选后连点保存不能重复创建现场（状态更新到下次渲染之间也有空隙）。 */
+  const captureBusyRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!taskId) return;
@@ -225,12 +230,14 @@ export default function TaskContextDrawer() {
     return () => scope.dispose();
   }, [open, refresh, showToast, workspaceEnabled]);
 
-  // Escape 走全局弹层栈：捕获对话框(dialog) → 上下文抽屉(drawer) → 主窗口。
-  // 一次 Escape 只关最上层，窗口不会跟着被藏进托盘。
-  useOverlayLayer("dialog", captureOpen, () => setCaptureOpen(false));
-  useOverlayLayer("drawer", open, () => closeContext());
-  // 焦点陷阱：捕获对话框打开时由它自己接管
-  useFocusTrap(open && !captureOpen, drawerRef);
+  // Escape 走全局弹层栈：抽屉内捕获区 → 上下文抽屉 → 主窗口。
+  // 一次 Escape 只退一层，窗口不会跟着被藏进托盘。
+  useOverlayLayer("drawer", open, () => {
+    if (captureOpen) setCaptureOpen(false);
+    else closeContext();
+  });
+  // 捕获区是抽屉内部内容，焦点始终留在抽屉内。
+  useFocusTrap(open, drawerRef);
 
   // 全局搜索定位：消费 workspace 意图 —— 找到关联任务打开上下文抽屉并展开
   // 目标快照；**绝不自动恢复现场**（恢复必须用户显式点击恢复按钮）。
@@ -315,6 +322,7 @@ export default function TaskContextDrawer() {
     }
     setCaptureOpen(true);
     setCaptureLoading(true);
+    setCaptureError(null);
     setCaptureSelected(new Set());
     const stamp = new Date().toLocaleString("zh-CN", {
       month: "2-digit",
@@ -329,8 +337,25 @@ export default function TaskContextDrawer() {
       // 无法识别进程的窗口后端会跳过，默认不勾选，避免制造「已捕获」的错觉
       setCaptureSelected(new Set(ws.filter((w) => w.exe_path).map((w) => w.hwnd)));
     } catch (e) {
-      showToast(`枚举窗口失败：${errorMessage(e)}`, { kind: "error" });
+      setCaptureError(errorMessage(e));
       setCaptureWindows([]);
+    } finally {
+      setCaptureLoading(false);
+    }
+  }
+
+  /** 展开区内重试枚举，不重新打开第二层界面。 */
+  async function retryCaptureWindows() {
+    setCaptureLoading(true);
+    setCaptureError(null);
+    setCaptureWindows([]);
+    setCaptureSelected(new Set());
+    try {
+      const ws = await workspaceCaptureWindows();
+      setCaptureWindows(ws);
+      setCaptureSelected(new Set(ws.filter((w) => w.exe_path).map((w) => w.hwnd)));
+    } catch (e) {
+      setCaptureError(errorMessage(e));
     } finally {
       setCaptureLoading(false);
     }
@@ -347,10 +372,12 @@ export default function TaskContextDrawer() {
 
   async function onCreateCapture() {
     if (!taskId) return;
+    if (captureBusyRef.current) return;
     if (captureSelected.size === 0) {
       showToast("请至少勾选一个窗口", { kind: "info" });
       return;
     }
+    captureBusyRef.current = true;
     setBusy("capture");
     try {
       const snap = await workspaceCreate({
@@ -365,6 +392,7 @@ export default function TaskContextDrawer() {
     } catch (e) {
       showToast(`保存现场失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
+      captureBusyRef.current = false;
       setBusy(null);
     }
   }
@@ -534,9 +562,96 @@ export default function TaskContextDrawer() {
           </header>
 
           <div className="context-body">
-            {!ctx && <div className="empty-hint">加载中…</div>}
+            {/* 捕获窗口在抽屉内展开：与上下文共用同一个滚动容器，不再是第二层模态。 */}
+            {captureOpen && (
+              <section className="context-section context-capture" aria-label="捕获当前窗口">
+                <div className="context-section-head">
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => setCaptureOpen(false)}
+                    aria-label="返回任务上下文"
+                  >
+                    <ArrowLeft size={12} aria-hidden="true" /> 返回
+                  </button>
+                  <span className="context-section-title">
+                    <AppWindow size={12} /> 捕获当前窗口
+                  </span>
+                </div>
+                <label className="field">
+                  <span>现场名称</span>
+                  <input
+                    value={captureName}
+                    onChange={(e) => setCaptureName(e.target.value)}
+                    autoFocus
+                  />
+                </label>
+                <div className="endpoint-hint">
+                  只记录窗口标题、类名与进程路径，不读取窗口内容、不截图；句柄仅本次使用，不落库。
+                </div>
+                {captureLoading && (
+                  <div className="empty-hint" role="status">
+                    正在枚举窗口…
+                  </div>
+                )}
+                {captureError && (
+                  <div className="wizard-error" role="alert">
+                    <AlertTriangle size={12} /> 枚举窗口失败：{captureError}
+                    <button className="btn sm" onClick={() => void retryCaptureWindows()}>
+                      重试
+                    </button>
+                  </div>
+                )}
+                {!captureLoading && !captureError && captureWindows.length === 0 && (
+                  <div className="empty-hint">没有可捕获的窗口。</div>
+                )}
+                {!captureLoading && captureWindows.length > 0 && (
+                  <div className="capture-list">
+                    {captureWindows.map((w) => {
+                      const selectable = Boolean(w.exe_path);
+                      return (
+                        <label key={w.hwnd} className={`capture-row ${selectable ? "" : "disabled"}`}>
+                          <Checkbox
+                            checked={captureSelected.has(w.hwnd)}
+                            disabled={!selectable}
+                            ariaLabel={w.title || "（无标题窗口）"}
+                            onChange={() => toggleWindow(w.hwnd)}
+                          />
+                          <span className="capture-title" title={w.title}>
+                            {w.title || "（无标题窗口）"}
+                          </span>
+                          <span className="capture-meta">
+                            {selectable ? w.exe_path!.split(/[\\/]/).pop() : "无法识别进程（将跳过）"}
+                            {w.is_minimized ? " · 已最小化" : ""}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="context-capture-foot">
+                  <span className="endpoint-hint">
+                    已选 {captureSelected.size} / {captureWindows.length}
+                  </span>
+                  <span className="flex-spacer" />
+                  <button type="button" className="btn" onClick={() => setCaptureOpen(false)}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="btn primary"
+                    onClick={() => void onCreateCapture()}
+                    disabled={busy === "capture" || captureSelected.size === 0}
+                  >
+                    保存现场
+                  </button>
+                </div>
+              </section>
+            )}
 
-            {ctx && (
+            {!captureOpen && !ctx && <div className="empty-hint">加载中…</div>}
+
+            {!captureOpen && ctx && (
               <>
                 {/* ── 工作现场 ── */}
                 <section className="context-section">
@@ -836,77 +951,6 @@ export default function TaskContextDrawer() {
           </div>
         </section>
       </div>
-
-      {captureOpen && (
-        <div
-          className="modal-mask"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setCaptureOpen(false);
-          }}
-        >
-          <div className="modal capture-modal" role="dialog" aria-modal="true" aria-label="捕获当前窗口">
-            <div className="modal-head">
-              <span>
-                <AppWindow size={13} /> 捕获当前窗口
-              </span>
-              <button className="icon-btn sm" onClick={() => setCaptureOpen(false)} title="关闭" aria-label="关闭">
-                <X size={13} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <label className="field">
-                <span>现场名称</span>
-                <input value={captureName} onChange={(e) => setCaptureName(e.target.value)} />
-              </label>
-              <div className="endpoint-hint">
-                只记录窗口标题、类名与进程路径，不读取窗口内容、不截图；句柄仅本次使用，不落库。
-              </div>
-              {captureLoading && <div className="empty-hint">正在枚举窗口…</div>}
-              {!captureLoading && captureWindows.length === 0 && <div className="empty-hint">没有可捕获的窗口。</div>}
-              {!captureLoading && captureWindows.length > 0 && (
-                <div className="capture-list">
-                  {captureWindows.map((w) => {
-                    const selectable = Boolean(w.exe_path);
-                    return (
-                      <label key={w.hwnd} className={`capture-row ${selectable ? "" : "disabled"}`}>
-                        <Checkbox
-                          checked={captureSelected.has(w.hwnd)}
-                          disabled={!selectable}
-                          ariaLabel={w.title || "（无标题窗口）"}
-                          onChange={() => toggleWindow(w.hwnd)}
-                        />
-                        <span className="capture-title" title={w.title}>
-                          {w.title || "（无标题窗口）"}
-                        </span>
-                        <span className="capture-meta">
-                          {selectable ? w.exe_path!.split(/[\\/]/).pop() : "无法识别进程（将跳过）"}
-                          {w.is_minimized ? " · 已最小化" : ""}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-            <div className="modal-foot">
-              <span className="endpoint-hint">
-                已选 {captureSelected.size} / {captureWindows.length}
-              </span>
-              <div className="flex-spacer" />
-              <button className="btn" onClick={() => setCaptureOpen(false)}>
-                取消
-              </button>
-              <button
-                className="btn primary"
-                onClick={() => void onCreateCapture()}
-                disabled={busy === "capture" || captureSelected.size === 0}
-              >
-                保存现场
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

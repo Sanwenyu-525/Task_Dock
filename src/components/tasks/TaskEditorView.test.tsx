@@ -40,8 +40,20 @@ beforeEach(() => {
   create.mockClear();
   onClose.mockClear();
   useTasksStore.setState({ update, create, remove: vi.fn(async () => {}), refresh: vi.fn(async () => {}) });
-  useNavigationStore.setState({ loadTaskLinks: vi.fn(async () => "ok" as const) });
-  useUiStore.setState({ openClipboard: vi.fn(), openContext: vi.fn(), showToast: vi.fn() });
+  useNavigationStore.setState({
+    loadTaskLinks: vi.fn(async () => "ok" as const),
+    // AppPicker 页内子视图只读已保存目标；测试不触发真实扫描
+    targetsLoaded: true,
+    targets: [],
+    scan: null,
+  });
+  useUiStore.setState({
+    openClipboard: vi.fn(),
+    openContext: vi.fn(),
+    showToast: vi.fn(),
+    tab: "tasks",
+    pendingTab: null,
+  });
 });
 afterEach(cleanup);
 
@@ -162,6 +174,81 @@ it("有未保存修改时返回先出页内确认条，放弃修改才返回", a
 
   await user.click(screen.getByRole("button", { name: "放弃修改" }));
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("跨主 Tab 切换：只记录待决导航，编辑器不卸载、草稿保留", async () => {
+  const user = userEvent.setup();
+  render(<TaskEditorView task={task} onClose={onClose} />);
+  const title = screen.getByLabelText("标题");
+  await user.clear(title);
+  await user.type(title, "还没保存的标题");
+
+  // 侧栏 / 更多菜单 / 快捷键 / 通知跳转都最终调用 setTab
+  useUiStore.getState().setTab("apps");
+
+  expect(useUiStore.getState().tab).toBe("tasks");
+  expect(useUiStore.getState().pendingTab).toMatchObject({
+    tab: "apps",
+    guardId: "task-editor",
+  });
+  expect(screen.getByLabelText("标题")).toHaveProperty("value", "还没保存的标题");
+  expect(onClose).not.toHaveBeenCalled();
+
+  // 「继续编辑」：撤销待决导航
+  useUiStore.getState().cancelPendingTab();
+  expect(useUiStore.getState().pendingTab).toBeNull();
+  expect(screen.getByLabelText("标题")).toHaveProperty("value", "还没保存的标题");
+});
+
+it("明确放弃修改后才完成跨 Tab 导航", async () => {
+  const user = userEvent.setup();
+  render(<TaskEditorView task={task} onClose={onClose} />);
+  const title = screen.getByLabelText("标题");
+  await user.clear(title);
+  await user.type(title, "要放弃的草稿");
+
+  useUiStore.getState().setTab("apps");
+  useUiStore.getState().confirmPendingTab();
+
+  expect(useUiStore.getState().tab).toBe("apps");
+  expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("保存进行中切换主 Tab 被明确拒绝，不产生错误态", async () => {
+  let resolveUpdate: (t: Task) => void = () => {};
+  update.mockImplementationOnce(
+    () => new Promise<Task>((resolve) => {
+      resolveUpdate = resolve;
+    }),
+  );
+  render(<TaskEditorView task={task} onClose={onClose} />);
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+  useUiStore.getState().setTab("apps");
+  expect(useUiStore.getState().tab).toBe("tasks");
+  expect(useUiStore.getState().pendingTab).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+
+  resolveUpdate(task);
+  await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+});
+
+it("关联目标选择器以页内子视图打开，返回后保留原有输入", async () => {
+  const user = userEvent.setup();
+  render(<TaskEditorView task={task} onClose={onClose} />);
+  const title = screen.getByLabelText("标题");
+  await user.clear(title);
+  await user.type(title, "选择目标前的草稿");
+
+  await user.click(screen.getByRole("button", { name: /添加目标/ }));
+  expect(screen.getByRole("region", { name: "添加应用" })).toBeTruthy();
+  expect(screen.queryByLabelText("标题")).toBeNull();
+  // 页内模式不再叠加全局遮罩
+  expect(document.querySelector(".modal-backdrop")).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "返回应用列表" }));
+  expect(screen.getByLabelText("标题")).toHaveProperty("value", "选择目标前的草稿");
+  expect(screen.getByText("未保存")).toBeTruthy();
 });
 
 it("卸载后到达的保存响应不再回调", async () => {
