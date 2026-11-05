@@ -27,6 +27,21 @@ function setMode(mode: "full" | "compact" | "minimal") {
   });
 }
 
+/** 读取品牌球某个伪元素的规则体；jsdom 不计算伪元素样式，只能断言样式表契约。 */
+function orbRule(pseudo: "before" | "after") {
+  return new RegExp(`\\.brand-orb::${pseudo}\\s*\\{([\\s\\S]*?)\\}`).exec(themesCss)?.[1] ?? "";
+}
+
+function darkOrbRule(pseudo: "before" | "after") {
+  return new RegExp(`:root\\[data-theme="dark"\\]\\s*\\.brand-orb::${pseudo}\\s*\\{([^}]*)\\}`).exec(themesCss)?.[1] ?? "";
+}
+
+function brandOrbKeyframes() {
+  const start = themesCss.indexOf("@keyframes brand-orb-cycle");
+  if (start < 0) return "";
+  return themesCss.slice(start, themesCss.indexOf("@media (prefers-reduced-motion", start));
+}
+
 describe("TitleBar 剪贴板入口", () => {
   beforeEach(() => {
     useUiStore.setState({ tab: "tasks", clipboardOpen: false, clipboardLinkTask: null });
@@ -108,46 +123,91 @@ describe("TitleBar 品牌球与状态点", () => {
     expect(screen.getByText("Task Dock")).toBeTruthy();
   });
 
-  it("品牌球呼吸光晕由独立伪元素绘制，不参与布局且不可命中", () => {
-    const rule = /\.brand-orb::after\s*\{([\s\S]*?)\}/.exec(themesCss);
-    expect(rule, "缺少 .brand-orb::after 光晕层").toBeTruthy();
-    const body = rule![1];
-    expect(body).toMatch(/position:\s*absolute/);
-    expect(body).toMatch(/inset:\s*-8px/);
-    expect(body).toMatch(/pointer-events:\s*none/);
-    expect(body).toMatch(/animation:\s*brand-orb-breathe\s+3\.6s\s+ease-in-out\s+infinite/);
-    // 内圈透明，光晕只叠加在球体外围，不把圆圈本体一起洗亮。
-    expect(body).toMatch(/transparent 0%/);
-    expect(body).toMatch(/transparent 30%/);
-    expect(body).toMatch(/radial-gradient/);
+  it("两层动效都裁在 14px 圆内，旧外围光环不再存在", () => {
+    for (const body of [orbRule("before"), orbRule("after")]) {
+      expect(body, "缺少品牌球动效层").toBeTruthy();
+      expect(body).toMatch(/position:\s*absolute/);
+      expect(body).toMatch(/inset:\s*0;/);
+      expect(body).toMatch(/border-radius:\s*inherit/);
+      expect(body).toMatch(/pointer-events:\s*none/);
+      expect(body).not.toMatch(/inset:\s*-\d/);
+    }
+    // 旧外围环 Token 与按预设复制动画的写法都已清除。
+    expect(themesCss).not.toMatch(/--orb-glow-/);
+    expect(themesCss).not.toMatch(/\[data-preset="(?:frosted|dream-gradient)"\][^{]*\.brand-orb::(?:before|after)/);
+    // 球体本体尺寸固定，动画只挂在伪元素上，不改布局。
+    const base = /\.brand-orb\s*\{([\s\S]*?)\}/.exec(themesCss)?.[1] ?? "";
+    expect(base).toMatch(/width:\s*14px/);
+    expect(base).toMatch(/height:\s*14px/);
+    expect(base).not.toMatch(/animation|transform/);
   });
 
-  it("呼吸关键帧只改 opacity，不改变圆圈布局尺寸", () => {
-    const kfStart = themesCss.indexOf("@keyframes brand-orb-breathe");
-    expect(kfStart, "缺少 brand-orb-breathe 关键帧").toBeGreaterThan(-1);
-    const kf = themesCss.slice(kfStart, themesCss.indexOf("@media (prefers-reduced-motion", kfStart));
-    expect(kf).toMatch(/opacity:\s*var\(--orb-glow-(min|peak)\)/);
-    // 关键帧不写宽高/位移/缩放/滤镜/阴影，布局尺寸只由静态规则决定。
-    expect(kf).not.toMatch(/width|height|transform|scale|filter|box-shadow|inset/);
+  it("颜色是圆内静态渐变叠层，变化只发生在 opacity", () => {
+    expect(orbRule("before")).toMatch(/--orb-cool:/);
+    expect(orbRule("before")).toMatch(/radial-gradient/);
+    expect(orbRule("after")).toMatch(/--orb-warm:/);
+    expect(orbRule("after")).toMatch(/radial-gradient/);
+    // 关键帧不写渐变/阴影/滤镜：色泽层是预先定义的静态渐变，只交替透明度。
+    expect(brandOrbKeyframes()).not.toMatch(/background|linear-gradient|radial-gradient/);
   });
 
-  it("浅色与深色使用对应的光晕强度 Token，两套预设共享同一组动画结构", () => {
-    const lightPeak = /\.brand-orb::after\s*\{[\s\S]*?--orb-glow-peak:\s*([\d.]+)/.exec(themesCss);
-    const darkRule = /:root\[data-theme="dark"\]\s*\.brand-orb::after\s*\{([^}]*)\}/.exec(themesCss);
-    expect(lightPeak, "浅色峰值缺失").toBeTruthy();
-    expect(Number(lightPeak![1])).toBeGreaterThanOrEqual(0.55);
-    expect(Number(lightPeak![1])).toBeLessThanOrEqual(0.70);
-    expect(darkRule, "深色峰值缺失").toBeTruthy();
-    expect(Number(/--orb-glow-peak:\s*([\d.]+)/.exec(darkRule![1])![1])).toBeLessThan(Number(lightPeak![1]));
-    // 两套视觉预设共用同一组 Token：不存在按预设再覆写的光晕规则。
-    expect(themesCss).not.toMatch(/\[data-preset="(?:frosted|dream-gradient)"\][^{]*\.brand-orb::after\s*\{/);
-    // 同一套 keyframes 通过变量读取两种明暗的峰值，不复制第二份动画。
-    expect(themesCss.match(/@keyframes brand-orb-breathe/g)?.length).toBe(1);
+  it("7.2s 双周期时间轴：第一口气更快、第二口气更慢、首尾连续", () => {
+    for (const body of [orbRule("before"), orbRule("after")]) {
+      expect(body).toMatch(/animation:\s*brand-orb-cycle\s+7\.2s\s+linear\s+infinite/);
+    }
+    const kf = brandOrbKeyframes();
+    // 起点与终点同为静息值 → 无缝循环；两个峰值分别落在 24% 与 75.5%。
+    expect(kf).toMatch(/0%\s*\{\s*opacity:\s*var\(--orb-layer-min\)/);
+    expect(kf).toMatch(/100%\s*\{\s*opacity:\s*var\(--orb-layer-min\)/);
+    expect(kf).toMatch(/24%\s*\{\s*opacity:\s*var\(--orb-layer-fast\)/);
+    expect(kf).toMatch(/75\.5%\s*\{\s*opacity:\s*var\(--orb-layer-slow\)/);
+    // 第一次吸气 1.728s < 第二次吸气 2.436s（同一 7.2s 时间轴）。
+    expect((24 / 100) * 7.2).toBeLessThan(((75.5 - 41.67) / 100) * 7.2);
+    // 分段缓动承担「加速 → 减速 → 短停 → 慢呼气」；不碰布局/滤镜/阴影。
+    expect(kf.match(/cubic-bezier\(/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+    expect(kf).not.toMatch(/width|height|transform|scale|filter|box-shadow|backdrop-filter/);
   });
 
-  it("减少动态时关闭呼吸，但仍保留静态柔光", () => {
-    expect(themesCss).toMatch(
-      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.brand-orb::after\s*\{[^}]*animation:\s*none[^}]*opacity:\s*0\.24/,
-    );
+  it("颜色、高光与节奏共用同一关键帧，深浅只通过 Token 调强度", () => {
+    expect(themesCss.match(/@keyframes brand-orb-cycle/g)?.length).toBe(1);
+    const beforeAnim = /animation:\s*([^;]+);/.exec(orbRule("before"))?.[1]?.trim();
+    const afterAnim = /animation:\s*([^;]+);/.exec(orbRule("after"))?.[1]?.trim();
+    expect(beforeAnim).toBe(afterAnim);
+    const lightFast = Number(/--orb-layer-fast:\s*([\d.]+)/.exec(orbRule("before"))?.[1]);
+    const darkFast = Number(/--orb-layer-fast:\s*([\d.]+)/.exec(darkOrbRule("before"))?.[1]);
+    const lightSlow = Number(/--orb-layer-slow:\s*([\d.]+)/.exec(orbRule("after"))?.[1]);
+    const darkSlow = Number(/--orb-layer-slow:\s*([\d.]+)/.exec(darkOrbRule("after"))?.[1]);
+    expect(darkFast).toBeLessThan(lightFast);
+    expect(darkSlow).toBeLessThan(lightSlow);
+  });
+
+  it("冷色/暖紫由 :root Token 按预设取值，伪元素只消费 Token", () => {
+    // 梦幻渐变底色中段本身是紫蓝，必须换更蓝的冷色 Token，才能出现色相转换。
+    expect(orbRule("before")).toMatch(/--orb-cool:\s*color-mix\(in srgb, var\(--orb-cool-tone\)/);
+    expect(orbRule("after")).toMatch(/--orb-warm:\s*color-mix\(in srgb, var\(--orb-warm-tone\)/);
+    expect(darkOrbRule("before")).toMatch(/var\(--orb-cool-tone\)/);
+    expect(darkOrbRule("after")).toMatch(/var\(--orb-warm-tone\)/);
+    expect(themesCss).toMatch(/\[data-preset="dream-gradient"\][^{]*\{[^}]*--orb-cool-tone:/);
+    expect(themesCss).toMatch(/\[data-preset="dream-gradient"\][^{]*\{[^}]*--orb-warm-tone:/);
+    // 预设只改 Token，不复制第二套动画。
+    expect(themesCss).not.toMatch(/\[data-preset="(?:frosted|dream-gradient)"\][^{]*\.brand-orb::(?:before|after)/);
+  });
+
+  it("减少动态时取消双周期循环，保留静态玻璃球", () => {
+    const kfStart = themesCss.indexOf("@keyframes brand-orb-cycle");
+    const reduceBody = themesCss.slice(themesCss.indexOf("@media (prefers-reduced-motion: reduce)", kfStart));
+    expect(reduceBody).toMatch(/\.brand-orb::before\s*\{[^}]*animation:\s*none[^}]*opacity:\s*0\.3/);
+    expect(reduceBody).toMatch(/\.brand-orb::after\s*\{[^}]*animation:\s*none[^}]*opacity:\s*0\.12/);
+  });
+
+  it("品牌球对读屏隐藏，标题栏结构不被动画影响", () => {
+    const { container } = render(<TitleBar />);
+    const orb = container.querySelector(".brand-orb");
+    expect(orb).toBeTruthy();
+    expect(orb!.getAttribute("aria-hidden")).toBe("true");
+    // 品牌球自身必须是拖拽热区：Tauri 只认事件 target 上的 data-tauri-drag-region。
+    expect(orb!.getAttribute("data-tauri-drag-region")).not.toBeNull();
+    expect(container.querySelector(".titlebar .agent-dot")).toBeNull();
+    expect(screen.getByText("Task Dock")).toBeTruthy();
   });
 });

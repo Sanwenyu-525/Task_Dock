@@ -22,6 +22,7 @@ import {
 } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useTabGuard } from "../../lib/tabGuard";
 
 const PROJECT_STATUS_OPTIONS = (
   Object.keys(PLANNING_PROJECT_STATUS_LABELS) as PlanningProjectStatus[]
@@ -74,6 +75,14 @@ function EditorShell({
   children,
   actions,
 }: EditorShellProps) {
+  // 三个规划编辑器共用同一套跨 Tab 离开保护，避免各视图复制导航拦截。
+  useTabGuard({
+    id: "planning-editor",
+    label: title,
+    dirty,
+    busy,
+    discard: onDiscard,
+  });
   return (
     <div className="planning-editor" role="region" aria-label={title}>
       <header className="planning-editor-head">

@@ -11,9 +11,11 @@ import {
   entriesForSurface,
   leftEntryForTab,
   navEntry,
+  navLabel,
   type NavSurface,
 } from "./navigationRegistry";
 import { RAIL_ORDER, TAB_ORDER } from "../store/useUiStore";
+import { translate } from "../i18n";
 
 /** 按已发布 TAB_ORDER 推导某逻辑 Tab 的展示快捷键（Ctrl+1…9、Ctrl+0）。 */
 function shortcutForTab(tab: string): string | null {
@@ -78,5 +80,30 @@ describe("导航注册中心", () => {
   it("按 ID 查询不会把未知入口当作已注册", () => {
     expect(navEntry("tasks")?.label).toBe("任务");
     expect(navEntry("not-a-real-entry")).toBeUndefined();
+  });
+
+  it("每个入口都有唯一翻译 Key；中英文标签由 Key 决定，ID/顺序/快捷键不受影响", () => {
+    const keys = NAV_ENTRIES.map((entry) => entry.labelKey);
+    expect(keys.every((key) => typeof key === "string" && key.startsWith("nav."))).toBe(true);
+    expect(new Set(keys).size).toBe(keys.length);
+
+    const before = NAV_ENTRIES.map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      order: entry.defaults.left.order,
+      shortcut: entry.shortcut,
+    }));
+    expect(navLabel(navEntry("tasks")!, (key) => translate("zh-CN", key))).toBe("任务");
+    expect(navLabel(navEntry("tasks")!, (key) => translate("en-US", key))).toBe("Tasks");
+    expect(navLabel(navEntry("settings")!, (key) => translate("en-US", key))).toBe("Settings");
+    // 翻译 Key 只是文案层，入口身份元数据不变
+    expect(
+      NAV_ENTRIES.map((entry) => ({
+        id: entry.id,
+        label: entry.label,
+        order: entry.defaults.left.order,
+        shortcut: entry.shortcut,
+      })),
+    ).toEqual(before);
   });
 });

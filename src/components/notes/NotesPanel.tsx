@@ -11,7 +11,6 @@ import {
   Loader2,
   Pin,
   Plus,
-  Search,
   Star,
 } from "lucide-react";
 
@@ -24,6 +23,7 @@ import {
   type NotesFilter,
 } from "../../store/useNotesStore";
 import { locateElement } from "../global-search/locate";
+import { SearchField } from "../ui";
 import NoteEditor from "./NoteEditor";
 import "./notes.css";
 
@@ -129,17 +129,15 @@ export default function NotesPanel() {
           </button>
         </div>
 
-        <div className="notes-search">
-          <Search size={13} aria-hidden="true" />
-          <input
-            type="search"
-            className="notes-search-input"
-            value={query}
-            placeholder={t("notes.searchPlaceholder")}
-            aria-label={t("notes.searchAria")}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
+        <SearchField
+          className="notes-search"
+          size="compact"
+          value={query}
+          placeholder={t("notes.searchPlaceholder")}
+          ariaLabel={t("notes.searchAria")}
+          clearLabel={t("notes.clearSearch")}
+          onChange={setQuery}
+        />
 
         <div
           className="seg-group subtle notes-filter"

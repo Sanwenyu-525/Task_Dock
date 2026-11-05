@@ -13,6 +13,7 @@ import { useSettingsStore } from "../store/useSettingsStore";
 import { useUiStore } from "../store/useUiStore";
 import { applyMode } from "../lib/bridge";
 import { PRESET_LABELS, VISUAL_PRESETS, resolveVisualPreset } from "../lib/theme";
+import { resolveWindowMode } from "../lib/windowMode";
 import DropdownMenu, { type DropdownMenuItem } from "./ui/DropdownMenu";
 
 const MODES = [
@@ -73,7 +74,8 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
   const openClipboard = useUiStore((s) => s.openClipboard);
   const closeClipboard = useUiStore((s) => s.closeClipboard);
   const clipboardOpen = useUiStore((s) => s.clipboardOpen);
-  const mode = settings?.mode ?? "full";
+  // 与 App 共用同一归一化：损坏/未知的模式值下，菜单不能显示「无选中项」。
+  const mode = resolveWindowMode(settings?.mode);
   const theme = settings?.theme ?? "system";
   const preset = resolveVisualPreset(settings?.visual_preset);
 
@@ -110,7 +112,9 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
 
   return (
     <div className="titlebar" data-tauri-drag-region inert={inert}>
-      <span className="brand-orb" aria-hidden="true" />
+      {/* 品牌球也作为窗口拖拽热区：Tauri 的 drag-region 只认事件 target 自身的
+          data-tauri-drag-region，父级标题栏的属性不会向下传递。 */}
+      <span className="brand-orb" aria-hidden="true" data-tauri-drag-region />
       <span className="titlebar-title" data-tauri-drag-region>
         Task Dock
       </span>

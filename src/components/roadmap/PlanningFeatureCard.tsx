@@ -17,7 +17,7 @@ import {
   Send,
   Trash2,
 } from "lucide-react";
-import { DatePicker, Select, Checkbox, ConfirmDialog } from "../ui";
+import { DatePicker, Select, Checkbox, ConfirmDialog, StatusBadge } from "../ui";
 import { formatRelative } from "../../lib/format";
 import {
   PLANNING_FEATURE_STATUS_LABELS,
@@ -27,6 +27,7 @@ import {
   type PlanningPriority,
 } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
+import { PLANNING_STATUS_TONE } from "./PlanningBits";
 import { useUiStore } from "../../store/useUiStore";
 
 export const FEATURE_STATUS_OPTIONS = (
@@ -43,23 +44,6 @@ const PRIORITY_OPTIONS: { value: PlanningPriority; label: string }[] = [
 export function stepProgressText(f: PlanningFeature): string {
   if (f.step_total === 0) return "未拆分步骤";
   return `步骤 ${f.step_done}/${f.step_total}`;
-}
-
-function statusBadgeClass(status: PlanningFeatureStatus): string {
-  switch (status) {
-    case "completed":
-      return "p-completed";
-    case "in_progress":
-      return "p-in_progress";
-    case "review":
-      return "p-review";
-    case "blocked":
-      return "p-blocked";
-    case "paused":
-      return "p-paused";
-    default:
-      return "p-planned";
-  }
 }
 
 export function PlanningActivityRow({ a }: { a: PlanningActivity }) {
@@ -211,9 +195,9 @@ export function PlanningFeatureCard({
       >
         <span className="planning-card-title-row">
           <span className="planning-card-title">{feature.title}</span>
-          <em className={`planning-status ${statusBadgeClass(feature.status)}`}>
+          <StatusBadge tone={PLANNING_STATUS_TONE[feature.status]} size="sm">
             {PLANNING_FEATURE_STATUS_LABELS[feature.status]}
-          </em>
+          </StatusBadge>
           <span className={`priority-tag ${feature.priority.toLowerCase()}`}>{feature.priority}</span>
           <span className={`planning-progress ${feature.step_total === 0 ? "none" : ""}`}>
             {stepProgressText(feature)}

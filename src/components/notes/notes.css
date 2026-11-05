@@ -34,34 +34,9 @@
   white-space: nowrap;
 }
 
+/* 搜索容器与输入样式由公共 SearchField 提供，这里只保留列表内宽度。 */
 .notes-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border-subtle);
-  background: var(--card-face);
-  color: var(--text-tertiary);
-}
-
-.notes-search:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.notes-search-input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 12px;
-  outline: none;
-}
-
-.notes-search-input::placeholder {
-  color: var(--text-tertiary);
+  width: 100%;
 }
 
 .notes-filter {

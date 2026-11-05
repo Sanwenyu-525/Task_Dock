@@ -16,6 +16,7 @@ import {
 } from "../../lib/globalSearchBridge";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useGlobalSearchShortcut } from "../../hooks/useGlobalSearchShortcut";
+import useImeComposition from "../../hooks/useImeComposition";
 import { GlobalSearchResults } from "./GlobalSearchResults";
 
 export function GlobalSearchDialog() {
@@ -44,6 +45,7 @@ export function GlobalSearchDialog() {
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const ime = useImeComposition();
   useOverlayLayer("dialog", open, closeSearch, rootRef);
   useFocusTrap(open, rootRef, { initial: inputRef });
 
@@ -60,6 +62,8 @@ export function GlobalSearchDialog() {
   if (!open) return null;
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // 输入法组合中：方向键留给候选列表，Enter 只确认候选，不打开结果
+    if (ime.isComposing(e)) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       moveActive(1);
@@ -98,6 +102,8 @@ export function GlobalSearchDialog() {
             aria-label="搜索关键词"
             maxLength={200}
             onChange={(e) => setQuery(e.target.value)}
+            onCompositionStart={ime.onCompositionStart}
+            onCompositionEnd={ime.onCompositionEnd}
           />
           {query ? (
             <button

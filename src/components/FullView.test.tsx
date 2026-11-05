@@ -34,6 +34,7 @@ import { useActionsStore } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { allEntryIds } from "../lib/navigationRegistry";
+import { __resetLocaleForTests, setLocalePreference } from "../i18n";
 
 /** 写入一份指定左侧可见入口的导航配置（known 覆盖当前全部入口，确保其余为「用户隐藏」）。 */
 function seedLeftLayout(left: string[]) {
@@ -295,3 +296,70 @@ describe("导航显隐", () => {
   });
 });
 
+
+// 英文模式：导航文案、aria-label、提示与计数全部走词典；入口身份/顺序/快捷键不变。
+describe("英文导航", () => {
+  afterEach(() => {
+    __resetLocaleForTests();
+    useSettingsStore.setState({ settings: null });
+  });
+
+  it("切换英文后导航标签、可访问名与提示即时更新，顺序不变", async () => {
+    setLocalePreference("en-US");
+    render(<FullView />);
+
+    const nav = screen.getByRole("navigation", { name: "Main navigation" });
+    expect(nav).toBeTruthy();
+    const labels = [...document.querySelectorAll(".rail-items .rail-label")].map(
+      (node) => node.textContent,
+    );
+    expect(labels).toEqual([
+      "Tasks",
+      "Agents",
+      "Apps",
+      "Widgets",
+      "Actions",
+      "Clipboard",
+      "Capture & Shelf",
+      "Workflows",
+      "History",
+      "Roadmap",
+      "Settings",
+    ]);
+
+    // 收集与暂存徽标数仍来自未处理计数（2），aria 与提示按英文模板拼接
+    const collection = screen.getByRole("button", {
+      name: "Capture & Shelf (2)",
+    });
+    expect(collection.getAttribute("data-tip")).toBe("Capture & Shelf (2 pending captures)");
+    // 窄窗只留图标时，可访问名由 aria-label 提供
+    expect(collection.getAttribute("aria-label")).toBe("Capture & Shelf (2)");
+
+    const newTask = screen.getByRole("button", { name: "New task" });
+    expect(newTask.getAttribute("data-tip")).toBe("New task (Ctrl+K)");
+  });
+
+  it("英文模式下切换页面仍按 Tab 身份工作（不依赖文案）", async () => {
+    const user = userEvent.setup();
+    setLocalePreference("en-US");
+    render(<FullView />);
+
+    await user.click(screen.getByRole("button", { name: "Roadmap" }));
+    expect(await screen.findByText("roadmap-panel")).toBeTruthy();
+    expect(useUiStore.getState().tab).toBe("roadmap");
+  });
+
+  it("英文模式「更多」菜单与自定义导航文案翻译，隐藏项仍可访问", async () => {
+    const user = userEvent.setup();
+    setLocalePreference("en-US");
+    seedLeftLayout(allEntryIds("left").filter((id) => id !== "apps"));
+    render(<FullView />);
+
+    const more = screen.getByRole("button", { name: "More navigation entries" });
+    expect(more.getAttribute("data-tip")).toBe("More");
+    await user.click(more);
+    expect(screen.getByRole("menuitemradio", { name: "Apps" })).toBeTruthy();
+    await user.click(screen.getByRole("menuitem", { name: "Customize navigation" }));
+    expect(useUiStore.getState().tab).toBe("settings");
+  });
+});

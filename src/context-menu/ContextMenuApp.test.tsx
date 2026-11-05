@@ -33,12 +33,19 @@ function settingsStub(overrides: Partial<Record<string, unknown>> = {}) {
     autostart: false,
     snap_enabled: true,
     hotkey_enabled: true,
+    snap_display_mode: "capsule",
     ...overrides,
   };
 }
 
 function snapshotOf(s: ReturnType<typeof settingsStub>) {
-  return { mode: s.mode, theme: s.theme, autostart: s.autostart, visual_preset: s.visual_preset };
+  return {
+    mode: s.mode,
+    theme: s.theme,
+    autostart: s.autostart,
+    visual_preset: s.visual_preset,
+    snap_display_mode: s.snap_display_mode,
+  };
 }
 
 /** 动作默认成功并回传最新快照（与后端 MenuActionResult 协议一致）。 */
@@ -70,15 +77,23 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("渲染结构", () => {
-  it("渲染四组标题与全部 11 个菜单项", async () => {
-    render(<ContextMenuApp />);
+  it("渲染五组标题与全部 13 个菜单项", async () => {
+    const { container } = render(<ContextMenuApp />);
     await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
-    for (const label of ["常用操作", "布局模式", "外观与系统", "退出操作"]) {
+    const groupLabels = ["常用操作", "布局模式", "吸附方式", "外观与系统", "退出操作"];
+    for (const label of groupLabels) {
       expect(screen.getByText(label)).toBeTruthy();
     }
+    // 分组顺序与视觉顺序一致（键盘导航按同一展平顺序）
+    expect(screen.getAllByRole("group").map((g) => g.getAttribute("aria-label"))).toEqual(
+      groupLabels,
+    );
+    expect(container.querySelectorAll(".menu-sep")).toHaveLength(4);
     expect(screen.getAllByRole("menuitem")).toHaveLength(4); // 显示/隐藏 · 快速添加 · 快速捕获 · 退出
-    expect(screen.getAllByRole("menuitemradio")).toHaveLength(6); // 3 模式 + 3 主题
+    expect(screen.getAllByRole("menuitemradio")).toHaveLength(8); // 3 模式 + 2 吸附方式 + 3 主题
     expect(screen.getAllByRole("menuitemcheckbox")).toHaveLength(1); // 自启动
+    // 13 个可交互项，没有多余的按钮混进菜单
+    expect(container.querySelectorAll("button")).toHaveLength(13);
   });
 
   it("勾选态与设置快照同步（mode=compact / theme=dark / 自启动开）", async () => {
@@ -101,6 +116,18 @@ describe("渲染结构", () => {
     listenHandlers.get("theme-changed")?.({ payload: "dark" });
     await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "深色主题" }).getAttribute("aria-checked")).toBe("true"));
     expect(screen.getByRole("menuitemradio", { name: "跟随系统" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("收到 snap-form-changed 事件时吸附方式勾选态实时更新", async () => {
+    render(<ContextMenuApp />);
+    await waitFor(() =>
+      expect(screen.getByRole("menuitemradio", { name: "胶囊隐藏" }).getAttribute("aria-checked")).toBe("true"),
+    );
+    listenHandlers.get("snap-form-changed")?.({ payload: "full" });
+    await waitFor(() =>
+      expect(screen.getByRole("menuitemradio", { name: "完整面板" }).getAttribute("aria-checked")).toBe("true"),
+    );
+    expect(screen.getByRole("menuitemradio", { name: "胶囊隐藏" }).getAttribute("aria-checked")).toBe("false");
   });
 });
 
@@ -173,6 +200,82 @@ describe("动作分发", () => {
   });
 });
 
+describe("吸附方式", () => {
+  it("默认/缺省快照勾选「胶囊隐藏」（老库无该字段也按后端默认展示）", async () => {
+    invokeMock.mockImplementation((cmd) =>
+      cmd === "get_settings"
+        ? Promise.resolve({ ...settingsStub(), snap_display_mode: undefined })
+        : Promise.resolve(),
+    );
+    render(<ContextMenuApp />);
+    await waitFor(() =>
+      expect(screen.getByRole("menuitemradio", { name: "胶囊隐藏" }).getAttribute("aria-checked")).toBe("true"),
+    );
+    expect(screen.getByRole("menuitemradio", { name: "完整面板" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("快照 snap_display_mode=full 时勾选「完整面板」", async () => {
+    invokeMock.mockImplementation((cmd) =>
+      cmd === "get_settings"
+        ? Promise.resolve(settingsStub({ snap_display_mode: "full" }))
+        : Promise.resolve(),
+    );
+    render(<ContextMenuApp />);
+    await waitFor(() =>
+      expect(screen.getByRole("menuitemradio", { name: "完整面板" }).getAttribute("aria-checked")).toBe("true"),
+    );
+    expect(screen.getByRole("menuitemradio", { name: "胶囊隐藏" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("点击「完整面板」调用 snap-form:full，成功快照回传后勾选态更新", async () => {
+    const user = userEvent.setup();
+    actionResult = {
+      ok: true,
+      snapshot: { ...snapshotOf(settingsStub()), snap_display_mode: "full" },
+    };
+    render(<ContextMenuApp />);
+    await screen.findByRole("menu");
+    await user.click(screen.getByRole("menuitemradio", { name: "完整面板" }));
+    expect(lastInvoke("context_menu_action")?.[1]).toEqual({ action: "snap-form:full" });
+    await waitFor(() =>
+      expect(screen.getByRole("menuitemradio", { name: "完整面板" }).getAttribute("aria-checked")).toBe("true"),
+    );
+    expect(screen.getByRole("menuitemradio", { name: "胶囊隐藏" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("后端失败：行内反馈，权威快照仍勾选「胶囊隐藏」（不虚假勾选）", async () => {
+    const user = userEvent.setup();
+    actionResult = {
+      ok: false,
+      error: "切换吸附方式失败：数据库错误",
+      snapshot: snapshotOf(settingsStub()),
+    };
+    render(<ContextMenuApp />);
+    await screen.findByRole("menu");
+    await user.click(screen.getByRole("menuitemradio", { name: "完整面板" }));
+    expect(lastInvoke("context_menu_action")?.[1]).toEqual({ action: "snap-form:full" });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("切换吸附方式失败"));
+    expect(screen.getByRole("menuitemradio", { name: "胶囊隐藏" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("menuitemradio", { name: "完整面板" }).getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("IPC 异常：反馈并回读权威快照，吸附组不残留乐观勾选", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((cmd) => {
+      if (cmd === "get_settings") return Promise.resolve(settingsStub());
+      if (cmd === "context_menu_action") return Promise.reject(new Error("ipc down"));
+      return Promise.resolve();
+    });
+    render(<ContextMenuApp />);
+    await screen.findByRole("menu");
+    await user.click(screen.getByRole("menuitemradio", { name: "完整面板" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("菜单命令未响应"));
+    expect(screen.getByRole("menuitemradio", { name: "胶囊隐藏" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("menuitemradio", { name: "完整面板" }).getAttribute("aria-checked")).toBe("false");
+  });
+});
+
 describe("键盘交互", () => {
   it("show 后初始焦点落在勾选项，↑↓ 移动，Enter 触发当前项", async () => {
     const user = userEvent.setup();
@@ -196,6 +299,42 @@ describe("键盘交互", () => {
     await user.keyboard("{Enter}");
     expect(lastInvoke("context_menu_action")?.[1]).toEqual({ action: "mode:full" });
     void menu;
+  });
+
+  it("键盘导航顺序：布局模式 → 吸附方式 → 外观与系统，Enter 触发吸附动作", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((cmd) =>
+      cmd === "get_settings"
+        ? Promise.resolve(
+            settingsStub({ mode: "minimal", theme: "system", snap_display_mode: "capsule" }),
+          )
+        : Promise.resolve(),
+    );
+    render(<ContextMenuApp />);
+    await screen.findByRole("menu");
+    fireShow();
+    // 初始焦点：第一个勾选项 = 极简模式（snap 组排在布局组之后、主题组之前）
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "极简模式" })),
+    );
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "紧凑模式" })),
+    );
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "完整模式" })),
+    );
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "胶囊隐藏" })),
+    );
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "完整面板" })),
+    );
+    await user.keyboard("{Enter}");
+    expect(lastInvoke("context_menu_action")?.[1]).toEqual({ action: "snap-form:full" });
   });
 
   it("Escape 关闭菜单（调用 hide_context_menu）", async () => {

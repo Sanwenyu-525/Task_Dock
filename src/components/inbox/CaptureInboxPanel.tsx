@@ -31,6 +31,7 @@ import { locateElement } from "../global-search/locate";
 import { copyText } from "../../lib/clipboard";
 import { formatRelative } from "../../lib/format";
 import type { CaptureItem, CaptureKind } from "../../lib/bridge";
+import { StatusBadge } from "../ui";
 import type { IconComponent } from "../ui/AgentIcon";
 
 const KIND_LABELS: Record<CaptureKind, string> = {
@@ -317,9 +318,12 @@ export default function CaptureInboxPanel() {
                     {KIND_LABELS[item.kind]}
                   </span>
                   {filter === "all" && (
-                    <span className={`inbox-status inbox-status-${item.status}`}>
+                    <StatusBadge
+                      tone={item.status === "converted" ? "info" : item.status === "handled" ? "success" : "neutral"}
+                      size="md"
+                    >
                       {STATUS_LABELS[item.status]}
-                    </span>
+                    </StatusBadge>
                   )}
                   <span className="flex-spacer" />
                   <span className="inbox-time" title={item.created_at}>

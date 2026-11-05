@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
-  ChevronDown, Clipboard, HardDrive, Loader2, Plus, Search, Settings2, Star, Trash2, Upload, X,
+  ChevronDown, Clipboard, HardDrive, Loader2, Plus, Settings2, Star, Trash2, Upload, X,
 } from "lucide-react";
 import {
   clipboardView,
@@ -35,7 +35,7 @@ import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { ConfirmDialog } from "../ui/Dialog";
-import { DropdownMenu } from "../ui";
+import { DropdownMenu, SearchField } from "../ui";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
 import ShelfItemCard from "./ShelfItemCard";
 import ShelfDetail from "./ShelfDetail";
@@ -136,7 +136,12 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingLocate]);
 
-  // 搜索输入去抖
+  // 搜索输入去抖：输入框保留即时草稿，避免受控值与 250ms 去抖互相拉扯。
+  const [searchDraft, setSearchDraft] = useState(filter.search ?? "");
+  useEffect(() => {
+    setSearchDraft(filter.search ?? "");
+  }, [filter.search]);
+
   const onSearchInput = useCallback(
     (v: string) => {
       if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
@@ -479,16 +484,17 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           placement="bottom-start"
         />
 
-        <label className="shelf-search">
-          <Search size={13} aria-hidden="true" />
-          <input
-            type="search"
-            className="input-embedded"
-            placeholder="搜索名称 / 内容 / 备注"
-            aria-label="搜索暂存条目"
-            onChange={(e) => onSearchInput(e.target.value)}
-          />
-        </label>
+        <SearchField
+          className="shelf-search"
+          size="compact"
+          value={searchDraft}
+          placeholder="搜索名称 / 内容 / 备注"
+          ariaLabel="搜索暂存条目"
+          onChange={(v) => {
+            setSearchDraft(v);
+            onSearchInput(v);
+          }}
+        />
 
         <div className="seg-group" role="tablist" aria-label="类型筛选">
           {KIND_FILTERS.map((k) => (

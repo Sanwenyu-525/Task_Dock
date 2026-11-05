@@ -1,7 +1,7 @@
 //! 规划中心四视图共用的小型展示件：项目选择器、进度条、功能状态徽标。
 //! 颜色只做辅助，所有状态徽标同时带文本，不作为唯一识别依据。
 
-import { Select } from "../ui";
+import { Select, StatusBadge, type StatusTone } from "../ui";
 import {
   PLANNING_FEATURE_STATUS_LABELS,
   type PlanningFeatureStatus,
@@ -40,11 +40,21 @@ export function PlanningProgressBar({
   );
 }
 
+/** 规划功能状态 → 语义色；文案映射仍由 PLANNING_FEATURE_STATUS_LABELS 负责。 */
+export const PLANNING_STATUS_TONE: Record<PlanningFeatureStatus, StatusTone> = {
+  planned: "neutral",
+  in_progress: "warning",
+  review: "info",
+  completed: "success",
+  blocked: "danger",
+  paused: "neutral",
+};
+
 export function PlanningFeatureStatusBadge({ status }: { status: PlanningFeatureStatus }) {
   return (
-    <span className={`planning-status-badge st-${status}`}>
+    <StatusBadge tone={PLANNING_STATUS_TONE[status]} size="sm">
       {PLANNING_FEATURE_STATUS_LABELS[status]}
-    </span>
+    </StatusBadge>
   );
 }
 

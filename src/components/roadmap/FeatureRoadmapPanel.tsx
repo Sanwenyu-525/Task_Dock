@@ -7,7 +7,8 @@
 //! - 「待开发」只代表登记与规划，不代表功能可用；已实现项说明现有入口，避免重复开发
 
 import { useMemo, useState } from "react";
-import { Search, X, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
+import { SearchField, StatusBadge, type StatusTone } from "../ui";
 import {
   CATEGORY_META,
   FEATURE_CATALOG,
@@ -49,9 +50,12 @@ function matchesSearch(f: FeatureEntry, query: string): boolean {
   );
 }
 
-function StatusBadge({ status }: { status: FeatureStatus }) {
-  return <em className={`roadmap-status s-${status}`}>{STATUS_META[status].label}</em>;
-}
+const FEATURE_STATUS_TONE: Record<FeatureStatus, StatusTone> = {
+  implemented: "success",
+  partial: "warning",
+  planned: "neutral",
+  blocked: "danger",
+};
 
 /**
  * 单张功能卡片（导出以便测试用独立夹具覆盖四类状态中的每一种，
@@ -77,7 +81,9 @@ export function FeatureCard({
       >
         <span className="roadmap-card-title-row">
           <span className="roadmap-card-title">{feature.title}</span>
-          <StatusBadge status={feature.status} />
+          <StatusBadge tone={FEATURE_STATUS_TONE[feature.status]} size="sm">
+            {meta.label}
+          </StatusBadge>
           <span className={`priority-tag ${feature.priority.toLowerCase()}`}>{feature.priority}</span>
           <ChevronDown
             size={15}
@@ -195,21 +201,15 @@ export default function FeatureRoadmapPanel() {
       </div>
 
       <div className="filter-bar primary">
-        <div className="search-box roadmap-search">
-          <Search size={13} aria-hidden="true" />
-          <input
-            className="input-embedded"
-            placeholder="搜索功能…"
-            aria-label="搜索规划功能"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          {search && (
-            <button className="icon-btn sm" data-tip="清空搜索" aria-label="清空搜索" onClick={() => setSearch("")}>
-              <X size={13} />
-            </button>
-          )}
-        </div>
+        <SearchField
+          className="roadmap-search"
+          size="compact"
+          value={search}
+          placeholder="搜索功能…"
+          ariaLabel="搜索规划功能"
+          clearLabel="清空搜索"
+          onChange={setSearch}
+        />
         <div className="seg-group subtle" role="group" aria-label="按状态筛选">
           {STATUS_FILTERS.map((s) => (
             <button

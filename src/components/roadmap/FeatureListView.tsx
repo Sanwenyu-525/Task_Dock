@@ -11,11 +11,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
   Plus,
-  Search,
   SlidersHorizontal,
-  X,
 } from "lucide-react";
-import { Select, ConfirmDialog } from "../ui";
+import { Select, ConfirmDialog, SearchField } from "../ui";
 import {
   PLANNING_FEATURE_STATUS_LABELS,
   type PlanningFeature,
@@ -262,26 +260,15 @@ export default function FeatureListView({
       )}
 
       <div className="planning-toolbar planning-feature-toolbar">
-        <div className="planning-search">
-          <Search size={13} aria-hidden="true" />
-          <input
-            className="input sm"
-            value={search}
-            placeholder="搜索功能名称、描述或验收标准"
-            aria-label="搜索功能"
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          {search && (
-            <button
-              className="icon-btn sm"
-              data-tip="清空搜索"
-              aria-label="清空搜索"
-              onClick={() => setSearch("")}
-            >
-              <X size={12} />
-            </button>
-          )}
-        </div>
+        <SearchField
+          className="planning-search"
+          size="compact"
+          value={search}
+          placeholder="搜索功能名称、描述或验收标准"
+          ariaLabel="搜索功能"
+          clearLabel="清空搜索"
+          onChange={setSearch}
+        />
         <div className="planning-filter-row">
           <span className="planning-filter-label">
             <SlidersHorizontal size={12} aria-hidden="true" /> 筛选

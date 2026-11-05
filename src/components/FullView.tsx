@@ -35,6 +35,7 @@ import ActionCenterPanel from "./actions/ActionCenterPanel";
 import ClipboardPanel from "./clipboard/ClipboardPanel";
 import CollectionPanel from "./collection/CollectionPanel";
 import { WIDGET_SOURCES } from "./widgets/liveSources";
+import TabLeaveGuard from "./TabLeaveGuard";
 
 import { Plus, MoreHorizontal, Settings2 } from "lucide-react";
 import { DropdownMenu } from "./ui";
@@ -43,9 +44,11 @@ import {
   entriesForSurface,
   leftEntryForTab,
   navEntry,
+  navLabel,
   type NavEntry,
 } from "../lib/navigationRegistry";
 import { useNavigationLayout } from "../lib/navigationLayout";
+import { useLocale } from "../hooks/useLocale";
 
 import { requestSettingsSectionReveal } from "../lib/settingsSections";
 
@@ -64,6 +67,7 @@ const LEFT_ENTRIES = entriesForSurface("left");
 const FLOATING_TIP_PLACEMENT = railTipPlacement("floating", null, false);
 
 export default function FullView() {
+  const { t } = useLocale();
   const tab = useUiStore((s) => s.tab);
   const setTab = useUiStore((s) => s.setTab);
   const collectionSub = useUiStore((s) => s.collectionSub);
@@ -119,13 +123,13 @@ export default function FullView() {
 
   return (
     <div className="full-view">
-      <nav className="rail" aria-label="主导航">
+      <nav className="rail" aria-label={t("nav.main")}>
         <div className="rail-head">
           <button
             className="rail-new-task"
-            data-tip="新建任务 (Ctrl+K)"
+            data-tip={t("nav.newTaskTip")}
             data-tip-placement={FLOATING_TIP_PLACEMENT}
-            aria-label="新建任务"
+            aria-label={t("nav.newTask")}
             onClick={() => {
               setTab("tasks");
               bumpQuickAdd();
@@ -138,11 +142,12 @@ export default function FullView() {
           {entriesToRender.map((entry) => {
             const count = entry.badge ? counts[entry.badge] : 0;
             const active = entry.tabs.includes(tab);
+            const label = navLabel(entry, t);
             // 徽标语义在提示条中如实说明：数字只代表待处理收集内容
             const tip =
               entry.id === "collection" && count > 0
-                ? `${entry.label}（${count} 条待处理收集）`
-                : entry.label;
+                ? t("nav.pendingCollection", { label, count })
+                : label;
             return (
               <button
                 key={entry.id}
@@ -151,7 +156,7 @@ export default function FullView() {
                 aria-current={active ? "page" : undefined}
                 // 窄窗下文字标签被隐藏，可访问名必须由 aria-label 兜底；
                 // 提示条走统一的 data-tip（原生 title 会弹出系统样式提示）。
-                aria-label={count > 0 ? `${entry.label}（${count}）` : entry.label}
+                aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
                 data-tip={tip}
                 data-tip-placement={FLOATING_TIP_PLACEMENT}
               >
@@ -163,7 +168,7 @@ export default function FullView() {
                     </em>
                   )}
                 </span>
-                <span className="rail-label">{entry.label}</span>
+                <span className="rail-label">{label}</span>
               </button>
             );
           })}
@@ -173,7 +178,7 @@ export default function FullView() {
         {hiddenEntries.length > 0 && (
           <div className="rail-items rail-more">
             <DropdownMenu
-              menuLabel="隐藏的导航入口"
+              menuLabel={t("nav.hiddenMenu")}
               placement="bottom-start"
               menuMinWidth={168}
               trigger={({ ref, expanded, onClick, onKeyDown }) => (
@@ -184,8 +189,8 @@ export default function FullView() {
                   aria-current={currentHidden ? "page" : undefined}
                   aria-haspopup="menu"
                   aria-expanded={expanded}
-                  aria-label="更多导航入口"
-                  data-tip="更多"
+                  aria-label={t("nav.moreAria")}
+                  data-tip={t("nav.more")}
                   data-tip-placement={FLOATING_TIP_PLACEMENT}
                   onClick={onClick}
                   onKeyDown={onKeyDown}
@@ -193,13 +198,13 @@ export default function FullView() {
                   <span className="rail-icon">
                     <MoreHorizontal size={18} strokeWidth={1.75} />
                   </span>
-                  <span className="rail-label">更多</span>
+                  <span className="rail-label">{t("nav.more")}</span>
                 </button>
               )}
               items={[
                 ...hiddenEntries.map((entry) => ({
                   key: entry.id,
-                  label: entry.label,
+                  label: navLabel(entry, t),
                   icon: <entry.icon size={14} strokeWidth={1.6} />,
                   radio: true,
                   checked: entry.tabs.includes(tab),
@@ -207,7 +212,7 @@ export default function FullView() {
                 })),
                 {
                   key: "__customize-navigation",
-                  label: "自定义导航",
+                  label: t("nav.customize"),
                   icon: <Settings2 size={14} />,
                   onSelect: () => {
                     setTab("settings");
@@ -221,8 +226,10 @@ export default function FullView() {
         )}
       </nav>
       <div className={`tab-content tab-content-${tab}`}>
+        {/* 编辑中切换页面：由 store 门禁记录待决目标，这里统一确认，不各页重复拦截。 */}
+        <TabLeaveGuard />
         {/* 低频页首次进入时异步加载；fallback 只占位、不做持续动画，避免闪烁。 */}
-        <Suspense fallback={<div className="panel-loading" role="status" aria-label="正在加载页面" />}>
+        <Suspense fallback={<div className="panel-loading" role="status" aria-label={t("nav.loading")} />}>
           {tab === "tasks" && <TasksPanel />}
           {tab === "agents" && <AgentPanel />}
           {tab === "apps" && <AppsPanel />}

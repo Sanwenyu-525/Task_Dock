@@ -1,24 +1,25 @@
 @layer base, theme, ui, menu;
 @layer menu {
 /* ════════════════════════════════════════════════════════════════
-   液态玻璃右键菜单（v0.6 视觉整改）— 仅右键菜单弹窗装载
+   右键菜单弹窗（v0.6 视觉整改 / 2026-11-04 可读性与圆角修复）
    ────────────────────────────────────────────────────────────────
-   材质模型与主窗一致：
-   - 桌面模糊来自原生 **blur**（context_menu.rs 经 apply_material_to_window
-     共用主窗后端选择：Win11 + 区域裁剪 → blur，由窗口自身合成、受
-     SetWindowRgn 约束；不再用 Acrylic —— Win11 上它是 DWM SystemBackdrop，
-     会越过区域在圆角外画出灰蓝残影）；
-   - CSS 层只做**染色与高光**：底色是有层次的半透明渐变（不是纯色填充），
-     backdrop-filter 仅作为浏览器预览环境的渐进增强；
-   - 文本与图标直接落在玻璃层上，不加 filter，保持清晰。
+   材质模型：**纯 CSS 柔光表面**。菜单窗口不挂原生材质
+   （DWM blur/acrylic 会按整窗矩形合成、越过圆角区域留下暗楔），
+   也不对整个菜单做实时背景模糊（高 DPI 成本高且拖垮文字对比度）。
+   表面直接复用弹层 Token（--menu-face / --menu-text / --menu-hover /
+   --menu-active-*，见 styles-themes.css §5b）：
 
-   颜色基调沿用既有主题令牌（--text-* / --accent* / --divider，来自
-   styles-themes.css 的 预设 × 明暗 令牌层）；玻璃底色/高光为菜单专用
-   取值，明暗两套都经视觉验证调整，不机械套用固定数值。
+   - 浅色：接近 #F8F9FC 的极轻冷调不透明渐变；
+   - 深色：接近 #252B38 的冷调不透明渐变；
+   - 复杂桌面/深色正文背景下，文字与图标始终落在实底上，不出现重影。
+
+   圆角：CSS 16px；Win32 区域由 window_shape.rs 生成同一半径的
+   「CSS 像素支撑形状」（不是 CreateRoundRectRgn 硬边椭圆），且弹窗区域
+   成功后 DWM 固定 DONOTROUND —— 不再有第二层系统弧、系统边框或月牙缝。
 
    状态层级（互不混淆）：
-   - Hover：中性玻璃染色（浅色白染 / 深色冷染），无色彩倾向；
-   - Checked：主题色染色 + 右侧 Check（微弱背景、不描边，非仅靠颜色）；
+   - Hover：中性灰染（text-primary 低比例），无白色强覆盖、无位移；
+   - Checked：低饱和主题色底 + 强调文字/图标 + 右侧 Check；
    - 键盘焦点：focus-visible 2px 主题色描边（鼠标 hover 不劫持 DOM 焦点，
      描边只在键盘导航时出现），与 Hover/Checked 视觉完全不同。
 
@@ -42,7 +43,7 @@ body {
   -webkit-user-select: none;
 }
 
-/* ── 玻璃容器 ─────────────────────────────────────────────────
+/* ── 柔光容器 ─────────────────────────────────────────────────
    尺寸：宽 250（设计常量）、圆角 16、内边距 8 —— 与 Win32 圆角区域
    （context_menu.rs MENU_RADIUS=16）一致。高度由内容撑开，
    fit_context_menu 在挂载时即收放窗口（首开无跳动），绝不能设固定 height。 */
@@ -58,42 +59,20 @@ body {
   flex-direction: column;
 
   border-radius: 16px;
-  /* 冰蓝→珍珠白的三段渐变：半透明染色层，透出原生 blur 的桌面色彩 */
-  background: linear-gradient(
-    175deg,
-    rgba(250, 252, 255, 0.72),
-    rgba(238, 245, 255, 0.6) 55%,
-    rgba(243, 248, 255, 0.66)
-  );
-  backdrop-filter: blur(28px) saturate(1.2);
-  -webkit-backdrop-filter: blur(28px) saturate(1.2);
-  border: 1px solid rgba(255, 255, 255, 0.62);
-  /* 高光只走 inset（外阴影交给 DWM 圆角阴影，窗口外无内容可画） */
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.28),
-    inset 0 0 0 1px rgba(214, 228, 252, 0.25);
+  /* 高可读柔光表面：弹层 Token 自带不透明渐变（预设 × 明暗各自取值），
+     不在运行时模糊桌面，任何背景上文字都清晰。 */
+  background: var(--menu-face, linear-gradient(180deg, #f8f9fc, #f4f6fb));
+  /* 细而低对比的描边：由正文色低比例混出，浅/深两套都能看到窗口边界，
+     且不会出现白色亮边或黑色硬边。 */
+  border: 1px solid color-mix(in srgb, var(--text-primary) 14%, transparent);
+  /* 只保留内高光（外阴影会被透明窗口区域裁掉）；玻璃感来自 Token 的
+     顶部反射与渐变层，不叠加外环/黑边。 */
+  box-shadow: var(--menu-highlight, inset 0 1px 0 rgba(255, 255, 255, 0.72));
 
   padding: 8px;
-  color: var(--text-primary);
+  color: var(--menu-text, var(--text-primary));
   transform-origin: top center;
   animation: liquid-menu-in 150ms cubic-bezier(0.25, 0.8, 0.35, 1);
-}
-
-/* 深色：分层蓝黑玻璃 —— 压低黑色覆盖感、透出桌面色彩，
-   冷色高光替代白色边框（避免「不透明塑料板」观感） */
-:root[data-theme="dark"] .liquid-context-menu {
-  background: linear-gradient(
-    175deg,
-    rgba(46, 60, 92, 0.58),
-    rgba(24, 33, 54, 0.66) 55%,
-    rgba(17, 24, 42, 0.7)
-  );
-  border-color: rgba(150, 180, 235, 0.2);
-  box-shadow:
-    inset 0 1px 0 rgba(165, 197, 255, 0.16),
-    inset 0 -1px 0 rgba(10, 14, 26, 0.4),
-    inset 0 0 0 1px rgba(90, 120, 180, 0.12);
 }
 
 @keyframes liquid-menu-in {
@@ -115,14 +94,13 @@ body {
   gap: 1px;
 }
 
-/* 分组标题：次级文字色（比 tertiary 提升对比度）+ 微字距 */
+/* 分组标题：弹层次级文字 Token（不透明表面上下都保持可读对比度）+ 微字距 */
 .menu-group-label {
   padding: 2px 10px 3px;
   font-size: 11px;
   line-height: 1;
   font-weight: 500;
-  color: var(--text-secondary);
-  opacity: 0.82;
+  color: var(--menu-text-dim, var(--text-secondary));
   letter-spacing: 0.05em;
 }
 
@@ -132,10 +110,6 @@ body {
   height: 1px;
   margin: 5px 6px;
   background: var(--divider);
-}
-
-:root[data-theme="dark"] .menu-sep {
-  background: rgba(158, 180, 220, 0.14);
 }
 
 /* ── 菜单项（高度 34px，密度整改）──────────────────────────── */
@@ -159,21 +133,13 @@ body {
   transition: background-color 140ms ease, color 140ms ease;
 }
 
-/* Hover：中性玻璃染色（浅色白染 / 深色冷染），与 Checked 的主题色染色明确区分 */
+/* Hover：中性灰染（不偏主题色、不是白色强覆盖），与 Checked 明确区分 */
 .menu-item:hover {
-  background: rgba(255, 255, 255, 0.52);
-}
-
-:root[data-theme="dark"] .menu-item:hover {
-  background: rgba(148, 172, 224, 0.15);
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
 }
 
 .menu-item:active {
-  background: rgba(255, 255, 255, 0.7);
-}
-
-:root[data-theme="dark"] .menu-item:active {
-  background: rgba(148, 172, 224, 0.24);
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
 }
 
 /* 键盘焦点：明确可识别的 2px 主题色描边。焦点只由键盘导航移动
@@ -183,16 +149,15 @@ body {
   outline-offset: -2px;
 }
 
-/* Checked：主题色微染 + 文字/图标强调 + 右侧 Check（非仅靠颜色表达）；
-   Checked + Hover 用更深的主题色染色（inset 铺色叠加），仍与中性 Hover 不同 */
+/* Checked：低饱和主题色底 + 文字/图标强调 + 右侧 Check（非仅靠颜色表达） */
 .menu-item.is-checked {
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: color-mix(in srgb, var(--menu-active-face, var(--accent-soft)) 88%, transparent);
+  color: var(--menu-active-text, var(--accent));
 }
 
+/* Checked + Hover：使用完整主题色面（仍与中性 Hover 完全不同，且不叠加出杂色） */
 .menu-item.is-checked:hover {
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 999px rgba(99, 102, 241, 0.08);
+  background: var(--menu-active-face, var(--accent-soft));
 }
 
 .menu-item-icon {
@@ -202,11 +167,11 @@ body {
   justify-content: center;
   width: 16px;
   height: 16px;
-  color: var(--text-secondary);
+  color: var(--menu-text-dim, var(--text-secondary));
 }
 
 .menu-item.is-checked .menu-item-icon {
-  color: var(--accent);
+  color: var(--menu-active-text, var(--accent));
 }
 
 .menu-item-label {
@@ -229,7 +194,7 @@ body {
   justify-content: center;
   width: 14px;
   height: 14px;
-  color: var(--accent);
+  color: var(--menu-active-text, var(--accent));
 }
 
 /* ── 动作失败反馈（行内浮层，不参与布局、不影响 fit 测量）──── */
@@ -259,13 +224,13 @@ body {
 
 /* ── 可读性兜底（与主题体系的降级约定一致）──────────────────── */
 
-/* 系统关闭透明效果：玻璃退为近实底，防文字压桌面 */
+/* 系统关闭透明效果：直接落到用户要求的基准表面（完全实底） */
 @media (prefers-reduced-transparency: more) {
   .liquid-context-menu {
-    background: rgba(246, 250, 255, 0.97);
+    background: #f8f9fc;
   }
   :root[data-theme="dark"] .liquid-context-menu {
-    background: rgba(20, 28, 46, 0.97);
+    background: #252b38;
   }
 }
 
@@ -274,8 +239,6 @@ body {
   .liquid-context-menu {
     background: #ffffff;
     border-color: rgba(34, 38, 60, 0.55);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
   }
   :root[data-theme="dark"] .liquid-context-menu {
     background: #151c2e;

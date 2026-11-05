@@ -560,6 +560,90 @@ describe("展开详情占位与视口同步", () => {
     });
   });
 
+  it("展开时收到新 Agent 通知：新轮次重新编号并保留占位，旧轮次不再上报", async () => {
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "agent_failed", title: "Agent 执行失败", body: longBody })]);
+    await waitFor(() => expect(fitCalls()).toHaveLength(1));
+    await waitFor(() => expect(rafQueue.length).toBeGreaterThan(0));
+    await runFrames(1);
+
+    fireEvent.click(screen.getByText("展开详情"));
+    await waitFor(() => expect(fitCalls()).toHaveLength(2));
+    expect(fitCalls()[1]).toMatchObject({ height: 280, round: 1, seq: 2 });
+    expect(document.querySelector(".ntf-extra-measure")).toBeTruthy();
+
+    // 展开期间到达新通知：后端推进轮次，前端重新编号并重新上报（含展开余量）
+    emitShow([
+      cardData({ id: "n2", kind: "agent_running", title: "Agent 正在执行", refId: "run-2" }),
+    ]);
+    await waitFor(() => expect(fitCalls()).toHaveLength(3));
+    expect(fitCalls()[2]).toMatchObject({ height: 280, round: 2, seq: 1 });
+    // 旧轮次不得再产生迟到 fit（序号/轮次都在新批次里重新开始）
+    expect(fitCalls().filter((c) => c.round === 1)).toHaveLength(2);
+    // 新卡到达不影响仍然展开的详情占位
+    expect(document.querySelector(".ntf-extra-measure")).toBeTruthy();
+
+    window.innerHeight = 280;
+    for (let i = 0; i < 8; i++) {
+      await act(async () => {
+        await Promise.resolve();
+      });
+      if (rafQueue.length > 0) await runFrames(1);
+      if (!document.querySelector(".ntf-extra-measure")) break;
+    }
+    expect(document.querySelector(".ntf-extra-measure")).toBeNull();
+    expect(document.querySelector(".ntf-card > .ntf-extra")).toBeTruthy();
+  });
+
+  it("展开时用户关闭：立即撤销占位，剩余队列走 hide 而不再上报塌缩高度", async () => {
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "agent_failed", title: "Agent 执行失败", body: longBody })]);
+    await waitFor(() => expect(fitCalls()).toHaveLength(1));
+    await waitFor(() => expect(rafQueue.length).toBeGreaterThan(0));
+    await runFrames(1);
+
+    fireEvent.click(screen.getByText("展开详情"));
+    await waitFor(() => expect(fitCalls()).toHaveLength(2));
+    expect(document.querySelector(".ntf-extra-measure")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭通知" }));
+    // 关闭的卡片不能再作为展开目标：影子占位与 held 状态同步撤销
+    expect(document.querySelector(".ntf-extra-measure")).toBeNull();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("hide_notification_window", { round: 1 }),
+    );
+    // 离场期间不上报塌缩高度，窗口不会先缩再藏
+    expect(fitCalls()).toHaveLength(2);
+  });
+
+  it("后端拒绝 fit 时不标记尺寸已同步，仍按超时安全释放", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_settings") {
+        return Promise.resolve({ theme: "dark", visual_preset: "frosted" });
+      }
+      if (cmd === "fit_notification_window") {
+        return Promise.resolve({ accepted: false, round: 0, applied: 0, clamped: false });
+      }
+      return Promise.resolve(null);
+    });
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "agent_failed", title: "Agent 执行失败", body: longBody })]);
+    await waitFor(() => expect(document.querySelector(".ntf-card")).toBeTruthy());
+    await waitFor(() => expect(rafQueue.length).toBeGreaterThan(0));
+    await runFrames(1);
+
+    fireEvent.click(screen.getByText("展开详情"));
+    await waitFor(() => expect(fitCalls()).toHaveLength(2));
+    // 被拒结果不能写入 lastFitRef（否则会按 applied=0 提前放行 / 或错误标记已同步）
+    await runFrames(3);
+    expect(document.querySelector(".ntf-extra-measure")).toBeTruthy();
+    // 1200ms 一次性兜底后安全释放，内容不会永久不可见
+    await waitFor(() => expect(document.querySelector(".ntf-extra-measure")).toBeNull(), {
+      timeout: 2500,
+    });
+    expect(document.querySelector(".ntf-card > .ntf-extra")).toBeTruthy();
+  });
+
   it("卸载后迟到的帧/超时回调不再更新状态", async () => {
     const { unmount } = render(<NotificationWindow />);
     emitShow([cardData({ kind: "agent_failed", title: "Agent 执行失败", body: longBody })]);

@@ -31,15 +31,17 @@ import { createSubscriptionScope } from "../../lib/subscriptions";
 import { ConfirmDialog, Select } from "../ui";
 import { NOTIFICATION_KIND_LABELS, AGENT_STATE_LABELS, formatRelative } from "../../lib/format";
 import { groupHistory } from "../../lib/historyGroup";
+import { useLocale } from "../../hooks/useLocale";
+import type { MessageKey } from "../../i18n";
 
 type KindFilter = "all" | "notification" | "event";
 type TimeFilter = "today" | "3d" | "7d" | "all";
 
-const TIME_FILTERS: { id: TimeFilter; label: string }[] = [
-  { id: "today", label: "今天" },
-  { id: "3d", label: "近 3 天" },
-  { id: "7d", label: "近 7 天" },
-  { id: "all", label: "全部" },
+const TIME_FILTERS: { id: TimeFilter; labelKey: MessageKey }[] = [
+  { id: "today", labelKey: "history.time.today" },
+  { id: "3d", labelKey: "history.time.3d" },
+  { id: "7d", labelKey: "history.time.7d" },
+  { id: "all", labelKey: "history.time.all" },
 ];
 
 const DAY = 86400000;
@@ -99,6 +101,7 @@ function mergeRefresh<T extends { id: string }>(
 }
 
 export default function HistoryPanel() {
+  const { t: tr } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
   const agentSnapshot = useAgentsStore((s) => s.snapshot);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -315,31 +318,31 @@ export default function HistoryPanel() {
       {/* 过滤工具栏：第一行 = 筛选（时间 → 来源 → 类型，窄窗口时靠后的先换行），
           第二行 = 统计 + 批量操作，两行职责分离互不挤压 */}
       <div className="filter-bar primary">
-        <div className="seg-group subtle" role="group" aria-label="时间范围">
+        <div className="seg-group subtle" role="group" aria-label={tr("history.rangeAria")}>
           {TIME_FILTERS.map((t) => (
             <button
               key={t.id}
               className={`seg-btn ${timeFilter === t.id ? "active" : ""}`}
               onClick={() => setTimeFilter(t.id)}
             >
-              {t.label}
+              {tr(t.labelKey)}
             </button>
           ))}
         </div>
         <Select
           className="sort-select"
           size="sm"
-          ariaLabel="来源筛选"
+          ariaLabel={tr("history.sourceAria")}
           value={sourceFilter}
-          options={[{ value: "all", label: "全部来源" }, ...sourceOptions.map(([value, label]) => ({ value, label }))]}
+          options={[{ value: "all", label: tr("history.allSources") }, ...sourceOptions.map(([value, label]) => ({ value, label }))]}
           onChange={(v) => setSourceFilter(v)}
         />
-        <div className="seg-group subtle" role="group" aria-label="类型">
+        <div className="seg-group subtle" role="group" aria-label={tr("history.typeAria")}>
           {(
             [
-              { id: "all", label: "全部" },
-              { id: "notification", label: "通知" },
-              { id: "event", label: "Agent 事件" },
+              { id: "all", labelKey: "history.kind.all" },
+              { id: "notification", labelKey: "history.kind.notification" },
+              { id: "event", labelKey: "history.kind.event" },
             ] as const
           ).map((k) => (
             <button
@@ -347,37 +350,37 @@ export default function HistoryPanel() {
               className={`seg-btn ${kindFilter === k.id ? "active" : ""}`}
               onClick={() => setKindFilter(k.id)}
             >
-              {k.label}
+              {tr(k.labelKey)}
             </button>
           ))}
         </div>
       </div>
       <div className="filter-bar secondary">
         <span className="history-unread-hint">
-          {unread} 条未读 / 共 {inboxTotal}
+          {tr("history.unread", { unread, total: inboxTotal })}
         </span>
         <span className="flex-spacer" />
-        <button className="btn sm" onClick={onMarkAll} disabled={unread === 0} title="全部标为已读">
-          <CheckCheck size={12} /> 全部已读
+        <button className="btn sm" onClick={onMarkAll} disabled={unread === 0} title={tr("history.markAllTip")}>
+          <CheckCheck size={12} /> {tr("history.markAll")}
         </button>
-        <button className="btn sm" onClick={() => setConfirmClear(true)} data-tip="清空通知历史">
-          <Trash2 size={12} /> 清空
+        <button className="btn sm" onClick={() => setConfirmClear(true)} data-tip={tr("history.clearTip")}>
+          <Trash2 size={12} /> {tr("history.clear")}
         </button>
       </div>
 
       {hasNew && (
         <div className="history-new-banner">
-          <span>有新记录到达，当前列表与最新数据之间还有未加载的空隙。</span>
-          <button className="btn sm" onClick={() => void refresh("replace")}>刷新到最新</button>
+          <span>{tr("history.gap")}</span>
+          <button className="btn sm" onClick={() => void refresh("replace")}>{tr("history.refreshLatest")}</button>
         </div>
       )}
 
       {/* 时间轴 */}
-      {!loaded && <div className="empty-hint">加载中…</div>}
+      {!loaded && <div className="empty-hint">{tr("history.loading")}</div>}
       {loaded && total === 0 && (
         <div className="empty-state">
           <div className="empty-icon"><Inbox size={22} /></div>
-          <div className="empty-title">{filtering ? "当前筛选下暂无记录" : "暂无历史记录"}</div>
+          <div className="empty-title">{filtering ? tr("history.emptyFiltered") : tr("history.empty")}</div>
           <div className="empty-hint">
             {filtering
               ? `筛选范围内共 ${eventsTotal} 条 Agent 事件、${notificationsTotal} 条通知；可调整来源/时间/类型。`

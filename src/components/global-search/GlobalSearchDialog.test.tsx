@@ -164,6 +164,42 @@ describe("键盘交互", () => {
     expect(useGlobalSearchStore.getState().open).toBe(false);
     void mask;
   });
+  it("输入法组合中的 Enter 只确认候选，不打开结果；组合结束后 Enter 正常打开", () => {
+    openWithResults();
+    render(<GlobalSearchDialog />);
+    const input = screen.getByRole("textbox", { name: "搜索关键词" });
+    const mask = document.querySelector(".gs-mask")!;
+
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(mask, { key: "Enter", isComposing: true });
+    expect(useGlobalSearchStore.getState().open).toBe(true);
+    expect(useGlobalSearchStore.getState().pendingLocate).toBeNull();
+
+    fireEvent.compositionEnd(input);
+    // Safari 顺序：compositionend 后 keydown 只剩 keyCode 229，仍需拦住
+    fireEvent.keyDown(mask, { key: "Enter", keyCode: 229 });
+    expect(useGlobalSearchStore.getState().pendingLocate).toBeNull();
+
+    fireEvent.keyDown(mask, { key: "Enter" });
+    expect(useGlobalSearchStore.getState().pendingLocate?.id).toBe("t1");
+  });
+
+  it("输入法组合中的 Escape 取消候选，不关闭弹窗", () => {
+    openWithResults();
+    render(<GlobalSearchDialog />);
+    const input = screen.getByRole("textbox", { name: "搜索关键词" });
+    fireEvent.compositionStart(input);
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true, isComposing: true }),
+    );
+    expect(useGlobalSearchStore.getState().open).toBe(true);
+
+    fireEvent.compositionEnd(input);
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    expect(useGlobalSearchStore.getState().open).toBe(false);
+  });
 });
 
 describe("结果点击", () => {

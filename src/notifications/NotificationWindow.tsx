@@ -361,7 +361,15 @@ export default function NotificationWindow() {
       })
         .then((res) => {
           if (disposedRef.current || token !== fitTokenRef.current) return;
-          if (res && res.accepted !== false && Number.isFinite(res.applied)) {
+          // 只认本轮、且当前仍是本轮的受理结果：被拒（轮次/序号过期）时不得标记尺寸已同步，
+          // 否则后续 reveal 会按陈旧高度放行，出现裁切或错位。
+          if (
+            res &&
+            res.accepted !== false &&
+            Number.isFinite(res.applied) &&
+            res.round === round &&
+            roundRef.current === round
+          ) {
             lastFitRef.current = { wanted: height, applied: res.applied };
           }
         })
