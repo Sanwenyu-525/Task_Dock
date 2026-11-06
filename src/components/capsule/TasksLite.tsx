@@ -21,11 +21,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
 import { useTasksStore, type TaskLiteScope } from "../../store/useTasksStore";
-import { useUiStore } from "../../store/useUiStore";
 import type { Task } from "../../lib/bridge";
 import { describeRecurrence } from "../../lib/format";
 import useImeComposition from "../../hooks/useImeComposition";
-import { openFullApp } from "./actions";
+import { openFullApp, openTaskEditor } from "./actions";
 import { dueLabel, sortPending } from "./format";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 
@@ -179,10 +178,11 @@ export default function TasksLite() {
     }
   };
 
-  /** 详情里的「编辑」不复制表单：定位到完整任务页并复用主窗口编辑器。 */
+  /** 详情里的「编辑」不复制表单：定位到完整任务页并复用主窗口编辑器。
+   *  切页与「打开编辑器」必须是同一个导航事务（openTaskEditor 内部只 setTab 一次），
+   *  否则存在草稿时第二次导航会覆盖待确认导航绑定的 after，编辑意图丢失。 */
   const edit = (task: Task) => {
-    useUiStore.getState().openEditor(task);
-    openFullApp("tasks");
+    openTaskEditor(task);
   };
 
   const now = Date.now();

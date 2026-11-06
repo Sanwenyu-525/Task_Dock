@@ -8,6 +8,7 @@
 //! - 缓存按「稳定身份 + 文件修改时间」失效，避免文件替换后长期显示旧图标。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
@@ -110,11 +111,66 @@ pub fn register_discovered(apps: &[DiscoveredApp]) {
 struct CacheEntry {
     stamp: u64,
     icon: Option<AppIconData>,
+    /// 插入序号（单调递增），用于达到容量上限时淘汰最旧条目。
+    inserted: u64,
+}
+
+/// 图标缓存上限与单次淘汰量：达到上限时淘汰最旧的一批，而不是整体清空。
+const ICON_CACHE_LIMIT: usize = 512;
+const ICON_CACHE_EVICT: usize = 64;
+
+fn icon_cache_seq() -> u64 {
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 fn icon_cache() -> &'static Mutex<HashMap<String, CacheEntry>> {
     static CELL: OnceLock<Mutex<HashMap<String, CacheEntry>>> = OnceLock::new();
     CELL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 容量到顶时淘汰最旧的一批（不是整体清空）。抽成独立函数便于单测：
+/// 清空策略会让界面上已显示的图标全部重新提取，滚动列表时形成 IPC 尖峰。
+fn evict_oldest_if_full(cache: &mut HashMap<String, CacheEntry>) {    if cache.len() < ICON_CACHE_LIMIT {
+        return;
+    }
+    let mut by_age: Vec<(u64, String)> =
+        cache.iter().map(|(k, v)| (v.inserted, k.clone())).collect();
+    by_age.sort_unstable_by_key(|(seq, _)| *seq);
+    for (_, key) in by_age.into_iter().take(ICON_CACHE_EVICT) {
+        cache.remove(&key);
+    }
+}
+
+/// 图标内存缓存统计：返回（条目数，data URL 字符串的保留字节数）。
+pub fn icon_cache_stats() -> (usize, usize) {
+    match icon_cache().lock() {
+        Ok(cache) => cache_stats(&cache),
+        Err(_) => (0, 0),
+    }
+}
+
+/// 清空图标内存缓存，返回实际释放的（条目数，字节数）。
+///
+/// 只丢弃本进程缓存的图标副本；系统图标源与磁盘文件不受影响，下次请求会重新提取。
+pub fn clear_icon_cache() -> (usize, usize) {
+    match icon_cache().lock() {
+        Ok(mut cache) => {
+            let stats = cache_stats(&cache);
+            cache.clear();
+            stats
+        }
+        Err(_) => (0, 0),
+    }
+}
+
+fn cache_stats(cache: &HashMap<String, CacheEntry>) -> (usize, usize) {
+    let bytes = cache
+        .values()
+        .filter_map(|entry| entry.icon.as_ref())
+        .map(|icon| icon.url.len())
+        .sum();
+    (cache.len(), bytes)
 }
 
 /// 文件修改时间（含纳秒）+ 大小，用于缓存失效；取不到时间时仍保留大小维度。
@@ -214,8 +270,7 @@ pub fn extract_icon_data_for_exe(exe_path: &str) -> Option<AppIconData> {
 }
 
 /// 带缓存的提取：缓存键 = 稳定身份；exe 额外按文件修改时间失效。
-fn extract_with_cache(source: &IconSource) -> Option<AppIconData> {
-    let cache_key = if !source.aumid.is_empty() {
+fn extract_with_cache(source: &IconSource) -> Option<AppIconData> {    let cache_key = if !source.aumid.is_empty() {
         format!("aumid:{}", source.aumid)
     } else {
         format!("exe:{}", source.exe_path.to_lowercase())
@@ -237,14 +292,13 @@ fn extract_with_cache(source: &IconSource) -> Option<AppIconData> {
     let icon = platform_extract(source);
     {
         let mut cache = icon_cache().lock().unwrap();
-        if cache.len() >= 512 {
-            cache.clear();
-        }
+        evict_oldest_if_full(&mut cache);
         cache.insert(
             cache_key,
             CacheEntry {
                 stamp,
                 icon: icon.clone(),
+                inserted: icon_cache_seq(),
             },
         );
     }
@@ -544,6 +598,34 @@ mod tests {
     static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn icon_cache_stats_and_clear_only_touch_cached_copies() {
+        // 直接向缓存注入条目，验证统计口径与实际释放量一致（不依赖系统图标提取）。
+        let (before_entries, before_bytes) = icon_cache_stats();
+        {
+            let mut cache = icon_cache().lock().unwrap();
+            cache.insert(
+                "test:icon-cache-probe".into(),
+                CacheEntry {
+                    stamp: 0,
+                    icon: Some(AppIconData {
+                        url: "data:image/png;base64,AAAA".into(),
+                        light: false,
+                    }),
+                    inserted: icon_cache_seq(),
+                },
+            );
+        }
+        let (entries, bytes) = icon_cache_stats();
+        assert_eq!(entries, before_entries + 1);
+        assert_eq!(bytes, before_bytes + "data:image/png;base64,AAAA".len());
+
+        let (cleared_entries, cleared_bytes) = clear_icon_cache();
+        assert_eq!(cleared_entries, entries);
+        assert_eq!(cleared_bytes, bytes);
+        assert_eq!(icon_cache_stats(), (0, 0));
+    }
+
+    #[test]
     fn utf16_uses_first_nul() {
         assert_eq!(
             utf16_to_string(&[b'A' as u16, b'B' as u16, 0, b'C' as u16]),
@@ -705,5 +787,48 @@ mod tests {
             })
             .collect();
         register_discovered(&apps);
+    }
+
+    /// 缓存到上限只淘汰最旧的一批：不能整体清空（否则在视图标全部重新提取）。
+    #[test]
+    fn cache_evicts_oldest_batch_instead_of_clearing_all() {
+        let _guard = REGISTRY_LOCK.lock().unwrap();
+        let mut cache: HashMap<String, CacheEntry> = HashMap::new();
+        for i in 0..ICON_CACHE_LIMIT {
+            cache.insert(
+                format!("exe:c:\\app\\{}", i),
+                CacheEntry {
+                    stamp: 0,
+                    icon: None,
+                    inserted: i as u64,
+                },
+            );
+        }
+        evict_oldest_if_full(&mut cache);
+        assert_eq!(
+            cache.len(),
+            ICON_CACHE_LIMIT - ICON_CACHE_EVICT,
+            "只淘汰固定数量，不清空整体"
+        );
+        assert!(
+            !cache.contains_key("exe:c:\\app\\0"),
+            "最旧条目必须被淘汰"
+        );
+        assert!(
+            cache.contains_key(&format!("exe:c:\\app\\{}", ICON_CACHE_LIMIT - 1)),
+            "最新条目必须保留"
+        );
+        // 未到上限不做任何淘汰。
+        let mut small: HashMap<String, CacheEntry> = HashMap::new();
+        small.insert(
+            "k".into(),
+            CacheEntry {
+                stamp: 0,
+                icon: None,
+                inserted: 1,
+            },
+        );
+        evict_oldest_if_full(&mut small);
+        assert_eq!(small.len(), 1);
     }
 }

@@ -20,6 +20,12 @@ vi.mock("../lib/bridge", async (importOriginal) => ({
 
 import { useWorkflowsStore } from "./useWorkflowsStore";
 import type { WorkflowRun, WorkflowRunDetail, WorkflowRunPage } from "../lib/bridge";
+import {
+  clientDiagnosticsStats,
+  flushDiagnostics,
+  setDiagnosticTransport,
+  type DiagnosticInput,
+} from "../lib/diagnostics";
 
 function runRow(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   return {
@@ -94,6 +100,29 @@ describe("活动运行", () => {
     expect(useWorkflowsStore.getState().activeRunDetail?.id).toBe("r1");
     // 没有任何视图卸载会调用取消：后台执行继续由后端和 store 持有
     expect(useWorkflowsStore.getState().activeRun?.cancel_requested).toBe(false);
+  });
+
+  it("运行链路只产生一个操作：success 复用后端 run id 作为 op metadata", async () => {
+    // 先清空此前用例留下的诊断队列，避免旧事件混入本次断言。
+    setDiagnosticTransport(async () => {});
+    while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+    const events: DiagnosticInput[] = [];
+    setDiagnosticTransport(async (batch) => {
+      events.push(...batch);
+    });
+    try {
+      run.mockResolvedValueOnce(runDetailRow({ id: "run-42" }));
+      await useWorkflowsStore.getState().runWorkflow("w1");
+      while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+      const opEvents = events.filter((event) => event.action === "workflow_run");
+      expect(opEvents.filter((event) => event.status === "started")).toHaveLength(1);
+      expect(opEvents.filter((event) => event.status === "success")).toHaveLength(1);
+      expect(opEvents.find((event) => event.status === "success")?.metadata?.op).toBe("run-42");
+    } finally {
+      setDiagnosticTransport(null);
+    }
   });
 
   it("进度事件更新当前运行详情；终态后清空活动槽但保留结果", () => {

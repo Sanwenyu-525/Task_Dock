@@ -4,12 +4,17 @@
 //! 的 `reportError` / 内联错误状态负责。
 //!
 //! 安全边界：界面只展示审查过的通用文案与重试入口，**不展示** `error.message`、
-//! 组件堆栈或任何原始异常文本；原始错误只写入 console 诊断通道。
+//! 组件堆栈或任何原始异常文本；原始错误写 console 与诊断日志（已脱敏）。
 //! 小窗口（快速捕获/通知/右键菜单）使用 `variant="compact"`，避免把主窗口完整
 //! 错误页塞进悬浮窗；不会自动重载，也不改变业务数据。
+//!
+//! 诊断归属：渲染异常在 `getDerivedStateFromError` 中先声明归属（`markLogged`），
+//! 这样 React 19 随后通过 `window.onerror` 上报同一实例时，全局处理器会跳过，
+//! 保证「一次渲染失败只有一条主要诊断事件（带窗口 + 作用域）」。
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
+import { logEvent, markLogged } from "../lib/diagnostics";
 
 interface Props {
   children: ReactNode;
@@ -38,6 +43,8 @@ export default class ErrorBoundary extends Component<Props, State> {
   state: State = { error: null, attempt: 0 };
 
   static getDerivedStateFromError(error: Error): Partial<State> {
+    // 先声明归属：避免 React 19 之后把同一异常再交给 window.onerror 时被二次记录。
+    markLogged(error);
     return { error };
   }
 
@@ -53,6 +60,24 @@ export default class ErrorBoundary extends Component<Props, State> {
     // 原始对象与堆栈只进 console（审查过的诊断通道），不进入 DOM。
     try {
       console.error("[error-boundary]", this.props.scope ?? "main", error, info.componentStack);
+    } catch {
+      // ignore
+    }
+    try {
+      // 诊断事件只带可读上下文：作用域 + 页面标签 + 异常类型/文案（Rust 端再次脱敏）。
+      // 组件堆栈不进日志（体积大且包含源码路径），需要时看 console。
+      logEvent({
+        level: "ERROR",
+        module: "ui",
+        action: "render",
+        event: "failed",
+        status: "failed",
+        error_code: "UI_RENDER_ERROR",
+        error_category: "unknown",
+        component: this.props.scope ?? "main",
+        message: `${error.name || "Error"}: ${error.message || "渲染异常"}`,
+        metadata: this.props.label ? { route: this.props.label } : undefined,
+      });
     } catch {
       // ignore
     }

@@ -10,16 +10,17 @@
 //! toast 通过挂在树内的探针组件读取 useUiStore 断言"可见"。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { useNavigationStore } from "../../store/useNavigationStore";
+import { useNavigationStore, deriveScanState } from "../../store/useNavigationStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useTasksStore } from "../../store/useTasksStore";
-import AppPicker from "./AppPicker";
+import AppPicker, { scanDiscoveryIssueText, scanProgressIssueText } from "./AppPicker";
 import { APP_PAGE_SIZE } from "../../lib/appSearch";
 import {
+  navCancelScan,
   navLinkTask,
   navListWindows,
   navListTargets,
@@ -28,6 +29,7 @@ import {
   navLinkTaskWindow,
   navSaveTarget,
   navSaveWindowTarget,
+  navScanApps,
   navUpdateTarget,
   type DiscoveredApp,
   type NavTarget,
@@ -40,6 +42,8 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
   return {
     ...actual,
     navScanApps: vi.fn(async () => ({ apps: [], scanned_at: "", duration_ms: 0, counts: {} })),
+    navCancelScan: vi.fn(async () => true),
+    onNavScanBatch: vi.fn(async () => () => {}),
     navListTargets: vi.fn(async () => []),
     navAllTaskLinks: vi.fn(async () => []),
     navListWindows: vi.fn(async () => [] as WindowInfo[]),
@@ -152,6 +156,7 @@ function seedStores(opts?: { apps?: DiscoveredApp[]; targets?: NavTarget[]; link
     scanning: false,
     scanProgress: null,
     scanPartial: false,
+    scanCancelled: false,
     targets: opts?.targets ?? [],
     targetsLoaded: true,
     targetsError: null,
@@ -1234,3 +1239,428 @@ describe("AppPicker 子页面（variant=page）", () => {
     expect(within(screen.getByRole("listbox", { name: "已安装软件" })).getByText("Chrome")).toBeTruthy();
   });
 });
+
+describe("AppPicker 扫描取消与搜索补扫", () => {
+  /** 真实 loadApps（其他用例会把 store 动作替换成 vi.fn，这里显式还原）。 */
+  const realLoadApps = useNavigationStore.getState().loadApps;
+
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  function seedCompletedScan(apps: DiscoveredApp[]) {
+    useNavigationStore.setState({
+      scan: {
+        apps,
+        scanned_at: "2026-10-28T00:00:00Z",
+        duration_ms: 1,
+        counts: {},
+      },
+      scanning: false,
+      scanError: null,
+      scanCancelled: false,
+      scanPartial: false,
+      scanProgress: null,
+      targets: [],
+      targetsLoaded: true,
+      targetsError: null,
+      linksError: null,
+      linksByTask: {},
+      loadApps: realLoadApps,
+      loadTargets: vi.fn(async () => "ok" as const),
+      loadTaskLinks: vi.fn(async () => "ok" as const),
+    });
+  }
+
+  beforeEach(() => {
+    vi.mocked(navScanApps).mockClear();
+    vi.mocked(navCancelScan).mockClear();
+  });
+
+  it("搜索未命中：防抖后强制补扫一次，并区分「扫过了确实没有」", async () => {
+    seedCompletedScan([APP_WECHAT]);
+    render(<AppPicker standalone onClose={() => {}} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索应用" }), {
+      target: { value: "zzz-not-installed" },
+    });
+    // 防抖窗口内不得触发扫描
+    expect(navScanApps).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(navScanApps).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    // 补扫必须绕过后端 TTL 缓存，否则新装应用永远查不到
+    expect(vi.mocked(navScanApps).mock.calls[0][0]).toBe(true);
+    expect(
+      await screen.findByText(/已重新扫描，仍未找到匹配的应用/),
+    ).toBeTruthy();
+  });
+
+  it("搜索命中已缓存应用：不触发补扫", async () => {
+    seedCompletedScan([APP_WECHAT]);
+    render(<AppPicker standalone onClose={() => {}} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索应用" }), {
+      target: { value: "微信" },
+    });
+    await new Promise((r) => setTimeout(r, 750));
+    expect(navScanApps).not.toHaveBeenCalled();
+    expect(screen.getByRole("option", { name: /微信/ })).toBeTruthy();
+  });
+
+  it("补扫有冷却：连续修改关键词不会产生多次全量扫描", async () => {
+    seedCompletedScan([APP_WECHAT]);
+    render(<AppPicker standalone onClose={() => {}} />);
+    const input = screen.getByRole("textbox", { name: "搜索应用" });
+    fireEvent.change(input, { target: { value: "zzz-one" } });
+    await waitFor(() => expect(navScanApps).toHaveBeenCalledTimes(1), { timeout: 2500 });
+
+    fireEvent.change(input, { target: { value: "zzz-two" } });
+    await new Promise((r) => setTimeout(r, 750));
+    expect(navScanApps).toHaveBeenCalledTimes(1);
+  });
+
+  it("扫描在途时修改关键词：不叠加请求（单飞）", async () => {
+    const loadApps = vi.fn(async () => "stale" as const);
+    useNavigationStore.setState({
+      scan: { apps: [APP_WECHAT], scanned_at: "", duration_ms: 1, counts: {} },
+      scanning: true,
+      scanError: null,
+      scanCancelled: false,
+      scanPartial: true,
+      scanProgress: { discovered: 1, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+      targets: [],
+      targetsLoaded: true,
+      targetsError: null,
+      linksError: null,
+      linksByTask: {},
+      loadApps,
+      loadTargets: vi.fn(async () => "ok" as const),
+      loadTaskLinks: vi.fn(async () => "ok" as const),
+    });
+    render(<AppPicker standalone onClose={() => {}} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索应用" }), {
+      target: { value: "zzz-after" },
+    });
+    await new Promise((r) => setTimeout(r, 750));
+    expect(loadApps).not.toHaveBeenCalled();
+    expect(screen.getByText(/正在继续扫描，暂未发现匹配的应用/)).toBeTruthy();
+  });
+
+  it("关闭添加页（最后一个查看者离开）会取消在途扫描，取消结果不当作完成", async () => {
+    const scan = deferred<never>();
+    vi.mocked(navScanApps).mockReturnValueOnce(scan.promise as never);
+    seedCompletedScan([]);
+    useNavigationStore.setState({ scan: null, scanning: false, scanCancelled: false });
+
+    const { unmount } = render(<AppPicker standalone onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "扫描本机应用" }));
+    await waitFor(() => expect(navScanApps).toHaveBeenCalledTimes(1));
+
+    unmount();
+    await waitFor(() => expect(navCancelScan).toHaveBeenCalledTimes(1));
+
+    scan.resolve({ apps: [], scanned_at: "", duration_ms: 0, counts: {}, cancelled: true } as never);
+    await waitFor(() => expect(useNavigationStore.getState().scanCancelled).toBe(true));
+    expect(useNavigationStore.getState().scanError).toBeNull();
+  });
+
+  it("取消后界面如实说明，并提供重新扫描入口（首次扫描被取消）", () => {
+    useNavigationStore.setState({
+      scan: null,
+      scanning: false,
+      scanError: null,
+      scanCancelled: true,
+      scanPartial: false,
+      scanProgress: null,
+      targets: [],
+      targetsLoaded: true,
+      targetsError: null,
+      linksError: null,
+      linksByTask: {},
+      loadApps: vi.fn(async () => "ok" as const),
+      loadTargets: vi.fn(async () => "ok" as const),
+      loadTaskLinks: vi.fn(async () => "ok" as const),
+    });
+    render(<AppPicker standalone onClose={() => {}} />);
+    expect(screen.getByText("扫描已取消")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重新扫描" })).toBeTruthy();
+    // 取消不是失败：不得出现错误态文案
+    expect(screen.queryByText(/应用扫描失败/)).toBeNull();
+  });
+
+  it("取消时保留上次完整结果：提示仍显示上次结果而不是「部分结果」", () => {
+    seedCompletedScan([APP_WECHAT]);
+    useNavigationStore.setState({ scanCancelled: true, scanPartial: false });
+    render(<AppPicker standalone onClose={() => {}} />);
+    expect(screen.getByText(/扫描已取消，当前显示上次扫描结果/)).toBeTruthy();
+    expect(screen.getByRole("option", { name: /微信/ })).toBeTruthy();
+  });
+});
+
+describe("AppPicker 扫描取消入口", () => {
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  it("点击取消：请求在途→已接受，按钮保持禁用并如实反馈，不提前收起加载态", async () => {
+    const gate = deferred<"accepted" | "finished" | "failed">();
+    const cancelScan = vi.fn(() => gate.promise);
+    seedStoresForCancel();
+    useNavigationStore.setState({
+      scanning: true,
+      scanProgress: { discovered: 12, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+      cancelScan,
+    });
+    render(<AppPicker standalone onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "取消扫描" }));
+    await waitFor(() => expect(cancelScan).toHaveBeenCalledTimes(1));
+
+    // 请求在途：按钮禁用并显示「正在请求取消…」，重复点击不产生第二次 IPC
+    const requesting = screen.getByRole("button", { name: "正在请求取消…" });
+    expect((requesting as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(requesting);
+    expect(cancelScan).toHaveBeenCalledTimes(1);
+
+    // 后端接受：按钮切到「正在取消…」并保持禁用，扫描仍未结束
+    gate.resolve("accepted");
+    const accepted = await screen.findByRole("button", { name: "正在取消…" });
+    expect((accepted as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() =>
+      expect(useUiStore.getState().toast?.message).toContain("已请求取消扫描"),
+    );
+    expect(screen.getByText(/正在扫描（已发现 12 个 · 已扫描来源 1\/5）/)).toBeTruthy();
+    expect(useNavigationStore.getState().scanning).toBe(true);
+    expect(useNavigationStore.getState().scanCancelled).toBe(false);
+
+    // 已接受后不得再出现可点击的「取消扫描」；点击禁用按钮不产生 IPC
+    expect(screen.queryByRole("button", { name: "取消扫描" })).toBeNull();
+    fireEvent.click(accepted);
+    expect(cancelScan).toHaveBeenCalledTimes(1);
+  });
+
+  it("取消请求失败：如实警告，按钮恢复可点击并允许重试", async () => {
+    const cancelScan = vi
+      .fn()
+      .mockResolvedValueOnce("failed" as const)
+      .mockResolvedValueOnce("accepted" as const);
+    seedStoresForCancel();
+    useNavigationStore.setState({
+      scanning: true,
+      scanProgress: { discovered: 5, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+      cancelScan,
+    });
+    render(<AppPicker standalone onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "取消扫描" }));
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("warning"));
+    expect(useUiStore.getState().toast?.message).toContain("取消请求发送失败");
+    expect(useNavigationStore.getState().scanning).toBe(true);
+
+    // 失败不是终态：按钮回到可点击的「取消扫描」，可再次请求
+    const retry = screen.getByRole("button", { name: "取消扫描" });
+    expect((retry as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(retry);
+    await waitFor(() => expect(cancelScan).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "正在取消…" })).toBeTruthy();
+  });
+
+  it("扫描自然结束时取消：不误报失败；结束后按钮退出，新一轮扫描恢复可用", async () => {
+    const cancelScan = vi.fn(async () => "finished" as const);
+    seedStoresForCancel();
+    useNavigationStore.setState({
+      scanning: true,
+      scanProgress: { discovered: 5, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+      cancelScan,
+    });
+    render(<AppPicker standalone onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "取消扫描" }));
+    await waitFor(() => expect(cancelScan).toHaveBeenCalledTimes(1));
+    expect(useUiStore.getState().toast).toBeNull();
+
+    // 扫描真实结束：取消入口退出，不再留有无效按钮
+    await act(async () => {
+      useNavigationStore.setState({ scanning: false });
+    });
+    expect(screen.queryByRole("button", { name: "取消扫描" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "正在取消…" })).toBeNull();
+
+    // 新一轮扫描：状态复位为可点击的「取消扫描」
+    await act(async () => {
+      useNavigationStore.setState({ scanning: true });
+    });
+    expect(screen.getByRole("button", { name: "取消扫描" })).toBeTruthy();
+  });
+
+  it("取消请求返回前组件已卸载：不再弹 Toast", async () => {
+    let rejectCancel: (e: unknown) => void = () => {};
+    const cancelScan = vi.fn(
+      () => new Promise<"accepted" | "finished" | "failed">((_, reject) => { rejectCancel = reject; }),
+    );
+    seedStoresForCancel();
+    useNavigationStore.setState({
+      scanning: true,
+      scanProgress: { discovered: 2, sourcesDone: 1, sourcesTotal: 5, batches: 1 },
+      cancelScan,
+    });
+    const { unmount } = render(<AppPicker standalone onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "取消扫描" }));
+    await waitFor(() => expect(cancelScan).toHaveBeenCalledTimes(1));
+    unmount();
+    rejectCancel(new Error("ipc failed after unmount"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("首次扫描（尚无结果）时状态卡片同样提供取消入口", () => {
+    seedStoresForCancel();
+    useNavigationStore.setState({
+      scan: null,
+      scanning: true,
+      scanPartial: true,
+      scanProgress: { discovered: 0, sourcesDone: 0, sourcesTotal: 0, batches: 0 },
+      cancelScan: vi.fn(async () => "accepted" as const),
+    });
+    render(<AppPicker standalone onClose={() => {}} />);
+    expect(screen.getByText(/正在扫描本机应用/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "取消扫描" })).toBeTruthy();
+  });
+});
+
+describe("扫描诊断分类 · 完整性 vs 进度推送", () => {
+  const scan = { apps: [APP_WECHAT], scanned_at: "2026-11-06T10:00:00Z", duration_ms: 1, counts: {} };
+
+  function stateFor(diagnostics: Record<string, number>, extra?: { cancelled?: boolean }) {
+    const incomplete = scanDiscoveryIssueText(diagnostics).length > 0;
+    return deriveScanState({
+      scan: { ...scan, diagnostics } as never,
+      scanning: false,
+      scanError: null,
+      scanPartial: false,
+      cancelled: extra?.cancelled ?? false,
+      incomplete,
+    });
+  }
+
+  it("只有 batch_event_failed：最终状态仍是 complete，并给出不承诺完整性的进度说明", () => {
+    expect(stateFor({ batch_event_failed: 2 })).toBe("complete");
+    expect(scanDiscoveryIssueText({ batch_event_failed: 2 })).toBe("");
+    expect(scanProgressIssueText({ batch_event_failed: 2 })).toContain("以最终结果为准");
+    expect(scanProgressIssueText({ batch_event_failed: 2 })).not.toContain("结果仍完整");
+  });
+
+  it("只有 registry_unreadable：判定为 partial 并展示来源问题", () => {
+    expect(stateFor({ registry_unreadable: 1 })).toBe("partial");
+    expect(scanDiscoveryIssueText({ registry_unreadable: 1 })).toContain("注册表");
+    expect(scanProgressIssueText({ registry_unreadable: 1 })).toBe("");
+  });
+
+  it("uwp_scan_timeout 与 batch_event_failed 同时出现：仍为 partial，文案不互相矛盾", () => {
+    const d = { uwp_scan_timeout: 1, batch_event_failed: 3 };
+    expect(stateFor(d)).toBe("partial");
+    expect(scanDiscoveryIssueText(d)).toContain("超时");
+    expect(scanDiscoveryIssueText(d)).not.toContain("进度");
+    // 进度说明不得承诺「结果仍完整」（实际发现已超时、不完整）。
+    expect(scanProgressIssueText(d)).toContain("以最终结果为准");
+    expect(scanProgressIssueText(d)).not.toContain("结果仍完整");
+  });
+
+  it("没有诊断的完整扫描：complete", () => {
+    expect(stateFor({})).toBe("complete");
+    expect(scanDiscoveryIssueText({})).toBe("");
+    expect(scanProgressIssueText({})).toBe("");
+  });
+
+  it("扫描中途取消：cancelled 优先于诊断完整性，且不显示完成", () => {
+    expect(
+      stateFor({ scan_cancelled: 1, registry_unreadable: 1, batch_event_failed: 2 }, { cancelled: true }),
+    ).toBe("cancelled");
+  });
+
+  it("首次扫描失败但保留部分结果：partial（有 scan + scanPartial）", () => {
+    expect(
+      deriveScanState({
+        scan: { ...scan, apps: [] } as never,
+        scanning: false,
+        scanError: "来源读取失败",
+        scanPartial: true,
+      }),
+    ).toBe("partial");
+    expect(deriveScanState({ scan: null, scanning: false, scanError: "扫描失败", scanPartial: false })).toBe(
+      "failed",
+    );
+  });
+
+  it("界面上进度推送失败只作低干扰说明，不出现「部分来源失败」横幅", () => {
+    seedStores();
+    useNavigationStore.setState({
+      scan: {
+        apps: [APP_WECHAT],
+        scanned_at: "2026-11-06T10:00:00Z",
+        duration_ms: 1,
+        counts: {},
+        diagnostics: { batch_event_failed: 1 },
+      },
+    });
+    render(<AppPicker standalone onClose={() => {}} />);
+    expect(screen.getByText(/部分扫描进度未能实时更新，以最终结果为准/)).toBeTruthy();
+    expect(screen.queryByText(/结果仍完整/)).toBeNull();
+    expect(screen.queryByText(/部分来源失败/)).toBeNull();
+    expect(screen.queryByText(/应用发现可能不完整/)).toBeNull();
+    expect(screen.getByRole("option", { name: /微信/ })).toBeTruthy();
+  });
+
+  it("来源超时与进度推送失败并存：partial 横幅与进度说明同时可见且不矛盾", () => {
+    seedStores();
+    useNavigationStore.setState({
+      scan: {
+        apps: [APP_WECHAT],
+        scanned_at: "2026-11-06T10:00:00Z",
+        duration_ms: 1,
+        counts: {},
+        diagnostics: { uwp_scan_timeout: 1, batch_event_failed: 2 },
+      },
+    });
+    render(<AppPicker standalone onClose={() => {}} />);
+    // 真实来源失败：必须仍判定为部分结果并显示横幅
+    expect(screen.getByText(/应用发现可能不完整/)).toBeTruthy();
+    expect(screen.getByText(/应用商店来源读取超时/)).toBeTruthy();
+    expect(screen.getAllByText(/部分来源失败/).length).toBeGreaterThan(0);
+    // 进度说明只陈述进度推送，不再宣称结果完整
+    expect(screen.getByText(/部分扫描进度未能实时更新，以最终结果为准/)).toBeTruthy();
+    expect(screen.queryByText(/结果仍完整/)).toBeNull();
+  });
+});
+
+/** 与 seedStores 同形但不覆盖取消动作/loadApps（本组用例只关心取消按钮）。 */
+function seedStoresForCancel() {
+  useNavigationStore.setState({
+    scan: {
+      apps: [appFix({ app_key: "wechat", display_name: "微信", category: "im" })],
+      scanned_at: "2026-10-28T00:00:00Z",
+      duration_ms: 1,
+      counts: {},
+    },
+    scanning: false,
+    scanError: null,
+    scanCancelled: false,
+    scanProgress: null,
+    scanPartial: false,
+    targets: [],
+    targetsLoaded: true,
+    targetsError: null,
+    linksError: null,
+    linksByTask: {},
+    loadApps: vi.fn(async () => "ok" as const),
+    loadTargets: vi.fn(async () => "ok" as const),
+    loadTaskLinks: vi.fn(async () => "ok" as const),
+  });
+  useAgentsStore.setState({ snapshot: { sources: [], instances: [], sessions: [], runs: [] } });
+  useUiStore.setState({ toast: null });
+  useTasksStore.setState({ refresh: vi.fn(async () => {}) });
+}

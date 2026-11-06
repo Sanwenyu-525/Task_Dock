@@ -1,4 +1,5 @@
-//! 完整模式：左侧垂直导航 + 任务 / Agent / 应用 / 行动 / 剪贴板 / 收集与暂存 / 工作流 / 历史 / 规划中心 / 帮助 / 设置 **十二个视觉入口**。
+//! 完整模式：左侧垂直导航 + 任务 / Agent / 应用 / 微件 / 行动 / 剪贴板 / 收集与暂存 / 工作流 / 历史 / 规划中心 / 帮助 / 诊断中心 / 资源管理 / 设置
+//! **十四个声明视觉入口（其中帮助与诊断中心默认隐藏；默认渲染 10 个滚动项 + 资源管理、设置两个固定入口）**。
 //! 应用中心（v0.10）复用既有导航目标体系，三端（侧栏 / 胶囊 / 设置）共享同一份数据。
 //!
 //! v0.6：由顶部横向标签改为**左侧垂直导航**（两套视觉预设共用同一结构）。
@@ -12,10 +13,12 @@
 //!   （页面内双子页签：快速收集 | 文件暂存）。
 //! - v0.10：新增「应用」视觉入口（Agent 之后、行动之前）
 //! - v0.11：新增「帮助」视觉入口（规划中心之后、设置之前，不占 Ctrl+数字）
+//! - v0.14：新增「诊断中心」视觉入口（帮助之后、设置之前，默认隐藏，不占 Ctrl+数字）
+//! - v0.14：新增「资源管理」固定视觉入口（设置上方，不可隐藏/排序，不占 Ctrl+数字）
 //!
 //! 逻辑 Tab 与快捷键：`TAB_ORDER` 仍是 10 个逻辑 Tab（快捷键 Ctrl+1…9 与 Ctrl+0 的
-//! 事实源，Ctrl+5=快速收集、Ctrl+6=文件暂存）；「应用 / 微件 / 帮助」只是视觉入口，
-//! **不占用 Ctrl+数字**，已有快捷键语义不漂移。视觉合并只发生在导航渲染层。
+//! 事实源，Ctrl+5=快速收集、Ctrl+6=文件暂存）；「应用 / 微件 / 帮助 / 诊断中心 / 资源管理」
+//! 只是视觉入口，**不占用 Ctrl+数字**，已有快捷键语义不漂移。视觉合并只发生在导航渲染层。
 //!
 //! 入口元数据统一来自 `src/lib/navigationRegistry.ts`，用户显隐/排序来自 SQLite
 //! 设置 `navigation_layout`（见 `src/lib/navVisibility.ts`）；本文件不保留第二份入口清单。
@@ -52,6 +55,7 @@ import {
   type NavEntry,
 } from "../lib/navigationRegistry";
 import { useNavigationLayout } from "../lib/navigationLayout";
+import { safeTabForHiddenEntry } from "../lib/navVisibility";
 import { useLocale } from "../hooks/useLocale";
 
 import { requestSettingsSectionReveal } from "../lib/settingsSections";
@@ -63,6 +67,8 @@ const HistoryPanel = lazy(() => import("./history/HistoryPanel"));
 const PlanningCenterPanel = lazy(() => import("./roadmap/PlanningCenterPanel"));
 const SettingsPanel = lazy(() => import("./settings/SettingsPanel"));
 const HelpCenterPanel = lazy(() => import("./help/HelpCenterPanel"));
+const DiagnosticsCenterPanel = lazy(() => import("./diagnostics/DiagnosticsCenterPanel"));
+const ResourceManagementPanel = lazy(() => import("./resource/ResourceManagementPanel"));
 
 // 注册中心声明顺序不是展示顺序：左侧入口统一按默认顺序读取，用户排序在渲染时覆盖。
 const LEFT_ENTRIES = entriesForSurface("left");
@@ -113,6 +119,36 @@ export default function FullView() {
   const lockedIds = lockedEntryIds("left");
   const currentEntry = leftEntryForTab(tab);
   const currentHidden = !!currentEntry && !layout.left.includes(currentEntry.id);
+
+  // ── 隐藏当前入口后的安全恢复（导航配置变更驱动，唯一实现点）──────────
+  // 只在「当前页所属入口由可见变为隐藏」这一次配置变更上触发一次：
+  // - 从「更多」/快捷键/通知/深链主动打开本来就隐藏的页面时**没有**可见→隐藏
+  //   迁移，因此不会被强制重定向（隐藏 ≠ 禁止访问）；
+  // - 不做「持续检查 tab 是否可见并强制纠正」的 Effect（那会让隐藏功能无法通过
+  //   「更多」进入），也不依赖设置页的局部操作路径（旧实现只覆盖该路径，且用的是
+  //   写入前的旧快照，连续操作时可能选到刚被隐藏的页面）。
+  // 切页仍走 `setTab` 门禁：未保存草稿 → pending（等用户确认/取消）、保存中 →
+  // blocked（store 已就地提示）。绝不为恢复导航丢弃用户编辑内容；用户取消后停留
+  // 在原页是安全的（页面仍可编辑/保存，设置入口始终可达）。
+  const entryState = { id: currentEntry?.id ?? null, hidden: currentHidden };
+  const prevEntryState = useRef(entryState);
+  useEffect(() => {
+    const prev = prevEntryState.current;
+    prevEntryState.current = entryState;
+    if (!currentEntry || !currentHidden) return;
+    if (prev.id !== currentEntry.id || prev.hidden) return;
+    const target = safeTabForHiddenEntry(layout, collectionSub);
+    const result = setTab(target);
+    // 合并入口的「快速笔记」子页没有独立逻辑 Tab：切页会把子页重置为 inbox，
+    // 切页成功后再恢复笔记子页，避免恢复导航顺带丢失子页状态。
+    if (
+      result === "switched" &&
+      collectionSub === "notes" &&
+      (target === "inbox" || target === "shelf")
+    ) {
+      setCollectionSub("notes");
+    }
+  }, [currentEntry, currentHidden, layout, collectionSub, setTab, setCollectionSub]);
 
   // ── 行动中心徽标的消费者恢复路径 ──────────────────────────────────
   // App 的事件聚合刷新按消费者门控（shouldRefreshActions）：入口隐藏 /
@@ -304,6 +340,8 @@ export default function FullView() {
             {tab === "history" && <HistoryPanel />}
             {tab === "roadmap" && <PlanningCenterPanel />}
             {tab === "help" && <HelpCenterPanel />}
+            {tab === "diagnostics" && <DiagnosticsCenterPanel />}
+            {tab === "resource" && <ResourceManagementPanel />}
             {tab === "settings" && <SettingsPanel />}
           </Suspense>
         </ErrorBoundary>

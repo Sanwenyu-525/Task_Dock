@@ -3,6 +3,18 @@
 //! 固定类别白名单：暂存架陈旧原子写入残留、TTS 服务缓存、剪贴板/暂存架无引用缩略图。
 //! 执行只接受服务端预览 ID，并再次验证文件身份。
 //! Windows 通过拒绝并发写/删共享的文件句柄复核后对同一对象设置删除标记；其他平台跳过。
+//!
+//! 同模块还提供只读资源概览与进程诊断（`probes` / `diagnostics`）：按需采样、
+//! 不注册后台轮询、不结束任何进程、不读取命令行。
+
+mod diagnostics;
+mod memory;
+mod probes;
+mod storage;
+
+pub use diagnostics::{CpuSampler, ProcessDiagnostics, SelfProcessSnapshot};
+pub use memory::{MemoryCatalog, MemoryReleaseReport, MemoryReleaseSource, MemorySource};
+pub use storage::{StorageBreakdown, StorageEntry};
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -47,6 +59,8 @@ pub struct ResourceSnapshot {
     pub application: ApplicationSnapshot,
     pub memory: MemorySnapshot,
     pub disks: Vec<DiskSnapshot>,
+    /// 本应用进程指标：CPU（差分窗口）、内存、运行时长。
+    pub process: SelfProcessSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,6 +177,43 @@ struct PreviewRecord {
 pub struct ResourceCleanupState {
     previews: Mutex<HashMap<String, PreviewRecord>>,
     executing: Mutex<()>,
+    /// 只读诊断的 CPU 差分基线：跨命令复用，首次无基线时由调用方做一次短窗口采样。
+    sampler: CpuSampler,
+    /// 应用数据根：只读占用分布用。测试或非标准启动时为 None（命令明确报不可用）。
+    data_root: Option<PathBuf>,
+    /// TTS 语音缓存目录（便携模式在数据根下，安装模式在 app_cache_dir 下）。
+    tts_cache_root: Option<PathBuf>,
+}
+
+impl ResourceCleanupState {
+    /// 绑定应用数据根与 TTS 缓存根（与剪贴板/暂存架/备份/语音同一实际目录）。
+    pub fn with_roots(root: PathBuf, tts_cache: Option<PathBuf>) -> Self {
+        Self {
+            data_root: Some(root),
+            tts_cache_root: tts_cache,
+            ..Self::default()
+        }
+    }
+
+    /// 只读扫描应用数据目录的占用分布（有界、不跟随链接）。
+    pub fn disk_usage(&self) -> Option<StorageBreakdown> {
+        self.data_root.as_deref().map(|root| {
+            storage::scan(storage::Roots {
+                data: root,
+                tts_cache: self.tts_cache_root.as_deref(),
+            })
+        })
+    }
+
+    /// 只读统计应用自身可回收的内存缓存。
+    pub fn memory_catalog(&self, audio: &AudioService) -> MemoryCatalog {
+        memory::catalog(audio)
+    }
+
+    /// 释放应用自身的可回收内存缓存（只清空缓存副本，不触碰磁盘缓存与运行中任务）。
+    pub fn release_memory(&self, audio: &AudioService) -> MemoryReleaseReport {
+        memory::release(audio)
+    }
 }
 
 impl ResourceCleanupState {
@@ -218,6 +269,8 @@ impl ResourceCleanupState {
             }
         }
 
+        let (memory_total, memory_available) = probes::system_memory();
+
         ResourceSnapshot {
             sampled_at: chrono::Utc::now().to_rfc3339(),
             application: ApplicationSnapshot {
@@ -232,14 +285,19 @@ impl ResourceCleanupState {
                 }
                 .into(),
             },
-            // Windows memory sampling remains unavailable on builds without a stable API.
-            // Null communicates unknown and is never represented as zero.
+            // 不可读时保持 None（未知），绝不以 0 冒充。
             memory: MemorySnapshot {
-                total_bytes: None,
-                available_bytes: None,
+                total_bytes: memory_total,
+                available_bytes: memory_available,
             },
             disks: disk_snapshot(&clipboard.root),
+            process: diagnostics::self_process(&self.sampler),
         }
+    }
+
+    /// 只读进程诊断：仅在用户显式请求时调用，不注册任何后台轮询。
+    pub fn process_diagnostics(&self) -> ProcessDiagnostics {
+        diagnostics::diagnostics(&self.sampler)
     }
 
     pub fn preview(

@@ -2681,11 +2681,8 @@ mod tests {
         let feature = create_feature_impl(&db, project.id.clone(), feat_input("F")).unwrap();
         let run_started = "2026-11-06T10:11:12Z";
         db.with_transaction(|conn| {
-            conn.execute(
-                "INSERT INTO agent_sources (id, display_name, created_at, updated_at)
-                 VALUES ('codex', 'Codex CLI', ?1, ?1)",
-                rusqlite::params![now_iso()],
-            )?;
+            // `codex` 由数据库迁移预置（v2 INSERT OR IGNORE），这里直接复用，
+            // 重复插入会触发 agent_sources.id 唯一约束。
             conn.execute(
                 "INSERT INTO agent_sessions
                  (id, source_id, external_id, title, status, first_seen_at, last_seen_at, origin)
@@ -2716,7 +2713,8 @@ mod tests {
         let links = list_feature_agent_links_impl(&db, &feature.id).unwrap();
         assert_eq!(links.len(), 2);
         let known = links.iter().find(|link| link.id == "known-link").unwrap();
-        assert_eq!(known.agent_name.as_deref(), Some("Codex CLI"));
+        // 来源显示名来自迁移预置的 agent_sources（id='codex'，display_name='Codex'）。
+        assert_eq!(known.agent_name.as_deref(), Some("Codex"));
         assert_eq!(known.agent_status.as_deref(), Some("waiting"));
         assert_eq!(known.agent_session_id.as_deref(), Some("session-row"));
         assert_eq!(known.last_execution_at.as_deref(), Some(run_started));

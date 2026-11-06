@@ -3,8 +3,8 @@
 //! 目的：锁定本次回归核对的关键契约，防止并行会话更新统计时发生静默漂移：
 //! - CORE_FEATURE_IDS 恰好 12 项，ID、标题、顺序固定；
 //! - 12 项核心 P0=5 / P1=5 / P2=2；全局搜索固定 P1；核心项状态集合固定；
-//! - 目录 28 项，状态 implemented=12 / partial=13 / planned=3 / blocked=0
-//!   （2026-11-05：Claude Code / Cursor / Gemini CLI 适配器已落地，planned → implemented）；
+//! - 目录 31 项，状态 implemented=13 / partial=15 / planned=3 / blocked=0
+//!   （2026-11-06 规划纠偏：场景 / 工作流 / MCP / 帮助四项按代码证据修正描述，数量不变）；
 //! - Gemini CLI 为 implemented + unverified（真实会话未联调，不登记为受阻）。
 //!
 //! 本文件只校验数据，不渲染面板；面板交互由既有

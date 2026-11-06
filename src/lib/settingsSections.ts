@@ -24,6 +24,7 @@ export const SETTINGS_SECTION_IDS = [
   "agent",
   "data",
   "diagnostics",
+  "diagnostics-logs",
   "developer",
 ] as const;
 

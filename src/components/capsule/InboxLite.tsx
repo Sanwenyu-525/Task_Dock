@@ -26,6 +26,7 @@ import {
   AlignLeft,
   ArrowUpRight,
   Check,
+  ChevronRight,
   Inbox,
   Lightbulb,
   Link2,
@@ -36,6 +37,7 @@ import {
 import type { CaptureItem, CaptureKind } from "../../lib/bridge";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
+import { useUiStore } from "../../store/useUiStore";
 import { openFullApp } from "./actions";
 import InboxDropPane from "./InboxDropPane";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
@@ -308,10 +310,24 @@ export default function InboxLite() {
             <span className="cap-foot-note">
               {notice ?? "快速捕获的记录先落在这里，处理完自动移出"}
             </span>
-            <button type="button" className="cap-link" onClick={() => openFullApp("inbox")}>
-              完整收集箱
-              <ArrowUpRight size={12} strokeWidth={2.2} aria-hidden="true" />
-            </button>
+            <div className="cap-actions">
+              {/* 快速笔记复用完整面板的第三个子页（NotesPanel），胶囊不新建编辑器；
+                  子页切换绑定在导航事务的 after 上：被草稿拦截/保存中拒绝时不提前改状态。 */}
+              <button
+                type="button"
+                className="cap-link"
+                onClick={() =>
+                  openFullApp("inbox", () => useUiStore.getState().setCollectionSub("notes"))
+                }
+              >
+                快速笔记
+                <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
+              </button>
+              <button type="button" className="cap-link" onClick={() => openFullApp("inbox")}>
+                完整收集箱
+                <ArrowUpRight size={12} strokeWidth={2.2} aria-hidden="true" />
+              </button>
+            </div>
           </div>
         </>
       )}

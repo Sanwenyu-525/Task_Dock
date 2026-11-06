@@ -95,6 +95,7 @@ const OPEN = {
   agent: false,
   data: false,
   diagnostics: false,
+  "diagnostics-logs": false,
   developer: false,
 } as const;
 

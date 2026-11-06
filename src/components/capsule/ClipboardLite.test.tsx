@@ -304,6 +304,33 @@ describe("A3 文件基础查看", () => {
   });
 });
 
+describe("复制结果反馈", () => {
+  it("写入成功但统计失败：提示部分成功（info）并保留成功勾选", async () => {
+    const text = item({ id: "lite-copy-partial", kind: "text", title: "部分成功文本" });
+    clipboardView.mockResolvedValue(view([text]));
+    clipboardCopyItem.mockResolvedValueOnce({
+      mode: "text",
+      bytes: 1,
+      warnings: ["使用次数未能记录（统计写入失败），不影响本次复制"],
+      sequence: 1,
+      stats_recorded: false,
+    });
+    render(<ClipboardLite />);
+    await screen.findByText("部分成功文本");
+
+    fireEvent.click(screen.getByRole("button", { name: "复制「部分成功文本」" }));
+    await waitFor(() => {
+      const toast = useUiStore
+        .getState()
+        .toasts.find((t) => t.message.includes("已复制（部分成功"));
+      expect(toast?.kind).toBe("info");
+      expect(toast?.message).toContain("使用次数未记录");
+    });
+    // 剪贴板写入本身成功：仍显示成功勾选，不退化成「复制失败」
+    expect(document.querySelector(".cap-mini.is-ok")).toBeTruthy();
+  });
+});
+
 describe("A4 截图组有界预览", () => {
   const imageOf = (id: string, title: string) =>
     item({

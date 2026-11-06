@@ -553,6 +553,16 @@ pub fn duplicate(db: &Db, id: &str) -> AppResult<String> {
             )
             .optional()?
             .ok_or_else(|| AppError::Validation(format!("场景不存在: {id}")))?;
+        // 复制同样是新建场景，必须与 save 共用同一数量上限，否则可无限绕过。
+        let total: i64 = tx
+            .query_row("SELECT COUNT(*) FROM scenarios", [], |r| r.get(0))
+            .optional()?
+            .unwrap_or(0);
+        if total as usize >= MAX_SCENARIOS {
+            return Err(AppError::Validation(format!(
+                "场景数量已达上限 {MAX_SCENARIOS}，请先删除不用的场景"
+            )));
+        }
         let base: String = name
             .chars()
             .take(NAME_MAX_CHARS.saturating_sub(3))
@@ -1279,6 +1289,39 @@ mod tests {
             count(&db, "SELECT COUNT(*) FROM scenarios"),
             MAX_SCENARIOS as i64
         );
+    }
+
+    #[test]
+    fn duplicate_respects_scenario_cap() {
+        let db = memdb();
+        let source = save(&db, &base_input("源场景")).unwrap();
+        for i in 0..(MAX_SCENARIOS - 1) {
+            save(&db, &base_input(&format!("填充 {i}"))).unwrap();
+        }
+        let e = duplicate(&db, &source).unwrap_err();
+        assert!(e.to_string().contains("上限"), "复制不应绕过上限: {e}");
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) FROM scenarios"),
+            MAX_SCENARIOS as i64
+        );
+
+        // 释放一个名额后复制成功；副本不继承 last_entered_at
+        let victim = list(&db).unwrap()[0].id.clone();
+        delete(&db, &victim).unwrap();
+        let copy = duplicate(&db, &source).unwrap();
+        let copied = get(&db, &copy).unwrap();
+        assert!(copied.summary.name.ends_with("副本"), "实际: {}", copied.summary.name);
+        assert_eq!(copied.summary.last_entered_at, None);
+        assert_eq!(
+            (
+                copied.summary.app_count,
+                copied.summary.url_count,
+                copied.summary.folder_count
+            ),
+            (2, 1, 1),
+            "副本应复制完整清单"
+        );
+        assert_eq!(get(&db, &source).unwrap().summary.linked_workflow_id, None);
     }
 
     #[test]

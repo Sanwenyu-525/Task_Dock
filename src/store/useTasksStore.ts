@@ -14,6 +14,7 @@ import {
   type TaskStats,
 } from "../lib/bridge";
 import { errorMessage } from "../lib/errors";
+import { startOperation } from "../lib/diagnostics";
 
 /** 轻量列表的在途请求代际：只认最后一次，旧响应不覆盖新列表 */
 let liteSeq = 0;
@@ -224,9 +225,18 @@ export const useTasksStore = create<{
     await Promise.all(jobs);
   },
   create: async (input) => {
-    const t = await createTask(input);
-    await get().refresh();
-    return t;
+    // 一次用户保存 = 一个 operation_id；参数只记录阶段，不记录标题/正文。
+    const op = startOperation("task", "create_task");
+    try {
+      op.stage("persist");
+      const t = await createTask(input);
+      op.success();
+      await get().refresh();
+      return t;
+    } catch (e) {
+      op.fail(e);
+      throw e;
+    }
   },
   quickCreate: async (text, dueAt, recurrence, advanceMinutes) => {
     const t = await createFromQuickAdd(text, dueAt, recurrence, advanceMinutes);
@@ -234,9 +244,17 @@ export const useTasksStore = create<{
     return t;
   },
   update: async (id, input) => {
-    const t = await updateTask(id, input);
-    await get().refresh();
-    return t;
+    const op = startOperation("task", "update_task");
+    try {
+      op.stage("persist");
+      const t = await updateTask(id, input);
+      op.success();
+      await get().refresh();
+      return t;
+    } catch (e) {
+      op.fail(e);
+      throw e;
+    }
   },
   toggle: async (id, opts) => {
     const t = await toggleTask(id);

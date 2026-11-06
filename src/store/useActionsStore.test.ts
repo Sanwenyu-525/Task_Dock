@@ -17,8 +17,10 @@ import type {
 } from "../lib/bridge";
 import {
   attentionCount,
+  cancelActionsRefresh,
   categoryCount,
   hasActionsFeedConsumer,
+  scheduleActionsRefresh,
   shouldRefreshActions,
   useActionsStore,
 } from "./useActionsStore";
@@ -521,5 +523,51 @@ describe("useActionsStore 消费者门控", () => {
     } as never);
     expect(shouldRefreshActions()).toBe(false);
     useSettingsStore.setState({ settings: null });
+  });
+
+  it("极简 / 紧凑模式：侧栏与行动页都不渲染，不算消费者（即使入口可见且 tab=actions）", () => {
+    useUiStore.setState({ tab: "actions" });
+    act(() => useEdgeSnapStore.setState({ phase: "free" }));
+    for (const mode of ["compact", "minimal"] as const) {
+      useSettingsStore.setState({ settings: { mode } } as never);
+      expect(hasActionsFeedConsumer()).toBe(false);
+      expect(shouldRefreshActions()).toBe(false);
+    }
+    // 回到完整模式：同一状态下消费者恢复
+    useSettingsStore.setState({ settings: { mode: "full" } } as never);
+    expect(hasActionsFeedConsumer()).toBe(true);
+    useUiStore.setState({ tab: "tasks" });
+    useSettingsStore.setState({ settings: null });
+  });
+
+  it("调度窗口内消费者消失：执行前重新验证，不发无消费者的聚合查询", async () => {
+    vi.useFakeTimers();
+    try {
+      feedMock.mockResolvedValue(feedOf());
+      useSettingsStore.setState({ settings: { mode: "full" } } as never);
+      useUiStore.setState({ tab: "tasks" });
+      act(() => useEdgeSnapStore.setState({ phase: "free" }));
+      expect(shouldRefreshActions()).toBe(true);
+
+      scheduleActionsRefresh();
+      // 去抖窗口内切到紧凑模式：聚合结果已没有 UI 消费者
+      useSettingsStore.setState({ settings: { mode: "compact" } } as never);
+      await act(async () => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(feedMock).not.toHaveBeenCalled();
+
+      // 消费者恢复：由恢复路径（FullView / ActionCenterPanel）显式补一次刷新
+      useSettingsStore.setState({ settings: { mode: "full" } } as never);
+      await act(async () => {
+        await useActionsStore.getState().load({ silent: true, countsOnly: true });
+      });
+      expect(feedMock).toHaveBeenCalledTimes(1);
+    } finally {
+      cancelActionsRefresh();
+      vi.useRealTimers();
+      useSettingsStore.setState({ settings: null });
+      useUiStore.setState({ tab: "tasks" });
+    }
   });
 });

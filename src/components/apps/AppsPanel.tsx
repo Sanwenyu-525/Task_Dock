@@ -209,7 +209,8 @@ export default function AppsPanel() {
       showToast(successMessage, { kind: "success" });
       return;
     }
-    if (outcome === "stale") return;
+    // stale / cancelled 都不是失败：结果由其他请求落地，或请求被主动取消。
+    if (outcome === "stale" || outcome === "cancelled") return;
     showToast(tr("apps.refreshStale", { success: successMessage }), {
       kind: "warning",
       action: {

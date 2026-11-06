@@ -15,7 +15,16 @@
 //! 分段筛选（全部 / 文本 / 图片 / 文件）是对同一份真实列表的本地过滤。
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpRight, Check, Clipboard, Copy, FileText, Images, Layers, Play } from "lucide-react";
+import {
+  ArrowUpRight,
+  Check,
+  Clipboard,
+  Copy,
+  FileText,
+  Images,
+  Layers,
+  Play,
+} from "lucide-react";
 import {
   clipboardCopyGroupRich,
   clipboardCopyItem,
@@ -28,6 +37,7 @@ import { useClipboardStore } from "../../store/useClipboardStore";
 import { useUiStore } from "../../store/useUiStore";
 import { ClipboardThumb } from "../clipboard/Media";
 import { openFullApp } from "./actions";
+import ClipboardTargetView from "./ClipboardTargetView";
 import {
   ClipboardLiteFilesView,
   ClipboardLiteGroupView,
@@ -268,6 +278,15 @@ export default function ClipboardLite() {
   const pushView = (view: ClipboardLiteView) => setViews((s) => [...s, view]);
   const closeTop = () => setViews((s) => s.slice(0, -1));
 
+  /**
+   * 从列表行打开「复制并切换到…」：入口只在列表里，因此与 openView 一样先记住
+   * 列表滚动位置；返回列表时由上面的 useLayoutEffect 恢复（不改变行高与面板几何）。
+   */
+  const openCopySwitch = (it: ClipboardItem) => {
+    listScroll.current = listRef.current?.scrollTop ?? 0;
+    pushView({ kind: "copy-switch", item: it });
+  };
+
   const list = useMemo(() => {
     if (!items) return null;
     return items
@@ -328,6 +347,12 @@ export default function ClipboardLite() {
                 onBack={closeTop}
                 onOpenFull={openFull}
                 onCopyItem={copyDetailItem}
+              />
+            ) : view.kind === "copy-switch" ? (
+              <ClipboardTargetView
+                item={view.item}
+                active={index === views.length - 1}
+                onBack={closeTop}
               />
             ) : (
               <ClipboardLiteGroupView
@@ -543,6 +568,17 @@ export default function ClipboardLite() {
                 ) : (
                   <Copy size={13} strokeWidth={2} aria-hidden="true" />
                 )}
+              </button>
+              {/* 分体入口：复制按钮行为不变，右侧箭头直接打开「复制并切换到…」。
+                  箭头表示「跳转到其他窗口」，不是折叠/展开；行高由既有行样式决定。 */}
+              <button
+                type="button"
+                className="cap-mini is-icon"
+                aria-label="复制并切换到目标窗口"
+                data-tip="复制并切换到目标窗口"
+                onClick={() => openCopySwitch(it)}
+              >
+                <ArrowUpRight size={13} strokeWidth={2} aria-hidden="true" />
               </button>
             </div>
           );

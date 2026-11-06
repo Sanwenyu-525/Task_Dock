@@ -5,8 +5,11 @@
 //! 2. 用户主动操作失败必须说明「哪个操作失败 + 原因 + 下一步」；
 //! 3. 后台高频轮询失败不要每次弹 Toast（业务调用方用 `recordBackgroundError`）；
 //! 4. 重试动作统一包一层安全壳，重试自身失败会再次走统一上报，不抛出第二个异常。
+//! 5. 诊断日志归属：IPC 失败已由 `invokeCommand` 记录，这里不再重复写；本地抛出的
+//!    错误（参数校验、状态检查等）在这里补一条，保证「一次失败只有一个主要事件」。
 
 import { normalizeError, type AppError } from "./errors";
+import { isLogged, logEvent, markLogged, reserveReport } from "./diagnostics";
 import { localizedErrorMessage } from "../i18n/errors";
 import { useUiStore } from "../store/useUiStore";
 
@@ -85,11 +88,52 @@ function runRetrySafely(retry: () => void | Promise<void>, operation?: string): 
 }
 
 /**
+ * 记录一条“本地产生”的失败（非 IPC 抛出）。
+ * 已被 `invokeCommand` 归属的错误直接跳过，避免同一失败写两条日志。
+ */
+function logOwnedError(
+  err: AppError,
+  operation: string | undefined,
+  source: "report" | "background",
+): void {
+  try {
+    if (isLogged(err)) return;
+    // 同一失败可能已被 invokeCommand 或其它层归属（错误被重新包装后实例不同）：
+    // 250ms 窗口内只抑制事件；被抑制次数在下一次实际写入时带回，不丢真实次数。
+    const reservation = reserveReport(err.code, err.message);
+    if (!reservation.emit) return;
+    const level =
+      err.severity === "critical" ? "CRITICAL" : err.severity === "warning" ? "WARN" : "ERROR";
+    const metadata: Record<string, string | number | boolean> = { source };
+    if (operation) metadata.operation = operation;
+    if (reservation.suppressed > 0) metadata.suppressed_since_last = reservation.suppressed;
+    logEvent({
+      level,
+      module: "ui",
+      action: "report_error",
+      event: "failed",
+      status: "failed",
+      error_code: err.code,
+      error_category: err.category,
+      message: err.message,
+      // component 只放可读上下文；operation 是用户视角的中文名，不作为稳定标识符。
+      component: operation,
+      metadata,
+    });
+    markLogged(err);
+  } catch {
+    // 诊断失败不影响提示与重试。
+  }
+}
+
+/**
  * 统一错误上报：归一化 + 弹 Toast（可选重试）。
  * 返回归一化错误，便于调用方继续设置内联错误状态或决定回退。
  */
 export function reportError(raw: unknown, opts: ReportOptions = {}): AppError {
   const err = normalizeError(raw, opts.operation);
+  // 即使只归一化不弹提示（silent），诊断仍然要记录：silent 只表示“不给用户看”。
+  logOwnedError(err, opts.operation, "report");
   if (!opts.silent) {
     const { message } = formatErrorForUser(err, opts.operation);
     useUiStore.getState().showToast(message, {
@@ -109,5 +153,7 @@ export function reportError(raw: unknown, opts: ReportOptions = {}): AppError {
  * 调用方应把它写入对应模块的错误状态（工具栏/面板内联提示）。
  */
 export function recordBackgroundError(raw: unknown, operation?: string): AppError {
-  return normalizeError(raw, operation);
+  const err = normalizeError(raw, operation);
+  logOwnedError(err, operation, "background");
+  return err;
 }

@@ -2,7 +2,7 @@
 //!
 //! - 我的项目：用户自建多项目（SQLite planning_* 表），可创建 / 编辑 / 归档 / 删除，
 //!   规划功能、拆分步骤、记录进度（见 PlanningWorkspace 与 docs/roadmap/planning-center.md）；
-//! - 内置路线图：Task Dock 自身的 28 项功能规划（lib/featureCatalog.ts 静态目录），
+//! - 内置路线图：Task Dock 自身的 31 项功能规划（lib/featureCatalog.ts 静态目录），
 //!   只读展示，不受用户项目编辑影响（FeatureRoadmapPanel 原样保留）。
 //!
 //! 保留 roadmap Tab 身份：导航、快捷键（Ctrl+7）与既有测试不受改名影响。

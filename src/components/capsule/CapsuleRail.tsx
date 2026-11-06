@@ -265,8 +265,14 @@ export default function CapsuleRail({
     [layout.capsule],
   );
   const orbEntry = capsuleEntries.find((entry) => entry.id === "agents");
-  const categoryEntries = capsuleEntries.filter(
-    (entry) => entry.id !== "agents" && entry.capsuleCategory !== undefined,
+  // 过滤结果必须保持引用稳定：`visibleCategories` 的下游 effect 以它为依赖，
+  // 每次渲染都新建数组会让 effect 在每次渲染后重跑（虽无状态写入，仍是多余工作）。
+  const categoryEntries = useMemo(
+    () =>
+      capsuleEntries.filter(
+        (entry) => entry.id !== "agents" && entry.capsuleCategory !== undefined,
+      ),
+    [capsuleEntries],
   );
   // 合法分类集合包含 Agent 端头球：只留状态球时也能切到 Agent，而不是停在隐藏分类。
   const visibleCategories = useMemo(() => {

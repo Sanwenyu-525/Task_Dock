@@ -34,6 +34,7 @@ import {
   type ShelfStats,
   type ShelfUpdatePatch,
 } from "../lib/bridge";
+import { startOperation } from "../lib/diagnostics";
 
 /** 分页大小：与剪贴板面板一致的后端分页节奏。 */
 export const SHELF_PAGE_SIZE = 100;
@@ -59,9 +60,11 @@ interface ShelfState {
   filter: ShelfFilter;
   loading: boolean;
   error: string | null;
-  /** 删除/清空后的权威刷新失败时，保留旧列表并提示可重试。 */
+  /** 删除/清空/清理后的权威刷新失败时，保留旧列表并提示可重试。 */
   mutationSyncError: string | null;
   deletionBusy: boolean;
+  /** 手动过期清理在途闸：预览/执行都不得并发发起。 */
+  cleanupBusy: boolean;
   /** 工具面板「最近暂存」轻量切片（独立于完整列表，避免胶囊加载整页历史） */
   recent: ShelfItem[];
   recentLoading: boolean;
@@ -96,7 +99,7 @@ interface ShelfState {
   updateItem: (id: string, patch: ShelfUpdatePatch) => Promise<ShelfItem>;
   deleteItems: (ids: string[], includeProtected: boolean) => Promise<ShelfMutationResult>;
   clearShelf: (includeProtected: boolean) => Promise<ShelfMutationResult>;
-  runCleanup: (dryRun: boolean, includeProtected: boolean) => Promise<ShelfCleanupReport>;
+  runCleanup: (dryRun: boolean, includeProtected: boolean) => Promise<ShelfCleanupResult>;
   verifyExists: (ids: string[]) => Promise<void>;
   createGroup: (name: string) => Promise<void>;
   renameGroup: (id: string, name: string) => Promise<void>;
@@ -122,6 +125,15 @@ export interface ShelfMutationResult {
   report: ShelfDeleteReport;
   synced: boolean;
   remainingTotal: number | null;
+}
+
+/**
+ * 清理结果：report 是后端唯一事实源，synced 表示执行后的权威刷新是否成功。
+ * dry_run 预览不写数据，synced 恒为 true。
+ */
+export interface ShelfCleanupResult {
+  report: ShelfCleanupReport;
+  synced: boolean;
 }
 
 /** 模块级请求代际：筛选切换后，旧响应不得覆盖新状态。 */
@@ -164,6 +176,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   error: null,
   mutationSyncError: null,
   deletionBusy: false,
+  cleanupBusy: false,
   recent: [],
   recentLoading: false,
   recentLoaded: false,
@@ -325,17 +338,36 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   },
 
   addPaths: async (paths, mode, source, groupId) => {
-    const report = await shelfAddPaths(paths, mode, source, groupId ?? null);
-    if (report.added.length > 0) {
-      set((s) => ({
-        items: sortItems([...report.added, ...s.items]),
-        recent: [...report.added, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
-      }));
-      invalidateRecent();
-      void get().refreshMeta();
-      await get().load({ silent: true });
+    // 一次投递 = 一个 operation_id；只记录数量/来源/存储模式，绝不记录文件路径。
+    const op = startOperation("file", "shelf_add_paths");
+    try {
+      op.stage("persist");
+      const report = await shelfAddPaths(paths, mode, source, groupId ?? null);
+      if (report.added.length > 0) {
+        // 真实存在的收尾步骤：本地合并 + 元数据/列表刷新。
+        op.stage("finalize");
+        set((s) => ({
+          items: sortItems([...report.added, ...s.items]),
+          recent: [...report.added, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
+        }));
+        invalidateRecent();
+        void get().refreshMeta();
+        await get().load({ silent: true });
+      }
+      op.success({
+        metadata: {
+          count: paths.length,
+          added: report.added.length,
+          failed: report.failed.length,
+          mode,
+          source,
+        },
+      });
+      return { added: report.added.length, failed: report.failed };
+    } catch (e) {
+      op.fail(e);
+      throw e;
     }
-    return { added: report.added.length, failed: report.failed };
   },
 
   addLink: async (url, groupId) => {
@@ -387,6 +419,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
 
   deleteItems: async (ids, includeProtected) => {
     if (get().deletionBusy) throw new Error("暂存架正在处理删除操作");
+    if (get().cleanupBusy) throw new Error("暂存架正在清理，请稍候");
     set({ deletionBusy: true });
     try {
       const report = await shelfDelete(ids, includeProtected);
@@ -404,6 +437,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
 
   clearShelf: async (includeProtected) => {
     if (get().deletionBusy) throw new Error("暂存架正在处理删除操作");
+    if (get().cleanupBusy) throw new Error("暂存架正在清理，请稍候");
     set({ deletionBusy: true });
     try {
       const report = await shelfClear(includeProtected);
@@ -420,14 +454,25 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   },
 
   runCleanup: async (dryRun, includeProtected) => {
-    const report = await shelfCleanup(dryRun, includeProtected);
-    set({ lastCleanup: report });
-    if (!dryRun) {
-      invalidateRecent();
-      await get().load({ silent: true });
-      void get().refreshMeta();
+    if (get().cleanupBusy) throw new Error("暂存架正在清理，请稍候");
+    if (dryRun) {
+      // 预览只读：不改列表、统计与最近缓存，结果交给调用方做二次确认。
+      const report = await shelfCleanup(true, includeProtected);
+      set({ lastCleanup: report });
+      return { report, synced: true };
     }
-    return report;
+    set({ cleanupBusy: true });
+    try {
+      const report = await shelfCleanup(false, includeProtected);
+      set({ lastCleanup: report });
+      invalidateRecent();
+      // 与删除/清空共用同一权威同步路径：列表（保留已加载范围与当前筛选）、
+      // 统计、分组与最近暂存一次性收敛；失败只置 mutationSyncError，不重跑清理。
+      const synced = await get().retryShelfSync();
+      return { report, synced };
+    } finally {
+      set({ cleanupBusy: false });
+    }
   },
 
   verifyExists: async (ids) => {

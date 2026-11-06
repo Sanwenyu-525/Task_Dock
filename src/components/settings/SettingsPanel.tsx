@@ -1,14 +1,15 @@
 //! 设置面板：外观与主题 / 窗口与快捷键 / 通知 / Agent 接入 / 数据与备份 / 开发者选项。
 //! 统一控件风格；高级选项（Agent 接入细节、开发者工具）默认折叠。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
   RefreshCw, Navigation, Clipboard, Trash2, Gauge, Layers, Compass, AlertTriangle, HardDrive, LifeBuoy,
+  ScrollText,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
-import { CollapsibleSection } from "../ui";
+import { CollapsibleSection, Combobox } from "../ui";
 import {
   auditTestData,
   backupNow,
@@ -49,7 +50,7 @@ import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { copyText } from "../../lib/clipboard";
 import MockControls from "../agents/MockControls";
 import AudioSettings from "./AudioSettings";
-import ResourceCleanupSection from "./ResourceCleanupSection";
+import DiagnosticsLogsSection from "./DiagnosticsLogsSection";
 import ReopenOnboardingButton from "../onboarding/ReopenOnboardingButton";
 import McpAccessSection from "./McpAccessSection";
 import ContextHelpButton from "../help/ContextHelpButton";
@@ -71,10 +72,37 @@ import {
   type SettingsSectionId,
   type SettingsSectionOpenState,
 } from "../../lib/settingsSections";
+import {
+  categoryForSection,
+  matchesSettingsQuery,
+  persistSettingsCategory,
+  readSettingsCategory,
+  settingsCategory,
+  settingsSectionMeta,
+  sectionsForCategory,
+  SETTINGS_CATEGORIES,
+  SETTINGS_SECTION_META,
+  type SettingsCategoryId,
+} from "../../lib/settingsCategories";
+import SettingsCategoryNav, {
+  settingsCategoryTabId,
+  settingsCategoryPanelId,
+} from "./SettingsCategoryNav";
 
 function sumAuditCounts(c: AuditTableCounts): number {
   return c.events + c.sessions + c.runs + c.instances + c.notifications;
 }
+
+/** 设置页附属数据的按需加载切片（按实际展示位置划分，不按页面整体）。 */
+type PanelDataSlice = "backups" | "clipboard";
+const PANEL_DATA_SLICES: readonly PanelDataSlice[] = ["backups", "clipboard"];
+
+/**
+ * 设置分组索引**不再在本文件维护**：分组标题、所属分类与顺序统一由
+ * `lib/settingsCategories.ts` 的 `SETTINGS_SECTION_META` 提供（唯一事实源）。
+ * 历史缺陷：本文件曾有一份手写索引，新增 `diagnostics-logs` 时漏加，
+ * 导致该分组无法通过「查找设置」定位；现在漏项由完整性测试直接拦下。
+ */
 
 /** 备份类型只按后端元数据判断；未知值明确标未知，绝不猜测为完整。 */
 function backupKindLabel(
@@ -152,12 +180,53 @@ export default function SettingsPanel() {
   const [pendingPicker, setPendingPicker] = useState(false);
   /** 设置页附属数据（备份/剪贴板统计/剪贴板状态）读取失败：显示真实错误与重试，不伪装成空数据 */
   const [dataLoadError, setDataLoadError] = useState<string | null>(null);
+  /** 已成功读取的附属数据切片：展开/折叠反复切换不重复查询。 */
+  const loadedSlices = useRef<Record<PanelDataSlice, boolean>>({
+    backups: false,
+    clipboard: false,
+  });
   const snapPhase = useEdgeSnapStore((s) => s.phase);
 
   // 首次无有效记录时全部折叠；切换立即写入本地偏好（不进业务配置/备份/IPC）。
   const [openSections, setOpenSections] = useState<SettingsSectionOpenState>(() =>
     readSettingsSectionOpenState(),
   );
+  // 一级分类选中态：与折叠偏好分开持久化（`taskdock.settings.category.v1`），
+  // 首次进入默认「通用与外观」，损坏/未知值安全回退，不影响任何业务设置。
+  const [category, setCategory] = useState<SettingsCategoryId>(() => readSettingsCategory());
+  const categoryRef = useRef<SettingsCategoryId>(category);
+  categoryRef.current = category;
+
+  /**
+   * 切换分类前提交可能丢失的本地草稿。
+   *
+   * 设置值本身都在 Store 里（切换分类不丢），唯一例外是「输入后需失焦才提交」的
+   * 剪贴板排除名单：分类切换会卸载输入框，若依赖 blur 顺序就等于把草稿交给事件时序。
+   * 这里显式提交一次；失败仍走原有 Toast 反馈，不静默吞掉。
+   */
+  const flushDrafts = useCallback(() => {
+    if (!settings) return;
+    if (excludeApps === settings.clipboard_exclude_apps) return;
+    update({ clipboard_exclude_apps: excludeApps }).catch((e) =>
+      showToast(t("settings.clipboard.excludeSaveFailed", { error: String(e) }), {
+        kind: "error",
+      }),
+    );
+  }, [excludeApps, settings, update, showToast, t]);
+  // 草稿提交依赖每次输入都会变的闭包，但分类切换回调本身必须**引用稳定**：
+  // 它经 `revealSection` 被跨模块定位的 window 监听依赖，不稳定会导致每次输入
+  // 都重新注册一次监听（清理正确但属无谓抖动，也可能漏掉一次事件）。
+  const flushDraftsRef = useRef(flushDrafts);
+  flushDraftsRef.current = flushDrafts;
+
+  const selectCategory = useCallback((next: SettingsCategoryId) => {
+    if (categoryRef.current === next) return;
+    flushDraftsRef.current();
+    categoryRef.current = next;
+    persistSettingsCategory(next);
+    setCategory(next);
+  }, []);
+
   const setSectionOpen = useCallback((sectionId: SettingsSectionId, open: boolean) => {
     setOpenSections((prev) => {
       if (prev[sectionId] === open) return prev;
@@ -187,44 +256,17 @@ export default function SettingsPanel() {
     [],
   );
 
-  // 工具面板「应用」页的一次性配置意图（消费后立即清除，避免反复自动弹出）。
-  const appConfig = useUiStore((s) => s.appConfig);
-  const clearAppConfig = useUiStore((s) => s.clearAppConfig);
-  useEffect(() => {
-    if (!appConfig) return;
-    const kind = appConfig.kind;
-    clearAppConfig();
-    if (kind === "picker") {
-      // 胶囊仍处于 Win32 区域裁剪态时先挂起，等解除停靠进入 free 再挂载选择器，
-      // 避免大型模态被裁掉。
-      setPendingPicker(true);
-      return;
-    }
-    // 管理意图：目标分组原为折叠时先展开，等展开后的 DOM 提交再滚动定位；
-    // 否则折叠状态下 `.app-management` 未渲染，scrollIntoView 会静默失效。
-    setSectionOpen("apps", true);
-    const first = requestAnimationFrame(() => {
-      const second = requestAnimationFrame(() => {
-        document
-          .querySelector('[data-collapsible-section="settings-apps"]')
-          ?.scrollIntoView({ block: "start" });
-      });
-      scrollRafs.current.push(second);
-    });
-    scrollRafs.current.push(first);
-  }, [appConfig, clearAppConfig, setSectionOpen]);
-
-  useEffect(() => {
-    if (!pendingPicker || snapPhase !== "free") return;
-    setPendingPicker(false);
-    setAppPickerOpen(true);
-  }, [pendingPicker, snapPhase]);
-
-  // 「更多」菜单里的「自定义导航」：展开目标分区并在 DOM 提交后滚动定位。
-  // 设置页尚未挂载时由 sessionStorage 意图兜底；已挂载时直接走事件。
-  useEffect(() => {
-    const revealSection = (sectionId: SettingsSectionId) => {
+  /**
+   * 展开目标分组并在 DOM 提交后滚动定位。
+   *
+   * 一级分类下目标分组可能不在当前分类里：先切到它所属的分类（注册表唯一事实源），
+   * 再展开、再等两帧滚动——折叠/未渲染状态下 `querySelector` 取不到节点，
+   * 一次 rAF 也可能早于分类切换后的 DOM 提交。
+   */
+  const revealSection = useCallback(
+    (sectionId: SettingsSectionId) => {
       setSectionOpen(sectionId, true);
+      selectCategory(categoryForSection(sectionId));
       const first = requestAnimationFrame(() => {
         const second = requestAnimationFrame(() => {
           const target = document.querySelector(`[data-collapsible-section="settings-${sectionId}"]`);
@@ -236,7 +278,38 @@ export default function SettingsPanel() {
         scrollRafs.current.push(second);
       });
       scrollRafs.current.push(first);
-    };
+    },
+    [selectCategory, setSectionOpen],
+  );
+
+  // 工具面板「应用」页的一次性配置意图（消费后立即清除，避免反复自动弹出）。
+  const appConfig = useUiStore((s) => s.appConfig);
+  const clearAppConfig = useUiStore((s) => s.clearAppConfig);
+  useEffect(() => {
+    if (!appConfig) return;
+    const kind = appConfig.kind;
+    clearAppConfig();
+    if (kind === "picker") {
+      // 胶囊仍处于 Win32 区域裁剪时先挂起，等解除停靠进入 free 再挂载选择器，
+      // 避免大型模态被裁掉。同时把分类切到「功能与应用」：关闭选择器后用户
+      // 落在应用设置所在分类，而不是回到别的分类再找一次。
+      selectCategory(categoryForSection("apps"));
+      setPendingPicker(true);
+      return;
+    }
+    // 管理意图：切分类 + 展开 + 定位一次完成（与「更多 → 自定义导航」同一路径）。
+    revealSection("apps");
+  }, [appConfig, clearAppConfig, revealSection, selectCategory]);
+
+  useEffect(() => {
+    if (!pendingPicker || snapPhase !== "free") return;
+    setPendingPicker(false);
+    setAppPickerOpen(true);
+  }, [pendingPicker, snapPhase]);
+
+  // 「更多」菜单里的「自定义导航」：展开目标分区并在 DOM 提交后滚动定位。
+  // 设置页尚未挂载时由 sessionStorage 意图兜底；已挂载时直接走事件。
+  useEffect(() => {
     const pending = consumeSettingsSectionReveal();
     if (pending) revealSection(pending);
     const onReveal = (event: Event) => {
@@ -247,31 +320,70 @@ export default function SettingsPanel() {
     };
     window.addEventListener(SETTINGS_SECTION_REVEAL_EVENT, onReveal);
     return () => window.removeEventListener(SETTINGS_SECTION_REVEAL_EVENT, onReveal);
-  }, [setSectionOpen]);
+  }, [revealSection]);
 
-  const loadPanelData = useCallback(async () => {
-    setDataLoadError(null);
-    const [backupResult, statsResult, statusResult] = await Promise.allSettled([
-      listBackups(),
-      clipboardStats(),
-      clipboardStatus(),
-    ]);
-    // 每项独立落地：一项失败不覆盖其他项，也不把失败清成空数据
-    if (backupResult.status === "fulfilled") setBackups(backupResult.value);
-    if (statsResult.status === "fulfilled") setClipStats(statsResult.value);
-    if (statusResult.status === "fulfilled") {
-      setClipConfigError(statusResult.value.configError ?? null);
-      setClipConfigOrigin(statusResult.value.configOrigin ?? null);
-    }
-    const failure = [backupResult, statsResult, statusResult].find(
-      (r): r is PromiseRejectedResult => r.status === "rejected",
-    );
-    if (failure) setDataLoadError(errorMessage(failure.reason));
-  }, []);
+  /**
+   * 设置页附属数据按需读取（2026-11-06 信息架构重整）。
+   *
+   * 历史行为：设置页一挂载就并发读取备份列表 + 剪贴板统计 + 剪贴板状态，
+   * 即使用户只是来看主题。现在按「实际展示」切片：
+   * - `backups`：仅「数据与备份」分组展开时需要；
+   * - `clipboard`：仅「智能剪贴板」分组展开时需要（用量/配置告警都在分组内）。
+   *
+   * 切片读取成功后才标记已加载；失败会清掉标记，下次展开或点「重试」可重新读取，
+   * 不把失败伪装成空数据。
+   */
+  const loadPanelData = useCallback(
+    async (slices: readonly PanelDataSlice[] = PANEL_DATA_SLICES): Promise<boolean> => {
+      setDataLoadError(null);
+      const failures: unknown[] = [];
+      if (slices.includes("backups")) {
+        try {
+          setBackups(await listBackups());
+        } catch (e) {
+          failures.push(e);
+        }
+      }
+      if (slices.includes("clipboard")) {
+        // 统计与状态各自落地：一项失败不覆盖另一项，也不把失败清成空数据
+        const [statsResult, statusResult] = await Promise.allSettled([
+          clipboardStats(),
+          clipboardStatus(),
+        ]);
+        if (statsResult.status === "fulfilled") setClipStats(statsResult.value);
+        else failures.push(statsResult.reason);
+        if (statusResult.status === "fulfilled") {
+          setClipConfigError(statusResult.value.configError ?? null);
+          setClipConfigOrigin(statusResult.value.configOrigin ?? null);
+        } else {
+          failures.push(statusResult.reason);
+        }
+      }
+      if (failures.length > 0) {
+        setDataLoadError(errorMessage(failures[0]));
+        return false;
+      }
+      return true;
+    },
+    [],
+  );
+
+  /** 分组首次展开时读取一次；失败后解除标记，允许再次展开或重试。 */
+  const ensurePanelSlice = useCallback(
+    (slice: PanelDataSlice) => {
+      if (loadedSlices.current[slice]) return;
+      loadedSlices.current[slice] = true;
+      void loadPanelData([slice]).then((ok) => {
+        if (!ok) loadedSlices.current[slice] = false;
+      });
+    },
+    [loadPanelData],
+  );
 
   useEffect(() => {
-    void loadPanelData();
-  }, [loadPanelData]);
+    if (openSections.data) ensurePanelSlice("backups");
+    if (openSections.clipboard) ensurePanelSlice("clipboard");
+  }, [openSections.data, openSections.clipboard, ensurePanelSlice]);
 
   async function onRepairClipboard(resume: boolean) {
     setBusyKey("clip-repair");
@@ -567,6 +679,23 @@ export default function SettingsPanel() {
   const retention = diag?.retention;
   const frontendMetrics = getAgentRefreshMetrics();
 
+  // 当前分类的展示元数据（标题/说明）与「查找设置」候选：全部来自注册表，
+  // 不再维护第二份索引；候选顺序 = 分类顺序 + 分类内页面顺序。
+  const activeCategory = settingsCategory(category) ?? SETTINGS_CATEGORIES[0];
+  const activeCategorySectionCount = sectionsForCategory(category).length;
+  const searchOptions = useMemo(
+    () =>
+      SETTINGS_SECTION_META.map((meta) => {
+        const owner = settingsCategory(meta.category);
+        return {
+          value: meta.id,
+          label: t(meta.labelKey),
+          hint: owner ? t(owner.labelKey) : "",
+        };
+      }),
+    [t],
+  );
+
   // 添加应用改为内容区子页面：替换设置内容，不叠覆盖式大 Modal；
   // 组件保持挂载，返回后各设置项状态不丢失。
   if (appPickerOpen) {
@@ -583,6 +712,56 @@ export default function SettingsPanel() {
           </button>
         </div>
       )}
+      <SettingsCategoryNav active={category} onSelect={selectCategory} />
+      <div className="settings-jump" data-settings-jump>
+        <span className="settings-jump-label">{t("settings.jump.label")}</span>
+        <Combobox
+          ariaLabel={t("settings.jump.label")}
+          size="sm"
+          className="settings-search"
+          value={null}
+          placeholder={t("settings.jump.placeholder")}
+          searchPlaceholder={t("settings.jump.searchPlaceholder")}
+          emptyText={t("settings.jump.empty")}
+          options={searchOptions}
+          // 命中范围：分组标题 + 所属分类 + 注册表别名（中文连续子串 / 英文不区分大小写）。
+          filter={(option, query) => {
+            const meta = settingsSectionMeta(option.value as SettingsSectionId);
+            return matchesSettingsQuery(
+              {
+                label: option.label,
+                categoryLabel: option.hint ?? "",
+                aliases: meta?.aliases,
+              },
+              query,
+            );
+          }}
+          onChange={(sectionId) => revealSection(sectionId as SettingsSectionId)}
+        />
+      </div>
+      {/* 分类内容区：只渲染当前分类的分组，未选中的分类不挂载（不产生额外查询）。
+          分组内部仍由 CollapsibleSection 控制展开，折叠状态沿用原有本地偏好。 */}
+      <div
+        className="settings-category-panel"
+        role="tabpanel"
+        id={settingsCategoryPanelId(category)}
+        aria-labelledby={settingsCategoryTabId(category)}
+      >
+        <header className="settings-category-head">
+          <div className="settings-category-title-row">
+            <h3 className="settings-category-title">
+              <activeCategory.icon size={14} strokeWidth={1.7} aria-hidden="true" />
+              {t(activeCategory.labelKey)}
+            </h3>
+            <span className="settings-category-count">
+              {t("settings.category.summary", { count: activeCategorySectionCount })}
+            </span>
+          </div>
+          <p className="settings-category-desc">{t(activeCategory.descriptionKey)}</p>
+        </header>
+
+        {category === "general" && (
+          <>
       <Section
         sectionId="appearance"
         icon={Palette}
@@ -761,7 +940,11 @@ export default function SettingsPanel() {
         </div>
         <HotkeysSection />
       </Section>
+          </>
+        )}
 
+        {category === "features" && (
+          <>
       <Section
         sectionId="features"
         icon={Layers}
@@ -790,7 +973,40 @@ export default function SettingsPanel() {
         <div className="setting-note">{t("settings.features.actionsNote")}</div>
         <div className="setting-note">{t("settings.features.clipboardNote")}</div>
       </Section>
+          </>
+        )}
 
+        {category === "data-resources" && (
+          <>
+      {/* 资源管理属于「数据与资源」分类：与备份恢复放在一起，先看占用再决定清理。 */}
+      <Section
+        sectionId="resource-cleanup"
+        icon={HardDrive}
+        title={t("settings.section.resourceCleanup")}
+        description={t("settings.section.resourceCleanupDesc")}
+        open={openSections["resource-cleanup"]}
+        onToggle={() => toggleSection("resource-cleanup")}
+      >
+        {/* 完整资源管理中心是独立一级页面；设置里只保留入口，避免两份完整界面。 */}
+        <div className="resource-entry">
+          <div className="resource-entry-text">
+            <strong>{t("settings.resourceEntry.title")}</strong>
+            <span>{t("settings.resourceEntry.desc")}</span>
+          </div>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => setTab("resource")}
+          >
+            {t("settings.resourceEntry.open")}
+          </button>
+        </div>
+      </Section>
+          </>
+        )}
+
+        {category === "features" && (
+          <>
       <Section
         sectionId="apps"
         icon={Navigation}
@@ -1043,7 +1259,11 @@ export default function SettingsPanel() {
         </div>
         <div className="setting-note">{t("settings.clipboard.cleanupNote")}</div>
       </Section>
+          </>
+        )}
 
+        {category === "notify-voice" && (
+          <>
       <Section
         sectionId="notifications"
         icon={Bell}
@@ -1118,18 +1338,11 @@ export default function SettingsPanel() {
       </Section>
 
       <AudioSettings openSections={openSections} onToggle={toggleSection} />
+          </>
+        )}
 
-      <Section
-        sectionId="resource-cleanup"
-        icon={HardDrive}
-        title={t("settings.section.resourceCleanup")}
-        description={t("settings.section.resourceCleanupDesc")}
-        open={openSections["resource-cleanup"]}
-        onToggle={() => toggleSection("resource-cleanup")}
-      >
-        <ResourceCleanupSection />
-      </Section>
-
+        {category === "help" && (
+          <>
       <Section
         sectionId="help"
         icon={LifeBuoy}
@@ -1152,7 +1365,11 @@ export default function SettingsPanel() {
           <ReopenOnboardingButton />
         </div>
       </Section>
+          </>
+        )}
 
+        {category === "integration" && (
+          <>
       <Section
         sectionId="agent"
         icon={AgentIcon}
@@ -1235,7 +1452,11 @@ export default function SettingsPanel() {
         </div>
         <McpAccessSection />
       </Section>
+          </>
+        )}
 
+        {category === "data-resources" && (
+          <>
       <Section
         sectionId="data"
         icon={Database}
@@ -1432,6 +1653,21 @@ export default function SettingsPanel() {
         )}
         <div className="setting-note">{t("settings.data.auditNote")}</div>
       </Section>
+          </>
+        )}
+
+        {category === "integration" && (
+          <>
+      <Section
+        sectionId="diagnostics-logs"
+        icon={ScrollText}
+        title={t("settings.section.diagnosticsLogs")}
+        description={t("settings.section.diagnosticsLogsDesc")}
+        open={openSections["diagnostics-logs"]}
+        onToggle={() => toggleSection("diagnostics-logs")}
+      >
+        <DiagnosticsLogsSection />
+      </Section>
 
       <Section
         sectionId="diagnostics"
@@ -1602,6 +1838,9 @@ export default function SettingsPanel() {
         <div className="setting-note">{t("settings.developer.note")}</div>
         <MockControls />
       </Section>
+          </>
+        )}
+      </div>
 
       {/* 危险操作统一确认框：深浅主题一致、危险标识、执行中禁用重复提交 */}
       <ConfirmDialog

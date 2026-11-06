@@ -127,7 +127,8 @@ task_dock/
 
 | 命令 | 用途 |
 |---|---|
-| `nav_scan_apps(force?)` | 软件扫描（开始菜单/卸载注册表/App Paths/UWP/常用路径；返回 `diagnostics` 标记截断或来源失败；后端 5 分钟缓存） |
+| `nav_scan_apps(force?, scanId?)` | 软件扫描（开始菜单/卸载注册表/App Paths/UWP/常用路径；按来源分批推送 `nav-scan-batch`，来源内每 60 条一片；返回 `diagnostics` 标记截断/来源失败/超时；`cancelled=true` 表示中途取消且不写缓存；后端 5 分钟缓存） |
+| `nav_cancel_scan(scan_id)` | 取消在途扫描（只置标志并立即返回；扫描在来源/条目/子进程检查点退出，结果以 `nav_scan_apps` 返回的 `cancelled` 为准） |
 | `nav_app_icon(target_id?, app_key?)` | 按需提取真实 Windows 图标（`data:image/png;base64`；只接受已保存目标 id 或扫描登记过的 app_key） |
 | `nav_list_windows()` | 当前可交互顶层窗口（窗口选择器） |
 | `nav_list_targets` / `nav_save_target` / `nav_update_target` / `nav_delete_target` | 目标 CRUD（保存时全量安全校验 + app_key 幂等去重） |
@@ -448,3 +449,32 @@ exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
 - 只允许检查服务端固定目录和命名白名单；`temporary` 只清理 Shelf 目录内规范 UUID 命名且超过 24 小时的 `.part` 文件。Agent spool、备份/恢复、用户原文件、语音包或构建缓存不扫描。
 - 扫描最多处理每目录 10,000 个条目、条目间最长 5 秒；超过限制应返回部分结果，不能把子集总量标为完整。preview/execute 共用非阻塞作业闸；Shelf producer 与清理、过期孤儿回收共享写入/维护闸，冲突返回 `CLEANUP_BUSY`。
 - 前端定向用例：`npx vitest run src/components/settings/ResourceCleanupSection.test.tsx src/components/settings/AudioSettings.test.tsx src/lib/settingsSections.test.ts src/components/settings/SettingsPanel.test.tsx`（工作目录仓库根）。Rust 用例从 `src-tauri/` 内按模块过滤运行；完整环境/验收限制见 [资源清理说明](RESOURCE_CLEANUP.md) 与 `tmp/acceptance/resource-cleaner/report.md`。
+
+## 诊断日志命令速查（2026-11-06）
+
+技术说明与字段/级别/隐私规范见 [DIAGNOSTICS.md](DIAGNOSTICS.md)。日常排查只需要其中一条命令：
+
+| 命令 | 参数 | 用途 |
+|---|---|---|
+| `diagnostics_status` | — | 会话 ID、日志目录、容量、写入/丢弃/聚合/轮转计数、详细模式剩余时间 |
+| `diagnostics_query` | `{ filter }`（`levels/modules/errorCodes/statuses/windowIds/operationId/text/since/until/limit/offset`） | 分页查询（新→旧） |
+| `diagnostics_summary` | `{ filter }` | 按 模块+操作+错误码 聚合的异常摘要 |
+| `diagnostics_export` | `{ filter }` | 生成脱敏报告到 `<日志目录>/exports/`，返回路径/字节/条数 |
+| `diagnostics_clear` | — | 只删诊断日志文件 |
+| `diagnostics_open_dir` | — | 资源管理器打开日志目录 |
+| `diagnostics_set_mode` | `{ mode: "normal"\|"verbose", minutes? }` | 详细诊断（默认 30 分钟，最长 120，自动恢复） |
+| `diagnostics_record` | `{ events }` | 前端批量上报（上限 256/批，非法条目计入 `rejected`） |
+
+本地证据位置（隔离实例）：`TASK_DOCK_DATA_DIR=<dir>` 时全部落在 `<dir>/diagnostics/`；
+Windows 正式运行默认 `%APPDATA%\com.taskdock.desktop\diagnostics\`。
+
+验收/排查常用检查：
+
+```bash
+# 最近 5 条错误（需要应用正在运行、主窗口已就绪的 CDP/脚本环境）
+# 也可直接查看 JSONL（每行一个事件，字段见 docs/DIAGNOSTICS.md §3）
+tail -n 5 "%APPDATA%\com.taskdock.desktop\diagnostics\diagnostics-active.jsonl"
+```
+
+注意：诊断日志默认不记录 INFO 以下的 `tracing` 事件；需要更细粒度时先在设置页开启
+「详细诊断」，排查完会到期自动恢复，避免长期噪声。

@@ -47,7 +47,9 @@ export type ClipboardLiteView =
   | { kind: "image"; item: ClipboardItem; sequence?: LiteImageSequence }
   | { kind: "text"; item: ClipboardItem }
   | { kind: "files"; item: ClipboardItem }
-  | { kind: "group"; group: ClipboardGroup };
+  | { kind: "group"; group: ClipboardGroup }
+  /** 复制并切换到目标窗口：只复制 + 激活目标，不发送按键、不自动粘贴 */
+  | { kind: "copy-switch"; item: ClipboardItem };
 
 /** 文本一次性渲染上限：超出只显示前 N 字，避免超大文本撑爆面板渲染。 */
 export const TEXT_RENDER_LIMIT = 20_000;

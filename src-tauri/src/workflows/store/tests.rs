@@ -282,45 +282,154 @@ fn scene_workflow_direct_and_indirect_cycles_are_rejected() {
     );
 }
 
+fn enter_scene_step(scene_id: &str) -> StepInput {
+    step_input("enter_scene", &format!(r#"{{"scene_id":"{scene_id}"}}"#))
+}
+
+/// 嵌套层数口径（与 `workflows/mod.rs` 的 `validate_scene_flow_graph` 一致）：
+/// 一层 = 一条「场景 → 场景关联工作流」边；工作流步骤「进入场景」不计层。
+/// 该口径保证任一入口（直接进入场景 / 直接运行工作流）展开后都不超过三层关联工作流。
+///
+/// 这里同时锁住三条边界：
+/// - 三层链允许；
+/// - 以工作流为入口不额外计层（wf→scene 不算一层）；
+/// - 第四条关联工作流边在保存场景时被拒绝。
 #[test]
 fn scene_workflow_nesting_is_bounded() {
     let db = temp_db("scene-depth");
-    let workflows = (0..5)
+    let wf = (0..5)
         .map(|i| create_workflow(&db, wf_input(&format!("层级 {i}"), vec![])).unwrap())
         .collect::<Vec<_>>();
-    let scenes = (0..4)
-        .map(|i| {
-            crate::commands::scenario::save(
-                &db,
-                &scene_input(&format!("场景层级 {i}"), Some(workflows[i + 1].id.clone())),
-            )
-            .unwrap()
-        })
-        .collect::<Vec<_>>();
-    for i in (1..4).rev() {
-        replace_steps(
-            &db,
-            &workflows[i].id,
-            vec![step_input(
-                "enter_scene",
-                &format!(r#"{{"scene_id":"{}"}}"#, scenes[i]),
-            )],
-        )
+    // 链：s1 → wf2 → s2 → wf3 → s3 → wf4
+    let s3 = crate::commands::scenario::save(&db, &scene_input("层级 3", Some(wf[4].id.clone())))
         .unwrap();
-    }
-    let too_deep = replace_steps(
-        &db,
-        &workflows[0].id,
-        vec![step_input(
-            "enter_scene",
-            &format!(r#"{{"scene_id":"{}"}}"#, scenes[0]),
-        )],
-    )
-    .unwrap_err();
+    let s2 = crate::commands::scenario::save(&db, &scene_input("层级 2", Some(wf[3].id.clone())))
+        .unwrap();
+    let s1 = crate::commands::scenario::save(&db, &scene_input("层级 1", Some(wf[2].id.clone())))
+        .unwrap();
+    // s2 深度 2：s2→wf3→s3→wf4
+    replace_steps(&db, &wf[3].id, vec![enter_scene_step(&s3)]).unwrap();
+    // s1 深度 3：s1→wf2→s2→wf3→s3→wf4（三层边界允许）
+    replace_steps(&db, &wf[2].id, vec![enter_scene_step(&s2)]).unwrap();
+    // 工作流进入场景不计层：wf1 进入 s1 后仍是三层
+    replace_steps(&db, &wf[1].id, vec![enter_scene_step(&s1)]).unwrap();
+
+    // 第四条「场景 → 关联工作流」边：s0 → wf1 必须被拒绝（保存场景时校验）
+    let over = crate::commands::scenario::save(&db, &scene_input("层级 0", Some(wf[1].id.clone())))
+        .unwrap_err();
     assert!(
-        too_deep.to_string().contains("最大深度"),
-        "超过嵌套上限: {too_deep}"
+        over.to_string().contains("最大深度"),
+        "第四层应被拒绝: {over}"
     );
+}
+
+/// 同一张图从另一侧闭合第四层时，保存工作流步骤也必须拒绝：
+/// 先建 s0 → wf1（此时 wf1 无步骤，深度合法），再给 wf1 加「进入 s1」，
+/// 等价于 s0→wf1→s1→wf2→s2→wf3→s3→wf4 四层，必须拒绝且不能落库。
+#[test]
+fn scene_workflow_depth_rejects_whichever_edge_closes_fourth_layer() {
+    let db = temp_db("scene-depth-step-side");
+    let wf = (0..5)
+        .map(|i| create_workflow(&db, wf_input(&format!("侧向 {i}"), vec![])).unwrap())
+        .collect::<Vec<_>>();
+    let s3 = crate::commands::scenario::save(&db, &scene_input("侧向 3", Some(wf[4].id.clone())))
+        .unwrap();
+    let s2 = crate::commands::scenario::save(&db, &scene_input("侧向 2", Some(wf[3].id.clone())))
+        .unwrap();
+    let s1 = crate::commands::scenario::save(&db, &scene_input("侧向 1", Some(wf[2].id.clone())))
+        .unwrap();
+    replace_steps(&db, &wf[3].id, vec![enter_scene_step(&s3)]).unwrap();
+    replace_steps(&db, &wf[2].id, vec![enter_scene_step(&s2)]).unwrap();
+    // s0 → wf1 先落库（wf1 还没有步骤，一层，合法）
+    let s0 = crate::commands::scenario::save(&db, &scene_input("侧向 0", Some(wf[1].id.clone())))
+        .unwrap();
+
+    let over = replace_steps(&db, &wf[1].id, vec![enter_scene_step(&s1)]).unwrap_err();
+    assert!(
+        over.to_string().contains("最大深度"),
+        "工作流步骤侧闭合第四层应被拒绝: {over}"
+    );
+    // 失败不得留下步骤：wf1 仍为空
+    assert!(list_steps(&db, &wf[1].id).unwrap().is_empty());
+
+    // 删除最深场景后链变短，同一操作应恢复允许（无错误残留）
+    crate::commands::scenario::delete(&db, &s3).unwrap();
+    replace_steps(&db, &wf[1].id, vec![enter_scene_step(&s1)]).unwrap();
+    assert_eq!(list_steps(&db, &wf[1].id).unwrap().len(), 1);
+    // s0 仍在，且未因上一次失败被改写
+    let after = crate::commands::scenario::get(&db, &s0).unwrap();
+    assert_eq!(after.summary.linked_workflow_id.as_deref(), Some(wf[1].id.as_str()));
+}
+
+/// 运行前校验与保存校验共用同一函数：对历史/外部写入的超深图（绕过保存校验直插），
+/// 引擎侧 `validate_scene_graph_for_workflow` 也必须拒绝，不能只在保存路径上拦。
+#[test]
+fn scene_workflow_depth_guard_also_covers_run_time_validation() {
+    let db = temp_db("scene-depth-runtime");
+    let wf = (0..5)
+        .map(|i| create_workflow(&db, wf_input(&format!("运行 {i}"), vec![])).unwrap())
+        .collect::<Vec<_>>();
+    let s3 = crate::commands::scenario::save(&db, &scene_input("运行 3", Some(wf[4].id.clone())))
+        .unwrap();
+    let s2 = crate::commands::scenario::save(&db, &scene_input("运行 2", Some(wf[3].id.clone())))
+        .unwrap();
+    let s1 = crate::commands::scenario::save(&db, &scene_input("运行 1", Some(wf[2].id.clone())))
+        .unwrap();
+    replace_steps(&db, &wf[3].id, vec![enter_scene_step(&s3)]).unwrap();
+    replace_steps(&db, &wf[2].id, vec![enter_scene_step(&s2)]).unwrap();
+    replace_steps(&db, &wf[1].id, vec![enter_scene_step(&s1)]).unwrap();
+
+    // 绕过保存校验直插历史四层边（模拟旧数据/外部写入）
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO scenarios (id, name, icon, apps_json, urls_json, folders_json,
+                 linked_workflow_id, snapshot_id, created_at, updated_at)
+             VALUES ('legacy-over-deep', '历史四层', NULL, '[]', '[]', '[]', ?1, NULL,
+                 '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+            [&wf[1].id],
+        )
+        .map_err(AppError::from)
+    })
+    .unwrap();
+
+    // 运行前校验（engine 直接调用同一函数）必须拒绝
+    let run_time = crate::workflows::validate_scene_graph_for_workflow(&db, &wf[1].id, &[s1.clone()])
+        .unwrap_err();
+    assert!(
+        run_time.to_string().contains("最大深度"),
+        "运行前校验应拒绝历史超深图: {run_time}"
+    );
+    // 保存侧同样拒绝
+    let save_side =
+        crate::commands::scenario::save(&db, &scene_input("再叠一层", Some(wf[1].id.clone())))
+            .unwrap_err();
+    assert!(save_side.to_string().contains("最大深度"));
+}
+
+/// 多入口共享子图：两个入口场景指向同一工作流，深度按各自路径独立计算，
+/// 不得因为共享节点被重复累加或被误判为循环。
+#[test]
+fn scene_workflow_shared_subgraph_allows_multiple_entries() {
+    let db = temp_db("scene-depth-shared");
+    let hub = create_workflow(&db, wf_input("共享工作流", vec![])).unwrap();
+    let tail = create_workflow(&db, wf_input("共享下游", vec![])).unwrap();
+    let shared_scene =
+        crate::commands::scenario::save(&db, &scene_input("共享场景", Some(tail.id.clone())))
+            .unwrap();
+    replace_steps(&db, &hub.id, vec![enter_scene_step(&shared_scene)]).unwrap();
+    // 两个入口场景都指向 hub：入口 1 → hub → 共享场景 → tail = 2 层
+    let entry_a =
+        crate::commands::scenario::save(&db, &scene_input("入口 A", Some(hub.id.clone()))).unwrap();
+    let entry_b =
+        crate::commands::scenario::save(&db, &scene_input("入口 B", Some(hub.id.clone()))).unwrap();
+    assert_ne!(entry_a, entry_b);
+    // 两个入口的深度各自独立为 2，互不影响；再读回仍是两条独立场景
+    for id in [&entry_a, &entry_b] {
+        let detail = crate::commands::scenario::get(&db, id).unwrap();
+        assert_eq!(detail.summary.linked_workflow_id.as_deref(), Some(hub.id.as_str()));
+    }
+    let listed = crate::commands::scenario::list(&db).unwrap();
+    assert!(listed.len() >= 3, "共享子图不应合并入口场景");
 }
 
 #[test]

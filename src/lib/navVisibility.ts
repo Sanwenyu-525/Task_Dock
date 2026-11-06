@@ -262,11 +262,26 @@ export function isTabHidden(config: NavLayoutConfig, tab: Tab): boolean {
  * 隐藏当前入口时自动切换的「安全页」：
  * 优先任务页（最高频）；否则取左侧第一个仍可见入口覆盖的页面；
  * 左侧全部隐藏时回退设置页（页面本身仍可被深链打开，不产生导航死路）。
+ *
+ * `collectionSub` 只影响合并入口（收集与暂存）：它覆盖 inbox + shelf 两个逻辑 Tab，
+ * 恢复目标必须落在用户当时所在的子页，否则「隐藏当前入口」会顺带把暂存架重置回
+ * 快速收集。`notes` 没有独立逻辑 Tab，按 inbox 承载，子页状态由调用方在切页后恢复。
  */
-export function safeTabForHiddenEntry(config: NavLayoutConfig): Tab {
-  if (config.left.includes("tasks")) return "tasks";
-  const first = config.left[0] ? navEntry(config.left[0]) : undefined;
-  return first?.tabs[0] ?? "settings";
+export function safeTabForHiddenEntry(
+  config: NavLayoutConfig,
+  collectionSub?: "inbox" | "shelf" | "notes",
+): Tab {
+  // 只在「可排序」入口里找落点：锁定入口（资源管理/设置）是系统兜底，
+  // 不应成为隐藏普通入口后的默认首页；只剩锁定入口时回到设置。
+  const sortable = config.left
+    .map((id) => navEntry(id))
+    .filter((entry): entry is NonNullable<ReturnType<typeof navEntry>> => !!entry && !entry.locked);
+  const tasks = sortable.find((entry) => entry.tabs.includes("tasks"));
+  if (tasks) return "tasks";
+  const first = sortable[0];
+  if (!first) return "settings";
+  if (first.kind === "merged") return collectionSub === "shelf" ? "shelf" : "inbox";
+  return first.tabs[0] ?? "settings";
 }
 
 // ── 旧版 localStorage 配置迁移（只读；新配置一律写 SQLite）───────────────

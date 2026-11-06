@@ -13,10 +13,12 @@ use crate::navigation::router::{self, NavigateOptions};
 
 // ── 软件发现 ────────────────────────────────────────────────
 
-/// 扫描本机应用：逐来源推送 `nav-scan-batch` 渐进事件，最终返回完整权威结果。
+/// 扫描本机应用：分批推送 `nav-scan-batch` 渐进事件，最终返回完整权威结果。
 ///
 /// 前端按 `scan_id`（请求代际）过滤过期批次；扫描线程只做事件推送，不阻塞 IPC。
-/// 事件保留来源级粒度（5 个来源 + 缓存命中），不做百分比估算。
+/// 同一来源内按固定上限分块（最后一块才推进 `sources_done`），不做百分比估算。
+/// 扫描期间可通过 [`nav_cancel_scan`] 置取消标志：扫描在来源/条目/子进程检查点退出，
+/// 返回 `cancelled = true` 的部分结果，且**不写入扫描缓存**。
 #[tauri::command]
 pub async fn nav_scan_apps(
     app: AppHandle,
@@ -26,12 +28,18 @@ pub async fn nav_scan_apps(
     use tauri::Emitter;
     let force = force.unwrap_or(false);
     let scan_id = scan_id.unwrap_or_default();
+    // 守卫在扫描线程内持有：扫描结束（含 panic 展开）后自动注销，不遗留取消注册项。
+    let guard = navigation::app_discovery::ScanGuard::register(&scan_id);
     tauri::async_runtime::spawn_blocking(move || {
         let mut sources_done = 0usize;
-        Ok(navigation::app_discovery::scan_installed_apps_streaming(
+        let mut emit_failures: u32 = 0;
+        let mut result = navigation::app_discovery::scan_installed_apps_streaming(
             force,
-            |apps, source, discovered| {
-                sources_done += 1;
+            guard.as_ref().map(|g| g.token()),
+            |apps, source, discovered, source_done| {
+                if source_done {
+                    sources_done += 1;
+                }
                 let payload = navigation::app_discovery::AppScanBatch {
                     scan_id: scan_id.clone(),
                     source: source.to_string(),
@@ -41,12 +49,30 @@ pub async fn nav_scan_apps(
                     sources_total: navigation::app_discovery::SCAN_SOURCES_TOTAL,
                 };
                 // 事件失败不影响扫描本身（例如窗口已关闭）；最终结果仍经 invoke 返回。
-                let _ = app.emit("nav-scan-batch", payload);
+                // 但必须计数并作为诊断返回，不能静默当成「进度推送正常」。
+                if app.emit("nav-scan-batch", payload).is_err() {
+                    emit_failures += 1;
+                }
             },
-        ))
+        );
+        if emit_failures > 0 {
+            result
+                .diagnostics
+                .insert("batch_event_failed".into(), emit_failures);
+        }
+        Ok(result)
     })
     .await
     .map_err(|e| crate::error::AppError::Agent(format!("扫描任务失败: {}", e)))?
+}
+
+/// 取消一次在途扫描（按 `scan_id`）：只置取消标志并立即返回，不等待扫描线程退出。
+///
+/// 返回 `false` 表示该请求已结束或不存在——前端不得据此声称「已取消」，
+/// 应等 `nav_scan_apps` 的真实返回（`cancelled` 字段）确认结果。
+#[tauri::command]
+pub fn nav_cancel_scan(scan_id: String) -> bool {
+    navigation::app_discovery::request_cancel(&scan_id)
 }
 
 /// 真实应用图标（PNG data URL）。只接受已保存目标 id、扫描发现的 app_key，

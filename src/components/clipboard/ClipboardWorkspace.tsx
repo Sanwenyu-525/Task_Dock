@@ -52,10 +52,12 @@ import ClipboardGroupCard from "./ClipboardGroupCard";
 import ClipboardGroupDetail from "./ClipboardGroupDetail";
 import ClipboardItemCard from "./ClipboardItemCard";
 import ClipboardItemDetail from "./ClipboardItemDetail";
+import CopySwitchPanel from "./CopySwitchPanel";
 import ImageLightbox from "./ImageLightbox";
 import PastePanel from "./PastePanel";
 import type { AskConfirm, ClipboardDetail } from "./types";
 import ContextHelpButton from "../help/ContextHelpButton";
+import { requestSettingsSectionReveal } from "../../lib/settingsSections";
 
 const KIND_CHIPS: { id: string; label: string }[] = [
   { id: "all", label: "全部" },
@@ -895,6 +897,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   }
 
   function goSettings() {
+    // 跨模块定位：设置页按一级分类组织后，直接定位到「智能剪贴板」分组
+    // （切分类 → 展开分组 → 滚动由设置页统一处理），用户不用再自己找。
+    requestSettingsSectionReveal("clipboard");
     setTab("settings");
     if (isDrawer) closeDrawer();
   }
@@ -995,6 +1000,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               linkMode={!!linkTask}
               onSelect={() => toggleItemSelection(item.id)}
               onCopy={() => void onCopyItem(item)}
+              onCopySwitch={() => setDetail({ kind: "copy-switch", item })}
               onToggle={(flag) => void onToggleItem(item, flag)}
               onDetail={() => setDetail({ kind: "item", id: item.id })}
               onDelete={() => onDeleteItem(item)}
@@ -1196,6 +1202,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           <PastePanel groupId={detail.id} groupName={detail.name} onBack={() => setDetail(null)} />
         ) : detail?.kind === "paste-items" ? (
           <PastePanel itemIds={detail.ids} onBack={() => setDetail(null)} />
+        ) : detail?.kind === "copy-switch" ? (
+          <CopySwitchPanel item={detail.item} onBack={() => setDetail(null)} />
         ) : (
           renderList()
         )}

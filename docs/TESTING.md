@@ -17,6 +17,17 @@
 
 ## 一、自动化测试结果
 
+### 规划整改二次验收：Rust 定向测试修复（2026-11-06）
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| `workflows::store::tests::scene_workflow_*`（5 用例） | **PASS** 5/5 | 原 `scene_workflow_nesting_is_bounded` 构造自相矛盾（同时要求 `depth(Scene0)≤3` 与 `depth(WF0)=depth(Scene0)>3`），已按「场景→关联工作流计层」口径重写；新增四层拒绝、工作流侧闭合、运行前校验、删除恢复、多入口共享子图 |
+| `mcp::tests::feature_completed_is_user_only_and_submit_for_review_flow` | **PASS** | 原测试用 `planned` 状态提交超长说明，先命中状态冲突；现拆为 A–F（planned 冲突 / 超长回滚 / 合法提交 / completed 拒绝 / 过期 revision / 无残留），生产代码未改 |
+| `commands::planning::tests::feature_agent_links_use_real_session_state_and_unlink_in_place` | **PASS** | 原测试重复插入迁移预置的 `agent_sources('codex')`；改为复用预置来源，断言目标不变 |
+| shelf junction 相关 3 项 | **PASS** | 2026-11-06 19:26 全量 `cargo test --lib` 中 `orphan_cleanup_rejects_reparse_point_as_shelf_root` / `orphan_cleanup_skips_reparse_point_subdirectory` / `startup_part_cleanup_does_not_follow_junctions` 全部通过；此前 ENVIRONMENT BLOCKED 结论已不成立（当时 `cmd mklink /J` 创建失败） |
+| `fs_safety::tests`（5 用例，含 `open_file_handle_prevents_delete_until_released`） | **PASS** 5/5 | 2026-11-06 19:45 定向 `cargo test --lib fs_safety::tests` 全部通过。根因是夹具文件位于共享临时目录根：`lock_category_directory` 以 DELETE 打开该目录时返回 Win32 错误 32（ERROR_SHARING_VIOLATION），函数按 fail-closed 返回 false（生产只锁定应用自管分类子目录）。夹具改为独立分类子目录，并新增正向对照、时间戳变化、文件缺失 3 个边界；生产实现未改。|
+| `cargo test --lib`（全量） | **PASS** | 2026-11-06 20:11，**1386 passed / 0 failed / 6 ignored**，exit 0。前两次尝试因并行会话 `diagnostics/` 与 `resource_cleanup/storage.rs` 编译错误未进入测试阶段，非本任务改动 |
+
 ### Round 5 Agent 实时监控边界与事件生命周期（2026-11-06）
 
 | 检查 | 结果 |
@@ -50,6 +61,7 @@
 
 - 场景单飞新增 5 项边界用例（get 失败释放、enter 失败释放、快速/异场景并发拒绝、成功不覆盖结果、删除清理）后 `useScenarioStore.test.ts` **8 passed / 0 failed**；并行 `workflows`/`mcp`/`shelf`  mid-edit 短暂不可编译期间 Agent 专项复跑中 `file_drop` 1 项负载抖动失败，隔离与随后的全量 `agents::` 复跑均通过（201/201）。
 - `cargo test --lib` 续验更新为 **1305 passed / 6 failed / 4 ignored**：fs_safety 2 项 + resource_cleanup 1 项已由并行所有者修复；剩余 6 项为 `commands::planning` 唯一约束、`mcp` 断言含 "2000"、`workflows::store` 嵌套深度语义、`shelf` 3 项 junction 创建失败（`ENVIRONMENT BLOCKED`，fixture 路径），均未触及 Agent。
+  > **2026-11-06 晚更正**：以上 6 项已全部处理——workflow 深度为测试构造矛盾（已重写 5 用例）、MCP 断言与 planning 唯一约束为测试前置条件错误、shelf junction 3 项已能创建并通过。见本文件顶部「规划整改二次验收」与最后一轮收尾记录。
 - 前端复验 7 文件 **97 passed / 0 failed**（Agent 契约 26+14、场景 8、导航 51 一类合并）。
 
 #### 复验收尾（15:53–16:16）
@@ -796,7 +808,7 @@ Rust：`cargo test --lib` 覆盖 `capsule_regions`（四边 × 折叠/展开、D
 | `src/capture/captureUtils.test.ts` | 五类型常量与未知值回落、单选组循环索引、链接识别与句末标点剥离、`suggestKind` 只建议（链接优先于时间词）、空/超长/首行标题校验、提交输入拆分（链接→url+note、`www.` 补协议）、备注截断、草稿状态机与文案、`formatClock`/`newClientId`/`formatError` |
 | `src/capture/CaptureApp.test.tsx` | 挂载同步 last_type 与空内容禁用保存、主题快照、切换类型立即保存草稿、方向键/Home/End 循环、建议不静默改类型、600ms 防抖且只展示后端确认时间、保存失败重试、失焦/`capture-flush-draft`/隐藏事件 flush、唤起恢复草稿提示、字数阈值、Ctrl+Enter 提交成功后约 500ms 隐藏、失败保留内容与同一 client_id、防重复提交、空内容拒绝、链接拆分提交、Esc 关闭、关闭按钮走 bridge、IME 组合中不提交 |
 | `src/components/inbox/CaptureInboxPanel.test.tsx` | 加载未处理列表与类型/内容/时间渲染、筛选全部、复制（链接优先复制 URL）、转任务后移除并递减徽标、标记已处理、全部筛选下禁用处理操作、删除就地二次确认（取消/确认）、两种空态文案、加载失败重试、刷新当前筛选 |
-| `src/lib/featureCatalog.test.ts` | 快速捕获登记为 implemented 且 verification 仍 unverified、能力/入口文本含独立捕获窗口/五类型/收集箱/幂等、partial 集合调整、全目录计数（28 = 4 implemented + 8 partial + 16 planned + 0 blocked） |
+| `src/lib/featureCatalog.test.ts` | 快速捕获登记为 implemented 且 verification 仍 unverified、能力/入口文本含独立捕获窗口/五类型/收集箱/幂等、partial 集合调整、全目录计数（2026-11-06 起为 31 = 13 implemented + 15 partial + 3 planned + 0 blocked；本行 v0.7 记录时点为 28 = 4 / 8 / 16 / 0，已被后续迭代覆盖） |
 | `src/components/roadmap/FeatureRoadmapPanel.test.tsx` | partial 样例改为场景工作区、quick-capture 显示已实现横幅并给出现有入口 |
 
 Rust：`cargo test --lib` 的 `quick_capture` 模块覆盖窗口定位（主屏居中、副屏 work_area 原点
@@ -841,5 +853,6 @@ Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延
 - Rust 定向测试：`resource_cleanup::tests` 15/15、Shelf maintenance gate 1/1、`fs_safety::tests` 3/3 通过，退出码均为 0；日志分别为 `rust-resource-cleanup-final3.log`、`rust-shelf-maintenance-final2.log`、`rust-fs-safety-final.log`。`audio::cache::tests` 14/14 的可复核旧日志仍为 `rust-audio--cache--tests.log`。
 - junction 复测：`shelf/tests.rs` 的测试辅助函数已改用 Windows `cmd.exe /S /C` 原始命令行引号；同参数隔离临时目录 smoke 创建 junction 并保留目标哨兵通过，日志 `junction-helper-smoke.log`。Rust `cargo test --lib reparse_point -- --nocapture` 在执行用例前被共享源码编译错误阻断，退出码 101：范围外 `src-tauri/src/mcp/bridge.rs:534` 调用不支持的 `JoinHandle::is_finished`；日志 `rust-reparse-point-final.log`。旧 `orphan_` 过滤仍是 7/9（两个失败在 junction 建立），日志 `rust-orphan-.log`。
 - Rust 当前集成构建受共享工作树编译错误阻断：最新测试 crate 无法越过上述范围外 MCP 错误；不修改该文件，也不把之前通过的定向过滤扩展成当前全量通过结论。
+- **2026-11-06 晚更正（规划整改收尾）**：上述「编译阻断」与 junction 旧结论已被新的全量运行覆盖——19:26 `cargo test --lib` 实际执行（1367 passed / 1 failed / 4 ignored），junction 3 项通过；唯一失败 `fs_safety` 于 19:45 以独立分类目录夹具修复（`fs_safety::tests` 5/5，生产实现未改）。旧日志与结论保留，仅作历史记录。
 - Windows 原生 Tauri 页面、双主题/窄窗/高 DPI 走查未执行；DOM 测试不替代原生证据。资源清理当前结论见 `tmp/acceptance/resource-cleaner/report.md`。
 

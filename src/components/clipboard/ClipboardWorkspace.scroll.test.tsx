@@ -30,6 +30,10 @@ const bridge = vi.hoisted(() => ({
   clipboardToggleGroup: vi.fn(),
   clipboardToggleItem: vi.fn(),
   clipboardItem: vi.fn(),
+  clipboardVisibleTargets: vi.fn(),
+  clipboardTargetIcon: vi.fn(),
+  clipboardPastePrecheck: vi.fn(),
+  clipboardFocusTarget: vi.fn(),
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
 }));
@@ -144,6 +148,22 @@ beforeEach(() => {
     const n = Number(id.replace(/^\D+/, ""));
     return makeItem(Number.isFinite(n) ? n : 0);
   });
+  bridge.clipboardVisibleTargets.mockResolvedValue([
+    { hwnd: 101, pid: 1001, title: "记事本", exe_path: "C:\\Windows\\notepad.exe" },
+  ]);
+  bridge.clipboardTargetIcon.mockResolvedValue(null);
+  bridge.clipboardPastePrecheck.mockResolvedValue({
+    hwnd: 101,
+    pid: 1001,
+    title: "记事本",
+    exe_path: "C:\\Windows\\notepad.exe",
+  });
+  bridge.clipboardFocusTarget.mockResolvedValue({
+    hwnd: 101,
+    pid: 1001,
+    title: "记事本",
+    exe_path: "C:\\Windows\\notepad.exe",
+  });
   useClipboardStore.setState({
     view: makeView(),
     filters: { kind: "all", search: "", favorite: false },
@@ -253,6 +273,24 @@ describe("历史列表滚动稳定性", () => {
       expect(useClipboardStore.getState().view?.items[0]?.id).toBe("img0"),
     );
     expect(bodyEl().scrollTop).toBe(0);
+  }, 20000);
+
+  it("复制并切换面板往返恢复原滚动位置，且不整表刷新列表", async () => {
+    const user = userEvent.setup();
+    await mount();
+    const viewCallsBefore = bridge.clipboardView.mock.calls.length;
+    scrollTo(600);
+
+    // 卡片跳转箭头 → 完整面板（走既有 setDetail，记录滚动位置）；不再经过菜单
+    await user.click(screen.getAllByRole("button", { name: "复制并切换到目标窗口" })[10]);
+    expect(await screen.findByText("复制并切换到…")).toBeTruthy();
+    // 只是枚举目标窗口，没有重新加载/重排历史
+    expect(bridge.clipboardView.mock.calls.length).toBe(viewCallsBefore);
+    expect(useClipboardStore.getState().view?.items[0].id).toBe("ci0");
+
+    await user.click(screen.getByRole("button", { name: "返回列表" }));
+    await waitFor(() => expect(document.querySelectorAll(".clip-item").length).toBeGreaterThan(20));
+    expect(bodyEl().scrollTop).toBe(600);
   }, 20000);
 });
 

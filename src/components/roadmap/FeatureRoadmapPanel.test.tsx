@@ -98,8 +98,8 @@ describe("四类状态卡片交互", () => {
     expect(within(card).getByText("功能待完善")).toBeTruthy();
     expect(within(card).getByText("已具备能力")).toBeTruthy();
     expect(within(card).getByText("待补齐")).toBeTruthy();
-    // 缺口具体可见，而不是一句空话
-    expect(within(card).getByText(/独立于任务的「场景」实体/)).toBeTruthy();
+    // 缺口具体可见，而不是一句空话（场景实体/管理界面已交付，缺口改为进入侧边界）
+    expect(within(card).getByText(/直接进入的取消与超时/)).toBeTruthy();
   });
 
   it("implemented：全局快速捕获落地后显示已实现横幅并给出现有入口", () => {

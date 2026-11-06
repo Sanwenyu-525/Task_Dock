@@ -94,6 +94,10 @@ export default function AppManagement({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 本页展示扫描结果，登记为扫描订阅者：离开设置页时若没有其他入口仍在展示，
+  // 由 store 通知后端取消在途扫描；其他入口在用时不会被误取消。
+  useEffect(() => useNavigationStore.getState().attachScanViewer(), []);
+
   // 窗口记忆可见化：目标清单就绪后逐个查询 application 目标记住的窗口身份
   // （类名+标题），供用户查看与清除。查询失败静默视为无记忆；
   // 分批限并发，目标很多时不打爆 IPC。targets 变化（增删/刷新）后重查保持新鲜。
@@ -157,15 +161,78 @@ export default function AppManagement({
         }),
       );
     if (problems.length > 0) {
+      // 重试只执行确实失败的那一项：已成功的请求不重复发起。
+      const targetsNeedRetry = targetsOutcome === "error";
+      const scanNeedRetry = scanOutcome === "error";
       showToast(tr("appMgmt.refresh.partial", { problems: problems.join("; ") }), {
         kind: "warning",
-        action: { label: tr("appMgmt.refresh.retry"), run: () => void refresh() },
+        action: {
+          label: tr("appMgmt.refresh.retry"),
+          run: () => {
+            if (targetsNeedRetry && !scanNeedRetry) void refreshTargetsOnly();
+            else if (scanNeedRetry && !targetsNeedRetry) void refreshScanOnly();
+            else void refresh();
+          },
+        },
       });
       return;
     }
-    // 两次刷新都已被更新的请求取代：结果由那次请求落地，不重复提示成功。
-    if (targetsOutcome === "stale" && scanOutcome === "stale") return;
-    showToast(tr("appMgmt.refresh.done"), { kind: "success" });
+    // 只有两项都由本次调用真正完成，才可以提示整体成功。
+    if (targetsOutcome === "ok" && scanOutcome === "ok") {
+      showToast(tr("appMgmt.refresh.done"), { kind: "success" });
+      return;
+    }
+    // stale（被更新请求取代/已有在途请求）与 cancelled（扫描被取消）都不是本次成功：
+    // 只陈述真实情况，不宣称「全部刷新完成」，也不重复提示成功。
+    const notes: string[] = [];
+    if (targetsOutcome === "stale") notes.push(tr("appMgmt.refresh.targetsStale"));
+    if (scanOutcome === "stale") notes.push(tr("appMgmt.refresh.scanStale"));
+    if (scanOutcome === "cancelled") notes.push(tr("appMgmt.refresh.scanCancelled"));
+    showToast(tr("appMgmt.refresh.shared", { detail: notes.join("; ") }), { kind: "info" });
+  }
+
+  /** 定向重试：只刷新目标清单（扫描已成功或不属于失败项）。 */
+  async function refreshTargetsOnly() {
+    const outcome = await loadTargets(true);
+    if (outcome === "ok") {
+      showToast(tr("appMgmt.refresh.done"), { kind: "success" });
+      return;
+    }
+    if (outcome !== "error") return; // stale：由其他刷新落地
+    const reason = useNavigationStore.getState().targetsError ?? tr("appMgmt.refresh.readFailed");
+    showToast(
+      tr("appMgmt.refresh.partial", {
+        problems: tr("appMgmt.refresh.targets", { error: reason }),
+      }),
+      {
+        kind: "warning",
+        action: { label: tr("appMgmt.refresh.retry"), run: () => void refreshTargetsOnly() },
+      },
+    );
+  }
+
+  /** 定向重试：只重新扫描（目标清单已成功或不属于失败项）。 */
+  async function refreshScanOnly() {
+    const outcome = await loadApps(true);
+    if (outcome === "ok") {
+      showToast(tr("appMgmt.refresh.scanDone"), { kind: "success" });
+      return;
+    }
+    if (outcome === "cancelled") {
+      showToast(tr("appMgmt.refresh.scanCancelled"), { kind: "info" });
+      return;
+    }
+    if (outcome !== "error") return; // stale：由在途扫描负责
+    const reason = useNavigationStore.getState().scanError ?? tr("appMgmt.refresh.scanFailed");
+    showToast(
+      tr("appMgmt.refresh.partial", {
+        problems: tr("appMgmt.refresh.scan", { error: reason }),
+      }),
+      {
+        kind: "warning",
+        action: { label: tr("appMgmt.refresh.retry"), run: () => void refreshScanOnly() },
+      },
+    );
   }
 
   function closeEditor() {

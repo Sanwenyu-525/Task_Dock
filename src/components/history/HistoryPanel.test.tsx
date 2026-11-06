@@ -4,7 +4,7 @@
 //! 历史面板：全局未读、筛选/分页口径、刷新空隙与订阅生命周期。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({
   notificationPage: vi.fn(),
@@ -22,6 +22,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
 });
 
 import HistoryPanel from "./HistoryPanel";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import type { AgentEventPage, AgentEventRow, NotificationPage, NotificationRow } from "../../lib/bridge";
 
 function deferred<T>() {
@@ -116,6 +117,79 @@ describe("HistoryPanel 订阅生命周期", () => {
 
     expect(offNotification).toHaveBeenCalledTimes(1);
     expect(offAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("完整面板不可见：不注册独占监听、不发历史查询；恢复可见后重新注册并补刷新", async () => {
+    // 隐藏态挂载（极简/紧凑模式或停靠胶囊）：页面保活但不可见
+    act(() => useSettingsStore.setState({ settings: { mode: "compact" } as never }));
+    try {
+      render(<HistoryPanel />);
+      // 隐藏期间：没有首屏查询，也没有本页独占监听
+      await waitFor(() => expect(bridge.notificationInboxStats).not.toHaveBeenCalled());
+      expect(bridge.notificationPage).not.toHaveBeenCalled();
+      expect(bridge.onNotification).not.toHaveBeenCalled();
+      expect(bridge.onAgentChanged).not.toHaveBeenCalled();
+
+      const offNotification = vi.fn();
+      const offAgent = vi.fn();
+      bridge.onNotification.mockResolvedValue(offNotification);
+      bridge.onAgentChanged.mockResolvedValue(offAgent);
+
+      // 恢复可见：重新注册监听 + 补一次刷新（列表已清空，merge 语义即首屏）
+      act(() => useSettingsStore.setState({ settings: { mode: "full" } as never }));
+      await waitFor(() => expect(bridge.onAgentChanged).toHaveBeenCalledTimes(1));
+      expect(bridge.onNotification).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(bridge.notificationPage).toHaveBeenCalledTimes(1));
+
+      // 再次隐藏：监听立即释放，不残留
+      act(() => useSettingsStore.setState({ settings: { mode: "compact" } as never }));
+      await waitFor(() => expect(offAgent).toHaveBeenCalledTimes(1));
+      expect(offNotification).toHaveBeenCalledTimes(1);
+
+      // 多次往返不累积监听（每次可见只注册一次）
+      act(() => useSettingsStore.setState({ settings: { mode: "full" } as never }));
+      await waitFor(() => expect(bridge.onAgentChanged).toHaveBeenCalledTimes(2));
+      expect(bridge.onNotification).toHaveBeenCalledTimes(2);
+    } finally {
+      act(() => useSettingsStore.setState({ settings: null }));
+    }
+  });
+
+  it("连续 20 次显示/隐藏往返：监听净数量不增长（资源验证）", async () => {
+    // 计数真实生效的监听器：注册 +1、反订阅 -1，结束时应回到基线
+    let activeListeners = 0;
+    bridge.onNotification.mockImplementation(async () => {
+      activeListeners += 1;
+      return () => {
+        activeListeners -= 1;
+      };
+    });
+    bridge.onAgentChanged.mockImplementation(async () => {
+      activeListeners += 1;
+      return () => {
+        activeListeners -= 1;
+      };
+    });
+
+    act(() => useSettingsStore.setState({ settings: { mode: "full" } as never }));
+    try {
+      render(<HistoryPanel />);
+      await waitFor(() => expect(activeListeners).toBe(2));
+
+      for (let i = 0; i < 20; i += 1) {
+        act(() => useSettingsStore.setState({ settings: { mode: "compact" } as never }));
+        await waitFor(() => expect(activeListeners).toBe(0));
+        act(() => useSettingsStore.setState({ settings: { mode: "full" } as never }));
+        await waitFor(() => expect(activeListeners).toBe(2));
+      }
+      // 可见态：净监听仍是 2（没有随往返次数增长）
+      expect(activeListeners).toBe(2);
+
+      cleanup();
+      expect(activeListeners).toBe(0);
+    } finally {
+      act(() => useSettingsStore.setState({ settings: null }));
+    }
   });
 });
 

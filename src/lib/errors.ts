@@ -9,6 +9,7 @@
 //! 本文件保持纯函数/纯数据，不依赖 store，便于单测与多窗口复用。
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { logIpcFailure, logIpcSuccess, markLogged } from "./diagnostics";
 
 export const ERROR_CODES = [
   "VALIDATION_ERROR",
@@ -366,15 +367,40 @@ export function isRetryable(raw: unknown): boolean {
 /**
  * 统一 IPC 调用入口：把后端结构化/旧字符串错误归一化后统一抛出 `AppError`。
  * 所有窗口的 invoke 都应经过这里，保证错误码稳定且 `String(e)` 可读。
+ *
+ * 诊断归属：**IPC 失败在这里记录唯一一条诊断事件**（命令名、耗时、错误码），
+ * 上层 `reportError`/`recordBackgroundError` 检测到已归属后不再重复记录。
+ * 日志失败不会改变错误传播、返回值或用户提示。
  */
 export async function invokeCommand<T>(
   command: string,
   args?: Record<string, unknown>,
   operation?: string,
 ): Promise<T> {
+  const startedAt = typeof performance !== "undefined" ? performance.now() : 0;
   try {
-    return await tauriInvoke<T>(command, args);
+    const result = await tauriInvoke<T>(command, args);
+    if (startedAt) logIpcSuccess(command, Math.round(performance.now() - startedAt));
+    return result;
   } catch (raw) {
-    throw normalizeError(raw, operation);
+    const err = normalizeError(raw, operation);
+    try {
+      logIpcFailure(
+        command,
+        {
+          code: err.code,
+          category: err.category,
+          severity: err.severity,
+          message: err.message,
+        },
+        startedAt ? Math.round(performance.now() - startedAt) : undefined,
+        operation,
+      );
+      // 标记归属：后续 catch/reportError/ErrorBoundary 不再为同一失败写第二条日志。
+      markLogged(err);
+    } catch {
+      // 诊断失败不得影响错误传播。
+    }
+    throw err;
   }
 }

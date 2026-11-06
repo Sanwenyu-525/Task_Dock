@@ -8,12 +8,17 @@
 //! `useAgentsStore.snapshot`（本地事件流），没有的字段（如进度百分比）不显示，
 //! 也不提供后端不支持的「暂停 / 重启 / 新建 Agent」。
 //! 每个 Agent 能做的只有两件真实存在的事：打开它的会话，或进入完整 Agent 页。
+//!
+//! 「行动」入口只做导航：行动中心的数据、刷新与门控归完整页
+//! （`useActionsStore` / `ActionCenterPanel`）。胶囊不再订阅一份聚合 feed，
+//! 也不轮询；用户关闭行动中心时入口隐藏，避免给出只能看到「已关闭」的死入口。
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Activity, ArrowUpRight, ChevronRight, RefreshCw } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import { openAgentSession } from "../../lib/bridge";
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import { liveRuns, liveSummary } from "../../lib/agentTree";
 import { AGENT_STATE_LABELS } from "../../lib/format";
 import { avatarHue } from "../../lib/navigation";
@@ -47,6 +52,9 @@ export default function AgentsLite() {
   const snapshot = useAgentsStore((s) => s.snapshot);
   const snapshotError = useAgentsStore((s) => s.snapshotError);
   const load = useAgentsStore((s) => s.load);
+  // 只读既有设置，判断「行动」入口是否还有意义；不订阅行动 feed、不发 IPC。
+  // 设置未加载（null）按默认开启处理，与完整页 `?? true` 的口径一致。
+  const actionsEnabled = useSettingsStore((s) => s.settings?.actions_enabled ?? true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -269,10 +277,20 @@ export default function AgentsLite() {
         <span className="cap-foot-note">
           {notice ?? (snapshotError !== null ? "状态可能不是最新" : "状态来自本地事件流")}
         </span>
-        <button type="button" className="cap-link" onClick={() => openFullApp("agents")}>
-          Agent 页
-          <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
-        </button>
+        <div className="cap-actions">
+          {/* 行动中心入口：只导航，不在胶囊里加载/轮询第二份聚合 feed。
+              用户在设置里关闭行动中心时隐藏，避免死入口。 */}
+          {actionsEnabled ? (
+            <button type="button" className="cap-link" onClick={() => openFullApp("actions")}>
+              行动
+              <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
+            </button>
+          ) : null}
+          <button type="button" className="cap-link" onClick={() => openFullApp("agents")}>
+            Agent 页
+            <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        </div>
       </div>
     </>
   );

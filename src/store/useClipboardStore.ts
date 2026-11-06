@@ -355,14 +355,33 @@ export const useClipboardStore = create<{
 
   bumpItemCopy: (id) =>
     set((s) => {
-      if (!s.view) return {};
-      let changed = false;
-      const items = s.view.items.map((item) => {
-        if (item.id !== id) return item;
-        changed = true;
-        return { ...item, copy_count: item.copy_count + 1 };
-      });
-      return changed ? { view: { ...s.view, items } } : {};
+      // 完整页使用 `view.items`，胶囊使用 `lite.items`：两处都只在命中时
+      // 替换数组引用，未命中的切片保持原对象，避免无意义重渲染。
+      let view = s.view;
+      let viewChanged = false;
+      if (view) {
+        const items = view.items.map((item) => {
+          if (item.id !== id) return item;
+          viewChanged = true;
+          return { ...item, copy_count: item.copy_count + 1 };
+        });
+        if (viewChanged) view = { ...view, items };
+      }
+      let lite = s.lite;
+      let liteChanged = false;
+      if (lite) {
+        const items = lite.items.map((item) => {
+          if (item.id !== id) return item;
+          liteChanged = true;
+          return { ...item, copy_count: item.copy_count + 1 };
+        });
+        if (liteChanged) lite = { ...lite, items };
+      }
+      if (!viewChanged && !liteChanged) return {};
+      return {
+        ...(viewChanged ? { view } : {}),
+        ...(liteChanged ? { lite } : {}),
+      };
     }),
 
   renameItem: (id, title, titleSource) =>

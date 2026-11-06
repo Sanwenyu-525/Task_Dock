@@ -2,8 +2,8 @@
 
 import { useLayoutEffect, useRef } from "react";
 import {
-  CheckSquare, Code2, Copy, Files, Globe, Image as ImageIcon, Link2, Maximize2,
-  Pin, Square, Star, Trash2, Type,
+  ArrowUpRight, CheckSquare, Code2, Copy, Files, Globe, Image as ImageIcon,
+  Link2, Maximize2, Pin, Square, Star, Trash2, Type,
 } from "lucide-react";
 import type { ClipboardItem } from "../../lib/bridge";
 import { clipSource, clipboardTime, fileBaseName, formatBytes, kindLabel } from "../../lib/clipboardUi";
@@ -25,6 +25,7 @@ export default function ClipboardItemCard({
   pending,
   onSelect,
   onCopy,
+  onCopySwitch,
   onToggle,
   onDetail,
   onDelete,
@@ -40,6 +41,8 @@ export default function ClipboardItemCard({
   pending: boolean;
   onSelect: () => void;
   onCopy: () => void;
+  /** 打开「复制并切换到…」完整面板；不传则不显示跳转箭头 */
+  onCopySwitch?: () => void;
   onToggle: (flag: "favorite" | "pinned") => void;
   onDetail: () => void;
   onDelete: () => void;
@@ -175,9 +178,33 @@ export default function ClipboardItemCard({
             <Link2 size={11} /> 关联
           </button>
         )}
-        <button className="icon-btn sm" data-tip="复制" aria-label="复制" onClick={onCopy} disabled={locked}>
+        <button
+          className="icon-btn sm"
+          data-tip="复制"
+          aria-label="复制"
+          onClick={onCopy}
+          // 卡片把 Enter 当「打开详情」：复制按钮上的按键不得冒泡（否则一次复制还顺带开详情）
+          onKeyDown={(e) => e.stopPropagation()}
+          disabled={locked}
+        >
           <Copy size={12} />
         </button>
+        {/* 分体复制：主按钮保持「直接复制」不变，右侧箭头直接打开目标窗口选择器。
+            只有一个动作就不该再套一层菜单：箭头本身就是入口，也不是折叠语义。 */}
+        {onCopySwitch && (
+          <button
+            type="button"
+            className="icon-btn sm"
+            data-tip="复制并切换到目标窗口"
+            aria-label="复制并切换到目标窗口"
+            onClick={onCopySwitch}
+            // 卡片把 Enter 当「打开详情」：箭头上的按键不得冒泡
+            onKeyDown={(e) => e.stopPropagation()}
+            disabled={locked}
+          >
+            <ArrowUpRight size={12} />
+          </button>
+        )}
         <button
           className={`icon-btn sm ${item.pinned ? "active" : ""}`}
           data-tip={item.pinned ? "取消置顶" : "置顶"}

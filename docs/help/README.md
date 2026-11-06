@@ -34,8 +34,10 @@
   `needs_review`（操作语义可能过时或功能仍在开发）/ `unavailable`；
 - featureCatalog 的 `implemented / partial / planned / blocked` 是功能实现状态；
 - **静态校验确认不了的「操作语义是否过时」不伪装自动通过**，一律用 `needs_review` 表达
-  （当前 2 篇：`help.agents.mcp-authorization`（管理 UI / 真实客户端流程待复核）、
-  `help.troubleshooting.agent-no-events`）。
+  （2026-11-06 实测 6 篇：`help.agents.mcp-authorization`、`help.capture.shelf`、
+  `help.troubleshooting.agent-no-events`、`help.workflows.one-click`、`help.workflows.scenes`、
+  `help.workflows.planning-center`；此前记录的 2 篇为 v0.11 首轮统计，已被内容迭代覆盖）。
+  文章总量 20 篇：14 verified / 6 needs_review / 0 draft。
 
 ### 2.3 结构化 section
 

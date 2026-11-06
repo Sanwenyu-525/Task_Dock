@@ -10,7 +10,7 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
     id: "help.troubleshooting.feature-status",
     categoryId: "troubleshooting",
     status: "verified",
-    contentVersion: 1,
+    contentVersion: 2,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
@@ -34,7 +34,7 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
           {
             type: "steps",
             items: [
-              "「进入场景」工作流步骤：场景工作区未落地前该步骤会被拒绝执行，属于预期保护，不是故障。",
+              "「进入场景」工作流步骤：需要先在「工作流 → 场景工作区」创建场景；场景不存在或会形成场景/工作流循环时保存会被拒绝，这是引用校验，不是故障。",
               "系统级拖出暂存文件：WebView2/OLE 通道未实现前请用「复制路径 / 复制文件 / 所在文件夹」替代。",
               "节假日调休：按设计不接节假日 API，重复规则的「工作日」基于自然周。",
             ],
@@ -67,7 +67,7 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
           {
             type: "steps",
             items: [
-              "The \"Enter scene\" workflow step is rejected until the scenario workspace ships — that is protection, not a bug.",
+              "The \"Enter scene\" workflow step needs a scene created under Workflows → Scenarios first; saving is rejected when the scene is missing or would form a scene/workflow cycle — that is reference validation, not a bug.",
               "System-level drag-out of shelf files: until the OLE channel exists, use \"Copy path / Copy file / Reveal in folder\".",
               "Public holidays: by design no holiday API is used; \"weekday\" in repeat rules means natural weeks.",
             ],

@@ -133,7 +133,8 @@ describe("导航布局配置", () => {
       known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
     });
     // 「设置」锁定入口必须始终可达，即使旧配置把它删光也要补回
-    expect(result.config.left).toEqual(["settings"]);
+    // 锁定入口（资源管理、设置）必须始终可达，即使旧配置把它们删光也要补回
+    expect(result.config.left).toEqual(["resource", "settings"]);
     expect(result.config.capsule).toEqual([]);
   });
 
@@ -206,6 +207,17 @@ describe("导航布局配置", () => {
     expect(isEntryVisible(base, "left", "settings")).toBe(true);
     expect(isTabHidden({ ...base, left: [] }, "settings")).toBe(true);
   });
+
+  it("安全页落在合并入口时保留用户子页（shelf / notes），不重置回快速收集", () => {
+    const base = defaultNavigationLayout();
+    // 只剩合并入口（收集与暂存）+ 锁定的设置：安全页必须落在合并入口上
+    const onlyCollection = { ...base, left: ["collection", "settings"] };
+    expect(safeTabForHiddenEntry(onlyCollection, "shelf")).toBe("shelf");
+    expect(safeTabForHiddenEntry(onlyCollection, "notes")).toBe("inbox");
+    expect(safeTabForHiddenEntry(onlyCollection)).toBe("inbox");
+    // 任务仍可见时优先任务，与子页无关
+    expect(safeTabForHiddenEntry(base, "shelf")).toBe("tasks");
+  });
 });
 
 // ── 排序不变量（2026-11-05）────────────────────────────────────────
@@ -222,7 +234,7 @@ describe("排序不变量：锁定入口固定末尾", () => {
       known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
     };
     const { config } = normalizeNavigationLayout(raw);
-    expect(config.left).toEqual(["tasks", "agents", "settings"]);
+    expect(config.left).toEqual(["tasks", "agents", "resource", "settings"]);
   });
 
   it("普通入口可以跨过锁定入口排序（固定项原地不动）", () => {
@@ -386,6 +398,6 @@ describe("胶囊 Agent 状态球排序边界", () => {
       capsule: ["agents", "tasks"],
       known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
     });
-    expect(config.left).toEqual(["apps", "tasks", "history", "settings"]);
+    expect(config.left).toEqual(["apps", "tasks", "history", "resource", "settings"]);
   });
 });

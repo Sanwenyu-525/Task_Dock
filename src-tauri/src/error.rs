@@ -308,6 +308,18 @@ impl AppError {
 /// 说明：detail 字段已按白名单生成（Io 只留 kind/os、Json 只留行列），这里主要保护
 /// `user_message` 里的业务文案；两层都不能单独作为“已脱敏”的证明。
 fn sanitize(raw: &str) -> String {
+    sanitize_impl(raw, 240)
+}
+
+/// 诊断日志文本脱敏（复用用户文案规则，只放宽长度上限）。
+///
+/// 诊断事件允许稍长的技术文案（例如失败阶段拼接），但仍然单行化并隐藏用户目录与
+/// 凭证；任何调用方都不应把业务对象整体序列化后交给这里。
+pub(crate) fn sanitize_diagnostic(raw: &str, max_chars: usize) -> String {
+    sanitize_impl(raw, max_chars.clamp(1, 2000))
+}
+
+fn sanitize_impl(raw: &str, max_chars: usize) -> String {
     let filtered: Vec<&str> = raw
         .lines()
         .map(str::trim)
@@ -337,8 +349,8 @@ fn sanitize(raw: &str) -> String {
     let joined = filtered.join(" ");
     let joined = redact_home_dirs(&joined);
     let joined = redact_secrets(&joined);
-    let mut out: String = joined.chars().take(240).collect();
-    if joined.chars().count() > 240 {
+    let mut out: String = joined.chars().take(max_chars).collect();
+    if joined.chars().count() > max_chars {
         out.push('…');
     }
     out
@@ -423,16 +435,32 @@ fn redact_secrets(raw: &str) -> String {
                 from = value_start + "<已隐藏>".len();
                 continue;
             }
-            let end = value_rest
+            // `Authorization: Bearer <token>` / `bearer <token>`：跳过认证方案名，
+            // 否则只会隐藏 "Bearer" 而把真正的 token 留在文本里（隐私缺口）。
+            let (scheme, after_scheme) = match value_rest
+                .get(..7)
+                .map(|prefix| prefix.eq_ignore_ascii_case("bearer "))
+            {
+                Some(true) => (7usize, &value_rest[7..]),
+                _ => (0usize, value_rest),
+            };
+            let scheme_skip = after_scheme.len() - after_scheme.trim_start().len();
+            let token_start = value_start + scheme + scheme_skip;
+            let token_rest = &out[token_start..];
+            if token_rest.starts_with("<已隐藏>") {
+                from = token_start + "<已隐藏>".len();
+                continue;
+            }
+            let end = token_rest
                 .find(|c: char| c.is_whitespace() || c == ',' || c == '"' || c == '\'')
-                .unwrap_or(value_rest.len());
+                .unwrap_or(token_rest.len());
             if end < 6 {
                 // 没有可识别的凭证值：跳过该标记，继续找后面的出现位置
                 from = pos + marker.len();
                 continue;
             }
-            out.replace_range(value_start..value_start + end, "<已隐藏>");
-            from = value_start + "<已隐藏>".len();
+            out.replace_range(token_start..token_start + end, "<已隐藏>");
+            from = token_start + "<已隐藏>".len();
         }
     }
     out

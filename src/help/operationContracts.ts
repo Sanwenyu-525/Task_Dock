@@ -36,7 +36,7 @@ export const HELP_OPERATION_CONTRACTS: Readonly<Record<string, HelpOperationCont
     ],
   },
   "core.file-shelf": {
-    version: 1,
+    version: 2,
     articleIds: ["help.capture.shelf"],
     sourceFiles: [
       "src/components/shelf/ShelfWorkspace.tsx",

@@ -396,6 +396,45 @@ pub fn update_settings(
             }
         }
     }
+    // 状态一致性校验（诊断用，不改变保存结果）：写入语句成功并不等于最终持久化正确
+    // （事务回滚、并发覆盖、写入后又被旧值盖回都可能发生）。这里对本次 patch 逐键回读，
+    // 只记录键名与不一致事实，**绝不记录设置值**（可能含端口/令牌等敏感内容）。
+    for (k, expected) in obj {
+        match db.get_setting(k) {
+            Ok(Some(actual)) => {
+                if &actual != expected {
+                    crate::diagnostics::event(
+                        crate::diagnostics::DiagLevel::Critical,
+                        "settings",
+                        "persist_verify",
+                        "mismatch",
+                    )
+                    .status(crate::diagnostics::DiagStatus::Failed)
+                    .error_code("DATA_INTEGRITY_ERROR")
+                    .error_category("integrity")
+                    .message("设置写入后回读不一致（保存命令返回成功但值与提交值不同）")
+                    .metadata("key", serde_json::Value::String(k.clone()))
+                    .emit();
+                }
+            }
+            Ok(None) => {
+                crate::diagnostics::event(
+                    crate::diagnostics::DiagLevel::Critical,
+                    "settings",
+                    "persist_verify",
+                    "missing",
+                )
+                .status(crate::diagnostics::DiagStatus::Failed)
+                .error_code("DATA_INTEGRITY_ERROR")
+                .error_category("integrity")
+                .message("设置写入后回读为空（持久化可能未生效）")
+                .metadata("key", serde_json::Value::String(k.clone()))
+                .emit();
+            }
+            // 读取失败本身会由数据库错误路径暴露，这里不重复刷屏。
+            Err(_) => {}
+        }
+    }
     // 主题/预设变更广播给所有窗口（通知窗口、右键菜单跟随；主窗 store 同值幂等）。
     // 与托盘/右键菜单路径（context_menu_action 单独 emit）保持同一事件契约。
     if let Some(theme) = obj.get("theme").and_then(|v| v.as_str()) {

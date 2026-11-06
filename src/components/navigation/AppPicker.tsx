@@ -44,15 +44,45 @@ function isAdvancedApp(a: DiscoveredApp): boolean {
   return a.tier ? a.tier === "advanced" : BACKGROUND_COMPONENT_NAME.test(a.display_name);
 }
 
-/** 把来源级诊断翻译成用户能理解的一句话（细节仍留在调试字段里）。 */
-function scanIssueText(diagnostics?: Record<string, number>): string {
+/**
+ * 影响「应用发现完整性」的来源诊断 → 用户可读文案。
+ *
+ * 只包含会让结果变少的诊断（截断、来源不可读、超时）。
+ * `batch_event_failed` 不属于这里：它只表示进度事件推送失败，最终 invoke 仍会返回
+ * 完整权威结果，不能据此把扫描判为 `partial`。
+ */
+export function scanDiscoveryIssueText(diagnostics?: Record<string, number>): string {
   if (!diagnostics) return "";
   const parts: string[] = [];
   if ((diagnostics.startmenu_truncated ?? 0) > 0) parts.push("开始菜单快捷方式超出本次扫描上限");
+  if ((diagnostics.startmenu_dir_unreadable ?? 0) > 0) parts.push("部分开始菜单目录无法读取");
+  if ((diagnostics.registry_unreadable ?? 0) > 0) parts.push("部分卸载注册表项无法读取");
+  if ((diagnostics.app_paths_unreadable ?? 0) > 0) parts.push("部分 App Paths 注册表项无法读取");
   if ((diagnostics.uwp_scan_failed ?? 0) > 0) parts.push("应用商店来源读取失败");
+  if ((diagnostics.uwp_scan_timeout ?? 0) > 0) parts.push("应用商店来源读取超时");
   if ((diagnostics.uwp_truncated ?? 0) > 0) parts.push("应用商店条目超出本次扫描上限");
   return parts.join("；");
 }
+
+/**
+ * 只影响进度展示、不影响权威结果的诊断 → 低干扰说明。
+ * 当前仅 `batch_event_failed`：最终结果仍以 invoke 返回的权威结果为准。
+ *
+ * 文案不得对结果完整性作绝对承诺：同一份诊断里可能同时存在真实来源失败
+ *（如 `uwp_scan_timeout`），此时结果确实不完整；「以最终结果为准」只陈述进度
+ * 推送与权威结果的关系，与「应用发现可能不完整」横幅并存也不矛盾。
+ */
+export function scanProgressIssueText(diagnostics?: Record<string, number>): string {
+  if (!diagnostics) return "";
+  if ((diagnostics.batch_event_failed ?? 0) > 0) {
+    return "部分扫描进度未能实时更新，以最终结果为准";
+  }
+  return "";
+}
+
+/** 搜索未命中时的受控补扫参数：防抖避免每次按键都触发，冷却是为了不做高频全量扫描。 */
+const AUTO_RESCAN_DEBOUNCE_MS = 500;
+const AUTO_RESCAN_COOLDOWN_MS = 60_000;
 
 /** 上次扫描时间：无法解析时返回空串，不伪造时间。 */
 function formatScanTime(iso: string): string {
@@ -88,6 +118,15 @@ function discoveredToInput(a: DiscoveredApp): TargetInput {
  */
 const EMPTY_SESSIONS: AgentSession[] = [];
 
+/**
+ * 取消按钮状态机（用户必须能分辨「还没点」「请求在途」「后端已接受」）：
+ * - `idle`：可点击的「取消扫描」；
+ * - `requesting`：取消 IPC 在途，按钮禁用防重复；
+ * - `accepted`：后端已接受取消，扫描尚未结束；保持禁用（显示「正在取消…」），
+ *   不能退回一个点了没反应的「取消扫描」。
+ */
+type CancelPhase = "idle" | "requesting" | "accepted";
+
 interface Props {
   /** 关联模式：非空 = 选择后直接关联该任务 */
   taskId?: string | null;
@@ -118,8 +157,8 @@ export default function AppPicker({
 }: Props) {
   const showToast = useUiStore((s) => s.showToast);
   const {
-    scan, scanning, scanError, scanProgress, scanPartial,
-    loadApps, targets, targetsLoaded, targetsError, loadTargets,
+    scan, scanning, scanError, scanCancelled, scanProgress, scanPartial,
+    loadApps, cancelScan, targets, targetsLoaded, targetsError, loadTargets,
     linksError, loadTaskLinks,
   } = useNavigationStore();
   const taskMode = !!taskId;
@@ -158,6 +197,75 @@ export default function AppPicker({
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const autoTriggeredRef = useRef(false);
+  /** 上次搜索补扫的触发时间（冷却用）；0 = 本次会话尚未补扫。 */
+  const lastAutoRescanAtRef = useRef(0);
+  /** 补扫已完成但当前关键词仍无匹配：用于区分「扫描中尚未发现」与「扫过了确实没有」。 */
+  const [autoRescanMissed, setAutoRescanMissed] = useState(false);
+  /** 取消按钮状态：请求在途 / 已接受未结束都必须保持禁用，见 `CancelPhase`。 */
+  const [cancelPhase, setCancelPhase] = useState<CancelPhase>("idle");
+  /** 同一轮扫描已接受过取消：后续点击不再重复发送（扫描结束/重扫时复位）。 */
+  const cancelAcceptedRef = useRef(false);
+  const cancelInFlightRef = useRef(false);
+  /** 组件是否仍挂载：取消是异步的，卸载后不得再弹 Toast 或写状态。 */
+  const mountedRef = useRef(true);
+
+  // 扫描结果订阅者登记：最后一个查看者离开（关闭添加页/弹层）时才通知后端取消，
+  // 其他入口仍在展示同一份扫描结果时不会误取消共享扫描。
+  // 自动取消由 store 内部完成（无 UI 反馈）；这里的 handler 只服务用户主动点击。
+  useEffect(() => useNavigationStore.getState().attachScanViewer(), []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // 扫描结束（完成/失败/取消）后复位取消状态：下一次扫描可以再次取消。
+  useEffect(() => {
+    if (scanning) return;
+    cancelAcceptedRef.current = false;
+    cancelInFlightRef.current = false;
+    setCancelPhase("idle");
+  }, [scanning]);
+
+  /**
+   * 用户主动取消（三个入口共用）：
+   * - `requesting`：IPC 在途，按钮禁用；
+   * - `accepted`：后端已接受，按钮保持禁用并显示「正在取消…」，等真实结果收敛状态；
+   * - `failed`：恢复可点击，允许重试；`finished`：扫描已自然结束，静默交给结果状态；
+   * - 卸载后不弹 Toast、不写按钮状态；同一轮扫描只发送一次取消 IPC。
+   */
+  async function requestCancelScan() {
+    if (cancelInFlightRef.current || cancelAcceptedRef.current) return;
+    if (!useNavigationStore.getState().scanning) return;
+    cancelInFlightRef.current = true;
+    setCancelPhase("requesting");
+    const outcome = await cancelScan();
+    cancelInFlightRef.current = false;
+    if (!mountedRef.current) return;
+    if (outcome === "accepted") {
+      cancelAcceptedRef.current = true;
+      setCancelPhase("accepted");
+      showToast("已请求取消扫描，正在停止后续来源…", { kind: "info" });
+    } else if (outcome === "failed") {
+      // 请求未送达：扫描仍在进行，恢复按钮让用户可以重试。
+      setCancelPhase("idle");
+      showToast("取消请求发送失败，扫描仍在进行", { kind: "warning" });
+    } else if (useNavigationStore.getState().scanning) {
+      // finished 但仍在扫描（极端竞态）：没有可等待的取消请求，允许再次尝试。
+      setCancelPhase("idle");
+    }
+    // finished 且已结束：由扫描结果状态收敛，不提示失败。
+  }
+
+  /** 取消按钮文案与可用性：accepted 后不得回到无效的可点击状态。 */
+  function cancelButtonLabel(): string {
+    if (cancelPhase === "requesting") return "正在请求取消…";
+    if (cancelPhase === "accepted") return "正在取消…";
+    return "取消扫描";
+  }
+  const cancelButtonDisabled = cancelPhase !== "idle";
 
   // 弹层栈：关联目标选择器是模态对话框。Escape 只关它，
   // 不会越过它去关外层（任务编辑器），更不会把主窗口藏进托盘。
@@ -181,7 +289,8 @@ export default function AppPicker({
       showToast(successMessage, { kind });
       return;
     }
-    if (outcome === "stale") return;
+    // stale / cancelled 都不是失败：结果由其他请求落地或扫描被主动取消。
+    if (outcome === "stale" || outcome === "cancelled") return;
     showToast(`${successMessage}，但列表刷新失败`, {
       kind: "warning",
       action: {
@@ -262,6 +371,19 @@ export default function AppPicker({
           </button>
         </div>
       );
+    } else if (scanCancelled && !scan) {
+      // 首次扫描被取消：既不是失败也不是「未扫描」，必须明确说明并保留重扫入口。
+      content = (
+        <div className="picker-unscanned" role="status">
+          <div className="picker-unscanned-title">扫描已取消</div>
+          <div className="picker-unscanned-desc">
+            已停止后续来源（包括应用商店读取），不会在后台继续扫描；可以随时重新扫描。
+          </div>
+          <button className="btn primary sm" onClick={() => void loadApps(true)}>
+            重新扫描
+          </button>
+        </div>
+      );
     } else if (scanUnscanned) {
       content = (
         <div className="picker-unscanned" role="status">
@@ -284,6 +406,14 @@ export default function AppPicker({
             <RefreshCw size={12} className="spin" /> 正在扫描本机应用…
           </span>
           {progress && <span className="picker-scan-progress">{progress}</span>}
+          {/* 明确的取消入口：点击只通知后端停止后续来源，界面仍等真实返回再结束加载态。 */}
+          <button
+            className="btn sm"
+            onClick={() => void requestCancelScan()}
+            disabled={cancelButtonDisabled}
+          >
+            {cancelButtonLabel()}
+          </button>
         </div>
       );
     }
@@ -297,7 +427,7 @@ export default function AppPicker({
     );
   }
 
-  /** 已有结果时的失败 / 部分成功提示：区分「上次结果仍可用」与「仅有部分结果」。 */
+  /** 已有结果时的失败 / 部分成功 / 取消提示：区分「上次结果仍可用」与「仅有部分结果」。 */
   function renderScanNotices() {
     if (!scan) return null;
     return (
@@ -309,6 +439,16 @@ export default function AppPicker({
               : `扫描刷新失败，当前显示上次结果：${scanError}`}
             <button className="btn sm" onClick={() => void loadApps(true)}>
               重试
+            </button>
+          </div>
+        )}
+        {scanCancelled && !scanError && (
+          <div className="empty-hint picker-scan-warn" role="status">
+            {scanPartial
+              ? "扫描已取消，当前仅显示取消前已发现的部分结果（不完整）。"
+              : "扫描已取消，当前显示上次扫描结果。"}
+            <button className="btn sm" onClick={() => void loadApps(true)}>
+              重新扫描
             </button>
           </div>
         )}
@@ -327,16 +467,20 @@ export default function AppPicker({
   /** 结果摘要：数量 + 上次扫描时间 + 是否正在刷新，细节留在 diagnostics。 */
   function renderScanSummary(total: number) {
     if (!scan) return null;
+    // 取消前的中途结果不标注「上次扫描」时间：那不是一次完整扫描的时间。
+    const showScanTime = scan.scanned_at && !(scanCancelled && scanPartial);
     return (
       <div className="picker-count" role="status">
         共 {total} 个{query.trim() ? "匹配" : "可添加"}应用
-        {scan.scanned_at ? ` · 上次扫描 ${formatScanTime(scan.scanned_at)}` : ""}
+        {showScanTime ? ` · 上次扫描 ${formatScanTime(scan.scanned_at)}` : ""}
         {scanning
           ? scanProgressText()
             ? ` · 正在扫描（${scanProgressText()}）`
             : " · 正在扫描…"
           : ""}
+        {scanCancelled ? " · 扫描已取消" : ""}
         {scanIncomplete ? " · 部分来源失败" : ""}
+        {scanProgressIssue ? ` · ${scanProgressIssue}` : ""}
       </div>
     );
   }
@@ -391,22 +535,55 @@ export default function AppPicker({
 
   const visibleApps = apps.slice(0, visibleCount);
   const hasMore = apps.length > visibleApps.length;
-  const scanIssue = scanIssueText(scan?.diagnostics);
+  // 完整性只看会让结果变少的来源诊断；进度推送失败单独展示，不参与 partial 判定。
+  const scanIssue = scanDiscoveryIssueText(scan?.diagnostics);
   const scanIncomplete = scanIssue.length > 0;
+  const scanProgressIssue = scanProgressIssueText(scan?.diagnostics);
   // 显式状态机：未扫描 / 扫描中·尚无结果 / 扫描中·已有结果 / 完成 / 部分失败 / 完全失败。
   // 空批次只推进进度，不会让 scan 变为非 null，因此不会提前显示「扫描完成」。
-  const scanState = deriveScanState({ scan, scanning, scanError, scanPartial, incomplete: scanIncomplete });
+  const scanState = deriveScanState({
+    scan, scanning, scanError, scanPartial, cancelled: scanCancelled, incomplete: scanIncomplete,
+  });
   const scanUnscanned = scanState === "unscanned";
   const scanFailedFresh = scanState === "failed";
   const scanRefreshing = scanState === "scanning-empty";
 
-  // 未扫描时输入搜索词 → 自动触发一次扫描。首次进入添加页仍然不主动扫描；
-  // loadApps 内部有 scanning 单飞守卫 + 代际序号：连续输入不会叠加请求，
-  // 旧请求也不会覆盖新的搜索/结果；失败后由页面上的重试按钮接管。
+  /**
+   * 搜索 → 扫描的受控触发：
+   * 1) 从未扫描：输入关键词后主动扫描一次（非强制，命中后端 5 分钟缓存即时返回）；
+   * 2) 已有结果但当前关键词没有命中：防抖 500ms + 60s 冷却后强制补扫一次，
+   *    用于发现「扫描后新安装」的应用（非强制会被 TTL 缓存挡住）；
+   * 3) 扫描在途不叠加请求（store 单飞 + request 代际隔离旧批次）；
+   * 4) 分类是本地过滤，补扫不会改变分类命中，因此只在「全部」分类下补扫；
+   * 5) 首次扫描失败交给显式重试按钮，避免失败后自动循环重扫。
+   */
   useEffect(() => {
-    if (!query.trim() || scanState !== "unscanned") return;
-    void loadApps();
-  }, [query, scanState, loadApps]);
+    const q = query.trim();
+    if (!q) {
+      setAutoRescanMissed(false);
+      return;
+    }
+    if (scanning) return;
+    if (scanState === "unscanned") {
+      void loadApps();
+      return;
+    }
+    if (scanState === "failed") return;
+    if (category !== "all") return;
+    if (apps.length > 0) {
+      setAutoRescanMissed(false);
+      return;
+    }
+    if (Date.now() - lastAutoRescanAtRef.current < AUTO_RESCAN_COOLDOWN_MS) return;
+    const timer = window.setTimeout(() => {
+      lastAutoRescanAtRef.current = Date.now();
+      void loadApps(true).then((outcome) => {
+        // 只有真正完成的补扫才算「扫过了确实没有」；取消/失败/被取代由扫描状态提示。
+        if (outcome === "ok") setAutoRescanMissed(true);
+      });
+    }, AUTO_RESCAN_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [query, category, apps.length, scanState, scanning, loadApps]);
 
   /**
    * 空列表提示（页面与弹层共用）：扫描中不得说「没有匹配」，否则会被误读为
@@ -421,6 +598,13 @@ export default function AppPicker({
       if (scanState === "partial") {
         return "没有找到匹配的应用；扫描未完成，结果可能不完整，可尝试重新扫描或手动添加。";
       }
+      if (scanState === "cancelled") {
+        return "没有找到匹配的应用；扫描已取消，结果可能不完整，可重新扫描或手动添加。";
+      }
+      // 已做过一次受控补扫：明确告诉用户「扫过了确实没有」，而不是让他继续等扫描。
+      if (autoRescanMissed) {
+        return "已重新扫描，仍未找到匹配的应用，可以尝试其他关键词或手动添加。";
+      }
       return "没有找到匹配的应用，可以尝试其他关键词或手动添加。";
     }
     if (apps.length > 0) {
@@ -428,6 +612,7 @@ export default function AppPicker({
     }
     if (scanningNow) return "正在扫描，暂未发现可添加的应用…";
     if (scanState === "partial") return "扫描未完成，暂未发现可添加的应用；可重试扫描";
+    if (scanState === "cancelled") return "扫描已取消，暂未发现可添加的应用；可重新扫描";
     return `扫描完成，未发现可添加的应用；${footer}`;
   }
 
@@ -865,6 +1050,16 @@ export default function AppPicker({
                   {scanning ? "扫描中…" : "重新扫描"}
                 </button>
               )}
+              {/* 已有结果时扫描中：取消入口放在工具栏（无结果时由扫描状态卡片提供）。 */}
+              {scan !== null && scanning && (
+                <button
+                  className="btn sm"
+                  onClick={() => void requestCancelScan()}
+                  disabled={cancelButtonDisabled}
+                >
+                  {cancelButtonLabel()}
+                </button>
+              )}
               <button
                 className="btn sm"
                 onClick={() => {
@@ -1088,13 +1283,17 @@ export default function AppPicker({
                   {renderScanNotices()}
                   <div className="picker-count" role="status">
                     共 {pageApps.length} 个{query.trim() ? "匹配" : "可添加"}应用
-                    {scan.scanned_at ? ` · 上次扫描 ${formatScanTime(scan.scanned_at)}` : ""}
+                    {scan.scanned_at && !(scanCancelled && scanPartial)
+                      ? ` · 上次扫描 ${formatScanTime(scan.scanned_at)}`
+                      : ""}
                     {scanning
                       ? scanProgressText()
                         ? ` · 正在扫描（${scanProgressText()}）`
                         : " · 正在扫描…"
                       : ""}
+                    {scanCancelled ? " · 扫描已取消" : ""}
                     {scanIncomplete ? " · 部分来源失败" : ""}
+                    {scanProgressIssue ? ` · ${scanProgressIssue}` : ""}
                     {hiddenByDefault.length > 0 && !showAdvanced && (
                       <button
                         className="link-btn picker-advanced"
@@ -1238,6 +1437,15 @@ export default function AppPicker({
                 title="重新扫描开始菜单 / 注册表 / 应用商店（不扫描全盘）"
               >
                 <RefreshCw size={12} className={scanning ? "spin" : ""} /> {scanning ? "扫描中…" : "重新扫描"}
+              </button>
+            )}
+            {scan !== null && scanning && (
+              <button
+                className="btn sm"
+                onClick={() => void requestCancelScan()}
+                disabled={cancelButtonDisabled}
+              >
+                {cancelButtonLabel()}
               </button>
             )}
             <button className="btn sm" onClick={() => setManualOpen((v) => !v)}>

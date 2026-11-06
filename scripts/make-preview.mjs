@@ -21,6 +21,9 @@ const shim = `
   const MODE = q.get("mode") || "full";
   const PRESET = q.get("preset") || "dream-gradient";
   const EMPTY = q.get("agents") === "empty";
+  // 扫描场景：ok（默认，立即返回完整结果）| cancelled | fail。
+  // 只影响 harness 的 nav_scan_apps 返回，用于走查取消/错误状态，不参与发布包。
+  const SCAN_MODE = q.get("scan") || "ok";
   const now = new Date();
   const iso = (minAgo) => new Date(now.getTime() - minAgo * 60000).toISOString();
 
@@ -700,7 +703,47 @@ const shim = `
       case "nav_all_task_links": return navLinks;
       case "nav_task_targets": return navLinks.filter((l) => l.task_id === args?.task_id);
       case "nav_list_targets": return navTargets;
-      case "nav_scan_apps": return { apps: scanApps, scanned_at: iso(1), duration_ms: 420, counts: { startmenu: 3, registry: 0, uwp: 1, known: 1 } };
+      case "nav_scan_apps": {
+        if (SCAN_MODE === "slow") {
+          // 永不返回：用于走查「扫描中」门（取消按钮/进度）而不需要真实批次事件。
+          return new Promise(() => {});
+        }
+        if (SCAN_MODE === "batchfail") {
+          // 进度事件推送失败但权威结果完整：用于走查诊断分类（不应判为 partial）。
+          return {
+            apps: scanApps,
+            scanned_at: iso(1),
+            duration_ms: 420,
+            counts: { startmenu: 3, registry: 0, uwp: 1, known: 1 },
+            diagnostics: { batch_event_failed: 2 },
+          };
+        }
+        if (SCAN_MODE === "partialbatch") {
+          // 真实来源超时 + 进度推送失败并存：用于走查「不完整横幅」与进度说明不矛盾。
+          return {
+            apps: scanApps,
+            scanned_at: iso(1),
+            duration_ms: 420,
+            counts: { startmenu: 3, registry: 0, uwp: 0, known: 1 },
+            diagnostics: { uwp_scan_timeout: 1, batch_event_failed: 2 },
+          };
+        }
+        if (SCAN_MODE === "cancelled") {
+          return {
+            apps: scanApps.slice(0, 2),
+            scanned_at: iso(1),
+            duration_ms: 120,
+            counts: { startmenu: 2 },
+            diagnostics: { scan_cancelled: 1 },
+            cancelled: true,
+          };
+        }
+        if (SCAN_MODE === "fail") {
+          throw new Error("开始菜单来源读取失败（预览模拟）");
+        }
+        return { apps: scanApps, scanned_at: iso(1), duration_ms: 420, counts: { startmenu: 3, registry: 0, uwp: 1, known: 1 } };
+      }
+      case "nav_cancel_scan": return true;
       case "nav_target_running_states": {
         const states = {};
         for (const id of args?.ids ?? []) {

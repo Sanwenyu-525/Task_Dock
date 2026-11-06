@@ -11,6 +11,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod context_menu;
 pub mod db;
+pub mod diagnostics;
 pub mod error;
 pub mod focus;
 mod fs_safety;
@@ -44,6 +45,8 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{App, AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::ShortcutState;
+// 组合多个 Layer（EnvFilter + fmt + 诊断持久化）需要 Layer trait 在作用域内。
+use tracing_subscriber::prelude::*;
 
 use agents::{AgentAdapter, AgentHub, AgentState};
 use db::Db;
@@ -364,13 +367,45 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // 日志（默认 info；RUST_LOG 可覆盖）
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-                )
+            // 数据目录最先确定：诊断日志、数据库、备份与恢复都依赖它。
+            // 测试/便携模式（TASK_DOCK_DATA_DIR）下同时隔离全部本地状态。
+            let data_dir = std::env::var_os("TASK_DOCK_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    app.path()
+                        .app_data_dir()
+                        .expect("无法获取应用数据目录")
+                });
+            std::fs::create_dir_all(&data_dir).ok();
+
+            // 日志：控制台输出保持原有行为（默认 info；RUST_LOG 可覆盖），
+            // 同时挂载诊断持久化层——仓库已有的 tracing::warn!/error! 会自动落盘，
+            // 不需要逐个业务文件改埋点（字段白名单见 diagnostics::tracing_layer）。
+            let diagnostics = diagnostics::Diagnostics::init(app.handle());
+            diagnostics.install();
+            // 动态日志级别：详细诊断模式必须真正改变 `tracing` 过滤，否则 DEBUG 会在
+            // 进入诊断层之前被 EnvFilter 丢弃。RUST_LOG 显式设置时始终以开发者意图为准。
+            let env_override = std::env::var("RUST_LOG").ok().filter(|v| !v.trim().is_empty());
+            let normal_spec = env_override.clone().unwrap_or_else(|| "info".to_string());
+            let verbose_spec = env_override
+                .clone()
+                .unwrap_or_else(|| "info,task_dock_lib=debug".to_string());
+            let (filter_layer, filter_handle) = tracing_subscriber::reload::Layer::new(
+                tracing_subscriber::EnvFilter::new(normal_spec.clone()),
+            );
+            tracing_subscriber::registry()
+                .with(filter_layer)
+                .with(tracing_subscriber::fmt::layer())
+                .with(diagnostics::DiagnosticsLayer::new(diagnostics.clone()))
                 .init();
+            diagnostics.attach_filter_reload(move |verbose| {
+                let spec = if verbose { verbose_spec.clone() } else { normal_spec.clone() };
+                if let Err(e) = filter_handle.reload(tracing_subscriber::EnvFilter::new(spec)) {
+                    // 过滤切换失败只影响详细模式的额外事件，不影响业务。
+                    tracing::warn!("诊断日志级别切换失败: {e}");
+                }
+            });
+            app.manage(diagnostics.clone());
 
             // 开发模式预检：Vite 未启动则不显示窗口，弹窗说明原因后退出，
             // 避免留下无边框幽灵错误页（窗口保持隐藏，见 tauri.conf.json visible:false）
@@ -393,11 +428,6 @@ pub fn run() {
             }
 
             let handle = app.handle().clone();
-            // 测试/便携模式：显式数据目录隔离，避免验收脚本触碰真实用户数据库。
-            let data_dir = std::env::var_os("TASK_DOCK_DATA_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| handle.path().app_data_dir().expect("无法获取应用数据目录"));
-            std::fs::create_dir_all(&data_dir).ok();
 
             let db = Arc::new(Db::open(&data_dir.join("task-dock.db")).expect("数据库打开失败"));
             // 先处理上次中断的恢复：数据库/文件提交要么续跑完成，要么回滚；
@@ -425,7 +455,6 @@ pub fn run() {
             //（绝不自动重放有副作用的步骤）。
             commands::workflows::recover_on_startup(&db);
             handle.manage(db.clone());
-            handle.manage(Arc::new(resource_cleanup::ResourceCleanupState::default()));
             // 统一音频通知服务（TTS 合成 + 本地缓存）：
             // 缓存目录走 app_cache_dir/audio/tts（验收/便携模式随 TASK_DOCK_DATA_DIR 隔离），
             // 启动时不初始化 WinRT 引擎；只有实际播报/预生成时才合成。
@@ -439,6 +468,11 @@ pub fn run() {
                         .ok()
                         .map(|p| p.join("audio").join("tts"))
                 });
+            // 资源管理：磁盘占用分布需要数据根与 TTS 缓存根（安装模式两者不在同一目录）。
+            handle.manage(Arc::new(resource_cleanup::ResourceCleanupState::with_roots(
+                data_dir.clone(),
+                audio_cache_dir.clone(),
+            )));
             handle.manage(Arc::new(audio::AudioService::new(audio_cache_dir)));
             let settings = db::Settings::load(&db).unwrap_or_else(|e| {
                 tracing::warn!(
@@ -725,6 +759,24 @@ pub fn run() {
             }
 
             tracing::info!("Task Dock 启动完成（数据目录: {:?}）", data_dir);
+            // 显式里程碑（不依赖 tracing 的 INFO：正常模式下 INFO 不落盘）。
+            diagnostics::event(
+                diagnostics::DiagLevel::Info,
+                "system",
+                "startup",
+                "ready",
+            )
+            .status(diagnostics::DiagStatus::Success)
+            .message("应用启动完成")
+            .metadata(
+                "mode",
+                serde_json::Value::String(
+                    db::Settings::load(&db)
+                        .map(|settings| settings.mode.clone())
+                        .unwrap_or_else(|_| "unknown".to_string()),
+                ),
+            )
+            .emit();
             let _ = handle.emit("app-ready", ());
             Ok(())
         })
@@ -813,6 +865,15 @@ pub fn run() {
             // 设置
             commands::settings::get_settings,
             commands::settings::update_settings,
+            // 诊断日志（本地持久化 / 查询 / 摘要 / 导出 / 清理）
+            commands::diagnostics::diagnostics_record,
+            commands::diagnostics::diagnostics_status,
+            commands::diagnostics::diagnostics_set_mode,
+            commands::diagnostics::diagnostics_query,
+            commands::diagnostics::diagnostics_summary,
+            commands::diagnostics::diagnostics_export,
+            commands::diagnostics::diagnostics_clear,
+            commands::diagnostics::diagnostics_open_dir,
             // 统一提示音 / 语音播报 / 本地语音缓存（v0.13）
             commands::audio::tts_list_voices,
             commands::audio::tts_synthesize,
@@ -821,6 +882,10 @@ pub fn run() {
             commands::resource_cleanup::resource_snapshot,
             commands::resource_cleanup::resource_cleanup_preview,
             commands::resource_cleanup::resource_cleanup_execute,
+            commands::resource_cleanup::resource_process_diagnostics,
+            commands::resource_cleanup::resource_disk_usage,
+            commands::resource_cleanup::resource_memory_catalog,
+            commands::resource_cleanup::resource_memory_release,
             commands::voice_packs::voice_packs_list,
             commands::voice_packs::voice_pack_create,
             commands::voice_packs::voice_pack_rename,
@@ -891,6 +956,7 @@ pub fn run() {
             widget_windows::dispatch_widget_action,
             // 统一导航（v0.4）
             commands::navigation::nav_scan_apps,
+            commands::navigation::nav_cancel_scan,
             commands::navigation::nav_app_icon,
             commands::navigation::nav_list_windows,
             commands::navigation::nav_list_target_windows,
@@ -1215,6 +1281,20 @@ pub fn request_exit(app: &AppHandle) {
         }
         // 退出流程销毁微件窗口时统一标记 app-exit，避免被当成用户主动关闭而改写配置。
         crate::widget_windows::mark_app_exit();
+        // 诊断日志最后收尾：刷出队列尾部与聚合摘要，再结束写线程。
+        // 失败不影响退出（写线程内部已降级）。
+        if let Some(diag) = app.try_state::<Arc<diagnostics::Diagnostics>>() {
+            diagnostics::event(
+                diagnostics::DiagLevel::Info,
+                "system",
+                "shutdown",
+                "exit",
+            )
+            .status(diagnostics::DiagStatus::Success)
+            .message("应用正常退出")
+            .emit();
+            diag.shutdown();
+        }
         EXIT_READY.store(true, Ordering::SeqCst);
         app.exit(0);
     });

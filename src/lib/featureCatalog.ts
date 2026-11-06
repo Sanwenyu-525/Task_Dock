@@ -145,24 +145,31 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     title: "场景工作区",
     description: "开发 / 办公 / 娱乐 / 学习等场景一键切换，保存并恢复整组环境。",
     detail:
-      "场景是可反复进入的预设组合：一组应用、窗口布局、网址、文件目录、关联任务与场景专属设置。与「工作现场恢复」的区别：" +
-      "现场 = 某个任务此刻环境的快照；场景 = 预先定义、可一键进入的标准工作组合。实现应复用现有 workspace 快照、统一导航与窗口管理能力，不另起炉灶。",
+      "场景是可反复进入的预设组合（v38 已落地独立实体）：一组应用、网址、文件目录、关联工作现场 / 工作流与暂存架文件。" +
+      "与「工作现场恢复」的区别：现场 = 某个任务此刻环境的快照；场景 = 预先定义、可一键进入的标准工作组合。" +
+      "场景只软引用 workspace_snapshots（不复制快照），自身不保存窗口几何；直接进入无取消能力、后端无并发互斥，" +
+      "因此登记为 partial（嵌套深度校验不属于缺口：三层允许、第四层拒绝，保存与运行前共用同一校验，已由 5 个回归用例锁定）。",
     status: "partial",
     priority: "P0",
     existingFeatures: [
-      "工作现场快照：按任务捕获窗口组合 / 手动勾选，可命名保存多条",
-      "批量启动器：应用唤醒复用 / 网页 / 目录 / Agent 会话，逐项成败反馈，可取消未执行项",
-      "任务关联导航目标 + 窗口身份记忆（类名 + 标题，不存 HWND）",
+      "场景实体与独立管理界面：SQLite v38 scenarios 表（FK ON DELETE SET NULL），工作流页「场景工作区」子视图，数量上限 32",
+      "场景创建 / 编辑（整体覆盖清单）/ 删除 / 复制；删除只解除引用，不删现场、工作流、暂存条目或用户原文件",
+      "场景内容：应用、网址、文件目录 + 关联工作现场 + 关联工作流 + 暂存架文件/文件夹软关联（shelf_items.scene_id）",
+      "一键进入：现场恢复 → 应用 → 网址 → 目录 → 关联工作流，逐项 ok/skipped/failed 回执 + 进度事件",
+      "保存时校验引用完整性（工作流 / 现场真实存在，暂存条目只能属于本场景）",
+      "与工作现场恢复互不混淆：独立表、独立命令，场景不复制快照、不保存窗口矩形与 DPI",
     ],
     missingFeatures: [
-      "独立于任务的「场景」实体与场景管理界面（创建 / 编辑 / 删除）",
-      "场景保存应用清单、窗口布局、网址、文件目录、关联任务与专属设置",
-      "一键进入 / 恢复场景（不依赖某个具体任务）",
-      "自定义场景命名与图标",
+      "直接进入的取消与超时：当前无法中止（最坏需等待现场恢复完成），也没有「退出场景」动作",
+      "后端并发互斥：直接进入只有前端单飞，绕过前端可并发进入同一或不同场景",
+      "场景专属设置与任务关联（当前内容仅应用 / 网址 / 目录 / 现场 / 工作流 / 暂存引用）",
+      "场景自身的窗口布局与几何（只能经关联现场间接恢复，现场本身不存窗口矩形 / DPI）",
+      "进入途中删除场景无显式中断：finish 写库 0 行不报错，回执可能落到已删除场景",
+      "真机验收：多显示器、DPI、前台争用、进入中删除（无 CDP / 原生证据）",
     ],
     dependencies: [
-      "复用 workspace 快照与 nav 导航启动链路",
-      "场景数据模型（新表或扩展现有快照）",
+      "复用 workspace 快照与 nav 导航启动链路（软引用，不复制）",
+      "scenarios 表与工作流单运行槽（v38 迁移，已发布不可修改）",
     ],
     acceptanceCriteria: [
       "可创建、编辑、删除场景",
@@ -171,6 +178,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "重复进入场景不重复启动已运行应用",
     ],
     verification: "unverified",
+    entryPoints: ["完整模式导航「工作流」→「场景工作区」"],
   },
   {
     id: "core.agent-action-center",
@@ -290,17 +298,19 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "从剪贴板条目添加（复制为独立副本，剪贴板清空不影响）",
       "引用 / 托管副本双存储模式（默认引用不复制；托管受配额与磁盘余量约束）",
       "搜索、类型筛选、分组筛选、收藏筛选、置顶排序、分页",
-      "多选批量操作：移动分组、收藏、删除（保护收藏/置顶）",
-      "过期清理：自动清理默认关闭、可预览候选、收藏/置顶永不被自动清理、绝不删除用户原文件",
+      "多选批量操作：移动分组、收藏、删除（保护收藏/置顶/场景引用）",
+      "过期清理：自动清理默认关闭、可预览候选、收藏/置顶/已被场景引用的条目永不被自动清理、绝不删除用户原文件",
+      "手动过期清理先自动 dry-run 预览并二次确认，确认前不执行删除；结果按后端报告区分保留项、托管文件残留与同步失败，并提供重试同步",
       "图片缩略图懒加载与灯箱预览；文本/HTML 安全只读预览；未知格式展示元数据",
       "任务关联（幂等；删除任务不删暂存资源）",
+      "暂存条目与场景的软关联：shelf_items.scene_id，场景保存/删除时维护，删除场景只解绑不删文件",
       "纳入正式备份/恢复（托管副本全量打包、路径安全校验）",
       "删除条目不误删剪贴板/原文件；系统级拖出前的替代：复制路径 / 复制文件（CF_HDROP）/ 所在文件夹",
     ],
     missingFeatures: [
       "系统级拖出到资源管理器（WebView2/OLE 通道未实现，见 docs/shelf/）",
-      "与场景工作区的 scene_id 联动（等场景接口稳定）",
       "真机拖入验收（无头环境不可模拟 OS 拖放，待真机复验）",
+      "暂存架侧的场景归属展示与筛选（当前只有场景编辑器单向关联，暂存架看不到被谁占用）",
     ],
     dependencies: ["独立托管目录与配额策略", "Tauri 拖放事件（拖入）", "系统级文件拖出需 OLE/IDataObject 原生通道"],
     acceptanceCriteria: [
@@ -316,18 +326,23 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     title: "一键工作流",
     description: "把重复的应用与任务操作编排为可重复执行的一键流程。",
     detail:
-      "v0.9 已交付白名单动作编排（打开应用/网页/文件目录、创建任务、恢复工作现场），顺序执行引擎支持暂停/继续/取消、逐步骤状态反馈与失败策略；幂等由全局单运行槽 + 持久化操作 ID 保证，异常退出标记 interrupted 且不自动重放。不引入任意脚本执行系统；「进入场景」步骤待场景工作区模块集成后启用（类型保留、当前拒绝执行）。",
+      "v0.9 已交付白名单动作编排（打开应用/网页/文件目录、创建任务、恢复工作现场），顺序执行引擎支持暂停/继续/取消、逐步骤状态反馈与失败策略；幂等由全局单运行槽 + 持久化操作 ID 保证，异常退出标记 interrupted 且不自动重放。不引入任意脚本执行系统。「进入场景」步骤已接入：类型 / 前端选择器 / 保存校验 / 执行调用 / 循环与深度保护均已落地（v0.11）。嵌套层数口径：一层 = 一条「场景 → 场景关联工作流」边，工作流步骤「进入场景」不计层；三层允许、第四层在保存与运行前均拒绝（2026-11-06 由回归测试锁定）。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
       "工作流与步骤 CRUD（SQLite 迁移 v23，完整/快速备份登记）",
       "步骤编排：白名单动作 + 单步启停 + 失败策略（停止/继续）+ 上下移排序",
+      "「进入场景」步骤：场景下拉取真实场景列表，保存时校验场景存在与循环引用，执行时调用场景进入（工作流内不递归启动场景关联工作流）",
+      "场景/工作流图保护：直接与间接循环独立拒绝；嵌套三层允许、第四层拒绝，保存与运行前共用同一校验；覆盖多入口共享子图与删除关联后的恢复（5 个回归用例）",
       "执行引擎：顺序执行、暂停/继续/取消、逐步骤状态与失败原因、事件推送",
       "幂等与恢复：同一时刻单运行、操作 ID 回执、异常退出标 interrupted 不重放副作用",
       "示例模板（开发/办公，应用目标由用户选择）",
       "运行历史分页与保留（每工作流最近 50 条）",
     ],
-    missingFeatures: ["「进入场景」步骤：依赖场景工作区模块（尚未集成，类型保留但校验层拒绝执行）"],
+    missingFeatures: [
+      "工作流回执只保留场景步骤的 kind/status，丢失逐项 label 与失败原因，运行历史看不到场景内哪个应用失败",
+      "「进入场景」真实执行（LiveExecutor）无自动化测试；窗口跳转与现场恢复联动未真机验收",
+    ],
     dependencies: ["场景工作区（进入场景作为工作流步骤）", "统一导航 nav_navigate", "任务创建命令"],
     acceptanceCriteria: [
       "工作流可创建、编辑、排序、一键执行、取消",
@@ -665,30 +680,34 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     title: "Agent MCP Server",
     description: "外部 MCP 客户端经授权读写规划中心：身份、权限、审计与乐观并发。",
     detail:
-      "已交付（v0.11 后端最小安全闭环）：taskdock.exe --mcp-server stdio 子命令（手写 JSON-RPC 2.0 + " +
+      "已交付（v0.11 后端最小安全闭环 + 设置页管理界面）：taskdock.exe --mcp-server stdio 子命令（手写 JSON-RPC 2.0 + " +
       "MCP 最小子集 initialize / tools/list / tools/call，不引入 SDK）→ 127.0.0.1 HTTP loopback bridge" +
       "（独立端口与 token，256KB 体积上限、20s 超时、连接/在途并发上限，日志不含请求体与凭据）→ 规划服务层 → SQLite。" +
       "身份存 SHA-256（明文仅创建时返回一次）；scope = disabled / readonly / project_rw + 逐项目授权，撤销即时生效；" +
       "每次调用写 mcp_audit_log，写工具 requestId 幂等（重复返回原结果）。18 个规划读写工具全部复用 planning 服务层，" +
       "强制 expected_revision 乐观并发（冲突明确返回）；update_feature 拒绝置 completed，submit_for_review 只置 review。" +
       "写入成功 emit planning-changed，前端去抖合并 + 代际守卫局部刷新，无新增轮询。设置键 mcp_server_enabled 默认关闭。" +
-      "配置片段生成已核对 Claude Code / Codex CLI / Cursor / Trae 官方文档格式（v37 迁移 + 备份登记齐备）。" +
-      "测试：mcp 29 用例 + tests/mcp_e2e.rs 3 用例（真实子进程握手→发现→读→拒绝→授权写→幂等→冲突→审计→重连→不可用降级）。",
+      "设置 → Agent 接入 → MCP 已提供开关、身份/凭据、授权项目、配置片段与分页审计查询。" +
+      "测试：mcp 单测 29 个 + tests/mcp_e2e.rs 3 个（真实子进程握手→发现→读→拒绝→授权写→幂等→冲突→审计→重连→不可用降级）；" +
+      "其中 feature_completed_is_user_only_and_submit_for_review_flow 已拆为 A–F 并通过（planned 冲突 / 超长回滚 / 合法提交 / " +
+      "completed 拒绝 / 过期 revision / 无残留；生产代码未改，2026-11-06）。" +
+      "内置路线图（featureCatalog.ts）与用户项目（planning_*）是两个数据源，MCP 工具不能写内置目录。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
       "stdio MCP 子命令 + loopback bridge（按设置开关启停，关闭即释放）",
       "agent 身份 / scope / 逐项目授权 / 撤销即时生效 / 审计与幂等",
       "18 个规划读写工具 + 乐观并发控制 + 防越权（completed 不可由 Agent 判定）",
-      "planning-changed 事件 → 前端局部刷新；配置片段生成（四家客户端格式已核实）",
+      "设置 → Agent 接入 → MCP：开关、身份创建（明文仅一次）、轮换、撤销、scope、逐项目授权与撤权、四家客户端配置片段、分页审计查询",
+      "planning-changed 事件 → 前端局部刷新（去抖 + 代际守卫，无轮询）",
     ],
     missingFeatures: [
-      "设置 / Agent 页接入管理 UI（开关、凭据、授权项目、最近操作、连接测试）",
-      "真实客户端端到端联调（本机未安装对应客户端，如实记未验证）",
+      "设置页连接测试：无法发起一次经 bridge 鉴权的 initialize / tools/list 探测（当前只显示端口与运行状态）",
+      "真实 MCP 客户端端到端联调（本机未安装 Claude Code / Codex CLI / Cursor / Trae 客户端，未执行）",
+      "审计保留期与容量策略：mcp_audit_log 无清理，result_json 随备份全量保存",
       "任务 / 笔记 / 工作流等扩展工具（复用同一套权限与审计）",
-      "审计查询界面与单项目撤权",
     ],
-    dependencies: ["planning_* 服务层与 v37 迁移", "http_ingest 的 hyper + Bearer 既有模式"],
+    dependencies: ["planning_* 服务层与 v37/v38 迁移", "http_ingest 的 hyper + Bearer 既有模式"],
     acceptanceCriteria: [
       "未授权请求被拒绝且不降级为无认证",
       "并发冲突明确返回，后写不无声覆盖",
@@ -696,7 +715,10 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "task_dock 未运行时子进程返回明确不可用错误",
     ],
     verification: "unverified",
-    entryPoints: ["taskdock.exe --mcp-server（外部 MCP 客户端 stdio 接入）"],
+    entryPoints: [
+      "taskdock.exe --mcp-server（外部 MCP 客户端 stdio 接入）",
+      "设置 → Agent 接入 → MCP（开关 / 凭据 / 授权 / 审计）",
+    ],
   },
 
   // ─── 任务与交互增强 ────────────────────────────────────────────────
@@ -798,26 +820,30 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     title: "帮助与教程中心",
     description: "可随功能演进校验失效的内置教程：搜索、分类、功能关联与状态提示。",
     detail:
-      "已交付（v0.11 第一轮）：src/help 教程注册中心（结构化 TS 正文，heading/paragraph/steps/tip/note/callout，零新依赖）" +
-      "+ 8 分类 19 篇教程（16 verified / 2 needs_review / 1 draft），正文自备 translations，en-US 缺失时明确显示" +
-      "「暂无英文版」徽标并回退中文，不伪称国际化完成；完整模式第 13 个 rail 入口（help，不占 Ctrl+数字）；" +
+      "已交付（v0.11）：src/help 教程注册中心（结构化 TS 正文，heading/paragraph/steps/tip/note/callout，零新依赖）" +
+      "+ 8 分类 20 篇教程（14 verified / 6 needs_review / 0 draft，2026-11-06 按内容源重新统计），正文自备 translations，" +
+      "en-US 缺失时明确显示「暂无英文版」徽标并回退中文，不伪称国际化完成；完整模式第 13 个 rail 入口（help，不占 Ctrl+数字）；" +
       "搜索（标题/关键词/正文）、分类浏览、最近浏览（上限 8）、文章头显示适用版本/最近更新/翻译状态；" +
       "相关功能跳转对 planned / blocked / hidden / 停用分别给出状态提示而非死链接；复制操作步骤；" +
-      "npm run help:check 契约校验（12 用例：featureId / routeId / 正文完整性 / en 结构平行 / 核心功能覆盖 / 内容版本），" +
-      "引用失效即报错。ContextHelpButton（? 弹出轻量说明）已交付组件与测试。测试 61 用例 + 预览截图 8 张" +
-      "（深浅主题 × 列表/文章/搜索/引导 × 320 窄窗）。",
+      "npm run help:check 契约校验（19 用例 = registry-contract 13 + health 6，覆盖 featureId / routeId / 正文完整性 / " +
+      "en 结构平行 / 核心功能覆盖 / 内容版本 / 操作契约版本），引用失效即报错。" +
+      "ContextHelpButton（? 弹出轻量说明）已接入 8 个业务页面共 9 处；帮助中心与设置页均可重新打开首次引导。" +
+      "测试 61 用例 + 预览截图 8 张（深浅主题 × 列表/文章/搜索/引导 × 320 窄窗）。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
-      "注册中心 + 8 分类 19 篇教程 + 搜索 / 分类 / 最近浏览",
+      "8 分类 20 篇教程 + 搜索 / 分类 / 最近浏览（上限 8）",
       "状态徽标：功能未实现 / 受阻 / 导航隐藏 / 停用 / 翻译缺失分别如实提示",
-      "help:check 契约校验阻断引用失效（featureId / routeId / 翻译 / 版本）",
-      "第 13 个 rail 入口 + 从教程跳转实际功能",
+      "help:check 契约校验阻断引用失效（featureId / routeId / 翻译 / 版本 / 操作契约）",
+      "第 13 个 rail 入口 + 从教程跳转实际功能 + 返回来源页面",
+      "ContextHelpButton 已接入 Agent / 剪贴板 / 规划中心 / 设置（MCP 与备份）/ 暂存架 / 任务 / 场景 / 工作流编辑器 9 处",
+      "帮助中心与设置页均提供「重新打开引导」入口",
     ],
     missingFeatures: [
-      "ContextHelpButton 接入各复杂功能面板（Agent / 剪贴板 / 文件移动 / 场景 / 备份）",
-      "MCP 接入与无事件排查两篇教程按 needs_review 复核",
-      "真实 WebView2 / 真机双主题与窄窗走查",
+      "帮助中心与首次使用引导自身没有教程（help:check 已提示「可见功能尚未关联教程」）",
+      "教程正文语义漂移无自动检测：verified 教程曾长期声称「进入场景步骤会被拒绝」，与代码冲突；本次已更正正文，契约层仍只校验引用/版本，不校验语义",
+      "6 篇 needs_review 待复核；14 篇缺 en-US 翻译",
+      "真实 WebView2 / 真机双主题与窄窗走查（现有证据为 A 自动化 + B 隔离预览）",
     ],
     dependencies: ["featureCatalog.ts（功能元数据事实源）", "navigationRegistry.ts（入口寻址）", "overlayStack 弹层栈"],
     acceptanceCriteria: [
@@ -837,20 +863,20 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "已交付（v0.11）：useOnboardingStore（localStorage taskdock.onboarding.v1）+ OnboardingOverlay 页内卡片" +
       "（非全屏 Modal），仅完整模式且未完成时显示；三步（认识 task_dock → 完成第一个任务 → 选择需要的功能）均可跳过 / 返回，" +
       "Escape 经 overlayStack，键盘可操作；不创建任何业务数据（步骤按钮只做页面跳转）；升级版本只置「有新内容」红点" +
-      "由帮助中心呈现，不自动重播；可从帮助中心重新打开。测试覆盖步骤流转 / 跳过 / 持久化 / 不重播。" +
-      "剩余事项：设置页重开引导入口待接入；真机双主题 / 窄窗 / DPI 走查未执行。",
+      "由帮助中心呈现，不自动重播；可从帮助中心与设置页（「重新打开引导」）重新打开。测试覆盖步骤流转 / 跳过 / 持久化 / 不重播。" +
+      "剩余事项：真机双主题 / 窄窗 / DPI 走查未执行。",
     status: "implemented",
     priority: "P2",
     existingFeatures: [
-      "三步引导：可跳过、可返回、可从帮助中心重新打开",
+      "三步引导：可跳过、可返回、可从帮助中心与设置页重新打开",
       "状态持久化，升级版本不重复强制展示",
       "页内卡片形态 + overlayStack + 键盘操作 + 双主题 Token",
     ],
     missingFeatures: [],
-    dependencies: ["useUiStore tab 调度", "overlayStack", "帮助中心（重新打开入口）"],
+    dependencies: ["useUiStore tab 调度", "overlayStack", "帮助中心与设置页（重新打开入口）"],
     acceptanceCriteria: ["首次启动出现且仅出现一次", "跳过后不再自动弹出", "不创建不可辨别的永久测试数据"],
     verification: "unverified",
-    entryPoints: ["首次启动完整模式自动呈现", "帮助中心 → 重新打开引导"],
+    entryPoints: ["首次启动完整模式自动呈现", "帮助中心 → 重新打开引导", "设置 → 帮助与引导 → 重新打开引导"],
   },
 
   // ─── 长期生态 ───────────────────────────────────────────────────────

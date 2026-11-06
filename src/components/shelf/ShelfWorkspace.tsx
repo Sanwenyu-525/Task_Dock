@@ -16,7 +16,6 @@ import {
   clipboardView,
   getSettings,
   quickCaptureSubmit,
-  shelfCleanup,
   shelfGetItem,
   shelfCopyFiles,
   shelfCopyPaths,
@@ -45,6 +44,7 @@ import ShelfDetail from "./ShelfDetail";
 import ShelfFileOpPanel, { type ShelfFileOpRequest } from "./ShelfFileOpPanel";
 import DropTargetManager from "./DropTargetManager";
 import { shelfDeleteFeedback } from "./shelfDeleteFeedback";
+import { shelfCleanupFeedback } from "./shelfCleanupFeedback";
 
 /** 有真实文件/文件夹语义的条目（link/text 不参与移动与复制）。 */
 function isPhysicalItem(item: ShelfItem): boolean {
@@ -81,6 +81,22 @@ const KIND_FILTERS: { value: ShelfKind | "all"; label: string }[] = [
 interface PendingDelete {
   ids: string[];
   includeProtected: boolean;
+  hasFlags: boolean;
+  hasScene: boolean;
+}
+
+/** dry-run 预览：确认框只展示这三项，执行结果以后端报告为准。 */
+interface CleanupPreview {
+  candidates: number;
+  skipped_protected: number;
+  freed_bytes: number;
+}
+
+/** 受保护原因必须说清，不能用「受保护内容」糊过去：场景引用的后果与收藏/置顶不同。 */
+function protectedReason(hasFlags: boolean, hasScene: boolean): string {
+  if (hasFlags && hasScene) return "包含收藏/置顶项，且被场景引用";
+  if (hasScene) return "被场景引用";
+  return "包含收藏/置顶项";
 }
 
 export default function ShelfWorkspace({ active }: { active: boolean }) {
@@ -97,6 +113,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const error = useShelfStore((s) => s.error);
   const mutationSyncError = useShelfStore((s) => s.mutationSyncError);
   const deletionBusy = useShelfStore((s) => s.deletionBusy);
+  const cleanupBusy = useShelfStore((s) => s.cleanupBusy);
   const selectedIds = useShelfStore((s) => s.selectedIds);
   const detailId = useShelfStore((s) => s.detailId);
   const load = useShelfStore((s) => s.load);
@@ -110,6 +127,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const updateItem = useShelfStore((s) => s.updateItem);
   const deleteItems = useShelfStore((s) => s.deleteItems);
   const retryShelfSync = useShelfStore((s) => s.retryShelfSync);
+  const runCleanup = useShelfStore((s) => s.runCleanup);
   const moveToGroup = useShelfStore((s) => s.moveToGroup);
   const toggleSelect = useShelfStore((s) => s.toggleSelect);
   const selectAll = useShelfStore((s) => s.selectAll);
@@ -156,12 +174,14 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
-  const [cleanupPreview, setCleanupPreview] = useState<{
-    candidates: number;
-    skipped_protected: number;
-    freed_bytes: number;
-  } | null>(null);
-  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupPreview, setCleanupPreview] = useState<CleanupPreview | null>(null);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
+  /** dry-run 在途（与真实执行分开：预览按钮用它禁用，不误报「正在清理」）。 */
+  const [cleanupPreviewBusy, setCleanupPreviewBusy] = useState(false);
+  /** 同步闸：state 更新前的连点也不能重复发 dry-run。 */
+  const cleanupPreviewInFlight = useRef(false);
+  /** 预览代际：关闭面板/卸载后，迟到的 dry-run 结果不得弹确认框。 */
+  const cleanupSeq = useRef(0);
   /** 反向转存（暂存架→收集箱）在途守卫：菜单项 disabled，防连点重复创建 */
   const [toInboxBusy, setToInboxBusy] = useState(false);
   /** 内嵌文件操作面板（移动/复制共享同一套面板，不做大模态） */
@@ -170,6 +190,25 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   /** 视图切换时保留暂存列表滚动位置（目标管理视图不渲染列表）。 */
   const listRef = useRef<HTMLDivElement>(null);
   const savedScroll = useRef(0);
+
+  /** 关闭清理面板：作废在途 dry-run，迟到的预览不得再弹确认框。 */
+  const closeCleanupPanel = useCallback(() => {
+    cleanupSeq.current += 1;
+    setCleanupOpen(false);
+    setCleanupPreview(null);
+    setConfirmCleanup(false);
+  }, []);
+
+  // 兜底：其他路径关闭面板或组件卸载时，同样作废在途预览。
+  useEffect(() => {
+    if (!cleanupOpen) cleanupSeq.current += 1;
+  }, [cleanupOpen]);
+  useEffect(
+    () => () => {
+      cleanupSeq.current += 1;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (targetsOpen) {
@@ -277,8 +316,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     if (manageRequest === 0) return;
     consumeManage();
     setTargetsOpen(true);
-    setCleanupOpen(false);
-  }, [manageRequest, consumeManage]);
+    closeCleanupPanel();
+  }, [manageRequest, consumeManage, closeCleanupPanel]);
 
   // 搜索输入去抖：输入框保留即时草稿，避免受控值与 250ms 去抖互相拉扯。
   const [searchDraft, setSearchDraft] = useState(filter.search ?? "");
@@ -601,7 +640,12 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         label: "删除",
         danger: true,
         onSelect: () => {
-          setPendingDelete({ ids: [item.id], includeProtected: item.favorite || item.pinned });
+          setPendingDelete({
+            ids: [item.id],
+            includeProtected: item.favorite || item.pinned || item.scene_id != null,
+            hasFlags: item.favorite || item.pinned,
+            hasScene: item.scene_id != null,
+          });
           setConfirmDelete(true);
         },
       },
@@ -653,35 +697,67 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       .catch((e) => showToast(`复制所选文件失败：${errorMessage(e)}`, { kind: "error" }));
   };
 
-  const runCleanupPreview = async () => {
-    setCleanupBusy(true);
+  /** dry-run 预览：只读，不触发真实清理；关闭面板后迟到的结果直接丢弃。 */
+  const previewCleanup = useCallback(async (): Promise<CleanupPreview | null> => {
+    if (cleanupPreviewInFlight.current || cleanupBusy) return null;
+    cleanupPreviewInFlight.current = true;
+    const seq = ++cleanupSeq.current;
+    setCleanupPreviewBusy(true);
     try {
-      const r = await shelfCleanup(true, false);
-      setCleanupPreview({
-        candidates: r.candidates,
-        skipped_protected: r.skipped_protected,
-        freed_bytes: r.freed_bytes,
-      });
+      const { report } = await runCleanup(true, false);
+      if (seq !== cleanupSeq.current) return null;
+      const preview: CleanupPreview = {
+        candidates: report.candidates,
+        skipped_protected: report.skipped_protected,
+        freed_bytes: report.freed_bytes,
+      };
+      setCleanupPreview(preview);
+      return preview;
     } catch (e) {
-      showToast(`清理预览失败：${errorMessage(e)}`, { kind: "error" });
+      if (seq === cleanupSeq.current) {
+        showToast(`清理预览失败：${errorMessage(e)}`, { kind: "error" });
+      }
+      return null;
     } finally {
-      setCleanupBusy(false);
+      cleanupPreviewInFlight.current = false;
+      setCleanupPreviewBusy(false);
     }
+  }, [cleanupBusy, runCleanup, showToast]);
+
+  const runCleanupPreview = () => {
+    void previewCleanup();
   };
 
-  const runCleanupNow = async () => {
-    setCleanupBusy(true);
+  /** 「立即清理过期」：先自动 dry-run 预览，再弹确认；确认前绝不执行真实清理。 */
+  const askCleanupNow = async () => {
+    const preview = await previewCleanup();
+    if (!preview) return;
+    if (preview.candidates === 0) {
+      // 0 候选不是成功清理：不弹「确认清理」，也不发真实请求。
+      showToast("没有需要清理的过期条目。", { kind: "info" });
+      return;
+    }
+    setConfirmCleanup(true);
+  };
+
+  /** 二次确认后才执行真实清理；结果反馈与权威同步都由 Store 负责。 */
+  const confirmCleanupNow = async () => {
     try {
-      const r = await shelfCleanup(false, false);
-      showToast(`已清理 ${r.candidates} 项，释放 ${formatBytes(r.freed_bytes)}`, {
-        kind: "success",
+      const result = await runCleanup(false, false);
+      const feedback = shelfCleanupFeedback(result);
+      showToast(feedback.message, {
+        kind: feedback.kind,
+        ...(!result.synced
+          ? { action: { label: "重试同步", run: () => void retryShelfSync() } }
+          : {}),
       });
       setCleanupPreview(null);
-      setCleanupOpen(false);
+      // 有托管文件残留或列表未同步时保留面板，便于再次预览或重试同步。
+      if (result.synced && result.report.failed_files === 0) closeCleanupPanel();
     } catch (e) {
       showToast(`清理失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
-      setCleanupBusy(false);
+      setConfirmCleanup(false);
     }
   };
 
@@ -712,7 +788,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           data-tip="投递目标（工具面板共用）"
           onClick={() => {
             setTargetsOpen((v) => !v);
-            setCleanupOpen(false);
+            closeCleanupPanel();
           }}
         >
           <FolderInput size={14} aria-hidden="true" />
@@ -721,10 +797,16 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           type="button"
           className="icon-btn sm"
           aria-label="空间占用与清理设置"
+          aria-expanded={cleanupOpen}
           data-tip="空间占用与清理"
           onClick={() => {
-            setCleanupOpen((v) => !v);
-            setCleanupPreview(null);
+            if (cleanupOpen) {
+              closeCleanupPanel();
+            } else {
+              cleanupSeq.current += 1;
+              setCleanupPreview(null);
+              setCleanupOpen(true);
+            }
           }}
         >
           <Settings2 size={14} aria-hidden="true" />
@@ -733,7 +815,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           type="button"
           className="icon-btn sm"
           aria-label="清空暂存架"
-          data-tip="清空（保留收藏/置顶）"
+          data-tip="清空（保留收藏/置顶/场景引用）"
           onClick={() => setConfirmClear(true)}
         >
           <Trash2 size={14} aria-hidden="true" />
@@ -867,10 +949,10 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         <CleanupPanel
           stats={stats}
           preview={cleanupPreview}
-          busy={cleanupBusy}
-          onPreview={() => void runCleanupPreview()}
-          onRun={() => void runCleanupNow()}
-          onClose={() => setCleanupOpen(false)}
+          busy={cleanupBusy || cleanupPreviewBusy}
+          onPreview={runCleanupPreview}
+          onRun={() => void askCleanupNow()}
+          onClose={closeCleanupPanel}
         />
       )}
 
@@ -1127,7 +1209,14 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             type="button"
             className="btn sm"
             onClick={() => {
-              setPendingDelete({ ids: selectedIds, includeProtected: false });
+              const selected = items.filter((it) => selectedIds.includes(it.id));
+              setPendingDelete({
+                ids: selectedIds,
+                // 批量删除保持保守：受保护条目跳过并保留，不隐式删除。
+                includeProtected: false,
+                hasFlags: selected.some((it) => it.favorite || it.pinned),
+                hasScene: selected.some((it) => it.scene_id != null),
+              });
               setConfirmDelete(true);
             }}
           >
@@ -1194,8 +1283,17 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         }
         detail={
           pendingDelete?.includeProtected
-            ? "所选条目包含收藏/置顶项，需要你确认后才会一并删除。托管副本会被删除，用户原文件不受影响。"
-            : "托管副本将被删除；引用模式的原文件不受影响。"
+            ? `所选条目${protectedReason(
+                pendingDelete.hasFlags,
+                pendingDelete.hasScene,
+              )}，需要你确认后才会一并删除。${
+                pendingDelete.hasScene ? "删除后对应场景会失去这些文件引用。" : ""
+              }托管副本会被删除，用户原文件不受影响。`
+            : `收藏、置顶与被场景引用的条目会被跳过并保留。${
+                pendingDelete && (pendingDelete.hasFlags || pendingDelete.hasScene)
+                  ? `（本次所选${protectedReason(pendingDelete.hasFlags, pendingDelete.hasScene)}）`
+                  : ""
+              }托管副本将被删除；引用模式的原文件不受影响。`
         }
         confirmLabel="删除"
         danger
@@ -1225,7 +1323,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       <ConfirmDialog
         open={confirmClear}
         title="清空暂存架？"
-        detail="删除全部未收藏、未置顶的条目（收藏/置顶保留）。托管副本会被删除，引用的原文件不受影响。"
+        detail="删除全部未收藏、未置顶、未被场景引用的条目（收藏、置顶与场景引用条目保留）。托管副本会被删除，引用的原文件不受影响。"
         confirmLabel="清空"
         danger
         busy={deletionBusy}
@@ -1242,6 +1340,30 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           })();
         }}
         onCancel={() => setConfirmClear(false)}
+      />
+
+      {/* 过期清理确认：dry-run 只做预览；确认后才执行真实清理。
+          预览与执行之间可能有时间差，最终以后端执行报告为准。 */}
+      <ConfirmDialog
+        open={confirmCleanup}
+        title="清理过期条目？"
+        detail={
+          cleanupPreview
+            ? `预计清理 ${cleanupPreview.candidates} 项，释放约 ${formatBytes(cleanupPreview.freed_bytes)} 托管空间。${
+                cleanupPreview.skipped_protected > 0
+                  ? `另有 ${cleanupPreview.skipped_protected} 项因收藏、置顶或场景引用而保留。`
+                  : ""
+              }只会删除 Task Dock 托管的副本与暂存记录，不会删除你的原始文件；收藏、置顶及被场景引用的条目默认保留。实际结果以执行后报告为准。`
+            : undefined
+        }
+        confirmLabel="确认清理"
+        danger
+        busy={cleanupBusy}
+        onConfirm={() => void confirmCleanupNow()}
+        onCancel={() => {
+          if (cleanupBusy) return;
+          setConfirmCleanup(false);
+        }}
       />
         </>
       )}
@@ -1281,7 +1403,7 @@ function CleanupPanel({
   onClose,
 }: {
   stats: ReturnType<typeof useShelfStore.getState>["stats"];
-  preview: { candidates: number; skipped_protected: number; freed_bytes: number } | null;
+  preview: CleanupPreview | null;
   busy: boolean;
   onPreview: () => void;
   onRun: () => void;
@@ -1368,8 +1490,11 @@ function CleanupPanel({
             if (Number.isFinite(v) && v >= 1 && v <= 3650) void setRetention(v);
           }}
         />
-        （收藏/置顶永不过期）
+        （收藏、置顶、场景引用条目不自动清理）
       </label>
+      <p className="shelf-cleanup-hint">
+        「立即清理过期」会先预览并二次确认；只删除 Task Dock 托管的副本与暂存记录，不会删除你的原始文件。
+      </p>
       <div className="shelf-cleanup-actions">
         <button type="button" className="btn sm" disabled={busy} onClick={onPreview}>
           预览可清理
@@ -1383,7 +1508,7 @@ function CleanupPanel({
         <p className="shelf-cleanup-preview" role="status">
           可清理 {preview.candidates} 项，预计释放 {formatBytes(preview.freed_bytes)}
           {preview.skipped_protected > 0 &&
-            `；${preview.skipped_protected} 项因收藏/置顶被跳过`}
+            `；${preview.skipped_protected} 项因收藏、置顶或场景引用被跳过`}
         </p>
       )}
     </div>

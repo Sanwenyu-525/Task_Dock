@@ -7,7 +7,7 @@ export const CLIPBOARD_ARTICLES: readonly HelpArticle[] = [
     id: "help.clipboard.history",
     categoryId: "clipboard",
     status: "verified",
-    contentVersion: 1,
+    contentVersion: 2,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
@@ -26,6 +26,8 @@ export const CLIPBOARD_ARTICLES: readonly HelpArticle[] = [
               "点击条目打开详情：文本看完整正文，HTML 用白名单只读预览（不执行脚本、链接不可点），文件列路径并可打开 / 定位。",
               "详情内可以收藏、置顶，或把条目关联到某个任务。",
               "需要再次使用时直接复制；也可以用「逐项粘贴」把截图组按顺序粘贴到目标窗口。",
+              "想把内容送到另一个窗口：点条目右侧的箭头选择「复制并切换到…」，再选一个目标窗口；这会复制内容并激活该窗口，但**不会自动粘贴**，到目标窗口后请自行按 Ctrl+V。",
+              "「复制并切换」与「逐项粘贴」是两种操作：前者只复制并切换窗口，后者会逐项发送粘贴按键；复制成功但窗口切换失败时，内容仍在剪贴板里，可只重试切换。",
             ],
           },
           { type: "heading", text: "搜索与清理" },
@@ -41,7 +43,7 @@ export const CLIPBOARD_ARTICLES: readonly HelpArticle[] = [
       },
     },
     keywords: {
-      "zh-CN": ["剪贴板", "历史", "收藏", "置顶", "HTML 预览", "逐项粘贴", "搜索"],
+      "zh-CN": ["剪贴板", "历史", "收藏", "置顶", "HTML 预览", "逐项粘贴", "搜索", "复制并切换", "窗口切换"],
     },
     relatedFeatureIds: ["ux.clipboard-viewers", "core.global-search"],
     relatedRouteIds: ["clipboard"],

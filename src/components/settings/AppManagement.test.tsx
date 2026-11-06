@@ -267,3 +267,117 @@ describe("AppManagement", () => {
     expect(vi.mocked(navRecentLogs)).toHaveBeenCalled();
   });
 });
+
+describe("AppManagement 刷新结果语义", () => {
+  type Outcome = "ok" | "stale" | "cancelled" | "error";
+
+  function seedRefresh(
+    targetsOutcome: Outcome,
+    scanOutcome: Outcome,
+    errors?: { targets?: string; scan?: string },
+  ) {
+    seed([targetFix()]);
+    useNavigationStore.setState({
+      targetsError: errors?.targets ?? null,
+      scanError: errors?.scan ?? null,
+      loadTargets: vi.fn(async () => targetsOutcome),
+      loadApps: vi.fn(async () => scanOutcome),
+    });
+  }
+
+  async function clickRescan() {
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+    await waitFor(() => expect(useUiStore.getState().toast).not.toBeNull());
+    return useUiStore.getState().toast!;
+  }
+
+  it("ok + ok：可以提示整体刷新完成", async () => {
+    seedRefresh("ok", "ok");
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    expect(toast.kind).toBe("success");
+    expect(toast.message).toContain("应用清单已刷新");
+  });
+
+  it("ok + stale：不得提示全部刷新完成（扫描由其他入口负责）", async () => {
+    seedRefresh("ok", "stale");
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    expect(toast.kind).not.toBe("success");
+    expect(toast.message).toContain("扫描由其他入口");
+    expect(toast.message).not.toContain("应用清单已刷新");
+  });
+
+  it("stale + ok：不宣称两项均由本次完成", async () => {
+    seedRefresh("stale", "ok");
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    expect(toast.kind).not.toBe("success");
+    expect(toast.message).toContain("应用清单由其他刷新更新");
+  });
+
+  it("stale + stale：只给一次非成功说明，不重复成功提示", async () => {
+    seedRefresh("stale", "stale");
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    expect(toast.kind).toBe("info");
+    expect(toast.message).toContain("应用清单由其他刷新更新");
+    expect(toast.message).toContain("扫描由其他入口");
+  });
+
+  it("ok + cancelled：不得提示扫描成功", async () => {
+    seedRefresh("ok", "cancelled");
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    expect(toast.kind).toBe("info");
+    expect(toast.message).toContain("扫描已取消");
+    expect(toast.message).not.toContain("已刷新");
+  });
+
+  it("error + ok：明确目标列表刷新失败", async () => {
+    seedRefresh("error", "ok", { targets: "读取被拒绝" });
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    expect(toast.kind).toBe("warning");
+    expect(toast.message).toContain("刷新部分失败");
+    expect(toast.message).toContain("应用清单：读取被拒绝");
+    expect(toast.message).not.toContain("应用扫描：");
+  });
+
+  it("ok + error：明确扫描失败", async () => {
+    seedRefresh("ok", "error", { scan: "开始菜单不可读" });
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    expect(toast.kind).toBe("warning");
+    expect(toast.message).toContain("应用扫描：开始菜单不可读");
+    expect(toast.message).not.toContain("应用清单：");
+  });
+
+  it("error + error：展示合并后的真实失败信息", async () => {
+    seedRefresh("error", "error", { targets: "清单错误", scan: "扫描错误" });
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    expect(toast.kind).toBe("warning");
+    expect(toast.message).toContain("应用清单：清单错误");
+    expect(toast.message).toContain("应用扫描：扫描错误");
+  });
+
+  it("定向重试：仅重试失败的扫描，不重复刷新已成功的目标清单", async () => {
+    seedRefresh("ok", "error", { scan: "扫描错误" });
+    render(<AppManagement />);
+    const toast = await clickRescan();
+    const loadApps = useNavigationStore.getState().loadApps as unknown as {
+      mock: { calls: unknown[][] };
+    };
+    const loadTargets = useNavigationStore.getState().loadTargets as unknown as {
+      mock: { calls: unknown[][] };
+    };
+    expect(loadApps.mock.calls).toHaveLength(1);
+    expect(loadTargets.mock.calls).toHaveLength(1);
+
+    // 重试只执行扫描，不再请求已成功的目标清单
+    toast.action?.run();
+    await waitFor(() => expect(loadApps.mock.calls).toHaveLength(2));
+    expect(loadTargets.mock.calls).toHaveLength(1);
+  });
+});

@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { act } from "react";
+import { act, StrictMode } from "react";
 
 vi.mock("../../lib/bridge", () => ({
   onClipboardChanged: async () => () => {},
@@ -88,6 +88,8 @@ import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useCapsuleStore } from "../../store/useCapsuleStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { useUiStore } from "../../store/useUiStore";
+import { registerTabGuard } from "../../lib/tabGuard";
 import { overlayStack, registerOverlay, topOverlay } from "../../lib/overlayStack";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import type { AgentRun, AgentSnapshot } from "../../lib/bridge";
@@ -330,6 +332,164 @@ describe("CapsuleDock · 真实状态与空状态", () => {
   });
 });
 
+describe("CapsuleDock · 胶囊内未保存草稿确认条", () => {
+  const discard = vi.fn();
+  let unregister: (() => void) | null = null;
+
+  function registerDirtyGuard(id = "capsule-guard", label = "任务编辑器") {
+    discard.mockReset();
+    unregister = registerTabGuard({
+      id,
+      label: () => label,
+      isDirty: () => true,
+      isBusy: () => false,
+      discard,
+    });
+  }
+
+  function pend(tab: "tasks" | "clipboard" | "apps", after: (() => void) | null = vi.fn()) {
+    useUiStore.setState({
+      pendingTab: { tab, guardId: "capsule-guard", after },
+    });
+    return after;
+  }
+
+  afterEach(() => {
+    unregister?.();
+    unregister = null;
+    useUiStore.setState({ tab: "tasks", pendingTab: null });
+  });
+
+  it("被未保存草稿拦截时，面板内出现可见确认条与两个按钮", () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    registerDirtyGuard();
+    pend("clipboard");
+    const { container } = mountAt("docked-revealed");
+
+    const bar = container.querySelector(".capsule-panel .cap-confirm");
+    expect(bar).toBeTruthy();
+    expect(bar!.getAttribute("role")).toBe("alert");
+    expect(bar!.textContent).toContain("任务编辑器");
+    expect(bar!.textContent).toContain("切换页面会丢失这些修改");
+    expect(screen.getByRole("button", { name: "继续编辑" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "放弃并切换" })).toBeTruthy();
+  });
+
+  it("继续编辑：清除待决导航、不切页、不丢弃草稿", () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    registerDirtyGuard();
+    const after = pend("clipboard");
+    const { container } = mountAt("docked-revealed");
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>(".cap-confirm .cap-mini")!.click();
+    });
+
+    expect(useUiStore.getState().pendingTab).toBeNull();
+    expect(useUiStore.getState().tab).toBe("tasks");
+    expect(discard).not.toHaveBeenCalled();
+    expect(after).not.toHaveBeenCalled();
+    expect(container.querySelector(".cap-confirm")).toBeNull();
+  });
+
+  it("放弃并切换：discard 一次、切到目标页、after 只执行一次", () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    registerDirtyGuard();
+    const after = pend("clipboard");
+    const { container } = mountAt("docked-revealed");
+
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>(".cap-confirm .cap-confirm-danger")!
+        .click();
+    });
+
+    expect(discard).toHaveBeenCalledTimes(1);
+    expect(useUiStore.getState().tab).toBe("clipboard");
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(useUiStore.getState().pendingTab).toBeNull();
+  });
+
+  it("StrictMode 首次挂载的模拟卸载不会抹掉刚出现的确认条", () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    registerDirtyGuard();
+    pend("clipboard");
+    useEdgeSnapStore.setState({
+      phase: "docked-revealed",
+      dockedEdge: "left",
+      candidateEdge: null,
+      reveal,
+      collapse,
+    });
+
+    // main.tsx 启用了 StrictMode：开发模式会在挂载后立即做一次「清理 → 重跑」。
+    const { container } = render(
+      <StrictMode>
+        <CapsuleDock />
+      </StrictMode>,
+    );
+
+    expect(container.querySelector(".cap-confirm")).toBeTruthy();
+    expect(useUiStore.getState().pendingTab).not.toBeNull();
+  });
+
+  it("收起面板即取消待决导航：after 不留给下一次进入", async () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    registerDirtyGuard();
+    const after = pend("clipboard");
+    const { container } = mountAt("docked-revealed");
+    expect(container.querySelector(".cap-confirm")).toBeTruthy();
+
+    await act(async () => {
+      useEdgeSnapStore.setState({ phase: "docked-hidden" });
+    });
+
+    expect(container.querySelector(".capsule-panel")).toBeNull();
+    expect(useUiStore.getState().pendingTab).toBeNull();
+    expect(useUiStore.getState().tab).toBe("tasks");
+    expect(after).not.toHaveBeenCalled();
+  });
+
+  it("切换分类（面板重挂载）同样取消待决导航", async () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    registerDirtyGuard();
+    const after = pend("clipboard");
+    mountAt("docked-revealed");
+    expect(useUiStore.getState().pendingTab).not.toBeNull();
+
+    await act(async () => {
+      useCapsuleStore.setState({ active: "agents" });
+    });
+
+    expect(useUiStore.getState().pendingTab).toBeNull();
+    expect(useUiStore.getState().tab).toBe("tasks");
+    expect(after).not.toHaveBeenCalled();
+  });
+
+  it("无待决导航时不渲染确认条，也不新增可聚焦控件", () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    registerDirtyGuard();
+    const { container } = mountAt("docked-revealed");
+
+    expect(container.querySelector(".cap-confirm")).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: "继续编辑" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "放弃并切换" })).toBeNull();
+  });
+
+  it("待决守卫与当前活动守卫不一致时不渲染（确认条不得误丢其他草稿）", () => {
+    useCapsuleStore.setState({ active: "tasks" });
+    registerDirtyGuard();
+    useUiStore.setState({
+      pendingTab: { tab: "clipboard", guardId: "already-unregistered", after: null },
+    });
+    const { container } = mountAt("docked-revealed");
+
+    expect(container.querySelector(".cap-confirm")).toBeNull();
+    expect(screen.queryByRole("button", { name: "放弃并切换" })).toBeNull();
+  });
+});
+
 describe("CapsuleDock · 极简标签（Edge Tab）", () => {
   const restoreTab = vi.fn();
   const beginTabDrag = vi.fn();
@@ -428,5 +588,7 @@ describe("CapsuleDock · 极简标签（Edge Tab）", () => {
     const panel = container.querySelector(".capsule-panel");
     expect(panel).toBeTruthy();
     expect(panel!.className).toContain("is-closing");
+    // 离场动画期间 pointer-events:none 已关闭鼠标交互，键盘/读屏同样不得进入
+    expect(panel!.hasAttribute("inert")).toBe(true);
   });
 });

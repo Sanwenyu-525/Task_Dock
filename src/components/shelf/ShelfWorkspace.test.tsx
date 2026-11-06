@@ -15,8 +15,11 @@ const api = vi.hoisted(() => ({
   shelfStats: vi.fn(),
   shelfDelete: vi.fn(),
   shelfClear: vi.fn(),
+  shelfCleanup: vi.fn(),
   shelfCheckExists: vi.fn(),
   shelfGetItem: vi.fn(),
+  getSettings: vi.fn(),
+  updateSettings: vi.fn(),
   shelfDropTargets: vi.fn(),
   shelfDropTargetCreate: vi.fn(),
   shelfDropTargetUpdate: vi.fn(),
@@ -109,7 +112,18 @@ beforeEach(() => {
   api.shelfStats.mockResolvedValue(stats(0));
   api.shelfDelete.mockResolvedValue({ deleted: 0, skipped: 0, freed_bytes: 0, failed_files: 0 });
   api.shelfClear.mockResolvedValue({ deleted: 0, skipped: 0, freed_bytes: 0, failed_files: 0 });
+  api.shelfCleanup.mockImplementation(async (dryRun: boolean) => ({
+    dry_run: dryRun,
+    candidates: 2,
+    skipped_protected: 1,
+    temporary_files_skipped: 0,
+    freed_bytes: 2048,
+    failed_files: 0,
+    orphan_files_removed: 0,
+  }));
   api.shelfCheckExists.mockResolvedValue([]);
+  api.getSettings.mockResolvedValue({ shelf_auto_cleanup_enabled: false, shelf_retention_days: 30 });
+  api.updateSettings.mockResolvedValue(undefined);
   api.shelfDropTargets.mockResolvedValue([]);
   api.shelfGetItem.mockResolvedValue(shelfRow("s1"));
   dropMock.register.mockClear();
@@ -124,6 +138,7 @@ beforeEach(() => {
     error: null,
     mutationSyncError: null,
     deletionBusy: false,
+    cleanupBusy: false,
     recent: [],
     recentLoading: false,
     recentLoaded: false,
@@ -202,7 +217,7 @@ describe("ShelfWorkspace 内容视图分离", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "清空" }));
 
     await waitFor(() => expect(toast).toHaveBeenCalledWith(
-      "已清理 1 项，保留 3 项受保护内容",
+      "已清理 1 项，保留 3 项收藏/置顶/场景引用条目",
       expect.objectContaining({ kind: "warning" }),
     ));
     expect(api.shelfClear).toHaveBeenCalledWith(false);
@@ -223,6 +238,19 @@ describe("ShelfWorkspace 内容视图分离", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "删除暂存条目？" });
     expect(within(dialog).getByText(/该条目已收藏且置顶，确认后会一并删除/)).toBeTruthy();
+  });
+
+  it("场景引用的条目删除前明确说明场景会失去文件引用", async () => {
+    const item = shelfRow("linked", { scene_id: "scene-1" });
+    api.shelfList.mockResolvedValue({ items: [item], total: 1 });
+    api.shelfStats.mockResolvedValue(stats(1));
+    render(<ShelfWorkspace active />);
+    fireEvent.click(await screen.findByRole("button", { name: "条目 linked" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除条目" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "删除暂存条目？" });
+    expect(within(dialog).getByText(/该条目已被场景引用，确认后会一并删除/)).toBeTruthy();
+    expect(within(dialog).getByText(/删除后对应场景会失去该文件引用/)).toBeTruthy();
   });
 
   it("进入投递目标管理后，暂存架工具栏/筛选/空态不再出现，返回后恢复", async () => {
@@ -445,5 +473,316 @@ describe("ShelfWorkspace 空态", () => {
     await screen.findByText("暂存架读取失败");
     expect(screen.queryByText(/把文件、图片拖进窗口/)).toBeNull();
     expect(screen.getByRole("button", { name: "重试同步" })).toBeTruthy();
+  });
+});
+
+describe("ShelfWorkspace 手动过期清理", () => {
+  async function openCleanupPanel() {
+    fireEvent.click(screen.getByRole("button", { name: "空间占用与清理设置" }));
+    return screen.findByRole("dialog", { name: "空间占用与清理设置" });
+  }
+
+  const cleanupDialog = () => screen.queryByRole("dialog", { name: "清理过期条目？" });
+
+  it("立即清理先自动 dry-run 预览，确认前不执行真实清理", async () => {
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "清理过期条目？" });
+    expect(within(dialog).getByText(/预计清理 2 项，释放约 2\.0 KB/)).toBeTruthy();
+    expect(within(dialog).getByText(/1 项因收藏、置顶或场景引用而保留/)).toBeTruthy();
+    expect(within(dialog).getByText(/不会删除你的原始文件/)).toBeTruthy();
+    expect(within(dialog).getByText(/实际结果以执行后报告为准/)).toBeTruthy();
+    expect(api.shelfCleanup).toHaveBeenCalledWith(true, false);
+    expect(api.shelfCleanup).not.toHaveBeenCalledWith(false, false);
+  });
+
+  it("取消确认绝不触发真实清理", async () => {
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+    const dialog = await screen.findByRole("dialog", { name: "清理过期条目？" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+
+    expect(cleanupDialog()).toBeNull();
+    expect(api.shelfCleanup).not.toHaveBeenCalledWith(false, false);
+  });
+
+  it("Escape 关闭确认框且不执行清理", async () => {
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+    await screen.findByRole("dialog", { name: "清理过期条目？" });
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+
+    await waitFor(() => expect(cleanupDialog()).toBeNull());
+    expect(api.shelfCleanup).not.toHaveBeenCalledWith(false, false);
+  });
+
+  it("dry-run 失败时不弹确认也不执行真实清理", async () => {
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    api.shelfCleanup.mockRejectedValueOnce(new Error("db locked"));
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("清理预览失败：db locked", { kind: "error" }),
+    );
+    expect(cleanupDialog()).toBeNull();
+    expect(api.shelfCleanup).not.toHaveBeenCalledWith(false, false);
+  });
+
+  it("候选为 0 时不弹确认、不发真实请求，也不报虚假成功", async () => {
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    api.shelfCleanup.mockImplementationOnce(async () => ({
+      dry_run: true,
+      candidates: 0,
+      skipped_protected: 0,
+      temporary_files_skipped: 0,
+      freed_bytes: 0,
+      failed_files: 0,
+      orphan_files_removed: 0,
+    }));
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("没有需要清理的过期条目。", { kind: "info" }),
+    );
+    expect(cleanupDialog()).toBeNull();
+    expect(api.shelfCleanup).not.toHaveBeenCalledWith(false, false);
+  });
+
+  it("确认后恰好执行一次清理，并按报告反馈（含场景引用保留项）", async () => {
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+    const dialog = await screen.findByRole("dialog", { name: "清理过期条目？" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认清理" }));
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        "已清理 2 项，释放约 2.0 KB；1 项因收藏、置顶或场景引用而保留。",
+        { kind: "warning" },
+      ),
+    );
+    expect(
+      api.shelfCleanup.mock.calls.filter(([dryRun]) => dryRun === false),
+    ).toHaveLength(1);
+    expect(cleanupDialog()).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "空间占用与清理设置" })).toBeNull();
+  });
+
+  it("托管文件部分失败时警告而非纯成功，并保留清理面板", async () => {
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    api.shelfCleanup.mockImplementation(async (dryRun: boolean) =>
+      dryRun
+        ? {
+            dry_run: true,
+            candidates: 2,
+            skipped_protected: 0,
+            temporary_files_skipped: 0,
+            freed_bytes: 2048,
+            failed_files: 0,
+            orphan_files_removed: 0,
+          }
+        : {
+            dry_run: false,
+            candidates: 2,
+            skipped_protected: 0,
+            temporary_files_skipped: 0,
+            freed_bytes: 2048,
+            failed_files: 3,
+            orphan_files_removed: 0,
+          },
+    );
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+    const dialog = await screen.findByRole("dialog", { name: "清理过期条目？" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认清理" }));
+
+    await waitFor(() => {
+      const last = toast.mock.calls.at(-1);
+      expect(last?.[0]).toContain("部分托管文件清理失败（3 个）");
+      expect(last?.[1]).toMatchObject({ kind: "warning" });
+    });
+    expect(screen.getByRole("dialog", { name: "空间占用与清理设置" })).toBeTruthy();
+  });
+
+  it("清理成功后列表、统计与最近暂存同步，筛选与滚动位置保留", async () => {
+    const rows = [shelfRow("a"), shelfRow("b")];
+    api.shelfList.mockResolvedValue({ items: rows, total: 2 });
+    api.shelfStats.mockResolvedValue(stats(2));
+    useShelfStore.setState({
+      filter: { search: "", kind: "file", group_id: "all", favorite_only: false },
+    });
+    render(<ShelfWorkspace active />);
+    const list = await screen.findByRole("list", { name: "暂存条目" });
+    expect(screen.getByText("条目 a")).toBeTruthy();
+    // 挂载时的滚动恢复 effect 走 requestAnimationFrame；先让它执行完再记位置。
+    await act(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+    list.scrollTop = 240;
+
+    await openCleanupPanel();
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+    const dialog = await screen.findByRole("dialog", { name: "清理过期条目？" });
+
+    api.shelfList.mockResolvedValue({ items: [rows[1]], total: 1 });
+    api.shelfStats.mockResolvedValue(stats(1));
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认清理" }));
+
+    await waitFor(() => expect(screen.queryByText("条目 a")).toBeNull());
+    const state = useShelfStore.getState();
+    expect(state.items.map((item) => item.id)).toEqual(["b"]);
+    expect(state.stats?.total).toBe(1);
+    expect(state.recent.map((item) => item.id)).toEqual(["b"]);
+    expect(state.filter.kind).toBe("file");
+    expect(list.scrollTop).toBe(240);
+  });
+
+  it("后端清理成功但同步失败时提示重试同步，重试不重复清理", async () => {
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    const rows = [shelfRow("a"), shelfRow("b")];
+    api.shelfList.mockResolvedValue({ items: rows, total: 2 });
+    api.shelfStats.mockResolvedValue(stats(2));
+    render(<ShelfWorkspace active />);
+    await screen.findByText("条目 a");
+
+    await openCleanupPanel();
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+    const dialog = await screen.findByRole("dialog", { name: "清理过期条目？" });
+
+    // 清理写入成功，但随后的权威列表刷新失败一次。
+    api.shelfList.mockRejectedValueOnce(new Error("列表不可用"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认清理" }));
+
+    await waitFor(() => {
+      const last = toast.mock.calls.at(-1);
+      expect(last?.[0]).toContain("清理操作已经执行，但列表状态尚未同步");
+      expect(last?.[1]).toMatchObject({
+        kind: "warning",
+        action: { label: "重试同步" },
+      });
+    });
+    const retry = toast.mock.calls.at(-1)?.[1]?.action;
+    expect(retry?.label).toBe("重试同步");
+    const cleanupCalls = api.shelfCleanup.mock.calls.filter(([dryRun]) => dryRun === false).length;
+
+    retry?.run();
+    await waitFor(() => expect(useShelfStore.getState().mutationSyncError).toBeNull());
+    expect(
+      api.shelfCleanup.mock.calls.filter(([dryRun]) => dryRun === false),
+    ).toHaveLength(cleanupCalls);
+  });
+
+  it("在途重复点击立即清理只发一次 dry-run", async () => {
+    let release!: (v: unknown) => void;
+    const gate = new Promise((resolve) => (release = resolve));
+    api.shelfCleanup.mockReturnValueOnce(gate);
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+
+    const button = screen.getByRole("button", { name: "立即清理过期" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(api.shelfCleanup).toHaveBeenCalledTimes(1));
+    // 预览在途：按钮进入 disabled，不能靠连点再发请求。
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true));
+    release({
+      dry_run: true,
+      candidates: 2,
+      skipped_protected: 0,
+      temporary_files_skipped: 0,
+      freed_bytes: 2048,
+      failed_files: 0,
+      orphan_files_removed: 0,
+    });
+    await screen.findByRole("dialog", { name: "清理过期条目？" });
+    expect(api.shelfCleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("关闭面板后迟到的 dry-run 结果不会弹确认框", async () => {
+    let release!: (v: unknown) => void;
+    const gate = new Promise((resolve) => (release = resolve));
+    api.shelfCleanup.mockReturnValueOnce(gate);
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+    await waitFor(() => expect(api.shelfCleanup).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "空间占用与清理设置" }));
+    release({
+      dry_run: true,
+      candidates: 2,
+      skipped_protected: 0,
+      temporary_files_skipped: 0,
+      freed_bytes: 2048,
+      failed_files: 0,
+      orphan_files_removed: 0,
+    });
+    await act(async () => {});
+
+    expect(cleanupDialog()).toBeNull();
+    expect(api.shelfCleanup).not.toHaveBeenCalledWith(false, false);
+  });
+
+  it("组件卸载后迟到的预览失败不会写错误状态或弹 Toast", async () => {
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    let reject!: (e: unknown) => void;
+    const gate = new Promise((_resolve, r) => (reject = r));
+    api.shelfCleanup.mockReturnValueOnce(gate);
+    const view = render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+    fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
+    await waitFor(() => expect(api.shelfCleanup).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    reject(new Error("组件已卸载"));
+    await act(async () => {});
+
+    expect(toast).not.toHaveBeenCalledWith("清理预览失败：组件已卸载", { kind: "error" });
+    expect(api.shelfCleanup).not.toHaveBeenCalledWith(false, false);
+  });
+
+  it("清理面板与清空确认都明确场景引用条目会被保留", async () => {
+    render(<ShelfWorkspace active />);
+    await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
+    await openCleanupPanel();
+    expect(screen.getByText(/收藏、置顶、场景引用条目不自动清理/)).toBeTruthy();
+    expect(screen.getByText(/不会删除你的原始文件/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "预览可清理" }));
+    await screen.findByText(/1 项因收藏、置顶或场景引用被跳过/);
+
+    fireEvent.click(screen.getByRole("button", { name: "清空暂存架" }));
+    const dialog = await screen.findByRole("dialog", { name: "清空暂存架？" });
+    expect(
+      within(dialog).getByText(/收藏、置顶与场景引用条目保留/),
+    ).toBeTruthy();
   });
 });

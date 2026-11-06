@@ -65,6 +65,43 @@ fn tool_err(ctx: &ToolCtx, name: &str, args: Value) -> crate::error::AppError {
     crate::error::AppError::Validation(payload["message"].as_str().unwrap().to_string())
 }
 
+/// 读取失败结果的原始 payload（含 `error` code）；`tool_err` 只保留消息文本。
+fn tool_err_payload(ctx: &ToolCtx, name: &str, args: Value) -> Value {
+    let result = run_tool_call(ctx, name, &args).expect("应为 isError result");
+    assert_eq!(result["isError"], true, "应为业务失败 result: {result}");
+    let text = result["content"][0]["text"].as_str().unwrap();
+    serde_json::from_str(text).unwrap()
+}
+
+/// 功能当前 (status, revision)：失败调用后用于确认事务没有残留。
+fn feature_state(db: &Db, feature_id: &str) -> (String, i64) {
+    db.with_read(|conn| {
+        let feature = crate::commands::planning::load_feature_tx(conn, feature_id)?;
+        Ok((feature.status, feature.revision))
+    })
+    .unwrap()
+}
+
+/// 某功能的 planning_activity 行数；`kind` 为 None 时统计全部。
+fn activity_rows(db: &Db, feature_id: &str, kind: Option<&str>) -> i64 {
+    db.with_conn(|conn| {
+        let count = match kind {
+            Some(kind) => conn.query_row(
+                "SELECT COUNT(*) FROM planning_activity WHERE feature_id = ?1 AND kind = ?2",
+                rusqlite::params![feature_id, kind],
+                |row| row.get::<_, i64>(0),
+            ),
+            None => conn.query_row(
+                "SELECT COUNT(*) FROM planning_activity WHERE feature_id = ?1",
+                rusqlite::params![feature_id],
+                |row| row.get::<_, i64>(0),
+            ),
+        };
+        count.map_err(crate::error::AppError::from)
+    })
+    .unwrap()
+}
+
 fn rpc_err(ctx: &ToolCtx, name: &str, args: Value) -> ToolRpcError {
     run_tool_call(ctx, name, &args).expect_err("应为 RPC 错误（授权拒绝）")
 }
@@ -430,20 +467,44 @@ fn feature_completed_is_user_only_and_submit_for_review_flow() {
         json!({ "project_id": p.id, "title": "登录" }),
     );
     assert_eq!(f["status"], "planned");
+    assert_eq!(f["revision"], 1);
     let feature_id = f["id"].as_str().unwrap().to_string();
+    // 创建功能自身会写一条 status_change（"" → planned），后续断言以它为基线。
+    let created_activity = activity_rows(&db, &feature_id, None);
+    assert_eq!(created_activity, 1);
 
-    // 直接置 completed → 拒绝
-    let err = tool_err(
+    // A：planned 不是「开发中」，提交待验收必须先被状态冲突拒绝（不是长度校验）。
+    let state_a = feature_state(&db, &feature_id);
+    let payload = tool_err_payload(
         &ctx,
-        "taskdock_update_feature",
+        "taskdock_submit_for_review",
         json!({
             "feature_id": feature_id,
             "expected_revision": f["revision"],
-            "status": "completed",
+            "note": "尚未开工",
         }),
     );
-    assert!(err.to_string().contains("completed"));
+    assert_eq!(payload["error"], "CONFLICT", "应为状态冲突: {payload}");
+    assert!(
+        payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("只有开发中的功能可以提交待验收"),
+        "冲突应说明只有开发中的功能可提交待验收: {payload}"
+    );
+    assert_eq!(
+        feature_state(&db, &feature_id),
+        state_a,
+        "A 失败不得改变状态或 revision"
+    );
+    assert_eq!(
+        activity_rows(&db, &feature_id, None),
+        created_activity,
+        "A 失败不得写 activity"
+    );
 
+    // B：先用创建返回的 revision 置 in_progress，再用 2001 字符说明提交 →
+    // 长度校验失败且事务回滚：状态、revision、activity 都保持失败前。
     let in_progress = call_ok(
         &ctx,
         "taskdock_update_feature",
@@ -453,8 +514,48 @@ fn feature_completed_is_user_only_and_submit_for_review_flow() {
             "status": "in_progress",
         }),
     );
+    assert_eq!(in_progress["status"], "in_progress");
+    assert_eq!(in_progress["revision"], 2);
+    let state_b = feature_state(&db, &feature_id);
+    let activity_b = activity_rows(&db, &feature_id, None);
+    assert_eq!(state_b, ("in_progress".to_string(), 2));
+    assert_eq!(activity_b, created_activity + 1);
 
-    // submit_for_review → review + activity
+    let too_long = "n".repeat(2001);
+    let payload = tool_err_payload(
+        &ctx,
+        "taskdock_submit_for_review",
+        json!({
+            "feature_id": feature_id,
+            "expected_revision": in_progress["revision"],
+            "note": too_long,
+        }),
+    );
+    assert_eq!(
+        payload["error"], "VALIDATION_ERROR",
+        "超长说明应为校验失败: {payload}"
+    );
+    assert!(
+        payload["message"].as_str().unwrap().contains("2000"),
+        "长度校验错误应包含上限 2000: {payload}"
+    );
+    assert_eq!(
+        feature_state(&db, &feature_id),
+        state_b,
+        "B 失败必须回滚状态与 revision"
+    );
+    assert_eq!(
+        activity_rows(&db, &feature_id, None),
+        activity_b,
+        "B 失败不得新增 activity"
+    );
+    assert_eq!(
+        activity_rows(&db, &feature_id, Some("note")),
+        0,
+        "失败提交不得写 note"
+    );
+
+    // C：in_progress + 合法说明 → review，revision 递增，写入 status_change 与 note。
     let submitted = call_ok(
         &ctx,
         "taskdock_submit_for_review",
@@ -465,91 +566,125 @@ fn feature_completed_is_user_only_and_submit_for_review_flow() {
         }),
     );
     assert_eq!(submitted["status"], "review");
-    let kinds: Vec<String> = db
-        .with_conn(|c| {
-            let mut st = c
-                .prepare("SELECT kind FROM planning_activity WHERE feature_id = ?1 ORDER BY rowid")
-                .map_err(crate::error::AppError::from)?;
-            let rows = st
-                .query_map(rusqlite::params![feature_id], |r| r.get::<_, String>(0))
-                .map_err(crate::error::AppError::from)?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(crate::error::AppError::from)
-        })
-        .unwrap();
-    assert!(
-        kinds.contains(&"status_change".to_string()) && kinds.contains(&"note".to_string()),
-        "提交验收应写 status_change 与 note 历史: {kinds:?}"
+    assert_eq!(submitted["revision"], 3);
+    assert_eq!(feature_state(&db, &feature_id), ("review".to_string(), 3));
+    assert_eq!(
+        activity_rows(&db, &feature_id, Some("status_change")),
+        3,
+        "创建、planned→in_progress、in_progress→review 各一条"
+    );
+    assert_eq!(
+        activity_rows(&db, &feature_id, Some("note")),
+        1,
+        "提交说明应写入进度历史"
     );
 
-    // 说明为空时按可选说明处理；超长说明失败不能留下状态或 activity 半成功。
-    let second = call_ok(
+    // D：Agent 不能直接把状态置 completed（验收完成由用户判定），失败不写库。
+    let state_d = feature_state(&db, &feature_id);
+    let activity_d = activity_rows(&db, &feature_id, None);
+    let payload = tool_err_payload(
         &ctx,
-        "taskdock_create_feature",
-        json!({ "project_id": p.id, "title": "第二项" }),
-    );
-    let too_long = "n".repeat(2001);
-    let error = tool_err(
-        &ctx,
-        "taskdock_submit_for_review",
+        "taskdock_update_feature",
         json!({
-            "feature_id": second["id"],
-            "expected_revision": second["revision"],
-            "note": too_long,
+            "feature_id": feature_id,
+            "expected_revision": submitted["revision"],
+            "status": "completed",
         }),
     );
-    assert!(error.to_string().contains("2000"));
-    let after_failed_submit = db
-        .with_read(|conn| {
-            crate::commands::planning::load_feature_tx(conn, second["id"].as_str().unwrap())
-        })
-        .unwrap();
-    assert_eq!(after_failed_submit.status, "planned");
     assert_eq!(
-        after_failed_submit.revision,
-        second["revision"].as_i64().unwrap()
+        payload["error"], "VALIDATION_ERROR",
+        "应拒绝 completed: {payload}"
     );
-    let second_activity_count: i64 = db
-        .with_conn(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM planning_activity WHERE feature_id = ?1",
-                rusqlite::params![second["id"].as_str().unwrap()],
-                |row| row.get(0),
-            )
-            .map_err(crate::error::AppError::from)
-        })
-        .unwrap();
-    assert_eq!(second_activity_count, 0);
+    assert!(payload["message"].as_str().unwrap().contains("completed"));
+    assert_eq!(
+        feature_state(&db, &feature_id),
+        state_d,
+        "D 失败不得改状态或 revision"
+    );
+    assert_eq!(
+        activity_rows(&db, &feature_id, None),
+        activity_d,
+        "D 失败不得写 activity"
+    );
 
-    let submitted_without_note = call_ok(
+    // E：回到 in_progress 后用过期 revision 提交 → 版本冲突，且不覆盖当前状态。
+    let reopened = call_ok(
+        &ctx,
+        "taskdock_update_feature",
+        json!({
+            "feature_id": feature_id,
+            "expected_revision": submitted["revision"],
+            "status": "in_progress",
+        }),
+    );
+    assert_eq!(reopened["status"], "in_progress");
+    assert_eq!(reopened["revision"], 4);
+    let state_e = feature_state(&db, &feature_id);
+    let activity_e = activity_rows(&db, &feature_id, None);
+    let payload = tool_err_payload(
         &ctx,
         "taskdock_submit_for_review",
         json!({
-            "feature_id": second["id"],
-            "expected_revision": second["revision"],
+            "feature_id": feature_id,
+            "expected_revision": submitted["revision"],
+            "note": "迟到提交",
+        }),
+    );
+    assert_eq!(
+        payload["error"], "CONFLICT",
+        "过期 revision 应为冲突: {payload}"
+    );
+    assert!(
+        payload["message"].as_str().unwrap().contains("版本冲突"),
+        "应提示 revision 冲突: {payload}"
+    );
+    assert_eq!(
+        feature_state(&db, &feature_id),
+        state_e,
+        "E 失败不得覆盖当前状态或 revision"
+    );
+    assert_eq!(
+        activity_rows(&db, &feature_id, None),
+        activity_e,
+        "E 失败不得写 activity"
+    );
+
+    // F：失败调用后 activity 计数与 revision 与失败前一致（A/B/D/E 已逐项断言，
+    // 这里再确认整体基线未被失败路径推进）。
+    assert_eq!(activity_rows(&db, &feature_id, None), activity_e);
+    assert_eq!(
+        feature_state(&db, &feature_id),
+        ("in_progress".to_string(), 4)
+    );
+
+    // 回归：空白说明按「无说明」处理，不写 note；已 review 再提交被状态冲突拒绝。
+    let blank = call_ok(
+        &ctx,
+        "taskdock_submit_for_review",
+        json!({
+            "feature_id": feature_id,
+            "expected_revision": reopened["revision"],
             "note": "   ",
         }),
     );
-    assert_eq!(submitted_without_note["status"], "review");
-    let second_activity_count: i64 = db
-        .with_conn(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM planning_activity WHERE feature_id = ?1",
-                rusqlite::params![second["id"].as_str().unwrap()],
-                |row| row.get(0),
-            )
-            .map_err(crate::error::AppError::from)
-        })
-        .unwrap();
-    assert_eq!(second_activity_count, 1, "空白 note 不应写入日志");
-
-    // 已 review 再提交 → 拒绝；且 update_feature 不能改到 completed
-    let err = tool_err(
+    assert_eq!(blank["status"], "review");
+    assert_eq!(blank["revision"], 5);
+    assert_eq!(
+        activity_rows(&db, &feature_id, Some("note")),
+        1,
+        "空白说明不应写入日志"
+    );
+    let payload = tool_err_payload(
         &ctx,
         "taskdock_submit_for_review",
-        json!({ "feature_id": feature_id, "expected_revision": submitted["revision"] }),
+        json!({ "feature_id": feature_id, "expected_revision": blank["revision"] }),
     );
-    assert!(err.to_string().contains("review"));
+    assert_eq!(payload["error"], "CONFLICT");
+    assert!(
+        payload["message"].as_str().unwrap().contains("review"),
+        "已 review 再提交应指明当前状态: {payload}"
+    );
+    assert_eq!(feature_state(&db, &feature_id), ("review".to_string(), 5));
 }
 
 #[test]

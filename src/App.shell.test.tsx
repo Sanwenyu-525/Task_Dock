@@ -16,10 +16,12 @@
 //! 当前视图槽必须保持挂载。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({
   settings: null as unknown,
+  /** 非空时 getSettings 抛错（模拟启动读取失败） */
+  settingsError: null as unknown,
   updateSettings: vi.fn(),
 }));
 
@@ -47,7 +49,10 @@ vi.mock("./lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/bridge")>();
   return {
     ...actual,
-    getSettings: async () => bridge.settings,
+    getSettings: async () => {
+      if (bridge.settingsError) throw bridge.settingsError;
+      return bridge.settings;
+    },
     updateSettings: (patch: Record<string, unknown>) => bridge.updateSettings(patch),
     applyWindowMaterial: async () => ({ applied: false, effect: "none", os_version: "" }),
     applyWindowRadius: async () => true,
@@ -133,6 +138,7 @@ function expectShellAlive() {
 
 beforeEach(() => {
   bridge.settings = { ...BASE };
+  bridge.settingsError = null;
   bridge.updateSettings.mockImplementation(async (patch: Record<string, unknown>) => ({
     ...(bridge.settings as Record<string, unknown>),
     ...patch,
@@ -144,6 +150,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   bridge.updateSettings.mockReset();
+  bridge.settingsError = null;
   useSettingsStore.setState({ settings: null, materialInfo: null });
   useEdgeSnapStore.getState().reset();
 });
@@ -235,6 +242,57 @@ describe("App 外壳 · 主内容区不得整体消失", () => {
       ).rejects.toThrow();
     });
     expect(useSettingsStore.getState().settings?.mode).toBe("full");
+    expectShellAlive();
+  });
+});
+
+// ── 设置加载门（2026-11-06 P2 修复）──────────────────────────────────
+// 设置未加载完成前，`mode` 与 `navigation_layout` 只有默认值。旧实现先按默认值
+// 渲染完整面板与默认导航，设置到达后再跳到真实模式/排序（启动闪烁）。
+// 现在的契约：设置未就绪只渲染中性占位，就绪后按真实配置挂载；读取失败必须
+// 给出可操作的重试入口，不能变成永久空白。
+describe("App 外壳 · 设置加载门", () => {
+  it("设置未就绪：只渲染中性占位，不渲染默认导航/默认模式内容", () => {
+    render(<App />);
+    expect(document.querySelector(".shell-boot")).toBeTruthy();
+    expect(document.querySelector(".full-view")).toBeNull();
+    expect(document.querySelector(".compact-view")).toBeNull();
+    // 外壳结构仍在，且恰好一个视图槽处于 active（不是空白窗口）
+    expect(document.querySelector(".dock-body")).toBeTruthy();
+    expect(activeSlots()).toHaveLength(1);
+  });
+
+  it("真实模式是极简/紧凑时：加载门不把 FullView 误挂载到隐藏槽", async () => {
+    bridge.settings = { ...BASE, mode: "compact" };
+    render(<App />);
+    await act(async () => {
+      await useSettingsStore.getState().load();
+    });
+    expect(document.querySelector(".compact-view")).toBeTruthy();
+    // 占位不算一次视图激活：完整模式从未激活，FullView 不应挂载
+    expect(document.querySelector(".full-view")).toBeNull();
+    expect(document.querySelector(".shell-boot")).toBeNull();
+    expect(activeSlots()).toHaveLength(1);
+  });
+
+  it("读取失败：显示原因与重试入口；重试成功后进入正常界面", async () => {
+    bridge.settingsError = new Error("数据库被占用");
+    render(<App />);
+    await act(async () => {
+      await useSettingsStore.getState().load().catch(() => undefined);
+    });
+    const alert = document.querySelector(".shell-boot");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(alert?.textContent ?? "").toContain("设置读取失败");
+    expect(useSettingsStore.getState().loadError).toContain("数据库被占用");
+
+    // 重试：错误消失、真实配置生效
+    bridge.settingsError = null;
+    await act(async () => {
+      screen.getByRole("button", { name: "重试" }).click();
+    });
+    expect(useSettingsStore.getState().settings?.mode).toBe("full");
+    expect(document.querySelector(".shell-boot")).toBeNull();
     expectShellAlive();
   });
 });

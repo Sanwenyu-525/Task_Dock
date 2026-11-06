@@ -5,6 +5,8 @@ export interface RailEntry {
   readonly shortcut: string;
   /** 该视觉入口覆盖的逻辑 Tab（v0.8 起合并入口覆盖 ["inbox","shelf"]，其余 1:1） */
   readonly tabs?: readonly string[];
+  /** 是否默认渲染在侧栏；显式 false 表示默认隐藏（只在「更多」菜单中出现） */
+  readonly defaultVisible?: boolean;
 }
 
 /** 逻辑 Tab 顺序（= useUiStore.TAB_ORDER；快捷键 Ctrl+1…9 的事实源） */
@@ -13,6 +15,7 @@ export declare const LOGICAL_TABS: readonly string[];
 export declare const RAIL_ONLY_TABS: readonly string[];
 export declare const RAIL_ENTRIES: readonly RailEntry[];
 export declare const RAIL_ITEM_COUNT: number;
+/** 默认渲染在侧栏的视觉入口标签（默认隐藏入口只在「更多」菜单中出现） */
 export declare const RAIL_LABELS: readonly string[];
 export declare const RAIL_ADD_BUTTON: {
   readonly selector: string;

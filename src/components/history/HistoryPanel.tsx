@@ -183,24 +183,33 @@ export default function HistoryPanel() {
     [applyFirstPages, queryOpts, showToast],
   );
 
+  // 页面活跃态（消费者门控）：完整面板不可见（停靠胶囊、极简/紧凑模式）时
+  // 本页不注册独占监听、也不发筛选查询；恢复可见时重新注册并补一次刷新。
+  const visible = useFullViewVisible();
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+
   // 时间/来源筛选变化：两个列表一起按新口径重置（分页游标随之失效）。
   useEffect(() => {
     setLoaded(false);
     setNotifications([]);
     setEvents([]);
     setHasNew(false);
+    // 隐藏态不发三条历史查询（页面级消费者门控）：恢复可见时由下方
+    // 「恢复可见补一次刷新」effect 以 merge 语义补齐首屏（此时列表已清空）。
+    if (!visibleRef.current) return;
     void refresh("replace");
     // refresh 已包含筛选与当前列表；此处只在筛选变化时重置
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryKey]);
 
   // 新通知 / Agent 事件到达 → 合并刷新（500ms 窗口，避免事件风暴下反复拉取全量历史）。
-  // 停靠/模式切换的隐藏期间跳过（页面级消费者门控）：隐藏页不为事件批付
-  // 三条历史查询；恢复可见时由下方 effect 补一次合并刷新。
-  const visible = useFullViewVisible();
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
+  // 消费者门控（页面级独占资源）：本页的两个监听只服务于本页刷新，不是共享订阅
+  // （全局 Agent 事件存储与历史写入由 App/store 负责）。完整面板不可见时不注册监听，
+  // 恢复可见时重新注册并补一次合并刷新；异步 listen() 在作用域关闭后才兑现时
+  // 由 createSubscriptionScope 立即反订阅。
   useEffect(() => {
+    if (!visible) return;
     const scope = createSubscriptionScope();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const bump = () => {
@@ -222,7 +231,7 @@ export default function HistoryPanel() {
       if (timer) clearTimeout(timer);
       scope.dispose();
     };
-  }, [refresh]);
+  }, [refresh, visible]);
 
   // 恢复可见：补一次合并刷新，弥补隐藏期间被门控跳过的事件（不重复拉首屏）
   const prevVisibleRef = useRef(visible);

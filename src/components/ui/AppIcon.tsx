@@ -30,7 +30,16 @@ function readCache(key: string): AppIconData | null | undefined {
 }
 
 function writeCache(key: string, icon: AppIconData | null) {
-  if (cache.size >= CACHE_LIMIT) cache.clear();
+  // 达到上限时按插入顺序淘汰最旧的一批，而不是整体清空：
+  // 整体清空会让当前可见的图标全部重新走一次 IPC，滚动列表时形成请求尖峰。
+  if (!cache.has(key) && cache.size >= CACHE_LIMIT) {
+    const evict = Math.max(1, Math.ceil(CACHE_LIMIT / 8));
+    let removed = 0;
+    for (const oldest of cache.keys()) {
+      cache.delete(oldest);
+      if (++removed >= evict) break;
+    }
+  }
   cache.set(key, { icon, at: Date.now() });
 }
 

@@ -58,6 +58,8 @@ vi.mock("../../lib/bridge", () => ({
 
 import InboxLite from "./InboxLite";
 import { useCaptureStore } from "../../store/useCaptureStore";
+import { useUiStore } from "../../store/useUiStore";
+import { registerTabGuard } from "../../lib/tabGuard";
 
 function item(id: string, content: string, extra = {}) {
   return {
@@ -94,6 +96,12 @@ beforeEach(() => {
     lite: null,
     liteLoading: false,
     liteError: null,
+  });
+  useUiStore.setState({
+    tab: "tasks",
+    collectionSub: "inbox",
+    pendingTab: null,
+    toasts: [],
   });
 });
 
@@ -247,5 +255,91 @@ describe("InboxLite", () => {
     await screen.findByText("没有未处理的记录");
     expect(screen.getByRole("tab", { name: "快速收集" }).getAttribute("aria-selected")).toBe("true");
     spy.mockRestore();
+  });
+
+  it("「快速笔记」入口：导航成功后打开完整收集箱的笔记子页", async () => {
+    quickCaptureList.mockResolvedValue([]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 0 });
+    render(<InboxLite />);
+    await screen.findByText("没有未处理的记录");
+
+    fireEvent.click(screen.getByRole("button", { name: "快速笔记" }));
+    expect(useUiStore.getState().tab).toBe("inbox");
+    expect(useUiStore.getState().collectionSub).toBe("notes");
+    expect(useUiStore.getState().pendingTab).toBeNull();
+  });
+
+  it("「快速笔记」导航保存中被拒绝：不提前改子页、不残留意图", async () => {
+    const unregister = registerTabGuard({
+      id: "inbox-lite-quick-notes-busy",
+      label: () => "笔记",
+      isDirty: () => false,
+      isBusy: () => true,
+      discard: vi.fn(),
+    });
+    try {
+      quickCaptureList.mockResolvedValue([]);
+      quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 0 });
+      render(<InboxLite />);
+      await screen.findByText("没有未处理的记录");
+
+      fireEvent.click(screen.getByRole("button", { name: "快速笔记" }));
+      expect(useUiStore.getState().tab).toBe("tasks");
+      expect(useUiStore.getState().collectionSub).toBe("inbox");
+      expect(useUiStore.getState().pendingTab).toBeNull();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("「快速笔记」导航被未保存草稿拦截：取消不残留、确认后才切到笔记子页", async () => {
+    const discard = vi.fn();
+    const unregister = registerTabGuard({
+      id: "inbox-lite-quick-notes-dirty",
+      label: () => "笔记",
+      isDirty: () => true,
+      isBusy: () => false,
+      discard,
+    });
+    try {
+      quickCaptureList.mockResolvedValue([]);
+      quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 0 });
+      render(<InboxLite />);
+      await screen.findByText("没有未处理的记录");
+
+      fireEvent.click(screen.getByRole("button", { name: "快速笔记" }));
+      // 待确认期间：子页保持原值，意图只存在于待确认导航的事务里
+      expect(useUiStore.getState().tab).toBe("tasks");
+      expect(useUiStore.getState().collectionSub).toBe("inbox");
+      expect(useUiStore.getState().pendingTab?.tab).toBe("inbox");
+
+      act(() => useUiStore.getState().cancelPendingTab());
+      expect(useUiStore.getState().collectionSub).toBe("inbox");
+
+      fireEvent.click(screen.getByRole("button", { name: "快速笔记" }));
+      act(() => useUiStore.getState().confirmPendingTab());
+      expect(discard).toHaveBeenCalledTimes(1);
+      expect(useUiStore.getState().tab).toBe("inbox");
+      expect(useUiStore.getState().collectionSub).toBe("notes");
+      expect(useUiStore.getState().pendingTab).toBeNull();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("「快速笔记」只在快速收集子页出现，不干扰文件子页", async () => {
+    quickCaptureList.mockResolvedValue([]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 0 });
+    render(<InboxLite />);
+    await screen.findByText("没有未处理的记录");
+    expect(screen.getByRole("button", { name: "快速笔记" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "文件" }));
+    await screen.findByText("还没有文件投递目标");
+    expect(screen.queryByRole("button", { name: "快速笔记" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: "快速收集" }));
+    await screen.findByText("没有未处理的记录");
+    expect(screen.getByRole("button", { name: "快速笔记" })).toBeTruthy();
   });
 });

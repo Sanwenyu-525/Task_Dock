@@ -65,13 +65,14 @@ export default function ShelfDetail({
   const [savingNote, setSavingNote] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const noteDirty = noteDraft !== item.note;
-  const protectedLabel = item.favorite && item.pinned
-    ? "收藏且置顶"
-    : item.favorite
-      ? "收藏"
-      : item.pinned
-        ? "置顶"
-        : null;
+  const protectedLabel = (() => {
+    const labels: string[] = [];
+    if (item.favorite && item.pinned) labels.push("收藏且置顶");
+    else if (item.favorite) labels.push("收藏");
+    else if (item.pinned) labels.push("置顶");
+    if (item.scene_id) labels.push("被场景引用");
+    return labels.length ? labels.join("，") : null;
+  })();
   const loadedRef = useRef(false);
 
   useEffect(() => {
@@ -454,6 +455,8 @@ export default function ShelfDetail({
         title="删除暂存条目？"
         detail={
           `${protectedLabel ? `该条目已${protectedLabel}，确认后会一并删除。` : ""}${
+            item.scene_id ? "删除后对应场景会失去该文件引用。" : ""
+          }${
             item.storage_mode === "managed"
               ? "将删除 Task Dock 拥有的托管副本；用户原文件不受影响。"
               : "仅删除暂存记录；用户原文件不受影响。"

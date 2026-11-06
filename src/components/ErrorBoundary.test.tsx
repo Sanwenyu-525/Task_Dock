@@ -6,6 +6,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+// 诊断上报是纯副作用：mock 掉以便断言"渲染异常归属一条 ui/render 事件"。
+const mocks = vi.hoisted(() => ({ logEvent: vi.fn(), markLogged: vi.fn() }));
+vi.mock("../lib/diagnostics", () => ({
+  logEvent: mocks.logEvent,
+  markLogged: mocks.markLogged,
+}));
+
 import ErrorBoundary from "./ErrorBoundary";
 
 afterEach(() => {

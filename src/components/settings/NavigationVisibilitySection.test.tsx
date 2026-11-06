@@ -7,7 +7,7 @@
 //! 折叠外壳由 `SettingsPanel` 的 `Section` 负责，这里只测展开内容本身。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import NavigationVisibilitySection from "./NavigationVisibilitySection";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -49,12 +49,12 @@ afterEach(() => {
 });
 
 describe("导航自定义区块", () => {
-  it("展示当前常驻摘要，隐藏入口写入 navigation_layout；隐藏当前页时自动切到安全页", async () => {
+  it("展示当前常驻摘要，隐藏入口写入 navigation_layout（切页恢复由 FullView 统一负责）", async () => {
     const user = userEvent.setup();
     useUiStore.setState({ tab: "apps" });
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText(/常驻 11 \/ 12 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 12 \/ 14 项/)).toBeTruthy();
     const appsSwitch = screen.getByRole("switch", {
       name: "应用导航入口显示",
     }) as HTMLInputElement;
@@ -66,12 +66,15 @@ describe("导航自定义区块", () => {
     };
     expect(patch.navigation_layout.version).toBe(1);
     expect(patch.navigation_layout.left).not.toContain("apps");
-    expect(useUiStore.getState().tab).toBe("tasks");
+    // 隐藏当前页后的安全切页是**导航配置变更驱动**的全局行为，唯一实现在
+    // FullView（见 NavigationVisibility.integration.test）。本区块只写配置，
+    // 不再用写入前的旧快照另做一次切页（旧实现会在连续操作时选到刚隐藏的页面）。
+    expect(useUiStore.getState().tab).toBe("apps");
     // 后端返回值已写入 Store：开关与配置一致，不存在假成功
     expect(
       (useSettingsStore.getState().settings?.navigation_layout as { left: string[] }).left,
     ).not.toContain("apps");
-    expect(screen.getByText(/常驻 10 \/ 12 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 11 \/ 14 项/)).toBeTruthy();
   });
 
   it("「设置」是锁定入口：开关禁用、无排序按钮并标注固定", () => {
@@ -82,7 +85,8 @@ describe("导航自定义区块", () => {
     }) as HTMLInputElement;
     expect(settingsSwitch.disabled).toBe(true);
     expect(settingsSwitch.checked).toBe(true);
-    expect(screen.getByText("固定")).toBeTruthy();
+    // 资源管理 + 设置都是固定入口，各自一行都带「固定」标记
+    expect(screen.getAllByText("固定").length).toBeGreaterThanOrEqual(2);
     // 锁定入口不提供上移/下移，避免把设置从底部移走
     expect(screen.queryByRole("button", { name: "上移 设置" })).toBeNull();
     expect(screen.queryByRole("button", { name: "下移 设置" })).toBeNull();
@@ -188,7 +192,7 @@ describe("导航自定义区块 · 英文", () => {
     setLocalePreference("en-US");
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText("11 of 12 pinned")).toBeTruthy();
+    expect(screen.getByText("12 of 14 pinned")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Full panel" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Docked capsule" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Show Tasks navigation entry" })).toBeTruthy();
@@ -288,5 +292,81 @@ describe("排序按钮可见性与边界", () => {
     // 成员集合不变（显隐不受排序影响）
     expect([...left].sort()).toEqual([...defaultNavigationLayout().left].sort());
     expect(left[left.length - 1]).toBe("settings");
+  });
+});
+
+// ── 写入串行与「进行中」状态（2026-11-06 P1 修复）──────────────────────
+// 旧缺陷：只禁用当前行，其它行仍可点击，但处理函数在 pendingId 非空时直接
+// 返回 —— 用户看到可点的开关，操作却被静默丢弃。现在的契约是
+// 「可点击」与「会被执行」严格等价：写库期间全部配置操作一致禁用，
+// 并显示进行中状态；落地后恢复可用。
+describe("写入串行：进行中状态与操作确定性", () => {
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it("写库在途：所有开关/排序/恢复一致禁用并显示进行中，点击不会产生第二次写入", async () => {
+    const user = userEvent.setup();
+    const gate = deferred();
+    updateSettings.mockImplementationOnce(async (patch: Record<string, unknown>) => {
+      await gate.promise;
+      const current = useSettingsStore.getState().settings ?? {};
+      return { ...current, ...patch } as never;
+    });
+    render(<NavigationVisibilitySection />);
+
+    await user.click(screen.getByRole("switch", { name: "应用导航入口显示" }));
+    // 进行中：可见状态 + 全部操作禁用（不是只有当前行）
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("正在保存"));
+    expect(document.querySelector(".nav-visibility-list")?.getAttribute("aria-busy")).toBe("true");
+    for (const name of ["微件导航入口显示", "行动导航入口显示", "剪贴板导航入口显示"]) {
+      expect((screen.getByRole("switch", { name }) as HTMLInputElement).disabled).toBe(true);
+    }
+    expect((screen.getByRole("button", { name: "上移 Agent" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(
+      (screen.getByRole("button", { name: "恢复完整面板默认导航配置" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    // 在途点击不会进入队列：不会形成无界请求，也不会出现「假成功」
+    fireEvent.click(screen.getByRole("switch", { name: "微件导航入口显示" }));
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+
+    gate.resolve();
+    // 落地后恢复可用，后续操作正常生效（连续操作不丢）
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("switch", { name: "微件导航入口显示" }) as HTMLInputElement).disabled,
+      ).toBe(false),
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    await user.click(screen.getByRole("switch", { name: "微件导航入口显示" }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(2));
+    const second = updateSettings.mock.calls[1][0] as {
+      navigation_layout: { left: string[] };
+    };
+    // 第二次写入基于第一次已落库的结果：两个隐藏都保留（不是旧快照覆盖）
+    expect(second.navigation_layout.left).not.toContain("apps");
+    expect(second.navigation_layout.left).not.toContain("widgets");
+  });
+
+  it("写入失败后恢复可用并显示真实错误，不留下永久禁用", async () => {
+    const user = userEvent.setup();
+    updateSettings.mockRejectedValueOnce(new Error("数据库被占用"));
+    render(<NavigationVisibilitySection />);
+
+    await user.click(screen.getByRole("switch", { name: "应用导航入口显示" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("保存失败");
+    expect(
+      (screen.getByRole("switch", { name: "应用导航入口显示" }) as HTMLInputElement).disabled,
+    ).toBe(false);
+    expect((screen.getByRole("switch", { name: "应用导航入口显示" }) as HTMLInputElement).checked).toBe(
+      true,
+    );
   });
 });

@@ -1132,6 +1132,50 @@ export type ResourceCleanupCategory = "temporary" | "tts" | "orphan_thumbnails";
 export type ResourceAvailability = "ready" | "partial" | "unavailable";
 export type ResourceCleanupStatus = "success" | "partial" | "failed" | "skipped";
 
+/** 进程状态只表达可解释的观察结果，不构成「应该结束」的建议。 */
+export type ResourceProcessStatus = "normal" | "high_usage" | "exited" | "unknown";
+/** 归属分级：名称匹配只作线索，不作为所有权证明。 */
+export type ResourceProcessAssociation =
+  | "self"
+  | "managed_child"
+  | "project_dev"
+  | "external_tool"
+  | "unknown_owner";
+export type ResourceProcessBasis =
+  | "self"
+  | "parent_chain"
+  | "image_path"
+  | "name_and_path"
+  | "unverified";
+
+export interface ResourceProcessSnapshot {
+  pid: number;
+  name: string;
+  cpuPercent: number | null;
+  cpuWindowMs: number;
+  workingSetBytes: number | null;
+  privateBytes: number | null;
+  uptimeSecs: number | null;
+  status: ResourceProcessStatus;
+}
+
+export interface ResourceProcessRow extends ResourceProcessSnapshot {
+  association: ResourceProcessAssociation;
+  associationBasis: ResourceProcessBasis;
+}
+
+export interface ResourceProcessDiagnostics {
+  sampledAt: string;
+  cpuWindowMs: number;
+  supported: boolean;
+  truncated: boolean;
+  /** 名称匹配但归属未确认、被折叠未展示的外部工具数量。 */
+  omittedExternal: number;
+  /** 归属不明、被折叠未展示的进程数量。 */
+  omittedUnknown: number;
+  processes: ResourceProcessRow[];
+}
+
 export interface ResourceSnapshot {
   sampledAt: string;
   application: {
@@ -1148,6 +1192,7 @@ export interface ResourceSnapshot {
     totalBytes: number | null;
     availableBytes: number | null;
   }>;
+  process: ResourceProcessSnapshot;
 }
 
 export interface ResourceCleanupCategoryPreview {
@@ -1194,6 +1239,54 @@ export interface ResourceCleanupExecutionReport {
 }
 
 export const resourceSnapshot = () => invoke<ResourceSnapshot>("resource_snapshot");
+/** 只读进程诊断：仅在用户显式请求时调用；后端不结束进程、不读取命令行。 */
+export const resourceProcessDiagnostics = () =>
+  invoke<ResourceProcessDiagnostics>("resource_process_diagnostics");
+
+/** 应用数据目录的只读占用分布（只扫描应用自有目录，有界、不跟随链接）。 */
+export interface ResourceStorageEntry {
+  /** 稳定类别 ID（文案按 ID 映射）。 */
+  id: string;
+  bytes: number;
+  files: number;
+  kind: "regenerable" | "persistent";
+  status: "ready" | "missing" | "partial";
+}
+
+export interface ResourceStorageBreakdown {
+  sampledAt: string;
+  entries: ResourceStorageEntry[];
+  totalBytes: number;
+  truncated: boolean;
+}
+
+/** 应用自身可回收内存缓存（只读目录）。 */
+export interface ResourceMemorySource {
+  id: string;
+  entries: number;
+  bytes: number;
+  status: "available" | "empty";
+}
+
+export interface ResourceMemoryCatalog {
+  sampledAt: string;
+  sources: ResourceMemorySource[];
+  totalBytes: number;
+}
+
+export interface ResourceMemoryReleaseReport {
+  sampledAt: string;
+  releasedBytes: number;
+  sources: Array<{ id: string; entries: number; bytes: number }>;
+}
+
+export const resourceDiskUsage = () =>
+  invoke<ResourceStorageBreakdown>("resource_disk_usage");
+export const resourceMemoryCatalog = () =>
+  invoke<ResourceMemoryCatalog>("resource_memory_catalog");
+/** 释放应用自身可回收缓存；返回每项实际释放量（不做系统级内存优化）。 */
+export const resourceMemoryRelease = () =>
+  invoke<ResourceMemoryReleaseReport>("resource_memory_release");
 export const resourceCleanupPreview = (categories: ResourceCleanupCategory[]) =>
   invoke<ResourceCleanupPreview>("resource_cleanup_preview", { categories });
 export const resourceCleanupExecute = (args: {
@@ -2961,7 +3054,7 @@ export const shelfGetItem = (id: string) => invoke<ShelfItem>("shelf_get_item", 
 export const shelfUpdate = (id: string, patch: ShelfUpdatePatch) =>
   invoke<ShelfItem>("shelf_update", { id, patch });
 
-/** 删除条目：托管副本一并删除；引用模式绝不触碰原文件。收藏/置顶需显式确认。 */
+/** 删除条目：托管副本一并删除；引用模式绝不触碰原文件。收藏/置顶/场景引用需显式确认。 */
 export const shelfDelete = (ids: string[], includeProtected: boolean) =>
   invoke<ShelfDeleteReport>("shelf_delete", { ids, includeProtected });
 
@@ -3422,3 +3515,170 @@ export const SHELF_KIND_LABELS: Record<ShelfKind, string> = {
   link: "链接",
   text: "文本",
 };
+
+// ── 诊断日志（本机持久化 / 查询 / 摘要 / 导出 / 清理）──────────────
+//
+// 事件体字段使用 snake_case：这是落盘 JSONL 的稳定契约，和 `Task` 等后端载荷一致。
+// 查询参数使用 camelCase（项目 IPC 参数规范）。
+
+export type DiagnosticLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR" | "CRITICAL";
+export type DiagnosticStatusValue =
+  | "started"
+  | "success"
+  | "failed"
+  | "cancelled"
+  | "recovered";
+
+export interface DiagnosticEventRecord {
+  timestamp: string;
+  level: DiagnosticLevel;
+  module: string;
+  action: string;
+  event: string;
+  session_id: string;
+  operation_id?: string;
+  window_id?: string;
+  component?: string;
+  stage?: string;
+  status?: DiagnosticStatusValue;
+  error_code?: string;
+  error_category?: string;
+  duration_ms?: number;
+  retry_count?: number;
+  message?: string;
+  metadata?: Record<string, unknown>;
+  source: "rust" | "frontend" | "system";
+  /** 本行代表的重复次数（聚合摘要行 > 1）。 */
+  count: number;
+}
+
+export interface DiagnosticQuery {
+  levels?: DiagnosticLevel[];
+  modules?: string[];
+  errorCodes?: string[];
+  statuses?: DiagnosticStatusValue[];
+  windowIds?: string[];
+  operationId?: string;
+  text?: string;
+  /** RFC3339（含时区） */
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+  /** 只统计 WARN 及以上（摘要/导出默认视图） */
+  anomaliesOnly?: boolean;
+}
+
+export interface DiagnosticPage {
+  items: DiagnosticEventRecord[];
+  matched: number;
+  scanned: number;
+  truncated: boolean;
+  files: number;
+  skipped: number;
+}
+
+export interface DiagnosticCountItem {
+  key: string;
+  count: number;
+}
+
+export interface DiagnosticSummaryGroup {
+  module: string;
+  action: string;
+  errorCode?: string;
+  level: DiagnosticLevel;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  lastStatus?: DiagnosticStatusValue;
+  recovered: boolean;
+  sampleMessage?: string;
+  sampleOperationId?: string;
+}
+
+export interface DiagnosticSummary {
+  total: number;
+  errors: number;
+  warnings: number;
+  infos: number;
+  groups: DiagnosticSummaryGroup[];
+  byModule: DiagnosticCountItem[];
+  byCode: DiagnosticCountItem[];
+  truncated: boolean;
+  scanned: number;
+  skipped: number;
+  files: number;
+  generatedAt: string;
+  since?: string;
+  until?: string;
+}
+
+export interface DiagnosticLogFile {
+  name: string;
+  bytes: number;
+  modifiedAt?: string;
+  active: boolean;
+}
+
+export interface DiagnosticsStatus {
+  sessionId: string;
+  startedAt: string;
+  logDir: string;
+  mode: "normal" | "verbose";
+  verboseRemainingMs: number;
+  files: DiagnosticLogFile[];
+  totalBytes: number;
+  maxFileBytes: number;
+  maxTotalBytes: number;
+  maxArchiveFiles: number;
+  written: number;
+  dropped: number;
+  queueFull: number;
+  aggregated: number;
+  rotations: number;
+  failures: number;
+  skippedLines: number;
+  degraded: boolean;
+  lastError?: string;
+}
+
+export interface DiagnosticExportResult {
+  path: string;
+  bytes: number;
+  records: number;
+  /** 扫描/条数上限截断：报告只包含部分事件 */
+  truncated: boolean;
+  /** 导出前是否确认刷盘成功（false = 可能有更新的日志未进入报告） */
+  flushed: boolean;
+  /** 刷盘降级原因：`timeout` / `queue_full` / `not_flushed`；正常为 undefined */
+  flushIssue?: string;
+  /** 报告内容是否完整可信（flushed && !truncated） */
+  complete: boolean;
+}
+
+export const diagnosticsStatus = () => invoke<DiagnosticsStatus>("diagnostics_status");
+
+export const diagnosticsSetMode = (mode: "normal" | "verbose", minutes?: number) =>
+  invoke<DiagnosticsStatus>("diagnostics_set_mode", { mode, minutes });
+
+export const diagnosticsQuery = (filter: DiagnosticQuery = {}) =>
+  invoke<DiagnosticPage>("diagnostics_query", { filter });
+
+export const diagnosticsSummary = (filter: DiagnosticQuery = {}) =>
+  invoke<DiagnosticSummary>("diagnostics_summary", { filter });
+
+export const diagnosticsExport = (filter: DiagnosticQuery = {}) =>
+  invoke<DiagnosticExportResult>("diagnostics_export", { filter });
+
+export interface DiagnosticClearResult {
+  removedBytes: number;
+  /** 是否真正执行完成；false = 超时/取消，日志未被删除 */
+  completed: boolean;
+  status: DiagnosticsStatus;
+}
+
+export const diagnosticsClear = () =>
+  invoke<DiagnosticClearResult>("diagnostics_clear");
+
+export const diagnosticsOpenDir = () => invoke<void>("diagnostics_open_dir");

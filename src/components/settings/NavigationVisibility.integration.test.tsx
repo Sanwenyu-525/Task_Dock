@@ -41,6 +41,14 @@ vi.mock("../history/HistoryPanel", () => ({ default: () => <div>history-panel</d
 vi.mock("../roadmap/PlanningCenterPanel", () => ({ default: () => <div>roadmap-panel</div> }));
 vi.mock("../help/HelpCenterPanel", () => ({ default: () => <div>help-panel</div> }));
 vi.mock("../settings/SettingsPanel", () => ({ default: () => <div>settings-panel</div> }));
+// 导航注册表新增的锁定系统页（资源管理/诊断中心）：本文件只验证导航显隐，
+// 不加载真实面板，避免与其它任务的面板实现耦合。
+vi.mock("../resource/ResourceManagementPanel", () => ({
+  default: () => <div>resource-panel</div>,
+}));
+vi.mock("../diagnostics/DiagnosticsCenterPanel", () => ({
+  default: () => <div>diagnostics-panel</div>,
+}));
 
 import FullView from "../FullView";
 import NavigationVisibilitySection from "./NavigationVisibilitySection";
@@ -50,6 +58,8 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useActionsStore } from "../../store/useActionsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { defaultNavigationLayout } from "../../lib/navVisibility";
+import { allEntryIds } from "../../lib/navigationRegistry";
+import { registerTabGuard } from "../../lib/tabGuard";
 
 const BASE = {
   theme: "dark",
@@ -346,5 +356,190 @@ describe("导航显隐 · 主内容区始终有效", () => {
     expect(after.theme).toBe(before.theme);
     expect(after.material).toBe(before.material);
     expect(after.snap_display_mode).toBe(before.snap_display_mode);
+  });
+});
+
+// ── 隐藏当前入口后的恢复语义（2026-11-06 统一实现）─────────────────────
+// 恢复由「导航配置变更」驱动（FullView 唯一实现）：只在当前页所属入口
+// 由可见变为隐藏时切一次安全页。主动打开隐藏页不会被重定向；
+// 未保存草稿/保存中仍走 setTab 门禁，绝不静默丢弃编辑内容。
+describe("隐藏当前入口 · 安全恢复与草稿门禁", () => {
+  it("有未保存草稿：不强制切页（pending），确认后才切换", async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ tab: "apps" });
+    const dispose = registerTabGuard({
+      id: "test-dirty-editor",
+      label: () => "测试编辑器",
+      isDirty: () => true,
+      isBusy: () => false,
+      discard: () => undefined,
+    });
+    try {
+      renderAll();
+      await user.click(switchFor("应用"));
+      await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
+
+      // 配置已落库，但页面没有被强制切走（草稿安全）
+      expect(useUiStore.getState().tab).toBe("apps");
+      await waitFor(() => expect(useUiStore.getState().pendingTab?.tab).toBe("tasks"));
+      expect(await screen.findByText("apps-panel")).toBeTruthy();
+      expectContentAlive();
+
+      act(() => useUiStore.getState().confirmPendingTab());
+      expect(useUiStore.getState().tab).toBe("tasks");
+      expect(screen.getByText("tasks-panel")).toBeTruthy();
+      expectContentAlive();
+    } finally {
+      dispose();
+      act(() => useUiStore.getState().cancelPendingTab());
+    }
+  });
+
+  it("有未保存草稿且用户取消：留在原页，草稿内容不被丢弃", async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ tab: "apps" });
+    const dispose = registerTabGuard({
+      id: "test-dirty-editor",
+      label: () => "测试编辑器",
+      isDirty: () => true,
+      isBusy: () => false,
+      discard: () => undefined,
+    });
+    try {
+      renderAll();
+      await user.click(switchFor("应用"));
+      await waitFor(() => expect(useUiStore.getState().pendingTab?.tab).toBe("tasks"));
+
+      act(() => useUiStore.getState().cancelPendingTab());
+      expect(useUiStore.getState().tab).toBe("apps");
+      expect(await screen.findByText("apps-panel")).toBeTruthy();
+      // 入口已隐藏但页面仍可编辑/保存：不制造无法退出的死路，设置入口仍可达
+      expect(railLabels()[railLabels().length - 1]).toBe("设置");
+      expectContentAlive();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("正在保存：拒绝切换并就地提示，不丢页面也不丢配置", async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ tab: "apps", toasts: [], toast: null });
+    const dispose = registerTabGuard({
+      id: "test-busy-editor",
+      label: () => "测试编辑器",
+      isDirty: () => true,
+      isBusy: () => true,
+      discard: () => undefined,
+    });
+    try {
+      renderAll();
+      await user.click(switchFor("应用"));
+      await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
+
+      expect(useUiStore.getState().tab).toBe("apps");
+      const toasts = useUiStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === "warning" && t.code === "tab-guard-busy")).toBe(true);
+      expect(await screen.findByText("apps-panel")).toBeTruthy();
+      expectContentAlive();
+    } finally {
+      dispose();
+      act(() => useUiStore.setState({ toasts: [], toast: null }));
+    }
+  });
+
+  it("安全页落在合并入口：保留暂存架子页，不重置回快速收集", async () => {
+    const user = userEvent.setup();
+    // 任务可见在前、合并入口在后：隐藏当前页（任务）后安全页落在合并入口上
+    useSettingsStore.setState({
+      settings: {
+        ...BASE,
+        navigation_layout: {
+          version: 1,
+          left: ["tasks", "collection", "settings"],
+          capsule: [],
+          known: { left: allEntryIds("left"), capsule: allEntryIds("capsule") },
+        },
+      } as never,
+    });
+    // 用户上次停在暂存架子页，随后切到了任务页
+    useUiStore.setState({ tab: "tasks", collectionSub: "shelf" });
+    renderAll();
+    expect(await screen.findByText("tasks-panel")).toBeTruthy();
+
+    await user.click(switchFor("任务"));
+    await waitFor(() => expect(useUiStore.getState().tab).toBe("shelf"));
+    expect(useUiStore.getState().collectionSub).toBe("shelf");
+    expectContentAlive();
+  });
+
+  it("快速笔记子页：切页恢复后仍停留在笔记子页", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({
+      settings: {
+        ...BASE,
+        navigation_layout: {
+          version: 1,
+          left: ["tasks", "collection", "settings"],
+          capsule: [],
+          known: { left: allEntryIds("left"), capsule: allEntryIds("capsule") },
+        },
+      } as never,
+    });
+    // 笔记子页没有独立逻辑 Tab，由 inbox 承载
+    useUiStore.setState({ tab: "tasks", collectionSub: "notes" });
+    renderAll();
+    expect(await screen.findByText("tasks-panel")).toBeTruthy();
+
+    await user.click(switchFor("任务"));
+    await waitFor(() => expect(useUiStore.getState().tab).toBe("inbox"));
+    expect(useUiStore.getState().collectionSub).toBe("notes");
+    expectContentAlive();
+  });
+
+  it("隐藏唯一的普通入口：切到仍可见入口的页面（设置始终可达，不产生空白）", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({
+      settings: {
+        ...BASE,
+        navigation_layout: {
+          version: 1,
+          left: ["collection", "settings"],
+          capsule: [],
+          known: { left: allEntryIds("left"), capsule: allEntryIds("capsule") },
+        },
+      } as never,
+    });
+    useUiStore.setState({ tab: "shelf", collectionSub: "shelf" });
+    renderAll();
+    expect(await screen.findByText("collection-panel")).toBeTruthy();
+
+    await user.click(switchFor("收集与暂存"));
+    // 不再停在刚被隐藏的页面；落在仍可见入口覆盖的页面上（锁定系统入口优先于设置）
+    await waitFor(() => expect(useUiStore.getState().tab).not.toBe("shelf"));
+    const landed = useUiStore.getState().tab;
+    expect(["settings", "resource"]).toContain(landed);
+    expect(document.querySelector(".tab-content")?.textContent ?? "").not.toBe("");
+    // 设置入口是锁定入口：隐藏全部普通入口后仍在侧栏底部
+    expect(railLabels()[railLabels().length - 1]).toBe("设置");
+    expectContentAlive();
+  });
+
+  it("主动打开本来就隐藏的页面：后续隐藏其它入口不会把当前页重定向走", async () => {
+    const user = userEvent.setup();
+    renderAll();
+    await user.click(switchFor("应用"));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
+
+    // 从「更多」进入隐藏的「应用」页
+    await user.click(screen.getByRole("button", { name: "更多导航入口" }));
+    await user.click(await screen.findByRole("menuitemradio", { name: /应用/ }));
+    expect(useUiStore.getState().tab).toBe("apps");
+
+    // 再隐藏另一个入口：当前页没有「可见 → 隐藏」迁移，不应被重定向
+    await user.click(switchFor("微件"));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 2));
+    expect(useUiStore.getState().tab).toBe("apps");
+    expect(await screen.findByText("apps-panel")).toBeTruthy();
+    expectContentAlive();
   });
 });

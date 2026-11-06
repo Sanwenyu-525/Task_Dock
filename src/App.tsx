@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { RotateCcw } from "lucide-react";
 import { useSettingsStore } from "./store/useSettingsStore";
 import { useTasksStore } from "./store/useTasksStore";
 import { useAgentsStore, scheduleAgentRefresh } from "./store/useAgentsStore";
@@ -54,11 +55,41 @@ import {
 } from "./lib/bridge";
 import { useCaptureStore } from "./store/useCaptureStore";
 import { useAudioNotifications } from "./lib/audioNotification";
+import { useLocale } from "./hooks/useLocale";
+
+/**
+ * 启动占位（设置加载门）：设置尚未加载完成时，外壳不渲染「默认模式 + 默认导航」。
+ *
+ * 为什么需要：`mode` 与 `navigation_layout` 都来自设置。若在设置到达前先按默认值
+ * 渲染，用户会看到完整面板与默认导航闪一下，再跳到真实模式/排序（P2 闪烁缺陷）。
+ * 因此设置未就绪时只渲染中性占位，就绪后再按真实配置挂载视图。
+ *
+ * 边界：读取失败不能让窗口永久空白 —— `loadError` 非空时显示原因与重试入口
+ * （重试走 `useSettingsStore.load`，成功后自动进入正常界面）。
+ */
+function ShellBootState({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  const { t } = useLocale();
+  return (
+    <div className="shell-boot" role={error ? "alert" : "status"}>
+      <div className="shell-boot-card">
+        <p className="shell-boot-text">
+          {error ? t("shell.bootFailed", { error }) : t("shell.booting")}
+        </p>
+        {error && (
+          <button type="button" className="btn sm" onClick={onRetry}>
+            <RotateCcw size={12} aria-hidden="true" /> {t("common.retry")}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   // 统一音频通知服务：主窗口唯一调度所有者（Agent/任务/日程 → 提示音 + TTS）。
   useAudioNotifications();
   const settings = useSettingsStore((s) => s.settings);
+  const settingsLoadError = useSettingsStore((s) => s.loadError);
   const materialInfo = useSettingsStore((s) => s.materialInfo);
   const loadSettings = useSettingsStore((s) => s.load);
   const syncExternal = useSettingsStore((s) => s.syncExternal);
@@ -72,6 +103,10 @@ export default function App() {
   // 显示模式是外壳唯一的视图判据：非法/缺失值必须在渲染前收敛，否则三个
   // `.view-slot` 可能同时不是 active（只剩标题栏与窗口背景的空白窗口）。
   const mode = resolveWindowMode(settings?.mode);
+  // 设置就绪门：`mode` 与 `navigation_layout` 都来自设置。设置未到达前不挂载任何
+  // 模式视图（只渲染中性占位），避免「先显示默认完整面板与默认导航、再跳到真实
+  // 配置」的启动闪烁；读取失败时由占位提供原因与重试入口，不会永久空白。
+  const settingsReady = settings !== null;
   // 设置未加载完成前**不启用**贴边吸附：否则启动瞬间会按默认值 true 生效，
   // 可能把窗口滑出屏幕（并把该位置持久化），随后又因设置到达而停用。
   const snapEnabled = settings?.snap_enabled === true;
@@ -118,6 +153,13 @@ export default function App() {
     void loadNavLinks();
     void loadNavTargets();
   }, [loadSettings, refreshTasks, loadAgents, loadNavLinks, loadNavTargets]);
+
+  // 启动占位的重试：与启动路径同一入口，成功后 settings 就绪、外壳自动进入正常界面。
+  const retrySettings = useCallback(() => {
+    void Promise.resolve(loadSettings()).catch((e) =>
+      reportError(e, { operation: "读取设置", retry: () => loadSettings() }),
+    );
+  }, [loadSettings]);
 
   // 行动中心开关：关闭时停止定时刷新并清空聚合（Agent 事件仍照常入库）；
   // 重新开启后立即补一次聚合，无需重启应用。启动加载与事件刷新都按消费者
@@ -283,17 +325,24 @@ export default function App() {
           {/* CSS 隐藏非当前项；DeferredView 让非当前模式在**首次激活前**不挂载，
              首次激活后永久保留（切换保留内容状态与滚动位置，与常驻方案一致） */}
           <div className={`view-slot ${mode === "minimal" ? "active" : ""}`}>
-            <DeferredView active={mode === "minimal"}>
+            <DeferredView active={settingsReady && mode === "minimal"}>
               <MinimalView />
             </DeferredView>
           </div>
           <div className={`view-slot ${mode === "compact" ? "active" : ""}`}>
-            <DeferredView active={mode === "compact"}>
+            <DeferredView active={settingsReady && mode === "compact"}>
               <CompactView />
             </DeferredView>
           </div>
           <div className={`view-slot ${mode === "full" ? "active" : ""}`}>
-            <DeferredView active={mode === "full"}>
+            {/* 启动占位只在设置未就绪时出现；它**不计入一次视图激活**
+                （DeferredView 的 active 仍要求 settingsReady），否则用户的真实模式
+                是极简/紧凑时，FullView 会在隐藏槽里白挂载一次（多付一次导航渲染
+                与任务查询）。 */}
+            {!settingsReady && (
+              <ShellBootState error={settingsLoadError} onRetry={retrySettings} />
+            )}
+            <DeferredView active={settingsReady && mode === "full"}>
               <FullView />
             </DeferredView>
           </div>

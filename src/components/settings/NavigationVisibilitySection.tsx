@@ -12,8 +12,10 @@
 //! - 「设置」是锁定入口（`locked`）：不可隐藏、不可排序，始终固定在完整面板底部，
 //!   保证用户任何时候都能回到本页恢复配置；
 //! - 排序使用上下移动按钮（Tab 可达、aria 明确），不引入拖拽系统；
-//! - 隐藏当前所在页时自动切到仍可访问的安全页；
-//! - 保存失败就地提示，界面仍显示后端真实配置，不出现假成功。
+//! - 隐藏当前所在页时的安全切页由 `FullView` 统一处理（配置变更驱动）；
+//!   本区块只负责写配置，避免两处实现用不同快照各自切页；
+//! - 写入串行化：写库期间所有开关/排序/恢复按钮一致禁用并显示进行中状态，
+//!   不存在「可点击但被静默丢弃」的操作；保存失败就地提示，界面仍显示后端真实配置。
 
 import { useState } from "react";
 import { ArrowDown, ArrowUp, RotateCcw } from "lucide-react";
@@ -29,7 +31,6 @@ import {
   type NavEntry,
   type NavSurface,
 } from "../../lib/navigationRegistry";
-import { safeTabForHiddenEntry } from "../../lib/navVisibility";
 import {
   moveNavigationEntry,
   resetNavigationSurface,
@@ -45,11 +46,14 @@ export default function NavigationVisibilitySection() {
   const settingsReady = useSettingsStore((s) => !!s.settings);
   const layout = useNavigationLayout();
   const tab = useUiStore((s) => s.tab);
-  const setTab = useUiStore((s) => s.setTab);
 
   const [surface, setSurface] = useState<NavSurface>("left");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 写入期间**全部**配置操作禁用：旧实现只禁用当前行，其它行仍可点击，
+  // 但处理函数在 pendingId 非空时直接返回 —— 点击被静默丢弃。
+  // 现在「可点击」与「会被执行」严格等价（串行写入链本身已保证读-改-写不覆盖）。
+  const busy = pendingId !== null;
 
   const currentEntryId = leftEntryForTab(tab)?.id;
   const surfaceEntries = entriesForSurface(surface);
@@ -63,21 +67,14 @@ export default function NavigationVisibilitySection() {
   );
   const rows = [...visibleEntries, ...hiddenEntries];
 
+  // 隐藏当前所在页的恢复由 `FullView` 统一处理（导航配置变更驱动，唯一实现点）：
+  // 这里只负责写入配置，不在局部路径里另做一次切页（旧快照 + 双实现会互相覆盖）。
   async function onToggle(entry: NavEntry, nextVisible: boolean) {
-    if (pendingId || entry.locked) return;
+    if (busy || entry.locked) return;
     setPendingId(entry.id);
     setError(null);
     try {
       await setNavigationEntryVisible(surface, entry.id, nextVisible);
-      if (surface === "left" && !nextVisible && currentEntryId === entry.id) {
-        // 写入成功后当前页失去入口：切到仍可见的安全页，避免停在无入口页面。
-        setTab(
-          safeTabForHiddenEntry({
-            ...layout,
-            left: layout.left.filter((id) => id !== entry.id),
-          }),
-        );
-      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -86,7 +83,7 @@ export default function NavigationVisibilitySection() {
   }
 
   async function onMove(entry: NavEntry, delta: -1 | 1) {
-    if (pendingId || entry.locked) return;
+    if (busy || entry.locked) return;
     setPendingId(entry.id);
     setError(null);
     try {
@@ -99,7 +96,7 @@ export default function NavigationVisibilitySection() {
   }
 
   async function onReset() {
-    if (pendingId) return;
+    if (busy) return;
     setPendingId("__reset__");
     setError(null);
     try {
@@ -143,12 +140,12 @@ export default function NavigationVisibilitySection() {
         </span>
       </div>
 
-      <div className="nav-visibility-list">
+      <div className="nav-visibility-list" aria-busy={busy}>
         {rows.map((entry) => {
           const visible = layout[surface].includes(entry.id);
           const index = visibleEntries.findIndex((item) => item.id === entry.id);
           const current = surface === "left" && entry.id === currentEntryId;
-          const busy = pendingId === entry.id || pendingId === "__reset__";
+          // 写入期间所有行一致禁用（busy 是整块状态）：不出现「点了但被丢弃」的行间差异。
           // 排序规则与底层 `moveNavigationEntry` 共用同一份元数据：
           // 锁定入口与胶囊 Agent 状态球不提供上移/下移按钮（不暴露无效操作）；
           // 固定入口不是障碍——普通入口可以跨过它排序，因此边界按
@@ -233,6 +230,11 @@ export default function NavigationVisibilitySection() {
           <RotateCcw size={12} /> {t("nav.reset", { surface: surfaceLabel(surface) })}
         </button>
         {!settingsReady && <span className="setting-note">{t("nav.settingsNotLoaded")}</span>}
+        {settingsReady && busy && (
+          <span className="setting-note" role="status">
+            {t("nav.saving")}
+          </span>
+        )}
       </div>
 
       {surface === "capsule" && visibleEntries.length === 0 && (

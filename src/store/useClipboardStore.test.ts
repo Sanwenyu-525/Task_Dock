@@ -469,4 +469,99 @@ describe("useClipboardStore", () => {
       expect(useClipboardStore.getState().selectedItems).toEqual(["b"]);
     });
   });
+
+  describe("bumpItemCopy 同步胶囊轻量视图", () => {
+    const liteOf = (items: ReturnType<typeof itemOf>[]) => ({
+      items: items as never,
+      groups: [],
+    });
+
+    it("只有 lite 命中时计数 +1，view 保持 null", () => {
+      useClipboardStore.setState({ view: null, lite: liteOf([itemOf("a"), itemOf("b")]) });
+
+      useClipboardStore.getState().bumpItemCopy("b");
+
+      const state = useClipboardStore.getState();
+      expect(state.view).toBeNull();
+      expect(state.lite?.items.map((i) => [i.id, i.copy_count])).toEqual([
+        ["a", 1],
+        ["b", 2],
+      ]);
+    });
+
+    it("view 与 lite 同时命中时两处都 +1，未命中条目保持原引用", () => {
+      const view = {
+        ...viewOf(["a", "b"]),
+        items: [itemOf("a"), itemOf("b")],
+      } as unknown as ClipboardView;
+      useClipboardStore.setState({ view, lite: liteOf([itemOf("a"), itemOf("b")]) });
+      const viewItemA = useClipboardStore.getState().view!.items[0];
+      const liteItemA = useClipboardStore.getState().lite!.items[0];
+      const viewItemB = useClipboardStore.getState().view!.items[1];
+      const liteItemB = useClipboardStore.getState().lite!.items[1];
+
+      useClipboardStore.getState().bumpItemCopy("b");
+
+      const state = useClipboardStore.getState();
+      expect(state.view?.items.map((i) => i.copy_count)).toEqual([1, 2]);
+      expect(state.lite?.items.map((i) => i.copy_count)).toEqual([1, 2]);
+      // 未命中的条目仍复用原对象，命中项被浅拷贝
+      expect(state.view?.items[0]).toBe(viewItemA);
+      expect(state.lite?.items[0]).toBe(liteItemA);
+      expect(state.view?.items[1]).not.toBe(viewItemB);
+      expect(state.lite?.items[1]).not.toBe(liteItemB);
+    });
+
+    it("只命中 view 时 lite 的数组引用不变；只命中 lite 时 view 的数组引用不变", () => {
+      const view = {
+        ...viewOf(["a"]),
+        items: [itemOf("a")],
+      } as unknown as ClipboardView;
+      const lite = liteOf([itemOf("other")]);
+      useClipboardStore.setState({ view, lite });
+      const liteItemsBefore = useClipboardStore.getState().lite!.items;
+
+      useClipboardStore.getState().bumpItemCopy("a");
+
+      expect(useClipboardStore.getState().view?.items[0].copy_count).toBe(2);
+      expect(useClipboardStore.getState().lite!.items).toBe(liteItemsBefore);
+
+      const viewItemsBefore = useClipboardStore.getState().view!.items;
+      useClipboardStore.getState().bumpItemCopy("other");
+
+      expect(useClipboardStore.getState().lite!.items[0].copy_count).toBe(2);
+      expect(useClipboardStore.getState().view!.items).toBe(viewItemsBefore);
+    });
+
+    it("两处都没有该条目时不做任何改动（切片与数组引用均不变）", () => {
+      const view = {
+        ...viewOf(["a"]),
+        items: [itemOf("a")],
+      } as unknown as ClipboardView;
+      const lite = liteOf([itemOf("b")]);
+      useClipboardStore.setState({ view, lite });
+      const before = useClipboardStore.getState();
+
+      useClipboardStore.getState().bumpItemCopy("ghost");
+
+      const after = useClipboardStore.getState();
+      expect(after.view).toBe(before.view);
+      expect(after.view?.items).toBe(before.view?.items);
+      expect(after.lite).toBe(before.lite);
+      expect(after.lite?.items).toBe(before.lite?.items);
+    });
+
+    it("view 与 lite 都为空时调用是空操作", () => {
+      useClipboardStore.setState({ view: null, lite: null });
+      const before = useClipboardStore.getState();
+
+      useClipboardStore.getState().bumpItemCopy("a");
+
+      const after = useClipboardStore.getState();
+      expect(after.view).toBeNull();
+      expect(after.lite).toBeNull();
+      expect(after.view).toBe(before.view);
+      expect(after.lite).toBe(before.lite);
+    });
+  });
 });

@@ -1,7 +1,7 @@
 //! 分类胶囊外壳：轨道 + 功能面板。
 //!
 //! 结构（与 Win32 区域一一对应，见 `lib/capsuleLayout.ts`）：
-//!   [ 轨道 56×400 ][ 间隙 12 ][ 面板 340×440 ]
+//!   [ 轨道 56×400 ][ 间隙 8 ][ 面板 340×440 ]
 //!
 //! 关键约束（v0.7）：
 //! - **窗口在停靠期间不移动、不缩放**，展开/收起只切 Win32 区域；
@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useState, type ComponentType } from "react";
 import CapsuleRail, { CATEGORY_LABELS } from "./CapsuleRail";
+import CapsuleLeaveGuard from "./CapsuleLeaveGuard";
 import EdgeTab from "./EdgeTab";
 import TasksLite from "./TasksLite";
 import AgentsLite from "./AgentsLite";
@@ -143,9 +144,15 @@ export default function CapsuleDock() {
           key={activeCategory}
           className={`capsule-panel panel-${edge}${panelExiting ? " is-closing" : ""}`}
           aria-label={`${CATEGORY_LABELS[activeCategory]}面板`}
+          /* 离场阶段只剩 160ms 的收合动画且 pointer-events:none：同步置 inert，
+             键盘/读屏也不再进入一块已经不可交互、正在消失的面板。 */
+          inert={panelExiting}
         >
           {/* 专注状态徽标：无活动会话时返回 null，不占位、不新增轮询 */}
           <FocusCapsuleBadge className="capsule-focus-slot" />
+          {/* 胶囊内的未保存草稿确认：全局确认条在 inert 的完整窗口里，面板内必须
+              有一份可见入口，否则拦截后的导航看起来像没反应。 */}
+          <CapsuleLeaveGuard />
           <Panel />
         </section>
       )}

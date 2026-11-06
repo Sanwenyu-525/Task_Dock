@@ -1,5 +1,5 @@
 //! 场景与工作流类教程。
-//! 场景和工作流调用均已接入；C4 文件关联及现场几何仍有缺口，且界面/原生行为未完整复核，教程保持 needs_review。
+//! 场景和工作流调用均已接入；窗口几何与进入取消仍有缺口，且界面/原生行为未完整复核，教程保持 needs_review。
 
 import type { HelpArticle } from "../types";
 
@@ -52,12 +52,12 @@ export const WORKFLOWS_ARTICLES: readonly HelpArticle[] = [
     id: "help.workflows.scenes",
     categoryId: "workflows",
     status: "needs_review",
-    contentVersion: 2,
+    contentVersion: 3,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
         title: "场景工作区：管理并进入可复用场景",
-        summary: "场景可以独立创建、整理并进入，也能作为工作流步骤调用；当前仍有文件关联和窗口几何缺口。",
+        summary: "场景可以独立创建、整理并进入，也能作为工作流步骤调用；当前仍有窗口几何与进入取消能力缺口。",
         sections: [
           {
             type: "heading",
@@ -78,7 +78,7 @@ export const WORKFLOWS_ARTICLES: readonly HelpArticle[] = [
           },
           {
             type: "note",
-            text: "当前场景编辑器可选择暂存架条目，但后端尚未持久化场景关联；不要把文件选择视为已保存。窗口矩形、尺寸、显示器和 DPI 也未纳入快照。删除场景不会删除用户原文件。",
+            text: "当前场景编辑器选择的暂存架文件会随场景保存到数据库（shelf_items.scene_id）；删除场景只解除关联，不删除用户原文件。但窗口矩形、尺寸、显示器和 DPI 仍未纳入快照，进入场景不会恢复窗口几何。",
           },
         ],
       },

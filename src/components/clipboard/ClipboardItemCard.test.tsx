@@ -15,7 +15,8 @@
 //!    jsdom 不做布局，所以样式用 `?raw` 读原文断言，和 `styles-themes.test.ts` 同路。
 
 import { describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach } from "vitest";
 import appCss from "../../styles.css?raw";
 import ClipboardItemCard from "./ClipboardItemCard";
@@ -250,8 +251,105 @@ describe("styles.css 预览截断契约", () => {
   });
 });
 
-describe("ClipboardItemCard 来源信息", () => {
-  it("展示人类可读应用名与「窗口」标题，不直接暴露 exe", () => {
+/** 分体复制：主按钮直接复制，右侧箭头直接打开「复制并切换到…」（不是折叠菜单）。 */
+function renderSplitCard() {
+  const onCopy = vi.fn();
+  const onCopySwitch = vi.fn();
+  const onDetail = vi.fn();
+  const onSelect = vi.fn();
+  render(
+    <ClipboardItemCard
+      item={makeItem()}
+      selected={false}
+      linkMode={false}
+      removing={false}
+      pending={false}
+      onSelect={onSelect}
+      onCopy={onCopy}
+      onCopySwitch={onCopySwitch}
+      onToggle={vi.fn()}
+      onDetail={onDetail}
+      onDelete={vi.fn()}
+      onLink={vi.fn()}
+    />,
+  );
+  return { onCopy, onCopySwitch, onDetail, onSelect };
+}
+
+describe("ClipboardItemCard 分体复制按钮", () => {
+  it("点箭头直接打开目标选择器：不复制、不打开详情、没有菜单层级", async () => {
+    const user = userEvent.setup();
+    const { onCopy, onCopySwitch, onDetail } = renderSplitCard();
+    const arrow = screen.getByRole("button", { name: "复制并切换到目标窗口" });
+    // 跳转语义：不是折叠/展开，也不再有只有一个选项的菜单
+    expect(arrow.getAttribute("aria-haspopup")).toBeNull();
+    expect(arrow.getAttribute("aria-expanded")).toBeNull();
+    expect(arrow.querySelector("svg")?.getAttribute("class")).toContain("lucide-arrow-up-right");
+
+    await user.click(arrow);
+    expect(onCopySwitch).toHaveBeenCalledTimes(1);
+    expect(onCopy).not.toHaveBeenCalled();
+    expect(onDetail).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("点复制只复制：不打开目标选择器、不打开详情", async () => {
+    const user = userEvent.setup();
+    const { onCopy, onCopySwitch, onDetail } = renderSplitCard();
+
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    expect(onCopySwitch).not.toHaveBeenCalled();
+    expect(onDetail).not.toHaveBeenCalled();
+  });
+
+  it("键盘 Enter 在箭头或复制按钮上只激活自身，不冒泡触发卡片详情", async () => {
+    const user = userEvent.setup();
+    const { onCopy, onCopySwitch, onDetail } = renderSplitCard();
+    const arrow = screen.getByRole("button", { name: "复制并切换到目标窗口" });
+    const copy = screen.getByRole("button", { name: "复制" });
+
+    arrow.focus();
+    await user.keyboard("{Enter}");
+    expect(onCopySwitch).toHaveBeenCalledTimes(1);
+    expect(onCopy).not.toHaveBeenCalled();
+    expect(onDetail).not.toHaveBeenCalled();
+
+    copy.focus();
+    await user.keyboard("{Enter}");
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    expect(onDetail).not.toHaveBeenCalled();
+  });
+
+  it("未提供 onCopySwitch 时不渲染箭头（不出现空入口）", () => {
+    const card = renderCard();
+    expect(card.querySelector('[aria-label="复制并切换到目标窗口"]')).toBeNull();
+    expect(card.querySelector('[aria-label="复制"]')).not.toBeNull();
+  });
+
+  it("删除在途时箭头同样禁用（不打开一个即将消失的条目选择器）", () => {
+    const { container } = render(
+      <ClipboardItemCard
+        item={makeItem()}
+        selected={false}
+        linkMode={false}
+        removing={false}
+        pending
+        onSelect={vi.fn()}
+        onCopy={vi.fn()}
+        onCopySwitch={vi.fn()}
+        onToggle={vi.fn()}
+        onDetail={vi.fn()}
+        onDelete={vi.fn()}
+        onLink={vi.fn()}
+      />,
+    );
+    const arrow = container.querySelector<HTMLButtonElement>('[aria-label="复制并切换到目标窗口"]')!;
+    expect(arrow.disabled).toBe(true);
+  });
+});
+
+describe("ClipboardItemCard 来源信息", () => {  it("展示人类可读应用名与「窗口」标题，不直接暴露 exe", () => {
     const card = renderCard({
       source_app: "chrome.exe",
       source_title: "Go | OpenCode Console - Google Chrome",

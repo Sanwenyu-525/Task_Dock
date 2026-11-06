@@ -96,6 +96,17 @@ platform / agent_bridge）内的单元测试共 **61 例**，另有跨模块集�
 | `src/components/clipboard/AgentExportPanel.test.tsx` | 2 例：能力矩阵文案（直接发送不支持/文件导入未验证/桌面粘贴可手动/本地导出可用）；本地导出参数与“未发送”提示 |
 | `src/store/useClipboardStore.test.ts` | 4 例（原有）：筛选清空多选、刷新剔除失效选中、追加分页、加载失败 |
 
+单条「复制并切换到目标窗口」（2026-11-06）新增测试：
+
+| 文件 | 用例 |
+|---|---|
+| `src/lib/clipboardCopySwitch.test.ts` | 12 例：precheck→copy→focus 顺序；precheck/copy/focus 三层失败；copy 成功+focus 失败保留已复制；两种 partial；`focusTargetOnly` 只切不复制；四类统一文案 |
+| `src/hooks/useClipboardCopySwitch.test.tsx` | 9 例：挂载单次枚举/刷新失败保留旧列表/乱序刷新；重复 run 只执行一次；统计 +1 口径；copy/focus 失败相位；仅重试切换不重复复制；NOT_FOUND；卸载作废；itemId 切换在途结果不串写 |
+| `src/components/clipboard/ClipboardItemCard.test.tsx` | 分体按钮：↗ 直接打开目标选择器（无 `aria-haspopup`/菜单、图标为 `lucide-arrow-up-right`）、复制只复制、Enter 不触发详情、无回调不渲染箭头、删除在途禁用 |
+| `src/components/clipboard/CopySwitchPanel.test.tsx` | 目标加载/失败/空态/刷新；点击目标行（含右侧 ↗ 图示）只触发一次 precheck→copy→focus 且零粘贴接口；无 radio/aria-checked 语义；复制失败不 focus；切换失败仅重试；部分成功文案；滚动位置保持；itemMissing |
+| `src/components/capsule/ClipboardTargetView.test.tsx` | 16 例：胶囊入口为 `ArrowUpRight` 按钮、单次枚举、点击目标行右侧箭头同样只执行一次、Escape 返回、复制/切换失败恢复、仅重试切换、部分成功、itemMissing、卸载清理 |
+
+
 本次全量运行未出现此前的 5 s 超时；早前在 CPU 满载并行编译时出现过 3 例任务面板超时，
 属于测试阈值而非功能回归，未通过修改阈值掩盖。
 

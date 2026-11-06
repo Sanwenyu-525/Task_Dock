@@ -126,14 +126,18 @@ vi.mock("../lib/bridge", () => {
     shelfClear: vi.fn(async (includeProtected: boolean) =>
       reportDelete(mockShelf.server.map((item) => item.id), includeProtected),
     ),
-    shelfCleanup: vi.fn(async () => ({
-      dry_run: false,
-      candidates: 1,
-      skipped_protected: 0,
-      freed_bytes: 10,
-      failed_files: 0,
-      orphan_files_removed: 0,
-    })),
+    shelfCleanup: vi.fn(async (dryRun: boolean) => {
+      calls.shelfCleanup?.push(dryRun);
+      return {
+        dry_run: dryRun,
+        candidates: 1,
+        skipped_protected: 0,
+        temporary_files_skipped: 0,
+        freed_bytes: 10,
+        failed_files: 0,
+        orphan_files_removed: 0,
+      };
+    }),
     shelfCheckExists: vi.fn(async (ids: string[]) =>
       ids.map((id) => ({ id, exists_state: id === "b" ? "missing" : "ok" })),
     ),
@@ -152,11 +156,18 @@ vi.mock("../lib/bridge", () => {
 
 import { useShelfStore, __resetShelfRecentCache, SHELF_RECENT_LIMIT } from "./useShelfStore";
 import {
+  clientDiagnosticsStats,
+  flushDiagnostics,
+  setDiagnosticTransport,
+  type DiagnosticInput,
+} from "../lib/diagnostics";
+import {
   shelfList,
   shelfStats,
   shelfGroups,
   shelfCheckExists,
   shelfDelete,
+  shelfCleanup,
   type ShelfItem,
 } from "../lib/bridge";
 
@@ -178,6 +189,7 @@ describe("useShelfStore", () => {
       error: null,
       mutationSyncError: null,
       deletionBusy: false,
+      cleanupBusy: false,
       recent: [],
       recentLoading: false,
       recentLoaded: false,
@@ -224,6 +236,36 @@ describe("useShelfStore", () => {
     expect(s.items.some((i) => i.display_name === "D:\\a.txt")).toBe(true);
     expect(shelfStats).toHaveBeenCalled();
     expect(shelfGroups).toHaveBeenCalled();
+  });
+
+  it("addPaths 只记录数量/来源，不把文件路径写进诊断日志", async () => {
+    // 先清空此前用例留下的诊断队列，避免旧事件混入本次断言。
+    setDiagnosticTransport(async () => {});
+    while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+    const events: DiagnosticInput[] = [];
+    setDiagnosticTransport(async (batch) => {
+      events.push(...batch);
+    });
+    try {
+      await useShelfStore.getState().addPaths(["D:\\secret\\note.txt"], "reference", "drag");
+      while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+      const opEvents = events.filter((event) => event.action === "shelf_add_paths");
+      expect(opEvents.filter((event) => event.status === "started")).toHaveLength(1);
+      expect(opEvents.filter((event) => event.status === "success")).toHaveLength(1);
+      expect(opEvents.find((event) => event.status === "success")?.metadata).toMatchObject({
+        count: 1,
+        added: 1,
+        failed: 0,
+      });
+      // 隐私红线：路径与文件名不得进入诊断事件。
+      const payload = JSON.stringify(opEvents);
+      expect(payload).not.toContain("secret");
+      expect(payload).not.toContain("note.txt");
+    } finally {
+      setDiagnosticTransport(null);
+    }
   });
 
   it("addFromClipboard 上报逐条失败原因", async () => {
@@ -511,5 +553,149 @@ describe("useShelfStore", () => {
     await pending;
     expect(useShelfStore.getState().recent.some((i) => i.id === "stale")).toBe(false);
     expect(useShelfStore.getState().recentLoading).toBe(false);
+  });
+
+  it("runCleanup 的 dry-run 只读：不改列表/统计，也不失效最近缓存", async () => {
+    await useShelfStore.getState().loadRecent({ force: true });
+    const listCalls = (shelfList as ReturnType<typeof vi.fn>).mock.calls.length;
+    const statsCalls = (shelfStats as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    const result = await useShelfStore.getState().runCleanup(true, false);
+
+    expect(shelfCleanup).toHaveBeenCalledWith(true, false);
+    expect(result.synced).toBe(true);
+    expect(result.report.dry_run).toBe(true);
+    expect(useShelfStore.getState().lastCleanup?.dry_run).toBe(true);
+    expect((shelfList as ReturnType<typeof vi.fn>).mock.calls.length).toBe(listCalls);
+    expect((shelfStats as ReturnType<typeof vi.fn>).mock.calls.length).toBe(statsCalls);
+    expect(useShelfStore.getState().recentLoaded).toBe(true);
+  });
+
+  it("runCleanup 真实执行后同步列表、统计、分组与最近暂存，并保留当前筛选", async () => {
+    mockShelf.server = [makeItem("a"), makeItem("b")];
+    await useShelfStore.getState().setFilter({ kind: "file" });
+    await useShelfStore.getState().loadRecent({ force: true });
+    useShelfStore.setState({ selectedIds: ["a", "b"], detailId: "a" });
+
+    (shelfCleanup as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      mockShelf.server = [makeItem("b")];
+      return {
+        dry_run: false,
+        candidates: 1,
+        skipped_protected: 0,
+        temporary_files_skipped: 0,
+        freed_bytes: 10,
+        failed_files: 0,
+        orphan_files_removed: 0,
+      };
+    });
+
+    const result = await useShelfStore.getState().runCleanup(false, false);
+    const state = useShelfStore.getState();
+
+    expect(result.synced).toBe(true);
+    expect(result.report.candidates).toBe(1);
+    expect(state.items.map((item) => item.id)).toEqual(["b"]);
+    expect(state.total).toBe(1);
+    expect(state.stats?.total).toBe(1);
+    expect(state.groups[0]?.item_count).toBe(1);
+    expect(state.recent.map((item) => item.id)).toEqual(["b"]);
+    expect(state.selectedIds).toEqual(["b"]);
+    expect(state.detailId).toBeNull();
+    expect(state.filter.kind).toBe("file");
+    // 清理沿用当前筛选加载权威列表，而不是清空筛选重载。
+    const lastFilteredList = (shelfList as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([opts]) => (opts as { sort?: string } | undefined)?.sort !== "recent")
+      .at(-1)?.[0];
+    expect(lastFilteredList).toMatchObject({ kind: "file" });
+
+    // 最近暂存没有被 TTL 复用：清理后强制重新取权威切片。
+    const recentLists = (shelfList as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([opts]) => (opts as { sort?: string } | undefined)?.sort === "recent",
+    );
+    expect(recentLists.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("清理后旧的最近响应不能覆盖新的最近切片", async () => {
+    mockShelf.server = [makeItem("a"), makeItem("b")];
+    await useShelfStore.getState().loadRecent({ force: true });
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    (shelfList as ReturnType<typeof vi.fn>).mockImplementationOnce(() =>
+      gate.then(() => ({
+        items: [makeItem("stale")],
+        total: 1,
+      })),
+    );
+    const stale = useShelfStore.getState().loadRecent({ force: true });
+
+    (shelfCleanup as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      mockShelf.server = [makeItem("b")];
+      return {
+        dry_run: false,
+        candidates: 1,
+        skipped_protected: 0,
+        temporary_files_skipped: 0,
+        freed_bytes: 10,
+        failed_files: 0,
+        orphan_files_removed: 0,
+      };
+    });
+    await useShelfStore.getState().runCleanup(false, false);
+
+    release();
+    await stale;
+    expect(useShelfStore.getState().recent.some((item) => item.id === "stale")).toBe(false);
+    expect(useShelfStore.getState().recent.map((item) => item.id)).toEqual(["b"]);
+  });
+
+  it("runCleanup 成功但同步失败时返回 synced=false，重试只同步不重复清理", async () => {
+    useShelfStore.setState({ items: [makeItem("a"), makeItem("b")], total: 2 });
+    (shelfCleanup as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => ({
+      dry_run: false,
+      candidates: 1,
+      skipped_protected: 0,
+      temporary_files_skipped: 0,
+      freed_bytes: 10,
+      failed_files: 0,
+      orphan_files_removed: 0,
+    }));
+    (shelfList as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("列表不可用"));
+
+    const result = await useShelfStore.getState().runCleanup(false, false);
+    expect(result.synced).toBe(false);
+    expect(useShelfStore.getState().mutationSyncError).toContain("刷新失败");
+    expect(shelfCleanup).toHaveBeenCalledTimes(1);
+
+    await useShelfStore.getState().retryShelfSync();
+    expect(shelfCleanup).toHaveBeenCalledTimes(1);
+    expect(useShelfStore.getState().mutationSyncError).toBeNull();
+  });
+
+  it("清理在途时拒绝第二次执行，预览与执行共用同一闸", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    (shelfCleanup as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      await gate;
+      return {
+        dry_run: false,
+        candidates: 1,
+        skipped_protected: 0,
+        temporary_files_skipped: 0,
+        freed_bytes: 10,
+        failed_files: 0,
+        orphan_files_removed: 0,
+      };
+    });
+
+    const first = useShelfStore.getState().runCleanup(false, false);
+    await flush();
+    await expect(useShelfStore.getState().runCleanup(false, false)).rejects.toThrow("正在清理");
+    await expect(useShelfStore.getState().runCleanup(true, false)).rejects.toThrow("正在清理");
+    release();
+    await first;
+    expect(shelfCleanup).toHaveBeenCalledTimes(1);
+    expect(useShelfStore.getState().cleanupBusy).toBe(false);
   });
 });

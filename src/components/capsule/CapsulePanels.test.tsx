@@ -104,6 +104,7 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import type { AgentSnapshot, Task } from "../../lib/bridge";
 
@@ -203,6 +204,7 @@ beforeEach(() => {
     liteError: null,
   });
   useNavigationStore.setState({ targets: [], targetsLoaded: false, targetsError: null });
+  useSettingsStore.setState({ settings: null });
   clearAppGridOrder();
 });
 
@@ -755,6 +757,30 @@ describe("Agent 面板", () => {
     act(() => screen.getByRole("button", { name: "打开 重构登录 的会话" }).click());
     await screen.findByText("打开会话失败");
     expect(openAgentSession).toHaveBeenCalledWith("codex", "s1");
+  });
+
+  it("底栏提供「行动」入口：只导航到完整行动页，不在胶囊内加载聚合 feed", async () => {
+    useSettingsStore.setState({ settings: { actions_enabled: true } as never });
+    useAgentsStore.setState({ snapshot });
+    useUiStore.setState({ tab: "tasks", pendingTab: null });
+    render(<AgentsLite />);
+    await screen.findByText("重构登录");
+
+    fireEvent.click(screen.getByRole("button", { name: "行动" }));
+    expect(useUiStore.getState().tab).toBe("actions");
+    // 入口只做导航：不额外请求 Agent 快照/行动聚合（面板自身的补快照除外）
+    expect(agentSnapshot.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it("行动中心被用户关闭时不显示「行动」入口（避免死入口）", async () => {
+    useSettingsStore.setState({ settings: { actions_enabled: false } as never });
+    useAgentsStore.setState({ snapshot });
+    render(<AgentsLite />);
+    await screen.findByText("重构登录");
+
+    expect(screen.queryByRole("button", { name: "行动" })).toBeNull();
+    // Agent 页入口仍在，面板核心能力不受影响
+    expect(screen.getByRole("button", { name: "Agent 页" })).toBeTruthy();
   });
 });
 

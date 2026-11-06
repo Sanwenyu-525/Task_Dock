@@ -182,6 +182,14 @@ function normalizeLoadedSettings(
 
 export const useSettingsStore = create<{
   settings: Settings | null;
+  /**
+   * 启动读取失败原因（成功读取后清空）。
+   *
+   * 设置未加载时外壳不渲染默认导航/默认模式（避免「先显示默认界面、再跳到真实
+   * 配置」的闪烁）；因此读取失败必须有可操作出口：外壳据本字段显示重试入口，
+   * 而不是让窗口停在空白的启动占位。
+   */
+  loadError: string | null;
   /** 材质实际状态（含降级信息） */
   materialInfo: MaterialInfo | null;
   load: () => Promise<void>;
@@ -492,14 +500,25 @@ export const useSettingsStore = create<{
 
   return {
     settings: null,
+    loadError: null,
     materialInfo: null,
 
     load: async () => {
-      const s = await getSettings();
-      set({ settings: normalizeLoadedSettings(s) });
-      applyPresetToDom();
-      applyThemeToDom();
-      await applyMaterial();
+      try {
+        const s = await getSettings();
+        // 空/非对象响应：没有可用的初始设置就不能进入「已就绪」，否则外壳会永久
+        // 停在启动占位且没有任何提示。按读取失败处理，交给外壳显示重试入口。
+        const next = normalizeLoadedSettings(s);
+        if (!next) throw new Error("设置响应无效");
+        set({ settings: next, loadError: null });
+        applyPresetToDom();
+        applyThemeToDom();
+        await applyMaterial();
+      } catch (e) {
+        // 读取失败：记下原因供外壳显示重试入口，再原样抛给调用方（启动路径统一报错）。
+        set({ loadError: errorMessage(e) });
+        throw e;
+      }
     },
 
     update: (patch) => enqueueWrite(patch),

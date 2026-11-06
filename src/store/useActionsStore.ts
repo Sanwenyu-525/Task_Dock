@@ -17,11 +17,10 @@ import {
   type ActionKind,
 } from "../lib/bridge";
 import type { NavigationResult } from "../lib/navigation";
-import { isCapsuleMode } from "../lib/edgeSnap";
+import { isFullViewVisible } from "../hooks/useMainUiVisible";
 import { selectNavigationLayout } from "../lib/navigationLayout";
 import { useSettingsStore } from "./useSettingsStore";
 import { useUiStore } from "./useUiStore";
-import { useEdgeSnapStore } from "./useEdgeSnapStore";
 
 const REFRESH_DEBOUNCE_MS = 1200;
 const PAGE_SIZE = 40;
@@ -193,6 +192,10 @@ export function scheduleActionsRefresh() {
   if (timer) return;
   timer = setTimeout(() => {
     timer = null;
+    // 执行前重新验证消费者：调度窗口内可能已切到极简/紧凑模式、隐藏入口或进入
+    // 停靠胶囊。此时聚合结果没有任何 UI 消费者，发出去只是白跑一次查询；
+    // 消费者恢复时由 FullView / ActionCenterPanel 的恢复路径补一次刷新。
+    if (!shouldRefreshActions()) return;
     void useActionsStore.getState().load({ silent: true, countsOnly: true });
   }, REFRESH_DEBOUNCE_MS);
 }
@@ -201,13 +204,16 @@ export function scheduleActionsRefresh() {
  * 行动中心聚合数据当前的 UI 消费者判定。
  *
  * `feed` 只有两个消费者：完整面板侧栏徽标（入口可见时渲染）与行动中心页面
- * （tab=actions 时挂载）。入口被隐藏、行动页未打开、或主界面停靠隐藏时，
+ * （tab=actions 时挂载）。入口被隐藏、行动页未打开、或完整面板不可见时，
  * 事件驱动的计数聚合刷新没有任何 UI 消费者 —— 应当暂停（导航显隐 ≠ 停用
  * 行动中心：Agent 事件仍照常入库，重新出现消费者时由恢复路径补一次刷新）。
+ *
+ * 「完整面板不可见」包含两种：停靠胶囊期（主界面 display:none + inert）与
+ * 极简/紧凑模式（主界面仍在，但侧栏与页面整块不渲染）。后者是旧实现的漏判：
+ * 只看 tab 与入口可见性，会让非完整模式下继续为不可见的徽标做聚合查询。
  */
 export function hasActionsFeedConsumer(): boolean {
-  // 停靠期主界面 display:none + inert：徽标与页面都不可见
-  if (isCapsuleMode(useEdgeSnapStore.getState().phase)) return false;
+  if (!isFullViewVisible()) return false;
   // 行动中心页面挂载中（tab=actions），即使入口隐藏（当前页由「更多」承担）
   if (useUiStore.getState().tab === "actions") return true;
   // 侧栏入口可见：徽标持续消费 counts

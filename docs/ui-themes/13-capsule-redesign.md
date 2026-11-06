@@ -761,3 +761,25 @@ IPC/轮询的前提下完成核心动作」。两者任一不成立即为快捷�
   已在途请求超时未返回时新移动仍排在旧移动之后。
 - 回读有界重试 1 次（共 2 次）；仍失败时不写持久化并清空未确认的内存中心，
   恢复胶囊回退到真实矩形，后续巡检用真实位重建。
+
+**工具面板与完整面板整合修订（2026-11-06）：**
+
+- **跨面板跳转必须是单一导航事务**：胶囊里「打开完整面板并执行一个动作」统一走
+  `openFullApp(tab, after)`，`after` 只在导航成功（含用户确认放弃草稿后的强制导航）后执行，
+  返回值区分 `switched / pending / blocked`。任务编辑新增 `openTaskEditor(task)`（一次
+  `setTab` + `openEditorNow`）；禁止拆成 `openEditor(task)` + `openFullApp("tasks")`——
+  第二次导航会覆盖 `pendingTab.after`，有未保存草稿时编辑意图丢失。
+- **一次性意图一律放在 `after` 内**：逐项粘贴、暂存定位、添加应用、目标管理、快速笔记；
+  取消/保存中拦截时不残留。`InboxDropPane` 的「管理」由「先置位再导航」改为 after，
+  修复了导航被拦截后、下次进入暂存架突然展开管理面板的问题。
+- **胶囊内的未保存草稿确认**：胶囊模式 `.dock-app` 是 `display:none` + `inert`，全局
+  `TabLeaveGuard` 不可见；`CapsuleDock` 面板内新增 `CapsuleLeaveGuard`（复用 `cap-confirm`），
+  只在 `pendingTab` 与当前活动守卫一致时显示「继续编辑 / 放弃并切换」；面板收起或切换分类
+  即取消待决意图，不把 `after` 留给下一次进入。
+- **轻量入口**：Agent 面板底栏「行动」只导航到完整行动中心（不订阅行动 feed；用户在设置中
+  关闭行动中心时隐藏）；收集箱「快速笔记」导航到完整收集箱的笔记子页（胶囊不新建笔记编辑器）。
+- **不新增胶囊分类**：轨道几何只支持「状态球 + 4 分类」，第 5 个分类会挤压命中区，且需要
+  `styles.css` 与 `window_shape.rs` 三端同步改动；本次不扩大几何。
+- 回归：`src/components/capsule/taskEditorNavigation.test.tsx`、`CapsuleDock.test.tsx`、
+  `CapsulePanels.test.tsx`、`InboxDropPane.test.tsx`、`InboxLite.test.tsx`、
+  `capsuleNavigationContract.test.tsx`。

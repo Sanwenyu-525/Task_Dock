@@ -1,14 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, HardDrive, Image, RefreshCw, Trash2, Volume2 } from "lucide-react";
 import {
   resourceCleanupExecute,
   resourceCleanupPreview,
-  resourceSnapshot,
   type ResourceCleanupCategory,
   type ResourceCleanupCategoryPreview,
   type ResourceCleanupExecutionReport,
   type ResourceCleanupPreview,
-  type ResourceSnapshot,
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
 import { normalizeError } from "../../lib/errors";
@@ -110,69 +108,18 @@ function isPreviewExpired(preview: ResourceCleanupPreview | null): boolean {
   return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
 }
 
-function SnapshotSummary({ snapshot }: { snapshot: ResourceSnapshot }) {
-  const { t } = useLocale();
-  const unavailable = t("settings.resourceCleanup.unavailable");
-  return (
-    <div className="resource-cleanup-summary">
-      <div className="resource-cleanup-metric">
-        <span className="resource-cleanup-metric-label">
-          {t("settings.resourceCleanup.applicationCache")}
-        </span>
-        {snapshot.application.knownCacheBytes === null || snapshot.application.knownCacheFiles === null
-          ? unavailable
-          : t("settings.resourceCleanup.usageValue", {
-              bytes: formatBytes(snapshot.application.knownCacheBytes),
-              files: snapshot.application.knownCacheFiles,
-            })}
-        <span className="resource-cleanup-row-status">
-          {t(
-            snapshot.application.status === "ready"
-              ? "settings.resourceCleanup.applicationStatus.ready"
-              : snapshot.application.status === "partial"
-                ? "settings.resourceCleanup.applicationStatus.partial"
-                : "settings.resourceCleanup.applicationStatus.unavailable",
-          )}
-        </span>
-      </div>
-      <div className="resource-cleanup-metric">
-        <span className="resource-cleanup-metric-label">{t("settings.resourceCleanup.memory")}</span>
-        {snapshot.memory.totalBytes === null || snapshot.memory.availableBytes === null
-          ? unavailable
-          : t("settings.resourceCleanup.memoryValue", {
-              available: formatBytes(snapshot.memory.availableBytes),
-              total: formatBytes(snapshot.memory.totalBytes),
-            })}
-      </div>
-      <div className="resource-cleanup-metric">
-        <span className="resource-cleanup-metric-label">{t("settings.resourceCleanup.disk")}</span>
-        {snapshot.disks.length === 0 ? (
-          unavailable
-        ) : (
-          <ul className="resource-cleanup-disk-list">
-            {snapshot.disks.map((disk) => (
-              <li key={disk.volume}>
-                {disk.totalBytes === null || disk.availableBytes === null
-                  ? `${disk.volume}: ${unavailable}`
-                  : t("settings.resourceCleanup.diskValue", {
-                      volume: disk.volume,
-                      available: formatBytes(disk.availableBytes),
-                      total: formatBytes(disk.totalBytes),
-                    })}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
+export interface ResourceCleanupSectionProps {
+  /** 预览结果变化：可清理字节；`null` 表示尚未扫描。 */
+  onPreviewChange?: (totalBytes: number | null) => void;
+  /** 清理完成/失败后请求页面刷新快照（缓存与磁盘数据已变化）。 */
+  onSnapshotInvalidated?: () => void;
 }
 
-export default function ResourceCleanupSection() {
+export default function ResourceCleanupSection({
+  onPreviewChange,
+  onSnapshotInvalidated,
+}: ResourceCleanupSectionProps = {}) {
   const { t } = useLocale();
-  const [snapshot, setSnapshot] = useState<ResourceSnapshot | null>(null);
-  const [snapshotError, setSnapshotError] = useState<string | null>(null);
-  const [snapshotLoading, setSnapshotLoading] = useState(true);
   const [preview, setPreview] = useState<ResourceCleanupPreview | null>(null);
   const [report, setReport] = useState<ResourceCleanupExecutionReport | null>(null);
   const [phase, setPhase] = useState<CleanupPhase>("idle");
@@ -182,36 +129,19 @@ export default function ResourceCleanupSection() {
   const [expiryCheck, setExpiryCheck] = useState(0);
   const mountedRef = useRef(false);
   const requestRef = useRef(0);
-  const snapshotRequestRef = useRef(0);
-
-  const loadSnapshot = useCallback(async () => {
-    const request = ++snapshotRequestRef.current;
-    setSnapshot(null);
-    setSnapshotError(null);
-    setSnapshotLoading(true);
-    try {
-      const result = await resourceSnapshot();
-      if (!mountedRef.current || request !== snapshotRequestRef.current) return;
-      setSnapshot(result);
-    } catch (reason: unknown) {
-      if (!mountedRef.current || request !== snapshotRequestRef.current) return;
-      setSnapshotError(localizedErrorMessage(reason));
-    } finally {
-      if (mountedRef.current && request === snapshotRequestRef.current) {
-        setSnapshotLoading(false);
-      }
-    }
-  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
-    void loadSnapshot();
     return () => {
       mountedRef.current = false;
       requestRef.current += 1;
-      snapshotRequestRef.current += 1;
     };
-  }, [loadSnapshot]);
+  }, []);
+
+  // 概览的「可清理量」来自这里的预览结果：扫描/清理后同步给页面，不重复请求。
+  useEffect(() => {
+    onPreviewChange?.(preview ? preview.totalEstimatedBytes : null);
+  }, [preview, onPreviewChange]);
 
   const categoryRows = preview?.categories ?? [];
   const selectedRows = useMemo(
@@ -293,49 +223,34 @@ export default function ResourceCleanupSection() {
       setReport(result);
       setPreview(null);
       setPhase(result.status === "success" ? "success" : result.status === "partial" ? "partial" : "error");
-      void loadSnapshot();
+      onSnapshotInvalidated?.();
     } catch (reason) {
       if (!mountedRef.current || request !== requestRef.current) return;
       setError(cleanupErrorMessage(reason, t));
       setPreview(null);
       setPhase("error");
-      void loadSnapshot();
+      onSnapshotInvalidated?.();
     }
   }
 
   const categoryName = (category: ResourceCleanupCategory) => t(CATEGORY_INFO[category].title);
 
   return (
-    <div className="resource-cleanup">
-      <h3 className="resource-cleanup-heading">{t("settings.resourceCleanup.snapshotTitle")}</h3>
-      {snapshotLoading && (
-        <div className="setting-note" role="status">
-          {t("settings.resourceCleanup.loadingSnapshot")}
+    <div className="resource-management">
+      <section className="resource-cleanup" aria-labelledby="resource-cleanup-title">
+        <div className="resource-cleanup-section-head">
+          <h3 className="resource-cleanup-heading" id="resource-cleanup-title">
+            {t("settings.resourceCleanup.categoriesTitle")}
+          </h3>
+          {preview && (
+            <StatusBadge
+              tone={phase === "partial" ? "warning" : phase === "error" ? "danger" : "neutral"}
+              size="sm"
+            >
+              {t(`settings.resourceCleanup.phase.${phase}` as MessageKey)}
+            </StatusBadge>
+          )}
         </div>
-      )}
-      {snapshotError && (
-        <div className="resource-cleanup-section-head" role="alert">
-          <span className="setting-note resource-cleanup-error">
-            {t("settings.resourceCleanup.snapshotFailed", { error: snapshotError })}
-          </span>
-          <button className="btn sm" type="button" onClick={() => void loadSnapshot()} disabled={snapshotLoading}>
-            {t("common.retry")}
-          </button>
-        </div>
-      )}
-      {snapshot && <SnapshotSummary snapshot={snapshot} />}
-
-      <div className="resource-cleanup-section-head">
-        <h3 className="resource-cleanup-heading">{t("settings.resourceCleanup.categoriesTitle")}</h3>
-        {preview && (
-          <StatusBadge
-            tone={phase === "partial" ? "warning" : phase === "error" ? "danger" : "neutral"}
-            size="sm"
-          >
-            {t(`settings.resourceCleanup.phase.${phase}` as MessageKey)}
-          </StatusBadge>
-        )}
-      </div>
 
       {preview ? (
         <div className="resource-cleanup-categories">
@@ -509,6 +424,11 @@ export default function ResourceCleanupSection() {
           </ul>
         </section>
       )}
+      </section>
+
+      <p className="setting-note resource-management-safety">
+        {t("settings.resourceCleanup.safetyNote")}
+      </p>
     </div>
   );
 }

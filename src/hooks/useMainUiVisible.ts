@@ -42,3 +42,16 @@ export function useFullViewVisible(): boolean {
   const mode = useSettingsStore((s) => resolveWindowMode(s.settings?.mode));
   return useEdgeSnapStore((s) => mode === "full" && !isCapsuleMode(s.phase));
 }
+
+/**
+ * 非 React 调用方（事件处理器 / store 模块）：完整面板当前是否可见。
+ *
+ * 与 `isMainUiVisible` 的区别：极简/紧凑模式下主界面（标题栏等）仍可见，
+ * 但**侧栏与完整面板页面不渲染**。只消费侧栏徽标/完整页面的门控必须用本函数，
+ * 否则「非完整模式」会被误判成仍有 UI 消费者（行动中心计数聚合即为此类）。
+ * 设置尚未加载时按安全页 `full` 处理（保守放行，不因启动竞态漏刷新）。
+ */
+export function isFullViewVisible(): boolean {
+  if (resolveWindowMode(useSettingsStore.getState().settings?.mode) !== "full") return false;
+  return !isCapsuleMode(useEdgeSnapStore.getState().phase);
+}

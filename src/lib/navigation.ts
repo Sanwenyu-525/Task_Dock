@@ -122,8 +122,11 @@ export interface AppScanResult {
   scanned_at: string;
   duration_ms: number;
   counts: Record<string, number>;
-  /** 来源级诊断：startmenu_truncated / uwp_scan_failed 等（区分「没有匹配」与「发现不完整」） */
+  /** 来源级诊断：startmenu_truncated / uwp_scan_failed / uwp_scan_timeout 等
+   * （区分「没有匹配」与「发现不完整」） */
   diagnostics?: Record<string, number>;
+  /** 本次扫描被取消：apps 只含取消前已发现的部分结果，不能当作完整扫描 */
+  cancelled?: boolean;
 }
 
 export interface WindowInfo {
@@ -192,6 +195,14 @@ export interface AppScanBatch {
 // ── 扫描与目标 ──
 export const navScanApps = (force = false, scanId?: string) =>
   invoke<AppScanResult>("nav_scan_apps", { force, scanId: scanId ?? null });
+
+/**
+ * 取消一次在途扫描（按 scan_id）。只置后端取消标志，立即返回；
+ * 返回 false = 该请求已结束或不存在，调用方不得据此声称「已取消」，
+ * 必须以后续 `navScanApps` 的真实返回（`cancelled`）为准。
+ */
+export const navCancelScan = (scanId: string) =>
+  invoke<boolean>("nav_cancel_scan", { scanId });
 
 /** 订阅渐进扫描批次；调用方必须在扫描结束后注销，避免重复监听。 */
 export const onNavScanBatch = (handler: (batch: AppScanBatch) => void): Promise<UnlistenFn> =>

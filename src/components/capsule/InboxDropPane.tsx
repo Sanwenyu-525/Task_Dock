@@ -253,7 +253,10 @@ export default function InboxDropPane() {
         />
       ) : (
         <>
-          {empty && !loading && (
+          {/* 空态只在「确实没有目标」或「首次读取中」出现：
+              读取失败由上方错误条负责（不冒充正在读取）；目标全部未勾选
+              「在工具面板显示」时由下方提示负责（不误报还没有目标、不诱导重复添加）。 */}
+          {empty && !loading && !error && targets.length === 0 && (
             <EmptyState
               icon={<FolderInput size={22} strokeWidth={1.6} aria-hidden="true" />}
               text={loaded ? "还没有文件投递目标" : "正在读取投递目标"}
@@ -445,8 +448,9 @@ export default function InboxDropPane() {
               type="button"
               className="cap-link"
               onClick={() => {
-                requestManage();
-                openFullApp("shelf");
+                // 一次性意图必须绑定在导航事务上：切页被未保存草稿拦截/保存中
+                // 拒绝时不能提前置位，否则之后进入暂存架会突然展开管理面板。
+                openFullApp("shelf", () => requestManage());
               }}
             >
               管理

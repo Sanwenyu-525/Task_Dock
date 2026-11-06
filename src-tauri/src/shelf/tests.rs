@@ -995,6 +995,155 @@ fn cleanup_expired_respects_protection_and_dry_run() {
     assert!(get_item(&db, &b.id).is_err());
 }
 
+/// 场景引用的暂存条目不得被自动过期清理：否则场景文件关联会静默失效。
+#[test]
+fn cleanup_expired_protects_scene_linked_items() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let mut settings = Settings::default();
+    settings.shelf_retention_days = 7;
+
+    let free = add_text(&db, "未关联旧条目", "manual", None).unwrap();
+    let linked = add_text(&db, "场景引用旧条目", "manual", None).unwrap();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE shelf_items SET scene_id = 'scene-keep' WHERE id = ?1",
+            params![&linked.id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let old = (Utc::now() - Duration::days(30)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    db.with_conn(|conn| {
+        conn.execute("UPDATE shelf_items SET created_at = ?1", params![&old])?;
+        Ok(())
+    })
+    .unwrap();
+
+    let preview = cleanup_expired(&db, &tmp.shelf(), &settings, true, false).unwrap();
+    assert_eq!(preview.candidates, 1, "场景引用条目不计入候选");
+    assert_eq!(preview.skipped_protected, 1);
+
+    let run = cleanup_expired(&db, &tmp.shelf(), &settings, false, false).unwrap();
+    assert_eq!(run.candidates, 1);
+    assert!(get_item(&db, &free.id).is_err());
+    assert!(get_item(&db, &linked.id).is_ok(), "场景引用条目永不被自动清理");
+    let kept = get_item(&db, &linked.id).unwrap();
+    assert_eq!(kept.scene_id.as_deref(), Some("scene-keep"));
+}
+
+/// 删除事务必须复核场景保护：扫描后条目被关联到场景时，
+/// 数据库行与托管文件都不得被删（否则场景引用静默失效且文件丢失）。
+#[test]
+fn delete_items_rechecks_scene_protection_and_keeps_managed_files() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let src = write_source(&tmp.0, "源文件.txt", b"managed-bytes");
+    let item = add_managed(
+        &db,
+        &tmp.shelf(),
+        &src.to_string_lossy(),
+        "picker",
+        None,
+    )
+    .unwrap();
+    let managed_abs = tmp
+        .shelf()
+        .join(item.managed_path.clone().expect("托管条目应有托管路径"));
+    assert!(managed_abs.exists());
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE shelf_items SET scene_id = 'scene-race' WHERE id = ?1",
+            params![&item.id],
+        )?;
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+
+    let report = delete_items(&db, &tmp.shelf(), &[item.id.clone()], false).unwrap();
+    assert_eq!(report.deleted, 0);
+    assert_eq!(report.skipped, 1);
+    assert!(get_item(&db, &item.id).is_ok(), "场景引用条目不得被删除");
+    assert!(managed_abs.exists(), "数据库行保留时托管文件不得被删");
+
+    // 显式包含保护项才允许删除托管副本；用户原文件始终保留
+    let forced = delete_items(&db, &tmp.shelf(), &[item.id.clone()], true).unwrap();
+    assert_eq!(forced.deleted, 1);
+    assert!(get_item(&db, &item.id).is_err());
+    assert!(!managed_abs.exists());
+    assert!(src.exists(), "用户原文件始终保留");
+}
+
+/// 真实业务链路：托管文件 → 正式场景保存接口关联 → 过期清理保护 → 解绑后恢复资格。
+#[test]
+fn cleanup_expired_real_scene_link_roundtrip() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let mut settings = Settings::default();
+    settings.shelf_retention_days = 7;
+
+    let src = write_source(&tmp.0, "用户原文件.txt", b"keep-me");
+    let item = add_managed(
+        &db,
+        &tmp.shelf(),
+        &src.to_string_lossy(),
+        "picker",
+        None,
+    )
+    .unwrap();
+    let managed_abs = tmp
+        .shelf()
+        .join(item.managed_path.clone().expect("托管条目应有托管路径"));
+
+    let scene_input = |id: Option<String>, shelf_ids: Vec<String>| {
+        crate::commands::scenario::ScenarioSaveInput {
+            id,
+            name: "文件场景".into(),
+            icon: None,
+            apps: vec![],
+            urls: vec![],
+            folders: vec![],
+            shelf_item_ids: shelf_ids,
+            linked_workflow_id: None,
+            snapshot_id: None,
+        }
+    };
+    // 正式接口只允许文件/文件夹关联；托管文件条目满足条件
+    let scene_id =
+        crate::commands::scenario::save(&db, &scene_input(None, vec![item.id.clone()])).unwrap();
+    assert_eq!(
+        get_item(&db, &item.id).unwrap().scene_id.as_deref(),
+        Some(scene_id.as_str())
+    );
+
+    let old = (Utc::now() - Duration::days(30)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    db.with_conn(|conn| {
+        conn.execute("UPDATE shelf_items SET created_at = ?1", params![&old])?;
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+
+    let preview = cleanup_expired(&db, &tmp.shelf(), &settings, true, false).unwrap();
+    assert_eq!(preview.candidates, 0, "场景关联条目不进入默认候选");
+    assert_eq!(preview.skipped_protected, 1);
+
+    let run = cleanup_expired(&db, &tmp.shelf(), &settings, false, false).unwrap();
+    assert_eq!(run.candidates, 0);
+    assert!(get_item(&db, &item.id).is_ok());
+    assert!(managed_abs.exists(), "场景关联期间托管副本不得被清理");
+
+    // 解绑（正式接口保存空清单）后恢复过期清理资格
+    crate::commands::scenario::save(&db, &scene_input(Some(scene_id), vec![])).unwrap();
+    assert_eq!(get_item(&db, &item.id).unwrap().scene_id, None);
+
+    let after = cleanup_expired(&db, &tmp.shelf(), &settings, false, false).unwrap();
+    assert_eq!(after.candidates, 1, "解绑后应恢复清理资格");
+    assert!(get_item(&db, &item.id).is_err());
+    assert!(!managed_abs.exists());
+    assert!(src.exists(), "用户原文件始终保留");
+}
+
 #[test]
 fn explicit_expire_at_triggers_cleanup() {
     let tmp = TempRoot::new();

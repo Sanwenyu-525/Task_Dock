@@ -4,14 +4,21 @@
 //! 扫描带 5 分钟后端缓存，这里不再额外加定时器，避免常驻开销。
 //!
 //! **刷新结果契约**：三个 load 函数都返回 `RefreshOutcome`，调用方必须用返回值区分
-//! 「本次成功 / 被更新的请求取代 / 失败」，不得在 `await` 后读取 store 旧状态推断成功：
+//! 「本次成功 / 被更新的请求取代 / 被取消 / 失败」，不得在 `await` 后读取 store 旧状态推断成功：
 //! - `ok`：本次请求结果已写入 store；
 //! - `stale`：已有更新的请求（代际更大）在途或已落地，本次结果不写入，也不应报错；
+//! - `cancelled`：本次扫描按调用方请求取消（只有 loadApps 会返回）；已发现的结果按
+//!   「取消」状态保留，既不算成功也不算失败；
 //! - `error`：本次请求失败，旧数据保留，错误原因写入对应 `*Error` 字段供 UI 展示与重试。
+//!
+//! **扫描所有权**：扫描请求只有一份（`scanning` 单飞）。谁在展示扫描结果，谁就通过
+//! `attachScanViewer()` 登记为订阅者；最后一个订阅者离开时才通知后端取消在途扫描，
+//! 因此关闭一个面板不会误取消其他入口仍在使用的扫描。
 
 import { create } from "zustand";
 import {
   navAllTaskLinks,
+  navCancelScan,
   navListTargets,
   navScanApps,
   onNavScanBatch,
@@ -23,12 +30,32 @@ import {
 import { errorMessage } from "../lib/errors";
 
 /** 单次刷新结果：调用方据此区分持久化成功与界面刷新失败。 */
-export type RefreshOutcome = "ok" | "stale" | "error";
+export type RefreshOutcome = "ok" | "stale" | "cancelled" | "error";
+
+/**
+ * 取消请求结果，供界面如实反馈：
+ * - `accepted`：后端已接受取消信号，但扫描尚未结束，必须继续等待真实结果；
+ * - `finished`：没有在途扫描（已自然结束/已结束），不提示失败；
+ * - `failed`：取消请求未能送达（IPC 异常等），后台扫描仍在继续。
+ */
+export type CancelScanOutcome = "accepted" | "finished" | "failed";
 
 /** 请求代际：只接受最新一次请求的结果（旧响应不得覆盖新数据）。 */
 let targetsSeq = 0;
 let linksSeq = 0;
 let scanSeq = 0;
+
+/** 当前在途扫描的请求身份（用于按 scan_id 取消）；无在途扫描时为 null。 */
+let activeScanId: string | null = null;
+
+/**
+ * 已经接受过取消请求的扫描 id：多个面板共享同一次扫描时，后来者直接复用
+ * 「已接受」事实，不再重复发送取消 IPC。新扫描开始/结束时清空。
+ */
+let cancelRequestedScanId: string | null = null;
+
+/** 扫描结果查看者数量：归零且仍在扫描时，才真正取消后台扫描。 */
+let scanViewers = 0;
 
 /** 渐进扫描进度：只展示真实信息（来源完成数），不适配虚假百分比。 */
 export interface ScanProgress {
@@ -36,6 +63,7 @@ export interface ScanProgress {
   discovered: number;
   sourcesDone: number;
   sourcesTotal: number;
+  /** 已收到的批次数量（含来源内分块） */
   batches: number;
 }
 
@@ -47,6 +75,7 @@ export interface ScanProgress {
  *   列表继续接收新批次；
  * - `complete`：本次/上次结果完整可用（刷新失败但上次结果完整也归入此态，另有提示）；
  * - `partial`：结果可用但不完整（首次扫描中途失败，或本轮刷新后标明部分来源失败）；
+ * - `cancelled`：扫描被调用方取消；结果可能是上次完整结果，也可能是取消前的部分结果；
  * - `failed`：没有任何可用结果（首次扫描直接失败）。
  */
 export type ScanState =
@@ -55,11 +84,13 @@ export type ScanState =
   | "scanning-partial"
   | "complete"
   | "partial"
+  | "cancelled"
   | "failed";
 
 /**
  * 由扫描字段派生状态。空批次不会把 `scan` 置为非 null，因此不会提前翻成
  * `complete`；`scanning` 优先，确保「后续来源仍在扫」时不显示完成。
+ * 取消优先于 complete/partial：取消必须与「完成」「失败」都是不同状态。
  * `incomplete` 由调用方根据 `scan.diagnostics` 判定（部分来源失败的诊断）。
  */
 export function deriveScanState(input: {
@@ -67,13 +98,16 @@ export function deriveScanState(input: {
   scanning: boolean;
   scanError: string | null;
   scanPartial: boolean;
+  cancelled?: boolean;
   incomplete?: boolean;
 }): ScanState {
+  if (input.scanning) {
+    return input.scan === null ? "scanning-empty" : "scanning-partial";
+  }
+  if (input.cancelled) return "cancelled";
   if (input.scan === null) {
-    if (input.scanning) return "scanning-empty";
     return input.scanError !== null ? "failed" : "unscanned";
   }
-  if (input.scanning) return "scanning-partial";
   if (input.incomplete || (input.scanPartial && input.scanError !== null)) return "partial";
   return "complete";
 }
@@ -94,9 +128,11 @@ export const useNavigationStore = create<{
   scanning: boolean;
   /** 扫描最近一次失败原因；null = 无错误。失败时保留旧扫描结果，但 UI 必须可见并可重试 */
   scanError: string | null;
+  /** 最近一次扫描是否被取消（与失败、完成区分；取消不写扫描缓存） */
+  scanCancelled: boolean;
   /** 扫描期间的真实进度（已发现数 / 已扫描来源）；未扫描或完成后为 null */
   scanProgress: ScanProgress | null;
-  /** 当前 scan 是否为渐进批次拼出的不完整结果（首次扫描中 / 首次扫描中途失败） */
+  /** 当前 scan 是否为渐进批次拼出的不完整结果（首次扫描中 / 首次扫描中途失败 / 中途取消） */
   scanPartial: boolean;
   /** 全部导航目标 */
   targets: NavTarget[];
@@ -112,12 +148,20 @@ export const useNavigationStore = create<{
   openPicker: (taskId: string | null) => void;
   closePicker: () => void;
   loadApps: (force?: boolean) => Promise<RefreshOutcome>;
+  /** 取消在途扫描（按当前请求身份）；返回后端可确认的取消结果 */
+  cancelScan: () => Promise<CancelScanOutcome>;
+  /**
+   * 登记一个「扫描结果查看者」，返回注销函数。
+   * 最后一个查看者注销且扫描仍在途时，才通知后端取消，避免误取消共享任务。
+   */
+  attachScanViewer: () => () => void;
   loadTargets: (force?: boolean) => Promise<RefreshOutcome>;
   loadTaskLinks: () => Promise<RefreshOutcome>;
 }>((set, get) => ({
   scan: null,
   scanning: false,
   scanError: null,
+  scanCancelled: false,
   scanProgress: null,
   scanPartial: false,
   targets: [],
@@ -133,11 +177,13 @@ export const useNavigationStore = create<{
     // 已有扫描在途：本次不再叠加请求；调用方把结果视为「由在途请求负责」。
     if (get().scanning) return "stale";
     const seq = ++scanSeq;
-    // 请求身份：后端原样回传，用于过滤旧扫描残留的批次事件。
+    // 请求身份：后端原样回传，用于过滤旧扫描残留的批次事件，也是取消的键。
     const scanId = `scan-${seq}-${Date.now().toString(36)}`;
+    activeScanId = scanId;
+    cancelRequestedScanId = null;
     // 只有「上次是完整权威结果」时才保留旧列表；首次扫描的部分结果在重试时重建。
     const keepPrevious = get().scan !== null && !get().scanPartial;
-    // 重新扫描时保留的上次权威结果，供失败时回退，避免部分新结果覆盖上次成功结果。
+    // 重新扫描时保留的上次权威结果，供失败/取消时回退，避免部分新结果覆盖上次成功结果。
     const previousScan = keepPrevious ? get().scan : null;
     // 重新扫描时，把上次已确认的完整结果作为增量起点，使新发现的应用
     // 能在扫描期间逐步进入集合，同时保留旧条目（避免列表抖动/重复）。
@@ -151,6 +197,7 @@ export const useNavigationStore = create<{
     set({
       scanning: true,
       scanError: null,
+      scanCancelled: false,
       scanProgress: { discovered: 0, sourcesDone: 0, sourcesTotal: 0, batches: 0 },
       scanPartial: !keepPrevious,
     });
@@ -187,8 +234,22 @@ export const useNavigationStore = create<{
       if (seq !== scanSeq) return "stale";
       const scan = await navScanApps(force, scanId);
       if (seq !== scanSeq) return "stale";
+      if (scan.cancelled) {
+        // 取消既不是完成也不是失败：
+        // - 已有一份完整结果 → 回退到它（取消产生的新发现不作为权威结果）；
+        // - 首次扫描被取消 → 保留取消前已合并的部分结果，并标记不完整。
+        const fallback = keepPrevious && previousScan ? previousScan : get().scan;
+        set({
+          scan: fallback,
+          scanError: null,
+          scanProgress: null,
+          scanCancelled: true,
+          scanPartial: !keepPrevious && fallback !== null,
+        });
+        return "cancelled";
+      }
       // 最终权威结果收敛列表、计数与诊断，避免渐进阶段的数据长期残留。
-      set({ scan, scanError: null, scanProgress: null, scanPartial: false });
+      set({ scan, scanError: null, scanProgress: null, scanPartial: false, scanCancelled: false });
       return "ok";
     } catch (e) {
       if (seq !== scanSeq) return "stale";
@@ -197,6 +258,7 @@ export const useNavigationStore = create<{
       set({
         scanError: errorMessage(e),
         scanProgress: null,
+        scanCancelled: false,
         // 重新扫描失败：回退到上次权威结果，不保留本次部分新发现。
         scan: keepPrevious && previousScan ? previousScan : get().scan,
         scanPartial: !keepPrevious && get().scan !== null,
@@ -205,8 +267,46 @@ export const useNavigationStore = create<{
     } finally {
       unlisten?.();
       // 只允许最新请求收起 loading，避免旧请求提前把新请求的 scanning 置回 false。
-      if (seq === scanSeq) set({ scanning: false });
+      if (seq === scanSeq) {
+        if (activeScanId === scanId) activeScanId = null;
+        set({ scanning: false });
+      }
     }
+  },
+
+  cancelScan: async () => {
+    const scanId = activeScanId;
+    // 没有在途扫描：可能刚好自然结束，不能报「取消失败」。
+    if (!scanId || !get().scanning) return "finished";
+    // 同一次扫描已经接受过取消（其他面板或自动取消已发出）：复用事实，不重复 IPC。
+    if (cancelRequestedScanId === scanId) return "accepted";
+    try {
+      // 只发取消信号：本函数不把 scanning 置 false，界面必须等后端真实返回
+      // （scan.cancelled）才结束加载态，不能用前端隐藏 Loading 冒充已取消。
+      const accepted = await navCancelScan(scanId);
+      // 请求往返期间扫描可能已经结束：以当前在途状态区分「已结束」与「未送达」。
+      if (!get().scanning) return "finished";
+      if (accepted) {
+        cancelRequestedScanId = scanId;
+        return "accepted";
+      }
+      return "failed";
+    } catch {
+      // IPC 失败不伪装成功；扫描可能恰在此时完成，已结束则不算失败。
+      return get().scanning ? "failed" : "finished";
+    }
+  },
+
+  attachScanViewer: () => {
+    scanViewers += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      scanViewers = Math.max(0, scanViewers - 1);
+      // 仍有其他入口在展示扫描结果时不取消；只有最后一个查看者离开才释放后台工作。
+      if (scanViewers === 0) void get().cancelScan();
+    };
   },
 
   loadTargets: async (_force = false) => {

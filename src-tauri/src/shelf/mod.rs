@@ -1310,9 +1310,9 @@ fn delete_matching(
             for id_batch in unique_ids.chunks(ID_BATCH_SIZE) {
                 let ph = placeholders(id_batch.len());
                 let select_sql = format!(
-                    "SELECT id, managed_path, byte_size, favorite, pinned FROM shelf_items WHERE id IN ({ph})"
+                    "SELECT id, managed_path, byte_size, favorite, pinned, scene_id FROM shelf_items WHERE id IN ({ph})"
                 );
-                let batch_pending = {
+                let mut batch_pending = {
                     let mut stmt = tx.prepare(&select_sql)?;
                     let rows = stmt.query_map(params_from_iter(id_batch.iter()), |r| {
                         Ok((
@@ -1321,12 +1321,15 @@ fn delete_matching(
                             r.get::<_, i64>(2)?,
                             r.get::<_, i64>(3)?,
                             r.get::<_, i64>(4)?,
+                            r.get::<_, Option<String>>(5)?,
                         ))
                     })?;
                     let mut batch_pending = Vec::new();
                     for row in rows {
-                        let (id, managed_path, size, favorite, pinned) = row?;
-                        if !include_protected && (favorite != 0 || pinned != 0) {
+                        let (id, managed_path, size, favorite, pinned, scene_id) = row?;
+                        if !include_protected
+                            && (favorite != 0 || pinned != 0 || scene_id.is_some())
+                        {
                             skipped += 1;
                         } else {
                             batch_pending.push(PendingFile {
@@ -1350,7 +1353,7 @@ fn delete_matching(
                 let protected_clause = if include_protected {
                     ""
                 } else {
-                    " AND favorite = 0 AND pinned = 0"
+                    " AND favorite = 0 AND pinned = 0 AND scene_id IS NULL"
                 };
                 deleted += tx.execute(
                     &format!(
@@ -1358,12 +1361,27 @@ fn delete_matching(
                     ),
                     params_from_iter(delete_ids.iter()),
                 )? as i64;
+                // 事务内复核：扫描后条目可能被改为收藏/置顶/关联场景，DELETE 会跳过它。
+                // 这些行不能进入待删文件列表，否则会出现「数据库行还在、托管文件已删」。
+                let survivors = {
+                    let mut stmt = tx.prepare(&format!(
+                        "SELECT id FROM shelf_items WHERE id IN ({delete_ph})"
+                    ))?;
+                    let rows = stmt.query_map(params_from_iter(delete_ids.iter()), |r| {
+                        r.get::<_, String>(0)
+                    })?;
+                    rows.collect::<Result<HashSet<String>, _>>()?
+                };
+                if !survivors.is_empty() {
+                    skipped += survivors.len() as i64;
+                    batch_pending.retain(|p| !survivors.contains(&p.id));
+                }
                 pending.extend(batch_pending);
             }
         } else {
             {
                 let mut stmt = tx.prepare(
-                    "SELECT id, managed_path, byte_size, favorite, pinned FROM shelf_items",
+                    "SELECT id, managed_path, byte_size, favorite, pinned, scene_id FROM shelf_items",
                 )?;
                 let rows = stmt.query_map([], |r| {
                     Ok((
@@ -1372,11 +1390,14 @@ fn delete_matching(
                         r.get::<_, i64>(2)?,
                         r.get::<_, i64>(3)?,
                         r.get::<_, i64>(4)?,
+                        r.get::<_, Option<String>>(5)?,
                     ))
                 })?;
                 for row in rows {
-                    let (id, managed_path, size, favorite, pinned) = row?;
-                    if !include_protected && (favorite != 0 || pinned != 0) {
+                    let (id, managed_path, size, favorite, pinned, scene_id) = row?;
+                    if !include_protected
+                        && (favorite != 0 || pinned != 0 || scene_id.is_some())
+                    {
                         skipped += 1;
                     } else {
                         pending.push(PendingFile {
@@ -1390,9 +1411,18 @@ fn delete_matching(
             let sql = if include_protected {
                 "DELETE FROM shelf_items"
             } else {
-                "DELETE FROM shelf_items WHERE favorite = 0 AND pinned = 0"
+                "DELETE FROM shelf_items WHERE favorite = 0 AND pinned = 0 AND scene_id IS NULL"
             };
             deleted = tx.execute(sql, [])? as i64;
+            // 事务内复核：只有确认已从表中删除的行才允许进入待删文件列表。
+            let remaining = {
+                let mut stmt = tx.prepare("SELECT id FROM shelf_items")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                rows.collect::<Result<HashSet<String>, _>>()?
+            };
+            let before = pending.len();
+            pending.retain(|p| !remaining.contains(&p.id));
+            skipped += (before - pending.len()) as i64;
         }
 
         tx.commit()?;
@@ -1478,7 +1508,7 @@ pub fn cleanup_expired(
     let mut candidates: Vec<Cand> = Vec::new();
     let mut skipped_protected = 0i64;
     {
-        let sql = "SELECT id, managed_path, byte_size, favorite, pinned, expire_at, created_at \
+        let sql = "SELECT id, managed_path, byte_size, favorite, pinned, expire_at, created_at, scene_id \
                    FROM shelf_items";
         db.with_read(|conn| {
             let mut stmt = conn.prepare(sql)?;
@@ -1491,11 +1521,14 @@ pub fn cleanup_expired(
                     r.get::<_, i64>(4)?,
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, String>(6)?,
+                    r.get::<_, Option<String>>(7)?,
                 ))
             })?;
             for r in rows {
-                let (id, managed, size, fav, pin, expire_at, created_at) = r?;
-                let is_protected = fav != 0 || pin != 0;
+                let (id, managed, size, fav, pin, expire_at, created_at, scene_id) = r?;
+                // 收藏 / 置顶 / 已被场景引用 的条目都不参与自动过期清理：
+                // 场景仍在使用这些文件时清掉会静默破坏场景，且用户无从得知。
+                let is_protected = fav != 0 || pin != 0 || scene_id.is_some();
                 if is_protected && !include_protected {
                     // 收藏/置顶不参与过期判定（也不计入 skipped_protected：
                     // 它们根本不是候选；此字段只统计「过期但被保护」的条目）

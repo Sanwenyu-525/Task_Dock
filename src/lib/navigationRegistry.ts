@@ -18,8 +18,10 @@
 //! `useGlobalShortcuts` 决定。新增视觉入口默认**不分配数字键**，避免已有语义漂移。
 
 import {
+  Activity,
   Blocks,
   Clipboard,
+  HardDrive,
   History,
   Inbox,
   LayoutGrid,
@@ -63,7 +65,9 @@ export type NavEntryId =
   | "roadmap"
   | "settings"
   | "inbox"
-  | "help";
+  | "help"
+  | "diagnostics"
+  | "resource";
 
 /** 左侧徽标口径：复用既有统计，不在注册中心里计算。 */
 export type NavBadge = "intervention" | "attention" | "pending" | "inbox";
@@ -305,6 +309,41 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     group: "system",
     defaults: {
       left: { order: 10.5, visible: false },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    // 诊断中心：仅左侧页面的独立入口，默认隐藏（用户可在「导航自定义」中开启），
+    // 不占 Ctrl+数字；隐藏时仍可从侧栏底部「更多」进入。不与「设置」合并，
+    // 避免重复高亮与路由冲突。
+    id: "diagnostics",
+    kind: "page",
+    surfaces: ["left"],
+    labelKey: "nav.diagnostics",
+    label: "诊断中心",
+    icon: Activity,
+    tabs: ["diagnostics"],
+    group: "system",
+    defaults: {
+      left: { order: 10.6, visible: false },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    // 资源管理：完整面板的常驻系统入口（固定底部、位于「设置」上方）。
+    // 不占 Ctrl+数字（既有快捷键语义不变），不提供胶囊入口（页面级工具，胶囊不承载）。
+    id: "resource",
+    kind: "page",
+    surfaces: ["left"],
+    labelKey: "nav.resource",
+    label: "资源管理",
+    icon: HardDrive,
+    tabs: ["resource"],
+    group: "system",
+    // 与「设置」同级：不可隐藏/排序，任何窗口高度都必须可达。
+    locked: true,
+    defaults: {
+      left: { order: 10.8, visible: true },
       capsule: { order: 0, visible: false },
     },
   },

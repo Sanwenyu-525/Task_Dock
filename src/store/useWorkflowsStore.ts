@@ -35,6 +35,7 @@ import {
   type WorkflowRunPage,
 } from "../lib/bridge";
 import { errorMessage } from "../lib/errors";
+import { startOperation } from "../lib/diagnostics";
 
 export function errText(e: unknown): string {
   return errorMessage(e);
@@ -202,19 +203,29 @@ export const useWorkflowsStore = create<WorkflowsState>((set, get) => ({
   },
 
   runWorkflow: async (id) => {
-    const detail = await workflowRun(id);
-    set({
-      activeRun: {
-        run_id: detail.id,
-        workflow_id: detail.workflow_id,
-        paused: false,
-        cancel_requested: false,
-      },
-      activeRunDetail: detail,
-      activeError: null,
-    });
-    void get().loadLastRun(id);
-    return detail;
+    // 一次「运行」= 一个 operation_id；后端返回的 run id 复用到 op metadata，
+    // 前端与运行回执可互相定位（不改变 IPC 签名）。
+    const op = startOperation("workflow", "workflow_run");
+    try {
+      op.stage("start");
+      const detail = await workflowRun(id);
+      op.success({ metadata: { op: detail.id } });
+      set({
+        activeRun: {
+          run_id: detail.id,
+          workflow_id: detail.workflow_id,
+          paused: false,
+          cancel_requested: false,
+        },
+        activeRunDetail: detail,
+        activeError: null,
+      });
+      void get().loadLastRun(id);
+      return detail;
+    } catch (e) {
+      op.fail(e);
+      throw e;
+    }
   },
 
   pauseWorkflow: async (id) => {

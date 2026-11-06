@@ -16,9 +16,9 @@ export function shelfDeleteFeedback(
     } else if (deleted === 0 && skipped === 0 && result.remainingTotal === 0 && result.synced) {
       message = "暂存架已经为空";
     } else if (deleted === 0 && skipped > 0) {
-      message = `没有清理普通条目，保留 ${skipped} 项受保护内容`;
+      message = `没有清理普通条目，保留 ${skipped} 项收藏/置顶/场景引用条目`;
     } else if (deleted > 0 && skipped > 0) {
-      message = `已清理 ${deleted} 项，保留 ${skipped} 项受保护内容`;
+      message = `已清理 ${deleted} 项，保留 ${skipped} 项收藏/置顶/场景引用条目`;
     } else if (deleted > 0 && result.remainingTotal && result.remainingTotal > 0) {
       message = `已清理 ${deleted} 项，暂存架还剩 ${result.remainingTotal} 项`;
     } else if (deleted > 0) {
@@ -27,9 +27,9 @@ export function shelfDeleteFeedback(
       message = "没有删除任何条目";
     }
   } else if (deleted === 0 && skipped > 0) {
-    message = "没有删除任何条目，所选内容受到收藏或置顶保护";
+    message = "没有删除任何条目，所选内容受到收藏、置顶或场景引用保护";
   } else if (deleted > 0 && skipped > 0) {
-    message = `已删除 ${deleted} 项，保留 ${skipped} 项收藏或置顶内容`;
+    message = `已删除 ${deleted} 项，保留 ${skipped} 项收藏、置顶或场景引用内容`;
   } else if (deleted > 0) {
     message = `已删除 ${deleted} 项`;
   } else {

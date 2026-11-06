@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   navListTargets: vi.fn(),
   navAllTaskLinks: vi.fn(),
   navScanApps: vi.fn(),
+  navCancelScan: vi.fn(),
   unlistenScanBatch: vi.fn(),
   scanBatchHandler: null as ((batch: unknown) => void) | null,
   onNavScanBatch: vi.fn(async (handler: (batch: unknown) => void) => {
@@ -22,6 +23,7 @@ vi.mock("../lib/navigation", () => ({
   navListTargets: mocks.navListTargets,
   navAllTaskLinks: mocks.navAllTaskLinks,
   navScanApps: mocks.navScanApps,
+  navCancelScan: mocks.navCancelScan,
   onNavScanBatch: mocks.onNavScanBatch,
 }));
 
@@ -53,6 +55,7 @@ beforeEach(() => {
   mocks.navListTargets.mockReset();
   mocks.navAllTaskLinks.mockReset();
   mocks.navScanApps.mockReset();
+  mocks.navCancelScan.mockReset();
   mocks.onNavScanBatch.mockClear();
   mocks.unlistenScanBatch.mockClear();
   mocks.scanBatchHandler = null;
@@ -60,6 +63,7 @@ beforeEach(() => {
     scan: null,
     scanning: false,
     scanError: null,
+    scanCancelled: false,
     scanProgress: null,
     scanPartial: false,
     targets: [],
@@ -366,6 +370,183 @@ describe("loadApps · 渐进扫描", () => {
     scan.resolve({ apps: [discovered("a", "Alpha")], scanned_at: "2026-11-05T10:00:00Z" } as never);
     await expect(load).resolves.toBe("ok");
   });
+
+  it("取消在途扫描：只发取消信号，等后端真实返回；保留上次完整结果且不算完成/失败", async () => {
+    const previous = {
+      apps: [discovered("old", "旧应用")],
+      scanned_at: "2026-11-04T10:00:00Z",
+    };
+    useNavigationStore.setState({ scan: previous as never, scanPartial: false });
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await waitForListener();
+    const scanId = await currentScanId();
+
+    mocks.navCancelScan.mockResolvedValueOnce(true);
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("accepted");
+    expect(mocks.navCancelScan).toHaveBeenCalledWith(scanId);
+    // 不能用前端隐藏 loading 冒充已取消：必须等后端真实返回。
+    expect(useNavigationStore.getState().scanning).toBe(true);
+
+    scan.resolve({ apps: [discovered("half", "半截结果")], cancelled: true } as never);
+    await expect(load).resolves.toBe("cancelled");
+    const state = useNavigationStore.getState();
+    expect(state.scan).toEqual(previous);
+    expect(state.scanCancelled).toBe(true);
+    expect(state.scanPartial).toBe(false);
+    expect(state.scanError).toBeNull();
+    expect(state.scanning).toBe(false);
+    expect(state.scanProgress).toBeNull();
+  });
+
+  it("首次扫描被取消：保留已发现的部分结果并标记不完整；取消后可重新扫描", async () => {
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    const handler = await waitForListener();
+    const scanId = await currentScanId();
+
+    handler({
+      scan_id: scanId,
+      source: "startmenu",
+      apps: [discovered("a", "Alpha")],
+      discovered: 1,
+      sources_done: 1,
+      sources_total: 5,
+    });
+    await vi.waitFor(() => expect(useNavigationStore.getState().scan).not.toBeNull());
+
+    scan.resolve({ apps: [discovered("a", "Alpha")], cancelled: true } as never);
+    await expect(load).resolves.toBe("cancelled");
+    let state = useNavigationStore.getState();
+    expect(state.scan?.apps.map((a: { app_key: string }) => a.app_key)).toEqual(["a"]);
+    expect(state.scanPartial).toBe(true);
+    expect(state.scanCancelled).toBe(true);
+    expect(state.scanProgress).toBeNull();
+
+    // 取消后再次扫描必须正常工作，并清除取消标记。
+    mocks.navScanApps.mockResolvedValueOnce({
+      apps: [discovered("a", "Alpha"), discovered("b", "Beta")],
+      scanned_at: "2026-11-05T11:00:00Z",
+    } as never);
+    await expect(useNavigationStore.getState().loadApps(true)).resolves.toBe("ok");
+    state = useNavigationStore.getState();
+    expect(state.scanCancelled).toBe(false);
+    expect(state.scanPartial).toBe(false);
+    expect(state.scan?.apps).toHaveLength(2);
+  });
+
+  it("取消请求与扫描启动竞态：取消先到也不会丢失（仅记录，不阻塞）", async () => {
+    mocks.navCancelScan.mockResolvedValueOnce(true);
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await waitForListener();
+    // 扫描已在途时取消：返回后端是否接受请求；本次模拟后端已接受。
+    await useNavigationStore.getState().cancelScan();
+    scan.resolve({ apps: [], cancelled: true } as never);
+    await expect(load).resolves.toBe("cancelled");
+    expect(useNavigationStore.getState().scanCancelled).toBe(true);
+  });
+
+  it("扫描查看者引用计数：还有查看者时不取消，最后一个离开才取消", async () => {
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await waitForListener();
+
+    const releaseA = useNavigationStore.getState().attachScanViewer();
+    const releaseB = useNavigationStore.getState().attachScanViewer();
+    releaseA();
+    expect(mocks.navCancelScan).not.toHaveBeenCalled();
+    releaseB();
+    expect(mocks.navCancelScan).toHaveBeenCalledTimes(1);
+
+    scan.resolve({ apps: [], cancelled: true } as never);
+    await expect(load).resolves.toBe("cancelled");
+  });
+
+  it("没有在途扫描时取消是空操作，不产生 IPC", async () => {
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("finished");
+    expect(mocks.navCancelScan).not.toHaveBeenCalled();
+  });
+});
+
+describe("cancelScan · 取消结果契约", () => {
+  it("IPC 抛错且扫描仍在途 → failed，不伪装成功也不提前结束加载态", async () => {
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await vi.waitFor(() => expect(mocks.navScanApps).toHaveBeenCalled());
+
+    mocks.navCancelScan.mockRejectedValueOnce(new Error("ipc down"));
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("failed");
+    expect(useNavigationStore.getState().scanning).toBe(true);
+    expect(useNavigationStore.getState().scanCancelled).toBe(false);
+
+    scan.resolve({ apps: [], scanned_at: "" } as never);
+    await expect(load).resolves.toBe("ok");
+  });
+
+  it("后端拒绝取消（返回 false）且扫描仍在途 → failed", async () => {
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await vi.waitFor(() => expect(mocks.navScanApps).toHaveBeenCalled());
+
+    mocks.navCancelScan.mockResolvedValueOnce(false);
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("failed");
+    expect(useNavigationStore.getState().scanning).toBe(true);
+
+    scan.resolve({ apps: [], scanned_at: "" } as never);
+    await expect(load).resolves.toBe("ok");
+  });
+
+  it("取消请求期间扫描自然结束 → finished，不误报取消失败", async () => {
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await vi.waitFor(() => expect(mocks.navScanApps).toHaveBeenCalled());
+
+    mocks.navCancelScan.mockImplementationOnce(async () => {
+      // 取消 IPC 尚未返回，扫描已经自然完成
+      scan.resolve({ apps: [], scanned_at: "2026-11-06T10:00:00Z" } as never);
+      await vi.waitFor(() => expect(useNavigationStore.getState().scanning).toBe(false));
+      return true;
+    });
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("finished");
+    await expect(load).resolves.toBe("ok");
+    expect(useNavigationStore.getState().scanCancelled).toBe(false);
+  });
+
+  it("同一扫描已接受取消后，其他查看者不再重复发送取消 IPC；新扫描重新允许", async () => {
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await vi.waitFor(() => expect(mocks.navScanApps).toHaveBeenCalled());
+
+    mocks.navCancelScan.mockResolvedValue(true);
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("accepted");
+    expect(mocks.navCancelScan).toHaveBeenCalledTimes(1);
+
+    // 共享同一次扫描的第二个面板：复用「已接受」事实，不重复取消
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("accepted");
+    expect(mocks.navCancelScan).toHaveBeenCalledTimes(1);
+
+    scan.resolve({ apps: [], scanned_at: "", cancelled: true } as never);
+    await expect(load).resolves.toBe("cancelled");
+
+    // 新一轮扫描的取消必须重新发送 IPC（去重只作用于同一次扫描）
+    const next = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(next.promise);
+    const load2 = useNavigationStore.getState().loadApps(true);
+    await vi.waitFor(() => expect(mocks.navScanApps).toHaveBeenCalledTimes(2));
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("accepted");
+    expect(mocks.navCancelScan).toHaveBeenCalledTimes(2);
+    next.resolve({ apps: [], scanned_at: "", cancelled: true } as never);
+    await expect(load2).resolves.toBe("cancelled");
+  });
 });
 
 describe("deriveScanState · 显式扫描状态机", () => {
@@ -412,5 +593,30 @@ describe("deriveScanState · 显式扫描状态机", () => {
     expect(
       deriveScanState({ scan: null, scanning: false, scanError: "扫描服务不可用", scanPartial: false }),
     ).toBe("failed");
+  });
+
+  it("取消是独立状态：优先于完成/部分失败，且不与失败混淆", () => {
+    expect(
+      deriveScanState({
+        scan: null, scanning: false, scanError: null, scanPartial: false, cancelled: true,
+      }),
+    ).toBe("cancelled");
+    expect(
+      deriveScanState({
+        scan, scanning: false, scanError: null, scanPartial: true, cancelled: true,
+      }),
+    ).toBe("cancelled");
+    // 取消 + 旧错误同时存在时仍以取消呈现（error 字段是上一次失败残留）。
+    expect(
+      deriveScanState({
+        scan, scanning: false, scanError: "旧错误", scanPartial: false, cancelled: true,
+      }),
+    ).toBe("cancelled");
+    // 扫描中优先显示扫描中，避免取消标记压过真实在途状态。
+    expect(
+      deriveScanState({
+        scan, scanning: true, scanError: null, scanPartial: true, cancelled: true,
+      }),
+    ).toBe("scanning-partial");
   });
 });

@@ -8,6 +8,7 @@ vi.mock("../lib/bridge", async (importOriginal) => {
   return {
     ...actual,
     listTasks: vi.fn(),
+    createTask: vi.fn(),
     taskStats: vi.fn(async () => ({
       pending: 0,
       overdue: 0,
@@ -18,8 +19,14 @@ vi.mock("../lib/bridge", async (importOriginal) => {
   };
 });
 
-import { listTasks, type Task, type TaskFilter } from "../lib/bridge";
+import { listTasks, createTask, type Task, type TaskFilter } from "../lib/bridge";
 import { useTasksStore } from "./useTasksStore";
+import {
+  clientDiagnosticsStats,
+  flushDiagnostics,
+  setDiagnosticTransport,
+  type DiagnosticInput,
+} from "../lib/diagnostics";
 
 const listMock = vi.mocked(listTasks);
 
@@ -222,5 +229,33 @@ describe("任务列表请求代际", () => {
     expect(useTasksStore.getState().exitHolds).toHaveLength(1);
     useTasksStore.getState().releaseExitHold("a", second);
     expect(useTasksStore.getState().exitHolds).toEqual([]);
+  });
+});
+
+describe("任务保存操作链", () => {
+  it("create 失败：错误原样抛出，诊断终态携带 persist 阶段且不含标题", async () => {
+    vi.mocked(createTask).mockRejectedValueOnce({ code: "IO_ERROR", message: "写入失败" });
+    // 先清空此前用例留下的诊断队列，避免旧事件混入本次断言。
+    setDiagnosticTransport(async () => {});
+    while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+    const events: DiagnosticInput[] = [];
+    setDiagnosticTransport(async (batch) => {
+      events.push(...batch);
+    });
+    try {
+      await expect(
+        useTasksStore.getState().create({ title: "不应出现在日志里的标题" }),
+      ).rejects.toMatchObject({ code: "IO_ERROR" });
+      while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+      const opEvents = events.filter((event) => event.action === "create_task");
+      expect(opEvents.filter((event) => event.status === "started")).toHaveLength(1);
+      const failed = opEvents.find((event) => event.status === "failed");
+      expect(failed).toMatchObject({ stage: "persist", error_code: "IO_ERROR" });
+      expect(JSON.stringify(opEvents)).not.toContain("不应出现在日志里的标题");
+    } finally {
+      setDiagnosticTransport(null);
+    }
   });
 });

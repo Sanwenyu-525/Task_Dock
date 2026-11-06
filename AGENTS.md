@@ -39,6 +39,12 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；能力与当前状态见 [REA
   数据库或证据日志。
 - 同一文件被并行修改：先读双方 diff、确认意图与影响面再合并，不整文件覆盖；无法安全合并时
   停止并报告，不猜测丢弃哪一方。
+- **Subagent 并行上限与文件所有权**：同一任务最多并行 3 个 Subagent，且只有存在相互独立的
+  调查/实现收益时才并行；派发时显式声明每个 Subagent 的写入范围（文件/目录）。共享枢纽文件
+  （如 `src/lib/bridge.ts`、`src/lib/navigationRegistry.ts`、`src/lib/featureCatalog.ts`、
+  `src/store/useUiStore.ts`、`src-tauri/src/lib.rs`、`src-tauri/src/commands/mod.rs`、
+  `src-tauri/src/db/mod.rs`）、SQLite 迁移与构建缓存同一时刻只允许一个所有者；跨范围改动由
+  主 Agent 串行集成并负责最终验收。子 Agent 越界写入、覆盖他人改动或自行清理缓存均视为事故。
 - 不覆盖其他 Agent 的日志、截图、验收报告；新证据使用独立文件名（含日期）；历史结论被推翻时
   保留旧文件并新增更正记录。未经授权不批量 `git rm --cached`、不删除构建目录或验收目录；
   发现应清理项时列路径、体量与建议命令等待授权，最终如实列出本次实际修改、新增、删除的文件；

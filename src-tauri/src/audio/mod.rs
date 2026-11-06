@@ -186,6 +186,17 @@ struct MemCache {
 }
 
 impl MemCache {
+    /// 按读取路径相同的 TTL 规则回收过期条目并重算总量。
+    fn expire(&mut self) {
+        let now = Instant::now();
+        let before = self.entries.len();
+        self.entries
+            .retain(|_, e| now.duration_since(e.inserted) <= MEM_TTL);
+        if self.entries.len() != before || self.total == 0 {
+            self.total = self.entries.values().map(|e| e.bytes.len()).sum();
+        }
+    }
+
     fn get(&mut self, key: &str) -> Option<(Arc<Vec<u8>>, String, VoiceInfo)> {
         let now = Instant::now();
         self.entries
@@ -600,6 +611,37 @@ impl AudioService {
             status: status.into(),
             error_code,
             error_message,
+        }
+    }
+
+    /// 内存语音缓存统计（只读）：返回（条目数，字节数）。
+    ///
+    /// 只统计本进程保留的合成结果，不触发磁盘扫描或删除；过期条目在统计时先按
+    /// 与读取路径一致的 TTL 规则回收，避免把已过期数据算成「可释放」。
+    pub fn mem_cache_stats(&self) -> (usize, usize) {
+        match self.mem.lock() {
+            Ok(mut mem) => {
+                mem.expire();
+                (mem.entries.len(), mem.total)
+            }
+            Err(_) => (0, 0),
+        }
+    }
+
+    /// 只释放内存中的合成语音缓冲，返回实际释放的（条目数，字节数）。
+    ///
+    /// 磁盘缓存不在此清理（走资源清理的预览/确认流程）。正在播放/返回给调用方的
+    /// 缓冲由 `Arc` 单独持有，清空缓存不会打断进行中的播放或合成。
+    pub fn clear_mem_cache(&self) -> (usize, usize) {
+        match self.mem.lock() {
+            Ok(mut mem) => {
+                let entries = mem.entries.len();
+                let bytes = mem.total;
+                mem.entries.clear();
+                mem.total = 0;
+                (entries, bytes)
+            }
+            Err(_) => (0, 0),
         }
     }
 

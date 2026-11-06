@@ -54,7 +54,7 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
     id: "help.capture.shelf",
     categoryId: "capture",
     status: "needs_review",
-    contentVersion: 1,
+    contentVersion: 2,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
@@ -73,14 +73,15 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
           { type: "heading", text: "整理与查找" },
           {
             type: "paragraph",
-            text: "支持搜索、类型筛选、分组筛选、收藏筛选与置顶排序；多选后可批量移动分组、收藏或删除（收藏与置顶受保护）。图片有缩略图与灯箱预览，文本与 HTML 安全只读预览。",
+            text: "支持搜索、类型筛选、分组筛选、收藏筛选与置顶排序；多选后可批量移动分组、收藏或删除（收藏、置顶与场景引用条目受保护）。图片有缩略图与灯箱预览，文本与 HTML 安全只读预览。",
           },
           { type: "heading", text: "取出与清理" },
           {
             type: "steps",
             items: [
               "系统级拖出资源管理器尚未支持；替代操作：「复制路径」「复制文件」「打开所在文件夹」。",
-              "过期清理默认关闭；开启后可先预览候选条目再执行，收藏与置顶永不被自动清理，绝不删除你的原始文件。",
+              "过期清理默认关闭；开启后每 1 小时检查一次。手动「立即清理过期」会先预览候选并二次确认，确认后才删除。",
+              "收藏、置顶及被场景引用的条目默认跳过，不会被过期清理；清理只删除 Task Dock 托管的副本与暂存记录，绝不删除你的原始文件。",
             ],
           },
           {

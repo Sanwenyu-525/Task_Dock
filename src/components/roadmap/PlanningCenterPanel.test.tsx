@@ -208,7 +208,7 @@ describe("数据源与视图导航", () => {
     expect(screen.getByRole("tab", { name: "里程碑" })).toBeTruthy();
   });
 
-  it("切到内置路线图后渲染 Task Dock 既有目录，28 项入口保留", async () => {
+  it("切到内置路线图后渲染 Task Dock 既有目录，31 项入口保留", async () => {
     const user = userEvent.setup();
     bridge.planningListProjects.mockResolvedValue([]);
     render(<PlanningCenterPanel />);

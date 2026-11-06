@@ -15,7 +15,9 @@ export type Tab =
   | "history"
   | "roadmap"
   | "settings"
-  | "help";
+  | "help"
+  | "diagnostics"
+  | "resource";
 
 /**
  * 快捷键逻辑顺序：Ctrl+1…9 映射前九个逻辑 Tab、Ctrl+0=设置。
@@ -39,6 +41,8 @@ export const TAB_ORDER: readonly Tab[] = [
  * v0.10 新增「应用」入口（位于 Agent 之后、行动之前）；它不占用 Ctrl+数字，
  * 因此与 `TAB_ORDER` 分离，避免已有快捷键语义漂移。
  * 帮助中心（help）同为仅视觉入口（settings 之前），不占 Ctrl+数字。
+ * 诊断中心（diagnostics）默认隐藏、不占快捷键，位于帮助之后、设置之前。
+ * 资源管理（resource）是常驻固定入口（settings 上方），不占快捷键。
  */
 export const RAIL_ORDER: readonly Tab[] = [
   "tasks",
@@ -53,6 +57,8 @@ export const RAIL_ORDER: readonly Tab[] = [
   "history",
   "roadmap",
   "help",
+  "diagnostics",
+  "resource",
   "settings",
 ] as const;
 
@@ -128,6 +134,13 @@ export const useUiStore = create<{
   setCollectionSub: (sub: "inbox" | "shelf" | "notes") => void;
   editor: { open: boolean; task: Task | null };
   openEditor: (task?: Task) => void;
+  /**
+   * 只写入编辑器状态，**不做导航**：供「导航成功之后」的 after 回调使用。
+   * 需要跨页打开编辑器时用 `openEditor`（内部仍走 setTab 门禁）；已经自行
+   * 完成导航事务的调用方（如胶囊 `openTaskEditor`）用本方法，避免二次导航
+   * 覆盖待确认导航绑定的 after，导致编辑意图丢失。
+   */
+  openEditorNow: (task?: Task | null) => void;
   closeEditor: () => void;
   /** 任务工作区批量启动弹窗（v0.4） */
   workspace: { open: boolean; task: Task | null };
@@ -245,10 +258,8 @@ export const useUiStore = create<{
   // 编辑态由任务面板（TasksPanel）在页面内承载：从其他页（如小组件）打开时切回任务页，
   // 否则编辑表单没有宿主。
   // 同样经过 setTab 门禁：其他页有未保存草稿时不能静默切走并卸载它。
-  openEditor: (task) =>
-    get().setTab("tasks", {
-      after: () => set({ editor: { open: true, task: task ?? null } }),
-    }),
+  openEditor: (task) => get().setTab("tasks", { after: () => get().openEditorNow(task) }),
+  openEditorNow: (task) => set({ editor: { open: true, task: task ?? null } }),
   closeEditor: () => set({ editor: { open: false, task: null } }),
   workspace: { open: false, task: null },
   openWorkspace: (task) => set({ workspace: { open: true, task } }),

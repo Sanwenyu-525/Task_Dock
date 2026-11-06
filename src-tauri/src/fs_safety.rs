@@ -243,20 +243,73 @@ fn normalized_windows_path(path: &Path) -> String {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::time::{Duration, SystemTime};
 
-    #[test]
-    fn handle_delete_rejects_same_path_replacement() {
-        let path =
-            std::env::temp_dir().join(format!("td-handle-delete-{}.bin", uuid::Uuid::new_v4()));
-        std::fs::write(&path, b"same-size").unwrap();
-        let metadata = std::fs::metadata(&path).unwrap();
+    /// 生产只对应用自管的分类目录调用 `remove_file_if_unchanged`。
+    /// 共享的临时目录根可能被其他进程以拒绝 DELETE 的方式打开
+    /// （实测 Win32 错误 32 ERROR_SHARING_VIOLATION），目录锁会 fail-closed。
+    /// 夹具必须落在独立的分类子目录内，否则断言会「因错误原因」通过。
+    struct TempCategory {
+        root: std::path::PathBuf,
+        category: std::path::PathBuf,
+    }
+
+    impl TempCategory {
+        fn new(tag: &str) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("td-fs-safety-{tag}-{}", uuid::Uuid::new_v4()));
+            let category = root.join("category");
+            std::fs::create_dir_all(&category).unwrap();
+            Self { root, category }
+        }
+
+        fn file(&self, name: &str) -> std::path::PathBuf {
+            self.category.join(name)
+        }
+    }
+
+    impl Drop for TempCategory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn fingerprint(path: &Path) -> (u64, u128, u128) {
+        let metadata = std::fs::metadata(path).unwrap();
         let modified_ns = metadata
             .modified()
             .unwrap()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let identity = crate::shelf::file_identity(&path).unwrap();
+        (
+            metadata.len(),
+            modified_ns,
+            crate::shelf::file_identity(path).unwrap(),
+        )
+    }
+
+    #[test]
+    fn handle_delete_rejects_same_path_replacement() {
+        let tmp = TempCategory::new("replacement");
+        let path = tmp.file("candidate.bin");
+        let control = tmp.file("control.bin");
+        std::fs::write(&path, b"same-size").unwrap();
+        std::fs::write(&control, b"control").unwrap();
+        let (size, modified_ns, identity) = fingerprint(&path);
+        let (control_size, control_modified, control_identity) = fingerprint(&control);
+
+        // 正向对照：证明夹具路径可锁、可删；若目录锁失败，这里会先失败，
+        // 避免下面的 `false` 断言因错误原因通过。
+        assert!(remove_file_if_unchanged(
+            &control,
+            control_size,
+            control_modified,
+            control_identity
+        )
+        .unwrap());
+        assert!(!control.exists());
+
         let replacement = path.with_extension("replacement");
         std::fs::rename(&path, &replacement).unwrap();
         std::fs::write(&path, b"same-size").unwrap();
@@ -264,13 +317,12 @@ mod tests {
             .write(true)
             .open(&path)
             .unwrap()
-            .set_modified(metadata.modified().unwrap())
+            .set_modified(std::fs::metadata(&replacement).unwrap().modified().unwrap())
             .unwrap();
 
-        assert!(!remove_file_if_unchanged(&path, metadata.len(), modified_ns, identity).unwrap());
-        assert!(path.exists());
-        std::fs::remove_file(path).unwrap();
-        std::fs::remove_file(replacement).unwrap();
+        assert!(!remove_file_if_unchanged(&path, size, modified_ns, identity).unwrap());
+        assert!(path.exists(), "同路径替换不得按旧身份删除");
+        let _ = std::fs::remove_file(replacement);
     }
 
     #[test]
@@ -295,27 +347,48 @@ mod tests {
     fn open_file_handle_prevents_delete_until_released() {
         use std::os::windows::fs::OpenOptionsExt;
 
-        let path =
-            std::env::temp_dir().join(format!("td-open-file-lock-{}.bin", uuid::Uuid::new_v4()));
+        let tmp = TempCategory::new("open-handle");
+        let path = tmp.file("candidate.bin");
         std::fs::write(&path, b"playing-cache").unwrap();
-        let metadata = std::fs::metadata(&path).unwrap();
-        let modified_ns = metadata
-            .modified()
-            .unwrap()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let identity = crate::shelf::file_identity(&path).unwrap();
+        let (size, modified_ns, identity) = fingerprint(&path);
         let open_file = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(1)
             .open(&path)
             .unwrap();
 
-        assert!(!remove_file_if_unchanged(&path, metadata.len(), modified_ns, identity).unwrap());
+        assert!(!remove_file_if_unchanged(&path, size, modified_ns, identity).unwrap());
         assert!(path.exists(), "占用中的缓存不得被标记删除");
         drop(open_file);
-        assert!(remove_file_if_unchanged(&path, metadata.len(), modified_ns, identity).unwrap());
+        assert!(remove_file_if_unchanged(&path, size, modified_ns, identity).unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn changed_timestamp_blocks_delete() {
+        let tmp = TempCategory::new("mtime");
+        let path = tmp.file("candidate.bin");
+        std::fs::write(&path, b"cache-bytes").unwrap();
+        let (size, modified_ns, identity) = fingerprint(&path);
+        // 只改时间戳、不改内容与大小，隔离出指纹中的 mtime 分支。
+        let bumped = SystemTime::now() + Duration::from_secs(2);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(bumped)
+            .unwrap();
+
+        assert!(!remove_file_if_unchanged(&path, size, modified_ns, identity).unwrap());
+        assert!(path.exists(), "时间戳变化的文件不得按旧指纹删除");
+    }
+
+    #[test]
+    fn missing_file_reports_error_instead_of_claiming_success() {
+        let tmp = TempCategory::new("missing");
+        let path = tmp.file("gone.bin");
+        let result = remove_file_if_unchanged(&path, 1, 0, 0);
+        assert!(result.is_err(), "文件不存在必须显式失败，不得返回成功");
         assert!(!path.exists());
     }
 }

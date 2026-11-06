@@ -3,7 +3,7 @@
 //! 「不重复实现主窗口功能」的落点：面板只做高频轻操作，重活一律交给既有
 //! 主窗口（任务页 / Agent 页 / 剪贴板 / 应用管理），这里只负责切标签 + 解除吸附。
 
-import { applyMode } from "../../lib/bridge";
+import { applyMode, type Task } from "../../lib/bridge";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useUiStore, type Tab, type TabSwitchResult } from "../../store/useUiStore";
 
@@ -31,6 +31,20 @@ export function openFullApp(tab: Tab, after?: () => void): TabSwitchResult {
       after?.();
     },
   });
+}
+
+/**
+ * 打开完整窗口任务页并打开指定任务的编辑器：**一次导航事务**。
+ *
+ * 编辑意图放在 `after` 里，只随导航成功（含用户确认放弃草稿后的强制导航）
+ * 执行一次；草稿待确认时由 `pendingTab` 携带，取消或保存中拦截时既不切页、
+ * 也不打开编辑器，更不会留下「之后突然弹层」的残留意图。
+ *
+ * 禁止在调用方拆成 `openEditor(task)` + `openFullApp("tasks")` 两次导航：
+ * 第二次 setTab 会覆盖 pendingTab.after（编辑意图丢失），保存中则两次都被拒绝。
+ */
+export function openTaskEditor(task?: Task): TabSwitchResult {
+  return openFullApp("tasks", () => useUiStore.getState().openEditorNow(task ?? null));
 }
 
 /**

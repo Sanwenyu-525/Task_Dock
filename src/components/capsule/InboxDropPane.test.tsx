@@ -235,6 +235,22 @@ describe("InboxDropPane", () => {
     expect(screen.getByRole("button", { name: /添加目标文件夹/ })).toBeTruthy();
   });
 
+  it("目标全部未勾选胶囊显示：只提示去完整面板开启，不误报「还没有目标」", async () => {
+    dropTargets.mockResolvedValue([target({ show_in_capsule: false })]);
+    render(<InboxDropPane />);
+    await screen.findByText(/有 1 个目标未勾选/);
+    expect(screen.queryByText("还没有文件投递目标")).toBeNull();
+    expect(screen.queryByRole("button", { name: /添加目标文件夹/ })).toBeNull();
+  });
+
+  it("目标读取失败：显示错误与重试，不把失败冒充成「正在读取」", async () => {
+    dropTargets.mockRejectedValue(new Error("ipc broken"));
+    render(<InboxDropPane />);
+    await screen.findByText("ipc broken");
+    expect(screen.queryByText("正在读取投递目标")).toBeNull();
+    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+  });
+
   it("拖入命中卡片 → 只向该目标投递一次，并展示结果汇总", async () => {
     dropTargets.mockResolvedValue([target()]);
     dropToDirectory.mockResolvedValue(report());
@@ -679,6 +695,29 @@ describe("InboxDropPane", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "在暂存架中查看" }));
     await waitFor(() => expect(openFullAppMock).toHaveBeenCalled());
     expect(useGlobalSearchStore.getState().pendingLocate).toBeNull();
+  });
+
+  it("「管理」入口：导航成功后才置位一次性意图", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    expect(useDropTargetsStore.getState().manageRequest).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "管理" }));
+    expect(openFullAppMock).toHaveBeenCalledWith("shelf", expect.any(Function));
+    expect(useDropTargetsStore.getState().manageRequest).toBe(1);
+  });
+
+  it("「管理」入口：导航被阻止时不残留一次性意图", async () => {
+    openFullAppMock.mockImplementationOnce(() => "blocked");
+    dropTargets.mockResolvedValue([target()]);
+    render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+
+    fireEvent.click(screen.getByRole("button", { name: "管理" }));
+    await waitFor(() => expect(openFullAppMock).toHaveBeenCalled());
+    // 未导航成功：之后手动进入暂存架也不会突然展开管理面板
+    expect(useDropTargetsStore.getState().manageRequest).toBe(0);
   });
 
   it("最近暂存可在胶囊内直接添加文件（默认引用）", async () => {

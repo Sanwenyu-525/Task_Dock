@@ -68,6 +68,8 @@ windows-sys = { version = "0.60", features = [
   # 智能剪贴板（v0.5）：剪贴板读写/监听、全局内存、隐藏消息窗口、进程令牌
   "Win32_System_DataExchange",
   "Win32_System_Ole",
+  # 资源管理（v0.14）：GlobalMemoryStatusEx 物理内存采样（kernel32）
+  "Win32_System_SystemInformation",
   "Win32_System_Memory",
   "Win32_System_LibraryLoader",
   "Win32_Security",

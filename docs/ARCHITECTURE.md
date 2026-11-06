@@ -297,6 +297,34 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `app_key` 唯一的条目，累计数与最终结果一致。渐进阶段只登记本批图标身份
   （`register_discovered_batch` 不清空旧登记），扫描完成后 `register_discovered` 整体收敛；
   不引入轮询、无界队列或百分比估算，进度只显示「已发现 N 个 / 已扫描来源 x/y」。
+  **扫描取消与细粒度分批（2026-11-06）**：扫描期间可用 `nav_cancel_scan(scan_id)` 置取消标志，
+  后端在来源边界、快捷方式/注册表条目、PowerShell 轮询点检查并提前退出（PowerShell 子进程
+  `kill` 后 `wait` 回收，不放任其跑到超时）；取消先于 `nav_scan_apps` 到达时按 `scan_id`
+  记为待取消（上限 64 条），扫描注册后立即生效，不丢取消信号。取消结果 `cancelled = true`
+  + `diagnostics.scan_cancelled`，`apps` 只含取消前已发现的部分结果，**不写入扫描缓存**
+  （下一次扫描必须重新执行），图标身份只追加不整体收敛。前端状态机新增 `cancelled` 态
+  （与 `complete` / `partial` / `failed` 区分），已有一份完整结果时回退到它并提示「显示上次结果」。
+  扫描结果订阅者通过 `useNavigationStore.attachScanViewer()` 引用计数登记，**最后一个查看者
+  离开才取消**，关闭单个面板不会误取消其他入口仍在使用的共享扫描；前端不得用隐藏 Loading
+  代替取消，必须以后端返回的 `cancelled` 为准。
+  批次改为「来源内每 60 条一片」：同来源中间批次 `sources_done` 不前进，只有最后一片
+  （或空来源的完成片）才推进；**来源被取消时不发送完成片**（已发现的真实条目照常补发，
+  因此取消不会丢数据，也不会虚增完成来源数），最终结果按「名称（忽略大小写）+ app_key」稳定排序。
+  诊断分两类：影响完整性的 `startmenu_dir_unreadable` / `startmenu_truncated` /
+  `startmenu_lnk_unreadable`（仅诊断）/ `registry_unreadable` / `app_paths_unreadable` /
+  `uwp_scan_timeout` / `uwp_scan_failed` / `uwp_truncated` 参与 `partial` 判定；
+  **可选来源正常不存在（NotFound）不计诊断**（如 HKCU 没有对应注册表项、精简系统没有公共
+  开始菜单目录），权限拒绝、I/O 错误、枚举中途失败才计入，不能把「读不到」伪装成「没有应用」；
+  仅影响进度展示的 `batch_event_failed` **不参与**，完整权威结果成功返回时扫描仍为 `complete`，
+  界面只给低干扰说明「部分扫描进度未能实时更新，以最终结果为准」——不对结果完整性作绝对承诺，
+  与「应用发现可能不完整」横幅可同时出现。
+  **取消按钮状态（2026-11-06 第三轮）**：`idle`（取消扫描，可点击）→ `requesting`
+  （正在请求取消…，禁用）→ `accepted`（正在取消…，保持禁用直到后端返回真实结果）；
+  请求失败恢复 `idle` 允许重试，扫描自然结束静默退出，新一轮扫描复位；同一 `scan_id`
+  已接受取消后 store 不再重复发送取消 IPC（多个面板共享同一次扫描）。
+  应用身份与去重：`app_key` 仍是 exe 绝对路径（小写）或 AUMID；同一 exe 的多个快捷方式
+  只保留先到的一条（含其启动参数），不同 exe 即使同名也各自保留；同身份下先到 `advanced`
+  随后发现 `normal` 时由普通项顶替（避免「卸载 Foo」遮蔽主入口）。不修改数据库唯一约束。
 - `app_icons.rs`：真实应用图标提取（`SHGetFileInfoW`/`ExtractIconExW`/UWP
   `IShellItemImageFactory` → HICON → RGBA PNG data URL）。扫描与图标提取解耦，
   前端按需调用 `nav_app_icon`；HICON/HBITMAP/DC 全部释放，`spawn_blocking` +
@@ -363,6 +391,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   - 模块约定：读取失败 ≠ 空数据（任务/应用/Agent/工作流/设置页均显示真实错误 +
     重试，并保留旧数据标记「可能不是最新」）；写入成功但刷新失败必须分两阶段说明；
     正常取消、用户暂停、明确不支持的可选效果不算错误。
+  - 刷新结果契约（2026-11-06 第二轮）：`RefreshOutcome` 的 `ok / stale / cancelled / error`
+    分别对应「本次完成 / 被更新请求取代或已有在途任务 / 被主动取消 / 失败」。
+    多请求聚合（设置页「重新扫描」并行刷新目标与扫描）只有**两项都 `ok`** 才能提示整体成功；
+    `stale` / `cancelled` 只陈述事实（哪一项由其他入口处理或被取消），不得折算成成功；
+    重试只重跑失败的那一项，不重复发起已成功的请求。
   - 渲染异常由 `src/components/ErrorBoundary.tsx` 兜底（不白屏、用户点击才重试）；
     未处理 Promise rejection 由 `src/lib/globalErrors.ts` 兜底，同一根因 30s 内只提示一次。
   - 内容区独立边界（2026-11-05 第四轮）：完整面板在 `.tab-content` 内再包一层
@@ -423,7 +456,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     百分比）；项目进度 = 已完成功能/总功能（无功能显示空态，不显示 0%）；功能状态
     与进度相互独立，不由完成率推断。功能状态变化与步骤勾选在后端同一事务写入
     `planning_activity`（status_change / step_done / note 三类显式区分）。
-  - 「内置路线图」：Task Dock 自身 28 项功能规划（`lib/featureCatalog.ts` 静态目录）
+  - 「内置路线图」：Task Dock 自身 31 项功能规划（`lib/featureCatalog.ts` 静态目录）
     经 `FeatureRoadmapPanel` 原样只读展示，不入库、不被用户项目编辑覆盖。
 - 任务编辑交互（2026-11-04，模态清理第二批）：原 `TaskEditor.tsx`（`modal-mask` + Dialog）
   删除，改为 `src/components/tasks/TaskEditorView.tsx` 的**页面内编辑态**；`TasksPanel.tsx`
@@ -562,6 +595,12 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `navigationLayout` 的串行写入链，连续点击不产生乱序写入；⑤写入失败保留 UI 原顺序并报错，
   不做乐观假成功。完整面板侧栏三区域：顶部新建、中部可排序入口（`.rail-items`，独立滚动）、
   底部固定区（`.rail-foot`：存在隐藏项时的「更多」+ 设置），固定区不随中部列表滚动且有分隔线。
+  （2026-11-06 更正）固定区不再只有设置：新增常驻一级入口「资源管理」（`resource`，
+  `locked: true`，默认顺序 10.8，位于设置 11 之前）。两个锁定入口按注册中心默认顺序
+  收敛到可见数组末尾（资源管理 → 设置），仍不可隐藏/排序；底部固定区因此渲染两个入口，
+  中部 `.rail-items` 依旧是唯一滚动区域，340px 最小高度下溢出入口靠滚动可达。
+  同时修正隐藏当前入口后的落点：`safeTabForHiddenEntry` 只在**可排序**入口中选择，
+  避免把系统页（资源管理）当作默认首页；只剩锁定入口时仍回退设置。
   停靠胶囊仍可隐藏 Agent 状态球，隐藏只影响入口渲染，不影响 Agent 事件监控与徽标计数。
   原生几何契约：停靠形态完全由 `SetWindowRgn` 决定，`docked-full` 对应
   `set_capsule(hwnd, None)`（整窗圆角区域，`GetWindowRgn` 包围盒等于窗口矩形，**不是**
@@ -579,6 +618,68 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   「可排序子序列内是否还有前/后邻居」判定，与底层语义一致。复验证据：
   `tmp/acceptance/navigation-layout-fix/repro-final-summary.json`、`native2-summary.json`
   （2026-11-06，EXE sha256 `DA61A842…`）。
+- 导航路由恢复、写入串行与启动加载门（2026-11-06，导航/页面生命周期专项）：
+  ①**隐藏当前入口后的安全恢复只有一个实现点**——`FullView` 以「导航配置变更」驱动：
+  记录当前页所属入口的 `{id, hidden}`，仅在**可见 → 隐藏**这一次迁移上调用一次
+  `safeTabForHiddenEntry` + `setTab`。因此「从更多/快捷键/通知/深链主动打开本来就隐藏的页面」
+  没有该迁移，不会被强制重定向（隐藏 ≠ 禁止访问）；也不存在「持续检查 tab 是否可见并纠正」
+  的 Effect（那会让隐藏功能无法通过「更多」进入）。旧实现只写在设置页的局部操作路径里，
+  且用写入前的旧快照计算安全页，连续操作时可能选到刚被隐藏的页面，已删除。
+  安全页优先级：仍可见的任务页 → 左侧第一个可见入口覆盖的页面（合并入口按
+  `collectionSub` 落在 inbox/shelf，`notes` 子页在切页成功后恢复）→ 设置页。
+  ②**草稿门禁不因恢复而绕过**：`setTab` 的 `switched/pending/blocked` 语义原样生效——
+  未保存草稿只记录 `pendingTab`（用户确认才切、取消则留在原页继续编辑），保存中直接
+  `blocked` 并就地提示；恢复不会强制切页、不会丢弃编辑内容，入口已隐藏的页面仍可保存/退出。
+  ③**写入串行 + 进行中状态**：`navigation_layout` 的读-改-写在 `navigationLayout` 串行链内完成
+  （每次都读最新已落库配置，不基于渲染快照），设置页在写库期间把**全部**开关/排序/恢复按钮
+  一致禁用、列表 `aria-busy`、显示「正在保存…」——「可点击」与「会被执行」严格等价，
+  不再出现旧实现「其它行仍可点但处理函数直接 return」的静默丢弃；在途点击不排队
+  （不产生无界请求），失败就地显示真实错误且保留上次配置。
+  ④**消费者门控补全**：`useActionsStore.hasActionsFeedConsumer()` 改用
+  `hooks/useMainUiVisible.isFullViewVisible()`（mode=full 且未停靠）——极简/紧凑模式下侧栏与
+  行动页都不渲染，不再被误判成有消费者；`scheduleActionsRefresh` 的去抖回调**执行前重新验证**
+  消费者（窗口内切走即放弃本次聚合，恢复时由 FullView/ActionCenterPanel 的恢复路径补刷新）。
+  历史页的两个事件监听是页面独占资源：`useFullViewVisible()` 为 false 时不注册、恢复可见时
+  重新注册并补一次 merge 刷新（异步 `listen()` 迟到兑现由 `subscriptions` 作用域立即反订阅），
+  隐藏期间的筛选变化也不再发三条历史查询。
+  ⑤**启动加载门**：`mode` 与 `navigation_layout` 都来自设置，设置未就绪时外壳只渲染中性占位
+  （`ShellBootState`，`.shell-boot`），不按默认值渲染完整面板与默认导航（消除启动闪烁）；
+  占位**不计入一次视图激活**（`DeferredView.active` 仍要求 `settingsReady`），真实模式是
+  极简/紧凑时不会把 `FullView` 白挂载进隐藏槽。读取失败由 `useSettingsStore.loadError`
+  驱动占位显示原因 + 重试（重试成功自动进入正常界面），不会变成永久空白。
+  测试：`NavigationVisibility.integration.test.tsx`（安全恢复/草稿 pending/cancel/blocked/合并子页/
+  主动打开隐藏页不重定向）、`NavigationVisibilitySection.test.tsx`（在途全禁用 + 后续操作生效 +
+  失败恢复）、`useActionsStore.test.ts`（mode 门控 + 调度前复验）、`HistoryPanel.test.tsx`
+  （隐藏不注册/恢复重注册/20 次往返净监听不增长）、`App.shell.test.tsx`（加载门/失败重试/
+  紧凑模式不误挂载）、`navVisibility.test.ts`（安全页子页语义）。
+- 设置页信息架构（2026-11-06，一级分类 + 查找定位）：设置页从「十几个分组纵向堆叠」
+  改为**六个一级分类**（通用与外观 / 功能与应用 / 通知与语音 / 数据与资源 / 接入与诊断 /
+  帮助与教程），同一时刻只渲染当前分类的分组。
+  ①**注册表唯一事实源**：`lib/settingsCategories.ts` 的 `SETTINGS_SECTION_META` 声明每个稳定
+  分组的标题 Key、所属分类与搜索别名，`SETTINGS_CATEGORIES` 声明分类标题/说明/图标/顺序；
+  设置页与「查找设置」都从这里派生，**不再维护第二份手写索引**——历史缺陷（新增
+  `diagnostics-logs` 时漏加跳转索引）由 `settingsCategories.test.ts` 的完整性断言拦住：
+  分组漏归类、重复归属、分类为空、标题 Key 在中英词典缺失、`diagnostics-logs` 不可定位
+  都会直接失败。分类身份一律用稳定英文 ID，不按中文标题匹配。
+  ②**分类导航**：`SettingsCategoryNav` 是紧凑 tablist（`role=tablist/tab/tabpanel`、
+  `aria-selected` + `aria-labelledby/controls`、漫游 tabindex、方向键/Home/End 移动并激活）；
+  默认 3 列 × 2 行，窗口收窄按 `@media` 降为 2 列 / 1 列（标签换行不截断），
+  选中态只用边框 + `--accent-soft` + 文字对比度表达，不加阴影。
+  ③**状态与持久化分离**：分组展开偏好仍存 `taskdock.settings.sections.v1`（结构未变，
+  旧偏好继续有效）；分类选中态单独存 `taskdock.settings.category.v1`（版本化、未知/损坏
+  回退首个分类），互不影响，也不进业务配置/备份/IPC。
+  ④**跨模块定位**：`requestSettingsSectionReveal(id)` 语义扩展为「切分类 → 展开分组 → 两帧后
+  滚动定位」，覆盖设置页尚未挂载（sessionStorage 意图）与已挂载（window 事件）两条路径；
+  「更多 → 自定义导航」、工具面板 → 应用管理、剪贴板页「剪贴板设置」均复用该入口，
+  不再只切到设置页而不定位。分类切换回调保持引用稳定，避免跨模块监听被反复注册。
+  ⑤**按需加载**：设置页挂载时不再并发读取备份列表与剪贴板统计/状态；`loadPanelData` 拆成
+  `backups` / `clipboard` 两个切片，只在对应分组首次展开时读取（成功后标记，失败解除标记
+  以便重试），分类切换本身不产生查询。
+  ⑥**状态保护**：切换分类会先提交「输入后需失焦才提交」的剪贴板排除名单草稿（失败仍走原有
+  Toast），避免卸载输入框丢草稿；危险操作确认框与添加应用子页面是面板级状态，切分类不丢。
+  测试：`lib/settingsCategories.test.ts`（完整性/持久化/匹配）、`SettingsPanel.test.tsx`
+  （分类切换只渲染目标内容、跨分类展开保持、查找定位、按需加载与重试、键盘与 aria 关联、
+  草稿提交）。
 - 智能剪贴板（v0.6 起进入侧边栏）：完整模式为**第 4 个导航入口**（任务 / Agent /
   行动 / 剪贴板 / 历史 / 设置），**完整模式标题栏不再保留剪贴板入口按钮**；
   任务关联场景仍以
@@ -608,6 +709,13 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `variant="page"`：工具面板/应用管理/设置页的「添加应用」改为内容区子页面（返回、搜索、
   分类横向滚动、多选批量添加、手动添加、当前窗口选择均在同一页面内切换），任务关联场景仍用
   模态选择器。
+  **搜索未命中受控补扫（2026-11-06）**：添加页搜索先从当前索引（`searchApps`）取结果；
+  关键词无匹配时防抖 500ms、冷却 60s 后强制触发一次扫描（`loadApps(true)` 绕过 5 分钟 TTL，
+  用于发现扫描后新安装的应用）。扫描在途不叠加请求，分类筛选不是「全部」时不补扫
+  （分类是本地过滤，补扫不改变命中）；首次扫描失败交给显式重试。补扫完成后仍无匹配时
+  提示「已重新扫描，仍未找到」，与「正在继续扫描，暂未发现」明确区分；代际由 `scan_id`
+  隔离，旧批次不污染新请求。图标缓存采用「容量上限 + 淘汰最旧一批」（前端 512/64，
+  后端 512/64），不再整体清空，避免在视图标整批重新走 IPC。
 - 应用添加入口与快捷方式类型（2026-11-04，v33）：胶囊「+」与应用中心「添加应用」写入一次性
   `useUiStore.appsAddRequest` 后展开完整窗口并切到「应用」页，由已挂载的 `AppsPanel` 消费一次
   并打开 `AppPicker` 添加子页面；保存/批量完成后回到应用中心并立即刷新，**不再绕经设置页**，
@@ -1248,3 +1356,24 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 - 资源清理按 `ResourceCleanupSection → Bridge → Tauri command → ResourceCleanupState` 分层；类别固定为临时文件、TTS 缓存、无引用缩略图，不接受任意文件路径。
 - TTS 操作复用 `AudioService` 缓存锁；剪贴板操作复用采集闸并检查活跃粘贴；缩略图引用复查在 SQLite `BEGIN IMMEDIATE` 事务内执行。Shelf producer、过期孤儿回收和资源清理共享一个写入/维护闸，避免文件先写入、数据库后登记时误删。
 - 不变更数据库 schema、备份 manifest 或持久设置。资源快照与清理预览都按需执行；详细路径白名单、文件句柄验证、限制与剩余缺口见 [docs/RESOURCE_CLEANUP.md](RESOURCE_CLEANUP.md)。
+
+## 诊断日志（diagnostics/，2026-11-06）
+
+统一诊断日志基础设施：**本机 JSONL 持久化 + 有界队列 + 单写线程 + 轮转保留 + 异常聚合 +
+脱敏报告导出**，完整技术说明见 [DIAGNOSTICS.md](DIAGNOSTICS.md)。
+
+- `src-tauri/src/diagnostics/`：事件模型（`DiagnosticEvent`）、单写线程（追加/轮转/保留/
+  聚合）、查询与摘要、字段白名单脱敏、`tracing` 桥接层。写入端唯一，读写线程分离。
+- `src-tauri/src/commands/diagnostics.rs`：`diagnostics_record` / `diagnostics_status` /
+  `diagnostics_set_mode` / `diagnostics_query` / `diagnostics_summary` / `diagnostics_export` /
+  `diagnostics_clear` / `diagnostics_open_dir`。
+- 启动顺序：`.setup()` 先确定数据目录 → 初始化诊断日志 → 挂载 `EnvFilter + fmt +
+  DiagnosticsLayer` → 再创建窗口；退出在 `request_exit` 中先记录 `system/shutdown` 并
+  `shutdown()` 写线程（刷出尾部与聚合摘要）。
+- 前端：`src/lib/diagnostics.ts`（有界队列 + 批量 IPC + 错误归属去重 + `startOperation`）、
+  `invokeCommand` 统一记录 IPC 失败、`ErrorBoundary`/`globalErrors` 记录渲染与未捕获异常；
+  设置页 `DiagnosticsLogsSection` 提供筛选、摘要、模式切换、导出与清理。
+- 一致性校验：`update_settings` 写入后逐键回读（`settings/persist_verify`，只记键名），
+  `src/lib/consistencyChecks.ts` 在设置首次加载后校验导航布局孤儿项（一次性，不轮询）。
+- 诊断日志**不进入 SQLite**，也不替代工作流回执、备份 manifest、文件投递恢复记录等业务
+  审计数据；清理只删诊断目录内的 JSONL 与导出报告。
