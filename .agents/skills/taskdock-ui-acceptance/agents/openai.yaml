@@ -1,4 +1,4 @@
 interface:
   display_name: "Task Dock UI 验收"
-  short_description: "WebView2 与原生窗口分层核查"
-  default_prompt: "使用 $taskdock-ui-acceptance 核查当前 task_dock UI 和交互问题，优先低干扰通道。"
+  short_description: "分层核查视觉、交互与原生窗口"
+  default_prompt: "使用 $taskdock-ui-acceptance 核查当前 task_dock 视觉、组件交互或原生窗口问题，按 A/B/C/D/E/F 分层取证；纯功能是否实现转用 taskdock-acceptance。"

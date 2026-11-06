@@ -6,6 +6,7 @@
 
 ## 主要发现（按 P0–P3）
 - 问题：
+- 内部状态：UNIMPLEMENTED / PARTIAL / IMPLEMENTED_UNVERIFIED / AUTOMATED_VERIFIED / NATIVE_VERIFIED / DEFECT / ENVIRONMENT BLOCKED
 - 触发条件 / 预期 / 实际：
 - 文件或命令证据：
 - 根因：已确认 / 待查
@@ -15,7 +16,6 @@
 | 目标 | A–F 通道 | 实际命令 / 动作 | 结果 | 证据路径 | 未覆盖边界 |
 |---|---|---|---|---|---|
 
-## 实施 / 遗留
-- 本轮修改：只读验收则写“无”
+## 未验证项与遗留风险
 - 未执行、ENVIRONMENT BLOCKED：
 - 产物路径：

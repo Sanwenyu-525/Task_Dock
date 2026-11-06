@@ -1,4 +1,4 @@
 interface:
   display_name: "Task Dock 性能审计"
-  short_description: "内存、CPU、背压与生命周期"
-  default_prompt: "使用 $taskdock-performance-audit 审计当前 task_dock 性能问题，区分静态风险与实测。"
+  short_description: "审计常驻资源与生命周期"
+  default_prompt: "使用 $taskdock-performance-audit 审计当前 task_dock 常驻性能问题，先静态检查与低侵入采样，不默认高成本压测；仅问功能实现则转用 taskdock-acceptance。"

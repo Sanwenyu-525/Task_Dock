@@ -1,5 +1,6 @@
 {
   "task": "replace-with-real-task",
+  "task_type": "defect_fix",
   "context": "描述用户原始需求；以下案例是占位，未进行真实代码验证",
   "scope": ["只处理本任务涉及的组件/模块"],
   "out_of_scope": ["不重构无关模块"],
