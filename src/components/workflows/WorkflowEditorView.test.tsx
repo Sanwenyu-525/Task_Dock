@@ -14,6 +14,7 @@ import type { WorkflowDetail } from "../../lib/bridge";
 const workflowCreate = vi.fn();
 const workflowSave = vi.fn();
 const workspaceList = vi.fn();
+const scenarioList = vi.fn();
 const navListTargets = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
@@ -28,6 +29,7 @@ vi.mock("../../lib/bridge", () => ({
   workflowCreate: (...a: unknown[]) => workflowCreate(...a),
   workflowSave: (...a: unknown[]) => workflowSave(...a),
   workspaceList: (...a: unknown[]) => workspaceList(...a),
+  scenarioList: (...a: unknown[]) => scenarioList(...a),
 }));
 
 vi.mock("../../lib/navigation", () => ({
@@ -67,8 +69,10 @@ beforeEach(() => {
   workflowCreate.mockReset();
   workflowSave.mockReset();
   workspaceList.mockReset();
+  scenarioList.mockReset();
   navListTargets.mockReset();
   workspaceList.mockResolvedValue([]);
+  scenarioList.mockResolvedValue([{ id: "scene-1", name: "写作场景" }]);
   navListTargets.mockResolvedValue([]);
 });
 
@@ -77,6 +81,38 @@ afterEach(() => {
 });
 
 describe("WorkflowEditorView", () => {
+  it("提供与工作流功能对应的上下文教程入口", () => {
+    renderEditor(null);
+
+    expect(
+      screen.getByRole("button", { name: "查看帮助：一键工作流：把重复操作变成一次点击" }),
+    ).toBeTruthy();
+  });
+
+  it("允许选择真实场景并把 scene_id 保存到步骤参数", async () => {
+    const user = userEvent.setup();
+    workflowCreate.mockResolvedValue(detail({ id: "new", name: "进入场景" }));
+
+    renderEditor(null);
+    await user.type(screen.getByLabelText("名称"), "进入场景");
+    await user.click(screen.getByRole("combobox", { name: "添加步骤" }));
+    await user.click(await screen.findByRole("option", { name: "进入场景" }));
+
+    const scenePicker = await screen.findByRole("combobox", { name: "选择场景" });
+    await user.click(scenePicker);
+    await user.click(await screen.findByRole("option", { name: "写作场景" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(workflowCreate).toHaveBeenCalledTimes(1));
+    const payload = workflowCreate.mock.calls[0][0] as {
+      steps: { step_type: string; params: { scene_id?: string } }[];
+    };
+    expect(payload.steps[0]).toMatchObject({
+      step_type: "enter_scene",
+      params: { scene_id: "scene-1" },
+    });
+  });
+
   it("新建：选择步骤类型后直接展开参数区，保存一次提交", async () => {
     const user = userEvent.setup();
     const onSaved = vi.fn();

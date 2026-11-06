@@ -1301,6 +1301,51 @@ CREATE TABLE scenarios (
 CREATE INDEX idx_scenarios_updated ON scenarios(updated_at DESC, id DESC);
 "#,
     ),
+    (
+        39,
+        r#"
+-- v39（自定义语音包）：用户托管音频与通知事件绑定。
+-- 音频内容按 SHA-256 去重；资源文件只存于 app_data_dir/audio/voice-packs。
+CREATE TABLE voice_packs (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK(length(trim(name)) BETWEEN 1 AND 80),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE voice_assets (
+  id TEXT PRIMARY KEY NOT NULL,
+  sha256 TEXT NOT NULL UNIQUE,
+  media_type TEXT NOT NULL CHECK(media_type IN ('audio/mpeg','audio/wav')),
+  duration_ms INTEGER NOT NULL CHECK(duration_ms BETWEEN 1 AND 60000),
+  size_bytes INTEGER NOT NULL CHECK(size_bytes BETWEEN 1 AND 15728640),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE voice_pack_assets (
+  pack_id TEXT NOT NULL REFERENCES voice_packs(id) ON DELETE CASCADE,
+  asset_id TEXT NOT NULL REFERENCES voice_assets(id) ON DELETE RESTRICT,
+  display_name TEXT NOT NULL,
+  source_label TEXT,
+  license_note TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(pack_id, asset_id)
+);
+CREATE INDEX idx_voice_pack_assets_asset ON voice_pack_assets(asset_id);
+
+CREATE TABLE voice_bindings (
+  pack_id TEXT NOT NULL,
+  event_kind TEXT NOT NULL CHECK(event_kind IN (
+    'agent_started','agent_done','agent_done_multiple','agent_waiting',
+    'agent_failed','agent_disconnected','task_due','reminder'
+  )),
+  asset_id TEXT NOT NULL,
+  PRIMARY KEY(pack_id, event_kind),
+  FOREIGN KEY(pack_id, asset_id)
+    REFERENCES voice_pack_assets(pack_id, asset_id) ON DELETE CASCADE
+);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1724,6 +1769,17 @@ impl Db {
         let conn = self.conn();
         f(&conn)
     }
+
+    /// Execute a group of writes on the single writer connection as one transaction.
+    /// The closure receives the transaction through `Connection` deref and must not
+    /// start or commit a nested transaction. Returning an error rolls back all writes.
+    pub fn with_transaction<T>(&self, f: impl FnOnce(&Connection) -> AppResult<T>) -> AppResult<T> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let value = f(&tx)?;
+        tx.commit()?;
+        Ok(value)
+    }
 }
 
 /// 事务内写入设置：缺失时插入，已存在时覆盖。
@@ -2079,6 +2135,15 @@ pub struct Settings {
     /// 语音播报总开关（默认关闭；关闭时不初始化 WinRT 引擎）
     #[serde(default)]
     pub tts_enabled: bool,
+    /// 自定义语音包功能总开关；默认停用以保持旧版播报行为。
+    #[serde(default)]
+    pub tts_voice_pack_enabled: bool,
+    /// 当前语音包 ID；空值表示未选择。
+    #[serde(default)]
+    pub tts_voice_pack_id: String,
+    /// 固定语音路由：auto | system | custom。
+    #[serde(default = "default_tts_voice_route")]
+    pub tts_voice_route: String,
     /// 用户选择的语音唯一 ID（空 = 按性别偏好自动选择中文语音）
     #[serde(default)]
     pub tts_voice_id: String,
@@ -2239,6 +2304,9 @@ fn default_sound_volume() -> u32 {
     70
 }
 fn default_tts_gender() -> String {
+    "auto".into()
+}
+fn default_tts_voice_route() -> String {
     "auto".into()
 }
 fn default_tts_volume() -> u32 {
@@ -2942,6 +3010,91 @@ fn repair_hook(_phase: RepairPhase) -> AppResult<()> {
 mod tests {
     use super::*;
     use crate::error::AppError;
+
+    #[test]
+    fn with_transaction_commits_success_and_rolls_back_errors() {
+        let db = Db::open_in_memory().unwrap();
+
+        db.with_transaction(|conn| {
+            conn.execute(
+                "INSERT INTO application_settings (key, value, updated_at) VALUES ('tx-commit', '1', 'now')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let result = db.with_transaction(|conn| {
+            conn.execute(
+                "INSERT INTO application_settings (key, value, updated_at) VALUES ('tx-rollback', '1', 'now')",
+                [],
+            )?;
+            Err::<(), _>(AppError::Validation("force rollback".into()))
+        });
+        assert!(result.is_err());
+
+        db.with_read(|conn| {
+            let committed: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM application_settings WHERE key = 'tx-commit'",
+                [],
+                |row| row.get(0),
+            )?;
+            let rolled_back: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM application_settings WHERE key = 'tx-rollback'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(committed, 1);
+            assert_eq!(rolled_back, 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn v39_voice_pack_migration_creates_tables_and_defaults_settings() {
+        let db = Db::open_in_memory().unwrap();
+        let tables: i64 = db
+            .with_read(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+                     ('voice_packs','voice_assets','voice_pack_assets','voice_bindings')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(tables, 4);
+
+        let settings = Settings::load(&db).unwrap();
+        assert!(!settings.tts_voice_pack_enabled);
+        assert!(settings.tts_voice_pack_id.is_empty());
+        assert_eq!(settings.tts_voice_route, "auto");
+
+        let now = chrono::Utc::now().to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO voice_packs (id,name,created_at,updated_at) VALUES ('p','pack',?1,?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_assets (id,sha256,media_type,duration_ms,size_bytes,created_at) VALUES ('a',?1,'audio/wav',1000,4,?2)",
+                rusqlite::params!["a".repeat(64), now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_pack_assets (pack_id,asset_id,display_name,created_at) VALUES ('p','a','a.wav',?1)",
+                [&now],
+            )?;
+            let invalid_event = conn.execute(
+                "INSERT INTO voice_bindings (pack_id,event_kind,asset_id) VALUES ('p','unknown','a')",
+                [],
+            );
+            assert!(invalid_event.is_err(), "event_kind CHECK 必须生效");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn v5_to_v6_preserves_links_and_defaults_to_reselection() {

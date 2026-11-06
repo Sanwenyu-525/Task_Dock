@@ -1,7 +1,7 @@
-# 统一提示音与语音播报（v0.13，2026-11-04）
+# 统一提示音与语音播报（持续更新；最后更新 2026-11-06）
 
-> 状态：已实现。范围只包含「提示音 + 本地系统 TTS + 本地缓存」，不接入云端 TTS、
-> 不引入大模型、不扩展语音助手。跨平台仅保留接口边界；本轮只支持 Windows WinRT。
+> 当前实现：提示音、本地系统 TTS、本地合成缓存，以及用户导入的自定义 MP3/WAV 语音包。
+> 不接入云端 TTS、不引入大模型、不扩展语音助手。系统 TTS 仍只支持 Windows WinRT。
 
 ## 1. 架构与唯一调度者
 
@@ -12,6 +12,7 @@ Agent 状态迁移 / 任务到期 / 日程提醒
 前端 `AudioNotificationService`（App 根组件唯一挂载）
   ├─ 去重（eventId）→ 合并（done 窗口）→ 有界优先级队列 → 串行播放
   ├─ 提示音引擎（Web Audio 合成音调，无音频资源包）
+  ├─ 自定义片段（资源 ID → 托管文件路径 → Tauri asset protocol）
   └─ TTS 引擎（invoke `tts_synthesize`）
          ├─ 持久缓存命中 → 直接播放
          ├─ 内存缓存命中 → 直接播放
@@ -24,8 +25,8 @@ Agent 状态迁移 / 任务到期 / 日程提醒
   WebView 重复挂载。后端 `audio-event` 一律 `emit_to("main", ...)`，只投递主窗口；停靠胶囊、
   通知窗口、桌面微件窗等其它 WebView 不接收该事件，也不挂载该服务，因此不会重复播放
   （跨窗口唯一性由后端定向投递保证，不依赖单个 WebView 内的全局变量）。
-- Rust 只负责「事件广播、合成、缓存、统计」，不播放音频、不阻塞 UI 与主流程；音频失败不影响
-  事件入库与通知历史。
+- Rust 负责事件广播、TTS 合成与缓存，以及语音包元数据/导入文件管理；WebView 的唯一音频服务
+  负责提示音、系统 TTS 与自定义片段的串行播放。音频失败不影响事件入库与通知历史。
 - 不新增轮询：完全事件驱动，设置变更通过 Zustand 订阅即时应用。
 
 ## 2. 事件与调度规则
@@ -133,6 +134,12 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 - 容量：默认 50 MB（1–2048 可配置）；超限按 mtime（LRU）驱逐，命中触碰 mtime 最多 60 秒一次。
 - 清理：只删除缓存扩展名与 `.tmp-*`，不触碰用户其它文件；统计与清理均为 O(文件数)，不建 DB 结构。
 
+### 5.2.1 资源管理页复用（2026-11-06）
+
+- 设置 → 资源管理复用 `AudioService` 与同一缓存锁；仅枚举本服务 Key 文件和已超过 24 小时的本服务 `.tmp-*`，缓存读取、合成、预生成与任一设置页清理不会并发删除同一文件。
+- 新增的详细清理报告保留原有 `ok`、释放字节与删除数，并补充跳过/失败/状态字段。缓存扫描达到上限或无法完整读取时返回部分/不可用状态，不显示为完整成功。
+- 资源管理页清理 TTS 后发出设置页刷新事件；两个入口继续调用同一个后端缓存服务。
+
 ### 5.3 固定短语 vs 动态文本
 
 持久缓存白名单（`FIXED_PHRASES`）：
@@ -171,13 +178,16 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 | `tts_agent_*` | 同音效默认 | 按事件播报开关 |
 | `tts_cache_enabled` | true | 固定短语持久缓存 |
 | `tts_cache_max_mb` | 50 | 1–2048 |
+| `tts_voice_pack_enabled` | false | 自定义包启停；仍受 `tts_enabled` 与事件开关控制 |
+| `tts_voice_pack_id` | 空 | 当前语音包 ID |
+| `tts_voice_route` | `auto` | `auto` / `system` / `custom` |
 
 - 提示音与 TTS 总开关彼此独立，同时服从 `notify_muted`；暂停静音会停止当前音频，但不清通知
   历史、不停提醒调度、不停 Agent 采集。
 - 旧键 `agent_alert_sound=false`（且无新事件键）只映射关闭 waiting/failed 提示音，避免升级后
   突然响铃；不连带关闭其它默认事件。
-- 所有新键已加入 `ALLOWED_KEYS` 与 `validate_setting`；未新增数据表，因此不涉及
-  `BACKUP_TABLES`。
+- 所有新键已加入 `ALLOWED_KEYS` 与 `validate_setting`。语音包元数据使用 SQLite 独立表，
+  迁移与备份登记见 §15。
 
 ## 8. IPC 命令
 
@@ -187,6 +197,9 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 | `tts_synthesize` | 合成/取缓存，返回 data URL、实际语音、是否命中、耗时 |
 | `tts_cache_stats` | 容量、文件数、命中/未命中/写入/驱逐、内存命中 |
 | `tts_cache_clear` | 一键清理并返回释放字节与文件数 |
+| `voice_packs_list` / `voice_pack_create` / `voice_pack_rename` / `voice_pack_delete` | 语音包列表与 CRUD |
+| `voice_asset_import` / `voice_asset_remove` / `voice_asset_path` | 导入、移除与按资源 ID 解析托管文件 |
+| `voice_binding_set` / `voice_resolve_clip` | 事件绑定和当前配置下的片段解析 |
 
 合成与枚举均在 `spawn_blocking` 中执行，不阻塞 Tauri 主线程。
 
@@ -202,6 +215,9 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
 | 缓存文件损坏 | 最小格式校验失败 → 删除条目并重新合成，不把坏音频交给播放器 |
 | 缓存删除被占用/拒绝 | 保留条目、不计释放，容量统计按实际磁盘重算 |
 | 合成中取消/切换声音/语速 | generation/epoch 校验丢弃旧结果，不播放旧声音或旧参数音频 |
+| 固定片段缺失/损坏 | 本事件最多回退一次系统 TTS；若播放器已开始输出后失败则不从头重复播报 |
+| 自定义语音包未启用/无当前包 | 保持系统 TTS 路径，不扫描或预载语音目录 |
+| 自定义音频导入失败 | 返回格式化错误码；暂存/数据库补偿清理失败文件，不改动用户原文件 |
 | 音量 0 | 完全不发声，不创建音频节点、不发起合成；试听返回 `silent_tone`/`silent_speech` 并提示单通道静音，不报成功 |
 | `AudioContext.resume()` 失败 | 3s 超时/异常明确 reject，不把自动播放失败当作播放成功 |
 | 睡眠恢复 | 事件驱动，不补播；超补偿窗口的旧提醒只入库/推进、不发声 |
@@ -392,3 +408,57 @@ key = SHA-256( format_version, voice_id, language, rate, text )[0..16] → 32 he
    `neural` 引擎：模型清单（id/大小/SHA-256/许可）→ 用户确认下载（可取消/续传/校验）→ 按需加载 + 空闲释放（有界 TTL，无轮询）。
 2. 若接受 GPL：Piper + 中文 voice，需同步 GPL 合规方案（分发源码/许可声明），并单独核对每个 weight 的许可。
 3. 任一方案落地前：缓存 Key 已隔离、`engine` 参数与 `engines[]` 元数据已就位，前端只需补充引擎选择持久化（`tts_engine` 设置键）与安装/进度 UI。
+
+## 15. 自定义语音包与事件级配音（2026-11-06）
+
+### 15.1 数据与资源边界
+
+- SQLite 迁移 v39 增加 `voice_packs`、`voice_assets`、`voice_pack_assets`、`voice_bindings`。
+  每包每事件至多一条绑定；`agent_done_multiple` 是音频层的合并变体，不新增后端业务事件。
+- 音频文件位于 `app_data_dir/audio/voice-packs/`，使用内容 SHA-256 命名；不同包可引用同一资产。
+  删除包/片段只移除不再被引用的托管副本，不修改用户选择的源文件。TTS 缓存仍隔离在
+  `app_cache_dir/audio/tts/`，资源清理和 `tts_cache_clear` 不处理用户语音包。
+- 导入只允许 MP3/WAV；单文件上限 15 MiB、硬时长上限 60 秒，超过 15 秒显示建议提示；每包最多
+  32 个资源、累计 256 MiB。以扩展名、文件头和完整解码共同校验格式，限制体积与时长并计算哈希。
+  使用 Symphonia 纯 Rust 解码，不加载模型、不启动常驻音频后台进程。
+- 前端只保留资源 ID 和元数据；`voice_asset_path` 只接受资源 ID。Tauri asset protocol 仅开放
+  `$APPDATA/audio/voice-packs/**`，不向 WebView 暴露整个应用数据目录。
+
+### 15.2 统一路由与播放生命周期
+
+- 自定义片段不是第三个叠加通道；提示音仍先播，语音仍由同一个 `AudioNotificationService` 串行调度。
+- `system` 跳过自定义片段；`auto` 在无动态来源名/标题需要播报时优先用事件绑定片段，否则用系统 TTS；
+  `custom` 使用绑定固定片段。片段缺失或在输出开始前播放失败时至多回退一次系统 TTS；已开始输出后
+  失败不再从头重复整段 TTS。TTS 总开关、语音事件开关、音量和全局静音仍然优先生效。
+- 合并完成事件先找 `agent_done_multiple`，未配置时回退 `agent_done`，再进入当前路由的系统 TTS 回退。
+- 自定义片段试听、系统 TTS 试听和提示音试听共用单一服务。试听会话序号阻止旧会话的迟到 `finally`
+  释放新试听占用；切换包、关闭设置区、禁用语音、全局静音和删除正在试听的资源会停止试听。
+
+### 15.3 备份兼容
+
+- voice 四表登记在 `BACKUP_TABLES` / `EXTENDED_TABLES`。完整与快速 bundle 均保存语音包元数据、绑定和
+  所有去重托管音频；资产 path、文件大小和内容摘要在读取/恢复前交叉校验。
+- 备份与导入/恢复共用语音资产读写门禁。恢复沿用既有 staging、vault、恢复点与日志回滚流程，提交
+  数据库和替换资产期间保持互斥；失败时由原有恢复状态机回滚。
+- 旧数据库通过 v39 迁移启动后默认关闭自定义语音，不改变原系统 TTS 设置。未声明语音表的旧 bundle
+  保留本机语音包数据；明确声明语音表但缺对应 section 的 bundle 拒绝导入；明确提供空 section 会清空
+  语音数据。manifest 版本保持原值。
+
+### 15.4 隐私、许可与限制
+
+- 仅用户主动选取并导入本地文件；不访问外部 TTS 网站、不保存网站 Cookie/API Key、不把任务文本发送
+  到云服务。产品不判断音源是否获得许可，界面提示用户自行确认使用权。
+- 开发当日（2026-11-06）复核了 [ElevenLabs 使用条款](https://elevenlabs.io/terms-of-use)、
+  [TTSMaker 服务条款](https://ttsmaker.com/terms-of-service) 与
+  [Microsoft Speech 音频内容创建文档](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/how-to-audio-content-creation)。
+  不同平台、账号方案、具体声音及输入素材可能适用不同限制；平台授予的输出使用权不自动清理其中
+  的第三方声音、肖像/人格或输入内容权利。Task Dock 不宣称任何平台音源可统一商用，也不替用户判断
+  许可；界面只给出通用的使用权提醒。
+- 播放错误只在本次语音路径结构化处理，不改变 Agent/任务/提醒业务状态；日志不记录用户原始路径或音频正文。
+- 动态来源名与任务标题仍由现有 Windows WinRT TTS 播报；固定预生成语音只覆盖固定通知语句，不拼接音频
+  来朗读动态文本。自定义语音并不等同可实时生成任意文本的神经网络 TTS。
+
+### 15.5 本轮验收
+
+本节的测试命令、运行时间、退出码、构建状态和 Windows 实际播放状态以
+`tmp/acceptance/custom-voice-packs/report.md` 为准；自动化测试通过不代表真实 WebView 音频播放已验证。

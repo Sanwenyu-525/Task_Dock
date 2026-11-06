@@ -130,7 +130,10 @@ fn validate(title: &str, content: &str) -> AppResult<()> {
         return Err(AppError::Validation(format!("标题超过 {} 字符", MAX_TITLE)));
     }
     if content.chars().count() > MAX_CONTENT {
-        return Err(AppError::Validation(format!("正文超过 {} 字符", MAX_CONTENT)));
+        return Err(AppError::Validation(format!(
+            "正文超过 {} 字符",
+            MAX_CONTENT
+        )));
     }
     Ok(())
 }
@@ -245,7 +248,12 @@ pub(crate) fn list_in_conn(conn: &Connection, filter: &ListFilter) -> AppResult<
     let mut sql = format!("SELECT {} FROM notes WHERE 1 = 1", SUMMARY_COLUMNS);
     let mut values: Vec<Value> = Vec::new();
 
-    if let Some(query) = filter.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+    if let Some(query) = filter
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    {
         sql.push_str(" AND (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')");
         let pattern = like_pattern(query);
         values.push(Value::Text(pattern.clone()));
@@ -257,7 +265,12 @@ pub(crate) fn list_in_conn(conn: &Connection, filter: &ListFilter) -> AppResult<
     if filter.favorite_only {
         sql.push_str(" AND favorite = 1");
     }
-    if let Some(task_id) = filter.task_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(task_id) = filter
+        .task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         sql.push_str(" AND task_id = ?");
         values.push(Value::Text(task_id.to_string()));
     }
@@ -686,8 +699,8 @@ mod tests {
         let fetched = get(&db, &note.id).expect("读取笔记失败");
         assert_eq!(fetched.content, "第一行\n第二行");
 
-        let updated = update(&db, &note.id, update_input("新标题", "新正文", Some(1)))
-            .expect("更新失败");
+        let updated =
+            update(&db, &note.id, update_input("新标题", "新正文", Some(1))).expect("更新失败");
         assert_eq!(updated.revision, 2);
         assert_eq!(updated.title, "新标题");
 
@@ -859,7 +872,8 @@ mod tests {
         let cleared = set_task_link(&db, &note.id, None).expect("取消关联失败");
         assert!(cleared.task_id.is_none());
 
-        let err = set_task_link(&db, &note.id, Some("missing".into())).expect_err("不存在的任务应拒绝");
+        let err =
+            set_task_link(&db, &note.id, Some("missing".into())).expect_err("不存在的任务应拒绝");
         assert!(matches!(err, AppError::NotFound(_)));
         cleanup(&dir);
     }
@@ -921,6 +935,8 @@ mod tests {
     fn templates_are_non_empty() {
         let templates = templates();
         assert!(!templates.is_empty());
-        assert!(templates.iter().all(|t| !t.name.is_empty() && !t.content.is_empty()));
+        assert!(templates
+            .iter()
+            .all(|t| !t.name.is_empty() && !t.content.is_empty()));
     }
 }

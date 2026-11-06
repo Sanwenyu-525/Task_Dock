@@ -95,8 +95,12 @@ fn map_page_item_at(row: &Row<'_>, offset: usize) -> rusqlite::Result<ClipboardI
         byte_size: row.get(offset + 5)?,
         source_app: row.get(offset + 6)?,
         source_title: row.get(offset + 7)?,
-        image_width: row.get::<_, Option<i64>>(offset + 8)?.map(|v| v.max(0) as u32),
-        image_height: row.get::<_, Option<i64>>(offset + 9)?.map(|v| v.max(0) as u32),
+        image_width: row
+            .get::<_, Option<i64>>(offset + 8)?
+            .map(|v| v.max(0) as u32),
+        image_height: row
+            .get::<_, Option<i64>>(offset + 9)?
+            .map(|v| v.max(0) as u32),
         file_paths: serde_json::from_str(&raw_paths).unwrap_or_default(),
         favorite: row.get::<_, i64>(offset + 11)? != 0,
         pinned: row.get::<_, i64>(offset + 12)? != 0,
@@ -137,7 +141,10 @@ fn enrich_groups(conn: &Connection, groups: &mut [ClipboardGroup]) -> AppResult<
         return Ok(());
     }
     let ids: Vec<String> = groups.iter().map(|g| g.id.clone()).collect();
-    let placeholders = std::iter::repeat("?").take(ids.len()).collect::<Vec<_>>().join(",");
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
     let args: Vec<Value> = ids.iter().cloned().map(Value::Text).collect();
 
     let mut stmt = conn.prepare(&format!(
@@ -146,7 +153,11 @@ fn enrich_groups(conn: &Connection, groups: &mut [ClipboardGroup]) -> AppResult<
          WHERE gi.group_id IN ({placeholders}) GROUP BY gi.group_id, i.kind"
     ))?;
     let rows = stmt.query_map(params_from_iter(args.iter()), |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
     })?;
     let mut counts: std::collections::HashMap<String, GroupKindCounts> = Default::default();
     for r in rows {
@@ -744,7 +755,11 @@ pub(crate) fn reconcile_source_snapshot(
 ) -> (String, String, String) {
     let (new_app, new_title, new_kind) = next;
     if source_app_is_known(new_app) && source_kind_is_known(new_kind) {
-        return (new_app.to_string(), new_title.to_string(), new_kind.to_string());
+        return (
+            new_app.to_string(),
+            new_title.to_string(),
+            new_kind.to_string(),
+        );
     }
     (prev.0.to_string(), prev.1.to_string(), prev.2.to_string())
 }
@@ -2971,7 +2986,11 @@ mod tests {
         let second = record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
         let gid = second.group_id.expect("同来源的第二张截图应建组");
         let g = get_group(&db, &gid).unwrap();
-        assert!(g.name.starts_with("截图 · "), "不得再使用「截图组 N」: {}", g.name);
+        assert!(
+            g.name.starts_with("截图 · "),
+            "不得再使用「截图组 N」: {}",
+            g.name
+        );
         assert!(!g.name.contains("截图组"), "{}", g.name);
 
         // 关联文本主题优先于时间兜底
@@ -3324,21 +3343,9 @@ mod tests {
         close_group(&db, &text_group).unwrap();
 
         // 连续链接：同来源的相邻链接成组。
-        let u1 = record_capture(
-            &db,
-            &root.0,
-            &url_payload("https://example.com/one"),
-            &s,
-        )
-        .unwrap();
+        let u1 = record_capture(&db, &root.0, &url_payload("https://example.com/one"), &s).unwrap();
         assert!(u1.group_id.is_none());
-        let u2 = record_capture(
-            &db,
-            &root.0,
-            &url_payload("https://example.com/two"),
-            &s,
-        )
-        .unwrap();
+        let u2 = record_capture(&db, &root.0, &url_payload("https://example.com/two"), &s).unwrap();
         let link_group = u2.group_id.expect("连续链接应成组");
         let g = get_group(&db, &link_group).unwrap();
         assert_eq!(g.kind_counts.url, 2);
@@ -3346,21 +3353,9 @@ mod tests {
         close_group(&db, &link_group).unwrap();
 
         // 连续文件：每次复制一个文件条目，相邻条目成文件组。
-        let f1 = record_capture(
-            &db,
-            &root.0,
-            &files_payload(&["C:\\tmp\\报告.docx"]),
-            &s,
-        )
-        .unwrap();
+        let f1 = record_capture(&db, &root.0, &files_payload(&["C:\\tmp\\报告.docx"]), &s).unwrap();
         assert!(f1.group_id.is_none());
-        let f2 = record_capture(
-            &db,
-            &root.0,
-            &files_payload(&["C:\\tmp\\预算.xlsx"]),
-            &s,
-        )
-        .unwrap();
+        let f2 = record_capture(&db, &root.0, &files_payload(&["C:\\tmp\\预算.xlsx"]), &s).unwrap();
         let file_group = f2.group_id.expect("连续文件应成组");
         let g = get_group(&db, &file_group).unwrap();
         assert_eq!(g.kind_counts.files, 2);
@@ -3432,10 +3427,7 @@ mod tests {
         assert_eq!(manual.mode, "manual");
 
         let b = record_capture(&db, &root.0, &text_payload("后续内容"), &s).unwrap();
-        assert!(
-            b.group_id.is_none(),
-            "候选已被手动归类，不能再被自动组拉入"
-        );
+        assert!(b.group_id.is_none(), "候选已被手动归类，不能再被自动组拉入");
         assert_eq!(
             list_groups(&db, &ClipboardFilter::default()).unwrap().len(),
             1,
@@ -3479,21 +3471,9 @@ mod tests {
         let ga = a2.group_id.expect("A 应用连续文本应成组");
 
         // B 应用插入复制：第一条成为候选，第二条应与候选成组，而不是被 A 的会话挡住。
-        let b1 = record_capture(
-            &db,
-            &root.0,
-            &url_payload("https://example.com/b1"),
-            &s,
-        )
-        .unwrap();
+        let b1 = record_capture(&db, &root.0, &url_payload("https://example.com/b1"), &s).unwrap();
         assert!(b1.group_id.is_none());
-        let b2 = record_capture(
-            &db,
-            &root.0,
-            &url_payload("https://example.com/b2"),
-            &s,
-        )
-        .unwrap();
+        let b2 = record_capture(&db, &root.0, &url_payload("https://example.com/b2"), &s).unwrap();
         let gb = b2.group_id.expect("B 应用连续链接应独立成组");
         assert_ne!(ga, gb);
         let g = get_group(&db, &gb).unwrap();
@@ -3515,13 +3495,8 @@ mod tests {
         assert!(first.group_id.is_none());
         let mut gid = None;
         for i in 2..=MAX_AUTO_GROUP_ITEMS {
-            let out = record_capture(
-                &db,
-                &root.0,
-                &text_payload(&format!("上限 {}", i)),
-                &s,
-            )
-            .unwrap();
+            let out =
+                record_capture(&db, &root.0, &text_payload(&format!("上限 {}", i)), &s).unwrap();
             gid = gid.or(out.group_id);
         }
         let gid = gid.expect("应形成文本组");
@@ -3529,13 +3504,7 @@ mod tests {
         assert_eq!(g.items.len(), MAX_AUTO_GROUP_ITEMS, "组内数量有上限");
         assert_eq!(g.status, "collecting", "达到上限的最后一条仍属于当前会话");
 
-        let overflow = record_capture(
-            &db,
-            &root.0,
-            &text_payload("上限 溢出"),
-            &s,
-        )
-        .unwrap();
+        let overflow = record_capture(&db, &root.0, &text_payload("上限 溢出"), &s).unwrap();
         assert!(overflow.group_id.is_none(), "超限条目只成为新候选");
         assert_eq!(
             get_group(&db, &gid).unwrap().status,
@@ -3547,13 +3516,7 @@ mod tests {
             MAX_AUTO_GROUP_ITEMS,
             "已满会话内容保留"
         );
-        let next = record_capture(
-            &db,
-            &root.0,
-            &text_payload("上限 新组"),
-            &s,
-        )
-        .unwrap();
+        let next = record_capture(&db, &root.0, &text_payload("上限 新组"), &s).unwrap();
         let g2 = next.group_id.expect("超限后的连续内容应可成新组");
         assert_ne!(g2, gid);
     }
@@ -3568,7 +3531,10 @@ mod tests {
         let dup = record_capture(&db, &root.0, &text_payload("相同内容"), &s).unwrap();
         assert!(!dup.created, "相同内容遵守现有去重");
         assert!(dup.group_id.is_none());
-        assert_eq!(list_items(&db, &ClipboardFilter::default()).unwrap().len(), 1);
+        assert_eq!(
+            list_items(&db, &ClipboardFilter::default()).unwrap().len(),
+            1
+        );
         assert!(list_groups(&db, &ClipboardFilter::default())
             .unwrap()
             .is_empty());
@@ -3635,10 +3601,7 @@ mod tests {
         db.with_conn(|c| {
             c.execute(
                 "UPDATE clipboard_items SET created_at = ?1 WHERE id = ?2",
-                params![
-                    (Utc::now() - Duration::seconds(10)).to_rfc3339(),
-                    b.item.id
-                ],
+                params![(Utc::now() - Duration::seconds(10)).to_rfc3339(), b.item.id],
             )?;
             Ok(())
         })
@@ -3904,12 +3867,7 @@ mod tests {
         }
     }
 
-    fn with_source(
-        text: &str,
-        app: &str,
-        title: &str,
-        kind: &str,
-    ) -> CapturedContent {
+    fn with_source(text: &str, app: &str, title: &str, kind: &str) -> CapturedContent {
         let mut p = text_payload(text);
         p.source_app = app.into();
         p.source_title = title.into();
@@ -4098,20 +4056,35 @@ mod tests {
         );
         assert_eq!(
             reconcile_source_snapshot(prev, ("unknown", "", "unknown")),
-            ("chrome.exe".into(), "OpenCode Console".into(), "owner".into()),
+            (
+                "chrome.exe".into(),
+                "OpenCode Console".into(),
+                "owner".into()
+            ),
             "unknown 不得覆盖已识别来源"
         );
         assert_eq!(
             reconcile_source_snapshot(prev, ("", "", "")),
-            ("chrome.exe".into(), "OpenCode Console".into(), "owner".into())
+            (
+                "chrome.exe".into(),
+                "OpenCode Console".into(),
+                "owner".into()
+            )
         );
         assert_eq!(
             reconcile_source_snapshot(prev, ("notepad.exe", "记事本", "unknown")),
-            ("chrome.exe".into(), "OpenCode Console".into(), "owner".into()),
+            (
+                "chrome.exe".into(),
+                "OpenCode Console".into(),
+                "owner".into()
+            ),
             "识别方式缺失的半快照不构成可替换来源"
         );
         assert_eq!(
-            reconcile_source_snapshot(("legacy.exe", "旧标题", ""), ("code.exe", "VS Code", "foreground")),
+            reconcile_source_snapshot(
+                ("legacy.exe", "旧标题", ""),
+                ("code.exe", "VS Code", "foreground")
+            ),
             ("code.exe".into(), "VS Code".into(), "foreground".into()),
             "旧记录缺 kind 时可被新快照补齐"
         );
@@ -4163,12 +4136,7 @@ mod tests {
         assert_eq!((page.total_count, page.image_count), (1, 1));
         assert!(page.items[0].has_thumb, "封面查询必须带缩略图标记");
 
-        let ids = capture_ids(
-            &db,
-            &root.0,
-            (0..9).map(image_payload),
-            &s,
-        );
+        let ids = capture_ids(&db, &root.0, (0..9).map(image_payload), &s);
         let nine = create_manual_group(&db, "九图", &ids).unwrap();
         let page = get_group_page(&db, &nine.id, Some(9), Some(0), true).unwrap();
         assert_eq!(page.items.len(), 9);
@@ -4309,7 +4277,10 @@ mod tests {
         let full = get_group(&db, &gid).unwrap();
         let page = get_group_page(&db, &gid, Some(10), Some(0), false).unwrap();
         assert_eq!(
-            page.items.iter().map(|i| i.kind.as_str()).collect::<Vec<_>>(),
+            page.items
+                .iter()
+                .map(|i| i.kind.as_str())
+                .collect::<Vec<_>>(),
             vec!["image", "text", "image"],
             "分页不得打乱图片/文字交错顺序"
         );
@@ -4323,13 +4294,18 @@ mod tests {
         delete_items(&db, &root.0, std::slice::from_ref(&cover.items[0].id)).unwrap();
         let cover = get_group_page(&db, &gid, Some(1), Some(0), true).unwrap();
         assert_eq!(cover.items.len(), 1);
-        assert_eq!(cover.items[0].id, full.items[2].id, "封面被删后回退到下一张图");
+        assert_eq!(
+            cover.items[0].id, full.items[2].id,
+            "封面被删后回退到下一张图"
+        );
         assert_eq!((cover.total_count, cover.image_count), (2, 1));
         assert!(get_group(&db, &gid).is_ok(), "组内仍有内容，分组必须保留");
 
         // 组不存在时必须与「空组」区分：返回 NOT_FOUND 而不是空页。
         assert_eq!(
-            get_group_page(&db, "missing-group", Some(1), None, true).unwrap_err().code(),
+            get_group_page(&db, "missing-group", Some(1), None, true)
+                .unwrap_err()
+                .code(),
             "NOT_FOUND"
         );
     }
@@ -4388,7 +4364,13 @@ mod tests {
         let g = create_manual_group(
             &db,
             "混合组",
-            &[img1.clone(), note.clone(), img2.clone(), files.clone(), img3.clone()],
+            &[
+                img1.clone(),
+                note.clone(),
+                img2.clone(),
+                files.clone(),
+                img3.clone(),
+            ],
         )
         .unwrap();
         let page = get_group_page(&db, &g.id, Some(50), Some(0), true).unwrap();
@@ -4478,12 +4460,7 @@ mod tests {
         let a = record_capture(&db, &root.0, &image_payload(1), &s).unwrap();
         let b = record_capture(&db, &root.0, &image_payload(2), &s).unwrap();
         let g1 = create_manual_group(&db, "组一", std::slice::from_ref(&a.item.id)).unwrap();
-        let g2 = create_manual_group(
-            &db,
-            "组二",
-            &[b.item.id.clone(), a.item.id.clone()],
-        )
-        .unwrap();
+        let g2 = create_manual_group(&db, "组二", &[b.item.id.clone(), a.item.id.clone()]).unwrap();
 
         // 快速切换不同组：响应必须带 groupId，且各页条目互不串组。
         for round in 0..10 {
@@ -4564,21 +4541,30 @@ mod tests {
         let ids = capture_ids(&db, &root.0, (21..=25).map(image_payload), &s);
         let g = create_manual_group(&db, "重排", &ids).unwrap();
         assert_eq!(
-            cover_ids(&list_groups(&db, &ClipboardFilter::default()).unwrap(), &g.id),
+            cover_ids(
+                &list_groups(&db, &ClipboardFilter::default()).unwrap(),
+                &g.id
+            ),
             ids[..3].to_vec()
         );
 
         // 重排：最后一张移到最前，封面顺序必须跟随 position。
         move_group_item(&db, &g.id, &ids[4], 0).unwrap();
         assert_eq!(
-            cover_ids(&list_groups(&db, &ClipboardFilter::default()).unwrap(), &g.id),
+            cover_ids(
+                &list_groups(&db, &ClipboardFilter::default()).unwrap(),
+                &g.id
+            ),
             vec![ids[4].clone(), ids[0].clone(), ids[1].clone()]
         );
 
         // 从组内移除一条（条目本身保留）。
         remove_group_item(&db, &g.id, &ids[0]).unwrap();
         assert_eq!(
-            cover_ids(&list_groups(&db, &ClipboardFilter::default()).unwrap(), &g.id),
+            cover_ids(
+                &list_groups(&db, &ClipboardFilter::default()).unwrap(),
+                &g.id
+            ),
             vec![ids[4].clone(), ids[1].clone(), ids[2].clone()]
         );
 

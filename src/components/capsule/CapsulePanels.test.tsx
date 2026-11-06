@@ -696,6 +696,40 @@ describe("Agent 面板", () => {
     expect(summary).toContain("失败");
   });
 
+  it("胶囊概览使用后端全量实时计数并提示分页", async () => {
+    const counts = {
+      active_session_total: 201,
+      session_total: 201,
+      run_total: 301,
+      running: 17,
+      waiting: 250,
+      failed: 34,
+      disconnected: 0,
+    };
+    useAgentsStore.setState({
+      snapshot: {
+        ...snapshot,
+        live_summary: {
+          ...counts,
+          by_source: { codex: counts },
+          sessions_truncated: true,
+          runs_truncated: true,
+          next_cursor: "next-live-page",
+        },
+      },
+    });
+    const { container } = render(<AgentsLite />);
+
+    await screen.findByText("重构登录");
+    const summary = container.querySelector(".cap-summary")?.textContent ?? "";
+    expect(summary).toContain("运行中 17");
+    expect(summary).toContain("等待 250");
+    expect(summary).toContain("失败 34");
+    expect(summary).toContain("更多实时项请到 Agent 页分页");
+    expect(screen.getByText(/会话\s*201/)).toBeTruthy();
+    expect(screen.getByText(/运行\s*301/)).toBeTruthy();
+  });
+
   it("首次读取失败显示错误空态并重试，不永久停在「读取中…」", async () => {
     agentSnapshot.mockRejectedValueOnce(new Error("ipc broken"));
     render(<AgentsLite />);
@@ -927,9 +961,9 @@ describe("应用面板", () => {
     render(<AppsLite />);
     await screen.findByText("应用0");
     const add = screen.getByRole("button", { name: "添加应用" });
-    // 纯加号入口：可见文字已移除，但可访问名称保留；图标直接铺在卡片单元里
-    expect(add.textContent).toBe("");
-    expect(add.querySelector(".cap-app-name")).toBeNull();
+    // 添加入口与普通应用共享网格单元结构，下方显示「添加」
+    expect(add.textContent).toContain("添加");
+    expect(add.querySelector(".cap-app-name")).toBeTruthy();
     expect(add.querySelector("svg")).toBeTruthy();
     expect(screen.queryByText("添加应用")).toBeNull();
     fireEvent.click(add);
@@ -1054,8 +1088,8 @@ describe("应用面板", () => {
     render(<AppsLite />);
     await screen.findByText("尚未配置快捷应用");
     const add = screen.getByRole("button", { name: "添加应用" });
-    // 加号不是空态里的另一个按钮，而是网格的正式格子。
-    expect(add.closest(".cap-app-grid")).toBeTruthy();
+    // 未配置时空态提供唯一添加入口，不再额外渲染网格加号。
+    expect(add.closest(".cap-empty")).toBeTruthy();
     fireEvent.click(add);
     expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0);
     expect(useUiStore.getState().appConfig).toBeNull();
@@ -1282,6 +1316,12 @@ describe("应用面板", () => {
       useNavigationStore.setState({ targets: list, targetsLoaded: true, targetsError: null });
       render(<AppsLite />);
       if (count > 0) await screen.findByText("应用0");
+      else await screen.findByText("尚未配置快捷应用");
+
+      if (count === 0) {
+        expect(screen.getByRole("button", { name: "添加应用" })).toBeTruthy();
+        return;
+      }
 
       const grid = document.querySelector(".cap-app-grid") as HTMLElement;
       expect(grid).toBeTruthy();
@@ -1295,8 +1335,8 @@ describe("应用面板", () => {
       expect(add.className.split(/\s+/)).toEqual(
         expect.arrayContaining(["cap-app", "cap-app-add"]),
       );
-      expect(add.textContent).toBe("");
-      expect(add.querySelector(".cap-app-name")).toBeNull();
+      expect(add.textContent).toContain("添加");
+      expect(add.querySelector(".cap-app-name")).toBeTruthy();
       expect(add.querySelector(".cap-app-avatar.is-add")).toBeTruthy();
     },
   );

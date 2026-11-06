@@ -273,6 +273,28 @@ ZCode 的用户配置 `~/.zcode/cli/config.json` 支持配置式 hooks，Task Do
   （实例未知时归入未关联实例，不伪造实例）。目标不在第一页时按游标有上限地补页
   （最多 10 页），避免一次定位拉取整段历史。
 
+**2026-11-06 Round 5 补充（实时快照容量与事件生命周期）**
+
+- `agent_snapshot` 的明细仍有界：最多 200 个实时会话、300 个实时轮次； completed
+  不占实时明细容量。`live_summary` 在同一只读事务与同一个 1 小时窗口内返回全库及
+  `by_source` 的实时会话/轮次数、各状态数、截断标志和会话续页游标。监控树、胶囊、
+  标题状态和来源接入标记使用全量计数，不把快照样本量误当作真实数量；若来源的会话
+  全在首屏容量外，仍会显示为已接入。
+- `sessions_truncated=true` 时，Agent 页用
+  `agent_history_sessions({ liveOnly: true, cursor, limit })` 从快照末项继续 keyset
+  分页；单次只显示一页。单会话实时轮次超出快照时，调用
+  `agent_history_runs({ sessionId, liveOnly: true, cursor, limit })` 翻页，实时模式只保留
+  当前页，不把全部活动轮次累积进前端状态。`liveOnly` 优先于 `includeLive`；普通历史
+  查询仍默认排除实时项。新增字段和可选查询参数没有 SQLite schema 或迁移变化。
+- 历史更新探测共享一个 `agent-changed` 原生监听；相同筛选共用 `limit=1` 探测，事件
+  以 800ms 去抖，不同筛选的在途探测最多 3 个。面板隐藏时暂停并在恢复后补查；最后
+  一个消费者卸载后释放监听与待执行计时器。监听注册失败不会清空历史分页，界面显示
+  固定错误并保留手动刷新/重试入口；没有新增轮询。
+
+**2026-11-06 Round 5 二次验收整改（agent-changed 契约统一）**
+- `cleanup_stale()` 不再单独发送 `{ stale_cleanup }`，而是复用 `stale_cleanup_payload()` 按正常批量事件同一契约发送：`source_id` / `sources`（去重）/ `session_id`（单轮次为该轮次会话，多来源为空）/ `run_id` / `state=disconnected` / `states={ disconnected: n }` / `batch=n` / `changed=true` / `deduplicated=false` / `late=false` / `stale_cleanup=n`。stale 仍不推断任务成功/失败。
+- 前端 `lib/bridge.ts:normalizeAgentChangedPayload()` 做运行时校验：非对象、`sources`/`source_id` 类型非法、无信号返回 null（调用方忽略不抛 TypeError、不刷新）；`sources` 缺失时由 `source_id` 兜底，两者均缺失（仅旧 `{ stale_cleanup }`）规范为全局事件（`sources=[]`）使所有分区与实时摘要刷新；`states` 非对象、`stale_cleanup` 非数字亦视为非法。`onAgentChanged` 与 App / HistoryPanel / `useAgentHistory` 均经该归一化，不再直接访问 `payload.sources.includes`。
+
 ## 五、新增一个 Adapter 的步骤
 
 1. 在 `agents/` 新增模块，实现 `AgentAdapter` trait（只需 `id()` 与 `spawn()`）；
@@ -285,3 +307,29 @@ ZCode 的用户配置 `~/.zcode/cli/config.json` 支持配置式 hooks，Task Do
 「Agent → 模拟控制台」可触发一次模拟会话（completed / failed / waiting_only），
 依次产生 running → waiting → running → 终态 的跃迁与通知，用于在无真实 Agent 的
 环境验证 UI、托盘、通知与任务关联。所有模拟数据在 UI 与通知中均标注「模拟」。
+
+## 七、MCP 规划中心数据访问（2026-11-06）
+
+- 外部 MCP 客户端通过 `task-dock.exe --mcp-server` stdio 子命令进入本机 loopback
+  bridge；`mcp_server_enabled` 默认关闭。设置页显示独立的开关，并从 bridge 运行态读取
+  是否监听和实际端口，不用开关值冒充运行状态。
+- MCP 只开放用户自建规划项目、功能、步骤、里程碑、进度及 Agent 会话关联；不开放
+  任务、剪贴板正文、内置路线图或任意 SQL。`readonly` 是用户显式选择的全项目只读；
+  `project_rw` 的读写都限制在显式授权项目，创建项目后仅创建者 Agent 自动获得该项目授权。
+- 设置页可创建身份、调整 scope、授予/撤销项目、轮换/撤销凭据、生成 Claude Code、
+  Codex CLI、Cursor、Trae、generic 配置片段，并分页查看审计摘要。新身份默认 `disabled`。
+  Token 明文只在创建或轮换命令的响应返回一次，数据库只存 SHA-256；前端只在当前创建
+  区域内存态显示，关闭该区域会清除。任何配置片段由用户自行粘贴，Task Dock 不代写
+  第三方客户端配置文件。
+- MCP 成功写入与成功审计在同一立即写事务内提交；同一身份、工具和 `requestId` 用
+  参数摘要检测重放/冲突，并在当前 scope 与项目授权通过后才返回旧结果。失败时业务
+  写入与成功审计一起回滚，提交待验收的状态更新和可选说明也作为单一事务完成。
+- 规划功能详情展示关联 Agent 与真实会话状态，Agent 会话详情可反向定位功能；解除关联
+  只将关系标记为 `unlinked` 并保留记录。不存在匹配真实会话时状态显示「未知」，且不允许
+  跳转。
+- 审计分页 API 只返回身份名、工具、对象 ID、时间、成败、授权结果和粗粒度错误分类；
+  不返回 `detail`、`request_id` 或 `result_json`。**数据库中的 `result_json` 仍保存写入
+ 结果以支持幂等重放，并随本地数据库备份；目前没有配置保留周期或自动清理策略**，
+  因此审计正文保留期/存储增长仍需后续确定。
+- bridge 生命周期由设置更新通知驱动，活动监听异常退出或启动失败时每秒轻量检查/重试；成功监听、关闭释放与进程退出路径在代码中实现，但本轮没有完成真实 MCP 客户端联调、故障重试演练或残留子进程验收。
+  未在具体客户端中实测的配置/连接步骤标记为未验证。

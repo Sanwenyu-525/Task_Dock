@@ -74,14 +74,16 @@ export function EmptyState({
   text,
   actionLabel,
   onAction,
+  className,
 }: {
   icon: ReactNode;
   text: string;
   actionLabel?: string;
   onAction?: () => void;
+  className?: string;
 }) {
   return (
-    <div className="cap-empty">
+    <div className={`cap-empty${className ? ` ${className}` : ""}`}>
       {icon}
       <p>{text}</p>
       {actionLabel && onAction ? (

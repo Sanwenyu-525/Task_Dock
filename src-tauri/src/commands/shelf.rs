@@ -141,6 +141,7 @@ pub async fn shelf_add_paths(
                 let _permit = st.acquire_copy_permit();
                 shelf::add_managed(&st.db, &st.root, &raw, source, group_id.as_deref())
             } else {
+                let _permit = st.acquire_copy_permit();
                 shelf::add_reference(&st.db, &st.root, &raw, source, group_id.as_deref())
             };
             match result {
@@ -248,6 +249,7 @@ pub async fn shelf_add_from_clipboard(
                                 group_id.as_deref(),
                             )
                         } else {
+                            let _permit = st.acquire_copy_permit();
                             shelf::add_reference(
                                 &st.db,
                                 &st.root,
@@ -346,6 +348,14 @@ pub fn shelf_cleanup(
     include_protected: bool,
 ) -> AppResult<shelf::ShelfCleanupReport> {
     let st = rt(&state);
+    let _maintenance = if dry_run {
+        None
+    } else {
+        Some(
+            st.try_acquire_maintenance_permit()
+                .ok_or_else(|| AppError::Conflict("CLEANUP_BUSY".into()))?,
+        )
+    };
     let settings = Settings::load(&st.db).unwrap_or_default();
     shelf::cleanup_expired(&st.db, &st.root, &settings, dry_run, include_protected)
 }
@@ -420,7 +430,10 @@ pub fn shelf_reveal_item(state: State<'_, Arc<ShelfState>>, id: String) -> AppRe
 /// 单条全量读取（含 content）：列表载荷不带大文本，跨模块转存等需要
 /// 完整内容的场景先经此命令取权威行，再消费字段。
 #[tauri::command]
-pub fn shelf_get_item(state: State<'_, Arc<ShelfState>>, id: String) -> AppResult<shelf::ShelfItem> {
+pub fn shelf_get_item(
+    state: State<'_, Arc<ShelfState>>,
+    id: String,
+) -> AppResult<shelf::ShelfItem> {
     shelf::item(&rt(&state).db, &id)
 }
 
@@ -492,10 +505,13 @@ pub fn shelf_copy_paths(state: State<'_, Arc<ShelfState>>, ids: Vec<String>) -> 
     if paths.is_empty() {
         return Err(AppError::Validation("所选条目没有可复制的路径".into()));
     }
-    write_system_payload(&st.app, &ClipboardPayload::Text {
-        text: paths.join("\r\n"),
-        html: None,
-    })
+    write_system_payload(
+        &st.app,
+        &ClipboardPayload::Text {
+            text: paths.join("\r\n"),
+            html: None,
+        },
+    )
 }
 
 /// 复制文件本体（CF_HDROP）到系统剪贴板：资源管理器 Ctrl+V 即得文件。
@@ -513,10 +529,7 @@ pub fn shelf_copy_files(state: State<'_, Arc<ShelfState>>, ids: Vec<String>) -> 
     write_system_payload(&st.app, &ClipboardPayload::Files { paths })
 }
 
-fn write_system_payload(
-    app: &AppHandle,
-    payload: &ClipboardPayload,
-) -> AppResult<u32> {
+fn write_system_payload(app: &AppHandle, payload: &ClipboardPayload) -> AppResult<u32> {
     let rt = app
         .try_state::<Arc<crate::clipboard::ClipboardRuntime>>()
         .ok_or_else(|| AppError::Unavailable("剪贴板模块未就绪".into()))?;
@@ -603,11 +616,9 @@ pub async fn shelf_relocate_item(
     path: String,
 ) -> AppResult<shelf::ShelfItem> {
     let st = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        shelf::fsops::relocate_item(&st.db, &id, &path)
-    })
-    .await
-    .map_err(|e| AppError::Agent(format!("重定位任务失败: {e}")))?
+    tauri::async_runtime::spawn_blocking(move || shelf::fsops::relocate_item(&st.db, &id, &path))
+        .await
+        .map_err(|e| AppError::Agent(format!("重定位任务失败: {e}")))?
 }
 
 #[tauri::command]
@@ -682,7 +693,9 @@ pub async fn shelf_drop_target_create(
             &path,
             show_in_capsule.unwrap_or(true),
             op_mode.as_deref().unwrap_or(shelf::drop_targets::OP_COPY),
-            conflict.as_deref().unwrap_or(shelf::drop_targets::CONFLICT_RENAME),
+            conflict
+                .as_deref()
+                .unwrap_or(shelf::drop_targets::CONFLICT_RENAME),
         )
     })
     .await
@@ -779,4 +792,3 @@ pub async fn shelf_drop_to_directory(
     .await
     .map_err(|e| AppError::Agent(format!("文件投递任务失败: {e}")))?
 }
-

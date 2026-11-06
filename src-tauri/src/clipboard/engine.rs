@@ -1554,7 +1554,10 @@ mod tests {
         assert_eq!(group_topic("图片 1200×800"), None);
 
         // 主题取首个非空行并折叠空白，超长截断
-        assert_eq!(group_topic("\n\n  项目   评审  \n第二行"), Some("项目 评审".into()));
+        assert_eq!(
+            group_topic("\n\n  项目   评审  \n第二行"),
+            Some("项目 评审".into())
+        );
         let long = "很长的标题".repeat(10);
         let (name, source) = screenshot_group_name(Some(&long), "11-04 14:32");
         assert_eq!(source, "auto_source");

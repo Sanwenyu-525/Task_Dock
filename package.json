@@ -16,7 +16,7 @@
     "guard:cleanup": "node scripts/build-guard.mjs cleanup",
     "test": "vitest run",
     "test:watch": "vitest",
-    "help:check": "vitest run src/help/__tests__/registry-contract.test.ts",
+    "help:check": "vitest run src/help/__tests__/registry-contract.test.ts src/help/__tests__/health.test.ts",
     "icons": "node scripts/gen-icons.mjs"
   },
   "dependencies": {

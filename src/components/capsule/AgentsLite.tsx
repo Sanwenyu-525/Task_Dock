@@ -62,6 +62,8 @@ export default function AgentsLite() {
   }, [notice]);
 
   const summary = useMemo(() => liveSummary(snapshot), [snapshot]);
+  const hasLiveActivity =
+    summary.running + summary.waiting + summary.failed + summary.disconnected > 0;
   const runs = useMemo(
     () =>
       [...liveRuns(snapshot?.runs ?? [])]
@@ -145,6 +147,9 @@ export default function AgentsLite() {
                 · 失联 <b>{summary.disconnected}</b>
               </>
             ) : null}
+            {snapshot.live_summary?.sessions_truncated || snapshot.live_summary?.runs_truncated
+              ? " · 更多实时项请到 Agent 页分页"
+              : null}
             {snapshotError !== null ? " · 可能不是最新" : null}
           </span>
         )}
@@ -171,7 +176,7 @@ export default function AgentsLite() {
           </div>
         )}
 
-        {snapshot !== null && snapshotError === null && runs.length === 0 && (
+        {snapshot !== null && snapshotError === null && !hasLiveActivity && (
           <EmptyState
             icon={<AgentIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
             text="未检测到运行中的 Agent"
@@ -179,14 +184,21 @@ export default function AgentsLite() {
             onAction={() => openFullApp("agents")}
           />
         )}
+        {snapshot !== null && snapshotError === null && hasLiveActivity && runs.length === 0 && (
+          <div className="cap-item" role="status">
+            实时状态统计已读取，详情请到 Agent 页按需分页查看。
+          </div>
+        )}
         {runs.map((r) => {
           const session = snapshot?.sessions.find((s) => s.id === r.session_id);
           const title = r.task_title || session?.title || r.source_id;
           const label = AGENT_STATE_LABELS[r.status] ?? r.status;
-          const sessionCount = snapshot?.sessions.filter((s) => s.source_id === r.source_id).length ?? 0;
+          const sourceCounts = snapshot?.live_summary?.by_source?.[r.source_id];
+          const sessionCount = sourceCounts?.session_total ??
+            snapshot?.sessions.filter((s) => s.source_id === r.source_id).length ?? 0;
           // 「运行」只统计当前实时轮次（running/waiting/近期 failed/disconnected），
           // 不能把 completed 历史轮次算成正在运行。
-          const runCount = liveRuns(snapshot?.runs ?? []).filter(
+          const runCount = sourceCounts?.run_total ?? liveRuns(snapshot?.runs ?? []).filter(
             (x) => x.source_id === r.source_id,
           ).length;
           const hue = avatarHue(r.source_id || title);

@@ -430,3 +430,21 @@ CARGO_PROFILE_DEV_DEBUG=2 cargo build              # bash / Git Bash
 
 覆盖后会重新编译受影响的 crate，PDB 也随之回到完整体积；用完删除该环境变量即可恢复。
 `CARGO_PROFILE_DEV_DEBUG = 0` 可临时得到最小体积（但栈只有地址，无文件名/行号）。
+
+### 7.7 构建溯源诊断
+
+`src-tauri/build.rs` 在构建时注入 Git 短 commit 与 Unix 构建时间；`performance_diagnostics`
+的 `build` 段同时返回 debug/release profile 和当前运行 exe 路径。构建脚本通过
+`git rev-parse --git-path` 解析并监听 `.git/HEAD`、当前分支 ref 与 `packed-refs`，因此同一
+分支前进到新 commit 时会重新生成诊断信息，也兼容 worktree 的 `.git` 指针文件。
+
+`commit` 只标识 Git 提交，不是工作区内容哈希；诊断的 `dirty` 字段只表示构建时
+是否存在未提交的已跟踪修改（`git status --porcelain --untracked-files=no`，
+未跟踪文件不计，未提交内容本身不做哈希）。`dirty=true` 的构建不应视为干净快照。
+exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
+## 资源管理与清理
+
+- 后端入口：`src-tauri/src/resource_cleanup/`、`commands/resource_cleanup.rs`；文件句柄验证在 `src-tauri/src/fs_safety.rs`。TTS 缓存复用 `audio/cache.rs`，不得另开缓存目录锁；剪贴板缩略图必须使用 `ClipboardRuntime.capture_gate`，Shelf 引用复查必须位于 SQLite writer transaction。
+- 只允许检查服务端固定目录和命名白名单；`temporary` 只清理 Shelf 目录内规范 UUID 命名且超过 24 小时的 `.part` 文件。Agent spool、备份/恢复、用户原文件、语音包或构建缓存不扫描。
+- 扫描最多处理每目录 10,000 个条目、条目间最长 5 秒；超过限制应返回部分结果，不能把子集总量标为完整。preview/execute 共用非阻塞作业闸；Shelf producer 与清理、过期孤儿回收共享写入/维护闸，冲突返回 `CLEANUP_BUSY`。
+- 前端定向用例：`npx vitest run src/components/settings/ResourceCleanupSection.test.tsx src/components/settings/AudioSettings.test.tsx src/lib/settingsSections.test.ts src/components/settings/SettingsPanel.test.tsx`（工作目录仓库根）。Rust 用例从 `src-tauri/` 内按模块过滤运行；完整环境/验收限制见 [资源清理说明](RESOURCE_CLEANUP.md) 与 `tmp/acceptance/resource-cleaner/report.md`。

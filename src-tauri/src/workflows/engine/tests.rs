@@ -75,11 +75,7 @@ impl FakeExecutor {
         self
     }
 
-    fn hook(
-        mut self,
-        step_type: &str,
-        f: impl Fn(&StepExecContext<'_>) + Send + 'static,
-    ) -> Self {
+    fn hook(mut self, step_type: &str, f: impl Fn(&StepExecContext<'_>) + Send + 'static) -> Self {
         self.hooks
             .lock()
             .unwrap()
@@ -95,14 +91,33 @@ impl StepExecutor for FakeExecutor {
             calls.push(ctx.step.step_type.clone());
             calls.len()
         };
-        if let Some(hook) = self.hooks.lock().unwrap_or_else(|e| e.into_inner()).get(&ctx.step.step_type) {
+        if let Some(hook) = self
+            .hooks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&ctx.step.step_type)
+        {
             hook(ctx);
         }
-        if self.panic_calls.lock().unwrap_or_else(|e| e.into_inner()).contains(&call_no) {
+        if self
+            .panic_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&call_no)
+        {
             panic!("模拟执行器 panic");
         }
-        if self.fail_calls.lock().unwrap_or_else(|e| e.into_inner()).contains(&call_no) {
-            return Err(self.fail_reason.lock().unwrap_or_else(|e| e.into_inner()).clone());
+        if self
+            .fail_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&call_no)
+        {
+            return Err(self
+                .fail_reason
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone());
         }
         Ok(serde_json::json!({"summary": format!("{} 完成", ctx.step.step_type)}))
     }
@@ -183,7 +198,11 @@ fn run_steps(db: &Db, run_id: &str) -> Vec<crate::workflows::WorkflowRunStepRow>
 #[test]
 fn executes_in_order_and_completes() {
     let db = Arc::new(temp_db("order"));
-    let (wf_id, steps) = setup(&db, "w", vec![task_step("a"), task_step("b"), task_step("c")]);
+    let (wf_id, steps) = setup(
+        &db,
+        "w",
+        vec![task_step("a"), task_step("b"), task_step("c")],
+    );
     let run = store::create_run(&db, &wf_id, "w", &steps).unwrap();
     let executor = Box::new(FakeExecutor::new());
     let sink = FakeSink::default();
@@ -210,13 +229,21 @@ fn executes_in_order_and_completes() {
     assert_eq!(run_row.completed_steps, 3);
     assert_eq!(run_row.total_steps, 3);
     assert!(run_row.finished_at.is_some());
-    assert!(sink.count() >= 4, "至少：开始 + 每步 + 收尾，实际 {}", sink.count());
+    assert!(
+        sink.count() >= 4,
+        "至少：开始 + 每步 + 收尾，实际 {}",
+        sink.count()
+    );
 }
 
 #[test]
 fn failure_with_stop_policy_cancels_rest() {
     let db = Arc::new(temp_db("stop"));
-    let (wf_id, steps) = setup(&db, "w", vec![task_step("a"), task_step("b"), task_step("c")]);
+    let (wf_id, steps) = setup(
+        &db,
+        "w",
+        vec![task_step("a"), task_step("b"), task_step("c")],
+    );
     let run = store::create_run(&db, &wf_id, "w", &steps).unwrap();
     let executor = Box::new(FakeExecutor::new().fail_nth(2, "任务标题非法"));
     run_engine(
@@ -242,7 +269,11 @@ fn failure_with_stop_policy_cancels_rest() {
 #[test]
 fn failure_with_continue_policy_finishes_run() {
     let db = Arc::new(temp_db("continue"));
-    let (wf_id, mut steps) = setup(&db, "w", vec![task_step("a"), task_step("b"), task_step("c")]);
+    let (wf_id, mut steps) = setup(
+        &db,
+        "w",
+        vec![task_step("a"), task_step("b"), task_step("c")],
+    );
     steps[1].on_error = OnError::Continue.as_str().to_string();
     let run = store::create_run(&db, &wf_id, "w", &steps).unwrap();
     let executor = Box::new(FakeExecutor::new().fail_nth(2, "失败步骤"));
@@ -264,7 +295,13 @@ fn failure_with_continue_policy_finishes_run() {
         "completed",
         "失败继续后整体视为完成（失败明细在步骤回执里）"
     );
-    assert_eq!(store::get_run(&db, &run.run_id).unwrap().run.completed_steps, 3);
+    assert_eq!(
+        store::get_run(&db, &run.run_id)
+            .unwrap()
+            .run
+            .completed_steps,
+        3
+    );
 }
 
 #[test]
@@ -302,10 +339,8 @@ fn pause_blocks_until_resume_then_finishes() {
     let control = Arc::new(RunControl::new());
     let control2 = control.clone();
     // 第一步执行时请求暂停：引擎应在安全边界（下一步开始前）停下
-    let executor = Box::new(
-        FakeExecutor::new()
-            .hook("create_task", move |_ctx| control2.set_paused(true)),
-    );
+    let executor =
+        Box::new(FakeExecutor::new().hook("create_task", move |_ctx| control2.set_paused(true)));
     let handle = std::thread::spawn({
         let db = db.clone();
         let run_id = run_id.clone();
@@ -324,7 +359,8 @@ fn pause_blocks_until_resume_then_finishes() {
         }
     });
     assert!(
-        wait_for(Duration::from_secs(5), || run_status(&db, &run_id) == "paused"),
+        wait_for(Duration::from_secs(5), || run_status(&db, &run_id)
+            == "paused"),
         "引擎应在安全边界进入 paused"
     );
     let rs = run_steps(&db, &run_id);
@@ -333,7 +369,8 @@ fn pause_blocks_until_resume_then_finishes() {
     // 恢复 → 跑完
     control.set_paused(false);
     assert!(
-        wait_for(Duration::from_secs(5), || run_status(&db, &run_id) == "completed"),
+        wait_for(Duration::from_secs(5), || run_status(&db, &run_id)
+            == "completed"),
         "恢复后应完成"
     );
     handle.join().unwrap();
@@ -343,29 +380,31 @@ fn pause_blocks_until_resume_then_finishes() {
 #[test]
 fn cancel_prevents_subsequent_steps() {
     let db = Arc::new(temp_db("cancel"));
-    let (wf_id, steps) = setup(&db, "w", vec![task_step("a"), task_step("b"), task_step("c")]);
+    let (wf_id, steps) = setup(
+        &db,
+        "w",
+        vec![task_step("a"), task_step("b"), task_step("c")],
+    );
     let run_id = store::create_run(&db, &wf_id, "w", &steps).unwrap().run_id;
     let control = Arc::new(RunControl::new());
     let control2 = control.clone();
     // 已有一步成功后，在下一步执行中请求取消：该步不可中断（如实完成），后续不得开始
-    let executor = Box::new(
-        FakeExecutor::new().hook("create_task", move |ctx| {
-            let done = ctx
-                .db
-                .with_conn(|c| {
-                    c.query_row(
-                        "SELECT COUNT(*) FROM workflow_run_steps WHERE status = 'succeeded'",
-                        [],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .map_err(AppError::from)
-                })
-                .unwrap_or(0);
-            if done >= 1 {
-                control2.cancel();
-            }
-        }),
-    );
+    let executor = Box::new(FakeExecutor::new().hook("create_task", move |ctx| {
+        let done = ctx
+            .db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM workflow_run_steps WHERE status = 'succeeded'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap_or(0);
+        if done >= 1 {
+            control2.cancel();
+        }
+    }));
     run_engine(
         db.clone(),
         Box::new(FakeSink::default()),
@@ -379,7 +418,36 @@ fn cancel_prevents_subsequent_steps() {
     assert_eq!(rs[0].status, "succeeded");
     assert_eq!(rs[1].status, "succeeded", "取消时已在执行的步骤如实完成");
     assert_eq!(rs[2].status, "cancelled", "后续步骤不得开始");
-    assert_eq!(run_status(&db, &run_id), "cancelled", "用户取消 → cancelled");
+    assert_eq!(
+        run_status(&db, &run_id),
+        "cancelled",
+        "用户取消 → cancelled"
+    );
+}
+
+#[test]
+fn cancelled_long_running_step_is_recorded_as_cancelled() {
+    let db = Arc::new(temp_db("cancel-current-step"));
+    let (wf_id, steps) = setup(&db, "w", vec![task_step("a")]);
+    let run_id = store::create_run(&db, &wf_id, "w", &steps).unwrap().run_id;
+    let control = Arc::new(RunControl::new());
+    let control2 = control.clone();
+    let executor = Box::new(
+        FakeExecutor::new()
+            .hook("create_task", move |_| control2.cancel())
+            .fail_nth(1, "场景进入已取消"),
+    );
+    run_engine(
+        db.clone(),
+        Box::new(FakeSink::default()),
+        executor,
+        run_id.clone(),
+        wf_id,
+        steps,
+        control,
+    );
+    assert_eq!(run_steps(&db, &run_id)[0].status, "cancelled");
+    assert_eq!(run_status(&db, &run_id), "cancelled");
 }
 
 // ── 桌面互斥 ────────────────────────────────────────────────
@@ -411,14 +479,21 @@ fn desktop_wait_is_cancellable() {
     std::thread::sleep(Duration::from_millis(50));
     control.cancel();
     let result = handle.join().unwrap();
-    assert!(matches!(result, DesktopWait::Cancelled), "取消位必须立即打断等待");
+    assert!(
+        matches!(result, DesktopWait::Cancelled),
+        "取消位必须立即打断等待"
+    );
 }
 
 #[test]
 fn desktop_free_when_no_restore_running() {
     // 测试环境中工作现场恢复未运行 → 真实 restore_status 返回 Free → 步骤正常执行
     let db = Arc::new(temp_db("free"));
-    let (wf_id, steps) = setup(&db, "w", vec![nav_step(&db, "url", "open_url"), task_step("t")]);
+    let (wf_id, steps) = setup(
+        &db,
+        "w",
+        vec![nav_step(&db, "url", "open_url"), task_step("t")],
+    );
     let run_id = store::create_run(&db, &wf_id, "w", &steps).unwrap().run_id;
     run_engine(
         db.clone(),
@@ -511,8 +586,7 @@ fn create_task_step_writes_receipt_and_operation_id() {
     );
     let rs = run_steps(&db, &run_id);
     assert_eq!(rs[0].status, "succeeded");
-    let result: serde_json::Value =
-        serde_json::from_str(rs[0].result.as_deref().unwrap()).unwrap();
+    let result: serde_json::Value = serde_json::from_str(rs[0].result.as_deref().unwrap()).unwrap();
     assert_eq!(result["summary"], "create_task 完成");
     // 假执行器不真建任务；真建任务由 LiveExecutor 覆盖（需 AppHandle，真机验收）。
     // 这里验证回执与 operation_id 链路完整：

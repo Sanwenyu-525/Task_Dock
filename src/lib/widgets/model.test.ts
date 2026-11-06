@@ -3,12 +3,17 @@ import { describe, expect, it } from "vitest";
 import { translate } from "../../i18n";
 import {
   defaultWidgetItems,
+  desktopPresetSize,
+  DESKTOP_HEIGHT_RANGE,
+  DESKTOP_WIDTH_RANGE,
   enabledWidgets,
   moveWidgetBy,
   moveWidgetTo,
   normalizeConfig,
   normalizeLayout,
+  resolveDesktopWindowSize,
   widgetDefinition,
+  WIDGET_SIZES,
   WIDGET_TYPES,
 } from "./model";
 
@@ -36,6 +41,48 @@ describe("widget model defaults", () => {
       expect(translate("en-US", def.titleKey).length).toBeGreaterThan(0);
       expect(translate("zh-CN", def.descriptionKey).length).toBeGreaterThan(0);
       expect(translate("en-US", def.descriptionKey).length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("desktop size presets", () => {
+  it("每类三档预设都在允许范围内且单调不减", () => {
+    for (const type of WIDGET_TYPES) {
+      let prev: { width: number; height: number } = {
+        width: DESKTOP_WIDTH_RANGE.min,
+        height: DESKTOP_HEIGHT_RANGE.min,
+      };
+      for (const size of WIDGET_SIZES) {
+        const preset = desktopPresetSize(type, size);
+        expect(preset.width).toBeGreaterThanOrEqual(DESKTOP_WIDTH_RANGE.min);
+        expect(preset.width).toBeLessThanOrEqual(DESKTOP_WIDTH_RANGE.max);
+        expect(preset.height).toBeGreaterThanOrEqual(DESKTOP_HEIGHT_RANGE.min);
+        expect(preset.height).toBeLessThanOrEqual(DESKTOP_HEIGHT_RANGE.max);
+        expect(preset.width).toBeGreaterThanOrEqual(prev.width);
+        expect(preset.height).toBeGreaterThanOrEqual(prev.height);
+        prev = preset;
+      }
+    }
+  });
+
+  it("预设高度不会小于标题栏与刘海区以外的最小可读高度", () => {
+    // 标题栏 30 + 体区底边距 10 还要留 2 行左右正文（含空状态图标+一行字）
+    for (const type of WIDGET_TYPES) {
+      for (const size of WIDGET_SIZES) {
+        expect(desktopPresetSize(type, size).height).toBeGreaterThanOrEqual(120);
+      }
+    }
+  });
+
+  it("用户自定义尺寸优先于预设，预设值怎么改都不会覆盖已保存尺寸", () => {
+    const custom = { visible: true, topmost: false, width: 333, height: 244 };
+    for (const type of WIDGET_TYPES) {
+      for (const size of WIDGET_SIZES) {
+        expect(resolveDesktopWindowSize(type, size, custom)).toEqual({ width: 333, height: 244 });
+        expect(resolveDesktopWindowSize(type, size, undefined)).toEqual(
+          desktopPresetSize(type, size),
+        );
+      }
     }
   });
 });

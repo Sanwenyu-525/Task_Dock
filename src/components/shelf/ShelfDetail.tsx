@@ -28,6 +28,7 @@ import { ConfirmDialog } from "../ui/Dialog";
 import Select from "../ui/Select";
 import HtmlReader from "../clipboard/HtmlReader";
 import ShelfImageLightbox from "./ShelfImageLightbox";
+import { shelfDeleteFeedback } from "./shelfDeleteFeedback";
 
 /** 文本预览上限（后端已截断；这里只控制渲染量）。 */
 const PREVIEW_RENDER_LIMIT = 200_000;
@@ -48,6 +49,8 @@ export default function ShelfDetail({
   const showToast = useUiStore((s) => s.showToast);
   const updateItem = useShelfStore((s) => s.updateItem);
   const verifyExists = useShelfStore((s) => s.verifyExists);
+  const deletionBusy = useShelfStore((s) => s.deletionBusy);
+  const retryShelfSync = useShelfStore((s) => s.retryShelfSync);
 
   const [lightbox, setLightbox] = useState(false);
   const [textContent, setTextContent] = useState<string | null>(null);
@@ -62,6 +65,13 @@ export default function ShelfDetail({
   const [savingNote, setSavingNote] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const noteDirty = noteDraft !== item.note;
+  const protectedLabel = item.favorite && item.pinned
+    ? "收藏且置顶"
+    : item.favorite
+      ? "收藏"
+      : item.pinned
+        ? "置顶"
+        : null;
   const loadedRef = useRef(false);
 
   useEffect(() => {
@@ -443,19 +453,32 @@ export default function ShelfDetail({
         open={confirmDelete}
         title="删除暂存条目？"
         detail={
-          item.storage_mode === "managed"
-            ? "将删除 Task Dock 拥有的托管副本；用户原文件不受影响。"
-            : "仅删除暂存记录；用户原文件不受影响。"
+          `${protectedLabel ? `该条目已${protectedLabel}，确认后会一并删除。` : ""}${
+            item.storage_mode === "managed"
+              ? "将删除 Task Dock 拥有的托管副本；用户原文件不受影响。"
+              : "仅删除暂存记录；用户原文件不受影响。"
+          }`
         }
         confirmLabel="删除"
         danger
+        busy={deletionBusy}
         onConfirm={() => {
-          setConfirmDelete(false);
-          useShelfStore
-            .getState()
-            .deleteItems([item.id], true)
-            .then(() => showToast("已删除", { kind: "success" }))
-            .catch((e) => showToast(String(e), { kind: "error" }));
+          void (async () => {
+            try {
+              const result = await useShelfStore.getState().deleteItems([item.id], true);
+              const feedback = shelfDeleteFeedback(result, "delete");
+              showToast(feedback.message, {
+                kind: feedback.kind,
+                ...(!result.synced
+                  ? { action: { label: "重试同步", run: () => void retryShelfSync() } }
+                  : {}),
+              });
+            } catch (e) {
+              showToast(String(e), { kind: "error" });
+            } finally {
+              setConfirmDelete(false);
+            }
+          })();
         }}
         onCancel={() => setConfirmDelete(false)}
       />

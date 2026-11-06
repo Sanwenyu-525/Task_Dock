@@ -803,7 +803,10 @@ mod tests {
         // 提交成功在事务内清草稿
         save_draft(&db, "text", "待提交").expect("保存草稿");
         submit(&db, input("c-draft", "text", "待提交")).expect("提交");
-        assert!(state(&db).expect("状态").draft.is_none(), "提交成功应清草稿");
+        assert!(
+            state(&db).expect("状态").draft.is_none(),
+            "提交成功应清草稿"
+        );
         drop(db);
         cleanup(&dir);
     }
@@ -820,7 +823,10 @@ mod tests {
         let converted = convert_to_task(&db, &link.id).expect("转任务");
         assert_eq!(converted.status, "converted");
         let tid = converted.task_id.expect("应有 task_id");
-        assert_eq!(get_task(&db, &tid).expect("任务应可查").title, "https://example.com");
+        assert_eq!(
+            get_task(&db, &tid).expect("任务应可查").title,
+            "https://example.com"
+        );
         // 幂等：再次转换不新建任务
         let again = convert_to_task(&db, &link.id).expect("再次转任务");
         assert_eq!(again.task_id.as_deref(), Some(tid.as_str()));
@@ -901,11 +907,8 @@ mod tests {
             Err(AppError::Validation(_))
         ));
         // 直接写非法值：读取时回退默认，不 panic
-        db.set_setting(
-            SETTING_LAST_TYPE,
-            serde_json::Value::String("bogus".into()),
-        )
-        .expect("写设置");
+        db.set_setting(SETTING_LAST_TYPE, serde_json::Value::String("bogus".into()))
+            .expect("写设置");
         assert_eq!(last_type(&db), "task");
         drop(db);
         cleanup(&dir);

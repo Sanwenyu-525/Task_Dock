@@ -193,6 +193,9 @@ export const useUiStore = create<{
   helpOpenRequest: { token: number; articleId: string } | null;
   requestHelpArticle: (articleId: string) => void;
   clearHelpArticleRequest: () => void;
+  /** 从上下文帮助或设置入口进入帮助中心的来源页；离开 help Tab 时自动清空。 */
+  helpReturnTab: Tab | null;
+  setHelpReturnTab: (tab: Tab | null) => void;
 }>((set, get) => ({
   tab: "tasks",
   // 收集箱/暂存架是同一视觉入口的两个子页：setTab 落到其中之一时同步子页状态，
@@ -221,6 +224,7 @@ export const useUiStore = create<{
       tab: t,
       collectionSub: t === "inbox" || t === "shelf" ? t : s.collectionSub,
       pendingTab: null,
+      helpReturnTab: t === "help" ? s.helpReturnTab : null,
     }));
     opts?.after?.();
     return "switched";
@@ -346,4 +350,6 @@ export const useUiStore = create<{
       },
     })),
   clearHelpArticleRequest: () => set({ helpOpenRequest: null }),
+  helpReturnTab: null,
+  setHelpReturnTab: (helpReturnTab) => set({ helpReturnTab }),
 }));

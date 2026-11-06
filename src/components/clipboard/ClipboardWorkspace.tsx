@@ -55,6 +55,7 @@ import ClipboardItemDetail from "./ClipboardItemDetail";
 import ImageLightbox from "./ImageLightbox";
 import PastePanel from "./PastePanel";
 import type { AskConfirm, ClipboardDetail } from "./types";
+import ContextHelpButton from "../help/ContextHelpButton";
 
 const KIND_CHIPS: { id: string; label: string }[] = [
   { id: "all", label: "全部" },
@@ -1031,6 +1032,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           </span>
         </div>
         <div className="clip-head-actions">
+          {!isDrawer && <ContextHelpButton articleId="help.clipboard.history" />}
           <button
             className={`icon-btn sm ${paused ? "active" : ""}`}
             data-tip={

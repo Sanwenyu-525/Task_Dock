@@ -110,6 +110,11 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "feature_agent_links",
     // 场景工作区（v38）：软引用 workflow 与现场快照，必须排在两者之后。
     "scenarios",
+    // 自定义语音包（v39）：声明顺序满足外键插入依赖。
+    "voice_packs",
+    "voice_assets",
+    "voice_pack_assets",
+    "voice_bindings",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -408,6 +413,25 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["workflows", "workspace_snapshots"],
         true
     ),
+    // 自定义语音包（v39）：包 → 内容资产 → 包资源关联 → 事件绑定。
+    rule!("voice_packs", "audio", "all", 390, &[], true),
+    rule!("voice_assets", "audio", "all", 395, &[], true),
+    rule!(
+        "voice_pack_assets",
+        "audio",
+        "all",
+        400,
+        &["voice_packs", "voice_assets"],
+        true
+    ),
+    rule!(
+        "voice_bindings",
+        "audio",
+        "all",
+        405,
+        &["voice_pack_assets"],
+        true
+    ),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -424,7 +448,7 @@ pub fn is_local_transient_table(table: &str) -> bool {
     matches!(table, "shelf_file_ops")
 }
 
-/// 备份来源目录：归档、剪贴板资产、暂存架托管文件与用户配置。
+/// 备份来源目录：归档、剪贴板资产、暂存架托管文件、语音包资产与用户配置。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BackupSources<'a> {
     pub archive_dir: Option<&'a Path>,
@@ -698,7 +722,13 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
     | "mcp_agents"
     | "mcp_agent_grants"
     | "mcp_audit_log"
-    | "feature_agent_links" => format!("SELECT * FROM {} ORDER BY rowid", table),
+        | "feature_agent_links"
+        | "scenarios"
+        // 自定义语音包：完整/快速备份都包含包、去重资产、关联和事件绑定。
+        | "voice_packs"
+        | "voice_assets"
+        | "voice_pack_assets"
+        | "voice_bindings" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(
             "SELECT * FROM workflow_runs WHERE id IN (SELECT id FROM workflow_runs ORDER BY started_at DESC, rowid DESC LIMIT {}) ORDER BY rowid",
@@ -1350,6 +1380,21 @@ pub(crate) fn safe_asset_rel(rel: &str) -> AppResult<&Path> {
     }
     let comps: Vec<Component<'_>> = path.components().collect();
     let all_normal = comps.iter().all(|c| matches!(c, Component::Normal(_)));
+    if all_normal && comps.len() == 2 && comps[0].as_os_str() == "voice" {
+        let name = comps[1].as_os_str().to_string_lossy();
+        let Some((sha, ext)) = name.rsplit_once('.') else {
+            return Err(AppError::Validation("语音资产文件名非法".into()));
+        };
+        if sha.len() != 64
+            || !sha
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || (ext != "mp3" && ext != "wav")
+        {
+            return Err(AppError::Validation("语音资产路径格式非法".into()));
+        }
+        return Ok(path);
+    }
     if all_normal && comps.len() == 3 && comps[0].as_os_str() == "shelf" {
         // 暂存架托管文件：shelf/<files|images|thumbs>/<name>
         let dir = comps[1].as_os_str().to_string_lossy();
@@ -1461,6 +1506,48 @@ fn write_asset_unchecked(
     Ok(size)
 }
 
+fn canonical_voice_root(root: &Path) -> AppResult<PathBuf> {
+    let metadata = std::fs::symlink_metadata(root)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::Validation("语音资源目录不可用".into()));
+    }
+    let app_data = root
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| AppError::Validation("语音资源目录层级非法".into()))?;
+    let canonical_app_data = std::fs::canonicalize(app_data)?;
+    let expected = canonical_app_data.join("audio").join("voice-packs");
+    let canonical_root = std::fs::canonicalize(root)?;
+    if canonical_root != expected {
+        return Err(AppError::Validation(
+            "语音资源目录解析后超出应用数据目录".into(),
+        ));
+    }
+    Ok(canonical_root)
+}
+
+fn write_voice_asset(
+    writer: &mut BundleWriter,
+    root: &Path,
+    rel: &str,
+    expected_size: u64,
+    expected_sha: &str,
+) -> AppResult<u64> {
+    safe_asset_rel(rel)?;
+    let canonical_root = canonical_voice_root(root)?;
+    let filename = rel.strip_prefix("voice/").expect("已校验 voice 前缀");
+    let abs = canonical_root.join(filename);
+    let metadata = std::fs::symlink_metadata(&abs)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::Validation("语音资源文件不可用".into()));
+    }
+    let (size, sha) = hash_file(&abs)?;
+    if size != expected_size || sha != expected_sha {
+        return Err(AppError::Validation("语音资源与数据库摘要不一致".into()));
+    }
+    write_asset_unchecked(writer, &canonical_root, filename, rel)
+}
+
 fn list_archive_files(dir: &Path) -> AppResult<Vec<(String, PathBuf)>> {
     let mut out = Vec::new();
     if !dir.exists() {
@@ -1487,6 +1574,29 @@ pub fn write_bundle(
     target: &Path,
     kind: BackupKind,
 ) -> AppResult<BackupWriteResult> {
+    let _gate = crate::audio::voice_packs::asset_gate_read();
+    write_bundle_inner(db, sources, target, kind)
+}
+
+/// 恢复流程已持有语音资产写门禁时使用，避免恢复点备份再次获取读锁而死锁。
+pub(crate) fn write_bundle_without_voice_gate(
+    db: &Db,
+    sources: BackupSources<'_>,
+    target: &Path,
+    kind: BackupKind,
+) -> AppResult<BackupWriteResult> {
+    write_bundle_inner(db, sources, target, kind)
+}
+
+fn write_bundle_inner(
+    db: &Db,
+    sources: BackupSources<'_>,
+    target: &Path,
+    kind: BackupKind,
+) -> AppResult<BackupWriteResult> {
+    let voice_pack_dir = sources
+        .data_dir
+        .map(|data_dir| data_dir.join("audio").join("voice-packs"));
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
     let tmp = parent.join(format!(
@@ -1718,9 +1828,54 @@ pub fn write_bundle(
             }
             counts.insert("shelf_assets".into(), shelf_count as i64);
             counts.insert("shelf_asset_bytes".into(), shelf_bytes_total as i64);
-            // 资产总量 = 剪贴板资产 + 暂存架托管文件（读取端按 staged 全量核对）
-            counts.insert("assets".into(), (assets + shelf_count) as i64);
-            counts.insert("asset_bytes".into(), (asset_bytes + shelf_bytes_total) as i64);
+
+            // 用户语音资源不受 quick/full 区分影响；表行与所有去重后的托管音频必须一起备份。
+            let mut voice_assets: Vec<(String, String, u64, String)> = Vec::new();
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT sha256, media_type, size_bytes, id FROM voice_assets ORDER BY sha256",
+                )?;
+                let rows = stmt.query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?.max(0) as u64,
+                        r.get::<_, String>(3)?,
+                    ))
+                })?;
+                for row in rows {
+                    voice_assets.push(row?);
+                }
+            }
+            let mut voice_bytes = 0u64;
+            if !voice_assets.is_empty() {
+                let root = voice_pack_dir.as_deref().ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "备份缺少语音资源目录，无法打包 {} 个音频文件",
+                        voice_assets.len()
+                    ))
+                })?;
+                for (sha, media_type, size, _id) in &voice_assets {
+                    let rel = crate::audio::voice_packs::voice_asset_rel(sha, media_type)?;
+                    match write_voice_asset(&mut writer, root, &rel, *size, sha) {
+                        Ok(actual) => voice_bytes += actual,
+                        Err(e) => {
+                            return Err(AppError::Validation(format!(
+                                "语音资产缺失或不可读（{}）：{}",
+                                rel, e
+                            )));
+                        }
+                    }
+                }
+            }
+            counts.insert("voice_assets".into(), voice_assets.len() as i64);
+            counts.insert("voice_asset_bytes".into(), voice_bytes as i64);
+            // 资产总量 = 剪贴板 + 暂存架 + 语音包（读取端按 staged 全量核对）。
+            counts.insert("assets".into(), (assets + shelf_count + voice_assets.len()) as i64);
+            counts.insert(
+                "asset_bytes".into(),
+                (asset_bytes + shelf_bytes_total + voice_bytes) as i64,
+            );
 
             let mut archives = 0usize;
             let mut archive_bytes = 0u64;
@@ -2437,9 +2592,18 @@ fn read_bundle_impl(
 
     // 资产校验：每个数据库引用必须有同名文件且大小/哈希一致；也不接受未引用的多余文件。
     // 暂存架托管文件带 `shelf/` 命名空间前缀，与剪贴板资产分开校验。
-    let (clip_assets, shelf_staged): (Vec<&StagedAsset>, Vec<&StagedAsset>) = staged_assets
-        .iter()
-        .partition(|a| !a.rel.starts_with("shelf/"));
+    let mut clip_assets = Vec::new();
+    let mut shelf_staged = Vec::new();
+    let mut voice_staged = Vec::new();
+    for asset in &staged_assets {
+        if asset.rel.starts_with("shelf/") {
+            shelf_staged.push(asset);
+        } else if asset.rel.starts_with("voice/") {
+            voice_staged.push(asset);
+        } else {
+            clip_assets.push(asset);
+        }
+    }
     let mut asset_by_rel: HashMap<&str, &StagedAsset> = HashMap::new();
     for asset in &clip_assets {
         asset_by_rel.insert(asset.rel.as_str(), asset);
@@ -2507,6 +2671,71 @@ fn read_bundle_impl(
                 return Err(AppError::Validation(format!(
                     "暂存架托管文件 {} 大小与数据库记录不一致：记录 {}，实际 {}",
                     asset.rel, expected, asset.size
+                )));
+            }
+        }
+        let mut voice_expected: HashMap<String, (u64, String)> = HashMap::new();
+        for_each_spilled_row(rows_dir, "voice_assets", |index, row| {
+            let sha = row.get("sha256").and_then(|v| v.as_str()).ok_or_else(|| {
+                AppError::Validation(format!("voice_assets 第 {} 行缺少 sha256", index + 1))
+            })?;
+            let media_type = row
+                .get("media_type")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    AppError::Validation(format!("voice_assets 第 {} 行缺少 media_type", index + 1))
+                })?;
+            let rel = crate::audio::voice_packs::voice_asset_rel(sha, media_type)?;
+            let size = row
+                .get("size_bytes")
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
+                })
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "voice_assets 第 {} 行 size_bytes 非法",
+                        index + 1
+                    ))
+                })?;
+            if voice_expected
+                .insert(rel.clone(), (size, sha.to_string()))
+                .is_some()
+            {
+                return Err(AppError::Validation(format!(
+                    "voice_assets 存在重复文件摘要: {}",
+                    rel
+                )));
+            }
+            Ok(())
+        })?;
+        let mut seen_voice = HashSet::new();
+        for asset in &voice_staged {
+            let (expected_size, expected_sha) =
+                voice_expected.get(&asset.rel).ok_or_else(|| {
+                    AppError::Validation(format!("备份包含未被数据库登记的语音资产: {}", asset.rel))
+                })?;
+            let filename_sha = asset
+                .rel
+                .strip_prefix("voice/")
+                .and_then(|name| name.rsplit_once('.').map(|(sha, _)| sha))
+                .unwrap_or_default();
+            if *expected_size != asset.size
+                || expected_sha != filename_sha
+                || asset.sha256 != expected_sha.as_str()
+            {
+                return Err(AppError::Validation(format!(
+                    "语音资产 {} 与数据库摘要或大小不一致",
+                    asset.rel
+                )));
+            }
+            seen_voice.insert(asset.rel.as_str());
+        }
+        for rel in voice_expected.keys() {
+            if !seen_voice.contains(rel.as_str()) {
+                return Err(AppError::Validation(format!(
+                    "备份缺少语音资产文件: {}",
+                    rel
                 )));
             }
         }
@@ -3698,6 +3927,93 @@ mod tests {
             })
             .unwrap();
         assert_eq!(link_task, "t1");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn quick_and_full_bundles_include_all_voice_tables_and_assets() {
+        let dir = temp_dir("voice-assets");
+        let data_dir = dir.join("appdata");
+        let voice_root = data_dir.join("audio").join("voice-packs");
+        std::fs::create_dir_all(&voice_root).unwrap();
+        let bytes = b"self-contained voice asset bytes";
+        let sha = Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let rel = format!("{sha}.mp3");
+        std::fs::write(voice_root.join(&rel), bytes).unwrap();
+
+        let db = memdb();
+        let now = now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO voice_packs (id,name,created_at,updated_at) VALUES ('00000000-0000-0000-0000-000000000004','默认',?1,?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_assets (id,sha256,media_type,duration_ms,size_bytes,created_at) VALUES ('asset-v',?1,'audio/mpeg',1000,?2,?3)",
+                rusqlite::params![sha, bytes.len() as i64, now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_pack_assets (pack_id,asset_id,display_name,created_at) VALUES ('00000000-0000-0000-0000-000000000004','asset-v','done.mp3',?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_bindings (pack_id,event_kind,asset_id) VALUES ('00000000-0000-0000-0000-000000000004','agent_done','asset-v')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        db.set_setting(
+            "tts_voice_pack_id",
+            serde_json::json!("00000000-0000-0000-0000-000000000004"),
+        )
+        .unwrap();
+        db.set_setting("tts_voice_pack_enabled", serde_json::json!(true))
+            .unwrap();
+        db.set_setting("tts_voice_route", serde_json::json!("custom"))
+            .unwrap();
+
+        for kind in [BackupKind::Quick, BackupKind::Full] {
+            let bundle = dir.join(format!("voice-{}.jsonl", kind.as_str()));
+            let written = write_bundle(
+                &db,
+                BackupSources {
+                    data_dir: Some(&data_dir),
+                    ..Default::default()
+                },
+                &bundle,
+                kind,
+            )
+            .unwrap();
+            assert_eq!(written.counts["voice_assets"], 1);
+            assert_eq!(written.counts["voice_asset_bytes"], bytes.len() as i64);
+            let staging = dir.join(format!("staging-{}", kind.as_str()));
+            let read = read_bundle(&bundle, &staging).unwrap();
+            assert!(read
+                .assets
+                .iter()
+                .any(|asset| asset.rel == format!("voice/{rel}")));
+            assert_eq!(
+                read.data["settings"]["tts_voice_pack_id"],
+                "00000000-0000-0000-0000-000000000004"
+            );
+            assert_eq!(read.data["settings"]["tts_voice_pack_enabled"], true);
+            assert_eq!(read.data["settings"]["tts_voice_route"], "custom");
+            data::validate_bundle(&db, &read.data, &read.rows_dir).unwrap();
+            let staged_voice = read
+                .assets
+                .iter()
+                .find(|asset| asset.rel == format!("voice/{rel}"))
+                .expect("备份应包含语音资产");
+            assert_eq!(std::fs::read(&staged_voice.path).unwrap(), bytes);
+        }
+
+        assert!(safe_asset_rel(&format!("voice/{rel}")).is_ok());
+        assert!(safe_asset_rel(&format!("voice/{}.MP3", "a".repeat(64))).is_err());
+        assert!(safe_asset_rel(&format!("voice/{}.mp3/extra", "a".repeat(64))).is_err());
         std::fs::remove_dir_all(dir).ok();
     }
 

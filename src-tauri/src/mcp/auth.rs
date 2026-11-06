@@ -123,6 +123,20 @@ pub fn find_agent_by_token(conn: &Connection, token: &str) -> AppResult<Option<M
     Ok(row)
 }
 
+/// 按行 ID 重读当前未撤销身份，避免已验证上下文跨授权修改后继续沿用旧 scope。
+pub fn find_active_agent_by_row_id(
+    conn: &Connection,
+    row_id: &str,
+) -> AppResult<Option<McpAgentRow>> {
+    conn.query_row(
+        &format!("{AGENT_SELECT} WHERE id = ?1 AND revoked_at IS NULL"),
+        rusqlite::params![row_id],
+        |r| row_to_agent(r).map(|(agent, _, _)| agent),
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
 /// 每次成功请求后更新 last_seen_at（60s 节流；纯运维元数据，失败不影响请求）。
 pub fn touch_last_seen(conn: &Connection, row_id: &str) {
     let _ = conn.execute(
@@ -276,6 +290,25 @@ pub fn create_agent(db: &Db, agent_id: &str, display_name: &str) -> AppResult<Ag
     Ok(AgentCreated { info, token })
 }
 
+/// 轮换现有身份的凭据；明文仅随本次返回值交付，数据库只保存哈希。
+pub fn rotate_agent_token(db: &Db, row_id: &str) -> AppResult<AgentCreated> {
+    let token = generate_token();
+    let token_hash = sha256_hex(&token);
+    let now = crate::agents::now_iso();
+    let info = db.with_transaction(|conn| {
+        let changed = conn.execute(
+            "UPDATE mcp_agents SET token_hash = ?1, updated_at = ?2
+             WHERE id = ?3 AND revoked_at IS NULL",
+            rusqlite::params![token_hash, now, row_id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::NotFound("MCP Agent 不存在或已撤销".into()));
+        }
+        agent_info_by_row_id(conn, row_id)
+    })?;
+    Ok(AgentCreated { info, token })
+}
+
 pub fn set_agent_scope(db: &Db, row_id: &str, scope: &str) -> AppResult<McpAgentInfo> {
     if McpScope::parse(scope).is_none() {
         return Err(AppError::Validation(format!(
@@ -337,6 +370,25 @@ pub fn grant_project(db: &Db, row_id: &str, project_id: &str) -> AppResult<McpAg
         Ok(())
     })?;
     db.with_read(|conn| agent_info_by_row_id(conn, row_id))
+}
+
+/// 撤销单个项目授权；重复撤销幂等，返回更新后的身份和授权列表。
+pub fn revoke_project(db: &Db, row_id: &str, project_id: &str) -> AppResult<McpAgentInfo> {
+    db.with_transaction(|conn| {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM mcp_agents WHERE id = ?1)",
+            rusqlite::params![row_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(AppError::NotFound(format!("MCP Agent 不存在: {row_id}")));
+        }
+        conn.execute(
+            "DELETE FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
+            rusqlite::params![row_id, project_id],
+        )?;
+        agent_info_by_row_id(conn, row_id)
+    })
 }
 
 /// 撤销 Agent：revoked_at 置时间，后续请求立即 401（无缓存窗口）。

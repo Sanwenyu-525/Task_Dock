@@ -118,13 +118,14 @@ impl AppError {
                             retryable: true,
                         }
                     }
-                    rusqlite::ErrorCode::DatabaseCorrupt
-                    | rusqlite::ErrorCode::NotADatabase => ErrorMeta {
-                        code: "DATA_INTEGRITY_ERROR",
-                        category: ErrorCategory::Integrity,
-                        severity: ErrorSeverity::Critical,
-                        retryable: false,
-                    },
+                    rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase => {
+                        ErrorMeta {
+                            code: "DATA_INTEGRITY_ERROR",
+                            category: ErrorCategory::Integrity,
+                            severity: ErrorSeverity::Critical,
+                            retryable: false,
+                        }
+                    }
                     _ => ErrorMeta {
                         code: "DATABASE_ERROR",
                         category: ErrorCategory::Database,
@@ -318,10 +319,18 @@ fn sanitize(raw: &str) -> String {
                 return false;
             }
             let lower = line.to_lowercase();
-            !["select ", "insert into ", "update ", "delete from ", "create table",
-              "alter table ", "drop table ", "pragma "]
-                .iter()
-                .any(|kw| lower.contains(kw))
+            ![
+                "select ",
+                "insert into ",
+                "update ",
+                "delete from ",
+                "create table",
+                "alter table ",
+                "drop table ",
+                "pragma ",
+            ]
+            .iter()
+            .any(|kw| lower.contains(kw))
         })
         .collect();
 
@@ -343,10 +352,11 @@ fn redact_home_dirs(raw: &str) -> String {
     let mut i = 0;
     while i < raw.len() {
         let rest = &raw[i..];
-        if let Some(marker) = WIN_MARKERS
-            .iter()
-            .find(|m| rest.get(..m.len()).map(|p| p.eq_ignore_ascii_case(m)).unwrap_or(false))
-        {
+        if let Some(marker) = WIN_MARKERS.iter().find(|m| {
+            rest.get(..m.len())
+                .map(|p| p.eq_ignore_ascii_case(m))
+                .unwrap_or(false)
+        }) {
             out.push_str(&rest[..marker.len()]);
             let name_rest = &rest[marker.len()..];
             let end = name_rest
@@ -358,10 +368,11 @@ fn redact_home_dirs(raw: &str) -> String {
             i += marker.len() + end;
             continue;
         }
-        if let Some(marker) = NIX_MARKERS
-            .iter()
-            .find(|m| rest.get(..m.len()).map(|p| p.eq_ignore_ascii_case(m)).unwrap_or(false))
-        {
+        if let Some(marker) = NIX_MARKERS.iter().find(|m| {
+            rest.get(..m.len())
+                .map(|p| p.eq_ignore_ascii_case(m))
+                .unwrap_or(false)
+        }) {
             out.push_str(&rest[..marker.len()]);
             let name_rest = &rest[marker.len()..];
             let end = name_rest
@@ -471,7 +482,10 @@ mod tests {
 
     #[test]
     fn missing_file_is_not_found_and_safe() {
-        let e = AppError::Io(std::io::Error::new(ErrorKind::NotFound, "C:\\Users\\alice\\a.txt"));
+        let e = AppError::Io(std::io::Error::new(
+            ErrorKind::NotFound,
+            "C:\\Users\\alice\\a.txt",
+        ));
         assert_eq!(e.code(), "NOT_FOUND");
         assert_eq!(e.user_message(), "文件或路径不存在");
         // detail 只暴露白名单化的 kind/os，不包含原始路径或账户名

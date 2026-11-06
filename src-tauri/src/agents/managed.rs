@@ -497,7 +497,9 @@ impl ManagedAdapter for HooksAdapter {
         let events_ref: Vec<&str> = events.iter().map(|s| s.as_str()).collect();
         let files: Vec<Value> = (self.hooks_files)()
             .iter()
-            .map(|f| hooks_install::status_hooks_with(f, &events_ref, self.layout).unwrap_or(Value::Null))
+            .map(|f| {
+                hooks_install::status_hooks_with(f, &events_ref, self.layout).unwrap_or(Value::Null)
+            })
             .collect();
         let legacy = hooks_install::legacy_script_path(app_data, self.source_id);
         Ok(json!({
@@ -677,7 +679,14 @@ pub fn sync_uninstall_state(
 
 /// 来源健康查询返回的原始证据列
 /// （enabled / verified / transport_verified / last_event_at / config / 最近真实事件）。
-type HealthRow = (i64, i64, i64, Option<String>, Option<String>, Option<String>);
+type HealthRow = (
+    i64,
+    i64,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 /// 来源健康：严格区分
 /// 已禁用 / 已配置 / 通道已验证 / 曾经真实接入 / 最近真实事件 / 过期 / 未知。
@@ -710,7 +719,8 @@ pub fn source_health(db: &Db, source_id: &str) -> Value {
         })
         .ok()
         .flatten();
-    let Some((enabled, verified, transport_verified, last_event_at, config, last_real_event_at)) = row
+    let Some((enabled, verified, transport_verified, last_event_at, config, last_real_event_at)) =
+        row
     else {
         return json!({ "state": "unregistered", "connection_state": "unknown" });
     };

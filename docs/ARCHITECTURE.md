@@ -661,9 +661,20 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   Windows 重设默认光标，指针静止时不再派发 `WM_SETCURSOR`，WebView2 的 CSS `cursor` 没有机会重新
   生效。修复：`window_cursor.rs` 在 `WM_EXITSIZEMOVE` 后延后一拍（`PostMessageW`）按
   `GetDpiForWindow` 折算的 12 CSS px 热区补 `SetCursor(IDC_SIZENWSE/IDC_SIZENESW)`，并在
-  `WM_SETCURSOR(HTCLIENT)` 兜底；改写前用 `WindowFromPoint` 校验像素归属（圆角区域外的角点属于
-  下层窗口，不越权改写）。热区边长 12 CSS px 是前端 `.resize-grip` 与 `window_cursor::GRIP_CSS`
-  的跨端契约，两端单测锁定。证据见 `tmp/acceptance/window-corner-resize/report.md`。
+  `WM_SETCURSOR` 的 `lParam` LOWORD 为命中测试值（HTCLIENT=客户区），`wParam` 才是窗口句柄；
+  命中角热区前用 `WindowFromPoint` 校验像素归属（圆角区域外的角点属于下层窗口，不越权改写）。
+  热区边长 12 CSS px 是前端 `.resize-grip` 与 `window_cursor::GRIP_CSS` 的跨端契约，两端单测锁定。
+  证据见 `tmp/acceptance/window-corner-resize/report.md`。
+
+  **CSS 光标与 Windows 原生窗口拖拽光标的技术边界（2026-11-06）：**
+  - CSS `cursor: grab/grabbing` 仅在 WebView2 控制鼠标时生效（悬停、非拖动态、应用网格 HTML5 拖放、
+    Edge Tab 手动指针拖动）；Tauri `data-tauri-drag-region` 触发的原生 `startDragging` 进入 Win32
+    模态移动/缩放循环期间，系统光标由 OS 拥有，CSS 不会反映到系统鼠标。
+  - `magnetic.rs` 子类化 WndProc 在 `WM_SETCURSOR`（命中测试值在 `lParam` 的 LOWORD，`wParam` 为
+    窗口句柄）按 `WindowFromPoint` 归属校验后补 `SetCursor`，仅用于缩放角热区光标恢复；原生拖动
+    期间不强制握拳，接受 OS 默认光标。不新增 `.cur` 资源、全局 Hook、轮询。
+  - 前端 `useWindowDragCursor/useRailDragCursor/useWidgetDragCursor` 的 120ms 起始守卫只抑制启动扰动
+    导致的 DOM 类闪烁，不试图控制 OS 光标；`pointerup/pointercancel/visibilitychange` 为可靠结束信号。
   详见 [ui-themes/](ui-themes/) 目录。
 
 ### 7. 智能剪贴板（clipboard/，v0.5）
@@ -822,9 +833,12 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     `TAB_RESTORE_DRAG_CSS` 阈值恢复且拖动结束不再触发点击恢复。面板展开态收起额外有一段
     160ms 离场（`panelExiting` + `PANEL_EXIT_MS`）：面板先淡出再写轨道区域，避免相位推进
     当拍卸载面板造成「突然消失」。
-  - 构建溯源（2026-11-05）：`build.rs` 注入 `TASK_DOCK_GIT_COMMIT` / `TASK_DOCK_BUILD_TIME`，
-    `performance_diagnostics` 在 `build` 段返回 commit、构建时间（Unix 秒）、debug/release
-    profile 与当前 exe 路径；不新增依赖、不写用户路径到公开日志。
+  - 构建溯源（2026-11-05；触发条件于 2026-11-06 修正）：`build.rs` 注入 `TASK_DOCK_GIT_COMMIT` / `TASK_DOCK_GIT_DIRTY` / `TASK_DOCK_BUILD_TIME`，
+    `performance_diagnostics` 在 `build` 段返回 commit、dirty（`true`/`false`/`unknown`，轻量
+    `status --porcelain --untracked-files=no`）、构建时间（Unix 秒）、debug/release
+    profile 与当前 exe 路径；构建脚本监听 Git `HEAD`、当前分支 ref 与 `packed-refs`，
+    分支提交前进也会刷新诊断。Git 路径通过 `git rev-parse --git-path` 解析，兼容 worktree
+    的 `.git` 指针文件；不新增依赖、不写用户路径到公开日志。
 
 ### 11. 快速捕获（quick_capture/，v0.7）
 
@@ -1017,6 +1031,11 @@ clipboard_task_links      （任务↔条目/分组；任务删除只删关联�
 clipboard_paste_jobs      （逐项粘贴审计：sent/remaining/status/restored）
 clipboard_snapshot_links  （v0.5 工作现场↔素材，只存关联）
 
+voice_packs               （v39 自定义语音包元数据）
+voice_assets              （v39 SHA-256 去重的 MP3/WAV 资产元数据）
+voice_pack_assets         （v39 语音包↔共享音频资源，保存显示名）
+voice_bindings            （v39 每包每事件至多一条固定语音绑定）
+
 workspace_snapshots       （任务现场/手动现场；任务删除 SET NULL 降级）
 workspace_snapshot_items  （≤30 项；窗口身份字段，无 HWND/PID）
 action_acks               （行动中心已处理，按 event_id 幂等）
@@ -1047,8 +1066,8 @@ task_categories · notification_history (UNIQUE(kind, ref_id, occurrence)) · ap
 ### v0.5 备份与恢复架构（2026-10-30）
 
 **统一注册表**：`src-tauri/src/commands/backup.rs` 的 `BACKUP_TABLES` 声明全部用户业务表
-（当前 43 张；v0.7 规划、v0.8 货架/工作流、v0.9 笔记/专注/任务完成事件均在同一注册表中
-登记）、恢复顺序与外键依赖；`EXTENDED_TABLES` 标记剪贴板、工作现场与行动中心等
+（v0.7 规划、v0.8 货架/工作流、v0.9 笔记/专注/任务完成事件以及 v39 语音包均在同一注册表中
+登记）、恢复顺序与外键依赖；`EXTENDED_TABLES` 标记剪贴板、工作现场、行动中心与语音包等
 v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_schema_table` 会直接失败，
 防止“新模块数据从未进入备份却无人发现”。
 
@@ -1058,7 +1077,8 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 - quick：事件最近 20000 行 + 全部 running/waiting 保护行，通知 500、导航流水 500、
   剪贴板条目 2000、粘贴作业 500；header 记录数据库总量、`partial=true`、
   `partial_reasons` 与 `truncated_tables`。快速备份不打包事件归档，并只打包被导出条目
-  引用的资产，避免恢复出“有数据库行、无图片文件”的半套数据。
+  引用的剪贴板/暂存架资产，避免恢复出“有数据库行、无图片文件”的半套数据；语音包属于用户
+  托管资产，quick/full 均全量保存语音元数据、事件绑定与去重音频文件。
 - bundle 为流式 JSONL（header/section/archive/asset/integrity），表行 500 行/块，
   归档 1 MiB/块，资产 512 KiB/块；先写临时文件再原子替换，已有目标轮换为 `.previous`。
 - header 声明 `manifest_version`、`registry`、`excluded_settings` 与
@@ -1124,6 +1144,19 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   无 registry 头的极老文件按 `PRE_PLANNING_EXTENDED_TABLES` 兜底校验。
 - 恢复语义不变：整体替换用户数据。旧备份（无规划数据）恢复会清空当前规划数据
   （与其余业务表行为一致）；规划中心导入按 `EXTENDED_TABLES` 顺序插入满足外键依赖。
+
+### v39 自定义语音包与资产备份（2026-11-06）
+
+- 迁移 v39 追加 `voice_packs`、`voice_assets`、`voice_pack_assets`、`voice_bindings` 四表；
+  `BACKUP_TABLES` 按包定义 → 全局资源 → 包资源关联 → 事件绑定排序，quick/full 都完整备份这四表。
+- 托管音频位于 `app_data_dir/audio/voice-packs/`，使用 SHA-256 文件名；同一内容可跨包引用。
+  backup bundle 使用 `voice/<sha256>.<mp3|wav>` 资源路径，写入前校验文件真实大小和哈希，读入时再与
+  数据行摘要/大小核对。quick backup 与 full backup 均包含所有语音音频。
+- 备份/导入/恢复通过共享语音资产门禁串行化。restore 按既有 staging/vault/journal 流程留底与回滚，
+  音频和数据库提交期间不会并发删除或导入同一资产；恢复完成后清理无引用的托管文件。
+- 向后兼容：旧 registry 没有 voice 表时保留本机语音包及当前设置；registry 声明 voice 表但缺 section
+  时拒绝；明确给出空 section 才按整体替换语义清空语音包。SQLite v39 升级默认关闭语音包功能，保留旧
+  TTS 行为。`BUNDLE_VERSION` / `MANIFEST_VERSION` 不变。
 
 ### 通用 Agent 覆盖扩展迁移 v21（2026-11-03）
 
@@ -1209,3 +1242,9 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   不新开窗口、不铺全局遮罩；滚动沿用 `.tab-content` 单一容器（编辑态解除列表面板自身
   `overflow`），操作按钮随内容流式排布、不使用固定底栏。「添加步骤」复用
   `Select/Popover` 锚定菜单；未保存返回为页内确认条。执行链路、数据模型与命令不变。
+
+## 资源管理与智能清理（2026-11-06）
+
+- 资源清理按 `ResourceCleanupSection → Bridge → Tauri command → ResourceCleanupState` 分层；类别固定为临时文件、TTS 缓存、无引用缩略图，不接受任意文件路径。
+- TTS 操作复用 `AudioService` 缓存锁；剪贴板操作复用采集闸并检查活跃粘贴；缩略图引用复查在 SQLite `BEGIN IMMEDIATE` 事务内执行。Shelf producer、过期孤儿回收和资源清理共享一个写入/维护闸，避免文件先写入、数据库后登记时误删。
+- 不变更数据库 schema、备份 manifest 或持久设置。资源快照与清理预览都按需执行；详细路径白名单、文件句柄验证、限制与剩余缺口见 [docs/RESOURCE_CLEANUP.md](RESOURCE_CLEANUP.md)。

@@ -13,6 +13,8 @@ const api = vi.hoisted(() => ({
   shelfList: vi.fn(),
   shelfGroups: vi.fn(),
   shelfStats: vi.fn(),
+  shelfDelete: vi.fn(),
+  shelfClear: vi.fn(),
   shelfCheckExists: vi.fn(),
   shelfGetItem: vi.fn(),
   shelfDropTargets: vi.fn(),
@@ -105,6 +107,8 @@ beforeEach(() => {
   api.shelfList.mockResolvedValue({ items: [], total: 0 });
   api.shelfGroups.mockResolvedValue([]);
   api.shelfStats.mockResolvedValue(stats(0));
+  api.shelfDelete.mockResolvedValue({ deleted: 0, skipped: 0, freed_bytes: 0, failed_files: 0 });
+  api.shelfClear.mockResolvedValue({ deleted: 0, skipped: 0, freed_bytes: 0, failed_files: 0 });
   api.shelfCheckExists.mockResolvedValue([]);
   api.shelfDropTargets.mockResolvedValue([]);
   api.shelfGetItem.mockResolvedValue(shelfRow("s1"));
@@ -118,6 +122,8 @@ beforeEach(() => {
     filter: { search: "", kind: "all", group_id: "all", favorite_only: false },
     loading: false,
     error: null,
+    mutationSyncError: null,
+    deletionBusy: false,
     recent: [],
     recentLoading: false,
     recentLoaded: false,
@@ -162,6 +168,63 @@ function baseTarget() {
 }
 
 describe("ShelfWorkspace 内容视图分离", () => {
+  it("提供文件暂存架对应的上下文教程入口", () => {
+    render(<ShelfWorkspace active={false} />);
+
+    expect(screen.getByRole("button", { name: "查看帮助：文件暂存架：临时文件的收纳区" })).toBeTruthy();
+  });
+
+  it("清空提示按后端报告显示保留内容，并刷新为权威列表", async () => {
+    const rows = [
+      shelfRow("ordinary"),
+      shelfRow("favorite", { favorite: true }),
+      shelfRow("pinned", { pinned: true }),
+      shelfRow("both", { favorite: true, pinned: true }),
+    ];
+    api.shelfList.mockResolvedValue({ items: rows, total: rows.length });
+    api.shelfStats.mockResolvedValue(stats(rows.length));
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+    await screen.findByText("条目 ordinary");
+
+    const remaining = rows.filter((item) => item.id !== "ordinary");
+    api.shelfClear.mockResolvedValueOnce({
+      deleted: 1,
+      skipped: 3,
+      freed_bytes: 0,
+      failed_files: 0,
+    });
+    api.shelfList.mockResolvedValue({ items: remaining, total: remaining.length });
+    api.shelfStats.mockResolvedValue(stats(remaining.length));
+
+    fireEvent.click(screen.getByRole("button", { name: "清空暂存架" }));
+    const dialog = await screen.findByRole("dialog", { name: "清空暂存架？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "清空" }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(
+      "已清理 1 项，保留 3 项受保护内容",
+      expect.objectContaining({ kind: "warning" }),
+    ));
+    expect(api.shelfClear).toHaveBeenCalledWith(false);
+    expect(screen.queryByText("条目 ordinary")).toBeNull();
+    expect(screen.getByText("条目 favorite")).toBeTruthy();
+    expect(screen.getByText("条目 pinned")).toBeTruthy();
+    expect(screen.getByText("条目 both")).toBeTruthy();
+    expect(useShelfStore.getState().stats?.total).toBe(3);
+  });
+
+  it("详情删除受保护条目前明确说明收藏与置顶会一并删除", async () => {
+    const item = shelfRow("protected", { favorite: true, pinned: true });
+    api.shelfList.mockResolvedValue({ items: [item], total: 1 });
+    api.shelfStats.mockResolvedValue(stats(1));
+    render(<ShelfWorkspace active />);
+    fireEvent.click(await screen.findByRole("button", { name: "条目 protected" }));
+    fireEvent.click(await screen.findByRole("button", { name: "删除条目" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "删除暂存条目？" });
+    expect(within(dialog).getByText(/该条目已收藏且置顶，确认后会一并删除/)).toBeTruthy();
+  });
+
   it("进入投递目标管理后，暂存架工具栏/筛选/空态不再出现，返回后恢复", async () => {
     render(<ShelfWorkspace active />);
     await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
@@ -381,6 +444,6 @@ describe("ShelfWorkspace 空态", () => {
     render(<ShelfWorkspace active />);
     await screen.findByText("暂存架读取失败");
     expect(screen.queryByText(/把文件、图片拖进窗口/)).toBeNull();
-    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "重试同步" })).toBeTruthy();
   });
 });

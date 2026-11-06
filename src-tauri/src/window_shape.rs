@@ -260,6 +260,18 @@ pub fn is_capsule_mode(hwnd: isize) -> bool {
     capsule_for(hwnd).is_some()
 }
 
+/// 当前胶囊模式是否为 Edge Tab（极简吸附标签）。
+#[cfg(windows)]
+pub fn is_tab_mode(hwnd: isize) -> bool {
+    capsule_for(hwnd).map(|p| p.tab).unwrap_or(false)
+}
+
+/// 当前 Edge Tab 的停靠边（0=left 1=right 2=top 3=bottom）。
+#[cfg(windows)]
+pub fn capsule_tab_edge(hwnd: isize) -> Option<u8> {
+    capsule_for(hwnd).filter(|p| p.tab).map(|p| p.edge)
+}
+
 // ── 启动空白区域 ─────────────────────────────────────────────
 //
 // 停靠恢复启动时窗口必须**立刻**显示（隐藏窗口的定时器会被浏览器后台节流，
@@ -2461,7 +2473,11 @@ mod tests {
             } else {
                 (tab_h, tab_w)
             };
-            assert_eq!((s.rail.width, s.rail.height), (rect_w, rect_h), "edge={edge}");
+            assert_eq!(
+                (s.rail.width, s.rail.height),
+                (rect_w, rect_h),
+                "edge={edge}"
+            );
             let expect = match edge {
                 0 => (0, (h - rect_h) / 2),
                 1 => (w - rect_w, (h - rect_h) / 2),
@@ -2586,18 +2602,16 @@ mod tests {
 
         // 窗口太窄放不下面板：展开请求必须整体失败，不能退化成「只裁轨道」后
         // 仍报告成功（否则前端提交 docked-revealed，面板控件被裁进翼片）。
-        assert!(
-            capsule_regions(
-                120,
-                420,
-                1.0,
-                &CapsuleParams {
-                    expanded: true,
-                    ..CAP
-                }
-            )
-            .is_none()
-        );
+        assert!(capsule_regions(
+            120,
+            420,
+            1.0,
+            &CapsuleParams {
+                expanded: true,
+                ..CAP
+            }
+        )
+        .is_none());
         // 折叠态同样宽度只要求容纳轨道，仍应成功
         assert!(capsule_regions(120, 420, 1.0, &CAP).is_some());
         // 窗口太矮：轨道长度钳制到窗口高

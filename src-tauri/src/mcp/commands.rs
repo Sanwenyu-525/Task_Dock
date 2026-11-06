@@ -11,6 +11,7 @@ use tauri::State;
 
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
+use crate::mcp::audit::{self, AuditPage};
 use crate::mcp::auth::{self, McpAgentInfo};
 use crate::mcp::bridge::McpRuntimeStatus;
 
@@ -76,6 +77,16 @@ pub fn mcp_agent_create(
     })
 }
 
+/// 为现有 Agent 轮换 token；旧 token 在事务提交后立即失效，明文只返回一次。
+#[tauri::command]
+pub fn mcp_agent_rotate_token(db: State<'_, Arc<Db>>, id: String) -> AppResult<McpAgentCreated> {
+    let rotated = auth::rotate_agent_token(&db, &id)?;
+    Ok(McpAgentCreated {
+        info: rotated.info,
+        token: rotated.token,
+    })
+}
+
 #[derive(Serialize)]
 pub struct McpAgentCreated {
     #[serde(flatten)]
@@ -102,10 +113,25 @@ pub fn mcp_agent_grant_project(
     auth::grant_project(&db, &id, &project_id)
 }
 
+#[tauri::command]
+pub fn mcp_agent_revoke_project(
+    db: State<'_, Arc<Db>>,
+    id: String,
+    project_id: String,
+) -> AppResult<McpAgentInfo> {
+    auth::revoke_project(&db, &id, &project_id)
+}
+
 /// 撤销：置 revoked_at，立即生效（进行中的 HTTP 请求处理完即失效）。
 #[tauri::command]
 pub fn mcp_agent_revoke(db: State<'_, Arc<Db>>, id: String) -> AppResult<McpAgentInfo> {
     auth::revoke_agent(&db, &id)
+}
+
+/// 本机只读、分页审计摘要；不返回 detail、request_id 或幂等结果正文。
+#[tauri::command]
+pub fn mcp_audit_list(db: State<'_, Arc<Db>>, offset: u32, limit: u32) -> AppResult<AuditPage> {
+    db.with_read(|conn| audit::list_page(conn, offset, limit))
 }
 
 #[derive(Deserialize)]

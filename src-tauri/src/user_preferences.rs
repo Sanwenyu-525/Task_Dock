@@ -21,7 +21,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::hotkeys::model::{find_def, HotkeyBinding, HotkeyConfigFile, CONFIG_VERSION as HOTKEY_CONFIG_VERSION};
+use crate::hotkeys::model::{
+    find_def, HotkeyBinding, HotkeyConfigFile, CONFIG_VERSION as HOTKEY_CONFIG_VERSION,
+};
 
 pub const PREFERENCES_FILE: &str = "preferences.json";
 pub const PREFERENCES_PENDING_FILE: &str = "preferences.restore-pending.json";
@@ -230,8 +232,14 @@ fn normalize_desktop(raw: Option<&serde_json::Value>) -> WidgetDesktop {
             .map(|value| value.clamp(min, max).round())
     };
     WidgetDesktop {
-        visible: obj.get("visible").and_then(|v| v.as_bool()).unwrap_or(false),
-        topmost: obj.get("topmost").and_then(|v| v.as_bool()).unwrap_or(false),
+        visible: obj
+            .get("visible")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        topmost: obj
+            .get("topmost")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         width: clamp("width", 220.0, 560.0),
         height: clamp("height", 120.0, 640.0),
         nx: clamp("nx", 0.0, 1.0),
@@ -247,7 +255,9 @@ fn normalize_desktop(raw: Option<&serde_json::Value>) -> WidgetDesktop {
 
 fn normalize_max_items(raw: Option<&serde_json::Value>) -> i64 {
     let Some(value) = raw else { return 5 };
-    let Some(number) = value.as_f64() else { return 5 };
+    let Some(number) = value.as_f64() else {
+        return 5;
+    };
     if !number.is_finite() {
         return 5;
     }
@@ -340,9 +350,7 @@ pub fn normalize_widgets(raw: &serde_json::Value) -> (Vec<WidgetItem>, Vec<Strin
             widget_type: (*kind).to_string(),
             enabled: *default_enabled,
             config: if *kind == "today-tasks" {
-                WidgetConfig {
-                    max_items: Some(5),
-                }
+                WidgetConfig { max_items: Some(5) }
             } else {
                 WidgetConfig::default()
             },
@@ -369,10 +377,7 @@ pub fn sanitize_hotkeys(config: &HotkeyConfigFile) -> (HotkeyConfigFile, Vec<Str
             continue;
         };
         if !seen.insert(binding.action.clone()) {
-            warnings.push(format!(
-                "快捷键动作「{}」重复出现，已忽略后一条",
-                def.label
-            ));
+            warnings.push(format!("快捷键动作「{}」重复出现，已忽略后一条", def.label));
             continue;
         }
         out.push(HotkeyBinding {
@@ -474,9 +479,7 @@ pub fn parse_bundle_config(raw: &serde_json::Value) -> (Option<BundleConfig>, Ve
 }
 
 /// 读取并归一化 `preferences.json`；返回配置与可展示的警告。
-fn read_preferences_file(
-    data_dir: &Path,
-) -> Result<(Option<BundleConfig>, Vec<String>), String> {
+fn read_preferences_file(data_dir: &Path) -> Result<(Option<BundleConfig>, Vec<String>), String> {
     let path = data_dir.join(PREFERENCES_FILE);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
@@ -652,7 +655,11 @@ pub fn collect_export_config(data_dir: &Path) -> CollectedConfig {
         app_grid_order: preferences.and_then(|p| p.app_grid_order),
     };
     CollectedConfig {
-        config: if config.is_empty() { None } else { Some(config) },
+        config: if config.is_empty() {
+            None
+        } else {
+            Some(config)
+        },
         warnings,
     }
 }
@@ -693,10 +700,7 @@ pub fn pending_restore(data_dir: &Path) -> (Option<String>, Option<String>) {
                 pending.version
             )),
         ),
-        Err(error) => (
-            None,
-            Some(format!("偏好恢复标记损坏（{error}），已忽略")),
-        ),
+        Err(error) => (None, Some(format!("偏好恢复标记损坏（{error}），已忽略"))),
     }
 }
 
@@ -705,8 +709,9 @@ pub fn clear_restore_pending(data_dir: &Path, restore_id: &str) -> Result<(), St
     let path = data_dir.join(PREFERENCES_PENDING_FILE);
     let (pending, _) = pending_restore(data_dir);
     match pending.as_deref() {
-        Some(current) if current == restore_id => fs::remove_file(&path)
-            .map_err(|e| format!("清除偏好恢复标记失败：{e}")),
+        Some(current) if current == restore_id => {
+            fs::remove_file(&path).map_err(|e| format!("清除偏好恢复标记失败：{e}"))
+        }
         Some(_) => Ok(()),
         None => {
             // 标记不存在或已损坏：清理损坏文件，避免永久残留。
@@ -725,11 +730,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "td-user-prefs-{}-{}",
-            tag,
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("td-user-prefs-{}-{}", tag, uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -761,7 +763,10 @@ mod tests {
         // 未知类型与重复项被过滤，未知 ID 按类型重建。
         assert!(warnings.iter().any(|w| w.contains("unknown-widget")));
         assert!(warnings.iter().any(|w| w.contains("重复")));
-        let today = items.iter().find(|w| w.widget_type == "today-tasks").unwrap();
+        let today = items
+            .iter()
+            .find(|w| w.widget_type == "today-tasks")
+            .unwrap();
         assert!(!today.enabled);
         assert_eq!(today.config.max_items, Some(12));
         assert_eq!(today.size, "md");
@@ -866,7 +871,10 @@ mod tests {
         let (config, warnings) = parse_bundle_config(&raw);
         let config = config.unwrap();
         assert_eq!(config.locale.as_deref(), Some("en-US"));
-        assert_eq!(config.widgets.as_ref().unwrap().len(), WIDGET_DEFAULTS.len());
+        assert_eq!(
+            config.widgets.as_ref().unwrap().len(),
+            WIDGET_DEFAULTS.len()
+        );
         assert!(config.hotkeys.is_none());
         assert!(warnings.iter().any(|w| w.contains("快捷键配置损坏")));
         let (config, warnings) = parse_bundle_config(&serde_json::json!({"version":99}));

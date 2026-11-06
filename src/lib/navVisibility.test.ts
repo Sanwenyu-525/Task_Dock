@@ -38,6 +38,7 @@ describe("导航布局配置", () => {
     // 设置默认可见且锁定（locked）：不可隐藏、不可排序，固定底部
     expect(layout.left).toContain("settings");
     expect(layout.capsule).toContain("agents");
+    expect(layout.left).not.toContain("help");
   });
 
   it("有效配置原样保留用户显隐与排序", () => {
@@ -55,6 +56,25 @@ describe("导航布局配置", () => {
     expect(result.dropped).toBe(0);
     expect(result.config.left).toEqual(left);
     expect(result.config.capsule).toEqual(capsule);
+  });
+
+  it("已保存的帮助入口显隐与顺序保持不变", () => {
+    const left = ["tasks", "help", ...visibleExcept("left", ["tasks", "help", "settings"]), "settings"];
+    const visible = normalizeNavigationLayout({
+      version: NAV_LAYOUT_VERSION,
+      left,
+      capsule: allEntryIds("capsule"),
+      known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
+    });
+    expect(visible.config.left).toEqual(left);
+
+    const hidden = normalizeNavigationLayout({
+      version: NAV_LAYOUT_VERSION,
+      left: left.filter((id) => id !== "help"),
+      capsule: allEntryIds("capsule"),
+      known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
+    });
+    expect(hidden.config.left).not.toContain("help");
   });
 
   it("老配置缺少的新入口按默认值补齐；用户已隐藏的入口不会被恢复", () => {

@@ -92,8 +92,85 @@ const efficiencySource: EfficiencySource = {
   },
 };
 
+/**
+ * 微件窗口拖拽光标会话：标题条 `.wd-drag` 按下时表面加 `is-dragging`（grabbing），
+ * 结束回到 grab。与主窗标题栏同一策略（Tauri 原生拖动进入 Win32 模态循环期间
+ * WebView2 收不到 pointerup；结束信号取 pointerup / pointercancel /
+ * visibilitychange，以及恢复后的「按键已松开」pointermove）。
+ * `blur` 只在起始 120ms 之后结束（起始内为激活扰动）；会话序号隔离新旧会话。
+ * 只认事件 target 自身的 data-tauri-drag-region（按钮永远不是手柄）。
+ */
+function useWidgetDragCursor() {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    let endSession: (() => void) | null = null;
+    let sessionSeq = 0;
+
+    const stop = () => {
+      root.classList.remove("is-dragging");
+      endSession?.();
+      endSession = null;
+    };
+
+    const start = () => {
+      stop(); // 上一条会话若因事件缺失没收尾，先清掉再开新的
+      const mySeq = ++sessionSeq;
+      const startedAt = Date.now();
+      const isStale = () => mySeq !== sessionSeq;
+      const inStartChurn = () => Date.now() - startedAt < 120;
+      root.classList.add("is-dragging");
+      const end = () => {
+        if (isStale()) return;
+        stop();
+      };
+      const endIfLate = () => {
+        if (isStale() || inStartChurn()) return;
+        stop();
+      };
+      const onMove = (event: PointerEvent) => {
+        if (event.buttons === 0) endIfLate();
+      };
+      const onBlur = () => endIfLate();
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
+      window.addEventListener("blur", onBlur);
+      document.addEventListener("visibilitychange", end);
+      endSession = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        window.removeEventListener("blur", onBlur);
+        document.removeEventListener("visibilitychange", end);
+      };
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const target = event.target;
+      if (!(target instanceof Element) || !root.contains(target)) return;
+      if (!target.hasAttribute("data-tauri-drag-region")) return;
+      start();
+    };
+
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      sessionSeq += 1;
+      stop();
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, []);
+
+  return rootRef;
+}
+
 export default function WidgetWindow() {
   const { t } = useLocale();
+  const surfaceSessionRef = useWidgetDragCursor();
 
   // label 在 WebView 创建时即确定，不依赖 URL query。
   const type = useMemo<WidgetType | null>(() => {
@@ -477,7 +554,7 @@ export default function WidgetWindow() {
 
   return (
     <div className="wd-root">
-      <div className="wd-surface" role="region" aria-label={title}>
+      <div className="wd-surface wd-drag-session" ref={surfaceSessionRef} role="region" aria-label={title}>
         <header className="wd-header">
           <div className="wd-drag" data-tauri-drag-region>
             <span className="wd-title">{title}</span>

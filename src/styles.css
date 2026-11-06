@@ -2583,6 +2583,184 @@ code {
   line-height: 1.5;
 }
 
+.resource-cleanup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-cleanup-heading {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.resource-cleanup-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-cleanup-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.resource-cleanup-metric-label {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.resource-cleanup-disk-list,
+.resource-cleanup-result ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.resource-cleanup-section-head,
+.resource-cleanup-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-cleanup-categories {
+  min-width: 0;
+}
+
+.resource-cleanup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, auto);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border-subtle);
+}
+
+.resource-cleanup-row:last-child {
+  border-bottom: none;
+}
+
+.resource-cleanup-checkbox {
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.resource-cleanup-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.resource-cleanup-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.resource-cleanup-description,
+.resource-cleanup-category-stats,
+.resource-cleanup-row-status,
+.resource-cleanup-selection-summary {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.resource-cleanup-category-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.resource-cleanup-category-stats strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.resource-cleanup-selection-summary {
+  flex: 1;
+  text-align: right;
+}
+
+.resource-cleanup-confirm,
+.resource-cleanup-result {
+  padding: 8px 10px;
+}
+
+.resource-cleanup-confirm-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.resource-cleanup-confirm-list {
+  margin: 6px 0;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+
+.resource-cleanup-result h3 {
+  margin: 0 0 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.resource-cleanup-result p,
+.resource-cleanup-result li {
+  margin: 4px 0;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.resource-cleanup-error {
+  color: var(--status-error);
+}
+
+@media (max-width: 560px) {
+  .resource-cleanup-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .resource-cleanup-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .resource-cleanup-category-stats {
+    align-items: flex-start;
+    padding-left: 22px;
+    text-align: left;
+  }
+
+  .resource-cleanup-actions {
+    flex-wrap: wrap;
+  }
+}
+
 /* ══════════ 统一音色选择器（语音播报分组） ══════════
    紧凑可滚动列表 + 行内试听。所有颜色/圆角/边框走语义 Token，
    两套视觉预设与明暗主题共用同一结构，不引入割裂的新控件风格。 */
@@ -9481,6 +9659,16 @@ code {
   scrollbar-width: thin;
   scrollbar-color: var(--cap-track) transparent;
 }
+/* 应用面板：空态是紧凑提示，不占满剩余高度。
+   全局 `.cap-empty` 的 flex:1 用于任务/Agent/剪贴板等列表面板，
+   这里仅对应用面板收敛，避免空态把网格挤到面板底部。 */
+.cap-list--apps > .cap-empty {
+  flex: 0 0 auto;
+}
+/* 未配置时空态作为独立完整状态，占用可用高度并垂直居中 */
+.cap-list--apps > .cap-empty.cap-empty--centered {
+  flex: 1 1 auto;
+}
 .cap-list::-webkit-scrollbar { width: 4px; }
 .cap-list::-webkit-scrollbar-thumb {
   background: var(--cap-track);
@@ -10859,6 +11047,13 @@ code {
 /* 手动排序：拖拽中的格子降透明度，落点用 2px 强调竖线标出前后位置。
    标记不占布局（绝对定位伪元素），不引入额外占位格。 */
 .cap-app-slot.is-dragging { opacity: 0.55; }
+.cap-app-add.is-dragging { opacity: 0.55; }
+/* HTML5 拖拽不经过 Win32 模态移动循环，WebView 能控制系统光标：
+   可排序项 grab，拖动中 grabbing；删除按钮保持 pointer，不参与排序。 */
+.cap-app-slot.is-dragging .cap-app,
+.cap-app-add.is-dragging {
+  cursor: grabbing;
+}
 .cap-app-slot.is-drop-before::before,
 .cap-app-slot.is-drop-after::after,
 .cap-app-add.is-drop-before::before,
@@ -10892,7 +11087,8 @@ code {
   background: transparent;
   box-shadow: none;
   color: var(--cap-text-2);
-  cursor: pointer;
+  /* 网格排序项可拖：grab 提示可拖动，拖动中由 is-dragging 切 grabbing。 */
+  cursor: grab;
 }
 /* 普通应用没有任何 hover/active 装饰：整格与 36px 图标片都不铺背景，
    只保留真实图标与名称；点击热区仍由整个格子承担。 */
@@ -10982,8 +11178,6 @@ code {
   /* 与普通应用图标垂直对齐：普通项图标自格子顶部 5px 起，
      这里也从顶部起排，而不是在 78px 整格内居中（否则缺名称会让加号明显偏低）。 */
   position: relative;
-  justify-content: flex-start;
-  gap: 0;
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -11002,8 +11196,8 @@ code {
    只画一次 2px outline，这里不再叠第二层焦点框。 */
 .cap-app-add:disabled { opacity: 0.35; cursor: default; }
 .cap-app-avatar {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   border-radius: 10px;
@@ -13450,6 +13644,11 @@ code {
 }
 
 .shelf-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
   margin: 4px 14px 0;
   padding: 6px 10px;
   border-radius: var(--radius-control);

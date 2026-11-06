@@ -1,6 +1,22 @@
 @layer base, theme, ui, menu;
 
 @layer ui {
+  .onboarding-reopen-btn {
+    flex: 0 0 auto;
+    position: relative;
+  }
+
+  .onboarding-reopen-dot {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--status-warning);
+    pointer-events: none;
+  }
+
   /* ── 首次使用引导卡片（页内卡片形态，非全屏 Modal）────────────────
      只使用语义 Token；fixed 定位挂在右下角，不遮挡导航与内容主列；
      320 窄窗时宽度收缩到视口内，正文自动换行。 */

@@ -78,13 +78,14 @@ export function deriveScanState(input: {
   return "complete";
 }
 
-/** 按 app_key 去重并按名称稳定排序，保证批次追加时列表顺序不抖动。 */
+/** 按 app_key 去重，保持已展示条目的相对位置稳定：
+ *  - 已存在的应用保留原顺序；
+ *  - 新发现的应用按名称稳定排序后追加到末尾；
+ *  避免新批次把原有条目整体移动，最终权威结果仍按后端排序收敛。 */
 function mergeProgressiveApps(apps: Map<string, DiscoveredApp>): DiscoveredApp[] {
-  return [...apps.values()].sort((a, b) => {
-    const byName = a.display_name.toLowerCase().localeCompare(b.display_name.toLowerCase());
-    if (byName !== 0) return byName;
-    return a.app_key < b.app_key ? -1 : a.app_key > b.app_key ? 1 : 0;
-  });
+  // Map 保留插入顺序；loadApps 已把旧结果作为起点插入，因此
+  // 这里直接按插入顺序返回，新应用自然追加在末尾，不重排旧条目。
+  return [...apps.values()];
 }
 
 export const useNavigationStore = create<{
@@ -136,7 +137,16 @@ export const useNavigationStore = create<{
     const scanId = `scan-${seq}-${Date.now().toString(36)}`;
     // 只有「上次是完整权威结果」时才保留旧列表；首次扫描的部分结果在重试时重建。
     const keepPrevious = get().scan !== null && !get().scanPartial;
+    // 重新扫描时保留的上次权威结果，供失败时回退，避免部分新结果覆盖上次成功结果。
+    const previousScan = keepPrevious ? get().scan : null;
+    // 重新扫描时，把上次已确认的完整结果作为增量起点，使新发现的应用
+    // 能在扫描期间逐步进入集合，同时保留旧条目（避免列表抖动/重复）。
     const merged = new Map<string, DiscoveredApp>();
+    if (keepPrevious && get().scan) {
+      for (const a of get().scan!.apps) {
+        if (a.app_key) merged.set(a.app_key, a);
+      }
+    }
     let unlisten: (() => void) | null = null;
     set({
       scanning: true,
@@ -159,10 +169,11 @@ export const useNavigationStore = create<{
             batches: (get().scanProgress?.batches ?? 0) + 1,
           },
         };
-        // 已有完整结果时只补充进度，不替换列表（避免重扫期间列表抖动/清空）。
-        // 空批次（定位到 0 个应用）只推进进度，绝不创建 scan——否则界面会把
-        // 「扫描仍在进行、尚无结果」误判成「扫描完成、未发现应用」。
-        if (!keepPrevious && merged.size > 0) {
+        // 渐进更新：把本批新增合并进已发现集合，并驱动 UI 更新。
+        // 首次扫描：merged 为空时不创建 scan，避免把「扫描中、尚无结果」误判成「扫描完成」。
+        // 重新扫描：merged 以旧结果为起点，scan 始终反映「旧结果 + 新发现」。
+        const isFirstEmpty = !keepPrevious && merged.size === 0;
+        if (!isFirstEmpty && merged.size > 0) {
           update.scan = {
             apps: mergeProgressiveApps(merged),
             scanned_at: "",
@@ -186,6 +197,8 @@ export const useNavigationStore = create<{
       set({
         scanError: errorMessage(e),
         scanProgress: null,
+        // 重新扫描失败：回退到上次权威结果，不保留本次部分新发现。
+        scan: keepPrevious && previousScan ? previousScan : get().scan,
         scanPartial: !keepPrevious && get().scan !== null,
       });
       return "error";

@@ -5,9 +5,8 @@
 //!   同一 activity 留痕），绝不直接拼 SQL 写 planning 表；
 //! - 写工具**强制** `expected_revision`（乐观并发，防止多客户端后写无声覆盖），
 //!   冲突返回明确错误（携带当前 revision）；
-//! - 授权：读工具要求 scope ∈ {readonly, project_rw}；写工具要求 scope=project_rw
-//!   且持有对应项目 grant（create_project 例外：project_rw 可新建项目，
-//!   创建后自动授予该项目，便于同一 Agent 继续推进）；
+//! - 授权：readonly 是显式的全项目只读模式；project_rw 的读取和写入都限于 grant
+//!   项目（create_project 例外：创建后自动授予该项目，便于同一 Agent 继续推进）；
 //! - `taskdock_update_feature` 拒绝 status='completed'（验收完成由用户判定）；
 //!   `taskdock_submit_for_review` 只能置 'review'；
 //! - 有意偏离说明：`taskdock_add_progress_note` 与 link/unlink 只追加 activity
@@ -18,10 +17,8 @@ use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 use crate::commands::planning::{
-    add_note_impl, add_step_impl, create_feature_impl, create_project_impl, list_features_impl,
-    list_milestones_impl, list_projects_impl, load_feature_tx, load_project_tx,
-    update_feature_impl, update_project_impl, update_step_impl, FeatureInput, FeaturePatch,
-    ProjectInput, ProjectPatch, StepPatch,
+    list_features_impl, list_milestones_impl, list_projects_impl, load_feature_tx, load_project_tx,
+    FeatureInput, FeaturePatch, ProjectInput, ProjectPatch, StepPatch,
 };
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -381,13 +378,11 @@ fn ensure_can_read(agent: &McpAgentRow) -> Result<(), ToolError> {
     }
 }
 
-/// 写授权：scope=project_rw 且持有该项目 grant；不满足返回 Authz。
-fn ensure_grant(ctx: &ToolCtx, project_id: &str) -> Result<(), ToolError> {
-    if !ctx.agent.scope.can_write() {
-        return Err(ToolError::Authz(format!(
-            "scope={} 不允许写操作（需要 project_rw）",
-            ctx.agent.scope.as_str()
-        )));
+/// project_rw 的读取也限制在显式项目授权内；readonly 是用户显式选择的全项目只读模式。
+fn ensure_can_read_project(ctx: &ToolCtx, project_id: &str) -> Result<(), ToolError> {
+    ensure_can_read(&ctx.agent)?;
+    if ctx.agent.scope == auth::McpScope::ReadOnly {
+        return Ok(());
     }
     let granted = ctx
         .db
@@ -397,9 +392,139 @@ fn ensure_grant(ctx: &ToolCtx, project_id: &str) -> Result<(), ToolError> {
         Ok(())
     } else {
         Err(ToolError::Authz(format!(
+            "未授权项目: {project_id}（读取需要该项目的 grant）"
+        )))
+    }
+}
+
+fn granted_project_ids(ctx: &ToolCtx) -> AppResult<std::collections::HashSet<String>> {
+    ctx.db.with_read(|conn| {
+        let mut stmt =
+            conn.prepare("SELECT project_id FROM mcp_agent_grants WHERE agent_row_id = ?1")?;
+        let rows = stmt.query_map(rusqlite::params![ctx.agent.row_id], |r| r.get(0))?;
+        let mut ids = std::collections::HashSet::new();
+        for row in rows {
+            ids.insert(row?);
+        }
+        Ok(ids)
+    })
+}
+
+/// 写授权：scope=project_rw 且持有该项目 grant；不满足返回 Authz。
+fn ensure_grant(
+    ctx: &ToolCtx,
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> Result<(), ToolError> {
+    if !ctx.agent.scope.can_write() {
+        return Err(ToolError::Authz(format!(
+            "scope={} 不允许写操作（需要 project_rw）",
+            ctx.agent.scope.as_str()
+        )));
+    }
+    let granted =
+        auth::has_project_grant(conn, &ctx.agent.row_id, project_id).map_err(ToolError::Failed)?;
+    if granted {
+        Ok(())
+    } else {
+        Err(ToolError::Authz(format!(
             "未授权项目: {project_id}（写操作需要该项目的 grant）"
         )))
     }
+}
+
+/// 同一 write 事务中用于重放的权限校验，不执行任何业务副作用。
+fn authorize_replay(
+    ctx: &ToolCtx,
+    conn: &rusqlite::Connection,
+    name: &str,
+    args: &Value,
+    replay: &audit::Replay,
+) -> Result<(), ToolError> {
+    if !ctx.agent.scope.can_write() {
+        return Err(ToolError::Authz(format!(
+            "scope={} 不允许重放写操作（需要 project_rw）",
+            ctx.agent.scope.as_str()
+        )));
+    }
+    let project_id = match name {
+        "taskdock_create_project" => {
+            if replay.entity_type != "project" || replay.entity_id.is_empty() {
+                return Err(ToolError::Failed(AppError::Validation(
+                    "幂等审计对象无效，拒绝重放".into(),
+                )));
+            }
+            replay.entity_id.clone()
+        }
+        "taskdock_update_project" | "taskdock_create_feature" | "taskdock_add_progress_note" => {
+            require_str(args, "project_id")?.to_string()
+        }
+        "taskdock_update_feature"
+        | "taskdock_add_step"
+        | "taskdock_link_agent_session"
+        | "taskdock_unlink_agent_session"
+        | "taskdock_submit_for_review" => {
+            let feature_id = require_str(args, "feature_id")?;
+            conn.query_row(
+                "SELECT project_id FROM planning_features WHERE id = ?1",
+                rusqlite::params![feature_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::Validation(format!("功能不存在: {feature_id}")))?
+        }
+        "taskdock_update_step" => {
+            let step_id = require_str(args, "step_id")?;
+            project_of_step(conn, &step_id)?.1
+        }
+        other => {
+            return Err(ToolError::Failed(AppError::Validation(format!(
+                "未知写工具: {other}"
+            ))));
+        }
+    };
+    ensure_grant(ctx, conn, &project_id)
+}
+
+fn request_fingerprint(args: &Value) -> String {
+    let mut business_args = args.clone();
+    if let Some(object) = business_args.as_object_mut() {
+        object.remove("requestId");
+    }
+    use sha2::Digest;
+    let digest =
+        sha2::Sha256::digest(serde_json::to_vec(&business_args).expect("JSON values serialize"));
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn fingerprint_from_audit_detail(detail: &str) -> Option<&str> {
+    detail
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("request_sha256="))
+}
+
+fn refreshed_context(ctx: &ToolCtx) -> Result<ToolCtx, crate::mcp::bridge::ToolRpcError> {
+    let current = ctx
+        .db
+        .with_conn(|conn| auth::find_active_agent_by_row_id(conn, &ctx.agent.row_id))
+        .map_err(|error| crate::mcp::bridge::ToolRpcError {
+            code: crate::mcp::protocol::INTERNAL_ERROR,
+            message: format!("MCP 身份状态读取失败: {}", error.user_message()),
+            data: Value::Null,
+        })?;
+    let Some(agent) = current else {
+        return Err(crate::mcp::bridge::ToolRpcError {
+            code: crate::mcp::protocol::ERR_UNAUTHORIZED,
+            message: "Agent 凭据已撤销或不存在".into(),
+            data: Value::Null,
+        });
+    };
+    Ok(ToolCtx {
+        db: ctx.db.clone(),
+        agent,
+        emit: ctx.emit.clone(),
+    })
 }
 
 /// 功能 → 所属项目（授权判定用）。
@@ -471,28 +596,37 @@ fn agent_links_of(conn: &rusqlite::Connection, feature_id: &str) -> AppResult<Va
     Ok(Value::Array(out))
 }
 
-fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolError> {
+fn call(
+    ctx: &ToolCtx,
+    name: &str,
+    args: &Value,
+    write_conn: Option<&rusqlite::Connection>,
+) -> Result<CallOutcome, ToolError> {
     let db = ctx.db.as_ref();
     let agent = &ctx.agent;
     match name {
         // ── 读工具（scope ∈ {readonly, project_rw}）────────────────
         "taskdock_list_projects" => {
             ensure_can_read(agent)?;
-            let projects =
+            let mut projects =
                 list_projects_impl(db, args.get("include_archived").and_then(|v| v.as_bool()))?;
+            if agent.scope == auth::McpScope::ProjectRw {
+                let granted = granted_project_ids(ctx)?;
+                projects.retain(|project| granted.contains(&project.id));
+            }
             let value = serde_json::to_value(projects).map_err(AppError::from)?;
             Ok(outcome(value, "project", String::new(), None))
         }
         "taskdock_get_project" => {
-            ensure_can_read(agent)?;
             let id = require_str(args, "project_id")?;
+            ensure_can_read_project(ctx, &id)?;
             let p = db.with_read(|conn| load_project_tx(conn, &id))?;
             let value = serde_json::to_value(p).map_err(AppError::from)?;
             Ok(outcome(value, "project", id, None))
         }
         "taskdock_list_features" => {
-            ensure_can_read(agent)?;
             let id = require_str(args, "project_id")?;
+            ensure_can_read_project(ctx, &id)?;
             let features = list_features_impl(db, id)?;
             let value = serde_json::to_value(features).map_err(AppError::from)?;
             Ok(outcome(value, "feature", String::new(), None))
@@ -500,6 +634,8 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
         "taskdock_get_feature" => {
             ensure_can_read(agent)?;
             let id = require_str(args, "feature_id")?;
+            let project_id = db.with_read(|conn| project_of_feature(conn, &id))?;
+            ensure_can_read_project(ctx, &project_id)?;
             let value = db.with_read(|conn| {
                 let f = load_feature_tx(conn, &id)?;
                 let mut v = serde_json::to_value(&f).map_err(AppError::from)?;
@@ -509,15 +645,16 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             Ok(outcome(value, "feature", id, None))
         }
         "taskdock_list_steps" => {
-            ensure_can_read(agent)?;
             let id = require_str(args, "feature_id")?;
+            let project_id = db.with_read(|conn| project_of_feature(conn, &id))?;
+            ensure_can_read_project(ctx, &project_id)?;
             let f = db.with_read(|conn| load_feature_tx(conn, &id))?;
             let value = serde_json::to_value(f.steps).map_err(AppError::from)?;
             Ok(outcome(value, "step", id, None))
         }
         "taskdock_list_milestones" => {
-            ensure_can_read(agent)?;
             let id = require_str(args, "project_id")?;
+            ensure_can_read_project(ctx, &id)?;
             let ms = list_milestones_impl(db, id)?;
             let value = serde_json::to_value(ms).map_err(AppError::from)?;
             Ok(outcome(value, "milestone", String::new(), None))
@@ -530,6 +667,13 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                 return Err(ToolError::Failed(AppError::Validation(
                     "需要 project_id 或 feature_id 之一".into(),
                 )));
+            }
+            if let Some(project_id) = &project_id {
+                ensure_can_read_project(ctx, project_id)?;
+            }
+            if let Some(feature_id) = &feature_id {
+                let feature_project = db.with_read(|conn| project_of_feature(conn, feature_id))?;
+                ensure_can_read_project(ctx, &feature_project)?;
             }
             let value = db.with_read(|conn| {
                 if let Some(fid) = &feature_id {
@@ -563,6 +707,13 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             let feature_id = arg_str(args, "feature_id").map(str::to_string);
             let agent_source = arg_str(args, "agent_source").map(str::to_string);
             let session_id = arg_str(args, "session_id").map(str::to_string);
+            if let Some(project_id) = &project_id {
+                ensure_can_read_project(ctx, project_id)?;
+            }
+            if let Some(feature_id) = &feature_id {
+                let feature_project = db.with_read(|conn| project_of_feature(conn, feature_id))?;
+                ensure_can_read_project(ctx, &feature_project)?;
+            }
             let value = db.with_read(|conn| {
                 let mut sql = String::from(
                     "SELECT l.id, l.feature_id, f.project_id, l.agent_source, l.session_id, l.status, l.last_event_at, l.created_at
@@ -584,6 +735,13 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                 if let Some(s) = &session_id {
                     sql.push_str(" AND l.session_id = ?");
                     params.push(s);
+                }
+                if agent.scope == auth::McpScope::ProjectRw {
+                    sql.push_str(
+                        " AND EXISTS (SELECT 1 FROM mcp_agent_grants g
+                                     WHERE g.agent_row_id = ? AND g.project_id = f.project_id)",
+                    );
+                    params.push(&agent.row_id);
                 }
                 sql.push_str(" ORDER BY l.created_at");
                 let mut stmt = conn.prepare(&sql)?;
@@ -610,6 +768,8 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
 
         // ── 写工具（scope=project_rw + 项目 grant）─────────────────
         "taskdock_create_project" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             if !agent.scope.can_write() {
                 return Err(ToolError::Authz(format!(
                     "scope={} 不允许创建项目（需要 project_rw）",
@@ -622,22 +782,19 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                 status: None,
                 target_date: arg_str(args, "target_date").map(str::to_string),
             };
-            let p = create_project_impl(db, input)?;
+            let p = crate::commands::planning::create_project_tx(conn, input)?;
             // 创建者自动获得该项目授权，便于同一 Agent 继续推进（见交付报告）
-            db.with_conn(|conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
+            conn.execute(
+                "INSERT OR IGNORE INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
                      VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![
-                        uuid::Uuid::new_v4().to_string(),
-                        agent.row_id,
-                        p.id,
-                        crate::agents::now_iso()
-                    ],
-                )
-                .map_err(AppError::from)?;
-                Ok(())
-            })?;
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    agent.row_id,
+                    p.id,
+                    crate::agents::now_iso()
+                ],
+            )
+            .map_err(AppError::from)?;
             let revision = p.revision;
             let id = p.id.clone();
             let value = serde_json::to_value(&p).map_err(AppError::from)?;
@@ -654,9 +811,11 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             ))
         }
         "taskdock_update_project" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let id = require_str(args, "project_id")?;
             let expected = require_revision(args)?;
-            ensure_grant(ctx, &id)?;
+            ensure_grant(ctx, conn, &id)?;
             let patch = ProjectPatch {
                 name: arg_str(args, "name").map(str::to_string),
                 description: arg_str(args, "description").map(str::to_string),
@@ -667,7 +826,7 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                 sort_order: None,
                 expected_revision: Some(expected),
             };
-            let p = update_project_impl(db, id.clone(), patch)?;
+            let p = crate::commands::planning::update_project_tx(conn, id.clone(), patch)?;
             let revision = p.revision;
             let value = serde_json::to_value(&p).map_err(AppError::from)?;
             Ok(outcome(
@@ -683,8 +842,10 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             ))
         }
         "taskdock_create_feature" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let project_id = require_str(args, "project_id")?;
-            ensure_grant(ctx, &project_id)?;
+            ensure_grant(ctx, conn, &project_id)?;
             reject_bad_enum(
                 args,
                 "status",
@@ -703,7 +864,7 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                 milestone_id: arg_str(args, "milestone_id").map(str::to_string),
                 target_date: arg_str(args, "target_date").map(str::to_string),
             };
-            let f = create_feature_impl(db, project_id.clone(), input)?;
+            let f = crate::commands::planning::create_feature_tx(conn, project_id.clone(), input)?;
             let (id, revision) = (f.id.clone(), f.revision);
             let value = serde_json::to_value(&f).map_err(AppError::from)?;
             Ok(outcome(
@@ -719,6 +880,8 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             ))
         }
         "taskdock_update_feature" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let id = require_str(args, "feature_id")?;
             let expected = require_revision(args)?;
             if arg_str(args, "status") == Some("completed") {
@@ -727,8 +890,8 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                         .into(),
                 )));
             }
-            let project_id = db.with_read(|conn| project_of_feature(conn, &id))?;
-            ensure_grant(ctx, &project_id)?;
+            let project_id = project_of_feature(conn, &id)?;
+            ensure_grant(ctx, conn, &project_id)?;
             let patch = FeaturePatch {
                 title: arg_str(args, "title").map(str::to_string),
                 description: arg_str(args, "description").map(str::to_string),
@@ -744,7 +907,7 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                 sort_order: None,
                 expected_revision: Some(expected),
             };
-            let f = update_feature_impl(db, id.clone(), patch)?;
+            let f = crate::commands::planning::update_feature_tx(conn, id.clone(), patch)?;
             let (revision, feature_id) = (f.revision, f.id.clone());
             let value = serde_json::to_value(&f).map_err(AppError::from)?;
             Ok(outcome(
@@ -760,11 +923,18 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             ))
         }
         "taskdock_add_step" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let feature_id = require_str(args, "feature_id")?;
             let expected = require_revision(args)?;
-            let project_id = db.with_read(|conn| project_of_feature(conn, &feature_id))?;
-            ensure_grant(ctx, &project_id)?;
-            let f = add_step_impl(db, feature_id, require_str(args, "title")?, Some(expected))?;
+            let project_id = project_of_feature(conn, &feature_id)?;
+            ensure_grant(ctx, conn, &project_id)?;
+            let f = crate::commands::planning::add_step_tx(
+                conn,
+                feature_id,
+                require_str(args, "title")?,
+                Some(expected),
+            )?;
             let (fid, revision) = (f.id.clone(), f.revision);
             let value = serde_json::to_value(&f).map_err(AppError::from)?;
             Ok(outcome(
@@ -780,16 +950,18 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             ))
         }
         "taskdock_update_step" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let step_id = require_str(args, "step_id")?;
             let expected = require_revision(args)?;
-            let (_feature_id, project_id) = db.with_read(|conn| project_of_step(conn, &step_id))?;
-            ensure_grant(ctx, &project_id)?;
+            let (_feature_id, project_id) = project_of_step(conn, &step_id)?;
+            ensure_grant(ctx, conn, &project_id)?;
             let patch = StepPatch {
                 title: arg_str(args, "title").map(str::to_string),
                 done: args.get("done").and_then(|v| v.as_bool()),
                 expected_revision: Some(expected),
             };
-            let f = update_step_impl(db, step_id, patch)?;
+            let f = crate::commands::planning::update_step_tx(conn, step_id, patch)?;
             let (fid, revision) = (f.id.clone(), f.revision);
             let value = serde_json::to_value(&f).map_err(AppError::from)?;
             Ok(outcome(
@@ -805,11 +977,18 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             ))
         }
         "taskdock_add_progress_note" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let project_id = require_str(args, "project_id")?;
-            ensure_grant(ctx, &project_id)?;
+            ensure_grant(ctx, conn, &project_id)?;
             let feature_id = arg_str(args, "feature_id").map(str::to_string);
             let message = require_str(args, "message")?;
-            let a = add_note_impl(db, project_id.clone(), feature_id.clone(), message)?;
+            let a = crate::commands::planning::add_note_tx(
+                conn,
+                project_id.clone(),
+                feature_id.clone(),
+                message,
+            )?;
             let value = serde_json::to_value(&a).map_err(AppError::from)?;
             Ok(outcome(
                 value,
@@ -824,6 +1003,8 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             ))
         }
         "taskdock_link_agent_session" | "taskdock_unlink_agent_session" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let feature_id = require_str(args, "feature_id")?;
             let agent_source = require_str(args, "agent_source")?;
             let session_id = require_str(args, "session_id")?;
@@ -837,13 +1018,12 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                     "session_id 超过 256 字符".into(),
                 )));
             }
-            let project_id = db.with_read(|conn| project_of_feature(conn, &feature_id))?;
-            ensure_grant(ctx, &project_id)?;
-            db.with_conn(|conn| {
-                let now = crate::agents::now_iso();
-                if name == "taskdock_link_agent_session" {
-                    // UNIQUE(feature_id, agent_source, session_id)：重复 link 刷新状态与时间
-                    conn.execute(
+            let project_id = project_of_feature(conn, &feature_id)?;
+            ensure_grant(ctx, conn, &project_id)?;
+            let now = crate::agents::now_iso();
+            if name == "taskdock_link_agent_session" {
+                // UNIQUE(feature_id, agent_source, session_id)：重复 link 刷新状态与时间
+                conn.execute(
                         "INSERT INTO feature_agent_links (id, feature_id, agent_source, session_id, status, last_event_at, created_at)
                          VALUES (?1, ?2, ?3, ?4, 'linked', ?5, ?5)
                          ON CONFLICT(feature_id, agent_source, session_id)
@@ -857,23 +1037,21 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
                         ],
                     )
                     .map_err(AppError::from)?;
-                } else {
-                    let n = conn
-                        .execute(
-                            "UPDATE feature_agent_links SET status = 'unlinked', last_event_at = ?4
+            } else {
+                let n = conn
+                    .execute(
+                        "UPDATE feature_agent_links SET status = 'unlinked', last_event_at = ?4
                              WHERE feature_id = ?1 AND agent_source = ?2 AND session_id = ?3",
-                            rusqlite::params![feature_id, agent_source, session_id, now],
-                        )
-                        .map_err(AppError::from)?;
-                    if n == 0 {
-                        return Err(AppError::Validation(format!(
-                            "未找到关联记录: {agent_source}/{session_id}"
-                        )));
-                    }
+                        rusqlite::params![feature_id, agent_source, session_id, now],
+                    )
+                    .map_err(AppError::from)?;
+                if n == 0 {
+                    return Err(ToolError::Failed(AppError::Validation(format!(
+                        "未找到关联记录: {agent_source}/{session_id}"
+                    ))));
                 }
-                Ok(())
-            })?;
-            let value = db.with_read(|conn| agent_links_of(conn, &feature_id))?;
+            }
+            let value = agent_links_of(conn, &feature_id)?;
             Ok(outcome(
                 value,
                 "feature",
@@ -887,50 +1065,18 @@ fn call(ctx: &ToolCtx, name: &str, args: &Value) -> Result<CallOutcome, ToolErro
             ))
         }
         "taskdock_submit_for_review" => {
+            let conn = write_conn
+                .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let feature_id = require_str(args, "feature_id")?;
             let expected = require_revision(args)?;
-            let project_id = db.with_read(|conn| project_of_feature(conn, &feature_id))?;
-            ensure_grant(ctx, &project_id)?;
-            let current_status: String = db.with_read(|conn| {
-                conn.query_row(
-                    "SELECT status FROM planning_features WHERE id = ?1",
-                    rusqlite::params![feature_id],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(AppError::from)?
-                .ok_or_else(|| AppError::Validation(format!("功能不存在: {feature_id}")))
-            })?;
-            if current_status == "completed" {
-                return Err(ToolError::Failed(AppError::Validation(
-                    "功能已完成（completed），提交验收需用户在 Task Dock 中先重开".into(),
-                )));
-            }
-            if current_status == "review" {
-                return Err(ToolError::Failed(AppError::Validation(
-                    "功能已处于 review 状态，无需重复提交".into(),
-                )));
-            }
-            let patch = FeaturePatch {
-                title: None,
-                description: None,
-                acceptance_criteria: None,
-                status: Some("review".into()),
-                priority: None,
-                milestone_id: None,
-                target_date: None,
-                sort_order: None,
-                expected_revision: Some(expected),
-            };
-            let f = update_feature_impl(db, feature_id.clone(), patch)?;
-            if let Some(note) = arg_str(args, "note").filter(|s| !s.trim().is_empty()) {
-                add_note_impl(
-                    db,
-                    project_id.clone(),
-                    Some(feature_id.clone()),
-                    note.to_string(),
-                )?;
-            }
+            let project_id = project_of_feature(conn, &feature_id)?;
+            ensure_grant(ctx, conn, &project_id)?;
+            let f = crate::commands::planning::submit_for_review_tx(
+                conn,
+                feature_id.clone(),
+                Some(expected),
+                arg_str(args, "note").map(str::to_string),
+            )?;
             let (fid, revision) = (f.id.clone(), f.revision);
             let value = serde_json::to_value(&f).map_err(AppError::from)?;
             Ok(outcome(
@@ -976,121 +1122,205 @@ pub fn run_tool_call(
             data: Value::Null,
         });
     };
+    let ctx = refreshed_context(ctx)?;
     let request_id = request_id_of(args);
 
-    // 写工具幂等重放：同 (agent, action, request_id) 的成功请求直接返回原结果
-    if def.write && !request_id.is_empty() {
-        let replay = ctx
-            .db
-            .with_conn(|conn| audit::find_replay(conn, &ctx.agent.row_id, name, &request_id))
-            .ok()
-            .flatten();
-        if let Some(original) = replay {
-            let value: Value =
-                serde_json::from_str(&original).unwrap_or_else(|_| json!({ "replayed": true }));
-            return Ok(mcp_result(&value, false));
+    if def.write {
+        enum WriteResult {
+            Fresh(CallOutcome),
+            Replay(Value),
         }
-    }
 
-    match call(ctx, name, args) {
-        Ok(outcome) => {
-            let result_json = serde_json::to_string(&outcome.value).unwrap_or_default();
-            let revision = outcome.changed.as_ref().and_then(|c| c.revision);
-            if def.write {
-                let detail = match revision {
-                    Some(rev) => format!("ok revision={rev}"),
-                    None => "ok".to_string(),
-                };
-                let entry = AuditEntry {
-                    agent_row_id: Some(&ctx.agent.row_id),
-                    agent_id: &ctx.agent.agent_id,
-                    action: name,
-                    entity_type: outcome.entity_type,
-                    entity_id: &outcome.entity_id,
-                    request_id: &request_id,
-                    success: true,
-                    authz: true,
-                    detail: &detail,
-                    result_json: &result_json,
-                };
-                if let Err(e) = ctx.db.with_conn(|conn| audit::write(conn, &entry)) {
-                    if audit::is_idempotency_conflict(&e) {
-                        // 并发同键：按重放处理，返回已入库的原结果
-                        if let Ok(Some(original)) = ctx.db.with_conn(|conn| {
-                            audit::find_replay(conn, &ctx.agent.row_id, name, &request_id)
-                        }) {
-                            let value: Value = serde_json::from_str(&original)
-                                .unwrap_or_else(|_| json!({ "replayed": true }));
-                            return Ok(mcp_result(&value, false));
+        let fingerprint = request_fingerprint(args);
+        let mut tool_error = None;
+        let transaction = ctx.db.with_transaction(|conn| {
+            let current_agent = auth::find_active_agent_by_row_id(conn, &ctx.agent.row_id)?;
+            let Some(agent) = current_agent else {
+                tool_error = Some(ToolError::Authz("Agent 凭据已撤销或不存在".into()));
+                return Err(AppError::Validation("MCP Agent 已撤销".into()));
+            };
+            let tx_ctx = ToolCtx {
+                db: ctx.db.clone(),
+                agent,
+                emit: ctx.emit.clone(),
+            };
+
+            if !request_id.is_empty() {
+                if let Some(replay) =
+                    audit::find_replay_entry(conn, &tx_ctx.agent.row_id, name, &request_id)?
+                {
+                    if let Err(error) = authorize_replay(&tx_ctx, conn, name, args, &replay) {
+                        tool_error = Some(error);
+                        return Err(AppError::Validation("MCP 重放授权失败".into()));
+                    }
+                    match fingerprint_from_audit_detail(&replay.detail) {
+                        Some(saved) if saved == fingerprint.as_str() => {}
+                        Some(_) => {
+                            tool_error = Some(ToolError::Failed(AppError::Validation(
+                                "requestId 已用于不同参数，请为新操作使用新的 requestId".into(),
+                            )));
+                            return Err(AppError::Validation("MCP requestId 参数冲突".into()));
+                        }
+                        None => {
+                            tool_error = Some(ToolError::Failed(AppError::Validation(
+                                "旧幂等记录没有参数摘要，无法安全重放；请使用新的 requestId".into(),
+                            )));
+                            return Err(AppError::Validation(
+                                "MCP 旧 requestId 缺少参数摘要".into(),
+                            ));
                         }
                     }
-                    // 审计写失败不回滚业务写（业务已在事务内落库），记录并继续
-                    tracing::warn!("MCP 审计写入失败: {e}");
-                }
-            } else {
-                // 读工具也留审计（request_id 恒 ''，可重复记录）
-                let entry = AuditEntry {
-                    agent_row_id: Some(&ctx.agent.row_id),
-                    agent_id: &ctx.agent.agent_id,
-                    action: name,
-                    entity_type: outcome.entity_type,
-                    entity_id: &outcome.entity_id,
-                    request_id: "",
-                    success: true,
-                    authz: true,
-                    detail: "ok",
-                    result_json: "",
-                };
-                if let Err(e) = ctx.db.with_conn(|conn| audit::write(conn, &entry)) {
-                    tracing::warn!("MCP 读审计写入失败: {e}");
+                    if replay.result_json.is_empty() {
+                        tool_error = Some(ToolError::Failed(AppError::Validation(
+                            "幂等审计结果为空，拒绝重新执行以避免重复写入".into(),
+                        )));
+                        return Err(AppError::Validation("MCP 幂等审计结果为空".into()));
+                    }
+                    let value = match serde_json::from_str(&replay.result_json) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            tool_error = Some(ToolError::Failed(AppError::Validation(
+                                "幂等审计结果无法解析，拒绝重新执行".into(),
+                            )));
+                            return Err(AppError::Validation("MCP 幂等审计结果无法解析".into()));
+                        }
+                    };
+                    return Ok(WriteResult::Replay(value));
                 }
             }
-            if let Some(changed) = outcome.changed {
-                (ctx.emit)(changed);
+
+            match call(&tx_ctx, name, args, Some(conn)) {
+                Ok(outcome) => {
+                    let result_json = serde_json::to_string(&outcome.value)?;
+                    let revision = outcome.changed.as_ref().and_then(|c| c.revision);
+                    let base_detail = match revision {
+                        Some(rev) => format!("ok revision={rev}"),
+                        None => "ok".to_string(),
+                    };
+                    let detail = if request_id.is_empty() {
+                        base_detail
+                    } else {
+                        format!("{base_detail} request_sha256={fingerprint}")
+                    };
+                    let entry = AuditEntry {
+                        agent_row_id: Some(&tx_ctx.agent.row_id),
+                        agent_id: &tx_ctx.agent.agent_id,
+                        action: name,
+                        entity_type: outcome.entity_type,
+                        entity_id: &outcome.entity_id,
+                        request_id: &request_id,
+                        success: true,
+                        authz: true,
+                        detail: &detail,
+                        result_json: &result_json,
+                    };
+                    audit::write(conn, &entry)?;
+                    Ok(WriteResult::Fresh(outcome))
+                }
+                Err(error) => {
+                    tool_error = Some(error);
+                    Err(AppError::Validation("MCP 写事务失败，已回滚".into()))
+                }
             }
+        });
+
+        if let Some(error) = tool_error {
+            audit_tool_failure(&ctx, name, &request_id, &error)?;
+            return tool_error_response(&ctx, error);
+        }
+        let result = transaction.map_err(|_| ToolRpcError {
+            code: crate::mcp::protocol::INTERNAL_ERROR,
+            message: "MCP 写入及其审计未能持久化，事务已回滚".into(),
+            data: Value::Null,
+        })?;
+        return match result {
+            WriteResult::Replay(value) => Ok(mcp_result(&value, false)),
+            WriteResult::Fresh(outcome) => {
+                if let Some(changed) = outcome.changed {
+                    (ctx.emit)(changed);
+                }
+                Ok(mcp_result(&outcome.value, false))
+            }
+        };
+    }
+
+    match call(&ctx, name, args, None) {
+        Ok(outcome) => {
+            let entry = AuditEntry {
+                agent_row_id: Some(&ctx.agent.row_id),
+                agent_id: &ctx.agent.agent_id,
+                action: name,
+                entity_type: outcome.entity_type,
+                entity_id: &outcome.entity_id,
+                request_id: "",
+                success: true,
+                authz: true,
+                detail: "ok",
+                result_json: "",
+            };
+            ctx.db
+                .with_conn(|conn| audit::write(conn, &entry))
+                .map_err(|_| ToolRpcError {
+                    code: crate::mcp::protocol::INTERNAL_ERROR,
+                    message: "MCP 读取审计未能持久化".into(),
+                    data: Value::Null,
+                })?;
             Ok(mcp_result(&outcome.value, false))
         }
-        Err(ToolError::Authz(msg)) => {
-            let entry = AuditEntry {
-                agent_row_id: Some(&ctx.agent.row_id),
-                agent_id: &ctx.agent.agent_id,
-                action: name,
-                entity_type: "",
-                entity_id: "",
-                request_id: &request_id,
-                success: false,
-                authz: false,
-                detail: &msg,
-                result_json: "",
-            };
-            if let Err(e) = ctx.db.with_conn(|conn| audit::write(conn, &entry)) {
-                tracing::warn!("MCP 拒绝审计写入失败: {e}");
-            }
-            Err(ToolRpcError {
-                code: crate::mcp::protocol::ERR_FORBIDDEN,
-                message: msg,
-                data: json!({ "agent_id": ctx.agent.agent_id }),
-            })
+        Err(error) => {
+            audit_tool_failure(&ctx, name, "", &error)?;
+            tool_error_response(&ctx, error)
         }
-        Err(ToolError::Failed(e)) => {
-            let message = e.user_message();
-            let entry = AuditEntry {
-                agent_row_id: Some(&ctx.agent.row_id),
-                agent_id: &ctx.agent.agent_id,
-                action: name,
-                entity_type: "",
-                entity_id: "",
-                request_id: "",
-                success: false,
-                authz: true,
-                detail: &message,
-                result_json: "",
-            };
-            if let Err(err) = ctx.db.with_conn(|conn| audit::write(conn, &entry)) {
-                tracing::warn!("MCP 失败审计写入失败: {err}");
-            }
+    }
+}
+
+fn audit_tool_failure(
+    ctx: &ToolCtx,
+    name: &str,
+    request_id: &str,
+    error: &ToolError,
+) -> Result<(), crate::mcp::bridge::ToolRpcError> {
+    use crate::mcp::bridge::ToolRpcError;
+    let (detail, authz) = match error {
+        ToolError::Authz(_) => ("authorization_denied".to_string(), false),
+        ToolError::Failed(error) => (error.code().to_string(), true),
+    };
+    let entry = AuditEntry {
+        agent_row_id: Some(&ctx.agent.row_id),
+        agent_id: &ctx.agent.agent_id,
+        action: name,
+        entity_type: "",
+        entity_id: "",
+        request_id,
+        success: false,
+        authz,
+        detail: &detail,
+        result_json: "",
+    };
+    ctx.db
+        .with_conn(|conn| audit::write(conn, &entry))
+        .map_err(|_| ToolRpcError {
+            code: crate::mcp::protocol::INTERNAL_ERROR,
+            message: "MCP 操作失败，且失败审计未能持久化".into(),
+            data: Value::Null,
+        })
+}
+
+fn tool_error_response(
+    ctx: &ToolCtx,
+    error: ToolError,
+) -> Result<Value, crate::mcp::bridge::ToolRpcError> {
+    use crate::mcp::bridge::ToolRpcError;
+    match error {
+        ToolError::Authz(message) => Err(ToolRpcError {
+            code: crate::mcp::protocol::ERR_FORBIDDEN,
+            message,
+            data: json!({ "agent_id": ctx.agent.agent_id }),
+        }),
+        ToolError::Failed(error) => {
+            let message = error.user_message();
             Ok(mcp_result(
-                &json!({ "error": e.code(), "message": message }),
+                &json!({ "error": error.code(), "message": message }),
                 true,
             ))
         }

@@ -330,7 +330,10 @@ mod tests {
         let payload = json!({"session_id": "s1"});
         assert_eq!(state_for("trae", "SessionStart", &payload), Some("idle"));
         // 其他 Agent 保持原语义，避免回归
-        assert_eq!(state_for("codex", "SessionStart", &payload), Some("running"));
+        assert_eq!(
+            state_for("codex", "SessionStart", &payload),
+            Some("running")
+        );
     }
 
     #[test]
@@ -354,7 +357,10 @@ mod tests {
         assert_eq!(state_for("trae", "Notification", &plain), None);
 
         let permission = json!({"notification_type": "permission_request"});
-        assert_eq!(state_for("trae", "Notification", &permission), Some("waiting"));
+        assert_eq!(
+            state_for("trae", "Notification", &permission),
+            Some("waiting")
+        );
 
         let cn = json!({"message": "需要确认是否继续"});
         assert_eq!(state_for("trae", "Notification", &cn), Some("waiting"));
@@ -364,7 +370,10 @@ mod tests {
     fn trae_stop_completes_current_turn_and_tools_are_running() {
         let payload = json!({"session_id": "s1"});
         assert_eq!(state_for("trae", "Stop", &payload), Some("completed"));
-        assert_eq!(state_for("trae", "UserPromptSubmit", &payload), Some("running"));
+        assert_eq!(
+            state_for("trae", "UserPromptSubmit", &payload),
+            Some("running")
+        );
         assert_eq!(state_for("trae", "PreToolUse", &payload), Some("running"));
         assert_eq!(state_for("trae", "PostToolUse", &payload), Some("running"));
         assert_eq!(state_for("trae", "SessionEnd", &payload), Some("completed"));

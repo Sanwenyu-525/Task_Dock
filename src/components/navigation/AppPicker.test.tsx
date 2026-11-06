@@ -614,7 +614,22 @@ describe("AppPicker", () => {
   });
 
   it("大量结果分页完整：首屏 40 条，「加载更多」后 60 条全部可见", async () => {
-    const user = userEvent.setup();
+    let ioCallback: IntersectionObserverCallback | null = null;
+    class MockIO {
+      constructor(cb: IntersectionObserverCallback) { ioCallback = cb; }
+      observe(target: Element) {
+        if (ioCallback) {
+          const cb = ioCallback;
+          setTimeout(() => cb([{ isIntersecting: true, target } as IntersectionObserverEntry], this as unknown as IntersectionObserver), 0);
+        }
+      }
+      unobserve() {}
+      disconnect() {}
+      takeRecords() { return []; }
+    }
+    const origIO = globalThis.IntersectionObserver;
+    globalThis.IntersectionObserver = MockIO as unknown as typeof IntersectionObserver;
+
     const many = Array.from({ length: 60 }, (_, i) =>
       appFix({ app_key: `wechat-${i}`, display_name: `微信应用${i}`, category: "im" }),
     );
@@ -625,9 +640,12 @@ describe("AppPicker", () => {
     expect(within(list).getAllByRole("option")).toHaveLength(APP_PAGE_SIZE);
     expect(within(list).getByText(/共 60 个可添加应用/)).toBeTruthy();
 
-    await user.click(within(list).getByRole("button", { name: /加载更多/ }));
-    expect(within(list).getAllByRole("option")).toHaveLength(60);
-    expect(within(list).queryByRole("button", { name: /加载更多/ })).toBeNull();
+    // 触底自动加载：模拟 IntersectionObserver 进入视口。
+    await vi.waitFor(() => {
+      expect(within(list).getAllByRole("option")).toHaveLength(60);
+    });
+
+    globalThis.IntersectionObserver = origIO;
   });
 
   it("扫描不完整时明确提示，不与「没有匹配」混淆", () => {

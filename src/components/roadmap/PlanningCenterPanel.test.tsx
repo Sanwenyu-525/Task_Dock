@@ -184,6 +184,15 @@ async function goToFeatures(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("数据源与视图导航", () => {
+  it("提供规划中心对应的上下文教程入口", () => {
+    bridge.planningListProjects.mockResolvedValue([]);
+    render(<PlanningCenterPanel />);
+
+    expect(
+      screen.getByRole("button", { name: "查看帮助：规划中心：管理项目与内置路线图" }),
+    ).toBeTruthy();
+  });
+
   it("默认显示项目总览；无项目时给出创建引导并提示内置路线图位置", async () => {
     bridge.planningListProjects.mockResolvedValue([]);
     render(<PlanningCenterPanel />);

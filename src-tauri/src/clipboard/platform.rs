@@ -851,7 +851,8 @@ pub(crate) fn payload_matches_read(
             // 剪贴板只有 CF_DIB/CF_DIBV5（Snipping Tool、Snipaste、旧式应用、
             // 第三方剪贴板管理器）时根本没有 PNG 容器：此时只能用 DIB 像素比较，
             // 否则「没有 PNG」会被误判成「内容已变化」，第 1 项就写不进来。
-            let expected_pixels = expected_image_pixels(expected_png, rgba.as_ref(), *width, *height);
+            let expected_pixels =
+                expected_image_pixels(expected_png, rgba.as_ref(), *width, *height);
             let actual_pixels = actual_image_pixels(png, dib);
             match (expected_pixels, actual_pixels) {
                 (Some((expected_rgba, expected_size)), Some((actual_rgba, actual_size))) => {
@@ -880,10 +881,7 @@ fn expected_image_pixels(
     height: u32,
 ) -> Option<(Vec<u8>, (u32, u32))> {
     if let Some(cached) = rgba.filter(|r| !r.is_empty()) {
-        if width > 0
-            && height > 0
-            && cached.len() == width as usize * height as usize * 4
-        {
+        if width > 0 && height > 0 && cached.len() == width as usize * height as usize * 4 {
             let mut pixels = cached.clone();
             image::canonicalize_unused_alpha(&mut pixels);
             return Some((pixels, (width, height)));
@@ -898,10 +896,7 @@ fn expected_image_pixels(
 ///
 /// DIB 分支覆盖「只有 DIB」的剪贴板；`dib_to_rgba` 已按 Windows 语义把
 /// 「Alpha 未使用」归为不透明，这里再做一次归一保持与 PNG 分支一致。
-fn actual_image_pixels(
-    png: Option<&[u8]>,
-    dib: Option<&[u8]>,
-) -> Option<(Vec<u8>, (u32, u32))> {
+fn actual_image_pixels(png: Option<&[u8]>, dib: Option<&[u8]>) -> Option<(Vec<u8>, (u32, u32))> {
     if let Some(bytes) = png {
         if let Ok((mut pixels, w, h)) = image::decode_png_rgba(bytes) {
             // 32bpp CF_DIB 合成出的 PNG 容器 Alpha 字节全 0（通道未被使用），
@@ -1120,7 +1115,7 @@ mod imp {
     use std::sync::Mutex;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, SetLastError,
+        CloseHandle, GetLastError, SetLastError, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT,
         WAIT_OBJECT_0, WPARAM,
     };
     use windows_sys::Win32::Security::{
@@ -1559,7 +1554,9 @@ mod imp {
     ///
     /// 「空」与「读不到/不支持」必须分开：前者没有可保护内容，后者只能说明
     /// 无法验证，不能在任何后续路径里被当成「用户接管」。
-    unsafe fn snapshot_payload_state(read: ClipboardRead) -> (Option<ClipboardPayload>, SnapshotState) {
+    unsafe fn snapshot_payload_state(
+        read: ClipboardRead,
+    ) -> (Option<ClipboardPayload>, SnapshotState) {
         let payload = payload_from_read(read);
         if payload.is_some() {
             return (payload, SnapshotState::Captured);
@@ -3499,7 +3496,10 @@ mod tests {
         };
         let reason = snapshot_reconstruction(&formats(&[CF_HDROP as u32]), &gone)
             .expect_err("失效路径必须拒绝");
-        assert!(reason.contains("失效"), "拒绝原因必须说明路径失效：{reason}");
+        assert!(
+            reason.contains("失效"),
+            "拒绝原因必须说明路径失效：{reason}"
+        );
         assert!(
             write_formats_with(&gone, |_, _| true).is_err(),
             "写入层同样不接受失效路径"
@@ -3518,8 +3518,8 @@ mod tests {
         assert_ne!(rtf, 0);
         let mut with_rtf = text_formats.to_vec();
         with_rtf.push(rtf);
-        let reason = snapshot_reconstruction(&formats(&with_rtf), &body)
-            .expect_err("RTF 会永久丢失");
+        let reason =
+            snapshot_reconstruction(&formats(&with_rtf), &body).expect_err("RTF 会永久丢失");
         assert!(
             reason.contains("Rich Text Format"),
             "拒绝原因必须点名 RTF：{reason}"
@@ -3527,9 +3527,12 @@ mod tests {
         let office = format_id("Microsoft Office Word 2003 XML");
         let mut with_office = text_formats.to_vec();
         with_office.push(office);
-        let reason =
-            snapshot_reconstruction(&formats(&with_office), &body).expect_err("Office 私有格式会丢失");
-        assert!(reason.contains("Office"), "拒绝原因必须点名 Office 格式：{reason}");
+        let reason = snapshot_reconstruction(&formats(&with_office), &body)
+            .expect_err("Office 私有格式会丢失");
+        assert!(
+            reason.contains("Office"),
+            "拒绝原因必须点名 Office 格式：{reason}"
+        );
     }
 
     #[test]
@@ -3744,14 +3747,7 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            payload_matches_read(
-                &plain,
-                Some("验收"),
-                Some("<b>验收</b>"),
-                None,
-                None,
-                &[]
-            ),
+            payload_matches_read(&plain, Some("验收"), Some("<b>验收</b>"), None, None, &[]),
             Some(false),
             "纯文本项遇到 HTML 必须视为内容已换"
         );
@@ -3760,25 +3756,11 @@ mod tests {
             html: Some("<b>验收</b>".into()),
         };
         assert_eq!(
-            payload_matches_read(
-                &rich,
-                Some("验收"),
-                Some("<b>验收</b>"),
-                None,
-                None,
-                &[]
-            ),
+            payload_matches_read(&rich, Some("验收"), Some("<b>验收</b>"), None, None, &[]),
             Some(true)
         );
         assert_eq!(
-            payload_matches_read(
-                &rich,
-                Some("验收"),
-                Some("<i>验收</i>"),
-                None,
-                None,
-                &[]
-            ),
+            payload_matches_read(&rich, Some("验收"), Some("<i>验收</i>"), None, None, &[]),
             Some(false)
         );
     }
@@ -3960,7 +3942,9 @@ mod tests {
 
     #[test]
     fn payload_match_compares_image_bytes_and_file_names() {
-        let rgba: Vec<u8> = vec![10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 1, 2, 3, 255];
+        let rgba: Vec<u8> = vec![
+            10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 1, 2, 3, 255,
+        ];
         let png = image::encode_png(&rgba, 2, 2).unwrap();
         let image = ClipboardPayload::Image {
             png: png.clone(),
@@ -3993,25 +3977,11 @@ mod tests {
             paths: vec!["C:\\Temp\\a.txt".into()],
         };
         assert_eq!(
-            payload_matches_read(
-                &files,
-                None,
-                None,
-                None,
-                None,
-                &["c:\\temp\\A.TXT".into()]
-            ),
+            payload_matches_read(&files, None, None, None, None, &["c:\\temp\\A.TXT".into()]),
             Some(true)
         );
         assert_eq!(
-            payload_matches_read(
-                &files,
-                None,
-                None,
-                None,
-                None,
-                &["C:\\Temp\\b.txt".into()]
-            ),
+            payload_matches_read(&files, None, None, None, None, &["C:\\Temp\\b.txt".into()]),
             Some(false)
         );
     }
@@ -4118,7 +4088,13 @@ mod tests {
     #[test]
     fn payload_match_rejects_different_dib_only_image() {
         let rgba: Vec<u8> = (0..4 * 4 * 4)
-            .map(|i| if i % 4 == 3 { 255 } else { (i as u8).wrapping_mul(17) })
+            .map(|i| {
+                if i % 4 == 3 {
+                    255
+                } else {
+                    (i as u8).wrapping_mul(17)
+                }
+            })
             .collect();
         let expected = ClipboardPayload::Image {
             png: image::encode_png(&rgba, 4, 4).unwrap(),
@@ -4181,14 +4157,7 @@ mod tests {
             "DIB 读取不完整/截断时必须判「无法验证」"
         );
         assert_eq!(
-            payload_matches_read(
-                &expected,
-                Some("用户后来复制的文本"),
-                None,
-                None,
-                None,
-                &[]
-            ),
+            payload_matches_read(&expected, Some("用户后来复制的文本"), None, None, None, &[]),
             Some(false),
             "期望是图片、实际只剩文本时必须判 Different（用户确实接管了）"
         );

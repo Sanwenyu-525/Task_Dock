@@ -16,8 +16,8 @@ use crate::error::{AppError, AppResult};
 
 use super::{
     check_workflow_description, check_workflow_name, validate_step, OnError, StepInput, StepParams,
-    StepType, WorkflowInput, WorkflowRunDetail, WorkflowRunPage, WorkflowRunRow, WorkflowRunStepRow,
-    WorkflowRow, WorkflowStepRow,
+    StepType, WorkflowInput, WorkflowRow, WorkflowRunDetail, WorkflowRunPage, WorkflowRunRow,
+    WorkflowRunStepRow, WorkflowStepRow,
 };
 
 /// 每个工作流的运行历史保留条数（超出时按 started_at 淘汰最旧记录）。
@@ -181,6 +181,17 @@ fn normalize_step_inputs(db: &Db, inputs: &[StepInput]) -> AppResult<Vec<(String
     Ok(out)
 }
 
+fn enabled_scene_ids(normalized: &[(String, StepInput)]) -> Vec<String> {
+    normalized
+        .iter()
+        .filter(|(_, input)| {
+            input.enabled && input.step_type == super::StepType::EnterScene.as_str()
+        })
+        .map(|(_, input)| input.params.scene_id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
 fn insert_steps_tx(
     tx: &rusqlite::Connection,
     workflow_id: &str,
@@ -213,8 +224,9 @@ fn insert_steps_tx(
 pub fn create_workflow(db: &Db, input: WorkflowInput) -> AppResult<WorkflowRow> {
     let name = check_workflow_name(&input.name)?;
     let description = check_workflow_description(&input.description)?;
-    let normalized = normalize_step_inputs(db, &input.steps)?;
     let id = new_id();
+    let normalized = normalize_step_inputs(db, &input.steps)?;
+    super::validate_scene_graph_for_workflow(db, &id, &enabled_scene_ids(&normalized))?;
     let now = now_iso();
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
@@ -249,7 +261,9 @@ pub fn update_workflow(
     let changed = db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         let exists: i64 = tx
-            .query_row("SELECT COUNT(*) FROM workflows WHERE id = ?1", [id], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM workflows WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
             .map_err(AppError::from)?;
         if exists == 0 {
             return Err(AppError::NotFound(format!("工作流不存在: {}", id)));
@@ -296,11 +310,8 @@ pub fn delete_workflow(db: &Db, id: &str) -> AppResult<()> {
             .execute("DELETE FROM workflows WHERE id = ?1", [id])
             .map_err(AppError::from)?;
         // 步骤 / 运行 / 回执经 ON DELETE CASCADE 级联清理；显式删除不依赖编译期 pragma。
-        tx.execute(
-            "DELETE FROM workflow_steps WHERE workflow_id = ?1",
-            [id],
-        )
-        .map_err(AppError::from)?;
+        tx.execute("DELETE FROM workflow_steps WHERE workflow_id = ?1", [id])
+            .map_err(AppError::from)?;
         tx.execute("DELETE FROM workflow_runs WHERE workflow_id = ?1", [id])
             .map_err(AppError::from)?;
         tx.commit().map_err(AppError::from)?;
@@ -375,7 +386,10 @@ pub fn reorder_workflows(db: &Db, ordered_ids: &[String]) -> AppResult<()> {
         let mut seen = std::collections::HashSet::new();
         for (idx, wf_id) in ordered_ids.iter().enumerate() {
             if !seen.insert(wf_id.as_str()) {
-                return Err(AppError::Validation(format!("顺序列表存在重复 ID: {}", wf_id)));
+                return Err(AppError::Validation(format!(
+                    "顺序列表存在重复 ID: {}",
+                    wf_id
+                )));
             }
             let n = tx
                 .execute(
@@ -406,6 +420,7 @@ pub fn replace_steps_and_update(
     let name = check_workflow_name(&name)?;
     let description = check_workflow_description(&description)?;
     let normalized = normalize_step_inputs(db, &inputs)?;
+    super::validate_scene_graph_for_workflow(db, workflow_id, &enabled_scene_ids(&normalized))?;
     let now = now_iso();
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
@@ -443,6 +458,7 @@ pub fn replace_steps(
     inputs: Vec<StepInput>,
 ) -> AppResult<Vec<WorkflowStepRow>> {
     let normalized = normalize_step_inputs(db, &inputs)?;
+    super::validate_scene_graph_for_workflow(db, workflow_id, &enabled_scene_ids(&normalized))?;
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         let exists: i64 = tx
@@ -572,7 +588,12 @@ pub fn last_run(db: &Db, workflow_id: &str) -> AppResult<Option<WorkflowRunDetai
 }
 
 /// 运行历史分页（新→旧）。
-pub fn list_runs(db: &Db, workflow_id: &str, limit: i64, offset: i64) -> AppResult<WorkflowRunPage> {
+pub fn list_runs(
+    db: &Db,
+    workflow_id: &str,
+    limit: i64,
+    offset: i64,
+) -> AppResult<WorkflowRunPage> {
     let limit = limit.clamp(1, 100);
     let offset = offset.max(0);
     let total: i64 = db.with_read(|conn| {
@@ -666,12 +687,7 @@ pub struct RunStepUpdate {
     pub operation_id: Option<String>,
 }
 
-pub fn update_run_step(
-    db: &Db,
-    run_id: &str,
-    step_id: &str,
-    u: &RunStepUpdate,
-) -> AppResult<()> {
+pub fn update_run_step(db: &Db, run_id: &str, step_id: &str, u: &RunStepUpdate) -> AppResult<()> {
     db.with_conn(|conn| {
         if let Some(v) = &u.status {
             conn.execute(
@@ -754,9 +770,8 @@ pub fn recover_stale_runs(db: &Db) -> AppResult<usize> {
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         let stale: Vec<String> = {
-            let mut stmt = tx.prepare(
-                "SELECT id FROM workflow_runs WHERE status IN ('running','paused')",
-            )?;
+            let mut stmt =
+                tx.prepare("SELECT id FROM workflow_runs WHERE status IN ('running','paused')")?;
             let rows = stmt
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -799,9 +814,7 @@ pub fn revalidate_step(
     params: &StepParams,
 ) -> AppResult<(StepType, super::ValidatedStep)> {
     validate_step(db, step_type, params, true).map_err(|e| match e {
-        AppError::Validation(m) => {
-            AppError::Validation(format!("步骤执行前校验失败: {}", m))
-        }
+        AppError::Validation(m) => AppError::Validation(format!("步骤执行前校验失败: {}", m)),
         other => other,
     })
 }

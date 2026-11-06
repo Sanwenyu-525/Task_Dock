@@ -23,8 +23,10 @@ export type EdgeTabAppear = "idle" | "in" | "out";
 
 interface DragStart {
   pointerId: number;
-  x: number;
-  y: number;
+  /** 屏幕坐标（与视口坐标解耦）：窗口移动时视口原点会随窗口变化，
+   *  使用 clientX 作为拖动基准会导致位移反馈循环/重影。 */
+  screenX: number;
+  screenY: number;
 }
 
 export default function EdgeTab({
@@ -98,15 +100,15 @@ export default function EdgeTab({
     e.preventDefault();
     e.currentTarget.setPointerCapture?.(e.pointerId);
     resetDragCursor();
-    start.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+    start.current = { pointerId: e.pointerId, screenX: e.screenX, screenY: e.screenY };
     beginDrag?.();
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const s = start.current;
     if (!s || s.pointerId !== e.pointerId) return;
-    const dx = e.clientX - s.x;
-    const dy = e.clientY - s.y;
+    const dx = e.screenX - s.screenX;
+    const dy = e.screenY - s.screenY;
     // 超过点击阈值（任意方向 4px）即进入拖动语义；单击不会点亮 grabbing。
     if (!draggingRef.current && classifyTabGesture(edge, dx, dy) !== "click") {
       draggingRef.current = true;
@@ -127,8 +129,8 @@ export default function EdgeTab({
   const onPointerUp = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const s = start.current;
     if (!s || s.pointerId !== e.pointerId) return;
-    const dx = e.clientX - s.x;
-    const dy = e.clientY - s.y;
+    const dx = e.screenX - s.screenX;
+    const dy = e.screenY - s.screenY;
     const kind = classifyTabGesture(edge, dx, dy);
     if (kind === "drag" && pendingDelta.current !== 0) {
       // 补上最后一帧被 rAF 合并的位移，松手位置与光标一致。

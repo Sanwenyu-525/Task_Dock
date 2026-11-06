@@ -9,7 +9,9 @@ use tauri::{AppHandle, State};
 
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
-use crate::workflows::{engine, store, WorkflowRunDetail, WorkflowRunPage, WorkflowRow, WorkflowStepRow};
+use crate::workflows::{
+    engine, store, WorkflowRow, WorkflowRunDetail, WorkflowRunPage, WorkflowStepRow,
+};
 
 use super::format_local;
 
@@ -21,12 +23,12 @@ pub fn workflow_list(db: State<'_, Arc<Db>>) -> AppResult<Vec<WorkflowRow>> {
 }
 
 #[tauri::command]
-pub fn workflow_get(
-    db: State<'_, Arc<Db>>,
-    id: String,
-) -> AppResult<WorkflowDetail> {
+pub fn workflow_get(db: State<'_, Arc<Db>>, id: String) -> AppResult<WorkflowDetail> {
     let (wf, steps) = store::get_workflow(&db, &id)?;
-    Ok(WorkflowDetail { workflow: wf, steps })
+    Ok(WorkflowDetail {
+        workflow: wf,
+        steps,
+    })
 }
 
 /// 工作流详情（定义 + 有序步骤）。
@@ -44,7 +46,10 @@ pub fn workflow_create(
 ) -> AppResult<WorkflowDetail> {
     let wf = store::create_workflow(&db, input)?;
     let steps = store::list_steps(&db, &wf.id)?;
-    Ok(WorkflowDetail { workflow: wf, steps })
+    Ok(WorkflowDetail {
+        workflow: wf,
+        steps,
+    })
 }
 
 #[tauri::command]
@@ -55,7 +60,10 @@ pub fn workflow_update(
 ) -> AppResult<WorkflowDetail> {
     let wf = store::update_workflow(&db, &id, patch.name, patch.description, patch.enabled)?;
     let steps = store::list_steps(&db, &id)?;
-    Ok(WorkflowDetail { workflow: wf, steps })
+    Ok(WorkflowDetail {
+        workflow: wf,
+        steps,
+    })
 }
 
 /// 工作流元信息补丁（字段缺省 = 不修改）。
@@ -72,20 +80,17 @@ pub fn workflow_delete(db: State<'_, Arc<Db>>, id: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn workflow_duplicate(
-    db: State<'_, Arc<Db>>,
-    id: String,
-) -> AppResult<WorkflowDetail> {
+pub fn workflow_duplicate(db: State<'_, Arc<Db>>, id: String) -> AppResult<WorkflowDetail> {
     let wf = store::duplicate_workflow(&db, &id)?;
     let steps = store::list_steps(&db, &wf.id)?;
-    Ok(WorkflowDetail { workflow: wf, steps })
+    Ok(WorkflowDetail {
+        workflow: wf,
+        steps,
+    })
 }
 
 #[tauri::command]
-pub fn workflow_reorder(
-    db: State<'_, Arc<Db>>,
-    ordered_ids: Vec<String>,
-) -> AppResult<()> {
+pub fn workflow_reorder(db: State<'_, Arc<Db>>, ordered_ids: Vec<String>) -> AppResult<()> {
     store::reorder_workflows(&db, &ordered_ids)
 }
 
@@ -100,7 +105,10 @@ pub fn workflow_save(
 ) -> AppResult<WorkflowDetail> {
     let rows = store::replace_steps_and_update(&db, &id, name, description, steps)?;
     let (wf, _) = store::get_workflow(&db, &id)?;
-    Ok(WorkflowDetail { workflow: wf, steps: rows })
+    Ok(WorkflowDetail {
+        workflow: wf,
+        steps: rows,
+    })
 }
 
 /// 整表替换步骤编排（原子事务；步骤 ID 由前端生成以保持编辑稳定性）。
@@ -112,7 +120,10 @@ pub fn workflow_replace_steps(
 ) -> AppResult<WorkflowDetail> {
     let rows = store::replace_steps(&db, &id, steps)?;
     let (wf, _) = store::get_workflow(&db, &id)?;
-    Ok(WorkflowDetail { workflow: wf, steps: rows })
+    Ok(WorkflowDetail {
+        workflow: wf,
+        steps: rows,
+    })
 }
 
 // ── 运行控制 ────────────────────────────────────────────────
@@ -148,10 +159,7 @@ pub fn workflow_cancel(db: State<'_, Arc<Db>>, id: String) -> AppResult<Workflow
 }
 
 /// 读取该工作流当前活动运行（无则 NotFound）。
-fn current_active_run(
-    db: &Arc<Db>,
-    workflow_id: &str,
-) -> AppResult<WorkflowRunDetail> {
+fn current_active_run(db: &Arc<Db>, workflow_id: &str) -> AppResult<WorkflowRunDetail> {
     let view = engine::active_run()
         .filter(|r| r.workflow_id == workflow_id)
         .ok_or_else(|| AppError::NotFound("该工作流当前没有正在执行的运行".into()))?;
@@ -167,10 +175,7 @@ pub fn workflow_active() -> Option<engine::ActiveRunView> {
 // ── 运行历史 ────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn workflow_run_detail(
-    db: State<'_, Arc<Db>>,
-    run_id: String,
-) -> AppResult<WorkflowRunDetail> {
+pub fn workflow_run_detail(db: State<'_, Arc<Db>>, run_id: String) -> AppResult<WorkflowRunDetail> {
     store::get_run(&db, &run_id)
 }
 

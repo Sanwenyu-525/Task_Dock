@@ -38,6 +38,7 @@ import { createSubscriptionScope } from "./lib/subscriptions";
 import { setWindowEscapeHandler } from "./lib/overlayStack";
 import {
   notifyUiReady,
+  normalizeAgentChangedPayload,
   onAgentChanged,
   onAppReady,
   onFocusQuickAdd,
@@ -147,10 +148,11 @@ export default function App() {
         loadNavLinks();
       }, 400);
     };
-    scope.add(onAgentChanged((payload) => {
-      // 全部命中幂等去重 → UI 无变化，不刷新
-      if (payload?.changed === false) return;
-      const states = payload?.states ?? {};
+    scope.add(onAgentChanged((rawPayload) => {
+      // 运行时校验：非法载荷忽略，stale 旧载荷规范为全局 disconnected 刷新。
+      const payload = normalizeAgentChangedPayload(rawPayload);
+      if (!payload || payload.changed === false) return;
+      const states = payload.states ?? {};
       const critical = ["waiting", "failed", "completed", "disconnected"].some(
         (k) => (states[k] ?? 0) > 0,
       );

@@ -143,6 +143,23 @@ pub struct ActivityPage {
     pub has_more: bool,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct PlanningAgentFeatureLink {
+    pub id: String,
+    pub feature_id: String,
+    pub feature_title: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub agent_source: String,
+    pub agent_name: Option<String>,
+    pub session_id: String,
+    pub status: String,
+    pub agent_status: Option<String>,
+    pub agent_session_id: Option<String>,
+    pub last_seen_at: Option<String>,
+    pub last_execution_at: Option<String>,
+}
+
 // ── 输入模型 ─────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -649,7 +666,10 @@ pub fn planning_list_projects(
     list_projects_impl(&db, include_archived)
 }
 
-pub(crate) fn create_project_impl(db: &Db, input: ProjectInput) -> AppResult<PlanningProject> {
+pub(crate) fn create_project_tx(
+    conn: &Connection,
+    input: ProjectInput,
+) -> AppResult<PlanningProject> {
     let name = check_name(&input.name, "项目", 100)?;
     let description = check_text(&input.description, "项目描述", 2000)?;
     let status = input.status.as_deref().unwrap_or("planning");
@@ -657,19 +677,18 @@ pub(crate) fn create_project_impl(db: &Db, input: ProjectInput) -> AppResult<Pla
     let target_date = normalize_date(&input.target_date)?;
     let now = now_iso();
     let id = new_id();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let sort_order = next_sort_order(&tx, "planning_projects", None)?;
-        tx.execute(
-            "INSERT INTO planning_projects (id, name, description, status, archived, target_date, sort_order, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7)",
-            rusqlite::params![id, name, description, status, target_date, sort_order, now],
-        )
-        .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })?;
-    db.with_read(|conn| load_project_tx(conn, &id))
+    let sort_order = next_sort_order(conn, "planning_projects", None)?;
+    conn.execute(
+        "INSERT INTO planning_projects (id, name, description, status, archived, target_date, sort_order, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?7)",
+        rusqlite::params![id, name, description, status, target_date, sort_order, now],
+    )
+    .map_err(AppError::from)?;
+    load_project_tx(conn, &id)
+}
+
+pub(crate) fn create_project_impl(db: &Db, input: ProjectInput) -> AppResult<PlanningProject> {
+    db.with_transaction(|conn| create_project_tx(conn, input))
 }
 
 #[tauri::command]
@@ -680,8 +699,8 @@ pub fn planning_create_project(
     create_project_impl(&db, input)
 }
 
-pub(crate) fn update_project_impl(
-    db: &Db,
+pub(crate) fn update_project_tx(
+    conn: &Connection,
     id: String,
     patch: ProjectPatch,
 ) -> AppResult<PlanningProject> {
@@ -697,44 +716,47 @@ pub(crate) fn update_project_impl(
         check_status(s, PROJECT_STATUSES, "项目")?;
     }
     let now = now_iso();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let current: (Option<String>, i64) = tx
-            .query_row(
-                "SELECT target_date, revision FROM planning_projects WHERE id = ?1",
-                rusqlite::params![id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::Validation(format!("项目不存在: {}", id)))?;
-        let target_date = resolve_date(&current.0, &parse_date_update(&patch.target_date)?);
-        check_expected_revision_tx(&tx, "planning_projects", &id, patch.expected_revision)?;
-        tx.execute(
-            "UPDATE planning_projects SET
-               name = COALESCE(?1, name),
-               description = COALESCE(?2, description),
-               status = COALESCE(?3, status),
-               target_date = ?4,
-               sort_order = COALESCE(?5, sort_order),
-               revision = revision + 1,
-               updated_at = ?6
-             WHERE id = ?7",
-            rusqlite::params![
-                name,
-                description,
-                patch.status,
-                target_date,
-                patch.sort_order,
-                now,
-                id
-            ],
+    let current: (Option<String>, i64) = conn
+        .query_row(
+            "SELECT target_date, revision FROM planning_projects WHERE id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })?;
-    db.with_read(|conn| load_project_tx(conn, &id))
+        .optional()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::Validation(format!("项目不存在: {}", id)))?;
+    let target_date = resolve_date(&current.0, &parse_date_update(&patch.target_date)?);
+    check_expected_revision_tx(conn, "planning_projects", &id, patch.expected_revision)?;
+    conn.execute(
+        "UPDATE planning_projects SET
+           name = COALESCE(?1, name),
+           description = COALESCE(?2, description),
+           status = COALESCE(?3, status),
+           target_date = ?4,
+           sort_order = COALESCE(?5, sort_order),
+           revision = revision + 1,
+           updated_at = ?6
+         WHERE id = ?7",
+        rusqlite::params![
+            name,
+            description,
+            patch.status,
+            target_date,
+            patch.sort_order,
+            now,
+            id
+        ],
+    )
+    .map_err(AppError::from)?;
+    load_project_tx(conn, &id)
+}
+
+pub(crate) fn update_project_impl(
+    db: &Db,
+    id: String,
+    patch: ProjectPatch,
+) -> AppResult<PlanningProject> {
+    db.with_transaction(|conn| update_project_tx(conn, id, patch))
 }
 
 #[tauri::command]
@@ -894,8 +916,155 @@ pub fn planning_list_features(
     list_features_impl(&db, project_id)
 }
 
-pub(crate) fn create_feature_impl(
+const PLANNING_AGENT_LINK_SELECT: &str = "SELECT l.id, l.feature_id, f.title, f.project_id,
+       p.name, l.agent_source, a.display_name, l.session_id, l.status, s.status, s.id,
+       s.last_seen_at,
+       (SELECT MAX(r.started_at) FROM agent_runs r WHERE r.session_id = s.id)
+   FROM feature_agent_links l
+   JOIN planning_features f ON f.id = l.feature_id
+   JOIN planning_projects p ON p.id = f.project_id
+   LEFT JOIN agent_sources a ON a.id = l.agent_source
+   LEFT JOIN agent_sessions s ON s.source_id = l.agent_source
+       AND s.external_id = l.session_id AND s.origin = 'real'";
+
+fn row_to_planning_agent_link(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<PlanningAgentFeatureLink> {
+    Ok(PlanningAgentFeatureLink {
+        id: row.get(0)?,
+        feature_id: row.get(1)?,
+        feature_title: row.get(2)?,
+        project_id: row.get(3)?,
+        project_name: row.get(4)?,
+        agent_source: row.get(5)?,
+        agent_name: row.get(6)?,
+        session_id: row.get(7)?,
+        status: row.get(8)?,
+        agent_status: row.get(9)?,
+        agent_session_id: row.get(10)?,
+        last_seen_at: row.get(11)?,
+        last_execution_at: row.get(12)?,
+    })
+}
+
+fn list_feature_agent_links_inner(
+    conn: &Connection,
+    feature_id: &str,
+) -> AppResult<Vec<PlanningAgentFeatureLink>> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM planning_features WHERE id = ?1)",
+        rusqlite::params![feature_id],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(AppError::Validation(format!("功能不存在: {feature_id}")));
+    }
+    let sql =
+        format!("{PLANNING_AGENT_LINK_SELECT} WHERE l.feature_id = ?1 ORDER BY l.created_at, l.id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params![feature_id], row_to_planning_agent_link)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+pub(crate) fn list_feature_agent_links_impl(
     db: &Db,
+    feature_id: &str,
+) -> AppResult<Vec<PlanningAgentFeatureLink>> {
+    db.with_read(|conn| list_feature_agent_links_inner(conn, feature_id))
+}
+
+#[tauri::command]
+pub fn planning_list_feature_agent_links(
+    db: State<'_, Arc<Db>>,
+    feature_id: String,
+) -> AppResult<Vec<PlanningAgentFeatureLink>> {
+    list_feature_agent_links_impl(&db, &feature_id)
+}
+
+fn list_agent_feature_links_inner(
+    conn: &Connection,
+    agent_source: &str,
+    session_id: &str,
+) -> AppResult<Vec<PlanningAgentFeatureLink>> {
+    let sql = format!(
+        "{PLANNING_AGENT_LINK_SELECT}
+         WHERE l.agent_source = ?1 AND l.session_id = ?2 AND l.status = 'linked'
+         ORDER BY l.created_at DESC, l.id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        rusqlite::params![agent_source, session_id],
+        row_to_planning_agent_link,
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+}
+
+#[tauri::command]
+pub fn planning_list_agent_feature_links(
+    db: State<'_, Arc<Db>>,
+    agent_source: String,
+    session_id: String,
+) -> AppResult<Vec<PlanningAgentFeatureLink>> {
+    let agent_source = agent_source.trim();
+    let session_id = session_id.trim();
+    if agent_source.is_empty() || agent_source.chars().count() > 64 {
+        return Err(AppError::Validation("Agent 来源无效".into()));
+    }
+    if session_id.is_empty() || session_id.chars().count() > 256 {
+        return Err(AppError::Validation("Agent 会话 ID 无效".into()));
+    }
+    db.with_read(|conn| list_agent_feature_links_inner(conn, agent_source, session_id))
+}
+
+fn unlink_agent_session_impl(
+    db: &Db,
+    feature_id: &str,
+    agent_source: &str,
+    session_id: &str,
+) -> AppResult<String> {
+    db.with_transaction(|conn| {
+        let project_id: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM planning_features WHERE id = ?1",
+                rusqlite::params![feature_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let project_id =
+            project_id.ok_or_else(|| AppError::Validation(format!("功能不存在: {feature_id}")))?;
+        let changed = conn.execute(
+            "UPDATE feature_agent_links SET status = 'unlinked', last_event_at = ?4
+             WHERE feature_id = ?1 AND agent_source = ?2 AND session_id = ?3 AND status = 'linked'",
+            rusqlite::params![feature_id, agent_source, session_id, now_iso()],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Validation("未找到有效的 Agent 关联".into()));
+        }
+        Ok(project_id)
+    })
+}
+
+#[tauri::command]
+pub fn planning_unlink_agent_session(
+    app: tauri::AppHandle,
+    db: State<'_, Arc<Db>>,
+    feature_id: String,
+    agent_source: String,
+    session_id: String,
+) -> AppResult<()> {
+    let project_id = unlink_agent_session_impl(&db, &feature_id, &agent_source, &session_id)?;
+    let changed = crate::mcp::PlanningChanged {
+        kind: "feature",
+        project_id: Some(project_id),
+        feature_id: Some(feature_id),
+        revision: None,
+    };
+    let _ = tauri::Emitter::emit(&app, crate::mcp::PLANNING_CHANGED_EVENT, &changed);
+    Ok(())
+}
+
+pub(crate) fn create_feature_tx(
+    conn: &Connection,
     project_id: String,
     input: FeatureInput,
 ) -> AppResult<PlanningFeature> {
@@ -909,39 +1078,42 @@ pub(crate) fn create_feature_impl(
     let target_date = normalize_date(&input.target_date)?;
     let now = now_iso();
     let id = new_id();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        if !project_exists(&tx, &project_id)? {
-            return Err(AppError::Validation(format!("项目不存在: {}", project_id)));
-        }
-        if let Some(mid) = &input.milestone_id {
-            check_milestone_in_project(&tx, mid, &project_id)?;
-        }
-        let sort_order = next_sort_order(&tx, "planning_features", Some(("project_id", &project_id)))?;
-        tx.execute(
-            "INSERT INTO planning_features (id, project_id, title, description, acceptance_criteria, status, priority, milestone_id, target_date, sort_order, created_at, updated_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)",
-            rusqlite::params![
-                id,
-                project_id,
-                title,
-                description,
-                acceptance_criteria,
-                status,
-                priority,
-                input.milestone_id,
-                target_date,
-                sort_order,
-                now,
-                if status == "completed" { Some(&now) } else { None }
-            ],
-        )
-        .map_err(AppError::from)?;
-        record_status_change_tx(&tx, &project_id, &id, "", status, "创建功能")?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })?;
-    db.with_read(|conn| load_feature_tx(conn, &id))
+    if !project_exists(conn, &project_id)? {
+        return Err(AppError::Validation(format!("项目不存在: {}", project_id)));
+    }
+    if let Some(mid) = &input.milestone_id {
+        check_milestone_in_project(conn, mid, &project_id)?;
+    }
+    let sort_order = next_sort_order(conn, "planning_features", Some(("project_id", &project_id)))?;
+    conn.execute(
+        "INSERT INTO planning_features (id, project_id, title, description, acceptance_criteria, status, priority, milestone_id, target_date, sort_order, created_at, updated_at, completed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)",
+        rusqlite::params![
+            id,
+            project_id,
+            title,
+            description,
+            acceptance_criteria,
+            status,
+            priority,
+            input.milestone_id,
+            target_date,
+            sort_order,
+            now,
+            if status == "completed" { Some(&now) } else { None }
+        ],
+    )
+    .map_err(AppError::from)?;
+    record_status_change_tx(conn, &project_id, &id, "", status, "创建功能")?;
+    load_feature_tx(conn, &id)
+}
+
+pub(crate) fn create_feature_impl(
+    db: &Db,
+    project_id: String,
+    input: FeatureInput,
+) -> AppResult<PlanningFeature> {
+    db.with_transaction(|conn| create_feature_tx(conn, project_id, input))
 }
 
 #[tauri::command]
@@ -979,8 +1151,8 @@ fn check_milestone_in_project(
 /// 更新功能。状态变化在同一事务写入 status_change 历史；
 /// 标记 completed 时记录 completed_at，离开 completed 时清除；
 /// 带未完成步骤直接标记完成是允许的（前端需先确认），历史里如实记录未完成数。
-pub(crate) fn update_feature_impl(
-    db: &Db,
+pub(crate) fn update_feature_tx(
+    conn: &Connection,
     id: String,
     patch: FeaturePatch,
 ) -> AppResult<PlanningFeature> {
@@ -1003,88 +1175,97 @@ pub(crate) fn update_feature_impl(
         check_status(p, FEATURE_PRIORITIES, "功能优先级")?;
     }
     let now = now_iso();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let current: (String, String, Option<String>, Option<String>, Option<String>) = tx
-            .query_row(
-                "SELECT project_id, status, milestone_id, completed_at, target_date FROM planning_features WHERE id = ?1",
-                rusqlite::params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .optional()
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", id)))?;
-        let (project_id, old_status, cur_milestone, cur_completed_at, cur_target_date) = current;
-        check_expected_revision_tx(&tx, "planning_features", &id, patch.expected_revision)?;
-
-        // 里程碑三态：缺省保持 / null 清除 / 值校验归属后替换
-        let milestone_id = match &patch.milestone_id {
-            None => cur_milestone,
-            Some(None) => None,
-            Some(Some(mid)) => {
-                check_milestone_in_project(&tx, mid, &project_id)?;
-                Some(mid.clone())
-            }
-        };
-        let target_date = resolve_date(&cur_target_date, &parse_date_update(&patch.target_date)?);
-
-        // completed_at：状态变化进入 completed 记时间，离开清除；未涉及状态时保持原值
-        let status_changed = patch.status.is_some();
-        let new_status = patch.status.clone().unwrap_or_else(|| old_status.clone());
-        let completed_at = if status_changed {
-            if new_status == "completed" { Some(now.clone()) } else { None }
-        } else {
-            cur_completed_at
-        };
-
-        tx.execute(
-            "UPDATE planning_features SET
-               title = COALESCE(?1, title),
-               description = COALESCE(?2, description),
-               acceptance_criteria = COALESCE(?3, acceptance_criteria),
-               status = ?4,
-               priority = COALESCE(?5, priority),
-               milestone_id = ?6,
-               target_date = ?7,
-               sort_order = COALESCE(?8, sort_order),
-               completed_at = ?9,
-               revision = revision + 1,
-               updated_at = ?10
-             WHERE id = ?11",
-            rusqlite::params![
-                title,
-                description,
-                acceptance_criteria,
-                new_status,
-                patch.priority,
-                milestone_id,
-                target_date,
-                patch.sort_order,
-                completed_at,
-                now,
-                id
-            ],
+    let current: (String, String, Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT project_id, status, milestone_id, completed_at, target_date FROM planning_features WHERE id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
-        .map_err(AppError::from)?;
+        .optional()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", id)))?;
+    let (project_id, old_status, cur_milestone, cur_completed_at, cur_target_date) = current;
+    check_expected_revision_tx(conn, "planning_features", &id, patch.expected_revision)?;
 
-        if status_changed && new_status != old_status {
-            let mut message = String::new();
-            if new_status == "completed" {
-                let undone: i64 = tx.query_row(
+    // 里程碑三态：缺省保持 / null 清除 / 值校验归属后替换
+    let milestone_id = match &patch.milestone_id {
+        None => cur_milestone,
+        Some(None) => None,
+        Some(Some(mid)) => {
+            check_milestone_in_project(conn, mid, &project_id)?;
+            Some(mid.clone())
+        }
+    };
+    let target_date = resolve_date(&cur_target_date, &parse_date_update(&patch.target_date)?);
+
+    // completed_at：状态变化进入 completed 记时间，离开清除；未涉及状态时保持原值
+    let status_changed = patch.status.is_some();
+    let new_status = patch.status.clone().unwrap_or_else(|| old_status.clone());
+    let completed_at = if status_changed {
+        if new_status == "completed" {
+            Some(now.clone())
+        } else {
+            None
+        }
+    } else {
+        cur_completed_at
+    };
+
+    conn.execute(
+        "UPDATE planning_features SET
+           title = COALESCE(?1, title),
+           description = COALESCE(?2, description),
+           acceptance_criteria = COALESCE(?3, acceptance_criteria),
+           status = ?4,
+           priority = COALESCE(?5, priority),
+           milestone_id = ?6,
+           target_date = ?7,
+           sort_order = COALESCE(?8, sort_order),
+           completed_at = ?9,
+           revision = revision + 1,
+           updated_at = ?10
+         WHERE id = ?11",
+        rusqlite::params![
+            title,
+            description,
+            acceptance_criteria,
+            new_status,
+            patch.priority,
+            milestone_id,
+            target_date,
+            patch.sort_order,
+            completed_at,
+            now,
+            id
+        ],
+    )
+    .map_err(AppError::from)?;
+
+    if status_changed && new_status != old_status {
+        let mut message = String::new();
+        if new_status == "completed" {
+            let undone: i64 = conn
+                .query_row(
                     "SELECT COUNT(*) FROM planning_feature_steps WHERE feature_id = ?1 AND done = 0",
                     rusqlite::params![id],
                     |r| r.get(0),
-                ).map_err(AppError::from)?;
-                if undone > 0 {
-                    message = format!("确认完成：仍有 {} 个未完成步骤", undone);
-                }
+                )
+                .map_err(AppError::from)?;
+            if undone > 0 {
+                message = format!("确认完成：仍有 {} 个未完成步骤", undone);
             }
-            record_status_change_tx(&tx, &project_id, &id, &old_status, &new_status, &message)?;
         }
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })?;
-    db.with_read(|conn| load_feature_tx(conn, &id))
+        record_status_change_tx(conn, &project_id, &id, &old_status, &new_status, &message)?;
+    }
+    load_feature_tx(conn, &id)
+}
+
+pub(crate) fn update_feature_impl(
+    db: &Db,
+    id: String,
+    patch: FeaturePatch,
+) -> AppResult<PlanningFeature> {
+    db.with_transaction(|conn| update_feature_tx(conn, id, patch))
 }
 
 #[tauri::command]
@@ -1164,8 +1345,8 @@ pub fn planning_reorder_features(
 
 /// 新增步骤。返回更新后的功能（含步骤与进度），前端就地替换。
 /// expected_revision（v37）：传入时校验功能 revision（MCP 写工具强制）。
-pub(crate) fn add_step_impl(
-    db: &Db,
+pub(crate) fn add_step_tx(
+    conn: &Connection,
     feature_id: String,
     title: String,
     expected_revision: Option<i64>,
@@ -1173,36 +1354,43 @@ pub(crate) fn add_step_impl(
     let title = check_name(&title, "步骤", 200)?;
     let now = now_iso();
     let id = new_id();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        // 确认功能存在（顺带取 project_id 备用）
-        let _project_id: String = tx
-            .query_row(
-                "SELECT project_id FROM planning_features WHERE id = ?1",
-                rusqlite::params![feature_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", feature_id)))?;
-        check_expected_revision_tx(&tx, "planning_features", &feature_id, expected_revision)?;
-        let sort_order =
-            next_sort_order(&tx, "planning_feature_steps", Some(("feature_id", &feature_id)))?;
-        tx.execute(
-            "INSERT INTO planning_feature_steps (id, feature_id, title, done, sort_order, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?5)",
-            rusqlite::params![id, feature_id, title, sort_order, now],
+    // 确认功能存在（顺带取 project_id 备用）
+    let _project_id: String = conn
+        .query_row(
+            "SELECT project_id FROM planning_features WHERE id = ?1",
+            rusqlite::params![feature_id],
+            |r| r.get(0),
         )
-        .map_err(AppError::from)?;
-        tx.execute(
-            "UPDATE planning_features SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
-            rusqlite::params![now, feature_id],
-        )
-        .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })?;
-    db.with_read(|conn| load_feature_tx(conn, &feature_id))
+        .optional()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", feature_id)))?;
+    check_expected_revision_tx(conn, "planning_features", &feature_id, expected_revision)?;
+    let sort_order = next_sort_order(
+        conn,
+        "planning_feature_steps",
+        Some(("feature_id", &feature_id)),
+    )?;
+    conn.execute(
+        "INSERT INTO planning_feature_steps (id, feature_id, title, done, sort_order, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?5)",
+        rusqlite::params![id, feature_id, title, sort_order, now],
+    )
+    .map_err(AppError::from)?;
+    conn.execute(
+        "UPDATE planning_features SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, feature_id],
+    )
+    .map_err(AppError::from)?;
+    load_feature_tx(conn, &feature_id)
+}
+
+pub(crate) fn add_step_impl(
+    db: &Db,
+    feature_id: String,
+    title: String,
+    expected_revision: Option<i64>,
+) -> AppResult<PlanningFeature> {
+    db.with_transaction(|conn| add_step_tx(conn, feature_id, title, expected_revision))
 }
 
 #[tauri::command]
@@ -1217,8 +1405,8 @@ pub fn planning_add_step(
 
 /// 更新步骤（改标题 / 勾选完成 / 重开）。
 /// 勾选与重开在同一事务写入 step_done 历史并同步功能 updated_at。
-pub(crate) fn update_step_impl(
-    db: &Db,
+pub(crate) fn update_step_tx(
+    conn: &Connection,
     id: String,
     patch: StepPatch,
 ) -> AppResult<PlanningFeature> {
@@ -1227,62 +1415,74 @@ pub(crate) fn update_step_impl(
         None => None,
     };
     let now = now_iso();
-    let feature_id = db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let current: (String, String, i64, Option<String>) = tx
-            .query_row(
-                "SELECT s.feature_id, s.title, s.done, s.completed_at FROM planning_feature_steps s WHERE s.id = ?1",
-                rusqlite::params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::Validation(format!("步骤不存在: {}", id)))?;
-        let (feature_id, old_title, old_done, cur_completed_at) = current;
-        let project_id: String = tx
-            .query_row(
-                "SELECT project_id FROM planning_features WHERE id = ?1",
-                rusqlite::params![feature_id],
-                |r| r.get(0),
-            )
-            .map_err(AppError::from)?;
-        check_expected_revision_tx(&tx, "planning_features", &feature_id, patch.expected_revision)?;
+    let current: (String, String, i64, Option<String>) = conn
+        .query_row(
+            "SELECT s.feature_id, s.title, s.done, s.completed_at FROM planning_feature_steps s WHERE s.id = ?1",
+            rusqlite::params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::Validation(format!("步骤不存在: {}", id)))?;
+    let (feature_id, old_title, old_done, cur_completed_at) = current;
+    let project_id: String = conn
+        .query_row(
+            "SELECT project_id FROM planning_features WHERE id = ?1",
+            rusqlite::params![feature_id],
+            |r| r.get(0),
+        )
+        .map_err(AppError::from)?;
+    check_expected_revision_tx(
+        conn,
+        "planning_features",
+        &feature_id,
+        patch.expected_revision,
+    )?;
 
-        let new_title = title.clone().unwrap_or_else(|| old_title.clone());
-        let done_touched = patch.done.is_some();
-        let new_done = patch.done.unwrap_or(old_done != 0);
-        let completed_at = if done_touched {
-            if new_done { Some(now.clone()) } else { None }
+    let new_title = title.clone().unwrap_or_else(|| old_title.clone());
+    let done_touched = patch.done.is_some();
+    let new_done = patch.done.unwrap_or(old_done != 0);
+    let completed_at = if done_touched {
+        if new_done {
+            Some(now.clone())
         } else {
-            cur_completed_at
-        };
-
-        tx.execute(
-            "UPDATE planning_feature_steps SET title = COALESCE(?1, title), done = ?2, completed_at = ?3, updated_at = ?4
-             WHERE id = ?5",
-            rusqlite::params![title, new_done as i64, completed_at, now, id],
-        )
-        .map_err(AppError::from)?;
-
-        // 勾选状态实际变化才记录事件，避免重复点击刷历史
-        if done_touched && new_done != (old_done != 0) {
-            let message = if new_done {
-                format!("完成步骤「{}」", new_title)
-            } else {
-                format!("重开步骤「{}」", new_title)
-            };
-            record_step_event_tx(&tx, &project_id, &feature_id, &message)?;
+            None
         }
-        // 步骤变化同步功能 revision 与 updated_at（卡片「最近更新」以此为准）
-        tx.execute(
-            "UPDATE planning_features SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
-            rusqlite::params![now, feature_id],
-        )
-        .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(feature_id)
-    })?;
-    db.with_read(|conn| load_feature_tx(conn, &feature_id))
+    } else {
+        cur_completed_at
+    };
+
+    conn.execute(
+        "UPDATE planning_feature_steps SET title = COALESCE(?1, title), done = ?2, completed_at = ?3, updated_at = ?4
+         WHERE id = ?5",
+        rusqlite::params![title, new_done as i64, completed_at, now, id],
+    )
+    .map_err(AppError::from)?;
+
+    // 勾选状态实际变化才记录事件，避免重复点击刷历史
+    if done_touched && new_done != (old_done != 0) {
+        let message = if new_done {
+            format!("完成步骤「{}」", new_title)
+        } else {
+            format!("重开步骤「{}」", new_title)
+        };
+        record_step_event_tx(conn, &project_id, &feature_id, &message)?;
+    }
+    // 步骤变化同步功能 revision 与 updated_at（卡片「最近更新」以此为准）
+    conn.execute(
+        "UPDATE planning_features SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, feature_id],
+    )
+    .map_err(AppError::from)?;
+    load_feature_tx(conn, &feature_id)
+}
+
+pub(crate) fn update_step_impl(
+    db: &Db,
+    id: String,
+    patch: StepPatch,
+) -> AppResult<PlanningFeature> {
+    db.with_transaction(|conn| update_step_tx(conn, id, patch))
 }
 
 #[tauri::command]
@@ -1590,8 +1790,8 @@ fn row_to_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningActivity
 }
 
 /// 用户主动提交的开发日志（kind = note）。不解析内容、不推断进度。
-pub(crate) fn add_note_impl(
-    db: &Db,
+pub(crate) fn add_note_tx(
+    conn: &Connection,
     project_id: String,
     feature_id: Option<String>,
     message: String,
@@ -1603,44 +1803,98 @@ pub(crate) fn add_note_impl(
     let message = check_text(&message, "记录内容", 2000)?;
     let now = now_iso();
     let id = new_id();
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        if !project_exists(&tx, &project_id)? {
-            return Err(AppError::Validation(format!("项目不存在: {}", project_id)));
+    if !project_exists(conn, &project_id)? {
+        return Err(AppError::Validation(format!("项目不存在: {}", project_id)));
+    }
+    if let Some(fid) = &feature_id {
+        let belongs: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM planning_features WHERE id = ?1",
+                rusqlite::params![fid],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(AppError::from)?;
+        if belongs.as_deref() != Some(project_id.as_str()) {
+            return Err(AppError::Validation(format!("功能不属于该项目: {}", fid)));
         }
-        if let Some(fid) = &feature_id {
-            let belongs: Option<String> = tx
-                .query_row(
-                    "SELECT project_id FROM planning_features WHERE id = ?1",
-                    rusqlite::params![fid],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(AppError::from)?;
-            if belongs.as_deref() != Some(project_id.as_str()) {
-                return Err(AppError::Validation(format!("功能不属于该项目: {}", fid)));
-            }
-        }
-        tx.execute(
-            "INSERT INTO planning_activity (id, project_id, feature_id, kind, message, created_at)
-             VALUES (?1, ?2, ?3, 'note', ?4, ?5)",
-            rusqlite::params![id, project_id, feature_id, message, now],
+    }
+    conn.execute(
+        "INSERT INTO planning_activity (id, project_id, feature_id, kind, message, created_at)
+         VALUES (?1, ?2, ?3, 'note', ?4, ?5)",
+        rusqlite::params![id, project_id, feature_id, message, now],
+    )
+    .map_err(AppError::from)?;
+    conn.query_row(
+        "SELECT a.id, a.project_id, a.feature_id, f.title, a.kind, a.old_status, a.new_status, a.message, a.created_at
+         FROM planning_activity a
+         LEFT JOIN planning_features f ON f.id = a.feature_id
+         WHERE a.id = ?1",
+        rusqlite::params![id],
+        row_to_activity,
+    )
+    .map_err(AppError::from)
+}
+
+pub(crate) fn add_note_impl(
+    db: &Db,
+    project_id: String,
+    feature_id: Option<String>,
+    message: String,
+) -> AppResult<PlanningActivity> {
+    db.with_transaction(|conn| add_note_tx(conn, project_id, feature_id, message))
+}
+
+/// 提交待验收：只接受当前开发中的功能，更新状态与可选日志写入共用调用方事务。
+pub(crate) fn submit_for_review_tx(
+    conn: &Connection,
+    feature_id: String,
+    expected_revision: Option<i64>,
+    note: Option<String>,
+) -> AppResult<PlanningFeature> {
+    let expected_revision = expected_revision
+        .ok_or_else(|| AppError::Validation("提交待验收必须提供 expected_revision".into()))?;
+    let (project_id, status): (String, String) = conn
+        .query_row(
+            "SELECT project_id, status FROM planning_features WHERE id = ?1",
+            rusqlite::params![feature_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .map_err(AppError::from)?;
-        tx.commit().map_err(AppError::from)?;
-        Ok(())
-    })?;
-    db.with_read(|conn| {
-        conn.query_row(
-            "SELECT a.id, a.project_id, a.feature_id, f.title, a.kind, a.old_status, a.new_status, a.message, a.created_at
-             FROM planning_activity a
-             LEFT JOIN planning_features f ON f.id = a.feature_id
-             WHERE a.id = ?1",
-            rusqlite::params![id],
-            row_to_activity,
-        )
-        .map_err(AppError::from)
-    })
+        .optional()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", feature_id)))?;
+    if status != "in_progress" {
+        return Err(AppError::Conflict(format!(
+            "只有开发中的功能可以提交待验收（当前状态：{}）",
+            status
+        )));
+    }
+    let note = note
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(value) = &note {
+        check_text(value, "验收说明", 2000)?;
+    }
+
+    let result = update_feature_tx(
+        conn,
+        feature_id.clone(),
+        FeaturePatch {
+            title: None,
+            description: None,
+            acceptance_criteria: None,
+            status: Some("review".into()),
+            priority: None,
+            milestone_id: None,
+            target_date: None,
+            sort_order: None,
+            expected_revision: Some(expected_revision),
+        },
+    )?;
+    if let Some(note) = note {
+        add_note_tx(conn, project_id, Some(feature_id), note)?;
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -2303,5 +2557,197 @@ mod tests {
             .unwrap_err(),
             AppError::Validation(_)
         ));
+    }
+
+    #[test]
+    fn submit_for_review_updates_feature_and_note_together() {
+        let db = memdb();
+        let p = create_project_impl(&db, proj_input("P")).unwrap();
+        let project_id = p.id.clone();
+        let mut input = feat_input("F");
+        input.status = Some("in_progress".into());
+        let f = create_feature_impl(&db, project_id.clone(), input).unwrap();
+
+        let submitted = db
+            .with_transaction(|conn| {
+                submit_for_review_tx(
+                    conn,
+                    f.id.clone(),
+                    Some(f.revision),
+                    Some("请验收边界行为".into()),
+                )
+            })
+            .unwrap();
+        assert_eq!(submitted.status, "review");
+        assert_eq!(submitted.revision, f.revision + 1);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM planning_activity WHERE kind = 'note'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM planning_activity WHERE kind = 'status_change'"
+            ),
+            2
+        );
+        assert!(matches!(
+            db.with_transaction(|conn| {
+                submit_for_review_tx(
+                    conn,
+                    f.id.clone(),
+                    Some(f.revision),
+                    Some("重复提交".into()),
+                )
+            })
+            .unwrap_err(),
+            AppError::Conflict(_)
+        ));
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM planning_activity WHERE kind = 'note'"
+            ),
+            1
+        );
+
+        let mut empty_note_input = feat_input("空说明");
+        empty_note_input.status = Some("in_progress".into());
+        let empty_note_feature = create_feature_impl(&db, project_id, empty_note_input).unwrap();
+        db.with_transaction(|conn| {
+            submit_for_review_tx(
+                conn,
+                empty_note_feature.id.clone(),
+                Some(empty_note_feature.revision),
+                Some("   ".into()),
+            )
+        })
+        .unwrap();
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM planning_activity WHERE kind = 'note'"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn submit_for_review_rolls_back_when_note_write_fails() {
+        let db = memdb();
+        let p = create_project_impl(&db, proj_input("P")).unwrap();
+        let mut input = feat_input("F");
+        input.status = Some("in_progress".into());
+        let f = create_feature_impl(&db, p.id, input).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_review_note BEFORE INSERT ON planning_activity
+                 WHEN NEW.kind = 'note' BEGIN SELECT RAISE(ABORT, 'note write failed'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let result = db.with_transaction(|conn| {
+            submit_for_review_tx(conn, f.id.clone(), Some(f.revision), Some("有说明".into()))
+        });
+        assert!(result.is_err());
+        let current = db.with_read(|conn| load_feature_tx(conn, &f.id)).unwrap();
+        assert_eq!(current.status, "in_progress");
+        assert_eq!(current.revision, f.revision);
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM planning_activity WHERE kind = 'status_change'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM planning_activity WHERE kind = 'note'"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn feature_agent_links_use_real_session_state_and_unlink_in_place() {
+        let db = memdb();
+        let project = create_project_impl(&db, proj_input("P")).unwrap();
+        let feature = create_feature_impl(&db, project.id.clone(), feat_input("F")).unwrap();
+        let run_started = "2026-11-06T10:11:12Z";
+        db.with_transaction(|conn| {
+            conn.execute(
+                "INSERT INTO agent_sources (id, display_name, created_at, updated_at)
+                 VALUES ('codex', 'Codex CLI', ?1, ?1)",
+                rusqlite::params![now_iso()],
+            )?;
+            conn.execute(
+                "INSERT INTO agent_sessions
+                 (id, source_id, external_id, title, status, first_seen_at, last_seen_at, origin)
+                 VALUES ('session-row', 'codex', 'external-session', '会话', 'waiting', ?1, ?1, 'real')",
+                rusqlite::params![now_iso()],
+            )?;
+            conn.execute(
+                "INSERT INTO agent_runs (id, session_id, source_id, status, started_at, updated_at)
+                 VALUES ('run-row', 'session-row', 'codex', 'waiting', ?1, ?1)",
+                rusqlite::params![run_started],
+            )?;
+            conn.execute(
+                "INSERT INTO feature_agent_links
+                 (id, feature_id, agent_source, session_id, status, last_event_at, created_at)
+                 VALUES ('known-link', ?1, 'codex', 'external-session', 'linked', ?2, '1')",
+                rusqlite::params![feature.id, now_iso()],
+            )?;
+            conn.execute(
+                "INSERT INTO feature_agent_links
+                 (id, feature_id, agent_source, session_id, status, last_event_at, created_at)
+                 VALUES ('unknown-link', ?1, 'missing-source', 'unknown-session', 'linked', ?2, '2')",
+                rusqlite::params![feature.id, now_iso()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let links = list_feature_agent_links_impl(&db, &feature.id).unwrap();
+        assert_eq!(links.len(), 2);
+        let known = links.iter().find(|link| link.id == "known-link").unwrap();
+        assert_eq!(known.agent_name.as_deref(), Some("Codex CLI"));
+        assert_eq!(known.agent_status.as_deref(), Some("waiting"));
+        assert_eq!(known.agent_session_id.as_deref(), Some("session-row"));
+        assert_eq!(known.last_execution_at.as_deref(), Some(run_started));
+        let unknown = links.iter().find(|link| link.id == "unknown-link").unwrap();
+        assert!(unknown.agent_name.is_none());
+        assert!(unknown.agent_status.is_none());
+        assert!(unknown.agent_session_id.is_none());
+        assert!(unknown.last_execution_at.is_none());
+
+        let session_links = db
+            .with_read(|conn| list_agent_feature_links_inner(conn, "codex", "external-session"))
+            .unwrap();
+        assert_eq!(session_links.len(), 1);
+        assert_eq!(session_links[0].feature_id, feature.id);
+
+        let project_id =
+            unlink_agent_session_impl(&db, &feature.id, "codex", "external-session").unwrap();
+        assert_eq!(project_id, project.id);
+        let links = list_feature_agent_links_impl(&db, &feature.id).unwrap();
+        assert_eq!(
+            links
+                .iter()
+                .find(|link| link.id == "known-link")
+                .unwrap()
+                .status,
+            "unlinked"
+        );
+        assert!(db
+            .with_read(|conn| list_agent_feature_links_inner(conn, "codex", "external-session"))
+            .unwrap()
+            .is_empty());
+        assert!(unlink_agent_session_impl(&db, &feature.id, "codex", "external-session").is_err());
     }
 }

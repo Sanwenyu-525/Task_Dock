@@ -84,11 +84,7 @@ fn mutate<T>(
     Ok(out)
 }
 
-pub fn start(
-    app: &AppHandle,
-    db: &Db,
-    task_id: Option<String>,
-) -> AppResult<FocusSnapshot> {
+pub fn start(app: &AppHandle, db: &Db, task_id: Option<String>) -> AppResult<FocusSnapshot> {
     mutate(app, db, |core, now, mono| {
         core.start_focus(db, task_id, now, mono)?;
         core.snapshot(db, now, mono)
@@ -130,11 +126,7 @@ pub fn cancel(app: &AppHandle, db: &Db) -> AppResult<FocusSnapshot> {
     })
 }
 
-pub fn extend_break(
-    app: &AppHandle,
-    db: &Db,
-    minutes: u32,
-) -> AppResult<FocusSnapshot> {
+pub fn extend_break(app: &AppHandle, db: &Db, minutes: u32) -> AppResult<FocusSnapshot> {
     mutate(app, db, |core, now, mono| {
         core.extend_break(db, minutes, now)?;
         core.snapshot(db, now, mono)
@@ -148,19 +140,13 @@ pub fn skip_break(app: &AppHandle, db: &Db) -> AppResult<FocusSnapshot> {
     })
 }
 
-pub fn update_prefs(
-    app: &AppHandle,
-    db: &Db,
-    patch: FocusPrefsPatch,
-) -> AppResult<FocusPrefs> {
-    mutate(app, db, |core, now, _mono| core.update_prefs(db, patch, now))
+pub fn update_prefs(app: &AppHandle, db: &Db, patch: FocusPrefsPatch) -> AppResult<FocusPrefs> {
+    mutate(app, db, |core, now, _mono| {
+        core.update_prefs(db, patch, now)
+    })
 }
 
-pub fn snooze_sedentary(
-    app: &AppHandle,
-    db: &Db,
-    minutes: u32,
-) -> AppResult<FocusSnapshot> {
+pub fn snooze_sedentary(app: &AppHandle, db: &Db, minutes: u32) -> AppResult<FocusSnapshot> {
     mutate(app, db, |core, now, mono| {
         core.snooze_sedentary(db, minutes, now)?;
         core.snapshot(db, now, mono)

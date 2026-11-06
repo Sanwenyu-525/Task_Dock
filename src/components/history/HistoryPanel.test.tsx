@@ -221,6 +221,26 @@ describe("HistoryPanel 分页与刷新空隙", () => {
     expect(screen.queryByText(/未加载的空隙/)).toBeNull();
   });
 
+  it("stale 清理事件（仅 stale_cleanup）触发历史刷新且不抛错", async () => {
+    bridge.listAgentEvents
+      .mockResolvedValueOnce(eventPageOf([event("e1")], { filtered_total: 1 }))
+      .mockResolvedValue(eventPageOf([event("e1")], { filtered_total: 1 }));
+    const holder: { cb?: (p: unknown) => void } = {};
+    bridge.onAgentChanged.mockImplementation((cb: (p: unknown) => void) => {
+      holder.cb = cb as (p: unknown) => void;
+      return Promise.resolve(() => {});
+    });
+    render(<HistoryPanel />);
+    await screen.findByText("事件 e1");
+    const callsBefore = bridge.listAgentEvents.mock.calls.length;
+    expect(() => {
+      holder.cb?.({ stale_cleanup: 2 } as unknown);
+      holder.cb?.(null as unknown);
+      holder.cb?.({ sources: "codex" } as unknown);
+    }).not.toThrow();
+    await waitFor(() => expect(bridge.listAgentEvents.mock.calls.length).toBeGreaterThan(callsBefore));
+  });
+
   it("首屏为空后到达的新事件会重新启用「加载更早」", async () => {
     bridge.listAgentEvents
       .mockResolvedValueOnce(eventPageOf([], { has_more: false, filtered_total: 0 }))

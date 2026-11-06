@@ -48,11 +48,7 @@ pub fn notes_create(db: State<'_, Arc<Db>>, input: CreateNoteInput) -> AppResult
 }
 
 #[tauri::command]
-pub fn notes_update(
-    db: State<'_, Arc<Db>>,
-    id: String,
-    input: UpdateNoteInput,
-) -> AppResult<Note> {
+pub fn notes_update(db: State<'_, Arc<Db>>, id: String, input: UpdateNoteInput) -> AppResult<Note> {
     store::update(&db, &id, input)
 }
 

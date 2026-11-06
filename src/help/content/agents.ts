@@ -1,7 +1,4 @@
 //! Agent 管理类教程（2 篇）。
-//! 注意：help.agents.mcp-authorization 描述的 MCP 授权功能在本文撰写时仍在开发中
-//! （另一任务并行实现），故 status=needs_review，正文只描述设计目标并明确标注
-//! 「功能开发中」，不描述不存在的 UI。
 
 import type { HelpArticle } from "../types";
 
@@ -64,43 +61,59 @@ export const AGENTS_ARTICLES: readonly HelpArticle[] = [
     id: "help.agents.mcp-authorization",
     categoryId: "agents",
     status: "needs_review",
-    contentVersion: 1,
+    contentVersion: 3,
     reviewedForVersion: "v0.11",
+    reviewedOperationContractVersions: { "agent.mcp-server": 2 },
     translations: {
       "zh-CN": {
-        title: "MCP 服务器授权（功能开发中）",
-        summary:
-          "通过 MCP 授权管理让 Agent 在受控范围内调用 task_dock 能力；该功能正在开发中，本文随功能落地复核更新。",
+        title: "MCP 服务器：规划数据的授权读写",
+        summary: "Task Dock MCP 当前提供 18 个规划中心工具；身份、项目授权和审计摘要可在设置中管理。",
         sections: [
           {
             type: "callout",
-            text: "功能开发中：MCP 授权管理尚未随当前版本发布，下文描述的是设计目标，实际界面与步骤以功能发布后的版本为准。发布后本文会重新核对并转为「已核对」。",
+            text: "管理界面和服务端能力已接入。真实 MCP 客户端连接、桌面运行状态及完整系统交互尚未完成验收，因此本文继续标记为「待复核」。",
           },
-          { type: "heading", text: "设计目标" },
+          { type: "heading", text: "当前服务范围" },
           {
             type: "paragraph",
-            text: "MCP（Model Context Protocol）授权管理的目标是：让受支持的 Agent 通过 MCP 有限地调用 task_dock 的查询与操作能力（如查询任务、读取剪贴板元数据），而不是暴露完整数据库。",
+            text: "MCP（Model Context Protocol）通过 `taskdock.exe --mcp-server` 的 stdio 子命令接入 Task Dock 的本机 loopback bridge。当前工具只读写用户创建的规划项目、功能、步骤、进度与 Agent 会话关联；不提供任务操作、剪贴板正文读取或内置路线图修改。服务开关 `mcp_server_enabled` 默认关闭。",
           },
-          { type: "heading", text: "计划中的边界" },
+          { type: "heading", text: "权限范围" },
           {
             type: "steps",
             items: [
-              "授权开关默认关闭；开启前列出将暴露的能力清单，由你逐项确认。",
-              "授权可随时撤销；撤销后 Agent 侧调用立即失败并给出可读错误。",
-              "所有经 MCP 的调用走现有事件管线与审计记录，不绕过行动中心。",
+              "新建的 Agent 身份默认是 `disabled`，不能调用读写工具；撤销身份后后续请求立即失效。",
+              "`readonly` 是用户显式选择的全项目只读范围；不能写入。",
+              "`project_rw` 只能读取和修改已明确授权的项目；创建的新项目会自动授权给该 Agent。",
+              "写入需要 `project_rw`。更新项目、功能、步骤和提交待验收时使用 `expected_revision`；并发版本过期会返回冲突。追加进度日志、关联或解除 Agent 会话是追加型动作，不要求 revision。",
+            ],
+          },
+          { type: "heading", text: "已经开放的工具" },
+          {
+            type: "paragraph",
+            text: "可读：列出/读取项目、功能、步骤、里程碑、进度和 Agent 会话关联。可写：创建项目或功能、更新项目/功能/步骤、追加进度日志、关联/解除 Agent 会话、将功能提交待验收。Agent 不能把功能标记为已完成，验收仍由用户判定。",
+          },
+          { type: "heading", text: "配置和连接检查" },
+          {
+            type: "steps",
+            items: [
+              "在设置的 Agent 接入区域启用 MCP，并查看服务是否实际运行及监听端口；开关状态不代表服务已成功启动。",
+              "在 MCP 管理区创建身份并选 scope。`project_rw` 还需授予具体项目；Token 明文只在创建或轮换时返回一次，数据库只保存其哈希。",
+              "按客户端生成对应配置片段，复制到 Claude Code、Codex CLI、Cursor、Trae 或 generic 客户端。不要把 Token 放进截图、日志或共享文档。",
+              "连接后可在 MCP 操作历史查看分页审计摘要。界面不展示错误正文或重放载荷；本机数据库仍保留写工具的 `result_json` 以支持幂等重放，目前没有配置审计保留期限或自动清理。真实客户端连接尚未实测。",
             ],
           },
           {
             type: "note",
-            text: "在功能发布前，任何声称「已授权 MCP」的第三方教程均不适用于当前版本。",
+            text: "权限不足通常表示身份仍为 disabled、scope 不允许该动作，或 `project_rw` 身份缺少目标项目 grant。若提示服务不可用，先确认 Task Dock 正在运行且 MCP 已启用；MCP 未开放任务、剪贴板或其他任意数据库工具。",
           },
         ],
       },
     },
     keywords: {
-      "zh-CN": ["MCP", "授权", "开发中", "Model Context Protocol", "Agent 能力"],
+      "zh-CN": ["MCP", "授权", "Model Context Protocol", "Agent 能力", "规划中心", "readonly", "project_rw", "项目授权", "配置", "Token", "审计"],
     },
-    relatedFeatureIds: [],
-    relatedRouteIds: ["agents"],
+    relatedFeatureIds: ["agent.mcp-server"],
+    relatedRouteIds: ["roadmap", "settings"],
   },
 ];

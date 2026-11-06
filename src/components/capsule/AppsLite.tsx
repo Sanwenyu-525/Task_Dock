@@ -11,9 +11,9 @@
 //! - 启动失败如实提示后端返回的 `reason`，不显示「已启动」。
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { LayoutGrid, Loader2, Plus, Search, X } from "lucide-react";
+import { Eye, LayoutGrid, Loader2, Plus, Search, X } from "lucide-react";
 import {
-  navDeleteTarget, navNavigate, avatarHue, resultMessage, type NavTarget,
+  navDeleteTarget, navNavigate, navUpdateTarget, avatarHue, resultMessage, type NavTarget,
 } from "../../lib/navigation";
 import { normalizeError } from "../../lib/errors";
 import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
@@ -70,6 +70,8 @@ export default function AppsLite() {
       改为面板内确认条（同一套确认语义与后端删除命令）。 */
   const [pendingDelete, setPendingDelete] = useState<NavTarget | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  /** 恢复显示（隐藏 → 可见）：逐个按钮忙碌态；只改 hidden，不动名称/收藏/启动参数。 */
+  const [restoreBusyId, setRestoreBusyId] = useState<string | null>(null);
   /** 后端删除成功但刷新失败时，本地先隐藏该项，避免旧缓存把「已删除」显示回来。 */
   const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
   const cancelRef = useRef<HTMLButtonElement | null>(null);
@@ -80,6 +82,10 @@ export default function AppsLite() {
   // 自然结束后置空，避免连续启动/失败把已结束的 ID 一直累积。
   const noticeTimer = useRef<number | null>(null);
 
+  // 按需加载（不轮询、不每次 render 请求）：未加载时补一次；
+  // 已加载时复用共享 Store，跨入口的增删/隐藏/恢复都已在写入处刷新，
+  // 重新打开胶囊不会重复请求。刷新失败保留旧数据并由重试按钮显式触发。
+  // 失败不自动重发：避免 targetsError 变化触发循环请求。
   useEffect(() => {
     if (!targetsLoaded) void loadTargets();
   }, [targetsLoaded, loadTargets]);
@@ -224,8 +230,35 @@ export default function AppsLite() {
   // 「没有配置」与「读取失败」必须分开：targetsError 存在时绝不把旧清单/空清单
   // 伪装成「尚未配置快捷应用」。读取失败且从未成功 → 错误空态（可重试）；
   // 失败但已有旧清单 → 旧清单保留 + 错误提示条。
+  // 已隐藏目标仍在权威数据内（list 时 include_hidden=true），这里按原始 targets
+  // 计数区分「从未配置 / 全部隐藏 / 仅 Agent 会话」，绝不自动取消隐藏。
+  const hiddenRelevant = useMemo(
+    () =>
+      targets.filter(
+        (t) =>
+          t.hidden &&
+          !removedIds.has(t.id) &&
+          (t.target_type === "application" ||
+            t.target_type === "url" ||
+            t.target_type === "file" ||
+            t.target_type === "directory"),
+      ),
+    [targets, removedIds],
+  );
   const loadError = targetsError !== null;
-  const empty = targetsLoaded && !loadError && ranked.length === 0 && extras.length === 0;
+  const isLoading = !targetsLoaded && !loadError;
+  const hasAgentOnly = useMemo(
+    () =>
+      targetsLoaded &&
+      !loadError &&
+      ranked.length === 0 &&
+      extras.length === 0 &&
+      hiddenRelevant.length === 0 &&
+      targets.some((t) => !removedIds.has(t.id) && t.target_type === "agent_session"),
+    [targetsLoaded, loadError, ranked.length, extras.length, hiddenRelevant.length, targets, removedIds],
+  );
+  const allHidden = targetsLoaded && !loadError && ranked.length === 0 && extras.length === 0 && hiddenRelevant.length > 0;
+  const neverConfigured = targetsLoaded && !loadError && ranked.length === 0 && extras.length === 0 && hiddenRelevant.length === 0 && !hasAgentOnly;
   const loadFailedFresh = loadError && !targetsLoaded;
   const loadFailedStale = loadError && targetsLoaded;
 
@@ -275,6 +308,22 @@ export default function AppsLite() {
       ? "目标已删除，但列表刷新失败"
       : "目标已删除");
     setDeleteBusy(false);
+  };
+
+  /** 隐藏项恢复显示：只改 hidden，不触碰名称/收藏/启动参数；失败保留原隐藏态。 */
+  const restoreHiddenItem = async (t: NavTarget) => {
+    if (restoreBusyId) return;
+    setRestoreBusyId(t.id);
+    try {
+      await navUpdateTarget(t.id, { hidden: false });
+      const outcome = await loadTargets(true);
+      flash(outcome === "error" ? "已恢复显示，但列表刷新失败" : `已恢复显示「${t.display_name}」`);
+    } catch (e) {
+      const err = normalizeError(e, "nav_update_target");
+      flash(`恢复显示失败：${err.reason || err.message || "未知错误"}`);
+    } finally {
+      setRestoreBusyId(null);
+    }
   };
 
   // ── 网格排序（应用 + 加号共用）──────────────────────────────
@@ -390,7 +439,14 @@ export default function AppsLite() {
         </div>
       )}
 
-      <div className="cap-list">
+      <div className="cap-list cap-list--apps">
+        {isLoading && (
+          <EmptyState
+            icon={<Loader2 size={22} strokeWidth={1.6} className="spin" aria-hidden="true" />}
+            text="正在读取快捷应用…"
+          />
+        )}
+
         {loadFailedFresh && (
           <EmptyState
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
@@ -409,14 +465,58 @@ export default function AppsLite() {
           </div>
         )}
 
-        {empty && (
+        {neverConfigured && !query.trim() && (
           <EmptyState
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
             text="尚未配置快捷应用"
+            actionLabel="添加应用"
+            onAction={() => openAppsAdd()}
+            className="cap-empty--centered"
           />
         )}
 
-        {targetsLoaded && !loadFailedFresh && (
+        {allHidden && !query.trim() && (
+          <>
+            <EmptyState
+              icon={<Eye size={22} strokeWidth={1.6} aria-hidden="true" />}
+              text="已添加的应用均处于隐藏状态"
+            />
+            <div className="cap-recent" data-testid="hidden-restore-list">
+              <span className="cap-recent-title">已隐藏（共 {hiddenRelevant.length}）</span>
+              <span className="cap-recent-list">
+                {hiddenRelevant.map((t) => (
+                  <button
+                    type="button"
+                    key={t.id}
+                    className="cap-recent-chip"
+                    aria-label={`恢复显示 ${t.display_name}`}
+                    disabled={restoreBusyId === t.id}
+                    onClick={() => void restoreHiddenItem(t)}
+                  >
+                    <i
+                      className="cap-recent-dot"
+                      style={{ "--app-hue": String(avatarHue(t.app_key || t.display_name)) } as CSSProperties}
+                      aria-hidden="true"
+                    >
+                      {(t.display_name || "?").slice(0, 1).toUpperCase()}
+                    </i>
+                    <span>{t.display_name}</span>
+                    <span>{restoreBusyId === t.id ? "恢复中…" : "恢复显示"}</span>
+                  </button>
+                ))}
+              </span>
+            </div>
+          </>
+        )}
+
+        {hasAgentOnly && !query.trim() && (
+          <EmptyState
+            icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
+            text="Agent 会话在 Agent 面板中管理"
+          />
+        )}
+
+        {targetsLoaded && !loadFailedFresh && !neverConfigured && !allHidden && !hasAgentOnly && (
           <div
             className="cap-app-grid"
             aria-label="应用网格，拖动或在项目上按 Alt+左右方向键调整顺序"
@@ -428,7 +528,7 @@ export default function AppsLite() {
                     key={entry.id}
                     type="button"
                     data-grid-id={entry.id}
-                    className={`cap-app cap-app-add ${dropClass(entry.id)}`}
+                    className={`cap-app cap-app-add ${dragId === entry.id ? "is-dragging" : ""} ${dropClass(entry.id)}`}
                     aria-label="添加应用"
                     draggable={!busyId}
                     onDragStart={(e) => onDragStart(e, entry.id)}
@@ -447,8 +547,9 @@ export default function AppsLite() {
                     }}
                   >
                     <span className="cap-app-avatar is-add" aria-hidden="true">
-                      <Plus size={16} strokeWidth={2.4} />
+                      <Plus size={18} strokeWidth={2.4} />
                     </span>
+                    <span className="cap-app-name">添加</span>
                   </button>
                 );
               }

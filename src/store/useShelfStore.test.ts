@@ -7,9 +7,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const calls: Record<string, unknown[]> = {};
-
-vi.mock("../lib/bridge", () => {
+const { calls, mockShelf, makeItem } = vi.hoisted(() => {
   const makeItem = (id: string, over: Record<string, unknown> = {}) => ({
     id,
     kind: "file",
@@ -31,51 +29,103 @@ vi.mock("../lib/bridge", () => {
     created_at: `2026-01-0${id.length}T00:00:00.000Z`,
     updated_at: "2026-01-01T00:00:00.000Z",
     ...over,
-  });
+  } as ShelfItem);
+  return {
+    calls: {} as Record<string, unknown[]>,
+    mockShelf: { server: [] as ReturnType<typeof makeItem>[] },
+    makeItem,
+  };
+});
+
+vi.mock("../lib/bridge", () => {
   /** 模拟服务端状态：添加动作会真实写入，load 返回它（与服务端权威语义一致）。 */
-  let server: ReturnType<typeof makeItem>[] = [
+  mockShelf.server = [
     makeItem("a"),
     makeItem("b", { exists_state: "unknown" }),
   ];
+  const reportDelete = (ids: string[], includeProtected: boolean) => {
+    const requested = new Set(ids);
+    const selected = mockShelf.server.filter((item) => requested.has(item.id));
+    const skipped = includeProtected
+      ? []
+      : selected.filter((item) => item.favorite || item.pinned);
+    const deleted = selected.filter((item) => !skipped.includes(item));
+    mockShelf.server = mockShelf.server.filter((item) => !deleted.includes(item));
+    return { deleted: deleted.length, skipped: skipped.length, freed_bytes: 0, failed_files: 0 };
+  };
   return {
     SHELF_PAGE_SIZE: undefined,
-    shelfList: vi.fn(async (opts: { offset?: number }) => {
+    shelfList: vi.fn(async (opts: {
+      offset?: number;
+      limit?: number;
+      sort?: "default" | "recent";
+      search?: string;
+      kind?: string;
+      group_id?: string;
+      favorite_only?: boolean;
+    }) => {
       calls.shelfList?.push(opts);
-      if (opts.offset) return { items: [], total: server.length };
-      return { items: server, total: server.length };
+      let filtered = [...mockShelf.server];
+      if (opts.search) filtered = filtered.filter((item) => item.display_name.includes(opts.search!));
+      if (opts.kind && opts.kind !== "all") filtered = filtered.filter((item) => item.kind === opts.kind);
+      if (opts.group_id && opts.group_id !== "all") {
+        filtered = filtered.filter((item) => item.group_id === opts.group_id);
+      }
+      if (opts.favorite_only) filtered = filtered.filter((item) => item.favorite);
+      if (opts.sort === "recent") {
+        filtered.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+      } else {
+        filtered.sort((a, b) => Number(b.pinned) - Number(a.pinned));
+      }
+      const offset = opts.offset ?? 0;
+      const limit = opts.limit ?? 100;
+      return { items: filtered.slice(offset, offset + limit), total: filtered.length };
     }),
     shelfStats: vi.fn(async () => {
       calls.shelfStats?.push(1);
-      return { total: server.length, managed_bytes: 20, quota_mb: 2048 };
+      return { total: mockShelf.server.length, managed_bytes: 20, quota_mb: 2048 };
     }),
     shelfGroups: vi.fn(async () => [
-      { id: "shelf-default", name: "默认暂存", builtin: true, sort_order: 0, item_count: 2 },
+      {
+        id: "shelf-default",
+        name: "默认暂存",
+        builtin: true,
+        sort_order: 0,
+        item_count: mockShelf.server.length,
+      },
     ]),
     shelfAddPaths: vi.fn(async (paths: string[]) => {
       const added = paths.map((p) => makeItem(p, { display_name: p }));
-      server = [...added, ...server];
+      mockShelf.server = [...added, ...mockShelf.server];
       return { added, failed: [] };
     }),
     shelfAddLink: vi.fn(async (url: string) => {
       const item = makeItem(url, { kind: "link", content: url });
-      server = [item, ...server];
+      mockShelf.server = [item, ...mockShelf.server];
       return item;
     }),
     shelfAddText: vi.fn(async () => {
       const item = makeItem("text1", { kind: "text" });
-      server = [item, ...server];
+      mockShelf.server = [item, ...mockShelf.server];
       return item;
     }),
     shelfAddFromClipboard: vi.fn(async (ids: string[]) => {
       const added = ids.map((x) => makeItem(x));
-      server = [...added, ...server];
+      mockShelf.server = [...added, ...mockShelf.server];
       return { added, failed: [{ path: "bad", reason: "已被清理" }] };
     }),
-    shelfUpdate: vi.fn(async (id: string, patch: Record<string, unknown>) =>
-      makeItem(id, patch),
+    shelfUpdate: vi.fn(async (id: string, patch: Record<string, unknown>) => {
+      const previous = mockShelf.server.find((item) => item.id === id) ?? makeItem(id);
+      const updated = makeItem(id, { ...previous, ...patch });
+      mockShelf.server = mockShelf.server.map((item) => item.id === id ? updated : item);
+      return updated;
+    }),
+    shelfDelete: vi.fn(async (ids: string[], includeProtected: boolean) =>
+      reportDelete(ids, includeProtected),
     ),
-    shelfDelete: vi.fn(async () => undefined),
-    shelfClear: vi.fn(async () => undefined),
+    shelfClear: vi.fn(async (includeProtected: boolean) =>
+      reportDelete(mockShelf.server.map((item) => item.id), includeProtected),
+    ),
     shelfCleanup: vi.fn(async () => ({
       dry_run: false,
       candidates: 1,
@@ -106,6 +156,8 @@ import {
   shelfStats,
   shelfGroups,
   shelfCheckExists,
+  shelfDelete,
+  type ShelfItem,
 } from "../lib/bridge";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -113,6 +165,8 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 describe("useShelfStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    for (const key of Object.keys(calls)) calls[key] = [];
+    mockShelf.server = [makeItem("a"), makeItem("b", { exists_state: "unknown" })];
     __resetShelfRecentCache();
     useShelfStore.setState({
       items: [],
@@ -122,6 +176,8 @@ describe("useShelfStore", () => {
       filter: { search: "", kind: "all", group_id: "all", favorite_only: false },
       loading: false,
       error: null,
+      mutationSyncError: null,
+      deletionBusy: false,
       recent: [],
       recentLoading: false,
       recentLoaded: false,
@@ -191,6 +247,143 @@ describe("useShelfStore", () => {
     expect(s.items.map((i) => i.id)).toEqual(["b"]);
     expect(s.selectedIds).toEqual(["b"]);
     expect(s.detailId).toBeNull();
+  });
+
+  it("混合批量删除按后端报告刷新，保留收藏/置顶条目的选择与详情", async () => {
+    const rows = [
+      makeItem("a"),
+      makeItem("b", { favorite: true }),
+      makeItem("c", { pinned: true }),
+      makeItem("d"),
+      makeItem("e", { favorite: true, pinned: true }),
+    ];
+    mockShelf.server = rows;
+    await useShelfStore.getState().load();
+    await useShelfStore.getState().loadRecent({ force: true });
+    useShelfStore.setState({ selectedIds: rows.map((item) => item.id), detailId: "b" });
+
+    const result = await useShelfStore.getState().deleteItems(rows.map((item) => item.id), false);
+    const state = useShelfStore.getState();
+
+    expect(result.report).toMatchObject({ deleted: 2, skipped: 3, failed_files: 0 });
+    expect(state.items.map((item) => item.id).sort()).toEqual(["b", "c", "e"]);
+    expect(state.recent.map((item) => item.id).sort()).toEqual(["b", "c", "e"]);
+    expect(state.total).toBe(3);
+    expect(state.stats?.total).toBe(3);
+    expect(state.groups[0]?.item_count).toBe(3);
+    expect(state.selectedIds.sort()).toEqual(["b", "c", "e"]);
+    expect(state.detailId).toBe("b");
+    expect(result.synced).toBe(true);
+
+    const explicit = await useShelfStore.getState().deleteItems(["b", "c", "e"], true);
+    expect(explicit.report).toMatchObject({ deleted: 3, skipped: 0 });
+    expect(useShelfStore.getState().stats?.total).toBe(0);
+  });
+
+  it("删除后旧列表响应不能把已删除条目写回", async () => {
+    const rows = [makeItem("a"), makeItem("b")];
+    mockShelf.server = rows;
+    useShelfStore.setState({ selectedIds: ["a", "b"], detailId: "a" });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    (shelfList as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      await gate;
+      return { items: rows, total: rows.length };
+    });
+
+    const staleLoad = useShelfStore.getState().load();
+    await flush();
+    const result = await useShelfStore.getState().deleteItems(["a"], false);
+    expect(result.synced).toBe(true);
+    expect(useShelfStore.getState().items.map((item) => item.id)).toEqual(["b"]);
+
+    release();
+    await staleLoad;
+    const state = useShelfStore.getState();
+    expect(state.items.map((item) => item.id)).toEqual(["b"]);
+    expect(state.selectedIds).toEqual(["b"]);
+    expect(state.detailId).toBeNull();
+  });
+
+  it("清空在收藏筛选下保留受保护条目，并同步最近列表与统计", async () => {
+    mockShelf.server = [
+      makeItem("a"),
+      makeItem("b", { favorite: true }),
+      makeItem("c", { pinned: true }),
+      makeItem("d", { favorite: true, pinned: true }),
+    ];
+    await useShelfStore.getState().loadRecent({ force: true });
+    await useShelfStore.getState().setFilter({ favorite_only: true });
+    useShelfStore.setState({ selectedIds: ["b", "d"], detailId: "b" });
+
+    const result = await useShelfStore.getState().clearShelf(false);
+    const state = useShelfStore.getState();
+
+    expect(result.report).toMatchObject({ deleted: 1, skipped: 3 });
+    expect(result.remainingTotal).toBe(3);
+    expect(state.items.map((item) => item.id).sort()).toEqual(["b", "d"]);
+    expect(state.total).toBe(2);
+    expect(state.recent.map((item) => item.id).sort()).toEqual(["b", "c", "d"]);
+    expect(state.stats?.total).toBe(3);
+    expect(state.selectedIds.sort()).toEqual(["b", "d"]);
+    expect(state.detailId).toBe("b");
+  });
+
+  it("删除成功但权威列表刷新失败时保留现状并提供完整重试", async () => {
+    useShelfStore.setState({
+      items: [makeItem("a"), makeItem("b")],
+      total: 2,
+      selectedIds: ["a", "b"],
+      detailId: "a",
+    });
+    (shelfList as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("列表不可用"));
+
+    const result = await useShelfStore.getState().deleteItems(["a"], false);
+    expect(result.report.deleted).toBe(1);
+    expect(result.synced).toBe(false);
+    expect(useShelfStore.getState().items.map((item) => item.id)).toEqual(["a", "b"]);
+    expect(useShelfStore.getState().mutationSyncError).toContain("刷新失败");
+
+    expect(await useShelfStore.getState().retryShelfSync()).toBe(true);
+    expect(useShelfStore.getState().items.map((item) => item.id)).toEqual(["b"]);
+    expect(useShelfStore.getState().mutationSyncError).toBeNull();
+  });
+
+  it("后端删除请求失败时保留列表、选择、详情和既有同步告警", async () => {
+    const existingWarning = "上一轮状态刷新失败";
+    useShelfStore.setState({
+      items: [makeItem("a"), makeItem("b")],
+      total: 2,
+      selectedIds: ["a"],
+      detailId: "a",
+      mutationSyncError: existingWarning,
+    });
+    (shelfDelete as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("db locked"));
+
+    await expect(useShelfStore.getState().deleteItems(["a"], false)).rejects.toThrow("db locked");
+    const state = useShelfStore.getState();
+    expect(state.items.map((item) => item.id)).toEqual(["a", "b"]);
+    expect(state.total).toBe(2);
+    expect(state.selectedIds).toEqual(["a"]);
+    expect(state.detailId).toBe("a");
+    expect(state.mutationSyncError).toBe(existingWarning);
+    expect(state.deletionBusy).toBe(false);
+  });
+
+  it("删除操作在途时拒绝第二次提交", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    (shelfDelete as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      await gate;
+      mockShelf.server = mockShelf.server.filter((item) => item.id !== "a");
+      return { deleted: 1, skipped: 0, freed_bytes: 0, failed_files: 0 };
+    });
+
+    const first = useShelfStore.getState().deleteItems(["a"], false);
+    await expect(useShelfStore.getState().deleteItems(["a"], false)).rejects.toThrow("正在处理");
+    release();
+    await first;
+    expect(shelfDelete).toHaveBeenCalledTimes(1);
   });
 
   it("verifyExists 把存在性写回条目", async () => {

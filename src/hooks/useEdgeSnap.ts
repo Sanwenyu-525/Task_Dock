@@ -39,6 +39,7 @@ import {
   applyMode,
   applyWindowCapsule,
   cancelUndockAnchor,
+  refreshEdgeTabCursor,
   getSnapState,
   getWindowRect,
   notifyUiReady,
@@ -284,6 +285,21 @@ let engineEpoch = 0;
 function enqueueWrite(task: () => Promise<void>): Promise<void> {
   const run = writeChain.then(task, task); // 前序失败不阻塞后续写入
   writeChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
+ * 窗口移动串行链（模块级）：单窗口的 setPosition 不得重叠在途。
+ * Edge Tab 单飞、恢复、解除、重启恢复共用同一真实窗口；跨实例
+ *（卸载后新引擎重挂）仍需按发出顺序落地，避免慢 IPC 晚到覆盖新几何。
+ */
+let windowMoveChain: Promise<void> = Promise.resolve();
+function enqueueWindowMove<T>(task: () => Promise<T>): Promise<T> {
+  const run = windowMoveChain.then(task, task);
+  windowMoveChain = run.then(
     () => undefined,
     () => undefined,
   );
@@ -576,7 +592,7 @@ export function useEdgeSnap(enabled: boolean) {
         });
     }
 
-    /** 程序移动：幂等（同目标跳过）、登记防污染守卫、失败返回 false。 */
+    /** 程序移动：幂等（同目标跳过）、登记防污染守卫、失败返回 false；经模块级串行链防重叠在途。 */
     async function moveWindow(x: number, y: number, force = false): Promise<boolean> {
       if (
         !force &&
@@ -587,14 +603,16 @@ export function useEdgeSnap(enabled: boolean) {
         return true;
       }
       snapMoveGuard.noteProgrammaticMove(x, y);
-      try {
-        await win.setPosition(new PhysicalPosition(x, y));
-        lastMoveTarget = { x, y };
-        return true;
-      } catch {
-        lastMoveTarget = null; // 移动失败：位置缓存立即失效
-        return false;
-      }
+      return enqueueWindowMove(async () => {
+        try {
+          await win.setPosition(new PhysicalPosition(x, y));
+          lastMoveTarget = { x, y };
+          return true;
+        } catch {
+          lastMoveTarget = null; // 移动失败：位置缓存立即失效
+          return false;
+        }
+      });
     }
 
     /**
@@ -1355,6 +1373,7 @@ export function useEdgeSnap(enabled: boolean) {
     /** 收起为极简标签：Capsule（轨道/面板）→ Edge Tab。 */
     async function collapseToTab(): Promise<boolean> {
       if (disposed || tabAnimating) return false;
+      invalidateTabDrag();
       const edge = machine.edge;
       if (!edge || !dockedMonitor) return false;
       if (
@@ -1410,6 +1429,10 @@ export function useEdgeSnap(enabled: boolean) {
     /** 点击标签恢复：Edge Tab → Capsule 轨道（复用同一套过渡与区域协议）。 */
     async function restoreFromTab(): Promise<boolean> {
       if (disposed || tabAnimating) return false;
+      const pendingDrain = tabDragDrain;
+      invalidateTabDrag();
+      await waitForTabDrain(pendingDrain);
+      if (disposed) return false;
       const edge = machine.edge;
       const m = dockedMonitor;
       const size = dockedSize;
@@ -1462,12 +1485,63 @@ export function useEdgeSnap(enabled: boolean) {
       }
     }
 
-    /** 按下标签：记录沿边基准；任何形态切换都被 `tabAnimating`/相位阻止。 */
+    /**
+     * 按下标签：记录沿边基准；任何形态切换都被 `tabAnimating`/相位阻止。
+     * Edge Tab 拖动移动调度：单飞 + 只保留最新目标，避免异步 setPosition 乱序覆盖。
+     * 代次（seq）用于作废过期事务：形态切换 / 卸载 / 下一轮按下后，
+     * 尚未启动的排队目标不得执行、已在途的终态落库不得覆盖新事务。
+     */
+    let tabDragMoveInFlight = false;
+    let tabDragMoveLatest: { x: number; y: number; seq: number } | null = null;
+    let tabDragSeq = 0;
+    let tabDragDrain: Promise<void> | null = null;
+    function invalidateTabDrag(): void {
+      tabDragSeq += 1;
+      tabDragMoveLatest = null;
+      tabDragging = false;
+    }
+    /**
+     * 等待已发出的 Edge Tab 移动收口（有界 2s）：形态切换前先让旧 IPC
+     * 落地，再让新几何提交，避免旧位置在新形态之后落地覆盖。
+     * 超时不卡死：新移动经 windowMoveChain 仍排在旧移动之后。
+     */
+    async function waitForTabDrain(drain: Promise<void> | null): Promise<void> {
+      if (!drain) return;
+      await Promise.race([
+        drain.catch(() => {}),
+        new Promise<void>((resolve) => window.setTimeout(resolve, 2000)),
+      ]);
+    }
+    function scheduleTabDragMove(target: { x: number; y: number }): void {
+      if (disposed) return;
+      tabDragMoveLatest = { ...target, seq: tabDragSeq };
+      if (tabDragMoveInFlight) return;
+      tabDragMoveInFlight = true;
+      tabDragDrain = (async () => {
+        try {
+          while (tabDragMoveLatest) {
+            const t = tabDragMoveLatest;
+            tabDragMoveLatest = null;
+            if (disposed || t.seq !== tabDragSeq) continue;
+            if (machine.phase !== "docked-tab") continue;
+            await moveWindow(t.x, t.y, true);
+          }
+        } finally {
+          tabDragMoveInFlight = false;
+          tabDragDrain = null;
+          if (tabDragMoveLatest && !disposed) scheduleTabDragMove(tabDragMoveLatest);
+        }
+      })();
+      void tabDragDrain.catch(() => {});
+    }
+
     function beginTabDrag(): void {
       if (machine.phase !== "docked-tab" || tabAnimating) return;
+      tabDragSeq += 1;
       tabDragging = true;
       tabDragBase = capsuleCenter;
       tabDragMoved = false;
+      tabDragMoveLatest = null;
     }
 
     /** 沿边拖动：只改沿边中心，法向（X 轴/贴边位置）保持不变。 */
@@ -1490,18 +1564,64 @@ export function useEdgeSnap(enabled: boolean) {
       dockedPos = { x: pos.x, y: pos.y };
       capsuleCenter = center;
       tabDragMoved = true;
-      void moveWindow(pos.x, pos.y, true);
+      scheduleTabDragMove({ x: pos.x, y: pos.y });
     }
 
     function endTabDrag(): void {
       const moved = tabDragging && tabDragMoved;
+      const mySeq = tabDragSeq;
+      const expectedAtEnd = capsuleCenter;
+      if (!moved) tabDragMoveLatest = null;
       tabDragging = false;
       tabDragBase = null;
       tabDragMoved = false;
-      // 拖动只改沿边位置：松手即持久化，保证重启后的标签与真实窗口位置一致。
-      if (moved && !tabAnimating && machine.phase === "docked-tab" && machine.edge) {
-        persistDockedSnap(machine.edge, false, capsuleCenter, "tab");
-      }
+      // 松手后鼠标可能完全静止：系统不会自动派发 WM_SETCURSOR，
+      // WebView2 的 CSS cursor 因此停在 grabbing。请求窗口线程补一次刷新。
+      void refreshEdgeTabCursor().catch(() => {});
+      if (!moved) return;
+      // 终态必须先真实落地并回读，再按实际位置持久化；松手即写目标位
+      // 会留下幻影记录（失败/吞掉/延迟未落地时与窗口不一致，重启跳位）。
+      const drain = tabDragDrain;
+      void (async () => {
+        try {
+          await drain;
+        } catch {
+          // 单飞任务内部已吞掉 moveWindow 失败，这里只等收口
+        }
+        if (disposed || mySeq !== tabDragSeq) return;
+        if (tabAnimating || machine.phase !== "docked-tab" || !machine.edge) return;
+        let rect: SnapRect | null = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            rect = await fetchRectOnly();
+            break;
+          } catch {
+            rect = null;
+          }
+          if (disposed || mySeq !== tabDragSeq) return;
+        }
+        if (disposed || mySeq !== tabDragSeq) return;
+        if (tabAnimating || machine.phase !== "docked-tab" || !machine.edge) return;
+        if (!rect) {
+          console.warn("[edge-snap] Edge Tab 拖动终态回读失败，本次不落库");
+          // 不留幻影内存：清空未确认中心，恢复/巡检改用真实矩形
+          capsuleCenter = null;
+          return;
+        }
+        const edge = machine.edge;
+        const actualCenter = alongCenterOf(edge, rect);
+        const expected = expectedAtEnd;
+        if (expected !== null && Math.abs(actualCenter - expected) >= 1) {
+          console.warn("[edge-snap] Edge Tab 拖动终态位置回读不一致，已按实际位置落库", {
+            expected,
+            actual: actualCenter,
+          });
+        }
+        dockedPos = { x: rect.x, y: rect.y };
+        capsuleCenter = actualCenter;
+        syncMagnetDock();
+        persistDockedSnap(edge, false, actualCenter, "tab");
+      })();
     }
 
     /**
@@ -1677,6 +1797,10 @@ export function useEdgeSnap(enabled: boolean) {
      * 按钮解除 / 打开完整页 / 托盘唤回等路径保持各自原有定位，不传该参数。
      */
     async function undockCore(targetMode?: string, anchorCursor = false): Promise<boolean> {
+      const pendingDrain = tabDragDrain;
+      invalidateTabDrag();
+      await waitForTabDrain(pendingDrain);
+      if (disposed) return false;
       // 停靠相位缺停靠边属于不变量被破坏：不猜方向，走安全恢复（off 回读 → free）。
       if (!machine.edge) {
         if (!isDockedPhase(machine.phase)) return false;
@@ -2607,6 +2731,7 @@ export function useEdgeSnap(enabled: boolean) {
     const timer = window.setInterval(runTick, SNAP_POLL_MS);
 
     return () => {
+      invalidateTabDrag();
       disposed = true;
       window.clearInterval(timer);
       window.removeEventListener("pointermove", onDomPointer);

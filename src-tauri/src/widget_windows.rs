@@ -17,7 +17,9 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 use crate::error::{AppError, AppResult};
 
@@ -116,7 +118,10 @@ fn closed_at_ms() -> u64 {
 
 fn remember_programmatic_size(kind: &str, generation: u64, width: f64, height: f64) {
     if let Ok(mut sizes) = PROGRAMMATIC_SIZE.lock() {
-        sizes.insert(kind.to_string(), (generation, width.round(), height.round()));
+        sizes.insert(
+            kind.to_string(),
+            (generation, width.round(), height.round()),
+        );
     }
 }
 
@@ -125,7 +130,9 @@ fn is_user_resize(kind: &str, generation: u64, width: f64, height: f64) -> bool 
         return false;
     };
     match sizes.get(kind).copied() {
-        Some((expected_generation, expected_w, expected_h)) if expected_generation == generation => {
+        Some((expected_generation, expected_w, expected_h))
+            if expected_generation == generation =>
+        {
             (width - expected_w).abs() > 1.0 || (height - expected_h).abs() > 1.0
         }
         _ => false,
@@ -176,9 +183,7 @@ fn assert_main(window: &WebviewWindow) -> AppResult<()> {
     if window.label() == MAIN_LABEL {
         Ok(())
     } else {
-        Err(AppError::Validation(
-            "该命令仅限主窗口调用".to_string(),
-        ))
+        Err(AppError::Validation("该命令仅限主窗口调用".to_string()))
     }
 }
 
@@ -294,10 +299,11 @@ fn pick_monitor(app: &AppHandle, name: Option<&str>) -> Option<tauri::Monitor> {
             }
         }
     }
-    app.primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| app.available_monitors().ok().and_then(|m| m.into_iter().next()))
+    app.primary_monitor().ok().flatten().or_else(|| {
+        app.available_monitors()
+            .ok()
+            .and_then(|m| m.into_iter().next())
+    })
 }
 
 /// 由工作区、窗口物理尺寸与归一化锚点求物理坐标；越界时收进工作区。
@@ -356,7 +362,10 @@ fn default_position(
             min_left = x;
         }
         if next_y + window_h <= bottom {
-            return (x.clamp(area.x, (area.x + area.width - window_w).max(area.x)), next_y);
+            return (
+                x.clamp(area.x, (area.x + area.width - window_w).max(area.x)),
+                next_y,
+            );
         }
         let next_right = min_left - COLUMN_GAP;
         if next_right - window_w < area.x {
@@ -373,7 +382,13 @@ fn default_position(
     (x, y)
 }
 
-fn anchor_from_position(area: WorkArea, window_w: i32, window_h: i32, x: i32, y: i32) -> (f64, f64) {
+fn anchor_from_position(
+    area: WorkArea,
+    window_w: i32,
+    window_h: i32,
+    x: i32,
+    y: i32,
+) -> (f64, f64) {
     let span_x = (area.width - window_w).max(1) as f64;
     let span_y = (area.height - window_h).max(1) as f64;
     (
@@ -456,11 +471,7 @@ fn emit_to_main<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) 
     let _ = app.emit_to(MAIN_LABEL, event, payload);
 }
 
-fn build_info(
-    kind: &str,
-    win: &WebviewWindow,
-    app: &AppHandle,
-) -> WidgetWindowInfo {
+fn build_info(kind: &str, win: &WebviewWindow, app: &AppHandle) -> WidgetWindowInfo {
     let (width, height) = logical_size(win);
     let topmost = win.is_always_on_top().unwrap_or(false);
     if let Some((area, scale, monitor, x, y, w, h)) = current_work_area(app, win) {
@@ -653,21 +664,21 @@ fn create_window(app: &AppHandle, kind: &str) -> AppResult<(WebviewWindow, u64)>
     // 若此时还没占代际，请求与之后的快照都会带旧值（0），窗口自身的 info 也会读到旧值，
     // 导致真实快照被接收端当成旧实例永久丢弃。先占代际后建窗，保证实例身份从头一致。
     let generation = next_window_generation(kind);
-    let win = WebviewWindowBuilder::new(
-        app,
-        &label,
-        WebviewUrl::App("widget.html".into()),
-    )
-    .title("Task Dock 微件")
-    .decorations(false)
-    .transparent(true)
-    .resizable(true)
-    .skip_taskbar(true)
-    .visible(false)
-    .inner_size(300.0, 200.0)
-    .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
-    .max_inner_size(MAX_WIDTH, MAX_HEIGHT)
-    .build()?;
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("widget.html".into()))
+        .title("Task Dock 微件")
+        .decorations(false)
+        .transparent(true)
+        .resizable(true)
+        .skip_taskbar(true)
+        // 没有 shadow(false) 时 DWM 会在可视区域外留约 9px 的不可见调整边框：
+        // WebView 只画客户区，超出部分用默认白底渲染，与 Win32 圆角区域合成成
+        // 右/下亮白边（主窗与任务栏弹窗在 tauri.conf 里都是 shadow:false）。
+        .shadow(false)
+        .visible(false)
+        .inner_size(300.0, 200.0)
+        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+        .max_inner_size(MAX_WIDTH, MAX_HEIGHT)
+        .build()?;
 
     // 不抢键盘焦点；桌面微件不是输入窗口。
     let _ = win.set_focusable(false);
@@ -770,9 +781,7 @@ pub fn hide_widget_window(
         if let Err(error) = win.destroy() {
             // 销毁失败说明窗口仍在：不能向前端谎报已关闭。
             clear_close_reason(kind);
-            return Err(AppError::Validation(format!(
-                "关闭桌面微件失败：{error}"
-            )));
+            return Err(AppError::Validation(format!("关闭桌面微件失败：{error}")));
         }
     }
     Ok(())
@@ -787,9 +796,7 @@ pub fn dismiss_widget_window(window: WebviewWindow) -> AppResult<()> {
     mark_close_reason(&kind, "user-close");
     if let Err(error) = window.destroy() {
         clear_close_reason(&kind);
-        return Err(AppError::Validation(format!(
-            "关闭桌面微件失败：{error}"
-        )));
+        return Err(AppError::Validation(format!("关闭桌面微件失败：{error}")));
     }
     Ok(())
 }
@@ -821,7 +828,11 @@ pub fn report_widget_bounds(app: AppHandle, window: WebviewWindow) -> AppResult<
 
 /// 管理页「重置位置」：窗口已打开时立即回到默认层叠位。
 #[tauri::command]
-pub fn reset_widget_position(app: AppHandle, window: WebviewWindow, widget_type: String) -> AppResult<()> {
+pub fn reset_widget_position(
+    app: AppHandle,
+    window: WebviewWindow,
+    widget_type: String,
+) -> AppResult<()> {
     assert_main(&window)?;
     let kind = validate_type(&widget_type)?;
     if let Some(win) = app.get_webview_window(&window_label(kind)) {
@@ -901,8 +912,14 @@ pub fn dispatch_widget_action(
     let kind = caller_type(&window)?;
     let navigates = matches!(
         action.as_str(),
-        "open-task" | "open-panel" | "open-agents" | "new-task" | "capture" | "clipboard"
-            | "workflows" | "manage-reminders"
+        "open-task"
+            | "open-panel"
+            | "open-agents"
+            | "new-task"
+            | "capture"
+            | "clipboard"
+            | "workflows"
+            | "manage-reminders"
     );
     if navigates {
         crate::commands::system::show_main_window(app.clone())?;

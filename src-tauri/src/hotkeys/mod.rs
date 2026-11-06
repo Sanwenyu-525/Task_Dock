@@ -122,10 +122,7 @@ struct Inner {
 }
 
 impl HotkeysManager {
-    pub fn new(
-        store: Arc<dyn store::HotkeyStore>,
-        registrar: Arc<dyn ShortcutRegistrar>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn store::HotkeyStore>, registrar: Arc<dyn ShortcutRegistrar>) -> Self {
         Self {
             store,
             registrar,
@@ -339,11 +336,7 @@ impl HotkeysManager {
             None => current.accelerator.clone(),
         };
         let new_enabled = enabled.unwrap_or(current.enabled);
-        let current_status = inner
-            .statuses
-            .get(action)
-            .cloned()
-            .unwrap_or_default();
+        let current_status = inner.statuses.get(action).cloned().unwrap_or_default();
         // 系统级「已启用但注册已失效」的条目允许用相同组合重新应用：
         // 否则快照提示的「请重新应用」会变成空操作，用户只能重启应用。
         let needs_retry = def.scope == HotkeyScope::SystemGlobal
@@ -351,9 +344,7 @@ impl HotkeysManager {
             && new_enabled
             && !current_status.registered;
 
-        if new_accelerator == current.accelerator
-            && new_enabled == current.enabled
-            && !needs_retry
+        if new_accelerator == current.accelerator && new_enabled == current.enabled && !needs_retry
         {
             return Ok(make_outcome(
                 &*inner,
@@ -440,11 +431,7 @@ impl HotkeysManager {
         }
 
         // 以下为系统级：每一步失败都保留原绑定。
-        let status = inner
-            .statuses
-            .get(action)
-            .cloned()
-            .unwrap_or_default();
+        let status = inner.statuses.get(action).cloned().unwrap_or_default();
         let was_registered = status.registered;
         let old_accelerator = current.accelerator.clone();
 
@@ -490,9 +477,7 @@ impl HotkeysManager {
                     action.to_string(),
                     BindingStatus {
                         registered: was_registered && rollback_ok,
-                        error: Some(format!(
-                            "保存禁用状态失败（{message}），{rollback_note}"
-                        )),
+                        error: Some(format!("保存禁用状态失败（{message}），{rollback_note}")),
                         error_kind: Some("persist_failed".to_string()),
                     },
                 );
@@ -706,10 +691,7 @@ impl HotkeysManager {
                 // 尽量回到进入本函数前的注册状态，再如实报告失败。
                 for done in &unregistered {
                     if let Err(error) = self.registrar.register(done) {
-                        warnings.push(format!(
-                            "回滚注册原快捷键 {done} 失败：{}",
-                            error.message()
-                        ));
+                        warnings.push(format!("回滚注册原快捷键 {done} 失败：{}", error.message()));
                     }
                 }
                 warnings.push(format!(
@@ -878,8 +860,8 @@ impl HotkeysManager {
         // （例如两条组合互换）。其余动作已恢复默认后腾出了组合，这里只重试内部冲突。
         if action.is_none() {
             for (index, def) in targets.iter().enumerate() {
-                let retry = !results[index].ok
-                    && results[index].error_kind.as_deref() == Some("conflict");
+                let retry =
+                    !results[index].ok && results[index].error_kind.as_deref() == Some("conflict");
                 if !retry {
                     continue;
                 }
@@ -904,7 +886,10 @@ impl HotkeysManager {
     /// 旧版「全局快捷键」总开关：统一启停所有系统级动作。
     pub fn set_all_system_enabled(&self, enabled: bool) -> AppResult<HotkeyResetOutcome> {
         let mut results = Vec::new();
-        for def in ACTIONS.iter().filter(|d| d.scope == HotkeyScope::SystemGlobal) {
+        for def in ACTIONS
+            .iter()
+            .filter(|d| d.scope == HotkeyScope::SystemGlobal)
+        {
             let result = self.change(def.id, None, Some(enabled))?;
             results.push(result);
         }
@@ -972,7 +957,11 @@ fn build_views(inner: &Inner) -> Vec<HotkeyBindingView> {
         .iter()
         .filter_map(|binding| {
             let def = find_def(&binding.action)?;
-            let status = inner.statuses.get(&binding.action).cloned().unwrap_or_default();
+            let status = inner
+                .statuses
+                .get(&binding.action)
+                .cloned()
+                .unwrap_or_default();
             let state = if !binding.enabled {
                 "disabled"
             } else if status.error_kind.as_deref() == Some("invalid") {
@@ -995,8 +984,7 @@ fn build_views(inner: &Inner) -> Vec<HotkeyBindingView> {
                 accelerator: binding.accelerator.clone(),
                 default_accelerator: def.default_accelerator.to_string(),
                 enabled: binding.enabled,
-                is_default: binding.enabled
-                    && binding.accelerator == def.default_accelerator,
+                is_default: binding.enabled && binding.accelerator == def.default_accelerator,
                 state: state.to_string(),
                 message: status.error,
             })
@@ -1110,9 +1098,7 @@ pub(crate) fn restore_config_file_only(
     let path = data_dir.join("hotkeys.json");
     match store::save_config_atomic(&path, &normalized) {
         Ok(()) => {
-            warnings.push(
-                "快捷键模块尚未初始化：配置已写入，将在下次启动时注册并校验".to_string(),
-            );
+            warnings.push("快捷键模块尚未初始化：配置已写入，将在下次启动时注册并校验".to_string());
         }
         Err(error) => {
             warnings.push(format!("写入恢复后的快捷键配置失败：{error}"));
@@ -1142,10 +1128,7 @@ pub(crate) fn restore_config_file_only(
 
 /// global-shortcut 插件回调：匹配已注册的系统级动作并执行。
 /// 返回 `true` 表示按键已消费；未知按键返回 `false`，不改变原有行为。
-pub fn handle_shortcut(
-    app: &AppHandle,
-    shortcut: &tauri_plugin_global_shortcut::Shortcut,
-) -> bool {
+pub fn handle_shortcut(app: &AppHandle, shortcut: &tauri_plugin_global_shortcut::Shortcut) -> bool {
     let Some(manager) = manager() else {
         return false;
     };
@@ -1226,7 +1209,9 @@ mod tests {
                 let target = self.fail_accelerator.lock().unwrap().clone();
                 let matches = target.as_deref().map(|t| t == accelerator).unwrap_or(true);
                 if matches {
-                    return Err(RegisterError::Occupied("该组合已被其他程序占用".to_string()));
+                    return Err(RegisterError::Occupied(
+                        "该组合已被其他程序占用".to_string(),
+                    ));
                 }
             }
             let mut registered = self.registered.lock().unwrap();
@@ -1291,10 +1276,7 @@ mod tests {
         }
     }
 
-    fn manager(
-        store: Arc<MemStore>,
-        registrar: Arc<FakeRegistrar>,
-    ) -> HotkeysManager {
+    fn manager(store: Arc<MemStore>, registrar: Arc<FakeRegistrar>) -> HotkeysManager {
         let manager = HotkeysManager::new(store, registrar);
         manager.bootstrap(true);
         manager
@@ -1382,7 +1364,9 @@ mod tests {
     #[test]
     fn invalid_and_reserved_combinations_are_rejected() {
         let manager = manager(MemStore::new(0), FakeRegistrar::new());
-        let outcome = manager.change("quick_add_task", Some("Ctrl"), None).unwrap();
+        let outcome = manager
+            .change("quick_add_task", Some("Ctrl"), None)
+            .unwrap();
         assert_eq!(outcome.error_kind.as_deref(), Some("invalid"));
         let outcome = manager
             .change("quick_add_task", Some("Alt+F4"), None)
@@ -1564,9 +1548,7 @@ mod tests {
     fn snapshot_detects_lost_registration() {
         let registrar = FakeRegistrar::new();
         let manager = manager(MemStore::new(0), registrar.clone());
-        registrar
-            .unregister("Ctrl+Alt+T")
-            .unwrap();
+        registrar.unregister("Ctrl+Alt+T").unwrap();
         let binding = system_action(&manager, "toggle_main_window");
         assert_eq!(binding.state, "conflict");
         assert!(binding.message.unwrap().contains("已失效"));
@@ -1594,7 +1576,10 @@ mod tests {
         let store = MemStore::new(0);
         let manager = manager(store.clone(), registrar.clone());
         // 启动注册失败：已启用但未注册，UI 会提示「重新应用或重启」。
-        assert_eq!(system_action(&manager, "toggle_main_window").state, "conflict");
+        assert_eq!(
+            system_action(&manager, "toggle_main_window").state,
+            "conflict"
+        );
         assert!(!registrar.is_registered("Ctrl+Alt+T"));
 
         // 占用解除后，用相同组合重新应用必须真的重试，而不是被当成无变化空操作。
@@ -1619,17 +1604,25 @@ mod tests {
     fn reset_all_retries_after_conflicts_are_freed() {
         let manager = manager(MemStore::new(0), FakeRegistrar::new());
         // 制造组合互换：剪贴板占用「快速添加任务」的默认 Ctrl+K。
-        assert!(manager
-            .change("quick_add_task", Some("Ctrl+Alt+K"), None)
-            .unwrap()
-            .ok);
-        assert!(manager
-            .change("open_clipboard", Some("Ctrl+K"), None)
-            .unwrap()
-            .ok);
+        assert!(
+            manager
+                .change("quick_add_task", Some("Ctrl+Alt+K"), None)
+                .unwrap()
+                .ok
+        );
+        assert!(
+            manager
+                .change("open_clipboard", Some("Ctrl+K"), None)
+                .unwrap()
+                .ok
+        );
 
         let reset = manager.reset(None).unwrap();
-        assert!(reset.ok, "全部恢复默认应在腾出组合后重试成功: {:?}", reset.error);
+        assert!(
+            reset.ok,
+            "全部恢复默认应在腾出组合后重试成功: {:?}",
+            reset.error
+        );
         let bindings = manager.snapshot().bindings;
         let quick = bindings
             .iter()
@@ -1678,11 +1671,7 @@ mod tests {
         }
     }
 
-    fn custom(
-        action: &str,
-        accelerator: &str,
-        enabled: bool,
-    ) -> HotkeyBinding {
+    fn custom(action: &str, accelerator: &str, enabled: bool) -> HotkeyBinding {
         HotkeyBinding {
             action: action.to_string(),
             scope: find_def(action).unwrap().scope,
@@ -1736,9 +1725,8 @@ mod tests {
             .find(|b| b.action == "toggle_main_window")
             .unwrap();
         assert_eq!(toggle.accelerator, "Ctrl+Alt+T");
-        let pending = crate::hotkeys::store::FileHotkeyStore::new(
-            dir.join(store::PENDING_RESTORE_FILE),
-        );
+        let pending =
+            crate::hotkeys::store::FileHotkeyStore::new(dir.join(store::PENDING_RESTORE_FILE));
         assert!(pending.path().exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

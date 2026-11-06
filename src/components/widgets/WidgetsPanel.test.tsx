@@ -471,6 +471,47 @@ describe("微件面板", () => {
     expect(screen.queryAllByRole("button", { name: /添加到工作台/ })).toHaveLength(0);
   });
 
+  it("全部启用后展开的添加面板自动收起，停用后可重新展开", () => {
+    seedTasks();
+    const { container } = render(<WidgetsPanel />);
+
+    // 展开微件库（此时还有专注/效率可添加）
+    fireEvent.click(screen.getByRole("button", { name: "添加微件" }));
+    expect(screen.getByRole("button", { name: "将「专注倒计时」添加到工作台" })).toBeTruthy();
+
+    // Store 状态变为全部启用（真实状态切换，而非按钮点击）：添加面板自动收起
+    act(() => {
+      enable("today-tasks", "next-reminder", "agent-status", "quick-actions", "focus-timer", "efficiency");
+    });
+    expect(screen.queryByRole("button", { name: "将「专注倒计时」添加到工作台" })).toBeNull();
+    expect(container.querySelector("#widget-library-panel")).toBeNull();
+    // 工作台主体完整（六张卡片）
+    expect(container.querySelectorAll("[data-widget-id]")).toHaveLength(6);
+    // 完成状态只保留在页头的计数上，不占卡片空间
+    expect(screen.getByText("已启用 6 / 6")).toBeTruthy();
+
+    // 停用一个后添加入口恢复可用，重新展开能看到可添加项
+    act(() => {
+      enable("today-tasks", "next-reminder", "agent-status", "quick-actions", "efficiency");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加微件" }));
+    expect(screen.getByRole("button", { name: "将「专注倒计时」添加到工作台" })).toBeTruthy();
+  });
+
+  it("全部启用时手动展开微件库仍显示完成态（不被自动逻辑强制关闭）", () => {
+    enable(
+      "today-tasks",
+      "next-reminder",
+      "agent-status",
+      "quick-actions",
+      "focus-timer",
+      "efficiency",
+    );
+    render(<WidgetsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "添加微件" }));
+    expect(screen.getByText("全部微件已添加")).toBeTruthy();
+  });
+
   it("库中只列出尚未启用的微件", () => {
     seedTasks();
     render(<WidgetsPanel />);

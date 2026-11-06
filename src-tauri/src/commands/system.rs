@@ -204,7 +204,12 @@ static CAPSULE_APPLY_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 这是「鼠标在吸附条与悬浮窗口之间来回跳动」的结构性修复：
 /// 命中区不再随窗口移动而移动。
 #[tauri::command]
-pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String, seq: u64) -> AppResult<bool> {
+pub fn apply_window_capsule(
+    app: AppHandle,
+    mode: String,
+    edge: String,
+    seq: u64,
+) -> AppResult<bool> {
     // 乱序保护：已有更高序号的请求落地过，本次旧请求直接丢弃，不再改写区域与原生层。
     if CAPSULE_APPLY_SEQ.fetch_max(seq, Ordering::SeqCst) > seq {
         tracing::debug!("忽略乱序的胶囊区域请求 seq={seq}");
@@ -267,6 +272,26 @@ pub fn apply_window_capsule(app: AppHandle, mode: String, edge: String, seq: u64
     }
     tracing::debug!("胶囊区域 mode={mode}（edge={edge}）应用: {applied}");
     Ok(applied)
+}
+
+/// Edge Tab 拖动结束后刷新系统光标（鼠标静止时 CSS cursor 不会自动重新生效）。
+/// 主线程通过 WM_CURSOR_EDGE_TAB 消息完成，避免在工作线程直接调用 SetCursor。
+#[tauri::command]
+pub fn refresh_edge_tab_cursor(app: AppHandle) -> AppResult<bool> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
+    let hwnd = win
+        .hwnd()
+        .map(|h| h.0 as isize)
+        .map_err(|e| crate::error::AppError::Agent(format!("无法获取主窗口句柄: {e}")))?;
+    // PostMessage 线程安全：消息由 wndproc 在窗口线程处理。
+    #[cfg(windows)]
+    {
+        crate::magnetic::request_edge_tab_cursor_refresh(hwnd);
+    }
+    let _ = hwnd;
+    Ok(true)
 }
 
 // ── 拖拽磁力（v0.7）──────────────────────────────────────────
@@ -518,6 +543,7 @@ pub fn performance_diagnostics(
 fn build_info() -> serde_json::Value {
     serde_json::json!({
         "commit": option_env!("TASK_DOCK_GIT_COMMIT").unwrap_or("unknown"),
+        "dirty": option_env!("TASK_DOCK_GIT_DIRTY").unwrap_or("unknown"),
         "built_at_unix": option_env!("TASK_DOCK_BUILD_TIME").unwrap_or("unknown"),
         "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
         "exe": std::env::current_exe()

@@ -397,9 +397,9 @@ describe("CapsuleDock · 极简标签（Edge Tab）", () => {
   it("拖动超过沿边阈值只移动位置，松手后不再触发点击恢复", () => {
     const { container } = mountTab();
     const tab = container.querySelector<HTMLButtonElement>(".capsule-tab")!;
-    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 0, clientY: 0 });
-    fireEvent.pointerMove(tab, { pointerId: 1, clientX: 0, clientY: 40 });
-    fireEvent.pointerUp(tab, { pointerId: 1, clientX: 0, clientY: 40 });
+    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 0, clientY: 0, screenX: 0, screenY: 0 });
+    fireEvent.pointerMove(tab, { pointerId: 1, clientX: 0, clientY: 40, screenX: 0, screenY: 40 });
+    fireEvent.pointerUp(tab, { pointerId: 1, clientX: 0, clientY: 40, screenX: 0, screenY: 40 });
     // 指针点击由 pointerup 判定；拖动型不会恢复
     expect(restoreTab).not.toHaveBeenCalled();
     expect(dragTabBy).toHaveBeenCalledWith(40);

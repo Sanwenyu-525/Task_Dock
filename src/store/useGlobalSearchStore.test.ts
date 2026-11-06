@@ -178,4 +178,20 @@ describe("定位意图消费", () => {
     useGlobalSearchStore.getState().consumeLocate();
     expect(useGlobalSearchStore.getState().pendingLocate).toBeNull();
   });
+
+  it("Agent 会话关联 → 切换规划中心并定位真实功能", () => {
+    const request = useGlobalSearchStore.getState().requestPlanningFeatureLocate;
+    request("feature-1", "project-1");
+    const first = useGlobalSearchStore.getState().pendingLocate;
+    expect(useUiStore.getState().tab).toBe("roadmap");
+    expect(first).toMatchObject({
+      category: "planning",
+      id: "feature-1",
+      kind: "feature",
+      parentId: "project-1",
+    });
+
+    request("feature-1", "project-1");
+    expect(useGlobalSearchStore.getState().pendingLocate?.token).toBeGreaterThan(first?.token ?? 0);
+  });
 });

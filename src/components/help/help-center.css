@@ -38,22 +38,6 @@
     min-width: 0;
   }
 
-  .help-onboarding-btn {
-    flex: 0 0 auto;
-    position: relative;
-  }
-
-  .help-onboarding-dot {
-    position: absolute;
-    top: -3px;
-    right: -3px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--status-warning);
-    pointer-events: none;
-  }
-
   /* 分类 chips：横向排列可换行，窄窗自动折行不溢出 */
   .help-cats {
     display: flex;

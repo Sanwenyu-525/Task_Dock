@@ -19,6 +19,8 @@ export const SETTINGS_SECTION_IDS = [
   "audio-sound",
   "tts",
   "tts-cache",
+  "resource-cleanup",
+  "help",
   "agent",
   "data",
   "diagnostics",
@@ -46,6 +48,7 @@ export function isSettingsSectionId(value: string): value is SettingsSectionId {
 /** 「自定义导航」跨模块定位：先持久化展开状态，再通知已挂载的设置页滚动定位。 */
 export const SETTINGS_SECTION_REVEAL_KEY = "taskdock.settings.reveal.v1";
 export const SETTINGS_SECTION_REVEAL_EVENT = "taskdock:settings-section-reveal";
+export const SETTINGS_TTS_CACHE_REFRESH_EVENT = "taskdock:tts-cache-refresh";
 
 /**
  * 请求展开并定位到某设置分区（幂等）。

@@ -6,13 +6,10 @@
 use tauri::AppHandle;
 
 use crate::error::{AppError, AppResult};
-use crate::hotkeys::{
-    self, HotkeyChangeOutcome, HotkeyResetOutcome, HotkeySnapshot,
-};
+use crate::hotkeys::{self, HotkeyChangeOutcome, HotkeyResetOutcome, HotkeySnapshot};
 
 fn manager() -> AppResult<&'static std::sync::Arc<hotkeys::HotkeysManager>> {
-    hotkeys::manager()
-        .ok_or_else(|| AppError::Unavailable("快捷键模块尚未初始化".to_string()))
+    hotkeys::manager().ok_or_else(|| AppError::Unavailable("快捷键模块尚未初始化".to_string()))
 }
 
 #[tauri::command]
@@ -37,10 +34,7 @@ pub fn hotkeys_change(
 
 /// 恢复默认；`action` 为空时恢复全部。
 #[tauri::command]
-pub fn hotkeys_reset(
-    app: AppHandle,
-    action: Option<String>,
-) -> AppResult<HotkeyResetOutcome> {
+pub fn hotkeys_reset(app: AppHandle, action: Option<String>) -> AppResult<HotkeyResetOutcome> {
     let outcome = manager()?.reset(action.as_deref())?;
     if outcome.results.iter().any(|result| result.persisted) {
         hotkeys::emit_changed(&app);

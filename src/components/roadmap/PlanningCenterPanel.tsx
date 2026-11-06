@@ -8,6 +8,7 @@
 //! 保留 roadmap Tab 身份：导航、快捷键（Ctrl+7）与既有测试不受改名影响。
 
 import { useState } from "react";
+import ContextHelpButton from "../help/ContextHelpButton";
 import FeatureRoadmapPanel from "./FeatureRoadmapPanel";
 import PlanningWorkspace from "./PlanningWorkspace";
 
@@ -34,6 +35,7 @@ export default function PlanningCenterPanel() {
             内置路线图
           </button>
         </div>
+        <ContextHelpButton articleId="help.workflows.planning-center" />
       </div>
       {source === "mine" ? <PlanningWorkspace /> : <FeatureRoadmapPanel />}
     </div>

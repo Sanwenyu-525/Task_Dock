@@ -748,6 +748,14 @@
 
 .ui-checkbox,
 .ui-switch {
+  /* label 必须建立定位上下文：内部 input 为 position:absolute 的视觉隐藏元素，
+     若 label 为 static，其包含块会穿透到最近的 positioned 祖先（主窗口为
+     .dock-body），导致 input 的 absolute 位置按 .dock-body 坐标系计算，
+     使设置页深处控件的 1×1 隐藏 input 超出 .dock-body 底边，撑大其
+     scrollHeight 并使外壳成为可程序化滚动容器；行重排/焦点还会滚动
+     .dock-body 造成下方空白。relative 使 input 包含在控件自身内，
+     随所属滚动容器（.tab-content）一起裁剪与滚动。 */
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 7px;

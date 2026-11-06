@@ -304,10 +304,14 @@ pub fn validate_local_path(raw: &str) -> AppResult<std::path::PathBuf> {
         return Err(AppError::Validation("路径为空".into()));
     }
     if !p.is_absolute() {
-        return Err(AppError::Validation("必须以绝对路径给出本地文件或目录".into()));
+        return Err(AppError::Validation(
+            "必须以绝对路径给出本地文件或目录".into(),
+        ));
     }
     if !p.exists() {
-        return Err(AppError::Validation("本地文件或目录不存在或已被移动".into()));
+        return Err(AppError::Validation(
+            "本地文件或目录不存在或已被移动".into(),
+        ));
     }
     Ok(p)
 }

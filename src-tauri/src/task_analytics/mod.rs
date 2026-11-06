@@ -212,7 +212,8 @@ fn local_midnight(date: NaiveDate) -> DateTime<Utc> {
 }
 
 fn shift_days(date: NaiveDate, days: i64) -> NaiveDate {
-    date.checked_add_signed(Duration::days(days)).unwrap_or(date)
+    date.checked_add_signed(Duration::days(days))
+        .unwrap_or(date)
 }
 
 fn month_start(year: i32, month0: i32) -> NaiveDate {
@@ -248,7 +249,10 @@ fn trend_buckets(kind: RangeKind, today: NaiveDate) -> Vec<Bucket> {
         RangeKind::Day => (0..14)
             .map(|i| {
                 let start = shift_days(today, -(13 - i));
-                Bucket { start, end: shift_days(start, 1) }
+                Bucket {
+                    start,
+                    end: shift_days(start, 1),
+                }
             })
             .collect(),
         RangeKind::Week => {
@@ -256,7 +260,10 @@ fn trend_buckets(kind: RangeKind, today: NaiveDate) -> Vec<Bucket> {
             (0..12)
                 .map(|i| {
                     let start = shift_days(current, -(7 * (11 - i)));
-                    Bucket { start, end: shift_days(start, 7) }
+                    Bucket {
+                        start,
+                        end: shift_days(start, 7),
+                    }
                 })
                 .collect()
         }
@@ -265,10 +272,13 @@ fn trend_buckets(kind: RangeKind, today: NaiveDate) -> Vec<Bucket> {
             (0..12)
                 .map(|i| {
                     let start = shift_months(current, i - 11);
-                    Bucket { start, end: shift_months(start, 1) }
+                    Bucket {
+                        start,
+                        end: shift_months(start, 1),
+                    }
                 })
                 .collect()
-            }
+        }
     }
 }
 
@@ -463,12 +473,7 @@ fn last_day_of_month(year: i32, month0: i32) -> NaiveDate {
 }
 
 /// 某月第 N 个（或最后一个）命中 `by_weekday` 的日期；与重复任务引擎同义。
-fn nth_weekday_in_month(
-    year: i32,
-    month0: i32,
-    by_weekday: &[u32],
-    pos: i32,
-) -> Option<NaiveDate> {
+fn nth_weekday_in_month(year: i32, month0: i32, by_weekday: &[u32], pos: i32) -> Option<NaiveDate> {
     if pos == 0 {
         return None;
     }
@@ -506,9 +511,7 @@ fn expected_past_occurrences(
     let time = due_local.time();
     let anchor = NaiveDate::parse_from_str(&row.anchor, "%Y-%m-%d")
         .ok()
-        .or_else(|| {
-            parse_utc(&row.created_at).map(|v| v.with_timezone(&Local).date_naive())
-        });
+        .or_else(|| parse_utc(&row.created_at).map(|v| v.with_timezone(&Local).date_naive()));
     let Some(anchor) = anchor else {
         return occurrences;
     };
@@ -567,8 +570,7 @@ fn expected_past_occurrences(
         }
         "monthly" => {
             let anchor_total = anchor.year() as i64 * 12 + anchor.month0() as i64;
-            let start_total =
-                window_start.year() as i64 * 12 + window_start.month0() as i64;
+            let start_total = window_start.year() as i64 * 12 + window_start.month0() as i64;
             let end_total = window_end.year() as i64 * 12 + window_end.month0() as i64;
             let scan_total = anchor_total.max(start_total);
             let diff = scan_total - anchor_total;
@@ -580,9 +582,7 @@ fn expected_past_occurrences(
                 }
                 let year = total.div_euclid(12) as i32;
                 let month0 = total.rem_euclid(12) as i32;
-                let date = if let Some(pos) =
-                    row.by_setpos.filter(|_| !row.by_weekday.is_empty())
-                {
+                let date = if let Some(pos) = row.by_setpos.filter(|_| !row.by_weekday.is_empty()) {
                     nth_weekday_in_month(year, month0, &row.by_weekday, pos)
                 } else {
                     let day = row.by_monthday.unwrap_or(anchor.day()).clamp(1, 31);
@@ -634,10 +634,7 @@ fn evaluate_history_complete(
         }
     }
 
-    let rule_task_ids: HashSet<&str> = recurring
-        .iter()
-        .map(|row| row.task_id.as_str())
-        .collect();
+    let rule_task_ids: HashSet<&str> = recurring.iter().map(|row| row.task_id.as_str()).collect();
     // 规则已解除但仍有重复完成事件：后续期次无法再按规则校验/还原。
     for event in events {
         if event.kind == "recurring" && !rule_task_ids.contains(event.task_id.as_str()) {
@@ -818,7 +815,11 @@ pub(crate) fn report_at(
             },
         })
         .collect();
-    by_category.sort_by(|a, b| b.completed.cmp(&a.completed).then(a.category.cmp(&b.category)));
+    by_category.sort_by(|a, b| {
+        b.completed
+            .cmp(&a.completed)
+            .then(a.category.cmp(&b.category))
+    });
 
     let by_priority: Vec<PriorityStat> = (0u8..=3)
         .map(|priority| {
@@ -979,7 +980,11 @@ mod tests {
             .to_rfc3339()
     }
 
-    fn task_input(title: &str, due: Option<String>, recurrence: Option<RecurrenceRuleInput>) -> TaskInput {
+    fn task_input(
+        title: &str,
+        due: Option<String>,
+        recurrence: Option<RecurrenceRuleInput>,
+    ) -> TaskInput {
         TaskInput {
             title: title.to_string(),
             due_at: Some(due),
@@ -999,8 +1004,14 @@ mod tests {
     }
 
     fn count_events(db: &Db) -> i64 {
-        db.with_read(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM task_completion_events", [], |r| r.get(0))?))
-            .unwrap()
+        db.with_read(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM task_completion_events", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
+        .unwrap()
     }
 
     /// 插入一条无截止时间的待办任务（FK 目标），用于只验证完成事件口径的场景。
@@ -1020,14 +1031,13 @@ mod tests {
     }
 
     fn record_at(db: &Db, id: &str, completed_at: &str) {
-        db.with_conn(|conn| record_completion(conn, id, completed_at, None, "", 2, "once")).unwrap();
+        db.with_conn(|conn| record_completion(conn, id, completed_at, None, "", 2, "once"))
+            .unwrap();
     }
 
     fn record_at_due(db: &Db, id: &str, completed_at: &str, due_at: &str) {
-        db.with_conn(|conn| {
-            record_completion(conn, id, completed_at, Some(due_at), "", 2, "once")
-        })
-        .unwrap();
+        db.with_conn(|conn| record_completion(conn, id, completed_at, Some(due_at), "", 2, "once"))
+            .unwrap();
     }
 
     #[test]
@@ -1075,7 +1085,11 @@ mod tests {
     #[test]
     fn reopening_removes_completion_event() {
         let db = setup();
-        let task = create_task_inner(&db, task_input("可撤销", Some(local_iso(2026, 11, 4, 9, 0)), None)).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("可撤销", Some(local_iso(2026, 11, 4, 9, 0)), None),
+        )
+        .unwrap();
         toggle_task_inner(&db, &task.id).unwrap();
         assert_eq!(count_events(&db), 1);
         toggle_task_inner(&db, &task.id).unwrap(); // 重新打开
@@ -1094,7 +1108,11 @@ mod tests {
         let task = create_task_inner(&db, task_input("同一期次", Some(due.clone()), None)).unwrap();
         record_at_due(&db, &task.id, &local_iso(2026, 11, 4, 10, 0), &due);
         record_at_due(&db, &task.id, &local_iso(2026, 11, 4, 10, 1), &due);
-        assert_eq!(count_events(&db), 1, "同一 (task_id, due_at) 只能有一条用户事件");
+        assert_eq!(
+            count_events(&db),
+            1,
+            "同一 (task_id, due_at) 只能有一条用户事件"
+        );
     }
 
     #[test]
@@ -1102,7 +1120,8 @@ mod tests {
         let db = setup();
         let due = local_iso(2026, 11, 3, 9, 0);
         let completed_at = local_iso(2026, 11, 3, 10, 0);
-        let task = create_task_inner(&db, task_input("升级前完成", Some(due.clone()), None)).unwrap();
+        let task =
+            create_task_inner(&db, task_input("升级前完成", Some(due.clone()), None)).unwrap();
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE tasks SET status = 'completed', completed_at = ?1 WHERE id = ?2",
@@ -1112,12 +1131,7 @@ mod tests {
                 "INSERT INTO task_completion_events
                    (id, task_id, completed_at, due_at, category, priority, origin, kind, created_at)
                  VALUES (?1, ?2, ?3, ?4, '', 2, 'backfill', 'once', ?3)",
-                rusqlite::params![
-                    uuid::Uuid::new_v4().to_string(),
-                    task.id,
-                    completed_at,
-                    due
-                ],
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), task.id, completed_at, due],
             )?;
             Ok::<_, AppError>(())
         })
@@ -1164,7 +1178,11 @@ mod tests {
         let yesterday = Local.with_ymd_and_hms(2026, 11, 3, 9, 0, 0).unwrap();
         let task = create_task_inner(
             &db,
-            task_input("每日站会", Some(yesterday.with_timezone(&Utc).to_rfc3339()), Some(daily())),
+            task_input(
+                "每日站会",
+                Some(yesterday.with_timezone(&Utc).to_rfc3339()),
+                Some(daily()),
+            ),
         )
         .unwrap();
 
@@ -1185,13 +1203,21 @@ mod tests {
     fn recurring_completion_writes_one_event_for_consumed_occurrence() {
         let db = setup();
         let due = local_iso(2026, 11, 4, 23, 59);
-        let task = create_task_inner(&db, task_input("每日复盘", Some(due.clone()), Some(daily()))).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("每日复盘", Some(due.clone()), Some(daily())),
+        )
+        .unwrap();
 
         toggle_task_inner(&db, &task.id).unwrap();
 
         let after = crate::commands::tasks::get_task(&db, &task.id).unwrap();
         assert_eq!(after.status, "pending");
-        assert_ne!(after.due_at.as_deref(), Some(due.as_str()), "应推进到下一期");
+        assert_ne!(
+            after.due_at.as_deref(),
+            Some(due.as_str()),
+            "应推进到下一期"
+        );
         let rows: Vec<(String, Option<String>, String)> = db
             .with_read(|conn| {
                 let mut stmt = conn.prepare(
@@ -1206,7 +1232,11 @@ mod tests {
             })
             .unwrap();
         assert_eq!(rows.len(), 1, "一期只允许一条完成事件");
-        assert_eq!(rows[0].1.as_deref(), Some(due.as_str()), "事件归属被消耗的期次");
+        assert_eq!(
+            rows[0].1.as_deref(),
+            Some(due.as_str()),
+            "事件归属被消耗的期次"
+        );
         assert_eq!(rows[0].2, "recurring");
     }
 
@@ -1215,7 +1245,11 @@ mod tests {
     fn completion_event_failure_rolls_back_advance_and_reminders() {
         let db = setup();
         let due = local_iso(2026, 11, 4, 23, 59);
-        let task = create_task_inner(&db, task_input("每日站会", Some(due.clone()), Some(daily()))).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("每日站会", Some(due.clone()), Some(daily())),
+        )
+        .unwrap();
         let reminders_before: Vec<(String, String)> = db
             .with_read(|conn| {
                 let mut stmt = conn.prepare(
@@ -1240,10 +1274,17 @@ mod tests {
         .unwrap();
 
         let err = toggle_task_inner(&db, &task.id).unwrap_err();
-        assert!(format!("{err}").contains("injected"), "应返回真实失败原因: {err}");
+        assert!(
+            format!("{err}").contains("injected"),
+            "应返回真实失败原因: {err}"
+        );
 
         let after = crate::commands::tasks::get_task(&db, &task.id).unwrap();
-        assert_eq!(after.due_at.as_deref(), Some(due.as_str()), "任务期次必须回滚");
+        assert_eq!(
+            after.due_at.as_deref(),
+            Some(due.as_str()),
+            "任务期次必须回滚"
+        );
         assert_eq!(count_events(&db), 0, "不得留下半条完成事实");
         let reminders_after: Vec<(String, String)> = db
             .with_read(|conn| {
@@ -1274,7 +1315,11 @@ mod tests {
         use crate::scheduler::{advance_recurrence_tx, AdvanceOutcome};
         let db = setup();
         let due = local_iso(2026, 11, 4, 23, 59);
-        let task = create_task_inner(&db, task_input("每日站会", Some(due.clone()), Some(daily()))).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("每日站会", Some(due.clone()), Some(daily())),
+        )
+        .unwrap();
 
         let first = db
             .with_conn(|conn| {
@@ -1301,7 +1346,11 @@ mod tests {
         assert_eq!(second, AdvanceOutcome::Conflict, "同一期次不得推进两次");
 
         let after = crate::commands::tasks::get_task(&db, &task.id).unwrap();
-        assert_eq!(after.due_at.as_deref(), Some(expected_to.as_str()), "期次保持不变");
+        assert_eq!(
+            after.due_at.as_deref(),
+            Some(expected_to.as_str()),
+            "期次保持不变"
+        );
     }
 
     /// v0.10 原子性 #5：自动到期推进（调度器路径）不是用户完成，不得写完成事件。
@@ -1310,7 +1359,11 @@ mod tests {
         use crate::scheduler::advance_recurrence_tx;
         let db = setup();
         let due = local_iso(2026, 11, 4, 23, 59);
-        let task = create_task_inner(&db, task_input("每日站会", Some(due.clone()), Some(daily()))).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("每日站会", Some(due.clone()), Some(daily())),
+        )
+        .unwrap();
 
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
@@ -1344,8 +1397,16 @@ mod tests {
     #[test]
     fn pending_past_due_counts_as_overdue_but_future_due_does_not() {
         let db = setup();
-        create_task_inner(&db, task_input("逾期未做", Some(local_iso(2026, 11, 3, 9, 0)), None)).unwrap();
-        create_task_inner(&db, task_input("今晚到期", Some(local_iso(2026, 11, 4, 23, 0)), None)).unwrap();
+        create_task_inner(
+            &db,
+            task_input("逾期未做", Some(local_iso(2026, 11, 3, 9, 0)), None),
+        )
+        .unwrap();
+        create_task_inner(
+            &db,
+            task_input("今晚到期", Some(local_iso(2026, 11, 4, 23, 0)), None),
+        )
+        .unwrap();
 
         // 本周窗口同时覆盖 11-03（已过）与 11-04（未到），分母固定为「本周到期任务数」。
         let report = report_at(&db, RangeKind::Week, fixed_now()).unwrap();
@@ -1408,10 +1469,17 @@ mod tests {
         toggle_task_inner(&db, &task_c.id).unwrap();
 
         let report = report_at(&db, RangeKind::Day, Local::now()).unwrap();
-        let work = report.by_category.iter().find(|c| c.category == "工作").unwrap();
+        let work = report
+            .by_category
+            .iter()
+            .find(|c| c.category == "工作")
+            .unwrap();
         assert_eq!(work.completed, 2);
         assert!((work.share - 2.0 / 3.0).abs() < 1e-9);
-        assert!(report.by_category.iter().any(|c| c.category == "未分类" && c.completed == 1));
+        assert!(report
+            .by_category
+            .iter()
+            .any(|c| c.category == "未分类" && c.completed == 1));
         assert_eq!(report.by_priority[0].completed, 2);
         assert_eq!(report.by_priority[2].completed, 1);
 
@@ -1424,18 +1492,28 @@ mod tests {
         edit.priority = Some(1);
         crate::commands::tasks::update_task_inner(&db, &task_a.id, edit).unwrap();
         let again = report_at(&db, RangeKind::Day, Local::now()).unwrap();
-        assert!(again.by_category.iter().any(|c| c.category == "工作" && c.completed == 2));
+        assert!(again
+            .by_category
+            .iter()
+            .any(|c| c.category == "工作" && c.completed == 2));
         assert!(!again.by_category.iter().any(|c| c.category == "生活"));
     }
 
     #[test]
     fn deleting_task_cascades_completion_events() {
         let db = setup();
-        let task = create_task_inner(&db, task_input("待删除", Some(local_iso(2026, 11, 4, 9, 0)), None)).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("待删除", Some(local_iso(2026, 11, 4, 9, 0)), None),
+        )
+        .unwrap();
         toggle_task_inner(&db, &task.id).unwrap();
         assert_eq!(count_events(&db), 1);
         db.with_conn(|conn| {
-            conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![task.id])?;
+            conn.execute(
+                "DELETE FROM tasks WHERE id = ?1",
+                rusqlite::params![task.id],
+            )?;
             Ok(())
         })
         .unwrap();
@@ -1448,7 +1526,11 @@ mod tests {
     #[test]
     fn trend_buckets_cover_windows_and_summary_equals_last_bucket() {
         let db = setup();
-        let task = create_task_inner(&db, task_input("趋势", Some(local_iso(2026, 11, 4, 9, 0)), None)).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("趋势", Some(local_iso(2026, 11, 4, 9, 0)), None),
+        )
+        .unwrap();
         toggle_task_inner(&db, &task.id).unwrap();
 
         for kind in [RangeKind::Day, RangeKind::Week, RangeKind::Month] {
@@ -1458,9 +1540,27 @@ mod tests {
             assert_eq!(last.due, report.summary.due);
             assert_eq!(last.due_overdue, report.summary.due_overdue);
         }
-        assert_eq!(report_at(&db, RangeKind::Day, fixed_now()).unwrap().trend.len(), 14);
-        assert_eq!(report_at(&db, RangeKind::Week, fixed_now()).unwrap().trend.len(), 12);
-        assert_eq!(report_at(&db, RangeKind::Month, fixed_now()).unwrap().trend.len(), 12);
+        assert_eq!(
+            report_at(&db, RangeKind::Day, fixed_now())
+                .unwrap()
+                .trend
+                .len(),
+            14
+        );
+        assert_eq!(
+            report_at(&db, RangeKind::Week, fixed_now())
+                .unwrap()
+                .trend
+                .len(),
+            12
+        );
+        assert_eq!(
+            report_at(&db, RangeKind::Month, fixed_now())
+                .unwrap()
+                .trend
+                .len(),
+            12
+        );
     }
 
     #[test]
@@ -1519,8 +1619,11 @@ mod tests {
     fn auto_advanced_recurring_occurrence_marks_history_incomplete() {
         let db = setup();
         let due = local_iso(2026, 11, 3, 9, 0);
-        let task =
-            create_task_inner(&db, task_input("每日站会", Some(due.clone()), Some(daily()))).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("每日站会", Some(due.clone()), Some(daily())),
+        )
+        .unwrap();
         let now_utc = fixed_now().with_timezone(&Utc);
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
@@ -1539,7 +1642,10 @@ mod tests {
         let report = report_at(&db, RangeKind::Day, fixed_now()).unwrap();
         assert_eq!(report.summary.completed, 0);
         assert_eq!(report.summary.due, 0, "被自动推进掉的今日期次没有独立记录");
-        assert_eq!(report.summary.completion_rate, None, "分母为 0 不得伪装成 0%");
+        assert_eq!(
+            report.summary.completion_rate, None,
+            "分母为 0 不得伪装成 0%"
+        );
         assert!(!report.history_complete, "存在无法还原的自动推进期次");
     }
 
@@ -1548,8 +1654,11 @@ mod tests {
     fn multi_day_gap_marks_history_incomplete() {
         let db = setup();
         let due = local_iso(2026, 11, 1, 9, 0);
-        let task =
-            create_task_inner(&db, task_input("每日打卡", Some(due.clone()), Some(daily()))).unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("每日打卡", Some(due.clone()), Some(daily())),
+        )
+        .unwrap();
         let now_utc = fixed_now().with_timezone(&Utc);
         db.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
@@ -1618,9 +1727,11 @@ mod tests {
         let monday = local_iso(2026, 11, 2, 9, 0);
         let tuesday = local_iso(2026, 11, 3, 9, 0);
         let wednesday = local_iso(2026, 11, 4, 9, 0);
-        let task =
-            create_task_inner(&db, task_input("每日站会", Some(monday.clone()), Some(daily())))
-                .unwrap();
+        let task = create_task_inner(
+            &db,
+            task_input("每日站会", Some(monday.clone()), Some(daily())),
+        )
+        .unwrap();
         record_at_due(&db, &task.id, &local_iso(2026, 11, 2, 8, 55), &monday);
         record_at_due(&db, &task.id, &local_iso(2026, 11, 3, 8, 55), &tuesday);
         // 周三期次仍未完成（任务行就是它），应计入分母且算逾期。
@@ -1659,7 +1770,11 @@ mod tests {
         let monday = local_iso(2026, 11, 2, 9, 0);
         let task = create_task_inner(
             &db,
-            task_input("每周例会", Some(monday.clone()), Some(weekly(vec![1, 3, 5]))),
+            task_input(
+                "每周例会",
+                Some(monday.clone()),
+                Some(weekly(vec![1, 3, 5])),
+            ),
         )
         .unwrap();
         let now_utc = fixed_now().with_timezone(&Utc);

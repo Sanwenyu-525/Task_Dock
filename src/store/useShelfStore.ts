@@ -26,6 +26,7 @@ import {
   shelfUpdate,
   type ShelfCleanupReport,
   type ShelfConflictStrategy,
+  type ShelfDeleteReport,
   type ShelfGroup,
   type ShelfItem,
   type ShelfKind,
@@ -58,6 +59,9 @@ interface ShelfState {
   filter: ShelfFilter;
   loading: boolean;
   error: string | null;
+  /** 删除/清空后的权威刷新失败时，保留旧列表并提示可重试。 */
+  mutationSyncError: string | null;
+  deletionBusy: boolean;
   /** 工具面板「最近暂存」轻量切片（独立于完整列表，避免胶囊加载整页历史） */
   recent: ShelfItem[];
   recentLoading: boolean;
@@ -69,12 +73,13 @@ interface ShelfState {
   /** 清理预览弹层使用 */
   lastCleanup: ShelfCleanupReport | null;
 
-  load: (opts?: { silent?: boolean }) => Promise<void>;
+  load: (opts?: { silent?: boolean; preserveLoaded?: boolean }) => Promise<boolean>;
   /** 最近暂存：limit 固定为 SHELF_RECENT_LIMIT；force 跳过 5s 软缓存 */
-  loadRecent: (opts?: { force?: boolean }) => Promise<void>;
+  loadRecent: (opts?: { force?: boolean }) => Promise<boolean>;
   loadMore: () => Promise<void>;
   setFilter: (patch: Partial<ShelfFilter>) => Promise<void>;
-  refreshMeta: () => Promise<void>;
+  refreshMeta: () => Promise<boolean>;
+  retryShelfSync: () => Promise<boolean>;
   addPaths: (
     paths: string[],
     mode: "reference" | "managed",
@@ -89,8 +94,8 @@ interface ShelfState {
     groupId?: string | null,
   ) => Promise<{ added: number; failed: { path: string; reason: string }[] }>;
   updateItem: (id: string, patch: ShelfUpdatePatch) => Promise<ShelfItem>;
-  deleteItems: (ids: string[], includeProtected: boolean) => Promise<void>;
-  clearShelf: (includeProtected: boolean) => Promise<void>;
+  deleteItems: (ids: string[], includeProtected: boolean) => Promise<ShelfMutationResult>;
+  clearShelf: (includeProtected: boolean) => Promise<ShelfMutationResult>;
   runCleanup: (dryRun: boolean, includeProtected: boolean) => Promise<ShelfCleanupReport>;
   verifyExists: (ids: string[]) => Promise<void>;
   createGroup: (name: string) => Promise<void>;
@@ -111,6 +116,12 @@ interface ShelfState {
   selectAll: () => void;
   clearSelection: () => void;
   setDetail: (id: string | null) => void;
+}
+
+export interface ShelfMutationResult {
+  report: ShelfDeleteReport;
+  synced: boolean;
+  remainingTotal: number | null;
 }
 
 /** 模块级请求代际：筛选切换后，旧响应不得覆盖新状态。 */
@@ -151,6 +162,8 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   filter: { search: "", kind: "all", group_id: "all", favorite_only: false },
   loading: false,
   error: null,
+  mutationSyncError: null,
+  deletionBusy: false,
   recent: [],
   recentLoading: false,
   recentLoaded: false,
@@ -161,30 +174,51 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
 
   load: async (opts) => {
     const seq = ++reqSeq;
+    const current = get();
+    const filter = current.filter;
+    const loadedTarget = opts?.preserveLoaded
+      ? Math.max(SHELF_PAGE_SIZE, current.items.length)
+      : SHELF_PAGE_SIZE;
     if (!opts?.silent) set({ loading: true });
     try {
-      const f = get().filter;
-      const page = await shelfList({
-        search: f.search || undefined,
-        kind: f.kind,
-        group_id: f.group_id,
-        favorite_only: f.favorite_only,
-        limit: SHELF_PAGE_SIZE,
-        offset: 0,
-      });
-      if (seq !== reqSeq) return;
+      const items: ShelfItem[] = [];
+      let total = 0;
+      do {
+        const page = await shelfList({
+          search: filter.search || undefined,
+          kind: filter.kind,
+          group_id: filter.group_id,
+          favorite_only: filter.favorite_only,
+          limit: SHELF_PAGE_SIZE,
+          offset: items.length,
+        });
+        if (seq !== reqSeq) return false;
+        items.push(...page.items);
+        total = page.total;
+        if (
+          !opts?.preserveLoaded ||
+          items.length >= loadedTarget ||
+          items.length >= total ||
+          page.items.length === 0
+        ) {
+          break;
+        }
+      } while (true);
       // 服务端权威收敛：刷新后不再存在于列表中的选中项同步移除
-      const ids = new Set(page.items.map((i) => i.id));
+      const ids = new Set(items.map((i) => i.id));
+      if (seq !== reqSeq) return false;
       set((s) => ({
-        items: page.items,
-        total: page.total,
+        items,
+        total,
         error: null,
         selectedIds: s.selectedIds.filter((id) => ids.has(id)),
         detailId: s.detailId && ids.has(s.detailId) ? s.detailId : null,
       }));
+      return true;
     } catch (e) {
-      if (seq !== reqSeq) return;
+      if (seq !== reqSeq) return false;
       set({ error: String(e) });
+      return false;
     } finally {
       if (seq === reqSeq) set({ loading: false });
     }
@@ -194,8 +228,8 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     const force = opts?.force ?? false;
     const s = get();
     // 软缓存 + 在途去重：胶囊子页来回切换 / 重复挂载不产生请求风暴。
-    if (!force && s.recentLoaded && Date.now() - recentLoadedAt < SHELF_RECENT_TTL_MS) return;
-    if (!force && s.recentLoading) return;
+    if (!force && s.recentLoaded && Date.now() - recentLoadedAt < SHELF_RECENT_TTL_MS) return true;
+    if (!force && s.recentLoading) return false;
 
     const seq = ++recentSeq;
     const version = recentVersion;
@@ -204,7 +238,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
       // 只要最近 4 条：按创建时间倒序（不受置顶影响），不读完整历史，
       // 也不动完整列表的筛选/分页状态。
       const page = await shelfList({ sort: "recent", limit: SHELF_RECENT_LIMIT, offset: 0 });
-      if (seq !== recentSeq || version !== recentVersion) return;
+      if (seq !== recentSeq || version !== recentVersion) return false;
       set({ recent: page.items, recentLoaded: true });
       recentLoadedAt = Date.now();
 
@@ -216,7 +250,7 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
       if (ids.length > 0) {
         try {
           const reports = await shelfCheckExists(ids);
-          if (seq !== recentSeq || version !== recentVersion) return;
+          if (seq !== recentSeq || version !== recentVersion) return false;
           const map = new Map(reports.map((r) => [r.id, r.exists_state]));
           set((prev) => ({
             recent: prev.recent.map((i) =>
@@ -227,8 +261,10 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
           // 存在性探测是展示增强：失败不覆盖列表、不阻塞打开/复制。
         }
       }
+      return true;
     } catch (e) {
       if (seq === recentSeq && version === recentVersion) set({ recentError: String(e) });
+      return false;
     } finally {
       if (seq === recentSeq) set({ recentLoading: false });
     }
@@ -267,9 +303,25 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     try {
       const [groups, stats] = await Promise.all([shelfGroups(), shelfStats()]);
       set({ groups, stats });
+      return true;
     } catch (e) {
       set({ error: String(e) });
+      return false;
     }
+  },
+
+  retryShelfSync: async () => {
+    set({ mutationSyncError: null });
+    const [listOk, metaOk, recentOk] = await Promise.all([
+      get().load({ silent: true, preserveLoaded: true }),
+      get().refreshMeta(),
+      get().loadRecent({ force: true }),
+    ]);
+    const synced = listOk && metaOk && recentOk;
+    set({
+      mutationSyncError: synced ? null : "暂存架状态刷新失败，当前内容可能未同步。请重试。",
+    });
+    return synced;
   },
 
   addPaths: async (paths, mode, source, groupId) => {
@@ -334,23 +386,37 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   },
 
   deleteItems: async (ids, includeProtected) => {
-    await shelfDelete(ids, includeProtected);
-    const gone = new Set(ids);
-    set((s) => ({
-      items: s.items.filter((i) => !gone.has(i.id)),
-      recent: s.recent.filter((i) => !gone.has(i.id)),
-      selectedIds: s.selectedIds.filter((id) => !gone.has(id)),
-      detailId: s.detailId && gone.has(s.detailId) ? null : s.detailId,
-    }));
-    invalidateRecent();
-    void get().refreshMeta();
+    if (get().deletionBusy) throw new Error("暂存架正在处理删除操作");
+    set({ deletionBusy: true });
+    try {
+      const report = await shelfDelete(ids, includeProtected);
+      invalidateRecent();
+      const synced = await get().retryShelfSync();
+      return {
+        report,
+        synced,
+        remainingTotal: synced ? (get().stats?.total ?? null) : null,
+      };
+    } finally {
+      set({ deletionBusy: false });
+    }
   },
 
   clearShelf: async (includeProtected) => {
-    await shelfClear(includeProtected);
-    set({ items: [], total: 0, selectedIds: [], detailId: null, recent: [] });
-    invalidateRecent();
-    void get().refreshMeta();
+    if (get().deletionBusy) throw new Error("暂存架正在处理删除操作");
+    set({ deletionBusy: true });
+    try {
+      const report = await shelfClear(includeProtected);
+      invalidateRecent();
+      const synced = await get().retryShelfSync();
+      return {
+        report,
+        synced,
+        remainingTotal: synced ? (get().stats?.total ?? null) : null,
+      };
+    } finally {
+      set({ deletionBusy: false });
+    }
   },
 
   runCleanup: async (dryRun, includeProtected) => {

@@ -110,6 +110,12 @@ interface World {
   savedWindowRect: { x: number; y: number; w: number; h: number } | null;
   /** 接下来 N 次 outerPosition 读取延迟指定毫秒（模拟解除恢复期间的 IPC 拥塞） */
   delayRectReadMs: number;
+  /** setPosition IPC 延迟（ms，用 fake timer 推进；用于 Edge Tab 异步竞态） */
+  setPositionDelayMs: number;
+  /** 按次 setPosition 延迟队列（优先于 setPositionDelayMs） */
+  setPositionDelayQueue: number[];
+  /** 接下来 N 次 outerPosition 读取抛错（模拟回读失败） */
+  failRectReadCalls: number;
   /** cursorPosition 持续失败（受限会话形态：GetCursorPos 被拒） */
   failCursor: boolean;
   /** update_settings 写回的完整设置快照（P2：形态偏好回滚断言用） */
@@ -151,6 +157,9 @@ const world: World = {
   undockAnchorCancelled: 0,
   savedWindowRect: null,
   delayRectReadMs: 0,
+  setPositionDelayMs: 0,
+  setPositionDelayQueue: [],
+  failRectReadCalls: 0,
   failCursor: false,
   settings: { mode: "full", snap_display_mode: "capsule", theme: "light" },
 };
@@ -190,6 +199,9 @@ function resetWorld() {
   world.undockAnchorCancelled = 0;
   world.savedWindowRect = null;
   world.delayRectReadMs = 0;
+  world.setPositionDelayMs = 0;
+  world.setPositionDelayQueue = [];
+  world.failRectReadCalls = 0;
   world.failCursor = false;
   world.settings = { mode: "full", snap_display_mode: "capsule", theme: "light" };
 }
@@ -197,6 +209,10 @@ function resetWorld() {
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     outerPosition: async () => {
+      if (world.failRectReadCalls > 0) {
+        world.failRectReadCalls -= 1;
+        throw new Error("mock outerPosition rejected");
+      }
       if (world.delayRectReadMs > 0) {
         const delay = world.delayRectReadMs;
         world.delayRectReadMs = 0;
@@ -207,6 +223,10 @@ vi.mock("@tauri-apps/api/window", () => ({
     outerSize: async () => ({ width: world.size.width, height: world.size.height }),
     setPosition: async (p: { x: number; y: number }) => {
       world.positionAttempts += 1;
+      const delay = world.setPositionDelayQueue.length > 0 ? world.setPositionDelayQueue.shift()! : world.setPositionDelayMs;
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
       if (world.failSetPosition) throw new Error("mock setPosition rejected");
       world.setPositionCalls.push({ x: p.x, y: p.y });
       if (world.swallowPositionCalls > 0) {
@@ -300,6 +320,7 @@ vi.mock("../lib/bridge", () => ({
     if (sticky || counted) return Promise.resolve(false);
     return Promise.resolve(true);
   },
+  refreshEdgeTabCursor: async () => true,
   applyMode: async (mode: string) => {
     world.modeCalls.push(mode);
     if (world.failApplyMode) throw new Error("mock applyMode rejected");
@@ -417,8 +438,10 @@ beforeEach(() => {
   useUiStore.setState({ toasts: [] });
 });
 
-afterEach(() => {
+afterEach(async () => {
   while (mounted.length) mounted.pop()!();
+  // 刷掉在途移动/延迟计时器，避免模块级串行链跨用例尾随
+  await vi.advanceTimersByTimeAsync(10000);
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -2543,5 +2566,429 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
     expect(world.pos.x).toBe(0);
     expect(world.size).toEqual({ width: 505, height: 550 });
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+  });
+});
+
+// ── Edge Tab 异步拖动一致性（round2 验收）───────────────────────
+// 单飞调度允许 IPC 延迟，但必须保证：松手终态真实生效、持久化与实际
+// 窗口一致、旧事务不覆盖新事务、形态切换/卸载后不执行过期移动。
+describe("Edge Tab 异步拖动一致性", () => {
+  async function collapseToTab() {
+    await act(async () => {
+      useEdgeSnapStore.getState().collapseToTab?.();
+      await vi.advanceTimersByTimeAsync(400);
+    });
+  }
+  const tabCenter = () => world.pos.y + world.size.height / 2;
+
+  async function dockToTab() {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+  }
+
+  it("T1) IPC 延迟时：松手不得先写目标中心；终态落地后持久化与真实位置一致", async () => {
+    await dockToTab();
+    const targetY = world.pos.y + 120;
+    world.setPositionDelayMs = 300;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    // 终态 IPC 尚未落地：窗口仍在旧位，持久化不得已经写成目标位
+    const earlySaved = world.snapWrites.at(-1)!;
+    expect(earlySaved.center).not.toBe(targetY + world.size.height / 2);
+    await advance(500);
+    expect(world.pos.y).toBe(targetY);
+    const saved = world.snapWrites.at(-1)!;
+    expect(saved).toMatchObject({ edge: "left", form: "tab" });
+    expect(saved.center).toBe(tabCenter());
+  });
+
+  it("T2) setPosition 失败：不写幻影中心，持久化回到真实位置", async () => {
+    await dockToTab();
+    const actualBefore = tabCenter();
+    world.failSetPosition = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    // 松手瞬间不得留下目标位的幻影写入（tick 的 settle 修复之前）
+    expect(world.snapWrites.some((w) => w.center === actualBefore + 120)).toBe(false);
+    await advance(600);
+    expect(world.pos.y).not.toBe(360 + 120);
+    const saved = world.snapWrites.at(-1)!;
+    expect(saved.center).toBe(actualBefore);
+    expect(saved.center).toBe(tabCenter());
+    warn.mockRestore();
+  });
+
+  it("T3) 回读不一致（setPosition 成功但位置未生效）：持久化按真实位置", async () => {
+    await dockToTab();
+    const actualBefore = tabCenter();
+    world.swallowPositionCalls = 10;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    expect(world.snapWrites.some((w) => w.center === actualBefore + 120)).toBe(false);
+    await advance(600);
+    const saved = world.snapWrites.at(-1)!;
+    expect(saved.center).toBe(actualBefore);
+    expect(saved.center).toBe(tabCenter());
+  });
+
+  it("T4) 连续快速拖动：单飞合并，最终位置正确且不逐帧发 IPC", async () => {
+    await dockToTab();
+    const baseY = world.pos.y;
+    world.setPositionDelayMs = 200;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      for (let i = 1; i <= 10; i += 1) {
+        s.dragTabBy?.(i * 10);
+        await Promise.resolve();
+      }
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    const attemptsDuring = world.positionAttempts;
+    await advance(800);
+    expect(world.pos.y).toBe(baseY + 100);
+    expect(world.snapWrites.at(-1)?.center).toBe(tabCenter());
+    // 单飞合并：10 次快速拖动不得发出 10 次物理移动
+    expect(world.positionAttempts - attemptsDuring).toBeLessThan(5);
+  });
+
+  it("T5) 上一轮未收尾又开始下一轮：旧事务不覆盖新位置", async () => {
+    await dockToTab();
+    const baseY = world.pos.y;
+    world.setPositionDelayMs = 300;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(60);
+      s.endTabDrag?.();
+      // 不等待上一轮 IPC 落地，立即开始下一轮（delta 相对新会话基准）
+      s.beginTabDrag?.();
+      s.dragTabBy?.(160);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    await advance(1000);
+    // 两轮位移累加（基准是上一轮终态），旧目标不得排在新目标之后覆盖
+    expect(world.pos.y).toBe(baseY + 60 + 160);
+    expect(world.snapWrites.at(-1)?.center).toBe(tabCenter());
+  });
+
+  it("T6) 引擎卸载时仍有在途移动：卸载后不再执行过期移动", async () => {
+    const hook = mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+    world.setPositionDelayMs = 300;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(80);
+      // 第二个目标只进 latest，不立即执行（首个在途）
+      s.dragTabBy?.(160);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    const attemptsAtUnmount = world.positionAttempts;
+    hook.unmount();
+    mounted.pop();
+    await advance(1000);
+    // 卸载后只允许已经在途的那一次落地，不得再追加过期目标
+    expect(world.positionAttempts - attemptsAtUnmount).toBe(0);
+  });
+
+  it("T8) 拖动后立即切换形态：过期的标签持久化不得覆盖新形态", async () => {
+    const hook = mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+    world.setPositionDelayMs = 300;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(60);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    // 终态移动在途时立即恢复胶囊（形态切换）
+    await act(async () => {
+      useEdgeSnapStore.getState().restoreTab?.();
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    await advance(1000);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.snapWrites.at(-1)).toMatchObject({ form: "capsule" });
+    expect(world.snapWrites.at(-1)?.center).toBe(tabCenter());
+    expect(world.pos.x).toBe(0);
+    void hook;
+  });
+
+  it("T7) 重启位置与最终真实位置一致（失败路径不跳位）", async () => {
+    await dockToTab();
+    const actualBefore = tabCenter();
+    const posBefore = { ...world.pos };
+    world.failSetPosition = true;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    // 松手后立即重启（settle 修复 tick 未跑）：持久化快照必须已经是真实位
+    const savedCenter = world.snapState?.center;
+    expect(savedCenter).toBe(actualBefore);
+    await advance(600);
+    expect(world.snapWrites.at(-1)?.center).toBe(actualBefore);
+    // 模拟重启：按保存的中心重建（引擎 restore 会算出同一窗口左上角）
+    expect(savedCenter).toBe(posBefore.y + world.size.height / 2);
+  });
+
+  it("U1) 800ms 慢在途 IPC + 立即恢复胶囊：旧 IPC 不得覆盖新形态几何", async () => {
+    const hook = mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+    // 拖动慢（1500），恢复事务快（0）：旧 IPC 落地晚于新几何事务
+    world.setPositionDelayQueue = [1500];
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      useEdgeSnapStore.getState().restoreTab?.();
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    await advance(2000);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.x).toBe(0);
+    // 恢复几何与持久化必须同为真实位置
+    expect(world.snapWrites.at(-1)).toMatchObject({ form: "capsule" });
+    expect(world.snapWrites.at(-1)?.center).toBe(tabCenter());
+    void hook;
+  });
+
+  it("U2) 800ms 慢在途 IPC + 立即解除：旧 IPC 落地后不得把自由窗口拉回边", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+    world.savedWindowRect = { x: 600, y: 300, w: 800, h: 600 };
+    world.setPositionDelayQueue = [1500];
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      useEdgeSnapStore.getState().undock?.();
+      await Promise.resolve();
+    });
+    // 解除前有界等收口（1500ms 在途）+ 解除几何恢复：旧 IPC 先落地
+    await advance(4000);
+    expect(phase()).toBe("free");
+    expect(lastRegion()?.mode).toBe("off");
+    // 用户在自由态继续挪动窗口（原生拖动模拟）
+    await dragTo(600, 400);
+    await advance(600);
+    // 旧在途 IPC（1500ms）此时落地，不得把窗口拉回贴边位
+    expect(world.pos).toEqual({ x: 600, y: 400 });
+    expect(phase()).toBe("free");
+  });
+
+  it("U3) 回读失败：有界重试后按实际落库，不写幻影", async () => {
+    await dockToTab();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 失败一次后读回成功（窗口已到目标位 700）：有界重试应按真实落库
+    world.failRectReadCalls = 1;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    await advance(800);
+    expect(world.pos.y).toBe(480);
+    const saved = world.snapWrites.at(-1)!;
+    expect(saved.center).toBe(tabCenter());
+    expect(saved.center).toBe(700);
+    warn.mockRestore();
+  });
+
+  it("U3b) 回读持续失败：不写幻影，恢复不跳位", async () => {
+    await dockToTab();
+    const beforePos = { ...world.pos };
+    const beforeCenter = tabCenter();
+    world.failSetPosition = true;
+    world.failRectReadCalls = 99;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    // 500ms 内 tick/回读都受阻：不得把目标 700 写进持久化
+    expect(world.snapWrites.some((w) => w.center === beforeCenter + 120)).toBe(false);
+    world.failRectReadCalls = 0;
+    world.failSetPosition = false;
+    // 恢复胶囊：按真实位置（fetch 恢复后）而不按幻影
+    await act(async () => {
+      useEdgeSnapStore.getState().restoreTab?.();
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    await advance(600);
+    expect(world.pos.y).toBe(beforePos.y);
+    expect(world.snapWrites.at(-1)?.center).toBe(tabCenter());
+    expect(world.snapWrites.at(-1)?.center).toBe(beforeCenter);
+    warn.mockRestore();
+  });
+
+  it("U5) 1500ms 慢在途 + 卸载重挂载：旧 IPC 不得破坏新引擎恢复态", async () => {
+    const first = mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+    world.setPositionDelayQueue = [1500];
+    // 先记录拖动前真实位置（重挂后应恢复到此，不被旧拖动目标改写）
+    const beforePos = { ...world.pos };
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(120);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    first.unmount();
+    mounted.pop();
+    // 新引擎按已落库状态恢复（拖动未落库前仍是旧中心）
+    mount();
+    await advance(400);
+    const restoredPos = { ...world.pos };
+    await advance(2000);
+    // 旧在途 IPC 落地后，窗口仍应与新引擎恢复位一致（phase/region 不被旧形态污染）
+    expect(["docked-visible", "docked-hidden", "docked-tab"]).toContain(phase());
+    // 真实位置与持久化中心同源
+    expect(world.snapState?.center).toBe(restoredPos.y + world.size.height / 2);
+    void beforePos;
+  });
+
+  it("U6) 真重启恢复（成功）：拖后卸载重挂，形态/位置/区域与真实位置一致", async () => {
+    const first = mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(100);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    await advance(400);
+    const finalPos = { ...world.pos };
+    const finalCenter = tabCenter();
+    expect(world.snapState?.center).toBe(finalCenter);
+    first.unmount();
+    mounted.pop();
+    // 卸载会走清理（区域 off + 持久化 none 的延迟宏任务），先推进再重挂
+    // 为避免清理污染，用保存的 snapState 重新定向
+    await advance(10);
+    world.snapState = { edge: "left", hidden: false, center: finalCenter, form: "tab" } as typeof world.snapState;
+    mount();
+    await advance(400);
+    expect(phase()).toBe("docked-tab");
+    expect(world.pos).toEqual(finalPos);
+    expect(lastRegion()).toEqual({ mode: "tab", edge: "left" });
+  });
+
+  it("U7) 真重启恢复（失败）：拖动失败后重挂不跳位", async () => {
+    const first = mount();
+    await advance(50);
+    await dockLeft();
+    await collapseToTab();
+    const beforePos = { ...world.pos };
+    const beforeCenter = tabCenter();
+    world.failSetPosition = true;
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(100);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    await advance(400);
+    expect(world.snapState?.center).toBe(beforeCenter);
+    first.unmount();
+    mounted.pop();
+    await advance(10);
+    world.snapState = { edge: "left", hidden: false, center: beforeCenter, form: "tab" } as typeof world.snapState;
+    world.failSetPosition = false;
+    mount();
+    await advance(400);
+    expect(phase()).toBe("docked-tab");
+    expect(world.pos).toEqual(beforePos);
+    expect(lastRegion()).toEqual({ mode: "tab", edge: "left" });
+  });
+
+  it("U8) 右缘慢在途 IPC + 恢复：镜像方向同样收口", async () => {
+    mount();
+    await advance(50);
+    await dragTo(1500, 300);
+    expect(phase()).toBe("candidate");
+    await releasePointer();
+    await advance(400);
+    expect(phase()).toBe("docked-visible");
+    expect(world.pos.x).toBe(1920 - 404);
+    await collapseToTab();
+    expect(phase()).toBe("docked-tab");
+    world.setPositionDelayQueue = [800];
+    await act(async () => {
+      const s = useEdgeSnapStore.getState();
+      s.beginTabDrag?.();
+      s.dragTabBy?.(60);
+      s.endTabDrag?.();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      useEdgeSnapStore.getState().restoreTab?.();
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    await advance(1200);
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.x).toBe(1920 - 404);
+    expect(world.snapWrites.at(-1)).toMatchObject({ form: "capsule" });
+    expect(world.snapWrites.at(-1)?.center).toBe(tabCenter());
   });
 });

@@ -23,7 +23,9 @@ use crate::recurrence::RecurrenceRuleInput;
 /// 的编辑请求会把独立的 remind_at / due_at 一起写成 NULL——用户设置的提醒
 /// 在保存一次标题后就消失了，且界面不会有任何提示。
 /// （规划中心的 milestone_id / target_date 复用同一语义，见 planning.rs。）
-pub(crate) fn deserialize_optional_field<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+pub(crate) fn deserialize_optional_field<'de, T, D>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
 where
     T: Deserialize<'de>,
     D: Deserializer<'de>,
@@ -2236,7 +2238,11 @@ mod tests {
 
     #[test]
     fn task_limit_none_keeps_unbounded_behavior() {
-        assert_eq!(effective_task_limit(None), None, "None 必须保持旧行为：不限制");
+        assert_eq!(
+            effective_task_limit(None),
+            None,
+            "None 必须保持旧行为：不限制"
+        );
     }
 
     #[test]
@@ -2468,8 +2474,18 @@ mod tests {
         }
         let older = create(&db, "已完成甲", None, None);
         let newer = create(&db, "已完成乙", None, None);
-        set_status(&db, &older.id, "completed", Some("2026-11-01T10:00:00+00:00"));
-        set_status(&db, &newer.id, "completed", Some("2026-11-02T10:00:00+00:00"));
+        set_status(
+            &db,
+            &older.id,
+            "completed",
+            Some("2026-11-01T10:00:00+00:00"),
+        );
+        set_status(
+            &db,
+            &newer.id,
+            "completed",
+            Some("2026-11-02T10:00:00+00:00"),
+        );
 
         let got = list_tasks_inner(
             &db,
@@ -2499,8 +2515,18 @@ mod tests {
         }
         let early = create(&db, "已完成早", None, None);
         let late = create(&db, "已完成晚", None, None);
-        set_status(&db, &early.id, "completed", Some("2026-11-01T10:00:00+00:00"));
-        set_status(&db, &late.id, "completed", Some("2026-11-02T10:00:00+00:00"));
+        set_status(
+            &db,
+            &early.id,
+            "completed",
+            Some("2026-11-01T10:00:00+00:00"),
+        );
+        set_status(
+            &db,
+            &late.id,
+            "completed",
+            Some("2026-11-02T10:00:00+00:00"),
+        );
 
         let got = list_tasks_inner(
             &db,

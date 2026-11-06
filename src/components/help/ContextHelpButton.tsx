@@ -50,8 +50,13 @@ export default function ContextHelpButton({
   function openFullGuide() {
     setOpen(false);
     const ui = useUiStore.getState();
-    ui.setTab("help");
-    ui.requestHelpArticle(resolvedArticleId);
+    const returnTab = ui.tab;
+    ui.setTab("help", {
+      after: () => {
+        ui.setHelpReturnTab(returnTab);
+        ui.requestHelpArticle(resolvedArticleId);
+      },
+    });
   }
 
   return (

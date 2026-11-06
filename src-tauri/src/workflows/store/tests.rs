@@ -52,6 +52,23 @@ fn wf_input(name: &str, steps: Vec<StepInput>) -> WorkflowInput {
     }
 }
 
+fn scene_input(
+    name: &str,
+    linked_workflow_id: Option<String>,
+) -> crate::commands::scenario::ScenarioSaveInput {
+    crate::commands::scenario::ScenarioSaveInput {
+        id: None,
+        name: name.into(),
+        icon: None,
+        apps: vec![],
+        urls: vec![],
+        folders: vec![],
+        shelf_item_ids: vec![],
+        linked_workflow_id,
+        snapshot_id: None,
+    }
+}
+
 #[test]
 fn create_get_list_and_update() {
     let db = temp_db("crud");
@@ -92,17 +109,9 @@ fn create_get_list_and_update() {
 fn create_rejects_invalid_name_and_steps() {
     let db = temp_db("invalid");
     assert!(create_workflow(&db, wf_input("  ", vec![])).is_err());
-    assert!(create_workflow(
-        &db,
-        wf_input(&"x".repeat(61), vec![])
-    )
-    .is_err());
+    assert!(create_workflow(&db, wf_input(&"x".repeat(61), vec![])).is_err());
     // 未知步骤类型
-    let err = create_workflow(
-        &db,
-        wf_input("w", vec![step_input("shell", r#"{}"#)]),
-    )
-    .unwrap_err();
+    let err = create_workflow(&db, wf_input("w", vec![step_input("shell", r#"{}"#)])).unwrap_err();
     assert!(err.to_string().contains("未知步骤类型"), "{}", err);
     // 目标不存在
     let err = create_workflow(
@@ -121,7 +130,10 @@ fn step_type_requires_matching_target_type() {
     // open_url 引用 application 目标 → 拒绝
     let err = create_workflow(
         &db,
-        wf_input("w", vec![step_input("open_url", r#"{"target_id":"tgt-app"}"#)]),
+        wf_input(
+            "w",
+            vec![step_input("open_url", r#"{"target_id":"tgt-app"}"#)],
+        ),
     )
     .unwrap_err();
     assert!(err.to_string().contains("类型"), "{}", err);
@@ -156,8 +168,11 @@ fn create_task_step_validation() {
         &db,
         wf_input(
             "w",
-            vec![step_input("create_task", r#"{"title":"t","remind_at":"not-a-date"}"#)],
-        )
+            vec![step_input(
+                "create_task",
+                r#"{"title":"t","remind_at":"not-a-date"}"#,
+            )],
+        ),
     )
     .unwrap_err();
     assert!(err.to_string().contains("提醒时间"), "{}", err);
@@ -167,7 +182,7 @@ fn create_task_step_validation() {
         wf_input(
             "w",
             vec![step_input("create_task", r#"{"title":"t","priority":9}"#)],
-        )
+        ),
     )
     .unwrap_err();
     assert!(err.to_string().contains("优先级"), "{}", err);
@@ -186,17 +201,125 @@ fn create_task_step_validation() {
 }
 
 #[test]
-fn enter_scene_is_rejected_until_module_ready() {
+fn enter_scene_requires_an_existing_scene() {
     let db = temp_db("scene");
     let err = create_workflow(
         &db,
         wf_input("w", vec![step_input("enter_scene", r#"{"scene_id":"s1"}"#)]),
     )
     .unwrap_err();
+    assert!(err.to_string().contains("场景不存在"), "实际: {err}");
+}
+
+#[test]
+fn enter_scene_accepts_existing_scene_and_keeps_its_real_id() {
+    let db = temp_db("scene-real");
+    let scene_id = crate::commands::scenario::save(&db, &scene_input("编辑场景", None)).unwrap();
+    let wf = create_workflow(
+        &db,
+        wf_input(
+            "进入场景",
+            vec![step_input(
+                "enter_scene",
+                &format!(r#"{{"scene_id":"{scene_id}"}}"#),
+            )],
+        ),
+    )
+    .unwrap();
+    let (_, steps) = get_workflow(&db, &wf.id).unwrap();
+    assert_eq!(steps[0].params.scene_id, scene_id);
+}
+
+#[test]
+fn scene_workflow_direct_and_indirect_cycles_are_rejected() {
+    let db = temp_db("scene-cycle");
+    let first = create_workflow(&db, wf_input("第一条", vec![])).unwrap();
+    let scene =
+        crate::commands::scenario::save(&db, &scene_input("关联第一条", Some(first.id.clone())))
+            .unwrap();
+    let direct = replace_steps(
+        &db,
+        &first.id,
+        vec![step_input(
+            "enter_scene",
+            &format!(r#"{{"scene_id":"{scene}"}}"#),
+        )],
+    )
+    .unwrap_err();
     assert!(
-        err.to_string().contains("场景工作区"),
-        "应注明场景依赖: {}",
-        err
+        direct.to_string().contains("循环引用"),
+        "直接循环: {direct}"
+    );
+
+    let second = create_workflow(&db, wf_input("第二条", vec![])).unwrap();
+    let first_scene =
+        crate::commands::scenario::save(&db, &scene_input("第一层", Some(second.id.clone())))
+            .unwrap();
+    let second_scene =
+        crate::commands::scenario::save(&db, &scene_input("第二层", Some(first.id.clone())))
+            .unwrap();
+    replace_steps(
+        &db,
+        &first.id,
+        vec![step_input(
+            "enter_scene",
+            &format!(r#"{{"scene_id":"{first_scene}"}}"#),
+        )],
+    )
+    .unwrap();
+    let indirect = replace_steps(
+        &db,
+        &second.id,
+        vec![step_input(
+            "enter_scene",
+            &format!(r#"{{"scene_id":"{second_scene}"}}"#),
+        )],
+    )
+    .unwrap_err();
+    assert!(
+        indirect.to_string().contains("循环引用"),
+        "间接循环: {indirect}"
+    );
+}
+
+#[test]
+fn scene_workflow_nesting_is_bounded() {
+    let db = temp_db("scene-depth");
+    let workflows = (0..5)
+        .map(|i| create_workflow(&db, wf_input(&format!("层级 {i}"), vec![])).unwrap())
+        .collect::<Vec<_>>();
+    let scenes = (0..4)
+        .map(|i| {
+            crate::commands::scenario::save(
+                &db,
+                &scene_input(&format!("场景层级 {i}"), Some(workflows[i + 1].id.clone())),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for i in (1..4).rev() {
+        replace_steps(
+            &db,
+            &workflows[i].id,
+            vec![step_input(
+                "enter_scene",
+                &format!(r#"{{"scene_id":"{}"}}"#, scenes[i]),
+            )],
+        )
+        .unwrap();
+    }
+    let too_deep = replace_steps(
+        &db,
+        &workflows[0].id,
+        vec![step_input(
+            "enter_scene",
+            &format!(r#"{{"scene_id":"{}"}}"#, scenes[0]),
+        )],
+    )
+    .unwrap_err();
+    assert!(
+        too_deep.to_string().contains("最大深度"),
+        "超过嵌套上限: {too_deep}"
     );
 }
 
@@ -207,7 +330,10 @@ fn restore_workspace_requires_existing_snapshot() {
         &db,
         wf_input(
             "w",
-            vec![step_input("restore_workspace", r#"{"snapshot_id":"snap-x"}"#)],
+            vec![step_input(
+                "restore_workspace",
+                r#"{"snapshot_id":"snap-x"}"#,
+            )],
         ),
     )
     .unwrap_err();
@@ -217,7 +343,10 @@ fn restore_workspace_requires_existing_snapshot() {
         &db,
         wf_input(
             "w",
-            vec![step_input("restore_workspace", r#"{"snapshot_id":"snap-1"}"#)],
+            vec![step_input(
+                "restore_workspace",
+                r#"{"snapshot_id":"snap-1"}"#,
+            )],
         ),
     )
     .unwrap();
@@ -299,7 +428,10 @@ fn replace_steps_and_update_is_single_transaction() {
     let db = temp_db("save-atomic");
     let wf = create_workflow(
         &db,
-        wf_input("旧名称", vec![step_input("create_task", r#"{"title":"a"}"#)]),
+        wf_input(
+            "旧名称",
+            vec![step_input("create_task", r#"{"title":"a"}"#)],
+        ),
     )
     .unwrap();
     let before = list_steps(&db, &wf.id).unwrap();
@@ -349,7 +481,6 @@ fn replace_steps_and_update_is_single_transaction() {
     assert_eq!(row.name, "新名称");
     assert_eq!(row.description, "新描述");
 }
-
 
 #[test]
 fn duplicate_copies_definition_not_history() {
@@ -554,7 +685,10 @@ fn recover_stale_runs_marks_interrupted_without_replay() {
         "必须如实提示副作用结果未知: {}",
         detail.steps[1].detail
     );
-    assert_eq!(detail.steps[2].status, "cancelled", "pending 步骤标为 cancelled");
+    assert_eq!(
+        detail.steps[2].status, "cancelled",
+        "pending 步骤标为 cancelled"
+    );
 
     // 幂等：再次恢复是空操作，且不会覆盖已标记的状态
     let n2 = recover_stale_runs(&db).unwrap();
@@ -577,7 +711,10 @@ fn recover_stale_runs_marks_interrupted_without_replay() {
     .unwrap();
     let n3 = recover_stale_runs(&db).unwrap();
     assert_eq!(n3, 1);
-    assert_eq!(get_run(&db, &run2.run_id).unwrap().run.status, "interrupted");
+    assert_eq!(
+        get_run(&db, &run2.run_id).unwrap().run.status,
+        "interrupted"
+    );
 }
 
 #[test]

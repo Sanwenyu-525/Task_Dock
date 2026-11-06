@@ -1,9 +1,9 @@
 # 一键工作流（v0.9）
 
-把用户确认过的导航目标 / 任务创建 / 工作现场恢复编排为**可重复执行的白名单动作序列**。
+把用户确认过的导航目标 / 任务创建 / 场景进入 / 工作现场恢复编排为**可重复执行的白名单动作序列**。
 事实优先级与总体约束见仓库根 `AGENTS.md`；本文只记录工作流模块的架构与契约。
 
-- 入口：完整模式左侧导航「工作流」（Ctrl+7）
+- 入口：完整模式左侧导航「工作流」（Ctrl+7）；场景工作区嵌在工作流页内，不新增导航入口
 - 前端：`src/components/workflows/`、`src/store/useWorkflowsStore.ts`、`src/lib/bridge.ts`（`workflow*` 段）
 - 后端：`src-tauri/src/workflows/`（`mod.rs` 模型与校验、`store.rs` 持久化、`engine.rs` 执行引擎）、
   `src-tauri/src/commands/workflows.rs`
@@ -38,7 +38,7 @@ workflow_run_steps   回执：status(六态) / detail / result(JSON 摘要) / st
 | `open_path` | `target_id` | `nav_navigate`（file / directory 目标） | 同上 |
 | `create_task` | `title`（必填 ≤200）、`description`（≤2000）、`priority`（0~3，默认 2）、`remind_at`（RFC3339 可选）、`advance_minutes`（0~43200） | `create_task_inner`（任务 + 提醒同事务） | 保存与执行双重校验；**每次运行创建新任务**（UI 有明确提示） |
 | `restore_workspace` | `snapshot_id` | `workspace::start_restore`（统一恢复门禁），等待其真正退出后返回 | 快照存在；取消位传递给恢复；120s 超时只停止等待，**绝不强制终止系统操作** |
-| `enter_scene` | `scene_id`（保留） | **依赖场景工作区模块（尚未集成）：校验层一律拒绝**，类型与参数位保留，模块就绪并经验证后再启用 | — |
+| `enter_scene` | `scene_id` | 调用场景服务逐项进入；工作现场恢复等待真实终态，结果写入步骤回执 | 场景存在；场景/工作流关系图无循环且不超过 3 层 |
 
 安全边界：
 
@@ -46,6 +46,8 @@ workflow_run_steps   回执：status(六态) / detail / result(JSON 摘要) / st
 - 前端只传目标 / 快照 **ID**，路径由后端从数据库读取并在执行前重新校验（复用导航模块既有安全层）；
 - 参数校验共用 `validate_step`（保存时引用存在性检查 + 执行时重校验，目标可能已被删除）；
 - 单工作流步骤数上限 50（`MAX_STEPS`）。
+- 场景步骤编辑器从真实场景列表选择 ID；保存和运行前均重验，场景被删除后工作流不能继续运行该步骤。
+- 场景/工作流关联组成有向图：保存关联与运行前都会检查直接/间接循环，最多 3 层嵌套；进入场景的工作流步骤不会递归启动场景关联工作流，结果明确记为跳过并使该步骤失败，避免抢占全局单运行槽。
 
 ## 3. 执行状态机
 
@@ -76,7 +78,7 @@ running/paused ──应用异常退出──▶ interrupted（启动恢复标�
   IPC 阻塞调用），彻底消除「双击两个请求都通过检查」的竞态；释放只认自己的 run_id。
 - **控制位**：`RunControl`（paused / cancelled 原子位 + Condvar）。取消位立即打断
   暂停等待与桌面互斥等待；已进入执行的步骤如实完成（不可中断，UI 有明确说明）。
-- **桌面互斥**：会抢焦点的步骤（open_app / open_url / open_path / restore_workspace）
+- **桌面互斥**：会抢焦点的步骤（open_app / open_url / open_path / enter_scene / restore_workspace）
   在工作现场恢复运行期间等待（轮询 `restore_status`，上限 30s）；超时该步骤失败并
   如实提示，不与恢复争夺焦点。
 - **panic 隔离**：单步 `catch_unwind`，执行器异常退出一律记为该步骤 failed；
@@ -84,6 +86,7 @@ running/paused ──应用异常退出──▶ interrupted（启动恢复标�
 - **事件推送**：状态迁移点 emit `workflow-run-progress`（payload = 完整运行详情）；
   前端面板挂载期间订阅（`createSubscriptionScope` 引用计数），隐藏时不轮询，
   重新挂载用 `workflow_active` 按需查询。事件缓冲由 Tauri 事件通道承担，无自建队列。
+- 工作流内进入场景复用 `scenario` 服务并传递取消位；关联现场恢复走现有恢复门禁，等待恢复槽退出后读取逐项持久化结果。失败、跳过、未知结果不会标成场景步骤成功。
 
 ## 4. 幂等与异常恢复
 
@@ -106,19 +109,22 @@ running/paused ──应用异常退出──▶ interrupted（启动恢复标�
 参数 camelCase；控制类命令（pause / resume / cancel）只做槽位读写与标志置位，
 **不在 IPC 线程内等待引擎**。
 
-## 6. 与场景工作区的接口边界
+## 6. 场景工作区与结果语义
 
-- `enter_scene` 已在白名单中保留类型与参数位（`scene_id`），UI 中该选项置灰并注明依赖；
-- 场景模块（其他子任务开发）就绪并经验证后，只需在 `workflows/mod.rs::validate_step`
-  的 `EnterScene` 分支接入真实校验、`engine.rs::LiveExecutor` 接入真实执行，不改表结构；
-- 工作流**不另建场景表**、不直接修改场景模块内部实现。
+- 场景管理位于工作流页内，提供列表、搜索、创建/编辑、删除、复制、进入和逐项结果；工作流编辑器可选择真实场景。
+- 手动进入场景时，同步应用/网页/文件夹结果使用 `ok / skipped / failed`；现场与关联工作流的 `ok` 只表示已受理。界面订阅现有 `workspace-restore-progress` / `workflow-run-progress` 事件展示运行中、完成、失败、取消或部分成功，不新增常驻轮询。
+- 场景删除只删除场景定义，不删除其关联工作现场、工作流或真实文件；现场和工作流软引用按既有规则处理。
+- 场景编辑器通过 `shelf_items.scene_id` 持久化暂存文件/文件夹关联；一个条目同一时刻归属一个场景，保存时在立即事务中校验并更新所有权。路径失效时仍保留稳定 shelf ID；复制场景不转移关联；删除场景只解除关联，不删除暂存记录或真实文件。该字段已随暂存架表进入备份清单，无需新增迁移。
+- 工作现场恢复仍按 `workspace-restore-progress` 每项反馈并经单恢复槽执行；已发出的应用启动不能撤回。工作流内等待取消时会向当前恢复操作发取消请求并等待其退出；120 秒超时只停止等待，不强杀系统操作。恢复应用时先按窗口身份查找并唤醒已有窗口，找不到才尝试启动；启动请求与窗口确认使用不同验证级别。
+- 当前快照记录 exe、窗口类名和标题用于身份匹配，不保存窗口矩形、尺寸、显示器或 DPI，因此当前能力不包含窗口位置/大小恢复。多显示器与 DPI 几何恢复、窗口消失/重启后的实际结果仍未验证；本轮没有进行真机操作。
+- 现有工作现场详情展开显示条目和上次结果/验证级别，恢复期间按事件显示逐项结果；场景编辑器只选择快照，不复制另一套快照预览。
 
 ## 7. 测试与验收状态
 
-- Rust：`cargo test --lib` 734 通过（含工作流 32 项：CRUD / 校验拒绝 / 事务回滚 /
+- 历史基线（场景步骤接入前）：`cargo test --lib` 734 通过（含工作流 32 项：CRUD / 校验拒绝 / 事务回滚 /
   排序 / 运行生命周期与保留 / interrupted 恢复 / 顺序与失败策略 / 暂停继续 / 取消 /
   桌面互斥可取消 / 槽互斥与防迟到清理 / panic 隔离）。
-- 前端：`npx vitest run` 1117 通过（含 useWorkflowsStore 13 项、导航契约与快捷键契约）；
-  `npm run build`（tsc strict + vite）通过。
+- 历史基线（场景 UI 接入前）：`npx vitest run` 1117 通过（含 useWorkflowsStore 13 项、导航契约与快捷键契约）；`npm run build`（tsc strict + vite）通过。
+- 2026-11-06 本轮新增场景 UI / `enter_scene` / 循环与深度保护的验证结果，以本轮实际命令为准；Rust 验证受共享 Cargo 编译占用影响时不得标记通过。
 - 真机窗口跳转 / 现场恢复步骤联动 / 深浅主题走查：**NOT VERIFIED**（待真机验收，
   见 `tmp/acceptance/one-click-workflows/report.md`）。

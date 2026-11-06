@@ -91,12 +91,12 @@ pub fn save_config_atomic(path: &std::path::Path, config: &HotkeyConfigFile) -> 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建快捷键配置目录失败：{e}"))?;
     }
-    let data = serde_json::to_vec_pretty(config)
-        .map_err(|e| format!("序列化快捷键配置失败：{e}"))?;
+    let data =
+        serde_json::to_vec_pretty(config).map_err(|e| format!("序列化快捷键配置失败：{e}"))?;
     let tmp = path.with_extension(format!("tmp-{}.json", stamp()));
     {
-        let mut file = fs::File::create(&tmp)
-            .map_err(|e| format!("创建临时快捷键配置失败：{e}"))?;
+        let mut file =
+            fs::File::create(&tmp).map_err(|e| format!("创建临时快捷键配置失败：{e}"))?;
         file.write_all(&data)
             .map_err(|e| format!("写入临时快捷键配置失败：{e}"))?;
         file.sync_all()

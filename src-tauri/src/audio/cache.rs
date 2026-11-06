@@ -12,7 +12,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use sha2::{Digest, Sha256};
 
@@ -25,6 +25,8 @@ pub const ENGINE_FORMAT_VERSION: &str = "tts-key/2/wav";
 
 /// 命中后触碰 mtime 的最小间隔。
 const TOUCH_INTERVAL: Duration = Duration::from_secs(60);
+const MAX_RESOURCE_SCAN_ENTRIES: usize = 10_000;
+const RESOURCE_SCAN_TIME_BUDGET: Duration = Duration::from_secs(5);
 
 /// 稳定缓存 Key：SHA-256 前 128 位（32 个十六进制字符），文件名即 `<key>.<ext>`。
 pub fn cache_key(
@@ -95,6 +97,29 @@ pub struct CacheStats {
     pub evictions: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceCacheFile {
+    pub name: String,
+    pub size: u64,
+    pub modified_ns: u128,
+    pub file_identity: u128,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResourceCacheScan {
+    pub files: Vec<ResourceCacheFile>,
+    pub skipped_files: u32,
+    pub incomplete: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CacheClearStats {
+    pub freed_bytes: u64,
+    pub deleted_files: u32,
+    pub skipped_files: u32,
+    pub failed_files: u32,
+}
+
 pub struct TtsCache {
     dir: Option<PathBuf>,
     entries: HashMap<String, Entry>,
@@ -150,7 +175,16 @@ impl TtsCache {
         let Some(dir) = self.dir.clone() else {
             return;
         };
-        let Ok(read) = fs::read_dir(&dir) else {
+        let Ok(root_meta) = fs::symlink_metadata(&dir) else {
+            return;
+        };
+        if !root_meta.is_dir() || is_reparse_point(&root_meta) {
+            return;
+        }
+        let Ok(root) = fs::canonicalize(&dir) else {
+            return;
+        };
+        let Ok(read) = fs::read_dir(&root) else {
             return;
         };
         for item in read.flatten() {
@@ -169,17 +203,23 @@ impl TtsCache {
             if !is_service_key_file_name(name) {
                 continue;
             }
-            let Ok(meta) = item.metadata() else {
+            let Ok(meta) = fs::symlink_metadata(&path) else {
                 continue;
             };
-            if !meta.is_file() {
+            if !meta.is_file()
+                || is_reparse_point(&meta)
+                || fs::canonicalize(&path)
+                    .ok()
+                    .and_then(|p| p.parent().map(Path::to_path_buf))
+                    != Some(root.clone())
+            {
                 continue;
             }
             let key = name.rsplit_once('.').map(|(k, _)| k.to_string());
             let Some(key) = key else { continue };
             let touched = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            let content_type = content_type_for_ext(path.extension().and_then(|e| e.to_str()))
-                .to_string();
+            let content_type =
+                content_type_for_ext(path.extension().and_then(|e| e.to_str())).to_string();
             self.total = self.total.saturating_add(meta.len());
             self.entries.insert(
                 key,
@@ -256,7 +296,10 @@ impl TtsCache {
         })();
         if let Err(err) = write_result {
             let _ = fs::remove_file(&temp_path);
-            tracing::warn!("语音缓存写入失败（分类: {:?}），本次改为直接播放", err.kind());
+            tracing::warn!(
+                "语音缓存写入失败（分类: {:?}），本次改为直接播放",
+                err.kind()
+            );
             return false;
         }
         let size = bytes.len() as u64;
@@ -319,38 +362,329 @@ impl TtsCache {
     /// 一键清理：只删除本服务创建的缓存文件（固定扩展名），不触碰用户其他文件。
     /// 只有真正删除成功（或文件已不存在）才更新占用；删除失败保留索引，避免假报释放。
     pub fn clear(&mut self) -> (u64, u32) {
-        let mut freed = 0u64;
-        let mut removed = 0u32;
+        let stats = self.clear_all_detailed();
+        (stats.freed_bytes, stats.deleted_files)
+    }
+
+    pub fn resource_files(&self) -> io::Result<ResourceCacheScan> {
+        self.resource_files_with_limits(MAX_RESOURCE_SCAN_ENTRIES, RESOURCE_SCAN_TIME_BUDGET)
+    }
+
+    fn resource_files_with_limits(
+        &self,
+        max_entries: usize,
+        time_budget: Duration,
+    ) -> io::Result<ResourceCacheScan> {
+        const STALE_TEMP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+        let Some(dir) = self.dir.as_ref() else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "TTS cache unavailable",
+            ));
+        };
+        validate_path_ancestors(dir)?;
+        let root_meta = fs::symlink_metadata(dir)?;
+        if !root_meta.is_dir() || is_reparse_point(&root_meta) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe TTS cache root",
+            ));
+        }
+        let root = fs::canonicalize(dir)?;
+        let mut result = ResourceCacheScan::default();
+        let started = Instant::now();
+        let mut entries = fs::read_dir(&root)?;
+        let mut visited = 0usize;
+        loop {
+            if started.elapsed() >= time_budget {
+                result.incomplete = true;
+                break;
+            }
+            if visited >= max_entries {
+                match entries.next() {
+                    Some(Ok(_)) => result.incomplete = true,
+                    Some(Err(_)) => {
+                        result.skipped_files = result.skipped_files.saturating_add(1);
+                        result.incomplete = true;
+                    }
+                    None => {}
+                }
+                break;
+            }
+            let Some(item) = entries.next() else {
+                break;
+            };
+            visited += 1;
+            let item = match item {
+                Ok(item) => item,
+                Err(_) => {
+                    result.skipped_files = result.skipped_files.saturating_add(1);
+                    continue;
+                }
+            };
+            let name = item.file_name().to_string_lossy().to_string();
+            let meta = match fs::symlink_metadata(item.path()) {
+                Ok(meta) => meta,
+                Err(_) => {
+                    result.skipped_files = result.skipped_files.saturating_add(1);
+                    continue;
+                }
+            };
+            if !meta.is_file() || is_reparse_point(&meta) {
+                result.skipped_files = result.skipped_files.saturating_add(1);
+                continue;
+            }
+            let owned = is_service_key_file_name(&name)
+                || (is_service_temp_file_name(&name)
+                    && meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age >= STALE_TEMP_AGE));
+            if !owned || fs::canonicalize(item.path())?.parent() != Some(root.as_path()) {
+                result.skipped_files = result.skipped_files.saturating_add(1);
+                continue;
+            }
+            let Some(modified_ns) = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+            else {
+                result.skipped_files = result.skipped_files.saturating_add(1);
+                continue;
+            };
+            let Some(file_identity) = file_identity(&item.path()) else {
+                result.skipped_files = result.skipped_files.saturating_add(1);
+                continue;
+            };
+            result.files.push(ResourceCacheFile {
+                name,
+                size: meta.len(),
+                modified_ns,
+                file_identity,
+            });
+        }
+        Ok(result)
+    }
+
+    pub fn clear_resource_files(&mut self, expected: &[ResourceCacheFile]) -> CacheClearStats {
+        let mut stats = CacheClearStats::default();
+        let Some(dir) = self.dir.clone() else {
+            stats.failed_files = expected.len().min(u32::MAX as usize) as u32;
+            return stats;
+        };
+        if validate_path_ancestors(&dir).is_err() {
+            stats.failed_files = expected.len().min(u32::MAX as usize) as u32;
+            return stats;
+        }
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() && !is_reparse_point(&meta) => meta,
+            Ok(_) => {
+                stats.failed_files = expected.len().min(u32::MAX as usize) as u32;
+                return stats;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                stats.skipped_files = expected.len().min(u32::MAX as usize) as u32;
+                return stats;
+            }
+            Err(_) => {
+                stats.failed_files = expected.len().min(u32::MAX as usize) as u32;
+                return stats;
+            }
+        };
+        let root = match fs::canonicalize(&dir) {
+            Ok(root) => root,
+            Err(_) => {
+                stats.failed_files = expected.len().min(u32::MAX as usize) as u32;
+                return stats;
+            }
+        };
+        for candidate in expected {
+            if !(is_service_key_file_name(&candidate.name)
+                || is_service_temp_file_name(&candidate.name))
+            {
+                stats.skipped_files = stats.skipped_files.saturating_add(1);
+                continue;
+            }
+            let path = root.join(&candidate.name);
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_file() && !is_reparse_point(&meta) => meta,
+                Ok(_) => {
+                    stats.skipped_files = stats.skipped_files.saturating_add(1);
+                    continue;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    stats.skipped_files = stats.skipped_files.saturating_add(1);
+                    continue;
+                }
+                Err(_) => {
+                    stats.failed_files = stats.failed_files.saturating_add(1);
+                    continue;
+                }
+            };
+            if is_service_temp_file_name(&candidate.name) && !is_stale_temp_meta(&meta) {
+                stats.skipped_files = stats.skipped_files.saturating_add(1);
+                continue;
+            }
+            let Some(modified_ns) = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+            else {
+                stats.skipped_files = stats.skipped_files.saturating_add(1);
+                continue;
+            };
+            if file_identity(&path) != Some(candidate.file_identity) {
+                stats.skipped_files = stats.skipped_files.saturating_add(1);
+                continue;
+            }
+            if meta.len() != candidate.size
+                || modified_ns != candidate.modified_ns
+                || fs::canonicalize(&path)
+                    .ok()
+                    .and_then(|p| p.parent().map(Path::to_path_buf))
+                    != Some(root.clone())
+            {
+                stats.skipped_files = stats.skipped_files.saturating_add(1);
+                continue;
+            }
+            match crate::fs_safety::remove_file_if_unchanged(
+                &path,
+                candidate.size,
+                candidate.modified_ns,
+                candidate.file_identity,
+            ) {
+                Ok(true) => {
+                    stats.freed_bytes = stats.freed_bytes.saturating_add(meta.len());
+                    stats.deleted_files = stats.deleted_files.saturating_add(1);
+                    if let Some(key) = candidate.name.rsplit_once('.').map(|(key, _)| key) {
+                        self.entries.remove(key);
+                    }
+                }
+                Ok(false) => {
+                    stats.skipped_files = stats.skipped_files.saturating_add(1);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    stats.skipped_files = stats.skipped_files.saturating_add(1);
+                }
+                Err(_) => stats.failed_files = stats.failed_files.saturating_add(1),
+            }
+        }
+        self.recompute_total();
+        stats
+    }
+
+    pub fn clear_all_detailed(&mut self) -> CacheClearStats {
+        let mut stats = CacheClearStats::default();
         let entries = std::mem::take(&mut self.entries);
+        let canonical_root = self.dir.as_ref().and_then(|dir| {
+            validate_path_ancestors(dir).ok()?;
+            let metadata = fs::symlink_metadata(dir).ok()?;
+            if !metadata.is_dir() || is_reparse_point(&metadata) {
+                return None;
+            }
+            fs::canonicalize(dir).ok()
+        });
         for (key, entry) in entries {
-            match delete_cache_file(&entry.path) {
+            let outcome = canonical_root
+                .as_ref()
+                .map_or(DeleteOutcome::Failed, |root| {
+                    delete_owned_cache_file(root, &entry.path, &key, entry.size)
+                });
+            match outcome {
                 DeleteOutcome::Deleted => {
-                    freed = freed.saturating_add(entry.size);
-                    removed += 1;
+                    stats.freed_bytes = stats.freed_bytes.saturating_add(entry.size);
+                    stats.deleted_files = stats.deleted_files.saturating_add(1);
                 }
                 DeleteOutcome::Missing => {
                     // 文件已不存在：索引可清理，但本次没有释放任何字节。
+                    stats.skipped_files = stats.skipped_files.saturating_add(1);
                 }
                 DeleteOutcome::Failed => {
                     // 删除失败：保留条目，统计与磁盘保持一致。
                     self.entries.insert(key, entry);
+                    stats.failed_files = stats.failed_files.saturating_add(1);
                 }
             }
         }
         // 兜底清理可能残留的临时文件（仅匹配本服务的 `.tmp-` 命名）。
         if let Some(dir) = self.dir.clone() {
-            if let Ok(read) = fs::read_dir(&dir) {
-                for item in read.flatten() {
-                    let path = item.path();
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if name.starts_with('.') && name.contains(".tmp-") {
-                        let _ = fs::remove_file(path);
+            let canonical = fs::symlink_metadata(&dir)
+                .ok()
+                .filter(|meta| meta.is_dir() && !is_reparse_point(meta))
+                .and_then(|_| fs::canonicalize(&dir).ok());
+            if let Some(canonical) = canonical {
+                if let Ok(read) = fs::read_dir(&canonical) {
+                    for item in read.flatten() {
+                        let path = item.path();
+                        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        if is_service_temp_file_name(name) {
+                            match fs::symlink_metadata(&path) {
+                                Ok(meta)
+                                    if meta.is_file()
+                                        && !is_reparse_point(&meta)
+                                        && is_stale_temp_meta(&meta)
+                                        && fs::canonicalize(&path)
+                                            .ok()
+                                            .and_then(|p| p.parent().map(Path::to_path_buf))
+                                            == Some(canonical.clone()) =>
+                                {
+                                    let modified_ns = meta
+                                        .modified()
+                                        .ok()
+                                        .and_then(|time| {
+                                            time.duration_since(SystemTime::UNIX_EPOCH).ok()
+                                        })
+                                        .map(|time| time.as_nanos());
+                                    let identity = file_identity(&path);
+                                    match modified_ns.zip(identity).map_or(
+                                        Ok(false),
+                                        |(modified, identity)| {
+                                            crate::fs_safety::remove_file_if_unchanged(
+                                                &path,
+                                                meta.len(),
+                                                modified,
+                                                identity,
+                                            )
+                                        },
+                                    ) {
+                                        Ok(true) => {
+                                            stats.freed_bytes =
+                                                stats.freed_bytes.saturating_add(meta.len());
+                                            stats.deleted_files =
+                                                stats.deleted_files.saturating_add(1);
+                                        }
+                                        Ok(false) => {
+                                            stats.skipped_files =
+                                                stats.skipped_files.saturating_add(1)
+                                        }
+                                        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                                            stats.skipped_files =
+                                                stats.skipped_files.saturating_add(1)
+                                        }
+                                        Err(_) => {
+                                            stats.failed_files =
+                                                stats.failed_files.saturating_add(1)
+                                        }
+                                    }
+                                }
+                                Ok(_) => {
+                                    stats.skipped_files = stats.skipped_files.saturating_add(1)
+                                }
+                                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                                    stats.skipped_files = stats.skipped_files.saturating_add(1)
+                                }
+                                Err(_) => stats.failed_files = stats.failed_files.saturating_add(1),
+                            }
+                        }
                     }
                 }
             }
         }
         self.recompute_total();
-        (freed, removed)
+        stats
     }
 
     pub fn stats(&self) -> CacheStats {
@@ -400,6 +734,63 @@ fn delete_cache_file(path: &Path) -> DeleteOutcome {
     }
 }
 
+fn delete_owned_cache_file(
+    root: &Path,
+    path: &Path,
+    key: &str,
+    expected_size: u64,
+) -> DeleteOutcome {
+    if !is_cache_key(key)
+        || path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map_or(true, |name| !is_service_key_file_name(name))
+    {
+        return DeleteOutcome::Failed;
+    }
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !is_reparse_point(&metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return DeleteOutcome::Missing,
+        _ => return DeleteOutcome::Failed,
+    };
+    let Some(modified_ns) = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|time| time.as_nanos())
+    else {
+        return DeleteOutcome::Failed;
+    };
+    let Some(identity) = file_identity(path) else {
+        return DeleteOutcome::Failed;
+    };
+    let canonical_path = match fs::canonicalize(path) {
+        Ok(canonical) if canonical.parent() == Some(root) => canonical,
+        _ => return DeleteOutcome::Failed,
+    };
+    if metadata.len() != expected_size {
+        return DeleteOutcome::Failed;
+    }
+    match crate::fs_safety::remove_file_if_unchanged(
+        &canonical_path,
+        expected_size,
+        modified_ns,
+        identity,
+    ) {
+        Ok(true) => DeleteOutcome::Deleted,
+        Ok(false) => DeleteOutcome::Failed,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => DeleteOutcome::Missing,
+        Err(_) => DeleteOutcome::Failed,
+    }
+}
+
+fn is_cache_key(key: &str) -> bool {
+    key.len() == 32
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// 轻量校验：只检查格式头与最小长度，不做全量解码，保持缓存读取性能。
 fn is_valid_payload(ext: Option<&str>, bytes: &[u8]) -> bool {
     if bytes.is_empty() {
@@ -438,9 +829,99 @@ fn is_service_key_file_name(name: &str) -> bool {
     let Some((key, ext)) = name.rsplit_once('.') else {
         return false;
     };
-    is_cache_extension(Some(ext))
-        && key.len() == 32
-        && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    is_cache_extension(Some(ext)) && is_cache_key(key)
+}
+
+fn is_service_temp_file_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.') else {
+        return false;
+    };
+    let Some((key, suffix)) = rest.split_once(".tmp-") else {
+        return false;
+    };
+    let mut parts = suffix.split('-');
+    let pid = parts.next().unwrap_or_default();
+    let seq = parts.next().unwrap_or_default();
+    key.len() == 32
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && !pid.is_empty()
+        && pid.bytes().all(|b| b.is_ascii_digit())
+        && !seq.is_empty()
+        && seq.bytes().all(|b| b.is_ascii_digit())
+        && parts.next().is_none()
+}
+
+fn is_stale_temp_meta(metadata: &fs::Metadata) -> bool {
+    const STALE_TEMP_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.elapsed().ok())
+        .is_some_and(|age| age >= STALE_TEMP_AGE)
+}
+
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x0400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn validate_path_ancestors(path: &Path) -> io::Result<()> {
+    for ancestor in path.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(meta) if is_reparse_point(&meta) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "unsafe cache ancestor",
+                ))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn file_identity(path: &Path) -> Option<u128> {
+    let file = fs::File::open(path).ok()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
+        if ok == 0 {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        Some(
+            ((info.dwVolumeSerialNumber as u128) << 64)
+                | ((info.nFileIndexHigh as u128) << 32)
+                | info.nFileIndexLow as u128,
+        )
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = file.metadata().ok()?;
+        Some(((meta.dev() as u128) << 64) | meta.ino() as u128)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = file;
+        None
+    }
 }
 
 #[cfg(test)]
@@ -482,14 +963,32 @@ mod tests {
     #[test]
     fn key_is_stable_and_sensitive_to_audio_parameters() {
         let a = cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100, "system");
-        assert_eq!(a, cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100, "system"));
+        assert_eq!(
+            a,
+            cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100, "system")
+        );
         assert_eq!(a.len(), 32);
-        assert_ne!(a, cache_key("任务已完成", "voice-zh-cn", "zh-CN", 150, "system"));
-        assert_ne!(a, cache_key("任务已完成", "voice-other", "zh-CN", 100, "system"));
-        assert_ne!(a, cache_key("任务已完成", "voice-zh-cn", "en-US", 100, "system"));
-        assert_ne!(a, cache_key("需要你的操作", "voice-zh-cn", "zh-CN", 100, "system"));
+        assert_ne!(
+            a,
+            cache_key("任务已完成", "voice-zh-cn", "zh-CN", 150, "system")
+        );
+        assert_ne!(
+            a,
+            cache_key("任务已完成", "voice-other", "zh-CN", 100, "system")
+        );
+        assert_ne!(
+            a,
+            cache_key("任务已完成", "voice-zh-cn", "en-US", 100, "system")
+        );
+        assert_ne!(
+            a,
+            cache_key("需要你的操作", "voice-zh-cn", "zh-CN", 100, "system")
+        );
         // 引擎隔离：同名音色在不同引擎下不得复用缓存。
-        assert_ne!(a, cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100, "neural"));
+        assert_ne!(
+            a,
+            cache_key("任务已完成", "voice-zh-cn", "zh-CN", 100, "neural")
+        );
     }
 
     #[test]
@@ -586,13 +1085,87 @@ mod tests {
     }
 
     #[test]
+    fn resource_scan_and_execution_use_service_filename_and_fingerprint() {
+        let dir = temp_dir("resource-clear");
+        let key = cache_key("任务已完成", "v", "zh-CN", 100, "system");
+        let mut cache = TtsCache::new(Some(dir.clone()));
+        assert!(cache.put(&key, "wav", wav_bytes(b"abcd").as_slice(), 1024));
+        fs::write(dir.join("user-recording.wav"), wav_bytes(b"abcd")).unwrap();
+
+        let preview = cache.resource_files().unwrap();
+        assert_eq!(preview.files.len(), 1);
+        assert_eq!(preview.files[0].name, format!("{key}.wav"));
+
+        fs::write(dir.join(format!("{key}.wav")), wav_bytes(b"changed-size")).unwrap();
+        let report = cache.clear_resource_files(&preview.files);
+        assert_eq!(report.deleted_files, 0);
+        assert_eq!(report.freed_bytes, 0);
+        assert_eq!(report.skipped_files, 1);
+        assert!(dir.join(format!("{key}.wav")).exists());
+        assert!(dir.join("user-recording.wav").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resource_scan_limit_returns_a_partial_result() {
+        let dir = temp_dir("resource-scan-limit");
+        for phrase in ["first", "second"] {
+            let key = cache_key(phrase, "v", "zh-CN", 100, "system");
+            fs::write(dir.join(format!("{key}.wav")), wav_bytes(b"a")).unwrap();
+        }
+        let cache = TtsCache::new(Some(dir.clone()));
+        let scan = cache
+            .resource_files_with_limits(1, Duration::from_secs(5))
+            .unwrap();
+
+        assert_eq!(scan.files.len(), 1);
+        assert!(scan.incomplete);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resource_clear_deletes_only_a_matching_service_file() {
+        let dir = temp_dir("resource-clear-handle");
+        let key = cache_key("清理缓存", "v", "zh-CN", 100, "system");
+        let mut cache = TtsCache::new(Some(dir.clone()));
+        assert!(cache.put(&key, "wav", wav_bytes(b"safe").as_slice(), 1024));
+        let preview = cache.resource_files().unwrap();
+
+        let stats = cache.clear_resource_files(&preview.files);
+        assert_eq!(stats.deleted_files, 1);
+        assert_eq!(stats.failed_files, 0);
+        assert_eq!(stats.skipped_files, 0);
+        assert!(!dir.join(format!("{key}.wav")).exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn temporary_name_requires_exact_tts_owner_pattern() {
+        assert!(is_service_temp_file_name(
+            ".0123456789abcdef0123456789abcdef.tmp-42-7"
+        ));
+        assert!(!is_service_temp_file_name(".user.tmp-42-7"));
+        assert!(!is_service_temp_file_name(
+            ".0123456789abcdef0123456789abcdef.tmp-x-7"
+        ));
+        assert!(!is_service_temp_file_name(
+            ".0123456789abcdef0123456789abcdef.tmp-42-7-extra"
+        ));
+    }
+
+    #[test]
     fn rescan_only_adopts_service_generated_file_names() {
         let dir = temp_dir("rescan-foreign");
         let key = cache_key("任务已完成", "v", "zh-CN", 100, "system");
         fs::write(dir.join(format!("{key}.wav")), wav_bytes(b"abcd")).expect("写本服务缓存");
         fs::write(dir.join("user-recording.wav"), wav_bytes(b"abcd")).expect("写用户文件");
         let mut cache = TtsCache::new(Some(dir.clone()));
-        assert_eq!(cache.stats().files, 1, "只索引 32 位十六进制 Key 命名的文件");
+        assert_eq!(
+            cache.stats().files,
+            1,
+            "只索引 32 位十六进制 Key 命名的文件"
+        );
         assert!(cache.get(&key).is_some());
         // 用户文件既不进索引，也不被清理。
         let (_, removed) = cache.clear();

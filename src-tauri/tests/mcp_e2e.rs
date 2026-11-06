@@ -188,12 +188,12 @@ async fn stdio_end_to_end_handshake_read_write_conflict_audit_reconnect() {
         .collect();
     assert_eq!(names.len(), 18, "应暴露 18 个工具: {names:?}");
 
-    // 读工具可用（project_rw 含读）
+    // project_rw 只读取已授权项目，初始列表不泄漏用户项目名称。
     let listed = tool_result_value(&s1.request(
         "tools/call",
         json!({"name":"taskdock_list_projects","arguments":{}}),
     ));
-    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed.as_array().unwrap().len(), 0);
 
     // 写未授权项目 → JSON-RPC -32002
     let denied = s1.request(
@@ -208,6 +208,11 @@ async fn stdio_end_to_end_handshake_read_write_conflict_audit_reconnect() {
 
     // 用户授权该项目
     task_dock_lib::mcp::auth::grant_project(&db, &created.info.id, &existing.id).unwrap();
+    let listed = tool_result_value(&s1.request(
+        "tools/call",
+        json!({"name":"taskdock_list_projects","arguments":{}}),
+    ));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
 
     // 授权后写成功，revision +1
     let updated = tool_result_value(&s1.request(
@@ -222,7 +227,7 @@ async fn stdio_end_to_end_handshake_read_write_conflict_audit_reconnect() {
     let replayed = tool_result_value(&s1.request(
         "tools/call",
         json!({"name":"taskdock_update_project","arguments":{
-            "project_id": existing.id, "expected_revision": existing.revision + 1, "name":"应被拒绝的重放",
+            "project_id": existing.id, "expected_revision": existing.revision, "name":"端到端改名",
             "requestId":"e2e-req-1"}}),
     ));
     assert_eq!(
@@ -231,6 +236,17 @@ async fn stdio_end_to_end_handshake_read_write_conflict_audit_reconnect() {
         "重放返回原结果"
     );
     assert_eq!(replayed["name"], "端到端改名");
+
+    let changed_parameters = s1.request(
+        "tools/call",
+        json!({"name":"taskdock_update_project","arguments":{
+            "project_id": existing.id, "expected_revision": existing.revision, "name":"不同参数",
+            "requestId":"e2e-req-1"}}),
+    );
+    assert!(
+        tool_error_message(&changed_parameters).contains("不同参数"),
+        "同一 requestId 不得复用到不同参数: {changed_parameters}"
+    );
 
     // 过期 revision → 明确冲突
     let conflict = s1.request(

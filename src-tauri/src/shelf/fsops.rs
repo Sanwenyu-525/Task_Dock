@@ -122,11 +122,7 @@ fn snapshot_source(path: &Path) -> AppResult<SourceSnapshot> {
     }
     if root_meta.is_file() {
         return Ok(SourceSnapshot {
-            entries: vec![(
-                String::new(),
-                root_meta.len(),
-                modified_nanos(&root_meta),
-            )],
+            entries: vec![(String::new(), root_meta.len(), modified_nanos(&root_meta))],
         });
     }
     if !root_meta.is_dir() {
@@ -413,7 +409,9 @@ impl Drop for PathClaim {
 /// 避免调用方拿到不完整的保护。
 fn claim_paths(claims: &[(PathBuf, ClaimMode)]) -> AppResult<PathClaim> {
     if claims.is_empty() {
-        return Ok(PathClaim { owner: next_claim_owner() });
+        return Ok(PathClaim {
+            owner: next_claim_owner(),
+        });
     }
     let keys: Vec<ClaimKey> = claims.iter().map(|(p, m)| claim_key(p, *m)).collect();
     let owner = next_claim_owner();
@@ -440,10 +438,7 @@ fn claim_paths(claims: &[(PathBuf, ClaimMode)]) -> AppResult<PathClaim> {
             .iter()
             .any(|active| active.key.parts == key.parts && active.key.mode == key.mode);
         if !exists {
-            set.push(ActiveClaim {
-                key,
-                owner,
-            });
+            set.push(ActiveClaim { key, owner });
         }
     }
     Ok(PathClaim { owner })
@@ -458,10 +453,8 @@ fn claim_batch(
     source_mode: ClaimMode,
     target_dir: &Path,
 ) -> AppResult<PathClaim> {
-    let mut claims: Vec<(PathBuf, ClaimMode)> = sources
-        .iter()
-        .map(|p| (p.clone(), source_mode))
-        .collect();
+    let mut claims: Vec<(PathBuf, ClaimMode)> =
+        sources.iter().map(|p| (p.clone(), source_mode)).collect();
     claims.push((target_dir.to_path_buf(), ClaimMode::Shared));
     claim_paths(&claims)
 }
@@ -507,8 +500,7 @@ fn load_items(db: &Db, ids: &[String]) -> AppResult<HashMap<String, ShelfItem>> 
     let rows = db.with_read(|conn| {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(ids.iter()), item_from_row)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(AppError::from)
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     })?;
     Ok(rows.into_iter().map(|i| (i.id.clone(), i)).collect())
 }
@@ -516,9 +508,8 @@ fn load_items(db: &Db, ids: &[String]) -> AppResult<HashMap<String, ShelfItem>> 
 /// 目标目录：绝对路径、必须存在且为目录；禁止指向暂存架内部（避免被清理兜底误删）。
 pub fn normalize_target_dir(raw: &str, root: &Path) -> AppResult<PathBuf> {
     let dir = normalize_original_path(raw)?;
-    let meta = std::fs::metadata(&dir).map_err(|e| {
-        AppError::NotFound(format!("目标目录不可访问: {}（{e}）", dir.display()))
-    })?;
+    let meta = std::fs::metadata(&dir)
+        .map_err(|e| AppError::NotFound(format!("目标目录不可访问: {}（{e}）", dir.display())))?;
     if !meta.is_dir() {
         return Err(AppError::Validation(format!(
             "目标不是目录: {}",
@@ -568,9 +559,7 @@ fn op_source(root: &Path, item: &ShelfItem) -> AppResult<PathBuf> {
                 .ok_or_else(|| AppError::Validation("条目缺少原路径".into()))?;
             let p = normalize_original_path(raw)?;
             if !p.exists() {
-                return Err(AppError::NotFound(
-                    "原文件已失效，请先重新定位".into(),
-                ));
+                return Err(AppError::NotFound("原文件已失效，请先重新定位".into()));
             }
             Ok(p)
         }
@@ -699,7 +688,10 @@ fn rename_no_replace(src: &Path, target: &Path) -> std::io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
 
     fn wide(path: &Path) -> Vec<u16> {
-        path.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
     let src_w = wide(src);
     let target_w = wide(target);
@@ -793,12 +785,18 @@ fn remove_best_effort(path: &Path) {
     match std::fs::symlink_metadata(path) {
         Ok(m) if m.is_dir() && !is_reparse_point(&m) => {
             if let Err(e) = std::fs::remove_dir_all(path) {
-                tracing::warn!("临时目录清理失败（不影响源与目标）: {} ({e})", path.display());
+                tracing::warn!(
+                    "临时目录清理失败（不影响源与目标）: {} ({e})",
+                    path.display()
+                );
             }
         }
         Ok(_) => {
             if let Err(e) = std::fs::remove_file(path) {
-                tracing::warn!("临时文件清理失败（不影响源与目标）: {} ({e})", path.display());
+                tracing::warn!(
+                    "临时文件清理失败（不影响源与目标）: {} ({e})",
+                    path.display()
+                );
             }
         }
         Err(_) => {}
@@ -1004,7 +1002,6 @@ fn verify_tree(src: &Path, dst: &Path) -> AppResult<()> {
     Ok(())
 }
 
-
 /// 更新引用路径：同一路径的多条记录、父子目录内的记录同步改写。
 /// 仅处理 reference 模式；托管记录的 original_path 只是来源信息，不参与外部移动。
 fn rewrite_reference_paths(db: &Db, old_root: &Path, new_root: &Path) -> AppResult<usize> {
@@ -1095,9 +1092,7 @@ fn journal_phase(db: &Db, id: &str, phase: &str) -> AppResult<()> {
 fn journal_mark_copied(db: &Db, id: &str, final_target: &Path) -> AppResult<()> {
     #[cfg(test)]
     if test_support::take("journal_copied_fail") {
-        return Err(AppError::Conflict(
-            "注入故障：记录复制完成阶段失败".into(),
-        ));
+        return Err(AppError::Conflict("注入故障：记录复制完成阶段失败".into()));
     }
     db.with_conn(|conn| {
         conn.execute(
@@ -1235,9 +1230,7 @@ pub fn recover_pending_file_ops(db: &Db) {
         }
         if dst_exists && src_exists && phase == "intent" {
             // 同卷重命名尚未推进日志时两者同时存在：无法判定，保留两者。
-            tracing::warn!(
-                "暂存架移动日志 {id} 状态不明确（源与目标都存在），保留两者不做处理"
-            );
+            tracing::warn!("暂存架移动日志 {id} 状态不明确（源与目标都存在），保留两者不做处理");
             if journal_done(db, &id).is_err() {
                 tracing::warn!("暂存架移动日志 {id} 清理失败，将在下次启动重试");
             }
@@ -1263,9 +1256,7 @@ pub fn recover_pending_file_ops(db: &Db) {
             continue;
         }
         // 目标不存在、源存在：操作未完成或目标被外部删除；源可能仍完整。
-        tracing::warn!(
-            "暂存架移动日志 {id} 目标不存在但源仍存在，保留源不动并丢弃日志"
-        );
+        tracing::warn!("暂存架移动日志 {id} 目标不存在但源仍存在，保留源不动并丢弃日志");
         if journal_done(db, &id).is_err() {
             tracing::warn!("暂存架移动日志 {id} 清理失败，将在下次启动重试");
         }
@@ -1563,10 +1554,7 @@ fn copy_path_core(
         Err(e) => return PathOutcome::failed(e.to_string()),
     };
     if skipped {
-        return PathOutcome::skipped(
-            "目标目录已存在同名文件（同名策略：跳过）",
-            Some(target),
-        );
+        return PathOutcome::skipped("目标目录已存在同名文件（同名策略：跳过）", Some(target));
     }
     // 最终写入目标独占：两个批次同时解析出同一个目标路径时，后到者拿到可重试冲突，
     // 不会各自写临时副本再互相覆盖（提交本身也已有原子无覆盖语义兜底）。
@@ -1637,10 +1625,7 @@ fn move_path_core(
         Err(e) => return PathOutcome::failed(e.to_string()),
     };
     if skipped {
-        return PathOutcome::skipped(
-            "目标目录已存在同名文件（同名策略：跳过）",
-            Some(target),
-        );
+        return PathOutcome::skipped("目标目录已存在同名文件（同名策略：跳过）", Some(target));
     }
     // 最终目标独占：同路径的另一个移动/复制批次会拿到可重试冲突，
     // 而不是在同一目标上互相 rename（提交本身也保证不覆盖）。
@@ -1904,7 +1889,9 @@ fn copy_one(
     entry.target = outcome.target.map(|p| p.to_string_lossy().into_owned());
     entry.reason = outcome.reason;
     entry.recovery = outcome.recovery;
-    entry.residual_source = outcome.residual_source.map(|p| p.to_string_lossy().into_owned());
+    entry.residual_source = outcome
+        .residual_source
+        .map(|p| p.to_string_lossy().into_owned());
     entry
 }
 
@@ -1933,9 +1920,8 @@ fn test_remove_partial(root: &Path, remove_subdir: bool) -> std::io::Result<()> 
             std::fs::remove_dir_all(dir)?;
         }
     } else {
-        let manifest = walk_tree(root).map_err(|e| {
-            std::io::Error::other(format!("构造部分删除故障失败: {e}"))
-        })?;
+        let manifest = walk_tree(root)
+            .map_err(|e| std::io::Error::other(format!("构造部分删除故障失败: {e}")))?;
         if let Some((_, rel, _)) = manifest.files.first() {
             std::fs::remove_file(root.join(rel))?;
         }
@@ -2009,14 +1995,22 @@ fn move_one(
             return entry;
         }
     };
-    let outcome = move_path_core(db, &item.id, &src, &name, target_dir, strategy, &|old, new| {
-        rewrite_after_move(db, old, new)
-    });
+    let outcome = move_path_core(
+        db,
+        &item.id,
+        &src,
+        &name,
+        target_dir,
+        strategy,
+        &|old, new| rewrite_after_move(db, old, new),
+    );
     entry.status = outcome.status.into();
     entry.target = outcome.target.map(|p| p.to_string_lossy().into_owned());
     entry.reason = outcome.reason;
     entry.recovery = outcome.recovery;
-    entry.residual_source = outcome.residual_source.map(|p| p.to_string_lossy().into_owned());
+    entry.residual_source = outcome
+        .residual_source
+        .map(|p| p.to_string_lossy().into_owned());
     entry
 }
 
@@ -2114,10 +2108,7 @@ pub fn move_items(
             (id.clone(), src)
         })
         .collect();
-    let claim_targets: Vec<PathBuf> = order
-        .iter()
-        .filter_map(|(_, src)| src.clone())
-        .collect();
+    let claim_targets: Vec<PathBuf> = order.iter().filter_map(|(_, src)| src.clone()).collect();
     // 移动会改变源（独占）；目标目录只要求保持原位（同目录并发复制安全）。
     let _path_claim = claim_batch(&claim_targets, ClaimMode::Exclusive, &dir)?;
     order.sort_by_key(|(_, src)| src.as_ref().map(|p| path_depth(p)).unwrap_or(usize::MAX));
@@ -2177,9 +2168,7 @@ pub fn move_items(
         }
         let entry = move_one(db, root, &item, &dir, strategy, &mut seen_sources);
         if entry.status == "ok" || entry.status == "partial" {
-            let moved_from = planned_src
-                .clone()
-                .or_else(|| current_src.clone());
+            let moved_from = planned_src.clone().or_else(|| current_src.clone());
             if let Some(old) = moved_from {
                 let new = entry.target.as_ref().map(PathBuf::from);
                 completed.push((old, new));
@@ -2225,10 +2214,7 @@ pub fn copy_items(
             (id.clone(), src)
         })
         .collect();
-    let claim_targets: Vec<PathBuf> = order
-        .iter()
-        .filter_map(|(_, src)| src.clone())
-        .collect();
+    let claim_targets: Vec<PathBuf> = order.iter().filter_map(|(_, src)| src.clone()).collect();
     // 复制只读取源（共享，可与其他复制并行）；目标目录同样只要求保持原位。
     let _path_claim = claim_batch(&claim_targets, ClaimMode::Shared, &dir)?;
     order.sort_by_key(|(_, src)| src.as_ref().map(|p| path_depth(p)).unwrap_or(usize::MAX));
@@ -2476,9 +2462,9 @@ pub fn drop_paths(
             PathOutcome::skipped("已经在目标目录内，未重复处理", None)
         } else if let Ok(canon_src) = std::fs::canonicalize(&src) {
             match std::fs::canonicalize(root) {
-                Ok(canon_root) if canon_src.starts_with(&canon_root) => PathOutcome::failed(
-                    "不能把暂存架自己的托管目录投递到外部目录",
-                ),
+                Ok(canon_root) if canon_src.starts_with(&canon_root) => {
+                    PathOutcome::failed("不能把暂存架自己的托管目录投递到外部目录")
+                }
                 _ => run_drop_one(db, &journal_item, &src, &dir, strategy, move_mode),
             }
         } else {
@@ -2497,7 +2483,9 @@ pub fn drop_paths(
             status: outcome.status.to_string(),
             reason: outcome.reason,
             recovery: outcome.recovery,
-            residual_source: outcome.residual_source.map(|p| p.to_string_lossy().into_owned()),
+            residual_source: outcome
+                .residual_source
+                .map(|p| p.to_string_lossy().into_owned()),
         });
     }
 
@@ -2560,24 +2548,17 @@ pub fn relocate_item(db: &Db, id: &str, raw: &str) -> AppResult<ShelfItem> {
         _ => {}
     }
     let path = normalize_original_path(raw)?;
-    let meta = std::fs::metadata(&path).map_err(|e| {
-        AppError::NotFound(format!("所选路径不可访问: {}（{e}）", path.display()))
-    })?;
+    let meta = std::fs::metadata(&path)
+        .map_err(|e| AppError::NotFound(format!("所选路径不可访问: {}（{e}）", path.display())))?;
     let type_ok = if item.kind == KIND_FOLDER {
         meta.is_dir()
     } else {
         meta.is_file()
     };
     if !type_ok {
-        return Err(AppError::Validation(
-            "所选路径类型与条目类型不匹配".into(),
-        ));
+        return Err(AppError::Validation("所选路径类型与条目类型不匹配".into()));
     }
-    let ext = if meta.is_file() {
-        ext_of(&path)
-    } else {
-        None
-    };
+    let ext = if meta.is_file() { ext_of(&path) } else { None };
     let size = if meta.is_file() {
         meta.len() as i64
     } else {
@@ -2647,9 +2628,7 @@ pub fn touch_recent_dir(db: &Db, raw: &str) -> AppResult<()> {
         )? != 0;
         if !exists {
             let total: i64 =
-                conn.query_row("SELECT COUNT(*) FROM shelf_recent_dirs", [], |r| {
-                    r.get(0)
-                })?;
+                conn.query_row("SELECT COUNT(*) FROM shelf_recent_dirs", [], |r| r.get(0))?;
             if total >= MAX_RECENT_DIRS as i64 {
                 let oldest: Option<String> = conn
                     .query_row(
@@ -2661,10 +2640,7 @@ pub fn touch_recent_dir(db: &Db, raw: &str) -> AppResult<()> {
                     .optional()?;
                 match oldest {
                     Some(p) => {
-                        conn.execute(
-                            "DELETE FROM shelf_recent_dirs WHERE path = ?1",
-                            params![p],
-                        )?;
+                        conn.execute("DELETE FROM shelf_recent_dirs WHERE path = ?1", params![p])?;
                     }
                     None => {
                         return Err(AppError::Conflict(
@@ -2819,7 +2795,11 @@ mod move_safety_tests {
             err.to_string().contains("拒绝覆盖") || err.to_string().contains("已存在"),
             "目录提交同样必须 fail-closed: {err}"
         );
-        assert_eq!(std::fs::read(&target).unwrap(), b"racer", "不得覆盖目标路径");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"racer",
+            "不得覆盖目标路径"
+        );
         assert!(!part.exists(), "提交失败后必须回收临时副本");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2937,7 +2917,12 @@ mod move_safety_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    fn drop_target_for(db: &Db, root: &Path, dir: &Path, mode: &str) -> super::super::drop_targets::DropTarget {
+    fn drop_target_for(
+        db: &Db,
+        root: &Path,
+        dir: &Path,
+        mode: &str,
+    ) -> super::super::drop_targets::DropTarget {
         std::fs::create_dir_all(dir).unwrap();
         super::super::drop_targets::create(
             db,
@@ -3018,7 +3003,11 @@ mod move_safety_tests {
             "b-parallel",
         )
         .unwrap();
-        assert_eq!(report.success, 1, "不同目标文件必须可并行: {:?}", report.entries);
+        assert_eq!(
+            report.success, 1,
+            "不同目标文件必须可并行: {:?}",
+            report.entries
+        );
         assert_eq!(std::fs::read(out.join("b.txt")).unwrap(), b"b");
 
         // 同一目标文件则必须冲突（而不是两个批次各写一份）
@@ -3032,7 +3021,11 @@ mod move_safety_tests {
         .unwrap();
         assert_eq!(err.failed, 1, "{:?}", err.entries);
         assert!(
-            err.entries[0].reason.as_deref().unwrap_or("").contains("冲突"),
+            err.entries[0]
+                .reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("冲突"),
             "{:?}",
             err.entries
         );

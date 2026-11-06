@@ -4,7 +4,7 @@
 //! 避免设置页产生第二个音频调度者。语音列表与缓存统计在对应分组展开时读取，
 //! 关闭 TTS 时不会在后台初始化语音引擎。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, HardDrive, Play, RefreshCw, Trash2, Volume2 } from "lucide-react";
 import { CollapsibleSection } from "../ui";
 import { NumberInput, Select, Switch } from "../ui";
@@ -13,6 +13,7 @@ import { errorMessage } from "../../lib/errors";
 import { getAudioService } from "../../lib/audioNotification";
 import { previewMessage } from "../../lib/audioPreview";
 import VoicePicker from "./VoicePicker";
+import VoicePackManager from "./VoicePackManager";
 import {
   ttsCacheClear,
   ttsCacheStats,
@@ -24,6 +25,7 @@ import {
 import {
   type SettingsSectionId,
   type SettingsSectionOpenState,
+  SETTINGS_TTS_CACHE_REFRESH_EVENT,
 } from "../../lib/settingsSections";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -93,6 +95,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
   const [cache, setCache] = useState<TtsCacheReport | null>(null);
   const [cacheError, setCacheError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const cacheLoadSequence = useRef(0);
 
   const ttsOpen = openSections.tts;
   const cacheOpen = openSections["tts-cache"];
@@ -134,16 +137,26 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
   }, [ttsOpen]);
 
   const loadCache = useCallback(async () => {
+    const sequence = ++cacheLoadSequence.current;
     try {
+      const result = await ttsCacheStats();
+      if (sequence !== cacheLoadSequence.current) return;
       setCacheError(null);
-      setCache(await ttsCacheStats());
+      setCache(result);
     } catch (e) {
-      setCacheError(errorMessage(e));
+      if (sequence === cacheLoadSequence.current) setCacheError(errorMessage(e));
     }
   }, []);
 
   useEffect(() => {
     if (cacheOpen) void loadCache();
+  }, [cacheOpen, loadCache]);
+
+  useEffect(() => {
+    if (!cacheOpen) return;
+    const refresh = () => void loadCache();
+    window.addEventListener(SETTINGS_TTS_CACHE_REFRESH_EVENT, refresh);
+    return () => window.removeEventListener(SETTINGS_TTS_CACHE_REFRESH_EVENT, refresh);
   }, [cacheOpen, loadCache]);
 
   if (!settings) return null;
@@ -175,12 +188,34 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
     setBusy("cache-clear");
     try {
       const report = await ttsCacheClear();
-      showToast(
-        t("settings.ttsCache.cleared", {
-          files: report.removedFiles,
-          bytes: formatBytes(report.freedBytes),
-        }),
-      );
+      if (!report.ok || report.status === "failed") {
+        showToast(
+          t("settings.ttsCache.clearFailed", {
+            error: report.errorMessage
+              ? errorMessage(report.errorMessage)
+              : t("settings.resourceCleanup.error.generic"),
+          }),
+          { kind: "error" },
+        );
+      } else if (report.status === "partial") {
+        showToast(
+          t("settings.ttsCache.clearPartial", {
+            bytes: formatBytes(report.freedBytes),
+            deleted: report.removedFiles,
+            skipped: report.skippedFiles ?? 0,
+            failed: report.failedFiles ?? 0,
+          }),
+          { kind: "warning" },
+        );
+      } else {
+        showToast(
+          t("settings.ttsCache.cleared", {
+            files: report.removedFiles,
+            bytes: formatBytes(report.freedBytes),
+          }),
+          { kind: "success" },
+        );
+      }
       await loadCache();
     } catch (e) {
       showToast(t("settings.ttsCache.clearFailed", { error: errorMessage(e) }));
@@ -390,6 +425,7 @@ export default function AudioSettings({ openSections, onToggle }: AudioSettingsP
           </div>
         ))}
         <div className="setting-note">{t("settings.audio.ttsNote")}</div>
+        <VoicePackManager />
       </CollapsibleSection>
 
       <CollapsibleSection

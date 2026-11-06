@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Copy,
   History,
+  Layers,
   Loader2,
   Pencil,
   Play,
@@ -32,6 +33,7 @@ import { WORKFLOW_TEMPLATES } from "./templates";
 import WorkflowEditorView from "./WorkflowEditorView";
 import WorkflowRunView from "./WorkflowRunView";
 import WorkflowHistoryView from "./WorkflowHistoryView";
+import ScenarioWorkspaceView from "./ScenarioWorkspaceView";
 import { useLocale } from "../../hooks/useLocale";
 
 /** 内容区的滚动容器（页面级单一滚动）：向上找第一个 overflow-y 可滚动的祖先。 */
@@ -67,7 +69,8 @@ export default function WorkflowsPanel() {
   type PanelPage =
     | { kind: "edit"; workflow: WorkflowDetail | null; template: (typeof WORKFLOW_TEMPLATES)[number] | null }
     | { kind: "run"; workflow: WorkflowDetail; runId: string | null }
-    | { kind: "history"; workflow: Workflow };
+    | { kind: "history"; workflow: Workflow }
+    | { kind: "scenarios" };
   const [page, setPage] = useState<PanelPage | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   /** 进入子视图前列表的滚动位置：返回时恢复，避免用户回到列表顶部。 */
@@ -169,6 +172,12 @@ export default function WorkflowsPanel() {
     setPage({ kind: "history", workflow: wf });
   };
 
+  const openScenarios = () => {
+    setActionError(null);
+    rememberListScroll();
+    setPage({ kind: "scenarios" });
+  };
+
   const guard = (id: string, fn: () => Promise<unknown>) => async () => {
     setActionError(null);
     setBusyId(id);
@@ -217,6 +226,8 @@ export default function WorkflowsPanel() {
         />
       ) : page?.kind === "history" ? (
         <WorkflowHistoryView workflow={page.workflow} onBack={closePage} />
+      ) : page?.kind === "scenarios" ? (
+        <ScenarioWorkspaceView onBack={closePage} />
       ) : (
         <>
       <header className="wf-head-row">
@@ -225,6 +236,9 @@ export default function WorkflowsPanel() {
           <p className="wf-subtitle">{tr("workflows.subtitle")}</p>
         </div>
         <div className="wf-head-actions">
+          <button type="button" className="btn" onClick={openScenarios} data-tip="管理可重复进入的场景">
+            <Layers size={14} aria-hidden="true" /> 场景工作区
+          </button>
           <button
             type="button"
             className="btn"

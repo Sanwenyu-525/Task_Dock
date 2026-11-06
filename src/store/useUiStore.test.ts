@@ -13,7 +13,7 @@ import { registerTabGuard } from "../lib/tabGuard";
 const NOW = 1_000_000;
 
 function reset() {
-  useUiStore.setState({ toast: null, toasts: [] });
+  useUiStore.setState({ toast: null, toasts: [], helpReturnTab: null });
 }
 
 function messages() {
@@ -103,7 +103,7 @@ describe("导航事务结果（TabSwitchResult）", () => {
   const cleanups: Array<() => void> = [];
 
   beforeEach(() => {
-    useUiStore.setState({ tab: "tasks", pendingTab: null, toast: null, toasts: [] });
+    useUiStore.setState({ tab: "tasks", pendingTab: null, toast: null, toasts: [], helpReturnTab: null });
   });
 
   afterEach(() => {
@@ -116,6 +116,14 @@ describe("导航事务结果（TabSwitchResult）", () => {
     expect(useUiStore.getState().setTab("clipboard", { after })).toBe("switched");
     expect(useUiStore.getState().tab).toBe("clipboard");
     expect(after).toHaveBeenCalledTimes(1);
+  });
+
+  it("从帮助中心切换到其他业务页时清除旧来源页", () => {
+    useUiStore.setState({ tab: "help", helpReturnTab: "settings" });
+
+    expect(useUiStore.getState().setTab("roadmap")).toBe("switched");
+    expect(useUiStore.getState().tab).toBe("roadmap");
+    expect(useUiStore.getState().helpReturnTab).toBeNull();
   });
 
   it("未保存草稿：返回 pending，after 只在确认后执行；取消不执行", () => {

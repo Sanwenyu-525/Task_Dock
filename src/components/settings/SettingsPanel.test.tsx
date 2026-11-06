@@ -25,6 +25,25 @@ vi.mock("../../lib/bridge", () => ({
   performanceDiagnostics: vi.fn(),
   agentRetentionRun: vi.fn(),
   agentInboxRetry: vi.fn(),
+  agentMcpStatus: vi.fn(async () => ({ enabled: false, running: false, port: null, agent_count: 0, started_at: null })),
+  agentMcpList: vi.fn(async () => []),
+  agentMcpCreate: vi.fn(),
+  agentMcpRotateToken: vi.fn(),
+  agentMcpSetScope: vi.fn(),
+  agentMcpGrantProject: vi.fn(),
+  agentMcpRevokeProject: vi.fn(),
+  agentMcpRevoke: vi.fn(),
+  agentMcpAuditList: vi.fn(async (offset: number, limit: number) => ({ items: [], total: 0, offset, limit })),
+  agentMcpConfigSnippet: vi.fn(),
+  planningListProjects: vi.fn(async () => []),
+  resourceSnapshot: vi.fn(async () => ({
+    sampledAt: "2026-11-06T00:00:00.000Z",
+    application: { knownCacheBytes: null, knownCacheFiles: null, status: "unavailable" },
+    memory: { totalBytes: null, availableBytes: null },
+    disks: [],
+  })),
+  resourceCleanupPreview: vi.fn(),
+  resourceCleanupExecute: vi.fn(),
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
   applyWindowMaterial: vi.fn(async () => ({ applied: false, effect: "none", os_version: "" })),
@@ -48,10 +67,11 @@ vi.mock("../navigation/AppPicker", () => ({ default: () => null }));
 vi.mock("./hotkeys/HotkeysSection", () => ({ default: () => null }));
 vi.mock("../../i18n/LanguageSetting", () => ({ default: () => null }));
 
-import { listBackups } from "../../lib/bridge";
+import { listBackups, resourceSnapshot } from "../../lib/bridge";
 import { SETTINGS_SECTIONS_STORAGE_KEY } from "../../lib/settingsSections";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useOnboardingStore } from "../../store/useOnboardingStore";
 import SettingsPanel from "./SettingsPanel";
 
 const BASE_SETTINGS: Settings = {
@@ -67,6 +87,7 @@ const BASE_SETTINGS: Settings = {
   http_enabled: false,
   http_port: 7331,
   http_token: "",
+  mcp_server_enabled: false,
   mock_enabled: false,
   notify_reminder: true,
   notify_agent: true,
@@ -123,6 +144,8 @@ const SECTION_TITLES = [
   "应用与快捷方式",
   "智能剪贴板",
   "通知",
+  "资源管理与清理",
+  "帮助与教程",
   "Agent 接入",
   "数据与备份",
   "性能诊断",
@@ -151,7 +174,7 @@ function foldableBodyCount(): number {
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
-  useUiStore.setState({ appConfig: null });
+  useUiStore.setState({ appConfig: null, tab: "settings", helpReturnTab: null });
   useSettingsStore.setState({
     settings: BASE_SETTINGS,
     materialInfo: null,
@@ -235,14 +258,58 @@ describe("设置页分组折叠", () => {
     expectExpanded(sectionHead("外观与主题"), false);
   });
 
+  it("资源清理入口使用稳定分组 ID 并在展开时读取概览", async () => {
+    render(<SettingsPanel />);
+    fireEvent.click(sectionHead("资源管理与清理"));
+
+    await waitFor(() => expect(vi.mocked(resourceSnapshot)).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("资源概览")).toBeTruthy();
+    expect(localStorage.getItem(SETTINGS_SECTIONS_STORAGE_KEY)).toContain('"resource-cleanup":true');
+  });
+
+  it("帮助与教程设置可打开帮助中心并重新打开新手引导", () => {
+    useOnboardingStore.setState({ open: false, step: 0, hydrated: true, done: true, hasNewContent: false });
+    render(<SettingsPanel />);
+    fireEvent.click(sectionHead("帮助与教程"));
+
+    fireEvent.click(screen.getByRole("button", { name: "打开帮助中心" }));
+    expect(useUiStore.getState().tab).toBe("help");
+    expect(useUiStore.getState().helpReturnTab).toBe("settings");
+
+    fireEvent.click(screen.getByRole("button", { name: "重新打开新手引导" }));
+    expect(useOnboardingStore.getState().open).toBe(true);
+    expect(useOnboardingStore.getState().step).toBe(0);
+  });
+
+  it("MCP 服务开关默认关闭并通过设置更新", async () => {
+    render(<SettingsPanel />);
+    fireEvent.click(sectionHead("Agent 接入"));
+
+    expect(screen.getByRole("button", { name: "查看帮助：MCP 服务器：规划数据的授权读写" })).toBeTruthy();
+
+    const toggle = screen.getByRole("switch", { name: "MCP 规划数据访问服务（默认关闭）" });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(useSettingsStore.getState().update).toHaveBeenCalledWith({ mcp_server_enabled: true }),
+    );
+  });
+
+  it("数据与备份区提供对应的恢复教程入口", () => {
+    render(<SettingsPanel />);
+    fireEvent.click(sectionHead("数据与备份"));
+
+    expect(screen.getByRole("button", { name: "查看帮助：备份与恢复：数据在哪些环节受保护" })).toBeTruthy();
+  });
+
   it("「自定义导航」一次性意图会展开导航分区并清除标记", async () => {
     sessionStorage.setItem("taskdock.settings.reveal.v1", "navigation");
     render(<SettingsPanel />);
 
     await waitFor(() => expectExpanded(sectionHead("导航自定义"), true));
-    // 数字与 navigationRegistry 默认全部常驻的 left 入口数一致（v0.11 新增 help 后为 12）；
+    // 数字与 navigationRegistry 默认常驻的 left 入口数一致（帮助入口默认隐藏）；
     // 再新增常驻入口时需同步更新。
-    expect(screen.getByText(/常驻 12 \/ 12 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 11 \/ 12 项/)).toBeTruthy();
     expect(sessionStorage.getItem("taskdock.settings.reveal.v1")).toBeNull();
   });
 

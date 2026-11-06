@@ -244,12 +244,10 @@ pub(crate) fn run_plan(
     // 前者意味着原内容无法恢复，必须如实提前说明，不能等到失败时才发现。
     match snapshot.state {
         SnapshotState::Captured | SnapshotState::Empty => {}
-        SnapshotState::Unsupported => notes.push(
-            "粘贴前剪贴板包含无法完整保存的格式，粘贴后无法恢复原内容".into(),
-        ),
-        SnapshotState::Unreadable => {
-            notes.push("粘贴前无法读取剪贴板，原内容可能无法恢复".into())
+        SnapshotState::Unsupported => {
+            notes.push("粘贴前剪贴板包含无法完整保存的格式，粘贴后无法恢复原内容".into())
         }
+        SnapshotState::Unreadable => notes.push("粘贴前无法读取剪贴板，原内容可能无法恢复".into()),
     }
     let mut states: Vec<(String, ItemState)> = Vec::new();
     let mut status = "completed";
@@ -1983,7 +1981,11 @@ mod tests {
         assert_eq!(outcome.status, "failed");
         assert!(!outcome.user_took_over, "无法验证不等于用户接管");
         assert_eq!(outcome.sent, 0);
-        assert_eq!(io.applied.get(), 0, "无法验证时绝不能执行 EmptyClipboard/写入");
+        assert_eq!(
+            io.applied.get(),
+            0,
+            "无法验证时绝不能执行 EmptyClipboard/写入"
+        );
         assert_eq!(
             outcome.remaining,
             vec!["a".to_string(), "b".to_string()],

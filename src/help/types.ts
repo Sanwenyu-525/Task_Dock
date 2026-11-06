@@ -81,5 +81,7 @@ export interface HelpArticle {
   contentVersion: number;
   /** 最近一次人工核对针对的发布版本（如 "v0.11"），非空。 */
   reviewedForVersion: string;
+  /** 最近一次人工核对过的操作契约版本；缺失表示该文章尚未纳入变更影响映射。 */
+  reviewedOperationContractVersions?: Readonly<Record<string, number>>;
   status: HelpArticleStatus;
 }

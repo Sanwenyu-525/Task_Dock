@@ -16,6 +16,7 @@
 //! - 托管复制写 `.part` 临时文件后原子改名，中断不产生半份"完整"文件；启动时清理残留 `.part`；
 //! - 复制前检查磁盘剩余空间与配额；流式分块复制，不整读进内存。
 
+use std::collections::HashSet;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -122,7 +123,7 @@ pub struct ShelfDeleteReport {
     /// 因收藏/置顶被保护而跳过的条目数
     pub skipped: i64,
     pub freed_bytes: i64,
-    /// 数据库已删除但文件删除失败的数量；下次清理重试
+    /// 数据库记录已删除但托管文件或缩略图删除失败的文件数；下次清理重试
     pub failed_files: i64,
 }
 
@@ -133,6 +134,8 @@ pub struct ShelfCleanupReport {
     pub candidates: i64,
     /// 因收藏/置顶保护被跳过的过期条目数
     pub skipped_protected: i64,
+    /// 未尝试删除的 .part/.tmp 文件数；正在写入或生命周期不明时保留。
+    pub temporary_files_skipped: i64,
     /// 预计/实际释放的托管字节
     pub freed_bytes: i64,
     pub failed_files: i64,
@@ -156,9 +159,15 @@ pub struct ShelfTaskLink {
 
 /// 并发复制闸：阻塞式（spawn_blocking 线程内使用），限制同时落盘的副本数，
 /// 防止批量拖入打满磁盘带宽与线程池。
-struct CopyGate {
-    active: Mutex<usize>,
+pub(crate) struct CopyGate {
+    state: Mutex<CopyGateState>,
     cv: Condvar,
+}
+
+#[derive(Default)]
+struct CopyGateState {
+    active: usize,
+    maintenance: bool,
 }
 
 /// RAII 许可：Drop 归还名额并唤醒等待者。
@@ -168,29 +177,53 @@ pub struct CopyPermit {
 
 impl Drop for CopyPermit {
     fn drop(&mut self) {
-        let mut active = self.gate.active.lock().expect("复制闸锁");
-        *active -= 1;
-        self.gate.cv.notify_one();
+        let mut state = self.gate.state.lock().expect("复制闸锁");
+        state.active -= 1;
+        self.gate.cv.notify_all();
+    }
+}
+
+/// 独占暂存架文件区的维护许可；持有期间不会有新的写入许可。
+pub struct ShelfMaintenancePermit {
+    gate: Arc<CopyGate>,
+}
+
+impl Drop for ShelfMaintenancePermit {
+    fn drop(&mut self) {
+        let mut state = self.gate.state.lock().expect("暂存架维护闸锁");
+        state.maintenance = false;
+        self.gate.cv.notify_all();
     }
 }
 
 impl CopyGate {
     fn new() -> Self {
         Self {
-            active: Mutex::new(0),
+            state: Mutex::new(CopyGateState::default()),
             cv: Condvar::new(),
         }
     }
 
     fn acquire(self: &Arc<Self>) -> CopyPermit {
-        let mut active = self.active.lock().expect("复制闸锁");
-        while *active >= COPY_CONCURRENCY {
-            active = self.cv.wait(active).expect("复制闸锁");
+        let mut state = self.state.lock().expect("复制闸锁");
+        while state.maintenance || state.active >= COPY_CONCURRENCY {
+            state = self.cv.wait(state).expect("复制闸锁");
         }
-        *active += 1;
+        state.active += 1;
         CopyPermit {
             gate: Arc::clone(self),
         }
+    }
+
+    fn try_acquire_maintenance(self: &Arc<Self>) -> Option<ShelfMaintenancePermit> {
+        let mut state = self.state.try_lock().ok()?;
+        if state.maintenance || state.active > 0 {
+            return None;
+        }
+        state.maintenance = true;
+        Some(ShelfMaintenancePermit {
+            gate: Arc::clone(self),
+        })
     }
 }
 
@@ -204,10 +237,23 @@ pub struct ShelfState {
 
 impl ShelfState {
     pub fn new(db: Arc<Db>, root: PathBuf, app: tauri::AppHandle) -> AppResult<Self> {
-        std::fs::create_dir_all(root.join("files"))?;
-        std::fs::create_dir_all(root.join("images"))?;
-        std::fs::create_dir_all(root.join("thumbs"))?;
-        purge_part_files(&root);
+        validate_shelf_path(&root)?;
+        std::fs::create_dir_all(&root)?;
+        let canonical_root = canonical_shelf_root(&root)?
+            .ok_or_else(|| AppError::Validation("暂存架根目录不可用".into()))?;
+        for sub in ["files", "images", "thumbs"] {
+            let dir = root.join(sub);
+            validate_shelf_path(&dir)?;
+            std::fs::create_dir_all(&dir)?;
+            let metadata = std::fs::symlink_metadata(&dir)?;
+            if !metadata.is_dir()
+                || is_reparse_point(&metadata)
+                || std::fs::canonicalize(&dir)?.parent() != Some(canonical_root.as_path())
+            {
+                return Err(AppError::Validation(format!("暂存架目录不安全（{sub}）")));
+            }
+        }
+        purge_part_files(&root)?;
         // 上次退出/崩溃留下的移动日志：启动时按最小恢复规则对齐磁盘与数据库。
         fsops::recover_pending_file_ops(&db);
         Ok(Self {
@@ -221,6 +267,11 @@ impl ShelfState {
     /// 取复制许可（阻塞式；批量拖入时自然排队，不阻塞 UI 线程）。
     pub fn acquire_copy_permit(&self) -> CopyPermit {
         self.copy_gate.acquire()
+    }
+
+    /// 立即尝试独占文件区；有复制/添加正在进行或已有维护任务时返回 None。
+    pub fn try_acquire_maintenance_permit(&self) -> Option<ShelfMaintenancePermit> {
+        self.copy_gate.try_acquire_maintenance()
     }
 }
 
@@ -261,6 +312,40 @@ fn is_within_root(root: &Path, file: &Path) -> bool {
         return false;
     };
     file_canon.starts_with(root_canon)
+}
+
+fn validate_shelf_path(path: &Path) -> AppResult<()> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(AppError::Validation("暂存架路径不安全".into()));
+    }
+    for ancestor in path.ancestors() {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(metadata) if is_reparse_point(&metadata) => {
+                return Err(AppError::Validation("暂存架路径包含重解析点".into()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn canonical_shelf_root(root: &Path) -> AppResult<Option<PathBuf>> {
+    validate_shelf_path(root)?;
+    let metadata = match std::fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_dir() || is_reparse_point(&metadata) {
+        return Err(AppError::Validation("暂存架根目录不是安全目录".into()));
+    }
+    Ok(Some(std::fs::canonicalize(root)?))
 }
 
 /// 引用路径规范化：绝对路径 + 词法消解 `.`/`..`（不触盘、不改写大小写），
@@ -343,8 +428,7 @@ fn sanitize_ext(ext: &str) -> String {
 }
 
 fn ext_of(path: &Path) -> Option<String> {
-    path.extension()
-        .map(|e| sanitize_ext(&e.to_string_lossy()))
+    path.extension().map(|e| sanitize_ext(&e.to_string_lossy()))
 }
 
 fn is_image_ext(ext: &str) -> bool {
@@ -390,9 +474,7 @@ fn disk_free_bytes(path: &Path) -> Option<u64> {
     let mut avail: u64 = 0;
     let mut total: u64 = 0;
     let mut free: u64 = 0;
-    let ok = unsafe {
-        GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut free)
-    };
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut free) };
     if ok != 0 {
         Some(free)
     } else {
@@ -662,11 +744,17 @@ pub fn add_managed(
         KIND_FILE
     };
     let display_name = validate_add_name(
-        &src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "未命名".into()),
+        &src.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "未命名".into()),
     )?;
 
     let id = uuid::Uuid::new_v4().to_string();
-    let sub = if kind == KIND_IMAGE { "images" } else { "files" };
+    let sub = if kind == KIND_IMAGE {
+        "images"
+    } else {
+        "files"
+    };
     let file_name = match &ext {
         Some(e) => format!("{id}.{e}"),
         None => id.clone(),
@@ -860,7 +948,12 @@ pub struct ListFilter {
 pub fn list(db: &Db, filter: &ListFilter) -> AppResult<ShelfPage> {
     let mut wheres: Vec<String> = Vec::new();
     let mut bind_values: Vec<String> = Vec::new();
-    if let Some(term) = filter.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(term) = filter
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         wheres.push(
             "(display_name LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\')"
                 .into(),
@@ -1030,9 +1123,11 @@ pub fn group_create(db: &Db, name: &str) -> AppResult<ShelfGroup> {
     }
     let id = uuid::Uuid::new_v4().to_string();
     let sort: i64 = db.with_read(|conn| {
-        conn.query_row("SELECT COALESCE(MAX(sort_order),0)+1 FROM shelf_groups", [], |r| {
-            r.get(0)
-        })
+        conn.query_row(
+            "SELECT COALESCE(MAX(sort_order),0)+1 FROM shelf_groups",
+            [],
+            |r| r.get(0),
+        )
         .map_err(AppError::from)
     })?;
     let created = now_iso();
@@ -1135,9 +1230,8 @@ pub fn update(db: &Db, id: &str, patch: &UpdatePatch) -> AppResult<ShelfItem> {
     }
     if let Some(exp) = &patch.expire_at {
         if let Some(iso) = exp {
-            chrono::DateTime::parse_from_rfc3339(iso).map_err(|_| {
-                AppError::Validation("expire_at 必须是 ISO8601 时间字符串".into())
-            })?;
+            chrono::DateTime::parse_from_rfc3339(iso)
+                .map_err(|_| AppError::Validation("expire_at 必须是 ISO8601 时间字符串".into()))?;
         }
         sets.push("expire_at = ?");
         values.push(Box::new(exp.clone()));
@@ -1182,57 +1276,127 @@ pub fn delete_items(
             failed_files: 0,
         });
     }
-    let mut skipped = 0i64;
-    let mut pending: Vec<PendingFile> = Vec::new();
-    {
-        let ph = placeholders(ids.len());
-        let sql = format!(
-            "SELECT id, managed_path, byte_size, favorite, pinned FROM shelf_items WHERE id IN ({ph})"
-        );
-        db.with_read(|conn| {
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params_from_iter(ids.iter()), |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, i64>(4)?,
-                ))
-            })?;
-            for r in rows {
-                let (id, managed, size, fav, pin) = r?;
-                if !include_protected && (fav != 0 || pin != 0) {
-                    skipped += 1;
+    delete_matching(db, root, Some(ids), include_protected)
+}
+
+pub fn clear(db: &Db, root: &Path, include_protected: bool) -> AppResult<ShelfDeleteReport> {
+    delete_matching(db, root, None, include_protected)
+}
+
+/// 读取保护状态并在同一写事务中删除，避免状态在预读与删除之间变化。
+/// 指定 ID 分批绑定，避免批量操作超过 SQLite 的参数上限；清空直接按条件删除。
+fn delete_matching(
+    db: &Db,
+    root: &Path,
+    ids: Option<&[String]>,
+    include_protected: bool,
+) -> AppResult<ShelfDeleteReport> {
+    const ID_BATCH_SIZE: usize = 500;
+
+    let (deleted, skipped, pending) = db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let mut skipped = 0i64;
+        let mut pending = Vec::new();
+        let mut deleted = 0i64;
+
+        if let Some(ids) = ids {
+            let mut seen = HashSet::with_capacity(ids.len());
+            let unique_ids = ids
+                .iter()
+                .filter(|id| seen.insert(id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+
+            for id_batch in unique_ids.chunks(ID_BATCH_SIZE) {
+                let ph = placeholders(id_batch.len());
+                let select_sql = format!(
+                    "SELECT id, managed_path, byte_size, favorite, pinned FROM shelf_items WHERE id IN ({ph})"
+                );
+                let batch_pending = {
+                    let mut stmt = tx.prepare(&select_sql)?;
+                    let rows = stmt.query_map(params_from_iter(id_batch.iter()), |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, i64>(4)?,
+                        ))
+                    })?;
+                    let mut batch_pending = Vec::new();
+                    for row in rows {
+                        let (id, managed_path, size, favorite, pinned) = row?;
+                        if !include_protected && (favorite != 0 || pinned != 0) {
+                            skipped += 1;
+                        } else {
+                            batch_pending.push(PendingFile {
+                                id,
+                                managed_path,
+                                size,
+                            });
+                        }
+                    }
+                    batch_pending
+                };
+
+                if batch_pending.is_empty() {
                     continue;
                 }
-                pending.push(PendingFile {
-                    id,
-                    managed_path: managed,
-                    size,
-                });
+                let delete_ids = batch_pending
+                    .iter()
+                    .map(|item| item.id.clone())
+                    .collect::<Vec<_>>();
+                let delete_ph = placeholders(delete_ids.len());
+                let protected_clause = if include_protected {
+                    ""
+                } else {
+                    " AND favorite = 0 AND pinned = 0"
+                };
+                deleted += tx.execute(
+                    &format!(
+                        "DELETE FROM shelf_items WHERE id IN ({delete_ph}){protected_clause}"
+                    ),
+                    params_from_iter(delete_ids.iter()),
+                )? as i64;
+                pending.extend(batch_pending);
             }
-            Ok(())
-        })?;
-    }
-    if pending.is_empty() {
-        return Ok(ShelfDeleteReport {
-            deleted: 0,
-            skipped,
-            freed_bytes: 0,
-            failed_files: 0,
-        });
-    }
-    let del_ids: Vec<String> = pending.iter().map(|p| p.id.clone()).collect();
-    let deleted = db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let ph = placeholders(del_ids.len());
-        let n = tx.execute(
-            &format!("DELETE FROM shelf_items WHERE id IN ({ph})"),
-            params_from_iter(del_ids.iter()),
-        )? as i64;
+        } else {
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT id, managed_path, byte_size, favorite, pinned FROM shelf_items",
+                )?;
+                let rows = stmt.query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (id, managed_path, size, favorite, pinned) = row?;
+                    if !include_protected && (favorite != 0 || pinned != 0) {
+                        skipped += 1;
+                    } else {
+                        pending.push(PendingFile {
+                            id,
+                            managed_path,
+                            size,
+                        });
+                    }
+                }
+            }
+            let sql = if include_protected {
+                "DELETE FROM shelf_items"
+            } else {
+                "DELETE FROM shelf_items WHERE favorite = 0 AND pinned = 0"
+            };
+            deleted = tx.execute(sql, [])? as i64;
+        }
+
         tx.commit()?;
-        Ok(n)
+        Ok((deleted, skipped, pending))
     })?;
     let (freed, failed) = remove_owned_files(root, &pending);
     Ok(ShelfDeleteReport {
@@ -1243,19 +1407,6 @@ pub fn delete_items(
     })
 }
 
-pub fn clear(db: &Db, root: &Path, include_protected: bool) -> AppResult<ShelfDeleteReport> {
-    let ids: Vec<String> = db.with_read(|conn| {
-        let mut stmt = conn.prepare("SELECT id FROM shelf_items")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        let mut v = Vec::new();
-        for r in rows {
-            v.push(r?);
-        }
-        Ok(v)
-    })?;
-    delete_items(db, root, &ids, include_protected)
-}
-
 /// 删除 Task Dock 拥有的文件（托管主文件 + 缩略图），canonical 边界复核。
 /// 文件删除失败只计数不谎报；数据库行已删，残留文件由下次清理的孤儿扫描兜底。
 fn remove_owned_files(root: &Path, pending: &[PendingFile]) -> (i64, i64) {
@@ -1263,23 +1414,32 @@ fn remove_owned_files(root: &Path, pending: &[PendingFile]) -> (i64, i64) {
     let mut failed = 0i64;
     for p in pending {
         if let Some(rel) = &p.managed_path {
-            if let Ok(path) = safe_managed_rel(rel) {
-                let abs = root.join(path);
-                if abs.exists() {
-                    if is_within_root(root, &abs) {
-                        match std::fs::remove_file(&abs) {
+            match safe_managed_rel(rel) {
+                Ok(path) => {
+                    let abs = root.join(path);
+                    match std::fs::symlink_metadata(&abs) {
+                        Ok(_) if is_within_root(root, &abs) => match std::fs::remove_file(&abs) {
                             Ok(()) => freed += p.size,
                             Err(_) => failed += 1,
-                        }
-                    } else {
-                        failed += 1;
+                        },
+                        Ok(_) => failed += 1,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(_) => failed += 1,
                     }
                 }
+                Err(_) => failed += 1,
             }
         }
         let thumb = root.join(format!("thumbs/{}.png", p.id));
-        if thumb.exists() && is_within_root(root, &thumb) {
-            let _ = std::fs::remove_file(&thumb);
+        match std::fs::symlink_metadata(&thumb) {
+            Ok(_) if is_within_root(root, &thumb) => {
+                if std::fs::remove_file(&thumb).is_err() {
+                    failed += 1;
+                }
+            }
+            Ok(_) => failed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => failed += 1,
         }
     }
     (freed, failed)
@@ -1339,16 +1499,22 @@ pub fn cleanup_expired(
                 if is_protected && !include_protected {
                     // 收藏/置顶不参与过期判定（也不计入 skipped_protected：
                     // 它们根本不是候选；此字段只统计「过期但被保护」的条目）
-                    if effective_expire_at(expire_at.as_deref(), &created_at, settings.shelf_retention_days)
-                        .is_some_and(|t| t <= now)
+                    if effective_expire_at(
+                        expire_at.as_deref(),
+                        &created_at,
+                        settings.shelf_retention_days,
+                    )
+                    .is_some_and(|t| t <= now)
                     {
                         skipped_protected += 1;
                     }
                     continue;
                 }
-                if let Some(t) =
-                    effective_expire_at(expire_at.as_deref(), &created_at, settings.shelf_retention_days)
-                {
+                if let Some(t) = effective_expire_at(
+                    expire_at.as_deref(),
+                    &created_at,
+                    settings.shelf_retention_days,
+                ) {
                     if t <= now {
                         candidates.push(Cand {
                             id,
@@ -1371,6 +1537,7 @@ pub fn cleanup_expired(
             dry_run,
             candidates: candidates.len() as i64,
             skipped_protected,
+            temporary_files_skipped: 0,
             freed_bytes,
             failed_files: 0,
             orphan_files_removed: 0,
@@ -1378,81 +1545,439 @@ pub fn cleanup_expired(
     }
     let ids: Vec<String> = candidates.iter().map(|c| c.id.clone()).collect();
     let del = delete_items(db, root, &ids, true)?;
-    let orphans = purge_orphan_files(db, root);
+    let orphans = purge_orphan_files(db, root)?;
     Ok(ShelfCleanupReport {
         dry_run: false,
         candidates: del.deleted,
         skipped_protected,
+        temporary_files_skipped: orphans.skipped_temporary_files,
         freed_bytes: del.freed_bytes,
-        failed_files: del.failed_files,
-        orphan_files_removed: orphans,
+        failed_files: del.failed_files + orphans.failed_files,
+        orphan_files_removed: orphans.removed_files,
     })
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OrphanCleanupReport {
+    pub removed_files: i64,
+    pub skipped_files: i64,
+    pub skipped_temporary_files: i64,
+    pub failed_files: i64,
+}
+
+#[cfg(windows)]
+pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    // FILE_ATTRIBUTE_REPARSE_POINT also covers junctions, unlike is_symlink alone.
+    metadata.file_attributes() & 0x0400 != 0
+}
+
+#[cfg(not(windows))]
+pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+/// 读取文件系统对象身份，执行清理时用于区分同路径替换后的新文件。
+pub(crate) fn file_identity(path: &Path) -> Option<u128> {
+    let file = std::fs::File::open(path).ok()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
+        if ok == 0 {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        Some(
+            ((info.dwVolumeSerialNumber as u128) << 64)
+                | ((info.nFileIndexHigh as u128) << 32)
+                | info.nFileIndexLow as u128,
+        )
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = file.metadata().ok()?;
+        Some(((meta.dev() as u128) << 64) | meta.ino() as u128)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = file;
+        None
+    }
 }
 
 /// 孤儿文件兜底：数据库删除失败或复制中断留下的无主文件，下次清理时移除。
 /// 引用集合 = 全部 managed_path + 全部缩略图（thumbs/{id}.png）。
-pub fn purge_orphan_files(db: &Db, root: &Path) -> i64 {
-    let referenced: std::collections::HashSet<String> = {
+/// 任一引用查询失败时整轮中止，不使用部分引用集合判断孤儿。
+pub fn purge_orphan_files(db: &Db, root: &Path) -> AppResult<OrphanCleanupReport> {
+    // Both reference queries must succeed before any file is examined. Returning the local set
+    // only after the closure completes prevents a partial set from authorizing deletion.
+    let referenced = match db.with_read(|conn| {
         let mut set = std::collections::HashSet::new();
-        let _ = db.with_read(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT managed_path FROM shelf_items WHERE managed_path IS NOT NULL")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            for r in rows {
-                set.insert(r?);
-            }
-            let mut stmt = conn.prepare("SELECT id FROM shelf_items WHERE kind = 'image'")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            for r in rows {
-                set.insert(format!("thumbs/{}.png", r?));
-            }
-            Ok(())
-        });
-        set
+        let mut stmt =
+            conn.prepare("SELECT managed_path FROM shelf_items WHERE managed_path IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for row in rows {
+            set.insert(row?);
+        }
+
+        let mut stmt = conn.prepare("SELECT id FROM shelf_items WHERE kind = 'image'")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for row in rows {
+            set.insert(format!("thumbs/{}.png", row?));
+        }
+        Ok(set)
+    }) {
+        Ok(referenced) => referenced,
+        Err(error) => {
+            tracing::error!("暂存架孤儿清理因数据库引用查询失败而中止: {error}");
+            return Err(error);
+        }
     };
-    let mut removed = 0i64;
+
+    let mut report = OrphanCleanupReport::default();
+    let Some(canonical_root) = canonical_shelf_root(root)? else {
+        return Ok(report);
+    };
+
     for sub in ["files", "images", "thumbs"] {
         let dir = root.join(sub);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
+        let directory_metadata = match std::fs::symlink_metadata(&dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                report.failed_files += 1;
+                tracing::warn!("暂存架孤儿目录校验失败（{sub}）: {}", error.kind());
+                continue;
+            }
         };
-        for entry in entries.flatten() {
-            if !entry.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        if !directory_metadata.is_dir() || is_reparse_point(&directory_metadata) {
+            report.skipped_files += 1;
+            tracing::warn!("暂存架孤儿目录不是安全目录（{sub}），已跳过");
+            continue;
+        }
+        let canonical_dir = match std::fs::canonicalize(&dir) {
+            Ok(path) if path.parent() == Some(canonical_root.as_path()) => path,
+            Ok(_) => {
+                report.skipped_files += 1;
+                tracing::warn!("暂存架孤儿目录越出根目录（{sub}），已跳过");
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                report.failed_files += 1;
+                tracing::warn!("暂存架孤儿目录路径解析失败（{sub}）: {}", error.kind());
+                continue;
+            }
+        };
+        let entries = match std::fs::read_dir(&canonical_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                report.failed_files += 1;
+                tracing::warn!("暂存架孤儿目录读取失败（{sub}）: {}", error.kind());
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    report.failed_files += 1;
+                    tracing::warn!("暂存架孤儿目录项读取失败（{sub}）: {}", error.kind());
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    report.failed_files += 1;
+                    tracing::warn!("暂存架孤儿文件元数据读取失败（{sub}）: {}", error.kind());
+                    continue;
+                }
+            };
+            if !metadata.is_file() || is_reparse_point(&metadata) {
+                report.skipped_files += 1;
+                continue;
+            }
+            let canonical_path = match std::fs::canonicalize(&path) {
+                Ok(path) if path.parent() == Some(canonical_dir.as_path()) => path,
+                Ok(_) => {
+                    report.skipped_files += 1;
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    report.failed_files += 1;
+                    tracing::warn!("暂存架孤儿文件路径解析失败（{sub}）: {}", error.kind());
+                    continue;
+                }
+            };
+            // Retain only a canonical child path before the transactional reference recheck.
+            if !canonical_path.starts_with(&canonical_root) {
+                report.skipped_files += 1;
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
             if name.ends_with(".part") || name.ends_with(".tmp") {
-                if std::fs::remove_file(entry.path()).is_ok() {
-                    removed += 1;
-                }
+                report.skipped_files += 1;
+                report.skipped_temporary_files += 1;
                 continue;
             }
             let rel = format!("{sub}/{name}");
             if !referenced.contains(&rel) {
-                if std::fs::remove_file(entry.path()).is_ok() {
-                    removed += 1;
+                let Some(modified_ns) = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|time| time.as_nanos())
+                else {
+                    report.skipped_files += 1;
+                    continue;
+                };
+                let Some(identity) = file_identity(&canonical_path) else {
+                    report.skipped_files += 1;
+                    continue;
+                };
+                let outcome = match remove_orphan_if_unreferenced(
+                    db,
+                    root,
+                    &canonical_root,
+                    &canonical_dir,
+                    sub,
+                    &name,
+                    metadata.len(),
+                    modified_ns,
+                    identity,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        tracing::error!("暂存架孤儿清理因复查引用失败而中止: {error}");
+                        return Err(error);
+                    }
+                };
+                match outcome {
+                    OrphanRemoveOutcome::Removed => report.removed_files += 1,
+                    OrphanRemoveOutcome::Skipped => report.skipped_files += 1,
+                    OrphanRemoveOutcome::Failed(kind) => {
+                        report.failed_files += 1;
+                        tracing::warn!("暂存架孤儿文件删除失败: {kind}");
+                    }
+                }
+            } else {
+                report.skipped_files += 1;
+            }
+        }
+    }
+    Ok(report)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrphanRemoveOutcome {
+    Removed,
+    Skipped,
+    Failed(std::io::ErrorKind),
+}
+
+/// 在 SQLite writer transaction 持有期间重新核验引用并删除；事务锁期间不能有并发
+/// 写入为同一路径新增引用。删除前重新验证目录与文件身份（大小/mtime/常规文件）。
+fn remove_orphan_if_unreferenced(
+    db: &Db,
+    root: &Path,
+    canonical_root: &Path,
+    canonical_dir: &Path,
+    sub: &str,
+    name: &str,
+    expected_size: u64,
+    expected_modified_ns: u128,
+    expected_identity: u128,
+) -> AppResult<OrphanRemoveOutcome> {
+    let relative = format!("{sub}/{name}");
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> AppResult<OrphanRemoveOutcome> {
+            let referenced: bool = if sub == "thumbs" {
+                let id = name.strip_suffix(".png").unwrap_or_default();
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM shelf_items WHERE id = ?1 AND kind = 'image')",
+                    [id],
+                    |row| row.get(0),
+                )?
+            } else {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM shelf_items WHERE managed_path = ?1)",
+                    [&relative],
+                    |row| row.get(0),
+                )?
+            };
+            if referenced {
+                return Ok(OrphanRemoveOutcome::Skipped);
+            }
+
+            let dir = root.join(sub);
+            let dir_meta = match std::fs::symlink_metadata(&dir) {
+                Ok(meta) if meta.is_dir() && !is_reparse_point(&meta) => meta,
+                _ => return Ok(OrphanRemoveOutcome::Skipped),
+            };
+            let _ = dir_meta;
+            if std::fs::canonicalize(&dir).ok().as_deref() != Some(canonical_dir) {
+                return Ok(OrphanRemoveOutcome::Skipped);
+            }
+            let path = canonical_dir.join(name);
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_file() && !is_reparse_point(&meta) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(OrphanRemoveOutcome::Skipped)
+                }
+                Ok(_) => return Ok(OrphanRemoveOutcome::Skipped),
+                Err(error) => return Ok(OrphanRemoveOutcome::Failed(error.kind())),
+            };
+            let canonical_path = match std::fs::canonicalize(&path) {
+                Ok(path)
+                    if path.parent() == Some(canonical_dir) && path.starts_with(canonical_root) =>
+                {
+                    path
+                }
+                _ => return Ok(OrphanRemoveOutcome::Skipped),
+            };
+            match crate::fs_safety::remove_file_if_unchanged(
+                &canonical_path,
+                expected_size,
+                expected_modified_ns,
+                expected_identity,
+            ) {
+                Ok(true) => Ok(OrphanRemoveOutcome::Removed),
+                Ok(false) => Ok(OrphanRemoveOutcome::Skipped),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(OrphanRemoveOutcome::Skipped)
+                }
+                Err(error) => Ok(OrphanRemoveOutcome::Failed(error.kind())),
+            }
+        })();
+        match result {
+            Ok(outcome) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(outcome)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    })
+}
+
+/// 仅在暂存架运行时状态创建前清理上次退出遗留的 `.part`/`.tmp` 文件。
+pub fn purge_part_files(root: &Path) -> AppResult<()> {
+    let Some(canonical_root) = canonical_shelf_root(root)? else {
+        return Ok(());
+    };
+    for sub in ["files", "images", "thumbs"] {
+        let dir = root.join(sub);
+        let metadata = match std::fs::symlink_metadata(&dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                tracing::warn!("启动时暂存架目录检查失败（{sub}）: {}", error.kind());
+                continue;
+            }
+        };
+        if !metadata.is_dir() || is_reparse_point(&metadata) {
+            tracing::warn!("启动时暂存架目录不是安全目录（{sub}），跳过残留清理");
+            continue;
+        }
+        let canonical_dir = match std::fs::canonicalize(&dir) {
+            Ok(path) if path.parent() == Some(canonical_root.as_path()) => path,
+            Ok(_) => {
+                tracing::warn!("启动时暂存架目录越出根目录（{sub}），跳过残留清理");
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                tracing::warn!("启动时暂存架目录解析失败（{sub}）: {}", error.kind());
+                continue;
+            }
+        };
+        let entries = match std::fs::read_dir(&canonical_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                tracing::warn!("启动时暂存架目录读取失败（{sub}）: {}", error.kind());
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    tracing::warn!("启动时暂存架目录项读取失败（{sub}）: {}", error.kind());
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    tracing::warn!("启动时暂存架残留元数据读取失败（{sub}）: {}", error.kind());
+                    continue;
+                }
+            };
+            if !metadata.is_file() || is_reparse_point(&metadata) {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.ends_with(".part") || name.ends_with(".tmp") {
+                let canonical_path = match std::fs::canonicalize(&path) {
+                    Ok(path) if path.parent() == Some(canonical_dir.as_path()) => path,
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        tracing::warn!("启动时暂存架残留路径解析失败（{sub}）: {}", error.kind());
+                        continue;
+                    }
+                };
+                if !canonical_path.starts_with(&canonical_root) {
+                    continue;
+                }
+                let Some(modified_ns) = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|time| time.as_nanos())
+                else {
+                    continue;
+                };
+                let Some(identity) = file_identity(&canonical_path) else {
+                    continue;
+                };
+                match crate::fs_safety::remove_file_if_unchanged(
+                    &canonical_path,
+                    metadata.len(),
+                    modified_ns,
+                    identity,
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        tracing::warn!("启动时暂存架残留删除失败（{sub}）: {}", error.kind())
+                    }
                 }
             }
         }
     }
-    removed
-}
-
-/// 启动/统计时清理中断复制残留的 .part 文件。
-pub fn purge_part_files(root: &Path) {
-    for sub in ["files", "images", "thumbs"] {
-        let dir = root.join(sub);
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.ends_with(".part") || name.ends_with(".tmp") {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
+    Ok(())
 }
 
 // ── 存在性检查 / 打开 / 预览 ────────────────────────────────
@@ -1538,7 +2063,9 @@ pub fn resolve_item_file(db: &Db, root: &Path, id: &str) -> AppResult<(ShelfItem
                 .ok_or_else(|| AppError::Validation("托管条目缺少文件路径".into()))?;
             let path = root.join(safe_managed_rel(rel)?);
             if !path.exists() {
-                return Err(AppError::NotFound("托管文件已丢失（可能被外部删除）".into()));
+                return Err(AppError::NotFound(
+                    "托管文件已丢失（可能被外部删除）".into(),
+                ));
             }
             Ok((item, path))
         }
@@ -1562,9 +2089,7 @@ pub fn read_text(db: &Db, root: &Path, id: &str) -> AppResult<(String, bool)> {
     }
     let ext = item.file_ext.clone().unwrap_or_default();
     if !is_text_ext(&ext) {
-        return Err(AppError::Validation(
-            "该文件类型不支持文本预览".into(),
-        ));
+        return Err(AppError::Validation("该文件类型不支持文本预览".into()));
     }
     let (_, path) = resolve_item_file(db, root, id)?;
     let meta = std::fs::metadata(&path)?;
@@ -1633,7 +2158,10 @@ pub fn read_image_data_url(
         _ => "application/octet-stream",
     };
     use base64::Engine as _;
-    Ok(Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes))))
+    Ok(Some(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    )))
 }
 
 // ── 任务关联 ────────────────────────────────────────────────
@@ -1721,16 +2249,15 @@ pub(crate) fn snapshot_clipboard_item(
     clipboard_root: &Path,
     clipboard_item_id: &str,
 ) -> AppResult<ClipboardSnapshot> {
-    let (kind, text, file_paths_json): (String, Option<String>, Option<String>) = db.with_read(
-        |conn| {
+    let (kind, text, file_paths_json): (String, Option<String>, Option<String>) =
+        db.with_read(|conn| {
             conn.query_row(
                 "SELECT kind, text, file_paths FROM clipboard_items WHERE id = ?1",
                 params![clipboard_item_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(|_| AppError::NotFound(format!("剪贴板条目不存在: {clipboard_item_id}")))
-        },
-    )?;
+        })?;
     match kind.as_str() {
         "url" => Ok(ClipboardSnapshot::Url {
             url: text.unwrap_or_default(),
@@ -1863,7 +2390,10 @@ pub fn add_managed_png(
 /// 挂载说明：调度器 scheduler.rs 属智能提醒模块（跨模块边界禁止修改），
 /// 故由暂存架自带线程承载；频率极低（1h）、随进程退出回收、每次运行前
 /// 重读设置（fail-closed：设置损坏时跳过本轮，绝不臆测配置继续清理）。
-pub fn start_auto_cleanup(db: Arc<Db>, root: PathBuf) {
+pub fn start_auto_cleanup(state: &ShelfState) {
+    let db = Arc::clone(&state.db);
+    let root = state.root.clone();
+    let gate = Arc::clone(&state.copy_gate);
     let _ = std::thread::Builder::new()
         .name("shelf-auto-cleanup".into())
         .spawn(move || loop {
@@ -1878,6 +2408,10 @@ pub fn start_auto_cleanup(db: Arc<Db>, root: PathBuf) {
             if !settings.shelf_auto_cleanup_enabled {
                 continue;
             }
+            let Some(_maintenance) = gate.try_acquire_maintenance() else {
+                tracing::debug!("暂存架文件操作进行中，跳过本轮自动清理");
+                continue;
+            };
             match cleanup_expired(&db, &root, &settings, false, false) {
                 Ok(r) if r.candidates > 0 || r.orphan_files_removed > 0 => {
                     tracing::info!(

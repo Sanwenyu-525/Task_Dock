@@ -41,6 +41,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
 import ClipboardPanel from "./ClipboardPanel";
 import ClipboardWorkspace from "./ClipboardWorkspace";
 import type { ClipboardItem, ClipboardView, DeleteReport } from "../../lib/bridge";
+import { EXIT_MS } from "../../lib/motion";
 import { useClipboardStore, resetClipboardRequestState } from "../../store/useClipboardStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -52,6 +53,27 @@ import { useUiStore } from "../../store/useUiStore";
  */
 async function flushExitCommit() {
   await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function holdExitTimers() {
+  const callbacks: (() => void)[] = [];
+  const realSetTimeout = window.setTimeout.bind(window);
+  vi.spyOn(window, "setTimeout").mockImplementation((handler, timeout, ...args) => {
+    if (timeout === EXIT_MS && typeof handler === "function") {
+      callbacks.push(() => handler(...args));
+      return 0 as unknown as NodeJS.Timeout;
+    }
+    return realSetTimeout(handler, timeout, ...args) as unknown as NodeJS.Timeout;
+  });
+  return callbacks;
+}
+
+async function finishHeldExitTimers(callbacks: readonly (() => void)[]) {
+  await act(async () => {
+    expect(callbacks).toHaveLength(2);
+    callbacks.forEach((callback) => callback());
     await Promise.resolve();
   });
 }
@@ -165,11 +187,23 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   useUiStore.setState({ tab: "tasks", clipboardOpen: false, toast: null });
   useSettingsStore.setState({ settings: null });
 });
 
 describe("剪贴板主页面", () => {
+  it("页面形态的上下文帮助打开剪贴板教程", async () => {
+    const user = userEvent.setup();
+    render(<ClipboardPanel />);
+
+    await user.click(screen.getByRole("button", { name: "查看帮助：剪贴板历史：查找、收藏与复用" }));
+    await user.click(await screen.findByRole("button", { name: "查看完整教程" }));
+
+    expect(useUiStore.getState().tab).toBe("help");
+    expect(useUiStore.getState().helpOpenRequest?.articleId).toBe("help.clipboard.history");
+  });
+
   it("进入页面即拉取历史，并渲染条目与统计", async () => {
     render(<ClipboardPanel />);
 
@@ -350,6 +384,7 @@ describe("剪贴板主页面", () => {
     render(<ClipboardPanel />);
     await screen.findByText("第 0 条剪贴板预览");
     const callsBefore = bridge.clipboardView.mock.calls.length;
+    const exitCallbacks = holdExitTimers();
 
     await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
@@ -362,6 +397,7 @@ describe("剪贴板主页面", () => {
     expect(bridge.clipboardView.mock.calls.length).toBe(callsBefore);
 
     // 一次性定时器到点后移除退出态并静默刷新
+    await finishHeldExitTimers(exitCallbacks);
     await waitFor(() => expect(bridge.clipboardView.mock.calls.length).toBe(callsBefore + 1));
     expect(document.querySelector(".clip-item.removing")).toBeNull();
   });
@@ -460,6 +496,7 @@ describe("操作反馈与离场", () => {
     const user = userEvent.setup();
     render(<ClipboardPanel />);
     await screen.findByText("第 0 条剪贴板预览");
+    const exitCallbacks = holdExitTimers();
 
     await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
@@ -478,26 +515,29 @@ describe("操作反馈与离场", () => {
     expect(document.querySelectorAll('[data-clip-id="ci0"]')).toHaveLength(1);
     expect(removingCard()?.dataset.clipId).toBe("ci0");
 
+    await finishHeldExitTimers(exitCallbacks);
     await waitFor(() => expect(useClipboardStore.getState().exiting).toEqual({}));
     await waitFor(() => expect(document.querySelector(".clip-item.removing")).toBeNull());
     await waitFor(() => expect(cards().map((c) => c.dataset.clipId)).toEqual(["ci1", "ci2", "ci9"]));
   });
 
   it("两条预览完全相同时，离场与提示都落在按 ID 选中的那一条", async () => {
-    const user = userEvent.setup();
     const twin = (id: string): ClipboardItem => ({ ...makeItem(0), id, preview: "同样的周报正文" });
     bridge.clipboardView.mockResolvedValue(viewOfItems([twin("ciA"), twin("ciB")]));
     render(<ClipboardPanel />);
     expect((await screen.findAllByText("同样的周报正文")).length).toBe(2);
 
+    const exitCallbacks = holdExitTimers();
+    const user = userEvent.setup();
     await user.click(screen.getAllByRole("button", { name: "删除" })[1]);
-    const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
-    await user.click(await within(dialog).findByRole("button", { name: "删除" }));
+    const dialog = screen.getByRole("dialog", { name: "删除这条剪贴板历史？" });
+    await user.click(within(dialog).getByRole("button", { name: "删除" }));
     await flushExitCommit();
     expect(removingCard()?.dataset.clipId).toBe("ciB");
     expect(document.querySelector('[data-clip-id="ciA"]')?.classList.contains("removing")).toBe(false);
     expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ciB"]);
     // 成功提示在离场结束后才出现（不会被离场动画吞掉）
+    await finishHeldExitTimers(exitCallbacks);
     await waitFor(() => expect(useUiStore.getState().toast?.message).toContain("同样的周报正文"));
   });
 
@@ -685,10 +725,12 @@ describe("操作反馈与离场", () => {
     await user.click(await screen.findByRole("button", { name: "删除分组" }));
     const dialog = await screen.findByRole("dialog", { name: "删除分组「调试截图」？" });
     expect(dialog.textContent).toContain("分组内的历史条目仍保留");
+    const exitCallbacks = holdExitTimers();
     await user.click(await within(dialog).findByRole("button", { name: "删除分组" }));
     await flushExitCommit();
     expect(removingCard()?.dataset.clipId).toBe("cg1");
     expect(bridge.clipboardDeleteGroup).toHaveBeenCalledWith("cg1", false);
+    await finishHeldExitTimers(exitCallbacks);
     await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("success"));
     expect(useUiStore.getState().toast?.message).toContain("分组「调试截图」已删除");
     expect(useUiStore.getState().toast?.message).toContain("历史条目仍保留");
@@ -731,11 +773,13 @@ describe("操作反馈与离场", () => {
 
     await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
+    const exitCallbacks = holdExitTimers();
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
     await flushExitCommit();
 
     await waitFor(() => expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ci0"]));
     expect(removingCard()?.dataset.clipId).toBe("ci0");
+    await finishHeldExitTimers(exitCallbacks);
     await waitFor(() => expect(useClipboardStore.getState().exiting).toEqual({}));
     expect(useUiStore.getState().toast?.message).toContain("已删除");
   });

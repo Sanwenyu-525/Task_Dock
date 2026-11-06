@@ -101,8 +101,8 @@ pub fn resolve_voice(
         return Err(TtsError::NoVoice);
     }
     let infos: Vec<VoiceInfo> = voices.into_iter().map(|(info, _)| info).collect();
-    let (idx, fallback) = pick_voice_index(&infos, requested_voice_id, gender_preference)
-        .ok_or(TtsError::NoVoice)?;
+    let (idx, fallback) =
+        pick_voice_index(&infos, requested_voice_id, gender_preference).ok_or(TtsError::NoVoice)?;
     Ok((infos[idx].clone(), fallback))
 }
 
@@ -139,8 +139,8 @@ pub fn synthesize(
     rate_percent: u32,
     cancel: &AtomicBool,
 ) -> Result<SynthOutput, TtsError> {
-    use windows::Media::SpeechSynthesis::SpeechSynthesizer;
     use windows::core::HSTRING;
+    use windows::Media::SpeechSynthesis::SpeechSynthesizer;
 
     if text.trim().is_empty() {
         return Err(TtsError::Failed("播报文本为空".into()));
@@ -228,9 +228,10 @@ pub fn pick_voice_index(
 fn auto_voice_index(voices: &[VoiceInfo], gender_preference: &str) -> Option<usize> {
     let zh = |v: &VoiceInfo| v.language.to_ascii_lowercase().starts_with("zh");
     if matches!(gender_preference, "male" | "female") {
-        if let Some(pos) = voices.iter().position(|v| {
-            zh(v) && v.gender.eq_ignore_ascii_case(gender_preference)
-        }) {
+        if let Some(pos) = voices
+            .iter()
+            .position(|v| zh(v) && v.gender.eq_ignore_ascii_case(gender_preference))
+        {
             return Some(pos);
         }
     }
@@ -264,8 +265,8 @@ fn resolve_voice_with_handle(
         return Err(TtsError::NoVoice);
     }
     let infos: Vec<VoiceInfo> = voices.iter().map(|(i, _)| i.clone()).collect();
-    let (idx, fallback) = pick_voice_index(&infos, requested_voice_id, gender_preference)
-        .ok_or(TtsError::NoVoice)?;
+    let (idx, fallback) =
+        pick_voice_index(&infos, requested_voice_id, gender_preference).ok_or(TtsError::NoVoice)?;
     let (info, voice) = voices[idx].clone();
     Ok((info, voice, fallback))
 }
@@ -286,7 +287,10 @@ fn enumerate_voices(
         if id.is_empty() {
             continue;
         }
-        let name = voice.DisplayName().map(|s| s.to_string()).unwrap_or_default();
+        let name = voice
+            .DisplayName()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         let language = voice.Language().map(|s| s.to_string()).unwrap_or_default();
         let gender = {
             let g = voice.Gender().unwrap_or(VoiceGender::Male);
@@ -350,8 +354,8 @@ fn read_stream(
     stream: &windows::Media::SpeechSynthesis::SpeechSynthesisStream,
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, TtsError> {
-    use windows::Storage::Streams::{DataReader, IInputStream};
     use windows::core::Interface;
+    use windows::Storage::Streams::{DataReader, IInputStream};
 
     let size = stream
         .Size()
@@ -475,8 +479,7 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 impl TtsWorker {
     pub fn new() -> Self {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(TTS_JOB_QUEUE_LIMIT);
-        let (init_tx, init_rx) =
-            std::sync::mpsc::channel::<Result<(), (String, String)>>();
+        let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), (String, String)>>();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_worker = Arc::clone(&cancel);
         let handle = std::thread::Builder::new()
@@ -489,8 +492,7 @@ impl TtsWorker {
                         Some(guard)
                     }
                     Err(err) => {
-                        let _ =
-                            init_tx.send(Err(("unsupported_platform".into(), err.message())));
+                        let _ = init_tx.send(Err(("unsupported_platform".into(), err.message())));
                         None
                     }
                 };
@@ -635,7 +637,10 @@ mod tests {
 
     #[test]
     fn explicit_voice_id_wins_and_falls_back_when_missing() {
-        let list = vec![voice("zh-f", "zh-CN", "female"), voice("zh-m", "zh-CN", "male")];
+        let list = vec![
+            voice("zh-f", "zh-CN", "female"),
+            voice("zh-m", "zh-CN", "male"),
+        ];
         let (idx, fallback) = pick_voice_index(&list, Some("zh-m"), "female").unwrap();
         assert_eq!(list[idx].id, "zh-m");
         assert!(!fallback);
@@ -710,10 +715,7 @@ mod tests {
             match tx.try_send(job) {
                 Ok(()) => {
                     filled += 1;
-                    assert!(
-                        filled <= TTS_JOB_QUEUE_LIMIT,
-                        "队列缓冲不得超过上限"
-                    );
+                    assert!(filled <= TTS_JOB_QUEUE_LIMIT, "队列缓冲不得超过上限");
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => break,
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {

@@ -10,6 +10,7 @@
 
 pub mod cache;
 pub mod tts;
+pub mod voice_packs;
 
 pub use tts::VoiceInfo;
 
@@ -22,7 +23,10 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use serde::Serialize;
 
-use cache::{cache_key, extension_for_content_type, CacheStats, TtsCache};
+use cache::{
+    cache_key, extension_for_content_type, CacheClearStats, CacheStats, ResourceCacheFile,
+    ResourceCacheScan, TtsCache,
+};
 
 /// 允许持久化的固定播报短语白名单。新增固定语音时必须同步这里与前端常量，
 /// 否则只会进入内存缓存（不落盘），不会误把动态敏感文本写入磁盘。
@@ -148,6 +152,11 @@ pub struct CacheReport {
     pub writes: u64,
     pub evictions: u64,
     pub memory_hits: u64,
+    pub failed_files: u32,
+    pub skipped_files: u32,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +165,11 @@ pub struct ClearReport {
     pub ok: bool,
     pub freed_bytes: u64,
     pub removed_files: u32,
+    pub failed_files: u32,
+    pub skipped_files: u32,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
 }
 
 struct MemEntry {
@@ -174,11 +188,16 @@ struct MemCache {
 impl MemCache {
     fn get(&mut self, key: &str) -> Option<(Arc<Vec<u8>>, String, VoiceInfo)> {
         let now = Instant::now();
-        self.entries.retain(|_, e| now.duration_since(e.inserted) <= MEM_TTL);
-        self.total = self.entries.values().map(|e| e.bytes.len()).sum();
         self.entries
-            .get(key)
-            .map(|e| (Arc::clone(&e.bytes), e.content_type.clone(), e.voice.clone()))
+            .retain(|_, e| now.duration_since(e.inserted) <= MEM_TTL);
+        self.total = self.entries.values().map(|e| e.bytes.len()).sum();
+        self.entries.get(key).map(|e| {
+            (
+                Arc::clone(&e.bytes),
+                e.content_type.clone(),
+                e.voice.clone(),
+            )
+        })
     }
 
     fn put(&mut self, key: String, bytes: Vec<u8>, content_type: String, voice: VoiceInfo) {
@@ -295,11 +314,7 @@ impl AudioService {
     pub fn shutdown(&self) {
         // 先置退出标志，再取线程：退出中到达的合成/枚举请求不会重新创建 WinRT 线程。
         self.stopping.store(true, Ordering::SeqCst);
-        let worker = self
-            .worker
-            .lock()
-            .ok()
-            .and_then(|mut guard| guard.take());
+        let worker = self.worker.lock().ok().and_then(|mut guard| guard.take());
         if let Some(worker) = worker {
             worker.shutdown();
         }
@@ -327,9 +342,7 @@ impl AudioService {
                     ok: true,
                     code: "ok".into(),
                     message: String::new(),
-                    has_chinese_male: voices
-                        .iter()
-                        .any(|v| is_chinese(v) && v.gender == "male"),
+                    has_chinese_male: voices.iter().any(|v| is_chinese(v) && v.gender == "male"),
                     has_chinese_female: voices
                         .iter()
                         .any(|v| is_chinese(v) && v.gender == "female"),
@@ -402,12 +415,7 @@ impl AudioService {
         let requested_for_resolve = requested_voice_id.map(|s| s.to_string());
         let gender_for_resolve = gender_preference.to_string();
         let resolved = worker
-            .call(move || {
-                tts::resolve_voice(
-                    requested_for_resolve.as_deref(),
-                    &gender_for_resolve,
-                )
-            })
+            .call(move || tts::resolve_voice(requested_for_resolve.as_deref(), &gender_for_resolve))
             .and_then(|inner| inner);
         let (voice, resolved_fallback) = match resolved {
             Ok(v) => v,
@@ -507,9 +515,9 @@ impl AudioService {
         };
         let ext = extension_for_content_type(&output.content_type);
         let persisted = if allow_persist {
-            self.cache.lock().map_or(false, |mut c| {
-                c.put(&key, ext, &output.bytes, max_bytes)
-            })
+            self.cache
+                .lock()
+                .map_or(false, |mut c| c.put(&key, ext, &output.bytes, max_bytes))
         } else {
             false
         };
@@ -533,13 +541,51 @@ impl AudioService {
     }
 
     pub fn cache_report(&self, enabled: bool, max_mb: u32) -> CacheReport {
-        let stats: CacheStats = self
-            .cache
-            .lock()
-            .map(|c| c.stats())
-            .unwrap_or_default();
+        let (stats, status, error_code, error_message, failed_files, skipped_files): (
+            CacheStats,
+            &str,
+            Option<String>,
+            Option<String>,
+            u32,
+            u32,
+        ) = match self.cache.lock() {
+            Ok(cache) => match cache.resource_files() {
+                Ok(scan) if scan.skipped_files > 0 || scan.incomplete => (
+                    cache.stats(),
+                    "partial",
+                    Some(
+                        (if scan.incomplete {
+                            "SCAN_LIMIT_REACHED"
+                        } else {
+                            "SCAN_UNAVAILABLE"
+                        })
+                        .into(),
+                    ),
+                    None,
+                    0,
+                    scan.skipped_files,
+                ),
+                Ok(_) => (cache.stats(), "ready", None, None, 0, 0),
+                Err(_) => (
+                    CacheStats::default(),
+                    "unavailable",
+                    Some("SCAN_UNAVAILABLE".into()),
+                    None,
+                    1,
+                    0,
+                ),
+            },
+            Err(_) => (
+                CacheStats::default(),
+                "unavailable",
+                Some("CACHE_LOCK_POISONED".into()),
+                Some("TTS 缓存状态暂不可用".into()),
+                1,
+                0,
+            ),
+        };
         CacheReport {
-            ok: true,
+            ok: status == "ready",
             enabled,
             bytes: stats.bytes,
             files: stats.files,
@@ -549,23 +595,78 @@ impl AudioService {
             writes: stats.writes,
             evictions: stats.evictions,
             memory_hits: self.memory_hits.load(Ordering::Relaxed),
+            failed_files,
+            skipped_files,
+            status: status.into(),
+            error_code,
+            error_message,
         }
     }
 
     pub fn clear_cache(&self) -> ClearReport {
-        if let Ok(mut mem) = self.mem.lock() {
-            mem.clear();
+        let mem_ok = self
+            .mem
+            .lock()
+            .map(|mut mem| {
+                mem.clear();
+            })
+            .is_ok();
+        match self.cache.lock() {
+            Ok(mut cache) => {
+                let report = cache.clear_all_detailed();
+                let ok = mem_ok && report.failed_files == 0;
+                ClearReport {
+                    ok,
+                    freed_bytes: report.freed_bytes,
+                    removed_files: report.deleted_files,
+                    failed_files: report.failed_files + if mem_ok { 0 } else { 1 },
+                    skipped_files: report.skipped_files,
+                    status: if ok {
+                        "success"
+                    } else if report.deleted_files > 0 {
+                        "partial"
+                    } else {
+                        "failed"
+                    }
+                    .into(),
+                    error_code: if ok {
+                        None
+                    } else {
+                        Some("PARTIAL_FAILURE".into())
+                    },
+                    error_message: None,
+                }
+            }
+            Err(_) => ClearReport {
+                ok: false,
+                freed_bytes: 0,
+                removed_files: 0,
+                failed_files: 1,
+                skipped_files: 0,
+                status: "failed".into(),
+                error_code: Some("CACHE_LOCK_POISONED".into()),
+                error_message: None,
+            },
         }
-        let (freed, removed) = self
+    }
+
+    pub fn resource_cache_files(&self) -> Result<ResourceCacheScan, String> {
+        self.cache
+            .lock()
+            .map_err(|_| "CACHE_LOCK_POISONED".to_string())?
+            .resource_files()
+            .map_err(|_| "SCAN_UNAVAILABLE".to_string())
+    }
+
+    pub fn clear_resource_cache_files(
+        &self,
+        expected: &[ResourceCacheFile],
+    ) -> Result<CacheClearStats, String> {
+        Ok(self
             .cache
             .lock()
-            .map(|mut c| c.clear())
-            .unwrap_or((0, 0));
-        ClearReport {
-            ok: true,
-            freed_bytes: freed,
-            removed_files: removed,
-        }
+            .map_err(|_| "CACHE_LOCK_POISONED".to_string())?
+            .clear_resource_files(expected))
     }
 
     /// 设置变更时应用缓存策略：容量下调时立即按 LRU 收敛，避免等下次写入才清理。
@@ -720,8 +821,7 @@ mod tests {
         let empty = service.synthesize("   ", None, "auto", 100, true, true, 50, ENGINE_SYSTEM);
         assert_eq!(empty.code, "text_empty");
         let long = "a".repeat(MAX_TEXT_CHARS + 1);
-        let report =
-            service.synthesize(&long, None, "auto", 100, false, true, 50, ENGINE_SYSTEM);
+        let report = service.synthesize(&long, None, "auto", 100, false, true, 50, ENGINE_SYSTEM);
         assert_eq!(report.code, "text_too_long");
     }
 
@@ -735,9 +835,15 @@ mod tests {
         // 引擎清单如实包含系统（可用）与高品质（不可用、需下载）两项。
         let voices = service.voices();
         let engines = voices.engines;
-        let system = engines.iter().find(|e| e.id == ENGINE_SYSTEM).expect("必须有系统引擎");
+        let system = engines
+            .iter()
+            .find(|e| e.id == ENGINE_SYSTEM)
+            .expect("必须有系统引擎");
         assert!(system.available && !system.requires_download);
-        let neural = engines.iter().find(|e| e.id == "neural").expect("必须如实报告高品质引擎状态");
+        let neural = engines
+            .iter()
+            .find(|e| e.id == "neural")
+            .expect("必须如实报告高品质引擎状态");
         assert!(!neural.available && neural.requires_download);
         assert!(!neural.reason.is_empty());
     }
@@ -753,7 +859,10 @@ mod tests {
     #[test]
     fn tts_worker_is_not_started_by_construction_or_validation() {
         let service = AudioService::new(None);
-        assert!(!service.is_worker_initialized(), "构造服务不得启动 WinRT 线程");
+        assert!(
+            !service.is_worker_initialized(),
+            "构造服务不得启动 WinRT 线程"
+        );
         // 参数校验在触碰语音线程之前完成：不应为一次非法请求初始化 COM。
         let empty = service.synthesize("   ", None, "auto", 100, true, true, 50, ENGINE_SYSTEM);
         assert_eq!(empty.code, "text_empty");
@@ -782,7 +891,10 @@ mod tests {
         for handle in handles {
             handle.join().expect("并发首次调用不得 panic");
         }
-        assert!(service.is_worker_initialized(), "首次真正需要时才创建语音线程");
+        assert!(
+            service.is_worker_initialized(),
+            "首次真正需要时才创建语音线程"
+        );
         // 再次调用复用同一常驻线程（COM 不会被拆掉重建）。
         let _ = service.voices();
         assert!(service.is_worker_initialized());

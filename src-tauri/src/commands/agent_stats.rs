@@ -24,7 +24,9 @@ pub async fn agent_work_time_stats(
     query: WorkTimeStatsQuery,
 ) -> AppResult<WorkTimeStats> {
     let db = db.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || db.with_read(|conn| compute(conn, &query, Utc::now())))
-        .await
-        .map_err(|e| AppError::Agent(format!("工作时间统计任务失败: {e}")))?
+    tauri::async_runtime::spawn_blocking(move || {
+        db.with_read(|conn| compute(conn, &query, Utc::now()))
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("工作时间统计任务失败: {e}")))?
 }

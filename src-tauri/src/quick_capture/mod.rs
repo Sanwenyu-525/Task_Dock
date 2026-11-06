@@ -19,8 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State};
 use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State};
 
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -171,8 +171,7 @@ pub fn toggle(app: &AppHandle) {
 /// 显式打开快速捕获窗口（收集箱「+ 快速记录」等入口）：
 /// 已可见时只聚焦，不因再次点击而收起；未可见时走与热键相同的定位/恢复草稿路径。
 pub fn show(app: &AppHandle) -> AppResult<QuickCaptureShowResult> {
-    let win = capture_window(app)
-        .ok_or_else(|| AppError::NotFound("快速捕获窗口不存在".into()))?;
+    let win = capture_window(app).ok_or_else(|| AppError::NotFound("快速捕获窗口不存在".into()))?;
     if win.is_visible().unwrap_or(false) {
         let _ = win.unminimize();
         let focus_error = win.set_focus().err().map(|e| e.to_string());
@@ -184,10 +183,7 @@ pub fn show(app: &AppHandle) -> AppResult<QuickCaptureShowResult> {
             focus_error: if focused {
                 None
             } else {
-                Some(
-                    focus_error
-                        .unwrap_or_else(|| "系统前台锁阻止窗口自动聚焦".into()),
-                )
+                Some(focus_error.unwrap_or_else(|| "系统前台锁阻止窗口自动聚焦".into()))
             },
         });
     }
@@ -209,8 +205,7 @@ pub fn show(app: &AppHandle) -> AppResult<QuickCaptureShowResult> {
     }
     let _ = win.unminimize();
     // 只有 show 失败才算「窗口打开失败」；定位/尺寸失败仍尝试显示并如实报告焦点状态。
-    win.show()
-        .map_err(|e| AppError::Tauri(e))?;
+    win.show().map_err(|e| AppError::Tauri(e))?;
     let focus_error = win.set_focus().err().map(|e| e.to_string());
     let focused = win.is_focused().unwrap_or(false);
     let _ = app.emit_to(WINDOW_LABEL, SUMMONED_EVENT, ());
@@ -220,9 +215,7 @@ pub fn show(app: &AppHandle) -> AppResult<QuickCaptureShowResult> {
         focus_error: if focused {
             None
         } else {
-            Some(
-                focus_error.unwrap_or_else(|| "系统前台锁阻止窗口自动聚焦".into()),
-            )
+            Some(focus_error.unwrap_or_else(|| "系统前台锁阻止窗口自动聚焦".into()))
         },
     })
 }
@@ -241,8 +234,7 @@ pub fn hide_capture(app: &AppHandle, restore_focus: bool) {
     }
     // 必须在 hide 之前判断：hide 之后前台必然易主，按字面判断永远不会成立。
     let capture_hwnd = win.hwnd().ok().map(|h| h.0 as isize).unwrap_or(0);
-    let was_foreground =
-        capture_hwnd != 0 && window_manager::foreground_window() == capture_hwnd;
+    let was_foreground = capture_hwnd != 0 && window_manager::foreground_window() == capture_hwnd;
 
     HIDING.store(true, Ordering::SeqCst);
     let _ = win.hide();
@@ -303,7 +295,10 @@ pub async fn flush_draft_before_exit(app: &AppHandle) {
     }
     DRAFT_FLUSHED.store(false, Ordering::SeqCst);
     if app.emit_to(WINDOW_LABEL, FLUSH_DRAFT_EVENT, ()).is_err() {
-        tracing::warn!(window = WINDOW_LABEL, "退出前通知快速捕获落草稿失败，继续退出");
+        tracing::warn!(
+            window = WINDOW_LABEL,
+            "退出前通知快速捕获落草稿失败，继续退出"
+        );
         return;
     }
     let deadline = Instant::now() + Duration::from_millis(FLUSH_WAIT_MS);
@@ -314,7 +309,10 @@ pub async fn flush_draft_before_exit(app: &AppHandle) {
         tokio::time::sleep(Duration::from_millis(FLUSH_POLL_MS)).await;
     }
     if !DRAFT_FLUSHED.load(Ordering::SeqCst) {
-        tracing::warn!(window = WINDOW_LABEL, "退出前快速捕获草稿落盘等待超时，继续退出");
+        tracing::warn!(
+            window = WINDOW_LABEL,
+            "退出前快速捕获草稿落盘等待超时，继续退出"
+        );
     }
 }
 

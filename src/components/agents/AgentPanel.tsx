@@ -21,10 +21,11 @@ import StatusBadge, { type StatusTone } from "../ui/StatusBadge";
 import { persistCollapsibleState, readCollapsibleState } from "../../lib/collapsibleState";
 import {
   adapterUninstall, adapterVerify,
-  agentHistorySession,
+  agentHistorySession, agentHistorySessions,
   createSource, deleteSource, discoveryScan, getAgentInboxDir, openAgentSession,
   pendingItemsToTasks, setSourceEnabled,
-  type AgentHistorySession, type AgentInstance, type AgentRun, type AgentSource,
+  type AgentHistorySession, type AgentHistorySessionsPage, type AgentInstance,
+  type AgentLiveSummary, type AgentRun, type AgentSource,
   type DiscoveredAgent,
 } from "../../lib/bridge";
 import {
@@ -39,7 +40,7 @@ import { useUiStore } from "../../store/useUiStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { AGENT_STATE_LABELS, formatBetween, formatDue, formatRelative } from "../../lib/format";
-import { buildTree, liveSummary, type TreeAgent, type TreeRun, type TreeSession } from "../../lib/agentTree";
+import { buildTree, liveSummary, type LiveState, type TreeAgent, type TreeRun, type TreeSession } from "../../lib/agentTree";
 import {
   useAgentHistoryGroups,
   useAgentHistorySearch,
@@ -51,6 +52,8 @@ import { copyText } from "../../lib/clipboard";
 import { reportError } from "../../lib/errorReport";
 import AgentStatsView from "./stats/AgentStatsView";
 import { useLocale } from "../../hooks/useLocale";
+import ContextHelpButton from "../help/ContextHelpButton";
+import AgentPlanningLinks from "./AgentPlanningLinks";
 
 // 徽标只描述「接入证据强度」，不把已安装 / 已配置 / 验证通过 / 已连接混为一谈。
 // 徽标只做「一级短标签」，窄卡片下优先让徽标换行而不是挤压名称，完整证据解释放在展开区（HEALTH_DETAILS），
@@ -128,6 +131,8 @@ function sessionMatchesQuery(session: TreeSession, query: string): boolean {
 
 /** 历史分区/历史轮次每页条数：先渲染实时项，历史按需展开、分页加载。 */
 const HISTORY_PAGE = 10;
+const LIVE_RUN_PAGE = 50;
+const LIVE_SESSION_PAGE = 20;
 const FAILED_RECENT_MS = 60 * 60 * 1000;
 
 /** 轮次是否属于「当前实时集合」：completed 与过期 failed/disconnected 归入历史。 */
@@ -159,6 +164,7 @@ function toTreeRun(run: AgentRun): TreeRun {
  * `runs` 为空；liveState 只用于样式，展示状态由 `displayStatus` 传真实 status。
  */
 function toTreeSession(session: AgentHistorySession): TreeSession {
+  const liveState = session.live_state;
   return {
     id: session.id,
     externalId: session.external_id,
@@ -166,8 +172,222 @@ function toTreeSession(session: AgentHistorySession): TreeSession {
     status: session.status,
     lastSeen: session.last_seen_at,
     runs: [],
-    liveState: "idle",
+    liveState: liveState && ["failed", "waiting", "running", "disconnected"].includes(liveState)
+      ? liveState as LiveState
+      : "idle",
+    liveRunCount: session.live_run_count ?? 0,
   };
+}
+
+function AgentRunCard({ run, onPendingToTasks }: {
+  run: TreeRun;
+  onPendingToTasks: (items: string[]) => Promise<void>;
+}) {
+  return (
+    <div key={run.id} className={`task-card run-item state-${run.status}`} data-agent-run-id={run.id}>
+      <span className={`agent-dot state-${run.status}`} />
+      <div className="run-main">
+        <div className="run-title">
+          <span className="run-source">{run.externalRunId?.slice(0, 10) ?? "自动轮次"}</span>
+          {run.taskTitle || "（无标题）"}
+        </div>
+        <div className="run-meta">
+          {AGENT_STATE_LABELS[run.status] ?? "未知"} · {formatBetween(run.startedAt, run.endedAt)} · 活动 {formatRelative(run.updatedAt)}
+        </div>
+        {run.pending.length > 0 && (
+          <div className="run-pending">
+            <ListChecks size={11} /> {run.pending.length} 个待处理事项
+            <button className="btn sm" onClick={() => void onPendingToTasks(run.pending)}>
+              转为任务
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 实时轮次溢出分页：只加载一页，翻页时替换旧页，避免扩展快照缓存。 */
+function LiveRunsPager({
+  sessionId,
+  enabled,
+  onPendingToTasks,
+}: {
+  sessionId: string;
+  enabled: boolean;
+  onPendingToTasks: (items: string[]) => Promise<void>;
+}) {
+  const history = useAgentRunHistory(sessionId, enabled, LIVE_RUN_PAGE, true);
+  if (!enabled) return null;
+  return (
+    <div className="tree-children" aria-label="实时轮次分页">
+      {history.error && (
+        <div className="empty-hint error-text" role="alert">
+          实时轮次读取失败：{history.error}
+          <button className="btn sm" onClick={history.reload}>重试</button>
+        </div>
+      )}
+      {history.loading && <div className="empty-hint">正在读取实时轮次…</div>}
+      {!history.loading && !history.error && history.items.map((run) => (
+        <AgentRunCard key={run.id} run={toTreeRun(run)} onPendingToTasks={onPendingToTasks} />
+      ))}
+      {!history.loading && !history.error && history.items.length === 0 && (
+        <div className="empty-hint">当前没有可继续查看的实时轮次</div>
+      )}
+      {history.hasMore && (
+        <button
+          type="button"
+          className="btn sm tree-history-more"
+          onClick={() => void history.loadMore()}
+          disabled={history.loadingMore}
+        >
+          {history.loadingMore ? "加载中…" : "显示下一页实时轮次"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AgentLiveOverflowItem({
+  item,
+  sourceName,
+  expanded,
+  onToggle,
+  onPendingToTasks,
+  showToast,
+}: {
+  item: AgentHistorySession;
+  sourceName: string;
+  expanded: boolean;
+  onToggle: () => void;
+  onPendingToTasks: (items: string[]) => Promise<void>;
+  showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
+}) {
+  const state = item.live_state ?? "idle";
+  const title = item.title || item.external_id;
+  return (
+    <div className={`tree-session attention-${state}`} data-agent-session-id={item.id}>
+      <div className="tree-row">
+        <button className="tree-row-main" onClick={onToggle} aria-expanded={expanded}>
+          {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          <span className={`session-state state-${state}`}>{AGENT_STATE_LABELS[state] ?? "未知"}</span>
+          <span className="tree-title">{title}</span>
+          <span className="run-source" data-tip={sourceName}>{sourceName}</span>
+          <span className="tree-meta">{item.live_run_count ?? 0} 个实时轮次</span>
+        </button>
+        <button
+          className="icon-btn sm"
+          aria-label={`打开会话 ${title}`}
+          data-tip="尝试打开此 Agent 会话"
+          onClick={async () => {
+            try {
+              await openAgentSession(item.source_id, item.external_id);
+              showToast("已按来源能力尝试打开会话", { kind: "success" });
+            } catch (e) {
+              showToast(`打开 Agent 会话失败：${errorMessage(e)}`, { kind: "error" });
+            }
+          }}
+        >
+          <ExternalLink size={12} />
+        </button>
+      </div>
+      <LiveRunsPager sessionId={item.id} enabled={expanded} onPendingToTasks={onPendingToTasks} />
+    </div>
+  );
+}
+
+/** 快照仅显示前 200 个实时会话；用户可通过有界 keyset 页面继续访问剩余会话。 */
+function AgentLiveOverflow({
+  summary,
+  snapshotSessionCount,
+  sources,
+  onPendingToTasks,
+  showToast,
+}: {
+  summary: AgentLiveSummary;
+  snapshotSessionCount: number;
+  sources: AgentSource[];
+  onPendingToTasks: (items: string[]) => Promise<void>;
+  showToast: (m: string, o?: { kind?: "info" | "success" | "error" }) => void;
+}) {
+  const [page, setPage] = useState<AgentHistorySessionsPage | null>(null);
+  const [cursor, setCursor] = useState(summary.next_cursor);
+  const [loadedCount, setLoadedCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const requestSeq = useRef(0);
+  const sourceNames = useMemo(
+    () => new Map(sources.map((source) => [source.id, source.display_name])),
+    [sources],
+  );
+
+  useEffect(() => () => { requestSeq.current += 1; }, []);
+
+  const loadNextPage = async () => {
+    if (!cursor || loading) return;
+    const seq = ++requestSeq.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await agentHistorySessions({ liveOnly: true, cursor, limit: LIVE_SESSION_PAGE });
+      if (seq !== requestSeq.current) return;
+      setPage(result);
+      setCursor(result.next_cursor);
+      setLoadedCount((count) => count + result.items.length);
+      setExpandedId(null);
+    } catch (e) {
+      if (seq === requestSeq.current) setError(errorMessage(e));
+    } finally {
+      if (seq === requestSeq.current) setLoading(false);
+    }
+  };
+
+  const reset = () => {
+    requestSeq.current += 1;
+    setPage(null);
+    setCursor(summary.next_cursor);
+    setLoadedCount(0);
+    setExpandedId(null);
+    setError(null);
+  };
+
+  if (!summary.sessions_truncated) return null;
+  return (
+    <section className="tree-children" aria-label="实时会话继续列表">
+      <div className="empty-hint" role="status">
+        实时会话共 {summary.session_total} 条，首屏展示 {snapshotSessionCount} 条；其余会话可按页查看。
+      </div>
+      <div className="tree-live-overflow-actions">
+        <button type="button" className="btn sm" onClick={() => void loadNextPage()} disabled={loading || !cursor}>
+          {loading ? "加载中…" : page ? "显示下一批实时会话" : "查看更多实时会话"}
+        </button>
+        {page && (
+          <>
+            <span className="tree-meta">本轮已翻页 {loadedCount} 条 · 查询总数 {page.total}</span>
+            <button type="button" className="btn sm" onClick={reset}>回到首屏</button>
+          </>
+        )}
+      </div>
+      {error && (
+        <div className="empty-hint error-text" role="alert">
+          实时会话分页失败：{error}
+          <button className="btn sm" onClick={() => void loadNextPage()}>重试</button>
+        </div>
+      )}
+      {page?.items.map((item) => (
+        <AgentLiveOverflowItem
+          key={item.id}
+          item={item}
+          sourceName={sourceNames.get(item.source_id) ?? item.source_id}
+          expanded={expandedId === item.id}
+          onToggle={() => setExpandedId((current) => current === item.id ? null : item.id)}
+          onPendingToTasks={onPendingToTasks}
+          showToast={showToast}
+        />
+      ))}
+    </section>
+  );
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -635,31 +855,35 @@ export default function AgentPanel() {
         </div>
       )}
       {/* ══ 分区切换 ══ */}
-      <div className="seg-group agents-section-switch" role="tablist" aria-label={tr("agent.ui.sectionAria")}>
-        <button
-          className={`seg-btn ${section === "monitor" ? "active" : ""}`}
-          role="tab"
-          aria-selected={section === "monitor"}
-          onClick={() => setSection("monitor")}
-        >
-          <Activity size={12} /> {tr("agent.ui.monitor")}
-        </button>
-        <button
-          className={`seg-btn ${section === "stats" ? "active" : ""}`}
-          role="tab"
-          aria-selected={section === "stats"}
-          onClick={() => setSection("stats")}
-        >
-          <BarChart3 size={12} /> {tr("agent.ui.stats")}
-        </button>
-        <button
-          className={`seg-btn ${section === "onboard" ? "active" : ""}`}
-          role="tab"
-          aria-selected={section === "onboard"}
-          onClick={() => setSection("onboard")}
-        >
-          <PlugZap size={12} /> {tr("agent.ui.onboard")}
-        </button>
+      <div className="filter-bar">
+        <div className="seg-group agents-section-switch" role="tablist" aria-label={tr("agent.ui.sectionAria")}>
+          <button
+            className={`seg-btn ${section === "monitor" ? "active" : ""}`}
+            role="tab"
+            aria-selected={section === "monitor"}
+            onClick={() => setSection("monitor")}
+          >
+            <Activity size={12} /> {tr("agent.ui.monitor")}
+          </button>
+          <button
+            className={`seg-btn ${section === "stats" ? "active" : ""}`}
+            role="tab"
+            aria-selected={section === "stats"}
+            onClick={() => setSection("stats")}
+          >
+            <BarChart3 size={12} /> {tr("agent.ui.stats")}
+          </button>
+          <button
+            className={`seg-btn ${section === "onboard" ? "active" : ""}`}
+            role="tab"
+            aria-selected={section === "onboard"}
+            onClick={() => setSection("onboard")}
+          >
+            <PlugZap size={12} /> {tr("agent.ui.onboard")}
+          </button>
+        </div>
+        <span className="flex-spacer" />
+        <ContextHelpButton articleId="help.agents.hooks-onboarding" />
       </div>
 
       {section === "monitor" && (
@@ -780,6 +1004,15 @@ export default function AgentPanel() {
                 }
               />
             ))}
+            {!monitorSearching && snapshot.live_summary && (
+              <AgentLiveOverflow
+                summary={snapshot.live_summary}
+                snapshotSessionCount={snapshot.sessions.length}
+                sources={snapshot.sources}
+                onPendingToTasks={onPendingToTasks}
+                showToast={showToast}
+              />
+            )}
           </div>
         </>
       )}
@@ -1387,7 +1620,7 @@ function AgentNode({
           <strong>{agent.name}</strong>
           <span className="tree-meta">
             {agent.activeCount > 0
-              ? `${agent.activeCount} 活跃`
+              ? `${agent.activeCount} 活跃会话`
               : softwareStatus ?? AGENT_STATE_LABELS[agent.liveState] ?? "空闲"}
           </span>
         </button>
@@ -1755,6 +1988,12 @@ function SessionList({
           有新的历史记录 · 更新
         </button>
       )}
+      {historyOpen && history.liveError && (
+        <div className="empty-hint" role="status">
+          {history.liveError}
+          <button className="btn sm" onClick={history.reload}>刷新历史</button>
+        </div>
+      )}
       {historyOpen && history.error && (
         <div className="empty-hint error-text" role="alert">
           历史会话加载失败：{history.error}
@@ -1850,6 +2089,12 @@ function HistorySearchResults({
           <button className="btn sm" onClick={state.reload}>
             重试
           </button>
+        </div>
+      )}
+      {active && state.liveError && (
+        <div className="empty-hint" role="status">
+          {state.liveError}
+          <button className="btn sm" onClick={state.reload}>刷新历史</button>
         </div>
       )}
       {active && !state.error && !state.loading && state.items.length === 0 && (
@@ -1986,9 +2231,11 @@ function SessionNode({
           <RunList
             sessionId={session.id}
             runs={session.runs}
+            liveRunCount={session.liveRunCount}
             focusRunId={focusRunId}
             onPendingToTasks={onPendingToTasks}
           />
+          <AgentPlanningLinks agentSource={agentId} sessionId={session.externalId} />
         </div>
       )}
     </div>
@@ -2002,17 +2249,21 @@ function SessionNode({
 function RunList({
   sessionId,
   runs,
+  liveRunCount,
   focusRunId,
   onPendingToTasks,
 }: {
   sessionId: string;
   runs: TreeRun[];
+  liveRunCount?: number;
   focusRunId: string | null;
   onPendingToTasks: (items: string[]) => Promise<void>;
 }) {
   const history = useAgentRunHistory(sessionId, true, HISTORY_PAGE);
   const [open, setOpen] = useState(false);
+  const [browseLive, setBrowseLive] = useState(false);
   const live = runs.filter(isLiveTreeRun);
+  const hasLiveOverflow = (liveRunCount ?? live.length) > live.length;
   const snapshotHistory = runs.filter((run) => !isLiveTreeRun(run));
   // 后端历史轮次查询默认排除实时轮次，COUNT 与列表同口径；这里不再前端过滤，
   // 否则会出现「列表少了但 total 仍含实时轮次」的数量不一致。
@@ -2040,36 +2291,26 @@ function RunList({
     void history.loadMore();
   }, [focusRunId, historyRuns, backendReady, history.loadingMore, history.hasMore, history]);
 
-  const renderRun = (run: TreeRun) => (
-    <div
-      key={run.id}
-      className={`task-card run-item state-${run.status}`}
-      data-agent-run-id={run.id}
-    >
-      <span className={`agent-dot state-${run.status}`} />
-      <div className="run-main">
-        <div className="run-title">
-          <span className="run-source">{run.externalRunId?.slice(0, 10) ?? "自动轮次"}</span>
-          {run.taskTitle || "（无标题）"}
-        </div>
-        <div className="run-meta">
-          {AGENT_STATE_LABELS[run.status] ?? "未知"} · {formatBetween(run.startedAt, run.endedAt)} · 活动 {formatRelative(run.updatedAt)}
-        </div>
-        {run.pending.length > 0 && (
-          <div className="run-pending">
-            <ListChecks size={11} /> {run.pending.length} 个待处理事项
-            <button className="btn sm" onClick={() => onPendingToTasks(run.pending)}>
-              转为任务
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
   return (
     <>
-      {live.map(renderRun)}
+      {!browseLive && live.map((run) => (
+        <AgentRunCard key={run.id} run={run} onPendingToTasks={onPendingToTasks} />
+      ))}
+      {hasLiveOverflow && (
+        <button
+          type="button"
+          className="btn sm tree-history-more"
+          aria-expanded={browseLive}
+          onClick={() => setBrowseLive((value) => !value)}
+        >
+          {browseLive
+            ? "返回快照中的实时轮次"
+            : `分页查看全部实时轮次（共 ${liveRunCount} 条）`}
+        </button>
+      )}
+      {browseLive && (
+        <LiveRunsPager sessionId={sessionId} enabled onPendingToTasks={onPendingToTasks} />
+      )}
       <button
         type="button"
         className="tree-history-toggle tree-history-toggle--runs"
@@ -2095,7 +2336,9 @@ function RunList({
       {open && !history.error && !history.loading && historyRuns.length === 0 && (
         <div className="empty-hint">暂无历史轮次</div>
       )}
-      {open && historyRuns.map(renderRun)}
+      {open && historyRuns.map((run) => (
+        <AgentRunCard key={run.id} run={run} onPendingToTasks={onPendingToTasks} />
+      ))}
       {open && backendReady && history.hasMore && (
         <button
           type="button"

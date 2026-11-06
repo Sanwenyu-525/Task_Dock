@@ -2,10 +2,10 @@
  * @vitest-environment jsdom
  */
 //! 完整模式左侧导航（v0.8：收集箱+暂存架合并为「收集与暂存」单一视觉入口）：
-//! - 十二个视觉入口 + 顶部「新建任务」始终存在，标签与图标语义正确；
+//! - 注册的 12 个视觉入口中，新配置默认显示 11 个（帮助默认隐藏）；
 //! - 逻辑 Tab 仍是 10 个（Ctrl+5=快速收集、Ctrl+6=文件暂存），视觉合并不改快捷键；
 //! - v0.10 新增「应用」入口（Agent 之后、行动之前），不占 Ctrl+数字；
-//! - v0.11 新增「帮助」入口（规划中心之后、设置之前），不占 Ctrl+数字；
+//! - v0.11 注册「帮助」入口（规划中心之后、设置之前），旧配置可见，新配置默认隐藏；
 //! - 徽标直接复用任务统计 / 行动中心 / 收集箱未处理计数，不新造计数；
 //! - 顶部入口切到任务页并聚焦快速添加；
 //! - 「收集箱」位于剪贴板之后、历史之前；「规划中心」位于历史之后、设置之前。
@@ -76,13 +76,14 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("渲染十二个视觉导航入口与顶部新建按钮（收集箱+暂存架合并）", () => {
+  it("默认渲染十一个导航入口并隐藏帮助，保留顶部新建按钮（收集箱+暂存架合并）", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["任务", "Agent", "应用", "微件", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "帮助", "设置"]) {
+    for (const label of ["任务", "Agent", "应用", "微件", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
+    expect(screen.queryByRole("button", { name: /^帮助/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^暂存架/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^收集箱/ })).toBeNull();
     expect(screen.getByRole("button", { name: "新建任务" })).toBeTruthy();
@@ -112,7 +113,6 @@ describe("完整模式左侧导航", () => {
       "工作流",
       "历史",
       "规划中心",
-      "帮助",
       "设置",
     ]);
 
@@ -188,6 +188,8 @@ describe("完整模式左侧导航", () => {
 
   it("帮助入口位于规划中心之后、设置之前，点击后渲染帮助中心（不占 Ctrl+数字）", async () => {
     const user = userEvent.setup();
+    // 旧用户的显式可见设置保持有效。
+    seedLeftLayout(allEntryIds("left"));
     render(<FullView />);
 
     await user.click(navItem("帮助"));
@@ -348,7 +350,6 @@ describe("英文导航", () => {
       "Workflows",
       "History",
       "Roadmap",
-      "Help",
       "Settings",
     ]);
 

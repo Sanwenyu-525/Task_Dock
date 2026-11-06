@@ -13,6 +13,7 @@ pub mod context_menu;
 pub mod db;
 pub mod error;
 pub mod focus;
+mod fs_safety;
 pub mod global_search;
 pub mod hotkeys;
 mod magnetic;
@@ -23,6 +24,7 @@ mod notes;
 pub mod notification_window;
 pub mod quick_capture;
 pub mod recurrence;
+pub mod resource_cleanup;
 pub mod scheduler;
 pub mod shelf;
 pub mod task_analytics;
@@ -423,6 +425,7 @@ pub fn run() {
             //（绝不自动重放有副作用的步骤）。
             commands::workflows::recover_on_startup(&db);
             handle.manage(db.clone());
+            handle.manage(Arc::new(resource_cleanup::ResourceCleanupState::default()));
             // 统一音频通知服务（TTS 合成 + 本地缓存）：
             // 缓存目录走 app_cache_dir/audio/tts（验收/便携模式随 TASK_DOCK_DATA_DIR 隔离），
             // 启动时不初始化 WinRT 引擎；只有实际播报/预生成时才合成。
@@ -471,7 +474,7 @@ pub fn run() {
             let shelf_state =
                 shelf::ShelfState::new(db.clone(), data_dir.join("shelf"), handle.clone())
                     .expect("暂存架目录初始化失败");
-            shelf::start_auto_cleanup(db.clone(), shelf_state.root.clone());
+            shelf::start_auto_cleanup(&shelf_state);
             handle.manage(Arc::new(shelf_state));
 
             let hub = Arc::new(AgentHub::new(handle.clone(), db.clone()));
@@ -815,6 +818,18 @@ pub fn run() {
             commands::audio::tts_synthesize,
             commands::audio::tts_cache_stats,
             commands::audio::tts_cache_clear,
+            commands::resource_cleanup::resource_snapshot,
+            commands::resource_cleanup::resource_cleanup_preview,
+            commands::resource_cleanup::resource_cleanup_execute,
+            commands::voice_packs::voice_packs_list,
+            commands::voice_packs::voice_pack_create,
+            commands::voice_packs::voice_pack_rename,
+            commands::voice_packs::voice_pack_delete,
+            commands::voice_packs::voice_asset_import,
+            commands::voice_packs::voice_asset_remove,
+            commands::voice_packs::voice_binding_set,
+            commands::voice_packs::voice_resolve_clip,
+            commands::voice_packs::voice_asset_path,
             commands::settings::clipboard_repair_config,
             commands::settings::save_window_rect,
             commands::settings::get_window_rect,
@@ -846,6 +861,7 @@ pub fn run() {
             commands::system::apply_window_material,
             commands::system::apply_window_radius,
             commands::system::apply_window_capsule,
+            commands::system::refresh_edge_tab_cursor,
             commands::system::set_magnetic_drag_config,
             commands::system::set_magnetic_dock,
             commands::system::set_undock_anchor,
@@ -911,6 +927,9 @@ pub fn run() {
             commands::planning::planning_delete_project,
             commands::planning::planning_reorder_projects,
             commands::planning::planning_list_features,
+            commands::planning::planning_list_feature_agent_links,
+            commands::planning::planning_list_agent_feature_links,
+            commands::planning::planning_unlink_agent_session,
             commands::planning::planning_create_feature,
             commands::planning::planning_update_feature,
             commands::planning::planning_delete_feature,
@@ -929,9 +948,12 @@ pub fn run() {
             mcp::commands::mcp_status,
             mcp::commands::mcp_agent_list,
             mcp::commands::mcp_agent_create,
+            mcp::commands::mcp_agent_rotate_token,
             mcp::commands::mcp_agent_set_scope,
             mcp::commands::mcp_agent_grant_project,
+            mcp::commands::mcp_agent_revoke_project,
             mcp::commands::mcp_agent_revoke,
+            mcp::commands::mcp_audit_list,
             mcp::commands::mcp_config_snippet,
             // 智能剪贴板（v0.5）
             commands::clipboard::clipboard_view,

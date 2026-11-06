@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
-  RefreshCw, Navigation, Clipboard, Trash2, Gauge, Layers, Compass, AlertTriangle,
+  RefreshCw, Navigation, Clipboard, Trash2, Gauge, Layers, Compass, AlertTriangle, HardDrive, LifeBuoy,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
 import { CollapsibleSection } from "../ui";
@@ -49,6 +49,10 @@ import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { copyText } from "../../lib/clipboard";
 import MockControls from "../agents/MockControls";
 import AudioSettings from "./AudioSettings";
+import ResourceCleanupSection from "./ResourceCleanupSection";
+import ReopenOnboardingButton from "../onboarding/ReopenOnboardingButton";
+import McpAccessSection from "./McpAccessSection";
+import ContextHelpButton from "../help/ContextHelpButton";
 import AppManagement from "./AppManagement";
 import AppPicker from "../navigation/AppPicker";
 import { NumberInput, Select, Switch } from "../ui";
@@ -123,6 +127,8 @@ export default function SettingsPanel() {
   const materialInfo = useSettingsStore((s) => s.materialInfo);
   const reapplyFromSystem = useSettingsStore((s) => s.reapplyFromSystem);
   const showToast = useUiStore((s) => s.showToast);
+  const setTab = useUiStore((s) => s.setTab);
+  const setHelpReturnTab = useUiStore((s) => s.setHelpReturnTab);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [inboxDir, setInboxDir] = useState("");
   const [tokenRevealed, setTokenRevealed] = useState(false);
@@ -1114,6 +1120,40 @@ export default function SettingsPanel() {
       <AudioSettings openSections={openSections} onToggle={toggleSection} />
 
       <Section
+        sectionId="resource-cleanup"
+        icon={HardDrive}
+        title={t("settings.section.resourceCleanup")}
+        description={t("settings.section.resourceCleanupDesc")}
+        open={openSections["resource-cleanup"]}
+        onToggle={() => toggleSection("resource-cleanup")}
+      >
+        <ResourceCleanupSection />
+      </Section>
+
+      <Section
+        sectionId="help"
+        icon={LifeBuoy}
+        title={t("settings.section.help")}
+        open={openSections.help}
+        onToggle={() => toggleSection("help")}
+      >
+        <div className="setting-row">
+          <span>{t("settings.help.center")}</span>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => setTab("help", { after: () => setHelpReturnTab("settings") })}
+          >
+            {t("settings.help.open")}
+          </button>
+        </div>
+        <div className="setting-row">
+          <span>{t("settings.help.onboarding")}</span>
+          <ReopenOnboardingButton />
+        </div>
+      </Section>
+
+      <Section
         sectionId="agent"
         icon={AgentIcon}
         title={t("settings.section.agent")}
@@ -1182,6 +1222,18 @@ export default function SettingsPanel() {
             </button>
           </div>
         </div>
+        <div className="setting-row">
+          <span>{t("settings.agent.mcpServer")}</span>
+          <div className="btn-row">
+            <Switch
+              checked={settings.mcp_server_enabled}
+              ariaLabel={t("settings.agent.mcpServer")}
+              onChange={(v) => update({ mcp_server_enabled: v })}
+            />
+            <ContextHelpButton articleId="help.agents.mcp-authorization" />
+          </div>
+        </div>
+        <McpAccessSection />
       </Section>
 
       <Section
@@ -1193,11 +1245,14 @@ export default function SettingsPanel() {
       >
         <div className="setting-row">
           <span>{t("settings.data.autoBackup")}</span>
-          <Switch
-            checked={settings.auto_backup}
-            ariaLabel={t("settings.data.autoBackup")}
-            onChange={(v) => update({ auto_backup: v })}
-          />
+          <div className="btn-row">
+            <Switch
+              checked={settings.auto_backup}
+              ariaLabel={t("settings.data.autoBackup")}
+              onChange={(v) => update({ auto_backup: v })}
+            />
+            <ContextHelpButton articleId="help.troubleshooting.backup" />
+          </div>
         </div>
         <div className="setting-row">
           <span>{t("settings.data.retainDays")}</span>

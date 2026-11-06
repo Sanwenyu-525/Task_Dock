@@ -20,9 +20,7 @@ fn max_bytes_of(settings: &Settings) -> u64 {
 }
 
 #[tauri::command]
-pub async fn tts_list_voices(
-    audio: State<'_, Arc<AudioService>>,
-) -> AppResult<VoicesReport> {
+pub async fn tts_list_voices(audio: State<'_, Arc<AudioService>>) -> AppResult<VoicesReport> {
     let service = Arc::clone(&audio);
     tauri::async_runtime::spawn_blocking(move || service.voices())
         .await
@@ -79,9 +77,7 @@ pub fn tts_cache_stats(
 }
 
 #[tauri::command]
-pub async fn tts_cache_clear(
-    audio: State<'_, Arc<AudioService>>,
-) -> AppResult<ClearReport> {
+pub async fn tts_cache_clear(audio: State<'_, Arc<AudioService>>) -> AppResult<ClearReport> {
     let service = Arc::clone(&audio);
     tauri::async_runtime::spawn_blocking(move || service.clear_cache())
         .await

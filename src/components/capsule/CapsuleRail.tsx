@@ -137,8 +137,10 @@ export const CAPSULE_TIP_COLLAPSE_OFFSET = capsuleTipInwardOffset(CAP_COLLAPSE_C
 /**
  * 轨道拖拽光标会话：轨道空白处按下（事件 target 自身带 `data-tauri-drag-region`）
  * 时进入 `is-dragging`（grabbing）；原生拖拽期间 WebView2 收不到指针事件，
- * 因此结束信号取 pointerup / pointercancel / blur / visibilitychange，以及
- * 恢复后的「按键已松开」pointermove。一次会话只装一组监听，结束即全部摘除。
+ * 因此结束信号取 pointerup / pointercancel / visibilitychange，以及恢复后的
+ * 「按键已松开」pointermove。`blur` 只在起始 120ms 之后才结束（起始内的
+ * blur 为原生拖动激活扰动，与标题栏同一守卫）；会话序号隔离新旧会话。
+ * 一次会话只装一组监听，结束即全部摘除。
  * 按钮自身不带 drag-region，按下既不进入会话，也不会被误判为拖动。
  */
 function useRailDragCursor() {
@@ -150,6 +152,7 @@ function useRailDragCursor() {
     if (!root) return;
 
     let endSession: (() => void) | null = null;
+    let sessionSeq = 0;
 
     const stop = () => {
       root.classList.remove("is-dragging");
@@ -160,22 +163,34 @@ function useRailDragCursor() {
 
     const start = () => {
       stop(); // 上一条会话若因事件缺失没收尾，先清掉再开新的
+      const mySeq = ++sessionSeq;
+      const startedAt = Date.now();
+      const isStale = () => mySeq !== sessionSeq;
+      const inStartChurn = () => Date.now() - startedAt < 120;
       root.classList.add("is-dragging");
       setDragging(true);
-      const end = () => stop();
-      const onMove = (event: PointerEvent) => {
-        if (event.buttons === 0) stop();
+      const end = () => {
+        if (isStale()) return;
+        stop();
       };
+      const endIfLate = () => {
+        if (isStale() || inStartChurn()) return;
+        stop();
+      };
+      const onMove = (event: PointerEvent) => {
+        if (event.buttons === 0) endIfLate();
+      };
+      const onBlur = () => endIfLate();
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", end);
       window.addEventListener("pointercancel", end);
-      window.addEventListener("blur", end);
+      window.addEventListener("blur", onBlur);
       document.addEventListener("visibilitychange", end);
       endSession = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", end);
         window.removeEventListener("pointercancel", end);
-        window.removeEventListener("blur", end);
+        window.removeEventListener("blur", onBlur);
         document.removeEventListener("visibilitychange", end);
       };
     };
@@ -191,6 +206,7 @@ function useRailDragCursor() {
 
     root.addEventListener("pointerdown", onPointerDown, true);
     return () => {
+      sessionSeq += 1;
       stop();
       root.removeEventListener("pointerdown", onPointerDown, true);
     };

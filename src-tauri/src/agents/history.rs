@@ -1,6 +1,6 @@
 //! Agent 历史会话 / 轮次的后端分页查询（P1-02）。
 //!
-//! 实时快照（`snapshot_query`）只取最近 200 个会话 / 300 个轮次，用于监控树、
+//! 实时快照（`snapshot_query`）只取最多 200 个实时会话 / 300 个实时轮次，用于监控树、
 //! 状态聚合与托盘；它**不是**历史数据源。本模块提供独立的只读分页查询：
 //! 数量由独立 `COUNT(*)` 聚合给出，翻页使用 keyset 游标，因此不受快照上限影响，
 //! 也不会因为深页 `OFFSET` 越来越慢。前端「历史会话」「历史搜索结果」「会话轮次」
@@ -40,7 +40,11 @@ const MAX_GROUPS: i64 = 2000;
 /// 而前端监控树以「轮次证据」计算 liveState；两边必须使用同一口径，否则同一会话
 /// 会同时出现在实时树与历史列表/COUNT 中。
 fn live_session_sql(session_alias: &str) -> String {
-    let live_run = live_run_sql("lr");
+    live_session_sql_at(session_alias, "datetime('now','-1 hour')")
+}
+
+pub(super) fn live_session_sql_at(session_alias: &str, cutoff_sql: &str) -> String {
+    let live_run = live_run_sql_at("lr", cutoff_sql);
     format!(
         "EXISTS (SELECT 1 FROM agent_runs lr \
          WHERE lr.session_id = {session_alias}.id AND lr.origin = 'real' \
@@ -51,13 +55,16 @@ fn live_session_sql(session_alias: &str) -> String {
 /// 实时轮次谓词（表别名）：running/waiting 恒为实时，failed/disconnected 仅近 1 小时。
 /// 与前端 `liveRuns()` 使用同一窗口，历史轮次分区据此与实时轮次互斥。
 fn live_run_sql(run_alias: &str) -> String {
+    live_run_sql_at(run_alias, "datetime('now','-1 hour')")
+}
+
+pub(super) fn live_run_sql_at(run_alias: &str, cutoff_sql: &str) -> String {
     format!(
         "{run_alias}.status IN ('running','waiting') \
          OR ({run_alias}.status IN ('failed','disconnected') \
-             AND datetime({run_alias}.updated_at) >= datetime('now','-1 hour'))"
+             AND datetime({run_alias}.updated_at) >= {cutoff_sql})"
     )
 }
-
 
 /// 会话历史查询条件。前端传 camelCase；未提供的字段表示不筛选。
 ///
@@ -81,6 +88,8 @@ pub struct AgentSessionHistoryQuery {
     /// 是否把实时会话也算进历史结果。默认 false：历史列表/COUNT 与实时树互斥。
     /// 精确按会话 ID 定位（find_session）会显式传 true。
     pub include_live: Option<bool>,
+    /// 仅查实时会话，供快照超出容量后的 keyset 继续访问；优先于 include_live。
+    pub live_only: Option<bool>,
     pub cursor: Option<String>,
     pub limit: Option<i64>,
 }
@@ -100,6 +109,9 @@ pub struct AgentHistorySession {
     pub last_run_id: Option<String>,
     /// 该会话的真实（origin='real'）轮次数量，独立 COUNT 聚合，只作展示，不参与分页。
     pub run_count: i64,
+    /// 当前实时轮次的最差状态；历史会话为 None，不由 session.status 猜测。
+    pub live_state: Option<String>,
+    pub live_run_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +233,14 @@ fn encode_cursor<T: Serialize>(cursor: &T) -> AppResult<String> {
     Ok(serde_json::to_string(cursor)?)
 }
 
+pub(super) fn encode_session_position(last_seen_at: &str, id: &str) -> AppResult<String> {
+    encode_cursor(&HistoryCursor {
+        v: CURSOR_VERSION,
+        last_seen_at: last_seen_at.to_string(),
+        id: id.to_string(),
+    })
+}
+
 fn parse_session_cursor(raw: &str) -> AppResult<HistoryCursor> {
     let cursor: HistoryCursor =
         serde_json::from_str(raw).map_err(|_| AppError::Validation("历史会话游标无效".into()))?;
@@ -248,7 +268,9 @@ fn build_session_filter(query: &AgentSessionHistoryQuery) -> AppResult<SqlFilter
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     // 默认排除实时会话：与前端监控树 `liveState !== idle` 同一口径。
-    if !query.include_live.unwrap_or(false) {
+    if query.live_only.unwrap_or(false) {
+        clauses.push(live_session_sql("s"));
+    } else if !query.include_live.unwrap_or(false) {
         clauses.push(format!("NOT {}", live_session_sql("s")));
     }
 
@@ -336,6 +358,7 @@ pub fn query_sessions(
             |r| r.get(0),
         )?;
 
+        let live_run = live_run_sql("lr");
         let mut sql = format!(
             "SELECT s.id, s.source_id,
                     CASE WHEN EXISTS (SELECT 1 FROM agent_instances i
@@ -344,7 +367,14 @@ pub fn query_sessions(
                     s.external_id, s.title, s.status,
                     s.first_seen_at, s.last_seen_at, s.last_run_id,
                     (SELECT COUNT(*) FROM agent_runs r
-                      WHERE r.session_id = s.id AND r.origin = 'real') AS run_count
+                      WHERE r.session_id = s.id AND r.origin = 'real') AS run_count,
+                    (SELECT lr.status FROM agent_runs lr
+                      WHERE lr.session_id = s.id AND lr.origin = 'real' AND ({live_run})
+                      ORDER BY CASE lr.status WHEN 'failed' THEN 0 WHEN 'waiting' THEN 1
+                                    WHEN 'running' THEN 2 ELSE 3 END,
+                               lr.updated_at DESC, lr.id DESC LIMIT 1) AS live_state,
+                    (SELECT COUNT(*) FROM agent_runs lr
+                      WHERE lr.session_id = s.id AND lr.origin = 'real' AND ({live_run})) AS live_run_count
              FROM agent_sessions s WHERE {}",
             filter.clause
         );
@@ -372,6 +402,8 @@ pub fn query_sessions(
                 last_seen_at: r.get(7)?,
                 last_run_id: r.get(8)?,
                 run_count: r.get(9)?,
+                live_state: r.get(10)?,
+                live_run_count: r.get(11)?,
             })
         })?;
         let mut items = rows.collect::<Result<Vec<_>, _>>()?;
@@ -381,11 +413,7 @@ pub fn query_sessions(
             items
                 .last()
                 .map(|s| {
-                    encode_cursor(&HistoryCursor {
-                        v: CURSOR_VERSION,
-                        last_seen_at: s.last_seen_at.clone(),
-                        id: s.id.clone(),
-                    })
+                    encode_session_position(&s.last_seen_at, &s.id)
                 })
                 .transpose()?
         } else {
@@ -406,13 +434,15 @@ pub fn query_sessions(
 ///
 /// 默认排除实时轮次（`include_live=false`）：调用方从快照渲染实时轮次，
 /// 历史分区只列已结束的轮次，`COUNT` 与列表同口径；通知深链需要完整轮次时可显式
-/// 传 `include_live=true`。
+/// 传 `include_live=true`。溢出监控会显式传 `live_only=true`，此时只查实时轮次，
+/// 且优先于 `include_live`。
 pub fn query_runs(
     db: &Db,
     session_id: &str,
     cursor: Option<&str>,
     limit: Option<i64>,
     include_live: Option<bool>,
+    live_only: Option<bool>,
 ) -> AppResult<AgentRunHistoryPage> {
     let session_id = session_id.trim();
     if session_id.is_empty() || session_id.chars().count() > MAX_FILTER_ID_LEN {
@@ -423,7 +453,9 @@ pub fn query_runs(
         .filter(|s| !s.trim().is_empty())
         .map(parse_run_cursor)
         .transpose()?;
-    let live_clause = if include_live.unwrap_or(false) {
+    let live_clause = if live_only.unwrap_or(false) {
+        format!(" AND ({})", live_run_sql("r"))
+    } else if include_live.unwrap_or(false) {
         String::new()
     } else {
         format!(" AND NOT ({})", live_run_sql("r"))
@@ -503,10 +535,7 @@ pub fn query_runs(
 /// 历史入口分组查询：按 source + instance 聚合 COUNT，不加载会话明细。
 /// 隐藏来源不返回（尊重用户隐藏）；已删除来源没有 agent_sources 行，也不会返回。
 /// 实例行不存在的会话归入 `instance_id = NULL`（未关联实例），与原历史查询口径一致。
-pub fn query_groups(
-    db: &Db,
-    query: &AgentHistoryGroupQuery,
-) -> AppResult<AgentHistoryGroups> {
+pub fn query_groups(db: &Db, query: &AgentHistoryGroupQuery) -> AppResult<AgentHistoryGroups> {
     let source_id = normalize_id(query.source_id.as_deref(), "source_id")?;
     db.with_read(|conn| {
         let mut clauses = vec![
@@ -773,16 +802,85 @@ mod tests {
                 insert_run(conn, &format!("{sid}-run"), sid, "codex", sid, status, &now)?;
             }
             // 历史：过期 failed / completed / 无轮次 / 有真实实例但快照可能没有
-            insert_session(conn, "s-failed-old", "codex", None, "failed", &old, "旧失败", "s-failed-old")?;
-            insert_run(conn, "s-failed-old-run", "s-failed-old", "codex", "旧失败", "failed", &old)?;
-            insert_session(conn, "s-completed", "codex", None, "completed", &now, "已完成", "s-completed")?;
-            insert_run(conn, "s-completed-run", "s-completed", "codex", "已完成", "completed", &now)?;
-            insert_session(conn, "s-norun", "codex", None, "idle", &old, "无轮次", "s-norun")?;
-            insert_session(conn, "s-inst", "codex", Some("inst-old"), "completed", &old, "实例历史", "s-inst")?;
-            insert_run(conn, "s-inst-run", "s-inst", "codex", "实例历史", "completed", &old)?;
+            insert_session(
+                conn,
+                "s-failed-old",
+                "codex",
+                None,
+                "failed",
+                &old,
+                "旧失败",
+                "s-failed-old",
+            )?;
+            insert_run(
+                conn,
+                "s-failed-old-run",
+                "s-failed-old",
+                "codex",
+                "旧失败",
+                "failed",
+                &old,
+            )?;
+            insert_session(
+                conn,
+                "s-completed",
+                "codex",
+                None,
+                "completed",
+                &now,
+                "已完成",
+                "s-completed",
+            )?;
+            insert_run(
+                conn,
+                "s-completed-run",
+                "s-completed",
+                "codex",
+                "已完成",
+                "completed",
+                &now,
+            )?;
+            insert_session(
+                conn,
+                "s-norun",
+                "codex",
+                None,
+                "idle",
+                &old,
+                "无轮次",
+                "s-norun",
+            )?;
+            insert_session(
+                conn,
+                "s-inst",
+                "codex",
+                Some("inst-old"),
+                "completed",
+                &old,
+                "实例历史",
+                "s-inst",
+            )?;
+            insert_run(
+                conn,
+                "s-inst-run",
+                "s-inst",
+                "codex",
+                "实例历史",
+                "completed",
+                &old,
+            )?;
             // 隐藏来源：历史入口不应出现
             insert_source(conn, "hidden-src", true)?;
-            insert_session(conn, "s-hidden", "hidden-src", None, "completed", &old, "隐藏来源", "s-hidden")?;
+            insert_session(
+                conn,
+                "s-hidden",
+                "hidden-src",
+                None,
+                "completed",
+                &old,
+                "隐藏来源",
+                "s-hidden",
+            )?;
             Ok::<_, AppError>(())
         })
         .unwrap();
@@ -795,7 +893,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(page.total, 4, "历史 COUNT 必须排除实时会话：{:?}", page.items);
+        assert_eq!(
+            page.total, 4,
+            "历史 COUNT 必须排除实时会话：{:?}",
+            page.items
+        );
         let ids: std::collections::HashSet<_> = page.items.iter().map(|s| s.id.clone()).collect();
         for live in ["s-running", "s-waiting", "s-failed-recent"] {
             assert!(!ids.contains(live), "实时会话不得出现在历史列表: {live}");
@@ -854,12 +956,28 @@ mod tests {
             for i in 0..5 {
                 let sid = format!("live-{i}");
                 insert_session(conn, &sid, "codex", None, "running", &now, &sid, &sid)?;
-                insert_run(conn, &format!("{sid}-run"), &sid, "codex", &sid, "running", &now)?;
+                insert_run(
+                    conn,
+                    &format!("{sid}-run"),
+                    &sid,
+                    "codex",
+                    &sid,
+                    "running",
+                    &now,
+                )?;
             }
             for i in 0..5 {
                 let sid = format!("hist-{i}");
                 insert_session(conn, &sid, "codex", None, "completed", &old, &sid, &sid)?;
-                insert_run(conn, &format!("{sid}-run"), &sid, "codex", &sid, "completed", &old)?;
+                insert_run(
+                    conn,
+                    &format!("{sid}-run"),
+                    &sid,
+                    "codex",
+                    &sid,
+                    "completed",
+                    &old,
+                )?;
             }
             Ok::<_, AppError>(())
         })
@@ -892,7 +1010,15 @@ mod tests {
             for i in 0..3 {
                 let sid = format!("live-{i}");
                 insert_session(conn, &sid, "codex", None, "running", &now, &sid, &sid)?;
-                insert_run(conn, &format!("{sid}-run"), &sid, "codex", &sid, "running", &now)?;
+                insert_run(
+                    conn,
+                    &format!("{sid}-run"),
+                    &sid,
+                    "codex",
+                    &sid,
+                    "running",
+                    &now,
+                )?;
             }
             Ok::<_, AppError>(())
         })
@@ -933,7 +1059,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(all.total, 3, "includeLive 仍可看到全部实时会话");
-        assert!(find_session(&db, "live-0").unwrap().is_some(), "实时会话仍可按 ID 定位");
+        assert!(
+            find_session(&db, "live-0").unwrap().is_some(),
+            "实时会话仍可按 ID 定位"
+        );
     }
 
     #[test]
@@ -1069,7 +1198,15 @@ mod tests {
                 let sid = format!("h{i}");
                 let at = (base - chrono::Duration::minutes(10 - i)).to_rfc3339();
                 insert_session(conn, &sid, "codex", None, "completed", &at, &sid, &sid)?;
-                insert_run(conn, &format!("{sid}-run"), &sid, "codex", &sid, "completed", &at)?;
+                insert_run(
+                    conn,
+                    &format!("{sid}-run"),
+                    &sid,
+                    "codex",
+                    &sid,
+                    "completed",
+                    &at,
+                )?;
             }
             Ok::<_, AppError>(())
         })
@@ -1116,7 +1253,11 @@ mod tests {
         .unwrap();
         assert_eq!(second.total, 3, "total 随实时/历史重分类更新");
         assert_eq!(
-            second.items.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            second
+                .items
+                .iter()
+                .map(|s| s.id.clone())
+                .collect::<Vec<_>>(),
             vec!["h0".to_string()],
             "已翻过的条目不得重复，仍在历史的条目不得遗漏"
         );
@@ -1128,7 +1269,13 @@ mod tests {
         let db = memdb();
         db.with_conn(|conn| {
             insert_source(conn, "codex", false)?;
-            insert_instance(conn, "inst-deep", "codex", "deep-instance", "2026-01-02T00:00:00+00:00")?;
+            insert_instance(
+                conn,
+                "inst-deep",
+                "codex",
+                "deep-instance",
+                "2026-01-02T00:00:00+00:00",
+            )?;
             insert_session(
                 conn,
                 "s-deep",
@@ -1167,7 +1314,10 @@ mod tests {
             .find(|g| g.instance_id.is_none())
             .expect("失效实例归入未关联实例");
         assert_eq!(dangling.count, 1);
-        assert!(!groups.items.iter().any(|g| g.instance_id.as_deref() == Some("deleted-instance")));
+        assert!(!groups
+            .items
+            .iter()
+            .any(|g| g.instance_id.as_deref() == Some("deleted-instance")));
     }
 
     #[test]
@@ -2057,7 +2207,7 @@ mod tests {
         let mut pages = 0;
         let mut all_order = Vec::new();
         loop {
-            let page = query_runs(&db, "s1", cursor.as_deref(), Some(10), None).unwrap();
+            let page = query_runs(&db, "s1", cursor.as_deref(), Some(10), None, None).unwrap();
             assert_eq!(page.total, 25);
             pages += 1;
             for run in &page.items {
@@ -2074,12 +2224,12 @@ mod tests {
         assert_eq!(all_order[0], "run-024", "最新更新的轮次在前");
         assert_eq!(all_order.last().unwrap(), "run-000");
 
-        let empty = query_runs(&db, "missing-session", None, Some(10), None).unwrap();
+        let empty = query_runs(&db, "missing-session", None, Some(10), None, None).unwrap();
         assert_eq!(empty.total, 0);
         assert!(empty.items.is_empty());
         assert!(empty.next_cursor.is_none());
 
-        let err = query_runs(&db, "s1", Some("bad-cursor"), Some(10), None).unwrap_err();
+        let err = query_runs(&db, "s1", Some("bad-cursor"), Some(10), None, None).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
     }
 
@@ -2093,13 +2243,29 @@ mod tests {
             insert_session(conn, "s1", "codex", None, "running", &now, "混合会话", "s1")?;
             insert_run(conn, "r-live", "s1", "codex", "运行中", "running", &now)?;
             insert_run(conn, "r-waiting", "s1", "codex", "等待", "waiting", &now)?;
-            insert_run(conn, "r-failed-old", "s1", "codex", "旧失败", "failed", &old)?;
-            insert_run(conn, "r-completed", "s1", "codex", "已完成", "completed", &now)?;
+            insert_run(
+                conn,
+                "r-failed-old",
+                "s1",
+                "codex",
+                "旧失败",
+                "failed",
+                &old,
+            )?;
+            insert_run(
+                conn,
+                "r-completed",
+                "s1",
+                "codex",
+                "已完成",
+                "completed",
+                &now,
+            )?;
             Ok::<_, AppError>(())
         })
         .unwrap();
 
-        let page = query_runs(&db, "s1", None, Some(10), None).unwrap();
+        let page = query_runs(&db, "s1", None, Some(10), None, None).unwrap();
         assert_eq!(page.total, 2, "历史轮次 COUNT 不得包含实时轮次");
         assert_eq!(
             page.items.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
@@ -2108,9 +2274,17 @@ mod tests {
         );
         assert!(page.next_cursor.is_none());
 
-        let all = query_runs(&db, "s1", None, Some(10), Some(true)).unwrap();
+        let all = query_runs(&db, "s1", None, Some(10), Some(true), None).unwrap();
         assert_eq!(all.total, 4, "include_live=true 仍可查看完整轮次");
         assert_eq!(all.items.len(), 4);
+
+        let live = query_runs(&db, "s1", None, Some(10), Some(true), Some(true)).unwrap();
+        assert_eq!(live.total, 2, "live_only 优先于 include_live");
+        assert!(live.items.iter().all(|run| {
+            run.status == "running"
+                || run.status == "waiting"
+                || (run.status == "failed" && run.updated_at >= now)
+        }));
     }
 
     #[test]
@@ -2219,7 +2393,10 @@ mod tests {
             if x.source_id == y.source_id && x.count == y.count {
                 let xk = x.instance_key.clone().unwrap_or_default();
                 let yk = y.instance_key.clone().unwrap_or_default();
-                assert!(xk < yk, "同数量分组必须按 instance_key 稳定排序: {xk} !< {yk}");
+                assert!(
+                    xk < yk,
+                    "同数量分组必须按 instance_key 稳定排序: {xk} !< {yk}"
+                );
             } else {
                 assert!(x.count >= y.count, "同来源内必须按数量降序");
             }
@@ -2229,7 +2406,10 @@ mod tests {
             Some("instance-0000"),
             "同数量按 instance_key 升序"
         );
-        assert_eq!(first.items[MAX_GROUPS as usize - 1].instance_key.as_deref(), Some("instance-1999"));
+        assert_eq!(
+            first.items[MAX_GROUPS as usize - 1].instance_key.as_deref(),
+            Some("instance-1999")
+        );
         assert!(!first
             .items
             .iter()
@@ -2246,8 +2426,10 @@ mod tests {
         .unwrap();
         assert_eq!(hit.total, 1, "被截断分组的会话必须仍可被关键词搜索命中");
         assert_eq!(hit.items[0].source_id, "codex");
-        assert!(find_session(&db, &hit.items[0].id).unwrap().is_some(),
-            "find_session 必须能打开被截断分组的会话");
+        assert!(
+            find_session(&db, &hit.items[0].id).unwrap().is_some(),
+            "find_session 必须能打开被截断分组的会话"
+        );
     }
 
     /// P2-02：隐藏来源与已删除来源（无 agent_sources 行的残留会话）不得进入分组。
@@ -2360,8 +2542,10 @@ mod tests {
             2,
             "display_name 相同、instance_key 不同的两个实例不得合并成分组"
         );
-        let names: std::collections::HashSet<_> =
-            named.iter().map(|g| g.display_name.as_deref().unwrap()).collect();
+        let names: std::collections::HashSet<_> = named
+            .iter()
+            .map(|g| g.display_name.as_deref().unwrap())
+            .collect();
         assert_eq!(names.len(), 1, "构造前提：display_name 相同");
         // 确定序：同数量按 instance_key 升序，两个分组顺序可复现。
         assert_eq!(named[0].instance_key.as_deref(), Some("key-alpha"));

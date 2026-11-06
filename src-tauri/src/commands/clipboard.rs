@@ -354,15 +354,10 @@ pub async fn clipboard_ocr(
     };
     tauri::async_runtime::spawn_blocking(move || {
         let _slot = slot;
-        rt.ocr
-            .recognize(&rt.db, &rt.root, &item_id, &request_id)
+        rt.ocr.recognize(&rt.db, &rt.root, &item_id, &request_id)
     })
     .await
-    .map_err(|e| {
-        AppError::Io(std::io::Error::other(format!(
-            "识别后台任务异常结束：{e}"
-        )))
-    })
+    .map_err(|e| AppError::Io(std::io::Error::other(format!("识别后台任务异常结束：{e}"))))
 }
 
 /// 取消进行中的识别（只匹配同一个 `request_id`，切换条目后的旧取消不会误伤新请求）。
@@ -691,8 +686,10 @@ pub fn clipboard_clear_history(state: State<'_, Arc<ClipboardRuntime>>) -> AppRe
     let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
     // 记录清空时刻的剪贴板序列号：清空前入队、清空后才派发的旧事件
     // 即使拿到新代数，采集侧也会因「不晚于清空水位」把它丢弃。
-    rt.clear_seq
-        .store(crate::clipboard::platform::current_sequence(), Ordering::SeqCst);
+    rt.clear_seq.store(
+        crate::clipboard::platform::current_sequence(),
+        Ordering::SeqCst,
+    );
     rt.capture_epoch.fetch_add(1, Ordering::SeqCst);
     let report = store::clear_history(&rt.db, &rt.root)?;
     // 清空后整体失效；识别中的旧任务因代数变化不会再写回缓存。
@@ -895,10 +892,7 @@ pub fn clipboard_foreground_target() -> Option<TargetWindow> {
 }
 
 #[tauri::command]
-pub fn clipboard_paste_precheck(
-    hwnd: isize,
-    expected_pid: Option<u32>,
-) -> AppResult<TargetWindow> {
+pub fn clipboard_paste_precheck(hwnd: isize, expected_pid: Option<u32>) -> AppResult<TargetWindow> {
     paste::precheck_target(hwnd, expected_pid)
 }
 
@@ -908,10 +902,7 @@ pub fn clipboard_paste_precheck(
 /// `focus_window` 激活 → 再次核实身份与前台。任何一步失败都返回具体原因，
 /// 绝不把「已请求切换」当成成功。
 #[tauri::command]
-pub fn clipboard_focus_target(
-    hwnd: isize,
-    expected_pid: Option<u32>,
-) -> AppResult<TargetWindow> {
+pub fn clipboard_focus_target(hwnd: isize, expected_pid: Option<u32>) -> AppResult<TargetWindow> {
     use crate::navigation::window_manager::{focus_window, FocusError};
 
     let target = paste::precheck_target(hwnd, expected_pid)?;
@@ -965,6 +956,7 @@ pub fn clipboard_paste_group(
     if ids.is_empty() {
         return Err(AppError::Validation("分组为空，无法逐项粘贴".into()));
     }
+    let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
     rt.paste.start(&group_id, target_hwnd, expected_pid, &ids)
 }
 
@@ -984,6 +976,7 @@ pub fn clipboard_paste_items(
         return Err(AppError::Validation("所选条目不存在或已删除".into()));
     }
     let ids: Vec<String> = items.into_iter().map(|i| i.id).collect();
+    let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
     rt.paste.start("", target_hwnd, expected_pid, &ids)
 }
 
@@ -1002,9 +995,9 @@ pub fn clipboard_paste_resume(
     target_hwnd: isize,
     expected_pid: Option<u32>,
 ) -> AppResult<PasteStartReport> {
-    runtime(&state)
-        .paste
-        .resume(&job_id, target_hwnd, expected_pid)
+    let rt = runtime(&state);
+    let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
+    rt.paste.resume(&job_id, target_hwnd, expected_pid)
 }
 
 #[tauri::command]
@@ -1218,7 +1211,9 @@ mod tests {
             busy: "测试任务过多",
         };
 
-        let held: Vec<QuotaGuard> = (0..3).map(|_| QUOTA.acquire().expect("配额内应可用")).collect();
+        let held: Vec<QuotaGuard> = (0..3)
+            .map(|_| QUOTA.acquire().expect("配额内应可用"))
+            .collect();
         let barrier = Arc::new(Barrier::new(9)); // 8 个竞争线程 + 主线程
         let handles: Vec<_> = (0..8)
             .map(|_| {

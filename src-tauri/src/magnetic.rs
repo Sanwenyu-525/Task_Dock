@@ -627,6 +627,24 @@ pub fn set_config(enabled: bool, range_css: f64, max_lead_css: f64, release_css:
     request_snap_style_sync();
 }
 
+/// 请求窗口线程刷新 Edge Tab 拖动结束后的系统光标（PostMessage，线程安全）。
+#[cfg(windows)]
+pub fn request_edge_tab_cursor_refresh(hwnd: isize) {
+    if hwnd == 0 {
+        return;
+    }
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+            hwnd as _,
+            win::WM_CURSOR_EDGE_TAB,
+            0,
+            0,
+        );
+    }
+}
+#[cfg(not(windows))]
+pub fn request_edge_tab_cursor_refresh(_hwnd: isize) {}
+
 pub fn config() -> (bool, f64, f64, f64) {
     (
         ENABLED.load(Ordering::Acquire),
@@ -809,6 +827,8 @@ mod win {
     /// 角热区光标恢复消息（自定义）：缩放/移动循环退出后延后一拍补 `SetCursor`。
     /// 见 `window_cursor` 模块文档。
     const WM_CURSOR_CORNER: u32 = WM_APP + 0x53;
+    /// Edge Tab 拖动结束后刷新系统光标（鼠标静止时 CSS cursor 不会自动重新生效）。
+    pub const WM_CURSOR_EDGE_TAB: u32 = WM_APP + 0x54;
 
     /// 子类化时窗口是否本就带 `WS_MAXIMIZEBOX`（1=有 2=没有 0=未记录）。
     /// 恢复时只还原原本存在的样式，不把"不可最大化"改成"可最大化"。
@@ -998,9 +1018,13 @@ mod win {
                 crate::window_cursor::restore_at_corner(hwnd as isize);
                 return 0;
             }
-            WM_SETCURSOR if wparam == HTCLIENT as WPARAM => {
-                // 客户端区的光标通常由 WebView2 子窗按 CSS 设置；这里兜底
-                // 「子窗没有设置光标」的情况，命中角热区时保持双向箭头。
+            WM_CURSOR_EDGE_TAB => {
+                crate::window_cursor::refresh_edge_tab_cursor(hwnd as isize);
+                return 0;
+            }
+            WM_SETCURSOR if (lparam as usize & 0xFFFF) as u32 == HTCLIENT => {
+                // lParam 的 LOWORD 是命中测试值（HTCLIENT=客户区），wParam 才是窗口句柄；
+                // 之前误用 wParam == HTCLIENT，导致分支几乎永远不命中，角热区光标恢复失效。
                 if crate::window_cursor::restore_at_corner(hwnd as isize) {
                     return 1;
                 }

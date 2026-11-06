@@ -9,13 +9,14 @@ import {
   EVENT_PRIORITY,
   QUEUE_LIMIT,
   composeSpeech,
+  hasDynamicSpeech,
   readAudioSettings,
   sanitizeSpeechLabel,
   toneGain,
   type AudioAdapters,
   type AudioEventKind,
 } from "./audioNotification";
-import type { Settings, TtsSynthesisReport } from "./bridge";
+import type { Settings, TtsSynthesisReport, VoiceClip, VoiceEventKind } from "./bridge";
 
 /** 最小设置桩：只填本套件涉及的音频字段，其余交给默认值。 */
 function fakeSettings(patch: Partial<Settings> = {}): Settings {
@@ -32,6 +33,9 @@ function fakeSettings(patch: Partial<Settings> = {}): Settings {
     tts_speak_title: false,
     tts_cache_enabled: true,
     tts_cache_max_mb: 50,
+    tts_voice_pack_enabled: false,
+    tts_voice_pack_id: "",
+    tts_voice_route: "auto",
     ...patch,
   } as unknown as Settings;
 }
@@ -59,11 +63,15 @@ function okReport(): TtsSynthesisReport {
 interface Harness {
   service: AudioNotificationService;
   events: string[];
+  speechSources: string[];
+  voiceResolutions: VoiceEventKind[];
   synth: Array<Record<string, unknown>>;
   settings: Settings;
   setSettings: (patch: Partial<Settings>) => void;
   holdTone: () => { release: () => void };
-  holdSpeech: () => { release: () => void };
+  holdSpeech: (options?: { ignoreAbort?: boolean }) => { release: () => void };
+  setVoiceClip: (eventKind: VoiceEventKind, clip: VoiceClip | null) => void;
+  failNextSpeech: (error: Error) => void;
   holdSynth: () => { release: (report?: TtsSynthesisReport) => void };
   closed: boolean;
   aborted: string[];
@@ -71,15 +79,20 @@ interface Harness {
 
 function makeHarness(initial: Settings = fakeSettings()): Harness {
   const events: string[] = [];
+  const speechSources: string[] = [];
+  const voiceResolutions: VoiceEventKind[] = [];
+  const voiceClips = new Map<VoiceEventKind, VoiceClip | null>();
   const synth: Array<Record<string, unknown>> = [];
   const aborted: string[] = [];
   let settings = initial;
   let toneRelease: (() => void) | null = null;
-  let speechRelease: (() => void) | null = null;
+  const speechReleases: Array<() => void> = [];
   let synthRelease: ((report: TtsSynthesisReport) => void) | null = null;
   let holdToneOn = false;
   let holdSpeechOn = false;
+  let ignoreSpeechAbort = false;
   let holdSynthOn = false;
+  let nextSpeechFailure: Error | null = null;
   let closed = false;
 
   const deps: AudioAdapters = {
@@ -100,15 +113,28 @@ function makeHarness(initial: Settings = fakeSettings()): Harness {
         signal.addEventListener("abort", () => resolve());
       });
     },
-    playSpeech: async (_dataUrl, _volume, signal) => {
+    playSpeech: async (source, _volume, signal) => {
       events.push("speech");
+      speechSources.push(source);
       signal.addEventListener("abort", () => aborted.push("speech"));
+      if (nextSpeechFailure) {
+        const failure = nextSpeechFailure;
+        nextSpeechFailure = null;
+        throw failure;
+      }
       if (!holdSpeechOn) return;
       await new Promise<void>((resolve) => {
-        speechRelease = resolve;
-        signal.addEventListener("abort", () => resolve());
+        speechReleases.push(resolve);
+        if (!ignoreSpeechAbort) {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        }
       });
     },
+    resolveVoiceClip: async (eventKind) => {
+      voiceResolutions.push(eventKind);
+      return voiceClips.get(eventKind) ?? null;
+    },
+    voiceAssetSource: async (assetId) => `asset://${assetId}`,
     now: () => Date.now(),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (id) => clearTimeout(id),
@@ -121,6 +147,8 @@ function makeHarness(initial: Settings = fakeSettings()): Harness {
   return {
     service: new AudioNotificationService(deps),
     events,
+    speechSources,
+    voiceResolutions,
     synth,
     get settings() {
       return settings;
@@ -138,15 +166,22 @@ function makeHarness(initial: Settings = fakeSettings()): Harness {
         },
       };
     },
-    holdSpeech: () => {
+    holdSpeech: (options = {}) => {
       holdSpeechOn = true;
+      ignoreSpeechAbort = options.ignoreAbort ?? false;
       return {
         release: () => {
-          holdSpeechOn = false;
-          speechRelease?.();
-          speechRelease = null;
+          speechReleases.shift()?.();
+          if (speechReleases.length === 0) {
+            holdSpeechOn = false;
+            ignoreSpeechAbort = false;
+          }
         },
       };
+    },
+    setVoiceClip: (eventKind, clip) => voiceClips.set(eventKind, clip),
+    failNextSpeech: (error) => {
+      nextSpeechFailure = error;
     },
     holdSynth: () => {
       holdSynthOn = true;
@@ -179,6 +214,9 @@ describe("readAudioSettings", () => {
     expect(snap.soundEnabled).toBe(true);
     expect(snap.ttsEnabled).toBe(false);
     expect(snap.ttsRate).toBe(100);
+    expect(snap.voicePackEnabled).toBe(false);
+    expect(snap.voicePackId).toBe("");
+    expect(snap.voiceRoute).toBe("auto");
     expect(snap.cacheMaxMb).toBe(50);
     expect(snap.soundFor.agent_started).toBe(false);
     expect(snap.soundFor.agent_done).toBe(true);
@@ -250,6 +288,162 @@ describe("AudioNotificationService", () => {
     expect(h.synth[0].text).toBe("多个任务已完成");
     expect(h.events).toEqual(["tone:agent_done", "speech"]);
     expect(h.service.diagnostics().merged).toBe(3);
+  });
+
+  it("auto 路由在没有动态标签时播放固定片段", async () => {
+    const h = makeHarness(
+      fakeSettings({
+        audio_sound_enabled: false,
+        tts_voice_pack_enabled: true,
+        tts_voice_pack_id: "pack-a",
+      }),
+    );
+    h.setVoiceClip("agent_waiting", {
+      assetId: "waiting-wav",
+      mediaType: "audio/wav",
+      durationMs: 1200,
+    });
+    h.service.handleItems([{ eventId: "clip-auto", kind: "agent_waiting" }]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.voiceResolutions).toEqual(["agent_waiting"]);
+    expect(h.speechSources).toEqual(["asset://waiting-wav"]);
+    expect(h.synth).toHaveLength(0);
+    expect(h.service.diagnostics().voiceClipOk).toBe(1);
+    h.service.dispose();
+  });
+
+  it("auto 路由在本次需要播报动态来源时保留系统 TTS", async () => {
+    const h = makeHarness(
+      fakeSettings({
+        audio_sound_enabled: false,
+        tts_voice_pack_enabled: true,
+        tts_voice_pack_id: "pack-a",
+        tts_voice_route: "auto",
+        tts_speak_source: true,
+      }),
+    );
+    h.setVoiceClip("agent_waiting", {
+      assetId: "waiting-mp3",
+      mediaType: "audio/mpeg",
+      durationMs: 1200,
+    });
+    h.service.handleItems([
+      { eventId: "clip-dynamic", kind: "agent_waiting", sourceName: "Claude" },
+    ]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.voiceResolutions).toHaveLength(0);
+    expect(h.synth[0].text).toContain("Claude");
+    expect(h.service.diagnostics().voiceClipOk).toBe(0);
+    h.service.dispose();
+  });
+
+  it("system 路由不解析自定义片段", async () => {
+    const h = makeHarness(
+      fakeSettings({
+        audio_sound_enabled: false,
+        tts_voice_pack_enabled: true,
+        tts_voice_pack_id: "pack-a",
+        tts_voice_route: "system",
+      }),
+    );
+    h.setVoiceClip("agent_waiting", {
+      assetId: "waiting-mp3",
+      mediaType: "audio/mpeg",
+      durationMs: 1200,
+    });
+    h.service.handleItems([{ eventId: "clip-system", kind: "agent_waiting" }]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.voiceResolutions).toHaveLength(0);
+    expect(h.synth).toHaveLength(1);
+    h.service.dispose();
+  });
+
+  it("custom 路由缺少有效绑定时回退一次系统 TTS", async () => {
+    const h = makeHarness(
+      fakeSettings({
+        audio_sound_enabled: false,
+        tts_voice_pack_enabled: true,
+        tts_voice_pack_id: "pack-a",
+        tts_voice_route: "custom",
+      }),
+    );
+    h.service.handleItems([{ eventId: "clip-unbound", kind: "agent_waiting" }]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.voiceResolutions).toEqual(["agent_waiting"]);
+    expect(h.synth).toHaveLength(1);
+    expect(h.service.diagnostics().voiceClipFallback).toBe(1);
+    h.service.dispose();
+  });
+
+  it("custom 路由允许固定片段替代动态来源并试听合并完成变体", async () => {
+    const h = makeHarness(
+      fakeSettings({
+        audio_sound_enabled: false,
+        tts_voice_pack_enabled: true,
+        tts_voice_pack_id: "pack-a",
+        tts_voice_route: "custom",
+      }),
+    );
+    h.setVoiceClip("agent_done_multiple", {
+      assetId: "multi-done-mp3",
+      mediaType: "audio/mpeg",
+      durationMs: 1700,
+    });
+    h.service.handleItems([
+      { eventId: "multi-1", kind: "agent_done", sourceName: "Claude" },
+      { eventId: "multi-2", kind: "agent_done", sourceName: "Codex" },
+    ]);
+    await vi.advanceTimersByTimeAsync(DONE_MERGE_WINDOW_MS + 20);
+    expect(h.voiceResolutions).toEqual(["agent_done_multiple"]);
+    expect(h.speechSources).toEqual(["asset://multi-done-mp3"]);
+    expect(h.synth).toHaveLength(0);
+    h.service.dispose();
+  });
+
+  it("自定义片段在开始播放前失败时只回退一次系统 TTS", async () => {
+    const h = makeHarness(
+      fakeSettings({
+        audio_sound_enabled: false,
+        tts_voice_pack_enabled: true,
+        tts_voice_pack_id: "pack-a",
+      }),
+    );
+    h.setVoiceClip("agent_waiting", {
+      assetId: "broken-wav",
+      mediaType: "audio/wav",
+      durationMs: 1200,
+    });
+    h.failNextSpeech(Object.assign(new Error("decode"), { playbackStarted: false }));
+    h.service.handleItems([{ eventId: "clip-fallback", kind: "agent_waiting" }]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.synth).toHaveLength(1);
+    expect(h.speechSources).toHaveLength(2);
+    expect(h.service.diagnostics().voiceClipFallback).toBe(1);
+    expect(h.service.diagnostics().ttsOk).toBe(1);
+    h.service.dispose();
+  });
+
+  it("自定义片段播放已开始后失败不重复播报完整 TTS", async () => {
+    const h = makeHarness(
+      fakeSettings({
+        audio_sound_enabled: false,
+        tts_voice_pack_enabled: true,
+        tts_voice_pack_id: "pack-a",
+      }),
+    );
+    h.setVoiceClip("agent_waiting", {
+      assetId: "partial-mp3",
+      mediaType: "audio/mpeg",
+      durationMs: 1200,
+    });
+    h.failNextSpeech(Object.assign(new Error("device"), { playbackStarted: true }));
+    h.service.handleItems([{ eventId: "clip-partial", kind: "agent_waiting" }]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.synth).toHaveLength(0);
+    expect(h.speechSources).toHaveLength(1);
+    expect(h.service.diagnostics().voiceClipFallback).toBe(0);
+    expect(h.service.diagnostics().voiceClipFail).toBe(1);
+    h.service.dispose();
   });
 
   it("等待事件优先于完成事件；先提示音后语音，绝不叠音", async () => {
@@ -409,6 +603,72 @@ describe("AudioNotificationService", () => {
     h.service.stopPreview();
     gate.release();
     await expect(pending).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    expect(h.service.diagnostics().previewing).toBe(false);
+    h.service.dispose();
+  });
+
+  it("自定义 MP3/WAV 试听经同一服务播放，不合成也不改设置", async () => {
+    const h = makeHarness(fakeSettings({ tts_voice_pack_id: "pack-original" }));
+    await expect(h.service.previewCustomAsset("clip-mp3")).resolves.toMatchObject({
+      ok: true,
+      code: "ok",
+    });
+    await expect(h.service.previewCustomAsset("clip-wav")).resolves.toMatchObject({
+      ok: true,
+      code: "ok",
+    });
+    expect(h.speechSources).toEqual(["asset://clip-mp3", "asset://clip-wav"]);
+    expect(h.synth).toHaveLength(0);
+    expect(h.settings.tts_voice_pack_id).toBe("pack-original");
+    h.service.dispose();
+  });
+
+  it("旧试听晚结束时不能释放新试听的独占通道或提前恢复通知队列", async () => {
+    const h = makeHarness(fakeSettings({ audio_sound_enabled: false }));
+    const gate = h.holdSpeech({ ignoreAbort: true });
+    const previewA = h.service.previewCustomAsset("clip-a-mp3");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.speechSources).toEqual(["asset://clip-a-mp3"]);
+
+    const previewB = h.service.previewCustomAsset("clip-b-wav");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.speechSources).toEqual(["asset://clip-a-mp3", "asset://clip-b-wav"]);
+    expect(h.aborted).toContain("speech");
+
+    h.service.handleItems([{ eventId: "during-preview", kind: "agent_waiting" }]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.service.diagnostics().previewing).toBe(true);
+    expect(h.service.diagnostics().queue).toBe(1);
+    expect(h.synth).toHaveLength(0);
+
+    gate.release(); // A 在 B 开始后才完成；它的 finally 必须无权释放 B。
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(previewA).resolves.toMatchObject({ ok: false, code: "cancelled" });
+    expect(h.service.diagnostics().previewing).toBe(true);
+    expect(h.service.diagnostics().queue).toBe(1);
+    expect(h.synth).toHaveLength(0);
+
+    gate.release();
+    await expect(previewB).resolves.toMatchObject({ ok: true, code: "ok" });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.service.diagnostics().previewing).toBe(false);
+    expect(h.service.diagnostics().queue).toBe(0);
+    expect(h.synth).toHaveLength(1);
+    h.service.dispose();
+  });
+
+  it("全局静音立即取消试听占用并清空队列；迟到的试听 finally 不复活", async () => {
+    const h = makeHarness(fakeSettings({ audio_sound_enabled: false }));
+    const gate = h.holdSpeech({ ignoreAbort: true });
+    const preview = h.service.previewCustomAsset("clip-pending");
+    await vi.advanceTimersByTimeAsync(1);
+    h.service.handleItems([{ eventId: "muted-queued", kind: "agent_waiting" }]);
+    h.setSettings({ notify_muted: true });
+    h.service.onSettingsChanged(h.settings);
+    expect(h.service.diagnostics().previewing).toBe(false);
+    expect(h.service.diagnostics().queue).toBe(0);
+    gate.release();
+    await expect(preview).resolves.toMatchObject({ ok: false, code: "cancelled" });
     expect(h.service.diagnostics().previewing).toBe(false);
     h.service.dispose();
   });
@@ -672,6 +932,21 @@ describe("EVENT_PRIORITY", () => {
 });
 
 describe("播报标签清洗（自然度与隐私）", () => {
+  it("动态路由只在清洗后仍有实际播报标签时切到系统 TTS", () => {
+    expect(
+      hasDynamicSpeech(
+        { sourceName: "Claude", taskTitle: null },
+        { speakSource: true, speakTitle: false },
+      ),
+    ).toBe(true);
+    expect(
+      hasDynamicSpeech(
+        { sourceName: "https://example.com/task", taskTitle: "!!!" },
+        { speakSource: true, speakTitle: true },
+      ),
+    ).toBe(false);
+  });
+
   it("去掉 URL / 文件路径 / 邮箱，只保留可朗读内容", () => {
     expect(sanitizeSpeechLabel("修 bug https://example.com/x?y=1")).toBe("修 bug");
     expect(sanitizeSpeechLabel(String.raw`C:\Users\me\secret.txt`)).toBe("");

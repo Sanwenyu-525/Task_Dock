@@ -240,12 +240,7 @@ pub fn create(
     get(db, &id)
 }
 
-pub fn update(
-    db: &Db,
-    root: &Path,
-    id: &str,
-    patch: &DropTargetPatch,
-) -> AppResult<DropTarget> {
+pub fn update(db: &Db, root: &Path, id: &str, patch: &DropTargetPatch) -> AppResult<DropTarget> {
     let current = get(db, id)?;
 
     let name = match patch.name.as_deref() {
@@ -257,7 +252,11 @@ pub fn update(
         None => None,
     };
     let op_mode = patch.op_mode.as_deref().map(validate_mode).transpose()?;
-    let conflict = patch.conflict.as_deref().map(validate_conflict).transpose()?;
+    let conflict = patch
+        .conflict
+        .as_deref()
+        .map(validate_conflict)
+        .transpose()?;
 
     if let Some(next) = path.as_deref() {
         if path_taken(db, next, Some(id))? {

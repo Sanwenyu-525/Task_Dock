@@ -20,6 +20,9 @@ import {
   scenarioGet,
   scenarioList,
   scenarioSave,
+  type RestoreSummary,
+  type WorkflowRunDetail,
+  type WorkspaceRestoreProgress,
   type ScenarioDetail,
   type ScenarioEnterResult,
   type ScenarioSaveInput,
@@ -39,6 +42,10 @@ interface ScenarioState {
   editing: ScenarioDetail | null;
   /** 每个场景最近一次进入结果（卸载后仍可查看） */
   results: Record<string, ScenarioEnterResult>;
+  /** 异步现场/工作流动作的事件状态；不做轮询，事件缺失时保留「已受理」。 */
+  progressByItem: Record<string, { status: ScenarioAsyncStatus; detail: string }>;
+  activeSnapshotId: string | null;
+  activeWorkflowId: string | null;
 
   load: (opts?: { force?: boolean }) => Promise<void>;
   openEditor: (id: string) => Promise<ScenarioDetail>;
@@ -49,6 +56,20 @@ interface ScenarioState {
   /** 进入场景；已有在途进入时返回 null（不排队、不并发）。 */
   enter: (id: string) => Promise<ScenarioEnterResult | null>;
   clearResult: (id: string) => void;
+  applyRestoreProgress: (event: WorkspaceRestoreProgress) => void;
+  applyWorkflowProgress: (detail: WorkflowRunDetail) => void;
+}
+
+export type ScenarioAsyncStatus = "accepted" | "running" | "completed" | "partial" | "failed" | "cancelled";
+
+export const scenarioItemProgressKey = (kind: "snapshot" | "workflow", id: string) => `${kind}:${id}`;
+
+function restoreProgressState(summary: RestoreSummary): { status: ScenarioAsyncStatus; detail: string } {
+  const detail = `恢复 ${summary.restored}，跳过 ${summary.skipped}，失败 ${summary.failed}，取消 ${summary.cancelled}`;
+  if (summary.cancelled > 0) return { status: "cancelled", detail };
+  if (summary.failed === 0 && summary.skipped === 0) return { status: "completed", detail };
+  if (summary.restored > 0) return { status: "partial", detail };
+  return { status: "failed", detail };
 }
 
 /** 请求代次：只接受最新一次 `load` 的响应。 */
@@ -108,6 +129,9 @@ export const useScenarioStore = create<ScenarioState>((set, get) => {
     enteringId: null,
     editing: null,
     results: {},
+    progressByItem: {},
+    activeSnapshotId: null,
+    activeWorkflowId: null,
 
     load: (opts) => runLoad(opts?.force === true, 0),
 
@@ -156,11 +180,33 @@ export const useScenarioStore = create<ScenarioState>((set, get) => {
     enter: async (id) => {
       // 全局单飞：不排队，避免两个场景互相抢前台、也让用户看清「正在进入哪一个」
       if (get().enteringId !== null) return null;
-      set({ enteringId: id, error: null });
+      const oldResult = get().results[id];
+      set((s) => {
+        const progressByItem = { ...s.progressByItem };
+        for (const item of oldResult?.items ?? []) {
+          if (item.kind === "snapshot" || item.kind === "workflow") {
+            delete progressByItem[scenarioItemProgressKey(item.kind, item.label)];
+          }
+        }
+        const results = { ...s.results };
+        delete results[id];
+        return {
+          enteringId: id,
+          activeSnapshotId: null,
+          activeWorkflowId: null,
+          results,
+          progressByItem,
+          error: null,
+        };
+      });
       try {
+        const detail = await scenarioGet(id);
+        set({ activeSnapshotId: detail.snapshotId, activeWorkflowId: detail.linkedWorkflowId });
         const result = await scenarioEnter(id);
         set((s) => ({
           enteringId: null,
+          activeSnapshotId: null,
+          activeWorkflowId: null,
           results: { ...s.results, [id]: result },
         }));
         // 进入会刷新 last_entered_at：重取一次保证摘要与后端一致
@@ -168,7 +214,7 @@ export const useScenarioStore = create<ScenarioState>((set, get) => {
         await reloadAfterWrite();
         return result;
       } catch (e) {
-        set({ enteringId: null, error: errorMessage(e) });
+        set({ enteringId: null, activeSnapshotId: null, activeWorkflowId: null, error: errorMessage(e) });
         throw e;
       }
     },
@@ -177,7 +223,81 @@ export const useScenarioStore = create<ScenarioState>((set, get) => {
       set((s) => {
         const results = { ...s.results };
         delete results[id];
-        return { results };
+        const progressByItem = { ...s.progressByItem };
+        for (const item of s.results[id]?.items ?? []) {
+          if (item.kind === "snapshot" || item.kind === "workflow") {
+            delete progressByItem[scenarioItemProgressKey(item.kind, item.label)];
+          }
+        }
+        return { results, progressByItem };
       }),
+
+    applyRestoreProgress: (event) => {
+      const state = get();
+      const key = scenarioItemProgressKey("snapshot", event.snapshot_id);
+      const relevant =
+        state.activeSnapshotId === event.snapshot_id ||
+        Object.values(state.results).some((result) =>
+          result.items.some(
+            (item) => item.kind === "snapshot" && item.label === event.snapshot_id && item.status === "ok",
+          ),
+        );
+      if (!relevant) return;
+      if (event.phase === "error") {
+        set((s) => ({
+          progressByItem: {
+            ...s.progressByItem,
+            [key]: { status: "failed", detail: event.error ?? "工作现场恢复失败" },
+          },
+        }));
+        return;
+      }
+      if (event.phase === "done" && event.summary) {
+        const progress = restoreProgressState(event.summary);
+        set((s) => ({ progressByItem: { ...s.progressByItem, [key]: progress } }));
+        return;
+      }
+      if (event.phase === "started" || event.phase === "running" || event.phase === "item-done") {
+        set((s) => ({
+          progressByItem: {
+            ...s.progressByItem,
+            [key]: {
+              status: "running",
+              detail:
+                event.total > 0
+                  ? `正在恢复 ${Math.min(event.index + 1, event.total)}/${event.total}`
+                  : "正在恢复工作现场",
+            },
+          },
+        }));
+      }
+    },
+
+    applyWorkflowProgress: (detail) => {
+      const state = get();
+      const key = scenarioItemProgressKey("workflow", detail.workflow_id);
+      const relevant =
+        state.activeWorkflowId === detail.workflow_id ||
+        Object.values(state.results).some((result) =>
+          result.items.some(
+            (item) => item.kind === "workflow" && item.label === detail.workflow_id && item.status === "ok",
+          ),
+        );
+      if (!relevant) return;
+      const failedSteps = detail.steps.filter((step) => step.status === "failed").length;
+      let status: ScenarioAsyncStatus;
+      if (!detail.finished_at) status = "running";
+      else if (detail.status === "cancelled") status = "cancelled";
+      else if (detail.status === "failed" || detail.status === "interrupted") status = "failed";
+      else if (failedSteps > 0) status = "partial";
+      else status = "completed";
+      const detailText = `${detail.completed_steps}/${detail.total_steps} 步${failedSteps > 0 ? `，${failedSteps} 步失败` : ""}`;
+      set((s) => {
+        const current = s.progressByItem[key];
+        // 只接受受理后该场景的第一次运行事件，避免之后手动运行同一工作流改写旧结果。
+        if (current && !["accepted", "running"].includes(current.status)) return {};
+        return { progressByItem: { ...s.progressByItem, [key]: { status, detail: detailText } } };
+      });
+    },
   };
 });

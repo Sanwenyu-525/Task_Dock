@@ -5,8 +5,8 @@
 //!   Shell / PowerShell / 脚本下载执行，前端不能透传可执行路径；
 //! - 导航类步骤只引用 `navigation_targets.id`，执行时由 router 重新校验目标；
 //! - 参数在保存与执行时双重校验（保存时目标必须存在，执行时重新校验）；
-//! - `enter_scene` 类型已登记，但场景工作区模块尚未集成：校验层一律拒绝并注明依赖，
-//!   绝不伪造场景启动结果。
+//! - `enter_scene` 引用场景工作区真实服务；场景与工作流的嵌套图在保存和运行时校验，
+//!   防止循环与过深嵌套。
 //!
 //! 模块分层：
 //! - [`store`]：工作流 / 步骤 / 运行记录的持久化（事务保证，运行历史有保留上限）；
@@ -14,6 +14,8 @@
 
 pub mod engine;
 pub mod store;
+
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +33,7 @@ pub enum StepType {
     OpenPath,
     /// 创建任务（标题 / 描述 / 优先级 / 可选提醒时间）。
     CreateTask,
-    /// 进入场景（依赖场景工作区模块，未集成前校验层拒绝）。
+    /// 进入已保存的场景（由场景工作区服务执行）。
     EnterScene,
     /// 恢复工作现场（用户显式选择的快照，走恢复门禁）。
     RestoreWorkspace,
@@ -77,7 +79,11 @@ impl StepType {
     pub fn is_desktop_affecting(&self) -> bool {
         matches!(
             self,
-            StepType::OpenApp | StepType::OpenUrl | StepType::OpenPath | StepType::RestoreWorkspace
+            StepType::OpenApp
+                | StepType::OpenUrl
+                | StepType::OpenPath
+                | StepType::EnterScene
+                | StepType::RestoreWorkspace
         )
     }
 }
@@ -132,7 +138,7 @@ pub struct StepParams {
     /// restore_workspace：workspace_snapshots.id。
     #[serde(default)]
     pub snapshot_id: String,
-    /// enter_scene：场景 ID（模块未集成，仅保留参数位）。
+    /// enter_scene：场景 ID。
     #[serde(default)]
     pub scene_id: String,
 }
@@ -229,7 +235,9 @@ pub fn validate_step(
             }
             let advance = params.advance_minutes.unwrap_or(0);
             if !(0..=60 * 24 * 30).contains(&advance) {
-                return Err(AppError::Validation("提醒提前分钟必须在 0~43200 之间".into()));
+                return Err(AppError::Validation(
+                    "提醒提前分钟必须在 0~43200 之间".into(),
+                ));
             }
             ValidatedStep::CreateTask {
                 title,
@@ -245,11 +253,24 @@ pub fn validate_step(
             }
         }
         StepType::EnterScene => {
-            // 场景工作区由其他子任务开发；接口稳定并经验证前，此类型一律拒绝执行。
-            // 绝不为了工作流功能伪造场景启动结果或另建场景表。
-            return Err(AppError::Validation(
-                "「进入场景」依赖场景工作区模块，该模块尚未集成，步骤暂不可用".into(),
-            ));
+            let scene_id = params.scene_id.trim().to_string();
+            if scene_id.is_empty() {
+                return Err(AppError::Validation("「进入场景」步骤必须选择场景".into()));
+            }
+            if check_references {
+                let exists: i64 = db.with_read(|conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM scenarios WHERE id = ?1",
+                        [&scene_id],
+                        |r| r.get(0),
+                    )
+                    .map_err(AppError::from)
+                })?;
+                if exists == 0 {
+                    return Err(AppError::Validation(format!("场景不存在: {}", scene_id)));
+                }
+            }
+            ValidatedStep::EnterScene { scene_id }
         }
         StepType::RestoreWorkspace => {
             let snapshot_id = params.snapshot_id.trim().to_string();
@@ -278,6 +299,143 @@ pub fn validate_step(
         }
     };
     Ok((ty, validated))
+}
+
+/// 场景与工作流之间最多允许三层「场景关联工作流」嵌套。
+/// 单个 workflow run 仍由 engine 的全局槽保护；这里负责更早拒绝直接或间接循环。
+pub const MAX_SCENE_WORKFLOW_DEPTH: usize = 3;
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+enum SceneFlowNode {
+    Scene(String),
+    Workflow(String),
+}
+
+fn validate_scene_flow_graph(
+    db: &crate::db::Db,
+    override_node: SceneFlowNode,
+    override_edges: Vec<SceneFlowNode>,
+) -> AppResult<()> {
+    let workflow_edges = db.with_read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT workflow_id, step_type, params FROM workflow_steps WHERE enabled = 1",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    })?;
+    let scene_edges = db.with_read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, linked_workflow_id FROM scenarios WHERE linked_workflow_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    })?;
+
+    let mut graph: HashMap<SceneFlowNode, Vec<SceneFlowNode>> = HashMap::new();
+    for (workflow_id, step_type, raw_params) in workflow_edges {
+        if step_type != StepType::EnterScene.as_str() {
+            continue;
+        }
+        let params = serde_json::from_str::<StepParams>(&raw_params).unwrap_or_default();
+        let scene_id = params.scene_id.trim();
+        if !scene_id.is_empty() {
+            graph
+                .entry(SceneFlowNode::Workflow(workflow_id))
+                .or_default()
+                .push(SceneFlowNode::Scene(scene_id.to_string()));
+        }
+    }
+    for (scene_id, workflow_id) in scene_edges {
+        graph
+            .entry(SceneFlowNode::Scene(scene_id))
+            .or_default()
+            .push(SceneFlowNode::Workflow(workflow_id));
+    }
+    graph.insert(override_node, override_edges);
+
+    fn longest_nested_path(
+        node: &SceneFlowNode,
+        graph: &HashMap<SceneFlowNode, Vec<SceneFlowNode>>,
+        visiting: &mut HashSet<SceneFlowNode>,
+        memo: &mut HashMap<SceneFlowNode, usize>,
+    ) -> AppResult<usize> {
+        if visiting.contains(node) {
+            return Err(AppError::Validation(
+                "场景与工作流存在循环引用，无法保存或执行".into(),
+            ));
+        }
+        if let Some(depth) = memo.get(node) {
+            return Ok(*depth);
+        }
+        visiting.insert(node.clone());
+        let mut depth = 0;
+        for child in graph.get(node).into_iter().flatten() {
+            let nested = if matches!(
+                (node, child),
+                (SceneFlowNode::Scene(_), SceneFlowNode::Workflow(_))
+            ) {
+                1
+            } else {
+                0
+            };
+            depth = depth.max(nested + longest_nested_path(child, graph, visiting, memo)?);
+        }
+        visiting.remove(node);
+        if depth > MAX_SCENE_WORKFLOW_DEPTH {
+            return Err(AppError::Validation(format!(
+                "场景与工作流嵌套超过最大深度（{} 层）",
+                MAX_SCENE_WORKFLOW_DEPTH
+            )));
+        }
+        memo.insert(node.clone(), depth);
+        Ok(depth)
+    }
+
+    let mut visiting = HashSet::new();
+    let mut memo = HashMap::new();
+    for node in graph.keys() {
+        longest_nested_path(node, &graph, &mut visiting, &mut memo)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_scene_graph_for_workflow(
+    db: &crate::db::Db,
+    workflow_id: &str,
+    scene_ids: &[String],
+) -> AppResult<()> {
+    validate_scene_flow_graph(
+        db,
+        SceneFlowNode::Workflow(workflow_id.to_string()),
+        scene_ids
+            .iter()
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| SceneFlowNode::Scene(id.trim().to_string()))
+            .collect(),
+    )
+}
+
+pub(crate) fn validate_scene_graph_for_scene(
+    db: &crate::db::Db,
+    scene_id: &str,
+    linked_workflow_id: Option<&str>,
+) -> AppResult<()> {
+    validate_scene_flow_graph(
+        db,
+        SceneFlowNode::Scene(scene_id.to_string()),
+        linked_workflow_id
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| vec![SceneFlowNode::Workflow(id.trim().to_string())])
+            .unwrap_or_default(),
+    )
 }
 
 // ── 行结构 ──────────────────────────────────────────────────

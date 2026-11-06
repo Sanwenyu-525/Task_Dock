@@ -477,6 +477,7 @@ pub struct McpRuntimeStatus {
     pub port: Mutex<Option<u16>>,
     pub running: AtomicBool,
     pub started_at: Mutex<Option<String>>,
+    settings_changed: Notify,
 }
 
 impl McpRuntimeStatus {
@@ -486,9 +487,21 @@ impl McpRuntimeStatus {
             *self.port.lock().unwrap_or_else(|e| e.into_inner()),
         )
     }
+
+    pub fn notify_settings_changed(&self) {
+        // `notify_one` retains one permit if the adapter is between its settings read
+        // and select, so a just-committed change cannot be lost.
+        self.settings_changed.notify_one();
+    }
+
+    fn clear_running(&self) {
+        self.running.store(false, Ordering::Relaxed);
+        *self.port.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.started_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
-/// 设置驱动的 bridge 生命周期：每秒轮询 mcp_server_enabled，启用即绑定端口并
+/// 设置驱动的 bridge 生命周期：设置变更时读取 mcp_server_enabled，启用即绑定端口并
 /// 写 mcp-transport.json，关闭即停服务并标记 enabled=false（stdio 侧明确报错）。
 pub fn spawn_adapter(
     app: tauri::AppHandle,
@@ -500,63 +513,87 @@ pub fn spawn_adapter(
     tauri::async_runtime::spawn(async move {
         let mut current: Option<RunningBridge> = None;
         let mut wrote_disabled = false;
+        let mut settings_dirty = true;
+        let mut retry_start = false;
         loop {
             if crate::agents::shutdown_signal::is_set() {
                 if let Some(b) = current.take() {
                     b.stop().await;
                 }
                 let _ = crate::mcp::write_transport_config(&data_dir, 0, "", false);
+                status_for_task.clear_running();
                 return;
             }
-            let enabled = crate::db::Settings::load(&db)
-                .map(|s| s.mcp_server_enabled)
-                .unwrap_or(false);
-            match (enabled, current.is_some()) {
-                (true, false) => {
-                    let emit = make_emitter(&app);
-                    match start(db.clone(), emit).await {
-                        Ok(b) => {
-                            let _ = crate::mcp::write_transport_config(
-                                &data_dir, b.port, &b.token, true,
-                            );
-                            *status_for_task
-                                .port
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner()) = Some(b.port);
-                            *status_for_task
-                                .started_at
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner()) =
-                                Some(crate::agents::now_iso());
-                            status_for_task.running.store(true, Ordering::Relaxed);
-                            wrote_disabled = false;
-                            current = Some(b);
-                        }
-                        Err(e) => {
-                            tracing::error!("MCP bridge 启动失败: {e}");
-                            let _ = crate::mcp::write_transport_config(&data_dir, 0, "", false);
+
+            // A listener task can finish unexpectedly (for example, after a panic).
+            // Its port is then released, so clear the published state and re-evaluate
+            // the setting before retrying.
+            if current
+                .as_ref()
+                .and_then(|bridge| bridge.join.as_ref())
+                .is_some_and(|join| join.inner().is_finished())
+            {
+                if let Some(b) = current.take() {
+                    let _ = b.stop().await;
+                }
+                let _ = crate::mcp::write_transport_config(&data_dir, 0, "", false);
+                status_for_task.clear_running();
+                retry_start = true;
+            }
+
+            if settings_dirty || retry_start {
+                let enabled = crate::db::Settings::load(&db)
+                    .map(|s| s.mcp_server_enabled)
+                    .unwrap_or(false);
+                match (enabled, current.is_some()) {
+                    (true, false) => {
+                        let emit = make_emitter(&app);
+                        match start(db.clone(), emit).await {
+                            Ok(b) => {
+                                let _ = crate::mcp::write_transport_config(
+                                    &data_dir, b.port, &b.token, true,
+                                );
+                                *status_for_task
+                                    .port
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner()) = Some(b.port);
+                                *status_for_task
+                                    .started_at
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner()) =
+                                    Some(crate::agents::now_iso());
+                                status_for_task.running.store(true, Ordering::Relaxed);
+                                wrote_disabled = false;
+                                retry_start = false;
+                                current = Some(b);
+                            }
+                            Err(e) => {
+                                tracing::error!("MCP bridge 启动失败: {e}");
+                                let _ = crate::mcp::write_transport_config(&data_dir, 0, "", false);
+                                status_for_task.clear_running();
+                                retry_start = true;
+                            }
                         }
                     }
-                }
-                (false, true) => {
-                    if let Some(b) = current.take() {
-                        b.stop().await;
-                    }
-                    let _ = crate::mcp::write_transport_config(&data_dir, 0, "", false);
-                    status_for_task.running.store(false, Ordering::Relaxed);
-                    *status_for_task
-                        .port
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = None;
-                }
-                (false, false) => {
-                    if !wrote_disabled {
-                        // 让 stdio 侧即使从未启用也能读到明确的 enabled=false
+                    (false, true) => {
+                        if let Some(b) = current.take() {
+                            b.stop().await;
+                        }
                         let _ = crate::mcp::write_transport_config(&data_dir, 0, "", false);
-                        wrote_disabled = true;
+                        status_for_task.clear_running();
+                        retry_start = false;
                     }
+                    (false, false) => {
+                        if !wrote_disabled {
+                            // 让 stdio 侧即使从未启用也能读到明确的 enabled=false
+                            let _ = crate::mcp::write_transport_config(&data_dir, 0, "", false);
+                            wrote_disabled = true;
+                        }
+                        retry_start = false;
+                    }
+                    (true, true) => retry_start = false,
                 }
-                (true, true) => {}
+                settings_dirty = false;
             }
             tokio::select! {
                 _ = crate::agents::shutdown_signal::wait() => {
@@ -564,9 +601,13 @@ pub fn spawn_adapter(
                         b.stop().await;
                     }
                     let _ = crate::mcp::write_transport_config(&data_dir, 0, "", false);
+                    status_for_task.clear_running();
                     return;
                 }
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                _ = status_for_task.settings_changed.notified() => {
+                    settings_dirty = true;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(1)), if current.is_some() || retry_start => {}
             }
         }
     });

@@ -15,8 +15,7 @@ use serde_json::json;
 
 use super::model::{
     local_day, ts, FocusHistoryItem, FocusPrefs, FocusPrefsPatch, FocusSessionView, FocusSnapshot,
-    SedentaryView, SessionKind, SessionState, KEY_ROUNDS_SINCE_LONG,
-    KEY_SEDENTARY_NEXT_AT,
+    SedentaryView, SessionKind, SessionState, KEY_ROUNDS_SINCE_LONG, KEY_SEDENTARY_NEXT_AT,
 };
 use super::store::{self, SessionRecord};
 use crate::db::Db;
@@ -189,12 +188,7 @@ impl FocusCore {
         Ok(())
     }
 
-    pub fn snapshot(
-        &self,
-        db: &Db,
-        now: DateTime<Utc>,
-        mono: Instant,
-    ) -> AppResult<FocusSnapshot> {
+    pub fn snapshot(&self, db: &Db, now: DateTime<Utc>, mono: Instant) -> AppResult<FocusSnapshot> {
         let day = local_day(now);
         let mut today = store::read_today(db, &day)?;
         if let Some(pending) = self.pending.get(&day) {
@@ -246,11 +240,7 @@ impl FocusCore {
         let (task_id, task_title) = match task_id {
             Some(id) => match db.with_conn(|conn| store::task_title(conn, &id))? {
                 Some(title) => (Some(id), title),
-                None => {
-                    return Err(AppError::Validation(
-                        "所选任务不存在或已被删除".to_string(),
-                    ))
-                }
+                None => return Err(AppError::Validation("所选任务不存在或已被删除".to_string())),
             },
             None => (None, String::new()),
         };
@@ -278,12 +268,7 @@ impl FocusCore {
     }
 
     /// 开始休息。长休由 `rounds_since_long` 与偏好决定；开始长休后轮次归零。
-    pub fn start_break(
-        &mut self,
-        db: &Db,
-        now: DateTime<Utc>,
-        mono: Instant,
-    ) -> AppResult<bool> {
+    pub fn start_break(&mut self, db: &Db, now: DateTime<Utc>, mono: Instant) -> AppResult<bool> {
         self.reload_if_active_in_db(db, mono)?;
         if self.active.is_some() {
             return Ok(false);
@@ -330,12 +315,7 @@ impl FocusCore {
         Ok(true)
     }
 
-    pub fn pause(
-        &mut self,
-        db: &Db,
-        now: DateTime<Utc>,
-        mono: Instant,
-    ) -> AppResult<bool> {
+    pub fn pause(&mut self, db: &Db, now: DateTime<Utc>, mono: Instant) -> AppResult<bool> {
         let Some(mut active) = self.active.take() else {
             return Ok(false);
         };
@@ -361,12 +341,7 @@ impl FocusCore {
         Ok(true)
     }
 
-    pub fn resume(
-        &mut self,
-        db: &Db,
-        now: DateTime<Utc>,
-        mono: Instant,
-    ) -> AppResult<bool> {
+    pub fn resume(&mut self, db: &Db, now: DateTime<Utc>, mono: Instant) -> AppResult<bool> {
         let Some(mut active) = self.active.take() else {
             return Ok(false);
         };
@@ -408,12 +383,7 @@ impl FocusCore {
         Ok(true)
     }
 
-    pub fn extend_break(
-        &mut self,
-        db: &Db,
-        minutes: u32,
-        now: DateTime<Utc>,
-    ) -> AppResult<bool> {
+    pub fn extend_break(&mut self, db: &Db, minutes: u32, now: DateTime<Utc>) -> AppResult<bool> {
         if !(1..=120).contains(&minutes) {
             return Err(AppError::Validation(
                 "延长休息分钟数必须在 1..=120 之间".to_string(),
@@ -433,12 +403,7 @@ impl FocusCore {
         Ok(true)
     }
 
-    pub fn skip_break(
-        &mut self,
-        db: &Db,
-        now: DateTime<Utc>,
-        mono: Instant,
-    ) -> AppResult<bool> {
+    pub fn skip_break(&mut self, db: &Db, now: DateTime<Utc>, mono: Instant) -> AppResult<bool> {
         let Some(active) = self.active.as_ref() else {
             return Ok(false);
         };
@@ -494,12 +459,7 @@ impl FocusCore {
     }
 
     /// 调度器每秒调用一次：推进有效时长、检测无法确认的挂起区间、处理完成与久坐提醒。
-    pub fn tick(
-        &mut self,
-        db: &Db,
-        now: DateTime<Utc>,
-        mono: Instant,
-    ) -> AppResult<TickEffects> {
+    pub fn tick(&mut self, db: &Db, now: DateTime<Utc>, mono: Instant) -> AppResult<TickEffects> {
         let mut fx = TickEffects::default();
         let day = local_day(now);
         let mut natural_kind: Option<SessionKind> = None;
@@ -522,9 +482,7 @@ impl FocusCore {
                     CreditOutcome::None => {}
                 }
             }
-            if active.rec.state.is_active()
-                && active.rec.accumulated_ms >= active.planned_ms()
-            {
+            if active.rec.state.is_active() && active.rec.accumulated_ms >= active.planned_ms() {
                 natural_kind = Some(active.rec.kind);
                 let info =
                     self.close_record(db, active, now, SessionState::Completed, true, true)?;
@@ -705,8 +663,7 @@ impl FocusCore {
                     self.rounds_since_long += 1;
                     self.add_completed(&day);
                 }
-                let next_break = if self.rounds_since_long >= self.prefs.long_break_every as i64
-                {
+                let next_break = if self.rounds_since_long >= self.prefs.long_break_every as i64 {
                     self.prefs.long_break_minutes
                 } else {
                     self.prefs.short_break_minutes
@@ -731,12 +688,7 @@ impl FocusCore {
             store::update_session(&tx, &rec, now)?;
             flush_pending(&tx, &pending, now)?;
             if count_round {
-                store::upsert_setting(
-                    &tx,
-                    KEY_ROUNDS_SINCE_LONG,
-                    &json!(rounds),
-                    now,
-                )?;
+                store::upsert_setting(&tx, KEY_ROUNDS_SINCE_LONG, &json!(rounds), now)?;
             }
             if let Some(done) = &info_for_db {
                 push_completion_notification(&tx, done, now)?;
@@ -766,11 +718,7 @@ impl FocusCore {
     }
 }
 
-fn credit_segment(
-    active: &mut ActiveSession,
-    now: DateTime<Utc>,
-    mono: Instant,
-) -> CreditOutcome {
+fn credit_segment(active: &mut ActiveSession, now: DateTime<Utc>, mono: Instant) -> CreditOutcome {
     let mono_delta = mono
         .saturating_duration_since(active.last_tick_mono)
         .as_millis() as i64;

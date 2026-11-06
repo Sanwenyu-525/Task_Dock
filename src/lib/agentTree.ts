@@ -9,7 +9,7 @@
 //! - 会话未携带实例信息（instance_id = null）时直接挂在 Agent 层级下，
 //!   严禁伪造 "default" 实例。
 
-import type { AgentRun, AgentSession, AgentSnapshot } from "./bridge";
+import type { AgentLiveCounts, AgentRun, AgentSession, AgentSnapshot } from "./bridge";
 
 export type LiveState = "failed" | "waiting" | "running" | "disconnected" | "idle";
 
@@ -46,6 +46,7 @@ export function liveRuns(runs: AgentRun[], now = Date.now()): AgentRun[] {
 /** 实时最差状态（标题栏状态点用）。 */
 export function worstAgentState(snapshot: AgentSnapshot | null, now = Date.now()): LiveState {
   if (!snapshot) return "idle";
+  if (snapshot.live_summary) return summaryWorst(snapshot.live_summary);
   const live = new Set(liveRuns(snapshot.runs, now).map((r) => r.status));
   for (const s of LIVE_STATE_ORDER) {
     if (s !== "idle" && live.has(s)) return s;
@@ -63,6 +64,16 @@ export interface LiveSummary {
 
 /** 实时计数汇总（极简/紧凑/Agent 概览共用）。 */
 export function liveSummary(snapshot: AgentSnapshot | null, now = Date.now()): LiveSummary {
+  if (snapshot?.live_summary) {
+    const counts = snapshot.live_summary;
+    return {
+      running: counts.running,
+      waiting: counts.waiting,
+      failed: counts.failed,
+      disconnected: counts.disconnected,
+      worst: summaryWorst(counts),
+    };
+  }
   const live = liveRuns(snapshot?.runs ?? [], now);
   const count = (s: string) => live.filter((r) => r.status === s).length;
   const summary: LiveSummary = {
@@ -77,6 +88,13 @@ export function liveSummary(snapshot: AgentSnapshot | null, now = Date.now()): L
       (s) => s !== "idle" && count(s) > 0,
     ) as LiveState | undefined) ?? "idle";
   return summary;
+}
+
+function summaryWorst(counts: Pick<AgentLiveCounts, "running" | "waiting" | "failed" | "disconnected">): LiveState {
+  return (
+    (LIVE_STATE_ORDER.find((state) => state !== "idle" && counts[state] > 0) as LiveState | undefined) ??
+    "idle"
+  );
 }
 
 // ── 监控树：Agent → 实例（可选）→ 会话 → 轮次 ──
@@ -101,6 +119,8 @@ export interface TreeSession {
   runs: TreeRun[];
   /** 会话的实时最差状态（无实时轮次时为 idle） */
   liveState: LiveState;
+  /** 当前有效真实轮次数；超出快照展示量时用于提供分页入口。 */
+  liveRunCount?: number;
 }
 
 export interface TreeInstance {
@@ -171,6 +191,7 @@ function sessionLiveState(runs: AgentRun[], now: number): LiveState {
  * - 会话按关注优先级 + 最近活动排序；Agent 亦然（需关注的排前面）。
  */
 export function buildTree(snapshot: AgentSnapshot, now = Date.now()): TreeAgent[] {
+  const hasBackendCounts = snapshot.live_summary?.by_source !== undefined;
   const instanceById = new Map(snapshot.instances.map((i) => [i.id, i]));
 
   const runsBySession = new Map<string, AgentRun[]>();
@@ -197,7 +218,11 @@ export function buildTree(snapshot: AgentSnapshot, now = Date.now()): TreeAgent[
     // 不再跳过无会话的 Agent：进程存在但未接入时也必须可见（展示为「监控未接入」），
     // 但 liveState 保持 idle，绝不把「软件在运行」当成「正在执行任务」。
     const sessions = sessionsBySource.get(src.id) ?? [];
-    const connected = sessions.length > 0 || (instanceCountBySource.get(src.id) ?? 0) > 0;
+    const sourceCounts = snapshot.live_summary?.by_source?.[src.id];
+    const connected =
+      sessions.length > 0 ||
+      (sourceCounts?.session_total ?? 0) > 0 ||
+      (instanceCountBySource.get(src.id) ?? 0) > 0;
 
     const groups = new Map<string, TreeSession[]>();
     const unassigned: TreeSession[] = [];
@@ -213,6 +238,7 @@ export function buildTree(snapshot: AgentSnapshot, now = Date.now()): TreeAgent[
         lastSeen: sess.last_seen_at,
         runs: toTreeRuns(rawRuns),
         liveState: sessionLiveState(rawRuns, now),
+        liveRunCount: sess.live_run_count,
       };
       const instId = sess.instance_id ?? null;
       if (instId && instanceById.has(instId)) {
@@ -242,9 +268,13 @@ export function buildTree(snapshot: AgentSnapshot, now = Date.now()): TreeAgent[
     unassigned.sort(sortSess);
 
     const all = [...instances.flatMap((i) => i.sessions), ...unassigned];
-    const activeCount = all.filter((s) => s.liveState === "running" || s.liveState === "waiting").length;
-    const worst =
-      LIVE_STATE_ORDER.find((s) => s !== "idle" && all.some((x) => x.liveState === s)) ?? "idle";
+    const activeCount = sourceCounts?.active_session_total ??
+      (hasBackendCounts ? 0 : all.filter((s) => s.liveState === "running" || s.liveState === "waiting").length);
+    const worst = sourceCounts
+      ? summaryWorst(sourceCounts)
+      : hasBackendCounts
+        ? "idle"
+        : LIVE_STATE_ORDER.find((s) => s !== "idle" && all.some((x) => x.liveState === s)) ?? "idle";
 
     agents.push({
       id: src.id,
@@ -254,7 +284,7 @@ export function buildTree(snapshot: AgentSnapshot, now = Date.now()): TreeAgent[
       instances,
       unassignedSessions: unassigned,
       connected,
-      sessionCount: sessions.length,
+      sessionCount: sourceCounts?.session_total ?? (hasBackendCounts ? 0 : sessions.length),
     });
   }
 

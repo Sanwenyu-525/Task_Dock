@@ -9,7 +9,7 @@
 //!   逻辑 Tab 都让该入口呈选中态；快捷键仍按 TAB_ORDER 映射（Ctrl+5/6）不偏移；
 //! - v0.9 新增「工作流」视觉入口（Ctrl+7），第 10 个逻辑 Tab（设置）= Ctrl+0；
 //! - v0.10 新增「应用」视觉入口：仅视觉入口、**不占 Ctrl+数字**（`RAIL_ONLY_TABS`）；
-//! - v0.11 新增「帮助」视觉入口（规划中心之后、设置之前，不占 Ctrl+数字）；
+//! - v0.11 注册「帮助」视觉入口（规划中心之后、设置之前，不占 Ctrl+数字），新配置默认隐藏；
 //! - 同时校验导航顶部「新建任务」按钮（`.rail-new-task`）的类名与可访问名；
 //! - 导航增删、换序、改名时本测试失败，防止脚本侧过期断言再次出现。
 
@@ -95,16 +95,17 @@ describe("脚本侧导航契约与真实导航一致", () => {
     }
   });
 
-  it("FullView 渲染的入口顺序、data-tip、aria-label 与契约一致", () => {
+  it("FullView 默认隐藏帮助入口，其他入口顺序和可访问名与契约一致", () => {
     render(<FullView />);
     // 设置固定在底部区域（不在滚动列表内），仍属于视觉入口契约的一部分
     const items = [
       ...document.querySelectorAll(".rail-items .rail-item, .rail-foot > .rail-item"),
     ];
-    expect(items).toHaveLength(RAIL_ITEM_COUNT);
-    expect(items.map((el) => el.getAttribute("data-tip"))).toEqual([...RAIL_LABELS]);
+    const visibleLabels = RAIL_LABELS.filter((_, i) => RAIL_ENTRIES[i]?.id !== "help");
+    expect(items).toHaveLength(RAIL_ITEM_COUNT - 1);
+    expect(items.map((el) => el.getAttribute("data-tip"))).toEqual(visibleLabels);
     items.forEach((el, i) => {
-      const label = RAIL_LABELS[i];
+      const label = visibleLabels[i];
       const aria = (el.getAttribute("aria-label") ?? "").trim();
       const tip = (el.getAttribute("data-tip") ?? "").trim();
       expect(aria.startsWith(label), `第 ${i + 1} 个入口 aria-label 应以「${label}」开头`).toBe(true);

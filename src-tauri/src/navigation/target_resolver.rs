@@ -1732,8 +1732,16 @@ mod tests {
     #[test]
     fn window_shortcuts_allow_same_program_multiple_windows_without_overwrites() {
         let db = Db::open_in_memory().unwrap();
-        let gh = win_fix(1001, "GitHub - Google Chrome", "C:\\Windows\\System32\\notepad.exe");
-        let chat = win_fix(1002, "ChatGPT - Google Chrome", "C:\\Windows\\System32\\notepad.exe");
+        let gh = win_fix(
+            1001,
+            "GitHub - Google Chrome",
+            "C:\\Windows\\System32\\notepad.exe",
+        );
+        let chat = win_fix(
+            1002,
+            "ChatGPT - Google Chrome",
+            "C:\\Windows\\System32\\notepad.exe",
+        );
         let a = save_window_shortcut_for_window(&db, &gh, None).unwrap();
         let b = save_window_shortcut_for_window(&db, &chat, None).unwrap();
         assert_ne!(a.id, b.id, "同程序不同窗口必须是独立快捷方式");
@@ -1767,10 +1775,22 @@ mod tests {
     #[test]
     fn window_shortcut_coexists_with_plain_app_and_plain_dedupe_is_unchanged() {
         let db = Db::open_in_memory().unwrap();
-        let w = win_fix(2001, "GitHub - Google Chrome", "C:\\Windows\\System32\\notepad.exe");
+        let w = win_fix(
+            2001,
+            "GitHub - Google Chrome",
+            "C:\\Windows\\System32\\notepad.exe",
+        );
         let win = save_window_shortcut_for_window(&db, &w, None).unwrap();
-        let plain = save_target(&db, &app_input("C:\\Windows\\System32\\notepad.exe", "Chrome")).unwrap();
-        let plain2 = save_target(&db, &app_input("C:\\Windows\\System32\\notepad.exe", "Chrome 改名")).unwrap();
+        let plain = save_target(
+            &db,
+            &app_input("C:\\Windows\\System32\\notepad.exe", "Chrome"),
+        )
+        .unwrap();
+        let plain2 = save_target(
+            &db,
+            &app_input("C:\\Windows\\System32\\notepad.exe", "Chrome 改名"),
+        )
+        .unwrap();
         assert_ne!(win.id, plain.id, "窗口快捷方式不占用普通应用行");
         assert_eq!(plain.id, plain2.id, "普通应用仍按 app_key 去重");
         assert_eq!(plain.shortcut_kind, "app");
@@ -1828,13 +1848,21 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let a = save_window_shortcut_for_window(
             &db,
-            &win_fix(5001, "项目 A - Chrome", "C:\\Windows\\System32\\notepad.exe"),
+            &win_fix(
+                5001,
+                "项目 A - Chrome",
+                "C:\\Windows\\System32\\notepad.exe",
+            ),
             None,
         )
         .unwrap();
         let b = save_window_shortcut_for_window(
             &db,
-            &win_fix(5002, "项目 B - Chrome", "C:\\Windows\\System32\\notepad.exe"),
+            &win_fix(
+                5002,
+                "项目 B - Chrome",
+                "C:\\Windows\\System32\\notepad.exe",
+            ),
             None,
         )
         .unwrap();

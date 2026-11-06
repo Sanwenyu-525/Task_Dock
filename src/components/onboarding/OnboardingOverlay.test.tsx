@@ -4,7 +4,7 @@
 //! OnboardingOverlay：可见性门控（完整模式/设置加载/非停靠）、步骤流转、
 //! Escape 经 overlayStack 跳过、动作按钮只做页面跳转不写业务数据。
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import OnboardingOverlay from "./OnboardingOverlay";
@@ -34,6 +34,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   __resetOnboardingForTests();
   __resetLocaleForTests();
   resetOverlayStack();
@@ -61,6 +62,24 @@ describe("OnboardingOverlay · 可见性门控", () => {
     useEdgeSnapStore.setState({ phase: "docked-visible" });
     const { container: c3 } = render(<OnboardingOverlay />);
     expect(c3.querySelector(".onboarding-card")).toBeNull();
+  });
+
+  it("本地存储不可读/不可写时仍可在当前会话完成引导", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+
+    render(<OnboardingOverlay />);
+    expect(screen.getByText("认识 task_dock")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+
+    expect(useOnboardingStore.getState().done).toBe(true);
+    expect(useOnboardingStore.getState().open).toBe(false);
   });
 
   it("明确跳过后重启不再展示", () => {

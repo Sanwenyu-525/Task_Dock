@@ -70,9 +70,7 @@ impl TraeProduct {
 
 /// 配置根是否是真实 Trae 安装留下的（含 IDE 自身产物），而不是仅有 hooks.json 的空壳。
 fn home_is_real(home: &Path) -> bool {
-    PRODUCT_MARKERS
-        .iter()
-        .any(|m| home.join(m).exists())
+    PRODUCT_MARKERS.iter().any(|m| home.join(m).exists())
 }
 
 fn hook_file(p: TraeProduct) -> PathBuf {
@@ -81,9 +79,7 @@ fn hook_file(p: TraeProduct) -> PathBuf {
 
 fn file_has_ours(path: &Path) -> bool {
     std::fs::read_to_string(path)
-        .map(|s| {
-            s.contains(hooks_install::MARKER) || s.contains(hooks_install::LEGACY_MARKER)
-        })
+        .map(|s| s.contains(hooks_install::MARKER) || s.contains(hooks_install::LEGACY_MARKER))
         .unwrap_or(false)
 }
 
@@ -204,7 +200,11 @@ mod tests {
     fn trae_command_uses_cmd_wrapper_not_leading_quote() {
         let exe = PathBuf::from(r"C:\Program Files\Task Dock\task-dock.exe");
         let cmd = hooks_install::trae_hook_command(&exe, "trae", "Stop");
-        assert!(!cmd.trim_start().starts_with('"'), "不得以引号开头: {}", cmd);
+        assert!(
+            !cmd.trim_start().starts_with('"'),
+            "不得以引号开头: {}",
+            cmd
+        );
         assert!(cmd.contains("/c call \""), "{}", cmd);
         assert!(cmd.contains("--agent-hook --source trae --event Stop"));
     }

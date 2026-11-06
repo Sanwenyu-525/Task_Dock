@@ -90,6 +90,9 @@ const ALLOWED_KEYS: &[&str] = &[
     "audio_sound_task_due",
     "audio_sound_reminder",
     "tts_enabled",
+    "tts_voice_pack_enabled",
+    "tts_voice_pack_id",
+    "tts_voice_route",
     "tts_voice_id",
     "tts_voice_gender",
     "tts_volume",
@@ -191,6 +194,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "audio_sound_task_due"
         | "audio_sound_reminder"
         | "tts_enabled"
+        | "tts_voice_pack_enabled"
         | "tts_speak_source"
         | "tts_speak_title"
         | "tts_agent_started"
@@ -205,6 +209,19 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "tts_rate" => int_in_range(v, key, 50, 200),
         "tts_cache_max_mb" => int_in_range(v, key, 1, 2048),
         "tts_voice_gender" => enum_of(v, key, &["auto", "female", "male"]),
+        "tts_voice_route" => enum_of(v, key, &["auto", "system", "custom"]),
+        "tts_voice_pack_id" => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| AppError::Validation("tts_voice_pack_id 必须是字符串".into()))?;
+            if s.is_empty() || uuid::Uuid::parse_str(s).is_ok() {
+                Ok(())
+            } else {
+                Err(AppError::Validation(
+                    "tts_voice_pack_id 必须为空或有效语音包 ID".into(),
+                ))
+            }
+        }
         // 系统语音唯一 ID 是自由字符串（Windows 生成的 ID），只做长度/控制字符边界校验
         "tts_voice_id" => {
             let s = v
@@ -357,8 +374,27 @@ pub fn update_settings(
     for (k, v) in obj {
         validate_setting(k, v)?;
     }
+    // 当前包 ID 与包删除串行化，并先拒绝不存在的 ID，避免保存悬挂引用。
+    let _voice_gate = if let Some(pack_id) = obj
+        .get("tts_voice_pack_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        let gate = crate::audio::voice_packs::asset_gate_read();
+        if !crate::audio::voice_packs::pack_exists(&db, pack_id)? {
+            return Err(AppError::NotFound("语音包不存在".into()));
+        }
+        Some(gate)
+    } else {
+        None
+    };
     for (k, v) in obj {
         db.set_setting(k, v.clone())?;
+        if k == "mcp_server_enabled" {
+            if let Some(runtime) = app.try_state::<Arc<crate::mcp::bridge::McpRuntimeStatus>>() {
+                runtime.inner().notify_settings_changed();
+            }
+        }
     }
     // 主题/预设变更广播给所有窗口（通知窗口、右键菜单跟随；主窗 store 同值幂等）。
     // 与托盘/右键菜单路径（context_menu_action 单独 emit）保持同一事件契约。
@@ -594,6 +630,9 @@ mod tests {
             "audio_sound_task_due",
             "audio_sound_reminder",
             "tts_enabled",
+            "tts_voice_pack_enabled",
+            "tts_voice_pack_id",
+            "tts_voice_route",
             "tts_voice_id",
             "tts_voice_gender",
             "tts_volume",
@@ -625,6 +664,18 @@ mod tests {
         assert!(validate_setting("tts_voice_gender", &serde_json::json!("female")).is_ok());
         assert!(validate_setting("tts_voice_gender", &serde_json::json!("auto")).is_ok());
         assert!(validate_setting("tts_voice_gender", &serde_json::json!("robot")).is_err());
+        assert!(validate_setting("tts_voice_pack_enabled", &serde_json::json!(true)).is_ok());
+        assert!(validate_setting("tts_voice_pack_enabled", &serde_json::json!("true")).is_err());
+        assert!(validate_setting("tts_voice_route", &serde_json::json!("auto")).is_ok());
+        assert!(validate_setting("tts_voice_route", &serde_json::json!("custom")).is_ok());
+        assert!(validate_setting("tts_voice_route", &serde_json::json!("invalid")).is_err());
+        assert!(validate_setting("tts_voice_pack_id", &serde_json::json!("")).is_ok());
+        assert!(validate_setting(
+            "tts_voice_pack_id",
+            &serde_json::json!(uuid::Uuid::new_v4().to_string())
+        )
+        .is_ok());
+        assert!(validate_setting("tts_voice_pack_id", &serde_json::json!("../bad")).is_err());
         assert!(validate_setting("tts_voice_id", &serde_json::json!("Microsoft Huihui")).is_ok());
         assert!(validate_setting("tts_voice_id", &serde_json::json!("bad\u{0007}id")).is_err());
     }

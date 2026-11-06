@@ -84,9 +84,11 @@ pub fn adapter() -> HooksAdapter {
         hook_command: hooks_install::codex_hook_command,
         layout: hooks_install::HooksLayout::NestedEvents,
         limitations: vec![
-            "写入用户级 ~/.zcode/cli/config.json 的 hooks.events；安装时自动置 hooks.enabled=true".into(),
+            "写入用户级 ~/.zcode/cli/config.json 的 hooks.events；安装时自动置 hooks.enabled=true"
+                .into(),
             "配置式 hooks 默认关闭，且只在 ZCode 新会话启动时加载；已打开的会话不会热更新".into(),
-            "只接入用户级配置；插件市场 hooks 与项目级 .zcode/config.json 不由 Task Dock 修改".into(),
+            "只接入用户级配置；插件市场 hooks 与项目级 .zcode/config.json 不由 Task Dock 修改"
+                .into(),
             "配置写入成功 ≠ 事件已到达；真实会话接入以非自测事件为准".into(),
         ],
         timeout_secs: 10,

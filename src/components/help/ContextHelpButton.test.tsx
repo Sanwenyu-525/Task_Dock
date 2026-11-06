@@ -18,7 +18,7 @@ function fireGlobalEscape() {
 
 beforeEach(() => {
   resetOverlayStack();
-  useUiStore.setState({ tab: "tasks", helpOpenRequest: null });
+  useUiStore.setState({ tab: "tasks", helpOpenRequest: null, helpReturnTab: null });
 });
 
 afterEach(() => {
@@ -73,6 +73,7 @@ describe("ContextHelpButton", () => {
       const ui = useUiStore.getState();
       expect(ui.tab).toBe("help");
       expect(ui.helpOpenRequest?.articleId).toBe("help.quickstart.capture");
+      expect(ui.helpReturnTab).toBe("tasks");
     });
   });
 

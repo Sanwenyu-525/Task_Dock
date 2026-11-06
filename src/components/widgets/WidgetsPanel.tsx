@@ -60,6 +60,14 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
     hydrate();
   }, [hydrate]);
 
+  // 全部添加后自动收起添加面板：添加入口已清空时（Store 实际状态，而非按钮点击）
+  // 关闭添加面板，把主区域让给微件工作台。用户重新停用微件后添加入口可正常恢复；
+  // 恢复默认（默认含停用项）后同样恢复。手动重开时会保留打开状态（只承载停止操作）。
+  const allAdded = widgets.length > 0 && widgets.every((item) => item.enabled);
+  useEffect(() => {
+    if (allAdded) setLibraryOpen(false);
+  }, [allAdded]);
+
   // 「添加到桌面」的成功提示必须等 desktopRuntime 真正进入 shown；
   // 失败提示由 WidgetDesktopBridge 统一发出，这里只结束等待，避免重复 Toast。
   useEffect(() => {

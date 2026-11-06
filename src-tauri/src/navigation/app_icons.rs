@@ -13,30 +13,39 @@ use std::sync::{Mutex, OnceLock};
 use serde::Serialize;
 
 #[cfg(windows)]
-use windows::core::{GUID, HSTRING, Interface};
+use windows::core::{Interface, GUID, HSTRING};
 #[cfg(windows)]
 use windows::Win32::Foundation::SIZE;
 #[cfg(windows)]
-use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, IPersistFile, STGM_READ};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    STGM_READ,
+};
 #[cfg(windows)]
-use windows::Win32::UI::Shell::{IShellLinkW, IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY};
+use windows::Win32::UI::Shell::{
+    IShellItemImageFactory, IShellLinkW, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK,
+    SIIGBF_ICONONLY,
+};
 
 #[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, SelectObject,
-    BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+    CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC,
+    SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
+    HGDIOBJ,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 #[cfg(windows)]
-use windows_sys::Win32::UI::Shell::{ExtractIconExW, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+use windows_sys::Win32::UI::Shell::{
+    ExtractIconExW, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
+};
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 
-use crate::db::Db;
-use crate::error::{AppError, AppResult};
 use super::app_discovery::DiscoveredApp;
 use super::target_resolver;
+use crate::db::Db;
+use crate::error::{AppError, AppResult};
 
 /// 扫描发现过的应用身份（app_key → 图标来源）。
 /// 只有在本次进程扫描中登记过的身份才允许提取图标，杜绝任意路径请求。
@@ -120,9 +129,7 @@ fn file_stamp(path: &str) -> u64 {
         .map(|d| (d.as_secs(), d.subsec_nanos() as u64))
         .unwrap_or((0, 0));
     // 修改时间（含纳秒）+ 文件大小：同名文件被覆盖更新时缓存能失效
-    secs.wrapping_mul(1_000_000_000)
-        .wrapping_add(nanos)
-        ^ (meta.len() << 32)
+    secs.wrapping_mul(1_000_000_000).wrapping_add(nanos) ^ (meta.len() << 32)
 }
 
 /// 目标 id → 图标来源（只认数据库里已保存的目标）。
@@ -351,7 +358,12 @@ unsafe fn bitmap_to_png(hbm: HBITMAP, hbm_mask: HBITMAP) -> Option<AppIconData> 
         return None;
     }
     let mut bmp: BITMAP = std::mem::zeroed();
-    if GetObjectW(hbm as HGDIOBJ, std::mem::size_of::<BITMAP>() as i32, &mut bmp as *mut _ as *mut _) == 0 {
+    if GetObjectW(
+        hbm as HGDIOBJ,
+        std::mem::size_of::<BITMAP>() as i32,
+        &mut bmp as *mut _ as *mut _,
+    ) == 0
+    {
         return None;
     }
     let w = bmp.bmWidth;
@@ -476,9 +488,12 @@ pub fn resolve_shortcut(lnk_path: &str) -> Option<(String, String, String)> {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         // CLSID_ShellLink = {00021401-0000-0000-C000-000000000046}
         let clsid = GUID::from_u128(0x00021401_0000_0000_c000_0000_0000_0046);
-        let link: IShellLinkW =
-            CoCreateInstance(&clsid, None::<&windows::core::IUnknown>, CLSCTX_INPROC_SERVER)
-                .ok()?;
+        let link: IShellLinkW = CoCreateInstance(
+            &clsid,
+            None::<&windows::core::IUnknown>,
+            CLSCTX_INPROC_SERVER,
+        )
+        .ok()?;
         let file: IPersistFile = link.cast().ok()?;
         let path = HSTRING::from(lnk_path);
         file.Load(&path, STGM_READ).ok()?;
@@ -530,16 +545,17 @@ mod tests {
 
     #[test]
     fn utf16_uses_first_nul() {
-        assert_eq!(utf16_to_string(&[b'A' as u16, b'B' as u16, 0, b'C' as u16]), "AB");
+        assert_eq!(
+            utf16_to_string(&[b'A' as u16, b'B' as u16, 0, b'C' as u16]),
+            "AB"
+        );
         assert_eq!(utf16_to_string(&[]), "");
     }
 
     #[test]
     fn file_stamp_changes_when_file_is_replaced() {
-        let path = std::env::temp_dir().join(format!(
-            "task-dock-icon-stamp-{}.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("task-dock-icon-stamp-{}.bin", std::process::id()));
         std::fs::write(&path, vec![1u8; 16]).unwrap();
         let first = file_stamp(&path.to_string_lossy());
         std::fs::write(&path, vec![2u8; 32]).unwrap();
@@ -559,7 +575,10 @@ mod tests {
             "未登记的 app_key 不得被当作可信文件目标"
         );
 
-        let exe = std::env::current_exe().unwrap().to_string_lossy().to_string();
+        let exe = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let key = exe.to_ascii_lowercase();
         build_discovered(vec![(key.clone(), exe.clone(), String::new())]);
         let src = source_from_app_key(&key).expect("已登记身份应能取到图标来源");
@@ -577,8 +596,7 @@ mod tests {
             String::new(),
             "Tencent.WeChat_123!App".into(),
         )]);
-        let src = source_from_app_key("Tencent.WeChat_123!App")
-            .expect("UWP 身份应按 AUMID 解析");
+        let src = source_from_app_key("Tencent.WeChat_123!App").expect("UWP 身份应按 AUMID 解析");
         assert!(src.exe_path.is_empty());
         assert_eq!(src.aumid, "Tencent.WeChat_123!App");
         build_discovered(Vec::new());
@@ -588,7 +606,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn extracts_real_icon_png_from_current_exe() {
-        let exe = std::env::current_exe().unwrap().to_string_lossy().to_string();
+        let exe = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let src = IconSource {
             exe_path: exe,
             aumid: String::new(),
@@ -624,10 +645,7 @@ mod tests {
         let mut buf = vec![0; reader.output_buffer_size().expect("PNG 尺寸可计算")];
         let info = reader.next_frame(&mut buf).expect("PNG 必须可解码");
         assert_eq!(info.color_type, png::ColorType::Rgba, "必须保留 alpha 通道");
-        let transparent = buf
-            .chunks_exact(4)
-            .filter(|px| px[3] == 0)
-            .count();
+        let transparent = buf.chunks_exact(4).filter(|px| px[3] == 0).count();
         assert!(
             transparent > 0,
             "真实图标应存在透明像素（否则提取时被错误铺白底）"

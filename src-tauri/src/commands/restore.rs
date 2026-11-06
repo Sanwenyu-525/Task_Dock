@@ -374,6 +374,7 @@ fn build_plan(
     read: &ReadBackup,
     clipboard_dir: &Path,
     shelf_dir: &Path,
+    voice_pack_dir: &Path,
     archive_dir: &Path,
     vault_root: &Path,
 ) -> AppResult<Vec<PlannedFile>> {
@@ -392,6 +393,17 @@ fn build_plan(
                 &rel,
                 asset,
                 shelf_dir.join(sub),
+                vault_root.join("assets").join(&rel),
+            )?;
+        } else if let Some(filename) = rel.strip_prefix("voice/") {
+            crate::audio::voice_packs::ensure_root(voice_pack_dir)?;
+            push_planned(
+                &mut plan,
+                &mut seen,
+                "asset",
+                &rel,
+                asset,
+                voice_pack_dir.join(filename),
                 vault_root.join("assets").join(&rel),
             )?;
         } else {
@@ -606,7 +618,7 @@ fn write_pre_backup(
         // 恢复点也包含当前用户配置：配置恢复失败/回滚时可用它找回原快捷键/偏好。
         data_dir: Some(data_dir),
     };
-    backup::write_bundle(db, sources, &path, BackupKind::Full)?;
+    backup::write_bundle_without_voice_gate(db, sources, &path, BackupKind::Full)?;
     Ok(path)
 }
 
@@ -740,7 +752,8 @@ pub fn restore_bundle(
     source: &Path,
     options: &RestoreOptions,
 ) -> AppResult<RestoreOutcome> {
-    if let Some(previous) = recover_pending(data_dir, db)? {
+    let _asset_gate = crate::audio::voice_packs::asset_gate_write();
+    if let Some(previous) = recover_pending_inner(data_dir, db)? {
         if previous.state == RestoreState::FailedUnrecovered {
             return Err(AppError::Conflict(
                 "上一次恢复尚未回滚完成，请先处理恢复日志后重试".into(),
@@ -831,11 +844,13 @@ pub fn restore_bundle(
     // 3. 计划 + 原文件留底。
     let clipboard_dir = data_dir.join("clipboard");
     let shelf_dir = data_dir.join("shelf");
+    let voice_pack_dir = data_dir.join("audio").join("voice-packs");
     let archive_dir = crate::agents::retention::archive_dir(data_dir);
     let plan = match build_plan(
         &read,
         &clipboard_dir,
         &shelf_dir,
+        &voice_pack_dir,
         &archive_dir,
         &vault_root,
     ) {
@@ -968,6 +983,12 @@ pub fn restore_bundle(
             e
         )));
     }
+    if let Err(error) = crate::audio::voice_packs::cleanup_orphaned_files(
+        db,
+        &data_dir.join("audio").join("voice-packs"),
+    ) {
+        tracing::warn!("恢复后清理未引用语音资源失败: {}", error);
+    }
     journal.phase = "done".into();
     let _ = write_journal(data_dir, &mut journal);
     cleanup_after_success(data_dir, &journal);
@@ -1009,7 +1030,8 @@ pub fn restore_legacy_json(
     source: &Path,
     data: &serde_json::Value,
 ) -> AppResult<RestoreOutcome> {
-    if let Some(previous) = recover_pending(data_dir, db)? {
+    let _asset_gate = crate::audio::voice_packs::asset_gate_write();
+    if let Some(previous) = recover_pending_inner(data_dir, db)? {
         if previous.state == RestoreState::FailedUnrecovered {
             return Err(AppError::Conflict(
                 "上一次恢复尚未回滚完成，请先处理恢复日志后重试".into(),
@@ -1093,7 +1115,15 @@ pub fn restore_legacy_json(
     journal.phase = "done".into();
     let _ = write_journal(data_dir, &mut journal);
     cleanup_after_success(data_dir, &journal);
-    Ok(success_outcome(&journal, 0, 0, true, false, None, Vec::new()))
+    Ok(success_outcome(
+        &journal,
+        0,
+        0,
+        true,
+        false,
+        None,
+        Vec::new(),
+    ))
 }
 
 /// 启动时/恢复前调用：处理上次中断的恢复。
@@ -1101,6 +1131,11 @@ pub fn restore_legacy_json(
 /// - 数据库未提交 → 丢弃暂存并清理；
 /// - 处于回滚中 → 继续回滚（失败保留证据并返回错误）。
 pub fn recover_pending(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryOutcome>> {
+    let _asset_gate = crate::audio::voice_packs::asset_gate_write();
+    recover_pending_inner(data_dir, db)
+}
+
+fn recover_pending_inner(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryOutcome>> {
     let Some(mut journal) = read_journal(data_dir)? else {
         if let Some(marker) = read_marker(db)? {
             clear_marker(db)?;
@@ -1143,6 +1178,12 @@ pub fn recover_pending(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryOut
                     tracing::warn!("恢复完成收尾时应用用户配置: {}", warning);
                 }
                 clear_marker(db)?;
+            }
+            if let Err(error) = crate::audio::voice_packs::cleanup_orphaned_files(
+                db,
+                &data_dir.join("audio").join("voice-packs"),
+            ) {
+                tracing::warn!("恢复收尾时清理未引用语音资源失败: {}", error);
             }
             cleanup_session(data_dir, &journal.session_id);
             remove_journal(data_dir);
@@ -1421,6 +1462,166 @@ mod tests {
         write_bundle_lines(path, &out);
     }
 
+    fn make_pre_voice_bundle(path: &Path) {
+        rewrite_bundle(path, |values| {
+            let voice_tables = [
+                "voice_packs",
+                "voice_assets",
+                "voice_pack_assets",
+                "voice_bindings",
+            ];
+            let header = values
+                .iter_mut()
+                .find(|value| value["record"] == "header")
+                .unwrap();
+            header["registry"].as_array_mut().unwrap().retain(|entry| {
+                !entry
+                    .get("table")
+                    .and_then(Value::as_str)
+                    .is_some_and(|table| voice_tables.contains(&table))
+            });
+            values.retain_mut(|value| {
+                if value["record"] == "section" {
+                    let table = value["table"].as_str().unwrap_or_default();
+                    if voice_tables.contains(&table) {
+                        return false;
+                    }
+                    if table == "settings" {
+                        if let Some(settings) = value["value"].as_object_mut() {
+                            settings.remove("tts_voice_pack_enabled");
+                            settings.remove("tts_voice_pack_id");
+                            settings.remove("tts_voice_route");
+                        }
+                    }
+                }
+                if value["record"] == "asset"
+                    && value["path"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .starts_with("voice/")
+                {
+                    return false;
+                }
+                true
+            });
+        });
+        // Old manifest did not advertise voice table counts. Footer counts are outside the payload hash.
+        let mut lines = bundle_lines(path);
+        let mut footer: Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        let counts = footer["counts"].as_object_mut().unwrap();
+        for table in [
+            "voice_packs",
+            "voice_assets",
+            "voice_pack_assets",
+            "voice_bindings",
+            "voice_asset_bytes",
+        ] {
+            counts.remove(table);
+        }
+        *lines.last_mut().unwrap() = serde_json::to_string(&footer).unwrap();
+        write_bundle_lines(path, &lines);
+    }
+
+    fn seed_target_voice(db: &Db, data_dir: &Path) -> (String, PathBuf, Vec<u8>) {
+        let root = data_dir.join("audio").join("voice-packs");
+        std::fs::create_dir_all(&root).unwrap();
+        let bytes = b"pre-existing managed voice file".to_vec();
+        let sha = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        std::fs::write(root.join(format!("{sha}.wav")), &bytes).unwrap();
+        let now = now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO voice_packs (id,name,created_at,updated_at) VALUES ('00000000-0000-0000-0000-000000000002','Keep voice',?1,?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_assets (id,sha256,media_type,duration_ms,size_bytes,created_at) VALUES ('keep-asset',?1,'audio/wav',1000,?2,?3)",
+                rusqlite::params![sha, bytes.len() as i64, now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_pack_assets (pack_id,asset_id,display_name,created_at) VALUES ('00000000-0000-0000-0000-000000000002','keep-asset','keep.wav',?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_bindings (pack_id,event_kind,asset_id) VALUES ('00000000-0000-0000-0000-000000000002','agent_done','keep-asset')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        db.set_setting(
+            "tts_voice_pack_id",
+            json!("00000000-0000-0000-0000-000000000002"),
+        )
+        .unwrap();
+        db.set_setting("tts_voice_pack_enabled", json!(true))
+            .unwrap();
+        db.set_setting("tts_voice_route", json!("custom")).unwrap();
+        (sha, root, bytes)
+    }
+
+    fn rebuild_bundle_with_voice(db: &Db, original_bundle: &Path) -> (PathBuf, String, Vec<u8>) {
+        let source_root = original_bundle.parent().unwrap();
+        let data_dir = source_root.join("appdata");
+        let voice_root = data_dir.join("audio").join("voice-packs");
+        std::fs::create_dir_all(&voice_root).unwrap();
+        let bytes = b"restored custom voice bytes".to_vec();
+        let sha = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        std::fs::write(voice_root.join(format!("{sha}.wav")), &bytes).unwrap();
+        let now = now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO voice_packs (id,name,created_at,updated_at) VALUES ('00000000-0000-0000-0000-000000000001','Source voice',?1,?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_assets (id,sha256,media_type,duration_ms,size_bytes,created_at) VALUES ('source-asset',?1,'audio/wav',1000,?2,?3)",
+                rusqlite::params![sha, bytes.len() as i64, now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_pack_assets (pack_id,asset_id,display_name,created_at) VALUES ('00000000-0000-0000-0000-000000000001','source-asset','source.wav',?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_bindings (pack_id,event_kind,asset_id) VALUES ('00000000-0000-0000-0000-000000000001','agent_done','source-asset')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        db.set_setting(
+            "tts_voice_pack_id",
+            json!("00000000-0000-0000-0000-000000000001"),
+        )
+        .unwrap();
+        db.set_setting("tts_voice_pack_enabled", json!(true))
+            .unwrap();
+        db.set_setting("tts_voice_route", json!("custom")).unwrap();
+
+        let bundle = source_root.join("with-voice.jsonl");
+        let archive_dir = source_root.join("archive");
+        let clipboard_dir = source_root.join("clipboard");
+        backup::write_bundle(
+            db,
+            BackupSources {
+                archive_dir: Some(&archive_dir),
+                clipboard_dir: Some(&clipboard_dir),
+                shelf_dir: None,
+                data_dir: Some(&data_dir),
+            },
+            &bundle,
+            BackupKind::Full,
+        )
+        .unwrap();
+        (bundle, sha, bytes)
+    }
+
     #[test]
     fn full_restore_commits_db_assets_archives_and_cleans() {
         let (_, source) = make_source_bundle("full-ok", false);
@@ -1470,11 +1671,142 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pre_voice_bundle_preserves_current_voice_tables_settings_and_files() {
+        let (_, source) = make_source_bundle("pre-voice-source", false);
+        make_pre_voice_bundle(&source.bundle);
+
+        let target_root = temp_dir("pre-voice-target");
+        let db = make_target_db();
+        let (sha, voice_root, bytes) = seed_target_voice(&db, &target_root);
+        let original_id = db.get_setting("tts_voice_pack_id").unwrap();
+        let original_enabled = db.get_setting("tts_voice_pack_enabled").unwrap();
+        let original_route = db.get_setting("tts_voice_route").unwrap();
+
+        let outcome = restore_bundle(
+            &target_root,
+            &db,
+            &source.bundle,
+            &restore_opts(RestoreFaults::default()),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, RestoreState::Completed);
+        for table in [
+            "voice_packs",
+            "voice_assets",
+            "voice_pack_assets",
+            "voice_bindings",
+        ] {
+            let count: i64 = db
+                .with_conn(|conn| {
+                    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(AppError::from)
+                })
+                .unwrap();
+            assert_eq!(count, 1, "旧 bundle 未提供的 {table} 应保留");
+        }
+        assert_eq!(db.get_setting("tts_voice_pack_id").unwrap(), original_id);
+        assert_eq!(
+            db.get_setting("tts_voice_pack_enabled").unwrap(),
+            original_enabled
+        );
+        assert_eq!(db.get_setting("tts_voice_route").unwrap(), original_route);
+        assert_eq!(
+            std::fs::read(voice_root.join(format!("{sha}.wav"))).unwrap(),
+            bytes
+        );
+        assert!(
+            crate::audio::voice_packs::voice_asset_path(&db, &voice_root, "keep-asset").is_ok()
+        );
+        let violations: i64 = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get(0)
+                })
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(violations, 0, "旧 bundle 恢复后语音表不得产生悬挂引用");
+    }
+
+    #[test]
+    fn voice_asset_restore_commits_managed_audio_file() {
+        let (source_db, source) = make_source_bundle("voice-restore-source", false);
+        let (bundle, sha, bytes) = rebuild_bundle_with_voice(&source_db, &source.bundle);
+        let target_root = temp_dir("voice-restore-target");
+        let target_db = make_target_db();
+
+        let outcome = restore_bundle(
+            &target_root,
+            &target_db,
+            &bundle,
+            &restore_opts(RestoreFaults::default()),
+        )
+        .unwrap();
+        assert_eq!(outcome.state, RestoreState::Completed);
+        assert_eq!(outcome.assets, 3, "应恢复两个图片资产与一个语音资产");
+        let voice_root = target_root.join("audio").join("voice-packs");
+        assert_eq!(
+            std::fs::read(voice_root.join(format!("{sha}.wav"))).unwrap(),
+            bytes
+        );
+        assert!(crate::audio::voice_packs::voice_asset_path(
+            &target_db,
+            &voice_root,
+            "source-asset"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn archive_failure_rolls_back_voice_asset_and_database() {
+        let (source_db, source) = make_source_bundle("voice-rollback-source", false);
+        let (bundle, sha, _bytes) = rebuild_bundle_with_voice(&source_db, &source.bundle);
+        let target_root = temp_dir("voice-rollback-target");
+        let target_db = make_target_db();
+        let (old_sha, voice_root, old_bytes) = seed_target_voice(&target_db, &target_root);
+
+        let err = restore_bundle(
+            &target_root,
+            &target_db,
+            &bundle,
+            &restore_opts(RestoreFaults {
+                fail_archive_at: Some(0),
+                ..Default::default()
+            }),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("已自动回滚"), "实际错误: {err}");
+        assert!(std::fs::read(voice_root.join(format!("{old_sha}.wav"))).unwrap() == old_bytes);
+        assert!(
+            !voice_root.join(format!("{sha}.wav")).exists(),
+            "失败恢复写入的新语音文件必须删除"
+        );
+        let pack_count: i64 = target_db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM voice_packs WHERE id = '00000000-0000-0000-0000-000000000002'", [], |row| row.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(pack_count, 1);
+        let source_pack_count: i64 = target_db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM voice_packs WHERE id = '00000000-0000-0000-0000-000000000001'", [], |row| row.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(source_pack_count, 0);
+        assert!(
+            crate::audio::voice_packs::voice_asset_path(&target_db, &voice_root, "keep-asset")
+                .is_ok()
+        );
+    }
+
     /// 构造带用户配置的完整 bundle；返回 (源库, bundle 路径, 源数据目录)。
     fn bundle_with_user_config(tag: &str) -> (Db, PathBuf, PathBuf) {
-        use crate::hotkeys::model::{
-            find_def, HotkeyBinding, HotkeyConfigFile, CONFIG_VERSION,
-        };
+        use crate::hotkeys::model::{find_def, HotkeyBinding, HotkeyConfigFile, CONFIG_VERSION};
         let root = temp_dir(tag);
         let db = memdb();
         seed_task(&db, "cfg-task", "配置来源任务");
@@ -1562,13 +1894,7 @@ mod tests {
         let db = memdb();
         seed_task(&db, "old-task", "旧备份任务");
         let bundle = src_root.join("old.json");
-        backup::write_bundle(
-            &db,
-            BackupSources::default(),
-            &bundle,
-            BackupKind::Full,
-        )
-        .unwrap();
+        backup::write_bundle(&db, BackupSources::default(), &bundle, BackupKind::Full).unwrap();
 
         let target_root = temp_dir("cfg-old-target");
         let target_db = memdb();

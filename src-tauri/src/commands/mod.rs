@@ -15,6 +15,7 @@ pub mod hotkeys;
 pub mod navigation;
 pub mod notes;
 pub mod planning;
+pub mod resource_cleanup;
 pub mod restore;
 pub mod scenario;
 pub mod settings;
@@ -23,6 +24,7 @@ pub mod system;
 pub mod task_analytics;
 pub mod tasks;
 pub mod user_preferences;
+pub mod voice_packs;
 pub mod workflows;
 pub mod workspace;
 

@@ -17,6 +17,47 @@
 
 ## 一、自动化测试结果
 
+### Round 5 Agent 实时监控边界与事件生命周期（2026-11-06）
+
+| 检查 | 结果 |
+|---|---|
+| Agent 定向 Vitest | **63 passed / 0 failed**（3 files：历史 Hook 生命周期、AgentPanel、agentTree；13:58，日志见 Round 5 验收目录） |
+| 胶囊全量统计回归 | 新增用例 **1 passed / 62 skipped**（按测试名隔离执行，断言快照截断时显示真实状态/会话/轮次总数与分页提示） |
+| `npm run build` | 最终复跑通过（14:22，`tsc --noEmit` + Vite，1874 modules，6.35s；主 bundle >500 kB 提示）。14:15 的中间复跑曾因并行编辑尚未补 `help` 字段而失败，随后字段补齐、最终构建通过 |
+| `cargo test --lib agents:: -- --nocapture`（`src-tauri`） | **未执行到测试**：编译被共享工作区 `src/mcp/tools.rs:478`（`String` / `&str`）与 `:1052`（`AppError` / `ToolError`）两处错误阻断；日志见 `tmp/acceptance/historical-task-closure-round5/logs/agent-rust-tests-20261106.log` |
+| `npx vitest run --maxWorkers=4` | 最终状态 **2552 passed / 19 failed，178 files passed / 5 failed**；失败集中在导航入口数量/可见性契约（18 项）和 `useScenarioStore.test.ts`（1 项），均为当前共享工作区导航/场景模块的并行改动，不触及 Agent。本轮定向 Agent 测试 63/63、胶囊统计用例 1/1 通过；子集复跑 `CapsulePanels` + `useNavigationStore` 为 82/82 通过 |
+| Windows 桌面原生验收 | 本轮未执行：现有 Task Dock 实例与用户应用正在使用；不操作用户剪贴板、前台焦点或真实目标窗口。Round 4 证据只保留为历史，不并入本轮结论 |
+
+本轮增加了有界实时快照统计、快照外 keyset 续页及共享历史事件监听的定向覆盖。Rust 高活动量新增用例源码尚未通过编译执行，真实 Windows Agent / 剪贴板 / 吸附 / 通知 / 音频验收仍待单独完成；完整范围与 O-1～O-8 现状见
+[`historical-task-closure-round5/report.md`](../tmp/acceptance/historical-task-closure-round5/report.md)。
+
+### Round 5 二次验收整改（2026-11-06 同日，followup）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo check --lib`（`src-tauri`） | **通过，退出码 0**（4 warnings，与本轮无关的资源清理/Workflows/Shelf/全局搜索未用变量）；历史 MCP 两处类型错误已消除 |
+| `cargo test --lib agents::`（`src-tauri`） | **201 passed / 0 failed / 1 ignored**（含新增 stale 载荷 3 项）；覆盖 0/10/200/201 会话、300/301 轮次、1000 实时会话、10k 完成会话、跨来源、并发一致性 |
+| Agent 前端契约专项 | **64 passed / 0 failed**（4 files：useAgentHistory 26、bridge.normalize 14、HistoryPanel 9、App 15）；覆盖单/多来源 stale、旧全局载荷、缺可选字段、非法载荷、changed=false、顺序/卸载/全局刷新 |
+| 导航/场景复验（5 files） | **51 passed / 0 failed**；默认 11 可见 + 帮助隐藏、12 注册、设置底部锁定、场景单飞均与当前产品规则一致；历史 19 项失败已消除 |
+| `npx tsc --noEmit` / `npm run build` | **均通过（退出码 0）**；Vite 5.53s，主 bundle >500 kB 提示（既有） |
+| `npx vitest run --maxWorkers=4` | **2612 passed / 1 failed，183 files passed / 1 failed**（184 files）；唯一失败为 ClipboardPanel 离场卡片键盘用例在并行负载下 `removingCard() null`，单独复跑 **34/34 通过**（负载抖动，非本轮改动）；本轮 Agent 定向与导航/场景 5 文件均通过 |
+| `cargo test --lib` 全量 | **1296 passed / 8 failed / 4 ignored**；8 项失败均在未触及的并行模块（fs_safety 2、shelf 3、resource_cleanup 1、workflows 1、mcp 1，均为断言/文件锁/符号链接语义），与 Agent 改动无关，单独复跑仍失败，列入遗留风险不冒充通过 |
+| Windows 原生验收 | 未执行（用户实例占用，不扰动剪贴板/前台/窗口），`ENVIRONMENT BLOCKED` 单列 |
+
+证据目录：`tmp/acceptance/historical-task-closure-round5-followup/logs/`；完整报告 `tmp/acceptance/historical-task-closure-round5-followup/report.md`。
+
+#### 续验补充（同日 15:40–15:50）
+
+- 场景单飞新增 5 项边界用例（get 失败释放、enter 失败释放、快速/异场景并发拒绝、成功不覆盖结果、删除清理）后 `useScenarioStore.test.ts` **8 passed / 0 failed**；并行 `workflows`/`mcp`/`shelf`  mid-edit 短暂不可编译期间 Agent 专项复跑中 `file_drop` 1 项负载抖动失败，隔离与随后的全量 `agents::` 复跑均通过（201/201）。
+- `cargo test --lib` 续验更新为 **1305 passed / 6 failed / 4 ignored**：fs_safety 2 项 + resource_cleanup 1 项已由并行所有者修复；剩余 6 项为 `commands::planning` 唯一约束、`mcp` 断言含 "2000"、`workflows::store` 嵌套深度语义、`shelf` 3 项 junction 创建失败（`ENVIRONMENT BLOCKED`，fixture 路径），均未触及 Agent。
+- 前端复验 7 文件 **97 passed / 0 failed**（Agent 契约 26+14、场景 8、导航 51 一类合并）。
+
+#### 复验收尾（15:53–16:16）
+
+- 类型修复后 `npx tsc --noEmit` 0、`npm run build` 0（6.43s）、定向 48 passed；`cargo check --lib` 0。
+- 性能 harness `snapshot_perf_measurement_10k_history_1k_live`（debug 内存库，10k 完成 + 1k 实时，n=20 两次复测）：snapshot p50 380–396ms、历史首屏 p50 60–65ms、liveOnly p50 308–371ms、groups p50 22–33ms；EXPLAIN 均为索引 SEARCH（`idx_sessions_origin_last`、`idx_sessions_origin_source_last_id`），无全表 SCAN。结论为 P2 后续优化项，debug 数字不代表生产延迟。
+- 全量 Vitest 低负载（`--maxWorkers=2`）：**187 files passed，2647 passed / 0 failed，退出码 0**（305.5s，`logs/full-vitest-rerun2-20261106.log`），P2-03 以续跑全量通过收闭；此前 `--maxWorkers=4` 1 项抖动仍保留记录。
+
 ### 0.0.12 规划中心（多项目功能规划，v0.7，2026-11-03）
 
 | 检查 | 结果 |
@@ -792,4 +833,13 @@ Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延
 
 **真机验收未执行**：任务页快捷提醒与倒计时在真实窗口的布局/双主题/320·400 窄窗、系统通知
 弹窗与通知窗口按钮、休眠唤醒后真实补触发未验证；jsdom 单测与预览截图不能替代。
+
+## 资源管理与智能清理（2026-11-06）
+
+- 前端定向：仓库根执行 `npx vitest run src/components/settings/ResourceCleanupSection.test.tsx src/components/settings/AudioSettings.test.tsx src/lib/settingsSections.test.ts src/components/settings/SettingsPanel.test.tsx`，4 个文件、38 个用例通过，退出码 0；最新日志 `tmp/acceptance/resource-cleaner/frontend-focused-final3.log`。
+- 完整前端构建：`npm run build` 退出码 0（TypeScript 检查与 Vite 生产构建通过）；最新日志 `tmp/acceptance/resource-cleaner/frontend-build-final3.log`。
+- Rust 定向测试：`resource_cleanup::tests` 15/15、Shelf maintenance gate 1/1、`fs_safety::tests` 3/3 通过，退出码均为 0；日志分别为 `rust-resource-cleanup-final3.log`、`rust-shelf-maintenance-final2.log`、`rust-fs-safety-final.log`。`audio::cache::tests` 14/14 的可复核旧日志仍为 `rust-audio--cache--tests.log`。
+- junction 复测：`shelf/tests.rs` 的测试辅助函数已改用 Windows `cmd.exe /S /C` 原始命令行引号；同参数隔离临时目录 smoke 创建 junction 并保留目标哨兵通过，日志 `junction-helper-smoke.log`。Rust `cargo test --lib reparse_point -- --nocapture` 在执行用例前被共享源码编译错误阻断，退出码 101：范围外 `src-tauri/src/mcp/bridge.rs:534` 调用不支持的 `JoinHandle::is_finished`；日志 `rust-reparse-point-final.log`。旧 `orphan_` 过滤仍是 7/9（两个失败在 junction 建立），日志 `rust-orphan-.log`。
+- Rust 当前集成构建受共享工作树编译错误阻断：最新测试 crate 无法越过上述范围外 MCP 错误；不修改该文件，也不把之前通过的定向过滤扩展成当前全量通过结论。
+- Windows 原生 Tauri 页面、双主题/窄窗/高 DPI 走查未执行；DOM 测试不替代原生证据。资源清理当前结论见 `tmp/acceptance/resource-cleaner/report.md`。
 

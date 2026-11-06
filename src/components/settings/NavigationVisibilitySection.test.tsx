@@ -54,7 +54,7 @@ describe("导航自定义区块", () => {
     useUiStore.setState({ tab: "apps" });
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText(/常驻 12 \/ 12 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 11 \/ 12 项/)).toBeTruthy();
     const appsSwitch = screen.getByRole("switch", {
       name: "应用导航入口显示",
     }) as HTMLInputElement;
@@ -71,7 +71,7 @@ describe("导航自定义区块", () => {
     expect(
       (useSettingsStore.getState().settings?.navigation_layout as { left: string[] }).left,
     ).not.toContain("apps");
-    expect(screen.getByText(/常驻 11 \/ 12 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 10 \/ 12 项/)).toBeTruthy();
   });
 
   it("「设置」是锁定入口：开关禁用、无排序按钮并标注固定", () => {
@@ -188,7 +188,7 @@ describe("导航自定义区块 · 英文", () => {
     setLocalePreference("en-US");
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText("12 of 12 pinned")).toBeTruthy();
+    expect(screen.getByText("11 of 12 pinned")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Full panel" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Docked capsule" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Show Tasks navigation entry" })).toBeTruthy();
@@ -223,6 +223,8 @@ describe("排序按钮可见性与边界", () => {
 
   it("左侧末位普通入口的「下移」禁用（不能越过固定的设置）", async () => {
     seedLayout((layout) => {
+      // 帮助被新配置默认隐藏；显式启用它以验证普通入口不能越过固定设置。
+      layout.left.push("help");
       // 把设置从可见数组里删掉：归一化会补回并收敛到末尾
       layout.left = layout.left.filter((id) => id !== "settings");
     });

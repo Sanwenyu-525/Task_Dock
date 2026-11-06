@@ -79,8 +79,17 @@ function MenuButton({
  * - `pointermove` 只认 `buttons === 0`：拖拽开始前的最后几毫秒仍可能收到
  *   按住状态的移动事件，不能据此提前复位；
  * - `pointerup` / `pointercancel` 覆盖没走到原生循环的普通点击与中断；
- * - `blur` / `visibilitychange` 覆盖失焦、切走与页面隐藏。
- * 任一信号先到即摘掉本次会话的全部监听，不会累积（一次性会话）。
+ * - `visibilitychange` 覆盖页面隐藏；`blur` 只在「非起始扰动」时结束，
+ *   起始 120ms 内的 blur 是原生拖动启动时的激活扰动（见 TooltipLayer
+ *   实测注释：startDragging 会激活窗口并引发 focus 扰动），若在此处
+ *   立即 stop，会把 `grabbing` 切掉造成闪烁。
+ *
+ * 起始守卫（120ms）只拦截 blur / buttons=0 的合成移动，pointerup/cancel
+ * 始终可结束（真实点击/中断不受影响）；会话序号保证旧会话的迟到事件
+ * 不会清理新会话。任一信号先到即摘掉本次会话的全部监听，不会累积。
+ * 原生拖动在 mousedown 即进入循环，DOM 无位移可用于 pressed/dragging
+ * 区分，故此处不设视觉 pressed 阶段；pressed→dragging 的阈值语义保留给
+ * EdgeTab（4px）与应用网格（dragstart）等非原生拖动。
  */
 function useWindowDragCursor() {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -90,6 +99,7 @@ function useWindowDragCursor() {
     if (!root) return;
 
     let endSession: (() => void) | null = null;
+    let sessionSeq = 0;
 
     const stop = () => {
       root.classList.remove("is-dragging");
@@ -99,21 +109,33 @@ function useWindowDragCursor() {
 
     const start = () => {
       stop(); // 上一条会话若因事件缺失没收尾，先清掉再开新的
+      const mySeq = ++sessionSeq;
+      const startedAt = Date.now();
+      const isStale = () => mySeq !== sessionSeq;
+      const inStartChurn = () => Date.now() - startedAt < 120;
       root.classList.add("is-dragging");
-      const end = () => stop();
-      const onMove = (event: PointerEvent) => {
-        if (event.buttons === 0) stop();
+      const end = () => {
+        if (isStale()) return;
+        stop();
       };
+      const endIfLate = () => {
+        if (isStale() || inStartChurn()) return;
+        stop();
+      };
+      const onMove = (event: PointerEvent) => {
+        if (event.buttons === 0) endIfLate();
+      };
+      const onBlur = () => endIfLate();
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", end);
       window.addEventListener("pointercancel", end);
-      window.addEventListener("blur", end);
+      window.addEventListener("blur", onBlur);
       document.addEventListener("visibilitychange", end);
       endSession = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", end);
         window.removeEventListener("pointercancel", end);
-        window.removeEventListener("blur", end);
+        window.removeEventListener("blur", onBlur);
         document.removeEventListener("visibilitychange", end);
       };
     };
@@ -132,6 +154,8 @@ function useWindowDragCursor() {
     // pointerdown 先于 mousedown，且捕获阶段不受其影响。
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => {
+      // 卸载先使在途会话失效，旧会话的迟到事件不再触碰新状态。
+      sessionSeq += 1;
       stop();
       document.removeEventListener("pointerdown", onPointerDown, true);
     };

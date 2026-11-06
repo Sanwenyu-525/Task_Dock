@@ -185,7 +185,10 @@ pub fn fit_logical_size(wa: WorkArea, size_logical: (f64, f64), scale: f64) -> (
     };
     let max_w = ((wa.w as f64 / scale) - 2.0 * EDGE_MARGIN).max(1.0);
     let max_h = ((wa.h as f64 / scale) - 2.0 * EDGE_MARGIN).max(1.0);
-    (size_logical.0.min(max_w).max(1.0), size_logical.1.min(max_h).max(1.0))
+    (
+        size_logical.0.min(max_w).max(1.0),
+        size_logical.1.min(max_h).max(1.0),
+    )
 }
 
 /// 计算通知窗口的物理位置：目标显示器工作区右下角。
@@ -1001,12 +1004,8 @@ pub async fn notification_navigate(
                 let nav_session = session.clone();
                 let nav_ref_id = ref_id.clone();
                 let outcome = tauri::async_runtime::spawn_blocking(move || {
-                    let resolved = resolve_session(
-                        &db,
-                        &nav_source,
-                        &nav_session,
-                        nav_ref_id.as_deref(),
-                    )?;
+                    let resolved =
+                        resolve_session(&db, &nav_source, &nav_session, nav_ref_id.as_deref())?;
                     if let Some(r) = resolved {
                         let settings = crate::db::Settings::load(&db).unwrap_or_default();
                         let nav = crate::navigation::agent_navigation::resume_session(
@@ -1069,11 +1068,7 @@ pub async fn notification_navigate(
     for (key, value) in focus {
         payload.insert(key, value);
     }
-    let _ = app.emit_to(
-        "main",
-        NAVIGATE_EVENT,
-        serde_json::Value::Object(payload),
-    );
+    let _ = app.emit_to("main", NAVIGATE_EVENT, serde_json::Value::Object(payload));
 
     Ok(NotificationNavigateResult {
         tab: tab.to_string(),
@@ -1142,7 +1137,8 @@ mod tests {
         let anchor = monitors[0].anchor.clone();
         // 高度变化/展开期间再次解析：即使光标已在第二屏，也必须命中原锚点
         let first = find_anchor_monitor(&monitors, &anchor).unwrap();
-        let second = find_anchor_monitor(&monitors, &monitor("DISPLAY2", 1920, 1.25).anchor).unwrap();
+        let second =
+            find_anchor_monitor(&monitors, &monitor("DISPLAY2", 1920, 1.25).anchor).unwrap();
         assert_eq!(first, 0);
         assert_eq!(second, 1);
         // 按光标点仍能选到第二屏（仅用于新一轮/锚点失效时重新选择）

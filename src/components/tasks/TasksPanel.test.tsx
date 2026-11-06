@@ -116,6 +116,20 @@ afterEach(() => {
 });
 
 describe("TasksPanel 筛选交互", () => {
+  it("上下文帮助打开对应教程，不修改当前任务筛选", async () => {
+    const user = userEvent.setup();
+    seedTasks();
+    render(<TasksPanel />);
+    const currentFilter = useTasksStore.getState().filter;
+
+    await user.click(screen.getByRole("button", { name: "查看帮助：创建任务与自然语言提醒" }));
+    await user.click(await screen.findByRole("button", { name: "查看完整教程" }));
+
+    expect(useUiStore.getState().tab).toBe("help");
+    expect(useUiStore.getState().helpOpenRequest?.articleId).toBe("help.tasks.create-reminders");
+    expect(useTasksStore.getState().filter).toEqual(currentFilter);
+  });
+
   it("点击搜索按钮展开输入框，输入关键词过滤任务列表", async () => {
     const user = userEvent.setup();
     seedTasks();

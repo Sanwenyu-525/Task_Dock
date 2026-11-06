@@ -88,6 +88,25 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 vi.mock("./lib/bridge", () => ({
   notifyUiReady: async () => true,
+  normalizeAgentChangedPayload: (p: unknown) => {
+    if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+    const r = p as Record<string, unknown>;
+    if (!("changed" in r) && !("stale_cleanup" in r) && !("states" in r) && !("sources" in r) && !("source_id" in r) && !("session_id" in r)) return null;
+    if ("sources" in r && r.sources !== undefined && !Array.isArray(r.sources)) return null;
+    const sources = Array.isArray(r.sources) ? (r.sources as string[]) : (typeof r.source_id === "string" && r.source_id ? [r.source_id] : []);
+    return {
+      source_id: typeof r.source_id === "string" && r.source_id ? r.source_id : (sources[0] ?? ""),
+      sources,
+      session_id: typeof r.session_id === "string" ? r.session_id : "",
+      run_id: null,
+      state: null,
+      states: (r.states && typeof r.states === "object" && !Array.isArray(r.states) ? r.states : {}) as Record<string, number>,
+      batch: typeof r.batch === "number" ? r.batch : 0,
+      changed: r.changed === false ? false : true,
+      deduplicated: false,
+      late: false,
+    };
+  },
   onAgentChanged: bridgeMock.listener("agent-changed"),
   onAppReady: bridgeMock.listener("app-ready"),
   onFocusQuickAdd: bridgeMock.listener("focus-quick-add"),

@@ -149,11 +149,7 @@ pub fn nav_save_window_target(
     hwnd: isize,
     display_name: Option<String>,
 ) -> AppResult<navigation::target_resolver::NavTargetRow> {
-    navigation::target_resolver::save_window_shortcut(
-        &db,
-        hwnd,
-        display_name.as_deref(),
-    )
+    navigation::target_resolver::save_window_shortcut(&db, hwnd, display_name.as_deref())
 }
 
 #[tauri::command]

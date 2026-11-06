@@ -120,7 +120,8 @@ fn capability_matrix(
 const TARGETS_TTL: Duration = Duration::from_secs(300);
 /// 缓存快照：扫描完成时刻、结果、以及全局扫描序号。
 type TargetsCacheEntry = (Instant, Vec<AgentClipboardTarget>, u64);
-static TARGETS_CACHE: LazyLock<Mutex<Option<TargetsCacheEntry>>> = LazyLock::new(|| Mutex::new(None));
+static TARGETS_CACHE: LazyLock<Mutex<Option<TargetsCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(None));
 /// 每次真实扫描完成后递增：用来识别「请求开始后已有别的请求完成了一次扫描」。
 static TARGETS_SCAN_SEQ: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
@@ -128,8 +129,7 @@ static TARGETS_SCANS: AtomicU64 = AtomicU64::new(0);
 
 /// 列出剪贴板导出可配合的 Agent；不在此列表中的程序仍可手动选择导出的文件。
 pub fn targets(db: &Db, force_refresh: bool) -> AgentTargetsSnapshot {
-    let (targets, probed_at_ms, cached) =
-        snapshot_or_scan(force_refresh, || targets_uncached(db));
+    let (targets, probed_at_ms, cached) = snapshot_or_scan(force_refresh, || targets_uncached(db));
     AgentTargetsSnapshot {
         targets,
         probed_at_ms,
@@ -727,8 +727,7 @@ mod tests {
                        expect_items: usize,
                        expect_files: usize| {
             let started = Instant::now();
-            let pkg =
-                export_package(&db, &root.0, &data.0, target_type, target_id, None).unwrap();
+            let pkg = export_package(&db, &root.0, &data.0, target_type, target_id, None).unwrap();
             let ms = started.elapsed().as_millis();
             println!(
                 "[perf] case={label} items={} files={} elapsed_ms={ms}",
@@ -835,10 +834,7 @@ mod tests {
             1,
             "TTL 内重复请求不应再次扫描"
         );
-        assert!(
-            second.1 <= first.1,
-            "缓存结果的时间戳不得晚于首次扫描时间"
-        );
+        assert!(second.1 <= first.1, "缓存结果的时间戳不得晚于首次扫描时间");
 
         assert!(snapshot_or_scan(true, counting_scan(&scans)).0.is_empty());
         assert_eq!(
@@ -949,7 +945,10 @@ mod tests {
         std::fs::create_dir(&existing).unwrap();
         std::fs::write(existing.join("user-note.txt"), "keep me").unwrap();
 
-        let names = std::cell::RefCell::new(vec!["existing-export".to_string(), "fresh-export".to_string()]);
+        let names = std::cell::RefCell::new(vec![
+            "existing-export".to_string(),
+            "fresh-export".to_string(),
+        ]);
         let created = unique_export_dir(&base.0, || names.borrow_mut().remove(0)).unwrap();
 
         assert!(created.ends_with("fresh-export"), "冲突时必须换一个新名字");
@@ -980,7 +979,12 @@ mod tests {
     fn export_dir_uses_full_uuid() {
         let base = Temp::new();
         let guard = ExportDirGuard::create_in(&base.0).unwrap();
-        let name = guard.path.file_name().unwrap().to_string_lossy().into_owned();
+        let name = guard
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(name.len(), 36, "目录名应为完整 UUID（36 字符）");
         assert!(uuid::Uuid::parse_str(&name).is_ok());
         guard.commit();

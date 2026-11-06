@@ -9,9 +9,7 @@ use tauri::{AppHandle, State};
 
 use crate::db::Db;
 use crate::error::AppResult;
-use crate::focus::{
-    FocusHistoryItem, FocusPrefs, FocusPrefsPatch, FocusSnapshot,
-};
+use crate::focus::{FocusHistoryItem, FocusPrefs, FocusPrefsPatch, FocusSnapshot};
 
 #[tauri::command]
 pub fn focus_snapshot(db: State<'_, Arc<Db>>) -> AppResult<FocusSnapshot> {
@@ -36,42 +34,27 @@ pub fn focus_start(
 }
 
 #[tauri::command]
-pub fn focus_start_break(
-    app: AppHandle,
-    db: State<'_, Arc<Db>>,
-) -> AppResult<FocusSnapshot> {
+pub fn focus_start_break(app: AppHandle, db: State<'_, Arc<Db>>) -> AppResult<FocusSnapshot> {
     crate::focus::start_break(&app, db.as_ref())
 }
 
 #[tauri::command]
-pub fn focus_pause(
-    app: AppHandle,
-    db: State<'_, Arc<Db>>,
-) -> AppResult<FocusSnapshot> {
+pub fn focus_pause(app: AppHandle, db: State<'_, Arc<Db>>) -> AppResult<FocusSnapshot> {
     crate::focus::pause(&app, db.as_ref())
 }
 
 #[tauri::command]
-pub fn focus_resume(
-    app: AppHandle,
-    db: State<'_, Arc<Db>>,
-) -> AppResult<FocusSnapshot> {
+pub fn focus_resume(app: AppHandle, db: State<'_, Arc<Db>>) -> AppResult<FocusSnapshot> {
     crate::focus::resume(&app, db.as_ref())
 }
 
 #[tauri::command]
-pub fn focus_finish(
-    app: AppHandle,
-    db: State<'_, Arc<Db>>,
-) -> AppResult<FocusSnapshot> {
+pub fn focus_finish(app: AppHandle, db: State<'_, Arc<Db>>) -> AppResult<FocusSnapshot> {
     crate::focus::finish(&app, db.as_ref())
 }
 
 #[tauri::command]
-pub fn focus_cancel(
-    app: AppHandle,
-    db: State<'_, Arc<Db>>,
-) -> AppResult<FocusSnapshot> {
+pub fn focus_cancel(app: AppHandle, db: State<'_, Arc<Db>>) -> AppResult<FocusSnapshot> {
     crate::focus::cancel(&app, db.as_ref())
 }
 
@@ -85,10 +68,7 @@ pub fn focus_extend_break(
 }
 
 #[tauri::command]
-pub fn focus_skip_break(
-    app: AppHandle,
-    db: State<'_, Arc<Db>>,
-) -> AppResult<FocusSnapshot> {
+pub fn focus_skip_break(app: AppHandle, db: State<'_, Arc<Db>>) -> AppResult<FocusSnapshot> {
     crate::focus::skip_break(&app, db.as_ref())
 }
 

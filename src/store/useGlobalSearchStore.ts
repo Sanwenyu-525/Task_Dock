@@ -65,6 +65,8 @@ interface GlobalSearchState {
   consumeLocate: () => void;
   /** 胶囊「最近暂存」跳转完整暂存架并定位条目（复用同一 pendingLocate 通道）。 */
   requestShelfLocate: (id: string, kind: string) => void;
+  /** 从 Agent 会话跳转到规划功能详情。 */
+  requestPlanningFeatureLocate: (featureId: string, projectId: string) => void;
   clearRecent: () => void;
   setNotice: (n: string | null) => void;
 }
@@ -263,6 +265,20 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
         token: ++locateSeq,
       },
     }),
+
+  requestPlanningFeatureLocate: (featureId, projectId) => {
+    useUiStore.getState().setTab("roadmap");
+    set({
+      pendingLocate: {
+        category: "planning",
+        id: featureId,
+        kind: "feature",
+        parentId: projectId,
+        keyword: "",
+        token: ++locateSeq,
+      },
+    });
+  },
 
   clearRecent: () => {
     clearRecentPersisted();

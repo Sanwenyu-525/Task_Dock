@@ -114,7 +114,9 @@
     cursor: grab;
   }
 
-  .wd-drag:active {
+  /* grabbing 由 JS 会话类驱动（与主窗标题栏同一策略）：原生拖动期间
+     WebView2 收不到 pointerup，:active 不可靠，不再用它决定 dragging。 */
+  .wd-drag-session.is-dragging .wd-drag {
     cursor: grabbing;
   }
 

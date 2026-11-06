@@ -213,20 +213,12 @@ impl FocusPrefs {
         let defaults = Self::default();
         let mut prefs = Self {
             focus_minutes: read_u32(db, KEY_FOCUS_MINUTES, defaults.focus_minutes)?,
-            short_break_minutes: read_u32(
-                db,
-                KEY_SHORT_BREAK,
-                defaults.short_break_minutes,
-            )?,
+            short_break_minutes: read_u32(db, KEY_SHORT_BREAK, defaults.short_break_minutes)?,
             long_break_minutes: read_u32(db, KEY_LONG_BREAK, defaults.long_break_minutes)?,
             long_break_every: read_u32(db, KEY_LONG_EVERY, defaults.long_break_every)?,
             auto_start_break: read_bool(db, KEY_AUTO_BREAK, defaults.auto_start_break)?,
             auto_start_next: read_bool(db, KEY_AUTO_NEXT, defaults.auto_start_next)?,
-            sedentary_enabled: read_bool(
-                db,
-                KEY_SEDENTARY_ENABLED,
-                defaults.sedentary_enabled,
-            )?,
+            sedentary_enabled: read_bool(db, KEY_SEDENTARY_ENABLED, defaults.sedentary_enabled)?,
             sedentary_interval_minutes: read_u32(
                 db,
                 KEY_SEDENTARY_INTERVAL,
@@ -243,10 +235,7 @@ impl FocusPrefs {
     pub fn persist(&self, db: &Db) -> AppResult<()> {
         self.validate()?;
         db.set_setting(KEY_FOCUS_MINUTES, serde_json::json!(self.focus_minutes))?;
-        db.set_setting(
-            KEY_SHORT_BREAK,
-            serde_json::json!(self.short_break_minutes),
-        )?;
+        db.set_setting(KEY_SHORT_BREAK, serde_json::json!(self.short_break_minutes))?;
         db.set_setting(KEY_LONG_BREAK, serde_json::json!(self.long_break_minutes))?;
         db.set_setting(KEY_LONG_EVERY, serde_json::json!(self.long_break_every))?;
         db.set_setting(KEY_AUTO_BREAK, serde_json::json!(self.auto_start_break))?;

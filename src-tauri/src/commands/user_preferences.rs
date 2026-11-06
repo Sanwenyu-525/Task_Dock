@@ -97,9 +97,7 @@ pub fn set_user_preferences(
             next_widgets.as_deref(),
             next_app_grid_order.as_deref(),
         )
-        .map_err(|message| {
-            AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, message))
-        })?;
+        .map_err(|message| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, message)))?;
     }
 
     if let Some(restore_id) = applied_restore_id.as_deref() {

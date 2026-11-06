@@ -37,6 +37,9 @@ pub mod trae;
 pub mod workbuddy;
 pub mod zcode;
 
+#[cfg(test)]
+mod snapshot_tests;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,7 +49,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::db::{AgentInstance, AgentRun, AgentSession, AgentSource, Db};
+use crate::db::{AgentInstance, AgentRun, AgentSource, Db};
 use crate::error::{AppError, AppResult};
 
 use self::notify::{NotificationPolicy, NotifyGate, NotifyItem, Popup};
@@ -1142,13 +1145,88 @@ pub fn cleanup_stale_core(
     Ok(stale)
 }
 
+/// 统一构造 stale 清理的 `agent-changed` 事件载荷。
+/// 与正常批量事件（`AgentHub::after_batch`）保持同一契约：前端订阅者
+/// （App / HistoryPanel / useAgentHistory 的共享历史探测）可依赖
+/// `sources`、`changed`、`states` 等字段做精准分发，不会因缺少 `sources`
+/// 而抛出 TypeError。`session_id` 由调用方传入：单轮次时为该轮次会话，
+/// 多来源汇总时为空字符串（不绑定单一会话，避免误导定位）。
+pub(crate) fn stale_cleanup_payload(
+    notified: &[(String, String)],
+    session_id: &str,
+) -> serde_json::Value {
+    let mut sources: Vec<String> = Vec::new();
+    for (_, source_id) in notified {
+        if !sources.contains(source_id) {
+            sources.push(source_id.clone());
+        }
+    }
+    let last = notified.last();
+    serde_json::json!({
+        "source_id": last.map(|(_, s)| s.as_str()).unwrap_or(""),
+        "sources": sources,
+        "session_id": session_id,
+        "run_id": last.map(|(r, _)| r.clone()),
+        "state": "disconnected",
+        "states": { "disconnected": notified.len() },
+        "batch": notified.len(),
+        "changed": true,
+        "deduplicated": false,
+        "late": false,
+        "stale_cleanup": notified.len(),
+    })
+}
+
 /// 前端快照。
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentSnapshot {
     pub sources: Vec<AgentSource>,
     pub instances: Vec<AgentInstance>,
-    pub sessions: Vec<AgentSession>,
+    pub sessions: Vec<AgentSnapshotSession>,
     pub runs: Vec<AgentRun>,
+    pub live_summary: AgentLiveSummary,
+}
+
+/// 快照会话的有限实时计数，不扩展数据库通用 AgentSession 模型。
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentSnapshotSession {
+    pub id: String,
+    pub source_id: String,
+    pub external_id: String,
+    pub title: String,
+    pub status: String,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub last_run_id: Option<String>,
+    pub instance_id: Option<String>,
+    pub live_run_count: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AgentLiveCounts {
+    pub session_total: i64,
+    pub active_session_total: i64,
+    pub run_total: i64,
+    pub running: i64,
+    pub waiting: i64,
+    pub failed: i64,
+    pub disconnected: i64,
+}
+
+/// 全量实时计数与有界明细分开；截断时用 next_cursor 继续 liveOnly 会话分页。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AgentLiveSummary {
+    pub session_total: i64,
+    pub active_session_total: i64,
+    pub run_total: i64,
+    pub running: i64,
+    pub waiting: i64,
+    pub failed: i64,
+    pub disconnected: i64,
+    pub by_source: std::collections::BTreeMap<String, AgentLiveCounts>,
+    pub sessions_truncated: bool,
+    pub runs_truncated: bool,
+    pub next_cursor: Option<String>,
 }
 
 /// 事件总线：Adapter 与 UI 之间的唯一通道。
@@ -1256,22 +1334,19 @@ impl AgentHub {
                     AgentState::Disconnected => "agent_disconnected",
                     _ => return None,
                 };
-                let (event_id, source_name, task_title): (
-                    String,
-                    Option<String>,
-                    Option<String>,
-                ) = match o.notification.as_ref() {
-                    Some(n) => (
-                        n.nh_id.clone(),
-                        Some(n.source_name.clone()),
-                        n.task_title.clone(),
-                    ),
-                    None => (
-                        format!("run:{}:{}:{}", o.run_row_id, kind, uuid::Uuid::new_v4()),
-                        None,
-                        None,
-                    ),
-                };
+                let (event_id, source_name, task_title): (String, Option<String>, Option<String>) =
+                    match o.notification.as_ref() {
+                        Some(n) => (
+                            n.nh_id.clone(),
+                            Some(n.source_name.clone()),
+                            n.task_title.clone(),
+                        ),
+                        None => (
+                            format!("run:{}:{}:{}", o.run_row_id, kind, uuid::Uuid::new_v4()),
+                            None,
+                            None,
+                        ),
+                    };
                 Some(serde_json::json!({
                     "eventId": event_id,
                     "kind": kind,
@@ -1297,11 +1372,7 @@ impl AgentHub {
                 .filter_map(|o| o.notification.as_ref())
                 .map(|n| {
                     NotifyItem::new(&n.kind, &n.title, &n.body)
-                        .with_ref(
-                            n.run_id.clone(),
-                            n.source_id.clone(),
-                            n.session_id.clone(),
-                        )
+                        .with_ref(n.run_id.clone(), n.source_id.clone(), n.session_id.clone())
                         .with_detail(n.detail.clone())
                 })
                 .collect();
@@ -1524,12 +1595,10 @@ impl AgentHub {
             .with_conn(|conn| cleanup_stale_core(conn, stale_minutes))?;
         let notified = stale;
         if !notified.is_empty() {
-            // 单轮次断连携带跳转元数据（run → source/session）供通知窗口「查看详情」；
-            // 多条合并为一条汇总时不绑定单一对象，跳转落到 Agent 面板。
-            let item = if notified.len() == 1 {
-                let (run_id, source_id) = &notified[0];
-                let session_id: Option<String> = self
-                    .db
+            // 单轮次时查会话并复用于通知跳转与事件载荷；多来源汇总不绑定单一会话。
+            let single_run_session: Option<String> = if notified.len() == 1 {
+                let (run_id, _) = &notified[0];
+                self.db
                     .with_read(|conn| {
                         conn.query_row(
                             "SELECT session_id FROM agent_runs WHERE id = ?1",
@@ -1540,7 +1609,14 @@ impl AgentHub {
                         .map_err(AppError::from)
                     })
                     .ok()
-                    .flatten();
+                    .flatten()
+            } else {
+                None
+            };
+            // 单轮次断连携带跳转元数据（run → source/session）供通知窗口「查看详情」；
+            // 多条合并为一条汇总时不绑定单一对象，跳转落到 Agent 面板。
+            let item = if notified.len() == 1 {
+                let (run_id, source_id) = &notified[0];
                 NotifyItem::new(
                     "agent_disconnected",
                     "Agent 连接中断",
@@ -1549,7 +1625,7 @@ impl AgentHub {
                 .with_ref(
                     Some(run_id.clone()),
                     Some(source_id.clone()),
-                    session_id,
+                    single_run_session.clone(),
                 )
             } else {
                 NotifyItem::new(
@@ -1577,7 +1653,7 @@ impl AgentHub {
             );
             let _ = self.app.emit(
                 "agent-changed",
-                serde_json::json!({ "stale_cleanup": notified.len() }),
+                stale_cleanup_payload(&notified, single_run_session.as_deref().unwrap_or("")),
             );
             self.update_tray();
         }
@@ -1605,6 +1681,18 @@ impl AgentHub {
 pub(crate) fn snapshot_query(db: &Db) -> AppResult<AgentSnapshot> {
     db.with_read(|conn| {
         let tx = conn.unchecked_transaction()?;
+        // 同一快照共用一个近期窗口边界，避免查询跨过一小时边界时计数与明细不一致。
+        let cutoff = (Utc::now() - Duration::hours(1)).to_rfc3339();
+        let live_run = history::live_run_sql_at("r", "datetime(?1)");
+        let live_session = history::live_session_sql_at("s", "datetime(?1)");
+        let session_filter = format!(
+            "s.origin = 'real' AND s.source_id IN (SELECT id FROM agent_sources WHERE hidden = 0) \
+             AND {live_session}"
+        );
+        let session_window = format!(
+            "SELECT s.id FROM agent_sessions s WHERE {session_filter} \
+             ORDER BY s.last_seen_at DESC, s.id DESC LIMIT 200"
+        );
         let mut stmt = tx.prepare(
             "SELECT id, display_name, kind, enabled, verified, homepage, note, config, created_at, updated_at
              FROM agent_sources WHERE hidden = 0 ORDER BY id",
@@ -1627,12 +1715,51 @@ pub(crate) fn snapshot_query(db: &Db) -> AppResult<AgentSnapshot> {
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
-            let mut stmt = tx.prepare(
+            let mut stmt = tx.prepare(&format!(
+                "SELECT s.source_id, COUNT(DISTINCT r.session_id),
+                        COUNT(DISTINCT CASE WHEN r.status IN ('running','waiting') THEN r.session_id END),
+                        COUNT(*), SUM(r.status = 'running'), SUM(r.status = 'waiting'),
+                        SUM(r.status = 'failed'), SUM(r.status = 'disconnected')
+                 FROM agent_runs r JOIN agent_sessions s ON s.id = r.session_id
+                 JOIN agent_sources src ON src.id = s.source_id
+                 WHERE r.origin = 'real' AND s.origin = 'real' AND src.hidden = 0
+                   AND ({live_run}) GROUP BY s.source_id"
+            ))?;
+            let rows = stmt.query_map([&cutoff], |r| {
+                Ok((r.get::<_, String>(0)?, AgentLiveCounts {
+                    session_total: r.get(1)?,
+                    active_session_total: r.get(2)?,
+                    run_total: r.get(3)?,
+                    running: r.get(4)?,
+                    waiting: r.get(5)?,
+                    failed: r.get(6)?,
+                    disconnected: r.get(7)?,
+                }))
+            })?;
+            let mut live_summary = AgentLiveSummary::default();
+            for row in rows {
+                let (source, counts) = row?;
+                live_summary.session_total += counts.session_total;
+                live_summary.active_session_total += counts.active_session_total;
+                live_summary.run_total += counts.run_total;
+                live_summary.running += counts.running;
+                live_summary.waiting += counts.waiting;
+                live_summary.failed += counts.failed;
+                live_summary.disconnected += counts.disconnected;
+                live_summary.by_source.insert(source, counts);
+            }
+            drop(stmt);
+            let mut stmt = tx.prepare(&format!(
                 "SELECT id, source_id, instance_key, display_name, exe_path, first_seen_at, last_seen_at
-                 FROM agent_instances WHERE origin = 'real' ORDER BY last_seen_at DESC LIMIT 200",
-            )?;
+                 FROM agent_instances WHERE origin = 'real'
+                   AND source_id IN (SELECT id FROM agent_sources WHERE hidden = 0)
+                 ORDER BY CASE WHEN id IN (
+                    SELECT s.instance_id FROM agent_sessions s WHERE {session_filter}
+                    ORDER BY s.last_seen_at DESC, s.id DESC LIMIT 200
+                 ) THEN 0 ELSE 1 END, last_seen_at DESC, id DESC LIMIT 200"
+            ))?;
             let instances = stmt
-                .query_map([], |r| {
+                .query_map([&cutoff], |r| {
                     Ok(AgentInstance {
                         id: r.get(0)?,
                         source_id: r.get(1)?,
@@ -1645,12 +1772,17 @@ pub(crate) fn snapshot_query(db: &Db) -> AppResult<AgentSnapshot> {
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
-            let mut stmt = tx.prepare(
-                "SELECT id, source_id, external_id, title, status, first_seen_at, last_seen_at, last_run_id, instance_id FROM agent_sessions WHERE origin = 'real' ORDER BY last_seen_at DESC LIMIT 200",
-            )?;
+            let mut stmt = tx.prepare(&format!(
+                "SELECT s.id, s.source_id, s.external_id, s.title, s.status, s.first_seen_at,
+                        s.last_seen_at, s.last_run_id, s.instance_id,
+                        (SELECT COUNT(*) FROM agent_runs r
+                         WHERE r.session_id = s.id AND r.origin = 'real' AND ({live_run}))
+                 FROM agent_sessions s WHERE {session_filter}
+                 ORDER BY s.last_seen_at DESC, s.id DESC LIMIT 200"
+            ))?;
             let sessions = stmt
-                .query_map([], |r| {
-                    Ok(AgentSession {
+                .query_map([&cutoff], |r| {
+                    Ok(AgentSnapshotSession {
                         id: r.get(0)?,
                         source_id: r.get(1)?,
                         external_id: r.get(2)?,
@@ -1660,16 +1792,34 @@ pub(crate) fn snapshot_query(db: &Db) -> AppResult<AgentSnapshot> {
                         last_seen_at: r.get(6)?,
                         last_run_id: r.get(7)?,
                         instance_id: r.get(8)?,
+                        live_run_count: r.get(9)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
-            let mut stmt = tx.prepare(
-                "SELECT id, session_id, source_id, external_run_id, task_title, status, started_at, updated_at, ended_at, pending_items, instance_id
-                 FROM agent_runs WHERE origin = 'real' ORDER BY updated_at DESC LIMIT 300",
-            )?;
+            let mut stmt = tx.prepare(&format!(
+                "WITH visible_sessions AS ({session_window}),
+                 ranked_runs AS (
+                    SELECT r.*, ROW_NUMBER() OVER (
+                        PARTITION BY r.session_id
+                        ORDER BY CASE r.status WHEN 'failed' THEN 0 WHEN 'waiting' THEN 1
+                                              WHEN 'running' THEN 2 ELSE 3 END,
+                                 r.updated_at DESC, r.id DESC
+                    ) AS session_rank
+                    FROM agent_runs r JOIN visible_sessions s ON s.id = r.session_id
+                    WHERE r.origin = 'real' AND ({live_run})
+                 )
+                 SELECT id, session_id, source_id, external_run_id, task_title, status,
+                        started_at, updated_at, ended_at, pending_items, instance_id
+                 FROM ranked_runs
+                 -- 每个已展示会话至少携带一条最需关注的轮次，防止单个繁忙会话挤走关联证据。
+                 ORDER BY session_rank,
+                          CASE status WHEN 'failed' THEN 0 WHEN 'waiting' THEN 1
+                                      WHEN 'running' THEN 2 ELSE 3 END,
+                          updated_at DESC, id DESC LIMIT 300"
+            ))?;
             let runs = stmt
-                .query_map([], |r| {
+                .query_map([&cutoff], |r| {
                     Ok(AgentRun {
                         id: r.get(0)?,
                         session_id: r.get(1)?,
@@ -1687,12 +1837,20 @@ pub(crate) fn snapshot_query(db: &Db) -> AppResult<AgentSnapshot> {
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
+            live_summary.sessions_truncated = live_summary.session_total > sessions.len() as i64;
+            live_summary.runs_truncated = live_summary.run_total > runs.len() as i64;
+            if live_summary.sessions_truncated {
+                live_summary.next_cursor = sessions.last()
+                    .map(|s| history::encode_session_position(&s.last_seen_at, &s.id))
+                    .transpose()?;
+            }
             tx.commit()?;
             Ok(AgentSnapshot {
                 sources,
                 instances,
                 sessions,
                 runs,
+                live_summary,
             })
         })
 }

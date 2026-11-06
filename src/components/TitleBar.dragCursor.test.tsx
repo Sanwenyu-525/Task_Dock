@@ -73,28 +73,44 @@ describe("标题栏拖拽光标语义", () => {
 
   it("按住时的 pointermove 不提前复位，松开后的 pointermove 才复位", () => {
     const { bar, orb } = setup();
+    let now = 1000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
     fireEvent.pointerDown(orb, { button: 0, pointerId: 1 });
 
     // 原生移动循环真正开始前的最后几毫秒仍可能收到按住状态的移动事件
     fireEvent.pointerMove(window, { buttons: 1, pointerId: 1 });
     expect(dragging(bar)).toBe(true);
 
-    // 循环内 WebView2 收不到指针事件；恢复收到且按键已放开 = 拖拽结束
+    // 起始 120ms 内的 buttons=0 合成移动是启动扰动，不结束会话
+    fireEvent.pointerMove(window, { buttons: 0, pointerId: 1 });
+    expect(dragging(bar)).toBe(true);
+
+    // 守卫期之后，循环内无事件→恢复收到且按键已放开 = 拖拽结束
+    now = 1300;
     fireEvent.pointerMove(window, { buttons: 0, pointerId: 1 });
     expect(dragging(bar)).toBe(false);
   });
 
-  it("取消、失焦、页面隐藏都会复位", () => {
+  it("取消与页面隐藏立即复位；起始内 blur 不结束，守卫期后真实失焦才复位", () => {
     const { bar, orb } = setup();
+    let now = 1000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
 
     fireEvent.pointerDown(orb, { button: 0 });
     fireEvent.pointerCancel(window);
     expect(dragging(bar)).toBe(false);
 
+    // 起始扰动：原生拖动启动激活窗口引发的即时 blur 不切断会话
     fireEvent.pointerDown(orb, { button: 0 });
+    fireEvent.blur(window);
+    expect(dragging(bar)).toBe(true);
+
+    // 守卫期后：真实切走失焦可靠清理
+    now = 1300;
     fireEvent.blur(window);
     expect(dragging(bar)).toBe(false);
 
+    now = 2000;
     fireEvent.pointerDown(orb, { button: 0 });
     fireEvent(document, new Event("visibilitychange"));
     expect(dragging(bar)).toBe(false);

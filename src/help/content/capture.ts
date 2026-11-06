@@ -53,7 +53,7 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
   {
     id: "help.capture.shelf",
     categoryId: "capture",
-    status: "verified",
+    status: "needs_review",
     contentVersion: 1,
     reviewedForVersion: "v0.11",
     translations: {

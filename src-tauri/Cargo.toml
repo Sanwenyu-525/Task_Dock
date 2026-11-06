@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
 # 直接依赖 window-vibrancy（与 tauri 的 Windows 传递依赖同版本，零新增 crate）：
 # Tauri 原生 set_effects 在 Windows 上吞错（恒 Ok），无法判断毛玻璃是否真正生效
 window-vibrancy = "0.6"
@@ -50,6 +50,8 @@ thiserror = "2"
 png = "0.18"
 sha2 = "0.10"
 base64 = "0.23"
+# 自定义语音包导入校验：纯 Rust 完整解码 MP3/WAV，不启用播放后端或其他媒体格式。
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm"] }
 # 导航系统（v0.4）：窗口枚举/焦点控制（与 window-vibrancy 传递依赖同主版本，零新增二进制）
 windows-sys = { version = "0.60", features = [
   "Win32_Foundation",

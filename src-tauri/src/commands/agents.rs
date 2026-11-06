@@ -43,10 +43,19 @@ pub async fn agent_history_runs(
     session_id: String,
     cursor: Option<String>,
     limit: Option<i64>,
+    include_live: Option<bool>,
+    live_only: Option<bool>,
 ) -> AppResult<AgentRunHistoryPage> {
     let db = db.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        history::query_runs(&db, &session_id, cursor.as_deref(), limit, None)
+        history::query_runs(
+            &db,
+            &session_id,
+            cursor.as_deref(),
+            limit,
+            include_live,
+            live_only,
+        )
     })
     .await
     .map_err(|e| AppError::Agent(format!("历史轮次查询失败: {e}")))?

@@ -12,7 +12,7 @@
 //!   同级保持 SQL 内业务次序（未完成优先 / 置顶收藏优先 / 时间新优先）。
 //! - 分页：每类 `LIMIT limit+1` 判断 `has_more`，不一次加载全部历史。
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use crate::db::Db;
@@ -88,7 +88,9 @@ pub struct GlobalSearchResponse {
 fn like_pattern(q: &str) -> String {
     format!(
         "%{}%",
-        q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        q.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
     )
 }
 
@@ -196,11 +198,33 @@ fn search_tasks(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<
         let due_at: Option<String> = r.get(7)?;
         let completed_at: Option<String> = r.get(8)?;
         let updated_at: String = r.get(9)?;
-        Ok((id, title, description, status, priority, category, tags_json, due_at, completed_at, updated_at))
+        Ok((
+            id,
+            title,
+            description,
+            status,
+            priority,
+            category,
+            tags_json,
+            due_at,
+            completed_at,
+            updated_at,
+        ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, title, description, status, priority, category, tags_json, due_at, completed_at, updated_at) = row?;
+        let (
+            id,
+            title,
+            description,
+            status,
+            priority,
+            category,
+            tags_json,
+            due_at,
+            completed_at,
+            updated_at,
+        ) = row?;
         let body = description.clone().unwrap_or_default();
         let rank = rank_match(q, &title, &body);
         let subtitle = match category.as_deref() {
@@ -260,14 +284,38 @@ fn search_clipboard(
         let pinned: i64 = r.get(7)?;
         let last_seen_at: String = r.get(8)?;
         let byte_size: i64 = r.get(9)?;
-        Ok((id, kind, title, preview, source_app, source_title, favorite, pinned, last_seen_at, byte_size))
+        Ok((
+            id,
+            kind,
+            title,
+            preview,
+            source_app,
+            source_title,
+            favorite,
+            pinned,
+            last_seen_at,
+            byte_size,
+        ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, kind, title, preview, source_app, source_title, favorite, pinned, last_seen_at, _byte_size) = row?;
+        let (
+            id,
+            kind,
+            title,
+            preview,
+            source_app,
+            source_title,
+            favorite,
+            pinned,
+            last_seen_at,
+            _byte_size,
+        ) = row?;
         // 展示标题：title 优先，其次 preview 首行；正文 text / html 不返回。
         let preview = preview.unwrap_or_default();
-        let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| first_line(&preview).to_string());
+        let title = title
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| first_line(&preview).to_string());
         let rank = rank_match(q, &title, &preview);
         let mut subtitle = source_app.unwrap_or_default();
         if favorite != 0 {
@@ -380,11 +428,21 @@ fn search_shelf(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<
         let byte_size: i64 = r.get(5)?;
         let storage_mode: String = r.get(6)?;
         let updated_at: String = r.get(7)?;
-        Ok((id, kind, display_name, note, exists_state, byte_size, storage_mode, updated_at))
+        Ok((
+            id,
+            kind,
+            display_name,
+            note,
+            exists_state,
+            byte_size,
+            storage_mode,
+            updated_at,
+        ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, kind, display_name, note, exists_state, _byte_size, storage_mode, updated_at) = row?;
+        let (id, kind, display_name, note, exists_state, _byte_size, storage_mode, updated_at) =
+            row?;
         let rank = rank_match(q, &display_name, &note.clone().unwrap_or_default());
         // 引用文件已失效时如实标注，不伪装成正常文件。
         let missing = exists_state == "missing";
@@ -406,7 +464,11 @@ fn search_shelf(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<
                 subtitle,
                 snippet: truncate(note.clone().unwrap_or_default().trim(), SNIPPET_MAX_CHARS),
                 occurred_at: Some(updated_at),
-                status: Some(if missing { "missing".into() } else { exists_state }),
+                status: Some(if missing {
+                    "missing".into()
+                } else {
+                    exists_state
+                }),
                 priority: None,
                 target_id: Some(id),
                 parent_id: None,
@@ -435,12 +497,24 @@ fn search_apps(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<V
         let url: Option<String> = r.get(4)?;
         let use_count: i64 = r.get(5)?;
         let updated_at: String = r.get(6)?;
-        Ok((id, display_name, target_type, category, url, use_count, updated_at))
+        Ok((
+            id,
+            display_name,
+            target_type,
+            category,
+            url,
+            use_count,
+            updated_at,
+        ))
     })?;
     let mut out = Vec::new();
     for row in rows {
         let (id, display_name, target_type, category, url, use_count, updated_at) = row?;
-        let body = format!("{} {}", category.clone().unwrap_or_default(), url.clone().unwrap_or_default());
+        let body = format!(
+            "{} {}",
+            category.clone().unwrap_or_default(),
+            url.clone().unwrap_or_default()
+        );
         let rank = rank_match(q, &display_name, &body);
         out.push((
             rank,
@@ -489,11 +563,21 @@ fn search_agents(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult
             let source_id: String = r.get(4)?;
             let source_name: String = r.get(5)?;
             let last_seen_at: String = r.get(6)?;
-            Ok((id, title, external_id, status, source_id, source_name, last_seen_at))
+            Ok((
+                id,
+                title,
+                external_id,
+                status,
+                source_id,
+                source_name,
+                last_seen_at,
+            ))
         })?;
         for row in rows {
             let (id, title, external_id, status, source_id, source_name, last_seen_at) = row?;
-            let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| external_id.clone().unwrap_or_else(|| id.clone()));
+            let title = title
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| external_id.clone().unwrap_or_else(|| id.clone()));
             let body = format!("{source_name} {}", external_id.clone().unwrap_or_default());
             let rank = rank_match(q, &title, &body);
             out.push((
@@ -504,7 +588,9 @@ fn search_agents(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult
                     kind: "session".into(),
                     title: truncate(&title, TITLE_MAX_CHARS),
                     subtitle: format!("会话 · {source_name}"),
-                    snippet: external_id.map(|e| truncate(&e, SNIPPET_MAX_CHARS)).unwrap_or_default(),
+                    snippet: external_id
+                        .map(|e| truncate(&e, SNIPPET_MAX_CHARS))
+                        .unwrap_or_default(),
                     occurred_at: Some(last_seen_at),
                     status,
                     priority: None,
@@ -530,11 +616,21 @@ fn search_agents(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult
             let source_id: String = r.get(4)?;
             let source_name: String = r.get(5)?;
             let updated_at: String = r.get(6)?;
-            Ok((id, session_id, task_title, status, source_id, source_name, updated_at))
+            Ok((
+                id,
+                session_id,
+                task_title,
+                status,
+                source_id,
+                source_name,
+                updated_at,
+            ))
         })?;
         for row in rows {
             let (id, session_id, task_title, status, source_id, source_name, updated_at) = row?;
-            let title = task_title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "未命名轮次".into());
+            let title = task_title
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| "未命名轮次".into());
             let rank = rank_match(q, &title, &source_name);
             out.push((
                 rank,
@@ -557,7 +653,12 @@ fn search_agents(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult
     Ok(out)
 }
 
-fn search_workspace(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResult<Vec<Candidate>> {
+fn search_workspace(
+    conn: &Connection,
+    q: &str,
+    pat: &str,
+    limit: i64,
+) -> AppResult<Vec<Candidate>> {
     let mut stmt = conn.prepare(
         "SELECT w.id, w.task_id, t.title, w.name, w.note, w.source, w.item_count, w.updated_at \
          FROM workspace_snapshots w LEFT JOIN tasks t ON t.id = w.task_id \
@@ -573,12 +674,18 @@ fn search_workspace(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppRes
         let source: String = r.get(5)?;
         let item_count: i64 = r.get(6)?;
         let updated_at: String = r.get(7)?;
-        Ok((id, task_id, task_title, name, note, source, item_count, updated_at))
+        Ok((
+            id, task_id, task_title, name, note, source, item_count, updated_at,
+        ))
     })?;
     let mut out = Vec::new();
     for row in rows {
         let (id, task_id, task_title, name, note, source, item_count, updated_at) = row?;
-        let body = format!("{} {}", note.clone().unwrap_or_default(), task_title.clone().unwrap_or_default());
+        let body = format!(
+            "{} {}",
+            note.clone().unwrap_or_default(),
+            task_title.clone().unwrap_or_default()
+        );
         let rank = rank_match(q, &name, &body);
         let subtitle = match task_title.as_deref() {
             Some(t) if !t.trim().is_empty() => format!("关联任务 · {t}"),
@@ -593,7 +700,8 @@ fn search_workspace(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppRes
                 title: truncate(&name, TITLE_MAX_CHARS),
                 subtitle,
                 snippet: {
-                    let mut s = truncate(note.clone().unwrap_or_default().trim(), SNIPPET_MAX_CHARS);
+                    let mut s =
+                        truncate(note.clone().unwrap_or_default().trim(), SNIPPET_MAX_CHARS);
                     if item_count > 0 {
                         if !s.is_empty() {
                             s.push_str(" · ");
@@ -675,10 +783,20 @@ fn search_planning(conn: &Connection, q: &str, pat: &str, limit: i64) -> AppResu
             let priority: Option<String> = r.get(5)?;
             let project_name: String = r.get(6)?;
             let updated_at: String = r.get(7)?;
-            Ok((id, project_id, title, description, status, priority, project_name, updated_at))
+            Ok((
+                id,
+                project_id,
+                title,
+                description,
+                status,
+                priority,
+                project_name,
+                updated_at,
+            ))
         })?;
         for row in rows {
-            let (id, project_id, title, description, status, priority, project_name, updated_at) = row?;
+            let (id, project_id, title, description, status, priority, project_name, updated_at) =
+                row?;
             let body = description.clone().unwrap_or_default();
             let rank = rank_match(q, &title, &body);
             out.push((
@@ -801,7 +919,11 @@ pub fn run_search(
     }
     let trimmed = query.trim();
     let query = truncate(trimmed, MAX_QUERY_CHARS);
-    let empty = |q: String| GlobalSearchResponse { query: q, groups: Vec::new(), total_returned: 0 };
+    let empty = |q: String| GlobalSearchResponse {
+        query: q,
+        groups: Vec::new(),
+        total_returned: 0,
+    };
     if trimmed.is_empty() {
         return Ok(empty(query));
     }
@@ -851,7 +973,11 @@ pub fn run_search(
     })?;
 
     let total_returned = groups.iter().map(|g| g.items.len()).sum();
-    Ok(GlobalSearchResponse { query, groups, total_returned })
+    Ok(GlobalSearchResponse {
+        query,
+        groups,
+        total_returned,
+    })
 }
 
 // ── 测试 ────────────────────────────────────────────────────
@@ -1036,7 +1162,10 @@ mod tests {
         let (_dir, db) = temp_db("agent-iso");
         seed_all(&db);
         let rs = run_search(&db, "mock", &["agents".into()], 0).unwrap();
-        assert!(rs.groups.iter().all(|g| g.items.iter().all(|i| i.id != "sess2")));
+        assert!(rs
+            .groups
+            .iter()
+            .all(|g| g.items.iter().all(|i| i.id != "sess2")));
         // benchmark 类别来源同样不出现。
         db.with_conn(|c| {
             c.execute(
@@ -1058,7 +1187,11 @@ mod tests {
         let visible = rs2
             .groups
             .first()
-            .map(|g| g.items.iter().all(|i| i.parent_id.as_deref() != Some("src3")))
+            .map(|g| {
+                g.items
+                    .iter()
+                    .all(|i| i.parent_id.as_deref() != Some("src3"))
+            })
             .unwrap_or(true);
         assert!(visible, "hidden=1 的 benchmark 来源不得进入搜索结果");
     }
@@ -1199,7 +1332,10 @@ mod tests {
         .unwrap();
         let rs = run_search(&db, "登录流程备忘", &["capture".into()], 0).unwrap();
         let ids: Vec<&str> = rs.groups[0].items.iter().map(|i| i.id.as_str()).collect();
-        assert!(ids.contains(&"q3") && ids.contains(&"q4"), "同名不同 ID 记录都应返回");
+        assert!(
+            ids.contains(&"q3") && ids.contains(&"q4"),
+            "同名不同 ID 记录都应返回"
+        );
     }
 
     #[test]
@@ -1276,7 +1412,10 @@ mod tests {
         let t1 = std::time::Instant::now();
         let _ = run_search(&db, "绝不存在的搜索词xyzzy", &[], 6).unwrap();
         let miss_ms = t1.elapsed().as_millis();
-        println!("benchmark: 10k rows, hit {hit_ms} ms, miss {miss_ms} ms, total_returned={}", rs.total_returned);
+        println!(
+            "benchmark: 10k rows, hit {hit_ms} ms, miss {miss_ms} ms, total_returned={}",
+            rs.total_returned
+        );
         // 宽松上限：LIKE 扫描在 23k 行内不应接近秒级（防退化失控；非严格 SLA）。
         assert!(hit_ms < 2000, "命中查询 {hit_ms} ms 超出宽松上限");
         assert!(miss_ms < 2000, "空结果查询 {miss_ms} ms 超出宽松上限");

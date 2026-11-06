@@ -60,6 +60,7 @@ const BASE = {
   snap_display_mode: "capsule",
   actions_enabled: true,
 };
+const DEFAULT_LEFT_COUNT = defaultNavigationLayout().left.length;
 
 /** 后端真实行为：返回完整 Settings（写入的键覆盖，其余保持原值）。 */
 function installBackend() {
@@ -132,12 +133,12 @@ describe("导航显隐 · 主内容区始终有效", () => {
   it("隐藏任意普通入口：侧栏更新、主内容区仍在、mode 不变", async () => {
     const user = userEvent.setup();
     renderAll();
-    expect(railLabels()).toHaveLength(12);
+    expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT);
     expectContentAlive();
     expect(screen.getByText("tasks-panel")).toBeTruthy();
 
     await user.click(switchFor("应用"));
-    await waitFor(() => expect(railLabels()).toHaveLength(11));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
     expect(railLabels()).not.toContain("应用");
     expectContentAlive();
     expect(useSettingsStore.getState().settings?.mode).toBe("full");
@@ -145,9 +146,9 @@ describe("导航显隐 · 主内容区始终有效", () => {
     expect(screen.getByRole("button", { name: "更多导航入口" })).toBeTruthy();
 
     await user.click(switchFor("应用"));
-    await waitFor(() => expect(railLabels()).toHaveLength(12));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT));
     expectContentAlive();
-    expect(screen.queryByRole("button", { name: "更多导航入口" })).toBeNull();
+    expect(screen.getByRole("button", { name: "更多导航入口" })).toBeTruthy();
   });
 
   it("快速连续切换多个入口：最后一次配置生效，界面不丢（含 20 次往返）", async () => {
@@ -168,14 +169,14 @@ describe("导航显隐 · 主内容区始终有效", () => {
         await flushWrite();
       }
     }
-    await waitFor(() => expect(railLabels()).toHaveLength(12));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT));
     expectContentAlive();
     const layout = useSettingsStore.getState().settings?.navigation_layout as {
       left: string[];
       version: number;
     };
     expect(layout.version).toBe(1);
-    expect(layout.left).toHaveLength(12);
+    expect(layout.left).toHaveLength(DEFAULT_LEFT_COUNT);
     expect(useSettingsStore.getState().settings?.mode).toBe("full");
     expect(useSettingsStore.getState().settings?.theme).toBe("dark");
     expect(useSettingsStore.getState().settings?.material).toBe("solid");
@@ -196,7 +197,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
       expect(layout.left).toContain("apps");
     });
     // 胶囊配置变化不改变完整面板侧栏
-    expect(railLabels()).toHaveLength(12);
+    expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT);
     expectContentAlive();
     expect(useSettingsStore.getState().settings?.mode).toBe("full");
   });
@@ -211,14 +212,51 @@ describe("导航显隐 · 主内容区始终有效", () => {
     await waitFor(() => expect(useUiStore.getState().tab).toBe("tasks"));
     expect(screen.getByText("tasks-panel")).toBeTruthy();
     expectContentAlive();
-    expect(railLabels()).toHaveLength(11);
+    expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1);
+  });
+
+  it("设置页隐藏任务后保持挂载：更多可访问，恢复后侧栏回到原状", async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ tab: "settings" });
+    renderAll();
+
+    const fullView = document.querySelector(".full-view");
+    const tabContent = document.querySelector(".tab-content");
+    expect(await screen.findByText("settings-panel")).toBeTruthy();
+    expect(railLabels()[railLabels().length - 1]).toBe("设置");
+
+    const before = useSettingsStore.getState().settings!;
+    await user.click(switchFor("任务"));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
+    expect(railLabels()).not.toContain("任务");
+    expect(railLabels()[railLabels().length - 1]).toBe("设置");
+    expect(useUiStore.getState().tab).toBe("settings");
+    expect(useSettingsStore.getState().settings?.mode).toBe(before.mode);
+    expect(useSettingsStore.getState().settings?.snap_display_mode).toBe(before.snap_display_mode);
+    expect(document.querySelector(".full-view")).toBe(fullView);
+    expect(document.querySelector(".tab-content")).toBe(tabContent);
+
+    await user.click(screen.getByRole("button", { name: "更多导航入口" }));
+    expect(await screen.findByRole("menuitemradio", { name: /任务/ })).toBeTruthy();
+    await user.keyboard("{Escape}");
+
+    await user.click(switchFor("任务"));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT));
+    expect(railLabels()).toContain("任务");
+    expect(railLabels()[railLabels().length - 1]).toBe("设置");
+    expect(useUiStore.getState().tab).toBe("settings");
+    expect(useSettingsStore.getState().settings?.mode).toBe(before.mode);
+    expect(useSettingsStore.getState().settings?.snap_display_mode).toBe(before.snap_display_mode);
+    expect(document.querySelector(".full-view")).toBe(fullView);
+    expect(document.querySelector(".tab-content")).toBe(tabContent);
+    expect(await screen.findByText("settings-panel")).toBeTruthy();
   });
 
   it("隐藏页仍可从「更多」访问，且不会临时插回侧栏", async () => {
     const user = userEvent.setup();
     renderAll();
     await user.click(switchFor("应用"));
-    await waitFor(() => expect(railLabels()).toHaveLength(11));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
 
     await user.click(screen.getByRole("button", { name: "更多导航入口" }));
     const item = await screen.findByRole("menuitemradio", { name: /应用/ });
@@ -226,7 +264,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
     expect(useUiStore.getState().tab).toBe("apps");
     expect(await screen.findByText("apps-panel")).toBeTruthy();
     // 打开隐藏页不改变配置：侧栏仍是 10 项，「更多」呈当前页选中态
-    expect(railLabels()).toHaveLength(11);
+    expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1);
     expect(
       screen.getByRole("button", { name: "更多导航入口" }).getAttribute("aria-current"),
     ).toBe("page");
@@ -238,10 +276,10 @@ describe("导航显隐 · 主内容区始终有效", () => {
     renderAll();
     await user.click(switchFor("应用"));
     await user.click(switchFor("微件"));
-    await waitFor(() => expect(railLabels()).toHaveLength(10));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 2));
 
     await user.click(screen.getByRole("button", { name: "恢复完整面板默认导航配置" }));
-    await waitFor(() => expect(railLabels()).toHaveLength(12));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT));
     expectContentAlive();
     expect(useSettingsStore.getState().settings?.mode).toBe("full");
   });
@@ -256,7 +294,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
     expect(alert.textContent).toContain("保存失败");
     // 配置未被修改：开关仍为显示，侧栏 11 项
     expect((switchFor("应用") as HTMLInputElement).checked).toBe(true);
-    expect(railLabels()).toHaveLength(12);
+    expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT);
     expectContentAlive();
     expect(useSettingsStore.getState().settings?.mode).toBe("full");
   });
@@ -265,7 +303,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
     const user = userEvent.setup();
     renderAll();
     await user.click(switchFor("应用"));
-    await waitFor(() => expect(railLabels()).toHaveLength(11));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
     const persisted = useSettingsStore.getState().settings?.navigation_layout;
     cleanup();
 
@@ -273,7 +311,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
     bridge.settings = { ...BASE, navigation_layout: persisted };
     useSettingsStore.setState({ settings: bridge.settings as never });
     renderAll();
-    expect(railLabels()).toHaveLength(11);
+    expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1);
     expect(railLabels()).not.toContain("应用");
     expectContentAlive();
   });
@@ -287,10 +325,10 @@ describe("导航显隐 · 主内容区始终有效", () => {
       });
       renderAll();
       await user.click(switchFor("应用"));
-      await waitFor(() => expect(railLabels()).toHaveLength(11));
+      await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
       expectContentAlive();
       await user.click(switchFor("应用"));
-      await waitFor(() => expect(railLabels()).toHaveLength(12));
+      await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT));
       expectContentAlive();
       cleanup();
     }
@@ -302,7 +340,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
     renderAll();
     const before = useSettingsStore.getState().settings!;
     await user.click(switchFor("应用"));
-    await waitFor(() => expect(railLabels()).toHaveLength(11));
+    await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1));
     const after = useSettingsStore.getState().settings!;
     expect(after.mode).toBe(before.mode);
     expect(after.theme).toBe(before.theme);

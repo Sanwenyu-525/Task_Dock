@@ -1,6 +1,5 @@
-//! 场景与工作流类教程（2 篇）。
-//! help.workflows.scenes 对应「场景工作区」（partial 状态），文章定位是说明
-//! 现有能力与缺口，status=draft（等场景功能落地后补全操作步骤）。
+//! 场景与工作流类教程。
+//! 场景和工作流调用均已接入；C4 文件关联及现场几何仍有缺口，且界面/原生行为未完整复核，教程保持 needs_review。
 
 import type { HelpArticle } from "../types";
 
@@ -8,8 +7,8 @@ export const WORKFLOWS_ARTICLES: readonly HelpArticle[] = [
   {
     id: "help.workflows.one-click",
     categoryId: "workflows",
-    status: "verified",
-    contentVersion: 1,
+    status: "needs_review",
+    contentVersion: 2,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
@@ -21,7 +20,7 @@ export const WORKFLOWS_ARTICLES: readonly HelpArticle[] = [
             type: "steps",
             items: [
               "Ctrl+7 进入「工作流」页，点「新建」从空白开始，或套用「开发 / 办公」示例模板（模板中的应用目标由你自己选择，不会假设安装了特定软件）。",
-              "添加步骤：打开应用 / 网页 / 文件目录、创建任务、恢复工作现场，均为白名单动作。",
+              "添加步骤：打开应用 / 网页 / 文件目录、创建任务、恢复工作现场或进入场景，均为白名单动作。",
               "拖动或用上移/下移调整顺序；每个步骤可单独启停，并可设置失败策略（停止或继续）。",
               "保存后点「运行」：流程顺序执行，逐步骤显示成功 / 失败与原因。",
             ],
@@ -38,7 +37,7 @@ export const WORKFLOWS_ARTICLES: readonly HelpArticle[] = [
           },
           {
             type: "note",
-            text: "工作流只执行白名单内的动作，不支持任意脚本；「进入场景」步骤待场景工作区落地后开放，当前版本会拒绝执行该类步骤。",
+            text: "工作流只执行白名单内的动作，不支持任意脚本。「进入场景」会等待场景恢复结果；失败会显示步骤结果，取消会传递到当前场景流程。",
           },
         ],
       },
@@ -52,44 +51,75 @@ export const WORKFLOWS_ARTICLES: readonly HelpArticle[] = [
   {
     id: "help.workflows.scenes",
     categoryId: "workflows",
-    status: "draft",
-    contentVersion: 1,
+    status: "needs_review",
+    contentVersion: 2,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
-        title: "场景工作区：一键进入标准工作组合（规划中）",
-        summary:
-          "场景是预先定义的应用 / 网页 / 目录 / 任务组合；当前版本已具备任务级现场恢复，独立场景管理仍在开发。",
+        title: "场景工作区：管理并进入可复用场景",
+        summary: "场景可以独立创建、整理并进入，也能作为工作流步骤调用；当前仍有文件关联和窗口几何缺口。",
         sections: [
           {
-            type: "callout",
-            text: "当前状态：独立于任务的「场景」实体与一键进入场景尚未发布。本文为草案，功能落地后会补全操作步骤并转为「已核对」。",
+            type: "heading",
+            text: "管理与进入场景",
           },
-          { type: "heading", text: "现在就能用的能力" },
           {
             type: "steps",
             items: [
-              "任务关联目标 + 窗口身份记忆：在任务上下文抽屉「现场」分区保存窗口组合。",
-              "任务卡「打开工作区」批量启动：应用复用已有窗口（绝不重复启动），网页 / 目录 / Agent 会话逐项打开并逐项反馈成败。",
-              "恢复可取消：取消后剩余项如实记为 cancelled，不中断已完成项。",
+              "按 Ctrl+7 打开「工作流」页，再选择「场景工作区」。",
+              "在场景工作区中创建、编辑、复制或删除场景；进入场景后可以查看逐项结果。",
+              "在工作流编辑器添加「进入场景」步骤，并从真实场景列表选择要进入的场景。",
             ],
           },
-          { type: "heading", text: "与「场景」的区别" },
+          { type: "heading", text: "场景与工作现场" },
           {
             type: "paragraph",
-            text: "「现场」是某个任务此刻环境的快照；「场景」是预先定义、可反复进入的标准工作组合（不依赖某个具体任务）。场景将复用现有现场快照与导航启动链路，不会另起第二套系统。",
+            text: "场景是可重复进入的标准组合；工作现场是某个任务当前环境的快照。场景复用已有导航与现场恢复，不代表窗口几何能完整还原。",
           },
           {
             type: "note",
-            text: "当前缺口：窗口位置与大小恢复、浏览器多标签页恢复暂不支持；恢复的是「哪些窗口」而不是几何布局。",
+            text: "当前场景编辑器可选择暂存架条目，但后端尚未持久化场景关联；不要把文件选择视为已保存。窗口矩形、尺寸、显示器和 DPI 也未纳入快照。删除场景不会删除用户原文件。",
           },
         ],
       },
     },
     keywords: {
-      "zh-CN": ["场景", "工作区", "现场", "恢复", "批量启动", "开发中"],
+      "zh-CN": ["场景", "工作区", "现场", "恢复", "进入场景", "工作流", "文件关联"],
     },
     relatedFeatureIds: ["core.scenario-workspace", "core.workspace-restore"],
     relatedRouteIds: ["workflows", "tasks"],
+  },
+  {
+    id: "help.workflows.planning-center",
+    categoryId: "workflows",
+    status: "needs_review",
+    contentVersion: 1,
+    reviewedForVersion: "v0.11",
+    translations: {
+      "zh-CN": {
+        title: "规划中心：管理项目与内置路线图",
+        summary: "「我的项目」保存你的规划数据；「内置路线图」只读展示 task_dock 的功能状态。",
+        sections: [
+          { type: "heading", text: "切换数据来源" },
+          {
+            type: "steps",
+            items: [
+              "进入 Ctrl+7「规划中心」，顶部可以切换「我的项目」与「内置路线图」。",
+              "在「我的项目」中创建并管理自己的项目、功能、步骤、进度和里程碑。",
+              "「内置路线图」来自 task_dock 的功能目录，只读展示功能状态，不会改动你的项目数据。",
+            ],
+          },
+          {
+            type: "note",
+            text: "MCP 外部 Agent 使用的是经授权的「我的项目」数据服务；它不会获得内置路线图或其他页面数据的隐式访问权限。",
+          },
+        ],
+      },
+    },
+    keywords: {
+      "zh-CN": ["规划中心", "我的项目", "内置路线图", "项目", "里程碑", "功能状态"],
+    },
+    relatedFeatureIds: [],
+    relatedRouteIds: ["roadmap"],
   },
 ];

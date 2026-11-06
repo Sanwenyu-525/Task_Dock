@@ -47,7 +47,12 @@ pub struct ActionDef {
     pub default_accelerator: &'static str,
 }
 
-const fn app(id: &'static str, label: &'static str, description: &'static str, default_accelerator: &'static str) -> ActionDef {
+const fn app(
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    default_accelerator: &'static str,
+) -> ActionDef {
     ActionDef {
         id,
         label,
@@ -57,7 +62,12 @@ const fn app(id: &'static str, label: &'static str, description: &'static str, d
     }
 }
 
-const fn system(id: &'static str, label: &'static str, description: &'static str, default_accelerator: &'static str) -> ActionDef {
+const fn system(
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    default_accelerator: &'static str,
+) -> ActionDef {
     ActionDef {
         id,
         label,
@@ -93,16 +103,66 @@ pub const ACTIONS: &[ActionDef] = &[
         "应用内：完整模式切到剪贴板页，紧凑 / 极简模式开关抽屉",
         "Ctrl+Shift+C",
     ),
-    app("switch_tab_tasks", "切换到任务", "应用内：完整模式下切到任务页", "Ctrl+1"),
-    app("switch_tab_agents", "切换到 Agent", "应用内：完整模式下切到 Agent 页", "Ctrl+2"),
-    app("switch_tab_actions", "切换到行动", "应用内：完整模式下切到行动页", "Ctrl+3"),
-    app("switch_tab_clipboard", "切换到剪贴板页", "应用内：完整模式下切到剪贴板页", "Ctrl+4"),
-    app("switch_tab_inbox", "切换到收集箱", "应用内：完整模式下切到收集箱子页", "Ctrl+5"),
-    app("switch_tab_shelf", "切换到文件暂存", "应用内：完整模式下切到文件暂存子页", "Ctrl+6"),
-    app("switch_tab_workflows", "切换到工作流", "应用内：完整模式下切到工作流页", "Ctrl+7"),
-    app("switch_tab_history", "切换到历史", "应用内：完整模式下切到历史页", "Ctrl+8"),
-    app("switch_tab_roadmap", "切换到规划中心", "应用内：完整模式下切到规划中心页", "Ctrl+9"),
-    app("switch_tab_settings", "切换到设置", "应用内：完整模式下切到设置页", "Ctrl+0"),
+    app(
+        "switch_tab_tasks",
+        "切换到任务",
+        "应用内：完整模式下切到任务页",
+        "Ctrl+1",
+    ),
+    app(
+        "switch_tab_agents",
+        "切换到 Agent",
+        "应用内：完整模式下切到 Agent 页",
+        "Ctrl+2",
+    ),
+    app(
+        "switch_tab_actions",
+        "切换到行动",
+        "应用内：完整模式下切到行动页",
+        "Ctrl+3",
+    ),
+    app(
+        "switch_tab_clipboard",
+        "切换到剪贴板页",
+        "应用内：完整模式下切到剪贴板页",
+        "Ctrl+4",
+    ),
+    app(
+        "switch_tab_inbox",
+        "切换到收集箱",
+        "应用内：完整模式下切到收集箱子页",
+        "Ctrl+5",
+    ),
+    app(
+        "switch_tab_shelf",
+        "切换到文件暂存",
+        "应用内：完整模式下切到文件暂存子页",
+        "Ctrl+6",
+    ),
+    app(
+        "switch_tab_workflows",
+        "切换到工作流",
+        "应用内：完整模式下切到工作流页",
+        "Ctrl+7",
+    ),
+    app(
+        "switch_tab_history",
+        "切换到历史",
+        "应用内：完整模式下切到历史页",
+        "Ctrl+8",
+    ),
+    app(
+        "switch_tab_roadmap",
+        "切换到规划中心",
+        "应用内：完整模式下切到规划中心页",
+        "Ctrl+9",
+    ),
+    app(
+        "switch_tab_settings",
+        "切换到设置",
+        "应用内：完整模式下切到设置页",
+        "Ctrl+0",
+    ),
 ];
 
 pub fn find_def(action: &str) -> Option<&'static ActionDef> {
@@ -207,10 +267,14 @@ pub fn build_bindings(
                 .unwrap_or(other_action.as_str());
             issues.push(format!(
                 "「{}」与「{}」使用了相同组合 {}，已自动禁用「{}」",
-                find_def(&binding.action).map(|d| d.label).unwrap_or("未知动作"),
+                find_def(&binding.action)
+                    .map(|d| d.label)
+                    .unwrap_or("未知动作"),
                 other_label,
                 other_accel,
-                find_def(&binding.action).map(|d| d.label).unwrap_or("未知动作")
+                find_def(&binding.action)
+                    .map(|d| d.label)
+                    .unwrap_or("未知动作")
             ));
             binding.enabled = false;
         } else {
@@ -226,13 +290,13 @@ pub fn build_bindings(
 }
 
 const LETTERS: [&str; 26] = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q",
-    "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
+    "T", "U", "V", "W", "X", "Y", "Z",
 ];
 const DIGITS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const FUNCTION_KEYS: [&str; 24] = [
-    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14",
-    "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "F15",
+    "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
 ];
 const NAMED_KEYS: &[(&str, &str)] = &[
     ("SPACE", "Space"),
@@ -399,7 +463,9 @@ mod tests {
     fn binding(action: &str, accelerator: &str, enabled: bool) -> HotkeyBinding {
         HotkeyBinding {
             action: action.to_string(),
-            scope: find_def(action).map(|d| d.scope).unwrap_or(HotkeyScope::AppLocal),
+            scope: find_def(action)
+                .map(|d| d.scope)
+                .unwrap_or(HotkeyScope::AppLocal),
             accelerator: accelerator.to_string(),
             enabled,
         }
@@ -411,16 +477,30 @@ mod tests {
         assert_eq!(bindings.len(), ACTIONS.len());
         let mut accelerators = std::collections::HashSet::new();
         for binding in &bindings {
-            assert!(validate_accelerator(&binding.accelerator).is_ok(), "{}", binding.action);
+            assert!(
+                validate_accelerator(&binding.accelerator).is_ok(),
+                "{}",
+                binding.action
+            );
             assert!(binding.enabled);
-            assert!(accelerators.insert(binding.accelerator.clone()), "重复: {}", binding.accelerator);
+            assert!(
+                accelerators.insert(binding.accelerator.clone()),
+                "重复: {}",
+                binding.accelerator
+            );
             let def = find_def(&binding.action).unwrap();
             assert_eq!(binding.scope, def.scope);
             assert_eq!(binding.accelerator, def.default_accelerator);
         }
         // 契约：动作 ID 必须稳定，新增入口不得挤占已有数字键。
-        assert_eq!(find_def("switch_tab_tasks").unwrap().default_accelerator, "Ctrl+1");
-        assert_eq!(find_def("switch_tab_settings").unwrap().default_accelerator, "Ctrl+0");
+        assert_eq!(
+            find_def("switch_tab_tasks").unwrap().default_accelerator,
+            "Ctrl+1"
+        );
+        assert_eq!(
+            find_def("switch_tab_settings").unwrap().default_accelerator,
+            "Ctrl+0"
+        );
         assert!(find_def("switch_tab_apps").is_none());
     }
 
@@ -442,11 +522,20 @@ mod tests {
         let (bindings, issues) = build_bindings(Some(&saved), Some(false));
         assert!(issues.is_empty());
         assert_eq!(bindings.len(), ACTIONS.len());
-        assert_eq!(bindings[0].action, ACTIONS[0].id, "顺序按动作清单，不受旧配置影响");
-        let quick_add = bindings.iter().find(|b| b.action == "quick_add_task").unwrap();
+        assert_eq!(
+            bindings[0].action, ACTIONS[0].id,
+            "顺序按动作清单，不受旧配置影响"
+        );
+        let quick_add = bindings
+            .iter()
+            .find(|b| b.action == "quick_add_task")
+            .unwrap();
         assert_eq!(quick_add.accelerator, "Ctrl+Shift+K");
         // 旧配置未包含的系统动作补默认值；旧版开关不应覆盖已有文件。
-        let toggle = bindings.iter().find(|b| b.action == "toggle_main_window").unwrap();
+        let toggle = bindings
+            .iter()
+            .find(|b| b.action == "toggle_main_window")
+            .unwrap();
         assert!(toggle.enabled);
         assert_eq!(toggle.accelerator, "Ctrl+Alt+T");
     }
@@ -460,7 +549,10 @@ mod tests {
         let (bindings, issues) = build_bindings(Some(&saved), None);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("已回退默认"));
-        let quick_add = bindings.iter().find(|b| b.action == "quick_add_task").unwrap();
+        let quick_add = bindings
+            .iter()
+            .find(|b| b.action == "quick_add_task")
+            .unwrap();
         assert_eq!(quick_add.accelerator, "Ctrl+K");
     }
 
@@ -475,8 +567,14 @@ mod tests {
         };
         let (bindings, issues) = build_bindings(Some(&saved), None);
         assert!(issues.iter().any(|i| i.contains("相同组合")));
-        let quick_add = bindings.iter().find(|b| b.action == "quick_add_task").unwrap();
-        let clipboard = bindings.iter().find(|b| b.action == "open_clipboard").unwrap();
+        let quick_add = bindings
+            .iter()
+            .find(|b| b.action == "quick_add_task")
+            .unwrap();
+        let clipboard = bindings
+            .iter()
+            .find(|b| b.action == "open_clipboard")
+            .unwrap();
         assert!(quick_add.enabled);
         assert!(!clipboard.enabled);
     }
@@ -494,7 +592,10 @@ mod tests {
 
     #[test]
     fn normalize_orders_modifiers_and_accepts_case() {
-        assert_eq!(normalize_accelerator("shift+ctrl+k").unwrap(), "Ctrl+Shift+K");
+        assert_eq!(
+            normalize_accelerator("shift+ctrl+k").unwrap(),
+            "Ctrl+Shift+K"
+        );
         assert_eq!(normalize_accelerator("Alt + F5").unwrap(), "Alt+F5");
         assert_eq!(normalize_accelerator("win+space").unwrap(), "Meta+Space");
         assert_eq!(normalize_accelerator("Ctrl+Up").unwrap(), "Ctrl+Up");

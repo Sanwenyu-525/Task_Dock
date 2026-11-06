@@ -293,9 +293,8 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     },
   },
   {
-    // 帮助中心：仅视觉入口（不占 Ctrl+数字）。视觉位置在「设置」之前——
-    // 设置的既有 order=11 保持不动（纯增量约束），help 用 10.5 插在其前；
-    // 锁定的设置始终渲染在侧栏底部固定区域，实际视觉顺序不受影响。
+    // 帮助中心：稳定路由与用户可选的视觉入口，不占 Ctrl+数字；默认隐藏，
+    // 已保存的用户显隐和排序由 navVisibility 按 ID 原样保留。
     id: "help",
     kind: "page",
     surfaces: ["left"],
@@ -305,7 +304,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     tabs: ["help"],
     group: "system",
     defaults: {
-      left: { order: 10.5, visible: true },
+      left: { order: 10.5, visible: false },
       capsule: { order: 0, visible: false },
     },
   },

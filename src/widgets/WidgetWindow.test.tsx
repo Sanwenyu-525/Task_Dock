@@ -320,7 +320,8 @@ describe("拖动区光标语义", () => {
 
   it("微件标题条可拖动区为 grab，按下为 grabbing", () => {
     expect(widgetCss).toMatch(/\.wd-drag\s*\{[^}]*cursor:\s*grab/);
-    expect(widgetCss).toMatch(/\.wd-drag:active\s*\{[^}]*cursor:\s*grabbing/);
+    expect(widgetCss).toMatch(/\.wd-drag-session\.is-dragging\s+\.wd-drag\s*\{[^}]*cursor:\s*grabbing/);
+    expect(widgetCss).not.toMatch(/\.wd-drag:active\s*\{[^}]*cursor:\s*grabbing/);
   });
 
   it("排序手柄默认 grab，拖动卡片期间为 grabbing", () => {

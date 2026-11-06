@@ -17,8 +17,9 @@
 //! - 任何播放/合成失败只写 debug 日志，不弹错误通知、不影响业务事件入库。
 
 import { useEffect } from "react";
-import type { Settings, TtsSynthesisReport } from "./bridge";
-import { onAudioEvent, ttsSynthesize } from "./bridge";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import type { Settings, TtsSynthesisReport, VoiceClip, VoiceEventKind } from "./bridge";
+import { onAudioEvent, ttsSynthesize, voiceAssetPath, voiceResolveClip } from "./bridge";
 import { useSettingsStore } from "../store/useSettingsStore";
 
 export type AudioEventKind =
@@ -131,6 +132,9 @@ export interface AudioSettingsSnapshot {
   speakTitle: boolean;
   cacheEnabled: boolean;
   cacheMaxMb: number;
+  voicePackEnabled: boolean;
+  voicePackId: string;
+  voiceRoute: "auto" | "system" | "custom";
   soundFor: Record<AudioEventKind, boolean>;
   ttsFor: Record<AudioEventKind, boolean>;
 }
@@ -177,6 +181,12 @@ export function readAudioSettings(s: Settings | null | undefined): AudioSettings
     speakTitle: boolOf(s?.tts_speak_title, false),
     cacheEnabled: boolOf(s?.tts_cache_enabled, true),
     cacheMaxMb: Math.min(2048, Math.max(1, numOf(s?.tts_cache_max_mb, 50))),
+    voicePackEnabled: boolOf(s?.tts_voice_pack_enabled, false),
+    voicePackId: typeof s?.tts_voice_pack_id === "string" ? s.tts_voice_pack_id : "",
+    voiceRoute:
+      s?.tts_voice_route === "system" || s?.tts_voice_route === "custom"
+        ? s.tts_voice_route
+        : "auto",
     soundFor: {
       agent_started: boolOf(s?.audio_sound_agent_started, DEFAULT_SOUND.agent_started),
       agent_done: boolOf(s?.audio_sound_agent_done, DEFAULT_SOUND.agent_done),
@@ -203,6 +213,34 @@ export function readAudioSettings(s: Settings | null | undefined): AudioSettings
 
 function clampPercent(n: number): number {
   return Math.min(100, Math.max(0, Math.round(n)));
+}
+
+function errorCode(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && code) return code;
+  }
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (
+      message === "playback_timeout" ||
+      message === "playback_failed" ||
+      message === "audio_unavailable" ||
+      message === "unsupported"
+    ) {
+      return message;
+    }
+  }
+  return "playback_failed";
+}
+
+function playbackHadStarted(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "playbackStarted" in error &&
+      (error as { playbackStarted?: unknown }).playbackStarted === true,
+  );
 }
 
 export function eventKindOf(raw: string): AudioEventKind | null {
@@ -278,6 +316,17 @@ export function composeSpeech(
   return { text: clipped, persist };
 }
 
+/** 当前事件是否确实会在系统 TTS 文本中包含动态标签。 */
+export function hasDynamicSpeech(
+  job: Pick<AudioEventItem, "sourceName" | "taskTitle">,
+  settings: Pick<AudioSettingsSnapshot, "speakSource" | "speakTitle">,
+): boolean {
+  return (
+    (settings.speakSource && Boolean(sanitizeSpeechLabel(job.sourceName))) ||
+    (settings.speakTitle && Boolean(sanitizeSpeechLabel(job.taskTitle)))
+  );
+}
+
 interface Job {
   eventId: string;
   kind: AudioEventKind;
@@ -299,6 +348,9 @@ export interface AudioDiagnostics {
   ttsFail: number;
   /** 因静音/关闭 TTS/切换声音或语速取消的数量（不计成功也不计失败）。 */
   ttsCancelled: number;
+  voiceClipOk: number;
+  voiceClipFail: number;
+  voiceClipFallback: number;
   queue: number;
   playing: boolean;
   /** 正在等待后端合成（尚未播放）。 */
@@ -328,7 +380,10 @@ export interface AudioAdapters {
     engine?: string;
   }) => Promise<TtsSynthesisReport>;
   playTone: (kind: AudioEventKind, volume: number, signal: AbortSignal) => Promise<void>;
-  playSpeech: (dataUrl: string, volume: number, signal: AbortSignal) => Promise<void>;
+  /** 播放 TTS data URL 或由 asset protocol 生成的用户语音 URL。 */
+  playSpeech: (source: string, volume: number, signal: AbortSignal) => Promise<void>;
+  resolveVoiceClip: (eventKind: VoiceEventKind) => Promise<VoiceClip | null>;
+  voiceAssetSource: (assetId: string) => Promise<string>;
   now: () => number;
   setTimeout: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimeout: (id: ReturnType<typeof setTimeout>) => void;
@@ -474,7 +529,7 @@ export function createDefaultAdapters(): AudioAdapters {
   };
 
   const playSpeech = (
-    dataUrl: string,
+    source: string,
     volume: number,
     signal: AbortSignal,
   ): Promise<void> =>
@@ -487,9 +542,10 @@ export function createDefaultAdapters(): AudioAdapters {
         reject(new Error("audio_unavailable"));
         return;
       }
-      const audio = new Audio(dataUrl);
+      const audio = new Audio(source);
       audio.volume = Math.min(1, Math.max(0, volume / 100));
       let settled = false;
+      let playbackStarted = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
       const cleanup = () => {
         if (timer) clearTimeout(timer);
@@ -497,6 +553,7 @@ export function createDefaultAdapters(): AudioAdapters {
         signal.removeEventListener("abort", onAbort);
         audio.onended = null;
         audio.onerror = null;
+        audio.onplaying = null;
         audio.onloadedmetadata = null;
         try {
           audio.pause();
@@ -522,7 +579,11 @@ export function createDefaultAdapters(): AudioAdapters {
       };
       signal.addEventListener("abort", onAbort);
       audio.onended = () => finish();
-      audio.onerror = () => finish(new Error("playback_failed"));
+      audio.onerror = () =>
+        finish(Object.assign(new Error("playback_failed"), { playbackStarted }));
+      audio.onplaying = () => {
+        playbackStarted = true;
+      };
       audio.onloadedmetadata = () => {
         const duration = audio.duration;
         armTimeout(
@@ -533,10 +594,17 @@ export function createDefaultAdapters(): AudioAdapters {
       };
       // 元数据迟迟不来时的兜底；拿到真实时长后会替换。
       armTimeout(60_000);
-      void Promise.resolve(audio.play()).catch(() => {
-        // 自动播放被拒绝/解码失败：交给服务统计为失败，不能计成功。
-        finish(new Error("playback_failed"));
-      });
+      void Promise.resolve()
+        .then(() => audio.play())
+        .then(
+          () => {
+            playbackStarted = true;
+          },
+          () => {
+            // 自动播放被拒绝/解码失败：交给服务统计为失败，不能计成功。
+            finish(Object.assign(new Error("playback_failed"), { playbackStarted }));
+          },
+        );
     });
 
   const closeAudio = async () => {
@@ -556,6 +624,8 @@ export function createDefaultAdapters(): AudioAdapters {
     synthesize: (args) => ttsSynthesize(args),
     playTone,
     playSpeech,
+    resolveVoiceClip: (eventKind) => voiceResolveClip(eventKind),
+    voiceAssetSource: async (assetId) => convertFileSrc(await voiceAssetPath(assetId)),
     now: () => Date.now(),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (id) => clearTimeout(id),
@@ -575,6 +645,8 @@ export class AudioNotificationService {
   private doneTimer: ReturnType<typeof setTimeout> | null = null;
   private pumping = false;
   private previewing = false;
+  /** 旧试听异步 finally 只能释放启动它的会话，不能解锁后续试听占用。 */
+  private previewSession = 0;
   private generation = 0;
   /** 提示音与语音分别持有取消句柄：切换声音不影响正在播放的提示音。 */
   private toneController: AbortController | null = null;
@@ -598,6 +670,9 @@ export class AudioNotificationService {
     ttsOk: 0,
     ttsFail: 0,
     ttsCancelled: 0,
+    voiceClipOk: 0,
+    voiceClipFail: 0,
+    voiceClipFallback: 0,
   };
 
   constructor(deps: AudioAdapters) {
@@ -779,21 +854,90 @@ export class AudioNotificationService {
       }
     }
     if (!this.isActive(generation)) return;
-    if (!ttsOn) {
+    const speechSnap = readAudioSettings(this.deps.getSettings());
+    const speechOn =
+      speechSnap.ttsEnabled && speechSnap.ttsFor[job.kind] && speechSnap.ttsVolume > 0;
+    if (!speechOn) {
       if (tonePlayed) this.stats.played += 1;
       return;
     }
 
-    const { text, persist } = composeSpeech(job.kind, job, snap);
     const epoch = this.speechEpoch;
+    const wantsCustom =
+      speechSnap.voicePackEnabled &&
+      Boolean(speechSnap.voicePackId) &&
+      speechSnap.voiceRoute !== "system" &&
+      (speechSnap.voiceRoute === "custom" || !hasDynamicSpeech(job, speechSnap));
+    if (wantsCustom) {
+      const eventKind: VoiceEventKind =
+        job.kind === "agent_done" && job.merged ? "agent_done_multiple" : job.kind;
+      let clip: VoiceClip | null = null;
+      try {
+        clip = await this.deps.resolveVoiceClip(eventKind);
+      } catch (e) {
+        // 资源解析失败时保留事件，并按策略只尝试一次系统 TTS 回退。
+        this.deps.log("audio voice clip resolve failed:", errorCode(e));
+      }
+      if (!this.canContinueSpeech(job, generation, speechSnap, epoch)) {
+        this.stats.ttsCancelled += 1;
+        if (tonePlayed) this.stats.played += 1;
+        return;
+      }
+      if (clip) {
+        const controller = new AbortController();
+        this.speechController = controller;
+        this.speaking = true;
+        try {
+          const source = await this.deps.voiceAssetSource(clip.assetId);
+          if (
+            controller.signal.aborted ||
+            !this.canContinueSpeech(job, generation, speechSnap, epoch)
+          ) {
+            this.stats.ttsCancelled += 1;
+            if (tonePlayed) this.stats.played += 1;
+            return;
+          }
+          await this.deps.playSpeech(source, speechSnap.ttsVolume, controller.signal);
+          if (controller.signal.aborted) {
+            this.stats.ttsCancelled += 1;
+            if (tonePlayed) this.stats.played += 1;
+            return;
+          }
+          this.stats.voiceClipOk += 1;
+          this.stats.played += 1;
+          return;
+        } catch (e) {
+          if (controller.signal.aborted) {
+            this.stats.ttsCancelled += 1;
+            if (tonePlayed) this.stats.played += 1;
+            return;
+          }
+          this.stats.voiceClipFail += 1;
+          this.deps.log("audio voice clip playback failed:", errorCode(e));
+          if (playbackHadStarted(e)) {
+            // 已经播出一部分时不从头播放完整 TTS，避免重复打扰。
+            if (tonePlayed) this.stats.played += 1;
+            return;
+          }
+          this.stats.voiceClipFallback += 1;
+        } finally {
+          this.speaking = false;
+          if (this.speechController === controller) this.speechController = null;
+        }
+      } else {
+        this.stats.voiceClipFallback += 1;
+      }
+    }
+
+    const { text, persist } = composeSpeech(job.kind, job, speechSnap);
     let report: TtsSynthesisReport;
     this.synthesizing = true;
     try {
       report = await this.deps.synthesize({
         text,
-        voiceId: snap.ttsVoiceId || undefined,
-        gender: snap.ttsGender,
-        rate: snap.ttsRate,
+        voiceId: speechSnap.ttsVoiceId || undefined,
+        gender: speechSnap.ttsGender,
+        rate: speechSnap.ttsRate,
         persist,
       });
     } catch (e) {
@@ -811,15 +955,7 @@ export class AudioNotificationService {
       if (tonePlayed) this.stats.played += 1;
       return;
     }
-    const after = readAudioSettings(this.deps.getSettings());
-    if (
-      !after.ttsEnabled ||
-      !after.ttsFor[job.kind] ||
-      after.ttsVolume <= 0 ||
-      after.ttsVoiceId !== snap.ttsVoiceId ||
-      after.ttsGender !== snap.ttsGender ||
-      after.ttsRate !== snap.ttsRate
-    ) {
+    if (!this.canContinueSpeech(job, generation, speechSnap, epoch)) {
       this.stats.ttsCancelled += 1;
       if (tonePlayed) this.stats.played += 1;
       return;
@@ -838,7 +974,7 @@ export class AudioNotificationService {
     this.speechController = controller;
     this.speaking = true;
     try {
-      await this.deps.playSpeech(report.dataUrl, snap.ttsVolume, controller.signal);
+      await this.deps.playSpeech(report.dataUrl, speechSnap.ttsVolume, controller.signal);
       if (controller.signal.aborted) {
         // 静音/切声音/退出取消：不计成功也不计失败。
         this.stats.ttsCancelled += 1;
@@ -850,12 +986,35 @@ export class AudioNotificationService {
     } catch (e) {
       // 合成成功但扬声器播放失败：不能计成功。
       this.stats.ttsFail += 1;
-      this.deps.log("audio speech playback failed:", e);
+      this.deps.log("audio speech playback failed:", errorCode(e));
       if (tonePlayed) this.stats.played += 1;
     } finally {
       this.speaking = false;
       if (this.speechController === controller) this.speechController = null;
     }
+  }
+
+  private canContinueSpeech(
+    job: Job,
+    generation: number,
+    before: AudioSettingsSnapshot,
+    epoch: number,
+  ): boolean {
+    if (!this.isActive(generation) || epoch !== this.speechEpoch) return false;
+    const after = readAudioSettings(this.deps.getSettings());
+    return (
+      after.ttsEnabled &&
+      after.ttsFor[job.kind] &&
+      after.ttsVolume > 0 &&
+      after.ttsVoiceId === before.ttsVoiceId &&
+      after.ttsGender === before.ttsGender &&
+      after.ttsRate === before.ttsRate &&
+      after.speakSource === before.speakSource &&
+      after.speakTitle === before.speakTitle &&
+      after.voicePackEnabled === before.voicePackEnabled &&
+      after.voicePackId === before.voicePackId &&
+      after.voiceRoute === before.voiceRoute
+    );
   }
 
   private toneReady(kind: AudioEventKind): boolean {
@@ -896,18 +1055,21 @@ export class AudioNotificationService {
       const voiceChanged =
         prev.ttsVoiceId !== snap.ttsVoiceId ||
         prev.ttsGender !== snap.ttsGender ||
-        prev.ttsRate !== snap.ttsRate;
+        prev.ttsRate !== snap.ttsRate ||
+        prev.speakSource !== snap.speakSource ||
+        prev.speakTitle !== snap.speakTitle ||
+        prev.voicePackEnabled !== snap.voicePackEnabled ||
+        prev.voicePackId !== snap.voicePackId ||
+        prev.voiceRoute !== snap.voiceRoute;
       const speechSilenced = snap.ttsVolume <= 0 && prev.ttsVolume > 0;
       if (!snap.ttsEnabled && prev.ttsEnabled) {
         // 关闭语音：立即停当前播放，拒绝在途合成与排队语音；提示音照常。
         this.stopSpeech();
-        this.previewController?.abort();
-        this.previewController = null;
+        this.stopPreview();
       } else if (voiceChanged || speechSilenced) {
-        // 切男/女声、具体语音或语速：旧声音/旧参数一律不再播放（含试听）。
+        // 语音配置变化：旧声音/旧参数一律不再播放（含试听）。
         this.stopSpeech();
-        this.previewController?.abort();
-        this.previewController = null;
+        this.stopPreview();
       }
     }
     if (!snap.ttsEnabled || !snap.cacheEnabled) {
@@ -972,12 +1134,9 @@ export class AudioNotificationService {
     const snap = readAudioSettings(this.deps.getSettings());
     if (snap.muted) return { ok: false, code: "muted" };
     if (this.pumping) return { ok: false, code: "busy" };
-    this.previewController?.abort();
     // 单通道音量 0：明确回报「静音」，不排程、不误报试听成功。
     if (snap.soundVolume <= 0) return { ok: false, code: "silent_tone" };
-    const controller = new AbortController();
-    this.previewController = controller;
-    this.previewing = true;
+    const { session, controller } = this.beginPreview();
     try {
       await this.deps.playTone("agent_done", snap.soundVolume, controller.signal);
       return controller.signal.aborted
@@ -986,15 +1145,30 @@ export class AudioNotificationService {
     } catch {
       return { ok: false, code: "failed" };
     } finally {
-      if (this.previewController === controller) this.previewController = null;
-      this.endPreview();
+      this.finishPreview(session, controller);
     }
   }
 
   /** 试听结束：释放独占通道，并把期间到达的真实通知继续播。 */
-  private endPreview(): void {
+  private endPreview(session: number): void {
+    if (session !== this.previewSession) return;
     this.previewing = false;
     if (!this.disposed && !this.pumping && this.queue.length > 0) void this.pump();
+  }
+
+  private beginPreview(): { session: number; controller: AbortController } {
+    // 新会话先中止旧会话，再递增身份。旧 finally 即使晚到也无权释放新会话。
+    this.previewController?.abort();
+    const session = ++this.previewSession;
+    const controller = new AbortController();
+    this.previewController = controller;
+    this.previewing = true;
+    return { session, controller };
+  }
+
+  private finishPreview(session: number, controller: AbortController): void {
+    if (this.previewController === controller) this.previewController = null;
+    this.endPreview(session);
   }
 
   /**
@@ -1011,7 +1185,6 @@ export class AudioNotificationService {
     const snap = readAudioSettings(this.deps.getSettings());
     if (snap.muted) return { ok: false, code: "muted" };
     if (this.pumping) return { ok: false, code: "busy" };
-    this.previewController?.abort();
     // 语音音量 0：不做无意义的合成与播放，明确回报单通道静音。
     if (snap.ttsVolume <= 0) return { ok: false, code: "silent_speech" };
     const text = (options.text ?? PREVIEW_TEXT).trim();
@@ -1021,9 +1194,7 @@ export class AudioNotificationService {
     const voiceId = explicitVoice ? options.voiceId : snap.ttsVoiceId;
     const gender = options.gender ?? snap.ttsGender;
     const rate = options.rate ?? snap.ttsRate;
-    const controller = new AbortController();
-    this.previewController = controller;
-    this.previewing = true;
+    const { session, controller } = this.beginPreview();
     options.onStage?.("synthesizing");
     try {
       const report = await this.deps.synthesize({
@@ -1063,8 +1234,35 @@ export class AudioNotificationService {
     } catch {
       return { ok: false, code: "failed" };
     } finally {
-      if (this.previewController === controller) this.previewController = null;
-      this.endPreview();
+      this.finishPreview(session, controller);
+    }
+  }
+
+  /** 试听导入的固定语音片段；与系统 TTS 试听共用唯一播放通道。 */
+  async previewCustomAsset(assetId: string): Promise<AudioPreviewResult> {
+    if (this.disposed) return { ok: false, code: "disposed" };
+    const snap = readAudioSettings(this.deps.getSettings());
+    if (snap.muted) return { ok: false, code: "muted" };
+    if (this.pumping) return { ok: false, code: "busy" };
+    if (!assetId.trim()) return { ok: false, code: "asset_missing" };
+    if (snap.ttsVolume <= 0) return { ok: false, code: "silent_speech" };
+    const { session, controller } = this.beginPreview();
+    try {
+      const source = await this.deps.voiceAssetSource(assetId);
+      if (controller.signal.aborted) return { ok: false, code: "cancelled" };
+      const after = readAudioSettings(this.deps.getSettings());
+      if (after.muted) return { ok: false, code: "muted" };
+      if (after.ttsVolume <= 0) return { ok: false, code: "silent_speech" };
+      await this.deps.playSpeech(source, snap.ttsVolume, controller.signal);
+      return controller.signal.aborted
+        ? { ok: false, code: "cancelled" }
+        : { ok: true, code: "ok" };
+    } catch (e) {
+      return controller.signal.aborted
+        ? { ok: false, code: "cancelled" }
+        : { ok: false, code: errorCode(e) };
+    } finally {
+      this.finishPreview(session, controller);
     }
   }
 
@@ -1072,6 +1270,8 @@ export class AudioNotificationService {
   stopPreview(): void {
     this.previewController?.abort();
     this.previewController = null;
+    this.previewSession += 1;
+    this.endPreview(this.previewSession);
   }
 
   /** 语音关闭/静音/切声音：停止当前语音并让在途合成结果失效；提示音不受影响。 */
@@ -1085,6 +1285,8 @@ export class AudioNotificationService {
   stopAll(): void {
     this.generation += 1;
     this.speechEpoch += 1;
+    this.previewSession += 1;
+    this.previewing = false;
     this.prewarmGeneration += 1;
     this.queue = [];
     this.doneBatchFirst = null;

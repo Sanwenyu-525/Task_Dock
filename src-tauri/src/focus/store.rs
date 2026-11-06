@@ -227,7 +227,13 @@ pub fn upsert_daily(
             break_ms = break_ms + excluded.break_ms,
             completed_focus = completed_focus + excluded.completed_focus,
             updated_at = excluded.updated_at",
-        params![day, focus_delta_ms, break_delta_ms, completed_delta, ts(now)],
+        params![
+            day,
+            focus_delta_ms,
+            break_delta_ms,
+            completed_delta,
+            ts(now)
+        ],
     )?;
     Ok(())
 }

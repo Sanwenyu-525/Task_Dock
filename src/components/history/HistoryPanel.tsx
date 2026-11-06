@@ -18,6 +18,7 @@ import {
   markNotificationRead,
   notificationInboxStats,
   notificationPage,
+  normalizeAgentChangedPayload,
   onAgentChanged,
   onNotification,
   type AgentEventPage,
@@ -212,8 +213,9 @@ export default function HistoryPanel() {
       }, 500);
     };
     scope.add(onNotification(() => bump()));
-    scope.add(onAgentChanged((payload) => {
-      if (payload?.changed === false) return;
+    scope.add(onAgentChanged((rawPayload) => {
+      const payload = normalizeAgentChangedPayload(rawPayload);
+      if (!payload || payload.changed === false) return;
       bump();
     }));
     return () => {

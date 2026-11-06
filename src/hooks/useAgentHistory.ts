@@ -19,6 +19,7 @@ import {
   agentHistoryGroups,
   agentHistoryRuns,
   agentHistorySessions,
+  normalizeAgentChangedPayload,
   onAgentChanged,
   type AgentHistoryGroup,
   type AgentHistorySession,
@@ -26,6 +27,8 @@ import {
   type AgentRun,
 } from "../lib/bridge";
 import { errorMessage } from "../lib/errors";
+import { createSubscriptionScope, type SubscriptionScope } from "../lib/subscriptions";
+import { useFullViewVisible } from "./useMainUiVisible";
 
 export interface AgentHistoryPageBase<T> {
   items: T[];
@@ -49,6 +52,8 @@ export interface AgentHistoryPageState<T> extends AgentHistoryPageBase<T> {
    * 只置位提示，绝不自动 reload、不清除已加载分页、不改滚动。
    */
   hasNewer: boolean;
+  /** 自动更新监听不可用；分页与手动刷新仍可使用。 */
+  liveError: string | null;
   /** 用户确认提示（点击「更新」时立即消除提示，不等刷新完成） */
   markSeen: () => void;
 }
@@ -88,6 +93,146 @@ function uniqueAppend<T extends { id: string }>(prev: T[], next: T[]): T[] {
 /** 「有新的历史记录」探测去抖：一批 agent-changed 事件只安排一次轻量探测。 */
 const NEWER_PROBE_DEBOUNCE_MS = 800;
 
+type SessionsPage = Awaited<ReturnType<typeof agentHistorySessions>>;
+interface ProbeListener {
+  page: (page: SessionsPage) => void;
+  error: (message: string | null) => void;
+}
+interface HistoryProbe {
+  query: AgentHistorySessionsQuery;
+  listeners: Set<ProbeListener>;
+  timer: ReturnType<typeof setTimeout> | null;
+  inFlight: boolean;
+  dirty: boolean;
+}
+
+// 只保存当前可见、展开分区的订阅，不缓存历史结果。相同筛选共享去抖/单飞，
+// 不同实例仍各自探测；原生监听与 visibilitychange 均在最后一个消费者退出时释放。
+const historyProbes = new Map<string, HistoryProbe>();
+const queuedProbes = new Set<HistoryProbe>();
+const MAX_CONCURRENT_PROBES = 3;
+let activeProbes = 0;
+let historyScope: SubscriptionScope | null = null;
+let historyListenFailed = false;
+const HISTORY_LISTEN_ERROR = "历史更新监听不可用，可手动刷新。";
+
+function scheduleProbe(probe: HistoryProbe) {
+  probe.dirty = true;
+  if (probe.timer !== null) clearTimeout(probe.timer);
+  probe.timer = null;
+  if (document.visibilityState === "hidden") return;
+  probe.timer = setTimeout(() => {
+    probe.timer = null;
+    queuedProbes.add(probe);
+    drainProbes();
+  }, NEWER_PROBE_DEBOUNCE_MS);
+}
+
+function drainProbes() {
+  if (document.visibilityState === "hidden") return;
+  for (const probe of queuedProbes) {
+    if (activeProbes >= MAX_CONCURRENT_PROBES) break;
+    queuedProbes.delete(probe);
+    if (probe.listeners.size === 0 || probe.inFlight) continue;
+    probe.inFlight = true;
+    probe.dirty = false;
+    activeProbes += 1;
+    const listeners = [...probe.listeners];
+    void agentHistorySessions({ ...probe.query, limit: 1 })
+      .then((page) => {
+        for (const listener of listeners) {
+          if (probe.listeners.has(listener)) listener.page(page);
+        }
+      })
+      .catch(() => {
+        // 探测失败不清空已加载列表；下个事件或用户刷新可重新读取。
+      })
+      .finally(() => {
+        probe.inFlight = false;
+        activeProbes -= 1;
+        if (probe.dirty && probe.listeners.size > 0) scheduleProbe(probe);
+        drainProbes();
+      });
+  }
+}
+
+function onHistoryVisibilityChange() {
+  for (const probe of historyProbes.values()) {
+    if (document.visibilityState === "hidden") {
+      probe.dirty = probe.dirty || probe.inFlight || queuedProbes.has(probe);
+      if (probe.timer !== null) clearTimeout(probe.timer);
+      probe.timer = null;
+      queuedProbes.delete(probe);
+    } else if (probe.dirty) {
+      scheduleProbe(probe);
+    }
+  }
+}
+
+function ensureHistoryListener() {
+  if (historyScope && !historyListenFailed) return;
+  historyScope?.dispose();
+  const scope = createSubscriptionScope();
+  historyScope = scope;
+  historyListenFailed = false;
+  for (const probe of historyProbes.values()) {
+    for (const listener of probe.listeners) listener.error(null);
+  }
+  void scope.add(onAgentChanged((rawPayload) => {
+    if (scope.closed) return;
+    const payload = normalizeAgentChangedPayload(rawPayload);
+    if (!payload || payload.changed === false) return;
+    for (const probe of historyProbes.values()) {
+      const sourceId = probe.query.sourceId;
+      // 空 sources = 全局事件（stale 汇总等），所有分区均需刷新探测。
+      if (sourceId && payload.sources.length > 0 && !payload.sources.includes(sourceId)) continue;
+      scheduleProbe(probe);
+    }
+  })).then((ok) => {
+    if (historyScope !== scope || scope.closed || ok) return;
+    historyListenFailed = true;
+    // 诊断只含固定代码；不记录事件、搜索词或会话数据。
+    console.warn("[agent-history] event-listen-failed");
+    for (const probe of historyProbes.values()) {
+      for (const listener of probe.listeners) listener.error(HISTORY_LISTEN_ERROR);
+    }
+  });
+}
+
+function subscribeHistoryProbe(
+  key: string,
+  query: AgentHistorySessionsQuery,
+  listener: ProbeListener,
+  catchUp: boolean,
+): () => void {
+  let probe = historyProbes.get(key);
+  if (!probe) {
+    probe = { query, listeners: new Set(), timer: null, inFlight: false, dirty: false };
+    historyProbes.set(key, probe);
+  }
+  probe.listeners.add(listener);
+  listener.error(historyListenFailed ? HISTORY_LISTEN_ERROR : null);
+  if (historyProbes.size === 1 && probe.listeners.size === 1) {
+    document.addEventListener("visibilitychange", onHistoryVisibilityChange);
+  }
+  ensureHistoryListener();
+  if (catchUp) scheduleProbe(probe);
+  return () => {
+    probe.listeners.delete(listener);
+    if (probe.listeners.size === 0) {
+      if (probe.timer !== null) clearTimeout(probe.timer);
+      queuedProbes.delete(probe);
+      historyProbes.delete(key);
+    }
+    if (historyProbes.size === 0) {
+      historyScope?.dispose();
+      historyScope = null;
+      historyListenFailed = false;
+      document.removeEventListener("visibilitychange", onHistoryVisibilityChange);
+    }
+  };
+}
+
 function useSessionsPage(
   query: AgentHistorySessionsQuery,
   key: string,
@@ -96,31 +241,44 @@ function useSessionsPage(
 ): AgentHistoryPageState<AgentHistorySession> {
   const [state, setState] = useState<PageData<AgentHistorySession>>(EMPTY);
   const [hasNewer, setHasNewer] = useState(false);
+  const [liveError, setLiveError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const visible = useFullViewVisible();
   const generation = useRef(0);
+  const loadedRequest = useRef<string | null>(null);
+  const resumeProbe = useRef(false);
   const loadingMoreRef = useRef(false);
   const queryRef = useRef(query);
   queryRef.current = query;
   // 探测比较需要读取「当前列表头部」；用 ref 避免 head 变化反复重挂订阅。
   const stateRef = useRef(state);
   stateRef.current = state;
-  // 探测在途标志：同一分区同一时刻最多一个在途探测，不并发。
-  const probeInFlightRef = useRef(false);
 
   useEffect(() => {
     const gen = ++generation.current;
     loadingMoreRef.current = false;
     if (!enabled) {
+      loadedRequest.current = null;
       setState(EMPTY());
       setHasNewer(false);
+      setLiveError(null);
       return;
     }
+    if (!visible) {
+      setState((prev) => prev.loading || prev.loadingMore
+        ? { ...prev, loading: false, loadingMore: false }
+        : prev);
+      return;
+    }
+    const requestKey = JSON.stringify([key, pageSize, reloadToken]);
+    if (loadedRequest.current === requestKey) return;
     // 新筛选立即清空旧结果，避免旧筛选内容短暂冒充新结果。
     setState({ ...EMPTY(), loading: true });
     void (async () => {
       try {
         const page = await agentHistorySessions({ ...queryRef.current, limit: pageSize });
         if (gen !== generation.current) return;
+        loadedRequest.current = requestKey;
         setState({
           items: page.items,
           total: page.total,
@@ -141,39 +299,23 @@ function useSessionsPage(
       // 卸载/条件变化：让所有在途响应失效。
       generation.current += 1;
     };
-  }, [enabled, key, pageSize, reloadToken]);
+  }, [enabled, visible, key, pageSize, reloadToken]);
 
   // 「有新的历史记录」轻量探测（P3-01）：列表成功加载后订阅 agent-changed，
   // 800ms 去抖合并一批事件，再用 limit=1 的单行查询比较头部是否变化。
   // 绝不自动 reload、不清除已加载分页、不改滚动，只把 hasNewer 交给 UI 提示；
   // 页面隐藏时跳过探测，可见性恢复后补一次。不新增轮询/interval。
   useEffect(() => {
+    if (!visible) {
+      resumeProbe.current = true;
+      return;
+    }
     if (!enabled || !state.loaded) return;
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let missedWhileHidden = false;
-    let unlisten: (() => void) | null = null;
-
-    const clearTimer = () => {
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    };
-
-    const probe = async () => {
-      if (disposed || probeInFlightRef.current) return;
-      if (document.visibilityState === "hidden") {
-        // 隐藏期间不探测；记录遗漏，可见性恢复后补一次。
-        missedWhileHidden = true;
-        return;
-      }
-      probeInFlightRef.current = true;
-      const gen = generation.current;
-      try {
-        const page = await agentHistorySessions({ ...queryRef.current, limit: 1 });
-        // 代际守卫：响应回来时代际已变（筛选变化/重拉/卸载）→ 丢弃。
-        if (disposed || gen !== generation.current) return;
+    const gen = generation.current;
+    const unsubscribe = subscribeHistoryProbe(key, queryRef.current, {
+      page: (page) => {
+        if (disposed || gen !== generation.current || document.visibilityState === "hidden") return;
         const newest = page.items[0];
         if (!newest) return;
         const head = stateRef.current.items[0];
@@ -181,60 +323,25 @@ function useSessionsPage(
         if (!head || newest.id !== head.id || newest.last_seen_at !== head.last_seen_at) {
           setHasNewer(true);
         }
-      } catch {
-        // 探测失败保持静默：不打扰用户；下一个事件会重新探测。
-      } finally {
-        probeInFlightRef.current = false;
-      }
-    };
-
-    const scheduleProbe = () => {
-      clearTimer();
-      timer = setTimeout(() => {
-        timer = null;
-        void probe();
-      }, NEWER_PROBE_DEBOUNCE_MS);
-    };
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible" || !missedWhileHidden) return;
-      missedWhileHidden = false;
-      clearTimer();
-      void probe();
-    };
-
-    void onAgentChanged((payload) => {
-      if (disposed) return;
-      const sid = queryRef.current.sourceId;
-      // 指定了来源时只关心本来源的事件；未指定（全局搜索页）任何事件都检查。
-      if (sid && payload.source_id !== sid && !payload.sources.includes(sid)) return;
-      if (document.visibilityState === "hidden") missedWhileHidden = true;
-      scheduleProbe();
-    }).then((fn) => {
-      if (disposed) {
-        // 订阅完成前已卸载：立即退订，避免泄漏监听器。
-        fn();
-        return;
-      }
-      unlisten = fn;
-    });
-    document.addEventListener("visibilitychange", onVisibilityChange);
+      },
+      error: (message) => {
+        if (!disposed) setLiveError(message);
+      },
+    }, resumeProbe.current);
+    resumeProbe.current = false;
 
     return () => {
       disposed = true;
-      clearTimer();
-      document.removeEventListener("visibilitychange", onVisibilityChange);
       // 卸载/条件变化：在途探测响应由 disposed + 探测自捕获的代际守卫丢弃。
       // 这里不能动 generation.current：cleanup 也会在 loaded true→false（点击
       // 「更新」重拉）时运行，递增会连带作废正在途的全量重拉响应。
-      setHasNewer(false);
-      if (unlisten) unlisten();
+      unsubscribe();
     };
-  }, [enabled, key, state.loaded]);
+  }, [enabled, visible, key, state.loaded]);
 
   const loadMore = useCallback(async () => {
     const cursor = state.nextCursor;
-    if (!enabled || !cursor || state.loading || loadingMoreRef.current) return;
+    if (!enabled || !visible || !cursor || state.loading || loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     const gen = generation.current;
     setState((prev) => ({ ...prev, loadingMore: true, error: null }));
@@ -258,16 +365,21 @@ function useSessionsPage(
       if (gen !== generation.current) return;
       setState((prev) => ({ ...prev, loadingMore: false, error: errorMessage(e) }));
     } finally {
-      loadingMoreRef.current = false;
+      if (gen === generation.current) loadingMoreRef.current = false;
     }
-  }, [enabled, pageSize, state.loading, state.nextCursor]);
+  }, [enabled, visible, pageSize, state.loading, state.nextCursor]);
 
-  const reload = useCallback(() => setReloadToken((n) => n + 1), []);
+  const reload = useCallback(() => {
+    // 立即停止旧代际监听，避免同步完成的重拉把 loaded=false 中间态合并掉。
+    setState((prev) => ({ ...prev, loaded: false }));
+    setReloadToken((n) => n + 1);
+  }, []);
   const markSeen = useCallback(() => setHasNewer(false), []);
 
   return {
     ...state,
     hasNewer,
+    liveError,
     hasMore: state.nextCursor !== null,
     loadMore,
     reload,
@@ -334,6 +446,7 @@ export function useAgentHistoryGroups(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const visible = useFullViewVisible();
   const generation = useRef(0);
 
   useEffect(() => {
@@ -343,6 +456,10 @@ export function useAgentHistoryGroups(
       setTruncated(false);
       setLoading(false);
       setError(null);
+      return;
+    }
+    if (!visible) {
+      setLoading(false);
       return;
     }
     setLoading(true);
@@ -366,7 +483,7 @@ export function useAgentHistoryGroups(
       generation.current += 1;
       clearTimeout(timer);
     };
-  }, [sourceId, enabled, refreshKey, reloadToken]);
+  }, [sourceId, enabled, visible, refreshKey, reloadToken]);
 
   const reload = useCallback(() => setReloadToken((n) => n + 1), []);
   return { items, truncated, loading, error, reload };
@@ -423,24 +540,37 @@ export function useAgentRunHistory(
   sessionId: string | null,
   enabled: boolean,
   pageSize = 10,
+  liveOnly = false,
 ): AgentHistoryPageBase<AgentRun> {
   const [state, setState] = useState<RunsData>(EMPTY_RUNS);
   const [reloadToken, setReloadToken] = useState(0);
+  const visible = useFullViewVisible();
   const generation = useRef(0);
+  const loadedRequest = useRef<string | null>(null);
   const loadingMoreRef = useRef(false);
 
   useEffect(() => {
     const gen = ++generation.current;
     loadingMoreRef.current = false;
     if (!sessionId || !enabled) {
+      loadedRequest.current = null;
       setState(EMPTY_RUNS());
       return;
     }
+    if (!visible) {
+      setState((prev) => prev.loading || prev.loadingMore
+        ? { ...prev, loading: false, loadingMore: false }
+        : prev);
+      return;
+    }
+    const requestKey = JSON.stringify([sessionId, pageSize, reloadToken, liveOnly]);
+    if (loadedRequest.current === requestKey) return;
     setState({ ...EMPTY_RUNS(), loading: true });
     void (async () => {
       try {
-        const page = await agentHistoryRuns(sessionId, null, pageSize);
+        const page = await agentHistoryRuns(sessionId, null, pageSize, false, liveOnly);
         if (gen !== generation.current) return;
+        loadedRequest.current = requestKey;
         setState({
           items: page.items,
           total: page.total,
@@ -458,20 +588,21 @@ export function useAgentRunHistory(
     return () => {
       generation.current += 1;
     };
-  }, [sessionId, enabled, pageSize, reloadToken]);
+  }, [sessionId, enabled, visible, pageSize, reloadToken, liveOnly]);
 
   const loadMore = useCallback(async () => {
-    if (!sessionId || !enabled || !state.nextCursor || state.loading || loadingMoreRef.current) {
+    if (!sessionId || !enabled || !visible || !state.nextCursor || state.loading || loadingMoreRef.current) {
       return;
     }
     loadingMoreRef.current = true;
     const gen = generation.current;
     setState((prev) => ({ ...prev, loadingMore: true, error: null }));
     try {
-      const page = await agentHistoryRuns(sessionId, state.nextCursor, pageSize);
+      const page = await agentHistoryRuns(sessionId, state.nextCursor, pageSize, false, liveOnly);
       if (gen !== generation.current) return;
       setState((prev) => ({
-        items: uniqueAppend(prev.items, page.items),
+        // 实时溢出只保留当前页，避免长时间翻页把整个活动集合缓存进 React state。
+        items: liveOnly ? page.items : uniqueAppend(prev.items, page.items),
         total: page.total,
         nextCursor: page.next_cursor,
         loading: false,
@@ -483,9 +614,9 @@ export function useAgentRunHistory(
       if (gen !== generation.current) return;
       setState((prev) => ({ ...prev, loadingMore: false, error: errorMessage(e) }));
     } finally {
-      loadingMoreRef.current = false;
+      if (gen === generation.current) loadingMoreRef.current = false;
     }
-  }, [enabled, pageSize, sessionId, state.loading, state.nextCursor]);
+  }, [enabled, visible, liveOnly, pageSize, sessionId, state.loading, state.nextCursor]);
 
   const reload = useCallback(() => setReloadToken((n) => n + 1), []);
 

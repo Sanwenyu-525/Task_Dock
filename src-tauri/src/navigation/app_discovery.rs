@@ -559,7 +559,13 @@ fn is_uninstaller_stem(stem: &str) -> bool {
 fn is_installer_stem(stem: &str) -> bool {
     if matches!(
         stem,
-        "setup" | "installer" | "install" | "installshield" | "dpinst" | "dpinst64" | "driverinstall"
+        "setup"
+            | "installer"
+            | "install"
+            | "installshield"
+            | "dpinst"
+            | "dpinst64"
+            | "driverinstall"
     ) {
         return true;
     }
@@ -1149,7 +1155,10 @@ mod tests {
         );
         // 正常应用不能被误杀（开发工具、通讯、便携程序）
         assert_eq!(
-            candidate_tier("Visual Studio Code", "c:\\program files\\microsoft vs code\\code.exe"),
+            candidate_tier(
+                "Visual Studio Code",
+                "c:\\program files\\microsoft vs code\\code.exe"
+            ),
             CandidateTier::Normal
         );
         assert_eq!(
@@ -1204,10 +1213,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn lnk_budget_truncation_is_accurate() {
-        let dir = std::env::temp_dir().join(format!(
-            "task-dock-lnk-budget-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("task-dock-lnk-budget-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         for name in ["a.lnk", "b.lnk"] {
             std::fs::write(dir.join(name), b"broken").unwrap();
@@ -1228,10 +1234,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn invalid_shortcut_is_ignored_without_panic() {
-        let dir = std::env::temp_dir().join(format!(
-            "task-dock-lnk-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("task-dock-lnk-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("broken.lnk");
         std::fs::write(&path, b"not a real shortcut").unwrap();
@@ -1246,7 +1249,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn stale_link_info_shortcut_resolves_to_existing_target() {
-        let lnk = Path::new("C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\微信\\微信.lnk");
+        let lnk =
+            Path::new("C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\微信\\微信.lnk");
         if !lnk.exists() {
             eprintln!("skip: 本机未安装微信（{} 不存在）", lnk.display());
             return;

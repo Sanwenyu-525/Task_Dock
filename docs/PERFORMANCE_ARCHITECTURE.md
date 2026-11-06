@@ -183,6 +183,23 @@ DeferredView 保活使隐藏页面（切换模式 / 停靠胶囊期）仍处于�
 | 历史页事件合并刷新（500ms 去抖） | `useFullViewVisible()` + 原有 `document.visibilityState` | 恢复可见时补一次 merge 刷新 |
 | 任务倒计时共享时钟（1s tick） | `useFullViewVisible()`：`ActiveReminders` 行组件只在可见时挂载 | 重新挂载即重新订阅；sharedClock 首订阅者重新对齐时间 |
 
+### 4.2 Agent 实时快照边界与历史事件探测（2026-11-06）
+
+- `snapshot_query` 在单个只读事务内固定 1 小时实时窗口，最多返回 200 个真实实时会话和
+  300 个真实实时轮次；completed 轮次不挤占实时明细。轮次排序优先保证每个首屏会话有
+  一条最需关注的轮次，再填充其余容量。
+- 同一事务另外聚合全量实时会话/轮次总数、running / waiting / failed / disconnected
+  状态数及每个可见来源的计数。`sessions_truncated` / `runs_truncated` 与不透明会话游标
+  明确表示样本截断；UI 以这些计数展示总量，以 `liveOnly` keyset 查询按需继续读取，
+  不扩张快照或缓存所有活动项。实时轮次续页只保存当前页。
+- 历史分区的 `agent-changed` 监听在消费者之间共享；同一筛选只保留一个去抖探测，最多
+  3 个不同筛选并发查询。事件突发按 800ms 合并为轻量 `limit=1` 头部探测，隐藏状态不
+  发查询，恢复可见后补查。最后一个消费者退出会取消计时器并释放原生监听。注册失败
+  保留已加载分页并显示手动恢复入口，不转为轮询。
+- stale 清理与正常批量事件共用同一 `agent-changed` 契约（2026-11-06 二次验收整改）：
+  单事件即一广播，来源去重后分发；全局事件（`sources=[]`）触发所有分区与实时摘要刷新；
+  非法载荷归一化返回 null 并被忽略，不新增队列、不轮询。
+
 测量口径：Tauri v2 Windows 的 invoke 走 `http://ipc.localhost/<cmd>` 自定义协议，
 CDP/Playwright 可在请求层按命令名计数（不拦截、不阻塞）。对照测量记录见
 `tmp/acceptance/navigation-resource-lifecycle/`（含 before/after exe 的 sha256）。

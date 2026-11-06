@@ -226,6 +226,13 @@ pub fn start_run(db: Arc<Db>, app: AppHandle, workflow_id: &str) -> AppResult<St
                 "工作流的所有步骤均已停用，无法运行".into(),
             ));
         }
+        let scene_ids = steps
+            .iter()
+            .filter(|s| s.enabled && s.step_type == StepType::EnterScene.as_str())
+            .map(|s| s.params.scene_id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        super::validate_scene_graph_for_workflow(&db, workflow_id, &scene_ids)?;
         // 运行前快速校验启用的步骤（目标 / 快照仍存在），给出带序号的明确错误，
         // 避免创建运行后逐步失败浪费时间窗。
         for (idx, step) in steps.iter().enumerate() {
@@ -502,9 +509,8 @@ pub(crate) fn run_engine(
                     break 'outer;
                 }
                 DesktopWait::Busy => {
-                    let reason =
-                        "工作现场恢复正在进行，为避免焦点争夺已跳过本步骤；请稍后重新运行"
-                            .to_string();
+                    let reason = "工作现场恢复正在进行，为避免焦点争夺已跳过本步骤；请稍后重新运行"
+                        .to_string();
                     completed += 1;
                     let _ = store::update_run_step(
                         &db,
@@ -548,9 +554,8 @@ pub(crate) fn run_engine(
             operation_id: &operation_id,
             cancel: &cancel_flag,
         };
-        let outcome_exec = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            executor.execute(&ctx)
-        }));
+        let outcome_exec =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| executor.execute(&ctx)));
         let now = now_iso();
         match outcome_exec {
             Ok(Ok(value)) => {
@@ -576,12 +581,13 @@ pub(crate) fn run_engine(
             }
             Ok(Err(reason)) => {
                 completed += 1;
+                let was_cancelled = control.is_cancelled();
                 let _ = store::update_run_step(
                     &db,
                     &run_id,
                     &step.id,
                     &RunStepUpdate {
-                        status: Some("failed".into()),
+                        status: Some(if was_cancelled { "cancelled" } else { "failed" }.into()),
                         detail: Some(reason.clone()),
                         result: None,
                         started_at: None,
@@ -589,6 +595,12 @@ pub(crate) fn run_engine(
                         operation_id: None,
                     },
                 );
+                if was_cancelled {
+                    let _ = store::cancel_pending_steps(&db, &run_id);
+                    outcome = Some(("cancelled", Some(reason)));
+                    emit_progress(&db, sink.as_ref(), &run_id);
+                    break 'outer;
+                }
                 if store::parse_on_error(&step.on_error) == super::OnError::Stop {
                     let _ = store::cancel_pending_steps(&db, &run_id);
                     outcome = Some(("failed", Some(reason)));
@@ -645,7 +657,7 @@ pub(crate) fn run_engine(
 // ── 生产执行器 ──────────────────────────────────────────────
 
 /// 生产实现：导航复用 router::navigate，任务复用 create_task_inner，
-/// 现场恢复复用 workspace::start_restore（恢复门禁）。
+/// 场景复用 scenario 服务，现场恢复复用 workspace::start_restore（恢复门禁）。
 pub struct LiveExecutor {
     pub app: AppHandle,
     pub db: Arc<Db>,
@@ -660,14 +672,13 @@ impl StepExecutor for LiveExecutor {
             .map_err(|e| e.to_string())?
             .1;
         match (ty, validated) {
-            (StepType::OpenApp | StepType::OpenUrl | StepType::OpenPath, ValidatedStep::OpenNav { target_id }) => {
+            (
+                StepType::OpenApp | StepType::OpenUrl | StepType::OpenPath,
+                ValidatedStep::OpenNav { target_id },
+            ) => {
                 let options = crate::navigation::router::NavigateOptions::default();
-                let result = crate::navigation::router::navigate(
-                    ctx.db,
-                    &self.app,
-                    &target_id,
-                    &options,
-                );
+                let result =
+                    crate::navigation::router::navigate(ctx.db, &self.app, &target_id, &options);
                 if result.success {
                     Ok(json!({
                         "summary": format!("导航完成（验证级别: {}）", result.verification_level),
@@ -683,7 +694,16 @@ impl StepExecutor for LiveExecutor {
                         .unwrap_or_else(|| "导航失败（原因未知）".into()))
                 }
             }
-            (StepType::CreateTask, ValidatedStep::CreateTask { title, description, priority, remind_at, advance_minutes }) => {
+            (
+                StepType::CreateTask,
+                ValidatedStep::CreateTask {
+                    title,
+                    description,
+                    priority,
+                    remind_at,
+                    advance_minutes,
+                },
+            ) => {
                 let input = crate::commands::tasks::TaskInput {
                     title,
                     description,
@@ -703,7 +723,28 @@ impl StepExecutor for LiveExecutor {
                     "operation_id": ctx.operation_id,
                 }))
             }
-            (StepType::EnterScene, _) => Err("场景工作区模块尚未集成，无法执行该步骤".into()),
+            (StepType::EnterScene, ValidatedStep::EnterScene { scene_id }) => {
+                let result = crate::commands::scenario::enter_for_workflow(
+                    &self.db, &self.app, &scene_id, ctx.cancel,
+                )
+                .map_err(|e| e.to_string())?;
+                let items = result
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        json!({
+                            "index": index + 1,
+                            "kind": item.kind,
+                            "status": item.status,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!({
+                    "summary": format!("场景「{}」已完成 {} 项", scene_id, items.len()),
+                    "items": items,
+                }))
+            }
             (StepType::RestoreWorkspace, ValidatedStep::RestoreWorkspace { snapshot_id }) => {
                 self.execute_restore(ctx, &snapshot_id)
             }
@@ -730,9 +771,34 @@ impl LiveExecutor {
             }
             let status = workspace::restore_status();
             if !status.running {
+                let detail = workspace::get_snapshot(&self.db, snapshot_id)
+                    .map_err(|e| format!("工作现场已退出，但读取逐项结果失败: {e}"))?;
+                let mut restored = 0usize;
+                let mut failed = 0usize;
+                let mut skipped = 0usize;
+                let mut cancelled = 0usize;
+                let mut unknown = 0usize;
+                for item in &detail.items {
+                    match item.last_result.as_str() {
+                        "restored" => restored += 1,
+                        "failed" => failed += 1,
+                        "skipped" => skipped += 1,
+                        "cancelled" => cancelled += 1,
+                        _ => unknown += 1,
+                    }
+                }
+                let summary = format!(
+                    "工作现场结果：恢复 {}，跳过 {}，失败 {}，取消 {}，未知 {}",
+                    restored, skipped, failed, cancelled, unknown
+                );
+                if failed > 0 || skipped > 0 || cancelled > 0 || unknown > 0 {
+                    return Err(summary);
+                }
                 return Ok(json!({
-                    "summary": "工作现场恢复完成",
+                    "summary": summary,
                     "snapshot_id": snapshot_id,
+                    "restored": restored,
+                    "total": detail.items.len(),
                 }));
             }
             if Instant::now() >= deadline {

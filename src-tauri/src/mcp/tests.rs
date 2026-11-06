@@ -168,8 +168,11 @@ fn project_rw_without_grant_cannot_write_existing_project() {
     let (agent, _) = make_agent(&db, "rw", "project_rw");
     let ctx = ctx_for(&db, &agent);
 
-    // 读允许
-    let _ = call_ok(&ctx, "taskdock_list_projects", json!({}));
+    // project_rw 只读取已授权项目；未授权项目名称不能出现在列表中。
+    let listed = call_ok(&ctx, "taskdock_list_projects", json!({}));
+    assert_eq!(listed.as_array().unwrap().len(), 0);
+    let e = rpc_err(&ctx, "taskdock_get_project", json!({ "project_id": p.id }));
+    assert_eq!(e.code, crate::mcp::protocol::ERR_FORBIDDEN);
     // 写未授权项目 → 拒绝
     let e = rpc_err(
         &ctx,
@@ -199,6 +202,16 @@ fn project_isolation_between_agents() {
     // agent-a 授权 P1
     auth::grant_project(&db, &agent_a.row_id, &p1.id).unwrap();
 
+    let listed = call_ok(&ctx_a, "taskdock_list_projects", json!({}));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["id"], p1.id);
+    let denied_read = rpc_err(
+        &ctx_a,
+        "taskdock_get_project",
+        json!({ "project_id": p2.id }),
+    );
+    assert_eq!(denied_read.code, crate::mcp::protocol::ERR_FORBIDDEN);
+
     // P1 可写
     let _ = call_ok(
         &ctx_a,
@@ -222,6 +235,110 @@ fn project_isolation_between_agents() {
     assert_eq!(e.code, crate::mcp::protocol::ERR_FORBIDDEN);
 }
 
+#[test]
+fn project_rw_reads_are_limited_to_grants_and_revocation_is_immediate() {
+    let db = memdb();
+    let p1 = create_project_impl(&db, proj_input("可读项目")).unwrap();
+    let p2 = create_project_impl(&db, proj_input("不可读项目")).unwrap();
+    let f1 = create_feature_impl(
+        &db,
+        p1.id.clone(),
+        crate::commands::planning::FeatureInput {
+            title: "可读功能".into(),
+            description: String::new(),
+            acceptance_criteria: String::new(),
+            status: None,
+            priority: None,
+            milestone_id: None,
+            target_date: None,
+        },
+    )
+    .unwrap();
+    let f2 = create_feature_impl(
+        &db,
+        p2.id.clone(),
+        crate::commands::planning::FeatureInput {
+            title: "不可读功能".into(),
+            description: String::new(),
+            acceptance_criteria: String::new(),
+            status: None,
+            priority: None,
+            milestone_id: None,
+            target_date: None,
+        },
+    )
+    .unwrap();
+    let (agent_a, _) = make_agent(&db, "read-scope-a", "project_rw");
+    auth::grant_project(&db, &agent_a.row_id, &p1.id).unwrap();
+    let ctx_a = ctx_for(&db, &agent_a);
+
+    let (agent_b, _) = make_agent(&db, "read-scope-b", "project_rw");
+    auth::grant_project(&db, &agent_b.row_id, &p2.id).unwrap();
+    let ctx_b = ctx_for(&db, &agent_b);
+    let _ = call_ok(
+        &ctx_b,
+        "taskdock_link_agent_session",
+        json!({
+            "feature_id": f2.id,
+            "agent_source": "claude-code",
+            "session_id": "private-session",
+        }),
+    );
+
+    let listed = call_ok(&ctx_a, "taskdock_list_projects", json!({}));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["id"], p1.id);
+    assert_eq!(
+        call_ok(
+            &ctx_a,
+            "taskdock_list_features",
+            json!({ "project_id": p1.id }),
+        )
+        .as_array()
+        .unwrap()
+        .len(),
+        1
+    );
+    for (name, args) in [
+        ("taskdock_list_features", json!({ "project_id": p2.id })),
+        ("taskdock_get_feature", json!({ "feature_id": f2.id })),
+    ] {
+        let error = rpc_err(&ctx_a, name, args);
+        assert_eq!(error.code, crate::mcp::protocol::ERR_FORBIDDEN);
+    }
+    let hidden_session_links = call_ok(
+        &ctx_a,
+        "taskdock_get_agent_links",
+        json!({ "session_id": "private-session" }),
+    );
+    assert_eq!(hidden_session_links.as_array().unwrap().len(), 0);
+    let visible_links = call_ok(
+        &ctx_b,
+        "taskdock_get_agent_links",
+        json!({ "session_id": "private-session" }),
+    );
+    assert_eq!(visible_links.as_array().unwrap().len(), 1);
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
+            rusqlite::params![agent_a.row_id, p1.id],
+        )
+        .map_err(crate::error::AppError::from)?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        call_ok(&ctx_a, "taskdock_list_projects", json!({}))
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "撤销项目授权后列表立即不再返回该项目"
+    );
+    assert_eq!(f1.project_id, p1.id);
+}
+
 // ── 撤销立即生效 ─────────────────────────────────────────────────────
 
 #[test]
@@ -239,6 +356,9 @@ fn revocation_takes_effect_immediately() {
             .is_none(),
         "撤销后同一 token 必须立即失效"
     );
+    let ctx = ctx_for(&db, &agent);
+    let error = rpc_err(&ctx, "taskdock_list_projects", json!({}));
+    assert_eq!(error.code, crate::mcp::protocol::ERR_UNAUTHORIZED);
     // 重复撤销幂等
     auth::revoke_agent(&db, &agent.row_id).unwrap();
 }
@@ -324,13 +444,23 @@ fn feature_completed_is_user_only_and_submit_for_review_flow() {
     );
     assert!(err.to_string().contains("completed"));
 
+    let in_progress = call_ok(
+        &ctx,
+        "taskdock_update_feature",
+        json!({
+            "feature_id": feature_id,
+            "expected_revision": f["revision"],
+            "status": "in_progress",
+        }),
+    );
+
     // submit_for_review → review + activity
     let submitted = call_ok(
         &ctx,
         "taskdock_submit_for_review",
         json!({
             "feature_id": feature_id,
-            "expected_revision": f["revision"],
+            "expected_revision": in_progress["revision"],
             "note": "实现完成，请验收",
         }),
     );
@@ -351,6 +481,67 @@ fn feature_completed_is_user_only_and_submit_for_review_flow() {
         kinds.contains(&"status_change".to_string()) && kinds.contains(&"note".to_string()),
         "提交验收应写 status_change 与 note 历史: {kinds:?}"
     );
+
+    // 说明为空时按可选说明处理；超长说明失败不能留下状态或 activity 半成功。
+    let second = call_ok(
+        &ctx,
+        "taskdock_create_feature",
+        json!({ "project_id": p.id, "title": "第二项" }),
+    );
+    let too_long = "n".repeat(2001);
+    let error = tool_err(
+        &ctx,
+        "taskdock_submit_for_review",
+        json!({
+            "feature_id": second["id"],
+            "expected_revision": second["revision"],
+            "note": too_long,
+        }),
+    );
+    assert!(error.to_string().contains("2000"));
+    let after_failed_submit = db
+        .with_read(|conn| {
+            crate::commands::planning::load_feature_tx(conn, second["id"].as_str().unwrap())
+        })
+        .unwrap();
+    assert_eq!(after_failed_submit.status, "planned");
+    assert_eq!(
+        after_failed_submit.revision,
+        second["revision"].as_i64().unwrap()
+    );
+    let second_activity_count: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM planning_activity WHERE feature_id = ?1",
+                rusqlite::params![second["id"].as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .map_err(crate::error::AppError::from)
+        })
+        .unwrap();
+    assert_eq!(second_activity_count, 0);
+
+    let submitted_without_note = call_ok(
+        &ctx,
+        "taskdock_submit_for_review",
+        json!({
+            "feature_id": second["id"],
+            "expected_revision": second["revision"],
+            "note": "   ",
+        }),
+    );
+    assert_eq!(submitted_without_note["status"], "review");
+    let second_activity_count: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM planning_activity WHERE feature_id = ?1",
+                rusqlite::params![second["id"].as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .map_err(crate::error::AppError::from)
+        })
+        .unwrap();
+    assert_eq!(second_activity_count, 1, "空白 note 不应写入日志");
 
     // 已 review 再提交 → 拒绝；且 update_feature 不能改到 completed
     let err = tool_err(
@@ -439,6 +630,194 @@ fn same_request_id_replays_original_result_without_double_execute() {
     assert_eq!(audits, 1, "幂等键唯一索引应只允许一条成功记录");
 }
 
+#[test]
+fn same_request_id_with_different_arguments_is_rejected() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "idem-conflict", "project_rw");
+    let ctx = ctx_for(&db, &agent);
+
+    let first = call_ok(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "参数 A", "requestId": "same-id" }),
+    );
+    let conflict = tool_err(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "参数 B", "requestId": "same-id" }),
+    );
+    assert!(conflict.to_string().contains("不同参数"));
+    let projects: Vec<String> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare("SELECT name FROM planning_projects ORDER BY name")?;
+            let rows = statement.query_map([], |row| row.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(crate::error::AppError::from)
+        })
+        .unwrap();
+    assert_eq!(projects, vec!["参数 A"]);
+    assert_eq!(first["name"], "参数 A");
+}
+
+#[test]
+fn request_id_is_scoped_to_agent_and_action() {
+    let db = memdb();
+    let (agent_a, _) = make_agent(&db, "idem-scope-a", "project_rw");
+    let (agent_b, _) = make_agent(&db, "idem-scope-b", "project_rw");
+    let ctx_a = ctx_for(&db, &agent_a);
+    let ctx_b = ctx_for(&db, &agent_b);
+
+    let project_a = call_ok(
+        &ctx_a,
+        "taskdock_create_project",
+        json!({ "name": "Agent A 项目", "requestId": "shared" }),
+    );
+    let feature = call_ok(
+        &ctx_a,
+        "taskdock_create_feature",
+        json!({
+            "project_id": project_a["id"],
+            "title": "Agent A 功能",
+            "requestId": "shared",
+        }),
+    );
+    let project_b = call_ok(
+        &ctx_b,
+        "taskdock_create_project",
+        json!({ "name": "Agent B 项目", "requestId": "shared" }),
+    );
+    assert_ne!(project_a["id"], project_b["id"]);
+    assert_eq!(feature["title"], "Agent A 功能");
+
+    let counts = db
+        .with_conn(|conn| {
+            let projects: i64 =
+                conn.query_row("SELECT COUNT(*) FROM planning_projects", [], |r| r.get(0))?;
+            let features: i64 =
+                conn.query_row("SELECT COUNT(*) FROM planning_features", [], |r| r.get(0))?;
+            let audits: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM mcp_audit_log WHERE request_id='shared' AND success=1",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((projects, features, audits))
+        })
+        .unwrap();
+    assert_eq!(counts, (2, 1, 3));
+}
+
+#[test]
+fn concurrent_same_request_id_creates_one_project_and_one_success_audit() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "idem-race", "project_rw");
+    let args = json!({ "name": "并发幂等", "requestId": "shared-request" });
+    let threads = 12;
+
+    let results = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let db = db.clone();
+            let agent = agent.clone();
+            let args = args.clone();
+            handles.push(scope.spawn(move || {
+                let (emit, _) = collector();
+                let ctx = ToolCtx { db, agent, emit };
+                call_ok(&ctx, "taskdock_create_project", args)
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+
+    let first_id = results[0]["id"].as_str().unwrap();
+    assert!(results.iter().all(|value| value["id"] == first_id));
+    let counts = db
+        .with_conn(|conn| {
+            let projects: i64 = conn.query_row("SELECT COUNT(*) FROM planning_projects", [], |r| r.get(0))?;
+            let audits: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM mcp_audit_log
+                 WHERE action='taskdock_create_project' AND request_id='shared-request' AND success=1",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((projects, audits))
+        })
+        .unwrap();
+    assert_eq!(counts, (1, 1));
+}
+
+#[test]
+fn replay_requires_current_scope_and_project_grant() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "idem-revoke", "project_rw");
+    let ctx = ctx_for(&db, &agent);
+    let created = call_ok(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "授权后撤销", "requestId": "grant-replay" }),
+    );
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM mcp_agent_grants WHERE agent_row_id = ?1 AND project_id = ?2",
+            rusqlite::params![agent.row_id, created["id"].as_str().unwrap()],
+        )
+        .map_err(crate::error::AppError::from)?;
+        Ok(())
+    })
+    .unwrap();
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "授权后撤销", "requestId": "grant-replay" }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+
+    auth::set_agent_scope(&db, &agent.row_id, "readonly").unwrap();
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "授权后撤销", "requestId": "grant-replay" }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+}
+
+#[test]
+fn failed_audit_insert_rolls_back_mcp_business_write() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "audit-fail", "project_rw");
+    let ctx = ctx_for(&db, &agent);
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER reject_mcp_success_audit
+             BEFORE INSERT ON mcp_audit_log
+             WHEN NEW.action = 'taskdock_create_project' AND NEW.success = 1
+             BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;",
+        )
+        .map_err(crate::error::AppError::from)
+    })
+    .unwrap();
+
+    let error = run_tool_call(
+        &ctx,
+        "taskdock_create_project",
+        &json!({ "name": "必须回滚", "requestId": "audit-failure" }),
+    )
+    .expect_err("审计无法持久化时写工具不应返回成功");
+    assert_eq!(error.code, crate::mcp::protocol::INTERNAL_ERROR);
+    let project_count: i64 = db
+        .with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM planning_projects", [], |row| {
+                row.get(0)
+            })
+            .map_err(crate::error::AppError::from)
+        })
+        .unwrap();
+    assert_eq!(project_count, 0, "业务写入须随审计失败回滚");
+}
+
 // ── 审计与事件 ──────────────────────────────────────────────────────
 
 #[test]
@@ -460,6 +839,11 @@ fn audits_record_reads_writes_and_failures_without_secrets() {
         &ctx,
         "taskdock_update_project",
         json!({ "project_id": p.id, "expected_revision": p.revision, "name": "X3" }),
+    );
+    let _ = tool_err(
+        &ctx,
+        "taskdock_create_project",
+        json!({ "name": "日期校验失败", "target_date": "PRIVATE_DATE_SENTINEL" }),
     );
 
     let rows: Vec<(String, String, i64, i64, String, String)> = db
@@ -500,6 +884,10 @@ fn audits_record_reads_writes_and_failures_without_secrets() {
     // 绝不含 token
     let all = rows.iter().map(|r| format!("{r:?}")).collect::<String>();
     assert!(!all.contains(&token), "审计不得包含 token 明文");
+    assert!(
+        !all.contains("PRIVATE_DATE_SENTINEL"),
+        "审计错误详情不得包含用户提交的原始值"
+    );
 }
 
 #[test]
@@ -694,4 +1082,112 @@ fn token_hash_is_stable_and_agent_lookup_works() -> AppResult<()> {
         "无授权时应为 false"
     );
     Ok(())
+}
+
+#[test]
+fn token_rotation_invalidates_the_previous_token_and_returns_the_same_identity() {
+    let db = memdb();
+    let created = auth::create_agent(&db, "rotate", "轮换测试").unwrap();
+    let rotated = auth::rotate_agent_token(&db, &created.info.id).unwrap();
+
+    assert_eq!(rotated.info.id, created.info.id);
+    assert_ne!(rotated.token, created.token);
+    let old = db
+        .with_conn(|conn| auth::find_agent_by_token(conn, &created.token))
+        .unwrap();
+    let new = db
+        .with_conn(|conn| auth::find_agent_by_token(conn, &rotated.token))
+        .unwrap();
+    assert!(old.is_none(), "轮换提交后旧 token 应立即失效");
+    assert_eq!(new.unwrap().row_id, created.info.id);
+
+    let stored_hash: String = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT token_hash FROM mcp_agents WHERE id = ?1",
+                rusqlite::params![created.info.id],
+                |row| row.get(0),
+            )
+            .map_err(crate::error::AppError::from)
+        })
+        .unwrap();
+    assert_ne!(stored_hash, rotated.token);
+    assert_eq!(stored_hash, auth::sha256_hex(&rotated.token));
+}
+
+#[test]
+fn revoking_a_project_grant_blocks_the_next_read() {
+    let db = memdb();
+    let project = create_project_impl(&db, proj_input("撤权项目")).unwrap();
+    let (agent, _) = make_agent(&db, "grant-revoke", "project_rw");
+    auth::grant_project(&db, &agent.row_id, &project.id).unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    let loaded = call_ok(
+        &ctx,
+        "taskdock_get_project",
+        json!({ "project_id": project.id }),
+    );
+    assert_eq!(loaded["id"], project.id);
+
+    let info = auth::revoke_project(&db, &agent.row_id, &project.id).unwrap();
+    assert!(!info.granted_project_ids.contains(&project.id));
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_get_project",
+        json!({ "project_id": project.id }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+}
+
+#[test]
+fn audit_page_is_bounded_and_excludes_operation_payloads() {
+    let db = memdb();
+    let created = auth::create_agent(&db, "audit-ui", "审计 UI").unwrap();
+    db.with_conn(|conn| {
+        for index in 0..3 {
+            crate::mcp::audit::write(
+                conn,
+                &crate::mcp::audit::AuditEntry {
+                    agent_row_id: Some(&created.info.id),
+                    agent_id: &created.info.agent_id,
+                    action: "taskdock_update_project",
+                    entity_type: "project",
+                    entity_id: &format!("project-{index}"),
+                    request_id: &format!("request-{index}"),
+                    success: index != 1,
+                    authz: index != 1,
+                    detail: "PRIVATE_DETAIL_SENTINEL",
+                    result_json: "PRIVATE_RESULT_SENTINEL",
+                },
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    let first = db
+        .with_read(|conn| crate::mcp::audit::list_page(conn, 0, 2))
+        .unwrap();
+    let second = db
+        .with_read(|conn| crate::mcp::audit::list_page(conn, 2, 2))
+        .unwrap();
+    assert_eq!(first.total, 3);
+    assert_eq!(first.items.len(), 2);
+    assert_eq!(second.items.len(), 1);
+    assert_eq!(first.items[0].error_category, None);
+    assert_eq!(
+        first.items[1].error_category.as_deref(),
+        Some("authorization_denied")
+    );
+
+    let public = serde_json::to_string(&first).unwrap();
+    assert!(!public.contains("PRIVATE_DETAIL_SENTINEL"));
+    assert!(!public.contains("PRIVATE_RESULT_SENTINEL"));
+    assert!(!public.contains("request-"));
+
+    let clamped = db
+        .with_read(|conn| crate::mcp::audit::list_page(conn, 0, u32::MAX))
+        .unwrap();
+    assert_eq!(clamped.limit, 100);
 }

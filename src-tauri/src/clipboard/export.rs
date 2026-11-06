@@ -35,9 +35,9 @@ pub fn save_png_bytes(target: &Path, bytes: &[u8], overwrite: bool) -> AppResult
         return Err(AppError::Validation("图片数据为空，拒绝写入".into()));
     }
     validate_target(target)?;
-    let parent = target.parent().ok_or_else(|| {
-        AppError::Validation(format!("保存路径没有父目录：{}", target.display()))
-    })?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::Validation(format!("保存路径没有父目录：{}", target.display())))?;
     if !parent.is_dir() {
         return Err(AppError::NotFound(format!(
             "目标目录不存在：{}",
@@ -107,7 +107,7 @@ fn create_new_file(path: &Path) -> std::io::Result<File> {
 fn cleanup_created_file(file: File, path: &Path) {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        SetFileInformationByHandle, FileDispositionInfo, FILE_DISPOSITION_INFO,
+        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
     };
 
     let info = FILE_DISPOSITION_INFO { DeleteFile: true };
@@ -219,7 +219,10 @@ fn write_replace(target: &Path, parent: &Path, bytes: &[u8]) -> AppResult<u64> {
                 tmp.display()
             );
             cleanup_created_file(file, &tmp);
-            return Err(AppError::Io(std::io::Error::new(ErrorKind::InvalidData, message)));
+            return Err(AppError::Io(std::io::Error::new(
+                ErrorKind::InvalidData,
+                message,
+            )));
         }
         Err(e) => {
             cleanup_created_file(file, &tmp);
@@ -406,7 +409,10 @@ mod tests {
         let written = save_png_bytes(&target, &bytes, false).expect("新建保存应成功");
         assert_eq!(written, bytes.len() as u64);
         assert_eq!(std::fs::read(&target).unwrap(), bytes);
-        assert!(tmp_leftovers(dir.path()).is_empty(), "新建分支不应留下临时文件");
+        assert!(
+            tmp_leftovers(dir.path()).is_empty(),
+            "新建分支不应留下临时文件"
+        );
     }
 
     #[test]
@@ -455,7 +461,11 @@ mod tests {
 
         let written = save_png_bytes(&target, &new_bytes, true).expect("授权覆盖应成功");
         assert_eq!(written, new_bytes.len() as u64);
-        assert_eq!(std::fs::read(&target).unwrap(), new_bytes, "覆盖后内容应为新字节");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            new_bytes,
+            "覆盖后内容应为新字节"
+        );
         assert!(
             tmp_leftovers(dir.path()).is_empty(),
             "覆盖成功后不得残留临时文件: {:?}",
@@ -514,17 +524,26 @@ mod tests {
         let bytes = png_bytes(0xaa, 32);
         for bad in ["", "   "] {
             let err = save_png_bytes(Path::new(bad), &bytes, false).expect_err("空路径必须拒绝");
-            assert!(matches!(err, AppError::Validation(_)), "{bad:?} 实际: {err:?}");
+            assert!(
+                matches!(err, AppError::Validation(_)),
+                "{bad:?} 实际: {err:?}"
+            );
         }
         for bad in ["clip.png", r"out\clip.png"] {
             let err = save_png_bytes(Path::new(bad), &bytes, true).expect_err("相对路径必须拒绝");
-            assert!(matches!(err, AppError::Validation(_)), "{bad:?} 实际: {err:?}");
+            assert!(
+                matches!(err, AppError::Validation(_)),
+                "{bad:?} 实际: {err:?}"
+            );
         }
         let dir = TempDir::new("bad-ext");
         for name in ["clip.jpg", "clip", "clip.png.txt"] {
             let target = dir.join(name);
             let err = save_png_bytes(&target, &bytes, false).expect_err("非 .png 必须拒绝");
-            assert!(matches!(err, AppError::Validation(_)), "{name} 实际: {err:?}");
+            assert!(
+                matches!(err, AppError::Validation(_)),
+                "{name} 实际: {err:?}"
+            );
             assert!(!target.exists());
         }
         // .PNG 大写应被接受（与命令层大小写不敏感规则一致）。
@@ -536,8 +555,8 @@ mod tests {
     fn save_rejects_missing_parent_dir_with_not_found() {
         let dir = TempDir::new("missing-parent");
         let target = dir.join("no-such-dir").join("clip.png");
-        let err = save_png_bytes(&target, &png_bytes(0xbb, 16), false)
-            .expect_err("父目录不存在应报错");
+        let err =
+            save_png_bytes(&target, &png_bytes(0xbb, 16), false).expect_err("父目录不存在应报错");
         match err {
             AppError::NotFound(msg) => {
                 assert!(msg.contains("目标目录不存在"), "文案: {msg}");
@@ -561,7 +580,8 @@ mod tests {
         let dir = TempDir::new("dir-target");
         let target = dir.join("clip.png");
         std::fs::create_dir(&target).unwrap();
-        let err = save_png_bytes(&target, &png_bytes(0xdd, 64), true).expect_err("目标是目录应拒绝");
+        let err =
+            save_png_bytes(&target, &png_bytes(0xdd, 64), true).expect_err("目标是目录应拒绝");
         assert!(matches!(err, AppError::Validation(_)), "实际: {err:?}");
         assert!(target.is_dir(), "拒绝时不得删除/替换目录");
         assert!(tmp_leftovers(dir.path()).is_empty());
@@ -742,6 +762,9 @@ mod tests {
             final_bytes == payloads[0] || final_bytes == payloads[1],
             "并发覆盖后最终文件必须是完整的一份写入（不能是半截/交错）"
         );
-        assert!(tmp_leftovers(dir.path()).is_empty(), "并发覆盖不得残留临时文件");
+        assert!(
+            tmp_leftovers(dir.path()).is_empty(),
+            "并发覆盖不得残留临时文件"
+        );
     }
 }

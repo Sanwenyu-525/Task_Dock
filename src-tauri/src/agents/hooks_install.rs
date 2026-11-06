@@ -862,7 +862,11 @@ mod tests {
         assert_eq!(r.installed_events, vec!["Stop", "SessionStart"]);
 
         let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["hooks"]["enabled"], json!(true), "配置式 hooks 必须启用");
+        assert_eq!(
+            root["hooks"]["enabled"],
+            json!(true),
+            "配置式 hooks 必须启用"
+        );
         assert_eq!(root["hooks"]["timeoutMs"], json!(5000), "用户级设置保留");
         assert_eq!(root["mcp"]["servers"], json!({}), "其他配置保留");
         assert_eq!(root["hooks"]["events"]["Stop"].as_array().unwrap().len(), 2);
@@ -918,11 +922,7 @@ mod tests {
 
         // 只有 Task Dock 条目时，卸载后移除空 events 对象
         let only_ours = dir.join("only-ours.json");
-        std::fs::write(
-            &only_ours,
-            r#"{"hooks":{"enabled":true,"events":{}}}"#,
-        )
-        .unwrap();
+        std::fs::write(&only_ours, r#"{"hooks":{"enabled":true,"events":{}}}"#).unwrap();
         install_hooks_with(&only_ours, &[spec("Stop")], HooksLayout::NestedEvents).unwrap();
         uninstall_hooks_with(&only_ours, HooksLayout::NestedEvents).unwrap();
         let root: Value =

@@ -7,6 +7,30 @@ use super::*;
 
 use serde_json::json;
 
+#[test]
+fn maintenance_gate_excludes_active_shelf_file_writes() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let gate = Arc::new(CopyGate::new());
+    let copy = gate.acquire();
+    assert!(gate.try_acquire_maintenance().is_none());
+    drop(copy);
+
+    let maintenance = gate.try_acquire_maintenance().unwrap();
+    assert!(gate.try_acquire_maintenance().is_none());
+    let worker_gate = Arc::clone(&gate);
+    let (started, received) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _copy = worker_gate.acquire();
+        started.send(()).unwrap();
+    });
+    assert!(received.recv_timeout(Duration::from_millis(50)).is_err());
+    drop(maintenance);
+    received.recv_timeout(Duration::from_secs(2)).unwrap();
+    worker.join().unwrap();
+}
+
 struct TempRoot(PathBuf);
 impl TempRoot {
     fn new() -> Self {
@@ -36,6 +60,23 @@ fn write_source(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, bytes).unwrap();
     p
+}
+
+#[cfg(windows)]
+fn create_junction(link: &Path, target: &Path) {
+    use std::os::windows::process::CommandExt;
+
+    let command = format!("mklink /J \"{}\" \"{}\"", link.display(), target.display());
+    let output = std::process::Command::new("cmd")
+        .args(["/D", "/S", "/C"])
+        .raw_arg(format!(" \"{command}\""))
+        .output()
+        .expect("cmd.exe 应可用于隔离目录 junction 测试");
+    assert!(
+        output.status.success(),
+        "创建测试 junction 失败：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn add_ref(db: &Db, root: &Path, src: &Path) -> ShelfItem {
@@ -169,7 +210,11 @@ fn fsops_move_rejects_same_dir_subdir_and_managed() {
     .unwrap();
     assert_eq!(report.skipped, 1);
     assert!(file.exists());
-    assert!(report.entries[0].reason.as_deref().unwrap().contains("目标目录"));
+    assert!(report.entries[0]
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("目标目录"));
 
     // 文件夹移入自身子目录必须拒绝
     let folder = tmp.0.join("树");
@@ -337,9 +382,7 @@ fn fsops_managed_export_copy_keeps_managed_path_and_remove_after_only_record() {
     let db = Db::open_in_memory().unwrap();
     let src = write_source(&tmp.0, "导出.csv", b"a,b\n");
     let managed = add_managed(&db, &tmp.shelf(), &src.to_string_lossy(), "picker", None).unwrap();
-    let managed_file = tmp
-        .shelf()
-        .join(managed.managed_path.as_deref().unwrap());
+    let managed_file = tmp.shelf().join(managed.managed_path.as_deref().unwrap());
     let target = tmp.0.join("export");
     std::fs::create_dir_all(&target).unwrap();
 
@@ -372,7 +415,10 @@ fn fsops_managed_export_copy_keeps_managed_path_and_remove_after_only_record() {
     .unwrap();
     assert_eq!(report.removed, 1);
     assert!(get_item(&db, &managed.id).is_err());
-    assert!(target.join("导出 (1).csv").is_file(), "已移动的目标文件必须保留");
+    assert!(
+        target.join("导出 (1).csv").is_file(),
+        "已移动的目标文件必须保留"
+    );
 }
 
 #[test]
@@ -448,11 +494,7 @@ fn fsops_recovery_after_disk_move_rewrites_paths() {
         conn.execute(
             "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
              VALUES ('op1', ?1, 'move', 'moved', ?2, ?3, '2026-01-01T00:00:00Z')",
-            params![
-                item.id,
-                src.to_string_lossy(),
-                target.to_string_lossy()
-            ],
+            params![item.id, src.to_string_lossy(), target.to_string_lossy()],
         )?;
         Ok(())
     })
@@ -486,8 +528,10 @@ fn fsops_recent_dirs_dedup_order_pin_and_limit() {
     }
     let list = fsops::list_recent_dirs(&db).unwrap();
     assert_eq!(list.len(), fsops::MAX_RECENT_DIRS, "最多保留 8 个");
-    assert!(!list.iter().any(|d| d.path == dirs[0].to_string_lossy()),
-        "超限时淘汰最久未用目录");
+    assert!(
+        !list.iter().any(|d| d.path == dirs[0].to_string_lossy()),
+        "超限时淘汰最久未用目录"
+    );
 
     // 去重：再次使用不新增
     fsops::touch_recent_dir(&db, &dirs[8].to_string_lossy()).unwrap();
@@ -539,7 +583,10 @@ fn add_reference_keeps_original_and_survives_item_delete() {
     // 删除暂存条目：原文件必须原样保留
     let report = delete_items(&db, &tmp.shelf(), &[item.id.clone()], false).unwrap();
     assert_eq!(report.deleted, 1);
-    assert_eq!(report.freed_bytes, 0, "引用模式不删除原文件，不统计释放字节");
+    assert_eq!(
+        report.freed_bytes, 0,
+        "引用模式不删除原文件，不统计释放字节"
+    );
     assert!(src.exists(), "删除暂存记录绝不能删除用户原文件");
     assert!(get_item(&db, &item.id).is_err());
 }
@@ -577,7 +624,10 @@ fn managed_copy_roundtrip_and_delete_removes_owned_file() {
     assert_ne!(managed_abs, src, "托管副本不得指向原文件");
 
     delete_items(&db, &tmp.shelf(), &[item.id.clone()], false).unwrap();
-    assert!(!managed_abs.exists(), "删除托管条目必须删除 Task Dock 拥有的副本");
+    assert!(
+        !managed_abs.exists(),
+        "删除托管条目必须删除 Task Dock 拥有的副本"
+    );
     assert!(src.exists(), "托管删除也不得触碰原文件");
 }
 
@@ -600,7 +650,10 @@ fn managed_copy_rejects_folder() {
     let dir = tmp.0.join("dir");
     std::fs::create_dir_all(&dir).unwrap();
     let err = add_managed(&db, &tmp.shelf(), &dir.to_string_lossy(), "drag", None).unwrap_err();
-    assert!(err.to_string().contains("引用模式"), "文件夹必须明确拒绝托管: {err}");
+    assert!(
+        err.to_string().contains("引用模式"),
+        "文件夹必须明确拒绝托管: {err}"
+    );
 }
 
 #[test]
@@ -624,7 +677,7 @@ fn interrupted_copy_part_file_purged() {
     std::fs::create_dir_all(&files).unwrap();
     std::fs::write(files.join("ghost.bin.part"), b"half").unwrap();
     std::fs::write(files.join("real.bin"), b"full").unwrap();
-    purge_part_files(&tmp.shelf());
+    purge_part_files(&tmp.shelf()).unwrap();
     assert!(!files.join("ghost.bin.part").exists());
     assert!(files.join("real.bin").exists());
 }
@@ -653,7 +706,14 @@ fn link_and_text_items() {
     assert_eq!(content, "第一行\n第二行");
     assert!(!truncated);
     // content 不进列表载荷（大文本不进前端内存）
-    let page = list(&db, &ListFilter { limit: 10, ..Default::default() }).unwrap();
+    let page = list(
+        &db,
+        &ListFilter {
+            limit: 10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(page.items.iter().all(|i| i.content.is_none()));
 }
 
@@ -671,7 +731,11 @@ fn group_lifecycle_and_builtin_protection() {
     assert!(group_create(&db, "周会材料").is_err(), "重名分组必须拒绝");
 
     group_rename(&db, &g.id, "评审材料").unwrap();
-    let names: Vec<String> = list_groups(&db).unwrap().into_iter().map(|x| x.name).collect();
+    let names: Vec<String> = list_groups(&db)
+        .unwrap()
+        .into_iter()
+        .map(|x| x.name)
+        .collect();
     assert!(names.contains(&"评审材料".to_string()));
 
     // 条目归位：删分组后条目进默认分组
@@ -738,6 +802,151 @@ fn delete_skips_protected_unless_confirmed() {
     let r2 = delete_items(&db, &tmp.shelf(), &[item.id.clone()], true).unwrap();
     assert_eq!(r2.deleted, 1);
     assert!(get_item(&db, &item.id).is_err());
+}
+
+#[test]
+fn delete_mixed_favorite_and_pinned_items_reports_each_protected_item_once() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let normal = add_text(&db, "普通条目", "manual", None).unwrap();
+    let favorite = add_text(&db, "收藏条目", "manual", None).unwrap();
+    let pinned = add_text(&db, "置顶条目", "manual", None).unwrap();
+    let both = add_text(&db, "收藏且置顶", "manual", None).unwrap();
+    for (item, favorite, pinned) in [
+        (&favorite, true, false),
+        (&pinned, false, true),
+        (&both, true, true),
+    ] {
+        update(
+            &db,
+            &item.id,
+            &UpdatePatch {
+                favorite: Some(favorite),
+                pinned: Some(pinned),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    let ids = [
+        normal.id.clone(),
+        favorite.id.clone(),
+        pinned.id.clone(),
+        both.id.clone(),
+    ];
+    let report = delete_items(&db, &tmp.shelf(), &ids, false).unwrap();
+    assert_eq!(report.deleted, 1);
+    assert_eq!(report.skipped, 3, "收藏且置顶的条目只计一次");
+    assert!(get_item(&db, &normal.id).is_err());
+    assert!(get_item(&db, &favorite.id).unwrap().favorite);
+    assert!(get_item(&db, &pinned.id).unwrap().pinned);
+    let kept_both = get_item(&db, &both.id).unwrap();
+    assert!(kept_both.favorite && kept_both.pinned);
+
+    let confirmed = delete_items(
+        &db,
+        &tmp.shelf(),
+        &[favorite.id.clone(), pinned.id.clone(), both.id.clone()],
+        true,
+    )
+    .unwrap();
+    assert_eq!(confirmed.deleted, 3);
+    assert_eq!(confirmed.skipped, 0);
+    assert_eq!(stats(&db, &tmp.shelf()).unwrap().total, 0);
+}
+
+#[test]
+fn clear_keeps_protected_items_and_reports_the_remaining_database_count() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let normal = add_text(&db, "普通条目", "manual", None).unwrap();
+    let favorite = add_text(&db, "收藏条目", "manual", None).unwrap();
+    let pinned = add_text(&db, "置顶条目", "manual", None).unwrap();
+    let both = add_text(&db, "收藏且置顶", "manual", None).unwrap();
+    for (item, favorite, pinned) in [
+        (&favorite, true, false),
+        (&pinned, false, true),
+        (&both, true, true),
+    ] {
+        update(
+            &db,
+            &item.id,
+            &UpdatePatch {
+                favorite: Some(favorite),
+                pinned: Some(pinned),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    let report = clear(&db, &tmp.shelf(), false).unwrap();
+    assert_eq!(report.deleted, 1);
+    assert_eq!(report.skipped, 3);
+    assert_eq!(stats(&db, &tmp.shelf()).unwrap().total, 3);
+    assert!(get_item(&db, &normal.id).is_err());
+    assert!(get_item(&db, &favorite.id).is_ok());
+    assert!(get_item(&db, &pinned.id).is_ok());
+    assert!(get_item(&db, &both.id).is_ok());
+
+    let confirmed = clear(&db, &tmp.shelf(), true).unwrap();
+    assert_eq!(confirmed.deleted, 3);
+    assert_eq!(confirmed.skipped, 0);
+    assert_eq!(stats(&db, &tmp.shelf()).unwrap().total, 0);
+}
+
+#[test]
+fn delete_handles_empty_missing_duplicate_and_large_id_sets() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+
+    let empty = delete_items(&db, &tmp.shelf(), &[], false).unwrap();
+    assert_eq!(empty.deleted, 0);
+    assert_eq!(empty.skipped, 0);
+
+    let missing = delete_items(&db, &tmp.shelf(), &["missing-id".into()], false).unwrap();
+    assert_eq!(missing.deleted, 0);
+    assert_eq!(missing.skipped, 0);
+
+    let one = add_text(&db, "重复 ID", "manual", None).unwrap();
+    let duplicate =
+        delete_items(&db, &tmp.shelf(), &[one.id.clone(), one.id.clone()], false).unwrap();
+    assert_eq!(duplicate.deleted, 1);
+    assert_eq!(duplicate.skipped, 0);
+
+    let ids = (0..1_050)
+        .map(|i| {
+            add_text(&db, &format!("批量条目 {i}"), "manual", None)
+                .unwrap()
+                .id
+        })
+        .collect::<Vec<_>>();
+    let large = delete_items(&db, &tmp.shelf(), &ids, false).unwrap();
+    assert_eq!(large.deleted, 1_050);
+    assert_eq!(large.skipped, 0);
+    assert_eq!(stats(&db, &tmp.shelf()).unwrap().total, 0);
+}
+
+#[test]
+fn delete_reports_managed_file_cleanup_failure_after_database_delete() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let source = write_source(&tmp.0, "托管源.bin", b"bytes");
+    let item = add_managed(&db, &tmp.shelf(), &source.to_string_lossy(), "drag", None).unwrap();
+    let managed = tmp.shelf().join(item.managed_path.as_deref().unwrap());
+    std::fs::remove_file(&managed).unwrap();
+    std::fs::create_dir(&managed).unwrap();
+
+    let report = delete_items(&db, &tmp.shelf(), &[item.id.clone()], false).unwrap();
+    assert_eq!(report.deleted, 1);
+    assert_eq!(report.failed_files, 1);
+    assert!(
+        get_item(&db, &item.id).is_err(),
+        "清理失败不能伪报为数据库删除失败"
+    );
+    assert!(managed.is_dir(), "删除失败时必须如实保留磁盘残留");
+    assert!(source.exists(), "托管记录删除不得触碰原始文件");
 }
 
 // ── 过期清理 ────────────────────────────────────────────────
@@ -815,20 +1024,259 @@ fn orphan_files_removed_only_when_unreferenced() {
     let db = Db::open_in_memory().unwrap();
     let src = write_source(&tmp.0, "ok.bin", b"data");
     let item = add_managed(&db, &tmp.shelf(), &src.to_string_lossy(), "drag", None).unwrap();
-        // 手工制造孤儿与 .part
-        let orphan = tmp.shelf().join("files/deadbeef.bin");
-        std::fs::write(&orphan, b"orphan").unwrap();
-        let images = tmp.shelf().join("images");
-        std::fs::create_dir_all(&images).unwrap();
-        let part = images.join("half.png.part");
-        std::fs::write(&part, b"half").unwrap();
-    let removed = purge_orphan_files(&db, &tmp.shelf());
-    assert!(removed >= 2, "孤儿与 .part 都应被移除（实际 {removed}）");
+    // 手工制造孤儿与临时残留。
+    let orphan = tmp.shelf().join("files/deadbeef.bin");
+    std::fs::write(&orphan, b"orphan").unwrap();
+    let images = tmp.shelf().join("images");
+    std::fs::create_dir_all(&images).unwrap();
+    let part = images.join("half.png.part");
+    std::fs::write(&part, b"half").unwrap();
+    let report = purge_orphan_files(&db, &tmp.shelf()).unwrap();
+    assert!(
+        report.removed_files >= 1,
+        "孤儿文件应被移除（实际 {}）",
+        report.removed_files
+    );
+    assert_eq!(report.skipped_temporary_files, 1);
     assert!(!orphan.exists());
-    assert!(!part.exists());
+    assert!(part.exists(), "运行中的 .part 无法确认已过期时必须保留");
     // 在管文件保留
     let rel = item.managed_path.clone().unwrap();
-    assert!(tmp.shelf().join(&rel).exists(), "在管托管文件不得被孤儿清理误删");
+    assert!(
+        tmp.shelf().join(&rel).exists(),
+        "在管托管文件不得被孤儿清理误删"
+    );
+}
+
+#[test]
+fn cleanup_expired_reports_temporary_files_without_deleting_them() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let settings = Settings::default();
+    let item = add_text(&db, "过期内容", "manual", None).unwrap();
+    let past = (Utc::now() - Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    update(
+        &db,
+        &item.id,
+        &UpdatePatch {
+            expire_at: Some(Some(past)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let images = tmp.shelf().join("images");
+    std::fs::create_dir_all(&images).unwrap();
+    let part = images.join("in-progress.png.part");
+    std::fs::write(&part, b"partial").unwrap();
+
+    let report = cleanup_expired(&db, &tmp.shelf(), &settings, false, false).unwrap();
+    assert_eq!(report.candidates, 1);
+    assert_eq!(report.temporary_files_skipped, 1);
+    assert!(part.exists(), "无法判定是否仍在写入的临时文件不能删除");
+}
+
+#[test]
+fn orphan_cleanup_stops_before_deleting_when_reference_query_fails() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let files = tmp.shelf().join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    let orphan = files.join("orphan.bin");
+    let part = files.join("interrupted.part");
+    std::fs::write(&orphan, b"orphan").unwrap();
+    std::fs::write(&part, b"partial").unwrap();
+
+    db.with_conn(|conn| {
+        conn.execute_batch("DROP TABLE shelf_task_links; DROP TABLE shelf_items;")?;
+        Ok(())
+    })
+    .unwrap();
+
+    let result = purge_orphan_files(&db, &tmp.shelf());
+    assert!(result.is_err(), "引用查询失败必须明确返回错误");
+    assert!(orphan.exists(), "数据库不可读时不能删除普通托管文件");
+    assert!(part.exists(), "数据库不可读时也不能继续清理本轮文件");
+}
+
+#[test]
+fn orphan_cleanup_does_not_use_a_partial_reference_set() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let files = tmp.shelf().join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    let referenced = files.join("referenced.bin");
+    let orphan = files.join("orphan.bin");
+    std::fs::write(&referenced, b"referenced").unwrap();
+    std::fs::write(&orphan, b"orphan").unwrap();
+
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "DROP TABLE shelf_task_links;
+             DROP TABLE shelf_items;
+             CREATE TABLE shelf_items (managed_path TEXT);
+             INSERT INTO shelf_items (managed_path) VALUES ('files/referenced.bin');",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let result = purge_orphan_files(&db, &tmp.shelf());
+    assert!(result.is_err(), "第二项引用查询失败必须中止整轮清理");
+    assert!(referenced.exists(), "已读取的部分引用集合不能触发删除");
+    assert!(orphan.exists(), "部分引用集合不能授权删除其他文件");
+}
+
+#[test]
+fn orphan_candidate_rechecks_new_managed_and_image_references_before_delete() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let root = tmp.shelf();
+    let files = root.join("files");
+    let thumbs = root.join("thumbs");
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::create_dir_all(&thumbs).unwrap();
+
+    // 模拟扫描时 `files/late-reference.bin` 无引用；扫描后插入 managed_path。
+    let file = files.join("late-reference.bin");
+    std::fs::write(&file, b"managed").unwrap();
+    let file_meta = std::fs::metadata(&file).unwrap();
+    let file_modified_ns = file_meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let item = add_text(&db, "managed ref", "manual", None).unwrap();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE shelf_items SET managed_path = ?1 WHERE id = ?2",
+            ["files/late-reference.bin", &item.id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let canonical_root = std::fs::canonicalize(&root).unwrap();
+    let canonical_files = std::fs::canonicalize(&files).unwrap();
+    assert_eq!(
+        remove_orphan_if_unreferenced(
+            &db,
+            &root,
+            &canonical_root,
+            &canonical_files,
+            "files",
+            "late-reference.bin",
+            file_meta.len(),
+            file_modified_ns,
+            file_identity(&file).unwrap()
+        )
+        .unwrap(),
+        OrphanRemoveOutcome::Skipped,
+    );
+    assert!(file.exists(), "扫描后新增托管路径引用必须阻止删除");
+
+    // 同样覆盖 thumbs/{id}.png：扫描后插入 image 条目引用必须保留缩略图。
+    let image = add_text(&db, "image ref", "manual", None).unwrap();
+    let thumb = thumbs.join(format!("{}.png", image.id));
+    std::fs::write(&thumb, b"png").unwrap();
+    let thumb_meta = std::fs::metadata(&thumb).unwrap();
+    let thumb_modified_ns = thumb_meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE shelf_items SET kind = 'image' WHERE id = ?1",
+            [&image.id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let canonical_thumbs = std::fs::canonicalize(&thumbs).unwrap();
+    assert_eq!(
+        remove_orphan_if_unreferenced(
+            &db,
+            &root,
+            &canonical_root,
+            &canonical_thumbs,
+            "thumbs",
+            &format!("{}.png", image.id),
+            thumb_meta.len(),
+            thumb_modified_ns,
+            file_identity(&thumb).unwrap()
+        )
+        .unwrap(),
+        OrphanRemoveOutcome::Skipped,
+    );
+    assert!(thumb.exists(), "扫描后新增图片条目引用必须阻止删除");
+}
+
+#[cfg(windows)]
+#[test]
+fn orphan_cleanup_rejects_reparse_point_as_shelf_root() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let outside = tmp.0.join("outside");
+    let outside_files = outside.join("files");
+    std::fs::create_dir_all(&outside_files).unwrap();
+    let original = outside_files.join("user-original.bin");
+    std::fs::write(&original, b"user data").unwrap();
+    create_junction(&tmp.shelf(), &outside);
+
+    let result = purge_orphan_files(&db, &tmp.shelf());
+    assert!(result.is_err(), "暂存架根目录是 junction 时必须拒绝清理");
+    assert!(original.exists(), "junction 目标中的原文件必须保持不变");
+    std::fs::remove_dir(tmp.shelf()).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn orphan_cleanup_skips_reparse_point_subdirectory() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let root = tmp.shelf();
+    std::fs::create_dir_all(&root).unwrap();
+    let outside_files = tmp.0.join("outside-files");
+    std::fs::create_dir_all(&outside_files).unwrap();
+    let original = outside_files.join("user-original.bin");
+    std::fs::write(&original, b"user data").unwrap();
+    create_junction(&root.join("files"), &outside_files);
+
+    let report = purge_orphan_files(&db, &root).unwrap();
+    assert!(report.skipped_files > 0, "junction 子目录应在报告中跳过");
+    assert!(original.exists(), "junction 目标中的原文件必须保持不变");
+    std::fs::remove_dir(root.join("files")).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn startup_part_cleanup_does_not_follow_junctions() {
+    let tmp = TempRoot::new();
+    let outside = tmp.0.join("outside");
+    let files = outside.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    let stale_part = files.join("stale.part");
+    std::fs::write(&stale_part, b"partial").unwrap();
+    create_junction(&tmp.shelf(), &outside);
+
+    assert!(purge_part_files(&tmp.shelf()).is_err());
+    assert!(
+        stale_part.exists(),
+        "root junction 目标中的临时文件必须保留"
+    );
+    std::fs::remove_dir(tmp.shelf()).unwrap();
+
+    let root = tmp.shelf();
+    std::fs::create_dir_all(&root).unwrap();
+    create_junction(&root.join("files"), &files);
+    purge_part_files(&root).unwrap();
+    assert!(
+        stale_part.exists(),
+        "子目录 junction 目标中的临时文件必须保留"
+    );
+    std::fs::remove_dir(root.join("files")).unwrap();
 }
 
 // ── 存在性检查 ──────────────────────────────────────────────
@@ -879,7 +1327,10 @@ fn task_link_idempotent_and_cascade() {
         Ok(())
     })
     .unwrap();
-    assert!(get_item(&db, &item.id).is_ok(), "删除任务不得静默删除暂存资源");
+    assert!(
+        get_item(&db, &item.id).is_ok(),
+        "删除任务不得静默删除暂存资源"
+    );
     assert!(task_links(&db, &item.id).unwrap().is_empty());
     let _ = tmp;
 }
@@ -1049,7 +1500,10 @@ fn fsops_cross_volume_detects_corrupted_copy_and_keeps_source() {
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert!(leftovers.is_empty(), "失败后不得残留临时副本: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "失败后不得残留临时副本: {leftovers:?}"
+    );
     clear_faults();
 }
 
@@ -1453,7 +1907,6 @@ fn finish_report_distinguishes_record_cleanup_failure() {
     clear_faults();
 }
 
-
 // ── 收集箱文件投递（v35） ──────────────────────────────────
 
 /// 建一个真实目标目录 + 目标配置。
@@ -1466,7 +1919,16 @@ fn add_target(
 ) -> drop_targets::DropTarget {
     let dir = base.join(dir_name);
     std::fs::create_dir_all(&dir).unwrap();
-    drop_targets::create(db, root, name, &dir.to_string_lossy(), true, "copy", "rename").unwrap()
+    drop_targets::create(
+        db,
+        root,
+        name,
+        &dir.to_string_lossy(),
+        true,
+        "copy",
+        "rename",
+    )
+    .unwrap()
 }
 
 #[test]
@@ -1543,7 +2005,10 @@ fn drop_target_crud_persists_name_order_visibility_and_modes() {
     drop_targets::delete(&db, &b.id).unwrap();
     assert_eq!(drop_targets::list(&db).unwrap().len(), 1);
     assert!(tmp.0.join("images").is_dir(), "删除配置不得删除真实目录");
-    assert!(drop_targets::delete(&db, &b.id).is_err(), "重复删除返回未找到");
+    assert!(
+        drop_targets::delete(&db, &b.id).is_err(),
+        "重复删除返回未找到"
+    );
 }
 
 #[test]
@@ -1553,8 +2018,16 @@ fn drop_target_rejects_duplicate_path_case_insensitively_and_inside_shelf_root()
     let root = tmp.shelf();
     std::fs::create_dir_all(tmp.0.join("Work")).unwrap();
 
-    drop_targets::create(&db, &root, "工作", &tmp.0.join("Work").to_string_lossy(), true, "", "")
-        .unwrap();
+    drop_targets::create(
+        &db,
+        &root,
+        "工作",
+        &tmp.0.join("Work").to_string_lossy(),
+        true,
+        "",
+        "",
+    )
+    .unwrap();
     let dup = drop_targets::create(
         &db,
         &root,
@@ -1643,9 +2116,20 @@ fn drop_copies_file_and_keeps_source() {
     assert!(copied.exists());
     assert_eq!(std::fs::read(&copied).unwrap(), b"hello");
     assert_eq!(
-        list(&db, &ListFilter { search: None, kind: "all".into(), group_id: "all".into(), favorite_only: false, limit: 10, offset: 0, sort: "default".into() })
-            .unwrap()
-            .total,
+        list(
+            &db,
+            &ListFilter {
+                search: None,
+                kind: "all".into(),
+                group_id: "all".into(),
+                favorite_only: false,
+                limit: 10,
+                offset: 0,
+                sort: "default".into()
+            }
+        )
+        .unwrap()
+        .total,
         0,
         "投递不得悄悄创建暂存记录"
     );
@@ -1660,8 +2144,14 @@ fn drop_conflict_default_renames_and_skip_strategy_skips() {
     let target = add_target(&db, &root, &tmp.0, "归档", "out");
     std::fs::write(tmp.0.join("out").join("重名.txt"), b"old").unwrap();
 
-    let report = fsops::drop_paths(&db, &root, &target, &[src.to_string_lossy().into_owned()], "b1")
-        .unwrap();
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &target,
+        &[src.to_string_lossy().into_owned()],
+        "b1",
+    )
+    .unwrap();
     assert_eq!(report.success, 1, "{:?}", report.entries);
     assert!(tmp.0.join("out").join("重名 (1).txt").exists());
     assert_eq!(
@@ -1693,8 +2183,14 @@ fn drop_conflict_default_renames_and_skip_strategy_skips() {
         "skip",
     )
     .unwrap();
-    let report = fsops::drop_paths(&db, &root, &skip_target, &[src.to_string_lossy().into_owned()], "b2")
-        .unwrap();
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &skip_target,
+        &[src.to_string_lossy().into_owned()],
+        "b2",
+    )
+    .unwrap();
     assert_eq!(report.skipped, 1, "{:?}", report.entries);
     assert_eq!(report.success, 0);
     assert_eq!(
@@ -1715,8 +2211,14 @@ fn drop_folder_keeps_structure_and_empty_dirs() {
     write_source(&folder.join("子目录"), "b.txt", b"b");
     let target = add_target(&db, &root, &tmp.0, "归档", "out");
 
-    let report =
-        fsops::drop_paths(&db, &root, &target, &[folder.to_string_lossy().into_owned()], "b1").unwrap();
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &target,
+        &[folder.to_string_lossy().into_owned()],
+        "b1",
+    )
+    .unwrap();
     assert_eq!(report.success, 1, "{:?}", report.entries);
     let out = tmp.0.join("out").join("项目");
     assert!(out.join("a.txt").exists());
@@ -1744,8 +2246,14 @@ fn drop_move_removes_source_only_after_target_complete() {
     )
     .unwrap();
 
-    let report =
-        fsops::drop_paths(&db, &root, &target, &[src.to_string_lossy().into_owned()], "b1").unwrap();
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &target,
+        &[src.to_string_lossy().into_owned()],
+        "b1",
+    )
+    .unwrap();
     assert_eq!(report.success, 1, "{:?}", report.entries);
     assert_eq!(report.op, "move");
     assert!(!src.exists(), "移动模式必须清理源文件");
@@ -1776,7 +2284,10 @@ fn drop_skips_same_dir_and_duplicate_batch_entries() {
     assert_eq!(report.total, 1, "同批次重复路径先去重");
     assert_eq!(report.skipped, 1, "{:?}", report.entries);
     assert_eq!(report.success, 0);
-    assert!(!dir.join("already (1).txt").exists(), "同目录不得产生额外副本");
+    assert!(
+        !dir.join("already (1).txt").exists(),
+        "同目录不得产生额外副本"
+    );
 }
 
 #[test]
@@ -1793,13 +2304,20 @@ fn drop_batch_partial_failure_isolated_and_missing_source_reported() {
         &db,
         &root,
         &target,
-        &[ok.to_string_lossy().into_owned(), gone.to_string_lossy().into_owned()],
+        &[
+            ok.to_string_lossy().into_owned(),
+            gone.to_string_lossy().into_owned(),
+        ],
         "b1",
     )
     .unwrap();
     assert_eq!(report.success, 1);
     assert_eq!(report.failed, 1);
-    let failed = report.entries.iter().find(|e| e.status == "failed").unwrap();
+    let failed = report
+        .entries
+        .iter()
+        .find(|e| e.status == "failed")
+        .unwrap();
     assert!(failed.reason.as_deref().unwrap().contains("已不存在"));
     assert!(tmp.0.join("out").join("ok.txt").exists());
 }
@@ -1818,14 +2336,20 @@ fn drop_parent_and_child_in_one_batch_processes_parent_only() {
         &db,
         &root,
         &target,
-        &[child.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned()],
+        &[
+            child.to_string_lossy().into_owned(),
+            folder.to_string_lossy().into_owned(),
+        ],
         "b1",
     )
     .unwrap();
     assert_eq!(report.success, 1, "{:?}", report.entries);
     assert_eq!(report.skipped, 1);
     assert!(tmp.0.join("out").join("嵌套").join("child.txt").exists());
-    assert!(!tmp.0.join("out").join("child.txt").exists(), "子项不得被单独复制到根");
+    assert!(
+        !tmp.0.join("out").join("child.txt").exists(),
+        "子项不得被单独复制到根"
+    );
 }
 
 /// 移动模式下父目录被搬走后源路径已不存在：类型必须在操作前判定，子项不能误报失败。
@@ -1867,7 +2391,11 @@ fn drop_move_parent_and_child_counts_child_as_carried_by_parent() {
     assert_eq!(report.total, 3);
     assert_eq!(report.success, 1, "{:?}", report.entries);
     assert_eq!(report.skipped, 2, "{:?}", report.entries);
-    assert_eq!(report.failed, 0, "父目录移动成功不得把子项计入失败: {:?}", report.entries);
+    assert_eq!(
+        report.failed, 0,
+        "父目录移动成功不得把子项计入失败: {:?}",
+        report.entries
+    );
     assert_eq!(report.partial, 0);
     assert_eq!(
         report.success + report.skipped + report.failed + report.partial,
@@ -1876,7 +2404,10 @@ fn drop_move_parent_and_child_counts_child_as_carried_by_parent() {
     );
     let out = dir.join("移动嵌套");
     assert_eq!(std::fs::read(out.join("child.txt")).unwrap(), b"c");
-    assert_eq!(std::fs::read(out.join("sub").join("deep.txt")).unwrap(), b"d");
+    assert_eq!(
+        std::fs::read(out.join("sub").join("deep.txt")).unwrap(),
+        b"d"
+    );
     assert!(!folder.exists(), "移动模式清理源目录");
 }
 
@@ -1909,14 +2440,21 @@ fn drop_partial_parent_marks_children_partial_with_recovery_hint() {
         &db,
         &root,
         &target,
-        &[child.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned()],
+        &[
+            child.to_string_lossy().into_owned(),
+            folder.to_string_lossy().into_owned(),
+        ],
         "b-partial",
     )
     .unwrap();
     fsops::test_support::clear();
 
     assert_eq!(report.partial, 2, "{:?}", report.entries);
-    assert_eq!(report.success, 0, "部分完成不得计入成功: {:?}", report.entries);
+    assert_eq!(
+        report.success, 0,
+        "部分完成不得计入成功: {:?}",
+        report.entries
+    );
     assert_eq!(report.failed, 0);
     let child_entry = report
         .entries
@@ -1926,7 +2464,10 @@ fn drop_partial_parent_marks_children_partial_with_recovery_hint() {
     assert_eq!(child_entry.status, "partial");
     assert!(child_entry.reason.as_deref().unwrap().contains("部分完成"));
     assert!(child_entry.recovery.is_some(), "必须给出人工处理建议");
-    assert!(child_entry.residual_source.is_some(), "必须指出可能残留的源");
+    assert!(
+        child_entry.residual_source.is_some(),
+        "必须指出可能残留的源"
+    );
     // 目标完整可用，源目录可能残留
     assert!(dir.join("部分完成").join("child.txt").exists());
 }
@@ -1949,7 +2490,10 @@ fn drop_parent_failure_does_not_block_unrelated_file() {
         &db,
         &root,
         &target,
-        &[folder.to_string_lossy().into_owned(), independent.to_string_lossy().into_owned()],
+        &[
+            folder.to_string_lossy().into_owned(),
+            independent.to_string_lossy().into_owned(),
+        ],
         "b-fail",
     )
     .unwrap();
@@ -1957,7 +2501,11 @@ fn drop_parent_failure_does_not_block_unrelated_file() {
 
     assert_eq!(report.failed, 1, "{:?}", report.entries);
     assert_eq!(report.success, 1, "{:?}", report.entries);
-    let failed = report.entries.iter().find(|e| e.status == "failed").unwrap();
+    let failed = report
+        .entries
+        .iter()
+        .find(|e| e.status == "failed")
+        .unwrap();
     assert_eq!(failed.display_name, "坏目录");
     assert!(
         !tmp.0.join("out").join("坏目录").exists(),
@@ -1983,9 +2531,14 @@ fn drop_folder_conflict_renames_without_overwriting_existing_directory() {
     std::fs::create_dir_all(&existing).unwrap();
     std::fs::write(existing.join("keep.txt"), b"keep").unwrap();
 
-    let report =
-        fsops::drop_paths(&db, &root, &target, &[folder.to_string_lossy().into_owned()], "b-dup")
-            .unwrap();
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &target,
+        &[folder.to_string_lossy().into_owned()],
+        "b-dup",
+    )
+    .unwrap();
     assert_eq!(report.success, 1, "{:?}", report.entries);
     assert_eq!(
         std::fs::read(existing.join("keep.txt")).unwrap(),
@@ -2020,7 +2573,10 @@ fn drop_skipped_parent_does_not_copy_children_separately() {
         &db,
         &root,
         &target,
-        &[child.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned()],
+        &[
+            child.to_string_lossy().into_owned(),
+            folder.to_string_lossy().into_owned(),
+        ],
         "b-skip-tree",
     )
     .unwrap();
@@ -2044,8 +2600,14 @@ fn drop_rejects_unavailable_target_without_touching_any_file() {
     // 目录在配置之后消失（外接盘拔出 / 网络盘断开）
     std::fs::remove_dir_all(tmp.0.join("out")).unwrap();
 
-    let err = fsops::drop_paths(&db, &root, &target, &[src.to_string_lossy().into_owned()], "b1")
-        .unwrap_err();
+    let err = fsops::drop_paths(
+        &db,
+        &root,
+        &target,
+        &[src.to_string_lossy().into_owned()],
+        "b1",
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("不可用"), "{err}");
     assert!(src.exists());
     assert!(!tmp.0.join("out").exists());
@@ -2096,7 +2658,11 @@ fn drop_target_reorder_handles_duplicate_sort_orders_and_boundaries() {
     let b = add_target(&db, &root, &tmp.0, "B", "b");
     let c = add_target(&db, &root, &tmp.0, "C", "c");
     // 三行 sort_order 完全相同：旧实现交换相同值 = 空操作
-    for (t, created) in [(&a, "2026-01-01T00:00:01Z"), (&b, "2026-01-01T00:00:02Z"), (&c, "2026-01-01T00:00:03Z")] {
+    for (t, created) in [
+        (&a, "2026-01-01T00:00:01Z"),
+        (&b, "2026-01-01T00:00:02Z"),
+        (&c, "2026-01-01T00:00:03Z"),
+    ] {
         force_order(&db, &t.id, 5, created);
     }
     assert_eq!(
@@ -2105,7 +2671,11 @@ fn drop_target_reorder_handles_duplicate_sort_orders_and_boundaries() {
     );
 
     let moved = drop_targets::reorder(&db, &c.id.as_str(), "up").unwrap();
-    assert_eq!(ids(&moved), vec![a.id.as_str(), c.id.as_str(), b.id.as_str()], "重复排序值也必须真正上移");
+    assert_eq!(
+        ids(&moved),
+        vec![a.id.as_str(), c.id.as_str(), b.id.as_str()],
+        "重复排序值也必须真正上移"
+    );
     assert_eq!(stored_orders(&db), vec![0, 1, 2], "顺带规范化为连续序号");
     // 名称/路径/模式不受影响
     assert_eq!(moved[1].name, "C");
@@ -2114,14 +2684,30 @@ fn drop_target_reorder_handles_duplicate_sort_orders_and_boundaries() {
 
     // 继续上移到首位，再点一次是幂等的
     let moved = drop_targets::reorder(&db, &c.id.as_str(), "up").unwrap();
-    assert_eq!(ids(&moved), vec![c.id.as_str(), a.id.as_str(), b.id.as_str()]);
+    assert_eq!(
+        ids(&moved),
+        vec![c.id.as_str(), a.id.as_str(), b.id.as_str()]
+    );
     let again = drop_targets::reorder(&db, &c.id.as_str(), "up").unwrap();
-    assert_eq!(ids(&again), vec![c.id.as_str(), a.id.as_str(), b.id.as_str()], "首位继续上移不报错也不改变顺序");
+    assert_eq!(
+        ids(&again),
+        vec![c.id.as_str(), a.id.as_str(), b.id.as_str()],
+        "首位继续上移不报错也不改变顺序"
+    );
 
     // 下移回中间，再到末位，末位继续下移幂等
-    assert_eq!(ids(&drop_targets::reorder(&db, &c.id.as_str(), "down").unwrap()), vec![a.id.as_str(), c.id.as_str(), b.id.as_str()]);
-    assert_eq!(ids(&drop_targets::reorder(&db, &c.id.as_str(), "down").unwrap()), vec![a.id.as_str(), b.id.as_str(), c.id.as_str()]);
-    assert_eq!(ids(&drop_targets::reorder(&db, &c.id.as_str(), "down").unwrap()), vec![a.id.as_str(), b.id.as_str(), c.id.as_str()]);
+    assert_eq!(
+        ids(&drop_targets::reorder(&db, &c.id.as_str(), "down").unwrap()),
+        vec![a.id.as_str(), c.id.as_str(), b.id.as_str()]
+    );
+    assert_eq!(
+        ids(&drop_targets::reorder(&db, &c.id.as_str(), "down").unwrap()),
+        vec![a.id.as_str(), b.id.as_str(), c.id.as_str()]
+    );
+    assert_eq!(
+        ids(&drop_targets::reorder(&db, &c.id.as_str(), "down").unwrap()),
+        vec![a.id.as_str(), b.id.as_str(), c.id.as_str()]
+    );
 }
 
 #[test]
@@ -2137,7 +2723,10 @@ fn drop_target_reorder_normalizes_sparse_sort_orders() {
     force_order(&db, &c.id.as_str(), 30, "2026-01-01T00:00:03Z");
 
     let moved = drop_targets::reorder(&db, &b.id.as_str(), "up").unwrap();
-    assert_eq!(ids(&moved), vec![b.id.as_str(), a.id.as_str(), c.id.as_str()]);
+    assert_eq!(
+        ids(&moved),
+        vec![b.id.as_str(), a.id.as_str(), c.id.as_str()]
+    );
     assert_eq!(stored_orders(&db), vec![0, 1, 2]);
 }
 
@@ -2151,7 +2740,10 @@ fn drop_target_reorder_after_middle_delete_keeps_remaining_order() {
     let c = add_target(&db, &root, &tmp.0, "C", "c");
     drop_targets::delete(&db, &b.id.as_str()).unwrap();
 
-    assert_eq!(ids(&drop_targets::list(&db).unwrap()), vec![a.id.as_str(), c.id.as_str()]);
+    assert_eq!(
+        ids(&drop_targets::list(&db).unwrap()),
+        vec![a.id.as_str(), c.id.as_str()]
+    );
     // 剩余两行 sort_order 是 0/2（删除后不连续）：上移仍必须生效
     let moved = drop_targets::reorder(&db, &c.id.as_str(), "up").unwrap();
     assert_eq!(ids(&moved), vec![c.id.as_str(), a.id.as_str()]);
@@ -2206,8 +2798,8 @@ fn drop_limits_target_count() {
     }
     let extra = tmp.0.join("extra");
     std::fs::create_dir_all(&extra).unwrap();
-    let err = drop_targets::create(&db, &root, "", &extra.to_string_lossy(), true, "", "")
-        .unwrap_err();
+    let err =
+        drop_targets::create(&db, &root, "", &extra.to_string_lossy(), true, "", "").unwrap_err();
     assert!(err.to_string().contains("最多"));
 }
 

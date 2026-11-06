@@ -29,6 +29,7 @@ import {
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { PLANNING_STATUS_TONE } from "./PlanningBits";
 import { useUiStore } from "../../store/useUiStore";
+import FeatureAgentLinks from "./FeatureAgentLinks";
 
 export const FEATURE_STATUS_OPTIONS = (
   Object.keys(PLANNING_FEATURE_STATUS_LABELS) as PlanningFeatureStatus[]
@@ -312,6 +313,8 @@ export function PlanningFeatureCard({
               )}
             </section>
           </div>
+
+          <FeatureAgentLinks featureId={feature.id} />
 
           <div className="planning-steps">
             <div className="planning-steps-head">

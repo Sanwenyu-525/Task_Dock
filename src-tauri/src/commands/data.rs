@@ -620,7 +620,10 @@ fn collect(db: &Db) -> AppResult<serde_json::Value> {
         // http_token 属于本机安全项，不随导出文件流转
         let mut settings = serde_json::Map::new();
         {
-            let mut stmt = tx.prepare("SELECT key, value FROM application_settings WHERE key != 'http_token'")?;
+            let mut stmt = tx.prepare(
+                "SELECT key, value FROM application_settings
+                 WHERE key NOT IN ('http_token', 'tts_voice_pack_enabled', 'tts_voice_pack_id', 'tts_voice_route')",
+            )?;
             let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             for row in rows {
                 let (k, v) = row?;
@@ -1052,13 +1055,12 @@ fn parse_extended(
         .get("extended_modules")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let registry_tables: Option<Vec<String>> = data.get("registry").and_then(|v| v.as_array()).map(
-        |arr| {
+    let registry_tables: Option<Vec<String>> =
+        data.get("registry").and_then(|v| v.as_array()).map(|arr| {
             arr.iter()
                 .filter_map(|r| r.get("table").and_then(|t| t.as_str()).map(String::from))
                 .collect()
-        },
-    );
+        });
     let required: Vec<&'static str> = match &registry_tables {
         Some(names) => crate::commands::backup::EXTENDED_TABLES
             .iter()
@@ -1683,6 +1685,13 @@ pub(crate) fn import_parsed_with(
             // 扩展模块先按依赖逆序清除（任务级联之前），再走旧表清除顺序。
             if parsed.extended.active {
                 for table in crate::commands::backup::EXTENDED_TABLES.iter().rev() {
+                    // 较旧 registry 没有语音表时保留本机语音包；显式空 section 会在
+                    // parsed.tables 中存在，因此仍清空。registry 声明缺 section 已在预检拒绝。
+                    if crate::audio::voice_packs::is_voice_table(table)
+                        && !parsed.extended.tables.contains_key(table)
+                    {
+                        continue;
+                    }
                     conn.execute(&format!("DELETE FROM {}", table), [])?;
                 }
             }
@@ -2082,6 +2091,128 @@ pub fn inspect_backup(path: String) -> AppResult<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seed_voice_pack(db: &Db) {
+        let now = now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO voice_packs (id,name,created_at,updated_at) VALUES ('00000000-0000-0000-0000-000000000003','保留包',?1,?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_assets (id,sha256,media_type,duration_ms,size_bytes,created_at) VALUES ('asset-keep',?1,'audio/wav',1000,4,?2)",
+                rusqlite::params!["a".repeat(64), now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_pack_assets (pack_id,asset_id,display_name,created_at) VALUES ('00000000-0000-0000-0000-000000000003','asset-keep','keep.wav',?1)",
+                [&now],
+            )?;
+            conn.execute(
+                "INSERT INTO voice_bindings (pack_id,event_kind,asset_id) VALUES ('00000000-0000-0000-0000-000000000003','agent_done','asset-keep')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        db.set_setting(
+            "tts_voice_pack_id",
+            serde_json::json!("00000000-0000-0000-0000-000000000003"),
+        )
+        .unwrap();
+        db.set_setting("tts_voice_pack_enabled", serde_json::json!(true))
+            .unwrap();
+    }
+
+    fn registry_for(tables: &[&str]) -> serde_json::Value {
+        serde_json::Value::Array(
+            tables
+                .iter()
+                .map(|table| serde_json::json!({"table": table}))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn voice_tables_restore_has_missing_empty_and_declared_missing_states() {
+        let db = memdb();
+        seed_voice_pack(&db);
+        let old_header = serde_json::json!({
+            "extended_modules": true,
+            "registry": registry_for(&[]),
+        });
+        let old = parse_extended(&db, &old_header, SectionSource::Value(&old_header)).unwrap();
+        assert!(old.active);
+        assert!(!old.tables.contains_key("voice_packs"));
+        import_parsed_with(
+            &db,
+            ParsedImport {
+                extended: old,
+                ..Default::default()
+            },
+            &ImportOptions {
+                allow_extended: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let retained: i64 = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM voice_packs", [], |row| row.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(retained, 1, "旧 registry 未包含语音表时必须保留现有语音包");
+        assert_eq!(
+            db.get_setting("tts_voice_pack_id").unwrap(),
+            Some(serde_json::json!("00000000-0000-0000-0000-000000000003"))
+        );
+
+        let voice_tables = [
+            "voice_packs",
+            "voice_assets",
+            "voice_pack_assets",
+            "voice_bindings",
+        ];
+        let empty_header = serde_json::json!({
+            "extended_modules": true,
+            "registry": registry_for(&voice_tables),
+            "voice_packs": [],
+            "voice_assets": [],
+            "voice_pack_assets": [],
+            "voice_bindings": [],
+        });
+        let empty =
+            parse_extended(&db, &empty_header, SectionSource::Value(&empty_header)).unwrap();
+        assert!(voice_tables
+            .iter()
+            .all(|table| empty.tables.contains_key(table)));
+        import_parsed_with(
+            &db,
+            ParsedImport {
+                extended: empty,
+                ..Default::default()
+            },
+            &ImportOptions {
+                allow_extended: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let remaining: i64 = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM voice_packs", [], |row| row.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0, "显式空表必须清空现有语音数据");
+
+        let incomplete = serde_json::json!({
+            "extended_modules": true,
+            "registry": registry_for(&["voice_packs"]),
+        });
+        let err = parse_extended(&db, &incomplete, SectionSource::Value(&incomplete)).unwrap_err();
+        assert!(err.to_string().contains("voice_packs"));
+    }
     use crate::agents::{ingest_core, AgentEvent, Transport};
     use rusqlite::OptionalExtension;
 
@@ -3083,6 +3214,9 @@ mod tests {
     fn import_preserves_local_http_token_and_registry() {
         let db = memdb();
         seed_full(&db);
+        seed_voice_pack(&db);
+        db.set_setting("tts_voice_route", serde_json::json!("custom"))
+            .unwrap();
         let token_before: String = db
             .with_conn(|c| {
                 c.query_row(
@@ -3096,6 +3230,13 @@ mod tests {
             .unwrap()
             .expect("seed 后存在 token");
         let v = collect(&db).unwrap();
+        for key in [
+            "tts_voice_pack_enabled",
+            "tts_voice_pack_id",
+            "tts_voice_route",
+        ] {
+            assert!(v["settings"].get(key).is_none(), "旧 JSON 导出不包含 {key}");
+        }
         import_value(&db, &v).unwrap();
         let token_after: String = db
             .with_conn(|c| {
@@ -3108,6 +3249,25 @@ mod tests {
             })
             .unwrap();
         assert_eq!(token_before, token_after, "导入不得覆盖本机 http_token");
+        let voice_pack_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM voice_packs", [], |row| row.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(voice_pack_count, 1, "旧 JSON 导入保留本机语音包");
+        assert_eq!(
+            db.get_setting("tts_voice_pack_id").unwrap(),
+            Some(serde_json::json!("00000000-0000-0000-0000-000000000003"))
+        );
+        assert_eq!(
+            db.get_setting("tts_voice_pack_enabled").unwrap(),
+            Some(serde_json::json!(true))
+        );
+        assert_eq!(
+            db.get_setting("tts_voice_route").unwrap(),
+            Some(serde_json::json!("custom"))
+        );
     }
 
     /// 分块备份恢复：数据完整、归档提交到正式目录、恢复前自动生成完整恢复点、

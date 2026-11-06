@@ -54,7 +54,9 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
   const recentLoading = useShelfStore((s) => s.recentLoading);
   const recentLoaded = useShelfStore((s) => s.recentLoaded);
   const recentError = useShelfStore((s) => s.recentError);
+  const mutationSyncError = useShelfStore((s) => s.mutationSyncError);
   const loadRecent = useShelfStore((s) => s.loadRecent);
+  const retryShelfSync = useShelfStore((s) => s.retryShelfSync);
   const addPaths = useShelfStore((s) => s.addPaths);
   const requestShelfLocate = useGlobalSearchStore((s) => s.requestShelfLocate);
   const [adding, setAdding] = useState(false);
@@ -198,7 +200,9 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
     }
   };
 
-  const showEmpty = recentLoaded && recent.length === 0 && !recentError;
+  const showEmpty = recentLoaded && recent.length === 0 && !recentError && !mutationSyncError;
+  const retryRecent = () =>
+    void (mutationSyncError ? retryShelfSync() : loadRecent({ force: true }));
 
   return (
     <section className="cap-shelf-recent" aria-label="最近暂存">
@@ -225,11 +229,11 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
         </button>
       </div>
 
-      {recentError && recent.length === 0 ? (
+      {(recentError || mutationSyncError) && recent.length === 0 ? (
         <p className="cap-shelf-recent-hint is-error" role="alert">
-          暂存架读取失败
-          <button type="button" className="cap-mini" onClick={() => void loadRecent({ force: true })}>
-            重试
+          暂存架状态刷新失败
+          <button type="button" className="cap-mini" onClick={retryRecent}>
+            重试同步
           </button>
         </p>
       ) : recentLoading && recent.length === 0 ? (
@@ -241,6 +245,15 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
           暂存架还是空的；用「+」添加文件，默认只保存引用、不复制原文件。
         </p>
       ) : (
+        <>
+        {(recentError || mutationSyncError) && (
+          <p className="cap-shelf-recent-hint is-error" role="alert">
+            暂存架状态刷新失败，当前列表可能未同步。
+            <button type="button" className="cap-mini" onClick={retryRecent}>
+              重试同步
+            </button>
+          </p>
+        )}
         <ul className="cap-shelf-recent-list">
           {recent.map((item) => {
             const Icon = KIND_ICONS[item.kind] ?? FileIcon;
@@ -355,6 +368,7 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
             );
           })}
         </ul>
+        </>
       )}
     </section>
   );

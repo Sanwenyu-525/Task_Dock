@@ -1,6 +1,6 @@
-# 帮助系统（帮助中心 / 首次引导 / ContextHelpButton）— 第一轮交付说明
+# 帮助系统（帮助中心 / 首次引导 / ContextHelpButton）— 交付说明
 
-> 交付轮次：Round 1（2026-11-06，Subagent B）。第二轮计划接入各功能面板，见文末。
+> 交付轮次：Round 2（2026-11-06）。本轮补齐主要业务页上下文入口、来源页返回和显式操作源变更提示；未完成项列在文末。
 
 ## 1. 组成与文件地图
 
@@ -12,10 +12,11 @@
 | 状态徽标 | `src/help/statusMeta.ts` | 教程状态 → 文案键 + StatusTone 统一映射 |
 | 最近浏览 | `src/help/recent.ts` | localStorage（`taskdock.help.recent.v1`，上限 8 条），无常驻任务 |
 | 正文内容 | `src/help/content/*.ts` | 按分类分文件的结构化 TS 内容（不用 markdown 解析器，零新依赖） |
-| 校验 | `npm run help:check` | = `vitest run src/help/__tests__/registry-contract.test.ts` |
-| 帮助中心 UI | `src/components/help/HelpCenterPanel.tsx`（+ `HelpArticleBody.tsx` / `HelpFeatureLink.tsx` / `help-center.css`） | 完整模式第 13 个视觉入口（`help` tab）宿主页 |
+| 校验与健康度 | `npm run help:check` | 注册中心静态契约 + 教程覆盖/复核/英文缺失摘要；MCP、工作流、场景和暂存架操作源文件由 `src/help/operationContracts.ts` 显式登记 |
+| 帮助中心 UI | `src/components/help/HelpCenterPanel.tsx`（+ `HelpArticleBody.tsx` / `HelpFeatureLink.tsx` / `help-center.css`） | `help` 稳定路由；默认不占左侧常驻入口 |
 | 上下文帮助 | `src/components/help/ContextHelpButton.tsx` | 可复用 `?` 按钮 + Popover（overlayStack menu 层） |
 | 首次引导 | `src/store/useOnboardingStore.ts`、`src/components/onboarding/OnboardingOverlay.tsx`（+ `onboarding.css`） | 页内卡片形态（非全屏 Modal），localStorage `taskdock.onboarding.v1` |
+| 重开引导 | `src/components/onboarding/ReopenOnboardingButton.tsx` | 帮助中心与设置页可复用；调用现有 `reopenFromHelp()`，无新存储或 IPC |
 
 ## 2. 教程内容约定
 
@@ -33,7 +34,8 @@
   `needs_review`（操作语义可能过时或功能仍在开发）/ `unavailable`；
 - featureCatalog 的 `implemented / partial / planned / blocked` 是功能实现状态；
 - **静态校验确认不了的「操作语义是否过时」不伪装自动通过**，一律用 `needs_review` 表达
-  （当前 2 篇：`help.agents.mcp-authorization`（功能开发中）、`help.troubleshooting.agent-no-events`）。
+  （当前 2 篇：`help.agents.mcp-authorization`（管理 UI / 真实客户端流程待复核）、
+  `help.troubleshooting.agent-no-events`）。
 
 ### 2.3 结构化 section
 
@@ -54,11 +56,12 @@ type HelpSection =
    - `id`：`help.<categoryId>.<slug>`，稳定且唯一（公开契约，重命名视为破坏性变更）；
    - `relatedFeatureIds`：必须 ∈ `featureCatalog`；
    - `relatedRouteIds`：必须 ∈ `navigationRegistry` 入口 ID；
-   - `contentVersion ≥ 1`（结构变化递增）、`reviewedForVersion` 非空（如 `"v0.11"`）；
+   - `contentVersion ≥ 1`（正文结构或操作语义变化递增）、`reviewedForVersion` 非空（如 `"v0.11"`）；
    - `status=verified` 必须有完整 zh-CN 正文 + 非空 `keywords["zh-CN"]`；
    - en-US 正文若提供，段落数量与类型必须与 zh-CN 平行（防漂移）；
-3. 运行 `npm run help:check` —— 全部契约静态校验，失败消息指明「哪篇文章哪个字段」；
-4. 若关联了 implemented 核心功能，注册中心契约保证「每个 implemented 核心功能至少一篇
+3. 若改动 `operationContracts.ts` 登记的操作/权限实现，递增对应契约 `version`，把受影响文章改为 `needs_review`；人工复核正文后更新 `reviewedOperationContractVersions` 和文章状态；
+4. 运行 `npm run help:check` —— 静态契约校验 + 健康度摘要；无效引用和敏感契约冲突会阻断，普通契约冲突、待复核和缺英文版会明确提示；
+5. 若关联了 implemented 核心功能，注册中心契约保证「每个 implemented 核心功能至少一篇
    非 unavailable 教程」，删除教程前先确认不破坏该约束。
 
 ## 4. ContextHelpButton 用法（第二轮接入指南）
@@ -79,8 +82,16 @@ import ContextHelpButton from "../help/ContextHelpButton";
 - 「查看完整教程」执行 `setTab("help")` + `requestHelpArticle(articleId)`（一次性意图，
   帮助中心消费后清除；token 自增防重复消费）。
 
-第二轮接入建议顺序：任务页（quick-capture / smart-reminders）、剪贴板页、Agent 页、
-工作流页；每个面板 1-2 个按钮即可，不在列表行内堆叠帮助按钮。
+当前已接入：任务页主筛选栏（`help.tasks.create-reminders`）、剪贴板标题操作区（仅页面形态，
+`help.clipboard.history`）、Agent 分区工具栏（`help.agents.hooks-onboarding`）、工作流编辑器
+（`help.workflows.one-click`）、规划中心数据源切换区（`help.workflows.planning-center`）、暂存架标题区
+（`help.capture.shelf`）、场景工作区标题区（`help.workflows.scenes`）、设置中的 MCP 服务开关
+（`help.agents.mcp-authorization`）和数据备份开关（`help.troubleshooting.backup`）。
+
+帮助中心可从设置页「帮助与教程」或业务页面的上下文帮助打开。上下文按钮与设置入口会记录来源页，
+帮助中心提供「返回来源页面」；离开帮助路由时自动清除旧来源。帮助文章内「返回教程列表」会保留原搜索查询。
+左侧导航中的 `help` 路由仍保留，
+但新配置默认隐藏以减少常驻入口；已有导航配置会按稳定 ID 保留用户明确设置的显隐和顺序。
 
 ## 5. 首次引导语义
 
@@ -96,16 +107,19 @@ import ContextHelpButton from "../help/ContextHelpButton";
 ## 6. 校验命令
 
 ```bash
-npm run help:check          # 注册中心契约（12 用例）
+npm run help:check          # 注册中心契约与教程健康度检查
 npx vitest run src/help src/components/help src/components/onboarding src/store/useOnboardingStore.test.ts
 npx tsc --noEmit
 ```
 
-## 7. 第二轮待办
+MCP 教程当前描述设置中的管理 UI 和规划中心 18 个读写工具：`disabled` / `readonly` /
+`project_rw` 权限、项目授权、一次性 token、客户端配置片段与分页审计摘要；明确不支持任务/剪贴板工具。
+审计 UI 隐去 `detail`、`request_id` 和 `result_json`，但本地数据库仍保存成功写入结果用于幂等重放，且当前无保留期限或自动清理策略。`help:check` 只检查登记过的 MCP 身份、审计、bridge、命令、配置、
+协议、工具与数据库源文件，也登记工作流、场景及暂存架操作文件；变更检查只对这些明确登记的文件运行，并同时包含未跟踪的新源文件。若敏感文章仍为 `verified` 时其源文件变化，会得到阻断级健康问题。静态检查不等于
+真实 MCP 客户端、桌面运行状态或系统级交互已通过验收。教程仍标为 `needs_review`，直到真实客户端与 UI 流程完成人工复核。
 
-1. 各面板接入 `ContextHelpButton`（见第 4 节顺序建议）；
-2. 「设置」页加入「重新打开新手引导」入口（本轮 SettingsPanel 属其他 Agent 禁改范围，未接入；
-   帮助中心已提供等价入口）；
-3. 全局搜索（Ctrl+Shift+F）接入帮助分类（当前帮助中心自带搜索，未占用全局搜索）；
-4. MCP 教程随功能发布复核转 verified；`agent-no-events` 篇真机复核后转 verified；
-5. en-US 教程正文按需补齐（缺失时有诚实徽标，不影响使用）。
+## 7. 后续待办
+
+1. 全局搜索（Ctrl+Shift+F）接入帮助分类（当前帮助中心自带搜索，未占用全局搜索）；
+2. MCP、工作流、场景和暂存架教程完成人工界面复核后再评估是否转 verified；`agent-no-events` 篇需真机复核；
+3. en-US 教程正文按需补齐（缺失时有诚实徽标，不影响使用）；浅色/深色、玻璃预设和 320/400px 窄窗仍需 WebView2 验收。

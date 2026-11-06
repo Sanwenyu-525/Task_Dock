@@ -154,6 +154,10 @@ export default function AppPicker({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const sessions = useAgentsStore((s) => s.snapshot?.sessions ?? EMPTY_SESSIONS);
   const modalRef = useRef<HTMLDivElement>(null);
+  /** 自动分页：滚动容器与哨兵。 */
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const autoTriggeredRef = useRef(false);
 
   // 弹层栈：关联目标选择器是模态对话框。Escape 只关它，
   // 不会越过它去关外层（任务编辑器），更不会把主窗口藏进托盘。
@@ -448,6 +452,32 @@ export default function AppPicker({
   );
   const pageVisible = pageApps.slice(0, visibleCount);
   const pageHasMore = pageApps.length > pageVisible.length;
+
+  // 滚动触底自动加载：用 IntersectionObserver 监听哨兵，进入视口时展示下一批。
+  // 不支持 IntersectionObserver 的环境回退到手动「加载更多」按钮。
+  const activeHasMore = isPage ? pageHasMore : hasMore;
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const sentinel = sentinelRef.current;
+    const root = listScrollRef.current;
+    if (!sentinel || !root) return;
+    if (!activeHasMore) return;
+    autoTriggeredRef.current = false;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting && !autoTriggeredRef.current) {
+            autoTriggeredRef.current = true;
+            setVisibleCount((v) => v + APP_PAGE_SIZE);
+          }
+          if (!entry.isIntersecting) autoTriggeredRef.current = false;
+        }
+      },
+      { root, rootMargin: "160px 0px", threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [activeHasMore, isPage, pageView]);
 
   // 扫描结果变化后剔除已不存在身份的选中项，避免批量提交提交到失效条目。
   // 渐进扫描期间列表尚不完整，暂不裁剪，否则已选中的应用会在新批次到达前被误删。
@@ -1036,7 +1066,7 @@ export default function AppPicker({
               </div>
             </div>
 
-            <div className="app-picker-page-body">
+            <div className="app-picker-page-body" ref={isPage && pageView === "discover" ? listScrollRef : undefined}>
               {batchError && (
                 <div className="empty-hint error-text" role="alert">{batchError}</div>
               )}
@@ -1113,13 +1143,16 @@ export default function AppPicker({
                           );
                         })}
                       </div>
-                      {pageHasMore && (
+                      {pageHasMore && typeof IntersectionObserver === "undefined" && (
                         <button
                           className="btn sm picker-more"
                           onClick={() => setVisibleCount((v) => v + APP_PAGE_SIZE)}
                         >
                           加载更多（已显示 {pageVisible.length} / {pageApps.length}）
                         </button>
+                      )}
+                      {pageHasMore && (
+                        <div ref={sentinelRef} className="picker-sentinel" aria-hidden="true" />
                       )}
                     </>
                   )}
@@ -1357,7 +1390,7 @@ export default function AppPicker({
           )}
 
           {/* 应用列表 */}
-          <div className="picker-list" role="listbox" aria-label="已安装软件">
+          <div className="picker-list" role="listbox" aria-label="已安装软件" ref={!isPage ? listScrollRef : undefined}>
             {renderScanGate()}
             {scan !== null && (
               <>
@@ -1392,13 +1425,16 @@ export default function AppPicker({
                         </button>
                       );
                     })}
-                    {hasMore && (
+                    {hasMore && typeof IntersectionObserver === "undefined" && (
                       <button
                         className="btn sm picker-more"
                         onClick={() => setVisibleCount((v) => v + APP_PAGE_SIZE)}
                       >
                         加载更多（已显示 {visibleApps.length} / {apps.length}）
                       </button>
+                    )}
+                    {hasMore && (
+                      <div ref={sentinelRef} className="picker-sentinel" aria-hidden="true" />
                     )}
                   </>
                 )}

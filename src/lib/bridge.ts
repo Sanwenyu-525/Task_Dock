@@ -142,6 +142,8 @@ export interface AgentSession {
   last_run_id: string | null;
   /** 关联的 agent_instances 行 ID；未知为 null（UI 不得伪造实例） */
   instance_id?: string | null;
+  /** 当前有效的真实轮次数；超出实时快照轮次上限时仍保留准确计数。 */
+  live_run_count?: number;
 }
 
 export interface AgentRun {
@@ -164,6 +166,25 @@ export interface AgentSnapshot {
   instances: AgentInstance[];
   sessions: AgentSession[];
   runs: AgentRun[];
+  /** 后端全量计数；明细仍有界，超限可经 keyset 分页继续查看。 */
+  live_summary?: AgentLiveSummary;
+}
+
+export interface AgentLiveCounts {
+  active_session_total: number;
+  session_total: number;
+  run_total: number;
+  running: number;
+  waiting: number;
+  failed: number;
+  disconnected: number;
+}
+
+export interface AgentLiveSummary extends AgentLiveCounts {
+  by_source?: Record<string, AgentLiveCounts>;
+  sessions_truncated: boolean;
+  runs_truncated: boolean;
+  next_cursor: string | null;
 }
 
 /**
@@ -173,6 +194,9 @@ export interface AgentSnapshot {
  */
 export interface AgentHistorySession extends AgentSession {
   run_count: number;
+  /** 当前有效真实轮次的最差状态；历史会话为 null。 */
+  live_state?: string | null;
+  live_run_count?: number;
 }
 
 export interface AgentHistorySessionsPage {
@@ -221,6 +245,8 @@ export interface AgentHistorySessionsQuery {
    * 精确按会话 ID 定位由后端固定包含实时。
    */
   includeLive?: boolean;
+  /** 仅查实时会话，用于从快照容量边界继续按 keyset 访问。 */
+  liveOnly?: boolean;
   cursor?: string;
   /** 1..100，默认 20 */
   limit?: number;
@@ -306,6 +332,7 @@ export interface Settings {
   http_enabled: boolean;
   http_port: number;
   http_token: string;
+  mcp_server_enabled: boolean;
   mock_enabled: boolean;
   notify_reminder: boolean;
   notify_agent: boolean;
@@ -344,6 +371,10 @@ export interface Settings {
   tts_reminder?: boolean;
   tts_cache_enabled?: boolean;
   tts_cache_max_mb?: number;
+  /** 自定义固定语音片段：仅在现有 TTS 总开关开启时参与语音路由。 */
+  tts_voice_pack_enabled?: boolean;
+  tts_voice_pack_id?: string;
+  tts_voice_route?: "auto" | "system" | "custom";
   overdue_grace_hours: number;
   stale_run_minutes: number;
   auto_backup: boolean;
@@ -823,11 +854,19 @@ export const agentSnapshot = () => invoke<AgentSnapshot>("agent_snapshot");
 export const agentHistorySessions = (query: AgentHistorySessionsQuery = {}) =>
   invoke<AgentHistorySessionsPage>("agent_history_sessions", { query });
 /** 会话轮次按需分页：展开会话后再加载，避免一次拉全部历史轮次。 */
-export const agentHistoryRuns = (sessionId: string, cursor?: string | null, limit = 10) =>
+export const agentHistoryRuns = (
+  sessionId: string,
+  cursor?: string | null,
+  limit = 10,
+  includeLive = false,
+  liveOnly = false,
+) =>
   invoke<AgentHistoryRunsPage>("agent_history_runs", {
     sessionId,
     cursor: cursor ?? undefined,
     limit,
+    includeLive: includeLive || undefined,
+    liveOnly: liveOnly || undefined,
   });
 /** 按会话行 ID 精确定位（通知跳转/深链）。 */
 export const agentHistorySession = (sessionId: string) =>
@@ -978,12 +1017,104 @@ export interface TtsCacheReport {
   writes: number;
   evictions: number;
   memoryHits: number;
+  failedFiles?: number;
+  skippedFiles?: number;
+  status?: "ready" | "partial" | "unavailable";
+  errorCode?: string;
+  errorMessage?: string;
 }
 export interface TtsCacheClearReport {
   ok: boolean;
   freedBytes: number;
   removedFiles: number;
+  failedFiles?: number;
+  skippedFiles?: number;
+  status?: "success" | "partial" | "failed";
+  errorCode?: string;
+  errorMessage?: string;
 }
+
+export type VoiceEventKind =
+  | "agent_started"
+  | "agent_done"
+  | "agent_done_multiple"
+  | "agent_waiting"
+  | "agent_failed"
+  | "agent_disconnected"
+  | "task_due"
+  | "reminder";
+
+export type VoiceRouteMode = "auto" | "system" | "custom";
+
+export interface VoiceAsset {
+  id: string;
+  displayName: string;
+  mediaType: "audio/mpeg" | "audio/wav";
+  durationMs: number;
+  sizeBytes: number;
+}
+
+export interface VoiceBinding {
+  eventKind: VoiceEventKind;
+  assetId: string;
+}
+
+export interface VoicePack {
+  id: string;
+  name: string;
+  storageBytes: number;
+  assets: VoiceAsset[];
+  bindings: VoiceBinding[];
+}
+
+export interface VoiceClip {
+  assetId: string;
+  mediaType: VoiceAsset["mediaType"];
+  durationMs: number;
+}
+
+export interface VoiceAssetImportResult {
+  ok: boolean;
+  code: string;
+  asset?: VoiceAsset;
+  /** 超过建议时长但未超过硬上限时为 true。 */
+  durationWarning?: boolean;
+}
+
+export interface VoiceDeleteResult {
+  /** 数据库删除已提交成功。 */
+  deleted: boolean;
+  /** 仍有孤儿文件待后续重试清理。 */
+  cleanupPending: boolean;
+  /** 清理警告代码，成功清理时为 null。 */
+  cleanupWarning?: string | null;
+  /** 本次实际解除引用的资源数。 */
+  removedAssets: number;
+  /** 本次实际确认释放的字节。 */
+  freedBytes: number;
+}
+
+export const voicePacksList = () => invoke<VoicePack[]>("voice_packs_list");
+export const voicePackCreate = (name: string) =>
+  invoke<string>("voice_pack_create", { name });
+export const voicePackRename = (packId: string, name: string) =>
+  invoke<void>("voice_pack_rename", { packId, name });
+export const voicePackDelete = (packId: string) =>
+  invoke<VoiceDeleteResult>("voice_pack_delete", { packId });
+export const voiceAssetImport = (packId: string, path: string) =>
+  invoke<VoiceAssetImportResult>("voice_asset_import", { packId, path });
+export const voiceAssetRemove = (packId: string, assetId: string) =>
+  invoke<VoiceDeleteResult>("voice_asset_remove", { packId, assetId });
+export const voiceBindingSet = (
+  packId: string,
+  eventKind: VoiceEventKind,
+  assetId: string | null,
+) => invoke<void>("voice_binding_set", { packId, eventKind, assetId });
+export const voiceResolveClip = (eventKind: VoiceEventKind) =>
+  invoke<VoiceClip | null>("voice_resolve_clip", { eventKind });
+export const voiceAssetPath = (assetId: string) =>
+  invoke<string>("voice_asset_path", { assetId });
+
 export const ttsListVoices = () => invoke<TtsVoicesReport>("tts_list_voices");
 export const ttsSynthesize = (args: {
   text: string;
@@ -996,6 +1127,80 @@ export const ttsSynthesize = (args: {
 }) => invoke<TtsSynthesisReport>("tts_synthesize", args);
 export const ttsCacheStats = () => invoke<TtsCacheReport>("tts_cache_stats");
 export const ttsCacheClear = () => invoke<TtsCacheClearReport>("tts_cache_clear");
+
+export type ResourceCleanupCategory = "temporary" | "tts" | "orphan_thumbnails";
+export type ResourceAvailability = "ready" | "partial" | "unavailable";
+export type ResourceCleanupStatus = "success" | "partial" | "failed" | "skipped";
+
+export interface ResourceSnapshot {
+  sampledAt: string;
+  application: {
+    knownCacheBytes: number | null;
+    knownCacheFiles: number | null;
+    status: ResourceAvailability;
+  };
+  memory: {
+    totalBytes: number | null;
+    availableBytes: number | null;
+  };
+  disks: Array<{
+    volume: string;
+    totalBytes: number | null;
+    availableBytes: number | null;
+  }>;
+}
+
+export interface ResourceCleanupCategoryPreview {
+  category: ResourceCleanupCategory;
+  status: ResourceAvailability | "incomplete";
+  candidates: number;
+  estimatedBytes: number;
+  protectedFiles: number;
+  skippedFiles: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface ResourceCleanupPreview {
+  previewId: string;
+  createdAt: string;
+  expiresAt: string;
+  categories: ResourceCleanupCategoryPreview[];
+  totalCandidates: number;
+  totalEstimatedBytes: number;
+}
+
+export interface ResourceCleanupCategoryResult {
+  category: ResourceCleanupCategory;
+  status: ResourceCleanupStatus;
+  candidates: number;
+  estimatedBytes: number;
+  freedBytes: number;
+  deletedFiles: number;
+  skippedFiles: number;
+  failedFiles: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface ResourceCleanupExecutionReport {
+  jobId: string;
+  startedAt: string;
+  finishedAt: string;
+  status: ResourceCleanupStatus;
+  totalFreedBytes: number;
+  totalDeletedFiles: number;
+  categories: ResourceCleanupCategoryResult[];
+}
+
+export const resourceSnapshot = () => invoke<ResourceSnapshot>("resource_snapshot");
+export const resourceCleanupPreview = (categories: ResourceCleanupCategory[]) =>
+  invoke<ResourceCleanupPreview>("resource_cleanup_preview", { categories });
+export const resourceCleanupExecute = (args: {
+  previewId: string;
+  categories: ResourceCleanupCategory[];
+}) => invoke<ResourceCleanupExecutionReport>("resource_cleanup_execute", args);
+
 /** 后端音频事件：来自真实 Agent 通知记录 / 任务提醒，eventId 用于去重。 */
 export interface AudioEventItem {
   eventId: string;
@@ -1237,6 +1442,8 @@ export type CapsuleRegionMode = "off" | "rail" | "panel" | "tab";
  */
 export const applyWindowCapsule = (mode: CapsuleRegionMode, edge: string, seq: number) =>
   invoke<boolean>("apply_window_capsule", { mode, edge, seq });
+
+export const refreshEdgeTabCursor = () => invoke<boolean>("refresh_edge_tab_cursor");
 
 /**
  * 拖拽磁力参数（CSS px）：吸引范围 / 最大额外位移 / 脱离拖动距离。
@@ -1944,7 +2151,12 @@ export const quickCaptureHide = (_reason?: "user" | "success") =>
   invoke<void>("quick_capture_hide");
 
 // ── 事件订阅 ──
-/** 后端批量聚合后的 Agent 变化事件（一批一次，不随事件数量线性增长）。 */
+/**
+ * 后端批量聚合后的 Agent 变化事件（一批一次，不随事件数量线性增长）。
+ * 正常批量事件与 stale 清理事件（`stale_cleanup`）共用同一契约：
+ * `sources` 为受影响来源列表，缺失 `sources` 时按 `source_id` 兜底，
+ * 两者均缺失时视为全局刷新（空 `sources`）。
+ */
 export interface AgentChangedEvent {
   source_id: string;
   sources: string[];
@@ -1956,9 +2168,111 @@ export interface AgentChangedEvent {
   changed: boolean;
   deduplicated: boolean;
   late: boolean;
+  stale_cleanup?: number;
+}
+
+/**
+ * 归一化 agent-changed 载荷（运行时校验，不依赖 TS 断言）。
+ * - 非对象 / null / 数组 / `sources` 或 `source_id` 类型非法 → 返回 null（调用方应忽略，
+ *   不抛 TypeError、不刷新）。
+ * - 缺少可选字段（`states`、`batch`、`changed` 等）→ 补默认值，仍视为合法事件。
+ * - 缺少 `sources` 但有 `source_id` → `sources=[source_id]`。
+ * - 仅有 `stale_cleanup` 的旧载荷 → 规范为全局事件（`sources=[]`、`changed=true`），
+ *   由所有历史分区与实时摘要刷新消费，不误报为任务成功/失败。
+ */
+export function normalizeAgentChangedPayload(
+  payload: unknown,
+): AgentChangedEvent | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const raw = payload as Record<string, unknown>;
+  const hasSignal =
+    "changed" in raw ||
+    "stale_cleanup" in raw ||
+    "states" in raw ||
+    "sources" in raw ||
+    "source_id" in raw ||
+    "session_id" in raw;
+  if (!hasSignal) return null;
+  if (
+    "sources" in raw &&
+    raw.sources !== undefined &&
+    !Array.isArray(raw.sources)
+  ) {
+    return null;
+  }
+  if (
+    "source_id" in raw &&
+    raw.source_id !== undefined &&
+    typeof raw.source_id !== "string"
+  ) {
+    return null;
+  }
+  if (
+    "session_id" in raw &&
+    raw.session_id !== undefined &&
+    typeof raw.session_id !== "string"
+  ) {
+    return null;
+  }
+  if (
+    "states" in raw &&
+    raw.states !== undefined &&
+    (typeof raw.states !== "object" || raw.states === null || Array.isArray(raw.states))
+  ) {
+    return null;
+  }
+  if (
+    "stale_cleanup" in raw &&
+    raw.stale_cleanup !== undefined &&
+    typeof raw.stale_cleanup !== "number"
+  ) {
+    return null;
+  }
+  const sources: string[] = Array.isArray(raw.sources)
+    ? (raw.sources as unknown[]).filter(
+        (s): s is string => typeof s === "string",
+      )
+    : typeof raw.source_id === "string" && raw.source_id
+      ? [raw.source_id]
+      : [];
+  const sourceId =
+    typeof raw.source_id === "string" && raw.source_id
+      ? raw.source_id
+      : (sources[0] ?? "");
+  const states: Record<string, number> = {};
+  if (raw.states && typeof raw.states === "object" && !Array.isArray(raw.states)) {
+    for (const [k, v] of Object.entries(raw.states as Record<string, unknown>)) {
+      if (typeof v === "number") states[k] = v;
+    }
+  }
+  const staleCleanup =
+    typeof raw.stale_cleanup === "number" ? raw.stale_cleanup : undefined;
+  const batch =
+    typeof raw.batch === "number"
+      ? raw.batch
+      : (staleCleanup ?? sources.length);
+  return {
+    source_id: sourceId,
+    sources,
+    session_id: typeof raw.session_id === "string" ? raw.session_id : "",
+    run_id:
+      typeof raw.run_id === "string" || raw.run_id === null
+        ? (raw.run_id as string | null)
+        : null,
+    state: typeof raw.state === "string" ? raw.state : null,
+    states,
+    batch,
+    changed: raw.changed === false ? false : true,
+    deduplicated: raw.deduplicated === true,
+    late: raw.late === true,
+    ...(staleCleanup !== undefined ? { stale_cleanup: staleCleanup } : {}),
+  };
 }
 export const onAgentChanged = (cb: (payload: AgentChangedEvent) => void): Promise<UnlistenFn> =>
-  listen<AgentChangedEvent>("agent-changed", (e) => cb(e.payload));
+  listen<unknown>("agent-changed", (e) => {
+    const normalized = normalizeAgentChangedPayload(e.payload);
+    if (normalized) cb(normalized);
+  });
 export const onReminderFired = (cb: () => void): Promise<UnlistenFn> =>
   listen("reminder-fired", () => cb());
 /** 延后成功（任意入口）：后端统一广播，主窗口弹带「撤销」的 Toast */
@@ -2139,6 +2453,23 @@ export interface PlanningFeature {
   step_done: number;
 }
 
+/** 用户规划功能与 Agent 会话的真实关联；Agent 当前状态仅在 session 可匹配时提供。 */
+export interface PlanningAgentFeatureLink {
+  id: string;
+  feature_id: string;
+  feature_title: string;
+  project_id: string;
+  project_name: string;
+  agent_source: string;
+  agent_name: string | null;
+  session_id: string;
+  status: "linked" | "unlinked";
+  agent_status: string | null;
+  agent_session_id: string | null;
+  last_seen_at: string | null;
+  last_execution_at: string | null;
+}
+
 export interface PlanningFeatureInput {
   title: string;
   description?: string;
@@ -2227,6 +2558,15 @@ export const planningReorderProjects = (ids: string[]) =>
 
 export const planningListFeatures = (projectId: string) =>
   invoke<PlanningFeature[]>("planning_list_features", { projectId });
+export const planningListFeatureAgentLinks = (featureId: string) =>
+  invoke<PlanningAgentFeatureLink[]>("planning_list_feature_agent_links", { featureId });
+export const planningListAgentFeatureLinks = (agentSource: string, sessionId: string) =>
+  invoke<PlanningAgentFeatureLink[]>("planning_list_agent_feature_links", { agentSource, sessionId });
+export const planningUnlinkAgentSession = (
+  featureId: string,
+  agentSource: string,
+  sessionId: string,
+) => invoke<void>("planning_unlink_agent_session", { featureId, agentSource, sessionId });
 export const planningCreateFeature = (projectId: string, input: PlanningFeatureInput) =>
   invoke<PlanningFeature>("planning_create_feature", { projectId, input });
 export const planningUpdateFeature = (id: string, patch: PlanningFeaturePatch) =>
@@ -2322,15 +2662,40 @@ export interface McpAgentCreated extends McpAgentInfo {
   token: string;
 }
 
+export interface McpAuditSummary {
+  agentId: string;
+  displayName: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  createdAt: string;
+  success: boolean;
+  authorized: boolean;
+  errorCategory: "authorization_denied" | "operation_failed" | null;
+}
+
+export interface McpAuditPage {
+  items: McpAuditSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 export const agentMcpStatus = () => invoke<McpStatus>("mcp_status", {});
 export const agentMcpList = () => invoke<McpAgentInfo[]>("mcp_agent_list", {});
 export const agentMcpCreate = (agentId: string, displayName: string) =>
   invoke<McpAgentCreated>("mcp_agent_create", { agentId, displayName });
+export const agentMcpRotateToken = (id: string) =>
+  invoke<McpAgentCreated>("mcp_agent_rotate_token", { id });
 export const agentMcpSetScope = (id: string, scope: McpAgentScope) =>
   invoke<McpAgentInfo>("mcp_agent_set_scope", { id, scope });
 export const agentMcpGrantProject = (id: string, projectId: string) =>
   invoke<McpAgentInfo>("mcp_agent_grant_project", { id, projectId });
+export const agentMcpRevokeProject = (id: string, projectId: string) =>
+  invoke<McpAgentInfo>("mcp_agent_revoke_project", { id, projectId });
 export const agentMcpRevoke = (id: string) => invoke<McpAgentInfo>("mcp_agent_revoke", { id });
+export const agentMcpAuditList = (offset: number, limit: number) =>
+  invoke<McpAuditPage>("mcp_audit_list", { offset, limit });
 export const agentMcpConfigSnippet = (client: McpConfigClient, agentToken: string) =>
   invoke<string>("mcp_config_snippet", { input: { client, agentToken } });
 
@@ -2378,6 +2743,8 @@ export interface ScenarioDetail extends ScenarioSummary {
   urls: string[];
   folders: string[];
   snapshotId: string | null;
+  /** 暂存架文件/文件夹的稳定条目 ID；不保存或回传文件路径。 */
+  shelfItemIds: string[];
 }
 
 /** 场景保存载荷：id 为空表示新建；name 必填。 */
@@ -2390,6 +2757,8 @@ export interface ScenarioSaveInput {
   folders: string[];
   linkedWorkflowId?: string | null;
   snapshotId?: string | null;
+  /** 整体替换当前场景关联的暂存架文件/文件夹 ID。 */
+  shelfItemIds?: string[];
 }
 
 /** 一键进入的逐项结果：单失败不阻断，缺失降级 skipped。 */
@@ -2496,6 +2865,7 @@ export interface ShelfCleanupReport {
   dry_run: boolean;
   candidates: number;
   skipped_protected: number;
+  temporary_files_skipped: number;
   freed_bytes: number;
   failed_files: number;
   orphan_files_removed: number;

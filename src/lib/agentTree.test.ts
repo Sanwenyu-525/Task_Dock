@@ -73,6 +73,31 @@ describe("liveRuns / worstAgentState 语义", () => {
     expect(sum.failed).toBe(1);
     expect(sum.worst).toBe("failed");
   });
+
+  it("使用后端全量统计，不把快照轮次上限当成真实总数", () => {
+    const counts = {
+      active_session_total: 201,
+      session_total: 201,
+      run_total: 301,
+      running: 0,
+      waiting: 301,
+      failed: 0,
+      disconnected: 0,
+    };
+    const s = snap({
+      runs: [run("r1", "s1", "codex", "waiting")],
+      live_summary: {
+        ...counts,
+        by_source: { codex: counts },
+        sessions_truncated: true,
+        runs_truncated: true,
+        next_cursor: "next-live-page",
+      },
+    });
+
+    expect(liveSummary(s, NOW)).toMatchObject({ waiting: 301, worst: "waiting" });
+    expect(worstAgentState(s, NOW)).toBe("waiting");
+  });
 });
 
 describe("buildTree 实例层级", () => {
@@ -175,5 +200,63 @@ describe("buildTree 实例层级", () => {
     expect(tree[0].id).toBe("busy-agent");
     expect(tree[0].liveState).toBe("running");
     expect(tree[1].liveState).toBe("idle");
+  });
+
+  it("Agent 层级与会话溢出计数使用后端全量实时口径", () => {
+    const counts = {
+      active_session_total: 201,
+      session_total: 201,
+      run_total: 301,
+      running: 0,
+      waiting: 301,
+      failed: 0,
+      disconnected: 0,
+    };
+    const s = snap({
+      sources: [source("codex")],
+      sessions: [session("s1", "codex", "ext-1", { live_run_count: 301 })],
+      runs: [run("r1", "s1", "codex", "waiting")],
+      live_summary: {
+        ...counts,
+        by_source: { codex: counts },
+        sessions_truncated: true,
+        runs_truncated: true,
+        next_cursor: "next-live-page",
+      },
+    });
+    const agent = buildTree(s, NOW)[0];
+
+    expect(agent.liveState).toBe("waiting");
+    expect(agent.liveState).toBe(liveSummary(s, NOW).worst);
+    expect(agent.activeCount).toBe(201);
+    expect(agent.sessionCount).toBe(201);
+    expect(agent.unassignedSessions[0].liveRunCount).toBe(301);
+  });
+
+  it("来源会话全部落在快照容量外时，仍标记为已接入", () => {
+    const counts = {
+      active_session_total: 201,
+      session_total: 201,
+      run_total: 201,
+      running: 201,
+      waiting: 0,
+      failed: 0,
+      disconnected: 0,
+    };
+    const agent = buildTree(snap({
+      sources: [source("codex")],
+      live_summary: {
+        ...counts,
+        by_source: { codex: counts },
+        sessions_truncated: true,
+        runs_truncated: false,
+        next_cursor: "next-live-page",
+      },
+    }), NOW)[0];
+
+    expect(agent.connected).toBe(true);
+    expect(agent.sessionCount).toBe(201);
+    expect(agent.activeCount).toBe(201);
+    expect(agent.liveState).toBe("running");
   });
 });

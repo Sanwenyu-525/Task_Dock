@@ -11,16 +11,18 @@ import userEvent from "@testing-library/user-event";
 import HelpCenterPanel from "./HelpCenterPanel";
 import { useUiStore } from "../../store/useUiStore";
 import { useOnboardingStore } from "../../store/useOnboardingStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import {
   clearRecentArticles,
   readRecentArticleIds,
 } from "../../help/recent";
+import { defaultNavigationLayout, NAV_LAYOUT_SETTING_KEY } from "../../lib/navVisibility";
 import { setLocalePreference, __resetLocaleForTests } from "../../i18n";
 
 beforeEach(() => {
   localStorage.clear();
   clearRecentArticles();
-  useUiStore.setState({ tab: "help", helpOpenRequest: null });
+  useUiStore.setState({ tab: "help", helpOpenRequest: null, helpReturnTab: null });
   useOnboardingStore.setState({ hasNewContent: false, open: false });
 });
 
@@ -28,6 +30,7 @@ afterEach(() => {
   cleanup();
   __resetLocaleForTests();
   localStorage.clear();
+  useSettingsStore.setState({ settings: null });
 });
 
 describe("帮助中心 · 分类浏览", () => {
@@ -53,7 +56,7 @@ describe("帮助中心 · 分类浏览", () => {
     render(<HelpCenterPanel />);
     await user.click(screen.getByRole("button", { name: "场景与工作流" }));
     expect(screen.getByText("一键工作流：把重复操作变成一次点击")).toBeTruthy();
-    expect(screen.getByText("场景工作区：一键进入标准工作组合（规划中）")).toBeTruthy();
+    expect(screen.getByText("场景工作区：管理并进入可复用场景")).toBeTruthy();
   });
 
   it("打开文章显示正文、状态徽标与元信息；返回恢复列表", async () => {
@@ -136,6 +139,22 @@ describe("帮助中心 · 相关功能跳转", () => {
     expect(screen.getAllByRole("button", { name: "前往「规划中心」" }).length).toBe(2);
     expect(screen.getAllByRole("button", { name: "前往「设置」" }).length).toBe(2);
   });
+
+  it("入口隐藏时教程仍可打开，并显示提示后跳转到功能页", async () => {
+    const user = userEvent.setup();
+    const layout = defaultNavigationLayout();
+    useSettingsStore.setState({
+      settings: { [NAV_LAYOUT_SETTING_KEY]: { ...layout, left: layout.left.filter((id) => id !== "roadmap") } } as never,
+    });
+    render(<HelpCenterPanel />);
+
+    await user.click(screen.getByRole("button", { name: "故障排查" }));
+    await user.click(screen.getByText("为什么某个功能找不到或不可用"));
+    expect(screen.getAllByText(/该入口已在导航中隐藏/).length).toBeGreaterThan(0);
+
+    await user.click(screen.getAllByRole("button", { name: "前往「规划中心」" })[0]);
+    expect(useUiStore.getState().tab).toBe("roadmap");
+  });
 });
 
 describe("帮助中心 · 翻译状态与语言", () => {
@@ -160,6 +179,16 @@ describe("帮助中心 · 翻译状态与语言", () => {
 });
 
 describe("帮助中心 · 一次性意图与引导入口", () => {
+  it("返回进入帮助中心前的来源页面并清除来源记录", async () => {
+    useUiStore.setState({ helpReturnTab: "settings" });
+    render(<HelpCenterPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: "返回来源页面" }));
+
+    expect(useUiStore.getState().tab).toBe("settings");
+    expect(useUiStore.getState().helpReturnTab).toBeNull();
+  });
+
   it("消费 helpOpenRequest：挂载时直接打开指定文章并清除请求", () => {
     useUiStore.setState({
       helpOpenRequest: { token: 1, articleId: "help.clipboard.history" },
@@ -182,7 +211,7 @@ describe("帮助中心 · 一次性意图与引导入口", () => {
     const user = userEvent.setup();
     useOnboardingStore.setState({ hasNewContent: true });
     render(<HelpCenterPanel />);
-    expect(document.querySelector(".help-onboarding-dot")).toBeTruthy();
+    expect(document.querySelector(".onboarding-reopen-dot")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "重新打开新手引导" }));
     const state = useOnboardingStore.getState();
     expect(state.open).toBe(true);

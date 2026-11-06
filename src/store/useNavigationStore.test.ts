@@ -181,7 +181,7 @@ describe("loadApps · 渐进扫描", () => {
       sources_total: 5,
     });
     await vi.waitFor(() => expect(useNavigationStore.getState().scan).not.toBeNull());
-    expect(useNavigationStore.getState().scan?.apps.map((a) => a.app_key)).toEqual(["a", "b"]);
+    expect(useNavigationStore.getState().scan?.apps.map((a) => a.app_key)).toEqual(["b", "a"]);
     expect(useNavigationStore.getState().scanPartial).toBe(true);
     expect(useNavigationStore.getState().scanProgress).toMatchObject({
       discovered: 2,
@@ -199,7 +199,7 @@ describe("loadApps · 渐进扫描", () => {
       sources_done: 2,
       sources_total: 5,
     });
-    expect(useNavigationStore.getState().scan?.apps.map((a) => a.app_key)).toEqual(["a", "b", "c"]);
+    expect(useNavigationStore.getState().scan?.apps.map((a) => a.app_key)).toEqual(["b", "a", "c"]);
 
     finalScan.resolve({ apps: [discovered("a", "Alpha")], scanned_at: "2026-11-05T10:00:00Z" } as never);
     await expect(load).resolves.toBe("ok");
@@ -261,7 +261,9 @@ describe("loadApps · 渐进扫描", () => {
       sources_total: 5,
     });
     await vi.waitFor(() => expect(useNavigationStore.getState().scanProgress?.discovered).toBe(1));
-    expect(useNavigationStore.getState().scan).toEqual(previous);
+    // 重新扫描期间新发现的应用渐进进入集合，同时保留上次结果。
+    expect(useNavigationStore.getState().scan?.apps.map((a: { app_key: string }) => a.app_key)).toContain("new");
+    expect(useNavigationStore.getState().scan?.apps.map((a: { app_key: string }) => a.app_key)).toContain("old");
     expect(useNavigationStore.getState().scanPartial).toBe(false);
 
     scan.reject(new Error("重扫失败"));

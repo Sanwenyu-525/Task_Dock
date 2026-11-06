@@ -21,6 +21,7 @@ import TaskAnalyticsPanel from "./analytics/TaskAnalyticsPanel";
 import FocusWorkspace from "../focus/FocusWorkspace";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
+import ContextHelpButton from "../help/ContextHelpButton";
 
 /** 内容区滚动容器（`.tab-content`）：编辑态切换时用它记录/恢复列表位置。 */
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
@@ -243,6 +244,7 @@ export default function TasksPanel() {
           ))}
         </div>
         <span className="flex-spacer" />
+        <ContextHelpButton articleId="help.tasks.create-reminders" />
         <button
           className={`icon-btn sm ${focusOpen ? "active" : ""}`}
           data-tip={focusOpen ? t("tasks.backToList") : t("tasks.focus")}

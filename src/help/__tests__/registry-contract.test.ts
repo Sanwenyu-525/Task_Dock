@@ -22,6 +22,7 @@ import { FEATURE_CATALOG, CORE_FEATURE_IDS } from "../../lib/featureCatalog";
 import { NAV_ENTRIES } from "../../lib/navigationRegistry";
 import { translate } from "../../i18n";
 import type { MessageKey } from "../../i18n/messages";
+import { HELP_OPERATION_CONTRACTS } from "../operationContracts";
 
 const ARTICLE_IDS = new Set(HELP_ARTICLES.map((a) => a.id));
 const FEATURE_IDS = new Set<string>(FEATURE_CATALOG.map((f) => f.id));
@@ -211,6 +212,24 @@ describe("帮助注册中心契约", () => {
           article.requiredCapabilities.every((c) => typeof c === "string" && c.trim() !== ""),
         `${article.id}: requiredCapabilities 必须是非空字符串数组`,
       ).toBe(true);
+    }
+  });
+
+  it("操作契约版本必须与所关联教程的人工复核版本一致", () => {
+    for (const [featureId, contract] of Object.entries(HELP_OPERATION_CONTRACTS)) {
+      expect(FEATURE_IDS.has(featureId), `操作契约引用了不存在的功能 ${featureId}`).toBe(true);
+      for (const articleId of contract.articleIds) {
+        const article = HELP_ARTICLES.find((entry) => entry.id === articleId);
+        expect(article, `${featureId} 缺少教程 ${articleId}`).toBeTruthy();
+        expect(article?.relatedFeatureIds, `${articleId} 未关联功能 ${featureId}`).toContain(featureId);
+        if (article?.status === "verified") {
+          expect(
+            article.reviewedOperationContractVersions?.[featureId],
+            `${articleId} 已标记 verified，但未复核当前操作契约版本 ${contract.version}`,
+          ).toBe(contract.version);
+        }
+      }
+      expect(contract.sourceFiles.length, `${featureId} 未登记操作契约源文件`).toBeGreaterThan(0);
     }
   });
 

@@ -77,18 +77,27 @@ describe("CapsuleRail 拖拽光标", () => {
     expect(rail.classList.contains("is-dragging")).toBe(false);
   });
 
-  it("pointermove 只在按键已松开时提前复位", () => {
+  it("pointermove 只在按键已松开且越过起始守卫时复位", () => {
     const { rail } = renderRail();
+    let now = 1000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
     fireEvent.pointerDown(rail, { button: 0, buttons: 1 });
     fireEvent.pointerMove(rail, { buttons: 1 });
     expect(rail.classList.contains("is-dragging")).toBe(true);
 
+    // 起始 120ms 内 buttons=0 是启动扰动，不结束
+    fireEvent.pointerMove(rail, { buttons: 0 });
+    expect(rail.classList.contains("is-dragging")).toBe(true);
+
+    now = 1300;
     fireEvent.pointerMove(rail, { buttons: 0 });
     expect(rail.classList.contains("is-dragging")).toBe(false);
   });
 
-  it("pointercancel / blur / 页面隐藏都复位", () => {
+  it("pointercancel / 页面隐藏立即复位；blur 起始内不复位，守卫期后复位", () => {
     const { rail } = renderRail();
+    let now = 1000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
 
     fireEvent.pointerDown(rail, { button: 0, buttons: 1 });
     fireEvent.pointerCancel(rail);
@@ -96,8 +105,13 @@ describe("CapsuleRail 拖拽光标", () => {
 
     fireEvent.pointerDown(rail, { button: 0, buttons: 1 });
     fireEvent.blur(window);
+    expect(rail.classList.contains("is-dragging")).toBe(true);
+
+    now = 1300;
+    fireEvent.blur(window);
     expect(rail.classList.contains("is-dragging")).toBe(false);
 
+    now = 2000;
     fireEvent.pointerDown(rail, { button: 0, buttons: 1 });
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
@@ -206,11 +220,11 @@ describe("EdgeTab 拖拽光标", () => {
 
   it("单击（位移小于阈值）不进入拖动并照常恢复胶囊", () => {
     const tab = renderTab();
-    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20 });
-    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 22 });
+    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20, screenX: 10, screenY: 20 });
+    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 22, screenX: 10, screenY: 22 });
     expect(tab.classList.contains("is-dragging")).toBe(false);
 
-    fireEvent.pointerUp(tab, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 22 });
+    fireEvent.pointerUp(tab, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 22, screenX: 10, screenY: 22 });
     expect(tab.classList.contains("is-dragging")).toBe(false);
     expect(restoreTab).toHaveBeenCalledTimes(1);
     expect(releaseMock).toHaveBeenCalledWith(1);
@@ -218,22 +232,22 @@ describe("EdgeTab 拖拽光标", () => {
 
   it("超过阈值后切入 grabbing，松手复位且不触发恢复", () => {
     const tab = renderTab();
-    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20 });
-    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 23 });
+    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20, screenX: 10, screenY: 20 });
+    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 23, screenX: 10, screenY: 23 });
     expect(tab.classList.contains("is-dragging")).toBe(false);
 
-    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 27 });
+    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 27, screenX: 10, screenY: 27 });
     expect(tab.classList.contains("is-dragging")).toBe(true);
 
-    fireEvent.pointerUp(tab, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 27 });
+    fireEvent.pointerUp(tab, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 27, screenX: 10, screenY: 27 });
     expect(tab.classList.contains("is-dragging")).toBe(false);
     expect(restoreTab).not.toHaveBeenCalled();
   });
 
   it("取消拖动后复位并释放指针捕获", () => {
     const tab = renderTab();
-    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20 });
-    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 40 });
+    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20, screenX: 10, screenY: 20 });
+    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 40, screenX: 10, screenY: 40 });
     expect(tab.classList.contains("is-dragging")).toBe(true);
 
     fireEvent.pointerCancel(tab, { pointerId: 1, pointerType: "mouse" });

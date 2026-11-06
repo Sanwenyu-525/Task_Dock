@@ -25,19 +25,18 @@ import {
   recentArticles,
   recordRecentArticle,
 } from "../../help/recent";
-import { useOnboardingStore } from "../../store/useOnboardingStore";
 import type { HelpArticle, HelpCategoryId } from "../../help/types";
 import HelpArticleBody from "./HelpArticleBody";
 import HelpFeatureLink from "./HelpFeatureLink";
+import ReopenOnboardingButton from "../onboarding/ReopenOnboardingButton";
 import "./help-center.css";
 
 export default function HelpCenterPanel() {
   const { t, locale } = useLocale();
   const setTab = useUiStore((s) => s.setTab);
+  const helpReturnTab = useUiStore((s) => s.helpReturnTab);
+  const clearHelpReturnTab = useUiStore((s) => s.setHelpReturnTab);
   const layout = useNavigationLayout();
-  const hasNewOnboarding = useOnboardingStore((s) => s.hasNewContent);
-  const reopenOnboarding = useOnboardingStore((s) => s.reopenFromHelp);
-
   const [query, setQuery] = useState("");
   const [categoryId, setCategoryId] = useState<HelpCategoryId>("quickstart");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -70,6 +69,11 @@ export default function HelpCenterPanel() {
     setOpenId(null);
   }
 
+  function returnToSource() {
+    if (!helpReturnTab) return;
+    setTab(helpReturnTab, { after: () => clearHelpReturnTab(null) });
+  }
+
   const normalizedQuery = query.trim();
   const searchResults = normalizedQuery ? searchHelpArticles(normalizedQuery, locale) : [];
   const categoryArticles = articlesByCategory(categoryId);
@@ -82,6 +86,20 @@ export default function HelpCenterPanel() {
         <p className="help-subtitle">{t("help.subtitle")}</p>
       </header>
 
+      {helpReturnTab && (
+        <div className="help-badges">
+          <button
+            type="button"
+            className="btn sm"
+            onClick={returnToSource}
+            aria-label={t("help.backToSource")}
+          >
+            <ArrowLeft size={12} aria-hidden="true" style={{ marginRight: 4 }} />
+            {t("help.backToSource")}
+          </button>
+        </div>
+      )}
+
       <div className="help-toolbar">
         <SearchField
           value={query}
@@ -90,14 +108,7 @@ export default function HelpCenterPanel() {
           ariaLabel={t("help.searchAria")}
           clearLabel={t("help.searchClear")}
         />
-        <button
-          type="button"
-          className="btn sm help-onboarding-btn"
-          onClick={reopenOnboarding}
-        >
-          {t("help.reopenOnboarding")}
-          {hasNewOnboarding && <span className="help-onboarding-dot" aria-hidden="true" />}
-        </button>
+        <ReopenOnboardingButton />
       </div>
 
       {openArticle ? (

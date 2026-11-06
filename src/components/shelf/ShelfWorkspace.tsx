@@ -38,11 +38,13 @@ import { useGlobalSearchStore, type GlobalSearchLocateIntent } from "../../store
 import { useUiStore } from "../../store/useUiStore";
 import { ConfirmDialog } from "../ui/Dialog";
 import { DropdownMenu, SearchField } from "../ui";
+import ContextHelpButton from "../help/ContextHelpButton";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
 import ShelfItemCard from "./ShelfItemCard";
 import ShelfDetail from "./ShelfDetail";
 import ShelfFileOpPanel, { type ShelfFileOpRequest } from "./ShelfFileOpPanel";
 import DropTargetManager from "./DropTargetManager";
+import { shelfDeleteFeedback } from "./shelfDeleteFeedback";
 
 /** 有真实文件/文件夹语义的条目（link/text 不参与移动与复制）。 */
 function isPhysicalItem(item: ShelfItem): boolean {
@@ -93,6 +95,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const filter = useShelfStore((s) => s.filter);
   const loading = useShelfStore((s) => s.loading);
   const error = useShelfStore((s) => s.error);
+  const mutationSyncError = useShelfStore((s) => s.mutationSyncError);
+  const deletionBusy = useShelfStore((s) => s.deletionBusy);
   const selectedIds = useShelfStore((s) => s.selectedIds);
   const detailId = useShelfStore((s) => s.detailId);
   const load = useShelfStore((s) => s.load);
@@ -105,6 +109,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const addFromClipboard = useShelfStore((s) => s.addFromClipboard);
   const updateItem = useShelfStore((s) => s.updateItem);
   const deleteItems = useShelfStore((s) => s.deleteItems);
+  const retryShelfSync = useShelfStore((s) => s.retryShelfSync);
   const moveToGroup = useShelfStore((s) => s.moveToGroup);
   const toggleSelect = useShelfStore((s) => s.toggleSelect);
   const selectAll = useShelfStore((s) => s.selectAll);
@@ -112,6 +117,19 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const setDetail = useShelfStore((s) => s.setDetail);
   const verifyExists = useShelfStore((s) => s.verifyExists);
   const relocateItem = useShelfStore((s) => s.relocateItem);
+
+  const notifyShelfMutation = (
+    result: Awaited<ReturnType<typeof deleteItems>>,
+    action: "delete" | "clear",
+  ) => {
+    const feedback = shelfDeleteFeedback(result, action);
+    showToast(feedback.message, {
+      kind: feedback.kind,
+      ...(!result.synced
+        ? { action: { label: "重试同步", run: () => void retryShelfSync() } }
+        : {}),
+    });
+  };
 
   const [dragOver, setDragOver] = useState(false);
   /** 拖入/剪贴板添加的默认策略：引用优先（不偷偷复制占用磁盘），用户可显式切换。 */
@@ -684,6 +702,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       <div className="shelf-head">
         <span className="shelf-head-title">文件暂存架</span>
         {total > 0 && <span className="shelf-head-count">{total} 项</span>}
+        <ContextHelpButton articleId="help.capture.shelf" />
         <button
           type="button"
           className={`icon-btn sm ${targetsOpen ? "active" : ""}`}
@@ -962,9 +981,12 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         </div>
       )}
 
-      {error && (
+      {(mutationSyncError || error) && items.length > 0 && (
         <div className="shelf-error" role="alert">
-          {error}
+          {mutationSyncError ?? error}
+          <button type="button" className="btn sm" onClick={() => void retryShelfSync()}>
+            重试同步
+          </button>
         </div>
       )}
 
@@ -987,16 +1009,16 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             onPreview={() => setDetail(item.id)}
           />
         ))}
-        {items.length === 0 && !loading && error && (
+        {items.length === 0 && !loading && (mutationSyncError || error) && (
           <div className="shelf-empty is-error" role="alert">
             <p>暂存架读取失败</p>
-            <p className="shelf-empty-sub">{error}</p>
-            <button type="button" className="btn sm" onClick={() => void load()}>
-              重试
+            <p className="shelf-empty-sub">{mutationSyncError ?? error}</p>
+            <button type="button" className="btn sm" onClick={() => void retryShelfSync()}>
+              重试同步
             </button>
           </div>
         )}
-        {items.length === 0 && !loading && !error && filteredEmpty && (
+        {items.length === 0 && !loading && !error && !mutationSyncError && filteredEmpty && (
           <div className="shelf-empty">
             <FilterX size={22} strokeWidth={1.5} aria-hidden="true" />
             <p>没有匹配的文件</p>
@@ -1010,7 +1032,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             </button>
           </div>
         )}
-        {items.length === 0 && !loading && !error && !filteredEmpty && (
+        {items.length === 0 && !loading && !error && !mutationSyncError && !filteredEmpty && (
           <div className="shelf-empty">
             <Upload size={22} strokeWidth={1.5} aria-hidden="true" />
             <p>把文件、图片拖进窗口，或用上方「添加」收纳链接与文本。</p>
@@ -1177,14 +1199,21 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         }
         confirmLabel="删除"
         danger
+        busy={deletionBusy}
         onConfirm={() => {
           const target = pendingDelete;
-          setConfirmDelete(false);
-          setPendingDelete(null);
           if (!target) return;
-          deleteItems(target.ids, target.includeProtected)
-            .then(() => showToast("已删除", { kind: "success" }))
-            .catch((e) => showToast(`删除暂存项失败：${errorMessage(e)}`, { kind: "error" }));
+          void (async () => {
+            try {
+              const result = await deleteItems(target.ids, target.includeProtected);
+              notifyShelfMutation(result, "delete");
+            } catch (e) {
+              showToast(`删除暂存项失败：${errorMessage(e)}`, { kind: "error" });
+            } finally {
+              setConfirmDelete(false);
+              setPendingDelete(null);
+            }
+          })();
         }}
         onCancel={() => {
           setConfirmDelete(false);
@@ -1199,13 +1228,18 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         detail="删除全部未收藏、未置顶的条目（收藏/置顶保留）。托管副本会被删除，引用的原文件不受影响。"
         confirmLabel="清空"
         danger
+        busy={deletionBusy}
         onConfirm={() => {
-          setConfirmClear(false);
-          useShelfStore
-            .getState()
-            .clearShelf(false)
-            .then(() => showToast("已清空", { kind: "success" }))
-            .catch((e) => showToast(`清空暂存架失败：${errorMessage(e)}`, { kind: "error" }));
+          void (async () => {
+            try {
+              const result = await useShelfStore.getState().clearShelf(false);
+              notifyShelfMutation(result, "clear");
+            } catch (e) {
+              showToast(`清空暂存架失败：${errorMessage(e)}`, { kind: "error" });
+            } finally {
+              setConfirmClear(false);
+            }
+          })();
         }}
         onCancel={() => setConfirmClear(false)}
       />

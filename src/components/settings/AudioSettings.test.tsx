@@ -90,6 +90,8 @@ const OPEN = {
   "audio-sound": false,
   tts: true,
   "tts-cache": true,
+  "resource-cleanup": false,
+  help: false,
   agent: false,
   data: false,
   diagnostics: false,
@@ -228,6 +230,7 @@ describe("AudioSettings", () => {
     await waitFor(() => expect(mocks.cacheClear).toHaveBeenCalledTimes(1));
     expect(mocks.toast).toHaveBeenCalledWith(
       'settings.ttsCache.cleared|{"files":2,"bytes":"1.0 KB"}',
+      { kind: "success" },
     );
   });
 
@@ -238,6 +241,37 @@ describe("AudioSettings", () => {
       await screen.findByText('settings.ttsCache.readError|{"error":"目录不可读"}'),
     ).toBeTruthy();
     expect(screen.getByText("settings.ttsCache.readFailed")).toBeTruthy();
+  });
+
+  it("资源清理完成后收到一次性事件时刷新已展开的语音缓存统计", async () => {
+    renderPanel();
+    await waitFor(() => expect(mocks.cacheStats).toHaveBeenCalledTimes(1));
+
+    window.dispatchEvent(new Event("taskdock:tts-cache-refresh"));
+
+    await waitFor(() => expect(mocks.cacheStats).toHaveBeenCalledTimes(2));
+  });
+
+  it("部分清理按实际删除/跳过/失败数量反馈", async () => {
+    mocks.cacheClear.mockResolvedValueOnce({
+      ok: true,
+      status: "partial",
+      freedBytes: 512,
+      removedFiles: 1,
+      skippedFiles: 2,
+      failedFiles: 1,
+    });
+    renderPanel();
+    await waitFor(() => expect(mocks.cacheStats).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: "settings.ttsCache.clear" }));
+
+    await waitFor(() =>
+      expect(mocks.toast).toHaveBeenCalledWith(
+        'settings.ttsCache.clearPartial|{"bytes":"512 B","deleted":1,"skipped":2,"failed":1}',
+        { kind: "warning" },
+      ),
+    );
   });
 
   it("试听音量 0 时显示单通道静音提示，不显示试听成功", async () => {

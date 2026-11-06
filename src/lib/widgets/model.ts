@@ -69,20 +69,22 @@ export const DESKTOP_HEIGHT_RANGE = { min: 120, max: 640 } as const;
 const DESKTOP_PRESETS: Record<WidgetType, Record<WidgetSize, { width: number; height: number }>> = {
   // 高度按内容密度收紧：默认尺寸不再预留大块空白；用户手动缩放优先于预设，
   // 修改预设只影响后续新建/切尺寸的窗口，不会在内容变化时反复 resize。
+  // 空/单条状态较矮，微件体内部滚动（.wd-body overflow-auto）兜住超量内容；
+  // sm/md 以默认条目数不滚动或轻微滚动为界，lg 才预留更富余空间。
   "today-tasks": {
-    sm: { width: 300, height: 185 },
-    md: { width: 340, height: 220 },
-    lg: { width: 400, height: 270 },
+    sm: { width: 300, height: 175 },
+    md: { width: 340, height: 200 },
+    lg: { width: 400, height: 245 },
   },
   "next-reminder": {
-    sm: { width: 280, height: 125 },
-    md: { width: 320, height: 145 },
-    lg: { width: 380, height: 170 },
+    sm: { width: 280, height: 120 },
+    md: { width: 320, height: 132 },
+    lg: { width: 380, height: 152 },
   },
   "agent-status": {
-    sm: { width: 300, height: 160 },
-    md: { width: 340, height: 190 },
-    lg: { width: 400, height: 235 },
+    sm: { width: 300, height: 150 },
+    md: { width: 340, height: 168 },
+    lg: { width: 400, height: 215 },
   },
   "quick-actions": {
     sm: { width: 300, height: 120 },
@@ -91,13 +93,13 @@ const DESKTOP_PRESETS: Record<WidgetType, Record<WidgetSize, { width: number; he
   },
   "focus-timer": {
     sm: { width: 260, height: 120 },
-    md: { width: 300, height: 128 },
-    lg: { width: 360, height: 146 },
+    md: { width: 300, height: 124 },
+    lg: { width: 360, height: 135 },
   },
   efficiency: {
     sm: { width: 280, height: 132 },
-    md: { width: 320, height: 150 },
-    lg: { width: 380, height: 176 },
+    md: { width: 320, height: 140 },
+    lg: { width: 380, height: 160 },
   },
 };
 

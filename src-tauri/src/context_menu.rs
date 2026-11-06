@@ -168,7 +168,9 @@ pub fn resolve_menu_height(natural: f64, wa: WorkArea, scale: f64) -> f64 {
 
 /// 以当前自然高度 + 锚点所在显示器工作区算出窗口尺寸；取不到显示器时只按自然高度。
 fn desired_size(app: &AppHandle, anchor: (f64, f64)) -> (f64, f64) {
-    let natural = *MENU_NATURAL_HEIGHT.lock().unwrap_or_else(|e| e.into_inner());
+    let natural = *MENU_NATURAL_HEIGHT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let height = match monitor_at(app, anchor) {
         Some((wa, scale)) => resolve_menu_height(natural, wa, scale),
         None => natural.clamp(MIN_WINDOW_HEIGHT, MAX_NATURAL_HEIGHT),

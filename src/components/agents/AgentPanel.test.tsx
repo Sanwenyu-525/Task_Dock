@@ -6,9 +6,11 @@
 //! 后端发现扫描与导航命令全部 mock；store 用真实实例（共享状态语义）。
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAgentsStore } from "../../store/useAgentsStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
 import AgentPanel from "./AgentPanel";
 import type { AgentChangedEvent, AgentSnapshot, DiscoveredAgent } from "../../lib/bridge";
@@ -19,6 +21,7 @@ const ipc = vi.hoisted(() => ({
   historyRuns: vi.fn(),
   historySession: vi.fn(),
   historyGroups: vi.fn(),
+  planningFeatureLinks: vi.fn(),
   onAgentChanged: vi.fn(),
 }));
 
@@ -31,6 +34,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     agentHistoryRuns: ipc.historyRuns,
     agentHistorySession: ipc.historySession,
     agentHistoryGroups: ipc.historyGroups,
+    planningListAgentFeatureLinks: ipc.planningFeatureLinks,
     onAgentChanged: ipc.onAgentChanged,
     adapterPreview: vi.fn(async () => ({})),
     adapterInstall: vi.fn(async () => ({})),
@@ -188,6 +192,7 @@ beforeEach(() => {
   ipc.historyRuns.mockResolvedValue({ items: [], total: 0, next_cursor: null });
   ipc.historySession.mockResolvedValue(null);
   ipc.historyGroups.mockResolvedValue({ items: [], truncated: false });
+  ipc.planningFeatureLinks.mockResolvedValue([]);
   // agent-changed：记录订阅回调；退订时调用 spy 并从列表移除。
   agentChangedHandlers = [];
   unlistenAgentChanged = vi.fn();
@@ -200,6 +205,7 @@ beforeEach(() => {
   });
   useAgentsStore.setState({ snapshot: snapshot(), snapshotError: null });
   useUiStore.setState({ agentFocus: null });
+  useGlobalSearchStore.setState({ pendingLocate: null });
 });
 
 afterEach(() => {
@@ -209,6 +215,55 @@ afterEach(() => {
 });
 
 describe("运行监控 · 历史会话后端分页", () => {
+  it("Agent 页面上下文帮助打开 Agent 接入教程", async () => {
+    const user = userEvent.setup();
+    render(<AgentPanel />);
+
+    await user.click(screen.getByRole("button", { name: "查看帮助：接入 Agent：检测与 Hooks 安装" }));
+    await user.click(await screen.findByRole("button", { name: "查看完整教程" }));
+
+    expect(useUiStore.getState().tab).toBe("help");
+    expect(useUiStore.getState().helpOpenRequest?.articleId).toBe("help.agents.hooks-onboarding");
+  });
+
+  it("展开真实 Agent 会话后可定位关联规划功能", async () => {
+    ipc.planningFeatureLinks.mockResolvedValue([
+      {
+        id: "link-1",
+        feature_id: "feature-1",
+        feature_title: "Feature one",
+        project_id: "project-1",
+        project_name: "Project one",
+        agent_source: "codex",
+        agent_name: "Codex CLI",
+        session_id: "e1",
+        status: "linked",
+        agent_status: "running",
+        agent_session_id: "s1",
+        last_seen_at: ago(1),
+        last_execution_at: ago(5),
+      },
+    ]);
+    render(<AgentPanel />);
+
+    expect(ipc.planningFeatureLinks).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Codex CLI"));
+    const session = screen.getByRole("button", { name: /Fix bug/ });
+    fireEvent.click(session);
+
+    expect(await screen.findByRole("button", { name: "定位规划功能 Feature one" })).toBeTruthy();
+    expect(ipc.planningFeatureLinks).toHaveBeenCalledWith("codex", "e1");
+    fireEvent.click(screen.getByRole("button", { name: "定位规划功能 Feature one" }));
+
+    expect(useUiStore.getState().tab).toBe("roadmap");
+    expect(useGlobalSearchStore.getState().pendingLocate).toMatchObject({
+      category: "planning",
+      id: "feature-1",
+      kind: "feature",
+      parentId: "project-1",
+    });
+  });
+
   type HistoryPage = Awaited<ReturnType<typeof import("../../lib/bridge").agentHistorySessions>>;
 
   function historyItem(i: number, overrides: Partial<AgentHistorySessionLike> = {}) {
@@ -678,7 +733,7 @@ describe("运行监控 · 历史会话后端分页", () => {
     // 会话未展开：不得提前拉轮次。
     expect(ipc.historyRuns).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Fix bug"));
-    await waitFor(() => expect(ipc.historyRuns).toHaveBeenCalledWith("s1", null, 10));
+    await waitFor(() => expect(ipc.historyRuns).toHaveBeenCalledWith("s1", null, 10, false, false));
 
     const runToggle = screen.getByRole("button", { name: "历史轮次分区" });
     expect(runToggle.textContent).toContain("12");
@@ -688,7 +743,7 @@ describe("运行监控 · 历史会话后端分页", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "显示更多轮次" }));
     expect(await screen.findByText("历史轮次任务 2")).toBeTruthy();
-    expect(ipc.historyRuns).toHaveBeenLastCalledWith("s1", "run-cursor", 10);
+    expect(ipc.historyRuns).toHaveBeenLastCalledWith("s1", "run-cursor", 10, false, false);
     expect(screen.queryByRole("button", { name: "显示更多轮次" })).toBeNull();
   });
 });
@@ -1259,5 +1314,148 @@ describe("历史列表更新反馈（agent-changed 轻量探测）", () => {
       }),
     ).not.toThrow();
     expect(() => emitAgentChanged({ source_id: "codex", session_id: "late" })).not.toThrow();
+  });
+});
+
+describe("实时监控容量续页", () => {
+  it("显示超出快照的旧 waiting 会话，并可分页查看其实时轮次", async () => {
+    const base = snapshot();
+    const counts = {
+      active_session_total: 201,
+      session_total: 201,
+      run_total: 301,
+      running: 0,
+      waiting: 301,
+      failed: 0,
+      disconnected: 0,
+    };
+    useAgentsStore.setState({
+      snapshot: {
+        ...base,
+        live_summary: {
+          ...counts,
+          by_source: { codex: counts },
+          sessions_truncated: true,
+          runs_truncated: true,
+          next_cursor: "snapshot-cursor",
+        },
+      },
+      snapshotError: null,
+    });
+    ipc.historySessions.mockResolvedValue({
+      items: [{
+        id: "overflow-session",
+        source_id: "codex",
+        external_id: "old-waiting-session",
+        title: "快照外的旧 waiting 会话",
+        status: "idle",
+        first_seen_at: ago(500),
+        last_seen_at: ago(400),
+        last_run_id: "overflow-run",
+        instance_id: null,
+        run_count: 301,
+        live_state: "waiting",
+        live_run_count: 301,
+      }],
+      total: 201,
+      next_cursor: null,
+    });
+    ipc.historyRuns.mockResolvedValue({
+      items: [{
+        id: "overflow-run",
+        session_id: "overflow-session",
+        source_id: "codex",
+        external_run_id: "run-301",
+        task_title: "快照外等待任务详情",
+        status: "waiting",
+        started_at: ago(401),
+        updated_at: ago(400),
+        ended_at: null,
+        pending_items: [],
+        instance_id: null,
+      }],
+      total: 301,
+      next_cursor: "run-cursor",
+    });
+
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "查看更多实时会话" }));
+    await screen.findByText("快照外的旧 waiting 会话");
+    expect(ipc.historySessions).toHaveBeenCalledWith({
+      liveOnly: true,
+      cursor: "snapshot-cursor",
+      limit: 20,
+    });
+
+    fireEvent.click(screen.getByText("快照外的旧 waiting 会话"));
+    await screen.findByText("快照外等待任务详情");
+    expect(ipc.historyRuns).toHaveBeenCalledWith(
+      "overflow-session",
+      null,
+      50,
+      false,
+      true,
+    );
+  });
+
+  it("单个快照会话的实时轮次超量时提供有界分页入口", async () => {
+    const base = snapshot();
+    base.sessions[0].live_run_count = 2;
+    useAgentsStore.setState({
+      snapshot: {
+        ...base,
+        live_summary: {
+          active_session_total: 1,
+          session_total: 1,
+          run_total: 2,
+          running: 1,
+          waiting: 1,
+          failed: 0,
+          disconnected: 0,
+          by_source: {
+            codex: {
+              active_session_total: 1,
+              session_total: 1,
+              run_total: 2,
+              running: 1,
+              waiting: 1,
+              failed: 0,
+              disconnected: 0,
+            },
+          },
+          sessions_truncated: false,
+          runs_truncated: true,
+          next_cursor: null,
+        },
+      },
+      snapshotError: null,
+    });
+    ipc.historyRuns.mockResolvedValue({
+      items: [{
+        id: "r2",
+        session_id: "s1",
+        source_id: "codex",
+        external_run_id: "run-2",
+        task_title: "分页实时轮次",
+        status: "waiting",
+        started_at: ago(2),
+        updated_at: ago(1),
+        ended_at: null,
+        pending_items: [],
+        instance_id: null,
+      }],
+      total: 2,
+      next_cursor: null,
+    });
+
+    render(<AgentPanel />);
+    fireEvent.click(screen.getByText("Codex CLI"));
+    fireEvent.click(screen.getByText("Fix bug"));
+    fireEvent.click(await screen.findByRole("button", {
+      name: "分页查看全部实时轮次（共 2 条）",
+    }));
+
+    await screen.findByText("分页实时轮次");
+    expect(ipc.historyRuns).toHaveBeenCalledWith("s1", null, 50, false, true);
   });
 });

@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowUp, Loader2, Trash2 } from "lucide-react";
 import {
   WORKFLOW_STEP_TYPE_LABELS,
+  scenarioList,
   workflowCreate,
   workflowSave,
   type WorkflowDetail,
@@ -21,8 +22,9 @@ import {
   type WorkflowStepType,
 } from "../../lib/bridge";
 import { navListTargets, type NavTarget } from "../../lib/navigation";
-import { workspaceList, type SnapshotSummary } from "../../lib/bridge";
+import { workspaceList, type ScenarioSummary, type SnapshotSummary } from "../../lib/bridge";
 import { Combobox, DateTimePicker, Select } from "../ui";
+import ContextHelpButton from "../help/ContextHelpButton";
 import { errText } from "../../store/useWorkflowsStore";
 import { useTabGuard } from "../../lib/tabGuard";
 import type { WorkflowTemplate } from "./templates";
@@ -42,13 +44,11 @@ interface EditorForm {
   steps: EditorStep[];
 }
 
-const STEP_TYPE_OPTIONS: { value: WorkflowStepType; label: string; disabled?: boolean }[] = (
+const STEP_TYPE_OPTIONS: { value: WorkflowStepType; label: string }[] = (
   Object.keys(WORKFLOW_STEP_TYPE_LABELS) as WorkflowStepType[]
 ).map((t) => ({
   value: t,
   label: WORKFLOW_STEP_TYPE_LABELS[t],
-  // 场景工作区模块尚未集成：类型保留展示但不可选（依赖注记见 docs/workflows）
-  disabled: t === "enter_scene",
 }));
 
 const ON_ERROR_OPTIONS = [
@@ -106,7 +106,8 @@ export function stepDraftError(s: EditorStep): string | null {
       if (!s.params.snapshot_id) return "请选择工作现场快照";
       return null;
     case "enter_scene":
-      return "场景工作区模块尚未集成，该步骤不可用";
+      if (!s.params.scene_id) return "请选择要进入的场景";
+      return null;
   }
 }
 
@@ -173,6 +174,7 @@ export default function WorkflowEditorView({
 
   const [targets, setTargets] = useState<NavTarget[] | null>(null);
   const [snapshots, setSnapshots] = useState<SnapshotSummary[] | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioSummary[] | null>(null);
   const [refError, setRefError] = useState<string | null>(null);
 
   const isCreate = workflow === null;
@@ -198,7 +200,7 @@ export default function WorkflowEditorView({
     };
   }, []);
 
-  // 目标 / 快照选项：挂载时拉取一次；卸载后到达的响应直接丢弃。
+  // 目标 / 快照 / 场景选项：挂载时拉取一次；卸载后到达的响应直接丢弃。
   useEffect(() => {
     let alive = true;
     const failRef = (msg: string) => {
@@ -215,6 +217,11 @@ export default function WorkflowEditorView({
         if (alive) setSnapshots(next);
       })
       .catch((e) => failRef(`工作现场快照加载失败: ${errText(e)}`));
+    scenarioList()
+      .then((next) => {
+        if (alive) setScenarios(next);
+      })
+      .catch((e) => failRef(`场景列表加载失败: ${errText(e)}`));
     return () => {
       alive = false;
     };
@@ -277,6 +284,10 @@ export default function WorkflowEditorView({
         label: s.name || s.id,
       })),
     [snapshots],
+  );
+  const scenarioOptions = useMemo(
+    () => (scenarios ?? []).map((scene) => ({ value: scene.id, label: scene.name })),
+    [scenarios],
   );
 
   /** 返回列表：有未保存修改时先在页内确认，不弹大窗。 */
@@ -356,6 +367,7 @@ export default function WorkflowEditorView({
             未保存
           </span>
         ) : null}
+        <ContextHelpButton articleId="help.workflows.one-click" />
       </header>
 
       {leaveGuard ? (
@@ -435,7 +447,7 @@ export default function WorkflowEditorView({
                     data-tip="编辑步骤参数"
                   >
                     <span className="wf-step-type">{label}</span>
-                    <span className="wf-step-summary">{stepSummary(s, targets, snapshots)}</span>
+                    <span className="wf-step-summary">{stepSummary(s, targets, snapshots, scenarios)}</span>
                   </button>
                   <div className="wf-step-tools">
                     <button
@@ -488,8 +500,10 @@ export default function WorkflowEditorView({
                     step={s}
                     targetOptions={targetOptions}
                     snapshotOptions={snapshotOptions}
+                    scenarioOptions={scenarioOptions}
                     targetsLoading={targets === null}
                     snapshotsLoading={snapshots === null}
+                    scenariosLoading={scenarios === null}
                     onChange={(params) => updateStep(s.id, { params })}
                   />
                 ) : null}
@@ -523,6 +537,7 @@ function stepSummary(
   s: EditorStep,
   targets: NavTarget[] | null,
   snapshots: SnapshotSummary[] | null,
+  scenarios: ScenarioSummary[] | null,
 ): string {
   switch (s.step_type) {
     case "open_app":
@@ -543,7 +558,8 @@ function stepSummary(
       return snap ? snap.name : s.params.snapshot_id;
     }
     case "enter_scene":
-      return "（场景工作区未集成）";
+      if (!s.params.scene_id) return "（待选择场景）";
+      return scenarios?.find((scene) => scene.id === s.params.scene_id)?.name ?? s.params.scene_id;
   }
 }
 
@@ -552,15 +568,19 @@ function StepParamsForm({
   step,
   targetOptions,
   snapshotOptions,
+  scenarioOptions,
   targetsLoading,
   snapshotsLoading,
+  scenariosLoading,
   onChange,
 }: {
   step: EditorStep;
   targetOptions: (types: NavTarget["target_type"][]) => { value: string; label: string }[];
   snapshotOptions: { value: string; label: string }[];
+  scenarioOptions: { value: string; label: string }[];
   targetsLoading: boolean;
   snapshotsLoading: boolean;
+  scenariosLoading: boolean;
   onChange: (params: WorkflowStepParams) => void;
 }) {
   const p = step.params;
@@ -681,7 +701,27 @@ function StepParamsForm({
       );
     case "enter_scene":
       return (
-        <p className="wf-hint-text">依赖场景工作区模块（尚未集成）；模块就绪并经验证后该步骤才可配置。</p>
+        <div className="wf-step-form">
+          <label className="form-label" htmlFor={`scene-${step.id}`}>
+            选择要进入的场景（运行时会再次校验场景仍然存在）
+          </label>
+          {scenariosLoading ? (
+            <p className="wf-empty-steps">场景加载中…</p>
+          ) : scenarioOptions.length === 0 ? (
+            <p className="wf-empty-steps">还没有场景；可在工作流页的「场景工作区」中创建。</p>
+          ) : (
+            <Combobox
+              id={`scene-${step.id}`}
+              value={p.scene_id ?? ""}
+              options={scenarioOptions}
+              onChange={(v) => onChange({ ...p, scene_id: v })}
+              placeholder="搜索并选择场景"
+              ariaLabel="选择场景"
+              emptyText="没有匹配的场景"
+            />
+          )}
+          <p className="wf-hint-text">关联的工作流不会递归启动；现场恢复完成前此步骤会保持运行，取消会传递给恢复操作。</p>
+        </div>
       );
   }
 }

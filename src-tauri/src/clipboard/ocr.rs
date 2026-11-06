@@ -370,13 +370,7 @@ impl OcrService {
     }
 
     /// 同步执行一次识别。调用方必须在阻塞线程上运行，不得在 UI 线程直接调用。
-    pub fn recognize(
-        &self,
-        db: &Db,
-        root: &Path,
-        item_id: &str,
-        request_id: &str,
-    ) -> OcrReport {
+    pub fn recognize(&self, db: &Db, root: &Path, item_id: &str, request_id: &str) -> OcrReport {
         let started = Instant::now();
         // 先记录代数再查条目：识别尚未登记时发生的删除/清空/清理，也必须让结果不写回。
         let cache_epoch = self.cache.lock().map(|c| c.epoch).unwrap_or(0);
@@ -467,17 +461,17 @@ impl OcrService {
             Err(RunError::Timeout) => {
                 OcrReport::error("timeout", "识别超时，请稍后重试或用更小的图片", duration_ms)
             }
-            Err(RunError::Unavailable(msg)) => {
-                OcrReport::unavailable("engine_unavailable", &msg)
-            }
-            Err(RunError::Failed(msg)) => {
-                OcrReport::error("recognize_failed", &msg, duration_ms)
-            }
+            Err(RunError::Unavailable(msg)) => OcrReport::unavailable("engine_unavailable", &msg),
+            Err(RunError::Failed(msg)) => OcrReport::error("recognize_failed", &msg, duration_ms),
             Ok(out) => {
                 let text = normalize_ocr_text(&out.text);
                 let chars = text.chars().count() as u32;
                 let mut report = OcrReport::base(
-                    if text.is_empty() { STATUS_EMPTY } else { STATUS_OK },
+                    if text.is_empty() {
+                        STATUS_EMPTY
+                    } else {
+                        STATUS_OK
+                    },
                     if text.is_empty() { "no_text" } else { "ok" },
                 );
                 if text.is_empty() {
@@ -708,7 +702,9 @@ fn tighten_line(line: &str) -> String {
             continue;
         }
         let prev = out.iter().rev().find(|c| **c != ' ');
-        let next = chars[i + 1..].iter().find(|c| **c != ' ' && **c != '\u{00A0}');
+        let next = chars[i + 1..]
+            .iter()
+            .find(|c| **c != ' ' && **c != '\u{00A0}');
         let join = match (prev, next) {
             (Some(&p), Some(&n)) => {
                 (is_cjk(p) && is_cjk(n))
@@ -776,8 +772,7 @@ fn recognize_pixels(
         .or_else(|| pick_engine_tag(&languages, "en"))
         .or_else(|| languages.first().cloned())
         .ok_or_else(|| RunError::Unavailable("没有可用的 OCR 语言".into()))?;
-    let (first_text, first_lines) =
-        run_engine(&primary, &pixels, width, height, cancel, started)?;
+    let (first_text, first_lines) = run_engine(&primary, &pixels, width, height, cancel, started)?;
     let normalized = normalize_ocr_text(&first_text);
     if !normalized.is_empty()
         && !contains_cjk(&normalized)
@@ -785,9 +780,7 @@ fn recognize_pixels(
         && !primary.starts_with("en")
     {
         if let Some(en) = pick_engine_tag(&languages, "en") {
-            if let Ok((text, lines)) =
-                run_engine(&en, &pixels, width, height, cancel, started)
-            {
+            if let Ok((text, lines)) = run_engine(&en, &pixels, width, height, cancel, started) {
                 let normalized_en = normalize_ocr_text(&text);
                 if !normalized_en.is_empty() {
                     return Ok(Recognized {
@@ -1005,7 +998,6 @@ impl Drop for ComGuard {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,12 +1133,17 @@ mod tests {
 
     #[test]
     fn com_disposition_pairs_s_ok_and_s_false() {
-        use windows::Win32::Foundation::{E_FAIL, E_OUTOFMEMORY, RPC_E_CHANGED_MODE, S_FALSE, S_OK};
+        use windows::Win32::Foundation::{
+            E_FAIL, E_OUTOFMEMORY, RPC_E_CHANGED_MODE, S_FALSE, S_OK,
+        };
         // S_OK 与 S_FALSE 都是「本次调用成功」，都必须配对一次 CoUninitialize。
         assert_eq!(com_disposition(S_OK), ComDisposition::MustUninitialize);
         assert_eq!(com_disposition(S_FALSE), ComDisposition::MustUninitialize);
         // 模式冲突与其他失败不得反初始化。
-        assert_eq!(com_disposition(RPC_E_CHANGED_MODE), ComDisposition::ChangedMode);
+        assert_eq!(
+            com_disposition(RPC_E_CHANGED_MODE),
+            ComDisposition::ChangedMode
+        );
         assert_eq!(com_disposition(E_OUTOFMEMORY), ComDisposition::Failed);
         assert_eq!(com_disposition(E_FAIL), ComDisposition::Failed);
         assert!(ComInitError::ChangedMode.message().contains("套间"));
