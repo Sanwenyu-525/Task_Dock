@@ -14,7 +14,8 @@ export type Tab =
   | "workflows"
   | "history"
   | "roadmap"
-  | "settings";
+  | "settings"
+  | "help";
 
 /**
  * 快捷键逻辑顺序：Ctrl+1…9 映射前九个逻辑 Tab、Ctrl+0=设置。
@@ -37,6 +38,7 @@ export const TAB_ORDER: readonly Tab[] = [
  * 完整模式侧边栏视觉顺序：导航渲染、提示与文档共用这一处定义。
  * v0.10 新增「应用」入口（位于 Agent 之后、行动之前）；它不占用 Ctrl+数字，
  * 因此与 `TAB_ORDER` 分离，避免已有快捷键语义漂移。
+ * 帮助中心（help）同为仅视觉入口（settings 之前），不占 Ctrl+数字。
  */
 export const RAIL_ORDER: readonly Tab[] = [
   "tasks",
@@ -50,6 +52,7 @@ export const RAIL_ORDER: readonly Tab[] = [
   "workflows",
   "history",
   "roadmap",
+  "help",
   "settings",
 ] as const;
 
@@ -183,6 +186,13 @@ export const useUiStore = create<{
   } | null;
   requestClipboardPaste: (groupId: string, groupName: string) => void;
   clearClipboardPasteRequest: () => void;
+  /**
+   * 打开帮助中心指定教程的一次性意图（如 ContextHelpButton「查看完整教程」）：
+   * 调用方先 setTab("help")，HelpCenterPanel 挂载/收到新 token 时消费并清除。
+   */
+  helpOpenRequest: { token: number; articleId: string } | null;
+  requestHelpArticle: (articleId: string) => void;
+  clearHelpArticleRequest: () => void;
 }>((set, get) => ({
   tab: "tasks",
   // 收集箱/暂存架是同一视觉入口的两个子页：setTab 落到其中之一时同步子页状态，
@@ -327,4 +337,13 @@ export const useUiStore = create<{
       },
     })),
   clearClipboardPasteRequest: () => set({ clipboardPasteRequest: null }),
+  helpOpenRequest: null,
+  requestHelpArticle: (articleId) =>
+    set((s) => ({
+      helpOpenRequest: {
+        token: (s.helpOpenRequest?.token ?? 0) + 1,
+        articleId,
+      },
+    })),
+  clearHelpArticleRequest: () => set({ helpOpenRequest: null }),
 }));

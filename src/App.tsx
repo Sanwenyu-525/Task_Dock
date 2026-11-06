@@ -20,6 +20,7 @@ import FullView from "./components/FullView";
 import DeferredView from "./components/DeferredView";
 import WorkspaceLauncher from "./components/navigation/WorkspaceLauncher";
 import { GlobalSearchDialog } from "./components/global-search/GlobalSearchDialog";
+import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
 import ClipboardDrawer from "./components/clipboard/ClipboardDrawer";
 import TaskContextDrawer from "./components/context/TaskContextDrawer";
 import Toast from "./components/Toast";
@@ -299,6 +300,9 @@ export default function App() {
         </div>
         <WorkspaceLauncher />
         <GlobalSearchDialog />
+        {/* 首次使用引导：页内卡片形态，仅完整模式且未完成时自我呈现（可跳过、
+            可从帮助中心重新打开）；停靠/胶囊期随 dock-app inert 一并失效。 */}
+        <OnboardingOverlay />
       </div>
       {capsuleMode && <CapsuleDock />}
       {/* 完整面板停靠态：贴停靠边提供一个轻量「收缩为胶囊」入口（复用轨道按钮图标），

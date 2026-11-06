@@ -177,7 +177,7 @@
 | `npm run tauri build -- --no-bundle` | 通过（Release 可执行文件产出；注意必须用该命令，裸 `cargo build --release` 会漏 `custom-protocol` 特性导致启动即退出） |
 | `node scripts/visual-v06.mjs` | **26 场景全部通过**：0 横向溢出、0 元素越界、0 导航项裁剪、0 运行期错误 |
 | `node scripts/visual-themes.mjs` | 18 场景全部通过：0 横向溢出、关键元素无越界、0 运行期错误 |
-| `node scripts/layout-regression.mjs` | **37 组合全部达标**：六个侧边栏入口全部可达、快速添加按钮未被遮挡、无横向溢出、0 运行期错误 |
+| `node scripts/layout-regression.mjs` | **38 组合全部达标**（2026-11-06）：导航清单按 `.rail-items` + `.rail-foot`（剔除动态「更多」）合并校验；新增**高度填充**断言（内容区 = 视口 − 标题栏，`.full-view` / `.rail` / `.tab-content` 与内容区同高，「设置」固定区贴底）与**导航显隐后高度稳定性**用例；无横向溢出、0 运行期错误 |
 | 原生窗口取证（旧：`native-verify.ps1` + `check-corners.py`） | ❌ **结论已撤回**：旧方法只用 `region_probe` + 同帧自比，无法发现黑角；真机受控背景复测为 FAIL（glass 每角 44–45 暗像素、solid 半径 31.75 ≠ 22）。现行方法：`corner-lab.ps1` + `check-corners.py`（独立背景基线 + 四角像素 + `GetWindowRgn` 联合判定，缺基线返回 UNVERIFIED） |
 | 修复后原生窗口验收 | ⬜ **UNVERIFIED**：本机会话锁定（LogonUI 运行），无法进行真实窗口取证；见 [ui-themes/12-v06-window-corners.md](ui-themes/12-v06-window-corners.md) |
 | 未验证 | Windows 10 真机、100%/150% DPI、Dev 模式、拖动/贴边/托盘交互回归、长时间常驻资源曲线 |

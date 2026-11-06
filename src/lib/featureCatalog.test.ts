@@ -152,11 +152,11 @@ describe("目录结构契约", () => {
     expect(groups.reduce((n, g) => n + g.items.length, 0)).toBe(FEATURE_CATALOG.length);
   });
 
-  it("五个展示分区条目数为 core 5 / workflow 9 / info 2 / agent 7 / ecosystem 5", () => {
+  it("五个展示分区条目数为 core 5 / workflow 11 / info 2 / agent 8 / ecosystem 5", () => {
     const counts = Object.fromEntries(
       featuresByCategory().map((g) => [g.category, g.items.length]),
     );
-    expect(counts).toEqual({ core: 5, workflow: 9, info: 2, agent: 7, ecosystem: 5 });
+    expect(counts).toEqual({ core: 5, workflow: 11, info: 2, agent: 8, ecosystem: 5 });
   });
 
   it("每项必备字段非空", () => {
@@ -210,24 +210,27 @@ describe("目录结构契约", () => {
 });
 
 describe("统计摘要", () => {
-  it("全目录状态计数与验收基线一致（28 = 12 + 13 + 3 + 0）", () => {
+  it("全目录状态计数与验收基线一致（31 = 13 + 15 + 3 + 0）", () => {
     const s = featureCatalogSummary();
-    expect(s.total).toBe(28);
+    expect(s.total).toBe(31);
     expect(s.coreTotal).toBe(12);
     // v0.10（2026-11-04 七项功能验收整改）：专注与休息、快速笔记、Agent 工作时间统计、
     // 任务统计与效率分析、自定义全局快捷键 planned→implemented；
     // 多语言 i18n（主壳未抽取）、桌面微件库（无独立宿主窗口）planned→partial。
     // 2026-11-05 轨道 A：Claude Code / Cursor / Gemini CLI 适配器已落地，目录同步
     // planned→implemented；真实会话事件仍未联调，verification 保持 unverified。
-    expect(s.implemented).toBe(12);
-    expect(s.partial).toBe(13);
+    // 2026-11-06 v0.11 第一轮：新增 agent.mcp-server（partial）、ux.help-center（partial）、
+    // ux.onboarding（implemented，unverified）；三项真实 UI 验收均待真机，verification 保持 unverified。
+    expect(s.implemented).toBe(13);
+    expect(s.partial).toBe(15);
     expect(s.planned).toBe(3);
     expect(s.blocked).toBe(0);
     // 状态计数之和必须等于总功能数
     expect(s.implemented + s.partial + s.planned + s.blocked).toBe(s.total);
-    // 真机走查（2026-11-04）通过的 5 项 implemented 记为 verified
+    // 真机走查（2026-11-04）通过的 5 项 implemented 记为 verified；
+    // v0.11 新增三项（mcp-server / help-center / onboarding）自动化测试已具备但真机未走查，保持 unverified
     expect(s.verified).toBe(8);
-    expect(s.unverified).toBe(20);
+    expect(s.unverified).toBe(23);
     expect(s.verified + s.unverified).toBe(s.total);
   });
 

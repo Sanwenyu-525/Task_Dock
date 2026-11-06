@@ -26,6 +26,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "hotkey_enabled",
     "http_enabled",
     "http_port",
+    // Agent MCP Server（v37）：外部 MCP 客户端 loopback bridge 开关，默认关闭
+    "mcp_server_enabled",
     "mock_enabled",
     "notify_reminder",
     "notify_agent",
@@ -157,6 +159,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "autostart"
         | "hotkey_enabled"
         | "http_enabled"
+        | "mcp_server_enabled"
         | "mock_enabled"
         | "notify_reminder"
         | "notify_agent"

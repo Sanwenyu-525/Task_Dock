@@ -70,12 +70,12 @@ describe("结构渲染", () => {
     expect(screen.queryByRole("button", { name: /（受阻）/ })).toBeNull();
   });
 
-  it("五个分类区块条目数与目录一致（5 / 9 / 2 / 7 / 5）", () => {
+  it("五个分类区块条目数与目录一致（5 / 11 / 2 / 8 / 5）", () => {
     const expected: [label: string, count: number][] = [
       ["核心效率功能", 5],
-      ["工作流与效率增强", 9],
+      ["工作流与效率增强", 11],
       ["信息管理与生活效率", 2],
-      ["Agent 扩展", 7],
+      ["Agent 扩展", 8],
       ["长期生态", 5],
     ];
     for (const [label, count] of expected) {

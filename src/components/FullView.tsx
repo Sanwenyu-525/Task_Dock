@@ -1,4 +1,4 @@
-//! 完整模式：左侧垂直导航 + 任务 / Agent / 应用 / 行动 / 剪贴板 / 收集与暂存 / 工作流 / 历史 / 规划中心 / 设置 **十个视觉入口**。
+//! 完整模式：左侧垂直导航 + 任务 / Agent / 应用 / 行动 / 剪贴板 / 收集与暂存 / 工作流 / 历史 / 规划中心 / 帮助 / 设置 **十二个视觉入口**。
 //! 应用中心（v0.10）复用既有导航目标体系，三端（侧栏 / 胶囊 / 设置）共享同一份数据。
 //!
 //! v0.6：由顶部横向标签改为**左侧垂直导航**（两套视觉预设共用同一结构）。
@@ -11,9 +11,10 @@
 //! - v0.8：新增「暂存架」入口，随后与收集箱**合并为「收集与暂存」单一视觉入口**
 //!   （页面内双子页签：快速收集 | 文件暂存）。
 //! - v0.10：新增「应用」视觉入口（Agent 之后、行动之前）
+//! - v0.11：新增「帮助」视觉入口（规划中心之后、设置之前，不占 Ctrl+数字）
 //!
 //! 逻辑 Tab 与快捷键：`TAB_ORDER` 仍是 10 个逻辑 Tab（快捷键 Ctrl+1…9 与 Ctrl+0 的
-//! 事实源，Ctrl+5=快速收集、Ctrl+6=文件暂存）；「应用 / 微件」只是视觉入口，
+//! 事实源，Ctrl+5=快速收集、Ctrl+6=文件暂存）；「应用 / 微件 / 帮助」只是视觉入口，
 //! **不占用 Ctrl+数字**，已有快捷键语义不漂移。视觉合并只发生在导航渲染层。
 //!
 //! 入口元数据统一来自 `src/lib/navigationRegistry.ts`，用户显隐/排序来自 SQLite
@@ -61,6 +62,7 @@ const WorkflowsPanel = lazy(() => import("./workflows/WorkflowsPanel"));
 const HistoryPanel = lazy(() => import("./history/HistoryPanel"));
 const PlanningCenterPanel = lazy(() => import("./roadmap/PlanningCenterPanel"));
 const SettingsPanel = lazy(() => import("./settings/SettingsPanel"));
+const HelpCenterPanel = lazy(() => import("./help/HelpCenterPanel"));
 
 // 注册中心声明顺序不是展示顺序：左侧入口统一按默认顺序读取，用户排序在渲染时覆盖。
 const LEFT_ENTRIES = entriesForSurface("left");
@@ -301,6 +303,7 @@ export default function FullView() {
             {tab === "workflows" && <WorkflowsPanel />}
             {tab === "history" && <HistoryPanel />}
             {tab === "roadmap" && <PlanningCenterPanel />}
+            {tab === "help" && <HelpCenterPanel />}
             {tab === "settings" && <SettingsPanel />}
           </Suspense>
         </ErrorBoundary>

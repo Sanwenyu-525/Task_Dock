@@ -23,6 +23,7 @@ import {
   History,
   Inbox,
   LayoutGrid,
+  LifeBuoy,
   ListTodo,
   Map as MapIcon,
   Settings as SettingsIcon,
@@ -61,7 +62,8 @@ export type NavEntryId =
   | "history"
   | "roadmap"
   | "settings"
-  | "inbox";
+  | "inbox"
+  | "help";
 
 /** 左侧徽标口径：复用既有统计，不在注册中心里计算。 */
 export type NavBadge = "intervention" | "attention" | "pending" | "inbox";
@@ -287,6 +289,23 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     locked: true,
     defaults: {
       left: { order: 11, visible: true },
+      capsule: { order: 0, visible: false },
+    },
+  },
+  {
+    // 帮助中心：仅视觉入口（不占 Ctrl+数字）。视觉位置在「设置」之前——
+    // 设置的既有 order=11 保持不动（纯增量约束），help 用 10.5 插在其前；
+    // 锁定的设置始终渲染在侧栏底部固定区域，实际视觉顺序不受影响。
+    id: "help",
+    kind: "page",
+    surfaces: ["left"],
+    labelKey: "nav.help",
+    label: "帮助",
+    icon: LifeBuoy,
+    tabs: ["help"],
+    group: "system",
+    defaults: {
+      left: { order: 10.5, visible: true },
       capsule: { order: 0, visible: false },
     },
   },

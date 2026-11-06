@@ -49,7 +49,8 @@ node scripts/theme-perf.mjs
 #                    深色菜单 / 320px 窄布局，两套预设 × 明暗）
 node scripts/visual-v06.mjs
 
-# v0.6 布局回归矩阵（37 组合：宽高 × DPR × 预设 × 明暗 × 材质 × 模式）
+# 布局回归矩阵（38 组合：宽高 × DPR × 预设 × 明暗 × 材质 × 模式 +
+#                 导航显隐后高度稳定性；含高度填充与「设置」固定区贴底断言）
 node scripts/layout-regression.mjs
 
 # v0.6 原生窗口取证（真实 Win32 窗口截图，验证四角/材质）
@@ -112,7 +113,7 @@ task_dock/
 ├── scripts/visual-audit.mjs    # Playwright 320/400 视觉走查
 ├── scripts/visual-themes.mjs   # v0.6 双预设视觉走查（18 场景 + 布局溢出审计）
 ├── scripts/visual-v06.mjs      # v0.6 交互场景走查（26 场景）
-├── scripts/layout-regression.mjs # v0.6 布局回归矩阵（37 组合）
+├── scripts/layout-regression.mjs # 布局回归矩阵（38 组合 + 高度填充/导航切换稳定性）
 ├── scripts/theme-perf.mjs      # v0.6 主题性能测量（空闲占用/布局/backdrop-filter/切换耗时）
 ├── scripts/native-verify.ps1   # v0.6 原生窗口取证（桌面合成像素 + PrintWindow）
 ├── scripts/capture-native.ps1  # 原生窗口截图（仅抓屏）

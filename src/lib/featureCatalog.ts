@@ -659,6 +659,45 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     verification: "unverified",
     entryPoints: ["历史页（现有事件时间轴）"],
   },
+  {
+    id: "agent.mcp-server",
+    category: "agent",
+    title: "Agent MCP Server",
+    description: "外部 MCP 客户端经授权读写规划中心：身份、权限、审计与乐观并发。",
+    detail:
+      "已交付（v0.11 后端最小安全闭环）：taskdock.exe --mcp-server stdio 子命令（手写 JSON-RPC 2.0 + " +
+      "MCP 最小子集 initialize / tools/list / tools/call，不引入 SDK）→ 127.0.0.1 HTTP loopback bridge" +
+      "（独立端口与 token，256KB 体积上限、20s 超时、连接/在途并发上限，日志不含请求体与凭据）→ 规划服务层 → SQLite。" +
+      "身份存 SHA-256（明文仅创建时返回一次）；scope = disabled / readonly / project_rw + 逐项目授权，撤销即时生效；" +
+      "每次调用写 mcp_audit_log，写工具 requestId 幂等（重复返回原结果）。18 个规划读写工具全部复用 planning 服务层，" +
+      "强制 expected_revision 乐观并发（冲突明确返回）；update_feature 拒绝置 completed，submit_for_review 只置 review。" +
+      "写入成功 emit planning-changed，前端去抖合并 + 代际守卫局部刷新，无新增轮询。设置键 mcp_server_enabled 默认关闭。" +
+      "配置片段生成已核对 Claude Code / Codex CLI / Cursor / Trae 官方文档格式（v37 迁移 + 备份登记齐备）。" +
+      "测试：mcp 29 用例 + tests/mcp_e2e.rs 3 用例（真实子进程握手→发现→读→拒绝→授权写→幂等→冲突→审计→重连→不可用降级）。",
+    status: "partial",
+    priority: "P1",
+    existingFeatures: [
+      "stdio MCP 子命令 + loopback bridge（按设置开关启停，关闭即释放）",
+      "agent 身份 / scope / 逐项目授权 / 撤销即时生效 / 审计与幂等",
+      "18 个规划读写工具 + 乐观并发控制 + 防越权（completed 不可由 Agent 判定）",
+      "planning-changed 事件 → 前端局部刷新；配置片段生成（四家客户端格式已核实）",
+    ],
+    missingFeatures: [
+      "设置 / Agent 页接入管理 UI（开关、凭据、授权项目、最近操作、连接测试）",
+      "真实客户端端到端联调（本机未安装对应客户端，如实记未验证）",
+      "任务 / 笔记 / 工作流等扩展工具（复用同一套权限与审计）",
+      "审计查询界面与单项目撤权",
+    ],
+    dependencies: ["planning_* 服务层与 v37 迁移", "http_ingest 的 hyper + Bearer 既有模式"],
+    acceptanceCriteria: [
+      "未授权请求被拒绝且不降级为无认证",
+      "并发冲突明确返回，后写不无声覆盖",
+      "撤销凭据后既有会话立即失效",
+      "task_dock 未运行时子进程返回明确不可用错误",
+    ],
+    verification: "unverified",
+    entryPoints: ["taskdock.exe --mcp-server（外部 MCP 客户端 stdio 接入）"],
+  },
 
   // ─── 任务与交互增强 ────────────────────────────────────────────────
   {
@@ -752,6 +791,66 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     acceptanceCriteria: ["HTML 预览不执行脚本", "文件路径不泄露到日志"],
     verification: "verified",
     entryPoints: ["剪贴板条目详情"],
+  },
+  {
+    id: "ux.help-center",
+    category: "workflow",
+    title: "帮助与教程中心",
+    description: "可随功能演进校验失效的内置教程：搜索、分类、功能关联与状态提示。",
+    detail:
+      "已交付（v0.11 第一轮）：src/help 教程注册中心（结构化 TS 正文，heading/paragraph/steps/tip/note/callout，零新依赖）" +
+      "+ 8 分类 19 篇教程（16 verified / 2 needs_review / 1 draft），正文自备 translations，en-US 缺失时明确显示" +
+      "「暂无英文版」徽标并回退中文，不伪称国际化完成；完整模式第 13 个 rail 入口（help，不占 Ctrl+数字）；" +
+      "搜索（标题/关键词/正文）、分类浏览、最近浏览（上限 8）、文章头显示适用版本/最近更新/翻译状态；" +
+      "相关功能跳转对 planned / blocked / hidden / 停用分别给出状态提示而非死链接；复制操作步骤；" +
+      "npm run help:check 契约校验（12 用例：featureId / routeId / 正文完整性 / en 结构平行 / 核心功能覆盖 / 内容版本），" +
+      "引用失效即报错。ContextHelpButton（? 弹出轻量说明）已交付组件与测试。测试 61 用例 + 预览截图 8 张" +
+      "（深浅主题 × 列表/文章/搜索/引导 × 320 窄窗）。",
+    status: "partial",
+    priority: "P1",
+    existingFeatures: [
+      "注册中心 + 8 分类 19 篇教程 + 搜索 / 分类 / 最近浏览",
+      "状态徽标：功能未实现 / 受阻 / 导航隐藏 / 停用 / 翻译缺失分别如实提示",
+      "help:check 契约校验阻断引用失效（featureId / routeId / 翻译 / 版本）",
+      "第 13 个 rail 入口 + 从教程跳转实际功能",
+    ],
+    missingFeatures: [
+      "ContextHelpButton 接入各复杂功能面板（Agent / 剪贴板 / 文件移动 / 场景 / 备份）",
+      "MCP 接入与无事件排查两篇教程按 needs_review 复核",
+      "真实 WebView2 / 真机双主题与窄窗走查",
+    ],
+    dependencies: ["featureCatalog.ts（功能元数据事实源）", "navigationRegistry.ts（入口寻址）", "overlayStack 弹层栈"],
+    acceptanceCriteria: [
+      "引用不存在的功能或路由时校验报错",
+      "功能隐藏 / 停用 / 未实现时教程入口不误导",
+      "帮助中心不引入常驻后台且不要求主窗变大",
+    ],
+    verification: "unverified",
+    entryPoints: ["完整模式左栏「帮助」（Ctrl 无绑定）", "npm run help:check（教程契约校验）"],
+  },
+  {
+    id: "ux.onboarding",
+    category: "workflow",
+    title: "首次使用引导",
+    description: "首次启动三步入门：认识界面、完成第一个任务、按需启用功能。",
+    detail:
+      "已交付（v0.11）：useOnboardingStore（localStorage taskdock.onboarding.v1）+ OnboardingOverlay 页内卡片" +
+      "（非全屏 Modal），仅完整模式且未完成时显示；三步（认识 task_dock → 完成第一个任务 → 选择需要的功能）均可跳过 / 返回，" +
+      "Escape 经 overlayStack，键盘可操作；不创建任何业务数据（步骤按钮只做页面跳转）；升级版本只置「有新内容」红点" +
+      "由帮助中心呈现，不自动重播；可从帮助中心重新打开。测试覆盖步骤流转 / 跳过 / 持久化 / 不重播。" +
+      "剩余事项：设置页重开引导入口待接入；真机双主题 / 窄窗 / DPI 走查未执行。",
+    status: "implemented",
+    priority: "P2",
+    existingFeatures: [
+      "三步引导：可跳过、可返回、可从帮助中心重新打开",
+      "状态持久化，升级版本不重复强制展示",
+      "页内卡片形态 + overlayStack + 键盘操作 + 双主题 Token",
+    ],
+    missingFeatures: [],
+    dependencies: ["useUiStore tab 调度", "overlayStack", "帮助中心（重新打开入口）"],
+    acceptanceCriteria: ["首次启动出现且仅出现一次", "跳过后不再自动弹出", "不创建不可辨别的永久测试数据"],
+    verification: "unverified",
+    entryPoints: ["首次启动完整模式自动呈现", "帮助中心 → 重新打开引导"],
   },
 
   // ─── 长期生态 ───────────────────────────────────────────────────────

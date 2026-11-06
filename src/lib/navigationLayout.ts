@@ -16,6 +16,7 @@ import { useEffect, useMemo } from "react";
 import {
   allEntryIds,
   defaultVisibleIds,
+  isEntrySortable,
   navEntry,
   type NavSurface,
 } from "./navigationRegistry";
@@ -103,8 +104,11 @@ export function setNavigationEntryVisible(
 
 /** 上移 / 下移一个可见入口（键盘可用的排序实现，不引入拖拽系统）。
  *
- * 锁定入口（`locked`）不可排序，也不可被普通入口间接挤走：
- * 邻居是锁定入口时本次移动无效（配置保持原样，UI 不会出现假成功）。
+ * 排序规则与设置页 UI 共用同一份元数据（`isEntrySortable`）：
+ * - 固定入口（左侧 `locked` 设置、胶囊 Agent 状态球）自身不可移动；
+ * - 固定入口**不是障碍**：普通入口在可排序子序列内交换，可以跨过固定项
+ *   （固定项原地不动；胶囊分类因此不受端头 Agent 阻挡）；
+ * - 未知 ID 不会出现在已归一化的布局里，谓词按普通入口处理。
  */
 export function moveNavigationEntry(
   surface: NavSurface,
@@ -113,12 +117,10 @@ export function moveNavigationEntry(
 ): Promise<void> {
   return persistNavigationLayout((current) => ({
     ...current,
-    [surface]: moveEntryInList(
-      current[surface],
-      id,
-      delta,
-      (entryId) => navEntry(entryId)?.locked === true,
-    ),
+    [surface]: moveEntryInList(current[surface], id, delta, (entryId) => {
+      const entry = navEntry(entryId);
+      return entry ? !isEntrySortable(entry, surface) : false;
+    }),
   }));
 }
 

@@ -16,8 +16,9 @@
 
 **验证口径**：verified = 该功能当前范围内有自动化测试或历史真机验收证据；unverified = 未充分验证。**「已实现」不等于「已通过验收」**。
 
-当前计数：共 28 项（核心 12 项）——已实现 12 · 部分实现 13 · 待开发 3 · 受阻 0；已验证 8，未验证 20。
-（2026-11-05 按 `featureCatalog.ts` 重新核对；状态口径与验证口径见上。此前“已实现 9 / 待开发 6”为 2026-11-04 的过期统计。）
+当前计数：共 31 项（核心 12 项）——已实现 13 · 部分实现 15 · 待开发 3 · 受阻 0；已验证 8，未验证 23。
+（2026-11-06 v0.11 第一轮按 `featureCatalog.ts` 同步：新增 Agent MCP Server（partial）、帮助与教程中心（partial）、
+首次使用引导（implemented·unverified）三项；此前 2026-11-05 的"28 项 = 12 + 13 + 3 + 0 / 已验证 8"为上一轮统计。）
 
 ---
 
@@ -31,7 +32,7 @@
 | 工作现场恢复 `core.workspace-restore` | partial | 已有：保存/恢复/取消/任务关联、逐项验证级别与失败降级。缺口：窗口位置尺寸恢复、浏览器多标签恢复、恢复前预览 |
 | 智能日程提醒 `core.smart-reminders` | partial | 已有：自然语言创建（含「N 分钟后」相对时间、工作日与每月高级规则）、重复规则引擎（含每 N 月/每月第 N 个星期X/每月最后一个工作日，修复每两个月退化为每月）、任务页快捷提醒与页面级共享时钟倒计时、任务详情/任务卡/任务通知三处延后入口（可撤销、版本约束）、通知操作（查看/稍后/完成）、补触发。缺口：提醒与场景/现场联动、法定节假日/调休跳过（按设计不接节假日 API）、真机双主题与窄窗走查 |
 
-## 工作流与效率增强（P1，9 项）
+## 工作流与效率增强（P1，11 项）
 
 | 功能 | 状态 | 摘要 |
 |---|---|---|
@@ -44,6 +45,8 @@
 | 自定义全局快捷键 `ux.custom-hotkeys` | implemented ✅已验证 | v0.10 已交付：hotkeys_snapshot/change/reset、录制控件（应用内/全局分组）、冲突与系统占用提示、无修饰键拒绝、hotkeys.json 即时生效并重启保持。入口：设置 → 窗口与快捷键。配置随完整/快速备份迁移（bundle header 可选 config），恢复时逐项重新注册校验；冲突/占用会降级或禁用并保留原配置，不伪装恢复成功。真机 2026-11-04 走查录制、无修饰键拒绝、系统级改键 Ctrl+Alt+F12、组合冲突提示与重置 |
 | 图片放大及全屏预览 `ux.image-fullscreen` | implemented ✅已验证 | 图片灯箱：缩放/平移/双击/另存为，弹层栈隔离。入口：剪贴板图片详情 |
 | 剪贴板多类型专用查看器 `ux.clipboard-viewers` | implemented ✅已验证 | HTML 白名单只读阅读器、图片灯箱、文件预览、URL 详情。入口：剪贴板条目详情 |
+| 帮助与教程中心 `ux.help-center` | partial | v0.11 第一轮已交付：src/help 注册中心（结构化 TS 正文，零新依赖）+ 8 分类 19 篇教程（16 verified / 2 needs_review / 1 draft）、en-US 缺失明确显示翻译状态；第 13 个 rail 入口（不占 Ctrl+数字）；搜索/分类/最近浏览/状态徽标（未实现/受阻/隐藏/停用分别如实提示）/功能跳转/复制步骤；`npm run help:check` 契约校验 12 用例阻断引用失效；ContextHelpButton 组件已交付。缺口：面板内 ? 接入、MCP 两篇教程复核、真机双主题与窄窗走查 |
+| 首次使用引导 `ux.onboarding` | implemented（待真机验证） | v0.11 已交付：三步引导（认识 task_dock → 完成第一个任务 → 按需启用功能），页内卡片形态（非全屏 Modal）、可跳过/返回、Escape 经 overlayStack、键盘可操作、不创建业务数据；localStorage 持久化，升级不自动重播（「有新内容」由帮助中心呈现）；可从帮助中心重新打开。缺口：设置页重开入口、真机双主题/窄窗/DPI 走查 |
 
 ## 信息管理与生活效率（P2，2 项）
 
@@ -52,10 +55,12 @@
 | 快速笔记 `core.quick-notes` | implemented ✅已验证 | v0.10 已交付：notes 表（v25，纳入备份）+ 11 个 notes_* 命令、自动保存、收藏置顶、搜索、内置模板、关联任务/工作现场、捕获转笔记、全局搜索笔记分类。入口：收集与暂存 → 笔记；收集箱「转为笔记」。真机 2026-11-04 走查新建→保存→搜索与空态，并验证完整备份→删除→恢复后笔记正文与标题回来、重启仍在 |
 | 生活例行事项 `core.life-routines` | partial | 已有：周期任务引擎可覆盖。缺口：今日待办视图、打卡与连续记录、延后处理、自定义分类。**复用任务与重复规则，不建第二套任务系统** |
 
-## Agent 扩展（P1，7 项）
+## Agent 扩展（P1，8 项）
 
 | 功能 | 状态 | 摘要 |
 |---|---|---|
+| Agent MCP Server `agent.mcp-server` | partial | v0.11 第一轮已交付后端最小安全闭环：`taskdock.exe --mcp-server` stdio 子命令（手写 JSON-RPC 2.0 + MCP 最小子集，不引入 SDK）→ 127.0.0.1 loopback bridge（独立端口/token、256KB 上限、20s 超时、并发上限）→ 规划服务层 → SQLite；agent 身份 SHA-256、scope=disabled/readonly/project_rw + 逐项目授权、撤销即时生效；mcp_audit_log 审计 + requestId 幂等；18 个规划读写工具复用 planning 服务层，强制 expected_revision 乐观并发，Agent 不可置 completed、submit_for_review 只置 review；planning-changed 事件前端局部刷新；mcp_server_enabled 默认关闭；v37 迁移 + 备份登记；mcp 29 用例 + e2e 3 用例（真实子进程全链路）。缺口：接入管理 UI（设置/Agent 页）、真实客户端联调、任务/笔记/工作流扩展工具、审计查询 UI |
+
 | Codex App Server 深度接入 `agent.codex-app-server` | partial | 已有：hooks 接入（7 事件、真实联调）+ codex resume。缺口：app-server stdio JSON-RPC 通道（线程恢复、中断回合、完整对话事件） |
 | Claude Code 专用适配器 `agent.claude-code-adapter` | implemented（待本轮真实验证） | 已实现：~/.claude/settings.json 官方 Hooks 安装/卸载、多文件事务、二进制能力线索检查。缺口：本轮未在真实 Claude 会话触发事件，真实验证标 UNVERIFIED |
 | Cursor 专用适配器 `agent.cursor-adapter` | implemented（待本轮真实验证） | 已实现：用户级 ~/.cursor/hooks.json（保留 version 等字段）、camelCase 事件映射。缺口：本轮未在真实 Cursor 会话触发事件 |

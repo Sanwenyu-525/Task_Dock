@@ -142,8 +142,8 @@ describe("12 项核心功能精确契约", () => {
 });
 
 describe("全目录统计契约", () => {
-  it("目录总数 28，状态计数 implemented=12 / partial=13 / planned=3 / blocked=0", () => {
-    expect(FEATURE_CATALOG).toHaveLength(28);
+  it("目录总数 31，状态计数 implemented=13 / partial=15 / planned=3 / blocked=0", () => {
+    expect(FEATURE_CATALOG).toHaveLength(31);
     const counts: Record<FeatureStatus, number> = {
       implemented: 0,
       partial: 0,
@@ -151,7 +151,8 @@ describe("全目录统计契约", () => {
       blocked: 0,
     };
     for (const f of FEATURE_CATALOG) counts[f.status] += 1;
-    expect(counts).toEqual({ implemented: 12, partial: 13, planned: 3, blocked: 0 });
+    // v0.11 第一轮新增 agent.mcp-server / ux.help-center（partial）与 ux.onboarding（implemented）
+    expect(counts).toEqual({ implemented: 13, partial: 15, planned: 3, blocked: 0 });
   });
 
   it("摘要函数与目录实际计数一致（total / coreTotal / 状态 / 验证）", () => {

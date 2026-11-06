@@ -103,6 +103,13 @@ pub const EXTENDED_TABLES: &[&str] = &[
     // 专注与休息：会话历史与日聚合（无外键依赖）。
     "focus_sessions",
     "focus_daily_stats",
+    // Agent MCP Server（v37）：Agent 身份 → 授权/审计 → 功能会话关联（FK 依赖序）。
+    "mcp_agents",
+    "mcp_agent_grants",
+    "mcp_audit_log",
+    "feature_agent_links",
+    // 场景工作区（v38）：软引用 workflow 与现场快照，必须排在两者之后。
+    "scenarios",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -306,7 +313,14 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     // 暂存架文件操作增强：最近目录是轻量用户偏好；操作日志只保留未完成项，
     // 正常完成即删除，恢复时由启动恢复逻辑消费，不承载用户业务数据。
     rule!("shelf_recent_dirs", "shelf", "all", 315, &[], true),
-    rule!("shelf_file_ops", "shelf", "all", 316, &["shelf_items"], true),
+    rule!(
+        "shelf_file_ops",
+        "shelf",
+        "all",
+        316,
+        &["shelf_items"],
+        true
+    ),
     // 快捷投递目标：用户显式配置的命名目录（别名/排序/显示开关/默认模式），
     // 属于可迁移的用户配置，快速备份全量保存；不含任何文件内容或路径以外的隐私数据。
     rule!("shelf_drop_targets", "shelf", "all", 317, &[], true),
@@ -363,6 +377,37 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     // 无外键：task_id 只作弱引用，任务删除后历史仍保留标题快照。
     rule!("focus_sessions", "focus", "all", 350, &[], true),
     rule!("focus_daily_stats", "focus", "all", 355, &[], true),
+    // Agent MCP Server（v37）：Agent 身份/授权/会话关联/审计。
+    // token 只存哈希，表内无凭据明文；审计 detail/result_json 均不含凭据与路径。
+    // 快速备份全量保存（行数小）；恢复顺序：Agent 身份 → 授权/审计 → 会话关联。
+    rule!("mcp_agents", "agent", "all", 360, &[], true),
+    rule!(
+        "mcp_agent_grants",
+        "agent",
+        "all",
+        365,
+        &["mcp_agents", "planning_projects"],
+        true
+    ),
+    rule!("mcp_audit_log", "agent", "all", 370, &["mcp_agents"], true),
+    rule!(
+        "feature_agent_links",
+        "agent",
+        "all",
+        375,
+        &["planning_features"],
+        true
+    ),
+    // 场景工作区（v38）：静态清单，软引用 workflow 与现场快照。
+    // 归入 workflow 家族（不新增 class 取值）：它的两个外键目标都由 workflow/现场恢复提供。
+    rule!(
+        "scenarios",
+        "workflow",
+        "all",
+        380,
+        &["workflows", "workspace_snapshots"],
+        true
+    ),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -647,7 +692,13 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
     | "task_completion_events"
     // 专注与休息：会话历史与日聚合都是用户数据，快速备份也全量保存
     | "focus_sessions"
-    | "focus_daily_stats" => format!("SELECT * FROM {} ORDER BY rowid", table),
+    | "focus_daily_stats"
+    // Agent MCP Server（v37）：身份/授权/审计/会话关联都是小体量配置与审计数据，
+    // 快速备份全量保存（审计是问责依据，不截断）
+    | "mcp_agents"
+    | "mcp_agent_grants"
+    | "mcp_audit_log"
+    | "feature_agent_links" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(
             "SELECT * FROM workflow_runs WHERE id IN (SELECT id FROM workflow_runs ORDER BY started_at DESC, rowid DESC LIMIT {}) ORDER BY rowid",
@@ -2882,7 +2933,7 @@ mod tests {
             },
         )
         .unwrap();
-        crate::commands::planning::add_step_impl(&db, f.id.clone(), "步骤一".into()).unwrap();
+        crate::commands::planning::add_step_impl(&db, f.id.clone(), "步骤一".into(), None).unwrap();
         crate::commands::planning::add_note_impl(&db, p.id.clone(), None, "开发日志".into())
             .unwrap();
 

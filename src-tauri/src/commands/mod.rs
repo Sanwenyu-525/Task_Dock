@@ -1,29 +1,30 @@
 //! 命令层：前端 invoke 的统一入口。
 
 pub mod actions;
-pub mod agents;
 pub mod agent_stats;
+pub mod agents;
 pub mod audio;
 pub mod audit;
 pub mod backup;
 pub mod clipboard;
 pub mod context;
+pub mod data;
 pub mod focus;
 pub mod global_search;
 pub mod hotkeys;
-pub mod notes;
-pub mod shelf;
-pub mod data;
 pub mod navigation;
+pub mod notes;
 pub mod planning;
 pub mod restore;
+pub mod scenario;
 pub mod settings;
+pub mod shelf;
 pub mod system;
 pub mod task_analytics;
 pub mod tasks;
 pub mod user_preferences;
-pub mod workspace;
 pub mod workflows;
+pub mod workspace;
 
 use chrono::DateTime;
 

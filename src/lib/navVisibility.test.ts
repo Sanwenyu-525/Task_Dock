@@ -205,18 +205,31 @@ describe("排序不变量：锁定入口固定末尾", () => {
     expect(config.left).toEqual(["tasks", "agents", "settings"]);
   });
 
-  it("普通入口不能与锁定入口交换位置（下移越过设置无效）", () => {
-    const ids = ["tasks", "agents", "settings"];
-    expect(moveEntryInList(ids, "agents", 1, (id) => id === "settings")).toEqual([
-      "tasks",
+  it("普通入口可以跨过锁定入口排序（固定项原地不动）", () => {
+    // 新语义：固定入口不是障碍——agents 与 tasks 在可排序子序列内交换，
+    // settings 原地不动；归一化会再把设置收敛回末尾。
+    expect(moveEntryInList(["tasks", "agents", "settings"], "agents", -1, (id) => id === "settings")).toEqual([
       "agents",
+      "tasks",
       "settings",
     ]);
-    // 上移方向同样受保护：设置不会被挤到普通入口之后
+    // 上移方向同样可以跨过：agents 与子序列中的前一项（tasks）交换，
+    // settings 原地不动；归一化收敛后等效于 agents 上移一位
     expect(moveEntryInList(["tasks", "settings", "agents"], "agents", -1, (id) => id === "settings")).toEqual([
+      "agents",
+      "settings",
+      "tasks",
+    ]);
+    // 首个可排序入口再上移无效（不越出子序列边界）；末个可排序入口再下移无效
+    expect(moveEntryInList(["tasks", "settings", "agents"], "tasks", -1, (id) => id === "settings")).toEqual([
       "tasks",
       "settings",
       "agents",
+    ]);
+    expect(moveEntryInList(["tasks", "agents", "settings"], "agents", 1, (id) => id === "settings")).toEqual([
+      "tasks",
+      "agents",
+      "settings",
     ]);
   });
 
@@ -236,5 +249,123 @@ describe("排序不变量：锁定入口固定末尾", () => {
   it("恢复默认后锁定入口仍在末尾", () => {
     const layout = defaultNavigationLayout();
     expect(layout.left[layout.left.length - 1]).toBe("settings");
+  });
+});
+
+describe("胶囊 Agent 状态球排序边界", () => {
+  // Agent 状态球是固定入口：不参与排序，也不阻挡普通分类
+  const isFixed = (id: string) => id === "agents";
+
+  it("旧配置 Agent 夹在中间：普通分类上移跨过它，Agent 原地不动", () => {
+    // 任务 → Agent → 收集箱 → 剪贴板 → 应用，上移「收集箱」
+    const ids = ["tasks", "agents", "inbox", "clipboard", "apps"];
+    const moved = moveEntryInList(ids, "inbox", -1, isFixed);
+    // 普通分类顺序变为 收集箱 → 任务 → 剪贴板 → 应用；Agent 未被移动
+    expect(moved).toEqual(["inbox", "agents", "tasks", "clipboard", "apps"]);
+    // 归一化后 Agent 收敛到端头，普通分类相对顺序保留
+    const { config } = normalizeNavigationLayout({
+      version: NAV_LAYOUT_VERSION,
+      capsule: moved,
+      left: ALL_LEFT,
+      known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
+    });
+    expect(config.capsule).toEqual(["agents", "inbox", "tasks", "clipboard", "apps"]);
+  });
+
+  it("Agent 在数组首/尾时普通分类同样可以自由排序", () => {
+    expect(moveEntryInList(["agents", "tasks", "inbox"], "inbox", -1, isFixed)).toEqual([
+      "agents",
+      "inbox",
+      "tasks",
+    ]);
+    expect(moveEntryInList(["tasks", "inbox", "agents"], "tasks", 1, isFixed)).toEqual([
+      "inbox",
+      "tasks",
+      "agents",
+    ]);
+  });
+
+  it("Agent 自身不可被底层 API 移动", () => {
+    const ids = ["tasks", "agents", "inbox"];
+    expect(moveEntryInList(ids, "agents", -1, isFixed)).toEqual(ids);
+    expect(moveEntryInList(ids, "agents", 1, isFixed)).toEqual(ids);
+  });
+
+  it("归一化把 Agent 收敛到端头：首/中/尾三种旧配置、普通分类相对顺序保留", () => {
+    const known = { left: ALL_LEFT, capsule: allEntryIds("capsule") };
+    const normalizeCapsule = (capsule: string[]) =>
+      normalizeNavigationLayout({
+        version: NAV_LAYOUT_VERSION,
+        capsule,
+        left: ALL_LEFT,
+        known,
+      }).config.capsule;
+    expect(normalizeCapsule(["agents", "tasks", "inbox", "clipboard", "apps"])).toEqual([
+      "agents",
+      "tasks",
+      "inbox",
+      "clipboard",
+      "apps",
+    ]);
+    expect(normalizeCapsule(["tasks", "agents", "inbox", "clipboard", "apps"])).toEqual([
+      "agents",
+      "tasks",
+      "inbox",
+      "clipboard",
+      "apps",
+    ]);
+    expect(normalizeCapsule(["tasks", "inbox", "clipboard", "apps", "agents"])).toEqual([
+      "agents",
+      "tasks",
+      "inbox",
+      "clipboard",
+      "apps",
+    ]);
+  });
+
+  it("Agent 被隐藏时不重新显示；只有 Agent 可见与全部分类隐藏都是合法状态", () => {
+    const known = { left: ALL_LEFT, capsule: allEntryIds("capsule") };
+    const normalizeCapsule = (capsule: string[]) =>
+      normalizeNavigationLayout({
+        version: NAV_LAYOUT_VERSION,
+        capsule,
+        left: ALL_LEFT,
+        known,
+      }).config.capsule;
+    // Agent 隐藏：保持隐藏，不意外恢复
+    expect(normalizeCapsule(["tasks", "inbox", "clipboard", "apps"])).toEqual([
+      "tasks",
+      "inbox",
+      "clipboard",
+      "apps",
+    ]);
+    // 只有 Agent 可见
+    expect(normalizeCapsule(["agents"])).toEqual(["agents"]);
+    // 所有胶囊分类隐藏（空数组合法）
+    expect(normalizeCapsule([])).toEqual([]);
+  });
+
+  it("未知 ID 与重复 ID 被丢弃计数，不影响 Agent 收敛与用户排序", () => {
+    const result = normalizeNavigationLayout({
+      version: NAV_LAYOUT_VERSION,
+      capsule: ["tasks", "agents", "tasks", "unknown-id", "inbox"],
+      left: ALL_LEFT,
+      known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
+    });
+    // 重复的 tasks 与未知 ID 各丢弃 1 次；known 快照含全量入口，
+    // 缺失的 clipboard/apps 视为用户隐藏，不会被重新补齐
+    expect(result.dropped).toBe(2);
+    expect(result.config.capsule).toEqual(["agents", "tasks", "inbox"]);
+  });
+
+  it("归一化不影响完整面板配置：left 排序原样保留（设置仍固定末尾）", () => {
+    const left = ["apps", "tasks", "history", "settings"];
+    const { config } = normalizeNavigationLayout({
+      version: NAV_LAYOUT_VERSION,
+      left,
+      capsule: ["agents", "tasks"],
+      known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
+    });
+    expect(config.left).toEqual(["apps", "tasks", "history", "settings"]);
   });
 });

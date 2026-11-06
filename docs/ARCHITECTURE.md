@@ -568,6 +568,17 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   「无区域」）；四向吸附后窗口保持用户模式尺寸并沿停靠边齐平，沿边位置由持久化
   `centerRatio` 决定；点击命中与区域一致（`WindowFromPoint` 面板内命中主窗、面板外不命中）。
   四向真机证据见 `tmp/acceptance/navigation-layout-fix/native-summary.json`。
+  （2026-11-06 更正）排序算法从「相邻交换、固定项不可跨越」改为**可排序子序列内相邻交换**：
+  `moveEntryInList` 的 `isFixed` 谓词只决定谁不可移动，固定入口不再是普通入口之间的障碍——
+  普通入口可以跨过固定项排序（固定项原地不动）。此前「固定项不可跨越」会让夹在普通分类之间的
+  Agent 状态球挡住一侧全部排序操作，与 UI 禁用逻辑叠加成「点了没反应」。配套变化：
+  ①`moveNavigationEntry` 的固定谓词与 UI 共用 `isEntrySortable`（此前只认 `locked`，胶囊
+  Agent 状态球可被底层 API 交换）；②`normalizeNavigationLayout` 把胶囊 `agent-status` 收敛到
+  可见数组**端头**（与 locked 收敛到末尾并列），旧配置（Agent 夹中间/末尾）读取即自愈，
+  普通分类相对顺序保留，隐藏的 Agent 不被重新显示；③设置页上/下按钮的可用性按
+  「可排序子序列内是否还有前/后邻居」判定，与底层语义一致。复验证据：
+  `tmp/acceptance/navigation-layout-fix/repro-final-summary.json`、`native2-summary.json`
+  （2026-11-06，EXE sha256 `DA61A842…`）。
 - 智能剪贴板（v0.6 起进入侧边栏）：完整模式为**第 4 个导航入口**（任务 / Agent /
   行动 / 剪贴板 / 历史 / 设置），**完整模式标题栏不再保留剪贴板入口按钮**；
   任务关联场景仍以

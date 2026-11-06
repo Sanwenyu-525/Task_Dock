@@ -1197,6 +1197,110 @@ CREATE INDEX IF NOT EXISTS idx_runs_session_updated_id
   ON agent_runs(session_id, updated_at DESC, id DESC);
 "#,
     ),
+    (
+        37,
+        r#"
+-- v37（Agent MCP Server）：外部 MCP 客户端经 stdio → loopback bridge 安全读写规划中心。
+-- 1) 乐观并发控制：planning_projects / planning_features 增加 revision（每次内容写 +1），
+--    更新路径可传 expected_revision，不匹配返回明确冲突（MCP 工具层强制要求）。
+--    DEFAULT 1：既有行从 revision=1 起步，旧行为（不传 expected_revision）完全不变。
+ALTER TABLE planning_projects ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE planning_features ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+
+-- 2) Agent 身份与授权。token 只存 SHA-256（hex），明文仅在创建命令返回值出现一次；
+--    scope: disabled（拒绝一切）/ readonly（只读工具）/ project_rw（读 + 已授权项目写）。
+CREATE TABLE mcp_agents (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_id TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL DEFAULT '',
+  token_hash TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'disabled' CHECK (scope IN ('disabled','readonly','project_rw')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT,
+  last_seen_at TEXT
+);
+CREATE INDEX idx_mcp_agents_scope ON mcp_agents(scope);
+
+-- 3) 项目级写授权（scope=project_rw 时生效）。删除项目/Agent 双向级联，不留悬挂授权。
+CREATE TABLE mcp_agent_grants (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_row_id TEXT NOT NULL REFERENCES mcp_agents(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES planning_projects(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  UNIQUE (agent_row_id, project_id)
+);
+CREATE INDEX idx_mcp_agent_grants_project ON mcp_agent_grants(project_id);
+
+-- 4) 功能 ↔ Agent 会话关联（来源 + 会话维度）。UNIQUE 键 upsert 语义：
+--    重复 link 更新 status/last_event_at，不产生重复行。
+CREATE TABLE feature_agent_links (
+  id TEXT PRIMARY KEY NOT NULL,
+  feature_id TEXT NOT NULL REFERENCES planning_features(id) ON DELETE CASCADE,
+  agent_source TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'linked' CHECK (status IN ('linked','unlinked')),
+  last_event_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (feature_id, agent_source, session_id)
+);
+CREATE INDEX idx_feature_agent_links_session ON feature_agent_links(agent_source, session_id);
+
+-- 5) 审计：每次工具调用一条。agent_row_id 可空（未知身份的失败尝试也要留痕）。
+--    detail 只放脱敏摘要（动作结果、revision 等），绝不含凭据/正文/完整路径；
+--    result_json 保存写工具的成功结果（规划实体本身，与 planning 表同源），
+--    供相同 (agent, action, request_id) 幂等重放返回原结果，不重复执行。
+--    幂等键：部分唯一索引只约束成功且带 request_id 的行；读工具 request_id 恒存 ''，
+--    不受索引约束，可任意重复审计。
+CREATE TABLE mcp_audit_log (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_row_id TEXT,
+  agent_id TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  entity_type TEXT NOT NULL DEFAULT '',
+  entity_id TEXT NOT NULL DEFAULT '',
+  request_id TEXT NOT NULL DEFAULT '',
+  success INTEGER NOT NULL,
+  authz INTEGER NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  result_json TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_mcp_audit_agent ON mcp_audit_log(agent_row_id, created_at);
+CREATE INDEX idx_mcp_audit_time ON mcp_audit_log(created_at);
+CREATE UNIQUE INDEX idx_mcp_audit_idempotent
+  ON mcp_audit_log(agent_row_id, action, request_id)
+  WHERE request_id <> '' AND success = 1;
+"#,
+    ),
+    (
+        38,
+        r#"
+-- v38（场景工作区）：用户命名的「一键进入」预设工作环境。
+-- 与相邻概念的边界（不要合并成一套）：
+-- - workspace_snapshots：某一次真实现场的**捕获**（窗口/进程快照，恢复即重放当时状态）；
+-- - workflows：**有序步骤**的执行序列，有运行态（pause/resume/cancel）；
+-- - 本表：可长期重复进入的**静态清单**（应用 / 网址 / 目录），最多软引用一个现场和一个
+--   工作流，两个外键都是 ON DELETE SET NULL——删除现场或工作流绝不级联删场景。
+-- apps/urls/folders 以 JSON 数组保存：条目只是配置文本，不含文件正文，
+-- 应用层按 targetId 优先、exePath 兜底解析，不在此表复制导航目标明细。
+-- name 不做唯一约束（同名场景是合法用法），长度与条数上限在应用层校验。
+CREATE TABLE scenarios (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  icon TEXT,
+  apps_json TEXT NOT NULL DEFAULT '[]',
+  urls_json TEXT NOT NULL DEFAULT '[]',
+  folders_json TEXT NOT NULL DEFAULT '[]',
+  linked_workflow_id TEXT REFERENCES workflows(id) ON DELETE SET NULL,
+  snapshot_id TEXT REFERENCES workspace_snapshots(id) ON DELETE SET NULL,
+  last_entered_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_scenarios_updated ON scenarios(updated_at DESC, id DESC);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1798,6 +1902,10 @@ pub struct Settings {
     pub http_port: u16,
     #[serde(default)]
     pub http_token: String,
+    /// Agent MCP Server（v37）：loopback bridge 开关，默认关闭；
+    /// 启用后 stdio MCP 子命令才能经 mcp-transport.json 连入。
+    #[serde(default)]
+    pub mcp_server_enabled: bool,
     #[serde(default = "default_true")]
     pub mock_enabled: bool,
     #[serde(default = "default_true")]
@@ -2291,9 +2399,7 @@ fn clipboard_u32(
 /// 只把真正损坏的键交给 serde 补默认值，其余合法设置原样保留；未知/内部键
 /// （`window_rect`、`restore_commit_id` 等）会被 serde 忽略，不会被误删。
 /// 返回被剔除的键名（不含值），由调用方记录诊断；本函数不写库。
-fn salvage_invalid_settings(
-    obj: &mut serde_json::Map<String, serde_json::Value>,
-) -> Vec<String> {
+fn salvage_invalid_settings(obj: &mut serde_json::Map<String, serde_json::Value>) -> Vec<String> {
     let mut dropped = Vec::new();
     for key in obj.keys().cloned().collect::<Vec<_>>() {
         let Some(value) = obj.get(&key).cloned() else {
@@ -2863,6 +2969,101 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn v37_revision_columns_new_tables_and_idempotency_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        // 建到 v36，写入既有规划数据后应用 v37，验证 ALTER 保留旧行并给默认 revision
+        let idx36 = MIGRATIONS.iter().position(|(v, _)| *v == 36).unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..idx36 + 1]).unwrap();
+        conn.execute(
+            "INSERT INTO planning_projects (id, name, created_at, updated_at)
+             VALUES ('p1', '项目', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO planning_features (id, project_id, title, created_at, updated_at)
+             VALUES ('f1', 'p1', '功能', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let idx37 = MIGRATIONS.iter().position(|(v, _)| *v == 37).unwrap();
+        apply_migrations(
+            &conn,
+            MIGRATIONS[idx36].0,
+            &[(MIGRATIONS[idx37].0, MIGRATIONS[idx37].1)],
+        )
+        .unwrap();
+
+        // revision 列默认 1，不改写既有行
+        let (pr, fr): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT revision FROM planning_projects WHERE id='p1'),
+                        (SELECT revision FROM planning_features WHERE id='f1')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((pr, fr), (1, 1), "v37 应给既有行默认 revision=1");
+
+        // 幂等部分唯一索引：同 (agent, action, request_id) 只允许一条成功记录
+        conn.execute(
+            "INSERT INTO mcp_agents (id, agent_id, token_hash, scope, created_at, updated_at)
+             VALUES ('a1', 'codex-main', 'deadbeef', 'project_rw', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT INTO mcp_audit_log (id, agent_row_id, agent_id, action, request_id, success, authz, created_at)
+                 VALUES (lower(hex(randomblob(16))), 'a1', 'codex-main', 'taskdock_update_project', 'req-1', 1, 1, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap_or_else(|e| {
+                assert!(
+                    matches!(e, rusqlite::Error::SqliteFailure(_, _)),
+                    "重复幂等键应被唯一索引拒绝: {e}"
+                );
+                0usize
+            });
+        }
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mcp_audit_log WHERE action='taskdock_update_project'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "第二次插入应触发 UNIQUE 冲突被拒绝");
+
+        // 级联：删 Agent 清授权；删功能清会话关联
+        conn.execute(
+            "INSERT INTO mcp_agent_grants (id, agent_row_id, project_id, created_at)
+             VALUES ('g1', 'a1', 'p1', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO feature_agent_links (id, feature_id, agent_source, session_id, last_event_at, created_at)
+             VALUES ('l1', 'f1', 'codex', 's1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM planning_features WHERE id='f1'", [])
+            .unwrap();
+        conn.execute("DELETE FROM mcp_agents WHERE id='a1'", [])
+            .unwrap();
+        let grants: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mcp_agent_grants", [], |r| r.get(0))
+            .unwrap();
+        let links: i64 = conn
+            .query_row("SELECT COUNT(*) FROM feature_agent_links", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(grants, 0, "删 Agent 应级联清授权");
+        assert_eq!(links, 0, "删功能应级联清会话关联");
     }
 
     #[test]
@@ -3709,7 +3910,10 @@ mod tests {
         );
         assert_eq!(first.5, "app", "新增 shortcut_kind 对旧数据默认 app");
         assert_eq!(first.6, "", "新增 bound_window_identity 对旧数据默认空");
-        assert_eq!(first.7, "user", "旧手工关联必须保持 user，不得被回填为 auto");
+        assert_eq!(
+            first.7, "user",
+            "旧手工关联必须保持 user，不得被回填为 auto"
+        );
 
         // 再次打开 = 在最新版本上重复执行迁移，必须安全且不改变数据。
         let again = snapshot(&Db::open(&path).unwrap());
@@ -3923,7 +4127,9 @@ mod tests {
         assert_eq!(read("theme"), "\"dark\"", "迁移不得重置主题");
         assert_eq!(read("material"), "\"solid\"", "迁移不得重置材质");
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM application_settings", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM application_settings", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 3, "迁移不得增删其他设置键");
 

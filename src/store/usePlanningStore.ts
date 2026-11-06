@@ -39,8 +39,10 @@ import {
   type PlanningProject,
   type PlanningProjectInput,
   type PlanningProjectPatch,
+  type PlanningChangedEvent,
   type PlanningProjectStats,
   type PlanningStepPatch,
+  onPlanningChanged,
 } from "../lib/bridge";
 
 /** 历史分页每页条数 */
@@ -214,6 +216,7 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   activityScope: null,
 
   loadProjects: async () => {
+    ensurePlanningSync();
     const seq = ++projectsSeq;
     set({ projectsLoading: true, projectsError: null });
     try {
@@ -260,6 +263,7 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
   },
 
   selectProject: async (id) => {
+    ensurePlanningSync();
     // 同一项目且数据已就绪（加载完成、无错误）：不重拉（空项目也是就绪态）
     if (
       get().activeProjectId === id &&
@@ -488,3 +492,90 @@ export const usePlanningStore = create<PlanningState>((set, get) => ({
     });
   },
 }));
+
+// ── planning-changed 订阅（v37）────────────────────────────────────
+//
+// 外部 MCP 客户端写入成功后，主进程广播 `planning-changed`
+// { kind, projectId?, featureId?, revision? }。本 store 订阅该事件做局部刷新：
+// - 全应用只挂一条监听（首次 loadProjects/selectProject 时懒注册，幂等）；
+// - 短时重复事件去抖合并（SYNC_DEBOUNCE_MS 内只刷一次）；
+// - 刷新全部走带请求代际（seq）的加载路径，旧响应一律丢弃，
+//   不会覆盖用户刚提交的更新（防旧响应覆盖新数据）；
+// - 不新增任何轮询：事件驱动，无事件无请求。
+
+const SYNC_DEBOUNCE_MS = 300;
+
+let syncSubscribed = false;
+let syncTimer: ReturnType<typeof setTimeout> | null = null;
+const pendingSyncEvents: PlanningChangedEvent[] = [];
+
+function refreshActiveProject(): Promise<void> {
+  const { activeProjectId: projectId } = usePlanningStore.getState();
+  if (!projectId) return Promise.resolve();
+  const seq = ++featuresSeq;
+  const mSeq = ++milestonesSeq;
+  usePlanningStore.setState({
+    featuresLoading: true,
+    featuresError: null,
+    milestonesLoading: true,
+    milestonesError: null,
+  });
+  return (async () => {
+    try {
+      const [features, milestones] = await Promise.all([
+        planningListFeatures(projectId),
+        planningListMilestones(projectId),
+      ]);
+      if (seq !== featuresSeq || mSeq !== milestonesSeq) return;
+      usePlanningStore.setState((s) => ({
+        features,
+        featuresLoading: false,
+        milestonesLoading: false,
+        loadedForProject: projectId,
+        ...syncDerivedLists({ ...s, activeProjectId: projectId }, features, milestones),
+      }));
+      // 处于第一页的作用域历史同步刷新（有更早页未加载时不追加以保时间倒序）
+      const latest = usePlanningStore.getState();
+      if (!latest.activityHasMore) {
+        await latest.loadActivity(latest.activityScope?.featureId ?? undefined);
+      }
+    } catch (e) {
+      if (seq !== featuresSeq) return;
+      usePlanningStore.setState({
+        featuresLoading: false,
+        milestonesLoading: false,
+        featuresError: errText(e),
+      });
+    }
+  })();
+}
+
+function flushPlanningSync(): void {
+  syncTimer = null;
+  const events = pendingSyncEvents.splice(0, pendingSyncEvents.length);
+  if (events.length === 0) return;
+  // 项目级变化（新建/改名/归档/统计）刷新项目列表
+  if (events.some((e) => e.kind === "project")) {
+    void usePlanningStore.getState().loadProjects();
+  }
+  // 事件命中当前项目时局部刷新功能/里程碑/历史
+  const active = usePlanningStore.getState().activeProjectId;
+  if (active && events.some((e) => e.projectId === active)) {
+    void refreshActiveProject();
+  }
+}
+
+/** 注册 planning-changed 监听（幂等；首次打开规划面板时调用）。 */
+export function ensurePlanningSync(): void {
+  if (syncSubscribed) return;
+  syncSubscribed = true;
+  onPlanningChanged((event) => {
+    pendingSyncEvents.push(event);
+    if (syncTimer !== null) return;
+    syncTimer = setTimeout(flushPlanningSync, SYNC_DEBOUNCE_MS);
+  }).catch((e) => {
+    // 注册失败（如非 Tauri 环境）：恢复未订阅状态，下次进入面板重试
+    syncSubscribed = false;
+    console.warn("planning-changed 订阅失败", e);
+  });
+}

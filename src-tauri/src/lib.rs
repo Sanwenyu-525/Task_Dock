@@ -1,8 +1,8 @@
 //! Task Dock 应用入口：插件装配、窗口/托盘/热键、数据库与 Agent 总线初始化。
 
 pub mod actions;
-pub mod agents;
 pub mod agent_stats;
+pub mod agents;
 pub mod alloc_stats;
 pub mod audio;
 #[global_allocator]
@@ -16,6 +16,7 @@ pub mod focus;
 pub mod global_search;
 pub mod hotkeys;
 mod magnetic;
+pub mod mcp;
 pub mod navigation;
 pub mod nlp;
 mod notes;
@@ -26,12 +27,12 @@ pub mod scheduler;
 pub mod shelf;
 pub mod task_analytics;
 pub mod user_preferences;
-mod window_shape;
-mod window_cursor;
 mod widget_windows;
+mod window_cursor;
+mod window_shape;
 mod winproc;
-pub mod workspace;
 pub mod workflows;
+pub mod workspace;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -437,7 +438,10 @@ pub fn run() {
                 });
             handle.manage(Arc::new(audio::AudioService::new(audio_cache_dir)));
             let settings = db::Settings::load(&db).unwrap_or_else(|e| {
-                tracing::warn!("启动时读取设置失败，使用默认值（剪贴板等模块将按默认关闭）: {}", e);
+                tracing::warn!(
+                    "启动时读取设置失败，使用默认值（剪贴板等模块将按默认关闭）: {}",
+                    e
+                );
                 Default::default()
             });
 
@@ -464,12 +468,9 @@ pub fn run() {
             handle.manage(clipboard_rt);
 
             // 文件暂存架（v0.8）：独立托管目录 data_dir/shelf，与剪贴板资产互不影响
-            let shelf_state = shelf::ShelfState::new(
-                db.clone(),
-                data_dir.join("shelf"),
-                handle.clone(),
-            )
-            .expect("暂存架目录初始化失败");
+            let shelf_state =
+                shelf::ShelfState::new(db.clone(), data_dir.join("shelf"), handle.clone())
+                    .expect("暂存架目录初始化失败");
             shelf::start_auto_cleanup(db.clone(), shelf_state.root.clone());
             handle.manage(Arc::new(shelf_state));
 
@@ -500,14 +501,16 @@ pub fn run() {
             // 圆角外形按当前视觉预设先落一次（前端加载后会以真实预设再同步一次），
             // 保证窗口第一次显示时四角就是圆角，不会闪一下直角。
             // 两种玻璃预设（柔光 / 清透）同样使用 20px，与前端 presetRadius 保持一致。
-            window_shape::set_radius(if matches!(
-                settings.visual_preset.as_str(),
-                "liquid-glass" | "frosted" | "clear"
-            ) {
-                20.0
-            } else {
-                18.0
-            });
+            window_shape::set_radius(
+                if matches!(
+                    settings.visual_preset.as_str(),
+                    "liquid-glass" | "frosted" | "clear"
+                ) {
+                    20.0
+                } else {
+                    18.0
+                },
+            );
             if let Some(win) = handle.get_webview_window("main") {
                 if !window_shape::apply(&win) {
                     tracing::debug!("窗口圆角区域未应用（可能为无 Win32 句柄的早期阶段）");
@@ -647,6 +650,14 @@ pub fn run() {
             ))
             .spawn(hub.clone());
             Box::new(agents::mock::MockAdapter::new()).spawn(hub.clone());
+
+            // Agent MCP Server（v37，默认关闭）：设置开关驱动 loopback bridge，
+            // stdio 子命令经 mcp-transport.json 连入；planning-changed 事件广播给前端
+            {
+                let mcp_status =
+                    mcp::bridge::spawn_adapter(handle.clone(), db.clone(), data_dir.clone());
+                handle.manage(mcp_status);
+            }
 
             // 异常重启恢复：重启前遗留的活跃轮次按失联规则归位
             if let Err(e) = hub.recover_after_restart() {
@@ -914,6 +925,14 @@ pub fn run() {
             commands::planning::planning_delete_milestone,
             commands::planning::planning_activity_page,
             commands::planning::planning_add_note,
+            // Agent MCP Server（v37）：管理命令（第二轮 UI 使用）
+            mcp::commands::mcp_status,
+            mcp::commands::mcp_agent_list,
+            mcp::commands::mcp_agent_create,
+            mcp::commands::mcp_agent_set_scope,
+            mcp::commands::mcp_agent_grant_project,
+            mcp::commands::mcp_agent_revoke,
+            mcp::commands::mcp_config_snippet,
             // 智能剪贴板（v0.5）
             commands::clipboard::clipboard_view,
             commands::clipboard::clipboard_item,
@@ -991,6 +1010,13 @@ pub fn run() {
             commands::workspace::workspace_restore,
             commands::workspace::workspace_restore_cancel,
             commands::workspace::workspace_restore_status,
+            // 场景工作区（v0.11，迁移 v38）：静态清单 + 现场/工作流软引用
+            commands::scenario::scenario_list,
+            commands::scenario::scenario_get,
+            commands::scenario::scenario_save,
+            commands::scenario::scenario_delete,
+            commands::scenario::scenario_duplicate,
+            commands::scenario::scenario_enter,
             // 全局快速捕获（v0.7）
             quick_capture::quick_capture_state,
             quick_capture::quick_capture_save_draft,

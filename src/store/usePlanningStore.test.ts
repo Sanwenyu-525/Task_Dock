@@ -4,9 +4,24 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePlanningStore, ACTIVITY_PAGE_SIZE } from "./usePlanningStore";
-import type { PlanningFeature, PlanningMilestone, PlanningProject } from "../lib/bridge";
+import type {
+  PlanningChangedEvent,
+  PlanningFeature,
+  PlanningMilestone,
+  PlanningProject,
+} from "../lib/bridge";
 
-const bridge = vi.hoisted(() => ({
+const bridge = vi.hoisted(() => {
+  // 捕获 store 注册的 planning-changed 回调，测试直接驱动它模拟 MCP 写入广播
+  const state: { planningChangedCb: ((e: unknown) => void) | null } = {
+    planningChangedCb: null,
+  };
+  return {
+    state,
+    onPlanningChanged: vi.fn((cb: (e: unknown) => void) => {
+      state.planningChangedCb = cb;
+      return Promise.resolve(() => {});
+    }),
   planningListProjects: vi.fn(),
   planningCreateProject: vi.fn(),
   planningUpdateProject: vi.fn(),
@@ -28,7 +43,7 @@ const bridge = vi.hoisted(() => ({
   planningDeleteMilestone: vi.fn(),
   planningActivityPage: vi.fn(),
   planningAddNote: vi.fn(),
-}));
+};});
 
 vi.mock("../lib/bridge", () => bridge);
 
@@ -402,5 +417,85 @@ describe("进度历史分页", () => {
     });
     await usePlanningStore.getState().addNote("项目级日志");
     expect(usePlanningStore.getState().activity).toEqual([]);
+  });
+});
+
+// ── planning-changed 同步（v37）：MCP 写入 → 去抖局部刷新 + 代际守卫 ──
+
+function emitPlanningChanged(e: PlanningChangedEvent): void {
+  if (!bridge.state.planningChangedCb) {
+    throw new Error("planning-changed 回调未注册（需先触发 loadProjects/selectProject）");
+  }
+  bridge.state.planningChangedCb(e);
+}
+
+describe("planning-changed 同步", () => {
+  it("同项目事件去抖合并为一次局部刷新", async () => {
+    vi.useFakeTimers();
+    bridge.planningListProjects.mockResolvedValue([proj("P1", "甲")]);
+    bridge.planningListFeatures.mockResolvedValue([]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    bridge.planningActivityPage.mockResolvedValue({ items: [], has_more: false });
+    await usePlanningStore.getState().selectProject("P1");
+    const callsBefore = bridge.planningListFeatures.mock.calls.length;
+
+    emitPlanningChanged({ kind: "feature", projectId: "P1" });
+    emitPlanningChanged({ kind: "step", projectId: "P1" });
+    emitPlanningChanged({ kind: "activity", projectId: "P1" });
+    // 去抖窗口内不立即请求
+    expect(bridge.planningListFeatures.mock.calls.length).toBe(callsBefore);
+    await vi.advanceTimersByTimeAsync(300);
+    // 三条事件合并为一次刷新
+    expect(bridge.planningListFeatures.mock.calls.length).toBe(callsBefore + 1);
+  });
+
+  it("非当前项目的事件不触发当前项目刷新；project 事件刷新项目列表", async () => {
+    vi.useFakeTimers();
+    bridge.planningListProjects.mockResolvedValue([proj("P1", "甲"), proj("P9", "MCP 新建")]);
+    bridge.planningListFeatures.mockResolvedValue([]);
+    bridge.planningListMilestones.mockResolvedValue([]);
+    await usePlanningStore.getState().selectProject("P1");
+
+    const featCalls = bridge.planningListFeatures.mock.calls.length;
+    const projCalls = bridge.planningListProjects.mock.calls.length;
+    emitPlanningChanged({ kind: "feature", projectId: "OTHER" });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(bridge.planningListFeatures.mock.calls.length).toBe(featCalls);
+    expect(bridge.planningListProjects.mock.calls.length).toBe(projCalls);
+
+    emitPlanningChanged({ kind: "project", projectId: "P9" });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(bridge.planningListProjects.mock.calls.length).toBe(projCalls + 1);
+    expect(bridge.planningListFeatures.mock.calls.length).toBe(featCalls);
+    // 项目列表已带出 MCP 新建的项目
+    expect(usePlanningStore.getState().projects.map((p) => p.id)).toContain("P9");
+  });
+
+  it("事件刷新与用户切换的迟到响应互不覆盖（代际守卫）", async () => {
+    vi.useFakeTimers();
+    const dSel = deferred<PlanningFeature[]>();
+    const dSync = deferred<PlanningFeature[]>();
+    let call = 0;
+    bridge.planningListFeatures.mockImplementation(() => {
+      call += 1;
+      return call === 1 ? dSel.promise : dSync.promise;
+    });
+    bridge.planningListMilestones.mockResolvedValue([]);
+    bridge.planningListProjects.mockResolvedValue([]);
+
+    void usePlanningStore.getState().selectProject("P1"); // call=1（select，pending）
+    emitPlanningChanged({ kind: "feature", projectId: "P1" });
+    await vi.advanceTimersByTimeAsync(300); // call=2（事件刷新，pending）
+
+    // 事件刷新先返回
+    dSync.resolve([feat("f-new", "P1", "MCP 新数据")]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-new"]);
+
+    // select 的迟到响应必须被丢弃
+    dSel.resolve([feat("f-old", "P1", "旧数据")]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(usePlanningStore.getState().features.map((f) => f.id)).toEqual(["f-new"]);
+    expect(usePlanningStore.getState().activeProjectId).toBe("P1");
   });
 });

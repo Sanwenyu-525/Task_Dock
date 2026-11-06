@@ -2081,6 +2081,8 @@ export interface PlanningProject {
   sort_order: number;
   created_at: string;
   updated_at: string;
+  /** 乐观并发版本（v37）：MCP 写工具强制校验；UI 路径可选传入 */
+  revision?: number;
   stats: PlanningProjectStats;
 }
 
@@ -2098,6 +2100,8 @@ export interface PlanningProjectPatch {
   /** 三态：undefined = 保持；null = 清除；字符串 = 设置 */
   target_date?: string | null;
   sort_order?: number;
+  /** 乐观并发（v37）：传入时后端校验，不匹配返回冲突 */
+  expected_revision?: number;
 }
 
 export interface PlanningStep {
@@ -2127,6 +2131,8 @@ export interface PlanningFeature {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** 乐观并发版本（v37）：MCP 写工具强制校验 */
+  revision?: number;
   steps: PlanningStep[];
   /** 0 = 未拆分步骤（不产出百分比，UI 如实显示） */
   step_total: number;
@@ -2152,6 +2158,8 @@ export interface PlanningFeaturePatch {
   milestone_id?: string | null;
   target_date?: string | null;
   sort_order?: number;
+  /** 乐观并发（v37）：传入时后端校验，不匹配返回冲突 */
+  expected_revision?: number;
 }
 
 export interface PlanningMilestone {
@@ -2200,6 +2208,8 @@ export interface PlanningActivityPage {
 export interface PlanningStepPatch {
   title?: string;
   done?: boolean;
+  /** 乐观并发（v37）：校验所属功能的 revision */
+  expected_revision?: number;
 }
 
 export const planningListProjects = (includeArchived?: boolean) =>
@@ -2276,6 +2286,133 @@ export const PLANNING_PROJECT_STATUS_LABELS: Record<PlanningProjectStatus, strin
   paused: "已暂停",
   completed: "已完成",
 };
+
+// ── Agent MCP Server（v37）：外部 MCP 客户端经 loopback bridge 读写规划中心 ──
+// 管理命令只暴露元数据；agent token 明文只在 mcp_agent_create 返回值出现一次，
+// 前端必须提示用户立即保存，库内只存 SHA-256。
+
+export type McpAgentScope = "disabled" | "readonly" | "project_rw";
+export type McpConfigClient = "claude-code" | "codex" | "cursor" | "trae" | "generic";
+
+export interface McpAgentInfo {
+  /** mcp_agents 行 id（UUID），set_scope/grant/revoke 用它 */
+  id: string;
+  agent_id: string;
+  display_name: string;
+  scope: McpAgentScope;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+  last_seen_at: string | null;
+  granted_project_ids: string[];
+}
+
+export interface McpStatus {
+  /** 设置开关（mcp_server_enabled） */
+  enabled: boolean;
+  /** bridge 是否在监听 */
+  running: boolean;
+  port: number | null;
+  agent_count: number;
+  started_at: string | null;
+}
+
+/** mcp_agent_create 返回：token 明文仅此一次。 */
+export interface McpAgentCreated extends McpAgentInfo {
+  token: string;
+}
+
+export const agentMcpStatus = () => invoke<McpStatus>("mcp_status", {});
+export const agentMcpList = () => invoke<McpAgentInfo[]>("mcp_agent_list", {});
+export const agentMcpCreate = (agentId: string, displayName: string) =>
+  invoke<McpAgentCreated>("mcp_agent_create", { agentId, displayName });
+export const agentMcpSetScope = (id: string, scope: McpAgentScope) =>
+  invoke<McpAgentInfo>("mcp_agent_set_scope", { id, scope });
+export const agentMcpGrantProject = (id: string, projectId: string) =>
+  invoke<McpAgentInfo>("mcp_agent_grant_project", { id, projectId });
+export const agentMcpRevoke = (id: string) => invoke<McpAgentInfo>("mcp_agent_revoke", { id });
+export const agentMcpConfigSnippet = (client: McpConfigClient, agentToken: string) =>
+  invoke<string>("mcp_config_snippet", { input: { client, agentToken } });
+
+/** MCP 写入成功后主进程广播（v37）：payload camelCase。 */
+export interface PlanningChangedEvent {
+  kind: "project" | "feature" | "step" | "milestone" | "activity";
+  projectId?: string;
+  featureId?: string;
+  revision?: number;
+}
+
+export const onPlanningChanged = (
+  cb: (payload: PlanningChangedEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<PlanningChangedEvent>("planning-changed", (e) => cb(e.payload));
+
+// ── 场景工作区（v0.11，迁移 v38）：可重复进入的预设工作环境 ──
+// 主 Agent 预置契约（Subagent C 按此实现 scenario_* 命令；字段全部 camelCase）。
+
+/** 场景内的应用目标：优先引用已登记导航目标，否则用 exe 路径直启。 */
+export interface ScenarioAppTarget {
+  targetId?: string;
+  exePath?: string;
+  args?: string;
+  displayName?: string;
+}
+
+/** 场景摘要（列表用）。 */
+export interface ScenarioSummary {
+  id: string;
+  name: string;
+  icon: string | null;
+  appCount: number;
+  urlCount: number;
+  folderCount: number;
+  linkedWorkflowId: string | null;
+  lastEnteredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 场景详情（编辑 / 进入前确认用）。 */
+export interface ScenarioDetail extends ScenarioSummary {
+  apps: ScenarioAppTarget[];
+  urls: string[];
+  folders: string[];
+  snapshotId: string | null;
+}
+
+/** 场景保存载荷：id 为空表示新建；name 必填。 */
+export interface ScenarioSaveInput {
+  id?: string;
+  name: string;
+  icon?: string | null;
+  apps: ScenarioAppTarget[];
+  urls: string[];
+  folders: string[];
+  linkedWorkflowId?: string | null;
+  snapshotId?: string | null;
+}
+
+/** 一键进入的逐项结果：单失败不阻断，缺失降级 skipped。 */
+export interface ScenarioEnterItemResult {
+  kind: "app" | "url" | "folder" | "snapshot" | "workflow";
+  label: string;
+  status: "ok" | "skipped" | "failed";
+  detail?: string;
+}
+
+export interface ScenarioEnterResult {
+  items: ScenarioEnterItemResult[];
+  startedAt: string;
+}
+
+export const scenarioList = () => invoke<ScenarioSummary[]>("scenario_list", {});
+export const scenarioGet = (id: string) => invoke<ScenarioDetail>("scenario_get", { id });
+export const scenarioSave = (input: ScenarioSaveInput) =>
+  invoke<{ id: string }>("scenario_save", { input });
+export const scenarioDelete = (id: string) => invoke<void>("scenario_delete", { id });
+export const scenarioDuplicate = (id: string) =>
+  invoke<{ id: string }>("scenario_duplicate", { id });
+export const scenarioEnter = (id: string) => invoke<ScenarioEnterResult>("scenario_enter", { id });
 
 // ── 文件暂存架（v0.8）──
 

@@ -54,7 +54,7 @@ describe("导航自定义区块", () => {
     useUiStore.setState({ tab: "apps" });
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText(/常驻 11 \/ 11 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 12 \/ 12 项/)).toBeTruthy();
     const appsSwitch = screen.getByRole("switch", {
       name: "应用导航入口显示",
     }) as HTMLInputElement;
@@ -71,7 +71,7 @@ describe("导航自定义区块", () => {
     expect(
       (useSettingsStore.getState().settings?.navigation_layout as { left: string[] }).left,
     ).not.toContain("apps");
-    expect(screen.getByText(/常驻 10 \/ 11 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 11 \/ 12 项/)).toBeTruthy();
   });
 
   it("「设置」是锁定入口：开关禁用、无排序按钮并标注固定", () => {
@@ -188,7 +188,7 @@ describe("导航自定义区块 · 英文", () => {
     setLocalePreference("en-US");
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText("11 of 11 pinned")).toBeTruthy();
+    expect(screen.getByText("12 of 12 pinned")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Full panel" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Docked capsule" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Show Tasks navigation entry" })).toBeTruthy();
@@ -228,12 +228,47 @@ describe("排序按钮可见性与边界", () => {
     });
     render(<NavigationVisibilitySection />);
 
-    // 规划中心是最后一位普通入口，其下移按钮禁用（后面只有固定的设置）
-    const down = screen.getByRole("button", { name: "下移 规划中心" }) as HTMLButtonElement;
+    // 帮助是最后一位普通入口（v0.11 新增，位于设置之前），其下移按钮禁用
+    const down = screen.getByRole("button", { name: "下移 帮助" }) as HTMLButtonElement;
     expect(down.disabled).toBe(true);
     // 倒数第二位仍可下移
-    const upDown = screen.getByRole("button", { name: "下移 历史" }) as HTMLButtonElement;
+    const upDown = screen.getByRole("button", { name: "下移 规划中心" }) as HTMLButtonElement;
     expect(upDown.disabled).toBe(false);
+  });
+
+  it("胶囊普通分类可跨过 Agent 排序：上移收集箱不被端头 Agent 拦截（2026-11-06 边界修复）", async () => {
+    const user = userEvent.setup();
+    seedLayout((layout) => {
+      // 模拟旧数据：Agent 夹在普通分类之间（读取归一化会把它收敛到端头）
+      layout.capsule = ["tasks", "agents", "inbox", "clipboard", "apps"];
+    });
+    render(<NavigationVisibilitySection />);
+    await user.click(screen.getByRole("button", { name: "停靠胶囊" }));
+
+    // 收集箱的上移按钮可用：可排序子序列内仍有前邻（任务），Agent 不构成障碍
+    const up = screen.getByRole("button", { name: "上移 收集箱" }) as HTMLButtonElement;
+    expect(up.disabled).toBe(false);
+    await user.click(up);
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
+    const saved = updateSettings.mock.calls[0][0] as {
+      navigation_layout: { capsule: string[] };
+    };
+    // 普通分类顺序变为 收集箱 → 任务 → 剪贴板 → 应用；Agent 固定端头，成员集合不变
+    expect(saved.navigation_layout.capsule).toEqual([
+      "agents",
+      "inbox",
+      "tasks",
+      "clipboard",
+      "apps",
+    ]);
+    // 设置列表立即更新：行顺序与持久化配置一致
+    await waitFor(() => {
+      const labels = [
+        ...document.querySelectorAll(".nav-visibility-row .nav-visibility-entry-label"),
+      ].map((el) => el.textContent);
+      expect(labels).toEqual(["Agent", "收集箱", "任务", "剪贴板", "应用"]);
+    });
   });
 
   it("排序操作立即持久化：配置数组顺序改变，且隐藏状态不变", async () => {

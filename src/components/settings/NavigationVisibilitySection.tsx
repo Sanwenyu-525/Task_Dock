@@ -149,15 +149,20 @@ export default function NavigationVisibilitySection() {
           const index = visibleEntries.findIndex((item) => item.id === entry.id);
           const current = surface === "left" && entry.id === currentEntryId;
           const busy = pendingId === entry.id || pendingId === "__reset__";
-          // 排序规则与渲染层共用一份元数据：锁定入口与胶囊 Agent 状态球
-          // 不提供上移/下移按钮（不暴露无效操作）；末位可排序入口也不能越过
-          // 其后方的固定入口，因此「下移」边界按下一个可排序邻居判断。
+          // 排序规则与底层 `moveNavigationEntry` 共用同一份元数据：
+          // 锁定入口与胶囊 Agent 状态球不提供上移/下移按钮（不暴露无效操作）；
+          // 固定入口不是障碍——普通入口可以跨过它排序，因此边界按
+          // 「可排序子序列内是否还有前/后邻居」判断，而不是相邻项，
+          // 保证按钮可用性与实际可移动性一致。
           const sortable = isEntrySortable(entry, surface);
-          const prevSortable = index > 0 && isEntrySortable(visibleEntries[index - 1], surface);
+          const prevSortable =
+            index > 0 &&
+            visibleEntries.slice(0, index).some((item) => isEntrySortable(item, surface));
           const nextSortable =
             index >= 0 &&
-            index < visibleEntries.length - 1 &&
-            isEntrySortable(visibleEntries[index + 1], surface);
+            visibleEntries
+              .slice(index + 1)
+              .some((item) => isEntrySortable(item, surface));
           return (
             <div className="setting-row nav-visibility-row" key={entry.id}>
               <span className="nav-visibility-entry">

@@ -10,5 +10,10 @@ fn main() {
         // Agent Hook 上报（旁路观测，绝不阻塞宿主；失败静默退出 0）
         std::process::exit(task_dock_lib::agents::hook_cli::run(&args[2..]));
     }
+    if args.len() >= 2 && args[1] == "--mcp-server" {
+        // MCP stdio 子命令：JSON-RPC 2.0 over stdio → loopback bridge。
+        // bridge 不可用时对每个请求回明确 JSON-RPC 错误，不挂死、不降级。
+        std::process::exit(task_dock_lib::mcp::protocol::run_stdio());
+    }
     task_dock_lib::run()
 }

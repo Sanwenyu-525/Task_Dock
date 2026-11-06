@@ -240,7 +240,9 @@ describe("设置页分组折叠", () => {
     render(<SettingsPanel />);
 
     await waitFor(() => expectExpanded(sectionHead("导航自定义"), true));
-    expect(screen.getByText(/常驻 11 \/ 11 项/)).toBeTruthy();
+    // 数字与 navigationRegistry 默认全部常驻的 left 入口数一致（v0.11 新增 help 后为 12）；
+    // 再新增常驻入口时需同步更新。
+    expect(screen.getByText(/常驻 12 \/ 12 项/)).toBeTruthy();
     expect(sessionStorage.getItem("taskdock.settings.reveal.v1")).toBeNull();
   });
 

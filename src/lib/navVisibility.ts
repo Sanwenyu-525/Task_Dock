@@ -100,10 +100,11 @@ export function insertEntryByDefaultOrder(
 
 /** 键盘可用的排序操作（上移 / 下移），不引入拖拽依赖。
  *
- * 排序不变量：**锁定入口不可被直接或间接移动**。
- * - `isFixed(id)` 判定固定入口（注册中心 `locked`）；
- * - 目标邻居是固定入口时本次移动无效（返回原顺序副本），
- *   保证普通入口永远不会把固定入口挤出末尾；
+ * 排序不变量：**固定入口不可移动，也不阻挡普通入口排序**。
+ * - `isFixed(id)` 判定固定入口（左侧 `locked` 设置、胶囊 Agent 状态球）；
+ * - 固定入口自身移动无效（返回原顺序副本）；
+ * - 普通入口在「可排序子序列」内相邻交换：固定入口不是障碍，普通入口可以
+ *   跨过它（固定项原地不动），胶囊分类因此不受端头 Agent 状态球阻挡；
  * - 隐藏入口不在可见数组里，天然不参与上下移动；
  * - 排序只改变顺序，不改变任何入口的显隐（数组成员集合不变）。
  */
@@ -116,10 +117,14 @@ export function moveEntryInList(
   const index = ids.indexOf(id);
   if (index < 0) return [...ids];
   if (isFixed(id)) return [...ids];
-  const target = index + delta;
-  if (target < 0 || target >= ids.length) return [...ids];
-  // 固定入口不可被普通入口挤走：跨越固定入口的移动一律无效。
-  if (isFixed(ids[target])) return [...ids];
+  const sortableIndexes: number[] = [];
+  for (let i = 0; i < ids.length; i += 1) {
+    if (!isFixed(ids[i])) sortableIndexes.push(i);
+  }
+  const from = sortableIndexes.indexOf(index);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= sortableIndexes.length) return [...ids];
+  const target = sortableIndexes[to];
   const next = [...ids];
   [next[index], next[target]] = [next[target], next[index]];
   return next;
@@ -195,6 +200,19 @@ export function normalizeNavigationLayout(raw: unknown): NavLayoutNormalization 
       if (persistedKnown.has(entry.id)) continue; // 老入口：缺失 = 用户隐藏
       if (!entry.defaults[surface].visible) continue; // 新入口默认隐藏
       merged = insertEntryByDefaultOrder(merged, entry.id, surface);
+    }
+    // 胶囊 Agent 状态球规范位置：可见数组端头（开头）。渲染层由 CapsuleRail
+    // 的独立区域绘制，数组位置不影响界面；收敛持久化模型让旧配置自愈
+    // （Agent 曾被历史排序夹在普通分类之间），普通分类的相对顺序保持不变，
+    // 「恢复默认 / 用户排序」的边界因此可预期。
+    if (surface === "capsule") {
+      const statusIds = merged.filter((id) => navEntry(id)?.kind === "agent-status");
+      if (statusIds.length > 0) {
+        merged = [
+          ...statusIds,
+          ...merged.filter((id) => navEntry(id)?.kind !== "agent-status"),
+        ];
+      }
     }
     // 排序不变量：锁定入口固定在可见数组末尾。
     // 旧配置/手工改库可能把锁定入口留在中间（历史 moveEntryInList 允许与它

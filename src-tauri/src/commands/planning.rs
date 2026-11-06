@@ -65,6 +65,9 @@ pub struct PlanningProject {
     pub sort_order: i64,
     pub created_at: String,
     pub updated_at: String,
+    /// 乐观并发版本（v37）：每次项目内容写成功后 +1；更新路径可传
+    /// expected_revision，不匹配返回 Conflict。缺省保持旧行为（向后兼容）。
+    pub revision: i64,
     pub stats: ProjectStats,
 }
 
@@ -97,6 +100,8 @@ pub struct PlanningFeature {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// 乐观并发版本（v37）：功能/步骤内容写成功后 +1；MCP 写工具强制校验。
+    pub revision: i64,
     pub steps: Vec<PlanningStep>,
     /// 总步骤数；0 = 未拆分步骤（不产出百分比，前端如实显示）
     pub step_total: i64,
@@ -164,6 +169,9 @@ pub struct ProjectPatch {
     pub target_date: Option<Option<String>>,
     #[serde(default)]
     pub sort_order: Option<i64>,
+    /// 乐观并发（v37）：传入时校验当前 revision，不匹配返回 Conflict；不传保持旧行为
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -202,6 +210,9 @@ pub struct FeaturePatch {
     pub target_date: Option<Option<String>>,
     #[serde(default)]
     pub sort_order: Option<i64>,
+    /// 乐观并发（v37）：传入时校验当前 revision，不匹配返回 Conflict；不传保持旧行为
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -231,6 +242,9 @@ pub struct StepPatch {
     pub title: Option<String>,
     #[serde(default)]
     pub done: Option<bool>,
+    /// 乐观并发（v37）：校验所属功能的 revision；不传保持旧行为
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
 }
 
 // ── 校验与工具 ───────────────────────────────────────────────────────
@@ -241,7 +255,10 @@ fn check_name(name: &str, what: &str, max: usize) -> AppResult<String> {
         return Err(AppError::Validation(format!("{}名称不能为空", what)));
     }
     if name.chars().count() > max {
-        return Err(AppError::Validation(format!("{}名称超过 {} 字符", what, max)));
+        return Err(AppError::Validation(format!(
+            "{}名称超过 {} 字符",
+            what, max
+        )));
     }
     Ok(name.to_string())
 }
@@ -260,9 +277,8 @@ fn normalize_date(date: &Option<String>) -> AppResult<Option<String>> {
         Some(d) if d.trim().is_empty() => Ok(None),
         Some(d) => {
             let d = d.trim();
-            chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| {
-                AppError::Validation(format!("目标日期格式应为 YYYY-MM-DD：{}", d))
-            })?;
+            chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                .map_err(|_| AppError::Validation(format!("目标日期格式应为 YYYY-MM-DD：{}", d)))?;
             Ok(Some(d.to_string()))
         }
     }
@@ -342,6 +358,35 @@ fn project_exists(conn: &Connection, id: &str) -> AppResult<bool> {
         .is_some())
 }
 
+/// 乐观并发（v37）：校验 expected_revision 与当前 revision 一致。
+/// 不匹配返回 Conflict（携带当前 revision），防止 MCP 客户端后写无声覆盖。
+/// 不传（None）保持旧行为——UI 命令向后兼容，MCP 工具层强制传值。
+fn check_expected_revision_tx(
+    conn: &Connection,
+    table: &str,
+    id: &str,
+    expected: Option<i64>,
+) -> AppResult<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let current: i64 = conn
+        .query_row(
+            &format!("SELECT revision FROM {table} WHERE id = ?1"),
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::Validation(format!("对象不存在: {}", id)))?;
+    if current != expected {
+        return Err(AppError::Conflict(format!(
+            "版本冲突：期望 revision {expected}，当前 {current}（请重新读取后再提交）"
+        )));
+    }
+    Ok(())
+}
+
 // ── 行映射 ───────────────────────────────────────────────────────────
 
 fn project_stats_from(
@@ -391,6 +436,7 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningProject> 
         sort_order: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        revision: row.get(16)?,
         stats,
     })
 }
@@ -398,7 +444,7 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningProject> 
 const PROJECT_SELECT: &str = "SELECT p.id, p.name, p.description, p.status, p.archived, p.target_date,
      p.sort_order, p.created_at, p.updated_at,
      COALESCE(f.total, 0), COALESCE(f.completed, 0), COALESCE(f.in_progress, 0), COALESCE(f.blocked, 0),
-     COALESCE(f.planned, 0), COALESCE(f.review, 0), COALESCE(f.paused, 0)
+     COALESCE(f.planned, 0), COALESCE(f.review, 0), COALESCE(f.paused, 0), p.revision
    FROM planning_projects p
    LEFT JOIN (
      SELECT project_id,
@@ -413,7 +459,7 @@ const PROJECT_SELECT: &str = "SELECT p.id, p.name, p.description, p.status, p.ar
    ) f ON f.project_id = p.id";
 
 /// 事务内按 id 读取项目（含统计）；不存在返回错误。
-fn load_project_tx(conn: &Connection, id: &str) -> AppResult<PlanningProject> {
+pub(crate) fn load_project_tx(conn: &Connection, id: &str) -> AppResult<PlanningProject> {
     let sql = format!("{} WHERE p.id = ?1", PROJECT_SELECT);
     conn.query_row(&sql, rusqlite::params![id], row_to_project)
         .optional()
@@ -423,7 +469,7 @@ fn load_project_tx(conn: &Connection, id: &str) -> AppResult<PlanningProject> {
 
 const FEATURE_SELECT: &str = "SELECT f.id, f.project_id, f.title, f.description, f.status, f.priority,
      f.milestone_id, m.name, f.target_date, f.sort_order, f.created_at, f.updated_at, f.completed_at,
-     f.acceptance_criteria
+     f.acceptance_criteria, f.revision
    FROM planning_features f
    LEFT JOIN planning_milestones m ON m.id = f.milestone_id";
 
@@ -443,6 +489,7 @@ fn row_to_feature(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningFeature> 
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
         completed_at: row.get(12)?,
+        revision: row.get(14)?,
         steps: Vec::new(),
         step_total: 0,
         step_done: 0,
@@ -450,7 +497,7 @@ fn row_to_feature(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningFeature> 
 }
 
 /// 事务内按 id 读取功能（含步骤与进度）；不存在返回错误。
-fn load_feature_tx(conn: &Connection, id: &str) -> AppResult<PlanningFeature> {
+pub(crate) fn load_feature_tx(conn: &Connection, id: &str) -> AppResult<PlanningFeature> {
     let sql = format!("{} WHERE f.id = ?1", FEATURE_SELECT);
     let mut feature = conn
         .query_row(&sql, rusqlite::params![id], row_to_feature)
@@ -507,7 +554,8 @@ fn row_to_milestone(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlanningMilesto
     })
 }
 
-const MILESTONE_SELECT: &str = "SELECT ms.id, ms.project_id, ms.name, ms.description, ms.target_date,
+const MILESTONE_SELECT: &str =
+    "SELECT ms.id, ms.project_id, ms.name, ms.description, ms.target_date,
      ms.sort_order, ms.created_at, ms.updated_at,
      COALESCE(f.total, 0), COALESCE(f.completed, 0)
    FROM planning_milestones ms
@@ -566,7 +614,10 @@ fn record_step_event_tx(
 // 命令层是薄包装：核心逻辑放在 `*_impl(db: &Db, …)` 内核函数上，
 // 单测可直接以 Db::open_in_memory 驱动完整读写路径，不经 Tauri 运行时。
 
-pub(crate) fn list_projects_impl(db: &Db, include_archived: Option<bool>) -> AppResult<Vec<PlanningProject>> {
+pub(crate) fn list_projects_impl(
+    db: &Db,
+    include_archived: Option<bool>,
+) -> AppResult<Vec<PlanningProject>> {
     let include_all = include_archived.unwrap_or(true);
     let sql = if include_all {
         format!(
@@ -629,7 +680,11 @@ pub fn planning_create_project(
     create_project_impl(&db, input)
 }
 
-pub(crate) fn update_project_impl(db: &Db, id: String, patch: ProjectPatch) -> AppResult<PlanningProject> {
+pub(crate) fn update_project_impl(
+    db: &Db,
+    id: String,
+    patch: ProjectPatch,
+) -> AppResult<PlanningProject> {
     let name = match &patch.name {
         Some(n) => Some(check_name(n, "项目", 100)?),
         None => None,
@@ -644,16 +699,17 @@ pub(crate) fn update_project_impl(db: &Db, id: String, patch: ProjectPatch) -> A
     let now = now_iso();
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
-        let current: (Option<String>,) = tx
+        let current: (Option<String>, i64) = tx
             .query_row(
-                "SELECT target_date FROM planning_projects WHERE id = ?1",
+                "SELECT target_date, revision FROM planning_projects WHERE id = ?1",
                 rusqlite::params![id],
-                |r| Ok((r.get(0)?,)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::Validation(format!("项目不存在: {}", id)))?;
         let target_date = resolve_date(&current.0, &parse_date_update(&patch.target_date)?);
+        check_expected_revision_tx(&tx, "planning_projects", &id, patch.expected_revision)?;
         tx.execute(
             "UPDATE planning_projects SET
                name = COALESCE(?1, name),
@@ -661,9 +717,18 @@ pub(crate) fn update_project_impl(db: &Db, id: String, patch: ProjectPatch) -> A
                status = COALESCE(?3, status),
                target_date = ?4,
                sort_order = COALESCE(?5, sort_order),
+               revision = revision + 1,
                updated_at = ?6
              WHERE id = ?7",
-            rusqlite::params![name, description, patch.status, target_date, patch.sort_order, now, id],
+            rusqlite::params![
+                name,
+                description,
+                patch.status,
+                target_date,
+                patch.sort_order,
+                now,
+                id
+            ],
         )
         .map_err(AppError::from)?;
         tx.commit().map_err(AppError::from)?;
@@ -682,7 +747,11 @@ pub fn planning_update_project(
 }
 
 /// 归档 / 恢复：archived 与项目状态相互独立，归档不丢数据、可随时恢复。
-pub(crate) fn archive_project_impl(db: &Db, id: String, archived: bool) -> AppResult<PlanningProject> {
+pub(crate) fn archive_project_impl(
+    db: &Db,
+    id: String,
+    archived: bool,
+) -> AppResult<PlanningProject> {
     let now = now_iso();
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
@@ -717,8 +786,11 @@ pub(crate) fn delete_project_impl(db: &Db, id: String) -> AppResult<()> {
         if !project_exists(&tx, &id)? {
             return Err(AppError::Validation(format!("项目不存在: {}", id)));
         }
-        tx.execute("DELETE FROM planning_projects WHERE id = ?1", rusqlite::params![id])
-            .map_err(AppError::from)?;
+        tx.execute(
+            "DELETE FROM planning_projects WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .map_err(AppError::from)?;
         tx.commit().map_err(AppError::from)?;
         Ok(())
     })
@@ -907,7 +979,11 @@ fn check_milestone_in_project(
 /// 更新功能。状态变化在同一事务写入 status_change 历史；
 /// 标记 completed 时记录 completed_at，离开 completed 时清除；
 /// 带未完成步骤直接标记完成是允许的（前端需先确认），历史里如实记录未完成数。
-pub(crate) fn update_feature_impl(db: &Db, id: String, patch: FeaturePatch) -> AppResult<PlanningFeature> {
+pub(crate) fn update_feature_impl(
+    db: &Db,
+    id: String,
+    patch: FeaturePatch,
+) -> AppResult<PlanningFeature> {
     let title = match &patch.title {
         Some(t) => Some(check_name(t, "功能", 200)?),
         None => None,
@@ -939,6 +1015,7 @@ pub(crate) fn update_feature_impl(db: &Db, id: String, patch: FeaturePatch) -> A
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", id)))?;
         let (project_id, old_status, cur_milestone, cur_completed_at, cur_target_date) = current;
+        check_expected_revision_tx(&tx, "planning_features", &id, patch.expected_revision)?;
 
         // 里程碑三态：缺省保持 / null 清除 / 值校验归属后替换
         let milestone_id = match &patch.milestone_id {
@@ -971,6 +1048,7 @@ pub(crate) fn update_feature_impl(db: &Db, id: String, patch: FeaturePatch) -> A
                target_date = ?7,
                sort_order = COALESCE(?8, sort_order),
                completed_at = ?9,
+               revision = revision + 1,
                updated_at = ?10
              WHERE id = ?11",
             rusqlite::params![
@@ -1023,7 +1101,10 @@ pub(crate) fn delete_feature_impl(db: &Db, id: String) -> AppResult<()> {
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
         let n = tx
-            .execute("DELETE FROM planning_features WHERE id = ?1", rusqlite::params![id])
+            .execute(
+                "DELETE FROM planning_features WHERE id = ?1",
+                rusqlite::params![id],
+            )
             .map_err(AppError::from)?;
         if n == 0 {
             return Err(AppError::Validation(format!("功能不存在: {}", id)));
@@ -1039,7 +1120,11 @@ pub fn planning_delete_feature(db: State<'_, Arc<Db>>, id: String) -> AppResult<
 }
 
 /// 功能排序：按传入 id 顺序写入 sort_order（限定同一项目内）。
-pub(crate) fn reorder_features_impl(db: &Db, project_id: String, ids: Vec<String>) -> AppResult<()> {
+pub(crate) fn reorder_features_impl(
+    db: &Db,
+    project_id: String,
+    ids: Vec<String>,
+) -> AppResult<()> {
     let now = now_iso();
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
@@ -1055,7 +1140,10 @@ pub(crate) fn reorder_features_impl(db: &Db, project_id: String, ids: Vec<String
                 )
                 .map_err(AppError::from)?;
             if n == 0 {
-                return Err(AppError::Validation(format!("功能不存在或不属于该项目: {}", id)));
+                return Err(AppError::Validation(format!(
+                    "功能不存在或不属于该项目: {}",
+                    id
+                )));
             }
         }
         tx.commit().map_err(AppError::from)?;
@@ -1075,7 +1163,13 @@ pub fn planning_reorder_features(
 // ── 步骤命令 ─────────────────────────────────────────────────────────
 
 /// 新增步骤。返回更新后的功能（含步骤与进度），前端就地替换。
-pub(crate) fn add_step_impl(db: &Db, feature_id: String, title: String) -> AppResult<PlanningFeature> {
+/// expected_revision（v37）：传入时校验功能 revision（MCP 写工具强制）。
+pub(crate) fn add_step_impl(
+    db: &Db,
+    feature_id: String,
+    title: String,
+    expected_revision: Option<i64>,
+) -> AppResult<PlanningFeature> {
     let title = check_name(&title, "步骤", 200)?;
     let now = now_iso();
     let id = new_id();
@@ -1091,6 +1185,7 @@ pub(crate) fn add_step_impl(db: &Db, feature_id: String, title: String) -> AppRe
             .optional()
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::Validation(format!("功能不存在: {}", feature_id)))?;
+        check_expected_revision_tx(&tx, "planning_features", &feature_id, expected_revision)?;
         let sort_order =
             next_sort_order(&tx, "planning_feature_steps", Some(("feature_id", &feature_id)))?;
         tx.execute(
@@ -1100,7 +1195,7 @@ pub(crate) fn add_step_impl(db: &Db, feature_id: String, title: String) -> AppRe
         )
         .map_err(AppError::from)?;
         tx.execute(
-            "UPDATE planning_features SET updated_at = ?1 WHERE id = ?2",
+            "UPDATE planning_features SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
             rusqlite::params![now, feature_id],
         )
         .map_err(AppError::from)?;
@@ -1115,13 +1210,18 @@ pub fn planning_add_step(
     db: State<'_, Arc<Db>>,
     feature_id: String,
     title: String,
+    expected_revision: Option<i64>,
 ) -> AppResult<PlanningFeature> {
-    add_step_impl(&db, feature_id, title)
+    add_step_impl(&db, feature_id, title, expected_revision)
 }
 
 /// 更新步骤（改标题 / 勾选完成 / 重开）。
 /// 勾选与重开在同一事务写入 step_done 历史并同步功能 updated_at。
-pub(crate) fn update_step_impl(db: &Db, id: String, patch: StepPatch) -> AppResult<PlanningFeature> {
+pub(crate) fn update_step_impl(
+    db: &Db,
+    id: String,
+    patch: StepPatch,
+) -> AppResult<PlanningFeature> {
     let title = match &patch.title {
         Some(t) => Some(check_name(t, "步骤", 200)?),
         None => None,
@@ -1146,6 +1246,7 @@ pub(crate) fn update_step_impl(db: &Db, id: String, patch: StepPatch) -> AppResu
                 |r| r.get(0),
             )
             .map_err(AppError::from)?;
+        check_expected_revision_tx(&tx, "planning_features", &feature_id, patch.expected_revision)?;
 
         let new_title = title.clone().unwrap_or_else(|| old_title.clone());
         let done_touched = patch.done.is_some();
@@ -1172,9 +1273,9 @@ pub(crate) fn update_step_impl(db: &Db, id: String, patch: StepPatch) -> AppResu
             };
             record_step_event_tx(&tx, &project_id, &feature_id, &message)?;
         }
-        // 步骤变化同步功能 updated_at（卡片「最近更新」以此为准）
+        // 步骤变化同步功能 revision 与 updated_at（卡片「最近更新」以此为准）
         tx.execute(
-            "UPDATE planning_features SET updated_at = ?1 WHERE id = ?2",
+            "UPDATE planning_features SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
             rusqlite::params![now, feature_id],
         )
         .map_err(AppError::from)?;
@@ -1212,7 +1313,7 @@ pub(crate) fn delete_step_impl(db: &Db, id: String) -> AppResult<PlanningFeature
         )
         .map_err(AppError::from)?;
         tx.execute(
-            "UPDATE planning_features SET updated_at = ?1 WHERE id = ?2",
+            "UPDATE planning_features SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
             rusqlite::params![now, feature_id],
         )
         .map_err(AppError::from)?;
@@ -1228,7 +1329,11 @@ pub fn planning_delete_step(db: State<'_, Arc<Db>>, id: String) -> AppResult<Pla
 }
 
 /// 步骤排序：按传入 id 顺序写入 sort_order（限定同一功能下）。
-pub(crate) fn reorder_steps_impl(db: &Db, feature_id: String, ids: Vec<String>) -> AppResult<PlanningFeature> {
+pub(crate) fn reorder_steps_impl(
+    db: &Db,
+    feature_id: String,
+    ids: Vec<String>,
+) -> AppResult<PlanningFeature> {
     let now = now_iso();
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
@@ -1241,7 +1346,10 @@ pub(crate) fn reorder_steps_impl(db: &Db, feature_id: String, ids: Vec<String>) 
                 )
                 .map_err(AppError::from)?;
             if n == 0 {
-                return Err(AppError::Validation(format!("步骤不存在或不属于该功能: {}", id)));
+                return Err(AppError::Validation(format!(
+                    "步骤不存在或不属于该功能: {}",
+                    id
+                )));
             }
         }
         tx.execute(
@@ -1266,7 +1374,10 @@ pub fn planning_reorder_steps(
 
 // ── 里程碑命令 ───────────────────────────────────────────────────────
 
-pub(crate) fn list_milestones_impl(db: &Db, project_id: String) -> AppResult<Vec<PlanningMilestone>> {
+pub(crate) fn list_milestones_impl(
+    db: &Db,
+    project_id: String,
+) -> AppResult<Vec<PlanningMilestone>> {
     db.with_read(|conn| {
         if !project_exists(conn, &project_id)? {
             return Err(AppError::Validation(format!("项目不存在: {}", project_id)));
@@ -1507,10 +1618,7 @@ pub(crate) fn add_note_impl(
                 .optional()
                 .map_err(AppError::from)?;
             if belongs.as_deref() != Some(project_id.as_str()) {
-                return Err(AppError::Validation(format!(
-                    "功能不属于该项目: {}",
-                    fid
-                )));
+                return Err(AppError::Validation(format!("功能不属于该项目: {}", fid)));
             }
         }
         tx.execute(
@@ -1576,11 +1684,8 @@ mod tests {
     }
 
     fn count(db: &Db, sql: &str) -> i64 {
-        db.with_conn(|c| {
-            c.query_row(sql, [], |r| r.get(0))
-                .map_err(AppError::from)
-        })
-        .unwrap()
+        db.with_conn(|c| c.query_row(sql, [], |r| r.get(0)).map_err(AppError::from))
+            .unwrap()
     }
 
     #[test]
@@ -1593,7 +1698,7 @@ mod tests {
         assert_eq!(p.stats.progress_percent, 0);
 
         let f = create_feature_impl(&db, p.id.clone(), feat_input("功能A")).unwrap();
-        let s = add_step_impl(&db, f.id.clone(), "步骤1".into()).unwrap();
+        let s = add_step_impl(&db, f.id.clone(), "步骤1".into(), None).unwrap();
         add_note_impl(&db, p.id.clone(), Some(f.id.clone()), "开始开发".into()).unwrap();
 
         // 归档 → 列表默认仍返回（前端分组展示），排除归档时不返回
@@ -1613,6 +1718,7 @@ mod tests {
                 status: Some("in_progress".into()),
                 target_date: Some(Some("2026-12-01".into())),
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap();
@@ -1656,10 +1762,14 @@ mod tests {
                 milestone_id: None,
                 target_date: None,
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap();
-        assert!(done.completed_at.is_some(), "进入 completed 应记 completed_at");
+        assert!(
+            done.completed_at.is_some(),
+            "进入 completed 应记 completed_at"
+        );
         let back = update_feature_impl(
             &db,
             f.id.clone(),
@@ -1672,10 +1782,14 @@ mod tests {
                 milestone_id: None,
                 target_date: None,
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap();
-        assert!(back.completed_at.is_none(), "离开 completed 应清除 completed_at");
+        assert!(
+            back.completed_at.is_none(),
+            "离开 completed 应清除 completed_at"
+        );
 
         // 三次状态事件：创建 + 完成 + 离开
         let n: i64 = count(
@@ -1697,6 +1811,7 @@ mod tests {
                 milestone_id: None,
                 target_date: None,
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap_err();
@@ -1727,6 +1842,7 @@ mod tests {
                 milestone_id: None,
                 target_date: None,
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap();
@@ -1758,27 +1874,37 @@ mod tests {
         let db = memdb();
         let p = create_project_impl(&db, proj_input("P")).unwrap();
         let f = create_feature_impl(&db, p.id.clone(), feat_input("登录系统")).unwrap();
-        let s1 = add_step_impl(&db, f.id.clone(), "设计数据库".into()).unwrap();
-        let s2 = add_step_impl(&db, f.id.clone(), "实现接口".into()).unwrap();
-        add_step_impl(&db, f.id.clone(), "实现界面".into()).unwrap();
+        let s1 = add_step_impl(&db, f.id.clone(), "设计数据库".into(), None).unwrap();
+        let s2 = add_step_impl(&db, f.id.clone(), "实现接口".into(), None).unwrap();
+        add_step_impl(&db, f.id.clone(), "实现界面".into(), None).unwrap();
 
         update_step_impl(
             &db,
             s1.steps[0].id.clone(),
-            StepPatch { title: None, done: Some(true) },
+            StepPatch {
+                title: None,
+                done: Some(true),
+                expected_revision: None,
+            },
         )
         .unwrap();
         let f = update_step_impl(
             &db,
             s2.steps[1].id.clone(),
-            StepPatch { title: None, done: Some(true) },
+            StepPatch {
+                title: None,
+                done: Some(true),
+                expected_revision: None,
+            },
         )
         .unwrap();
         assert_eq!((f.step_done, f.step_total), (2, 3), "2/3 步骤完成");
 
         // 完成事件在历史里
-        let step_events: i64 =
-            count(&db, "SELECT COUNT(*) FROM planning_activity WHERE kind = 'step_done'");
+        let step_events: i64 = count(
+            &db,
+            "SELECT COUNT(*) FROM planning_activity WHERE kind = 'step_done'",
+        );
         assert_eq!(step_events, 2);
 
         // 功能未完成 → 项目进度按功能算，不按步骤加权
@@ -1801,6 +1927,7 @@ mod tests {
                 milestone_id: None,
                 target_date: None,
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap();
@@ -1815,7 +1942,11 @@ mod tests {
                 .map_err(AppError::from)
             })
             .unwrap();
-        assert!(msg.contains("1 个未完成步骤"), "历史应记录未完成数：{}", msg);
+        assert!(
+            msg.contains("1 个未完成步骤"),
+            "历史应记录未完成数：{}",
+            msg
+        );
         let listed = list_projects_impl(&db, None).unwrap();
         assert_eq!(listed[0].stats.progress_percent, 100);
 
@@ -1823,17 +1954,27 @@ mod tests {
         update_step_impl(
             &db,
             s1.steps[0].id.clone(),
-            StepPatch { title: None, done: Some(false) },
+            StepPatch {
+                title: None,
+                done: Some(false),
+                expected_revision: None,
+            },
         )
         .unwrap();
         update_step_impl(
             &db,
             s1.steps[0].id.clone(),
-            StepPatch { title: None, done: Some(false) },
+            StepPatch {
+                title: None,
+                done: Some(false),
+                expected_revision: None,
+            },
         )
         .unwrap();
-        let step_events: i64 =
-            count(&db, "SELECT COUNT(*) FROM planning_activity WHERE kind = 'step_done'");
+        let step_events: i64 = count(
+            &db,
+            "SELECT COUNT(*) FROM planning_activity WHERE kind = 'step_done'",
+        );
         assert_eq!(step_events, 3, "重开记一次，重复同值不记");
     }
 
@@ -1944,9 +2085,9 @@ mod tests {
         assert!(add_note_impl(&db, p.id.clone(), None, "   ".into()).is_err());
         // 空步骤标题
         let f = create_feature_impl(&db, p.id.clone(), feat_input("F")).unwrap();
-        assert!(add_step_impl(&db, f.id.clone(), "".into()).is_err());
+        assert!(add_step_impl(&db, f.id.clone(), "".into(), None).is_err());
         // 不存在的功能
-        assert!(add_step_impl(&db, "nope".into(), "x".into()).is_err());
+        assert!(add_step_impl(&db, "nope".into(), "x".into(), None).is_err());
     }
 
     #[test]
@@ -1967,6 +2108,7 @@ mod tests {
                 milestone_id: None,
                 target_date: Some(Some("2026-11-20".into())),
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap();
@@ -1984,6 +2126,7 @@ mod tests {
                 milestone_id: None,
                 target_date: None,
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap();
@@ -2002,10 +2145,163 @@ mod tests {
                 milestone_id: None,
                 target_date: Some(None),
                 sort_order: None,
+                expected_revision: None,
             },
         )
         .unwrap();
         assert!(f.target_date.is_none());
     }
-}
 
+    #[test]
+    fn expected_revision_guards_against_lost_updates() {
+        let db = memdb();
+        let p = create_project_impl(&db, proj_input("P")).unwrap();
+        let f = create_feature_impl(&db, p.id.clone(), feat_input("F")).unwrap();
+        assert_eq!(p.revision, 1, "新建实体 revision 从 1 起步");
+        assert_eq!(f.revision, 1);
+
+        // 期望匹配 → 成功且 revision +1
+        let updated = update_project_impl(
+            &db,
+            p.id.clone(),
+            ProjectPatch {
+                name: Some("改名".into()),
+                description: None,
+                status: None,
+                target_date: None,
+                sort_order: None,
+                expected_revision: Some(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.revision, 2);
+
+        // 过期期望 → Conflict（带当前 revision），内容不被覆盖
+        let err = update_project_impl(
+            &db,
+            p.id.clone(),
+            ProjectPatch {
+                name: Some("迟到写入".into()),
+                description: None,
+                status: None,
+                target_date: None,
+                sort_order: None,
+                expected_revision: Some(1),
+            },
+        )
+        .unwrap_err();
+        match err {
+            AppError::Conflict(msg) => {
+                assert!(msg.contains("当前 2"), "冲突消息应带当前 revision: {msg}");
+            }
+            other => panic!("应返回 Conflict，实际: {other:?}"),
+        }
+        let current_name = db.with_read(|c| load_project_tx(c, &p.id)).unwrap().name;
+        assert_eq!(current_name, "改名", "迟到的旧版本写入不得生效");
+
+        // 不传 expected_revision → 保持旧行为（UI 兼容），revision 仍然 +1
+        let updated = update_project_impl(
+            &db,
+            p.id.clone(),
+            ProjectPatch {
+                name: Some("再改".into()),
+                description: None,
+                status: None,
+                target_date: None,
+                sort_order: None,
+                expected_revision: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.revision, 3);
+
+        // 功能更新同样受 revision 保护
+        let f2 = update_feature_impl(
+            &db,
+            f.id.clone(),
+            FeaturePatch {
+                title: Some("F2".into()),
+                description: None,
+                acceptance_criteria: None,
+                status: None,
+                priority: None,
+                milestone_id: None,
+                target_date: None,
+                sort_order: None,
+                expected_revision: Some(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(f2.revision, 2);
+        assert!(matches!(
+            update_feature_impl(
+                &db,
+                f.id.clone(),
+                FeaturePatch {
+                    title: Some("过期".into()),
+                    description: None,
+                    acceptance_criteria: None,
+                    status: None,
+                    priority: None,
+                    milestone_id: None,
+                    target_date: None,
+                    sort_order: None,
+                    expected_revision: Some(1),
+                },
+            )
+            .unwrap_err(),
+            AppError::Conflict(_)
+        ));
+
+        // 步骤新增/更新走功能 revision：新增成功后 revision +1，旧期望冲突
+        let s = add_step_impl(&db, f.id.clone(), "步骤".into(), Some(2)).unwrap();
+        assert_eq!(s.revision, 3);
+        let step_id = s.steps[0].id.clone();
+        assert!(matches!(
+            add_step_impl(&db, f.id.clone(), "过期步骤".into(), Some(2)).unwrap_err(),
+            AppError::Conflict(_)
+        ));
+        let s2 = update_step_impl(
+            &db,
+            step_id.clone(),
+            StepPatch {
+                title: None,
+                done: Some(true),
+                expected_revision: Some(3),
+            },
+        )
+        .unwrap();
+        assert_eq!(s2.revision, 4);
+        assert!(matches!(
+            update_step_impl(
+                &db,
+                step_id,
+                StepPatch {
+                    title: None,
+                    done: Some(false),
+                    expected_revision: Some(3)
+                },
+            )
+            .unwrap_err(),
+            AppError::Conflict(_)
+        ));
+
+        // 不存在的对象按 Validation 报错（非 Conflict）
+        assert!(matches!(
+            update_project_impl(
+                &db,
+                "ghost".into(),
+                ProjectPatch {
+                    name: Some("x".into()),
+                    description: None,
+                    status: None,
+                    target_date: None,
+                    sort_order: None,
+                    expected_revision: Some(1),
+                },
+            )
+            .unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+}

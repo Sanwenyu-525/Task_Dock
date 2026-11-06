@@ -1122,3 +1122,45 @@ describe("胶囊面板共享输入与添加入口", () => {
   });
 });
 
+/* ── 输入框光标颜色统一（2026-11-06 · 核对补验）──────────────────
+   光标颜色全部收敛到 --input-caret-color（指向主题 accent）：
+   - 全局基线 input/select/textarea 与内嵌输入组（styles-ui.css）都必须引用变量；
+   - 任何样式表不得把 caret-color 写死成字面颜色，否则深浅主题切换后
+     光标会在另一套主题里不可见（历史上「光标不可读」的根因形态）。 */
+describe("输入框光标可读性", () => {
+  const caretDecls = (css: string): string[] =>
+    [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/caret-color:\s*([^;}]+)/g)].map((m) =>
+      m[1].trim(),
+    );
+
+  it("全局基线与内嵌输入组都引用统一的 caret 令牌", () => {
+    const globalBaseline = /(?:^|\})\s*input,\s*\n?select,\s*\n?textarea\s*\{([^{}]*)\}/.exec(
+      appCssCode,
+    );
+    expect(globalBaseline?.[1], "缺少全局 input/select/textarea 基线规则").toBeTruthy();
+    expect(globalBaseline![1]).toMatch(/caret-color:\s*var\(--input-caret-color\)/);
+
+    const embedded = /\.input-embedded,\s*\n\.search-box input[\s\S]*?\{([^{}]*)\}/.exec(uiCss);
+    expect(embedded?.[1], "缺少内嵌输入 caret 统一组").toBeTruthy();
+    expect(embedded![1]).toMatch(/caret-color:\s*var\(--input-caret-color\)/);
+
+    const searchInput = /\.ui-search \.ui-search-input\s*\{([^{}]*)\}/.exec(uiCss);
+    expect(searchInput?.[1]).toMatch(/caret-color:\s*var\(--input-caret-color\)/);
+  });
+
+  it("两套样式表不存在写死的 caret 颜色（一律走主题令牌）", () => {
+    for (const [name, decl] of [
+      ["styles-ui.css", caretDecls(uiCss)],
+      ["styles.css", caretDecls(appCssCode)],
+    ] as const) {
+      for (const value of decl) {
+        expect(value, `${name} 中 caret-color 未使用令牌: ${value}`).toMatch(
+          /^var\(--[\w-]+\)$/,
+        );
+      }
+    }
+    // 令牌定义本身指向 accent（主题色），随预设/明暗联动。
+    expect(uiCss).toMatch(/--input-caret-color:\s*var\(--accent\)/);
+  });
+});
+

@@ -9,6 +9,7 @@
 //!   逻辑 Tab 都让该入口呈选中态；快捷键仍按 TAB_ORDER 映射（Ctrl+5/6）不偏移；
 //! - v0.9 新增「工作流」视觉入口（Ctrl+7），第 10 个逻辑 Tab（设置）= Ctrl+0；
 //! - v0.10 新增「应用」视觉入口：仅视觉入口、**不占 Ctrl+数字**（`RAIL_ONLY_TABS`）；
+//! - v0.11 新增「帮助」视觉入口（规划中心之后、设置之前，不占 Ctrl+数字）；
 //! - 同时校验导航顶部「新建任务」按钮（`.rail-new-task`）的类名与可访问名；
 //! - 导航增删、换序、改名时本测试失败，防止脚本侧过期断言再次出现。
 
@@ -26,6 +27,7 @@ vi.mock("./collection/CollectionPanel", () => ({ default: () => <div>collection-
 vi.mock("./workflows/WorkflowsPanel", () => ({ default: () => <div>workflows-panel</div> }));
 vi.mock("./history/HistoryPanel", () => ({ default: () => <div>history-panel</div> }));
 vi.mock("./roadmap/FeatureRoadmapPanel", () => ({ default: () => <div>roadmap-panel</div> }));
+vi.mock("./help/HelpCenterPanel", () => ({ default: () => <div>help-panel</div> }));
 vi.mock("./settings/SettingsPanel", () => ({ default: () => <div>settings-panel</div> }));
 
 import FullView from "./FullView";
@@ -46,17 +48,18 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("脚本侧导航契约与真实导航一致", () => {
-  it("视觉入口 11 项；逻辑 Tab 10 项且与 TAB_ORDER 完全一致", () => {
-    expect(RAIL_ITEM_COUNT).toBe(11);
+  it("视觉入口 12 项；逻辑 Tab 10 项且与 TAB_ORDER 完全一致", () => {
+    expect(RAIL_ITEM_COUNT).toBe(12);
     expect([...LOGICAL_TABS]).toEqual([...TAB_ORDER]);
-    // 合并入口覆盖 inbox+shelf，其余 1:1；「应用」「微件」是仅视觉入口
+    // 合并入口覆盖 inbox+shelf，其余 1:1；「应用」「微件」「帮助」是仅视觉入口
     const covered = RAIL_ENTRIES.flatMap((e) => (e.tabs ?? [e.id]));
     expect([...covered].sort()).toEqual([...TAB_ORDER, ...RAIL_ONLY_TABS].sort());
     expect(RAIL_ENTRIES.find((e) => e.id === "collection")?.tabs).toEqual(["inbox", "shelf"]);
-    // 视觉顺序：应用位于 Agent 之后、行动之前；微件紧随应用之后
+    // 视觉顺序：应用位于 Agent 之后、行动之前；微件紧随应用之后；帮助在设置之前
     const visual = RAIL_ENTRIES.map((e) => e.id);
     expect(visual.indexOf("apps")).toBe(visual.indexOf("agents") + 1);
     expect(visual.indexOf("actions")).toBe(visual.indexOf("apps") + 2);
+    expect(visual.indexOf("help")).toBe(visual.indexOf("settings") - 1);
     expect([...RAIL_ORDER]).toEqual([...RAIL_ENTRIES.flatMap((e) => e.tabs ?? [e.id])]);
   });
 
