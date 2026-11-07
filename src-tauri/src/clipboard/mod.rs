@@ -21,7 +21,7 @@ pub mod platform;
 pub mod store;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -351,6 +351,13 @@ pub struct ClipboardRuntime {
     maintenance_gen: AtomicU64,
     /// 维护线程停止信号（Condvar 让 300s 轮询可被立即打断）
     maintenance_stop: Arc<(Mutex<bool>, Condvar)>,
+    /// 仍存活的维护线程数量。只作为生命周期探针使用，不参与控制：
+    /// 暂停后必须等它真正退出才能对外报告 `paused`，不能把「已发停止信号」
+    /// 当成「资源已释放」。用计数而不是布尔：暂停后立刻恢复时旧线程可能
+    /// 仍在收尾、新线程已启动，布尔会被旧线程退出错误置回 false。
+    maintenance_alive: Arc<AtomicUsize>,
+    /// 正在异步回收的采集实例数量（暂停不阻塞 UI，但状态必须等归零才算 paused）。
+    capture_draining: Arc<AtomicUsize>,
 }
 
 impl ClipboardRuntime {
@@ -373,6 +380,8 @@ impl ClipboardRuntime {
             monitor: Mutex::new(None),
             maintenance_gen: AtomicU64::new(0),
             maintenance_stop: Arc::new((Mutex::new(false), Condvar::new())),
+            maintenance_alive: Arc::new(AtomicUsize::new(0)),
+            capture_draining: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -469,6 +478,26 @@ impl ClipboardRuntime {
     }
 
     fn start_maintenance(self: &Arc<Self>) {
+        // 幂等：当前已有一个在跑（停止位为 false）时直接返回，重复恢复/重复写设置
+        // 不会反复重启维护线程。停止位为 true 说明上一代已被暂停回收，即使计数
+        // 尚未归零也必须启动新一代（旧线程会因世代变化退出）。
+        {
+            let (lock, _) = &*self.maintenance_stop;
+            let stopping = *lock.lock().unwrap_or_else(|e| e.into_inner());
+            if self.maintenance_running() && !stopping {
+                return;
+            }
+        }
+        // 先让上一代退出，再启动新一代：
+        // - 置停止位并唤醒等待中的旧线程，避免它睡满 30 秒才看到世代变化；
+        // - 世代自增后，正在执行清理的旧线程也会在下一轮循环顶部的世代检查处退出。
+        // 旧线程可能短暂与新线程并存（正在清理时），但它不会再做第二轮工作，
+        // 也不会把监听实例写回（spawn_monitor 只有持有最新世代才能存实例）。
+        {
+            let (lock, cv) = &*self.maintenance_stop;
+            *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            cv.notify_all();
+        }
         let generation = self.maintenance_gen.fetch_add(1, Ordering::SeqCst) + 1;
         {
             let (lock, cv) = &*self.maintenance_stop;
@@ -476,11 +505,29 @@ impl ClipboardRuntime {
             cv.notify_all();
         }
         let stop = self.maintenance_stop.clone();
+        let alive = self.maintenance_alive.clone();
+        let thread_alive = alive.clone();
         let runtime = Arc::clone(self);
-        std::thread::Builder::new()
+        // 线程启动失败时不能让探针一直显示“运行中”。
+        self.maintenance_alive.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
             .name("clipboard-maintenance".into())
             .spawn(move || {
-                if wait_or_stop(&stop, Duration::from_secs(8)) {
+                // 所有退出路径（含 panic 展开）都必须把运行探针置回 false，
+                // 否则暂停请求会永远停在 pausing。
+                struct AliveGuard(Arc<AtomicUsize>);
+                impl Drop for AliveGuard {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+                let _alive = AliveGuard(thread_alive);
+                if wait_or_stop_gen(
+                    &stop,
+                    &runtime.maintenance_gen,
+                    generation,
+                    Duration::from_secs(8),
+                ) {
                     return;
                 }
                 // 首轮立即巡检一次（与原 8s 后清理的行为一致），之后每 5 分钟清理、
@@ -492,11 +539,12 @@ impl ClipboardRuntime {
                         return;
                     }
                     runtime.ensure_monitor(generation);
-                    // 模块关闭期间不再执行清理/巡检；配置不可靠时也必须停手，
+                    // 模块关闭/暂停期间不再执行清理与巡检；配置不可靠时也必须停手，
                     // 避免按错误的容量/保留参数删除历史数据。
                     let config = crate::db::Settings::load_clipboard(&runtime.db);
                     if config.error.is_none()
                         && config.settings.clipboard_enabled
+                        && !config.settings.clipboard_paused
                         && std::time::Instant::now() >= next_cleanup
                     {
                         next_cleanup =
@@ -537,12 +585,20 @@ impl ClipboardRuntime {
                             }
                         }
                     }
-                    if wait_or_stop(&stop, Duration::from_secs(30)) {
+                    if wait_or_stop_gen(
+                        &stop,
+                        &runtime.maintenance_gen,
+                        generation,
+                        Duration::from_secs(30),
+                    ) {
                         return;
                     }
                 }
-            })
-            .ok();
+            });
+        if let Err(e) = spawned {
+            self.maintenance_alive.fetch_sub(1, Ordering::SeqCst);
+            tracing::warn!("剪贴板维护线程启动失败: {}", e);
+        }
     }
 
     /// 模块级启停：关闭时停止监听、维护线程与进行中的粘贴；重新开启后恢复。
@@ -555,8 +611,39 @@ impl ClipboardRuntime {
         }
     }
 
-    /// 停止监听（应用退出、模块关闭或测试用）。
-    pub fn stop(&self) {
+    /// 让运行时与已持久化的配置收敛（幂等）。
+    ///
+    /// 三个维度必须分开：
+    /// - `enabled=false`：长期停用 —— 停止采集并取消进行中的逐项粘贴（既有语义）；
+    /// - `enabled=true && paused=true`：暂时暂停 —— 只回收采集侧线程，**不打断**
+    ///   用户已经发起的复制/粘贴；
+    /// - `enabled=true && paused=false`：恢复采集（重复调用不会留下第二套线程）。
+    pub fn apply_config(self: &Arc<Self>, enabled: bool, paused: bool) {
+        if !enabled {
+            self.stop();
+        } else if paused {
+            self.stop_capture();
+        } else {
+            self.start_monitor();
+            self.start_maintenance();
+        }
+    }
+
+    /// 仅停止采集侧（监听线程 + 维护线程），保留粘贴队列。
+    ///
+    /// 与 `stop()` 的边界：暂停/恢复不应取消用户显式发起的批量粘贴，也不应
+    /// 清空粘贴任务；这里只回收采集与维护资源。删除历史、清空等只读/写入
+    /// 历史的能力仍然可用。
+    ///
+    /// 实现为**异步回收**：`ClipboardMonitor::stop()` 会 join 采集/入库线程，
+    /// 而采集线程可能正在解码一张大图（最长边 2 万像素）或写图片资产。同步
+    /// join 会让暂停点击阻塞 UI 线程；这里把实例从槽位移除后交给独立线程收尾，
+    /// 由 `capture_draining()` 计数如实报告 `pausing`。
+    pub fn stop_capture(self: &Arc<Self>) {
+        // 先置维护停止位：与并发恢复的 `start_maintenance()` 相比，这个顺序保证
+        // 恢复方看到 stopping=true，一定会启动新一代维护线程（否则旧线程退出后
+        // 会没有看门狗）。旧线程自身通过世代变化退出。
+        self.signal_maintenance_stop();
         // 世代递增必须在 monitor 锁内：否则「取空实例 → 释放锁 → 递增世代」之间，
         // 正在启动的 spawn_monitor 会复核到旧世代并把新实例存进来，留下已关闭
         // 却仍在监听的线程。
@@ -565,13 +652,58 @@ impl ClipboardRuntime {
             self.maintenance_gen.fetch_add(1, Ordering::SeqCst);
             guard.take()
         };
-        if let Some(m) = taken {
-            m.stop();
+        if let Some(mut m) = taken {
+            // 先同步摘掉全局事件槽并通知消息循环退出：恢复请求可以立刻创建新实例，
+            // 不会因为旧实例还占着 EVENT_QUEUE 而启动失败。join 留给回收线程。
+            m.begin_stop();
+            self.capture_draining.fetch_add(1, Ordering::SeqCst);
+            let draining = self.capture_draining.clone();
+            let spawned = std::thread::Builder::new()
+                .name("clipboard-stop".into())
+                .spawn(move || {
+                    struct DrainGuard(Arc<AtomicUsize>);
+                    impl Drop for DrainGuard {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    }
+                    let _guard = DrainGuard(draining);
+                    m.finish_stop();
+                });
+            if let Err(e) = spawned {
+                // 创建回收线程失败：闭包（含 m）被丢弃时 ClipboardMonitor 的 Drop
+                // 会同步完成收尾，绝不留下已摘槽却仍在监听的孤儿线程。
+                tracing::warn!("剪贴板回收线程创建失败，Drop 兜底同步停止: {}", e);
+                self.capture_draining.fetch_sub(1, Ordering::SeqCst);
+            }
         }
-        self.paste.cancel_all();
+    }
+
+    /// 置维护线程停止位并立即唤醒等待（30s 轮询不必睡满）。
+    fn signal_maintenance_stop(&self) {
         let (lock, cv) = &*self.maintenance_stop;
         *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
         cv.notify_all();
+    }
+
+    /// 同步停止采集侧。仅用于应用退出/模块长期停用等必须确认线程已回收的路径；
+    /// 暂停走 `stop_capture()` 的异步回收，避免阻塞 UI。
+    fn stop_capture_sync(&self) {
+        self.signal_maintenance_stop();
+        let taken = {
+            let mut guard = self.monitor.lock().unwrap_or_else(|e| e.into_inner());
+            self.maintenance_gen.fetch_add(1, Ordering::SeqCst);
+            guard.take()
+        };
+        if let Some(m) = taken {
+            m.stop();
+        }
+    }
+
+    /// 停止监听（应用退出、模块关闭或测试用）。会取消进行中的粘贴任务。
+    pub fn stop(&self) {
+        self.stop_capture_sync();
+        self.paste.cancel_all();
     }
 
     /// 应用退出前的完整收尾：停止监听线程，并等待粘贴工作线程结束。
@@ -593,6 +725,16 @@ impl ClipboardRuntime {
             .is_some_and(|m| m.is_alive())
     }
 
+    /// 维护线程是否仍在运行（暂停后据此如实报告 pausing；不代表监听可用）。
+    pub fn maintenance_running(&self) -> bool {
+        self.maintenance_alive.load(Ordering::SeqCst) > 0
+    }
+
+    /// 是否有采集实例正在异步回收（暂停不阻塞 UI，但状态必须等回收完成）。
+    pub fn capture_draining(&self) -> bool {
+        self.capture_draining.load(Ordering::SeqCst) > 0
+    }
+
     /// 记录一次自写序列号（仅供无法使用 `write_payload_notifying` 的调用方；
     /// 常规复制/粘贴/恢复都应在访问锁内完成写入与登记）。
     pub fn note_self_write(&self, sequence: u32) {
@@ -606,14 +748,25 @@ impl ClipboardRuntime {
     }
 }
 
-/// 可被停止信号立即打断的等待；返回 true 表示收到停止请求。
-fn wait_or_stop(stop: &Arc<(Mutex<bool>, Condvar)>, dur: Duration) -> bool {
+/// 可被停止信号或世代变化立即打断的等待；返回 true 表示必须退出。
+///
+/// 同时监听世代的原因是「暂停后立刻恢复」：停止位会被新一代重置为 false，
+/// 只检查停止位的旧线程会继续睡满 30 秒；世代变化能保证它在唤醒后立即退出，
+/// 不会与新线程长期并存。
+fn wait_or_stop_gen(
+    stop: &Arc<(Mutex<bool>, Condvar)>,
+    generation_now: &AtomicU64,
+    generation: u64,
+    dur: Duration,
+) -> bool {
     let (lock, cv) = &**stop;
     let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     let (guard, _) = cv
-        .wait_timeout_while(guard, dur, |stopped| !*stopped)
+        .wait_timeout_while(guard, dur, |stopped| {
+            !*stopped && generation_now.load(Ordering::SeqCst) == generation
+        })
         .unwrap_or_else(|e| e.into_inner());
-    *guard
+    *guard || generation_now.load(Ordering::SeqCst) != generation
 }
 
 #[cfg(test)]
@@ -624,9 +777,13 @@ mod lifecycle_tests {
     #[test]
     fn stop_signal_wakes_maintenance_wait_immediately() {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let generation = Arc::new(AtomicU64::new(1));
         let waiter = stop.clone();
+        let gen_waiter = generation.clone();
         let begin = Instant::now();
-        let handle = std::thread::spawn(move || wait_or_stop(&waiter, Duration::from_secs(30)));
+        let handle = std::thread::spawn(move || {
+            wait_or_stop_gen(&waiter, &gen_waiter, 1, Duration::from_secs(30))
+        });
         std::thread::sleep(Duration::from_millis(50));
         {
             let (lock, cv) = &*stop;
@@ -643,8 +800,37 @@ mod lifecycle_tests {
     #[test]
     fn wait_times_out_without_stop_signal() {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let generation = AtomicU64::new(1);
         let begin = Instant::now();
-        assert!(!wait_or_stop(&stop, Duration::from_millis(20)));
+        assert!(!wait_or_stop_gen(
+            &stop,
+            &generation,
+            1,
+            Duration::from_millis(20)
+        ));
+        assert!(begin.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn generation_change_wakes_old_maintenance_thread_on_resume() {
+        // 暂停后立刻恢复：停止位被新一代重置为 false，旧线程必须靠世代变化退出，
+        // 不能继续睡满 30 秒后才发现自己已是上一代。
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let generation = Arc::new(AtomicU64::new(1));
+        let waiter = stop.clone();
+        let gen_waiter = generation.clone();
+        let begin = Instant::now();
+        let handle = std::thread::spawn(move || {
+            wait_or_stop_gen(&waiter, &gen_waiter, 1, Duration::from_secs(30))
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        generation.store(2, Ordering::SeqCst);
+        {
+            let (lock, cv) = &*stop;
+            *lock.lock().unwrap() = false;
+            cv.notify_all();
+        }
+        assert!(handle.join().unwrap(), "世代变化后旧线程必须退出");
         assert!(begin.elapsed() < Duration::from_secs(2));
     }
 }

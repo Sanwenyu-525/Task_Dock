@@ -39,7 +39,6 @@ import {
   applyMode,
   applyWindowCapsule,
   cancelUndockAnchor,
-  refreshEdgeTabCursor,
   getSnapState,
   getWindowRect,
   notifyUiReady,
@@ -1150,6 +1149,16 @@ export function useEdgeSnap(enabled: boolean) {
      */
     async function applyDockForm(form: DockForm): Promise<boolean> {
       if (!isDockedPhase(machine.phase) || !machine.edge) return false;
+      // Edge Tab → 完整面板必须经轨道：标签态窗口仍是胶囊容器尺寸，`dockFull`
+      // 的「先恢复用户模式尺寸再贴边」与标签态的尺寸收敛（`handleMoved` 会把
+      // 任何 >1px 的尺寸差收敛回容器）会互相覆盖——真机实测：400×560 在
+      // 600ms 稳定性复核前已被收敛回容器，整笔事务回滚、菜单点了没反应。
+      // 先把标签恢复成轨道（既有过渡与区域协议），再走胶囊→完整的正常路径；
+      // 两步仍在同一个串行槽内，不会与 tick / 其他形态事务竞争。
+      if (form === "full" && machine.phase === "docked-tab") {
+        if (!(await restoreFromTab())) return false;
+        if (disposed) return false;
+      }
       const alreadyFull = machine.phase === "docked-full";
       if (dockedForm === form && alreadyFull === (form === "full")) return true;
       if (form === "full") {
@@ -1575,9 +1584,10 @@ export function useEdgeSnap(enabled: boolean) {
       tabDragging = false;
       tabDragBase = null;
       tabDragMoved = false;
-      // 松手后鼠标可能完全静止：系统不会自动派发 WM_SETCURSOR，
-      // WebView2 的 CSS cursor 因此停在 grabbing。请求窗口线程补一次刷新。
-      void refreshEdgeTabCursor().catch(() => {});
+      // 光标由 WebView2 的 CSS 决定：`EdgeTab` 摘掉 `.is-dragging` 后 Blink 会
+      // 按指针下元素重新计算 `cursor` 并下发 `SetCursor`，鼠标完全静止也能立刻
+      // 从 grabbing 回到 grab。原生侧不再补 `SetCursor`（IDC_HAND 既不是 grab，
+      // 又会覆盖 CSS，反而让松手后的光标必须等下一次鼠标移动才正确）。
       if (!moved) return;
       // 终态必须先真实落地并回读，再按实际位置持久化；松手即写目标位
       // 会留下幻影记录（失败/吞掉/延迟未落地时与窗口不一致，重启跳位）。
@@ -2683,8 +2693,16 @@ export function useEdgeSnap(enabled: boolean) {
       collapse: () => {
         void runExclusiveResult(() => collapseToTab());
       },
-      restore: () => {
-        void runExclusiveResult(() => restoreFromTab());
+      restore: (opts) => {
+        // 恢复与展开是**同一事务的两步**：先等恢复事务提交（相位已到
+        // docked-visible），再在同一串行槽里展开面板。不用固定延迟拼接，
+        // 也不会出现「面板先展开、轨道后恢复」的竞争或闪烁。
+        void runExclusiveResult(async () => {
+          const restored = await restoreFromTab();
+          if (!restored || !opts?.reveal) return restored;
+          if (disposed) return restored;
+          return expandPanel();
+        });
       },
       beginDrag: beginTabDrag,
       dragBy: dragTabBy,

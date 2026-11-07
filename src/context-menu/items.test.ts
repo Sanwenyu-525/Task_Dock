@@ -4,9 +4,16 @@ import { describe, expect, it } from "vitest";
 import {
   FLAT_ITEMS,
   MENU_GROUPS,
+  TAB_FLAT_ITEMS,
+  TAB_MENU_GROUPS,
+  flatItemsFor,
+  groupLabel,
   initialActiveIndex,
   isItemChecked,
+  itemLabel,
+  showsGroupLabels,
   validateMenuConfig,
+  validateTabMenuConfig,
   type MenuSnapshot,
 } from "./items";
 
@@ -96,5 +103,49 @@ describe("initialActiveIndex", () => {
         snap_display_mode: "",
       }),
     ).toBe(FLAT_ITEMS.findIndex((it) => it.action === "snap-form:capsule"));
+  });
+});
+
+// ── 极简标签快捷菜单（tab 变体）────────────────────────────────
+//
+// 契约：恰好三项、动作唯一且都在 `tab:` 命名空间、不带勾选语义、
+// 条目文案必须可本地化。这三条对应验收标准「不增加第四个常驻菜单功能」。
+
+describe("tab 变体结构", () => {
+  it("恰好三项，顺序为 展开 / 完整面板 / 退出吸附", () => {
+    expect(TAB_FLAT_ITEMS.map((it) => it.action)).toEqual([
+      "tab:expand",
+      "tab:full",
+      "tab:undock",
+    ]);
+    expect(TAB_MENU_GROUPS).toHaveLength(1);
+    expect(TAB_MENU_GROUPS[0].items).toHaveLength(3);
+  });
+
+  it("结构守卫无问题", () => {
+    expect(validateTabMenuConfig()).toEqual([]);
+  });
+
+  it("托盘菜单不受影响（仍是五组 13 项）", () => {
+    expect(validateMenuConfig()).toEqual([]);
+    expect(flatItemsFor("tray")).toHaveLength(13);
+    expect(flatItemsFor("tab")).toHaveLength(3);
+  });
+
+  it("tab 变体不渲染分组标题（三项不需要分组）", () => {
+    expect(showsGroupLabels("tab")).toBe(false);
+    expect(showsGroupLabels("tray")).toBe(true);
+  });
+
+  it("初始焦点恒为第一项（无勾选语义）", () => {
+    expect(initialActiveIndex(snap, "tab")).toBe(0);
+    expect(initialActiveIndex(null, "tab")).toBe(0);
+  });
+
+  it("文案通过 labelKey 在渲染时解析（跟随界面语言）", () => {
+    const expand = TAB_FLAT_ITEMS[0];
+    expect(expand.labelKey).toBe("capsule.tabMenu.expand");
+    expect(itemLabel(expand)).toBe("展开工具面板");
+    expect(groupLabel(TAB_MENU_GROUPS[0])).toBe("极简标签");
   });
 });

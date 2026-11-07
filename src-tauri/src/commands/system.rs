@@ -274,26 +274,6 @@ pub fn apply_window_capsule(
     Ok(applied)
 }
 
-/// Edge Tab 拖动结束后刷新系统光标（鼠标静止时 CSS cursor 不会自动重新生效）。
-/// 主线程通过 WM_CURSOR_EDGE_TAB 消息完成，避免在工作线程直接调用 SetCursor。
-#[tauri::command]
-pub fn refresh_edge_tab_cursor(app: AppHandle) -> AppResult<bool> {
-    let win = app
-        .get_webview_window("main")
-        .ok_or_else(|| crate::error::AppError::Agent("主窗口不存在".into()))?;
-    let hwnd = win
-        .hwnd()
-        .map(|h| h.0 as isize)
-        .map_err(|e| crate::error::AppError::Agent(format!("无法获取主窗口句柄: {e}")))?;
-    // PostMessage 线程安全：消息由 wndproc 在窗口线程处理。
-    #[cfg(windows)]
-    {
-        crate::magnetic::request_edge_tab_cursor_refresh(hwnd);
-    }
-    let _ = hwnd;
-    Ok(true)
-}
-
 // ── 拖拽磁力（v0.7）──────────────────────────────────────────
 //
 // 吸引 / 阻力在原生 `WM_MOVING` 里完成（`crate::magnetic`）：系统模态移动循环

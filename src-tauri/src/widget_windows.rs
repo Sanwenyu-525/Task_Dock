@@ -684,6 +684,18 @@ fn create_window(app: &AppHandle, kind: &str) -> AppResult<(WebviewWindow, u64)>
     let _ = win.set_focusable(false);
     apply_shape(&win);
     crate::window_shape::watch_destroy(&win);
+    // 拖拽相位监视：微件标题栏拖动时让 WebView 在松手瞬间结束拖拽光标会话。
+    // 子类化必须在窗口所属线程执行，而本函数可能在 IPC 线程上跑 → 投递到主线程。
+    if let Ok(hwnd) = win.hwnd() {
+        let hwnd = hwnd.0 as isize;
+        let app_for_watch = app.clone();
+        let label_for_watch = label.clone();
+        if let Err(err) = app.run_on_main_thread(move || {
+            crate::drag_watch::install(&app_for_watch, hwnd, &label_for_watch);
+        }) {
+            tracing::warn!("微件拖拽相位监视投递失败: {err}");
+        }
+    }
     attach_window_events(app, &win, kind.to_string(), generation);
     Ok((win, generation))
 }

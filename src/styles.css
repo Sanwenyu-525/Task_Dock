@@ -314,6 +314,11 @@ code {
 .dock-window {
   position: relative; /* 吸附反馈层（SnapOverlay）的定位基准 */
   height: 100%;
+  /* 根容器必须始终占满窗口：胶囊态的可见内容全是绝对定位（`.capsule-dock` inset:0），
+     一旦 `#root` 的 display 不是 block（例如多入口构建把某个弹窗页的
+     `#root{display:flex}` 带进主窗样式），宽度会塌成 0，右/上/下停靠的标签
+     与轨道就会被排到窗口之外（区域可见但内容不在区域里）。 */
+  width: 100%;
   display: flex;
   flex-direction: column;
   background: var(--surface-base);
@@ -2903,12 +2908,13 @@ code {
 
 .resource-overview-label {
   color: var(--text-tertiary);
-  font-size: 10px;
+  /* 与 `.rail-label` 同一可读性下限（10.5px）：9.5/10px 的 CJK 小字已接近笔画粘连 */
+  font-size: 10.5px;
 }
 
 .resource-overview-value {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -2916,8 +2922,8 @@ code {
 
 .resource-overview-sub {
   color: var(--text-tertiary);
-  font-size: 9.5px;
-  line-height: 1.45;
+  font-size: 10.5px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
@@ -2949,6 +2955,15 @@ code {
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
+}
+
+/* 窄窗：标题保持整词，操作按钮整体换到下一行，不把「进程诊断」挤成两行。 */
+.resource-diagnostics .resource-cleanup-section-head {
+  flex-wrap: wrap;
+}
+
+.resource-diagnostics .resource-cleanup-heading {
+  white-space: nowrap;
 }
 
 .resource-process-self {
@@ -3033,11 +3048,57 @@ code {
 .resource-process-row {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main metrics tags"
+    "bars bars bars";
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   min-width: 0;
   padding: 7px 0;
   border-bottom: 1px dashed var(--border-subtle);
+}
+
+.resource-process-main {
+  grid-area: main;
+}
+
+.resource-process-metrics {
+  grid-area: metrics;
+}
+
+.resource-process-tags {
+  grid-area: tags;
+}
+
+.resource-process-bars {
+  grid-area: bars;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 每条指标独占一行：标签 + 条形 + 数值，窄窗下也不会把条形挤成 0 宽。 */
+.resource-process-bar {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.resource-process-bar-label {
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.resource-process-bar-note {
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .resource-process-row:last-child {
@@ -3106,16 +3167,52 @@ code {
 .resource-page {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
+  /* 资源页小字密集：把三级文字提升到可读对比度（只作用于本页，不改全局 Token）。 */
+  --text-tertiary: color-mix(in srgb, var(--text-secondary) 78%, var(--text-primary));
+  /* 图表语义色：使用率三档 + 低对比度轨道 + 8 色分类调色板。 */
+  --chart-track: color-mix(in srgb, var(--text-tertiary) 16%, transparent);
+  --chart-neutral: color-mix(in srgb, var(--accent) 80%, var(--text-secondary));
+  --chart-c1: #4c7df0;
+  --chart-c2: #2fa79b;
+  --chart-c3: #8668e8;
+  --chart-c4: #d9863a;
+  --chart-c5: #bd669f;
+  --chart-c6: #3f93cf;
+  --chart-c7: #71839d;
+  --chart-c8: #9aa24a;
+}
+
+html[data-theme="dark"] .resource-page {
+  --chart-track: color-mix(in srgb, var(--text-tertiary) 24%, transparent);
+  --chart-c1: #6f95ff;
+  --chart-c2: #45c1b4;
+  --chart-c3: #a68cff;
+  --chart-c4: #eea25c;
+  --chart-c5: #d986bd;
+  --chart-c6: #5faee3;
+  --chart-c7: #93a3ba;
+  --chart-c8: #b6bd62;
 }
 
 .resource-page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   min-width: 0;
+}
+
+/* 标题块可压缩，刷新按钮保持内容宽度：不形成占满整行的独立大按钮。 */
+.resource-page-title {
+  flex: 1 1 190px;
+  min-width: 0;
+}
+
+.resource-page-head > .btn {
+  flex: 0 0 auto;
 }
 
 .resource-page-title h2 {
@@ -3237,13 +3334,36 @@ code {
 }
 
 .resource-storage-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 2px 8px;
   min-width: 0;
   padding: 5px 0;
   border-bottom: 1px dashed var(--border-subtle);
   font-size: 10.5px;
+}
+
+.resource-storage-share {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.resource-kind-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.resource-kind-tag.kind-persistent {
+  border-style: dashed;
 }
 
 .resource-storage-row:last-child {
@@ -3325,10 +3445,307 @@ code {
   border-top: 1px dashed var(--border-subtle);
 }
 
+/* ── 资源图表基元 ─────────────────────────────────────────── */
+
+.resource-usage-hero {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-ring {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+}
+
+.resource-ring-figure {
+  position: relative;
+  width: min(132px, 100%);
+  margin: 0 auto;
+}
+
+.resource-ring-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.resource-ring-track {
+  fill: none;
+  stroke: var(--chart-track);
+  stroke-width: 10;
+}
+
+.resource-ring-fill {
+  fill: none;
+  stroke: var(--chart-level, var(--chart-neutral));
+  stroke-width: 10;
+  stroke-linecap: round;
+}
+
+.resource-ring.is-normal {
+  --chart-level: var(--status-success);
+}
+
+.resource-ring.is-attention {
+  --chart-level: var(--status-waiting);
+}
+
+.resource-ring.is-critical {
+  --chart-level: var(--status-error);
+}
+
+.resource-ring.is-unknown {
+  --chart-level: var(--chart-neutral);
+}
+
+.resource-ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  pointer-events: none;
+}
+
+.resource-ring-center strong {
+  color: var(--text-primary);
+  font-size: 19px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.resource-ring-center span {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.resource-ring.is-attention .resource-ring-center span {
+  color: var(--status-waiting);
+  font-weight: 600;
+}
+
+.resource-ring.is-critical .resource-ring-center span {
+  color: var(--status-error);
+  font-weight: 600;
+}
+
+.resource-ring-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  text-align: center;
+}
+
+.resource-ring-title {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.resource-ring-caption span:not(.resource-ring-title) {
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.resource-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+}
+
+.resource-metric-value {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.resource-metric-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.resource-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.resource-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-bar-label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.resource-bar-value {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.resource-bar.is-attention .resource-bar-value {
+  color: var(--status-waiting);
+  font-weight: 600;
+}
+
+.resource-bar.is-critical .resource-bar-value {
+  color: var(--status-error);
+  font-weight: 600;
+}
+
+.resource-bar-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--chart-track);
+  overflow: hidden;
+}
+
+.resource-bar.size-sm .resource-bar-track {
+  height: 5px;
+}
+
+.resource-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--chart-level, var(--chart-neutral));
+}
+
+.resource-bar.is-normal {
+  --chart-level: var(--status-success);
+}
+
+.resource-bar.is-attention {
+  --chart-level: var(--status-waiting);
+}
+
+.resource-bar.is-critical {
+  --chart-level: var(--status-error);
+}
+
+.resource-bar-detail {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.resource-meter {
+  display: inline-flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.resource-meter-track {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--chart-track);
+  overflow: hidden;
+}
+
+.resource-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--chart-neutral);
+}
+
+.resource-stacked {
+  display: flex;
+  gap: 1px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--chart-track);
+  overflow: hidden;
+}
+
+.resource-stacked-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.resource-stacked-empty {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+
+.resource-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.resource-swatch.color-1,
+.resource-stacked-seg.color-1 { background: var(--chart-c1); }
+.resource-swatch.color-2,
+.resource-stacked-seg.color-2 { background: var(--chart-c2); }
+.resource-swatch.color-3,
+.resource-stacked-seg.color-3 { background: var(--chart-c3); }
+.resource-swatch.color-4,
+.resource-stacked-seg.color-4 { background: var(--chart-c4); }
+.resource-swatch.color-5,
+.resource-stacked-seg.color-5 { background: var(--chart-c5); }
+.resource-swatch.color-6,
+.resource-stacked-seg.color-6 { background: var(--chart-c6); }
+.resource-swatch.color-7,
+.resource-stacked-seg.color-7 { background: var(--chart-c7); }
+.resource-swatch.color-8,
+.resource-stacked-seg.color-8 { background: var(--chart-c8); }
+
 @media (max-width: 560px) {
+  /* 页头保持「标题 + 紧凑刷新按钮」同行；只有极窄时才由 flex-wrap 自然换行。 */
   .resource-page-head {
-    flex-direction: column;
-    align-items: stretch;
+    align-items: flex-start;
+  }
+
+  .resource-page-title p {
+    font-size: 10.5px;
   }
 
   .resource-segment {
@@ -3336,11 +3753,11 @@ code {
   }
 
   .resource-storage-row {
-    flex-direction: column;
-    gap: 2px;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
   }
 
   .resource-storage-meta {
+    grid-column: 2 / -1;
     text-align: left;
   }
 
@@ -3367,10 +3784,19 @@ code {
 
   .resource-process-row {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "main"
+      "metrics"
+      "tags"
+      "bars";
   }
 
   .resource-process-tags {
     justify-content: flex-start;
+  }
+
+  .resource-process-bar {
+    grid-template-columns: 26px minmax(0, 1fr) auto;
   }
 }
 
@@ -9337,6 +9763,10 @@ code {
   --cap-panel-shadow:
     0 18px 40px -26px rgba(52, 60, 132, 0.58),
     0 3px 10px -6px rgba(52, 60, 132, 0.24);
+  /* 面板底色：启动 spinner、剪贴板图片切换按钮/计数/提示条都用它做「压在内容上」的
+     底衬。该变量曾只有引用没有定义（color-mix 失效 → 底衬退化成透明），这里补上
+     定义并跟随窗口底色，浅深主题各自正确。 */
+  --cap-panel-base: var(--wing-panel-base);
 
   /* 玻璃层的不透明度固定，颜色一律从 `--c-paper` / `--accent` 派生：
      浅深主题只覆盖透明度与 inkshadow，不在胶囊内另造一套色板。 */
@@ -9909,7 +10339,10 @@ code {
   box-shadow:
     inset 0 0 0 1px var(--cap-tab-ring),
     inset 0 1px 0 var(--cap-tab-edge);
-  cursor: pointer;
+  /* 可拖动表面的统一光标语义（与 `.ui-drag-surface` 一致）：悬停 grab、
+     超过拖动阈值后 grabbing。标签是「可抓取的细柄」而不是普通按钮，
+     `pointer` 会让人以为只能点。 */
+  cursor: grab;
   touch-action: none;
   -webkit-user-select: none;
   user-select: none;
@@ -9946,9 +10379,12 @@ code {
   translate: -50% 0;
   border-radius: 8px 8px 0 0;
 }
-/* 拖动光标语义（2026-11-05 · drag-cursor-feedback）：
-   悬停/单击保持 pointer；超过 `classifyTabGesture` 的点击阈值后
-   （`EdgeTab` 维护 `.is-dragging`）才切 grabbing，松手/取消即恢复。 */
+/* 拖动光标语义（2026-11-05 · drag-cursor-feedback；2026-11-06 改为抓手）：
+   悬停/按下未形成拖动 = `grab`；超过 `classifyTabGesture` 的点击阈值后
+   （`EdgeTab` 维护 `.is-dragging`）切 `grabbing`，松手/取消即恢复。
+   光标**只由 WebView2 的 CSS 决定**：原生侧不再用 `SetCursor(IDC_HAND/ARROW)`
+   覆盖（那会在松手后把光标换成手形/箭头，且鼠标静止时不再有 WM_SETCURSOR
+   纠正，表现为「必须动一下鼠标才恢复」）。 */
 .capsule-tab.is-dragging {
   cursor: grabbing;
 }
@@ -10202,6 +10638,29 @@ code {
   white-space: nowrap;
 }
 .cap-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+/* 标题区整体是窗口拖拽热区（`.cap-head` 的 ui-drag-surface 给了 grab），
+   但操作区自身**不是**热区（没有 data-tauri-drag-region）：按钮之间的空隙
+   若继承 grab 会误示可拖，这里与 `.titlebar-actions` 同一口径回到默认箭头。
+   按钮仍由全局 button 规则给 pointer。 */
+.cap-actions {
+  cursor: default;
+}
+/* 标题与说明同行（仅显式传 layout="inline" 的面板）：标题保持一级权重，
+   说明用小字号弱化并与标题基线对齐；空间不足时只省略说明，不挤压标题、
+   不换行、不横向溢出。其他面板仍走上面的纵向默认结构。 */
+.cap-head-text--inline {
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+}
+.cap-head-text--inline .cap-title { flex: 0 0 auto; }
+.cap-head-text--inline .cap-sub {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
 .cap-iconbtn {
   width: 30px;
   height: 30px;
@@ -10217,6 +10676,36 @@ code {
 }
 .cap-iconbtn:hover { background: var(--cap-chip-face-hover); }
 .cap-iconbtn:active { transform: scale(0.96); }
+/* 工具面板右上角关闭（五个面板统一入口）：28×28 热区 + 15px X，
+   默认透明，hover/active 只叠极浅的中性半透明底，不投阴影、不用常驻红色。
+   负的上下外边距让 28px 热区在标题行内只贡献 22px 高度：新增按钮不会把
+   标题行撑高，应用面板刚压缩过的标题区与搜索框位置保持不变。 */
+.cap-close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin-block: -3px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--cap-text-2);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.cap-close:hover {
+  background: color-mix(in srgb, var(--cap-text-1) 7%, transparent);
+  color: var(--cap-text-1);
+}
+.cap-close:active {
+  background: color-mix(in srgb, var(--cap-text-1) 11%, transparent);
+}
+.cap-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .cap-iconbtn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .cap-iconbtn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 
@@ -11689,6 +12178,10 @@ code {
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* 图标 + 名称作为一个整体在整格（= hover 背景范围）内垂直居中：
+     名称固定占两行高度保证同一行图标顶部对齐，组内间距因此始终为 4px。
+     居中只改内容位置，不改磁贴尺寸、行列间距与 hover 覆盖范围。 */
+  justify-content: center;
   width: 100%;
   min-width: 0;
   height: var(--cap-app-cell-h);
@@ -11698,16 +12191,36 @@ code {
   border-radius: 13px;
   /* 视觉减负：默认不铺卡片底、不投外阴影，让真实图标与名称自己形成层级。 */
   background: transparent;
-  box-shadow: none;
+  /* 1px 描边用 inset 阴影表达：不参与盒模型计算，hover 不会改变格子尺寸，
+     网格也不会因为新增 border 而抖动。 */
+  box-shadow: inset 0 0 0 1px transparent;
   color: var(--cap-text-2);
   /* 网格排序项可拖：grab 提示可拖动，拖动中由 is-dragging 切 grabbing。 */
   cursor: grab;
+  transition: background-color 0.14s ease, box-shadow 0.14s ease;
 }
-/* 普通应用没有任何 hover/active 装饰：整格与 36px 图标片都不铺背景，
-   只保留真实图标与名称；点击热区仍由整个格子承担。 */
-.cap-app:hover,
-.cap-app:active {
+/* 悬停反馈（轻量半透明底 + 1px 内描边，参考 Win11 开始菜单的手感，
+   不复用其配色）：不放大图标、不加外阴影、不改格子尺寸与行列间距。
+   作用在 slot 上而不是按钮本身：右上角删除按钮是并列兄弟，悬停它时
+   父级磁贴同样高亮，不会出现「删除按钮亮了、格子没亮」。 */
+.cap-app-slot:hover .cap-app,
+.cap-app-add:hover {
+  background: color-mix(in srgb, var(--cap-text-1) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cap-text-1) 12%, transparent);
+}
+/* 按下比悬停略强，图标仍留在原位（不改 padding / transform / 尺寸）。 */
+.cap-app:active:not(:disabled) {
+  background: color-mix(in srgb, var(--cap-text-1) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cap-text-1) 18%, transparent);
+}
+/* 拖动中的源项只保留降透明度与 grabbing 光标，不再叠 hover 底色：
+   避免 Hover / Dragging / Active 三层视觉同时出现。 */
+.cap-app-slot.is-dragging .cap-app,
+.cap-app-slot.is-dragging .cap-app:hover,
+.cap-app-add.is-dragging,
+.cap-app-add.is-dragging:hover {
   background: transparent;
+  box-shadow: inset 0 0 0 1px transparent;
 }
 .cap-app-icon {
   position: relative;
@@ -11739,13 +12252,24 @@ code {
   outline-offset: -2px;
   box-shadow: none;
 }
-/* 启动中的应用格子原地禁用，避免连续点击重复请求；完成后恢复。 */
-.cap-app:disabled { opacity: 0.68; cursor: default; }
+/* 启动中的应用格子原地禁用，避免连续点击重复请求；完成后恢复。
+   禁用态不保留 hover 底色（否则仍像可点击），只在图标片内显示加载反馈。 */
+.cap-app:disabled,
+.cap-app-slot:hover .cap-app:disabled {
+  opacity: 0.68;
+  cursor: default;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px transparent;
+}
 /* 已加载的真实图标不再套彩色底；字母回退仍保留 AppIcon 的色相底，
    不能被 `background: transparent` 一起吃掉。 */
 .cap-app .app-icon.is-loaded { background: transparent; box-shadow: none; }
-/* 右上角删除：默认隐藏，悬停/键盘聚焦时出现；22px 热区，图标 12px。
-   热区绝对定位在格子右上角，不与 36px 图标片和名称争布局。 */
+/* 右上角删除：默认隐藏，悬停/键盘聚焦时出现；18px 热区，图标 12px。
+   热区绝对定位在格子右上角，不与 36px 图标片和名称争布局。
+   2026-11-06 精修：原 22px 热区在 72px 磁贴里与居中图标（34px）的包围盒重叠 3px
+   （窄窗 65px 磁贴重叠 6.5px），实测 8% 的磁贴采样点会命中删除而不是启动。
+   收到 18px 后名义尺寸下与图标分离（留 1px），视觉上 X 与图标也拉开 4px；
+   删除仍需二次确认，不会误删。 */
 .cap-app-del {
   position: absolute;
   top: 0;
@@ -11753,11 +12277,11 @@ code {
   z-index: 1;
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   /* 静止态用次级文本语义 Token（不是三级）：深色主题下三级对比偏弱，
      保证删除入口在悬停/键盘聚焦出现时可辨认，不硬编码颜色。 */
@@ -16932,5 +17456,262 @@ span.wf-step-main {
 
   .diag-center-actions {
     width: 100%;
+  }
+}
+
+/* ══════════ 资源管理 · 功能运行（v0.15） ══════════
+   只读状态 + 模块级暂停/恢复。紧凑行式布局，不做大卡片；窄窗下说明换行、
+   操作按钮落到下一行，不产生横向溢出。 */
+@layer ui {
+  .runtime-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .runtime-section-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .runtime-section-head > div {
+    flex: 1 1 200px;
+    min-width: 0;
+  }
+
+  .runtime-section-head h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 650;
+  }
+
+  .runtime-section-head p {
+    margin: 2px 0 0;
+    color: var(--text-tertiary);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .runtime-section-head > .btn {
+    flex: 0 0 auto;
+  }
+
+  .runtime-section-error {
+    margin: 0;
+    padding: 6px 8px;
+    border: 1px solid color-mix(in srgb, var(--status-error) 35%, var(--border-subtle));
+    border-radius: 8px;
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+
+  .runtime-section-loading {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: 11px;
+  }
+
+  .runtime-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .runtime-group-title {
+    margin: 2px 0 0;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .runtime-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .runtime-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 9px;
+    min-width: 0;
+    background: transparent;
+  }
+
+  .runtime-row + .runtime-row {
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .runtime-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    margin-top: 1px;
+    border-radius: 7px;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+
+  .runtime-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .runtime-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .runtime-title strong {
+    color: var(--text-primary);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+
+  .runtime-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    font-size: 9.5px;
+    line-height: 1.4;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+  }
+
+  .runtime-state i {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .runtime-state.tone-ok {
+    color: var(--status-success);
+    background: color-mix(in srgb, var(--status-success) 12%, transparent);
+  }
+
+  .runtime-state.tone-warn {
+    color: var(--status-waiting);
+    background: color-mix(in srgb, var(--status-waiting) 14%, transparent);
+  }
+
+  .runtime-state.tone-bad {
+    color: var(--status-error);
+    background: color-mix(in srgb, var(--status-error) 12%, transparent);
+  }
+
+  .runtime-bg-badge {
+    padding: 1px 5px;
+    border-radius: 999px;
+    color: var(--text-tertiary);
+    background: transparent;
+    font-size: 9px;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+
+  .runtime-bg-badge.on {
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+
+  .runtime-scope,
+  .runtime-bg-list {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .runtime-bg-list {
+    color: var(--text-secondary);
+  }
+
+  .runtime-error {
+    margin: 1px 0 0;
+    color: var(--status-error);
+    font-size: 10px;
+    line-height: 1.45;
+  }
+
+  .runtime-action {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    min-height: 24px;
+  }
+
+  .runtime-managed {
+    color: var(--text-tertiary);
+    font-size: 9.5px;
+    line-height: 1.4;
+    text-align: right;
+    max-width: 110px;
+  }
+
+  .lifecycle-run-btn {
+    white-space: nowrap;
+  }
+
+  .lifecycle-run-btn[aria-busy="true"] {
+    cursor: progress;
+  }
+
+  .runtime-section-footnote {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 420px) {
+    .runtime-row {
+      flex-wrap: wrap;
+    }
+
+    .runtime-action {
+      width: 100%;
+      justify-content: flex-end;
+    }
+
+    .runtime-managed {
+      max-width: none;
+      text-align: right;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lifecycle-run-btn {
+      transition: none;
+    }
   }
 }

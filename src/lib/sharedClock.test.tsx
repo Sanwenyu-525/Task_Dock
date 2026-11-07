@@ -20,6 +20,12 @@ function Probe() {
   return <span data-testid="tick">{Math.floor((now - baseRef.current) / 1000)}</span>;
 }
 
+/** 保活页面用：enabled=false 时仍挂载，但不再是时钟消费者。 */
+function GatedProbe({ enabled }: { enabled: boolean }) {
+  const now = useSharedClock(enabled);
+  return <span data-testid="gated">{now}</span>;
+}
+
 describe("sharedClock", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -42,6 +48,39 @@ describe("sharedClock", () => {
 
     unmount();
     expect(clockRunning()).toBe(false);
+  });
+
+  it("整个窗口隐藏时释放计时器，恢复可见后重新对齐", () => {
+    let visibility: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+    const { unmount } = render(<Probe />);
+    expect(clockRunning()).toBe(true);
+    visibility = "hidden";
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(clockRunning()).toBe(false);
+    visibility = "visible";
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(clockRunning()).toBe(true);
+    unmount();
+    expect(clockRunning()).toBe(false);
+  });
+
+  it("隐藏页面退出消费者后释放计时器，恢复可见后重新启动", () => {
+    const { rerender, unmount } = render(<GatedProbe enabled={false} />);
+    expect(clockRunning()).toBe(false);
+    rerender(<GatedProbe enabled={true} />);
+    expect(clockRunning()).toBe(true);
+    // 切走 Tab/进入停靠：组件仍挂载，但不再为不可见倒计时每秒唤醒
+    rerender(<GatedProbe enabled={false} />);
+    expect(clockRunning()).toBe(false);
+    unmount();
   });
 
   it("多个订阅者共用同一条计时器", () => {

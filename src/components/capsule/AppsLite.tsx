@@ -26,6 +26,7 @@ import {
   writeAppGridOrder,
 } from "../../lib/appGridOrder";
 import { onAppGridOrderApplied, schedulePreferencesMirror } from "../../lib/userPreferences";
+import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import AppIcon from "../ui/AppIcon";
 import { SearchField } from "../ui";
 import { useNavigationStore } from "../../store/useNavigationStore";
@@ -58,14 +59,22 @@ export default function AppsLite() {
   const loadTaskLinks = useNavigationStore((s) => s.loadTaskLinks);
   const [query, setQuery] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  /** 启动中的目标 id 集合：与完整应用中心一致，每个目标各自表达状态，
+      不再用单个 busyId 让「A 启动中」看起来像「B 也不能点」。 */
+  const [launchingIds, setLaunchingIds] = useState<ReadonlySet<string>>(new Set());
+  /** 同步锁：setState 到重渲染之间仍可能连点，用 ref 保证同一目标只发一次请求。 */
+  const launchingRef = useRef<Set<string>>(new Set());
   /** 用户手动网格顺序（含加号伪 id）；null = 使用自然顺序。 */
   const [savedOrder, setSavedOrder] = useState<string[] | null>(() => readAppGridOrder());
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropHint, setDropHint] = useState<{ id: string; after: boolean } | null>(null);
   const dragIdRef = useRef<string | null>(null);
-  /** 拖放结束后浏览器可能仍补发一次 click；用时间戳挡住误启动。 */
-  const lastDropAtRef = useRef(0);
+  /**
+   * 拖放结束后浏览器可能补发一次 click。不能用「距上次 drop 的时间窗」判断：
+   * 那会把拖完后立刻点击的**其他**应用也一起吞掉。真实点击一定先有 pointerdown
+   * （键盘激活则是 keydown），补发的 click 两者都没有——用这个事实区分。
+   */
+  const suppressClickRef = useRef(false);
   /** 待确认删除的目标：胶囊窗口被 Win32 区域裁成 340×440，不能复用完整面板的浮层删除框，
       改为面板内确认条（同一套确认语义与后端删除命令）。 */
   const [pendingDelete, setPendingDelete] = useState<NavTarget | null>(null);
@@ -207,9 +216,21 @@ export default function AppsLite() {
     [fullGrid, matchedIds],
   );
 
+  /** 启动状态按 id 记录：不同应用互不阻塞，同一应用在途时忽略重复请求。 */
+  const markLaunching = (id: string, on: boolean) => {
+    const next = new Set(launchingRef.current);
+    if (on) next.add(id);
+    else next.delete(id);
+    launchingRef.current = next;
+    setLaunchingIds(next);
+  };
+
   const launch = async (id: string, name: string) => {
-    if (busyId) return;
-    setBusyId(id);
+    // 同一目标在途：忽略重复请求（按钮此时已禁用，这里兜住 setState 前的连点）。
+    // 其他目标不受影响：后端每次导航是独立的 spawn_blocking 任务，没有全局串行锁，
+    // 因此不需要像单槽位 busyId 那样把整组应用一起锁住。
+    if (launchingRef.current.has(id)) return;
+    markLaunching(id, true);
     try {
       const res = await navNavigate(id);
       // 与完整面板共用同一结果解释：请求启动 ≠ 已确认启动，请求聚焦 ≠ 已获得焦点，
@@ -223,7 +244,7 @@ export default function AppsLite() {
     } catch (e) {
       flash(`${name}：${launchFailureReason(e)}`);
     } finally {
-      setBusyId(null);
+      markLaunching(id, false);
     }
   };
 
@@ -247,6 +268,19 @@ export default function AppsLite() {
   );
   const loadError = targetsError !== null;
   const isLoading = !targetsLoaded && !loadError;
+  /** 隐藏项按类型拆分：文案必须说清隐藏的是应用还是网址/文件夹/文件，
+      不能把「网址全隐藏」误报成「应用均处于隐藏状态」。 */
+  const hiddenApps = useMemo(
+    () => hiddenRelevant.filter((t) => t.target_type === "application"),
+    [hiddenRelevant],
+  );
+  const hiddenAuxCount = hiddenRelevant.length - hiddenApps.length;
+  const hiddenSummary =
+    hiddenApps.length > 0 && hiddenAuxCount === 0
+      ? "已添加的应用均处于隐藏状态"
+      : hiddenApps.length === 0
+        ? "已添加的网址 / 文件夹 / 文件均处于隐藏状态"
+        : "已添加的快捷目标均处于隐藏状态";
   const hasAgentOnly = useMemo(
     () =>
       targetsLoaded &&
@@ -263,7 +297,7 @@ export default function AppsLite() {
   const loadFailedStale = loadError && targetsLoaded;
 
   const requestDelete = (t: NavTarget, trigger: HTMLButtonElement) => {
-    if (deleteBusy || busyId === t.id) return;
+    if (deleteBusy || launchingRef.current.has(t.id)) return;
     deleteTriggerRef.current = trigger;
     restoreFocusRef.current = false;
     setPendingDelete(t);
@@ -345,6 +379,8 @@ export default function AppsLite() {
   const onDragStart = (event: ReactDragEvent<HTMLElement>, id: string) => {
     dragIdRef.current = id;
     setDragId(id);
+    // 新一轮拖拽开始：清掉上一轮可能残留的「补发 click」防护。
+    suppressClickRef.current = false;
     event.dataTransfer.effectAllowed = "move";
     // Firefox/WebView 需要 setData 才会真正开始拖拽；内容本身不参与业务。
     event.dataTransfer.setData("text/plain", id);
@@ -365,6 +401,9 @@ export default function AppsLite() {
     dragIdRef.current = null;
     setDragId(null);
     setDropHint(null);
+    // 拖拽结束（含取消）：浏览器可能补发一次 click，它没有新的 pointerdown。
+    // 置位不会影响真实点击——真实点击的 pointerdown 会先把标记清掉。
+    suppressClickRef.current = true;
   };
 
   const onDrop = (event: ReactDragEvent<HTMLElement>, targetId: string) => {
@@ -375,13 +414,20 @@ export default function AppsLite() {
     }
     event.preventDefault();
     const after = isDropAfter(event);
-    lastDropAtRef.current = Date.now();
     commitOrder(moveAppGridId(fullOrder, dragged, targetId, after));
     endDrag();
   };
 
-  /** 拖放结束后浏览器可能补发 click：短时间内挡住误启动。 */
-  const consumeDropClick = () => Date.now() - lastDropAtRef.current < 400;
+  /**
+   * 拖放后浏览器补发的 click：没有新的 pointerdown（键盘激活也没有 keydown）。
+   * 只有这种情况忽略一次；真实点击/键盘激活会先清掉标记，因此拖完立刻点其他应用
+   * 或加号都能正常生效，不需要再移动一次鼠标。
+   */
+  const shouldIgnoreClick = () => {
+    if (!suppressClickRef.current) return false;
+    suppressClickRef.current = false;
+    return true;
+  };
 
   const onOrderKeyDown = (event: ReactKeyboardEvent<HTMLElement>, id: string) => {
     if (!event.altKey) return;
@@ -399,7 +445,7 @@ export default function AppsLite() {
 
   return (
     <>
-      <PanelHead title="应用" sub="常用应用、快捷启动与窗口切换" />
+      <PanelHead title="应用" sub="常用应用 · 快捷启动与窗口切换" layout="inline" />
 
       <SearchField
         value={query}
@@ -431,7 +477,7 @@ export default function AppsLite() {
               type="button"
               className="cap-mini cap-confirm-danger"
               onClick={() => void confirmDelete()}
-              disabled={deleteBusy || busyId === pendingDelete.id}
+              disabled={deleteBusy || launchingIds.has(pendingDelete.id)}
             >
               删除
             </button>
@@ -479,7 +525,11 @@ export default function AppsLite() {
           <>
             <EmptyState
               icon={<Eye size={22} strokeWidth={1.6} aria-hidden="true" />}
-              text="已添加的应用均处于隐藏状态"
+              // 文案按真实隐藏对象区分：网址/文件夹被隐藏时不能说成「应用均隐藏」。
+              text={hiddenSummary}
+              // 网格整体收起时加号也随之消失，这里保留同一个添加入口（不是第二套流程）。
+              actionLabel="添加应用"
+              onAction={() => openAppsAdd()}
             />
             <div className="cap-recent" data-testid="hidden-restore-list">
               <span className="cap-recent-title">已隐藏（共 {hiddenRelevant.length}）</span>
@@ -520,6 +570,13 @@ export default function AppsLite() {
           <div
             className="cap-app-grid"
             aria-label="应用网格，拖动或在项目上按 Alt+左右方向键调整顺序"
+            // 真实按下 / 键盘激活会先经过捕获阶段，清掉拖放后的「补发 click」防护。
+            onPointerDownCapture={() => {
+              suppressClickRef.current = false;
+            }}
+            onKeyDownCapture={() => {
+              suppressClickRef.current = false;
+            }}
           >
             {gridEntries.map((entry) => {
               if (entry.type === "add") {
@@ -530,7 +587,7 @@ export default function AppsLite() {
                     data-grid-id={entry.id}
                     className={`cap-app cap-app-add ${dragId === entry.id ? "is-dragging" : ""} ${dropClass(entry.id)}`}
                     aria-label="添加应用"
-                    draggable={!busyId}
+                    draggable
                     onDragStart={(e) => onDragStart(e, entry.id)}
                     onDragEnd={endDrag}
                     onDragOver={(e) => onDragOver(e, entry.id)}
@@ -542,7 +599,7 @@ export default function AppsLite() {
                     onDrop={(e) => onDrop(e, entry.id)}
                     onKeyDown={(e) => onOrderKeyDown(e, entry.id)}
                     onClick={() => {
-                      if (consumeDropClick()) return;
+                      if (shouldIgnoreClick()) return;
                       openAppsAdd();
                     }}
                   >
@@ -554,6 +611,7 @@ export default function AppsLite() {
                 );
               }
               const t = entry.app;
+              const busy = launchingIds.has(t.id);
               return (
                 <div
                   key={t.id}
@@ -572,20 +630,30 @@ export default function AppsLite() {
                     data-grid-id={t.id}
                     className="cap-app"
                     aria-label={`启动 ${t.display_name}`}
-                    aria-busy={busyId === t.id}
-                    disabled={busyId === t.id}
-                    draggable={busyId !== t.id}
+                    aria-busy={busy}
+                    disabled={busy}
+                    draggable={!busy}
                     onDragStart={(e) => onDragStart(e, t.id)}
                     onDragEnd={endDrag}
                     onKeyDown={(e) => onOrderKeyDown(e, t.id)}
                     onClick={() => {
-                      if (consumeDropClick()) return;
+                      if (shouldIgnoreClick()) return;
                       void launch(t.id, t.display_name);
                     }}
+                    // 只有名称真的被两行 clamp 截断时才挂提示：完整显示时不再弹同名浮层，
+                    // 避免提示条压住相邻磁贴；路径不作为名称提示。
+                    onMouseEnter={(e) => {
+                      if (!busy) syncTruncatedTip(e.currentTarget, ".cap-app-name", t.display_name);
+                    }}
+                    onMouseLeave={(e) => clearTip(e.currentTarget)}
+                    onFocus={(e) => {
+                      if (!busy) syncTruncatedTip(e.currentTarget, ".cap-app-name", t.display_name);
+                    }}
+                    onBlur={(e) => clearTip(e.currentTarget)}
                   >
                     <span className="cap-app-icon">
                       <AppIcon targetId={t.id} name={t.display_name} size={34} />
-                      {busyId === t.id && (
+                      {busy && (
                         <Loader2
                           size={17}
                           strokeWidth={2.2}
@@ -594,16 +662,14 @@ export default function AppsLite() {
                         />
                       )}
                     </span>
-                    <span className="cap-app-name" data-tip={t.display_name}>
-                      {t.display_name}
-                    </span>
+                    <span className="cap-app-name">{t.display_name}</span>
                   </button>
                   {/* 删除是启动的并列兄弟按钮，绝不嵌套在启动按钮内。 */}
                   <button
                     type="button"
                     className="cap-app-del"
                     aria-label={`从快捷列表删除 ${t.display_name}`}
-                    disabled={busyId === t.id}
+                    disabled={busy}
                     onClick={(e) => requestDelete(t, e.currentTarget)}
                   >
                     <X size={12} aria-hidden="true" />
@@ -626,9 +692,13 @@ export default function AppsLite() {
                   key={t.id}
                   className="cap-recent-chip"
                   aria-label={`打开 ${t.display_name}`}
-                  data-tip={t.url || t.path}
-                  disabled={busyId === t.id}
+                  disabled={launchingIds.has(t.id)}
                   onClick={() => void launch(t.id, t.display_name)}
+                  // 与磁贴同一规则：只在名称被省略时提示完整名称，不把网址/路径弹成浮层。
+                  onMouseEnter={(e) => syncTruncatedTip(e.currentTarget, ".cap-recent-name", t.display_name)}
+                  onMouseLeave={(e) => clearTip(e.currentTarget)}
+                  onFocus={(e) => syncTruncatedTip(e.currentTarget, ".cap-recent-name", t.display_name)}
+                  onBlur={(e) => clearTip(e.currentTarget)}
                 >
                   <i
                     className="cap-recent-dot"
@@ -637,7 +707,7 @@ export default function AppsLite() {
                   >
                     {(t.display_name || "?").slice(0, 1).toUpperCase()}
                   </i>
-                  <span>{t.display_name}</span>
+                  <span className="cap-recent-name">{t.display_name}</span>
                 </button>
               ))}
             </span>

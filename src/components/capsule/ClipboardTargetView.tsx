@@ -15,12 +15,13 @@
 import { useEffect, useRef } from "react";
 import { AppWindow, ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 import type { ClipboardItem, PasteTarget } from "../../lib/bridge";
+import { useDragRegion } from "../../lib/dragCursorSession";
 import { useClipboardCopySwitch } from "../../hooks/useClipboardCopySwitch";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import CopySwitchTargetRow from "../clipboard/CopySwitchTargetRow";
 import { useFocusRestore, useOverlayLayer } from "../ui/overlay";
 import { liteTitle } from "./ClipboardLiteViews";
-import { EmptyState } from "./PanelKit";
+import { EmptyState, PanelCloseButton } from "./PanelKit";
 
 export default function ClipboardTargetView({
   item,
@@ -70,9 +71,16 @@ export default function ClipboardTargetView({
 
   const succeeded = feedback?.kind === "success" || feedback?.kind === "partial";
 
+  // 标题区即窗口拖拽热区（二级页面与一级面板同一套命中规则，见 PanelKit.PanelHead）
+  const headRef = useDragRegion<HTMLElement>();
+
   return (
     <div className="cap-clip-shell" ref={rootRef}>
-      <header className="cap-head cap-clip-head">
+      <header
+        className="cap-head cap-clip-head ui-drag-surface ui-drag-session"
+        ref={headRef}
+        data-tauri-drag-region
+      >
         <button
           type="button"
           className="cap-iconbtn cap-clip-back"
@@ -81,11 +89,11 @@ export default function ClipboardTargetView({
         >
           <ArrowLeft size={15} strokeWidth={2.2} aria-hidden="true" />
         </button>
-        <div className="cap-head-text cap-clip-head-text">
-          <span className="cap-title cap-clip-title" title="复制并切换到…">
+        <div className="cap-head-text cap-clip-head-text" data-tauri-drag-region>
+          <span className="cap-title cap-clip-title" title="复制并切换到…" data-tauri-drag-region>
             复制并切换到…
           </span>
-          <span className="cap-sub" title={liteTitle(item)}>
+          <span className="cap-sub" title={liteTitle(item)} data-tauri-drag-region>
             {liteTitle(item)}
           </span>
         </div>
@@ -103,6 +111,8 @@ export default function ClipboardTargetView({
               <RefreshCw size={15} strokeWidth={2} aria-hidden="true" />
             )}
           </button>
+          {/* 与一级面板同一个关闭入口：返回只退到列表，X 才收起整个工具面板 */}
+          <PanelCloseButton label="关闭剪贴板面板" />
         </div>
       </header>
 

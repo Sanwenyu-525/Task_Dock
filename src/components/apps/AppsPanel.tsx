@@ -28,6 +28,7 @@ import {
   type NavTarget,
 } from "../../lib/navigation";
 import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
+import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import AppIcon from "../ui/AppIcon";
 import { ConfirmDialog, DropdownMenu, SearchField } from "../ui";
 import AppPicker from "../navigation/AppPicker";
@@ -50,19 +51,15 @@ const RUNNING_STATES = new Set(["has_window", "process_only"]);
 /**
  * 只有名称真的被省略号截断时才给卡片挂 `data-tip`（值为应用名），
  * 未截断完全不挂：避免全局 tooltip 把 exe 路径浮层压在相邻卡片文字上。
- * 必须在 mouseenter / focus 事件里同步写入，全局 tooltip 的冒泡监听才能读到。
+ * 判定与写入走 `lib/nameTip`（胶囊应用网格共用同一规则），并必须在
+ * mouseenter / focus 事件里同步写入，全局 tooltip 的冒泡监听才能读到。
  */
 function syncTruncatedNameTip(el: HTMLButtonElement, name: string) {
-  const nameEl = el.querySelector<HTMLElement>(".apps-tile-name");
-  if (nameEl && nameEl.scrollWidth > nameEl.clientWidth + 1) {
-    el.dataset.tip = name;
-  } else {
-    delete el.dataset.tip;
-  }
+  syncTruncatedTip(el, ".apps-tile-name", name);
 }
 
 function clearNameTip(el: HTMLButtonElement) {
-  delete el.dataset.tip;
+  clearTip(el);
 }
 
 export default function AppsPanel() {

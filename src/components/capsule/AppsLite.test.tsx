@@ -57,6 +57,7 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
 
 import AppsLite from "./AppsLite";
 import { useNavigationStore } from "../../store/useNavigationStore";
+import { useUiStore } from "../../store/useUiStore";
 
 function target(id: string, name: string) {
   return {
@@ -314,5 +315,287 @@ describe("AppsLite 空状态区分（数据不丢失）", () => {
     expect(stylesCss).toMatch(/\.cap-list--apps\s*>\s*\.cap-empty\s*\{[^}]*flex:\s*0 0 auto/);
     // 全局空态不被改动，其他面板继续 flex 占满
     expect(stylesCss).toMatch(/\.cap-empty\s*\{[^}]*flex:\s*1 1 auto/);
+  });
+
+  it("CSS：磁贴 hover/active 用半透明底 + inset 内描边，不新增 border、不改尺寸", () => {
+    // 过渡落在 120–160ms 区间
+    expect(stylesCss).toMatch(/\.cap-app\s*\{[^}]*transition:\s*background-color 0\.14s/);
+    // 旧策略（hover/active 一律透明）必须已被替换
+    expect(stylesCss).not.toMatch(/\.cap-app:hover,\s*\n\.cap-app:active\s*\{\s*background:\s*transparent/);
+
+    const hoverBlock = stylesCss.match(
+      /\.cap-app-slot:hover \.cap-app,\s*\n\.cap-app-add:hover \{([\s\S]*?)\}/,
+    );
+    expect(hoverBlock).toBeTruthy();
+    // 内描边走 inset box-shadow：不参与盒模型，网格不会因新增 border 抖动
+    expect(hoverBlock![1]).toMatch(/box-shadow:\s*inset 0 0 0 1px/);
+    expect(hoverBlock![1]).toMatch(/background:\s*color-mix\(in srgb, var\(--cap-text-1\) 6%/);
+    expect(hoverBlock![1]).not.toMatch(/\bborder:/);
+    expect(hoverBlock![1]).not.toMatch(/transform/);
+    // 删除按钮悬停时父级磁贴同样高亮（slot 承担 hover，而非只按钮自身）
+    expect(stylesCss).toMatch(/\.cap-app-slot:hover \.cap-app/);
+    expect(stylesCss).toMatch(/\.cap-app:active:not\(:disabled\)/);
+    // 拖动中不叠 hover 底色；启动中不出现可点击态
+    expect(stylesCss).toMatch(/\.cap-app-slot\.is-dragging \.cap-app:hover/);
+    expect(stylesCss).toMatch(/\.cap-app-slot:hover \.cap-app:disabled\s*\{[^}]*background:\s*transparent/);
+    // 键盘焦点仍是独立的 2px outline，而不是靠 hover 底色
+    expect(stylesCss).toMatch(/\.cap-app:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
+  });
+
+  it("CSS：标题同行布局是局部变体，默认纵向结构保持不变", () => {
+    expect(stylesCss).toMatch(/\.cap-head-text\s*\{[^}]*flex-direction:\s*column/);
+    expect(stylesCss).toMatch(/\.cap-head-text--inline\s*\{[^}]*flex-direction:\s*row/);
+    expect(stylesCss).toMatch(/\.cap-head-text--inline \.cap-sub\s*\{[^}]*min-width:\s*0/);
+  });
+});
+
+describe("AppsLite 启动状态按目标隔离", () => {
+  function seedTwo() {
+    useNavigationStore.setState({
+      targets: [target("a", "Alpha"), target("b", "Bravo")] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    navListTargets.mockResolvedValue([target("a", "Alpha"), target("b", "Bravo")]);
+  }
+
+  it("A 启动中 B 仍可点击：各自独立忙碌态，完成态不会互相覆盖", async () => {
+    seedTwo();
+    const resolvers: Record<string, (value: unknown) => void> = {};
+    navNavigate.mockImplementation(
+      (id: string) => new Promise((resolve) => { resolvers[id] = resolve; }),
+    );
+    render(<AppsLite />);
+
+    const a = screen.getByRole("button", { name: "启动 Alpha" }) as HTMLButtonElement;
+    const b = screen.getByRole("button", { name: "启动 Bravo" }) as HTMLButtonElement;
+
+    await act(async () => { fireEvent.click(a); });
+    expect(a.disabled).toBe(true);
+    expect(a.getAttribute("aria-busy")).toBe("true");
+    // 旧实现用单个 busyId：A 启动中 B 会被一起锁住，点了没有任何反应
+    expect(b.disabled).toBe(false);
+
+    await act(async () => { fireEvent.click(b); });
+    expect(navNavigate.mock.calls.map((c) => c[0])).toEqual(["a", "b"]);
+    expect(b.disabled).toBe(true);
+
+    await act(async () => { resolvers.a(launched("a")); });
+    expect(a.disabled).toBe(false);
+    expect(b.disabled).toBe(true);
+
+    await act(async () => { resolvers.b(launched("b")); });
+    expect(b.disabled).toBe(false);
+  });
+
+  it("同一应用请求在途：连点只发一次，不重复启动", () => {
+    seedTwo();
+    navNavigate.mockImplementation(() => new Promise(() => {}));
+    render(<AppsLite />);
+    const a = screen.getByRole("button", { name: "启动 Alpha" });
+    // 两次点击落在同一批渲染之内：禁用态尚未生效，交给同步 ref 兜住
+    fireEvent.click(a);
+    fireEvent.click(a);
+    expect(navNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("启动失败后状态恢复，可以再次点击重试", async () => {
+    seedTwo();
+    navNavigate.mockRejectedValueOnce({ code: "TIMEOUT", message: "timed out" });
+    render(<AppsLite />);
+    const a = screen.getByRole("button", { name: "启动 Alpha" }) as HTMLButtonElement;
+
+    await act(async () => { fireEvent.click(a); });
+    expect(a.disabled).toBe(false);
+    expect(a.getAttribute("aria-busy")).toBe("false");
+
+    navNavigate.mockResolvedValueOnce(launched("a"));
+    await act(async () => { fireEvent.click(a); });
+    expect(navNavigate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("AppsLite 拖拽结束后的点击判定", () => {
+  function seedTwo() {
+    useNavigationStore.setState({
+      targets: [target("a", "Alpha"), target("b", "Bravo")] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    navListTargets.mockResolvedValue([target("a", "Alpha"), target("b", "Bravo")]);
+    useUiStore.setState({ appConfig: null, appsAddRequest: null, tab: "tasks" });
+  }
+
+  const dragData = () => ({ setData: vi.fn(), effectAllowed: "", dropEffect: "" });
+
+  function dropAOnB() {
+    const a = screen.getByRole("button", { name: "启动 Alpha" });
+    const b = screen.getByRole("button", { name: "启动 Bravo" });
+    const dt = dragData();
+    fireEvent.dragStart(a, { dataTransfer: dt });
+    fireEvent.dragOver(b, { dataTransfer: dt, clientX: 999 });
+    fireEvent.drop(b, { dataTransfer: dt, clientX: 999 });
+    fireEvent.dragEnd(a, { dataTransfer: dt });
+    return { a, b };
+  }
+
+  it("拖放后浏览器补发的 click 被忽略；真实按下后点击可正常启动", async () => {
+    seedTwo();
+    navNavigate.mockResolvedValue(launched("a"));
+    render(<AppsLite />);
+    const { a } = dropAOnB();
+
+    // 补发的 click 没有新的 pointerdown：不得启动应用
+    fireEvent.click(a);
+    expect(navNavigate).not.toHaveBeenCalled();
+
+    // 真实点击一定先有 pointerdown：正常启动，不需要先移动鼠标
+    fireEvent.pointerDown(a);
+    await act(async () => { fireEvent.click(a); });
+    expect(navNavigate).toHaveBeenCalledWith("a");
+  });
+
+  it("拖完立刻点击其他应用不被拦截", async () => {
+    seedTwo();
+    navNavigate.mockResolvedValue(launched("b"));
+    render(<AppsLite />);
+    const { b } = dropAOnB();
+
+    fireEvent.pointerDown(b);
+    await act(async () => { fireEvent.click(b); });
+    expect(navNavigate).toHaveBeenCalledWith("b");
+  });
+
+  it("拖完立刻点加号：补发 click 被忽略，真实点击仍能打开添加页", async () => {
+    seedTwo();
+    render(<AppsLite />);
+    dropAOnB();
+    const add = screen.getByRole("button", { name: "添加应用" });
+
+    // 补发 click（无 pointerdown）不触发添加意图
+    fireEvent.click(add);
+    expect(useUiStore.getState().appsAddRequest).toBeNull();
+
+    fireEvent.pointerDown(add);
+    await act(async () => { fireEvent.click(add); });
+    expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0);
+  });
+
+  it("拖拽取消（Esc）后状态清理：不残留拖动标记，真实点击不受影响", async () => {
+    seedTwo();
+    navNavigate.mockResolvedValue(launched("a"));
+    render(<AppsLite />);
+    const a = screen.getByRole("button", { name: "启动 Alpha" });
+    const b = screen.getByRole("button", { name: "启动 Bravo" });
+    const dt = dragData();
+
+    fireEvent.dragStart(a, { dataTransfer: dt });
+    // 未 drop 直接结束（用户按 Esc 取消）
+    fireEvent.dragEnd(a, { dataTransfer: dt });
+    expect(document.querySelector(".cap-app-slot.is-dragging")).toBeNull();
+    expect(document.querySelector(".is-drop-before, .is-drop-after")).toBeNull();
+
+    fireEvent.pointerDown(b);
+    await act(async () => { fireEvent.click(b); });
+    expect(navNavigate).toHaveBeenCalledWith("b");
+  });
+});
+
+describe("AppsLite 名称提示（仅在截断时出现）", () => {
+  it("名称完整显示不挂提示；被两行截断时才提示完整名称", () => {
+    useNavigationStore.setState({
+      targets: [target("a", "Obsidian")],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    render(<AppsLite />);
+    const btn = screen.getByRole("button", { name: "启动 Obsidian" });
+    const name = btn.querySelector(".cap-app-name") as HTMLElement;
+
+    // 未截断：不重复弹同名提示
+    expect(btn.dataset.tip).toBeUndefined();
+    fireEvent.mouseEnter(btn);
+    expect(btn.dataset.tip).toBeUndefined();
+
+    // jsdom 不做真实排版：注入「已截断」的滚动高/可见高（两行 clamp）
+    Object.defineProperty(name, "scrollHeight", { configurable: true, value: 42 });
+    Object.defineProperty(name, "clientHeight", { configurable: true, value: 25 });
+
+    fireEvent.mouseEnter(btn);
+    expect(btn.dataset.tip).toBe("Obsidian");
+    fireEvent.mouseLeave(btn);
+    expect(btn.dataset.tip).toBeUndefined();
+
+    // 键盘 Focus 长名称时仍可获得完整信息
+    btn.focus();
+    expect(btn.dataset.tip).toBe("Obsidian");
+    btn.blur();
+    expect(btn.dataset.tip).toBeUndefined();
+  });
+
+  it("网址/文件夹胶囊不再把路径当名称提示；截断时才提示名称", () => {
+    const url = {
+      ...target("u1", "示例站点"),
+      target_type: "url" as const,
+      url: "https://example.com/very/long/path",
+    };
+    useNavigationStore.setState({
+      targets: [url] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    render(<AppsLite />);
+    const chip = screen.getByRole("button", { name: "打开 示例站点" });
+    expect(chip.dataset.tip).toBeUndefined();
+    expect(chip.getAttribute("data-tip") ?? "").not.toContain("example.com");
+
+    const name = chip.querySelector(".cap-recent-name") as HTMLElement;
+    Object.defineProperty(name, "scrollWidth", { configurable: true, value: 200 });
+    Object.defineProperty(name, "clientWidth", { configurable: true, value: 80 });
+    fireEvent.mouseEnter(chip);
+    expect(chip.dataset.tip).toBe("示例站点");
+  });
+});
+
+describe("AppsLite 全部隐藏时的文案与入口", () => {
+  function seed(items: unknown[]) {
+    useNavigationStore.setState({
+      targets: items as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+  }
+  const hiddenApp = { ...target("h1", "隐藏应用"), hidden: true };
+  const hiddenUrl = {
+    ...target("h2", "隐藏站点"),
+    target_type: "url" as const,
+    url: "https://example.com",
+    hidden: true,
+  };
+
+  it("只有应用隐藏：文案指向应用，并保留恢复与添加入口", async () => {
+    seed([hiddenApp]);
+    render(<AppsLite />);
+    expect(await screen.findByText("已添加的应用均处于隐藏状态")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "恢复显示 隐藏应用" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "添加应用" })).toBeTruthy();
+  });
+
+  it("只有网址隐藏：不得误报「应用均处于隐藏状态」，添加入口仍在", async () => {
+    seed([hiddenUrl]);
+    render(<AppsLite />);
+    expect(await screen.findByText("已添加的网址 / 文件夹 / 文件均处于隐藏状态")).toBeTruthy();
+    expect(screen.queryByText("已添加的应用均处于隐藏状态")).toBeNull();
+    expect(screen.getByRole("button", { name: "添加应用" })).toBeTruthy();
+  });
+
+  it("应用与网址都隐藏：使用中性文案，不为隐藏项自动取消隐藏", async () => {
+    seed([hiddenApp, hiddenUrl]);
+    render(<AppsLite />);
+    expect(await screen.findByText("已添加的快捷目标均处于隐藏状态")).toBeTruthy();
+    expect(navUpdateTarget).not.toHaveBeenCalled();
+    // 两个恢复入口都在，且只有一个添加入口（网格已收起）
+    expect(screen.getAllByRole("button", { name: /^恢复显示 / })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "添加应用" })).toHaveLength(1);
   });
 });

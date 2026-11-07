@@ -38,7 +38,12 @@ describe("SnapOverlay · 拖拽反馈", () => {
 
   it("停靠相位不渲染覆盖层（区域裁剪后覆盖层不可见）", () => {
     const { container } = render(<SnapOverlay />);
-    for (const phase of ["docked-visible", "docked-hidden", "docked-revealed"] as const) {
+    for (const phase of [
+      "docked-visible",
+      "docked-hidden",
+      "docked-revealed",
+      "docked-tab",
+    ] as const) {
       setSnap({ phase, candidateEdge: null, dockedEdge: "left" });
       expect(container.querySelector(".snap-glow")).toBeNull();
       expect(container.querySelector(".snap-dock-line")).toBeNull();

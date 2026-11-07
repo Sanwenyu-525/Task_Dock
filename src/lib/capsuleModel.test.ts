@@ -14,6 +14,7 @@ import {
   formatCapsuleCount,
   RAIL_CATEGORIES,
   railStatus,
+  tabHintKey,
 } from "./capsuleModel";
 
 function run(status: string, updatedMinutesAgo = 0): AgentRun {
@@ -164,5 +165,34 @@ describe("capsuleAriaLabel 可读摘要", () => {
   it("99+ 播报为「99 以上」", () => {
     const label = capsuleAriaLabel("left", capsuleModel(150, snapshotWith()));
     expect(label).toContain("待办 99 以上");
+  });
+});
+
+// ── Edge Tab 悬停提示文案 ─────────────────────────────────────
+//
+// 契约：状态文案与轨道状态球同源（railStatus.agentTone）；`unknown`（快照未加载）
+// 与 `idle`（无活动会话）只能落到中性文案，绝不宣称「运行中」。
+
+describe("tabHintKey", () => {
+  it("四种真实状态各有专属文案键", () => {
+    expect(tabHintKey("running")).toBe("capsule.tabHint.running");
+    expect(tabHintKey("waiting")).toBe("capsule.tabHint.waiting");
+    expect(tabHintKey("failed")).toBe("capsule.tabHint.failed");
+    expect(tabHintKey("disconnected")).toBe("capsule.tabHint.disconnected");
+  });
+
+  it("未知与空闲回落到中性文案（不把未知伪装成正常）", () => {
+    expect(tabHintKey("unknown")).toBe("capsule.tabHint.base");
+    expect(tabHintKey("idle")).toBe("capsule.tabHint.base");
+    expect(tabHintKey("")).toBe("capsule.tabHint.base");
+    expect(tabHintKey("whatever")).toBe("capsule.tabHint.base");
+  });
+
+  it("未加载快照经 railStatus 得到的 tone 只会是 unknown", () => {
+    const st = railStatus(null, null, Date.now(), null);
+    expect(st.agentsLoaded).toBe(false);
+    // CapsuleDock 传 unknown 而不是 agentTone：
+    // `status.agentsLoaded ? status.agentTone : "unknown"`
+    expect(tabHintKey("unknown")).toBe("capsule.tabHint.base");
   });
 });

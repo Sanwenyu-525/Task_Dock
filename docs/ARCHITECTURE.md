@@ -584,6 +584,53 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   任务/导航合并刷新、采集计数）不参与门控。测试：`useMainUiVisible.test.tsx`、
   `useActionsStore.test.ts`（门控矩阵）、`ActiveReminders.test.tsx`（停靠停钟）、
   `ClipboardWorkspace.suspend.test.tsx`（页面挂起/恢复）。
+  （2026-11-06 补充）专注工作台 `FocusWorkspace` 也纳入同一门控：`useSharedClock(visible)`
+  在页面不可见时退订共享时钟，`acquireFocusEvents()` 只在可见期持有；恢复可见时重新
+  拉取快照并补订阅。隐藏页面仍保持挂载，编辑草稿与子视图状态不丢。
+- **功能生命周期契约（v0.15，2026-11-06）**：在「导航显隐 / 页面活跃 / 后台启用」三层
+  之上，补齐「模块能否独立暂停、暂停是否真的释放资源」的统一语义。
+  ①**单一事实源**：用户意图只写既有 SQLite 设置键（`clipboard_enabled` / `clipboard_paused` /
+  `shelf_auto_cleanup_enabled` / `reminders_paused` / `actions_enabled` / `tts_enabled`），
+  不新增独立暂停 API；实际运行状态由 `src-tauri/src/lifecycle.rs` 的只读探针批量返回
+  （`lifecycle_status`），前端 `store/useLifecycleStore.ts` 只缓存快照与串行操作队列。
+  ②**状态机**：`running / pausing / paused / stopped / idle / error / unsupported`。
+  `paused` 只在线程确实退出后成立；已接受暂停但监听/维护/清理线程仍在收尾时如实返回
+  `pausing`，禁止用设置值冒充资源已释放。停用（`stopped`）优先于暂停；`error` 表示
+  意图为运行但探针发现线程未运行（不降级成 running）。
+  ③**模块分类**：resident（clipboard / shelf_cleanup / reminders / voice，可独立暂停）、
+  task（actions / workflows / focus / backup / workspace，暂停属于具体任务或前端聚合）、
+  shared（agents / diagnostics / hotkeys / tasks，停止会丢其他业务数据，不提供模块级暂停）、
+  ondemand（ocr / apps / history / planning / widgets / collection，无常驻后台，不造无效按钮）。
+  ④**剪贴板线程解耦**：`ClipboardRuntime::stop_capture()` 只回收监听线程 + 维护线程；
+  `stop()` = 同步 `stop_capture_sync()` + `paste.cancel_all()`，仅用于长期停用/退出。暂停
+  不清空粘贴队列、不打断用户已发起的逐项粘贴。暂停的采集回收是**异步**的：先同步
+  `begin_stop()`（关闭事件队列、摘除全局事件槽、通知消息循环退出，不 join），再交给
+  `clipboard-stop` 线程 `finish_stop()` join；`capture_draining()` 计数与
+  `maintenance_running()` 计数共同保证「paused 只在线程真正退出后成立」。恢复重建监听
+  （`start_monitor` 幂等；`begin_stop` 已同步摘槽，因此暂停后立刻恢复不会因旧实例占用
+  槽位而启动失败；世代检查防止启动期间被暂停留下孤儿线程），维护等待用「停止位 + 世代」
+  双条件唤醒，旧线程不会睡满 30 秒。采集实例被丢弃（例如回收线程创建失败）时
+  `ClipboardMonitor::Drop` 同步兜底收尾，不留下已摘槽却仍在监听的线程。暂停期间新复制
+  不补录：恢复后监听只在下一次系统剪贴板事件上读取，Windows 不为新监听回放暂停期事件；
+  已经越过队列边界、正在 `record_capture` 的一次入库允许完成（数据完整性），但暂停后
+  队列中的未处理内容随队列关闭丢弃，不会在恢复后回放。
+  ⑤**暂存架自动清理**：`ShelfState::apply_auto_cleanup(enabled)` 真正创建/停止
+  `shelf-auto-cleanup` 线程（Condvar 可立即唤醒），关闭时不再每小时醒来空转；
+  停止不 join（清理可能正在写文件/SQL），期间状态为 `pausing`。手动清理、已暂存文件
+  与文件操作闸不受影响。
+  ⑥**提醒暂停**：共享 1 秒调度循环**不停止**（Agent 过期清理、通知摘要、稍后提醒、
+  专注/久坐继续）；只在 `tick` 的提醒分支前检查 `reminders_paused`：暂停期间到期提醒
+  保持 `fired=0`、不写通知历史、不推进重复任务；恢复后按既有过期补偿补触发
+  （>60s 标注「补触发」；超过 `overdue_grace_hours` 仍入库历史但不弹窗/出声）。
+  ⑦**UI**：模块页标题栏/工具区提供 Pause/Play 图标按钮（`components/lifecycle/ModuleRunControl.tsx`，
+  loading / disabled / aria-pressed / `data-tip` 说明暂停范围）；资源管理新增
+  「功能运行」分区（`components/resource/RuntimeModulesSection.tsx`），按 resident/task/
+  shared/ondemand 分组展示实际状态、后台活动标记、暂停范围与真实错误。隐藏导航入口后
+  模块仍出现在该分区并可独立暂停；恢复运行不改变导航显隐，反之亦然。
+  ⑧**兼容**：`reminders_paused` 为带默认值的新键（旧库/旧备份缺键 = false），
+  设置备份仍走 `application_settings` 全量规则；未改动迁移历史与命令签名；
+  `clipboard_paused` 的持久化语义不变，但重启时不再「先启动再拒绝采集」——
+  暂停状态启动直接不创建监听与维护线程。
 - 导航排序与固定入口（2026-11-05）：排序与可见性彻底分离，排序只改顺序、不改成员。
   入口分两类：**普通入口**（可隐藏、可排序）与**固定入口**——`locked`（设置，完整面板）
   与胶囊面 `kind="agent-status"`（Agent 状态球）。判定唯一入口为
@@ -781,6 +828,17 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   - `magnetic.rs` 子类化 WndProc 在 `WM_SETCURSOR`（命中测试值在 `lParam` 的 LOWORD，`wParam` 为
     窗口句柄）按 `WindowFromPoint` 归属校验后补 `SetCursor`，仅用于缩放角热区光标恢复；原生拖动
     期间不强制握拳，接受 OS 默认光标。不新增 `.cur` 资源、全局 Hook、轮询。
+  - Edge Tab（极简吸附标签）的光标**完全交还 WebView2**：`grab` / `grabbing` 由 CSS 表达，
+    `EdgeTab` 摘掉 `.is-dragging` 后 Blink 重算并 `SetCursor`，鼠标静止也能立即恢复。
+    原 `refresh_edge_tab_cursor`（`WM_CURSOR_EDGE_TAB` → `SetCursor(IDC_HAND/ARROW)`）已移除：
+    Win32 没有与 `grab/grabbing` 等价的系统光标，强制写入只会在松手后留下手形/箭头，
+    并覆盖 CSS 结果。
+  - 多入口共享打包 CSS（`cssCodeSplit: false`）时，**弹窗入口不得写无作用域的
+    `html / body / #root` 布局规则**：它们会同时作用到主窗（历史故障：tab-hint 页的
+    `#root{display:flex}` 把主窗压成 0 宽）。页面级规则一律挂各入口的页面根 class；
+    由 `src/styles-entry-scope.test.ts` 与 `scripts/check-entry-css.mjs` 双层守卫。
+  - 跨窗口浮层（`tab-hint` 悬停提示）的显示是**可取消的三段式会话**（show → 测量 → fit → 真显），
+    以单调代次管理：hide/新 show 使在途 fit 失效，过期 fit 不得重新显示窗口。
   - 前端 `useWindowDragCursor/useRailDragCursor/useWidgetDragCursor` 的 120ms 起始守卫只抑制启动扰动
     导致的 DOM 类闪烁，不试图控制 OS 光标；`pointerup/pointercancel/visibilitychange` 为可靠结束信号。
   详见 [ui-themes/](ui-themes/) 目录。

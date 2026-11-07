@@ -399,6 +399,11 @@ export interface Settings {
   // 模块独立启停（v0.5 整改）
   workspace_enabled: boolean;
   actions_enabled: boolean;
+  /**
+   * 提醒调度暂停（v0.15）：暂停期间到期提醒保持未触发，恢复后按既有过期
+   * 补偿语义补触发；任务/提醒数据不删除。旧库缺省为 false。
+   */
+  reminders_paused?: boolean;
   // 智能剪贴板（v0.5）
   clipboard_enabled: boolean;
   clipboard_paused: boolean;
@@ -734,6 +739,10 @@ export interface ClipboardStatus {
   enabled: boolean;
   paused: boolean;
   monitoring: boolean;
+  /** 看门狗/过期清理维护线程是否仍在运行（暂停后用于区分 paused / pausing） */
+  maintenance?: boolean;
+  /** 采集实例是否正在异步回收（与 maintenance 一起决定是否仍为 pausing） */
+  draining?: boolean;
   activeJob: string | null;
   platform: string;
   configError?: ClipboardConfigError | null;
@@ -1535,8 +1544,6 @@ export type CapsuleRegionMode = "off" | "rail" | "panel" | "tab";
  */
 export const applyWindowCapsule = (mode: CapsuleRegionMode, edge: string, seq: number) =>
   invoke<boolean>("apply_window_capsule", { mode, edge, seq });
-
-export const refreshEdgeTabCursor = () => invoke<boolean>("refresh_edge_tab_cursor");
 
 /**
  * 拖拽磁力参数（CSS px）：吸引范围 / 最大额外位移 / 脱离拖动距离。
@@ -3682,3 +3689,34 @@ export const diagnosticsClear = () =>
   invoke<DiagnosticClearResult>("diagnostics_clear");
 
 export const diagnosticsOpenDir = () => invoke<void>("diagnostics_open_dir");
+
+// ── 功能生命周期（只读批量快照）────────────────────────────────
+//
+// 用户意图仍由 SQLite 设置键承载；这里只读取「实际运行状态」，用于模块页
+// 标题按钮与资源管理「功能运行」分区。状态查询不注册轮询，只在需要时调用。
+
+export type LifecycleState =
+  | "running"
+  | "pausing"
+  | "paused"
+  | "stopped"
+  | "idle"
+  | "error"
+  | "unsupported";
+
+export type LifecycleCategory = "resident" | "task" | "ondemand" | "shared";
+
+export interface ModuleRuntimeStatus {
+  id: string;
+  category: LifecycleCategory;
+  state: LifecycleState;
+  intent: "running" | "paused" | "stopped";
+  controllable: boolean;
+  /** 实际存在的后台活动标记（如 clipboard-monitor / shelf-auto-cleanup） */
+  background: string[];
+  detail: Record<string, unknown>;
+  error: string | null;
+}
+
+export const lifecycleStatus = () =>
+  invoke<ModuleRuntimeStatus[]>("lifecycle_status");

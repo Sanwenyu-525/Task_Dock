@@ -38,6 +38,13 @@ pub const WINDOW_LABEL: &str = "context-menu";
 /// 后端 → 菜单窗口：即将在锚点处显示（刷新设置快照 + 重放入场动画 + 回传尺寸）。
 pub const SHOW_EVENT: &str = "context-menu-show";
 
+/// show 事件载荷：`tray` = 托盘/悬浮栏完整菜单，`tab` = 极简标签三项快捷菜单。
+/// 两个变体共用同一个窗口与同一套键盘/关闭路径，只在条目与定位上不同。
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ShowPayload {
+    pub variant: &'static str,
+}
+
 /// 菜单 CSS 圆角（逻辑像素），与 styles-context-menu.css 的 border-radius 一致；
 /// Win32 区域按该逻辑半径 × DPI 生成逐行像素支撑形状（不再用 GDI 硬边椭圆）。
 pub const MENU_RADIUS: f64 = 16.0;
@@ -54,8 +61,33 @@ pub const BLUR_CLOSE_DELAY_MS: u64 = 160;
 /// 宽度不再回环（避免 测量→set_size→再测量 的舍入漂移）。
 const DEFAULT_SIZE: (f64, f64) = (250.0, 620.0);
 
-/// 最近一次显示的锚点（屏幕物理坐标）。
-static ANCHOR: Mutex<(f64, f64)> = Mutex::new((0.0, 0.0));
+/// 菜单的定位目标（决定弹出方向与尺寸收敛所用的工作区）。
+#[derive(Clone, Copy, Debug)]
+enum Target {
+    /// 托盘/悬浮栏：以屏幕锚点为中心、优先向上展开。
+    Anchor(f64, f64),
+    /// 极简标签：按停靠边朝屏幕内部展开，不覆盖标签本身。
+    Tab {
+        tab: crate::tab_popups::ScreenRect,
+        edge: u8,
+    },
+}
+
+impl Target {
+    /// 用于选择显示器与工作区的代表点（标签取中心）。
+    fn point(self) -> (f64, f64) {
+        match self {
+            Target::Anchor(x, y) => (x, y),
+            Target::Tab { tab, .. } => (
+                tab.x as f64 + tab.w as f64 / 2.0,
+                tab.y as f64 + tab.h as f64 / 2.0,
+            ),
+        }
+    }
+}
+
+/// 最近一次显示的目标（屏幕物理坐标）。
+static TARGET: Mutex<Target> = Mutex::new(Target::Anchor(0.0, 0.0));
 /// 菜单内容的**自然高度**（逻辑像素，由前端按 scrollHeight 实测回传）。
 /// 与「实际写入窗口的高度」分开：小屏被工作区裁剪时自然高度保持不变，
 /// 回到大屏后可直接恢复，不会被裁剪值反向污染。
@@ -166,16 +198,21 @@ pub fn resolve_menu_height(natural: f64, wa: WorkArea, scale: f64) -> f64 {
     natural.min(max_window_height(wa, scale))
 }
 
-/// 以当前自然高度 + 锚点所在显示器工作区算出窗口尺寸；取不到显示器时只按自然高度。
-fn desired_size(app: &AppHandle, anchor: (f64, f64)) -> (f64, f64) {
+/// 以当前自然高度 + 目标所在显示器工作区算出窗口尺寸；取不到显示器时只按自然高度。
+fn desired_size(app: &AppHandle) -> (f64, f64) {
     let natural = *MENU_NATURAL_HEIGHT
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let height = match monitor_at(app, anchor) {
+    let point = current_target().point();
+    let height = match monitor_at(app, point) {
         Some((wa, scale)) => resolve_menu_height(natural, wa, scale),
         None => natural.clamp(MIN_WINDOW_HEIGHT, MAX_NATURAL_HEIGHT),
     };
     (DEFAULT_SIZE.0, height)
+}
+
+fn current_target() -> Target {
+    *TARGET.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// <0.5 逻辑像素视为同一高度：吸收测量/DPI 舍入，避免 fit ↔ resize 回环。
@@ -207,10 +244,10 @@ fn refit_visible(app: &AppHandle) {
     if !win.is_visible().unwrap_or(false) {
         return;
     }
-    let anchor = *ANCHOR.lock().unwrap_or_else(|e| e.into_inner());
-    let size = desired_size(app, anchor);
+    let target = current_target();
+    let size = desired_size(app);
     apply_window_height(&win, size.1);
-    if let Some(pos) = compute_position(app, anchor, size) {
+    if let Some(pos) = compute_position(app, target, size) {
         let _ = win.set_position(pos);
     }
 }
@@ -380,30 +417,44 @@ fn monitor_at(app: &AppHandle, anchor: (f64, f64)) -> Option<(WorkArea, f64)> {
 
 fn compute_position(
     app: &AppHandle,
-    anchor: (f64, f64),
+    target: Target,
     size: (f64, f64),
 ) -> Option<PhysicalPosition<i32>> {
-    let (wa, scale) = monitor_at(app, anchor)?;
-    let (x, y) = place_menu(anchor, size, scale, wa);
+    let (wa, scale) = monitor_at(app, target.point())?;
+    let (x, y) = match target {
+        // 托盘/悬浮栏：锚点居中、优先向上（既有行为）
+        Target::Anchor(ax, ay) => place_menu((ax, ay), size, scale, wa),
+        // 极简标签：朝屏幕内部展开，永不覆盖贴边标签
+        Target::Tab { tab, edge } => crate::tab_popups::place_beside(edge, tab, size, scale, wa),
+    };
     Some(PhysicalPosition::new(x, y))
 }
 
 /// 在锚点处显示菜单（托盘右键与悬浮栏右键共用）。
 pub fn show_at(app: &AppHandle, anchor: (f64, f64)) {
+    show_target(app, Target::Anchor(anchor.0, anchor.1), "tray");
+}
+
+/// 在极简标签旁显示三项快捷菜单（同一窗口、同一套动作执行与关闭路径）。
+pub fn show_at_tab(app: &AppHandle, tab: crate::tab_popups::ScreenRect, edge: u8) {
+    show_target(app, Target::Tab { tab, edge }, "tab");
+}
+
+fn show_target(app: &AppHandle, target: Target, variant: &'static str) {
     let Some(win) = menu_window(app) else {
         tracing::warn!("context-menu 窗口不存在（未在 tauri.conf.json 声明？）");
         return;
     };
-    tracing::info!(anchor = ?anchor, "右键菜单：请求显示");
-    *ANCHOR.lock().unwrap_or_else(|e| e.into_inner()) = anchor;
+    tracing::info!(target = ?target, variant, "右键菜单：请求显示");
+    *TARGET.lock().unwrap_or_else(|e| e.into_inner()) = target;
     // 右键重开：取消未决失焦关闭，避免「关闭-显示」竞态闪烁
     cancel_pending_blur_close();
     apply_material(app);
-    // 显示前先按**锚点所在显示器工作区**收放高度：小屏/高 DPI 下即使用户还没
+    // 显示前先按**目标所在显示器工作区**收放高度：小屏/高 DPI 下即使用户还没
     // 回传实测高度，也不会先显示一个超出工作区的窗口。
-    let size = desired_size(app, anchor);
+    let size = desired_size(app);
     apply_window_height(&win, size.1);
-    if let Some(pos) = compute_position(app, anchor, size) {
+    if let Some(pos) = compute_position(app, target, size) {
         tracing::debug!(pos = ?pos, "右键菜单：定位完成");
         let _ = win.set_position(pos);
     }
@@ -415,7 +466,7 @@ pub fn show_at(app: &AppHandle, anchor: (f64, f64)) {
     crate::window_shape::apply_with_radius(&win, MENU_RADIUS);
     let _ = win.set_focus();
     // 内容收到事件后刷新设置快照、重放入场动画并回传实测尺寸（fit）
-    let _ = app.emit_to(WINDOW_LABEL, SHOW_EVENT, ());
+    let _ = app.emit_to(WINDOW_LABEL, SHOW_EVENT, ShowPayload { variant });
 }
 
 pub fn hide(app: &AppHandle) {
@@ -482,14 +533,14 @@ pub fn fit_context_menu(app: AppHandle, height: f64) {
         .unwrap_or_else(|e| e.into_inner()) = natural;
 
     let Some(win) = menu_window(&app) else { return };
-    let anchor = *ANCHOR.lock().unwrap_or_else(|e| e.into_inner());
-    let size = desired_size(&app, anchor);
+    let target = current_target();
+    let size = desired_size(&app);
     if !apply_window_height(&win, size.1) {
         // 自然高度变了但窗口高度未变（被工作区钳制）：不 resize、不重定位。
         return;
     }
     if win.is_visible().unwrap_or(false) {
-        if let Some(pos) = compute_position(&app, anchor, size) {
+        if let Some(pos) = compute_position(&app, target, size) {
             let _ = win.set_position(pos);
         }
     }
@@ -635,6 +686,18 @@ pub fn context_menu_action(
         "quit" => {
             crate::request_exit(&app);
             ok_result(&db)
+        }
+        // 极简标签三项：菜单只转发命令，吸附状态机与窗口几何全部留在主窗引擎
+        // （`useEdgeSnap` 拥有唯一的恢复/展开/解除事务），这里不复制第二套业务逻辑。
+        "tab:expand" | "tab:full" | "tab:undock" => {
+            let forwarded = action.trim_start_matches("tab:");
+            match app.emit_to("main", "edge-tab-action", forwarded) {
+                Ok(()) => ok_result(&db),
+                Err(e) => {
+                    tracing::warn!("转发极简标签菜单动作失败: {e}");
+                    err_result(&db, "主窗口未就绪".to_string())
+                }
+            }
         }
         other => {
             tracing::warn!("未知菜单动作: {other}");

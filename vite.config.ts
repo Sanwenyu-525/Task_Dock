@@ -10,6 +10,7 @@ export default defineConfig({
   clearScreen: false,
   // 多页入口：index.html（主窗）+ context-menu.html（右键菜单弹窗）
   // + notification.html（六状态桌面通知窗口）+ capture.html（全局快速捕获窗口）
+  // + tab-hint.html（极简标签悬停提示：10px 窄窗内的浮层会被原生区域裁掉）
   // + widget.html（桌面微件独立窗口：轻量宿主，不挂载完整 App）
   build: {
     // 多入口时共享 CSS 会被拆成独立 chunk，浏览器按 chunk 顺序加载会让
@@ -22,6 +23,7 @@ export default defineConfig({
         "context-menu": resolve(__dirname, "context-menu.html"),
         notification: resolve(__dirname, "notification.html"),
         capture: resolve(__dirname, "capture.html"),
+        "tab-hint": resolve(__dirname, "tab-hint.html"),
         widget: resolve(__dirname, "widget.html"),
       },
     },

@@ -70,6 +70,7 @@
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::Mutex;
 
 // ── 参数（CSS px；物理像素 = CSS × DPI 缩放）─────────────────
 //
@@ -584,6 +585,39 @@ static ANCHOR_W_MILLI: AtomicU32 = AtomicU32::new(0);
 static ANCHOR_H_MILLI: AtomicU32 = AtomicU32::new(0);
 static ANCHOR_TB_MILLI: AtomicU32 = AtomicU32::new(0);
 
+// ── 拖拽相位通知（前端拖拽光标会话）────────────────────────────
+//
+// 系统模态移动循环期间 WebView2 收不到指针事件，松手时**没有 pointerup**：
+// 前端只能等下一次指针移动才把 `grabbing` 收回，表现为「松开左键后光标要再
+// 动一下才恢复」。真值在窗口过程里（`WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`），
+// 这里把两段相位连同**代次**交给宿主（`lib.rs` 注册，向对应窗口 emit 一个事件）。
+//
+// 代次是跨会话竞态的解药：信号到达前端是异步的，只按「收到结束就结束全部会话」
+// 会把用户已经开始的下一次拖拽误判为结束（详见 `drag_signal` 模块文档）。
+//
+// 回调做成注册式而不是直接持有 AppHandle：窗口过程运行在窗口线程的高频路径，
+// 只做一次借用调用，不引入全局 Tauri 句柄与跨线程状态。
+static DRAG_HOOK: Mutex<Option<Box<dyn Fn(crate::drag_signal::DragEvent) + Send + Sync>>> =
+    Mutex::new(None);
+
+/// 当前移动循环代次（`WM_ENTERSIZEMOVE` 递增，`WM_EXITSIZEMOVE` 读取同一值）。
+#[cfg(windows)]
+static DRAG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 注册拖拽相位回调（主窗安装子类化时调用一次；重复注册覆盖旧回调）。
+pub fn register_drag_hook(hook: Box<dyn Fn(crate::drag_signal::DragEvent) + Send + Sync>) {
+    *DRAG_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+}
+
+/// 通知宿主某段拖拽相位（仅 Windows 有窗口过程；其他平台无操作）。
+#[cfg(windows)]
+fn notify_drag(event: crate::drag_signal::DragEvent) {
+    let hook = DRAG_HOOK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(hook) = hook.as_ref() {
+        hook(event);
+    }
+}
+
 /// 挂起一次拖离解除的鼠标锚定请求（仅拖离路径；非 Windows / 未安装时为 no-op，
 /// 返回 false 让前端走自己的回退定位）。
 pub fn request_undock_anchor(w_css: f64, h_css: f64, titlebar_css: f64) -> bool {
@@ -626,24 +660,6 @@ pub fn set_config(enabled: bool, range_css: f64, max_lead_css: f64, release_css:
     ENABLED.store(enabled, Ordering::Release);
     request_snap_style_sync();
 }
-
-/// 请求窗口线程刷新 Edge Tab 拖动结束后的系统光标（PostMessage，线程安全）。
-#[cfg(windows)]
-pub fn request_edge_tab_cursor_refresh(hwnd: isize) {
-    if hwnd == 0 {
-        return;
-    }
-    unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
-            hwnd as _,
-            win::WM_CURSOR_EDGE_TAB,
-            0,
-            0,
-        );
-    }
-}
-#[cfg(not(windows))]
-pub fn request_edge_tab_cursor_refresh(_hwnd: isize) {}
 
 pub fn config() -> (bool, f64, f64, f64) {
     (
@@ -827,8 +843,8 @@ mod win {
     /// 角热区光标恢复消息（自定义）：缩放/移动循环退出后延后一拍补 `SetCursor`。
     /// 见 `window_cursor` 模块文档。
     const WM_CURSOR_CORNER: u32 = WM_APP + 0x53;
-    /// Edge Tab 拖动结束后刷新系统光标（鼠标静止时 CSS cursor 不会自动重新生效）。
-    pub const WM_CURSOR_EDGE_TAB: u32 = WM_APP + 0x54;
+    /// 拖拽相位：`WM_ENTERSIZEMOVE` 后投递开始信号（带代次）。
+    const WM_DRAG_PHASE: u32 = WM_APP + 0x55;
 
     /// 子类化时窗口是否本就带 `WS_MAXIMIZEBOX`（1=有 2=没有 0=未记录）。
     /// 恢复时只还原原本存在的样式，不把"不可最大化"改成"可最大化"。
@@ -1011,6 +1027,22 @@ mod win {
         if msg == WM_EXITSIZEMOVE {
             unsafe {
                 PostMessageW(hwnd, WM_CURSOR_CORNER, 0, 0);
+                // 与磁力开关无关：即使关闭吸附也要通知前端「原生移动循环已退出」。
+                // 延后一拍处理——不在模态循环内跑宿主代码（循环退出后 Windows 还会
+                // 重设一次光标，提前恢复会被覆盖）。lparam 0 = end。
+                PostMessageW(
+                    hwnd,
+                    WM_DRAG_PHASE,
+                    DRAG_GEN.load(Ordering::Acquire) as usize,
+                    0,
+                );
+            }
+        }
+        // 开始信号同样与磁力开关无关（关闭吸附后拖拽光标仍要工作）。
+        if msg == WM_ENTERSIZEMOVE {
+            let generation = DRAG_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+            unsafe {
+                PostMessageW(hwnd, WM_DRAG_PHASE, generation as usize, 1);
             }
         }
         match msg {
@@ -1018,8 +1050,15 @@ mod win {
                 crate::window_cursor::restore_at_corner(hwnd as isize);
                 return 0;
             }
-            WM_CURSOR_EDGE_TAB => {
-                crate::window_cursor::refresh_edge_tab_cursor(hwnd as isize);
+            WM_DRAG_PHASE => {
+                let generation = wparam as u64;
+                if lparam == 1 {
+                    notify_drag(crate::drag_signal::DragEvent::start(generation));
+                } else if should_accept_end() {
+                    // 前端还会按代次匹配兜底；这里先挡掉「新循环已开始」的迟到信号，
+                    // 避免把上一轮的结束事件送到前端。
+                    notify_drag(crate::drag_signal::DragEvent::end(generation));
+                }
                 return 0;
             }
             WM_SETCURSOR if (lparam as usize & 0xFFFF) as u32 == HTCLIENT => {
@@ -1294,6 +1333,15 @@ mod win {
         }
     }
 
+    /// 结束信号是否应当被采纳：只有在**没有**新的移动循环进行时才算数。
+    ///
+    /// 延迟送达的信号（主线程忙、消息队列堆积）可能在用户已经开始下一次拖动
+    /// 之后才被处理；此时 `IN_SIZE_MOVE` 已重新置位，说明这条信号属于上一轮。
+    /// 前端另有代次匹配兜底（见 `drag_signal` 模块文档）。
+    fn should_accept_end() -> bool {
+        !IN_SIZE_MOVE.with(|f| f.get())
+    }
+
     fn call_old(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         let old = OLD_PROC.load(Ordering::Relaxed);
         if old == 0 {
@@ -1390,6 +1438,56 @@ mod win {
     /// 需要的原生动作是**推迟到松手后一次性校准**。
     pub fn in_size_move(hwnd: isize) -> bool {
         TARGET.load(Ordering::Relaxed) == hwnd && IN_SIZE_MOVE.with(|f| f.get())
+    }
+
+    #[cfg(test)]
+    mod drag_phase_tests {
+        use super::*;
+        use crate::drag_signal::{DragEvent, DragPhase};
+        use std::sync::Mutex;
+
+        static EVENTS: Mutex<Vec<DragEvent>> = Mutex::new(Vec::new());
+
+        fn hook(event: DragEvent) {
+            EVENTS.lock().unwrap().push(event);
+        }
+
+        fn take() -> Vec<DragEvent> {
+            std::mem::take(&mut *EVENTS.lock().unwrap())
+        }
+
+        /// 相位信号携带原样代次：开始与结束必须由同一次循环产生，前端才能配对。
+        #[test]
+        fn phase_events_keep_generation_and_order() {
+            super::super::register_drag_hook(Box::new(hook));
+            EVENTS.lock().unwrap().clear();
+
+            notify_drag(DragEvent::start(7));
+            notify_drag(DragEvent::end(7));
+
+            let events = take();
+            assert_eq!(
+                events,
+                vec![
+                    DragEvent { phase: DragPhase::Start, generation: 7 },
+                    DragEvent { phase: DragPhase::End, generation: 7 },
+                ]
+            );
+        }
+
+        /// 结束信号只在「当前没有移动循环」时被采纳。
+        ///
+        /// 真机场景：用户松手 → `WM_EXITSIZEMOVE` → 投递相位消息；若主线程正忙，
+        /// 消息可能延迟到用户已经按下第二次拖动（`WM_ENTERSIZEMOVE` 已把
+        /// IN_SIZE_MOVE 重新置位）之后才被处理，此时必须丢弃这条旧信号。
+        #[test]
+        fn end_is_ignored_while_a_new_move_loop_runs() {
+            IN_SIZE_MOVE.with(|f| f.set(true));
+            assert!(!should_accept_end(), "新循环进行中不得采纳结束信号");
+
+            IN_SIZE_MOVE.with(|f| f.set(false));
+            assert!(should_accept_end(), "循环已退出才采纳结束信号");
+        }
     }
 
     #[cfg(test)]

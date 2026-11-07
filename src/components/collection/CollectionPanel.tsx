@@ -15,6 +15,7 @@ import { useUiStore } from "../../store/useUiStore";
 import CaptureInboxPanel from "../inbox/CaptureInboxPanel";
 import ShelfPanel from "../shelf/ShelfPanel";
 import NotesPanel from "../notes/NotesPanel";
+import ModuleRunControl from "../lifecycle/ModuleRunControl";
 import { useLocale } from "../../hooks/useLocale";
 
 export default function CollectionPanel() {
@@ -57,6 +58,13 @@ export default function CollectionPanel() {
             {t("collection.notes")}
           </button>
         </div>
+        {/* 暂存架子页：自动清理的暂停/恢复（手动清理与文件不受影响）。 */}
+        {sub === "shelf" && (
+          <>
+            <span className="flex-spacer" />
+            <ModuleRunControl moduleId="shelf_cleanup" />
+          </>
+        )}
       </div>
       <div className="collection-body">
         {sub === "inbox" ? (

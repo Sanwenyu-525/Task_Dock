@@ -19,6 +19,8 @@ import {
 import { listTasks, type Task } from "../../lib/bridge";
 import { useSharedClock } from "../../lib/sharedClock";
 import { useLocale } from "../../hooks/useLocale";
+import { useFullViewVisible } from "../../hooks/useMainUiVisible";
+import { useUiStore } from "../../store/useUiStore";
 import { formatLocalizedTime } from "../../i18n/format";
 import type { MessageKey, MessageParams } from "../../i18n";
 import {
@@ -103,7 +105,13 @@ export default function FocusWorkspace() {
   const updatePrefs = useFocusStore((s) => s.updatePrefs);
   const snoozeSedentary = useFocusStore((s) => s.snoozeSedentary);
 
-  const now = useSharedClock();
+  // 页面保活（DeferredView）下切走 Tab / 进入极简紧凑 / 停靠胶囊时，本组件
+  // 仍然挂载。隐藏期必须退出「共享时钟消费者 + focus 事件订阅」，否则 1 秒
+  // 定时器会为看不见的倒计时持续空转；恢复可见时重新订阅并补一次快照。
+  const tab = useUiStore((s) => s.tab);
+  const fullVisible = useFullViewVisible();
+  const visible = fullVisible && tab === "tasks";
+  const now = useSharedClock(visible);
   const { t } = useLocale();
   const snapshotPrefs = snapshot?.prefs ?? null;
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
@@ -113,6 +121,8 @@ export default function FocusWorkspace() {
   const [draft, setDraft] = useState<FocusPrefs | null>(null);
 
   useEffect(() => {
+    if (!visible) return;
+    // 隐藏期不加载、不订阅；恢复可见时重新拉取快照，避免展示过期倒计时。
     void load();
     let disposed = false;
     let release: (() => void) | null = null;
@@ -124,7 +134,7 @@ export default function FocusWorkspace() {
       disposed = true;
       release?.();
     };
-  }, [load]);
+  }, [load, visible]);
 
   useEffect(() => {
     let alive = true;

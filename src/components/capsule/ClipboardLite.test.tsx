@@ -14,6 +14,7 @@ import ClipboardLite from "./ClipboardLite";
 import ClipboardPanel from "../clipboard/ClipboardPanel";
 import { registerTabGuard } from "../../lib/tabGuard";
 import { clearGroupPageCache, groupPageCacheKey, loadGroupPage } from "./ClipboardLiteViews";
+import { PanelCloseProvider } from "./panelClose";
 
 const clipboardView = vi.fn();
 const clipboardGroupPage = vi.fn();
@@ -1595,5 +1596,53 @@ describe("二级视图交互复验", () => {
     act(() => resolveImg?.("data:image/png;base64,LATE"));
     expect(screen.queryByRole("img", { name: "剪贴板图片预览" })).toBeNull();
     expect(screen.getByText("迟到图")).toBeTruthy();
+  });
+});
+
+describe("二级页面统一关闭入口", () => {
+  it("文本详情：返回只退一层，X 收起整个面板，两者是不同按钮", async () => {
+    const text = item({ id: "lite-close-text", kind: "text", title: "关闭测试", preview: "预览" });
+    clipboardView.mockResolvedValue(view([text]));
+    clipboardItem.mockResolvedValue({ ...text, text: "正文内容" });
+    const onClose = vi.fn();
+    render(
+      <PanelCloseProvider onClose={onClose}>
+        <ClipboardLite />
+      </PanelCloseProvider>,
+    );
+    await screen.findByText("关闭测试");
+    fireEvent.click(screen.getByRole("button", { name: "查看「关闭测试」" }));
+    await screen.findByText("正文内容");
+
+    const close = screen.getByRole("button", { name: "关闭剪贴板面板" });
+    const back = screen.getByRole("button", { name: "返回列表" });
+    // 二级页面同时保留返回与关闭，且是两个不同动作
+    expect(close).not.toBe(back);
+    expect(close.parentElement?.classList.contains("cap-actions")).toBe(true);
+    expect(close.parentElement?.lastElementChild).toBe(close);
+    // 关闭按钮不是窗口拖拽热区
+    expect(close.hasAttribute("data-tauri-drag-region")).toBe(false);
+
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // X 不冒充「返回」：视图本身由 CapsuleDock 收起时卸载，这里不应先退出当前层
+    expect(screen.getByText("正文内容")).toBeTruthy();
+
+    fireEvent.click(back);
+    await waitFor(() => expect(screen.queryByText("正文内容")).toBeNull());
+    // 返回只退当前层，不触发面板关闭
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("没有 provider 时不渲染 X（组件单独复用不受影响）", async () => {
+    const text = item({ id: "lite-close-text-2", kind: "text", title: "独立渲染", preview: "预览" });
+    clipboardView.mockResolvedValue(view([text]));
+    clipboardItem.mockResolvedValue({ ...text, text: "独立正文" });
+    render(<ClipboardLite />);
+    await screen.findByText("独立渲染");
+    fireEvent.click(screen.getByRole("button", { name: "查看「独立渲染」" }));
+    await screen.findByText("独立正文");
+    expect(screen.queryByRole("button", { name: "关闭剪贴板面板" })).toBeNull();
+    expect(screen.getByRole("button", { name: "返回列表" })).toBeTruthy();
   });
 });

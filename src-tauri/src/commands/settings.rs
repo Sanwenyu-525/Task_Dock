@@ -53,6 +53,8 @@ const ALLOWED_KEYS: &[&str] = &[
     // 模块独立启停（v0.5.2）
     "workspace_enabled",
     "actions_enabled",
+    // 提醒调度暂停（提醒数据与通知历史不删除；暂停期间到期提醒保持未触发）
+    "reminders_paused",
     // 智能剪贴板（v0.5）
     "clipboard_enabled",
     "clipboard_paused",
@@ -176,6 +178,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "nav_remember_window"
         | "workspace_enabled"
         | "actions_enabled"
+        | "reminders_paused"
         | "clipboard_enabled"
         | "clipboard_paused"
         | "clipboard_capture_images"
@@ -452,14 +455,28 @@ pub fn update_settings(
     if obj.contains_key("workspace_enabled") && !updated.workspace_enabled {
         crate::workspace::request_cancel();
     }
-    if obj.contains_key("clipboard_enabled") {
+    if obj.contains_key("clipboard_enabled") || obj.contains_key("clipboard_paused") {
         // 不能使用会静默默认的 Settings::load：配置损坏时它会把 enabled 读成 true，
         // 从而在用户不知情时重新开始采集。
+        // 三个层次分开收敛：停用 → 停止采集+取消粘贴；暂停 → 只回收采集线程；
+        // 恢复 → 必要时重建监听与维护（幂等，重复写入不会留下第二套线程）。
         let config = Settings::load_clipboard(&db);
         if config.error.is_none() {
             if let Some(rt) = app.try_state::<Arc<crate::clipboard::ClipboardRuntime>>() {
-                rt.inner().set_enabled(config.settings.clipboard_enabled);
+                rt.inner().apply_config(
+                    config.settings.clipboard_enabled,
+                    config.settings.clipboard_paused,
+                );
             }
+        }
+    }
+    // 暂存架自动清理：开关关闭时让清理线程真正退出（不再每小时空转），
+    // 重新开启后按需启动；暂停/启用都不影响手动清理与已暂存的文件。
+    if obj.contains_key("shelf_auto_cleanup_enabled") {
+        if let Some(state) = app.try_state::<Arc<crate::shelf::ShelfState>>() {
+            state
+                .inner()
+                .apply_auto_cleanup(updated.shelf_auto_cleanup_enabled);
         }
     }
     // 语音缓存容量变更：立即按 LRU 收敛到新上限，不必等下一次写入才清理。
@@ -498,7 +515,10 @@ pub fn clipboard_repair_config(
         }
         None => {
             if let Some(rt) = app.try_state::<Arc<crate::clipboard::ClipboardRuntime>>() {
-                rt.inner().set_enabled(config.settings.clipboard_enabled);
+                rt.inner().apply_config(
+                    config.settings.clipboard_enabled,
+                    config.settings.clipboard_paused,
+                );
             }
         }
     }

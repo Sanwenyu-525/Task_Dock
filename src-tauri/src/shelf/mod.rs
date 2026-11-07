@@ -227,12 +227,28 @@ impl CopyGate {
     }
 }
 
+/// 自动清理线程句柄：开关关闭/暂停时唤醒并让它退出，不在无意义地每小时空转。
+struct AutoCleanupWorker {
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    /// 只用于持有线程身份；停止时不 join（清理可能正在写文件/执行 SQL，
+    /// 阻塞设置写入会卡住 UI）。线程退出时通过 `cleanup_running` 探针反映。
+    _handle: std::thread::JoinHandle<()>,
+}
+
 /// 运行时状态：数据库 + 独立托管根目录 + 复制并发闸 + 应用句柄（打开/复制用）。
 pub struct ShelfState {
     pub db: Arc<Db>,
     pub root: PathBuf,
     pub app: tauri::AppHandle,
     copy_gate: Arc<CopyGate>,
+    /// 自动清理线程：只有持久化开关为真时才存在（暂停 = 真正停止线程）。
+    cleanup: Mutex<Option<AutoCleanupWorker>>,
+    /// 仍存活的自动清理线程数量（生命周期探针，不参与控制）。用计数而不是布尔：
+    /// 关闭后立刻重新开启时，旧线程可能在收尾、新线程已启动，布尔会被旧线程的
+    /// 退出错误地置回 false。
+    cleanup_running: Arc<std::sync::atomic::AtomicUsize>,
+    /// 自动清理线程启动/清理失败原因（只存稳定的错误文本，不含用户路径/内容）。
+    cleanup_error: Arc<Mutex<Option<String>>>,
 }
 
 impl ShelfState {
@@ -261,6 +277,9 @@ impl ShelfState {
             root,
             app,
             copy_gate: Arc::new(CopyGate::new()),
+            cleanup: Mutex::new(None),
+            cleanup_running: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            cleanup_error: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -272,6 +291,144 @@ impl ShelfState {
     /// 立即尝试独占文件区；有复制/添加正在进行或已有维护任务时返回 None。
     pub fn try_acquire_maintenance_permit(&self) -> Option<ShelfMaintenancePermit> {
         self.copy_gate.try_acquire_maintenance()
+    }
+
+    /// 让自动清理线程与持久化开关收敛（启动时与设置写入后调用，幂等）。
+    pub fn apply_auto_cleanup(self: &Arc<Self>, enabled: bool) {
+        if enabled {
+            self.start_auto_cleanup();
+        } else {
+            self.stop_auto_cleanup();
+        }
+    }
+
+    /// 自动清理线程是否仍在运行（探针；暂停/关闭后可能短暂为 true，直到当前
+    /// 清理操作结束）。调用方据此区分「已暂停」与「正在收尾」。
+    pub fn auto_cleanup_running(&self) -> bool {
+        self.cleanup_running
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+    }
+
+    pub fn auto_cleanup_error(&self) -> Option<String> {
+        self.cleanup_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn start_auto_cleanup(self: &Arc<Self>) {
+        let mut guard = self.cleanup.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(worker) = guard.as_ref() {
+            if !worker._handle.is_finished() {
+                return;
+            }
+        }
+        // 旧线程已退出：摘下句柄并 join（立即返回），避免句柄累积。
+        if let Some(old) = guard.take() {
+            let _ = old._handle.join();
+        }
+        self.cleanup_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let stop_thread = stop.clone();
+        let db = self.db.clone();
+        let root = self.root.clone();
+        let gate = Arc::clone(&self.copy_gate);
+        let running = self.cleanup_running.clone();
+        let running_for_thread = running.clone();
+        let error_slot = self.cleanup_error.clone();
+        running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("shelf-auto-cleanup".into())
+            .spawn(move || {
+                struct AliveGuard(Arc<std::sync::atomic::AtomicUsize>);
+                impl Drop for AliveGuard {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+                let _alive = AliveGuard(running_for_thread);
+                loop {
+                    // 可被关闭/暂停立即唤醒；不是「睡一小时再检查开关」。
+                    if wait_for_cleanup_tick(&stop_thread, std::time::Duration::from_secs(3600)) {
+                        return;
+                    }
+                    let settings = match Settings::load(&db) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!("暂存架设置不可读，跳过本轮自动清理: {}", e);
+                            continue;
+                        }
+                    };
+                    // 开关在等待期间被关闭（例如恢复旧配置）：不执行清理，继续等待
+                    // 下一次唤醒；线程本身由 `apply_auto_cleanup(false)` 唤醒退出。
+                    if !settings.shelf_auto_cleanup_enabled {
+                        continue;
+                    }
+                    let Some(_maintenance) = gate.try_acquire_maintenance() else {
+                        tracing::debug!("暂存架文件操作进行中，跳过本轮自动清理");
+                        continue;
+                    };
+                    match cleanup_expired(&db, &root, &settings, false, false) {
+                        Ok(r) if r.candidates > 0 || r.orphan_files_removed > 0 => {
+                            tracing::info!(
+                                cleaned = r.candidates,
+                                skipped_protected = r.skipped_protected,
+                                freed_bytes = r.freed_bytes,
+                                orphans = r.orphan_files_removed,
+                                "暂存架自动清理完成"
+                            );
+                        }
+                        Ok(_) => {
+                            if let Ok(mut slot) = error_slot.lock() {
+                                *slot = None;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("暂存架自动清理失败: {}", e);
+                            // 只保留稳定错误码；原始错误可能含本机路径，不进入
+                            // 前端状态载荷（日志侧按既有脱敏口径处理）。
+                            if let Ok(mut slot) = error_slot.lock() {
+                                *slot = Some("cleanup_failed".to_string());
+                            }
+                        }
+                    }
+                }
+            });
+        match spawned {
+            Ok(handle) => {
+                *guard = Some(AutoCleanupWorker {
+                    stop,
+                    _handle: handle,
+                });
+            }
+            Err(e) => {
+                running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                *self.cleanup_error.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(format!("自动清理线程启动失败: {e}"));
+                tracing::warn!("暂存架自动清理线程启动失败: {}", e);
+            }
+        }
+    }
+
+    fn stop_auto_cleanup(&self) {
+        let worker = self
+            .cleanup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(worker) = worker {
+            // 只发停止信号，不 join：当前清理可能正在执行文件/SQL 操作，
+            // 阻塞设置写入命令会让 UI 卡住。线程会在当前操作结束后退出；
+            // 期间生命周期状态如实显示为 pausing。
+            let (lock, cv) = &*worker.stop;
+            *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            cv.notify_all();
+        }
     }
 }
 
@@ -2423,42 +2580,14 @@ pub fn add_managed_png(
 /// 挂载说明：调度器 scheduler.rs 属智能提醒模块（跨模块边界禁止修改），
 /// 故由暂存架自带线程承载；频率极低（1h）、随进程退出回收、每次运行前
 /// 重读设置（fail-closed：设置损坏时跳过本轮，绝不臆测配置继续清理）。
-pub fn start_auto_cleanup(state: &ShelfState) {
-    let db = Arc::clone(&state.db);
-    let root = state.root.clone();
-    let gate = Arc::clone(&state.copy_gate);
-    let _ = std::thread::Builder::new()
-        .name("shelf-auto-cleanup".into())
-        .spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(3600));
-            let settings = match Settings::load(&db) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("暂存架设置不可读，跳过本轮自动清理: {}", e);
-                    continue;
-                }
-            };
-            if !settings.shelf_auto_cleanup_enabled {
-                continue;
-            }
-            let Some(_maintenance) = gate.try_acquire_maintenance() else {
-                tracing::debug!("暂存架文件操作进行中，跳过本轮自动清理");
-                continue;
-            };
-            match cleanup_expired(&db, &root, &settings, false, false) {
-                Ok(r) if r.candidates > 0 || r.orphan_files_removed > 0 => {
-                    tracing::info!(
-                        cleaned = r.candidates,
-                        skipped_protected = r.skipped_protected,
-                        freed_bytes = r.freed_bytes,
-                        orphans = r.orphan_files_removed,
-                        "暂存架自动清理完成"
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => tracing::warn!("暂存架自动清理失败: {}", e),
-            }
-        });
+/// 可被关闭/暂停立即打断的等待；返回 true 表示线程应退出。
+fn wait_for_cleanup_tick(stop: &Arc<(Mutex<bool>, Condvar)>, dur: std::time::Duration) -> bool {
+    let (lock, cv) = &**stop;
+    let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let (guard, _) = cv
+        .wait_timeout_while(guard, dur, |stopped| !*stopped)
+        .unwrap_or_else(|e| e.into_inner());
+    *guard
 }
 
 pub mod drop_targets;

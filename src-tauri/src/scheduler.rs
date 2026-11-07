@@ -55,6 +55,17 @@ pub struct DueItem {
 
 async fn tick(app: &AppHandle, db: &Db, hub: &AgentHub) -> AppResult<()> {
     let settings = Settings::load(db)?;
+    // 提醒暂停只拦「提醒触发」这一条业务分支，不停止共享调度循环：
+    // 同一循环里的 Agent 过期清理、通知摘要、稍后提醒与专注/久坐推进必须继续。
+    //
+    // 语义（与既有过期补偿保持一致）：
+    // - 暂停期间到期提醒保持 fired=0，不写通知历史，也不推进重复任务；
+    // - 不删除任何提醒/任务数据，因此不会「悄悄消失」；
+    // - 恢复后下一个 tick 即按原有过期补偿规则补触发（>60s 标注「补触发」，
+    //   超过 overdue_grace_hours 的仍入库通知历史但不再弹窗/出声）。
+    if settings.reminders_paused {
+        return Ok(());
+    }
     let now: DateTime<Utc> = Utc::now();
     let now_str = now.to_rfc3339();
 

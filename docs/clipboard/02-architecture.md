@@ -77,8 +77,34 @@
 | `clipboard-monitor` | 消息专用窗口 + `GetMessage` 循环；收到 `WM_CLIPBOARDUPDATE` 只把序列号与时间戳放入有界事件队列，不读剪贴板、不编码图片、不写库 | `WM_CLOSE` / `stop()` |
 | `clipboard-capture` | 合并事件（只保留最新序列号）→ 在后台读取剪贴板、系统标记/来源/敏感过滤、图片 PNG 编码 → 放入有界内容队列 | 队列关闭 / 进程退出 |
 | `clipboard-worker` | 从内容队列取内容 → `store::record_capture` 入库 → `emit clipboard-changed` | 队列关闭 / 进程退出 |
-| `clipboard-maintenance` | 启动 8 秒后首次清理，此后每 300 秒：结束过期收集组、清理过期/超额条目与孤儿文件、标记中断的粘贴任务；同时每 30 秒检查一次监听健康状态，监听/采集/入库线程任一退出时自动重启监听（`monitor_restarts` 计数） | 进程退出 |
-| `clipboard-paste` | 单次逐项粘贴任务（同一时刻最多一个） | 完成/取消/失败 |
+| `clipboard-maintenance` | 启动 8 秒后首次清理，此后每 300 秒：结束过期收集组、清理过期/超额条目与孤儿文件、标记中断的粘贴任务；同时每 30 秒检查一次监听健康状态，监听/采集/入库线程任一退出时自动重启监听（`monitor_restarts` 计数） | 暂停/停用（Condvar 立即唤醒）/进程退出 |
+| `clipboard-paste` | 单次逐项粘贴任务（同一时刻最多一个） | 完成/取消/失败；**暂停不取消**，仅模块停用/退出取消 |
+
+**暂停 vs 停用（v0.15，2026-11-06）**：
+
+| 操作 | 监听线程 | 维护线程 | 进行中的粘贴 | 历史读写 |
+|---|---|---|---|---|
+| `clipboard_paused=true`（暂停） | 停止并回收 | 停止并回收 | 保留，不打断 | 可用 |
+| `clipboard_enabled=false`（停用） | 停止并回收 | 停止并回收 | `paste.cancel_all()` | 可用 |
+
+- 运行时实现：`stop_capture()` 只做「监听 + 维护」回收；`stop()` = 同步
+  `stop_capture_sync()` + `paste.cancel_all()`；`apply_config(enabled, paused)` 统一收敛，
+  重复调用幂等。
+- 暂停的采集回收为异步两级：先 `begin_stop()` 同步关闭事件队列、摘除 `EVENT_QUEUE` 并
+  `WM_CLOSE`（不 join，恢复可立即创建新实例），再由 `clipboard-stop` 线程 `finish_stop()`
+  join 三个线程并释放句柄。`capture_draining` 计数归零前生命周期只能是 `pausing`。
+  实例被丢弃时 `Drop` 同步兜底收尾，避免孤儿监听。
+- 队列关闭语义（`BoundedQueue::pop` 关闭即返回 None）：暂停时尚未开始处理的内容被丢弃，
+  不会在恢复后回放；已经进入 `record_capture` 的一次写入允许完成。
+- 启动时若 `clipboard_paused=true`，**不创建**监听/维护线程（`lib.rs`），而不是先启动再靠
+  `capture_allowed` 拒绝采集；配置损坏时仍保持监听但不采集（fail-closed，便于界面显示并修复）。
+- 维护线程等待条件升级为「停止位 **或** 世代变化」：暂停后立刻恢复时，旧线程会在代次
+  变化时立即退出，不会与新线程并存 30 秒；`spawn_monitor` 存实例前复核世代，启动期间被
+  暂停不会留下孤儿监听。
+- `clipboard_status` 新增 `maintenance` 布尔值；生命周期探针只有在 `monitoring` 与
+  `maintenance` 均为 false 时才报告 `paused`，否则报告 `pausing`。
+- 恢复不补录暂停期间的复制：Windows 剪贴板不为新监听回放历史事件，下一次系统
+  `WM_CLIPBOARDUPDATE` 才可能读取新内容；采集线程启动水位取当前 `self_write` 序列号。
 
 有界队列与背压：
 

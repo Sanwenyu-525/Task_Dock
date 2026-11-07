@@ -16,6 +16,9 @@ dist/
 # 视觉走查 harness（由 scripts/make-preview.mjs 生成，不入库）
 .preview/
 
+# 视觉走查临时截图（单次取证产物，长期证据请归档 docs/ 对应目录）
+/.screenshots/
+
 # Tauri / Rust（src-tauri/target-* 通配覆盖 target-accept/-dbg/-measure/-gate 及未来隔离目录；
 # 归属与清理见 scripts/build-guard.mjs，docs/DEVELOPMENT.md「构建产物与磁盘空间管理」）
 src-tauri/target/

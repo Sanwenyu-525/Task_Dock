@@ -233,6 +233,9 @@ docked-revealed → docked-hidden | docked-visible | free
   恢复期间候选确认延迟到恢复收尾，避免两路几何写入交错；详见
   `tmp/acceptance/capsule-redock/report.md`。
 - **托盘/快捷键唤回**：`snap-recall` → 展开功能面板（窗口始终可见，无需"找回"）。
+- **工具面板标题也可拖动窗口**（2026-11-06）：面板标题背景与标题/说明文字都是
+  拖拽热区（`PanelKit.PanelHead`），拖动的是同一个原生窗口，轨道与面板不会分离；
+  标题右侧操作按钮、面板正文与列表不参与拖动。命中边界与光标口径见 §12.11。
 - **吸附反馈**：拖拽阶段有光晕 + 高亮细线 + 「松开吸附到 X 侧」；停靠完成时轨道
   播放一次 0.34s 的轻微缩放脉冲（只播一次，不循环）。
 
@@ -697,6 +700,76 @@ IPC/轮询的前提下完成核心动作」。两者任一不成立即为快捷�
 回归：`src/components/capsule/capsuleNavigationContract.test.tsx`（集合一致、分类有面板、
 状态球不计分类、隐藏/全隐行为、持久化与两面独立）。
 
+### 12.10 拖拽光标会话与「原生循环退出」信号（2026-11-06）
+
+**问题**：从轨道或标题栏按住拖动时，Windows 进入系统模态移动循环；循环期间 WebView2
+收不到指针事件，**松手没有 `pointerup`**。旧实现只能等下一次 `pointermove`
+（`buttons === 0`）才摘掉 `is-dragging`，表现为「左键松开后光标要再动一下才从
+`grabbing` 回到 `grab`」。
+
+**根因层**：结束信号本来就在窗口过程里——`WM_EXITSIZEMOVE`。前端拿不到它，
+所以只在浏览器事件层打补丁必然有残留。
+
+**方案（两层，不引入第二套引擎）**：
+
+1. **原生**：主窗 `magnetic.rs` 在 `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` 后各
+   `PostMessage` 一条自定义消息（`WM_APP + 0x55`），在消息处理里回调
+   `register_drag_hook` 注册的钩子。延后一拍的理由与 `WM_MAGNET_SNAP` 相同：
+   不在模态循环内执行宿主代码，且循环退出后 Windows 还会重设一次光标。
+   若消息送达时 `IN_SIZE_MOVE` 已重新置位（用户已开始下一次拖动），这条信号
+   属于上一轮，直接丢弃——否则新会话刚进入的 `grabbing` 会被误清
+   （`magnetic::win::drag_phase_tests` 锁定）。
+2. **前端**：`lib.rs` 把钩子接到**该窗口**的 `window-drag` 事件（窗口级 emit，
+   不广播，天然不串台）；`src/lib/dragCursorSession.ts` 收到后按相位处理。
+
+**相位协议与代次（2026-11-06 二次验收补强）**：
+
+事件载荷为 `{ phase: "start" | "end", generation: n }`（见 `src-tauri/src/drag_signal.rs`）。
+`generation` 在每次 `WM_ENTERSIZEMOVE` 递增，同一轮拖拽的开始与结束携带同一值。
+为什么需要它：事件是异步的，旧拖拽的结束信号可能在用户**已经开始下一次拖拽**之后才被
+前端消费；若「收到结束就结束全部会话」，会出现「鼠标还按着、抓手指针却没了」。
+前端规则：
+
+- 会话收到 `phase: "start"` 时绑定该代次；
+- 只有代次**完全匹配**的 `phase: "end"` 才结束它；
+- 尚未绑定代次的会话（例如 `startDragging` 没走到原生循环）不受任何原生结束信号影响，
+  继续由指针事件兜底；
+- 重复结束信号幂等（会话结束即从活动集合移除）。
+
+类名一变，Blink 按指针下元素重算 CSS `cursor` 并 `SetCursor`，
+**鼠标完全静止也能立刻复位**，不需要模拟鼠标移动、轮询或固定 timeout。
+
+**统一实现**：标题栏、胶囊轨道、工具面板标题、桌面微件共用
+`attachDragCursorSession()`；`pointerup` / `pointercancel` / `visibilitychange`
+仍是兜底路径（覆盖不走原生循环的普通点击与中断），`blur` 只在起始 120ms 之后生效
+（起始内是 `startDragging` 激活窗口造成的焦点扰动）。会话结束（任何路径）即从活动
+集合移除；`dispose()` 成对摘除监听（`dragCursorSession.test.tsx` 断言每次拖拽后
+活动会话数回到 0）。
+
+**边界**：微件窗口走 `drag_watch.rs` 的**同一协议**——只关心两段相位的轻量窗口过程
+（不动几何、不碰光标、`WM_NCDESTROY` 还原原过程并摘表项），经 `run_on_main_thread`
+在窗口所属线程安装；不加载磁吸状态机，也不在主窗上重复安装子类化。
+
+### 12.11 工具面板标题 = 窗口拖拽热区（2026-11-06）
+
+胶囊与工具面板在**同一个原生窗口**里（区域裁剪，见 §二），所以「拖面板」与
+「拖轨道」本质是同一件事：拖动整个窗口。因此标题区直接挂
+`data-tauri-drag-region`，不做 CSS `transform` 跟随，也不新增定位引擎——
+轨道与面板的相对位置由窗口几何天然保证，磁吸/解除/多显示器全部沿用既有路径。
+
+命中范围按 Tauri 语义划分（**属性只对事件 target 自身生效，不向下传递**）：
+
+| 元素 | 可起拖 | 说明 |
+|---|---|---|
+| `header.cap-head`（背景/内边距） | ✅ | `PanelHead` 统一挂载 |
+| `.cap-title` / `.cap-sub` 文字 | ✅ | 标题与说明都是抓手 |
+| `.cap-actions` 内按钮 | ❌ | 返回/刷新/新建/筛选/搜索不挂属性 |
+| 面板正文、列表、输入框、卡片 | ❌ | 不挂属性，交互不被抢占 |
+| 剪贴板二级页标题（`cap-clip-head`） | ✅ | 与一级面板同一套命中规则 |
+
+光标语义由 `.ui-drag-surface`（`grab`）+ `.ui-drag-session.is-dragging`（`grabbing`）
+承担；`PanelKit.PanelHead` 与两个剪贴板二级标题都用 `useDragRegion()` 复用同一会话。
+
 ## 十三、极简吸附态 Edge Tab（2026-11-05）
 
 **三种停靠形态**：完整面板（`snap_display_mode=full`，`docked-full`）· 胶囊（默认，
@@ -783,3 +856,224 @@ IPC/轮询的前提下完成核心动作」。两者任一不成立即为快捷�
 - 回归：`src/components/capsule/taskEditorNavigation.test.tsx`、`CapsuleDock.test.tsx`、
   `CapsulePanels.test.tsx`、`InboxDropPane.test.tsx`、`InboxLite.test.tsx`、
   `capsuleNavigationContract.test.tsx`。
+
+**拖拽光标与稳定态渲染契约修订（2026-11-06）：**
+
+- **光标只有一套来源**：标签悬停 `grab`、超过拖动阈值 `grabbing`、松手/取消回到 `grab`，
+  全部由 WebView2 的 CSS `cursor` 表达（`.capsule-tab` / `.capsule-tab.is-dragging`），
+  与轨道空白处的 `.ui-drag-surface` 同一语义。标签是「可抓取的细柄」，不是普通按钮，
+  因此不再使用 `pointer`。
+- **原生侧不得覆盖标签光标**：原来的 `refresh_edge_tab_cursor`（`WM_CURSOR_EDGE_TAB` →
+  `SetCursor(IDC_HAND/IDC_ARROW)`）已整条移除。它有两个必然偏差：Win32 没有与 Chromium
+  `grab/grabbing` 等价的系统光标（`IDC_HAND` 是手形，不是抓手）；且在鼠标静止时不再有
+  `WM_SETCURSOR`，一旦写错就会停在手形/箭头，表现为「必须动一下鼠标才恢复」。
+  `EdgeTab` 摘掉 `.is-dragging` 会让 Blink 按指针下元素重算 `cursor` 并下发 `SetCursor`，
+  鼠标完全静止也能立即恢复。
+- **稳定 `docked-tab` 只允许标签一个子节点**：`CapsuleDock` 在 `stableTab`（相位为
+  `docked-tab` 且 `tabTransition === null`）时**不挂载** `CapsuleRail`，也就没有 `.cap-nav`、
+  `.cap-edge-tab`、`.cap-sep`、面板与 `snap-dock-line`。轨道只在 `to-tab` / `from-tab`
+  过渡的 320ms 窗口内与标签共存（交叉淡出），过渡结束立即卸载。该约束由
+  `CapsuleDock.test.tsx` 的「稳定极简态只挂载标签」用例锁定。
+- **拖动结束的收尾必须唯一**：`pointerup` 已收尾时，随后的 `lostpointercapture` 只复位光标，
+  不得再次 `endTabDrag`（否则位置回读与持久化跑两遍）；窗口失焦/页面隐藏按取消处理。
+- **主窗根容器必须占满窗口**：`.dock-window` 增加 `width: 100%`。胶囊态的可见内容全是绝对
+  定位（`.capsule-dock` 是 `inset: 0`），自身没有内在宽度；一旦 `#root` 的 `display` 不是
+  block（多入口构建 `cssCodeSplit: false` 时，弹窗页的 `#root{display:flex}` 会进入主窗样式），
+  `.dock-window` 会塌成 0，右/上/下停靠的标签与轨道被排到窗口之外——原生区域正常、区域里
+  却没有内容。真机证据：修复前右边缘标签 DOM `x=-10`（区域 492..505 全空），修复后
+  `x=394..404` 与区域一致。
+- 诊断与真机取证见 `tmp/acceptance/edge-tab-visual-cursor/report.md`。
+
+**共享 CSS 作用域与悬停提示会话（2026-11-06 二轮修订）：**
+
+- **入口 CSS 必须页面级作用域**：`vite.config.ts` 关闭了 CSS 拆分（`cssCodeSplit: false`，
+  保证 styles-themes 与 styles 的层叠顺序），六个入口共享同一份打包 CSS。因此**任何**入口
+  的无作用域 `html / body / #root` 布局规则都会同时作用到主窗。tab-hint 页的根规则已全部
+  改挂 `<html class="tab-hint-page">`（`styles-tab-hint.css` 顶部有约定说明）；
+  `src/styles-entry-scope.test.ts` 做结构级守卫（裸根选择器不得声明 position/display/flex/
+  inset 等布局属性），`scripts/check-entry-css.mjs` 在 `npm run build` 之后的**打包产物**上
+  复查同样规则。`.dock-window{width:100%}` 保留：它与作用域无关，是主窗几何的独立约束。
+- **悬停提示是「显示会话」，不是状态开关**：`show → 前端渲染/测量 → fit → 真显` 三段式
+  链路必须可取消。后端用单调**代次**管理（`tab_hint.rs::HintState`，单锁，tao 调用在锁外）：
+  每次 `show`/`hide` 推进代次，`tab-hint-show { id, text }` 把代次发给提示窗，前端测量后回传
+  `fit_tab_hint { width, height, id }`；代次不匹配的 fit 一律丢弃，**hide 之后到达的旧测量
+  绝不能让窗口重新显示**。同文案重复悬停也必须重新走完整事务——只靠 `text` 变化驱动测量
+  会让第二次悬停静默失败（旧缺陷）。
+- **前端测量不再依赖 rAF**：提示窗长期处于隐藏态，隐藏窗口的帧调度可能被节流；
+  `useLayoutEffect` 阶段 DOM 已提交，同步读 `offsetWidth/offsetHeight` 是有效且更可靠的。
+- **前端 `hintVisible` 只做 hide 去重**：它以后端 `show` 的返回值为准（受理才算显示），
+  用会话代次丢弃迟到结果，并且**不拦截新的 show**——任何能永久阻止显示的缓存都是缺陷。
+- 提示窗圆角 `HINT_RADIUS = 8.0` 与 CSS `border-radius: 8px` **相等**：区域是 CSS 圆弧的
+  像素支撑形状，半径偏大会切进气泡四角（"角被削掉一圈"）。跨端契约由两端测试锁定。
+- 二轮真机证据见 `tmp/acceptance/edge-tab-visual-cursor-round2/report.md`。
+
+## 十四、应用工具面板交互修订（2026-11-06）
+
+用户对照 Win11 开始菜单提出：应用磁贴需要轻量悬停反馈、标题说明同行、启动与拖拽反馈必须与
+真实状态一致。本节记录**长期有效的交互契约**；具体视觉数值以 `styles.css` 为准。
+
+**磁贴状态（`.cap-app` / `.cap-app-add`）**
+
+- 普通态仍是透明底 + 真实图标，不铺卡片、不投外阴影。
+- Hover：整格一层半透明中性底（`color-mix(--cap-text-1 6%)`）+ 1px **inset** 内描边
+  （12%）。用 inset 阴影而不是 `border`，因为 border 参与盒模型会让 4 列网格抖动；
+  同时不允许放大图标、缩放磁贴、改行列间距。
+- Active：底色/描边加强到 10%/18%，图标位置不变。
+- Hover 作用在 `.cap-app-slot` 而不是按钮本身：右上角删除按钮是并列兄弟，悬停删除时
+  父级磁贴必须同步高亮。
+- Dragging：`.is-dragging` 复位 hover 底色，只保留 0.55 透明度、`grabbing` 光标与落点竖线，
+  避免 Hover / Dragging / Active 三层叠加。
+- Disabled / Launching：不显示 hover 底色（否则仍像可点击），加载反馈只画在 36px 图标片内。
+- Focus-visible：始终是独立的 2px `outline`，不依赖 hover 底色表达键盘焦点。
+- 主题适配：底色/描边全部由 `--cap-text-1` 派生，浅色得到深色淡底、深色得到浅色淡光。
+
+**标题布局**：`PanelHead` 新增 `layout="inline"`（默认 `stack`）。只有应用面板使用，
+说明文字移到标题右侧、12px→11px、基线对齐、可省略；其余面板结构与高度不变。
+
+**启动状态**：胶囊应用网格从「单个 `busyId`」改为「按目标 id 的 `launchingIds`」，
+与完整应用中心一致。后端每次 `nav_navigate` 是独立 `spawn_blocking` 任务、没有全局串行锁，
+因此不同应用可以并发启动，各自显示/恢复忙碌态；同一目标在途时忽略重复请求（同步 ref 兜住
+setState 前的连点）。禁止再用全局忙态把整组磁贴一起禁用。
+
+**拖放后的误点击防护**：不再用「距上次 drop 的时间窗」，改为「是否有新的按下」——
+`dragstart` 清标记、`dragend` 置标记，网格捕获阶段的 `pointerdown` / `keydown` 清标记，
+`click` 只在标记仍在时被忽略一次。这样浏览器补发的 click 不会误启动，拖完立刻点击其他应用、
+加号或按 Enter 也不会被吞掉；拖拽取消只清理拖动状态，光标立即恢复 `grab`。
+
+**名称提示**：统一走 `lib/nameTip.ts`（应用中心 / 选择器 / 胶囊网格 / 网址胶囊共用）。
+只有名称真的被布局截断（宽或高溢出）时才挂 `data-tip`，值为完整名称；完整显示不弹同名提示，
+exe 路径与网址不再作为提示内容。键盘 Focus 截断名称同样能拿到完整信息。
+
+**全部隐藏的空态**：按真实对象区分「应用均隐藏 / 网址·文件夹·文件均隐藏 / 快捷目标均隐藏」，
+不再把网址全隐藏说成应用全隐藏；网格收起时在该空态保留「添加应用」入口（复用同一个
+`openAppsAdd` 一次性意图，不新建第二套添加流程），恢复入口仍逐项列出、绝不自动取消隐藏。
+
+回归：`AppsLite.test.tsx`、`PanelKit.test.tsx`、`styles-themes.test.ts`（磁贴样式契约）。
+
+## 十五、工具面板关闭入口与应用磁贴居中（2026-11-06 晚）
+
+**统一关闭入口**
+
+- 五个工具面板（任务 / Agent / 剪贴板 / 收集箱 / 应用）的右上角都有同一个 X，由
+  `PanelKit.PanelHead` 渲染，不重复实现按钮；动作经 `panelClose.tsx` 的轻量 Context
+  由 `CapsuleDock.closePanel` 提供（→ `useEdgeSnapStore.collapse`），**没有第二套关闭状态机**。
+- 视觉：28×28 热区 + 15px Lucide `X`，透明底、10px 圆角（与 `cap-iconbtn` 一致），
+  hover 7%、active 11% 中性半透明底，focus-visible 2px `outline`，无阴影、无常驻红色。
+- 布局：始终排在 `cap-actions` 最后（= 标题栏最右）；28px 热区用 `margin-block: -3px`
+  只贡献 22px 高度，标题行不会被撑高（应用面板压缩后的标题区与搜索框位置不变）。
+  空间不足时只省略说明文字，标题不换行、面板无横向溢出。
+- 命中：按钮与其内部 `svg` 都**不带** `data-tauri-drag-region`，点击不会被当成窗口拖拽；
+  标题背景/标题/说明仍是拖拽热区，二者互不影响。
+- 语义：只收起当前工具面板——不退出应用、不关主窗、不隐藏胶囊、不切极简标签、不改分类、
+  不重置排序或停靠设置。Esc、再次点击当前分类、点击 X 走的是同一个 `closePanel`；
+  `collapsePanel` 在相位已不是 `docked-revealed` 时直接返回，重复点击不会反复切相位。
+  面板卸载后焦点回到 `body`（不留在已移除的按钮上），复用分类与排序状态不变。
+
+**应用磁贴视觉居中**
+
+- `.cap-app` 改用 `justify-content: center`：图标与名称作为一个整体在整格（= hover 背景
+  范围）内垂直居中，实测组中心偏移 0；同一行图标顶部位置一致，图标与名称间距恒为 4px。
+- 名称仍固定保留两行槽位（`height: 2.4em` + 两行 clamp）：这是同一行图标对齐与网格高度
+  稳定的前提。**单行名称的第二行留白是有意代价**：若把单行文字在自己的槽位里居中，会让
+  同一行首行文字参差（1 行名称比 2 行名称低约 6px），因此不做逐格视觉居中。
+- Hover 覆盖整格不变（`.cap-app-slot:hover .cap-app`），尺寸、行列间距、图标大小、
+  Active / Focus-visible / Dragging / Launching 规则均不变。
+
+**拖拽热区边界**：关闭按钮、搜索框、磁贴、加号、删除按钮都不是窗口拖拽热区；
+只有标题背景与两段标题文字带 `data-tauri-drag-region`。应用网格内部排序仍是 HTML5 DnD，
+与窗口拖动互不影响。
+
+## 十六、极简标签交互契约：单击展开 / 悬停提示 / 右键菜单（2026-11-06 晚）
+
+极简吸附态的外观保持不变（10×46 CSS px、单条状态线、贴边直角+内侧圆角、玻璃 Token），
+本节只新增**输入与浮层**契约。核心前提：标签的可见区由 `SetWindowRgn` 收紧到标签矩形，
+**任何主窗内的浮层都会被裁成残片**，所以提示与菜单都走独立弹窗，主窗区域与命中范围不扩大。
+
+**单击 = 恢复 + 展开（同一事务）**
+
+- `EdgeTab` 只在 `pointerup` 里按 `classifyTabGesture` 判定一次：位移 < 4px 为单击、
+  法向 ≥ 28px 且方向占优为「向内拖动恢复」、其余为沿边拖动；指针 `click`（`detail !== 0`）
+  一律忽略，键盘 Enter/Space 才走 `click`。因此拖动结束不会再触发一次恢复。
+- 单击与向内拖动都调用 `restoreTab({ reveal: true })`：引擎在**同一个串行槽**里
+  `await restoreFromTab()` 成功后再 `expandPanel()`，不是两段靠固定延迟拼接的调用；
+  恢复失败则不开面板，面板展开失败则停在轨道并沿用既有失败提示。单击不会出现
+  「面板先开、轨道后回」的竞争或闪烁。
+- 标签拖动仍是 `dragTabBy(累计位移)` 只管沿边位置；法向位置由贴边几何固定，
+  松手后终态回读一次再落库（既有逻辑未改）。
+
+**光标（与并行会话的 drag-cursor-feedback 合并后的最终语义）**
+
+- `.capsule-tab` 默认与悬停都是 `grab`；超过点击阈值（`is-dragging`）切 `grabbing`；
+  `pointerup` / `pointercancel` / `lostpointercapture` / 窗口 `blur` / 页面隐藏 / 卸载
+  都立即摘类，Blink 据此在同一次事件里重算并下发光标，鼠标静止也能恢复。
+- 光标**只由 WebView2 的 CSS 决定**：原生侧不再 `SetCursor(IDC_HAND)` 覆盖
+  （那会让松手后的光标变成手形/箭头，且静止时不再有 `WM_SETCURSOR` 纠正）。
+
+**悬停提示（独立 `tab-hint` 窗口）**
+
+- 主窗不挂 `data-tip`（TooltipLayer 在主窗内绘制，必被区域裁切）。`EdgeTab` 悬停 350ms
+  （与 TooltipLayer 的 SHOW_DELAY 同口径）后发送 `show_tab_hint { edge, text }`；
+  离开 / 按下 / 开始拖动 / 右键 / 窗口失焦 / 页面隐藏 / 卸载都会 `hide_tab_hint`。
+- `tab-hint` 窗口 `focus: false`（tao 据此加 `WS_EX_NOACTIVATE`，显示不抢焦点），
+  启动时 `set_ignore_cursor_events(true)`（`WS_EX_TRANSPARENT`，永不接收鼠标）；
+  从不调用 `set_focus()`。因此提示不会拦截单击、拖动或右键。
+- **先量后显**：`tab-hint-show { text }` → 前端渲染后回传 `fit_tab_hint { width, height }`
+  → 后端按实测尺寸 `set_size` + 定位 + `apply_with_radius(9)` 后才 `show()`。
+  前端未就绪时（`tab_hint_ready` 之前）用上一次自然尺寸先显示，不会留下永不显示的窗口。
+- 文案与轨道状态球**同源**（`railStatus().agentTone`，见 `tabHintKey`）：
+  running / waiting / failed / disconnected 各有专属文案，`unknown`（快照未加载）
+  与 `idle` 回落为「点击展开 · 拖拽移动」——未知状态绝不宣称运行中。无新增订阅与轮询。
+
+**右键菜单（复用 `context-menu` 弹窗的 tab 变体）**
+
+- 标签 `contextmenu` 上 `preventDefault` 后调用 `show_tab_context_menu { edge }`；
+  不进入拖动、不触发恢复、不重复打开。
+- 同一个 `context-menu` 窗口与同一套键盘/Escape/失焦关闭/圆角区域逻辑，只按
+  `context-menu-show { variant: "tray" | "tab" }` 切换条目：tab 变体**恰好三项**
+  （展开工具面板 / 打开完整面板 / 退出吸附），无分组标题、无勾选态；
+  结构由 `validateTabMenuConfig()` 与 `items.test.ts` 锁定（防止长出第四项）。
+- 动作执行不复制业务逻辑：`context_menu_action("tab:expand|full|undock")` 只向主窗
+  emit `edge-tab-action`，由 `useEdgeTabMenuActions` 交给唯一的状态机——
+  `expand` → `restoreTab({ reveal: true })`；`full` → `formSwitch("full")`
+  （本次会话临时形态，不写 `snap_display_mode`）；`undock` → `undock()`（既有解除事务，
+  恢复用户窗口几何，不影响下次吸附）。
+- 定位由 `tab_popups::place_beside` 统一计算：朝**屏幕内部**展开、横跨轴以标签中心对齐、
+  再收进该显示器工作区；水平/垂直/四角、125%/150%/200% DPI、副屏负坐标都有单测。
+  提示窗与菜单共用这一个函数，不再各自实现一套 `place_menu` 变体。
+
+**状态指示线与残影（有界排查，未改样式）**
+
+- `data-tone` 六值（idle / running / waiting / failed / disconnected / unknown）分别映射到
+  `--wing-badge` / `--status-*`，明暗主题各自有定义；状态变化只改 `background`，
+  不改变标签尺寸（线固定 2×18），无闪烁动画、无额外订阅。
+- 「右侧第二条细长残影」静态审计结论：标签内只有**一个** `.capsule-tab-line`，没有
+  `::before/::after` 伪元素，也没有第二条描边/阴影；`to-tab` 过渡期轨道仍在 DOM，
+  其 `--tab-clip` 切片与 `capsule-rail-to-tab` 的位移会让轨道右缘在 300ms 内从标签右侧
+  滑过——形态上就是「标签旁多一条细线」，动画结束（opacity 0，`both` 填充）后消失。
+  本轮未在真机上稳定复现动画结束后的残留；不通过隐藏正常元素掩盖，也不改动画节奏
+  （见验收报告的 P3 记录）。
+
+**二级页面复用同一个关闭入口（2026-11-06 补齐）**
+
+- `PanelCloseButton` 从 `PanelHead` 中提取为独立展示组件：一级标题栏与剪贴板二级页面
+  （`ClipboardLiteShell` 的图片/文本/文件/分组预览、`ClipboardTargetView` 复制并切换）
+  共用同一个按钮、同一套 `.cap-close` 样式与同一个收起动作（→ `CapsuleDock.closePanel`）。
+- 二级标题栏结构是 `← 返回 | 标题 + 说明 | 操作按钮 ×`：返回只退当前层（`onBack`），
+  X 收起整个工具面板；两者是不同的按钮、不同的语义，X 不冒充返回、返回也不触发收起。
+- 下层二级视图保持挂载（`hidden`）时只有最上层可见，不会出现视觉上的重复 X；
+  无 `PanelCloseProvider`（组件单独复用）时 X 不渲染。
+- 关闭动作只收起面板：进行中的复制/读取异步任务照常完成，`aliveRef` + 请求序号保证
+  迟到响应不会写入已卸载组件；已发出的外部操作（复制/切换窗口）不虚构「已取消」。
+
+**应用磁贴删除按钮精修（2026-11-06 补齐）**
+
+- `.cap-app-del` 从 22×22 收成 18×18（图标仍 12px）：原 22px 热区在 72px 磁贴里与 34px
+  图标的包围盒重叠 3px（窄窗 65px 磁贴重叠 6.5px），实测约 8% 的磁贴采样点命中删除
+  而不是启动；18px 后名义尺寸下两者分离（1px 间隙），X 与图标视觉间距 1px → 4px。
+- 图标容器仍是 36×36、位置不变（不允许为避让而偏移/缩小应用图标）；删除仍必须经过
+  面板内确认条，磁贴 X（删除快捷方式）与标题栏 X（收起面板）语义不同。
+- 长名称 Tooltip 复核：提示条 `pointer-events: none`，命中测试证明悬停其覆盖区域时
+  点击仍落在关闭按钮上；未改提示定位策略。
+
+**单行名称视觉重心（不改）**：名称槽固定两行是同一行图标对齐的前提；把单行文字在槽内
+居中会让同行首行参差约 6px，因此维持整组居中 + 顶部对齐的现状。

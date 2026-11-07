@@ -40,8 +40,12 @@ export interface EdgeSnapUiState {
   formSwitch: ((form: DockForm) => void) | null;
   /** 引擎注入：胶囊收起为 Edge Tab（带侧滑收纳动画）。未启用为 null。 */
   collapseToTab: (() => void) | null;
-  /** 引擎注入：Edge Tab 恢复为胶囊轨道（复用同一套过渡）。未启用为 null。 */
-  restoreTab: (() => void) | null;
+  /**
+   * 引擎注入：Edge Tab 恢复为胶囊轨道（复用同一套过渡）。未启用为 null。
+   * `reveal: true` 时在同一串行事务内继续展开功能面板（先恢复、后展开），
+   * 不靠固定延迟拼接两段状态机。
+   */
+  restoreTab: ((opts?: { reveal?: boolean }) => void) | null;
   // Edge Tab 拖动：只改沿边位置，不切形态；向屏幕内部拖动由组件在松手时判定恢复。
   beginTabDrag: (() => void) | null;
   dragTabBy: ((deltaCss: number) => void) | null;
@@ -68,7 +72,7 @@ export interface EdgeSnapUiState {
   setFormSwitch: (fn: ((form: DockForm) => void) | null) => void;
   setTabActions: (p: {
     collapse: (() => void) | null;
-    restore: (() => void) | null;
+    restore: ((opts?: { reveal?: boolean }) => void) | null;
     beginDrag: (() => void) | null;
     dragBy: ((deltaCss: number) => void) | null;
     endDrag: (() => void) | null;

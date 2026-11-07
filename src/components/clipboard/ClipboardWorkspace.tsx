@@ -12,8 +12,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Merge, Pause, Play, RefreshCw,
-  Settings as SettingsIcon, Star, Trash2, X,
+  AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Loader2, Merge, Pause, Play,
+  RefreshCw, Settings as SettingsIcon, Star, Trash2, X,
 } from "lucide-react";
 import {
   clipboardClearHistory,
@@ -42,6 +42,7 @@ import { formatBytes, groupDeleteFeedback, objectHint } from "../../lib/clipboar
 import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { useLifecycleStore } from "../../store/useLifecycleStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useMainUiVisible } from "../../hooks/useMainUiVisible";
@@ -118,7 +119,6 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const setTab = useUiStore((s) => s.setTab);
   const showToast = useUiStore((s) => s.showToast);
   const settings = useSettingsStore((s) => s.settings);
-  const updateSettings = useSettingsStore((s) => s.update);
   // 停靠期主界面 display:none + inert：页面与抽屉都不可见。活跃态 = 调用方
   // active 且主界面可见，否则暂停加载/实时订阅/弹层注册（组件保持挂载，
   // 状态不丢；恢复可见时 load effect 依赖变化自动补一次刷新）。
@@ -267,6 +267,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   };
   const onPreviewNeedMore = useCallback(() => requestMorePreviewRef.current(), []);
   const [status, setStatus] = useState<ClipboardStatus | null>(null);
+  /** 暂停/恢复在途：按钮禁用并显示 loading，避免快速连点制造并发意图。 */
+  const [pauseBusy, setPauseBusy] = useState(false);
   /** 状态读取失败：保留旧状态并标记过期，避免把「监听异常」显示成未知/正常 */
   const [statusError, setStatusError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -888,11 +890,40 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   }
 
   async function togglePause() {
+    if (pauseBusy) return;
+    const nextPaused = !paused;
+    setPauseBusy(true);
     try {
-      await updateSettings({ clipboard_paused: !paused });
-      showToast(!paused ? "已暂停记录新的剪贴板内容" : "已恢复监听", { kind: "success" });
+      // 统一走生命周期适配层（内部写既有 clipboard_paused 设置键）：
+      // 设置页、胶囊与资源管理使用同一份意图，不存在第二套暂停状态。
+      const ok = await useLifecycleStore.getState().setPaused("clipboard", nextPaused);
+      if (!ok) {
+        const reason = useLifecycleStore.getState().errors.clipboard;
+        showToast(`切换失败：${reason ?? "未知错误"}`, { kind: "error" });
+        return;
+      }
+      // 写库成功不等于线程已退出/已重建：回读实际状态后再给出反馈。
+      const s = await clipboardStatus();
+      setStatus(s);
+      setStatusError(null);
+      if (nextPaused) {
+        const stillDraining = s.monitoring || s.maintenance || s.draining;
+        showToast(
+          stillDraining
+            ? "已暂停记录新内容，采集线程正在安全收尾"
+            : "已暂停记录新的剪贴板内容（历史仍可查看）",
+          { kind: stillDraining ? "info" : "success" },
+        );
+      } else if (s.monitoring) {
+        showToast("已恢复监听", { kind: "success" });
+      } else {
+        // 不把「配置已恢复」冒充成「监听已启动」。
+        showToast("已恢复记录，监听线程尚未启动，正在重试", { kind: "warning" });
+      }
     } catch (e) {
       showToast(`切换失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setPauseBusy(false);
     }
   }
 
@@ -1046,14 +1077,21 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                 ? "剪贴板记录已停用，请在设置中开启"
                 : paused
                   ? "恢复监听"
-                  : "暂停记录新的剪贴板内容（仍可查看历史）"
+                  : "暂停记录新的剪贴板内容（停止监听与维护线程，仍可查看历史与粘贴）"
             }
             aria-label={paused ? "恢复监听" : "暂停监听"}
             aria-pressed={paused}
-            disabled={!enabled}
+            aria-busy={pauseBusy}
+            disabled={!enabled || pauseBusy}
             onClick={togglePause}
           >
-            {paused ? <Play size={13} /> : <Pause size={13} />}
+            {pauseBusy ? (
+              <Loader2 size={13} className="spin" aria-hidden="true" />
+            ) : paused ? (
+              <Play size={13} aria-hidden="true" />
+            ) : (
+              <Pause size={13} aria-hidden="true" />
+            )}
           </button>
           <button className="icon-btn sm" data-tip="剪贴板设置" aria-label="剪贴板设置" onClick={goSettings}>
             <SettingsIcon size={13} />

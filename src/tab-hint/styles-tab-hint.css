@@ -1,0 +1,89 @@
+@layer base, theme, ui, menu;
+@layer menu {
+/* ════════════════════════════════════════════════════════════════
+   极简标签悬停提示条（独立透明弹窗）
+
+   窗口尺寸 = 气泡尺寸（后端按本窗口回传的实测尺寸收放），因此这里没有
+   透明留白、没有第二层卡片：区域圆角就是气泡圆角，边缘不会被 Win32
+   区域切出残片。
+
+   视觉与主窗 `.ui-tooltip` 完全同源：同一组 Popover Token
+   （--menu-face / --menu-text / --menu-border / --menu-shadow）、
+   同一圆角与内边距。区别只有一处：宽度由内容决定、不换行、不做两行截断
+   （提示本身就是一句话，换行会把气泡撑高到贴到光标上）。
+
+   性能约定：唯一动画是显示时一次的 100ms 淡入（与 .ui-tooltip 一致）；
+   无轮询、无循环光效、无持续合成。
+   ════════════════════════════════════════════════════════════════ */
+
+/* 入口作用域（关键）：`vite.config.ts` 关闭了 CSS 拆分，六个入口共用同一个
+   CSS 文件。**任何无作用域的 html / body / #root 规则都会作用到主窗与其它弹窗**
+   （历史故障：这里的 `#root{position:absolute;display:flex}` 把主窗
+   `.dock-window` 压成 0 宽，右/上/下停靠的标签被排到窗口外）。
+   因此本文件所有页面级规则都必须挂在 `tab-hint.html` 的 `<html class="tab-hint-page">`
+   之下；新增规则同样遵守（`scripts/check-entry-css.mjs` 会在打包产物上复查）。 */
+html.tab-hint-page,
+html.tab-hint-page body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+html.tab-hint-page body {
+  font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    -apple-system, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html.tab-hint-page #root {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.tab-hint {
+  /* 宽度由文字决定：测量阶段可以超出当前视口，后端随后把窗口收到同一尺寸 */
+  width: max-content;
+  max-width: none;
+  padding: 5px 9px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  color: var(--menu-text);
+  background: var(--menu-face);
+  border: 1px solid var(--menu-border);
+  border-radius: 8px;
+  box-shadow: var(--menu-shadow);
+  /* 双击兜底：即使原生 click-through 未生效，提示条也不拦截任何鼠标语义 */
+  pointer-events: none;
+  animation: tab-hint-in 0.1s ease-out;
+}
+
+@keyframes tab-hint-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-hint {
+    animation: none;
+  }
+}
+
+/* 系统高对比度：靠颜色区分的信息补回边框与文字（与 .ui-tooltip 同规则） */
+@media (forced-colors: active) {
+  .tab-hint {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+}
+}

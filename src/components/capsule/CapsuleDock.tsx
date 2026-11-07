@@ -22,6 +22,7 @@ import ClipboardLite from "./ClipboardLite";
 import InboxLite from "./InboxLite";
 import AppsLite from "./AppsLite";
 import FocusCapsuleBadge from "../focus/FocusCapsuleBadge";
+import { PanelCloseProvider } from "./panelClose";
 import { railStatus, railAriaLabel } from "../../lib/capsuleModel";
 import type { CapsuleCategory } from "../../lib/capsuleModel";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
@@ -30,6 +31,7 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { registerOverlay } from "../../lib/overlayStack";
+import { useEdgeTabMenuActions } from "../../hooks/useEdgeTabMenuActions";
 
 /** 面板映射：轨道四类 + Agent（仅顶部状态球入口，仍打开 AgentsLite）。 */
 const PANELS: Record<CapsuleCategory, ComponentType> = {
@@ -64,6 +66,10 @@ export default function CapsuleDock() {
   // 未加载（false）传 null：徽标显示中性，不把未知伪装成 0
   const status = railStatus(stats, snapshot, Date.now(), inboxCountLoaded ? inboxCount : null);
   const [pulse, setPulse] = useState(0);
+
+  // 极简标签右键菜单的动作桥：菜单窗口只发命令，恢复/形态切换/解除仍走
+  // 本组件挂载的这套吸附引擎（唯一状态机），不复制第二套窗口状态管理。
+  useEdgeTabMenuActions();
 
   // 异常提示音（waiting/failed）已统一由 audioNotification 服务接管：它订阅后端
   // `audio-event`（真实事件 ID），负责去重、冷却、队列与 TTS，不再从胶囊状态派生第二套规则。
@@ -153,7 +159,11 @@ export default function CapsuleDock() {
           {/* 胶囊内的未保存草稿确认：全局确认条在 inert 的完整窗口里，面板内必须
               有一份可见入口，否则拦截后的导航看起来像没反应。 */}
           <CapsuleLeaveGuard />
-          <Panel />
+          {/* 统一的右上角关闭入口：五个面板共用同一个收起动作（closePanel），
+              不新增第二套关闭状态机；provider 只作用于面板子树。 */}
+          <PanelCloseProvider onClose={closePanel}>
+            <Panel />
+          </PanelCloseProvider>
         </section>
       )}
       {(stableTab || transitioning) && (

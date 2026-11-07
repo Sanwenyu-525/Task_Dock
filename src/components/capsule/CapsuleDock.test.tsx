@@ -205,6 +205,60 @@ describe("CapsuleDock · 折叠 / 展开", () => {
   });
 });
 
+describe("CapsuleDock · 面板统一关闭入口", () => {
+  it.each([
+    ["tasks", "关闭任务面板"],
+    ["agents", "关闭Agent面板"],
+    ["clipboard", "关闭剪贴板面板"],
+    ["inbox", "关闭收集箱面板"],
+    ["apps", "关闭应用面板"],
+  ] as const)("%s 面板的 X 只收起面板：不退出、不隐藏胶囊、不改分类", async (category, label) => {
+    useCapsuleStore.setState({ active: category });
+    useAgentsStore.setState({ snapshot: snapshotWith() });
+    const { container } = mountAt("docked-revealed");
+
+    const close = await screen.findByRole("button", { name: label });
+    // 位于面板标题栏内，且在动作区最右
+    const panel = container.querySelector(".capsule-panel") as HTMLElement;
+    expect(panel.contains(close)).toBe(true);
+    expect(close.parentElement?.classList.contains("cap-actions")).toBe(true);
+    expect(close.parentElement?.lastElementChild).toBe(close);
+
+    // 不是窗口拖拽热区：按下不会让标题进入 dragging
+    const head = container.querySelector(".cap-head") as HTMLElement;
+    expect(close.hasAttribute("data-tauri-drag-region")).toBe(false);
+    fireEvent.pointerDown(close, { button: 0, buttons: 1 });
+    expect(head.classList.contains("is-dragging")).toBe(false);
+
+    fireEvent.click(close);
+    // 只调用既有的收起动作（useEdgeSnapStore.collapse），不重新展开、不切分类
+    expect(collapse).toHaveBeenCalledTimes(1);
+    expect(reveal).not.toHaveBeenCalled();
+    expect(useCapsuleStore.getState().active).toBe(category);
+    // 胶囊轨道仍在（收起的是面板，不是整个胶囊）
+    expect(container.querySelector(".capsule-rail")).toBeTruthy();
+  });
+
+  it("收起成功后：面板卸载、焦点不留在已移除的按钮上、分类仍然保留", async () => {
+    useCapsuleStore.setState({ active: "apps" });
+    const { container } = mountAt("docked-revealed");
+    const close = await screen.findByRole("button", { name: "关闭应用面板" });
+    close.focus();
+    fireEvent.click(close);
+    expect(collapse).toHaveBeenCalledTimes(1);
+
+    // 引擎收起成功 → 相位离开 docked-revealed（测试里直接推进 store 模拟引擎）
+    act(() => {
+      useEdgeSnapStore.setState({ phase: "docked-visible" });
+    });
+    await waitFor(() => expect(container.querySelector(".capsule-panel")).toBeNull());
+    // 焦点没有被留在已卸载的关闭按钮上
+    expect(document.activeElement).toBe(document.body);
+    // 关闭不改分类：下次展开仍是应用面板
+    expect(useCapsuleStore.getState().active).toBe("apps");
+  });
+});
+
 describe("CapsuleDock · 分类与相位的单一事实来源", () => {
   it("托盘/热键/重启恢复只切相位：默认分类就有面板内容，不存在空白面板", async () => {
     const { container } = mountAt("docked-revealed");
@@ -574,6 +628,37 @@ describe("CapsuleDock · 极简标签（Edge Tab）", () => {
     expect(container.querySelector(".capsule-rail")).toBeTruthy();
     expect(container.querySelector(".capsule-tab")).toBeTruthy();
     expect(container.querySelector(".capsule-dock")!.className).toContain("is-to-tab");
+  });
+
+  /**
+   * 「极简标签附近多出一条细长条」的结构性防线（2026-11-06）：
+   * 稳定 `docked-tab` 下窗口区域只剩标签矩形，任何被遗留挂载的轨道/分类组/
+   * 选择指示块都会在标签旁画出额外像素。这里锁定「只有标签一个子节点」。
+   */
+  it("稳定极简态只挂载标签：没有轨道 / 分类组 / 选中指示块 / 面板", () => {
+    const { container } = mountTab();
+    expect(container.querySelector(".capsule-tab")).toBeTruthy();
+    expect(container.querySelector(".capsule-rail")).toBeNull();
+    expect(container.querySelector(".cap-nav")).toBeNull();
+    expect(container.querySelector(".cap-btn")).toBeNull();
+    expect(container.querySelector(".cap-edge-tab")).toBeNull();
+    expect(container.querySelector(".cap-sep")).toBeNull();
+    expect(container.querySelector(".capsule-panel")).toBeNull();
+    expect(container.querySelector(".snap-dock-line")).toBeNull();
+    // 根节点只能有标签本身：多余子节点 = 多余绘制层
+    const dock = container.querySelector(".capsule-dock")!;
+    expect(dock.children.length).toBe(1);
+    expect(dock.children[0].className).toContain("capsule-tab");
+    expect(dock.classList.contains("is-tab")).toBe(true);
+  });
+
+  it("过渡结束（tabTransition 归零）后轨道立即卸载", () => {
+    const { container } = mountTab({ tabTransition: "to-tab" });
+    expect(container.querySelector(".capsule-rail")).toBeTruthy();
+
+    act(() => useEdgeSnapStore.setState({ tabTransition: null }));
+    expect(container.querySelector(".capsule-rail")).toBeNull();
+    expect(container.querySelector(".capsule-dock")!.children.length).toBe(1);
   });
 
   it("功能面板离场阶段（相位已推进）仍挂载并带 is-closing，不提前卸载", () => {

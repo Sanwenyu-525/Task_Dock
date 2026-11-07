@@ -14,6 +14,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AlertTriangle, Loader2, Pin, PinOff, RefreshCw, X } from "lucide-react";
 
 import { getSettings } from "../lib/bridge";
+import { attachDragCursorSession } from "../lib/dragCursorSession";
 import { errorMessage } from "../lib/errors";
 import { useLocale } from "../hooks/useLocale";
 import { createSubscriptionScope } from "../lib/subscriptions";
@@ -94,10 +95,9 @@ const efficiencySource: EfficiencySource = {
 
 /**
  * 微件窗口拖拽光标会话：标题条 `.wd-drag` 按下时表面加 `is-dragging`（grabbing），
- * 结束回到 grab。与主窗标题栏同一策略（Tauri 原生拖动进入 Win32 模态循环期间
- * WebView2 收不到 pointerup；结束信号取 pointerup / pointercancel /
- * visibilitychange，以及恢复后的「按键已松开」pointermove）。
- * `blur` 只在起始 120ms 之后结束（起始内为激活扰动）；会话序号隔离新旧会话。
+ * 结束回到 grab。与主窗标题栏、胶囊轨道、工具面板标题共用
+ * `lib/dragCursorSession`（起手守卫 / 会话序号 / 监听成对摘除 / 原生结束信号）。
+ * 原生相位由 `drag_watch.rs` 在本窗口发出（与主窗同一协议，事件不跨窗口）。
  * 只认事件 target 自身的 data-tauri-drag-region（按钮永远不是手柄）。
  */
 function useWidgetDragCursor() {
@@ -106,63 +106,8 @@ function useWidgetDragCursor() {
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
-
-    let endSession: (() => void) | null = null;
-    let sessionSeq = 0;
-
-    const stop = () => {
-      root.classList.remove("is-dragging");
-      endSession?.();
-      endSession = null;
-    };
-
-    const start = () => {
-      stop(); // 上一条会话若因事件缺失没收尾，先清掉再开新的
-      const mySeq = ++sessionSeq;
-      const startedAt = Date.now();
-      const isStale = () => mySeq !== sessionSeq;
-      const inStartChurn = () => Date.now() - startedAt < 120;
-      root.classList.add("is-dragging");
-      const end = () => {
-        if (isStale()) return;
-        stop();
-      };
-      const endIfLate = () => {
-        if (isStale() || inStartChurn()) return;
-        stop();
-      };
-      const onMove = (event: PointerEvent) => {
-        if (event.buttons === 0) endIfLate();
-      };
-      const onBlur = () => endIfLate();
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", end);
-      window.addEventListener("pointercancel", end);
-      window.addEventListener("blur", onBlur);
-      document.addEventListener("visibilitychange", end);
-      endSession = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", end);
-        window.removeEventListener("pointercancel", end);
-        window.removeEventListener("blur", onBlur);
-        document.removeEventListener("visibilitychange", end);
-      };
-    };
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      const target = event.target;
-      if (!(target instanceof Element) || !root.contains(target)) return;
-      if (!target.hasAttribute("data-tauri-drag-region")) return;
-      start();
-    };
-
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      sessionSeq += 1;
-      stop();
-      document.removeEventListener("pointerdown", onPointerDown, true);
-    };
+    const session = attachDragCursorSession(root);
+    return () => session.dispose();
   }, []);
 
   return rootRef;

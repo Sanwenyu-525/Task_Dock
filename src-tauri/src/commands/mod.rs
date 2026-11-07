@@ -13,6 +13,7 @@ pub mod data;
 pub mod focus;
 pub mod global_search;
 pub mod hotkeys;
+pub mod lifecycle;
 pub mod navigation;
 pub mod notes;
 pub mod planning;

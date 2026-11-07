@@ -13,6 +13,7 @@ import {
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useUiStore } from "../store/useUiStore";
 import { applyMode } from "../lib/bridge";
+import { attachDragCursorSession } from "../lib/dragCursorSession";
 import { PRESET_LABELS, VISUAL_PRESETS, resolveVisualPreset } from "../lib/theme";
 import { resolveWindowMode } from "../lib/windowMode";
 import DropdownMenu, { type DropdownMenuItem } from "./ui/DropdownMenu";
@@ -71,25 +72,9 @@ function MenuButton({
 
 /**
  * 窗口拖拽光标会话：标题栏拖拽区按下时进入 `is-dragging`（grabbing），
- * 结束后回到 grab。
- *
- * Tauri 的 drag region 在 mousedown 里调用原生 `startDragging`，进入 Win32 的
- * 模态移动循环；循环期间 WebView2 收不到指针事件（`useEdgeSnap` 同一条实测
- * 结论），所以松手后**不会有 pointerup**。结束信号取「指针事件恢复」：
- * - `pointermove` 只认 `buttons === 0`：拖拽开始前的最后几毫秒仍可能收到
- *   按住状态的移动事件，不能据此提前复位；
- * - `pointerup` / `pointercancel` 覆盖没走到原生循环的普通点击与中断；
- * - `visibilitychange` 覆盖页面隐藏；`blur` 只在「非起始扰动」时结束，
- *   起始 120ms 内的 blur 是原生拖动启动时的激活扰动（见 TooltipLayer
- *   实测注释：startDragging 会激活窗口并引发 focus 扰动），若在此处
- *   立即 stop，会把 `grabbing` 切掉造成闪烁。
- *
- * 起始守卫（120ms）只拦截 blur / buttons=0 的合成移动，pointerup/cancel
- * 始终可结束（真实点击/中断不受影响）；会话序号保证旧会话的迟到事件
- * 不会清理新会话。任一信号先到即摘掉本次会话的全部监听，不会累积。
- * 原生拖动在 mousedown 即进入循环，DOM 无位移可用于 pressed/dragging
- * 区分，故此处不设视觉 pressed 阶段；pressed→dragging 的阈值语义保留给
- * EdgeTab（4px）与应用网格（dragstart）等非原生拖动。
+ * 结束回到 grab。生命周期（起手守卫、会话序号、原生 `WM_EXITSIZEMOVE`
+ * 结束信号、监听成对摘除）统一在 `lib/dragCursorSession` 里实现，
+ * 与胶囊轨道、工具面板标题、桌面微件共用同一套——不在这里维护第二份。
  */
 function useWindowDragCursor() {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -97,68 +82,8 @@ function useWindowDragCursor() {
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
-
-    let endSession: (() => void) | null = null;
-    let sessionSeq = 0;
-
-    const stop = () => {
-      root.classList.remove("is-dragging");
-      endSession?.();
-      endSession = null;
-    };
-
-    const start = () => {
-      stop(); // 上一条会话若因事件缺失没收尾，先清掉再开新的
-      const mySeq = ++sessionSeq;
-      const startedAt = Date.now();
-      const isStale = () => mySeq !== sessionSeq;
-      const inStartChurn = () => Date.now() - startedAt < 120;
-      root.classList.add("is-dragging");
-      const end = () => {
-        if (isStale()) return;
-        stop();
-      };
-      const endIfLate = () => {
-        if (isStale() || inStartChurn()) return;
-        stop();
-      };
-      const onMove = (event: PointerEvent) => {
-        if (event.buttons === 0) endIfLate();
-      };
-      const onBlur = () => endIfLate();
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", end);
-      window.addEventListener("pointercancel", end);
-      window.addEventListener("blur", onBlur);
-      document.addEventListener("visibilitychange", end);
-      endSession = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", end);
-        window.removeEventListener("pointercancel", end);
-        window.removeEventListener("blur", onBlur);
-        document.removeEventListener("visibilitychange", end);
-      };
-    };
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      const target = event.target;
-      if (!(target instanceof Element) || !root.contains(target)) return;
-      // 与 Tauri 一致：只认事件 target 自身的 data-tauri-drag-region
-      //（父级属性不向下传递，按钮/操作区不在这里起拖）。
-      if (!target.hasAttribute("data-tauri-drag-region")) return;
-      start();
-    };
-
-    // 捕获阶段：Tauri 的 drag.js 在 mousedown 里 stopImmediatePropagation，
-    // pointerdown 先于 mousedown，且捕获阶段不受其影响。
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      // 卸载先使在途会话失效，旧会话的迟到事件不再触碰新状态。
-      sessionSeq += 1;
-      stop();
-      document.removeEventListener("pointerdown", onPointerDown, true);
-    };
+    const session = attachDragCursorSession(root);
+    return () => session.dispose();
   }, []);
 
   return rootRef;

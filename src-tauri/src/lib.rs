@@ -12,11 +12,14 @@ pub mod commands;
 pub mod context_menu;
 pub mod db;
 pub mod diagnostics;
+mod drag_signal;
+mod drag_watch;
 pub mod error;
 pub mod focus;
 mod fs_safety;
 pub mod global_search;
 pub mod hotkeys;
+pub mod lifecycle;
 mod magnetic;
 pub mod mcp;
 pub mod navigation;
@@ -28,6 +31,8 @@ pub mod recurrence;
 pub mod resource_cleanup;
 pub mod scheduler;
 pub mod shelf;
+pub mod tab_hint;
+pub mod tab_popups;
 pub mod task_analytics;
 pub mod user_preferences;
 mod widget_windows;
@@ -497,19 +502,27 @@ pub fn run() {
                     error.message()
                 );
                 clipboard_rt.start();
-            } else if clip_config.settings.clipboard_enabled {
+            } else if clip_config.settings.clipboard_enabled
+                && !clip_config.settings.clipboard_paused
+            {
                 clipboard_rt.start();
+            } else if clip_config.settings.clipboard_paused {
+                // 用户明确保存的暂停偏好必须跨重启保持：不创建监听/维护线程，
+                // 而不是先启动再靠 capture_allowed 拒绝采集。恢复时由设置写入重建。
+                tracing::info!("智能剪贴板处于暂停状态：不启动监听与后台维护");
             } else {
                 tracing::info!("智能剪贴板已停用：不启动监听与后台维护");
             }
             handle.manage(clipboard_rt);
 
             // 文件暂存架（v0.8）：独立托管目录 data_dir/shelf，与剪贴板资产互不影响
-            let shelf_state =
+            let shelf_state = Arc::new(
                 shelf::ShelfState::new(db.clone(), data_dir.join("shelf"), handle.clone())
-                    .expect("暂存架目录初始化失败");
-            shelf::start_auto_cleanup(&shelf_state);
-            handle.manage(Arc::new(shelf_state));
+                    .expect("暂存架目录初始化失败"),
+            );
+            // 自动清理开关默认关闭：关闭时不创建常驻线程，而不是每小时醒来空转。
+            shelf_state.apply_auto_cleanup(settings.shelf_auto_cleanup_enabled);
+            handle.manage(shelf_state);
 
             let hub = Arc::new(AgentHub::new(handle.clone(), db.clone()));
             handle.manage(hub.clone());
@@ -564,6 +577,14 @@ pub fn run() {
                         if !magnetic::install(h.0 as isize) {
                             tracing::warn!("拖拽磁力子类化安装失败，吸附手感退化为纯阈值");
                         }
+                        // 拖拽相位：原生移动循环开始/结束都通知本窗口前端，
+                        // 载荷带单调代次（`drag_signal`），前端只结束代次匹配的会话，
+                        // 迟到的旧结束信号不会清掉刚开始的新拖拽。
+                        // 只发给主窗；微件窗口走 `drag_watch` 的同一协议。
+                        let win_for_drag = win.clone();
+                        magnetic::register_drag_hook(Box::new(move |event| {
+                            let _ = win_for_drag.emit(drag_signal::DRAG_EVENT, event);
+                        }));
                     }
                     Err(e) => tracing::warn!("无法获取主窗句柄，拖拽磁力未安装: {e}"),
                 }
@@ -673,6 +694,9 @@ pub fn run() {
 
             // 液态玻璃右键菜单：挂接弹窗窗口事件（失焦关闭 / 圆角区域）
             context_menu::init(&handle);
+
+            // 极简标签悬停提示：独立透明窗口，点击穿透、不抢焦点
+            tab_hint::init(&handle);
 
             // 自定义通知窗口：挂接生命周期事件（WS_EX_NOACTIVATE 在每次显示前确保）
             notification_window::init(&handle);
@@ -865,6 +889,8 @@ pub fn run() {
             // 设置
             commands::settings::get_settings,
             commands::settings::update_settings,
+            // 功能生命周期（只读批量快照；写入仍走 update_settings）
+            commands::lifecycle::lifecycle_status,
             // 诊断日志（本地持久化 / 查询 / 摘要 / 导出 / 清理）
             commands::diagnostics::diagnostics_record,
             commands::diagnostics::diagnostics_status,
@@ -926,17 +952,22 @@ pub fn run() {
             commands::system::apply_window_material,
             commands::system::apply_window_radius,
             commands::system::apply_window_capsule,
-            commands::system::refresh_edge_tab_cursor,
             commands::system::set_magnetic_drag_config,
             commands::system::set_magnetic_dock,
             commands::system::set_undock_anchor,
             commands::system::take_undock_anchor_applied,
             commands::system::cancel_undock_anchor,
             commands::system::notify_ui_ready,
-            // 液态玻璃右键菜单（v0.6；仅托盘右键入口，主窗右键不弹菜单）
+            // 液态玻璃右键菜单（v0.6；托盘右键入口 + 极简标签三项快捷菜单）
             context_menu::hide_context_menu,
             context_menu::fit_context_menu,
             context_menu::context_menu_action,
+            // 极简标签（Edge Tab）：独立悬停提示窗 + 标签旁快捷菜单入口
+            tab_popups::show_tab_context_menu,
+            tab_hint::show_tab_hint,
+            tab_hint::hide_tab_hint,
+            tab_hint::fit_tab_hint,
+            tab_hint::tab_hint_ready,
             // 自定义通知窗口（v0.7 六状态桌面通知）
             notification_window::fit_notification_window,
             notification_window::hide_notification_window,

@@ -1080,14 +1080,78 @@ describe("胶囊面板共享输入与添加入口", () => {
     expect(avatar![1]).toMatch(/box-shadow:\s*none/);
   });
 
-  it("普通应用 hover / active 不绘制背景块，只保留真实图标", () => {
-    const cell = /\.cap-app:hover,\s*\.cap-app:active\s*\{([\s\S]*?)\}/.exec(appCss);
-    expect(cell?.[1], "缺少 .cap-app hover/active 规则").toBeTruthy();
-    expect(cell![1]).toMatch(/background:\s*transparent/);
-    // 图标容器不得再出现 hover / active 背景，也不留 background 过渡
+  // 2026-11-06 设计调整：应用磁贴不再保持全透明，改为轻量 hover / active 反馈
+  // （对照 Win11 开始菜单的手感）。不变的部分：1px 描边走 inset 阴影不参与盒模型，
+  // 图标容器不铺底色、不缩放，浅色 Logo 的对比度不受影响。
+  it("普通应用 hover / active 用半透明底 + 内描边反馈，图标容器仍不铺底色", () => {
+    const hover = /\.cap-app-slot:hover \.cap-app,\s*\.cap-app-add:hover\s*\{([\s\S]*?)\}/.exec(
+      appCss,
+    );
+    expect(hover?.[1], "缺少磁贴 hover 规则").toBeTruthy();
+    expect(hover![1]).toMatch(/background:\s*color-mix\(in srgb, var\(--cap-text-1\) 6%/);
+    // 1px 描边用 inset 阴影：不参与盒模型，网格不会因新增 border 抖动
+    expect(hover![1]).toMatch(/box-shadow:\s*inset 0 0 0 1px/);
+    expect(hover![1]).not.toMatch(/\bborder:/);
+
+    const active = /\.cap-app:active:not\(:disabled\)\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(active?.[1], "缺少磁贴 active 规则").toBeTruthy();
+    expect(active![1]).toMatch(/background:\s*color-mix\(in srgb, var\(--cap-text-1\) 10%/);
+
+    // 图标容器不得出现 hover / active 背景，也不留 background 过渡
     expect(appCss).not.toMatch(/\.cap-app:hover[^{]*\.cap-app-icon\s*\{[^}]*background\s*:/);
     expect(appCss).not.toMatch(/\.cap-app:active[^{]*\.cap-app-icon\s*\{[^}]*background\s*:/);
     expect(appCss).not.toMatch(/\.cap-app-icon\s*\{[^}]*transition:\s*background/);
+  });
+
+  // 2026-11-06：`--cap-panel-base` 此前只有 4 处引用、没有任何定义，
+  // 导致 color-mix 声明失效，启动 spinner 与图片切换按钮的底衬退化成透明。
+  it("启动 spinner / 图片浮层的底衬 Token 有真实定义", () => {
+    expect(appCss).toMatch(/--cap-panel-base:\s*var\(--wing-panel-base\)/);
+    expect(appCss).toMatch(/\.cap-app-spinner\s*\{[^}]*background:\s*color-mix\([^)]*--cap-panel-base/);
+  });
+
+  it("工具面板关闭按钮：28×28、默认透明、hover/active 用中性半透明、不投阴影", () => {
+    const close = /(?:^|\n)\.cap-close\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(close?.[1], "缺少 .cap-close 基础规则").toBeTruthy();
+    expect(close![1]).toMatch(/width:\s*28px/);
+    expect(close![1]).toMatch(/height:\s*28px/);
+    expect(close![1]).toMatch(/background:\s*transparent/);
+    expect(close![1]).toMatch(/border:\s*0/);
+    expect(close![1]).not.toMatch(/box-shadow/);
+    // 常驻红色会让「关闭」看起来像危险操作，这里只允许语义文本色
+    expect(close![1]).not.toMatch(/status-error/);
+
+    const hover = /\.cap-close:hover\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(hover?.[1], "缺少 .cap-close hover 规则").toBeTruthy();
+    expect(hover![1]).toMatch(/color-mix\(in srgb, var\(--cap-text-1\) 7%/);
+
+    const focus = /\.cap-close:focus-visible\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(focus?.[1], "缺少 .cap-close 键盘焦点规则").toBeTruthy();
+    expect(focus![1]).toMatch(/outline:\s*2px solid var\(--accent\)/);
+  });
+
+  it("应用磁贴内容在整格内垂直居中，尺寸与 hover 覆盖范围不变", () => {
+    const tile = /(?:^|\n)\.cap-app\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(tile?.[1], "缺少 .cap-app 基础规则").toBeTruthy();
+    expect(tile![1]).toMatch(/justify-content:\s*center/);
+    expect(tile![1]).toMatch(/align-items:\s*center/);
+    // 高度仍由网格统一变量决定，hover 仍覆盖整格
+    expect(tile![1]).toMatch(/height:\s*var\(--cap-app-cell-h\)/);
+    expect(appCss).toMatch(/\.cap-app-slot:hover \.cap-app[\s\S]{0,200}?background:/);
+  });
+
+  // 2026-11-06 精修：22px 删除热区在 72px 磁贴里与 34px 图标包围盒重叠 3px
+  //（窄窗 65px 磁贴重叠 6.5px），实测 8% 的磁贴采样点命中删除而不是启动。
+  // 收成 18px 后名义尺寸下两者分离；图标容器尺寸不变（不允许为避让而缩图标）。
+  it("应用磁贴删除按钮收在角上，不与居中图标热区重叠", () => {
+    const del = /(?:^|\n)\.cap-app-del\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(del?.[1], "缺少 .cap-app-del 基础规则").toBeTruthy();
+    expect(del![1]).toMatch(/width:\s*18px/);
+    expect(del![1]).toMatch(/height:\s*18px/);
+    expect(del![1]).toMatch(/top:\s*0/);
+    expect(del![1]).toMatch(/right:\s*0/);
+    expect(appCss).toMatch(/\.cap-app-icon\s*\{[^}]*width:\s*36px/);
+    expect(appCss).toMatch(/\.cap-app-icon\s*\{[^}]*height:\s*36px/);
   });
 
   it("添加入口有清晰键盘焦点且不叠第二层焦点框", () => {

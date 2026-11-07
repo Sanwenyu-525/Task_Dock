@@ -3,23 +3,29 @@
 //! 产品边界：
 //! - 不调用 Windows 工作集裁剪、不强制 GC、不结束进程；
 //! - 只释放本应用自己持有、可按需重建的缓存，并返回**实际**释放字节；
+//! - 释放文案是「清空应用内存缓存」，不等于系统可用内存增加相同容量；
 //! - 没有可释放对象时不显示「一键释放」，只显示「当前没有可安全释放的应用缓存」；
-//! - WebView2 子进程内存是各进程工作集之和，共享页可能重复计数，只作规模参考。
+//! - 工作集 / 私有内存 / WebView2 是三个**不同口径**，不做加起来等于 100% 的堆叠图。
+//!
+//! 目录读取走 `useAsyncResource`：StrictMode 双挂载复用同一在途请求，
+//! 不会被「忙碌」标志拦成永久 pending（根因见 `lib/asyncResource`）。
 
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import {
   resourceMemoryCatalog,
   resourceMemoryRelease,
-  type ResourceMemoryCatalog,
   type ResourceMemoryReleaseReport,
   type ResourceProcessDiagnostics,
   type ResourceSnapshot,
 } from "../../lib/bridge";
+import { useAsyncResource } from "../../lib/asyncResource";
 import { formatBytes } from "../../lib/clipboardUi";
 import { localizedErrorMessage } from "../../i18n/errors";
+import { buildBreakdown, computeUsage, formatPercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
+import { ChartSwatch, PRESSURE_LEVEL_KEYS, StackedBar, UsageBar } from "./charts";
 
 const SOURCE_LABELS: Record<string, MessageKey> = {
   tts_memory: "resource.memory.source.tts",
@@ -33,6 +39,8 @@ interface MemorySegmentProps {
   processesLoading: boolean;
   onLoadProcesses: () => void;
   onRefreshSnapshot: () => void;
+  /** 页面级刷新信号：只在本分区可见时递增，切换分区不会误触发。 */
+  refreshSignal: number;
 }
 
 export default function MemorySegment({
@@ -42,149 +50,191 @@ export default function MemorySegment({
   processesLoading,
   onLoadProcesses,
   onRefreshSnapshot,
+  refreshSignal,
 }: MemorySegmentProps) {
   const { t } = useLocale();
-  const [catalog, setCatalog] = useState<ResourceMemoryCatalog | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const catalog = useAsyncResource("resource:memoryCatalog", resourceMemoryCatalog);
   const [releasing, setReleasing] = useState(false);
+  /** 同步锁：同一 tick 内的双击不会等 React 状态刷新，必须用 ref 兜住。 */
+  const releaseBusyRef = useRef(false);
   const [released, setReleased] = useState<ResourceMemoryReleaseReport | null>(null);
+  /** 释放失败只影响「释放」这一操作，不与目录读取错误混用同一条状态。 */
+  const [releaseError, setReleaseError] = useState<string | null>(null);
   const mountedRef = useRef(false);
-  const requestRef = useRef(0);
-  const busyRef = useRef(false);
-
-  async function loadCatalog() {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    const request = ++requestRef.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await resourceMemoryCatalog();
-      if (!mountedRef.current || request !== requestRef.current) return;
-      setCatalog(result);
-    } catch (reason: unknown) {
-      if (!mountedRef.current || request !== requestRef.current) return;
-      setCatalog(null);
-      setError(localizedErrorMessage(reason));
-    } finally {
-      busyRef.current = false;
-      if (mountedRef.current && request === requestRef.current) setLoading(false);
-    }
-  }
+  /** 进程数据由面板持有：首次进入内存页只请求一次（StrictMode 也不重复）。 */
+  const requestedProcessesRef = useRef(false);
+  const prevSignalRef = useRef(refreshSignal);
+  const { reload: reloadCatalog } = catalog;
 
   useEffect(() => {
     mountedRef.current = true;
-    void loadCatalog();
-    // WebView2 子进程数据与进程分区共用：首次进入内存页时按需取一次。
-    if (!processes && !processesLoading) onLoadProcesses();
     return () => {
       mountedRef.current = false;
-      requestRef.current += 1;
     };
+  }, []);
+
+  useEffect(() => {
+    if (requestedProcessesRef.current) return;
+    if (processes || processesLoading) return;
+    requestedProcessesRef.current = true;
+    onLoadProcesses();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** 页头刷新：只在本分区处于激活状态时由面板递增，避免隐藏分区被动重扫。 */
+  useEffect(() => {
+    if (prevSignalRef.current === refreshSignal) return;
+    prevSignalRef.current = refreshSignal;
+    reloadCatalog();
+  }, [refreshSignal, reloadCatalog]);
+
+  /**
+   * 释放事务 = IPC 释放 + **重新读取目录**。锁必须覆盖两段：
+   * 重新采样完成前 `catalog.data` 还是旧值（可释放量 > 0），若只按 `releasing`
+   * 判定，用户在间隙里再点一次就会基于旧数据重复释放。
+   */
+  const releaseLocked = releasing || catalog.loading;
+
   async function release() {
-    if (releasing || !catalog || catalog.totalBytes === 0) return;
+    if (releaseBusyRef.current || releaseLocked || !catalog.data || catalog.data.totalBytes === 0) {
+      return;
+    }
+    releaseBusyRef.current = true;
     setReleasing(true);
     setReleased(null);
-    setError(null);
+    setReleaseError(null);
     try {
       const report = await resourceMemoryRelease();
       if (!mountedRef.current) return;
       setReleased(report);
       // 释放后按同一口径重新采样：目录与工作集都可能变化。
-      await loadCatalog();
-      if (mountedRef.current) onRefreshSnapshot();
+      catalog.reload();
+      onRefreshSnapshot();
     } catch (reason: unknown) {
       if (!mountedRef.current) return;
-      setError(localizedErrorMessage(reason));
+      setReleaseError(localizedErrorMessage(reason));
     } finally {
+      releaseBusyRef.current = false;
       if (mountedRef.current) setReleasing(false);
     }
   }
 
   const memory = snapshot?.memory;
   const process = snapshot?.process;
+  const usage = computeUsage(memory?.totalBytes ?? null, memory?.availableBytes ?? null);
   const webview = processes?.processes.filter(
     (row) => row.association === "managed_child" && row.name.includes("msedgewebview2"),
   );
   const webviewBytes = webview?.reduce((sum, row) => sum + (row.workingSetBytes ?? 0), 0) ?? null;
   const webviewKnown = webview !== undefined && webview.some((row) => row.workingSetBytes !== null);
-  const reclaimed = catalog?.totalBytes ?? null;
+  const reclaimed = catalog.data?.totalBytes ?? null;
+  /** 首次读取仍在进行：这一格该显示「读取中」，而不是「暂不可用」。 */
+  const catalogPending = catalog.loading && !catalog.data;
+  const snapshotPending = snapshotLoading && !snapshot;
+  /** 进程数据未到（首次请求在途）：WebView2 规模只表达「读取中」。 */
+  const processesPending = processesLoading && !processes;
+  const reading = t("resource.reading");
+  const unavailable = t("settings.resourceCleanup.unavailable");
+
+  /** 先按容量降序，再生成切片：条形分段与图例色块必须同序同色。 */
+  const sortedSources = [...(catalog.data?.sources ?? [])].sort(
+    (left, right) => right.bytes - left.bytes,
+  );
+  const catalogSlices = buildBreakdown(
+    sortedSources.map((source) => ({ id: source.id, bytes: source.bytes })),
+    reclaimed,
+  ).map((slice, index) => ({ ...slice, colorIndex: index + 1 }));
 
   return (
     <div className="resource-memory">
       <div className="resource-cleanup-section-head">
         <h3 className="resource-cleanup-heading">{t("resource.memory.title")}</h3>
-        <button
-          type="button"
-          className="btn sm"
-          onClick={() => {
-            void loadCatalog();
-            onRefreshSnapshot();
-          }}
-          disabled={loading || snapshotLoading}
-        >
-          <RefreshCw
-            size={12}
-            className={loading || snapshotLoading ? "spin" : undefined}
-            aria-hidden="true"
-          />{" "}
-          {t("resource.memory.refresh")}
-        </button>
       </div>
 
-      {error && (
+      {catalog.error && (
         <div className="setting-note resource-cleanup-error" role="alert">
-          {t("resource.memory.failed", { error })}
+          {t("resource.memory.failed", { error: catalog.error })}
+          <button type="button" className="btn sm" onClick={catalog.reload}>
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
+      {releaseError && (
+        <div className="setting-note resource-cleanup-error" role="alert">
+          {t("resource.memory.failed", { error: releaseError })}
         </div>
       )}
 
-      <div className="resource-overview-grid">
-        <div className="resource-overview-card">
-          <span className="resource-overview-label">{t("settings.resourceCleanup.memory")}</span>
-          <strong className="resource-overview-value">
-            {memory && memory.totalBytes !== null && memory.availableBytes !== null
-              ? formatBytes(memory.availableBytes)
-              : t("settings.resourceCleanup.unavailable")}
-          </strong>
-          <span className="resource-overview-sub">
-            {memory && memory.totalBytes !== null
-              ? t("resource.memory.systemTotal", { total: formatBytes(memory.totalBytes) })
-              : t("settings.resourceCleanup.unavailable")}
-          </span>
-        </div>
-        <div className="resource-overview-card">
+      <UsageBar
+        usedPercent={snapshotPending ? null : usage.usedPercent}
+        level={snapshotPending ? "unknown" : usage.level}
+        label={t("resource.memory.systemUsage")}
+        value={
+          snapshotPending
+            ? reading
+            : `${formatPercent(usage.usedPercent) ?? unavailable} · ${t(
+                PRESSURE_LEVEL_KEYS[usage.level],
+              )}`
+        }
+        ariaLabel={t("resource.aria.memoryBar", {
+          percent: formatPercent(usage.usedPercent) ?? unavailable,
+          available:
+            usage.availableBytes === null ? unavailable : formatBytes(usage.availableBytes),
+          total: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
+          level: t(PRESSURE_LEVEL_KEYS[usage.level]),
+        })}
+        detail={
+          usage.totalBytes === null
+            ? unavailable
+            : t("settings.resourceCleanup.memoryValue", {
+                available:
+                  usage.availableBytes === null
+                    ? unavailable
+                    : formatBytes(usage.availableBytes),
+                total: formatBytes(usage.totalBytes),
+              })
+        }
+      />
+
+      {/* 三个应用内存口径互不互斥：并列展示，不做堆叠图。 */}
+      <div className="resource-metric-strip">
+        <div className="resource-metric">
           <span className="resource-overview-label">{t("resource.memory.workingSet")}</span>
-          <strong className="resource-overview-value">
-            {process?.workingSetBytes === null || process?.workingSetBytes === undefined
-              ? t("settings.resourceCleanup.unavailable")
-              : formatBytes(process.workingSetBytes)}
+          <strong className="resource-metric-value">
+            {snapshotPending
+              ? reading
+              : process?.workingSetBytes === null || process?.workingSetBytes === undefined
+                ? unavailable
+                : formatBytes(process.workingSetBytes)}
           </strong>
-          <span className="resource-overview-sub">{t("resource.memory.workingSetNote")}</span>
+          <span className="resource-metric-sub">{t("resource.memory.workingSetNote")}</span>
         </div>
-        <div className="resource-overview-card">
+        <div className="resource-metric">
           <span className="resource-overview-label">{t("resource.memory.private")}</span>
-          <strong className="resource-overview-value">
-            {process?.privateBytes === null || process?.privateBytes === undefined
-              ? t("settings.resourceCleanup.unavailable")
-              : formatBytes(process.privateBytes)}
+          <strong className="resource-metric-value">
+            {snapshotPending
+              ? reading
+              : process?.privateBytes === null || process?.privateBytes === undefined
+                ? unavailable
+                : formatBytes(process.privateBytes)}
           </strong>
-          <span className="resource-overview-sub">{t("resource.memory.privateNote")}</span>
+          <span className="resource-metric-sub">{t("resource.memory.privateNote")}</span>
         </div>
-        <div className="resource-overview-card">
+        <div className="resource-metric">
           <span className="resource-overview-label">{t("resource.memory.webview")}</span>
-          <strong className="resource-overview-value">
-            {!webviewKnown || webviewBytes === null
-              ? t("settings.resourceCleanup.unavailable")
-              : formatBytes(webviewBytes)}
+          <strong className="resource-metric-value">
+            {processesPending
+              ? reading
+              : !webviewKnown || webviewBytes === null
+                ? unavailable
+                : formatBytes(webviewBytes)}
           </strong>
-          <span className="resource-overview-sub">
+          <span className="resource-metric-sub">
             {webview
               ? t("resource.memory.webviewCount", { count: webview.length })
-              : t("resource.memory.webviewPending")}
+              : processesPending
+                ? reading
+                : t("resource.memory.webviewPending")}
           </span>
         </div>
       </div>
@@ -200,40 +250,77 @@ export default function MemorySegment({
         </div>
         <p className="setting-note">{t("resource.memory.reclaimableDesc")}</p>
 
-        {catalog && (
-          <ul className="resource-storage-list">
-            {catalog.sources.map((source) => (
-              <li className="resource-storage-row" key={source.id}>
-                <span className="resource-storage-name">
-                  {SOURCE_LABELS[source.id] ? t(SOURCE_LABELS[source.id]) : source.id}
-                </span>
-                <span className="resource-storage-meta">
-                  {source.status === "empty"
-                    ? t("resource.memory.sourceEmpty")
-                    : `${formatBytes(source.bytes)} · ${t("resource.memory.sourceEntries", {
-                        count: source.entries,
-                      })}`}
-                </span>
-              </li>
-            ))}
-          </ul>
+        {catalogPending && (
+          <p className="setting-note" role="status">
+            {t("resource.reading")}
+          </p>
+        )}
+        {/* 刷新中沿用旧目录避免闪烁，但明说这是上次结果；释放按钮已按锁禁用。 */}
+        {catalog.loading && catalog.data && (
+          <p className="setting-note" role="status">
+            {t("resource.updating")}
+          </p>
         )}
 
-        {catalog && catalog.totalBytes === 0 && (
+        {catalog.data && catalog.data.totalBytes > 0 && (
+          <>
+            <StackedBar
+              slices={catalogSlices}
+              ariaLabel={t("resource.aria.reclaim", {
+                total: formatBytes(catalog.data.totalBytes),
+              })}
+              emptyLabel={t("resource.memory.nothingToRelease")}
+            />
+            <ul className="resource-storage-list">
+              {sortedSources.map((source, index) => {
+                const percent = catalogSlices[index]?.percent ?? null;
+                return (
+                  <li className="resource-storage-row" key={source.id}>
+                    <ChartSwatch colorIndex={index + 1} />
+                    <span className="resource-storage-name">
+                      {SOURCE_LABELS[source.id] ? t(SOURCE_LABELS[source.id]) : source.id}
+                    </span>
+                    <span className="resource-storage-share">
+                      {source.bytes === 0 || percent === null
+                        ? "—"
+                        : t("resource.memory.reclaimShare", { percent: formatPercent(percent) ?? "—" })}
+                    </span>
+                    <span className="resource-storage-meta">
+                      {source.status === "empty"
+                        ? t("resource.memory.sourceEmpty")
+                        : `${formatBytes(source.bytes)} · ${t("resource.memory.sourceEntries", {
+                            count: source.entries,
+                          })}`}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="setting-note">{t("resource.memory.reclaimShareNote")}</p>
+          </>
+        )}
+
+        {catalog.data && catalog.data.totalBytes === 0 && (
           <p className="setting-note" role="status">
             {t("resource.memory.nothingToRelease")}
           </p>
         )}
 
-        {catalog && catalog.totalBytes > 0 && (
+        {catalog.data && catalog.data.totalBytes > 0 && (
           <div className="resource-cleanup-actions">
             <button
               type="button"
               className="btn sm"
               onClick={() => void release()}
-              disabled={releasing}
+              /* 锁覆盖「释放 + 重新读目录」：重新采样期间旧目录仍显示可释放量，
+                 但绝不能据此再次释放（一次用户意图只执行一次）。 */
+              disabled={releaseLocked}
             >
-              <RefreshCw size={12} className={releasing ? "spin" : undefined} aria-hidden="true" />{" "}
+              <RefreshCw
+                size={12}
+                className={releaseLocked ? "spin" : undefined}
+                aria-hidden="true"
+              />{" "}
               {t(releasing ? "resource.memory.releasing" : "resource.memory.release")}
             </button>
             <span className="resource-cleanup-selection-summary">
@@ -259,6 +346,7 @@ export default function MemorySegment({
                 </li>
               ))}
             </ul>
+            <p className="setting-note">{t("resource.memory.releaseNote")}</p>
           </div>
         )}
 

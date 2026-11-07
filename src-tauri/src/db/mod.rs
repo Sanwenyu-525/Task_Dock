@@ -2044,6 +2044,10 @@ pub struct Settings {
     /// 行动中心：关闭后停止聚合刷新与徽标，原始事件仍照常入库
     #[serde(default = "default_true")]
     pub actions_enabled: bool,
+    /// 提醒调度暂停：暂停期间到期提醒**保持未触发**（不写 fired、不推进重复任务），
+    /// 恢复后由既有过期补偿语义补触发。任务、提醒数据与通知历史都不删除。
+    #[serde(default)]
+    pub reminders_paused: bool,
     // ── 智能剪贴板（v0.5；全部带默认值，旧库无键也能反序列化）──
     /// 全局监听开关（关闭后不再记录任何新的剪贴板内容）
     #[serde(default = "default_true")]
@@ -4290,6 +4294,23 @@ mod tests {
         conn.execute_batch(sql).unwrap();
         assert_eq!(read("visual_preset"), "\"frosted\"");
         assert_eq!(read("theme"), "\"dark\"");
+    }
+
+    /// 提醒暂停键（v0.15）：旧库缺键默认 false，写入 true 后可读回；
+    /// 它是持久化意图，重启后保持不变（调度器每 tick 读取）。
+    #[test]
+    fn reminders_paused_defaults_false_and_persists() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(
+            !Settings::load(&db).unwrap().reminders_paused,
+            "旧库/缺键必须默认不暂停"
+        );
+        db.set_setting("reminders_paused", serde_json::json!(true))
+            .unwrap();
+        assert!(Settings::load(&db).unwrap().reminders_paused);
+        db.set_setting("reminders_paused", serde_json::json!(false))
+            .unwrap();
+        assert!(!Settings::load(&db).unwrap().reminders_paused);
     }
 
     /// 全新安装：seed 一次性写入默认值并标记来源，读取本身绝不自愈写入。

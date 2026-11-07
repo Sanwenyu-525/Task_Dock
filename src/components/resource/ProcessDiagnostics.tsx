@@ -9,7 +9,7 @@
 //! 数据由资源管理面板持有（内存分区也要用同一份 WebView2 子进程数据），
 //! 本组件只负责呈现、展开/收起与排序。
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ListTree, RefreshCw } from "lucide-react";
 import {
   type ResourceProcessAssociation,
@@ -22,9 +22,11 @@ import {
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
 import { formatDuration, formatLocalStamp } from "../../lib/format";
+import { formatPercent, relativePercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import { Select } from "../ui";
+import { MiniMeter } from "./charts";
 
 export interface ProcessDiagnosticsProps {
   /** 概览快照自带自身进程指标：进程列表未加载前也能展示真实数据。 */
@@ -36,6 +38,8 @@ export interface ProcessDiagnosticsProps {
   /** 首次加载（面板负责忙碌去重）。 */
   onLoad: () => void;
   onRefresh: () => void;
+  /** 页面级刷新信号：只在本分区可见时递增。 */
+  refreshSignal?: number;
 }
 
 type SortKey = "cpu" | "memory";
@@ -73,10 +77,12 @@ function sampledLabel(iso: string | null | undefined): string | null {
   return stamp ? `${stamp.date} ${stamp.time} ${stamp.zone}` : null;
 }
 
-/** 进程行：名称截断、指标等宽；不渲染命令行、路径或任何敏感信息。 */
-function ProcessLine({ row }: { row: ResourceProcessRow }) {
+/** 进程行：名称截断、指标等宽；不渲染命令行、路径或任何敏感信息。
+ *  CPU 条用接口的整机归一化百分比；内存条只表达「相对当前列表最大值」的长度。 */
+function ProcessLine({ row, maxMemory }: { row: ResourceProcessRow; maxMemory: number }) {
   const { t } = useLocale();
   const uptime = uptimeLabel(row.uptimeSecs);
+  const memoryRelative = relativePercent(row.workingSetBytes, maxMemory);
   return (
     <li className="resource-process-row">
       <div className="resource-process-main">
@@ -117,6 +123,50 @@ function ProcessLine({ row }: { row: ResourceProcessRow }) {
           {t(STATUS_LABELS[row.status])}
         </span>
       </div>
+      <div className="resource-process-bars">
+        <div className="resource-process-bar">
+          <span className="resource-process-bar-label">
+            {t("settings.resourceCleanup.processCpuLabel")}
+          </span>
+          <MiniMeter
+            percent={row.cpuPercent}
+            tone="neutral"
+            ariaLabel={t("resource.aria.processCpu", {
+              name: row.name,
+              percent:
+                row.cpuPercent === null
+                  ? t("settings.resourceCleanup.processUnknownValue")
+                  : `${row.cpuPercent.toFixed(1)}%`,
+            })}
+          />
+          <span className="resource-process-bar-note">
+            {row.cpuPercent === null
+              ? t("settings.resourceCleanup.processUnknownValue")
+              : `${row.cpuPercent.toFixed(1)}%`}
+          </span>
+        </div>
+        <div className="resource-process-bar">
+          <span className="resource-process-bar-label">
+            {t("settings.resourceCleanup.processMemoryLabel")}
+          </span>
+          <MiniMeter
+            percent={memoryRelative}
+            tone="neutral"
+            ariaLabel={t("resource.aria.processMemory", {
+              name: row.name,
+              percent:
+                formatPercent(memoryRelative) || t("settings.resourceCleanup.processUnknownValue"),
+            })}
+          />
+          <span className="resource-process-bar-note">
+            {memoryRelative === null
+              ? ""
+              : t("resource.process.memoryRelative", {
+                  percent: formatPercent(memoryRelative) ?? "",
+                })}
+          </span>
+        </div>
+      </div>
     </li>
   );
 }
@@ -140,10 +190,20 @@ export default function ProcessDiagnostics({
   error,
   onLoad,
   onRefresh,
+  refreshSignal = 0,
 }: ProcessDiagnosticsProps) {
   const { t } = useLocale();
   const [open, setOpen] = useState(false);
   const [sort, setSort] = useState<SortKey>("cpu");
+  const prevSignalRef = useRef(refreshSignal);
+
+  /** 页头刷新只在列表已展开时生效：未展开不应触发新的进程枚举。 */
+  useEffect(() => {
+    if (prevSignalRef.current === refreshSignal) return;
+    prevSignalRef.current = refreshSignal;
+    if (open) onRefresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal]);
 
   function toggle() {
     if (open) {
@@ -160,6 +220,11 @@ export default function ProcessDiagnostics({
   const others = sortRows(
     data?.processes.filter((row) => row.association !== "self") ?? [],
     sort,
+  );
+  /** 内存条的分母：当前列表中最大的有效工作集（不是系统内存）。 */
+  const maxMemory = others.reduce(
+    (max, row) => Math.max(max, row.workingSetBytes ?? 0),
+    0,
   );
   const sampled = sampledLabel(selfRow ? data?.sampledAt : snapshot?.sampledAt);
   const selfUptime = self ? uptimeLabel(self.uptimeSecs) : null;
@@ -297,11 +362,18 @@ export default function ProcessDiagnostics({
             </p>
           )}
           {others.length > 0 && (
-            <ul className="resource-process-list">
-              {others.map((row) => (
-                <ProcessLine key={`${row.pid}-${row.name}`} row={row} />
-              ))}
-            </ul>
+            <>
+              <ul className="resource-process-list">
+                {others.map((row) => (
+                  <ProcessLine
+                    key={`${row.pid}-${row.name}`}
+                    row={row}
+                    maxMemory={maxMemory}
+                  />
+                ))}
+              </ul>
+              <p className="setting-note">{t("resource.process.relativeNote")}</p>
+            </>
           )}
           {data?.truncated && (
             <p className="setting-note">

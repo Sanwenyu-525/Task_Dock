@@ -255,21 +255,11 @@ fn capsule_for(hwnd: isize) -> Option<CapsuleParams> {
 ///
 /// 停靠态窗口形状是轨道/面板而非整窗矩形，前端也不渲染四角缩放热区；
 /// 角热区光标维护（`window_cursor`）据此跳过，避免在胶囊角上错误改写光标。
+/// **Edge Tab 的光标不在这里处理**：标签拖动是前端指针拖动，光标由 WebView2 的
+/// CSS `cursor` 决定（见 `docs/ui-themes/13-capsule-redesign.md`）。
 #[cfg(windows)]
 pub fn is_capsule_mode(hwnd: isize) -> bool {
     capsule_for(hwnd).is_some()
-}
-
-/// 当前胶囊模式是否为 Edge Tab（极简吸附标签）。
-#[cfg(windows)]
-pub fn is_tab_mode(hwnd: isize) -> bool {
-    capsule_for(hwnd).map(|p| p.tab).unwrap_or(false)
-}
-
-/// 当前 Edge Tab 的停靠边（0=left 1=right 2=top 3=bottom）。
-#[cfg(windows)]
-pub fn capsule_tab_edge(hwnd: isize) -> Option<u8> {
-    capsule_for(hwnd).filter(|p| p.tab).map(|p| p.edge)
 }
 
 // ── 启动空白区域 ─────────────────────────────────────────────

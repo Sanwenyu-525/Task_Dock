@@ -12,6 +12,7 @@ import SearchField from "../ui/SearchField";
 import AgentIcon from "../ui/AgentIcon";
 import AppIcon from "../ui/AppIcon";
 import { searchApps, APP_PAGE_SIZE } from "../../lib/appSearch";
+import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import {
   deriveScanState,
   useNavigationStore,
@@ -1331,7 +1332,11 @@ export default function AppPicker({
                               className={`picker-app ${selected ? "selected" : ""} ${already ? "is-saved" : ""}`}
                               disabled={already || batchBusy}
                               onClick={() => toggleSelect(a.app_key)}
-                              data-tip={a.display_name}
+                              // 名称完整显示时不弹同名提示；只有真被省略号截断才挂完整名称。
+                              onMouseEnter={(e) => syncTruncatedTip(e.currentTarget, ".picker-app-name", a.display_name)}
+                              onMouseLeave={(e) => clearTip(e.currentTarget)}
+                              onFocus={(e) => syncTruncatedTip(e.currentTarget, ".picker-app-name", a.display_name)}
+                              onBlur={(e) => clearTip(e.currentTarget)}
                             >
                               <AppIcon appKey={a.app_key} name={a.display_name} size={30} />
                               <span className="picker-app-name">{a.display_name}</span>

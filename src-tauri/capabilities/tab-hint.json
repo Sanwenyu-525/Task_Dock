@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tab-hint",
+  "description": "极简标签悬停提示窗口权限：事件订阅（tab-hint-show / theme-changed / visual-preset-changed）+ 核心能力；窗口尺寸与显隐由后端负责，前端不需要窗口权限",
+  "windows": ["tab-hint"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

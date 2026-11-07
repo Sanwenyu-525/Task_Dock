@@ -1,0 +1,272 @@
+//! 窗口拖拽光标会话（主窗标题栏 / 胶囊轨道 / 工具面板标题 / 桌面微件共用）。
+//!
+//! ## 为什么需要原生信号
+//! `data-tauri-drag-region` 的按下会调用 `startDragging`，进入 Win32 的**系统模态
+//! 移动循环**；循环期间 WebView2 收不到任何指针事件，所以松手时没有 `pointerup`。
+//! 旧实现只能在「指针恢复派发」时补一条 `pointermove`（`buttons === 0`）来收尾：
+//! 用户松开左键后必须再动一下鼠标，`grabbing` 才会消失——这正是要修的观感问题。
+//!
+//! 真正的结束信号在窗口过程里：`WM_EXITSIZEMOVE`。原生侧（主窗 `magnetic.rs`、
+//! 微件 `drag_watch.rs`）在循环开始/结束时各发一次 `window-drag`
+//! （载荷 `{ phase, generation }`，见 `src-tauri/src/drag_signal.rs`）。
+//!
+//! ## 代次（generation）解决的是跨会话竞态
+//! 事件是异步的：旧拖拽的结束信号可能在用户**已经开始下一次拖拽**之后才被消费。
+//! 如果收到结束就结束全部会话，就会出现「鼠标还按着、抓手指针却没了」。
+//! 因此：
+//!
+//! - 会话在收到 `phase: "start"` 时绑定该代次（`generation`）；
+//! - 只有代次**完全匹配**的 `phase: "end"` 才会结束它；
+//! - 尚未绑定代次的会话（例如 `startDragging` 没走到原生循环）不受任何原生
+//!   结束信号影响，继续由 `pointerup` / `pointermove` 兜底收尾。
+//!
+//! 重复的结束信号是幂等的（会话已结束后不再是活动会话，遍历不到）。
+//!
+//! ## 仍然保留的兜底路径
+//! 不是所有拖动都走原生循环（例如没有 drag-region 的普通点击、拖动中途失焦、
+//! 页面隐藏），所以 `pointerup` / `pointercancel` / `visibilitychange` 仍然结束会话；
+//! `pointermove` 只认 `buttons === 0`，`blur` 只在起始 120ms 之后生效（起始内的
+//! blur 是 `startDragging` 激活窗口造成的扰动，见 TooltipLayer 的实测结论）。
+//!
+//! ## 不会做什么
+//! - 不模拟鼠标移动、不轮询、不用固定 timeout 猜拖动是否结束；
+//! - 不合并窗口几何逻辑：这里只负责「按下 / 结束 / 干净摘监听」，
+//!   吸附、磁力、区域裁剪仍由 `useEdgeSnap` 与原生移植层负责。
+//!
+//! 会话结束（任何路径）都会从活动集合移除；组件卸载时 `dispose()` 幂等，
+//! 监听成对摘除，不会累积。
+
+import { useEffect, useRef, type RefObject } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { isTauri } from "@tauri-apps/api/core";
+
+/** 拖拽期间加在宿主上的类名（CSS 侧统一切 `grabbing`）。 */
+export const DRAG_SESSION_CLASS = "is-dragging";
+
+/** 起始扰动窗口：这段时间内的 blur / `buttons=0` 移动不算结束。 */
+const START_CHURN_MS = 120;
+
+/**
+ * 原生拖拽相位事件名（窗口级 emit，只发给发出它的那个窗口）。
+ * 载荷：`{ phase: "start" | "end", generation: number }`。
+ */
+export const NATIVE_DRAG_EVENT = "window-drag";
+
+/** 一次进行中的拖拽会话。 */
+interface LiveSession {
+  /** 绑定到的原生移动循环代次；`null` = 尚未收到 start（非原生拖拽路径）。 */
+  generation: number | null;
+  ended: boolean;
+  teardown: (() => void) | null;
+  /** 结束本会话（幂等，可从任意结束路径调用）。 */
+  end: () => void;
+}
+
+/** 当前存活会话（同一个 webview 内最多一个在拖）。会话结束即移除。 */
+const activeSessions = new Set<LiveSession>();
+
+let bridgeInstalled = false;
+
+function parseGeneration(payload: unknown): number | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const value = (payload as { generation?: unknown }).generation;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parsePhase(payload: unknown): "start" | "end" | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const value = (payload as { phase?: unknown }).phase;
+  return value === "start" || value === "end" ? value : null;
+}
+
+/** 把代次绑定到当前所有未结束的会话（新一轮移动循环开始）。 */
+function bindGeneration(generation: number): void {
+  for (const session of activeSessions) {
+    if (session.ended) continue;
+    session.generation = generation;
+  }
+}
+
+/** 结束代次匹配的会话；代次不匹配的（新会话）保持不变。 */
+function endMatchingSessions(generation: number): void {
+  for (const session of [...activeSessions]) {
+    if (session.ended) continue;
+    if (session.generation !== generation) continue;
+    session.end();
+  }
+}
+
+/**
+ * 安装原生拖拽相位桥：每个 webview 入口调用一次（主窗 `main.tsx`、微件 `widgets/main.tsx`）。
+ * 浏览器预览没有 Tauri 运行时，直接跳过；重复调用是 no-op。
+ */
+export function installNativeDragBridge(): void {
+  if (bridgeInstalled || !isTauri()) return;
+  bridgeInstalled = true;
+  void listen(NATIVE_DRAG_EVENT, (event) => {
+    const generation = parseGeneration(event.payload);
+    const phase = parsePhase(event.payload);
+    // 协议不完整的事件不猜语义：宁可交给指针事件兜底，也不误清新会话。
+    if (generation === null || phase === null) return;
+    if (phase === "start") bindGeneration(generation);
+    else endMatchingSessions(generation);
+  }).catch(() => {
+    // 事件系统不可用（例如集成环境未注入）：保留指针事件兜底路径
+    bridgeInstalled = false;
+  });
+}
+
+export interface DragCursorSessionOptions {
+  /**
+   * 会话状态变化。需要把「是否拖动中」画进 React 输出的组件必须订阅它：
+   * React 重渲染会用 className 覆盖掉直接改的 DOM 类，二者需保持一致。
+   */
+  onActiveChange?: (active: boolean) => void;
+}
+
+export interface DragCursorSessionHandle {
+  /** 摘除监听并结束会话（幂等；组件卸载时调用）。 */
+  dispose: () => void;
+}
+
+/**
+ * 在 `root` 上挂一个拖拽光标会话。
+ *
+ * 起拖条件与 Tauri 的 drag.js 完全一致：**事件 target 自身**带
+ * `data-tauri-drag-region`（父级属性不向下传递），因此按钮、输入框、
+ * 列表项这些后代元素不会被误判成拖拽手柄。
+ */
+export function attachDragCursorSession(
+  root: HTMLElement,
+  options: DragCursorSessionOptions = {},
+): DragCursorSessionHandle {
+  let current: LiveSession | null = null;
+  let disposed = false;
+  let active = false;
+
+  const setActive = (next: boolean) => {
+    if (active === next) return;
+    active = next;
+    if (next) root.classList.add(DRAG_SESSION_CLASS);
+    else root.classList.remove(DRAG_SESSION_CLASS);
+    options.onActiveChange?.(next);
+  };
+
+  /** 结束某个会话：幂等，且无论从哪条路径结束都会从活动集合移除。 */
+  const finish = (session: LiveSession) => {
+    if (session.ended) return;
+    session.ended = true;
+    activeSessions.delete(session);
+    session.teardown?.();
+    session.teardown = null;
+    if (current === session) current = null;
+    setActive(false);
+  };
+
+  const stopCurrent = () => {
+    if (current) finish(current);
+  };
+
+  const start = () => {
+    if (disposed) return;
+    stopCurrent(); // 上一条会话若因事件缺失未收尾，先清掉再开新的
+
+    const session: LiveSession = {
+      generation: null,
+      ended: false,
+      teardown: null,
+      end: () => finish(session),
+    };
+    current = session;
+    activeSessions.add(session);
+    setActive(true);
+
+    const startedAt = Date.now();
+    const inStartChurn = () => Date.now() - startedAt < START_CHURN_MS;
+    // 结束判定统一看 `session.ended`：会话被新会话顶掉后，旧监听即使晚到也不会
+    // 触碰当前状态（旧监听在同一时刻已被 teardown 摘除，这里是双保险）。
+    const end = () => {
+      if (session.ended) return;
+      finish(session);
+    };
+    const endIfLate = () => {
+      if (session.ended || inStartChurn()) return;
+      finish(session);
+    };
+    const onMove = (event: PointerEvent) => {
+      // 拖拽开始前最后几毫秒仍可能收到按住状态的移动事件，不能据此提前复位
+      if (event.buttons === 0) endIfLate();
+    };
+    const onBlur = () => endIfLate();
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", end);
+
+    session.teardown = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", end);
+    };
+  };
+
+  const onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) return; // 右键/中键不是窗口拖拽
+    const target = event.target;
+    if (!(target instanceof Element) || !root.contains(target)) return;
+    if (!target.hasAttribute("data-tauri-drag-region")) return;
+    start();
+  };
+
+  // 捕获阶段：Tauri 的 drag.js 在 mousedown 里 stopImmediatePropagation，
+  // pointerdown 先于 mousedown，且捕获阶段不受其影响。
+  document.addEventListener("pointerdown", onPointerDown, true);
+
+  return {
+    dispose: () => {
+      disposed = true;
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      stopCurrent();
+    },
+  };
+}
+
+/**
+ * 把一个元素挂成拖拽会话宿主，返回它的 ref。
+ *
+ * 用法：`const ref = useDragRegion<HTMLElement>(); <header ref={ref} …>`。
+ * 只有「事件 target 自身」带 `data-tauri-drag-region` 才不会起拖，这是
+ * Tauri 的命中语义，组件里按需给背景/文字加属性即可，不需要包一层手柄。
+ */
+export function useDragRegion<T extends HTMLElement>(
+  options: DragCursorSessionOptions = {},
+): RefObject<T | null> {
+  const ref = useRef<T | null>(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const session = attachDragCursorSession(node, {
+      onActiveChange: (active) => optionsRef.current.onActiveChange?.(active),
+    });
+    return () => session.dispose();
+  }, []);
+
+  return ref;
+}
+
+/**
+ * 仅测试使用：当前活动会话数。
+ *
+ * 用于断言「每次拖拽结束后活动集合回到 0」；生产代码不读取该值，
+ * 也不把它暴露成诊断/遥测接口。
+ */
+export function __activeDragSessionCount(): number {
+  return activeSessions.size;
+}

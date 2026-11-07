@@ -332,6 +332,19 @@ const shim = `
     captureAllowed: true,
     monitor: { captured: 128, ignored: 6, errors: 0, last_at: iso(1) },
   };
+  // 功能运行分区走查夹具：resident / task / shared / ondemand 四类都覆盖。
+  const lifecycleStatus = [
+    { id: "clipboard", category: "resident", state: "running", intent: "running", controllable: true, background: ["clipboard-monitor", "clipboard-maintenance"], detail: { monitoring: true, maintenance: true, draining: false, pasteActive: false, configOrigin: "settings" }, error: null },
+    { id: "shelf_cleanup", category: "resident", state: "paused", intent: "paused", controllable: true, background: [], detail: { enabled: false, running: false }, error: null },
+    { id: "reminders", category: "resident", state: "running", intent: "running", controllable: true, background: ["shared-scheduler-tick"], detail: { sharedScheduler: true }, error: null },
+    { id: "voice", category: "resident", state: "idle", intent: "running", controllable: true, background: [], detail: { ttsEnabled: true, soundEnabled: true }, error: null },
+    { id: "actions", category: "task", state: "running", intent: "running", controllable: true, background: [], detail: { consumerGated: true }, error: null },
+    { id: "workflows", category: "task", state: "idle", intent: "running", controllable: false, background: [], detail: { perRunPause: true }, error: null },
+    { id: "agents", category: "shared", state: "running", intent: "running", controllable: false, background: ["agent-ingest-pipeline", "agent-adapters"], detail: { stopWouldLoseEvents: true }, error: null },
+    { id: "diagnostics", category: "shared", state: "running", intent: "running", controllable: false, background: ["diagnostics-writer"], detail: { alwaysOn: true }, error: null },
+    { id: "ocr", category: "ondemand", state: "idle", intent: "running", controllable: false, background: [], detail: { autoOcr: false }, error: null },
+    { id: "widgets", category: "ondemand", state: "idle", intent: "running", controllable: false, background: [], detail: { perWidget: true }, error: null },
+  ];
   // 「导出给 Agent」面板夹具：覆盖窗口可用 / 已安装 / 未安装与超长名称。
   const agentCap = (supported, evidence, note) => ({ supported, evidence, note });
   const clipboardAgentTargets = [
@@ -488,6 +501,7 @@ const shim = `
     switch (cmd) {
       case "get_settings": return settings;
       case "update_settings": return { ...settings, ...(args?.patch || {}) };
+      case "lifecycle_status": return lifecycleStatus;
       case "list_tasks": {
         const f = args?.filter || {};
         const q2 = (f.search || "").trim();

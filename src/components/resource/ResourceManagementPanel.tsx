@@ -5,17 +5,19 @@
 //! - 页面挂载时只取一次资源快照；切换分区不重复请求（分区按首次访问挂载并保持）；
 //! - 磁盘清理、磁盘分布、内存目录、进程列表都在各自首次进入时按需请求；
 //! - 没有定时器/轮询；卸载后忽略在途响应；
-//! - 同一时刻的手动刷新由 ref 去重。
+//! - 手动刷新与失败重试走「最新请求优先」，不再用忙碌标志拦下必要的重新加载
+//!   （StrictMode 双挂载会永久停在 loading，见 `lib/asyncResource` 模块文档）。
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { HardDrive, RefreshCw } from "lucide-react";
 import {
   resourceProcessDiagnostics,
   resourceSnapshot,
-  type ResourceProcessDiagnostics,
   type ResourceSnapshot,
 } from "../../lib/bridge";
-import { localizedErrorMessage } from "../../i18n/errors";
+import { useAsyncResource } from "../../lib/asyncResource";
+import { formatBytes } from "../../lib/clipboardUi";
+import { computeUsage, formatPercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import ResourceCleanupSection from "../settings/ResourceCleanupSection";
@@ -23,12 +25,15 @@ import ProcessDiagnostics from "./ProcessDiagnostics";
 import DiskStoragePanel from "./DiskStoragePanel";
 import MemorySegment from "./MemorySegment";
 import OverviewSegment from "./OverviewSegment";
+import RuntimeModulesSection from "./RuntimeModulesSection";
+import { PRESSURE_LEVEL_KEYS, UsageBar } from "./charts";
 
-const SEGMENTS = ["overview", "disk", "memory", "process"] as const;
+const SEGMENTS = ["overview", "modules", "disk", "memory", "process"] as const;
 type Segment = (typeof SEGMENTS)[number];
 
 const SEGMENT_LABELS: Record<Segment, MessageKey> = {
   overview: "resource.segment.overview",
+  modules: "resource.segment.modules",
   disk: "resource.segment.disk",
   memory: "resource.segment.memory",
   process: "resource.segment.process",
@@ -40,82 +45,38 @@ export default function ResourceManagementPanel() {
   /** 首次访问后保持挂载：再次切回不重新请求，也不丢扫描结果。 */
   const [visited, setVisited] = useState<ReadonlySet<Segment>>(() => new Set(["overview"]));
 
-  const [snapshot, setSnapshot] = useState<ResourceSnapshot | null>(null);
-  const [snapshotLoading, setSnapshotLoading] = useState(true);
-  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  /** 概览指标与磁盘/内存分区共用的系统快照。 */
+  const snapshot = useAsyncResource("resource:snapshot", resourceSnapshot);
+  /** 进程列表：默认不请求，进程分区展开或内存分区首次进入时按需加载。 */
+  const processes = useAsyncResource("resource:processes", resourceProcessDiagnostics, {
+    immediate: false,
+  });
+  const { reload: reloadProcesses } = processes;
   /** 磁盘页扫描出的可清理字节；概览共用，避免为用户看不见的操作再扫一次。 */
   const [cleanableBytes, setCleanableBytes] = useState<number | null>(null);
-  /** 清理完成/手动刷新后递增，通知磁盘分布重新统计。 */
-  const [refreshToken, setRefreshToken] = useState(0);
+  /** 磁盘分布重新统计的令牌：清理完成或「磁盘分区可见时的页头刷新」才递增。 */
+  const [storageToken, setStorageToken] = useState(0);
+  /** 内存/进程分区的页头刷新信号：只在对应分区可见时递增，隐藏分区不被重扫。 */
+  const [memorySignal, setMemorySignal] = useState(0);
+  const [processSignal, setProcessSignal] = useState(0);
 
-  const [processes, setProcesses] = useState<ResourceProcessDiagnostics | null>(null);
-  const [processesLoading, setProcessesLoading] = useState(false);
-  const [processesError, setProcessesError] = useState<string | null>(null);
+  const { reload: reloadSnapshot } = snapshot;
+  /**
+   * 页面级刷新（页头唯一入口）：总是重读系统快照，并只刷新**当前分区**的专属数据。
+   * 隐藏分区的详情（磁盘分布 / 内存目录 / 进程列表）不因这次点击被重扫。
+   */
+  const refreshCurrent = () => {
+    reloadSnapshot();
+    if (segment === "disk") setStorageToken((token) => token + 1);
+    else if (segment === "memory") setMemorySignal((signal) => signal + 1);
+    else if (segment === "process") setProcessSignal((signal) => signal + 1);
+  };
 
-  const mountedRef = useRef(false);
-  const snapshotRequestRef = useRef(0);
-  const snapshotBusyRef = useRef(false);
-  const processRequestRef = useRef(0);
-  const processBusyRef = useRef(false);
-
-  const loadSnapshot = useCallback(async () => {
-    if (snapshotBusyRef.current) return;
-    snapshotBusyRef.current = true;
-    const request = ++snapshotRequestRef.current;
-    setSnapshotLoading(true);
-    setSnapshotError(null);
-    try {
-      const result = await resourceSnapshot();
-      if (!mountedRef.current || request !== snapshotRequestRef.current) return;
-      setSnapshot(result);
-    } catch (reason: unknown) {
-      if (!mountedRef.current || request !== snapshotRequestRef.current) return;
-      // 刷新失败清空旧值：不把过期指标当作当前状态。
-      setSnapshot(null);
-      setSnapshotError(localizedErrorMessage(reason));
-    } finally {
-      snapshotBusyRef.current = false;
-      if (mountedRef.current && request === snapshotRequestRef.current) {
-        setSnapshotLoading(false);
-      }
-    }
-  }, []);
-
-  const loadProcesses = useCallback(async () => {
-    if (processBusyRef.current) return;
-    processBusyRef.current = true;
-    const request = ++processRequestRef.current;
-    setProcessesLoading(true);
-    setProcessesError(null);
-    try {
-      const result = await resourceProcessDiagnostics();
-      if (!mountedRef.current || request !== processRequestRef.current) return;
-      setProcesses(result);
-    } catch (reason: unknown) {
-      if (!mountedRef.current || request !== processRequestRef.current) return;
-      setProcessesError(localizedErrorMessage(reason));
-    } finally {
-      processBusyRef.current = false;
-      if (mountedRef.current && request === processRequestRef.current) {
-        setProcessesLoading(false);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    void loadSnapshot();
-    return () => {
-      mountedRef.current = false;
-      snapshotRequestRef.current += 1;
-      processRequestRef.current += 1;
-    };
-  }, [loadSnapshot]);
-
-  const refreshAll = useCallback(() => {
-    void loadSnapshot();
-    setRefreshToken((token) => token + 1);
-  }, [loadSnapshot]);
+  /** 清理完成后：缓存与磁盘占用都变了，快照 + 磁盘分布都必须刷新。 */
+  const refreshAfterCleanup = () => {
+    reloadSnapshot();
+    setStorageToken((token) => token + 1);
+  };
 
   function selectSegment(next: Segment) {
     setSegment(next);
@@ -153,16 +114,16 @@ export default function ResourceManagementPanel() {
         <button
           type="button"
           className="btn sm"
-          onClick={refreshAll}
-          disabled={snapshotLoading}
+          onClick={refreshCurrent}
+          disabled={snapshot.loading}
           aria-label={t("resource.refresh")}
         >
           <RefreshCw
             size={12}
-            className={snapshotLoading ? "spin" : undefined}
+            className={snapshot.loading ? "spin" : undefined}
             aria-hidden="true"
           />{" "}
-          {t(snapshotLoading ? "settings.resourceCleanup.refreshing" : "resource.refresh")}
+          {t(snapshot.loading ? "settings.resourceCleanup.refreshing" : "resource.refresh")}
         </button>
       </header>
 
@@ -200,14 +161,24 @@ export default function ResourceManagementPanel() {
         >
           {visited.has("overview") && (
             <OverviewSegment
-              snapshot={snapshot}
-              loading={snapshotLoading}
-              error={snapshotError}
+              snapshot={snapshot.data}
+              loading={snapshot.loading}
+              error={snapshot.error}
               cleanableBytes={cleanableBytes}
               onOpenDisk={() => selectSegment("disk")}
-              onRefresh={() => void loadSnapshot()}
+              onRefresh={snapshot.reload}
             />
           )}
+        </div>
+
+        {/* 功能运行：只读状态快照来自后端生命周期探针；暂停/恢复写既有设置键。 */}
+        <div
+          role="tabpanel"
+          id="resource-panel-modules"
+          aria-labelledby="resource-tab-modules"
+          hidden={segment !== "modules"}
+        >
+          {visited.has("modules") && <RuntimeModulesSection />}
         </div>
 
         <div
@@ -218,11 +189,12 @@ export default function ResourceManagementPanel() {
         >
           {visited.has("disk") && (
             <div className="resource-disk">
+              <DiskVolumeBar snapshot={snapshot.data} loading={snapshot.loading} />
               <ResourceCleanupSection
                 onPreviewChange={setCleanableBytes}
-                onSnapshotInvalidated={refreshAll}
+                onSnapshotInvalidated={refreshAfterCleanup}
               />
-              <DiskStoragePanel refreshToken={refreshToken} />
+              <DiskStoragePanel refreshToken={storageToken} />
             </div>
           )}
         </div>
@@ -235,12 +207,13 @@ export default function ResourceManagementPanel() {
         >
           {visited.has("memory") && (
             <MemorySegment
-              snapshot={snapshot}
-              snapshotLoading={snapshotLoading}
-              processes={processes}
-              processesLoading={processesLoading}
-              onLoadProcesses={() => void loadProcesses()}
-              onRefreshSnapshot={() => void loadSnapshot()}
+              snapshot={snapshot.data}
+              snapshotLoading={snapshot.loading}
+              processes={processes.data}
+              processesLoading={processes.loading}
+              onLoadProcesses={reloadProcesses}
+              onRefreshSnapshot={snapshot.reload}
+              refreshSignal={memorySignal}
             />
           )}
         </div>
@@ -253,13 +226,14 @@ export default function ResourceManagementPanel() {
         >
           {visited.has("process") && (
             <ProcessDiagnostics
-              snapshot={snapshot}
-              snapshotLoading={snapshotLoading}
-              data={processes}
-              loading={processesLoading}
-              error={processesError}
-              onLoad={() => void loadProcesses()}
-              onRefresh={() => void loadProcesses()}
+              snapshot={snapshot.data}
+              snapshotLoading={snapshot.loading}
+              data={processes.data}
+              loading={processes.loading}
+              error={processes.error}
+              onLoad={reloadProcesses}
+              onRefresh={reloadProcesses}
+              refreshSignal={processSignal}
             />
           )}
         </div>
@@ -269,5 +243,51 @@ export default function ResourceManagementPanel() {
         <HardDrive size={11} aria-hidden="true" /> {t("resource.footer.safety")}
       </p>
     </div>
+  );
+}
+
+/**
+ * 磁盘分区顶部的整机使用率条：复用与概览相同的公式与三档语义色。
+ * 与「应用数据占用」是不同口径，因此单独成条，不与缓存分布混在一起。
+ */
+function DiskVolumeBar({
+  snapshot,
+  loading,
+}: {
+  snapshot: ResourceSnapshot | null;
+  loading: boolean;
+}) {
+  const { t } = useLocale();
+  const disk = snapshot?.disks[0] ?? null;
+  const usage = computeUsage(disk?.totalBytes ?? null, disk?.availableBytes ?? null);
+  const pending = loading && !snapshot;
+  const unavailable = t("settings.resourceCleanup.unavailable");
+  return (
+    <UsageBar
+      usedPercent={pending ? null : usage.usedPercent}
+      level={pending ? "unknown" : usage.level}
+      size="md"
+      label={t("resource.overview.diskRingTitle")}
+      value={
+        pending
+          ? t("resource.reading")
+          : `${formatPercent(usage.usedPercent) ?? unavailable} · ${t(PRESSURE_LEVEL_KEYS[usage.level])}`
+      }
+      ariaLabel={t("resource.aria.diskBar", {
+        percent: formatPercent(usage.usedPercent) ?? unavailable,
+        used: usage.usedBytes === null ? unavailable : formatBytes(usage.usedBytes),
+        free: usage.availableBytes === null ? unavailable : formatBytes(usage.availableBytes),
+        total: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
+        level: t(PRESSURE_LEVEL_KEYS[usage.level]),
+      })}
+      detail={
+        disk && usage.totalBytes !== null && usage.availableBytes !== null
+          ? `${t("resource.overview.ringFree", { free: formatBytes(usage.availableBytes) })} · ${t(
+              "resource.overview.ringTotal",
+              { total: formatBytes(usage.totalBytes) },
+            )}${disk.volume ? ` · ${disk.volume}` : ""}`
+          : unavailable
+      }
+    />
   );
 }

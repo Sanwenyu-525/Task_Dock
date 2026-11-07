@@ -2659,6 +2659,11 @@ mod imp {
         thread: Option<std::thread::JoinHandle<()>>,
         capture: Option<std::thread::JoinHandle<()>>,
         worker: Option<std::thread::JoinHandle<()>>,
+        /// `stop()` 已完整收尾；Drop 据此避免重复 CloseHandle（双重关闭）。
+        stopped: bool,
+        /// `begin_stop()` 已摘除全局事件槽：后续 finish/Drop 不能再次 reset_queue，
+        /// 否则会误摘「暂停后立刻恢复」创建的新实例槽位。
+        begun: bool,
     }
 
     impl ClipboardMonitor {
@@ -2762,6 +2767,8 @@ mod imp {
                 thread: Some(thread),
                 capture: Some(capture),
                 worker: Some(worker),
+                stopped: false,
+                begun: false,
             })
         }
 
@@ -2773,11 +2780,49 @@ mod imp {
                 && self.worker.as_ref().is_some_and(|t| !t.is_finished())
         }
 
-        pub fn stop(mut self) {
+        /// 同步触发停止（不 join）：关闭事件队列、摘除全局事件槽、通知消息循环退出。
+        ///
+        /// 摘除槽位必须在调用方线程同步完成：否则「暂停 → 立刻恢复」会因
+        /// EVENT_QUEUE 仍被旧实例占着而启动失败（表现为恢复后监听未运行）。
+        /// 三个工作线程由 `finish_stop()`（或 Drop 兜底）回收。
+        pub fn begin_stop(&mut self) {
+            if self.begun {
+                return;
+            }
+            self.begun = true;
             self.event_q.close();
             reset_queue();
             unsafe {
                 PostMessageW(self.hwnd as HWND, WM_CLOSE, 0, 0);
+            }
+        }
+
+        /// 回收三个线程并释放句柄；可安全地在 `begin_stop()` 之后异步调用。
+        pub fn finish_stop(mut self) {
+            self.begin_stop();
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+            unsafe {
+                CloseHandle(self.cancel as HANDLE);
+            }
+            if let Some(c) = self.capture.take() {
+                let _ = c.join();
+            }
+            self.content_q.close();
+            if let Some(w) = self.worker.take() {
+                let _ = w.join();
+            }
+            self.stopped = true;
+        }
+
+        pub fn stop(self) {
+            self.finish_stop();
+        }
+
+        fn finish_in_place(&mut self) {
+            if !self.begun {
+                self.begin_stop();
             }
             if let Some(t) = self.thread.take() {
                 let _ = t.join();
@@ -2792,6 +2837,18 @@ mod imp {
             if let Some(w) = self.worker.take() {
                 let _ = w.join();
             }
+            self.stopped = true;
+        }
+    }
+
+    impl Drop for ClipboardMonitor {
+        /// 兜底收尾：异步回收线程创建失败等场景下，实例会在这里被丢弃。
+        /// 绝不能只丢 JoinHandle 而不关监听/句柄，否则会留下仍在监听的孤儿线程。
+        fn drop(&mut self) {
+            if self.stopped {
+                return;
+            }
+            self.finish_in_place();
         }
     }
 

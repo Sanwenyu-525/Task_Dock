@@ -320,7 +320,6 @@ vi.mock("../lib/bridge", () => ({
     if (sticky || counted) return Promise.resolve(false);
     return Promise.resolve(true);
   },
-  refreshEdgeTabCursor: async () => true,
   applyMode: async (mode: string) => {
     world.modeCalls.push(mode);
     if (world.failApplyMode) throw new Error("mock applyMode rejected");

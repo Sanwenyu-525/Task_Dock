@@ -12,6 +12,7 @@
 //! 4. 数量紧凑：≤99 原样，>99 显示 `99+`。
 
 import type { AgentSnapshot, TaskStats } from "./bridge";
+import type { MessageKey } from "../i18n";
 import { liveSummary, type LiveState } from "./agentTree";
 
 /**
@@ -113,6 +114,30 @@ export function railAriaLabel(edge: string, st: RailStatus): string {
   parts.push(st.tasksLoaded ? `待办 ${st.pending ?? 0}` : "待办未知");
   parts.push(agentSummaryLabel(st));
   return parts.join("，");
+}
+
+/**
+ * Edge Tab 悬停提示的文案键。
+ *
+ * 语义与轨道状态球**同源**（`railStatus().agentTone`，已含 `agentsLoaded` 判定）：
+ * - 只有 running / waiting / failed / disconnected 才宣称具体 Agent 状态；
+ * - `unknown`（快照未加载）与 `idle`（无活动会话）一律回落到中性文案，
+ *   绝不把「未知」说成「正常运行」；
+ * - 文案键交给调用方 `t()` 解析，本文件保持纯函数、可单测。
+ */
+export function tabHintKey(tone: string): MessageKey {
+  switch (tone) {
+    case "running":
+      return "capsule.tabHint.running";
+    case "waiting":
+      return "capsule.tabHint.waiting";
+    case "failed":
+      return "capsule.tabHint.failed";
+    case "disconnected":
+      return "capsule.tabHint.disconnected";
+    default:
+      return "capsule.tabHint.base";
+  }
 }
 
 // ── 兼容：旧版隐藏态短胶囊的信息模型 ────────────────────────

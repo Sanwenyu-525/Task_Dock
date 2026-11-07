@@ -38,6 +38,7 @@ import {
 import { formatRelative } from "../../lib/format";
 import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { Checkbox, Select } from "../ui";
+import ModuleRunControl from "../lifecycle/ModuleRunControl";
 
 const KIND_FILTERS: Record<ActionCategory, { id: ActionKind | "all"; label: string }[]> = {
   intervention: [
@@ -307,7 +308,14 @@ export default function ActionCenterPanel() {
           })}
         </div>
         <span className="flex-spacer" />
-        <button className="btn sm" onClick={() => load()} title="重新聚合动作">
+        {/* 聚合暂停：只停前端计数刷新与徽标，Agent 原始事件仍照常入库。 */}
+        <ModuleRunControl moduleId="actions" />
+        <button
+          className="btn sm"
+          onClick={() => load()}
+          data-tip="重新聚合动作"
+          aria-label="重新聚合动作"
+        >
           <RefreshCw size={12} /> 刷新
         </button>
       </div>

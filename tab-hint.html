@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- class="tab-hint-page"：本入口的页面级样式（html/body/#root）必须挂在这个
+     作用域下。六个入口共享同一份打包 CSS（cssCodeSplit=false），无作用域的
+     根节点规则会作用到主窗，见 src/tab-hint/styles-tab-hint.css 顶部说明。 -->
+<html lang="zh-CN" class="tab-hint-page" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Task Dock</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/tab-hint/main.tsx"></script>
+  </body>
+</html>

@@ -1048,6 +1048,11 @@ pub fn clipboard_status(state: State<'_, Arc<ClipboardRuntime>>) -> serde_json::
         "enabled": config.error.is_none() && config.settings.clipboard_enabled,
         "paused": config.error.is_some() || config.settings.clipboard_paused,
         "monitoring": rt.monitoring(),
+        // 维护线程（看门狗 + 过期清理）是否仍在运行：暂停后据此区分
+        // 「已暂停」与「仍在收尾」，前端不得只凭 paused 文案冒充已释放资源。
+        "maintenance": rt.maintenance_running(),
+        // 采集实例是否正在异步回收（暂停不再阻塞 UI；回收完成前不算 paused）。
+        "draining": rt.capture_draining(),
         "configError": config.error,
         "configOrigin": config.origin,
         "captureAllowed": config.capture_allowed(),

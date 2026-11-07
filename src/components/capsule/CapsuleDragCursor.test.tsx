@@ -12,7 +12,7 @@
 //! 2. 任一结束信号（pointerup / pointercancel / blur / visibilitychange /
 //!    恢复后 buttons=0 的 pointermove）都会复位，且一次会话只装一组监听；
 //! 3. Edge Tab 单击（位移 < 4px）全程不点亮 grabbing，且照常恢复胶囊；
-//! 4. CSS：轨道空白 grab → 拖动 grabbing；标签 pointer → 拖动 grabbing。
+//! 4. CSS：轨道空白 grab → 拖动 grabbing；标签悬停 grab → 拖动 grabbing。
 
 import { act, fireEvent, render } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -139,21 +139,31 @@ describe("CapsuleRail 拖拽光标", () => {
     const removeDoc = vi.spyOn(document, "removeEventListener");
 
     const { rail, view } = renderRail();
+    const docAddsBefore = addDoc.mock.calls.filter((c) => c[0] === "pointerdown").length;
+    // 起拖判定是 document 捕获阶段的统一实现（Tauri drag.js 会在 mousedown 里
+    // stopImmediatePropagation，pointerdown 先于它且捕获阶段不受影响），
+    // 因此挂载后应新增一条 document 级 pointerdown 监听。
+    expect(docAddsBefore).toBe(1);
+
     fireEvent.pointerDown(rail, { button: 0, buttons: 1 });
     fireEvent.pointerUp(rail);
 
     const active = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.length;
-    // 会话期间挂 4 个 window 监听（move/up/cancel/blur）+ 1 个 document；
+    // 会话期间挂 4 个 window 监听（move/up/cancel/blur）+ 1 个 document(visibilitychange)；
     // 复位后必须逐个摘除，不能只复位状态、留下监听。
     expect(active(addWindow)).toBeGreaterThanOrEqual(4);
     expect(active(removeWindow)).toBeGreaterThanOrEqual(4);
-    expect(active(addDoc)).toBeGreaterThanOrEqual(1);
-    expect(active(removeDoc)).toBeGreaterThanOrEqual(1);
+    expect(
+      removeDoc.mock.calls.filter((c) => c[0] === "visibilitychange"),
+    ).toHaveLength(1);
+    // 起拖监听属于挂载期（document 捕获阶段），会话结束不摘、卸载才摘。
+    expect(removeDoc.mock.calls.filter((c) => c[0] === "pointerdown")).toHaveLength(0);
 
-    // 卸载时清掉 rail 上的 pointerdown 捕获监听
-    const removeRail = vi.spyOn(rail, "removeEventListener");
+    // 卸载时摘掉 document 上的 pointerdown 捕获监听（成对，不残留）
     view.unmount();
-    expect(removeRail).toHaveBeenCalledWith("pointerdown", expect.any(Function), true);
+    const docRemoves = removeDoc.mock.calls.filter((c) => c[0] === "pointerdown");
+    expect(docRemoves).toHaveLength(1);
+    expect(docRemoves[0][2]).toBe(true);
 
     addWindow.mockRestore();
     removeWindow.mockRestore();
@@ -239,9 +249,48 @@ describe("EdgeTab 拖拽光标", () => {
     fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 27, screenX: 10, screenY: 27 });
     expect(tab.classList.contains("is-dragging")).toBe(true);
 
+    // 松手后鼠标完全静止：类名必须在同一次 pointerup 里摘掉（Blink 据此重算 cursor），
+    // 不能等下一次 pointermove —— 那正是「必须动一下鼠标才恢复」的来源。
     fireEvent.pointerUp(tab, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 27, screenX: 10, screenY: 27 });
     expect(tab.classList.contains("is-dragging")).toBe(false);
     expect(restoreTab).not.toHaveBeenCalled();
+    expect(endTabDrag).toHaveBeenCalledTimes(1);
+    expect(releaseMock).toHaveBeenCalledWith(1);
+  });
+
+  it("拖动中窗口失焦按取消处理：复位光标且不恢复形态", () => {
+    const tab = renderTab();
+    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20, screenX: 10, screenY: 20 });
+    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 20, clientY: 20, screenX: 20, screenY: 20 });
+    expect(tab.classList.contains("is-dragging")).toBe(true);
+
+    fireEvent.blur(window);
+    expect(tab.classList.contains("is-dragging")).toBe(false);
+    expect(endTabDrag).toHaveBeenCalledTimes(1);
+    expect(restoreTab).not.toHaveBeenCalled();
+  });
+
+  it("pointerup 之后的 lostpointercapture 不重复收尾", () => {
+    const tab = renderTab();
+    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20, screenX: 10, screenY: 20 });
+    fireEvent.pointerMove(tab, { pointerId: 1, pointerType: "mouse", buttons: 1, clientX: 10, clientY: 30, screenX: 10, screenY: 30 });
+    fireEvent.pointerUp(tab, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 30, screenX: 10, screenY: 30 });
+
+    // 浏览器在 releasePointerCapture 后仍会派发 lostpointercapture：
+    // 会话已收尾，不得再 endDrag 一次（重复提交会让持久化/位置回写跑两遍）。
+    fireEvent.lostPointerCapture(tab, { pointerId: 1, pointerType: "mouse" });
+    expect(endTabDrag).toHaveBeenCalledTimes(1);
+    expect(tab.classList.contains("is-dragging")).toBe(false);
+  });
+
+  it("指针捕获已被系统释放时不再调用 releasePointerCapture", () => {
+    const tab = renderTab();
+    hasCaptureMock.mockReturnValue(false);
+    fireEvent.pointerDown(tab, { pointerId: 1, pointerType: "mouse", button: 0, buttons: 1, clientX: 10, clientY: 20, screenX: 10, screenY: 20 });
+    fireEvent.pointerUp(tab, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 20, screenX: 10, screenY: 20 });
+
+    expect(releaseMock).not.toHaveBeenCalled();
+    expect(restoreTab).toHaveBeenCalledTimes(1);
   });
 
   it("取消拖动后复位并释放指针捕获", () => {
@@ -257,8 +306,10 @@ describe("EdgeTab 拖拽光标", () => {
     expect(restoreTab).not.toHaveBeenCalled();
   });
 
-  it("CSS：悬停 pointer，拖动 grabbing", () => {
-    expect(stylesCss).toMatch(/\.capsule-tab[^{]*\{[^}]*cursor:\s*pointer/);
+  it("CSS：悬停 grab，拖动 grabbing", () => {
+    // 标签是可拖动表面，不是普通按钮：`pointer` 会让人以为只能点。
+    // 与 `.ui-drag-surface` 同一语义，且**只**由 WebView2 的 CSS 光标表达。
+    expect(stylesCss).toMatch(/\.capsule-tab\s*\{[^}]*cursor:\s*grab/);
     expect(stylesCss).toMatch(/\.capsule-tab\.is-dragging[^{]*\{[^}]*cursor:\s*grabbing/);
   });
 });

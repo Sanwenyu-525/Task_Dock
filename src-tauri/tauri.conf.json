@@ -77,6 +77,23 @@
         "minimizable": false,
         "focus": false,
         "visible": false
+      },
+      {
+        "label": "tab-hint",
+        "title": "",
+        "url": "tab-hint.html",
+        "width": 240,
+        "height": 32,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "focus": false,
+        "visible": false
       }
     ],
     "security": {

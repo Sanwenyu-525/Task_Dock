@@ -15,6 +15,7 @@ import { resetClipboardRequestState, useClipboardStore } from "../../store/useCl
 import { useUiStore } from "../../store/useUiStore";
 import ClipboardLite from "./ClipboardLite";
 import ClipboardTargetView from "./ClipboardTargetView";
+import { PanelCloseProvider } from "./panelClose";
 
 const clipboardView = vi.fn();
 const clipboardGroupPage = vi.fn();
@@ -520,5 +521,30 @@ describe("目标行组件接入", () => {
     await screen.findByText("已复制并切换到「记事本」");
     expect(first.hasAttribute("disabled")).toBe(false);
     expect(second.hasAttribute("disabled")).toBe(false);
+  });
+});
+
+describe("复制并切换：统一关闭入口", () => {
+  it("X 与刷新并列在最右；X 收起面板，返回只退一层", async () => {
+    clipboardVisibleTargets.mockResolvedValue([]);
+    const onClose = vi.fn();
+    const onBack = vi.fn();
+    render(
+      <PanelCloseProvider onClose={onClose}>
+        <ClipboardTargetView item={textItem("close-1", "关闭")} active onBack={onBack} />
+      </PanelCloseProvider>,
+    );
+
+    const close = await screen.findByRole("button", { name: "关闭剪贴板面板" });
+    expect(close.parentElement?.classList.contains("cap-actions")).toBe(true);
+    expect(close.parentElement?.lastElementChild).toBe(close);
+    expect(close.hasAttribute("data-tauri-drag-region")).toBe(false);
+    // 二级页面原有入口都保留
+    expect(screen.getByRole("button", { name: "返回" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "刷新目标窗口列表" })).toBeTruthy();
+
+    fireEvent.click(close);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onBack).not.toHaveBeenCalled();
   });
 });

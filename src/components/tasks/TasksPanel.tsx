@@ -22,6 +22,7 @@ import FocusWorkspace from "../focus/FocusWorkspace";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import ContextHelpButton from "../help/ContextHelpButton";
+import ModuleRunControl from "../lifecycle/ModuleRunControl";
 
 /** 内容区滚动容器（`.tab-content`）：编辑态切换时用它记录/恢复列表位置。 */
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
@@ -244,6 +245,8 @@ export default function TasksPanel() {
           ))}
         </div>
         <span className="flex-spacer" />
+        {/* 提醒调度暂停：只暂停到期提醒触发，任务数据与共享调度循环不受影响。 */}
+        <ModuleRunControl moduleId="reminders" />
         <ContextHelpButton articleId="help.tasks.create-reminders" />
         <button
           className={`icon-btn sm ${focusOpen ? "active" : ""}`}

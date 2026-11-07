@@ -13,10 +13,15 @@ import "../components/widgets/widgets.css";
 import "./widgets-desktop.css";
 
 import { initLocale } from "../i18n";
+import { installNativeDragBridge } from "../lib/dragCursorSession";
 import WidgetWindow from "./WidgetWindow";
 
 // 微件窗口按需创建/销毁：跳过偏好镜像对账，避免每个窗口重复发起同一组存储 IPC。
 initLocale({ preferences: false });
+
+// 原生拖拽相位桥按 webview 安装：`drag_watch.rs` 在本窗口发出开始/结束（带代次），
+// 与主窗同一协议（`drag_signal`），事件只发给自己，不与其他窗口串台。
+installNativeDragBridge();
 
 const host = document.getElementById("root");
 if (host) {

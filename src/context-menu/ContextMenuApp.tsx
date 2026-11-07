@@ -20,16 +20,31 @@ import { getSettings } from "../lib/bridge";
 import { createSubscriptionScope } from "../lib/subscriptions";
 import { resolveSecondaryPreset, resolveTheme, resolveVisualPreset } from "../lib/theme";
 import {
-  FLAT_ITEMS,
-  MENU_GROUPS,
+  flatItemsFor,
+  groupLabel,
   initialActiveIndex,
   isItemChecked,
+  itemLabel,
+  menuGroupsFor,
+  showsGroupLabels,
   type MenuAction,
   type MenuSnapshot,
+  type MenuVariant,
 } from "./items";
+import { t } from "../i18n";
 
 const SHOW_EVENT = "context-menu-show";
-const INDEX_OF = new Map(FLAT_ITEMS.map((it, i) => [it, i] as const));
+
+/** show 事件载荷：变体由后端决定（托盘 = tray，极简标签 = tab）。 */
+interface ShowPayload {
+  variant?: string;
+}
+
+function readVariant(payload: unknown): MenuVariant {
+  return payload && typeof payload === "object" && (payload as ShowPayload).variant === "tab"
+    ? "tab"
+    : "tray";
+}
 
 /** context_menu_action 的返回：成功带最新快照，失败带可读原因（后端权威状态）。 */
 interface MenuActionResult {
@@ -40,6 +55,12 @@ interface MenuActionResult {
 
 export default function ContextMenuApp() {
   const [snap, setSnap] = useState<MenuSnapshot | null>(null);
+  /** 本次显示的变体：由后端 show 载荷决定；默认托盘菜单。 */
+  const [variant, setVariant] = useState<MenuVariant>("tray");
+  // 变体对应的条目：键盘导航、索引与渲染都只读这一份，不各自维护列表。
+  const groups = menuGroupsFor(variant);
+  const items = flatItemsFor(variant);
+  const showGroupLabels = showsGroupLabels(variant);
   const [activeIndex, setActiveIndex] = useState(-1);
   // 每次后端 show 事件 +1：重放入场动画、触发一次尺寸回传
   const [showTick, setShowTick] = useState(0);
@@ -114,7 +135,10 @@ export default function ContextMenuApp() {
     void refresh();
     const scope = createSubscriptionScope();
     scope.add(
-      listen(SHOW_EVENT, () => {
+      listen(SHOW_EVENT, (event) => {
+        // 变体先落定：同一次显示里的条目、键盘表、初始焦点都按它取。
+        const nextVariant = readVariant(event.payload);
+        setVariant(nextVariant);
         // 重开/重定位时清掉上一轮失败反馈：失败反馈有 2.5s 自动消失窗口，
         // 若在窗口内重开菜单，残留的旧错误会闪现误导用户。
         if (feedbackTimer.current !== null) window.clearTimeout(feedbackTimer.current);
@@ -126,8 +150,8 @@ export default function ContextMenuApp() {
           document.visibilityState === "visible" && showTickRef.current > 0;
         if (!alreadyShown) setShowTick((t) => t + 1);
         setFocusTick((t) => t + 1);
-        // 先刷新快照再定初始焦点：优先落在勾选项上
-        void refresh().then((s) => setActiveIndex(initialActiveIndex(s)));
+        // 先刷新快照再定初始焦点：优先落在勾选项上（tab 变体无勾选，恒第一项）
+        void refresh().then((s) => setActiveIndex(initialActiveIndex(s, nextVariant)));
       }),
     );
     scope.add(
@@ -206,13 +230,16 @@ export default function ContextMenuApp() {
     return () => cancelAnimationFrame(raf);
   }, [showTick]);
 
-  const step = useCallback((dir: 1 | -1) => {
-    setActiveIndex((i) => {
-      const n = FLAT_ITEMS.length;
-      if (n === 0) return -1;
-      return (((i < 0 ? 0 : i) + dir) % n + n) % n;
-    });
-  }, []);
+  const step = useCallback(
+    (dir: 1 | -1) => {
+      setActiveIndex((i) => {
+        const n = items.length;
+        if (n === 0) return -1;
+        return (((i < 0 ? 0 : i) + dir) % n + n) % n;
+      });
+    },
+    [items],
+  );
 
   function onKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
     switch (e.key) {
@@ -226,17 +253,17 @@ export default function ContextMenuApp() {
         return;
       case "Home":
         e.preventDefault();
-        setActiveIndex(FLAT_ITEMS.length ? 0 : -1);
+        setActiveIndex(items.length ? 0 : -1);
         return;
       case "End":
         e.preventDefault();
-        setActiveIndex(FLAT_ITEMS.length - 1);
+        setActiveIndex(items.length - 1);
         return;
       case "Enter":
       case " ":
         e.preventDefault();
-        if (activeIndex >= 0 && activeIndex < FLAT_ITEMS.length) {
-          runAction(FLAT_ITEMS[activeIndex].action);
+        if (activeIndex >= 0 && activeIndex < items.length) {
+          runAction(items[activeIndex].action);
         }
         return;
       case "Escape":
@@ -258,20 +285,20 @@ export default function ContextMenuApp() {
       ref={menuRef}
       className="liquid-context-menu"
       role="menu"
-      aria-label="Task Dock 菜单"
+      aria-label={variant === "tab" ? t("capsule.tabMenu.group") : "Task Dock 菜单"}
       onKeyDown={onKeyDown}
     >
-      {MENU_GROUPS.map((group, gi) => (
+      {groups.map((group, gi) => (
         <section
           key={group.key}
           className="menu-group"
           role="group"
-          aria-label={group.label}
+          aria-label={groupLabel(group)}
         >
           {gi > 0 && <div className="menu-sep" role="separator" aria-hidden="true" />}
-          <div className="menu-group-label">{group.label}</div>
+          {showGroupLabels && <div className="menu-group-label">{groupLabel(group)}</div>}
           {group.items.map((item) => {
-            const idx = INDEX_OF.get(item) ?? -1;
+            const idx = items.indexOf(item);
             const checked = snap ? isItemChecked(item, snap) : false;
             const Icon = item.icon;
             return (
@@ -290,7 +317,7 @@ export default function ContextMenuApp() {
                 <span className="menu-item-icon" aria-hidden="true">
                   <Icon size={16} strokeWidth={1.75} />
                 </span>
-                <span className="menu-item-label">{item.label}</span>
+                <span className="menu-item-label">{itemLabel(item)}</span>
                 <span className="menu-item-trailing" aria-hidden="true">
                   {checked && <Check size={14} strokeWidth={2.5} />}
                 </span>

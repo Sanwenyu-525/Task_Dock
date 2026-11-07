@@ -2172,6 +2172,19 @@
   flex: none;
 }
 
+/* 「更多」外层只是菜单锚点容器，但它必须是 **flex 容器**：
+   固定入口是 `.rail-foot` 的直接 flex item，被 `align-items: stretch` 拉满
+   轨道内容宽度；而 `<button>` 的 `width: auto` 是 shrink-to-fit（fit-content），
+   即使 `display: flex` 也不会像 div 那样填满包含块。多包一层普通 block 后，
+   「更多」只剩图标宽（62px 轨道里是 26px，而不是 50px），左缘对齐但图标
+   中心左移 12px，看起来整体往左偏。
+   这里只把包裹层恢复成同一套纵列 flex 布局，让触发按钮按 stretch 取宽——
+   不用 width: 100%、translateX 或负 margin 做视觉补偿。 */
+.rail-more {
+  display: flex;
+  flex-direction: column;
+}
+
 .rail-item {
   position: relative;
   display: flex;

@@ -181,7 +181,31 @@ DeferredView 保活使隐藏页面（切换模式 / 停靠胶囊期）仍处于�
 | 行动中心聚合（启动加载 + 事件 countsOnly，1200ms 去抖） | `useActionsStore.shouldRefreshActions()`：入口可见 / `tab=actions`，且主界面未停靠 | FullView 徽标 effect 与 `ActionCenterPanel` 在消费者重新出现时补一次（countsOnly / silent load） |
 | 剪贴板页/抽屉：列表加载、实时订阅（`setFullLive`）、`clipboard_status`、弹层注册 | `uiActive = active && useMainUiVisible()` | 恢复可见时 effect 依赖变化自动补一次加载；停靠期 liveFullRefs 归零，无胶囊消费者时全局 `clipboard-changed` 监听整体拆除（采集线程不受影响） |
 | 历史页事件合并刷新（500ms 去抖） | `useFullViewVisible()` + 原有 `document.visibilityState` | 恢复可见时补一次 merge 刷新 |
-| 任务倒计时共享时钟（1s tick） | `useFullViewVisible()`：`ActiveReminders` 行组件只在可见时挂载 | 重新挂载即重新订阅；sharedClock 首订阅者重新对齐时间 |
+| 任务倒计时共享时钟（1s tick） | `useFullViewVisible()`：`ActiveReminders` 行组件只在可见时挂载；`sharedClock` 另按 `document.visibilityState` 在整窗隐藏时停表 | 重新挂载/恢复可见即重新订阅；sharedClock 首订阅者重新对齐时间 |
+| 微件窗口倒计时（独立 WebView） | 同上：窗口隐藏/最小化时 `sharedClock` 停表，不依赖各微件自行处理 | 窗口恢复可见触发 visibilitychange，快照立即对齐 |
+| 专注工作台共享时钟 + `focus-changed/completed/sedentary` 订阅 | `visible = useFullViewVisible() && tab === "tasks"`（2026-11-06 补充） | `useSharedClock(visible)` 退订消费者；`acquireFocusEvents()` 在隐藏期释放，恢复可见时重拉快照并补订阅 |
+
+### 4.3 模块级暂停的真实资源边界（v0.15，2026-11-06）
+
+模块暂停不是 UI 隐藏：它停止的是该模块**可独立控制**的后台工作，且不改变用户数据。
+
+| 模块 | 暂停时停止 | 明确不停止 |
+| --- | --- | --- |
+| 剪贴板采集 | `clipboard-monitor`（消息线程 + capture + worker）、`clipboard-maintenance` | 历史读取/搜索/删除、逐项粘贴任务（`stop_capture` 不调用 `paste.cancel_all`） |
+| 暂存架自动清理 | `shelf-auto-cleanup` 线程（Condvar 唤醒退出） | 手动清理、文件复制/移动、已暂存文件 |
+| 提醒调度 | `tick` 的到期提醒分支（不写 fired/通知历史/重复任务推进） | 共享 1s 调度中的 Agent 过期清理、通知摘要、稍后提醒、专注/久坐推进 |
+| 行动中心聚合 | 前端计数刷新与徽标（`actions_enabled=false`，`shouldRefreshActions`） | 后端 Agent 原始事件入库、历史与会话跳转 |
+| 语音播报 | 新的自动 TTS 播报（`tts_enabled=false`） | 提示音、音量/音色设置、系统通知数据 |
+
+停用与暂停分离：`clipboard_enabled=false` 仍会取消进行中的逐项粘贴（既有语义），
+暂停不会。恢复路径均为幂等：重复写入不会创建第二套监听/清理线程；暂停后立刻恢复
+由世代检查回收上一代线程。专有线程在退出前状态为 `pausing`，不把「请求已接受」
+报告成「资源已释放」。
+
+可复核测量建议（本任务未宣称具体百分比）：暂停前后在同一隔离实例分别采样
+`resource_snapshot` 的 `cpuPercent` / 线程数 / IPC 计数，使用
+`TASK_DOCK_DATA_DIR` 隔离数据目录，至少 3 轮暂停/恢复检查线程数是否回落。
+本次仅执行了自动化测试与单元级线程生命周期验证，未做真机 CPU/内存前后采样。
 
 ### 4.2 Agent 实时快照边界与历史事件探测（2026-11-06）
 

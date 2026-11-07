@@ -26,6 +26,7 @@ import { navEntry, type NavEntry } from "../../lib/navigationRegistry";
 import { useNavigationLayout } from "../../lib/navigationLayout";
 import { useCapsuleStore } from "../../store/useCapsuleStore";
 import { CAPSULE_GAP_CSS, RAIL_THICKNESS_CSS } from "../../lib/capsuleLayout";
+import { attachDragCursorSession } from "../../lib/dragCursorSession";
 import type { SnapEdge } from "../../lib/edgeSnap";
 import { t } from "../../i18n";
 
@@ -136,12 +137,11 @@ export const CAPSULE_TIP_COLLAPSE_OFFSET = capsuleTipInwardOffset(CAP_COLLAPSE_C
 
 /**
  * 轨道拖拽光标会话：轨道空白处按下（事件 target 自身带 `data-tauri-drag-region`）
- * 时进入 `is-dragging`（grabbing）；原生拖拽期间 WebView2 收不到指针事件，
- * 因此结束信号取 pointerup / pointercancel / visibilitychange，以及恢复后的
- * 「按键已松开」pointermove。`blur` 只在起始 120ms 之后才结束（起始内的
- * blur 为原生拖动激活扰动，与标题栏同一守卫）；会话序号隔离新旧会话。
- * 一次会话只装一组监听，结束即全部摘除。
- * 按钮自身不带 drag-region，按下既不进入会话，也不会被误判为拖动。
+ * 时进入 `is-dragging`（grabbing）。结束信号、起始守卫、会话序号与监听摘除
+ * 统一在 `lib/dragCursorSession`（与标题栏、工具面板标题、微件同一套），
+ * 其中原生 `WM_EXITSIZEMOVE` 让「松手后鼠标静止」也能立即复位光标。
+ * 这里只把会话状态映射成 React 输出：轨道重渲染会用 className 覆盖直接改的 DOM 类，
+ * 两者必须一致。按钮自身不带 drag-region，按下既不进入会话，也不会被误判为拖动。
  */
 function useRailDragCursor() {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -150,66 +150,8 @@ function useRailDragCursor() {
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
-
-    let endSession: (() => void) | null = null;
-    let sessionSeq = 0;
-
-    const stop = () => {
-      root.classList.remove("is-dragging");
-      setDragging(false);
-      endSession?.();
-      endSession = null;
-    };
-
-    const start = () => {
-      stop(); // 上一条会话若因事件缺失没收尾，先清掉再开新的
-      const mySeq = ++sessionSeq;
-      const startedAt = Date.now();
-      const isStale = () => mySeq !== sessionSeq;
-      const inStartChurn = () => Date.now() - startedAt < 120;
-      root.classList.add("is-dragging");
-      setDragging(true);
-      const end = () => {
-        if (isStale()) return;
-        stop();
-      };
-      const endIfLate = () => {
-        if (isStale() || inStartChurn()) return;
-        stop();
-      };
-      const onMove = (event: PointerEvent) => {
-        if (event.buttons === 0) endIfLate();
-      };
-      const onBlur = () => endIfLate();
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", end);
-      window.addEventListener("pointercancel", end);
-      window.addEventListener("blur", onBlur);
-      document.addEventListener("visibilitychange", end);
-      endSession = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", end);
-        window.removeEventListener("pointercancel", end);
-        window.removeEventListener("blur", onBlur);
-        document.removeEventListener("visibilitychange", end);
-      };
-    };
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      const target = event.target;
-      if (!(target instanceof Element) || !root.contains(target)) return;
-      // 与 Tauri drag.js 一致：只认事件 target 自身的 data-tauri-drag-region
-      if (!target.hasAttribute("data-tauri-drag-region")) return;
-      start();
-    };
-
-    root.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      sessionSeq += 1;
-      stop();
-      root.removeEventListener("pointerdown", onPointerDown, true);
-    };
+    const session = attachDragCursorSession(root, { onActiveChange: setDragging });
+    return () => session.dispose();
   }, []);
 
   return { railRef: rootRef, dragging };

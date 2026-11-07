@@ -19,11 +19,12 @@ import {
   type ClipboardItem,
 } from "../../lib/bridge";
 import { fileBaseName, kindLabel } from "../../lib/clipboardUi";
+import { useDragRegion } from "../../lib/dragCursorSession";
 import { normalizeError } from "../../lib/errors";
 import { useUiStore } from "../../store/useUiStore";
 import { ClipboardThumb, useLargeImage } from "../clipboard/Media";
 import { useFocusRestore, useOverlayLayer } from "../ui/overlay";
-import { EmptyState, sizeLabel } from "./PanelKit";
+import { EmptyState, PanelCloseButton, sizeLabel } from "./PanelKit";
 
 /** 截图组内图片序列：只携带缩略图元数据，原图由预览组件按当前项按需读取。 */
 export interface LiteImageSequence {
@@ -239,9 +240,14 @@ function ClipboardLiteShell({
   footer,
   children,
 }: LiteShellProps) {
+  const headRef = useDragRegion<HTMLElement>();
   return (
     <div className="cap-clip-shell" ref={rootRef}>
-      <header className="cap-head cap-clip-head">
+      <header
+        className="cap-head cap-clip-head ui-drag-surface ui-drag-session"
+        ref={headRef}
+        data-tauri-drag-region
+      >
         <button
           type="button"
           className="cap-iconbtn cap-clip-back"
@@ -250,11 +256,15 @@ function ClipboardLiteShell({
         >
           <ArrowLeft size={15} strokeWidth={2.2} aria-hidden="true" />
         </button>
-        <div className="cap-head-text cap-clip-head-text">
-          <span className="cap-title cap-clip-title" title={title}>
+        <div className="cap-head-text cap-clip-head-text" data-tauri-drag-region>
+          <span className="cap-title cap-clip-title" title={title} data-tauri-drag-region>
             {title}
           </span>
-          {sub ? <span className="cap-sub">{sub}</span> : null}
+          {sub ? (
+            <span className="cap-sub" data-tauri-drag-region>
+              {sub}
+            </span>
+          ) : null}
         </div>
         <div className="cap-actions">
           <button
@@ -265,6 +275,8 @@ function ClipboardLiteShell({
           >
             <ArrowUpRight size={15} strokeWidth={2} aria-hidden="true" />
           </button>
+          {/* 二级页面与一级面板共用同一个关闭入口：返回只退一层，X 收起整个面板 */}
+          <PanelCloseButton label="关闭剪贴板面板" />
         </div>
       </header>
       <div className="cap-clip-body">{children}</div>
