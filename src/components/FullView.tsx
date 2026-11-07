@@ -26,11 +26,12 @@
 //! 徽标口径：合并入口徽标 = 未处理捕获条数（useCaptureStore.inboxCount），
 //! 即「待处理收集内容」；暂存条目总数**不计入**未处理徽标。
 
-import { lazy, Suspense, useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useUiStore } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
+import { useSettingsStore } from "../store/useSettingsStore";
 import { useFullViewVisible } from "../hooks/useMainUiVisible";
 // 高频页（任务 / Agent / 行动 / 剪贴板 / 收集与暂存）保持同步加载，避免切页白屏；
 // 低频页按需加载，降低首屏主包体积（轻量化专项 B）。打包后仍是本地资源，离线可用。
@@ -101,13 +102,23 @@ export default function FullView() {
 
   // 两个徽标共用行动中心口径：需介入（未确认），不再用原始 waiting/failed 计数，
   // 避免同一状态在标签页与行动中心显示两个不同的数字。
-  // 行动中心整体关闭时两个徽标都归零（不显示过期聚合）。
+  // 行动中心整体关闭或临时暂停时两个徽标都归零：暂停期间不展示可能过期的
+  // 自动聚合计数（历史仍可在行动中心手动查看）。
   const pending = stats?.pending ?? 0;
-  const actionsEnabled = actionFeed?.enabled !== false;
+  const actionsPaused = useSettingsStore((s) => s.settings?.actions_paused === true);
+  const actionsEnabled = actionFeed?.enabled !== false && !actionsPaused;
   const intervention = actionsEnabled ? actionFeed?.counts.intervention ?? 0 : 0;
   const actions = actionsEnabled ? attentionCount(actionFeed) : 0;
 
   const counts = { intervention, attention: actions, pending, inbox: inboxCount };
+
+  // ── 导航轨溢出兜底（验收 UI-01）───────────────────────────────────
+  // 默认窗口高度下 12 个入口放不进 304px 的可视区，而滚动条被隐藏。
+  // 这里测量「几何上不可见的入口」，把它们补进「更多」菜单，并在可滚动时
+  // 给轨道底部加渐隐；切页时把当前入口滚回视口，避免"当前页入口消失"。
+  const railItemsRef = useRef<HTMLDivElement | null>(null);
+  const [railScrollable, setRailScrollable] = useState(false);
+  const [overflowEntryIds, setOverflowEntryIds] = useState<string[]>([]);
 
   // ── 导航显隐与排序（统一导航架构）──────────────────────────────────
   // 只影响左侧导航的渲染：被隐藏的页面仍按 tab 渲染，快捷键/通知跳转照常可用。
@@ -157,11 +168,12 @@ export default function FullView() {
   const badgeConsumer = fullVisible && (layout.left.includes("actions") || tab === "actions");
   const prevBadgeConsumer = useRef(badgeConsumer);
   useEffect(() => {
-    if (badgeConsumer && !prevBadgeConsumer.current) {
+    // 暂停/停用期间消费者出现也不补自动聚合；恢复时由 App 的统一 effect 补一次。
+    if (badgeConsumer && !prevBadgeConsumer.current && !actionsPaused) {
       void (actionFeed ? loadActions({ silent: true, countsOnly: true }) : loadActions());
     }
     prevBadgeConsumer.current = badgeConsumer;
-  }, [badgeConsumer, actionFeed, loadActions]);
+  }, [badgeConsumer, actionFeed, loadActions, actionsPaused]);
 
   const entriesToRender = layout.left
     .filter((id) => !lockedIds.includes(id))
@@ -173,6 +185,55 @@ export default function FullView() {
     .filter((entry): entry is NavEntry => entry !== undefined);
   // 「更多」列出全部被隐藏入口（含当前页），否则当前页隐藏时菜单会凭空消失。
   const hiddenEntries = LEFT_ENTRIES.filter((entry) => !layout.left.includes(entry.id));
+
+  // 因窗口高度而被滚动裁掉的入口：与「配置隐藏」合并进同一菜单，
+  // 用户不必先发现"轨道可以滚动"才能到达这些页面。
+  const overflowEntries = entriesToRender.filter((entry) => overflowEntryIds.includes(entry.id));
+  const menuEntries = [...hiddenEntries, ...overflowEntries];
+  const leftLayoutKey = layout.left.join(",");
+
+  useLayoutEffect(() => {
+    const el = railItemsRef.current;
+    if (!el) return;
+    const measure = () => {
+      // 用「内容坐标系」判断是否放得下，而不是当前视口：滚动不会改变
+      // 「哪些入口装不下」的结论，菜单内容因此保持稳定。
+      const box = el.getBoundingClientRect();
+      const contentTop = box.top - el.scrollTop;
+      const next: string[] = [];
+      for (const item of el.querySelectorAll<HTMLElement>("[data-nav-id]")) {
+        const rect = item.getBoundingClientRect();
+        if (rect.top - contentTop + rect.height > el.clientHeight + 1) {
+          next.push(item.dataset.navId ?? "");
+        }
+      }
+      const ids = next.filter(Boolean);
+      setRailScrollable(el.scrollHeight > el.clientHeight + 1);
+      setOverflowEntryIds((prev) =>
+        prev.length === ids.length && prev.every((id, i) => id === ids[i]) ? prev : ids,
+      );
+    };
+    measure();
+    // 窗口高度、入口显隐/排序、徽标宽度变化都会改变轨道内容高度。
+    // jsdom 不实现 ResizeObserver（单测环境），有则观察、无则只靠 resize/tab 重测。
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [leftLayoutKey, entriesToRender.length, tab]);
+
+  // 切页后确保当前入口在视口内：滚动位置不会因"切换页面"而丢失可见的选中态。
+  useEffect(() => {
+    const el = railItemsRef.current;
+    if (!el) return;
+    const active = el.querySelector<HTMLElement>('[aria-current="page"]');
+    if (active && typeof active.scrollIntoView === "function") {
+      active.scrollIntoView({ block: "nearest" });
+    }
+  }, [tab, leftLayoutKey]);
 
   /** 打开视觉入口（合并入口回到上一次子页；笔记子页无逻辑 Tab，先落 inbox/shelf 再恢复）。 */
   function openEntry(entry: NavEntry) {
@@ -205,7 +266,10 @@ export default function FullView() {
             <Plus size={15} strokeWidth={1.9} aria-hidden="true" />
           </button>
         </div>
-        <div className="rail-items">
+        <div
+          className={`rail-items${railScrollable ? " is-scrollable" : ""}`}
+          ref={railItemsRef}
+        >
           {entriesToRender.map((entry) => {
             const count = entry.badge ? counts[entry.badge] : 0;
             const active = entry.tabs.includes(tab);
@@ -218,6 +282,7 @@ export default function FullView() {
             return (
               <button
                 key={entry.id}
+                data-nav-id={entry.id}
                 className={`rail-item ${active ? "active" : ""}`}
                 onClick={() => openEntry(entry)}
                 aria-current={active ? "page" : undefined}
@@ -241,10 +306,10 @@ export default function FullView() {
           })}
         </div>
         {/* 固定底部区域：不随中间列表滚动。
-            「更多」在上（仅存在隐藏入口时出现），设置恒在最底部——
+            「更多」在上（存在隐藏入口或窗口高度不足时出现），设置恒在最底部——
             系统入口不可隐藏/排序，任何窗口高度下都保持可达。 */}
         <div className="rail-foot">
-          {hiddenEntries.length > 0 && (
+          {menuEntries.length > 0 && (
             <div className="rail-more">
               <DropdownMenu
                 menuLabel={t("nav.hiddenMenu")}
@@ -271,7 +336,7 @@ export default function FullView() {
                   </button>
                 )}
                 items={[
-                  ...hiddenEntries.map((entry) => ({
+                  ...menuEntries.map((entry) => ({
                     key: entry.id,
                     label: navLabel(entry, t),
                     icon: <entry.icon size={14} strokeWidth={1.6} />,
@@ -315,7 +380,16 @@ export default function FullView() {
           })}
         </div>
       </nav>
-      <div className={`tab-content tab-content-${tab}`}>
+      {/* 内容区是主地标：读屏用户可按 landmark 直接跳到工作区（验收 UI-08）。
+          页级 h1 只给读屏，不新增视觉 chrome（560 高窗口的密度已经偏紧）；
+          可见页标题仍由各页自己的头部承担。 */}
+      <main
+        className={`tab-content tab-content-${tab}`}
+        aria-labelledby="page-heading"
+      >
+        <h1 id="page-heading" className="sr-only">
+          {currentEntry ? navLabel(currentEntry, t) : t("nav.tasks")}
+        </h1>
         {/* 编辑中切换页面：由 store 门禁记录待决目标，这里统一确认，不各页重复拦截。 */}
         <TabLeaveGuard />
         {/* 内容区独立错误边界：单个页面渲染异常只替换内容区，标题栏与左侧导航
@@ -345,7 +419,7 @@ export default function FullView() {
             {tab === "settings" && <SettingsPanel />}
           </Suspense>
         </ErrorBoundary>
-      </div>
+      </main>
     </div>
   );
 }

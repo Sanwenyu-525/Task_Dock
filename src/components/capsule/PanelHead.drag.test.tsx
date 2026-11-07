@@ -11,7 +11,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { PanelHead } from "./PanelKit";
 import { installNativeDragBridge, NATIVE_DRAG_EVENT } from "../../lib/dragCursorSession";
 
-const native = vi.hoisted(() => ({ handlers: new Map<string, (payload: unknown) => void>() }));
+const native = vi.hoisted(() => ({
+  handlers: new Map<string, (payload: unknown) => void>(),
+  loop: { generation: 0, active: false },
+}));
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (name: string, cb: (payload: unknown) => void) => {
@@ -19,11 +22,31 @@ vi.mock("@tauri-apps/api/event", () => ({
     return Promise.resolve(() => native.handlers.delete(name));
   },
 }));
-vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }));
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: () => true,
+  // start 的会话关联会查询原生循环是否仍在运行。
+  invoke: (command: string, args?: { generation?: number }) =>
+    Promise.resolve(
+      command === "drag_loop_active" &&
+        native.loop.active &&
+        native.loop.generation === args?.generation,
+    ),
+}));
 
 installNativeDragBridge();
 
 afterEach(() => cleanup());
+
+/** 冲刷关联查询的微任务链（不使用定时器）。 */
+async function flushNative() {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+}
+
+function phase(phaseName: "start" | "end", generation: number) {
+  const handler = native.handlers.get(NATIVE_DRAG_EVENT);
+  expect(handler).toBeTruthy();
+  handler!({ event: NATIVE_DRAG_EVENT, id: generation, payload: { phase: phaseName, generation } });
+}
 
 function renderHead() {
   const view = render(
@@ -75,25 +98,29 @@ describe("PanelHead 拖拽热区", () => {
     expect(head.classList.contains("is-dragging")).toBe(true);
   });
 
-  it("原生移动循环结束后标题区立即退出 dragging（松手不需要再移动鼠标）", () => {
+  it("原生移动循环结束后标题区立即退出 dragging（松手不需要再移动鼠标）", async () => {
     const { head, title } = renderHead();
     press(title);
     expect(head.classList.contains("is-dragging")).toBe(true);
 
-    // 原生相位事件带代次：start 绑定、end 收尾，与拖拽会话一一对应
-    const handler = native.handlers.get(NATIVE_DRAG_EVENT);
-    expect(handler).toBeTruthy();
-    handler!({ event: NATIVE_DRAG_EVENT, id: 1, payload: { phase: "start", generation: 3 } });
+    // 原生相位事件带代次：start 在循环活跃时绑定、end 收尾，与拖拽会话一一对应
+    native.loop = { generation: 3, active: true };
+    phase("start", 3);
+    await flushNative();
     expect(head.classList.contains("is-dragging")).toBe(true);
-    handler!({ event: NATIVE_DRAG_EVENT, id: 2, payload: { phase: "end", generation: 3 } });
+    native.loop.active = false;
+    phase("end", 3);
     expect(head.classList.contains("is-dragging")).toBe(false);
 
     // 迟到的旧代次结束事件不清掉新会话；新循环 start/end 才收尾
     press(title);
-    handler!({ event: NATIVE_DRAG_EVENT, id: 3, payload: { phase: "end", generation: 3 } });
+    phase("end", 3);
     expect(head.classList.contains("is-dragging")).toBe(true);
-    handler!({ event: NATIVE_DRAG_EVENT, id: 4, payload: { phase: "start", generation: 4 } });
-    handler!({ event: NATIVE_DRAG_EVENT, id: 5, payload: { phase: "end", generation: 4 } });
+    native.loop = { generation: 4, active: true };
+    phase("start", 4);
+    await flushNative();
+    native.loop.active = false;
+    phase("end", 4);
     expect(head.classList.contains("is-dragging")).toBe(false);
   });
 

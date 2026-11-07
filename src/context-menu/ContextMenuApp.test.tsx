@@ -198,6 +198,34 @@ describe("动作分发", () => {
     await user.click(screen.getByRole("menuitem", { name: "退出" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("菜单命令未响应"));
   });
+
+  it("动作在途时忽略重复点击/回车（同一命令只发一次）", async () => {
+    const user = userEvent.setup();
+    const deferred: { resolve?: (value: unknown) => void } = {};
+    invokeMock.mockImplementation((cmd) => {
+      if (cmd === "get_settings") return Promise.resolve(settingsStub());
+      if (cmd === "context_menu_action") {
+        return new Promise((resolve) => {
+          deferred.resolve = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+    render(<ContextMenuApp />);
+    const menu = await screen.findByRole("menu");
+    await user.click(screen.getByRole("menuitem", { name: "退出" }));
+    await waitFor(() => expect(menu.getAttribute("aria-busy")).toBe("true"));
+
+    // 事务未结束：再次点击/回车不得并发触发第二条命令
+    await user.click(screen.getByRole("menuitem", { name: "退出" }));
+    await user.keyboard("{Enter}");
+    expect(
+      invokeMock.mock.calls.filter(([cmd]) => cmd === "context_menu_action"),
+    ).toHaveLength(1);
+
+    deferred.resolve?.({ ok: true, snapshot: snapshotOf(settingsStub()) });
+    await waitFor(() => expect(menu.getAttribute("aria-busy")).toBeNull());
+  });
 });
 
 describe("吸附方式", () => {

@@ -14,6 +14,26 @@
    - 列表滚动交给原生 overflow，不做虚拟滚动动画。
    ════════════════════════════════════════════════════════════════ */
 
+/* 读屏专用：视觉隐藏但保留在可访问性树中（页级 h1 等）。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 焦点环间隙在深色主题用窗口底同族的实色，避免白环把元素圈成"贴纸"。
+   选择器 specificity 高于 :root，浅/深切换即时生效。 */
+:root[data-theme="dark"] {
+  --focus-ring-gap: #141826;
+}
+
 :root {
   /* ── 层级刻度 ────────────────────────────────────────────────
      内容 < 抽屉 < 模态 < 浮层 < 轻提示。
@@ -29,7 +49,8 @@
   /* Toast 只作反馈，不能压住菜单/对话框：低于 --z-menu(900) 与 --z-dialog(940)，
      高于抽屉/模态内容。否则确认框底部按钮会被提示气泡挡住（v0.7 通知整改）。 */
   --z-toast: 890;
-  --focus-ring: 0 0 0 2px var(--surface-base), 0 0 0 3.5px var(--accent);
+  --focus-ring-gap: #ffffff;
+  --focus-ring: 0 0 0 2px var(--focus-ring-gap), 0 0 0 3.5px var(--accent);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* ── 输入框排版 ──────────────────────────────────────────────
@@ -422,6 +443,15 @@
   font-size: var(--input-font-size);
   line-height: var(--input-line-height);
   caret-color: var(--input-caret-color);
+}
+
+/* 占位符必须跟随主题：Chromium 的 UA 默认 #757575 在深色输入面上只有
+   2.37–2.51:1（验收 UI-05）。统一用三级文字色，并清掉部分浏览器的
+   默认透明度叠乘。 */
+.ui-search .ui-search-input::placeholder,
+.input-embedded::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
 }
 
 /* compact 档只压缩水平留白与图标间距，不再压低字号：

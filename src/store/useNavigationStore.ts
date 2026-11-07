@@ -54,6 +54,13 @@ let activeScanId: string | null = null;
  */
 let cancelRequestedScanId: string | null = null;
 
+/**
+ * 同一扫描的取消请求在途复用：两个查看者在首个 IPC 返回前同时点击取消时，
+ * 复用同一个 Promise，只发送一次 IPC；结束（成功/失败/扫描自然结束）后释放，
+ * 失败后下一次调用仍会重新发送。
+ */
+let cancelInFlight: { scanId: string; promise: Promise<CancelScanOutcome> } | null = null;
+
 /** 扫描结果查看者数量：归零且仍在扫描时，才真正取消后台扫描。 */
 let scanViewers = 0;
 
@@ -181,6 +188,7 @@ export const useNavigationStore = create<{
     const scanId = `scan-${seq}-${Date.now().toString(36)}`;
     activeScanId = scanId;
     cancelRequestedScanId = null;
+    cancelInFlight = null;
     // 只有「上次是完整权威结果」时才保留旧列表；首次扫描的部分结果在重试时重建。
     const keepPrevious = get().scan !== null && !get().scanPartial;
     // 重新扫描时保留的上次权威结果，供失败/取消时回退，避免部分新结果覆盖上次成功结果。
@@ -280,21 +288,33 @@ export const useNavigationStore = create<{
     if (!scanId || !get().scanning) return "finished";
     // 同一次扫描已经接受过取消（其他面板或自动取消已发出）：复用事实，不重复 IPC。
     if (cancelRequestedScanId === scanId) return "accepted";
-    try {
-      // 只发取消信号：本函数不把 scanning 置 false，界面必须等后端真实返回
-      // （scan.cancelled）才结束加载态，不能用前端隐藏 Loading 冒充已取消。
-      const accepted = await navCancelScan(scanId);
-      // 请求往返期间扫描可能已经结束：以当前在途状态区分「已结束」与「未送达」。
-      if (!get().scanning) return "finished";
-      if (accepted) {
-        cancelRequestedScanId = scanId;
-        return "accepted";
+    // 同一扫描的取消 IPC 仍在途：所有调用者复用同一个结果，不重复发送。
+    if (cancelInFlight?.scanId === scanId) return cancelInFlight.promise;
+    const run = (async (): Promise<CancelScanOutcome> => {
+      try {
+        // 只发取消信号：本函数不把 scanning 置 false，界面必须等后端真实返回
+        // （scan.cancelled）才结束加载态，不能用前端隐藏 Loading 冒充已取消。
+        const accepted = await navCancelScan(scanId);
+        // 请求往返期间扫描可能已经结束或被新扫描取代：不能把旧请求的结果记到新扫描上。
+        if (!get().scanning || activeScanId !== scanId) return "finished";
+        if (accepted) {
+          cancelRequestedScanId = scanId;
+          return "accepted";
+        }
+        return "failed";
+      } catch {
+        // IPC 失败不伪装成功；扫描可能恰在此时完成，已结束则不算失败。
+        return get().scanning ? "failed" : "finished";
       }
-      return "failed";
-    } catch {
-      // IPC 失败不伪装成功；扫描可能恰在此时完成，已结束则不算失败。
-      return get().scanning ? "failed" : "finished";
-    }
+    })();
+    cancelInFlight = { scanId, promise: run };
+    // 请求结束后释放引用：失败可重试；不同扫描的旧请求不得清掉新请求的占位。
+    void run.then(() => {
+      if (cancelInFlight?.scanId === scanId && cancelInFlight.promise === run) {
+        cancelInFlight = null;
+      }
+    });
+    return run;
   },
 
   attachScanViewer: () => {

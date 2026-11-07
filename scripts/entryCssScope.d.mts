@@ -11,9 +11,12 @@ export interface CssScopeViolation {
   selector: string;
   props: string[];
   atPath: string[];
+  /** 命中的选择器来自的分组原文（仅当规则是逗号分组时存在）。 */
+  list?: string;
 }
 
 export declare function parseCssRules(css: string): CssRule[];
+export declare function splitSelectorList(selector: string): string[];
 export declare function isBareRootSelector(selector: string): boolean;
 export declare function findUnscopedRootLayoutRules(
   rules: CssRule[],

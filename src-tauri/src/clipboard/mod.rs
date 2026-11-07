@@ -618,9 +618,14 @@ impl ClipboardRuntime {
     /// - `enabled=true && paused=true`：暂时暂停 —— 只回收采集侧线程，**不打断**
     ///   用户已经发起的复制/粘贴；
     /// - `enabled=true && paused=false`：恢复采集（重复调用不会留下第二套线程）。
+    ///
+    /// 停用也走异步采集回收：设置命令是同步 IPC，不能因为采集线程正在解码大图
+    /// 而 join 阻塞 UI；粘贴取消本身只置取消位，不等待线程结束。真正需要等待
+    /// 线程收尾的只有应用退出（`shutdown`），那里仍走同步 `stop()`。
     pub fn apply_config(self: &Arc<Self>, enabled: bool, paused: bool) {
         if !enabled {
-            self.stop();
+            self.stop_capture();
+            self.paste.cancel_all();
         } else if paused {
             self.stop_capture();
         } else {

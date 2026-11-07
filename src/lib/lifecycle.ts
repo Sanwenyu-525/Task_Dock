@@ -34,7 +34,9 @@ export const MODULE_CONTROLS: Readonly<Record<string, ModuleControl>> = {
   // 自动清理是「开关型」设置：false 才是暂停（线程真正退出）。
   shelf_cleanup: { settingKey: "shelf_auto_cleanup_enabled", pausedValue: false },
   reminders: { settingKey: "reminders_paused", pausedValue: true },
-  actions: { settingKey: "actions_enabled", pausedValue: false },
+  // 行动中心：临时暂停用独立字段，不得复用 `actions_enabled`（长期停用会让
+  // 后端 feed 返回空，历史列表随之消失）。
+  actions: { settingKey: "actions_paused", pausedValue: true },
   // 只停自动语音播报；提示音（audio_sound_enabled）是独立维度，不被连带改写。
   voice: { settingKey: "tts_enabled", pausedValue: false },
 };
@@ -64,6 +66,31 @@ export function modulePausedFromSettings(
   return raw === control.pausedValue;
 }
 
+/**
+ * 模块是否处于「长期停用」：停用与暂停是两个维度。
+ *
+ * 停用模块时不能只改暂停字段并提示已恢复运行——例如剪贴板
+ * `clipboard_enabled=false` 时改 `clipboard_paused` 不会启动监听。
+ * 这里返回 true 的模块应禁用暂停按钮并提示先在设置中启用。
+ */
+const MODULE_DISABLE_KEYS: Readonly<
+  Record<string, { key: keyof Settings & string; disabledWhen: boolean }>
+> = {
+  clipboard: { key: "clipboard_enabled", disabledWhen: false },
+  actions: { key: "actions_enabled", disabledWhen: false },
+};
+
+export function moduleDisabledFromSettings(
+  moduleId: string,
+  settings: Partial<Settings> | null | undefined,
+): boolean {
+  const rule = MODULE_DISABLE_KEYS[moduleId];
+  if (!rule || !settings) return false;
+  const raw = settings[rule.key];
+  if (typeof raw !== "boolean") return false;
+  return raw === rule.disabledWhen;
+}
+
 /** 写入设置时使用的补丁值（恢复 = 暂停值的反面）。 */
 export function moduleControlPatch(moduleId: string, paused: boolean): Partial<Settings> | null {
   const control = controlFor(moduleId);
@@ -89,6 +116,7 @@ export function isLifecycleTransition(status: ModuleRuntimeStatus | undefined): 
 export const LIFECYCLE_STATE_LABEL: Readonly<Record<string, string>> = {
   running: "lifecycle.state.running",
   pausing: "lifecycle.state.pausing",
+  stopping: "lifecycle.state.stopping",
   paused: "lifecycle.state.paused",
   stopped: "lifecycle.state.stopped",
   idle: "lifecycle.state.idle",

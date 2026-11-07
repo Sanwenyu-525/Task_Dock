@@ -45,6 +45,31 @@ const CATEGORY_INFO: Record<
 
 type CleanupPhase = "idle" | "scanning" | "ready" | "partial" | "cleaning" | "success" | "error";
 
+/**
+ * 概览可清理量的口径状态。四种数字必须分开：
+ * 缓存总量（快照）、扫描估算量（本分区）、选中预计释放量、清理实际释放量。
+ * - `ready` / `partial`：当前有效的扫描估算；`partial` 表示部分来源未纳入；
+ * - `scanning`：正在扫描，尚无有效估算；
+ * - `stale`：之前的估算已过期或被清理动作作废，必须重新扫描；
+ * - `failed`：扫描失败或没有任何可用类别，不能显示为 0 B；
+ * - `unscanned`：本次会话尚未扫描。
+ */
+export type CleanupEstimateState =
+  | "unscanned"
+  | "scanning"
+  | "ready"
+  | "partial"
+  | "stale"
+  | "failed";
+
+export interface CleanupEstimate {
+  totalBytes: number | null;
+  state: CleanupEstimateState;
+}
+
+const INITIAL_ESTIMATE: CleanupEstimate = { totalBytes: null, state: "unscanned" };
+const STALE_ESTIMATE: CleanupEstimate = { totalBytes: null, state: "stale" };
+
 function previewStatusKey(status: ResourceCleanupCategoryPreview["status"]): MessageKey {
   switch (status) {
     case "ready":
@@ -109,8 +134,12 @@ function isPreviewExpired(preview: ResourceCleanupPreview | null): boolean {
 }
 
 export interface ResourceCleanupSectionProps {
-  /** 预览结果变化：可清理字节；`null` 表示尚未扫描。 */
-  onPreviewChange?: (totalBytes: number | null) => void;
+  /**
+   * 可清理估算变化：带状态一起上报，页面据此区分
+   * 「尚未扫描 / 正在扫描 / 有效估算 / 已过期 / 扫描失败」，
+   * 不会在 TTL 到期后继续把旧字节数当成当前可清理量。
+   */
+  onPreviewChange?: (estimate: CleanupEstimate) => void;
   /** 清理完成/失败后请求页面刷新快照（缓存与磁盘数据已变化）。 */
   onSnapshotInvalidated?: () => void;
 }
@@ -126,7 +155,10 @@ export default function ResourceCleanupSection({
   const [selection, setSelection] = useState<ResourceCleanupCategory[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expiryCheck, setExpiryCheck] = useState(0);
+  /** 预览 TTL 已到：只由一次性的到期计时器设置，不用轮询检查时间。 */
+  const [expiryReached, setExpiryReached] = useState(false);
+  /** 上报给概览的估算（唯一来源）。 */
+  const [estimate, setEstimate] = useState<CleanupEstimate>(INITIAL_ESTIMATE);
   const mountedRef = useRef(false);
   const requestRef = useRef(0);
 
@@ -138,10 +170,10 @@ export default function ResourceCleanupSection({
     };
   }, []);
 
-  // 概览的「可清理量」来自这里的预览结果：扫描/清理后同步给页面，不重复请求。
+  // 概览的「可清理量」来自这里的估算状态：状态变化才上报，不重复请求。
   useEffect(() => {
-    onPreviewChange?.(preview ? preview.totalEstimatedBytes : null);
-  }, [preview, onPreviewChange]);
+    onPreviewChange?.(estimate);
+  }, [estimate, onPreviewChange]);
 
   const categoryRows = preview?.categories ?? [];
   const selectedRows = useMemo(
@@ -150,27 +182,29 @@ export default function ResourceCleanupSection({
   );
   const selectedBytes = selectedRows.reduce((sum, row) => sum + row.estimatedBytes, 0);
   const usableSelection = selectedRows.map((row) => row.category);
-  const expired = isPreviewExpired(preview);
+  const expired = preview ? expiryReached || isPreviewExpired(preview) : false;
   const busy = phase === "scanning" || phase === "cleaning";
 
+  // 单个一次性计时器：到点把估算标记为失效并通知页面。没有轮询，卸载即清理。
   useEffect(() => {
     if (!preview) return;
-    const expiry = Date.parse(preview.expiresAt);
-    if (!Number.isFinite(expiry)) return;
-    const remaining = expiry - Date.now();
-    if (remaining <= 0) return;
-    const timer = window.setTimeout(
-      () => setExpiryCheck((check) => check + 1),
-      Math.min(2_147_483_647, remaining),
-    );
+    const remaining = Date.parse(preview.expiresAt) - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) return;
+    const timer = window.setTimeout(() => {
+      if (!mountedRef.current) return;
+      setExpiryReached(true);
+      setEstimate(STALE_ESTIMATE);
+    }, Math.min(2_147_483_647, remaining));
     return () => window.clearTimeout(timer);
-  }, [preview, expiryCheck]);
+  }, [preview]);
 
   async function scan() {
     if (busy) return;
     const request = ++requestRef.current;
     setPhase("scanning");
     setPreview(null);
+    setExpiryReached(false);
+    setEstimate({ totalBytes: null, state: "scanning" });
     setReport(null);
     setError(null);
     setConfirming(false);
@@ -190,10 +224,23 @@ export default function ResourceCleanupSection({
         (row) => row.status === "partial" || row.status === "incomplete" || row.status === "unavailable",
       );
       setPhase(hasPartialCategory ? "partial" : hasUsableCategory ? "ready" : "error");
+      // 概览只接收「当前有效」的估算：不可用或后端已判过期的预览都不能报数字。
+      if (!hasUsableCategory) {
+        setEstimate({ totalBytes: null, state: "failed" });
+      } else if (isPreviewExpired(result)) {
+        setExpiryReached(true);
+        setEstimate(STALE_ESTIMATE);
+      } else {
+        setEstimate({
+          totalBytes: result.totalEstimatedBytes,
+          state: hasPartialCategory ? "partial" : "ready",
+        });
+      }
     } catch (reason) {
       if (!mountedRef.current || request !== requestRef.current) return;
       setError(cleanupErrorMessage(reason, t));
       setPhase("error");
+      setEstimate({ totalBytes: null, state: "failed" });
     }
   }
 
@@ -222,12 +269,17 @@ export default function ResourceCleanupSection({
       if (!mountedRef.current || request !== requestRef.current) return;
       setReport(result);
       setPreview(null);
+      // 预览已被服务端消费（即使部分失败也可能已删除文件）：旧估算立即失效。
+      setExpiryReached(true);
+      setEstimate(STALE_ESTIMATE);
       setPhase(result.status === "success" ? "success" : result.status === "partial" ? "partial" : "error");
       onSnapshotInvalidated?.();
     } catch (reason) {
       if (!mountedRef.current || request !== requestRef.current) return;
       setError(cleanupErrorMessage(reason, t));
       setPreview(null);
+      setExpiryReached(true);
+      setEstimate(STALE_ESTIMATE);
       setPhase("error");
       onSnapshotInvalidated?.();
     }

@@ -604,6 +604,28 @@ static DRAG_HOOK: Mutex<Option<Box<dyn Fn(crate::drag_signal::DragEvent) + Send 
 #[cfg(windows)]
 static DRAG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// 系统移动/缩放循环当前是否仍在运行（与磁吸开关无关）。
+///
+/// 前端在收到 `start` 时用它确认「这条开始信号对应的循环此刻是否仍活跃」，
+/// 从而把迟到的旧 start 与已经开始的新会话解耦（见 `drag_signal` 模块文档）。
+#[cfg(windows)]
+static DRAG_LOOP_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 指定代次的移动循环此刻是否仍在主窗上运行。
+///
+/// 只由主窗窗口过程写入；前端查询必须先确认发起窗口是主窗，避免与其他窗口串台。
+/// 查询命令必须异步执行：同步命令会被模态循环所在的主线程排队，永远只能读到
+/// 「已结束」，失去关联意义。
+#[cfg(windows)]
+pub fn drag_loop_active(generation: u64) -> bool {
+    DRAG_LOOP_ACTIVE.load(Ordering::Acquire) && DRAG_GEN.load(Ordering::Acquire) == generation
+}
+
+#[cfg(not(windows))]
+pub fn drag_loop_active(_generation: u64) -> bool {
+    false
+}
+
 /// 注册拖拽相位回调（主窗安装子类化时调用一次；重复注册覆盖旧回调）。
 pub fn register_drag_hook(hook: Box<dyn Fn(crate::drag_signal::DragEvent) + Send + Sync>) {
     *DRAG_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
@@ -1025,6 +1047,9 @@ mod win {
         // 指针静止时系统不再派发 WM_SETCURSOR，前端 CSS cursor 无法重新生效，
         // 由窗口过程补一次 SetCursor（根因见 `window_cursor` 模块文档）。
         if msg == WM_EXITSIZEMOVE {
+            // 先清「循环活跃」再投递结束信号：查询接口读到的永远是真实相位，
+            // 不会把已经退出的循环报告成仍在运行。
+            DRAG_LOOP_ACTIVE.store(false, Ordering::Release);
             unsafe {
                 PostMessageW(hwnd, WM_CURSOR_CORNER, 0, 0);
                 // 与磁力开关无关：即使关闭吸附也要通知前端「原生移动循环已退出」。
@@ -1041,6 +1066,9 @@ mod win {
         // 开始信号同样与磁力开关无关（关闭吸附后拖拽光标仍要工作）。
         if msg == WM_ENTERSIZEMOVE {
             let generation = DRAG_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+            // 先置位再发信号：前端收到 start 后立即查询时必须看到「仍在运行」，
+            // 否则每次正常拖拽都会被误判成迟到的旧消息。
+            DRAG_LOOP_ACTIVE.store(true, Ordering::Release);
             unsafe {
                 PostMessageW(hwnd, WM_DRAG_PHASE, generation as usize, 1);
             }
@@ -1487,6 +1515,22 @@ mod win {
 
             IN_SIZE_MOVE.with(|f| f.set(false));
             assert!(should_accept_end(), "循环已退出才采纳结束信号");
+        }
+
+        /// 前端关联 start 的依据：活跃标志与代次必须同时匹配。
+        ///
+        /// 循环已退出（或已换成下一代）时，迟到的 start 查询必须返回 false，
+        /// 前端才不会把旧代次写给新会话。
+        #[test]
+        fn loop_active_requires_current_generation() {
+            super::super::DRAG_GEN.store(3, Ordering::Release);
+            super::super::DRAG_LOOP_ACTIVE.store(true, Ordering::Release);
+            assert!(super::super::drag_loop_active(3));
+            assert!(!super::super::drag_loop_active(2), "旧代次不得报告为活跃");
+            assert!(!super::super::drag_loop_active(4), "未来代次不得报告为活跃");
+
+            super::super::DRAG_LOOP_ACTIVE.store(false, Ordering::Release);
+            assert!(!super::super::drag_loop_active(3), "循环退出后不得报告为活跃");
         }
     }
 

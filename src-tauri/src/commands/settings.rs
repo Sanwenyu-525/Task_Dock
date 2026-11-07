@@ -53,6 +53,8 @@ const ALLOWED_KEYS: &[&str] = &[
     // 模块独立启停（v0.5.2）
     "workspace_enabled",
     "actions_enabled",
+    // 行动中心临时暂停（只停自动聚合；长期停用仍是 actions_enabled）
+    "actions_paused",
     // 提醒调度暂停（提醒数据与通知历史不删除；暂停期间到期提醒保持未触发）
     "reminders_paused",
     // 智能剪贴板（v0.5）
@@ -178,6 +180,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "nav_remember_window"
         | "workspace_enabled"
         | "actions_enabled"
+        | "actions_paused"
         | "reminders_paused"
         | "clipboard_enabled"
         | "clipboard_paused"

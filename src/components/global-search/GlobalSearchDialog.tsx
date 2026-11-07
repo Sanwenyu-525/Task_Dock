@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { X, Search, Clock, RotateCw } from "lucide-react";
+import { X, CircleX, Search, Clock, RotateCw } from "lucide-react";
 
 import { useOverlayLayer, useFocusTrap } from "../ui/overlay";
 import {
@@ -116,7 +116,9 @@ export function GlobalSearchDialog() {
                 inputRef.current?.focus();
               }}
             >
-              <X size={14} strokeWidth={2} aria-hidden="true" />
+              {/* 清空与关闭在同一行：不能用两个相同 X（验收 UI-21）。
+                  清空用 CircleX，关闭保留 X，两者 aria-label/data-tip 各自明确。 */}
+              <CircleX size={14} strokeWidth={2} aria-hidden="true" />
             </button>
           ) : null}
           {loading ? (

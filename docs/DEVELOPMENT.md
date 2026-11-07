@@ -24,6 +24,12 @@ npm run tauri dev
 # 仅前端类型检查 + 构建（产物 dist/）
 npm run build
 
+# 说明：Vite HMR 只更新前端资源，**不会**重新编译 Rust。
+# 若前端新增了 IPC 命令（如 lifecycle_status / hide_tab_hint）而 Rust 进程仍是旧构建，
+# 会得到 `Command <name> not found`；这不是命令未注册，而是运行实例版本落后。
+# 核对运行实例路径/启动时间与源码修改时间，重启 `npm run tauri dev` 或重新构建后再验收。
+# 诊断日志中的 IPC failed 不应当作“注册缺失”直接改代码。
+
 # 单元测试（前端 vitest / 后端 cargo test）
 npm test
 cd src-tauri && cargo test
@@ -108,6 +114,8 @@ task_dock/
 │   └── icons/                  # 应用图标与托盘状态图标（脚本生成）
 ├── src-tauri/tests/            # 集成测试；ingest_perf / actions_perf / clipboard_perf 为手动压测
 ├── scripts/gen-icons.mjs       # 图标生成器
+├── scripts/build-guard.mjs     # 构建空间/缓存登记与安全回收（§7）
+├── scripts/worktree-guard.mjs  # 多 Agent Worktree 创建/状态/集成预检/安全清理（§8）
 ├── scripts/make-preview.mjs    # 视觉预览 harness（IPC mock）→ dist/ 与 .preview/
 ├── scripts/serve-preview.mjs   # 视觉走查静态服务（harness 取 .preview/，产物取 dist/）
 ├── scripts/visual-audit.mjs    # Playwright 320/400 视觉走查
@@ -443,6 +451,134 @@ CARGO_PROFILE_DEV_DEBUG=2 cargo build              # bash / Git Bash
 是否存在未提交的已跟踪修改（`git status --porcelain --untracked-files=no`，
 未跟踪文件不计，未提交内容本身不做哈希）。`dirty=true` 的构建不应视为干净快照。
 exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
+
+## 八、多 Agent Worktree 隔离与集成
+
+多 Agent 并行时默认**一任务一 Worktree**；共享同一工作树只适用于单 Agent 独占且无并行冲突的
+简单任务。主工作区承担集成、验收与稳定版本管理。工具 `scripts/worktree-guard.mjs`（零依赖
+Node，与 `build-guard.mjs` 同级）负责创建、状态、冲突预检与安全清理，**不执行 commit / merge /
+rebase / push**，所有 Git 写操作仍由任务所有者按授权执行。
+
+### 8.1 目录与分支约定
+
+- Worktree 根默认在仓库同级：`<仓库父目录>/<仓库名>-worktrees/`（当前即
+  `D:\Develop\task_dock-worktrees\`），一任务一目录，目录名 = 任务名。
+- 任务名只允许小写字母/数字与单个短横线连接，长度 1–48，例如 `capsule-drag`。
+- 分支默认 `agent/<task>`；创建前同时检查本地与 `origin` 同名分支，已存在即拒绝。
+- Worktree 不得放在仓库内部（会污染工作树、`git status` 与构建缓存统计），工具直接拒绝。
+- 历史 Worktree（如第五轮验收的 `D:\Develop\task_dock-r2-acc`，detached HEAD）保持原状：
+  `status` 会列出，但 `cleanup` 只处理显式 `--task` 匹配项，不自动 prune 或删除。
+
+### 8.2 命令与退出码
+
+```bash
+node scripts/worktree-guard.mjs status   [--target main] [--json]
+node scripts/worktree-guard.mjs create   --task <name> [--base <ref>] [--branch <name>] \
+                                         [--root <绝对目录>] [--link-node-modules] [--json]
+node scripts/worktree-guard.mjs check    --task <name> [--target main] [--json]
+node scripts/worktree-guard.mjs cleanup  --task <name> [--target main] \
+                                         [--delete-branch] [--execute] [--json]
+```
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 正常（`check` 未发现冲突/覆盖风险；`cleanup` dry-run 或执行成功） |
+| 1 | 用法/环境错误（参数非法、分支或目录已存在、`git` 失败） |
+| 2 | `check` 发现冲突或覆盖风险，暂不可集成 |
+| 3 | `cleanup` 拒绝执行（脏、未合入、锁定、主工作区、目录缺失） |
+| 4 | 清理执行失败（移除 Worktree 或 `node_modules` 链接失败） |
+| 5 | Worktree 已移除，但分支删除失败（如目标分支与主工作区当前分支不一致） |
+
+`--json` 只输出机器可读结果，便于 Agent 判断；人类可读输出会把风险与建议逐条列出。
+
+### 8.3 创建与依赖/构建缓存
+
+1. 在仓库根执行 `create`。工具从 `--base`（默认 `HEAD`）解析固定提交，调用
+   `git worktree add -b agent/<task> <目录> <commit>`；**不移动主工作区 HEAD，不切换当前分支**。
+2. 目标目录、任务分支任一已存在即失败并保留现场；工具不自动删除冲突目录。
+3. 前端依赖：只有 `package.json` 与 `package-lock.json` 与主仓库**逐字节一致**时才允许
+   `--link-node-modules`，建立指向主仓库 `node_modules` 的 junction；否则必须在 Worktree 内
+   独立 `npm ci`。这样避免两个任务对同一依赖目录做不同版本安装而互相污染。
+4. Rust 缓存：**不要**让每个 Worktree 在自己目录下生成 `src-tauri/target`（不在主仓库报告范围，
+   且每个 5–7 GB）。需要 Rust 构建时，在主仓库 `src-tauri/` 内使用绝对路径：
+
+   ```bash
+   CARGO_TARGET_DIR="D:/Develop/task_dock/src-tauri/target-<task>"
+   node scripts/build-guard.mjs register --dir "$CARGO_TARGET_DIR" --task <task>
+   # 任务结束（成功/失败/取消）后：
+   node scripts/build-guard.mjs cleanup --dir "$CARGO_TARGET_DIR" --execute
+   ```
+
+   每个任务独立 target 目录可避免 Cargo 文件锁串行化；不要并发共享同一个 target（不同
+   checkout 的源路径会让指纹反复失效，且锁竞争会串行构建）。共享 `node_modules` 的 junction
+   在 `cleanup --execute` 前会先移除链接，不触碰主仓库依赖。
+5. 并行 `tauri dev` 共用 1420 端口会冲突：同一时刻只保留一个 dev 实例，其他 Agent 使用
+   `cargo test` / `vitest` / `npm run build`，或在各自任务中显式改端口。
+
+### 8.4 状态解读
+
+`status` 直接读取 `git worktree list --porcelain` 与每个工作树的 `git status --porcelain=v1`，
+**不凭目录名推断**，输出路径、分支、HEAD、修改/未跟踪/冲突计数、Git 锁定与相对目标分支的
+ahead/behind。当前没有任何进程/会话级证据，活跃状态统一显示「未知」；`locked` 只表示人工
+锁定，**不能当作仍在工作的证据**。目录缺失的条目会标记为可 `prune`，但工具不自动执行。
+
+### 8.5 集成流程（人工执行，工具只做预检）
+
+1. 在 Worktree 内完成开发，按任务授权提交；未提交内容不算已集成。
+2. 在 Worktree 内执行受影响测试与构建（前端 `npm test` / `npm run build`；Rust 在
+   `src-tauri/` 内 `cargo test`）。
+3. `node scripts/worktree-guard.mjs check --task <task>`：检查 ahead/behind、待集成文件、
+   `git merge-tree` 冲突预测、源 Worktree 是否干净、目标工作区未提交文件是否与待集成文件重叠。
+   退出码 2 表示存在阻塞/风险，先处理再合并。
+4. 主 Agent 复核 `git log --oneline <target>..<branch>` 与 `git diff --stat <target>...<branch>`，
+   确认依赖关系与集成顺序；跨模块改动按文件所有权串行合并。
+5. 在目标分支执行合并（仅在获得授权时）：`git merge --no-ff agent/<task>`；冲突时停止，
+   先读双方 diff 再决定，不整文件覆盖、不强制推送。
+6. 合并后重新执行受影响测试；确认无回归后才考虑清理 Worktree。
+
+### 8.6 冲突与共享文件
+
+- Worktree 隔离**不等于**自动解决冲突：两个 Worktree 改同一模块，合并时仍会冲突。
+- 共享枢纽文件（`src/lib/bridge.ts`、`navigationRegistry.ts`、`featureCatalog.ts`、
+  `useUiStore.ts`、`src-tauri/src/lib.rs`、`commands/mod.rs`、`db/mod.rs`）、SQLite 迁移与
+  构建缓存仍保持单一所有者；由主 Agent 决定集成顺序。
+- 目标工作区有未提交改动时，`check` 会列出与待集成文件重叠的路径并返回 2；不得用 stash、
+  reset 或整文件覆盖清理他人的现场，必须由该工作区所有者先提交或迁移改动。
+- 一个任务未完成、另一个任务需要开始时，新任务从目标分支的稳定提交新建 Worktree，
+  不等待、不 rebase 对方分支；集成时按提交顺序处理。
+
+### 8.7 安全清理
+
+`cleanup` 默认 dry-run，只有 `--execute` 才执行，且必须同时满足：Worktree 不是主工作区、
+未被 Git 锁定、目录存在、状态干净（无修改/未跟踪/冲突）、HEAD 已合入 `--target`（默认
+`main`）。不满足即返回 3 并保留目录。执行顺序为：复核状态 → 移除 `node_modules` 链接（若是
+共享 junction）→ `git worktree remove`（不带 `--force`）→ 可选 `git branch -d`。
+`--delete-branch` 只删除已合入的本地任务分支；不使用 `-D`，不删除远程分支。
+目录已缺失的条目不会自动 `git worktree prune`：先人工确认该条目确已废弃，再手动执行。
+
+### 8.8 异常恢复
+
+| 现象 | 处理 |
+|---|---|
+| `status` 显示目录缺失 / prunable | 人工确认目录确已废弃后执行 `git worktree prune`；工具不自动 prune |
+| Worktree 被锁定 | 确认无其他 Agent 使用后人工 `git worktree unlock`；工具拒绝自动解除 |
+| 创建时目录/分支已存在 | 工具停止并保留现场；确认归属后复用或换任务名，不覆盖、不删未知分支 |
+| `git worktree add` 中途失败 | 检查残留目录与 `.git/worktrees` 元数据后人工处理；工具不会自动删除 |
+| 合并冲突 | 停止集成，保留双方提交与工作树，按 8.6 确认归属后解决；不 `reset --hard` |
+| 磁盘空间不足 | 先 `node scripts/build-guard.mjs report`，按 7.4/7.5 清理已登记缓存 |
+
+### 8.9 验证
+
+```bash
+node --test scripts/worktree-guard.test.mjs      # 9 个用例：创建/重复拒绝/隔离/junction/冲突/清理/退出码
+node scripts/worktree-guard.mjs status           # 只读检查当前真实 Worktree
+node scripts/build-guard.mjs precheck            # 现有构建守卫保持兼容
+```
+
+自动化用例在系统临时目录自建一次性 Git 仓库，不读写本仓库的工作树；真实仓库验收只创建
+本任务自己的测试 Worktree，并在确认干净、已合入后清理。证据与结论见
+`tmp/acceptance/agent-worktree-isolation/report.md`。
+
 ## 资源管理与清理
 
 - 后端入口：`src-tauri/src/resource_cleanup/`、`commands/resource_cleanup.rs`；文件句柄验证在 `src-tauri/src/fs_safety.rs`。TTS 缓存复用 `audio/cache.rs`，不得另开缓存目录锁；剪贴板缩略图必须使用 `ClipboardRuntime.capture_gate`，Shelf 引用复查必须位于 SQLite writer transaction。
@@ -467,6 +603,15 @@ exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
 
 本地证据位置（隔离实例）：`TASK_DOCK_DATA_DIR=<dir>` 时全部落在 `<dir>/diagnostics/`；
 Windows 正式运行默认 `%APPDATA%\com.taskdock.desktop\diagnostics\`。
+
+**操作链查询**：诊断中心的「查看操作链」使用
+`diagnostics_query({ operationId, limit: 200, offset: 0 })`，**不得**带 `levels`、
+`anomaliesOnly` 或时间范围，否则 INFO/DEBUG 阶段会被过滤掉；结果为新→旧，UI 负责升序。
+超过 200 条时只保留最新部分，界面必须提示更早事件（可能含 `started`）缺失。
+
+**HTTP 接入日志**：401 鉴权失败按 10s 窗口聚合为一条 WARN（含累计次数），
+`stats().rejected_auth` 保留安全审计计数；非 401 请求只在详细模式记 DEBUG。端口被占用时
+适配器每 10s 重试，日志只记首次与每 30 次，避免每小时数百条同指纹 ERROR。
 
 验收/排查常用检查：
 

@@ -37,6 +37,25 @@ describe("悬停提示会话（edgeTabActions）", () => {
     expect(invokeCommand).toHaveBeenCalledTimes(1);
   });
 
+  it("已显示期间文案变化必须重新下发（状态更新不能被子句去重挡住）", async () => {
+    await showTabHint("left", "Agent 运行中");
+    expect(invokeCommand).toHaveBeenCalledTimes(1);
+
+    await expect(showTabHint("left", "Agent 等待确认")).resolves.toBe(true);
+    expect(invokeCommand).toHaveBeenCalledTimes(2);
+    expect(invokeCommand).toHaveBeenNthCalledWith(2, "show_tab_hint", {
+      edge: "left",
+      text: "Agent 等待确认",
+    });
+  });
+
+  it("文案变化后回到原文案也照发（以「当前显示文案」为去重基准）", async () => {
+    await showTabHint("left", "A");
+    await showTabHint("left", "B");
+    await showTabHint("left", "A");
+    expect(invokeCommand).toHaveBeenCalledTimes(3);
+  });
+
   it("迟到的 show 结果不得复活标记：hide 之后下一次 show 必须照发", async () => {
     let resolveFirst: (v: boolean) => void = () => {};
     invokeCommand.mockImplementationOnce(

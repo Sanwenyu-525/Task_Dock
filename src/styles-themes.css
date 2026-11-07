@@ -45,8 +45,11 @@
   --c-paper: rgb(255, 255, 255);
   --c-night: rgb(0, 0, 0);
   --c-ink: rgb(34, 38, 60);
-  --c-accent: rgb(99, 102, 241);
-  --c-accent-deep: rgb(79, 70, 229);
+  /* 浅色强调色压到 --c-accent-deep 量级：--accent 同时承担文字与图标，
+     #6366f1 在窗口/卡片底上只有 4.13–4.47:1（验收 UI-06）。深一档后
+     文字达标，图标与软底仍在同一色相族内。 */
+  --c-accent: rgb(79, 70, 229);
+  --c-accent-deep: rgb(67, 56, 202);
   --c-danger: rgb(220, 38, 38);
 
   /* 窗口圆角与 Win32 区域半径（PRESET_WINDOW_RADIUS，逻辑像素）对齐。
@@ -245,7 +248,7 @@
   --rail-add-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 70%, transparent);
 
   /* 强调与文字 */
-  --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6366f1 55%, #8b5cf6 100%);
+  --accent-gradient: linear-gradient(135deg, #4f46e5 0%, #4338ca 55%, #6d28d9 100%);
   --orb-gradient: linear-gradient(140deg, #b9d0ff 0%, #cbbdfd 46%, #f8c8e2 100%);
   /* 品牌球叠色：梦幻底色中段约 253°，冷色必须更蓝才能形成色相转换 */
   --orb-cool-tone: #6d8cf7;
@@ -259,7 +262,7 @@
 
   --text-primary: #22263c;
   --text-secondary: #59607a;
-  --text-tertiary: #697090;
+  --text-tertiary: #5a6179;
   --accent: var(--c-accent);
   --accent-hover: var(--c-accent-deep);
   --accent-soft: color-mix(in srgb, var(--c-accent) 10%, transparent);
@@ -465,7 +468,7 @@
   --rail-add-border: color-mix(in srgb, var(--c-paper) 9%, transparent);
   --rail-add-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 8%, transparent);
 
-  --accent-gradient: linear-gradient(135deg, #7c7cf5 0%, #6f6ef0 55%, #9a7cf0 100%);
+  --accent-gradient: linear-gradient(135deg, #5257ea 0%, #4f46e5 55%, #7c3aed 100%);
   --orb-gradient: linear-gradient(140deg, #6f8fd8 0%, #8f7fd0 48%, #c07fa8 100%);
   --orb-cool-tone: #6d8cf7;
   --orb-warm-tone: #bc82e6;
@@ -508,8 +511,8 @@
   --c-paper: rgb(255, 255, 255);
   --c-night: rgb(0, 0, 0);
   --c-ink: rgb(35, 40, 64);
-  --c-accent: rgb(99, 102, 241);
-  --c-accent-deep: rgb(79, 70, 229);
+  --c-accent: rgb(79, 70, 229);
+  --c-accent-deep: rgb(67, 56, 202);
   --c-danger: rgb(220, 38, 38);
 
   /* 显式半透明：真正的模糊来自原生 Mica/Acrylic，CSS 只做 tint 与高光。
@@ -713,7 +716,7 @@
   --rail-add-border: rgba(255, 255, 255, 0.60);
   --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
 
-  --accent-gradient: linear-gradient(140deg, #85a5f5 0%, #5b78e8 48%, #6d8ef2 100%);
+  --accent-gradient: linear-gradient(140deg, #4f46e5 0%, #3730a3 48%, #5b21b6 100%);
   --orb-cool-tone: #8668f3;
   --orb-warm-tone: #bc82e6;
   --orb-gradient: conic-gradient(
@@ -733,7 +736,7 @@
 
   --text-primary: #232840;
   --text-secondary: #565d78;
-  --text-tertiary: #6a7190;
+  --text-tertiary: #545c78;
   --accent: var(--c-accent);
   --accent-hover: var(--c-accent-deep);
   --accent-soft: color-mix(in srgb, var(--c-accent) 12%, transparent);
@@ -948,7 +951,7 @@
   --rail-add-border: rgba(255, 255, 255, 0.16);
   --rail-add-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
 
-  --accent-gradient: linear-gradient(140deg, #7d9af0 0%, #5b78e8 48%, #6d8ef2 100%);
+  --accent-gradient: linear-gradient(140deg, #4560e0 0%, #3730a3 48%, #5b21b6 100%);
   --orb-cool-tone: #8668f3;
   --orb-warm-tone: #bc82e6;
   --orb-gradient: conic-gradient(
@@ -1439,7 +1442,7 @@
   --surface-overlay: rgba(252, 253, 255, 0.90);
   --text-primary: #1f2438;
   --text-secondary: #4a5270;
-  --text-tertiary: #5f6885;
+  --text-tertiary: #545c78;
 }
 
 /* ── 5d.2 柔光玻璃 · 深色 ─────────────────────────────────── */
@@ -2140,6 +2143,14 @@
   width: 0;
   height: 0;
   display: none;
+}
+
+/* 入口数量超过可视高度时，底部 10px 渐隐提示"下面还有"。
+   滚动条双层隐藏后，这是唯一的滚动 affordance；只在真正可滚时启用，
+   不改变任何条目尺寸与命中区。 */
+.rail-items.is-scrollable {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 10px), transparent 100%);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 10px), transparent 100%);
 }
 
 /* 固定底部区域：不参与中间列表滚动。

@@ -2,10 +2,15 @@
 //!
 //! 菜单窗口只发命令：后端 `context_menu_action` 把 `tab:expand|full|undock`
 //! 转发成一次 `edge-tab-action` 事件到主窗，这里把它交给**唯一的**吸附状态机
-//! （`useEdgeSnap` 注入到 store 的恢复/形态切换/解除事务）。
+//! （`useEdgeSnap` 注入到 store 的恢复/形态切换/解除事务），事务结束后再把
+//! **真实结果**回传给后端（`tab_menu_action_result`）。
 //!
-//! 为什么不在菜单窗口里做：窗口几何、区域裁剪、持久化都归主窗引擎所有，
-//! 菜单窗口再实现一套就会出现两份状态源与竞争（明令禁止）。
+//! 为什么需要结果回执：事件 emit 成功只代表主窗收到了请求，不代表窗口真的
+//! 进入了目标状态。菜单必须等主窗事务结果才能决定「隐藏（成功）」还是
+//! 「保留并显示失败原因」——不能用「请求已发出」冒充「操作已完成」。
+//!
+//! 请求关联用单调 id：后端等待对应结果，超时/主窗未响应由后端给出明确失败，
+//! 迟到的重复事件按 id 去重，不会把同一个动作执行两遍。
 //!
 //! 生命周期：随组件挂载/卸载成对订阅，不产生悬空监听。
 
@@ -13,32 +18,91 @@ import { useEffect } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { listen } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
+import { invokeCommand } from "../lib/errors";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 
-/** 与 Rust `context_menu::context_menu_action` 的转发事件名一致。 */
+/** 与 Rust `context_menu::TAB_ACTION_EVENT` 的转发事件名一致。 */
 export const TAB_MENU_ACTION_EVENT = "edge-tab-action";
+/** 主窗 → 后端：`{ id, ok, error? }`，必须是本次事务的真实结果。 */
+export const TAB_MENU_RESULT_COMMAND = "tab_menu_action_result";
 
-/** 执行一条标签菜单动作；返回 false 表示当前没有可用的引擎入口。 */
-export function runTabMenuAction(action: string): boolean {
+export interface TabMenuActionResult {
+  ok: boolean;
+  /** 失败时给用户看的可恢复提示（菜单行内反馈直接展示）。 */
+  error?: string;
+}
+
+/** 后端下发的请求载荷：`id` 用于把结果对回等待中的菜单命令。 */
+interface TabActionRequest {
+  id?: number;
+  action?: string;
+}
+
+const OK: TabMenuActionResult = { ok: true };
+
+function unavailable(): TabMenuActionResult {
+  return { ok: false, error: "窗口引擎未就绪，操作未执行" };
+}
+
+/**
+ * 执行一条标签菜单动作；**只有事务真正提交成功才返回 ok**。
+ *
+ * - 引擎入口不存在（未启用吸附/主窗未挂载）→ 失败；
+ * - 引擎忙 / 恢复未完成 / 形态回滚 → 失败并给出可重试的原因；
+ * - 解除吸附返回的是「区域 + 相位已解除」，窗口尺寸恢复仍按既有设计在后台
+ *   继续（不占用互斥区），不会把「已解除」误报成「未执行」。
+ */
+export async function runTabMenuAction(action: string): Promise<TabMenuActionResult> {
   const s = useEdgeSnapStore.getState();
-  switch (action) {
-    case "expand":
-      if (!s.restoreTab) return false;
-      // 与单击同一条事务：恢复轨道 → 展开最近使用的面板
-      s.restoreTab({ reveal: true });
-      return true;
-    case "full":
-      if (!s.formSwitch) return false;
-      // 本次停靠会话的临时形态切换，不写持久化的默认吸附方式
-      s.formSwitch("full");
-      return true;
-    case "undock":
-      if (!s.undock) return false;
-      s.undock();
-      return true;
-    default:
-      return false;
+  try {
+    switch (action) {
+      case "expand": {
+        if (!s.restoreTab) return unavailable();
+        // 与单击同一条事务：恢复轨道 → 展开最近使用的面板
+        const ok = await s.restoreTab({ reveal: true });
+        return ok
+          ? OK
+          : { ok: false, error: "展开失败：窗口正在切换或恢复未完成，请稍后重试" };
+      }
+      case "full": {
+        if (!s.formSwitch) return unavailable();
+        // 本次停靠会话的临时形态切换，不写持久化的默认吸附方式
+        const ok = await s.formSwitch("full");
+        return ok
+          ? OK
+          : { ok: false, error: "切换到完整面板失败，已保持原形态，请重试" };
+      }
+      case "undock": {
+        if (!s.undock) return unavailable();
+        const ok = await s.undock();
+        return ok
+          ? OK
+          : { ok: false, error: "退出吸附失败，窗口保持吸附状态，请重试" };
+      }
+      default:
+        return { ok: false, error: "未知的菜单动作" };
+    }
+  } catch {
+    return { ok: false, error: "窗口操作异常，请重试" };
   }
+}
+
+/**
+ * 解析事件载荷。
+ *
+ * 新后端发送 `{ id, action }`；兼容旧版纯字符串载荷（可执行但无结果回执，
+ * `id=0`）。对象载荷缺 id / action 视为非法，不执行——无法回执的请求会让
+ * 后端一直等到超时，不如直接丢弃。
+ */
+function parseTabAction(payload: unknown): { id: number; action: string } | null {
+  if (typeof payload === "string") {
+    return payload ? { id: 0, action: payload } : null;
+  }
+  if (!payload || typeof payload !== "object") return null;
+  const { id, action } = payload as TabActionRequest;
+  if (typeof action !== "string" || !action) return null;
+  if (typeof id !== "number" || !Number.isFinite(id) || id <= 0) return null;
+  return { id, action };
 }
 
 export function useEdgeTabMenuActions(): void {
@@ -46,8 +110,28 @@ export function useEdgeTabMenuActions(): void {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
-    void listen<string>(TAB_MENU_ACTION_EVENT, (event) => {
-      runTabMenuAction(event.payload);
+    // 单调请求 id：重复投递/迟到事件只执行一次（后端每次请求都是新 id）。
+    let lastId = 0;
+    void listen<TabActionRequest | string>(TAB_MENU_ACTION_EVENT, (event) => {
+      const req = parseTabAction(event.payload);
+      if (!req) return;
+      if (req.id !== 0 && req.id <= lastId) return;
+      if (req.id !== 0) lastId = req.id;
+
+      void (async () => {
+        const result = await runTabMenuAction(req.action);
+        // 旧载荷没有 id，无法（也不需要）回执
+        if (req.id === 0 || disposed) return;
+        try {
+          await invokeCommand(TAB_MENU_RESULT_COMMAND, {
+            id: req.id,
+            ok: result.ok,
+            error: result.error ?? null,
+          });
+        } catch {
+          // 回执失败：后端按超时返回明确失败，不会静默当作成功。
+        }
+      })();
     })
       .then((fn) => {
         // 订阅兑现前已卸载：立即释放，避免监听器泄漏

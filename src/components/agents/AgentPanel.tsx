@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import CollapsibleSection from "../ui/CollapsibleSection";
+import EmptyState from "../ui/EmptyState";
 import SearchField from "../ui/SearchField";
 import StatusBadge, { type StatusTone } from "../ui/StatusBadge";
 import { persistCollapsibleState, readCollapsibleState } from "../../lib/collapsibleState";
@@ -890,19 +891,19 @@ export default function AgentPanel() {
         <>
           {/* ══ 状态摘要 ══ */}
           <div className="agent-summary">
-            <div className={`summary-card s-running ${summary.running ? "" : "muted"}`} title={tr("agent.ui.runningTip")}>
+            <div className={`summary-card s-running ${summary.running ? "" : "muted"}`} data-tip={tr("agent.ui.runningTip")}>
               <span className="summary-value">{summary.running}</span>
               <span className="summary-label">{tr("agent.ui.running")}</span>
             </div>
-            <div className={`summary-card s-waiting ${summary.waiting ? "" : "muted"}`} title={tr("agent.ui.waitingTip")}>
+            <div className={`summary-card s-waiting ${summary.waiting ? "" : "muted"}`} data-tip={tr("agent.ui.waitingTip")}>
               <span className="summary-value">{summary.waiting}</span>
               <span className="summary-label">{tr("agent.ui.waiting")}</span>
             </div>
-            <div className={`summary-card s-error ${summary.failed ? "" : "muted"}`} title={tr("agent.ui.failedTip")}>
+            <div className={`summary-card s-error ${summary.failed ? "" : "muted"}`} data-tip={tr("agent.ui.failedTip")}>
               <span className="summary-value">{summary.failed}</span>
               <span className="summary-label">{tr("agent.ui.failed")}</span>
             </div>
-            <div className="summary-card muted" title={tr("agent.ui.sourcesTip")}>
+            <div className="summary-card muted" data-tip={tr("agent.ui.sourcesTip")}>
               <span className="summary-value">{connectedSources}</span>
               <span className="summary-label">{tr("agent.ui.sources")}</span>
             </div>
@@ -937,7 +938,12 @@ export default function AgentPanel() {
               }}
             />
             <span className="flex-spacer" />
-            <button className="btn sm" onClick={load} title={tr("agent.ui.refreshTip")}>
+            <button
+              className="btn sm"
+              onClick={load}
+              data-tip={tr("agent.ui.refreshTip")}
+              aria-label={tr("agent.ui.refresh")}
+            >
               <RefreshCw size={12} /> {tr("agent.ui.refresh")}
             </button>
           </div>
@@ -959,13 +965,11 @@ export default function AgentPanel() {
 
           {/* ══ 监控树 ══ */}
           {visibleAgents.length === 0 && !searchHasHits && (
-            <div className="empty-state">
-              <div className="empty-icon"><AgentIcon size={22} /></div>
-              <div className="empty-title">
-                {monitorSearching ? tr("agent.ui.noMatch") : tr("agent.ui.noAttention")}
-              </div>
-              <div className="empty-hint">
-                {monitorSearching
+            <EmptyState
+              icon={<AgentIcon size={22} />}
+              title={monitorSearching ? tr("agent.ui.noMatch") : tr("agent.ui.noAttention")}
+              hint={
+                monitorSearching
                   ? tr("agent.ui.noMatchHint", {
                       query: monitorQuery.trim(),
                       scope:
@@ -975,9 +979,9 @@ export default function AgentPanel() {
                     })
                   : monitorFilter === "attention"
                     ? tr("agent.ui.idleHint")
-                    : tr("agent.ui.emptyHint")}
-              </div>
-            </div>
+                    : tr("agent.ui.emptyHint")
+              }
+            />
           )}
           <div className="monitor-tree">
             {visibleAgents.map((agent) => (

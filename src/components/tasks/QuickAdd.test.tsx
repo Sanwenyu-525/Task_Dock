@@ -120,6 +120,29 @@ describe("QuickAdd", () => {
     expect(toast.dataset.kind).toBe("success");
   });
 
+  it("解析后修改输入：预览立即失效，创建不会提交旧标题", async () => {
+    const user = userEvent.setup();
+    vi.mocked(parseQuickAdd).mockImplementation(async (value: string) => parseFix(value));
+    const quickCreateMock = mockQuickCreate(async (title: string) => taskFix({ id: "t", title }));
+    const input = renderQuickAdd();
+
+    // 解析出预览
+    await user.type(input, "买牛奶{enter}");
+    expect(await screen.findByText("买牛奶")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "创建" })).toBeTruthy();
+
+    // 改动输入：旧预览必须失效，按钮回到「解析」
+    await user.clear(input);
+    await user.type(input, "整理文件");
+    await waitFor(() => expect(screen.queryByText("买牛奶")).toBeNull());
+    expect(screen.getByRole("button", { name: "解析" })).toBeTruthy();
+
+    // 再按 Enter：走解析而不是创建旧任务
+    await user.type(input, "{enter}");
+    await waitFor(() => expect(vi.mocked(parseQuickAdd)).toHaveBeenLastCalledWith("整理文件"));
+    expect(quickCreateMock).not.toHaveBeenCalled();
+  });
+
   it("Escape 关闭：预览消失、可重新编辑", async () => {
     const user = userEvent.setup();
     vi.mocked(parseQuickAdd).mockResolvedValue(parseFix("开会"));

@@ -27,6 +27,7 @@ import {
   kindLabel,
 } from "../../store/useActionsStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import {
@@ -37,7 +38,7 @@ import {
 } from "../../lib/bridge";
 import { formatRelative } from "../../lib/format";
 import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
-import { Checkbox, Select } from "../ui";
+import { Checkbox, EmptyState, Select } from "../ui";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
 
 const KIND_FILTERS: Record<ActionCategory, { id: ActionKind | "all"; label: string }[]> = {
@@ -111,6 +112,9 @@ export default function ActionCenterPanel() {
   const unack = useActionsStore((s) => s.unack);
   const openSession = useActionsStore((s) => s.openSession);
   const showToast = useUiStore((s) => s.showToast);
+  // 临时暂停（actions_paused）与长期停用（actions_enabled）是两件事：
+  // 暂停只停自动聚合，页面手动刷新与历史查看继续可用。
+  const actionsPaused = useSettingsStore((s) => s.settings?.actions_paused === true);
   const setTab = useUiStore((s) => s.setTab);
   const refreshAgents = useAgentsStore((s) => s.load);
   const openContext = useUiStore((s) => s.openContext);
@@ -157,9 +161,12 @@ export default function ActionCenterPanel() {
   const visible = useFullViewVisible();
   const prevVisibleRef = useRef(visible);
   useEffect(() => {
-    if (visible && !prevVisibleRef.current && feed) void load({ silent: true });
+    // 暂停期间恢复可见也不自动刷新；用户仍可用页头「刷新」手动查看最新历史。
+    if (visible && !prevVisibleRef.current && feed && !actionsPaused) {
+      void load({ silent: true });
+    }
     prevVisibleRef.current = visible;
-  }, [visible, feed, load]);
+  }, [visible, feed, load, actionsPaused]);
 
   // 筛选/分类变化后，旧视图的离场快照不再属于新视图；一并清掉定时器
   useEffect(() => {
@@ -320,16 +327,18 @@ export default function ActionCenterPanel() {
         </button>
       </div>
 
-      {feed?.enabled === false ? (
-        <div className="empty-state">
-          <div className="empty-icon">
-            <Inbox size={22} />
-          </div>
-          <div className="empty-title">行动中心已关闭</div>
-          <div className="empty-hint">
-            Agent 事件仍会照常入库，历史与会话跳转不受影响；可在「设置」中重新开启行动中心以恢复聚合与徽标。
-          </div>
+      {actionsPaused && feed?.enabled !== false && (
+        <div className="empty-hint action-paused-hint" role="status">
+          自动聚合已暂停：历史与通知仍可手动查看；Agent 原始事件继续接收。
         </div>
+      )}
+
+      {feed?.enabled === false ? (
+        <EmptyState
+          icon={<Inbox size={22} />}
+          title="行动中心已关闭"
+          hint="Agent 事件仍会照常入库，历史与会话跳转不受影响；可在「设置」中重新开启行动中心以恢复聚合与徽标。"
+        />
       ) : (
         <>
           <div className="filter-bar secondary">
@@ -448,17 +457,11 @@ export default function ActionCenterPanel() {
           {error && <div className="empty-hint error-text">加载失败：{error}</div>}
           {!current && !error && <div className="empty-hint">加载中…</div>}
           {current && displayedItems.length === 0 && (
-            <div className="empty-state">
-              <div className="empty-icon">
-                <Inbox size={22} />
-              </div>
-              <div className="empty-title">
-                {emptyTitle(category, current.filtered_total, categoryTotal)}
-              </div>
-              <div className="empty-hint">
-                {emptyHint(category, current.filtered_total, categoryTotal)}
-              </div>
-            </div>
+            <EmptyState
+              icon={<Inbox size={22} />}
+              title={emptyTitle(category, current.filtered_total, categoryTotal)}
+              hint={emptyHint(category, current.filtered_total, categoryTotal)}
+            />
           )}
           {current && displayedItems.length > 0 && (
             <div className="action-list">

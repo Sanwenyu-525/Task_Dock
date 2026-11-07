@@ -307,6 +307,28 @@ pub fn set_magnetic_drag_config(enabled: bool, range: f64, max_lead: f64, releas
     crate::magnetic::installed()
 }
 
+/// 拖拽会话关联：指定代次的系统移动循环**此刻**是否仍在调用方窗口上运行。
+///
+/// 前端收到原生 `window-drag { phase: "start", generation }` 后调用它，把开始
+/// 信号关联到正确的本地会话（详见 `src/lib/dragCursorSession.ts`）：
+/// - 主窗：磁力子类化维护的代次 + 活跃标志；
+/// - 微件窗口：`drag_watch` 按窗口标签维护的同口径状态。
+///
+/// **必须是 async**：同步命令在宿主主线程执行，而系统模态移动循环期间主线程
+/// 正在循环内部；只有异步任务能及时读到原生状态并返回，否则永远读到「已结束」。
+#[tauri::command]
+pub async fn drag_loop_active(window: tauri::Window, generation: u64) -> bool {
+    let label = window.label();
+    let active = if label == "main" {
+        crate::magnetic::drag_loop_active(generation)
+    } else {
+        crate::drag_watch::loop_active(label, generation)
+    };
+    // 低频（每次原生拖拽一次）：诊断日志用于区分「查询迟到」与「事件丢失」。
+    tracing::debug!(label, generation, active, "drag_loop_active 查询");
+    active
+}
+
 /// 停靠位（物理像素，**齐平位置**）：`edge=null` 表示当前未停靠。
 ///
 /// 阻力只对"已停靠且位置已知"的窗口生效；前端在停靠事务提交成功后调用，

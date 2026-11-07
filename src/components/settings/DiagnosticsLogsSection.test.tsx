@@ -1,6 +1,6 @@
 /**
- * 诊断与日志设置区块：只读列表 + 筛选 + 清理确认。
- * 只验证行为契约，不校验视觉（视觉走截图走查）。
+ * 诊断与日志设置区块：状态与入口。
+ * 只验证行为契约（首屏拉取、模式切换、最近异常、入口跳转），不校验视觉。
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,9 +11,8 @@ const mocks = vi.hoisted(() => ({
   summary: vi.fn(),
   query: vi.fn(),
   setMode: vi.fn(),
-  clear: vi.fn(),
-  exportReport: vi.fn(),
-  openDir: vi.fn(),
+  setTab: vi.fn(),
+  setClientVerboseMode: vi.fn(),
   showToast: vi.fn(),
 }));
 
@@ -22,14 +21,18 @@ vi.mock("../../lib/bridge", () => ({
   diagnosticsSummary: mocks.summary,
   diagnosticsQuery: mocks.query,
   diagnosticsSetMode: mocks.setMode,
-  diagnosticsClear: mocks.clear,
-  diagnosticsExport: mocks.exportReport,
-  diagnosticsOpenDir: mocks.openDir,
+}));
+
+vi.mock("../../lib/diagnostics", () => ({
+  setClientVerboseMode: mocks.setClientVerboseMode,
 }));
 
 vi.mock("../../store/useUiStore", () => ({
-  useUiStore: (selector: (state: { showToast: typeof mocks.showToast }) => unknown) =>
-    selector({ showToast: mocks.showToast }),
+  useUiStore: Object.assign(
+    (selector: (state: { showToast: typeof mocks.showToast }) => unknown) =>
+      selector({ showToast: mocks.showToast }),
+    { getState: () => ({ setTab: mocks.setTab }) },
+  ),
 }));
 
 vi.mock("../../hooks/useLocale", () => ({
@@ -90,115 +93,83 @@ const SUMMARY = {
   generatedAt: "2026-11-06T18:03:00.000+08:00",
 };
 
-const PAGE = {
-  items: [
-    {
-      timestamp: "2026-11-06T18:02:00.000+08:00",
-      level: "ERROR" as const,
-      module: "clipboard",
-      action: "paste_batch",
-      event: "failed",
-      session_id: "session-1234-abcd",
-      error_code: "IO_ERROR",
-      duration_ms: 42,
-      window_id: "main",
-      operation_id: "op-1234abcd",
-      message: "批量粘贴失败",
-      source: "frontend" as const,
-      count: 1,
-    },
-  ],
-  matched: 1,
-  scanned: 12,
-  truncated: false,
-  files: 1,
-  skipped: 0,
-};
+const HOUR_MS = 3_600_000;
 
 beforeEach(() => {
   mocks.status.mockReset().mockResolvedValue(STATUS);
   mocks.summary.mockReset().mockResolvedValue(SUMMARY);
-  mocks.query.mockReset().mockResolvedValue(PAGE);
-  mocks.setMode.mockReset().mockResolvedValue({ ...STATUS, mode: "verbose", verboseRemainingMs: 1_800_000 });
-  mocks.clear.mockReset().mockResolvedValue({ removedBytes: 2048, status: STATUS });
-  mocks.exportReport.mockReset().mockResolvedValue({
-    path: "C:\\data\\diagnostics\\exports\\diagnostic-report.json",
-    bytes: 4096,
-    records: 1,
-    truncated: false,
+  mocks.query.mockReset().mockResolvedValue({ items: [] });
+  mocks.setMode.mockReset().mockResolvedValue({
+    ...STATUS,
+    mode: "verbose",
+    verboseRemainingMs: 1_800_000,
   });
-  mocks.openDir.mockReset().mockResolvedValue(undefined);
+  mocks.setTab.mockReset();
+  mocks.setClientVerboseMode.mockReset();
   mocks.showToast.mockReset();
 });
 
 afterEach(() => cleanup());
 
 describe("DiagnosticsLogsSection", () => {
-  it("加载状态与最近异常，不伪造空数据", async () => {
+  it("加载后展示容量、计数器与会话，只拉取一次状态与摘要", async () => {
+    render(<DiagnosticsLogsSection />);
+
+    await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(1));
+    expect(mocks.summary).toHaveBeenCalledTimes(1);
+
+    const summaryArg = mocks.summary.mock.calls[0]?.[0];
+    expect(summaryArg?.anomaliesOnly).toBe(true);
+    expect(typeof summaryArg?.since).toBe("string");
+    expect(Math.abs(Date.now() - Date.parse(summaryArg.since) - 24 * HOUR_MS)).toBeLessThan(5_000);
+
+    expect(await screen.findByText(/settings\.diagnosticsLogs\.status\.capacityValue/)).toBeTruthy();
+    expect(screen.getByText(/settings\.diagnosticsLogs\.status\.countersValue/)).toBeTruthy();
+    expect(screen.getByText(/session- · 11-06 18:00:00/)).toBeTruthy();
+  });
+
+  it("开启详细诊断会调用后端并同步客户端模式", async () => {
     render(<DiagnosticsLogsSection />);
     await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(1));
-    // 模块名同时出现在「最近异常」和「日志明细」两处，按所有匹配断言。
-    expect((await screen.findAllByText("clipboard")).length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("IO_ERROR").length).toBeGreaterThanOrEqual(2);
-    // 聚合次数与恢复标记来自后端，不在前端推算
-    expect(screen.getByText("×3")).toBeTruthy();
-    expect(
-      screen.getByText("settings.diagnosticsLogs.recent.recovered"),
-    ).toBeTruthy();
-    expect(mocks.query).toHaveBeenCalledTimes(1);
-  });
 
-  it("切换级别筛选会带上 levels 重新查询", async () => {
-    render(<DiagnosticsLogsSection />);
-    await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
-    const levelSelect = screen.getByLabelText("settings.diagnosticsLogs.filter.level");
-    fireEvent.click(levelSelect);
-    // 下拉项带 role=option；列表行里也有 ERROR 文本，不能按文本匹配。
-    fireEvent.click(await screen.findByRole("option", { name: "ERROR" }));
-    await waitFor(() => {
-      const last = mocks.query.mock.calls.at(-1)?.[0];
-      expect(last?.levels).toEqual(["ERROR"]);
-      expect(last?.limit).toBe(30);
-      expect(last?.offset).toBe(0);
-    });
-  });
-
-  it("开启详细诊断会调用后端并同步模式", async () => {
-    render(<DiagnosticsLogsSection />);
-    await waitFor(() => expect(mocks.status).toHaveBeenCalled());
     fireEvent.click(
       screen.getByRole("button", {
         name: "settings.diagnosticsLogs.mode.enable",
       }),
     );
+
     await waitFor(() => expect(mocks.setMode).toHaveBeenCalledWith("verbose", 30));
+    await waitFor(() => expect(mocks.setClientVerboseMode).toHaveBeenLastCalledWith(true));
   });
 
-  it("清理需要二次确认，确认后重新加载", async () => {
+  it("渲染最近异常分组与恢复标记", async () => {
     render(<DiagnosticsLogsSection />);
-    await waitFor(() => expect(mocks.status).toHaveBeenCalled());
-    fireEvent.click(
-      screen.getByRole("button", { name: /settings.diagnosticsLogs.action.clear/ }),
-    );
-    expect(mocks.clear).not.toHaveBeenCalled();
-    const confirm = await screen.findByRole("button", {
-      name: "settings.diagnosticsLogs.clear.confirm",
-    });
-    fireEvent.click(confirm);
-    await waitFor(() => expect(mocks.clear).toHaveBeenCalledTimes(1));
-    // 清理后重新拉取状态与列表
-    await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(1));
+
+    expect(await screen.findByText("clipboard")).toBeTruthy();
+    expect(screen.getByText("paste_batch")).toBeTruthy();
+    expect(screen.getByText("IO_ERROR")).toBeTruthy();
+    expect(screen.getByText("×3")).toBeTruthy();
+    expect(screen.getByText("settings.diagnosticsLogs.recent.recovered")).toBeTruthy();
+    expect(screen.getByText("批量粘贴失败")).toBeTruthy();
   });
 
-  it("导出只请求本机文件并展示路径", async () => {
+  it("打开诊断中心会切换设置页签", async () => {
     render(<DiagnosticsLogsSection />);
-    await waitFor(() => expect(mocks.status).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(1));
+
     fireEvent.click(
-      screen.getByRole("button", { name: /settings.diagnosticsLogs.action.export/ }),
+      screen.getByRole("button", { name: "settings.diagnosticsLogs.openCenter" }),
     );
-    await waitFor(() => expect(mocks.exportReport).toHaveBeenCalledTimes(1));
-    expect(
-      await screen.findByText(/C:\\data\\diagnostics\\exports\\diagnostic-report\.json/),
-    ).toBeTruthy();
+
+    expect(mocks.setTab).toHaveBeenCalledWith("diagnostics");
+  });
+
+  it("不再调用 diagnosticsQuery，事件列表交给诊断中心", async () => {
+    render(<DiagnosticsLogsSection />);
+    await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(1));
+
+    expect(mocks.query).not.toHaveBeenCalled();
   });
 });

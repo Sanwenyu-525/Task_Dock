@@ -8,7 +8,7 @@
 //! - 手动刷新与失败重试走「最新请求优先」，不再用忙碌标志拦下必要的重新加载
 //!   （StrictMode 双挂载会永久停在 loading，见 `lib/asyncResource` 模块文档）。
 
-import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { HardDrive, RefreshCw } from "lucide-react";
 import {
   resourceProcessDiagnostics,
@@ -18,15 +18,17 @@ import {
 import { useAsyncResource } from "../../lib/asyncResource";
 import { formatBytes } from "../../lib/clipboardUi";
 import { computeUsage, formatPercent } from "../../lib/resourceMetrics";
+import { useLifecycleStore } from "../../store/useLifecycleStore";
+import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
-import ResourceCleanupSection from "../settings/ResourceCleanupSection";
+import ResourceCleanupSection, { type CleanupEstimate } from "../settings/ResourceCleanupSection";
 import ProcessDiagnostics from "./ProcessDiagnostics";
 import DiskStoragePanel from "./DiskStoragePanel";
 import MemorySegment from "./MemorySegment";
 import OverviewSegment from "./OverviewSegment";
 import RuntimeModulesSection from "./RuntimeModulesSection";
-import { PRESSURE_LEVEL_KEYS, UsageBar } from "./charts";
+import { USAGE_ANOMALY_DETAIL, UsageBar, usageStatusKey } from "./charts";
 
 const SEGMENTS = ["overview", "modules", "disk", "memory", "process"] as const;
 type Segment = (typeof SEGMENTS)[number];
@@ -52,25 +54,56 @@ export default function ResourceManagementPanel() {
     immediate: false,
   });
   const { reload: reloadProcesses } = processes;
-  /** 磁盘页扫描出的可清理字节；概览共用，避免为用户看不见的操作再扫一次。 */
-  const [cleanableBytes, setCleanableBytes] = useState<number | null>(null);
+  /** 磁盘页的扫描估算（含有效期状态）；概览共用，避免为用户看不见的操作再扫一次。 */
+  const [cleanable, setCleanable] = useState<CleanupEstimate>({
+    totalBytes: null,
+    state: "unscanned",
+  });
   /** 磁盘分布重新统计的令牌：清理完成或「磁盘分区可见时的页头刷新」才递增。 */
   const [storageToken, setStorageToken] = useState(0);
   /** 内存/进程分区的页头刷新信号：只在对应分区可见时递增，隐藏分区不被重扫。 */
   const [memorySignal, setMemorySignal] = useState(0);
   const [processSignal, setProcessSignal] = useState(0);
+  /** 同一 tick 内的重复点击不会因 React 状态尚未刷新而发出第二次高成本采样。 */
+  const refreshLockRef = useRef(false);
 
   const { reload: reloadSnapshot } = snapshot;
+  const lifecycleLoading = useLifecycleStore((state) => state.loading);
+  const refreshLifecycle = useLifecycleStore((state) => state.refresh);
+  // 「功能运行」分区活跃 = 当前分区可见 + 完整面板未被停靠/极简模式隐藏。
+  // 分区首次访问后保持挂载，但隐藏期不允许再发生生命周期 IPC。
+  const fullViewVisible = useFullViewVisible();
+  const modulesActive = segment === "modules" && fullViewVisible;
+
   /**
    * 页面级刷新（页头唯一入口）：总是重读系统快照，并只刷新**当前分区**的专属数据。
-   * 隐藏分区的详情（磁盘分布 / 内存目录 / 进程列表）不因这次点击被重扫。
+   * - 功能运行：重查后端生命周期状态（不写第二份模块状态）；
+   * - 内存：系统快照 + 进程诊断（WebView2 指标）+ 内存目录；
+   * - 磁盘 / 进程：各自的令牌与列表。
+   * 隐藏分区的详情不因这次点击被重扫。
    */
-  const refreshCurrent = () => {
-    reloadSnapshot();
-    if (segment === "disk") setStorageToken((token) => token + 1);
-    else if (segment === "memory") setMemorySignal((signal) => signal + 1);
-    else if (segment === "process") setProcessSignal((signal) => signal + 1);
-  };
+  async function refreshCurrent() {
+    if (refreshLockRef.current) return;
+    refreshLockRef.current = true;
+    try {
+      const waits: Array<Promise<unknown>> = [reloadSnapshot()];
+      if (segment === "modules") waits.push(refreshLifecycle());
+      else if (segment === "disk") setStorageToken((token) => token + 1);
+      else if (segment === "memory") {
+        setMemorySignal((signal) => signal + 1);
+        waits.push(reloadProcesses());
+      } else if (segment === "process") setProcessSignal((signal) => signal + 1);
+      await Promise.allSettled(waits);
+    } finally {
+      refreshLockRef.current = false;
+    }
+  }
+
+  /** 页头刷新按钮的忙碌态：只包含当前分区真正在读取的数据源。 */
+  const refreshing =
+    snapshot.loading ||
+    (segment === "modules" && lifecycleLoading) ||
+    ((segment === "memory" || segment === "process") && processes.loading);
 
   /** 清理完成后：缓存与磁盘占用都变了，快照 + 磁盘分布都必须刷新。 */
   const refreshAfterCleanup = () => {
@@ -114,16 +147,16 @@ export default function ResourceManagementPanel() {
         <button
           type="button"
           className="btn sm"
-          onClick={refreshCurrent}
-          disabled={snapshot.loading}
+          onClick={() => void refreshCurrent()}
+          disabled={refreshing}
           aria-label={t("resource.refresh")}
         >
           <RefreshCw
             size={12}
-            className={snapshot.loading ? "spin" : undefined}
+            className={refreshing ? "spin" : undefined}
             aria-hidden="true"
           />{" "}
-          {t(snapshot.loading ? "settings.resourceCleanup.refreshing" : "resource.refresh")}
+          {t(refreshing ? "settings.resourceCleanup.refreshing" : "resource.refresh")}
         </button>
       </header>
 
@@ -164,7 +197,7 @@ export default function ResourceManagementPanel() {
               snapshot={snapshot.data}
               loading={snapshot.loading}
               error={snapshot.error}
-              cleanableBytes={cleanableBytes}
+              cleanable={cleanable}
               onOpenDisk={() => selectSegment("disk")}
               onRefresh={snapshot.reload}
             />
@@ -178,7 +211,7 @@ export default function ResourceManagementPanel() {
           aria-labelledby="resource-tab-modules"
           hidden={segment !== "modules"}
         >
-          {visited.has("modules") && <RuntimeModulesSection />}
+          {visited.has("modules") && <RuntimeModulesSection active={modulesActive} />}
         </div>
 
         <div
@@ -191,7 +224,7 @@ export default function ResourceManagementPanel() {
             <div className="resource-disk">
               <DiskVolumeBar snapshot={snapshot.data} loading={snapshot.loading} />
               <ResourceCleanupSection
-                onPreviewChange={setCleanableBytes}
+                onPreviewChange={setCleanable}
                 onSnapshotInvalidated={refreshAfterCleanup}
               />
               <DiskStoragePanel refreshToken={storageToken} />
@@ -211,6 +244,7 @@ export default function ResourceManagementPanel() {
               snapshotLoading={snapshot.loading}
               processes={processes.data}
               processesLoading={processes.loading}
+              processesError={processes.error}
               onLoadProcesses={reloadProcesses}
               onRefreshSnapshot={snapshot.reload}
               refreshSignal={memorySignal}
@@ -271,22 +305,26 @@ function DiskVolumeBar({
       value={
         pending
           ? t("resource.reading")
-          : `${formatPercent(usage.usedPercent) ?? unavailable} · ${t(PRESSURE_LEVEL_KEYS[usage.level])}`
+          : `${formatPercent(usage.usedPercent) ?? unavailable} · ${t(
+              usageStatusKey(usage.level, usage.anomaly),
+            )}`
       }
       ariaLabel={t("resource.aria.diskBar", {
         percent: formatPercent(usage.usedPercent) ?? unavailable,
         used: usage.usedBytes === null ? unavailable : formatBytes(usage.usedBytes),
         free: usage.availableBytes === null ? unavailable : formatBytes(usage.availableBytes),
         total: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
-        level: t(PRESSURE_LEVEL_KEYS[usage.level]),
+        level: t(usageStatusKey(usage.level, usage.anomaly)),
       })}
       detail={
-        disk && usage.totalBytes !== null && usage.availableBytes !== null
-          ? `${t("resource.overview.ringFree", { free: formatBytes(usage.availableBytes) })} · ${t(
-              "resource.overview.ringTotal",
-              { total: formatBytes(usage.totalBytes) },
-            )}${disk.volume ? ` · ${disk.volume}` : ""}`
-          : unavailable
+        usage.anomaly
+          ? t(USAGE_ANOMALY_DETAIL[usage.anomaly])
+          : disk && usage.totalBytes !== null && usage.availableBytes !== null
+            ? `${t("resource.overview.ringFree", { free: formatBytes(usage.availableBytes) })} · ${t(
+                "resource.overview.ringTotal",
+                { total: formatBytes(usage.totalBytes) },
+              )}${disk.volume ? ` · ${disk.volume}` : ""}`
+            : unavailable
       }
     />
   );

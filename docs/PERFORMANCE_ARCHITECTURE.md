@@ -194,13 +194,25 @@ DeferredView 保活使隐藏页面（切换模式 / 停靠胶囊期）仍处于�
 | 剪贴板采集 | `clipboard-monitor`（消息线程 + capture + worker）、`clipboard-maintenance` | 历史读取/搜索/删除、逐项粘贴任务（`stop_capture` 不调用 `paste.cancel_all`） |
 | 暂存架自动清理 | `shelf-auto-cleanup` 线程（Condvar 唤醒退出） | 手动清理、文件复制/移动、已暂存文件 |
 | 提醒调度 | `tick` 的到期提醒分支（不写 fired/通知历史/重复任务推进） | 共享 1s 调度中的 Agent 过期清理、通知摘要、稍后提醒、专注/久坐推进 |
-| 行动中心聚合 | 前端计数刷新与徽标（`actions_enabled=false`，`shouldRefreshActions`） | 后端 Agent 原始事件入库、历史与会话跳转 |
+| 行动中心聚合 | 自动计数刷新与徽标（`actions_paused=true`，`shouldRefreshActions`）；长期停用仍是 `actions_enabled=false` | 后端 Agent 原始事件入库、`feed` 手动查询、历史/通知查看与会话跳转 |
 | 语音播报 | 新的自动 TTS 播报（`tts_enabled=false`） | 提示音、音量/音色设置、系统通知数据 |
 
 停用与暂停分离：`clipboard_enabled=false` 仍会取消进行中的逐项粘贴（既有语义），
-暂停不会。恢复路径均为幂等：重复写入不会创建第二套监听/清理线程；暂停后立刻恢复
-由世代检查回收上一代线程。专有线程在退出前状态为 `pausing`，不把「请求已接受」
-报告成「资源已释放」。
+暂停不会；停用的采集回收同样是异步的（`stop_capture` + `paste.cancel_all` 取消位，
+不 join），设置命令不阻塞 UI。恢复路径均为幂等：重复写入不会创建第二套监听/清理
+线程；暂停后立刻恢复由世代检查回收上一代线程。专有线程在退出前状态为
+`pausing`/`stopping`，不把「请求已接受」报告成「资源已释放」。
+
+生命周期快照的查询成本（2026-11-07 复查）：
+
+- `lifecycle_status` 只在模块页按钮首次挂载、资源管理「功能运行」分区可见、或可见期
+  相关设置变化/操作完成后调用；无轮询、无定时器。
+- 分区首次访问后保持挂载，但活跃条件为「分区可见 **且** 完整面板可见」；隐藏（切分区、
+  停靠胶囊、极简/紧凑）时清空查询水位，不因设置变化发 IPC，重新显示补一次。
+- 状态查询只读内存探针/既有快照：线程计数、引擎活动槽、专注权威快照、扫描取消注册表、
+  微件窗口 label、接入管线运行标志；不枚举进程、不扫目录、不写库。
+- 设置 Store 变化只推进 revision 并标记 stale，不直接触发 IPC；旧响应按 revision 丢弃，
+  避免过期快照覆盖新意图与重复查询。
 
 可复核测量建议（本任务未宣称具体百分比）：暂停前后在同一隔离实例分别采样
 `resource_snapshot` 的 `cpuPercent` / 线程数 / IPC 计数，使用

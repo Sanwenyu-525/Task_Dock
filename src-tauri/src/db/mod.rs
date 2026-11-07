@@ -2041,9 +2041,14 @@ pub struct Settings {
     /// 工作现场：关闭后停止捕获与后台恢复，历史数据保留
     #[serde(default = "default_true")]
     pub workspace_enabled: bool,
-    /// 行动中心：关闭后停止聚合刷新与徽标，原始事件仍照常入库
+    /// 行动中心：长期停用。关闭后 `actions::feed` 返回空 Feed、徽标归零，
+    /// 原始 Agent 事件仍照常入库；与临时暂停（`actions_paused`）语义分离。
     #[serde(default = "default_true")]
     pub actions_enabled: bool,
+    /// 行动中心临时暂停：只停止自动聚合刷新与徽标更新；历史/通知仍可手动查看，
+    /// 原始 Agent 事件继续入库。不得用它替代 `actions_enabled` 的长期停用语义。
+    #[serde(default)]
+    pub actions_paused: bool,
     /// 提醒调度暂停：暂停期间到期提醒**保持未触发**（不写 fired、不推进重复任务），
     /// 恢复后由既有过期补偿语义补触发。任务、提醒数据与通知历史都不删除。
     #[serde(default)]

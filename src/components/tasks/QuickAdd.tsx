@@ -21,11 +21,17 @@ export default function QuickAdd({ compact }: Props) {
   const { t } = useLocale();
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState<ParsedInput | null>(null);
+  /* 解析结果对应的输入原文：输入被改动后预览必须失效，否则「创建」会提交
+     上一条解析结果并清空当前输入（验收 UI-02）。 */
+  const [parsedSource, setParsedSource] = useState("");
   const [dueInput, setDueInput] = useState("");
   const [error, setError] = useState("");
   const [parsing, setParsing] = useState(false);
   const [creating, setCreating] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  /* 输入法组合期间不因中间文本让预览失效（Escape 只关候选的既有语义）；
+     组合结束后按最终文本判定。isComposing 只接受键盘事件，故这里单独跟踪。 */
+  const composingRef = useRef(false);
   const ime = useImeComposition();
   const quickAddToken = useUiStore((s) => s.quickAddToken);
   const showToast = useUiStore((s) => s.showToast);
@@ -43,6 +49,7 @@ export default function QuickAdd({ compact }: Props) {
     try {
       const p = await parseQuickAdd(value);
       setParsed(p);
+      setParsedSource(value);
       setDueInput(toLocalInputValue(p.due_at));
     } catch (e) {
       setError(localizedErrorMessage(e));
@@ -53,6 +60,11 @@ export default function QuickAdd({ compact }: Props) {
 
   async function onCreate() {
     if (!parsed || creating) return;
+    // 双保险：即使有路径绕过 onChange 改写了输入，也绝不提交与输入不一致的旧解析结果。
+    if (text.trim() !== parsedSource) {
+      clearParsed();
+      return;
+    }
     setCreating(true);
     setError("");
     try {
@@ -64,6 +76,7 @@ export default function QuickAdd({ compact }: Props) {
       );
       setText("");
       setParsed(null);
+      setParsedSource("");
       setDueInput("");
       showToast(t("quickAdd.created", { title: task.title }), { kind: "success" });
       inputRef.current?.focus();
@@ -74,10 +87,15 @@ export default function QuickAdd({ compact }: Props) {
     }
   }
 
-  function onCancel() {
+  function clearParsed() {
     setParsed(null);
+    setParsedSource("");
     setDueInput("");
     setError("");
+  }
+
+  function onCancel() {
+    clearParsed();
   }
 
   const busy = parsing || creating;
@@ -90,11 +108,26 @@ export default function QuickAdd({ compact }: Props) {
           ref={inputRef}
           className="quick-add-input input-embedded"
           placeholder={t("quickAdd.placeholder")}
+          /* placeholder 在输入后消失，不能作为唯一可访问名（验收 UI-15）。 */
+          aria-label={t("quickAdd.placeholder")}
           value={text}
           disabled={creating}
-          onChange={(e) => setText(e.target.value)}
-          onCompositionStart={ime.onCompositionStart}
-          onCompositionEnd={ime.onCompositionEnd}
+          onChange={(e) => {
+            setText(e.target.value);
+            // 输入一变，上一条解析结果立即失效：按钮回到「解析」，避免创建旧任务。
+            // 输入法组合期间先保留预览（Escape 只关候选的既有语义），
+            // 组合结束后再按最终文本判定。
+            if (parsed && !composingRef.current) clearParsed();
+          }}
+          onCompositionStart={(e) => {
+            composingRef.current = true;
+            ime.onCompositionStart(e);
+          }}
+          onCompositionEnd={(e) => {
+            composingRef.current = false;
+            ime.onCompositionEnd(e);
+            if (parsed && e.currentTarget.value.trim() !== parsedSource) clearParsed();
+          }}
           onKeyDown={(e) => {
             // 输入法组合中：Enter 用于确认候选、Escape 用于关闭候选，
             // 都不能触发解析/创建或取消预览，也不能 preventDefault 打断 IME。

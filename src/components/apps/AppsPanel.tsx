@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, FolderOpen, Link2, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw,
+  AlertTriangle, FolderOpen, LayoutGrid, Link2, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw,
   Star, Trash2, EyeOff, Eye, X,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
@@ -30,7 +30,7 @@ import {
 import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
 import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import AppIcon from "../ui/AppIcon";
-import { ConfirmDialog, DropdownMenu, SearchField } from "../ui";
+import { ConfirmDialog, DropdownMenu, EmptyState, SearchField } from "../ui";
 import AppPicker from "../navigation/AppPicker";
 import TargetEditForm from "./TargetEditForm";
 import { useLocale } from "../../hooks/useLocale";
@@ -652,12 +652,16 @@ export default function AppsPanel() {
       )}
 
       {targetsError === null && targetsLoaded && noAppsAtAll && (
-        <div className="wf-empty">
-          <p className="wf-hint-text">{tr("apps.empty")}</p>
-          <button type="button" className="btn primary" onClick={requestAdd}>
-            <Plus size={13} aria-hidden="true" /> {tr("apps.add")}
-          </button>
-        </div>
+        <EmptyState
+          framed
+          icon={<LayoutGrid size={22} aria-hidden="true" />}
+          hint={tr("apps.empty")}
+          action={
+            <button type="button" className="btn primary" onClick={requestAdd}>
+              <Plus size={13} aria-hidden="true" /> {tr("apps.add")}
+            </button>
+          }
+        />
       )}
 
       {targetsLoaded && !noAppsAtAll && visibleApps.length === 0 && visibleExtras.length === 0 && (

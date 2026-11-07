@@ -12,16 +12,22 @@ import { HardDrive } from "lucide-react";
 import type { ResourceSnapshot } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
 import { formatLocalStamp } from "../../lib/format";
-import { computeUsage, formatPercent, type PressureLevel } from "../../lib/resourceMetrics";
+import { computeUsage, formatPercent } from "../../lib/resourceMetrics";
+import type { CleanupEstimate } from "../settings/ResourceCleanupSection";
 import { useLocale } from "../../hooks/useLocale";
-import { MiniMeter, PRESSURE_LEVEL_KEYS, UsageRing } from "./charts";
+import {
+  MiniMeter,
+  USAGE_ANOMALY_DETAIL,
+  UsageRing,
+  usageStatusKey,
+} from "./charts";
 
 interface OverviewSegmentProps {
   snapshot: ResourceSnapshot | null;
   loading: boolean;
   error: string | null;
-  /** 磁盘页最近一次扫描得到的可清理字节；null = 尚未扫描。 */
-  cleanableBytes: number | null;
+  /** 磁盘页的扫描估算状态：已过期/失败/未扫描都不能当成 0 B 显示。 */
+  cleanable: CleanupEstimate;
   /** 跳转到磁盘分区（扫描入口在那里）。 */
   onOpenDisk: () => void;
   onRefresh: () => void;
@@ -36,7 +42,7 @@ export default function OverviewSegment({
   snapshot,
   loading,
   error,
-  cleanableBytes,
+  cleanable,
   onOpenDisk,
   onRefresh,
 }: OverviewSegmentProps) {
@@ -52,11 +58,74 @@ export default function OverviewSegment({
   const memoryUsage = computeUsage(memory?.totalBytes ?? null, memory?.availableBytes ?? null);
 
   const percentText = (percent: number | null) => formatPercent(percent);
-  const levelText = (level: keyof typeof PRESSURE_LEVEL_KEYS) => t(PRESSURE_LEVEL_KEYS[level]);
   const ringValue = (percent: number | null) => (pending ? reading : percentText(percent));
-  const ringStatus = (level: PressureLevel) => (pending ? reading : levelText(level));
+  const ringStatus = (usage: typeof diskUsage) =>
+    pending ? reading : t(usageStatusKey(usage.level, usage.anomaly));
 
   const cacheBytes = snapshot?.application.knownCacheBytes ?? null;
+  const cacheStatus = snapshot?.application.status ?? null;
+  /** 部分统计 + 0 B 不等于「确认没有缓存」；不可用也不能显示成 0。 */
+  const cacheIncomplete = cacheStatus === "partial";
+  const cacheUnavailable = cacheBytes === null || cacheStatus === "unavailable";
+  const cacheValue = pending
+    ? reading
+    : cacheUnavailable
+      ? t("resource.overview.cacheUnavailable")
+      : cacheIncomplete && cacheBytes === 0
+        ? t("resource.overview.cacheZeroPartial")
+        : formatBytes(cacheBytes);
+  const cacheSub = pending
+    ? reading
+    : [
+        cacheUnavailable
+          ? t("settings.resourceCleanup.applicationStatus.unavailable")
+          : snapshot?.application.knownCacheFiles === null
+            ? unavailable
+            : t("settings.resourceCleanup.files", {
+                count: snapshot?.application.knownCacheFiles ?? 0,
+              }),
+        cacheIncomplete
+          ? t("resource.overview.cachePartialNote")
+          : cacheUnavailable
+            ? null
+            : t("settings.resourceCleanup.applicationStatus.ready"),
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(" · ");
+
+  const cleanableReady =
+    (cleanable.state === "ready" || cleanable.state === "partial") &&
+    cleanable.totalBytes !== null;
+  const cleanableValue = pending
+    ? reading
+    : cleanableReady
+      ? // 部分来源未纳入且已统计 0 B：不能只突出「0 B」让人误读为确认无可清理
+        cleanable.state === "partial" && cleanable.totalBytes === 0
+        ? t("resource.overview.cleanableZeroPartial")
+        : formatBytes(cleanable.totalBytes as number)
+      : cleanable.state === "scanning"
+        ? t("resource.overview.cleanableScanning")
+        : cleanable.state === "stale"
+          ? t("resource.overview.cleanableStale")
+          : cleanable.state === "failed"
+            ? t("resource.overview.cleanableFailed")
+            : t("resource.overview.cleanableUnknown");
+  const cleanableSub = pending
+    ? reading
+    : cleanableReady
+      ? t(
+          cleanable.state === "partial"
+            ? "resource.overview.cleanablePartialNote"
+            : "resource.overview.cleanableReadyNote",
+        )
+      : cleanable.state === "scanning"
+        ? t("resource.overview.cleanableScanningNote")
+        : cleanable.state === "stale"
+          ? t("resource.overview.cleanableStaleNote")
+          : cleanable.state === "failed"
+            ? t("resource.overview.cleanableFailedNote")
+            : t("resource.overview.cacheUnscanned");
+
   const sampled = sampledLabel(snapshot?.sampledAt);
 
   return (
@@ -90,11 +159,11 @@ export default function OverviewSegment({
           level={diskUsage.level}
           title={t("resource.overview.diskRingTitle")}
           valueText={ringValue(diskUsage.usedPercent)}
-          statusText={ringStatus(diskUsage.level)}
+          statusText={ringStatus(diskUsage)}
           ariaLabel={t("resource.aria.diskRing", {
             volume: disk?.volume ?? "",
             percent: percentText(diskUsage.usedPercent) ?? unavailable,
-            level: levelText(diskUsage.level),
+            level: t(usageStatusKey(diskUsage.level, diskUsage.anomaly)),
           })}
           detail={
             <>
@@ -102,23 +171,27 @@ export default function OverviewSegment({
                 {/* 读取尚未完成时显示「读取中」，不能把未加载说成「暂不可用」 */}
                 {pending
                   ? reading
-                  : diskUsage.usedBytes === null
-                    ? unavailable
-                    : t("resource.overview.ringUsed", {
-                        used: formatBytes(diskUsage.usedBytes),
-                      })}
-                {disk?.volume ? ` · ${disk.volume}` : ""}
+                  : diskUsage.anomaly
+                    ? t(USAGE_ANOMALY_DETAIL[diskUsage.anomaly])
+                    : diskUsage.usedBytes === null
+                      ? unavailable
+                      : t("resource.overview.ringUsed", {
+                          used: formatBytes(diskUsage.usedBytes),
+                        })}
+                {!diskUsage.anomaly && disk?.volume ? ` · ${disk.volume}` : ""}
               </span>
               <span>
                 {pending
                   ? reading
-                  : diskUsage.availableBytes === null || diskUsage.totalBytes === null
-                    ? unavailable
-                    : `${t("resource.overview.ringFree", {
-                        free: formatBytes(diskUsage.availableBytes),
-                      })} · ${t("resource.overview.ringTotal", {
-                        total: formatBytes(diskUsage.totalBytes),
-                      })}`}
+                  : diskUsage.anomaly
+                    ? ""
+                    : diskUsage.availableBytes === null || diskUsage.totalBytes === null
+                      ? unavailable
+                      : `${t("resource.overview.ringFree", {
+                          free: formatBytes(diskUsage.availableBytes),
+                        })} · ${t("resource.overview.ringTotal", {
+                          total: formatBytes(diskUsage.totalBytes),
+                        })}`}
               </span>
             </>
           }
@@ -128,10 +201,10 @@ export default function OverviewSegment({
           level={memoryUsage.level}
           title={t("resource.overview.memoryRingTitle")}
           valueText={ringValue(memoryUsage.usedPercent)}
-          statusText={ringStatus(memoryUsage.level)}
+          statusText={ringStatus(memoryUsage)}
           ariaLabel={t("resource.aria.memoryRing", {
             percent: percentText(memoryUsage.usedPercent) ?? unavailable,
-            level: levelText(memoryUsage.level),
+            level: t(usageStatusKey(memoryUsage.level, memoryUsage.anomaly)),
           })}
           detail={
             <>
@@ -139,12 +212,14 @@ export default function OverviewSegment({
                 {/* 与磁盘环一致：读取中显示「读取中」，不是「暂不可用」 */}
                 {pending
                   ? reading
-                  : memoryUsage.availableBytes === null || memoryUsage.totalBytes === null
-                    ? unavailable
-                    : t("settings.resourceCleanup.memoryValue", {
-                        available: formatBytes(memoryUsage.availableBytes),
-                        total: formatBytes(memoryUsage.totalBytes),
-                      })}
+                  : memoryUsage.anomaly
+                    ? t(USAGE_ANOMALY_DETAIL[memoryUsage.anomaly])
+                    : memoryUsage.availableBytes === null || memoryUsage.totalBytes === null
+                      ? unavailable
+                      : t("settings.resourceCleanup.memoryValue", {
+                          available: formatBytes(memoryUsage.availableBytes),
+                          total: formatBytes(memoryUsage.totalBytes),
+                        })}
               </span>
               <span>{t("settings.resourceCleanup.systemScope")}</span>
             </>
@@ -157,46 +232,15 @@ export default function OverviewSegment({
           <span className="resource-overview-label">
             {t("settings.resourceCleanup.applicationCache")}
           </span>
-          <strong className="resource-metric-value">
-            {pending ? reading : cacheBytes === null ? unavailable : formatBytes(cacheBytes)}
-          </strong>
-          <span className="resource-metric-sub">
-            {pending
-              ? reading
-              : snapshot && snapshot.application.knownCacheFiles !== null
-                ? t("settings.resourceCleanup.files", {
-                    count: snapshot.application.knownCacheFiles,
-                  })
-                : unavailable}
-            {snapshot
-              ? ` · ${t(
-                  snapshot.application.status === "ready"
-                    ? "settings.resourceCleanup.applicationStatus.ready"
-                    : snapshot.application.status === "partial"
-                      ? "settings.resourceCleanup.applicationStatus.partial"
-                      : "settings.resourceCleanup.applicationStatus.unavailable",
-                )}`
-              : ""}
-          </span>
+          <strong className="resource-metric-value">{cacheValue}</strong>
+          <span className="resource-metric-sub">{cacheSub}</span>
         </div>
 
         <div className="resource-metric">
           <span className="resource-overview-label">{t("resource.overview.cleanable")}</span>
-          <strong className="resource-metric-value">
-            {pending
-              ? reading
-              : cleanableBytes === null
-                ? t("resource.overview.cleanableUnknown")
-                : formatBytes(cleanableBytes)}
-          </strong>
+          <strong className="resource-metric-value">{cleanableValue}</strong>
           <span className="resource-metric-sub">
-            {pending
-              ? reading
-              : cleanableBytes === null
-                ? t("resource.overview.cacheUnscanned")
-                : t("settings.resourceCleanup.estimated", {
-                    bytes: formatBytes(cleanableBytes),
-                  })}
+            {cleanableSub}
             {!pending && (
               <button type="button" className="resource-link-btn" onClick={onOpenDisk}>
                 <HardDrive size={11} aria-hidden="true" /> {t("resource.overview.scanCache")}

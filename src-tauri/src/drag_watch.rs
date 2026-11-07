@@ -34,6 +34,8 @@ mod win {
         app: AppHandle,
         label: String,
         generation: u64,
+        /// 该窗口的系统移动循环当前是否仍在运行（供前端关联 start 归属）。
+        active: bool,
     }
 
     /// 微件窗口数量很少（按类型各一个），线性表足够，避免引入哈希表依赖。
@@ -71,6 +73,7 @@ mod win {
             WM_ENTERSIZEMOVE => {
                 let generation = with_watch(hwnd as isize, |watch| {
                     watch.generation += 1;
+                    watch.active = true;
                     watch.generation
                 });
                 if let Some(generation) = generation {
@@ -80,9 +83,10 @@ mod win {
                 call_old(hwnd, msg, wparam, lparam)
             }
             WM_EXITSIZEMOVE => {
-                if let Some(generation) =
-                    with_watch(hwnd as isize, |watch| watch.generation)
-                {
+                if let Some(generation) = with_watch(hwnd as isize, |watch| {
+                    watch.active = false;
+                    watch.generation
+                }) {
                     PostMessageW(hwnd, WM_WIDGET_DRAG, generation as usize, 0);
                 }
                 call_old(hwnd, msg, wparam, lparam)
@@ -100,6 +104,12 @@ mod win {
                     (watch.app.clone(), watch.label.clone())
                 });
                 if let Some((app, label)) = target {
+                    tracing::debug!(
+                        %label,
+                        phase = ?event.phase,
+                        generation = event.generation,
+                        "微件 window-drag 相位发出"
+                    );
                     let _ = app.emit_to(&label, DRAG_EVENT, event);
                 }
                 0
@@ -148,9 +158,20 @@ mod win {
         }
         list.push((
             hwnd,
-            Watch { old, app: app.clone(), label: label.to_string(), generation: 0 },
+            Watch { old, app: app.clone(), label: label.to_string(), generation: 0, active: false },
         ));
         true
+    }
+
+    /// 指定标签的微件窗口上，该代次的移动循环此刻是否仍在运行。
+    ///
+    /// 按**标签**而不是 hwnd 查找：前端只能拿到自己的窗口标签，且标签在微件
+    /// 生命周期内唯一；WATCHES 仍按 hwnd 存表项（窗口过程天然以 hwnd 为键）。
+    pub fn loop_active(label: &str, generation: u64) -> bool {
+        let list = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
+        list.iter().any(|(_, watch)| {
+            watch.label == label && watch.active && watch.generation == generation
+        })
     }
 }
 
@@ -162,5 +183,16 @@ pub fn install(app: &AppHandle, hwnd: isize, label: &str) -> bool {
 
 #[cfg(not(windows))]
 pub fn install(_app: &AppHandle, _hwnd: isize, _label: &str) -> bool {
+    false
+}
+
+/// 指定标签的微件窗口上，该代次的移动循环此刻是否仍在运行。
+#[cfg(windows)]
+pub fn loop_active(label: &str, generation: u64) -> bool {
+    win::loop_active(label, generation)
+}
+
+#[cfg(not(windows))]
+pub fn loop_active(_label: &str, _generation: u64) -> bool {
     false
 }

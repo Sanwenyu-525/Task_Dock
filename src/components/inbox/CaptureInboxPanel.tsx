@@ -33,7 +33,7 @@ import { copyText } from "../../lib/clipboard";
 import { formatRelative } from "../../lib/format";
 import type { CaptureItem, CaptureKind } from "../../lib/bridge";
 import { quickCaptureShow } from "../../lib/bridge";
-import { StatusBadge } from "../ui";
+import { EmptyState, StatusBadge } from "../ui";
 import type { IconComponent } from "../ui/AgentIcon";
 
 const KIND_LABELS: Record<CaptureKind, string> = {
@@ -323,13 +323,11 @@ export default function CaptureInboxPanel() {
       {showLoading && <div className="empty-hint">加载中…</div>}
 
       {showEmpty && (
-        <div className="empty-state">
-          <div className="empty-icon">
-            <Inbox size={22} aria-hidden="true" />
-          </div>
-          <div className="empty-title">{emptyCopy.title}</div>
-          <div className="empty-hint">{emptyCopy.hint}</div>
-        </div>
+        <EmptyState
+          icon={<Inbox size={22} aria-hidden="true" />}
+          title={emptyCopy.title}
+          hint={emptyCopy.hint}
+        />
       )}
 
       {items.length > 0 && (

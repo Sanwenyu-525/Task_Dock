@@ -790,9 +790,27 @@ export default function SettingsPanel() {
                   key={id}
                   role="radio"
                   aria-checked={active}
+                  tabIndex={active ? 0 : -1}
                   className={`preset-card preset-${id} ${active ? "active" : ""}`}
                   onClick={() => update({ visual_preset: id })}
-                  title={presetLabels.tagline}
+                  data-tip={presetLabels.tagline}
+                  onKeyDown={(e) => {
+                    // ARIA radiogroup 契约：一组只保留一个 tab 停靠点，
+                    // 方向键在组内移动并即时选中（验收 UI-15）。
+                    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+                    e.preventDefault();
+                    const items = [
+                      ...(e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+                        '[role="radio"]',
+                      ) ?? []),
+                    ];
+                    const index = items.indexOf(e.currentTarget);
+                    if (index < 0 || items.length === 0) return;
+                    const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
+                    const next = items[(index + delta + items.length) % items.length];
+                    next?.focus();
+                    next?.click();
+                  }}
                 >
                   <span className="preset-preview" aria-hidden="true">
                     <span className="pp-rail" />

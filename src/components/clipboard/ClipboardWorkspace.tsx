@@ -48,6 +48,7 @@ import { useUiStore } from "../../store/useUiStore";
 import { useMainUiVisible } from "../../hooks/useMainUiVisible";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 import { ConfirmDialog } from "../ui/Dialog";
+import EmptyState from "../ui/EmptyState";
 import SearchField from "../ui/SearchField";
 import ClipboardGroupCard from "./ClipboardGroupCard";
 import ClipboardGroupDetail from "./ClipboardGroupDetail";
@@ -626,16 +627,34 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const paused = configError ? true : settings?.clipboard_paused ?? false;
   const enabled = configError ? false : settings?.clipboard_enabled ?? true;
   const monitoringDown = status?.monitoring === false;
+  const draining = Boolean(status?.monitoring || status?.maintenance || status?.draining);
+  // 停用/暂停请求已接受但线程仍在收尾：如实显示过渡态，不提前说“已停止/已暂停”。
+  const stopping = !enabled && draining;
+  const pausing = enabled && paused && draining;
   const statusLabel = configError
     ? "配置异常，自动记录已暂停"
     : !enabled
-      ? "已停用"
+      ? stopping
+        ? "正在停止…"
+        : "已停用"
       : paused
-        ? "已暂停"
+        ? pausing
+          ? "正在暂停…"
+          : "已暂停"
         : monitoringDown
           ? "监听未启动"
           : "监听中";
-  const statusTone = configError ? "bad" : !enabled ? "off" : paused ? "paused" : monitoringDown ? "bad" : "ok";
+  const statusTone = configError
+    ? "bad"
+    : !enabled
+      ? stopping
+        ? "paused"
+        : "off"
+      : paused
+        ? "paused"
+        : monitoringDown
+          ? "bad"
+          : "ok";
   const stats = view?.stats;
 
   function reportCopy(r: CopyReport) {
@@ -896,8 +915,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     try {
       // 统一走生命周期适配层（内部写既有 clipboard_paused 设置键）：
       // 设置页、胶囊与资源管理使用同一份意图，不存在第二套暂停状态。
-      const ok = await useLifecycleStore.getState().setPaused("clipboard", nextPaused);
-      if (!ok) {
+      const result = await useLifecycleStore.getState().setPaused("clipboard", nextPaused);
+      if (result === "failed") {
         const reason = useLifecycleStore.getState().errors.clipboard;
         showToast(`切换失败：${reason ?? "未知错误"}`, { kind: "error" });
         return;
@@ -906,7 +925,10 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       const s = await clipboardStatus();
       setStatus(s);
       setStatusError(null);
-      if (nextPaused) {
+      if (result === "unconfirmed") {
+        // 配置已更新但状态查询失败：只报告“未确认”，不冒充资源已释放/监听已恢复。
+        showToast("配置已更新，运行状态未确认（可稍后重试刷新）", { kind: "warning" });
+      } else if (nextPaused) {
         const stillDraining = s.monitoring || s.maintenance || s.draining;
         showToast(
           stillDraining
@@ -957,11 +979,11 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       }
       if (groups.length === 0) {
         return (
-          <div className="clip-empty">
-            <Clipboard size={22} className="clip-empty-icon" />
-            <strong>暂无分组</strong>
-            <span>连续复制的相关操作会自动整理为分组；也可以在历史中勾选条目后手动创建分组。</span>
-          </div>
+          <EmptyState
+            icon={<Clipboard size={22} />}
+            title="暂无分组"
+            hint="连续复制的相关操作会自动整理为分组；也可以在历史中勾选条目后手动创建分组。"
+          />
         );
       }
       return (
@@ -1001,11 +1023,11 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     }
     if (items.length === 0) {
       return (
-        <div className="clip-empty">
-          <Clipboard size={22} className="clip-empty-icon" />
-          <strong>{filterActive ? "没有符合条件的记录" : "还没有剪贴板记录"}</strong>
-          <span>
-            {configError
+        <EmptyState
+          icon={<Clipboard size={22} />}
+          title={filterActive ? "没有符合条件的记录" : "还没有剪贴板记录"}
+          hint={
+            configError
               ? "剪贴板配置异常，自动记录已暂停；请在设置 → 智能剪贴板中修复。"
               : !enabled
                 ? "剪贴板记录已停用，可在设置中开启。"
@@ -1013,9 +1035,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                   ? "监听已暂停，恢复后新的复制才会被记录。"
                   : filterActive
                     ? "试试清除搜索或切换类型筛选。"
-                    : "复制文字、图片或文件后会自动出现在这里。"}
-          </span>
-        </div>
+                    : "复制文字、图片或文件后会自动出现在这里。"
+          }
+        />
       );
     }
     return (

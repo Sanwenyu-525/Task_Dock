@@ -367,6 +367,8 @@ pub struct IngestPipeline {
     rx: Mutex<Option<mpsc::Receiver<Job>>>,
     shared: Arc<Shared>,
     handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// 唯一消费者是否仍在运行（生命周期探针，不参与控制）。
+    running: Arc<std::sync::atomic::AtomicBool>,
     shutdown_lock: tokio::sync::Mutex<()>,
 }
 
@@ -425,12 +427,18 @@ impl IngestPipeline {
             rx: Mutex::new(Some(rx)),
             shared,
             handle: Mutex::new(None),
+            running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_lock: tokio::sync::Mutex::new(()),
         })
     }
 
     pub fn config(&self) -> &PipelineConfig {
         &self.shared.config
+    }
+
+    /// 消费者线程是否仍在运行（生命周期探针；不是事件队列是否非空）。
+    pub fn is_running(&self) -> bool {
+        self.running.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// 启动唯一消费者（幂等：重复调用直接返回）。
@@ -441,7 +449,16 @@ impl IngestPipeline {
         };
         drop(guard);
         let this = self.clone();
+        let running = self.running.clone();
+        running.store(true, std::sync::atomic::Ordering::SeqCst);
         let handle = tauri::async_runtime::spawn(async move {
+            struct RunningGuard(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for RunningGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _guard = RunningGuard(running);
             this.run(&mut rx).await;
         });
         *self.handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
@@ -1687,6 +1704,7 @@ mod tests {
                     prev_state: None,
                     deduplicated: false,
                     late: false,
+                    backfill: false,
                     notification: None,
                     origin: EventOrigin::Real,
                 })
@@ -1958,6 +1976,7 @@ mod tests {
                     prev_state: None,
                     deduplicated: false,
                     late: false,
+                    backfill: false,
                     notification: None,
                     origin: EventOrigin::Real,
                 })

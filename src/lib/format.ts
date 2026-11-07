@@ -160,6 +160,9 @@ export const NOTIFICATION_KIND_LABELS: Record<string, string> = {
   get agent_disconnected() {
     return t("notification.kind.agent_disconnected");
   },
+  get digest() {
+    return t("notification.kind.digest");
+  },
   get system() {
     return t("notification.kind.system");
   },

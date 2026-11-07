@@ -3,11 +3,15 @@
 //! 所有页面共用同一套公式与阈值，组件不得自行重复计算：
 //! - `usedPercent = (total - available) / total * 100`，结果限制在 0–100；
 //! - 总量必须 > 0 且有限；未知/非法输入一律返回 `unknown`，绝不当成 0%；
-//! - 可用量大于总量时按「已用 0」处理（数据异常时宁可显示 0% 也不显示负使用率）；
+//! - 可用量大于总量是自相矛盾的读数：标记 `anomaly` 并按不可读处理，
+//!   不再夹成「0% 正常」（把异常解释成健康状态比不显示更危险）；
 //! - 阈值集中在本文件：<80 正常，80–<90 关注，>=90 紧张。
 
 /** 使用率压力等级。`unknown` 表示数据不可读，不是 0%。 */
 export type PressureLevel = "normal" | "attention" | "critical" | "unknown";
+
+/** 读数异常：数值自相矛盾，不能作为使用率展示。 */
+export type UsageAnomaly = "available_exceeds_total";
 
 /** 关注阈值（百分比，含）。 */
 export const PRESSURE_ATTENTION = 80;
@@ -16,11 +20,13 @@ export const PRESSURE_CRITICAL = 90;
 
 export interface UsageMetric {
   totalBytes: number | null;
+  /** 原始可用量；异常时保留原值作为证据，不静默夹紧。 */
   availableBytes: number | null;
   usedBytes: number | null;
   /** 0–100 的原始精度百分比；不可读时为 null。展示时用 `formatPercent`。 */
   usedPercent: number | null;
   level: PressureLevel;
+  anomaly: UsageAnomaly | null;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -47,6 +53,7 @@ export function pressureLevel(percent: number | null | undefined): PressureLevel
  *
  * 非法输入（null / NaN / Infinity / 负数 / 总量 0）→ `unknown`，四个数值字段按
  * 可读性分别保留：只有能确认的字段才带值，其余为 null。
+ * 可用量大于总量 → `anomaly` + `unknown`：这是互相矛盾的读数，不能解释成 0%。
  */
 export function computeUsage(
   totalBytes: number | null | undefined,
@@ -62,26 +69,53 @@ export function computeUsage(
       usedBytes: null,
       usedPercent: null,
       level: "unknown",
+      anomaly: null,
     };
   }
-  // 可用量异常大于总量时夹紧，避免出现负使用率与超过 100% 的圆弧。
-  const clampedAvailable = Math.min(available, total);
-  const used = total - clampedAvailable;
+  if (available > total) {
+    return {
+      totalBytes: total,
+      availableBytes: available,
+      usedBytes: null,
+      usedPercent: null,
+      level: "unknown",
+      anomaly: "available_exceeds_total",
+    };
+  }
+  const used = total - available;
   const percent = clampPercent((used / total) * 100);
   return {
     totalBytes: total,
-    availableBytes: clampedAvailable,
+    availableBytes: available,
     usedBytes: used,
     usedPercent: percent,
     level: pressureLevel(percent),
+    anomaly: null,
   };
 }
 
-/** 百分比展示：默认一位小数；不可读返回 null（由界面显示「暂不可用」）。 */
+/**
+ * 百分比展示：默认一位小数，**向零截断**而不是四舍五入。
+ *
+ * 原因：等级阈值按真实值判断（79.96 仍属「正常」），若按四舍五入显示成
+ * 「80.0% · 正常」就会自相矛盾。阈值 80 / 90 都是一位小数的整数边界，
+ * 向零截断保证展示值永远不会跨过阈值，同时不修改真实数值（图形仍用原始精度）。
+ *
+ * 极小非零值不显示成 0.0%（会被误读为「完全没有使用」），改为 `<0.1%`；
+ * 真实 0 仍显示 `0.0%`。不可读返回 null（由界面显示「暂不可用」）。
+ */
 export function formatPercent(percent: number | null | undefined, digits = 1): string | null {
   const value = clampPercent(percent);
   if (value === null) return null;
-  return `${value.toFixed(Math.max(0, Math.min(3, digits)))}%`;
+  const precision = Math.max(0, Math.min(3, digits));
+  const step = 10 ** precision;
+  // 浮点乘法可能得到 892.9999999999999：加一个远小于最小显示刻度的 epsilon，
+  // 只修正表示误差，不会把 79.999 抬到 80.0。
+  const truncated = Math.floor(value * step + 1e-7) / step;
+  if (value > 0 && truncated === 0) {
+    return `<${(1 / step).toFixed(precision)}%`;
+  }
+  return `${truncated.toFixed(precision)}%`;
 }
 
 /**

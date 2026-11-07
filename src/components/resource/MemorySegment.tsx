@@ -25,7 +25,13 @@ import { localizedErrorMessage } from "../../i18n/errors";
 import { buildBreakdown, computeUsage, formatPercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
-import { ChartSwatch, PRESSURE_LEVEL_KEYS, StackedBar, UsageBar } from "./charts";
+import {
+  ChartSwatch,
+  StackedBar,
+  USAGE_ANOMALY_DETAIL,
+  UsageBar,
+  usageStatusKey,
+} from "./charts";
 
 const SOURCE_LABELS: Record<string, MessageKey> = {
   tts_memory: "resource.memory.source.tts",
@@ -37,6 +43,8 @@ interface MemorySegmentProps {
   snapshotLoading: boolean;
   processes: ResourceProcessDiagnostics | null;
   processesLoading: boolean;
+  /** 进程诊断读取失败：WebView2 指标显示未知 + 可重试，不保留旧值冒充新值。 */
+  processesError: string | null;
   onLoadProcesses: () => void;
   onRefreshSnapshot: () => void;
   /** 页面级刷新信号：只在本分区可见时递增，切换分区不会误触发。 */
@@ -48,6 +56,7 @@ export default function MemorySegment({
   snapshotLoading,
   processes,
   processesLoading,
+  processesError,
   onLoadProcesses,
   onRefreshSnapshot,
   refreshSignal,
@@ -92,6 +101,12 @@ export default function MemorySegment({
    * 释放事务 = IPC 释放 + **重新读取目录**。锁必须覆盖两段：
    * 重新采样完成前 `catalog.data` 还是旧值（可释放量 > 0），若只按 `releasing`
    * 判定，用户在间隙里再点一次就会基于旧数据重复释放。
+   *
+   * `useAsyncResource.reload()` 的 Promise 在本次请求**结算后**（成功或失败、
+   * 状态已提交）resolve，因此这里 await 它：同步锁与按钮忙碌态一起覆盖到
+   * 重采样完成，而不是在「释放 IPC 返回」的瞬间就放开。扫描失败由
+   * `catalog.error`（带重试入口）呈现，不会被误写成释放失败，释放结果仍按
+   * 实际释放字节如实展示。
    */
   const releaseLocked = releasing || catalog.loading;
 
@@ -104,15 +119,20 @@ export default function MemorySegment({
     setReleased(null);
     setReleaseError(null);
     try {
-      const report = await resourceMemoryRelease();
+      let report: ResourceMemoryReleaseReport;
+      try {
+        report = await resourceMemoryRelease();
+      } catch (reason: unknown) {
+        // 只有释放 IPC 本身失败才写 releaseError；重采样失败属于读取错误。
+        if (mountedRef.current) setReleaseError(localizedErrorMessage(reason));
+        return;
+      }
       if (!mountedRef.current) return;
       setReleased(report);
-      // 释放后按同一口径重新采样：目录与工作集都可能变化。
-      catalog.reload();
       onRefreshSnapshot();
-    } catch (reason: unknown) {
-      if (!mountedRef.current) return;
-      setReleaseError(localizedErrorMessage(reason));
+      // 释放后按同一口径重新采样：目录与工作集都可能变化。等待结算保证
+      // 「一次用户意图」的事务在重新扫描完成前不会因旧目录再次触发释放。
+      await reloadCatalog();
     } finally {
       releaseBusyRef.current = false;
       if (mountedRef.current) setReleasing(false);
@@ -173,7 +193,7 @@ export default function MemorySegment({
           snapshotPending
             ? reading
             : `${formatPercent(usage.usedPercent) ?? unavailable} · ${t(
-                PRESSURE_LEVEL_KEYS[usage.level],
+                usageStatusKey(usage.level, usage.anomaly),
               )}`
         }
         ariaLabel={t("resource.aria.memoryBar", {
@@ -181,18 +201,20 @@ export default function MemorySegment({
           available:
             usage.availableBytes === null ? unavailable : formatBytes(usage.availableBytes),
           total: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
-          level: t(PRESSURE_LEVEL_KEYS[usage.level]),
+          level: t(usageStatusKey(usage.level, usage.anomaly)),
         })}
         detail={
-          usage.totalBytes === null
-            ? unavailable
-            : t("settings.resourceCleanup.memoryValue", {
-                available:
-                  usage.availableBytes === null
-                    ? unavailable
-                    : formatBytes(usage.availableBytes),
-                total: formatBytes(usage.totalBytes),
-              })
+          usage.anomaly
+            ? t(USAGE_ANOMALY_DETAIL[usage.anomaly])
+            : usage.totalBytes === null
+              ? unavailable
+              : t("settings.resourceCleanup.memoryValue", {
+                  available:
+                    usage.availableBytes === null
+                      ? unavailable
+                      : formatBytes(usage.availableBytes),
+                  total: formatBytes(usage.totalBytes),
+                })
         }
       />
 
@@ -225,17 +247,24 @@ export default function MemorySegment({
           <strong className="resource-metric-value">
             {processesPending
               ? reading
-              : !webviewKnown || webviewBytes === null
+              : processesError || !webviewKnown || webviewBytes === null
                 ? unavailable
                 : formatBytes(webviewBytes)}
           </strong>
           <span className="resource-metric-sub">
-            {webview
-              ? t("resource.memory.webviewCount", { count: webview.length })
-              : processesPending
-                ? reading
-                : t("resource.memory.webviewPending")}
+            {processesError
+              ? t("resource.memory.webviewFailed")
+              : webview
+                ? t("resource.memory.webviewCount", { count: webview.length })
+                : processesPending
+                  ? reading
+                  : t("resource.memory.webviewPending")}
           </span>
+          {processesError && (
+            <button type="button" className="resource-link-btn" onClick={onLoadProcesses}>
+              {t("common.retry")}
+            </button>
+          )}
         </div>
       </div>
 

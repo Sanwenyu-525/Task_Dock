@@ -265,7 +265,7 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
                   type="button"
                   className="cap-shelf-recent-main"
                   aria-label={`${item.kind === "text" ? "查看" : "打开"}「${item.display_name}」`}
-                  title={item.original_path ?? item.display_name}
+                  data-tip={item.original_path ?? item.display_name}
                   onClick={() => openItem(item)}
                 >
                   <span className="cap-shelf-recent-icon" aria-hidden="true">

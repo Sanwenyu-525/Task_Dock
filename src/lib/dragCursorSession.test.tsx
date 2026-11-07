@@ -5,12 +5,19 @@
 //! 收不到指针事件，松手时不会派发 `pointerup`；同时结束事件是异步送达的，
 //! 迟到的旧事件不得清掉刚开始的新会话。
 
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 const native = vi.hoisted(() => {
   const handlers = new Map<string, (payload: unknown) => void>();
-  return { handlers };
+  /**
+   * 模拟原生窗口过程的状态：`generation` 是最近一次 `WM_ENTERSIZEMOVE` 的代次，
+   * `active` 表示该移动循环此刻是否仍在运行（`WM_ENTERSIZEMOVE`…`WM_EXITSIZEMOVE`）。
+   */
+  const loop = { generation: 0, active: false };
+  const queries: number[] = [];
+  const state = { failQueries: false };
+  return { handlers, loop, queries, state };
 });
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -21,7 +28,19 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 // 预览/测试环境没有 Tauri 运行时，这里显式按「桌面端」安装桥。
-vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }));
+// `drag_loop_active` 是前端关联 start 与本地会话的唯一原生查询。
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: () => true,
+  invoke: (command: string, args?: { generation?: number }) => {
+    if (command !== "drag_loop_active") {
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    }
+    if (native.state.failQueries) return Promise.reject(new Error("ipc unavailable"));
+    const generation = args?.generation ?? -1;
+    native.queries.push(generation);
+    return Promise.resolve(native.loop.active && native.loop.generation === generation);
+  },
+}));
 
 import {
   attachDragCursorSession,
@@ -29,6 +48,7 @@ import {
   NATIVE_DRAG_EVENT,
   DRAG_SESSION_CLASS,
   __activeDragSessionCount,
+  __resetDragBridgeStateForTests,
 } from "./dragCursorSession";
 
 function mountRoot() {
@@ -75,8 +95,36 @@ function nativePhase(phase: "start" | "end", generation: number) {
   handler!({ event: NATIVE_DRAG_EVENT, id: 1, payload: { phase, generation } });
 }
 
+/** 模拟原生移动循环的实时状态（`WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`）。 */
+function nativeLoop(generation: number, active: boolean) {
+  native.loop.generation = generation;
+  native.loop.active = active;
+}
+
+/**
+ * 派发一次原生开始信号并等待关联查询结算。
+ *
+ * 查询走 `invoke` 的 Promise 链（纯微任务），这里按微任务冲刷到稳定，
+ * 不使用定时器或随机延时。真实运行时查询在用户按住期间返回。
+ */
+async function nativeStart(generation: number) {
+  nativePhase("start", generation);
+  await flushNativeQueries();
+}
+
+async function flushNativeQueries() {
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+}
+
 beforeAll(() => {
   installNativeDragBridge();
+});
+
+beforeEach(() => {
+  native.queries.length = 0;
+  native.state.failQueries = false;
+  nativeLoop(0, false);
+  __resetDragBridgeStateForTests();
 });
 
 afterEach(() => {
@@ -126,15 +174,17 @@ describe("attachDragCursorSession", () => {
     session.dispose();
   });
 
-  it("start/end 代次配对：原生循环结束即复位，鼠标不需要移动", () => {
+  it("start/end 代次配对：原生循环结束即复位，鼠标不需要移动", async () => {
     const root = mountRoot();
     const session = attachDragCursorSession(root);
 
     press(surfaceOf(root));
-    nativePhase("start", 1);
+    nativeLoop(1, true);
+    await nativeStart(1);
     expect(dragging(root)).toBe(true);
 
     // 场景：用户按住拖动后松手，指针全程静止 → 没有任何 pointer 事件
+    nativeLoop(1, false);
     nativePhase("end", 1);
     expect(dragging(root)).toBe(false);
     expect(__activeDragSessionCount()).toBe(0);
@@ -142,13 +192,15 @@ describe("attachDragCursorSession", () => {
     session.dispose();
   });
 
-  it("迟到的旧结束通知不得清理已经开始的新会话", () => {
+  it("迟到的旧结束通知不得清理已经开始的新会话", async () => {
     const root = mountRoot();
     const session = attachDragCursorSession(root);
 
     // 第一次拖拽：正常收尾（pointerup 路径）
     press(surfaceOf(root));
-    nativePhase("start", 1);
+    nativeLoop(1, true);
+    await nativeStart(1);
+    nativeLoop(1, false);
     release(document.body);
     expect(dragging(root)).toBe(false);
 
@@ -159,14 +211,90 @@ describe("attachDragCursorSession", () => {
     expect(dragging(root)).toBe(true);
 
     // 新循环自己的结束信号才生效
-    nativePhase("start", 2);
+    nativeLoop(2, true);
+    await nativeStart(2);
+    nativeLoop(2, false);
     nativePhase("end", 2);
     expect(dragging(root)).toBe(false);
 
     session.dispose();
   });
 
-  it("重复的结束通知是幂等的", () => {
+  it("旧 start 与旧 end 都在新会话创建后才到达时，新会话必须存活", async () => {
+    const root = mountRoot();
+    const session = attachDragCursorSession(root);
+
+    // 会话 A：按下后原生循环 1 已退出（例如消息队列堆积，A 也已按指针路径收尾）。
+    press(surfaceOf(root));
+    release(document.body);
+    expect(dragging(root)).toBe(false);
+
+    // 会话 B 已经开始按住；A 的 start(1)/end(1) 此刻才送达。
+    press(surfaceOf(root));
+    expect(dragging(root)).toBe(true);
+
+    // 原生侧：循环 1 早已退出（B 自己的循环尚未开始或有别的代次）。
+    nativeLoop(1, false);
+    await nativeStart(1);
+    // 这是本用例的核心：旧 start 不得把代次 1 绑定给 B。
+    expect(dragging(root)).toBe(true);
+    nativePhase("end", 1);
+    expect(dragging(root)).toBe(true);
+    expect(__activeDragSessionCount()).toBe(1);
+
+    // B 收到自己的 start(2)/end(2) 后正常结束。
+    nativeLoop(2, true);
+    await nativeStart(2);
+    nativeLoop(2, false);
+    nativePhase("end", 2);
+    expect(dragging(root)).toBe(false);
+    expect(__activeDragSessionCount()).toBe(0);
+
+    session.dispose();
+  });
+
+  it("关联查询只在原生循环仍活跃时绑定代次", async () => {
+    const root = mountRoot();
+    const session = attachDragCursorSession(root);
+
+    press(surfaceOf(root));
+    // 循环代次存在但已经退出：start 是旧消息，不得绑定。
+    nativeLoop(7, false);
+    await nativeStart(7);
+    expect(native.queries).toContain(7);
+    expect(dragging(root)).toBe(true);
+
+    // 查询确认循环活跃时才绑定，之后 end(7) 才生效。
+    nativeLoop(7, true);
+    nativePhase("start", 7);
+    await flushNativeQueries();
+    nativeLoop(7, false);
+    nativePhase("end", 7);
+    expect(dragging(root)).toBe(false);
+
+    session.dispose();
+  });
+
+  it("快速拖拽：end 先于查询结算时仍会正确收尾（不残留 grabbing）", async () => {
+    const root = mountRoot();
+    const session = attachDragCursorSession(root);
+
+    press(surfaceOf(root));
+    nativeLoop(3, true);
+    nativePhase("start", 3); // 查询在循环活跃时受理
+    nativeLoop(3, false);
+    nativePhase("end", 3); // 结束信号先到（会话尚未绑定）
+
+    await flushNativeQueries();
+    // 查询结果确认这确实是本会话的循环：循环已结束，直接收尾，
+    // 而不是把代次绑给一个永远等不到 pointerup 的会话。
+    expect(dragging(root)).toBe(false);
+    expect(__activeDragSessionCount()).toBe(0);
+
+    session.dispose();
+  });
+
+  it("重复的 start 是幂等的（不会重复收尾或重复绑定）", async () => {
     const root = mountRoot();
     const states: boolean[] = [];
     const session = attachDragCursorSession(root, {
@@ -174,7 +302,54 @@ describe("attachDragCursorSession", () => {
     });
 
     press(surfaceOf(root));
+    nativeLoop(1, true);
+    await nativeStart(1);
     nativePhase("start", 1);
+    await flushNativeQueries();
+    expect(dragging(root)).toBe(true);
+
+    nativeLoop(1, false);
+    nativePhase("end", 1);
+    nativePhase("end", 1);
+    expect(dragging(root)).toBe(false);
+    expect(states).toEqual([true, false]);
+    expect(__activeDragSessionCount()).toBe(0);
+
+    session.dispose();
+  });
+
+  it("原生查询不可用时退回指针事件兜底", async () => {
+    const root = mountRoot();
+    const session = attachDragCursorSession(root);
+
+    native.state.failQueries = true;
+    press(surfaceOf(root));
+    nativeLoop(1, true);
+    await nativeStart(1);
+    // 无法确认归属时不绑定；用户松开左键后由 pointerup 收尾。
+    expect(dragging(root)).toBe(true);
+
+    nativeLoop(1, false);
+    nativePhase("end", 1);
+    expect(dragging(root)).toBe(true);
+
+    release(document.body);
+    expect(dragging(root)).toBe(false);
+
+    session.dispose();
+  });
+
+  it("重复的结束通知是幂等的", async () => {
+    const root = mountRoot();
+    const states: boolean[] = [];
+    const session = attachDragCursorSession(root, {
+      onActiveChange: (active) => states.push(active),
+    });
+
+    press(surfaceOf(root));
+    nativeLoop(1, true);
+    await nativeStart(1);
+    nativeLoop(1, false);
     nativePhase("end", 1);
     nativePhase("end", 1);
     nativePhase("end", 1);
@@ -186,17 +361,19 @@ describe("attachDragCursorSession", () => {
     session.dispose();
   });
 
-  it("相位乱序：先收到新 start，再收到旧 end，状态不被打乱", () => {
+  it("相位乱序：先收到新 start，再收到旧 end，状态不被打乱", async () => {
     const root = mountRoot();
     const session = attachDragCursorSession(root);
 
     press(surfaceOf(root));
-    nativePhase("start", 5);
+    nativeLoop(5, true);
+    await nativeStart(5);
     // 旧代次的结束事件晚到
     nativePhase("end", 4);
     expect(dragging(root)).toBe(true);
 
     // 当前代次结束才复位
+    nativeLoop(5, false);
     nativePhase("end", 5);
     expect(dragging(root)).toBe(false);
 
@@ -234,7 +411,7 @@ describe("attachDragCursorSession", () => {
     session.dispose();
   });
 
-  it("连续多次拖拽后活动会话回到零，监听成对摘除", () => {
+  it("连续多次拖拽后活动会话回到零，监听成对摘除", async () => {
     const root = mountRoot();
     const add = vi.spyOn(window, "addEventListener");
     const remove = vi.spyOn(window, "removeEventListener");
@@ -243,7 +420,9 @@ describe("attachDragCursorSession", () => {
     for (let index = 0; index < 4; index += 1) {
       press(surfaceOf(root));
       expect(__activeDragSessionCount()).toBe(1);
-      nativePhase("start", index + 1);
+      nativeLoop(index + 1, true);
+      await nativeStart(index + 1);
+      nativeLoop(index + 1, false);
       nativePhase("end", index + 1);
       expect(__activeDragSessionCount()).toBe(0);
     }
@@ -270,7 +449,7 @@ describe("attachDragCursorSession", () => {
     session.dispose();
   });
 
-  it("卸载/销毁后不再响应任何事件，也不残留类名与会话", () => {
+  it("卸载/销毁后不再响应任何事件，也不残留类名与会话", async () => {
     const root = mountRoot();
     const session = attachDragCursorSession(root);
 
@@ -285,6 +464,9 @@ describe("attachDragCursorSession", () => {
     expect(dragging(root)).toBe(false);
 
     nativePhase("start", 9);
+    await flushNativeQueries();
+    // 没有存活会话时不发起关联查询，迟到的原生事件也不会写状态。
+    expect(native.queries).toEqual([]);
     nativePhase("end", 9);
     expect(dragging(root)).toBe(false);
   });

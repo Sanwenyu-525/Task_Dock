@@ -192,7 +192,7 @@ export default function DropTargetForm({
         <button
           type="button"
           className={s.pick}
-          title={path || undefined}
+          data-tip={path || undefined}
           onClick={() => void pick()}
         >
           <FolderOpen size={12} strokeWidth={2} aria-hidden="true" />

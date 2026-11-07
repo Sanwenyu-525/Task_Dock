@@ -17,6 +17,16 @@
 
 ## 一、自动化测试结果
 
+### 多 Agent Worktree 隔离机制（2026-11-07）
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| `node --test scripts/worktree-guard.test.mjs` | **PASS 9/9**（10.4s，exit 0） | 一次性临时 Git 仓库覆盖：Git 登记识别、指定基准创建、重复任务/已存在目录/分支冲突/非法参数拒绝、双 Worktree 未提交隔离、node_modules 同清单 junction 与清单不一致拒绝、merge-tree 冲突/目标未提交重叠/源未提交风险、cleanup 脏/未合入/锁定/缺失/主工作区/当前 cwd 位于待清理目录内拒绝及合入后清理、linked Worktree 内继续创建、分支删除失败返回 5 |
+| `npm run test:scripts` | **PASS 10/10**（10.1s，exit 0） | 含既有 `build-guard.test.mjs` 1 项，确认新增脚本未影响构建守卫测试 |
+| 真实仓库双 Worktree 验收 | **PASS** | 从 `main @ 07606f6` 创建 `isolation-selftest-a` / `-b` 两个分支；A 的未跟踪文件对 B 与主工作区不可见；重复创建 exit 1 且不覆盖；脏 Worktree 清理 exit 3 且文件保留；干净后 `cleanup --delete-branch --execute` 双双 exit 0，分支与目录移除，主工作区 `git status` 前后完全一致。证据：`tmp/acceptance/agent-worktree-isolation/evidence/` |
+| `npm run build` | **PASS**（exit 0，Vite 8.35s，2026-11-07） | `tsc --noEmit` + Vite 构建通过；主 bundle >500 kB 为既有提示。构建时共享工作区另有未提交改动，见验收报告的并发说明 |
+| `node scripts/build-guard.mjs precheck` | **PASS**（exit 0） | 现有构建前置检查保持兼容；未创建任何 Rust 隔离缓存目录 |
+
 ### 规划整改二次验收：Rust 定向测试修复（2026-11-06）
 
 | 检查 | 结果 | 证据 |

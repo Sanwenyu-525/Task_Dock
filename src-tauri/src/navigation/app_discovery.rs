@@ -159,6 +159,14 @@ impl Drop for ScanGuard {
     }
 }
 
+/// 当前正在执行的扫描数量（生命周期探针；只读内存注册表，不扫描进程）。
+pub fn active_scan_count() -> usize {
+    cancel_registry()
+        .lock()
+        .map(|reg| reg.active.len())
+        .unwrap_or(0)
+}
+
 /// 请求取消某次扫描：只置标志并立即返回，不在 IPC 线程等待扫描退出。
 /// 返回 false 仅当 `scan_id` 为空；未知/已完成请求也会返回 true（记为待取消，
 /// 由上限兜底），调用方仍必须以后端扫描结果的 `cancelled` 字段为准。

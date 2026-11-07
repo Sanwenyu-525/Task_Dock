@@ -221,9 +221,16 @@ export function hasActionsFeedConsumer(): boolean {
   return layout.left.includes("actions");
 }
 
-/** 事件处理器统一入口：行动中心开关关闭或没有 UI 消费者时不调度聚合刷新。 */
+/**
+ * 事件处理器统一入口：长期停用、临时暂停或没有 UI 消费者时都不调度自动聚合。
+ *
+ * 暂停（`actions_paused`）只停自动刷新；页面内手动 `load()` 不受此门控，
+ * 历史记录仍可主动查看。
+ */
 export function shouldRefreshActions(): boolean {
-  if (useSettingsStore.getState().settings?.actions_enabled === false) return false;
+  const settings = useSettingsStore.getState().settings;
+  if (settings?.actions_enabled === false) return false;
+  if (settings?.actions_paused === true) return false;
   return hasActionsFeedConsumer();
 }
 

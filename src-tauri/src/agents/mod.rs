@@ -42,7 +42,7 @@ mod snapshot_tests;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, OptionalExtension};
@@ -152,6 +152,33 @@ const SELFTEST_PREFIX: &str = "taskdock-selftest-";
 
 fn is_selftest_session(session_id: &str) -> bool {
     session_id.starts_with(SELFTEST_PREFIX)
+}
+
+/// 历史补录（离线积压重放）判定窗口。
+///
+/// Hook CLI 在 Task Dock 未运行时会把事件原子写入 `agent-inbox/`，崩溃退出也会把
+/// 未落库事件写入 spool；两类文件在下一次启动时按时间顺序重放。若重放的事件时间
+/// 比受理时间早超过本窗口，说明它属于**历史补录**而不是当前状态迁移：
+/// - 仍写入事件流水与轮次历史（面板可查，不丢数据）；
+/// - 不产生桌面通知/语音，也不进入通知收件箱（否则一次积压会连弹十几分钟）；
+/// - 活跃状态（running/waiting）按失联语义落为 `disconnected`，不进入实时集合，
+///   因此随后的 stale 清理也不会再为它们补一条「连接中断」通知。
+///
+/// 窗口内的事件（正常批处理延迟、短暂断线重连）保持原有实时语义。
+const BACKFILL_MAX_AGE_MINUTES: i64 = 5;
+
+/// 是否为历史补录事件：仅在两端都能解析为 RFC3339 时判定；
+/// 时间不可解析时保持实时语义（合法时间已在校验阶段被拒绝）。
+fn is_backfill_event(occurred: &str, now: &str) -> bool {
+    match (
+        DateTime::parse_from_rfc3339(now),
+        DateTime::parse_from_rfc3339(occurred),
+    ) {
+        (Ok(now), Ok(occurred)) => {
+            now.signed_duration_since(occurred) > Duration::minutes(BACKFILL_MAX_AGE_MINUTES)
+        }
+        _ => false,
+    }
 }
 
 /// 事件来源可信分类（完全由服务端判定，客户端载荷无法设置或提升）。
@@ -407,6 +434,9 @@ pub struct IngestOutcome {
     pub deduplicated: bool,
     /// 迟到事件：occurred_at 早于轮次结束时间，仅记录、不改终态
     pub late: bool,
+    /// 历史补录：事件时间明显早于受理时间（离线积压重放）。
+    /// 只补流水/历史，不弹通知、不播语音，活跃状态不进入实时集合。
+    pub backfill: bool,
     /// 本事务内实际写入的通知；提交后由 AgentHub 送自定义通知窗口展示
     /// （窗口不可用时兜底 OS toast）。kind/title/body 之外携带跳转元数据。
     pub notification: Option<NotificationOut>,
@@ -479,6 +509,10 @@ pub fn ingest_core(
 ) -> AppResult<IngestOutcome> {
     let state = validate_event(ev)?;
     let occurred = normalize_ts(ev.occurred_at.as_deref().unwrap_or(now));
+    // 历史补录：离线积压（Hook 文件兜底 / spool 重放）在启动后才受理，
+    // 不能当成实时状态迁移；活跃状态同时按失联语义落为 disconnected。
+    let backfill = is_backfill_event(&occurred, now);
+    let history_only = backfill && state.is_active();
     // 因果序号：由入口受理时分配；直接调用 ingest_core 的旧路径/测试在此补齐。
     let ingest_seq = ev.ingest_seq.unwrap_or_else(next_ingest_seq) as i64;
     let title = ev.task_title.clone().unwrap_or_default();
@@ -588,6 +622,7 @@ pub fn ingest_core(
             origin,
             deduplicated: true,
             late: false,
+            backfill,
             notification: None,
         });
     }
@@ -635,6 +670,7 @@ pub fn ingest_core(
             origin,
             deduplicated: false,
             late: true,
+            backfill,
             notification: None,
         });
     }
@@ -663,6 +699,12 @@ pub fn ingest_core(
     };
 
     // 4. 会话 upsert（scope = 来源 + 会话外部 ID；不同来源同外部 ID 不冲突）
+    //    历史补录的活跃事件没有当前心跳：新会话直接落 disconnected，不进入实时集合。
+    let session_status = if history_only {
+        AgentState::Disconnected
+    } else {
+        state
+    };
     let new_session_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO agent_sessions (id, source_id, external_id, title, status, first_seen_at, last_seen_at, last_run_id, instance_id, origin)
@@ -675,7 +717,7 @@ pub fn ingest_core(
             ev.source_id,
             ev.session_id,
             title,
-            state.as_str(),
+            session_status.as_str(),
             occurred,
             instance_row_id,
             origin.as_str(),
@@ -732,11 +774,10 @@ pub fn ingest_core(
     // 因果顺序屏障（事件时间）：文件积压/离线恢复会把很旧的事件排在新事件之后受理，
     // 此时序号更新但事件时间更旧；只入流水，不回退状态。终态后确实更新的事件时间
     // 仍允许开启新一轮，避免误杀重连。时间无法解析时不启用该屏障（只用序号）。
-    let prev_terminal = existing
+    let prev_status = existing
         .as_ref()
-        .and_then(|r| AgentState::parse(&r.status))
-        .map(|s| s.is_terminal())
-        .unwrap_or(false);
+        .and_then(|r| AgentState::parse(&r.status));
+    let prev_terminal = prev_status.map(|s| s.is_terminal()).unwrap_or(false);
     let opens_new_round = prev_terminal
         && !state.is_terminal()
         && existing
@@ -758,7 +799,14 @@ pub fn ingest_core(
             }
         })
         .unwrap_or(false);
-    let stale = ordered_late || time_late;
+    // 历史补录的活跃事件：同一轮内只补流水（与迟到事件同一保护层）；
+    // 但上一轮是真实终态（completed/failed）、事件时间更新时是积压里的**新一轮**，
+    // 仍要落一个 disconnected 轮次，否则一次长会话的十几次执行会被折叠成一轮。
+    // 注意：补录自己合成的 disconnected 不算轮次边界（否则每条 running 都会开新轮）。
+    let backfill_new_round = history_only
+        && opens_new_round
+        && prev_status != Some(AgentState::Disconnected);
+    let stale = ordered_late || time_late || (history_only && !backfill_new_round);
 
     let mut prev_state: Option<AgentState> = None;
     let mut late = stale;
@@ -768,6 +816,31 @@ pub fn ingest_core(
             prev_state = prev;
             if stale {
                 run.id
+            } else if history_only {
+                // 积压里的新一轮：状态按失联落库（没有当前心跳），但保留轮次粒度。
+                if run_ext.is_some() {
+                    conn.execute(
+                        "UPDATE agent_runs SET status = 'disconnected', updated_at = MAX(updated_at, ?1), ended_at = ?1
+                         WHERE id = ?2",
+                        rusqlite::params![occurred, run.id],
+                    )?;
+                    run.id
+                } else {
+                    insert_new_run(
+                        conn,
+                        &ev.source_id,
+                        &session_row_id,
+                        instance_row_id.as_deref(),
+                        run_ext.as_deref(),
+                        ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
+                        &title,
+                        AgentState::Disconnected,
+                        &occurred,
+                        &pending_json,
+                        ingest_seq,
+                        origin,
+                    )?
+                }
             } else {
                 let prev_terminal = prev.map(|p| p.is_terminal()).unwrap_or(false);
                 let is_new_round = prev_terminal
@@ -860,7 +933,11 @@ pub fn ingest_core(
             run_ext.as_deref(),
             ev.parent_run_id.as_deref().filter(|s| !s.trim().is_empty()),
             &title,
-            state,
+            if history_only {
+                AgentState::Disconnected
+            } else {
+                state
+            },
             &occurred,
             &pending_json,
             ingest_seq,
@@ -879,10 +956,31 @@ pub fn ingest_core(
     )?;
 
     // 7. 会话指针更新（迟到事件不改变会话状态/指针；时间戳只向前）
+    //    历史补录的活跃事件用 session_status（disconnected），不得把会话标成运行中。
     if !late {
         conn.execute(
             "UPDATE agent_sessions SET last_run_id = ?1, status = ?2, last_seen_at = MAX(last_seen_at, ?3) WHERE id = ?4",
-            rusqlite::params![run_row_id, state.as_str(), occurred, session_row_id],
+            rusqlite::params![run_row_id, session_status.as_str(), occurred, session_row_id],
+        )?;
+    }
+
+    // 7.5 历史补录：状态已按失联落库，这里只把轮次/会话的时间跨度推进到最后一条积压事件，
+    //     让历史列表显示真实起止与「最近一次活动」，不恢复任何活跃状态。
+    //     只改 disconnected 轮次的 ended_at，绝不改写 completed/failed 的结束时间。
+    if backfill {
+        conn.execute(
+            "UPDATE agent_runs SET
+               updated_at = MAX(updated_at, ?1),
+               ended_at = CASE
+                 WHEN status = 'disconnected' AND (ended_at IS NULL OR ended_at < ?1) THEN ?1
+                 ELSE ended_at
+               END
+             WHERE id = ?2",
+            rusqlite::params![occurred, run_row_id],
+        )?;
+        conn.execute(
+            "UPDATE agent_sessions SET last_seen_at = MAX(last_seen_at, ?1) WHERE id = ?2",
+            rusqlite::params![occurred, session_row_id],
         )?;
     }
 
@@ -927,6 +1025,7 @@ pub fn ingest_core(
     let changed = prev_state.map(|p| p != state).unwrap_or(true);
     if origin.is_real()
         && !late
+        && !backfill
         && changed
         && matches!(
             state,
@@ -1001,6 +1100,7 @@ pub fn ingest_core(
         origin,
         deduplicated: false,
         late,
+        backfill,
         notification,
     })
 }
@@ -1229,12 +1329,113 @@ pub struct AgentLiveSummary {
     pub next_cursor: Option<String>,
 }
 
+/// 积压重放停止多久后汇总：持续到达的积压只合并成一张卡，不按批次拆分。
+const BACKFILL_DIGEST_QUIET: std::time::Duration = std::time::Duration::from_secs(3);
+/// 汇总去重集合上限（超出只影响卡内计数，不阻塞摄入）。
+const BACKFILL_DIGEST_MAX_SESSIONS: usize = 1024;
+const BACKFILL_DIGEST_MAX_SOURCES: usize = 32;
+
+/// 是否计入「离开期间补录」汇总：只有真实来源、首次受理的历史补录事件。
+/// 去重命中（同一事件重复重放）与自测/压测/模拟/人工来源一律不计。
+fn backfill_digest_eligible(outcome: &IngestOutcome) -> bool {
+    outcome.backfill && !outcome.deduplicated && outcome.origin.is_real()
+}
+
+/// 离开期间（离线积压）补录汇总。
+///
+/// 历史补录逐条静默，只在积压停止后弹一张摘要卡，回答「我不在时 Agent 干了什么」：
+/// 会话数、完成/失败/等待次数、事件总数。只统计真实来源，不统计去重命中的事件；
+/// 用户关闭 Agent 通知或静音时整批丢弃（不消耗通知额度）。
+#[derive(Default)]
+struct BackfillDigest {
+    sources: std::collections::BTreeSet<String>,
+    sessions: std::collections::HashSet<String>,
+    completed: u32,
+    failed: u32,
+    waiting: u32,
+    events: u64,
+    since: Option<String>,
+    until: Option<String>,
+    last_at: Option<Instant>,
+}
+
+impl BackfillDigest {
+    fn is_empty(&self) -> bool {
+        self.events == 0
+    }
+
+    /// 累计一条已经落库的历史补录事件（调用方保证 !deduplicated && origin=real）。
+    fn record(&mut self, ev: &AgentEvent, outcome: &IngestOutcome) {
+        self.events += 1;
+        if self.sources.len() < BACKFILL_DIGEST_MAX_SOURCES {
+            self.sources.insert(ev.source_id.clone());
+        }
+        if !outcome.session_row_id.is_empty() && self.sessions.len() < BACKFILL_DIGEST_MAX_SESSIONS {
+            self.sessions.insert(outcome.session_row_id.clone());
+        }
+        match outcome.state {
+            AgentState::Completed => self.completed += 1,
+            AgentState::Failed => self.failed += 1,
+            AgentState::Waiting => self.waiting += 1,
+            _ => {}
+        }
+        if let Some(ts) = ev.occurred_at.as_deref().filter(|t| !t.is_empty()) {
+            if self.since.as_deref().map(|s| ts < s).unwrap_or(true) {
+                self.since = Some(ts.to_string());
+            }
+            if self.until.as_deref().map(|s| ts > s).unwrap_or(true) {
+                self.until = Some(ts.to_string());
+            }
+        }
+        self.last_at = Some(Instant::now());
+    }
+
+    /// 积压是否已经安静下来（可以汇总）。
+    fn take_if_quiet(&mut self, quiet: std::time::Duration) -> Option<BackfillDigest> {
+        if self.is_empty() {
+            return None;
+        }
+        if self.last_at.map(|t| t.elapsed() < quiet).unwrap_or(false) {
+            return None;
+        }
+        Some(std::mem::take(self))
+    }
+
+    /// 汇总卡文案：标题点名来源，正文只报可复核的计数，不推断任务成败。
+    fn text(&self, source_names: &[String]) -> (String, String) {
+        let title = match source_names {
+            [] => "离开期间补录".to_string(),
+            [one] => format!("{} 离开期间补录", one),
+            many => format!("{} 等 {} 个 Agent 离开期间补录", many[0], many.len()),
+        };
+        let mut parts: Vec<String> = vec![format!("{} 个会话", self.sessions.len())];
+        // 计数口径是**事件次数**（Agent 在离开期间真实上报的次数），不是面板里的轮次行数：
+        // 积压乱序时同一轮可能被折叠为一条历史，用「次」避免与面板轮次对不上。
+        if self.completed > 0 {
+            parts.push(format!("完成 {} 次", self.completed));
+        }
+        if self.failed > 0 {
+            parts.push(format!("失败 {} 次", self.failed));
+        }
+        if self.waiting > 0 {
+            parts.push(format!("等待处理 {} 次", self.waiting));
+        }
+        parts.push(format!(
+            "共 {} 条事件，已归入 Agent 历史",
+            self.events
+        ));
+        (title, parts.join(" · "))
+    }
+}
+
 /// 事件总线：Adapter 与 UI 之间的唯一通道。
 pub struct AgentHub {
     app: AppHandle,
     db: Arc<Db>,
     /// 跨批次 OS 通知限流/合并状态（静音时不消耗额度）。
     notify_gate: std::sync::Mutex<NotifyGate>,
+    /// 离开期间补录汇总（积压安静后只弹一张摘要卡）。
+    backfill_digest: std::sync::Mutex<BackfillDigest>,
 }
 
 impl AgentHub {
@@ -1243,6 +1444,7 @@ impl AgentHub {
             app,
             db,
             notify_gate: std::sync::Mutex::new(NotifyGate::new()),
+            backfill_digest: std::sync::Mutex::new(BackfillDigest::default()),
         }
     }
 
@@ -1316,13 +1518,16 @@ impl AgentHub {
         if outcomes.is_empty() {
             return;
         }
+        // 历史补录汇总：逐条静默，只在积压停止后（调度器 flush）弹一张摘要卡。
+        self.record_backfill(events, outcomes);
         // 统一音频服务事件：与「是否弹系统通知/是否合并弹窗」解耦，覆盖全部真实状态迁移
         // （含默认关闭的 started/disconnected），前端负责去重、合并、限流与优先级。
         // 优先用 notification_history.id 作为事件唯一标识；无通知的状态（如 running）
         // 用轮次 + 状态迁移生成唯一 ID，避免按文本去重。
         let audio_items: Vec<serde_json::Value> = outcomes
             .iter()
-            .filter(|o| !o.deduplicated && !o.late)
+            // 历史补录不播语音：几小时前的积压不应在应用启动后逐条出声。
+            .filter(|o| !o.deduplicated && !o.late && !o.backfill)
             .filter_map(|o| {
                 let kind = match o.state {
                     AgentState::Running if o.prev_state != Some(AgentState::Running) => {
@@ -1503,6 +1708,95 @@ impl AgentHub {
         if let Some(p) = popup {
             self.deliver_popups(vec![p]);
         }
+    }
+
+    /// 历史补录累计：只收真实来源、非去重命中的补录事件；逐条静默，等待 quiet 后汇总。
+    fn record_backfill(&self, events: &[AgentEvent], outcomes: &[IngestOutcome]) {
+        let mut digest = self
+            .backfill_digest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (idx, outcome) in outcomes.iter().enumerate() {
+            if !backfill_digest_eligible(outcome) {
+                continue;
+            }
+            let Some(ev) = events.get(idx) else {
+                continue;
+            };
+            digest.record(ev, outcome);
+        }
+    }
+
+    /// 调度器周期调用：积压停止 `BACKFILL_DIGEST_QUIET` 后，把「离开期间」补录合并成一张摘要卡。
+    /// 只在真实来源、通知开关开启且未静音时送达；关闭时整批丢弃，不消耗额度。
+    /// 摘要绕过 NotifyGate 的弹窗额度（它本身就是限流摘要，且不逐条打扰）。
+    pub fn flush_backfill_digest(&self) {
+        let snapshot = {
+            let mut digest = self
+                .backfill_digest
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            digest.take_if_quiet(BACKFILL_DIGEST_QUIET)
+        };
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let settings = crate::db::Settings::load(&self.db).unwrap_or_default();
+        if !settings.notify_agent || settings.notify_muted {
+            return;
+        }
+        let mut names: Vec<String> = Vec::new();
+        for source_id in &snapshot.sources {
+            let name = self
+                .db
+                .with_read(|conn| {
+                    conn.query_row(
+                        "SELECT display_name FROM agent_sources WHERE id = ?1",
+                        rusqlite::params![source_id],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(AppError::from)
+                })
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| source_id.clone());
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        let (title, body) = snapshot.text(&names);
+        // 汇总进通知收件箱（一条），再送展示窗口：
+        // 展示失败不影响历史，通知历史已在事务内落库（不重试、不伪造成功）。
+        let occurrence = format!(
+            "backfill:{}:{}",
+            snapshot.since.as_deref().unwrap_or(""),
+            snapshot.until.as_deref().unwrap_or("")
+        );
+        let inserted = self
+            .db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO notification_history
+                       (id, kind, title, body, ref_type, ref_id, occurrence, is_read, created_at, agent_origin)
+                     VALUES (?1, 'digest', ?2, ?3, NULL, NULL, ?4, 0, ?5, 'real')",
+                    rusqlite::params![
+                        uuid::Uuid::new_v4().to_string(),
+                        title,
+                        body,
+                        occurrence,
+                        now_iso(),
+                    ],
+                )
+                .map(|n| n > 0)
+                .map_err(AppError::from)
+            })
+            .unwrap_or(false);
+        if inserted {
+            let _ = self.app.emit("notification", ());
+        }
+        let item = NotifyItem::new("digest", &title, &body);
+        self.deliver_popups(vec![Popup::from_item(&item, now_iso())]);
     }
 
     /// Agent 状态通知弹窗：跨批次共用同一窗口额度（等待/失败优先，完成合并）。
@@ -3044,6 +3338,306 @@ mod tests {
             1,
             "旧事件仍须保留在历史流水"
         );
+    }
+
+    #[test]
+    fn backlog_active_event_is_history_only_without_notification() {
+        // 离线积压（Hook 文件兜底 / spool 重放）在应用启动后才受理：
+        // 几小时前的 running 不得进入实时集合，也不得弹桌面通知。
+        let db = memdb();
+        let mut e = ev("codex", "s1", None, "running");
+        e.occurred_at = Some("2026-11-07T01:20:00+00:00".into());
+        let out = ingest(&db, &e, "2026-11-07T09:20:00+00:00").unwrap();
+        assert!(out.backfill, "早于受理时间超过窗口的事件必须标记为历史补录");
+        assert!(out.late, "历史补录不得推进实时状态");
+        assert!(out.notification.is_none(), "历史补录不得产生通知");
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&out.run_row_id]
+            ),
+            "disconnected",
+            "积压 running 没有当前心跳，按失联语义落库而不是保持运行中"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_sessions WHERE external_id = 's1'",
+                []
+            ),
+            "disconnected",
+            "积压会话不得进入实时集合"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT state FROM agent_events WHERE session_external_id = 's1'",
+                []
+            ),
+            "running",
+            "事件流水保留 Agent 上报的原始状态"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 0);
+    }
+
+    #[test]
+    fn backlog_runs_do_not_trigger_disconnect_notifications() {
+        // 积压轮次入库时已按失联落为 disconnected，stale 清理不得再补一条「连接中断」，
+        // 否则每次重启都会把几小时前的积压再弹一遍。
+        let db = memdb();
+        let mut running = ev("codex", "s1", None, "running");
+        running.occurred_at = Some("2026-11-07T01:20:00+00:00".into());
+        ingest(&db, &running, "2026-11-07T09:20:00+00:00").unwrap();
+        let stale = db
+            .with_conn(|conn| cleanup_stale_core(conn, 15))
+            .unwrap();
+        assert!(stale.is_empty(), "历史补录轮次不参与失联通知");
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 0);
+    }
+
+    #[test]
+    fn backlog_terminal_event_is_recorded_without_notification() {
+        let db = memdb();
+        let mut done = ev("codex", "s1", Some("r1"), "completed");
+        done.occurred_at = Some("2026-11-07T01:20:00+00:00".into());
+        let out = ingest(&db, &done, "2026-11-07T09:20:00+00:00").unwrap();
+        assert!(out.backfill);
+        assert!(out.notification.is_none(), "积压终态只补历史，不弹通知");
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&out.run_row_id]
+            ),
+            "completed",
+            "积压终态仍写入轮次历史"
+        );
+    }
+
+    #[test]
+    fn recent_event_within_backfill_window_stays_live() {
+        // 正常批处理延迟/短暂断线（窗口内）必须保持实时语义：通知照常、状态不折叠。
+        let db = memdb();
+        let mut e = ev("codex", "s1", None, "running");
+        e.occurred_at = Some("2026-11-07T09:16:30+00:00".into());
+        let out = ingest(&db, &e, "2026-11-07T09:20:00+00:00").unwrap();
+        assert!(!out.backfill, "窗口内的延迟不算历史补录");
+        assert!(
+            out.notification.is_some(),
+            "窗口内的状态迁移仍按实时通知"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&out.run_row_id]
+            ),
+            "running"
+        );
+    }
+
+    #[test]
+    fn live_event_after_backlog_opens_new_round_and_notifies() {
+        // 补录历史后，真实 Agent 继续运行：必须正常开新一轮并通知，不被积压状态阻塞。
+        let db = memdb();
+        let mut backlog = ev("codex", "s1", None, "running");
+        backlog.occurred_at = Some("2026-11-07T01:20:00+00:00".into());
+        let old = ingest(&db, &backlog, "2026-11-07T09:20:00+00:00").unwrap();
+        let live = ingest(
+            &db,
+            &ev("codex", "s1", None, "running"),
+            "2026-11-07T09:21:00+00:00",
+        )
+        .unwrap();
+        assert!(!live.backfill);
+        assert_ne!(live.run_row_id, old.run_row_id, "实时事件必须开启新一轮");
+        assert!(live.notification.is_some(), "实时事件必须恢复通知");
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_sessions WHERE external_id = 's1'",
+                []
+            ),
+            "running"
+        );
+    }
+
+    #[test]
+    fn backlog_events_extend_history_span_without_reviving_live_state() {
+        // 积压按时间顺序重放：轮次保持 disconnected，但时间跨度要推进到最后一条事件，
+        // 历史列表不能显示为「零时长」或以首条事件时间当作最近活动。
+        let db = memdb();
+        let mut first = ev("codex", "s1", None, "running");
+        first.occurred_at = Some("2026-11-07T01:20:00+00:00".into());
+        let out = ingest(&db, &first, "2026-11-07T09:20:00+00:00").unwrap();
+        let mut second = ev("codex", "s1", None, "running");
+        second.message = Some("PostToolUse".into());
+        second.occurred_at = Some("2026-11-07T01:23:00+00:00".into());
+        ingest(&db, &second, "2026-11-07T09:20:00+00:00").unwrap();
+
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT status FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&out.run_row_id]
+            ),
+            "disconnected",
+            "后续积压事件不得把失联轮次改回运行中"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT ended_at FROM agent_runs WHERE id = ?1",
+                rusqlite::params![&out.run_row_id]
+            ),
+            "2026-11-07T01:23:00+00:00"
+        );
+        assert_eq!(
+            cell(
+                &db,
+                "SELECT last_seen_at FROM agent_sessions WHERE external_id = 's1'",
+                []
+            ),
+            "2026-11-07T01:23:00+00:00"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 0);
+    }
+
+    #[test]
+    fn backlog_real_terminal_rounds_are_preserved() {
+        // 积压里的「running → completed → running → completed」是两轮：
+        // 真实终态之后的新一轮仍要落独立轮次（状态 disconnected/completed），
+        // 但同一轮内重复的 running 不得开新轮（见上一个用例）。
+        let db = memdb();
+        let mut seq = vec![];
+        for (state, ts) in [
+            ("running", "2026-11-07T01:20:00+00:00"),
+            ("completed", "2026-11-07T01:21:00+00:00"),
+            ("running", "2026-11-07T01:22:00+00:00"),
+            ("completed", "2026-11-07T01:23:00+00:00"),
+        ] {
+            let mut e = ev("codex", "s1", None, state);
+            e.occurred_at = Some(ts.into());
+            seq.push(e);
+        }
+        for e in &seq {
+            ingest(&db, e, "2026-11-07T09:20:00+00:00").unwrap();
+        }
+
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_runs r JOIN agent_sessions s ON s.id = r.session_id
+                 WHERE s.external_id = 's1'"
+            ),
+            2,
+            "两次真实终态之间各成一轮，连续 running 不重复开轮"
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) FROM agent_runs r JOIN agent_sessions s ON s.id = r.session_id
+                 WHERE s.external_id = 's1' AND r.status = 'completed'"
+            ),
+            2,
+            "两轮都以积压里的真实 completed 收尾"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM notification_history"), 0);
+    }
+
+    #[test]
+    fn backfill_digest_aggregates_real_backlog_and_ignores_dedupe_and_selftest() {
+        // 「离开期间补录」汇总：只统计真实来源的首次受理积压事件，
+        // 去重命中与自测来源都不计入，且积压安静后才出卡。
+        let db = memdb();
+        let now = "2026-11-07T09:20:00+00:00";
+        let mut digest = BackfillDigest::default();
+        let mut push = |ev: AgentEvent, eligible: bool| {
+            let out = ingest(&db, &ev, now).unwrap();
+            assert_eq!(
+                backfill_digest_eligible(&out),
+                eligible,
+                "{} 事件的汇总资格不符合预期",
+                ev.state
+            );
+            if eligible {
+                digest.record(&ev, &out);
+            }
+        };
+
+        let mut running = ev("codex", "s1", None, "running");
+        running.occurred_at = Some("2026-11-07T01:20:00+00:00".into());
+        push(running.clone(), true);
+        // 同一事件重放：命中幂等，不得重复计数
+        push(running, false);
+
+        let mut completed = ev("codex", "s1", None, "completed");
+        completed.occurred_at = Some("2026-11-07T01:21:00+00:00".into());
+        push(completed, true);
+
+        let mut waiting = ev("codex", "s1", None, "waiting");
+        waiting.message = Some("PermissionRequest".into());
+        waiting.occurred_at = Some("2026-11-07T01:22:00+00:00".into());
+        push(waiting, true);
+
+        let mut failed = ev("codex", "s1", None, "failed");
+        failed.message = Some("tool error".into());
+        failed.occurred_at = Some("2026-11-07T01:23:00+00:00".into());
+        push(failed, true);
+
+        // 自测来源即使时间很旧也不算「离开期间」的真实活动
+        let mut selftest = ev("codex", "taskdock-selftest-1", None, "running");
+        selftest.occurred_at = Some("2026-11-07T01:24:00+00:00".into());
+        push(selftest, false);
+
+        assert_eq!(digest.events, 4);
+        assert_eq!(digest.sessions.len(), 1);
+        assert_eq!(digest.completed, 1);
+        assert_eq!(digest.waiting, 1);
+        assert_eq!(digest.failed, 1);
+        assert_eq!(digest.since.as_deref(), Some("2026-11-07T01:20:00+00:00"));
+        assert_eq!(digest.until.as_deref(), Some("2026-11-07T01:23:00+00:00"));
+
+        let (title, body) = digest.text(&["WorkBuddy".to_string()]);
+        assert_eq!(title, "WorkBuddy 离开期间补录");
+        assert!(body.contains("1 个会话"), "{}", body);
+        assert!(body.contains("完成 1 次"), "{}", body);
+        assert!(body.contains("失败 1 次"), "{}", body);
+        assert!(body.contains("等待处理 1 次"), "{}", body);
+        assert!(body.contains("共 4 条事件"), "{}", body);
+
+        // 积压刚到达时不出卡；安静后取走一次，之后不再重复
+        assert!(
+            digest
+                .take_if_quiet(std::time::Duration::from_secs(60))
+                .is_none()
+        );
+        let taken = digest
+            .take_if_quiet(std::time::Duration::ZERO)
+            .expect("安静后应产出汇总");
+        assert_eq!(taken.events, 4);
+        assert!(
+            digest
+                .take_if_quiet(std::time::Duration::ZERO)
+                .is_none(),
+            "汇总只能出一次"
+        );
+    }
+
+    #[test]
+    fn backfill_digest_text_without_terminal_states_reports_events_only() {
+        // 全部是 running 积压：正文不虚构完成/失败/等待，只报会话与事件数。
+        let mut digest = BackfillDigest::default();
+        digest.events = 12;
+        digest.sessions.insert("sess".into());
+        let (title, body) = digest.text(&[]);
+        assert_eq!(title, "离开期间补录");
+        assert!(body.contains("1 个会话"), "{}", body);
+        assert!(!body.contains("完成"), "{}", body);
+        assert!(!body.contains("失败"), "{}", body);
+        assert!(!body.contains("等待"), "{}", body);
+        assert!(body.contains("共 12 条事件"), "{}", body);
     }
 
     #[test]

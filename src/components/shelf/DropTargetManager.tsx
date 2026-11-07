@@ -309,7 +309,7 @@ function TargetRow({
         <button
           type="button"
           className="shelf-drop-target-path"
-          title={`${target.path}（点击在资源管理器中打开）`}
+          data-tip={`${target.path}（点击在资源管理器中打开）`}
           onClick={onOpen}
         >
           {shortPath(target.path)}

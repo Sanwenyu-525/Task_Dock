@@ -18,15 +18,17 @@
   }
 
   /* ── 首次使用引导卡片（页内卡片形态，非全屏 Modal）────────────────
-     只使用语义 Token；fixed 定位挂在右下角，不遮挡导航与内容主列；
-     320 窄窗时宽度收缩到视口内，正文自动换行。 */
-
+     表面必须不透明：--surface-raised 是半透明卡片底，叠在空态文字/插画上
+     会出现双重文字（深色 alpha 仅 0.11→0.025，验收 UI-07）。这里改用
+     --dialog-face（无 alpha 的弹层表面）。
+     宽度为导航轨（62px）留出安全区，400 宽窗口下不再覆盖左侧入口；
+     320 窄窗时按 100vw-86px 收缩，正文自动换行。 */
   .onboarding-card {
     position: fixed;
     right: 12px;
     bottom: 12px;
     z-index: var(--z-modal);
-    width: min(400px, calc(100vw - 24px));
+    width: min(340px, calc(100vw - 86px));
     max-height: min(70vh, 480px);
     overflow-y: auto;
     display: flex;
@@ -35,7 +37,7 @@
     padding: 12px 14px;
     border: 1px solid var(--border-subtle);
     border-radius: 10px;
-    background: var(--surface-raised);
+    background: var(--dialog-face);
     box-shadow: var(--dialog-shadow, 0 8px 24px rgba(0, 0, 0, 0.18));
   }
 

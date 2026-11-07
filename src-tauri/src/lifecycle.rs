@@ -8,8 +8,8 @@
 //! - **用户意图**：现有 SQLite 设置键（`clipboard_paused` / `reminders_paused` /
 //!   `shelf_auto_cleanup_enabled` / `actions_enabled` / `tts_enabled` 等）；
 //! - **实际运行**：各模块运行时探针（监听/维护线程、自动清理线程）；
-//! - **有效状态**：由两者推导，`paused` 只在实际线程确实退出后成立，
-//!   已发停止信号但仍在收尾时如实报告 `pausing`。
+//! - **有效状态**：由两者推导，`paused`/`stopped` 只在实际线程确实退出后成立；
+//!   已发暂停/停止信号但仍在收尾时分别报告 `pausing`/`stopping`。
 //!
 //! ## 四类模块（与验收报告一致）
 //!
@@ -32,6 +32,7 @@ use crate::db::{Db, Settings};
 
 pub const STATE_RUNNING: &str = "running";
 pub const STATE_PAUSING: &str = "pausing";
+pub const STATE_STOPPING: &str = "stopping";
 pub const STATE_PAUSED: &str = "paused";
 pub const STATE_STOPPED: &str = "stopped";
 pub const STATE_IDLE: &str = "idle";
@@ -107,10 +108,10 @@ pub fn snapshot(app: &AppHandle, db: &Db) -> Vec<ModuleRuntimeStatus> {
         diagnostics_status(),
         hotkeys_status(&settings),
         workflows_status(),
-        focus_status(),
+        focus_status(db),
         backup_status(&settings),
         workspace_status(&settings),
-        widgets_status(),
+        widgets_status(app),
         apps_status(),
         history_status(),
         planning_status(),
@@ -203,7 +204,8 @@ fn clipboard_status(app: &AppHandle, db: &Db) -> ModuleRuntimeStatus {
 /// 剪贴板有效状态推导（纯函数，便于验证「pausing 不等于 paused」）。
 ///
 /// - 停用永远优先于暂停；
-/// - 暂停后只要监听/维护线程任一还活着，就只能报 `pausing`；
+/// - 暂停后只要监听/维护/回收线程任一还活着，就只能报 `pausing`；
+/// - 停用后线程仍在收尾时只能报 `stopping`，全部退出才是 `stopped`；
 /// - 开启且未暂停但监听未运行时是 `error`，不能伪装成 running。
 pub(crate) fn clipboard_effective_state(
     enabled: bool,
@@ -213,7 +215,12 @@ pub(crate) fn clipboard_effective_state(
     draining: bool,
 ) -> &'static str {
     if !enabled {
-        STATE_STOPPED
+        // 停用请求已接受，但监听/维护/回收线程仍存在：资源尚未释放，不能报 stopped。
+        if monitoring || maintenance || draining {
+            STATE_STOPPING
+        } else {
+            STATE_STOPPED
+        }
     } else if paused {
         if monitoring || maintenance || draining {
             STATE_PAUSING
@@ -331,28 +338,42 @@ fn reminders_status(settings: &Result<Settings, String>) -> ModuleRuntimeStatus 
 }
 
 fn actions_status(settings: &Result<Settings, String>) -> ModuleRuntimeStatus {
-    let (enabled, error) = match settings {
-        Ok(s) => (s.actions_enabled, None),
-        Err(code) => (false, Some(code.clone())),
+    let (enabled, paused, error) = match settings {
+        Ok(s) => (s.actions_enabled, s.actions_paused, None),
+        Err(code) => (false, false, Some(code.clone())),
+    };
+    let intent = if !enabled {
+        "stopped"
+    } else if paused {
+        "paused"
+    } else {
+        "running"
+    };
+    // 聚合是前端消费者门控的按需查询，没有常驻线程：启用且未暂停时是 idle，
+    // 不能用 running +「无后台活动」自相矛盾。暂停只停自动刷新，手动查看仍可用。
+    let state = if error.is_some() {
+        STATE_ERROR
+    } else if !enabled {
+        STATE_STOPPED
+    } else if paused {
+        STATE_PAUSED
+    } else {
+        STATE_IDLE
     };
     status(
         "actions",
         CATEGORY_TASK,
-        if error.is_some() {
-            STATE_ERROR
-        } else if enabled {
-            STATE_RUNNING
-        } else {
-            STATE_PAUSED
-        },
-        if enabled { "running" } else { "paused" },
+        state,
+        intent,
         true,
         Vec::new(),
         serde_json::json!({
             "enabled": enabled,
-            // 暂停的是前端聚合刷新与徽标；原始 Agent 事件仍照常入库。
+            "paused": paused,
+            // 暂停/停用都不影响原始 Agent 事件入库；停用才会让 feed 返回空。
             "rawIngest": "unaffected",
             "consumerGated": true,
+            "manualHistory": "available",
         }),
         error,
     )
@@ -392,27 +413,47 @@ fn voice_status(settings: &Result<Settings, String>) -> ModuleRuntimeStatus {
 // ── 共享基础设施（不允许单模块停止）──────────────────────────
 
 fn agents_status(app: &AppHandle) -> ModuleRuntimeStatus {
-    let present = app
+    let hub_ready = app
         .try_state::<std::sync::Arc<crate::agents::AgentHub>>()
         .is_some();
+    // Hub 只是落库接口；真正接收关键事件的是有界接入管线的唯一消费者线程。
+    // 仅凭 Hub 已创建就报 running，会在管线启动失败时误报“正常接收”。
+    let pipeline = app.try_state::<std::sync::Arc<crate::agents::pipeline::IngestPipeline>>();
+    let pipeline_running = pipeline
+        .as_ref()
+        .map(|p| p.is_running())
+        .unwrap_or(false);
+    let state = if hub_ready && pipeline_running {
+        STATE_RUNNING
+    } else {
+        STATE_ERROR
+    };
+    let error = if !hub_ready {
+        Some("agent_hub_unavailable".to_string())
+    } else if !pipeline_running {
+        Some("agent_pipeline_not_running".to_string())
+    } else {
+        None
+    };
     status(
         "agents",
         CATEGORY_SHARED,
-        if present { STATE_RUNNING } else { STATE_ERROR },
+        state,
         "running",
         false,
-        vec!["agent-ingest-pipeline", "agent-adapters"],
+        if pipeline_running {
+            vec!["agent-ingest-pipeline", "agent-adapters"]
+        } else {
+            Vec::new()
+        },
         serde_json::json!({
-            "hubReady": present,
+            "hubReady": hub_ready,
+            "pipelineRunning": pipeline_running,
             // 外部 Agent 通过 Hook/HTTP/文件投递上报；停止接收会丢关键事件，
             // 因此只允许在 Agent 页面停用单个数据源，不提供模块级暂停。
             "stopWouldLoseEvents": true,
         }),
-        if present {
-            None
-        } else {
-            Some("agent_hub_unavailable".to_string())
-        },
+        error,
     )
 }
 
@@ -459,36 +500,78 @@ fn hotkeys_status(settings: &Result<Settings, String>) -> ModuleRuntimeStatus {
 // ── 任务级能力（暂停属于具体任务）──────────────────────────
 
 fn workflows_status() -> ModuleRuntimeStatus {
+    // 活动运行槽是引擎唯一的全局运行事实源：没有运行就是 idle，不猜测。
+    let active = crate::workflows::engine::active_run();
+    let (state, background) = match active.as_ref() {
+        Some(run) if run.paused => (STATE_PAUSED, vec!["workflow-run"]),
+        Some(_) => (STATE_RUNNING, vec!["workflow-run"]),
+        None => (STATE_IDLE, Vec::new()),
+    };
     status(
         "workflows",
         CATEGORY_TASK,
-        STATE_IDLE,
+        state,
         "running",
         false,
-        Vec::new(),
+        background,
         serde_json::json!({
             // 运行中的工作流在 Run 视图内暂停/继续，到达安全边界后停止推进；
             // 模块级暂停会与单次运行的生命周期冲突。
             "perRunPause": true,
+            "runPaused": active.as_ref().map(|r| r.paused).unwrap_or(false),
+            "cancelRequested": active.as_ref().map(|r| r.cancel_requested).unwrap_or(false),
         }),
         None,
     )
 }
 
-fn focus_status() -> ModuleRuntimeStatus {
-    status(
-        "focus",
-        CATEGORY_TASK,
-        STATE_IDLE,
-        "running",
-        false,
-        Vec::new(),
-        serde_json::json!({
-            "sessionLevel": true,
-            // 计时/休息/久坐与提醒共用 1 秒调度，但状态机属于用户当前会话。
-        }),
-        None,
-    )
+fn focus_status(db: &Db) -> ModuleRuntimeStatus {
+    // 快照来自后端权威状态机（含启动恢复后的 paused 会话）；读失败如实报 error，
+    // 不退化成 idle。查询只在生命周期快照请求时执行，不轮询。
+    match crate::focus::snapshot(db) {
+        Ok(snapshot) => {
+            let active = snapshot.active.as_ref();
+            let paused = active
+                .map(|a| matches!(a.state, crate::focus::model::SessionState::Paused))
+                .unwrap_or(false);
+            let state = if active.is_none() {
+                STATE_IDLE
+            } else if paused {
+                STATE_PAUSED
+            } else {
+                STATE_RUNNING
+            };
+            status(
+                "focus",
+                CATEGORY_TASK,
+                state,
+                "running",
+                false,
+                if active.is_some() {
+                    vec!["focus-session"]
+                } else {
+                    Vec::new()
+                },
+                serde_json::json!({
+                    "sessionLevel": true,
+                    // 计时/休息/久坐与提醒共用 1 秒调度，但状态机属于用户当前会话。
+                    "hasSession": active.is_some(),
+                    "paused": paused,
+                }),
+                None,
+            )
+        }
+        Err(_) => status(
+            "focus",
+            CATEGORY_TASK,
+            STATE_ERROR,
+            "running",
+            false,
+            Vec::new(),
+            serde_json::json!({ "sessionLevel": true }),
+            Some("focus_state_unavailable".to_string()),
+        ),
+    }
 }
 
 fn backup_status(settings: &Result<Settings, String>) -> ModuleRuntimeStatus {
@@ -527,32 +610,52 @@ fn workspace_status(settings: &Result<Settings, String>) -> ModuleRuntimeStatus 
 
 // ── 纯按需模块（无后台可暂停）──────────────────────────────
 
-fn widgets_status() -> ModuleRuntimeStatus {
+fn widgets_status(app: &AppHandle) -> ModuleRuntimeStatus {
+    // 只统计当前真实存在的微件 WebView 窗口；不枚举进程、不读窗口几何。
+    let open = app
+        .webview_windows()
+        .keys()
+        .filter(|label| label.starts_with(crate::widget_windows::WINDOW_PREFIX))
+        .count();
     status(
         "widgets",
         CATEGORY_ONDEMAND,
-        STATE_IDLE,
+        if open > 0 { STATE_RUNNING } else { STATE_IDLE },
         "running",
         false,
-        Vec::new(),
+        if open > 0 {
+            vec!["widget-windows"]
+        } else {
+            Vec::new()
+        },
         serde_json::json!({
             // 每个桌面微件是独立窗口，按自身开关显示；事件驱动刷新，
             // 隐藏/关闭窗口即释放该窗口的渲染与订阅。
             "perWidget": true,
+            "openWindows": open,
         }),
         None,
     )
 }
 
 fn apps_status() -> ModuleRuntimeStatus {
+    // 取消注册表在扫描开始/结束时增减，是扫描是否正在运行的真实探针。
+    let scanning = crate::navigation::app_discovery::active_scan_count();
     status(
         "apps",
         CATEGORY_ONDEMAND,
-        STATE_IDLE,
+        if scanning > 0 { STATE_RUNNING } else { STATE_IDLE },
         "running",
         false,
-        Vec::new(),
-        serde_json::json!({ "scan": "manual_with_cancel" }),
+        if scanning > 0 {
+            vec!["app-scan"]
+        } else {
+            Vec::new()
+        },
+        serde_json::json!({
+            "scan": "manual_with_cancel",
+            "activeScans": scanning,
+        }),
         None,
     )
 }
@@ -589,10 +692,15 @@ fn ocr_status(app: &AppHandle) -> ModuleRuntimeStatus {
         .as_ref()
         .map(|rt| rt.ocr.is_busy())
         .unwrap_or(false);
+    ocr_status_from(busy)
+}
+
+/// OCR 状态推导（纯函数）：执行中必须是 running + `ocr-task`，不能固定 idle。
+fn ocr_status_from(busy: bool) -> ModuleRuntimeStatus {
     status(
         "ocr",
         CATEGORY_ONDEMAND,
-        STATE_IDLE,
+        if busy { STATE_RUNNING } else { STATE_IDLE },
         "running",
         false,
         if busy { vec!["ocr-task"] } else { Vec::new() },
@@ -622,6 +730,37 @@ fn collection_status() -> ModuleRuntimeStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actions_pause_and_disable_are_distinct_states() {
+        let mut settings = Settings::default();
+        let normal = actions_status(&Ok(settings.clone()));
+        assert_eq!(normal.state, STATE_IDLE, "无消费者时按需运行，不谎报常驻线程");
+        assert_eq!(normal.intent, "running");
+        assert!(normal.controllable);
+
+        settings.actions_paused = true;
+        let paused = actions_status(&Ok(settings.clone()));
+        assert_eq!(paused.state, STATE_PAUSED);
+        assert_eq!(paused.intent, "paused");
+
+        settings.actions_enabled = false;
+        let disabled = actions_status(&Ok(settings));
+        assert_eq!(disabled.state, STATE_STOPPED);
+        assert_eq!(disabled.intent, "stopped", "停用优先于暂停，不能被恢复按钮误导");
+    }
+
+    #[test]
+    fn ocr_busy_is_running_not_idle() {
+        let busy = ocr_status_from(true);
+        assert_eq!(busy.state, STATE_RUNNING);
+        assert_eq!(busy.background, vec!["ocr-task"]);
+        assert_eq!(busy.detail["busy"], serde_json::json!(true));
+
+        let idle = ocr_status_from(false);
+        assert_eq!(idle.state, STATE_IDLE);
+        assert!(idle.background.is_empty(), "idle 不能同时声明后台活动");
+    }
 
     #[test]
     fn category_order_puts_resident_first_and_ondemand_last() {
@@ -676,8 +815,18 @@ mod tests {
     fn clipboard_disabled_and_missing_monitor_are_distinct() {
         assert_eq!(
             clipboard_effective_state(false, true, true, true, true),
+            STATE_STOPPING,
+            "停用已接受但线程仍在收尾：不能宣称资源已完全释放"
+        );
+        assert_eq!(
+            clipboard_effective_state(false, true, false, false, false),
             STATE_STOPPED,
-            "停用永远优先于暂停"
+            "三个线程/回收任务都退出后才是 stopped"
+        );
+        assert_eq!(
+            clipboard_effective_state(false, false, false, false, true),
+            STATE_STOPPING,
+            "仅有异步回收线程仍在 join 也算收尾中"
         );
         assert_eq!(
             clipboard_effective_state(true, false, false, true, false),

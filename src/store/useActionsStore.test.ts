@@ -525,6 +525,22 @@ describe("useActionsStore 消费者门控", () => {
     useSettingsStore.setState({ settings: null });
   });
 
+  it("临时暂停：自动聚合停止，但手动 load 仍可查看历史", async () => {
+    feedMock.mockResolvedValue(feedOf());
+    useSettingsStore.setState({
+      settings: { mode: "full", actions_enabled: true, actions_paused: true },
+    } as never);
+    useUiStore.setState({ tab: "actions" });
+    act(() => useEdgeSnapStore.setState({ phase: "free" }));
+    expect(shouldRefreshActions()).toBe(false);
+
+    // 手动刷新/打开页面不受暂停门控：历史与通知仍可读取。
+    await useActionsStore.getState().load();
+    expect(feedMock).toHaveBeenCalledTimes(1);
+    useSettingsStore.setState({ settings: null });
+    useUiStore.setState({ tab: "tasks" });
+  });
+
   it("极简 / 紧凑模式：侧栏与行动页都不渲染，不算消费者（即使入口可见且 tab=actions）", () => {
     useUiStore.setState({ tab: "actions" });
     act(() => useEdgeSnapStore.setState({ phase: "free" }));

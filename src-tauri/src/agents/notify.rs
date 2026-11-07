@@ -119,7 +119,8 @@ pub struct Popup {
 }
 
 impl Popup {
-    fn from_item(item: &NotifyItem, created_at: String) -> Self {
+    /// 由已放行的载荷构造展示卡（历史补录汇总等不经 NotifyGate 的摘要也复用同一结构）。
+    pub(crate) fn from_item(item: &NotifyItem, created_at: String) -> Self {
         Self {
             kind: item.kind.clone(),
             title: item.title.clone(),

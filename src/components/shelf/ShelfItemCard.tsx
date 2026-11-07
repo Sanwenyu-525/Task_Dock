@@ -122,7 +122,7 @@ export default function ShelfItemCard({
         <button
           type="button"
           className="shelf-item-name"
-          title={item.display_name}
+          data-tip={item.display_name}
           onClick={(e) => {
             e.stopPropagation();
             onOpen();

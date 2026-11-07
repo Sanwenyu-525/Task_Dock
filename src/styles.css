@@ -34,17 +34,20 @@
   --accent-hover: #4f46e5;
   --accent-soft: rgba(99, 102, 241, 0.10);
   --accent-text-on: #ffffff;
-  /* 状态语义 */
-  --status-running: #3b82f6;
-  --status-waiting: #f97316;
-  --status-success: #22c55e;
-  --status-error: #ef4444;
-  --status-disconnected: #8b96a8;
+  /* 状态语义
+     浅色状态色同时用于「点/环」与「文字」：原值按图形填充选色，作正文时
+     只有 2.13–3.68:1（验收 UI-06）。整体压深 2 档，图形区分度不变，
+     文字全部 ≥5:1；深色块（下方 data-theme=dark）保持高亮值。 */
+  --status-running: #1d4ed8;
+  --status-waiting: #c2410c;
+  --status-success: #15803d;
+  --status-error: #b91c1c;
+  --status-disconnected: #5b6577;
   /* 优先级 */
-  --p0: #ef4444;
-  --p1: #f97316;
-  --p2: #3b82f6;
-  --p3: #8b96a8;
+  --p0: #b91c1c;
+  --p1: #c2410c;
+  --p2: #1d4ed8;
+  --p3: #5b6577;
   /* 阴影与圆角 */
   --shadow-overlay: 0 10px 34px rgba(15, 23, 42, 0.16), 0 1px 3px rgba(15, 23, 42, 0.08);
   --shadow-raised: 0 2px 8px rgba(15, 23, 42, 0.06);
@@ -456,6 +459,19 @@ code {
 .icon-btn.sm {
   width: 22px;
   height: 22px;
+}
+
+/* 22px 视觉尺寸不变，用透明伪元素把命中区扩到 24×24（WCAG 2.5.8，
+   验收 UI-14）。伪元素属于按钮自身，点击仍触发同一个 onClick。 */
+.icon-btn.sm {
+  position: relative;
+}
+
+.icon-btn.sm::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
 }
 
 .btn {
@@ -1042,6 +1058,7 @@ code {
 }
 
 .task-check {
+  position: relative;
   width: 16px;
   height: 16px;
   border-radius: 50%;
@@ -1053,6 +1070,15 @@ code {
   margin-top: 1px;
   color: #fff;
   transition: border-color 0.12s, background 0.12s, transform 0.12s;
+}
+
+/* 16px 圆形视觉不变，透明命中层扩到 24×24（验收 UI-14）。
+   伪元素不绘制、不拦截悬停样式，只扩大可点击区域。 */
+.task-check::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
 }
 
 .task-check:hover {
@@ -1424,6 +1450,19 @@ code {
   text-align: center;
 }
 
+/* 添加类空态：虚线描边表达「这里可以放东西」，与筛选为空的图标圆区分。
+   由 ui/EmptyState 的 framed 变体使用（验收 UI-09）。 */
+.empty-state.is-framed {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  padding: 22px 14px;
+}
+
+.empty-action {
+  margin-top: 4px;
+}
+
 .empty-icon {
   width: 40px;
   height: 40px;
@@ -1472,8 +1511,9 @@ code {
 
 .agent-summary {
   display: grid;
-  /* 窄窗 2×2、宽窗一行 4 个；不出现「3+1」孤立拉伸 */
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  /* 400 宽内容区 318px：minmax(96px) 会排成 3+1（第 4 张单独一行），
+     与设计意图相反。140px 下限保证「窄窗 2×2、宽窗一行 4 个」。 */
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px;
 }
 
@@ -1489,7 +1529,9 @@ code {
 }
 
 .summary-card.muted {
-  opacity: 0.78;
+  /* 零值/空态不再用整卡 opacity 表达：透明度会把 17px 数值与 10px 标签
+     一起压到 2.15–3.31:1（验收 UI-06）。改用中性值色，卡片本身保持不透明。 */
+  background: var(--surface-raised);
 }
 
 .summary-card.muted .summary-value {
@@ -2753,6 +2795,15 @@ code {
 
 .settings-categories {
   display: grid;
+  /* 分类网格吸顶：展开分组后仍能直接切分类，不必滚回顶部（验收 UI-10）。
+     surface-overlay 近不透明，滚动内容不会从卡片缝隙透出；吸顶占位由
+     sticky 自身承担，不改变初始布局。 */
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: var(--surface-overlay);
+  padding: 4px 0;
+  margin: -4px 0;
   /* 默认 3 列 × 2 行（约 500px 窗口正是这个档位）；窗口再窄逐级降列，
      分类名允许换行，因此不会出现截断或横向溢出。 */
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3748,8 +3799,16 @@ html[data-theme="dark"] .resource-page {
     font-size: 10.5px;
   }
 
+  /* 五个分区在窄窗必须全部可见：按内容宽度排布并允许换行，
+     不再依赖被隐藏的横向滚动条。 */
+  .resource-segments {
+    flex-wrap: wrap;
+  }
+
   .resource-segment {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
+    min-height: 26px;
+    padding: 5px 6px;
   }
 
   .resource-storage-row {
@@ -10603,6 +10662,12 @@ html[data-theme="dark"] .resource-page {
 .capsule-panel.panel-right { --cap-from-x: 6px; }
 .capsule-panel.panel-top { --cap-from-y: -6px; }
 .capsule-panel.panel-bottom { --cap-from-y: 6px; }
+/* 应用面板是网格列数的容器参照：查询面板自身宽度（不受列表滚动条影响）。
+   只对应用面板开启，其他面板的浮层/绝对定位不引入额外的包含块语义。 */
+.capsule-panel[data-panel="apps"] {
+  container-type: inline-size;
+  container-name: cap-panel;
+}
 @keyframes capsule-panel-in {
   from { opacity: 0; transform: translate(var(--cap-from-x), var(--cap-from-y)); }
   to { opacity: 1; transform: none; }
@@ -12138,6 +12203,35 @@ html[data-theme="dark"] .resource-page {
   grid-auto-rows: var(--cap-app-cell-h);
   gap: 6px;
   padding: 1px 1px 2px;
+}
+/* ── 窄面板列数收敛（2026-11-07）───────────────────────────────
+   列数由**面板自身宽度**决定，不按屏幕宽度推断：面板是容器查询的参照，
+   宽度不受列表滚动条（4px）影响，因此列数不会因为内容变多、滚动条出现
+   而在 4/3 列之间抖动。容器查询的长度取面板**内容盒**宽度 = 面板宽 - 28
+   （面板左右内边距 14+14）。
+   真实宽度口径：原生胶囊窗口是 404×440 CSS px（`CAPSULE_CONTAINER_W_CSS`），
+   所以 `@media (max-width: 407px)` 的窄窗兜底**总是**生效，面板实际宽度是
+   404 - 68 = 336px（不是设计常量 340）——这是既有行为，本轮不改窗口契约。
+   336 面板 → 网格内容 302 → 4 列 × 71px：图标居中后距右边缘 18.5px，
+   18px 删除按钮仍留 0.5px 间隙，不重叠。因此 4 列的判定必须按 336 而不是 340。
+   契约（网格内容宽 = 面板内容盒 - 6 = 面板宽 - 34，每列 ≥ 71px）：
+   - 面板 ≥ 336（内容盒 ≥ 308）：4 列；原生默认 336 → 71px/列；
+   - 面板 262..335：3 列（每列 ≥ 72px）；312 面板实测 88.7px/列；
+   - 面板 184..261：2 列；232 面板实测 96px/列；
+   - 面板 < 184：1 列（整行一个磁贴），用于比设计尺寸更极端的窗口回退。
+   依据：34px 图标在 W 宽磁贴里距右边缘 (W-34)/2，要完整放下 18px 删除按钮
+   需要 W ≥ 70；原生 4 列是 71px（0.5px 间隙），再窄一档面板 335 → 70.75px。
+   命中判定按 CSS 坐标精确切分，0.5px 间隙仍保证「点图标不会点到删除」。
+   窄窗下缩小按钮或图标都会牺牲可用性（按钮热区有 18px 下限、图标不允许为
+   避让而缩小），收列数才是不降低命中质量的做法。 */
+@container cap-panel (max-width: 307px) {
+  .cap-app-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container cap-panel (max-width: 233px) {
+  .cap-app-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container cap-panel (max-width: 155px) {
+  .cap-app-grid { grid-template-columns: minmax(0, 1fr); }
 }
 /* 每个应用是「启动按钮 + 并列删除按钮」的格子容器；
    删除按钮绝对定位，不参与图标/名称布局，也不改变格子尺寸。 */
@@ -17000,11 +17094,46 @@ span.wf-step-main {
   flex: 1 1 220px;
 }
 
+.diag-center-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .diag-center-title {
   margin: 0;
   font-size: 15px;
   font-weight: 650;
   letter-spacing: 0.01em;
+}
+
+.diag-center-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: calc(var(--radius-control) * 2);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.diag-center-mode.is-verbose {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.diag-center-mode-dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .diag-center-subtitle {
@@ -17030,7 +17159,9 @@ span.wf-step-main {
 
 .diag-center-overview,
 .diag-center-filters,
-.diag-center-list {
+.diag-center-list,
+.diag-center-chain,
+.diag-center-manage {
   min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--border-subtle);
@@ -17098,6 +17229,44 @@ span.wf-step-main {
   font-size: 10px;
   font-weight: 400;
   color: var(--text-secondary);
+}
+
+.diag-center-metric-capacity {
+  flex: 1 1 160px;
+}
+
+.diag-center-capacity-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.diag-center-capacity-track {
+  width: 100%;
+  height: 5px;
+  margin-top: 2px;
+  border-radius: calc(var(--radius-control) * 2);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.diag-center-capacity-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--text-tertiary, var(--text-secondary));
+}
+
+.diag-center-capacity-track.is-warn .diag-center-capacity-fill {
+  background: var(--status-waiting);
+}
+
+.diag-center-capacity-note {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--status-waiting);
 }
 
 .diag-center-latest {
@@ -17183,6 +17352,66 @@ span.wf-step-main {
   gap: 6px;
 }
 
+.diag-center-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.diag-center-advanced-toggle:hover {
+  color: var(--text-primary);
+}
+
+.diag-center-advanced-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.diag-center-advanced {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.diag-center-op-chip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  margin-bottom: 8px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 11px;
+}
+
+.diag-center-op-chip-label {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.diag-center-op-chip > .diag-center-mono {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.diag-center-op-chip > .btn,
+.diag-center-op-chip > .icon-btn {
+  flex: 0 0 auto;
+}
+
 .diag-center-state,
 .diag-center-note {
   display: flex;
@@ -17203,6 +17432,20 @@ span.wf-step-main {
   border-color: color-mix(in srgb, var(--status-error) 45%, transparent);
   background: color-mix(in srgb, var(--status-error) 10%, transparent);
   color: var(--status-error);
+}
+
+.diag-center-state.is-success {
+  border-color: color-mix(in srgb, var(--status-success) 45%, transparent);
+  background: color-mix(in srgb, var(--status-success) 10%, transparent);
+  color: var(--status-success);
+}
+
+.diag-center-state > .btn {
+  flex: 0 0 auto;
+}
+
+.diag-center-state-empty {
+  align-items: center;
 }
 
 .diag-center-note.is-warn {
@@ -17295,11 +17538,10 @@ span.wf-step-main {
 .diag-center-row {
   width: 100%;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 6px;
+  align-items: flex-start;
+  gap: 5px;
   min-width: 0;
-  padding: 4px 6px;
+  padding: 5px 6px;
   border: 0;
   border-radius: inherit;
   background: transparent;
@@ -17321,65 +17563,102 @@ span.wf-step-main {
 
 .diag-center-row > svg {
   flex: 0 0 auto;
+  margin-top: 2px;
   color: var(--text-secondary);
 }
 
-.diag-center-time,
-.diag-center-stage,
-.diag-center-count,
-.diag-center-recovered {
+.diag-center-row-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.diag-center-row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 6px;
+  min-width: 0;
+}
+
+.diag-center-row-line.is-sub {
+  color: var(--text-secondary);
+}
+
+.diag-center-row-module {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
+  font-size: 10px;
+  color: var(--text-primary);
+}
+
+.diag-center-row-time {
   flex: 0 0 auto;
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
-.diag-center-time {
-  color: var(--text-secondary);
-}
-
-.diag-center-stage {
-  color: var(--text-secondary);
-  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
-  font-size: 10px;
-}
-
-.diag-center-module {
+.diag-center-row-count {
   flex: 0 0 auto;
-  max-width: 120px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.diag-center-row-code {
+  flex: 0 1 auto;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
   font-size: 10px;
-  color: var(--text-primary);
-}
-
-.diag-center-action {
-  flex: 1 1 100px;
-  max-width: 180px;
-  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
-  font-size: 10px;
-  color: var(--text-secondary);
-}
-
-.diag-center-code {
-  flex: 0 1 auto;
-  max-width: 130px;
-  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
-  font-size: 10px;
   color: var(--status-error);
 }
 
-.diag-center-count {
-  font-weight: 600;
-  color: var(--text-primary);
+.diag-center-row-message {
+  flex: 1 1 120px;
+  min-width: 0;
+  font-size: 10px;
 }
 
-.diag-center-recovered {
+.diag-center-row-recovered {
+  flex: 0 0 auto;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: calc(var(--radius-control) * 2);
   font-size: 9px;
   color: var(--status-success);
   border: 1px solid color-mix(in srgb, var(--status-success) 40%, transparent);
+}
+
+.diag-center-level {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: calc(var(--radius-control) * 2);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1.45;
+  letter-spacing: 0.02em;
+}
+
+.diag-center-level-warn {
+  color: var(--status-waiting);
+}
+
+.diag-center-level-error,
+.diag-center-level-critical {
+  color: var(--status-error);
+}
+
+.diag-center-level-info,
+.diag-center-level-debug,
+.diag-center-level-trace {
+  color: var(--text-secondary);
 }
 
 .diag-center-details {
@@ -17416,19 +17695,69 @@ span.wf-step-main {
 
 .diag-center-op {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   min-width: 0;
 }
 
 .diag-center-op > .diag-center-mono {
+  flex: 1 1 120px;
   min-width: 0;
+}
+
+.diag-center-detail-note {
+  color: var(--text-secondary);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .diag-center-message {
   overflow-wrap: anywhere;
   white-space: normal;
   line-height: 1.45;
+}
+
+.diag-center-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  min-width: 0;
+}
+
+.diag-center-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.diag-center-meta-row dt {
+  flex: 0 0 auto;
+  max-width: 45%;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
+}
+
+.diag-center-meta-row dd {
+  flex: 1 1 auto;
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
+}
+
+.diag-center-meta-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.diag-center-meta-value > .diag-center-ellipsis {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .diag-center-pager {
@@ -17438,10 +17767,159 @@ span.wf-step-main {
   padding-top: 8px;
 }
 
-@media (max-width: 420px) {
+.diag-center-chain-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.diag-center-chain-head .diag-center-section-title {
+  margin: 0;
+}
+
+.diag-center-chain-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  margin: 8px 0;
+}
+
+.diag-center-chain-meta > .diag-center-mono {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.diag-center-chain-meta > .btn,
+.diag-center-chain-meta > .icon-btn {
+  flex: 0 0 auto;
+}
+
+.diag-center-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.diag-center-timeline-item {
+  display: grid;
+  grid-template-columns: 76px 14px minmax(0, 1fr);
+  column-gap: 6px;
+  min-width: 0;
+}
+
+.diag-center-timeline-time {
+  padding-top: 4px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.diag-center-timeline-axis {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.diag-center-timeline-axis::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border-subtle);
+}
+
+.diag-center-timeline-item:first-child .diag-center-timeline-axis::before {
+  top: 10px;
+}
+
+.diag-center-timeline-item:last-child .diag-center-timeline-axis::before {
+  bottom: calc(100% - 10px);
+}
+
+.diag-center-timeline-node {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  margin-top: 8px;
+  border: 1px solid var(--text-secondary);
+  border-radius: 50%;
+  background: var(--card-face);
+}
+
+.diag-center-timeline-node.is-error {
+  border-color: var(--status-error);
+  background: var(--status-error);
+}
+
+.diag-center-timeline-node.is-success {
+  border-color: var(--status-success);
+}
+
+.diag-center-timeline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 2px 0 8px;
+}
+
+.diag-center-timeline-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 6px;
+  min-width: 0;
+}
+
+.diag-center-timeline-stage,
+.diag-center-timeline-status,
+.diag-center-timeline-duration {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.diag-center-timeline-status {
+  color: var(--text-primary);
+}
+
+.diag-center-timeline-status.is-error {
+  color: var(--status-error);
+}
+
+.diag-center-timeline-status.is-success {
+  color: var(--status-success);
+}
+
+.diag-center-timeline-message {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.diag-center-manage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 400px 是完整面板的常用宽度：此时筛选保持两列，避免整页被四个全宽下拉拉高。
+   只有 360px 以下（原生最小 340）才退化为单列，保证不横向挤压。 */
+@media (max-width: 360px) {
   .diag-center-overview,
   .diag-center-filters,
-  .diag-center-list {
+  .diag-center-list,
+  .diag-center-chain,
+  .diag-center-manage {
     padding: 8px;
   }
 
@@ -17450,12 +17928,13 @@ span.wf-step-main {
     max-width: none;
   }
 
-  .diag-center-metric {
-    flex: 1 1 100%;
-  }
-
   .diag-center-actions {
     width: 100%;
+  }
+
+  .diag-center-timeline-item {
+    grid-template-columns: 74px 12px minmax(0, 1fr);
+    column-gap: 4px;
   }
 }
 
@@ -17503,6 +17982,10 @@ span.wf-step-main {
   }
 
   .runtime-section-error {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
     margin: 0;
     padding: 6px 8px;
     border: 1px solid color-mix(in srgb, var(--status-error) 35%, var(--border-subtle));
@@ -17510,6 +17993,10 @@ span.wf-step-main {
     color: var(--text-secondary);
     font-size: 10.5px;
     line-height: 1.5;
+  }
+
+  .runtime-section-error p {
+    margin: 0;
   }
 
   .runtime-section-loading {

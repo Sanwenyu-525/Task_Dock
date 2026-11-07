@@ -2681,13 +2681,13 @@ export function useEdgeSnap(enabled: boolean) {
 
     ui.setReveal(() => runExclusive(expandPanel));
     ui.setCollapse(() => runExclusive(collapsePanel));
-    ui.setUndock((mode) => runExclusive(() => undockCore(mode)));
+    // 显式用户动作需要**真实结果**（右键菜单据此决定隐藏/报错）：忙时有界等待，
+    // 等不到就返回 false，而不是把「已排队」当成「已执行」。
+    ui.setUndock((mode) => runExclusiveResult(() => undockCore(mode)).then((r) => r === true));
     // 形态入口（胶囊轨道 / 完整面板按钮）：**本次停靠会话的临时切换**，不改写
     // 持久化 `snap_display_mode`；设置页与右键菜单仍走 `requestDockForm`（长期偏好）。
     // 两种入口复用同一套几何与相位事务，只是成功/失败后的偏好处理不同。
-    ui.setFormSwitch((form) => {
-      void requestSessionForm(form);
-    });
+    ui.setFormSwitch((form) => requestSessionForm(form));
     // Edge Tab：与 reveal/collapse 相同，进入引擎串行队列，避免和 tick / 停靠事务竞争。
     ui.setTabActions({
       collapse: () => {
@@ -2697,12 +2697,13 @@ export function useEdgeSnap(enabled: boolean) {
         // 恢复与展开是**同一事务的两步**：先等恢复事务提交（相位已到
         // docked-visible），再在同一串行槽里展开面板。不用固定延迟拼接，
         // 也不会出现「面板先展开、轨道后恢复」的竞争或闪烁。
-        void runExclusiveResult(async () => {
+        // 返回 Promise 是菜单动作的结果回执来源（点击路径忽略返回值）。
+        return runExclusiveResult(async () => {
           const restored = await restoreFromTab();
           if (!restored || !opts?.reveal) return restored;
           if (disposed) return restored;
           return expandPanel();
-        });
+        }).then((r) => r === true);
       },
       beginDrag: beginTabDrag,
       dragBy: dragTabBy,

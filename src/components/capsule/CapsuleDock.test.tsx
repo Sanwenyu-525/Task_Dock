@@ -223,6 +223,9 @@ describe("CapsuleDock · 面板统一关闭入口", () => {
     expect(panel.contains(close)).toBe(true);
     expect(close.parentElement?.classList.contains("cap-actions")).toBe(true);
     expect(close.parentElement?.lastElementChild).toBe(close);
+    // 面板分类同时写进 data-panel：应用网格的容器查询（窄窗列数收敛）依赖它，
+    // 值必须与当前分类一致（纯样式钩子，不参与业务判断）。
+    expect(panel.getAttribute("data-panel")).toBe(category);
 
     // 不是窗口拖拽热区：按下不会让标题进入 dragging
     const head = container.querySelector(".cap-head") as HTMLElement;

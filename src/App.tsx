@@ -166,16 +166,21 @@ export default function App() {
   // 门控：入口隐藏、行动页未打开、主界面停靠时不为不可见的徽标付聚合查询
   // （重新出现消费者时由 FullView / ActionCenterPanel 的恢复路径补刷新）。
   const actionsEnabled = settings?.actions_enabled ?? true;
+  const actionsPaused = settings?.actions_paused ?? false;
   const settingsLoaded = settings !== null;
   useEffect(() => {
     if (!settingsLoaded) return;
     if (!actionsEnabled) {
+      // 长期停用：清空聚合（与既有语义一致）。
       cancelActionsRefresh();
       useActionsStore.setState({ feed: null, error: null });
+    } else if (actionsPaused) {
+      // 临时暂停：只取消在途的自动刷新，**保留已加载的历史/通知**。
+      cancelActionsRefresh();
     } else if (shouldRefreshActions()) {
       void loadActions();
     }
-  }, [actionsEnabled, settingsLoaded, loadActions]);
+  }, [actionsEnabled, actionsPaused, settingsLoaded, loadActions]);
 
   useEffect(() => {
     const scope = createSubscriptionScope();

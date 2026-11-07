@@ -27,7 +27,7 @@ import { createSubscriptionScope } from "../../lib/subscriptions";
 import { onWorkflowRunProgress } from "../../lib/bridge";
 import { useWorkflowsStore } from "../../store/useWorkflowsStore";
 import { errorMessage } from "../../lib/errors";
-import { ConfirmDialog } from "../ui";
+import { ConfirmDialog, EmptyState } from "../ui";
 import { runStatusKind } from "./display";
 import { WORKFLOW_TEMPLATES } from "./templates";
 import WorkflowEditorView from "./WorkflowEditorView";
@@ -313,10 +313,16 @@ export default function WorkflowsPanel() {
       ) : null}
 
       {workflows && workflows.length === 0 ? (
-        <div className="wf-empty">
-          <p>{tr("workflows.empty")}</p>
-          <p className="wf-hint-text">{tr("workflows.emptyHint")}</p>
-        </div>
+        <EmptyState
+          framed
+          icon={<Layers size={22} aria-hidden="true" />}
+          hint={
+            <>
+              <p>{tr("workflows.empty")}</p>
+              <p className="wf-hint-text">{tr("workflows.emptyHint")}</p>
+            </>
+          }
+        />
       ) : null}
 
       {workflows && workflows.length > 0 ? (

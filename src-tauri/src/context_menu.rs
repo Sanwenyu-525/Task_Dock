@@ -25,7 +25,8 @@
 //!   从未获得焦点也能收到通知，事件驱动、无轮询）。所有路径都经
 //!   BLUR_TOKEN 延迟合并：右键重开时 show 取消未决关闭，不闪烁。
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -37,12 +38,128 @@ use crate::db::Db;
 pub const WINDOW_LABEL: &str = "context-menu";
 /// 后端 → 菜单窗口：即将在锚点处显示（刷新设置快照 + 重放入场动画 + 回传尺寸）。
 pub const SHOW_EVENT: &str = "context-menu-show";
+/// 后端 → 主窗：执行一条极简标签菜单动作，载荷 `{ id, action }`。
+/// 主窗必须用 `tab_menu_action_result` 回传**真实事务结果**。
+pub const TAB_ACTION_EVENT: &str = "edge-tab-action";
+
+/// 等待主窗事务结果的上限。
+///
+/// 覆盖：引擎忙等（1s）+ Edge Tab 恢复过渡（300ms）+ 拖动终态收口（≤2s）+
+/// 尺寸/区域回读与稳定性复核。超时即明确失败（菜单保留并提示），
+/// 不把「仍在执行」提前当成成功。
+const TAB_ACTION_TIMEOUT: Duration = Duration::from_secs(8);
+/// 在途标签菜单动作计数：期间抑制失焦自动关闭，否则失败反馈会被藏进
+/// 已隐藏的菜单窗口（用户视角就是「点了没反应」）。成功后仍由动作路径隐藏。
+static TAB_ACTION_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+/// 菜单动作请求 id（单调，用于把主窗结果对回等待中的命令）。
+static NEXT_TAB_ACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// show 事件载荷：`tray` = 托盘/悬浮栏完整菜单，`tab` = 极简标签三项快捷菜单。
 /// 两个变体共用同一个窗口与同一套键盘/关闭路径，只在条目与定位上不同。
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ShowPayload {
     pub variant: &'static str,
+}
+
+/// 下发给主窗的动作请求：`id` 必须随结果原样带回。
+#[derive(Clone, Debug, Serialize)]
+struct TabActionRequest {
+    id: u64,
+    action: String,
+}
+
+/// 主窗回传的事务结果。
+#[derive(Debug)]
+struct TabActionOutcome {
+    ok: bool,
+    error: Option<String>,
+}
+
+/// 等待中的动作请求。oneshot 一对一：结果只能兑现一次，重复回执被忽略。
+fn pending_tab_actions(
+) -> &'static Mutex<HashMap<u64, tokio::sync::oneshot::Sender<TabActionOutcome>>> {
+    static PENDING: OnceLock<
+        Mutex<HashMap<u64, tokio::sync::oneshot::Sender<TabActionOutcome>>>,
+    > = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn take_pending_tab_action(id: u64) -> Option<tokio::sync::oneshot::Sender<TabActionOutcome>> {
+    pending_tab_actions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&id)
+}
+
+/// 兑现一条等待中的动作结果；返回 false 表示 id 不存在/已兑现（重复回执）。
+fn complete_tab_action(id: u64, ok: bool, error: Option<String>) -> bool {
+    let Some(tx) = take_pending_tab_action(id) else {
+        return false;
+    };
+    tx.send(TabActionOutcome {
+        error: error.filter(|e| !e.trim().is_empty()),
+        ok,
+    })
+    .is_ok()
+}
+
+/// 在途守卫：Drop 时递减，任何提前返回都不会漏减。
+struct TabActionInflight;
+
+impl TabActionInflight {
+    fn new() -> Self {
+        TAB_ACTION_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for TabActionInflight {
+    fn drop(&mut self) {
+        TAB_ACTION_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// 转发一次标签菜单动作并等待主窗事务结果。
+///
+/// - 主窗不存在/emit 失败 → 立即失败，不假装成功；
+/// - 主窗收到但不回执（入口缺失、事件丢失）→ 8s 超时后明确失败；
+/// - 主窗回传 ok → 只有事务真正提交才可能得到该结果（主窗侧 `restoreTab` /
+///   `formSwitch` / `undock` 都解析真实返回）。
+async fn run_tab_action(app: &AppHandle, action: String) -> Result<(), String> {
+    if app.get_webview_window("main").is_none() {
+        return Err("主窗口未就绪，操作未执行".to_string());
+    }
+    let id = NEXT_TAB_ACTION_ID.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    pending_tab_actions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id, tx);
+    let _inflight = TabActionInflight::new();
+    if let Err(e) = app.emit_to(
+        "main",
+        TAB_ACTION_EVENT,
+        TabActionRequest {
+            id,
+            action,
+        },
+    ) {
+        take_pending_tab_action(id);
+        tracing::warn!("转发极简标签菜单动作失败: {e}");
+        return Err("主窗口未就绪，操作未执行".to_string());
+    }
+    match tokio::time::timeout(TAB_ACTION_TIMEOUT, rx).await {
+        Ok(Ok(outcome)) if outcome.ok => Ok(()),
+        Ok(Ok(outcome)) => Err(outcome
+            .error
+            .unwrap_or_else(|| "操作未完成，请重试".to_string())),
+        Ok(Err(_)) => Err("主窗口未响应，操作结果未知".to_string()),
+        Err(_) => {
+            take_pending_tab_action(id);
+            tracing::warn!("极简标签菜单动作等待主窗结果超时: id={id}");
+            Err("操作超时，窗口可能未完成切换".to_string())
+        }
+    }
 }
 
 /// 菜单 CSS 圆角（逻辑像素），与 styles-context-menu.css 的 border-radius 一致；
@@ -298,6 +415,11 @@ pub fn schedule_blur_close(app: &AppHandle) {
         tokio::time::sleep(Duration::from_millis(BLUR_CLOSE_DELAY_MS)).await;
         // 期间发生过 show/hide/再次失焦：本任务已过期
         if BLUR_TOKEN.load(Ordering::SeqCst) != token {
+            return;
+        }
+        // 标签菜单动作正在主窗执行：此刻关闭会把失败反馈藏进不可见窗口。
+        // 成功后由动作路径 hide；失败保持菜单可见，让用户读到原因。
+        if TAB_ACTION_IN_FLIGHT.load(Ordering::SeqCst) > 0 {
             return;
         }
         if let Some(win) = menu_window(&app) {
@@ -602,11 +724,11 @@ fn err_result(db: &Db, message: String) -> MenuActionResult {
 /// **成功才隐藏菜单**：失败保留菜单展示行内反馈（前端 role=alert）——
 /// 若先隐藏，反馈就渲染在不可见窗口里，用户视角是「按了没反应」的静默失败。
 #[tauri::command]
-pub fn context_menu_action(
-    app: AppHandle,
-    db: tauri::State<'_, std::sync::Arc<Db>>,
-    action: String,
-) -> MenuActionResult {
+pub async fn context_menu_action(app: AppHandle, action: String) -> MenuActionResult {
+    // async command 的 future 必须是 'static：`State<'_, T>` 是借用参数，
+    // 不能出现在签名里。这里从 AppHandle 取一次并立即克隆 Arc，守卫在
+    // 任何 await 之前释放。
+    let db = std::sync::Arc::clone(app.state::<std::sync::Arc<Db>>().inner());
     let result = match action.as_str() {
         "show" => {
             crate::toggle_main(&app);
@@ -689,13 +811,14 @@ pub fn context_menu_action(
         }
         // 极简标签三项：菜单只转发命令，吸附状态机与窗口几何全部留在主窗引擎
         // （`useEdgeSnap` 拥有唯一的恢复/展开/解除事务），这里不复制第二套业务逻辑。
+        // **等待主窗事务的真实结果**：emit 成功只代表请求已送达，不代表窗口已切换。
         "tab:expand" | "tab:full" | "tab:undock" => {
-            let forwarded = action.trim_start_matches("tab:");
-            match app.emit_to("main", "edge-tab-action", forwarded) {
+            let forwarded = action.trim_start_matches("tab:").to_string();
+            match run_tab_action(&app, forwarded).await {
                 Ok(()) => ok_result(&db),
-                Err(e) => {
-                    tracing::warn!("转发极简标签菜单动作失败: {e}");
-                    err_result(&db, "主窗口未就绪".to_string())
+                Err(message) => {
+                    tracing::warn!(%message, "极简标签菜单动作未完成");
+                    err_result(&db, message)
                 }
             }
         }
@@ -709,6 +832,16 @@ pub fn context_menu_action(
         hide(&app);
     }
     result
+}
+
+/// 主窗回传标签菜单动作的**真实事务结果**（与 `TAB_ACTION_EVENT` 的 id 对应）。
+///
+/// 只兑现一次：重复/迟到回执返回 false 被忽略；等待方已超时也不影响。
+/// 不在这里隐藏菜单——结果会返回给 `context_menu_action`，由它统一决定
+/// 成功收起 / 失败保留并显示行内原因。
+#[tauri::command]
+pub fn tab_menu_action_result(id: u64, ok: bool, error: Option<String>) -> bool {
+    complete_tab_action(id, ok, error)
 }
 
 #[cfg(test)]
@@ -880,5 +1013,37 @@ mod tests {
             resolve_menu_height(0.0, wa_height(1032), 1.0),
             MIN_WINDOW_HEIGHT
         );
+    }
+
+    // ── 标签菜单动作结果回执（P2-2）──────────────────────────────
+
+    #[test]
+    fn tab_action_result_is_correlated_and_consumed_once() {
+        // 主窗回执必须精确对回请求 id，且只能兑现一次：重复/迟到回执不得
+        // 再唤醒等待方（否则同一动作可能被当成两次执行结果）。
+        let id = 9_876_543_210;
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        pending_tab_actions()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, tx);
+
+        assert!(complete_tab_action(id, true, None));
+        match rx.try_recv() {
+            Ok(TabActionOutcome { ok, error }) => {
+                assert!(ok);
+                assert!(error.is_none());
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+        assert!(
+            !complete_tab_action(id, false, Some("late".to_string())),
+            "重复回执必须被忽略"
+        );
+    }
+
+    #[test]
+    fn tab_action_result_for_unknown_id_is_ignored() {
+        assert!(!complete_tab_action(1_234_567_891, false, None));
     }
 }

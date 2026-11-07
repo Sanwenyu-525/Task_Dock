@@ -171,6 +171,15 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   3. 轮次状态机（`agent_runs`：running/waiting → completed/failed/disconnected，记 ended_at）；
   4. 事件流水（`agent_events`，仅元数据）；
   5. 状态跃迁通知（waiting/completed/failed，按 run+state+序号去重）。
+- **历史补录（2026-11-07）**：事件时间比受理时间早超过 5 分钟（`BACKFILL_MAX_AGE_MINUTES`）
+  视为离线积压重放（Hook 文件兜底 / spool 重放的旧事件）：仍写事件流水与轮次历史，
+  活跃状态（running/waiting）按失联语义落为 `disconnected`，但**不产生桌面通知/语音**，
+  也不写通知收件箱，因此不会在启动后把几小时前的积压逐条弹成新通知、再被 stale 清理
+  补一遍「连接中断」。5 分钟窗口内的延迟事件保持原有实时语义。
+  积压停止 3 秒后（`BACKFILL_DIGEST_QUIET`）只弹**一张**「离开期间补录」摘要卡
+  （复用 `digest` 摘要模板：会话数 / 完成 / 失败 / 等待 / 事件数，动作只到通知中心），
+  并写一条通知历史；关闭 Agent 通知或静音时整批丢弃，不消耗弹窗额度。
+  真实终态（completed/failed）之后的积压活跃事件仍落独立轮次，保留多轮历史。
 - 提交后副作用每批只执行一次：一次前端广播、一次托盘刷新、聚合桌面通知
   （≤3 条弹窗 + 摘要），绝不放进事务。
 - **桌面通知展示（2026-11-03）**：放行的弹窗优先送入独立常驻通知窗口
@@ -321,7 +330,8 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   **取消按钮状态（2026-11-06 第三轮）**：`idle`（取消扫描，可点击）→ `requesting`
   （正在请求取消…，禁用）→ `accepted`（正在取消…，保持禁用直到后端返回真实结果）；
   请求失败恢复 `idle` 允许重试，扫描自然结束静默退出，新一轮扫描复位；同一 `scan_id`
-  已接受取消后 store 不再重复发送取消 IPC（多个面板共享同一次扫描）。
+  已接受取消后 store 不再重复发送取消 IPC（多个面板共享同一次扫描），**首个 IPC 在途期间的
+  并发调用复用同一个 Promise**（2026-11-07 第四轮），失败后释放占位并可重试。
   应用身份与去重：`app_key` 仍是 exe 绝对路径（小写）或 AUMID；同一 exe 的多个快捷方式
   只保留先到的一条（含其启动参数），不同 exe 即使同名也各自保留；同身份下先到 `advanced`
   随后发现 `normal` 时由普通项顶替（避免「卸载 Foo」遮蔽主入口）。不修改数据库唯一约束。
@@ -590,13 +600,16 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - **功能生命周期契约（v0.15，2026-11-06）**：在「导航显隐 / 页面活跃 / 后台启用」三层
   之上，补齐「模块能否独立暂停、暂停是否真的释放资源」的统一语义。
   ①**单一事实源**：用户意图只写既有 SQLite 设置键（`clipboard_enabled` / `clipboard_paused` /
-  `shelf_auto_cleanup_enabled` / `reminders_paused` / `actions_enabled` / `tts_enabled`），
-  不新增独立暂停 API；实际运行状态由 `src-tauri/src/lifecycle.rs` 的只读探针批量返回
-  （`lifecycle_status`），前端 `store/useLifecycleStore.ts` 只缓存快照与串行操作队列。
-  ②**状态机**：`running / pausing / paused / stopped / idle / error / unsupported`。
-  `paused` 只在线程确实退出后成立；已接受暂停但监听/维护/清理线程仍在收尾时如实返回
-  `pausing`，禁止用设置值冒充资源已释放。停用（`stopped`）优先于暂停；`error` 表示
-  意图为运行但探针发现线程未运行（不降级成 running）。
+  `shelf_auto_cleanup_enabled` / `reminders_paused` / `actions_enabled` / `actions_paused` /
+  `tts_enabled`），不新增独立暂停 API；实际运行状态由 `src-tauri/src/lifecycle.rs` 的只读探针
+  批量返回（`lifecycle_status`）。前端 `store/useLifecycleStore.ts` 只缓存快照与串行操作队列：
+  模块按钮的暂停意图**永远从设置派生**，不读取可能过期的快照 `intent`；设置 Store 中相关键
+  变化时推进 revision 并标记快照 `stale`，响应返回时复核 revision，旧结果不覆盖新设置。
+  写库成功但状态查询失败时返回 `unconfirmed`，UI 只提示「配置已更新、运行状态未确认」。
+  ②**状态机**：`running / pausing / stopping / paused / stopped / idle / error / unsupported`。
+  `paused`/`stopped` 只在线程确实退出后成立；已接受暂停/停用但监听、维护或异步回收线程仍在
+  收尾时分别返回 `pausing`/`stopping`，禁止用设置值冒充资源已释放。停用（`stopped`）优先于
+  暂停；`error` 表示意图为运行但探针发现线程未运行（不降级成 running）。
   ③**模块分类**：resident（clipboard / shelf_cleanup / reminders / voice，可独立暂停）、
   task（actions / workflows / focus / backup / workspace，暂停属于具体任务或前端聚合）、
   shared（agents / diagnostics / hotkeys / tasks，停止会丢其他业务数据，不提供模块级暂停）、
@@ -626,11 +639,27 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   loading / disabled / aria-pressed / `data-tip` 说明暂停范围）；资源管理新增
   「功能运行」分区（`components/resource/RuntimeModulesSection.tsx`），按 resident/task/
   shared/ondemand 分组展示实际状态、后台活动标记、暂停范围与真实错误。隐藏导航入口后
-  模块仍出现在该分区并可独立暂停；恢复运行不改变导航显隐，反之亦然。
-  ⑧**兼容**：`reminders_paused` 为带默认值的新键（旧库/旧备份缺键 = false），
-  设置备份仍走 `application_settings` 全量规则；未改动迁移历史与命令签名；
+  模块仍出现在该分区并可独立暂停；恢复运行不改变导航显隐，反之亦然。分区活跃 = 当前分区
+  可见 **且** 完整面板可见（`useFullViewVisible`）；分区首次访问后保持挂载，但隐藏期不因设置
+  变化发查询，重新显示时补一次。长期停用模块（`clipboard_enabled=false` /
+  `actions_enabled=false`）的按钮禁用并明确提示「先在设置中启用」，不存在只改暂停字段的
+  假恢复。
+  ⑧**兼容**：`reminders_paused` / `actions_paused` 为带默认值的新键（旧库/旧备份缺键 =
+  false），设置备份仍走 `application_settings` 全量规则；未改动迁移历史与命令签名；
   `clipboard_paused` 的持久化语义不变，但重启时不再「先启动再拒绝采集」——
   暂停状态启动直接不创建监听与维护线程。
+  ⑨**行动中心暂停与停用分离（2026-11-07 复查）**：`actions_enabled` 保持长期停用语义
+  （后端 `actions::feed` 返回空 Feed、徽标归零）；新增 `actions_paused` 只停前端自动聚合
+  刷新与徽标更新。暂停时 feed 查询仍可用，页面手动刷新/历史/通知照常读取，Agent 原始事件
+  继续入库；`shouldRefreshActions()` 同时检查停用与暂停，`useActionsStore.load()` 不门控
+  （手动查看）。目标模块控制键登记为 `actions_paused`，不再复用 `actions_enabled`。
+  ⑩**真实探针（2026-11-07 复查）**：生命周期不再对已有运行时事实的模块固定报 `idle`——
+  OCR 用 `OcrService::is_busy()`（执行中为 `running` + `ocr-task`）；工作流读引擎全局活动槽
+  （`active_run()`，运行/暂停/取消），专注读后端权威快照（无会话 idle，会话暂停为 paused）；
+  应用扫描读取消注册表活跃数；微件统计真实存在的 `widget-<kind>` WebView 窗口；Agent 同时
+  检查 Hub 与接入管线消费者线程（`IngestPipeline::is_running()`），仅 Hub 存在不足以报
+  running。探针只读内存/既有快照，不新增进程扫描或轮询；无法可靠读取时返回 `error` 而不是
+  `idle`。状态与 `background` 字段保持一致（有活动标记才可能 running）。
 - 导航排序与固定入口（2026-11-05）：排序与可见性彻底分离，排序只改顺序、不改成员。
   入口分两类：**普通入口**（可隐藏、可排序）与**固定入口**——`locked`（设置，完整面板）
   与胶囊面 `kind="agent-status"`（Agent 状态球）。判定唯一入口为
@@ -837,8 +866,23 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     `html / body / #root` 布局规则**：它们会同时作用到主窗（历史故障：tab-hint 页的
     `#root{display:flex}` 把主窗压成 0 宽）。页面级规则一律挂各入口的页面根 class；
     由 `src/styles-entry-scope.test.ts` 与 `scripts/check-entry-css.mjs` 双层守卫。
+    逗号分组选择器**逐项判定**（`html, body, #root`、`:is(html, body)` 都算裸根，
+    不因同组另有已限定作用域的选择器而放行）。
   - 跨窗口浮层（`tab-hint` 悬停提示）的显示是**可取消的三段式会话**（show → 测量 → fit → 真显），
     以单调代次管理：hide/新 show 使在途 fit 失效，过期 fit 不得重新显示窗口。
+  - tab-hint 的**就绪握手**：前端先建立 `tab-hint-show` 订阅、成功后才调用 `tab_hint_ready`；
+    未就绪期间的 show 只在后端排队，ready 时补发一次（Tauri 事件无缓冲，提前 emit 会丢）。
+    订阅失败/组件卸载不报 ready；窗口销毁复位为未就绪。后端可区分「窗口不存在 /
+    监听未就绪 / 已就绪」三态，不用固定延迟或轮询掩盖时序。
+  - tab-hint 四个命令（show/hide/fit/ready）必须保持**同步命令**：它们只更新状态并投递
+    窗口 API（不创建 WebView、不在命令内阻塞等待消息循环）。Tauri 在 WebView2 消息线程
+    （Windows 主线程）内联执行同步命令，show/hide/fit 与 `Destroyed` 事件严格串行，
+    reveal 的提交门不会与 hide 交错；改成 `async fn` 会转到 async runtime 线程池，
+    必须另行引入提交序号/主线程封送。**窗口创建**命令（如 `show_widget_window`）仍必须
+    async（`build()` 依赖消息循环继续运转，见微件章节），两者不矛盾。
+  - 悬停提示随真实 Agent 状态更新：只在「提示已显示 + 鼠标仍在标签上 + 文案真正变化」时
+    原地推进代次（不 hide、不闪烁），并按单飞/合并限制 IPC 频率；拖动、右键菜单、
+    形态过渡、离开标签期间一律不显示。
   - 前端 `useWindowDragCursor/useRailDragCursor/useWidgetDragCursor` 的 120ms 起始守卫只抑制启动扰动
     导致的 DOM 类闪烁，不试图控制 OS 光标；`pointerup/pointercancel/visibilitychange` 为可靠结束信号。
   详见 [ui-themes/](ui-themes/) 目录。
@@ -1429,8 +1473,13 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   DiagnosticsLayer` → 再创建窗口；退出在 `request_exit` 中先记录 `system/shutdown` 并
   `shutdown()` 写线程（刷出尾部与聚合摘要）。
 - 前端：`src/lib/diagnostics.ts`（有界队列 + 批量 IPC + 错误归属去重 + `startOperation`）、
-  `invokeCommand` 统一记录 IPC 失败、`ErrorBoundary`/`globalErrors` 记录渲染与未捕获异常；
-  设置页 `DiagnosticsLogsSection` 提供筛选、摘要、模式切换、导出与清理。
+  `invokeCommand` 统一记录 IPC 失败、`ErrorBoundary`/`globalErrors` 记录渲染与未捕获异常。
+- 界面分工：左侧独立「诊断中心」`DiagnosticsCenterPanel` 负责异常列表（默认 WARN+）、
+  按 `operation_id` 的全级别操作链时间线、筛选、导出与带确认的清理；设置页
+  `DiagnosticsLogsSection` 只保留状态/容量/详细模式开关/最近异常摘要与「打开诊断中心」，
+  不再维护第二套事件列表。操作链查询必须关闭 `anomaliesOnly` 且不带级别/时间过滤。
+- 噪声控制：HTTP 接入的 401 按 10s 窗口聚合为累计 WARN（`rejected_auth` 计数保留），
+  非 401 请求降为 DEBUG；端口绑定失败只在首次与每 30 次（约 5 分钟）记录一次。
 - 一致性校验：`update_settings` 写入后逐键回读（`settings/persist_verify`，只记键名），
   `src/lib/consistencyChecks.ts` 在设置首次加载后校验导航布局孤儿项（一次性，不轮询）。
 - 诊断日志**不进入 SQLite**，也不替代工作流回执、备份 manifest、文件投递恢复记录等业务

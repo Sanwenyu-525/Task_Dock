@@ -5,6 +5,7 @@ import {
   controlFor,
   isControllableModule,
   moduleControlPatch,
+  moduleDisabledFromSettings,
   modulePausedFromSettings,
   moduleStatusById,
 } from "./lifecycle";
@@ -36,8 +37,28 @@ describe("生命周期控制映射", () => {
     expect(moduleControlPatch("shelf_cleanup", false)).toEqual({
       shelf_auto_cleanup_enabled: true,
     });
-    expect(moduleControlPatch("actions", true)).toEqual({ actions_enabled: false });
+    expect(moduleControlPatch("actions", true)).toEqual({ actions_paused: true });
+    expect(moduleControlPatch("actions", false)).toEqual({ actions_paused: false });
     expect(moduleControlPatch("voice", true)).toEqual({ tts_enabled: false });
+  });
+
+  it("长期停用与临时暂停分离：停用态不能被暂停字段伪装成可恢复", () => {
+    const disabled = {
+      clipboard_enabled: false,
+      clipboard_paused: false,
+      actions_enabled: false,
+      actions_paused: false,
+    } as Partial<Settings>;
+    expect(moduleDisabledFromSettings("clipboard", disabled)).toBe(true);
+    expect(moduleDisabledFromSettings("actions", disabled)).toBe(true);
+    const enabled = {
+      clipboard_enabled: true,
+      actions_enabled: true,
+    } as Partial<Settings>;
+    expect(moduleDisabledFromSettings("clipboard", enabled)).toBe(false);
+    expect(moduleDisabledFromSettings("actions", enabled)).toBe(false);
+    // 未登记的模块没有停用维度
+    expect(moduleDisabledFromSettings("messages", enabled)).toBe(false);
   });
 
   it("共享基础设施与按需模块没有控制键，避免无效按钮", () => {

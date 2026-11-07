@@ -6,7 +6,9 @@
 //! - 请求体大小上限 64KB、头部读取超时、请求处理超时；
 //! - 全局并发上限：连接 64 / 活跃请求 32，超出返回 429 + Retry-After；
 //! - 队列容量耗尽返回 503 + Retry-After（关键事件绝不静默成功）；
-//! - 日志只记录方法/路径/状态/对端/耗时，绝不记录请求体内容（脱敏）。
+//! - 日志只记录方法/路径/状态/对端/耗时，绝不记录请求体内容（脱敏）；
+//! - 401 鉴权失败按 10s 窗口聚合为一条 WARN（含累计次数），不逐请求打 INFO；
+//!   安全审计计数仍保留在 `stats().rejected_auth`。
 //!
 //! 单事件（running）快速入队后立即 200（`queued=true`）；关键状态与批量请求
 //! 等待事务提交后返回，保持「批量全成功/全失败」语义。
@@ -14,7 +16,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -40,6 +42,14 @@ const MAX_INFLIGHT: usize = 32;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// 401 鉴权失败的日志聚合窗口长度（每窗口最多输出一条 WARN）。
+const AUTH_REJECT_WINDOW: Duration = Duration::from_secs(10);
+
+/// 端口绑定失败的日志节流：10s 重试周期下只记首次与每 30 次（约 5 分钟）一次。
+fn should_log_bind_failure(attempt: u32) -> bool {
+    attempt == 1 || attempt % 30 == 0
+}
 
 /// hyper 1.x 在设置 `header_read_timeout` 时必须同时提供 timer，否则每个连接都会 panic。
 fn http1_builder() -> hyper::server::conn::http1::Builder {
@@ -90,6 +100,59 @@ pub fn stats_snapshot() -> serde_json::Value {
         "max_concurrency": MAX_INFLIGHT,
         "max_body_bytes": MAX_BODY,
     })
+}
+
+/// 401 鉴权失败的**有界日志聚合**（纯逻辑，可单测）。
+///
+/// 旧实例/错误令牌客户端会持续轮询同一端口，逐请求 INFO 会在日志里堆出数百条
+/// 401（历史约 438 条）。这里按固定窗口聚合：
+/// - `observe` 每条 401 调用一次；返回 `Some(n)` 表示应输出一条包含本窗口累计
+///   `n` 次的审计（含窗口内首条）；
+/// - 返回 `None` 表示本窗口已输出过审计，本条只计数、不落日志；
+/// - 窗口到期后输出**整个窗口**的累计次数，然后重新计数。
+///
+/// 只保存单调时钟与计数，不含 method/path/token 等任何请求内容；调用方在输出
+/// 时才附加本次请求的 method/path（绝不记录 Authorization、请求体、peer 端口）。
+/// 与 `stats().rejected_auth` 相互独立：日志限流不影响安全审计计数。
+#[derive(Debug, Default)]
+struct AuthRejectWindow {
+    last_emit: Option<Instant>,
+    suppressed: u64,
+}
+
+impl AuthRejectWindow {
+    fn observe(&mut self, now: Instant) -> Option<u64> {
+        self.suppressed = self.suppressed.saturating_add(1);
+        match self.last_emit {
+            Some(last) if now.duration_since(last) < AUTH_REJECT_WINDOW => None,
+            _ => {
+                let count = self.suppressed;
+                self.suppressed = 0;
+                self.last_emit = Some(now);
+                Some(count)
+            }
+        }
+    }
+}
+
+static AUTH_REJECTS: LazyLock<Mutex<AuthRejectWindow>> =
+    LazyLock::new(|| Mutex::new(AuthRejectWindow::default()));
+
+/// 记录一次 401：每 `AUTH_REJECT_WINDOW` 至多输出一条 WARN（含窗口累计次数）。
+fn record_auth_reject(method: &str, path: &str) {
+    let emitted = AUTH_REJECTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .observe(Instant::now());
+    if let Some(count) = emitted {
+        tracing::warn!(
+            "HTTP 接入鉴权失败 {} 次/{}s（method={}, path={}）",
+            count,
+            AUTH_REJECT_WINDOW.as_secs(),
+            method,
+            path
+        );
+    }
 }
 
 pub struct HttpIngestAdapter {
@@ -448,15 +511,22 @@ async fn handle_request(
         }
         _ => json_response(StatusCode::NOT_FOUND, json!({"error": "not found"}), None),
     };
-    // 脱敏日志：不含请求体
-    tracing::info!(
-        "HTTP 接入 {} {} -> {} ({:?}, {:?}ms)",
-        method.as_str(),
-        path,
-        response.status().as_u16(),
-        peer,
-        started.elapsed().as_millis()
-    );
+    // 脱敏日志：不含请求体/令牌/peer 端口。
+    // 401 是旧实例/错误令牌轮询的稳定噪声源：按窗口聚合为 WARN，计数仍由
+    // `stats().rejected_auth` 保留；其余请求只在详细模式（DEBUG）落盘。
+    let status = response.status();
+    if status == StatusCode::UNAUTHORIZED {
+        record_auth_reject(method.as_str(), path.as_str());
+    } else {
+        tracing::debug!(
+            "HTTP 接入 {} {} -> {} ({:?}, {:?}ms)",
+            method.as_str(),
+            path,
+            status.as_u16(),
+            peer,
+            started.elapsed().as_millis()
+        );
+    }
     response
 }
 
@@ -567,6 +637,8 @@ impl AgentAdapter for HttpIngestAdapter {
         tauri::async_runtime::spawn(async move {
             let conn_sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
             let mut current: Option<(u16, String)> = None;
+            // 端口占用时每 10s 重试：只记首次与每 30 次（约 5 分钟）一次，避免日志洪水。
+            let mut bind_failures: u32 = 0;
             loop {
                 if crate::agents::shutdown_signal::is_set() {
                     tracing::info!("应用退出：HTTP 接入适配器停止");
@@ -598,6 +670,7 @@ impl AgentAdapter for HttpIngestAdapter {
                 }
                 match TcpListener::bind(("127.0.0.1", port)).await {
                     Ok(listener) => {
+                        bind_failures = 0;
                         tracing::info!("本地 HTTP 接入监听 127.0.0.1:{}", port);
                         current = Some((port, token.clone()));
                         run_listener(
@@ -611,7 +684,17 @@ impl AgentAdapter for HttpIngestAdapter {
                         .await;
                     }
                     Err(e) => {
-                        tracing::error!("绑定 127.0.0.1:{} 失败: {}", port, e);
+                        // 真机实测：端口被占用时适配器每 10s 重试一次，逐次 ERROR 会堆出
+                        // 每小时 360 条噪声。只记首次与每 30 次（约 5 分钟）一次累计尝试。
+                        bind_failures = bind_failures.saturating_add(1);
+                        if should_log_bind_failure(bind_failures) {
+                            tracing::error!(
+                                "绑定 127.0.0.1:{} 失败（第 {} 次尝试，继续重试）: {}",
+                                port,
+                                bind_failures,
+                                e
+                            );
+                        }
                         tokio::select! {
                             _ = crate::agents::shutdown_signal::wait() => return,
                             _ = tokio::time::sleep(Duration::from_secs(10)) => {}
@@ -632,6 +715,65 @@ mod tests {
         assert!(constant_time_eq("abc", "abc"));
         assert!(!constant_time_eq("abc", "abd"));
         assert!(!constant_time_eq("abc", "ab"));
+    }
+
+    /// 401 审计有界聚合：首条立即输出、窗口内只计数、到期输出窗口累计。
+    #[test]
+    fn auth_reject_window_emits_at_most_once_per_ten_seconds() {
+        let start = Instant::now();
+        let mut window = AuthRejectWindow::default();
+
+        assert_eq!(window.observe(start), Some(1), "首条 401 必须立即审计");
+        for i in 0..5 {
+            assert_eq!(
+                window.observe(start + Duration::from_secs(i + 1)),
+                None,
+                "窗口内第 {} 条必须被聚合抑制",
+                i + 2
+            );
+        }
+        // 10s 到期：输出本窗口累计 6 次（含首条），而不是仅被抑制的 5 条。
+        assert_eq!(
+            window.observe(start + AUTH_REJECT_WINDOW),
+            Some(6),
+            "10s 后输出本窗口累计次数"
+        );
+        // 同一时刻的后续 401 属于新窗口：重新计数，不再立即输出。
+        assert_eq!(
+            window.observe(start + AUTH_REJECT_WINDOW + Duration::from_millis(1)),
+            None,
+            "输出后新窗口必须重新聚合"
+        );
+        assert_eq!(
+            window.observe(start + AUTH_REJECT_WINDOW * 2 + Duration::from_millis(2)),
+            Some(2),
+            "第二个窗口累计 2 次（重新计数）"
+        );
+    }
+
+    /// 端口占用会每 10s 重试：只在首次与每 30 次记录，避免每小时 360 条 ERROR。
+    #[test]
+    fn bind_failure_logging_is_rate_limited() {
+        assert!(should_log_bind_failure(1), "首次失败必须记录");
+        for attempt in 2..30 {
+            assert!(
+                !should_log_bind_failure(attempt),
+                "第 {attempt} 次尝试不应逐次记录"
+            );
+        }
+        assert!(should_log_bind_failure(30), "每 30 次（约 5 分钟）记录一次");
+        assert!(!should_log_bind_failure(31));
+        assert!(should_log_bind_failure(60));
+    }
+
+    /// 聚合状态必须按实例隔离：测试与多监听器不得共享全局窗口状态。
+    #[test]
+    fn auth_reject_windows_are_independent_instances() {
+        let now = Instant::now();
+        let mut a = AuthRejectWindow::default();
+        let mut b = AuthRejectWindow::default();
+        assert_eq!(a.observe(now), Some(1));
+        assert_eq!(b.observe(now), Some(1), "独立实例不得共享窗口状态");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

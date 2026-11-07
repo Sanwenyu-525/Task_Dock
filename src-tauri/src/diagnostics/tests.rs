@@ -540,3 +540,133 @@ fn summary_recovery_matrix() {
         std::fs::remove_dir_all(d).ok();
     }
 }
+
+/// 「操作链」查询契约：同一 operation_id 的 DEBUG/INFO/WARN/ERROR/success 必须
+/// 全部返回（新→旧，前端负责升序）；`anomaliesOnly` 会过滤掉 WARN 以下，
+/// 因此操作链模式必须显式关闭该选项。
+#[test]
+fn query_operation_chain_includes_all_levels() {
+    let dir = temp_dir("query-operation-chain");
+    let chain = "op-chain";
+    let events = [
+        timed(
+            DiagLevel::Debug,
+            "paste_batch",
+            None,
+            "2026-11-07T10:00:00.000+08:00",
+            Some(chain),
+        ),
+        timed(
+            DiagLevel::Info,
+            "paste_batch",
+            Some(DiagStatus::Started),
+            "2026-11-07T10:00:01.000+08:00",
+            Some(chain),
+        ),
+        timed(
+            DiagLevel::Warn,
+            "paste_batch",
+            None,
+            "2026-11-07T10:00:02.000+08:00",
+            Some(chain),
+        ),
+        timed(
+            DiagLevel::Error,
+            "paste_batch",
+            Some(DiagStatus::Failed),
+            "2026-11-07T10:00:03.000+08:00",
+            Some(chain),
+        ),
+        timed(
+            DiagLevel::Info,
+            "paste_batch",
+            Some(DiagStatus::Success),
+            "2026-11-07T10:00:04.000+08:00",
+            Some(chain),
+        ),
+        // 无关操作：不得混入操作链。
+        timed(
+            DiagLevel::Warn,
+            "paste_batch",
+            None,
+            "2026-11-07T10:00:05.000+08:00",
+            Some("op-other"),
+        ),
+    ];
+    write_events(&dir, &events);
+
+    let page = query::query(
+        &dir,
+        &DiagnosticQuery {
+            operation_id: Some(chain.into()),
+            ..Default::default()
+        },
+        &Counters::default(),
+    );
+    assert_eq!(
+        page.matched, 5,
+        "必须精确匹配该操作的 5 条事件: {:?}",
+        page.items
+    );
+    assert_eq!(page.items.len(), 5);
+    for item in &page.items {
+        assert_eq!(
+            item.operation_id.as_deref(),
+            Some(chain),
+            "不得混入其它操作: {item:?}"
+        );
+    }
+    // 查询结果为新→旧（存储倒序扫描）；前端负责升序展示。
+    for pair in page.items.windows(2) {
+        assert!(
+            pair[0].timestamp > pair[1].timestamp,
+            "顺序必须为新→旧: {} vs {}",
+            pair[0].timestamp,
+            pair[1].timestamp
+        );
+    }
+    assert_eq!(page.items[0].timestamp, "2026-11-07T10:00:04.000+08:00");
+    assert_eq!(page.items[4].timestamp, "2026-11-07T10:00:00.000+08:00");
+    for level in [
+        DiagLevel::Debug,
+        DiagLevel::Info,
+        DiagLevel::Warn,
+        DiagLevel::Error,
+    ] {
+        assert!(
+            page.items.iter().any(|event| event.level == level),
+            "操作链缺少 {level:?}: {:?}",
+            page.items
+        );
+    }
+
+    // 契约：操作链模式必须显式关闭 anomaliesOnly，否则 DEBUG/INFO 被过滤。
+    let anomalies = query::query(
+        &dir,
+        &DiagnosticQuery {
+            operation_id: Some(chain.into()),
+            anomalies_only: Some(true),
+            ..Default::default()
+        },
+        &Counters::default(),
+    );
+    assert_eq!(
+        anomalies.matched, 2,
+        "anomaliesOnly 只应保留 WARN/ERROR: {:?}",
+        anomalies.items
+    );
+    assert_eq!(anomalies.items.len(), 2);
+    assert!(
+        anomalies
+            .items
+            .iter()
+            .all(|event| event.level >= DiagLevel::Warn),
+        "不得残留 WARN 以下事件: {:?}",
+        anomalies.items
+    );
+    for item in &anomalies.items {
+        assert_eq!(item.operation_id.as_deref(), Some(chain));
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}

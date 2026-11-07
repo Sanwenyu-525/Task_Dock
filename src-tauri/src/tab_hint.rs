@@ -24,8 +24,37 @@
 //! - `hide` 推进代次并清空目标，使所有在途请求失效；
 //! - 窗口销毁同样推进代次，重建后不会沿用失效状态。
 //!
-//! 前端未就绪时的兜底：`show` 会先用上一次的自然尺寸立即显示（`ready` 为 false
-//! 时），下一次 `fit` 再纠正；不会留下一个永远不显示的悬空窗口。
+//! 前端未就绪时的处理：Tauri 事件没有缓冲，WebView 启动早期 emit 会静默丢失。
+//! 因此 `show` 在 `ready=false` 时只把请求**排队**，等前端在显示事件订阅兑现后
+//! 调用 `tab_hint_ready` 再补发；不会提前用兜底尺寸显示一个没有文字的空提示条。
+//!
+//! ## 就绪三态（2026-11-07 round3）
+//!
+//! 后端可区分三种状态，不依赖固定延迟：
+//! - **窗口已销毁/未创建**：`hint_window()` 为 None。`show` 直接返回 false（不置
+//!   前端「已显示」标记）；`tab_hint_ready` 不置 ready（等重建后的新前端重新订阅）；
+//! - **监听尚未就绪**（`ready=false`）：`show` 只更新代次/目标并排队，不 emit；
+//! - **已就绪**（`ready=true`）：`show` 立即 emit，成功后清掉同代次排队载荷。
+//!
+//! `Destroyed` 事件把状态复位为「监听尚未就绪」并清空目标/排队载荷，重建窗口
+//! 不会沿用失效会话。
+//!
+//! ## 命令执行模型（并发复核结论，2026-11-07 round3）
+//!
+//! 四个命令都是**同步**命令（非 `async`）。Tauri 会内联执行同步命令：wry 在
+//! WebView2 的 `WebMessageReceived` / `WebResourceRequested` 回调里调用
+//! `ipc_handler`（`wry-0.57.1/src/webview2/mod.rs` 的 `attach_ipc_handler` 与
+//! `attach_custom_protocol_handler`），Tauri 在其中同步调用
+//! `manager.run_invoke_handler(invoke)`（`tauri-2.12.5/src/webview/mod.rs` 的
+//! `on_message`）。这两个回调都由创建 WebView2 的线程（Windows 主线程）投递，
+//! 因此不同 WebView（主窗 / 提示窗）发出的 show/fit/hide **在同一线程上严格
+//! 串行**；`reveal` 的「校验代次 → 调用窗口 API」之间不可能插入另一个命令或
+//! `Destroyed` 事件。窗口 API 自身只是向事件循环投递消息，投递顺序与命令执行
+//! 顺序一致，所以不会出现「旧 reveal 校验通过 → hide → 旧 show 执行」。
+//!
+//! 该结论依赖「命令保持同步」这一契约：若将来改成 `async fn`，Tauri 会把命令
+//! 放到 async runtime 线程池（`respond_async`），上述串行性失效，必须改为提交
+//! 序号或主线程封送。下面的交错单测锁定状态机层面的不变量。
 
 use std::sync::Mutex;
 
@@ -52,7 +81,7 @@ const MAX_HEIGHT: f64 = 80.0;
 const MAX_TEXT_CHARS: usize = 200;
 
 /// 下发给提示窗口的显示请求：`id` 是本次显示会话的代次，前端必须原样带回。
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct HintShow {
     pub id: u64,
     pub text: String,
@@ -66,6 +95,9 @@ struct HintState {
     target: Option<(ScreenRect, u8)>,
     natural: (f64, f64),
     ready: bool,
+    /// 前端尚未就绪时暂存的显示请求：订阅兑现前的 emit 会静默丢失，
+    /// 因此先排队，等 `tab_hint_ready` 再补发（不轮询、不重试）。
+    pending: Option<HintShow>,
 }
 
 impl HintState {
@@ -75,20 +107,27 @@ impl HintState {
             target: None,
             natural: DEFAULT_SIZE,
             ready: false,
+            pending: None,
         }
     }
 
-    /// 新一次显示请求：推进代次并记录目标，返回本次代次。
-    fn begin(&mut self, target: (ScreenRect, u8)) -> u64 {
+    /// 新一次显示请求：推进代次并记录目标/待下发载荷，返回本次载荷。
+    fn begin(&mut self, target: (ScreenRect, u8), text: String) -> HintShow {
         self.generation = self.generation.wrapping_add(1);
         self.target = Some(target);
-        self.generation
+        let payload = HintShow {
+            id: self.generation,
+            text,
+        };
+        self.pending = Some(payload.clone());
+        payload
     }
 
-    /// 结束当前会话（隐藏 / 销毁）：推进代次，作废所有在途 fit。
+    /// 结束当前会话（隐藏 / 销毁）：推进代次，作废所有在途 fit 与待发请求。
     fn end(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.target = None;
+        self.pending = None;
     }
 
     /// 接受一次测量：只有代次仍有效才更新尺寸并允许显示。
@@ -102,6 +141,18 @@ impl HintState {
 
     fn is_current(&self, id: u64) -> bool {
         id != 0 && id == self.generation
+    }
+
+    /// 取走待下发载荷（就绪握手时调用一次）。
+    fn take_pending(&mut self) -> Option<HintShow> {
+        self.pending.take()
+    }
+
+    /// 已成功下发：只清掉同一代次的待发载荷，避免误删更新的一次 show。
+    fn clear_pending(&mut self, id: u64) {
+        if self.pending.as_ref().is_some_and(|p| p.id == id) {
+            self.pending = None;
+        }
     }
 }
 
@@ -132,17 +183,36 @@ pub fn show(app: &AppHandle, edge: &str, text: &str) -> bool {
     let Some(tab) = tab_rect_screen(app, e) else {
         return false;
     };
-    let (id, ready) = {
-        let mut s = state();
-        let id = s.begin((tab, e));
-        (id, s.ready)
-    };
-    let _ = app.emit_to(WINDOW_LABEL, SHOW_EVENT, HintShow { id, text });
-    if !ready {
-        // 前端还没挂载：用缓存尺寸先给可见反馈，下一次 fit 会纠正。
-        return reveal(app, id);
+    // 窗口不存在时不能返回“已受理”：前端会把「已显示」标记置真，之后
+    // 悬停全部命中错误去重门（一次失败变成永久不弹）。
+    if hint_window(app).is_none() {
+        tracing::warn!("tab-hint 窗口不存在（未在 tauri.conf.json 声明？）");
+        return false;
     }
-    true
+    let (payload, ready) = {
+        let mut s = state();
+        let payload = s.begin((tab, e), text);
+        (payload, s.ready)
+    };
+    if !ready {
+        // 前端监听尚未兑现（WebView 启动早期）：只排队，等 tab_hint_ready
+        // 补发。不能用缓存尺寸先显示——文字事件会丢，留下一个空提示条。
+        tracing::debug!("极简标签提示：前端未就绪，显示请求已排队");
+        return true;
+    }
+    let id = payload.id;
+    match app.emit_to(WINDOW_LABEL, SHOW_EVENT, payload) {
+        Ok(()) => {
+            state().clear_pending(id);
+            true
+        }
+        Err(e) => {
+            tracing::warn!("极简标签提示：下发显示请求失败: {e}");
+            // 事件没送达就无法完成 fit：结束会话，避免留下悬空目标
+            hide(app);
+            false
+        }
+    }
 }
 
 /// 按实测自然尺寸收放并显示（前端在渲染完成后调用一次）。
@@ -163,6 +233,15 @@ pub fn fit(app: &AppHandle, id: u64, width: f64, height: f64) -> bool {
     reveal(app, id)
 }
 
+/// `reveal` 的提交门：每次窗口 API 之间复核。
+///
+/// 代次仍是当前**且**目标仍在才允许继续提交显示；`hide`（清空目标）或新的
+/// `show`（推进代次）之后，旧 reveal 一律止步——旧请求不能把已隐藏的窗口重新
+/// 显示，也不能覆盖新会话的尺寸/位置。锁只在校验瞬间持有，窗口 API 全在锁外。
+fn commit_allowed(s: &HintState, id: u64) -> bool {
+    s.is_current(id) && s.target.is_some()
+}
+
 /// 真正把窗口放到标签旁并显示（无焦点、无动画、无延迟）。返回是否显示成功。
 ///
 /// 锁只在取快照与**显示前最后一次校验**时短暂持有；tao 调用全部在锁外。
@@ -173,7 +252,7 @@ fn reveal(app: &AppHandle, id: u64) -> bool {
     };
     let Some((tab, edge, size)) = ({
         let s = state();
-        if !s.is_current(id) {
+        if !commit_allowed(&s, id) {
             return false;
         }
         s.target.map(|(tab, edge)| (tab, edge, s.natural))
@@ -192,11 +271,11 @@ fn reveal(app: &AppHandle, id: u64) -> bool {
     }
     let _ = win.set_position(PhysicalPosition::new(x, y));
     // 收放期间可能已有新的 show/hide：过期请求不得把窗口显示出来。
-    if !state().is_current(id) {
+    if !commit_allowed(&state(), id) {
         return false;
     }
     crate::window_shape::apply_with_radius(&win, HINT_RADIUS);
-    if !state().is_current(id) {
+    if !commit_allowed(&state(), id) {
         return false;
     }
     if let Err(e) = win.show() {
@@ -263,9 +342,33 @@ pub fn fit_tab_hint(app: AppHandle, width: f64, height: f64, id: u64) -> bool {
 }
 
 /// 前端挂载完成：之后按实测尺寸显示（避免首帧用兜底尺寸抖动）。
+///
+/// 前端必须**等显示事件订阅兑现后**才调用本命令；这里会把就绪前排队的
+/// 显示请求补发出去。补发失败则结束会话并隐藏，避免留下一个永远等不到
+/// fit 的悬空目标，也避免前端「已显示」标记与真实状态失步。
+///
+/// 返回 true 表示就绪已生效；false 表示窗口已销毁/不存在（不标记就绪，
+/// 重建后的新前端会重新订阅并再次调用）。
 #[tauri::command]
-pub fn tab_hint_ready() {
-    state().ready = true;
+pub fn tab_hint_ready(app: AppHandle) -> bool {
+    // 窗口已销毁/未创建：此时置 ready 只会让后续 show 误以为事件能送达。
+    // 保持「未就绪」，重建窗口后由新前端重新握手。
+    if hint_window(&app).is_none() {
+        tracing::warn!("极简标签提示：窗口不存在，忽略 ready");
+        return false;
+    }
+    let pending = {
+        let mut s = state();
+        s.ready = true;
+        s.take_pending()
+    };
+    let Some(payload) = pending else { return true };
+    if let Err(e) = app.emit_to(WINDOW_LABEL, SHOW_EVENT, payload) {
+        tracing::warn!("极简标签提示：补发显示请求失败: {e}");
+        hide(&app);
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -282,7 +385,7 @@ mod tests {
     }
 
     fn begin(s: &mut HintState) -> u64 {
-        s.begin((rect(), 0))
+        s.begin((rect(), 0), "提示".to_string()).id
     }
 
     #[test]
@@ -344,6 +447,123 @@ mod tests {
         // 代次 0 不是有效请求：id=0 的 fit 不能显示窗口
         let mut s = HintState::new();
         assert!(!s.accept_fit(0, (120.0, 26.0)));
+    }
+
+    // ── 就绪握手与排队（P2-3）────────────────────────────────
+
+    #[test]
+    fn show_before_ready_is_queued_for_the_ready_handshake() {
+        // 前端订阅兑现前 emit 会静默丢失：必须先排队，就绪时补发一次。
+        let mut s = HintState::new();
+        assert!(!s.ready);
+        let payload = s.begin((rect(), 0), "Agent 等待确认".to_string());
+        assert_eq!(payload.id, 1);
+        let pending = s.take_pending().expect("就绪前必须保留待下发载荷");
+        assert_eq!(pending.id, payload.id);
+        assert_eq!(pending.text, "Agent 等待确认");
+        assert!(s.pending.is_none(), "补发后不得重复下发");
+    }
+
+    #[test]
+    fn hide_discards_a_queued_show() {
+        // show（排队）→ hide：补发时不得让已离开的提示重新显示
+        let mut s = HintState::new();
+        let _ = s.begin((rect(), 0), "提示".to_string());
+        s.end();
+        assert!(s.pending.is_none());
+        assert!(s.take_pending().is_none());
+    }
+
+    #[test]
+    fn newer_show_replaces_the_queued_payload() {
+        let mut s = HintState::new();
+        let a = s.begin((rect(), 0), "A".to_string());
+        let b = s.begin((rect(), 0), "B".to_string());
+        let pending = s.take_pending().expect("有排队请求");
+        assert_eq!(pending.id, b.id);
+        assert_ne!(a.id, b.id);
+        assert!(!s.accept_fit(a.id, (120.0, 26.0)), "旧代次必须失效");
+    }
+
+    #[test]
+    fn clearing_pending_only_affects_the_same_generation() {
+        // 旧请求的成功回执迟到，不得删掉新请求的待发载荷
+        let mut s = HintState::new();
+        let a = s.begin((rect(), 0), "A".to_string());
+        s.clear_pending(a.id);
+        assert!(s.pending.is_none());
+        let b = s.begin((rect(), 0), "B".to_string());
+        s.clear_pending(a.id);
+        assert_eq!(s.pending.as_ref().map(|p| p.id), Some(b.id));
+    }
+
+    // ── 显示提交的交错顺序（P2-4）────────────────────────────
+    //
+    // 真实命令在 WebView2 消息线程上严格串行（见模块文档的执行模型），这里用
+    // 状态机把「快照 → hide/新 show → 提交」的顺序固定下来：无论窗口 API 何时
+    // 投递，旧 reveal 都不能越过提交门重新显示窗口。
+
+    #[test]
+    fn hide_between_reveal_snapshot_and_commit_is_rejected() {
+        let mut s = HintState::new();
+        let id = begin(&mut s);
+        assert!(commit_allowed(&s, id), "show 之后快照阶段应允许提交");
+        s.end(); // hide 插在快照与提交之间
+        assert!(!commit_allowed(&s, id), "hide 之后旧 reveal 不得再显示窗口");
+        assert!(s.target.is_none());
+    }
+
+    #[test]
+    fn old_reveal_cannot_override_a_new_show() {
+        let mut s = HintState::new();
+        let a = begin(&mut s);
+        assert!(commit_allowed(&s, a));
+        let b = begin(&mut s); // 旧 reveal 走到一半时来了新 show
+        assert!(!commit_allowed(&s, a), "旧代次不能提交显示");
+        assert!(commit_allowed(&s, b));
+        assert!(s.accept_fit(b, (130.0, 28.0)));
+    }
+
+    #[test]
+    fn hide_then_show_commits_only_the_new_session() {
+        let mut s = HintState::new();
+        let a = begin(&mut s);
+        s.end();
+        let b = begin(&mut s);
+        assert!(!commit_allowed(&s, a));
+        assert!(commit_allowed(&s, b));
+        assert!(!s.accept_fit(a, (10.0, 10.0)), "旧 fit 仍被拒绝");
+        assert!(s.accept_fit(b, (120.0, 26.0)));
+    }
+
+    #[test]
+    fn hide_between_fit_accept_and_reveal_is_rejected() {
+        // fit 已接受尺寸 → 提交前 hide：等价于 reveal 的两次提交门复核
+        let mut s = HintState::new();
+        let id = begin(&mut s);
+        assert!(s.accept_fit(id, (120.0, 26.0)));
+        assert!(commit_allowed(&s, id));
+        s.end();
+        assert!(!commit_allowed(&s, id));
+    }
+
+    #[test]
+    fn repeated_hides_leave_no_committable_session() {
+        let mut s = HintState::new();
+        let id = begin(&mut s);
+        s.end();
+        s.end();
+        assert!(!commit_allowed(&s, id));
+        assert!(s.pending.is_none());
+    }
+
+    #[test]
+    fn ready_flush_does_not_resurrect_a_hidden_session() {
+        // show（未就绪，排队）→ hide → ready：补发必须为空
+        let mut s = HintState::new();
+        let _ = s.begin((rect(), 0), "提示".to_string());
+        s.end();
+        assert!(s.take_pending().is_none());
     }
 
     #[test]

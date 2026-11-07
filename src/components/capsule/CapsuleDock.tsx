@@ -150,6 +150,9 @@ export default function CapsuleDock() {
           key={activeCategory}
           className={`capsule-panel panel-${edge}${panelExiting ? " is-closing" : ""}`}
           aria-label={`${CATEGORY_LABELS[activeCategory]}面板`}
+          /* 仅供样式层做容器查询（应用网格列数按面板实际宽度收敛）：
+             data 值不参与任何业务判断，不落库、不经 IPC。 */
+          data-panel={activeCategory}
           /* 离场阶段只剩 160ms 的收合动画且 pointer-events:none：同步置 inert，
              键盘/读屏也不再进入一块已经不可交互、正在消失的面板。 */
           inert={panelExiting}

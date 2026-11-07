@@ -142,6 +142,10 @@ export const BACKGROUND_LABELS: Readonly<Record<string, MessageKey>> = {
   "diagnostics-writer": "lifecycle.background.diagnosticsWriter",
   "global-hotkey-registration": "lifecycle.background.hotkeys",
   "ocr-task": "lifecycle.background.ocrTask",
+  "workflow-run": "lifecycle.background.workflowRun",
+  "focus-session": "lifecycle.background.focusSession",
+  "app-scan": "lifecycle.background.appScan",
+  "widget-windows": "lifecycle.background.widgetWindows",
 };
 
 /** 后端稳定错误码 → 本地化文案；未知代码不展示原始服务端文本。 */
@@ -152,4 +156,6 @@ export const LIFECYCLE_ERROR_LABELS: Readonly<Record<string, MessageKey>> = {
   worker_start_failed: "lifecycle.error.workerStartFailed",
   cleanup_failed: "lifecycle.error.cleanupFailed",
   agent_hub_unavailable: "lifecycle.error.agentHubUnavailable",
+  agent_pipeline_not_running: "lifecycle.error.agentPipelineNotRunning",
+  focus_state_unavailable: "lifecycle.error.focusStateUnavailable",
 };

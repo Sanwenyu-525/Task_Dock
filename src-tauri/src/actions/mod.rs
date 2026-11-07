@@ -1945,4 +1945,40 @@ mod tests {
         }
         assert_eq!(event_count(&db), 1, "关闭行动中心不得影响 Agent 事件入库");
     }
+
+    /// 临时暂停（actions_paused）只停自动刷新，不得像长期停用那样清空 feed：
+    /// 历史/通知必须继续可手动查看，Agent 事件也不受影响。
+    #[test]
+    fn paused_module_keeps_feed_history_but_disable_still_empties() {
+        let db = memdb();
+        let now = crate::agents::now_iso();
+        step(
+            &db,
+            "e1",
+            "codex",
+            "s1",
+            Some("r1"),
+            "failed",
+            "失败",
+            &now,
+        );
+        db.set_setting("actions_paused", serde_json::json!(true))
+            .unwrap();
+        let intervention = feed_of(&db, "intervention");
+        assert!(intervention.enabled, "暂停不是停用，feed 仍应可用");
+        assert_eq!(intervention.items.len(), 1, "暂停后历史仍需可读");
+        assert!(intervention.counts.total > 0);
+
+        let history = feed_of(&db, "history");
+        assert!(history.enabled);
+        assert_eq!(history.items.len(), 1);
+        assert_eq!(event_count(&db), 1, "暂停不得影响 Agent 事件入库");
+
+        // 长期停用仍保持原有语义：空 feed。
+        db.set_setting("actions_enabled", serde_json::json!(false))
+            .unwrap();
+        let disabled = feed_of(&db, "history");
+        assert!(!disabled.enabled);
+        assert!(disabled.items.is_empty());
+    }
 }

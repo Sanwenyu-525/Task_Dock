@@ -36,6 +36,8 @@ pub fn start_scheduler(app: AppHandle, db: Arc<Db>, hub: Arc<AgentHub>) {
             }
             // 跨批次通知摘要：窗口结束/尾部抑制通知每秒检查一次
             hub.flush_notification_digest();
+            // 离开期间补录：积压停止后合并成一张摘要卡（无积压时不产生任何动作）
+            hub.flush_backfill_digest();
             // 稍后提醒：到期的通知卡片重新送自定义通知窗口（无独立定时器）
             crate::notification_window::poll_snoozed(&app);
             // 专注/休息/久坐推进（内存单调时钟；每 30 秒才落库一次）。

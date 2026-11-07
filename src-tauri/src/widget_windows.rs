@@ -30,7 +30,8 @@ pub const EVENT_BOUNDS: &str = "widget-bounds-changed";
 pub const EVENT_DISMISSED: &str = "widget-window-dismissed";
 
 const MAIN_LABEL: &str = "main";
-const WINDOW_PREFIX: &str = "widget-";
+/// 独立微件窗口 label 前缀（生命周期探针按它统计当前打开的微件）。
+pub const WINDOW_PREFIX: &str = "widget-";
 const WIDGET_RADIUS: f64 = 16.0;
 const MIN_WIDTH: f64 = 220.0;
 const MAX_WIDTH: f64 = 560.0;

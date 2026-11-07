@@ -15,6 +15,7 @@ import { useNavigationStore } from "../../store/useNavigationStore";
 import { formatDue, isOverdue, priorityLabel, describeRecurrence } from "../../lib/format";
 import { navNavigate, resultMessage } from "../../lib/navigation";
 import { errorMessage } from "../../lib/errors";
+import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import TargetMenu, { TargetAvatar } from "../navigation/TargetMenu";
 import { DropdownMenu } from "../ui";
 
@@ -249,7 +250,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
       <button
         className={`task-check ${task.status === "completed" ? "done" : ""}`}
         onClick={onToggle}
-        title={task.status === "completed" ? "取消完成" : "完成"}
+        data-tip={task.status === "completed" ? "取消完成" : "完成"}
         aria-label={task.status === "completed" ? "取消完成" : "完成任务"}
         aria-busy={busy}
         disabled={busy || isLeaving}
@@ -259,9 +260,15 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
       <div
         className="task-main"
         onDoubleClick={() => openEditor(task)}
-        title={compact ? "双击编辑" : undefined}
+        data-tip={compact ? "双击编辑" : undefined}
       >
-        <div className="task-title-row">
+        <div
+          className="task-title-row"
+          // 长标题单行省略后没有任何可读补偿（验收 UI-12）：悬停时只在
+          // 真的发生截断时挂完整标题，未截断不制造噪声提示。
+          onMouseEnter={(e) => syncTruncatedTip(e.currentTarget, ".task-title", task.title)}
+          onMouseLeave={(e) => clearTip(e.currentTarget)}
+        >
           <span className={`priority-tag p${task.priority}`}>{priorityLabel(task.priority)}</span>
           <span className="task-title">{task.title}</span>
         </div>
@@ -300,7 +307,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
                 key={l.id}
                 className="task-nav-btn"
                 data-default={l.is_default ? "true" : undefined}
-                title={`打开：${l.target.display_name}${l.is_default ? "（默认目标）" : ""}`}
+                data-tip={`打开：${l.target.display_name}${l.is_default ? "（默认目标）" : ""}`}
                 aria-label={`打开${l.is_default ? "默认目标 " : " "}${l.target.display_name}`}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -313,7 +320,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
             {overflow > 0 && (
               <button
                 className="task-nav-btn task-nav-more"
-                title={`还有 ${overflow} 个关联目标`}
+                data-tip={`还有 ${overflow} 个关联目标`}
                 aria-label={`还有 ${overflow} 个关联目标`}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
@@ -365,7 +372,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
           >
             <Layers size={13} />
           </button>
-          <button className="icon-btn sm task-edit" onClick={() => openEditor(task)} title="编辑任务" aria-label="编辑任务">
+          <button className="icon-btn sm task-edit" onClick={() => openEditor(task)} data-tip="编辑任务" aria-label="编辑任务">
             <Pencil size={13} />
           </button>
         </>

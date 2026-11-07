@@ -88,12 +88,16 @@
 | `clipboard_enabled=false`（停用） | 停止并回收 | 停止并回收 | `paste.cancel_all()` | 可用 |
 
 - 运行时实现：`stop_capture()` 只做「监听 + 维护」回收；`stop()` = 同步
-  `stop_capture_sync()` + `paste.cancel_all()`；`apply_config(enabled, paused)` 统一收敛，
-  重复调用幂等。
-- 暂停的采集回收为异步两级：先 `begin_stop()` 同步关闭事件队列、摘除 `EVENT_QUEUE` 并
-  `WM_CLOSE`（不 join，恢复可立即创建新实例），再由 `clipboard-stop` 线程 `finish_stop()`
-  join 三个线程并释放句柄。`capture_draining` 计数归零前生命周期只能是 `pausing`。
+  `stop_capture_sync()` + `paste.cancel_all()`，仅用于应用退出等必须等待收尾的路径；
+  `apply_config(enabled, paused)` 统一收敛，重复调用幂等。
+- 暂停**与停用**的采集回收都是异步两级：先 `begin_stop()` 同步关闭事件队列、摘除
+  `EVENT_QUEUE` 并 `WM_CLOSE`（不 join，恢复可立即创建新实例），再由 `clipboard-stop`
+  线程 `finish_stop()` join 三个线程并释放句柄。停用路径只调用 `paste.cancel_all()`
+  （置取消位，不 join），因此同步设置命令不会因大图解码而阻塞 UI。
+  `capture_draining` 计数归零前，暂停状态只能是 `pausing`、停用状态只能是 `stopping`。
   实例被丢弃时 `Drop` 同步兜底收尾，避免孤儿监听。
+- `clipboard_status` 暴露 `monitoring` / `maintenance` / `draining`；生命周期探针在
+  三个都为 false 时才报告 `paused`（启用但暂停）或 `stopped`（长期停用）。
 - 队列关闭语义（`BoundedQueue::pop` 关闭即返回 None）：暂停时尚未开始处理的内容被丢弃，
   不会在恢复后回放；已经进入 `record_capture` 的一次写入允许完成。
 - 启动时若 `clipboard_paused=true`，**不创建**监听/维护线程（`lib.rs`），而不是先启动再靠
@@ -101,8 +105,8 @@
 - 维护线程等待条件升级为「停止位 **或** 世代变化」：暂停后立刻恢复时，旧线程会在代次
   变化时立即退出，不会与新线程并存 30 秒；`spawn_monitor` 存实例前复核世代，启动期间被
   暂停不会留下孤儿监听。
-- `clipboard_status` 新增 `maintenance` 布尔值；生命周期探针只有在 `monitoring` 与
-  `maintenance` 均为 false 时才报告 `paused`，否则报告 `pausing`。
+- 停用页不再有「改暂停字段就恢复监听」的假动作：`clipboard_enabled=false` 时模块按钮
+  禁用并提示先在设置中启用；暂停按钮只在启用状态下可用。
 - 恢复不补录暂停期间的复制：Windows 剪贴板不为新监听回放历史事件，下一次系统
   `WM_CLIPBOARDUPDATE` 才可能读取新内容；采集线程启动水位取当前 `self_write` 序列号。
 

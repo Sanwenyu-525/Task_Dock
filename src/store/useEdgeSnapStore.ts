@@ -31,21 +31,26 @@ export interface EdgeSnapUiState {
   /** 引擎注入：收起功能面板（Esc / 收起按钮 / 再次点击当前分类）。 */
   collapse: (() => void) | null;
   /** 引擎注入：解除吸附并恢复普通窗口；可选指定目标模式（跳转完整页时用）。 */
-  undock: ((mode?: string) => void) | null;
+  undock: ((mode?: string) => Promise<boolean>) | null;
   /**
    * 引擎注入：**本次停靠会话**的临时形态切换（不改写持久化 `snap_display_mode`；
    * 解除停靠后失效，下次吸附按设置里的默认吸附方式）。供胶囊轨道与完整面板上的
    * 轻量入口复用。长期偏好仍由设置页 / 右键菜单更新。未启用为 null。
+   *
+   * 返回**真实事务结果**：菜单动作只凭它决定是否隐藏菜单/报错，不用「事件已
+   * 发出」冒充成功。
    */
-  formSwitch: ((form: DockForm) => void) | null;
+  formSwitch: ((form: DockForm) => Promise<boolean>) | null;
   /** 引擎注入：胶囊收起为 Edge Tab（带侧滑收纳动画）。未启用为 null。 */
   collapseToTab: (() => void) | null;
   /**
    * 引擎注入：Edge Tab 恢复为胶囊轨道（复用同一套过渡）。未启用为 null。
    * `reveal: true` 时在同一串行事务内继续展开功能面板（先恢复、后展开），
    * 不靠固定延迟拼接两段状态机。
+   *
+   * 返回真实事务结果：菜单动作据此显示成功/失败，不再“发出即成功”。
    */
-  restoreTab: ((opts?: { reveal?: boolean }) => void) | null;
+  restoreTab: ((opts?: { reveal?: boolean }) => Promise<boolean>) | null;
   // Edge Tab 拖动：只改沿边位置，不切形态；向屏幕内部拖动由组件在松手时判定恢复。
   beginTabDrag: (() => void) | null;
   dragTabBy: ((deltaCss: number) => void) | null;
@@ -68,11 +73,11 @@ export interface EdgeSnapUiState {
   clearFeedback: () => void;
   setReveal: (fn: (() => void) | null) => void;
   setCollapse: (fn: (() => void) | null) => void;
-  setUndock: (fn: ((mode?: string) => void) | null) => void;
-  setFormSwitch: (fn: ((form: DockForm) => void) | null) => void;
+  setUndock: (fn: ((mode?: string) => Promise<boolean>) | null) => void;
+  setFormSwitch: (fn: ((form: DockForm) => Promise<boolean>) | null) => void;
   setTabActions: (p: {
     collapse: (() => void) | null;
-    restore: ((opts?: { reveal?: boolean }) => void) | null;
+    restore: ((opts?: { reveal?: boolean }) => Promise<boolean>) | null;
     beginDrag: (() => void) | null;
     dragBy: ((deltaCss: number) => void) | null;
     endDrag: (() => void) | null;

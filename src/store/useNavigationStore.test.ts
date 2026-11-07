@@ -520,6 +520,49 @@ describe("cancelScan · 取消结果契约", () => {
     expect(useNavigationStore.getState().scanCancelled).toBe(false);
   });
 
+  it("同一扫描的并发取消复用同一个在途请求，只发送一次 IPC", async () => {
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await vi.waitFor(() => expect(mocks.navScanApps).toHaveBeenCalled());
+
+    const gate = deferred<boolean>();
+    mocks.navCancelScan.mockReturnValueOnce(gate.promise);
+    const first = useNavigationStore.getState().cancelScan();
+    const second = useNavigationStore.getState().cancelScan();
+    // 首个 IPC 尚未返回：第二个查看者不得再发一次
+    expect(mocks.navCancelScan).toHaveBeenCalledTimes(1);
+
+    gate.resolve(true);
+    await expect(first).resolves.toBe("accepted");
+    await expect(second).resolves.toBe("accepted");
+    expect(mocks.navCancelScan).toHaveBeenCalledTimes(1);
+
+    scan.resolve({ apps: [], scanned_at: "", cancelled: true } as never);
+    await expect(load).resolves.toBe("cancelled");
+  });
+
+  it("并发取消失败后释放占位：下一次调用重新发送 IPC，不伪造 accepted", async () => {
+    const scan = deferred<never>();
+    mocks.navScanApps.mockReturnValueOnce(scan.promise);
+    const load = useNavigationStore.getState().loadApps(true);
+    await vi.waitFor(() => expect(mocks.navScanApps).toHaveBeenCalled());
+
+    mocks.navCancelScan.mockRejectedValueOnce(new Error("ipc down"));
+    const first = useNavigationStore.getState().cancelScan();
+    const second = useNavigationStore.getState().cancelScan();
+    await expect(first).resolves.toBe("failed");
+    await expect(second).resolves.toBe("failed");
+    expect(mocks.navCancelScan).toHaveBeenCalledTimes(1);
+
+    mocks.navCancelScan.mockResolvedValueOnce(true);
+    await expect(useNavigationStore.getState().cancelScan()).resolves.toBe("accepted");
+    expect(mocks.navCancelScan).toHaveBeenCalledTimes(2);
+
+    scan.resolve({ apps: [], scanned_at: "", cancelled: true } as never);
+    await expect(load).resolves.toBe("cancelled");
+  });
+
   it("同一扫描已接受取消后，其他查看者不再重复发送取消 IPC；新扫描重新允许", async () => {
     const scan = deferred<never>();
     mocks.navScanApps.mockReturnValueOnce(scan.promise);

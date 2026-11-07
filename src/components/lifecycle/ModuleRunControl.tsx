@@ -6,12 +6,13 @@
 //! - 失败按真实错误提示，不把「已发请求」当成「已停止」。
 
 import { useEffect } from "react";
-import { Loader2, Pause, Play } from "lucide-react";
+import { Loader2, Pause, Play, Power } from "lucide-react";
 import { useLifecycleStore } from "../../store/useLifecycleStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import {
   controlFor,
+  moduleDisabledFromSettings,
   modulePausedFromSettings,
   moduleStatusById,
 } from "../../lib/lifecycle";
@@ -48,24 +49,29 @@ export default function ModuleRunControl({ moduleId, variant = "icon", className
 
   const label = t(presentation.label);
   const scope = t(presentation.scope);
-  // 首帧用设置派生意图；快照到达后以 intent 为准（实际状态另由 state 表达）。
-  const paused = status
-    ? status.intent === "paused"
-    : modulePausedFromSettings(moduleId, settings);
-  const transitioning = status?.state === "pausing";
+  // **意图只从设置派生**：其他入口（设置页/资源管理/胶囊）写入后立即同步，
+  // 不依赖可能过期的快照 intent；快照只用于过渡态与真实错误。
+  const paused = modulePausedFromSettings(moduleId, settings);
+  const moduleDisabled = moduleDisabledFromSettings(moduleId, settings);
+  const transitioning = status?.state === "pausing" || status?.state === "stopping";
   const busy = pending;
-  const disabled = !settings;
+  const disabled = !settings || moduleDisabled;
 
-  const aria = t(paused ? "lifecycle.resumeAria" : "lifecycle.pauseAria", { module: label });
+  const aria = moduleDisabled
+    ? t("lifecycle.moduleDisabledAria", { module: label })
+    : t(paused ? "lifecycle.resumeAria" : "lifecycle.pauseAria", { module: label });
   const errorCode = moduleError ?? status?.error ?? null;
   const errorKey = errorCode ? LIFECYCLE_ERROR_LABELS[errorCode] : undefined;
   const errorText = errorCode ? (errorKey ? t(errorKey) : errorCode) : null;
-  // 悬停提示必须说明“暂停后会停止什么”，运行异常也一并如实展示。
-  const tip = errorText ? `${aria} · ${scope} · ${errorText}` : `${aria} · ${scope}`;
+  // 停用态必须明确说“需要先启用”，不能提供只会改暂停字段的假恢复按钮。
+  // 悬停提示同时说明暂停范围与运行异常。
+  const baseTip = moduleDisabled ? t("lifecycle.moduleDisabledTip") : `${aria} · ${scope}`;
+  const tip = errorText ? `${baseTip} · ${errorText}` : baseTip;
 
   async function onClick() {
-    const ok = await setPaused(moduleId, !paused);
-    if (!ok) {
+    if (moduleDisabled) return;
+    const result = await setPaused(moduleId, !paused);
+    if (result === "failed") {
       const reason = useLifecycleStore.getState().errors[moduleId];
       showToast(
         t("lifecycle.actionFailed", {
@@ -74,10 +80,17 @@ export default function ModuleRunControl({ moduleId, variant = "icon", className
         }),
         { kind: "error" },
       );
+    } else if (result === "unconfirmed") {
+      // 配置已写入但状态查询失败：只说“未确认”，不冒充资源已释放。
+      showToast(t("lifecycle.statusUnconfirmed", { module: label }), {
+        kind: "warning",
+      });
     }
   }
 
-  const icon = busy || transitioning ? (
+  const icon = moduleDisabled ? (
+    <Power size={13} aria-hidden="true" />
+  ) : busy || transitioning ? (
     <Loader2 size={13} className="spin" aria-hidden="true" />
   ) : paused ? (
     <Play size={13} aria-hidden="true" />
@@ -97,7 +110,15 @@ export default function ModuleRunControl({ moduleId, variant = "icon", className
         onClick={() => void onClick()}
       >
         {icon}
-        <span>{t(paused ? "lifecycle.resume" : "lifecycle.pause")}</span>
+        <span>
+          {t(
+            moduleDisabled
+              ? "lifecycle.state.stopped"
+              : paused
+                ? "lifecycle.resume"
+                : "lifecycle.pause",
+          )}
+        </span>
       </button>
     );
   }

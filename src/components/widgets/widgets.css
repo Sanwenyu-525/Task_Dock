@@ -398,6 +398,9 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  /* 文字链接只有 15.8px 高：给 24px 命中高度（验收 UI-14），
+     视觉仍靠文字本身，不新增底色。 */
+  min-height: 24px;
 }
 
 .widget-link:hover {

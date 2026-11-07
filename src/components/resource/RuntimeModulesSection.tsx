@@ -9,7 +9,7 @@
 //! - shared：共享基础设施，明确说明「停止会丢失什么」，不提供模块级按钮；
 //! - ondemand：纯按需执行，显示状态但不造无效暂停按钮。
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   Activity,
   AppWindow,
@@ -22,7 +22,6 @@ import {
   Keyboard,
   Layers,
   LayoutGrid,
-  Loader2,
   Map as MapIcon,
   Plug,
   RefreshCw,
@@ -80,6 +79,7 @@ function stateTone(state: string): string {
     case "idle":
       return "ok";
     case "pausing":
+    case "stopping":
       return "warn";
     case "error":
       return "bad";
@@ -102,24 +102,38 @@ function lifecycleSettingsKey(settings: ReturnType<typeof useSettingsStore.getSt
     settings.reminders_paused,
     settings.shelf_auto_cleanup_enabled,
     settings.actions_enabled,
+    settings.actions_paused,
     settings.tts_enabled,
     settings.audio_sound_enabled,
   ].join("|");
 }
 
-export default function RuntimeModulesSection() {
+export default function RuntimeModulesSection({ active = true }: { active?: boolean }) {
   const { t } = useLocale();
   const statuses = useLifecycleStore((s) => s.statuses);
   const loading = useLifecycleStore((s) => s.loading);
   const error = useLifecycleStore((s) => s.error);
   const refresh = useLifecycleStore((s) => s.refresh);
+  const stale = useLifecycleStore((s) => s.stale);
   const settings = useSettingsStore((s) => s.settings);
   const settingsKey = lifecycleSettingsKey(settings);
+  /** 上次真正查询时使用的设置键：隐藏期间不更新，重新显示后必然重查一次。 */
+  const queriedKeyRef = useRef<string | null>(null);
 
-  // 首次进入 + 相关设置变化时刷新；没有轮询与常驻定时器。
+  // 只在分区可见时查询：首次显示、重新显示、可见期间相关设置变化。
+  // 隐藏时不因任何设置变化发请求；没有轮询与常驻定时器。
+  // `stale` 由设置 Store 的跨入口变化推进（含设置页/模块页），本分区只负责
+  // “可见时收敛”；请求代际由 useLifecycleStore.refresh 保证旧响应不覆盖新状态。
   useEffect(() => {
+    if (!active) {
+      // 隐藏期间设置可能变化，清空水位让下次显示重新读取真实状态。
+      queriedKeyRef.current = null;
+      return;
+    }
+    if (queriedKeyRef.current === settingsKey && !stale) return;
+    queriedKeyRef.current = settingsKey;
     void refresh();
-  }, [refresh, settingsKey]);
+  }, [active, refresh, settingsKey, stale]);
 
   const grouped = useMemo(() => {
     if (!statuses) return null;
@@ -139,26 +153,17 @@ export default function RuntimeModulesSection() {
           <h3 id="runtime-section-title">{t("resource.modules.title")}</h3>
           <p>{t("resource.modules.desc")}</p>
         </div>
-        <button
-          type="button"
-          className="btn sm"
-          onClick={() => void refresh()}
-          disabled={loading}
-          aria-label={t("resource.modules.refresh")}
-        >
-          {loading ? (
-            <Loader2 size={12} className="spin" aria-hidden="true" />
-          ) : (
-            <RefreshCw size={12} aria-hidden="true" />
-          )}{" "}
-          {t("resource.modules.refresh")}
-        </button>
       </header>
 
       {error && (
-        <p className="runtime-section-error" role="alert">
-          {t("resource.modules.error", { error })}
-        </p>
+        <div className="runtime-section-error" role="alert">
+          <p>{t("resource.modules.error", { error })}</p>
+          {/* 失败时的局部重试；正常刷新统一走页头，不设第二个常驻刷新按钮。 */}
+          <button type="button" className="btn sm" onClick={() => void refresh()} disabled={loading}>
+            <RefreshCw size={12} className={loading ? "spin" : undefined} aria-hidden="true" />{" "}
+            {t("common.retry")}
+          </button>
+        </div>
       )}
 
       {!grouped && loading && (

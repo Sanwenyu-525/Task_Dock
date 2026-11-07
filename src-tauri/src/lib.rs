@@ -583,6 +583,12 @@ pub fn run() {
                         // 只发给主窗；微件窗口走 `drag_watch` 的同一协议。
                         let win_for_drag = win.clone();
                         magnetic::register_drag_hook(Box::new(move |event| {
+                            // 低频（每次拖拽两条）：诊断日志用于核对相位是否送达前端。
+                            tracing::debug!(
+                                phase = ?event.phase,
+                                generation = event.generation,
+                                "window-drag 相位发出"
+                            );
                             let _ = win_for_drag.emit(drag_signal::DRAG_EVENT, event);
                         }));
                     }
@@ -953,6 +959,7 @@ pub fn run() {
             commands::system::apply_window_radius,
             commands::system::apply_window_capsule,
             commands::system::set_magnetic_drag_config,
+            commands::system::drag_loop_active,
             commands::system::set_magnetic_dock,
             commands::system::set_undock_anchor,
             commands::system::take_undock_anchor_applied,
@@ -962,6 +969,7 @@ pub fn run() {
             context_menu::hide_context_menu,
             context_menu::fit_context_menu,
             context_menu::context_menu_action,
+            context_menu::tab_menu_action_result,
             // 极简标签（Edge Tab）：独立悬停提示窗 + 标签旁快捷菜单入口
             tab_popups::show_tab_context_menu,
             tab_hint::show_tab_hint,

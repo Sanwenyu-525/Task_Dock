@@ -399,6 +399,8 @@ export interface Settings {
   // 模块独立启停（v0.5 整改）
   workspace_enabled: boolean;
   actions_enabled: boolean;
+  /** 行动中心临时暂停：只停自动聚合刷新与徽标，历史仍可手动查看。 */
+  actions_paused?: boolean;
   /**
    * 提醒调度暂停（v0.15）：暂停期间到期提醒保持未触发，恢复后按既有过期
    * 补偿语义补触发；任务/提醒数据不删除。旧库缺省为 false。
@@ -3698,6 +3700,7 @@ export const diagnosticsOpenDir = () => invoke<void>("diagnostics_open_dir");
 export type LifecycleState =
   | "running"
   | "pausing"
+  | "stopping"
   | "paused"
   | "stopped"
   | "idle"

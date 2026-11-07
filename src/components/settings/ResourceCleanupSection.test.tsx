@@ -5,7 +5,7 @@
 //! 概览与进程诊断已迁到资源管理页面，由 ResourceManagementPanel.test.tsx 覆盖。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   preview: vi.fn(),
@@ -117,12 +117,14 @@ describe("ResourceCleanupSection", () => {
         onSnapshotInvalidated={onSnapshotInvalidated}
       />,
     );
-    // 未扫描时向页面回报「无可清理量」而不是 0
-    expect(onPreviewChange).toHaveBeenLastCalledWith(null);
+    // 未扫描时向页面回报明确状态，而不是 0
+    expect(onPreviewChange).toHaveBeenLastCalledWith({ totalBytes: null, state: "unscanned" });
 
     fireEvent.click(screen.getByRole("button", { name: "settings.resourceCleanup.scan" }));
     expect(await screen.findByText("settings.resourceCleanup.categoriesTitle")).toBeTruthy();
-    await waitFor(() => expect(onPreviewChange).toHaveBeenLastCalledWith(8704));
+    await waitFor(() =>
+      expect(onPreviewChange).toHaveBeenLastCalledWith({ totalBytes: 8704, state: "partial" }),
+    );
     expect(screen.getByText("settings.resourceCleanup.error.temporarySourcesProtected")).toBeTruthy();
     expect(
       screen.getByRole("checkbox", { name: "settings.resourceCleanup.category.temporary" }),
@@ -152,6 +154,42 @@ describe("ResourceCleanupSection", () => {
     expect(screen.getAllByText(/settings.resourceCleanup.skipped\|\{"count":1\}/)).toHaveLength(1);
     // 执行完成后页面快照需要重采样（缓存与磁盘占用已变化）
     expect(onSnapshotInvalidated).toHaveBeenCalledTimes(1);
+    // 预览已被消费：旧估算立即失效，概览必须提示重新扫描
+    expect(onPreviewChange).toHaveBeenLastCalledWith({ totalBytes: null, state: "stale" });
+  });
+
+  it("预览 TTL 到期后上报失效，旧估算不再算作可清理量", async () => {
+    vi.useFakeTimers();
+    try {
+      const onPreviewChange = vi.fn();
+      mocks.preview.mockResolvedValueOnce({
+        ...PREVIEW,
+        expiresAt: new Date(Date.now() + 5_000).toISOString(),
+      });
+      render(<ResourceCleanupSection onPreviewChange={onPreviewChange} />);
+      fireEvent.click(screen.getByRole("button", { name: "settings.resourceCleanup.scan" }));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(onPreviewChange).toHaveBeenLastCalledWith({
+        totalBytes: 8704,
+        state: "partial",
+      });
+
+      await act(async () => {
+        vi.advanceTimersByTime(5_001);
+      });
+      expect(onPreviewChange).toHaveBeenLastCalledWith({ totalBytes: null, state: "stale" });
+      expect(screen.getByText("settings.resourceCleanup.expired")).toBeTruthy();
+      // 过期后不能执行清理
+      expect(screen.getByRole("button", { name: /settings.resourceCleanup.clean/ })).toHaveProperty(
+        "disabled",
+        true,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("扫描错误保持错误状态并可重新扫描", async () => {

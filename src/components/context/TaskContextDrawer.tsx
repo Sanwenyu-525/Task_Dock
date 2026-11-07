@@ -568,7 +568,7 @@ export default function TaskContextDrawer() {
               </span>
             </div>
             <div className="clip-head-actions">
-              <button className="icon-btn sm" onClick={() => void refresh()} title="刷新上下文" aria-label="刷新上下文">
+              <button className="icon-btn sm" onClick={() => void refresh()} data-tip="刷新上下文" aria-label="刷新上下文">
                 <RefreshCw size={12} />
               </button>
               <button className="icon-btn sm" onClick={close} data-tip="关闭" aria-label="关闭">
@@ -678,7 +678,7 @@ export default function TaskContextDrawer() {
                     </span>
                     <span className="flex-spacer" />
                     {restoringId && (
-                      <button className="btn sm" onClick={onCancelRestore} title="在项间取消">
+                      <button className="btn sm" onClick={onCancelRestore} data-tip="在项间取消">
                         停止恢复
                       </button>
                     )}
@@ -686,7 +686,7 @@ export default function TaskContextDrawer() {
                       className="btn sm"
                       onClick={onSaveScene}
                       disabled={!workspaceEnabled || busy === "save"}
-                      title={
+                      data-tip={
                         workspaceEnabled
                           ? "按任务关联目标与当前窗口保存现场"
                           : "工作现场模块已关闭，请在设置中开启"
@@ -698,7 +698,7 @@ export default function TaskContextDrawer() {
                       className="btn sm"
                       onClick={openCaptureDialog}
                       disabled={!workspaceEnabled || busy === "capture"}
-                      title={
+                      data-tip={
                         workspaceEnabled ? "选择当前窗口保存" : "工作现场模块已关闭，请在设置中开启"
                       }
                     >
@@ -739,7 +739,7 @@ export default function TaskContextDrawer() {
                             className="btn sm"
                             onClick={() => void onRestore(s)}
                             disabled={!workspaceEnabled || Boolean(restoringId) || busy === s.id}
-                            title={
+                            data-tip={
                               workspaceEnabled
                                 ? "恢复该现场（优先聚焦已存在窗口）"
                                 : "工作现场模块已关闭，请在设置中开启"
@@ -751,7 +751,7 @@ export default function TaskContextDrawer() {
                             className={`icon-btn sm ${confirmDelete === s.id ? "danger" : ""}`}
                             onClick={() => void onDelete(s)}
                             disabled={busy === s.id}
-                            title={confirmDelete === s.id ? "再次点击确认删除现场" : "删除现场"}
+                            data-tip={confirmDelete === s.id ? "再次点击确认删除现场" : "删除现场"}
                             aria-label={confirmDelete === s.id ? "确认删除现场" : "删除现场"}
                           >
                             {confirmDelete === s.id ? <Check size={12} /> : <Trash2 size={12} />}

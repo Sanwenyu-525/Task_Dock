@@ -7,7 +7,7 @@
 //! - `null` 百分比表示不可读：不画进度、不显示 0%，由调用方给「暂不可用」文案。
 
 import type { ReactNode } from "react";
-import type { PressureLevel } from "../../lib/resourceMetrics";
+import type { PressureLevel, UsageAnomaly } from "../../lib/resourceMetrics";
 import type { MessageKey } from "../../i18n";
 
 /** 压力等级 → i18n Key：概览/磁盘/内存共用同一套文案。 */
@@ -17,6 +17,25 @@ export const PRESSURE_LEVEL_KEYS: Record<PressureLevel, MessageKey> = {
   critical: "resource.level.critical",
   unknown: "resource.level.unknown",
 };
+
+/** 读数异常 → 状态文案：优先于等级文案，避免把矛盾读数说成「暂不可用」而不说明原因。 */
+const USAGE_ANOMALY_STATUS: Record<UsageAnomaly, MessageKey> = {
+  available_exceeds_total: "resource.level.anomaly",
+};
+
+/** 读数异常 → 详细说明（图表下方/aria 使用）。 */
+export const USAGE_ANOMALY_DETAIL: Record<UsageAnomaly, MessageKey> = {
+  available_exceeds_total: "resource.anomaly.availableExceedsTotal",
+};
+
+/** 图表状态文案：异常优先，其次才是压力等级。 */
+export function usageStatusKey(
+  level: PressureLevel,
+  anomaly: UsageAnomaly | null | undefined,
+): MessageKey {
+  if (anomaly) return USAGE_ANOMALY_STATUS[anomaly];
+  return PRESSURE_LEVEL_KEYS[level];
+}
 
 const LEVEL_CLASS: Record<PressureLevel, string> = {
   normal: "is-normal",

@@ -19,7 +19,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { Select, ConfirmDialog } from "../ui";
+import { Select, ConfirmDialog, EmptyState } from "../ui";
 import {
   PLANNING_PROJECT_STATUS_LABELS,
   type PlanningProject,
@@ -125,16 +125,25 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
   if (!projectsLoading && projects.length === 0 && !projectsError) {
     return (
       <div className="planning-projects" ref={rootRef}>
-        <div className="planning-empty-hero">
-          <h3>规划中心</h3>
-          <p>创建你的第一个项目：规划功能、拆分开发步骤、记录进度。</p>
-          <p className="planning-empty-sub">
-            Task Dock 自身的路线图在上方「内置路线图」中查看，两者互不影响。
-          </p>
-          <button className="btn primary" onClick={() => openEditor(null)}>
-            <FolderPlus size={14} aria-hidden="true" /> 新建项目
-          </button>
-        </div>
+        <EmptyState
+          framed
+          titleAs="h3"
+          title="规划中心"
+          icon={<FolderPlus size={22} aria-hidden="true" />}
+          hint={
+            <>
+              <p>创建你的第一个项目：规划功能、拆分开发步骤、记录进度。</p>
+              <p className="planning-empty-sub">
+                Task Dock 自身的路线图在上方「内置路线图」中查看，两者互不影响。
+              </p>
+            </>
+          }
+          action={
+            <button className="btn primary" onClick={() => openEditor(null)}>
+              <FolderPlus size={14} aria-hidden="true" /> 新建项目
+            </button>
+          }
+        />
       </div>
     );
   }

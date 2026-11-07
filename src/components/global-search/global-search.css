@@ -93,19 +93,16 @@
     }
   }
 
-  /* 分类筛选行 */
+  /* 分类筛选行：8 个分类在 400 宽下放不进一行。原实现横向滚动且隐藏
+     滚动条，最后一个分类被裁成「Ag…」且无任何提示（验收 UI-21）。
+     改为换行展示：多占约 28px 高度，但所有分类始终可见、可点。 */
   .gs-cats {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 4px;
     padding: 8px 12px 6px;
-    overflow-x: auto;
-    scrollbar-width: none;
     flex: none;
-  }
-
-  .gs-cats::-webkit-scrollbar {
-    display: none;
   }
 
   .gs-cat {

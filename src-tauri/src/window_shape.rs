@@ -2274,6 +2274,118 @@ mod tests {
     /// 水平停靠容器：宽 404（面板宽 340 与轨道长 400 都放得下），高 56+8+440。
     const CONTAINER_H_HORIZ: i32 = 504;
 
+    /// CSS → 物理像素：与前端 `toPhysical`（`round(css×scale)`，最小 1）一致。
+    fn container_physical(css: i32, scale: f64) -> i32 {
+        ((css as f64) * scale).round().max(1.0) as i32
+    }
+
+    /// 展开态面板必须完整包含在窗口内（四边 × 1.0/1.25/1.5 DPI）。
+    ///
+    /// 历史缺陷日志：`w=500 h=700 edge=0 px=80 py=75 pw=425 ph=550`
+    /// （1.25 DPI 下右边界超出 5px），面板被窗口裁掉。当前实现在越界时返回
+    /// `None`；本测试锁定「按容器尺寸撑窗后，四边、多 DPI 都必须成功，且面板
+    /// 四边不越界、尺寸不被钳小」的契约，防止再次退化成静默裁剪。
+    #[test]
+    fn expanded_panel_is_contained_on_all_edges_and_dpis() {
+        for scale in [1.0f64, 1.25, 1.5] {
+            for edge in 0u8..4 {
+                let horizontal = edge >= 2;
+                let (w, h) = if horizontal {
+                    (
+                        container_physical(CONTAINER_W, scale),
+                        container_physical(CONTAINER_H_HORIZ, scale),
+                    )
+                } else {
+                    (
+                        container_physical(CONTAINER_W, scale),
+                        container_physical(CONTAINER_H, scale),
+                    )
+                };
+                let set = capsule_regions(
+                    w,
+                    h,
+                    scale,
+                    &CapsuleParams {
+                        edge,
+                        expanded: true,
+                        ..CAP
+                    },
+                )
+                .unwrap_or_else(|| panic!("edge={edge} scale={scale} 容器 {w}x{h} 内展开必须成功"));
+                let panel = set
+                    .panel
+                    .unwrap_or_else(|| panic!("edge={edge} scale={scale} 展开态必须有面板"));
+                assert!(
+                    panel.x >= 0
+                        && panel.y >= 0
+                        && panel.x + panel.width <= w
+                        && panel.y + panel.height <= h,
+                    "edge={edge} scale={scale} 面板越界: panel=({}, {}, {}x{}) window={w}x{h}",
+                    panel.x,
+                    panel.y,
+                    panel.width,
+                    panel.height
+                );
+                // 面板必须保持设计尺寸：越界时唯一允许的结果是整体失败（None），
+                // 不能把面板钳小后仍报告成功。
+                assert_eq!(
+                    (panel.width, panel.height),
+                    (
+                        container_physical(CAPSULE_PANEL_WIDTH_CSS as i32, scale),
+                        container_physical(CAPSULE_PANEL_HEIGHT_CSS as i32, scale),
+                    ),
+                    "edge={edge} scale={scale} 面板不得被容器裁剪/缩小"
+                );
+                // 轨道轮廓（联合区域的另一半）同样不得越界。
+                for &(px, py) in &set.rail_polygon {
+                    assert!(
+                        (0..=w).contains(&px) && (0..=h).contains(&py),
+                        "edge={edge} scale={scale} 轨道轮廓越界 ({px},{py})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 容器差 1px 时展开必须整体失败（宁可展开失败也不能裁掉面板）。
+    ///
+    /// 关键维度是**堆叠轴**：垂直停靠为窗口宽（轨道+间隙+面板），水平停靠为
+    /// 窗口高。另一维只是面板尺寸的上限（`panel.min(window)`），减 1px 会把
+    /// 面板钳小而不会越界，因此不能用来验证拒绝契约。
+    #[test]
+    fn expanded_panel_rejects_window_below_container() {
+        for scale in [1.0f64, 1.25, 1.5] {
+            for edge in 0u8..4 {
+                let horizontal = edge >= 2;
+                let (w, h) = if horizontal {
+                    (
+                        container_physical(CONTAINER_W, scale),
+                        container_physical(CONTAINER_H_HORIZ, scale) - 1,
+                    )
+                } else {
+                    (
+                        container_physical(CONTAINER_W, scale) - 1,
+                        container_physical(CONTAINER_H, scale),
+                    )
+                };
+                assert!(
+                    capsule_regions(
+                        w,
+                        h,
+                        scale,
+                        &CapsuleParams {
+                            edge,
+                            expanded: true,
+                            ..CAP
+                        }
+                    )
+                    .is_none(),
+                    "edge={edge} scale={scale} 窗口 {w}x{h} 不足容器时必须返回 None"
+                );
+            }
+        }
+    }
+
     #[test]
     fn capsule_contract_matches_frontend_constants() {
         // 跨端契约：与 src/lib/capsuleLayout.ts 同一组数字（两端各有单测）

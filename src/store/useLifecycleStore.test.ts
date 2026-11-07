@@ -41,6 +41,7 @@ const BASE_SETTINGS = {
   shelf_auto_cleanup_enabled: true,
   reminders_paused: false,
   actions_enabled: true,
+  actions_paused: false,
   tts_enabled: false,
 } as unknown as Settings;
 
@@ -49,7 +50,10 @@ beforeEach(() => {
   bridge.lifecycleStatus.mockReset();
   bridge.updateSettings.mockReset();
   bridge.getSettings.mockReset();
-  bridge.updateSettings.mockResolvedValue(BASE_SETTINGS);
+  bridge.updateSettings.mockImplementation(async (patch: Partial<Settings>) => ({
+    ...BASE_SETTINGS,
+    ...patch,
+  }));
   bridge.getSettings.mockResolvedValue(BASE_SETTINGS);
   useSettingsStore.setState({ settings: BASE_SETTINGS });
 });
@@ -74,8 +78,8 @@ describe("useLifecycleStore", () => {
       .mockResolvedValueOnce([status("clipboard")])
       .mockResolvedValueOnce([status("clipboard", { state: "paused", intent: "paused" })]);
     await useLifecycleStore.getState().refresh();
-    const ok = await useLifecycleStore.getState().setPaused("clipboard", true);
-    expect(ok).toBe(true);
+    const result = await useLifecycleStore.getState().setPaused("clipboard", true);
+    expect(result).toBe("ok");
     expect(bridge.updateSettings).toHaveBeenCalledWith({ clipboard_paused: true });
     expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(2);
     expect(useLifecycleStore.getState().statuses?.[0].state).toBe("paused");
@@ -84,8 +88,8 @@ describe("useLifecycleStore", () => {
 
   it("开关型模块的暂停映射为关闭设置，不写反", async () => {
     bridge.lifecycleStatus.mockResolvedValue([status("shelf_cleanup")]);
-    const ok = await useLifecycleStore.getState().setPaused("shelf_cleanup", true);
-    expect(ok).toBe(true);
+    const result = await useLifecycleStore.getState().setPaused("shelf_cleanup", true);
+    expect(result).toBe("ok");
     expect(bridge.updateSettings).toHaveBeenCalledWith({
       shelf_auto_cleanup_enabled: false,
     });
@@ -114,8 +118,8 @@ describe("useLifecycleStore", () => {
   });
 
   it("不支持暂停的模块直接失败，不发写请求", async () => {
-    const ok = await useLifecycleStore.getState().setPaused("agents", true);
-    expect(ok).toBe(false);
+    const result = await useLifecycleStore.getState().setPaused("agents", true);
+    expect(result).toBe("failed");
     expect(bridge.updateSettings).not.toHaveBeenCalled();
     expect(useLifecycleStore.getState().errors.agents).toBeTruthy();
   });
@@ -124,10 +128,44 @@ describe("useLifecycleStore", () => {
     bridge.lifecycleStatus.mockResolvedValue([status("clipboard")]);
     await useLifecycleStore.getState().refresh();
     bridge.updateSettings.mockRejectedValue(new Error("数据库繁忙"));
-    const ok = await useLifecycleStore.getState().setPaused("clipboard", true);
-    expect(ok).toBe(false);
+    const result = await useLifecycleStore.getState().setPaused("clipboard", true);
+    expect(result).toBe("failed");
     expect(useLifecycleStore.getState().statuses?.[0].id).toBe("clipboard");
     expect(useLifecycleStore.getState().errors.clipboard).toBeTruthy();
+  });
+
+  it("写入成功但状态查询失败：返回 unconfirmed，不冒充暂停完成", async () => {
+    bridge.lifecycleStatus.mockResolvedValueOnce([status("clipboard")]);
+    await useLifecycleStore.getState().refresh();
+    bridge.lifecycleStatus.mockRejectedValueOnce(new Error("状态查询失败"));
+    const result = await useLifecycleStore.getState().setPaused("clipboard", true);
+    expect(result).toBe("unconfirmed");
+    expect(useLifecycleStore.getState().unconfirmed.clipboard).toBe(true);
+    expect(useLifecycleStore.getState().statuses?.[0].id).toBe("clipboard");
+    expect(bridge.updateSettings).toHaveBeenCalledWith({ clipboard_paused: true });
+  });
+
+  it("设置页修改后快照失效，旧响应不能覆盖新设置", async () => {
+    let resolveFirst!: (value: ModuleRuntimeStatus[]) => void;
+    bridge.lifecycleStatus.mockImplementationOnce(
+      () => new Promise<ModuleRuntimeStatus[]>((r) => (resolveFirst = r)),
+    );
+    const first = useLifecycleStore.getState().refresh();
+    // 其他入口（设置页/资源管理）写入：设置 Store 变化推进 revision
+    useSettingsStore.setState({
+      settings: { ...BASE_SETTINGS, actions_paused: true } as Settings,
+    });
+    expect(useLifecycleStore.getState().stale).toBe(true);
+    bridge.lifecycleStatus.mockResolvedValueOnce([
+      status("actions", { category: "task", state: "paused", intent: "paused" }),
+    ]);
+    resolveFirst([status("actions", { category: "task", state: "idle" })]);
+    await first;
+    await waitFor(() =>
+      expect(useLifecycleStore.getState().statuses?.[0].state).toBe("paused"),
+    );
+    expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(2);
+    expect(useLifecycleStore.getState().stale).toBe(false);
   });
 
   it("查询失败保留旧快照并暴露错误", async () => {

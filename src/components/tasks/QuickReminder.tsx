@@ -102,6 +102,7 @@ export default function QuickReminder() {
         <input
           className="quick-add-input input-embedded"
           placeholder={t("quickReminder.placeholder")}
+          aria-label={t("quickReminder.placeholder")}
           value={title}
           disabled={creating}
           maxLength={200}

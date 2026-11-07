@@ -22,7 +22,7 @@ import { createSubscriptionScope } from "../../lib/subscriptions";
 import { errorMessage } from "../../lib/errors";
 import { useScenarioStore, scenarioItemProgressKey, type ScenarioAsyncStatus } from "../../store/useScenarioStore";
 import ContextHelpButton from "../help/ContextHelpButton";
-import { Combobox, ConfirmDialog, SearchField, Select } from "../ui";
+import { Combobox, ConfirmDialog, EmptyState, SearchField, Select } from "../ui";
 import "./scenario-workspace.css";
 
 interface ScenarioDraft {
@@ -582,10 +582,11 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
       {refError ? <p className="wf-error-text" role="status">{refError}</p> : null}
       {loading && !loaded ? <p className="wf-empty-steps"><Loader2 size={13} className="spin" aria-hidden="true" /> 加载场景…</p> : null}
       {loaded && summaries.length === 0 ? (
-        <div className="wf-empty">
-          <p>还没有场景</p>
-          <p className="wf-hint-text">创建场景后，可以在工作流步骤中选择它。</p>
-        </div>
+        <EmptyState
+          framed
+          title="还没有场景"
+          hint="创建场景后，可以在工作流步骤中选择它。"
+        />
       ) : null}
       {loaded && summaries.length > 0 && filtered.length === 0 ? <p className="wf-empty-steps">没有匹配的场景。</p> : null}
 

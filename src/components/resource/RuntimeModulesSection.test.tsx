@@ -4,7 +4,7 @@
 //! 功能运行分区：只读状态展示、真实暂停写入、共享模块无按钮、过渡态如实显示。
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({
   lifecycleStatus: vi.fn(),
@@ -26,6 +26,7 @@ vi.mock("../../hooks/useLocale", () => ({
 
 import RuntimeModulesSection from "./RuntimeModulesSection";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { useUiStore } from "../../store/useUiStore";
 import { resetLifecycleStoreForTest, useLifecycleStore } from "../../store/useLifecycleStore";
 import type { ModuleRuntimeStatus, Settings } from "../../lib/bridge";
 
@@ -118,6 +119,32 @@ describe("RuntimeModulesSection", () => {
     expect(within(row).getByText("lifecycle.state.paused")).toBeTruthy();
   });
 
+  it("隐藏时正在进行的暂停操作仍会完成并更新真实状态", async () => {
+    let resolveUpdate!: (value: Settings) => void;
+    bridge.updateSettings.mockImplementationOnce(
+      () => new Promise<Settings>((resolve) => (resolveUpdate = resolve)),
+    );
+    bridge.lifecycleStatus
+      .mockResolvedValueOnce([status("clipboard")])
+      .mockResolvedValue([status("clipboard", { state: "paused", intent: "paused" })]);
+    const view = render(<RuntimeModulesSection active />);
+    const row = (await screen.findByText("lifecycle.module.clipboard.label")).closest(
+      "li",
+    ) as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /lifecycle\.pauseAria/ }));
+    await waitFor(() => expect(bridge.updateSettings).toHaveBeenCalledTimes(1));
+
+    // 页面隐藏不中断已发起的操作：写库完成后仍按真实状态刷新一次
+    view.rerender(<RuntimeModulesSection active={false} />);
+    await act(async () => {
+      resolveUpdate({ ...SETTINGS, clipboard_paused: true } as Settings);
+    });
+    await waitFor(() =>
+      expect(useLifecycleStore.getState().statuses?.[0].state).toBe("paused"),
+    );
+    expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("线程仍在收尾时显示 pausing，不提前报告已暂停", async () => {
     bridge.lifecycleStatus.mockResolvedValue([
       status("clipboard", { state: "pausing", intent: "paused" }),
@@ -127,12 +154,145 @@ describe("RuntimeModulesSection", () => {
     expect(screen.getByText("lifecycle.state.pausing")).toBeTruthy();
   });
 
-  it("状态查询失败显示真实错误并保留刷新入口", async () => {
+  it("状态查询失败显示真实错误并保留局部重试入口", async () => {
     bridge.lifecycleStatus.mockRejectedValue(new Error("IPC 失败"));
     render(<RuntimeModulesSection />);
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("resource.modules.error");
-    expect(screen.getByRole("button", { name: "resource.modules.refresh" })).toBeTruthy();
+    // 正常刷新统一走页头；这里只保留失败时的局部重试
+    expect(within(alert).getByRole("button", { name: "common.retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "resource.modules.refresh" })).toBeNull();
     expect(useLifecycleStore.getState().statuses).toBeNull();
+
+    bridge.lifecycleStatus.mockResolvedValue([status("clipboard")]);
+    fireEvent.click(within(alert).getByRole("button", { name: "common.retry" }));
+    expect(await screen.findByText("lifecycle.module.clipboard.label")).toBeTruthy();
+    expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("隐藏时不因设置变化发起查询，重新显示后读取最新状态", async () => {
+    bridge.lifecycleStatus.mockResolvedValue([status("clipboard")]);
+    const view = render(<RuntimeModulesSection active />);
+    await screen.findByText("lifecycle.module.clipboard.label");
+    expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(1);
+
+    // 页面隐藏（组件仍挂载），后台设置变化不产生新的状态查询
+    view.rerender(<RuntimeModulesSection active={false} />);
+    await act(async () => {
+      useSettingsStore.setState({
+        settings: { ...SETTINGS, clipboard_paused: true } as Settings,
+      });
+    });
+    expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(1);
+
+    // 重新显示：读取一次最新状态（可能已因外部入口改变）
+    view.rerender(<RuntimeModulesSection active />);
+    await waitFor(() => expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it("设置页/其他入口写入后，按钮意图立即按最新设置同步", async () => {
+    bridge.lifecycleStatus.mockResolvedValue([
+      status("actions", { category: "task", state: "idle" }),
+    ]);
+    render(<RuntimeModulesSection active />);
+    const row = (await screen.findByText("lifecycle.module.actions.label")).closest(
+      "li",
+    ) as HTMLElement;
+    expect(
+      within(row).getByRole("button", { name: /lifecycle\.pauseAria/ }),
+    ).toBeTruthy();
+
+    // 模拟设置页直接写 actions_paused：不等生命周期查询返回，按钮必须立刻变恢复。
+    await act(async () => {
+      useSettingsStore.setState({
+        settings: { ...SETTINGS, actions_paused: true } as Settings,
+      });
+    });
+    expect(
+      within(row).getByRole("button", { name: /lifecycle\.resumeAria/ }),
+    ).toBeTruthy();
+  });
+
+  it("设置页写入链成功后，其他入口按钮立即同步（走真实 update 队列）", async () => {
+    bridge.updateSettings.mockImplementation(async (patch: Partial<Settings>) => ({
+      ...SETTINGS,
+      ...patch,
+    }));
+    bridge.lifecycleStatus.mockResolvedValue([
+      status("actions", { category: "task", state: "idle" }),
+    ]);
+    render(<RuntimeModulesSection active />);
+    const row = (await screen.findByText("lifecycle.module.actions.label")).closest(
+      "li",
+    ) as HTMLElement;
+
+    await act(async () => {
+      await useSettingsStore.getState().update({ actions_paused: true });
+    });
+
+    expect(bridge.updateSettings).toHaveBeenCalledWith({ actions_paused: true });
+    expect(
+      within(row).getByRole("button", { name: /lifecycle\.resumeAria/ }),
+    ).toBeTruthy();
+  });
+
+  it("写库成功但状态查询失败：提示“未确认”，不冒充暂停完成", async () => {
+    bridge.updateSettings.mockImplementation(async (patch: Partial<Settings>) => ({
+      ...SETTINGS,
+      ...patch,
+    }));
+    bridge.lifecycleStatus
+      .mockResolvedValueOnce([status("clipboard")])
+      .mockRejectedValueOnce(new Error("状态查询失败"));
+    const toast = vi.fn();
+    useUiStore.setState({ showToast: toast });
+    render(<RuntimeModulesSection active />);
+    const row = (await screen.findByText("lifecycle.module.clipboard.label")).closest(
+      "li",
+    ) as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /lifecycle\.pauseAria/ }));
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    const [message, options] = toast.mock.calls[0];
+    expect(String(message)).toContain("lifecycle.statusUnconfirmed");
+    expect(options).toEqual({ kind: "warning" });
+    // 配置已写入 → 意图是暂停；但状态未确认，不能出现“成功”提示。
+    expect(
+      within(row).getByRole("button", { name: /lifecycle\.resumeAria/ }),
+    ).toBeTruthy();
+  });
+
+  it("长期停用模块不提供假恢复按钮，点击不写暂停字段", async () => {
+    bridge.lifecycleStatus.mockResolvedValue([
+      status("clipboard", { state: "stopped", intent: "stopped" }),
+    ]);
+    useSettingsStore.setState({
+      settings: {
+        ...SETTINGS,
+        clipboard_enabled: false,
+        clipboard_paused: true,
+      } as Settings,
+    });
+    render(<RuntimeModulesSection active />);
+    const row = (await screen.findByText("lifecycle.module.clipboard.label")).closest(
+      "li",
+    ) as HTMLElement;
+    const button = within(row).getByRole("button", { name: /lifecycle\.moduleDisabledAria/ });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(button);
+    expect(bridge.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("可见时相关设置变化才重查状态", async () => {
+    bridge.lifecycleStatus.mockResolvedValue([status("clipboard")]);
+    render(<RuntimeModulesSection active />);
+    await screen.findByText("lifecycle.module.clipboard.label");
+    expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      useSettingsStore.setState({
+        settings: { ...SETTINGS, clipboard_paused: true } as Settings,
+      });
+    });
+    await waitFor(() => expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(2));
   });
 });

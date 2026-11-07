@@ -16,6 +16,9 @@ import type { SnapEdge } from "./edgeSnap";
 
 /** 悬停提示是否已在屏幕上（仅用于隐藏去重的统计，不再阻断任何一次 hide）。 */
 let hintVisible = false;
+/** 已受理的提示文案/停靠边：同一次悬停里重复请求不再发 IPC；文案变化必须照发。 */
+let hintText: string | null = null;
+let hintEdge: SnapEdge | null = null;
 /**
  * 悬停会话代次：`show` 的 IPC 往返期间可能已经离开（hide 把标记清掉），
  * 迟到的结果显示不得把标记重新置真，否则下一次悬停会被去重门挡住、静默不弹。
@@ -25,33 +28,41 @@ let hintSession = 0;
 /** 仅测试用：复位模块级缓存，避免用例之间互相影响。 */
 export function resetEdgeTabActionState(): void {
   hintVisible = false;
+  hintText = null;
+  hintEdge = null;
   hintSession += 1;
 }
 
 /**
  * 显示悬停提示：`text` 为空时不显示（未加载状态不得伪装成有状态）。
  *
+ * 去重只针对**同一次悬停里的同文案例行调用**（组件重渲染、连续事件）：
+ * 文案变化（Agent 状态 running → waiting …）必须重新发请求，由后端推进代次、
+ * 前端重新测量，提示条原地更新而不是先隐藏再闪现。
+ *
  * 去重标记以后端**真实返回**为准：后端因标签几何缺失等原因没进入显示流程时，
  * 标记保持 false，下一次悬停仍会尝试——不会出现「一次失败后永远不弹」。
  */
-/**
- * 显示悬停提示：`text` 为空时不显示（未加载状态不得伪装成有状态）。
- *
- * 返回后端是否受理本次请求（受理 = 已进入显示事务，等待前端测量回传）。
- * 同文案重复调用也必须重新发请求：后端每次都会推进显示代次。
- */
 export async function showTabHint(edge: SnapEdge, text: string): Promise<boolean> {
   if (!isTauri() || !text) return false;
-  if (hintVisible) return true;
+  if (hintVisible && hintEdge === edge && hintText === text) return true;
   const session = ++hintSession;
   try {
     const accepted = (await invokeCommand<boolean>("show_tab_hint", { edge, text })) === true;
     // 只认本轮会话的结果：期间已经 hide 过就不要复活标记
-    if (session === hintSession) hintVisible = accepted;
+    if (session === hintSession) {
+      hintVisible = accepted;
+      hintText = accepted ? text : null;
+      hintEdge = accepted ? edge : null;
+    }
     return accepted;
   } catch {
     // 提示窗不可用（例如旧后端未注册命令）：保持沉默，标签交互不受影响
-    if (session === hintSession) hintVisible = false;
+    if (session === hintSession) {
+      hintVisible = false;
+      hintText = null;
+      hintEdge = null;
+    }
     return false;
   }
 }

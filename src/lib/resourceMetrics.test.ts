@@ -76,11 +76,17 @@ describe("computeUsage 非法输入", () => {
     expect(computeUsage(null, null).level).toBe("unknown");
   });
 
-  it("可用量大于总量 → 夹紧为已用 0，不出负值", () => {
+  it("可用量大于总量 → 标记读数异常，不解释成 0% 正常", () => {
     const metric = computeUsage(100, 200);
-    expect(metric.availableBytes).toBe(100);
-    expect(metric.usedBytes).toBe(0);
-    expect(metric.usedPercent).toBe(0);
+    // 原始读数作为证据保留，不做静默夹紧
+    expect(metric.availableBytes).toBe(200);
+    expect(metric.totalBytes).toBe(100);
+    expect(metric.usedBytes).toBeNull();
+    expect(metric.usedPercent).toBeNull();
+    expect(metric.level).toBe("unknown");
+    expect(metric.anomaly).toBe("available_exceeds_total");
+    // 正常数据不带异常标记
+    expect(computeUsage(100, 50).anomaly).toBeNull();
   });
 
   it("负数与 NaN / Infinity → unknown", () => {
@@ -102,8 +108,8 @@ describe("computeUsage 非法输入", () => {
     const metric = computeUsage(ONE_TB, ONE_TB - 1024);
     expect(metric.usedPercent).toBeGreaterThan(0);
     expect(metric.usedPercent).toBeLessThan(0.001);
-    // 展示层四舍五入为 0.0% 是格式问题，底层数值仍 > 0
-    expect(formatPercent(metric.usedPercent)).toBe("0.0%");
+    // 底层数值 > 0，展示为「<0.1%」，不能写成 0.0%
+    expect(formatPercent(metric.usedPercent)).toBe("<0.1%");
   });
 });
 
@@ -117,11 +123,36 @@ describe("百分比格式与工具", () => {
     expect(clampPercent(66.666)).toBeCloseTo(66.666, 6);
   });
 
-  it("formatPercent 一位小数，未知返回 null", () => {
+  it("formatPercent 向零截断：展示值不跨过 80/90 阈值", () => {
     expect(formatPercent(89.34)).toBe("89.3%");
-    expect(formatPercent(89.96)).toBe("90.0%");
+    // 四舍五入会得到 90.0%，但真实等级仍是「关注」；展示必须与等级一致
+    expect(formatPercent(89.96)).toBe("89.9%");
+    expect(formatPercent(79.94)).toBe("79.9%");
+    expect(formatPercent(79.96)).toBe("79.9%");
+    expect(formatPercent(80)).toBe("80.0%");
+    expect(formatPercent(89.94)).toBe("89.9%");
+    expect(formatPercent(90)).toBe("90.0%");
+    expect(formatPercent(99.96)).toBe("99.9%");
+    expect(formatPercent(100)).toBe("100.0%");
+    // 真实 0 显示 0.0%；极小非零显示 <0.1%，未知显示 null（不是 0%）
     expect(formatPercent(0)).toBe("0.0%");
+    expect(formatPercent(0.04)).toBe("<0.1%");
+    expect(formatPercent(Number.NaN)).toBeNull();
     expect(formatPercent(null)).toBeNull();
+  });
+
+  it("每个展示值与真实等级都不冲突（含阈值边界）", () => {
+    const samples = [
+      0, 0.001, 0.04, 0.05, 33.333, 50, 79.9, 79.94, 79.96, 79.99, 80, 80.04,
+      89.9, 89.94, 89.96, 89.99, 90, 90.04, 99.96, 100,
+    ];
+    for (const value of samples) {
+      const shown = formatPercent(value);
+      expect(shown).not.toBeNull();
+      const shownValue = Number.parseFloat(shown!.replace("<", ""));
+      if (shown!.startsWith("<")) continue;
+      expect(pressureLevel(shownValue)).toBe(pressureLevel(value));
+    }
   });
 
   it("proportionPercent 分母非法返回 null", () => {

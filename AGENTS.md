@@ -45,6 +45,29 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；能力与当前状态见 [REA
   `src/store/useUiStore.ts`、`src-tauri/src/lib.rs`、`src-tauri/src/commands/mod.rs`、
   `src-tauri/src/db/mod.rs`）、SQLite 迁移与构建缓存同一时刻只允许一个所有者；跨范围改动由
   主 Agent 串行集成并负责最终验收。子 Agent 越界写入、覆盖他人改动或自行清理缓存均视为事故。
+  **Worktree 隔离不改变上述所有权与并行上限，也不消除代码冲突。**
+- **Worktree 隔离**：单 Agent 独占且无并行冲突的简单任务可复用主工作树；多 Agent 同时开发、
+  任务长时间占用构建/测试、改动跨模块、需在稳定提交上复现或并行真机验收时，必须一任务一
+  Worktree。开发前先确认身份与隔离：
+  `git rev-parse --show-toplevel`、`git branch --show-current`、`git status --short`；
+  发现其他 Agent 正在同一工作树写入时停止写入并报告，不得继续直接修改共享工作目录。
+  - 创建：`node scripts/worktree-guard.mjs create --task <task>`；任务名用小写短横线英文，
+    分支默认 `agent/<task>`，目录默认仓库同级 `<仓库名>-worktrees/<task>`。不得覆盖已存在
+    目录、不得复用其他 Agent 的任务分支；创建失败保留现场并报告。
+  - 依赖与缓存：仅当 `package.json` 与 `package-lock.json` 完全一致时才可
+    `--link-node-modules`；Rust 构建用绝对路径 `CARGO_TARGET_DIR` 指向主仓库
+    `src-tauri/target-<task>`，并按 `build-guard register/cleanup` 登记与回收，不得让每个
+    Worktree 默认生成独立大型 Rust 缓存。
+  - 主工作区只承担集成、验收与稳定版本管理；不同 Agent 不得并行写入同一 Worktree。
+  - 集成：在 Worktree 内提交并按授权复测 → `node scripts/worktree-guard.mjs check --task <task>`
+    检查合并冲突、与目标工作区未提交文件的重叠、ahead/behind → 主 Agent 按顺序合并到目标
+    分支 → 合并后复测。未提交修改不得当作已集成代码，也不得用 merge/rebase 自动覆盖冲突。
+  - 清理：默认 `cleanup --task <task>` 只做 dry-run；仅当 Worktree 干净（无修改/未跟踪/冲突）、
+    HEAD 已合入目标分支、未锁定且有证据确认无其他 Agent 使用时，才可 `--execute`（删除本地
+    任务分支需显式 `--delete-branch`）。目录缺失、锁定、未合入或占用时一律拒绝，不自动
+    `prune`、不强制解锁、不删除未知任务分支。
+  - 异常：Worktree 路径/分支/状态无法确认时保留现场并上报；冲突处理仍遵循「先读双方 diff、
+    确认意图与影响面」，无法安全合并时停止，不猜测丢弃任何一方。
 - 不覆盖其他 Agent 的日志、截图、验收报告；新证据使用独立文件名（含日期）；历史结论被推翻时
   保留旧文件并新增更正记录。未经授权不批量 `git rm --cached`、不删除构建目录或验收目录；
   发现应清理项时列路径、体量与建议命令等待授权，最终如实列出本次实际修改、新增、删除的文件；
@@ -140,6 +163,43 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；能力与当前状态见 [REA
 - 性能红线：Agent 队列有界且过载返回可重试错误；轮询/订阅不重复，窗口隐藏/恢复不重复全量刷新；
   定时器、监听器、后台任务、线程/句柄退出或取消时释放；大事件/历史/图片下内存与 CPU 有平台期；
   IPC 高频通信合并、节流或单飞；异常恢复、取消、超时、强杀后状态正确（不清空用户数据）。
+
+### UI 开发 Skill 路由
+- **UI 变更先查 Skill。** 先查看本 Agent 已发现的 Skills 清单，公共来源 `%USERPROFILE%/.agents/skills`，
+  项目本地在 `.agents/skills/`；普通任务只查相关条目，不反复全盘扫描。实际读取匹配的 `SKILL.md`，
+  按其真实 description、When to Apply 和适用流程执行；不得仅凭名称宣称已使用。不适用时说明原因
+  并跳过；不完整或不可访问时报告具体问题，不能假装加载成功。这些是开发工具 Skill，不是产品
+  运行时能力。
+- **按任务组合 Skill。** 下表是优先路由，不要求全部加载；相似 Skill 选一个主 Skill，其余只补充
+  本次检查；`impeccable` 的 audit/polish 等是子命令，不是独立 Skill。
+
+| 开发任务 | 优先读取的 Skill ID / 使用边界 |
+|---|---|
+| 新增页面、重新设计 UI | `frontend-design` + `ui-ux-pro-max`；设置、资源、规划等工作台页也可用 `impeccable` 作主设计 Skill |
+| 现有页面视觉精修 | `impeccable`（polish / critique）；仅在适用页面加入 `design-taste-frontend` |
+| 排版、间距、颜色、视觉层级 | `ui-ux-pro-max` + 适用的 Taste；产品 UI 可用 `impeccable` typeset / layout |
+| Tooltip、Popover、右键菜单、悬浮层 | `impeccable`；涉及动效再加入 `emil-design-eng` / `animate` |
+| 加载、切换、展开收起、过渡动画 | `animate`；审查现有动效用 `review-animations`，性能问题用 `animation-performance` |
+| Agent 过程态、完成态、状态转换 UI | `impeccable` + 适用的 Emil 动效 Skill，保留既定业务状态语义 |
+| React 组件开发、重构、性能优化 | `vercel-react-best-practices`，只应用当前 React/Vite/Tauri 栈适用条目 |
+| Web 交互、无障碍和界面规范检查 | `web-design-guidelines`；按其要求读取当前规则来源 |
+| 完整前端页面交付 | 一个主设计 Skill + React Skill + UI 审查 Skill；动态交互增加动效及状态过渡检查 |
+| 验收、性能审计、整改提示词 | 项目本地 Skill 优先：`taskdock-ui-acceptance`（视觉/原生窗口专项）、`taskdock-acceptance`（功能链路与回归）、`taskdock-performance-audit`（常驻资源）、`taskdock-remediation-prompt`（仅生成提示词） |
+| 纯后端、数据库、API；仅文档修改 | 不强制前端 Skill，按内容选择 |
+
+- **项目规范优先于 Skill。** 视觉与交互先遵循 `docs/ui-themes/`（设计规格、交互规范、组件 API、
+  胶囊重设计）与第 4/8 节红线：语义 Token、`overlayStack.ts` 层级、`data-tip`/`aria-label`、
+  320/400 窄窗与 DPI 覆盖。`design-taste-frontend` 以当前版为准（含 dashboard/settings 等
+  app-screen 专门流程），v1 仅在需要保持旧版行为时显式使用。Skill 不得推翻用户要求、确认的
+  参考图、既有交互约束或 Token 体系，不得另造设计语言；候选 Skill 只有资源完整且适用时才可
+  使用。UI 改动至少完成一次适用的设计规范检查；动态交互增加动效/状态检查，React 行为增加
+  工程质量检查。
+- **精修不改契约，Skill 不替代真机。** 视觉精修不得无故修改业务逻辑、状态语义、测试选择器或
+  API；贴边吸附、拖拽、DPI、多显示器、系统剪贴板等原生窗口行为按第 7 节 A–F 路由验收，
+  Skill 指导与浏览器预览截图不能替代原生证据。
+- **跨 Agent 共享。** Codex、ZCode 等不同工具的全局 Skill 目录可能不同，不得假设沿用自己的
+  目录；以公共来源与项目本地 `.agents/skills/` 为准，文件可读、自动发现、实际调用分开记录。
+  不同步、不覆盖他人 Skill 目录；确需同步先 dry-run，同名异版先比较并备份，不静默覆盖。
 
 ## 9. 文档维护
 - 归属：架构 → `docs/ARCHITECTURE.md`；开发/命令 → `docs/DEVELOPMENT.md`；测试 →

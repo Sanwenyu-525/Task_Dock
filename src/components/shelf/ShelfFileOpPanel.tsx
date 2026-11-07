@@ -306,7 +306,7 @@ export default function ShelfFileOpPanel({
         className={`shelf-fileop-dir${targetDir === d.path ? " is-active" : ""}`}
         aria-pressed={targetDir === d.path}
         aria-label={`使用目标目录 ${d.path}`}
-        title={d.path}
+        data-tip={d.path}
         disabled={!d.available || busy || dirsBusy}
         onClick={() => setTargetDir(d.path)}
       >

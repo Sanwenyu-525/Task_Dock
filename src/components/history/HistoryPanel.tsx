@@ -29,7 +29,7 @@ import {
 import { useUiStore } from "../../store/useUiStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
-import { ConfirmDialog, Select } from "../ui";
+import { ConfirmDialog, EmptyState, Select } from "../ui";
 import { NOTIFICATION_KIND_LABELS, AGENT_STATE_LABELS, formatRelative } from "../../lib/format";
 import { groupHistory } from "../../lib/historyGroup";
 import { useLocale } from "../../hooks/useLocale";
@@ -385,7 +385,13 @@ export default function HistoryPanel() {
           {tr("history.unread", { unread, total: inboxTotal })}
         </span>
         <span className="flex-spacer" />
-        <button className="btn sm" onClick={onMarkAll} disabled={unread === 0} title={tr("history.markAllTip")}>
+        <button
+          className="btn sm"
+          onClick={onMarkAll}
+          disabled={unread === 0}
+          data-tip={tr("history.markAllTip")}
+          aria-label={tr("history.markAll")}
+        >
           <CheckCheck size={12} /> {tr("history.markAll")}
         </button>
         <button className="btn sm" onClick={() => setConfirmClear(true)} data-tip={tr("history.clearTip")}>
@@ -403,15 +409,15 @@ export default function HistoryPanel() {
       {/* 时间轴 */}
       {!loaded && <div className="empty-hint">{tr("history.loading")}</div>}
       {loaded && total === 0 && (
-        <div className="empty-state">
-          <div className="empty-icon"><Inbox size={22} /></div>
-          <div className="empty-title">{filtering ? tr("history.emptyFiltered") : tr("history.empty")}</div>
-          <div className="empty-hint">
-            {filtering
+        <EmptyState
+          icon={<Inbox size={22} />}
+          title={filtering ? tr("history.emptyFiltered") : tr("history.empty")}
+          hint={
+            filtering
               ? `筛选范围内共 ${eventsTotal} 条 Agent 事件、${notificationsTotal} 条通知；可调整来源/时间/类型。`
-              : "任务提醒与 Agent 事件会在这里按日期归档"}
-          </div>
-        </div>
+              : "任务提醒与 Agent 事件会在这里按日期归档"
+          }
+        />
       )}
       {groups.map((g) => (
         <div key={g.label} className="history-day">

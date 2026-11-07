@@ -37,6 +37,8 @@ vi.mock("../../hooks/useLocale", () => ({
 }));
 
 import ResourceManagementPanel from "./ResourceManagementPanel";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import type { Settings } from "../../lib/bridge";
 
 const SNAPSHOT = {
   sampledAt: "2026-11-06T00:00:00.000Z",
@@ -105,6 +107,7 @@ function tab(name: string) {
 }
 
 beforeEach(() => {
+  mocks.lifecycleStatus.mockReset().mockResolvedValue([]);
   mocks.snapshot.mockReset().mockResolvedValue(SNAPSHOT);
   mocks.processDiagnostics.mockReset().mockResolvedValue({
     sampledAt: "2026-11-06T00:00:00.000Z",
@@ -158,7 +161,47 @@ beforeEach(() => {
   mocks.cleanupPreview.mockReset().mockResolvedValue(PREVIEW);
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // 这个测试会改全局设置 Store；还原避免影响后续用例。
+  useSettingsStore.setState({ settings: null });
+});
+
+/** 两轮进程诊断只改 WebView2 工作集，用来证明内存页刷新真的重取了进程数据。 */
+function diagnosticsWithWebview(workingSetBytes: number) {
+  return {
+    sampledAt: "2026-11-06T00:00:00.000Z",
+    cpuWindowMs: 200,
+    supported: true,
+    truncated: false,
+    omittedExternal: 0,
+    omittedUnknown: 0,
+    processes: [
+      {
+        pid: 4242,
+        name: "task-dock.exe",
+        association: "self",
+        associationBasis: "self",
+        cpuPercent: 1.5,
+        workingSetBytes: 104857600,
+        privateBytes: 52428800,
+        uptimeSecs: 3725,
+        status: "normal",
+      },
+      {
+        pid: 5000,
+        name: "msedgewebview2.exe",
+        association: "managed_child",
+        associationBasis: "parent_chain",
+        cpuPercent: 0.4,
+        workingSetBytes,
+        privateBytes: 20971520,
+        uptimeSecs: 3700,
+        status: "normal",
+      },
+    ],
+  };
+}
 
 describe("ResourceManagementPanel", () => {
   it("默认进入概览，切换分区不重复请求资源快照", async () => {
@@ -583,6 +626,106 @@ describe("ResourceManagementPanel", () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
+  it("重采样期间触发新一轮目录读取：旧请求结算不会提前解锁", async () => {
+    let resolveRelease!: (value: unknown) => void;
+    let resolveRescan!: (value: unknown) => void;
+    let resolveRefresh!: (value: unknown) => void;
+    const catalog = (totalBytes: number) => ({
+      sampledAt: "2026-11-06T00:00:00.000Z",
+      totalBytes,
+      sources: [{ id: "tts_memory", entries: 2, bytes: totalBytes, status: "available" }],
+    });
+    mocks.memoryRelease.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveRelease = resolve)),
+    );
+    // 首次读取成功 → 释放后的重采样挂起 → 页头刷新发起的新请求也挂起
+    mocks.memoryCatalog
+      .mockResolvedValueOnce(catalog(1024))
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveRescan = resolve)))
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveRefresh = resolve)));
+    const button = await openMemoryTab();
+
+    await act(async () => {
+      button.click();
+    });
+    await waitFor(() => expect(mocks.memoryRelease).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveRelease({
+        sampledAt: "2026-11-06T00:00:01.000Z",
+        releasedBytes: 1024,
+        sources: [{ id: "tts_memory", entries: 2, bytes: 1024 }],
+      });
+    });
+    await waitFor(() => expect(mocks.memoryCatalog).toHaveBeenCalledTimes(2));
+    expect(button.disabled).toBe(true);
+
+    // 页头刷新：新一轮读取开始（旧请求被顶替，但仍会正常结算）
+    fireEvent.click(screen.getByRole("button", { name: "resource.refresh" }));
+    await waitFor(() => expect(mocks.memoryCatalog).toHaveBeenCalledTimes(3));
+
+    // 释放事务等待的旧请求结算：新请求仍在途，锁不能放开
+    await act(async () => {
+      resolveRescan(catalog(512));
+    });
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(mocks.memoryRelease).toHaveBeenCalledTimes(1);
+
+    // 最新请求结算后目录已更新，才允许下一次合法释放
+    await act(async () => {
+      resolveRefresh(catalog(512));
+    });
+    await waitFor(() => expect(button.disabled).toBe(false));
+    await act(async () => {
+      button.click();
+    });
+    await waitFor(() => expect(mocks.memoryRelease).toHaveBeenCalledTimes(2));
+  });
+
+  it("重采样期间卸载：迟到结果不写状态、不产生 React 警告", async () => {
+    let resolveRelease!: (value: unknown) => void;
+    let resolveRescan!: (value: unknown) => void;
+    mocks.memoryRelease.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveRelease = resolve)),
+    );
+    mocks.memoryCatalog
+      .mockResolvedValueOnce({
+        sampledAt: "2026-11-06T00:00:00.000Z",
+        totalBytes: 1024,
+        sources: [{ id: "tts_memory", entries: 2, bytes: 1024, status: "available" }],
+      })
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveRescan = resolve)));
+    const view = render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    fireEvent.click(tab("resource.segment.memory"));
+    const button = await screen.findByRole("button", { name: "resource.memory.release" });
+
+    await act(async () => {
+      button.click();
+    });
+    await waitFor(() => expect(mocks.memoryRelease).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveRelease({
+        sampledAt: "2026-11-06T00:00:01.000Z",
+        releasedBytes: 1024,
+        sources: [],
+      });
+    });
+    await waitFor(() => expect(mocks.memoryCatalog).toHaveBeenCalledTimes(2));
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    view.unmount();
+    await act(async () => {
+      resolveRescan({
+        sampledAt: "2026-11-06T00:00:02.000Z",
+        totalBytes: 0,
+        sources: [],
+      });
+    });
+    // useAsyncResource 在卸载后跳过状态提交；finally 也只在挂载时 setState。
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
   it("概览环形：百分比与数据一致，并按阈值给出状态", async () => {
     mocks.snapshot.mockResolvedValue({
       ...SNAPSHOT,
@@ -757,5 +900,229 @@ describe("ResourceManagementPanel", () => {
     expect(screen.getByText("resource.overview.cacheUnscanned")).toBeTruthy();
     expect(screen.getByText("resource.overview.cleanableUnknown")).toBeTruthy();
     expect(screen.queryByText("0 B")).toBeNull();
+  });
+
+  // ── 五个分区的刷新闭环与隐藏分区（2026-11-07）────────────────────
+
+  it("功能运行分区：页头刷新重新查询生命周期状态", async () => {
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    fireEvent.click(tab("resource.segment.modules"));
+    await waitFor(() => expect(mocks.lifecycleStatus).toHaveBeenCalledTimes(1));
+
+    const refresh = screen.getByRole("button", { name: "resource.refresh" });
+    await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(refresh);
+
+    await waitFor(() => expect(mocks.lifecycleStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(2));
+    // 分区内部不再放第二个常驻刷新按钮
+    const modulesPanel = document.getElementById("resource-panel-modules") as HTMLElement;
+    expect(within(modulesPanel).queryByRole("button", { name: "resource.modules.refresh" })).toBeNull();
+  });
+
+  it("隐藏的功能运行分区不因设置变化查询，返回时重新读取", async () => {
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    fireEvent.click(tab("resource.segment.modules"));
+    await waitFor(() => expect(mocks.lifecycleStatus).toHaveBeenCalledTimes(1));
+
+    // 离开分区但保持挂载
+    fireEvent.click(tab("resource.segment.disk"));
+    await waitFor(() => expect(mocks.diskUsage).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      useSettingsStore.setState({
+        settings: { clipboard_paused: true } as unknown as Settings,
+      });
+    });
+    expect(mocks.lifecycleStatus).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(tab("resource.segment.modules"));
+    await waitFor(() => expect(mocks.lifecycleStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it("内存页刷新：重新读取进程数据并更新 WebView2 工作集", async () => {
+    mocks.processDiagnostics
+      .mockResolvedValueOnce(diagnosticsWithWebview(30 * 1024 * 1024))
+      .mockResolvedValueOnce(diagnosticsWithWebview(40 * 1024 * 1024));
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    fireEvent.click(tab("resource.segment.memory"));
+
+    const memoryPanel = document.getElementById("resource-panel-memory") as HTMLElement;
+    await waitFor(() => expect(mocks.processDiagnostics).toHaveBeenCalledTimes(1));
+    const cards = memoryPanel.querySelectorAll(".resource-metric");
+    expect(cards).toHaveLength(3);
+    const webviewCard = cards[2] as HTMLElement;
+    await waitFor(() => expect(within(webviewCard).getByText("30.0 MB")).toBeTruthy());
+    await waitFor(() => expect(mocks.memoryCatalog).toHaveBeenCalledTimes(1));
+
+    const refresh = screen.getByRole("button", { name: "resource.refresh" });
+    await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(refresh);
+
+    await waitFor(() => expect(mocks.processDiagnostics).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(webviewCard).getByText("40.0 MB")).toBeTruthy());
+    // 目录也按同一入口刷新；快照指标保持可用
+    await waitFor(() => expect(mocks.memoryCatalog).toHaveBeenCalledTimes(2));
+    expect(within(cards[0] as HTMLElement).getByText("100.0 MB")).toBeTruthy();
+  });
+
+  it("内存页刷新时进程读取失败：显示未知并可重试，不清空其他指标", async () => {
+    mocks.processDiagnostics
+      .mockResolvedValueOnce(diagnosticsWithWebview(30 * 1024 * 1024))
+      .mockRejectedValueOnce({ code: "UNKNOWN_ERROR" });
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    fireEvent.click(tab("resource.segment.memory"));
+
+    const memoryPanel = document.getElementById("resource-panel-memory") as HTMLElement;
+    await waitFor(() => expect(mocks.processDiagnostics).toHaveBeenCalledTimes(1));
+    const cards = memoryPanel.querySelectorAll(".resource-metric");
+    const webviewCard = cards[2] as HTMLElement;
+    await waitFor(() => expect(within(webviewCard).getByText("30.0 MB")).toBeTruthy());
+
+    const refresh = screen.getByRole("button", { name: "resource.refresh" });
+    await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(refresh);
+    await waitFor(() => expect(mocks.processDiagnostics).toHaveBeenCalledTimes(2));
+
+    // 失败不保留旧值冒充新值；其他成功读取的指标不变
+    await waitFor(() =>
+      expect(within(webviewCard).getByText("resource.memory.webviewFailed")).toBeTruthy(),
+    );
+    expect(within(webviewCard).getByText("settings.resourceCleanup.unavailable")).toBeTruthy();
+    expect(within(webviewCard).queryByText("30.0 MB")).toBeNull();
+    expect(
+      within(webviewCard).getByRole("button", { name: "common.retry" }),
+    ).toBeTruthy();
+    expect(within(cards[0] as HTMLElement).getByText("100.0 MB")).toBeTruthy();
+  });
+
+  it("部分统计且 0 B：概览不把 0 B 当作确认无可清理", async () => {
+    mocks.cleanupPreview.mockResolvedValue({
+      ...PREVIEW,
+      totalEstimatedBytes: 0,
+      totalCandidates: 0,
+      categories: [
+        {
+          category: "temporary",
+          status: "partial",
+          candidates: 0,
+          estimatedBytes: 0,
+          protectedFiles: 0,
+          skippedFiles: 3,
+          errorCode: "SCAN_UNAVAILABLE",
+        },
+        {
+          category: "tts",
+          status: "ready",
+          candidates: 0,
+          estimatedBytes: 0,
+          protectedFiles: 0,
+          skippedFiles: 0,
+        },
+        {
+          category: "orphan_thumbnails",
+          status: "ready",
+          candidates: 0,
+          estimatedBytes: 0,
+          protectedFiles: 0,
+          skippedFiles: 0,
+        },
+      ],
+    });
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    fireEvent.click(tab("resource.segment.disk"));
+    fireEvent.click(screen.getByRole("button", { name: "settings.resourceCleanup.scan" }));
+    await screen.findByText("settings.resourceCleanup.categoriesTitle");
+    fireEvent.click(tab("resource.segment.overview"));
+
+    const overview = document.getElementById("resource-panel-overview") as HTMLElement;
+    expect(within(overview).getByText("resource.overview.cleanableZeroPartial")).toBeTruthy();
+    expect(within(overview).getByText("resource.overview.cleanablePartialNote")).toBeTruthy();
+  });
+
+  it("预览过期后概览提示重新扫描，重新扫描后显示新估算", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.cleanupPreview
+        .mockResolvedValueOnce({
+          ...PREVIEW,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        })
+        .mockResolvedValueOnce({
+          ...PREVIEW,
+          previewId: "preview-2",
+          totalEstimatedBytes: 4096,
+          // 重新扫描的预览必须仍然有效（时钟在用例中已推进过）
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        });
+      const flush = async () => {
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      };
+      render(<ResourceManagementPanel />);
+      await flush();
+
+      fireEvent.click(tab("resource.segment.disk"));
+      await flush();
+      fireEvent.click(screen.getByRole("button", { name: "settings.resourceCleanup.scan" }));
+      await flush();
+
+      fireEvent.click(tab("resource.segment.overview"));
+      await flush();
+      const overview = document.getElementById("resource-panel-overview") as HTMLElement;
+      expect(within(overview).getByText("8.5 KB")).toBeTruthy();
+
+      // TTL 到点：概览不再显示旧估算
+      await act(async () => {
+        vi.advanceTimersByTime(60_001);
+      });
+      expect(within(overview).getByText("resource.overview.cleanableStale")).toBeTruthy();
+      expect(within(overview).queryByText("8.5 KB")).toBeNull();
+
+      fireEvent.click(tab("resource.segment.disk"));
+      fireEvent.click(screen.getByRole("button", { name: "settings.resourceCleanup.rescan" }));
+      await flush();
+      fireEvent.click(tab("resource.segment.overview"));
+      await flush();
+      expect(within(overview).getByText("4.0 KB")).toBeTruthy();
+      expect(within(overview).queryByText("resource.overview.cleanableStale")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("五个分区 Tab 全部渲染，并支持方向键 / Home / End", async () => {
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    for (const id of ["overview", "modules", "disk", "memory", "process"]) {
+      expect(document.querySelector(`[data-resource-segment="${id}"]`)).toBeTruthy();
+    }
+
+    fireEvent.keyDown(tab("resource.segment.overview"), { key: "ArrowRight" });
+    expect(tab("resource.segment.modules").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("resource.segment.modules"));
+
+    fireEvent.keyDown(tab("resource.segment.modules"), { key: "ArrowRight" });
+    expect(tab("resource.segment.disk").getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(tab("resource.segment.disk"), { key: "End" });
+    expect(tab("resource.segment.process").getAttribute("aria-selected")).toBe("true");
+
+    // 循环到首项
+    fireEvent.keyDown(tab("resource.segment.process"), { key: "ArrowRight" });
+    expect(tab("resource.segment.overview").getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(tab("resource.segment.overview"), { key: "ArrowLeft" });
+    expect(tab("resource.segment.process").getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(tab("resource.segment.process"), { key: "Home" });
+    expect(tab("resource.segment.overview").getAttribute("aria-selected")).toBe("true");
   });
 });

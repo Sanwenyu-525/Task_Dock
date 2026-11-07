@@ -67,6 +67,10 @@ export default function ContextMenuApp() {
   // 动作失败的行内反馈（role=alert，2.5s 自动消失；不留悬空定时器）
   const [feedback, setFeedback] = useState<string | null>(null);
   const feedbackTimer = useRef<number | null>(null);
+  // 动作在途守卫：标签菜单的窗口事务可能持续到数百毫秒甚至更久，
+  // 期间的重复点击/回车不得再发一条命令（后端会等待同一条结果回执）。
+  const actionInFlight = useRef(false);
+  const [actionBusy, setActionBusy] = useState(false);
   const [prefersDark, setPrefersDark] = useState(
     () =>
       typeof window !== "undefined" &&
@@ -107,6 +111,11 @@ export default function ContextMenuApp() {
 
   const runAction = useCallback(
     (action: MenuAction) => {
+      // 同一时刻只允许一条动作：后端返回的是**真实事务结果**，执行期间
+      // 重复点击/回车既不取消也不排队，直接忽略，避免同一事务被并发触发。
+      if (actionInFlight.current) return;
+      actionInFlight.current = true;
+      setActionBusy(true);
       // 后端执行动作，成功才隐藏菜单；成功回传最新快照（不做乐观更新），
       // 失败保留菜单 + 行内错误反馈 —— 不虚假显示成功，也不静默失败。
       void invoke<MenuActionResult>("context_menu_action", { action })
@@ -121,6 +130,10 @@ export default function ContextMenuApp() {
           // IPC 本身异常：回读权威状态，避免残留乐观勾选
           showFeedback("菜单命令未响应");
           void refresh();
+        })
+        .finally(() => {
+          actionInFlight.current = false;
+          setActionBusy(false);
         });
     },
     [showFeedback, refresh],
@@ -286,6 +299,7 @@ export default function ContextMenuApp() {
       className="liquid-context-menu"
       role="menu"
       aria-label={variant === "tab" ? t("capsule.tabMenu.group") : "Task Dock 菜单"}
+      aria-busy={actionBusy || undefined}
       onKeyDown={onKeyDown}
     >
       {groups.map((group, gi) => (

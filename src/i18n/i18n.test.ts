@@ -76,6 +76,67 @@ describe("参数插值与复数", () => {
   });
 });
 
+describe("生命周期与运行模块插值（回归：双花括号误用）", () => {
+  // 插值器只认单花括号 `{name}`；`{{module}}` 会被渲染成字面量，
+  // 出现在按钮 aria-label、悬停说明与 Toast 错误提示里。
+  it("中文 aria 与失败提示正确替换 module / error", () => {
+    expect(translate("zh-CN", "lifecycle.pauseAria", { module: "剪贴板采集" })).toBe(
+      "暂停剪贴板采集",
+    );
+    expect(translate("zh-CN", "lifecycle.resumeAria", { module: "剪贴板采集" })).toBe(
+      "恢复剪贴板采集",
+    );
+    expect(
+      translate("zh-CN", "lifecycle.actionFailed", {
+        module: "剪贴板采集",
+        error: "拒绝访问",
+      }),
+    ).toBe("剪贴板采集操作失败：拒绝访问");
+    expect(translate("zh-CN", "resource.modules.error", { error: "读取超时" })).toBe(
+      "状态读取失败：读取超时",
+    );
+  });
+
+  it("英文同样正确插值", () => {
+    expect(translate("en-US", "lifecycle.pauseAria", { module: "Clipboard capture" })).toBe(
+      "Pause Clipboard capture",
+    );
+    expect(translate("en-US", "lifecycle.resumeAria", { module: "Clipboard capture" })).toBe(
+      "Resume Clipboard capture",
+    );
+    expect(
+      translate("en-US", "lifecycle.actionFailed", {
+        module: "Clipboard capture",
+        error: "Access denied",
+      }),
+    ).toBe("Clipboard capture action failed: Access denied");
+    expect(translate("en-US", "resource.modules.error", { error: "Read timed out" })).toBe(
+      "Failed to read state: Read timed out",
+    );
+  });
+
+  it("词条表中不存在未登记的花括号占位符", () => {
+    for (const [locale, catalog] of [
+      ["zh-CN", zhCN],
+      ["en-US", enUS],
+    ] as const) {
+      for (const [key, value] of Object.entries(catalog)) {
+        const rest = value.replace(/\{\w+\}/g, "");
+        if (/[{}]/.test(rest)) {
+          throw new Error(`${locale}:${key} 仍有未登记的占位符: ${rest}`);
+        }
+      }
+    }
+  });
+
+  it("缺失参数仍保留占位符（不吞掉、不重复渲染花括号）", () => {
+    expect(translate("zh-CN", "lifecycle.pauseAria", {})).toBe("暂停{module}");
+    expect(translate("zh-CN", "lifecycle.actionFailed", { module: "剪贴板采集" })).toBe(
+      "剪贴板采集操作失败：{error}",
+    );
+  });
+});
+
 describe("缺失键与兜底", () => {
   it("英文缺失时回退中文并记录", () => {
     const key = "test.not.translated" as MessageKey;

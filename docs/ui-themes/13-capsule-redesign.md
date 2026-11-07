@@ -750,6 +750,28 @@ IPC/轮询的前提下完成核心动作」。两者任一不成立即为快捷�
 （不动几何、不碰光标、`WM_NCDESTROY` 还原原过程并摘表项），经 `run_on_main_thread`
 在窗口所属线程安装；不加载磁吸状态机，也不在主窗上重复安装子类化。
 
+**start 归属校验（2026-11-07 三轮验收补强）**：
+
+只比较结束代次仍不充分：旧拖拽的 **start** 也可能迟到。若此时用户已开始新会话 B，
+无条件 `bind(start.generation)` 会把旧代次写给 B，随后迟到的旧 end 就会清掉 B。
+原生事件本身不携带前端会话身份，因此补两个**确定性**条件（不使用固定延时、模拟移动
+或轮询）：
+
+1. **会话快照**：收到 `start` 时先冻结当前存活会话；查询期间才创建的新会话不在快照里，
+   旧 start 无法认领它。
+2. **原生实时确认**：新增异步命令 `drag_loop_active(generation)`（主窗读
+   `magnetic::DRAG_LOOP_ACTIVE` + `DRAG_GEN`，微件读 `drag_watch::Watch.active` + 代次，
+   按调用窗口隔离）。系统模态循环期间 WebView2 收不到指针事件，所以「循环仍活跃时
+   存在的会话」只可能是它的发起者；循环已退出则说明 start 属于已结束的拖拽，不绑定。
+   命令必须是 `async fn`：同步命令在主线程执行，会被模态循环本身排队，永远只能读到
+   「已结束」。
+
+另加结束水位线：若查询结果在对应 `end` 之后才返回（快速拖拽），直接收尾快照里的会话，
+避免留下一个永远等不到 `pointerup` 的 `grabbing`；查询失败/协议不完整时不绑定，
+仍由指针事件兜底。重复 start 幂等（只绑定尚未绑定代次的会话），旧查询结果不会覆盖
+新代次。回归测试见 `dragCursorSession.test.tsx`（旧 start+end 同时迟到、快速拖拽、
+查询不可用、重复 start、连续拖拽、卸载后迟到事件）。
+
 ### 12.11 工具面板标题 = 窗口拖拽热区（2026-11-06）
 
 胶囊与工具面板在**同一个原生窗口**里（区域裁剪，见 §二），所以「拖面板」与
@@ -1004,8 +1026,10 @@ exe 路径与网址不再作为提示内容。键盘 Focus 截断名称同样能
 **光标（与并行会话的 drag-cursor-feedback 合并后的最终语义）**
 
 - `.capsule-tab` 默认与悬停都是 `grab`；超过点击阈值（`is-dragging`）切 `grabbing`；
-  `pointerup` / `pointercancel` / `lostpointercapture` / 窗口 `blur` / 页面隐藏 / 卸载
-  都立即摘类，Blink 据此在同一次事件里重算并下发光标，鼠标静止也能恢复。
+  `pointerup` / 真正的 `pointercancel` / 窗口 `blur` / 页面隐藏 / 卸载都会立即摘类，
+  Blink 据此在同一次事件里重算并下发光标，鼠标静止也能恢复。
+  正常松手后的 `lostpointercapture` 不再重复收尾；**按键仍按下时**的提前丢失捕获
+  不结束手势（见本轮补充的降级契约）。
 - 光标**只由 WebView2 的 CSS 决定**：原生侧不再 `SetCursor(IDC_HAND)` 覆盖
   （那会让松手后的光标变成手形/箭头，且静止时不再有 `WM_SETCURSOR` 纠正）。
 
@@ -1017,9 +1041,11 @@ exe 路径与网址不再作为提示内容。键盘 Focus 截断名称同样能
 - `tab-hint` 窗口 `focus: false`（tao 据此加 `WS_EX_NOACTIVATE`，显示不抢焦点），
   启动时 `set_ignore_cursor_events(true)`（`WS_EX_TRANSPARENT`，永不接收鼠标）；
   从不调用 `set_focus()`。因此提示不会拦截单击、拖动或右键。
-- **先量后显**：`tab-hint-show { text }` → 前端渲染后回传 `fit_tab_hint { width, height }`
-  → 后端按实测尺寸 `set_size` + 定位 + `apply_with_radius(9)` 后才 `show()`。
-  前端未就绪时（`tab_hint_ready` 之前）用上一次自然尺寸先显示，不会留下永不显示的窗口。
+- **先量后显**：`tab-hint-show { id, text }` → 前端渲染后回传
+  `fit_tab_hint { width, height, id }` → 后端校验代次后按实测尺寸 `set_size` + 定位 +
+  `apply_with_radius(8)` 才 `show()`。前端在**显示事件订阅兑现后**才回传
+  `tab_hint_ready`；就绪前的显示请求由后端排队并在 ready 时补发，不用兜底尺寸
+  提前显示一个没有文字的空提示条。
 - 文案与轨道状态球**同源**（`railStatus().agentTone`，见 `tabHintKey`）：
   running / waiting / failed / disconnected 各有专属文案，`unknown`（快照未加载）
   与 `idle` 回落为「点击展开 · 拖拽移动」——未知状态绝不宣称运行中。无新增订阅与轮询。
@@ -1077,3 +1103,93 @@ exe 路径与网址不再作为提示内容。键盘 Focus 截断名称同样能
 
 **单行名称视觉重心（不改）**：名称槽固定两行是同一行图标对齐的前提；把单行文字在槽内
 居中会让同行首行参差约 6px，因此维持整组居中 + 顶部对齐的现状。
+
+**第二轮交互可靠性契约（2026-11-07）**
+
+- **捕获丢失 ≠ 取消**：拖动期间窗口 `setPosition` / 独立提示窗显隐会让 WebView2 提前
+  丢失元素级指针捕获。按键仍按下（`buttons !== 0`）时会话保留，窗口级 `pointermove`
+  （捕获阶段）继续沿边移动，最终由窗口级 `pointerup/pointercancel` 收尾；元素与窗口两条
+  路径共用唯一 `completeRelease`，重复事件只 `endTabDrag` 一次。不同 `pointerId` 的
+  取消/丢失事件被忽略；正常松手后的 `lostpointercapture` 因会话已清空而自然跳过。
+  若 `pointerup` 也丢失，只提交最后一次按键按下时的可信位移并无恢复收尾，不把
+  「指针在标签外松开后又移回」误判成向内恢复。
+- **菜单动作以事务结果为准**：`context_menu_action("tab:*")` 生成单调请求 id，向主窗
+  emit `edge-tab-action { id, action }`，并等待主窗回传
+  `tab_menu_action_result { id, ok, error }`（上限 8s）。主窗把
+  `restoreTab` / `formSwitch` / `undock` 的 Promise 真实结果原样回执；只有 `ok` 才隐藏
+  菜单。失败保留菜单并用既有 `.menu-feedback` 行内显示可重试原因；主窗不存在 / 未响应 /
+  超时同样返回失败，不静默关闭。动作在途时菜单忽略重复点击/回车（`aria-busy`），
+  失焦自动关闭在动作在途期间被抑制，避免失败反馈被藏进已隐藏窗口。
+- **提示窗就绪 / 乱序**：`show_tab_hint` 在 `ready=false` 时只排队（不 emit）；前端在
+  `tab-hint-show` 订阅兑现后调用 `tab_hint_ready`，后端补发最近一次请求。前端按单调
+  `id` 丢弃重复/乱序旧事件；后端 `fit_tab_hint` 继续按代次拒绝过期测量
+  （show → hide → fit 不会重新显示）。同文案重复悬停由新代次驱动，仍会重新测量。
+- **残影（P3，未改动画）**：既有 16 帧证据中只有轨道滑出过程的中间帧会在标签右侧留下
+  轨道边缘列，落定后（约第 6 帧起）完全干净；不是重复伪元素/重复节点，也未在动画结束后
+  复现。保留 300ms 过渡，不通过隐藏正常元素或关闭动画掩盖。
+
+## 十六、应用网格按面板宽度收敛列数（2026-11-07）
+
+**问题**：`.cap-app-grid` 固定四列时，磁贴宽度随面板线性缩小，而图标（34px）与删除按钮
+（18px，绝对定位在格子右上角）是固定尺寸。34px 图标在 W 宽磁贴里距右边缘 `(W-34)/2`，
+要完整放下 18px 按钮需 `W ≥ 70`；原生 4 列是 71px（0.5px 间隙），面板 312（磁贴 65）与
+232（磁贴 45）分别重叠 2.5×10.6px 与 12.5×10.6px，`elementFromPoint` 采样显示
+312 有 2.34%、232 有 11.76% 的图标面积命中删除按钮 → 点图标会误进删除确认。
+
+**真实宽度口径**（本轮复核发现）：原生胶囊窗口是 404×440 CSS px（`CAPSULE_CONTAINER_W_CSS`），
+`@media (max-width: 407px)` 的窄窗兜底因此**总是**生效，面板实际是 `100vw - 68px` = **336px**，
+不是设计常量 340。列数分档必须按 336 判定，否则原生默认布局会从 4 列掉到 3 列。
+（Win32 区域仍按 340 裁，内缘 4px 透明带是既有行为，本轮不改窗口契约。）
+
+**决定**：不改按钮热区（18px 已是可点下限）、不缩图标，改为**收敛列数**。
+
+- 容器查询参照 `.capsule-panel[data-panel="apps"]` 的**内容盒**（容器属性只挂在应用面板上，
+  其他面板不引入额外包含块语义）。参照面板而不是列表滚动盒：列表出现滚动条（4px）时
+  列数不会抖动。
+- 契约：内容盒 ≥ 308（面板 ≥ 336，即原生默认）→ 4 列 × 71px（0.5px 间隙）；≤ 307 → 3 列；
+  ≤ 233（面板 262 以下）→ 2 列；≤ 155（面板 184 以下）→ 1 列。
+- 保证：任一模式下每列 ≥ 71px，删除按钮与 34px 图标包围盒零重叠、图标区域内
+  `elementFromPoint` 从不命中删除；「添加」磁贴仍是普通网格项，与普通磁贴同高。
+- 搜索、排序、持久化顺序、拖拽/Alt+方向键逻辑均不受影响（纯 CSS 布局变化）。
+- 浏览器合成实测（`tmp/acceptance/capsule-close-final-review/`）：原生 336 与
+  339/335/312/262/261/232/184/183 九个宽度 + 三个滚动组合 + 深色主题，重叠面积 0、
+  图标采样命中删除 0、图标右上角内侧命中启动、面板/网格/页面横向溢出 0。
+  窄窗列数只在窗口被系统压到 400px 以下（面板 ≤ 335）的回退场景出现。
+
+## 十七、极简吸附态第三轮：分组选择器、就绪握手与提示随状态更新（2026-11-07）
+
+**CSS 作用域检查的分组盲区（P2，已修）**：`isBareRootSelector()` 遇到逗号直接返回
+false，`html, body, #root { display:flex }` 会整条绕过裸根布局属性检查。现在
+`splitSelectorList()` 按**顶层**逗号拆分（括号/字符串内逗号不拆），逐项判定：
+同组里只要有一个裸根就报一条，不因另一个选择器已限定作用域而放行；独立的
+`:is(html, body)` / `:where(...)` 递归展开。`@layer` / `@media` 嵌套路径继续保留，
+压缩 CSS（`html,body,#root{display:flex}`）同样可识别。校验分两层：源码
+`src/styles-entry-scope.test.ts`（12 项，含合法规则零误报、压缩输入、嵌套 at 规则）
+与打包产物 `scripts/check-entry-css.mjs`。
+
+**就绪握手（P2，已修）**：`listen()` 是 Promise，旧顺序「先 ready 再订阅」会让首次
+show 在监听器建立前 emit 而丢失。现在前端先建立 `tab-hint-show` 订阅、成功后才
+`tab_hint_ready`；订阅失败/卸载期间不报 ready（`SubscriptionScope.add()` 的
+`Promise<boolean>` 就是建立结果），StrictMode 重挂载只会握手一次。后端三态：
+窗口不存在 → show 返回 false / ready 不生效；未就绪 → 只排队；已就绪 → emit 并清掉
+同代次排队载荷。`Destroyed` 复位为未就绪并清空目标。不用固定延迟、不轮询。
+
+**提示随 Agent 状态原地更新（P2，已修）**：此前提示只在 `pointerenter` 后 350ms
+显示一次，`hintVisible` 还会挡住后续 show。现在 `EdgeTab` 维护悬停会话：
+- 只有「提示已显示 + 鼠标仍在标签上 + 文案真正变化」才重新下发；后端推进代次、
+  提示窗重测尺寸，全程不 hide（无先隐藏再闪现）；
+- 350ms 计时器回调读最新文案，延迟期间的状态变化最终显示最新值；
+- 请求单飞 + 合并：在途时只记最新文案，兑现后补发一次，连续快速变化不放大 IPC；
+- 鼠标离开、按下/拖动、右键菜单、形态过渡、窗口失焦、卸载都会结束会话并 hide；
+- 同文案重复悬停仍能重新显示（hide 清空会话，下一次进入重新计时）；同一次悬停里的
+  同文案重复调用由 `edgeTabActions` 按「edge + 当前显示文案」去重。
+- 纯函数 `tabHintKey()` 未改：unknown/idle 继续回落到中性文案，不宣称具体状态。
+
+**命令执行模型（P2，复核结论：无需改动）**：四个 tab-hint 命令都是同步命令。
+wry 在 WebView2 的 `WebMessageReceived` / `WebResourceRequested` 回调里内联调用
+`ipc_handler`，Tauri 在其中同步执行 `run_invoke_handler`；两个回调都由创建 WebView2
+的 Windows 主线程投递，所以不同 WebView 的 show/fit/hide 与 `Destroyed` 严格串行，
+「旧 reveal 校验 → hide → 旧 show」不可能发生。`reveal` 的两次复核收敛为
+`commit_allowed()`（代次当前 + 目标仍在），并新增 6 项交错顺序单测。**契约**：
+这些命令不得改成 `async fn`（会转到 async runtime 线程池），否则必须引入提交序号
+或主线程封送。锁内不调用窗口 API、无全局锁、无后台线程/轮询。
