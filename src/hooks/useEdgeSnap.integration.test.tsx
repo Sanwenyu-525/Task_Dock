@@ -1735,7 +1735,8 @@ describe("临时停靠形态与会话隔离", () => {
       useEdgeSnapStore.getState().formSwitch?.(form);
       await Promise.resolve();
     });
-    // 胶囊 ↔ 完整需要静止等待 + 二次稳定回读（约 1s）。
+    // 胶囊 ↔ 完整含几何事务与有界等待（完整方向的稳定回读已被快速路径跳过，
+    // 这里仍按旧上限留足虚拟时间裕量，两条方向通用）。
     await advance(1400);
   };
   const pref = () => useSettingsStore.getState().settings?.snap_display_mode ?? "capsule";
@@ -1884,6 +1885,46 @@ describe("临时停靠形态与会话隔离", () => {
 
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
     expect(world.size).toEqual({ width: 404, height: 440 });
+    expect(pref()).toBe("capsule");
+  });
+
+  it("A8) 胶囊临时展开完整面板走快速尺寸恢复：无 600ms 稳定回读", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    expect(phase()).toBe("docked-visible");
+
+    await act(async () => {
+      useEdgeSnapStore.getState().formSwitch?.("full");
+      await Promise.resolve();
+    });
+    // 形态切换没有原生拖拽循环参与：首读确认已非容器尺寸即提交。
+    // 总推进 <600ms 就必须完成——旧实现固定等待 600ms 稳定窗口后才返回成功，
+    // 在此虚拟时刻内不可能到达 docked-full，该断言因此区分两条路径。
+    await advance(300);
+
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+    expect(pref()).toBe("capsule");
+  });
+
+  it("A9) 快速路径下首次 applyMode 尺寸被吞：经重试梯子仍切换成功", async () => {
+    mount();
+    await advance(50);
+    await dockLeft();
+    // 模拟写入被吞：applyMode 返回成功但窗口尺寸不变（仍是胶囊容器尺寸）。
+    world.swallowModeSizeCalls = 1;
+
+    await act(async () => {
+      useEdgeSnapStore.getState().formSwitch?.("full");
+      await Promise.resolve();
+    });
+    // 首读仍是容器尺寸 → 按既有重试梯子（300ms 起步）再应用一次。
+    await advance(2600);
+
+    expect(phase()).toBe("docked-full");
+    expect(world.size).toEqual({ width: 400, height: 560 });
+    expect(world.modeCalls.filter((m) => m === "full").length).toBeGreaterThanOrEqual(2);
     expect(pref()).toBe("capsule");
   });
 
@@ -2565,6 +2606,137 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
     expect(world.pos.x).toBe(0);
     expect(world.size).toEqual({ width: 505, height: 550 });
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+  });
+
+  it("D9) 连续三轮「拖离→立即反向再吸附」：每轮独立收口，无状态积累", async () => {
+    world.savedWindowRect = { x: 400, y: 300, w: 1000, h: 700 };
+    world.undockAnchorApplied = true;
+    mount();
+    await advance(50);
+    await dockLeft();
+
+    for (let round = 1; round <= 3; round += 1) {
+      expect(["docked-visible", "docked-hidden"]).toContain(phase());
+      expect(world.size).toEqual({ width: 404, height: 440 });
+      const anchorCallsBefore = world.undockAnchorCalls.length;
+
+      // 与 D1 相同的时序：拖离触发解除（后台恢复启动）→ 锚定帧 →
+      // 松手立即重抓反向拖回 → 松手吸附
+      await dragTo(40, 300);
+      await anchorDragTo(300 + round * 10, 300);
+      await anchorDragTo(520, 300);
+      await releasePointer();
+      await pressAndMoveImmediately(500, 300);
+      await dragTo(200, 300);
+      await dragTo(60, 300);
+      await dragTo(20, 300);
+      await releasePointer();
+      await advance(4000);
+
+      expect(["docked-visible", "docked-hidden"]).toContain(phase());
+      expect(world.pos.x).toBe(0);
+      expect(world.size).toEqual({ width: 404, height: 440 });
+      expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+      // 每轮恰好一次锚定请求：解除路径不跨轮重复请求、不泄漏
+      expect(world.undockAnchorCalls.length).toBe(anchorCallsBefore + 1);
+    }
+
+    // 连续循环不污染偏好与持久化
+    expect(useSettingsStore.getState().settings?.snap_display_mode ?? "capsule").toBe("capsule");
+    expect(world.snapWrites.at(-1)?.edge).toBe("left");
+  });
+
+  it("D10) 顶缘：拖离后立即反向拖回，重新吸附为胶囊（水平容器 404×504）", async () => {
+    world.savedWindowRect = { x: 500, y: 300, w: 1000, h: 700 };
+    world.undockAnchorApplied = true;
+    mount();
+    await advance(50);
+    await dragTo(500, 20);
+    expect(phase()).toBe("candidate");
+    await releasePointer();
+    await advance(400);
+    expect(phase()).toBe("docked-visible");
+    expect(world.pos.y).toBe(0);
+    expect(world.size).toEqual({ width: 404, height: 504 });
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "top" });
+
+    await dragTo(500, 40); // 向下越过退出阈值触发解除
+    await anchorDragTo(300, 300);
+    await anchorDragTo(520, 300);
+    await releasePointer();
+    await pressAndMoveImmediately(500, 300);
+    await dragTo(500, 200);
+    await dragTo(500, 60);
+    await dragTo(500, 20);
+    await releasePointer();
+    await advance(4000);
+
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.y).toBe(0);
+    expect(world.size).toEqual({ width: 404, height: 504 });
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "top" });
+  });
+
+  it("D11) 恢复后的用户矩形底部越出工作区：左缘再吸附不被越出轴遮蔽（2026-11-08）", async () => {
+    // 真机复现（capsule-redock 复核）：拖离恢复的自由窗口底部越过工作区底缘
+    // （125% DPI、工作区 1020 物理高、窗口 700 物理高且 y=395 → 底 1095）。
+    // 修复前 detectCandidateEdge 的 argmin 被 bottom 的负距离（-75）恒占，
+    // 总出口守卫整体判 null → 拖到左缘齐平位也永远进不了候选。
+    world.monitors = [
+      {
+        ...MAIN,
+        scaleFactor: 1.25,
+        size: { width: 1920, height: 1080 },
+        workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1020 } },
+      },
+    ];
+    world.savedWindowRect = { x: 900, y: 316, w: 1000, h: 700 };
+    world.undockAnchorApplied = true;
+    mount();
+    await advance(50);
+    // 自由窗口置于「底部越出工作区」的位置（物理坐标）
+    await dragTo(1125, 395);
+    await pressDragRegion();
+    await releasePointer();
+    await advance(350); // 上一手势收尾
+
+    // 两段手势的第二段：拖向左缘，y 不变（底部始终越出）
+    await pressDragRegion();
+    await dragTo(600, 395);
+    await dragTo(60, 395);
+    await dragTo(0, 395);
+    expect(phase()).toBe("candidate"); // 修复前：恒为 free（越出轴遮蔽）
+    await releasePointer();
+    await advance(1500);
+
+    expect(["docked-visible", "docked-hidden"]).toContain(phase());
+    expect(world.pos.x).toBe(0);
+    expect(world.size).toEqual({ width: 505, height: 550 }); // 容器 404×440 × 1.25
+    expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
+  });
+
+  it("D12) candidate 相位换边只认用户手势：程序性移动不得翻转候选边（2026-11-08）", async () => {
+    mount();
+    await advance(50);
+    await dragTo(20, 300);
+    expect(phase()).toBe("candidate");
+    expect(useEdgeSnapStore.getState().candidateEdge).toBe("left");
+
+    // 引擎登记的程序性移动（解除恢复搬运窗口）把窗口搬到「top 更近」的位置：
+    // 修复前 candidate 换边更新不查程序性移动 → 边被悄悄翻成 top，最终
+    // 吸附到非预期侧（真机：拖向左缘、恢复期被改判 bottom）。
+    snapMoveGuard.noteProgrammaticMove(700, 8);
+    await dragTo(700, 8);
+    // 不得翻转成 top；窗口已离开左缘磁吸区，按既有滞回退出 candidate
+    expect(useEdgeSnapStore.getState().candidateEdge).toBeNull();
+    expect(phase()).toBe("free");
+
+    // 用户真实拖动仍可正常进入 top 候选（守卫不误伤换边能力）
+    await dragTo(700, 300); // 拉回中性位（远离所有边）
+    await advance(250); // 手势静止收尾
+    await dragTo(700, 2);
+    expect(phase()).toBe("candidate");
+    expect(useEdgeSnapStore.getState().candidateEdge).toBe("top");
   });
 });
 

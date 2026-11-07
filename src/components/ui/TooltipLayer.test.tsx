@@ -167,3 +167,79 @@ describe("全局提示条层", () => {
     await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
   });
 });
+
+// 2026-11-07：纯图标按钮可以只有 aria-label，提示文案由提示层回退取用。
+// 边界必须锁死：显式 data-tip 优先、有可见文字不弹、原生 title 不重复弹、
+// 自带提示机制的控件可以整棵子树退出。
+describe("纯图标按钮的 aria-label 回退", () => {
+  const Icon = () => <span aria-hidden="true" />;
+
+  it("没有 data-tip 的纯图标按钮用 aria-label 作提示", async () => {
+    render(
+      <>
+        <button type="button" aria-label="刷新列表">
+          <Icon />
+        </button>
+        <TooltipLayer />
+      </>,
+    );
+    fireEvent.mouseOver(screen.getByRole("button", { name: "刷新列表" }));
+    await waitFor(() => expect(screen.getByRole("tooltip").textContent).toBe("刷新列表"));
+  });
+
+  it("显式 data-tip 优先于 aria-label", async () => {
+    render(
+      <>
+        <button type="button" aria-label="刷新列表" data-tip="刷新">
+          <Icon />
+        </button>
+        <TooltipLayer />
+      </>,
+    );
+    fireEvent.mouseOver(screen.getByRole("button", { name: "刷新列表" }));
+    await waitFor(() => expect(screen.getByRole("tooltip").textContent).toBe("刷新"));
+  });
+
+  it("有可见文字的按钮不回退（同名提示只是噪声）", async () => {
+    render(
+      <>
+        <button type="button" aria-label="搜索">
+          搜索
+        </button>
+        <TooltipLayer />
+      </>,
+    );
+    fireEvent.mouseOver(screen.getByRole("button", { name: "搜索" }));
+    // 越过 350ms 悬停延迟，确认没有弹提示
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("存在原生 title 时不回退，避免浏览器与提示层各弹一条", async () => {
+    render(
+      <>
+        <button type="button" aria-label="最小化" title="最小化">
+          <Icon />
+        </button>
+        <TooltipLayer />
+      </>,
+    );
+    fireEvent.mouseOver(screen.getByRole("button", { name: "最小化" }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("data-tip-skip 子树退出回退（自带独立提示窗口的控件）", async () => {
+    render(
+      <>
+        <button type="button" aria-label="极简标签" data-tip-skip="1">
+          <Icon />
+        </button>
+        <TooltipLayer />
+      </>,
+    );
+    fireEvent.mouseOver(screen.getByRole("button", { name: "极简标签" }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+});

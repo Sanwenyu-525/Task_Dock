@@ -1198,8 +1198,10 @@ export interface ResourceSnapshot {
     totalBytes: number | null;
     availableBytes: number | null;
   };
+  /** 只读枚举的全部逻辑卷；数据目录所在卷排首位（界面据此显示主盘）。 */
   disks: Array<{
     volume: string;
+    kind: "fixed" | "removable" | "remote" | "ramdisk" | "optical" | "unknown";
     totalBytes: number | null;
     availableBytes: number | null;
   }>;

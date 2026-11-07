@@ -19,6 +19,16 @@
 //! 贴边那一段由 `wingRimPath` 直接不画。它是一道细的轮廓高光，不是整圈边框。
 //! 描边用 `clip-path` 裁进可见轮廓：0.75px 描边沿轮廓线内外各分一半，外侧那一半叠在黑桌面上就是一条碎白边。
 //!
+//! ## 尖端渐隐 mask（2026-11-07 锯齿修复）
+//!
+//! 肩部贝塞尔按设计以「贴边切线水平」收尾（`capsuleShape.ts`），因此每个尖端
+//! 最后 ~15-25px 是一条 ≤3px 宽、与屏幕边缘近乎平行的细条，边界每 ~5 行才
+//! 前进 1px——任何光栅器下都是 1px 台阶，AA 只能软化；浅色主题下该细条是
+//! 「近白玻璃 + 高光」贴深色桌面，对比拉满后即用户可见的锯齿亮线
+//! （真机复现与排除过程见 tmp/acceptance/capsule-wing-jagged-edge/report.md）。
+//! 修复 = 沿边轴对整组材质做 alpha 渐隐：台阶区随对比度一起溶解，几何契约
+//! （采样点、Rust 区域、命中判定）完全不动。
+//!
 //! 渐变方向按停靠边换算：`near→far` 永远是「屏幕边缘 → 屏幕内部」，因此四边
 //! 共用一套语义 Token，换方向不换材质。
 //!
@@ -35,6 +45,26 @@ interface Axis {
   x2: number;
   y2: number;
 }
+
+/**
+ * 尖端渐隐 mask 的不透明度台阶（沿边轴，offset 为全长占比，两端对称）。
+ *
+ * 肩部曲线的贴边收尾段（宽度 ≤3px）是栅格化台阶的唯一来源（见文件头注释）：
+ * 该段边界每 ~5 行才前进 1px，任何光栅器下都是 1px 台阶，浅色主题下「近白
+ * 玻璃贴深色桌面」对比拉满后即肉眼可见的锯齿亮线。这里的曲线把最后 ~15px
+ * 压到 ≤0.5 不透明度、~25px 处 ≤0.75，台阶对比度随 alpha 一起衰减，肉眼读作
+ * 「液态尖端渐隐」；中段（0.08–0.92）保持 1.0，翼片主体完全不透明。
+ */
+const TIP_FADE_STOPS: Array<[offset: number, opacity: number]> = [
+  [0, 0],
+  [0.015, 0.28],
+  [0.045, 0.72],
+  [0.08, 1],
+  [0.92, 1],
+  [0.955, 0.72],
+  [0.985, 0.28],
+  [1, 0],
+];
 
 export default function CapsuleWing({ edge }: { edge: SnapEdge }) {
   // useId 含 ":" 等字符，直接拼进 url(#…) 会失效，这里过滤成安全字符
@@ -96,20 +126,32 @@ export default function CapsuleWing({ edge }: { edge: SnapEdge }) {
         <clipPath id={`${uid}-rim-clip`}>
           <path d={face} />
         </clipPath>
+        {/* 尖端渐隐（锯齿修复，见 TIP_FADE_STOPS）：mask 亮度沿边轴在两端衰减，
+            覆盖 face 四层与 rim 描边——台阶区对比度随 alpha 一起溶解。 */}
+        <linearGradient id={`${uid}-tip-fade`} gradientUnits="userSpaceOnUse" {...along}>
+          {TIP_FADE_STOPS.map(([offset, opacity]) => (
+            <stop key={offset} offset={offset} stopColor="#ffffff" stopOpacity={opacity} />
+          ))}
+        </linearGradient>
+        <mask id={`${uid}-tip-mask`} maskUnits="userSpaceOnUse" x={0} y={0} width={w} height={h}>
+          <rect x={0} y={0} width={w} height={h} fill={`url(#${uid}-tip-fade)`} />
+        </mask>
       </defs>
-      <path className="cap-wing-face" d={face} fill={`url(#${uid}-face)`} />
-      <path className="cap-wing-shade" d={face} fill={`url(#${uid}-shade)`} />
-      <path className="cap-wing-haze" d={face} fill={`url(#${uid}-haze)`} />
-      <path className="cap-wing-spec" d={face} fill={`url(#${uid}-spec)`} />
-      <path
-        className="cap-wing-rim"
-        d={rim}
-        fill="none"
-        stroke={`url(#${uid}-rim)`}
-        strokeLinecap="butt"
-        strokeWidth={0.75}
-        clipPath={`url(#${uid}-rim-clip)`}
-      />
+      <g mask={`url(#${uid}-tip-mask)`}>
+        <path className="cap-wing-face" d={face} fill={`url(#${uid}-face)`} />
+        <path className="cap-wing-shade" d={face} fill={`url(#${uid}-shade)`} />
+        <path className="cap-wing-haze" d={face} fill={`url(#${uid}-haze)`} />
+        <path className="cap-wing-spec" d={face} fill={`url(#${uid}-spec)`} />
+        <path
+          className="cap-wing-rim"
+          d={rim}
+          fill="none"
+          stroke={`url(#${uid}-rim)`}
+          strokeLinecap="butt"
+          strokeWidth={0.75}
+          clipPath={`url(#${uid}-rim-clip)`}
+        />
+      </g>
     </svg>
   );
 }

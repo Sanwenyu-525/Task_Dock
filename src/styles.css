@@ -191,19 +191,9 @@
   color-scheme: dark;
 }
 
-/* ── 高对比度：提高边框与文本反差，禁用低对比装饰 ── */
-@media (prefers-contrast: more) {
-  :root {
-    --border-subtle: rgba(15, 23, 42, 0.45);
-    --border-strong: rgba(15, 23, 42, 0.7);
-    --text-secondary: #3b4759;
-  }
-  :root[data-theme="dark"] {
-    --border-subtle: rgba(255, 255, 255, 0.45);
-    --border-strong: rgba(255, 255, 255, 0.7);
-    --text-secondary: #c3ccdb;
-  }
-}
+/* ── 高对比度：提高边框与文本反差 ──
+   覆盖必须写在 styles-themes.css 的 theme 层：base 层声明的 :root 会被
+   预设选择器（:root[data-preset]）整体压掉（UI-19）。 */
 
 /* ── 减少动态：关闭呼吸/旋转动画与过渡 ── */
 @media (prefers-reduced-motion: reduce) {
@@ -857,6 +847,11 @@ code {
 .tab-content {
   flex: 1;
   min-height: 0;
+  /* 2048 等超大窗口下约束正文测量宽度：整行 1986px 的 10–12px 文字
+     无法阅读（UI-17）。窄窗不受影响（可用宽度 < 560）。 */
+  width: 100%;
+  max-width: 560px;
+  margin-inline: auto;
   overflow-y: auto;
   padding: 10px;
 }
@@ -1549,9 +1544,44 @@ code {
 .summary-card.s-error .summary-value { color: var(--status-error); }
 
 .summary-card .summary-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-tertiary);
   white-space: nowrap;
+}
+
+/* 240 宽（UI-17）：提醒卡纵向堆叠，标题/统计标签不再逐字换行或被截断。
+   必须写在这批基础规则之后：同 specificity 的后者才生效。 */
+@media (max-width: 280px) {
+  .active-reminder-card {
+    flex-wrap: wrap;
+    gap: 2px 6px;
+  }
+
+  .reminder-countdown {
+    min-width: 0;
+    text-align: left;
+  }
+
+  .reminder-info {
+    flex: 1 1 100%;
+  }
+
+  .tasks-overview {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .overview-card {
+    min-width: 0;
+  }
+
+  .overview-label,
+  .summary-card .summary-label {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
 }
 
 .panel-block {
@@ -2624,7 +2654,8 @@ code {
 }
 
 .setting-note {
-  font-size: 10.5px;
+  /* 功能说明文字统一 11px 下限（UI-22）。 */
+  font-size: 11px;
   color: var(--text-tertiary);
   padding: 6px 0 2px;
   line-height: 1.5;
@@ -2639,9 +2670,11 @@ code {
 
 .resource-cleanup-heading {
   margin: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
+  color: var(--text-primary);
+  /* 分区小标题要能作为区块入口，与正文 11px 拉开层级。 */
+  font-size: 12px;
   font-weight: 650;
+  line-height: 1.35;
 }
 
 .resource-cleanup-disk-list,
@@ -2701,7 +2734,7 @@ code {
 .resource-cleanup-row-status,
 .resource-cleanup-selection-summary {
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 10.5px;
   line-height: 1.45;
 }
 
@@ -2778,7 +2811,7 @@ code {
 
 .settings-jump-label {
   color: var(--text-tertiary);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
 /* 「查找设置」：可搜索下拉占满剩余宽度但有上限，窄窗不挤压左侧标签 */
@@ -2912,7 +2945,7 @@ code {
 
 .settings-category-count {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
@@ -2936,7 +2969,7 @@ code {
 .resource-diagnostics {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -2959,8 +2992,8 @@ code {
 
 .resource-overview-label {
   color: var(--text-tertiary);
-  /* 与 `.rail-label` 同一可读性下限（10.5px）：9.5/10px 的 CJK 小字已接近笔画粘连 */
-  font-size: 10.5px;
+  /* 功能标签取规范下限 11px；9.5/10px 的 CJK 小字已接近笔画粘连 */
+  font-size: 11px;
 }
 
 .resource-overview-value {
@@ -2994,7 +3027,7 @@ code {
   gap: 2px;
   min-width: 0;
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 10.5px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -3140,13 +3173,13 @@ code {
 
 .resource-process-bar-label {
   color: var(--text-tertiary);
-  font-size: 9.5px;
+  font-size: 10px;
   white-space: nowrap;
 }
 
 .resource-process-bar-note {
   color: var(--text-tertiary);
-  font-size: 9.5px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
@@ -3314,8 +3347,9 @@ html[data-theme="dark"] .resource-page {
 }
 
 .resource-segment.active {
-  background: var(--rail-active-face);
-  color: var(--rail-active-text);
+  /* 选中段用 accent 淡底而不是白面：白色容器内的白药丸边界太弱。 */
+  background: var(--accent-soft);
+  color: var(--accent);
   font-weight: 600;
 }
 
@@ -3340,13 +3374,18 @@ html[data-theme="dark"] .resource-page {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0;
+  align-self: flex-start;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border-subtle));
+  border-radius: 999px;
   color: var(--accent);
-  font-size: 10px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  white-space: nowrap;
 }
 
 .resource-link-btn:hover {
-  text-decoration: underline;
+  background: var(--accent-soft);
 }
 
 .resource-storage {
@@ -3397,7 +3436,7 @@ html[data-theme="dark"] .resource-page {
 
 .resource-storage-share {
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -3408,7 +3447,7 @@ html[data-theme="dark"] .resource-page {
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
   color: var(--text-tertiary);
-  font-size: 9px;
+  font-size: 9.5px;
   font-style: normal;
   white-space: nowrap;
 }
@@ -3601,22 +3640,144 @@ html[data-theme="dark"] .resource-page {
 
 .resource-ring-title {
   color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 650;
 }
 
 .resource-ring-caption span:not(.resource-ring-title) {
   color: var(--text-tertiary);
-  font-size: 9.5px;
+  /* 已用/剩余/总量是功能性信息，不按装饰性小字处理。 */
+  font-size: 10px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
-.resource-metric-strip {
+/* 400 附近两张环形并排：略收环径，给卡片留呼吸空间。 */
+@media (max-width: 440px) {
+  .resource-ring-figure {
+    width: min(116px, 100%);
+  }
+
+  .resource-ring-center strong {
+    font-size: 18px;
+  }
+}
+
+/* 320 窄窗：两张大环竖排会把概览拉长近一倍；单列时改为「环左 + 说明右」的紧凑行。 */
+@media (max-width: 380px) {
+  .resource-usage-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .resource-ring {
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+  }
+
+  .resource-ring-figure {
+    width: 92px;
+  }
+
+  .resource-ring-center strong {
+    font-size: 16px;
+  }
+
+  .resource-ring-center span {
+    font-size: 9.5px;
+  }
+
+  .resource-ring-caption {
+    text-align: left;
+  }
+}
+
+/* 窄窗释放行：说明文字另起一行，避免挤在按钮右侧折成两行。 */
+@media (max-width: 420px) {
+  .resource-memory-release .resource-cleanup-actions {
+    align-items: flex-start;
+  }
+
+  .resource-memory-release .resource-cleanup-selection-summary {
+    flex-basis: 100%;
+    text-align: left;
+  }
+}
+
+/* 多卷只读概览：紧凑卷条 + 磁盘页的逐卷列表。 */
+.resource-volume-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.resource-volume-chip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0 6px;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+}
+
+.resource-volume-name {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.resource-volume-value {
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.resource-volume-chip .resource-meter {
+  grid-column: 1 / -1;
+  margin-top: 3px;
+}
+
+.resource-disk-volumes {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+
+.resource-volume-count {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resource-volume-kind {
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.resource-metric-strip {
+  display: grid;
+  /* 320 窄窗也能排成 2 列（内容宽 258），避免 4 张卡竖向拉长整页。 */
+  grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 指标卡为奇数张时（内存页 3 张），最后一张占满整行，避免半行空洞。 */
+.resource-metric-strip > .resource-metric:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 
 .resource-metric {
@@ -3643,9 +3804,11 @@ html[data-theme="dark"] .resource-page {
   gap: 2px;
   min-width: 0;
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 10.5px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+  /* 窄卡副文本折两行时均分，避免末行只剩一两个字。 */
+  text-wrap: balance;
 }
 
 .resource-bar {
@@ -3738,11 +3901,24 @@ html[data-theme="dark"] .resource-page {
   overflow: hidden;
 }
 
+/* 卷条等场景按三档语义色；进程条仍显式使用 neutral，不参与压力结论。 */
+.resource-meter.is-normal {
+  --chart-level: var(--status-success);
+}
+
+.resource-meter.is-attention {
+  --chart-level: var(--status-waiting);
+}
+
+.resource-meter.is-critical {
+  --chart-level: var(--status-error);
+}
+
 .resource-meter-fill {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: var(--chart-neutral);
+  background: var(--chart-level, var(--chart-neutral));
 }
 
 .resource-stacked {
@@ -8921,6 +9097,13 @@ html[data-theme="dark"] .resource-page {
 
 .action-summary .warn {
   color: var(--p1);
+}
+
+/* 列表脚注（UI-16）：总量/已加载不再占首屏 chrome。 */
+.action-list-meta {
+  padding: 4px 2px 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 /* 卡面/圆角/阴影/内边距由统一壳 .task-card 下发；优先级只由 .priority-tag 表达。 */
@@ -18014,11 +18197,10 @@ span.wf-step-main {
 
   .runtime-group-title {
     margin: 2px 0 0;
-    color: var(--text-tertiary);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.02em;
   }
 
   .runtime-list {
@@ -18086,7 +18268,7 @@ span.wf-step-main {
     gap: 3px;
     padding: 1px 5px;
     border-radius: 999px;
-    font-size: 9.5px;
+    font-size: 10px;
     line-height: 1.4;
     white-space: nowrap;
     color: var(--text-secondary);
@@ -18120,7 +18302,7 @@ span.wf-step-main {
     border-radius: 999px;
     color: var(--text-tertiary);
     background: transparent;
-    font-size: 9px;
+    font-size: 9.5px;
     line-height: 1.4;
     white-space: nowrap;
   }
@@ -18134,7 +18316,7 @@ span.wf-step-main {
   .runtime-bg-list {
     margin: 0;
     color: var(--text-tertiary);
-    font-size: 10px;
+    font-size: 10.5px;
     line-height: 1.45;
     overflow-wrap: anywhere;
   }
@@ -18159,7 +18341,7 @@ span.wf-step-main {
 
   .runtime-managed {
     color: var(--text-tertiary);
-    font-size: 9.5px;
+    font-size: 10px;
     line-height: 1.4;
     text-align: right;
     max-width: 110px;
@@ -18180,7 +18362,9 @@ span.wf-step-main {
     line-height: 1.5;
   }
 
-  @media (max-width: 420px) {
+  /* 400 基线窗口的内容宽约 318：暂停/恢复仍可留在标题行右侧，
+     只有 320 窄窗才把动作换到独立一行，避免每行白增 30px 高度。 */
+  @media (max-width: 340px) {
     .runtime-row {
       flex-wrap: wrap;
     }

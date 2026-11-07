@@ -111,7 +111,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ActionCenterPanel 三层展示", () => {
-  it("同时展示需关注、需介入、通知、历史与当前筛选/已加载", () => {
+  it("首屏只展示 3 个计数，总量/已加载下沉到列表脚注", () => {
     useActionsStore.setState({
       feed: feedOf({
         items: [itemOf("run:1"), itemOf("run:2", { kind: "waiting_input", priority: 1 })],
@@ -131,12 +131,12 @@ describe("ActionCenterPanel 三层展示", () => {
       }),
     });
     render(<ActionCenterPanel />);
-    expect(screen.getByText("需关注 5")).toBeTruthy();
+    expect(screen.queryByText(/需关注/)).toBeNull();
     expect(screen.getByText("需介入 2")).toBeTruthy();
     expect(screen.getByText("通知 3")).toBeTruthy();
     expect(screen.getByText("历史 12")).toBeTruthy();
-    expect(screen.getByText("当前筛选 2")).toBeTruthy();
-    expect(screen.getByText("已加载 2")).toBeTruthy();
+    expect(screen.queryByText(/当前筛选 \d/)).toBeNull();
+    expect(screen.getByText("共 2 条 · 已加载 2 条")).toBeTruthy();
   });
 
   it("筛选无结果时说明该分类仍有待处理条目", () => {

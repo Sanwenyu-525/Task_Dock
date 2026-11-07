@@ -85,11 +85,18 @@ describe("导航自定义区块", () => {
     }) as HTMLInputElement;
     expect(settingsSwitch.disabled).toBe(true);
     expect(settingsSwitch.checked).toBe(true);
-    // 资源管理 + 设置都是固定入口，各自一行都带「固定」标记
-    expect(screen.getAllByText("固定").length).toBeGreaterThanOrEqual(2);
+    // 只有「设置」是锁定入口；资源管理已回归普通入口（默认可见、可隐藏/排序）
+    expect(screen.getAllByText("固定")).toHaveLength(1);
     // 锁定入口不提供上移/下移，避免把设置从底部移走
     expect(screen.queryByRole("button", { name: "上移 设置" })).toBeNull();
     expect(screen.queryByRole("button", { name: "下移 设置" })).toBeNull();
+
+    const resourceSwitch = screen.getByRole("switch", {
+      name: "资源管理导航入口显示",
+    }) as HTMLInputElement;
+    expect(resourceSwitch.disabled).toBe(false);
+    expect(resourceSwitch.checked).toBe(true);
+    expect(screen.getByRole("button", { name: "上移 资源管理" })).toBeTruthy();
   });
 
   it("完整面板与停靠胶囊独立配置，互不覆盖", async () => {

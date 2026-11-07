@@ -331,17 +331,24 @@ interface SwitchProps { /* 同上，语义为开关 */ }
 <TooltipLayer />
 ```
 
-用法是给任意元素加 `data-tip`：
+用法是给任意元素加 `data-tip`；纯图标按钮也可以只写 `aria-label`（提示层回退取用）：
 
 ```tsx
 <button className="icon-btn" data-tip="刷新" aria-label="刷新">…</button>
+
+// 2026-11-07 起等价：没有 data-tip 时用 aria-label 作提示
+<button className="icon-btn" aria-label="刷新">…</button>
 ```
 
 规则：
 
 - 悬停 350 ms 后出现，移开即消失；键盘聚焦立即出现。
 - 提示条**不抢焦点**（`restoreFocus=false`）、**不吞外部点击**（`dismissOnOutsidePress=false`）。
-- 原生 `title` 与 `data-tip` 不要同时出现在同一元素上。
+- 原生 `title` 与 `data-tip` 不要同时出现在同一元素上；带 `title` 的控件不参与
+  `aria-label` 回退（浏览器会自己画一条）。
+- 有可见文字（含字母/数字）的按钮不回退；`✓`、`×` 等符号不算文字。
+- `data-tip-skip` 让整棵子树退出回退（自带独立提示窗口的控件）。
+- 每个独立窗口各挂一次 `TooltipLayer` 并引入 `styles-ui.css`（通知 / 快速捕获 / 微件已接入）。
 
 ## 10. 弹层基础设施（overlay.ts / overlayStack.ts）
 

@@ -9,11 +9,14 @@ import { createRoot } from "react-dom/client";
 
 // 顺序与主窗口一致：先主题 Token，再组件样式，最后微件窗口的表面层。
 import "../styles-themes.css";
+// 悬停提示沿用主窗同一套 .ui-tooltip / .ui-popover 基元，不另写一套提示样式。
+import "../styles-ui.css";
 import "../components/widgets/widgets.css";
 import "./widgets-desktop.css";
 
 import { initLocale } from "../i18n";
 import { installNativeDragBridge } from "../lib/dragCursorSession";
+import TooltipLayer from "../components/ui/TooltipLayer";
 import WidgetWindow from "./WidgetWindow";
 
 // 微件窗口按需创建/销毁：跳过偏好镜像对账，避免每个窗口重复发起同一组存储 IPC。
@@ -28,6 +31,8 @@ if (host) {
   createRoot(host).render(
     <StrictMode>
       <WidgetWindow />
+      {/* 独立窗口也有图标按钮：挂全局提示层，aria-label 回退才有提示 */}
+      <TooltipLayer />
     </StrictMode>,
   );
 }

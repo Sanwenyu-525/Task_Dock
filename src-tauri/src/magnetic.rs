@@ -182,6 +182,12 @@ pub fn nearest_edge(r: Rect, area: Rect, max_dist: f64) -> Option<Edge> {
             continue;
         }
         let d = edge_distance(r, area, edge);
+        // 明显越出（超过负向退出保护）的轴不参与选边：它的负距离在 argmin 中
+        // 恒小于其他边，会把用户真正逼近的边整体遮蔽成 None（2026-11-08
+        // 与前端 detectCandidateEdge 同口径修复）。滞回带内的轻微越出不变。
+        if d < -ATTRACT_RANGE_CSS {
+            continue;
+        }
         if d < best_d {
             best_d = d;
             best = Some(edge);
@@ -2118,6 +2124,38 @@ mod tests {
         assert_eq!(RELEASE_DRAG_CSS, 32.0);
         assert_eq!(COMMIT_DRAG_CSS, 24.0, "必须等于前端 SNAP_UNDOCK_DRAG_PX");
         assert_eq!(REARM_DIST_CSS, 96.0);
+    }
+
+    /// 越出轴不得遮蔽可达边（2026-11-08，与前端 detectCandidateEdge 同口径修复）：
+    /// 底部明显越出工作区的窗口（拖离恢复后的用户矩形常态）拖到左缘齐平位，
+    /// 磁吸必须仍判定 left——修复前 bottom 的负距离恒占 argmin，总出口守卫
+    /// 把结果整体判 None，左缘永远无磁吸。
+    #[test]
+    fn nearest_edge_ignores_far_poked_axis() {
+        // bottom 距离 = 1032 − (395+700) = −63 < −ATTRACT_RANGE_CSS：选边时跳过
+        let r = Rect {
+            x: 0,
+            y: 395,
+            w: 500,
+            h: 700,
+        };
+        assert_eq!(nearest_edge(r, AREA, 24.0), Some(Edge::Left));
+        // 明显越出轴被跳过后其余边都超距（> max_dist）→ None（不猜边）
+        let r2 = Rect {
+            x: 100,
+            y: 395,
+            w: 500,
+            h: 700,
+        };
+        assert_eq!(nearest_edge(r2, AREA, 24.0), None);
+        // 轻微越出（滞回带内）行为不变：仍判该边
+        let r3 = Rect {
+            x: -20,
+            y: 300,
+            w: 400,
+            h: 560,
+        };
+        assert_eq!(nearest_edge(r3, AREA, 24.0), Some(Edge::Left));
     }
 
     /// Windows Snap 抑制的状态决策：停靠即抑制；解除即恢复；

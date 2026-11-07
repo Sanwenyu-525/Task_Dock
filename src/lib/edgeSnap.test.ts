@@ -41,6 +41,7 @@ import {
   cursorNearTriggerStrip,
   cursorOverWindow,
   detectCandidateEdge,
+  nearestDockEdge,
   alongDeviation,
   dockFeedbackText,
   edgeDistance,
@@ -121,6 +122,82 @@ describe("候选边判定 detectCandidateEdge", () => {
   it("edgeDistance 的符号语义：越出边为负", () => {
     expect(edgeDistance(rect(-30, 0), WA, "left")).toBe(-30);
     expect(edgeDistance(rect(0, 0), WA, "left")).toBe(0);
+  });
+});
+
+describe("程序化再吸附选边 nearestDockEdge", () => {
+  it("不设阈值：屏幕中央也返回最近边（候选判定在此距离会返回 null）", () => {
+    // 中央窗口：距左 760、距右 760、距顶 236、距顶更近 → top
+    expect(nearestDockEdge(rect(760, 236), WA)).toBe("top");
+    // detectCandidateEdge 默认阈值下同一位置不是候选，语义差异就在这
+    expect(detectCandidateEdge(rect(760, 236), WA)).toBeNull();
+  });
+
+  it("四边各取最近", () => {
+    expect(nearestDockEdge(rect(6, 300), WA)).toBe("left");
+    expect(nearestDockEdge(rect(1920 - 400 - 3, 300), WA)).toBe("right");
+    expect(nearestDockEdge(rect(700, 2), WA)).toBe("top");
+    expect(nearestDockEdge(rect(700, 1032 - 560 - 1), WA)).toBe("bottom");
+  });
+
+  it("四角并列/双近时取距离更小者（与候选判定同一 tie-break）", () => {
+    // 距左 4 < 距顶 20 → 左
+    expect(nearestDockEdge(rect(4, 20), WA)).toBe("left");
+    // 距底 2 < 距右 18 → 底
+    expect(nearestDockEdge(rect(1920 - 400 - 18, 1032 - 560 - 2), WA)).toBe("bottom");
+  });
+
+  it("轻微越出边仍返回该边（用户把窗口压过边缘的意图）", () => {
+    expect(nearestDockEdge(rect(-SNAP_CANDIDATE_EXIT_DIST, 300), WA)).toBe("left");
+  });
+
+  it("明显越出工作区（超过负向退出保护）返回 null，不猜边", () => {
+    expect(nearestDockEdge(rect(-(SNAP_CANDIDATE_EXIT_DIST + 1), 300), WA)).toBeNull();
+  });
+
+  it("负坐标副屏上同样成立", () => {
+    expect(nearestDockEdge(rect(-1920 + 6, 300), WA_NEG)).toBe("left");
+    expect(nearestDockEdge(rect(-1920 + 1920 - 400 - 9, 300), WA_NEG)).toBe("right");
+  });
+});
+
+// ── 越出轴不得遮蔽可达边（2026-11-08，capsule-redock 复核发现）──────────
+//
+// 真实缺陷：拖离恢复后的自由窗口底部越过工作区底缘（停靠位靠下 + 恢复尺寸
+// 较高时必然发生）时，bottom 的负距离（< -EXIT）在 argmin 中永远小于其他边，
+// 而总出口守卫又把它整体判为 null——用户明明把窗口拖到了左缘齐平位，
+// detected 却恒为 null，永远无法重新吸附。修复语义：明显越出（超过负向
+// 退出保护）的轴在选边时直接跳过，不得参与 argmin；滞回带内（-EXIT..0）
+// 的轻微越出行为不变。
+describe("越出轴不遮蔽可达边", () => {
+  it("底部越出工作区的窗口齐平左缘：left 不被 bottom 负距离遮蔽", () => {
+    // bottom 距离 = 1032 − (395+700) = −63（< −38，明显越出）
+    const poking = rect(0, 395, 500, 700);
+    expect(detectCandidateEdge(poking, WA)).toBe("left");
+  });
+
+  it("右缘越出工作区的窗口齐平顶缘：top 不被 right 负距离遮蔽", () => {
+    // right 距离 = 1920 − (1433+550) = −63（< −38，明显越出）
+    const poking = rect(1920 + 63 - 550, 0, 550, 700);
+    expect(detectCandidateEdge(poking, WA)).toBe("top");
+  });
+
+  it("越出轴被跳过后其余边都不在候选距离内：候选仍返回 null（不猜边）", () => {
+    // left 距离 100 > 24：候选判定 null
+    expect(detectCandidateEdge(rect(100, 395, 500, 700), WA)).toBeNull();
+  });
+
+  it("nearestDockEdge 维持「明显越出 → 不猜边」契约（按钮入口语义不变）", () => {
+    // 底部明显越出：按钮入口返回 null、由调用方失败收场（P3 注记：
+    // 该入口对越出窗口提示重新定位，拖拽路径已修复不受此限）
+    expect(nearestDockEdge(rect(0, 395, 500, 700), WA)).toBeNull();
+    expect(nearestDockEdge(rect(100, 395, 500, 700), WA)).toBeNull();
+  });
+
+  it("越出轴在滞回带内（−EXIT..0）时行为不变：仍返回该边", () => {
+    // bottom = 1032 − 1070 = −38：恰在退出保护边界，保留原语义
+    const bandEdge = rect(0, 510, 500, 560);
+    expect(nearestDockEdge(bandEdge, WA)).toBe("bottom");
   });
 });
 

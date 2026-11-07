@@ -345,6 +345,84 @@ const shim = `
     { id: "ocr", category: "ondemand", state: "idle", intent: "running", controllable: false, background: [], detail: { autoOcr: false }, error: null },
     { id: "widgets", category: "ondemand", state: "idle", intent: "running", controllable: false, background: [], detail: { perWidget: true }, error: null },
   ];
+  // 资源管理中心夹具（只读预览用）：两卷 / 两轮内存目录 / 进程与清理报告。
+  const resourceSnapshot = {
+    sampledAt: iso(0),
+    application: { knownCacheBytes: 1016.7 * 1024, knownCacheFiles: 21, status: "ready" },
+    memory: { totalBytes: 16 * 1024 * 1024 * 1024, availableBytes: 3.63 * 1024 * 1024 * 1024 },
+    disks: [
+      { volume: "C:", kind: "fixed", totalBytes: 475.68 * 1024 * 1024 * 1024, availableBytes: 13.67 * 1024 * 1024 * 1024 },
+      { volume: "D:", kind: "fixed", totalBytes: 465.76 * 1024 * 1024 * 1024, availableBytes: 21.63 * 1024 * 1024 * 1024 },
+    ],
+    process: { pid: 4242, name: "task-dock.exe", cpuPercent: 0, cpuWindowMs: 201, workingSetBytes: 48.1 * 1024 * 1024, privateBytes: 27.8 * 1024 * 1024, uptimeSecs: 3725, status: "normal" },
+  };
+  const resourceProcesses = {
+    sampledAt: iso(0),
+    cpuWindowMs: 201,
+    supported: true,
+    truncated: false,
+    omittedExternal: 0,
+    omittedUnknown: 1,
+    processes: [
+      { pid: 4242, name: "task-dock.exe", association: "self", associationBasis: "self", cpuPercent: 0, workingSetBytes: 48.1 * 1024 * 1024, privateBytes: 27.8 * 1024 * 1024, uptimeSecs: 3725, status: "normal" },
+      { pid: 5000, name: "msedgewebview2.exe", association: "managed_child", associationBasis: "parent_chain", cpuPercent: 0.4, workingSetBytes: 89.3 * 1024 * 1024, privateBytes: 20.9 * 1024 * 1024, uptimeSecs: 3700, status: "normal" },
+      { pid: 5001, name: "msedgewebview2.exe", association: "managed_child", associationBasis: "parent_chain", cpuPercent: 0.2, workingSetBytes: 51.2 * 1024 * 1024, privateBytes: 12.4 * 1024 * 1024, uptimeSecs: 3700, status: "normal" },
+      { pid: 700, name: "node.exe", association: "external_tool", associationBasis: "name_and_path", cpuPercent: 1.3, workingSetBytes: 120.4 * 1024 * 1024, privateBytes: 40.2 * 1024 * 1024, uptimeSecs: 900, status: "normal" },
+      { pid: 701, name: "cargo.exe", association: "project_dev", associationBasis: "image_path", cpuPercent: 5.4, workingSetBytes: 96.8 * 1024 * 1024, privateBytes: 18.1 * 1024 * 1024, uptimeSecs: 300, status: "normal" },
+    ],
+  };
+  const resourceDiskUsage = {
+    sampledAt: iso(0),
+    totalBytes: 270 * 1024 * 1024,
+    truncated: false,
+    entries: [
+      { id: "clipboard_images", bytes: 215.2 * 1024 * 1024, files: 10, kind: "persistent", status: "ready" },
+      { id: "database", bytes: 36.3 * 1024 * 1024, files: 3, kind: "persistent", status: "ready" },
+      { id: "clipboard_thumbs", bytes: 4.9 * 1024 * 1024, files: 13, kind: "persistent", status: "ready" },
+      { id: "tts_cache", bytes: 829.6 * 1024, files: 12, kind: "regenerable", status: "ready" },
+      { id: "shelf_thumbs", bytes: 315.5 * 1024, files: 13, kind: "persistent", status: "ready" },
+      { id: "diagnostics", bytes: 12.1 * 1024, files: 1, kind: "persistent", status: "ready" },
+      { id: "agent_inbox", bytes: 4.1 * 1024, files: 21, kind: "persistent", status: "ready" },
+      { id: "backups", bytes: 0, files: 0, kind: "persistent", status: "missing" },
+      { id: "shelf_files", bytes: 0, files: 0, kind: "persistent", status: "missing" },
+      { id: "shelf_images", bytes: 0, files: 0, kind: "persistent", status: "missing" },
+    ],
+  };
+  const resourceMemoryCatalog = {
+    sampledAt: iso(0),
+    totalBytes: 68400,
+    sources: [
+      { id: "app_icons", entries: 20, bytes: 68400, status: "available" },
+      { id: "tts_memory", entries: 0, bytes: 0, status: "empty" },
+    ],
+  };
+  const resourceCategoryPreview = (category, candidates, bytes) => ({
+    category, status: "ready", candidates, estimatedBytes: bytes, protectedFiles: 0, skippedFiles: 0,
+  });
+  const resourcePreview = {
+    previewId: "preview-mock",
+    createdAt: iso(0),
+    expiresAt: new Date(Date.now() + 300000).toISOString(),
+    totalCandidates: 3,
+    totalEstimatedBytes: 8704,
+    categories: [
+      resourceCategoryPreview("temporary", 0, 0),
+      resourceCategoryPreview("tts", 2, 8192),
+      resourceCategoryPreview("orphan_thumbnails", 1, 512),
+    ],
+  };
+  const resourceCleanupReport = {
+    jobId: "job-mock",
+    startedAt: iso(0),
+    finishedAt: iso(0),
+    status: "success",
+    totalFreedBytes: 8704,
+    totalDeletedFiles: 3,
+    categories: [
+      { category: "tts", status: "success", estimatedBytes: 8192, freedBytes: 8192, candidates: 2, deletedFiles: 2, skippedFiles: 0, failedFiles: 0 },
+      { category: "orphan_thumbnails", status: "success", estimatedBytes: 512, freedBytes: 512, candidates: 1, deletedFiles: 1, skippedFiles: 0, failedFiles: 0 },
+    ],
+  };
   // 「导出给 Agent」面板夹具：覆盖窗口可用 / 已安装 / 未安装与超长名称。
   const agentCap = (supported, evidence, note) => ({ supported, evidence, note });
   const clipboardAgentTargets = [
@@ -502,6 +580,14 @@ const shim = `
       case "get_settings": return settings;
       case "update_settings": return { ...settings, ...(args?.patch || {}) };
       case "lifecycle_status": return lifecycleStatus;
+      case "resource_snapshot": return resourceSnapshot;
+      case "resource_process_diagnostics": return resourceProcesses;
+      case "resource_disk_usage": return resourceDiskUsage;
+      case "resource_memory_catalog": return resourceMemoryCatalog;
+      case "resource_memory_release": return { sampledAt: iso(0), releasedBytes: 0, sources: [] };
+      case "resource_cleanup_preview":
+        return { ...resourcePreview, previewId: "preview-" + Date.now(), createdAt: iso(0), expiresAt: new Date(Date.now() + 300000).toISOString() };
+      case "resource_cleanup_execute": return resourceCleanupReport;
       case "list_tasks": {
         const f = args?.filter || {};
         const q2 = (f.search || "").trim();

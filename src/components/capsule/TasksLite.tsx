@@ -237,6 +237,7 @@ export default function TasksLite() {
             type="button"
             className="cap-iconbtn"
             aria-label="快速新增任务"
+            data-tip-placement="bottom"
             onClick={() => inputRef.current?.focus()}
           >
             <Plus size={16} strokeWidth={2.2} aria-hidden="true" />
@@ -302,6 +303,8 @@ export default function TasksLite() {
                     type="button"
                     className={`cap-check${isDone ? " is-checked" : ""}`}
                     aria-label={`完成「${t.title}」`}
+                    // 行内已经显示标题：提示只给动作，不重复长文案
+                    data-tip="标记完成"
                     aria-pressed={isDone}
                     onClick={() => void complete(t.id)}
                   >

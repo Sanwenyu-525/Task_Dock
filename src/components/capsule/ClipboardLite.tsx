@@ -388,6 +388,7 @@ export default function ClipboardLite() {
             type="button"
             className="cap-iconbtn"
             aria-label="打开剪贴板页"
+            data-tip-placement="bottom"
             onClick={() => openFullApp("clipboard")}
           >
             <ArrowUpRight size={15} strokeWidth={2} aria-hidden="true" />
@@ -569,13 +570,13 @@ export default function ClipboardLite() {
                   <Copy size={13} strokeWidth={2} aria-hidden="true" />
                 )}
               </button>
-              {/* 分体入口：复制按钮行为不变，右侧箭头直接打开「复制并切换到…」。
+              {/* 分体入口：复制按钮行为不变，右侧箭头直接打开「复制或粘贴到…」。
                   箭头表示「跳转到其他窗口」，不是折叠/展开；行高由既有行样式决定。 */}
               <button
                 type="button"
                 className="cap-mini is-icon"
-                aria-label="复制并切换到目标窗口"
-                data-tip="复制并切换到目标窗口"
+                aria-label="复制或粘贴到目标窗口"
+                data-tip="复制或粘贴到目标窗口"
                 onClick={() => openCopySwitch(it)}
               >
                 <ArrowUpRight size={13} strokeWidth={2} aria-hidden="true" />

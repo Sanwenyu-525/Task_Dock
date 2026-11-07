@@ -6,7 +6,7 @@
 //! phase=free、无停靠边、无操作入口 —— UI 层自然全部隐藏。
 
 import { create } from "zustand";
-import type { DockForm, SnapEdge, SnapPhase } from "../lib/edgeSnap";
+import type { DockForm, RedockDockTarget, SnapEdge, SnapPhase } from "../lib/edgeSnap";
 
 let feedbackSeq = 0;
 
@@ -32,6 +32,13 @@ export interface EdgeSnapUiState {
   collapse: (() => void) | null;
   /** 引擎注入：解除吸附并恢复普通窗口；可选指定目标模式（跳转完整页时用）。 */
   undock: ((mode?: string) => Promise<boolean>) | null;
+  /**
+   * 引擎注入：自由窗口**程序化再吸附**（标题栏「吸附为 …」）。按当前窗口位置
+   * 选最近边、**直停目标形态**（capsule=轨道 / tab=极简标签 / full=完整面板，
+   * 不经偏好解析），复用 dockTo 停靠事务。未启用为 null；只在 free 相位生效，
+   * 其他相位返回 false。
+   */
+  redock: ((target: RedockDockTarget) => Promise<boolean>) | null;
   /**
    * 引擎注入：**本次停靠会话**的临时形态切换（不改写持久化 `snap_display_mode`；
    * 解除停靠后失效，下次吸附按设置里的默认吸附方式）。供胶囊轨道与完整面板上的
@@ -74,6 +81,7 @@ export interface EdgeSnapUiState {
   setReveal: (fn: (() => void) | null) => void;
   setCollapse: (fn: (() => void) | null) => void;
   setUndock: (fn: ((mode?: string) => Promise<boolean>) | null) => void;
+  setRedock: (fn: ((target: RedockDockTarget) => Promise<boolean>) | null) => void;
   setFormSwitch: (fn: ((form: DockForm) => Promise<boolean>) | null) => void;
   setTabActions: (p: {
     collapse: (() => void) | null;
@@ -97,6 +105,7 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   reveal: null,
   collapse: null,
   undock: null,
+  redock: null,
   formSwitch: null,
   collapseToTab: null,
   restoreTab: null,
@@ -112,6 +121,7 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   setReveal: (fn) => set({ reveal: fn }),
   setCollapse: (fn) => set({ collapse: fn }),
   setUndock: (fn) => set({ undock: fn }),
+  setRedock: (fn) => set({ redock: fn }),
   setFormSwitch: (fn) => set({ formSwitch: fn }),
   setTabActions: (p) =>
     set({
@@ -134,6 +144,7 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
       reveal: null,
       collapse: null,
       undock: null,
+      redock: null,
       formSwitch: null,
       collapseToTab: null,
       restoreTab: null,

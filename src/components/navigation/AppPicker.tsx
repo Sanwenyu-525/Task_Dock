@@ -25,6 +25,7 @@ import type { AgentSession } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
 import { reportError } from "../../lib/errorReport";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
+import { radioTabIndex, useRovingRadioGroup } from "../ui/radioGroup";
 import {
   navLinkTask, navListWindows, navListTargetWindows, navListTargets, navLinkTaskWindow, navPickTaskWindow, navPickWindowIdentity, navSaveTarget, navSaveWindowTarget, navSaveAgentSessionTarget, navUpdateTarget,
   CATEGORY_LABELS,
@@ -209,6 +210,9 @@ export default function AppPicker({
   const cancelInFlightRef = useRef(false);
   /** 组件是否仍挂载：取消是异步的，卸载后不得再弹 Toast 或写状态。 */
   const mountedRef = useRef(true);
+  /** 两组单选（窗口列表 / 快捷方式类型）共用同一键盘契约：单 Tab 停靠 + 方向键选中。 */
+  const windowsRadio = useRovingRadioGroup<HTMLDivElement>();
+  const windowModeRadio = useRovingRadioGroup<HTMLDivElement>();
 
   // 扫描结果订阅者登记：最后一个查看者离开（关闭添加页/弹层）时才通知后端取消，
   // 其他入口仍在展示同一份扫描结果时不会误取消共享扫描。
@@ -1107,8 +1111,14 @@ export default function AppPicker({
                 <div className="empty-hint">没有可交互的窗口</div>
               )}
               {!windowsError && (
-                <div className="picker-window-page-list" role="radiogroup" aria-label="选择窗口">
-                  {windows?.map((w) => {
+                <div
+                  className="picker-window-page-list"
+                  role="radiogroup"
+                  aria-label="选择窗口"
+                  ref={windowsRadio.ref}
+                  onKeyDown={windowsRadio.onKeyDown}
+                >
+                  {windows?.map((w, i) => {
                     const selected = selectedWindow?.hwnd === w.hwnd;
                     const unavailable = !w.exe_path;
                     return (
@@ -1118,6 +1128,7 @@ export default function AppPicker({
                         role="radio"
                         aria-checked={selected}
                         aria-disabled={unavailable}
+                        tabIndex={radioTabIndex(selected, !!selectedWindow, i)}
                         disabled={!!busyKey}
                         className={`picker-window-row ${selected ? "is-selected" : ""} ${unavailable ? "is-unavailable" : ""}`}
                         onClick={() => {
@@ -1152,12 +1163,19 @@ export default function AppPicker({
                 </div>
               )}
               {!windowLink && (
-                <div className="picker-window-mode" role="radiogroup" aria-label="快捷方式类型">
+                <div
+                  className="picker-window-mode"
+                  role="radiogroup"
+                  aria-label="快捷方式类型"
+                  ref={windowModeRadio.ref}
+                  onKeyDown={windowModeRadio.onKeyDown}
+                >
                 <div className="picker-window-mode-title">快捷方式类型</div>
                 <button
                   type="button"
                   role="radio"
                   aria-checked={windowMode === "focus"}
+                  tabIndex={windowMode === "focus" ? 0 : -1}
                   className={`picker-mode-option ${windowMode === "focus" ? "is-selected" : ""}`}
                   disabled={!!busyKey}
                   onClick={() => setWindowMode("focus")}
@@ -1171,6 +1189,7 @@ export default function AppPicker({
                   type="button"
                   role="radio"
                   aria-checked={windowMode === "launch"}
+                  tabIndex={windowMode === "launch" ? 0 : -1}
                   className={`picker-mode-option ${windowMode === "launch" ? "is-selected" : ""}`}
                   disabled={!!busyKey}
                   onClick={() => setWindowMode("launch")}

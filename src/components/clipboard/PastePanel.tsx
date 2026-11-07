@@ -31,6 +31,7 @@ import { errorMessage } from "../../lib/errors";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
+import { radioTabIndex, useRovingRadioGroup } from "../ui/radioGroup";
 import TargetIcon from "./TargetIcon";
 
 interface JobState {
@@ -136,6 +137,8 @@ export default function PastePanel({
   /** 只有标题真的被截断时才挂 data-tip，避免悬停任意卡片都弹提示遮挡其他行。 */
   const listRef = useRef<HTMLDivElement>(null);
   const [truncatedTitles, setTruncatedTitles] = useState<Set<number>>(new Set());
+  /** 粘贴目标单选组：复用 listRef，单 Tab 停靠 + 方向键切换选中。 */
+  const targetRadio = useRovingRadioGroup<HTMLDivElement>(listRef);
 
   useLayoutEffect(() => {
     const measure = () => {
@@ -478,8 +481,9 @@ export default function PastePanel({
             className="clip-target-list"
             role="radiogroup"
             aria-label="粘贴目标窗口"
+            onKeyDown={targetRadio.onKeyDown}
           >
-            {targets.map((t) => {
+            {targets.map((t, i) => {
               const isSelected = selected?.hwnd === t.hwnd && selected.pid === t.pid;
               const isJumping = jumping === t.hwnd;
               return (
@@ -493,6 +497,7 @@ export default function PastePanel({
                     className="clip-target"
                     role="radio"
                     aria-checked={isSelected}
+                    tabIndex={radioTabIndex(isSelected, !!selected, i)}
                     disabled={running}
                     onClick={() => setSelected({ hwnd: t.hwnd, pid: t.pid })}
                     data-tip={truncatedTitles.has(t.hwnd) ? t.title : undefined}

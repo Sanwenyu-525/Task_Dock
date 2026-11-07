@@ -133,8 +133,7 @@ describe("导航布局配置", () => {
       known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
     });
     // 「设置」锁定入口必须始终可达，即使旧配置把它删光也要补回
-    // 锁定入口（资源管理、设置）必须始终可达，即使旧配置把它们删光也要补回
-    expect(result.config.left).toEqual(["resource", "settings"]);
+    expect(result.config.left).toEqual(["settings"]);
     expect(result.config.capsule).toEqual([]);
   });
 
@@ -234,7 +233,8 @@ describe("排序不变量：锁定入口固定末尾", () => {
       known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
     };
     const { config } = normalizeNavigationLayout(raw);
-    expect(config.left).toEqual(["tasks", "agents", "resource", "settings"]);
+    // 资源管理是普通入口：known 中存在但不在可见数组里 = 用户隐藏，不补回
+    expect(config.left).toEqual(["tasks", "agents", "settings"]);
   });
 
   it("普通入口可以跨过锁定入口排序（固定项原地不动）", () => {
@@ -398,6 +398,6 @@ describe("胶囊 Agent 状态球排序边界", () => {
       capsule: ["agents", "tasks"],
       known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
     });
-    expect(config.left).toEqual(["apps", "tasks", "history", "resource", "settings"]);
+    expect(config.left).toEqual(["apps", "tasks", "history", "settings"]);
   });
 });

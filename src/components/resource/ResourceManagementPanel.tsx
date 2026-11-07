@@ -1,4 +1,4 @@
-//! 资源管理：完整面板的常驻一级页面。
+//! 资源管理：完整面板的一级页面（默认可见，可隐藏/排序）。
 //!
 //! 结构：概览 / 磁盘 / 内存 / 进程 四个内部分区（不是四个一级导航）。
 //! 生命周期约束：
@@ -29,6 +29,7 @@ import MemorySegment from "./MemorySegment";
 import OverviewSegment from "./OverviewSegment";
 import RuntimeModulesSection from "./RuntimeModulesSection";
 import { USAGE_ANOMALY_DETAIL, UsageBar, usageStatusKey } from "./charts";
+import { VOLUME_KIND_KEYS } from "./volumeLabels";
 
 const SEGMENTS = ["overview", "modules", "disk", "memory", "process"] as const;
 type Segment = (typeof SEGMENTS)[number];
@@ -222,7 +223,7 @@ export default function ResourceManagementPanel() {
         >
           {visited.has("disk") && (
             <div className="resource-disk">
-              <DiskVolumeBar snapshot={snapshot.data} loading={snapshot.loading} />
+              <DiskVolumes snapshot={snapshot.data} loading={snapshot.loading} />
               <ResourceCleanupSection
                 onPreviewChange={setCleanable}
                 onSnapshotInvalidated={refreshAfterCleanup}
@@ -281,10 +282,11 @@ export default function ResourceManagementPanel() {
 }
 
 /**
- * 磁盘分区顶部的整机使用率条：复用与概览相同的公式与三档语义色。
- * 与「应用数据占用」是不同口径，因此单独成条，不与缓存分布混在一起。
+ * 磁盘分区顶部的「所有卷」列表：只读展示每个逻辑卷的使用率。
+ * 与「应用数据占用」是不同口径，因此单独成节，不与缓存分布混在一起。
+ * 读不到的卷显示「暂不可用」而不是 0%；异常读数显示「读数异常」。
  */
-function DiskVolumeBar({
+function DiskVolumes({
   snapshot,
   loading,
 }: {
@@ -292,40 +294,78 @@ function DiskVolumeBar({
   loading: boolean;
 }) {
   const { t } = useLocale();
-  const disk = snapshot?.disks[0] ?? null;
-  const usage = computeUsage(disk?.totalBytes ?? null, disk?.availableBytes ?? null);
   const pending = loading && !snapshot;
+  const disks = snapshot?.disks ?? [];
   const unavailable = t("settings.resourceCleanup.unavailable");
+
   return (
-    <UsageBar
-      usedPercent={pending ? null : usage.usedPercent}
-      level={pending ? "unknown" : usage.level}
-      size="md"
-      label={t("resource.overview.diskRingTitle")}
-      value={
-        pending
-          ? t("resource.reading")
-          : `${formatPercent(usage.usedPercent) ?? unavailable} · ${t(
-              usageStatusKey(usage.level, usage.anomaly),
-            )}`
-      }
-      ariaLabel={t("resource.aria.diskBar", {
-        percent: formatPercent(usage.usedPercent) ?? unavailable,
-        used: usage.usedBytes === null ? unavailable : formatBytes(usage.usedBytes),
-        free: usage.availableBytes === null ? unavailable : formatBytes(usage.availableBytes),
-        total: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
-        level: t(usageStatusKey(usage.level, usage.anomaly)),
+    <section className="resource-disk-volumes" aria-labelledby="resource-disk-volumes-title">
+      <div className="resource-cleanup-section-head">
+        <h3 className="resource-cleanup-heading" id="resource-disk-volumes-title">
+          {t("resource.volumes.title")}
+        </h3>
+        {!pending && disks.length > 0 && (
+          <span className="resource-volume-count">
+            {t("resource.volumes.count", { count: disks.length })}
+          </span>
+        )}
+      </div>
+      {pending && (
+        <p className="setting-note" role="status">
+          {t("resource.reading")}
+        </p>
+      )}
+      {!pending && disks.length === 0 && (
+        <p className="setting-note" role="status">
+          {t("resource.volumes.empty")}
+        </p>
+      )}
+      {disks.map((disk) => {
+        const usage = computeUsage(disk.totalBytes, disk.availableBytes);
+        const kindKey = VOLUME_KIND_KEYS[disk.kind] ?? VOLUME_KIND_KEYS.unknown;
+        const status = t(usageStatusKey(usage.level, usage.anomaly));
+        return (
+          <UsageBar
+            key={disk.volume}
+            usedPercent={usage.usedPercent}
+            level={usage.level}
+            size="sm"
+            label={
+              <>
+                {disk.volume}{" "}
+                <span className="resource-volume-kind">{t(kindKey)}</span>
+              </>
+            }
+            value={
+              usage.usedPercent === null
+                ? status
+                : `${formatPercent(usage.usedPercent)} · ${status}`
+            }
+            ariaLabel={t("resource.aria.diskBar", {
+              percent: formatPercent(usage.usedPercent) ?? unavailable,
+              used: usage.usedBytes === null ? unavailable : formatBytes(usage.usedBytes),
+              free:
+                usage.availableBytes === null ? unavailable : formatBytes(usage.availableBytes),
+              total: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
+              level: status,
+            })}
+            detail={
+              usage.anomaly
+                ? t(USAGE_ANOMALY_DETAIL[usage.anomaly])
+                : usage.totalBytes !== null && usage.availableBytes !== null
+                  ? `${t("resource.overview.ringFree", {
+                      free: formatBytes(usage.availableBytes),
+                    })} · ${t("resource.overview.ringTotal", {
+                      total: formatBytes(usage.totalBytes),
+                    })}`
+                  : unavailable
+            }
+          />
+        );
       })}
-      detail={
-        usage.anomaly
-          ? t(USAGE_ANOMALY_DETAIL[usage.anomaly])
-          : disk && usage.totalBytes !== null && usage.availableBytes !== null
-            ? `${t("resource.overview.ringFree", { free: formatBytes(usage.availableBytes) })} · ${t(
-                "resource.overview.ringTotal",
-                { total: formatBytes(usage.totalBytes) },
-              )}${disk.volume ? ` · ${disk.volume}` : ""}`
-            : unavailable
-      }
-    />
+      {!pending && disks.length > 0 && (
+        <p className="setting-note">{t("resource.volumes.desc")}</p>
+      )}
+    </section>
   );
 }

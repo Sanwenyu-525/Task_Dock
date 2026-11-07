@@ -271,8 +271,9 @@ export function safeTabForHiddenEntry(
   config: NavLayoutConfig,
   collectionSub?: "inbox" | "shelf" | "notes",
 ): Tab {
-  // 只在「可排序」入口里找落点：锁定入口（资源管理/设置）是系统兜底，
+  // 只在「可排序」入口里找落点：锁定入口（设置）是导航自定义的兜底，
   // 不应成为隐藏普通入口后的默认首页；只剩锁定入口时回到设置。
+  // 资源管理是普通入口，与其他页面一样可作为正常落点。
   const sortable = config.left
     .map((id) => navEntry(id))
     .filter((entry): entry is NonNullable<ReturnType<typeof navEntry>> => !!entry && !entry.locked);

@@ -11,6 +11,7 @@ mod diagnostics;
 mod memory;
 mod probes;
 mod storage;
+mod volumes;
 
 pub use diagnostics::{CpuSampler, ProcessDiagnostics, SelfProcessSnapshot};
 pub use memory::{MemoryCatalog, MemoryReleaseReport, MemoryReleaseSource, MemorySource};
@@ -82,6 +83,8 @@ pub struct MemorySnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct DiskSnapshot {
     pub volume: String,
+    /// fixed / removable / remote / ramdisk / optical / unknown（只读展示用）
+    pub kind: String,
     pub total_bytes: Option<u64>,
     pub available_bytes: Option<u64>,
 }
@@ -1423,32 +1426,10 @@ fn result(
     }
 }
 
-#[cfg(windows)]
+/// 只读枚举所有卷（本地/可移动/网络/光驱/内存盘），数据目录所在卷排首位。
+/// 单卷探测在 `volumes` 内限时并在途去重；非 Windows 返回空列表。
 fn disk_snapshot(path: &Path) -> Vec<DiskSnapshot> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-    let wide: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let (mut available, mut total, mut free) = (0u64, 0u64, 0u64);
-    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, &mut total, &mut free) };
-    let volume = path
-        .components()
-        .next()
-        .map(|c| c.as_os_str().to_string_lossy().to_string())
-        .unwrap_or_default();
-    vec![DiskSnapshot {
-        volume,
-        total_bytes: (ok != 0).then_some(total),
-        available_bytes: (ok != 0).then_some(available),
-    }]
-}
-
-#[cfg(not(windows))]
-fn disk_snapshot(_path: &Path) -> Vec<DiskSnapshot> {
-    Vec::new()
+    volumes::collect(path)
 }
 
 #[cfg(test)]

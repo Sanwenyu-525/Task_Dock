@@ -42,7 +42,7 @@ export const TAB_ORDER: readonly Tab[] = [
  * 因此与 `TAB_ORDER` 分离，避免已有快捷键语义漂移。
  * 帮助中心（help）同为仅视觉入口（settings 之前），不占 Ctrl+数字。
  * 诊断中心（diagnostics）默认隐藏、不占快捷键，位于帮助之后、设置之前。
- * 资源管理（resource）是常驻固定入口（settings 上方），不占快捷键。
+ * 资源管理（resource）是默认可见的普通入口（默认顺序在 settings 之前），不占快捷键。
  */
 export const RAIL_ORDER: readonly Tab[] = [
   "tasks",

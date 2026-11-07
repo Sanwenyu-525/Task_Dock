@@ -514,10 +514,9 @@ describe("隐藏当前入口 · 安全恢复与草稿门禁", () => {
     expect(await screen.findByText("collection-panel")).toBeTruthy();
 
     await user.click(switchFor("收集与暂存"));
-    // 不再停在刚被隐藏的页面；落在仍可见入口覆盖的页面上（锁定系统入口优先于设置）
+    // 不再停在刚被隐藏的页面；普通入口全部隐藏时回退到锁定设置页
     await waitFor(() => expect(useUiStore.getState().tab).not.toBe("shelf"));
-    const landed = useUiStore.getState().tab;
-    expect(["settings", "resource"]).toContain(landed);
+    expect(useUiStore.getState().tab).toBe("settings");
     expect(document.querySelector(".tab-content")?.textContent ?? "").not.toBe("");
     // 设置入口是锁定入口：隐藏全部普通入口后仍在侧栏底部
     expect(railLabels()[railLabels().length - 1]).toBe("设置");

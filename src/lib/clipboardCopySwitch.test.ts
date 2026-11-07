@@ -1,15 +1,19 @@
-//! 「复制并切换到目标窗口」事务的 A 专项单测：顺序、失败分层与统一文案。
+//! 「复制并切换 / 粘贴到目标窗口」事务的 A 专项单测：顺序、失败分层与统一文案。
 
 import { describe, expect, it, vi } from "vitest";
-import type { CopyReport, PasteTarget } from "./bridge";
+import type { ClipboardPasteEvent, CopyReport, PasteJob, PasteTarget } from "./bridge";
 import {
   copyAndSwitchItem,
   copyPartialDetail,
   describeCopySwitchResult,
+  describePasteSwitchResult,
   focusTargetOnly,
   isPartialCopy,
+  pasteOutcomeFromEvent,
+  pasteOutcomeFromJob,
   type CopySwitchDeps,
   type CopySwitchResult,
+  type PasteSwitchResult,
 } from "./clipboardCopySwitch";
 
 const TARGET: PasteTarget = {
@@ -291,5 +295,113 @@ describe("describeCopySwitchResult / partial 文案", () => {
       title: "内容已复制，但未能切换窗口",
       detail: "前台被拒绝",
     });
+  });
+});
+
+// ── 粘贴到目标窗口：结果归一化与文案 ──
+
+
+function jobOf(over: Partial<PasteJob> = {}): PasteJob {
+  return {
+    id: "job-1",
+    group_id: "",
+    target_title: "记事本",
+    target_exe: "C:\Windows\notepad.exe",
+    status: "completed",
+    total: 1,
+    sent: 1,
+    started_at: "2026-11-07T00:00:00Z",
+    ended_at: "2026-11-07T00:00:01Z",
+    message: "已发送 1/1 项粘贴动作；目标应用是否接收无法自动验证（1 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容",
+    remaining_items: [],
+    restored: true,
+    ...over,
+  };
+}
+
+describe("粘贴结果归一化", () => {
+  it("任务快照只保留后端事实字段；空说明归一为 null", () => {
+    expect(pasteOutcomeFromJob(jobOf())).toEqual({
+      status: "completed",
+      sent: 1,
+      total: 1,
+      message: jobOf().message,
+      restored: true,
+    });
+    expect(pasteOutcomeFromJob(jobOf({ message: "  " })).message).toBeNull();
+  });
+
+  it("终态事件携带的 restored / message 同样归一", () => {
+    const event: ClipboardPasteEvent = {
+      jobId: "job-1",
+      status: "failed",
+      sent: 0,
+      total: 1,
+      pending: 1,
+      message: "第 1 项前失去焦点",
+      restored: false,
+      unavailable: undefined,
+    } as ClipboardPasteEvent;
+    expect(pasteOutcomeFromEvent(event)).toEqual({
+      status: "failed",
+      sent: 0,
+      total: 1,
+      message: "第 1 项前失去焦点",
+      restored: false,
+    });
+  });
+});
+
+describe("describePasteSwitchResult", () => {
+  const ok = (job: PasteJob | null): PasteSwitchResult => ({
+    ok: true,
+    outcome: job ? pasteOutcomeFromJob(job) : null,
+  });
+
+  it("完成：文案是「已发送粘贴」，详情保留后端「无法自动验证」原话", () => {
+    const feedback = describePasteSwitchResult(ok(jobOf()), { targetTitle: "记事本" });
+    expect(feedback.kind).toBe("paste-sent");
+    expect(feedback.title).toBe("已向「记事本」发送粘贴");
+    expect(feedback.detail).toContain("无法自动验证");
+    expect(feedback.detail).toContain("已恢复粘贴前的剪贴板内容");
+  });
+
+  it("取消/失败不显示为成功", () => {
+    const cancelled = describePasteSwitchResult(
+      ok(jobOf({ status: "cancelled", sent: 1, message: "用户已取消；第 1 项按键已发出，接收情况未知" })),
+      { targetTitle: "记事本" },
+    );
+    expect(cancelled).toEqual({
+      kind: "paste-failed",
+      title: "粘贴已取消",
+      detail: "用户已取消；第 1 项按键已发出，接收情况未知",
+    });
+
+    const failed = describePasteSwitchResult(
+      ok(jobOf({ status: "failed", sent: 0, message: "第 1 项写入剪贴板失败" })),
+      { targetTitle: "记事本" },
+    );
+    expect(failed.kind).toBe("paste-failed");
+    expect(failed.title).toBe("粘贴未完成");
+    expect(failed.detail).toBe("第 1 项写入剪贴板失败");
+  });
+
+  it("任务没能启动：按错误说明展示，不伪造已发送", () => {
+    const feedback = describePasteSwitchResult(
+      { ok: false, error: new Error("已有粘贴任务进行中") },
+      { targetTitle: "记事本", errorText: () => "已有粘贴任务进行中" },
+    );
+    expect(feedback).toEqual({
+      kind: "paste-failed",
+      title: "未能粘贴到「记事本」",
+      detail: "已有粘贴任务进行中",
+    });
+  });
+
+  it("等待超时没有终态：明确说「未确认结束」，不当作成功", () => {
+    const feedback = describePasteSwitchResult(ok(null), { targetTitle: "记事本" });
+    expect(feedback.kind).toBe("paste-failed");
+    expect(feedback.title).toBe("未确认粘贴任务结束");
+    expect(feedback.detail).toContain("可能仍在后台进行");
   });
 });

@@ -282,8 +282,8 @@ describe("历史列表滚动稳定性", () => {
     scrollTo(600);
 
     // 卡片跳转箭头 → 完整面板（走既有 setDetail，记录滚动位置）；不再经过菜单
-    await user.click(screen.getAllByRole("button", { name: "复制并切换到目标窗口" })[10]);
-    expect(await screen.findByText("复制并切换到…")).toBeTruthy();
+    await user.click(screen.getAllByRole("button", { name: "复制或粘贴到目标窗口" })[10]);
+    expect(await screen.findByText("复制或粘贴到…")).toBeTruthy();
     // 只是枚举目标窗口，没有重新加载/重排历史
     expect(bridge.clipboardView.mock.calls.length).toBe(viewCallsBefore);
     expect(useClipboardStore.getState().view?.items[0].id).toBe("ci0");

@@ -386,13 +386,6 @@ export default function ResourceCleanupSection({
           )}{" "}
           {t(phase === "scanning" ? "settings.resourceCleanup.scanning" : preview ? "settings.resourceCleanup.rescan" : "settings.resourceCleanup.scan")}
         </button>
-        <span className="resource-cleanup-selection-summary" aria-live="polite">
-          {preview
-            ? usableSelection.length > 0
-              ? `${t("settings.resourceCleanup.selected", { count: usableSelection.length })} · ${t("settings.resourceCleanup.totalEstimate", { bytes: formatBytes(selectedBytes) })}`
-              : t("settings.resourceCleanup.noSelection")
-            : null}
-        </span>
         <button
           className="btn sm"
           type="button"
@@ -401,6 +394,14 @@ export default function ResourceCleanupSection({
         >
           <Trash2 size={12} aria-hidden="true" /> {t("settings.resourceCleanup.clean")}
         </button>
+        {/* 主操作成组靠左；选择摘要吃掉剩余空间并右对齐，避免两个按钮被拉到大两端。 */}
+        <span className="resource-cleanup-selection-summary" aria-live="polite">
+          {preview
+            ? usableSelection.length > 0
+              ? `${t("settings.resourceCleanup.selected", { count: usableSelection.length })} · ${t("settings.resourceCleanup.totalEstimate", { bytes: formatBytes(selectedBytes) })}`
+              : t("settings.resourceCleanup.noSelection")
+            : null}
+        </span>
       </div>
 
       {preview && expired && (

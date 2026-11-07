@@ -1,13 +1,13 @@
-//! 胶囊内「复制并切换到目标窗口」二级视图。
+//! 胶囊内「复制并切换 / 粘贴到目标窗口」二级视图。
 //!
 //! 只在 `.capsule-panel` 内容区替换列表：不新开弹窗 / Portal、不改面板尺寸与
 //! Win32 裁剪区域；返回、Escape、焦点恢复沿用既有二级视图的 overlayStack 机制
 //! （一次 Escape 只关当前视图，面板本身保留）。
 //!
 //! 语义边界与完整面板一致，业务顺序只在共享层实现：
-//! - 目标枚举、precheck → copy → focus、竞态与统计口径全部由
+//! - 目标枚举、precheck → copy → focus、单条粘贴任务、竞态与统计口径全部由
 //!   `hooks/useClipboardCopySwitch.ts` / `lib/clipboardCopySwitch.ts` 决定；
-//! - 本视图不自动选择第一个窗口，也不调用任何逐项粘贴接口；
+//! - 本视图不自动选择第一个窗口，粘贴也不自己合成按键（复用后端粘贴队列）；
 //! - 结果文案直接使用 hook 的 `feedback`，不在这里自造第二套口径；
 //! - 目标列表只在挂载时枚举一次 + 手动刷新，无常驻监听与轮询；
 //! - 组件卸载即丢弃在途结果（hook 的存活守卫），重新打开不会重放旧请求。
@@ -46,18 +46,28 @@ export default function ClipboardTargetView({
     result,
     feedback,
     itemMissing,
+    phase,
     refresh,
     run,
+    runPaste,
     retryFocus,
   } = useClipboardCopySwitch(item.id);
 
   const loadLite = useClipboardStore((s) => s.loadLite);
-  /** 本次操作选择的目标：仅用于「复制失败」后的重试，不参与窗口身份判定。 */
+  /** 本次操作选择的目标与动作：仅用于失败后的「重试」，不参与窗口身份判定。 */
   const lastTarget = useRef<PasteTarget | null>(null);
+  const lastAction = useRef<"copy" | "paste">("copy");
   const busyAny = busy || retrying;
   // hook 在「仅重试切换」期间不设置 activeHwnd：让原目标行继续显示处理中，
   // 其余目标照旧禁用，避免重试切换与新的复制并发。
   const busyHwnd = busy ? activeHwnd : retrying ? (result?.precheckTarget?.hwnd ?? null) : null;
+  const busyAction: "copy" | "paste" | null = busy
+    ? phase === "pasting"
+      ? "paste"
+      : "copy"
+    : retrying
+      ? "copy"
+      : null;
 
   // 条目已被删除：只请求一次轻量列表刷新（不自动返回、不轮询）。
   useEffect(() => {
@@ -66,10 +76,29 @@ export default function ClipboardTargetView({
 
   const select = (target: PasteTarget) => {
     lastTarget.current = target;
+    lastAction.current = "copy";
     void run(target);
   };
 
-  const succeeded = feedback?.kind === "success" || feedback?.kind === "partial";
+  const pasteTo = (target: PasteTarget) => {
+    lastTarget.current = target;
+    lastAction.current = "paste";
+    void runPaste(target);
+  };
+
+  const retryLast = () => {
+    const target = lastTarget.current;
+    if (!target) return;
+    if (lastAction.current === "paste") pasteTo(target);
+    else select(target);
+  };
+
+  const succeeded =
+    feedback?.kind === "success" ||
+    feedback?.kind === "partial" ||
+    feedback?.kind === "paste-sent";
+  const retryable =
+    feedback?.kind === "copy-failed" || feedback?.kind === "paste-failed";
 
   // 标题区即窗口拖拽热区（二级页面与一级面板同一套命中规则，见 PanelKit.PanelHead）
   const headRef = useDragRegion<HTMLElement>();
@@ -85,13 +114,14 @@ export default function ClipboardTargetView({
           type="button"
           className="cap-iconbtn cap-clip-back"
           aria-label="返回"
+          data-tip-placement="bottom"
           onClick={onBack}
         >
           <ArrowLeft size={15} strokeWidth={2.2} aria-hidden="true" />
         </button>
         <div className="cap-head-text cap-clip-head-text" data-tauri-drag-region>
-          <span className="cap-title cap-clip-title" title="复制并切换到…" data-tauri-drag-region>
-            复制并切换到…
+          <span className="cap-title cap-clip-title" title="复制或粘贴到…" data-tauri-drag-region>
+            复制或粘贴到…
           </span>
           <span className="cap-sub" title={liteTitle(item)} data-tauri-drag-region>
             {liteTitle(item)}
@@ -118,7 +148,7 @@ export default function ClipboardTargetView({
 
       <div className="cap-clip-body">
         <div className="cap-summary">
-          <span>选择目标后复制并切换；不会自动粘贴，也不会发送 Ctrl+V。</span>
+          <span>复制并切换只写入剪贴板并激活窗口；粘贴会发送一次 Ctrl+V 并尝试恢复原剪贴板。</span>
         </div>
 
         {/* 条目已不存在：不显示任何成功口径，也不提供会再次失败的窗口选择。 */}
@@ -153,15 +183,12 @@ export default function ClipboardTargetView({
                 {retrying ? "重试中…" : "仅重试切换"}
               </button>
             ) : null}
-            {feedback.kind === "copy-failed" ? (
+            {retryable ? (
               <button
                 type="button"
                 className="cap-mini"
                 disabled={busyAny || lastTarget.current === null}
-                onClick={() => {
-                  const target = lastTarget.current;
-                  if (target) select(target);
-                }}
+                onClick={retryLast}
               >
                 重试
               </button>
@@ -219,9 +246,10 @@ export default function ClipboardTargetView({
                     key={target.hwnd}
                     target={target}
                     variant="compact"
-                    busy={busyHwnd === target.hwnd}
+                    busy={busyHwnd === target.hwnd ? busyAction : null}
                     disabled={busyAny}
                     onSelect={() => select(target)}
+                    onPaste={() => pasteTo(target)}
                   />
                 ))}
               </div>
@@ -232,3 +260,4 @@ export default function ClipboardTargetView({
     </div>
   );
 }
+

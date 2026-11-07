@@ -512,7 +512,10 @@ export default function WidgetWindow() {
                 topmost ? "widgetWindow.topmostOnAria" : "widgetWindow.topmostOffAria",
                 { title },
               )}
+              data-tip={t(topmost ? "widgetWindow.topmostOnTip" : "widgetWindow.topmostOffTip")}
               aria-pressed={topmost}
+              // 标题行贴窗口上缘：气泡朝下才不会被窗口边界裁掉
+              data-tip-placement="bottom"
               onClick={toggleTopmost}
             >
               {topmost ? (
@@ -525,6 +528,8 @@ export default function WidgetWindow() {
               type="button"
               className="wd-btn wd-close"
               aria-label={t("widgetWindow.closeAria", { title })}
+              data-tip={t("widgetWindow.closeTip")}
+              data-tip-placement="bottom"
               onClick={close}
             >
               <X size={12} aria-hidden="true" />

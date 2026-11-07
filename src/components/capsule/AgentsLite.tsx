@@ -120,6 +120,7 @@ export default function AgentsLite() {
               type="button"
               className="cap-iconbtn"
               aria-label="刷新 Agent 状态"
+              data-tip-placement="bottom"
               aria-disabled={busy}
               onClick={() => void refresh()}
             >
@@ -129,6 +130,7 @@ export default function AgentsLite() {
               type="button"
               className="cap-iconbtn"
               aria-label="在完整页打开 Agent"
+              data-tip-placement="bottom"
               onClick={() => openFullApp("agents")}
             >
               <ArrowUpRight size={15} strokeWidth={2} aria-hidden="true" />

@@ -189,14 +189,15 @@ export default function ClipboardItemCard({
         >
           <Copy size={12} />
         </button>
-        {/* 分体复制：主按钮保持「直接复制」不变，右侧箭头直接打开目标窗口选择器。
-            只有一个动作就不该再套一层菜单：箭头本身就是入口，也不是折叠语义。 */}
+        {/* 分体复制：主按钮保持「直接复制」不变，右侧箭头直接打开目标窗口选择器
+            （里面再选「复制并切换」或「粘贴到该窗口」）。只有一个动作就不该再套一层菜单：
+            箭头本身就是入口，也不是折叠语义。 */}
         {onCopySwitch && (
           <button
             type="button"
             className="icon-btn sm"
-            data-tip="复制并切换到目标窗口"
-            aria-label="复制并切换到目标窗口"
+            data-tip="复制或粘贴到目标窗口"
+            aria-label="复制或粘贴到目标窗口"
             onClick={onCopySwitch}
             // 卡片把 Enter 当「打开详情」：箭头上的按键不得冒泡
             onKeyDown={(e) => e.stopPropagation()}

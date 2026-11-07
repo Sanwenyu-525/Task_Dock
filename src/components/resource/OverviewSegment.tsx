@@ -21,6 +21,7 @@ import {
   UsageRing,
   usageStatusKey,
 } from "./charts";
+import { VOLUME_KIND_KEYS } from "./volumeLabels";
 
 interface OverviewSegmentProps {
   snapshot: ResourceSnapshot | null;
@@ -51,7 +52,9 @@ export default function OverviewSegment({
   const reading = t("resource.reading");
   const pending = loading && !snapshot;
 
-  const disk = snapshot?.disks[0] ?? null;
+  /** 后端按「数据目录所在卷优先」排序，首项即主盘；其余卷在下方卷条里并列展示。 */
+  const disks = snapshot?.disks ?? [];
+  const disk = disks[0] ?? null;
   const memory = snapshot?.memory;
   const process = snapshot?.process;
   const diskUsage = computeUsage(disk?.totalBytes ?? null, disk?.availableBytes ?? null);
@@ -226,6 +229,42 @@ export default function OverviewSegment({
           }
         />
       </div>
+
+      {/* 多卷：概览除主盘环形外，用紧凑卷条并列展示其余卷的只读使用率。 */}
+      {disks.length > 1 && (
+        <div className="resource-volume-strip" role="list" aria-label={t("resource.volumes.title")}>
+          {disks.map((item) => {
+            const usage = computeUsage(item.totalBytes, item.availableBytes);
+            const kindKey = VOLUME_KIND_KEYS[item.kind] ?? VOLUME_KIND_KEYS.unknown;
+            const status = t(usageStatusKey(usage.level, usage.anomaly));
+            const valueText =
+              usage.usedPercent === null
+                ? status
+                : `${formatPercent(usage.usedPercent)} · ${status}`;
+            return (
+              <div
+                className="resource-volume-chip"
+                role="listitem"
+                key={item.volume}
+                data-tip={t(kindKey)}
+              >
+                <span className="resource-volume-name">{item.volume}</span>
+                <span className="resource-volume-value">{pending ? reading : valueText}</span>
+                <MiniMeter
+                  percent={pending ? null : usage.usedPercent}
+                  tone={pending ? "neutral" : usage.level}
+                  ariaLabel={t("resource.aria.volumeChip", {
+                    volume: item.volume,
+                    kind: t(kindKey),
+                    percent: formatPercent(usage.usedPercent) ?? unavailable,
+                    level: t(usageStatusKey(usage.level, usage.anomaly)),
+                  })}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="resource-metric-strip">
         <div className="resource-metric">

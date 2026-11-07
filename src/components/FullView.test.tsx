@@ -304,7 +304,9 @@ describe("导航显隐", () => {
     const footLabels = [...document.querySelectorAll(".rail-foot > .rail-item .rail-label")].map(
       (node) => node.textContent,
     );
-    expect(footLabels).toEqual(["资源管理", "设置"]);
+    expect(footLabels).toEqual(["设置"]);
+    // 资源管理是普通入口：跟随配置顺序渲染在中间列表，不再固定底部
+    expect(labels).toContain("资源管理");
     // 未隐藏项不会出现在「更多」
     expect(screen.queryByRole("button", { name: "更多导航入口" })).toBeNull();
   });
@@ -403,7 +405,9 @@ describe("侧栏固定底部区域", () => {
     expect(foot).toBeTruthy();
     const footButtons = [...foot!.querySelectorAll(":scope > .rail-item, :scope > .rail-more .rail-item")];
     const labels = footButtons.map((el) => el.getAttribute("aria-label"));
-    expect(labels).toEqual(["更多导航入口", "资源管理", "设置"]);
+    expect(labels).toEqual(["更多导航入口", "设置"]);
+    // 资源管理是普通入口：进入中间滚动列表，可隐藏/排序，不再固定底部
+    expect(screen.getByRole("button", { name: "资源管理" }).closest(".rail-items")).toBeTruthy();
     // 设置不属于中间滚动列表
     expect(document.querySelector(".rail-items .rail-item-fixed")).toBeNull();
     expect(screen.getByRole("button", { name: "设置" }).closest(".rail-items")).toBeNull();
@@ -416,7 +420,7 @@ describe("侧栏固定底部区域", () => {
     const footLabels = [...document.querySelectorAll(".rail-foot > .rail-item, .rail-foot .rail-more .rail-item")].map(
       (el) => el.getAttribute("aria-label"),
     );
-    expect(footLabels).toEqual(["资源管理", "设置"]);
+    expect(footLabels).toEqual(["设置"]);
   });
 
   it("排序变化后设置仍在底部，按配置顺序渲染中间列表", () => {

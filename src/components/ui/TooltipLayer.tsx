@@ -16,7 +16,10 @@
 //!   换用紧凑气泡，并用 `data-tip-padding="0"` 取消视口留白，避免气泡被
 //!   收敛进轨道后被区域切掉内缘；
 //! - 与原生 `title` 互斥：需要主题化提示的控件用 `data-tip`，
-//!   纯文本截断提示（非交互元素）仍然保留原生 `title`。
+//!   纯文本截断提示（非交互元素）仍然保留原生 `title`；
+//! - **纯图标按钮可以只写 `aria-label`**：没有显式 `data-tip` 时由本层回退取用
+//!   （2026-11-07 补齐「有可访问名、悬停却没有提示」的图标按钮）。显式
+//!   `data-tip` 仍然优先；自带独立提示机制的控件用 `data-tip-skip` 退出回退。
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Placement } from "@floating-ui/react";
@@ -61,6 +64,47 @@ function readPadding(el: HTMLElement): number {
 /** 紧凑气泡：字号/内边距更小，保证折叠态气泡横跨翼片厚度也能完整显示。 */
 function readCompact(el: HTMLElement): boolean {
   return el.dataset.tipCompact === "1";
+}
+
+/** 「自带可见文案」判定：textContent 含字母或数字即认为文字已说明功能。 */
+const VISIBLE_TEXT = /[\p{L}\p{N}]/u;
+
+/**
+ * 纯图标按钮的回退文案（2026-11-07）：应用里大量图标按钮只有 `aria-label`，
+ * 视觉上没有任何文字。这里把它们接进同一条提示通道，避免「读屏有名字、
+ * 鼠标悬停什么也没有」。只认 button / role=button，输入框与区域标签不参与。
+ */
+function fallbackLabel(el: HTMLElement): string | null {
+  if (el.tagName !== "BUTTON" && el.getAttribute("role") !== "button") return null;
+  // 原生 title 会让浏览器自己画一条提示，再接主题化提示会出双气泡
+  if (el.hasAttribute("title")) return null;
+  // 有可见文字（字母/数字）就不回退：同名提示只是噪声（✓、× 等符号不算文字）
+  if (VISIBLE_TEXT.test(el.textContent ?? "")) return null;
+  const label = el.getAttribute("aria-label")?.trim();
+  return label ? label : null;
+}
+
+interface TipHit {
+  el: HTMLElement;
+  text: string;
+}
+
+/**
+ * 从事件目标向上找提示来源：最近的显式 `data-tip`，或纯图标按钮的 `aria-label`。
+ * `data-tip-skip` 表示该子树自带提示机制（极简标签有独立提示窗口），直接放弃，
+ * 避免主窗提示与独立提示窗各弹一条。
+ */
+function resolveTip(start: EventTarget | null): TipHit | null {
+  let el = start instanceof Element ? (start as HTMLElement) : null;
+  while (el) {
+    if (el.hasAttribute("data-tip-skip")) return null;
+    const explicit = el.dataset.tip?.trim();
+    if (explicit) return { el, text: explicit };
+    const label = fallbackLabel(el);
+    if (label) return { el, text: label };
+    el = el.parentElement;
+  }
+  return null;
 }
 
 export interface TipRect {
@@ -152,10 +196,7 @@ export default function TooltipLayer() {
   const [tip, setTip] = useState<TipState | null>(null);
 
   useEffect(() => {
-    const find = (target: EventTarget | null): HTMLElement | null => {
-      const el = target instanceof Element ? target.closest<HTMLElement>("[data-tip]") : null;
-      return el && el.dataset.tip?.trim() ? el : null;
-    };
+    const find = (target: EventTarget | null): TipHit | null => resolveTip(target);
     const clear = () => {
       window.clearTimeout(timerRef.current);
       timerRef.current = undefined;
@@ -168,9 +209,8 @@ export default function TooltipLayer() {
         setTip(null);
       }, delay);
     };
-    const show = (el: HTMLElement) => {
-      const text = el.dataset.tip?.trim();
-      if (!text) return;
+    const show = (hit: TipHit) => {
+      const { el, text } = hit;
       currentRef.current = el;
       anchorRef.current = el;
       setTip({
@@ -184,19 +224,19 @@ export default function TooltipLayer() {
     };
 
     const onOver = (e: MouseEvent) => {
-      const el = find(e.target);
-      if (!el) {
+      const hit = find(e.target);
+      if (!hit) {
         hide();
         return;
       }
-      if (currentRef.current === el) return;
+      if (currentRef.current === hit.el) return;
       clear();
-      timerRef.current = window.setTimeout(() => show(el), SHOW_DELAY);
+      timerRef.current = window.setTimeout(() => show(hit), SHOW_DELAY);
     };
     const onOut = (e: MouseEvent) => {
       const from = find(e.target);
       const to = find(e.relatedTarget as EventTarget | null);
-      if (from && from === to) return; // 只是在按钮内部移动
+      if (from && from.el === to?.el) return; // 只是在按钮内部移动
       hide();
     };
     // 键盘意图：只有 Tab 移动焦点才算「用户想键盘聚焦这个控件」。
@@ -215,13 +255,13 @@ export default function TooltipLayer() {
       }
     };
     const onFocusIn = (e: FocusEvent) => {
-      const el = find(e.target);
-      if (!el) return;
+      const hit = find(e.target);
+      if (!hit) return;
       // 鼠标点击后的聚焦、窗口重新激活时的焦点恢复，都不是键盘导航
       if (!keyboardNav) return;
       keyboardNav = false; // 一次键盘导航只对应一次焦点移动
       clear();
-      show(el);
+      show(hit);
     };
     const onFocusOut = () => hide(0);
     // 提示条不该挡住 Escape：它自己消失，但**不消费**按键，

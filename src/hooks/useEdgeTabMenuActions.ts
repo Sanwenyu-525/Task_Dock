@@ -12,7 +12,8 @@
 //! 请求关联用单调 id：后端等待对应结果，超时/主窗未响应由后端给出明确失败，
 //! 迟到的重复事件按 id 去重，不会把同一个动作执行两遍。
 //!
-//! 生命周期：随组件挂载/卸载成对订阅，不产生悬空监听。
+//! 生命周期：随组件挂载/卸载成对订阅，不产生悬空监听；**在途回执不受卸载
+//! 影响**——undock/full 成功本身会切走本桥所在的胶囊视图，回执必须照常送达。
 
 import { useEffect } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -120,8 +121,13 @@ export function useEdgeTabMenuActions(): void {
 
       void (async () => {
         const result = await runTabMenuAction(req.action);
-        // 旧载荷没有 id，无法（也不需要）回执
-        if (req.id === 0 || disposed) return;
+        // 旧载荷没有 id，无法（也不需要）回执。
+        // **卸载不得吞回执**：undock/full 成功本身就把相位切到 free/docked-full，
+        // App 会据此卸载 CapsuleDock（本桥所在组件），恰好发生在回执之前——若这里
+        // 因 disposed 丢弃回执，后端只能等满 8s 超时并按失败上报，菜单在已成功
+        // 切换的窗口上停留不消失（用户视角是「菜单卡住」）。回执只用捕获的请求
+        // id 与无状态 IPC，不依赖组件挂载，在途事务必须送达。
+        if (req.id === 0) return;
         try {
           await invokeCommand(TAB_MENU_RESULT_COMMAND, {
             id: req.id,

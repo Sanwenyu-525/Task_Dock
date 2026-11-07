@@ -6,7 +6,7 @@
 //! （页面内双子页签）；v0.9 新增「工作流」视觉入口；v0.10 新增「应用」视觉入口；
 //! v0.11 新增「帮助」视觉入口（settings 之前、不占 Ctrl+数字）；
 //! v0.14 新增「诊断中心」视觉入口（帮助之后、设置之前，默认隐藏，不占 Ctrl+数字）
-//! 与「资源管理」固定视觉入口（设置上方、不可隐藏/排序，不占 Ctrl+数字），
+//! 与「资源管理」默认可见入口（设置之前、可隐藏/排序，不占 Ctrl+数字），
 //! 因此 **14 个声明视觉入口（12 个默认可见）≠ 10 个逻辑 Tab**：
 //! - `RAIL_ENTRIES`：视觉入口（渲染顺序、data-tip、aria-label 的事实源）；
 //! - `LOGICAL_TABS`：逻辑 Tab 顺序（= useUiStore.TAB_ORDER，快捷键 Ctrl+1…9 与 Ctrl+0 的
@@ -60,7 +60,7 @@ export const RAIL_ENTRIES = Object.freeze([
   // 诊断中心：仅视觉入口、默认隐藏（显式标记 defaultVisible: false），
   // 用户可在「导航自定义」开启；隐藏时仍可从「更多」进入。
   { id: "diagnostics", label: "诊断中心", shortcut: "", defaultVisible: false },
-  // 资源管理：常驻固定入口（不可隐藏/排序），位于「设置」上方。
+  // 资源管理：默认可见的普通入口（可隐藏/排序），默认顺序位于「设置」之前。
   { id: "resource", label: "资源管理", shortcut: "" },
   { id: "settings", label: "设置", shortcut: "Ctrl+0" },
 ]);

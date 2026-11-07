@@ -251,7 +251,7 @@ describe("styles.css 预览截断契约", () => {
   });
 });
 
-/** 分体复制：主按钮直接复制，右侧箭头直接打开「复制并切换到…」（不是折叠菜单）。 */
+/** 分体复制：主按钮直接复制，右侧箭头直接打开「复制或粘贴到…」（不是折叠菜单）。 */
 function renderSplitCard() {
   const onCopy = vi.fn();
   const onCopySwitch = vi.fn();
@@ -280,7 +280,7 @@ describe("ClipboardItemCard 分体复制按钮", () => {
   it("点箭头直接打开目标选择器：不复制、不打开详情、没有菜单层级", async () => {
     const user = userEvent.setup();
     const { onCopy, onCopySwitch, onDetail } = renderSplitCard();
-    const arrow = screen.getByRole("button", { name: "复制并切换到目标窗口" });
+    const arrow = screen.getByRole("button", { name: "复制或粘贴到目标窗口" });
     // 跳转语义：不是折叠/展开，也不再有只有一个选项的菜单
     expect(arrow.getAttribute("aria-haspopup")).toBeNull();
     expect(arrow.getAttribute("aria-expanded")).toBeNull();
@@ -306,7 +306,7 @@ describe("ClipboardItemCard 分体复制按钮", () => {
   it("键盘 Enter 在箭头或复制按钮上只激活自身，不冒泡触发卡片详情", async () => {
     const user = userEvent.setup();
     const { onCopy, onCopySwitch, onDetail } = renderSplitCard();
-    const arrow = screen.getByRole("button", { name: "复制并切换到目标窗口" });
+    const arrow = screen.getByRole("button", { name: "复制或粘贴到目标窗口" });
     const copy = screen.getByRole("button", { name: "复制" });
 
     arrow.focus();
@@ -323,7 +323,7 @@ describe("ClipboardItemCard 分体复制按钮", () => {
 
   it("未提供 onCopySwitch 时不渲染箭头（不出现空入口）", () => {
     const card = renderCard();
-    expect(card.querySelector('[aria-label="复制并切换到目标窗口"]')).toBeNull();
+    expect(card.querySelector('[aria-label="复制或粘贴到目标窗口"]')).toBeNull();
     expect(card.querySelector('[aria-label="复制"]')).not.toBeNull();
   });
 
@@ -344,7 +344,7 @@ describe("ClipboardItemCard 分体复制按钮", () => {
         onLink={vi.fn()}
       />,
     );
-    const arrow = container.querySelector<HTMLButtonElement>('[aria-label="复制并切换到目标窗口"]')!;
+    const arrow = container.querySelector<HTMLButtonElement>('[aria-label="复制或粘贴到目标窗口"]')!;
     expect(arrow.disabled).toBe(true);
   });
 });

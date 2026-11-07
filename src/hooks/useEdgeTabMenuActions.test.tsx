@@ -4,7 +4,10 @@
 //! 1. 三类动作分别落到 `restoreTab({ reveal: true })` / `formSwitch("full")` / `undock()`；
 //! 2. **只有事务真实成功才回 ok**：入口缺失、事务失败、异常都返回失败原因；
 //! 3. 事件带请求 id 时把结果回传 `tab_menu_action_result`，重复 id 不执行两次；
-//! 4. 订阅在卸载时成对释放。
+//! 4. 订阅在卸载时成对释放；
+//! 5. **卸载不吞在途回执**：undock/full 成功本身会切走本桥所在视图（胶囊
+//!    相位结束 → App 卸载 CapsuleDock），回执必须照常送达，否则后端等满
+//!    超时按失败上报，菜单在已成功切换的窗口上卡住不消失。
 
 // @vitest-environment jsdom
 import { cleanup, renderHook } from "@testing-library/react";
@@ -148,6 +151,35 @@ describe("useEdgeTabMenuActions", () => {
 
     view.unmount();
     expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("动作成功导致卸载（undock/full 切走胶囊视图）时仍回执，不吞结果", async () => {
+    let releaseUndock: (ok: boolean) => void = () => {};
+    const undock = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          releaseUndock = resolve;
+        }),
+    );
+    useEdgeSnapStore.setState({ undock });
+    const view = renderHook(() => useEdgeTabMenuActions());
+    await Promise.resolve();
+
+    handler?.({ payload: { id: 43, action: "undock" } });
+    // 事务在途时组件卸载：真实序列是 undock 成功 → 相位切到 free → App 卸载
+    // CapsuleDock（本桥所在组件），卸载先于回执。 disposed 后回执仍必须送达，
+    // 否则后端只能等满超时按失败上报，菜单在已成功的窗口上卡住。
+    await Promise.resolve();
+    view.unmount();
+    releaseUndock(true);
+
+    await vi.waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith(TAB_MENU_RESULT_COMMAND, {
+        id: 43,
+        ok: true,
+        error: null,
+      }),
+    );
   });
 
   it("事务失败时回执 ok=false + 原因（菜单保留并显示反馈）", async () => {

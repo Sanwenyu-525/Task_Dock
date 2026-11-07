@@ -446,6 +446,9 @@ export default function EdgeTab({
         .join(" ")}
       data-tone={tone}
       aria-label={t("capsule.tabAria")}
+      // 极简标签有独立的 tab-hint 提示窗口（主窗区域被裁切，TooltipLayer 画不出来），
+      // 显式退出 aria-label 回退，避免同时弹两条提示。
+      data-tip-skip="1"
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
       onPointerDown={onPointerDown}

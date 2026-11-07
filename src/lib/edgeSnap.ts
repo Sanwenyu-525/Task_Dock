@@ -275,7 +275,8 @@ export function isSnapEdge(v: unknown): v is SnapEdge {
  */
 const LEGAL_TRANSITIONS: Record<SnapPhase, readonly SnapPhase[]> = {
   // free/candidate → docked-full：重启恢复或用户偏好为「完整面板」时直接停靠。
-  // free → docked-tab：仅重启恢复（持久化 form=tab）直接重新停靠为标签。
+  // free → docked-tab：重启恢复（持久化 form=tab）与标题栏「吸附为极简标签」
+  // 直接重新停靠为标签（同一 dockTo 事务，region=tab）。
   free: ["candidate", "docked-visible", "docked-hidden", "docked-full", "docked-tab"],
   candidate: ["free", "docked-visible", "docked-full"],
   "docked-visible": ["docked-hidden", "docked-revealed", "docked-full", "free", "docked-tab"],
@@ -356,6 +357,12 @@ export function detectCandidateEdge(
   for (const edge of SNAP_EDGES) {
     if (!centerWithinSpan(rect, area, edge)) continue;
     const d = edgeDistance(rect, area, edge);
+    // 明显越出（超过负向退出保护）的轴不参与选边：它的负距离在 argmin 中
+    // 恒小于其他边，会把用户真正逼近的边整体遮蔽成 null（2026-11-08
+    // capsule-redock 复核：拖离恢复后的窗口底部越出工作区 → 左/右缘永远
+    // 无法进入候选）。滞回带内（-EXIT..0）的轻微越出仍按原语义参与，
+    // 由总出口守卫保留「轻微压边仍算该边」的行为。
+    if (d < -SNAP_CANDIDATE_EXIT_DIST) continue;
     if (d < bestDist) {
       bestDist = d;
       best = edge;
@@ -365,6 +372,26 @@ export function detectCandidateEdge(
     ? best
     : null;
 }
+
+/**
+ * 自由窗口**程序化再吸附**的选边（标题栏「重新吸附」入口）：与候选判定同一套
+ * 几何（四边距离取最小、沿边跨度约束、负距离退出保护），但不设进入阈值——
+ * 离哪条边最近就吸附哪条边，与「把窗口拖向那条边会被磁吸」是同一判定。
+ * 返回 null = 窗口明显在工作区外/跨度外（不猜边，由调用方失败收场）。
+ */
+export function nearestDockEdge(rect: SnapRect, area: SnapArea): SnapEdge | null {
+  // 任一跨度内的轴明显越出（超过负向退出保护）→ 维持「不猜边」契约，由
+  // 调用方失败收场（2026-11-08：拖拽路径的越出轴遮蔽修复不改变此入口的
+  // 既有语义；按钮入口对越出窗口提示用户重新定位，见验收报告 P3 注记）。
+  for (const edge of SNAP_EDGES) {
+    if (!centerWithinSpan(rect, area, edge)) continue;
+    if (edgeDistance(rect, area, edge) < -SNAP_CANDIDATE_EXIT_DIST) return null;
+  }
+  return detectCandidateEdge(rect, area, Number.POSITIVE_INFINITY);
+}
+
+/** 自由窗口标题栏「吸附为 …」的直停目标：不经过偏好解析，点了就停成该形态。 */
+export type RedockDockTarget = "capsule" | "tab" | "full";
 
 /**
  * 自由窗口的**吸附意图**阈值（CSS px）：本次手势内相对起点的法向净位移。

@@ -434,6 +434,8 @@ export default function CaptureApp() {
             className="capture-close"
             aria-label="关闭快速捕获"
             data-tip="关闭（Esc）"
+            // 标题行贴窗口上缘：气泡朝下才不会被窗口边界裁掉
+            data-tip-placement="bottom"
             onClick={close}
           >
             <X size={14} />

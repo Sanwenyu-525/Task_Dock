@@ -106,6 +106,21 @@ platform / agent_bridge）内的单元测试共 **61 例**，另有跨模块集�
 | `src/components/clipboard/CopySwitchPanel.test.tsx` | 目标加载/失败/空态/刷新；点击目标行（含右侧 ↗ 图示）只触发一次 precheck→copy→focus 且零粘贴接口；无 radio/aria-checked 语义；复制失败不 focus；切换失败仅重试；部分成功文案；滚动位置保持；itemMissing |
 | `src/components/capsule/ClipboardTargetView.test.tsx` | 16 例：胶囊入口为 `ArrowUpRight` 按钮、单次枚举、点击目标行右侧箭头同样只执行一次、Escape 返回、复制/切换失败恢复、仅重试切换、部分成功、itemMissing、卸载清理 |
 
+单条「粘贴到目标窗口」增补（2026-11-07）：
+
+| 文件 | 用例 |
+|---|---|
+| `src/lib/clipboardCopySwitch.test.ts` | 18 例（+6）：`pasteOutcomeFromJob`/`pasteOutcomeFromEvent` 归一化与空说明；完成/取消/失败/未启动/等待超时五类文案；「无法自动验证」原话必须保留 |
+| `src/hooks/useClipboardCopySwitch.test.tsx` | 17 例（+8）：粘贴只调 `clipboard_paste_items`（不 copy/precheck/focus）；运行中事件不结束、终态事件才解除忙碌；开始失败与任务失败/取消；在途期间复制不得插队；itemId 切换作废旧粘贴；15s 超时解锁并标记「未确认结束」；粘贴不增加 `copy_count` |
+| `src/components/clipboard/CopySwitchPanel.test.tsx` | 16 例（+4）：行尾粘贴按钮为独立真实按钮；点击只走单条粘贴任务；spinner 落在粘贴按钮、复制按钮禁用；失败显示原因；粘贴在途时复制不并发 |
+| `src/components/capsule/ClipboardTargetView.test.tsx` | 19 例（+3）：胶囊行尾粘贴按钮、单条粘贴任务参数、反馈文案与两个动作并存 |
+
+2026-11-07 本轮结果：`npx vitest run` **215 文件 / 3189 用例全部通过**（exit 0，126.15 s，
+日志 `tmp/acceptance/clipboard-paste-to-target/full-vitest-1.log`）。首次全量在并行构建负载下
+出现 2 例 5 s 超时（其中一例为 `TasksPanel`，单独复跑通过；另一例输出被截断未取证），
+未修改阈值；同条件第二轮全量通过。`npm run build` 首次执行时 `tsc --noEmit` 被并行会话在
+`src/hooks/useEdgeSnap.ts` 的临时类型错误挡住（非本任务文件），该会话修复后复跑通过：
+main 788.48 kB / gzip 240.71（`tmp/acceptance/clipboard-paste-to-target/build.log`）。
 
 本次全量运行未出现此前的 5 s 超时；早前在 CPU 满载并行编译时出现过 3 例任务面板超时，
 属于测试阈值而非功能回归，未通过修改阈值掩盖。

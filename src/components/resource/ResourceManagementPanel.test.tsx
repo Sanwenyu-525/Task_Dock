@@ -44,7 +44,14 @@ const SNAPSHOT = {
   sampledAt: "2026-11-06T00:00:00.000Z",
   application: { knownCacheBytes: 3072, knownCacheFiles: 4, status: "ready" },
   memory: { totalBytes: 16 * 1024 * 1024, availableBytes: 8 * 1024 * 1024 },
-  disks: [{ volume: "C:", totalBytes: 128 * 1024 * 1024, availableBytes: 64 * 1024 * 1024 }],
+  disks: [
+    {
+      volume: "C:",
+      kind: "fixed",
+      totalBytes: 128 * 1024 * 1024,
+      availableBytes: 64 * 1024 * 1024,
+    },
+  ],
   process: {
     pid: 4242,
     name: "task-dock.exe",
@@ -730,7 +737,7 @@ describe("ResourceManagementPanel", () => {
     mocks.snapshot.mockResolvedValue({
       ...SNAPSHOT,
       // 1000 总量 / 107 可用 → 已用 89.3%（关注）
-      disks: [{ volume: "C:", totalBytes: 1000, availableBytes: 107 }],
+      disks: [{ volume: "C:", kind: "fixed", totalBytes: 1000, availableBytes: 107 }],
       // 16 / 8 → 50%（正常）
       memory: { totalBytes: 16, availableBytes: 8 },
     });
@@ -998,6 +1005,56 @@ describe("ResourceManagementPanel", () => {
       within(webviewCard).getByRole("button", { name: "common.retry" }),
     ).toBeTruthy();
     expect(within(cards[0] as HTMLElement).getByText("100.0 MB")).toBeTruthy();
+  });
+
+  it("所有卷：磁盘页逐卷展示，概览卷条并列，读不到的卷显示暂不可用", async () => {
+    mocks.snapshot.mockResolvedValue({
+      ...SNAPSHOT,
+      disks: [
+        { volume: "C:", kind: "fixed", totalBytes: 1000, availableBytes: 500 },
+        { volume: "D:", kind: "fixed", totalBytes: 1000, availableBytes: 80 },
+        { volume: "Z:", kind: "remote", totalBytes: null, availableBytes: null },
+      ],
+    });
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+
+    // 概览：主环仍是首卷（数据目录所在卷），其余卷以紧凑卷条并列
+    const overview = document.getElementById("resource-panel-overview") as HTMLElement;
+    const primaryRing = overview.querySelector(".resource-ring") as HTMLElement;
+    expect(primaryRing.querySelector(".resource-ring-center strong")?.textContent).toBe("50.0%");
+    const chips = [...overview.querySelectorAll(".resource-volume-chip")];
+    expect(
+      chips.map((chip) => chip.querySelector(".resource-volume-name")?.textContent),
+    ).toEqual(["C:", "D:", "Z:"]);
+    expect(chips[1].querySelector(".resource-volume-value")?.textContent).toBe(
+      "92.0% · resource.level.critical",
+    );
+    expect(chips[2].querySelector(".resource-volume-value")?.textContent).toBe(
+      "resource.level.unknown",
+    );
+
+    // 磁盘页：每个卷一条使用率条，网络卷不可读时不画填充
+    fireEvent.click(tab("resource.segment.disk"));
+    await waitFor(() => expect(mocks.diskUsage).toHaveBeenCalledTimes(1));
+    const bars = [
+      ...document.querySelectorAll<HTMLElement>(
+        "#resource-panel-disk .resource-disk-volumes .resource-bar",
+      ),
+    ];
+    expect(bars).toHaveLength(3);
+    expect(bars[0].querySelector(".resource-bar-value")?.textContent).toBe(
+      "50.0% · resource.level.normal",
+    );
+    expect(bars[1].querySelector(".resource-bar-value")?.textContent).toBe(
+      "92.0% · resource.level.critical",
+    );
+    // 等级文案走与环形一致的 resource.level.unknown（真实文案同为「暂不可用」）
+    expect(bars[2].querySelector(".resource-bar-value")?.textContent).toBe(
+      "resource.level.unknown",
+    );
+    expect(bars[2].querySelector(".resource-bar-fill")).toBeNull();
+    expect(bars[2].textContent).toContain("resource.volume.kind.remote");
   });
 
   it("部分统计且 0 B：概览不把 0 B 当作确认无可清理", async () => {

@@ -6,9 +6,12 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import CaptureApp from "./CaptureApp";
 import ErrorBoundary from "../components/ErrorBoundary";
+import TooltipLayer from "../components/ui/TooltipLayer";
 import { installGlobalErrorHandlers } from "../lib/globalErrors";
 import { initLocale } from "../i18n";
 import "../styles-themes.css";
+// 悬停提示沿用主窗同一套 .ui-tooltip / .ui-popover 基元，不另写一套提示样式。
+import "../styles-ui.css";
 import "./styles-capture.css";
 
 initLocale();
@@ -19,6 +22,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ErrorBoundary scope="快速捕获" variant="compact">
       <CaptureApp />
+      {/* 独立窗口也有图标按钮：挂全局提示层，data-tip 才不是死声明 */}
+      <TooltipLayer />
     </ErrorBoundary>
   </React.StrictMode>,
 );

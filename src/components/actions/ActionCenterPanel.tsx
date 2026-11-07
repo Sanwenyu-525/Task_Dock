@@ -22,7 +22,6 @@ import AgentIcon from "../ui/AgentIcon";
 import {
   useActionsStore,
   actionViewKey,
-  attentionCount,
   categoryCount,
   kindLabel,
 } from "../../store/useActionsStore";
@@ -139,7 +138,6 @@ export default function ActionCenterPanel() {
   // 分类切换后、新数据到达前不展示旧分类列表
   const current = feed && feed.category === category ? feed : null;
   const counts = feed?.counts;
-  const attention = attentionCount(feed);
   const categoryTotal = categoryCount(feed, category);
 
   // 离场快照只参与渲染、不写回 store：后台刷新/翻页既不会提前卸载它，也不会重复插入
@@ -410,12 +408,11 @@ export default function ActionCenterPanel() {
 
           {counts && (
             <div className="action-summary" role="status">
-              <span>需关注 {attention}</span>
+              {/* 首屏只留 3 个可行动计数（UI-16）；「当前筛选/已加载」下沉到列表脚注。
+                  分类徽标已经表达各自总量，这里不重复「需关注」总数。 */}
               <span className="pending">需介入 {counts.intervention}</span>
               <span>通知 {counts.notification}</span>
               <span className="muted">历史 {counts.history}</span>
-              {current && <span>当前筛选 {current.filtered_total}</span>}
-              {current && <span className="muted">已加载 {current.loaded}</span>}
             </div>
           )}
 
@@ -558,6 +555,12 @@ export default function ActionCenterPanel() {
                   </button>
                 </div>
               )}
+            </div>
+          )}
+          {/* 计数下沉（UI-16）：不占首屏，只在全部加载完时给出总量。 */}
+          {current && !current.has_more && displayedItems.length > 0 && (
+            <div className="action-list-meta" role="status">
+              共 {current.filtered_total} 条 · 已加载 {current.loaded} 条
             </div>
           )}
         </>

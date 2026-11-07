@@ -49,7 +49,7 @@ export type ClipboardLiteView =
   | { kind: "text"; item: ClipboardItem }
   | { kind: "files"; item: ClipboardItem }
   | { kind: "group"; group: ClipboardGroup }
-  /** 复制并切换到目标窗口：只复制 + 激活目标，不发送按键、不自动粘贴 */
+  /** 复制并切换 / 粘贴到目标窗口：目标选择器内选择具体动作 */
   | { kind: "copy-switch"; item: ClipboardItem };
 
 /** 文本一次性渲染上限：超出只显示前 N 字，避免超大文本撑爆面板渲染。 */
@@ -252,6 +252,7 @@ function ClipboardLiteShell({
           type="button"
           className="cap-iconbtn cap-clip-back"
           aria-label="返回列表"
+          data-tip-placement="bottom"
           onClick={onBack}
         >
           <ArrowLeft size={15} strokeWidth={2.2} aria-hidden="true" />
@@ -271,6 +272,7 @@ function ClipboardLiteShell({
             type="button"
             className="cap-iconbtn"
             aria-label="打开完整剪贴板"
+            data-tip-placement="bottom"
             onClick={onOpenFull}
           >
             <ArrowUpRight size={15} strokeWidth={2} aria-hidden="true" />

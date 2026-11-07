@@ -144,3 +144,45 @@ describe("搜索框占位符", () => {
     expect(rule?.[1]).toContain("opacity: 1");
   });
 });
+
+describe("高对比度覆盖的层叠位置（验收 UI-19）", () => {
+  it("base 层不再声明 prefers-contrast 文本/边框覆盖", () => {
+    expect(APP_CSS).not.toMatch(/@media \(prefers-contrast: more\)/);
+  });
+
+  it("覆盖写在 theme 层，并用预设选择器拿到同 specificity", () => {
+    const block = THEME_CSS.slice(THEME_CSS.lastIndexOf("@media (prefers-contrast: more)"));
+    expect(block).toContain(":root[data-preset]");
+    expect(block).toContain("--border-subtle");
+    expect(block).toContain("--text-secondary");
+  });
+});
+
+describe("frosted 浅色亮度（2026-11-07 观感修正）", () => {
+  it("窗口与卡片底色已压暗一档，防止回退成近白", () => {
+    const block = THEME_CSS.slice(
+      THEME_CSS.lastIndexOf(':root[data-preset="frosted"][data-theme="light"] {'),
+    );
+    // 旧值：窗口 rgb(248,251,255)/rgb(229,241,251)，卡片白 0.88。
+    expect(block).toContain("rgba(238, 244, 252, 0.93)");
+    expect(block).toContain("rgba(217, 229, 243, 0.89)");
+    expect(block).toContain("rgba(250, 253, 255, 0.86)");
+    expect(block).not.toContain("rgba(248, 251, 255, 0.93)");
+  });
+});
+
+describe("极限窗口宽度（验收 UI-17）", () => {
+  it("内容区在超大窗口下约束测量宽度并居中", () => {
+    const rule = APP_CSS.match(/\.tab-content\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toContain("max-width: 560px");
+    expect(rule?.[1]).toContain("margin-inline: auto");
+  });
+
+  it("≤280 宽把提醒卡改为纵向堆叠、统计标签允许换行", () => {
+    const block = APP_CSS.slice(APP_CSS.indexOf("@media (max-width: 280px)"));
+    expect(block).toContain(".active-reminder-card");
+    expect(block).toContain("flex-wrap: wrap");
+    expect(block).toContain(".summary-card .summary-label");
+    expect(block).toContain("white-space: normal");
+  });
+});

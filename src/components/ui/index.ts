@@ -3,6 +3,11 @@
 
 export { default as Select, type SelectOption, type SelectProps } from "./Select";
 export { default as EmptyState } from "./EmptyState";
+export {
+  useRovingRadioGroup,
+  radioTabIndex,
+  type RovingRadioGroup,
+} from "./radioGroup";
 export { default as Combobox, type ComboboxProps } from "./Combobox";
 export { default as DropdownMenu, type DropdownMenuItem, type DropdownMenuProps } from "./DropdownMenu";
 export { default as Popover, type PopoverProps } from "./Popover";

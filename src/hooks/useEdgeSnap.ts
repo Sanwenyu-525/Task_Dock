@@ -86,7 +86,9 @@ import {
   shouldUndockByDrag,
   snapMoveGuard,
   undockAnchorTarget,
+  nearestDockEdge,
   type DockForm,
+  type RedockDockTarget,
   type SnapArea,
   type SnapEdge,
   type SnapPhase,
@@ -1014,6 +1016,8 @@ export function useEdgeSnap(enabled: boolean) {
       feedback: boolean,
       fromDocked = false,
       monitorOverride: MonitorLike | null = null,
+      /** 仅按钮/菜单形态切换传 true：跳过 600ms 稳定回读（无拖拽循环回弹源）。 */
+      fastSizeRestore = false,
     ): Promise<boolean> {
       const { monitor } = monitorOverride ? { monitor: monitorOverride } : await fetchRect();
       if (disposed || !monitor) return false;
@@ -1051,7 +1055,9 @@ export function useEdgeSnap(enabled: boolean) {
       // 先恢复用户的模式尺寸，再按该尺寸贴边（不拉满全高、不强改宽度）。
       if (isCapsuleContainerSize(rect, scale)) {
         const mode = resolveWindowMode(useSettingsStore.getState().settings?.mode);
-        const restored = await restoreModeSize(mode, scale);
+        const restored = await restoreModeSize(mode, scale, {
+          skipStabilityWindow: fastSizeRestore,
+        });
         if (disposed) return false;
         if (!restored) {
           await rollback();
@@ -1164,7 +1170,8 @@ export function useEdgeSnap(enabled: boolean) {
       if (form === "full") {
         const center =
           capsuleCenter ?? alongCenterOf(machine.edge, await fetchRectOnly());
-        return dockFull(machine.edge, center, false, true);
+        // 已停靠时的按钮切换：无原生拖拽循环参与，走快速尺寸恢复。
+        return dockFull(machine.edge, center, false, true, null, true);
       }
       return switchDockedToCapsule();
     }
@@ -1643,7 +1650,18 @@ export function useEdgeSnap(enabled: boolean) {
      * 必须回读实际矩形；仍在胶囊容器尺寸时等窗口静止后有界重试（350/700ms）。
      * 每次尝试都抑制 `window_rect` 持久化：失败也绝不把容器尺寸写成用户几何。
      */
-    async function restoreModeSize(mode: string, scale: number): Promise<boolean> {
+    async function restoreModeSize(
+      mode: string,
+      scale: number,
+      /**
+       * 跳过 600ms 稳定回读窗口。该窗口防的是「原生拖拽循环在 set_size 后把
+       * 窗口恢复成拖拽起始尺寸、松手再回弹」（解除/再吸附场景真机复现）；
+       * 停靠形态切换（按钮）没有拖拽循环参与，事务全程持锁、提交后相位无
+       * 尺寸收敛——回弹源不存在，等待纯属固定延迟。set_size 真未落地仍由
+       * 首读失败 + 重试梯子兜底。默认不跳过，解除路径行为不变。
+       */
+      opts: { skipStabilityWindow?: boolean } = {},
+    ): Promise<boolean> {
       const wait = (ms: number) =>
         new Promise<void>((resolve) => {
           window.setTimeout(resolve, ms);
@@ -1674,6 +1692,7 @@ export function useEdgeSnap(enabled: boolean) {
         try {
           const rect = await fetchRectOnly();
           if (!isCapsuleContainerSize(rect, scale)) {
+            if (opts.skipStabilityWindow) return true;
             // 原生拖拽循环可能在 set_size 之后把窗口恢复成**拖拽起始尺寸**：
             // 立刻回读会看到 700，但松手后又被回弹成 525（真机复现）。
             // 再等一个稳定窗口后二次回读，确认尺寸没有被拖拽循环回弹。
@@ -1970,6 +1989,63 @@ export function useEdgeSnap(enabled: boolean) {
       } catch {
         // 尽力而为
       }
+    }
+
+    /**
+     * 自由窗口**程序化再吸附**（标题栏「吸附为 …」入口）：把「拖向边缘会被
+     * 磁吸」变成无拖拽版本，并**直停目标形态**。选边用 `nearestDockEdge`
+     * （与候选判定同一几何，不设阈值）；沿边位置取窗口当前沿边中心。
+     *
+     * 形态分支（同一 dockTo 事务，不新造状态机）：
+     * - capsule → 轨道（docked-visible）；
+     * - tab → region=tab + docked-tab（与重启恢复持久化 form=tab 同路径，
+     *   转移表允许 free → docked-tab）；
+     * - full → dockTo 的 dockFull 分支（先恢复用户模式尺寸再贴边）。
+     *
+     * 事务整体走 `runExclusiveResult`（与形态切换同一互斥槽），失败由 dockTo
+     * 回滚几何并置 dockRetryAt，绝不留下半停靠状态。用户拖拽磁吸仍是第一
+     * 优先：点击瞬间若已在 candidate/停靠相位，直接放弃（动作已无意义），
+     * 不与拖拽确认竞争。
+     */
+    async function redockFree(target: RedockDockTarget): Promise<boolean> {
+      if (disposed || tabAnimating) return false;
+      if (machine.phase !== "free") return false;
+      // 解除后的后台几何恢复还在写窗口尺寸/位置时必须先等它收尾（有界：
+      // restoreDone 是一定会 resolve 的收尾事务），否则两路几何写入交错、
+      // 双方回读验证互相失败——与 candidate 确认路径的 `!restoreInFlight`
+      // 守卫同一约束。按钮在解除后立即可见，这条是高频路径不是边角。
+      if (restoreInFlight) {
+        const settled = restoreDone;
+        if (settled) await settled;
+        if (disposed || machine.phase !== "free") return false;
+      }
+      const rect = await fetchRectOnly();
+      if (disposed) return false;
+      const monitors = await availableMonitors();
+      if (disposed || monitors.length === 0) return false;
+      const wa = toWorkArea(monitorForRect(rect, monitors as MonitorLike[]));
+      const edge = nearestDockEdge(rect, wa);
+      if (!edge) return false;
+      const center = alongCenterOf(edge, rect);
+      const ok =
+        (await runExclusiveResult(() =>
+          target === "full"
+            ? dockTo(edge, center, "docked-visible", true, "full")
+            : dockTo(
+                edge,
+                center,
+                target === "tab" ? "docked-tab" : "docked-visible",
+                true,
+                "capsule",
+              ),
+        )) === true;
+      if (!ok && !disposed && machine.phase === "free") {
+        // 仅在动作仍「该做而没做成」时反馈：拖拽已接管的失败不提示。
+        useUiStore
+          .getState()
+          .showToast("吸附失败，请把窗口拖向屏幕边缘吸附", { kind: "error", code: "redock" });
+      }
+      return ok;
     }
 
     /** 拖拽解除：用户把胶囊拖离停靠位超过阈值。不内推——窗口已在用户手上。
@@ -2526,7 +2602,11 @@ export function useEdgeSnap(enabled: boolean) {
         if (gestureTrail.length > GESTURE_TRAIL_MAX) gestureTrail.shift();
       }
       if (machine.phase === "candidate" && machine.edge) {
-        if (detected && detected !== machine.edge) {
+        // 换边更新只认用户手势：程序性移动（解除恢复搬运窗口）造成的
+        // 「另一条边更近」不得翻转候选边——否则松手后的恢复重定位会把
+        // 用户已选定的边悄悄改成别的边、吸附到非预期侧（2026-11-08 真机
+        // 复现：拖向左缘、恢复期被改判 bottom）。用户拖过角落仍照常换边。
+        if (detected && detected !== machine.edge && !programmaticMove) {
           machine.edge = detected; // 更近的另一条边（拖过角落）
           setMagnetized(edgeDistance(rect, wa, detected) <= SNAP_CANDIDATE_ENTER_DIST);
           return;
@@ -2688,6 +2768,8 @@ export function useEdgeSnap(enabled: boolean) {
     // 持久化 `snap_display_mode`；设置页与右键菜单仍走 `requestDockForm`（长期偏好）。
     // 两种入口复用同一套几何与相位事务，只是成功/失败后的偏好处理不同。
     ui.setFormSwitch((form) => requestSessionForm(form));
+    // 自由窗口的程序化再吸附（标题栏「吸附为 …」）：同一互斥槽，真实结果返回。
+    ui.setRedock((target) => redockFree(target));
     // Edge Tab：与 reveal/collapse 相同，进入引擎串行队列，避免和 tick / 停靠事务竞争。
     ui.setTabActions({
       collapse: () => {
@@ -2761,6 +2843,7 @@ export function useEdgeSnap(enabled: boolean) {
       ui.setCollapse(null);
       ui.setUndock(null);
       ui.setFormSwitch(null);
+      ui.setRedock(null);
       ui.setTabActions({
         collapse: null,
         restore: null,

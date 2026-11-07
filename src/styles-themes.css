@@ -1120,9 +1120,10 @@
 :root[data-preset="liquid-glass"][data-material="solid"],
 :root[data-preset="frosted"][data-material="solid"],
 :root[data-preset="clear"][data-material="solid"] {
-  --window-fill: linear-gradient(152deg, #fbfdff 0%, #f2f6fd 42%, #f7f3fb 72%, #f1f8ff 100%);
-  --card-face: linear-gradient(158deg, #ffffff, #fafaff 60%, #f6f7ff 100%);
-  --rail-active-face: linear-gradient(180deg, #ffffff, #f4f4ff);
+  /* 与柔光玻璃浅色同步压暗一档：实色路径不应比半透明路径更刺眼。 */
+  --window-fill: linear-gradient(152deg, #f0f5fc 0%, #e5eefa 42%, #e9f0fa 72%, #e2edf9 100%);
+  --card-face: linear-gradient(158deg, #fafcff, #eef4fb 60%, #e9f1f9 100%);
+  --rail-active-face: linear-gradient(180deg, #fafcff, #eef3fd);
 }
 
 :root[data-preset="liquid-glass"][data-theme="dark"][data-material="solid"],
@@ -1402,29 +1403,33 @@
    组件仍然只消费语义令牌，页面不写透明度。
    ════════════════════════════════════════════════════════════════ */
 
-/* ── 5d.1 柔光玻璃 · 浅色 ─────────────────────────────────── */
+/* ── 5d.1 柔光玻璃 · 浅色 ───────────────────────────────────
+   2026-11-07：浅色整体压暗一档（用户反馈「frosted 太亮」）。
+   窗口顶/中/底亮度 0.962/0.904/0.865 → 0.899/0.829/0.773；
+   卡片、输入面、轨道、弹层同步收敛，文字 Token 不变（对比只增不减）。 */
 :root[data-preset="frosted"][data-theme="light"] {
   --window-fill:
-    radial-gradient(118% 88% at 12% -14%, rgba(255, 255, 255, 0.55), transparent 62%),
-    radial-gradient(96% 72% at 102% 10%, rgba(190, 220, 248, 0.26), transparent 66%),
-    linear-gradient(152deg, rgba(248, 251, 255, 0.93) 0%, rgba(237, 245, 253, 0.90) 48%, rgba(229, 241, 251, 0.88) 100%);
+    radial-gradient(118% 88% at 12% -14%, rgba(255, 255, 255, 0.40), transparent 62%),
+    radial-gradient(96% 72% at 102% 10%, rgba(176, 208, 240, 0.24), transparent 66%),
+    linear-gradient(152deg, rgba(238, 244, 252, 0.93) 0%, rgba(226, 236, 248, 0.91) 48%, rgba(217, 229, 243, 0.89) 100%);
   --window-edge:
-    inset 0 0 0 1px rgba(124, 148, 186, 0.20),
-    inset 0 1px 0 rgba(255, 255, 255, 0.96),
-    inset 0 3px 8px -5px rgba(255, 255, 255, 0.72),
-    inset 2px 0 6px -4px rgba(255, 255, 255, 0.60),
-    inset -1px 0 0 rgba(90, 112, 150, 0.12),
-    inset 0 -2px 10px -6px rgba(88, 110, 150, 0.22);
-  --decor-opacity: 0.85;
+    inset 0 0 0 1px rgba(124, 148, 186, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 3px 8px -5px rgba(255, 255, 255, 0.64),
+    inset 2px 0 6px -4px rgba(255, 255, 255, 0.52),
+    inset -1px 0 0 rgba(90, 112, 150, 0.14),
+    inset 0 -2px 10px -6px rgba(88, 110, 150, 0.24);
+  --header-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.26), transparent 82%);
+  --decor-opacity: 0.72;
   --task-flow:
-    radial-gradient(120% 170% at 100% 78%, rgba(125, 168, 232, 0.10), transparent 62%),
-    linear-gradient(98deg, transparent 42%, rgba(148, 190, 240, 0.05) 68%, rgba(118, 162, 232, 0.08) 100%);
+    radial-gradient(120% 170% at 100% 78%, rgba(125, 168, 232, 0.08), transparent 62%),
+    linear-gradient(98deg, transparent 42%, rgba(148, 190, 240, 0.04) 68%, rgba(118, 162, 232, 0.06) 100%);
   /* 卡片不透明度略高于窗口；三层内边光形成「薄玻璃叠在窗面上」的厚度感 */
-  --card-face: linear-gradient(158deg, rgba(255, 255, 255, 0.88) 0%, rgba(251, 253, 255, 0.76) 56%, rgba(244, 250, 255, 0.72) 100%);
+  --card-face: linear-gradient(158deg, rgba(250, 253, 255, 0.86) 0%, rgba(242, 248, 253, 0.78) 56%, rgba(234, 243, 250, 0.74) 100%);
   --card-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
     inset 0 -1px 0 rgba(96, 120, 160, 0.12),
-    0 0 0 1px rgba(255, 255, 255, 0.62),
+    0 0 0 1px rgba(255, 255, 255, 0.52),
     0 2px 4px -2px rgba(70, 90, 130, 0.07),
     0 12px 28px -16px rgba(72, 82, 160, 0.46);
   --card-shadow-hover:
@@ -1433,13 +1438,18 @@
     0 0 0 1px rgba(99, 102, 241, 0.20),
     0 4px 10px -6px rgba(70, 90, 130, 0.12),
     0 16px 32px -18px rgba(72, 82, 160, 0.54);
-  --control-face: linear-gradient(160deg, rgba(255, 255, 255, 0.84), rgba(243, 249, 255, 0.66));
-  --inset-face: linear-gradient(180deg, rgba(226, 237, 250, 0.52) 0%, rgba(242, 248, 253, 0.74) 46%, rgba(252, 254, 255, 0.84) 100%);
-  --pill-face: rgba(214, 228, 245, 0.44);
-  --rail-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.36), rgba(255, 255, 255, 0.07) 72%, rgba(255, 255, 255, 0));
-  --rail-hover-face: rgba(255, 255, 255, 0.52);
-  --rail-active-face: linear-gradient(165deg, rgba(255, 255, 255, 0.92) 0%, rgba(238, 246, 255, 0.70) 48%, rgba(226, 240, 252, 0.56) 100%);
-  --surface-overlay: rgba(252, 253, 255, 0.90);
+  --control-face: linear-gradient(160deg, rgba(250, 253, 255, 0.80), rgba(232, 241, 250, 0.64));
+  --inset-face: linear-gradient(180deg, rgba(214, 228, 244, 0.52) 0%, rgba(232, 241, 250, 0.74) 46%, rgba(246, 250, 254, 0.84) 100%);
+  --pill-face: rgba(202, 220, 240, 0.46);
+  --rail-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.05) 72%, rgba(255, 255, 255, 0));
+  --rail-hover-face: rgba(255, 255, 255, 0.44);
+  --rail-active-face: linear-gradient(165deg, rgba(255, 255, 255, 0.88) 0%, rgba(232, 242, 251, 0.66) 48%, rgba(220, 234, 248, 0.52) 100%);
+  --surface-overlay: rgba(243, 248, 253, 0.92);
+  /* 剪贴板详情顶栏/胶囊面板必须是实色：同步压暗，避免亮底从内容上方透出 */
+  --clip-detail-face: #f1f6fc;
+  --capsule-face: #eef4fb;
+  --menu-face: linear-gradient(165deg, #f4f9fe, #e3edf9);
+  --dialog-face: linear-gradient(165deg, #f4f9fe, #e3edf9);
   --text-primary: #1f2438;
   --text-secondary: #4a5270;
   --text-tertiary: #545c78;
@@ -1488,8 +1498,8 @@
    保证纯 CSS 下文字仍有对比，不使用大面积 backdrop-filter。 */
 :root[data-preset="frosted"][data-theme="light"][data-glass-render="css"] {
   --window-fill:
-    radial-gradient(112% 84% at 12% -12%, rgba(255, 255, 255, 0.40), transparent 60%),
-    linear-gradient(152deg, rgba(249, 252, 255, 0.952) 0%, rgba(239, 247, 254, 0.944) 48%, rgba(232, 243, 252, 0.940) 100%);
+    radial-gradient(112% 84% at 12% -12%, rgba(255, 255, 255, 0.32), transparent 60%),
+    linear-gradient(152deg, rgba(239, 245, 252, 0.952) 0%, rgba(228, 238, 249, 0.944) 48%, rgba(220, 232, 245, 0.940) 100%);
 }
 :root[data-preset="frosted"][data-theme="dark"][data-glass-render="css"] {
   --window-fill:
@@ -1771,12 +1781,13 @@
 /* ── 5d.6 关闭材质（solid / 高对比）时的可靠回退：恢复不透明底 ──
    放在所有玻璃覆盖之后，保证「材质=实色」不会残留透明窗口。 */
 :root[data-preset="frosted"][data-material="solid"] {
-  --window-fill: linear-gradient(152deg, #fbfdff 0%, #f2f7fd 46%, #eff6fd 100%);
-  --card-face: linear-gradient(158deg, #ffffff, #f5faff);
-  --control-face: linear-gradient(160deg, #ffffff, #f4f9ff);
-  --inset-face: linear-gradient(180deg, #edf4fc, #ffffff);
-  --rail-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.18) 72%, transparent);
-  --decor-opacity: 0.60;
+  /* 与半透明路径同步压暗一档（2026-11-07）：实色回退不应更刺眼。 */
+  --window-fill: linear-gradient(152deg, #eef4fc 0%, #e5eefa 46%, #dfe9f6 100%);
+  --card-face: linear-gradient(158deg, #f8fbff, #eef4fb);
+  --control-face: linear-gradient(160deg, #f8fbff, #eaf2fb);
+  --inset-face: linear-gradient(180deg, #e3edf8, #f6faff);
+  --rail-bg: linear-gradient(90deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.14) 72%, transparent);
+  --decor-opacity: 0.50;
 }
 :root[data-preset="frosted"][data-theme="dark"][data-material="solid"] {
   --window-fill: linear-gradient(152deg, #1c2334 0%, #171d2b 46%, #151b27 100%);
@@ -2778,7 +2789,8 @@ textarea:focus {
 }
 
 .empty-hint {
-  font-size: 10.5px;
+  /* 功能提示抬到 11px 下限（UI-22）；装饰性微标签才允许 10/9.5。 */
+  font-size: 11px;
   color: var(--text-tertiary);
   max-width: 236px;
   line-height: 1.55;
@@ -2944,7 +2956,7 @@ textarea:focus {
 }
 
 .preset-meta em {
-  font-size: 9.5px;
+  font-size: 11px;
   font-style: normal;
   color: var(--text-tertiary);
   white-space: nowrap;
@@ -4166,6 +4178,29 @@ textarea:focus {
 
     .planning-editor-actions .btn {
       flex: 1 1 auto;
+    }
+  }
+}
+
+/* 高对比度强制兜底（UI-19）：必须与预设 Token 同层、同/更高 specificity。
+   base 层的 :root 声明会被 theme 层的 :root[data-preset] 整体压掉，
+   因此集中收在这里，不保留第二份。 */
+@layer theme {
+  @media (prefers-contrast: more) {
+    /* 预设层用 :root[data-preset][data-theme=…]（0,3,0）定义文字色，
+       这里必须同 specificity 且更靠后，否则 #2f3a4d 仍被 frosted 浅色压掉。 */
+    :root,
+    :root[data-preset][data-theme] {
+      --border-subtle: rgba(15, 23, 42, 0.5);
+      --border-strong: rgba(15, 23, 42, 0.78);
+      --text-secondary: #2f3a4d;
+    }
+
+    :root[data-theme="dark"],
+    :root[data-preset][data-theme="dark"] {
+      --border-subtle: rgba(255, 255, 255, 0.5);
+      --border-strong: rgba(255, 255, 255, 0.78);
+      --text-secondary: #d3dbea;
     }
   }
 }

@@ -802,6 +802,14 @@ IPC/轮询的前提下完成核心动作」。两者任一不成立即为快捷�
 胶囊「完整面板」仍走既有会话形态切换（`requestSessionForm`），不接入完整面板收缩逻辑。
 `edgeSnap.ts::LEGAL_TRANSITIONS` 是唯一守卫，`free → docked-tab` 只用于重启恢复。
 
+**双击收缩（2026-11-07）**：完整面板（`docked-full`）双击标题栏拖拽面 = 收缩为胶囊
+（`formSwitch("capsule")`，会话语义，与贴边箭头 `cap-form-toggle` 一致）。`TitleBar` 在
+元素级拦截 `mousedown detail≥2` 并 `stopPropagation`，替代 Tauri drag-region 脚本对双击
+的默认 `internal_toggle_maximize`——该默认是程序化最大化，不受停靠期清除的
+`WS_MAXIMIZEBOX` 限制，停靠窗口被最大化后引擎按法向偏离判定拖离、自动解除停靠。
+自由窗口保持常规双击最大化；单击拖拽路径不变；菜单/窗口按钮等交互子元素按
+drag-region bare 语义不会误触。
+
 **几何与命中**：标签 `10×46 CSS`（水平边 `46×10`），贴屏幕边为直边、内侧两角 8px 圆角；
 前端常量在 `capsuleLayout.ts`（`TAB_WIDTH_CSS` / `TAB_HEIGHT_CSS`），原生区域在
 `window_shape.rs::edge_tab_regions`，双端单测锁定；区域外另有缺口探针，避免隐形可点击区。

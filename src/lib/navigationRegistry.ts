@@ -330,7 +330,9 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     },
   },
   {
-    // 资源管理：完整面板的常驻系统入口（固定底部、位于「设置」上方）。
+    // 资源管理：完整面板的默认可见入口，默认顺序在「设置」之前。
+    // 与「设置」不同，它可隐藏/排序：隐藏后仍可从侧栏「更多」和设置页
+    // 「数据与资源 → 资源管理」进入，不存在导航自锁风险，因此不加 `locked`。
     // 不占 Ctrl+数字（既有快捷键语义不变），不提供胶囊入口（页面级工具，胶囊不承载）。
     id: "resource",
     kind: "page",
@@ -340,8 +342,6 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     icon: HardDrive,
     tabs: ["resource"],
     group: "system",
-    // 与「设置」同级：不可隐藏/排序，任何窗口高度都必须可达。
-    locked: true,
     defaults: {
       left: { order: 10.8, visible: true },
       capsule: { order: 0, visible: false },

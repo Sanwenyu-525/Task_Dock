@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-//! 胶囊「复制并切换到目标窗口」回归：
+//! 胶囊「复制并切换 / 粘贴到目标窗口」回归：
 //! 入口分体按钮（复制 ≠ 打开视图）、目标列表只枚举一次、precheck→copy→focus 顺序、
 //! 失败分支（复制失败 / 切换失败 / 条目不存在）、Escape 与滚动恢复、卸载竞态。
 //!
@@ -33,6 +33,7 @@ const clipboardPastePrecheck = vi.fn();
 const clipboardFocusTarget = vi.fn();
 const clipboardPasteItems = vi.fn();
 const clipboardPasteGroup = vi.fn();
+const clipboardPasteJob = vi.fn();
 const clipboardTargetIcon = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
@@ -54,6 +55,7 @@ vi.mock("../../lib/bridge", () => ({
   clipboardFocusTarget: (...a: unknown[]) => clipboardFocusTarget(...a),
   clipboardPasteItems: (...a: unknown[]) => clipboardPasteItems(...a),
   clipboardPasteGroup: (...a: unknown[]) => clipboardPasteGroup(...a),
+  clipboardPasteJob: (...a: unknown[]) => clipboardPasteJob(...a),
   clipboardTargetIcon: (...a: unknown[]) => clipboardTargetIcon(...a),
   applyMode: async () => undefined,
 }));
@@ -117,6 +119,7 @@ beforeEach(() => {
   clipboardFocusTarget.mockReset();
   clipboardPasteItems.mockReset();
   clipboardPasteGroup.mockReset();
+  clipboardPasteJob.mockReset();
   clipboardTargetIcon.mockReset();
 
   clipboardView.mockResolvedValue(view([]));
@@ -139,6 +142,21 @@ beforeEach(() => {
   clipboardFocusTarget.mockImplementation(async (hwnd: number, pid: number) =>
     targetOf(hwnd, pid, "目标"),
   );
+  // 单条粘贴任务默认已完成（快照路径）；需要事件路径的用例自行改 running。
+  clipboardPasteJob.mockResolvedValue({
+    id: "paste-job-1",
+    group_id: "",
+    target_title: "记事本",
+    target_exe: "C:\Apps\Fixture.exe",
+    status: "completed",
+    total: 1,
+    sent: 1,
+    started_at: iso(now),
+    ended_at: iso(now),
+    message: "已发送 1/1 项粘贴动作；目标应用是否接收无法自动验证。已恢复粘贴前的剪贴板内容",
+    remaining_items: [],
+    restored: true,
+  });
   clipboardTargetIcon.mockResolvedValue(null);
   clipboardThumb.mockResolvedValue(null);
   clipboardImage.mockResolvedValue(null);
@@ -179,7 +197,7 @@ describe("列表行入口", () => {
     render(<ClipboardLite />);
     await screen.findByText("文本一");
 
-    fireEvent.click(screen.getByRole("button", { name: "复制并切换到目标窗口" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制或粘贴到目标窗口" }));
     await screen.findByRole("button", { name: "复制并切换到「记事本」" });
     expect(clipboardCopyItem).not.toHaveBeenCalled();
     // 视图打开时列表整体被替换，主区域不再是可点详情入口
@@ -200,12 +218,12 @@ describe("列表行入口", () => {
     render(<ClipboardLite />);
     await screen.findByText("文本图标");
 
-    const entry = screen.getByRole("button", { name: "复制并切换到目标窗口" });
+    const entry = screen.getByRole("button", { name: "复制或粘贴到目标窗口" });
     expect(entry.getAttribute("aria-haspopup")).toBeNull();
     expect(entry.querySelector("svg")?.getAttribute("class")).toContain("lucide-arrow-up-right");
 
     fireEvent.click(entry);
-    await screen.findByText("复制并切换到…");
+    await screen.findByText("复制或粘贴到…");
     // 只有箭头打开选择器：没有弹出菜单、没有提前复制
     expect(screen.queryByRole("menu")).toBeNull();
     expect(clipboardCopyItem).not.toHaveBeenCalled();
@@ -220,7 +238,7 @@ describe("列表行入口", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "查看「文本二」" }));
     await screen.findByText("完整内容二");
-    expect(screen.queryByRole("button", { name: "复制并切换到目标窗口" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "复制或粘贴到目标窗口" })).toBeNull();
     expect(clipboardVisibleTargets).not.toHaveBeenCalled();
   });
 });
@@ -328,7 +346,7 @@ describe("目标选择视图", () => {
     render(<ClipboardLite />);
     await screen.findByText("消失的条目");
 
-    fireEvent.click(screen.getByRole("button", { name: "复制并切换到目标窗口" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制或粘贴到目标窗口" }));
     fireEvent.click(await screen.findByRole("button", { name: "复制并切换到「记事本」" }));
 
     await screen.findByText(/条目已不存在/);
@@ -370,7 +388,7 @@ describe("Escape 与滚动恢复", () => {
     render(<ClipboardLite />);
     await screen.findByText("文本 Esc");
 
-    fireEvent.click(screen.getByRole("button", { name: "复制并切换到目标窗口" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制或粘贴到目标窗口" }));
     await screen.findByRole("button", { name: "复制并切换到「记事本」" });
 
     act(() => fireEvent.keyDown(window, { key: "Escape" }));
@@ -415,9 +433,9 @@ describe("Escape 与滚动恢复", () => {
     const list = container.querySelector(".cap-list") as HTMLDivElement;
     list.scrollTop = 120;
 
-    const arrows = screen.getAllByRole("button", { name: "复制并切换到目标窗口" });
+    const arrows = screen.getAllByRole("button", { name: "复制或粘贴到目标窗口" });
     fireEvent.click(arrows[3]);
-    await screen.findByText("复制并切换到…");
+    await screen.findByText("复制或粘贴到…");
 
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     await screen.findByText("条目 3");
@@ -441,7 +459,7 @@ describe("卸载竞态", () => {
 
     const first = render(<ClipboardLite />);
     await screen.findByText("文本 Unmount");
-    fireEvent.click(screen.getByRole("button", { name: "复制并切换到目标窗口" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制或粘贴到目标窗口" }));
     await screen.findByText("正在读取可见窗口…");
     expect(overlayStack().length).toBeGreaterThan(0);
 
@@ -457,7 +475,7 @@ describe("卸载竞态", () => {
 
     render(<ClipboardLite />);
     await screen.findByText("文本 Unmount");
-    fireEvent.click(screen.getByRole("button", { name: "复制并切换到目标窗口" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制或粘贴到目标窗口" }));
     await screen.findByText("正在读取可见窗口…");
     expect(clipboardVisibleTargets).toHaveBeenCalledTimes(2);
     expect(clipboardCopyItem).not.toHaveBeenCalled();
@@ -476,7 +494,7 @@ describe("卸载竞态", () => {
 
     render(<ClipboardLite />);
     await screen.findByText("文本 Close");
-    fireEvent.click(screen.getByRole("button", { name: "复制并切换到目标窗口" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制或粘贴到目标窗口" }));
     await screen.findByText("正在读取可见窗口…");
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     await screen.findByText("文本 Close");
@@ -521,6 +539,30 @@ describe("目标行组件接入", () => {
     await screen.findByText("已复制并切换到「记事本」");
     expect(first.hasAttribute("disabled")).toBe(false);
     expect(second.hasAttribute("disabled")).toBe(false);
+  });
+});
+
+describe("粘贴到目标窗口", () => {
+  it("点行内粘贴按钮：只走单条粘贴任务，不复制、不切换，完成显示「已发送」", async () => {
+    clipboardVisibleTargets.mockResolvedValue([targetOf(101, 1001, "记事本")]);
+    clipboardPasteItems.mockResolvedValue({
+      job_id: "paste-job-1",
+      target: targetOf(101, 1001, "记事本"),
+      total: 1,
+      interval_ms: 350,
+      intervals: { text_ms: 350, html_ms: 600, image_ms: 1200, files_ms: 900 },
+    });
+    render(<ClipboardTargetView item={textItem("paste-1", "待粘贴")} active onBack={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "切换到该窗口并粘贴" }));
+    await screen.findByText(/已向「记事本」发送粘贴/);
+
+    expect(clipboardPasteItems).toHaveBeenCalledWith(101, 1001, ["paste-1"]);
+    expect(clipboardCopyItem).not.toHaveBeenCalled();
+    expect(clipboardPastePrecheck).not.toHaveBeenCalled();
+    expect(clipboardFocusTarget).not.toHaveBeenCalled();
+    // 两个动作在行内是独立按钮：复制并切换仍在
+    expect(screen.getByRole("button", { name: "复制并切换到「记事本」" })).toBeTruthy();
   });
 });
 

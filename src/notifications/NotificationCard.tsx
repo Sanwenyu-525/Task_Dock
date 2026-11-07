@@ -206,6 +206,8 @@ export default function NotificationCard({
           className="ntf-icon-btn"
           aria-label="关闭通知"
           data-tip="关闭通知"
+          // 卡片顶部贴窗口上缘：气泡朝下才不会被窗口边界裁掉
+          data-tip-placement="bottom"
           onClick={() => onClose(card.id)}
         >
           <X size={14} aria-hidden="true" />

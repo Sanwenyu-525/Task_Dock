@@ -18,6 +18,7 @@ import TitleBar from "./TitleBar";
 import { useUiStore } from "../store/useUiStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useAgentsStore } from "../store/useAgentsStore";
+import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 // 标题栏与品牌球的视觉契约直接从样式表读取，避免 jsdom 不计算伪元素样式。
 import themesCss from "../styles-themes.css?raw";
 
@@ -209,5 +210,195 @@ describe("TitleBar 品牌球与状态点", () => {
     expect(orb!.getAttribute("data-tauri-drag-region")).not.toBeNull();
     expect(container.querySelector(".titlebar .agent-dot")).toBeNull();
     expect(screen.getByText("Task Dock")).toBeTruthy();
+  });
+});
+
+describe("TitleBar 停靠完整面板双击收缩", () => {
+  /** 直接派发原生 mousedown：detail 是双击判定的核心（与 Tauri drag.js 同源）。 */
+  const fireMouseDown = (target: Element, detail: number) =>
+    target.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail }),
+    );
+
+  beforeEach(() => {
+    useUiStore.setState({ tab: "tasks", clipboardOpen: false, clipboardLinkTask: null });
+    setMode("full");
+    useEdgeSnapStore.getState().reset();
+  });
+
+  afterEach(() => cleanup());
+
+  it("docked-full 双击标题拖拽面：收缩为胶囊，并拦截冒泡（Tauri 的双击最大化不再触发）", () => {
+    const formSwitch = vi.fn(() => Promise.resolve(true));
+    useEdgeSnapStore.setState({ phase: "docked-full", dockedEdge: "left", formSwitch });
+    const { container } = render(<TitleBar />);
+    // document 级监听代表 Tauri drag-region 脚本的挂载点：拦截生效时它收不到事件。
+    const docSpy = vi.fn();
+    document.addEventListener("mousedown", docSpy);
+    try {
+      fireMouseDown(screen.getByText("Task Dock"), 2);
+      expect(formSwitch).toHaveBeenCalledTimes(1);
+      expect(formSwitch).toHaveBeenCalledWith("capsule");
+      expect(docSpy).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("mousedown", docSpy);
+    }
+    void container;
+  });
+
+  it("单击（detail=1）不收缩：原生拖拽路径保持不变", () => {
+    const formSwitch = vi.fn(() => Promise.resolve(true));
+    useEdgeSnapStore.setState({ phase: "docked-full", dockedEdge: "left", formSwitch });
+    render(<TitleBar />);
+    const docSpy = vi.fn();
+    document.addEventListener("mousedown", docSpy);
+    try {
+      fireMouseDown(screen.getByText("Task Dock"), 1);
+      expect(formSwitch).not.toHaveBeenCalled();
+      // 未拦截：事件继续冒泡（Tauri 据此 start_dragging）。
+      expect(docSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener("mousedown", docSpy);
+    }
+  });
+
+  it("自由窗口（free 相位）双击不收缩：保持 Windows 常规双击最大化", () => {
+    const formSwitch = vi.fn(() => Promise.resolve(true));
+    useEdgeSnapStore.setState({ phase: "free", dockedEdge: null, formSwitch });
+    render(<TitleBar />);
+    const docSpy = vi.fn();
+    document.addEventListener("mousedown", docSpy);
+    try {
+      fireMouseDown(screen.getByText("Task Dock"), 2);
+      expect(formSwitch).not.toHaveBeenCalled();
+      expect(docSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener("mousedown", docSpy);
+    }
+  });
+
+  it("双击菜单/窗口按钮等交互子元素：不误触收缩", () => {
+    const formSwitch = vi.fn(() => Promise.resolve(true));
+    useEdgeSnapStore.setState({ phase: "docked-full", dockedEdge: "left", formSwitch });
+    render(<TitleBar />);
+    const docSpy = vi.fn();
+    document.addEventListener("mousedown", docSpy);
+    try {
+      fireMouseDown(screen.getByRole("button", { name: "最小化" }), 2);
+      expect(formSwitch).not.toHaveBeenCalled();
+      // 目标不是拖拽面：不做拦截，行为与 Tauri 的 drag-region 判定一致。
+      expect(docSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener("mousedown", docSpy);
+    }
+  });
+});
+
+describe("TitleBar 停靠形态菜单", () => {
+  /** 菜单只在「吸附启用 + 停靠完整面板」出现；设置前置在这里统一给定。 */
+  function renderWithDock(enabled = true) {
+    useSettingsStore.setState({
+      settings: { mode: "full", theme: "light", visual_preset: "dream-gradient", snap_enabled: enabled } as never,
+    });
+    return render(<TitleBar />);
+  }
+
+  beforeEach(() => {
+    useUiStore.setState({ tab: "tasks", clipboardOpen: false, clipboardLinkTask: null });
+    setMode("full");
+    useEdgeSnapStore.getState().reset();
+    useEdgeSnapStore.setState({
+      phase: "docked-full",
+      dockedEdge: "left",
+      formSwitch: vi.fn(async () => true),
+      undock: vi.fn(async () => true),
+      collapseToTab: vi.fn(async () => true),
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  it("吸附未启用不渲染；启用后停靠完整态与自由窗口都渲染", () => {
+    const { unmount } = renderWithDock(false);
+    expect(screen.queryByRole("button", { name: "停靠形态" })).toBeNull();
+    unmount();
+
+    useEdgeSnapStore.setState({ phase: "docked-full", dockedEdge: "left" });
+    const docked = renderWithDock(true);
+    expect(screen.getByRole("button", { name: "停靠形态" })).toBeTruthy();
+    docked.unmount();
+
+    useEdgeSnapStore.setState({ phase: "free", dockedEdge: null });
+    renderWithDock(true);
+    expect(screen.getByRole("button", { name: "停靠形态" })).toBeTruthy();
+  });
+
+  it("转为胶囊：会话级 formSwitch，不写持久偏好", async () => {
+    const user = userEvent.setup();
+    const formSwitch = vi.fn(async () => true);
+    useEdgeSnapStore.setState({ formSwitch });
+    renderWithDock();
+    await user.click(screen.getByRole("button", { name: "停靠形态" }));
+    await user.click(screen.getByRole("menuitem", { name: "转为胶囊" }));
+    expect(formSwitch).toHaveBeenCalledTimes(1);
+    expect(formSwitch).toHaveBeenCalledWith("capsule");
+  });
+
+  it("收为极简标签：先收胶囊再收标签（docked-full 无直接 tab 转移）", async () => {
+    const user = userEvent.setup();
+    const formSwitch = vi.fn(async () => true);
+    const collapseToTab = vi.fn(async () => true);
+    useEdgeSnapStore.setState({ formSwitch, collapseToTab });
+    renderWithDock();
+    await user.click(screen.getByRole("button", { name: "停靠形态" }));
+    await user.click(screen.getByRole("menuitem", { name: "收为极简标签" }));
+    await vi.waitFor(() => expect(collapseToTab).toHaveBeenCalledTimes(1));
+    expect(formSwitch).toHaveBeenCalledWith("capsule");
+  });
+
+  it("收标签链路第一步失败即停（引擎已 toast，不继续收标签）", async () => {
+    const user = userEvent.setup();
+    const formSwitch = vi.fn(async () => false);
+    const collapseToTab = vi.fn(async () => true);
+    useEdgeSnapStore.setState({ formSwitch, collapseToTab });
+    renderWithDock();
+    await user.click(screen.getByRole("button", { name: "停靠形态" }));
+    await user.click(screen.getByRole("menuitem", { name: "收为极简标签" }));
+    await Promise.resolve();
+    expect(formSwitch).toHaveBeenCalledTimes(1);
+    expect(collapseToTab).not.toHaveBeenCalled();
+  });
+
+  it("退出吸附：走引擎解除事务", async () => {
+    const user = userEvent.setup();
+    const undock = vi.fn(async () => true);
+    useEdgeSnapStore.setState({ undock });
+    renderWithDock();
+    await user.click(screen.getByRole("button", { name: "停靠形态" }));
+    await user.click(screen.getByRole("menuitem", { name: "退出吸附" }));
+    expect(undock).toHaveBeenCalledTimes(1);
+  });
+
+  it("自由窗口下拉三项分别直停胶囊/极简标签/完整面板", async () => {
+    const user = userEvent.setup();
+    const redock = vi.fn(async () => true);
+    useEdgeSnapStore.setState({ phase: "free", dockedEdge: null, redock });
+    renderWithDock(true);
+    await user.click(screen.getByRole("button", { name: "停靠形态" }));
+    await user.click(screen.getByRole("menuitem", { name: "吸附为胶囊" }));
+    await user.click(screen.getByRole("button", { name: "停靠形态" }));
+    await user.click(screen.getByRole("menuitem", { name: "吸附为极简标签" }));
+    await user.click(screen.getByRole("button", { name: "停靠形态" }));
+    await user.click(screen.getByRole("menuitem", { name: "吸附为完整面板" }));
+    expect(redock).toHaveBeenCalledTimes(3);
+    expect(redock).toHaveBeenNthCalledWith(1, "capsule");
+    expect(redock).toHaveBeenNthCalledWith(2, "tab");
+    expect(redock).toHaveBeenNthCalledWith(3, "full");
+  });
+
+  it("吸附未启用时自由窗口不渲染停靠形态下拉", () => {
+    useEdgeSnapStore.setState({ phase: "free", dockedEdge: null });
+    renderWithDock(false);
+    expect(screen.queryByRole("button", { name: "停靠形态" })).toBeNull();
   });
 });

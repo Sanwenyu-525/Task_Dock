@@ -42,7 +42,14 @@ export function PanelCloseButton({ label = "关闭面板" }: { label?: string })
   const onClose = usePanelClose();
   if (!onClose) return null;
   return (
-    <button type="button" className="cap-close" aria-label={label} onClick={() => onClose()}>
+    <button
+      type="button"
+      className="cap-close"
+      aria-label={label}
+      // 标题区在面板顶边：气泡朝下才不会落在 Win32 可见区域之外被裁掉
+      data-tip-placement="bottom"
+      onClick={() => onClose()}
+    >
       <X size={15} strokeWidth={2} aria-hidden="true" />
     </button>
   );

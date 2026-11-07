@@ -185,6 +185,7 @@ export default function InboxLite() {
             type="button"
             className="cap-iconbtn"
             aria-label={sub === "drop" ? "打开完整文件暂存架" : "打开完整收集箱"}
+            data-tip-placement="bottom"
             onClick={() => openFullApp(sub === "drop" ? "shelf" : "inbox")}
           >
             <ArrowUpRight size={15} strokeWidth={2} aria-hidden="true" />

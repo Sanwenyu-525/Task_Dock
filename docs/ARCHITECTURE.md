@@ -534,6 +534,24 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   确认退化为「静默 + DOM 指针哨兵」口径。真机（125% DPI 隔离实例）：拖离 → 150ms 内
   重抓反向拖回 → 重新吸附为胶囊，区域/尺寸/持久化正确。
   （原 2026-10-31 记录中「48px 内推」「realignDocked」为旧实现描述，以本条为准。）
+- 停靠形态切换的快速尺寸恢复（2026-11-07）：胶囊「完整面板」按钮/右键菜单的
+  本次会话切换（`applyDockForm` → `dockFull(fastSizeRestore=true)`）跳过
+  `restoreModeSize` 的 600ms 稳定二次回读。该窗口防的是解除/再吸附场景的原生
+  拖拽循环把窗口恢复成拖拽起始尺寸、松手再回弹（v0.7 真机复现）；按钮切换无
+  拖拽循环参与、事务全程持有引擎互斥且提交后相位为 docked-full（无尺寸收敛），
+  回弹源不存在，等待纯属固定延迟（真机感知为点击后数秒才变完整面板）。首读
+  仍是容器尺寸时仍走 300/600/900ms 重试梯子；`dockTo`（重启恢复/拖拽后再吸附）、
+  `undockCore`、`restoreUserSize` 维持原加固行为不变。集成测试：A8（切换在
+  <600ms 虚拟时间内完成）、A9（首次 applyMode 尺寸被吞仍经重试成功）。
+- 完整面板双击标题栏收缩为胶囊（2026-11-07）：`TitleBar` 拦截拖拽面上的
+  `mousedown detail≥2`（仅 `docked-full` 相位）→ `formSwitch("capsule")` 并
+  `stopPropagation`，替代 Tauri drag-region 脚本对双击的默认
+  `internal_toggle_maximize`——该默认是程序化最大化（`SW_MAXIMIZE`），不受停靠期
+  清除的 `WS_MAXIMIZEBOX` 限制，停靠窗口被最大化后引擎按法向偏离判定拖离、
+  自动解除停靠（双击 = 被顶出停靠的混乱体验）。自由窗口双击最大化不受影响；
+  单击拖拽路径不变；菜单/窗口按钮等交互子元素按 drag-region bare 语义不误触。
+  元素级 React 监听先于 Tauri 挂在 document 的脚本监听，`stopPropagation` 在
+  React 根容器处终止原生冒泡即可挡住后者。
 - 主窗圆角与滚动条（2026-10-31）：液态玻璃预设 `--radius-window: 20px` 与
   `PRESET_WINDOW_RADIUS` / Win32 区域半径（逻辑像素，按 DPI 换算）对齐，消除
   dream/glass 18px 时 CSS 填充到不了区域边缘留下的圆角缝隙带；主窗滚动容器改用
@@ -677,6 +695,10 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   中部 `.rail-items` 依旧是唯一滚动区域，340px 最小高度下溢出入口靠滚动可达。
   同时修正隐藏当前入口后的落点：`safeTabForHiddenEntry` 只在**可排序**入口中选择，
   避免把系统页（资源管理）当作默认首页；只剩锁定入口时仍回退设置。
+  （2026-11-07 更正）「资源管理」取消 `locked`，回归**默认可见的普通入口**（默认顺序 10.8
+  不变）：可隐藏/排序，底部固定区恢复为「更多 + 设置」；隐藏后仍可从「更多」与设置页
+  「数据与资源 → 资源管理」入口卡片进入，不存在导航自锁风险。`safeTabForHiddenEntry`
+  因此把它视为正常落点（但仍只在可排序入口中选择，设置保持兜底）。
   停靠胶囊仍可隐藏 Agent 状态球，隐藏只影响入口渲染，不影响 Agent 事件监控与徽标计数。
   原生几何契约：停靠形态完全由 `SetWindowRgn` 决定，`docked-full` 对应
   `set_capsule(hwnd, None)`（整窗圆角区域，`GetWindowRgn` 包围盒等于窗口矩形，**不是**
