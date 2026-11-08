@@ -61,6 +61,10 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
 - **中文输入法吞字**：vivo IME 下 `adb shell input text` 的合成文本不提交，控件只收到 1 个字符。
   规避：输入后 `keyevent 66` 提交，再从 `uiautomator` 读控件值确认。要清空搜索框必须先让
   IME 失焦（点别的控件）再点「清除搜索」。
+- **秒级时钟会让控件树 dump 失效**：页头时钟每秒刷新，`uiautomator dump` 持续返回
+  `ERROR: could not get idle state`，`--compressed` 与 8 次重试都拿不到新文件（实测 6/6 失败）。
+  规避：改用截图 + 像素定位（扫描纯白卡片带算出各行的 y 区间），不要用 `ui.mjs dump`
+  的坐标；`ui.mjs` 已改为先删远端文件，dump 失败时报错而不是回退到旧控件树。
 - **键盘遮挡底部 TabBar**：键盘弹起时点 Tab 会打到 IME 上，先按 Back 收起键盘。
 - **vivo 安装器拒绝同版本重装**：升级 `versionCode` 再装（见 05-build.md §4）。
 
@@ -93,6 +97,14 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
 | 21 | 应用退到后台后提醒投递 | D | **ENVIRONMENT BLOCKED**（见 §6） |
 | 22 | 320dp 窄屏 / 大字体 / TalkBack | C/E | 未执行 |
 | 23 | 数据库 v1 → v2 升级不丢数据 | B | PASS |
+| 24 | 页头显示年月日时分秒，秒位实时跳动 | C | PASS |
+| 25 | 360dp 宽下四块统计压成一行（不再 2×2） | C | PASS |
+| 26 | 分组头点击折叠/展开，计数与箭头状态正确 | C | PASS |
+| 27 | 只允许左滑露出删除；开启后卡片右侧为直角 | C | PASS |
+| 28 | 右滑不露出删除，也不会误触完成 | C | PASS |
+| 29 | 切回任务页的入场淡入期间不闪删除按钮（红像素 0） | C | PASS |
+| 30 | 收集箱输入底色包住提示与记录按钮 | C | PASS |
+| 31 | 滑删后点「删除」真的删掉并提示 | B/C | PASS |
 
 ## 5. 证据与像素复核
 

@@ -92,13 +92,11 @@ export function SwipeRow({
       PanResponder.create({
         onStartShouldSetPanResponder: () => false,
         // 只有明确的横向滑动才从子级（Pressable）手里接管，纵向滚动继续交给 FlatList。
-        // 闭合时只接受向左（dx < 0）的手势，拒绝右滑，保证「只有一个方向能露出删除」。
-        onMoveShouldSetPanResponderCapture: (_event, gesture) => {
-          if (Math.abs(gesture.dx) <= 10 || Math.abs(gesture.dx) <= Math.abs(gesture.dy) * 1.6) {
-            return false;
-          }
-          return openRef.current || gesture.dx < 0;
-        },
+        // 两个方向都要接管：向右滑虽然不露出删除，但如果放回 Pressable，
+        // 松手会被当成一次点击，把任务误标成完成（真机实测）。
+        // 位移仍然只有向左一个方向，向右拖动只是被吸收，卡片不动。
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+          Math.abs(gesture.dx) > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.6,
         onPanResponderGrant: () => {
           translateX.stopAnimation((value) => {
             startRef.current = value;

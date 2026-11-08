@@ -22,8 +22,10 @@ npm install
 npx expo prebuild --platform android    # 生成 android/（不入库）
 ```
 
-`android/local.properties` 需要 `sdk.dir=...` 指向本机 SDK。prebuild 会按 `app.json`
-重新生成 `versionName` / `versionCode` / 包名（`dev.taskdock.mobile`），不要手改生成物。
+`android/local.properties` 需要 `sdk.dir=...` 指向本机 SDK。prebuild 会**清空 `android/`**，
+`local.properties` 随之丢失，必须重建，并且该 SDK 里要有 NDK 27.1（见 §6 第一行）。
+prebuild 会按 `app.json` 重新生成 `versionName` / `versionCode` / 包名（`dev.taskdock.mobile`），
+不要手改生成物。
 
 ## 3. 日常命令
 
@@ -64,8 +66,8 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 
 | 位置 | 字段 | 角色 |
 |---|---|---|
-| `app.json` | `expo.version` | **唯一事实源**（`0.1.1`） |
-| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `2`） |
+| `app.json` | `expo.version` | **唯一事实源**（`0.1.2`） |
+| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `5`） |
 | `android/app/build.gradle` | `versionName` / `versionCode` | 生成物，prebuild 写入；不要当作源 |
 | `src/screens/SettingsScreen.tsx` | 「关于 → 版本」文案 | 展示值，改版本号时同步 |
 
@@ -73,7 +75,8 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 
 - `versionCode` **单调递增**，永不回退。vivo 安装器会拒绝「已安装相同版本」的重装，
   报 `INSTALL_FAILED_ABORTED`，弹窗写「已安装相同版本」——这不是签名或权限问题，
-  提升 `versionCode` 后重装即可（0.1.0/1 → 0.1.1/2 已实测通过）。
+  提升 `versionCode` 后重装即可（0.1.0/1 → 0.1.1/2 → 0.1.2/5 已实测通过）。
+  同一版本名下来回调试时，可以只加 `versionCode`、不改 `version`。
 - 改版本只改 `app.json` + 设置页文案；如果直接手改了 `android/` 里的值，下次 prebuild 会被覆盖，
   不要依赖手改。
 - 正式发布前确认 `android/` 是重新 prebuild 出来的，而不是带旧补丁的残留目录。
@@ -90,6 +93,7 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 
 | 现象 | 根因 | 处理 |
 |---|---|---|
+| prebuild 后构建报 `LicenceNotAcceptedException: ndk;27.1.12297006` | `expo prebuild` 会**清空整个 `android/`**（含 `local.properties`），Gradle 回退到 `ANDROID_HOME` 指向的 SDK，而那里没装 NDK 27.1 | 重建 `android/local.properties`，`sdk.dir` 指向装有 NDK 27.1 的 SDK（本机 `%LOCALAPPDATA%\\Android\\Sdk`） |
 | Gradle 在下载依赖时 TLS 失败/超时 | 直连 Maven 不可用 | 加 `-I rn-mirrors.gradle`，用共享 `-g` Home |
 | `settings.gradle` 阶段要求下载 JDK | 只有 JDK 22，toolchain 不匹配 | 装 JDK 17 并让 Gradle 用它 |
 | `react-native-safe-area-context` codegen 报标识符过长 | Windows 260 字符路径上限 | 本工程**不依赖**该库，insets 用 `src/lib/insets.ts` 纯 JS；若将来要换回，先缩短工程路径 |
