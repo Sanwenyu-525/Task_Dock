@@ -215,7 +215,8 @@ export default function NotificationCard({
       </header>
 
       <div className="ntf-main">
-        <NotificationIcon kind={card.kind} />
+        {/* svg 14px 与 24px 状态图标容器配套（紧凑化，对齐系统通知的信息密度，见 styles-notifications.css） */}
+        <NotificationIcon kind={card.kind} size={14} />
         <div className="ntf-title-zone">
           <h3 className="ntf-title">{card.title}</h3>
           <p className="ntf-body">{card.body}</p>

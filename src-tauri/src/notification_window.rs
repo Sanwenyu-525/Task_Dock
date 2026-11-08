@@ -39,7 +39,9 @@ pub const NAVIGATE_EVENT: &str = "notification-navigate";
 /// 窗口宽度（逻辑像素）：360px 卡片 + 左右阴影余量。
 pub const WINDOW_WIDTH: f64 = 400.0;
 /// 窗口与工作区右/下边缘的间距（逻辑像素）。
-pub const EDGE_MARGIN: f64 = 16.0;
+/// 通知窗口与工作区边缘的留白（逻辑像素）：2026-11-08 自 16 收紧到 8，
+/// 底边贴近任务栏，与系统通知的贴底密度一致（用户反馈悬空过大）。
+pub const EDGE_MARGIN: f64 = 8.0;
 /// fit 高度钳制（逻辑像素）：下限保证可见，上限约 5 张卡 + 余量。
 pub const MIN_HEIGHT: f64 = 80.0;
 pub const MAX_HEIGHT: f64 = 860.0;
@@ -1106,8 +1108,8 @@ mod tests {
     #[test]
     fn places_bottom_right_inside_work_area() {
         let (x, y) = place_stack(wa_full_hd(), (400.0, 300.0), 1.0);
-        assert_eq!(x, 1920 - 16 - 400);
-        assert_eq!(y, 1032 - 16 - 300);
+        assert_eq!(x, 1920 - 8 - 400);
+        assert_eq!(y, 1032 - 8 - 300);
     }
 
     #[test]
@@ -1115,11 +1117,11 @@ mod tests {
         let wa = WorkArea::new(0, 0, 300, 200);
         let (x, y) = place_stack(wa, (400.0, 300.0), 1.0);
         // 收进工作区（贴 margin 起点），不出现负坐标
-        assert_eq!(x, 16);
-        assert_eq!(y, 16);
+        assert_eq!(x, 8);
+        assert_eq!(y, 8);
         // 坐标非负不等于可访问：窗口尺寸也必须落进工作区，内容不被截到屏幕外
         let (w, h) = fit_logical_size(wa, (400.0, 300.0), 1.0);
-        assert_eq!((w, h), (268.0, 168.0));
+        assert_eq!((w, h), (284.0, 184.0));
         assert!(x as f64 + w <= wa.w as f64);
         assert!(y as f64 + h <= wa.h as f64);
     }
@@ -1128,7 +1130,7 @@ mod tests {
     fn tiny_work_area_still_yields_positive_accessible_window() {
         let wa = WorkArea::new(0, 0, 40, 30);
         let (w, h) = fit_logical_size(wa, (400.0, 300.0), 1.0);
-        assert_eq!((w, h), (8.0, 1.0));
+        assert_eq!((w, h), (24.0, 14.0));
         let (x, y) = place_stack(wa, (400.0, 300.0), 1.0);
         assert!(x >= 0 && y >= 0);
     }
@@ -1189,15 +1191,15 @@ mod tests {
         let (w150, h150) = fit_logical_size(wa, (400.0, 700.0), 1.5);
         let (w200, h200) = fit_logical_size(wa, (400.0, 700.0), 2.0);
         assert_eq!((w150, h150), (400.0, 700.0));
-        assert_eq!((w200, h200), (400.0, 688.0));
+        assert_eq!((w200, h200), (400.0, 700.0));
     }
 
     #[test]
     fn honors_secondary_monitor_origin() {
         let wa = WorkArea::new(2560, 0, 1920, 1032);
         let (x, y) = place_stack(wa, (400.0, 300.0), 1.0);
-        assert_eq!(x, 2560 + 1920 - 16 - 400);
-        assert_eq!(y, 1032 - 16 - 300);
+        assert_eq!(x, 2560 + 1920 - 8 - 400);
+        assert_eq!(y, 1032 - 8 - 300);
     }
 
     #[test]
@@ -1205,15 +1207,15 @@ mod tests {
         // 150% 缩放：400×300 逻辑 → 600×450 物理
         let wa = WorkArea::new(0, 0, 2560, 1392);
         let (x, y) = place_stack(wa, (400.0, 300.0), 1.5);
-        assert_eq!(x, (2560.0 - 24.0 - 600.0) as i32);
-        assert_eq!(y, (1392.0 - 24.0 - 450.0) as i32);
+        assert_eq!(x, (2560.0 - 12.0 - 600.0) as i32);
+        assert_eq!(y, (1392.0 - 12.0 - 450.0) as i32);
     }
 
     #[test]
     fn invalid_scale_falls_back_to_one() {
         let (x, y) = place_stack(wa_full_hd(), (400.0, 300.0), 0.0);
-        assert_eq!(x, 1920 - 16 - 400);
-        assert_eq!(y, 1032 - 16 - 300);
+        assert_eq!(x, 1920 - 8 - 400);
+        assert_eq!(y, 1032 - 8 - 300);
     }
 
     // ── 轮次状态机（延迟 show 到首次 fit + 迟到请求保护）──────

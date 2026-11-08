@@ -42,10 +42,10 @@ describe("玻璃材质（深浅两套）", () => {
     expect(light!.body).toContain("rgba(246, 250, 255");
   });
 
-  it("原型规格：圆角 16px、卡片 360px、栈间距 8px", () => {
+  it("原型规格：圆角 16px、卡片 360px、栈间距 6px（2026-11-08 垂直紧凑化对齐系统通知密度）", () => {
     expect(rule(".ntf-card")!.body).toContain("border-radius: 16px");
     expect(rule(".ntf-stack")!.body).toContain("width: 360px");
-    expect(rule(".ntf-stack")!.body).toContain("gap: 8px");
+    expect(rule(".ntf-stack")!.body).toContain("gap: 6px");
   });
 });
 
