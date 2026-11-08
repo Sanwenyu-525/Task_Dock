@@ -6,81 +6,52 @@ import type { NewTaskInput, Priority, Task, TaskStatus } from "../domain/types";
 import { newId } from "../lib/id";
 
 import { getDatabase } from "./database";
+import { clampPriority, mapTaskRow, TASK_COLUMNS, type TaskDbRow } from "./taskRows";
 
-interface TaskDbRow {
-  id: string;
-  title: string;
-  description: string;
-  status: string;
-  priority: number;
-  category: string | null;
-  tags: string | null;
-  due_at: number | null;
-  remind_at: number | null;
-  advance_minutes: number | null;
-  recurrence_rule: string | null;
-  created_at: number;
-  updated_at: number;
-  completed_at: number | null;
-  rev: number;
-}
+export { updateTask } from "./taskUpdate";
 
-const COLUMNS = `id, title, description, status, priority, category, tags,
-  due_at, remind_at, advance_minutes, recurrence_rule,
-  created_at, updated_at, completed_at, rev`;
-
-function clampPriority(value: number): Priority {
-  if (value >= 3) return 3;
-  if (value <= 0) return 0;
-  return value as Priority;
-}
-
-function parseTags(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
-  } catch {
-    // 历史脏数据不应让整个列表崩溃
-    return [];
-  }
-}
-
-function mapRow(row: TaskDbRow): Task {
-  return {
-    id: row.id,
-    title: row.title,
-    description: row.description,
-    status: row.status === "completed" ? "completed" : "pending",
-    priority: clampPriority(row.priority),
-    category: row.category,
-    tags: parseTags(row.tags),
-    dueAt: row.due_at,
-    remindAt: row.remind_at,
-    advanceMinutes: row.advance_minutes,
-    recurrenceRule: row.recurrence_rule,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    completedAt: row.completed_at,
-    rev: row.rev,
-  };
+/**
+ * 任务三态更新补丁（docs/MOBILE_STACK.md §3.3）：
+ * - 键缺失（或显式 undefined）= 不改；
+ * - null = 清空（NOT NULL 列落到该列默认值：description → ''，priority → 0）；
+ * - 有值 = 写入。
+ *
+ * 为什么必须区分「缺失」与「null」：同步协议与桌面端 TaskInput 都用 Option<Option<T>>
+ * 表达同样的语义。如果这里把 null 和缺失合并成「不改」，用户永远无法清空截止时间；
+ * 如果合并成「清空」，一次只改标题的更新会静默抹掉提醒与重复规则。
+ */
+export interface TaskPatch {
+  /** 空字符串会被拒绝：标题是任务的必填展示字段 */
+  title?: string;
+  /** null 等价于空字符串 */
+  description?: string | null;
+  /** null 等价于 0（无优先级） */
+  priority?: Priority | null;
+  dueAt?: number | null;
+  remindAt?: number | null;
+  /** null 表示不提前提醒；有值时必须是 >= 0 的整数分钟 */
+  advanceMinutes?: number | null;
+  recurrenceRule?: string | null;
+  category?: string | null;
+  /** null 表示清空标签；有值时逐项 trim 并丢弃空串 */
+  tags?: string[] | null;
 }
 
 export async function listTasks(): Promise<Task[]> {
   const db = getDatabase();
   const rows = await db.getAllAsync<TaskDbRow>(
-    `SELECT ${COLUMNS} FROM tasks WHERE deleted_at IS NULL`,
+    `SELECT ${TASK_COLUMNS} FROM tasks WHERE deleted_at IS NULL`,
   );
-  return rows.map(mapRow);
+  return rows.map(mapTaskRow);
 }
 
 export async function getTask(id: string): Promise<Task | null> {
   const db = getDatabase();
   const row = await db.getFirstAsync<TaskDbRow>(
-    `SELECT ${COLUMNS} FROM tasks WHERE id = ? AND deleted_at IS NULL`,
+    `SELECT ${TASK_COLUMNS} FROM tasks WHERE id = ? AND deleted_at IS NULL`,
     [id],
   );
-  return row ? mapRow(row) : null;
+  return row ? mapTaskRow(row) : null;
 }
 
 export function buildTask(input: NewTaskInput, now = Date.now()): Task {
@@ -109,7 +80,7 @@ export function buildTask(input: NewTaskInput, now = Date.now()): Task {
  */
 export async function insertTaskInTx(db: SQLiteDatabase, task: Task, now: number): Promise<void> {
   await db.runAsync(
-    `INSERT INTO tasks (${COLUMNS})
+    `INSERT INTO tasks (${TASK_COLUMNS})
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       task.id,

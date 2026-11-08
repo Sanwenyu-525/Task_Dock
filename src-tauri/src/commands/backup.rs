@@ -115,6 +115,8 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "voice_assets",
     "voice_pack_assets",
     "voice_bindings",
+    // 任务提醒联动（v41）：外键只指向 tasks，场景/现场是软引用目标。
+    "task_reminder_links",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -430,6 +432,18 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         "all",
         405,
         &["voice_pack_assets"],
+        true
+    ),
+    // 任务提醒联动（v41）：任务 → 场景/工作现场 的显式关联，行数小、属用户意图，
+    // 快速备份全量保存。外键只指向 tasks（级联删除）；场景/现场目标是软引用，
+    // 恢复顺序仍排在它们之后（410 > scenarios 380 > workspace_snapshots 210），
+    // 旧备份缺该段时按「缺表即跳过」，新备份必须显式声明。
+    rule!(
+        "task_reminder_links",
+        "core",
+        "all",
+        410,
+        &["tasks", "scenarios", "workspace_snapshots"],
         true
     ),
 ];

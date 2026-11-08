@@ -622,11 +622,16 @@ pub fn rename_snapshot(db: &Db, id: &str, name: &str, note: &str) -> AppResult<(
 }
 
 pub fn delete_snapshot(db: &Db, id: &str) -> AppResult<()> {
-    db.with_conn(|conn| {
+    db.with_transaction(|conn| {
         let n = conn.execute("DELETE FROM workspace_snapshots WHERE id = ?1", params![id])?;
         if n == 0 {
             return Err(AppError::NotFound("工作现场不存在".into()));
         }
+        // 提醒联动随目标一并清理（v41）：避免通知卡继续出现失效的「恢复现场」。
+        conn.execute(
+            "DELETE FROM task_reminder_links WHERE target_kind = 'workspace' AND target_id = ?1",
+            params![id],
+        )?;
         Ok(())
     })
 }
@@ -668,6 +673,15 @@ pub fn prune_snapshots(db: &Db, keep: usize) -> AppResult<PruneReport> {
         } else {
             0
         };
+        // 被清理现场的提醒联动一并删除（v41），避免残留失效目标
+        if removed > 0 {
+            tx.execute(
+                "DELETE FROM task_reminder_links WHERE target_kind = 'workspace' AND target_id NOT IN (
+                   SELECT id FROM workspace_snapshots
+                 )",
+                [],
+            )?;
+        }
         // 外键/级联一致性：任何残留引用都回滚，绝不留下半清理状态
         let fk_bad: i64 =
             tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {

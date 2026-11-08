@@ -59,7 +59,9 @@ const styles = StyleSheet.create({
   card: {
     flexGrow: 1,
     flexShrink: 1,
-    paddingHorizontal: space.md,
+    // basis 0 让四张卡严格均分，避免内容宽度略超时最后一张被 flexWrap 挤到下一行
+    flexBasis: 0,
+    paddingHorizontal: space.sm + 2,
     paddingVertical: space.sm + 2,
     gap: 2,
   },

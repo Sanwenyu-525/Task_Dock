@@ -829,6 +829,10 @@ pub fn run() {
             commands::tasks::unlink_task_agent,
             commands::tasks::list_task_links,
             commands::tasks::pending_items_to_tasks,
+            // 任务提醒联动（v41）：任务 ↔ 场景/工作现场，通知卡显式点击才执行
+            commands::tasks::task_reminder_link_get,
+            commands::tasks::task_reminder_link_set,
+            commands::tasks::task_reminder_link_clear,
             // 任务统计（tasks.stats-trends）：只读聚合，打开统计子视图时按需调用
             commands::task_analytics::task_analytics,
             // 专注与休息（core.focus-timer）：Rust 侧权威状态机 + 既有 1 秒调度推进

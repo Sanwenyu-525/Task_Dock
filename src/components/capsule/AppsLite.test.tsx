@@ -10,7 +10,7 @@
 //! - 启动成功后的列表刷新失败不把已成功的启动说成失败。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import stylesCss from "../../styles.css?raw";
 
@@ -20,6 +20,9 @@ import stylesCss from "../../styles.css?raw";
 const navNavigate = vi.fn();
 const navListTargets = vi.fn();
 const navUpdateTarget = vi.fn();
+const navTargetRunningStates = vi.fn();
+const navCloseTargetWindows = vi.fn();
+const navQuitTargetProcesses = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   applyMode: async () => undefined,
@@ -51,6 +54,9 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
     navNavigate: (...a: unknown[]) => navNavigate(...a),
     navListTargets: (...a: unknown[]) => navListTargets(...a),
     navUpdateTarget: (...a: unknown[]) => navUpdateTarget(...a),
+    navTargetRunningStates: (...a: unknown[]) => navTargetRunningStates(...a),
+    navCloseTargetWindows: (...a: unknown[]) => navCloseTargetWindows(...a),
+    navQuitTargetProcesses: (...a: unknown[]) => navQuitTargetProcesses(...a),
     navAppIcon: async () => null,
   };
 });
@@ -100,6 +106,16 @@ beforeEach(() => {
   navUpdateTarget.mockReset();
   navUpdateTarget.mockResolvedValue(undefined);
   navListTargets.mockReset();
+  navTargetRunningStates.mockReset();
+  navTargetRunningStates.mockResolvedValue({});
+  navCloseTargetWindows.mockReset();
+  navCloseTargetWindows.mockResolvedValue({ requested: 1, closed: 1, stillOpen: [] });
+  navQuitTargetProcesses.mockReset();
+  navQuitTargetProcesses.mockResolvedValue({
+    processTotal: 1,
+    processExited: 1,
+    postedThreads: 2,
+  });
   useNavigationStore.setState({
     targets: [target("a", "Obsidian")],
     targetsLoaded: true,
@@ -130,14 +146,24 @@ describe("AppsLite 反馈计时器", () => {
       fireEvent.click(screen.getByRole("button", { name: "启动 Obsidian" }));
     });
     expect(screen.getByText("「Obsidian」已确认窗口")).toBeTruthy();
-    // 新反馈覆盖旧反馈：旧计时器被取消，而不是继续堆在列表里
-    expect(vi.getTimerCount()).toBe(timersAfterFirst);
+    // 新反馈覆盖旧反馈：旧计时器被取消，而不是继续堆在列表里。
+    // 成功的启动会额外排 2 个运行态补查（2.5s/6s，scheduleStateRecheck），
+    // 失败的启动没有；因此此刻 = 1 个反馈计时器 + 2 个补查计时器。
+    expect(vi.getTimerCount()).toBe(timersAfterFirst + 2);
 
     act(() => {
       vi.advanceTimersByTime(2600);
     });
     expect(screen.queryByText("「Obsidian」已确认窗口")).toBeNull();
-    expect(vi.getTimerCount()).toBe(0);
+    act(() => {
+      // 走到 6s：反馈与补查计时器都已触发并清理；面板展开期间只剩
+      // 常驻的 10s 运行态刷新（单一定时器，卸载即清）
+      vi.advanceTimersByTime(3400);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(vi.getTimerCount()).toBe(1);
   });
 
   it("卸载时取消未结束的计时器", async () => {
@@ -597,5 +623,71 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     // 两个恢复入口都在，且只有一个添加入口（网格已收起）
     expect(screen.getAllByRole("button", { name: /^恢复显示 / })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "添加应用" })).toHaveLength(1);
+  });
+
+  it("运行中的应用显示状态点与「运行中」快捷区，可一键关闭窗口", async () => {
+    seed([target("a", "Obsidian")]);
+    navTargetRunningStates.mockResolvedValue({ a: "has_window" });
+    render(<AppsLite />);
+    expect(await screen.findByTestId("running-list")).toBeTruthy();
+    expect(screen.getByText("运行中（1）")).toBeTruthy();
+    // 磁贴状态点由 CSS 渲染，这里确认结构位存在
+    expect(document.querySelector(".cap-app-dot")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭 Obsidian 的窗口" }));
+    await waitFor(() => expect(navCloseTargetWindows).toHaveBeenCalledWith("a"));
+    await waitFor(() => expect(screen.getByText("已关闭「Obsidian」的 1 个窗口")).toBeTruthy());
+  });
+
+  it("退出应用走 WM_QUIT 优雅档，未完全退出如实提示", async () => {
+    seed([target("a", "Obsidian")]);
+    navTargetRunningStates.mockResolvedValue({ a: "process_only" });
+    navQuitTargetProcesses.mockResolvedValue({
+      processTotal: 2,
+      processExited: 1,
+      postedThreads: 3,
+    });
+    render(<AppsLite />);
+    expect(await screen.findByTestId("running-list")).toBeTruthy();
+    // 仅后台进程没有窗口可关：不出现关闭按钮，退出按钮仍在
+    expect(screen.queryByRole("button", { name: "关闭 Obsidian 的窗口" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "退出 Obsidian" }));
+    await waitFor(() => expect(navQuitTargetProcesses).toHaveBeenCalledWith("a"));
+    await waitFor(() =>
+      expect(screen.getByText(/未完全退出（1\/2），可到完整面板使用结束进程/)).toBeTruthy(),
+    );
+  });
+
+  it("没有运行中的应用时不渲染运行中快捷区", async () => {
+    seed([target("a", "Obsidian")]);
+    navTargetRunningStates.mockResolvedValue({ a: "not_running" });
+    render(<AppsLite />);
+    expect(await screen.findByText("Obsidian")).toBeTruthy();
+    expect(screen.queryByTestId("running-list")).toBeNull();
+    expect(document.querySelector(".cap-app-dot")).toBeNull();
+  });
+
+  it("面板展开期间每 10s 刷新运行态，外部开关应用 ≤10s 反映到面板", async () => {
+    vi.useFakeTimers();
+    try {
+      seed([target("a", "Obsidian")]);
+      render(<AppsLite />);
+      // 挂载时的首次查询
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const before = navTargetRunningStates.mock.calls.length;
+      expect(before).toBeGreaterThanOrEqual(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(navTargetRunningStates.mock.calls.length).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

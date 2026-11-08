@@ -1,7 +1,7 @@
 //! 任务管理命令：CRUD、快速录入、筛选视图、重复任务、稍后提醒、Agent 关联。
 
 use chrono::{DateTime, Duration, Local, TimeZone, Utc};
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Deserializer};
 use std::sync::Arc;
 use tauri::State;
@@ -1157,6 +1157,231 @@ pub fn pending_items_to_tasks(db: State<'_, Arc<Db>>, items: Vec<String>) -> App
         out.push(task);
     }
     Ok(out)
+}
+
+// ── 任务提醒联动（v41）：任务 ↔ 场景 / 工作现场 ─────────────────────
+//
+// 一条任务最多一条联动（通知卡不堆多个启动按钮）。只存目标 UUID，不落窗口
+// 标题/路径/HWND；目标存在性在写入与读取时都校验（双保险），删除目标在
+// scenario::delete_guarded / workspace::delete_snapshot 的事务里同步清理，
+// 删除任务经外键级联清理。提醒触发时绝不自动执行联动，只在用户点击时执行。
+
+const LINK_KIND_WORKSPACE: &str = "workspace";
+const LINK_KIND_SCENE: &str = "scene";
+
+/// 已解析的提醒联动：label 为目标当前名称；目标已删除时查询层直接不返回。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReminderLink {
+    pub task_id: String,
+    /// workspace | scene
+    pub target_kind: String,
+    pub target_id: String,
+    pub label: String,
+    pub updated_at: String,
+}
+
+fn validate_link_kind(kind: &str) -> AppResult<()> {
+    if kind != LINK_KIND_WORKSPACE && kind != LINK_KIND_SCENE {
+        return Err(AppError::Validation(format!(
+            "提醒联动类型不合法: {kind}（只支持 workspace / scene）"
+        )));
+    }
+    Ok(())
+}
+
+/// 解析联动目标当前名称；目标已删除返回 None。表名来自白名单匹配，不拼用户输入。
+fn link_target_label(
+    conn: &Connection,
+    target_kind: &str,
+    target_id: &str,
+) -> AppResult<Option<String>> {
+    let sql = match target_kind {
+        LINK_KIND_WORKSPACE => {
+            "SELECT name FROM workspace_snapshots WHERE id = ?1"
+        }
+        LINK_KIND_SCENE => "SELECT name FROM scenarios WHERE id = ?1",
+        _ => return Ok(None),
+    };
+    conn.query_row(sql, rusqlite::params![target_id], |r| r.get::<_, String>(0))
+        .optional()
+        .map_err(AppError::from)
+}
+
+pub(crate) fn reminder_link_get_inner(
+    db: &Db,
+    task_id: &str,
+) -> AppResult<Option<TaskReminderLink>> {
+    db.with_conn(|conn| {
+        let row = conn
+            .query_row(
+                "SELECT task_id, target_kind, target_id, updated_at
+                 FROM task_reminder_links WHERE task_id = ?1",
+                rusqlite::params![task_id],
+                |r| {
+                    Ok(TaskReminderLink {
+                        task_id: r.get(0)?,
+                        target_kind: r.get(1)?,
+                        target_id: r.get(2)?,
+                        label: String::new(),
+                        updated_at: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(AppError::from)?;
+        let Some(mut link) = row else {
+            return Ok(None);
+        };
+        // 双保险之一：读取时校验目标存在。目标已删除的联动对上层等于「未关联」
+        // （正常路径删除目标时会同步清联动，这里只兜住异常残留），set 会覆盖残留行。
+        match link_target_label(conn, &link.target_kind, &link.target_id)? {
+            Some(label) => {
+                link.label = label;
+                Ok(Some(link))
+            }
+            None => Ok(None),
+        }
+    })
+}
+
+pub(crate) fn reminder_link_set_inner(
+    db: &Db,
+    task_id: &str,
+    kind: &str,
+    target_id: &str,
+) -> AppResult<TaskReminderLink> {
+    validate_link_kind(kind)?;
+    let target_id = target_id.trim();
+    if target_id.is_empty() {
+        return Err(AppError::Validation("提醒联动目标 id 不能为空".into()));
+    }
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        // 任务必须真实存在：联动依附于任务，不为它制造幽灵行。
+        let task_exists = tx
+            .query_row(
+                "SELECT 1 FROM tasks WHERE id = ?1",
+                rusqlite::params![task_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(AppError::from)?
+            .is_some();
+        if !task_exists {
+            return Err(AppError::NotFound(format!("任务不存在: {task_id}")));
+        }
+        // 目标必须真实存在：杜绝「关联了已删除对象、点击后伪装成功」。
+        let label = link_target_label(&tx, kind, target_id)?
+            .ok_or_else(|| AppError::NotFound("关联目标不存在或已被删除".into()))?;
+        let now = now_iso();
+        tx.execute(
+            "INSERT INTO task_reminder_links (task_id, target_kind, target_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(task_id) DO UPDATE SET
+               target_kind = excluded.target_kind,
+               target_id = excluded.target_id,
+               updated_at = excluded.updated_at",
+            rusqlite::params![task_id, kind, target_id, now],
+        )
+        .map_err(AppError::from)?;
+        tx.commit()?;
+        Ok(TaskReminderLink {
+            task_id: task_id.to_string(),
+            target_kind: kind.to_string(),
+            target_id: target_id.to_string(),
+            label,
+            updated_at: now,
+        })
+    })
+}
+
+/// 清除联动：幂等（未关联时同样成功）。
+pub(crate) fn reminder_link_clear_inner(db: &Db, task_id: &str) -> AppResult<()> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM task_reminder_links WHERE task_id = ?1",
+            rusqlite::params![task_id],
+        )
+        .map_err(AppError::from)?;
+        Ok(())
+    })
+}
+
+/// 批量解析提醒联动（调度器每个 tick 一次，避免 N+1）。
+/// 目标已删除的条目跳过——通知卡不出现失效动作。
+pub(crate) fn resolve_reminder_links(
+    db: &Db,
+    task_ids: &[String],
+) -> AppResult<std::collections::HashMap<String, TaskReminderLink>> {
+    if task_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    db.with_conn(|conn| {
+        let placeholders = vec!["?"; task_ids.len()].join(",");
+        let sql = format!(
+            "SELECT l.task_id, l.target_kind, l.target_id,
+                    CASE l.target_kind
+                      WHEN 'workspace' THEN (SELECT s.name FROM workspace_snapshots s WHERE s.id = l.target_id)
+                      WHEN 'scene' THEN (SELECT c.name FROM scenarios c WHERE c.id = l.target_id)
+                    END,
+                    l.updated_at
+             FROM task_reminder_links l
+             WHERE l.task_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&str> = task_ids.iter().map(String::as_str).collect();
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(params),
+            |r| {
+                Ok((
+                    TaskReminderLink {
+                        task_id: r.get(0)?,
+                        target_kind: r.get(1)?,
+                        target_id: r.get(2)?,
+                        label: String::new(),
+                        updated_at: r.get(4)?,
+                    },
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (link, label) = row.map_err(AppError::from)?;
+            // label IS NULL ⇔ 目标已删除（或类型异常）：不附加联动。
+            if let Some(label) = label {
+                out.insert(
+                    link.task_id.clone(),
+                    TaskReminderLink { label, ..link },
+                );
+            }
+        }
+        Ok(out)
+    })
+}
+
+#[tauri::command]
+pub fn task_reminder_link_get(
+    db: State<'_, Arc<Db>>,
+    task_id: String,
+) -> AppResult<Option<TaskReminderLink>> {
+    reminder_link_get_inner(&db, &task_id)
+}
+
+#[tauri::command]
+pub fn task_reminder_link_set(
+    db: State<'_, Arc<Db>>,
+    task_id: String,
+    kind: String,
+    target_id: String,
+) -> AppResult<TaskReminderLink> {
+    reminder_link_set_inner(&db, &task_id, &kind, &target_id)
+}
+
+#[tauri::command]
+pub fn task_reminder_link_clear(db: State<'_, Arc<Db>>, task_id: String) -> AppResult<()> {
+    reminder_link_clear_inner(&db, &task_id)
 }
 
 #[cfg(test)]
@@ -2582,5 +2807,164 @@ mod tests {
             assert!(titles.contains(&want), "today 视图缺少 {want}");
         }
         assert!(!titles.contains(&"明天"));
+    }
+
+    // ── 任务提醒联动（v41）────────────────────────────────────
+
+    fn seed_scenario(db: &Db, id: &str, name: &str) {
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO scenarios (id, name, apps_json, urls_json, folders_json, created_at, updated_at)
+                 VALUES (?1, ?2, '[]', '[]', '[]', '2026-11-08T00:00:00+00:00', '2026-11-08T00:00:00+00:00')",
+                rusqlite::params![id, name],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    fn seed_snapshot(db: &Db, id: &str, name: &str) {
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO workspace_snapshots (id, name, note, source, item_count, created_at, updated_at)
+                 VALUES (?1, ?2, '', 'manual', 0, '2026-11-08T00:00:00+00:00', '2026-11-08T00:00:00+00:00')",
+                rusqlite::params![id, name],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn reminder_link_set_get_clear_roundtrip() {
+        let db = db();
+        let t = create(&db, "写周报", None, None);
+        seed_scenario(&db, "sc-1", "深度工作");
+        seed_snapshot(&db, "ws-1", "任务现场 A");
+
+        // 未关联：get 返回 None
+        assert!(reminder_link_get_inner(&db, &t.id).unwrap().is_none());
+
+        // 关联场景 → label 解析为目标当前名称
+        let link = reminder_link_set_inner(&db, &t.id, "scene", "sc-1").unwrap();
+        assert_eq!(link.target_kind, "scene");
+        assert_eq!(link.label, "深度工作");
+        let got = reminder_link_get_inner(&db, &t.id).unwrap().unwrap();
+        assert_eq!(got.target_id, "sc-1");
+        assert_eq!(got.label, "深度工作");
+
+        // 一个任务只有一条联动：改关现场直接覆盖，不产生第二行
+        let link2 = reminder_link_set_inner(&db, &t.id, "workspace", "ws-1").unwrap();
+        assert_eq!(link2.target_kind, "workspace");
+        assert_eq!(link2.label, "任务现场 A");
+        let count: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM task_reminder_links WHERE task_id = ?1",
+                    [&t.id],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(count, 1, "一个任务最多一条提醒联动");
+
+        // 清除：幂等
+        reminder_link_clear_inner(&db, &t.id).unwrap();
+        assert!(reminder_link_get_inner(&db, &t.id).unwrap().is_none());
+        reminder_link_clear_inner(&db, &t.id).unwrap();
+    }
+
+    #[test]
+    fn reminder_link_set_rejects_bad_kind_task_or_target() {
+        let db = db();
+        let t = create(&db, "任务", None, None);
+        seed_scenario(&db, "sc-1", "深度工作");
+
+        let err = reminder_link_set_inner(&db, &t.id, "workflow", "sc-1").unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "类型必须白名单校验");
+        let err = reminder_link_set_inner(&db, "no-such-task", "scene", "sc-1").unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "任务必须存在");
+        let err = reminder_link_set_inner(&db, &t.id, "scene", "no-such-scene").unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "目标必须存在，杜绝幽灵联动");
+        let err = reminder_link_set_inner(&db, &t.id, "scene", "  ").unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "空目标 id 拒绝");
+        // 校验失败不得留下半行
+        let count: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM task_reminder_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn reminder_link_resolve_batch_skips_deleted_targets() {
+        let db = db();
+        let t1 = create(&db, "任务一", None, None);
+        let t2 = create(&db, "任务二", None, None);
+        let t3 = create(&db, "任务三", None, None);
+        seed_scenario(&db, "sc-1", "深度工作");
+        seed_snapshot(&db, "ws-1", "任务现场 A");
+        reminder_link_set_inner(&db, &t1.id, "scene", "sc-1").unwrap();
+        reminder_link_set_inner(&db, &t2.id, "workspace", "ws-1").unwrap();
+        // t3 无关联
+
+        let links =
+            resolve_reminder_links(&db, &[t1.id.clone(), t2.id.clone(), t3.id.clone()]).unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[&t1.id].label, "深度工作");
+        assert_eq!(links[&t2.id].label, "任务现场 A");
+        assert!(!links.contains_key(&t3.id), "未关联任务不附加联动");
+
+        // 目标被删除后：解析层跳过（通知卡不出现失效动作）；get 也视为未关联
+        let gate = crate::commands::scenario::ScenarioEnterGate::new();
+        crate::commands::scenario::delete_with_gate(&gate, &db, "sc-1").unwrap();
+        let links = resolve_reminder_links(&db, &[t1.id.clone()]).unwrap();
+        assert!(links.is_empty(), "目标已删除的联动不得返回");
+        assert!(reminder_link_get_inner(&db, &t1.id).unwrap().is_none());
+
+        // 空批次：不查询
+        assert!(resolve_reminder_links(&db, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reminder_link_cleanup_on_target_and_task_delete() {
+        let db = db();
+        let t1 = create(&db, "关联现场", None, None);
+        let t2 = create(&db, "关联场景", None, None);
+        seed_scenario(&db, "sc-1", "深度工作");
+        seed_snapshot(&db, "ws-1", "任务现场 A");
+        reminder_link_set_inner(&db, &t1.id, "workspace", "ws-1").unwrap();
+        reminder_link_set_inner(&db, &t2.id, "scene", "sc-1").unwrap();
+
+        // 删除工作现场：联动同事务清理
+        crate::workspace::delete_snapshot(&db, "ws-1").unwrap();
+        let count: i64 = db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM task_reminder_links WHERE target_kind = 'workspace'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "删除现场必须清理联动");
+
+        // 删除任务：外键级联清理
+        db.with_conn(|c| {
+            c.execute("DELETE FROM tasks WHERE id = ?1", [&t2.id])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let count: i64 = db
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM task_reminder_links", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "删除任务必须级联清理联动");
     }
 }

@@ -16,6 +16,7 @@ import { TabBar, type TabKey } from "./src/components/TabBar";
 import { openDatabase } from "./src/db/database";
 import { getSetting } from "./src/db/kv";
 import { useWindowInsets } from "./src/lib/insets";
+import { rescheduleAllReminders } from "./src/notifications/reminderEngine";
 import { installNotificationHandler } from "./src/notifications/reminders";
 import { InboxScreen } from "./src/screens/InboxScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
@@ -148,6 +149,9 @@ export default function App() {
       try {
         installNotificationHandler();
         await openDatabase();
+        // 启动时对账提醒：系统升级/换时区/被系统清理后，排期可能已经丢失。
+        // 失败不阻塞启动（通知是增强能力，不是打开应用的前提）。
+        void rescheduleAllReminders().catch(() => undefined);
         const stored = await getSetting("theme_mode");
         if (cancelled) return;
         setBoot({ phase: "ready", mode: isThemeMode(stored) ? stored : "system" });

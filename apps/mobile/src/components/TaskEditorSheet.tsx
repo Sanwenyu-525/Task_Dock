@@ -123,7 +123,7 @@ function remindKeyFor(task: Task): RemindKey {
 
 function keepDueLabel(task: Task, now: number): string {
   const formatted = formatDue(task.dueAt, now);
-  return formatted ? `保持 ${formatted}` : "保持原定";
+  return formatted ? `保持 ${formatted.replace("已过期 · ", "")}` : "保持原定";
 }
 
 function keepRemindLabel(task: Task, now: number): string {
@@ -168,16 +168,21 @@ export function TaskEditorSheet({
     setRemindKey("none");
   }, [mode, task, visible]);
 
+  // 「保持原定」是否出现取决于原任务能否被四个相对选项精确表达，而不是取决于当前选中项：
+  // 否则用户点一下「今天」后原值就再也选不回去了。
+  const hasKeepDue = mode === "edit" && task != null && dueKeyFor(task) === "keep";
+  const hasKeepRemind = mode === "edit" && task != null && remindKeyFor(task) === "keep";
+
   const dueOptions = useMemo(() => {
-    if (mode !== "edit" || !task || dueKey !== "keep") return BASE_DUE;
+    if (!hasKeepDue || !task) return BASE_DUE;
     // 文案里的时间只在打开弹层时格式化一次，不需要逐分钟刷新
     return [...BASE_DUE, { key: "keep" as DueKey, label: keepDueLabel(task, Date.now()) }];
-  }, [dueKey, mode, task]);
+  }, [hasKeepDue, task]);
 
   const remindOptions = useMemo(() => {
-    if (mode !== "edit" || !task || remindKey !== "keep") return BASE_REMIND;
+    if (!hasKeepRemind || !task) return BASE_REMIND;
     return [...BASE_REMIND, { key: "keep" as RemindKey, label: keepRemindLabel(task, Date.now()) }];
-  }, [mode, remindKey, task]);
+  }, [hasKeepRemind, task]);
 
   const canSave = title.trim().length > 0;
 
@@ -249,7 +254,7 @@ export function TaskEditorSheet({
           value={title}
           onChangeText={setTitle}
           placeholder="要做什么？"
-          placeholderTextColor={tokens.faint}
+          placeholderTextColor={tokens.muted}
           autoFocus={mode === "create"}
           autoCapitalize="none"
           autoCorrect={false}

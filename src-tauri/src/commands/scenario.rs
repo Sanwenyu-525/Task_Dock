@@ -774,6 +774,11 @@ fn delete_guarded(gate: &ScenarioEnterGate, db: &Db, id: &str, wait: Duration) -
             "UPDATE shelf_items SET scene_id = NULL, updated_at = ?1 WHERE scene_id = ?2",
             params![now_iso(), id],
         )?;
+        // 提醒联动随目标一并清理（v41）：避免通知卡继续出现失效的「进入场景」。
+        tx.execute(
+            "DELETE FROM task_reminder_links WHERE target_kind = 'scene' AND target_id = ?1",
+            params![id],
+        )?;
         Ok(())
     })
 }

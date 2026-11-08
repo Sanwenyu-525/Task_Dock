@@ -111,23 +111,36 @@ async fn tick(app: &AppHandle, db: &Db, hub: &AgentHub) -> AppResult<()> {
     if fired.is_empty() {
         return Ok(());
     }
+    // 提醒联动（v41）：按本 tick 全部 task_id 一次查询关联与目标存在性，避免 N+1。
+    // 目标已删除的条目不返回——通知卡不出现失效的「进入场景 / 恢复现场」动作。
+    // 联动绝不自动执行：这里只把目标附加到通知载荷，启动动作只由用户点击触发。
+    let fired_task_ids: Vec<String> = fired.iter().map(|n| n.task_id.clone()).collect();
+    let links = crate::commands::tasks::resolve_reminder_links(db, &fired_task_ids)?;
     let popups: Vec<NotifyItem> = fired
         .iter()
         .filter(|n| n.popup)
         // ref_id = 任务 id：桌面通知卡据此提供「查看任务 / 稍后提醒 / 完成任务」
         // 真实操作（多条合并为摘要卡时结构化字段自然丢失，按摘要展示，不伪造操作）。
         .map(|n| {
-            NotifyItem::new("reminder", &n.title, &n.body).with_ref(
+            let item = NotifyItem::new("reminder", &n.title, &n.body).with_ref(
                 Some(n.task_id.clone()),
                 None,
                 None,
-            )
+            );
+            match links.get(&n.task_id) {
+                Some(link) => item.with_link(
+                    Some(link.target_kind.clone()),
+                    Some(link.target_id.clone()),
+                    Some(link.label.clone()),
+                ),
+                None => item,
+            }
         })
         .collect();
     if !popups.is_empty() {
         hub.notify_reminder_popups(&popups);
     }
-    let task_ids: Vec<String> = fired.iter().map(|n| n.task_id.clone()).collect();
+    let task_ids: Vec<String> = fired_task_ids;
     // 统一音频服务：只有「仍在过期补偿窗口内」的提醒才出声；
     // 严重过期的旧提醒仍照常入库、推进重复任务与广播刷新，只是不再打扰用户。
     // 是否静音/是否开启 TTS/是否只关桌面通知，由前端按设置统一裁决，不在此过滤 popup。

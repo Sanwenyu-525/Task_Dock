@@ -6,7 +6,6 @@ import {
   createContext,
   useContext,
   useEffect,
-  useMemo,
   useState,
   type ReactNode,
 } from "react";
@@ -17,14 +16,11 @@ export const duration = {
   fast: 140,
   base: 200,
   list: 260,
-  sheet: 300,
   toast: 2400,
 };
 
 /** 标准减速曲线：起步快、收尾稳，适合「进入」类动画 */
 export const easeOut = Easing.bezier(0.22, 0.61, 0.36, 1);
-/** 强调曲线：用于弹层上滑这类需要一点「落定感」的动作 */
-export const easeEmphasis = Easing.bezier(0.16, 1, 0.3, 1);
 
 /** 弹层上滑的弹簧参数（Animated.spring） */
 export const sheetSpring = {
@@ -57,7 +53,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const value = useMemo(() => reduceMotion, [reduceMotion]);
+  const value = reduceMotion;
   return <ReduceMotionContext.Provider value={value}>{children}</ReduceMotionContext.Provider>;
 }
 

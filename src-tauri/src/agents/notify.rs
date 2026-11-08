@@ -56,6 +56,13 @@ pub struct NotifyItem {
     pub session_id: Option<String>,
     /// 事件附带的原因/错误摘要（失败/等待卡展开详情用；不写入通知历史正文）。
     pub detail: Option<String>,
+    /// 任务提醒联动（v41）：目标类型 workspace | scene。
+    /// 通知卡据此提供「进入场景 / 恢复现场」按钮——只在用户显式点击时执行。
+    pub link_kind: Option<String>,
+    /// 联动目标 UUID（scenarios.id 或 workspace_snapshots.id）。
+    pub link_target_id: Option<String>,
+    /// 联动目标当前名称（展示用；解析时目标已删除则三项均为 None）。
+    pub link_label: Option<String>,
 }
 
 impl NotifyItem {
@@ -87,6 +94,19 @@ impl NotifyItem {
         self
     }
 
+    /// 附带任务提醒联动（三项同时为 Some 才生效，保证半填充不出现）。
+    pub fn with_link(
+        mut self,
+        kind: Option<String>,
+        target_id: Option<String>,
+        label: Option<String>,
+    ) -> Self {
+        self.link_kind = kind;
+        self.link_target_id = target_id;
+        self.link_label = label;
+        self
+    }
+
     /// 关键类型（等待/失败/断连）：使用独立的保底弹窗额度，
     /// 不与可合并的普通通知（完成、执行中、提醒）争抢，也不会被它们挤占。
     fn is_critical(&self) -> bool {
@@ -112,10 +132,14 @@ pub struct Popup {
     pub ref_id: Option<String>,
     pub source_id: Option<String>,
     pub session_id: Option<String>,
-    /// 事件原因/错误摘要（仅通知窗口模板使用，不进入 OS toast）。
+    /// 事件原因/错误摘要（仅通知窗口模板使用，不进 OS toast）。
     pub detail: Option<String>,
     /// 受理时间（RFC3339，本地展示「刚刚 / N 分钟前」）。
     pub created_at: String,
+    /// 任务提醒联动（v41）：与 NotifyItem 同名三项，摘要卡不携带。
+    pub link_kind: Option<String>,
+    pub link_target_id: Option<String>,
+    pub link_label: Option<String>,
 }
 
 impl Popup {
@@ -130,6 +154,9 @@ impl Popup {
             session_id: item.session_id.clone(),
             detail: item.detail.clone(),
             created_at,
+            link_kind: item.link_kind.clone(),
+            link_target_id: item.link_target_id.clone(),
+            link_label: item.link_label.clone(),
         }
     }
 
@@ -143,6 +170,9 @@ impl Popup {
             session_id: None,
             detail: None,
             created_at,
+            link_kind: None,
+            link_target_id: None,
+            link_label: None,
         }
     }
 }

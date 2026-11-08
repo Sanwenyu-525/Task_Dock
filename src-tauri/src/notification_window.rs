@@ -97,6 +97,16 @@ pub struct NotificationCardPayload {
     /// 事件原因/错误摘要（失败/等待卡展开详情用；OS toast 不使用）。
     #[serde(rename = "detail", skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// 任务提醒联动（v41）：目标类型 workspace | scene；仅关联过的提醒卡携带。
+    /// 通知卡据此提供「进入场景 / 恢复现场」按钮，点击才执行，绝不自动启动。
+    #[serde(rename = "linkKind", skip_serializing_if = "Option::is_none")]
+    pub link_kind: Option<String>,
+    /// 联动目标 UUID（scenarios.id / workspace_snapshots.id）。
+    #[serde(rename = "linkTargetId", skip_serializing_if = "Option::is_none")]
+    pub link_target_id: Option<String>,
+    /// 联动目标当前名称（进入动作的确认信息用）。
+    #[serde(rename = "linkLabel", skip_serializing_if = "Option::is_none")]
+    pub link_label: Option<String>,
 }
 
 /// 发给通知窗口的一批卡片：`round` 标识本轮批次，前端每次 fit 原样带回；
@@ -119,6 +129,9 @@ impl From<Popup> for NotificationCardPayload {
             session_id: p.session_id,
             ref_id: p.ref_id,
             detail: p.detail,
+            link_kind: p.link_kind,
+            link_target_id: p.link_target_id,
+            link_label: p.link_label,
         }
     }
 }
@@ -135,6 +148,9 @@ impl From<NotificationCardPayload> for Popup {
             session_id: c.session_id,
             detail: c.detail,
             created_at: c.created_at,
+            link_kind: c.link_kind,
+            link_target_id: c.link_target_id,
+            link_label: c.link_label,
         }
     }
 }
@@ -1456,6 +1472,9 @@ mod tests {
             session_id: Some("s1".into()),
             ref_id: Some("r1".into()),
             detail: Some("等待确认发布范围".into()),
+            link_kind: None,
+            link_target_id: None,
+            link_label: None,
         };
         let json = serde_json::to_string(&card).unwrap();
         let back: NotificationCardPayload = serde_json::from_str(&json).unwrap();
@@ -1463,6 +1482,57 @@ mod tests {
         assert!(json.contains("\"createdAt\""));
         assert!(json.contains("\"sourceId\""));
         assert!(json.contains("\"detail\""));
+    }
+
+    #[test]
+    fn reminder_link_fields_survive_snooze_roundtrip() {
+        // v41 提醒联动：snooze 往返后「进入场景/恢复现场」动作不得丢失，
+        // 未关联的卡片则完全不出现 link 字段（旧载荷兼容）。
+        let card = NotificationCardPayload {
+            id: "n2".into(),
+            kind: "reminder".into(),
+            title: "任务提醒".into(),
+            body: "写周报 · 2026-11-08 09:00".into(),
+            created_at: "2026-11-08T01:00:00+00:00".into(),
+            source_id: None,
+            session_id: None,
+            ref_id: Some("task-1".into()),
+            detail: None,
+            link_kind: Some("scene".into()),
+            link_target_id: Some("scene-9".into()),
+            link_label: Some("深度工作".into()),
+        };
+        let json = serde_json::to_string(&card).unwrap();
+        assert!(json.contains("\"linkKind\":\"scene\""));
+        assert!(json.contains("\"linkTargetId\":\"scene-9\""));
+        assert!(json.contains("\"linkLabel\":\"深度工作\""));
+        let popup: Popup = serde_json::from_str::<NotificationCardPayload>(&json)
+            .unwrap()
+            .into();
+        assert_eq!(popup.link_kind.as_deref(), Some("scene"));
+        assert_eq!(popup.link_target_id.as_deref(), Some("scene-9"));
+        assert_eq!(popup.link_label.as_deref(), Some("深度工作"));
+        // 还原回展示卡仍携带（重新展示后动作仍在）
+        let back = NotificationCardPayload::from(popup);
+        assert_eq!(back.link_kind.as_deref(), Some("scene"));
+        assert_eq!(back.link_target_id.as_deref(), Some("scene-9"));
+        assert_eq!(back.link_label.as_deref(), Some("深度工作"));
+
+        // 未关联任务：三个字段全部跳过序列化，前端收不到多余键
+        let plain = NotificationCardPayload {
+            link_kind: None,
+            link_target_id: None,
+            link_label: None,
+            ..card
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("linkKind"));
+        assert!(!json.contains("linkTargetId"));
+        assert!(!json.contains("linkLabel"));
+        let back: NotificationCardPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.link_kind, None);
+        assert_eq!(back.link_target_id, None);
+        assert_eq!(back.link_label, None);
     }
 
     #[test]
@@ -1480,6 +1550,9 @@ mod tests {
                 session_id: None,
                 ref_id: None,
                 detail: Some("签名证书缺失".into()),
+                link_kind: None,
+                link_target_id: None,
+                link_label: None,
             }],
         };
         let json = serde_json::to_string(&batch).unwrap();

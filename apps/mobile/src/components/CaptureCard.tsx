@@ -1,6 +1,6 @@
 // 收集箱卡片：内容为主，时间与两个动作收在底部同一行；动作按钮 44dp 命中区。
 // 转任务/删除后由父级置 exiting，卡片淡出完成后才通知移除，避免列表「整块闪一下」。
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { formatRelative } from "../domain/taskQuery";
@@ -56,6 +56,13 @@ function CaptureCardBase({
     return () => animation.stop();
   }, [enter, entranceIndex, reduceMotion]);
 
+  // 入场动画进行中用户开启「减少动态效果」时立刻落定
+  useEffect(() => {
+    if (!reduceMotion) return;
+    enter.stopAnimation();
+    enter.setValue(1);
+  }, [enter, reduceMotion]);
+
   useEffect(() => {
     if (!exiting) return;
     if (reduceMotion) {
@@ -74,24 +81,28 @@ function CaptureCardBase({
     return () => animation.stop();
   }, [capture.id, exit, exiting, onExited, reduceMotion]);
 
-  const style = {
-    opacity: Animated.multiply(
-      enter,
-      exit.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
-    ),
-    transform: [
-      {
-        translateY: Animated.add(
-          enter.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }),
-          exit.interpolate({ inputRange: [0, 1], outputRange: [0, -6] }),
-        ),
-      },
-      { scale: exit.interpolate({ inputRange: [0, 1], outputRange: [1, 0.98] }) },
-    ],
-  };
+  // 插值节点只在两个动画值上建一次，避免每分钟刷新相对时间时重建动画图
+  const animatedStyle = useMemo(
+    () => ({
+      opacity: Animated.multiply(
+        enter,
+        exit.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+      ),
+      transform: [
+        {
+          translateY: Animated.add(
+            enter.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }),
+            exit.interpolate({ inputRange: [0, 1], outputRange: [0, -6] }),
+          ),
+        },
+        { scale: exit.interpolate({ inputRange: [0, 1], outputRange: [1, 0.98] }) },
+      ],
+    }),
+    [enter, exit],
+  );
 
   return (
-    <Animated.View style={style}>
+    <Animated.View style={animatedStyle}>
       <GlassCard style={styles.card}>
         <Text style={[styles.content, { color: tokens.text }]}>{capture.content}</Text>
         <View style={styles.footer}>
@@ -107,7 +118,10 @@ function CaptureCardBase({
               onPress={() => onPromote(capture)}
               style={({ pressed }) => [
                 styles.action,
-                { backgroundColor: tokens.accentSoft, opacity: pressed ? 0.65 : 1 },
+                {
+                  borderColor: tokens.accentSoft,
+                  opacity: pressed ? 0.65 : 1,
+                },
               ]}
             >
               <Text style={[styles.actionText, { color: tokens.accent }]}>转为任务</Text>
@@ -119,7 +133,10 @@ function CaptureCardBase({
               onPress={() => onDelete(capture)}
               style={({ pressed }) => [
                 styles.action,
-                { backgroundColor: tokens.track, opacity: pressed ? 0.65 : 1 },
+                {
+                  borderColor: tokens.cardBorder,
+                  opacity: pressed ? 0.65 : 1,
+                },
               ]}
             >
               <Text style={[styles.actionText, { color: tokens.danger }]}>删除</Text>
@@ -161,6 +178,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: space.md,
     borderRadius: radius.chip,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   actionText: {
     fontSize: font.meta,

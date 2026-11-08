@@ -151,7 +151,9 @@ export function InboxScreen({
       <View style={styles.header}>
         <View style={styles.titleRow}>
           <View style={styles.titleBlock}>
-            <Text style={[styles.title, { color: tokens.text }]}>收集箱</Text>
+            <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
+              收集箱
+            </Text>
             <Text style={[styles.subtitle, { color: tokens.muted }]}>
               {captures.length > 0
                 ? `${captures.length} 条待整理 · 转成任务后会自动离开这里`
@@ -182,7 +184,7 @@ export function InboxScreen({
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             placeholder="随手记一条：想法、链接、待确认的事…"
-            placeholderTextColor={tokens.faint}
+            placeholderTextColor={tokens.muted}
             multiline
             textAlignVertical="top"
             style={[styles.input, { color: tokens.text }]}

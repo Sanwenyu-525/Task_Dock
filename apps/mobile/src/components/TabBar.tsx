@@ -1,5 +1,6 @@
 // 底部标签栏：选中态用一块会滑动的玻璃胶囊表达，避免每次切换都「闪一下」。
-// 图标沿用现有几何字形，不引入图标库；点击区 ≥ 52dp。
+// 图标用基础 View 画出（同一 1.5dp 线重），不依赖图标库，也不让 Unicode 字形
+// 在不同 ROM 上被渲染成彩色 emoji；点击区 ≥ 52dp。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -9,11 +10,56 @@ import { font, radius, space } from "../theme/tokens";
 
 export type TabKey = "tasks" | "inbox" | "settings";
 
-const TABS: { key: TabKey; label: string; glyph: string }[] = [
-  { key: "tasks", label: "任务", glyph: "☰" },
-  { key: "inbox", label: "收集箱", glyph: "▤" },
-  { key: "settings", label: "设置", glyph: "⚙" },
+const TABS: { key: TabKey; label: string }[] = [
+  { key: "tasks", label: "任务" },
+  { key: "inbox", label: "收集箱" },
+  { key: "settings", label: "设置" },
 ];
+
+/** 线重统一用 1.5，与 hairline 边框形成同一套笔触 */
+const STROKE = 1.5;
+
+function TabIcon({ tab, color }: { tab: TabKey; color: string }) {
+  if (tab === "tasks") {
+    return (
+      <View style={[styles.iconBox, styles.listIcon]}>
+        <View style={[styles.iconLine, { width: 15, backgroundColor: color }]} />
+        <View style={[styles.iconLine, { width: 15, backgroundColor: color }]} />
+        <View style={[styles.iconLine, { width: 9, backgroundColor: color }]} />
+      </View>
+    );
+  }
+
+  if (tab === "inbox") {
+    return (
+      <View style={styles.iconBox}>
+        {/* 两张叠放的卡片：一张后置低透明，读作「收集起来的东西」 */}
+        <View
+          style={[
+            styles.cardBack,
+            { borderColor: color, opacity: 0.45 },
+          ]}
+        />
+        <View style={[styles.cardFront, { borderColor: color }]} />
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.iconBox, styles.sliders]}>
+      <View style={styles.sliderRow}>
+        <View style={[styles.sliderLine, { width: 4, backgroundColor: color }]} />
+        <View style={[styles.sliderKnob, { backgroundColor: color }]} />
+        <View style={[styles.sliderLine, styles.sliderLineGrow, { backgroundColor: color }]} />
+      </View>
+      <View style={styles.sliderRow}>
+        <View style={[styles.sliderLine, styles.sliderLineGrow, { backgroundColor: color }]} />
+        <View style={[styles.sliderKnob, { backgroundColor: color }]} />
+        <View style={[styles.sliderLine, { width: 4, backgroundColor: color }]} />
+      </View>
+    </View>
+  );
+}
 
 export function TabBar({
   active,
@@ -84,6 +130,7 @@ export function TabBar({
         ) : null}
         {TABS.map((tab) => {
           const selected = tab.key === active;
+          const color = selected ? tokens.accent : tokens.muted;
           return (
             <Pressable
               key={tab.key}
@@ -94,14 +141,12 @@ export function TabBar({
               onPress={() => onChange(tab.key)}
               style={({ pressed }) => [styles.item, { opacity: pressed ? 0.7 : 1 }]}
             >
-              <Text style={[styles.glyph, { color: selected ? tokens.accent : tokens.muted }]}>
-                {tab.glyph}
-              </Text>
+              <TabIcon tab={tab.key} color={color} />
               <Text
                 numberOfLines={1}
                 style={[
                   styles.label,
-                  { color: selected ? tokens.accent : tokens.muted },
+                  { color },
                   selected ? styles.labelActive : null,
                 ]}
               >
@@ -138,11 +183,63 @@ const styles = StyleSheet.create({
     minHeight: 52,
     alignItems: "center",
     justifyContent: "center",
-    gap: 2,
+    gap: 3,
   },
-  glyph: {
-    fontSize: 17,
-    lineHeight: 20,
+  iconBox: {
+    width: 18,
+    height: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  iconLine: {
+    height: STROKE,
+    borderRadius: 1,
+    marginVertical: 1.75,
+  },
+  listIcon: {
+    alignItems: "flex-start",
+    paddingLeft: 1.5,
+  },
+  cardBack: {
+    position: "absolute",
+    left: 4.5,
+    top: 1.5,
+    width: 10,
+    height: 12,
+    borderRadius: 2.5,
+    borderWidth: STROKE,
+  },
+  cardFront: {
+    position: "absolute",
+    left: 2.5,
+    top: 4.5,
+    width: 13,
+    height: 11,
+    borderRadius: 2.5,
+    borderWidth: STROKE,
+  },
+  sliders: {
+    justifyContent: "center",
+    gap: 5,
+  },
+  sliderRow: {
+    width: 15,
+    height: 4.5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 1.5,
+  },
+  sliderLine: {
+    height: STROKE,
+    borderRadius: 1,
+  },
+  sliderLineGrow: {
+    flex: 1,
+  },
+  sliderKnob: {
+    width: 4.5,
+    height: 4.5,
+    borderRadius: 2.5,
   },
   label: {
     fontSize: font.label,

@@ -1,5 +1,5 @@
 // 任务行：完成态用「勾选弹入 + 标题删除线渐显 + 文字变弱」表达，不做瞬间切换；
-// 向左滑出即露出红色删除底，长按打开动作表。行内容与动画都留在本组件内，
+// 左右滑动都露出红色删除底，长按打开动作表。行内容与动画都留在本组件内，
 // 列表只负责给数据与回调，避免父级每次刷新都重建行组件。
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
@@ -45,6 +45,8 @@ function TaskRowBase({
   const appeared = useRef(false);
   const progress = useRef(new Animated.Value(done ? 1 : 0)).current;
   const pop = useRef(new Animated.Value(1)).current;
+  // 记录上一次完成态：只有"从未完成变成完成"才弹入，避免已完成行滚动复用时反复弹跳
+  const previousDone = useRef(done);
 
   // 入场的 delay 由行序号决定；只跑一次，避免父级刷新（每分钟 now 变化）时重播
   useEffect(() => {
@@ -65,7 +67,17 @@ function TaskRowBase({
     return () => animation.stop();
   }, [enter, entranceIndex, reduceMotion]);
 
+  // 入场动画进行中用户开启「减少动态效果」时立刻落定，不能让残留位移继续播放
   useEffect(() => {
+    if (!reduceMotion) return;
+    enter.stopAnimation();
+    enter.setValue(1);
+  }, [enter, reduceMotion]);
+
+  useEffect(() => {
+    const justCompleted = done && !previousDone.current;
+    previousDone.current = done;
+
     if (reduceMotion) {
       progress.setValue(done ? 1 : 0);
       pop.setValue(1);
@@ -78,11 +90,10 @@ function TaskRowBase({
       useNativeDriver: false,
     });
     fade.start();
-    if (!done) {
-      pop.setValue(1);
+    if (!justCompleted) {
       return () => fade.stop();
     }
-    // 勾选弹入：从略小回弹到原尺寸，只在这一刻播放，恢复待办时不回弹
+    // 勾选弹入：从略小回弹到原尺寸，只在刚完成的那一刻播放
     pop.setValue(0.82);
     const bounce = Animated.spring(pop, {
       toValue: 1,
@@ -114,9 +125,9 @@ function TaskRowBase({
     () =>
       progress.interpolate({
         inputRange: [0, 1],
-        outputRange: [tokens.faint, tokens.ok],
+        outputRange: [tokens.muted, tokens.ok],
       }),
-    [progress, tokens.faint, tokens.ok],
+    [progress, tokens.muted, tokens.ok],
   );
   const checkBackground = useMemo(
     () =>
@@ -179,8 +190,8 @@ function TaskRowBase({
             accessibilityLabel={`任务：${task.title}${done ? "，已完成" : ""}`}
             accessibilityHint={
               done
-                ? "轻点恢复为待办，长按打开更多操作，向左滑动可删除"
-                : "轻点标记完成，长按打开更多操作，向左滑动可删除"
+                ? "轻点恢复为待办，长按打开更多操作，左右滑动可删除"
+                : "轻点标记完成，长按打开更多操作，左右滑动可删除"
             }
             accessibilityState={{ checked: done }}
             accessibilityActions={[{ name: "longpress", label: "打开任务操作" }]}
@@ -203,7 +214,9 @@ function TaskRowBase({
                   },
                 ]}
               >
-                <Animated.Text style={[styles.checkMark, markStyle]}>✓</Animated.Text>
+                <Animated.Text style={[styles.checkMark, { color: tokens.onOk }, markStyle]}>
+                  ✓
+                </Animated.Text>
               </Animated.View>
             </View>
 
@@ -242,6 +255,13 @@ function TaskRowBase({
                 {due ? (
                   <Text style={[styles.metaText, { color: overdue ? tokens.danger : tokens.muted }]}>
                     {due}
+                  </Text>
+                ) : null}
+
+                {/* 提醒时间与截止时间相同（旧版新建逻辑会这样写）时不重复展示 */}
+                {!done && task.remindAt != null && task.remindAt > now && task.remindAt !== task.dueAt ? (
+                  <Text style={[styles.metaText, { color: tokens.muted }]}>
+                    提醒 {formatDue(task.remindAt, now)}
                   </Text>
                 ) : null}
 
@@ -285,7 +305,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   checkMark: {
-    color: "#FFFFFF",
     fontSize: 13,
     fontWeight: "700",
     lineHeight: 16,
@@ -296,17 +315,20 @@ const styles = StyleSheet.create({
   },
   titleWrap: {
     position: "relative",
+    // 让标题按内容宽度收缩：删除线只划在文字上，而不是整行横线
+    alignItems: "flex-start",
   },
   title: {
     fontSize: font.title,
     fontWeight: "500",
     lineHeight: 21,
+    maxWidth: "100%",
   },
   strike: {
     position: "absolute",
     top: 0,
     left: 0,
-    right: 0,
+    maxWidth: "100%",
     color: "transparent",
     textDecorationLine: "line-through",
   },

@@ -37,7 +37,9 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   const { tokens } = useTheme();
   return (
     <GlassCard style={styles.section}>
-      <Text style={[styles.sectionTitle, { color: tokens.text }]}>{title}</Text>
+      <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.text }]}>
+        {title}
+      </Text>
       {children}
     </GlassCard>
   );
@@ -147,7 +149,9 @@ export function SettingsScreen() {
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.titleBlock}>
-          <Text style={[styles.title, { color: tokens.text }]}>设置</Text>
+          <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
+            设置
+          </Text>
           <Text style={[styles.subtitle, { color: tokens.muted }]}>外观、提醒与本地数据</Text>
         </View>
 
@@ -194,10 +198,10 @@ export function SettingsScreen() {
             </View>
           </View>
 
-          {tone !== "ok" ? (
+          {tone === "warn" ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="开启通知权限"
+              accessibilityLabel="请求通知权限"
               accessibilityHint="请求系统通知权限，用于任务提醒"
               onPress={() => void requestPermission()}
               style={({ pressed }) => [
@@ -205,9 +209,7 @@ export function SettingsScreen() {
                 { backgroundColor: tokens.accentFill, opacity: pressed ? 0.8 : 1 },
               ]}
             >
-              <Text style={[styles.primaryText, { color: tokens.onAccent }]}>
-                {tone === "danger" ? "去系统设置开启" : "开启通知权限"}
-              </Text>
+              <Text style={[styles.primaryText, { color: tokens.onAccent }]}>开启通知权限</Text>
             </Pressable>
           ) : null}
 
@@ -222,6 +224,11 @@ export function SettingsScreen() {
           >
             <Text style={[styles.ghostText, { color: tokens.accent }]}>发送测试通知</Text>
           </Pressable>
+          {tone === "danger" ? (
+            <Text style={[styles.hint, { color: tokens.danger }]}>
+              系统已不再弹出授权框：请到「设置 → 应用 → TaskDock → 通知」手动开启。
+            </Text>
+          ) : null}
           <Text style={[styles.hint, { color: tokens.muted }]}>
             提醒使用系统本地通知，不依赖桌面端；权限关闭时任务照常保存，只是到点不提醒。
           </Text>

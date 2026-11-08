@@ -12866,6 +12866,68 @@ html[data-theme="dark"] .resource-page {
 @media (hover: none) {
   .cap-app-del { opacity: 1; pointer-events: auto; }
 }
+/* 运行中状态点：36px 图标片右下角 9px 实心点，绝对定位不占布局、不改格子
+   尺寸。颜色用语义 Token（与完整面板徽标同源 success），分隔描边用面板底色，
+   深浅主题都由 Token 承担，不硬编码颜色。 */
+.cap-app-dot {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--status-success);
+  box-shadow: 0 0 0 2px var(--cap-panel-base);
+}
+/* 运行中快捷区：chip 内主区（点击=聚焦）与动作按钮（关闭窗口/退出应用）并列。
+   容器沿用 cap-recent-chip 的胶囊外观；主区用透明按钮承载截断省略，动作按钮
+   20px 热区、语义 Token 配色，与磁贴删除入口同一套可见性纪律。 */
+/* 两列等宽网格：chip 宽度不随名称长短变化，多行上下对齐；奇数个时末格留空，
+   仍是整齐的两列节奏。列表覆写 flex 布局需双类名提高优先级。 */
+.cap-recent-list.cap-run-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+}
+.cap-run-chip { gap: 2px; padding-right: 4px; }
+.cap-run-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.cap-run-main .cap-run-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cap-run-main:hover { color: var(--cap-text-1); }
+.cap-run-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; box-shadow: none; }
+.cap-chip-btn {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cap-text-2);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.cap-chip-btn:hover { background: var(--cap-card-face-hover); color: var(--cap-text-1); }
+.cap-chip-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.cap-chip-btn:disabled { opacity: 0.4; pointer-events: none; }
 /* 「添加应用」入口：与普通网格项同尺寸承接触点；视觉容器是与应用图标同尺度的
    34px 圆角方框，只有常显 1px 细轮廓 + 居中加号，不铺底色、不投外阴影。 */
 .cap-app-add {

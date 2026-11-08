@@ -500,6 +500,62 @@ pub fn request_processes_quit(pids: &[u32]) -> QuitProcessesReport {
     request_processes_quit_impl(pids)
 }
 
+/// UWP 目标（AUMID 形如 `Family!App`）的包族名；非 UWP 键返回 None。
+/// 打包应用的进程 exe 路径必含包族名（`...\WindowsApps\<family>\...`），
+/// 因此族名可用于窗口与进程的身份匹配——这是 UWP 目标唯一的 exe 之外身份。
+pub(crate) fn uwp_family(key: &str) -> Option<String> {
+    let family = key.split('!').next()?.trim();
+    if family.is_empty() || !key.contains('!') {
+        return None;
+    }
+    Some(family.to_ascii_lowercase())
+}
+
+/// 纯函数：判定一组窗口各自是否属于给定 UWP 包族名（窗口 exe 路径包含族名，
+/// 大小写不敏感——正常数据已小写，这里兜底防调用方传入原始大小写）。
+pub(crate) fn windows_hit_families(
+    windows: &[WindowInfo],
+    families: &[String],
+) -> std::collections::HashMap<String, bool> {
+    let mut out: std::collections::HashMap<String, bool> = families
+        .iter()
+        .map(|f| (f.trim().to_ascii_lowercase(), false))
+        .collect();
+    for w in windows {
+        if let Some(exe) = &w.exe_path {
+            let exe = exe.to_ascii_lowercase();
+            for (family, hit) in out.iter_mut() {
+                if !*hit && exe.contains(family.as_str()) {
+                    *hit = true;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 按 UWP 包族名找窗口（窗口 exe 路径包含族名，即该打包应用当前可见的窗口）。
+pub fn windows_for_family(family: &str) -> Vec<WindowInfo> {
+    let family = family.trim().to_ascii_lowercase();
+    if family.is_empty() {
+        return Vec::new();
+    }
+    top_windows_force()
+        .into_iter()
+        .filter(|w| {
+            w.exe_path
+                .as_deref()
+                .is_some_and(|exe| exe.contains(&family))
+        })
+        .collect()
+}
+
+/// 给定 PID 集合并入其全部子进程后的去重升序集合。
+/// UWP 目标没有 exe 身份，只能从窗口 PID 出发按进程树扩展操作对象。
+pub fn pids_with_descendants(pids: &[u32]) -> Vec<u32> {
+    pids_with_descendants_impl(pids)
+}
+
 /// exe 路径查询（按 PID；查询失败返回 None，绝不猜测）。
 pub fn exe_path_of(pid: u32) -> Option<String> {
     exe_path_of_pid(pid)
@@ -953,6 +1009,24 @@ mod imp {
             return out;
         }
         let windows = enumerate_now();
+        // UWP 目标没有 exe 身份：按包族名匹配窗口 exe 路径（打包应用路径必含族名）
+        let uwp: Vec<(String, String)> = exe_keys
+            .iter()
+            .filter_map(|k| {
+                uwp_family(k).map(|f| (k.trim().to_ascii_lowercase(), f))
+            })
+            .collect();
+        if !uwp.is_empty() {
+            let families: Vec<String> = uwp.iter().map(|(_, f)| f.clone()).collect();
+            let hits = windows_hit_families(&windows, &families);
+            for (lower_key, family) in &uwp {
+                if hits.get(family).copied().unwrap_or(false) {
+                    if let Some(hit) = out.get_mut(lower_key) {
+                        *hit = true;
+                    }
+                }
+            }
+        }
         let parents = process_parent_map();
         // 祖先 exe 查询带记忆化：多个窗口共享祖先链，避免重复 OpenProcess
         let mut exe_cache: std::collections::HashMap<u32, Option<String>> =
@@ -1105,6 +1179,25 @@ mod imp {
             posted_threads,
         }
     }
+
+    pub(super) fn pids_with_descendants_impl(pids: &[u32]) -> Vec<u32> {
+        let self_pid = std::process::id();
+        let mut out: HashSet<u32> = HashSet::new();
+        for &pid in pids {
+            if pid == 0 || pid == self_pid {
+                continue;
+            }
+            out.insert(pid);
+            for child in descendant_pids(pid) {
+                if child != self_pid {
+                    out.insert(child);
+                }
+            }
+        }
+        let mut sorted: Vec<u32> = out.into_iter().collect();
+        sorted.sort_unstable();
+        sorted
+    }
 }
 
 // ── 非 Windows 桩 ───────────────────────────────────────────
@@ -1159,12 +1252,19 @@ mod imp {
             posted_threads: 0,
         }
     }
+    pub(super) fn pids_with_descendants_impl(pids: &[u32]) -> Vec<u32> {
+        let mut sorted: Vec<u32> = pids.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        sorted
+    }
 }
 
 use imp::{
     close_windows_impl, descendant_pids, enumerate_now, exe_path_of_pid, focus_window_impl,
-    identity_has_window_impl, identity_pids, kill_processes_impl, post_quit_threads_impl,
-    request_processes_quit_impl, threads_of_pids_impl, wait_processes_exit_impl,
+    identity_has_window_impl, identity_pids, kill_processes_impl, pids_with_descendants_impl,
+    post_quit_threads_impl, request_processes_quit_impl, threads_of_pids_impl,
+    wait_processes_exit_impl,
 };
 
 #[cfg(test)]
@@ -1413,6 +1513,38 @@ mod tests {
         // 清理：强杀子进程，避免测试残留 30s
         let _ = kill_processes(&[pid]);
         let _ = child.wait();
+    }
+
+    #[test]
+    fn uwp_family_parses_aumid_and_rejects_non_uwp() {
+        assert_eq!(
+            uwp_family("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App").as_deref(),
+            Some("microsoft.windowsterminal_8wekyb3d8bbwe")
+        );
+        assert_eq!(uwp_family("OpenAI.Codex_2p2nqsd0c76g0!App").as_deref(), Some("openai.codex_2p2nqsd0c76g0"));
+        // 非 UWP：没有 '!' 不算包身份
+        assert_eq!(uwp_family("c:\\program files\\kugou\\kugou.exe"), None);
+        assert_eq!(uwp_family("!App"), None, "族名不能为空");
+    }
+
+    #[test]
+    fn windows_hit_families_matches_by_exe_path_containment() {
+        let windows = vec![
+            win_at(
+                1,
+                101,
+                "终端",
+                Some("C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_8wekyb3d8bbwe\\WindowsTerminal.exe"),
+            ),
+            win_at(2, 102, "记事本", Some("c:\\windows\\notepad.exe")),
+        ];
+        let families = vec![
+            "microsoft.windowsterminal_8wekyb3d8bbwe".to_string(),
+            "openai.codex_2p2nqsd0c76g0".to_string(),
+        ];
+        let out = windows_hit_families(&windows, &families);
+        assert!(out["microsoft.windowsterminal_8wekyb3d8bbwe"], "打包应用窗口应按族名命中");
+        assert!(!out["openai.codex_2p2nqsd0c76g0"], "未运行的包不得误报");
     }
 
     #[cfg(windows)]

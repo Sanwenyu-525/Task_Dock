@@ -1,7 +1,7 @@
 // 筛选/选项芯片：选中态用背景色与文字色的插值过渡，避免整块瞬间跳变。
 // 底色用 accentFill 而不是 accent：胶囊里是白字，必须守住 4.5:1。
 import { useEffect, useMemo, useRef } from "react";
-import { Animated, Pressable, StyleSheet, type StyleProp, type ViewStyle } from "react-native";
+import { Animated, Pressable, StyleSheet } from "react-native";
 
 import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
@@ -14,7 +14,6 @@ export function Chip({
   accessibilityLabel,
   accessibilityHint,
   disabled = false,
-  style,
 }: {
   label: string;
   active: boolean;
@@ -22,7 +21,6 @@ export function Chip({
   accessibilityLabel?: string;
   accessibilityHint?: string;
   disabled?: boolean;
-  style?: StyleProp<ViewStyle>;
 }) {
   const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
@@ -80,9 +78,7 @@ export function Chip({
       hitSlop={{ top: 5, bottom: 5, left: 2, right: 2 }}
       style={({ pressed }) => [styles.press, { opacity: disabled ? 0.45 : pressed ? 0.82 : 1 }]}
     >
-      <Animated.View
-        style={[styles.chip, { backgroundColor: background, borderColor: border }, style]}
-      >
+      <Animated.View style={[styles.chip, { backgroundColor: background, borderColor: border }]}>
         <Animated.Text style={[styles.label, { color }]} numberOfLines={1}>
           {label}
         </Animated.Text>

@@ -10,10 +10,11 @@
 //! - 搜索框做的是对已加载目标的本地过滤（真实可用），不是装饰；
 //! - 启动失败如实提示后端返回的 `reason`，不显示「已启动」。
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Eye, LayoutGrid, Loader2, Plus, Search, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Eye, LayoutGrid, Loader2, Plus, Power, Search, SquareX, X } from "lucide-react";
 import {
-  navDeleteTarget, navNavigate, navUpdateTarget, avatarHue, resultMessage, type NavTarget,
+  navCloseTargetWindows, navDeleteTarget, navNavigate, navQuitTargetProcesses,
+  navTargetRunningStates, navUpdateTarget, avatarHue, resultMessage, type NavTarget,
 } from "../../lib/navigation";
 import { normalizeError } from "../../lib/errors";
 import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
@@ -64,6 +65,16 @@ export default function AppsLite() {
   const [launchingIds, setLaunchingIds] = useState<ReadonlySet<string>>(new Set());
   /** 同步锁：setState 到重渲染之间仍可能连点，用 ref 保证同一目标只发一次请求。 */
   const launchingRef = useRef<Set<string>>(new Set());
+  /** 运行态快照（与完整应用中心同源命令）：驱动磁贴状态点与「运行中」快捷区。
+      按需查询不轮询；查询失败保持旧值静默降级（无点无快捷区），不用错误打扰小面板。 */
+  const [runningStates, setRunningStates] = useState<Record<string, string>>({});
+  /** 关闭窗口的在途目标：与 launchingIds 同一套防重入纪律。 */
+  const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(new Set());
+  const closingRef = useRef<Set<string>>(new Set());
+  /** 请求退出（WM_QUIT）同一时刻只允许一个在途。 */
+  const [quitBusy, setQuitBusy] = useState(false);
+  /** 启动后的运行态补查定时器：卸载即清，非常驻轮询。 */
+  const stateRecheckTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   /** 用户手动网格顺序（含加号伪 id）；null = 使用自然顺序。 */
   const [savedOrder, setSavedOrder] = useState<string[] | null>(() => readAppGridOrder());
   const [dragId, setDragId] = useState<string | null>(null);
@@ -103,6 +114,8 @@ export default function AppsLite() {
     return () => {
       if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
       noticeTimer.current = null;
+      for (const t of stateRecheckTimers.current) window.clearTimeout(t);
+      stateRecheckTimers.current = [];
     };
   }, []);
 
@@ -216,6 +229,48 @@ export default function AppsLite() {
     [fullGrid, matchedIds],
   );
 
+  /** 运行态快照查询：与完整应用中心同一命令、同一口径（后端按 exe 身份 +
+      祖先链判定），面板打开时查一次，启动/关闭/退出后刷新。 */
+  const fetchRunningStates = useCallback(async () => {
+    const ids = visible.filter((t) => t.target_type === "application").map((t) => t.id);
+    if (ids.length === 0) {
+      setRunningStates({});
+      return;
+    }
+    try {
+      setRunningStates(await navTargetRunningStates(ids));
+    } catch {
+      // 小面板不弹错误：状态属于增强信息，失败时保持旧值（无点无快捷区）。
+    }
+  }, [visible]);
+
+  // 面板挂载查一次运行态（targetsLoaded 后 visible 才有意义；已加载时立即可查）。
+  useEffect(() => {
+    if (targetsLoaded) void fetchRunningStates();
+  }, [targetsLoaded, fetchRunningStates]);
+
+  // 面板展开期间每 10s 刷新一次运行态：托盘驻留应用在外部被频繁开关，
+  // 只靠挂载时查一次会越放越陈旧（对不上系统托盘）。单一定时器、卸载即清
+  // （面板收起即卸载），不产生重复轮询，也不在面板关闭后继续跑。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void fetchRunningStates();
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [fetchRunningStates]);
+
+  /** 慢启动补查：后端启动确认最多等 5s，酷狗类应用窗口常晚于返回出现，
+      2.5s / 6s 两次单发补查让状态点与「运行中」区跟上真实情况。 */
+  const scheduleStateRecheck = useCallback(() => {
+    for (const delay of [2500, 6000]) {
+      const timer = setTimeout(() => {
+        stateRecheckTimers.current = stateRecheckTimers.current.filter((x) => x !== timer);
+        void fetchRunningStates();
+      }, delay);
+      stateRecheckTimers.current.push(timer);
+    }
+  }, [fetchRunningStates]);
+
   /** 启动状态按 id 记录：不同应用互不阻塞，同一应用在途时忽略重复请求。 */
   const markLaunching = (id: string, on: boolean) => {
     const next = new Set(launchingRef.current);
@@ -223,6 +278,14 @@ export default function AppsLite() {
     else next.delete(id);
     launchingRef.current = next;
     setLaunchingIds(next);
+  };
+
+  const markClosing = (id: string, on: boolean) => {
+    const next = new Set(closingRef.current);
+    if (on) next.add(id);
+    else next.delete(id);
+    closingRef.current = next;
+    setClosingIds(next);
   };
 
   const launch = async (id: string, name: string) => {
@@ -240,6 +303,8 @@ export default function AppsLite() {
         // 成功后刷新共享目标，让网格的「最近使用优先」排序反映真实后端计数。
         // 刷新失败只影响排序展示，不能把已成功的启动说成失败（错误由共享 store 记录）。
         void loadTargets(true);
+        // 窗口可能晚于启动返回出现：补查让状态点与「运行中」区跟上真实状态。
+        scheduleStateRecheck();
       }
     } catch (e) {
       flash(`${name}：${launchFailureReason(e)}`);
@@ -359,6 +424,62 @@ export default function AppsLite() {
       setRestoreBusyId(null);
     }
   };
+
+  /** 优雅关闭该应用的全部顶层窗口（WM_CLOSE）：与完整面板卡片按钮同一命令；
+      应用弹「是否保存」时窗口仍在，按结果如实提示。 */
+  const closeWindow = async (t: NavTarget) => {
+    if (closingRef.current.has(t.id)) return;
+    markClosing(t.id, true);
+    try {
+      const r = await navCloseTargetWindows(t.id);
+      if (r.requested === 0) {
+        flash(`「${t.display_name}」当前没有打开的窗口`);
+      } else if (r.stillOpen.length > 0) {
+        flash(`「${t.display_name}」还有 ${r.stillOpen.length} 个窗口未关闭（可能在等待确认）`);
+      } else {
+        flash(`已关闭「${t.display_name}」的 ${r.closed} 个窗口`);
+      }
+      await fetchRunningStates();
+    } catch (e) {
+      const err = normalizeError(e, "nav_close_target_windows");
+      flash(`关闭「${t.display_name}」的窗口失败：${err.reason || err.message || "未知错误"}`);
+    } finally {
+      markClosing(t.id, false);
+    }
+  };
+
+  /** 请求应用自行退出（向其线程投递 WM_QUIT，等价托盘「退出」）：应用走自己的
+      保存/清理/移除托盘路径；不配合的如实报未完全退出，引导到完整面板强杀。 */
+  const quitApp = async (t: NavTarget) => {
+    if (quitBusy) return;
+    setQuitBusy(true);
+    try {
+      const r = await navQuitTargetProcesses(t.id);
+      if (r.processTotal === 0) {
+        flash(`「${t.display_name}」当前没有在运行的进程`);
+      } else if (r.processExited < r.processTotal) {
+        flash(`「${t.display_name}」未完全退出（${r.processExited}/${r.processTotal}），可到完整面板使用结束进程`);
+      } else {
+        flash(`已退出「${t.display_name}」`);
+      }
+      await fetchRunningStates();
+    } catch (e) {
+      const err = normalizeError(e, "nav_quit_target_processes");
+      flash(`退出「${t.display_name}」失败：${err.reason || err.message || "未知错误"}`);
+    } finally {
+      setQuitBusy(false);
+    }
+  };
+
+  /** 运行中的应用（has_window 或仅后台进程）：驱动磁贴状态点与「运行中」快捷区。
+      只认真实快照，unavailable（配置失效）不算运行中。 */
+  const runningApps = useMemo(
+    () =>
+      visible.filter(
+        (t) => runningStates[t.id] === "has_window" || runningStates[t.id] === "process_only",
+      ),
+    [visible, runningStates],
+  );
 
   // ── 网格排序（应用 + 加号共用）──────────────────────────────
   // 只用原生 HTML5 拖放与键盘移动，不引入拖拽库，也不把加号做成绝对定位浮层。
@@ -653,6 +774,9 @@ export default function AppsLite() {
                   >
                     <span className="cap-app-icon">
                       <AppIcon targetId={t.id} name={t.display_name} size={34} />
+                      {runningStates[t.id] === "has_window" && (
+                        <i className="cap-app-dot" aria-hidden="true" />
+                      )}
                       {busy && (
                         <Loader2
                           size={17}
@@ -677,6 +801,55 @@ export default function AppsLite() {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* 运行中快捷区：关闭窗口（优雅）与退出应用（WM_QUIT）一键直达；
+            结束进程是破坏性动作，保留在完整面板的 ⋯ 菜单（确认弹窗后）。 */}
+        {targetsLoaded && !loadFailedFresh && runningApps.length > 0 && (
+          <div className="cap-recent" data-testid="running-list">
+            <span className="cap-recent-title">运行中（{runningApps.length}）</span>
+            <span className="cap-recent-list cap-run-list">
+              {runningApps.map((t) => {
+                const hasWindow = runningStates[t.id] === "has_window";
+                return (
+                  <span key={t.id} className="cap-recent-chip cap-run-chip">
+                    <button
+                      type="button"
+                      className="cap-run-main"
+                      aria-label={`启动或聚焦 ${t.display_name}`}
+                      disabled={launchingIds.has(t.id)}
+                      onClick={() => void launch(t.id, t.display_name)}
+                    >
+                      <AppIcon targetId={t.id} name={t.display_name} size={16} />
+                      <span className="cap-run-name">{t.display_name}</span>
+                    </button>
+                    {hasWindow && (
+                      <button
+                        type="button"
+                        className="cap-chip-btn"
+                        data-tip="关闭窗口"
+                        aria-label={`关闭 ${t.display_name} 的窗口`}
+                        disabled={closingIds.has(t.id)}
+                        onClick={() => void closeWindow(t)}
+                      >
+                        <SquareX size={12} aria-hidden="true" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="cap-chip-btn"
+                      data-tip="退出应用"
+                      aria-label={`退出 ${t.display_name}`}
+                      disabled={quitBusy}
+                      onClick={() => void quitApp(t)}
+                    >
+                      <Power size={12} aria-hidden="true" />
+                    </button>
+                  </span>
+                );
+              })}
+            </span>
           </div>
         )}
 

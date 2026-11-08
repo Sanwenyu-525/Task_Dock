@@ -518,6 +518,52 @@ pub fn running_states_by_id(
     Ok(out)
 }
 
+/// 校验目标可执行关闭/退出/结束动作：仅 application；exe 身份与 UWP 包族名
+/// 至少有其一，否则无法定位任何窗口或进程。
+fn validate_actionable(t: &NavTargetRow, verb: &str) -> AppResult<()> {
+    if t.target_type != "application" {
+        return Err(AppError::Validation(format!("仅支持{verb}应用目标")));
+    }
+    if t.exe_path.trim().is_empty() && super::window_manager::uwp_family(&t.app_key).is_none() {
+        return Err(AppError::Validation(
+            "该目标没有 exe 或包身份，无法定位".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 目标的候选窗口：exe 身份按进程树匹配（含 title_hint 收窄）；UWP 按包族名
+/// 匹配可见窗口（打包应用 exe 路径必含族名）。每次现查（HWND 易变）。
+fn windows_of_target(t: &NavTargetRow) -> Vec<super::window_manager::WindowInfo> {
+    if !t.exe_path.trim().is_empty() {
+        let hint = if t.window_title_hint.trim().is_empty() {
+            None
+        } else {
+            Some(t.window_title_hint.as_str())
+        };
+        return super::window_manager::windows_for_identity(t.exe_path.trim(), hint);
+    }
+    match super::window_manager::uwp_family(&t.app_key) {
+        Some(family) => super::window_manager::windows_for_family(&family),
+        None => Vec::new(),
+    }
+}
+
+/// 目标的操作进程集合：exe 身份按身份进程树（覆盖无窗口的后台进程）；
+/// UWP 从可见窗口 PID 出发并入子进程树（UWP 无 exe 身份可扫）。
+/// 本进程与 0 号 PID 由底层剔除。
+fn action_pids(t: &NavTargetRow) -> Vec<u32> {
+    if !t.exe_path.trim().is_empty() {
+        return super::window_manager::pids_for_identity(t.exe_path.trim());
+    }
+    let windows = windows_of_target(t);
+    if windows.is_empty() {
+        return Vec::new();
+    }
+    let window_pids: Vec<u32> = windows.iter().map(|w| w.pid).collect();
+    super::window_manager::pids_with_descendants(&window_pids)
+}
+
 /// 按目标身份优雅关闭其全部顶层窗口（WM_CLOSE，等价用户点标题栏 ×，不结束进程）。
 ///
 /// 返回 (候选窗口数, 已关闭数, 仍打开的窗口标题)；仍打开的典型原因是应用弹出
@@ -530,21 +576,8 @@ pub fn close_windows_for_target(
     let t = get_target(db, target_id)?.ok_or_else(|| AppError::NotFound(format!(
         "导航目标 {target_id} 不存在"
     )))?;
-    if t.target_type != "application" {
-        return Err(AppError::Validation("仅支持关闭应用目标的窗口".into()));
-    }
-    if t.exe_path.trim().is_empty() {
-        // UWP 目标只有 AUMID 身份，没有可执行路径，无法按进程身份定位窗口
-        return Err(AppError::Validation(
-            "该目标没有 exe 身份，无法定位窗口".into(),
-        ));
-    }
-    let hint = if t.window_title_hint.trim().is_empty() {
-        None
-    } else {
-        Some(t.window_title_hint.as_str())
-    };
-    let windows = super::window_manager::windows_for_identity(t.exe_path.trim(), hint);
+    validate_actionable(&t, "关闭")?;
+    let windows = windows_of_target(&t);
     let requested = windows.len();
     if requested == 0 {
         return Ok((0, 0, Vec::new()));
@@ -566,15 +599,8 @@ pub fn kill_target_processes(db: &Db, target_id: &str) -> AppResult<(usize, usiz
     let t = get_target(db, target_id)?.ok_or_else(|| AppError::NotFound(format!(
         "导航目标 {target_id} 不存在"
     )))?;
-    if t.target_type != "application" {
-        return Err(AppError::Validation("仅支持结束应用目标的进程".into()));
-    }
-    if t.exe_path.trim().is_empty() {
-        return Err(AppError::Validation(
-            "该目标没有 exe 身份，无法定位进程".into(),
-        ));
-    }
-    let pids = super::window_manager::pids_for_identity(t.exe_path.trim());
+    validate_actionable(&t, "结束")?;
+    let pids = action_pids(&t);
     let matched = pids.len();
     if matched == 0 {
         return Ok((0, 0, Vec::new()));
@@ -599,15 +625,8 @@ pub fn quit_target_processes(
     let t = get_target(db, target_id)?.ok_or_else(|| AppError::NotFound(format!(
         "导航目标 {target_id} 不存在"
     )))?;
-    if t.target_type != "application" {
-        return Err(AppError::Validation("仅支持退出应用目标的进程".into()));
-    }
-    if t.exe_path.trim().is_empty() {
-        return Err(AppError::Validation(
-            "该目标没有 exe 身份，无法定位进程".into(),
-        ));
-    }
-    let pids = super::window_manager::pids_for_identity(t.exe_path.trim());
+    validate_actionable(&t, "退出")?;
+    let pids = action_pids(&t);
     let report = super::window_manager::request_processes_quit(&pids);
     Ok((
         report.process_total,

@@ -1,5 +1,5 @@
 // 任务页：统计 → 筛选 → 分组列表（同一 FlatList 内用分组头切分，不做嵌套列表）。
-// 交互约定：轻点完成、左滑删除、长按打开动作表；编辑与新建共用 TaskEditorSheet。
+// 交互约定：轻点完成、左右滑动删除、长按打开动作表；编辑与新建共用 TaskEditorSheet。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -22,10 +22,11 @@ import { TaskEditorSheet } from "../components/TaskEditorSheet";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { TaskRow } from "../components/TaskRow";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
-import { createTask, deleteTask, listTasks, toggleTask } from "../db/tasks";
+import { createTask, deleteTask, listTasks, toggleTask, updateTask } from "../db/tasks";
 import { countTasks, formatDue, selectTasks } from "../domain/taskQuery";
 import type { NewTaskInput, Task, TaskFilter } from "../domain/types";
 import { describeError } from "../lib/errors";
+import { rescheduleAllReminders } from "../notifications/reminderEngine";
 import { cancelReminder, scheduleReminder } from "../notifications/reminders";
 import { useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
@@ -176,40 +177,25 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
 
   const handleUpdate = useCallback(
     async (original: Task, input: NewTaskInput) => {
-      let createdId: string | null = null;
       try {
-        // 数据层目前没有 updateTask：用「新建 + 删除旧记录」替换，保留描述；
-        // 已完成任务建好后立即切回完成态，避免编辑把它变回待办。
-        const created = await createTask({ ...input, description: original.description });
-        createdId = created.id;
-        if (original.status === "completed") {
-          await toggleTask(created.id);
-          await cancelReminder(created.id);
-        } else if (input.remindAt != null) {
-          const scheduled = await scheduleReminder(created.id, created.title, input.remindAt);
-          if (!scheduled) {
-            showToast("提醒未排期：系统通知权限未开启", "warn");
-          }
+        // 三态契约：编辑弹层里选「无」就是显式清空，所以这里一律显式传值，
+        // 用 null 表示清空、而不是省略键（省略会被数据层理解为「保持不变」）。
+        const updated = await updateTask(original.id, {
+          title: input.title,
+          description: input.description ?? "",
+          priority: input.priority ?? 0,
+          dueAt: input.dueAt ?? null,
+          remindAt: input.remindAt ?? null,
+        });
+        if (!updated) {
+          showToast("任务已不存在", "danger");
+        } else {
+          // 改了提醒时间要重建排期；引擎内部按 (task_id, occurrence) 幂等，不会重复弹。
+          await rescheduleAllReminders();
+          showToast("任务已更新", "success");
         }
-        await cancelReminder(original.id);
-        await deleteTask(original.id);
-        showToast("任务已更新", "success");
       } catch (error) {
-        // 删除旧记录失败时撤销新记录，避免同一任务出现两条
-        let rolledBack = true;
-        if (createdId) {
-          try {
-            await deleteTask(createdId);
-          } catch {
-            rolledBack = false;
-          }
-        }
-        showToast(
-          rolledBack
-            ? `更新失败：${describeError(error)}`
-            : `更新失败，可能产生重复任务：${describeError(error)}`,
-          "danger",
-        );
+        showToast(`更新失败：${describeError(error)}`, "danger");
       }
       await refresh(true);
     },
@@ -305,7 +291,9 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
   const listHeader = (
     <View style={styles.header}>
       <View style={styles.titleBlock}>
-        <Text style={[styles.screenTitle, { color: tokens.text }]}>任务</Text>
+        <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
+          任务
+        </Text>
         <Text style={[styles.screenSubtitle, { color: tokens.muted }]}>
           独立模式 · 数据只在本机
         </Text>
@@ -397,7 +385,10 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
           floatingShadow(scheme),
         ]}
       >
-        <Text style={[styles.fabGlyph, { color: tokens.onAccent }]}>＋</Text>
+        <View style={styles.fabGlyph}>
+          <View style={[styles.fabBar, styles.fabBarH, { backgroundColor: tokens.onAccent }]} />
+          <View style={[styles.fabBar, styles.fabBarV, { backgroundColor: tokens.onAccent }]} />
+        </View>
       </PressableScale>
 
       <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.lg + 68} />
@@ -479,8 +470,25 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   fabGlyph: {
-    fontSize: 26,
-    fontWeight: "400",
-    lineHeight: 30,
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fabBar: {
+    position: "absolute",
+    borderRadius: 1,
+  },
+  fabBarH: {
+    left: 2,
+    top: 11.1,
+    width: 20,
+    height: 1.8,
+  },
+  fabBarV: {
+    left: 11.1,
+    top: 2,
+    width: 1.8,
+    height: 20,
   },
 });

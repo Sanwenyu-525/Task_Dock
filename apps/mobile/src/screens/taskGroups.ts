@@ -6,7 +6,7 @@ import type { GroupTone } from "../components/TaskGroupHeader";
 
 const DAY_MS = 86_400_000;
 
-export type SectionKey = "today" | "week" | "later" | "undated" | "done";
+type SectionKey = "today" | "week" | "later" | "undated" | "done";
 
 export interface TaskSection {
   key: SectionKey;
@@ -15,8 +15,6 @@ export interface TaskSection {
   tasks: Task[];
   /** 分组头右侧的补充说明，例如「2 项已逾期」 */
   hint?: string;
-  /** 仅「今天」分组：其中已逾期的条数，用于分组头提示 */
-  overdue: number;
 }
 
 export type TaskListRow =
@@ -78,7 +76,6 @@ export function buildTaskSections(tasks: Task[], now: number): TaskSection[] {
     .map((definition) => ({
       ...definition,
       tasks: buckets[definition.key],
-      overdue: definition.key === "today" ? overdueInToday : 0,
     }))
     .filter((section) => section.tasks.length > 0);
 }

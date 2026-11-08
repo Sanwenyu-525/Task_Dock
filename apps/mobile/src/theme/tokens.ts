@@ -43,6 +43,8 @@ export interface Palette {
   onAccent: string;
   ok: string;
   okSoft: string;
+  /** 完成勾选符号的颜色：深色模式下 ok 本身很亮，白勾会糊，必须换深色符号 */
+  onOk: string;
   warn: string;
   warnSoft: string;
   danger: string;
@@ -74,6 +76,7 @@ export const palette = (scheme: ColorScheme): Palette =>
         onAccent: "#FFFFFF",
         ok: "#177B55",
         okSoft: "rgba(23,123,85,0.12)",
+        onOk: "#FFFFFF",
         warn: "#9A6400",
         warnSoft: "rgba(154,100,0,0.12)",
         danger: "#BE3A30",
@@ -102,6 +105,7 @@ export const palette = (scheme: ColorScheme): Palette =>
         onAccent: "#FFFFFF",
         ok: "#3DD598",
         okSoft: "rgba(61,213,152,0.16)",
+        onOk: "#06251A",
         warn: "#F0B354",
         warnSoft: "rgba(240,179,84,0.16)",
         danger: "#FF7A70",
@@ -112,7 +116,7 @@ export const palette = (scheme: ColorScheme): Palette =>
         separator: "rgba(148,180,226,0.10)",
       };
 
-export const space = { xxs: 2, xs: 4, sm: 8, md: 12, lg: 16, xl: 22, xxl: 30 };
+export const space = { xxs: 2, xs: 4, sm: 8, md: 12, lg: 16, xl: 22 };
 export const radius = { card: 18, row: 14, control: 11, sheet: 24, chip: 999 };
 export const font = {
   display: 26,
@@ -121,7 +125,4 @@ export const font = {
   body: 13,
   meta: 12,
   label: 11,
-  tiny: 10,
 };
-/** 可点击元素的最小边长：安卓无障碍建议 ≥ 44dp，图标按钮额外用 hitSlop 补足 */
-export const hit = { min: 44 };

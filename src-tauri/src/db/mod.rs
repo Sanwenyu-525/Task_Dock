@@ -1358,6 +1358,22 @@ ALTER TABLE workspace_snapshot_items
   ADD COLUMN window_geometry_json TEXT NOT NULL DEFAULT '';
 "#,
     ),
+    (
+        41,
+        r#"
+-- v41（智能日程提醒联动）：任务与「场景 / 工作现场」的一对一关联。
+-- 提醒触发时通知卡据此提供「进入场景 / 恢复现场」动作——只在用户显式点击时执行，
+-- 绝不自动启动。数据边界：只存任务 id、目标类型与目标 UUID，不落窗口标题、路径、
+-- HWND/PID；目标存在性在读取时校验（双保险），删除任务经外键级联清理。
+CREATE TABLE task_reminder_links (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  target_kind TEXT NOT NULL CHECK (target_kind IN ('workspace','scene')),
+  target_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

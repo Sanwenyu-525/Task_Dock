@@ -1,5 +1,6 @@
 // 分组头：左侧色点 + 名称 + 数量，右侧一条渐隐的分割线延伸到屏幕边。
 // 纯展示，不参与分组计算（分组在 src/screens/taskGroups.ts）。
+import { memo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
@@ -7,7 +8,7 @@ import { font, space } from "../theme/tokens";
 
 export type GroupTone = "accent" | "warn" | "ok" | "muted";
 
-export function TaskGroupHeader({
+function TaskGroupHeaderBase({
   title,
   count,
   hint,
@@ -47,6 +48,9 @@ export function TaskGroupHeader({
     </View>
   );
 }
+
+/** 分组头在每分钟 now 刷新时也会重渲染，参数全是原始值，memo 后可直接跳过 */
+export const TaskGroupHeader = memo(TaskGroupHeaderBase);
 
 const styles = StyleSheet.create({
   row: {
