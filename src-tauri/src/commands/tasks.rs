@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
