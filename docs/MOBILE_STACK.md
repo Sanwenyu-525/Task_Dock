@@ -3,6 +3,10 @@
 > 状态：**验证阶段设计稿**（2026-11-07）。本文件只描述已论证的设计与边界，不包含尚未实现的
 > 功能承诺。框架选型结论与实测数据见 `tmp/acceptance/mobile-stack-selection/report.md`。
 >
+> **实现现状以 [docs/mobile/](mobile/README.md) 为准。** 本稿中的 `notes` 表、`server_rev` /
+> `dirty` 列、`tombstones` 表、配对与同步流程均**未实现**；已实现部分的实际字段与行为见
+> `mobile/02-data-model.md` §9 的差异表。
+>
 > 前提事实（来自对本仓库真实代码的审计）：
 > - 桌面端业务规则**都在 Rust/SQLite 层**，TypeScript 只承担展示与纯函数；
 > - 现有 `http_ingest` 只绑定 `127.0.0.1`，**不能直接**作为手机接入点；

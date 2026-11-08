@@ -20,6 +20,7 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；能力与当前状态见 [REA
 | 测试矩阵、验收、性能 | [docs/TESTING.md](docs/TESTING.md)、`docs/PERFORMANCE_*.md`、`docs/V0*_*.md` |
 | Agent 接入、应用导航 | [docs/AGENT_ADAPTERS.md](docs/AGENT_ADAPTERS.md)、[AGENT_COVERAGE_MATRIX.md](AGENT_COVERAGE_MATRIX.md)、[APP_NAVIGATION_MATRIX.md](APP_NAVIGATION_MATRIX.md) |
 | 模块专项（剪贴板、UI/视觉） | [docs/clipboard/](docs/clipboard/)、[docs/ui-themes/](docs/ui-themes/) |
+| 移动端（Android 独立模式） | [docs/mobile/](docs/mobile/)、[apps/mobile/AGENTS.md](apps/mobile/AGENTS.md) |
 
 ## 2. 基本开发原则
 - 默认简体中文；修改前先读实际代码与测试，不凭记忆或文档臆断现状；既有注释与文案保持原语言风格。
