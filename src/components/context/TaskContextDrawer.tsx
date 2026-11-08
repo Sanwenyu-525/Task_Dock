@@ -136,6 +136,18 @@ export default function TaskContextDrawer() {
   const [linkOptionsLoading, setLinkOptionsLoading] = useState(false);
   const [linkOptionsError, setLinkOptionsError] = useState<string | null>(null);
 
+  /** 删除确认的 3s 复位定时器：换目标/关闭时先清旧的，卸载时统一回收。
+   *  必须声明在早退 return 之前：组件常驻挂载，关闭态与打开态渲染的
+   *  hooks 数若不一致，打开抽屉会触发 React #310（21f5887 引入的存量
+   *  缺陷；因其阻断提醒联动的抽屉入口，在本任务修复并加回归测试）。 */
+  const confirmResetTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (confirmResetTimerRef.current !== null) window.clearTimeout(confirmResetTimerRef.current);
+    },
+    [],
+  );
+
   // 捕获窗口是抽屉内的展开区，不再叠第二层模态
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureWindows, setCaptureWindows] = useState<CaptureWindow[]>([]);
@@ -519,17 +531,8 @@ export default function TaskContextDrawer() {
     }
   }
 
-  /** 删除确认的 3s 复位定时器：换目标/关闭时先清旧的，卸载时统一回收。
-   *  必须挂在早退 return 之前：组件常驻挂载，关闭态渲染的 hooks 数若与
-   *  打开态不同，打开抽屉会触发 React #310（21f5887 引入的存量缺陷，
-   *  因其阻断提醒联动的抽屉入口在本任务修复）。 */
-  const confirmResetTimerRef = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (confirmResetTimerRef.current !== null) window.clearTimeout(confirmResetTimerRef.current);
-    },
-    [],
-  );
+  /** 删除确认的 3s 复位定时器：ref 与卸载回收的 useEffect 声明在组件顶部
+   *  （早退 return 之前，保持两种渲染状态 hooks 数一致）。 */
   function armConfirmReset(id: string) {
     if (confirmResetTimerRef.current !== null) window.clearTimeout(confirmResetTimerRef.current);
     confirmResetTimerRef.current = window.setTimeout(() => {

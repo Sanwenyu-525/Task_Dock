@@ -257,6 +257,9 @@ describe("TaskContextDrawer 提醒联动", () => {
     // 回归背景：21f5887 把删除确认的 useRef/useEffect 放到早退 return 之后，
     // 真机上从关闭态打开抽屉即崩（界面渲染失败），jsdom 旧测试从打开态首渲染测不出来。
     taskReminderLinkGet.mockResolvedValue(null);
+    act(() => {
+      useUiStore.setState({ context: { open: false, task: null } });
+    });
     const view = render(<TaskContextDrawer />);
     expect(screen.queryByRole("dialog", { name: "任务上下文" })).toBeNull();
     act(() => {
